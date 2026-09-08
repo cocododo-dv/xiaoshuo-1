@@ -42,7 +42,14 @@ from novel_system.services.style_reference.metrics import (
     ParagraphRecord,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.sampling import stratified_sample
+from novel_system.services.style_reference.sampling import (
+    derive_extraction_rng,
+    group_consecutive_windows,
+    proportional_stratified_sample,
+    sample_windows,
+    scale_sample_target,
+    window_position,
+)
 from novel_system.services.style_reference.schemas import (
     AnchorKind,
     ExtractionEvidenceInput,
@@ -93,6 +100,19 @@ class _ExtractLLMError(StyleReferenceError):
     def __init__(self, message: str, *, retryable: bool = True) -> None:
         super().__init__(message)
         self.retryable = retryable
+
+
+# ---------------------------------------------------------------------------
+# 采样默认值(extraction.yaml `observations.*` 缺键时的兜底)
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_SAMPLE_SCALING: tuple[dict[str, Any], ...] = (
+    {"min_chars": 200_000, "multiplier": 2.0},
+    {"min_chars": 50_000, "multiplier": 1.5},
+)
+_DEFAULT_WINDOW_SIZE_RANGE: tuple[int, int] = (3, 6)
+_DEFAULT_WINDOW_LAYERS: tuple[str, ...] = (Layer.NARRATIVE.value, Layer.THEME.value)
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +243,16 @@ class BaseExtractor:
         self.repo = StyleReferenceRepository(session)
         self.metrics_engine = metrics_engine or MetricsEngine()
         self.retry_policy = retry_policy or ExtractionRetryPolicy()
-        self.rng = rng or random.Random()
         self._config = load_yaml_config("extraction")
         self._ptype_by_pid: dict[str, str] | None = None
+        self._book: Any | None = None
+        self._book_loaded = False
+        self._book_metrics: dict[str, dict[str, Any]] | None = None
+        # rng 默认以 sha256(text_checksum + run_id) 定种:同一 run 的采样可复现
+        # (resume 重放采样即回到同一位置);测试可显式注入 rng。
+        self.rng = rng if rng is not None else derive_extraction_rng(
+            getattr(self._get_book(), "text_checksum", None), run_id
+        )
         # 后台模式的事务边界:每个 sub_dim 落库后调用(session.commit),否则
         # 一层 4 个 sub_dim 的写事务会跨着多次分钟级 LLM 调用持有 SQLite 写锁,
         # 期间任何 UI 写操作等满 busy_timeout 后报 "database is busy"。
@@ -402,6 +429,22 @@ class BaseExtractor:
                 result.extractions_created += 1
                 result.findings = kept
                 return result
+            except _ExtractLLMError as exc:
+                # 重抽本身失败(供应商截断 / 空正文 / 网络):保留首抽 + 定向补证
+                # 已通过校验的 findings,而不是让整个 run FAILED。
+                kept = [f for f in findings if len(f.evidence) >= 2]
+                logger.warning(
+                    "full_retry LLM call failed for %s; keeping %d validated findings "
+                    "from the initial extraction and dropping %d unresolved: %s",
+                    sub_dim.value,
+                    len(kept),
+                    len(failed),
+                    exc,
+                )
+                self._persist_findings(sub_dim, kept, ExtractionPurpose.EXTRACT)
+                result.extractions_created += 1
+                result.findings = kept
+                return result
 
         # Step 4: 全部失败,丢弃失效 + warning
         kept = [f for f in findings if len(f.evidence) >= 2]
@@ -433,14 +476,7 @@ class BaseExtractor:
         payload = {
             "sub_dimension": sub_dim.value,
             "metrics_anchor": metrics_anchor,
-            "paragraphs": [
-                {
-                    "paragraph_id": p.paragraph_id,
-                    "paragraph_type": p.paragraph_type,
-                    "text": compact_ws(p.text)[:600],
-                }
-                for p in paragraphs
-            ],
+            "paragraphs": self._paragraph_payload_items(paragraphs),
         }
         try:
             structured = self._call_llm(self.extract_node_id, payload)
@@ -597,11 +633,24 @@ class BaseExtractor:
     # --------------------------------------------------------------- sampling
 
     def _sample_paragraphs(self, sub_dim: SubDimension) -> list["StyleReferenceParagraph"]:
+        """为一个 sub_dim 采样段落(返回按 paragraph_index 排序的扁平列表)。
+
+        - 样本量 = 层基准值 × 全书字数分档(`scale_sample_target`);
+        - language / scene:按段型真实分布比例分配名额(每型下限 1);
+        - narrative / theme:抽 3–6 个相邻段的连续窗口,窗口边界由
+          `group_consecutive_windows` 从扁平列表还原(payload 带 window_id / window_position)。
+        """
         observations_cfg = self._config.get("observations", {}) or {}
         samples_map = observations_cfg.get("samples_per_sub_dimension", {}) or {}
         layer_name = self.layer.value
-        target_n = int(samples_map.get(layer_name, 20))
-        min_per_type = int(observations_cfg.get("min_samples_per_type", 3))
+        base_n = int(samples_map.get(layer_name, 20))
+        target_n = scale_sample_target(
+            base_n,
+            getattr(self._get_book(), "total_chars", 0),
+            scaling=observations_cfg.get("sample_scaling") or list(_DEFAULT_SAMPLE_SCALING),
+            max_n=int(observations_cfg.get("max_samples_per_sub_dimension", 60) or 60),
+        )
+        min_per_type = int(observations_cfg.get("min_samples_per_type", 1))
 
         paragraphs = self.repo.list_paragraphs(self.book_id)
         # extraction 域禁用词(用户在任一 profile 上登记):含此词的段落不进抽取
@@ -616,12 +665,67 @@ class BaseExtractor:
                 p for p in paragraphs
                 if not any(term in (p.text or "") for term in banned)
             ]
-        return stratified_sample(
+        if self._uses_windows():
+            size_range = observations_cfg.get("window_size_range") or list(_DEFAULT_WINDOW_SIZE_RANGE)
+            windows = sample_windows(
+                paragraphs,
+                target_n,
+                (int(size_range[0]), int(size_range[1])),
+                self.rng,
+            )
+            return [p for window in windows for p in window]
+        return proportional_stratified_sample(
             paragraphs,
             target_n=target_n,
             min_per_type=min_per_type,
             rng=self.rng,
         )
+
+    def _uses_windows(self) -> bool:
+        observations_cfg = self._config.get("observations", {}) or {}
+        window_layers = observations_cfg.get("window_layers")
+        if window_layers is None:
+            window_layers = list(_DEFAULT_WINDOW_LAYERS)
+        return self.layer.value in {str(v) for v in window_layers}
+
+    def _paragraph_payload_items(
+        self,
+        paragraphs: list["StyleReferenceParagraph"],
+    ) -> list[dict[str, Any]]:
+        """抽取 payload 的段落条目:始终带 paragraph_index;窗口层再带
+        window_id / window_position(first / middle / last),让 LLM 看到顺序与窗口边界。"""
+        items: list[dict[str, Any]] = []
+        if self._uses_windows():
+            for w_idx, window in enumerate(group_consecutive_windows(paragraphs), start=1):
+                window_id = f"w{w_idx:02d}"
+                for pos, p in enumerate(window):
+                    items.append(
+                        {
+                            "paragraph_id": p.paragraph_id,
+                            "paragraph_index": int(getattr(p, "paragraph_index", 0) or 0),
+                            "paragraph_type": p.paragraph_type,
+                            "window_id": window_id,
+                            "window_position": window_position(pos, len(window)),
+                            "text": compact_ws(p.text)[:600],
+                        }
+                    )
+            return items
+        for p in paragraphs:
+            items.append(
+                {
+                    "paragraph_id": p.paragraph_id,
+                    "paragraph_index": int(getattr(p, "paragraph_index", 0) or 0),
+                    "paragraph_type": p.paragraph_type,
+                    "text": compact_ws(p.text)[:600],
+                }
+            )
+        return items
+
+    def _get_book(self) -> Any | None:
+        if not self._book_loaded:
+            self._book = self.repo.get_book(self.book_id)
+            self._book_loaded = True
+        return self._book
 
     # ---------------------------------------------------------- metrics_anchor
 
@@ -629,19 +733,55 @@ class BaseExtractor:
         self,
         paragraphs: list["StyleReferenceParagraph"],
         sub_dim: SubDimension,
-    ) -> dict[str, dict[str, float]]:
-        """注入当前 sub_dim 关心的硬指标子集(≤8 项,避免 prompt 过大)。"""
+    ) -> dict[str, Any]:
+        """注入当前 sub_dim 关心的硬指标子集(≤8 项,避免 prompt 过大)。
+
+        锚点取 **全书真值**:ingest 已把 `MetricsEngine.compute_with_variance` /
+        `compute_prose_shape_with_variance` 的结果写进 `book.stats_json.metrics` /
+        `prose_shape_metrics`;这里按 `_SUB_DIM_METRIC_SUBSET` 取子集并标
+        ``anchor_scope="book"``。全书值缺失(旧书 / 测试直接建表)时回退到对
+        当前样本计算,标 ``anchor_scope="sample"``。
+        """
+        subset_names = _SUB_DIM_METRIC_SUBSET.get(sub_dim, tuple(METRIC_NAMES[:6]))
+        book_metrics = self._book_level_metrics()
+        anchor: dict[str, Any] = {}
+        if book_metrics and all(name in book_metrics for name in subset_names):
+            for name in subset_names:
+                entry = book_metrics[name]
+                anchor[name] = {
+                    "mean": float(entry.get("mean", 0.0) or 0.0),
+                    "std": float(entry.get("std", 0.0) or 0.0),
+                }
+            anchor["anchor_scope"] = "book"
+            return anchor
         records = [
             ParagraphRecord(text=p.text, paragraph_type=p.paragraph_type)
             for p in paragraphs
         ]
         all_metrics = self.metrics_engine.compute_with_variance(records)
-        subset_names = _SUB_DIM_METRIC_SUBSET.get(sub_dim, tuple(METRIC_NAMES[:6]))
-        return {
-            name: {"mean": float(all_metrics[name][0]), "std": float(all_metrics[name][1])}
-            for name in subset_names
-            if name in all_metrics
-        }
+        for name in subset_names:
+            if name in all_metrics:
+                anchor[name] = {
+                    "mean": float(all_metrics[name][0]),
+                    "std": float(all_metrics[name][1]),
+                }
+        anchor["anchor_scope"] = "sample"
+        return anchor
+
+    def _book_level_metrics(self) -> dict[str, dict[str, Any]]:
+        """`book.stats_json.metrics` ∪ `prose_shape_metrics`(每项 {mean, std, ...}),lazy 读一次。"""
+        if self._book_metrics is None:
+            stats = getattr(self._get_book(), "stats_json", None) or {}
+            merged: dict[str, dict[str, Any]] = {}
+            for key in ("metrics", "prose_shape_metrics"):
+                block = stats.get(key) if isinstance(stats, dict) else None
+                if not isinstance(block, dict):
+                    continue
+                for name, entry in block.items():
+                    if isinstance(entry, dict) and "mean" in entry:
+                        merged[str(name)] = entry
+            self._book_metrics = merged
+        return self._book_metrics
 
     # --------------------------------------------------------------- persist
 

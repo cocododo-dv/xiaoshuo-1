@@ -5,16 +5,25 @@
 # PR-3 实际消费:retry / forbidden_pattern_target_count / observation_target_count
 
 metrics:
-  use_all_paragraphs: true        # MetricsEngine 用全文计算单值与方差
+  # ingest 用全文计算单值与块间方差,写入 book.stats_json.metrics / prose_shape_metrics;
+  # 抽取的 metrics_anchor 直接读这份全书真值(payload 标 anchor_scope=book),
+  # 只在全书值缺失时回退到对样本计算(anchor_scope=sample)。
+  use_all_paragraphs: true
 
 observations:
-  samples_per_sub_dimension:
+  samples_per_sub_dimension:      # <50k 字的基准值,按 sample_scaling 随全书字数放大
     language: 25
     narrative: 20
     scene: 25
     theme: 15
-  stratified_sampling: true       # 按 paragraph_type 分层抽样
-  min_samples_per_type: 3         # 每种 type 至少抽 3 段
+  sample_scaling:                 # total_chars ≥ min_chars 时基准值 × multiplier(取命中的最大档)
+    - {min_chars: 200000, multiplier: 2.0}
+    - {min_chars: 50000, multiplier: 1.5}
+  max_samples_per_sub_dimension: 60   # 放大后的上限(段 / 子维)
+  stratified_sampling: true       # language / scene:按 paragraph_type 真实分布比例分配名额
+  min_samples_per_type: 1         # 每种出现过的 type 至少 1 段(受该 type 段数约束)
+  window_layers: [narrative, theme]   # 这两层抽连续窗口(相邻段),payload 带 paragraph_index / window_id / window_position
+  window_size_range: [3, 6]       # 每个窗口 3–6 个相邻段
 
 # 以下为 PR-3 用,本 PR 仅占位
 retry:

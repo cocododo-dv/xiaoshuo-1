@@ -723,3 +723,91 @@ def test_preview_llm_required_when_disabled(client: TestClient, monkeypatch) -> 
     err = resp.json()["error"]
     assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
     assert err["details"]["author_action"]
+
+
+def test_synthesize_failure_maps_to_409_with_reason_code_and_author_action(
+    client: TestClient, monkeypatch
+) -> None:
+    """2026-09 v2 · W1:SynthesizeError 同时是 DomainError,路由零改动即透传为 409。"""
+    from novel_system.services.style_reference.profile_synthesizer import (
+        ProfileSynthesizer,
+        SynthesizeError,
+    )
+
+    def _boom(self, book_id, run_id):  # noqa: ANN001
+        raise SynthesizeError(
+            "style profile synthesis input cannot fit input_token_budget",
+            reason_code="budget_unfit",
+            details={"target_input_tokens": 39000, "estimated_floor": 40123},
+        )
+
+    monkeypatch.setattr(ProfileSynthesizer, "synthesize", _boom)
+    book_id = _import_book(client)
+    run_id, _, _ = _seed_full_chain(book_id)
+    resp = client.post(
+        f"{PREFIX}/runs/{run_id}/synthesize",
+        headers={"X-Idempotency-Key": "synth_budget_unfit"},
+    )
+
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["ok"] is False
+    err = body["error"]
+    assert err["code"] == "STYLE_REFERENCE_SYNTHESIZE_FAILED"
+    assert err["details"]["reason_code"] == "budget_unfit"
+    assert err["details"]["target_input_tokens"] == 39000
+    assert err["details"]["author_action"]["view"] == "styleref"
+    assert err["details"]["author_action"]["action"] == "review_dimension_matrix_then_synthesize"
+
+
+# ---------------------------------------------------------------------------
+# v2(风格模仿 v2 · W2):导入路由按运行时 LLM 配置 + cloud_policy 选分类器
+# ---------------------------------------------------------------------------
+
+
+def _book_calibration(client: TestClient, book_id: str) -> dict[str, Any]:
+    book = client.get(f"{PREFIX}/books/{book_id}").json()["data"]["book"]
+    return book["stats_json"]["classifier_calibration"]
+
+
+def test_import_upload_uses_runtime_llm_classifier_when_enabled(
+    client: TestClient, monkeypatch, fake_paragraph_classifier
+) -> None:
+    import novel_system.api.routes.style_reference as sr_routes
+
+    fake = fake_paragraph_classifier(rule="default")
+    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
+    book_id = _import_book(client)  # segments_only + 送出权 → 走 LLM 分类
+    assert fake.call_count >= 2, "anchor + bulk 至少两次分类调用"
+    calibration = _book_calibration(client, book_id)
+    assert calibration["fallback_to_heuristic"] is False
+    assert calibration["fast_model_agreement"] == 1.0
+
+
+def test_import_upload_local_only_book_stays_heuristic_even_with_llm(
+    client: TestClient, monkeypatch, fake_paragraph_classifier
+) -> None:
+    import novel_system.api.routes.style_reference as sr_routes
+
+    fake = fake_paragraph_classifier(rule="default")
+    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
+    resp = client.post(
+        f"{PREFIX}/books/import-upload",
+        files={"file": ("local.txt", io.BytesIO(SAMPLE_TXT), "text/plain")},
+        data={"title": "local", "cloud_policy": "local_only"},
+        headers={"X-Idempotency-Key": "imp_local_heuristic"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert fake.call_count == 0, "local_only 的段落不得送往 LLM"
+    calibration = _book_calibration(client, resp.json()["data"]["book"]["book_id"])
+    assert calibration["fallback_to_heuristic"] is True
+
+
+def test_import_upload_without_llm_records_heuristic_fallback(
+    client: TestClient, monkeypatch
+) -> None:
+    import novel_system.api.routes.style_reference as sr_routes
+
+    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (None, False))
+    book_id = _import_book(client)
+    assert _book_calibration(client, book_id)["fallback_to_heuristic"] is True

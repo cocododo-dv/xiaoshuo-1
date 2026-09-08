@@ -149,3 +149,60 @@ def test_split_paragraphs_keeps_blank_line_mode_for_normal_text() -> None:
     assert [b for _s, _e, b in paragraphs] == [
         "第一段内容。", "第二段内容,稍微长一点。", "第三段。",
     ]
+
+
+# ---------------------------------------------------------------------------
+# split_sentences v2(风格模仿 v2 · W2):闭引号归并 / ASCII 句点 / 无纯标点片段
+# ---------------------------------------------------------------------------
+
+
+def test_split_sentences_merges_closing_quote_into_previous_sentence() -> None:
+    """`“走吧。”` 此前会切出只含 `”` 的幽灵句(拉低 avg_sentence_length);
+    闭引号必须归并到前一句而不是开启下一句。"""
+    assert split_sentences("他说：“走吧。”她点头。") == ["他说：“走吧”", "她点头"]
+    assert split_sentences("‘对么？’") == ["‘对么’"]
+    assert split_sentences("他不以为然了。含含胡胡的答道，‘不……’") == [
+        "他不以为然了",
+        "含含胡胡的答道，‘不’",
+    ]
+    assert split_sentences('他说:"你好。"她答:"再见。"') == ['他说:"你好"', '她答:"再见"']
+
+
+def test_split_sentences_merges_closing_bracket() -> None:
+    assert split_sentences("他走了。（她没有回头。）后来呢") == ["他走了", "（她没有回头）", "后来呢"]
+
+
+def test_split_sentences_never_yields_pure_punctuation_fragment() -> None:
+    import re
+
+    for text in ("“不……”他愣住了。“……”", "。。。”", "——。", "他走了。……", "”", "“”"):
+        for piece in split_sentences(text):
+            assert re.search(r"[\w㐀-鿿]", piece), (text, piece)
+    assert split_sentences("“不……”他愣住了。“……”") == ["“不”", "他愣住了"]
+
+
+def test_split_sentences_ascii_period_only_before_whitespace_or_end() -> None:
+    assert split_sentences("价格是3.5元。") == ["价格是3.5元"]
+    assert split_sentences("www.example.com is a site. Really.") == [
+        "www.example.com is a site",
+        "Really",
+    ]
+    assert split_sentences("Hello.\nWorld") == ["Hello", "World"]
+    assert split_sentences('She said "no." Then left.') == ['She said "no"', "Then left"]
+    assert split_sentences("The end.") == ["The end"]
+
+
+def test_split_sentences_golden_corpus_has_no_ghost_sentences() -> None:
+    """鲁迅语料 500+ 处 `。’` / `？’`:分句后不得出现只含闭引号的片段。"""
+    from pathlib import Path
+
+    corpus = (
+        Path(__file__).resolve().parent
+        / "golden" / "style_reference" / "corpus" / "luxun_short_stories.txt"
+    )
+    text = normalize_text(corpus.read_text(encoding="utf-8"))
+    ghosts = [
+        s for s in split_sentences(text)
+        if s.strip("”’」』）)\"' ") == ""
+    ]
+    assert ghosts == []

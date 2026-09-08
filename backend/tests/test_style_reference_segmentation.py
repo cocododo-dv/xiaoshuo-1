@@ -414,3 +414,125 @@ def test_paragraph_classification_fields() -> None:
     assert c.paragraph_type == "dialogue"
     assert 0.0 <= c.confidence <= 1.0
     assert c.classifier_confidence_level in {"high", "medium", "low"}
+
+
+# ---------------------------------------------------------------------------
+# 启发式 v2(风格模仿 v2 · W2):‘’ 对白 / 引语占比 / 短段继承 / 切换词 transition
+# ---------------------------------------------------------------------------
+
+
+from novel_system.services.style_reference.segmentation.heuristic import (  # noqa: E402
+    classify_heuristic_sequence,
+)
+
+
+def test_heuristic_dialogue_single_curly_quotes() -> None:
+    """鲁迅等公版文本用 ‘’ 作对白引号,此前一律落 transition / narration。"""
+    assert _heuristic_classify_one("‘对么？’")[0] == "dialogue"
+    assert _heuristic_classify_one("‘疯了。’驼背五少爷点着头说。")[0] == "dialogue"
+    assert _heuristic_classify_one("他不以为然了。含含胡胡的答道，‘不……’")[0] == "dialogue"
+    assert _heuristic_classify_one("‘小栓的爹，你就去么？’是一个老女人的声音。里边的小屋子里，也发出一阵咳嗽。")[0] == "dialogue"
+
+
+def test_heuristic_brief_quoted_term_in_narration_is_not_dialogue() -> None:
+    """「含引号即对话」已废:引语只占一小段、无说话引导的叙述段不是对白。"""
+    body = "所谓“国粹”不过是一块遮羞布,几十年来我们都靠它挡着风雨,没有人愿意戳破。"
+    assert _heuristic_classify_one(body)[0] == "narration"
+    body2 = "阿Q尤其‘深恶而痛绝之’的，是他的一条假辫子。辫子而至于假，就是没有了做人的资格。"
+    assert _heuristic_classify_one(body2)[0] == "narration"
+
+
+def test_heuristic_speech_lead_makes_dialogue_even_when_quote_is_short() -> None:
+    lead = (
+        "旁人便又问道，‘你当真认识字么？’孔乙己看着问他的人，显出不屑置辩的神气，"
+        "然后慢慢地把碗放下，谁也不再理会。"
+    )
+    assert _heuristic_classify_one(lead)[0] == "dialogue"
+    # 段尾「喝道：」引入下一段引语的叙述引入段
+    assert _heuristic_classify_one("这时候，大哥也忽然显出凶相，高声喝道：")[0] == "dialogue"
+    assert _heuristic_classify_one("他点点头，“走吧。”")[0] == "dialogue"
+
+
+def test_heuristic_short_narration_is_not_transition() -> None:
+    """<30 字不再一律 transition:无切换词的短叙述句落 narration。"""
+    assert _heuristic_classify_one("天空忽然暗了下来。")[0] == "narration"
+    assert _heuristic_classify_one("我怕得有理。")[0] == "narration"
+    assert _heuristic_classify_one("今天晚上，很好的月光。")[0] == "narration"
+
+
+def test_heuristic_short_paragraph_inherits_previous_type() -> None:
+    body = "天空忽然暗了下来。"
+    assert _heuristic_classify_one(body, previous_type="dialogue")[0] == "dialogue"
+    assert _heuristic_classify_one(body, previous_type="flashback")[0] == "flashback"
+    # transition 是结构标记,不可继承 → narration 兜底
+    assert _heuristic_classify_one(body, previous_type="transition")[0] == "narration"
+    # 长段不继承
+    long_body = "故事从一个平凡的午后开始,看起来一切都和往常一样,没有什么特别。"
+    assert _heuristic_classify_one(long_body, previous_type="dialogue")[0] == "narration"
+
+
+def test_heuristic_transition_requires_switch_word_or_title_shape() -> None:
+    for body in ("几日后。", "次日清晨。", "与此同时，城的另一头。", "后来他再没有回来。", "回到家里。"):
+        assert _heuristic_classify_one(body)[0] == "transition", body
+    for body in ("《狂人日记》", "一", "第三章 归乡", "第十二回", "楔子", "Chapter 3", "(二)"):
+        assert _heuristic_classify_one(body)[0] == "transition", body
+    # 长段含「后来」「深夜」是叙述,不是切换
+    long_body = "后来他在城里做了小职员,每天早出晚归,渐渐把故乡的人和事都放下了,只在偶尔的深夜里生出一点不甘。"
+    assert _heuristic_classify_one(long_body)[0] == "narration"
+
+
+def test_classify_heuristic_sequence_inherits_and_skips_transition() -> None:
+    bodies = [
+        "《药》",
+        "今天晚上，很好的月光。",
+        "‘小栓的爹，你就去么？’是一个老女人的声音。",
+        "老栓没有答话。",
+        "几日后。",
+        "他又去了。",
+    ]
+    types = [ptype for ptype, _conf in classify_heuristic_sequence(bodies)]
+    assert types == ["transition", "narration", "dialogue", "dialogue", "transition", "dialogue"]
+    assert all(conf == 0.5 for _ptype, conf in classify_heuristic_sequence(bodies))
+
+
+def test_classify_paragraphs_offline_short_beats_follow_surrounding_mode() -> None:
+    paragraphs = [
+        (0, 10, "他说:“你好。”"),
+        (10, 20, "她没有回头。"),
+        (20, 30, "几日后。"),
+    ]
+    result = classify_paragraphs(paragraphs, llm_enabled=False)
+    assert [c.paragraph_type for c in result.classifications] == ["dialogue", "dialogue", "transition"]
+    assert result.calibration["fallback_to_heuristic"] is True
+
+
+def test_heuristic_speech_verb_inside_non_speech_compound_is_not_dialogue() -> None:
+    """C18:单字引导动词(道 / 应 / 叫 / 念 …)不得命中 知道 / 应该 / 道理 / 小说 / 叫做 / 念头
+    等非言说复合词——引语只占几个字、又没有真正说话引导的短叙述段不是对白。"""
+    for body in (
+        "他所谓的“国粹”，我是知道的。",
+        "这条“新路”，其实是老路，大家都应该明白。",
+        "那本“小说”里的道理他一个也没记住。",
+        "所谓“公理”，不过是强者的道具罢了。",
+        "他叫做“阿Q”，念头一转。",
+        "大家都知道“阿Q”是谁。",  # 引号前的「知道」同样不是引导
+    ):
+        assert _heuristic_classify_one(body)[0] == "narration", body
+    # 序列里紧随其后的短段不再继承错误的 dialogue
+    bodies = ["他所谓的“国粹”，我是知道的。", "他没有再说什么。"]
+    assert [ptype for ptype, _conf in classify_heuristic_sequence(bodies)] == ["narration", "narration"]
+    # 真正的引导 / 收尾动词不受影响
+    assert _heuristic_classify_one("他知道了，便说：“走吧。”")[0] == "dialogue"
+    assert _heuristic_classify_one("‘疯了。’驼背五少爷点着头说。")[0] == "dialogue"
+    assert _heuristic_classify_one("‘不知道。’他答道。")[0] == "dialogue"
+
+
+def test_heuristic_speech_exclusions_reuse_function_words_yaml() -> None:
+    """启发式与 voice_signature 同源:剥离表 ⊇ function_words.yaml speech_verbs.exclusions。"""
+    from novel_system.services.style_reference.config_loader import load_yaml_config
+    from novel_system.services.style_reference.segmentation.heuristic import _speech_exclusions
+
+    yaml_exclusions = set(load_yaml_config("function_words")["speech_verbs"]["exclusions"])
+    assert {"知道", "应该", "道理", "小说"} <= yaml_exclusions
+    assert yaml_exclusions <= set(_speech_exclusions())
+    assert {"叫做", "念头"} <= set(_speech_exclusions())

@@ -248,3 +248,34 @@ def test_resume_run_skips_finalized_subdimensions_and_finishes_remaining_three(
         "language.rhetoric",
         "language.punctuation",
     }
+
+
+# ---------------------------------------------------------------------------
+# v2(风格模仿 v2 · W2):rng 以 sha256(text_checksum + run_id) 定种
+# ---------------------------------------------------------------------------
+
+
+def test_run_orchestrator_rng_seeded_from_checksum_and_run_id() -> None:
+    import random
+
+    from novel_system.services.style_reference.sampling import derive_extraction_rng
+
+    book_id = _ingest("rng_seed")
+    with SessionLocal() as session:
+        book = StyleReferenceRepository(session).get_book(book_id)
+        orch = RunOrchestrator(session, llm_client=object(), llm_enabled=True)
+        again = RunOrchestrator(session, llm_client=object(), llm_enabled=True)
+        expected = derive_extraction_rng(book.text_checksum, "sr_run_seed_a")
+        assert (
+            orch._run_rng("sr_run_seed_a", book_id).random()
+            == again._run_rng("sr_run_seed_a", book_id).random()
+            == expected.random()
+        )
+        assert (
+            orch._run_rng("sr_run_seed_b", book_id).random()
+            != derive_extraction_rng(book.text_checksum, "sr_run_seed_a").random()
+        )
+        injected = random.Random(3)
+        assert RunOrchestrator(
+            session, llm_client=object(), llm_enabled=True, rng=injected
+        )._run_rng("sr_run_x", book_id) is injected

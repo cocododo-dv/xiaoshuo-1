@@ -8,7 +8,8 @@
 - `normalize_text`          ← `services/reference_learning.py:2123-2124` `_normalize_text`
 - `compute_text_checksum`   ← `services/reference_learning.py:199` 内联实现
 - `split_paragraphs`        ← `services/reference_learning.py:2131` 内联 + offset 追踪
-- `split_sentences`         ← `services/literary_quality.py:1701-1702` `_sentences`(扩 `…`)
+- `split_sentences`         ← `services/literary_quality.py:1701-1702` `_sentences`(扩 `…`;
+  2026-09 v2 重写:闭引号归并前句、ASCII 句点仅在空白 / 行尾前切、不产生纯标点片段)
 - `extract_dialogue_spans`  ← `services/literary_quality.py:1694-1698` `_dialogue_spans`
 - `compact_ws`              ← `services/literary_quality.py:1748-1749` `_compact_ws`
 
@@ -99,12 +100,46 @@ def _split_on(text: str, separator_pattern: str) -> list[tuple[int, int, str]]:
     return paragraphs
 
 
+# 句末标点:中文全角句末 + ASCII `!?` + 省略号。ASCII `.` 单独处理(见下)。
+_SENTENCE_TERMINATORS = "。！？!?…"
+# 紧随句末标点的闭引号 / 右括号归并到前一句,而不是成为下一句的开头
+# (`“走吧。”` 此前会切出一个只含 `”` 的幽灵句,拉低 avg_sentence_length)。
+# ASCII `"` `'` 出现在句末标点之后时几乎总是闭引号,同样归并。
+_SENTENCE_CLOSERS = "”’」』）)]】〕〉》\"'"
+_SENTENCE_END_RE = re.compile(
+    r"(?:[" + re.escape(_SENTENCE_TERMINATORS) + r"]+"
+    # ASCII 句点只在(可选闭引号后)后随空白 / 行尾时才算句末:`3.5` / `www.example.com` 不切
+    r"|\.+(?=[" + re.escape(_SENTENCE_CLOSERS) + r"]*(?:\s|$)))"
+    r"(?P<closers>[" + re.escape(_SENTENCE_CLOSERS) + r"]*)"
+)
+_SENTENCE_WORD_RE = re.compile(r"[\w\u3400-\u9fff]")
+
+
 def split_sentences(text: str) -> list[str]:
-    """中文 + 英文分句:按 `。！？.!?…` 切分,strip 后去空。
+    """中文 + 英文分句:按 `。！？!?…` 切分,ASCII `.` 只在后随空白 / 行尾时切。
+
+    - 句末标点本身不进入结果(与历史契约一致,句长统计不计终止符);
+    - 紧随句末标点的闭引号 / 右括号(`”’」』）)]` 等)归并到前一句;
+    - 不产生纯标点片段(无任何文字字符的片段被丢弃);
+    - 返回 list[str],每项已 strip,空项去除。
 
     引号内不切分由上游 `extract_dialogue_spans` 单独处理。
     """
-    return [part.strip() for part in re.split(r"[。！？.!?…]+", text) if part.strip()]
+    text = str(text or "")
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(text):
+        _append_sentence(sentences, text[start:match.start()] + match.group("closers"))
+        start = match.end()
+    _append_sentence(sentences, text[start:])
+    return sentences
+
+
+def _append_sentence(sentences: list[str], piece: str) -> None:
+    piece = piece.strip()
+    if not piece or _SENTENCE_WORD_RE.search(piece) is None:
+        return
+    sentences.append(piece)
 
 
 def extract_dialogue_spans(text: str) -> list[str]:
