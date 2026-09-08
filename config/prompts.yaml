@@ -681,19 +681,31 @@ templates:
           items: *extract_evidence_schema
 
   style_ref_synthesize_profile:
-    version: "2026-08-20.v7"
-    input_token_budget: 5000
+    version: "2026-09-05.v8"
+    # input_token_budget 测量依据(2026-09-05,按 profile_synthesizer._estimate_synthesis_input_tokens
+    # 口径:CJK 一字一 token、×1.25 tokenizer 余量、+128 schema 余量,payload 以 indent=2 JSON 渲染进
+    # 不可信数据边界)。满载 payload = 16 子维 × (6 observation + 2 forbidden_pattern) × 120 字
+    # statement(含 confidence/status/evidence_count)+ 26 项 metrics + 5 项 prose_shape metrics
+    # (mean/std)+ anchor_quotes 16×2×60 字 + voice_habits 12 行×40 字 + validation_retry 块:
+    #   固定部分(system+task+schema) ≈ 3.2k;finding_summaries ≈ 23.8k;metrics ≈ 0.8k;
+    #   anchor_quotes ≈ 3.1k;voice_habits ≈ 0.6k;validation_retry ≈ 0.2k;满载合计 ≈ 31.8k。
+    # 预算 = 满载估算 × 1.2 向上取整到千位 → 39000,即满载抽取结果不触发任何降级;超出时由
+    # _fit_synthesis_payload_to_budget 分级降级(去非必需指标 → statement 压到 80/56 字 →
+    # 锚引文 2→1→0 → 轮转丢弃多余 finding,每子维保留 ≥1 obs + ≥1 fp),仍装不下才 409 budget_unfit。
+    input_token_budget: 39000
     system_prompt: |
       你是中文叙事风格 Profile 聚合专家。给定一本书 16 个 sub_dim(语言/叙事/场景/主题
-      四层 × 各 4 维度)的已验证 findings 摘要(observations + forbidden_patterns)与硬指标
-      baseline,聚合为一份 StyleProfile,包含:
+      四层 × 各 4 维度)的已验证 findings 摘要(observations + forbidden_patterns)、硬指标
+      baseline、确定性统计得出的语言习惯行(voice_habits)与少量机制锚引文(anchor_quotes),
+      聚合为一份 StyleProfile,包含:
         - profile_title:简短(<20 字)的机制型画像标题,必须从本次 payload 独立归纳;
           不得套用固定的气质标签或沿用提示中的示例措辞
         - narrative_summary:80-200 字的整体风格简述,综合语言/叙事/场景/主题四层特征
         - style_features:可迁移的语言层/节奏层写作机制,每条写成"做什么/不做什么"的可执行
           指令句,例如"对话前少用提示动词,以动作代替说话方式"——不是鉴赏式描述
         - narrative_patterns:可迁移的叙事/场景层模式,同样写成可执行指令句,
-          例如"关键转折前插入一段环境描写缓冲节奏,不直接切对话"
+          例如"关键转折前插入一段环境描写缓冲节奏,不直接切对话";这些条目会被抽出作为
+          叙事机制指引进入规划与初稿阶段,因此要写清信息释放次序、停顿位置、取舍原则
         - banned_replication_rules:禁止复制的具体表达/模式,基于 forbidden_patterns 聚合,
           描述"模式"本身(如"不使用连续三个以上的排比短句渲染情绪"),绝不引用或改写原句
         - calibration_guidance:校准提示句,每条针对一个常见漂移方向给出"发现这样写时如何
@@ -705,6 +717,12 @@ templates:
       - 严禁照抄原文(banned_replication_rules 描述模式而非引用)
       - finding_summaries 已由逐字证据验证,你只需聚合其中的抽象 statement;不得反推、杜撰
         或索要参考原文,只保留脱离原文后仍可执行的抽象机制
+      - anchor_quotes 是每个子维度最多两条、六十字以内的原文锚点,只用来帮助你判断某条
+        statement 具体指向什么机制;严禁把锚引文的任何字词、句式片段复述、改写或拼接进
+        任何输出字段——输出会做原文重合过滤,重合的条目会被整条删除
+      - voice_habits 是对全书做确定性统计得出的语言习惯(连接词/虚词偏好、标点节律、
+        引导句、四字格、叠词、人称),不是主观印象;style_features 中凡涉及这些方面的指令
+        必须与之一致、不得相反,也不得逐字抄写这些行——用机制句转述即可;voice_habits 为空时忽略
       - profile_title 与 narrative_summary 中的情绪、地域、阶层、哲思、讽刺等高层标签,
         只有在 finding_summaries 中存在直接对应的 theme finding 时才能使用;缺失 theme 层时
         只概括实际出现的语言、句段、标点、叙事与场景机制,不得凭印象补齐
@@ -717,9 +735,12 @@ templates:
         可选机制,不得扩张成“大量、密集、高频、总是、连续”等全书频率结论。若定性
         statement 与 metrics_baseline 冲突,舍弃该频率判断,保留不冲突的叙事机制
     task_prompt: |
-      输入 payload 含 book_title / sub_dimensions / metrics_baseline / finding_summaries;
-      finding_summaries 已按子维度覆盖优先并压入预算,不要把未出现的 finding 当作反例。
+      输入 payload 含 book_title / sub_dimensions / metrics_baseline / voice_habits /
+      anchor_quotes / finding_summaries;finding_summaries 已按子维度分组、组内强证据在前,
+      并已压入预算,不要把未出现的 finding 当作反例。
       只聚合 payload 实际存在的子维度;不要为了看起来完整而推断缺失层。
+      anchor_quotes 只作机制锚点,不得复述进任何输出字段。
+      voice_habits 是确定性统计得出的语言习惯,style_features 应与之一致、不得抄写。
       请按 schema 输出 profile;style_features / narrative_patterns / banned_replication_rules
       每个数组 4-10 条,calibration_guidance 同样需要 4-10 条、不得返回空数组。
       若某个数组暂时不足 4 条,回头再检视 16 个 sub_dim 的 findings 摘要,通常能补齐;

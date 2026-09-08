@@ -740,3 +740,112 @@ def test_contract_aware_bundle_never_falls_back_to_a_later_live_binding(
     assert conflicting["_style_reference_runtime_audit"]["error_code"] == (
         "runtime_contract_status_conflict"
     )
+
+
+def test_contract_freezes_voice_signature_and_narrative_guidance_but_not_raw_fields(
+    session,
+) -> None:
+    """2026-09 v2 · W1:新键进冻结契约;非 allow-list 键(含原文)仍被拒之门外。"""
+    seeded = _seed_reference(session, seed="v2_keys", strategy="A")
+    profile = seeded.repo.get_profile(seeded.profile_id)
+    voice_signature = {
+        "version": "voice_signature_v1",
+        "features": {"comma_per_sentence": 1.5},
+        "habits": ["常用连接词:却、便、又;少用:然而、于是"],
+        "deliberate_repetition": False,
+    }
+    profile.profile_json = {
+        **dict(profile.profile_json or {}),
+        "voice_signature": voice_signature,
+        "narrative_guidance": ["关键信息放段首一次给出,之后不回头解释"],
+        # 审计字段不属于运行时契约,不该被冻结进每个 SceneBundle。
+        "anchor_quotes_used": 12,
+        "synthesis_input_budget": {"degradation_stage": "full"},
+    }
+    session.flush()
+
+    contract = build_style_runtime_contract(
+        seeded.repo,
+        [seeded.binding],
+        task_type="scene_generation",
+    )
+
+    assert contract is not None
+    frozen = contract["layers"][0]["profile"]["profile_json"]
+    assert frozen["voice_signature"] == voice_signature
+    assert frozen["narrative_guidance"] == ["关键信息放段首一次给出,之后不回头解释"]
+    assert "anchor_quotes_used" not in frozen
+    assert "synthesis_input_budget" not in frozen
+    assert "future_raw_excerpt" not in frozen
+    assert validate_style_runtime_contract(contract) == contract
+
+    # 旧画像(没有新键)照旧可冻结、可校验——优雅退化。
+    legacy = _seed_reference(session, seed="v2_legacy", strategy="A")
+    legacy_contract = build_style_runtime_contract(
+        legacy.repo,
+        [legacy.binding],
+        task_type="scene_generation",
+    )
+    assert legacy_contract is not None
+    legacy_profile = legacy_contract["layers"][0]["profile"]["profile_json"]
+    assert "voice_signature" not in legacy_profile
+    assert "narrative_guidance" not in legacy_profile
+    assert validate_style_runtime_contract(legacy_contract) == legacy_contract
+
+
+def test_contract_freezes_contiguous_neighbour_hashes_and_stops_at_gaps(session) -> None:
+    """v2(W4.5):契约冻结 quote 父段两侧连续相邻段的哈希(每侧 few_shot_window_paragraphs − 1 段),
+    遇 paragraph_index 缺口 / 空段即停;只冻哈希,不冻原文。"""
+    seeded = _seed_reference(session, seed="neighbours", strategy="B")
+    parent_text = "檐下的人没有立即进屋。" + seeded.quote_text + "他等那声音过去，才慢慢抬手拨亮灯芯。"
+    texts = {
+        0: "   ",  # 空段:左侧展开到此为止
+        1: "“你来了。”她说，声音很轻，像是怕惊动屋里的什么。",
+        2: parent_text,
+        3: "他没有回答，先把袖口的水拧了拧。桌上摆着两只碗，一只是干的。",
+        # index 4 缺失:右侧展开在缺口处停止
+        5: "灯芯亮起来，屋子却显得更小了。墙上挂着的旧衣裳在光里晃了晃。",
+    }
+    for index, text in texts.items():
+        seeded.repo.create_paragraph(
+            paragraph_id=f"contract_paragraph_nb_{index}",
+            book_id=seeded.book_id,
+            paragraph_index=index,
+            paragraph_type="dialogue" if index == 1 else "narration",
+            start_offset=0,
+            end_offset=len(text),
+            text=text,
+            char_count=len(text.strip()),
+            classifier_confidence=0.9,
+        )
+    quote = seeded.repo.get_quote(seeded.quote_id)
+    quote.paragraph_id = "contract_paragraph_nb_2"
+    session.flush()
+
+    contract = build_style_runtime_contract(seeded.repo, [seeded.binding], task_type="scene_generation")
+    assert contract is not None
+    layer = contract["layers"][0]
+    refs = layer["sample_paragraph_refs"]
+    assert refs[0]["paragraph_id"] == "contract_paragraph_nb_2"
+    assert {ref["paragraph_id"] for ref in refs} == {
+        "contract_paragraph_nb_1",
+        "contract_paragraph_nb_2",
+        "contract_paragraph_nb_3",
+    }
+    for ref in refs:
+        index = int(ref["paragraph_id"].rsplit("_", 1)[1])
+        assert ref["paragraph_sha256"] == hashlib.sha256(texts[index].encode("utf-8")).hexdigest()
+    dumped = json.dumps(contract, ensure_ascii=False)
+    for text in texts.values():
+        if text.strip():
+            assert text not in dumped
+    # 同一契约再验证一次仍通过(相邻引用只是普通 paragraph_ref)
+    assert validate_style_runtime_contract(contract)["contract_hash"] == contract["contract_hash"]
+
+    context = extract_style_generation_context("她在门外停步。", source_kind="generation_source")
+    rendered = InjectionService(session).fragments_for_contract(
+        contract, project_id=seeded.project_id, context=context
+    )
+    assert "连续3段窗口" in rendered.few_shot_block
+    assert texts[1][:8] in rendered.few_shot_block and texts[3][:8] in rendered.few_shot_block
+    assert texts[5][:8] not in rendered.few_shot_block
