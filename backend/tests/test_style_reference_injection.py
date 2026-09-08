@@ -28,6 +28,14 @@ def _reset_yaml_cache():
     clear_config_cache()
 
 
+_STEMS = "甲乙丙丁戊己庚辛壬癸"
+
+
+def _marker_line(marker: str, index: int) -> str:
+    """含标记字、无数字的 ~14 字机制句,便于按标记字出现次数比较各层份额。"""
+    return f"{marker}层要点{_STEMS[index % 10]}{_STEMS[(index // 10) % 10]}动作先于解释"
+
+
 def _seed(
     *,
     seed: str,
@@ -120,8 +128,12 @@ def test_strategy_a_renders_all_three_blocks():
         fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
     assert fragments.strategy == InjectionStrategy.A
     assert "正向风格特征" in fragments.positive_block
-    assert "短句频繁" not in fragments.positive_block
+    # v2:量化断言只软化不整行删除;基线句均 18(长短句混合)不与「短句频繁」相反 → 保留
+    assert "短句频繁" in fragments.positive_block
     assert "动词驱动" in fragments.positive_block
+    # 旧画像没有 voice_signature → 不渲染 [声音特征]
+    assert fragments.voice_block == ""
+    assert "[声音特征]" not in fragments.to_system_prompt_prefix()
     assert "回环结构" in fragments.positive_block
     assert "禁堆砌华丽形容词" in fragments.forbidden_block
     assert "禁使用美轮美奂等套话" in fragments.forbidden_block
@@ -158,9 +170,11 @@ def test_metric_baseline_suppresses_conflicting_legacy_surface_guidance() -> Non
             "scene_generation",
         )
 
+    # 与冻结基线方向相反的频率断言(设问高频 vs 基线问号极少)才丢弃
     assert "短句密集" not in fragments.positive_block
     assert "大量使用短句和反问" not in fragments.positive_block
-    assert "句号不够密集" not in fragments.positive_block
+    # v2:同向 / 方向未知的频率机制句不再整行删除(基线短句占比 0.32 = 较高频,同向)
+    assert "若句号不够密集就继续断句" in fragments.positive_block
     assert "在转折处用短句切断长句" in fragments.positive_block
     assert "让动作承担解释" in fragments.positive_block
     assert "转折前先释放可见线索" in fragments.positive_block
@@ -221,7 +235,7 @@ def test_mixed_positive_budget_keeps_expression_narrative_and_calibration() -> N
             project_id, "scene_generation"
         ).positive_block
 
-    assert len(block) <= 405
+    assert len(block) <= 1080  # intensity=100:total 2400 × positive ratio 0.45
     assert "表达机制甲" in block
     assert "叙事机制甲" in block
     assert "校准机制甲" in block
@@ -235,6 +249,17 @@ def test_line_truncation_drops_orphan_subsection_heading() -> None:
 
     assert truncated.endswith("概述:动作推进。")
     assert "叙事模式" not in truncated
+
+
+def test_line_truncation_has_no_character_level_fallback() -> None:
+    """v2:预算装不下一整行时宁可少一行,不发半句;只剩标题时整块置空。"""
+    block = "[正向风格特征]\n- " + "很长的单条规则" * 60
+    assert _truncate_lines(block, 200) == ""
+    two = "[禁忌模式]\n- 第一条禁忌\n- 第二条禁忌很长很长" + "很长" * 30
+    truncated = _truncate_lines(two, 40)
+    assert truncated == "[禁忌模式]\n- 第一条禁忌"
+    assert _truncate_lines("[风格分布指导｜只控制整体倾向]", 5) == ""
+    assert _truncate_lines("短块", 100) == "短块"
 
 
 def test_reference_sample_distance_rejects_punctuation_outlier() -> None:
@@ -452,10 +477,12 @@ def test_strategy_b_truncates_by_budget():
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
     assert fragments.strategy == InjectionStrategy.B
-    # 默认 800 token；主体风格、禁忌和软分布按 55%/25%/20% 分配。
-    assert len(fragments.positive_block) <= 440 + 5
-    assert len(fragments.forbidden_block) <= 200 + 5
-    assert len(fragments.metric_anchor_block) <= 160 + 5
+    # v2:未写 intensity 默认 50 → total = 900 + (2400-900)×0.5 = 1650;
+    # 四块按 0.45 / 0.20 / 0.15 / 0.20 切,整行边界截断(单条 800 字的超长行整行丢弃)。
+    assert len(fragments.positive_block) <= 742
+    assert len(fragments.forbidden_block) <= 330
+    assert len(fragments.metric_anchor_block) <= 247
+    assert not fragments.positive_block.endswith("…")
 
 
 def test_strategy_c_drops_metric_and_summarizes_forbidden():
@@ -578,13 +605,16 @@ def test_project_binding_wins_over_global():
 
 
 def test_mixed_intensity_scales_block_lengths():
-    """PR-9 §"intensity 语义" — intensity 缩放 ratio:0=0.3x / 50=0.9x / 100=1.5x。"""
-    long_features = ["要点" * 600]  # 1200 字,确保 low/mid/hi 都被截断
+    """v2 §1.5 — intensity 决定抽象总额:0 → 900 / 50 → 1650 / 100 → 2400,按 ratio 切块。"""
+    stems = "甲乙丙丁戊己庚辛壬癸"
+    # 60 条 ~18 字的表达机制(≈1140 字)与 30 条禁忌(≈450 字):三档都会被整行截断
+    long_features = [f"要点{stems[i % 10]}{stems[i // 10]}动作先于解释" for i in range(60)]
+    rules = [f"禁{stems[i % 10]}{stems[i // 10]}排比抒情堆叠" for i in range(30)]
     common = {
         "profile_json": {
             "narrative_summary": "summary",
             "style_features": long_features,
-            "banned_replication_rules": ["规则" * 100],
+            "banned_replication_rules": rules,
             "metrics_baseline": {"m1": {"mean": 1.0, "std": 0.1}},
         },
         "strategy": "mixed",
@@ -614,10 +644,19 @@ def test_mixed_intensity_scales_block_lengths():
         hi = svc.fragments_for(proj_hi, "scene_generation")
     # positive_block 长度应单调递增:low < mid < hi
     assert len(low.positive_block) < len(mid.positive_block) < len(hi.positive_block)
-    # forbidden_block 同理(若有内容)
-    assert len(low.forbidden_block) < len(mid.forbidden_block) <= len(hi.forbidden_block)
-    # 高强度上限不会超过 budget * 1.5 余量
-    assert len(hi.positive_block) <= 800 * 0.5 * 1.5 + 5
+    # forbidden_block 同理
+    assert len(low.forbidden_block) < len(mid.forbidden_block) < len(hi.forbidden_block)
+    # 各档上限 = total(i) × ratio:positive 405 / 742 / 1080,forbidden 180 / 330 / 480
+    assert len(low.positive_block) <= 405
+    assert len(mid.positive_block) <= 742
+    assert len(hi.positive_block) <= 1080
+    assert len(hi.forbidden_block) <= 480
+    # 整行截断:没有半截条目,也没有孤立标题
+    for frag in (low, mid, hi):
+        for block in (frag.positive_block, frag.forbidden_block):
+            lines = block.splitlines()
+            assert lines and not lines[-1].rstrip().endswith(("]", ":", "："))
+            assert all(len(line) < 40 for line in lines if line.startswith("- "))
 
 
 def test_mixed_sub_dimensions_filters_forbidden_findings():
@@ -864,7 +903,7 @@ def test_three_layer_order_general_to_specific():
 
 def test_three_layer_token_weighted_scene_largest():
     """PR-19 — token 加权:scene 段预算最大(权重 3/6),project 基底最小(1/6)。"""
-    # 手工 seed 长 style_features(各层 ~900 字),确保都被 cap 截断,验证加权差异
+    # 手工 seed 多条 style_features(各层 ~50 条 × ~14 字),确保都被 cap 整行截断,验证加权差异
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         repo.create_book(
@@ -873,14 +912,17 @@ def test_three_layer_token_weighted_scene_largest():
         )
         repo.create_run(run_id="sr_run_w3b", book_id="sr_book_w3b", status="done", phase="done")
         for suffix, scope, ref, feat in [
-            ("proj", "project", "proj_w3b", "项" * 900),
-            ("char", "character", "char_w3b", "角" * 900),
-            ("scene", "scene", "scene_w3b", "景" * 900),
+            ("proj", "project", "proj_w3b", "项"),
+            ("char", "character", "char_w3b", "角"),
+            ("scene", "scene", "scene_w3b", "景"),
         ]:
             repo.create_profile(
                 profile_id=f"sr_profile_w3b_{suffix}", book_id="sr_book_w3b", run_id="sr_run_w3b",
                 title=suffix, status="active",
-                profile_json={"narrative_summary": "n", "style_features": [feat]},
+                profile_json={
+                    "narrative_summary": "n",
+                    "style_features": [_marker_line(feat, i) for i in range(50)],
+                },
                 coverage_json={}, source_finding_ids_json=[],
             )
             repo.create_binding(
@@ -1036,9 +1078,9 @@ def test_overlay_forbidden_dedup():
 
 
 def test_overlay_token_each_half_capped():
-    """base 与 overlay positive 各被截到 half*0.6 内。"""
-    long_base = ["基底" * 500]      # 1000 字
-    long_overlay = ["增量" * 500]   # 1000 字
+    """base 与 overlay positive 各被截到自己的份额内(v2:总额 ×1.35,权重 1:2)。"""
+    long_base = [_marker_line("基", i) for i in range(60)]      # ≈ 1000 字
+    long_overlay = [_marker_line("增", i) for i in range(60)]   # ≈ 1000 字
     _seed_overlay_pair(
         seed="cap", project_id="proj_cap", character_id="char_cap",
         base_json={"narrative_summary": "b", "style_features": long_base},
@@ -1048,14 +1090,15 @@ def test_overlay_token_each_half_capped():
         fragments = InjectionService(session).fragments_for(
             "proj_cap", "scene_generation", character_ids=["char_cap"],
         )
-    # half=400,positive ratio 0.6 → 各 ≤ 240;合并后两段各受限
-    # 总 positive 不应远超 2*240(+标题/换行余量)
-    assert len(fragments.positive_block) <= 240 * 2 + 60
+    # intensity 默认 50:total 1650 × 1.35 = 2228;base 份额 742 → positive 333,
+    # overlay 份额 1485 → positive 668;合并后不超过两份之和(+换行余量)
+    assert len(fragments.positive_block) <= 333 + 668 + 10
+    assert fragments.positive_block.count("基") < fragments.positive_block.count("增")
 
 
 def test_overlay_only_base_is_single_layer():
-    """仅 project base(无 overlay)→ 单层路径,strategy A 全文不截断。"""
-    long_base = ["基底全文" * 500]  # 2000 字
+    """仅 project base(无 overlay)→ 单层路径:按自身 intensity 总额截断,不按多层份额 cap。"""
+    long_base = [_marker_line("基", i) for i in range(120)]  # ≈ 2000 字
     _seed_overlay_pair(
         seed="baseonly", project_id="proj_bo", character_id="char_bo",
         base_json={"narrative_summary": "b", "style_features": long_base},
@@ -1067,8 +1110,8 @@ def test_overlay_only_base_is_single_layer():
         fragments = InjectionService(session).fragments_for(
             "proj_bo", "scene_generation", character_ids=["char_bo"],
         )
-    # 单层 strategy A 全文不截断(远超 half cap)
-    assert len(fragments.positive_block) > 1000
+    # 单层 strategy A:positive ≤ 742(intensity 50 的 positive 份额),但远超多层 base 份额 333
+    assert 333 < len(fragments.positive_block) <= 742
 
 
 def test_overlay_only_character_is_single_layer():
@@ -1273,17 +1316,20 @@ def test_multi_character_scene_segment_still_largest():
             text_checksum="chk_mw", total_chars=10, status="ready", stats_json={},
         )
         repo.create_run(run_id="sr_run_mw", book_id="sr_book_mw", status="done", phase="done")
-        # project base + 2 character + scene 各 ~900 字长 feature,确保都被 cap 截断
+        # project base + 2 character + scene 各 ~50 条 feature,确保都被 cap 整行截断
         for suffix, scope, ref, feat in [
-            ("proj", "project", "proj_mw", "项" * 900),
-            ("ca", "character", "charA", "甲" * 900),
-            ("cb", "character", "charB", "乙" * 900),
-            ("scene", "scene", "scene_mw", "景" * 900),
+            ("proj", "project", "proj_mw", "项"),
+            ("ca", "character", "charA", "甲"),
+            ("cb", "character", "charB", "乙"),
+            ("scene", "scene", "scene_mw", "景"),
         ]:
             repo.create_profile(
                 profile_id=f"sr_profile_mw_{suffix}", book_id="sr_book_mw", run_id="sr_run_mw",
                 title=suffix, status="active",
-                profile_json={"narrative_summary": "n", "style_features": [feat]},
+                profile_json={
+                    "narrative_summary": "n",
+                    "style_features": [_marker_line(feat, i) for i in range(50)],
+                },
                 coverage_json={}, source_finding_ids_json=[],
             )
             repo.create_binding(

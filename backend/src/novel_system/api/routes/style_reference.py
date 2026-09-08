@@ -53,6 +53,8 @@ from novel_system.services.style_reference.metrics_aggregator import MetricsAggr
 from novel_system.services.style_reference.schemas import (
     BindingScope,
     InjectionPreviewRequest,
+    InjectionPreviewResponse,
+    InjectionPreviewStats,
     InjectionStrategy,
     RunStatus,
     TaskType,
@@ -1445,14 +1447,15 @@ def get_binding_injection_preview(
         strategy = InjectionStrategy(binding.strategy)
     except ValueError:
         strategy = InjectionStrategy.A
-    fragments = InjectionService(session)._render(
+    fragments, stats = InjectionService(session).render_preview(
         profile, strategy, binding.config_json or {}
     )
     return ok(
-        {
-            "fragments": fragments.model_dump(),
-            "prefix": fragments.to_system_prompt_prefix(),
-        },
+        InjectionPreviewResponse(
+            fragments=fragments,
+            prefix=fragments.to_system_prompt_prefix(),
+            stats=InjectionPreviewStats(**stats),
+        ).model_dump(),
         req_id=_req_id(request),
     )
 
@@ -1483,12 +1486,13 @@ def dryrun_injection_preview(
     if payload.include_metric is not None:
         config["include_metric"] = payload.include_metric
     strategy = payload.strategy or default_injection_strategy(payload.task_type)
-    fragments = InjectionService(session)._render(profile, strategy, config)
+    fragments, stats = InjectionService(session).render_preview(profile, strategy, config)
     return ok(
-        {
-            "fragments": fragments.model_dump(),
-            "prefix": fragments.to_system_prompt_prefix(),
-        },
+        InjectionPreviewResponse(
+            fragments=fragments,
+            prefix=fragments.to_system_prompt_prefix(),
+            stats=InjectionPreviewStats(**stats),
+        ).model_dump(),
         req_id=_req_id(request),
     )
 

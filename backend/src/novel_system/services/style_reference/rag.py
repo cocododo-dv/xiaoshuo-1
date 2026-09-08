@@ -27,15 +27,20 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.style_signature import (
+    FEATURE_NAMES,
     STYLE_SIGNATURE_VERSION,
+    StyleSignature,
     content_shingle_overlap,
     extract_style_signature,
     parse_style_signature,
@@ -376,6 +381,70 @@ def ensure_rag_index(
     return {**rebuilt, "status": "rebuilt"}
 
 
+def build_query_signatures(
+    paragraph_texts: Sequence[str],
+    *,
+    config: Mapping[str, Any] | None = None,
+) -> dict[str, StyleSignature]:
+    """画像代表签名:对一组代表段落按三粒度取 :func:`extract_style_signature` 的**均值**。
+
+    v2(W4.7)Strategy C 的默认 query 视图——中性稿不代表目标风格,用画像自己的样例
+    段落(或冻结引用的段落)的签名均值做 query,再由 :class:`RagRetriever` 以
+    ``query_signatures`` 消费。sentence 粒度对每段切句后逐句取签名;paragraph 逐段;
+    scene 按 ``rag_scene_target_chars`` 聚合连续段落。无可用文本时返回空 dict。
+    纯函数、无 LLM、确定性。
+    """
+    cfg = dict(config) if config is not None else load_rag_config()
+    texts = [str(text or "").strip() for text in paragraph_texts]
+    texts = [text for text in texts if text]
+    if not texts:
+        return {}
+    min_sent = int(cfg.get("rag_min_sentence_chars", 8))
+    units: dict[str, list[str]] = {
+        "sentence": [
+            sentence
+            for text in texts
+            for sentence in split_sentences(text, min_chars=min_sent)
+        ],
+        "paragraph": list(texts),
+        "scene": [
+            str(block["text"])
+            for block in aggregate_scenes(
+                [
+                    SimpleNamespace(text=text, paragraph_type="", paragraph_index=index)
+                    for index, text in enumerate(texts)
+                ],
+                target_chars=int(cfg.get("rag_scene_target_chars", 600)),
+            )
+            if str(block.get("text") or "").strip()
+        ],
+    }
+    out: dict[str, StyleSignature] = {}
+    for gran in GRANULARITIES:
+        samples = units.get(gran) or []
+        if not samples:
+            # 该粒度切不出单位(如全是短段切不出句)时退回整段
+            samples = list(texts)
+        signatures = [extract_style_signature(sample, granularity=gran) for sample in samples]
+        if not signatures:
+            continue
+        features = {
+            name: _clip01(
+                sum(float(sig.features.get(name, 0.0)) for sig in signatures)
+                / len(signatures)
+            )
+            for name in FEATURE_NAMES
+        }
+        out[gran] = StyleSignature(granularity=gran, features=features)
+    return out
+
+
+def _clip01(value: float) -> float:
+    if not math.isfinite(value):
+        return 0.0
+    return min(1.0, max(0.0, value))
+
+
 def _style_index_document(
     *,
     doc_id: str,
@@ -520,31 +589,81 @@ def _apply_content_penalty(
 
 
 class RagRetriever:
-    """三粒度内容克制风格召回 + 确定性 rerank。无 LLM。"""
+    """三粒度内容克制风格召回 + 确定性 rerank。无 LLM。
 
-    def __init__(self, session: Any, *, vector_store: VectorStore | None = None):
+    v2(W4.7)query 构造:``query_signatures``(粒度 → :class:`StyleSignature`,通常是
+    :func:`build_query_signatures` 算出的画像代表签名均值)显式给出时,该粒度不再从
+    ``query_text`` 抽签名——``query_text`` 可以为空,内容重叠惩罚也随之为 0;
+    ``preferred_paragraph_types`` 是场景段型**软过滤**:命中段型的片段排在前面,没有
+    命中时不丢弃任何片段。二者都走构造函数,``retrieve(profile_id, query_text)`` 的
+    位置参数契约不变。
+    """
+
+    def __init__(
+        self,
+        session: Any,
+        *,
+        vector_store: VectorStore | None = None,
+        query_signatures: Mapping[str, StyleSignature] | None = None,
+        preferred_paragraph_types: Iterable[str] | None = None,
+    ):
         self.session = session
         self._store = vector_store
         self._config = load_rag_config()
+        self._query_signatures: dict[str, StyleSignature] = {
+            str(gran): sig
+            for gran, sig in dict(query_signatures or {}).items()
+            if isinstance(sig, StyleSignature)
+        }
+        self._preferred_types: frozenset[str] = frozenset(
+            str(ptype) for ptype in (preferred_paragraph_types or []) if str(ptype)
+        )
+
+    def _prefer(self, snippets: list["RagSnippet"]) -> list["RagSnippet"]:
+        """场景段型软过滤:命中 preferred 段型的片段稳定前置;无命中 / 无偏好时原序。"""
+        if not self._preferred_types:
+            return snippets
+        matched = [
+            s for s in snippets if str(s.paragraph_type or "") in self._preferred_types
+        ]
+        if not matched:
+            return snippets
+        others = [
+            s for s in snippets if str(s.paragraph_type or "") not in self._preferred_types
+        ]
+        return [*matched, *others]
 
     # -- 评测/调试:按粒度分别返回(供 hit@k 独立测量) --------------------
     def retrieve_per_granularity(
         self, profile_id: str, query_text: str, *, top_k: int | None = None
     ) -> dict[str, list[RagSnippet]]:
         store = _resolve_store(self._store)
-        if store is None or not (query_text or "").strip():
+        has_text = bool((query_text or "").strip())
+        if store is None or (not has_text and not self._query_signatures):
             return {gran: [] for gran in GRANULARITIES}
         k = int(top_k if top_k is not None else self._config["rag_top_k"])
         out: dict[str, list[RagSnippet]] = {}
         for gran in GRANULARITIES:
             name = rag_collection_name(profile_id, gran)
-            query_view = query_view_for_granularity(
-                query_text,
-                gran,
-                paragraph_chars=int(self._config["rag_paragraph_query_chars"]),
-                scene_chars=int(self._config["rag_scene_target_chars"]),
+            query_view = (
+                query_view_for_granularity(
+                    query_text,
+                    gran,
+                    paragraph_chars=int(self._config["rag_paragraph_query_chars"]),
+                    scene_chars=int(self._config["rag_scene_target_chars"]),
+                )
+                if has_text
+                else ""
             )
-            query_signature = extract_style_signature(query_view, granularity=gran)
+            preset = self._query_signatures.get(gran)
+            if preset is not None:
+                # 画像代表签名:query 视图只用于内容重叠惩罚(无文本时惩罚为 0)
+                query_signature = preset
+            elif has_text:
+                query_signature = extract_style_signature(query_view, granularity=gran)
+            else:
+                out[gran] = []
+                continue
             pool_size = max(
                 k * int(self._config["rag_signature_candidate_pool_multiplier"]),
                 int(self._config["rag_signature_candidate_pool_min"]),
@@ -586,7 +705,7 @@ class RagRetriever:
                     )
                 )
             snippets.sort(key=lambda s: (-s.score, s.snippet_id))
-            out[gran] = snippets[: max(0, k)]
+            out[gran] = self._prefer(snippets)[: max(0, k)]
         return out
 
     # -- inject 热路径:合并三粒度 → 全局 rerank → 截断 --------------------
@@ -611,7 +730,7 @@ class RagRetriever:
         limit = int(
             inject_max if inject_max is not None else self._config["rag_inject_max"]
         )
-        return deduped[: max(0, limit)]
+        return self._prefer(deduped)[: max(0, limit)]
 
     def _query_collection(
         self, store: VectorStore, name: str, query_text: str, top_k: int
