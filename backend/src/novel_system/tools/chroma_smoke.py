@@ -8,7 +8,9 @@ from novel_system.settings import get_settings
 
 
 def run_chroma_smoke(persist_directory: Path | None = None) -> dict:
-    settings = get_settings()
+    # 只需要 vector_store_dir 这类环境级设置;不叠加库内 api 配置快照——CI 的 Chroma
+    # 作业在一个未迁移的 sqlite 上跑这个冒烟,读 system_config_snapshots 会直接报表不存在。
+    settings = get_settings(include_runtime_config=False)
     store = get_vector_store(
         backend="chroma",
         persist_directory=persist_directory or settings.vector_store_dir,

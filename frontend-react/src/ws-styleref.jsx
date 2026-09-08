@@ -62,47 +62,124 @@ function srRightsReady(cloudPolicy, rights) {
    Signature: 4 层 × 16 sub-dim DimensionMatrix
    ========================================================== */
 
-/* ---- 4 layers × 4 sub-dims = 16 sub-dimensions ---- */
+/* ---- 4 layers × 4 sub-dims = 16 sub-dimensions ----
+   只保留 id / 展示名（与后端 dimensions.SubDimension 一一对应）。置信度、计数、
+   「语料不足」等全部来自后端 deep 数据（dimCounts / profile_json.sub_dimensions /
+   stats_json.input_assessment），这里不再硬编码任何 conf / skip。 */
 const SR_LAYERS = [
   {
-    id: "language", name: "语言层", abbr: "语", input: "high",
+    id: "language", name: "语言层", abbr: "语",
     subs: [
-      { id: "sentence_structure", name: "句式结构", conf: "high",   obs: 7, fp: 2, q: 18 },
-      { id: "vocabulary",         name: "词汇选择", conf: "high",   obs: 6, fp: 1, q: 15 },
-      { id: "rhetoric",           name: "修辞手法", conf: "medium", obs: 4, fp: 3, q: 11 },
-      { id: "punctuation",        name: "标点节奏", conf: "high",   obs: 5, fp: 0, q: 9  },
+      { id: "sentence_structure", name: "句式结构" },
+      { id: "vocabulary",         name: "词汇选择" },
+      { id: "rhetoric",           name: "修辞手法" },
+      { id: "punctuation",        name: "标点节奏" },
     ],
   },
   {
-    id: "narrative", name: "叙事层", abbr: "叙", input: "medium",
+    id: "narrative", name: "叙事层", abbr: "叙",
     subs: [
-      { id: "perspective",         name: "叙事视角", conf: "high",   obs: 5, fp: 1, q: 12 },
-      { id: "pacing",              name: "节奏控制", conf: "medium", obs: 4, fp: 2, q: 8  },
-      { id: "time_handling",       name: "时间处理", conf: "medium", obs: 3, fp: 1, q: 7  },
-      { id: "information_density", name: "信息密度", conf: "low",    obs: 2, fp: 0, q: 4  },
+      { id: "perspective",         name: "叙事视角" },
+      { id: "pacing",              name: "节奏控制" },
+      { id: "time_handling",       name: "时间处理" },
+      { id: "information_density", name: "信息密度" },
     ],
   },
   {
-    id: "scene", name: "场景层", abbr: "景", input: "high",
+    id: "scene", name: "场景层", abbr: "景",
     subs: [
-      { id: "environment",        name: "环境描写", conf: "high",   obs: 6, fp: 1, q: 14 },
-      { id: "character_portrayal",name: "人物刻画", conf: "high",   obs: 5, fp: 2, q: 13 },
-      { id: "dialogue",           name: "对话写法", conf: "medium", obs: 4, fp: 1, q: 10 },
-      { id: "sensory_priority",   name: "感官优先", conf: "medium", obs: 3, fp: 0, q: 6  },
+      { id: "environment",        name: "环境描写" },
+      { id: "character_portrayal",name: "人物刻画" },
+      { id: "dialogue",           name: "对话写法" },
+      { id: "sensory_priority",   name: "感官优先" },
     ],
   },
   {
-    id: "theme", name: "主题层", abbr: "题", input: "skip",
+    id: "theme", name: "主题层", abbr: "题",
     subs: [
-      { id: "emotional_tone",      name: "情感基调", conf: "skip", obs: 0, fp: 0, q: 0 },
-      { id: "values",              name: "价值取向", conf: "skip", obs: 0, fp: 0, q: 0 },
-      { id: "motifs",              name: "母题意象", conf: "skip", obs: 0, fp: 0, q: 0 },
-      { id: "narrative_philosophy",name: "叙事哲学", conf: "skip", obs: 0, fp: 0, q: 0 },
+      { id: "emotional_tone",      name: "情感基调" },
+      { id: "values",              name: "价值取向" },
+      { id: "motifs",              name: "母题意象" },
+      { id: "narrative_philosophy",name: "叙事哲学" },
     ],
   },
 ];
 
-/* ---- findings for a couple of sub-dims (rich), with evidence ---- */
+/* ==========================================================
+   W7 纯函数（可单测，不依赖 React / window）
+   ========================================================== */
+
+/* 注入维度选项：按画像 profile_json.sub_dimensions（键为 16 个 sub_dim 路径）动态生成；
+   画像缺失时回退 book.stats_json.input_assessment（layer 级 skip 才禁用整层）；
+   两者都没有则全部可选。返回 { layers:[{id,name,abbr,subs:[{id,path,name,available,conf,obs,fp,q}]}], available:[path] } */
+function buildDimOptions(profile, book) {
+  const subDims = (profile && profile.profile_json && profile.profile_json.sub_dimensions) || null;
+  const hasSubDims = !!(subDims && typeof subDims === "object" && Object.keys(subDims).length > 0);
+  const inputAssessment = (book && book.stats_json && book.stats_json.input_assessment) || null;
+  const available = [];
+  const layers = SR_LAYERS.map(l => {
+    const layerSkipped = !hasSubDims && !!(inputAssessment && inputAssessment[l.id] === "skip");
+    const subs = l.subs.map(s => {
+      const path = `${l.id}.${s.id}`;
+      const d = hasSubDims ? subDims[path] : null;
+      const isAvailable = hasSubDims ? !!d : !layerSkipped;
+      if (isAvailable) available.push(path);
+      return {
+        id: s.id, path, name: s.name, available: isAvailable,
+        conf: (d && d.confidence) || null,
+        obs: (d && d.observation_count) || 0,
+        fp: (d && d.forbidden_pattern_count) || 0,
+        q: (d && d.quote_count) || 0,
+      };
+    });
+    return { id: l.id, name: l.name, abbr: l.abbr, subs, skipped: layerSkipped };
+  });
+  return { layers, available, source: hasSubDims ? "profile" : inputAssessment ? "input_assessment" : "none" };
+}
+
+/* 强度读数：只消费注入预览端点返回的 stats（后端 W4），缺失返回 null（调用方显示「预览中…」），
+   绝不用本地公式虚构。stats 形状：{positive_lines, forbidden_lines, metric_lines, voice_lines,
+   few_shot_windows, few_shot_chars, rag_snippets, total_prefix_chars, ...} */
+function computeIntensityReadout(stats) {
+  if (!stats || typeof stats !== "object") return null;
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const ruleLines = num(stats.positive_lines) + num(stats.forbidden_lines) + num(stats.metric_lines);
+  const voiceLines = num(stats.voice_lines);
+  const sampleWindows = num(stats.few_shot_windows) + num(stats.rag_snippets);
+  const totalChars = num(stats.total_prefix_chars);
+  return {
+    ruleLines, voiceLines, sampleWindows, totalChars,
+    text: `规则 ${ruleLines} 行 · 声音特征 ${voiceLines} 行 · 样例 ${sampleWindows} 段 · 共 ${totalChars} 字`,
+  };
+}
+
+/* 再合成判定：没有画像 → 可合成；有画像但 (a) 最新完成 run 与画像 run_id 不同、
+   (b) coverage_json.stale、(c) status !== "active" → 允许重新合成；否则只能查看。 */
+function computeResynthState(deep) {
+  const profile = deep && deep.profile;
+  const runId = deep && deep.runId;
+  if (!profile) return { hasProfile: false, canResynth: true, reason: "no_profile" };
+  const cov = profile.coverage_json || {};
+  if (runId && profile.run_id && runId !== profile.run_id) return { hasProfile: true, canResynth: true, reason: "new_run" };
+  if (cov.stale === true) return { hasProfile: true, canResynth: true, reason: "stale" };
+  if (profile.status !== "active") return { hasProfile: true, canResynth: true, reason: "inactive" };
+  return { hasProfile: true, canResynth: false, reason: null };
+}
+
+const SR_RESYNTH_REASON_LABEL = {
+  new_run: "有新的抽取结果",
+  stale: "画像已失效",
+  inactive: "画像未激活",
+};
+
+/* 同作用域遮蔽判定：所选 scope + scope_ref_id 上已有 active 绑定（缺 status 视为 active）则返回该绑定 */
+function findShadowedBinding(bindings, scope, scopeRefId) {
+  if (!Array.isArray(bindings) || !scope) return null;
+  const ref = scopeRefId == null ? null : String(scopeRefId);
+  return bindings.find(b => b && b.scope === scope
+    && (b.status == null || b.status === "active")
+    && (ref == null ? b.scope_ref_id == null : String(b.scope_ref_id) === ref)) || null;
+}
 
 /* ---- hard metrics (sample) ---- */
 const SR_METRICS = [
@@ -282,7 +359,7 @@ function WsStyleRef({ go }) {
             <I.FileInput size={16} />
             <div>
               <div className="fw-600 text-sm">导入参考书</div>
-              <div className="text-xs text-muted">epub · docx · txt · md · 先选择隐私边界</div>
+              <div className="text-xs text-muted">txt · md · 先选择隐私边界</div>
             </div>
           </button>
           <p className="sr-safe-note">
@@ -733,21 +810,24 @@ function SrMatrix({ go, book }) {
     ? Object.values(deep.dimCounts).reduce((a, d) => ({ obs: a.obs + d.obs, fp: a.fp + d.fp, q: a.q + d.q }), { obs: 0, fp: 0, q: 0 })
     : (realEmpty ? { obs: 0, fp: 0, q: 0 } : { obs: 52, fp: 14, q: 140 });
   const hasProfile = !!(deep && deep.profileId);
+  /* 再合成：有新 run / 画像 stale / 画像非 active 时允许再次调用 synthesize，
+     否则（画像 active 且对应最新 run）按钮只导航到画像页 */
+  const resynth = computeResynthState(deep);
+  const synthAllowed = realMode && !!deep.runId && (!hasProfile || resynth.canResynth);
 
   const onSynth = async () => {
     if (realEmpty) return;
-    if (!realMode || !deep.runId || hasProfile) { go && go("profile"); return; }
+    if (!synthAllowed) { go && go("profile"); return; }
     if (synthBusy) return;
     setSynthBusy(true);
     try {
       await window.srSynthesize(deep.runId, book.id);
       go && go("profile");
     } catch (e) {
-      if (e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED")) {
-        window.alert("合成风格画像需要启用 LLM（系统设置 → 模型与接入）。");
-      } else { window.alert("合成失败：" + ((e && e.message) || e)); }
+      window.alert(srSynthErrorMessage(e));
     } finally { setSynthBusy(false); }
   };
+  const synthLabel = !hasProfile ? "合成风格画像" : synthAllowed ? "重新合成画像" : "查看风格画像";
 
   return (
     <div className="sr-matrix-wrap">
@@ -826,9 +906,15 @@ function SrMatrix({ go, book }) {
           <div className="sr-matrix-foot-stat"><b className="tab-num">{totals.fp}</b> 禁忌模式</div>
           <div className="sr-matrix-foot-stat"><b className="tab-num">{totals.q}</b> 引文样本</div>
           <div className="flex-1" />
-          <button className="btn btn-accent btn-sm" disabled={synthBusy || realEmpty} title={realEmpty ? "先完成抽取再合成画像" : undefined} onClick={onSynth}>
+          {hasProfile && synthAllowed && resynth.reason && (
+            <span className="pill pill-gold text-xs" data-testid="sr-matrix-resynth-reason"><span className="pill-dot" />{SR_RESYNTH_REASON_LABEL[resynth.reason] || resynth.reason}</span>
+          )}
+          {hasProfile && synthAllowed && (
+            <button className="btn btn-quiet btn-sm" disabled={synthBusy} onClick={() => go && go("profile")}>查看画像</button>
+          )}
+          <button className="btn btn-accent btn-sm" data-testid="sr-matrix-synth" disabled={synthBusy || realEmpty} title={realEmpty ? "先完成抽取再合成画像" : undefined} onClick={onSynth}>
             {synthBusy ? <><span className="sr-spin" style={{display:"inline-flex"}}><I.Refresh size={13} /></span> 合成中…</>
-              : <><I.Sparkles size={13} /> {hasProfile ? "查看风格画像" : "合成风格画像"}</>}
+              : <><I.Sparkles size={13} /> {synthLabel}</>}
           </button>
         </div>
       </div>
@@ -943,6 +1029,43 @@ function FindingCard({ kind, finding, onReview, onVote }) {
 }
 
 /* ============ Stage: Profile ============ */
+/* 合成失败的作者可读文案：LLM 未启用 / 云端策略阻断 / W1 的 STYLE_REFERENCE_SYNTHESIZE_FAILED(409, details.reason_code) */
+function srSynthErrorMessage(e) {
+  const code = (e && e.code) || "";
+  if (code === "STYLE_REFERENCE_LLM_REQUIRED" || code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED") {
+    return "合成风格画像需要启用 LLM（系统设置 → 模型与接入）。";
+  }
+  if (code === "STYLE_REFERENCE_SYNTHESIZE_FAILED") {
+    const reason = (e && e.details && e.details.reason_code) || "";
+    const map = {
+      budget_unfit: "抽取结果太多，无法装入合成预算——回维度矩阵驳回部分 finding 后重试。",
+      empty_profile: "没有可用的 finding（全部被驳回或语料不足）——先重跑抽取。",
+      source_overlap: "合成输出与原文重合，已被拦下——请重试合成。",
+      text_integrity: "合成输出未通过文本完整性校验——请重试合成。",
+      llm_failed: "模型调用失败——检查模型接入后重试。",
+    };
+    return "合成失败：" + (map[reason] || (e && e.message) || reason || "未知原因");
+  }
+  return "合成失败：" + ((e && e.message) || e);
+}
+
+/* 画像状态徽标（画像页 + 注入页共用）：status / stale / 有新 run */
+function SrProfileStatusPills({ profile, resynth }) {
+  if (!profile) return null;
+  const status = profile.status || "draft";
+  const statusMeta = status === "active" ? { tone: "sage", label: "已激活" }
+    : status === "archived" ? { tone: "slate", label: "已归档" }
+    : { tone: "gold", label: "草稿 · 未激活" };
+  const stale = !!(profile.coverage_json && profile.coverage_json.stale);
+  return (
+    <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+      <span className={`pill pill-${statusMeta.tone} text-xs`} data-testid="sr-profile-status"><span className="pill-dot" />{statusMeta.label}</span>
+      {stale && <span className="pill pill-rose text-xs" data-testid="sr-profile-stale"><span className="pill-dot" />已失效 · 需重新合成</span>}
+      {!stale && resynth && resynth.reason === "new_run" && <span className="pill pill-gold text-xs"><span className="pill-dot" />有新的抽取结果</span>}
+    </span>
+  );
+}
+
 /* 真实书缺产物时的空态引导(矩阵/画像/回测/注入共用形态) */
 function SrRealEmpty({ title, sub, actionLabel, onAction }) {
   return (
@@ -971,6 +1094,20 @@ function SrProfile({ book, go }) {
   const sampleIdx = (pj && pj.scene_samples_index) || null;
   const features = (pj && pj.style_features) || [];
   const dimRows = realDimRows || [];
+  const voiceHabits = (pj && pj.voice_signature && Array.isArray(pj.voice_signature.habits)) ? pj.voice_signature.habits : [];
+  const narrativeGuidance = (pj && Array.isArray(pj.narrative_guidance)) ? pj.narrative_guidance : [];
+
+  /* 再合成：有新 run / stale / 非 active 时显示「重新合成」并可点 */
+  const resynth = computeResynthState(deep);
+  const canResynth = real && resynth.canResynth && !!(deep && deep.runId);
+  const [resynthBusy, setResynthBusy] = useStSR(false);
+  const onResynth = async () => {
+    if (!canResynth || resynthBusy || !window.srSynthesize) return;
+    setResynthBusy(true);
+    try { await window.srSynthesize(deep.runId, book.id); }
+    catch (e) { window.alert(srSynthErrorMessage(e)); }
+    finally { setResynthBusy(false); }
+  };
 
   /* 真实书还没有画像:显示真实空态,不再把演示画像(冷峻克制白描…)当成这本书的 */
   if (isRealBook && !real) {
@@ -996,8 +1133,25 @@ function SrProfile({ book, go }) {
               <div className="card-title">{real ? (profile.title || `${book.author}风格画像`) : `${book.author}风格画像 · v3`}</div>
               <div className="card-sub">{real ? `${cov.findings_count || 0} finding / ${cov.quotes_count || 0} 引文聚合 · ${cov.sub_dim_count || 0} 维` : "由 52 观察 / 14 禁忌 / 140 引文聚合 · 12 维有效"}</div>
             </div>
-            <span className={`pill ${real && profile.status !== "active" ? "pill-gold" : "pill-sage"}`}><span className="pill-dot" />{real ? (profile.status === "active" ? "已就绪" : profile.status) : "已就绪"}</span>
+            {real
+              ? <SrProfileStatusPills profile={profile} resynth={resynth} />
+              : <span className="pill pill-sage"><span className="pill-dot" />已就绪</span>}
           </div>
+          {real && canResynth && (
+            <div className="sr-fewshot-warn" data-testid="sr-profile-resynth" style={{ justifyContent: "space-between" }}>
+              <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                <I.Info size={13} />
+                <span>
+                  {resynth.reason === "new_run" ? "抽取结果已更新，这份画像基于旧的 run——重新合成后再注入。"
+                    : resynth.reason === "stale" ? "画像输入集合已变化（finding 审核改变了非驳回集合），当前注入不会生效——请重新合成。"
+                    : "画像尚未激活（应用并批准绑定后自动激活）；如需按最新 findings 重算，可重新合成。"}
+                </span>
+              </span>
+              <button type="button" className="btn btn-accent btn-sm" data-testid="sr-profile-resynth-btn" disabled={resynthBusy} onClick={onResynth}>
+                {resynthBusy ? <><span className="sr-spin" style={{display:"inline-flex"}}><I.Refresh size={13} /></span> 合成中…</> : <><I.Sparkles size={13} /> 重新合成</>}
+              </button>
+            </div>
+          )}
           <p className="sr-profile-summary text-serif">
             {real
               ? (pj.qualitative_summary || pj.narrative_summary || "（该画像尚无叙述性概述。）")
@@ -1008,6 +1162,27 @@ function SrProfile({ book, go }) {
               {features.slice(0, 8).map((f, i) => (
                 <span key={i} className="sr-pd-path" style={{display:"inline-block", margin:"2px 6px 2px 0", padding:"2px 8px", background:"var(--paper-2)", borderRadius:6, fontSize:12}}>{f}</span>
               ))}
+            </div>
+          )}
+          {/* v2 画像新键（旧画像没有时不渲染）：声音特征习惯句 / 叙事机制 */}
+          {real && (voiceHabits.length > 0 || narrativeGuidance.length > 0) && (
+            <div className="sr-profile-v2" style={{ display: "grid", gap: 10, margin: "6px 0 12px" }}>
+              {voiceHabits.length > 0 && (
+                <div className="card-flat" style={{ padding: "10px 12px" }}>
+                  <div className="ctx-head" style={{ marginBottom: 6 }}><I.Quote size={13} /><span>声音特征 · {voiceHabits.length} 条</span></div>
+                  <ul className="meta-rows" style={{ margin: 0 }}>
+                    {voiceHabits.slice(0, 12).map((h, i) => <li key={i}><span className="text-sm" style={{ color: "var(--ink-1)" }}>{h}</span></li>)}
+                  </ul>
+                </div>
+              )}
+              {narrativeGuidance.length > 0 && (
+                <div className="card-flat" style={{ padding: "10px 12px" }}>
+                  <div className="ctx-head" style={{ marginBottom: 6 }}><I.Target size={13} /><span>叙事机制 · {narrativeGuidance.length} 条</span></div>
+                  <ul className="meta-rows" style={{ margin: 0 }}>
+                    {narrativeGuidance.slice(0, 8).map((h, i) => <li key={i}><span className="text-sm" style={{ color: "var(--ink-1)" }}>{h}</span></li>)}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
 
@@ -1138,11 +1313,11 @@ function VerdictPill({ v }) {
 }
 
 /* ============ Stage: Apply / Inject ============ */
+/* 任务卡只保留唯一有生产消费方的 scene_generation；后端 /injection/task-defaults
+   仍会返回多项，前端按 SR_TASKS 过滤只展示这一张（project_init / fine_tuning /
+   key_chapter 在生成链路里没有调用点，属死路，2026-09 W7 移除）。 */
 const SR_TASKS = [
-  { id: "project_init", name: "项目初始化", def: "A", refresh: 0 },
   { id: "scene_generation", name: "场景生成", def: "mixed", refresh: 0 },
-  { id: "fine_tuning", name: "精修小改", def: "B", refresh: 0 },
-  { id: "key_chapter", name: "关键章节", def: "C", refresh: 2000 },
 ];
 
 /* layered injection stack — base(project/global) ∪ character(pov+onstage) ∪ scene */
@@ -1177,11 +1352,6 @@ function SrApply({ go, book }) {
   const [banned, setBanned] = useStSR(SR_BANNED_INIT);
   const [bannedInput, setBannedInput] = useStSR("");
   const [bannedScope, setBannedScope] = useStSR("generation");
-  const [selectedDims, setSelectedDims] = useStSR(() => {
-    const all = [];
-    SR_LAYERS.forEach(l => l.input !== "skip" && l.subs.forEach(s => s.conf !== "skip" && all.push(`${l.id}.${s.id}`)));
-    return all;
-  });
 
   /* ---- 真后端深层数据：有真画像则注入应用走真后端，否则回退演示 ---- */
   const isRealBook = !!(book && book.real);
@@ -1197,6 +1367,17 @@ function SrApply({ go, book }) {
   const realProfileId = deep && deep.profileId;
   const realMode = !!realProfileId;
   const realBindings = (deep && deep.bindings) || [];
+  const realProfile = (deep && deep.profile) || null;
+  const profileInactive = realMode && realProfile && realProfile.status !== "active";
+  const profileResynth = computeResynthState(deep);
+
+  /* ---- 注入维度：按画像 profile_json.sub_dimensions 动态生成（缺失回退 input_assessment），
+          默认选中全部可用维度；画像 / 书变化时重置选择 ---- */
+  const dimOptions = buildDimOptions(realProfile, deep && deep.book);
+  const availableDims = dimOptions.available;
+  const availableKey = availableDims.join("|");
+  const [selectedDims, setSelectedDims] = useStSR(() => availableDims);
+  React.useEffect(() => { setSelectedDims(availableDims); }, [availableKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // 立项 A — 当前活动项目 id(空安全:works 列表为空时 active() 可能 undefined)
   const activeProjId = (WsWorks && WsWorks.active && WsWorks.active() && WsWorks.active().id) || null;
   // 立项 A — scope 切换时清空已选目标(避免把 A scope 的目标误用到 B scope)
@@ -1293,9 +1474,10 @@ function SrApply({ go, book }) {
     })();
     return () => { alive = false; };
   }, [realMode]);
+  // 后端 task-defaults 返回多项；前端只展示 SR_TASKS 里的 scene_generation（其余任务无生产消费方）
   const tasks = SR_TASKS.map(t => {
     const d = (taskDefaults || []).find(x => x.task_type === t.id);
-    return d ? { ...t, def: d.default_strategy, refresh: d.refresh_every_chars } : t;
+    return d ? { ...t, def: d.default_strategy, refresh: d.refresh_every_chars || 0 } : t;
   });
 
   /* ---- 叠加注入层（真源 /injection/layers：resolve_binding_layers 命中层 + 预算分配）
@@ -1320,9 +1502,13 @@ function SrApply({ go, book }) {
   }, [realMode, sub, activeProjId, taskType, realBindings.length]);
 
   const toggleDim = (path) => setSelectedDims(prev => prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]);
-  const task = tasks.find(t => t.id === taskType) || tasks[1];
-  const obsCount = Math.round((intensity / 100) * 6 * (selectedDims.length / 12));
+  const task = tasks.find(t => t.id === taskType) || tasks[0];
+  /* 强度读数只来自预览端点的 stats（后端 W4）；没有 stats 就显示「预览中…」，不再有本地公式 */
+  const readout = computeIntensityReadout(preview && preview.stats);
   const totalTokens = SR_LAYER_STACK.reduce((s, l) => s + l.tokens, 0);
+  /* 同作用域遮蔽：所选 scope + scope_ref_id 上已有本画像的 active 绑定 */
+  const shadowRefId = scope === "project" ? activeProjId : scopeRefId;
+  const shadowed = realMode && (scope === "project" || !!scopeRefId) ? findShadowedBinding(realBindings, scope, shadowRefId) : null;
 
   const addBanned = () => {
     const t = bannedInput.trim();
@@ -1374,38 +1560,41 @@ function SrApply({ go, book }) {
             </div>
 
             <div className="card">
-              <div className="card-head"><div><div className="card-title">风格强度</div><div className="card-sub">控制注入的观察数量与约束力度</div></div>
+              <div className="card-head"><div><div className="card-title">风格强度</div><div className="card-sub">同时控制抽象规则总额与样例窗口数（0 = 最轻，100 = 最强）</div></div>
                 <span className="sr-intensity-val tab-num">{intensity}%</span>
               </div>
-              <input type="range" min="0" max="100" value={intensity} onChange={e=>setIntensity(parseInt(e.target.value))} className="sr-range" />
-              <div className="sr-intensity-ticks"><span>轻微借鉴</span><span>均衡</span><span>强烈复刻</span></div>
-              <div className="sr-intensity-readout">
+              <input type="range" min="0" max="100" value={intensity} onChange={e=>setIntensity(parseInt(e.target.value))} className="sr-range" aria-label="风格强度" />
+              <div className="sr-intensity-ticks"><span>轻</span><span>中</span><span>强</span></div>
+              <div className="sr-intensity-readout" data-testid="sr-intensity-readout">
                 <I.Sparkles size={13} />
-                <span>当前将注入约 <b>{Math.max(2, obsCount)}</b> 条观察 · <b>{selectedDims.length}</b> 个维度 · 禁忌红线 <b>全量</b> 固定保留</span>
+                {readout
+                  ? <span>当前注入：<b>{readout.text}</b> · 禁忌红线固定保留</span>
+                  : <span>{previewErr ? "预览失败，读数不可用" : "预览中…"}</span>}
               </div>
             </div>
 
             <div className="card">
               <div className="card-head">
-                <div><div className="card-title">注入维度</div><div className="card-sub">勾选要参与注入的 sub-dim（{selectedDims.length} / 12 已选）</div></div>
+                <div><div className="card-title">注入维度</div><div className="card-sub">勾选要参与注入的 sub-dim（{selectedDims.length} / {availableDims.length} 可用已选{dimOptions.source === "profile" ? " · 按画像覆盖维度" : dimOptions.source === "input_assessment" ? " · 按输入量评估" : ""}）</div></div>
                 <button className="btn btn-quiet btn-sm" onClick={() => {
-                  const all = [];
-                  SR_LAYERS.forEach(l => l.input !== "skip" && l.subs.forEach(s => s.conf !== "skip" && all.push(`${l.id}.${s.id}`)));
-                  setSelectedDims(selectedDims.length === all.length ? [] : all);
-                }}>{selectedDims.length === 12 ? "全不选" : "全选"}</button>
+                  setSelectedDims(selectedDims.length === availableDims.length ? [] : availableDims);
+                }}>{availableDims.length > 0 && selectedDims.length === availableDims.length ? "全不选" : "全选"}</button>
               </div>
-              <div className="sr-dimselect">
-                {SR_LAYERS.map(l => (
+              <div className="sr-dimselect" data-testid="sr-dimselect">
+                {dimOptions.layers.map(l => (
                   <div key={l.id} className="sr-ds-layer">
-                    <div className="sr-ds-layer-name">{l.name}</div>
+                    <div className="sr-ds-layer-name">{l.name}{l.skipped ? <span className="sr-cell-skip" style={{ marginLeft: 6, textTransform: "none", letterSpacing: 0 }}>语料不足</span> : null}</div>
                     <div className="sr-ds-cells">
                       {l.subs.map(s => {
-                        const path = `${l.id}.${s.id}`;
-                        const disabled = s.conf === "skip";
-                        const on = selectedDims.includes(path);
+                        const disabled = !s.available;
+                        const on = selectedDims.includes(s.path);
+                        const title = disabled
+                          ? (dimOptions.source === "profile" ? "画像未覆盖该维度" : "该层语料不足，已跳过")
+                          : (s.conf ? `${s.obs} 观察 · ${s.fp} 禁忌 · ${s.q} 引文` : undefined);
                         return (
                           <button key={s.id} className={`sr-ds-cell ${on ? "is-on" : ""} ${disabled ? "is-disabled" : ""}`}
-                            onClick={() => !disabled && toggleDim(path)} disabled={disabled}>
+                            data-dim={s.path} title={title}
+                            onClick={() => !disabled && toggleDim(s.path)} disabled={disabled}>
                             {on && <I.Check size={11} />}{s.name}
                           </button>
                         );
@@ -1586,7 +1775,7 @@ function SrApply({ go, book }) {
                 <p className="sr-frag-text">禁：排比抒情长句 · 陈词滥调比喻 · 比喻后解释…</p>
               </div>
               <div className="sr-bundle-frag">
-                <div className="sr-frag-label"><span className="sr-frag-ord">3</span> observations_by_dim · {Math.max(2, obsCount)} 条</div>
+                <div className="sr-frag-label"><span className="sr-frag-ord">3</span> observations_by_dim · {selectedDims.length} 维</div>
                 <p className="sr-frag-text">句式：短句独立成段 / 词汇：乡土具象…</p>
               </div>
               <div className="sr-bundle-frag fixed">
@@ -1606,24 +1795,9 @@ function SrApply({ go, book }) {
           <div className="sr-bundle-meta">
             <span>策略 {strategy === "mixed" ? "A+B" : strategy}</span>
             <span>·</span>
-            <span>{task.refresh > 0 ? `续写每 ${task.refresh} 字刷新` : "一次性注入"}</span>
+            <span>一次性注入</span>
           </div>
         </div>
-
-        {task.refresh > 0 && (
-          <div className="card-flat sr-drift">
-            <div className="ctx-head" style={{marginBottom: 10}}><I.Refresh size={13} /><span>长文防漂移</span></div>
-            <div className="sr-drift-track">
-              {[0,1,2,3].map(i => (
-                <div key={i} className="sr-drift-seg">
-                  <div className="sr-drift-bar" />
-                  {i < 3 && <div className="sr-drift-tick"><I.Refresh size={10} /></div>}
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-muted mt-2">每生成 {task.refresh} 字带最新 context 重调注入，5000+ 字续写 inject ≥3 次，防止回归 base 腔调。</p>
-          </div>
-        )}
 
         <div className="card-flat">
           <div className="ctx-head" style={{marginBottom: 10}}><I.GitBranch size={13} /><span>应用范围</span></div>
@@ -1654,6 +1828,12 @@ function SrApply({ go, book }) {
           )}
           {realMode ? (
             <ul className="sr-bindings">
+              {profileInactive && realBindings.length > 0 && (
+                <li className="sr-fewshot-warn" data-testid="sr-bindings-inactive" style={{ display: "flex", marginBottom: 0 }}>
+                  <I.Info size={13} />
+                  <span>画像已失效（{realProfile.coverage_json && realProfile.coverage_json.stale ? "输入集合已变化" : `状态 ${realProfile.status || "draft"}`}），注入不会生效——回「风格画像」重新合成后再应用。</span>
+                </li>
+              )}
               {realBindings.length === 0 && (
                 <li className="text-xs text-muted" style={{padding:"6px 2px", display:"block"}}>暂无已批准的绑定 · 应用并在收件箱批准后出现在此。</li>
               )}
@@ -1735,6 +1915,17 @@ function SrApply({ go, book }) {
         }}>
           <I.Check size={15} /> {applied ? "已进入审核" : `应用到${scope === "project" ? "项目" : scope === "scene" ? "场景" : "角色"} · 进审核`}
         </button>
+        {shadowed && !applied && (
+          <p className="sr-fewshot-warn text-xs" data-testid="sr-apply-shadow" style={{ margin: 0 }}>
+            <I.Info size={13} />
+            <span>将遮蔽该作用域已有绑定：<b>{(realProfile && realProfile.title) || `${book.author || "参考"}风格画像`}</b>（{shadowed.strategy === "mixed" ? "A+B" : shadowed.strategy}{shadowed.scope_ref_id ? ` · ${shadowed.scope_ref_id}` : ""}）</span>
+          </p>
+        )}
+        {profileInactive && !applied && (
+          <p className="text-xs" data-testid="sr-apply-inactive" style={{ textAlign: "center", color: "var(--gold)", fontWeight: 600, margin: 0 }}>
+            {profileResynth.reason === "stale" ? "画像已失效，应用前请先重新合成。" : "画像未激活：批准绑定后会自动激活。"}
+          </p>
+        )}
         {applied ? (
           <p className="text-xs" style={{textAlign:"center", color:"var(--sage)", fontWeight:600}}>
             已为{applied}创建审核条目 · <a href="#review" style={{color:"inherit"}}>去待办收件箱拍板 →</a>
@@ -1835,15 +2026,23 @@ function SrBundleReal({ preview, previewErr }) {
   }
   const f = preview.fragments || {};
   const clip = (t) => { const s = String(t || "").replace(/\n+/g, " · ").trim(); return s.length > 130 ? s.slice(0, 130) + "…" : s; };
+  /* 顺序与后端 to_system_prompt_prefix 一致：metric → voice → positive → forbidden → few_shot → rag（旧后端没有 voice/rag 时自然跳过） */
   const ordered = [
+    ["metric_anchor_block", "metric_anchor_block", false],
+    ["voice_block", "[声音特征] voice_block", false],
     ["positive_block", "narrative / observations", false],
     ["forbidden_block", "banned_pattern_block", true],
-    ["metric_anchor_block", "metric_anchor_block", false],
     ["few_shot_block", "few_shot_block", false],
+    ["rag_block", "rag_block", false],
   ];
   const present = ordered.filter(([k]) => f[k] && String(f[k]).trim());
   const hasAnti = !!(f.anti_plagiarism_block && String(f.anti_plagiarism_block).trim());
-  const prefixLen = (preview.prefix || "").length;
+  const stats = preview.stats && typeof preview.stats === "object" ? preview.stats : null;
+  const prefixLen = stats && Number.isFinite(Number(stats.total_prefix_chars)) ? Number(stats.total_prefix_chars) : (preview.prefix || "").length;
+  // 预算刻度：有 stats 时用「抽象总额 + 样例字数」作为本次强度下的理论上限，否则只按实际长度自适应，不再写死 800
+  const ceiling = stats
+    ? Math.max(prefixLen, (Number(stats.intensity_effective_total_chars) || 0) + (Number(stats.few_shot_chars) || 0), 1)
+    : Math.max(prefixLen, 1);
   if (present.length === 0 && !hasAnti) {
     return <div className="text-xs text-muted" style={{padding:"10px 2px"}}>该画像暂无可注入内容——需先抽取并合成出观察后再应用。</div>;
   }
@@ -1861,10 +2060,10 @@ function SrBundleReal({ preview, previewErr }) {
       </div>
       <div className="sr-budget-bar">
         <div className="sr-budget-track">
-          <div className="sr-budget-fill" style={{width: Math.min(100, prefixLen / 800 * 100) + "%"}} />
+          <div className="sr-budget-fill" style={{width: Math.min(100, prefixLen / ceiling * 100) + "%"}} />
         </div>
         <div className="sr-budget-legend">
-          <span className="tab-num">{prefixLen}</span> / 800 字 注入预算
+          <span className="tab-num">{prefixLen}</span> 字 注入前缀{stats ? <> · 样例 <span className="tab-num">{Number(stats.few_shot_windows) || 0}</span> 段 / <span className="tab-num">{Number(stats.few_shot_chars) || 0}</span> 字</> : null}
         </div>
       </div>
     </>
@@ -1933,7 +2132,8 @@ function srImportBook(cloudPolicy = "local_only", rights = null) {
   }
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = ".txt,.md,.epub,.docx";
+  // 与后端 ingest._REFERENCE_BOOK_SUFFIXES 一致：只接受纯文本 / Markdown。
+  input.accept = ".txt,.md,.markdown";
   input.onchange = async () => {
     const f = input.files && input.files[0];
     if (!f) return;
@@ -1981,9 +2181,11 @@ async function srBookAction(action, bookId, opts = {}) {
       const res = await apiPost(`/api/v2/style-reference/books/${bookId}/runs`, { background: true, force: !!opts.force });
       const runId = res && res.run_id;
       window.alert("抽取已在后台启动（按层推进），完成后会提示。");
-      if (runId) srPollRun(runId);
+      if (runId) srPollRun(runId, bookId);
     } else if (action === "reclassify") {
       await apiPost(`/api/v2/style-reference/books/${bookId}/reclassify`, {});
+      // 重分类改写 stats_json 并清空派生数据 → 概览 / 矩阵 / 画像页必须立即重读
+      await srLoadDeep(bookId, { force: true });
       window.alert("已重新分类段落。");
     }
   } catch (e) {
@@ -2017,8 +2219,11 @@ function srStopPoll(runId, token) {
   srPollRegistry.delete(runId);
 }
 
-/* 后台抽取轮询：层粒度进度，完成/失败时提示并刷新书库。最长轮询 20 分钟。 */
-async function srPollRun(runId) {
+/* 后台抽取轮询：层粒度进度，完成/失败时提示并刷新书库。最长轮询 20 分钟。
+   run 到达终态（done / failed / cancelled）时强制重载该书的深层数据（srLoadDeep force），
+   让矩阵 / 概览 / 画像 / 注入页立即刷新，不依赖整页刷新。bookId 优先取调用方传入，
+   否则用 run.book_id。 */
+async function srPollRun(runId, bookId = null) {
   if (!runId) return;
   srStopPoll(runId);
   const startedAt = Date.now();
@@ -2029,6 +2234,11 @@ async function srPollRun(runId) {
     if (srPollRegistry.get(runId)?.token !== token) return;
     record.timer = setTimeout(tick, 2500);
   };
+  const settle = async (run) => {
+    const bid = bookId || (run && run.book_id) || null;
+    if (bid) { try { await srLoadDeep(bid, { force: true }); } catch (e) { /* 深层重载失败不阻断提示 */ } }
+    await srSyncBooks();
+  };
   const tick = async () => {
     if (srPollRegistry.get(runId)?.token !== token) return;
     if (Date.now() - startedAt > 20 * 60 * 1000) { srStopPoll(runId, token); return; }
@@ -2038,13 +2248,13 @@ async function srPollRun(runId) {
     const status = run && run.status;
     if (status === "done") {
       srStopPoll(runId, token);
-      await srSyncBooks();
+      await settle(run);
       window.alert("风格抽取完成，维度矩阵已可查看。");
       return;
     }
     if (status === "failed" || status === "cancelled") {
       srStopPoll(runId, token);
-      await srSyncBooks();
+      await settle(run);
       window.alert(status === "failed" ? "风格抽取失败，可重试或查看系统日志。" : "风格抽取已取消。");
       return;
     }
@@ -2068,6 +2278,8 @@ async function srDeleteBook(bookId) {
   });
   const body = await res.json();
   if (!body.ok) throw new Error((body.error && body.error.message) || "删除失败");
+  // 删书级联清掉全部衍生数据：本地深层缓存必须同步失效，否则同内容重导（同 book_id）会读到旧画像
+  srDropDeep(bookId);
   await srSyncBooks();
   return true;
 }
@@ -2081,6 +2293,29 @@ const SR_DEEP = {};            // bookId -> { profileId, profile, bindings, load
 const SR_DEEP_FETCHING = {};
 
 function srDeepFor(bookId) { return SR_DEEP[bookId] || null; }
+
+/* 失效并广播：删书 / 书不存在时调用，订阅方（useSrDeep / SrApply）回到 null 状态 */
+function srDropDeep(bookId) {
+  if (!bookId) return;
+  delete SR_DEEP[bookId];
+  delete SR_DEEP_FETCHING[bookId];
+  window.dispatchEvent(new CustomEvent("sr:deep-changed"));
+}
+
+/* 最新完成的 run：按 finished_at / started_at 降序取第一条 done；列表无时间戳时取末尾（插入序）。
+   没有 done 时退到最新一条（running / failed），供概览显示进展。 */
+function srPickLatestRun(runs) {
+  const list = Array.isArray(runs) ? runs.filter(Boolean) : [];
+  if (!list.length) return null;
+  const ts = (r) => String(r.finished_at || r.started_at || "");
+  const done = list.filter(r => r.status === "done");
+  if (done.length) {
+    const stamped = done.filter(r => ts(r));
+    if (stamped.length === done.length) return [...done].sort((a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : 0))[0];
+    return done[done.length - 1];
+  }
+  return list[list.length - 1];
+}
 
 async function srLoadDeep(bookId, { force = false } = {}) {
   if (!bookId) return null;
@@ -2103,7 +2338,7 @@ async function srLoadDeep(bookId, { force = false } = {}) {
       try {
         const rr = await apiGet(`/api/v2/style-reference/books/${encodeURIComponent(bookId)}/runs`);
         const runs = (rr && rr.runs) || [];
-        out.run = runs.find(r => r.status === "done") || runs[0] || null;
+        out.run = srPickLatestRun(runs);
         out.runId = out.run ? out.run.run_id : null;
       } catch (e) { /* 无 run 列表则矩阵走演示 */ }
       // 3. 该 run 的 findings（含证据）→ 按 sub_dim 分组 + 计数
@@ -2204,5 +2439,11 @@ Object.assign(window, {
   srSynthesize, srReviewFinding, srFindingFeedback, srPreviewSamples,
 });
 
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsStyleRef, SrImportDialog, SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srImportBook, srRightsReady };
+/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留）。
+   W7 追加：可单测的纯函数 + 深层数据入口 + 需要渲染测试的 stage 组件。 */
+export {
+  WsStyleRef, SrImportDialog, SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srImportBook, srRightsReady,
+  SrMatrix, SrProfile, SrApply, SR_TASKS, SR_LAYERS,
+  buildDimOptions, computeIntensityReadout, computeResynthState, findShadowedBinding, srPickLatestRun,
+  srLoadDeep, srDeepFor, srDropDeep, srPollRun, srBookAction, srDeleteBook, srSynthesize,
+};

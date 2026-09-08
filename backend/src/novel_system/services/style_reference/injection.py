@@ -1,21 +1,32 @@
-"""PR-8 §5.1 — StyleProfile 注入到 LLM system_prompt 的服务。
+"""Style Reference — StyleProfile 注入到 LLM system_prompt 的服务(v2 注入重写,2026-09)。
 
 InjectionService 给定 `project_id` 与 `task_type`,从 `style_reference_injection_bindings`
 查 active binding,再读 profile.profile_json + 关联 forbidden_pattern findings,
-按 binding.strategy 拼成 :class:`SystemPromptFragments`(3 风格 block +
-anti_plagiarism 红线段 + strategy 回填)。红线段(§A.5)在任一风格 block 非空时
-必随注入且永不截断。
+按 binding.strategy 拼成 :class:`SystemPromptFragments`(metric / voice / positive /
+forbidden 四个**抽象块** + few_shot / rag 两个**原文样例块** + anti_plagiarism 红线段 +
+strategy 回填)。红线段(§A.5)在任一风格 block 非空时必随注入且永不截断;原文样例
+一律经 ``secure_reference_block`` 封装;``cloud_llm_allowed`` 守卫决定原文能否上云。
 
-调用方(scene_generation / chapter_draft 等)拿到 fragments 后调
+调用方(scene_generation / qc_engine 等)拿到 fragments 后调
 ``fragments.to_system_prompt_prefix()`` 得到字符串,prepend 到 LLM
 ``messages[0]["content"]`` 头部。
 
+intensity 语义(规格 §1.5,四种策略一致):``intensity∈[0,100]`` 同时决定
+① 抽象四块总额 ``total(i) = min_total + (max_total - min_total)·i/100``
+   (:func:`_allocate_abstract_budget` 再按 ``*_block_ratio`` 切给
+   positive / forbidden / metric / voice,整行边界截断,宁少一整行不发半句);
+② few-shot 窗口数 ``k(i) = round(k_min + (k_max - k_min)·i/100)``(:func:`_few_shot_k`)。
+
 Strategy 实现摘要:
-- **A** — positive + forbidden + metric_anchor 三块全文注入
-- **B** — 按 ``config/style_reference/injection_budget.yaml`` 预算截断
-- **C** — positive 全文 + forbidden 摘要(≤200 字) + 不注入 metric_anchor
-- **MIXED** — 场景生成默认；binding.config_json 自定义 ``include_positive`` /
-  ``include_forbidden`` / ``include_metric`` 三个布尔开关
+- **A** — 四个抽象块按 total(i) 截断;不注入原文样例
+- **B** — 四个抽象块 + k(i) 个连续段落窗口(few_shot)
+- **C** — positive + forbidden 摘要 + voice + RAG 检索片段(与 few-shot 互斥,不注 metric)
+- **MIXED** — 场景生成默认;= B 加 ``include_positive`` / ``include_forbidden`` /
+  ``include_metric`` / ``include_voice`` 布尔开关
+
+多层叠加(scene > character > project > global):总额 ×(1 + 0.35×(层数-1)),上限 ×1.7,
+按权重 [1..n] 切给各层;few_shot / rag 取最具体层(不再丢弃);同一 profile 跨作用域
+只渲染一次(按 profile_id 去重,保留最具体层)。
 """
 
 from __future__ import annotations
@@ -24,11 +35,15 @@ import hashlib
 import logging
 import math
 import re
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import SimpleNamespace
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.style_reference.config_loader import (
     load_text_template,
@@ -94,18 +109,47 @@ def injection_task_defaults() -> list[dict[str, Any]]:
     ]
 
 
-# 预算单位是**字符数**（配置注释：汉字 ~1 字 = 1 token 的粗估），
-# 截断走 _truncate_lines(text, max_chars)——键名沿用 *_max_tokens 仅为配置兼容（审计 P-20）。
-_DEFAULT_BUDGET = {
-    "system_prompt_max_tokens": 800,
-    "positive_block_ratio": 0.55,
-    "forbidden_block_ratio": 0.25,
-    "metric_anchor_block_ratio": 0.2,
+# 预算单位是**字符数**(配置注释:汉字 ~1 字 = 1 token 的粗估),截断走
+# _truncate_lines(text, max_chars)——键名沿用 *_max_tokens 仅为配置兼容(审计 P-20)。
+# 与 config/style_reference/injection_budget.yaml 同步(规格 §1.4);旧安装缺新键时
+# 行为回到这里的默认。
+_DEFAULT_BUDGET: dict[str, Any] = {
+    "system_prompt_max_tokens": 2400,
+    "intensity_min_total_chars": 900,
+    "positive_block_ratio": 0.45,
+    "forbidden_block_ratio": 0.20,
+    "metric_anchor_block_ratio": 0.15,
+    "voice_block_ratio": 0.20,
     "metric_guidance_mode": "soft_distribution",
     "metric_guidance_max_items": 6,
+    "few_shot_k": 6,
+    "few_shot_k_min": 2,
+    "few_shot_block_max_chars": 3600,
+    "few_shot_window_paragraphs": 3,
+    "few_shot_window_max_chars": 900,
+    "few_shot_paragraph_max_chars": 700,
+    "few_shot_paragraph_min_chars": 40,
+    "few_shot_quote_max_chars": 120,
+    "few_shot_candidate_scan_per_type": 12,
+    "layered_total_scale_per_layer": 0.35,
+    "layered_total_scale_max": 1.7,
+    "continuity_anchor_max_chars": 900,
+    "drift_calibration_max_lines": 3,
 }
+# binding.config_json 未写 intensity 时的默认档(与 InjectionPreviewRequest 默认一致)。
+_DEFAULT_INTENSITY = 50
+# Strategy C 的 forbidden 只带摘要(与 RAG 片段互补,不与 few-shot 争预算)。
+_C_FORBIDDEN_SUMMARY_MAX_CHARS = 200
+# 「概述:」行的上限(句边界截断):概述超过这个长度已不是概述;截断只在整行边界的
+# 新规则下,一条超长概述会把整个正向块挤空,先在渲染期压到合理长度。
+_NARRATIVE_SUMMARY_MAX_CHARS = 240
+# few-shot 代表段候选 / RAG 代表签名最多取多少段(限制热路径开销)。
+_REPRESENTATIVE_SAMPLE_MAX_PARAGRAPHS = 40
+# 场景段型:中性稿里某段型占比 ≥ 此值即视为该场景的主导段型(样例优先匹配)。
+_SCENE_DOMINANT_TYPE_SHARE = 0.25
+# 中性稿对白段占比 ≥ 此值 → 至少一半样例窗口须含对白。
+_SCENE_DIALOGUE_HEAVY_SHARE = 0.3
 
-# 配置文件缺失时的红线兜底:抄袭事前预防段不允许因部署缺配置而消失(§11 风险 11)
 _FALLBACK_ANTI_PLAGIARISM = """## 严格禁止
 - 复用或微改任何参考样本中的完整句子
 - 直接搬运超过 5 个连续字符的独特表达(常用词、人名、地名除外)
@@ -216,72 +260,13 @@ _RATIO_METRICS = frozenset(
     }
 )
 
-# 已有/旧版 Profile 可能同时携带冻结数字和由 LLM 概括的表层频率判断。
-# 对可直接量化的域压制“高频、密集、至少”等数量断言；统计真值转成软分布，
-# 而标点/句段在何处承担什么功能的机制仍照常注入。按域检查可避免用一个
-# 笼统关键词过滤掉任意参考风格中真正有效的写作建议。
-_METRIC_GUIDANCE_DOMAINS: tuple[
-    tuple[frozenset[str], tuple[str, ...]], ...
-] = (
-    (
-        frozenset(
-            {
-                "avg_sentence_length",
-                "sentence_length_std",
-                "short_sentence_ratio",
-                "long_sentence_ratio",
-            }
-        ),
-        ("短句", "长句", "句长", "断句", "句式长度", "单句"),
-    ),
-    (
-        frozenset(
-            {
-                "paragraph_mean_chars",
-                "paragraph_length_std_chars",
-                "paragraphs_per_1k",
-                "single_sentence_paragraph_ratio",
-                "quote_led_paragraph_ratio",
-            }
-        ),
-        ("段落", "段均", "段长", "段数", "段密度", "换段", "分段", "孤立成句"),
-    ),
-    (
-        frozenset(
-            {
-                "punctuation_density_per_1k",
-                "dash_em_density_per_1k",
-                "ellipsis_density_per_1k",
-                "semicolon_density_per_1k",
-                "question_density_per_1k",
-            }
-        ),
-        (
-            "句号",
-            "分号",
-            "逗号",
-            "问号",
-            "问句",
-            "发问",
-            "设问",
-            "反问",
-            "省略号",
-            "破折号",
-            "标点",
-        ),
-    ),
-    (
-        frozenset({"classical_word_ratio", "colloquial_marker_ratio"}),
-        ("口语", "语气词", "文言", "书面语", "四字格"),
-    ),
-    (
-        frozenset(
-            {"metaphor_density_per_1k", "personification_density_per_1k"}
-        ),
-        ("明喻", "比喻", "拟人", "仿佛", "似的", "好像", "如同", "犹如"),
-    ),
-)
+# ---------------------------------------------------------------------------
+# 量化断言软化(v2 §2.W4.4):旧版 `_is_metric_domain_guidance` 会整行删掉
+# 「短句密集」「大量短句」这类最像作者节拍的句子。现在只剥数字与绝对量词、保留机制,
+# **只有**与冻结基线方向相反的频率断言才丢弃。
+# ---------------------------------------------------------------------------
 
+# 触发软化的量化 marker(不含数字;数字单独用正则判断)。
 _QUANTITATIVE_GUIDANCE_MARKERS = (
     "大量",
     "密集",
@@ -289,14 +274,20 @@ _QUANTITATIVE_GUIDANCE_MARKERS = (
     "低频",
     "频繁",
     "总是",
+    "从不",
     "连续",
     "至少",
     "不够",
     "比例",
     "占比",
     "每千字",
+    "千字",
+    "百分之",
     "句均",
     "段均",
+    "密度",
+    "频率",
+    "字数",
     "目标",
     "当前",
     "波动",
@@ -304,24 +295,300 @@ _QUANTITATIVE_GUIDANCE_MARKERS = (
     "偏多",
     "偏少",
 )
+# 行内方向线索:命中「多」侧 / 「少」侧。两侧同时命中 → 方向不明 → 不判冲突(保守保留)。
+_DIRECTION_HIGH_CUES = (
+    "密集",
+    "高频",
+    "频繁",
+    "大量",
+    "偏多",
+    "主导",
+    "多用",
+    "常用",
+    "连续",
+    "总是",
+    "堆叠",
+    "较多",
+)
+_DIRECTION_LOW_CUES = (
+    "稀疏",
+    "低频",
+    "偏少",
+    "少用",
+    "克制",
+    "罕用",
+    "从不",
+    "稀少",
+    "极少",
+    "很少",
+    "不用",
+    "较少",
+)
+# 领域词 → (指标, 极性)。极性 +1:行说「该词多」⇒ 指标偏高;-1:⇒ 指标偏低。
+# 例:「短句密集」⇒ short_sentence_ratio 高 / avg_sentence_length 低。
+_SOFTEN_MARKER_METRICS: tuple[tuple[tuple[str, ...], tuple[tuple[str, int], ...]], ...] = (
+    (("短句", "断句", "碎句"), (("short_sentence_ratio", 1), ("avg_sentence_length", -1))),
+    (("长句", "复句"), (("long_sentence_ratio", 1), ("avg_sentence_length", 1))),
+    (("句号",), (("short_sentence_ratio", 1), ("avg_sentence_length", -1))),
+    (("分号",), (("semicolon_density_per_1k", 1),)),
+    (("问号", "问句", "设问", "反问", "发问"), (("question_density_per_1k", 1),)),
+    (("省略号",), (("ellipsis_density_per_1k", 1),)),
+    (("破折号",), (("dash_em_density_per_1k", 1),)),
+    (("逗号", "停顿", "标点"), (("punctuation_density_per_1k", 1),)),
+    (
+        ("换段", "分段", "短段", "碎段", "段数"),
+        (("paragraphs_per_1k", 1), ("paragraph_mean_chars", -1)),
+    ),
+    (("长段",), (("paragraph_mean_chars", 1),)),
+    (("单句段", "单句成段", "孤立成句"), (("single_sentence_paragraph_ratio", 1),)),
+    (("对话起段", "引号起段"), (("quote_led_paragraph_ratio", 1),)),
+    (("文言", "书面语"), (("classical_word_ratio", 1),)),
+    (("口语", "语气词"), (("colloquial_marker_ratio", 1),)),
+    (
+        ("比喻", "明喻", "如同", "仿佛", "犹如", "好像", "似的"),
+        (("metaphor_density_per_1k", 1),),
+    ),
+    (("拟人",), (("personification_density_per_1k", 1),)),
+)
+# 指标均值 → 粗粒度「低 / 高」档(value < low ⇒ low;value ≥ high ⇒ high;中间不判)。
+# 段 / 句 / 标点密度阈值与 `_metric_tendency` 的分档一致;单标点计数与修辞代理是
+# 只用于冲突判断的粗档,不进入任何提示词。
+# 同一行里同时出现的对立领域词(「短句切断长句」「短段与长段交替」)是对比 / 机制句,
+# 不是对某一侧的频率断言:两侧都不参与冲突判断。
+_OPPOSING_MARKER_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("短句", "断句", "碎句", "句号"), ("长句", "复句")),
+    (("换段", "分段", "短段", "碎段", "段数"), ("长段",)),
+)
+_METRIC_LEVEL_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "paragraph_mean_chars": (45.0, 110.0),
+    "paragraphs_per_1k": (8.0, 18.0),
+    "avg_sentence_length": (12.0, 22.0),
+    # 短句 / 长句占比是「句子里 ≤10 字 / ≥30 字的比例」(metrics.py),真实基线普遍落在
+    # 0.2–0.35,不能套通用 ratio 的 (0.04, 0.14) 档——否则任何作者都同时判成短句多、长句多。
+    "short_sentence_ratio": (0.20, 0.40),
+    "long_sentence_ratio": (0.15, 0.35),
+    "sentence_length_std": (7.0, 15.0),
+    "punctuation_density_per_1k": (100.0, 180.0),
+    "question_density_per_1k": (1.0, 5.0),
+    "semicolon_density_per_1k": (2.0, 8.0),
+    "ellipsis_density_per_1k": (1.0, 5.0),
+    "dash_em_density_per_1k": (1.0, 5.0),
+    "metaphor_density_per_1k": (0.5, 3.0),
+    "personification_density_per_1k": (0.5, 3.0),
+}
+_CLASSIFIER_UNITS = "字个条段句次行词处种倍成页篇"
+# 只把「像数量」的数字当量化 token:带约数词前缀(约 / 超过 / 至少 / 每 …)或带量词 /
+# 百分号后缀;「OS1」「第3人称」这类标识符里的数字不动(避免把机制句改成乱码)。
+_NUMBER_TOKEN_RE = re.compile(
+    r"(?:(?:约|大约|近|超过|不到|不超过|至少|最多|至多|每)\s*\d+(?:[.．]\d+)?\s*"
+    r"(?:%|％|个百分点|[" + _CLASSIFIER_UNITS + r"])?)"
+    r"|(?:\d+(?:[.．]\d+)?\s*(?:%|％|个百分点|[" + _CLASSIFIER_UNITS + r"]))"
+)
+# 数字区间「2-3句」「10～15字」:只留上界,再按普通量化 token 处理(不留半截连字符)。
+_NUMBER_RANGE_RE = re.compile(r"(?<![A-Za-z0-9第])\d+(?:[.．]\d+)?\s*[-–—~～至到]\s*(?=\d)")
+# 行已判定为量化行后,裸数字(无约数词前缀 / 量词后缀,如「占比0.6」「密度180/千字」)
+# 同样剥除;只有粘在 ASCII 标识符 / 「第」后的数字(OS1、第3人称)保留。
+_BARE_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9第])\d+(?:[.．]\d+)?(?:\s*/\s*千字)?")
+_QUANTIFIER_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("总是", "多"),
+    ("从不", "少"),
+    ("大量", "多"),
+    ("至少", ""),
+    ("每千字", ""),
+    ("百分之", ""),
+)
+_CJK_RE = re.compile(r"[㐀-鿿]")
+_MIN_SOFTENED_CJK_CHARS = 4
+# 剥完数字后,去掉量化 marker / 指标领域词 / 「若干」再数汉字:剩不到
+# `_MIN_SOFTENED_CJK_CHARS` 个 ⇒ 这行只是「指标 + 数字」的量化摘要,没有机制可保留。
+_RESIDUE_STRIP_WORDS: tuple[str, ...] = tuple(
+    sorted(
+        set(_QUANTITATIVE_GUIDANCE_MARKERS)
+        | {marker for markers, _metrics in _SOFTEN_MARKER_METRICS for marker in markers}
+        | {"若干"},
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def _metric_level(metric_name: str, value: float) -> str | None:
+    thresholds = _METRIC_LEVEL_THRESHOLDS.get(metric_name)
+    if thresholds is None and metric_name in _RATIO_METRICS:
+        thresholds = (0.04, 0.14)
+    if thresholds is None:
+        return None
+    low, high = thresholds
+    if value < low:
+        return "low"
+    if value >= high:
+        return "high"
+    return None
+
+
+def _line_direction(text: str) -> str | None:
+    high = any(cue in text for cue in _DIRECTION_HIGH_CUES)
+    low = any(cue in text for cue in _DIRECTION_LOW_CUES)
+    if high and not low:
+        return "high"
+    if low and not high:
+        return "low"
+    return None
+
+
+def _conflicts_with_baseline(text: str, baseline: Mapping[str, Any]) -> bool:
+    """该行的频率方向与冻结基线相反 → True。只在能映射到具体指标时判断。
+
+    按领域词组逐组判定:同一组映射到多个指标时(「短句」⇒ short_sentence_ratio 与
+    avg_sentence_length),只要有一个可判档的指标与行方向一致就不算冲突——单个指标
+    落在不可判的中档或被误判,不能否决另一个指标已经证实的同向断言;某一组的可判指标
+    全部反向才是冲突。
+    """
+    if not isinstance(baseline, Mapping) or not baseline:
+        return False
+    direction = _line_direction(text)
+    if direction is None:
+        return False
+    skipped: set[str] = set()
+    for left, right in _OPPOSING_MARKER_GROUPS:
+        if any(m in text for m in left) and any(m in text for m in right):
+            skipped.update(left)
+            skipped.update(right)
+    for markers, metrics in _SOFTEN_MARKER_METRICS:
+        if not any(marker in text for marker in markers):
+            continue
+        if all(marker in skipped for marker in markers):
+            continue
+        agreed = 0
+        disagreed = 0
+        for metric_name, polarity in metrics:
+            stats = baseline.get(metric_name)
+            mean = _finite_number(stats.get("mean")) if isinstance(stats, Mapping) else None
+            if mean is None:
+                continue
+            level = _metric_level(metric_name, mean)
+            if level is None:
+                continue
+            expected = direction if polarity > 0 else ("low" if direction == "high" else "high")
+            if expected == level:
+                agreed += 1
+            else:
+                disagreed += 1
+        if disagreed and not agreed:
+            return True
+    return False
+
+
+def _strip_numbers(text: str) -> str:
+    """量化 token → 带量词的换成「若干 + 量词」,百分比 / 裸数量整个去掉。"""
+
+    def _replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        unit = token[-1] if token and token[-1] in _CLASSIFIER_UNITS else ""
+        return f"若干{unit}" if unit else ""
+
+    return _NUMBER_TOKEN_RE.sub(_replace, text)
+
+
+def _strip_bare_numbers(text: str) -> tuple[str, int]:
+    """量化行里剩余的裸数字(「占比0.6」「密度180/千字」)整个去掉;返回 (文本, 剥掉的个数)。"""
+    return _BARE_NUMBER_RE.subn("", text)
+
+
+def _mechanism_residue_chars(text: str) -> int:
+    """去掉量化 marker / 指标领域词 / 「若干」后剩余的汉字数(判断剥完数字还有没有机制)。"""
+    for word in _RESIDUE_STRIP_WORDS:
+        text = text.replace(word, "")
+    return len(_CJK_RE.findall(text))
+
+
+def _clean_softened(text: str) -> str:
+    text = re.sub(r"[、，,]{2,}", "，", text)
+    text = re.sub(r"[；;]{2,}", "；", text)
+    text = re.sub(r"(?:约|大约|左右)(?=[、，,；;。]|$)", "", text)
+    text = re.sub(r"[、，,；;：:]+(?=[、，,；;。])", "", text)
+    text = re.sub(r"^[、，,；;：:\s]+", "", text)
+    text = re.sub(r"[、，,；;：:\s]+$", "", text)
+    return text.strip()
+
+
+def _soften_quantitative_guidance(
+    text: str, baseline: Mapping[str, Any] | None
+) -> str | None:
+    """把量化 / 绝对化的风格断言软化成方向性机制句;返回软化后的行或 None(丢弃)。
+
+    - 无量化数字(带约数词 / 量词 / 百分号的数字)且无量化 marker 的行原样返回(机制句不动;
+      标识符里的裸数字不算量化数字);
+    - 与冻结基线方向相反的频率断言 → None(复用 `_metric_level` 的分档判断,只在
+      能映射到具体 metric 时判断);
+    - 已判定为量化行后,**所有**数字都剥:区间只留上界、带量词的换成「若干 + 量词」、
+      百分比 / 裸数字 / 「/千字」整个去掉(只有 OS1、第3人称这类标识符里的数字保留);
+      ≥2 个数字 token 的行是量化摘要而非机制 → None;
+    - 「至少 / 每千字 / 百分之」剥除,「总是」→「多」、「从不」→「少」、「大量」→「多」;
+      剥完不足 4 个汉字,或剥过数字后去掉 marker / 领域词只剩不到 4 个汉字
+      (「短句占比0.6」→「短句占比」)→ None。
+    """
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None
+    number_tokens = _NUMBER_TOKEN_RE.findall(normalized)
+    if not number_tokens and not any(
+        marker in normalized for marker in _QUANTITATIVE_GUIDANCE_MARKERS
+    ):
+        return normalized
+    if _conflicts_with_baseline(normalized, baseline or {}):
+        return None
+    softened = _NUMBER_RANGE_RE.sub("", normalized)
+    number_tokens = _NUMBER_TOKEN_RE.findall(softened)
+    softened = _strip_numbers(softened)
+    softened, bare_count = _strip_bare_numbers(softened)
+    stripped_count = len(number_tokens) + bare_count
+    if stripped_count >= 2:
+        return None
+    for source, target in _QUANTIFIER_REPLACEMENTS:
+        softened = softened.replace(source, target)
+    softened = _clean_softened(softened)
+    if len(_CJK_RE.findall(softened)) < _MIN_SOFTENED_CJK_CHARS:
+        return None
+    if stripped_count and _mechanism_residue_chars(softened) < _MIN_SOFTENED_CJK_CHARS:
+        return None
+    return softened
+
+
+_SUMMARY_CLAUSE_SEPARATOR_RE = re.compile(r"([。；;，,\n]+)")
+
+
+def _soften_summary_clauses(text: str, baseline: Mapping[str, Any] | None) -> str:
+    """概述行按分句软化(v2 §2.W4.4「概述行同样处理,不再整段删除」)。
+
+    按 。；;，, 与换行切成分句,逐句 :func:`_soften_quantitative_guidance`;只丢被判
+    None 的分句(反向频率断言 / 量化摘要),其余按原分隔符拼回。全部被丢时返回空串。
+    """
+    parts = _SUMMARY_CLAUSE_SEPARATOR_RE.split(str(text or ""))
+    pieces: list[str] = []
+    for index in range(0, len(parts), 2):
+        clause = parts[index].strip()
+        separator = parts[index + 1] if index + 1 < len(parts) else ""
+        if not clause:
+            continue
+        softened = _soften_quantitative_guidance(clause, baseline)
+        if softened is None:
+            continue
+        pieces.append(softened + separator)
+    return _clean_softened("".join(pieces))
 
 
 def _is_metric_domain_guidance(text: str, baseline: dict[str, Any]) -> bool:
+    """兼容别名(旧过滤器):该行会被软化或丢弃时为 True。"""
     normalized = str(text or "").strip()
     if not normalized:
         return False
-    domain_observed = any(
-        any(metric in baseline for metric in metrics)
-        and any(marker in normalized for marker in markers)
-        for metrics, markers in _METRIC_GUIDANCE_DOMAINS
-    )
-    if not domain_observed:
-        return False
-    # 只压制会与冻结统计争夺“多少”的频率/配额断言。像“转折处用短句切断
-    # 长句”这样的功能机制仍是任意风格模仿所需的信息，不能一并删掉。
-    return bool(re.search(r"\d", normalized)) or any(
-        marker in normalized for marker in _QUANTITATIVE_GUIDANCE_MARKERS
-    )
+    return _soften_quantitative_guidance(normalized, baseline) != normalized
+
+
+# ---------------------------------------------------------------------------
+# 预算(规格 §1.4 / §1.5):四种策略共用同一套 intensity 语义
+# ---------------------------------------------------------------------------
 
 
 def _load_budget() -> dict[str, Any]:
@@ -331,7 +598,113 @@ def _load_budget() -> dict[str, Any]:
         return dict(_DEFAULT_BUDGET)
 
 
+def _budget_int(budget: Mapping[str, Any], key: str, default: int) -> int:
+    try:
+        return int(budget.get(key, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _budget_float(budget: Mapping[str, Any], key: str, default: float) -> float:
+    try:
+        value = float(budget.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+    return value if math.isfinite(value) else float(default)
+
+
+def _round_half_up(value: float) -> int:
+    return int(math.floor(value + 0.5))
+
+
+def _intensity_from_config(config: Mapping[str, Any] | None) -> int:
+    try:
+        return max(
+            0, min(100, int((config or {}).get("intensity", _DEFAULT_INTENSITY)))
+        )
+    except (TypeError, ValueError):
+        return _DEFAULT_INTENSITY
+
+
+def _intensity_total_chars(
+    intensity: int, budget: Mapping[str, Any] | None = None
+) -> int:
+    """抽象四块总额 total(i) = min_total + (max_total - min_total) × i / 100。"""
+    cfg = budget if budget is not None else _load_budget()
+    max_total = max(0, _budget_int(cfg, "system_prompt_max_tokens", 2400))
+    min_total = max(0, min(max_total, _budget_int(cfg, "intensity_min_total_chars", 900)))
+    ratio = max(0, min(100, int(intensity))) / 100.0
+    return _round_half_up(min_total + (max_total - min_total) * ratio)
+
+
+def _layered_total_scale(
+    layer_count: int, budget: Mapping[str, Any] | None = None
+) -> float:
+    """多层放大系数 min(1 + per_layer × (n - 1), cap)。"""
+    cfg = budget if budget is not None else _load_budget()
+    per_layer = max(0.0, _budget_float(cfg, "layered_total_scale_per_layer", 0.35))
+    cap = max(1.0, _budget_float(cfg, "layered_total_scale_max", 1.7))
+    count = max(1, int(layer_count))
+    return min(cap, 1.0 + per_layer * (count - 1))
+
+
+def _block_ratios(budget: Mapping[str, Any]) -> dict[str, float]:
+    ratios = {
+        "positive": max(0.0, _budget_float(budget, "positive_block_ratio", 0.45)),
+        "forbidden": max(0.0, _budget_float(budget, "forbidden_block_ratio", 0.20)),
+        "metric": max(0.0, _budget_float(budget, "metric_anchor_block_ratio", 0.15)),
+        "voice": max(0.0, _budget_float(budget, "voice_block_ratio", 0.20)),
+    }
+    total = sum(ratios.values())
+    if total > 1.0 + 1e-9:
+        # 旧 yaml 三项已合计 1.0、又补了 voice 默认值时,按比例回缩,总额仍是上限。
+        ratios = {name: value / total for name, value in ratios.items()}
+    return ratios
+
+
+def _allocate_abstract_budget(
+    intensity: int,
+    layer_count: int = 1,
+    *,
+    budget: Mapping[str, Any] | None = None,
+    total: int | None = None,
+) -> dict[str, int]:
+    """统一预算分配:返回 {"positive", "forbidden", "metric", "voice"} 各块字符上限。
+
+    ``total`` 显式给出时(多层按份额再切)跳过 intensity 计算;否则
+    total(intensity) × 多层放大系数,再按 ratio 切四块。A / B / C / MIXED 全部经此函数。
+    """
+    cfg = budget if budget is not None else _load_budget()
+    base_total = (
+        max(0, int(total))
+        if total is not None
+        else _intensity_total_chars(intensity, cfg)
+    )
+    scaled = _round_half_up(base_total * _layered_total_scale(layer_count, cfg))
+    ratios = _block_ratios(cfg)
+    return {name: int(scaled * ratio) for name, ratio in ratios.items()}
+
+
+def _few_shot_k(intensity: int, budget: Mapping[str, Any] | None = None) -> int:
+    """few-shot 窗口数 k(i) = round(k_min + (k_max - k_min) × i / 100)。"""
+    cfg = budget if budget is not None else _load_budget()
+    k_max = max(0, _budget_int(cfg, "few_shot_k", 6))
+    k_min = max(0, min(k_max, _budget_int(cfg, "few_shot_k_min", 2)))
+    ratio = max(0, min(100, int(intensity))) / 100.0
+    return _round_half_up(k_min + (k_max - k_min) * ratio)
+
+
+# ---------------------------------------------------------------------------
+# 截断:只在整行 / 整句边界
+# ---------------------------------------------------------------------------
+
+_SENTENCE_END_CHARS = "。！？!?…"
+_TRAILING_CLOSERS = "”’」』\"'）)】〕］]"
+_DIALOGUE_OPENERS = ("“", "‘", "「", "『", '"')
+
+
 def _truncate(text: str, max_chars: int) -> str:
+    """字符级截断(仅用于证据短引文这类本就不成段的文本)。"""
     if max_chars <= 0 or len(text) <= max_chars:
         return text
     if max_chars <= 1:
@@ -339,46 +712,84 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max_chars - 1] + "…"
 
 
-def _truncate_lines(text: str, max_chars: int) -> str:
-    """行边界感知截断:block 都是「标题行 + '- xxx' 条目行」结构,
-    在最后一个完整行处截断,避免把一条禁忌/特征截成半句送给 LLM。
+def _truncate_at_sentence(text: str, max_chars: int) -> tuple[str, bool]:
+    """超长段在句边界截断并加省略号;返回 (文本, 是否截断)。
 
-    行边界截断会损失超过一半预算时(单条目超长的退化情形),回退为
-    字符截断——半句好过整块丢失。"""
+    句边界太靠前(不足预算三分之一)时退到最后一个逗号 / 顿号 / 分号;再不行才按字符截。
+    """
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text, False
+    window = text[: max(1, max_chars - 1)]
+    cut = -1
+    for index in range(len(window) - 1, -1, -1):
+        if window[index] in _SENTENCE_END_CHARS:
+            end = index + 1
+            while end < len(window) and window[end] in _TRAILING_CLOSERS:
+                end += 1
+            cut = end
+            break
+    if cut < max_chars // 3:
+        for index in range(len(window) - 1, -1, -1):
+            if window[index] in "，,、；;":
+                cut = index
+                break
+    if cut < max_chars // 3:
+        cut = len(window)
+    return window[:cut].rstrip() + "…", True
+
+
+def _is_orphan_heading(line: str) -> bool:
+    stripped = line.strip()
+    return bool(stripped) and (
+        stripped.startswith("[") or stripped.endswith(("]", ":", "："))
+    )
+
+
+def _truncate_lines(text: str, max_chars: int) -> str:
+    """行边界感知截断:block 都是「标题行 + '- xxx' 条目行」结构,在最后一个完整行处截断。
+
+    v2:**没有字符级回退**——预算不够时宁可少一整行,也不把一条禁忌 / 特征截成半句;
+    截完只剩孤立标题(以 `[` 开头,或以 `]` / `:` / `：` 结尾的单行)时整块置空,
+    避免向模型暗示「该维度存在却没有任何指令」。
+    """
     if max_chars <= 0 or len(text) <= max_chars:
         return text
-    cut = text.rfind("\n", 0, max_chars)
-    if cut <= max_chars // 2:
-        return _truncate(text, max_chars)
+    cut = text.rfind("\n", 0, max_chars + 1)
+    if cut <= 0:
+        return ""
     kept = text[:cut].rstrip().splitlines()
-    # 预算刚好截在小节标题后时，不把“叙事模式:”之类的空标题交给模型。
-    # 空标题会暗示该维度存在、实际却没有任何指令，也掩盖了预算分配失衡。
-    while len(kept) > 1 and kept[-1].strip().endswith((":", "：")):
+    while kept and _is_orphan_heading(kept[-1]):
         kept.pop()
+    if not kept:
+        return ""
     return "\n".join(kept)
+
+
+def _count_entry_lines(block: str) -> int:
+    """块内条目行数(以 `-` 起头的行);标题 / 概述行不计。"""
+    return sum(1 for line in block.splitlines() if line.lstrip().startswith("-"))
+
+
+def _visible_chars(text: str) -> int:
+    return sum(1 for char in text if not char.isspace())
 
 
 def _cap_fragments(
     frag: "SystemPromptFragments", budget: int
 ) -> "SystemPromptFragments":
-    """PR-16 叠加专属:按配置 ratio 硬截 3 block(不管 strategy)。
+    """多层叠加:按该层份额 ``budget``(字符)经 :func:`_allocate_abstract_budget` 切四个抽象块。
 
-    anti_plagiarism_block 是红线段,**永不截断**,原样保留。
-    few_shot_block 与 rag_block(立项 C)在叠加路径**均不传**:二者都引用某一
-    profile/book 的原文样例,多层(可能跨书/跨 profile)混叠只会稀释风格信号——
-    RAG 检索是 per-profile 的,叠加时与 few_shot 同样丢弃,构造默认空即为丢弃。
-    (单层路径才走 strategy 全语义,RAG 在那里正常注入。)
+    anti_plagiarism_block 是红线段,**永不截断**;few_shot_block / rag_block 原样保留
+    (v2:样例不再在叠加路径丢弃,由 `_merge_fragments` 取最具体层)。
     """
-    configured = _load_budget()
-    p_ratio = float(configured.get("positive_block_ratio", 0.5))
-    f_ratio = float(configured.get("forbidden_block_ratio", 0.2))
-    m_ratio = float(configured.get("metric_anchor_block_ratio", 0.3))
+    alloc = _allocate_abstract_budget(0, 1, total=max(0, int(budget)))
     return SystemPromptFragments(
-        positive_block=_truncate_lines(frag.positive_block, int(budget * p_ratio)),
-        forbidden_block=_truncate_lines(frag.forbidden_block, int(budget * f_ratio)),
-        metric_anchor_block=_truncate_lines(
-            frag.metric_anchor_block, int(budget * m_ratio)
-        ),
+        positive_block=_truncate_lines(frag.positive_block, alloc["positive"]),
+        forbidden_block=_truncate_lines(frag.forbidden_block, alloc["forbidden"]),
+        metric_anchor_block=_truncate_lines(frag.metric_anchor_block, alloc["metric"]),
+        voice_block=_truncate_lines(frag.voice_block, alloc["voice"]),
+        few_shot_block=frag.few_shot_block,
+        rag_block=frag.rag_block,
         anti_plagiarism_block=frag.anti_plagiarism_block,
         strategy=frag.strategy,
     )
@@ -398,8 +809,8 @@ def fit_fragments_to_input_budget(
     却无法对后追加的风格块做确定性压缩，导致只超几十 token 也整场失败。
 
     压缩严格走完整行边界：先从最低优先级的量化锚点尾部缩减，再在必要时
-    权衡正向机制与禁忌条目。few-shot / RAG 要么完整保留（含不可信数据边界），
-    要么整块移除；反抄袭红线只要仍有任一风格负载就原样保留，绝不截断。
+    权衡正向机制、禁忌与声音特征条目。few-shot / RAG 要么完整保留（含不可信数据
+    边界），要么整块移除；反抄袭红线只要仍有任一风格负载就原样保留，绝不截断。
     返回的 audit 只含规模与策略，不含提示词正文。
     """
     target = max(0, int(target_input_tokens or 0))
@@ -418,6 +829,7 @@ def fit_fragments_to_input_budget(
             "positive_block",
             "forbidden_block",
             "metric_anchor_block",
+            "voice_block",
             "few_shot_block",
             "rag_block",
         )
@@ -475,7 +887,7 @@ def fit_fragments_to_input_budget(
             variants.append("")
         return variants
 
-    # 大多数临界超限只需少带一两个量化指标。正向特征、禁忌与原文样例
+    # 大多数临界超限只需少带一两个量化指标。正向特征、禁忌、声音特征与原文样例
     # 在这一阶段完全不动，最大限度保住风格辨识信号。
     for metric in _line_variants(fragments.metric_anchor_block):
         candidate = fragments.model_copy(
@@ -492,35 +904,42 @@ def fit_fragments_to_input_budget(
     ) -> SystemPromptFragments | None:
         positive_variants = _line_variants(fragments.positive_block)
         forbidden_variants = _line_variants(fragments.forbidden_block)
+        # 声音特征块只在「整块保留 / 整块移除」之间权衡,避免搜索空间立方膨胀。
+        voice_variants = [fragments.voice_block]
+        if fragments.voice_block.strip():
+            voice_variants.append("")
         best: tuple[tuple[int, int, int], SystemPromptFragments] | None = None
-        for positive in positive_variants:
-            for forbidden in forbidden_variants:
-                candidate = fragments.model_copy(
-                    update={
-                        "positive_block": positive,
-                        "forbidden_block": forbidden,
-                        "metric_anchor_block": "",
-                        "few_shot_block": (
-                            fragments.few_shot_block
-                            if keep_reference_examples
-                            else ""
-                        ),
-                        "rag_block": (
-                            fragments.rag_block if keep_reference_examples else ""
-                        ),
-                    }
-                )
-                if not _fits(candidate):
-                    continue
-                # 正向机制优先，禁忌次之；同分时保留更多完整字符。
-                score = (
-                    3 * len(positive.splitlines())
-                    + 2 * len(forbidden.splitlines()),
-                    int(bool(positive)) + int(bool(forbidden)),
-                    len(candidate.to_system_prompt_prefix()),
-                )
-                if best is None or score > best[0]:
-                    best = (score, candidate)
+        for voice in voice_variants:
+            for positive in positive_variants:
+                for forbidden in forbidden_variants:
+                    candidate = fragments.model_copy(
+                        update={
+                            "positive_block": positive,
+                            "forbidden_block": forbidden,
+                            "voice_block": voice,
+                            "metric_anchor_block": "",
+                            "few_shot_block": (
+                                fragments.few_shot_block
+                                if keep_reference_examples
+                                else ""
+                            ),
+                            "rag_block": (
+                                fragments.rag_block if keep_reference_examples else ""
+                            ),
+                        }
+                    )
+                    if not _fits(candidate):
+                        continue
+                    # 正向机制优先，禁忌与声音特征次之；同分时保留更多完整字符。
+                    score = (
+                        3 * len(positive.splitlines())
+                        + 2 * len(forbidden.splitlines())
+                        + 2 * len(voice.splitlines()),
+                        int(bool(positive)) + int(bool(forbidden)) + int(bool(voice)),
+                        len(candidate.to_system_prompt_prefix()),
+                    )
+                    if best is None or score > best[0]:
+                        best = (score, candidate)
         return best[1] if best is not None else None
 
     for keep_examples in (True, False):
@@ -559,15 +978,22 @@ def _merge_forbidden_blocks(*blocks: str) -> str:
     return "[禁忌模式]\n" + "\n".join(items)
 
 
+def _most_specific_block(layers_frags: Sequence["SystemPromptFragments"], name: str) -> str:
+    for fragment in reversed(layers_frags):  # 最具体层优先
+        block = str(getattr(fragment, name, "") or "")
+        if block.strip():
+            return block
+    return ""
+
+
 def _merge_fragments(
     layers_frags: list["SystemPromptFragments"],
 ) -> "SystemPromptFragments":
-    """PR-19 — 多层合并(由泛到具体):positive 顺序拼 / forbidden 全层去重 /
-    metric 最具体优先(反向取首个非空)/ strategy 取最具体层。
+    """PR-19 / v2 — 多层合并(由泛到具体):positive 顺序拼 / forbidden 全层去重 /
+    metric、voice、few_shot、rag 最具体优先(反向取首个非空)/ strategy 取最具体层。
 
-    few_shot_block 与 rag_block(立项 C)不在此合并:它们已在上游 `_cap_fragments`
-    阶段丢弃(per-profile 原文样例多层混叠稀释风格信号,详见该函数注释),故合并产物
-    不含二者。RAG 仅在单层路径注入。
+    v2:few_shot_block 与 rag_block 不再在叠加路径丢弃——多本书的原文样例混叠会稀释
+    风格信号,所以只取最具体层的那一块,而不是全部不要。
 
     positive 拼接时 `[正向风格特征]` 标题只保留首层——每层各带一遍标题会让
     system prompt 出现多个同名块头,干扰 LLM 对块结构的解析(2026-07 观感修正)。"""
@@ -583,15 +1009,13 @@ def _merge_fragments(
         positive_parts.append(block)
     positive = "\n\n".join(positive_parts)
     forbidden = _merge_forbidden_blocks(*[f.forbidden_block for f in layers_frags])
-    metric = ""
-    for f in reversed(layers_frags):  # 最具体层优先
-        if f.metric_anchor_block.strip():
-            metric = f.metric_anchor_block
-            break
     return SystemPromptFragments(
         positive_block=positive,
         forbidden_block=forbidden,
-        metric_anchor_block=metric,
+        metric_anchor_block=_most_specific_block(layers_frags, "metric_anchor_block"),
+        voice_block=_most_specific_block(layers_frags, "voice_block"),
+        few_shot_block=_most_specific_block(layers_frags, "few_shot_block"),
+        rag_block=_most_specific_block(layers_frags, "rag_block"),
         anti_plagiarism_block=_merge_anti_plagiarism(
             *[f.anti_plagiarism_block for f in layers_frags]
         ),
@@ -621,6 +1045,181 @@ def _merge_anti_plagiarism(*blocks: str) -> str:
     if not extra:
         return base
     return base + "\n" + "\n".join(extra)
+
+
+def _dedupe_layers_by_profile(
+    layers: Sequence[Any], *, key: Callable[[Any], str]
+) -> list[Any]:
+    """同一 profile 跨作用域只渲染一次:保留最具体(最后)那层,其余次序不变。"""
+    last_index: dict[str, int] = {}
+    for index, layer in enumerate(layers):
+        last_index[key(layer)] = index
+    return [
+        layer
+        for index, layer in enumerate(layers)
+        if last_index[key(layer)] == index
+    ]
+
+
+def _scene_paragraph_profile(context_text: str | None) -> dict[str, Any]:
+    """用启发式段型分类粗判中性稿的对白 / 叙述占比(决定样例窗口的段型配额)。"""
+    text = str(context_text or "").strip()
+    empty = {"shares": {}, "dialogue_share": 0.0, "paragraph_count": 0, "preferred": set()}
+    if not text:
+        return empty
+    bodies = [part.strip() for part in re.split(r"\n\s*\n|\r?\n", text) if part.strip()]
+    if not bodies:
+        return empty
+    try:
+        from novel_system.services.style_reference.segmentation.heuristic import (
+            classify_heuristic_sequence,
+        )
+
+        classified = classify_heuristic_sequence(bodies)
+    except Exception:  # noqa: BLE001 — 段型粗判失败不阻断注入
+        logger.warning("scene paragraph type profiling degraded", exc_info=True)
+        return empty
+    counts = Counter(ptype for ptype, _confidence in classified)
+    total = max(1, len(bodies))
+    shares = {ptype: count / total for ptype, count in counts.items()}
+    preferred = {
+        ptype for ptype, share in shares.items() if share >= _SCENE_DOMINANT_TYPE_SHARE
+    }
+    return {
+        "shares": shares,
+        "dialogue_share": shares.get("dialogue", 0.0),
+        "paragraph_count": len(bodies),
+        "preferred": preferred,
+    }
+
+
+def _looks_like_dialogue(paragraph_type: str | None, text: str) -> bool:
+    if str(paragraph_type or "") == "dialogue":
+        return True
+    return text.lstrip().startswith(_DIALOGUE_OPENERS)
+
+
+class _WindowAffinityScorer:
+    """样例窗口「辨识度」:窗口声音签名在画像相对基线显著偏离的特征上的同向偏离幅度之和。
+
+    画像无 voice_signature 或基线缺失时退化为既有 `_reference_sample_style_distance`
+    (越接近画像统计越好);两种模式都以「值越大越好」的口径返回。
+    """
+
+    def __init__(
+        self,
+        voice_signature: Mapping[str, Any] | None,
+        metrics_baseline: Mapping[str, Any] | None,
+    ) -> None:
+        self.mode = "style_distance"
+        self._metrics_baseline = dict(metrics_baseline or {})
+        self._targets: list[tuple[str, float]] = []
+        self._baseline_features: Mapping[str, Any] | None = None
+        self._compute: Callable[[str], Mapping[str, Any]] | None = None
+        self._z_scores: Callable[..., Mapping[str, float]] | None = None
+        if not isinstance(voice_signature, Mapping):
+            return
+        try:
+            from novel_system.services.style_reference.voice_signature import (
+                compute_voice_signature_for_text,
+                distinctive_features,
+                feature_z_scores,
+                load_voice_baseline,
+            )
+
+            baseline = load_voice_baseline()
+            baseline_features = (
+                baseline.get("features") if isinstance(baseline, Mapping) else None
+            )
+            if not isinstance(baseline_features, Mapping) or not baseline_features:
+                return
+            targets = distinctive_features(voice_signature, baseline, min_abs_z=1.0)
+            if not targets:
+                return
+            self._targets = [
+                (str(item["feature"]), 1.0 if item.get("direction") == "high" else -1.0)
+                for item in targets
+            ]
+            self._baseline_features = baseline_features
+            self._compute = compute_voice_signature_for_text
+            self._z_scores = feature_z_scores
+            self.mode = "voice"
+        except Exception:  # noqa: BLE001 — 声音签名不可用时退化到风格距离
+            logger.warning("voice-based sample scoring unavailable", exc_info=True)
+            self.mode = "style_distance"
+
+    def score(self, text: str) -> float:
+        if self.mode == "voice" and self._compute and self._z_scores:
+            try:
+                signature = self._compute(text)
+                scores = self._z_scores(
+                    signature, self._baseline_features or {}, block_count=1
+                )
+                return float(
+                    sum(
+                        max(0.0, sign * float(scores.get(feature, 0.0)))
+                        for feature, sign in self._targets
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("voice-based sample scoring degraded", exc_info=True)
+        return -_reference_sample_style_distance(text, self._metrics_baseline)
+
+
+def _fragment_stats(
+    fragments: SystemPromptFragments,
+    *,
+    few_shot_windows: int,
+    few_shot_chars: int,
+    rag_snippets: int,
+    intensity_total: int,
+    few_shot_k: int,
+) -> dict[str, int]:
+    """预览端点 / UI 读数(InjectionPreviewStats 的字段,行数只数 `-` 起头的条目行)。"""
+    return {
+        "positive_lines": _count_entry_lines(fragments.positive_block),
+        "forbidden_lines": _count_entry_lines(fragments.forbidden_block),
+        "metric_lines": _count_entry_lines(fragments.metric_anchor_block),
+        "voice_lines": _count_entry_lines(fragments.voice_block),
+        "few_shot_windows": int(few_shot_windows),
+        "few_shot_chars": int(few_shot_chars),
+        "rag_snippets": int(rag_snippets),
+        "total_prefix_chars": len(fragments.to_system_prompt_prefix()),
+        "intensity_effective_total_chars": int(intensity_total),
+        "few_shot_k": int(few_shot_k),
+    }
+
+
+def _layered_render_stats(
+    merged: SystemPromptFragments,
+    rendered: Sequence[SystemPromptFragments],
+    layer_stats: Sequence[Mapping[str, Any]],
+    *,
+    intensity_total: int,
+) -> dict[str, int]:
+    """多层叠加后的真实读数:行数 / 总字数按 **合并并截断后** 的 fragments 重数。
+
+    few-shot / RAG 样例块由 :func:`_merge_fragments` 取最具体的非空层,窗口数 / 原文字数 /
+    召回条数 / k 只能来自那一层自己的渲染读数;都没有时 k 沿用最具体层。
+    """
+
+    def _owner_stats(block_name: str) -> Mapping[str, Any] | None:
+        for fragment, stats in zip(reversed(rendered), reversed(layer_stats)):
+            if str(getattr(fragment, block_name, "") or "").strip():
+                return stats
+        return None
+
+    few_shot_owner = _owner_stats("few_shot_block")
+    rag_owner = _owner_stats("rag_block")
+    last = layer_stats[-1] if layer_stats else {}
+    return _fragment_stats(
+        merged,
+        few_shot_windows=int((few_shot_owner or {}).get("few_shot_windows", 0) or 0),
+        few_shot_chars=int((few_shot_owner or {}).get("few_shot_chars", 0) or 0),
+        rag_snippets=int((rag_owner or {}).get("rag_snippets", 0) or 0),
+        intensity_total=intensity_total,
+        few_shot_k=int((few_shot_owner or last).get("few_shot_k", 0) or 0),
+    )
 
 
 def ordered_character_ids(pov_id, onstage_ids) -> list[str]:
@@ -664,6 +1263,7 @@ def _char_order(b, character_ids: list[str] | None) -> int:
     return 0
 
 
+
 class InjectionService:
     """读 active binding + profile,渲染 SystemPromptFragments。"""
 
@@ -683,10 +1283,17 @@ class InjectionService:
         # fragments_for() to override the default ptype priority with dimension-targeted
         # exemplars ("show, don't tell" drift correction).
         self.drift_ptype_priority: list[str] | None = None
-        # 立项 C — Strategy C(RAG)的检索 query 来源:续写最新上下文。
-        # 由调用方(scene_generation._inject_style_reference)在 fragments_for() 前设置,
-        # 续写循环按 refresh_every_chars 周期性刷新此值 → RAG 召回随上下文变化(§12 防漂移)。
+        # 立项 C — Strategy C(RAG)的检索 query 来源 / few-shot 场景段型来源:当前上下文。
+        # 由调用方(scene_generation._inject_style_reference)在 fragments_for() 前设置。
         self.context_text: str | None = None
+        # v2(W4.7):只有调用方**显式**标记 context_text 已是风格化前文(续写)时,RAG
+        # query 才用前文签名;默认 False → 用画像代表签名(中性稿不代表目标风格)。
+        self.styled_context: bool = False
+        # v2(W4.8):最近一次 _render 的真实读数(InjectionPreviewStats 字段);
+        # 最近一次 Strategy C 的 RAG 结果(hit / unavailable / skipped_policy / error)。
+        self.last_render_stats: dict[str, Any] | None = None
+        self._last_rag_outcome: str | None = None
+        self._query_signature_cache: dict[str, dict[str, Any]] = {}
 
     # --------------------------------------------------------------- public
     def fragments_for(
@@ -718,23 +1325,41 @@ class InjectionService:
         project_id: str | None,
         context: StyleGenerationContext | None = None,
         drift_ptype_priority: list[str] | None = None,
+        styled_context: bool | None = None,
     ) -> SystemPromptFragments:
-        """Render the exact frozen bundle lineage instead of re-resolving live bindings."""
+        """Render the exact frozen bundle lineage instead of re-resolving live bindings.
+
+        ``styled_context``:调用方确认 ``context`` 是已风格化的前文(续写)时传 True,
+        RAG query 才改用前文签名;None 沿用实例属性 ``self.styled_context``(默认 False)。
+        """
         frozen = validate_style_runtime_contract(contract)
         task_type = str(frozen["task_type"])
-        layers = list(frozen["layers"])
-        rendered = [
-            self._render_contract_layer(
-                layer,
-                context_text=context.query_text if context is not None else None,
-                drift_ptype_priority=drift_ptype_priority,
+        raw_layers = list(frozen["layers"])
+        layers = _dedupe_layers_by_profile(
+            raw_layers, key=lambda layer: str(layer["profile"]["profile_id"])
+        )
+        use_styled = self.styled_context if styled_context is None else bool(styled_context)
+        rendered: list[SystemPromptFragments] = []
+        layer_stats: list[dict[str, Any]] = []
+        for layer in layers:
+            # 每层先清零:未真正渲染的层(profile 缺失 / 未激活)不得继承上一层的读数
+            self.last_render_stats = None
+            rendered.append(
+                self._render_contract_layer(
+                    layer,
+                    context_text=context.query_text if context is not None else None,
+                    drift_ptype_priority=drift_ptype_priority,
+                    styled_context=use_styled,
+                )
             )
-            for layer in layers
-        ]
+            layer_stats.append(dict(self.last_render_stats or {}))
         if len(rendered) == 1:
             fragments = rendered[0]
         else:
-            total = self._budget_total()
+            intensity = _intensity_from_config(
+                dict(layers[-1]["binding"].get("config_json") or {})
+            )
+            total = self._budget_total(intensity=intensity, layer_count=len(rendered))
             weights = list(range(1, len(rendered) + 1))
             weight_sum = sum(weights)
             fragments = _merge_fragments(
@@ -746,6 +1371,8 @@ class InjectionService:
                     for index, fragment in enumerate(rendered)
                 ]
             )
+            # 审计读数必须描述真正发出的合并前缀,而不是最后一层截断前的单层渲染
+            self.last_render_stats = _layered_render_stats(fragments, rendered, layer_stats, intensity_total=total)
 
         self._last_profile_id = str(layers[-1]["profile"]["profile_id"])
         self._last_binding_id = str(layers[-1]["binding"]["binding_id"])
@@ -760,12 +1387,36 @@ class InjectionService:
         self._record_invocation(project_id, task_type, fragments)
         return fragments
 
+    def render_preview(
+        self,
+        profile,
+        strategy: InjectionStrategy,
+        config: dict[str, Any] | None,
+    ) -> tuple[SystemPromptFragments, dict[str, int]]:
+        """预览端点入口:渲染 fragments 并返回真实读数(不写 metric 事件、不记 last id)。
+
+        与 binding 路径(:meth:`_render_for`)一致:调用方设置的 ``context_text`` /
+        ``drift_ptype_priority`` 同样生效(路由不设置时行为不变)。
+        """
+        fragments = self._render(
+            profile,
+            strategy,
+            dict(config or {}),
+            drift_ptype_priority=self.drift_ptype_priority,
+            context_text=self.context_text,
+        )
+        stats = dict(self.last_render_stats or {})
+        self._last_rag_outcome = None
+        self._query_signature_cache.clear()
+        return fragments, stats
+
     def _render_contract_layer(
         self,
         layer: dict[str, Any],
         *,
         context_text: str | None,
         drift_ptype_priority: list[str] | None,
+        styled_context: bool | None = None,
     ) -> SystemPromptFragments:
         profile = SimpleNamespace(**dict(layer["profile"]))
         binding = dict(layer["binding"])
@@ -780,6 +1431,7 @@ class InjectionService:
             drift_ptype_priority=drift_ptype_priority,
             context_text=context_text,
             frozen_layer=layer,
+            styled_context=styled_context,
         )
 
     def _resolve_fragments(
@@ -800,19 +1452,28 @@ class InjectionService:
         )
         if not layers:
             return SystemPromptFragments()
-        # 单层 → 走原路径,行为零回归(strategy 全语义,不 cap)
+        # v2:同一 profile 跨作用域只渲染一次(保留最具体层)
+        layers = _dedupe_layers_by_profile(layers, key=lambda b: str(b.profile_id))
+        # 单层 → 走原路径(strategy 全语义 + 该层自身 intensity 总额,不再按份额 cap)
         if len(layers) == 1:
             return self._fragments_from_binding(layers[0])
-        # PR-16/19 多层加权叠加:由泛到具体,越具体预算越多
-        total = self._budget_total()
+        # PR-16/19 多层加权叠加:由泛到具体,越具体预算越多;总额按层数放大(§1.4)
         n = len(layers)
+        intensity = _intensity_from_config(layers[-1].config_json or {})
+        total = self._budget_total(intensity=intensity, layer_count=n)
         weights = list(range(1, n + 1))  # [1,2] / [1,2,3]
         wsum = sum(weights)
-        capped = [
-            _cap_fragments(self._render_binding(b), total * weights[i] // wsum)
-            for i, b in enumerate(layers)
-        ]
+        rendered: list[SystemPromptFragments] = []
+        layer_stats: list[dict[str, Any]] = []
+        for b in layers:
+            # 每层先清零:未真正渲染的层(profile 缺失 / 未激活)不得继承上一层的读数
+            self.last_render_stats = None
+            rendered.append(self._render_binding(b))
+            layer_stats.append(dict(self.last_render_stats or {}))
+        capped = [_cap_fragments(fragment, total * weights[i] // wsum) for i, fragment in enumerate(rendered)]
         merged = _merge_fragments(capped)
+        # 审计读数必须描述真正发出的合并前缀,而不是最后一层截断前的单层渲染
+        self.last_render_stats = _layered_render_stats(merged, rendered, layer_stats, intensity_total=total)
         self._last_profile_id = layers[-1].profile_id  # 最具体层
         self._last_binding_id = layers[-1].binding_id
         self._last_base_binding_id = layers[0].binding_id  # 最泛层
@@ -848,8 +1509,15 @@ class InjectionService:
             context_text=self.context_text,
         )
 
-    def _budget_total(self) -> int:
-        return int(_load_budget().get("system_prompt_max_tokens", 800))
+    def _budget_total(
+        self, intensity: int = _DEFAULT_INTENSITY, layer_count: int = 1
+    ) -> int:
+        """抽象四块总额:total(intensity) × 多层放大系数(单层 = total(intensity))。"""
+        budget = _load_budget()
+        return _round_half_up(
+            _intensity_total_chars(intensity, budget)
+            * _layered_total_scale(layer_count, budget)
+        )
 
     def _record_invocation(
         self,
@@ -876,6 +1544,10 @@ class InjectionService:
             "context": self._last_context_audit,
             "prefix_chars": len(prefix),
             "prefix_sha256": hashlib.sha256(prefix.encode("utf-8")).hexdigest(),
+            # v2:Strategy C 的召回结果(hit / unavailable / skipped_policy / error);
+            # 非 C 或未走 RAG 时为 None。
+            "rag_outcome": self._last_rag_outcome,
+            "render_stats": dict(self.last_render_stats or {}),
         }
         self.last_runtime_audit = runtime_audit
         MetricsRecorder.record(
@@ -896,6 +1568,7 @@ class InjectionService:
                 "runtime_contract_hash": self._last_runtime_contract_hash,
                 "runtime_profile_ids": runtime_profile_ids,
                 "context": self._last_context_audit,
+                "rag_outcome": self._last_rag_outcome,
             },
         )
         # 用完即清,避免下一次 invocation 错误复用
@@ -907,6 +1580,8 @@ class InjectionService:
         self._last_runtime_profile_ids = []
         self._last_runtime_binding_ids = []
         self._last_context_audit = None
+        self._last_rag_outcome = None
+        self._query_signature_cache.clear()
 
     # ------------------------------------------------------------- binding 选取
     def _active_bindings(self, task_type: str) -> list:
@@ -1041,6 +1716,7 @@ class InjectionService:
             layers.append(scene_b)
         return layers  # 由泛到具体
 
+
     def describe_binding_layers(
         self,
         project_id: str | None,
@@ -1053,22 +1729,44 @@ class InjectionService:
 
         复算 `_resolve_fragments` 的权重/预算分配并附各层截断后 block 规模与
         合并结果概要;不写 metric 事件、不记 last id(纯读,可随 UI 反复调用)。
+        v2:同 profile 跨作用域去重后的层才参与分配,被去重的 binding 列在
+        ``deduplicated``;``budget_total`` 是按最具体层 intensity 与层数放大后的总额。
         """
-        total = self._budget_total()
-        layers = self.resolve_binding_layers(
+        raw_layers = self.resolve_binding_layers(
             project_id,
             task_type,
             character_ids=character_ids,
             scene_id=scene_id,
         )
-        if not layers:
-            return {"layers": [], "merged": None, "budget_total": total}
+        rank_by_scope = {"scene": 0, "character": 1, "project": 2, "global": 3}
+        if not raw_layers:
+            return {
+                "layers": [],
+                "merged": None,
+                "budget_total": self._budget_total(),
+                "deduplicated": [],
+            }
+        layers = _dedupe_layers_by_profile(raw_layers, key=lambda b: str(b.profile_id))
+        kept_ids = {b.binding_id for b in layers}
+        deduplicated = [
+            {
+                "binding_id": b.binding_id,
+                "profile_id": b.profile_id,
+                "scope": b.scope,
+                "scope_ref_id": b.scope_ref_id,
+                "rank": rank_by_scope.get(b.scope, 9),
+            }
+            for b in raw_layers
+            if b.binding_id not in kept_ids
+        ]
         n = len(layers)
+        intensity = _intensity_from_config(layers[-1].config_json or {})
+        total = self._budget_total(intensity=intensity, layer_count=n)
         weights = list(range(1, n + 1))
         wsum = sum(weights)
         rendered = [self._render_binding(b) for b in layers]
         if n == 1:
-            # 单层与 _resolve_fragments 一致:strategy 全语义,不 cap
+            # 单层与 _resolve_fragments 一致:strategy 全语义 + 自身 intensity 总额,不 cap
             budgets = [total]
             capped = rendered
             merged = rendered[0]
@@ -1076,7 +1774,6 @@ class InjectionService:
             budgets = [total * weights[i] // wsum for i in range(n)]
             capped = [_cap_fragments(rendered[i], budgets[i]) for i in range(n)]
             merged = _merge_fragments(capped)
-        rank_by_scope = {"scene": 0, "character": 1, "project": 2, "global": 3}
         out_layers: list[dict[str, Any]] = []
         for i, binding in enumerate(layers):
             frag = capped[i]
@@ -1084,6 +1781,9 @@ class InjectionService:
                 "positive_block": len(frag.positive_block),
                 "forbidden_block": len(frag.forbidden_block),
                 "metric_anchor_block": len(frag.metric_anchor_block),
+                "voice_block": len(frag.voice_block),
+                "few_shot_block": len(frag.few_shot_block),
+                "rag_block": len(frag.rag_block),
             }
             profile = self.repo.get_profile(binding.profile_id)
             out_layers.append(
@@ -1095,6 +1795,7 @@ class InjectionService:
                     "profile_id": binding.profile_id,
                     "profile_title": getattr(profile, "title", None),
                     "strategy": binding.strategy,
+                    "intensity": _intensity_from_config(binding.config_json or {}),
                     "weight": weights[i],
                     "budget_chars": budgets[i],
                     "block_chars": block_chars,
@@ -1107,9 +1808,12 @@ class InjectionService:
             if hasattr(merged.strategy, "value")
             else str(merged.strategy)
         )
+        self._last_rag_outcome = None
+        self._query_signature_cache.clear()
         return {
             "layers": out_layers,
             "budget_total": total,
+            "deduplicated": deduplicated,
             "merged": {
                 "layer_count": n,
                 "strategy": strategy_val,
@@ -1117,6 +1821,7 @@ class InjectionService:
             },
         }
 
+    # ------------------------------------------------------------------ 渲染
     def _render(
         self,
         profile,
@@ -1126,9 +1831,24 @@ class InjectionService:
         drift_ptype_priority: list[str] | None = None,
         context_text: str | None = None,
         frozen_layer: dict[str, Any] | None = None,
+        styled_context: bool | None = None,
     ) -> SystemPromptFragments:
+        """按 strategy 渲染单个 profile 的 fragments(规格 §1.5:四种策略共用 intensity 语义)。
+
+        抽象四块(positive / forbidden / metric / voice)先各自渲染全文,再按
+        :func:`_allocate_abstract_budget` 的份额整行截断;原文样例(few_shot / rag)
+        在四块预算之外,自带 block 上限并经 ``secure_reference_block`` 封装;
+        任一块非空 → 红线段随注、永不截断。渲染读数写入 ``self.last_render_stats``。
+        """
+        config = dict(config or {})
         sub_dims_raw = config.get("sub_dimensions")
         sub_dims = [str(s) for s in sub_dims_raw] if sub_dims_raw else None
+        intensity = _intensity_from_config(config)
+        budget = _load_budget()
+        alloc = _allocate_abstract_budget(intensity, 1, budget=budget)
+        intensity_total = _intensity_total_chars(intensity, budget)
+        use_styled = self.styled_context if styled_context is None else bool(styled_context)
+
         positive = self._render_positive(profile)
         forbidden = self._render_forbidden(
             profile,
@@ -1140,83 +1860,61 @@ class InjectionService:
             ),
         )
         metric = self._render_metric(profile, context_text=context_text)
-        few_shot = ""
-        rag_block = ""
+        voice = self._render_voice(profile)
 
-        if strategy == InjectionStrategy.B:
-            positive, forbidden, metric = self._apply_budget(
-                positive, forbidden, metric
-            )
-            few_shot = self._render_few_shot(
+        caps = dict(alloc)
+        if strategy == InjectionStrategy.MIXED:
+            # binding.config_json 三(四)个布尔开关:关掉的块预算归零
+            for name, switch in (
+                ("positive", "include_positive"),
+                ("forbidden", "include_forbidden"),
+                ("metric", "include_metric"),
+                ("voice", "include_voice"),
+            ):
+                if not bool(config.get(switch, True)):
+                    caps[name] = 0
+        if strategy == InjectionStrategy.C:
+            # C:positive + forbidden 摘要 + voice + RAG;metric 不注(与 RAG 片段互补)
+            caps["metric"] = 0
+            caps["forbidden"] = min(caps["forbidden"], _C_FORBIDDEN_SUMMARY_MAX_CHARS)
+
+        positive = _truncate_lines(positive, caps["positive"]) if caps["positive"] > 0 else ""
+        forbidden = (
+            self._summarize_forbidden(forbidden, max_chars=caps["forbidden"])
+            if caps["forbidden"] > 0
+            else ""
+        )
+        metric = _truncate_lines(metric, caps["metric"]) if caps["metric"] > 0 else ""
+        voice = _truncate_lines(voice, caps["voice"]) if caps["voice"] > 0 else ""
+
+        few_shot = ""
+        few_shot_windows = 0
+        few_shot_chars = 0
+        few_shot_k = 0
+        rag_block = ""
+        rag_snippets = 0
+        if strategy in (InjectionStrategy.B, InjectionStrategy.MIXED):
+            few_shot_k = _few_shot_k(intensity, budget)
+            few_shot, few_shot_windows, few_shot_chars = self._render_few_shot(
                 profile,
+                k=few_shot_k,
                 drift_ptype_priority=drift_ptype_priority,
                 frozen_layer=frozen_layer,
+                context_text=context_text,
             )
         elif strategy == InjectionStrategy.C:
-            # 立项 C — 真召回:positive 全文 + forbidden 摘要 + RAG 检索片段(metric 不注)。
-            # 空召回(无索引/无 query)时 rag_block="",C 优雅退化到 positive + forbidden 摘要。
-            forbidden = self._summarize_forbidden(forbidden, max_chars=200)
-            metric = ""
-            rag_block = self._render_rag(
+            # 立项 C — 真召回;空召回(无索引 / 向量后端不可用)时 rag_block="",
+            # C 优雅退化到 positive + forbidden 摘要 + voice,并在审计记 rag_outcome。
+            rag_block, rag_snippets = self._render_rag(
                 profile,
                 context_text=context_text,
                 frozen_layer=frozen_layer,
-            )
-        elif strategy == InjectionStrategy.MIXED:
-            # PR-9 §"intensity 语义" — 0-100 缩放 ratio:0 → 0.3x, 50 → 0.9x, 100 → 1.5x;
-            # 但三块截断额之和封顶 system_prompt_max_tokens(配置语义是 max,
-            # 高 intensity 不允许溢出预算 50%,超出部分按比例回缩)
-            try:
-                intensity = max(0, min(100, int(config.get("intensity", 50))))
-            except (TypeError, ValueError):
-                intensity = 50
-            scale = 0.3 + (intensity / 100.0) * 1.2
-            budget = _load_budget()
-            total = int(budget.get("system_prompt_max_tokens", 800))
-            p_ratio = float(budget.get("positive_block_ratio", 0.6))
-            f_ratio = float(budget.get("forbidden_block_ratio", 0.3))
-            m_ratio = float(budget.get("metric_anchor_block_ratio", 0.1))
-            caps = {
-                "positive": (
-                    int(total * p_ratio * scale)
-                    if config.get("include_positive", True)
-                    else 0
-                ),
-                "forbidden": (
-                    int(total * f_ratio * scale)
-                    if config.get("include_forbidden", True)
-                    else 0
-                ),
-                "metric": (
-                    int(total * m_ratio * scale)
-                    if config.get("include_metric", True)
-                    else 0
-                ),
-            }
-            cap_sum = sum(caps.values())
-            if cap_sum > total > 0:
-                shrink = total / cap_sum
-                caps = {k: int(v * shrink) for k, v in caps.items()}
-            positive = (
-                _truncate_lines(positive, caps["positive"]) if caps["positive"] else ""
-            )
-            forbidden = (
-                _truncate_lines(forbidden, caps["forbidden"])
-                if caps["forbidden"]
-                else ""
-            )
-            metric = _truncate_lines(metric, caps["metric"]) if caps["metric"] else ""
-            # mixed = A + B:few-shot 样例块也随混合策略注入(自带 few_shot_block_max_chars
-            # 预算截断,不参与上面三块的比例分配)
-            few_shot = self._render_few_shot(
-                profile,
-                drift_ptype_priority=drift_ptype_priority,
-                frozen_layer=frozen_layer,
+                styled_context=use_styled,
             )
 
         # Wave 7 §5.9 — few-shot 例句与 RAG 召回片段是参考书**原文派生物**,进 LLM 前
         # 必须先中和指令模式再用「非指令数据」边界封装(主防线),堵不可信文本提示词注入。
-        # positive/forbidden/metric 是抽象特征(非原文),不封装;anti_plagiarism 是我方红线。
+        # positive/forbidden/metric/voice 是抽象特征(非原文),不封装;anti_plagiarism 是我方红线。
         from novel_system.services.style_reference.untrusted_data import (
             secure_reference_block,
         )
@@ -1227,12 +1925,13 @@ class InjectionService:
             rag_block = secure_reference_block(rag_block, kind="rag")
 
         # §A.5 / §11 风险 11 — 抄袭事前预防红线段:任一风格 block 非空时必随注入,
-        # 不参与任何预算截断;few-shot 引用原文片段,更必须带红线
+        # 不参与任何预算截断;few-shot / RAG 引用原文片段,更必须带红线
         anti_plagiarism = ""
         if (
             positive.strip()
             or forbidden.strip()
             or metric.strip()
+            or voice.strip()
             or few_shot.strip()
             or rag_block.strip()
         ):
@@ -1245,49 +1944,90 @@ class InjectionService:
                 ),
             )
 
-        return SystemPromptFragments(
+        fragments = SystemPromptFragments(
             positive_block=positive,
             forbidden_block=forbidden,
             metric_anchor_block=metric,
+            voice_block=voice,
             few_shot_block=few_shot,
             rag_block=rag_block,
             anti_plagiarism_block=anti_plagiarism,
             strategy=strategy,
         )
+        self.last_render_stats = _fragment_stats(
+            fragments,
+            few_shot_windows=few_shot_windows,
+            few_shot_chars=few_shot_chars,
+            rag_snippets=rag_snippets,
+            intensity_total=intensity_total,
+            few_shot_k=few_shot_k,
+        )
+        return fragments
 
+    def _render_voice(self, profile) -> str:
+        """`[声音特征]` 块:profile_json.voice_signature.habits 每行「- …」;缺失则空串。"""
+        data = profile.profile_json or {}
+        signature = data.get("voice_signature")
+        if not isinstance(signature, Mapping):
+            return ""
+        habits = signature.get("habits")
+        if not isinstance(habits, list):
+            return ""
+        lines: list[str] = []
+        seen: set[str] = set()
+        for item in habits:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            lines.append(f"- {text}")
+        if not lines:
+            return ""
+        return (
+            "[声音特征](作者的虚词、标点、引导句与句群习惯；只按方向执行，不数数、不堆砌)\n"
+            + "\n".join(lines)
+        )
+
+    # ------------------------------------------------------------------ RAG(C)
     def _render_rag(
         self,
         profile,
         *,
         context_text: str | None,
         frozen_layer: dict[str, Any] | None = None,
-    ) -> str:
-        """Strategy C — 按 context_text 从三粒度索引检索参考风格片段,渲染 rag_block。
+        styled_context: bool = False,
+    ) -> tuple[str, int]:
+        """Strategy C — 从三粒度索引检索参考风格片段,渲染 rag_block;返回 (block, 片段数)。
 
-        query 来源:续写最新上下文(context_text);为空时回退用 profile 叙事概述
-        (narrative_summary),保证非续写场景(项目初始化)也能召回。无索引/空召回 →
-        空串(C 优雅退化)。全程无 LLM(§11 风险 6:inject < 50ms,库内拼装)。
+        v2(W4.7):渲染前调用幂等 ``ensure_rag_index``(memory 后端缺 collection 时重建,
+        失败不阻断);query 默认是「画像代表签名」(画像 scene_samples 段落 / 冻结引用段落
+        的签名均值,退化为本书均匀抽样段落)+ 场景段型软过滤;**只有**调用方显式标记
+        ``styled_context`` 时才用前文签名(中性稿不代表目标风格)。旧画像无样例段落时回退
+        旧行为(前文 / 概述文本 query)。空召回 → ``self._last_rag_outcome="unavailable"``。
+        全程无 LLM(§11 风险 6:inject < 50ms,库内拼装)。
 
-        反抄袭/隐私(附录 B):RAG 注入的是参考书**原文片段**(段/句/景),最终随用户
-        生成 prompt 送往云端 LLM。与 Strategy B(few-shot)共用 ``cloud_llm_allowed``
-        守卫：仅精确合法的云策略和严格发送权声明可检索/注入；其余情况直接跳过
-        RAG(positive/forbidden 抽象特征仍由其它 block 注入,不受影响)。
+        反抄袭/隐私(附录 B):RAG 注入的是参考书**原文片段**,最终随用户生成 prompt
+        送往云端 LLM。与 Strategy B(few-shot)共用 ``cloud_llm_allowed`` 守卫:仅精确合法
+        的云策略和严格发送权声明可检索/注入;其余情况直接跳过 RAG(抽象块不受影响)。
         """
+        from novel_system.services.style_reference.policy import cloud_llm_allowed
         from novel_system.services.style_reference.rag import (
             RagRetriever,
+            ensure_rag_index,
             load_rag_config,
             render_rag_block,
         )
-        from novel_system.services.style_reference.policy import cloud_llm_allowed
 
         frozen_book = (frozen_layer.get("book") or {}) if frozen_layer else None
         if frozen_book is not None and not bool(
             frozen_book.get("cloud_llm_allowed_at_freeze")
         ):
-            return ""
+            self._last_rag_outcome = "skipped_policy"
+            return "", 0
         book = self.repo.get_book(getattr(profile, "book_id", None))
         if frozen_layer is not None and (book is None or not cloud_llm_allowed(book)):
-            return ""
+            self._last_rag_outcome = "skipped_policy"
+            return "", 0
         if frozen_book is not None and str(
             getattr(book, "text_checksum", "") or ""
         ) != str(frozen_book.get("text_checksum") or ""):
@@ -1295,115 +2035,243 @@ class InjectionService:
                 "frozen style book checksum changed; skipping RAG for %s",
                 getattr(profile, "profile_id", None),
             )
-            return ""
+            self._last_rag_outcome = "skipped_policy"
+            return "", 0
         if frozen_layer is None and book is not None and not cloud_llm_allowed(book):
-            return ""
+            self._last_rag_outcome = "skipped_policy"
+            return "", 0
 
         cfg = load_rag_config()
-        query = (context_text or "").strip()
-        if not query:
-            query = (
-                (profile.profile_json or {}).get("narrative_summary") or ""
-            ).strip()
-        if not query:
-            return ""
-        max_q = int(cfg.get("rag_context_query_max_chars", 2000))
-        query = query[-max_q:]
         try:
-            snippets = RagRetriever(self.session).retrieve(profile.profile_id, query)
+            ensure_rag_index(self.session, profile)
+        except Exception:  # noqa: BLE001 — 索引重建失败不阻断生成(退化为空召回)
+            logger.warning(
+                "rag ensure_index failed for profile %s",
+                getattr(profile, "profile_id", None),
+                exc_info=True,
+            )
+        max_q = max(1, int(cfg.get("rag_context_query_max_chars", 2000)))
+        query_text = ""
+        query_signatures: dict[str, Any] | None = None
+        if styled_context and str(context_text or "").strip():
+            query_text = str(context_text).strip()[-max_q:]
+        else:
+            query_signatures = self._profile_query_signatures(
+                profile, frozen_layer=frozen_layer, config=cfg
+            ) or None
+            if not query_signatures:
+                fallback = str(context_text or "").strip() or str(
+                    (profile.profile_json or {}).get("narrative_summary") or ""
+                ).strip()
+                query_text = fallback[-max_q:] if fallback else ""
+        if not query_text and not query_signatures:
+            self._last_rag_outcome = "unavailable"
+            return "", 0
+        scene = _scene_paragraph_profile(context_text)
+        try:
+            retriever = RagRetriever(
+                self.session,
+                query_signatures=query_signatures,
+                preferred_paragraph_types=scene["preferred"] or None,
+            )
+            snippets = retriever.retrieve(profile.profile_id, query_text)
         except Exception:  # noqa: BLE001 — 召回失败不阻断生成
             logger.warning(
                 "rag retrieve failed for profile %s", profile.profile_id, exc_info=True
             )
-            return ""
-        return render_rag_block(snippets, config=cfg)
+            self._last_rag_outcome = "error"
+            return "", 0
+        if not snippets:
+            self._last_rag_outcome = "unavailable"
+            return "", 0
+        block = render_rag_block(snippets, config=cfg)
+        if not block.strip():
+            self._last_rag_outcome = "unavailable"
+            return "", 0
+        self._last_rag_outcome = "hit"
+        return block, _count_entry_lines(block)
+
+    def _profile_query_signatures(
+        self,
+        profile,
+        *,
+        frozen_layer: dict[str, Any] | None,
+        config: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """画像代表签名(三粒度签名均值),按 profile_id 在本次 invocation 内缓存。"""
+        profile_id = str(getattr(profile, "profile_id", "") or "")
+        cached = self._query_signature_cache.get(profile_id)
+        if cached is not None:
+            return cached
+        signatures: dict[str, Any] = {}
+        texts = self._representative_sample_texts(profile, frozen_layer=frozen_layer)
+        if texts:
+            try:
+                from novel_system.services.style_reference.rag import (
+                    build_query_signatures,
+                )
+
+                signatures = build_query_signatures(texts, config=config)
+            except Exception:  # noqa: BLE001 — 代表签名失败退回文本 query
+                logger.warning(
+                    "profile query signature build failed for %s",
+                    profile_id,
+                    exc_info=True,
+                )
+                signatures = {}
+        self._query_signature_cache[profile_id] = signatures
+        return signatures
+
+    def _representative_sample_texts(
+        self, profile, *, frozen_layer: dict[str, Any] | None
+    ) -> list[str]:
+        """画像代表段落文本:冻结引用段落(哈希校验)> scene_samples 父段落 > 本书均匀抽样。"""
+        limit = _REPRESENTATIVE_SAMPLE_MAX_PARAGRAPHS
+        texts: list[str] = []
+        seen: set[str] = set()
+
+        def _add(text: Any) -> None:
+            normalized = str(text or "").strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                texts.append(normalized)
+
+        _quote_refs, frozen_hashes = self._frozen_sample_refs(frozen_layer)
+        if frozen_hashes is not None:
+            for paragraph_id, expected in frozen_hashes.items():
+                if len(texts) >= limit:
+                    break
+                paragraph = self.repo.get_paragraph(paragraph_id)
+                text = str(getattr(paragraph, "text", "") or "").strip()
+                if text and hashlib.sha256(text.encode("utf-8")).hexdigest() == expected:
+                    _add(text)
+        else:
+            index = (profile.profile_json or {}).get("scene_samples_index") or {}
+            if isinstance(index, dict):
+                for raw_quote_ids in index.values():
+                    quote_ids = raw_quote_ids if isinstance(raw_quote_ids, list) else []
+                    for raw_quote_id in quote_ids:
+                        if len(texts) >= limit:
+                            break
+                        quote = self.repo.get_quote(str(raw_quote_id or ""))
+                        paragraph_id = str(getattr(quote, "paragraph_id", "") or "")
+                        if not paragraph_id:
+                            continue
+                        paragraph = self.repo.get_paragraph(paragraph_id)
+                        _add(getattr(paragraph, "text", ""))
+        if not texts:
+            # 旧画像无样例段:按 paragraph_index 均匀抽样本书段落(只取签名,不进提示)
+            book_id = getattr(profile, "book_id", None)
+            if book_id:
+                rows = self.repo.list_paragraphs(str(book_id))
+                if rows:
+                    step = max(1, len(rows) // limit)
+                    for row in rows[::step][:limit]:
+                        _add(getattr(row, "text", ""))
+        return texts
+
+    # ------------------------------------------------------------------ few-shot(B / MIXED)
+    @staticmethod
+    def _frozen_sample_refs(
+        frozen_layer: dict[str, Any] | None,
+    ) -> tuple[dict[str, dict[str, str]] | None, dict[str, str] | None]:
+        """冻结契约里的引文 / 段落哈希;非冻结路径返回 (None, None)。"""
+        if frozen_layer is None:
+            return None, None
+        quote_refs = {
+            str(item.get("quote_id")): {
+                "quote_sha256": str(item.get("quote_sha256") or ""),
+                "paragraph_id": str(item.get("paragraph_id") or ""),
+            }
+            for item in (frozen_layer.get("sample_quote_refs") or [])
+            if isinstance(item, dict)
+            and item.get("quote_id")
+            and item.get("quote_sha256")
+        }
+        paragraph_hashes = {
+            str(item.get("paragraph_id")): str(item.get("paragraph_sha256") or "")
+            for item in (frozen_layer.get("sample_paragraph_refs") or [])
+            if isinstance(item, dict)
+            and item.get("paragraph_id")
+            and item.get("paragraph_sha256")
+        }
+        return quote_refs, paragraph_hashes
 
     def _render_few_shot(
         self,
         profile,
         *,
+        k: int,
         drift_ptype_priority: list[str] | None = None,
         frozen_layer: dict[str, Any] | None = None,
-    ) -> str:
-        """Strategy B few-shot:优先注入 quote 所在的代表性完整段落。
+        context_text: str | None = None,
+    ) -> tuple[str, int, int]:
+        """Strategy B / MIXED few-shot:以 quote 所在段为中心的**连续段落窗口**;返回
+        (block, 窗口数, 原文字数)。
 
-        证据 quote 往往只有数个到数十个字，无法展示换段、句群和标点节奏；因此
-        在运行契约冻结 paragraph 哈希且权限允许时，按 Profile 的目标段均字数选择
-        最接近的完整父段落。无父段落的旧数据仍退化为 quote。每种段型最多一条，
-        样例引用原文，因此调用方(_render)保证红线段必随注入。
+        v2(W4.5):证据 quote 往往只有数个到数十个字,无法展示换段、句群和对白往返;
+        因此在权限允许时以 quote 的父段落为中心取相邻 1–3 段(``few_shot_window_paragraphs``,
+        不跨 paragraph_index 缺口,优先让窗口同时含对白与叙述),单段超长在句边界截断。
+        排序键 (drift 优先级, 场景段型匹配 desc, 窗口层级[段落窗口 > 短引文], 辨识度 desc,
+        完整度 desc, 稳定次序);中性稿对白占比高时至少一半窗口含对白;同一段型可多条,
+        但每种索引段型先保证一条。``k`` 由 intensity 决定(:func:`_few_shot_k`)。
+        无父段落的旧数据仍退化为短引文。样例引用原文,调用方(_render)保证红线段必随注。
+
+        冻结契约路径只允许契约里有 sha256 的段落;相邻段不在冻结引用里时退化为单段窗口。
 
         §9 Defect B — drift_ptype_priority: when drift correction is active, the caller
-        passes a re-ordered priority list (from style_drift_detector.drift_corrective_ptype_priority)
-        so the few-shot exemplars "show" the correct baseline for drifted dimensions
-        rather than just "telling" the model to adjust.
+        passes a re-ordered priority list so the few-shot exemplars "show" the correct
+        baseline for drifted dimensions rather than just "telling" the model to adjust.
 
         反抄袭/隐私(附录 B):few-shot 注入的是参考书**原文引文**,最终随用户生成 prompt
         送往云端 LLM。``cloud_policy=local_only`` 的书禁止把原文送云端,故此处直接跳过
-        few-shot(与 Strategy C RAG 守卫一致;positive/forbidden 抽象特征仍由其它 block 注入)。
+        few-shot(与 Strategy C RAG 守卫一致;抽象块仍由其它 block 注入)。
         """
         from novel_system.services.style_reference.policy import cloud_llm_allowed
 
+        empty: tuple[str, int, int] = ("", 0, 0)
         frozen_book = (frozen_layer.get("book") or {}) if frozen_layer else None
         if frozen_book is not None and not bool(
             frozen_book.get("cloud_llm_allowed_at_freeze")
         ):
-            return ""
+            return empty
         book = self.repo.get_book(getattr(profile, "book_id", None))
         if frozen_layer is not None and (book is None or not cloud_llm_allowed(book)):
-            return ""
+            return empty
         if frozen_layer is None and book is not None and not cloud_llm_allowed(book):
-            return ""
-        budget = _load_budget()
-        k = int(budget.get("few_shot_k", 3))
-        quote_max = int(budget.get("few_shot_quote_max_chars", 120))
-        paragraph_min = int(budget.get("few_shot_paragraph_min_chars", 40))
-        paragraph_max = int(budget.get("few_shot_paragraph_max_chars", 360))
-        scan_per_type = int(budget.get("few_shot_candidate_scan_per_type", 12))
-        block_max = int(budget.get("few_shot_block_max_chars", 900))
+            return empty
         if k <= 0:
-            return ""
-        samples_index: dict[str, Any] = (profile.profile_json or {}).get(
-            "scene_samples_index"
-        ) or {}
+            return empty
+        budget = _load_budget()
+        quote_max = _budget_int(budget, "few_shot_quote_max_chars", 120)
+        paragraph_min = _budget_int(budget, "few_shot_paragraph_min_chars", 40)
+        paragraph_max = _budget_int(budget, "few_shot_paragraph_max_chars", 700)
+        scan_per_type = _budget_int(budget, "few_shot_candidate_scan_per_type", 12)
+        block_max = _budget_int(budget, "few_shot_block_max_chars", 3600)
+        window_paragraphs = max(1, _budget_int(budget, "few_shot_window_paragraphs", 3))
+        window_max = _budget_int(budget, "few_shot_window_max_chars", 900)
+        data = profile.profile_json or {}
+        samples_index: dict[str, Any] = data.get("scene_samples_index") or {}
         if not isinstance(samples_index, dict) or not samples_index:
-            return ""
+            return empty
         header = (
-            "[风格样例 — 漂移修正](代表性完整段落优先；只学习句群、换段与标点节奏；样例长度不是输出长度；严禁照抄)"
+            "[风格样例 — 漂移修正](连续段落窗口，代表性完整段落优先；只学习句群、换段、对白往返与标点节奏；样例长度不是输出长度；严禁照抄)"
             if drift_ptype_priority
-            else "[风格样例](代表性完整段落优先；只学习句群、换段与标点节奏；样例长度不是输出长度；严禁照抄或微改)"
+            else "[风格样例](连续段落窗口，代表性完整段落优先；只学习句群、换段、对白往返与标点节奏；样例长度不是输出长度；严禁照抄或微改)"
         )
-        lines = [header]
-        frozen_quote_refs: dict[str, dict[str, str]] | None = None
-        frozen_paragraph_hashes: dict[str, str] | None = None
-        if frozen_layer is not None:
-            frozen_quote_refs = {
-                str(item.get("quote_id")): {
-                    "quote_sha256": str(item.get("quote_sha256") or ""),
-                    "paragraph_id": str(item.get("paragraph_id") or ""),
-                }
-                for item in (frozen_layer.get("sample_quote_refs") or [])
-                if isinstance(item, dict)
-                and item.get("quote_id")
-                and item.get("quote_sha256")
-            }
-            frozen_paragraph_hashes = {
-                str(item.get("paragraph_id")): str(item.get("paragraph_sha256") or "")
-                for item in (frozen_layer.get("sample_paragraph_refs") or [])
-                if isinstance(item, dict)
-                and item.get("paragraph_id")
-                and item.get("paragraph_sha256")
-            }
-
-        baseline = (profile.profile_json or {}).get("metrics_baseline") or {}
-        paragraph_target = _finite_number(
-            (baseline.get("paragraph_mean_chars") or {}).get("mean")
-            if isinstance(baseline.get("paragraph_mean_chars"), dict)
-            else None
-        ) or 120.0
+        frozen_quote_refs, frozen_paragraph_hashes = self._frozen_sample_refs(frozen_layer)
+        baseline = data.get("metrics_baseline") or {}
+        scorer = _WindowAffinityScorer(
+            data.get("voice_signature"),
+            baseline if isinstance(baseline, dict) else {},
+        )
+        scene = _scene_paragraph_profile(context_text)
+        preferred_types: set[str] = set(scene["preferred"])
         drift_order = {
             str(ptype): index
             for index, ptype in enumerate(drift_ptype_priority or [])
         }
+        book_id = str(getattr(profile, "book_id", "") or "")
         candidates: list[dict[str, Any]] = []
         seen_sources: set[str] = set()
         for ptype, raw_quote_ids in samples_index.items():
@@ -1437,9 +2305,6 @@ class InjectionService:
                     logger.warning("frozen style quote changed; skipping %s", quote_id)
                     continue
 
-                text = _truncate(quote_text, quote_max)
-                source_kind = "证据短引文"
-                source_id = f"quote:{quote_id}"
                 paragraph_id = str(getattr(quote, "paragraph_id", "") or "")
                 expected_paragraph_id = (
                     frozen_quote_ref.get("paragraph_id", "")
@@ -1454,9 +2319,6 @@ class InjectionService:
                     if paragraph
                     else ""
                 )
-                paragraph_chars = sum(
-                    1 for char in paragraph_text if not char.isspace()
-                )
                 frozen_paragraph_ok = frozen_layer is None or bool(
                     paragraph_id
                     and paragraph_id == expected_paragraph_id
@@ -1464,63 +2326,209 @@ class InjectionService:
                     and hashlib.sha256(paragraph_text.encode("utf-8")).hexdigest()
                     == frozen_paragraph_hashes.get(paragraph_id)
                 )
+                window: dict[str, Any] | None = None
                 if (
-                    paragraph_text
+                    paragraph is not None
+                    and paragraph_text
                     and quote_text in paragraph_text
-                    and paragraph_min <= paragraph_chars <= paragraph_max
                     and frozen_paragraph_ok
                 ):
-                    text = paragraph_text
-                    source_kind = "完整参考段落"
-                    source_id = f"paragraph:{paragraph_id}"
-                if source_id in seen_sources:
+                    window = self._build_sample_window(
+                        paragraph,
+                        book_id=book_id or str(getattr(paragraph, "book_id", "") or ""),
+                        frozen_paragraph_hashes=frozen_paragraph_hashes,
+                        window_paragraphs=window_paragraphs,
+                        window_max=window_max,
+                        paragraph_max=paragraph_max,
+                    )
+                    # 短对白段自身不够展示结构,但作为「对白 + 叙述」窗口的中心是合格的:
+                    # 最小长度约束施加在整个窗口上,只有窗口仍太短才退化为短引文。
+                    if window is not None and int(window["chars"]) < paragraph_min:
+                        window = None
+                if window is None:
+                    text = _truncate(quote_text, quote_max)
+                    dialogue = _looks_like_dialogue(str(ptype), text)
+                    window = {
+                        "paragraph_ids": [f"quote:{quote_id}"],
+                        "types": [str(ptype)],
+                        "text": text,
+                        "chars": _visible_chars(text),
+                        "has_dialogue": dialogue,
+                        "has_narration": not dialogue,
+                        "source_kind": "证据短引文",
+                        "source_id": f"quote:{quote_id}",
+                        "paragraph_count": 1,
+                        "truncated": len(text) < len(quote_text),
+                        "completeness": 0.0,
+                        "tier": 1,
+                        "center_id": None,
+                        "center_dialogue": dialogue,
+                        "items": None,
+                    }
+                if window["source_id"] in seen_sources:
                     continue
-                seen_sources.add(source_id)
-                sample_chars = sum(1 for char in text if not char.isspace())
-                distance = abs(math.log(max(sample_chars, 1) / paragraph_target))
-                style_distance = _reference_sample_style_distance(text, baseline)
+                seen_sources.add(window["source_id"])
+                affinity = scorer.score(window["text"])
+                scene_match = (
+                    1
+                    if preferred_types
+                    and (set(window["types"]) & preferred_types or str(ptype) in preferred_types)
+                    else 0
+                )
                 candidates.append(
                     {
+                        **window,
                         "ptype": str(ptype),
-                        "text": text,
-                        "source_kind": source_kind,
-                        "source_id": source_id,
-                        "chars": sample_chars,
-                        "style_distance": style_distance,
-                        "rank": (
+                        "affinity": affinity,
+                        "scene_match": scene_match,
+                        "key": (
                             drift_order.get(str(ptype), len(drift_order))
                             if drift_order
                             else 0,
-                            # 完整父段落比证据短引文更能展示句群与换段；同类
-                            # 候选再按整套可观测风格指标选最接近画像基线者，
-                            # 避免仅因段长接近而挑中问号/感叹号等修辞离群段。
-                            0 if source_kind == "完整参考段落" else 1,
-                            style_distance,
-                            distance,
+                            -scene_match,
+                            int(window.get("tier", 0)),
+                            -affinity,
+                            -float(window["completeness"]),
                             source_order,
                             quote_id,
                         ),
                     }
                 )
-
-        candidates.sort(key=lambda item: item["rank"])
-        picked_types: set[str] = set()
-        picked = 0
-        for candidate in candidates:
-            if picked >= k:
-                break
-            ptype = candidate["ptype"]
-            if ptype in picked_types:
-                continue
-            picked_types.add(ptype)
-            lines.append(
-                f"- ({ptype}；{candidate['source_kind']}；{candidate['chars']}字)"
+        if not candidates:
+            return empty
+        candidates.sort(key=lambda item: item["key"])
+        dialogue_quota = (
+            math.ceil(k / 2)
+            if scene["dialogue_share"] >= _SCENE_DIALOGUE_HEAVY_SHARE
+            else 0
+        )
+        picked = _pick_sample_windows(candidates, k=k, dialogue_quota=dialogue_quota)
+        lines = [header]
+        used = len(header)
+        windows = 0
+        chars = 0
+        for candidate in picked:
+            line = (
+                f"- ({candidate['ptype']}；{candidate['source_kind']}；{candidate['chars']}字)"
                 f"「{candidate['text']}」"
             )
-            picked += 1
-        if not picked:
-            return ""
-        return _truncate_lines("\n".join(lines), block_max)
+            if used + 1 + len(line) > block_max:
+                # 整块上限:装不下的窗口整只丢弃,不截半窗
+                continue
+            lines.append(line)
+            used += 1 + len(line)
+            windows += 1
+            chars += int(candidate["chars"])
+        if not windows:
+            return empty
+        return "\n".join(lines), windows, chars
+
+    def _paragraphs_in_range(
+        self, book_id: str, low: int, high: int
+    ) -> list[StyleReferenceParagraph]:
+        stmt = (
+            select(StyleReferenceParagraph)
+            .where(
+                StyleReferenceParagraph.book_id == book_id,
+                StyleReferenceParagraph.paragraph_index >= int(low),
+                StyleReferenceParagraph.paragraph_index <= int(high),
+            )
+            .order_by(StyleReferenceParagraph.paragraph_index)
+        )
+        try:
+            return list(self.session.scalars(stmt).all())
+        except Exception:  # noqa: BLE001 — 相邻段读取失败退化为单段窗口
+            logger.warning("few-shot neighbour paragraph lookup failed", exc_info=True)
+            return []
+
+    @staticmethod
+    def _sample_paragraph_item(paragraph, paragraph_max: int) -> dict[str, Any]:
+        raw = str(getattr(paragraph, "text", "") or "").strip()
+        text, truncated = _truncate_at_sentence(raw, paragraph_max)
+        ptype = str(getattr(paragraph, "paragraph_type", "") or "")
+        return {
+            "paragraph_id": str(getattr(paragraph, "paragraph_id", "") or ""),
+            "type": ptype,
+            "text": text,
+            "chars": _visible_chars(text),
+            "dialogue": _looks_like_dialogue(ptype, text),
+            "truncated": truncated,
+        }
+
+    def _build_sample_window(
+        self,
+        center,
+        *,
+        book_id: str,
+        frozen_paragraph_hashes: dict[str, str] | None,
+        window_paragraphs: int,
+        window_max: int,
+        paragraph_max: int,
+    ) -> dict[str, Any] | None:
+        """以 ``center`` 为中心收集相邻 1–``window_paragraphs`` 段的连续链,并给出理想窗口。
+
+        相邻段必须 paragraph_index 连续(遇缺口即停)、非空,冻结路径下还必须在
+        ``frozen_paragraph_hashes`` 里且哈希一致。理想窗口由 :func:`_shape_window`
+        在链上枚举含中心段的连续子窗口得到;选段完成后 :func:`_pick_sample_windows`
+        会在「其它窗口已占用的段落」约束下重新 shape,保证窗口互不重叠。
+        """
+        try:
+            center_index = int(getattr(center, "paragraph_index", 0) or 0)
+        except (TypeError, ValueError):
+            center_index = 0
+        span = max(0, window_paragraphs - 1)
+        by_index: dict[int, Any] = {}
+        if span > 0 and book_id:
+            for row in self._paragraphs_in_range(
+                book_id, center_index - span, center_index + span
+            ):
+                try:
+                    by_index[int(row.paragraph_index)] = row
+                except (TypeError, ValueError):
+                    continue
+        by_index[center_index] = center
+
+        def _eligible(paragraph) -> bool:
+            text = str(getattr(paragraph, "text", "") or "").strip()
+            if not text:
+                return False
+            if frozen_paragraph_hashes is not None:
+                paragraph_id = str(getattr(paragraph, "paragraph_id", "") or "")
+                return (
+                    hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    == frozen_paragraph_hashes.get(paragraph_id)
+                )
+            return True
+
+        left: list[Any] = []
+        index = center_index - 1
+        while len(left) < span and index in by_index and _eligible(by_index[index]):
+            left.insert(0, by_index[index])
+            index -= 1
+        right: list[Any] = []
+        index = center_index + 1
+        while len(right) < span and index in by_index and _eligible(by_index[index]):
+            right.append(by_index[index])
+            index += 1
+        chain = [*left, center, *right]
+        center_pos = len(left)
+        items = [self._sample_paragraph_item(p, paragraph_max) for p in chain]
+        shaped = _shape_window(
+            items,
+            center_pos,
+            window_paragraphs=window_paragraphs,
+            window_max=window_max,
+            blocked=frozenset(),
+        )
+        if shaped is None:
+            return None
+        return {
+            **shaped,
+            "items": items,
+            "center_pos": center_pos,
+            "window_paragraphs": window_paragraphs,
+            "window_max": window_max,
+        }
 
     def _render_anti_plagiarism(
         self,
@@ -1555,53 +2563,43 @@ class InjectionService:
             terms_text = ""
         return template.replace("{banned_terms_list}", terms_text).strip()
 
+
     def _render_positive(self, profile) -> str:
         data = profile.profile_json or {}
+        raw_baseline = data.get("metrics_baseline") or {}
+        baseline: dict[str, Any] = raw_baseline if isinstance(raw_baseline, dict) else {}
+        # v2:量化断言不再整行删除,而是软化(剥数字 / 绝对量词、保留机制);只有与
+        # 冻结基线方向相反的频率断言才丢弃——概述行按分句同样处理,不再整段删除。
         narrative = generation_safe_summary(data)
-        baseline = data.get("metrics_baseline") or {}
-        has_baseline = isinstance(baseline, dict) and bool(baseline)
-        if (
-            has_baseline
-            and narrative
-            and _is_metric_domain_guidance(narrative, baseline)
-        ):
-            # 兼容旧画像：早期 narrative_summary 由 LLM 直接生成，可能写出
-            # “短句密集/高频设问”等与冻结统计相反的结论。整句混合时无法
-            # 安全拆分，宁可省略旧概述，让软分布和非量化机制成为真源。
-            narrative = ""
-        features = [
-            f.strip()
-            for f in (data.get("style_features") or [])
-            if str(f).strip()
-            and not (
-                has_baseline and _is_metric_domain_guidance(str(f), baseline)
+        narrative = _soften_summary_clauses(narrative, baseline) if narrative else ""
+        if narrative:
+            narrative, _truncated = _truncate_at_sentence(
+                narrative, _NARRATIVE_SUMMARY_MAX_CHARS
             )
-        ]
-        patterns = [
-            p.strip()
-            for p in (data.get("narrative_patterns") or [])
-            if str(p).strip()
-            and not (
-                has_baseline and _is_metric_domain_guidance(str(p), baseline)
-            )
-        ]
-        calibration = [
-            str(item).strip()
-            for item in (data.get("calibration_guidance") or [])
-            if str(item).strip()
-            and not (
-                has_baseline and _is_metric_domain_guidance(str(item), baseline)
-            )
-        ]
+
+        def _softened(key: str) -> list[str]:
+            out: list[str] = []
+            for item in data.get(key) or []:
+                text = str(item or "").strip()
+                if not text:
+                    continue
+                softened = _soften_quantitative_guidance(text, baseline)
+                if softened:
+                    out.append(softened)
+            return out
+
+        features = _softened("style_features")
+        patterns = _softened("narrative_patterns")
+        calibration = _softened("calibration_guidance")
         if not (narrative or features or patterns or calibration):
             return ""
         lines: list[str] = ["[正向风格特征]"]
         if narrative:
             lines.append(f"概述:{narrative}")
-        # MIXED/B 会在较小预算内截断该块。旧顺序是“全部 feature → 全部
-        # pattern”，真实画像常在最后留下一个空的“叙事模式:”标题，模型完全
-        # 看不到叙事机制。按轮次交织三类可执行信息，让任意完整行前缀都保持
-        # 表达、叙事和偏离校准的基本覆盖；Strategy A 仍会拿到全部条目。
+        # 预算不足时 MIXED/B 会截断该块。旧顺序是“全部 feature → 全部 pattern”，
+        # 真实画像常在最后留下一个空的“叙事模式:”标题，模型完全看不到叙事机制。
+        # 按轮次交织三类可执行信息，让任意完整行前缀都保持表达、叙事和偏离校准的
+        # 基本覆盖；Strategy A 在高 intensity 下仍会拿到全部条目。
         for index in range(max(len(features), len(patterns), len(calibration))):
             if index < len(features):
                 lines.append(f"- [表达机制] {features[index]}")
@@ -1800,18 +2798,21 @@ class InjectionService:
             return ""
         return "\n".join(lines)
 
+
     def _apply_budget(
-        self, positive: str, forbidden: str, metric: str
+        self,
+        positive: str,
+        forbidden: str,
+        metric: str,
+        *,
+        intensity: int = _DEFAULT_INTENSITY,
     ) -> tuple[str, str, str]:
-        budget = _load_budget()
-        total = int(budget.get("system_prompt_max_tokens", 800))
-        p_ratio = float(budget.get("positive_block_ratio", 0.6))
-        f_ratio = float(budget.get("forbidden_block_ratio", 0.3))
-        m_ratio = float(budget.get("metric_anchor_block_ratio", 0.1))
+        """兼容薄封装:按 :func:`_allocate_abstract_budget` 截三个抽象块(语义与 _render 一致)。"""
+        alloc = _allocate_abstract_budget(intensity, 1)
         return (
-            _truncate_lines(positive, int(total * p_ratio)),
-            _truncate_lines(forbidden, int(total * f_ratio)),
-            _truncate_lines(metric, int(total * m_ratio)),
+            _truncate_lines(positive, alloc["positive"]),
+            _truncate_lines(forbidden, alloc["forbidden"]),
+            _truncate_lines(metric, alloc["metric"]),
         )
 
     def _summarize_forbidden(self, forbidden: str, *, max_chars: int) -> str:
@@ -2074,6 +3075,14 @@ def _metric_tendency(metric_name: str, value: float, *, std: float | None) -> st
         if value < 180:
             return "停顿适中"
         return "停顿较密，但仍须服从句义"
+    if metric_name in ("short_sentence_ratio", "long_sentence_ratio"):
+        # 与 `_METRIC_LEVEL_THRESHOLDS` 同一套档位(句子比例,不是词频比例)
+        low, high = _METRIC_LEVEL_THRESHOLDS[metric_name]
+        if value < low:
+            return "偏少"
+        if value < high:
+            return "适量"
+        return "偏多"
     if metric_name in _RATIO_METRICS:
         if value < 0.04:
             return "低频"
@@ -2099,3 +3108,166 @@ def _ts_to_int(ts: str | None) -> int:
         return int(cleaned[:20].ljust(20, "0"))
     except ValueError:
         return 0
+
+
+
+def _shape_window(
+    items: Sequence[Mapping[str, Any]],
+    center_pos: int,
+    *,
+    window_paragraphs: int,
+    window_max: int,
+    blocked: Iterable[str],
+) -> dict[str, Any] | None:
+    """在连续段落链 ``items`` 上,选含中心段、避开 ``blocked`` 段落的最优连续子窗口。
+
+    评分 (含对白且含叙述, 段数, 居中, 字数),总长须 ≤ ``window_max``(单段中心窗口永远
+    允许,超长时在句边界截到 ``window_max``)。中心段本身被占用 → None。
+    """
+    blocked_ids = set(blocked)
+    if not items or not (0 <= center_pos < len(items)):
+        return None
+    if str(items[center_pos]["paragraph_id"]) in blocked_ids:
+        return None
+    low_min = center_pos
+    while low_min > 0 and str(items[low_min - 1]["paragraph_id"]) not in blocked_ids:
+        low_min -= 1
+    high_max = center_pos
+    while (
+        high_max + 1 < len(items)
+        and str(items[high_max + 1]["paragraph_id"]) not in blocked_ids
+    ):
+        high_max += 1
+    best: tuple[tuple[int, int, int, int], int, int] | None = None
+    for low in range(low_min, center_pos + 1):
+        for high in range(center_pos, high_max + 1):
+            count = high - low + 1
+            if count > window_paragraphs:
+                continue
+            slice_items = items[low : high + 1]
+            total = sum(int(item["chars"]) for item in slice_items)
+            if total > window_max and count > 1:
+                continue
+            has_dialogue = any(item["dialogue"] for item in slice_items)
+            has_narration = any(not item["dialogue"] for item in slice_items)
+            score = (
+                1 if (has_dialogue and has_narration) else 0,
+                count,
+                -abs(low + high - 2 * center_pos),
+                total,
+            )
+            if best is None or score > best[0]:
+                best = (score, low, high)
+    if best is None:
+        return None
+    _score, low, high = best
+    slice_items = [dict(item) for item in items[low : high + 1]]
+    if len(slice_items) == 1 and int(slice_items[0]["chars"]) > window_max:
+        text, truncated = _truncate_at_sentence(str(slice_items[0]["text"]), window_max)
+        slice_items[0]["text"] = text
+        slice_items[0]["chars"] = _visible_chars(text)
+        slice_items[0]["truncated"] = bool(slice_items[0]["truncated"] or truncated)
+    text = "\n".join(str(item["text"]) for item in slice_items)
+    count = len(slice_items)
+    truncated = any(bool(item["truncated"]) for item in slice_items)
+    has_dialogue = any(item["dialogue"] for item in slice_items)
+    has_narration = any(not item["dialogue"] for item in slice_items)
+    completeness = (
+        (count / max(1, window_paragraphs)) * 0.5
+        + (0.3 if (has_dialogue and has_narration) else 0.0)
+        + (0.0 if truncated else 0.2)
+    )
+    center_id = str(items[center_pos]["paragraph_id"])
+    return {
+        "paragraph_ids": [str(item["paragraph_id"]) for item in slice_items],
+        "types": [str(item["type"]) for item in slice_items],
+        "text": text,
+        "chars": _visible_chars(text),
+        "has_dialogue": has_dialogue,
+        "has_narration": has_narration,
+        "source_kind": "完整参考段落" if count == 1 else f"连续{count}段窗口",
+        "source_id": f"paragraph:{center_id}",
+        "center_id": center_id,
+        "center_dialogue": bool(items[center_pos]["dialogue"]),
+        "paragraph_count": count,
+        "truncated": truncated,
+        "completeness": completeness,
+        "tier": 0,
+    }
+
+
+def _pick_sample_windows(
+    candidates: list[dict[str, Any]], *, k: int, dialogue_quota: int
+) -> list[dict[str, Any]]:
+    """从已按 key 排序的候选中选 ≤k 个互不重叠的窗口。
+
+    选段只按**中心段**预留(每个候选的中心段互不相同):
+    ① 对白配额:场景对白占比高时先取 ``dialogue_quota`` 个含对白窗口(中心为对白段者优先);
+    ② 段型覆盖:每种索引段型先保证一条(沿用「few-shot 覆盖多种段型」契约);
+    ③ 按 key 顺序补满。
+    最后按 key 顺序逐个 :func:`_shape_window`:避开其它窗口的中心段与已占用段落,
+    窄书(段落少)时窗口自动缩到不重叠为止,而不是丢掉整个段型。输出按 key 排序。
+    """
+    picked: list[int] = []
+    reserved: set[str] = set()
+
+    def _available(candidate: Mapping[str, Any]) -> bool:
+        center_id = candidate.get("center_id")
+        return center_id is None or str(center_id) not in reserved
+
+    def _take(index: int) -> None:
+        picked.append(index)
+        center_id = candidates[index].get("center_id")
+        if center_id:
+            reserved.add(str(center_id))
+
+    if dialogue_quota > 0:
+        quota = min(k, dialogue_quota)
+        for predicate in (
+            lambda c: bool(c.get("center_dialogue")),
+            lambda c: bool(c.get("has_dialogue")),
+        ):
+            for index, candidate in enumerate(candidates):
+                if len(picked) >= quota:
+                    break
+                if index in picked or not _available(candidate):
+                    continue
+                if predicate(candidate):
+                    _take(index)
+    seen_types = {candidates[index]["ptype"] for index in picked}
+    for index, candidate in enumerate(candidates):
+        if len(picked) >= k:
+            break
+        if index in picked or not _available(candidate) or candidate["ptype"] in seen_types:
+            continue
+        _take(index)
+        seen_types.add(candidate["ptype"])
+    for index, candidate in enumerate(candidates):
+        if len(picked) >= k:
+            break
+        if index in picked or not _available(candidate):
+            continue
+        _take(index)
+
+    ordered = sorted(picked, key=lambda i: candidates[i]["key"])
+    used_paragraphs: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for index in ordered:
+        candidate = candidates[index]
+        items = candidate.get("items")
+        if not items:
+            out.append(candidate)
+            continue
+        blocked = (reserved - {str(candidate["center_id"])}) | used_paragraphs
+        shaped = _shape_window(
+            items,
+            int(candidate["center_pos"]),
+            window_paragraphs=int(candidate["window_paragraphs"]),
+            window_max=int(candidate["window_max"]),
+            blocked=blocked,
+        )
+        if shaped is None:
+            continue
+        used_paragraphs.update(shaped["paragraph_ids"])
+        out.append({**candidate, **shaped})
+    return out

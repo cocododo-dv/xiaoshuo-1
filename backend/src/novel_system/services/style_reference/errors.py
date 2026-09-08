@@ -196,3 +196,72 @@ class CloudPolicyInvalidError(StyleReferenceError, DomainError):
         self.book_id = book_id
         self.operation = operation
         self.cloud_policy = cloud_policy
+
+
+SYNTHESIZE_REASON_CODES: frozenset[str] = frozenset(
+    {"budget_unfit", "empty_profile", "source_overlap", "text_integrity", "llm_failed"}
+)
+_SYNTHESIZE_AUTHOR_ACTIONS: dict[str, dict[str, str]] = {
+    # 预算装不下：抽取结果本身太多/太长，回到维度矩阵审阅、驳回冗余 finding 再合成。
+    "budget_unfit": {
+        "action": "review_dimension_matrix_then_synthesize",
+        "view": "styleref",
+        "label": "抽取结果超出合成预算，请回到维度矩阵精简 finding 后重试合成",
+    },
+    # 其余四类都是单次 LLM 产出问题，重试合成即可。
+    "empty_profile": {
+        "action": "retry_synthesize",
+        "view": "styleref",
+        "label": "模型返回的画像为空或无效，请重试合成",
+    },
+    "source_overlap": {
+        "action": "retry_synthesize",
+        "view": "styleref",
+        "label": "模型输出与参考原文重合被过滤，请重试合成",
+    },
+    "text_integrity": {
+        "action": "retry_synthesize",
+        "view": "styleref",
+        "label": "模型输出含损坏字符，请重试合成",
+    },
+    "llm_failed": {
+        "action": "retry_synthesize",
+        "view": "styleref",
+        "label": "画像合成调用失败，请检查 LLM 配置后重试合成",
+    },
+}
+
+
+class SynthesizeError(StyleReferenceError, DomainError):
+    """ProfileSynthesizer 失败。
+
+    同时继承 DomainError:API 层自动映射为 409 + ``STYLE_REFERENCE_SYNTHESIZE_FAILED``,
+    ``details.reason_code`` 取 :data:`SYNTHESIZE_REASON_CODES` 之一,并附 ``author_action``
+    (回到维度矩阵 / 重试合成)。子类(如 ProfileTextIntegrityError)通过 ``reason_code``
+    参数复用同一映射。
+    """
+
+    code = "STYLE_REFERENCE_SYNTHESIZE_FAILED"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str = "llm_failed",
+        details: dict | None = None,
+    ) -> None:
+        if reason_code not in SYNTHESIZE_REASON_CODES:
+            raise ValueError(f"unknown synthesize reason_code {reason_code!r}")
+        merged_details: dict = {
+            **(details or {}),
+            "reason_code": reason_code,
+            "author_action": dict(_SYNTHESIZE_AUTHOR_ACTIONS[reason_code]),
+        }
+        DomainError.__init__(
+            self,
+            self.code,
+            message,
+            status_code=409,
+            details=merged_details,
+        )
+        self.reason_code = reason_code

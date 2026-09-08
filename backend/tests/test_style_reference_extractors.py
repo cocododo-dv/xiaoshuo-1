@@ -238,3 +238,184 @@ def test_normalize_finding_item_tolerates_near_miss_output() -> None:
     # statement 已存在时不被别名覆盖
     item2 = _normalize_finding_item({"statement": "原句。", "description": "别名。", "evidence": []})
     assert item2["statement"] == "原句。"
+
+
+# ---------------------------------------------------------------------------
+# v2(风格模仿 v2 · W2):全书锚点 / payload 顺序字段 / 定种 rng / full_retry 失败保留首抽
+# ---------------------------------------------------------------------------
+
+
+import json  # noqa: E402
+import random  # noqa: E402
+import re  # noqa: E402
+
+from novel_system.services.style_reference.dimensions import SubDimension  # noqa: E402
+from novel_system.services.style_reference.extractors import ExtractionRetryPolicy  # noqa: E402
+from novel_system.services.style_reference.extractors.base import (  # noqa: E402
+    _ExtractLLMError,
+    _PartialResult,
+    _build_short_finding,
+)
+from novel_system.services.style_reference.sampling import derive_extraction_rng  # noqa: E402
+from novel_system.services.style_reference.schemas import (  # noqa: E402
+    ExtractionPurpose,
+    FindingKind,
+)
+
+_ANCHOR_SUBSET = (
+    "avg_sentence_length",
+    "sentence_length_std",
+    "short_sentence_ratio",
+    "long_sentence_ratio",
+)
+
+
+def _payload_of(user_msg: str) -> dict:
+    opening = re.search(r"\[UNTRUSTED_REFERENCE_DATA:[^\]]+\]\n", user_msg)
+    assert opening is not None
+    closing = user_msg.find("\n[/UNTRUSTED_REFERENCE_DATA]", opening.end())
+    assert closing > 0
+    return json.loads(user_msg[opening.end():closing])
+
+
+def test_metrics_anchor_equals_book_level_stats(fake_extractor_llm) -> None:
+    """锚点读 book.stats_json.metrics(全书真值),与送入的样本子集无关。"""
+    book_id = _ingest_book("anchor_book")
+    run_id = _make_run(book_id)
+    with SessionLocal() as session:
+        book = StyleReferenceRepository(session).get_book(book_id)
+        extractor = LanguageExtractor(
+            session, fake_extractor_llm("default"), run_id=run_id, book_id=book_id
+        )
+        paragraphs = extractor._sample_paragraphs(SubDimension.LANGUAGE_SENTENCE_STRUCTURE)
+        anchor = extractor._build_metrics_anchor(
+            paragraphs[:2], SubDimension.LANGUAGE_SENTENCE_STRUCTURE
+        )
+    assert anchor["anchor_scope"] == "book"
+    assert set(anchor) == set(_ANCHOR_SUBSET) | {"anchor_scope"}
+    for name in _ANCHOR_SUBSET:
+        assert anchor[name]["mean"] == pytest.approx(book.stats_json["metrics"][name]["mean"])
+        assert anchor[name]["std"] == pytest.approx(book.stats_json["metrics"][name]["std"])
+
+
+def test_metrics_anchor_falls_back_to_sample_when_book_stats_missing(fake_extractor_llm) -> None:
+    book_id = _ingest_book("anchor_sample")
+    run_id = _make_run(book_id)
+    with SessionLocal() as session:
+        book = StyleReferenceRepository(session).get_book(book_id)
+        book.stats_json = {
+            k: v for k, v in (book.stats_json or {}).items()
+            if k not in ("metrics", "prose_shape_metrics")
+        }
+        session.flush()
+        extractor = LanguageExtractor(
+            session, fake_extractor_llm("default"), run_id=run_id, book_id=book_id
+        )
+        paragraphs = extractor._sample_paragraphs(SubDimension.LANGUAGE_SENTENCE_STRUCTURE)
+        anchor = extractor._build_metrics_anchor(
+            paragraphs, SubDimension.LANGUAGE_SENTENCE_STRUCTURE
+        )
+    assert anchor["anchor_scope"] == "sample"
+    assert set(anchor) == set(_ANCHOR_SUBSET) | {"anchor_scope"}
+
+
+def test_extract_payload_carries_paragraph_index_and_window_fields(
+    fake_extractor_llm, monkeypatch
+) -> None:
+    """language 层每段带 paragraph_index 且按序;narrative 层(窗口层)再带
+    window_id / window_position(first / middle / last)。"""
+    book_id = _ingest_book("payload_fields")
+    run_id = _make_run(book_id)
+    client = fake_extractor_llm("default")
+    captured: dict[str, dict] = {}
+    original = client.generate_accounted
+
+    def _spy(request, *, accounting_hook):  # noqa: ANN001
+        node_id = getattr(request, "node_id", "")
+        if node_id not in captured and "extract" in node_id:
+            captured[node_id] = _payload_of(request.messages[-1]["content"])
+        return original(request, accounting_hook=accounting_hook)
+
+    monkeypatch.setattr(client, "generate_accounted", _spy)
+    with SessionLocal() as session:
+        LanguageExtractor(session, client, run_id=run_id, book_id=book_id).extract_all_sub_dimensions()
+        NarrativeExtractor(session, client, run_id=run_id, book_id=book_id).extract_all_sub_dimensions()
+        session.commit()
+
+    lang = captured[LanguageExtractor.extract_node_id]
+    assert lang["metrics_anchor"]["anchor_scope"] == "book"
+    assert lang["paragraphs"]
+    assert all("paragraph_index" in p and "window_id" not in p for p in lang["paragraphs"])
+    indices = [p["paragraph_index"] for p in lang["paragraphs"]]
+    assert indices == sorted(indices)
+
+    narr = captured[NarrativeExtractor.extract_node_id]
+    assert len(narr["paragraphs"]) >= 3
+    # 8 段小样本整本进样本 → 一个连续窗口
+    assert {p["window_id"] for p in narr["paragraphs"]} == {"w01"}
+    positions = [p["window_position"] for p in narr["paragraphs"]]
+    assert positions[0] == "first" and positions[-1] == "last"
+    assert set(positions[1:-1]) == {"middle"}
+    narr_indices = [p["paragraph_index"] for p in narr["paragraphs"]]
+    assert narr_indices == list(range(narr_indices[0], narr_indices[0] + len(narr_indices)))
+
+
+def test_extractor_rng_is_seeded_from_checksum_and_run_id() -> None:
+    book_id = _ingest_book("rng_seed")
+    run_id = _make_run(book_id)
+    with SessionLocal() as session:
+        book = StyleReferenceRepository(session).get_book(book_id)
+        first = LanguageExtractor(session, None, run_id=run_id, book_id=book_id)
+        second = LanguageExtractor(session, None, run_id=run_id, book_id=book_id)
+        expected = derive_extraction_rng(book.text_checksum, run_id)
+        assert first.rng.random() == second.rng.random() == expected.random()
+        other_run = LanguageExtractor(session, None, run_id="sr_run_other", book_id=book_id)
+        assert other_run.rng.random() != derive_extraction_rng(book.text_checksum, run_id).random()
+        injected = random.Random(5)
+        assert LanguageExtractor(
+            session, None, run_id=run_id, book_id=book_id, rng=injected
+        ).rng is injected
+
+
+def test_full_retry_llm_failure_keeps_validated_first_pass_findings(
+    fake_extractor_llm, monkeypatch
+) -> None:
+    """Step 3:整维重抽的 LLM 调用失败时,保留首抽已通过校验的 findings,不抛、不整 run FAILED。"""
+    book_id = _ingest_book("full_retry_fail")
+    run_id = _make_run(book_id)
+    client = fake_extractor_llm("default")
+    calls: dict[str, int] = {}
+    with SessionLocal() as session:
+        extractor = LanguageExtractor(
+            session,
+            client,
+            run_id=run_id,
+            book_id=book_id,
+            retry_policy=ExtractionRetryPolicy(max_targeted_retries=0, max_full_retries=1),
+        )
+        original = extractor._extract_once
+
+        def _scripted(sub_dim, *args, purpose, **kwargs):  # noqa: ANN001, ANN202
+            calls[sub_dim.value] = calls.get(sub_dim.value, 0) + 1
+            if purpose == ExtractionPurpose.EXTRACT:
+                findings = original(sub_dim, *args, purpose=purpose, **kwargs)
+                short = _build_short_finding(
+                    {"statement": "证据不足的观察", "confidence": "medium", "evidence": []},
+                    sub_dim,
+                    FindingKind.OBSERVATION,
+                )
+                raise _PartialResult(findings=findings, failed=[short])
+            raise _ExtractLLMError("provider truncated the retry")
+
+        monkeypatch.setattr(extractor, "_extract_once", _scripted)
+        results = extractor.extract_all_sub_dimensions()
+        session.commit()
+
+    assert len(results) == 4
+    assert all(len(r.findings) == 4 for r in results), "首抽 3 obs + 1 forbid 全部保留"
+    assert set(calls.values()) == {2}, "首抽 + 一次 full_retry"
+    with SessionLocal() as session:
+        rows = StyleReferenceRepository(session).list_extractions(run_id=run_id)
+        assert len(rows) == 4
+        assert {row.purpose for row in rows} == {"extract"}
+        assert len(StyleReferenceRepository(session).list_findings(run_id=run_id)) == 16

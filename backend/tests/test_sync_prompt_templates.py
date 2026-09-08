@@ -5,6 +5,10 @@
 
 这个文件里最要紧的是那条红线：版本号相同、正文不同 = 作者在界面上改写过，默认必须
 原样保留。提示词是创作意图的载体，工具无权替作者做决定。
+
+2026-09 风格模仿 v2（W8）：默认范围从 `snowflake_*` 扩为全部模板——`style_ref_*` /
+`style_draft` / `soft_qc` 等改动此前在存过系统配置的安装上同样静默不生效。`--all` 保留
+兼容，`--prefix` 可恢复旧的窄范围。
 """
 from __future__ import annotations
 
@@ -41,6 +45,12 @@ REPO = {
         "snowflake_generate_scene_list": _template(input_token_budget=24000),
         "snowflake_workspace_assistant": _template(input_token_budget=24000),
         "chapter_plan_review": _template(input_token_budget=3200),
+        # v2 之后默认必须覆盖的非雪花模板：风格参考族 + 场景生成链路
+        "style_draft": _template(
+            version="2026-09-06.v8", input_token_budget=24000,
+            system_prompt="仓库新版 style_draft system", task_prompt="仓库新版 style_draft task",
+        ),
+        "style_ref_synthesize_profile": _template(version="2026-09-05.v8", input_token_budget=39000),
     }
 }
 
@@ -76,6 +86,11 @@ def _stale_snapshot() -> dict:
             ),
             "snowflake_generate_scene_list": _template(input_token_budget=3200),
             "chapter_plan_review": _template(input_token_budget=3200),
+            # 落后于仓库的 style_draft；style_ref_synthesize_profile 在快照建立后才出现
+            "style_draft": _template(
+                version="2026-09-05.v7", input_token_budget=24000,
+                system_prompt="旧版 style_draft system", task_prompt="旧版 style_draft task",
+            ),
         }
     }
 
@@ -150,8 +165,46 @@ def test_a_template_missing_from_the_snapshot_is_added_whole(session, tmp_path, 
     assert "将整份加入" in capsys.readouterr().out
 
 
-def test_templates_outside_the_snowflake_family_are_untouched_by_default(session, tmp_path, monkeypatch):
-    """默认只处理雪花族——不点名的模板一律不动。"""
+def test_every_template_is_covered_by_default(session, tmp_path, monkeypatch):
+    """v2：默认处理全部模板——雪花族之外的模板不点名也会被同步。"""
+    _write_repo(tmp_path, monkeypatch, {
+        "templates": {
+            **REPO["templates"],
+            "chapter_plan_review": _template(version="9999.v9", input_token_budget=99999,
+                                             system_prompt="仓库新版 chapter_plan_review"),
+        }
+    })
+    _activate(session, _stale_snapshot())
+
+    assert tool.main(["--execute"]) == 0
+    live = _active(session)
+    synced = live["chapter_plan_review"]
+    assert synced["input_token_budget"] == 99999 and synced["version"] == "9999.v9"
+    assert synced["system_prompt"] == "仓库新版 chapter_plan_review"
+    # 风格参考族与场景生成链路同样进了默认集
+    assert live["style_draft"]["version"] == "2026-09-06.v8"
+    assert live["style_draft"]["system_prompt"] == "仓库新版 style_draft system"
+    assert live["style_ref_synthesize_profile"]["input_token_budget"] == 39000
+
+
+def test_default_dry_run_lists_style_reference_and_scene_templates(session, tmp_path, monkeypatch, capsys):
+    """规格 §2.W8.1：干跑不带参数就能看到 style_ref_* / style_draft 的待同步项。"""
+    _write_repo(tmp_path, monkeypatch, REPO)
+    _activate(session, _stale_snapshot())
+
+    assert tool.main([]) == 0
+    out = capsys.readouterr().out
+    assert f"检查 {len(REPO['templates'])} 个模板" in out
+    assert "style_draft" in out and "'2026-09-05.v7' → '2026-09-06.v8'" in out
+    assert "style_ref_synthesize_profile：快照里没有，将整份加入" in out
+    # 干跑一个字都没写
+    live = _active(session)
+    assert live["style_draft"]["version"] == "2026-09-05.v7"
+    assert "style_ref_synthesize_profile" not in live
+
+
+def test_prefix_restores_the_narrow_snowflake_scope(session, tmp_path, monkeypatch, capsys):
+    """--prefix snowflake_ 恢复 v2 之前的默认范围：前缀之外的模板一律不动。"""
     _write_repo(tmp_path, monkeypatch, {
         "templates": {
             **REPO["templates"],
@@ -161,12 +214,42 @@ def test_templates_outside_the_snowflake_family_are_untouched_by_default(session
     })
     _activate(session, _stale_snapshot())
 
-    assert tool.main(["--execute"]) == 0
-    kept = _active(session)["chapter_plan_review"]
+    assert tool.main(["--prefix", "snowflake_", "--execute"]) == 0
+    out = capsys.readouterr().out
+    assert "检查 3 个模板" in out, "前缀筛选后只该剩仓库里 3 个 snowflake_* 模板"
+    live = _active(session)
+    kept = live["chapter_plan_review"]
     assert kept["input_token_budget"] == 3200 and kept["system_prompt"] == "You are an editor."
+    assert live["style_draft"]["version"] == "2026-09-05.v7", "前缀之外的 style_draft 被改了"
+    assert "style_ref_synthesize_profile" not in live
+    # 前缀之内照常同步
+    assert live["snowflake_generate_scene_details"]["input_token_budget"] == 24000
 
 
-def test_all_covers_every_template(session, tmp_path, monkeypatch):
+def test_prefix_can_be_repeated_and_narrows_an_explicit_selection(session, tmp_path, monkeypatch):
+    _write_repo(tmp_path, monkeypatch, REPO)
+    _activate(session, _stale_snapshot())
+
+    assert tool.main([
+        "--template", "style_draft", "--template", "snowflake_generate_scene_details",
+        "--prefix", "style_", "--prefix", "no_such_",
+        "--execute",
+    ]) == 0
+    live = _active(session)
+    assert live["style_draft"]["version"] == "2026-09-06.v8"
+    assert live["snowflake_generate_scene_details"]["input_token_budget"] == 3600, "被前缀筛掉的点名模板仍被改了"
+
+
+def test_a_prefix_matching_nothing_is_reported_not_silently_a_no_op(session, tmp_path, monkeypatch, capsys):
+    _write_repo(tmp_path, monkeypatch, REPO)
+    _activate(session, _stale_snapshot())
+
+    assert tool.main(["--prefix", "no_such_family_"]) == 2
+    assert "没有模板匹配" in capsys.readouterr().out
+
+
+def test_all_stays_accepted_and_covers_every_template(session, tmp_path, monkeypatch):
+    """`--all` 是 v2 之前扩大范围的开关；现在与默认等价，但旧脚本传它不能报错。"""
     _write_repo(tmp_path, monkeypatch, {
         "templates": {
             **REPO["templates"],

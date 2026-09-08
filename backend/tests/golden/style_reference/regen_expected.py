@@ -30,6 +30,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["NOVEL_SYSTEM_DATABASE_URL"] = f"sqlite:///{tmp}/golden_regen.db"
         os.environ["NOVEL_SYSTEM_VECTOR_BACKEND"] = "memory"
+        # ingest_path 只接受配置过的导入根目录;把黄金语料目录加进去(不覆盖调用方已设值)
+        os.environ.setdefault(
+            "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS", str(GOLDEN_DIR / "corpus")
+        )
 
         from novel_system.db.models import Base
         from novel_system.db.session import SessionLocal, engine, reset_engine

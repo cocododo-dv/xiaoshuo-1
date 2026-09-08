@@ -51,6 +51,7 @@ from novel_system.services.projects import ProjectService
 from novel_system.services.reference_safety import ReferenceSafetyService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService
+from novel_system.services.scene_generation import latest_style_notices
 from novel_system.services.scene_notes import SceneNotesService
 from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
@@ -476,14 +477,48 @@ def run_scene(
             **({"author_note": author_note} if author_note else {}),
             **({"run_policy": run_policy} if run_policy != "reliable" else {}),
         },
-        action=lambda lease: Orchestrator(session).run_scene(
+        action=lambda lease: _attach_style_notices(
+            session,
             scene_id,
-            author_note=author_note,
-            run_policy=run_policy,
-            execution_id=lease.execution_id,
-            lease_renewer=lease.renew,
+            Orchestrator(session).run_scene(
+                scene_id,
+                author_note=author_note,
+                run_policy=run_policy,
+                execution_id=lease.execution_id,
+                lease_renewer=lease.renew,
+            ),
         ),
     )
+
+
+def _attach_style_notices(session: Session, scene_id: str, result: Any) -> Any:
+    """2026-09 风格模仿 v2（W5，规格 §2.W5.6）：把风格链路 notices 透传到场景运行响应。
+
+    notices（STYLE_DRAFT_FALLBACK_NEUTRAL / STYLE_INJECTION_MISS / STYLE_INJECTION_DEGRADED /
+    STYLE_PLAGIARISM_HIT / STYLE_BANNED_TERM_HIT / STYLE_GATE_UNAVAILABLE）由
+    scene_generation 写进本次运行 style_draft / near_final_rewrite 的 AttemptTracker；这里
+    只读不写，结果不是 dict 时原样返回。
+
+    只读**本次运行的 bundle**：bundle id 取运行结果的 ``current_bundle_id``，退而取
+    ``SceneRunState.current_bundle_id``；两者都没有（运行在建 bundle 之前早退）时原样返回
+    ——绝不读不带 bundle 范围的「场景最近一次」，否则一次在 hard_qc 就被挡下的重跑会带上
+    上一次运行、另一个 bundle 的 STYLE_PLAGIARISM_HIT。
+    """
+    if not isinstance(result, dict):
+        return result
+    bundle_id = result.get("current_bundle_id")
+    if not isinstance(bundle_id, str) or not bundle_id:
+        state = session.get(SceneRunState, scene_id)
+        bundle_id = state.current_bundle_id if state is not None else None
+    if not isinstance(bundle_id, str) or not bundle_id:
+        return result
+    notices = latest_style_notices(session, scene_id, bundle_id=bundle_id)
+    if not notices:
+        return result
+    existing = result.get("notices")
+    merged = [item for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+    merged.extend(item for item in notices if item not in merged)
+    return {**result, "notices": merged}
 
 
 @router.post("/api/v1/scenes/{scene_id}/preflight/create-cards")
@@ -1795,8 +1830,22 @@ def _serialize_generation_summary(
         "finish_reason": llm_call.finish_reason,
         "error_code": llm_call.error_code,
         "created_at": llm_call.created_at,
+        # v2（W5）：风格链路 notices（回退中性稿 / 注入未命中或降级 / 抄袭或禁用词命中 /
+        # gate 未执行）随生成摘要回读，工作台据此提示作者；无 notice 时为空列表。只读与
+        # llm_call 同一次运行（同一 bundle）的 notices。
+        "notices": _current_run_style_notices(session, scene_id, state),
     }
     return summary
+
+
+def _current_run_style_notices(
+    session: Session, scene_id: str, state: SceneRunState
+) -> list[dict]:
+    """当前运行 bundle 内的风格链路 notices；解析不出 bundle 时为空（不做无范围回读）。"""
+    bundle_id = _resolve_current_run_bundle_id(session, scene_id, state)
+    if not bundle_id:
+        return []
+    return latest_style_notices(session, scene_id, bundle_id=bundle_id)
 
 
 def _resolve_generation_llm_call(

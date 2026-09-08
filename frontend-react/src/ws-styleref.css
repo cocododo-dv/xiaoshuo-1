@@ -356,11 +356,11 @@
 .sr-budget-legend { font-size: 11px; color: var(--ink-3); }
 .sr-budget-legend .tab-num { color: var(--ink-1); font-weight: 600; }
 
-/* Anti-drift */
-.sr-drift-track { display: flex; align-items: center; gap: 0; }
-.sr-drift-seg { display: flex; align-items: center; flex: 1; }
-.sr-drift-bar { height: 8px; flex: 1; background: linear-gradient(90deg, var(--crimson-wash), var(--crimson)); border-radius: 4px; }
-.sr-drift-tick { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--crimson); color: white; flex-shrink: 0; margin: 0 -2px; z-index: 1; }
+/* W7：注入页 / 画像页的状态提示复用 .sr-fewshot-warn（gold wash）；这里只补对齐与强调 */
+.sr-fewshot-warn b { font-family: var(--font-serif); font-weight: 600; }
+.sr-fewshot-warn .btn { flex-shrink: 0; }
+.sr-ds-layer-name .sr-cell-skip { margin-top: 0; font-weight: 500; }
+.sr-intensity-readout span b { font-weight: 600; }
 .sr-scope { display: flex; gap: 4px; padding: 2px; background: var(--paper-2); border-radius: 8px; margin-bottom: 12px; }
 .sr-scope-btn { flex: 1; background: transparent; border: 0; padding: 6px; border-radius: 6px; font-size: 12.5px; font-weight: 600; color: var(--ink-3); cursor: pointer; }
 .sr-scope-btn.is-active { background: var(--paper-0); color: var(--ink-1); box-shadow: var(--shadow-sm); }

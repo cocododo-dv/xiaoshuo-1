@@ -5,8 +5,12 @@
 重置。
 
 支持的 name 与 §A 配置文件清单一致(input_thresholds / sensory_lexicon /
-extraction / banned_adjectives / tolerance_floors / candidate_rerank)。`anti_plagiarism_template.txt`
+extraction / banned_adjectives / tolerance_floors / candidate_rerank),v2 声音签名
+另加 function_words / voice_baseline。`anti_plagiarism_template.txt`
 不是 YAML,用 `load_text_template` 加载。
+
+`load_optional_yaml_config` 用于「缺文件即优雅退化」的配置(如 voice_baseline.yaml):
+文件不存在时返回空 dict 而不是抛错。
 """
 
 from __future__ import annotations
@@ -34,7 +38,8 @@ def _load_yaml(name: str) -> Any:
         raise FileNotFoundError(
             f"style_reference config not found: {path}"
             f" (expected one of: input_thresholds / sensory_lexicon / extraction / "
-            f"banned_adjectives / tolerance_floors / candidate_rerank)"
+            f"banned_adjectives / tolerance_floors / candidate_rerank / "
+            f"function_words / voice_baseline)"
         )
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -49,6 +54,14 @@ def load_yaml_config(name: str) -> dict[str, Any]:
     if isinstance(data, list):
         return {"items": data}
     return dict(data or {})
+
+
+def load_optional_yaml_config(name: str) -> dict[str, Any]:
+    """同 `load_yaml_config`,但文件缺失时返回 `{}`(供可选配置优雅退化)。"""
+    try:
+        return load_yaml_config(name)
+    except FileNotFoundError:
+        return {}
 
 
 @lru_cache(maxsize=4)

@@ -53,6 +53,8 @@ from novel_system.services.style_reference.metrics_aggregator import MetricsAggr
 from novel_system.services.style_reference.schemas import (
     BindingScope,
     InjectionPreviewRequest,
+    InjectionPreviewResponse,
+    InjectionPreviewStats,
     InjectionStrategy,
     RunStatus,
     TaskType,
@@ -335,7 +337,11 @@ def import_book_path(
     body = payload.model_dump(mode="json")
 
     def _do() -> dict[str, Any]:
-        service = IngestService(session, llm_enabled=False)
+        # 与 reclassify 一致:按运行时 LLM 配置 + 书的 cloud_policy 自动选 LLM /
+        # 启发式分类(local_only 仍强制启发式),stats_json.classifier_calibration
+        # .fallback_to_heuristic 如实记录实际走的路径。
+        client, enabled = _get_llm_client_and_enabled()
+        service = IngestService(session, llm_client=client, llm_enabled=enabled)
         result = service.ingest_path(
             file_path=body["file_path"],
             title=body["title"],
@@ -408,7 +414,8 @@ async def import_book_upload(
     }
 
     def _do() -> dict[str, Any]:
-        service = IngestService(session, llm_enabled=False)
+        client, enabled = _get_llm_client_and_enabled()
+        service = IngestService(session, llm_client=client, llm_enabled=enabled)
         result = service.ingest_upload(
             raw_bytes=raw_bytes,
             file_name=payload["file_name"],
@@ -1440,14 +1447,15 @@ def get_binding_injection_preview(
         strategy = InjectionStrategy(binding.strategy)
     except ValueError:
         strategy = InjectionStrategy.A
-    fragments = InjectionService(session)._render(
+    fragments, stats = InjectionService(session).render_preview(
         profile, strategy, binding.config_json or {}
     )
     return ok(
-        {
-            "fragments": fragments.model_dump(),
-            "prefix": fragments.to_system_prompt_prefix(),
-        },
+        InjectionPreviewResponse(
+            fragments=fragments,
+            prefix=fragments.to_system_prompt_prefix(),
+            stats=InjectionPreviewStats(**stats),
+        ).model_dump(),
         req_id=_req_id(request),
     )
 
@@ -1478,12 +1486,13 @@ def dryrun_injection_preview(
     if payload.include_metric is not None:
         config["include_metric"] = payload.include_metric
     strategy = payload.strategy or default_injection_strategy(payload.task_type)
-    fragments = InjectionService(session)._render(profile, strategy, config)
+    fragments, stats = InjectionService(session).render_preview(profile, strategy, config)
     return ok(
-        {
-            "fragments": fragments.model_dump(),
-            "prefix": fragments.to_system_prompt_prefix(),
-        },
+        InjectionPreviewResponse(
+            fragments=fragments,
+            prefix=fragments.to_system_prompt_prefix(),
+            stats=InjectionPreviewStats(**stats),
+        ).model_dump(),
         req_id=_req_id(request),
     )
 

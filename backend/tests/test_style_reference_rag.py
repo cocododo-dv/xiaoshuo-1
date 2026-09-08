@@ -246,29 +246,134 @@ def test_c_strategy_injects_rag_block_with_red_line(session):
     assert "严格禁止" in prefix or "严禁" in prefix  # 红线段随注
 
 
-def test_c_strategy_drift_changes_snippets_with_context(session):
+def test_c_strategy_drift_changes_snippets_with_styled_context(session):
+    """v2:只有调用方显式标记 styled_context(前文已风格化)时,RAG query 才用前文签名。"""
     profile = _seed_book_with_paragraphs(session, seed="cdrift")
     rag.build_rag_index(session, profile)
     _bind_c_strategy(session, profile, project_id="proj_cdrift")
     svc = InjectionService(session)
+    svc.styled_context = True
     svc.context_text = "窗外的雨下个不停，青灰色的瓦檐"  # 偏 description_env
     block_env = svc.fragments_for("proj_cdrift", "scene_generation").rag_block
     svc2 = InjectionService(session)
+    svc2.styled_context = True
     svc2.context_text = "她猛地推开门，冲进漆黑的走廊"  # 偏 action
     block_act = svc2.fragments_for("proj_cdrift", "scene_generation").rag_block
     assert block_env and block_act
-    assert block_env != block_act  # 召回随上下文变化(防漂移真实生效)
+    assert block_env != block_act  # 召回随(已风格化的)上下文变化
 
 
-def test_c_strategy_degrades_gracefully_without_index(session):
-    # 不建索引 → C 无 rag_block,但 positive/forbidden 仍在,不报错
+def test_c_strategy_default_query_is_profile_signature_not_context(session):
+    """v2 默认(中性稿不代表目标风格):query = 画像代表签名,召回不随 context 变;审计 rag_outcome=hit。"""
+    profile = _seed_book_with_paragraphs(session, seed="csig")
+    rag.build_rag_index(session, profile)
+    _bind_c_strategy(session, profile, project_id="proj_csig")
+    svc = InjectionService(session)
+    svc.context_text = "窗外的雨下个不停，青灰色的瓦檐"
+    block_env = svc.fragments_for("proj_csig", "scene_generation").rag_block
+    assert svc.last_runtime_audit["rag_outcome"] == "hit"
+    svc2 = InjectionService(session)
+    svc2.context_text = "她猛地推开门，冲进漆黑的走廊"
+    block_act = svc2.fragments_for("proj_csig", "scene_generation").rag_block
+    assert block_env and block_act
+    assert block_env == block_act
+
+
+def test_c_strategy_ensures_index_when_missing(session, monkeypatch):
+    """v2:未建索引 → _render_rag 前调用幂等 ensure_rag_index(memory 后端重建),C 仍有召回。"""
     profile = _seed_book_with_paragraphs(session, seed="cdeg")
     _bind_c_strategy(session, profile, project_id="proj_cdeg")
+    calls: list[str] = []
+    real_ensure = rag.ensure_rag_index
+
+    def _spy(sess, prof, **kwargs):
+        calls.append(str(prof.profile_id))
+        return real_ensure(sess, prof, **kwargs)
+
+    monkeypatch.setattr(rag, "ensure_rag_index", _spy)
     svc = InjectionService(session)
     svc.context_text = "任意上下文"
     frags = svc.fragments_for("proj_cdeg", "scene_generation")
+    assert calls == [profile.profile_id]
+    assert frags.rag_block  # 重建后真召回
+    assert frags.positive_block
+    assert svc.last_runtime_audit["rag_outcome"] == "hit"
+    # 第二次:索引已就绪,ensure 幂等(ready,不重建)
+    assert real_ensure(session, profile)["status"] == "ready"
+
+
+def test_c_strategy_empty_recall_writes_rag_outcome_unavailable(session, monkeypatch):
+    """空召回(向量后端不可用)→ rag_block 空、last_runtime_audit.rag_outcome == "unavailable"。"""
+    profile = _seed_book_with_paragraphs(session, seed="cunav2")
+    _bind_c_strategy(session, profile, project_id="proj_cunav2")
+    monkeypatch.setattr(rag, "_resolve_store", lambda vs: None)
+    svc = InjectionService(session)
+    svc.context_text = "她推开门冲进漆黑的走廊"
+    frags = svc.fragments_for("proj_cunav2", "scene_generation")
     assert frags.rag_block == ""
-    assert frags.positive_block  # 仍注入抽象正向特征
+    assert frags.positive_block
+    assert svc.last_runtime_audit["rag_outcome"] == "unavailable"
+    assert svc.last_runtime_audit["outcome"] == "hit"  # 抽象块仍命中
+
+
+def test_build_query_signatures_mean_drives_retriever_without_text(session):
+    """build_query_signatures 给三粒度均值签名;retriever 用预设签名可在空 query 下召回。"""
+    profile = _seed_book_with_paragraphs(session, seed="qsig")
+    store = InMemoryVectorStore()
+    rag.build_rag_index(session, profile, vector_store=store)
+    texts = [text for _pid, _ptype, text in _PARAGRAPHS]
+    signatures = rag.build_query_signatures(texts)
+    assert set(signatures) == set(rag.GRANULARITIES)
+    for gran, sig in signatures.items():
+        assert sig.granularity == gran
+        assert all(0.0 <= value <= 1.0 for value in sig.features.values())
+    # 均值签名 = 各段签名的逐特征平均
+    per_paragraph = [rag.extract_style_signature(t, granularity="paragraph") for t in texts]
+    name = "shape.unit_length"
+    expected = sum(sig.features[name] for sig in per_paragraph) / len(per_paragraph)
+    assert abs(signatures["paragraph"].features[name] - expected) < 1e-9
+    retriever = rag.RagRetriever(session, vector_store=store, query_signatures=signatures)
+    hits = retriever.retrieve(profile.profile_id, "")
+    assert hits  # 无文本 query 也能凭签名召回
+    assert all(hit.content_overlap == 0.0 for hit in hits)  # 无 query 文本 → 无内容惩罚
+    # 无签名、空 query 仍返回空(旧契约不变)
+    assert rag.RagRetriever(session, vector_store=store).retrieve(profile.profile_id, "  ") == []
+    assert rag.build_query_signatures(["", "  "]) == {}
+
+
+def test_retriever_preferred_paragraph_types_soft_filter(session):
+    """场景段型软过滤:命中段型的片段前置;无命中时不丢任何片段。"""
+    profile = _seed_book_with_paragraphs(session, seed="pref")
+    store = InMemoryVectorStore()
+    rag.build_rag_index(session, profile, vector_store=store)
+    texts = [text for _pid, _ptype, text in _PARAGRAPHS]
+    signatures = rag.build_query_signatures(texts)
+    plain = rag.RagRetriever(session, vector_store=store, query_signatures=signatures)
+    baseline_hits = plain.retrieve(profile.profile_id, "")
+    assert baseline_hits
+    preferred = rag.RagRetriever(
+        session,
+        vector_store=store,
+        query_signatures=signatures,
+        preferred_paragraph_types={"dialogue"},
+    )
+    hits = preferred.retrieve(profile.profile_id, "")
+    assert hits
+    matched = [h for h in hits if h.paragraph_type == "dialogue"]
+    assert matched, "fixture 必须召回 dialogue 片段,否则前置断言无从检验"
+    # 前置:所有 dialogue 命中都排在所有非 dialogue 命中之前(软过滤只重排,不丢片段)
+    assert [h.paragraph_type for h in hits[: len(matched)]] == ["dialogue"] * len(matched)
+    assert all(h.paragraph_type != "dialogue" for h in hits[len(matched) :])
+    # 偏好确实改变了保留集合:无偏好时按分数只留下更少的 dialogue 片段
+    assert len(matched) > sum(1 for h in baseline_hits if h.paragraph_type == "dialogue")
+    # 偏好一个不存在的段型 → 与无偏好结果一致(软过滤不丢片段)
+    none_match = rag.RagRetriever(
+        session,
+        vector_store=store,
+        query_signatures=signatures,
+        preferred_paragraph_types={"no_such_type"},
+    ).retrieve(profile.profile_id, "")
+    assert [h.snippet_id for h in none_match] == [h.snippet_id for h in baseline_hits]
 
 
 def test_purge_derived_data_deletes_rag_index(session):

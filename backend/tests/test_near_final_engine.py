@@ -5,6 +5,7 @@ import json
 from sqlalchemy import select
 
 from novel_system.db.models import (
+    AttemptTracker,
     ChapterGoal,
     ChapterMemory,
     ChapterState,
@@ -16,6 +17,7 @@ from novel_system.db.models import (
     SceneDraft,
     SceneRunState,
     StoryProject,
+    StyleReferenceMetricEvent,
     VoiceProfile,
     WriterEvaluation,
 )
@@ -25,12 +27,28 @@ from novel_system.services.near_final import (
     NearFinalAcceptanceService,
     NearFinalPlanningService,
 )
-from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.orchestrator import (
+    NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON,
+    Orchestrator,
+)
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from novel_system.services.qc_engine import (
+    STYLED_DRAFT_GATE_EVENT_KIND,
+    HardQcEngine,
+    SoftQcEngine,
+)
 from novel_system.services.scene_blueprint import SceneBlueprintService
-from novel_system.services.scene_generation import SceneGenerationService
+from novel_system.services.scene_generation import (
+    STYLE_NOTICE_PLAGIARISM_HIT,
+    SceneGenerationService,
+    latest_style_notices,
+)
 from tests.real_llm_fakes import ScenePipelineOnlineFake
+from tests.test_qc_engine_style_validation_gate import (
+    COPIED_SENTENCE,
+    REFERENCE_PARAGRAPH,
+    _seed_style_binding,
+)
 
 
 CHAPTER_ID = "CHNF01"
@@ -442,6 +460,166 @@ def test_orchestrator_runs_one_full_literary_rewrite_when_near_final_review_fail
     assert candidates[0].revision_type == "near_final_scene_rewrite"
     assert candidates[0].status == "superseded"
     assert [evaluation.overall_score for evaluation in evaluations] == [0.58, 0.86]
+
+
+def test_orchestrator_never_archives_a_near_final_rewrite_that_copies_the_reference(session) -> None:
+    """C9：带 [STYLE_REFERENCE] 前缀的准终稿重写稿复刻参考原文 → 不得成稿。
+
+    重写稿要过 styled-draft gate（真实阶段 near_final_rewrite 落 MetricEvent），抄袭裁决
+    让 orchestrator 丢弃重写稿、回退到重写前已过 soft_qc gate 的风格稿，skip_reason /
+    Q2 警告 / notices 全部可见，且不再对被拒重写稿做第二轮 near-final 评审。
+    """
+    _seed_scene(session)
+    _seed_style_binding(project_id=PROJECT_ID, seed="nf_plag", paragraphs=[REFERENCE_PARAGRAPH])
+    state = session.get(SceneRunState, SCENE_ID)
+    state.scene_token_budget = 250_000
+    state.attempt_budget = 20
+    state.provider_attempt_budget = 20
+    session.commit()
+    planning_client = ScenePipelineOnlineFake()
+    clean_style = (
+        "林岑必须选择：公开证据，还是隐瞒真相保护阿砚；两者不能同时做到。她决定承担隐瞒的代价。林岑把录音带分成两份。"
+    )
+    rewrite_with_copy = (
+        f"林岑按住录音带。{COPIED_SENTENCE}。公开它能证明篡改，也会暴露阿砚。"
+        "许望问：\"你要真相，还是要活人？\"林岑把录音带分成两份。一份交给许望，一份藏进船坞石缝。"
+    )
+    scene_client = SequencedClient(
+        [
+            {"scene_text": "林岑来到船坞，说明证据很重要。林岑把录音带分成两份。", "continuity_notes": []},
+            {"scene_text": clean_style, "style_notes": []},
+            {"scene_text": rewrite_with_copy, "style_notes": []},
+        ]
+    )
+    # 只给一份评审结果：被 gate 拒绝的重写稿不得再触发第二轮 near-final 评审
+    near_final_client = SequencedClient([_near_final_fail()])
+    orchestrator = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=scene_client),
+        hard_qc_engine=HardQcEngine(session, llm_client=SequencedClient([_hard_pass()])),
+        soft_qc_engine=SoftQcEngine(session, llm_client=SequencedClient([_soft_pass(), _soft_pass()])),
+        planning_service=NearFinalPlanningService(session, llm_client=planning_client),
+        near_final_service=NearFinalAcceptanceService(session, llm_client=near_final_client),
+    )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(
+        session, llm_client=ScenePipelineOnlineFake()
+    )
+
+    result = orchestrator.run_scene(SCENE_ID)
+    session.commit()
+
+    assert len(scene_client.requests) == 3, "the near-final rewrite itself was produced"
+    assert len(near_final_client.requests) == 1
+    rewrite_system_prompt = "\n".join(
+        str(message.get("content") or "")
+        for message in scene_client.requests[2].messages
+        if message.get("role") == "system"
+    )
+    assert "[STYLE_REFERENCE]" in rewrite_system_prompt
+    drafts = session.execute(
+        select(SceneDraft).order_by(SceneDraft.created_at.asc(), SceneDraft.row_id.asc())
+    ).scalars().all()
+    assert [draft.stage for draft in drafts] == ["neutral_draft", "style_draft", "near_final_rewrite"]
+    assert drafts[-1].content == rewrite_with_copy
+    final_scene = session.execute(select(FinalScene)).scalars().one()
+    assert result["scene_status"] == "archived"
+    assert COPIED_SENTENCE not in final_scene.content
+    assert final_scene.content == clean_style
+    assert final_scene.generation_llm_call_id == drafts[1].generation_llm_call_id
+    assert result["near_final"]["rewrite_count"] == 0
+    gate = result["near_final"]["rewrite_style_gate"]
+    assert gate["rejected"] is True and gate["verdict"] == "plagiarism"
+    assert gate["stage"] == "near_final_rewrite" and gate["plagiarism_hit_count"] >= 1
+    assert "near_final_rewrite_rejected_style_plagiarism" in [
+        item["issue_key"] for item in result["quality_warnings"]
+    ]
+    refs = session.get(SceneRunState, SCENE_ID).run_checkpoint_json["artifact_refs"]
+    assert refs["near_final_skip_reason"] == NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON
+    assert refs["near_rewrite_styled_gate"]["rejected"] is True
+    assert refs["near_final_source_draft_row_id"] == drafts[1].row_id
+    # 回退后当前稿指针必须指回来源风格稿,不能停在被拒的重写行(adopt-current 按它取稿)
+    run_state = session.get(SceneRunState, SCENE_ID)
+    assert run_state.current_style_draft_row_id == drafts[1].row_id
+    assert run_state.latest_valid_draft_row_id == drafts[1].row_id
+    events = session.execute(
+        select(StyleReferenceMetricEvent).where(
+            StyleReferenceMetricEvent.event_kind == STYLED_DRAFT_GATE_EVENT_KIND
+        )
+    ).scalars().all()
+    assert ("near_final_rewrite", "plagiarism") in [
+        (event.context_json.get("stage"), event.outcome) for event in events
+    ]
+    rewrite_attempt = session.execute(
+        select(AttemptTracker).where(
+            AttemptTracker.scene_id == SCENE_ID,
+            AttemptTracker.step == "scene_literary_rewrite",
+            AttemptTracker.status == "completed",
+        )
+    ).scalars().one()
+    assert STYLE_NOTICE_PLAGIARISM_HIT in [item["code"] for item in rewrite_attempt.details_json["notices"]]
+    notices = latest_style_notices(session, SCENE_ID, bundle_id=result["current_bundle_id"])
+    hit = next(item for item in notices if item["code"] == STYLE_NOTICE_PLAGIARISM_HIT)
+    assert hit["stage"] == "near_final_rewrite"
+    assert COPIED_SENTENCE not in str(notices)
+
+
+def test_strict_policy_stops_on_a_gate_rejected_near_final_rewrite_instead_of_archiving(session) -> None:
+    """复审后续:严格模式的 Q2 判据要看带 rewrite_style_gate 的 payload。
+
+    重写稿被 styled-draft gate 以抄袭拒绝后,回退的来源稿只能停在 quality_warning
+    等作者 adopt-current 显式接受,不得自动归档;当前稿指针指回来源稿。
+    """
+    _seed_scene(session)
+    _seed_style_binding(project_id=PROJECT_ID, seed="nf_plag_strict", paragraphs=[REFERENCE_PARAGRAPH])
+    state = session.get(SceneRunState, SCENE_ID)
+    state.scene_token_budget = 250_000
+    state.attempt_budget = 20
+    state.provider_attempt_budget = 20
+    session.commit()
+    clean_style = (
+        "林岑必须选择:公开证据,还是隐瞒真相保护阿砚;两者不能同时做到。她决定承担隐瞒的代价。林岑把录音带分成两份。"
+    )
+    rewrite_with_copy = (
+        f"林岑按住录音带。{COPIED_SENTENCE}。公开它能证明篡改,也会暴露阿砚。"
+        "许望问:\"你要真相,还是要活人?\"林岑把录音带分成两份。一份交给许望,一份藏进船坞石缝。"
+    )
+    scene_client = SequencedClient(
+        [
+            {"scene_text": "林岑来到船坞,说明证据很重要。林岑把录音带分成两份。", "continuity_notes": []},
+            {"scene_text": clean_style, "style_notes": []},
+            {"scene_text": rewrite_with_copy, "style_notes": []},
+        ]
+    )
+    near_final_client = SequencedClient([_near_final_fail()])
+    orchestrator = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=scene_client),
+        hard_qc_engine=HardQcEngine(session, llm_client=SequencedClient([_hard_pass()])),
+        soft_qc_engine=SoftQcEngine(session, llm_client=SequencedClient([_soft_pass(), _soft_pass()])),
+        planning_service=NearFinalPlanningService(session, llm_client=ScenePipelineOnlineFake()),
+        near_final_service=NearFinalAcceptanceService(session, llm_client=near_final_client),
+    )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(
+        session, llm_client=ScenePipelineOnlineFake()
+    )
+
+    result = orchestrator.run_scene(SCENE_ID, run_policy="strict")
+    session.commit()
+
+    drafts = session.execute(
+        select(SceneDraft).order_by(SceneDraft.created_at.asc(), SceneDraft.row_id.asc())
+    ).scalars().all()
+    assert [draft.stage for draft in drafts] == ["neutral_draft", "style_draft", "near_final_rewrite"]
+    assert result["scene_status"] == "quality_warning_pending_acceptance"
+    assert session.execute(select(FinalScene)).scalars().all() == []
+    assert result["near_final"]["rewrite_style_gate"]["rejected"] is True
+    assert "near_final_rewrite_rejected_style_plagiarism" in [
+        item.get("issue_key") for item in result["quality_warnings"] if isinstance(item, dict)
+    ]
+    run_state = session.get(SceneRunState, SCENE_ID)
+    assert run_state.scene_status == "quality_warning_pending_acceptance"
+    assert run_state.current_style_draft_row_id == drafts[1].row_id
+    assert run_state.latest_valid_draft_row_id == drafts[1].row_id
 
 
 def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:

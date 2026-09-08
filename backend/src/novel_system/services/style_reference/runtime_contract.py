@@ -11,14 +11,21 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
+from sqlalchemy import select
+
+from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.hash_engine import canonical_json
+from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.policy import cloud_llm_allowed
+
+logger = logging.getLogger(__name__)
 
 
 STYLE_RUNTIME_CONTRACT_VERSION = "style_reference_runtime_contract_v1"
@@ -37,6 +44,10 @@ _FROZEN_PROFILE_JSON_KEYS = frozenset(
         "calibration_guidance",
         "generation_safe_forbidden_findings",
         "source_overlap_filter",
+        # 2026-09 风格模仿 v2(W1 合成期写入):确定性声音签名 + habits、叙事机制指引。
+        # 旧画像没有这些键时,下游一律不渲染对应块(优雅退化)。
+        "voice_signature",
+        "narrative_guidance",
     }
 )
 _ALLOWED_STRATEGIES = frozenset({"A", "B", "C", "mixed"})
@@ -71,6 +82,72 @@ def _quote_ids(profile_json: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+def _few_shot_window_span() -> int:
+    """每侧要冻结的相邻段数 = ``few_shot_window_paragraphs`` − 1(injection_budget.yaml)。"""
+    try:
+        budget = load_yaml_config("injection_budget")
+    except FileNotFoundError:
+        budget = {}
+    try:
+        window = int(budget.get("few_shot_window_paragraphs", 3))
+    except (TypeError, ValueError):
+        window = 3
+    return max(0, window - 1)
+
+
+def _contiguous_neighbours(repo: Any, paragraph: Any, span: int) -> list[Any]:
+    """``paragraph`` 同书、paragraph_index 连续(遇缺口 / 空段即停)的 ±``span`` 相邻段。
+
+    与 ``injection._build_sample_window`` 的展开规则一致(不含中心段,按 index 升序);
+    读取失败退化为不冻结相邻段(窗口随之退化为单段,与旧契约行为相同)。
+    """
+    if span <= 0:
+        return []
+    session = getattr(repo, "session", None)
+    book_id = str(getattr(paragraph, "book_id", "") or "")
+    try:
+        center = int(getattr(paragraph, "paragraph_index", 0) or 0)
+    except (TypeError, ValueError):
+        return []
+    if session is None or not book_id:
+        return []
+    stmt = (
+        select(StyleReferenceParagraph)
+        .where(
+            StyleReferenceParagraph.book_id == book_id,
+            StyleReferenceParagraph.paragraph_index >= center - span,
+            StyleReferenceParagraph.paragraph_index <= center + span,
+        )
+        .order_by(StyleReferenceParagraph.paragraph_index)
+    )
+    try:
+        rows = list(session.scalars(stmt).all())
+    except Exception:  # noqa: BLE001 — 相邻段读取失败退化为只冻结父段
+        logger.warning("style contract neighbour paragraph lookup failed", exc_info=True)
+        return []
+    by_index: dict[int, Any] = {}
+    for row in rows:
+        try:
+            by_index[int(row.paragraph_index)] = row
+        except (TypeError, ValueError):
+            continue
+
+    def _usable(row: Any) -> bool:
+        return bool(str(getattr(row, "text", "") or "").strip())
+
+    left: list[Any] = []
+    index = center - 1
+    while len(left) < span and index in by_index and _usable(by_index[index]):
+        left.insert(0, by_index[index])
+        index -= 1
+    right: list[Any] = []
+    index = center + 1
+    while len(right) < span and index in by_index and _usable(by_index[index]):
+        right.append(by_index[index])
+        index += 1
+    return [*left, *right]
+
+
 def build_style_runtime_contract(
     repo: Any,
     layers: Sequence[Any],
@@ -80,6 +157,7 @@ def build_style_runtime_contract(
     """Freeze ordered binding layers and every abstract input used for rendering."""
     if not layers:
         return None
+    window_span = _few_shot_window_span()
     frozen_layers: list[dict[str, Any]] = []
     for order, binding in enumerate(layers):
         if (
@@ -155,6 +233,22 @@ def build_style_runtime_contract(
                             "paragraph_sha256": _text_hash(paragraph_text),
                         },
                     )
+                    # v2(W4.5):few-shot 是以 quote 父段为中心的连续 1–3 段窗口,冻结
+                    # 路径只允许契约里有 sha256 的段落——所以把父段两侧连续的相邻段一并
+                    # 冻结(只冻哈希,不冻原文),否则生产场景运行的窗口全部退化为单段。
+                    # 相邻段事后被改动仍会 sha256 失配 → 该侧退化,回放不可变性不变。
+                    for neighbour in _contiguous_neighbours(repo, paragraph, window_span):
+                        neighbour_id = str(getattr(neighbour, "paragraph_id", "") or "")
+                        neighbour_text = str(getattr(neighbour, "text", "") or "")
+                        if not neighbour_id or not neighbour_text:
+                            continue
+                        paragraph_refs.setdefault(
+                            neighbour_id,
+                            {
+                                "paragraph_id": neighbour_id,
+                                "paragraph_sha256": _text_hash(neighbour_text),
+                            },
+                        )
                 quote_refs.append(quote_ref)
 
         banned_terms = sorted(

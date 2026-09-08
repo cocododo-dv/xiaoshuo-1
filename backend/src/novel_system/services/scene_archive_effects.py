@@ -368,9 +368,101 @@ class SceneArchiveEffects:
             )
 
 
+    # 归档 checkpoint 的 ``_validate_archive_drift_product`` 只接受
+    # {"not_applicable", "no_op", "degraded"}（scene_archive_checkpoint.py，非本包文件）。
+    # 读数成功（"observed"）在产品层映射成 "no_op" + ``observation_outcome="observed"``：
+    # 漂移读数只写 MetricEvent，不改动归档正文，对归档而言确实是 no-op。
+    # 校验器放开 "observed" 后删掉这张别名表即可原样透传。
+
     def _detect_and_store_style_drift(self, scene: SceneCard) -> dict[str, Any]:
-        """Style-drift guidance was retired; the archive checkpoint keeps a no-op product."""
-        return {"outcome": "no_op", "reason": "style_drift_retired"}
+        """归档期确定性声音漂移读数（风格模仿 v2 W6，规格 §1.6 / §2.W6.2）。
+
+        取该场景的最终文本（最新未被取代的 ``FinalScene``，没有则最新已风格化
+        ``SceneDraft``）与冻结契约（``SceneRunState.current_bundle_id`` →
+        ``SceneBundle.frozen_snapshot_json`` 的运行时契约；legacy bundle / 无 bundle 时按
+        当前 active 绑定解析），调用 ``style_continuity.observe_style_drift`` 写
+        ``style_drift_observed`` 事件。无契约 / 无画像 / 文本过短 → ``no_op``；任何异常
+        吞掉记 warning 并返回 ``degraded``，绝不阻断归档。
+        """
+        try:
+            from novel_system.services.style_reference.style_continuity import (
+                observe_style_drift,
+            )
+
+            final_text = self._scene_final_text_for_drift(scene)
+            contract, contract_source = self._scene_style_contract_for_drift(scene)
+            result = observe_style_drift(self.session, scene, final_text, contract)
+        except Exception as exc:  # noqa: BLE001 — 归档不因漂移读数失败而中断
+            _LOGGER.warning(
+                "style drift observation degraded for scene %s",
+                scene.scene_id,
+                exc_info=True,
+            )
+            return {"outcome": "degraded", "error_code": exc.__class__.__name__}
+        if not isinstance(result, dict) or not isinstance(result.get("outcome"), str):
+            return {"outcome": "degraded", "error_code": "STYLE_DRIFT_RESULT_INVALID"}
+        product = dict(result)
+        product["contract_source"] = contract_source
+        # 归档校验器（scene_archive_checkpoint._validate_archive_drift_product）现已接受
+        # "observed"，读数结果原样透出；observation_outcome 保留以兼容读取方。
+        product["observation_outcome"] = str(product["outcome"])
+        # ``_archive_product`` 用 ``**details`` 展开：这些键与它的具名参数同名会 TypeError。
+        for reserved in ("kind", "step_key", "input_hash", "scene", "schema_version", "execution_id"):
+            product.pop(reserved, None)
+        return product
+
+    def _scene_final_text_for_drift(self, scene: SceneCard) -> str:
+        """最新未被取代的 FinalScene 正文；没有则最新已风格化草稿；都没有 → ``""``。"""
+        from novel_system.db.models import FinalScene
+
+        final_scene = (
+            self.session.execute(
+                select(FinalScene)
+                .where(
+                    FinalScene.scene_id == scene.scene_id,
+                    FinalScene.superseded_by_final_scene_row_id.is_(None),
+                    FinalScene.status.in_(("approved", "near_final_ready", "archived")),
+                )
+                .order_by(FinalScene.created_at.desc(), FinalScene.row_id.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if final_scene is not None and (final_scene.content or "").strip():
+            return str(final_scene.content)
+        from novel_system.services.bundle_builder import latest_styled_draft_for_scene
+
+        draft = latest_styled_draft_for_scene(self.session, scene.scene_id)
+        return str(draft.content or "") if draft is not None else ""
+
+    def _scene_style_contract_for_drift(
+        self, scene: SceneCard
+    ) -> tuple[dict[str, Any] | None, str]:
+        """(冻结契约 | None, 来源)。优先当前 bundle 冻结的契约；legacy bundle 才解析 live 绑定。
+
+        bundle 明确记录「无绑定」（absent）或契约损坏（degraded）时**不**回退到 live 解析——
+        与 runtime_contract 的约定一致：不一致的新 bundle 不是读今日绑定的许可。
+        """
+        from novel_system.services.style_reference.runtime_contract import (
+            resolve_style_runtime_contract_state,
+        )
+
+        state = self.session.get(SceneRunState, scene.scene_id)
+        bundle_id = getattr(state, "current_bundle_id", None) if state is not None else None
+        bundle = self.session.get(SceneBundle, bundle_id) if bundle_id else None
+        if bundle is not None:
+            contract_state = resolve_style_runtime_contract_state(
+                bundle.frozen_snapshot_json or {}
+            )
+            if contract_state.mode in {"frozen", "frozen_legacy"}:
+                return contract_state.contract, f"bundle:{contract_state.mode}"
+            if contract_state.mode in {"absent", "degraded"}:
+                return None, f"bundle:{contract_state.mode}"
+        from novel_system.services.bundle_builder import (
+            resolve_scene_style_runtime_contract,
+        )
+
+        return resolve_scene_style_runtime_contract(self.session, scene), "live_bindings"
 
     @staticmethod
     def _index_scene_to_vector_store(

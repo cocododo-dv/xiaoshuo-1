@@ -35,6 +35,7 @@ from novel_system.services.style_reference.extractors import (
 )
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.style_reference.sampling import derive_extraction_rng
 from novel_system.services.style_reference.schemas import RunPhase, RunStatus
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,9 @@ class RunOrchestrator:
             llm_enabled = bool(get_settings().llm_enabled)
         self._llm_enabled = llm_enabled
         self._retry_policy = retry_policy or ExtractionRetryPolicy()
-        self._rng = rng or random.Random()
+        # None → _execute 时以 sha256(text_checksum + run_id) 定种(同一 run 可复现,
+        # resume / 后台 worker 拿到同一采样序列);测试与基准可显式注入。
+        self._rng = rng
 
     def start_extract_run(
         self,
@@ -291,6 +294,7 @@ class RunOrchestrator:
         失败可整体回滚)。
         """
         sub_dim_results: list[ExtractionRunResult] = []
+        rng = self._run_rng(run_id, book_id)
         try:
             for i, layer in enumerate(layers):
                 if progress_commits:
@@ -332,7 +336,7 @@ class RunOrchestrator:
                     run_id=run_id,
                     book_id=book_id,
                     retry_policy=self._retry_policy,
-                    rng=self._rng,
+                    rng=rng,
                     # 后台模式每 sub_dim commit:不让写事务跨分钟级 LLM 调用持锁
                     # (否则并发 UI 写操作等满 busy_timeout 报 database is busy)
                     checkpoint=(
@@ -396,6 +400,13 @@ class RunOrchestrator:
             layers=[layer.value for layer in layers],
             sub_dim_results=sub_dim_results,
         )
+
+    def _run_rng(self, run_id: str, book_id: str) -> random.Random:
+        """本 run 的采样 RNG:显式注入优先,否则 sha256(text_checksum + run_id) 定种。"""
+        if self._rng is not None:
+            return self._rng
+        book = self.repo.get_book(book_id)
+        return derive_extraction_rng(getattr(book, "text_checksum", None), run_id)
 
     @staticmethod
     def _requested_layers(run: StyleReferenceRun) -> list[Layer]:

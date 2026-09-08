@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -9,13 +10,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, SceneBlueprint, SceneCard, SceneRunState
+from novel_system.services.bundle_builder import resolve_scene_style_runtime_contract
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.style_reference.narrative_guidance import (
+    NARRATIVE_GUIDANCE_SECTION_KEY,
+    collect_narrative_guidance,
+    render_narrative_section,
+)
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
+
+_LOGGER = logging.getLogger(__name__)
 
 
 SCENE_BLUEPRINT_FIELDS: tuple[str, ...] = (
@@ -178,12 +187,45 @@ class SceneBlueprintService:
                 "scene_writer_brief": json.dumps(normalize_scene_writer_brief(scene.writer_brief_json), ensure_ascii=False, sort_keys=True),
             },
         }
+        # 2026-09 风格模仿 v2（规格 §2.W5.4）：规划层也看参考作品的叙事取舍机制——
+        # 只注入 narrative_guidance（无语言层特征、无原文样例），让 information_release /
+        # pacing / ending_action 受其牵引。无绑定 / 旧画像 / 解析失败 → 不注入。
+        narrative_guidance = self._style_narrative_guidance(scene)
+        if narrative_guidance is not None:
+            lines, contract_hash = narrative_guidance
+            snapshot["source_version_refs"]["style_reference_runtime_contract_hash"] = contract_hash
+            snapshot["source_version_refs"]["style_narrative_guidance_line_count"] = len(lines)
+            snapshot["ordered_injections"].append(
+                {
+                    "slot": NARRATIVE_GUIDANCE_SECTION_KEY,
+                    "ref_id": contract_hash,
+                    "digest_key": NARRATIVE_GUIDANCE_SECTION_KEY,
+                }
+            )
+            snapshot["inline_digests"][NARRATIVE_GUIDANCE_SECTION_KEY] = render_narrative_section(lines)
         source_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
         return {
             "source_bundle_id": source_bundle_id,
             "source_bundle_hash": state.current_bundle_hash if state and state.current_bundle_hash else source_hash,
             "snapshot": snapshot,
         }
+
+    def _style_narrative_guidance(self, scene: SceneCard) -> tuple[list[str], str] | None:
+        try:
+            contract = resolve_scene_style_runtime_contract(self.session, scene)
+        except Exception:  # noqa: BLE001 — 可选增强：解析失败只记日志，不阻断规划
+            _LOGGER.warning(
+                "scene_blueprint style narrative guidance skipped for scene %s",
+                scene.scene_id,
+                exc_info=True,
+            )
+            return None
+        if contract is None:
+            return None
+        lines = collect_narrative_guidance(contract)
+        if not lines:
+            return None
+        return lines, str(contract["contract_hash"])
 
     def _require_scene(self, scene_id: str) -> SceneCard:
         return require_scene(self.session, scene_id)

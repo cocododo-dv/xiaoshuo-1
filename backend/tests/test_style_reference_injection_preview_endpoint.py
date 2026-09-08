@@ -122,8 +122,15 @@ def test_dryrun_preview_404_profile(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_dryrun_strategy_a_ignores_intensity_and_sub_dim(client: TestClient) -> None:
-    """strategy=A 时 intensity / sub_dimensions 不参与渲染(全文注入)。"""
+_STATS_KEYS = {
+    "positive_lines", "forbidden_lines", "metric_lines", "voice_lines",
+    "few_shot_windows", "few_shot_chars", "rag_snippets", "total_prefix_chars",
+    "intensity_effective_total_chars", "few_shot_k",
+}
+
+
+def test_dryrun_strategy_a_consumes_intensity_total(client: TestClient) -> None:
+    """v2 §1.5:strategy=A 同样消费 intensity(抽象总额 900 → 2400),小画像装得下时正文相同。"""
     _, profile_id = _seed_profile_with_binding(seed="strata")
     resp_a = client.post(
         f"{PREFIX}/profiles/{profile_id}/injection-preview",
@@ -135,10 +142,33 @@ def test_dryrun_strategy_a_ignores_intensity_and_sub_dim(client: TestClient) -> 
     )
     assert resp_a.status_code == 200
     assert resp_a2.status_code == 200
-    # A 全文注入,positive_block 长度应一致(不受 intensity 影响)
-    a_pos = resp_a.json()["data"]["fragments"]["positive_block"]
-    a2_pos = resp_a2.json()["data"]["fragments"]["positive_block"]
-    assert a_pos == a2_pos
+    low, high = resp_a.json()["data"], resp_a2.json()["data"]
+    # 小画像两档都装得下 → 正文一致;但总额读数不同,A 不带样例(few_shot_k=0)
+    assert low["fragments"]["positive_block"] == high["fragments"]["positive_block"]
+    assert low["stats"]["intensity_effective_total_chars"] == 900
+    assert high["stats"]["intensity_effective_total_chars"] == 2400
+    assert low["stats"]["few_shot_k"] == 0 and low["stats"]["few_shot_windows"] == 0
+    assert set(low["stats"]) == _STATS_KEYS
+
+
+def test_get_binding_preview_returns_real_stats(client: TestClient) -> None:
+    """GET 端点也带 stats,行数 = 各块 `- ` 条目数,总字数 = prefix 长度。"""
+    binding_id, _ = _seed_profile_with_binding(
+        seed="getstats", strategy="mixed", config_json={"intensity": 80}
+    )
+    resp = client.get(f"{PREFIX}/bindings/{binding_id}/injection-preview")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    stats = data["stats"]
+    assert set(stats) == _STATS_KEYS
+    assert stats["positive_lines"] == 2  # 短句 / 动词驱动
+    assert stats["forbidden_lines"] == 1  # 禁堆砌
+    assert stats["metric_lines"] >= 1  # 段均字数软分布
+    assert stats["voice_lines"] == 0  # 旧画像无 voice_signature
+    assert stats["total_prefix_chars"] == len(data["prefix"])
+    assert stats["intensity_effective_total_chars"] == 900 + (2400 - 900) * 80 // 100
+    assert stats["few_shot_k"] == 5  # round(2 + 4 × 0.8)
+    assert stats["few_shot_windows"] == 0  # local_only 书:原文样例不出
 
 
 def test_dryrun_mixed_empty_sub_dim_equals_all_selected(client: TestClient) -> None:

@@ -522,23 +522,16 @@ function AdvancedRoutes({ state, setFlash }) {
   );
 }
 
-/* ===== AI 行为(本地偏好,沿用原型) ===== */
+/* ===== AI 行为(本地偏好,沿用原型) =====
+   2026-09 W7：删除「允许引用参考画像」「复刻检查严格度」两个开关——它们只写 localStorage
+   （aiAllowRef / aiStrict），没有任何生成 / 注入 / 校验代码读取，属会误导作者的死开关。
+   参考画像是否生效由风格参考页的绑定决定；抄袭检查阈值是后端配置。 */
 function BehaviorSection() {
   const [candN, setCandN] = usePref("aiCandN", 3);
-  const [allowRef, setAllowRef] = usePref("aiAllowRef", true);
-  const [strict, setStrict] = usePref("aiStrict", "normal");
   return (
     <Section title="AI 行为">
       <Row label="生成候选数" hint="每次「再生」产出的候选条数。">
         <Segmented options={[{ value: 2, label: "2" }, { value: 3, label: "3" }, { value: 5, label: "5" }]} value={candN} onChange={setCandN} />
-      </Row>
-      <Row label="允许引用参考画像" hint="关闭后所有生成不再受参考画像影响。"><Toggle on={allowRef} onChange={setAllowRef} /></Row>
-      <Row label="复刻检查严格度">
-        <Segmented options={[
-          { value: "lax", label: "宽松" },
-          { value: "normal", label: "标准" },
-          { value: "strict", label: "严格" },
-        ]} value={strict} onChange={setStrict} />
       </Row>
     </Section>
   );

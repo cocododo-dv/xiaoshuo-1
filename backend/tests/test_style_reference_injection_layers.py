@@ -125,10 +125,11 @@ def test_layers_single_binding_gets_full_budget() -> None:
 
 
 def test_layers_stacked_weights_and_order() -> None:
-    """project + scene 双层:由泛到具体,scene 层权重/预算更大,合并概要一致。"""
-    profile_id = _seed_profile("stack")
-    _bind(profile_id, binding_id="sr_bind_il_p", scope="project", scope_ref_id="proj_il_x")
-    _bind(profile_id, binding_id="sr_bind_il_sc", scope="scene", scope_ref_id="scene_il_1", strategy="mixed")
+    """project + scene 双层(两个不同画像):由泛到具体,scene 层权重/预算更大,合并概要一致。"""
+    base_profile = _seed_profile("stack")
+    scene_profile = _seed_profile("stack_scene")
+    _bind(base_profile, binding_id="sr_bind_il_p", scope="project", scope_ref_id="proj_il_x")
+    _bind(scene_profile, binding_id="sr_bind_il_sc", scope="scene", scope_ref_id="scene_il_1", strategy="mixed")
     with TestClient(create_app()) as client:
         resp = client.get(
             f"{PREFIX}/injection/layers",
@@ -139,13 +140,43 @@ def test_layers_stacked_weights_and_order() -> None:
     weights = [l["weight"] for l in data["layers"]]
     assert weights == [1, 2]
     total = data["budget_total"]
+    # v2 §1.4:两层总额 = total(intensity 50)=1650 × (1 + 0.35) = 2228
+    assert total == 2228
     assert data["layers"][0]["budget_chars"] == total * 1 // 3
     assert data["layers"][1]["budget_chars"] == total * 2 // 3
     assert data["layers"][1]["rank"] < data["layers"][0]["rank"]  # scene 更具体
     assert data["merged"]["layer_count"] == 2
+    assert data["deduplicated"] == []
     # 合并 strategy 取最具体层
     assert data["merged"]["strategy"] == "mixed"
     assert all(l["fragment_count"] >= 1 for l in data["layers"])
+    assert all("voice_block" in l["block_chars"] for l in data["layers"])
+
+
+def test_layers_same_profile_across_scopes_is_deduplicated() -> None:
+    """v2:同一画像绑到 project 与 scene 时只渲染一次(保留最具体层),被去重的 binding 列出。"""
+    profile_id = _seed_profile("dedupe")
+    _bind(profile_id, binding_id="sr_bind_il_dd_p", scope="project", scope_ref_id="proj_il_dd")
+    _bind(profile_id, binding_id="sr_bind_il_dd_sc", scope="scene", scope_ref_id="scene_il_dd", strategy="mixed")
+    with TestClient(create_app()) as client:
+        resp = client.get(
+            f"{PREFIX}/injection/layers",
+            params={"project_id": "proj_il_dd", "scene_id": "scene_il_dd"},
+        )
+        data = resp.json()["data"]
+    assert [l["scope"] for l in data["layers"]] == ["scene"]
+    assert data["layers"][0]["weight"] == 1
+    assert data["layers"][0]["budget_chars"] == data["budget_total"] == 1650
+    assert [d["binding_id"] for d in data["deduplicated"]] == ["sr_bind_il_dd_p"]
+    assert data["merged"]["layer_count"] == 1
+    assert data["merged"]["strategy"] == "mixed"
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_il_dd", "scene_generation", scene_id="scene_il_dd"
+        )
+    # 单次渲染:正向块标题唯一、同一条特征只出现一次
+    assert fragments.positive_block.count("[正向风格特征]") == 1
+    assert fragments.positive_block.count("短句为主") == 1
 
 
 def test_describe_layers_is_read_only() -> None:

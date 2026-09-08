@@ -281,7 +281,9 @@ def get_vector_store(
     backend: str | None = None,
     persist_directory: Path | None = None,
 ) -> VectorStore:
-    settings = get_settings()
+    # 只用 vector_backend / vector_store_dir 两个环境级设置;不叠加库内 api 配置快照
+    # (向量库与 LLM 连接无关,且 chroma_smoke 会在未迁移的 sqlite 上调用这里)。
+    settings = get_settings(include_runtime_config=False)
     selected_backend = (backend or settings.vector_backend).lower()
     _ensure_backend_runtime_supported(selected_backend)
     if selected_backend == "memory":

@@ -633,6 +633,9 @@ class SystemPromptFragments(BaseModel):
     positive_block: str = ""
     forbidden_block: str = ""
     metric_anchor_block: str = ""
+    # 2026-09 风格模仿 v2(W4):确定性声音签名渲染的 `[声音特征]` 块
+    # (来源 profile_json.voice_signature.habits;旧画像缺该键时恒为空串)。
+    voice_block: str = ""
     few_shot_block: str = ""
     # 立项 C — Strategy C(RAG)按当前上下文检索的参考风格片段块;与 few_shot_block
     # 同性质(引用原文),非空时调用方保证红线段必随注。
@@ -641,10 +644,13 @@ class SystemPromptFragments(BaseModel):
     strategy: InjectionStrategy = InjectionStrategy.A
 
     def to_system_prompt_prefix(self) -> str:
+        # 顺序(v2 §1.2):metric → voice → positive → forbidden → few_shot → rag →
+        # anti_plagiarism(红线段永远最后、永不截断)。
         blocks = [
             block
             for block in (
                 self.metric_anchor_block,
+                self.voice_block,
                 self.positive_block,
                 self.forbidden_block,
                 self.few_shot_block,
@@ -682,6 +688,28 @@ class InjectionPreviewRequest(BaseModel):
     include_metric: bool | None = None
 
 
+class InjectionPreviewStats(BaseModel):
+    """preview 端点的真实读数(v2 §2.W4.8;前端强度滑块读数只消费这里,不再算虚构公式)。
+
+    行数 = 各块中以 `- ` 起头的条目行;`few_shot_windows` 是注入的连续段落窗口数,
+    `few_shot_chars` 是窗口原文总字数(封装边界前);`intensity_effective_total_chars`
+    是本次 intensity 对应的抽象四块总额;`few_shot_k` 是 k(i)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    positive_lines: int = 0
+    forbidden_lines: int = 0
+    metric_lines: int = 0
+    voice_lines: int = 0
+    few_shot_windows: int = 0
+    few_shot_chars: int = 0
+    rag_snippets: int = 0
+    total_prefix_chars: int = 0
+    intensity_effective_total_chars: int = 0
+    few_shot_k: int = 0
+
+
 class InjectionPreviewResponse(BaseModel):
     """preview 端点统一返回结构。"""
 
@@ -689,3 +717,4 @@ class InjectionPreviewResponse(BaseModel):
 
     fragments: SystemPromptFragments
     prefix: str
+    stats: InjectionPreviewStats | None = None

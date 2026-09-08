@@ -47,6 +47,9 @@ from novel_system.services.qc_constraints import (
 )
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
 from novel_system.services.scene_ownership import require_scene_project_id
+from novel_system.services.style_prompt_injection import (
+    STYLED_GATE_UNAVAILABLE_VERDICT,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,6 +69,28 @@ UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {
     "character_pronoun_ambiguity",
     "character_pronoun_continuity",
 }
+# 2026-09 风格模仿 v2（W5，规格 §2.W5.5）：styled-draft gate。
+# - 中性稿上的 style gate 只保留确定性 n-gram 抄袭（Q0）裁决；quant / 冻结禁用词不再对
+#   中性稿做（中性稿没有注入任何参考风格，量化容差与禁用词对它没有意义）。
+# - 风格稿（style_draft 落库后 + soft_qc 阶段）跑 plagiarism + 冻结 banned_terms：抄袭命中
+#   → Q0 `style_plagiarism`，走既有 human_review 升级路径（不允许软风险接受）；禁用词命中
+#   → Q2 `reference_banned_term_replicated`，soft_qc 要求人工复核（作者可接受软风险）；
+#   quant 结果只记诊断，不产 issue。
+STYLE_PLAGIARISM_ISSUE_KEY = "style_plagiarism"
+STYLE_BANNED_TERM_ISSUE_KEY = "reference_banned_term_replicated"
+# gate 自身没跑成（校验异常 / 契约损坏 / 参考书已删）：不是正文的错，但抄袭 / 禁用词检查
+# 确实没有执行——Q2（非阻断）并要求人工复核。key 不能以 ``style_`` 开头：分类器把该前缀
+# 一律视作 Q3 只诊断。
+STYLE_GATE_UNAVAILABLE_ISSUE_KEY = "reference_style_gate_unavailable"
+STYLE_VALIDATION_PLAGIARISM_TRIGGER = "style_validation_plagiarism"
+STYLED_DRAFT_GATE_EVENT_KIND = "styled_draft_gate_decided"
+# 每个可能成为终稿的风格化输出都要过 gate：style_draft 落库后、soft_qc 阶段（作用于进入
+# soft_qc 的任何风格稿——含 de_template / salvage / soft patch 产物）、以及
+# near_final_rewrite（带同一 [STYLE_REFERENCE] 前缀重写整场，输出直接成为终稿）。
+STYLED_DRAFT_GATE_STAGES: frozenset[str] = frozenset(
+    {"style_draft", "soft_qc", "near_final_rewrite"}
+)
+_STYLED_GATE_MAX_HITS = 8
 
 _QC_CONTROL_PLANE_ERROR_CODES = {
     "CONTINUITY_BUDGET_EXCEEDED",
@@ -773,12 +798,18 @@ def _qc_run_node_with_degradation(
     step: str,
     message_prefix: str,
     degraded_payload_factory: Callable[..., dict[str, Any]],
+    prompt_decorator: Callable[[dict[str, Any], str], dict[str, Any] | None]
+    | None = None,
 ) -> tuple[str | None, str | None, dict[str, Any]]:
     """QC 节点执行 + 三级受控降级（continuity 预拒 / 已派发失败 / payload 非法）。
 
     降级只在对应账本证据成立时发生，否则原异常照抛；降级形状由各引擎的
     payload 工厂决定（hard=pass、soft=waive）。返回 (llm_call_id,
     degraded_reason, payload)。
+
+    ``prompt_decorator(prompt, final_user_prompt)`` 在模板构建之后、派发之前对 prompt
+    做一次可选改写（v2：soft_qc 阶段前置 ``[STYLE_REFERENCE]`` 前缀）；返回 ``None``
+    视为不改写。
     """
     llm_call_id: str | None = None
     degraded_reason: str | None = None
@@ -787,6 +818,10 @@ def _qc_run_node_with_degradation(
         final_user_prompt = _qc_build_user_prompt(
             prompt["user_prompt"], source_draft_content
         )
+        if prompt_decorator is not None:
+            decorated = prompt_decorator(prompt, final_user_prompt)
+            if isinstance(decorated, dict):
+                prompt = decorated
         node_result = llm_runner.run(
             scene_id=scene_id,
             chapter_id=scene.chapter_id,
@@ -898,6 +933,301 @@ def _qc_record_attempt(
             details_json=details_json,
         )
     )
+
+
+def _neutral_gate_verdict(raw_verdict: Any) -> str:
+    """中性稿 style gate 只认确定性抄袭（Q0）；其余一律视为 pass。
+
+    v2（规格 §2.W5.5）：量化容差 / 冻结禁用词是针对**已注入参考风格的文本**的检查，
+    对没有任何风格注入的中性稿没有意义——原先的 fail / partial 诊断在这里不再产生。
+    """
+    return "plagiarism" if str(raw_verdict or "") == "plagiarism" else "pass"
+
+
+def _frozen_snapshot_for_scene(session: Session, scene: SceneCard) -> Any:
+    state = session.get(SceneRunState, scene.scene_id)
+    if state is None or not state.current_bundle_id:
+        return None
+    bundle_row = session.get(SceneBundle, state.current_bundle_id)
+    return bundle_row.frozen_snapshot_json if bundle_row is not None else None
+
+
+def _styled_gate_result(
+    *,
+    stage: str,
+    report: Any,
+    profile_id: str | None,
+    binding_id: str | None,
+    runtime_contract_hash: str | None,
+    runtime_contract_mode: str | None,
+) -> dict[str, Any]:
+    """把 ValidationReport 压成可入 AttemptTracker / notices 的诊断字典。
+
+    抄袭命中只记位置与长度（不落匹配原文——那正是参考作品的原文）；禁用词命中记词本身
+    （短、已在 banned_terms 表里）；量化结果只记通过计数，永不变成 issue。
+    """
+    plagiarism = dict(getattr(report, "plagiarism_json", None) or {})
+    raw_hits = plagiarism.get("hits") if isinstance(plagiarism.get("hits"), list) else []
+    plagiarism_hits = [
+        {
+            "position": int(hit.get("position") or 0),
+            "matched_length": int(hit.get("matched_length") or 0),
+            "matched_sha256": hashlib.sha256(
+                str(hit.get("matched_text") or "").encode("utf-8")
+            ).hexdigest()[:16],
+        }
+        for hit in raw_hits[:_STYLED_GATE_MAX_HITS]
+        if isinstance(hit, dict)
+    ]
+    forbidden_hits = [
+        {
+            "pattern_statement": str(hit.get("pattern_statement") or ""),
+            "matched_excerpt": str(hit.get("matched_excerpt") or ""),
+            "severity": str(hit.get("severity") or "error"),
+        }
+        for hit in (getattr(report, "forbidden_hits_json", None) or [])[
+            :_STYLED_GATE_MAX_HITS
+        ]
+        if isinstance(hit, dict)
+    ]
+    quantitative = [
+        item
+        for item in (getattr(report, "quantitative_json", None) or [])
+        if isinstance(item, dict)
+    ]
+    verdict_obj = getattr(report, "verdict", None)
+    verdict = str(getattr(verdict_obj, "value", verdict_obj) or "")
+    return {
+        "stage": stage,
+        "verdict": verdict,
+        "plagiarism_passed": bool(plagiarism.get("passed", True)),
+        "plagiarism_hits": plagiarism_hits,
+        "plagiarism_hit_count": len(raw_hits),
+        "forbidden_hits": forbidden_hits,
+        "forbidden_hit_count": len(getattr(report, "forbidden_hits_json", None) or []),
+        "quantitative": {
+            "checked": len(quantitative),
+            "passed": sum(1 for item in quantitative if item.get("passed")),
+        },
+        "profile_id": profile_id,
+        "binding_id": binding_id,
+        "runtime_contract_hash": runtime_contract_hash,
+        "runtime_contract_mode": runtime_contract_mode,
+    }
+
+
+def styled_gate_unavailable_result(
+    *,
+    stage: str,
+    error: str,
+    error_code: str | None = None,
+    profile_id: str | None = None,
+    binding_id: str | None = None,
+    runtime_contract_hash: str | None = None,
+    runtime_contract_mode: str | None = None,
+) -> dict[str, Any]:
+    """gate 未能执行时的诊断字典：与 ``_styled_gate_result`` 同形，``verdict="unavailable"``。
+
+    调用方不得把它当成「无绑定」：风格稿带着样例前缀生成，抄袭 / 禁用词检查却没有跑过
+    ——soft_qc 要挂 Q2 issue 并要求人工复核，scene_generation 要发 STYLE_GATE_UNAVAILABLE
+    notice。只记异常类型名与契约错误码，不记异常文本（可能夹带参考原文）。
+    """
+    return {
+        "stage": stage,
+        "verdict": STYLED_GATE_UNAVAILABLE_VERDICT,
+        "error": error,
+        "error_code": error_code,
+        "plagiarism_passed": None,
+        "plagiarism_hits": [],
+        "plagiarism_hit_count": None,
+        "forbidden_hits": [],
+        "forbidden_hit_count": None,
+        "quantitative": {"checked": 0, "passed": 0},
+        "profile_id": profile_id,
+        "binding_id": binding_id,
+        "runtime_contract_hash": runtime_contract_hash,
+        "runtime_contract_mode": runtime_contract_mode,
+    }
+
+
+def run_styled_draft_style_gate(
+    session: Session,
+    scene: SceneCard,
+    text: str,
+    *,
+    stage: str = "style_draft",
+    bundle: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """v2（规格 §2.W5.5）styled-draft gate：对**已风格化**文本跑抄袭 + 冻结禁用词。
+
+    契约解析顺序：调用方传入的 bundle 快照 → 场景当前 SceneBundle 冻结快照 → （旧 bundle）
+    实时 active 绑定。无绑定 / 契约显式 absent / 文本为空 → ``None``（不登记事件）。
+    契约 degraded 或校验自身失败 → ``verdict="unavailable"`` 的诊断字典（见
+    ``styled_gate_unavailable_result``）并 WARNING 落日志：gate 不阻断主流程，但「检查
+    没跑」必须与「无绑定」区分开，由调用方挂 Q2 / notice 让作者看见。
+
+    返回诊断字典（见 ``_styled_gate_result``）：``verdict`` 为 ``plagiarism`` 表示确定性
+    n-gram 重叠命中（Q0）；``forbidden_hits`` 非空表示复刻了冻结的生成禁用词；``quantitative``
+    只作诊断。每次裁决（含 gate 自身失败）写一行 ``styled_draft_gate_decided`` MetricEvent。
+    """
+    import time as _time
+
+    from novel_system.services.style_reference.injection import (
+        InjectionService,
+        ordered_character_ids,
+    )
+    from novel_system.services.style_reference.metrics_recorder import (
+        MetricsRecorder,
+    )
+    from novel_system.services.style_reference.runtime_contract import (
+        contract_profile_objects,
+        resolve_style_runtime_contract_state,
+    )
+    from novel_system.services.style_reference.validation import (
+        run_sync_validate,
+        run_sync_validate_profiles,
+    )
+
+    if stage not in STYLED_DRAFT_GATE_STAGES:
+        raise ValueError(f"unknown styled-draft gate stage: {stage}")
+    if scene is None or not text or not str(text).strip():
+        return None
+    project_id = getattr(scene, "project_id", None)
+    character_ids = ordered_character_ids(
+        getattr(scene, "pov_character_id", None),
+        getattr(scene, "onstage_chars_json", None),
+    )
+    scene_id = getattr(scene, "scene_id", None)
+    if not project_id and not character_ids and not scene_id:
+        return None
+
+    started_at = _time.perf_counter()
+    result: dict[str, Any] | None = None
+    profile_id: str | None = None
+    binding_id: str | None = None
+    runtime_contract_hash: str | None = None
+    contract_state: Any = None
+    outcome = "error"
+    try:
+        snapshot_source: Any = bundle if isinstance(bundle, dict) else None
+        contract_state = resolve_style_runtime_contract_state(snapshot_source)
+        if snapshot_source is None or contract_state.mode == "legacy_live":
+            frozen_snapshot = _frozen_snapshot_for_scene(session, scene)
+            if frozen_snapshot is not None:
+                contract_state = resolve_style_runtime_contract_state(frozen_snapshot)
+        if contract_state.error_code is not None:
+            raise ValueError(contract_state.error_code)
+        if contract_state.mode == "absent":
+            outcome = "no_binding"
+            return None
+        runtime_contract = contract_state.contract
+        if runtime_contract is not None:
+            profiles = contract_profile_objects(runtime_contract)
+            profile_id = str(runtime_contract["profile_ids"][-1])
+            binding_id = str(runtime_contract["binding_ids"][-1])
+            runtime_contract_hash = str(runtime_contract["contract_hash"])
+            report = run_sync_validate_profiles(text, profiles, session)
+        else:
+            active = InjectionService(session).resolve_active_binding(
+                project_id,
+                "scene_generation",
+                character_ids=character_ids,
+                scene_id=scene_id,
+            )
+            if active is None:
+                outcome = "no_binding"
+                return None
+            from novel_system.services.style_reference.repository import (
+                StyleReferenceRepository,
+            )
+
+            profile = StyleReferenceRepository(session).get_profile(active.profile_id)
+            if profile is None:
+                outcome = "no_binding"
+                return None
+            profile_id = str(active.profile_id)
+            binding_id = str(active.binding_id)
+            report = run_sync_validate(text, profile, session)
+        result = _styled_gate_result(
+            stage=stage,
+            report=report,
+            profile_id=profile_id,
+            binding_id=binding_id,
+            runtime_contract_hash=runtime_contract_hash,
+            runtime_contract_mode=contract_state.mode,
+        )
+        outcome = result["verdict"] or "pass"
+        return result
+    except Exception as exc:  # noqa: BLE001 — gate 不阻断主流程，但降级必须可见
+        _LOGGER.warning(
+            "styled-draft style gate unavailable for scene %s (stage=%s)",
+            getattr(scene, "scene_id", None),
+            stage,
+            exc_info=True,
+        )
+        contract_error = (
+            getattr(contract_state, "error_code", None)
+            if contract_state is not None
+            else None
+        )
+        exc_code = getattr(exc, "code", None)
+        result = styled_gate_unavailable_result(
+            stage=stage,
+            error=type(exc).__name__,
+            error_code=(
+                str(contract_error)
+                if contract_error is not None
+                else (str(exc_code) if exc_code is not None else None)
+            ),
+            profile_id=profile_id,
+            binding_id=binding_id,
+            runtime_contract_hash=runtime_contract_hash,
+            runtime_contract_mode=(
+                getattr(contract_state, "mode", None)
+                if contract_state is not None
+                else None
+            ),
+        )
+        outcome = "error"
+        return result
+    finally:
+        # 有画像的裁决、以及 gate 自身失败（哪怕失败在契约解析、还没解析出画像）都留
+        # MetricEvent；只有「确无绑定」不登记。
+        if profile_id is not None or outcome == "error":
+            unavailable = (
+                result is not None
+                and result.get("verdict") == STYLED_GATE_UNAVAILABLE_VERDICT
+            )
+            event_id = MetricsRecorder.record(
+                session,
+                STYLED_DRAFT_GATE_EVENT_KIND,
+                target_kind="scene",
+                target_ref_id=scene_id,
+                profile_id=profile_id,
+                binding_id=binding_id,
+                outcome=outcome,
+                latency_ms=int((_time.perf_counter() - started_at) * 1000),
+                context={
+                    "stage": stage,
+                    "runtime_contract_hash": runtime_contract_hash,
+                    "plagiarism_hit_count": (
+                        result.get("plagiarism_hit_count") if result else None
+                    ),
+                    "forbidden_hit_count": (
+                        result.get("forbidden_hit_count") if result else None
+                    ),
+                    **(
+                        {
+                            "error": result.get("error"),
+                            "error_code": result.get("error_code"),
+                        }
+                        if unavailable and result is not None
+                        else {}
+                    ),
+                },
+            )
+            if result is not None:
+                result["metric_event_id"] = event_id
 
 
 class HardQcEngine:
@@ -1251,10 +1581,14 @@ class HardQcEngine:
     def _apply_style_validation_gate(
         self, scene: SceneCard, neutral_content: str
     ) -> str | None:
-        """PR-8 §6.6 — sync_only style validation gate。
+        """PR-8 §6.6 — sync_only style validation gate（中性稿）。
 
         scene 无 project_id / 无 active binding / 调用失败 → 返 None(qc 结论直通)。
-        否则返 "pass" / "partial" / "fail" / "plagiarism"(小写字串)。
+        否则返 "pass" / "plagiarism"(小写字串)。
+
+        v2（规格 §2.W5.5）：中性稿只保留确定性 n-gram 抄袭（Q0）裁决；量化容差 /
+        冻结禁用词的 fail / partial 不再对没有任何风格注入的中性稿产生——风格稿的
+        对应检查移到 ``run_styled_draft_style_gate``（style_draft 落库后 + soft_qc）。
         """
         import time as _time
 
@@ -1325,7 +1659,7 @@ class HardQcEngine:
                     profiles,
                     self.session,
                 )
-                verdict = response_report.verdict.value
+                verdict = _neutral_gate_verdict(response_report.verdict.value)
                 return verdict
             if contract_state.mode == "absent":
                 return None
@@ -1353,7 +1687,7 @@ class HardQcEngine:
             )
             if response.sync_result is None:
                 return None
-            verdict = response.sync_result.verdict.value
+            verdict = _neutral_gate_verdict(response.sync_result.verdict.value)
             return verdict
         except (
             Exception
@@ -1583,6 +1917,31 @@ class SoftQcEngine:
     ) -> SoftQcDecision:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        # v2（规格 §2.W5.4）：soft_qc 评审看到的是与 style_draft **相同**的 [STYLE_REFERENCE]
+        # 前缀（同一冻结契约、同一 task_type），这样才谈得上「对照 [声音特征] /
+        # [正向风格特征] 检查偏离」。注入审计随 attempt 落库。
+        style_runtime_audit: dict[str, Any] | None = None
+
+        def _decorate_soft_qc_prompt(
+            prompt: dict[str, Any], final_user_prompt: str
+        ) -> dict[str, Any] | None:
+            nonlocal style_runtime_audit
+            injected = self._inject_style_reference_prefix(
+                prompt,
+                scene,
+                bundle,
+                context_text=source_draft_content,
+                final_user_prompt=final_user_prompt,
+            )
+            audit = (
+                injected.get("_style_reference_runtime_audit")
+                if isinstance(injected, dict)
+                else None
+            )
+            if isinstance(audit, dict):
+                style_runtime_audit = dict(audit)
+            return injected
+
         # Wave 2（§5.4/§7.7）：软 QC 执行失败不再断头——降级为 waive + Q2 警告
         # 继续交付；确定性 gates 照跑，verified Q0/Q1 仍能阻断。
         llm_call_id, degraded_reason, payload = _qc_run_node_with_degradation(
@@ -1599,12 +1958,45 @@ class SoftQcEngine:
             step="soft_qc",
             message_prefix="soft QC",
             degraded_payload_factory=self._degraded_waive_payload,
+            prompt_decorator=_decorate_soft_qc_prompt,
         )
 
         payload = _qc_apply_deterministic_quality_gates(
             scene, bundle, source_draft_content, payload, qc_type="soft_qc"
         )
         payload = self._apply_quality_grading(scene, source_draft_content, payload)
+        # v2（规格 §2.W5.5）styled-draft gate：风格稿的确定性抄袭 / 冻结禁用词检查。
+        # 抄袭 → Q0 阻断并升级人工复核（不允许软风险接受）；禁用词 → 要求人工复核
+        # （作者可接受软风险）；quant 只记诊断。
+        styled_gate = run_styled_draft_style_gate(
+            self.session,
+            scene,
+            source_draft_content,
+            stage="soft_qc",
+            bundle=bundle,
+        )
+        styled_gate_trigger: str | None = None
+        if styled_gate is not None:
+            if styled_gate.get("verdict") == "plagiarism":
+                payload = self._style_plagiarism_block_payload(
+                    scene, source_draft_content, payload, styled_gate
+                )
+                styled_gate_trigger = STYLE_VALIDATION_PLAGIARISM_TRIGGER
+            elif styled_gate.get("forbidden_hits"):
+                payload = self._style_banned_term_review_payload(
+                    scene, source_draft_content, payload, styled_gate
+                )
+            elif styled_gate.get("verdict") == STYLED_GATE_UNAVAILABLE_VERDICT:
+                # gate 没跑成 ≠ 无绑定：风格稿带着样例前缀生成，却没有过抄袭 / 禁用词
+                # 检查——挂 Q2 并要求人工复核（可软风险接受），绝不静默交付。
+                payload = self._style_gate_unavailable_review_payload(
+                    scene, source_draft_content, payload, styled_gate
+                )
+        attempt_details_extra: dict[str, Any] = {}
+        if style_runtime_audit is not None:
+            attempt_details_extra["style_reference_runtime"] = style_runtime_audit
+        if styled_gate is not None:
+            attempt_details_extra["styled_draft_gate"] = styled_gate
         validate_qc_report("soft_qc", payload)  # 组合合法性校验（不回写 dump）
         branch = self._branch_for(payload["next_action"])
         if branch == "patch" and state.soft_patch_count >= 1:
@@ -1626,6 +2018,27 @@ class SoftQcEngine:
             source_draft_row_id=source_draft_row_id,
             payload=payload,
         )
+
+        if branch == "human_review_required" and styled_gate_trigger is not None:
+            # 抄袭红线是来源安全（Q0）：与 hard_qc 的同名触发原因一致，不开放软风险接受。
+            _qc_apply_issue_tracking(state, payload["issues"])
+            _qc_clear_downstream_outputs(state)
+            return self._escalate_existing_report(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                source_draft_row_id=source_draft_row_id,
+                qc_report=qc_report,
+                branch=branch,
+                failure_reason=(
+                    "style_reference styled-draft gate found deterministic plagiarism "
+                    "evidence in the styled draft; human review is required."
+                ),
+                trigger_reason=styled_gate_trigger,
+                llm_call_id=llm_call_id,
+                execution_step_key=execution_step_key,
+                details_extra=attempt_details_extra,
+            )
 
         if branch == "human_review_required":
             blocking_issue = has_blocking(payload.get("issues", []))
@@ -1657,6 +2070,7 @@ class SoftQcEngine:
                     rewrite_brief=payload["rewrite_brief"],
                     llm_call_id=llm_call_id,
                     execution_step_key=execution_step_key,
+                    details_extra=attempt_details_extra,
                 )
                 self.session.flush()
                 return SoftQcDecision(
@@ -1687,6 +2101,7 @@ class SoftQcEngine:
                 source_draft_content_hash=source_draft_content_hash,
                 llm_call_id=llm_call_id,
                 execution_step_key=execution_step_key,
+                details_extra=attempt_details_extra,
             )
 
         _qc_apply_issue_tracking(state, payload["issues"])
@@ -1710,6 +2125,7 @@ class SoftQcEngine:
             rewrite_brief=payload["rewrite_brief"],
             llm_call_id=llm_call_id,
             execution_step_key=execution_step_key,
+            details_extra=attempt_details_extra,
         )
         self.session.flush()
         return SoftQcDecision(
@@ -1732,6 +2148,221 @@ class SoftQcEngine:
             "pass_with_notes": "waive",
             "human_review_required": "human_review_required",
         }[next_action]
+
+    def _inject_style_reference_prefix(
+        self,
+        prompt: dict[str, Any],
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        *,
+        context_text: str,
+        final_user_prompt: str,
+    ) -> dict[str, Any] | None:
+        """v2：复用 scene_generation 的模块级注入器，把同一 [STYLE_REFERENCE] 前缀
+        prepend 到 soft_qc 系统提示（task_type 不变：读同一个冻结契约）。
+
+        注入器内部已吞掉召回 / 渲染异常并记 ``outcome="degraded"``；这里再兜一层
+        import / 意外错误，保证 soft_qc 永不因风格前缀失败而中断。
+        """
+        try:
+            from novel_system.services.style_prompt_injection import (
+                inject_style_reference_prefix,
+            )
+
+            return inject_style_reference_prefix(
+                self.session,
+                prompt,
+                scene,
+                bundle,
+                task_type="scene_generation",
+                context_text=context_text,
+                final_user_prompt=final_user_prompt,
+            )
+        except Exception:  # noqa: BLE001 — 可选增强，不阻断 soft_qc
+            _LOGGER.warning(
+                "soft_qc style reference prefix skipped for scene %s",
+                getattr(scene, "scene_id", None),
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _style_plagiarism_block_payload(
+        scene: SceneCard,
+        content: str,
+        payload: dict[str, Any],
+        gate: dict[str, Any],
+    ) -> dict[str, Any]:
+        """styled-draft gate 抄袭命中 → Q0 ``style_plagiarism`` + soft_block_human。"""
+        issue = classify_issue(
+            {
+                "issue_key": STYLE_PLAGIARISM_ISSUE_KEY,
+                "message": (
+                    "style_reference plagiarism check hit on the styled draft "
+                    "(deterministic n-gram overlap with the reference source)"
+                ),
+                "source": "deterministic",
+                "evidence_spans": [
+                    {
+                        "start": int(hit.get("position") or 0),
+                        "end": int(hit.get("position") or 0)
+                        + int(hit.get("matched_length") or 0),
+                    }
+                    for hit in (gate.get("plagiarism_hits") or [])[:5]
+                    if isinstance(hit, dict)
+                ],
+                "details": {
+                    "stage": "styled_draft_gate",
+                    "profile_id": gate.get("profile_id"),
+                    "runtime_contract_hash": gate.get("runtime_contract_hash"),
+                    "plagiarism_hit_count": gate.get("plagiarism_hit_count"),
+                },
+            },
+            scene=scene,
+            content=content,
+        )
+        rewrite_brief = [
+            item
+            for item in payload.get("rewrite_brief", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        rewrite_brief = _append_unique_rewrite_briefs(
+            rewrite_brief,
+            [
+                "风格稿与参考作品原文存在确定性连续重叠：人工复核后重写重叠段落，"
+                "只保留句法 / 节奏机制，不得沿用参考原文的字句。"
+            ],
+        )
+        return {
+            **payload,
+            "resolution_code": "soft_block_human",
+            "pass_flag": False,
+            "next_action": "human_review_required",
+            "issues": _dedupe_issues([*(payload.get("issues") or []), issue]),
+            "rewrite_brief": rewrite_brief,
+            "carry_forward_note": False,
+            "note_scope": None,
+            "carry_note_text": None,
+        }
+
+    @staticmethod
+    def _style_banned_term_review_payload(
+        scene: SceneCard,
+        content: str,
+        payload: dict[str, Any],
+        gate: dict[str, Any],
+    ) -> dict[str, Any]:
+        """styled-draft gate 冻结禁用词命中 → Q2 issue + 要求人工复核（可软风险接受）。"""
+        terms = [
+            str(hit.get("matched_excerpt") or hit.get("pattern_statement") or "")
+            for hit in (gate.get("forbidden_hits") or [])
+            if isinstance(hit, dict)
+        ]
+        terms = [term for term in dict.fromkeys(terms) if term][:_STYLED_GATE_MAX_HITS]
+        issue = classify_issue(
+            {
+                "issue_key": STYLE_BANNED_TERM_ISSUE_KEY,
+                "message": (
+                    "styled draft replicates frozen generation-banned term(s) of the "
+                    f"style reference: {', '.join(terms)}"
+                ),
+                "source": "deterministic",
+                "evidence_spans": [{"text": term} for term in terms[:5]],
+                "details": {
+                    "stage": "styled_draft_gate",
+                    "profile_id": gate.get("profile_id"),
+                    "runtime_contract_hash": gate.get("runtime_contract_hash"),
+                    "terms": terms,
+                },
+            },
+            scene=scene,
+            content=content,
+        )
+        rewrite_brief = [
+            item
+            for item in payload.get("rewrite_brief", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        rewrite_brief = _append_unique_rewrite_briefs(
+            rewrite_brief,
+            [
+                "风格稿复刻了参考画像冻结的生成禁用词（"
+                + "、".join(terms)
+                + "）：人工复核后以自己的措辞替换，不得保留这些标志性用语。"
+            ],
+        )
+        return {
+            **payload,
+            "resolution_code": "soft_block_human",
+            "pass_flag": False,
+            "next_action": "human_review_required",
+            "issues": _dedupe_issues([*(payload.get("issues") or []), issue]),
+            "rewrite_brief": rewrite_brief,
+            "carry_forward_note": False,
+            "note_scope": None,
+            "carry_note_text": None,
+        }
+
+    @staticmethod
+    def _style_gate_unavailable_review_payload(
+        scene: SceneCard,
+        content: str,
+        payload: dict[str, Any],
+        gate: dict[str, Any],
+    ) -> dict[str, Any]:
+        """styled-draft gate 未能执行 → Q2 issue + 要求人工复核（可软风险接受）。
+
+        与禁用词命中同一形状：检查没跑不是正文的错，不阻断，但作者必须知道这份风格稿
+        没有经过抄袭 / 禁用词核对。
+        """
+        error = str(gate.get("error") or "unknown")
+        error_code = gate.get("error_code")
+        issue = classify_issue(
+            {
+                "issue_key": STYLE_GATE_UNAVAILABLE_ISSUE_KEY,
+                "message": (
+                    "style_reference styled-draft gate could not run on this styled "
+                    f"draft ({error}"
+                    + (f": {error_code}" if error_code else "")
+                    + "); the plagiarism / frozen banned-term check did not execute"
+                ),
+                "source": "deterministic",
+                "evidence_spans": [],
+                "details": {
+                    "stage": "styled_draft_gate",
+                    "gate_stage": gate.get("stage"),
+                    "error": error,
+                    "error_code": error_code,
+                    "profile_id": gate.get("profile_id"),
+                    "runtime_contract_hash": gate.get("runtime_contract_hash"),
+                },
+            },
+            scene=scene,
+            content=content,
+        )
+        rewrite_brief = [
+            item
+            for item in payload.get("rewrite_brief", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        rewrite_brief = _append_unique_rewrite_briefs(
+            rewrite_brief,
+            [
+                "风格稿的抄袭 / 禁用词检查未能执行：人工复核该稿是否沿用参考原文字句或"
+                "复刻了参考画像的生成禁用词，再决定是否接受。"
+            ],
+        )
+        return {
+            **payload,
+            "resolution_code": "soft_block_human",
+            "pass_flag": False,
+            "next_action": "human_review_required",
+            "issues": _dedupe_issues([*(payload.get("issues") or []), issue]),
+            "rewrite_brief": rewrite_brief,
+            "carry_forward_note": False,
+            "note_scope": None,
+            "carry_note_text": None,
+        }
 
     @staticmethod
     def _degraded_waive_payload(
@@ -1938,6 +2569,7 @@ class SoftQcEngine:
         error_code: str | None = None,
         retryable: bool | None = None,
         continuity_warning: dict[str, Any] | None = None,
+        details_extra: dict[str, Any] | None = None,
     ) -> None:
         _qc_record_attempt(
             self.session,
@@ -1955,10 +2587,12 @@ class SoftQcEngine:
             error_code=error_code,
             retryable=retryable,
             continuity_warning=continuity_warning,
-            # soft 侧独有的 details_json 键（checkpoint 契约键名不变）
+            # soft 侧独有的 details_json 键（checkpoint 契约键名不变）；v2 追加
+            # style_reference_runtime / styled_draft_gate 诊断键（可选）。
             details_extra={
                 "source_draft_row_id": source_draft_row_id,
                 "rewrite_brief": rewrite_brief,
+                **(details_extra or {}),
             },
         )
 
@@ -1979,6 +2613,7 @@ class SoftQcEngine:
         error_code: str | None = None,
         retryable: bool | None = None,
         source_draft_content_hash: str | None = None,
+        details_extra: dict[str, Any] | None = None,
     ) -> SoftQcDecision:
         replay_context = {
             "scene_id": scene.scene_id,
@@ -2036,6 +2671,7 @@ class SoftQcEngine:
             error_code=error_code,
             retryable=retryable,
             continuity_warning=continuity_warning,
+            details_extra=details_extra,
         )
         self.session.flush()
         return SoftQcDecision(

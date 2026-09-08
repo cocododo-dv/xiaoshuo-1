@@ -83,3 +83,80 @@ Bundle 在 `source_version_refs` 中显式记录状态：
 - 中性稿和续写上下文只以哈希进入审计；
 - 多层质检与漂移基线和候选评分使用相同合成目标；
 - 反馈快照不含正文，未知反馈标签被 API 拒绝，反馈不能激活策略。
+
+## v2 附记（2026-09-06，风格模仿 v2）
+
+依据 `docs/style-imitation-v2-plan-2026-09-05.md` §1 共享契约。以下只是**追加**，不改变上文的
+冻结 / 降级语义：旧画像没有新键、旧 Bundle 没有新 section、旧 yaml 没有新配置键时，对应块与
+section 一律不渲染，其余链路照旧；反抄袭红线段与 fail-closed 语义不变。
+
+### 冻结键新增
+
+- `profile_json.voice_signature`（`{version, features, habits, deliberate_repetition}`，合成期由
+  确定性声音签名 `voice_signature.py` 写入）与 `profile_json.narrative_guidance`（≤8 行确定性派生）
+  进入 `runtime_contract._FROZEN_PROFILE_JSON_KEYS` 白名单，随契约冻结并参与哈希；`anchor_quotes_used`
+  只是合成审计字段，不入契约。
+- 注入前缀顺序：`metric → voice（[声音特征]）→ positive → forbidden → few_shot → rag → anti_plagiarism`。
+  `[声音特征]` 只渲染冻结契约里的 `voice_signature.habits`，缺失即为空块。
+- intensity∈[0,100] 同时决定抽象四块总额（`intensity_min_total_chars`=900 → `system_prompt_max_tokens`=2400
+  字，线性）与 few-shot 窗口数（`few_shot_k_min`=2 → `few_shot_k`=6），A / B / C / MIXED 一致；多层总额
+  ×(1 + 0.35 × (层数 − 1))、上限 ×1.7，样例只取最具体层且不再丢弃。few-shot 仍逐条核对引文 SHA-256 与
+  发送许可，窗口只在许可有效时展开为相邻段落；契约构建时即把每条引文所在段的
+  ±(`few_shot_window_paragraphs` − 1) 同书相邻段哈希一并冻结进 `sample_paragraph_refs`（遇 `paragraph_index`
+  断档或空段即止，只存哈希不存原文），所以冻结路径的窗口也是多段的；相邻段被改动时 SHA-256 不符，
+  该窗口退化为单段；旧契约（只有引文所在段）照常校验。
+
+### Bundle 新 section 与可见性
+
+| section | 标签 | neutral_draft | style_draft | 来源 |
+|---|---|---|---|---|
+| `style_narrative_guidance` | Style Reference — Narrative Mechanisms | 可见 | 可见 | 契约所有层的 `narrative_guidance` 合并去重，≤8 行；`scene_blueprint._source_snapshot` 也注入 |
+| `previous_scene_voice_anchor` | Previous Scene Voice Anchor (own prose; keep the same voice) | 不可见 | 可见 | 同章上一场最新 `style_draft` / `de_template` / `style_patch` / `style_salvage` 稿（跳过内容等于中性稿的 `style_draft` 回退行）尾部 ≤`continuity_anchor_max_chars`（900）字；没有则上一章末场；没有则不注入 |
+| `style_drift_calibration` | Style Drift Calibration | 不可见 | 可见 | 本章最近一次 `style_drift_observed` 事件的 `calibration_lines`，≤`drift_calibration_max_lines`（3）行 |
+
+`context_budget.NEUTRAL_DRAFT_STYLE_SECTIONS` 追加了后两项，`style_narrative_guidance` 刻意不在其中——
+叙事取舍机制正是中性稿要吸收的。`source_version_refs` 只记 `style_narrative_guidance_contract_hash` /
+`_line_count`、`previous_scene_voice_anchor_scene_id` / `_draft_row_id` / `_stage`、
+`style_drift_calibration_line_count` / `_before_scene_seq`；section 正文（自己的成稿尾部、校准行）不进审计。
+
+### MetricEvent
+
+- `style_drift_observed`（W6）：`target_kind="scene"`，`target_ref_id=scene_id`，`profile_id`，
+  `context={"chapter_id","scene_seq","features":{名:{"value","baseline_mean","baseline_std","z"}},
+  "deviations":[{"feature","direction","z"}],"calibration_lines":[...],"drift_ptype_priority":[...]}`；
+  只在 |z|≥1.5 的特征上生成校准行（方向性、无数字）。归档期由
+  `scene_archive_effects._detect_and_store_style_drift` → `style_continuity.observe_style_drift` 写入，
+  下一场 Bundle 经 `style_continuity.latest_drift_calibration(session, chapter_id, before_scene_seq)` 读取；
+  没有事件时返回空、section 不登记。
+- `styled_draft_gate_decided`：styled-draft gate 每次裁决写一行（见下）。
+
+### styled-draft gate（`qc_engine.run_styled_draft_style_gate`）
+
+- 中性稿上的 style gate 只保留确定性 n-gram 抄袭（Q0 `style_plagiarism` → `human_review_required`，
+  `resolution_code=style_validation_plagiarism`）；quant / 冻结禁用词不再对中性稿裁决。
+- 风格稿（style_draft 落库后 / soft_qc 阶段）对 `style_content` 跑 plagiarism + 冻结 `banned_terms`：
+  抄袭命中 → Q0 同上，不允许软风险接受；禁用词命中 → Q2 `reference_banned_term_replicated`，soft_qc
+  要求人工复核（作者可接受软风险）；量化结果只记诊断计数，永不成为 issue。
+- soft_qc 与 style_draft 消费同一 `[STYLE_REFERENCE]` 前缀（`qc_engine._inject_style_reference_prefix`，
+  task_type 不变），因此质检对照的是与生成相同的冻结契约。
+
+### notices
+
+`scene_generation` 把 notices（`{code, severity, message}`）写进最近一次 style_draft 的
+`AttemptTracker.details_json`，`api/routes/scenes.py:_attach_style_notices` 只读透传到 `run/full`
+与工作台响应；同一 outcome 也进入 `_style_reference_runtime_audit`（仍只存哈希与计数，不存正文）。
+
+| code | 含义 |
+|---|---|
+| `STYLE_DRAFT_FALLBACK_NEUTRAL` | style_draft 因长度 / 必含项被拒，回退中性稿 |
+| `STYLE_INJECTION_MISS` | 契约已冻结但没渲染出任何块 |
+| `STYLE_INJECTION_DEGRADED` | 注入 outcome 为 `degraded` / `degraded_budget` |
+| `STYLE_PLAGIARISM_HIT` | styled-draft gate 抄袭命中（Q0） |
+| `STYLE_BANNED_TERM_HIT` | styled-draft gate 冻结禁用词命中（Q2） |
+
+### 同步提示词
+
+`config/prompts.yaml` 的改动对已保存系统配置的安装无效（活动快照盖过仓库文件），须
+`cd backend && python -m novel_system.tools.sync_prompt_templates`（干跑）→ `--execute`；该工具自 v2 起
+默认覆盖全部模板（此前只有 `snowflake_*`），`--prefix` / `--template` 可收窄，界面改写过且版本号未变的
+模板默认保留。

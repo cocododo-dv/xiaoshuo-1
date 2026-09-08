@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import re
 import time
 import uuid
 from copy import deepcopy
-from dataclasses import dataclass
-from typing import Any, Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Sequence
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -53,6 +55,10 @@ from novel_system.services.style_reference.runtime_contract import (
     contract_profile_objects,
     extract_style_generation_context,
     resolve_style_runtime_contract_state,
+)
+from novel_system.services.style_prompt_injection import (  # noqa: F401  (re-export for callers/tests)
+    STYLED_GATE_UNAVAILABLE_VERDICT,
+    inject_style_reference_prefix,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -114,9 +120,223 @@ class StyleGenerationResult:
     execution_step_key: str | None = None
     artifact_execution_id: str | None = None
     ranking_audit: dict[str, Any] | None = None
+    # 2026-09 风格模仿 v2（W5，规格 §2.W5.6）：风格链路的非静默提示。每项
+    # ``{"code", "message", "severity", ...}``；code 见 STYLE_NOTICE_*。同一份也写进
+    # AttemptTracker.details_json["notices"]，供场景运行 / 工作台响应回读。
+    notices: list[dict[str, Any]] = field(default_factory=list)
+    # 生成侧 styled-draft gate 的诊断字典（qc_engine.run_styled_draft_style_gate 的返回；
+    # 无绑定时 None）。orchestrator 据此对 near_final_rewrite 的抄袭裁决采取行动。
+    styled_draft_gate: dict[str, Any] | None = None
 
 
 JSON_SCHEMA_INSTRUCTION = "Return JSON that matches the structured schema exactly."
+
+# ---------------------------------------------------------------------------
+# 2026-09 风格模仿 v2（W5）：风格链路 notices
+# ---------------------------------------------------------------------------
+STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL = "STYLE_DRAFT_FALLBACK_NEUTRAL"
+STYLE_NOTICE_INJECTION_MISS = "STYLE_INJECTION_MISS"
+STYLE_NOTICE_INJECTION_DEGRADED = "STYLE_INJECTION_DEGRADED"
+STYLE_NOTICE_PLAGIARISM_HIT = "STYLE_PLAGIARISM_HIT"
+STYLE_NOTICE_BANNED_TERM_HIT = "STYLE_BANNED_TERM_HIT"
+# styled-draft gate 自身没跑成（校验异常 / 契约损坏 / 参考书已删）：抄袭 / 禁用词检查
+# 没有执行过，不能与「无绑定」混为一谈。
+STYLE_NOTICE_GATE_UNAVAILABLE = "STYLE_GATE_UNAVAILABLE"
+STYLE_NOTICE_CODES: frozenset[str] = frozenset(
+    {
+        STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL,
+        STYLE_NOTICE_INJECTION_MISS,
+        STYLE_NOTICE_INJECTION_DEGRADED,
+        STYLE_NOTICE_PLAGIARISM_HIT,
+        STYLE_NOTICE_BANNED_TERM_HIT,
+        STYLE_NOTICE_GATE_UNAVAILABLE,
+    }
+)
+# 生成侧要跑 styled-draft gate 的阶段：落库内容是 provider 的风格化输出、且会成为终稿
+# 候选的每一个阶段。style_draft 回退中性稿时不跑（内容是已批准的中性稿）。
+_STYLED_GATE_GENERATION_STAGES: frozenset[str] = frozenset(
+    {"style_draft", "near_final_rewrite"}
+)
+# 风格链路 notices 落在哪些 AttemptTracker.step 上（API 回读按 bundle 合并这几步的最近
+# 一次 completed 尝试）：style_draft 与 near_final_rewrite（step=scene_literary_rewrite）。
+STYLE_NOTICE_ATTEMPT_STEPS: tuple[str, ...] = ("style_draft", "scene_literary_rewrite")
+_STYLE_NOTICE_SEVERITIES = ("info", "warning", "error", "blocking")
+
+
+def style_notice(
+    code: str,
+    message: str,
+    *,
+    severity: str = "warning",
+    **details: Any,
+) -> dict[str, Any]:
+    """构造一条风格链路 notice（JSON 友好，供 API 直通）。"""
+    if code not in STYLE_NOTICE_CODES:
+        raise ValueError(f"unknown style notice code: {code}")
+    if severity not in _STYLE_NOTICE_SEVERITIES:
+        raise ValueError(f"unknown style notice severity: {severity}")
+    notice: dict[str, Any] = {"code": code, "message": message, "severity": severity}
+    for key, value in details.items():
+        if value is not None:
+            notice[key] = value
+    return notice
+
+
+def style_injection_notices(prompt: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """把 ``prompt["_style_reference_runtime_audit"]`` 的注入结果翻译成 notices。
+
+    - 无审计键：没有可用的参考绑定（严格 no-op）→ 无 notice（无参考不是故障）；
+    - ``outcome == "miss"``：契约已冻结但没渲染出任何块 → STYLE_INJECTION_MISS；
+    - ``outcome in {"degraded", "degraded_budget"}`` → STYLE_INJECTION_DEGRADED。
+    """
+    if not isinstance(prompt, Mapping):
+        return []
+    audit = prompt.get("_style_reference_runtime_audit")
+    if not isinstance(audit, Mapping):
+        return []
+    outcome = str(audit.get("outcome") or "")
+    if outcome == "miss":
+        return [
+            style_notice(
+                STYLE_NOTICE_INJECTION_MISS,
+                "风格参考已绑定，但本次没有渲染出任何可注入的风格块；本稿未受参考风格约束。",
+                severity="warning",
+                contract_hash=audit.get("contract_hash"),
+                profile_ids=list(audit.get("profile_ids") or []),
+            )
+        ]
+    if outcome == "degraded":
+        return [
+            style_notice(
+                STYLE_NOTICE_INJECTION_DEGRADED,
+                "风格参考注入失败，已回退到无风格前缀的基础提示；本稿未受参考风格约束。",
+                severity="error",
+                error_code=audit.get("error_code"),
+                runtime_contract_status=audit.get("runtime_contract_status"),
+            )
+        ]
+    if outcome == "degraded_budget":
+        return [
+            style_notice(
+                STYLE_NOTICE_INJECTION_DEGRADED,
+                "输入预算不足，风格参考前缀被整体裁掉；本稿未受参考风格约束。",
+                severity="warning",
+                budget_fit=deepcopy(audit.get("budget_fit")),
+            )
+        ]
+    return []
+
+
+_STYLED_GATE_STAGE_LABEL = {
+    "style_draft": "风格稿",
+    "near_final_rewrite": "准终稿重写稿",
+}
+_STYLED_GATE_STAGE_CONSEQUENCE = {
+    "style_draft": "该稿不得直接成稿，soft_qc 阶段将升级为人工复核。",
+    "near_final_rewrite": "该重写稿已被丢弃，终稿回退为重写前已过 gate 的风格稿。",
+}
+
+
+def _styled_draft_gate_notices(gate: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """styled-draft gate 结果 → notices。
+
+    plagiarism 阻断级；冻结禁用词命中 error 级；gate 自身未能执行（verdict
+    ``unavailable``）error 级 STYLE_GATE_UNAVAILABLE。命中计数取 gate 的真实总数
+    （``plagiarism_hit_count`` / ``forbidden_hit_count``），不是被截断到 8 条的证据列表长度。
+    """
+    if not isinstance(gate, Mapping):
+        return []
+    verdict = str(gate.get("verdict") or "")
+    stage = str(gate.get("stage") or "style_draft")
+    label = _STYLED_GATE_STAGE_LABEL.get(stage, "风格稿")
+    consequence = _STYLED_GATE_STAGE_CONSEQUENCE.get(
+        stage, _STYLED_GATE_STAGE_CONSEQUENCE["style_draft"]
+    )
+    notices: list[dict[str, Any]] = []
+    if verdict == STYLED_GATE_UNAVAILABLE_VERDICT:
+        notices.append(
+            style_notice(
+                STYLE_NOTICE_GATE_UNAVAILABLE,
+                f"{label}的抄袭 / 冻结禁用词检查未能执行；本稿未经参考来源安全核对，"
+                "soft_qc 阶段将要求人工复核。",
+                severity="error",
+                stage=stage,
+                error=gate.get("error"),
+                error_code=gate.get("error_code"),
+                profile_id=gate.get("profile_id"),
+                runtime_contract_hash=gate.get("runtime_contract_hash"),
+            )
+        )
+        return notices
+    if verdict == "plagiarism" or gate.get("plagiarism_passed") is False:
+        plagiarism_hits = gate.get("plagiarism_hits") or []
+        notices.append(
+            style_notice(
+                STYLE_NOTICE_PLAGIARISM_HIT,
+                f"{label}与参考作品原文存在确定性 n-gram 重叠（抄袭红线命中）；{consequence}",
+                severity="blocking",
+                stage=stage,
+                hit_count=int(gate.get("plagiarism_hit_count") or len(plagiarism_hits)),
+                profile_id=gate.get("profile_id"),
+                runtime_contract_hash=gate.get("runtime_contract_hash"),
+            )
+        )
+    forbidden_hits = gate.get("forbidden_hits") or []
+    if forbidden_hits:
+        notices.append(
+            style_notice(
+                STYLE_NOTICE_BANNED_TERM_HIT,
+                f"{label}命中参考画像冻结的生成禁用词；soft_qc 阶段将升级为人工复核。",
+                severity="error",
+                stage=stage,
+                hit_count=int(gate.get("forbidden_hit_count") or len(forbidden_hits)),
+                terms=[
+                    str(hit.get("matched_excerpt") or hit.get("pattern_statement") or "")
+                    for hit in forbidden_hits
+                    if isinstance(hit, Mapping)
+                ][:8],
+                profile_id=gate.get("profile_id"),
+            )
+        )
+    return notices
+
+
+def latest_style_notices(
+    session: Session,
+    scene_id: str,
+    *,
+    bundle_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """回读风格链路写进 AttemptTracker 的 notices（API 直通用）。
+
+    对 ``STYLE_NOTICE_ATTEMPT_STEPS`` 的每一步取最近一次 completed 尝试，按步序合并去重：
+    style_draft 的 notices 在前，near_final_rewrite（step=scene_literary_rewrite）在后。
+    传 ``bundle_id`` 时只看该 bundle（API 层必须传——一次运行的响应不能带上别的运行的
+    notices）；不传则取场景最近一次，仅供直接调用方使用。
+    """
+    merged: list[dict[str, Any]] = []
+    for step in STYLE_NOTICE_ATTEMPT_STEPS:
+        stmt = (
+            select(AttemptTracker)
+            .where(
+                AttemptTracker.scene_id == scene_id,
+                AttemptTracker.step == step,
+                AttemptTracker.status == "completed",
+            )
+            .order_by(AttemptTracker.attempt_id.desc())
+        )
+        if bundle_id:
+            stmt = stmt.where(AttemptTracker.source_bundle_id == bundle_id)
+        row = session.execute(stmt).scalars().first()
+        if row is None:
+            continue
+        raw = (row.details_json or {}).get("notices")
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, dict) and item.get("code") and item not in merged:
+                merged.append(deepcopy(item))
+    return merged
 _STYLE_SAFETY_REPAIR_TASK_PROMPT = (
     "Edit the labeled rejected style draft directly. This is a local safety repair, not a new composition. "
     "Preserve its wording, paragraph architecture, reusable style, facts, chronology, and ending wherever they "
@@ -1037,6 +1257,10 @@ class SceneGenerationService:
             context_text=neutral_content,
             final_user_prompt=user_prompt,
         )
+        # v2（规格 §2.W5.6）：注入命中与否、回退中性稿、styled-draft gate 命中都进
+        # 同一份 notices——随结果对象返回并写进 AttemptTracker，绝不静默。
+        notices: list[dict[str, Any]] = style_injection_notices(prompt)
+        styled_draft_gate: dict[str, Any] | None = None
         if resume_base is None:
             node_id = "style_patch" if llm_step == "soft_patch" else llm_step
             try:
@@ -1108,6 +1332,16 @@ class SceneGenerationService:
                 # 已批准的中性稿是安全降级真源。保留 provider 原稿为独立 rejected
                 # 行，主 style_draft 行只承载可继续进入 QC/候选选择的安全文本。
                 style_content = neutral_content
+                notices.append(
+                    style_notice(
+                        STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL,
+                        "风格稿因长度 / 必含项 / 禁用内容 / 文本完整性未通过确定性安全门，"
+                        "已回退为已批准的中性稿；后续修复通道会尝试一次带风格的安全修复。",
+                        severity="warning",
+                        reasons=list(base_safety.get("reasons") or []),
+                        rejected_candidate_row_id=rejected_candidate_row_id,
+                    )
+                )
             self.session.add(
                 SceneDraft(
                     row_id=row_id,
@@ -1122,6 +1356,32 @@ class SceneGenerationService:
             )
             self.session.flush()
 
+            if (
+                stage in _STYLED_GATE_GENERATION_STAGES
+                and rejected_candidate_row_id is None
+            ):
+                # v2（规格 §2.W5.5）styled-draft gate：样例预算放大后，每一份落库的
+                # provider 风格化输出都必须过一次确定性抄袭 + 冻结禁用词检查。
+                # style_draft：命中只记 notice 与审计，升级到人工复核由 soft_qc 阶段的同一
+                # gate 完成；near_final_rewrite：输出会直接成为终稿、没有后续 QC，
+                # orchestrator 读 result.styled_draft_gate 对抄袭裁决采取行动。
+                styled_draft_gate = self._styled_draft_style_gate(
+                    scene, style_content, bundle=bundle, stage=stage
+                )
+                notices.extend(_styled_draft_gate_notices(styled_draft_gate))
+
+            runtime_audit = (
+                deepcopy(prompt["_style_reference_runtime_audit"])
+                if isinstance(prompt.get("_style_reference_runtime_audit"), dict)
+                else None
+            )
+            if runtime_audit is not None:
+                runtime_audit["generation_outcome"] = (
+                    "approved_neutral_fallback"
+                    if rejected_candidate_row_id is not None
+                    else "provider_style_output"
+                )
+                runtime_audit["notice_codes"] = [item["code"] for item in notices]
             self.session.add(
                 AttemptTracker(
                     scene_id=scene.scene_id,
@@ -1140,6 +1400,12 @@ class SceneGenerationService:
                             if rejected_candidate_row_id is not None
                             else "provider_style_output"
                         ),
+                        "notices": deepcopy(notices),
+                        **(
+                            {"styled_draft_gate": deepcopy(styled_draft_gate)}
+                            if styled_draft_gate is not None
+                            else {}
+                        ),
                         **(
                             {
                                 "paragraph_shape_normalization": (
@@ -1150,14 +1416,8 @@ class SceneGenerationService:
                             else {}
                         ),
                         **(
-                            {
-                                "style_reference_runtime": deepcopy(
-                                    prompt["_style_reference_runtime_audit"]
-                                )
-                            }
-                            if isinstance(
-                                prompt.get("_style_reference_runtime_audit"), dict
-                            )
+                            {"style_reference_runtime": runtime_audit}
+                            if runtime_audit is not None
                             else {}
                         ),
                         **(attempt_details_extra or {}),
@@ -1178,6 +1438,8 @@ class SceneGenerationService:
                 bundle_id=bundle["bundle_id"],
                 bundle_hash=bundle["bundle_snapshot_hash"],
                 execution_step_key=execution_step_key,
+                notices=deepcopy(notices),
+                styled_draft_gate=deepcopy(styled_draft_gate),
             )
             if product_callback is not None and product_slot_key is not None:
                 product_callback(
@@ -1404,6 +1666,15 @@ class SceneGenerationService:
                             prior_repair_outcome
                         )
                 if de_template_result is not None:
+                    # 修复稿替代基稿返回时，基稿阶段产生的 notices 一并随行。
+                    de_template_result.notices = [
+                        *deepcopy(notices),
+                        *[
+                            item
+                            for item in (de_template_result.notices or [])
+                            if item not in notices
+                        ],
+                    ]
                     if product_callback is not None and product_slot_key is not None:
                         product_callback(
                             product_slot_key,
@@ -2011,158 +2282,58 @@ class SceneGenerationService:
     ) -> dict[str, Any] | None:
         """PR-8 §5.1 — 把 active StyleProfile 注入到 prompt["system_prompt"] 头部。
 
-        无 binding / project_id / profile 时 no-op；有候选 binding 但召回/渲染失败时
-        吞掉异常、回退基础 prompt（风格注入是可选增强，不阻断 LLM 生成流程）。
-
-        立项 C §12 — ``context_text``(续写最新正文)透传给 Strategy C(RAG),
-        作为三粒度检索 query;长文续写循环按 refresh 周期刷新此值 → 召回随上下文变化
-        (防漂移)。其余策略忽略此参数。
+        v2（W5）：核心逻辑抽成模块级 ``inject_style_reference_prefix``，qc_engine 在
+        soft_qc 阶段复用同一前缀；本方法只做委派，契约不变。
         """
-        if prompt is None or scene is None:
-            return prompt
-        project_id = getattr(scene, "project_id", None)
-        # PR-14/18 — character scope 用 pov ∪ onstage 匹配集(pov 优先)
-        character_ids = ordered_character_ids(
-            getattr(scene, "pov_character_id", None),
-            getattr(scene, "onstage_chars_json", None),
+        return inject_style_reference_prefix(
+            self.session,
+            prompt,
+            scene,
+            bundle,
+            task_type=task_type,
+            context_text=context_text,
+            final_user_prompt=final_user_prompt,
         )
-        # PR-15 — scene scope 用 scene_id 匹配(优先级最高)
-        scene_id = getattr(scene, "scene_id", None)
-        if not project_id and not character_ids and not scene_id:
-            return prompt
-        svc = InjectionService(self.session)
-        # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
-        # when drift guidance includes structured dimension data) so the few-shot
-        # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
-        snapshot = (
-            bundle.get("snapshot")
-            if bundle
-            and isinstance(bundle, dict)
-            and isinstance(bundle.get("snapshot"), dict)
-            else bundle
-        )
-        if isinstance(snapshot, dict):
-            drift_priority = (snapshot.get("inline_digests") or {}).get(
-                "_drift_ptype_priority"
-            )
-            if drift_priority and isinstance(drift_priority, list):
-                svc.drift_ptype_priority = drift_priority
-        # All callers now share one bounded prose-context extractor. The initial
-        # style pass supplies the neutral draft; continuation calls supply the
-        # latest accumulated prose.
-        from novel_system.services.style_reference.rag import load_rag_config
 
-        context = extract_style_generation_context(
-            context_text,
-            source_kind="generation_source" if context_text else "profile_fallback",
-            max_chars=int(load_rag_config().get("rag_context_query_max_chars", 2000)),
+    def _styled_draft_style_gate(
+        self,
+        scene: SceneCard,
+        style_content: str,
+        *,
+        bundle: dict[str, Any] | None = None,
+        stage: str = "style_draft",
+    ) -> dict[str, Any] | None:
+        """v2（规格 §2.W5.5）styled-draft gate：对已落库的风格化输出跑抄袭 + 冻结禁用词。
+
+        契约取自本次生成用的 bundle（与注入前缀同一冻结契约）；返回
+        qc_engine.run_styled_draft_style_gate 的诊断字典；无绑定 → None；gate 自身失败 →
+        ``verdict="unavailable"``（失败已 WARNING 落日志，不阻断生成，但必须可见——调用方
+        据此发 STYLE_GATE_UNAVAILABLE notice）。``stage`` 为 style_draft 时升级到人工复核由
+        soft_qc 阶段的同一 gate 完成；near_final_rewrite 由 orchestrator 直接处置。
+        """
+        from novel_system.services.qc_engine import (
+            run_styled_draft_style_gate,
+            styled_gate_unavailable_result,
         )
-        runtime_contract = None
-        contract_state = None
+
         try:
-            contract_state = resolve_style_runtime_contract_state(
-                bundle,
-                task_type=task_type,
+            return run_styled_draft_style_gate(
+                self.session,
+                scene,
+                style_content,
+                stage=stage,
+                bundle=bundle,
             )
-            runtime_contract = contract_state.contract
-            if contract_state.error_code is not None:
-                raise ValueError(contract_state.error_code)
-            if runtime_contract is not None:
-                fragments = svc.fragments_for_contract(
-                    runtime_contract,
-                    project_id=project_id,
-                    context=context,
-                    drift_ptype_priority=svc.drift_ptype_priority,
-                )
-            elif contract_state.mode == "absent":
-                # This new bundle explicitly froze "no style binding". A binding
-                # added later must not alter replay of the already-built scene.
-                return prompt
-            else:
-                # Backward compatibility for old bundles created before the frozen
-                # runtime contract. New bundles never re-resolve live bindings here.
-                svc.context_text = context.query_text
-                fragments = svc.fragments_for(
-                    project_id,
-                    task_type,
-                    character_ids=character_ids,
-                    scene_id=scene_id,
-                )
-            budget_fit_audit = None
-            token_budget = prompt.get("token_budget") or {}
-            target_input_tokens = token_budget.get("target_input_tokens")
-            if final_user_prompt is not None and target_input_tokens is not None:
-                fragments, budget_fit_audit = fit_fragments_to_input_budget(
-                    fragments,
-                    base_system_prompt=str(prompt.get("system_prompt") or ""),
-                    user_prompt=final_user_prompt,
-                    target_input_tokens=int(target_input_tokens),
-                )
-            prefix = fragments.to_system_prompt_prefix()
-        except Exception as exc:  # noqa: BLE001
-            # 风格注入是可选增强：召回/渲染失败时吞掉并回退到基础 prompt，不阻断 LLM 生成
-            # 流程（顾问型降级，与离线退役无关）。
+        except Exception as exc:  # noqa: BLE001 — gate 自身故障不阻断生成，但必须可见
             _LOGGER.warning(
-                "style_reference injection skipped for scene %s task %s: %s",
+                "styled-draft style gate failed for scene %s (stage=%s)",
                 getattr(scene, "scene_id", None),
-                task_type,
-                exc,
+                stage,
+                exc_info=True,
             )
-            degraded = dict(prompt)
-            degraded["_style_reference_runtime_audit"] = {
-                "outcome": "degraded",
-                "task_type": task_type,
-                "context": context.audit_dict(),
-                "runtime_contract_status": (
-                    contract_state.status if contract_state is not None else None
-                ),
-                "runtime_contract_mode": (
-                    contract_state.mode if contract_state is not None else None
-                ),
-                "error_code": (
-                    contract_state.error_code
-                    if contract_state is not None
-                    and contract_state.error_code is not None
-                    else getattr(exc, "code", exc.__class__.__name__)
-                ),
-            }
-            return degraded
-        if (
-            not prefix
-            and runtime_contract is None
-            and not (budget_fit_audit or {}).get("compacted")
-        ):
-            # Preserve the established strict no-op contract for legacy scenes
-            # with no applicable binding. The miss is already recorded by the
-            # injection metric; there is no frozen lineage to attach to the LLM
-            # request or attempt record.
-            return prompt
-        injected = dict(prompt)
-        if prefix:
-            injected["system_prompt"] = prefix + (prompt.get("system_prompt") or "")
-        if svc.last_runtime_audit is not None:
-            assert contract_state is not None
-            injected["_style_reference_runtime_audit"] = {
-                **svc.last_runtime_audit,
-                "runtime_contract_status": contract_state.status,
-                "runtime_contract_mode": contract_state.mode,
-            }
-            if budget_fit_audit is not None:
-                injected["_style_reference_runtime_audit"].update(
-                    {
-                        "outcome": (
-                            "hit"
-                            if prefix
-                            else "degraded_budget"
-                        ),
-                        "prefix_chars": len(prefix),
-                        "prefix_sha256": hashlib.sha256(
-                            prefix.encode("utf-8")
-                        ).hexdigest(),
-                        "budget_fit": budget_fit_audit,
-                    }
-                )
-        return injected
+            return styled_gate_unavailable_result(
+                stage=stage, error=type(exc).__name__
+            )
 
     def _record_runner_failure_attempt(
         self,

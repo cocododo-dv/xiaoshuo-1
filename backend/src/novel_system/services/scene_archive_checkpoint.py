@@ -468,9 +468,9 @@ class SceneArchiveCheckpoint:
 
         if progress < 11:
             drift_result = (
+                # 风格模仿 v2：每一场归档都做确定性漂移读数，下一场 bundle 才能拿到
+                # 同章校准（此前只在章末场景读数）。无画像/无契约时读数自身返回 no_op。
                 self._orch._detect_and_store_style_drift(scene)
-                if scene.is_chapter_last == 1
-                else {"outcome": "not_applicable", "reason": "not_chapter_last"}
             )
             drift_product = self._orch._archive_product(
                 scene=scene,
@@ -2040,6 +2040,7 @@ class SceneArchiveCheckpoint:
             outcomes={
                 "not_applicable",
                 "no_op",
+                "observed",
                 "degraded",
             },
         )
@@ -2051,23 +2052,8 @@ class SceneArchiveCheckpoint:
                 "style drift product hash mismatch",
                 status_code=409,
             )
-        if scene.is_chapter_last != 1:
-            final_scene = self.session.get(
-                FinalScene,
-                self._orch._archive_checkpoint_ref("final_scene_row_id"),
-            )
-            if (
-                product.get("outcome") != "not_applicable"
-                or product.get("reason") != "not_chapter_last"
-                or final_scene is None
-                or product.get("input_hash") != self._orch._text_hash(final_scene.content)
-            ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "non-final scene drift product is invalid",
-                    status_code=409,
-                )
-            return product
+        # 风格模仿 v2：漂移读数对每一场都执行（不再限于章末），因此不再要求
+        # 非章末场景的产品必须是 not_applicable。
         if product.get("outcome") == "degraded" and not isinstance(
             product.get("error_code"), str
         ):
