@@ -673,3 +673,429 @@ def test_bundle_builder_adds_literary_freshness_budget_from_prior_final_scenes(
         "final_scene_CH903_SC01_v1",
         "final_scene_CH903_SC02_v1",
     ]
+
+
+# ---------------------------------------------------------------------------
+# 2026-09 风格模仿 v2（W5，规格 §1.3 / §2.W5）：三个新 section 的可见性与 bundle 登记
+# ---------------------------------------------------------------------------
+
+
+def _v2_style_snapshot() -> dict:
+    snapshot = _bundle_snapshot()
+    snapshot["inline_digests"].update(
+        {
+            "style_narrative_guidance": (
+                "以下是参考作品的叙事取舍机制：\n- 关键信息放段首一次给出\n- 结尾不解释动机"
+            ),
+            "previous_scene_voice_anchor": "他把杯子放回桌上，没有看她。窗外的雨声更紧了些。",
+            "style_drift_calibration": "- 逗号再密一点\n- 少用然而",
+        }
+    )
+    return snapshot
+
+
+def test_neutral_draft_prompt_sees_narrative_mechanisms_only() -> None:
+    """neutral_draft：叙事机制块可见；前文声音锚 / 漂移校准 / 语言层块与样例都不可见。"""
+    builder = PromptBuilder()
+    payload = builder.build(_v2_style_snapshot(), "neutral_draft")
+    user_prompt = payload["user_prompt"]
+    assert "## Style Reference — Narrative Mechanisms" in user_prompt
+    assert "关键信息放段首一次给出" in user_prompt
+    assert "Previous Scene Voice Anchor" not in user_prompt
+    assert "Style Drift Calibration" not in user_prompt
+    # 语言层：style_observations / calibration_lines 仍被中性稿屏蔽
+    assert "Gesture before explanation" not in user_prompt
+    assert "The door closed like a sentence" not in user_prompt
+    assert "[STYLE_REFERENCE]" not in payload["system_prompt"]
+    assert "[风格样例]" not in payload["system_prompt"]
+    assert "If a Style Reference — Narrative Mechanisms section is present" in user_prompt
+    assert "keep diction neutral" in user_prompt
+    omitted = set(payload["token_budget"]["omitted_sections"])
+    assert {"previous_scene_voice_anchor", "style_drift_calibration"} <= omitted
+    assert "style_narrative_guidance" not in omitted
+
+
+def test_style_draft_prompt_sees_all_three_v2_sections_and_new_contract_wording() -> None:
+    builder = PromptBuilder()
+    payload = builder.build(_v2_style_snapshot(), "style_draft")
+    user_prompt = payload["user_prompt"]
+    assert "## Style Reference — Narrative Mechanisms" in user_prompt
+    assert "## Previous Scene Voice Anchor (own prose; keep the same voice)" in user_prompt
+    assert "## Style Drift Calibration" in user_prompt
+    assert "他把杯子放回桌上" in user_prompt
+    system_prompt = payload["system_prompt"]
+    # 七维契约与已移除层的引用不再出现；真实块名与消费顺序出现
+    assert "Style Feature Contract" not in system_prompt
+    assert "Longform Structure Guidance" not in user_prompt
+    assert "Chapter Story Architecture" not in user_prompt
+    for block in ("[禁止复刻]", "[声音特征]", "[正向风格特征]", "[风格分布指导]", "[风格样例]"):
+        assert block in system_prompt
+    assert "Previous Scene Voice Anchor" in system_prompt
+    assert "Style Drift Calibration" in system_prompt
+    assert "If no [STYLE_REFERENCE] block is present" in system_prompt
+    # 骨架约束放宽 + 新鲜度预算复沓豁免的预留句
+    assert "sentence order, pause placement, information-release order, and paragraph selection may be rearranged" in user_prompt
+    assert "Do not add new events" in user_prompt
+    assert "preserve_reference_repetition" in user_prompt
+    # 「不可变骨架」只限定事实层（what happened），不再禁止重排句序 / 段落取舍
+    assert "immutable event-and-fact scaffold only for what happened" in user_prompt
+    assert "do not preserve its sentence shapes" not in user_prompt
+
+
+def test_soft_qc_template_drops_seven_dimension_scoring() -> None:
+    builder = PromptBuilder()
+    payload = builder.build(_v2_style_snapshot(), "soft_qc")
+    assert "Score style adherence from 0 to 1" not in payload["user_prompt"]
+    assert "[声音特征]" in payload["system_prompt"]
+    assert "[正向风格特征]" in payload["user_prompt"]
+    # outcome 元组与 literary risks 项保留
+    assert "soft_block_human / false / human_review_required" in payload["user_prompt"]
+    assert "model_voice, image_homogeneity, expository_dialogue" in payload["user_prompt"]
+
+
+def _seed_v2_work(session, *, project_id: str, chapters: int = 1, scenes_per_chapter: int = 3) -> None:
+    session.add(
+        StoryProject(project_id=project_id, title="v2 continuity", outline_text="", planning_mode="snowflake")
+    )
+    for chapter_index in range(1, chapters + 1):
+        chapter_id = f"{project_id}_CH{chapter_index:02d}"
+        session.add(
+            ChapterGoal(
+                chapter_id=chapter_id,
+                project_id=project_id,
+                planned_scene_count=scenes_per_chapter,
+                chapter_goal=f"Chapter {chapter_index} goal.",
+                display_order=chapter_index,
+            )
+        )
+        for seq in range(1, scenes_per_chapter + 1):
+            scene_id = f"{chapter_id}_SC{seq:02d}"
+            session.add(
+                SceneCard(
+                    scene_id=scene_id,
+                    chapter_id=chapter_id,
+                    project_id=project_id,
+                    scene_seq=seq,
+                    onstage_chars_json=[],
+                    scene_goal=f"Scene {seq} goal.",
+                )
+            )
+            session.add(SceneRunState(scene_id=scene_id))
+    session.commit()
+
+
+def _add_draft(session, *, scene_id: str, stage: str, content: str, created_at: str, status: str = "active") -> str:
+    from novel_system.db.models import SceneDraft
+
+    chapter_id = scene_id.rsplit("_SC", 1)[0]
+    row_id = f"{stage}_{scene_id}_{created_at.replace(':', '').replace('-', '')}"
+    session.add(
+        SceneDraft(
+            row_id=row_id,
+            scene_id=scene_id,
+            chapter_id=chapter_id,
+            stage=stage,
+            status=status,
+            content=content,
+            source_bundle_id=f"bundle_{scene_id}",
+            source_bundle_hash="h",
+            created_at=created_at,
+        )
+    )
+    session.commit()
+    return row_id
+
+
+def _seed_v2_binding(session, *, project_id: str, seed: str, profile_json: dict) -> None:
+    session.add(
+        StyleReferenceBook(
+            book_id=f"sr_book_{seed}",
+            title="Public domain source",
+            source_kind="path",
+            cloud_policy="segments_only",
+            text_checksum=f"checksum-{seed}",
+            stats_json={"rights_declaration": {"declared": True, "send_rights": True}},
+        )
+    )
+    session.add(StyleReferenceRun(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done"))
+    session.add(
+        StyleReferenceProfile(
+            profile_id=f"sr_profile_{seed}",
+            book_id=f"sr_book_{seed}",
+            run_id=f"sr_run_{seed}",
+            title="Audited profile",
+            status="active",
+            profile_json=profile_json,
+        )
+    )
+    session.add(
+        StyleReferenceInjectionBinding(
+            binding_id=f"sr_bind_{seed}",
+            profile_id=f"sr_profile_{seed}",
+            scope="project",
+            scope_ref_id=project_id,
+            task_type="scene_generation",
+            strategy="A",
+            status="active",
+        )
+    )
+    session.commit()
+
+
+def test_bundle_builder_registers_narrative_guidance_from_frozen_contract(session) -> None:
+    _seed_v2_work(session, project_id="P_V2_NG", scenes_per_chapter=1)
+    _seed_v2_binding(
+        session,
+        project_id="P_V2_NG",
+        seed="v2ng",
+        profile_json={
+            "style_features": ["短句克制"],
+            "narrative_guidance": ["关键信息放段首一次给出", "结尾以动作收束，不解释动机"],
+        },
+    )
+    snapshot = BundleBuilder(session).build("P_V2_NG_CH01_SC01")["snapshot"]
+    digest = snapshot["inline_digests"]["style_narrative_guidance"]
+    assert "- 关键信息放段首一次给出" in digest and "- 结尾以动作收束，不解释动机" in digest
+    assert "短句克制" not in digest
+    slot = next(item for item in snapshot["ordered_injections"] if item["slot"] == "style_narrative_guidance")
+    assert slot["digest_key"] == "style_narrative_guidance"
+    assert slot["ref_id"] == snapshot["source_version_refs"]["style_reference_runtime_contract_hash"]
+    assert snapshot["source_version_refs"]["style_narrative_guidance_line_count"] == 2
+    # 中性稿看到叙事机制块，看不到语言层
+    payload = PromptBuilder().build(snapshot, "neutral_draft")
+    assert "## Style Reference — Narrative Mechanisms" in payload["user_prompt"]
+    assert "关键信息放段首一次给出" in payload["user_prompt"]
+    assert "[STYLE_REFERENCE]" not in payload["system_prompt"]
+
+
+def test_bundle_builder_skips_narrative_guidance_for_legacy_profiles(session) -> None:
+    _seed_v2_work(session, project_id="P_V2_LEG", scenes_per_chapter=1)
+    _seed_v2_binding(session, project_id="P_V2_LEG", seed="v2leg", profile_json={"style_features": ["短句"]})
+    snapshot = BundleBuilder(session).build("P_V2_LEG_CH01_SC01")["snapshot"]
+    assert "style_narrative_guidance" not in snapshot["inline_digests"]
+    assert all(item["slot"] != "style_narrative_guidance" for item in snapshot["ordered_injections"])
+    assert snapshot["source_version_refs"]["style_reference_runtime_contract_status"] == "frozen"
+
+
+def test_bundle_builder_voice_anchor_uses_latest_styled_draft_of_previous_scene(session) -> None:
+    from novel_system.services.bundle_builder import load_continuity_budget
+
+    _seed_v2_work(session, project_id="P_V2_VA", scenes_per_chapter=3)
+    long_styled = "".join(
+        f"第{i}句他把杯子放回桌上，没有看她，窗外的雨声更紧了些。" for i in range(40)
+    )
+    styled_row = _add_draft(
+        session, scene_id="P_V2_VA_CH01_SC01", stage="style_draft", content=long_styled,
+        created_at="2026-09-05T10:00:00",
+    )
+    # 更新的中性稿 / 被否决稿都不算「已风格化前文」
+    _add_draft(
+        session, scene_id="P_V2_VA_CH01_SC01", stage="neutral_draft", content="中性稿不该被当作声音锚。",
+        created_at="2026-09-05T11:00:00",
+    )
+    _add_draft(
+        session, scene_id="P_V2_VA_CH01_SC01", stage="style_rejected", content="被拒稿不该被当作声音锚。",
+        created_at="2026-09-05T12:00:00", status="rejected",
+    )
+    builder = BundleBuilder(session)
+
+    # 第一场：没有前文 → 不登记
+    first = builder.build("P_V2_VA_CH01_SC01")["snapshot"]
+    assert "previous_scene_voice_anchor" not in first["inline_digests"]
+    assert all(item["slot"] != "previous_scene_voice_anchor" for item in first["ordered_injections"])
+
+    # 第二场：取第一场最新已风格化稿的尾部，≤ continuity_anchor_max_chars 且从句边界起头
+    second = builder.build("P_V2_VA_CH01_SC02")["snapshot"]
+    anchor = second["inline_digests"]["previous_scene_voice_anchor"]
+    max_chars = load_continuity_budget()["continuity_anchor_max_chars"]
+    assert 0 < len(anchor) <= max_chars
+    assert long_styled.endswith(anchor)
+    assert long_styled[len(long_styled) - len(anchor) - 1] == "。"
+    assert "中性稿" not in anchor and "被拒稿" not in anchor
+    refs = second["source_version_refs"]
+    assert refs["previous_scene_voice_anchor_scene_id"] == "P_V2_VA_CH01_SC01"
+    assert refs["previous_scene_voice_anchor_draft_row_id"] == styled_row
+    assert refs["previous_scene_voice_anchor_stage"] == "style_draft"
+    slot = next(item for item in second["ordered_injections"] if item["slot"] == "previous_scene_voice_anchor")
+    assert slot["ref_id"] == styled_row and slot["digest_key"] == "previous_scene_voice_anchor"
+
+    # 第三场：第二场没有稿 → 回退到同章更早的第一场
+    third = builder.build("P_V2_VA_CH01_SC03")["snapshot"]
+    assert third["source_version_refs"]["previous_scene_voice_anchor_scene_id"] == "P_V2_VA_CH01_SC01"
+
+    # 可见性：style_draft 看到，neutral_draft 看不到
+    style_payload = PromptBuilder().build(second, "style_draft")
+    assert "## Previous Scene Voice Anchor (own prose; keep the same voice)" in style_payload["user_prompt"]
+    neutral_payload = PromptBuilder().build(second, "neutral_draft")
+    assert "Previous Scene Voice Anchor" not in neutral_payload["user_prompt"]
+
+
+def test_bundle_builder_voice_anchor_falls_back_to_previous_chapter_last_scene(session) -> None:
+    _seed_v2_work(session, project_id="P_V2_CH", chapters=2, scenes_per_chapter=2)
+    _add_draft(
+        session, scene_id="P_V2_CH_CH01_SC01", stage="style_draft", content="第一章第一场的风格稿。",
+        created_at="2026-09-05T10:00:00",
+    )
+    _add_draft(
+        session, scene_id="P_V2_CH_CH01_SC02", stage="de_template", content="第一章最后一场的去模板稿。",
+        created_at="2026-09-05T10:30:00",
+    )
+    snapshot = BundleBuilder(session).build("P_V2_CH_CH02_SC01")["snapshot"]
+    assert snapshot["inline_digests"]["previous_scene_voice_anchor"] == "第一章最后一场的去模板稿。"
+    refs = snapshot["source_version_refs"]
+    assert refs["previous_scene_voice_anchor_scene_id"] == "P_V2_CH_CH01_SC02"
+    assert refs["previous_scene_voice_anchor_stage"] == "de_template"
+
+
+_NEUTRAL_FALLBACK_TEXT = "他把杯子放回桌上。他没有看她。窗外在下雨。雨声比刚才大了一些。"
+
+
+def test_bundle_builder_voice_anchor_skips_style_draft_that_carries_neutral_fallback_text(session) -> None:
+    """风格稿未过安全门时 scene_generation 把已批准的中性稿原文写成主 style_draft 行
+    （STYLE_DRAFT_FALLBACK_NEUTRAL）：这一行不算「已风格化前文」，声音锚退到更早的真风格稿。"""
+    from novel_system.services.bundle_builder import latest_styled_draft_for_scene
+
+    _seed_v2_work(session, project_id="P_V2_NF", scenes_per_chapter=2)
+    genuine_row = _add_draft(
+        session,
+        scene_id="P_V2_NF_CH01_SC01",
+        stage="de_template",
+        content="真正带文风的去模板稿。",
+        created_at="2026-09-05T10:00:00",
+    )
+    _add_draft(
+        session,
+        scene_id="P_V2_NF_CH01_SC01",
+        stage="neutral_draft",
+        content=_NEUTRAL_FALLBACK_TEXT,
+        created_at="2026-09-05T11:00:00",
+    )
+    _add_draft(
+        session,
+        scene_id="P_V2_NF_CH01_SC01",
+        stage="style_rejected",
+        content="被安全门否决的 provider 风格稿。",
+        created_at="2026-09-05T12:00:00",
+        status="rejected",
+    )
+    # 主 style_draft 行：status 仍是默认 active，正文却是中性稿原文
+    fallback_row = _add_draft(
+        session,
+        scene_id="P_V2_NF_CH01_SC01",
+        stage="style_draft",
+        content=_NEUTRAL_FALLBACK_TEXT,
+        created_at="2026-09-05T12:00:00",
+    )
+
+    latest = latest_styled_draft_for_scene(session, "P_V2_NF_CH01_SC01")
+    assert latest is not None and latest.row_id == genuine_row and latest.row_id != fallback_row
+
+    snapshot = BundleBuilder(session).build("P_V2_NF_CH01_SC02")["snapshot"]
+    assert snapshot["inline_digests"]["previous_scene_voice_anchor"] == "真正带文风的去模板稿。"
+    refs = snapshot["source_version_refs"]
+    assert refs["previous_scene_voice_anchor_draft_row_id"] == genuine_row
+    assert refs["previous_scene_voice_anchor_stage"] == "de_template"
+    style_payload = PromptBuilder().build(snapshot, "style_draft")
+    assert _NEUTRAL_FALLBACK_TEXT not in style_payload["user_prompt"]
+
+
+def test_bundle_builder_voice_anchor_absent_when_only_styled_row_is_neutral_fallback(session) -> None:
+    """同章只有一条「中性稿原文」的 style_draft 行、又没有上一章 → 不登记声音锚，而不是钉在中性稿上。"""
+    from novel_system.services.bundle_builder import latest_styled_draft_for_scene, previous_scene_voice_anchor
+
+    _seed_v2_work(session, project_id="P_V2_NFO", scenes_per_chapter=2)
+    _add_draft(
+        session,
+        scene_id="P_V2_NFO_CH01_SC01",
+        stage="neutral_draft",
+        content=_NEUTRAL_FALLBACK_TEXT,
+        created_at="2026-09-05T11:00:00",
+    )
+    _add_draft(
+        session,
+        scene_id="P_V2_NFO_CH01_SC01",
+        stage="style_draft",
+        content=_NEUTRAL_FALLBACK_TEXT + "\n",
+        created_at="2026-09-05T12:00:00",
+    )
+    assert latest_styled_draft_for_scene(session, "P_V2_NFO_CH01_SC01") is None
+    scene2 = session.get(SceneCard, "P_V2_NFO_CH01_SC02")
+    assert previous_scene_voice_anchor(session, scene2) is None
+
+    snapshot = BundleBuilder(session).build("P_V2_NFO_CH01_SC02")["snapshot"]
+    assert "previous_scene_voice_anchor" not in snapshot["inline_digests"]
+    assert all(item["slot"] != "previous_scene_voice_anchor" for item in snapshot["ordered_injections"])
+    assert "previous_scene_voice_anchor_scene_id" not in snapshot["source_version_refs"]
+
+
+def test_bundle_builder_voice_anchor_honours_attempt_tracker_neutral_fallback_marker(session) -> None:
+    """AttemptTracker.details_json.content_source == approved_neutral_fallback 的 styled 行同样被跳过——
+    即使该场景的 neutral_draft 行已不在（正文比对无从下手）。"""
+    from novel_system.db.models import AttemptTracker
+    from novel_system.services.bundle_builder import latest_styled_draft_for_scene
+
+    _seed_v2_work(session, project_id="P_V2_NFM", scenes_per_chapter=2)
+    genuine_row = _add_draft(
+        session,
+        scene_id="P_V2_NFM_CH01_SC01",
+        stage="style_patch",
+        content="带文风的软补丁稿。",
+        created_at="2026-09-05T10:00:00",
+    )
+    marked_row = _add_draft(
+        session,
+        scene_id="P_V2_NFM_CH01_SC01",
+        stage="style_draft",
+        content=_NEUTRAL_FALLBACK_TEXT,
+        created_at="2026-09-05T12:00:00",
+    )
+    session.add(
+        AttemptTracker(
+            scene_id="P_V2_NFM_CH01_SC01",
+            chapter_id="P_V2_NFM_CH01",
+            step="style_draft",
+            status="completed",
+            source_bundle_id="bundle_P_V2_NFM_CH01_SC01",
+            details_json={"row_id": marked_row, "content_source": "approved_neutral_fallback"},
+        )
+    )
+    session.commit()
+
+    latest = latest_styled_draft_for_scene(session, "P_V2_NFM_CH01_SC01")
+    assert latest is not None and latest.row_id == genuine_row
+    snapshot = BundleBuilder(session).build("P_V2_NFM_CH01_SC02")["snapshot"]
+    assert snapshot["inline_digests"]["previous_scene_voice_anchor"] == "带文风的软补丁稿。"
+    assert snapshot["source_version_refs"]["previous_scene_voice_anchor_stage"] == "style_patch"
+
+
+def test_bundle_builder_drift_calibration_reads_style_continuity_and_caps_lines(session, monkeypatch) -> None:
+    import novel_system.services.bundle_builder as bundle_builder_module
+
+    _seed_v2_work(session, project_id="P_V2_DC", scenes_per_chapter=2)
+    builder = BundleBuilder(session)
+
+    # W6 stub：永远返回空 → 不登记
+    plain = builder.build("P_V2_DC_CH01_SC02")["snapshot"]
+    assert "style_drift_calibration" not in plain["inline_digests"]
+
+    captured: dict = {}
+
+    def fake_latest(session_arg, chapter_id, before_scene_seq):  # noqa: ANN001
+        captured["args"] = (chapter_id, before_scene_seq)
+        return ["逗号再密一点", "少用然而", "逗号再密一点", "对白少加引导词", "四字格再少一点"]
+
+    monkeypatch.setattr(bundle_builder_module, "latest_drift_calibration", fake_latest)
+    snapshot = builder.build("P_V2_DC_CH01_SC02")["snapshot"]
+    assert captured["args"] == ("P_V2_DC_CH01", 2)
+    digest = snapshot["inline_digests"]["style_drift_calibration"]
+    # 去重后截到 drift_calibration_max_lines（默认 3）
+    assert digest.split("\n") == ["- 逗号再密一点", "- 少用然而", "- 对白少加引导词"]
+    refs = snapshot["source_version_refs"]
+    assert refs["style_drift_calibration_line_count"] == 3
+    assert refs["style_drift_calibration_before_scene_seq"] == 2
+    slot = next(item for item in snapshot["ordered_injections"] if item["slot"] == "style_drift_calibration")
+    assert slot["digest_key"] == "style_drift_calibration"
+    neutral_payload = PromptBuilder().build(snapshot, "neutral_draft")
+    assert "Style Drift Calibration" not in neutral_payload["user_prompt"]
+    style_payload = PromptBuilder().build(snapshot, "style_draft")
+    assert "## Style Drift Calibration" in style_payload["user_prompt"]

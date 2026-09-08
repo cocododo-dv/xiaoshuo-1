@@ -5862,7 +5862,8 @@ def test_non_chapter_last_writes_fixed_archive_products_and_ordered_manifest(ses
     assert refs["archive_chapter_product"]["outcome"] == "not_applicable"
     assert refs["archive_volume_product"]["outcome"] == "not_applicable"
     assert refs["archive_chapter_evaluation_product"]["outcome"] == "not_applicable"
-    assert refs["archive_drift_product"]["outcome"] == "not_applicable"
+    # 风格模仿 v2：漂移读数对每一场执行；该场景没有风格画像/契约 → no_op。
+    assert refs["archive_drift_product"]["outcome"] == "no_op"
     assert [entry["sub_index"] for entry in refs["archive_manifest"]] == list(range(4, 12))
 
 

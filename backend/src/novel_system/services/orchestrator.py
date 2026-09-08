@@ -10,6 +10,90 @@ from sqlalchemy.orm import Session
 
 _LOGGER = logging.getLogger(__name__)
 
+# 2026-09 风格模仿 v2（W5）：near_final_rewrite 带同一 [STYLE_REFERENCE] 前缀（含参考原文
+# 样例窗口）重写整场，输出直接成为终稿。它的 styled-draft gate 判定抄袭（Q0）时重写稿永远
+# 不能落成 FinalScene：回退到重写前、已过 soft_qc gate 的来源稿，skip_reason 记在
+# 检查点 / near_completion 里，警告随 near_final payload 走。
+NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON = "rewrite_rejected_style_plagiarism"
+NEAR_FINAL_REWRITE_GATE_STAGE = "near_final_rewrite"
+
+
+def _near_final_rewrite_gate_summary(
+    generation: StyleGenerationResult,
+) -> dict[str, Any] | None:
+    """把重写稿的 styled-draft gate 诊断压成可进检查点 / near_final payload 的小结。
+
+    无绑定（gate 没跑、``styled_draft_gate is None``）→ ``None``，payload 形状与旧数据一致。
+    """
+    gate = generation.styled_draft_gate
+    if not isinstance(gate, dict):
+        return None
+    verdict = str(gate.get("verdict") or "")
+    notice_codes = [
+        str(item.get("code"))
+        for item in (generation.notices or [])
+        if isinstance(item, dict) and item.get("code")
+    ]
+    return {
+        "stage": NEAR_FINAL_REWRITE_GATE_STAGE,
+        "verdict": verdict,
+        "rejected": verdict == "plagiarism",
+        "plagiarism_hit_count": gate.get("plagiarism_hit_count"),
+        "forbidden_hit_count": gate.get("forbidden_hit_count"),
+        "error": gate.get("error"),
+        "profile_id": gate.get("profile_id"),
+        "runtime_contract_hash": gate.get("runtime_contract_hash"),
+        "notice_codes": notice_codes,
+    }
+
+
+def _near_final_rewrite_gate_warnings(gate: Any) -> list[dict[str, Any]]:
+    """重写稿 gate 小结 → Q2 警告（严格模式停点；宽松模式随稿归档、醒目提示）。"""
+    if not isinstance(gate, dict):
+        return []
+    if gate.get("rejected"):
+        return [
+            {
+                "issue_key": "near_final_rewrite_rejected_style_plagiarism",
+                "quality_level": "Q2",
+                "message": (
+                    "准终稿重写稿与参考作品原文存在确定性 n-gram 重叠（抄袭红线），"
+                    "已被丢弃；终稿回退为重写前已过 gate 的风格稿。"
+                ),
+                "recommended_action": "author_review_optional_fix",
+                "verified_by": "style_plagiarism_ngram",
+            }
+        ]
+    forbidden = gate.get("forbidden_hit_count")
+    if isinstance(forbidden, int) and forbidden > 0:
+        return [
+            {
+                "issue_key": "near_final_rewrite_banned_term_replicated",
+                "quality_level": "Q2",
+                "message": (
+                    f"准终稿重写稿复刻了参考画像冻结的生成禁用词（{forbidden} 处）；"
+                    "请人工复核并以自己的措辞替换。"
+                ),
+                "recommended_action": "author_review_optional_fix",
+                "verified_by": None,
+            }
+        ]
+    if str(gate.get("verdict") or "") == "unavailable":
+        return [
+            {
+                "issue_key": "near_final_rewrite_style_gate_unavailable",
+                "quality_level": "Q2",
+                "message": (
+                    "准终稿重写稿的抄袭 / 冻结禁用词检查未能执行"
+                    f"（{gate.get('error') or 'unknown'}）；本稿未经参考来源安全核对，"
+                    "请人工复核。"
+                ),
+                "recommended_action": "author_review_optional_fix",
+                "verified_by": None,
+            }
+        ]
+    return []
+
 from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
@@ -945,21 +1029,27 @@ class Orchestrator:
                 },
             )
 
-        near_final, final_generation, rewrite_count, near_final_skip_reason = (
-            self._ensure_near_final_subcheckpoints(
-                scene=scene,
-                bundle=bundle,
-                source_generation=final_generation,
-                optional_spend_allowed=_optional_spend_allowed,
-            )
+        (
+            near_final,
+            final_generation,
+            rewrite_count,
+            near_final_skip_reason,
+            rewrite_gate,
+        ) = self._ensure_near_final_subcheckpoints(
+            scene=scene,
+            bundle=bundle,
+            source_generation=final_generation,
+            optional_spend_allowed=_optional_spend_allowed,
         )
         near_final_payload = self._near_final_result_payload(
-            near_final, rewrite_count=rewrite_count
+            near_final, rewrite_count=rewrite_count, rewrite_gate=rewrite_gate
         )
         # Wave 2（§5.4 / Wave 2 项 4）：near-final 是 LLM 提案层（Q2/Q3）——达自动
         # 修订上限（软补丁 ≤1 + 准终稿重写 ≤1 = 2 次）后不再断头，交付当前最好稿；
         # 其 requires_human_review 亦为提案，不得产生 human_review_required 断头。
-        near_final_warnings = self._near_final_warning_findings(near_final)
+        # 严格模式的 Q2 判据要看带 rewrite_style_gate 的 payload(重写稿被 gate 拒绝 /
+        # gate 未执行的警告只在 payload 里),而不是评审器的原始返回。
+        near_final_warnings = self._near_final_warning_findings(near_final_payload)
 
         # 严格模式停点：存在 Q2 级警告（软 QC 报告或 near-final 未过）时不自动归档，
         # 停在可归档的 quality_warning，由作者经 adopt-current 显式接受（留审计）。
@@ -2335,7 +2425,18 @@ class Orchestrator:
         bundle: dict[str, Any],
         source_generation: StyleGenerationResult,
         optional_spend_allowed,
-    ) -> tuple[dict[str, Any], StyleGenerationResult, int, str | None]:
+    ) -> tuple[
+        dict[str, Any],
+        StyleGenerationResult,
+        int,
+        str | None,
+        dict[str, Any] | None,
+    ]:
+        """Returns ``(near_final, final_generation, rewrite_count, skip_reason, rewrite_gate)``.
+
+        ``rewrite_gate`` is the near_final_rewrite styled-draft gate summary (``None`` when no
+        rewrite was produced or the scene has no style binding).
+        """
         progress = self._near_final_checkpoint_progress()
         if progress >= 3:
             final_scene, payload = self._load_near_final_checkpoint(
@@ -2364,6 +2465,7 @@ class Orchestrator:
                 .get("artifact_refs", {})
                 .get("final_generation_artifact_execution_id"),
             )
+            stored_gate = payload.get("rewrite_style_gate")
             return (
                 payload,
                 generation,
@@ -2373,6 +2475,7 @@ class Orchestrator:
                     .get("artifact_refs", {})
                     .get("near_final_skip_reason")
                 ),
+                deepcopy(stored_gate) if isinstance(stored_gate, dict) else None,
             )
 
         if progress < 0:
@@ -2444,11 +2547,13 @@ class Orchestrator:
                         execution_step_key="near_final_rewrite:0",
                     )
                 )
+                rewrite_gate = _near_final_rewrite_gate_summary(rewrite_generation)
                 self._save_near_rewrite_checkpoint(
                     generation=rewrite_generation,
                     source_generation=source_generation,
                     source_evaluation_id=str(eval0.get("evaluation_id") or ""),
                     bundle=bundle,
+                    styled_gate=rewrite_gate,
                 )
                 progress = 1
             else:
@@ -2456,6 +2561,38 @@ class Orchestrator:
                     scene_id=scene.scene_id,
                     source_generation=source_generation,
                     source_evaluation_id=str(eval0.get("evaluation_id") or ""),
+                )
+                rewrite_gate = self._load_near_rewrite_gate_checkpoint()
+            if rewrite_gate is not None and rewrite_gate.get("rejected"):
+                # v2（W5）：重写稿 styled-draft gate 判定确定性抄袭（Q0，不开放软风险
+                # 接受）。重写稿永远不能成为终稿——不再对它做 near-final 评审，回退到
+                # 重写前、已过 soft_qc gate 的来源稿；skip_reason 与 Q2 警告让作者看见。
+                if progress >= 2:
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "near-final evaluation exists for a gate-rejected rewrite",
+                        status_code=409,
+                    )
+                _LOGGER.warning(
+                    "near-final rewrite for scene %s rejected by the styled-draft gate "
+                    "(plagiarism); falling back to the gated source draft %s",
+                    scene.scene_id,
+                    source_generation.row_id,
+                )
+                # 生成重写稿时 scene_generation 已把当前稿指针推到被拒的重写行;回退后
+                # 指针必须指回来源稿,否则 adopt-current(尚无 FinalScene 时按
+                # latest_valid_draft_row_id 取稿)会把抄袭稿当成当前稿采纳。
+                state = self.session.get(SceneRunState, scene.scene_id)
+                if state is not None:
+                    state.current_style_draft_row_id = source_generation.row_id
+                    state.latest_valid_draft_row_id = source_generation.row_id
+                    self.session.flush()
+                return (
+                    eval0,
+                    source_generation,
+                    0,
+                    NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON,
+                    rewrite_gate,
                 )
             if progress < 2:
                 self._reconcile_execution_step("near_final_acceptance:1")
@@ -2479,7 +2616,7 @@ class Orchestrator:
                     round_index=1,
                     source_generation=rewrite_generation,
                 )
-            return eval1, rewrite_generation, 1, None
+            return eval1, rewrite_generation, 1, None, rewrite_gate
 
         if progress >= 1:
             raise DomainError(
@@ -2487,7 +2624,7 @@ class Orchestrator:
                 "near-final rewrite checkpoint exists for a non-rewrite eval0 branch",
                 status_code=409,
             )
-        return eval0, source_generation, 0, control.get("skip_reason")
+        return eval0, source_generation, 0, control.get("skip_reason"), None
 
     @staticmethod
     def _near_evaluation_payload(result: dict[str, Any]) -> dict[str, Any]:
@@ -2929,24 +3066,53 @@ class Orchestrator:
         source_generation: StyleGenerationResult,
         source_evaluation_id: str,
         bundle: dict[str, Any],
+        styled_gate: dict[str, Any] | None = None,
     ) -> None:
+        refs: dict[str, Any] = {
+            "near_rewrite_draft_row_id": generation.row_id,
+            "near_rewrite_llm_call_id": generation.llm_call_id,
+            "near_rewrite_execution_step_key": generation.execution_step_key,
+            "near_rewrite_artifact_execution_id": generation.artifact_execution_id
+            or self._execution_id,
+            "near_rewrite_source_draft_row_id": source_generation.row_id,
+            "near_rewrite_source_evaluation_id": source_evaluation_id,
+            "near_rewrite_bundle_id": bundle["bundle_id"],
+            "near_rewrite_bundle_hash": bundle["bundle_snapshot_hash"],
+        }
+        hashes = {"near_rewrite_draft": self._text_hash(generation.content)}
+        if styled_gate is not None:
+            # 重写稿 gate 小结随检查点冻结：恢复 / 回放时据此重建「重写被拒 → 来源稿成为
+            # 终稿」的分支，而不是重新信任一份已判定抄袭的重写稿。
+            refs["near_rewrite_styled_gate"] = deepcopy(styled_gate)
+            hashes["near_rewrite_styled_gate"] = self._json_hash(styled_gate)
         self._save_run_checkpoint(
             "near_final_ready",
             sub_index=1,
-            artifact_refs={
-                "near_rewrite_draft_row_id": generation.row_id,
-                "near_rewrite_llm_call_id": generation.llm_call_id,
-                "near_rewrite_execution_step_key": generation.execution_step_key,
-                "near_rewrite_artifact_execution_id": generation.artifact_execution_id
-                or self._execution_id,
-                "near_rewrite_source_draft_row_id": source_generation.row_id,
-                "near_rewrite_source_evaluation_id": source_evaluation_id,
-                "near_rewrite_bundle_id": bundle["bundle_id"],
-                "near_rewrite_bundle_hash": bundle["bundle_snapshot_hash"],
-            },
-            artifact_hashes={"near_rewrite_draft": self._text_hash(generation.content)},
+            artifact_refs=refs,
+            artifact_hashes=hashes,
             branch="rewrite",
         )
+
+    def _load_near_rewrite_gate_checkpoint(self) -> dict[str, Any] | None:
+        """重写稿 styled-draft gate 小结（v2 之前的检查点没有该键 → ``None``）。"""
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
+            "artifact_refs"
+        ) or {}
+        gate = refs.get("near_rewrite_styled_gate")
+        expected_hash = self._checkpoint_hash("near_rewrite_styled_gate")
+        if gate is None and expected_hash is None:
+            return None
+        if (
+            not isinstance(gate, dict)
+            or not isinstance(gate.get("rejected"), bool)
+            or self._json_hash(gate) != expected_hash
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "near-final rewrite styled-draft gate checkpoint hash mismatch",
+                status_code=409,
+            )
+        return deepcopy(gate)
 
     def _load_near_rewrite_checkpoint(
         self,
@@ -3151,6 +3317,10 @@ class Orchestrator:
             )
             control = self._load_near_eval0_control(eval0)
             rewrite_count = refs.get("near_final_rewrite_count")
+            rewrite_gate = self._load_near_rewrite_gate_checkpoint()
+            expected_skip_reason = (
+                control.get("skip_reason") if rewrite_count == 0 else None
+            )
             if rewrite_count == 1:
                 if (
                     not control.get("rewrite_allowed")
@@ -3159,6 +3329,12 @@ class Orchestrator:
                     raise DomainError(
                         "RUN_CHECKPOINT_CORRUPT",
                         "near-final rewrite completion is not reachable from eval0",
+                        status_code=409,
+                    )
+                if rewrite_gate is not None and rewrite_gate.get("rejected"):
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "near-final completion promoted a gate-rejected rewrite",
                         status_code=409,
                     )
                 expected_generation = self._load_near_rewrite_checkpoint(
@@ -3173,9 +3349,24 @@ class Orchestrator:
                 )
             elif rewrite_count == 0:
                 if control.get("rewrite_allowed"):
+                    # v2（W5）：允许的重写被 styled-draft gate 拒绝（抄袭）才可能走到
+                    # 这里——重写产物必须仍在且匹配，终稿则是重写前的来源稿。
+                    if rewrite_gate is None or not rewrite_gate.get("rejected"):
+                        raise DomainError(
+                            "RUN_CHECKPOINT_CORRUPT",
+                            "near-final completion skipped an allowed rewrite",
+                            status_code=409,
+                        )
+                    self._load_near_rewrite_checkpoint(
+                        scene_id=scene_id,
+                        source_generation=source_generation,
+                        source_evaluation_id=str(eval0.get("evaluation_id") or ""),
+                    )
+                    expected_skip_reason = NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON
+                elif rewrite_gate is not None:
                     raise DomainError(
                         "RUN_CHECKPOINT_CORRUPT",
-                        "near-final completion skipped an allowed rewrite",
+                        "near-final rewrite gate exists for a non-rewrite branch",
                         status_code=409,
                     )
                 expected_generation = source_generation
@@ -3189,6 +3380,7 @@ class Orchestrator:
             expected_payload = self._near_final_result_payload(
                 final_evaluation,
                 rewrite_count=rewrite_count,
+                rewrite_gate=rewrite_gate,
             )
             eval0_candidate_id = refs.get("near_eval0_revision_candidate_id")
             if isinstance(eval0_candidate_id, str):
@@ -3224,8 +3416,7 @@ class Orchestrator:
                 != self._checkpoint_hash("near_completion")
                 or refs.get("near_final_branch")
                 != final_evaluation.get("near_final_status")
-                or refs.get("near_final_skip_reason")
-                != (control.get("skip_reason") if rewrite_count == 0 else None)
+                or refs.get("near_final_skip_reason") != expected_skip_reason
                 or near_final_payload != expected_payload
                 or refs.get("near_final_source_draft_row_id")
                 != expected_generation.row_id
@@ -6616,9 +6807,16 @@ class Orchestrator:
     def _near_final_warning_findings(
         near_final: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """near-final 未过 → Q2/Q3 警告条目（LLM 提案层，不阻断）。"""
+        """near-final 未过 → Q2/Q3 警告条目（LLM 提案层，不阻断）。
+
+        v2（W5）：重写稿 styled-draft gate 的结果（抄袭被拒 / 禁用词 / gate 未执行）追加
+        Q2 警告——与评审是否通过无关，严格模式据此停点。
+        """
+        warnings = _near_final_rewrite_gate_warnings(
+            near_final.get("rewrite_style_gate")
+        )
         if near_final.get("pass_flag"):
-            return []
+            return warnings
         failure_class = str(near_final.get("failure_class") or "near_final_unresolved")
         level = "Q3" if failure_class == "prose_model_voice" else "Q2"
         first_finding = next(
@@ -6636,7 +6834,8 @@ class Orchestrator:
                 "message": str(first_finding.get("issue") or failure_class),
                 "recommended_action": "author_review_optional_fix",
                 "verified_by": None,
-            }
+            },
+            *warnings,
         ]
 
     def _collect_q2_warnings(
@@ -6666,9 +6865,12 @@ class Orchestrator:
 
     @staticmethod
     def _near_final_result_payload(
-        near_final: dict[str, Any], *, rewrite_count: int
+        near_final: dict[str, Any],
+        *,
+        rewrite_count: int,
+        rewrite_gate: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "near_final_status": near_final.get("near_final_status"),
             "pass_flag": bool(near_final.get("pass_flag")),
             "overall_score": near_final.get("overall_score"),
@@ -6681,6 +6883,11 @@ class Orchestrator:
             "findings": near_final.get("findings") or [],
             "revision_brief": near_final.get("revision_brief") or [],
         }
+        if rewrite_gate is not None:
+            # v2（W5）：重写稿 styled-draft gate 小结只在有绑定且产生过重写时出现；
+            # rejected=True 表示重写稿因抄袭被丢弃、终稿回退为来源稿。
+            payload["rewrite_style_gate"] = deepcopy(rewrite_gate)
+        return payload
 
     def _archive_effects(self) -> SceneArchiveEffects:
         """Build the archive-effects worker for the CURRENT run.

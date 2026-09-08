@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -12,6 +13,10 @@ from novel_system.services.hash_engine import normalize
 TOKEN_ESTIMATOR_VERSION = "cjk_aware_conservative_v1"
 STYLE_OBSERVATION_COMPRESSED_TOKENS = 48
 CONTINUITY_DIGEST_COMPRESSED_TOKENS = 24
+# v2（W5）：前文声音锚是软性延续信号，预算紧张时先于任何事实 section 被压缩——
+# 保留尾部（离本场最近的节拍），再不够就整段省略；scene_card 永不因它被压。
+VOICE_ANCHOR_COMPRESSED_TOKENS = 160
+_SENTENCE_BOUNDARY_RE = re.compile(r"[。！？!?…]+[”’」』）)]*")
 
 
 @dataclass(slots=True)
@@ -44,7 +49,16 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("pov_voice", "POV Voice", ("voice_card",)),
     ("author_preference_profile", "Author Preference Profile", ("author_preference_profile",)),
     ("literary_freshness_budget", "Literary Freshness Budget", ("literary_freshness_budget",)),
+    # 2026-09 风格模仿 v2（W5，规格 §1.3）：三个新 section。叙事机制块是 neutral_draft
+    # 唯一可见的风格参考块；前文声音锚 / 漂移校准只对 style_draft 可见。
+    ("style_narrative_guidance", "Style Reference — Narrative Mechanisms", ("style_narrative_guidance",)),
     ("chapter_transition_buffer", "Chapter Transition Buffer", ("chapter_transition_buffer",)),
+    (
+        "previous_scene_voice_anchor",
+        "Previous Scene Voice Anchor (own prose; keep the same voice)",
+        ("previous_scene_voice_anchor",),
+    ),
+    ("style_drift_calibration", "Style Drift Calibration", ("style_drift_calibration",)),
     ("similar_scene_context", "Similar Scene Context", ("similar_scene", "similar_scene_context")),
     ("relation_digest", "Relation Digest", ("relation_card", "relation_digest")),
     ("scene_memory_digest", "Previous Scene Memory", ("scene_memory", "scene_memory_digest")),
@@ -72,6 +86,10 @@ NEUTRAL_DRAFT_STYLE_SECTIONS: tuple[str, ...] = (
     "style_observations",
     "narrative_patterns",
     "calibration_lines",
+    # v2（规格 §1.3）：前文声音锚与漂移校准都是目标文风的延续信号，中性稿不看；
+    # style_narrative_guidance 刻意不在此列——叙事取舍机制正是中性稿要吸收的。
+    "previous_scene_voice_anchor",
+    "style_drift_calibration",
 )
 
 CONTINUITY_POLICY: list[str] = [
@@ -163,6 +181,20 @@ def apply_context_budget(
         if similar_scene is not None:
             similar_scene.status = "omitted"
 
+        # v2：前文声音锚先被压成尾部片段（比任何事实 section 都先让路）。
+        if _rendered_prompt_tokens(
+            system_prompt=system_prompt,
+            task_prompt=task_prompt,
+            bundle_snapshot=bundle_snapshot,
+            sections=sections,
+            split_scene_recommended=False,
+        ) > max_input_tokens:
+            voice_anchor = section_lookup.get("previous_scene_voice_anchor")
+            if voice_anchor is not None and voice_anchor.status == "included":
+                _apply_compressed_text(
+                    voice_anchor, _compress_voice_anchor(voice_anchor.text)
+                )
+
         if normalized_task_kind == "hard_qc" and _rendered_prompt_tokens(
             system_prompt=system_prompt,
             task_prompt=task_prompt,
@@ -219,6 +251,19 @@ def apply_context_budget(
             section = section_lookup.get(section_name)
             if section is not None:
                 _apply_compressed_text(section, _compress_continuity_digest(section.text))
+
+        # v2：连续性摘要都压过仍超预算 → 整段省略声音锚 / 漂移校准（软性延续信号），
+        # 再走拆场建议；scene_card 等事实 section 从不被动。
+        for section_name in ("previous_scene_voice_anchor", "style_drift_calibration"):
+            if _rendered_prompt_tokens(
+                system_prompt=system_prompt,
+                task_prompt=task_prompt,
+                bundle_snapshot=bundle_snapshot,
+                sections=sections,
+                split_scene_recommended=False,
+            ) <= max_input_tokens:
+                break
+            _omit_section(section_lookup, section_name)
 
         if _rendered_prompt_tokens(
             system_prompt=system_prompt,
@@ -399,6 +444,23 @@ def _compress_style_observations(text: str) -> str:
         candidate,
         max_tokens=STYLE_OBSERVATION_COMPRESSED_TOKENS,
     )
+
+
+def _compress_voice_anchor(text: str) -> str:
+    """保留声音锚的**尾部**（最靠近本场的节拍），并从句边界起头。"""
+    normalized = _normalize_text(text)
+    if not normalized or estimate_tokens(normalized) <= VOICE_ANCHOR_COMPRESSED_TOKENS:
+        return normalized
+    # 从尾部向前收，直到估算 token 落进上限。
+    start = 0
+    while start < len(normalized) and estimate_tokens(normalized[start:]) > VOICE_ANCHOR_COMPRESSED_TOKENS:
+        start += max(1, (len(normalized) - start) // 8)
+    tail = normalized[start:]
+    match = _SENTENCE_BOUNDARY_RE.search(tail)
+    if match is not None and match.end() < len(tail):
+        tail = tail[match.end():]
+    tail = tail.strip()
+    return f"... {tail}" if tail else normalized[-1:]
 
 
 def _compress_calibration_lines(text: str) -> str:
