@@ -215,6 +215,9 @@ def test_ingest_luxun_placeholder(ingest_service: IngestService) -> None:
         assert "mean" in m
         assert "std" in m
         assert "sample_count" in m
+    # v2 W3:全书声音签名随 ingest 落库
+    assert stats["voice_signature"]["version"] == "voice_signature_v1"
+    assert stats["voice_signature"]["stats"]["char_count"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -275,3 +278,30 @@ def test_ingest_blank_title_falls_back_to_filename(ingest_service: IngestService
         cloud_policy="local_only",
     )
     assert upload.book.title == "风格样本"
+
+
+# ---------------------------------------------------------------------------
+# v2 W3:stats_json.voice_signature
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_writes_voice_signature(ingest_service: IngestService) -> None:
+    from novel_system.services.style_reference.voice_signature import (
+        FEATURE_NAMES,
+        VOICE_SIGNATURE_VERSION,
+    )
+
+    result = ingest_service.ingest_upload(
+        raw_bytes=SAMPLE_TEXT.encode("utf-8"),
+        file_name="sample.txt",
+        title="声音签名",
+        author_label="作者",
+        cloud_policy="local_only",
+    )
+    signature = result.book.stats_json["voice_signature"]
+    assert signature["version"] == VOICE_SIGNATURE_VERSION == "voice_signature_v1"
+    assert tuple(signature["features"]) == FEATURE_NAMES
+    assert all(isinstance(value, float) for value in signature["features"].values())
+    assert signature["stats"]["paragraph_count"] == 5
+    assert signature["stats"]["quote_count"] == 1
+    assert isinstance(signature["deliberate_repetition"], bool)

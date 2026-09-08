@@ -21,7 +21,8 @@ from novel_system.services.style_reference.text_utils import split_sentences
 STYLE_SIGNATURE_VERSION = "zh_content_restrained_style_signature_v2"
 _BINS = 8
 _SEARCH_CODEPOINT_BASE = 0xE000
-_SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？.!?…])")
+_HAS_VISIBLE_CHAR = re.compile(r"[\w㐀-鿿]")
+_TRAILING_CLOSERS = "”’」』\"'）)】〕］]"
 
 _PUNCTUATION = {
     "comma": "，,",
@@ -356,12 +357,24 @@ def query_view_for_granularity(
     if not normalized:
         return ""
     if granularity == "sentence":
+        # 分句复用 text_utils.split_sentences(W2 统一修闭引号);丢弃无可见字符的残片
+        # (闭引号 / 纯标点),再从原文取最后一句起始到结尾——保留句末标点与闭引号,
+        # 不再把孤立的「”」当成最后一句。
         sentences = [
-            sentence.strip()
-            for sentence in _SENTENCE_BOUNDARY.split(normalized)
-            if sentence.strip()
+            sentence
+            for sentence in split_sentences(normalized)
+            if _HAS_VISIBLE_CHAR.search(sentence)
         ]
-        return sentences[-1] if sentences else normalized[-80:]
+        if not sentences:
+            return normalized[-80:]
+        last = sentences[-1]
+        # split_sentences 会剥掉句末标点、并把闭引号归并进片段,片段未必是原文子串;
+        # 用去掉尾部闭引号的「句核」定位起点,再取原文到结尾。
+        core = last.rstrip(_TRAILING_CLOSERS) or last
+        tail_start = normalized.rfind(core)
+        if tail_start < 0:
+            return last
+        return normalized[tail_start:].strip()
     if granularity == "paragraph":
         paragraphs = [
             part.strip()

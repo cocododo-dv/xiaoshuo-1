@@ -12,6 +12,7 @@
   7. split_paragraphs(text) → list of (start, end, body)
   8. segmentation.classify_paragraphs(...) → SegmentationResult
   9. MetricsEngine.compute_with_variance(records) → stats_json.metrics
+     voice_signature.compute_voice_signature(paragraphs) → stats_json.voice_signature
  10. 落 style_reference_books + style_reference_paragraphs 表
  11. book.status = "ready"
 
@@ -58,6 +59,7 @@ from novel_system.services.style_reference.text_utils import (
     normalize_text,
     split_paragraphs,
 )
+from novel_system.services.style_reference.voice_signature import compute_voice_signature
 
 
 MAX_REFERENCE_BOOK_BYTES = 10 * 1024 * 1024
@@ -441,6 +443,11 @@ class IngestService:
             "input_assessment": assess_input_size(len(normalized)),
             "safety": safety_payload,
             "rights_declaration": rights,
+            # v2 W3:全书确定性声音签名(闭类词 / 标点 / 引导句 / 节奏),内容安全,
+            # 不依赖段型分类器;合成期(W1)由此写入 profile_json.voice_signature。
+            "voice_signature": compute_voice_signature(
+                [body for _start, _end, body in paragraph_spans]
+            ),
         }
 
         book = self.repo.create_book(

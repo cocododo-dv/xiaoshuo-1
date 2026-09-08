@@ -1,0 +1,81 @@
+# Style Reference v2 声音签名基线(voice_signature.py 消费,勿手改数值)。
+# 「一般中文小说」基线:用 backend/tests/golden/style_reference/corpus 全部公版文本
+# (鲁迅短篇 + 朱自清散文;luxun_kongyiji / zhuziqing_essays 与主集有重叠,按规格「全部文本」照收)
+# 按 1500 字块切分,对每个特征取块间 mean / std / p15 / p50 / p85。
+# render_voice_habits 以 p15 / p85 判「偏低 / 偏高」;feature_z_scores 用 mean / std。
+# 再生成(backend 目录下):
+#   python -m novel_system.services.style_reference.voice_signature build-baseline --block-chars 1500
+# generated_at: 2026-09-05
+version: voice_baseline_v1
+signature_version: voice_signature_v1
+block_chars: 1500
+block_count: 72
+corpus:
+  - {file: "luxun_kongyiji.txt", chars: 2644, paragraphs: 15, blocks: 1, normalized_sha256: d8dce98cc37839d8d579c62e3d7f4087474243b55ebf756a2a5528d0fcdedfde}
+  - {file: "luxun_short_stories.txt", chars: 66352, paragraphs: 904, blocks: 41, normalized_sha256: 2497c7d5e1b4a83d7f10934815f4ed46834495bdff8de5feeb3d00e9cd7bdf50}
+  - {file: "zhuziqing_benchmark_essays.txt", chars: 43539, paragraphs: 218, blocks: 25, normalized_sha256: 44334dcfc3d92cb2e882fb31f3b41b11837719b2f80fe7988686bd441f403ca7}
+  - {file: "zhuziqing_essays.txt", chars: 8296, paragraphs: 52, blocks: 5, normalized_sha256: c862a8cea5f3cbfab390588e3d0cef57cf5d82fb4327ecbb39b084c05d649679}
+features:
+  fw_particle_per_1k: {mean: 56.429102, std: 11.751654, p15: 44.748976, p50: 56.438567, p85: 67.934783}
+  fw_aspect_per_1k: {mean: 33.450481, std: 8.935129, p15: 23.275722, p50: 33.072446, p85: 43.789219}
+  fw_connective_per_1k: {mean: 50.722793, std: 12.180221, p15: 36.010322, p50: 50.847578, p85: 63.908911}
+  fw_adverb_per_1k: {mean: 31.443625, std: 5.706854, p15: 25.963769, p50: 31.604837, p85: 36.771656}
+  fw_preposition_per_1k: {mean: 30.78195, std: 5.706917, p15: 25.016666, p50: 29.779062, p85: 36.78304}
+  fw_pronoun_per_1k: {mean: 66.799698, std: 18.591975, p15: 49.225693, p50: 62.38405, p85: 87.043387}
+  fw_modal_per_1k: {mean: 7.021776, std: 4.215337, p15: 2.447032, p50: 6.237932, p85: 11.58476}
+  fw_classical_per_1k: {mean: 9.30322, std: 6.469201, p15: 3.281693, p50: 7.846154, p85: 16.088112}
+  fw_total_per_1k: {mean: 285.952646, std: 23.01863, p15: 262.136213, p50: 286.5371, p85: 310.146604}
+  sentence_final_modal_ratio: {mean: 0.107214, std: 0.063388, p15: 0.043261, p50: 0.1, p85: 0.182254}
+  sentence_final_classical_ratio: {mean: 0.004383, std: 0.011289, p15: 0.0, p50: 0.0, p85: 0.013334}
+  punct_comma_per_1k: {mean: 76.538936, std: 9.368944, p15: 64.355668, p50: 76.611871, p85: 86.068221}
+  punct_enumeration_per_1k: {mean: 0.772428, std: 1.493449, p15: 0.0, p50: 0.0, p85: 1.861036}
+  punct_period_per_1k: {mean: 31.751884, std: 6.873866, p15: 23.988821, p50: 32.083678, p85: 38.63806}
+  punct_colon_per_1k: {mean: 3.571217, std: 2.342334, p15: 1.319497, p50: 3.179652, p85: 6.027836}
+  punct_semicolon_per_1k: {mean: 8.812641, std: 4.617638, p15: 3.500908, p50: 8.636081, p85: 13.445129}
+  punct_exclamation_per_1k: {mean: 5.811893, std: 5.580433, p15: 1.178314, p50: 4.663936, p85: 9.004616}
+  punct_question_per_1k: {mean: 4.47945, std: 3.108421, p15: 1.302041, p50: 3.801767, p85: 8.332927}
+  punct_ellipsis_per_1k: {mean: 2.439217, std: 3.575238, p15: 0.0, p50: 1.039481, p85: 5.490296}
+  punct_dash_per_1k: {mean: 2.682584, std: 2.223978, p15: 0.734393, p50: 2.260771, p85: 4.862598}
+  punct_quote_pair_per_1k: {mean: 12.30168, std: 8.347437, p15: 4.246377, p50: 11.714717, p85: 19.510346}
+  sent_len_mean: {mean: 22.972293, std: 4.151366, p15: 19.234721, p50: 22.803509, p85: 27.879166}
+  sent_len_std: {mean: 15.625281, std: 3.445294, p15: 12.050457, p50: 14.952369, p85: 19.345827}
+  sent_len_p10: {mean: 6.563889, std: 2.916634, p15: 3.325, p50: 6.45, p85: 9.07}
+  sent_len_p90: {mean: 43.201389, std: 8.091448, p15: 34.7, p50: 42.75, p85: 52.87}
+  sent_pauses_mean: {mean: 2.059119, std: 0.411722, p15: 1.630137, p50: 2.033908, p85: 2.520109}
+  clause_len_mean: {mean: 7.483627, std: 0.653672, p15: 6.793164, p50: 7.578214, p85: 8.167284}
+  sent_short_run_mean: {mean: 2.089152, std: 1.052861, p15: 1.3, p50: 2.0, p85: 3.0}
+  sent_short_run_ratio: {mean: 0.110107, std: 0.09724, p15: 0.016667, p50: 0.083333, p85: 0.210317}
+  sent_len_lag1_autocorr: {mean: 0.134789, std: 0.130686, p15: -0.006115, p50: 0.153231, p85: 0.241867}
+  para_len_mean: {mean: 144.523512, std: 145.993452, p15: 51.883259, p50: 86.55625, p85: 235.602083}
+  para_single_sentence_ratio: {mean: 0.287737, std: 0.135655, p15: 0.166667, p50: 0.285714, p85: 0.411743}
+  para_dialogue_ratio: {mean: 0.276921, std: 0.25502, p15: 0.0, p50: 0.240385, p85: 0.621131}
+  dialogue_guide_pre_share: {mean: 0.224472, std: 0.243082, p15: 0.0, p50: 0.162281, p85: 0.507}
+  dialogue_guide_post_share: {mean: 0.1309, std: 0.149102, p15: 0.0, p50: 0.089572, p85: 0.280556}
+  dialogue_guide_none_share: {mean: 0.63074, std: 0.257549, p15: 0.350667, p50: 0.666667, p85: 0.895357}
+  speech_verb_shuodao_share: {mean: 0.036981, std: 0.096904, p15: 0.0, p50: 0.0, p85: 0.031818}
+  speech_verb_shuo_share: {mean: 0.518384, std: 0.337173, p15: 0.0, p50: 0.5, p85: 0.927778}
+  speech_verb_dao_share: {mean: 0.1, std: 0.197062, p15: 0.0, p50: 0.0, p85: 0.25}
+  speech_verb_wen_share: {mean: 0.037427, std: 0.134194, p15: 0.0, p50: 0.0, p85: 0.051594}
+  speech_verb_da_share: {mean: 0.014038, std: 0.064792, p15: 0.0, p50: 0.0, p85: 0.0}
+  speech_verb_other_share: {mean: 0.16817, std: 0.239881, p15: 0.0, p50: 0.018519, p85: 0.437662}
+  four_char_segment_per_1k: {mean: 16.714534, std: 6.319306, p15: 11.391978, p50: 15.713177, p85: 23.232093}
+  redup_aa_per_1k: {mean: 8.417973, std: 3.616933, p15: 5.301127, p50: 7.547319, p85: 12.349517}
+  redup_aabb_per_1k: {mean: 0.892308, std: 0.950103, p15: 0.0, p50: 0.749907, p85: 1.802705}
+  redup_abab_per_1k: {mean: 0.458866, std: 0.60866, p15: 0.0, p50: 0.0, p85: 1.229167}
+  redup_total_per_1k: {mean: 9.769146, std: 4.143014, p15: 5.599955, p50: 9.04361, p85: 13.959438}
+  person_first_share: {mean: 0.386626, std: 0.213789, p15: 0.132387, p50: 0.404404, p85: 0.612549}
+  person_second_share: {mean: 0.112089, std: 0.096138, p15: 0.019306, p50: 0.098316, p85: 0.188091}
+  person_third_share: {mean: 0.501286, std: 0.195948, p15: 0.289091, p50: 0.470861, p85: 0.744758}
+  lexical_char_ttr: {mean: 0.326227, std: 0.022605, p15: 0.306434, p50: 0.325849, p85: 0.348256}
+  lexical_bigram_hapax_ratio: {mean: 0.87309, std: 0.023436, p15: 0.855471, p50: 0.876025, p85: 0.891427}
+top_words:
+  particle: [["的", 0.811734], ["得", 0.099396], ["地", 0.048663], ["所", 0.027437], ["似的", 0.01277]]
+  aspect: [["了", 0.718331], ["着", 0.1231], ["过", 0.085544], ["起来", 0.040537], ["下去", 0.012519]]
+  connective: [["也", 0.173362], ["便", 0.11291], ["又", 0.087168], ["但", 0.068253], ["还", 0.057332]]
+  adverb: [["都", 0.10596], ["很", 0.082308], ["只", 0.075371], ["太", 0.067487], ["现在", 0.038158]]
+  preposition: [["在", 0.267342], ["和", 0.10453], ["将", 0.064618], ["从", 0.063035], ["为", 0.056699]]
+  pronoun: [["我", 0.226716], ["他", 0.16738], ["这", 0.122952], ["她", 0.0769], ["那", 0.065387]]
+  modal: [["呢", 0.323034], ["么", 0.231742], ["呀", 0.106742], ["罢", 0.095506], ["吧", 0.057584]]
+  classical: [["之", 0.290526], ["以", 0.243158], ["于", 0.101053], ["未", 0.086316], ["其", 0.084211]]
+  sentence_final: [["呢", 0.395753], ["么", 0.26834], ["罢", 0.090734], ["呀", 0.083012], ["吧", 0.059846]]
+  speech_verb: [["说", 0.58548], ["其他", 0.161593], ["道", 0.135831], ["说道", 0.063232], ["问", 0.042155]]
