@@ -10,12 +10,16 @@
 本地改写，原样保留并在报告里点名。`input_token_budget` 是代码侧实测定出的运行参数、
 不承载创作意图，只要不同就对齐。
 
-默认只处理雪花工作台模板族（名字以 `snowflake_` 开头的那 14 个），因为「库内快照盖过
-仓库文件」这个坑最常在改这一族时踩到。
+默认处理仓库文件里的**全部**模板（2026-09 风格模仿 v2 起）。此前默认只处理雪花工作台
+模板族（`snowflake_*` 那 14 个），结果 `style_ref_*`、`style_draft`、`neutral_draft`、
+`soft_qc`、`scene_blueprint` 等模板的仓库改动在存过系统配置的安装上同样静默不生效。
+`--all` 保留为显式同义写法；要缩小范围用 `--template` 点名，或 `--prefix` 按名字前缀筛
+（`--prefix snowflake_` 即恢复旧的默认范围）。
 
-    python -m novel_system.tools.sync_prompt_templates              # 干跑，只看会改什么
+    python -m novel_system.tools.sync_prompt_templates              # 干跑，只看会改什么（全部模板）
     python -m novel_system.tools.sync_prompt_templates --execute    # 落库并激活新快照
-    python -m novel_system.tools.sync_prompt_templates --all        # 处理全部模板
+    python -m novel_system.tools.sync_prompt_templates --all        # 与默认等价，保留兼容
+    python -m novel_system.tools.sync_prompt_templates --prefix style_ref_ --prefix style_
     python -m novel_system.tools.sync_prompt_templates --template snowflake_generate_scene_details
     python -m novel_system.tools.sync_prompt_templates --force-text # 连界面改写的正文一起覆盖
 """
@@ -36,7 +40,6 @@ from novel_system.services.system_config import SystemConfigService
 TEXT_FIELDS = ("version", "system_prompt", "task_prompt", "structured_schema")
 # 运行参数，与创作意图无关，不同即对齐。
 RUNTIME_FIELDS = ("input_token_budget",)
-DEFAULT_PREFIX = "snowflake_"
 ACTOR = "sync_prompt_templates"
 
 
@@ -50,9 +53,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--template", action="append", dest="templates",
-        help=f"要同步的模板名，可重复；默认全部 {DEFAULT_PREFIX}* 模板",
+        help="要同步的模板名，可重复；不点名则处理仓库文件里的全部模板（可再用 --prefix 收窄）",
     )
-    parser.add_argument("--all", action="store_true", help="处理仓库文件里的全部模板")
+    parser.add_argument(
+        "--all", action="store_true",
+        help="处理仓库文件里的全部模板——现已是默认行为，保留兼容",
+    )
+    parser.add_argument(
+        "--prefix", action="append", dest="prefixes",
+        help="只处理名字以此前缀开头的模板，可重复（如 --prefix snowflake_ 恢复旧的默认范围）",
+    )
     parser.add_argument(
         "--force-text", action="store_true",
         help="版本号相同但正文不同（界面改写）时也覆盖——默认保留界面版本",
@@ -62,11 +72,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _select(repo_templates: dict[str, Any], args: argparse.Namespace) -> list[str]:
+    """选出要检查的模板名：点名优先，否则全部；`--prefix` 在两者之上再收窄。"""
     if args.templates:
-        return list(args.templates)
-    if args.all:
-        return sorted(repo_templates)
-    return sorted(name for name in repo_templates if name.startswith(DEFAULT_PREFIX))
+        names = list(dict.fromkeys(args.templates))
+    else:
+        names = sorted(repo_templates)
+    prefixes = tuple(prefix for prefix in (args.prefixes or []) if prefix)
+    if prefixes:
+        names = [name for name in names if name.startswith(prefixes)]
+    return names
 
 
 def plan_changes(
@@ -148,6 +162,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{repo_path} 里没有 templates 段，无法同步。")
         return 2
 
+    names = _select(repo_templates, args)
+    if not names:
+        print(f"没有模板匹配 --prefix {', '.join(args.prefixes or [])}——仓库文件里共有 {len(repo_templates)} 个模板。")
+        return 2
+
     session = SessionLocal()
     try:
         service = SystemConfigService(session)
@@ -163,7 +182,6 @@ def main(argv: list[str] | None = None) -> int:
             print("活动快照里没有 templates 段，形状异常——请先在系统配置界面检查这一版。")
             return 2
 
-        names = _select(repo_templates, args)
         changes, problems = plan_changes(
             repo_templates, snapshot_templates, names, force_text=args.force_text
         )
