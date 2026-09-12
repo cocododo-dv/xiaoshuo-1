@@ -388,6 +388,23 @@ class FinalTextGateService:
             raise TypeError(f"expected {expected.__name__} digest")
         return decoded
 
+    def _scene_style_bound(self, scene: SceneCard | None) -> bool:
+        """场景当前 bundle 的冻结契约是否 style_first(房风阈值让位的统一条件)。"""
+        if scene is None:
+            return False
+        try:
+            state = self.session.get(SceneRunState, scene.scene_id)
+            if state is None or not state.current_bundle_id:
+                return False
+            bundle_row = self.session.get(SceneBundle, state.current_bundle_id)
+            if bundle_row is None:
+                return False
+            from novel_system.services.style_reference.runtime_contract import is_style_bound
+
+            return bool(is_style_bound(bundle_row.frozen_snapshot_json))
+        except Exception:  # noqa: BLE001 — 让位判定失败按现状(施加阈值)处理
+            return False
+
     def _literary(self, scene: SceneCard | None, content: str) -> dict[str, Any]:
         try:
             signals, findings = analyze_literary_quality(content)
@@ -420,12 +437,16 @@ class FinalTextGateService:
                 "choice_pressure": round(float(signals["choice_pressure"].get("score", 1.0)), 4),
             }
             promotion_blockers: list[str] = []
-            if scores["character_scene_core"] < CHARACTER_SCENE_CORE_MIN:
-                promotion_blockers.append("literary:character_scene_core")
-            if scores["ending_drive"] < ENDING_DRIVE_MIN:
-                promotion_blockers.append("literary:ending_drive")
-            if scores["choice_pressure"] < CHOICE_PRESSURE_MIN:
-                promotion_blockers.append("literary:choice_pressure")
+            # 2026-09-12 风格直起:style_first 下三个文学阈值整体让位(仍计算并展示分数);
+            # 事实 / 安全 / 抄袭门不受影响。
+            style_bound = self._scene_style_bound(scene)
+            if not style_bound:
+                if scores["character_scene_core"] < CHARACTER_SCENE_CORE_MIN:
+                    promotion_blockers.append("literary:character_scene_core")
+                if scores["ending_drive"] < ENDING_DRIVE_MIN:
+                    promotion_blockers.append("literary:ending_drive")
+                if scores["choice_pressure"] < CHOICE_PRESSURE_MIN:
+                    promotion_blockers.append("literary:choice_pressure")
             risky_dimensions = [
                 dimension for dimension, signal in signals.items() if bool(signal.get("risk"))
             ]
@@ -442,6 +463,9 @@ class FinalTextGateService:
                 "available": True,
                 "overall_score": overall_score,
                 "scores": scores,
+                "house_taste_thresholds": (
+                    "deferred_to_reference" if style_bound else "applied"
+                ),
                 "thresholds": {
                     "character_scene_core_min": CHARACTER_SCENE_CORE_MIN,
                     "ending_drive_min": ENDING_DRIVE_MIN,

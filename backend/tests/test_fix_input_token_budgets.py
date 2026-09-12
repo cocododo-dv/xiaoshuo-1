@@ -50,6 +50,7 @@ from novel_system.services.prompt_builder import (
     RUNTIME_MIN_INPUT_BUDGETS,
     SCENE_INPUT_TOKEN_BUDGET,
     SCENE_INPUT_TOKEN_BUDGET_ENV,
+    STYLE_PASS_INPUT_TOKEN_BUDGET,
     PromptBuilder,
     PromptConfigurationError,
     load_prompt_templates,
@@ -266,10 +267,21 @@ def test_repo_prompt_budgets_match_runtime_floors() -> None:
     }
     assert mismatched == {}
     assert SCENE_INPUT_TOKEN_BUDGET == 24000
+    assert STYLE_PASS_INPUT_TOKEN_BUDGET == 64000
     assert PLANNING_INPUT_TOKEN_BUDGET == 8000
     assert CHAPTER_INPUT_TOKEN_BUDGET == 30000
-    for name in ("neutral_draft", "style_draft", "hard_qc", "soft_qc", "near_final_acceptance_review"):
+    for name in ("neutral_draft", "hard_qc"):
         assert RUNTIME_MIN_INPUT_BUDGETS[name] == SCENE_INPUT_TOKEN_BUDGET
+    # 2026-09-09 样例优先:拿到 [STYLE_REFERENCE] 前缀(≤3 万字原文样例)的节点单独一档
+    for name in (
+        "style_draft",
+        "scene_literary_rewrite",
+        "style_length_patch",
+        "style_salvage_patch",
+        "soft_qc",
+        "near_final_acceptance_review",
+    ):
+        assert RUNTIME_MIN_INPUT_BUDGETS[name] == STYLE_PASS_INPUT_TOKEN_BUDGET
     for name in ("chapter_near_final_review", "writer_deep_review"):
         assert RUNTIME_MIN_INPUT_BUDGETS[name] == CHAPTER_INPUT_TOKEN_BUDGET
 
@@ -283,7 +295,7 @@ def test_near_final_acceptance_review_fits_a_3000_char_chinese_draft() -> None:
     prompt = PromptBuilder().build(_rich_scene_snapshot(), "near_final_acceptance_review")
     final_user_prompt = near_final_module._acceptance_user_prompt(prompt["user_prompt"], source_content=SCENE_DRAFT)
     budget = _assert_fits(prompt, final_user_prompt, stale_budget=STALE_BUDGETS["near_final_acceptance_review"])
-    assert budget["target_input_tokens"] == SCENE_INPUT_TOKEN_BUDGET
+    assert budget["target_input_tokens"] == STYLE_PASS_INPUT_TOKEN_BUDGET
     # 稿件本身就接近旧预算：这正是 900 字都过不去的原因
     assert estimate_tokens(SCENE_DRAFT) > 2900
 
@@ -469,8 +481,8 @@ def test_runner_dispatches_near_final_review_for_a_3000_char_draft(session) -> N
     stored_call = session.execute(select(LlmCall)).scalars().one()
     assert stored_call.error_code is None
     summary = stored_call.request_payload_summary["token_budget"]
-    assert summary["target_input_tokens"] == SCENE_INPUT_TOKEN_BUDGET
-    assert STALE_BUDGETS["near_final_acceptance_review"] < summary["estimated_input_tokens"] <= SCENE_INPUT_TOKEN_BUDGET
+    assert summary["target_input_tokens"] == STYLE_PASS_INPUT_TOKEN_BUDGET
+    assert STALE_BUDGETS["near_final_acceptance_review"] < summary["estimated_input_tokens"] <= STYLE_PASS_INPUT_TOKEN_BUDGET
 
 
 def test_runner_still_fails_closed_when_the_tightened_override_is_exceeded(session, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -19,8 +19,15 @@ voice_block_ratio: 0.20               # [声音特征](profile_json.voice_signat
 metric_guidance_mode: soft_distribution
 metric_guidance_max_items: 6
 
-# few-shot 样例(B / MIXED):以 quote 所在段为中心的**连续段落窗口**(1–3 段,含对白
-# 与叙述的往返),按 (场景段型匹配, 辨识度, 窗口完整度, 稳定次序) 选段,同一段型可多条。
+# few-shot 样例(B / MIXED):以 quote 所在段为中心的**连续段落窗口**,按 (场景段型匹配,
+# 辨识度, 窗口完整度, 稳定次序) 选段,同一段型可多条。
+#
+# 2026-09-09「样例优先」:原文样例是主信号,不再是点缀。默认强度(50)约 2 万字、满强度
+# 约 3 万字原文进入 style_draft / soft_qc / 近终稿改写的系统提示;窗口是 2–4 千字的连续段
+# (整场规模),按场景轮换,让模型读整段原文而不是 900 字碎片。小上下文模型用
+# NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET 收紧,装不下时按整窗口从末尾逐个卸载
+# (injection.fit_fragments_to_input_budget),先卸样例窗口、后卸抽象行,永不发半窗。
+#
 # few_shot_k / few_shot_k_min:intensity=100 / 0 时的窗口数,中间线性取整
 # few_shot_window_paragraphs:单个窗口最多几段(相邻、paragraph_index 连续,不跨缺口)
 # few_shot_window_max_chars:单窗口原文上限;few_shot_paragraph_max_chars:单段上限
@@ -29,15 +36,38 @@ metric_guidance_max_items: 6
 #   该块在四块 ratio 之外,随样例必附反抄袭红线段)
 # few_shot_quote_max_chars / few_shot_paragraph_min_chars / few_shot_candidate_scan_per_type:
 #   旧键保留——无父段落的旧数据退化为短引文;每种段型最多扫描的候选 quote 数
-few_shot_k: 6
-few_shot_k_min: 2
-few_shot_block_max_chars: 3600
-few_shot_window_paragraphs: 3
-few_shot_window_max_chars: 900
-few_shot_paragraph_max_chars: 700
+# few_shot_contract_neighbour_span:运行时契约里每个引文父段两侧要冻结哈希的相邻段数
+#   (兜底路径:整本书的段落根哈希失配时,窗口只能在这些已冻结的段落内展开)
+# few_shot_rotate_per_scene:同一绑定下按 scene_id 在前 k×few_shot_rotation_pool_multiplier
+#   个候选里确定性轮换,不同场景看到不同窗口(同一场景的生成与质检看到相同窗口);
+#   漂移修正激活时不轮换
+# few_shot_affinity_scan_chars:计算窗口辨识度时只看窗口前 N 字(控制大窗口的计算开销)
+# 2026-09-12 最大化模仿(Step 2):k 8→10、单窗 3500→4000、整块 30000→40000。满强度约 3 万字原文。
+few_shot_k: 10
+few_shot_k_min: 3
+few_shot_block_max_chars: 40000
+few_shot_window_paragraphs: 60
+few_shot_window_max_chars: 4000
+few_shot_paragraph_max_chars: 1500
 few_shot_paragraph_min_chars: 40
 few_shot_quote_max_chars: 120
 few_shot_candidate_scan_per_type: 12
+few_shot_contract_neighbour_span: 2
+few_shot_rotate_per_scene: true
+few_shot_rotation_pool_multiplier: 3
+few_shot_affinity_scan_chars: 1200
+
+# 2026-09-12 风格直起(Step 2,docs/style-first-draft-plan-2026-09-12.md):
+# draft_mode_default:绑定 config_json 未写 draft_mode 时的起草方式——
+#   style_first  = 有绑定时第一稿直接以参考作者手笔从 bundle 写(中性步位换内容,步位不变),
+#                  style_draft 改为再靠近一层的复读;下游房风门(去模板 / 自动批评 / 近终稿
+#                  确定性门 / 成稿文学阈值 / 新鲜度词表)整体让位,只留事实 / 抄袭 / 必含 / 禁止门
+#   neutral_first = 现状:中性稿再上风格(阅读对照组)
+# 生效值在 bundle 构建时冻结进运行时契约顶层 draft_mode;旧契约缺键 → neutral_first。
+# style_first_length_slack:style_first 下场景卡数字长度带两侧各放宽的比例(0.5:1200–1800
+#   → 600–2700),作者自己的场景尺度优先于系统的长度带;越界才触发长度补丁。
+draft_mode_default: style_first
+style_first_length_slack: 0.5
 
 # 多层叠加(scene > character > project > global):抽象总额 ×(1 + layered_total_scale_per_layer
 # × (层数 - 1)),上限 × layered_total_scale_max;按权重 [1..n] 切给各层(越具体越多)。

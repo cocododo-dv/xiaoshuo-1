@@ -483,6 +483,41 @@ class NearFinalAcceptanceService:
         self.prompt_builder = PromptBuilder()
         self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
 
+    def _inject_style_reference_prefix(
+        self,
+        prompt: dict[str, Any],
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        *,
+        context_text: str,
+        final_user_prompt: str,
+    ) -> dict[str, Any]:
+        """复用 scene_generation / soft_qc 的模块级注入器;任何异常都回退到基础 prompt。"""
+        try:
+            from novel_system.services.style_prompt_injection import (
+                inject_style_reference_prefix,
+            )
+
+            injected = inject_style_reference_prefix(
+                self.session,
+                prompt,
+                scene,
+                bundle,
+                task_type="scene_generation",
+                context_text=context_text,
+                final_user_prompt=final_user_prompt,
+            )
+            return injected if injected is not None else prompt
+        except Exception:  # noqa: BLE001 — 可选增强,不阻断验收评审
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "near-final review style reference prefix skipped for scene %s",
+                getattr(scene, "scene_id", None),
+                exc_info=True,
+            )
+            return prompt
+
     def evaluate_scene(
         self,
         scene_id: str,
@@ -495,6 +530,13 @@ class NearFinalAcceptanceService:
     ) -> dict[str, Any]:
         scene = self._require_scene(scene_id)
         prompt = self.prompt_builder.build(bundle["snapshot"], "near_final_acceptance_review")
+        user_prompt = _acceptance_user_prompt(prompt["user_prompt"], source_content=source_content)
+        # 2026-09-09 样例优先:验收评审拿到与 style_draft 相同的 [STYLE_REFERENCE] 前缀(同一冻结
+        # 契约、同一组样例窗口),「author voice match」对照参考原文而不是评审的默认口味;
+        # 注入失败只降级,不阻断评审。
+        prompt = self._inject_style_reference_prefix(
+            prompt, scene, bundle, context_text=source_content, final_user_prompt=user_prompt
+        )
         try:
             node_result = self._llm_runner.run(
                 scene_id=scene.scene_id,
@@ -504,7 +546,7 @@ class NearFinalAcceptanceService:
                 node_id="near_final_acceptance_review",
                 step="near_final_acceptance_review",
                 prompt=prompt,
-                user_prompt=_acceptance_user_prompt(prompt["user_prompt"], source_content=source_content),
+                user_prompt=user_prompt,
                 source_draft_row_id=source_draft_row_id,
                 source_draft_content=source_content,
                 execution_step_key=execution_step_key,
@@ -520,7 +562,9 @@ class NearFinalAcceptanceService:
             )
             payload = _execution_failure_payload(exc.message)
 
-        payload = _apply_scene_near_final_gates(payload, source_content)
+        payload = _apply_scene_near_final_gates(
+            payload, source_content, style_bound=_bundle_style_bound(bundle)
+        )
         source = {
             "content": source_content,
             "source_text_ref": f"source_draft:{source_draft_row_id}",
@@ -567,6 +611,23 @@ class NearFinalAcceptanceService:
             "should_rewrite": self._should_rewrite(payload),
         }
 
+    def _chapter_first_scene(self, chapter: Any) -> SceneCard | None:
+        try:
+            return (
+                self.session.execute(
+                    select(SceneCard)
+                    .where(
+                        SceneCard.chapter_id == chapter.chapter_id,
+                        SceneCard.trashed_flag == 0,
+                    )
+                    .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+                )
+                .scalars()
+                .first()
+            )
+        except Exception:  # noqa: BLE001 — 只影响前缀注入,不影响评审本身
+            return None
+
     def evaluate_chapter(
         self,
         chapter_id: str,
@@ -578,6 +639,20 @@ class NearFinalAcceptanceService:
         source = self._chapter_source(chapter)
         bundle = self._chapter_bundle(chapter, source)
         prompt = self.prompt_builder.build(bundle["snapshot"], "chapter_near_final_review")
+        chapter_user_prompt = _acceptance_user_prompt(
+            prompt["user_prompt"], source_content=source["content"]
+        )
+        # 2026-09-12 结构跟随:章级评审也拿到同一 [STYLE_REFERENCE] 前缀(以本章第一场解析
+        # 绑定;章 bundle 没有冻结契约,按实时绑定渲染);失败按无前缀降级。
+        first_scene = self._chapter_first_scene(chapter)
+        if first_scene is not None:
+            prompt = self._inject_style_reference_prefix(
+                prompt,
+                first_scene,
+                None,
+                context_text=source["content"],
+                final_user_prompt=chapter_user_prompt,
+            )
         execution_id = current_llm_execution_id()
         context = LLMCallContext(
             scope_type="chapter",
@@ -600,7 +675,7 @@ class NearFinalAcceptanceService:
                 node_id="chapter_near_final_review",
                 step="chapter_near_final_review",
                 prompt=prompt,
-                user_prompt=_acceptance_user_prompt(prompt["user_prompt"], source_content=source["content"]),
+                user_prompt=chapter_user_prompt,
                 source_draft_row_id=source["source_text_ref"],
                 source_draft_content=source["content"],
                 execution_step_key=execution_step_key,
@@ -993,8 +1068,26 @@ def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:
     }
 
 
-def _apply_scene_near_final_gates(payload: dict[str, Any], source_content: str) -> dict[str, Any]:
+def _bundle_style_bound(bundle: Any) -> bool:
+    try:
+        from novel_system.services.style_reference.runtime_contract import is_style_bound
+
+        return bool(is_style_bound(bundle))
+    except Exception:  # noqa: BLE001 — 让位判定失败按无绑定处理(现状行为)
+        return False
+
+
+def _apply_scene_near_final_gates(
+    payload: dict[str, Any],
+    source_content: str,
+    *,
+    style_bound: bool = False,
+) -> dict[str, Any]:
     if _is_test_placeholder_draft(source_content):
+        return payload
+    if style_bound:
+        # 2026-09-12 风格直起:词表门(她知道 / 忽然意识到 / 解释了一切…)与「结尾必须是动作」
+        # 启发式都是房风;有绑定时整体让位,由带样例的验收评审(LLM)判断。
         return payload
     missing = _missing_scene_machinery(source_content)
     if not missing:

@@ -644,17 +644,18 @@ class SystemPromptFragments(BaseModel):
     strategy: InjectionStrategy = InjectionStrategy.A
 
     def to_system_prompt_prefix(self) -> str:
-        # 顺序(v2 §1.2):metric → voice → positive → forbidden → few_shot → rag →
-        # anti_plagiarism(红线段永远最后、永不截断)。
+        # 顺序(2026-09-09 样例优先):few_shot → rag → voice → positive → forbidden →
+        # metric → anti_plagiarism。原文样例是主信号,排最前;抽象块作校核;量化分布最末;
+        # 红线段永远最后、永不截断。(v2 §1.2 的旧顺序把样例排在抽象块之后。)
         blocks = [
             block
             for block in (
-                self.metric_anchor_block,
+                self.few_shot_block,
+                self.rag_block,
                 self.voice_block,
                 self.positive_block,
                 self.forbidden_block,
-                self.few_shot_block,
-                self.rag_block,
+                self.metric_anchor_block,
             )
             if block.strip()
         ]
@@ -681,7 +682,7 @@ class InjectionPreviewRequest(BaseModel):
 
     strategy: InjectionStrategy | None = None
     task_type: TaskType = TaskType.SCENE_GENERATION
-    intensity: int = Field(default=50, ge=0, le=100)
+    intensity: int = Field(default=100, ge=0, le=100)
     sub_dimensions: list[str] = Field(default_factory=list, max_length=128)
     include_positive: bool = True
     include_forbidden: bool = True

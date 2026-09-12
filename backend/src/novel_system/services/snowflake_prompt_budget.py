@@ -80,6 +80,13 @@ _CHARACTER_STEP_KEYS = ("character_sheets", "character_synopses", "character_bib
 _UPSTREAM_ROLE_KEYS = ("upstream_steps", "approved_context")
 _DRAFT_ROLE_KEYS = ("current_draft", "current_canonical_draft")
 
+# 2026-09-12 结构跟随：场景清单 / 场景规划的载荷成员——参考作者的结构画像（带数字）、
+# 章首 / 章尾样例（封装原文）、场景手法。它是外部参考而非本书事实：降载时先于上游长散文
+# 与底稿参照条目让路（先卸样例，再卸整张画像），但排在纯重复的三级之后。
+STYLE_REFERENCE_STRUCTURE_KEY = "style_reference_structure"
+_STYLE_REFERENCE_SAMPLES_KEY = "structure_samples"
+_STYLE_REFERENCE_SAMPLES_SHED_NOTE = "章首 / 章尾样例因输入预算省略；仍按结构画像的尺度与开合方式规划。"
+
 
 def _role_key(payload: dict[str, Any], candidates: tuple[str, ...]) -> str | None:
     return next((key for key in candidates if isinstance(payload.get(key), (list, dict))), None)
@@ -176,6 +183,8 @@ def _ladder(step_key: str) -> tuple[tuple[str, Callable[..., dict[str, Any] | No
         ("upstream_scene_list_delta", _rung_upstream_scene_list_delta),
         ("reference_characters_to_identity", _rung_reference_characters),
         ("reference_scenes_to_identity", _rung_reference_scenes),
+        ("drop_style_reference_samples", _rung_drop_style_reference_samples),
+        ("drop_style_reference_structure", _rung_drop_style_reference_structure),
         ("truncate_long_prose", _rung_truncate_long_prose),
         ("drop_reference_scenes", _rung_drop_reference_scenes),
     )
@@ -366,6 +375,30 @@ def _rung_reference_scenes(payload: dict[str, Any], focus: dict[str, Any]) -> di
     if not changed:
         return None
     return {**payload, draft_key: {**draft, "scenes": trimmed}}
+
+
+def _rung_drop_style_reference_samples(
+    payload: dict[str, Any], focus: dict[str, Any]
+) -> dict[str, Any] | None:
+    """参考作者的章首 / 章尾样例最占体量、也最不影响尺度判断：先卸它，留下带数字的画像。
+    留一句说明——模型要知道样例是被预算省掉的，不是这位作者没有开合方式。"""
+    del focus
+    member = payload.get(STYLE_REFERENCE_STRUCTURE_KEY)
+    if not isinstance(member, dict) or not member.get(_STYLE_REFERENCE_SAMPLES_KEY):
+        return None
+    trimmed = {key: value for key, value in member.items() if key != _STYLE_REFERENCE_SAMPLES_KEY}
+    trimmed["structure_samples_note"] = _STYLE_REFERENCE_SAMPLES_SHED_NOTE
+    return {**payload, STYLE_REFERENCE_STRUCTURE_KEY: trimmed}
+
+
+def _rung_drop_style_reference_structure(
+    payload: dict[str, Any], focus: dict[str, Any]
+) -> dict[str, Any] | None:
+    """整张参考画像让位：它是外部参考，本书自己的上游散文与场表条目比它重要。"""
+    del focus
+    if STYLE_REFERENCE_STRUCTURE_KEY not in payload:
+        return None
+    return {key: value for key, value in payload.items() if key != STYLE_REFERENCE_STRUCTURE_KEY}
 
 
 def _rung_truncate_long_prose(payload: dict[str, Any], focus: dict[str, Any]) -> dict[str, Any] | None:

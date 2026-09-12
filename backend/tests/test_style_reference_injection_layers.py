@@ -140,8 +140,8 @@ def test_layers_stacked_weights_and_order() -> None:
     weights = [l["weight"] for l in data["layers"]]
     assert weights == [1, 2]
     total = data["budget_total"]
-    # v2 §1.4:两层总额 = total(intensity 50)=1650 × (1 + 0.35) = 2228
-    assert total == 2228
+    # v2 §1.4:两层总额 = total(缺省 intensity)× (1 + 0.35);2026-09-12 起缺省强度 100 → 2400 × 1.35 = 3240
+    assert total == 3240
     assert data["layers"][0]["budget_chars"] == total * 1 // 3
     assert data["layers"][1]["budget_chars"] == total * 2 // 3
     assert data["layers"][1]["rank"] < data["layers"][0]["rank"]  # scene 更具体
@@ -166,7 +166,8 @@ def test_layers_same_profile_across_scopes_is_deduplicated() -> None:
         data = resp.json()["data"]
     assert [l["scope"] for l in data["layers"]] == ["scene"]
     assert data["layers"][0]["weight"] == 1
-    assert data["layers"][0]["budget_chars"] == data["budget_total"] == 1650
+    # 2026-09-12 最大化模仿:缺省强度 100 → 单层总额 2400
+    assert data["layers"][0]["budget_chars"] == data["budget_total"] == 2400
     assert [d["binding_id"] for d in data["deduplicated"]] == ["sr_bind_il_dd_p"]
     assert data["merged"]["layer_count"] == 1
     assert data["merged"]["strategy"] == "mixed"

@@ -173,6 +173,15 @@ def _is_title_shape(body: str) -> bool:
     return _TITLE_RE.match(stripped) is not None
 
 
+def is_title_paragraph(text: str) -> bool:
+    """段落是否为章节标题形态(第X章 / 卷X / 一 / (一) / 《题名》 / 序 / 楔子 / Chapter N …)。
+
+    2026-09-12 结构跟随:`_is_title_shape` 的公开别名,供 `style_reference/structure.py`
+    在合成期按标题段切章。与分类器共用同一条正则,章检测与段型分类永远同口径。
+    """
+    return _is_title_shape(str(text or ""))
+
+
 def _is_transition(body: str) -> bool:
     if _is_title_shape(body):
         return True

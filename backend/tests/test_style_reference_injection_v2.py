@@ -32,6 +32,7 @@ from novel_system.services.style_reference.injection import (
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     build_style_runtime_contract,
+    compute_paragraph_root,
     extract_style_generation_context,
 )
 from novel_system.services.style_reference.schemas import (
@@ -329,8 +330,9 @@ def test_budget_allocation_and_k_follow_spec_formulas() -> None:
     assert sum(_allocate_abstract_budget(100, 3).values()) <= 2400 * 1.7
     assert sum(_allocate_abstract_budget(100, 5).values()) <= 2400 * 1.7
     assert sum(_allocate_abstract_budget(100, 5).values()) > 2400 * 1.6
-    assert _few_shot_k(0) == 2 and _few_shot_k(50) == 4 and _few_shot_k(100) == 6
-    assert _few_shot_k(25) == 3  # round(2 + 4 × 0.25) = 3(四舍五入,不用银行家舍入)
+    # 2026-09-12 最大化模仿:k_min=3 / k_max=10;50 → round(6.5)=7(四舍五入,不用银行家舍入)
+    assert _few_shot_k(0) == 3 and _few_shot_k(50) == 7 and _few_shot_k(100) == 10
+    assert _few_shot_k(25) == 5  # round(3 + 7 × 0.25) = round(4.75) = 5
 
 
 @pytest.mark.parametrize("strategy", ["A", "B", "C", "mixed"])
@@ -382,10 +384,10 @@ def test_voice_block_renders_habits_and_degrades_when_missing() -> None:
     assert stats["voice_lines"] == len(_entry_lines(fragments.voice_block)) >= 1
     assert not any(char.isdigit() for char in fragments.voice_block)
     prefix = fragments.to_system_prompt_prefix()
-    # 顺序 §1.2:metric → voice → positive → forbidden → few_shot → 红线
-    assert prefix.index("风格分布指导") < prefix.index("[声音特征]") < prefix.index("[正向风格特征]")
-    assert prefix.index("[正向风格特征]") < prefix.index("[禁忌模式]") < prefix.index("风格样例")
-    assert prefix.index("风格样例") < prefix.index("严格禁止")
+    # 顺序(2026-09-09 样例优先):few_shot → voice → positive → forbidden → metric → 红线
+    assert prefix.index("风格样例") < prefix.index("[声音特征]") < prefix.index("[正向风格特征]")
+    assert prefix.index("[正向风格特征]") < prefix.index("[禁忌模式]") < prefix.index("风格分布指导")
+    assert prefix.index("风格分布指导") < prefix.index("严格禁止")
     legacy, legacy_stats = _render(without_voice, "mixed", {"intensity": 80})
     assert legacy.voice_block == ""
     assert "[声音特征]" not in legacy.to_system_prompt_prefix()
@@ -547,14 +549,16 @@ def test_few_shot_windows_are_multi_paragraph_and_bounded() -> None:
     block = fragments.few_shot_block
     assert "[UNTRUSTED_REFERENCE_DATA:few_shot]" in block
     assert "风格样例" in block
-    assert stats["few_shot_windows"] == stats["few_shot_k"] == 6
+    assert stats["few_shot_windows"] == stats["few_shot_k"] == 10
     assert "连续" in block and "段窗口" in block  # 多段窗口
     # 窗口内段落以换行分隔(模型能看到换段)
     windows = [seg.split("」")[0] for seg in block.split("「")[1:] if "」" in seg]
     assert any("\n" in window for window in windows)
-    assert stats["few_shot_chars"] <= 3600
+    assert stats["few_shot_chars"] <= 40000
     inner = block.split("[UNTRUSTED_REFERENCE_DATA:few_shot]")[1].split("[/UNTRUSTED_REFERENCE_DATA]")[0]
-    assert len(inner) <= 3600 + 200
+    assert len(inner) <= 40000 + 400
+    # 样例优先:标题明令「以这位作者的手笔写本场」,不再限定「只学句法节奏」
+    assert "手笔" in block and "只学习句群" not in block
     # 窗口不重叠:同一段落不出现两次
     for _ptype, text in _PARAGRAPHS:
         assert block.count(text[:20]) <= 1
@@ -568,7 +572,7 @@ def test_few_shot_window_count_follows_intensity() -> None:
         _fragments, stats = _render(profile_id, "mixed", {"intensity": intensity})
         counts.append(stats["few_shot_windows"])
         assert stats["few_shot_windows"] == _few_shot_k(intensity)
-    assert counts == [2, 4, 6]
+    assert counts == [3, 7, 10]
 
 
 def test_dialogue_heavy_scene_gets_dialogue_windows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -593,7 +597,7 @@ def test_dialogue_heavy_scene_gets_dialogue_windows(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(injection_module, "_pick_sample_windows", _spy)
     fragments, stats = _render(profile_id, "B", {"intensity": 100}, context_text=dialogue_context)
     # render_preview 必须把调用方设置的 context_text 传给 _render:配额真的生效
-    assert calls and calls[-1] == {"k": 6, "dialogue_quota": math.ceil(6 / 2)}
+    assert calls and calls[-1] == {"k": 10, "dialogue_quota": math.ceil(10 / 2)}
     block = fragments.few_shot_block
     windows = [seg.split("」")[0] for seg in block.split("「")[1:]]
     assert len(windows) == stats["few_shot_windows"] >= 4
@@ -602,7 +606,7 @@ def test_dialogue_heavy_scene_gets_dialogue_windows(monkeypatch: pytest.MonkeyPa
     # 无上下文时不设配额(对照组)
     calls.clear()
     _render(profile_id, "B", {"intensity": 100})
-    assert calls and calls[-1] == {"k": 6, "dialogue_quota": 0}
+    assert calls and calls[-1] == {"k": 10, "dialogue_quota": 0}
 
 
 def test_few_shot_respects_local_only_and_missing_index() -> None:
@@ -647,8 +651,9 @@ def _few_shot_entries(block: str) -> list[str]:
 
 
 def test_frozen_contract_windows_only_use_hashed_paragraphs() -> None:
-    """冻结契约冻结 quote 父段 **及其连续相邻段** 的哈希:生产(冻结)路径下零散引文
-    仍得到多段窗口,MIXED@80 ≥4 个窗口且为多段;窗口只用契约里有哈希的段落。"""
+    """冻结契约冻结 quote 父段 **及其连续相邻段** 的哈希(兜底),并冻结整本书的段落根哈希
+    (2026-09-09 样例优先):根哈希一致时窗口可越过 ±2 的相邻段展开到全书;生产(冻结)路径
+    下零散引文得到多段窗口,MIXED@80 ≥4 个窗口且为多段。"""
     seed = "frozen"
     project_id = "v2_proj_frozen"
     scattered = [2, 6, 10, 14, 18, 22]  # 相邻段都没有引文
@@ -684,6 +689,10 @@ def test_frozen_contract_windows_only_use_hashed_paragraphs() -> None:
             assert ref["paragraph_sha256"] == hashlib.sha256(_PARAGRAPHS[pidx][1].encode("utf-8")).hexdigest()
         for _ptype, text in _PARAGRAPHS:
             assert text[:12] not in str(contract)
+        # 整本书段落根哈希被冻结(只有哈希,段数 = 24)
+        frozen_book = contract["layers"][0]["book"]
+        assert frozen_book["paragraph_root_sha256"] == compute_paragraph_root(repo, book_id)[0]
+        assert frozen_book["paragraph_count"] == len(_PARAGRAPHS)
         context = extract_style_generation_context("她在门外停步。", source_kind="generation_source")
         svc = InjectionService(session)
         frozen = svc.fragments_for_contract(contract, project_id=project_id, context=context)
@@ -696,10 +705,10 @@ def test_frozen_contract_windows_only_use_hashed_paragraphs() -> None:
     assert not any("完整参考段落" in line for line in frozen_entries)
     # 相邻段原文真的进了窗口(第 2 段的邻段 1 / 3 之一)
     assert _PARAGRAPHS[1][1][:10] in frozen.few_shot_block or _PARAGRAPHS[3][1][:10] in frozen.few_shot_block
-    # 只用契约里有哈希的段落
-    for _ptype, text in _PARAGRAPHS:
-        if text[:12] in frozen.few_shot_block:
-            assert any(text == _PARAGRAPHS[int(pid.rsplit("_", 1)[1])][1] for pid in frozen_ids)
+    # 引文每 4 段一条,±2 的冻结相邻段已覆盖全书;根哈希一致时窗口越过冻结相邻段展开的
+    # 情形由 test_style_reference_exemplar_first(单条引文、远段篡改)覆盖。窗口之间按中点分界,
+    # 每个窗口都是多段。
+    assert all(text[:12] in frozen.few_shot_block for _ptype, text in _PARAGRAPHS[:24:4])
     # 实时路径同样是多段窗口
     assert any("段窗口" in line for line in _few_shot_entries(live.few_shot_block))
 

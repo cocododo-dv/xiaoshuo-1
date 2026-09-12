@@ -1834,8 +1834,31 @@ def _serialize_generation_summary(
         # gate 未执行）随生成摘要回读，工作台据此提示作者；无 notice 时为空列表。只读与
         # llm_call 同一次运行（同一 bundle）的 notices。
         "notices": _current_run_style_notices(session, scene_id, state),
+        # 2026-09-12 风格直起:本次运行的起草方式(style_first / neutral_first),工作台据此
+        # 把中性步位标成「首稿（作者手笔）」或「中性稿」。
+        "draft_mode": _current_run_draft_mode(session, scene_id, state),
     }
     return summary
+
+
+def _current_run_draft_mode(
+    session: Session, scene_id: str, state: SceneRunState
+) -> str:
+    from novel_system.services.style_reference.runtime_contract import (
+        DRAFT_MODE_NEUTRAL_FIRST,
+        effective_draft_mode,
+    )
+
+    bundle_id = _resolve_current_run_bundle_id(session, scene_id, state)
+    if not bundle_id:
+        return DRAFT_MODE_NEUTRAL_FIRST
+    bundle_row = session.get(SceneBundle, bundle_id)
+    if bundle_row is None:
+        return DRAFT_MODE_NEUTRAL_FIRST
+    try:
+        return effective_draft_mode(bundle_row.frozen_snapshot_json)
+    except Exception:  # noqa: BLE001 — 只读展示,不因契约解析失败影响工作台
+        return DRAFT_MODE_NEUTRAL_FIRST
 
 
 def _current_run_style_notices(

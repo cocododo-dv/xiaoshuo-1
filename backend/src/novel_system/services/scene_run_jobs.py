@@ -378,6 +378,22 @@ class SceneRunJobService:
         self.session.flush()
         return job
 
+    def _scene_draft_mode(self, scene_state: SceneRunState | None) -> str | None:
+        if scene_state is None or not scene_state.current_bundle_id:
+            return None
+        try:
+            from novel_system.db.models import SceneBundle
+            from novel_system.services.style_reference.runtime_contract import (
+                effective_draft_mode,
+            )
+
+            bundle_row = self.session.get(SceneBundle, scene_state.current_bundle_id)
+            if bundle_row is None:
+                return None
+            return effective_draft_mode(bundle_row.frozen_snapshot_json)
+        except Exception:  # noqa: BLE001 — 只读展示,不影响任务视图
+            return None
+
     def serialize_job(self, job: ChapterRunJob) -> dict[str, Any]:
         payload = dict(job.payload_json or {})
         summary = dict(job.result_summary_json or {})
@@ -400,6 +416,9 @@ class SceneRunJobService:
             "status": job.status,
             "scene_status": scene_status,
             "current_step": current_step,
+            # 2026-09-12 风格直起:运行中即可知道中性步位写的是作者手笔首稿还是中性稿
+            # (bundle 冻结后才有;之前为 None,前端回退到工作台读数)。
+            "draft_mode": self._scene_draft_mode(scene_state),
             "stage_order": payload.get("stage_order") or SCENE_RUN_STAGE_ORDER,
             "started_at": job.started_at,
             "finished_at": job.finished_at,

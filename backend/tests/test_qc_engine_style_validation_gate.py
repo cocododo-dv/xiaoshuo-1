@@ -253,7 +253,8 @@ def test_styled_gate_returns_none_without_binding_or_text(session) -> None:
 
 def test_styled_gate_rejects_unknown_stage(session) -> None:
     with pytest.raises(ValueError):
-        run_styled_draft_style_gate(session, _make_scene("p"), "x", stage="neutral_draft")
+        # 2026-09-12 风格直起:neutral_draft 已是合法阶段(style_first 首稿过门);hard_qc 仍非法
+        run_styled_draft_style_gate(session, _make_scene("p"), "x", stage="hard_qc")
 
 
 def test_styled_gate_clean_text_passes_and_records_event(session) -> None:

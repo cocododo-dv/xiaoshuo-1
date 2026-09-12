@@ -158,6 +158,10 @@ def _style_injection_config(payload: dict[str, Any]) -> dict[str, Any]:
         value = payload.get(key)
         if value is not None:
             config[key] = bool(value)
+    # 2026-09-12 风格直起:起草方式随决策卡 effect 落库(非法值忽略 → 走 yaml 缺省)。
+    draft_mode = str(payload.get("draft_mode") or "").strip().lower()
+    if draft_mode in {"style_first", "neutral_first"}:
+        config["draft_mode"] = draft_mode
     return config
 
 

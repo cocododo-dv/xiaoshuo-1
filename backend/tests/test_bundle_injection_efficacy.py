@@ -244,13 +244,15 @@ def test_bundle_freshness_budget_applies_exemptions_from_bound_reference(session
         )
         session.commit()
 
-    # 有画像且标记刻意复沓
+    # 有画像且标记刻意复沓(neutral_first 对照组:2026-09-12 起绑定缺省 style_first,
+    # 房风词表会让位——本段断言的是现状行为,故显式钉住 neutral_first)
     seed_prior_final("P_W6_FRESH")
     seed_binding(
         session,
         project_id="P_W6_FRESH",
         seed="w6fresh",
         profile_json={"voice_signature": {"features": {"redup_total_per_1k": 20.0}, "deliberate_repetition": True}},
+        config_json={"draft_mode": "neutral_first"},
     )
     snapshot = BundleBuilder(session).build("P_W6_FRESH_CH01_SC02")["snapshot"]
     budget = json.loads(snapshot["inline_digests"]["literary_freshness_budget"])
@@ -283,6 +285,25 @@ def test_bundle_freshness_budget_applies_exemptions_from_bound_reference(session
         project_id="P_W6_NOREP",
         seed="w6norep",
         profile_json={"voice_signature": {"features": {"redup_total_per_1k": 3.0}, "deliberate_repetition": False}},
+        config_json={"draft_mode": "neutral_first"},
     )
     norep = json.loads(BundleBuilder(session).build("P_W6_NOREP_CH01_SC02")["snapshot"]["inline_digests"]["literary_freshness_budget"])
     assert "preserve_reference_repetition" not in norep
+
+    # 2026-09-12 风格直起(style_first,缺省):两张房风词表与「以动作收尾」子句让位;
+    # 跨场景动作模板 / 意象场 / n-gram 复用检查保留;刻意复沓时全书禁用表达表也让位。
+    seed_prior_final("P_W6_SFIRST")
+    seed_binding(
+        session,
+        project_id="P_W6_SFIRST",
+        seed="w6sfirst",
+        profile_json={"voice_signature": {"features": {"redup_total_per_1k": 20.0}, "deliberate_repetition": True}},
+    )
+    bound = json.loads(BundleBuilder(session).build("P_W6_SFIRST_CH01_SC02")["snapshot"]["inline_digests"]["literary_freshness_budget"])
+    assert bound["house_taste_lists"] == "deferred_to_reference"
+    assert "avoid_summary_endings" not in bound and "avoid_false_clarity" not in bound
+    assert "hard action" not in bound["instruction"]
+    assert "repeating your own earlier scenes" in bound["instruction"]
+    assert bound["avoid_recent_ngrams"] == ["他把杯子放回桌上"]
+    assert bound["preserve_reference_repetition"] is True
+    assert "lifetime_banned_expressions" not in bound

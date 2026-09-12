@@ -4743,6 +4743,14 @@ class Orchestrator:
             )
             self._reconcile_execution_step(critique_step_key)
             skip_critique = bool(getattr(criticality, "skip_critique", False))
+            # 2026-09-12 风格直起:style_first 下规则版自动批评让位——它的指令(删感知词、
+            # 句式要多样、意象要有意义)是房风,不再据此发风格补丁;参考是唯一的风格权威。
+            from novel_system.services.style_reference.runtime_contract import (
+                is_style_bound as _is_style_bound,
+            )
+
+            if _is_style_bound(bundle):
+                skip_critique = True
             from novel_system.services.auto_critique import auto_critique
 
             critique = self._recover_auto_critique_rejected_product(

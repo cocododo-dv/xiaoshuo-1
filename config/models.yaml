@@ -121,9 +121,11 @@ task_routing:
     temperature: 0.8
     max_output_tokens: 6000
     response_format: json_object
-    # §7 anti-mean sampling: decoding-level penalties to counteract repetition at source
-    frequency_penalty: 0.3
-    presence_penalty: 0.15
+    # 2026-09-09 样例优先:解码惩罚归零。§7 的反平均惩罚会抹平参考作者刻意的复沓
+    # (虚词回环、短句连打、叠词),与「像作者」直接冲突;复读由 self_repetition 与
+    # 文学质量门在文本层面处理,不在解码层一刀切。
+    frequency_penalty: 0.0
+    presence_penalty: 0.0
   # —— 审计 P-10：以下 6 个活跃节点此前无文件路由。llm_enabled=true 时 task_config
   # 故意不回退 stylize 别名（离线才回退），首次启用 LLM 必先 sync-missing 否则风格化
   # 全线 LLM_ROUTE_NOT_CONFIGURED。此处补缺省（参数对齐 llm_node_registry 节点规格），
@@ -134,16 +136,16 @@ task_routing:
     temperature: 0.8
     max_output_tokens: 6000
     response_format: json_object
-    frequency_penalty: 0.3
-    presence_penalty: 0.15
+    frequency_penalty: 0.0
+    presence_penalty: 0.0
   style_patch:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.8
     max_output_tokens: 6000
     response_format: json_object
-    frequency_penalty: 0.3
-    presence_penalty: 0.15
+    frequency_penalty: 0.0
+    presence_penalty: 0.0
   writer_deep_review:
     provider: openai_compatible
     model: gpt-5

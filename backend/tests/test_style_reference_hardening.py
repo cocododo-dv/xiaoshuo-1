@@ -333,7 +333,7 @@ def test_anti_plagiarism_block_survives_budget_truncation():
     # positive 被预算截断,红线段完整保留
     assert len(fragments.positive_block) < 1000
     assert "严格禁止" in fragments.anti_plagiarism_block
-    assert "改写它" in fragments.anti_plagiarism_block
+    assert "抄的是句子" in fragments.anti_plagiarism_block
 
 
 # ---------------------------------------------------------------------------

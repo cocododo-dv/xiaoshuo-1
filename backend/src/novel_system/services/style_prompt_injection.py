@@ -72,6 +72,9 @@ def inject_style_reference_prefix(
     if not project_id and not character_ids and not scene_id:
         return prompt
     svc = InjectionService(session)
+    # 2026-09-09 样例优先:few-shot 窗口按场景轮换——同一场景的 style_draft / soft_qc /
+    # 近终稿改写 / 验收评审看到同一组窗口,不同场景看到不同窗口。
+    svc.few_shot_seed = str(scene_id) if scene_id else None
     # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
     # when drift guidance includes structured dimension data) so the few-shot
     # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")

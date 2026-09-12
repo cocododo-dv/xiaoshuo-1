@@ -62,19 +62,27 @@ SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "number", "integer", "boo
 # 要为小上下文的本地模型收紧，用 NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET 覆盖整个
 # 三族（见 _scene_input_token_budget_override），无须改这里。
 SCENE_INPUT_TOKEN_BUDGET = 24000
+# 2026-09-09 样例优先：拿到 [STYLE_REFERENCE] 前缀的节点（风格稿、两种风格补丁、soft_qc、
+# 近终稿改写与验收评审）在场景族之上再加最多约 3 万字原文样例（injection_budget.yaml
+# few_shot_block_max_chars）+ 抽象块 + 完整中性稿，所以单独一档 64000。同样受
+# NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET 整体覆盖；装不下时注入器按整窗口卸载样例。
+STYLE_PASS_INPUT_TOKEN_BUDGET = 64000
 PLANNING_INPUT_TOKEN_BUDGET = 8000
 CHAPTER_INPUT_TOKEN_BUDGET = 30000
 SCENE_INPUT_TOKEN_BUDGET_ENV = "NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET"
 RUNTIME_MIN_INPUT_BUDGETS = {
     # 场景族
     "neutral_draft": SCENE_INPUT_TOKEN_BUDGET,
-    "style_draft": SCENE_INPUT_TOKEN_BUDGET,
-    "scene_literary_rewrite": SCENE_INPUT_TOKEN_BUDGET,
-    "style_length_patch": SCENE_INPUT_TOKEN_BUDGET,
-    "style_salvage_patch": SCENE_INPUT_TOKEN_BUDGET,
     "hard_qc": SCENE_INPUT_TOKEN_BUDGET,
-    "soft_qc": SCENE_INPUT_TOKEN_BUDGET,
-    "near_final_acceptance_review": SCENE_INPUT_TOKEN_BUDGET,
+    # 风格通道（场景族 + 原文样例块）
+    "style_draft": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    # 2026-09-12 风格直起:首稿模板与风格通道同预算(样例 + 完整 bundle)。
+    "style_first_draft": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    "scene_literary_rewrite": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    "style_length_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    "style_salvage_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    "soft_qc": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    "near_final_acceptance_review": STYLE_PASS_INPUT_TOKEN_BUDGET,
     # 规划族 + 局部改写（载荷有界）
     "scene_blueprint": PLANNING_INPUT_TOKEN_BUDGET,
     "chapter_story_architecture": PLANNING_INPUT_TOKEN_BUDGET,
@@ -94,6 +102,7 @@ CHARACTER_CONTINUITY_INSTRUCTION = (
 DRAFTING_TEMPLATE_NAMES = {
     "neutral_draft",
     "style_draft",
+    "style_first_draft",
     "scene_literary_rewrite",
     "near_final_rewrite",
     "project_outline_plan",
@@ -364,6 +373,11 @@ def _append_runtime_template_instruction(user_prompt: str, template_name: str) -
         "style_draft": (
             "Preserve the source draft language; do not translate the scene while styling it. "
             "If the draft or scene card is Chinese, scene_text must remain Chinese prose."
+        ),
+        "style_first_draft": (
+            "Write prose in the same language as the chapter goal and scene card. "
+            "If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; "
+            "do not translate Chinese settings, beats, or required text into English."
         ),
         "hard_qc": (
             "If the draft under review is Chinese, write issue messages and rewrite_brief in Chinese; "

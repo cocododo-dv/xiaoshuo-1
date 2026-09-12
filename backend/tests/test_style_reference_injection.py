@@ -477,11 +477,11 @@ def test_strategy_b_truncates_by_budget():
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
     assert fragments.strategy == InjectionStrategy.B
-    # v2:未写 intensity 默认 50 → total = 900 + (2400-900)×0.5 = 1650;
+    # 2026-09-12 最大化模仿:未写 intensity 默认 100 → total = 2400;
     # 四块按 0.45 / 0.20 / 0.15 / 0.20 切,整行边界截断(单条 800 字的超长行整行丢弃)。
-    assert len(fragments.positive_block) <= 742
-    assert len(fragments.forbidden_block) <= 330
-    assert len(fragments.metric_anchor_block) <= 247
+    assert len(fragments.positive_block) <= 1080
+    assert len(fragments.forbidden_block) <= 480
+    assert len(fragments.metric_anchor_block) <= 360
     assert not fragments.positive_block.endswith("…")
 
 
@@ -692,7 +692,7 @@ def test_mixed_sub_dimensions_filters_forbidden_findings():
 
 
 def test_to_system_prompt_prefix_ordering():
-    """软分布先于抽象描述，其后 positive → forbidden。"""
+    """positive → forbidden → 软分布(2026-09-09 样例优先:量化分布退到抽象块之后)。"""
     project_id = _seed(
         seed="order",
         profile_json={
@@ -707,7 +707,7 @@ def test_to_system_prompt_prefix_ordering():
     pos_idx = prefix.index("正向风格特征")
     forbid_idx = prefix.index("禁忌模式")
     metric_idx = prefix.index("风格分布指导")
-    assert metric_idx < pos_idx < forbid_idx
+    assert pos_idx < forbid_idx < metric_idx
 
 
 # ---------------------------------------------------------------------------
@@ -1090,9 +1090,9 @@ def test_overlay_token_each_half_capped():
         fragments = InjectionService(session).fragments_for(
             "proj_cap", "scene_generation", character_ids=["char_cap"],
         )
-    # intensity 默认 50:total 1650 × 1.35 = 2228;base 份额 742 → positive 333,
-    # overlay 份额 1485 → positive 668;合并后不超过两份之和(+换行余量)
-    assert len(fragments.positive_block) <= 333 + 668 + 10
+    # intensity 默认 100:total 2400 × 1.35 = 3240;base 份额 1080 → positive 486,
+    # overlay 份额 2160 → positive 972;合并后不超过两份之和(+换行余量)
+    assert len(fragments.positive_block) <= 486 + 972 + 10
     assert fragments.positive_block.count("基") < fragments.positive_block.count("增")
 
 
@@ -1110,8 +1110,8 @@ def test_overlay_only_base_is_single_layer():
         fragments = InjectionService(session).fragments_for(
             "proj_bo", "scene_generation", character_ids=["char_bo"],
         )
-    # 单层 strategy A:positive ≤ 742(intensity 50 的 positive 份额),但远超多层 base 份额 333
-    assert 333 < len(fragments.positive_block) <= 742
+    # 单层 strategy A:positive ≤ 1080(intensity 100 的 positive 份额),但远超多层 base 份额 486
+    assert 486 < len(fragments.positive_block) <= 1080
 
 
 def test_overlay_only_character_is_single_layer():

@@ -48,6 +48,10 @@ _FROZEN_PROFILE_JSON_KEYS = frozenset(
         # 旧画像没有这些键时,下游一律不渲染对应块(优雅退化)。
         "voice_signature",
         "narrative_guidance",
+        # 2026-09-12 结构跟随(Step 2 Track B):结构画像(章 / 场尺度、开合方式、段型比重、
+        # 章首章尾样例)与规划层指引(scene.* / theme.* 观察陈述)。旧画像没有时不渲染。
+        "structure_card",
+        "planning_guidance",
     }
 )
 _ALLOWED_STRATEGIES = frozenset({"A", "B", "C", "mixed"})
@@ -82,17 +86,69 @@ def _quote_ids(profile_json: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+DRAFT_MODE_STYLE_FIRST = "style_first"
+DRAFT_MODE_NEUTRAL_FIRST = "neutral_first"
+_ALLOWED_DRAFT_MODES = frozenset({DRAFT_MODE_STYLE_FIRST, DRAFT_MODE_NEUTRAL_FIRST})
+
+
+def _default_draft_mode() -> str:
+    """``injection_budget.yaml`` 的 ``draft_mode_default``(缺省 style_first)。"""
+    try:
+        budget = load_yaml_config("injection_budget")
+    except FileNotFoundError:
+        budget = {}
+    value = str(budget.get("draft_mode_default") or "").strip().lower()
+    return value if value in _ALLOWED_DRAFT_MODES else DRAFT_MODE_STYLE_FIRST
+
+
+def resolve_draft_mode(config_json: Mapping[str, Any] | None) -> str:
+    """一个绑定的生效起草方式:``config_json.draft_mode`` 合法即用,否则取 yaml 缺省。"""
+    raw = ""
+    if isinstance(config_json, Mapping):
+        raw = str(config_json.get("draft_mode") or "").strip().lower()
+    return raw if raw in _ALLOWED_DRAFT_MODES else _default_draft_mode()
+
+
 def _few_shot_window_span() -> int:
-    """每侧要冻结的相邻段数 = ``few_shot_window_paragraphs`` − 1(injection_budget.yaml)。"""
+    """每侧要冻结哈希的相邻段数(``few_shot_contract_neighbour_span``,默认 2)。
+
+    2026-09-09 样例优先:窗口可达数十段,不再逐段冻结相邻段——契约改冻整本书的段落根哈希
+    (``book.paragraph_root_sha256``,:func:`compute_paragraph_root`),根哈希一致时全书段落
+    都可进窗口;这里冻结的少量相邻段只是根哈希失配时的兜底路径(窗口退化到这些段落之内)。
+    """
     try:
         budget = load_yaml_config("injection_budget")
     except FileNotFoundError:
         budget = {}
     try:
-        window = int(budget.get("few_shot_window_paragraphs", 3))
+        span = int(budget.get("few_shot_contract_neighbour_span", 2))
     except (TypeError, ValueError):
-        window = 3
-    return max(0, window - 1)
+        span = 2
+    return max(0, span)
+
+
+def compute_paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:
+    """整本书段落的根哈希与段落数(按 paragraph_index 升序;只含哈希,不含原文)。
+
+    root = sha256(Σ ``f"{index}\\x1f" + sha256(text) + "\\x1e"``)。段落被改动 / 增删 / 换序都会
+    改变根哈希;书没有段落时返回 ("", 0)。
+    """
+    paragraphs = repo.list_paragraphs(str(book_id))
+    digest = hashlib.sha256()
+    count = 0
+    for paragraph in paragraphs:
+        try:
+            index = int(getattr(paragraph, "paragraph_index", 0) or 0)
+        except (TypeError, ValueError):
+            index = 0
+        text = str(getattr(paragraph, "text", "") or "")
+        digest.update(f"{index}\x1f".encode("utf-8"))
+        digest.update(_text_hash(text).encode("utf-8"))
+        digest.update(b"\x1e")
+        count += 1
+    if count == 0:
+        return "", 0
+    return digest.hexdigest(), count
 
 
 def _contiguous_neighbours(repo: Any, paragraph: Any, span: int) -> list[Any]:
@@ -261,13 +317,25 @@ def build_style_runtime_contract(
             }
         )
         book = repo.get_book(str(profile.book_id))
-        book_snapshot = {
+        try:
+            paragraph_root, paragraph_count = compute_paragraph_root(
+                repo, str(profile.book_id)
+            )
+        except Exception:  # noqa: BLE001 — 算不出根哈希时契约退回逐段哈希兜底路径
+            logger.warning("style contract paragraph root unavailable", exc_info=True)
+            paragraph_root, paragraph_count = "", 0
+        book_snapshot: dict[str, Any] = {
             "book_id": str(profile.book_id),
             "text_checksum": str(getattr(book, "text_checksum", "") or ""),
             "cloud_llm_allowed_at_freeze": bool(
                 book is not None and cloud_llm_allowed(book)
             ),
         }
+        if paragraph_root:
+            # 2026-09-09 样例优先:冻结整本书段落根哈希(不冻原文),渲染期根哈希一致 → 全书
+            # 段落都可进 few-shot 窗口;失配 → 只用下面逐段冻结的相邻段(兜底)。
+            book_snapshot["paragraph_root_sha256"] = paragraph_root
+            book_snapshot["paragraph_count"] = int(paragraph_count)
         profile_snapshot = {
             "profile_id": str(profile.profile_id),
             "book_id": str(profile.book_id),
@@ -314,6 +382,9 @@ def build_style_runtime_contract(
         "binding_ids": [layer["binding"]["binding_id"] for layer in frozen_layers],
         "layer_count": len(frozen_layers),
         "layers": frozen_layers,
+        # 2026-09-12 风格直起(Step 2):起草方式随契约冻结——最具体的绑定层说了算,缺省
+        # 取 yaml;重放旧 bundle 时不再看今天的配置。旧契约没有这个键 → neutral_first。
+        "draft_mode": resolve_draft_mode(frozen_layers[-1]["binding"]["config_json"]),
     }
     contract["contract_hash"] = _json_hash(contract)
     return validate_style_runtime_contract(contract)
@@ -438,9 +509,22 @@ def validate_style_runtime_contract(payload: Mapping[str, Any]) -> dict[str, Any
             or type(book.get("cloud_llm_allowed_at_freeze")) is not bool
         ):
             raise ValueError("style runtime contract layer lineage is invalid")
+        paragraph_root = book.get("paragraph_root_sha256")
+        if paragraph_root is not None and (
+            not isinstance(paragraph_root, str)
+            or _SHA256_RE.fullmatch(paragraph_root) is None
+            or type(book.get("paragraph_count")) is not int
+            or int(book.get("paragraph_count")) < 0
+        ):
+            raise ValueError("style runtime contract book paragraph root is malformed")
         if profile_id not in expected_profile_ids:
             expected_profile_ids.append(profile_id)
         expected_binding_ids.append(binding_id)
+    if "draft_mode" in contract and (
+        not isinstance(contract.get("draft_mode"), str)
+        or contract.get("draft_mode") not in _ALLOWED_DRAFT_MODES
+    ):
+        raise ValueError("style runtime contract draft mode is invalid")
     if contract.get("profile_ids") != expected_profile_ids:
         raise ValueError("style runtime contract profile ids mismatch")
     if contract.get("binding_ids") != expected_binding_ids:
@@ -709,6 +793,36 @@ def resolve_style_runtime_contract_state(
     return StyleRuntimeContractState(status=None, mode="legacy_live")
 
 
+_STYLE_BOUND_MODES = frozenset({"frozen", "frozen_legacy"})
+
+
+def effective_draft_mode(
+    bundle_or_snapshot: Mapping[str, Any] | None,
+    *,
+    task_type: str = "scene_generation",
+) -> str:
+    """这份 bundle 的起草方式。
+
+    只有冻结的契约(``frozen`` / ``frozen_legacy``)且契约写了 ``style_first`` 才是
+    style_first;无绑定 / absent / degraded / 旧契约缺键一律 ``neutral_first``——让位与
+    首稿直起都以此为准,无绑定的项目行为逐字不变。
+    """
+    state = resolve_style_runtime_contract_state(bundle_or_snapshot, task_type=task_type)
+    if state.mode not in _STYLE_BOUND_MODES or not isinstance(state.contract, Mapping):
+        return DRAFT_MODE_NEUTRAL_FIRST
+    mode = str(state.contract.get("draft_mode") or "")
+    return mode if mode in _ALLOWED_DRAFT_MODES else DRAFT_MODE_NEUTRAL_FIRST
+
+
+def is_style_bound(
+    bundle_or_snapshot: Mapping[str, Any] | None,
+    *,
+    task_type: str = "scene_generation",
+) -> bool:
+    """``effective_draft_mode(...) == "style_first"``:房风门让位与首稿直起的统一条件。"""
+    return effective_draft_mode(bundle_or_snapshot, task_type=task_type) == DRAFT_MODE_STYLE_FIRST
+
+
 def extract_style_generation_context(
     text: str | None,
     *,
@@ -728,6 +842,8 @@ def extract_style_generation_context(
 
 __all__ = [
     "STYLE_CONTEXT_VERSION",
+    "DRAFT_MODE_NEUTRAL_FIRST",
+    "DRAFT_MODE_STYLE_FIRST",
     "STYLE_RUNTIME_CONTRACT_VERSION",
     "StyleGenerationContext",
     "StyleRuntimeContractState",
@@ -735,7 +851,10 @@ __all__ = [
     "build_style_runtime_contract",
     "contract_metric_mean_map",
     "contract_profile_objects",
+    "effective_draft_mode",
     "extract_style_generation_context",
+    "is_style_bound",
+    "resolve_draft_mode",
     "resolve_style_runtime_contract_state",
     "style_runtime_contract_from_bundle",
     "style_runtime_contract_status_from_bundle",

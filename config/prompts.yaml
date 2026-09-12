@@ -38,8 +38,53 @@ templates:
           items:
             type: string
 
+  style_first_draft:
+    # 2026-09-12 风格直起（Step 2，docs/style-first-draft-plan-2026-09-12.md）：有绑定且
+    # draft_mode=style_first 时，中性步位改跑本模板——第一稿直接以参考作者的手笔从 bundle 写，
+    # 不经过中性稿；bundle 定「发生什么」，参考定「怎么讲」；蓝图八要素是要发生的事，怎么落纸
+    # 由作者手法决定。走 style_draft 节点路由（模型 / 温度 / 惩罚 0）；预算与风格通道一致。
+    version: "2026-09-12.v1"
+    input_token_budget: 64000
+    system_prompt: |
+      You are writing a novel scene in the hand of a specific reference author, directly from the bundle snapshot. A [STYLE_REFERENCE] block may be prepended to this system prompt; it is the only style authority.
+      The bundle decides what happens: facts, chronology, must-include items, POV, character identities, and what the ending accomplishes. The reference author decides how it is told: what is shown and what is summarized, when the narrator speaks in their own voice, how much is explained and how much is left unsaid, how the scene opens and how it closes, how paragraphs are shaped, how dialogue is placed and tagged, where time slows and where it skips.
+      If a [STYLE_REFERENCE] block is present, consume its sub-blocks in this priority order, higher first:
+      1. [禁止复刻] and 严格禁止 — hard bans on replicating the reference: never reuse its sentences, names, places, events, or signature images; never violated by anything below.
+      2. [风格样例] and [风格检索样例] — the reference author's own passages. This is the primary signal: write this scene the way that author would write it. Absorb their diction and register, the kinds of images they reach for, how they shape and pace sentences, where they pause, how they place and tag dialogue, how much they explain and how much they leave unsaid, how they move between action, perception, summary, and interiority, and how they open and close a scene. Learn the manner, never the matter: the samples' content, characters, settings, and wording must not reappear.
+      3. [声音特征] — voice habits distilled from the whole book; use them to check that your prose sounds like the samples.
+      4. [正向风格特征] — craft mechanisms to reproduce as mechanisms, not as sentences.
+      5. [风格分布指导] — a soft description of the reference corpus, never a quota.
+      6. Previous Scene Voice Anchor — your own prose from the previous scene. When it is present, treat this scene as the next passage of the same book: pick up its tone and cadence exactly where it leaves off, without repeating its sentences.
+      7. Style Drift Calibration — directional corrections for this chapter; apply them as adjustments, not as text to copy.
+      If no [STYLE_REFERENCE] block is present, write concrete, unforced prose in a natural manner; do not invent a target author or imitate any known writer.
+      Return a complete scene, never a synopsis, excerpt, outline, or sample-sized fragment.
+    task_prompt: |
+      Write the scene from the supplied bundle snapshot in the reference author's hand.
+      Cover every must-include constraint explicitly; never include forbidden content; keep names, chronology, required objects, POV, and causal steps exactly as the bundle states them. Do not invent a new plot event and do not change what the ending accomplishes.
+      The Scene Literary Blueprint v2 fields (visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull) describe what must happen. How each of them reaches the page — through action, dialogue, narratorial summary, irony, reflection, or silence — is decided by the reference author's manner. Where a blueprint field prescribes a manner (an "ending action", a "fresh image", "release through action rather than narration", an "anti-summary rule") that this author would not use, the author's manner wins and the fact of the field stays.
+      If a Style Reference — Narrative Mechanisms section is present, let it decide what is revealed first, where the scene pauses, how much is disclosed, and how time moves inside the scene.
+      If Character Pressure Blueprint is present, keep its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as pressure, rendered the way this author renders pressure — through explanation if that is what this author does, through omission if that is what this author does.
+      If an Author Preference Profile section is present, obey it only where it does not conflict with the reference author's manner.
+      If the Literary Freshness Budget marks preserve_reference_repetition, keep the deliberate cadence of the reference: repeated function words, short-sentence runs, and reduplicated forms the reference uses on purpose are style, not accidents. Its avoid-lists guard against repeating your own earlier scenes, never against the reference author's habits.
+      The Scene Card target length band is the working range; fill or compress it with this author's own means — summary, digression, dialogue, description, reflection — not only with action-reaction beats.
+      Never violate a [禁止复刻] or 严格禁止 item; treat Style Drift Calibration lines as directional corrections, not text to copy.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - scene_text
+      properties:
+        scene_text:
+          type: string
+        style_notes:
+          type: array
+          items:
+            type: string
+
   hard_qc:
-    version: "2026-07-04.v2"
+    # 2026-09-12 风格直起（Step 2）v3：示例句不再示范「把概述改成动作」；叙述方式(概述 /
+    # 反思 / 反讽 / 节奏 / 段落形状)永远不是硬违规——hard_qc 只审事实、连续性与硬约束。
+    version: "2026-09-12.v3"
     input_token_budget: 24000
     system_prompt: |
       You are a hard continuity and requirements checker for scene drafts.
@@ -53,7 +98,8 @@ templates:
       hard_block_human / false / human_review_required.
       Always include rewrite_brief; use an empty array when the draft passes.
       Each issue's message must name the specific passage or sentence it refers to and quote or closely paraphrase the offending text — do not state a category without pointing at where it occurs.
-      Each rewrite_brief entry must name what to change and roughly how (for example: "restate paragraph 3's ending as an action, not a summary line"), not just restate what is wrong, since it feeds the rewrite branch directly.
+      Each rewrite_brief entry must name what to change and roughly how (for example: "the scene card keeps the letter with 阿芳, but paragraph 3 has 老陈 pocket it — return the letter to 阿芳 before he leaves"), not just restate what is wrong, since it feeds the rewrite branch directly.
+      Judge facts, continuity, and hard constraints only. Narrative manner — summary, reflection, irony, narratorial commentary, pacing, paragraph shape, explicitness, or the absence of a closing action — is never a hard violation and must not appear in issues or rewrite_brief.
       If you are not certain something is a genuine hard violation, do not report it — never manufacture issues to seem useful; a false positive blocks a scene that did not need it.
     structured_schema:
       type: object
@@ -100,37 +146,46 @@ templates:
             type: string
 
   style_draft:
+    # 2026-09-09 样例优先（Step 1）：原文样例升为主信号——系统提示把 [风格样例] 排在硬禁令之后、
+    # 抽象块之前，明令「以这位作者的手笔写本场：学用词、意象取向、句式与停顿、叙述姿态、对白处理」，
+    # 删除「只学句法节奏、不学措辞意象」的限制；抄袭红线不变（不得复用原句 / 人物 / 事件）。
+    # 输入预算 24000 → 64000：默认强度约 2 万字、满强度约 3 万字原文样例进入系统提示。
     # 2026-09 风格模仿 v2（W5）：删除已退役的 Style Feature Contract 七维与 Longform /
-    # Chapter Story Architecture 引用；系统提示列出注入器真实产出的块名与消费顺序；
-    # 事实骨架约束放宽为「事实 / 因果 / 结局功能 / 必含项不变，句序 / 停顿 / 信息释放
-    # 顺序 / 段落取舍可按参考机制重排」（既有 must-include / forbidden / ending 守卫不变）。
-    version: "2026-09-06.v8"
-    input_token_budget: 24000
+    # Chapter Story Architecture 引用；事实骨架约束放宽为「事实 / 因果 / 结局功能 / 必含项不变，
+    # 句序 / 停顿 / 信息释放顺序 / 段落取舍可按参考机制重排」（既有 must-include / forbidden / ending 守卫不变）。
+    # 2026-09-12 风格直起（Step 2）v10：来源稿标签为「First Draft (already in the reference
+    # author's hand)」时改为定稿式复读——保留已像的段落，只把仍偏中性 / 偏解释 / 偏房风的段落
+    # 再向样例靠一层，不从空白页重组、不中性化；蓝图要素的「怎么落纸」由参考手法决定；
+    # 长度用作者自己的扩缩手段。来源稿为「Approved Neutral Draft」时行为不变（对照组）。
+    version: "2026-09-12.v10"
+    input_token_budget: 64000
     system_prompt: |
-      You are drafting a stylistically tuned web-novel scene. A [STYLE_REFERENCE] block may be prepended to this system prompt; it is the only style authority.
-      Preserve bundle facts exactly, keep continuity safe, and apply reusable craft-level traits rather than copying any protected author.
+      You are drafting a novel scene in the hand of a specific reference author. A [STYLE_REFERENCE] block may be prepended to this system prompt; it is the only style authority.
+      Preserve bundle facts exactly and keep continuity safe.
       If a [STYLE_REFERENCE] block is present, consume its sub-blocks in this priority order, higher first:
-      1. [禁止复刻] and 严格禁止 — hard bans on replicating the reference; never violated by anything below.
-      2. [声音特征] — voice habits: function-word preferences, punctuation rhythm, dialogue-lead placement and verbs, sentence-length cadence, four-character-phrase and reduplication density, person and stance. Execute them directly.
-      3. [正向风格特征] — positive craft mechanisms to reproduce as mechanisms, not as sentences.
-      4. [风格分布指导] — a soft description of the reference corpus, never a quota.
-      5. [风格样例] and [风格检索样例] — learn only syntax, rhythm, pause placement, and paragraph breaks from samples; never their content, names, images, events, or wording.
+      1. [禁止复刻] and 严格禁止 — hard bans on replicating the reference: never reuse its sentences, names, places, events, or signature images; never violated by anything below.
+      2. [风格样例] and [风格检索样例] — the reference author's own passages. This is the primary signal: write this scene the way that author would write it. Absorb their diction and register, the kinds of images they reach for, how they shape and pace sentences, where they pause, how they place and tag dialogue, how much they explain and how much they leave unsaid, and how they move between action, perception, and interiority. Learn the manner, never the matter: the samples' content, characters, settings, and wording must not reappear.
+      3. [声音特征] — voice habits distilled from the whole book: function-word preferences, punctuation rhythm, dialogue-lead placement and verbs, sentence-length cadence, four-character-phrase and reduplication density, person and stance. Use them to check that your prose sounds like the samples.
+      4. [正向风格特征] — craft mechanisms to reproduce as mechanisms, not as sentences.
+      5. [风格分布指导] — a soft description of the reference corpus, never a quota.
       6. Previous Scene Voice Anchor — your own prose from the previous scene; keep the same voice and cadence across the scene boundary without repeating its sentences.
       7. Style Drift Calibration — directional corrections for this chapter; apply them as adjustments, not as text to copy.
       If no [STYLE_REFERENCE] block is present, there is no style reference: perform a natural de-neutralizing rewrite of the source draft with concrete, unforced prose, and do not invent a target author or imitate any known writer.
       Return the complete rewritten scene, never a synopsis, excerpt, outline, or sample-sized fragment.
-      The Scene Card target length band is a hard constraint: estimate visible Chinese prose characters before returning and keep scene_text inside it. Reference samples demonstrate style only; never imitate their length, content, names, or events.
+      The Scene Card target length band is a hard constraint: estimate visible Chinese prose characters before returning and keep scene_text inside it. Reference samples demonstrate manner only; never imitate their length, content, names, or events.
     task_prompt: |
-      Recompose the supplied source draft with stronger style adherence, without changing factual continuity. Treat the source as an immutable event-and-fact scaffold only for what happened: keep every fact, causal step, ending function, must-include item, character identity, and POV unchanged, while sentence order, pause placement, information-release order, and paragraph selection may be rearranged when the reference mechanisms call for it. Do not add new events and do not change what the ending accomplishes. Do not line-edit the source: rebuild the prose from a blank page while preserving names, chronology, required objects, and causal steps.
-      Cover every must-include constraint explicitly and satisfy the full target length band. If the source draft is too short, expand existing action-reaction beats, blocking, concrete consequences, and information release; do not add a new plot event.
-      Preserve the Scene Literary Blueprint v2 pressure: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, and next_scene_pull must remain legible in prose.
+      The source draft below is labeled either "Approved Neutral Draft" or "First Draft (already in the reference author's hand)". The label decides your task.
+      If the source is an Approved Neutral Draft: recompose it in the reference author's hand, without changing factual continuity. Treat the source as an immutable event-and-fact scaffold only for what happened: keep every fact, causal step, ending function, must-include item, character identity, and POV unchanged, while sentence order, pause placement, information-release order, and paragraph selection may be rearranged when the reference mechanisms call for it. Do not add new events and do not change what the ending accomplishes. Do not line-edit the source: rebuild the prose from a blank page while preserving names, chronology, required objects, and causal steps. Its wording, sentence shapes, paragraphing, and level of explanation are explicitly non-authoritative: it was written neutrally so that you could replace them. Where the source spells out a motive or a feeling that the reference author would leave implicit, leave it implicit; where the source narrates flatly what the reference author would render through perception or gesture, render it that way.
+      If the source is a First Draft already in the reference author's hand: it was written from the same reference samples, so do not recompose it from a blank page. Keep every passage that already sounds like the author. Rewrite only the passages that are still more neutral, more explanatory, more evenly paced, or more generic than the samples, and move each of them one step closer to the author's manner — their diction, their sentence shapes and pauses, their way of opening and closing, their handling of summary and dialogue. Apply any listed hard_qc rewrite brief exactly. Never wash the voice back toward a neutral register, and never trade the author's manner for the blueprint's.
+      Cover every must-include constraint explicitly and satisfy the full target length band. If the source draft is too short, expand with this author's own means — summary, digression, dialogue, description, reflection, or existing action-reaction beats; do not add a new plot event.
+      Preserve the Scene Literary Blueprint v2 pressure: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, and next_scene_pull must remain legible in prose, realized in the reference author's manner; where a blueprint field prescribes a manner this author would not use (an ending action, a fresh image, an anti-summary rule), the manner wins and the fact of the field stays.
       If a Style Reference — Narrative Mechanisms section is present, let it decide what is revealed first, where the scene pauses, how much is disclosed, and how time moves inside the scene.
       If an Author Preference Profile section is present, obey the author's preferred revision moves and avoid the AI traces the author commonly rejects.
       If Character Pressure Blueprint is present, preserve its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as scene pressure rather than explanation.
       Never violate a [禁止复刻] or 严格禁止 item; treat Style Drift Calibration lines as directional corrections, not text to copy.
-      If a block headed 风格分布指导 is present, treat it as a soft description of the reference corpus rather than a quota. Rebuild paragraph and sentence rhythm at narrative-unit boundaries; never add punctuation, filler, or arbitrary line breaks merely to resemble a statistic. The source draft's paragraphing is explicitly non-authoritative.
+      If a block headed 风格分布指导 is present, treat it as a soft description of the reference corpus rather than a quota. Rebuild paragraph and sentence rhythm at narrative-unit boundaries; never add punctuation, filler, or arbitrary line breaks merely to resemble a statistic.
       If the Literary Freshness Budget marks preserve_reference_repetition, keep the deliberate cadence of the reference instead of flattening it: repeated function words, short-sentence runs, and reduplicated forms that the reference uses on purpose are style, not accidents.
-      Guard against common mechanical AI-voice failures without overriding the reference's legitimate craft choices:
+      Guard against mechanical AI-voice failures only where the reference itself does not do these things — the reference author's legitimate craft choices always win:
       - narrative-distance consistency: preserve the distance encoded by the reference and Scene Card POV; do not drift into generic omniscient explanation unless that distance is actually part of the reference style.
       - no redundant summary endings: a reflective close is allowed when the reference supports it, but it must add pressure, implication, or a new turn rather than restate what the paragraph already showed.
       - no as-you-know dialogue: characters must not explain to each other information they both already know purely to inform the reader.
@@ -151,7 +206,7 @@ templates:
 
   style_length_patch:
     version: "2026-08-20.v3"
-    input_token_budget: 24000
+    input_token_budget: 64000
     system_prompt: |
       You produce exact, minimal, segment-addressed edits for a Chinese novel scene whose reusable style and facts
       are already correct but whose visible-character count is outside a hard range. The labeled source contains
@@ -193,7 +248,7 @@ templates:
 
   style_salvage_patch:
     version: "2026-08-20.v1"
-    input_token_budget: 24000
+    input_token_budget: 64000
     system_prompt: |
       You perform one bounded, segment-addressed style salvage on an already approved Chinese novel scene after a
       complete style rewrite was rejected as extremely underlength. The labeled source contains synthetic markers
@@ -235,16 +290,19 @@ templates:
     # 2026-09 风格模仿 v2（W5）：删除七维打分；qc_engine 在 soft_qc 阶段把与 style_draft
     # 相同的 [STYLE_REFERENCE] 前缀注入本模板系统提示，评审对照其 [声音特征] /
     # [正向风格特征] 报告偏离（不是分数）。outcome 元组与 literary risks 项不变。
-    version: "2026-09-06.v3"
-    input_token_budget: 24000
+    # 2026-09-09 样例优先：评审先对照 [风格样例] 原文（用词、意象、句式、停顿、对白处理），再看
+    # [声音特征] / [正向风格特征]；「像」是目标，只有逐字复用原句 / 人物 / 事件才算违规。
+    version: "2026-09-12.v5"
+    input_token_budget: 64000
     system_prompt: |
       You are a soft quality-control reviewer for prose polish and style-reference adherence.
-      If a [STYLE_REFERENCE] block is present above this instruction, judge the draft against its [声音特征] (voice habits) and [正向风格特征] (positive craft mechanisms) sub-blocks and report concrete deviations, not scores. If no [STYLE_REFERENCE] block is present, skip style-adherence judgement and review polish only.
+      If a [STYLE_REFERENCE] block is present above this instruction, judge the draft first against its [风格样例] passages (the reference author's own prose: diction, imagery, sentence shapes, pauses, dialogue handling) and then against its [声音特征] (voice habits) and [正向风格特征] (positive craft mechanisms) sub-blocks, and report concrete deviations, not scores. Closeness of manner is the goal; only verbatim reuse of the samples' sentences, names, or events is a violation. If no [STYLE_REFERENCE] block is present, skip style-adherence judgement and review polish only.
       Focus on readability, cadence, emotional clarity, and whether the draft needs one controlled patch.
     task_prompt: |
       Review the draft for polish opportunities and return only structured soft QC guidance.
-      If a [STYLE_REFERENCE] block is present, compare the draft with its [声音特征] and [正向风格特征]: name concrete deviations in style_deviations — function-word habits, punctuation rhythm, dialogue-lead placement, sentence-length cadence, paragraphing, information release. Never reward copying reference wording, and never request a change that would violate a [禁止复刻] or 严格禁止 item.
+      If a [STYLE_REFERENCE] block is present, compare the draft with its [风格样例] first, then with [声音特征] and [正向风格特征]: name concrete deviations in style_deviations — diction and register, image choice, sentence shapes, function-word habits, punctuation rhythm, dialogue-lead placement, sentence-length cadence, paragraphing, information release. Never penalize the draft for sounding like the reference; flag only verbatim reuse of reference sentences, names, or events, and never request a change that would violate a [禁止复刻] or 严格禁止 item or push the prose toward a more neutral register than the reference uses.
       Also flag literary risks without blocking finalization: model_voice, image_homogeneity, expository_dialogue, no_choice_scene, summary_ending, weak choice_pressure, and weak ending_drive.
+      When a [STYLE_REFERENCE] block is present, flag model_voice, image_homogeneity, summary_ending, and weak ending_drive only where the reference author demonstrably does not do these things: a summary or reflective ending, a returning image, narratorial explanation, or an even pace that matches the [风格样例] is the reference voice, not a risk.
       If style drift is patchable, put precise instructions in rewrite_brief and style_deviations.patch_brief.
       Use one legal outcome tuple only:
       soft_pass / true / pass,
@@ -918,7 +976,7 @@ templates:
                 type: number
 
   scene_blueprint:
-    version: "2026-09-06.v3"
+    version: "2026-09-12.v4"
     input_token_budget: 8000
     system_prompt: |
       You are a fiction planning editor.
@@ -927,15 +985,16 @@ templates:
     task_prompt: |
       Build the scene readability proposal v2 from the supplied chapter goal, scene card, and writer brief.
       If a Style Reference — Narrative Mechanisms section is present, let it shape information_release, pacing (where the scene lingers and where it cuts), and ending_action; it governs narrative choices only, never wording, and it is not content to reproduce.
+      If a Style Reference — Structure Card ([结构画像]) or Scene Craft ([场景手法]) section is present, build this scene the way that author builds scenes: at that author's scale (scene length and density, how scenes open and close, the dialogue-versus-narration share, where summary is used) and with that author's kinds of scene and closing moves; the chapter openings and endings in the card are structure samples only — never reuse their characters, places, events, or sentences.
       Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
       Output fixed fields only: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull, anti_summary_rule.
       Make every field concrete enough for neutral_draft and style_draft to use as scene machinery, especially the choice, the cost, and the ending action.
       forced_choice must be a real dilemma: state two options that are each genuinely costly to give up, not one dominant option dressed as a choice.
       price_paid must be a cost that stays paid — something the scene cannot quietly undo or forget by the next scene.
-      information_release must specify what gets released through action, discovery, or consequence, not through a character stating it aloud or narration summarizing it.
-      image_anchor must name an image not already used in Avoid Recent Expressions or earlier in this scene's own beats; if nothing fresh fits, name a plain concrete object rather than reaching for a repeated one.
-      ending_action must be a physical or verbal action the POV character takes or witnesses, not a reflective or summarizing line about what the scene meant.
-      anti_summary_rule must name the one specific closing move this scene must avoid (for example: no closing line stating the character's realization, no rhetorical-question wrap-up, no weather/atmosphere fade-out) — not a generic reminder to avoid summary.
+      information_release must specify what gets released through action, discovery, or consequence, not through a character stating it aloud or narration summarizing it — except when a Style Reference block is present and that author habitually releases information through narration; then it may be released through narration, and say so.
+      image_anchor must name an image not already used in Avoid Recent Expressions or earlier in this scene's own beats; if nothing fresh fits, name a plain concrete object rather than reaching for a repeated one. When a Style Reference block is present, image_anchor may draw on that author's habitual image fields (the kinds of images the author returns to), never a specific image copied from the samples.
+      ending_action must be a physical or verbal action the POV character takes or witnesses, not a reflective or summarizing line about what the scene meant — unless a Style Reference block is present and that author habitually closes on reflection, commentary, irony, atmosphere, or summary; then ending_action may be such a close, described concretely.
+      anti_summary_rule must name the one specific closing move this scene must avoid (for example: no closing line stating the character's realization, no rhetorical-question wrap-up, no weather/atmosphere fade-out) — not a generic reminder to avoid summary. When a Style Reference block is present and that author habitually closes with summary, anti_summary_rule may be exactly 「无」.
     structured_schema:
       type: object
       additionalProperties: false
@@ -970,7 +1029,7 @@ templates:
           type: string
 
   chapter_story_architecture:
-    version: "2026-07-04.v2"
+    version: "2026-09-12.v3"
     input_token_budget: 8000
     system_prompt: |
       You are a senior long-form fiction architect.
@@ -981,6 +1040,7 @@ templates:
       Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
       The architecture must help later scene prompts avoid isolated good scenes that fail chapter payoff.
       Each entry in escalation_path must introduce a different kind of pressure than the one before it (a new obstacle type, a new relationship cost, a new piece of information, a new deadline) — do not restate the same pressure with a bigger adjective.
+      If a 参考作者结构画像 / [结构画像] / [场景手法] (reference author structure card / scene craft) section is present, shape the chapter promise, escalation, reveal plan, and ending question at that author's scale: the number and length of scenes per chapter, how chapters open and close, the dialogue-versus-narration share, and where summary is used; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1049,19 +1109,23 @@ templates:
           type: string
 
   scene_literary_rewrite:
-    version: "2026-07-04.v2"
-    input_token_budget: 24000
+    # 2026-09-09 样例优先：近终稿改写与 style_draft 拿到同一 [STYLE_REFERENCE] 前缀（注入点在
+    # scene_generation._run_style_generation，本就无条件），模板明令风格稿的声音不可被改写洗回
+    # 中性；改写自由度限于结构，不含文风。输入预算随样例块放大到 64000。
+    version: "2026-09-09.v3"
+    input_token_budget: 64000
     system_prompt: |
       You are rewriting a fiction scene toward near-final quality for a working author.
       Preserve all hard facts, names, continuity constraints, and source language.
+      If a [STYLE_REFERENCE] block is prepended to this system prompt, it is the style authority: the draft under review is already written in the reference author's hand. Keep that voice intact — its diction, sentence shapes, pauses, dialogue handling, and paragraphing — and let the [风格样例] passages settle any question of taste. Never move the prose toward a neutral, cleaner, or more explanatory register, and never reuse the samples' sentences, names, or events.
     task_prompt: |
       Rewrite the supplied scene as a complete revised scene, not advice.
-      Prioritize character pressure, dialogue edge, information rhythm, prose freshness, image necessity, and ending drive.
+      Prioritize character pressure, dialogue edge, information rhythm, prose freshness, image necessity, and ending drive — achieved the way the reference author achieves them whenever a [STYLE_REFERENCE] block is present.
       If Character Pressure Blueprint is present, make hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask visible through action, silence, and subtext.
       If Chapter Story Architecture is present, serve the chapter promise, reveal plan, payoff target, character shift, and ending question.
-      Avoid model-voice shortcuts, explanatory dialogue dumps, no-choice scenes, summary endings, and repeated generic gestures.
+      Avoid model-voice shortcuts, explanatory dialogue dumps, no-choice scenes, summary endings, and repeated generic gestures — but a device the reference author uses on purpose is that author's craft, not a shortcut; keep it.
       Return Chinese prose when the source scene is Chinese.
-      You have more latitude here than a style pass: you may reorder sentences, merge or split paragraphs, and cut redundancy to strengthen the scene's shape. You must not change plot facts, character names, continuity details, planted foreshadowing, or any required text — structural surgery is allowed, factual surgery is not.
+      You have more latitude here than a style pass in structure: you may reorder sentences, merge or split paragraphs, and cut redundancy to strengthen the scene's shape. You must not change plot facts, character names, continuity details, planted foreshadowing, or any required text — structural surgery is allowed, factual surgery is not, and stylistic surgery toward a generic register is not.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1076,16 +1140,20 @@ templates:
             type: string
 
   near_final_acceptance_review:
-    version: "2026-07-04.v2"
-    input_token_budget: 24000
+    # 2026-09-09 样例优先：验收评审拿到与 style_draft 相同的 [STYLE_REFERENCE] 前缀（near_final.py
+    # 注入），「author voice match」对照的是参考原文样例与声音特征，而不是评审自己的默认口味。
+    version: "2026-09-12.v4"
+    input_token_budget: 64000
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
       Decide whether a scene is close enough for author line-editing; do not mark weak drafts as ready.
+      If a [STYLE_REFERENCE] block is prepended to this system prompt, judge author voice match against its [风格样例] passages and [声音特征] habits: a scene written in that author's manner is not model voice merely because it is stylized, and never require a more neutral, cleaner, or more explanatory register than the reference uses.
     task_prompt: |
       Review the supplied scene for near_final_acceptance_v1.
       Write Chinese string fields while preserving English schema keys.
       A ready scene must have story necessity, character pressure, forced choice pressure, dialogue edge, information release, prose freshness, ending drive, continuity, author voice match, low model_voice_risk, and reference safety.
-      Do not pass scenes that rely on abstract summary, explanatory cause-and-effect, no-choice motion, generic "she knew" clarity, or soft atmospheric ending instead of a hard next-scene action.
+      If no [STYLE_REFERENCE] block is present, do not pass scenes that rely on abstract summary, explanatory cause-and-effect, no-choice motion, generic "she knew" clarity, or soft atmospheric ending instead of a hard next-scene action.
+      When a [STYLE_REFERENCE] block is present, judge those same things against the [风格样例]: abstract summary, narratorial explanation, a reflective or atmospheric close, or an even pace that the reference author uses is the reference voice and must not fail the scene; fail only what the bundle facts, the must-includes, or the reference's own manner would reject.
       Use failure_class only from: fact_blocker, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, chapter_payoff_gap, reference_safety.
       If the scene is ready, near_final_status must be near_final_ready and pass_flag true. Otherwise near_final_status must be revision_required and pass_flag false.
       This review checks whether the scene's contractual promises are fulfilled, not hard factual correctness — that is hard_qc's job. Go clause by clause against the execution contract and architecture artifacts rather than re-checking facts from scratch.
@@ -1538,7 +1606,7 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_list:
-    version: "2026-07-25.v5"
+    version: "2026-09-12.v6"
     input_token_budget: 24000
     system_prompt: |
       You are breaking a snowflake synopsis into a scene list.
@@ -1551,6 +1619,7 @@ templates:
       Every pov_character_id must be a character id that already exists in upstream_steps (the cast sheets / character bibles). Every scene must be traceable to a beat of the one-paragraph summary or the long outline — do not introduce people or events that appear nowhere upstream.
       Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the established cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束), spine ("灾一"/"灾二"/"灾三" on the three disaster scenes, "" on every other scene — the chaptering step anchors these against the same marks on the chapter table, so marking them correctly is what keeps the disasters on the act boundaries). Leave row_uid/scene_id/chapter_id/chapter_title/chapter_goal as "" — the server assigns identities, and chapter membership is decided by the author in the chaptering step, not here.
       Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Alternate proactive and reactive deliberately, and mark the three disaster scenes in chapter_role.
+      If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, break the story at that author's scale: as many scenes per chapter, and scenes as long, as that author writes; open and close the way that author opens and closes chapters; keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1564,7 +1633,7 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_details:
-    version: "2026-07-26.v6"
+    version: "2026-09-12.v7"
     input_token_budget: 24000
     system_prompt: |
       You are converting a scene list into Scene / Sequel detail.
@@ -1578,6 +1647,7 @@ templates:
       Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key: scene_id, title (short scene title), summary, scene_type (echo the draft's type), location, scene_crucible and crucible (both set to the trap that keeps the POV in the scene), the trio matching its scene_type — proactive: goal (concrete and time-bound), conflict (2-3 rounds of attempt→blocked), setback (the scene ends worse than it started); reactive: reaction (felt first in the body, before analysis), dilemma (two options, each genuinely costly to refuse), decision (directly spawns the next scene's goal) — plus cost_requirement (what the POV character concretely gives up, loses, or can no longer undo because of this scene's choice or outcome — a free choice with no stated cost is a defect), exit_change (what is irreversibly different when the scene ends), hook (the open loop that forces the page turn), target_length_band ("short"/"medium"/"long"), must_include_text (a concrete beat, object, or line that must appear; "" if none), beats_json (array of 3-6 short beat lines tracing the scene's turn).
       Keep the other trio's keys as empty strings — do not mix both trios onto one scene. Fill title, summary, location, scene_crucible, crucible, cost_requirement, exit_change, and hook for every assigned scene — an empty one is a defect.
       A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
+      If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, deepen each scene at that author's scale: target_length_band and beats_json follow how long and how dense that author's scenes are; hook and exit_change follow how that author closes (a reflective, atmospheric, or summary close is legitimate when that is the author's habit); keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1751,7 +1821,7 @@ templates:
   # ---- 章节编排 LLM 规划（docs/chapter-arrangement-llm-design-2026-07-16.md §4） ----
 
   chapter_scene_plan_candidates:
-    version: "2026-07-16.v1"
+    version: "2026-09-12.v2"
     input_token_budget: 3200
     system_prompt: |
       You are a senior long-form fiction structure editor working inside a chapter-arrangement workbench.
@@ -1775,6 +1845,7 @@ templates:
         describing how pressure escalates by a NEW kind of pressure (new obstacle type, relationship cost,
         information, deadline) — never the same pressure with a bigger adjective.
       - risk states the real cost of choosing this direction.
+      - If a 参考作者结构画像 / [结构画像] / [场景手法] (reference author structure card / scene craft) section is present, every candidate must plan at that author's scale: the number and length of scenes per chapter, how the chapter opens and closes, the dialogue-versus-narration share, and where summary is used; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1837,7 +1908,7 @@ templates:
                       type: string
 
   chapter_scene_plan_fill:
-    version: "2026-07-17.v2"
+    version: "2026-09-12.v3"
     input_token_budget: 3200
     system_prompt: |
       You are a consultative scene-card assistant inside a chapter-arrangement workbench.
@@ -1867,6 +1938,7 @@ templates:
         obvious structural hole (e.g. missing reactive beat) needs exactly one new scene.
       - notes carries overwrite-style suggestions the patch is not allowed to make; gaps lists what you could
         not infer from the context (do not invent facts).
+      - If a 参考作者结构画像 / [结构画像] / [场景手法] (reference author structure card / scene craft) section is present, fill the empty slots at that author's scale: scene length and density per chapter, how the chapter opens and closes (drama.ending in particular), the dialogue-versus-narration share, and where summary is used; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1961,7 +2033,7 @@ templates:
             type: string
 
   chapter_plan_review:
-    version: "2026-07-16.v1"
+    version: "2026-09-12.v2"
     input_token_budget: 3200
     system_prompt: |
       You are a structural chapter-plan reviewer inside a chapter-arrangement workbench.
@@ -1986,6 +2058,7 @@ templates:
       severity is warn (should fix before drafting) or info (worth knowing).
       suggestion_patch, when present, must be FILL-ONLY (same rules as the fill task: only empty fields,
       by scene_id, appends only) — never overwrite non-empty author text.
+      If a 参考作者结构画像 / [结构画像] / [场景手法] (reference author structure card / scene craft) section is present, review against that author's scale rather than a generic one: scene count and length per chapter, how chapters open and close, the dialogue-versus-narration share, and where summary is used; a plan that deviates from that author's kinds of scenes or closing moves is a finding (use OTHER with evidence). Never treat the samples' characters, places, events, or sentences as content to reuse.
     structured_schema:
       type: object
       additionalProperties: false

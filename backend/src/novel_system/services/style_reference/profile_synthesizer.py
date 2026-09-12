@@ -16,6 +16,9 @@ profile_json 结构:
     statements,forbidden 陈述带「避免：」极性标记,去重、过滤原文重合,≤8 行;
     供规划/初稿阶段的叙事机制注入)
   - voice_signature(W3 确定性声音签名 + habits,≤12 行;模块未就绪时缺省)
+  - structure_card / planning_guidance(2026-09-12 结构跟随:确定性结构画像——章 / 场尺度、
+    开合方式、段型比重、章首章尾样例——与 scene.* / theme.* 观察陈述 ≤10 行;
+    见 style_reference/structure.py;计算失败时缺省,下游按旧画像优雅退化)
   - anchor_quotes_used(审计:最终送入合成模型的锚引文条数)
 """
 
@@ -48,6 +51,10 @@ from novel_system.services.style_reference.repository import StyleReferenceRepos
 from novel_system.services.style_reference.schemas import (
     ProfileStatus,
     SynthesizedProfile,
+)
+from novel_system.services.style_reference.structure import (
+    compute_structure_card,
+    derive_planning_guidance,
 )
 from novel_system.services.style_reference.untrusted_data import (
     UntrustedPayload,
@@ -261,6 +268,10 @@ class ProfileSynthesizer:
             safe_forbidden_findings,
             corpus_texts,
         )
+        # 2026-09-12 结构跟随(Track B):结构画像与规划层指引都是确定性派生,与
+        # voice_signature 同一原则——任何失败只让画像缺键,绝不拖垮合成。
+        structure_card = _compute_structure_card_block(paragraphs, book_stats)
+        planning_guidance = _derive_planning_guidance_block(findings, corpus_texts)
 
         metric_summary = _deterministic_metric_summary(metrics_baseline)
         profile_json: dict[str, Any] = {
@@ -300,6 +311,10 @@ class ProfileSynthesizer:
         }
         if voice_signature is not None:
             profile_json["voice_signature"] = voice_signature
+        if structure_card is not None:
+            profile_json["structure_card"] = structure_card
+        if planning_guidance is not None:
+            profile_json["planning_guidance"] = planning_guidance
 
         profile = self.repo.create_profile(
             profile_id=f"sr_profile_{uuid.uuid4().hex[:12]}",
@@ -1326,6 +1341,47 @@ def _compute_voice_signature_block(paragraph_texts: list[str]) -> dict[str, Any]
         if len(habit_lines) >= _VOICE_HABITS_MAX_LINES:
             break
     return {**dict(signature), "habits": habit_lines}
+
+
+def _compute_structure_card_block(
+    paragraphs: list[Any],
+    book_stats: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """2026-09-12 结构跟随:从段落表 + 导入期声音签名确定性算结构画像;失败 → None(缺键)。"""
+
+    try:
+        voice_signature = (
+            book_stats.get("voice_signature") if isinstance(book_stats, Mapping) else None
+        )
+        card = compute_structure_card(
+            paragraphs,
+            voice_signature=voice_signature if isinstance(voice_signature, Mapping) else None,
+        )
+        # 与 voice_signature 同理:profile_json 是 JSON 列,先规整成纯 JSON 值。
+        return json.loads(json.dumps(card, ensure_ascii=False, default=_json_scalar_fallback))
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "structure card computation failed; profile omits structure_card", exc_info=True
+        )
+        return None
+
+
+def _derive_planning_guidance_block(
+    findings: list[Any],
+    corpus_texts: list[str],
+) -> list[str] | None:
+    """2026-09-12 结构跟随:scene.* / theme.* 观察陈述 → ≤10 行规划层指引;失败 → None(缺键)。"""
+
+    try:
+        return derive_planning_guidance(
+            findings,
+            overlap_filter=lambda text: _contains_source_overlap(text, corpus_texts),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "planning guidance derivation failed; profile omits planning_guidance", exc_info=True
+        )
+        return None
 
 
 def _prune_metrics_for_prompt(metrics: dict[str, Any]) -> dict[str, dict[str, float]]:

@@ -27,6 +27,7 @@ from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
 from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
 from novel_system.services.snowflake_prompt_budget import (
+    STYLE_REFERENCE_STRUCTURE_KEY,
     apply_snowflake_prompt_budget,
     budget_audit_fields,
 )
@@ -39,6 +40,10 @@ from novel_system.services.snowflake_steps import (
     merge_step_draft,
     step_completeness,
     step_guidance,
+)
+from novel_system.services.style_reference.planning_context import (
+    STRUCTURE_REFERENCE_HOW_TO_USE,
+    resolve_project_style_reference,
 )
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
@@ -64,6 +69,9 @@ SCENE_DETAIL_BATCH_SIZE = 6
 # 就会让一次点击变成半小时的同步请求（幂等租约只有 600s，见 config/models.yaml
 # job_runtime）。封顶后剩余场次由 notice 告诉作者，再点一次从第一场未完成处续深。
 SCENE_DETAIL_MAX_BATCHES_PER_RUN = 6
+# 2026-09-12 结构跟随：只有这两步在「排场」——参考作者的章 / 场尺度、开合方式、对白比重
+# 才有用武之地；其余八步（定位 / 摘要 / 角色）看不到它。
+_STRUCTURE_REFERENCE_STEPS = frozenset({"scene_list", "scene_details"})
 
 
 class SnowflakeWorkspaceLLMService:
@@ -81,6 +89,8 @@ class SnowflakeWorkspaceLLMService:
         self._prompt_templates = prompt_templates
         self._provider_configs: dict[str, Any] | None = None
         self._settings = None
+        # 场景规划分批深化会多次调用 _generate_step_once：同一次请求内的绑定解析只做一遍。
+        self._style_reference_cache: dict[str, dict[str, Any] | None] = {}
 
     def generate_step(
         self,
@@ -366,6 +376,12 @@ class SnowflakeWorkspaceLLMService:
             "current_pressure_diagnosis": diagnose_step_pressure(step_key, current_draft),
             "scene_rules": _scene_rules(step_key),
         }
+        # 2026-09-12 结构跟随：场景清单 / 场景规划看参考作者的结构画像与场景手法
+        # （project + global 绑定）。超预算时由 snowflake_prompt_budget 先卸样例、再卸整张画像。
+        if step_key in _STRUCTURE_REFERENCE_STEPS:
+            style_reference = self._project_style_reference(project.project_id)
+            if style_reference:
+                prompt_payload[STYLE_REFERENCE_STRUCTURE_KEY] = style_reference
         if adopted_direction:
             prompt_payload["adopted_direction"] = {
                 "text": adopted_direction,
@@ -828,6 +844,23 @@ class SnowflakeWorkspaceLLMService:
             payload=normalized_output,
             notice=_budget_notice(budget_report),
         )
+
+    def _project_style_reference(self, project_id: str) -> dict[str, Any] | None:
+        """参考作者结构画像的载荷成员（缓存于本次请求）；无绑定 / 旧画像 / 解析失败 → None。"""
+        if project_id not in self._style_reference_cache:
+            reference = resolve_project_style_reference(self.session, project_id)
+            member: dict[str, Any] | None = None
+            if reference:
+                member = {
+                    "profile_id": reference["profile_id"],
+                    "how_to_use": STRUCTURE_REFERENCE_HOW_TO_USE,
+                }
+                for key in ("structure_card", "structure_samples", "planning_guidance"):
+                    if reference.get(key):
+                        member[key] = reference[key]
+            self._style_reference_cache[project_id] = member
+        cached = self._style_reference_cache[project_id]
+        return dict(cached) if cached else None
 
     def _input_token_budget(self, template: Any) -> int:
         """本次渲染的输入预算：环境变量优先（小上下文的本地模型要能收紧），

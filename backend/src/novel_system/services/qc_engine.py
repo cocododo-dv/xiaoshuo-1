@@ -87,8 +87,10 @@ STYLED_DRAFT_GATE_EVENT_KIND = "styled_draft_gate_decided"
 # 每个可能成为终稿的风格化输出都要过 gate：style_draft 落库后、soft_qc 阶段（作用于进入
 # soft_qc 的任何风格稿——含 de_template / salvage / soft patch 产物）、以及
 # near_final_rewrite（带同一 [STYLE_REFERENCE] 前缀重写整场，输出直接成为终稿）。
+# 2026-09-12 风格直起:style_first 下中性步位的首稿也是 provider 的风格化输出,同样过门
+# (stage="neutral_draft";hard_qc 侧的 n-gram 门仍照跑,升级到人工复核由它完成)。
 STYLED_DRAFT_GATE_STAGES: frozenset[str] = frozenset(
-    {"style_draft", "soft_qc", "near_final_rewrite"}
+    {"neutral_draft", "style_draft", "soft_qc", "near_final_rewrite"}
 )
 _STYLED_GATE_MAX_HITS = 8
 

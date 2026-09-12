@@ -164,6 +164,9 @@ def resolve_scene_style_runtime_contract(
 # ``style_draft`` 行（provider 原稿另存为 ``style_rejected``），并在 AttemptTracker
 # ``details_json.content_source`` 上打这个标记；行本身没有字段能区分。
 NEUTRAL_FALLBACK_CONTENT_SOURCE = "approved_neutral_fallback"
+# 2026-09-12 风格直起:style_first 下中性步位的首稿已按参考作者手笔写成——它的正文**是**
+# 目标文风,既不该被当成「中性稿」排除,也可以直接作前文声音锚(无更晚的风格稿时)。
+STYLE_FIRST_DRAFT_CONTENT_SOURCE = "style_first_draft"
 
 
 def _normalized_draft_text(content: str | None) -> str:
@@ -186,19 +189,66 @@ def _neutral_fallback_styled_row_ids(session: Session, scene_id: str) -> set[str
     return row_ids
 
 
-def _neutral_draft_texts(session: Session, scene_id: str) -> set[str]:
-    """该场景所有 ``neutral_draft`` 行的正文（规范化后）集合。"""
-    return {
-        _normalized_draft_text(content)
-        for content in session.execute(
-            select(SceneDraft.content).where(
-                SceneDraft.scene_id == scene_id,
-                SceneDraft.stage == "neutral_draft",
+def _style_first_neutral_row_ids(session: Session, scene_id: str) -> set[str]:
+    """该场景 AttemptTracker 标记为「首稿直起」的 ``neutral_draft`` 行 ``row_id`` 集合。"""
+    row_ids: set[str] = set()
+    for details in (
+        session.execute(
+            select(AttemptTracker.details_json).where(
+                AttemptTracker.scene_id == scene_id,
+                AttemptTracker.step == "neutral_draft",
             )
         )
         .scalars()
         .all()
+    ):
+        if not isinstance(details, dict):
+            continue
+        if details.get("content_source") != STYLE_FIRST_DRAFT_CONTENT_SOURCE:
+            continue
+        row_id = details.get("row_id")
+        if isinstance(row_id, str) and row_id:
+            row_ids.add(row_id)
+    return row_ids
+
+
+def _neutral_draft_texts(session: Session, scene_id: str) -> set[str]:
+    """该场景所有**真正中性**的 ``neutral_draft`` 行正文（规范化后）集合。
+
+    style_first 的首稿虽然落在 ``neutral_draft`` 行,却已是目标文风,不算中性正文。
+    """
+    style_first_rows = _style_first_neutral_row_ids(session, scene_id)
+    return {
+        _normalized_draft_text(content)
+        for row_id, content in session.execute(
+            select(SceneDraft.row_id, SceneDraft.content).where(
+                SceneDraft.scene_id == scene_id,
+                SceneDraft.stage == "neutral_draft",
+            )
+        ).all()
+        if row_id not in style_first_rows
     }
+
+
+def _latest_style_first_draft(session: Session, scene_id: str) -> SceneDraft | None:
+    """最新一条首稿直起的 ``neutral_draft`` 行(未被否决);没有 → ``None``。"""
+    row_ids = _style_first_neutral_row_ids(session, scene_id)
+    if not row_ids:
+        return None
+    return (
+        session.execute(
+            select(SceneDraft)
+            .where(
+                SceneDraft.scene_id == scene_id,
+                SceneDraft.stage == "neutral_draft",
+                SceneDraft.status != "rejected",
+                SceneDraft.row_id.in_(sorted(row_ids)),
+            )
+            .order_by(SceneDraft.created_at.desc(), SceneDraft.row_id.desc())
+        )
+        .scalars()
+        .first()
+    )
 
 
 def latest_styled_draft_for_scene(session: Session, scene_id: str) -> SceneDraft | None:
@@ -224,8 +274,6 @@ def latest_styled_draft_for_scene(session: Session, scene_id: str) -> SceneDraft
         .scalars()
         .all()
     )
-    if not rows:
-        return None
     fallback_row_ids = _neutral_fallback_styled_row_ids(session, scene_id)
     neutral_texts = _neutral_draft_texts(session, scene_id)
     for row in rows:
@@ -234,7 +282,8 @@ def latest_styled_draft_for_scene(session: Session, scene_id: str) -> SceneDraft
         if _normalized_draft_text(row.content) in neutral_texts:
             continue
         return row
-    return None
+    # 2026-09-12 风格直起:还没有合格的风格稿时,首稿直起的中性步位行本身就是目标文风。
+    return _latest_style_first_draft(session, scene_id)
 
 
 _FRESHNESS_PRUNE_KEY_PREFIXES: tuple[str, ...] = ("avoid_", "vary_")
@@ -1147,24 +1196,43 @@ class BundleBuilder:
             for row in fingerprint.get("syntax_shapes", [])
             if int(row.get("count") or 0) >= 3
         ]
-        budget = {
+        # 2026-09-12 风格直起:契约先解析——style_first 下写死的两张房风词表与「以动作而非
+        # 解释收尾」子句整体让位;跨场景动作模板 / 意象场 / 句形复用(防系统自我复读)保留。
+        try:
+            contract = resolve_scene_style_runtime_contract(self.session, scene)
+        except Exception:  # noqa: BLE001 — 豁免标记是可选增强，解析失败按无契约处理
+            _LOGGER.debug("freshness budget contract lookup degraded", exc_info=True)
+            contract = None
+        style_bound = (
+            contract is not None and str(contract.get("draft_mode") or "") == "style_first"
+        )
+        preserve_repetition = contract is not None and contract_deliberate_repetition(contract)
+        budget: dict[str, Any] = {
             "schema_version": "literary_freshness_budget_v1",
             "source_scene_ids": [row.scene_id for row in source_rows],
             "avoid_action_templates": action_templates,
             "avoid_image_fields": image_fields[:6],
             "vary_syntax_shapes": syntax_shapes[:5],
-            "avoid_false_clarity": ["她知道", "他知道", "忽然意识到", "突然意识到"],
-            "avoid_summary_endings": [
+        }
+        if style_bound:
+            budget["house_taste_lists"] = "deferred_to_reference"
+            budget["instruction"] = (
+                "Use this as a freshness budget against repeating your own earlier scenes only: "
+                "do not reuse the action templates and image fields listed here. The reference "
+                "author's habits, cadence, and closing moves are never repetition to avoid."
+            )
+        else:
+            budget["avoid_false_clarity"] = ["她知道", "他知道", "忽然意识到", "突然意识到"]
+            budget["avoid_summary_endings"] = [
                 "这意味着",
                 "一切都变了",
                 "事情从此不同",
                 "解释了一切",
-            ],
-            "instruction": (
+            ]
+            budget["instruction"] = (
                 "Use this as a freshness budget: do not repeat high-frequency action templates, "
                 "rotate image fields, and end on a hard action instead of explanation."
-            ),
-        }
+            )
         try:
             from novel_system.services.self_repetition import (
                 SelfRepetitionDetector,
@@ -1201,7 +1269,8 @@ class BundleBuilder:
             lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(
                 scene.project_id
             )
-            if lifetime_guidance:
+            # style_first 且参考刻意复沓时,全书禁用表达表也让位(它会把作者的口头禅当成滥用)。
+            if lifetime_guidance and not (style_bound and preserve_repetition):
                 budget["lifetime_banned_expressions"] = lifetime_guidance
         except Exception:
             self._slot_degraded("literary_freshness_enrichment", scene)
@@ -1211,12 +1280,7 @@ class BundleBuilder:
         # (b) 任一层画像标记 deliberate_repetition 时加 preserve_reference_repetition 布尔键，
         #     style_draft 模板据此保留参考的刻意复沓。无契约时预算不变。
         _prune_function_word_only_entries(budget)
-        try:
-            contract = resolve_scene_style_runtime_contract(self.session, scene)
-        except Exception:  # noqa: BLE001 — 豁免标记是可选增强，解析失败按无契约处理
-            _LOGGER.debug("freshness budget contract lookup degraded", exc_info=True)
-            contract = None
-        if contract is not None and contract_deliberate_repetition(contract):
+        if preserve_repetition:
             # 只放布尔标记：这份预算 neutral_draft 也会看到，而「保留参考的刻意复沓」
             # 是语言层的目标文风指令，规格 §1.3 只允许 style_draft 模板解释它
             # （config/prompts.yaml ``style_draft`` 已有对应措辞），不能把措辞写进 instruction。

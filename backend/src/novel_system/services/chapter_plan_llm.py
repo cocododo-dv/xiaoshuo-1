@@ -38,6 +38,7 @@ from novel_system.services.catalog import (
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
 from novel_system.services.chapter_planning_context import (
     CHAPTER_ARCHITECTURE_ARTIFACT,
+    STYLE_REFERENCE_SLOT,
     ChapterPlanningContext,
     ChapterPlanningContextBuilder,
     latest_chapter_architecture,
@@ -1012,15 +1013,37 @@ def _rule_based_findings(context: ChapterPlanningContext) -> list[dict[str, Any]
 # ---------- prompt helpers（与雪花工作区同构） ----------
 
 
+def _render_style_reference_block(slot: Any) -> str:
+    """2026-09-12 结构跟随：结构画像 / 样例 / 场景手法按原样多行渲染，不塞进紧凑 JSON。
+
+    画像是带换行的中文块，样例块还带 UNTRUSTED_REFERENCE_DATA 边界——在 JSON 字符串里
+    全部被转义成 ``\\n``，模型读到的是一行长串，边界标记也失去了可读性。所以从载荷里
+    摘出来放在 Working payload 之后、Required keys 之前，按段落呈现。
+    """
+    if not isinstance(slot, dict):
+        return ""
+    parts = [
+        str(slot.get(key) or "").strip()
+        for key in ("how_to_use", "structure_card", "structure_samples", "planning_guidance")
+    ]
+    body = "\n".join(part for part in parts if part)
+    if not body:
+        return ""
+    return "Reference author structure (style_reference — planning scale and craft only; never content to reuse):\n" + body
+
+
 def _render_user_prompt(template: Any, prompt_payload: dict[str, Any]) -> str:
     required = template.structured_schema.get("required") or []
     required_text = ", ".join(str(item) for item in required if isinstance(item, str))
+    payload = dict(prompt_payload)
+    style_reference_block = _render_style_reference_block(payload.pop(STYLE_REFERENCE_SLOT, None))
     # 紧凑 JSON：缩进对模型没有价值，却给嵌套载荷凭空加约六成体积（与雪花工作区同款）。
-    prompt_json = json.dumps(normalize(prompt_payload), ensure_ascii=False, separators=(",", ":"))
+    prompt_json = json.dumps(normalize(payload), ensure_ascii=False, separators=(",", ":"))
     return (
         f"{template.task_prompt.strip()}\n\n"
         f"Working payload:\n{prompt_json}\n\n"
-        f"Required top-level JSON keys: {required_text or 'follow the provided schema'}.\n"
+        + (f"{style_reference_block}\n\n" if style_reference_block else "")
+        + f"Required top-level JSON keys: {required_text or 'follow the provided schema'}.\n"
         "Return only valid JSON. Do not wrap it in markdown fences."
     )
 

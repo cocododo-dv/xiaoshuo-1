@@ -637,7 +637,7 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert any("Approved Neutral Draft" in message["content"] for message in style_request.messages)
     assert any("Provider-generated neutral scene text." in message["content"] for message in style_request.messages)
     assert any(
-        "Recompose the supplied source draft" in message["content"]
+        "recompose it in the reference author's hand" in message["content"]
         for message in style_request.messages
     )
     assert any(

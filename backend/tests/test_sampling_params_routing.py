@@ -21,8 +21,9 @@ def test_route_payload_carries_sampling_penalties() -> None:
     from novel_system.services.llm_node_registry import default_task_config_payload
 
     payload = default_task_config_payload("style_draft", provider_id="acct1")
-    assert payload["frequency_penalty"] == 0.3
-    assert payload["presence_penalty"] == 0.15
+    # 2026-09-09 样例优先:惩罚归零(会抹平参考作者刻意的复沓),但键仍随路由发出。
+    assert payload["frequency_penalty"] == 0.0
+    assert payload["presence_penalty"] == 0.0
 
 
 def test_db_node_route_roundtrip_preserves_penalties() -> None:
@@ -34,8 +35,8 @@ def test_db_node_route_roundtrip_preserves_penalties() -> None:
     payload = default_task_config_payload("style_draft", provider_id="acct1")
     # Simulate persist-to-DB then reload into a TaskModelConfig.
     cfg = _load_task_model_config("style_draft", payload)
-    assert cfg.frequency_penalty == 0.3
-    assert cfg.presence_penalty == 0.15
+    assert cfg.frequency_penalty == 0.0
+    assert cfg.presence_penalty == 0.0
 
 
 def test_non_style_node_omits_penalties() -> None:

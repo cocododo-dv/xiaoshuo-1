@@ -160,3 +160,33 @@ section 一律不渲染，其余链路照旧；反抄袭红线段与 fail-closed
 `cd backend && python -m novel_system.tools.sync_prompt_templates`（干跑）→ `--execute`；该工具自 v2 起
 默认覆盖全部模板（此前只有 `snowflake_*`），`--prefix` / `--template` 可收窄，界面改写过且版本号未变的
 模板默认保留。
+
+### 2026-09-09 样例优先附记
+
+- 契约 `book` 快照新增 `paragraph_root_sha256` / `paragraph_count`（`runtime_contract.compute_paragraph_root`：按
+  `paragraph_index` 升序对每段 sha256 再做一次 sha256，只含哈希）。渲染期根哈希与库内段落一致 → 全书任何段落
+  都可进 few-shot 窗口（窗口可达 60 段 / 3,500 字）；失配（任一段被改动 / 增删 / 换序）→ 退回只用
+  `sample_paragraph_refs` 里冻结的相邻段（每侧 `few_shot_contract_neighbour_span`，默认 2），相邻段被篡改仍按
+  sha256 失配收窄。旧契约没有根哈希时走兜底路径，行为不变。
+- 前缀顺序改为 `few_shot → rag → voice → positive → forbidden → metric → anti_plagiarism`；few-shot 按 `scene_id`
+  轮换（`InjectionService.few_shot_seed`），同一场景各节点看到同一组窗口；`near_final_acceptance_review` 也注入
+  同一前缀（`near_final.NearFinalAcceptanceService._inject_style_reference_prefix`）。
+- 装不下时 `fit_fragments_to_input_budget` 先按整窗口卸载样例（`shed_few_shot_windows_preserve_abstract_v1`），再动
+  抽象行；风格通道模板的输入预算与代码地板为 64000（`prompt_builder.STYLE_PASS_INPUT_TOKEN_BUDGET`）。
+
+### 2026-09-12 风格直起附记
+
+- 契约顶层新增 `draft_mode`（`style_first` / `neutral_first`）：bundle 构建时按最具体绑定层的
+  `config_json.draft_mode` 解析，缺省取 `injection_budget.yaml: draft_mode_default`（style_first），随契约哈希冻结；
+  校验只接受两个取值；旧契约缺键 → `neutral_first`，重放不变。`runtime_contract.effective_draft_mode(bundle)` /
+  `is_style_bound(bundle)` 是首稿直起与所有房风门让位的唯一条件（absent / degraded / legacy_live 一律 neutral_first）。
+- style_first 下 `neutral_ready` 步位、`stage="neutral_draft"` 行、attempt step、指针与账本字段**全部不变**，只换内容：
+  `style_first_draft` 模板 + `[STYLE_REFERENCE]` 前缀（同 `scene_id` 轮换种子）、走 `style_draft` 节点路由；attempt
+  `content_source=style_first_draft`，notice `STYLE_FIRST_DRAFT`；首稿也过 styled-draft gate（stage `neutral_draft`）。
+  `style_draft` 步位改为定稿式复读（来源稿标签 `First Draft (already in the reference author's hand)`），回退稿标记
+  `first_draft_fallback`；前文声音锚可取首稿。
+- 冻结键新增 `structure_card` / `planning_guidance`（结构跟随，规划层消费；旧画像无键不渲染）。
+- 让位清单（仅 style_bound）：去模板门仅记录（`advisory_findings`）、规则版自动批评不发补丁、近终稿词表门与
+  「结尾必须是动作」启发式跳过、成稿门三个文学阈值不施加、新鲜度预算去掉两张房风词表与「以动作收尾」子句、
+  数字长度带按 `style_first_length_slack` 放宽。事实 / 必含 / 禁止 / 抄袭 / 禁用词门不让位。
+

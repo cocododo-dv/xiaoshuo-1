@@ -17,7 +17,7 @@ import { apiGet, apiPost, cancelRunJob, getLatestSceneRunJob } from "./lib/clien
    · 持久化：每场的运行结果存 scn-run:sid（按作品隔离），刷新不丢
    ========================================================== */
 
-const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock", "authorNote"];
+const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock", "authorNote", "draftMode"];
 const scnRunKey = (sid) => (wsKey ? wsKey("scn-run:" + sid) : "scn-run:" + sid);
 const scnQueueKey = () => (wsKey ? wsKey("scn-queue:v1") : "scn-queue:v1");
 const scnDismissKey = () => (wsKey ? wsKey("scn-queue-dismissed:v1") : "scn-queue-dismissed:v1");
@@ -34,6 +34,34 @@ const RUN_JOB_STATUS_LABELS = {
   failed: "运行失败",
   blocked: "已阻断",
 };
+/* 后端 scenes run 管线的 current_step（scene_run_jobs.SCENE_RUN_STAGE_ORDER）→ 作者可读标签。
+   2026-09-12 风格直起：neutral_running 步位不动、内容换——绑定 draft_mode=style_first 时这一步
+   写的是作者手笔首稿，标签按 workbench generation_summary.draft_mode 切换；词表外的 token 原样回显。 */
+const RUN_JOB_STEP_LABELS = {
+  planning_running: "规划蓝图",
+  bundle_built: "上下文已冻结",
+  neutral_running: "中性稿",
+  hard_qc_running: "硬质检",
+  style_running: "风格稿",
+  soft_qc_running: "软质检",
+  rewrite_running: "近终稿改写",
+  acceptance_review_running: "近终稿评审",
+  near_final: "近终稿",
+  archived: "已归档",
+};
+const RUN_JOB_STYLE_FIRST_DRAFT_LABEL = "首稿（作者手笔）";
+function runJobStepLabel(step, draftMode) {
+  const token = step == null ? "" : String(step);
+  if (!token) return "";
+  if (token === "neutral_running" && draftMode === "style_first") return RUN_JOB_STYLE_FIRST_DRAFT_LABEL;
+  return RUN_JOB_STEP_LABELS[token] || token;
+}
+/* workbench generation_summary.draft_mode（当前运行冻结契约的起草方式）→ "style_first" | "neutral_first" | null */
+function scnDraftModeFrom(wb) {
+  const summary = wb && wb.generation_summary;
+  const mode = summary && typeof summary === "object" ? String(summary.draft_mode || "") : "";
+  return mode === "style_first" || mode === "neutral_first" ? mode : null;
+}
 
 function runJobErrorText(error) {
   const code = error && error.code ? String(error.code) : "REQUEST_FAILED";
@@ -64,6 +92,7 @@ function SceneRunJobControl({
   onJobChange = null,
   pollIntervalMs = 2000,
   refreshSignal = 0,
+  draftMode = null,
 }) {
   const [job, setJob] = React.useState(null);
   const [loading, setLoading] = React.useState(Boolean(sceneId));
@@ -272,7 +301,7 @@ function SceneRunJobControl({
         {RUN_JOB_POLLING_STATUSES.has(status) && <span className="scn2-spin" aria-hidden="true" />}
         <span>
           运行任务 · {statusLabel}
-          {job && job.current_step ? ` · ${job.current_step}` : ""}
+          {job && job.current_step ? ` · ${runJobStepLabel(job.current_step, (job && job.draft_mode) || draftMode)}` : ""}
         </span>
       </div>
       <div className="scn2-decide-acts">
@@ -688,6 +717,7 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
   // reliable/无警告路径可能已经由后端原子归档。不能把 author_state=archived
   // 的 can_archive=false 误渲染成 Q0/Q1 阻断，也不能再展示待裁决按钮。
   qc.state = pipeState === "archived" ? "archived" : "ready";
+  qc.draftMode = scnDraftModeFrom(wb);
   qc.budgetBlock = budgetBlock;
   if (budgetBlock) {
     qc.gate = {
@@ -697,9 +727,9 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
     };
   }
   qc.log = [
-    { t: tm(0), who: "system", text: "已投递后端起草任务（scenes run 管线：预检 → 蓝图 → 起草 → 硬/软双层质检）" },
+    { t: tm(0), who: "system", text: "已投递后端起草任务（scenes run 管线：预检 → 蓝图 → 首稿（作者手笔 / 中性）→ 硬/软双层质检 → 近终稿）" },
     note ? { t: tm(0), who: "system", text: "改写指令已随任务下发（注入风格生成阶段，优先级最高）" } : null,
-    { t: tm(secs), who: "pipeline", text: `管线结束 · 任务 ${last.status} · 场景状态 ${pipeState} · ${qc.words} 字 · 用时 ${secs}s` },
+    { t: tm(secs), who: "pipeline", text: `管线结束 · 任务 ${last.status} · 场景状态 ${pipeState}${qc.draftMode ? ` · 首稿 ${qc.draftMode === "style_first" ? "作者手笔" : "中性"}` : ""} · ${qc.words} 字 · 用时 ${secs}s` },
     budgetBlock
       ? { t: tm(secs), who: "pipeline", text: `${budgetBlock.label}；已有正文与恢复点均已保留，需作者显式追加预算后续跑` }
       : scnGateLog(qc.gate, tm(secs)),
@@ -777,6 +807,7 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
       }],
       cost: [],
       recoveredWithoutDraft: true,
+      draftMode: scnDraftModeFrom(wb),
       pipeState,
     };
   }
@@ -793,6 +824,7 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
   qc.gate = scnGateFrom(wb);
   qc.rewriteBrief = scnRewriteBriefFrom(wb);
   qc.authorNote = authorNote;
+  qc.draftMode = scnDraftModeFrom(wb);
   qc.budgetBlock = budgetBlock;
   if (qc.budgetBlock) {
     qc.gate = {
@@ -1042,4 +1074,4 @@ function scnPickList(queuedSids) {
 }
 
 /* 场景工作台只通过显式 ESM 导出连接，不再写入 window 全局命名空间。 */
-export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+export { SceneRunJobControl, runJobStepLabel, scnDraftModeFrom, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

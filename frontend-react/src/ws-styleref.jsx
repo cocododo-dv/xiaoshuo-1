@@ -16,6 +16,20 @@ import {
 /* global React, I */
 const { useState: useStSR } = React;
 
+/* 2026-09-12 风格直起（Step 2）：绑定的起草方式，落 binding.config_json.draft_mode。
+   style_first（缺省）= 首稿直接以参考作者手笔写；neutral_first = 现状流程（中性稿再上风格），作阅读对照。
+   缺省不落库时后端按 injection_budget.yaml 的 draft_mode_default（style_first）生效。 */
+const SR_DRAFT_MODE_DEFAULT = "style_first";
+const SR_DRAFT_MODES = [
+  { id: "style_first", label: "作者手笔直起", badge: "默认", detail: "首稿直接以参考作者手笔写；系统的房风质量门让位" },
+  { id: "neutral_first", label: "中性稿再上风格", badge: "", detail: "现状流程，用于阅读对照" },
+];
+/* 绑定行 / 叠层行的起草方式标签：config_json.draft_mode 缺省即后端默认 style_first */
+function srDraftModeLabel(mode) {
+  const hit = SR_DRAFT_MODES.find(m => m.id === mode);
+  return (hit || SR_DRAFT_MODES[0]).label;
+}
+
 const SR_CLOUD_POLICIES = [
   {
     id: "local_only",
@@ -1345,7 +1359,8 @@ function SrApply({ go, book }) {
   const [strategy, setStrategy] = useStSR("mixed");
   const [taskType, setTaskType] = useStSR("scene_generation");
   const [applied, setApplied] = useStSR(null); // 已创建的审核条目描述
-  const [intensity, setIntensity] = useStSR(80);
+  const [intensity, setIntensity] = useStSR(100); // 2026-09-12 风格直起：新绑定默认强度拉满
+  const [draftMode, setDraftMode] = useStSR(SR_DRAFT_MODE_DEFAULT);
   const [scope, setScope] = useStSR("project");
   const [scopeRefId, setScopeRefId] = useStSR(null);   // 立项 A — scene/character 级绑定目标 id
   const [scopeOpts, setScopeOpts] = useStSR({ scene: [], character: [] });
@@ -1574,6 +1589,25 @@ function SrApply({ go, book }) {
             </div>
 
             <div className="card">
+              <div className="card-head"><div><div className="card-title">起草方式</div><div className="card-sub">有绑定时首稿由谁定调：直接用参考作者的手笔，还是先出中性稿再上风格</div></div>
+                <span className="pill pill-slate text-xs" data-testid="sr-draft-mode-current"><span className="pill-dot" />{srDraftModeLabel(draftMode)}</span>
+              </div>
+              <fieldset className="sr-policy-list" data-testid="sr-draft-mode">
+                <legend className="sr-policy-legend">首稿怎么写</legend>
+                {SR_DRAFT_MODES.map(m => (
+                  <label key={m.id} className={`sr-policy ${draftMode === m.id ? "is-selected" : ""}`}>
+                    <input type="radio" name="sr-draft-mode" value={m.id} checked={draftMode === m.id} onChange={() => setDraftMode(m.id)} />
+                    <span className="sr-policy-mark" aria-hidden="true" />
+                    <span className="sr-policy-copy">
+                      <span className="sr-policy-title">{m.label}{m.badge ? <em>{m.badge}</em> : null}</span>
+                      <span className="sr-policy-detail">{m.detail}</span>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            </div>
+
+            <div className="card">
               <div className="card-head">
                 <div><div className="card-title">注入维度</div><div className="card-sub">勾选要参与注入的 sub-dim（{selectedDims.length} / {availableDims.length} 可用已选{dimOptions.source === "profile" ? " · 按画像覆盖维度" : dimOptions.source === "input_assessment" ? " · 按输入量评估" : ""}）</div></div>
                 <button className="btn btn-quiet btn-sm" onClick={() => {
@@ -1608,7 +1642,7 @@ function SrApply({ go, book }) {
         )}
 
         {sub === "layers" && (realMode ? (
-          <SrLayersReal stack={layerStack} err={layerErr} />
+          <SrLayersReal stack={layerStack} err={layerErr} bindings={realBindings} />
         ) : isRealBook ? (
           <div className="card">
             <div className="card-head">
@@ -1844,6 +1878,7 @@ function SrApply({ go, book }) {
                   <li key={b.binding_id}>
                     <span className={`pill pill-${tone} text-xs`}><span className="pill-dot" />{sname}</span>
                     <span className="text-sm">{b.scope_ref_id || "—"} · {b.strategy === "mixed" ? "A+B" : b.strategy}</span>
+                    <span className="pill pill-slate text-xs" data-testid="sr-binding-draft-mode" title="起草方式"><span className="pill-dot" />{srDraftModeLabel(b.config_json && b.config_json.draft_mode)}</span>
                     <button className="btn btn-quiet btn-sm" onClick={() => {
                       window.srUnbind && window.srUnbind(b.binding_id, book.id).catch(e => window.alert("解绑失败：" + ((e && e.message) || e)));
                     }}>解绑</button>
@@ -1883,7 +1918,7 @@ function SrApply({ go, book }) {
               kind: "decision", priority: 1,
               title: `参考画像「${profileTitle}」应用到${scopeName}`,
               where: "风格参考 · 注入应用", source: "风格参考",
-              detail: `策略 ${strategy === "mixed" ? "A+B 混合" : strategy} · 强度 ${intensity}% · ${selectedDims.length} 维。批准后画像绑定到该范围、作为生成期默认润色基线，可随时回风格参考解绑。`,
+              detail: `策略 ${strategy === "mixed" ? "A+B 混合" : strategy} · 强度 ${intensity}% · ${selectedDims.length} 维 · 起草 ${srDraftModeLabel(draftMode)}。批准后画像绑定到该范围、作为生成期默认润色基线，可随时回风格参考解绑。`,
               dedupe_key: `style-apply:${realProfileId}:${scope}:${effScopeRefId || "_"}:${strategy}`,
               actions: [
                 { label: "批准应用", intent: "primary", op: "resolve",
@@ -1893,6 +1928,7 @@ function SrApply({ go, book }) {
                     scope, scope_ref_id: effScopeRefId, task_type: taskType, strategy, intensity,
                     sub_dimensions: selectedDims,
                     include_positive: true, include_forbidden: true, include_metric: strategy !== "C",
+                    draft_mode: draftMode,
                   } },
                 { label: "回风格参考调整", intent: "ghost", op: "nav", to: "styleref" },
                 { label: "丢弃", intent: "quiet", op: "resolve" },
@@ -1942,7 +1978,7 @@ function SrApply({ go, book }) {
 const SR_SCOPE_TONE = { scene: "sage", character: "gold", project: "crimson", global: "slate" };
 const SR_SCOPE_LABEL = { scene: "场景层", character: "角色层", project: "项目层", global: "全局基底" };
 
-function SrLayersReal({ stack, err }) {
+function SrLayersReal({ stack, err, bindings = [] }) {
   if (err) {
     return <div className="card"><div className="sr-fewshot-warn"><I.Info size={13} /><span>叠加注入层：{err}</span></div></div>;
   }
@@ -1971,6 +2007,8 @@ function SrLayersReal({ stack, err }) {
       <div className="sr-stack">
         {layers.map(l => {
           const tone = SR_SCOPE_TONE[l.scope] || "slate";
+          // 叠层端点不带 config_json：起草方式从本画像的绑定表按 binding_id 对位，对不上（他画像的层）就不猜
+          const own = (bindings || []).find(b => b && b.binding_id === l.binding_id);
           return (
             <div key={l.binding_id} className="sr-stack-layer">
               <div className={`sr-stack-rank rank-${tone}`}>rank {l.rank}</div>
@@ -1979,6 +2017,7 @@ function SrLayersReal({ stack, err }) {
                   <span className={`pill pill-${tone} text-xs`}><span className="pill-dot" />{SR_SCOPE_LABEL[l.scope] || l.scope}</span>
                   <span className="sr-stack-target text-serif">{l.profile_title || l.profile_id}</span>
                   <span className="text-xs text-muted">{l.scope_ref_id || "—"} · 策略 {l.strategy === "mixed" ? "A+B" : l.strategy}</span>
+                  {own && <span className="pill pill-slate text-xs" data-testid="sr-layer-draft-mode" title="起草方式"><span className="pill-dot" />{srDraftModeLabel(own.config_json && own.config_json.draft_mode)}</span>}
                   <span className="sr-stack-frags">{l.fragment_count} fragments</span>
                 </div>
                 <div className="sr-stack-budget">

@@ -384,7 +384,10 @@ _NEUTRAL_TEXT = "门外的脚步停住了，他把信封放到桌上，等对面
 
 
 def test_style_notice_codes_are_closed_set() -> None:
+    from novel_system.services.scene_generation import STYLE_NOTICE_FIRST_DRAFT
+
     assert STYLE_NOTICE_CODES == {
+        STYLE_NOTICE_FIRST_DRAFT,
         STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL,
         STYLE_NOTICE_INJECTION_MISS,
         STYLE_NOTICE_INJECTION_DEGRADED,

@@ -111,6 +111,9 @@ class ApplyConfigMixin(BaseModel):
     include_positive: bool | None = None
     include_forbidden: bool | None = None
     include_metric: bool | None = None
+    # 2026-09-12 风格直起(Step 2):起草方式——style_first(作者手笔直起,缺省)/
+    # neutral_first(中性稿再上风格,对照组)。缺省不落库,由 injection_budget.yaml 决定。
+    draft_mode: Literal["style_first", "neutral_first"] | None = None
 
 
 class FindingReviewRequest(BaseModel):
@@ -153,6 +156,8 @@ class ApplyProfileRequest(ApplyConfigMixin):
             value = getattr(self, key)
             if value is not None:
                 config[key] = bool(value)
+        if self.draft_mode is not None:
+            config["draft_mode"] = str(self.draft_mode)
         return config
 
 

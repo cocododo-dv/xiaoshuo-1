@@ -91,7 +91,15 @@ def seed_work(session, *, project_id: str, chapters: int = 1, scenes_per_chapter
     session.commit()
 
 
-def seed_binding(session, *, project_id: str, seed: str, profile_json: dict, scope: str = "project") -> str:
+def seed_binding(
+    session,
+    *,
+    project_id: str,
+    seed: str,
+    profile_json: dict,
+    scope: str = "project",
+    config_json: dict | None = None,
+) -> str:
     session.add(
         StyleReferenceBook(
             book_id=f"sr_book_{seed}",
@@ -121,6 +129,7 @@ def seed_binding(session, *, project_id: str, seed: str, profile_json: dict, sco
             scope_ref_id=project_id,
             task_type="scene_generation",
             strategy="A",
+            config_json=dict(config_json or {}),
             status="active",
         )
     )

@@ -37,8 +37,16 @@ from novel_system.services.catalog import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json, normalize
+from novel_system.services.style_reference.planning_context import (
+    STRUCTURE_REFERENCE_HOW_TO_USE,
+    resolve_project_style_reference,
+)
 
 CHAPTER_ARCHITECTURE_ARTIFACT = "chapter_story_architecture"
+# 2026-09-12 结构跟随：参考作者结构画像 / 场景手法的 slot 名。体量由渲染器封顶（画像 ≤1,500 字
+# + ≤6 条 ≤150 字样例 + ≤10 行手法），不走 _truncate_value——那是 canon 摘要的按槽预算，
+# 画像里的数字（章长 / 段数 / 比重）截半行就失真。
+STYLE_REFERENCE_SLOT = "style_reference"
 
 # 雪花 canon 摘要只取世界观/主线约束层；场景清单/场景细节体量大且已物化进目录，不重复注入。
 _CANON_STEP_KEYS = (
@@ -134,6 +142,11 @@ class ChapterPlanningContextBuilder:
         payload["tension_neighborhood"] = self._tension_slot(chapters, index)
         payload["character_positions"] = self._character_slot(chapters, index, scenes)
         payload["author_constraints"] = self._constraints_slot(project, chapter, refs)
+        # 2026-09-12 结构跟随：project + global 作用域的风格绑定 → 结构画像与场景手法进规划
+        # 提示。无绑定是常态而非降级（不进 degraded_slots）；有绑定时契约哈希进 refs 可审计。
+        style_reference = self._style_reference_slot(project_id, refs)
+        if style_reference:
+            payload[STYLE_REFERENCE_SLOT] = style_reference
 
         fingerprint = uuid.uuid5(uuid.NAMESPACE_URL, canonical_json(normalize(payload))).hex
         return ChapterPlanningContext(
@@ -252,6 +265,21 @@ class ChapterPlanningContextBuilder:
         except Exception:
             self._slot_degraded("snowflake_canon")
             return []
+
+    def _style_reference_slot(self, project_id: str, refs: dict[str, Any]) -> dict[str, Any] | None:
+        reference = resolve_project_style_reference(self.session, project_id)
+        if not reference:
+            return None
+        refs["style_reference_runtime_contract_hash"] = reference["contract_hash"]
+        refs["style_reference_profile_id"] = reference["profile_id"]
+        slot: dict[str, Any] = {
+            "profile_id": reference["profile_id"],
+            "how_to_use": STRUCTURE_REFERENCE_HOW_TO_USE,
+        }
+        for key in ("structure_card", "structure_samples", "planning_guidance"):
+            if reference.get(key):
+                slot[key] = reference[key]
+        return slot
 
     def _narrative_state_slot(self, project_id: str, first_scene: SceneCard | None) -> str | None:
         if first_scene is None:

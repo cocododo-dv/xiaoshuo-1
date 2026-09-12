@@ -705,6 +705,7 @@ function WsSceneBoard({ go, t }) {
             sceneId={activeBackendSceneId}
             observedJob={observedRunJob && observedRunJob.sceneId === activeBackendSceneId ? observedRunJob.job : null}
             onJobChange={(job) => setAuthoritativeRunJob({ sceneId: activeBackendSceneId, job })}
+            draftMode={(scene && scene.draftMode) || null}
             refreshSignal={runJobRefreshTick}
           />
         )}

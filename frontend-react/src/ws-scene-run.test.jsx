@@ -394,8 +394,9 @@ describe("SceneRunJobControl", () => {
     await view.rerender({ sceneId: "SC01", refreshSignal: 1 });
 
     await vi.waitFor(() => {
-      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("archived");
+      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("已归档");
     }, T);
+    expect(view.host.querySelector('[role="status"]')?.textContent).not.toContain("archived");
     expect(client.getLatestSceneRunJob).toHaveBeenCalledTimes(2);
     expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.status).toBe("completed");
   });
@@ -960,8 +961,9 @@ describe("SceneRunJobControl", () => {
       );
       expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-page-refresh");
       expect(view.host.querySelector('[data-testid="scene-run-cancel-button"]')).toBeTruthy();
-      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("neutral_running");
+      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("中性稿");
     }, T);
+    expect(view.host.querySelector('[role="status"]')?.textContent).not.toContain("neutral_running");
   });
 
   it("keeps authoritative queued distinct from running and suppresses a duplicate start", async () => {
@@ -1005,6 +1007,7 @@ describe("SceneRunJobControl", () => {
       expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-empty-restore");
       expect(view.host.querySelector(".scn2-state-tag")?.textContent).toContain("运行");
       expect(view.host.querySelector(".scn2-qrow.is-active .scn2-chip")?.textContent).toContain("运行");
+      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("运行中 · 中性稿");
     }, T);
     const stats = Array.from(view.host.querySelectorAll(".scn2-stat"));
     const running = stats.find(item => item.querySelector(".scn2-stat-label")?.textContent === "运行");
@@ -2234,5 +2237,184 @@ describe("scnQueueDismiss（移出名单：满了也不能让「移出」变成�
     mod.scnQueueDismissAdd(["a", "b", "c"]);
     expect(mod.scnQueueDismissClear(["b"])).toEqual(["a", "c"]);
     expect(mod.scnQueueDismissLoad()).toEqual(["a", "c"]);
+  });
+});
+
+/* 2026-09-12 风格直起（Step 2，Track C）：运行任务横幅的 current_step 中文标签——
+   neutral_running 步位在 draft_mode=style_first 下写的是作者手笔首稿；起草方式来自
+   workbench generation_summary.draft_mode，随运行记录持久化并由场景页传给横幅。 */
+describe("scene run step labels（风格直起）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+  });
+
+  afterEach(async () => {
+    while (mountedRoots.length) {
+      const { root, host } = mountedRoots.pop();
+      await act(async () => root.unmount());
+      host.remove();
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("runJobStepLabel：管线词表映射中文；neutral_running 按起草方式切换；未知 token 原样回显", async () => {
+    const { mod } = await loadSceneRun();
+    expect(mod.runJobStepLabel("neutral_running", "style_first")).toBe("首稿（作者手笔）");
+    expect(mod.runJobStepLabel("neutral_running", "neutral_first")).toBe("中性稿");
+    expect(mod.runJobStepLabel("neutral_running", null)).toBe("中性稿");
+    expect(mod.runJobStepLabel("planning_running")).toBe("规划蓝图");
+    expect(mod.runJobStepLabel("bundle_built")).toBe("上下文已冻结");
+    expect(mod.runJobStepLabel("hard_qc_running")).toBe("硬质检");
+    expect(mod.runJobStepLabel("style_running", "style_first")).toBe("风格稿");
+    expect(mod.runJobStepLabel("soft_qc_running")).toBe("软质检");
+    expect(mod.runJobStepLabel("rewrite_running")).toBe("近终稿改写");
+    expect(mod.runJobStepLabel("acceptance_review_running")).toBe("近终稿评审");
+    expect(mod.runJobStepLabel("near_final")).toBe("近终稿");
+    expect(mod.runJobStepLabel("archived")).toBe("已归档");
+    expect(mod.runJobStepLabel("awaiting_candidate_selection")).toBe("awaiting_candidate_selection");
+    expect(mod.runJobStepLabel("")).toBe("");
+    expect(mod.runJobStepLabel(null)).toBe("");
+  });
+
+  it("scnDraftModeFrom：只认 workbench generation_summary 里的两个取值", async () => {
+    const { mod } = await loadSceneRun();
+    expect(mod.scnDraftModeFrom({ generation_summary: { draft_mode: "style_first" } })).toBe("style_first");
+    expect(mod.scnDraftModeFrom({ generation_summary: { draft_mode: "neutral_first" } })).toBe("neutral_first");
+    expect(mod.scnDraftModeFrom({ generation_summary: { draft_mode: "whatever" } })).toBeNull();
+    expect(mod.scnDraftModeFrom({ generation_summary: null })).toBeNull();
+    expect(mod.scnDraftModeFrom(null)).toBeNull();
+  });
+
+  it("横幅按 draftMode 属性给 neutral_running 打标签：style_first → 首稿（作者手笔）", async () => {
+    const { mod, client } = await loadSceneRun();
+    client.getLatestSceneRunJob.mockResolvedValue({
+      job_id: "job-style-first",
+      scene_id: "SC01",
+      status: "running",
+      current_step: "neutral_running",
+    });
+    const view = await renderRunJobControl(mod.SceneRunJobControl, { sceneId: "SC01", draftMode: "style_first" });
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("运行中 · 首稿（作者手笔）");
+    }, T);
+    expect(view.host.querySelector('[role="status"]')?.textContent).not.toContain("neutral_running");
+
+    await view.rerender({ sceneId: "SC01", draftMode: "neutral_first" });
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("运行中 · 中性稿");
+    }, T);
+    expect(view.host.querySelector('[role="status"]')?.textContent).not.toContain("作者手笔");
+  });
+
+  it("scnHydrateFromBackend：把 generation_summary.draft_mode 记到运行记录，并随 scnRunSave 持久化", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          neutral_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "neutral_running" },
+          generation_summary: { draft_mode: "style_first", attempts: 1 },
+        });
+      }
+      return baseGet(url, options);
+    });
+    const restored = await mod.scnHydrateFromBackend("ch01s1", {});
+    expect(restored).toBeTruthy();
+    expect(restored.draftMode).toBe("style_first");
+    mod.scnRunSave("ch01s1", restored);
+    expect(mod.scnRunLoad("ch01s1").draftMode).toBe("style_first");
+  });
+
+  it("scnHydrateFromBackend：无正文的预算断点同样带起草方式", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          scene_run_state: { scene_status: "bundle_built", lifecycle_budget: { baseline_tokens: 7200, recommended_topup_tokens: 7200 } },
+          generation_summary: { draft_mode: "neutral_first" },
+        });
+      }
+      return baseGet(url, options);
+    });
+    const restored = await mod.scnHydrateFromBackend("ch01s1", {
+      terminalJob: {
+        job_id: "job-budget",
+        scene_id: "s1",
+        status: "blocked",
+        current_step: "neutral_running",
+        error_code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+        error_text: "scene token budget exhausted before dispatch",
+      },
+    });
+    expect(restored).toMatchObject({ recoveredWithoutDraft: true, draftMode: "neutral_first" });
+  });
+
+  it("scnRun：运行记录带 draftMode，运行日志写新的管线句与首稿方式", async () => {
+    const { mod, client } = await loadSceneRun();
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiPost.mockImplementation((url) => {
+      if (/\/api\/v1\/scenes\/s1\/run\/jobs$/.test(url)) {
+        return Promise.resolve({ job_id: "job-style", scene_id: "s1", status: "running" });
+      }
+      return Promise.resolve({});
+    });
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/run-jobs/job-style") {
+        return Promise.resolve({ job_id: "job-style", scene_id: "s1", status: "completed", current_step: "near_final" });
+      }
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          style_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "near_final" },
+          generation_summary: { draft_mode: "style_first" },
+        });
+      }
+      return baseGet(url);
+    });
+    vi.useFakeTimers();
+    let result;
+    try {
+      const runPromise = mod.scnRun({ sid: "ch01s1", kind: "主动场景" }, "", "", {});
+      await vi.runAllTimersAsync();
+      result = await runPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(result.draftMode).toBe("style_first");
+    const texts = result.log.map((l) => l.text);
+    expect(texts[0]).toBe("已投递后端起草任务（scenes run 管线：预检 → 蓝图 → 首稿（作者手笔 / 中性）→ 硬/软双层质检 → 近终稿）");
+    expect(texts.some((t) => t.includes("首稿 作者手笔"))).toBe(true);
+  });
+
+  it("真实场景页：从 workbench 恢复的起草方式传到横幅，running · neutral_running 读作首稿（作者手笔）", async () => {
+    const { client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    await queueSceneIntent({ sid: "ch01s1" });
+    client.getLatestSceneRunJob.mockResolvedValue({
+      job_id: "job-page-style-first",
+      scene_id: "s1",
+      status: "running",
+      current_step: "neutral_running",
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          neutral_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "neutral_running" },
+          generation_summary: { draft_mode: "style_first" },
+        });
+      }
+      return baseGet(url, options);
+    });
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-page-style-first");
+      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("首稿（作者手笔）");
+    }, T);
+    expect(view.host.querySelector('[role="status"]')?.textContent).not.toContain("neutral_running");
   });
 });

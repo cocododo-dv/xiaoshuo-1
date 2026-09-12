@@ -333,8 +333,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="stylize",
         temperature=0.8,
         max_output_tokens=6000,
-        frequency_penalty=0.3,
-        presence_penalty=0.15,
+        frequency_penalty=0.0,
+        presence_penalty=0.0,
     ),
     LLMNodeSpec(
         "style_patch",
@@ -343,8 +343,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="stylize",
         temperature=0.8,
         max_output_tokens=6000,
-        frequency_penalty=0.3,
-        presence_penalty=0.15,
+        frequency_penalty=0.0,
+        presence_penalty=0.0,
     ),
     LLMNodeSpec(
         "scene_literary_rewrite",
