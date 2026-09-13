@@ -1945,6 +1945,10 @@ def _sanitize_scene_detail_items(
         "triage_status",
         "triage_notes",
         "beats_json",
+        # 阶段 J：在场人物 / 故事时间 / 读者应感到
+        "onstage_chars_json",
+        "story_time",
+        "expected_reader_emotion",
     }
     result = []
     for base_item in base_items:
@@ -1973,7 +1977,7 @@ def _sanitize_scene_detail_items(
                 scene_type = scene_type if scene_type in {"proactive", "reactive"} else str(merged.get("primary_form") or merged.get("scene_type") or "proactive")
                 merged["primary_form"] = scene_type
                 merged["scene_type"] = scene_type
-            elif key in {"beats_json"}:
+            elif key in {"beats_json", "onstage_chars_json"}:
                 beats = _coerce_string_list(overlay.get(key))
                 if beats:
                     merged[key] = beats

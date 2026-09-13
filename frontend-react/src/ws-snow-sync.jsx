@@ -50,6 +50,8 @@ function canonFromFE(feKey, saved) {
     return {
       category: txt(sc.genre), target_reader: txt(sc.reader), delight_reason: txt(sc.pleasure),
       story_kind: txt(sc.source), genre_promise: txt(sc.exclude), expected_reader_emotion: txt(sc.emotion),
+      // 阶段 J：全书的叙述人称与时态——起草时有约束力
+      narrative_stance: txt(sc.stance),
     };
   }
   if (feKey === "logline") return { summary: draftText.split("\n").filter(Boolean)[0] || "" };
@@ -126,6 +128,9 @@ function canonFromFE(feKey, saved) {
         goal: txt(plan.goal), conflict: txt(plan.conflict), setback: txt(plan.setback),
         reaction: txt(plan.reaction), dilemma: txt(plan.dilemma), decision: txt(plan.decision),
         cost_requirement: txt(plan.cost_requirement),
+        // 阶段 J：原著的几栏——在场人物（角色 id 列表）、故事时间、读者应感到
+        onstage_chars_json: Array.isArray(plan.onstage) ? plan.onstage.map(txt).filter(Boolean) : [],
+        story_time: txt(plan.story_time), expected_reader_emotion: txt(plan.reader_emotion),
         // 阶段 C / I：反应场的呈现方式（full / summary / skip）。只对反应场上行；主动场服务端恒为 full。
         ...(form === "reactive" ? { rendering_mode: (plan.rendering === "summary" || plan.rendering === "skip") ? plan.rendering : "full" } : {}),
       };
@@ -139,7 +144,7 @@ function feFromCanon(feKey, draft) {
   const d = draft || {};
   const pad2 = (n) => String(n).padStart(2, "0");
   if (feKey === "audience") {
-    return { scaffold: { genre: d.category || "", reader: d.target_reader || "", pleasure: d.delight_reason || "", source: d.story_kind || "", exclude: d.genre_promise || "", emotion: d.expected_reader_emotion || "" } };
+    return { scaffold: { genre: d.category || "", reader: d.target_reader || "", pleasure: d.delight_reason || "", source: d.story_kind || "", exclude: d.genre_promise || "", emotion: d.expected_reader_emotion || "", stance: d.narrative_stance || "" } };
   }
   if (feKey === "logline") return { text: d.summary || "" };
   if (feKey === "paragraph") {
@@ -225,6 +230,8 @@ function feFromCanon(feKey, draft) {
         goal: s.goal || "", conflict: s.conflict || "", setback: s.setback || "",
         reaction: s.reaction || "", dilemma: s.dilemma || "", decision: s.decision || "",
         cost_requirement: s.cost_requirement || "",
+        onstage: Array.isArray(s.onstage_chars_json) ? s.onstage_chars_json.filter(Boolean) : [],
+        story_time: s.story_time || "", reader_emotion: s.expected_reader_emotion || "",
         rendering: (s.rendering_mode === "summary" || s.rendering_mode === "skip") ? s.rendering_mode : "full",
       };
     });

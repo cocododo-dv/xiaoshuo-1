@@ -482,8 +482,8 @@ def test_prompt_templates_teach_the_design_context() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     expectations = {
-        "neutral_draft": ("2026-09-13.v10", "never adds an event to this scene"),
-        "style_first_draft": ("2026-09-13.v5", "never restated in the prose"),
+        "neutral_draft": ("2026-09-14.v11", "never adds an event to this scene"),
+        "style_first_draft": ("2026-09-14.v6", "never restated in the prose"),
         "scene_blueprint": ("2026-09-13.v8", "ground the proposal in it"),
     }
     for name, (version, phrase) in expectations.items():

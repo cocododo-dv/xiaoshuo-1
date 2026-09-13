@@ -1,4 +1,4 @@
-"""迁移 20260913_0084：snowflake_scene_plans.rendering_mode，历史行回填 full，可降级。"""
+"""迁移 20260914_0085：snowflake_scene_plans.expected_reader_emotion / story_time（原著场景表的两栏），可空、不回填，可降级。"""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 
-PREVIOUS_HEAD = "20260904_0083"
-CURRENT_HEAD = "20260913_0084"
+PREVIOUS_HEAD = "20260913_0084"
+CURRENT_HEAD = "20260914_0085"
 
 
 def _config() -> Config:
@@ -25,7 +25,7 @@ def _migrate(path: Path, revision: str, monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     backups = tmp_path / "backups"
     backups.mkdir(exist_ok=True)
-    (backups / "style_reference_legacy_0084.json").write_text("[]", encoding="utf-8")
+    (backups / "style_reference_legacy_0085.json").write_text("[]", encoding="utf-8")
     with monkeypatch.context() as migration_env:
         migration_env.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{path.as_posix()}")
         migration_env.setenv("STYLE_REFERENCE_REPO_ROOT", str(tmp_path))
@@ -62,40 +62,44 @@ def _columns(path: Path, table: str) -> set[str]:
         return {row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')}
 
 
-def test_0084_adds_rendering_mode_with_full_backfill_and_downgrades(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = tmp_path / "rendering-mode-0084.db"
+def test_0085_adds_the_method_columns_nullable_and_downgrades(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "method-fields-0085.db"
     _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
-    assert "rendering_mode" not in _columns(path, "snowflake_scene_plans")
+    before = _columns(path, "snowflake_scene_plans")
+    assert "expected_reader_emotion" not in before and "story_time" not in before
 
-    # 升级前就存在的规划行：回填 full（原生 sqlite3 连接不开外键，不必先建作品行）
     with sqlite3.connect(path) as connection:
         _insert_minimal_row(
             connection,
             "snowflake_scene_plans",
             {
-                "scene_plan_id": "plan-0084",
-                "project_id": "prj-0084",
-                "row_uid": "row_0084",
-                "scene_id": "prj-0084_SC_row_0084",
-                "chapter_id": "prj-0084_CH01",
+                "scene_plan_id": "plan-0085",
+                "project_id": "prj-0085",
+                "row_uid": "row_0085",
+                "scene_id": "prj-0085_SC_row_0085",
+                "chapter_id": "prj-0085_CH01",
                 "scene_seq": 1,
-                "scene_type": "reactive",
+                "scene_type": "proactive",
                 "status": "draft",
             },
         )
         connection.commit()
 
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)  # 0085 之后 head 往前走了：这里只测本迁移
-    assert "rendering_mode" in _columns(path, "snowflake_scene_plans")
+    _migrate(path, "head", monkeypatch, tmp_path)
+    after = _columns(path, "snowflake_scene_plans")
+    assert {"expected_reader_emotion", "story_time"} <= after
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (CURRENT_HEAD,)
-        assert connection.execute("SELECT rendering_mode FROM snowflake_scene_plans WHERE scene_plan_id = 'plan-0084'").fetchone() == ("full",)
-        # 旧的唯一索引在 batch 重建后仍然在
+        # 历史行不回填：两列都空
+        assert connection.execute(
+            "SELECT expected_reader_emotion, story_time FROM snowflake_scene_plans WHERE scene_plan_id = 'plan-0085'"
+        ).fetchone() == (None, None)
         index_names = {row[1] for row in connection.execute('PRAGMA index_list("snowflake_scene_plans")')}
         assert {"ix_snowflake_scene_plans_row_uid", "ix_snowflake_scene_plans_scene_id"} <= index_names
 
     _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
-    assert "rendering_mode" not in _columns(path, "snowflake_scene_plans")
+    downgraded = _columns(path, "snowflake_scene_plans")
+    assert "expected_reader_emotion" not in downgraded and "story_time" not in downgraded
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (PREVIOUS_HEAD,)
-        assert connection.execute("SELECT scene_plan_id FROM snowflake_scene_plans").fetchone() == ("plan-0084",)
+        assert connection.execute("SELECT scene_plan_id FROM snowflake_scene_plans").fetchone() == ("plan-0085",)

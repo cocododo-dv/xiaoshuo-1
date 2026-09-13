@@ -126,6 +126,10 @@ def render_scene_structure_brief(scene: SceneCard, session: Session | None = Non
     if onstage_ids:
         onstage = list(dict.fromkeys(names.get(item) or item for item in onstage_ids))
         lines.append("Onstage characters: " + ", ".join(onstage))
+    # 阶段 J：原著场景表的时间戳——连续性的锚，起草与 QC 都要看。
+    story_time = _text(brief.get("story_time"))
+    if story_time:
+        lines.append(f"Story time (故事时间): {story_time}")
     # 阶段 B（B5）：挫折 / 胜利以主角衡量。POV 不是主角时明说——POV 得手就是主角的挫折。
     protagonist = _text(brief.get("protagonist_hint"))
     if protagonist:
@@ -148,6 +152,10 @@ def render_scene_structure_brief(scene: SceneCard, session: Session | None = Non
     cost = _text(brief.get("cost_requirement"))
     if cost:
         lines.append(f"Cost paid (代价): {cost}")
+    # 阶段 J：Dynamite Scene 分诊第 5 步——写下这一场要给读者的情绪；近终稿评审据此判「落地没有」。
+    reader_emotion = _text(brief.get("expected_reader_emotion"))
+    if reader_emotion:
+        lines.append(f"Reader should feel (读者应感到): {reader_emotion}")
     # 雪花物化把 must_reveal 设成挫折 / 决定本身；与三拍重复时不再赘述一遍。
     must_reveal = _text(brief.get("must_reveal"))
     if must_reveal and must_reveal not in primary_values:

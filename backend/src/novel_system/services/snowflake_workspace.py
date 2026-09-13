@@ -107,6 +107,9 @@ SCENE_PATCH_FIELDS = {
     "target_length_band",
     # 阶段 C：反应场的呈现方式（full / summary）。主动场写入时一律回到 full。
     "rendering_mode",
+    # 阶段 J：原著的几栏——读者应感到什么、故事时间（在场人物已在上面）。
+    "expected_reader_emotion",
+    "story_time",
 }
 
 
@@ -1432,6 +1435,8 @@ class SnowflakeWorkspaceService:
             "dilemma": plan.dilemma,
             "decision": plan.decision,
             "cost_requirement": plan.cost_requirement,
+            "expected_reader_emotion": plan.expected_reader_emotion or "",
+            "story_time": plan.story_time or "",
             "primary_form": plan.scene_type,
             "rendering_mode": rendering_mode,
             "timebox": target_length_band or "medium",
@@ -1472,7 +1477,10 @@ class SnowflakeWorkspaceService:
     # chapter_goal 汇总）——物化与 resync 两个写入方对这些键的写法天生不同，
     # 拿去整体 != 会让刚物化完的每一场都被报成待同步（纯假阳性）。
     # 场卡其余内容（scene_goal/beats/hook/location/POV/scene_type…）由顶层列对比兜底。
-    _BRIEF_CONTENT_KEYS = ("scene_crucible", "goal", "conflict", "setback", "reaction", "dilemma", "decision", "cost_requirement")
+    _BRIEF_CONTENT_KEYS = (
+        "scene_crucible", "goal", "conflict", "setback", "reaction", "dilemma", "decision", "cost_requirement",
+        "expected_reader_emotion", "story_time",
+    )
 
     @staticmethod
     def _writer_brief_comparable(value: Any) -> Any:
@@ -2873,6 +2881,8 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "hook": scene.hook or "",
         "target_length_band": scene.target_length_band or "",
         "rendering_mode": scene.rendering_mode or "full",
+        "expected_reader_emotion": scene.expected_reader_emotion or "",
+        "story_time": scene.story_time or "",
         "status": scene.status,
         "stale_reason": scene.stale_reason or "",
         "stale_accepted_at": scene.stale_accepted_at,

@@ -335,6 +335,36 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(hydrated.scaffold.plans.S03.rendering).toBe("full");
   });
 
+  it("阶段 J：在场人物 / 故事时间 / 读者应感到 与 01 的叙述人称往返保真", async () => {
+    const { mod } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, steps: [] } });
+    const saved = {
+      drafts: {}, checks: {}, states: {},
+      scaffolds: {
+        audience: { genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫", stance: "第三人称限知，过去时" },
+        scenes: { lines: [], list: [
+          { id: "S01", type: "proactive", pov: "c1", place: "码头", event: "取账本", crucible: "退不出的困局", fn: "起疑", spine: "" },
+        ] },
+        planning: { sel: "S01", plans: {
+          S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧", onstage: ["c2", "", "c3"], story_time: "第三天傍晚", reader_emotion: "替她捏一把汗" },
+        } },
+      },
+    };
+    expect(mod.canonFromFE("audience", saved).narrative_stance).toBe("第三人称限知，过去时");
+    expect(mod.feFromCanon("audience", { narrative_stance: "第一人称，现在时" }).scaffold.stance).toBe("第一人称，现在时");
+
+    const canon = mod.canonFromFE("planning", saved);
+    expect(canon.scenes[0].onstage_chars_json).toEqual(["c2", "c3"]);
+    expect(canon.scenes[0].story_time).toBe("第三天傍晚");
+    expect(canon.scenes[0].expected_reader_emotion).toBe("替她捏一把汗");
+
+    const hydrated = mod.feFromCanon("planning", { scenes: [
+      { row_uid: "S01", primary_form: "proactive", onstage_chars_json: ["c2"], story_time: "第四天清晨", expected_reader_emotion: "松一口气又不安" },
+      { row_uid: "S02", primary_form: "reactive" },
+    ] });
+    expect(hydrated.scaffold.plans.S01).toEqual(expect.objectContaining({ onstage: ["c2"], story_time: "第四天清晨", reader_emotion: "松一口气又不安" }));
+    expect(hydrated.scaffold.plans.S02).toEqual(expect.objectContaining({ onstage: [], story_time: "", reader_emotion: "" }));
+  });
+
   it("feFromCanon backstory：前缀行拆回六字段，无前缀散文整段进「视角故事」", async () => {
     const { mod } = await loadSync({});
     const withPrefix = mod.feFromCanon("backstory", { characters: [{

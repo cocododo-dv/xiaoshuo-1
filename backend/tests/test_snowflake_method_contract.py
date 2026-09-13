@@ -264,7 +264,7 @@ def test_guidance_and_prompts_drop_mechanical_alternation() -> None:
     assert "Alternate proactive and reactive deliberately" not in scene_list["task_prompt"]
     assert "Reactive scenes should be a minority" in scene_list["task_prompt"]
     scene_details = templates["snowflake_generate_scene_details"]
-    assert scene_details["version"] == "2026-09-13.v11"
+    assert scene_details["version"] == "2026-09-14.v12"
     assert "measured against the protagonist" in scene_details["task_prompt"]
     one_sentence = templates["snowflake_generate_one_sentence_summary"]
     assert one_sentence["version"] == "2026-09-13.v3"
@@ -607,7 +607,7 @@ def test_phase_d_prompt_versions_and_contracts() -> None:
     assert "视角故事" in scene_list["task_prompt"]
 
     review = templates["near_final_acceptance_review"]
-    assert review["version"] == "2026-09-13.v6"
+    assert review["version"] == "2026-09-14.v7"
     assert "Always fill scene_story_check" in review["task_prompt"]
     assert "must not change near_final_status or pass_flag" in review["task_prompt"]
     schema = review["structured_schema"]

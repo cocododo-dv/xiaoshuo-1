@@ -56,6 +56,8 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
             "delight_reason": "",
             "genre_promise": "",
             "expected_reader_emotion": "",
+            # 阶段 J：全书的叙述人称与时态（Dynamite Scene 第 4 章的两个决定），起草时有约束力。
+            "narrative_stance": "",
             "safety_rules": [
                 "只借鉴抽象风格、结构经验与节奏手法。",
                 "不得复制参考文本的人物、设定、桥段或标志性句式。",
@@ -70,6 +72,8 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                 {"key": "delight_reason", "kind": "textarea", "label": "读者会沉迷的原因"},
                 {"key": "genre_promise", "kind": "textarea", "label": "类型承诺"},
                 {"key": "expected_reader_emotion", "kind": "textarea", "label": "期待读者情绪"},
+                # 可选：留白即合法——没填就不算缺失，起草沿用风格参考或模型默认
+                {"key": "narrative_stance", "kind": "textarea", "label": "叙述人称与时态", "optional": True},
                 {"key": "safety_rules", "kind": "list", "label": "安全规则"},
             ],
         },
@@ -327,6 +331,10 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                         "exit_change": "",
                         "hook": "",
                         "beats_json": [],
+                        # 阶段 J：原著第 9 步「列出在场人物、描述设定」与场景表的时间戳；分诊第 5 步「写下读者要经历的情绪」。
+                        "onstage_chars_json": [],
+                        "story_time": "",
+                        "expected_reader_emotion": "",
                     },
                     "readonly_fields": ["scene_id", "chapter_id", "row_uid"],
                     "scene_modes": [
@@ -932,6 +940,9 @@ def _scene_detail_seed(scene: dict[str, Any], index: int) -> dict[str, Any]:
         "decision": "",
         "cost_requirement": "",
         "rendering_mode": "full",
+        "onstage_chars_json": list(scene.get("onstage_chars_json") or []),
+        "story_time": scene.get("story_time") or "",
+        "expected_reader_emotion": "",
         "triage_status": "",
         "triage_notes": "",
         "triage_missing_fields": [],
@@ -972,6 +983,8 @@ def _missing_fields_for_step(step_key: str, draft: dict[str, Any]) -> list[str]:
     missing = []
     for field in fields:
         key = str(field.get("key") or "")
+        if field.get("optional"):
+            continue  # 可选字段空着不算缺失（01 叙述人称、07 章表）
         if key and not _has_value(draft.get(key)):
             missing.append(key)
     return missing
@@ -1273,6 +1286,8 @@ _FIELD_DISPLAY_LABELS = {
     "delight_reason": "读者沉迷原因",
     "genre_promise": "类型承诺",
     "expected_reader_emotion": "期待读者情绪",
+    "narrative_stance": "叙述人称与时态",
+    "story_time": "故事时间",
     "summary": "概括",
     "sentences": "五句骨架",
     "three_act_check": "三幕校验",

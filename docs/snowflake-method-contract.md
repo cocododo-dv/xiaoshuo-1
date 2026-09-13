@@ -14,7 +14,7 @@
 
 | 步 | 原著要求 | 项目步骤（`step_key`）与字段 | 闸门 | 有意的差异 |
 |---|---|---|---|---|
-| 前置 | （原著无此步） | 01 读者定位 `book_brief`：类型、读者画像、核心快感、快感来源、期待读者情绪、反向定位 | 物化硬闸门 | 项目增设：把「为谁写」定成尺子，后面九步取舍都用它 |
+| 前置 | （原著无此步；Dynamite Scene 第 4 章：每场都要决定人称与时态） | 01 读者定位 `book_brief`：类型、读者画像、核心快感、快感来源、期待读者情绪、**叙述人称与时态**（`narrative_stance`）、反向定位 | 物化硬闸门 | 项目增设：把「为谁写」定成尺子，后面九步取舍都用它；人称与时态是全书一次的决定，经设计上下文的 `Narrative stance` 行约束每一场起草 |
 | 1 | 一句话概括，≤25 个英文词 | 02 一句话概括 `one_sentence_summary.summary` | 物化硬闸门 | 口径统一为约 40 个汉字（25 词 ≈ 40 字）；诊断按要素（主角、目标、阻力/转折）判，不按字数 |
 | 2 | 一段话：三次灾难 + 结局，五句 | 03 一段话概括 `one_paragraph_summary.sentences[5]` + `moral_premise` | 物化硬闸门；恰好五句（多则拒绝） | 项目增设「道德前提」字段（原著在第 2 步谈及，但不单列）；三幕由五句派生，不单独存 |
 | 3 | 角色摘要表：姓名、定位、目标、抱负、价值观（「没有什么比___更重要」）、冲突、顿悟、一句话故事线、一段话故事线 | 04 角色摘要表 `character_sheets.characters[]`：`role / goal / ambition / values[] / conflict / epiphany / one_sentence_summary / one_paragraph_summary` | 建议（缺项只提醒） | 价值观按原著句式一条一元素，2–3 条且互相有张力；两栏故事线在前端有独立栏位并往返（阶段 D） |
@@ -23,7 +23,7 @@
 | 6 | 长篇梗概：一页梗概的每段扩成一页 | 07 长篇大纲 `long_synopsis.paragraphs[5]`（五段展开）+ `chapters[]`（章表） | 五段恰好（多则拒绝）；章表是分章真相 | 项目增设章表（原著无章的概念）；分章在 `chapter-plan` 面板完成，场景归属只看章表 |
 | 7 | 角色圣经 | 08 角色全档案 `character_bibles.characters[]`：生理 / 性格 / 环境 / 心理四维 | 建议 | 与原著一致 |
 | 8 | 场景列表：一行一场，POV、一句话 | 09 场景列表 `scene_list.scenes[]`：`pov_character_id / summary / primary_form / location / crucible / chapter_role / spine` | 物化硬闸门 | 项目要求每场先定形态（主动/反应）与坩埚；`spine` 标记三次灾难，分章锚定用 |
-| 9 | 场景规划：每场的三拍 | 10 场景规划 `scene_details.scenes[]`：主动 `goal / conflict / setback`，反应 `reaction / dilemma / decision`，另加 `cost_requirement / exit_change / hook / rendering_mode` | 物化硬闸门：三拍缺失即 blocker，缺代价为 maybe | `cost_requirement`（代价）是项目增设的强化；`rendering_mode` 让反应场可「概述两段」 |
+| 9 | 场景规划：每场的三拍；列出在场人物、描述设定（场景表可带时间戳）；分诊第 5 步：写下这一场要给读者的情绪 | 10 场景规划 `scene_details.scenes[]`：主动 `goal / conflict / setback`，反应 `reaction / dilemma / decision`，另加 `cost_requirement / exit_change / hook / rendering_mode`，以及原著的 `onstage_chars_json`（在场人物）/ `story_time`（故事时间）/ `expected_reader_emotion`（读者应感到） | 物化硬闸门：三拍缺失即 blocker；缺代价只提醒 | `cost_requirement`（代价）是项目增设的强化；`rendering_mode` 让反应场可「概述两段」或「略过」；在场 / 时间 / 读者情绪进场景卡与结构简报，近终稿评审据「读者应感到」判落地 |
 | 10 | 写初稿 | 场景起草管线（`run/full`）、章节编排、成稿中心 | — | 起草由 bundle 的 `Scene Structure (Snowflake)` 段承接第 9、10 步（事实，永不压缩）；已确认的 02 / 03 / 04 / 06、章表与相邻两场经可压缩的 `Scene Design Context (Snowflake)` 段到达起草与蓝图（背景，硬 QC 不看；未确认的草稿不算事实）。原著第十步「读完为这场规划的一切再开写」以此兑现。物化不再用样板句冒充作者没写的坩埚 / 三拍 / 必须隐瞒 / 钩子 |
 
 ## 2. 场景形态
@@ -65,5 +65,6 @@
 | 2026-09-13 | E3-2 | 见 git 历史（E3 第二步提交） | 移除前端本地 revs / confirmRevs 失效图；需复核只来自后端 stale，漂移上游按 input_refs 提示；批准 / 复核回包整份工作台刷新健康；accept-stale 刷新消费的上游版本 |
 | 2026-09-13 | F | 见 git 历史（阶段 F 提交） | 已确认的设计（02 / 03 / 04 / 06、章表、相邻两场）经 `Scene Design Context (Snowflake)` 段到达起草与蓝图；物化不再写样板句（must_withhold / hook / 空三拍 / 摘要冒充必须包含） |
 | 2026-09-13 | G | 见 git 历史（阶段 G 提交） | 让回溯便宜：消费表补全且「不消费即不失效」、已复核可重亮、09 按场失效、草稿同步只打回改过的场、书级步骤的运行时失效降为提示、确认后又改 = 待重新确认（不再自动补批准） |
+| 2026-09-14 | J | 见 git 历史（阶段 J 提交） | 原著的几栏：第 10 步在场人物 / 故事时间 / 读者应感到（迁移 `20260914_0085`，物化进场景卡与简报，近终稿评审判落地）；01 叙述人称与时态经设计上下文约束起草 |
 | 2026-09-14 | I | 见 git 历史（阶段 I 提交） | 场是拍子序列：反应场第三档 `skip`（不建卡、回流进回收站、三拍进下一场的设计上下文、节奏按 0 计）；次要三拍（`Follow-up beats` + `Scene ends on`，节拍按发生顺序拼接，起草 / 风格直起 / 硬 QC / 蓝图知道它）；挫折可以是带代价的胜利 |
 | 2026-09-13 | H | 见 git 历史（阶段 H 提交） | 留白即合法与诊断收口：角色三步 / 场景规划提示词只要求主角与对手填满、留空不是缺陷；未确认草稿的留白不得补满；关键词与泛泛短语表、缺代价全部降为建议；角色全档案诊断读嵌套档；五段按位置保留空槽且不截断；规则层「重写」不再阻断物化；执行合同的代价永远只是提醒 |

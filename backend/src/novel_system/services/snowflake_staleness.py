@@ -81,6 +81,8 @@ _SCENE_ROW_CONTENT_KEYS: tuple[str, ...] = (
     "hook",
     "target_length_band",
     "rendering_mode",
+    "expected_reader_emotion",
+    "story_time",
 )
 
 

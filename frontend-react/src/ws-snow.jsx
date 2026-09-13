@@ -2148,6 +2148,7 @@ const S2_AUD_FIELDS = [
   { f: "pleasure", label: "核心快感", hint: "用「她读完会觉得 ___」一句话锁定", rows: 2, accent: true },
   { f: "source",   label: "快感来源", hint: "这种快感具体从哪来——叙述、主题、节奏？", rows: 2 },
   { f: "emotion",  label: "期待读者情绪", hint: "压力升级中，读者持续感到什么——揪心、压迫、向前的拉力？", rows: 2 },
+  { f: "stance",   label: "叙述人称与时态", hint: "全书用什么人称、什么时态、视角纪律——如「第三人称限知，过去时，每场固定一个视角人物」；起草时有约束力", rows: 1 },
   { f: "exclude",  label: "反向定位", hint: "「我不为谁写 / 不写什么」——砍掉犹豫", rows: 2, danger: true },
 ];
 function S2Audience({ scaffold, onScaffold }) {
@@ -2656,7 +2657,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const selIdx = list.findIndex(s => s.id === selId);
   // 类型跟随 09 的真相：主动/反应在场景列表里定，这里不再各说各话
   const proactive = scene ? scene.type !== "reactive" : true;
-  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", ...(plans[selId] || {}) };
+  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", onstage: [], story_time: "", reader_emotion: "", ...(plans[selId] || {}) };
   plan.mode = proactive ? "proactive" : "reactive";
   const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...plan, [f]: v } } }));
   const selScene = (id) => onScaffold(s => ({ ...s, sel: id }));
@@ -2774,6 +2775,24 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
         </div>
         <label className="sf-field is-short"><span className="sf-field-label">POV 角色</span>
           <S2PovPick value={plan.pov} roster={roster} onChange={(v) => setPlan("pov", v)} className="sf-field-input" placeholder={s2PovLabel(scene.pov, roster) || "POV"} /></label>
+        {/* 阶段 J：原著第 9 步「列出在场人物」——从 04 名册点选，POV 之外的人 */}
+        <span className="sf-field is-short sf-plan-onstage" data-testid="snow-plan-onstage" title="这一场里还有谁在场（POV 之外）——写手与连续性检查都要用">
+          <span className="sf-field-label">在场</span>
+          <span className="sf-plan-onstage-chips">
+            {(roster || []).filter(r => r.id !== plan.pov).map(r => {
+              const on = (plan.onstage || []).includes(r.id);
+              return (
+                <button key={r.id} type="button" className={`sf-plan-render-opt ${on ? "is-on" : ""}`}
+                  onClick={() => setPlan("onstage", on ? (plan.onstage || []).filter(x => x !== r.id) : [...(plan.onstage || []), r.id])}>{r.name}</button>
+              );
+            })}
+            {!(roster || []).length && <span className="text-muted text-sm">（04 名册为空）</span>}
+          </span>
+        </span>
+        <label className="sf-field is-short"><span className="sf-field-label">故事时间</span>
+          <input className="sf-field-input" data-testid="snow-plan-story-time" value={plan.story_time || ""} onChange={(e) => setPlan("story_time", e.target.value)} placeholder="如：第三天傍晚" title="原著场景表的时间戳——连续性的锚" /></label>
+        <label className="sf-field"><span className="sf-field-label">读者应感到</span>
+          <input className="sf-field-input" data-testid="snow-plan-reader-emotion" value={plan.reader_emotion || ""} onChange={(e) => setPlan("reader_emotion", e.target.value)} placeholder="这一场读完，读者该被留在什么情绪里" title="Dynamite Scene 分诊第 5 步：写下这一场要给读者的情绪；近终稿评审据此判落地没有" /></label>
         <span className={`sf-plan-type ${proactive ? "is-pro" : "is-rea"}`} title="类型跟随 09 场景列表——要改去 09 切换">
           {proactive ? "主动 · GCS" : "反应 · RDD"}
           <button className="sf-plan-type-go" onClick={() => go && go("scenes")} title="在 09 修改类型">09</button>

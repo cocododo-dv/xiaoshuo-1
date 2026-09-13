@@ -292,6 +292,10 @@ class SnowflakeScenePlan(Base):
     # Ingermanson：反应场可以整场写、缩成两段概述、或干脆略过；第一版只做前两档，主动场恒为 full。
     # 迁移 20260913_0084 加列，server_default="full"。
     rendering_mode: Mapped[str] = mapped_column(String, default="full")
+    # 2026-09-14 阶段 J：原著场景表的两栏——这一场想让读者经历什么（分诊第 5 步）、故事时间戳。
+    # 迁移 20260914_0085 加列，可空。
+    expected_reader_emotion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    story_time: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="draft")
     source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
     stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

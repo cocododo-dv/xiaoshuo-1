@@ -832,6 +832,8 @@ def _scene_writer_brief(scene_type: str, detail: dict[str, Any]) -> dict[str, An
         "function_tag": detail.get("function_tag"),
         "involved_foreshadowing": detail.get("involved_foreshadowing") or detail.get("involved_foreshadowing_json") or [],
         "cost_requirement": detail.get("cost_requirement"),
+        # 阶段 J：原著场景表的时间戳——连续性锚，也进结构简报。
+        "story_time": detail.get("story_time") or "",
         "causal_prerequisite_scene_id": detail.get("causal_prerequisite_scene_id"),
         "downstream_obligations": detail.get("downstream_obligations") or detail.get("downstream_obligations_json") or [],
     }

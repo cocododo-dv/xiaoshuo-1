@@ -45,6 +45,7 @@ SCENE_DESIGN_SECTION_LABEL = "Scene Design Context (Snowflake)"
 # 只有作者确认过的版本才是设计事实；stale 是「确认过、上游又改了」，仍然优于没有。
 CANON_STATUSES: frozenset[str] = frozenset({"approved", "stale"})
 _CANON_STEP_KEYS: tuple[str, ...] = (
+    "book_brief",
     "one_sentence_summary",
     "one_paragraph_summary",
     "character_sheets",
@@ -98,6 +99,11 @@ def build_scene_design_context(scene: SceneCard, session: Session | None) -> Sce
     if logline:
         _use("one_sentence_summary")
         lines.append(f"Book logline: {logline}")
+    # 阶段 J：全书的叙述人称与时态（Dynamite Scene 第 4 章：每一场都要决定视角与时态）——这一行有约束力。
+    stance = _text((canon.get("book_brief").draft_json if canon.get("book_brief") else {}).get("narrative_stance"))
+    if stance:
+        _use("book_brief")
+        lines.append(f"Narrative stance (binding: person and tense): {stance}")
 
     paragraph = canon.get("one_paragraph_summary").draft_json if canon.get("one_paragraph_summary") else {}
     sentences = [_text(item) for item in _as_list(paragraph.get("sentences")) if _text(item)]

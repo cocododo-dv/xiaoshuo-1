@@ -14,7 +14,7 @@ from novel_system.db.models import Base
 
 
 PREVIOUS_HEAD = "20260805_0081"
-CURRENT_HEAD = "20260913_0084"
+CURRENT_HEAD = "20260914_0085"
 
 
 def _migration_module():

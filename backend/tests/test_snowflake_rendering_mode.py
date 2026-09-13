@@ -263,8 +263,8 @@ def test_prompts_know_the_summary_rendering_mode() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-13.v11"
+    assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-14.v12"
     assert "rendering_mode (reactive scenes only" in templates["snowflake_generate_scene_details"]["task_prompt"]
-    for name, version in (("neutral_draft", "2026-09-13.v10"), ("style_first_draft", "2026-09-13.v5"), ("scene_blueprint", "2026-09-13.v8")):
+    for name, version in (("neutral_draft", "2026-09-14.v11"), ("style_first_draft", "2026-09-14.v6"), ("scene_blueprint", "2026-09-13.v8")):
         assert templates[name]["version"] == version, name
         assert "Rendering mode: summary" in templates[name]["task_prompt"], name

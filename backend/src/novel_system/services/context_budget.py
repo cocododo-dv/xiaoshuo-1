@@ -506,6 +506,7 @@ def _compress_continuity_digest(text: str) -> str:
 # 本模块，反向引用会成环。
 DESIGN_CONTEXT_COMPRESS_KEEP_LABELS: tuple[str, ...] = (
     "Book logline:",
+    "Narrative stance",
     "Moral premise:",
     "Chapter:",
     "Scene position:",
