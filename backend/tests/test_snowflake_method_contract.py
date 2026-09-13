@@ -596,8 +596,8 @@ def test_phase_d_prompt_versions_and_contracts() -> None:
     assert "exactly these six prefixed lines" in synopses["task_prompt"] and "视角故事：" in synopses["task_prompt"]
 
     outline = templates["snowflake_generate_long_synopsis"]
-    assert outline["version"] == "2026-09-13.v5"
-    assert "exactly 5 paragraphs" in outline["task_prompt"] and "300-600 Chinese characters" in outline["task_prompt"]
+    assert outline["version"] == "2026-09-14.v6"
+    assert "exactly 5 paragraphs" in outline["task_prompt"] and "600-1000 Chinese characters" in outline["task_prompt"]
     assert "never write chapter lists or headings into `paragraphs`" in outline["task_prompt"]
     assert "`chapters` is the source of truth for chapter membership" in outline["task_prompt"]
 

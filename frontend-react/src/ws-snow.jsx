@@ -2309,7 +2309,7 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
       <div className="sf-outline-expand" data-testid="snow-outline-expansions">
         <div className="sf-syn-prog">
           <span className="sf-syn-prog-c"><b>{expFilled}</b> / 5 段已扩成一页</span>
-          <span className="sf-syn-prog-note">每段 300–600 字：具体场景设定、行动与反应、关键对话要点、情感节点、支线穿插</span>
+          <span className="sf-syn-prog-note">每段约一页（600–1000 字，长篇取上限）：具体场景设定、行动与反应、关键对话要点、情感节点、支线穿插</span>
           <div className="sf-syn-track">{S2_SYN_BEATS.map(b => <span key={b.f} className={`sf-syn-tick tone-${b.tone} ${(expansions[b.f] || "").trim() ? "is-on" : ""}`} />)}</div>
         </div>
         {S2_SYN_BEATS.map((b, i) => {

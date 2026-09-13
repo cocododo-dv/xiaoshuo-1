@@ -355,6 +355,31 @@ def preview_chapter_plan(
     )
 
 
+@router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/propose")
+def propose_chapter_plan(
+    project_id: str,
+    payload: BoundedJsonObject | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """阶段 K：按场景列表提议并落一版章表（Ingermanson：章是列完场之后的包装决定）。
+
+    载荷：``target_chapter_count``（缺省用作品设置）、``scenes_per_chapter``（缺省 3）、``replace``
+    （已有章表时必须为 true）。回包是 keep_current 策略的分章预览，外加 created_chapter_count。
+    """
+    body = payload or {}
+    return idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/propose",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeChapteringService(session).propose_from_scenes(
+            project_id, body, actor_ref=request.state.operator_ref
+        ),
+    )
+
+
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/suggest")
 def suggest_chapter_plan(
     project_id: str,

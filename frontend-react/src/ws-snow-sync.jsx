@@ -979,6 +979,15 @@ const SnowSync = {
      顶部「整理为章节结构」据此决定是直接开面板还是先提示补 07 章表。 */
   chapterPlanStatus(workId) { return snowChapterStatus[workId || activeWork()] || { chapter_count: 0, unassigned_scene_count: 0, chaptered: false }; },
   /* 分章预览：只读推演，不落库。strategy = spine_anchor（默认，脊柱锚点）/ even / keep_current。 */
+  /* 阶段 K：按场景列表提议章表并落库（Ingermanson：章是列完场之后的包装决定）。已有章表时要带 replace。 */
+  async chapterPropose(options, workId) {
+    const id = workId || activeWork();
+    if (!id) throw new Error("作品尚未就绪");
+    const body = options && typeof options === "object" ? options : {};
+    const result = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/propose`, body);
+    try { await snowHydrate(id, { force: true }); } catch (e) {}
+    return result;
+  },
   async chapterPreview(strategy, workId) {
     const id = workId || activeWork();
     await flushSnowPush(id);

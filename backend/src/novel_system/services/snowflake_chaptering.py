@@ -24,6 +24,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from novel_system.db.models import (
     ChapterGoal,
@@ -31,6 +32,7 @@ from novel_system.db.models import (
     SnowflakeChapterPlan,
     SnowflakeScenePlan,
     SnowflakeStepRun,
+    StoryProject,
     utcnow,
 )
 from novel_system.services.errors import DomainError
@@ -248,6 +250,139 @@ class SnowflakeChapteringService:
         if run is None:
             return []
         return parse_outline_chapters(run.draft_json or {})
+
+    # -------------------------------------------------- 阶段 K：章在场景之后——按场景列表提议章表
+
+    def propose_from_scenes(
+        self,
+        project_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        """按已经列好的场景提议一份章表并落库（Ingermanson：章是列完场之后的包装决定）。
+
+        - 三个灾难是幕的铰链：带 灾一 / 灾二 / 灾三 的场必须是它所在章的最后一场；
+        - 章数 = ``target_chapter_count``（载荷 / 作品设置），否则按每章 ``scenes_per_chapter``（默认 3）场推；
+        - 每幕至少一章；章标题给占位「第 N 章」，摘要取本章第一场的一句话，作者随后改；
+        - 已有章表时必须显式 ``replace=true`` 才覆盖（旧章软删，归属重排）；
+        - 章表同时镜像进 07 草稿的 ``chapters``，前端表格能看到。
+        """
+        body = payload or {}
+        scenes = self.scene_plans(project_id)
+        if not scenes:
+            raise DomainError(
+                "SNOWFLAKE_SCENES_REQUIRED",
+                "09 场景列表还没有场景，无法按场景提议章表。",
+                status_code=409,
+                details={"step_key": "scene_list"},
+            )
+        existing = self.chapter_plans(project_id)
+        if existing and not body.get("replace"):
+            raise DomainError(
+                "SNOWFLAKE_CHAPTER_PLAN_EXISTS",
+                "已经有章表了；要按场景重新提议，请带 replace=true（旧章会被替换，场景归属重排）。",
+                status_code=409,
+                details={"chapter_count": len(existing)},
+            )
+        project = self.session.get(StoryProject, project_id)
+        target = _as_int(body.get("target_chapter_count")) or int(getattr(project, "target_chapter_count", 0) or 0)
+        per_chapter = max(1, _as_int(body.get("scenes_per_chapter")) or 3)
+        chunks = propose_chapter_chunks(scenes, target_chapter_count=target, scenes_per_chapter=per_chapter)
+
+        removed_at = utcnow()
+        for row in existing:
+            row.removed_at = removed_at
+            row.removed_by = actor_ref or "operator"
+        for plan in scenes:
+            plan.chapter_plan_id = None
+        self.session.flush()
+
+        created: list[SnowflakeChapterPlan] = []
+        for index, chunk in enumerate(chunks, start=1):
+            first = chunk["scenes"][0]
+            row = self._create_chapter_plan(
+                project_id,
+                {
+                    "row_uid": "",
+                    "chapter_seq": index,
+                    "act": chunk["act"],
+                    "title": f"第 {index} 章",
+                    "summary": str(first.summary or first.title or "").strip(),
+                    "spine": chunk["spine"],
+                    "chapter_goal": "",
+                },
+            )
+            created.append(row)
+        self.session.flush()
+        assignments = [
+            {"scene_plan_id": scene.scene_plan_id, "chapter_row_uid": row.row_uid}
+            for row, chunk in zip(created, chunks)
+            for scene in chunk["scenes"]
+        ]
+        self.save(
+            project_id,
+            {
+                "chapters": [
+                    {"row_uid": row.row_uid, "title": row.title, "act": row.act, "spine": row.spine, "chapter_goal": row.chapter_goal, "summary": row.summary}
+                    for row in created
+                ],
+                "assignments": assignments,
+            },
+            actor_ref=actor_ref,
+        )
+        self._mirror_chapters_into_long_synopsis(project_id, created)
+        self.session.add(
+            OperationLog(
+                event_type="snowflake_chapter_plan_proposed",
+                object_type="story_project",
+                object_ref=project_id,
+                payload_json={
+                    "project_id": project_id,
+                    "chapter_count": len(created),
+                    "scene_count": len(scenes),
+                    "replaced_chapter_count": len(existing),
+                    "target_chapter_count": target,
+                    "scenes_per_chapter": per_chapter,
+                    "actor_ref": actor_ref or "operator",
+                    "proposed_at": removed_at,
+                },
+            )
+        )
+        self.session.flush()
+        preview = self.preview(project_id, {"strategy": "keep_current"})
+        preview["created_chapter_count"] = len(created)
+        preview["replaced_chapter_count"] = len(existing)
+        return preview
+
+    def _mirror_chapters_into_long_synopsis(self, project_id: str, chapters: list[SnowflakeChapterPlan]) -> None:
+        """把提议出来的章表写回 07 最新草稿的 ``chapters``（带 row_uid），前端 07 表格与章表行才是同一份。"""
+        run = self.session.execute(
+            select(SnowflakeStepRun)
+            .where(
+                SnowflakeStepRun.project_id == project_id,
+                SnowflakeStepRun.step_key == "long_synopsis",
+                SnowflakeStepRun.status != "superseded",
+            )
+            .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
+        ).scalars().first()
+        if run is None:
+            return
+        draft = dict(run.draft_json or {})
+        draft["chapters"] = [
+            {
+                "row_uid": row.row_uid,
+                "chapter_seq": row.chapter_seq,
+                "act": row.act,
+                "title": row.title or "",
+                "summary": row.summary or "",
+                "spine": row.spine or "",
+                "chapter_goal": row.chapter_goal or "",
+            }
+            for row in chapters
+        ]
+        run.draft_json = draft
+        flag_modified(run, "draft_json")
 
     # -------------------------------------------------------------- 预览
 
@@ -940,6 +1075,104 @@ def parse_outline_chapters(draft: dict[str, Any] | None) -> list[dict[str, Any]]
                 }
             )
     return chapters
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def propose_chapter_chunks(
+    scenes: list[SnowflakeScenePlan],
+    *,
+    target_chapter_count: int = 0,
+    scenes_per_chapter: int = 3,
+) -> list[dict[str, Any]]:
+    """把有序的场景切成章（纯函数）。三个灾难场是幕的铰链，各自收束所在的章；
+    章数按目标章数（或每章场数）在各幕之间按场数比例分配，每幕至少一章。"""
+    ordered = list(scenes)
+    if not ordered:
+        return []
+    marks = {mark: next((i for i, scene in enumerate(ordered) if scene_spine(scene) == mark), -1) for mark in SPINE_MARKS}
+    # 幕的边界：灾一收束第一幕，灾三收束第二幕；灾二是第二幕内部的铰链（也收束它所在的章）
+    boundaries: list[int] = []
+    for mark in ("灾一", "灾三"):
+        index = marks.get(mark, -1)
+        if index >= 0 and (not boundaries or index > boundaries[-1]):
+            boundaries.append(index)
+    acts: list[tuple[int, list[SnowflakeScenePlan]]] = []
+    start = 0
+    for act_number, boundary in enumerate(boundaries, start=1):
+        acts.append((act_number, ordered[start : boundary + 1]))
+        start = boundary + 1
+    if start < len(ordered) or not acts:
+        acts.append((len(acts) + 1, ordered[start:]))
+    acts = [(number, members) for number, members in acts if members]
+
+    total = len(ordered)
+    wanted = int(target_chapter_count or 0) or max(1, math.ceil(total / max(1, scenes_per_chapter)))
+    # 铰链优先于章数：每幕至少一章；灾二在第二幕中间时，它后面的场还要再起一章，灾二才能收束自己的章。
+    hinge = marks.get("灾二", -1)
+    min_required = len(acts)
+    if hinge >= 0:
+        act_of_hinge = next((members for _number, members in acts if ordered[hinge] in members), None)
+        if act_of_hinge is not None and act_of_hinge[-1] is not ordered[hinge]:
+            min_required += 1
+    wanted = max(min_required, min(wanted, total))
+    # 按场数比例分章，保证每幕至少一章、每章至少一场
+    quotas = [max(1, round(wanted * len(members) / total)) for _number, members in acts]
+    while sum(quotas) > wanted:
+        biggest = max(range(len(quotas)), key=lambda i: (quotas[i], -i))
+        if quotas[biggest] <= 1:
+            break
+        quotas[biggest] -= 1
+    while sum(quotas) < wanted:
+        biggest = max(range(len(quotas)), key=lambda i: (len(acts[i][1]) / quotas[i], -i))
+        if quotas[biggest] >= len(acts[biggest][1]):
+            break
+        quotas[biggest] += 1
+
+    chunks: list[dict[str, Any]] = []
+    for (act_number, members), quota in zip(acts, quotas):
+        pieces = _split_act(members, quota, hinge=marks.get("灾二", -1), ordered=ordered)
+        for piece in pieces:
+            spine = next((scene_spine(scene) for scene in piece if scene_spine(scene)), "")
+            chunks.append({"act": min(3, act_number), "spine": spine, "scenes": piece})
+    return chunks
+
+
+def _split_act(
+    members: list[SnowflakeScenePlan],
+    quota: int,
+    *,
+    hinge: int,
+    ordered: list[SnowflakeScenePlan],
+) -> list[list[SnowflakeScenePlan]]:
+    """把一幕的场均匀切成 quota 章；灾二（若在本幕）必须是它所在章的最后一场。"""
+    quota = max(1, min(quota, len(members)))
+    hinge_scene = ordered[hinge] if 0 <= hinge < len(ordered) else None
+    if hinge_scene is not None and hinge_scene in members and quota >= 2:
+        cut = members.index(hinge_scene) + 1
+        left, right = members[:cut], members[cut:]
+        if right:
+            left_quota = max(1, min(len(left), round(quota * len(left) / len(members))))
+            right_quota = max(1, min(len(right), quota - left_quota))
+            return _even_pieces(left, left_quota) + _even_pieces(right, right_quota)
+    return _even_pieces(members, quota)
+
+
+def _even_pieces(members: list[SnowflakeScenePlan], quota: int) -> list[list[SnowflakeScenePlan]]:
+    quota = max(1, min(quota, len(members)))
+    pieces: list[list[SnowflakeScenePlan]] = []
+    for index in range(quota):
+        start = math.floor(index * len(members) / quota)
+        end = math.floor((index + 1) * len(members) / quota)
+        piece = members[start:end]
+        if piece:
+            pieces.append(piece)
+    return pieces
 
 
 def _assign(

@@ -181,7 +181,7 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
         "label": "长篇大纲",
         "english_label": "Long Synopsis",
         "phase": "雪花第6步",
-        "description": "把一页梗概的每一段再扩成约一页（五段展开，第 6 步的分形），再落成三幕章节表。这是最接近实际写作的规划阶段。",
+        "description": "把一页梗概的每一段再扩成约一页（五段展开，第 6 步的分形）。章节表可以留空——章是列完场之后的包装决定，整理章节结构时按场景列表提议。",
         # 阶段 D：paragraphs 回到书里的第 6 步——五段各扩自一页梗概的一段（每段约一页）。
         # 章表仍是分章真相（物化分章读的是 chapters）；paragraphs 不再是章行的文本镜像。
         # 历史草稿里「NN 章名：一句话（灾一）」格式的段落只在没有 chapters 时被回退解析。
@@ -194,6 +194,8 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                     "key": "chapters",
                     "kind": "chapters",
                     "label": "章节表",
+                    # 阶段 K：章是列完场之后的包装决定——07 可以不出章表，整理章节结构时按场景列表提议。
+                    "optional": True,
                     "template": {
                         "row_uid": "",
                         "chapter_seq": 0,

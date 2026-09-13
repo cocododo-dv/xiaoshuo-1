@@ -140,12 +140,14 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep }) {
   const [materializationGate, setMaterializationGate] = React.useState(null);
   const previewRequestRef = React.useRef(null);
 
+  const [noChapters, setNoChapters] = React.useState(false);
   const load = React.useCallback((strategy) => {
     const inflight = previewRequestRef.current;
     if (inflight && inflight.strategy === strategy) return inflight.promise;
     const promise = (async () => {
       setBusy(true);
       setError("");
+      setNoChapters(false);
       try {
         if (!window.SnowSync || typeof window.SnowSync.chapterPreview !== "function") {
           throw new Error("雪花同步模块尚未就绪，请刷新页面后重试。");
@@ -154,6 +156,8 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep }) {
         setDraft(shapeDraft(preview));
         setMaterializationGate((preview && preview.materialization_gate) || null);
       } catch (e) {
+        // 阶段 K：07 没出章表不是错——章是列完场之后的包装决定，这里直接按场景列表提议
+        setNoChapters(!!(e && e.code === "SNOWFLAKE_CHAPTER_PLAN_EMPTY"));
         setError((e && e.message) || "无法生成分章预览，请稍后重试。");
         setDraft(null);
         setMaterializationGate(null);
@@ -169,6 +173,27 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep }) {
     });
     return promise;
   }, []);
+
+  /* 阶段 K：按场景列表提议章表（三个灾难收束各自的章，章数按作品设置或每章约三场）。
+     已有章表时是「重排」，要作者确认——旧章会被替换、归属重排。 */
+  const [proposing, setProposing] = React.useState(false);
+  const propose = async (replace) => {
+    if (proposing || saving) return;
+    if (replace && !window.confirm("按场景列表重新提议章表？现有章会被替换，场景归属重排（07 的章表也随之更新）。")) return;
+    setProposing(true);
+    setError("");
+    try {
+      if (!window.SnowSync || typeof window.SnowSync.chapterPropose !== "function") {
+        throw new Error("雪花同步模块尚未就绪，请刷新页面后重试。");
+      }
+      await window.SnowSync.chapterPropose(replace ? { replace: true } : {});
+      await load("keep_current");
+    } catch (e) {
+      setError((e && e.message) || "按场景提议章表失败，请稍后重试。");
+    } finally {
+      setProposing(false);
+    }
+  };
 
   /* 处置孤儿场（作者从 09 删掉、但目录里已有场景卡的那些场）。处置完必须重拉预览：
      孤儿警告是后端算的，本地删掉那一条会让界面和真相分家。 */
@@ -301,6 +326,11 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep }) {
             title="让 AI 依据脊柱锚点与上下游材料给一份分章建议；采纳与否由你决定"
             onClick={suggest} data-testid="chapter-plan-suggest">
             <I.Wand size={13} className={suggesting ? "sf-spin" : ""} /> {suggesting ? "推演中…" : "AI 建议"}
+          </button>
+          <button className="btn btn-quiet btn-sm" disabled={busy || saving || proposing}
+            title="章是列完场之后的包装决定：按 09 的场景列表重新提议章表——三个灾难各自收束一章，章数按作品设置或每章约三场"
+            onClick={() => propose(!noChapters)} data-testid="chapter-plan-propose">
+            <I.Layout size={13} className={proposing ? "sf-spin" : ""} /> {proposing ? "提议中…" : (noChapters ? "按场景生成章表" : "按场景重排章表")}
           </button>
           <span style={{ flex: 1 }} />
           {draft && <span className="text-muted text-sm">{chapterTotal} 章 · {sceneTotal} 场</span>}

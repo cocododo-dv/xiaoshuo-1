@@ -230,6 +230,31 @@ describe("分章面板 · 物化闸门衔接", () => {
     expect(host.querySelector('[data-testid="chapter-plan-confirm"]')).toBeTruthy();
   });
 
+  it("阶段 K：07 没出章表时，面板提供「按场景生成章表」，提议后重新拉预览", async () => {
+    let previewCalls = 0;
+    window.SnowSync = {
+      chapterPreview: vi.fn(async () => {
+        previewCalls += 1;
+        if (previewCalls === 1) {
+          throw Object.assign(new Error("07 长篇大纲还没有可用章节，先去把章列出来再分章。"), { code: "SNOWFLAKE_CHAPTER_PLAN_EMPTY", status: 409 });
+        }
+        return panelPreview({ status: "ready", blockers: [], warnings: [], items: [] });
+      }),
+      chapterPropose: vi.fn(async () => ({ created_chapter_count: 1 })),
+    };
+    const host = await renderPanel();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    const button = host.querySelector('[data-testid="chapter-plan-propose"]');
+    expect(button).toBeTruthy();
+    expect(button.textContent).toContain("按场景生成章表");
+    await act(async () => { button.click(); await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(window.SnowSync.chapterPropose).toHaveBeenCalledWith({});
+    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(2);
+    expect(host.querySelector('[data-testid="chapter-plan-confirm"]')).toBeTruthy();
+    // 有章表之后按钮变成「重排」，需要确认
+    expect(host.querySelector('[data-testid="chapter-plan-propose"]').textContent).toContain("按场景重排章表");
+  });
+
   it("预览返回必修阻断时禁用确认，并提供回到具体雪花步骤的动作", async () => {
     const onGoToStep = vi.fn();
     window.SnowSync = {
