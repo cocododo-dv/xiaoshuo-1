@@ -107,6 +107,10 @@ class Settings:
     # ``Scene Structure (Snowflake)`` 事实 section 进入起草 bundle、蓝图与近终稿快照。
     # 默认开；``NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF=false`` 只作回滚开关。
     scene_structure_brief_enabled: bool = True
+    # 2026-09-13 阶段 F：已确认的雪花设计（一句话 / 五句脊柱 / 道德前提 / 章位置 / POV 角色摘要 /
+    # 视角故事 / 相邻两场）作为可压缩的 ``Scene Design Context (Snowflake)`` 背景 section 进入
+    # 起草 bundle 与蓝图快照。默认开；``NOVEL_SYSTEM_SCENE_DESIGN_CONTEXT=false`` 只作回滚开关。
+    scene_design_context_enabled: bool = True
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -201,6 +205,7 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
     llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
     scene_structure_brief_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
+    scene_design_context_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_DESIGN_CONTEXT", True)
     accounting_runtime = load_llm_accounting_runtime()
     llm_daily_token_limit = accounting_runtime.daily_token_limit
     llm_monthly_token_limit = accounting_runtime.monthly_token_limit
@@ -264,6 +269,7 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_auto_critique_enabled=llm_auto_critique_enabled,
         llm_event_extraction_enabled=llm_event_extraction_enabled,
         scene_structure_brief_enabled=scene_structure_brief_enabled,
+        scene_design_context_enabled=scene_design_context_enabled,
         llm_daily_token_limit=llm_daily_token_limit,
         llm_monthly_token_limit=llm_monthly_token_limit,
         llm_project_daily_token_limit=llm_project_daily_token_limit,

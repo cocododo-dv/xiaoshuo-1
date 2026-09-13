@@ -4,7 +4,9 @@ templates:
     # 2026-09-13 阶段 A（雪花评估）v7：bundle 里出现 Scene Structure (Snowflake) 段时，按作者写下的
     # 场景形态起草——主动场景目标→冲突→挫折，反应场景反应→两难→决定；这是作者的设计，高于任何对节拍的另读。
     # 阶段 C v8：Rendering mode: summary 的反应场按概述两段写（数值篇幅带 200-500），不戏剧化成整场。
-    version: "2026-09-13.v8"
+    # 阶段 F v9：bundle 里出现 Scene Design Context (Snowflake) 段时，它是已确认的书设计（一句话、五句脊柱、
+    # 道德前提、章位置、POV 角色摘要、视角故事、相邻两场）——用来定动机、定位置、接上一场，不添加事件、不高于结构简报。
+    version: "2026-09-13.v9"
     # A deterministic repair includes the rejected draft plus the same frozen
     # scene facts, so the drafting budget must hold draft + bundle twice over.
     # 24000 is the measured scene-family value (see the block above); the old
@@ -23,6 +25,7 @@ templates:
       Cover every must-include constraint explicitly and satisfy the full target length band. If more development is needed, expand action-reaction beats, blocking, concrete consequences, and information release without inventing a new event.
       Treat Scene Literary Blueprint v2 as a readability proposal, not background summary: put visible_desire on the page, force forced_choice, make price_paid concrete, release information_release through action, and end on ending_action.
       If a Scene Structure (Snowflake) section is present, it is the author's own design for this scene and it outranks any competing reading of the beats. Proactive scene: state the POV character's Goal within the first paragraph, spend the body on repeated attempts that meet escalating Conflict, and end on the designed Setback — a worse position than the opening, or a victory that costs exactly what the section says it costs — never on a clean win the section did not plan. Reactive scene: open on the Reaction felt in the body before it is analysed, work through the Dilemma by rejecting the bad options one by one, and end on the Decision as a firm commitment that becomes the next scene's goal. Keep the stated POV character throughout, put the Cost paid on the page, and never release what Must withhold names. If that section states Rendering mode: summary, do not dramatise the beat: tell it as two or three paragraphs of narrative summary inside the Scene Card target length band — the Reaction felt, the options weighed and rejected, the Decision committed — with no dialogue expansion and no scene-length blocking.
+      If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background: the logline, the five-sentence spine and moral premise, this chapter's act and disaster mark, the POV character's sheet (goal, ambition, values, conflict, epiphany, storyline), the POV character's own view of the story so far, and what the neighbouring scenes end and open on. Use it to motivate the POV character's choices, keep the scene in its place in the arc, and pick up from the previous scene's ending; it never adds an event to this scene, never overrides the Scene Structure (Snowflake) section or the Scene Card, and is not text to restate in the prose.
       If Longform Structure Guidance is present, treat it as editorial pressure for arc, promise, payoff, and information release; do not let it override hard facts in the chapter goal or scene card.
       If Character Pressure Blueprint is present, make the character's hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask visible through action or omission.
       If Chapter Story Architecture is present, obey its promise, escalation path, reveal plan, payoff target, character shift, and ending question.
@@ -50,7 +53,8 @@ templates:
     # 2026-09-13 阶段 A v2：Scene Structure (Snowflake) 段定「发生什么」（三拍、POV、代价、必须隐瞒），
     # 参考作者定「怎么讲」；结尾不得改成设计之外的干净胜利，不得略过决定。
     # 阶段 C v3：Rendering mode: summary 的反应场以参考作者的概述手法写，不戏剧化成整场。
-    version: "2026-09-13.v3"
+    # 阶段 F v4：Scene Design Context (Snowflake) 段是已确认的书设计背景（动机、位置、上一场的结尾），不添加事件、不高于结构简报。
+    version: "2026-09-13.v4"
     input_token_budget: 64000
     system_prompt: |
       You are writing a novel scene in the hand of a specific reference author, directly from the bundle snapshot. A [STYLE_REFERENCE] block may be prepended to this system prompt; it is the only style authority.
@@ -70,6 +74,7 @@ templates:
       Cover every must-include constraint explicitly; never include forbidden content; keep names, chronology, required objects, POV, and causal steps exactly as the bundle states them. Do not invent a new plot event and do not change what the ending accomplishes.
       The Scene Literary Blueprint v2 fields (visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull) describe what must happen. How each of them reaches the page — through action, dialogue, narratorial summary, irony, reflection, or silence — is decided by the reference author's manner. Where a blueprint field prescribes a manner (an "ending action", a "fresh image", "release through action rather than narration", an "anti-summary rule") that this author would not use, the author's manner wins and the fact of the field stays.
       If a Scene Structure (Snowflake) section is present, it fixes what happens: the Goal, Conflict and Setback of a proactive scene, or the Reaction, Dilemma and Decision of a reactive scene, the POV character, the Cost paid, and what Must withhold names. The reference author decides how each reaches the page — a goal may be stated or implied, a dilemma argued in dialogue or worked out in silence, a setback landed in one line or over a page — but the scene may not end on a clean win where the section designed a Setback, may not skip the Decision, and may not release what Must withhold names. When that section states Rendering mode: summary, the beat is told as narrative summary inside the Scene Card target length band, in this author's own manner of summarising — no dramatised scene, no dialogue expansion.
+      If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background — the logline, the five-sentence spine and moral premise, this chapter's act and disaster mark, the POV character's sheet and own view of the story so far, and what the neighbouring scenes end and open on. Let it inform why the POV character acts as they do and how this scene follows the previous one; it never adds an event, never overrides the Scene Structure (Snowflake) section or the Scene Card, and is never restated in the prose.
       If a Style Reference — Narrative Mechanisms section is present, let it decide what is revealed first, where the scene pauses, how much is disclosed, and how time moves inside the scene.
       If Character Pressure Blueprint is present, keep its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as pressure, rendered the way this author renders pressure — through explanation if that is what this author does, through omission if that is what this author does.
       If an Author Preference Profile section is present, obey it only where it does not conflict with the reference author's manner.
@@ -992,7 +997,9 @@ templates:
   scene_blueprint:
     # 2026-09-13 阶段 A v5：有 Scene Structure (Snowflake) 段时蓝图从作者的三拍推导，不另起炉灶。
     # 阶段 C v6：Rendering mode: summary 的反应场，蓝图按两三段概述的体量给。
-    version: "2026-09-13.v6"
+    # 阶段 F v7：Scene Design Context (Snowflake) 段给 visible_desire / forced_choice 以人物依据（POV 的目标、价值观、顿悟），
+    # 给 ending_action / next_scene_pull 以位置（章的幕次与灾难标记、相邻两场）。
+    version: "2026-09-13.v7"
     input_token_budget: 8000
     system_prompt: |
       You are a fiction planning editor.
@@ -1001,6 +1008,7 @@ templates:
     task_prompt: |
       Build the scene readability proposal v2 from the supplied chapter goal, scene card, and writer brief.
       If a Scene Structure (Snowflake) section is present, derive the proposal from it instead of re-inventing the scene: visible_desire restates the Goal (for a reactive scene, the want behind the Decision); forced_choice is the Dilemma of a reactive scene, or the hardest choice inside the Conflict of a proactive scene; price_paid is the Cost paid; ending_action is the Setback or the Decision made concrete; next_scene_pull is the Next-scene pull. Never contradict that section — a proposal that ends the scene on a win where the section designed a Setback, or that releases what Must withhold names, is invalid. When that section states Rendering mode: summary, keep the proposal proportionate to a two-or-three-paragraph summary beat: information_release and image_anchor stay minimal, and ending_action is the Decision itself.
+      If a Scene Design Context (Snowflake) section is present, ground the proposal in it: visible_desire and forced_choice must follow from the POV character's goal, values and conflict on their sheet; ending_action and next_scene_pull must respect the chapter's act and disaster mark and connect to what the previous scene ended on and the next scene opens on. It is background only — never add an event from it, and never let it override the Scene Structure (Snowflake) section or the Scene Card.
       If a Style Reference — Narrative Mechanisms section is present, let it shape information_release, pacing (where the scene lingers and where it cuts), and ending_action; it governs narrative choices only, never wording, and it is not content to reproduce.
       If a Style Reference — Structure Card ([结构画像]) or Scene Craft ([场景手法]) section is present, build this scene the way that author builds scenes: at that author's scale (scene length and density, how scenes open and close, the dialogue-versus-narration share, where summary is used) and with that author's kinds of scene and closing moves; the chapter openings and endings in the card are structure samples only — never reuse their characters, places, events, or sentences.
       Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.

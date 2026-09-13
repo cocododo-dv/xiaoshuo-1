@@ -326,21 +326,26 @@ def test_closeout3_recompute_stale_is_field_aware() -> None:
     old_para = {"sentences": ["a", "b", "c", "d", "e"], "moral_premise": "old"}
     snap = {"one_paragraph_summary": field_sigs(old_para)}
     short = _Row("short_synopsis", snap)
-    # Also a row with no field map → dependency-edge fallback (any change stales it).
+    # 阶段 G：character_synopses 有字段表但不读 one_paragraph_summary → 不消费，不失效；
+    # 一个不在表里的未知步骤才退化为依赖边级（任何改动都标）。
     char_syn = _Row("character_synopses", {"one_paragraph_summary": field_sigs(old_para)})
+    unknown = _Row("scene_details", {"one_paragraph_summary": field_sigs(old_para)})
+    unknown.step_key = "unknown_future_step"
+    step_order = {**STEP_ORDER, "unknown_future_step": 99}
 
     # 1) Only moral_premise changed → short_synopsis (reads sentences) is NOT stale,
-    #    but the edge-level row still flips.
+    #    character_synopses (does not read 03 at all) is NOT stale, the unknown step flips.
     new_para = {"sentences": ["a", "b", "c", "d", "e"], "moral_premise": "new"}
     hits = recompute_stale(
         changed_step_key="one_paragraph_summary",
         current_field_sigs=field_sigs(new_para),
-        candidate_rows=[short, char_syn],
-        step_order=STEP_ORDER,
+        candidate_rows=[short, char_syn, unknown],
+        step_order=step_order,
     )
     stale = {hit.step_key for hit in hits}
     assert "short_synopsis" not in stale
-    assert "character_synopses" in stale
+    assert "character_synopses" not in stale
+    assert "unknown_future_step" in stale
 
     # 2) A consumed field (sentences) changed → short_synopsis IS stale.
     changed_para = {"sentences": ["a", "B!", "c", "d", "e"], "moral_premise": "old"}

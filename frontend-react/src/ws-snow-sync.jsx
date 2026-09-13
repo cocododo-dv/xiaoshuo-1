@@ -366,6 +366,8 @@ function shapeStepHealth(step) {
     total: typeof comp.total_count === "number" ? comp.total_count : null,
     gateSatisfied: !!(step && step.gate_satisfied),
     beStatus: (step && step.status) || null,        // draft / pending_review / approved / skipped / stale
+    // 阶段 G：确认过的步骤被改动后是「待重新确认」——不再在键入后自动补批准，等作者显式点「确认本步」
+    revisedAfterApproval: !!(step && step.revised_after_approval),
     // 阶段 E：失效真相来自后端——原因、是否已确认仍有效、本版与本步确认时消费的上游版本（step_run_id）
     staleReason: (step && step.stale_reason) || "",
     staleAcceptedAt: (step && step.stale_accepted_at) || null,
@@ -525,7 +527,8 @@ async function snowHydrate(workId, opts) {
     hydratedKeys.forEach(feKey => {
       const frag = buildStepFragment(feKey, remote, workId);
       const approvalPending = frag.fe_state === "done"
-        && ((health[feKey] || {}).beStatus === "pending_review");
+        && ((health[feKey] || {}).beStatus === "pending_review")
+        && !((health[feKey] || {}).revisedAfterApproval); // 阶段 G：确认后又改的，等作者显式重新确认
       mine[feKey] = {
         sig: stepSig(frag),
         state: frag.fe_state,
@@ -586,9 +589,13 @@ async function snowPushKey(cacheKey) {
       try {
         const patched = await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}`, { draft: fragment, force: true });
         const patchedStatus = patched && patched.step && patched.step.status;
+        // 阶段 G：已确认的步骤被改动（后端 revised_after_approval）→ 待作者显式重新确认，
+        // 不再在停止输入一秒后自动补批准——下游失效级联在作者点「确认本步」那一刻才发生。
+        const revisedAfterApproval = !!(patched && patched.step && patched.step.revised_after_approval);
         const approvalPending = fragment.fe_state === "done"
           && patchedStatus !== "approved"
-          && patchedStatus !== "skipped";
+          && patchedStatus !== "skipped"
+          && !revisedAfterApproval;
         mine[feKey] = { sig, state: fragment.fe_state, approvalPending };
         if (feKey === "scenes" || feKey === "planning") pushedSceneish = true;
         // update_step 回包带最新 step.health/completeness → 增量刷新后端权威评估（无需再拉全量）
@@ -863,6 +870,27 @@ const SnowSync = {
   /* 后端 per-step 权威健康（feKey -> {score,status,gaps,nextActions,missingFields,gateSatisfied,...}）；
      视图用它显示「后端评估」区，与本地实时估算区分。随 ws:snow-health / ws:snow-hydrated 更新。 */
   health(workId) { return snowHealth[workId || activeWork()] || {}; },
+  /* 阶段 G：确认过又改过的步骤（revised_after_approval）由作者显式重新确认——POST approve，
+     回包刷新本步与整个工作台的权威健康（下游失效在这一刻可见）。失败上抛由调用方诚实提示。 */
+  async approveStep(workId, feKey) {
+    const id = workId || activeWork();
+    const beKey = BE_BY_FE[feKey];
+    if (!id || !beKey) throw new Error("步骤未知，无法确认");
+    const res = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}/approve`, {});
+    const mine = lastPushed[id] || (lastPushed[id] = {});
+    mine[feKey] = { ...(mine[feKey] || {}), state: "done", approvalPending: false };
+    if (res && res.step) {
+      (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(res.step);
+      captureWorkspaceHealth(id, res.workspace);
+      try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+    }
+    return (snowHealth[id] || {})[feKey] || null;
+  },
+  /* 本步是否「确认过又改了、等作者重新确认」（后端 pending_review + revised_after_approval）。 */
+  needsReconfirm(workId, feKey) {
+    const h = ((snowHealth[workId || activeWork()] || {})[feKey]) || {};
+    return h.beStatus === "pending_review" && !!h.revisedAfterApproval;
+  },
   /* 阶段 E：「已复核」在服务端留痕——POST accept-stale，回包刷新权威健康。只对后端 status=stale 的步有意义。 */
   async acceptStale(workId, feKey, note) {
     const id = workId || activeWork();

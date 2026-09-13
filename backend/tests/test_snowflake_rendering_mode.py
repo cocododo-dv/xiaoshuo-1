@@ -263,6 +263,6 @@ def test_prompts_know_the_summary_rendering_mode() -> None:
     )["templates"]
     assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-13.v9"
     assert "rendering_mode (reactive scenes only" in templates["snowflake_generate_scene_details"]["task_prompt"]
-    for name, version in (("neutral_draft", "2026-09-13.v8"), ("style_first_draft", "2026-09-13.v3"), ("scene_blueprint", "2026-09-13.v6")):
+    for name, version in (("neutral_draft", "2026-09-13.v9"), ("style_first_draft", "2026-09-13.v4"), ("scene_blueprint", "2026-09-13.v7")):
         assert templates[name]["version"] == version, name
         assert "Rendering mode: summary" in templates[name]["task_prompt"], name

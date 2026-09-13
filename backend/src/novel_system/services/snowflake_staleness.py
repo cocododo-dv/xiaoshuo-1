@@ -29,20 +29,110 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-# 「哪步读上游哪些（顶层）字段」。键缺失即退化为依赖边级（上游任何改动都算）。
-# 这里只登记「整字段单向消费」这类绝对安全的边，未覆盖的关系自动走更保守的边级判定。
+# 「哪步读上游哪些（顶层）字段」——每一步**直接展开**的上游（Ingermanson：一句扩一段、一段扩一页）。
+#
+# 2026-09-13 阶段 G（让回溯便宜）改了缺省语义：审批快照拍的是全部祖先，而旧表只列直接上游，
+# 表里没有的 (step, up) 组合一律「上游任何改动都算」——于是改一句道德前提会让 06 到 10 全部需复核，
+# 改读者定位的安全规则会让九步全失效，恰与「鼓励早回溯」相反。现在：
+# - 本步在表里、上游也在本步的表里 → 字段级判定；
+# - 本步在表里、上游不在 → 本步不消费它，**不失效**（上游变化经它真正的下游一层层再批准来传递）；
+# - 本步不在表里（未知步骤）→ 退化为依赖边级，宁可多亮。
+# 正确性优先：字段宁可多列（偏多亮），也不漏标。
 FIELDS_CONSUMED: dict[str, dict[str, set[str]]] = {
+    # 一句话是写给这类读者的营销句：类型 / 读者 / 故事种类 / 承诺变了它要重看；安全规则是起草侧的禁令，不是设计。
+    "one_sentence_summary": {
+        "book_brief": {"category", "target_reader", "story_kind", "genre_promise", "delight_reason", "expected_reader_emotion"},
+    },
     "one_paragraph_summary": {"one_sentence_summary": {"summary"}},
+    # 角色表读五句脊柱（三次灾难落在谁身上）；道德前提是故事的论证，改措辞不必重看角色表。
     "character_sheets": {"one_paragraph_summary": {"sentences"}},
     "short_synopsis": {"one_paragraph_summary": {"sentences"}},
-    "character_synopses": {"character_sheets": {"characters"}},
+    # 06 的「视角故事」是把一页梗概从这个角色的眼睛再讲一遍。
+    "character_synopses": {"character_sheets": {"characters"}, "short_synopsis": {"paragraphs"}},
     "long_synopsis": {"short_synopsis": {"paragraphs"}},
-    "character_bibles": {"character_sheets": {"characters"}},
+    "character_bibles": {"character_sheets": {"characters"}, "character_synopses": {"characters"}},
     # 阶段 D：07 的 paragraphs 是五段展开（拆场素材），chapters 是章表——以前章表镜像在 paragraphs 里，
     # 改章表自然让 09 失效；镜像去掉后把 chapters 明确登记进来，语义不变。
     "scene_list": {"long_synopsis": {"paragraphs", "chapters"}},
     "scene_details": {"scene_list": {"scenes"}},
 }
+
+# 场景行的**内容**投影：作者在 09 / 10 真正编辑的键。服务端在建行时派生的键（title 缺省等于 summary、
+# chapter_title 缺省等于章号、身份 / 状态 / 诊断）不算内容——否则生成器写的第一版与前端回传的版本
+# 会因为这些派生键在每一行都不同。同义键归一（scene_type/primary_form、scene_crucible/crucible）。
+_SCENE_ROW_CONTENT_KEYS: tuple[str, ...] = (
+    "summary",
+    "pov_character_id",
+    "location",
+    "chapter_role",
+    "spine",
+    # onstage_chars_json 故意不比：09 / 10 的表单没有这一栏，生成器写进草稿的名单不会回到计划行，
+    # 一比每一行都「变了」。
+    "goal",
+    "conflict",
+    "setback",
+    "reaction",
+    "dilemma",
+    "decision",
+    "cost_requirement",
+    "beats_json",
+    "must_include_text",
+    "exit_change",
+    "hook",
+    "target_length_band",
+    "rendering_mode",
+)
+
+
+def changed_scene_row_uids(previous_payload: dict[str, Any] | None, current_payload: dict[str, Any] | None) -> set[str] | None:
+    """09 重新批准时，按行身份（``row_uid``，旧数据退回 ``scene_id``）找出内容真的变了（或新加）的场。
+
+    任一侧有行两种身份都缺 → 返回 ``None``，调用方退回「全部场景计划置 stale」。
+    被删掉的场不在返回集合里——它们已经软删，没有计划行可标。
+    """
+    previous = _scene_rows_by_uid(previous_payload)
+    current = _scene_rows_by_uid(current_payload)
+    if previous is None or current is None:
+        return None
+    changed: set[str] = set()
+    for row_uid, row in current.items():
+        before = previous.get(row_uid)
+        if before is None or scene_row_content(before) != scene_row_content(row):
+            changed.add(row_uid)
+    return changed
+
+
+def _scene_rows_by_uid(payload: dict[str, Any] | None) -> dict[str, dict[str, Any]] | None:
+    scenes = semantic_payload(payload).get("scenes")
+    if not isinstance(scenes, list):
+        return None
+    rows: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(scenes, start=1):
+        if not isinstance(item, dict):
+            return None
+        key = str(item.get("row_uid") or "").strip() or str(item.get("scene_id") or "").strip()
+        if not key:
+            return None
+        rows[key] = {**item, "_ordinal": index}
+    return rows
+
+
+def scene_row_content(row: dict[str, Any]) -> str:
+    # 空值与缺席同义：生成器写的行没有 hook / beats 这些键，前端上行的行带着空串，
+    # 不能因此把每一场都判成「改了」。
+    content: dict[str, Any] = {}
+    for key in _SCENE_ROW_CONTENT_KEYS:
+        value = row.get(key)
+        if value not in ("", None, [], {}):
+            content[key] = value
+    scene_type = str(row.get("scene_type") or row.get("primary_form") or "").strip().lower()
+    if scene_type:
+        content["scene_type"] = scene_type
+    crucible = str(row.get("scene_crucible") or row.get("crucible") or "").strip()
+    if crucible:
+        content["crucible"] = crucible
+    content["_ordinal"] = row.get("_ordinal")
+    return stable_json(content)
 
 
 class _StaleRow(Protocol):
@@ -143,9 +233,10 @@ def recompute_stale(
 ) -> list[StaleHit]:
     """给定刚被（重新）审批的步骤，算出真正受影响的下游步骤。
 
-    单一判定取代两份全量循环。只标：在 ``changed_step_key`` **之后**、且其审批快照里
-    该上游的内容确实变了、且变的字段本步会读（或无字段表时退化为依赖边级）的步骤。
-    缺快照的下游保守按依赖边全标。
+    单一判定取代两份全量循环。只标：在 ``changed_step_key`` **之后**、且本步**直接消费**该上游
+    （``FIELDS_CONSUMED`` 有登记）、且其审批快照里被消费的字段确实变了的步骤。
+    本步不消费该上游 → 不标（变化经真正的下游一层层再批准来传递）；本步不在表里 → 依赖边级；
+    消费但缺快照 → 保守置 stale。
     """
     changed_index = step_order.get(changed_step_key)
     if changed_index is None:
@@ -156,6 +247,11 @@ def recompute_stale(
         row_index = step_order.get(row.step_key)
         if row_index is None or row_index <= changed_index:
             continue  # 只有严格下游才可能受影响
+
+        table = FIELDS_CONSUMED.get(row.step_key)
+        consumed = table.get(changed_step_key) if table is not None else None
+        if table is not None and consumed is None:
+            continue  # 本步不读这个上游：连 stale 都不必亮。
 
         snaps = row.consumed_input_sigs_json or {}
         snap_for_changed = snaps.get(changed_step_key)
@@ -168,9 +264,8 @@ def recompute_stale(
             continue  # 上游没动 → 跳过（回修不再被惩罚）
 
         changed = changed_fields(snap_for_changed, current_field_sigs)
-        consumed = FIELDS_CONSUMED.get(row.step_key, {}).get(changed_step_key)
         if consumed is None:
-            # 无字段表 → 依赖边级：上游变了就标。
+            # 未知步骤，无字段表 → 依赖边级：上游变了就标。
             hits.append(StaleHit(row=row, step_key=row.step_key, reason=f"{changed_step_key} 改了 {sorted(changed)}"))
         else:
             hit_fields = changed & consumed

@@ -40,6 +40,9 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # 2026-09-13 阶段 A：雪花 / 章节编排的场景结构（形态、POV、坩埚、三拍、代价）。与
     # scene_card 同级的事实 section——不进任何压缩 / 省略名单（见 scene_structure_brief.py）。
     ("scene_structure_brief", "Scene Structure (Snowflake)", ("scene_structure_brief",)),
+    # 2026-09-13 阶段 F：已确认的雪花设计背景（一句话 / 五句脊柱 / 道德前提 / 章位置 / POV 角色摘要 /
+    # 视角故事 / 相邻两场）。背景而非事实：预算紧时先压成要点、最后整段省略；硬 QC 类任务不看。
+    ("scene_design_context", "Scene Design Context (Snowflake)", ("scene_design_context",)),
     ("chapter_writer_brief", "Chapter Writer Brief", ("chapter_writer_brief",)),
     ("scene_writer_brief", "Scene Writer Brief", ("scene_writer_brief",)),
     ("author_instruction", "Author Instruction", ("author_instruction",)),
@@ -172,6 +175,9 @@ def apply_context_budget(
     if normalized_task_kind == "neutral_draft":
         for section_name in NEUTRAL_DRAFT_STYLE_SECTIONS:
             _omit_section(section_lookup, section_name)
+    if normalized_task_kind == "hard_qc":
+        # 硬 QC 只审事实与硬约束；设计背景（前提、价值观、相邻场）会诱使它核对本场之外的东西。
+        _omit_section(section_lookup, "scene_design_context")
 
     if _rendered_prompt_tokens(
         system_prompt=system_prompt,
@@ -197,6 +203,19 @@ def apply_context_budget(
                 _apply_compressed_text(
                     voice_anchor, _compress_voice_anchor(voice_anchor.text)
                 )
+
+        # 阶段 F：设计背景紧随其后压成要点（视角故事 / 五句脊柱 / 在场人物先让路），
+        # 仍先于任何事实 section；整段省略排在最后一轮（见下）。
+        if _rendered_prompt_tokens(
+            system_prompt=system_prompt,
+            task_prompt=task_prompt,
+            bundle_snapshot=bundle_snapshot,
+            sections=sections,
+            split_scene_recommended=False,
+        ) > max_input_tokens:
+            design_context = section_lookup.get("scene_design_context")
+            if design_context is not None and design_context.status == "included":
+                _apply_compressed_text(design_context, _compress_design_context(design_context.text))
 
         if normalized_task_kind == "hard_qc" and _rendered_prompt_tokens(
             system_prompt=system_prompt,
@@ -257,7 +276,7 @@ def apply_context_budget(
 
         # v2：连续性摘要都压过仍超预算 → 整段省略声音锚 / 漂移校准（软性延续信号），
         # 再走拆场建议；scene_card 等事实 section 从不被动。
-        for section_name in ("previous_scene_voice_anchor", "style_drift_calibration"):
+        for section_name in ("previous_scene_voice_anchor", "style_drift_calibration", "scene_design_context"):
             if _rendered_prompt_tokens(
                 system_prompt=system_prompt,
                 task_prompt=task_prompt,
@@ -480,6 +499,34 @@ def _compress_continuity_digest(text: str) -> str:
         candidate,
         max_tokens=CONTINUITY_DIGEST_COMPRESSED_TOKENS,
     )
+
+
+# 设计背景压缩时保留的行首标签（背景里最省不掉的部分）；其余行（五句脊柱 / 视角故事 / 在场人物）先让路。
+# 放在这里而不是 scene_design_context.py：那边要读 settings，settings → system_config → prompt_builder →
+# 本模块，反向引用会成环。
+DESIGN_CONTEXT_COMPRESS_KEEP_LABELS: tuple[str, ...] = (
+    "Book logline:",
+    "Moral premise:",
+    "Chapter:",
+    "Scene position:",
+    "POV character sheet",
+    "Previous scene",
+    "Next scene",
+)
+
+
+def compress_design_context(text: str) -> str:
+    """设计背景的压缩形态：只留一句话、道德前提、章位置、POV 摘要表与相邻两场。"""
+    kept = [
+        line
+        for line in str(text or "").split("\n")
+        if any(line.startswith(label) for label in DESIGN_CONTEXT_COMPRESS_KEEP_LABELS)
+    ]
+    return "\n".join(kept) if kept else str(text or "").split("\n")[0]
+
+
+def _compress_design_context(text: str) -> str:
+    return compress_design_context(text)
 
 
 def _omit_section(section_lookup: Mapping[str, PromptSection], section_name: str) -> None:

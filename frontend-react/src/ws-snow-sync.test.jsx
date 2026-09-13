@@ -697,6 +697,92 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(preview.materialization_gate).toEqual(gate);
   });
 
+  it("阶段 G：确认过的步骤被改动（revised_after_approval）不再自动补批准，等作者显式 approveStep", async () => {
+    // 路由器每次都返回同一个工作台对象：改动之后把它改成「待审 + 确认后又改过」，模拟服务端的真实回包
+    const ws = JSON.parse(JSON.stringify(WS_WITH_BOOK_BRIEF));
+    const { mod, client } = await loadSync({ snowflakeWorkspace: ws });
+    await vi.waitFor(() => expect((mod.SnowSync.health("prj-main").audience || {}).beStatus).toBe("approved"), T);
+    client.apiPatch.mockImplementation(async (url, body) => ({
+      step: { step_key: "book_brief", status: "pending_review", revised_after_approval: true, draft: body.draft, health: {}, completeness: {} },
+    }));
+    client.apiPost.mockImplementation(async (url) => {
+      if (String(url).endsWith("/steps/book_brief/approve")) {
+        return {
+          step: { step_key: "book_brief", status: "approved", revised_after_approval: false, draft: {}, health: {}, completeness: {} },
+          workspace: { steps: [] },
+        };
+      }
+      return {};
+    });
+
+    // 本机 done 的步改了内容 → PATCH 出去，但**不**自动 approve。用 retry() 显式驱动本实例的一次上行，
+    // 不依赖 700ms 的 autosave 定时器（旧模块实例的监听也会响应 ws:snow-saved，不能拿 mock 调用记录当本实例的证据）。
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({
+      _t: Date.now() + 10_000,
+      drafts: {},
+      scaffolds: { audience: { genre: "悬疑", reader: "改动后的读者画像", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫" } },
+      checks: {}, states: { audience: "done" }, history: [],
+    }));
+    ws.steps[0].status = "pending_review";
+    ws.steps[0].revised_after_approval = true;
+    ws.steps[0].gate_satisfied = false;
+    const state = await mod.SnowSync.retry("prj-main");
+    expect(state.phase).toBe("synced");
+    expect((mod.SnowSync.health("prj-main").audience || {}).beStatus).toBe("pending_review");
+    expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(false);
+    expect((mod.SnowSync.health("prj-main").audience || {}).revisedAfterApproval).toBe(true);
+    expect(mod.SnowSync.needsReconfirm("prj-main", "audience")).toBe(true);
+
+    // 作者显式重新确认 → POST approve，健康刷新
+    const health = await mod.SnowSync.approveStep("prj-main", "audience");
+    expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(true);
+    expect(health.beStatus).toBe("approved");
+    expect(mod.SnowSync.needsReconfirm("prj-main", "audience")).toBe(false);
+  });
+
+  it("阶段 G：水合发现 pending_review 但 revised_after_approval：不补 approve（等作者重新确认）", async () => {
+    const scaffold = {
+      genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫",
+    };
+    const cache = {
+      drafts: {}, scaffolds: { audience: scaffold }, checks: {}, states: { audience: "done" }, history: [],
+    };
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ _t: Date.now() + 10_000, ...cache }));
+    const { mod, client } = await loadSync({
+      snowflakeWorkspace: {
+        ready_to_materialize: false,
+        current_step_key: "book_brief",
+        steps: [{
+          step_key: "book_brief",
+          status: "pending_review",
+          revised_after_approval: true,
+          gate_satisfied: false,
+          draft: {
+            category: scaffold.genre,
+            target_reader: scaffold.reader,
+            delight_reason: scaffold.pleasure,
+            story_kind: scaffold.source,
+            genre_promise: scaffold.exclude,
+            expected_reader_emotion: scaffold.emotion,
+            fe_text: "",
+            fe_scaffold: scaffold,
+            fe_checks: [],
+            fe_state: "done",
+            fe_t: 1,
+            fe_meta: { history: [] },
+          },
+          health: {}, completeness: {},
+        }],
+      },
+    });
+    client.apiPost.mockResolvedValue({ step: { status: "approved", draft: {}, health: {}, completeness: {} } });
+    await vi.waitFor(() => expect((mod.SnowSync.health("prj-main").audience || {}).revisedAfterApproval).toBe(true), T);
+    saveCache(cache);
+    await vi.waitFor(() => expect(mod.SnowSync.syncState("prj-main").phase).toBe("synced"), T);
+    expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(false);
+    expect(mod.SnowSync.needsReconfirm("prj-main", "audience")).toBe(true);
+  });
+
   it("水合发现服务端仍是 pending_review：即使本机签名没有变化也会补 approve", async () => {
     const scaffold = {
       genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫",

@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -37,6 +38,8 @@ from novel_system.services.snowflake_planner import (
     _scene_writer_brief,
 )
 from novel_system.services.snowflake_staleness import (
+    changed_scene_row_uids,
+    stable_json,
     field_sigs,
     recompute_stale,
     semantic_payload,
@@ -175,7 +178,11 @@ class SnowflakeWorkspaceService:
         scene_board = self._scene_board(project_id, scene_plans=scene_plans)
         triage_items = self._triage_items(project_id)
         latest_plan = self._latest_plan(project_id)
-        steps = [self._workspace_step(step, latest_by_step, project_id=project_id) for step in list_step_definitions()]
+        confirmed_steps = self._steps_with_confirmed_version(project_id)
+        steps = [
+            self._workspace_step(step, latest_by_step, project_id=project_id, confirmed_steps=confirmed_steps)
+            for step in list_step_definitions()
+        ]
         chapter_plan_status = self._chaptering.status(project_id, scene_plans)
         gate = self._materialization_gate(latest_by_step, triage_items, scene_plans, chapter_plan_status)
         return {
@@ -533,7 +540,7 @@ class SnowflakeWorkspaceService:
         # 全部置 stale，前端就永远无法按依赖顺序补批准。只有存在上一版 approved run
         #（真正的重新批准）时，才计算并落地下游失效。
         downstream_impact = (
-            self._mark_downstream_stale(run)
+            self._mark_downstream_stale(run, previous_payload=previous_run.draft_json)
             if previous_run is not None
             else {
                 "step_key": step_key,
@@ -895,7 +902,9 @@ class SnowflakeWorkspaceService:
                         "location": detail.get("location") or None,
                         "scene_goal": detail.get("summary") or detail.get("title") or goal,
                         "beats_json": _scene_card_beats(scene_type, detail),
-                        "must_include_text": detail.get("must_include_text") or detail.get("summary") or "",
+                        # 阶段 F：摘要不再冒充「必须包含」的硬约束（它本来就含挫折，写成硬约束会让
+                        # 硬 QC 拿一句概括去卡正文）；钩子 / 离场变化没写就留空，简报只陈述作者写过的。
+                        "must_include_text": detail.get("must_include_text") or "",
                         "forbidden_text": "不得复制参考书原文表达、人物、设定或桥段。",
                         # 与 _scene_card_resync_patch 同一配方：规划行没写离场变化就用挫折 / 决定。
                         # 两边配方不同时，刚物化完的每一场都会被报成「待同步」（纯假阳性）。
@@ -903,9 +912,9 @@ class SnowflakeWorkspaceService:
                             detail.get("exit_change")
                             or detail.get("setback")
                             or detail.get("decision")
-                            or "场景结束时至少改变一个信息、关系或行动目标。"
+                            or ""
                         ),
-                        "hook": detail.get("hook") or "以未解决的选择、代价或发现推动下一场。",
+                        "hook": detail.get("hook") or "",
                         "target_length_band": detail["target_length_band"],
                         "primary_form": scene_type,
                         "scene_type": scene_type,
@@ -1135,12 +1144,35 @@ class SnowflakeWorkspaceService:
             )
         return project
 
-    def _workspace_step(self, step: dict[str, Any], latest_by_step: dict[str, SnowflakeStepRun], *, project_id: str) -> dict[str, Any]:
+    def _steps_with_confirmed_version(self, project_id: str) -> set[str]:
+        """还留着一版已确认内容（approved / stale）的步骤——待审的新版本就是「确认之后又改了」。"""
+        rows = self.session.execute(
+            select(SnowflakeStepRun.step_key).where(
+                SnowflakeStepRun.project_id == project_id,
+                SnowflakeStepRun.status.in_(["approved", "stale"]),
+            )
+        ).all()
+        return {str(row[0]) for row in rows}
+
+    def _workspace_step(
+        self,
+        step: dict[str, Any],
+        latest_by_step: dict[str, SnowflakeStepRun],
+        *,
+        project_id: str,
+        confirmed_steps: set[str] | None = None,
+    ) -> dict[str, Any]:
         run = latest_by_step.get(step["step_key"])
         draft = self._draft_for_step(step["step_key"], run, latest_by_step, project_id=project_id)
         status = run.status if run is not None else "draft"
         approval_blockers = self._previous_gate_blockers(step["step_key"], latest_by_step)
+        if confirmed_steps is None:
+            confirmed_steps = self._steps_with_confirmed_version(project_id)
+        # 阶段 G：确认过的步骤被改动后是「待重新确认」，不是「本机已确认、后端同步中」——前端据此
+        # 不再在键入后自动补批准，而是等作者显式点「确认本步」，下游失效级联也在那一刻才发生。
+        revised_after_approval = bool(run is not None and run.status == "pending_review" and step["step_key"] in confirmed_steps)
         return {
+            "revised_after_approval": revised_after_approval,
             "step_key": step["step_key"],
             "label": step["label"],
             "english_label": step.get("english_label", ""),
@@ -1985,6 +2017,7 @@ class SnowflakeWorkspaceService:
         # 把铸好的 row_uid 回写进草稿，让下一次保存和前端水合都拿到同一个锚
         if minted and isinstance(run.draft_json, dict):
             run.draft_json = {**run.draft_json, "chapters": incoming}
+            flag_modified(run, "draft_json")
 
         loosened = sum(item["unbound_scene_count"] for item in dropped)
         if not loosened:
@@ -2146,19 +2179,23 @@ class SnowflakeWorkspaceService:
                     minted = True
                 row_uid = plan.row_uid
 
+            before = None if created else _scene_plan_content_signature(plan)
             plan.scene_seq = scene_seq
             plan.source_step_run_id = run.step_run_id
-            plan.status = "approved" if approved else "draft"
-            plan.stale_reason = None
-            plan.stale_accepted_at = None
-            plan.stale_accepted_by = None
-            plan.stale_accepted_note = None
             # Discard any author-supplied scene_id / chapter_id — those are system
             # identity, not editable narrative fields.
             patch = _sanitize_scene_patch(item)
             patch.pop("scene_id", None)
             patch.pop("chapter_id", None)
             self._apply_scene_patch(plan, patch)
+            # 阶段 G：草稿同步只把**内容真的变了**（或新建）的场打回 draft；「AI 补全这一场」和
+            # 一次无谓的整表 PATCH 不再把其余几十场的确认与复核留痕一起清零。批准仍然整表置 approved。
+            if approved or created or before != _scene_plan_content_signature(plan):
+                plan.status = "approved" if approved else "draft"
+                plan.stale_reason = None
+                plan.stale_accepted_at = None
+                plan.stale_accepted_by = None
+                plan.stale_accepted_note = None
             if created and not plan.title:
                 plan.title = str(item.get("title") or item.get("summary") or f"场景 {index:02d}").strip()
             if created and not plan.chapter_title:
@@ -2182,6 +2219,9 @@ class SnowflakeWorkspaceService:
 
         if minted and isinstance(run.draft_json, dict):
             run.draft_json = {**run.draft_json, "scenes": scenes}
+            # 行是就地改的：旧值与新值在 JSON 比较下相等，SQLAlchemy 会判「没变」而不写库——
+            # 铸好的 row_uid / scene_id 于是只活在本次回包里，落库的草稿仍然没有身份。
+            flag_modified(run, "draft_json")
 
     def _reconcile_removed_scene_plans(self, project_id: str, kept_row_uids: set[str]) -> None:
         """P1-3 收口：把不在本次场景列表里的场标记为已删除。
@@ -2317,16 +2357,18 @@ class SnowflakeWorkspaceService:
         for row in rows:
             row.status = "superseded"
 
-    def _mark_downstream_stale(self, run: SnowflakeStepRun) -> dict[str, Any]:
+    def _mark_downstream_stale(self, run: SnowflakeStepRun, *, previous_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         # P0-3: a single dependency/diff-aware judgment replaces the old "stale every
         # later step" loop. Only steps whose approval snapshot of THIS step's consumed
         # fields actually changed are marked — revising a step no longer punishes
         # downstream work that did not depend on what changed.
+        # 阶段 G：已经 stale 的行也参与判定——点过「已复核」的步骤在 accept-stale 时把消费快照刷到
+        # 了当时的上游版本，上游再改一次它必须重新亮起来，否则「仍然有效」会永远有效。
         candidates = self.session.execute(
             select(SnowflakeStepRun).where(
                 SnowflakeStepRun.project_id == run.project_id,
                 SnowflakeStepRun.step_run_id != run.step_run_id,
-                SnowflakeStepRun.status.in_(["pending_review", "approved", "skipped"]),
+                SnowflakeStepRun.status.in_(["pending_review", "approved", "skipped", "stale"]),
             )
         ).scalars().all()
         hits = recompute_stale(
@@ -2355,7 +2397,14 @@ class SnowflakeWorkspaceService:
         # that happens to sit upstream of scene_list.
         if stale_step_keys & {"scene_list", "scene_details"}:
             reason = f"{run.step_key} 改动影响了场景列表，复核场景计划。"
+            # 阶段 G：09 自己重新批准时按 row_uid 只标内容真的变了（或新加）的场；
+            # 旧数据没有 row_uid、或改动来自更上游（无法定位到场）→ 仍然全标。
+            changed_row_uids = (
+                changed_scene_row_uids(previous_payload, run.draft_json) if run.step_key == "scene_list" else None
+            )
             for scene in self._scene_plans(run.project_id):
+                if changed_row_uids is not None and not ({scene.row_uid or "", scene.scene_id or ""} & changed_row_uids):
+                    continue
                 scene.status = "stale"
                 scene.stale_reason = reason
                 scene.stale_accepted_at = None
@@ -2761,6 +2810,17 @@ def _merge_preserving_existing(existing: dict[str, Any], incoming: dict[str, Any
         elif isinstance(current, list) and isinstance(value, list):
             merged[key] = current or deepcopy(value)
     return merged
+
+
+_SCENE_PLAN_STATE_KEYS: frozenset[str] = frozenset(
+    {"scene_plan_id", "status", "stale_reason", "stale_accepted_at", "stale_accepted_by", "stale_accepted_note", "diagnosis"}
+)
+
+
+def _scene_plan_content_signature(scene: SnowflakeScenePlan) -> str:
+    """场景计划行的**内容**签名（去掉状态 / 失效留痕 / 诊断 / 身份）；同步时据此判断这一行有没有真的改。"""
+    payload = {key: value for key, value in _scene_plan_payload(scene).items() if key not in _SCENE_PLAN_STATE_KEYS}
+    return stable_json(payload)
 
 
 def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:

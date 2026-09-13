@@ -808,10 +808,22 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     }
     return Math.min(S2_STEPS.length - 1, from + 1);
   };
-  const confirmStep = () => {
+  const confirmStep = async () => {
+    /* 阶段 G：确认过又改了的步骤（后端 pending_review + revised_after_approval）不再在键入后自动补批准，
+       而是在这里由作者显式重新确认——下游失效级联在这一刻发生、回包整份工作台刷新健康。失败就诚实提示，不跳步。 */
+    let workId = null; try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+    const reconfirm = !!(workId && window.SnowSync && window.SnowSync.needsReconfirm && window.SnowSync.needsReconfirm(workId, activeKey));
+    if (reconfirm) {
+      try {
+        await window.SnowSync.approveStep(workId, activeKey);
+      } catch (err) {
+        showToast("重新确认未能记入服务端：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+        return;
+      }
+    }
     setStates(prev => ({ ...prev, [activeKey]: "done" }));
-    pushHist("确认本步", `${active.num} ${active.name}`, "我", snapNow(activeKey));
-    showToast(`已确认 · ${active.name}`, "sage");
+    pushHist(reconfirm ? "重新确认" : "确认本步", `${active.num} ${active.name}`, "我", snapNow(activeKey));
+    showToast(reconfirm ? `已重新确认 · ${active.name}，下游按新版本核对` : `已确认 · ${active.name}`, "sage");
     const ni = nextUnfinished(idx); if (ni >= 0) goStep(ni);
   };
   /* re-review a stale step in place. 阶段 E（E3 第二步）：「已复核」= 在服务端记下「仍然有效」
@@ -1394,13 +1406,14 @@ function WsSnowflake({ go, initialStep, onOverview }) {
           {S2_STEPS.map((s) => {
             const st = states[s.key];
             const stale = !!staleMap[s.key];
+            const revised = st === "done" && !!(beHealth[s.key] && beHealth[s.key].revisedAfterApproval);
             return (
-              <button key={s.key} data-testid={`snow-step-${s.key}`} className={`snow-step ${activeKey === s.key ? "is-active" : ""} s-${st} ${stale ? "is-stale" : ""}`} onClick={() => setActiveKey(s.key)} title={st === "done" && beKnownUnapproved(s.key) ? "本地已确认 · 后端未批准（前序闸门未满足）" : undefined}>
+              <button key={s.key} data-testid={`snow-step-${s.key}`} className={`snow-step ${activeKey === s.key ? "is-active" : ""} s-${st} ${stale ? "is-stale" : ""} ${revised ? "is-revised" : ""}`} onClick={() => setActiveKey(s.key)} title={revised ? "确认之后又改过 · 待重新确认" : (st === "done" && beKnownUnapproved(s.key) ? "本地已确认 · 后端未批准（前序闸门未满足）" : undefined)}>
                 <span className={`sf-track-bar trk-${s.track}`} />
                 <span className="snow-step-num">{s.num}</span>
                 <span className="snow-step-body">
                   <span className="snow-step-name">{s.name}</span>
-                  <span className="snow-step-blurb">{stale ? `上游已改 · 需复核` : s.blurb}</span>
+                  <span className="snow-step-blurb">{stale ? `上游已改 · 需复核` : revised ? `已改动 · 待重新确认` : s.blurb}</span>
                 </span>
                 <span className="snow-step-mark">
                   {stale ? <I.AlertTriangle size={13} className="sf-stale-ic" />
@@ -1439,6 +1452,8 @@ function WsSnowflake({ go, initialStep, onOverview }) {
                 {stStatus === "done" ? (
                   beApprovedOf(activeKey) ? (
                     <span className="pill pill-sage" title="后端已批准本步"><span className="pill-dot" />已批准</span>
+                  ) : (beHealth[activeKey] && beHealth[activeKey].revisedAfterApproval) ? (
+                    <span className="pill pill-gold" data-testid="snow-reconfirm-pill" title="确认之后又改过：点「确认本步」重新确认，下游步骤才会按新版本核对"><span className="pill-dot" />已改动 · 待重新确认</span>
                   ) : (
                     <span className="pill pill-gold" title={(beHealth[activeKey] && !beHealth[activeKey].gateSatisfied) ? "本地已确认，后端未批准：前序闸门未满足——补齐上游各步后会自动批准" : "本地已确认 · 后端批准同步中…"}><span className="pill-dot" />本地已确认</span>
                   )

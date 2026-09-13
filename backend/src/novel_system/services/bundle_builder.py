@@ -34,6 +34,10 @@ from novel_system.services.character_continuity import (
     CHARACTER_CONTRACT_VERSION,
     build_character_contract_digest,
 )
+from novel_system.services.scene_design_context import (
+    SCENE_DESIGN_SECTION_KEY,
+    build_scene_design_context,
+)
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.scene_structure_brief import (
@@ -569,6 +573,20 @@ class BundleBuilder:
                 }
             )
             inline_digests[SCENE_STRUCTURE_SECTION_KEY] = structure_brief
+        # 2026-09-13 阶段 F：已确认的雪花设计背景（02 / 03 / 04 / 06 与章表、相邻两场）紧随结构简报。
+        # 它是背景不是事实：预算紧时被压缩 / 省略，硬 QC 不看；引用的步骤版本进 source_version_refs，
+        # 设计一改，bundle 哈希就变。
+        design_context = build_scene_design_context(scene, self.session)
+        if design_context is not None:
+            source_version_refs[SCENE_DESIGN_SECTION_KEY] = list(design_context.step_run_ids)
+            ordered_injections.append(
+                {
+                    "slot": SCENE_DESIGN_SECTION_KEY,
+                    "ref_id": scene.scene_id,
+                    "digest_key": SCENE_DESIGN_SECTION_KEY,
+                }
+            )
+            inline_digests[SCENE_DESIGN_SECTION_KEY] = design_context.text
         source_version_refs["style_reference_runtime_contract_version"] = (
             STYLE_RUNTIME_CONTRACT_VERSION
         )
