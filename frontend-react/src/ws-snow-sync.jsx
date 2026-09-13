@@ -15,7 +15,7 @@ import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow.jsx";
      fe_* 键优先（无损还原），无 fe_* 时从规范字段反推原型形状
      （真·雪花管线生成的项目）；本地 _t 不旧于
      服务端则本地为准（未上行的编辑不被覆盖）。
-   - revs/confirmRevs 经 book_brief 的 fe_meta 随存；history（过程
+   - 失效真相在后端（E3 第二步已移除本地 revs/confirmRevs 图）；history（过程
      快照日志）留本地（体积大、跨会话价值低，账本记录）。
    ========================================================== */
 
@@ -246,7 +246,7 @@ function canonHasContent(feKey, draft) {
 }
 
 // 阶段 E：后端 stale = 曾批准、上游又改了——前端态仍是「已确认」，「需复核」由 health 的
-// beStatus / staleReason 驱动（失效的单一真相在后端；本地 revs 图只是乐观预判）。
+// beStatus / staleReason 驱动（失效的单一真相在后端；E3 第二步起前端没有第二套失效算法）。
 const BE_STATE_TO_FE = { approved: "done", skipped: "skip", stale: "done" };
 
 /* ---------- 规范字段保真层（AI 融合 F1） ----------
@@ -324,9 +324,8 @@ function buildStepFragment(feKey, cache, workId) {
     fe_t: c._t || Date.now(),
   };
   if (feKey === "audience") {
+    // E3 第二步：fe_meta 只剩跨会话 journal；revs / confirmRevs 不再写穿（失效真相在后端）
     fragment.fe_meta = {
-      revs: c.revs || {},
-      confirmRevs: c.confirmRevs || {},
       history: (c.history || []).slice(0, 20).map(h => ({ t: h.t, who: h.who, action: h.action, note: h.note, key: h.key })),
     };
   }
@@ -345,6 +344,14 @@ const snowUnsupported = {};
    与前端写穿缓存分开存（避免被本地 save 覆盖）。hydrate 时全量捕获，
    每次 update_step 的 PATCH 响应里带最新 step.health → 增量更新。 */
 const snowHealth = {}; // workId -> feKey -> shaped health
+/* 整份 workspace 回包 → 刷新所有步骤的权威健康。approve / accept-stale 的回包都带 workspace：
+   批准上游会让下游按消费字段置 stale，这里顺手把它们的 stale 状态收进来，「需复核」不必等下一次全量水合。 */
+function captureWorkspaceHealth(workId, ws) {
+  if (!workId || !ws || !Array.isArray(ws.steps)) return false;
+  const bucket = snowHealth[workId] || (snowHealth[workId] = {});
+  ws.steps.forEach(step => { const feKey = FE_BY_BE[step && step.step_key]; if (feKey) bucket[feKey] = shapeStepHealth(step); });
+  return true;
+}
 function shapeStepHealth(step) {
   const h = (step && step.health) || {};
   const comp = (step && step.completeness) || {};
@@ -487,8 +494,7 @@ async function snowHydrate(workId, opts) {
       if (draft.fe_state) remote.states[feKey] = draft.fe_state;
       if (draft.fe_t && draft.fe_t > remote._t) remote._t = draft.fe_t;
       if (draft.fe_meta) {
-        if (draft.fe_meta.revs) remote.revs = draft.fe_meta.revs;
-        if (draft.fe_meta.confirmRevs) remote.confirmRevs = draft.fe_meta.confirmRevs;
+        // E3 第二步：旧写穿里的 fe_meta.revs / confirmRevs 直接忽略——失效真相在后端
         // G2：跨会话 journal（去快照、cap 20）——视图只对带 snap 的条目给回滚按钮，
         // 还原条目天然只读，不需要视图改动
         if (Array.isArray(draft.fe_meta.history)) remote.history = draft.fe_meta.history;
@@ -622,6 +628,7 @@ async function snowPushKey(cacheKey) {
       mine[feKey] = { ...(mine[feKey] || {}), state: "done", approvalPending: false };
       if (appr && appr.step) {
         (snowHealth[workId] || (snowHealth[workId] = {}))[feKey] = shapeStepHealth(appr.step);
+        captureWorkspaceHealth(workId, appr.workspace); // 下游 stale 立即可见
         window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId }));
       }
     } catch (error) {
@@ -777,7 +784,7 @@ const SnowSync = {
     const approvedStepKeys = [];
     const importedAt = Date.now();
     const local = {
-      drafts: {}, scaffolds: {}, checks: {}, states: {}, revs: {}, confirmRevs: {},
+      drafts: {}, scaffolds: {}, checks: {}, states: {},
       history: [{
         t: importedAt,
         who: "我",
@@ -807,8 +814,6 @@ const SnowSync = {
       if (fe && fe.text != null) local.drafts[feKey] = fe.text;
       if (fe && fe.scaffold) local.scaffolds[feKey] = fe.scaffold;
       local.states[feKey] = "done";
-      local.revs[feKey] = 0;
-      local.confirmRevs[feKey] = 0;
       approvedStepKeys.push(beKey);
     }
 
@@ -866,6 +871,7 @@ const SnowSync = {
     const res = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}/accept-stale`, note ? { note } : {});
     if (res && res.step) {
       (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(res.step);
+      captureWorkspaceHealth(id, res.workspace); // 下游闸门随之变化
       try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
     }
     return (snowHealth[id] || {})[feKey] || null;

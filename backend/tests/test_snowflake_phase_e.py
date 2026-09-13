@@ -132,7 +132,14 @@ def test_stale_step_keeps_consumed_upstream_refs_and_accept_stale_leaves_a_trace
     assert step["stale_accepted_at"]
     assert step["stale_accepted_note"] == "改的是措辞，五句不受影响"
     assert step["gate_satisfied"] is True, "确认仍有效的 stale 步骤重新满足闸门"
-    assert step["artifact"]["input_refs"]["one_sentence_summary"] == logline_v1["artifact"]["step_run_id"]
+    # E3 第二步：「仍然有效」是对现在的上游说的——消费的上游版本刷新到当前，前端的「上游已有新版本」提示随之清零
+    assert step["artifact"]["input_refs"]["one_sentence_summary"] == logline_v2["artifact"]["step_run_id"]
+    history_after = client.get(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/one_paragraph_summary/history",
+        params={"include_draft": "false"},
+    )
+    assert history_after.status_code == 200, history_after.text
+    assert history_after.json()["data"]["items"][0]["stale_accepted_note"] == "改的是措辞，五句不受影响"
 
 
 def test_regenerating_a_stale_step_from_new_upstream_records_the_trigger_and_refreshes_refs(client) -> None:

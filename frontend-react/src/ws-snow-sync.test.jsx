@@ -39,8 +39,6 @@ vi.mock("./ws-snow.jsx", () => ({
       },
       checks: { ...Object.fromEntries(feKeys.map(k => [k, []])), ...(saved.checks || {}) },
       states: { ...Object.fromEntries(feKeys.map(k => [k, "todo"])), ...(saved.states || {}) },
-      revs: { ...Object.fromEntries(feKeys.map(k => [k, 0])), ...(saved.revs || {}) },
-      confirmRevs: { ...(saved.confirmRevs || {}) },
       history: Array.isArray(saved.history) ? saved.history : [],
     };
   },
@@ -398,6 +396,41 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(cache.states.logline).toBe("done");
   });
 
+  it("E3 第二步：approve 回包自带 workspace → 下游 stale 立即进入权威健康，不必等下一次全量水合", async () => {
+    const scaffold = { genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫" };
+    const cache = { drafts: {}, scaffolds: { audience: scaffold }, checks: {}, states: { audience: "done" }, history: [] };
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ _t: Date.now() + 10_000, ...cache }));
+    const { mod, client } = await loadSync({
+      snowflakeWorkspace: {
+        ready_to_materialize: false, current_step_key: "book_brief",
+        steps: [
+          { step_key: "book_brief", status: "pending_review", gate_satisfied: false, health: {}, completeness: {},
+            draft: { category: scaffold.genre, target_reader: scaffold.reader, delight_reason: scaffold.pleasure, story_kind: scaffold.source,
+              genre_promise: scaffold.exclude, expected_reader_emotion: scaffold.emotion, fe_text: "", fe_scaffold: scaffold, fe_checks: [], fe_state: "done", fe_t: 1 } },
+          { step_key: "one_sentence_summary", status: "approved", gate_satisfied: true, version: 1, health: {}, completeness: {},
+            draft: { summary: "林岑必须交出母本，但交出去弟弟就没了退路。" }, artifact: { step_run_id: "run_logline_v1", input_refs: { book_brief: "run_brief_v1" } } },
+        ],
+      },
+    });
+    client.apiPost.mockResolvedValue({
+      step: { step_key: "book_brief", status: "approved", draft: {}, health: {}, completeness: {}, artifact: { step_run_id: "run_brief_v2", input_refs: {} } },
+      workspace: { steps: [
+        { step_key: "book_brief", status: "approved", gate_satisfied: true, draft: {}, health: {}, completeness: {}, artifact: { step_run_id: "run_brief_v2", input_refs: {} } },
+        { step_key: "one_sentence_summary", status: "stale", gate_satisfied: false, version: 1, stale_reason: "book_brief 改了被消费字段 ['target_reader']", stale_accepted_at: null,
+          draft: { summary: "林岑必须交出母本，但交出去弟弟就没了退路。" }, health: {}, completeness: {}, artifact: { step_run_id: "run_logline_v1", input_refs: { book_brief: "run_brief_v1" } } },
+      ] },
+    });
+    await vi.waitFor(() => expect((mod.SnowSync.health("prj-main").audience || {}).beStatus).toBe("pending_review"), T);
+    expect(mod.SnowSync.health("prj-main").logline.beStatus).toBe("approved");
+    saveCache(cache);
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(true), T);
+    await vi.waitFor(() => expect((mod.SnowSync.health("prj-main").logline || {}).beStatus).toBe("stale"), T);
+    const logline = mod.SnowSync.health("prj-main").logline;
+    expect(logline.staleReason).toContain("book_brief");
+    expect(logline.inputRefs).toEqual({ book_brief: "run_brief_v1" });
+    expect(mod.SnowSync.health("prj-main").audience.stepRunId).toBe("run_brief_v2");
+  });
+
   it("阶段 E：acceptStale 走 accept-stale 端点并刷新权威健康；失败时不动健康", async () => {
     const { mod, client } = await loadSync({});
     mod.SnowSync.applyServerStep("prj-main", "paragraph", {
@@ -411,8 +444,11 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       step_key: "one_paragraph_summary", status: "stale", gate_satisfied: true,
       stale_reason: "one_sentence_summary 改了被消费字段 ['summary']", stale_accepted_at: "2026-09-13T10:00:00Z",
       draft: { sentences: ["一", "二", "三", "四", "五"] }, health: {}, completeness: {},
-      artifact: { step_run_id: "run_para_v1", input_refs: { one_sentence_summary: "run_logline_v1" } },
-    } });
+      // E3 第二步：后端把消费的上游版本刷新到当前
+      artifact: { step_run_id: "run_para_v1", input_refs: { one_sentence_summary: "run_logline_v2" } },
+    }, workspace: { steps: [
+      { step_key: "character_sheets", status: "approved", gate_satisfied: true, draft: { characters: [] }, health: {}, completeness: {}, artifact: { step_run_id: "run_chars_v1", input_refs: {} } },
+    ] } });
     const events = [];
     const onHealth = () => events.push("health");
     window.addEventListener("ws:snow-health", onHealth);
@@ -423,6 +459,8 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(call[1]).toEqual({ note: "措辞改动，五句不受影响" });
     expect(health.staleAcceptedAt).toBe("2026-09-13T10:00:00Z");
     expect(health.gateSatisfied).toBe(true);
+    expect(health.inputRefs).toEqual({ one_sentence_summary: "run_logline_v2" });
+    expect(mod.SnowSync.health("prj-main").characters.gateSatisfied).toBe(true); // 回包里的 workspace 也收进来
     expect(mod.SnowSync.health("prj-main").paragraph.staleAcceptedAt).toBe("2026-09-13T10:00:00Z");
     expect(events).toContain("health");
 

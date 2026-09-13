@@ -582,6 +582,12 @@ class SnowflakeWorkspaceService:
         run.stale_accepted_at = accepted_at
         run.stale_accepted_by = actor_ref or "operator"
         run.stale_accepted_note = note
+        # 阶段 E（E3 第二步）：「仍然有效」是对**现在的**上游版本说的——把消费的上游 step_run_id 与
+        # 逐字段签名重新拍到当前，前端按 input_refs 对照上游版本的「上游已有新版本」提示随之清零，
+        # 下一次上游修订也以作者确认过的这一版为基准比较。
+        latest_by_step = self._latest_by_step(project.project_id)
+        run.input_refs_json = self._input_refs(step_key, latest_by_step)
+        run.consumed_input_sigs_json = snapshot_consumed_sigs(latest_by_step, list(run.input_refs_json.keys()))
         self.session.add(
             OperationLog(
                 event_type="snowflake_step_stale_accepted",

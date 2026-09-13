@@ -16,7 +16,7 @@ vi.mock("./ws-works.jsx", () => ({
   },
 }));
 
-import { WsSnowflake, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap } from "./ws-snow.jsx";
+import { WsSnowflake, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2NormalizeState } from "./ws-snow.jsx";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -127,16 +127,31 @@ describe("阶段 E · 场景规划覆盖格与本地失效图", () => {
     expect(byTitle["链条衔接"].pass).toBe(true);
   });
 
-  it("s2StaleMap：只有已确认的步骤会因上游 rev 超过确认快照而进图，祖先按 DAG 收集", () => {
-    const states = { logline: "done", paragraph: "done", characters: "done", synopsis: "done", outline: "todo" };
-    const revs = { audience: 1, logline: 3, paragraph: 2, characters: 5, synopsis: 1 };
-    const confirmRevs = {
-      logline: { audience: 1 },
-      paragraph: { logline: 3, audience: 1 },
-      characters: { paragraph: 2, logline: 3, audience: 1 },
-      synopsis: { paragraph: 2, logline: 3, audience: 1, characters: 4 },   // 04 改过（5 > 4）
+  it("E3 第二步：需复核只来自后端 status=stale（未确认仍有效）；漂移上游按 input_refs 对照当前 step_run_id", () => {
+    const health = {
+      audience: { beStatus: "approved", stepRunId: "run_brief_v1", inputRefs: {} },
+      logline: { beStatus: "approved", stepRunId: "run_logline_v2", inputRefs: { book_brief: "run_brief_v1" } },
+      paragraph: { beStatus: "stale", staleAcceptedAt: null, staleReason: "one_sentence_summary 改了被消费字段 ['summary']",
+        stepRunId: "run_para_v1", inputRefs: { book_brief: "run_brief_v1", one_sentence_summary: "run_logline_v1" } },
+      // 作者已「确认仍有效」：后端刷新了它消费的版本，不再进需复核图
+      characters: { beStatus: "stale", staleAcceptedAt: "2026-09-13T10:00:00Z", stepRunId: "run_chars_v1", inputRefs: { one_sentence_summary: "run_logline_v2" } },
+      // 上游有了新版本但后端没判定失效（消费的字段没变）：只是漂移提示，不算需复核
+      synopsis: { beStatus: "approved", stepRunId: "run_syn_v1", inputRefs: { one_sentence_summary: "run_logline_v1" } },
+      // 后端 stale 但没有 input_refs 记录（旧数据）：仍需复核，漂移列表为空
+      outline: { beStatus: "stale", staleAcceptedAt: null, stepRunId: "run_out_v1", inputRefs: {} },
     };
-    const map = s2StaleMap(states, revs, confirmRevs);
-    expect(map).toEqual({ synopsis: ["characters"] });
+    expect(s2UpstreamDrift(health, "paragraph")).toEqual(["logline"]);   // book_brief 没变，不在列表里
+    expect(s2UpstreamDrift(health, "synopsis")).toEqual(["logline"]);
+    expect(s2UpstreamDrift(health, "characters")).toEqual([]);
+    expect(s2StaleMap(health)).toEqual({ paragraph: ["logline"], outline: [] });
+    expect(s2StaleMap({})).toEqual({});
+    expect(s2StaleMap(undefined)).toEqual({});
+  });
+
+  it("E3 第二步：旧缓存里的 revs / confirmRevs 被归一化丢弃，不再进入状态", () => {
+    const normalized = s2NormalizeState({ drafts: {}, states: { logline: "done" }, revs: { logline: 3 }, confirmRevs: { paragraph: { logline: 2 } } });
+    expect(normalized).not.toHaveProperty("revs");
+    expect(normalized).not.toHaveProperty("confirmRevs");
+    expect(normalized.states.logline).toBe("done");
   });
 });

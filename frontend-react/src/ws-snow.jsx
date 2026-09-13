@@ -513,18 +513,13 @@ async function s2GenerateCands(active, data, drafts, scaffolds) {
    LLM 不可用时诚实报错，绝不落一版启发式草稿冒充）。 */
 
 /* ---- downstream staleness (the fractal method's cheap-backtracking core) ----
-   Each step carries a content revision number (revs), bumped whenever its
-   folded content changes. When a step is confirmed we snapshot the current
-   rev of every upstream ancestor (confirmRevs). A confirmed step is "stale"
-   when any ancestor's rev has advanced past the snapshot — i.e. an upstream
-   layer was edited after this one was last reviewed. */
-function s2Sig(text) {
-  const t = text || ""; let h = 0;
-  for (let i = 0; i < t.length; i++) { h = (Math.imul(h, 31) + t.charCodeAt(i)) | 0; }
-  return h + ":" + t.length;
-}
+   阶段 E（E3 第二步）：失效的单一真相在后端。后端在再次批准上游时按「本步消费的字段」的
+   签名判定失效（status=stale + stale_reason），前端只读它——本地的 revs / confirmRevs 图
+   已移除，不再有第二套失效算法。另外按本步 artifact.input_refs（写入时消费的上游
+   step_run_id）对照各上游现在的 step_run_id，得到「哪些上游已有新版本」：这是给作者的
+   方向指引与上游 diff 的依据，不是失效判定——后端没标 stale 的步骤不显示「需复核」。 */
 /* 依赖是 DAG 而非单亲链：fromKey 是主展开源，alsoFrom 是跨轨依赖
-   （如 05 梗概 / 09 场景列表也依赖 04 角色表：改角色同样触发复核）。 */
+   （如 05 梗概 / 09 场景列表也依赖 04 角色表：改角色同样触发复核）。引用面板用它列上游。 */
 function s2Ancestors(key) {
   const out = []; const seen = new Set([key]); let frontier = [key];
   while (frontier.length) {
@@ -538,21 +533,23 @@ function s2Ancestors(key) {
   }
   return out;
 }
-function s2StaleMap(states, revs, confirmRevs) {
+// 本步写入时消费的上游版本（input_refs）与各上游现在的版本不同 → 这些上游「已有新版本」
+function s2UpstreamDrift(health, key) {
+  const refs = (((health || {})[key]) || {}).inputRefs || {};
+  return S2_STEPS.filter(s => {
+    const oldRun = refs[S2_BE_KEY[s.key]];
+    const now = (((health || {})[s.key]) || {}).stepRunId;
+    return !!(oldRun && now && oldRun !== now);
+  }).map(s => s.key);
+}
+// 需复核图：只有后端 status=stale 且作者尚未「确认仍有效」的步骤；值是漂移的上游列表（可能为空）
+function s2StaleMap(health) {
   const map = {};
   S2_STEPS.forEach(s => {
-    if (states[s.key] !== "done") return;
-    const cr = (confirmRevs || {})[s.key] || {};
-    const dirty = s2Ancestors(s.key).filter(a => ((revs || {})[a] || 0) > (cr[a] || 0));
-    if (dirty.length) map[s.key] = dirty; // nearest dirty ancestor first
+    const b = (health || {})[s.key];
+    if (b && b.beStatus === "stale" && !b.staleAcceptedAt) map[s.key] = s2UpstreamDrift(health, s.key);
   });
   return map;
-}
-// snapshot of every ancestor's current rev — recorded at confirm/review time
-function s2SnapAncestors(key, revs) {
-  const snap = {};
-  s2Ancestors(key).forEach(a => { snap[a] = (revs || {})[a] || 0; });
-  return snap;
 }
 
 /* ---- persistence helpers (localStorage, per-work namespaced) ---- */
@@ -633,15 +630,14 @@ function s2MergeChecks(stored) {
    同步层和视图层共用这一条边界，避免“刚批准的服务端真相”因为 React 补齐空脚手架
    而被误判为作者编辑，再写回成 pending_review。 */
 function s2NormalizeState(saved) {
-  const source = saved || {};
+  const source = { ...(saved || {}) };
+  delete source.revs; delete source.confirmRevs; // E3 第二步：旧缓存里的本地失效图直接丢弃
   return {
     ...source,
     drafts: { ...s2DefaultDrafts(), ...(source.drafts || {}) },
     scaffolds: s2MergeScaffolds(source.scaffolds),
     checks: s2MergeChecks(source.checks),
     states: { ...s2DefaultStates(), ...(source.states || {}) },
-    revs: { ...Object.fromEntries(S2_STEPS.map(s => [s.key, 0])), ...(source.revs || {}) },
-    confirmRevs: { ...(source.confirmRevs || {}) },
     history: Array.isArray(source.history) ? source.history : [],
     _t: source._t || Date.now(),
   };
@@ -669,12 +665,9 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const [scaffolds, setScaffolds] = useSS(() => s2MergeScaffolds(saved.scaffolds));
   const [checks, setChecks] = useSS(() => s2MergeChecks(saved.checks));
   const [states, setStates] = useSS(() => ({ ...s2DefaultStates(), ...(saved.states || {}) }));
-  const [revs, setRevs] = useSS(() => ({ ...Object.fromEntries(S2_STEPS.map(s => [s.key, 0])), ...(saved.revs || {}) }));
-  const [confirmRevs, setConfirmRevs] = useSS(() => ({ ...(saved.confirmRevs || {}) }));
   const [history, setHistory] = useSS(() => saved.history || []);
   const latestRef = useSR();
-  latestRef.current = { drafts, scaffolds, checks, states, revs, confirmRevs, history };
-  const sigRef = useSR(null);
+  latestRef.current = { drafts, scaffolds, checks, states, history };
   const [savedAt, setSavedAt] = useSS(saved._t || null);
   const snowWorkId = String(myKey || "").split("::")[1] || "";
   const [syncState, setSyncState] = useSS(() => {
@@ -776,14 +769,13 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const candMeta = gen ? { ai: true, at: gen.at } : { ai: false };
   const idx = S2_STEPS.findIndex(s => s.key === activeKey);
   const doneCount = S2_STEPS.filter(s => states[s.key] === "done").length;
-  const staleMap = s2StaleMap(states, revs, confirmRevs);
-  /* 阶段 E：后端 status=stale 且未确认仍有效，是失效的权威真相；本地 revs 图只是乐观预判。
-     两者并行展示、后端优先：后端标 stale 的步即使本地图没算出脏祖先，也进 staleMap（空祖先列表）。 */
-  const beStaleOf = (k) => { const b = beHealth[k]; return !!(b && b.beStatus === "stale" && !b.staleAcceptedAt); };
-  S2_STEPS.forEach(s => { if (beStaleOf(s.key) && !staleMap[s.key]) staleMap[s.key] = []; });
+  /* 阶段 E（E3 第二步）：需复核只来自后端 status=stale（未确认仍有效）；值是按 input_refs 算出的
+     「已有新版本」的上游列表，作方向指引与 diff 依据。本地 revs 图已移除。 */
+  const staleMap = s2StaleMap(beHealth);
+  const beStaleOf = (k) => !!staleMap[k];
   const staleCount = Object.keys(staleMap).length;
-  const curStale = staleMap[activeKey];   // array of dirty ancestor keys, or undefined
-  const curBeStale = beStaleOf(activeKey) ? beHealth[activeKey] : null;
+  const curStale = staleMap[activeKey];   // 漂移上游 key 列表（可能为空数组），或 undefined
+  const curBeStale = curStale ? beHealth[activeKey] : null;
   const [upDiff, setUpDiff] = useSS(null); // 阶段 E：上游 diff 对话框 { key, loading, items, error, reason }
 
   /* 统一回执：UndoToast（ws-undo-toast.jsx）。保留 (label, tone) 旧签名，25+ 调用点不动 */
@@ -818,29 +810,26 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   };
   const confirmStep = () => {
     setStates(prev => ({ ...prev, [activeKey]: "done" }));
-    setConfirmRevs(prev => ({ ...prev, [activeKey]: s2SnapAncestors(activeKey, revs) }));
     pushHist("确认本步", `${active.num} ${active.name}`, "我", snapNow(activeKey));
     showToast(`已确认 · ${active.name}`, "sage");
     const ni = nextUnfinished(idx); if (ni >= 0) goStep(ni);
   };
-  /* re-review a stale step in place: realign its upstream snapshot, stay put.
-     阶段 E：后端标 stale 的步骤，「已复核」先在服务端留痕（accept-stale），失败就不动本地图——
-     否则本地看着已对齐、后端仍 stale，两边又各说各话。 */
+  /* re-review a stale step in place. 阶段 E（E3 第二步）：「已复核」= 在服务端记下「仍然有效」
+     （accept-stale，后端把消费的上游版本刷新到当前），回包刷新健康后横幅自然消失；失败就什么都不改——
+     没有本地图可以偷偷对齐，两边永远一致。 */
   const reviewStep = async () => {
-    if (beStaleOf(activeKey)) {
-      try {
-        let workId = null; try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
-        if (!workId || !(window.SnowSync && window.SnowSync.acceptStale)) throw new Error("同步层未就绪");
-        await window.SnowSync.acceptStale(workId, activeKey, "");
-      } catch (err) {
-        showToast("复核未能记入服务端：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
-        return;
-      }
+    if (!beStaleOf(activeKey)) return;
+    try {
+      let workId = null; try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+      if (!workId || !(window.SnowSync && window.SnowSync.acceptStale)) throw new Error("同步层未就绪");
+      await window.SnowSync.acceptStale(workId, activeKey, "");
+    } catch (err) {
+      showToast("复核未能记入服务端：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      return;
     }
-    setConfirmRevs(prev => ({ ...prev, [activeKey]: s2SnapAncestors(activeKey, revs) }));
     setStates(prev => ({ ...prev, [activeKey]: "done" }));
     pushHist("复核对齐", `${active.num} ${active.name}`, "我", snapNow(activeKey));
-    showToast(`已复核 · ${active.name} 与上游重新对齐`, "sage");
+    showToast(`已复核 · ${active.name} 仍然有效，已在服务端留痕`, "sage");
   };
   /* 阶段 E：看清上游改了什么——本步确认时消费的上游版本 vs 现在的版本（后端 input_refs + history） */
   const showUpstreamDiff = async () => {
@@ -1180,21 +1169,11 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [idx, activeKey, states, ctxOpen]);
-  /* bump a step's revision whenever its folded content changes (drives staleness) */
-  useSE(() => {
-    const cur = {};
-    S2_STEPS.forEach(s => { cur[s.key] = s2Sig(s2Content(drafts[s.key], scaffolds[s.key])); });
-    if (!sigRef.current) { sigRef.current = cur; return; }
-    const changed = S2_STEPS.filter(s => cur[s.key] !== sigRef.current[s.key]).map(s => s.key);
-    if (changed.length) setRevs(prev => { const n = { ...prev }; changed.forEach(k => { n[k] = (n[k] || 0) + 1; }); return n; });
-    sigRef.current = cur;
-  }, [drafts, scaffolds]);
-
   /* persist to localStorage (debounced) */
   useSE(() => {
     const id = setTimeout(() => {
       try {
-        localStorage.setItem(myKey, JSON.stringify({ drafts, scaffolds, checks, states, revs, confirmRevs, history, _t: Date.now() }));
+        localStorage.setItem(myKey, JSON.stringify({ drafts, scaffolds, checks, states, history, _t: Date.now() }));
         setSavedAt(Date.now());
         window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: myKey }));
       } catch (e) {
@@ -1202,7 +1181,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       }
     }, 450);
     return () => clearTimeout(id);
-  }, [drafts, scaffolds, checks, states, revs, confirmRevs, history]);
+  }, [drafts, scaffolds, checks, states, history]);
 
   /* 下一跳握手：分章预览发来 flush 请求时，不等 450ms 防抖，立即把当前内存态落盘
      并触发 SnowSync 上行。这样“确认本步 → 立刻整理”不会读取到上一版后端闸门。 */
@@ -1242,10 +1221,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       setScaffolds(s2MergeScaffolds(s.scaffolds));
       setChecks(s2MergeChecks(s.checks));
       setStates({ ...s2DefaultStates(), ...(s.states || {}) });
-      setRevs({ ...Object.fromEntries(S2_STEPS.map(x => [x.key, 0])), ...(s.revs || {}) });
-      setConfirmRevs({ ...(s.confirmRevs || {}) });
       setHistory(s.history || []); // G2：跨会话 journal（无 snap 条目天然只读）
-      sigRef.current = null;
     };
     window.addEventListener("ws:snow-hydrated", onHyd);
     return () => window.removeEventListener("ws:snow-hydrated", onHyd);
@@ -1258,10 +1234,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     setScaffolds(s2MergeScaffolds(null));
     setChecks(s2DefaultChecks());
     setStates(s2DefaultStates());
-    setRevs(Object.fromEntries(S2_STEPS.map(s => [s.key, 0])));
-    setConfirmRevs({});
     setHistory([]);
-    sigRef.current = null;
     showToast("已重置为示例稿", "slate");
   };
 
@@ -1480,30 +1453,30 @@ function WsSnowflake({ go, initialStep, onOverview }) {
               </div>
             </header>
 
-            {(curStale || curBeStale) && (
+            {curStale && (
               <div className="sf-stale-banner" data-testid="snow-stale-banner">
                 <span className="sf-stale-banner-ic"><I.AlertTriangle size={15} /></span>
                 <div className="sf-stale-body">
-                  <div className="sf-stale-title">上游已改动 · 本步需复核一致性{curBeStale ? "" : " · 本地预判"}</div>
+                  <div className="sf-stale-title">上游已改动 · 本步需复核一致性</div>
                   <div className="sf-stale-sub">
                     {curBeStale && curBeStale.staleReason && (
                       <span className="sf-stale-reason" title="后端失效分析给出的原因">{curBeStale.staleReason}</span>
                     )}
-                    {curStale && curStale.length > 0 && (<>
-                      你确认本步之后，
+                    {curStale.length > 0 && (<>
+                      本步确认后，
                       {curStale.map((a) => { const u = S2_STEPS.find(x => x.key === a); return (
                         <button key={a} className="sf-stale-up" onClick={() => setActiveKey(a)}>{u.num} {u.name}<I.ArrowRight size={10} /></button>
                       ); })}
-                      发生了变化。
+                      有了新版本。
                     </>)}
-                    先看看上游改了什么；可以按新上游重新展开本步，或核对无误后点“已复核”{curBeStale ? "（会在服务端留痕）" : ""}。
+                    先看看上游改了什么；可以按新上游重新展开本步，或核对无误后点“已复核”（会在服务端留痕）。
                   </div>
                   <div className="sf-stale-actions">
                     <button className="btn btn-quiet btn-sm" onClick={showUpstreamDiff} data-testid="snow-stale-diff" title="对照本步确认时消费的上游版本与现在的版本"><I.GitBranch size={12} /> 查看上游改了什么</button>
                     <button className="btn btn-quiet btn-sm" disabled={structBusy} onClick={regenFromUpstream} data-testid="snow-stale-regen" title="用现在的上游材料重新生成本步（生成前留底，可回滚），生成后需要你再确认"><I.Wand size={12} className={structBusy ? "sf-spin" : ""} /> 按新上游重新展开</button>
                   </div>
                 </div>
-                <button className="btn btn-accent btn-sm sf-stale-ok" onClick={reviewStep} title={curBeStale ? "核对无误：在服务端记下「仍然有效」，并与上游重新对齐" : "重新与上游对齐"}><I.Check size={13} /> 已复核</button>
+                <button className="btn btn-accent btn-sm sf-stale-ok" onClick={reviewStep} title="核对无误：在服务端记下「仍然有效」（消费的上游版本刷新到当前）"><I.Check size={13} /> 已复核</button>
               </div>
             )}
 
@@ -3346,4 +3319,4 @@ function WsConstruct({ go }) {
 Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2NextSceneRowId, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap };
+export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2NextSceneRowId, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift };
