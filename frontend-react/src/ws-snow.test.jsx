@@ -16,7 +16,7 @@ vi.mock("./ws-works.jsx", () => ({
   },
 }));
 
-import { WsSnowflake } from "./ws-snow.jsx";
+import { WsSnowflake, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap } from "./ws-snow.jsx";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -93,5 +93,50 @@ describe("真实新项目的雪花顶部主操作", () => {
     // 预览阶段绝不落库
     expect(catalog.adoptOutline).not.toHaveBeenCalled();
     expect(window.SnowSync.materialize).not.toHaveBeenCalled();
+  });
+});
+
+
+/* —— 阶段 E：10 的覆盖格按 09 的形态数槽；本地失效图只是乐观预判（后端优先的合并在视图里） —— */
+describe("阶段 E · 场景规划覆盖格与本地失效图", () => {
+  it("s2PlanSlots / s2PlanState：传入 09 的类型时按它取三槽，存储的 plan.mode 只是兜底", () => {
+    const legacyReactivePlan = { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人", goal: "", conflict: "", setback: "" };
+    expect(s2PlanSlots(legacyReactivePlan)).toEqual(["reaction", "dilemma", "decision"]);
+    expect(s2PlanState(legacyReactivePlan)).toBe(2);
+    // 09 把这一场切回主动：格子必须按 GCS 数槽——三个 RDD 槽再满也算「未规划」
+    expect(s2PlanSlots(legacyReactivePlan, "proactive")).toEqual(["goal", "conflict", "setback"]);
+    expect(s2PlanState(legacyReactivePlan, "proactive")).toBe(0);
+    expect(s2PlanState({ mode: "proactive", goal: "拿到账本", conflict: "", setback: "" }, "reactive")).toBe(0);
+    expect(s2PlanState({ mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "" }, "proactive")).toBe(1);
+    expect(s2PlanState(null, "proactive")).toBe(0);
+  });
+
+  it("s2PlanAuto：逐场覆盖与三槽填满都按 09 的类型判", () => {
+    const scenes = { list: [
+      { id: "S01", type: "proactive" },
+      { id: "S02", type: "proactive" },   // 09 已切回主动，存储的 plan 还是 RDD
+    ] };
+    const planning = { plans: {
+      S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧" },
+      S02: { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人" },
+    } };
+    const auto = s2PlanAuto(planning, scenes);
+    const byTitle = Object.fromEntries(auto.map(a => [a.t, a]));
+    expect(byTitle["逐场覆盖"].val).toBe("1/2 场已规划");
+    expect(byTitle["三槽填满"].val).toBe("1/2 场三槽齐");
+    expect(byTitle["链条衔接"].pass).toBe(true);
+  });
+
+  it("s2StaleMap：只有已确认的步骤会因上游 rev 超过确认快照而进图，祖先按 DAG 收集", () => {
+    const states = { logline: "done", paragraph: "done", characters: "done", synopsis: "done", outline: "todo" };
+    const revs = { audience: 1, logline: 3, paragraph: 2, characters: 5, synopsis: 1 };
+    const confirmRevs = {
+      logline: { audience: 1 },
+      paragraph: { logline: 3, audience: 1 },
+      characters: { paragraph: 2, logline: 3, audience: 1 },
+      synopsis: { paragraph: 2, logline: 3, audience: 1, characters: 4 },   // 04 改过（5 > 4）
+    };
+    const map = s2StaleMap(states, revs, confirmRevs);
+    expect(map).toEqual({ synopsis: ["characters"] });
   });
 });

@@ -367,6 +367,140 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(back.scaffold.chars.c1.belief).toBe("记录即救赎");
   });
 
+  /* —— 阶段 E：失效的单一真相在后端——health 暴露 staleReason / inputRefs / stepRunId，
+     accept-stale 留痕并刷新健康，upstreamChanges 用 input_refs 对照上游历史拼出消费版本 vs 当前版本 —— */
+  it("阶段 E：后端 stale 步的健康带原因与消费版本；stale 水合成「已确认」而非「需补」", async () => {
+    const ws = {
+      ready_to_materialize: false, current_step_key: "one_paragraph_summary",
+      steps: [
+        { step_key: "one_sentence_summary", status: "approved", gate_satisfied: true, version: 2,
+          draft: { summary: "林岑必须烧掉母本，但烧掉它养母就永远逍遥。" }, health: {}, completeness: {},
+          artifact: { step_run_id: "run_logline_v2", input_refs: { book_brief: "run_brief_v1" } } },
+        { step_key: "one_paragraph_summary", status: "stale", gate_satisfied: false, version: 1,
+          stale_reason: "one_sentence_summary 改了被消费字段 ['summary']", stale_accepted_at: null,
+          draft: { sentences: ["一", "二", "三", "四", "五"], moral_premise: "逃避代价只会放大伤害。" }, health: {}, completeness: {},
+          artifact: { step_run_id: "run_para_v1", input_refs: { book_brief: "run_brief_v1", one_sentence_summary: "run_logline_v1" } } },
+      ],
+    };
+    const { mod } = await loadSync({ snowflakeWorkspace: ws });
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "prj-main" }));
+    await vi.waitFor(() => expect((mod.SnowSync.health("prj-main").paragraph || {}).beStatus).toBe("stale"), T);
+    const h = mod.SnowSync.health("prj-main");
+    expect(h.paragraph.staleReason).toContain("one_sentence_summary");
+    expect(h.paragraph.staleAcceptedAt).toBeNull();
+    expect(h.paragraph.stepRunId).toBe("run_para_v1");
+    expect(h.paragraph.inputRefs).toEqual({ book_brief: "run_brief_v1", one_sentence_summary: "run_logline_v1" });
+    expect(h.logline.stepRunId).toBe("run_logline_v2");
+    expect(h.logline.version).toBe(2);
+    // 规范字段水合：后端 stale 的步骤在前端仍是「已确认」，需复核由健康驱动，不再被打成「需补」
+    const cache = JSON.parse(window.localStorage.getItem(CACHE_KEY));
+    expect(cache.states.paragraph).toBe("done");
+    expect(cache.states.logline).toBe("done");
+  });
+
+  it("阶段 E：acceptStale 走 accept-stale 端点并刷新权威健康；失败时不动健康", async () => {
+    const { mod, client } = await loadSync({});
+    mod.SnowSync.applyServerStep("prj-main", "paragraph", {
+      step_key: "one_paragraph_summary", status: "stale", gate_satisfied: false,
+      stale_reason: "one_sentence_summary 改了被消费字段 ['summary']", stale_accepted_at: null,
+      draft: { sentences: ["一", "二", "三", "四", "五"] }, health: {}, completeness: {},
+      artifact: { step_run_id: "run_para_v1", input_refs: { one_sentence_summary: "run_logline_v1" } },
+    });
+    client.apiPost.mockClear();
+    client.apiPost.mockResolvedValueOnce({ step: {
+      step_key: "one_paragraph_summary", status: "stale", gate_satisfied: true,
+      stale_reason: "one_sentence_summary 改了被消费字段 ['summary']", stale_accepted_at: "2026-09-13T10:00:00Z",
+      draft: { sentences: ["一", "二", "三", "四", "五"] }, health: {}, completeness: {},
+      artifact: { step_run_id: "run_para_v1", input_refs: { one_sentence_summary: "run_logline_v1" } },
+    } });
+    const events = [];
+    const onHealth = () => events.push("health");
+    window.addEventListener("ws:snow-health", onHealth);
+    const health = await mod.SnowSync.acceptStale("prj-main", "paragraph", "措辞改动，五句不受影响");
+    window.removeEventListener("ws:snow-health", onHealth);
+    const call = client.apiPost.mock.calls.find(c => String(c[0]).includes("/steps/one_paragraph_summary/accept-stale"));
+    expect(call).toBeTruthy();
+    expect(call[1]).toEqual({ note: "措辞改动，五句不受影响" });
+    expect(health.staleAcceptedAt).toBe("2026-09-13T10:00:00Z");
+    expect(health.gateSatisfied).toBe(true);
+    expect(mod.SnowSync.health("prj-main").paragraph.staleAcceptedAt).toBe("2026-09-13T10:00:00Z");
+    expect(events).toContain("health");
+
+    // 失败：抛错给视图（视图据此不动本地图），健康保持原样
+    client.apiPost.mockRejectedValueOnce(new Error("network down"));
+    await expect(mod.SnowSync.acceptStale("prj-main", "paragraph")).rejects.toThrow("network down");
+    expect(mod.SnowSync.health("prj-main").paragraph.staleAcceptedAt).toBe("2026-09-13T10:00:00Z");
+    await expect(mod.SnowSync.acceptStale("prj-main", "not-a-step")).rejects.toThrow("步骤未知");
+  });
+
+  it("阶段 E：upstreamChanges 只对变了的上游拉历史，按 step_run_id 配对消费版本与当前版本并折成文本", async () => {
+    const { mod, client } = await loadSync({});
+    mod.SnowSync.applyServerStep("prj-main", "audience", {
+      step_key: "book_brief", status: "approved", gate_satisfied: true, version: 1, draft: { category: "文学悬疑" }, health: {}, completeness: {},
+      artifact: { step_run_id: "run_brief_v1", input_refs: {} },
+    });
+    mod.SnowSync.applyServerStep("prj-main", "logline", {
+      step_key: "one_sentence_summary", status: "approved", gate_satisfied: true, version: 2,
+      draft: { summary: "林岑必须烧掉母本，但烧掉它养母就永远逍遥。" }, health: {}, completeness: {},
+      artifact: { step_run_id: "run_logline_v2", input_refs: { book_brief: "run_brief_v1" } },
+    });
+    mod.SnowSync.applyServerStep("prj-main", "paragraph", {
+      step_key: "one_paragraph_summary", status: "stale", gate_satisfied: false, version: 1,
+      stale_reason: "one_sentence_summary 改了被消费字段 ['summary']",
+      draft: { sentences: ["一", "二", "三", "四", "五"] }, health: {}, completeness: {},
+      artifact: { step_run_id: "run_para_v1", input_refs: { book_brief: "run_brief_v1", one_sentence_summary: "run_logline_v1" } },
+    });
+    client.apiGet.mockClear();
+    client.apiGet.mockImplementation(async (url) => {
+      if (String(url).includes("/steps/one_sentence_summary/history")) {
+        expect(String(url)).toContain("include_draft=true");
+        return { items: [
+          { step_run_id: "run_logline_v2", version: 2, status: "approved", draft: { summary: "林岑必须烧掉母本，但烧掉它养母就永远逍遥。" } },
+          { step_run_id: "run_logline_v1", version: 1, status: "superseded", draft: { summary: "林岑必须交出母本，但交出去弟弟就没了退路。" } },
+        ] };
+      }
+      throw new Error("unexpected GET " + url);
+    });
+    const items = await mod.SnowSync.upstreamChanges("prj-main", "paragraph");
+    expect(items).toHaveLength(1);                                  // book_brief 没变，不拉它的历史
+    expect(items[0]).toMatchObject({ feKey: "logline", beKey: "one_sentence_summary", oldRunId: "run_logline_v1", newRunId: "run_logline_v2", oldFound: true, oldVersion: 1, newVersion: 2 });
+    expect(items[0].oldText).toBe("林岑必须交出母本，但交出去弟弟就没了退路。");
+    expect(items[0].newText).toBe("林岑必须烧掉母本，但烧掉它养母就永远逍遥。");
+    expect(client.apiGet).toHaveBeenCalledTimes(1);
+
+    // 旧版本已不在历史里：仍返回当前版本文本并标 oldFound=false；脚手架型步骤折成多行文本
+    mod.SnowSync.applyServerStep("prj-main", "characters", {
+      step_key: "character_sheets", status: "approved", gate_satisfied: true, version: 3,
+      draft: { characters: [{ character_id: "c1", display_name: "林岑", role: "主角", goal: "查清谁改了档案", values: ["没有什么比真相更重要"] }] },
+      health: {}, completeness: {}, artifact: { step_run_id: "run_chars_v3", input_refs: {} },
+    });
+    mod.SnowSync.applyServerStep("prj-main", "synopsis", {
+      step_key: "short_synopsis", status: "stale", gate_satisfied: false, version: 1,
+      draft: { paragraphs: ["", "", "", "", ""] }, health: {}, completeness: {},
+      artifact: { step_run_id: "run_syn_v1", input_refs: { character_sheets: "run_chars_v1" } },
+    });
+    client.apiGet.mockImplementation(async (url) => {
+      if (String(url).includes("/steps/character_sheets/history")) {
+        return { items: [{ step_run_id: "run_chars_v3", version: 3, status: "approved", draft: { characters: [{ character_id: "c1", display_name: "林岑", role: "主角", goal: "查清谁改了档案", values: ["没有什么比真相更重要"] }] } }] };
+      }
+      throw new Error("unexpected GET " + url);
+    });
+    const [chars] = await mod.SnowSync.upstreamChanges("prj-main", "synopsis");
+    expect(chars.oldFound).toBe(false);
+    expect(chars.oldText).toBe("");
+    expect(chars.newText).toContain("林岑");
+    expect(chars.newText).toContain("查清谁改了档案");
+    expect(chars.newText).toContain("真相");
+    // 没有 input_refs 记录（旧数据）→ 空数组，不发任何请求
+    client.apiGet.mockClear();
+    mod.SnowSync.applyServerStep("prj-main", "backstory", {
+      step_key: "character_synopses", status: "stale", gate_satisfied: false, version: 1, draft: { characters: [] }, health: {}, completeness: {},
+      artifact: { step_run_id: "run_bk_v1" },
+    });
+    expect(await mod.SnowSync.upstreamChanges("prj-main", "backstory")).toEqual([]);
+    expect(client.apiGet).not.toHaveBeenCalled();
+  });
+
   it("outline 往返：paragraphs 是五段展开而非章行镜像；历史章行镜像水合成空槽；散文不造假章", async () => {
     const { mod } = await loadSync({});
     const saved = { scaffolds: { outline: {

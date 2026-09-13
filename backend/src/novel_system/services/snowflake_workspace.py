@@ -2490,6 +2490,9 @@ class SnowflakeWorkspaceService:
             "stale_accepted_at": run.stale_accepted_at,
             "stale_accepted_by": run.stale_accepted_by,
             "stale_accepted_note": run.stale_accepted_note,
+            # 阶段 E：本版草稿写入时消费的上游 step_run_id（按 step_key）——前端用它对照
+            # 各上游现在的 step_run_id，把「上游改了什么」拉成消费版本 vs 当前版本的 diff。
+            "input_refs": deepcopy(run.input_refs_json or {}),
             "created_at": run.created_at,
             "updated_at": run.updated_at,
         }

@@ -79,7 +79,7 @@ uv export --locked --extra dev --extra chroma --no-emit-project --format require
 7. 在 `成稿中心` 的“正史”页签核对正文事实候选，完成每场提交后再通读当前服务端正文并批准终稿；需要重开时填写可审计原因。文学质量提示始终需要作者判断。
 
 雪花步骤允许带原因跳过，但读者定位、一句话概括、一段话概括、场景列表和场景规划是结构物化前的硬检查项。
-完整十步依次为：读者定位、一句话概括、一段话概括、角色摘要表、一页梗概、角色背景故事、长篇大纲、角色全档案、场景列表、场景规划。
+完整十步依次为：读者定位、一句话概括、一段话概括、角色摘要表、一页梗概、角色背景故事、长篇大纲、角色全档案、场景列表、场景规划。各步与 Ingermanson 雪花写作法的逐条对照、字段与有意的差异见 [雪花方法契约](docs/snowflake-method-contract.md)。
 
 ## 数据库与迁移
 
@@ -113,7 +113,7 @@ $env:NOVEL_SYSTEM_CORS_ORIGINS = "https://你的前端域名"
 
 浏览器客户端通过 `X-Novel-Access-Token` 发送令牌；可用 `VITE_NOVEL_SYSTEM_ACCESS_TOKEN` 注入默认值，运行时值只保存在 `sessionStorage`。这是共享访问令牌，不是用户登录、RBAC 或租户隔离；构建进前端的值也不能视为对浏览器用户保密。
 
-完整的网络、额度、内容复核、路径导入和恢复边界见 [运行安全与资源边界](docs/runtime-safety.md)。长篇冻结与最终状态语义见 [长篇运行时契约与终稿状态](docs/longform-runtime-contract.md)，正文事实的候选、复核和提交规则见 [正史连续性与长篇记忆](docs/canon-continuity.md)。本轮整改与残余盲区见 [系统整改记录（2026-07-16）](docs/system-remediation-2026-07-16.md)。
+完整的网络、额度、内容复核、路径导入和恢复边界见 [运行安全与资源边界](docs/runtime-safety.md)；正文事实的候选、复核和提交规则见 [正史连续性与长篇记忆](docs/canon-continuity.md)；雪花十步、场景形态与闸门对照原著的契约见 [雪花方法契约](docs/snowflake-method-contract.md)。
 
 完整文档入口、维护状态和历史资料边界见 [文档导航](docs/README.md)。日常使用以 [操作手册](docs/operator-manual.md) 为准；日期化的计划、证据和进度记录只说明当时状态，不替代 README、操作手册和运行时契约。
 

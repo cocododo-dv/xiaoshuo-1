@@ -22,6 +22,7 @@ import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow.jsx";
 // G5：FE→BE 步骤键映射统一以 ws-snow 的 S2_BE_STEPS 为正源（避免双份漂移）
 const SNOW_STEPS = S2_BE_STEPS;
 const FE_BY_BE = Object.fromEntries(SNOW_STEPS.map(([fe, be]) => [be, fe]));
+const BE_BY_FE = Object.fromEntries(SNOW_STEPS);
 
 const snowCacheKey = (workId) => "ws_snow_state_v2::" + workId;
 const activeWork = () => { try { return (WsWorks && WsWorks.activeId()) || ""; } catch (e) { return ""; } };
@@ -244,7 +245,9 @@ function canonHasContent(feKey, draft) {
   return (d.scenes || []).length > 0;
 }
 
-const BE_STATE_TO_FE = { approved: "done", skipped: "skip", stale: "warn" };
+// 阶段 E：后端 stale = 曾批准、上游又改了——前端态仍是「已确认」，「需复核」由 health 的
+// beStatus / staleReason 驱动（失效的单一真相在后端；本地 revs 图只是乐观预判）。
+const BE_STATE_TO_FE = { approved: "done", skipped: "skip", stale: "done" };
 
 /* ---------- 规范字段保真层（AI 融合 F1） ----------
    后端 generate（结构化整步生成）产出的规范草稿比原型脚手架能表达的更富
@@ -355,8 +358,29 @@ function shapeStepHealth(step) {
     filled: typeof comp.filled_count === "number" ? comp.filled_count : null,
     total: typeof comp.total_count === "number" ? comp.total_count : null,
     gateSatisfied: !!(step && step.gate_satisfied),
-    beStatus: (step && step.status) || null,        // draft / pending_review / approved / skipped
+    beStatus: (step && step.status) || null,        // draft / pending_review / approved / skipped / stale
+    // 阶段 E：失效真相来自后端——原因、是否已确认仍有效、本版与本步确认时消费的上游版本（step_run_id）
+    staleReason: (step && step.stale_reason) || "",
+    staleAcceptedAt: (step && step.stale_accepted_at) || null,
+    version: typeof (step && step.version) === "number" ? step.version : null,
+    stepRunId: (step && step.artifact && step.artifact.step_run_id) || null,
+    inputRefs: (step && step.artifact && step.artifact.input_refs && typeof step.artifact.input_refs === "object")
+      ? { ...step.artifact.input_refs } : {},
   };
+}
+
+/* 规范草稿 → 可读文本（与视图 s2Content 同一折叠法：脚手架里的字符串按出现顺序拼接，跳过空串） */
+function canonText(feKey, draft) {
+  const fe = feFromCanon(feKey, draft || {});
+  if (fe.text != null) return String(fe.text);
+  const out = [];
+  const walk = (v) => {
+    if (typeof v === "string") out.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(fe.scaffold || {});
+  return out.filter(s => s && s.trim()).join("\n");
 }
 
 /* 物化后回流（FE 补接 resync）：workspace 回包自带 resync_status——物化过的场，
@@ -834,6 +858,48 @@ const SnowSync = {
   /* 后端 per-step 权威健康（feKey -> {score,status,gaps,nextActions,missingFields,gateSatisfied,...}）；
      视图用它显示「后端评估」区，与本地实时估算区分。随 ws:snow-health / ws:snow-hydrated 更新。 */
   health(workId) { return snowHealth[workId || activeWork()] || {}; },
+  /* 阶段 E：「已复核」在服务端留痕——POST accept-stale，回包刷新权威健康。只对后端 status=stale 的步有意义。 */
+  async acceptStale(workId, feKey, note) {
+    const id = workId || activeWork();
+    const beKey = BE_BY_FE[feKey];
+    if (!id || !beKey) throw new Error("步骤未知，无法记录复核");
+    const res = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}/accept-stale`, note ? { note } : {});
+    if (res && res.step) {
+      (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(res.step);
+      try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+    }
+    return (snowHealth[id] || {})[feKey] || null;
+  },
+  /* 阶段 E：上游改了什么——按本步 artifact.input_refs（确认/写入时消费的上游 step_run_id）对照各上游
+     现在的 step_run_id，变了的上游拉 history?include_draft=true，把消费版本与现在版本折成可读文本并排返回。
+     没有记录（旧数据）或上游没变 → 空数组，视图据此提示。 */
+  async upstreamChanges(workId, feKey) {
+    const id = workId || activeWork();
+    const health = snowHealth[id] || {};
+    const refs = ((health[feKey] || {}).inputRefs) || {};
+    const changed = Object.entries(refs).map(([beKey, oldRunId]) => {
+      const upFe = FE_BY_BE[beKey];
+      if (!upFe) return null;
+      const now = (health[upFe] || {}).stepRunId || null;
+      return (oldRunId && now && oldRunId !== now) ? { feKey: upFe, beKey, oldRunId, newRunId: now } : null;
+    }).filter(Boolean);
+    const items = [];
+    for (const c of changed) {
+      const hist = await apiGet(`/api/v2/projects/${id}/snowflake-workspace/steps/${c.beKey}/history?include_draft=true`);
+      const rows = (hist && Array.isArray(hist.items)) ? hist.items : [];
+      const oldRow = rows.find(r => r.step_run_id === c.oldRunId) || null;
+      const newRow = rows.find(r => r.step_run_id === c.newRunId) || rows[0] || null;
+      items.push({
+        ...c,
+        oldFound: !!oldRow,
+        oldVersion: oldRow ? oldRow.version : null,
+        newVersion: newRow ? newRow.version : null,
+        oldText: oldRow ? canonText(c.feKey, oldRow.draft) : "",
+        newText: newRow ? canonText(c.feKey, newRow.draft) : "",
+      });
+    }
+    return items;
+  },
   /* 「采纳并结构化」接缝（AI 融合 F1）：generate 回包的 step 落进本地——
      刷新 canon 镜像（后续 push 在它之上保真合并）与权威健康，并把规范草稿
      反推成原型形状 {text?, scaffold?} 交视图写入 drafts/scaffolds。 */

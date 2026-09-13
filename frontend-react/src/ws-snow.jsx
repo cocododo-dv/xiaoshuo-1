@@ -146,11 +146,16 @@ function s2SceneAuto(scaffold) {
 }
 
 /* ---- 10 场景规划：逐场覆盖与链条核验 ---- */
-function s2PlanSlots(plan) { return plan && plan.mode === "reactive" ? ["reaction", "dilemma", "decision"] : ["goal", "conflict", "setback"]; }
+/* 阶段 E：形态以 09 场景列表为真相——传入 type 时按它取三槽；只有拿不到 09 信息时才看存储的 plan.mode。
+   以前覆盖格按存储的 mode 数槽，09 切换类型后格子说「三槽齐」、编辑器却是另一组空槽。 */
+function s2PlanSlots(plan, type) {
+  const mode = type ? (type === "reactive" ? "reactive" : "proactive") : (plan && plan.mode);
+  return mode === "reactive" ? ["reaction", "dilemma", "decision"] : ["goal", "conflict", "setback"];
+}
 // 0 = 未规划 · 1 = 填了一半 · 2 = 三槽齐
-function s2PlanState(plan) {
+function s2PlanState(plan, type) {
   if (!plan) return 0;
-  const slots = s2PlanSlots(plan);
+  const slots = s2PlanSlots(plan, type);
   const n = slots.filter(f => (plan[f] || "").trim()).length;
   return n === slots.length ? 2 : n ? 1 : 0;
 }
@@ -158,10 +163,11 @@ function s2PlanAuto(scaffold, scenesScaffold) {
   const list = (scenesScaffold && scenesScaffold.list) || [];
   const plans = (scaffold && scaffold.plans) || {};
   const total = list.length;
-  const fully = list.filter(s => s2PlanState(plans[s.id]) === 2).length;
-  const partial = list.filter(s => s2PlanState(plans[s.id]) === 1).length;
+  const stateOf = (s) => s2PlanState(plans[s.id], s.type);
+  const fully = list.filter(s => stateOf(s) === 2).length;
+  const partial = list.filter(s => stateOf(s) === 1).length;
   let seamBad = 0; // 已规划的场，它的上一场却还空着 → 「挫败→反应 / 决定→目标」的链条断在那里
-  list.forEach((s, i) => { if (i > 0 && s2PlanState(plans[s.id]) > 0 && s2PlanState(plans[list[i - 1].id]) === 0) seamBad++; });
+  list.forEach((s, i) => { if (i > 0 && stateOf(s) > 0 && stateOf(list[i - 1]) === 0) seamBad++; });
   return [
     { t: "逐场覆盖", pass: total > 0 && fully + partial === total, val: total ? `${fully + partial}/${total} 场已规划` : "09 还没有场景", need: "每场一份" },
     { t: "三槽填满", pass: total > 0 && fully === total, val: partial ? `${partial} 场只填了一半` : `${fully}/${total} 场三槽齐` , need: "GCS / RDD 三槽齐" },
@@ -771,8 +777,14 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const idx = S2_STEPS.findIndex(s => s.key === activeKey);
   const doneCount = S2_STEPS.filter(s => states[s.key] === "done").length;
   const staleMap = s2StaleMap(states, revs, confirmRevs);
+  /* 阶段 E：后端 status=stale 且未确认仍有效，是失效的权威真相；本地 revs 图只是乐观预判。
+     两者并行展示、后端优先：后端标 stale 的步即使本地图没算出脏祖先，也进 staleMap（空祖先列表）。 */
+  const beStaleOf = (k) => { const b = beHealth[k]; return !!(b && b.beStatus === "stale" && !b.staleAcceptedAt); };
+  S2_STEPS.forEach(s => { if (beStaleOf(s.key) && !staleMap[s.key]) staleMap[s.key] = []; });
   const staleCount = Object.keys(staleMap).length;
   const curStale = staleMap[activeKey];   // array of dirty ancestor keys, or undefined
+  const curBeStale = beStaleOf(activeKey) ? beHealth[activeKey] : null;
+  const [upDiff, setUpDiff] = useSS(null); // 阶段 E：上游 diff 对话框 { key, loading, items, error, reason }
 
   /* 统一回执：UndoToast（ws-undo-toast.jsx）。保留 (label, tone) 旧签名，25+ 调用点不动 */
   const showToast = (label, tone) => pushToast({ text: label, tone: tone || "sage", timeout: 4200 });
@@ -811,12 +823,38 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     showToast(`已确认 · ${active.name}`, "sage");
     const ni = nextUnfinished(idx); if (ni >= 0) goStep(ni);
   };
-  /* re-review a stale step in place: realign its upstream snapshot, stay put */
-  const reviewStep = () => {
+  /* re-review a stale step in place: realign its upstream snapshot, stay put.
+     阶段 E：后端标 stale 的步骤，「已复核」先在服务端留痕（accept-stale），失败就不动本地图——
+     否则本地看着已对齐、后端仍 stale，两边又各说各话。 */
+  const reviewStep = async () => {
+    if (beStaleOf(activeKey)) {
+      try {
+        let workId = null; try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+        if (!workId || !(window.SnowSync && window.SnowSync.acceptStale)) throw new Error("同步层未就绪");
+        await window.SnowSync.acceptStale(workId, activeKey, "");
+      } catch (err) {
+        showToast("复核未能记入服务端：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+        return;
+      }
+    }
     setConfirmRevs(prev => ({ ...prev, [activeKey]: s2SnapAncestors(activeKey, revs) }));
     setStates(prev => ({ ...prev, [activeKey]: "done" }));
     pushHist("复核对齐", `${active.num} ${active.name}`, "我", snapNow(activeKey));
     showToast(`已复核 · ${active.name} 与上游重新对齐`, "sage");
+  };
+  /* 阶段 E：看清上游改了什么——本步确认时消费的上游版本 vs 现在的版本（后端 input_refs + history） */
+  const showUpstreamDiff = async () => {
+    const key = activeKey;
+    const reason = curBeStale ? (curBeStale.staleReason || "") : "";
+    setUpDiff({ key, loading: true, items: [], error: null, reason });
+    try {
+      let workId = null; try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+      const items = (workId && window.SnowSync && window.SnowSync.upstreamChanges)
+        ? await window.SnowSync.upstreamChanges(workId, key) : [];
+      setUpDiff({ key, loading: false, items, error: null, reason });
+    } catch (err) {
+      setUpDiff({ key, loading: false, items: [], error: (err && err.message) || "拉取上游历史失败", reason });
+    }
   };
   const skipStep = () => {
     setStates(prev => ({ ...prev, [activeKey]: prev[activeKey] === "done" ? "done" : "skip" }));
@@ -849,7 +887,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
      focusRow 时只回写焦点场的规划（其余场保留本地态，防止未上行编辑被服务端旧值盖掉）。 */
   const [structBusyMap, setStructBusyMap] = useSS({});
   const structBusy = !!structBusyMap[activeKey];
-  const structuredGenerate = async ({ direction = null, focus = null, focusRow = null, focusChars = null, focusChar = null, histAction, histNote, doneAction, doneNote, toastOk, toastFail, switchTab = false, fallbackText = null }) => {
+  const structuredGenerate = async ({ direction = null, focus = null, focusRow = null, focusChars = null, focusChar = null, source = null, histAction, histNote, doneAction, doneNote, toastOk, toastFail, switchTab = false, fallbackText = null }) => {
     const key = activeKey, step = active;
     if (structBusyMap[key]) return false;
     setGenErrMap(prev => ({ ...prev, [key]: null }));
@@ -860,7 +898,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
       const beKey = S2_BE_KEY[key];
       if (!workId || !beKey) throw new Error("作品尚未就绪，稍后重试");
-      const body = { require_llm: true, source: focus ? "fe_scene_focus_ai" : focusChars ? "fe_char_focus_ai" : (direction ? "fe_candidate_adopt" : "fe_scaffold_ai") };
+      const body = { require_llm: true, source: source || (focus ? "fe_scene_focus_ai" : focusChars ? "fe_char_focus_ai" : (direction ? "fe_candidate_adopt" : "fe_scaffold_ai")) };
       if (direction) body.direction_text = direction;
       if (focus) body.focus_scene_refs = focus;
       if (focusChars) body.focus_character_refs = focusChars;
@@ -919,6 +957,20 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     } finally {
       setStructBusyMap(prev => ({ ...prev, [key]: false }));
     }
+  };
+
+  /* 阶段 E：按新上游重新展开本步——用现在的上游材料重新生成（生成前留底，可回滚），
+     本地最新草稿随 draft_override 带入按成员对位合并；生成后本步回到「进行中」，由作者再确认。 */
+  const regenFromUpstream = async () => {
+    const key = activeKey;
+    const ok = await structuredGenerate({
+      source: "fe_restale_regen", switchTab: true,
+      histAction: "按新上游重新展开", histNote: "重展前留底",
+      doneAction: "按新上游重新展开", doneNote: "上游已改，本步已按新上游重新生成，请核对后确认",
+      toastOk: "已按新上游重新展开 · 请核对后确认本步", toastFail: "重新展开失败",
+    });
+    if (ok) setStates(prev => ({ ...prev, [key]: "active" }));
+    return ok;
   };
 
   /* 采纳并结构化：候选正文作为方向蓝本，展开整步 */
@@ -1117,6 +1169,8 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   useSE(() => {
     const inField = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
     const onKey = (e) => {
+      // 阶段 E：焦点在教练输入框时，⌘↵ 是「发送」（它自己处理并 stopPropagation），窗口级不再抢去确认本步
+      if (e.target && e.target.closest && e.target.closest(".sf-coach-input")) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); confirmStep(); return; }
       if (e.key === "Escape" && ctxOpen) { setCtxOpen(false); return; }
       if (e.metaKey || e.ctrlKey || e.altKey || inField(e.target)) return;
@@ -1426,20 +1480,30 @@ function WsSnowflake({ go, initialStep, onOverview }) {
               </div>
             </header>
 
-            {curStale && (
-              <div className="sf-stale-banner">
+            {(curStale || curBeStale) && (
+              <div className="sf-stale-banner" data-testid="snow-stale-banner">
                 <span className="sf-stale-banner-ic"><I.AlertTriangle size={15} /></span>
                 <div className="sf-stale-body">
-                  <div className="sf-stale-title">上游已改动 · 本步需复核一致性</div>
+                  <div className="sf-stale-title">上游已改动 · 本步需复核一致性{curBeStale ? "" : " · 本地预判"}</div>
                   <div className="sf-stale-sub">
-                    你确认本步之后，
-                    {curStale.map((a, i) => { const u = S2_STEPS.find(x => x.key === a); return (
-                      <button key={a} className="sf-stale-up" onClick={() => setActiveKey(a)}>{u.num} {u.name}<I.ArrowRight size={10} /></button>
-                    ); })}
-                    发生了变化。回去核对或重写本步后点“已复核”。
+                    {curBeStale && curBeStale.staleReason && (
+                      <span className="sf-stale-reason" title="后端失效分析给出的原因">{curBeStale.staleReason}</span>
+                    )}
+                    {curStale && curStale.length > 0 && (<>
+                      你确认本步之后，
+                      {curStale.map((a) => { const u = S2_STEPS.find(x => x.key === a); return (
+                        <button key={a} className="sf-stale-up" onClick={() => setActiveKey(a)}>{u.num} {u.name}<I.ArrowRight size={10} /></button>
+                      ); })}
+                      发生了变化。
+                    </>)}
+                    先看看上游改了什么；可以按新上游重新展开本步，或核对无误后点“已复核”{curBeStale ? "（会在服务端留痕）" : ""}。
+                  </div>
+                  <div className="sf-stale-actions">
+                    <button className="btn btn-quiet btn-sm" onClick={showUpstreamDiff} data-testid="snow-stale-diff" title="对照本步确认时消费的上游版本与现在的版本"><I.GitBranch size={12} /> 查看上游改了什么</button>
+                    <button className="btn btn-quiet btn-sm" disabled={structBusy} onClick={regenFromUpstream} data-testid="snow-stale-regen" title="用现在的上游材料重新生成本步（生成前留底，可回滚），生成后需要你再确认"><I.Wand size={12} className={structBusy ? "sf-spin" : ""} /> 按新上游重新展开</button>
                   </div>
                 </div>
-                <button className="btn btn-accent btn-sm sf-stale-ok" onClick={reviewStep} title="重新与上游对齐"><I.Check size={13} /> 已复核</button>
+                <button className="btn btn-accent btn-sm sf-stale-ok" onClick={reviewStep} title={curBeStale ? "核对无误：在服务端记下「仍然有效」，并与上游重新对齐" : "重新与上游对齐"}><I.Check size={13} /> 已复核</button>
               </div>
             )}
 
@@ -1521,6 +1585,9 @@ function WsSnowflake({ go, initialStep, onOverview }) {
         <div className={`sf-ctx-scrim ${ctxOpen ? "show" : ""}`} onClick={() => setCtxOpen(false)} />
       </div>
 
+      {upDiff && (
+        <S2UpstreamDiff diff={upDiff} onClose={() => setUpDiff(null)} />
+      )}
       {snapDiff && (
         <S2SnapDiff h={snapDiff} current={{ draft: drafts[snapDiff.key] || "", scaffold: scaffolds[snapDiff.key] }}
           onApply={() => applySnap(snapDiff)} onClose={() => setSnapDiff(null)} />
@@ -1738,7 +1805,7 @@ function S2Guide({ guide, rubric, checks, onToggle, stepKey, draft, scaffold, ta
         );
       })()}
 
-      <S2Sec label="验收门" meta={<span className={`sfx-gate-meta ${gateOpen ? "is-open" : ""}`}>{gateOpen ? <><I.Unlock size={11} /> 门开</> : <><I.Lock size={11} /> {passedTotal}/{allTotal}</>}</span>}>
+      <S2Sec label="验收门 · 指南" meta={<span className={`sfx-gate-meta ${gateOpen ? "is-open" : ""}`}>{gateOpen ? <><I.CheckCircle size={11} /> 已过</> : <><I.Info size={11} /> {passedTotal}/{allTotal}</>}</span>}>
         <div className="sfx-gate-grp-h"><I.Cpu size={11} /> 机器核验 · 自动 <span className="sfx-gate-grp-c">{autoPass}/{auto.length}</span></div>
         <ul className="sfx-autos">
           {auto.map((a, i) => (
@@ -1758,10 +1825,10 @@ function S2Guide({ guide, rubric, checks, onToggle, stepKey, draft, scaffold, ta
             </li>
           ))}
         </ul>
-        <div className={`sfx-gate-foot ${gateOpen ? "is-open" : ""}`}>
+        <div className={`sfx-gate-foot ${gateOpen ? "is-open" : ""}`} data-testid="snow-gate-foot">
           {gateOpen
             ? <><I.CheckCircle size={12} /> 验收通过 · 可确认本步</>
-            : <><I.Lock size={12} /> 还差 {allTotal - passedTotal} 项 · 机器 {autoPass}/{auto.length} · 人工 {done}/{checks.length}</>}
+            : <><I.Info size={12} /> 还差 {allTotal - passedTotal} 项 · 机器 {autoPass}/{auto.length} · 人工 {done}/{checks.length} · 验收未过也可确认本步，后端闸门仍会守住依赖</>}
         </div>
       </S2Sec>
     </div>
@@ -2621,7 +2688,9 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
     );
   }
 
-  const stateOf = (id) => s2PlanState(plans[id]);
+  // 阶段 E：覆盖格按 09 的类型数槽（与编辑器同一真相），不再看存储的 plan.mode
+  const typeOf = Object.fromEntries(list.map(s => [s.id, s.type]));
+  const stateOf = (id) => s2PlanState(plans[id], typeOf[id]);
   const fully = list.filter(s => stateOf(s.id) === 2).length;
   const triItems = (ai && ai.triage && ai.triage.items) || null;
   const triOf = (id) => (triItems ? triItems[id] : null);
@@ -2833,7 +2902,7 @@ function S2Coach({ active, beKey, history, busy, focusRow, onSend, onApplyPatch 
       <div className="sf-coach-input">
         <textarea rows={2} value={input} disabled={busy} placeholder={`问「${active.name}」这一步的任何问题；让教练“直接给改写”会得到可应用的补丁…`}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); send(); } }} />
+          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); e.stopPropagation(); send(); } }} />
         <button className="btn btn-primary" disabled={busy || !input.trim()} onClick={() => send()}>
           {busy ? <I.Refresh size={14} className="sf-spin" /> : <I.ArrowRight size={14} />} 发送
         </button>
@@ -3134,6 +3203,63 @@ function S2SnapDiff({ h, current, onApply, onClose }) {
   );
 }
 
+/* ---- 阶段 E：上游改了什么——本步确认时消费的上游版本 vs 现在的版本（后端 input_refs + history） ---- */
+function S2UpstreamDiff({ diff, onClose }) {
+  const st = S2_STEPS.find(s => s.key === diff.key) || {};
+  const cnt = (t) => String(t || "").replace(/\s+/g, "").length;
+  useSE(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const items = diff.items || [];
+  return (
+    <div className="sf-sd-scrim" role="dialog" aria-modal="true" onClick={onClose} data-testid="snow-upstream-diff">
+      <div className="sf-sd-card" onClick={(e) => e.stopPropagation()}>
+        <header className="sf-sd-head">
+          <div>
+            <div className="sf-sd-title">上游改了什么 · {st.num} {st.name}</div>
+            <div className="sf-sd-sub">{diff.reason ? `后端失效原因：${diff.reason}` : "左边是本步确认时消费的上游版本，右边是现在的版本"}</div>
+          </div>
+          <button className="wr-drawer-x" onClick={onClose} title="关闭 (Esc)"><I.X size={16} /></button>
+        </header>
+        {diff.loading ? (
+          <div className="sf-sd-same"><I.Refresh size={14} className="sf-spin" /> 正在拉取上游历史…</div>
+        ) : diff.error ? (
+          <div className="sf-sd-same is-warn"><I.AlertTriangle size={14} /> {diff.error}</div>
+        ) : !items.length ? (
+          <div className="sf-sd-same is-warn"><I.Info size={14} /> 服务端没有记录到本步确认时消费的上游版本（旧数据），或上游版本没有变化——请直接回上游核对。</div>
+        ) : (
+          <div className="sf-updiff-list">
+            {items.map(item => {
+              const up = S2_STEPS.find(s => s.key === item.feKey) || {};
+              return (
+                <div key={item.feKey} className="sf-updiff-item" data-testid="snow-upstream-diff-item">
+                  <div className="sf-updiff-head"><b>{up.num} {up.name}</b> · v{item.oldVersion == null ? "?" : item.oldVersion} → v{item.newVersion == null ? "?" : item.newVersion}{item.oldFound ? "" : " · 旧版本已不在历史里"}</div>
+                  <div className="sf-sd-cols">
+                    <div className="sf-sd-col is-old">
+                      <div className="sf-sd-coltag"><I.Clock size={11} /> 本步确认时消费的版本 · {cnt(item.oldText)} 字</div>
+                      <pre className="sf-sd-text text-serif">{item.oldText || "（空）"}</pre>
+                    </div>
+                    <div className="sf-sd-col is-cur">
+                      <div className="sf-sd-coltag"><I.Pen size={11} /> 现在的版本 · {cnt(item.newText)} 字</div>
+                      <pre className="sf-sd-text text-serif">{item.newText || "（空）"}</pre>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <footer className="sf-sd-foot">
+          <span className="sf-sd-hint">看清差异后，回本步「按新上游重新展开」，或改完点「已复核」</span>
+          <div className="flex gap-2"><button className="btn btn-quiet btn-sm" onClick={onClose}>关闭</button></div>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function S2ImportPlanDialog({ value, busy, error, onChange, onImport, onClose }) {
   useSE(() => {
     const onKey = (e) => { if (e.key === "Escape" && !busy) onClose(); };
@@ -3220,4 +3346,4 @@ function WsConstruct({ go }) {
 Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2NextSceneRowId };
+export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2NextSceneRowId, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap };

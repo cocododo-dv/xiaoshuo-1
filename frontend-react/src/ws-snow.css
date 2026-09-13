@@ -167,6 +167,15 @@
 .sf-stale-up:hover { background: var(--gold); color: #fff; }
 .sf-stale-up:hover svg { color: #fff; }
 .sf-stale-ok { flex: 0 0 auto; }
+/* 阶段 E：失效横幅的原因行与动作行；上游 diff 对话框的多项列表 */
+.sf-stale-reason { display: block; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); margin-bottom: 3px; word-break: break-all; }
+.sf-stale-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sf-updiff-list { overflow: auto; flex: 1; min-height: 0; padding: 4px 18px 14px; }
+.sf-updiff-item { padding-top: 10px; border-top: 1px solid var(--line-1); }
+.sf-updiff-item:first-child { border-top: 0; }
+.sf-updiff-head { font-size: 12px; color: var(--ink-2); margin: 4px 0 6px; }
+.sf-updiff-item .sf-sd-cols { padding: 0 0 6px; flex: none; overflow: visible; }
+.sf-sd-same.is-warn { background: var(--gold-wash); color: var(--gold); }
 /* --- history / reference panels (real data) --- */
 .hist-empty { display: flex; align-items: center; gap: 12px; padding: 22px; border: 1px dashed var(--line-2); border-radius: 12px; background: var(--paper-1); color: var(--ink-3); }
 .hist-empty svg { color: var(--ink-4); flex: 0 0 auto; }
