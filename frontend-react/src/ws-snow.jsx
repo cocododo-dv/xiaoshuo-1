@@ -138,7 +138,8 @@ function s2SceneAuto(scaffold) {
   const subUsed = stats.filter(s => s.kind !== "main" && s.count > 0).length;
   return [
     { t: "场场有冲突", pass: list.length > 0 && noCru === 0, val: noCru ? `${noCru} 场缺坩埚` : `${list.length} 场齐`, need: "0 场缺冲突" },
-    { t: "节奏无紧绷段", pass: tightMax < 3, val: tightMax >= 3 ? `连续 ${tightMax} 场主动` : "主动 / 反应交替", need: "无连续 ≥3 主动" },
+    // 阶段 B：反应场是少数（Ingermanson），连续主动只是提醒——阈值放宽到 5，且不算硬标准
+    { t: "节奏可行（建议）", pass: tightMax < 5, val: tightMax >= 5 ? `连续 ${tightMax} 场主动` : "节奏可行", need: "无连续 ≥5 主动" },
     { t: "支线织入并折射主题", pass: subUsed > 0 && noRefract === 0, val: noRefract ? `${noRefract} 条缺折射` : (subUsed ? `${subUsed} 条支线织入` : "尚无支线"), need: "每条线写折射" },
     { t: "支线穿插不扎堆", pass: clustered === 0, val: clustered ? `${clustered} 条扎堆` : "分布均匀", need: "无扎堆" },
   ];
@@ -354,7 +355,7 @@ const S2_STEP_DATA = {
       task: "分形展开接近底层：把大纲拆成一行一场的清单。场景是小说的基本单位——每个场景必须有冲突，必须是一个完整的缩微故事。",
       writing: [
         { k: "一行一场", v: "编号 · 类型（主动/反应）· POV 角色 · 地点/时间 · 坩埚（困住角色的力量）· 结果/转变" },
-        { k: "铁律三条", v: "①每场必须有冲突 ②没有冲突的场景→删除 ③主动与反应交替出现，形成呼吸节奏" },
+        { k: "铁律三条", v: "①每场必须有冲突 ②没有冲突的场景→删除 ③一场挫折后三选一：换 POV 线 / 直接下一场主动 / 下一目标不明显时才写反应场——反应场是少数，不要机械交替" },
         { k: "情绪节奏", v: "相邻两场温度要有起伏，不能全程高温也不能全程低温" },
       ],
       checklist: [
@@ -369,11 +370,11 @@ const S2_STEP_DATA = {
     target: 400,
     scaffold: { type: "scene" },
     guide: {
-      task: "雪花的最后一步：给每场花五分钟画草图。主动场景制造紧张，反应场景让读者喘息并期待——两者交替构成故事的引擎。",
+      task: "雪花的最后一步：给每场花五分钟画草图。主动场景制造紧张；反应场景让人物消化挫败、做出下一个决定——它是少数，可以整场写，也可以缩成两段概述。",
       writing: [
         { k: "主动场景 GCS", v: "目标（具体可拍摄）→ 冲突（多轮受阻）→ 挫败（结尾比开场更糟，迫使翻页）" },
         { k: "反应场景 RDD", v: "反应（情感先于理性，用身体呈现）→ 两难（每个选项都有代价）→ 决定（触发下一场目标）" },
-        { k: "交替引擎", v: "主动→反应→主动→反应……挫败接反应，决定接目标——链条不能断" },
+        { k: "链条", v: "挫败接反应、或直接接下一个目标；决定接目标——链条不能断，但不要机械交替。挫败以主角衡量：POV 是对手时，对手得手就是挫败" },
       ],
       checklist: [
         "标明了主动 / 反应类型。",
@@ -2269,13 +2270,14 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
 }
 
 /* ---- 09 场景列表：结构化场景表（一行一场 · 织线 · 主动/反应节奏） ----
-   把雪花的分形原则落到底层：主线与支线在这里编织，主动/反应交替成呼吸。
-   两个诊断都与右栏同源——确定性、可解释、可机检。 */
+   把雪花的分形原则落到底层：主线与支线在这里编织；反应场是少数，只在下一目标不明显时才写
+   （阶段 B：不再把机械交替当节奏标准）。两个诊断都与右栏同源——确定性、可解释、可机检。 */
 const S2_SPINE_OPTS = ["", "灾一", "灾二", "灾三"];
 const S2_LINE_TONES = ["gold", "slate", "sage"];  // 非主线循环配色
 const S2_KIND_LABEL = { main: "主线", thread: "线索", sub: "支线" };
 
-// 连续同类型的“跑动”：主动跑太长 = 紧绷；反应跑太长 = 松散
+// 连续同类型的“跑动”：主动跑很长 = 提醒作者想想要不要喘息（≥5 才提）；反应跑太长 = 松散（≥3 就提）
+// 阶段 B：Ingermanson 说反应场是少数，一场挫折后可以直接开下一场主动——连续主动本身不是问题。
 function s2PacingRuns(list) {
   const runs = [];
   (list || []).forEach((s, i) => {
@@ -2284,7 +2286,7 @@ function s2PacingRuns(list) {
     if (last && last.t === t) { last.len++; last.end = i; }
     else runs.push({ t, len: 1, start: i, end: i });
   });
-  const tight = runs.filter(r => r.t === "pro" && r.len >= 3);
+  const tight = runs.filter(r => r.t === "pro" && r.len >= 5);
   const slack = runs.filter(r => r.t === "rea" && r.len >= 3);
   return { runs, tight, slack };
 }
@@ -2394,7 +2396,7 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
     <div className="sf-scaffold sf-scenelist">
       <div className="sf-scaffold-note">
         <I.List size={14} />
-        <span>分形展开接近底层：把大纲拆成<b>一行一场</b>。每场都要有坩埚（困住角色的冲突）；主线与支线在此<b>编织</b>，主动 / 反应交替形成<b>呼吸节奏</b>。</span>
+        <span>分形展开接近底层：把大纲拆成<b>一行一场</b>。每场都要有坩埚（困住角色的冲突）；主线与支线在此<b>编织</b>；反应场是<b>少数</b>，只在下一目标不明显时才写，不要机械交替。</span>
       </div>
 
       <div className="sf-scene-stats">
@@ -2438,9 +2440,9 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
             ))}
           </div>
           <div className="sf-rhythm-flags">
-            {tightMax ? <span className="sf-flag tone-rose"><I.AlertTriangle size={10} /> 连续 {tightMax} 场主动 · 张力紧绷，插一场反应喘息</span> : null}
+            {tightMax ? <span className="sf-flag tone-gold"><I.AlertTriangle size={10} /> 连续 {tightMax} 场主动 · 很长一段没有喘息——若下一目标不明显，考虑插一场反应场（也可只写两段概述）</span> : null}
             {slackMax ? <span className="sf-flag tone-gold"><I.AlertTriangle size={10} /> 连续 {slackMax} 场反应 · 节奏松弛，推进一场主动</span> : null}
-            {!tightMax && !slackMax ? <span className="sf-flag tone-sage"><I.Check size={10} /> 主动 / 反应交替均匀</span> : null}
+            {!tightMax && !slackMax ? <span className="sf-flag tone-sage"><I.Check size={10} /> 节奏可行 · 反应场是少数，只在下一目标不明显时才写</span> : null}
           </div>
         </div>
 

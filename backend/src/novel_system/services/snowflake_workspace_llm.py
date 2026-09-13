@@ -32,6 +32,7 @@ from novel_system.services.snowflake_prompt_budget import (
     budget_audit_fields,
 )
 from novel_system.services.snowflake_steps import (
+    SCENE_FIELD_EXAMPLES,
     STEP_ORDER,
     diagnose_scene_detail,
     diagnose_step_pressure,
@@ -47,6 +48,19 @@ from novel_system.services.style_reference.planning_context import (
 )
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
+
+
+class StructuredCountMismatch(ValueError):
+    """模型违反了数量契约（一段话概括恰好五句、一页梗概恰好五段）。
+
+    阶段 B（2026-09-13 雪花评估）：旧归一化把多出来的句 / 段静默截掉——一页梗概的第 6–9 段在编辑器
+    与长篇大纲的上游上下文里无声消失。现在整步生成拒绝这份输出并带着理由重试一次，教练补丁则
+    丢弃该键；绝不静默截断。
+    """
+
+
+# 一页梗概 = 五句各扩一段（Ingermanson 第 4 步）。前端 05 也只有五个槽。
+SHORT_SYNOPSIS_PARAGRAPHS = 5
 
 
 @dataclass(slots=True)
@@ -450,7 +464,22 @@ class SnowflakeWorkspaceLLMService:
                 focus_filter=focus_filter,
             ),
         )
-        result = self._run_structured_task(prompt_payload=prompt_payload, **run_kwargs)
+        try:
+            result = self._run_structured_task(prompt_payload=prompt_payload, **run_kwargs)
+        except DomainError as exc:
+            if not (getattr(exc, "details", None) or {}).get("count_mismatch"):
+                raise
+            # 数量契约（五句 / 五段）被违反：带着拒绝理由再给模型一次机会；再错就如实报错，
+            # 绝不静默截断。completeness_repair 是受预算保护的键，降载时不会被削掉。
+            repair_payload = dict(prompt_payload)
+            repair_payload["completeness_repair"] = {
+                "empty_fields": [],
+                "instruction": (
+                    f"The previous attempt was rejected: {exc.message} "
+                    "Return exactly the required number of items, in order, and nothing else."
+                ),
+            }
+            result = self._run_structured_task(prompt_payload=repair_payload, **run_kwargs)
         if result.source != "llm":
             return result
         _assert_scene_details_advanced(
@@ -815,6 +844,7 @@ class SnowflakeWorkspaceLLMService:
                     "request_id": response.request_id,
                 },
             )
+            count_mismatch = isinstance(exc, StructuredCountMismatch)
             raise DomainError(
                 "SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA",
                 str(exc),
@@ -823,7 +853,8 @@ class SnowflakeWorkspaceLLMService:
                     "llm_call_id": llm_call_id,
                     "node_id": task_key,
                     "error_code": "LLM_RESPONSE_INVALID_SCHEMA",
-                    "next_action": "retry_or_adjust_prompt_schema",
+                    "next_action": "regenerate_with_exact_count" if count_mismatch else "retry_or_adjust_prompt_schema",
+                    "count_mismatch": count_mismatch,
                     "structured_output": response.structured_output,
                 },
             ) from exc
@@ -1355,6 +1386,8 @@ def _normalize_assistant_output(
             latest_by_step=latest_by_step,
             project_id=_project_id_from_steps(latest_by_step),
             base=base_draft,
+            # 教练回复不能因为补丁多了一段就整条报废：违反数量契约的键丢弃，回复与建议照常送达。
+            count_policy="drop",
         )
     return {
         "step_key": step_key,
@@ -1457,6 +1490,7 @@ def _sanitize_step_patch(
     latest_by_step: dict[str, Any],
     project_id: str,
     base: dict[str, Any],
+    count_policy: str = "raise",
 ) -> dict[str, Any]:
     if not isinstance(patch, dict):
         return {}
@@ -1467,7 +1501,15 @@ def _sanitize_step_patch(
         if not isinstance(key, str) or key not in patch:
             continue
         value = patch.get(key)
-        normalized = _sanitize_field_value(field, value, project_id=project_id, latest_by_step=latest_by_step, base=base)
+        normalized = _sanitize_field_value(
+            field,
+            value,
+            project_id=project_id,
+            latest_by_step=latest_by_step,
+            base=base,
+            step_key=step_key,
+            count_policy=count_policy,
+        )
         if _has_value(normalized):
             result[key] = normalized
     return result
@@ -1539,19 +1581,41 @@ def _sanitize_field_value(
     project_id: str,
     latest_by_step: dict[str, Any],
     base: dict[str, Any],
+    step_key: str = "",
+    count_policy: str = "raise",
 ) -> Any:
     kind = str(field.get("kind") or "")
     key = str(field.get("key") or "")
     if kind in {"text", "textarea"}:
         return str(value or "").strip()
+    if kind == "paragraphs" and step_key == "short_synopsis":
+        # 阶段 B：一页梗概 = 五句各扩一段，恰好五段。多出来的段不再静默截掉。
+        items = _coerce_string_list(value)
+        if len(items) > SHORT_SYNOPSIS_PARAGRAPHS:
+            message = (
+                f"一页梗概要求恰好 {SHORT_SYNOPSIS_PARAGRAPHS} 段（每段对应五句之一），"
+                f"模型返回了 {len(items)} 段；本次结果已丢弃。"
+            )
+            if count_policy == "raise":
+                raise StructuredCountMismatch(message)
+            return None
+        return items
     if kind in {"list", "paragraphs"}:
         return _coerce_string_list(value)
     if kind == "sentences":
         seed = base.get(key) if isinstance(base.get(key), list) else []
         items = _coerce_string_list(value)
+        if seed and len(items) > len(seed):
+            message = (
+                f"一段话概括要求恰好 {len(seed)} 句（开局、三次灾难、结局），"
+                f"模型返回了 {len(items)} 句；本次结果已丢弃。"
+            )
+            if count_policy == "raise":
+                raise StructuredCountMismatch(message)
+            return None
         if seed and len(items) < len(seed):
             items.extend([""] * (len(seed) - len(items)))
-        return items[: len(seed)] if seed else items
+        return items
     if kind == "object":
         nested = {}
         payload = value if isinstance(value, dict) else {}
@@ -1997,6 +2061,8 @@ def _diagnostic_label(value: str) -> str:
         return _DIAGNOSTIC_LABELS[key]
     if key.startswith("missing_"):
         return f"缺少{_field_label(key.removeprefix('missing_'))}"
+    if key.startswith("placeholder_"):
+        return f"{_field_label(key.removeprefix('placeholder_'))}仍是占位"
     return key
 
 
@@ -2046,16 +2112,8 @@ def _fallback_repair_patch(
     missing_fields: list[str],
     pressure_flags: list[str] | None = None,
 ) -> dict[str, str]:
-    examples = {
-        "crucible": "一个具体压力把视角角色困在这里；离开会让损失永久化。",
-        "goal": "在场景倒计时结束前，拿到某个具体证据、许可或让步。",
-        "conflict": "角色先直接索取，再尝试策略绕路，最后冒险揭露；每一轮都遇到更强阻力。",
-        "setback": "角色拿到线索，但代价指向一个他无法失去的人。",
-        "reaction": "角色先出现身体和情绪反应，然后才开始分析损害。",
-        "dilemma": "一个选择保护关系却埋掉真相，另一个选择暴露真相却烧掉保护。",
-        "decision": "角色选择代价更高的路径，并制造下一场的具体目标。",
-        "cost_requirement": "拿到线索的同时，永久失去了这个线人的信任。",
-    }
+    # 例句与 snowflake_steps.SCENE_FIELD_EXAMPLES 同源：应用后留在字段里会被规则层认作占位。
+    examples = SCENE_FIELD_EXAMPLES
     required = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
     keys = ["crucible" if field == "crucible" else field for field in missing_fields if field in {"crucible", *required}]
     if pressure_flags and "missing_cost_requirement" in pressure_flags:

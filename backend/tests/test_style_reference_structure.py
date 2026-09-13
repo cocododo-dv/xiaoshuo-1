@@ -895,8 +895,8 @@ def test_snowflake_budget_sheds_samples_then_the_card_before_story_material() ->
         ("chapter_scene_plan_candidates", "2026-09-12.v2"),
         ("chapter_scene_plan_fill", "2026-09-12.v3"),
         ("chapter_plan_review", "2026-09-12.v2"),
-        ("snowflake_generate_scene_list", "2026-09-12.v6"),
-        ("snowflake_generate_scene_details", "2026-09-12.v7"),
+        ("snowflake_generate_scene_list", "2026-09-13.v7"),
+        ("snowflake_generate_scene_details", "2026-09-13.v8"),
     ],
 )
 def test_planning_templates_are_bumped_and_follow_the_reference_structure(name: str, version: str) -> None:

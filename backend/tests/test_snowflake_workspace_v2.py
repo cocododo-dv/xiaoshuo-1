@@ -917,6 +917,9 @@ def test_workspace_v2_persists_scene_triage_and_approves_materialized_outline(cl
     assert scene is not None
     assert scene.writer_brief_json["source"] == "snowflake_method"
     assert scene.writer_brief_json["scene_crucible"]
+    # 阶段 B（B5）：角色摘要表里的主角随物化进入每一场的简报——挫折以此人衡量
+    assert scene.writer_brief_json["protagonist_hint"] == "Lead"
+    assert scene.writer_brief_json["protagonist_character_id"] == f"{project['project_id']}_CHAR01"
 
 
 def test_workspace_v2_cost_requirement_clears_missing_flag_and_persists_through_materialization(client, session) -> None:
@@ -1751,15 +1754,17 @@ def test_workspace_v2_flags_weak_scene_pressure_even_when_required_fields_are_pr
     proactive_item = next(item for item in items if item["scene_id"] == weak_proactive["scene_id"])
     reactive_item = next(item for item in items if item["scene_id"] == weak_reactive["scene_id"])
 
+    # 阶段 B：规则层只认「占位 / 泛泛短语」与缺代价；「挫折没有代价」这类质量判断降为建议。
     assert proactive_item["recommended_status"] == "maybe"
-    assert "weak_conflict_escalation" in proactive_item["pressure_flags"]
-    assert "weak_setback_cost" in proactive_item["pressure_flags"]
+    assert "placeholder_conflict" in proactive_item["pressure_flags"]  # "They argue."
+    assert not any(flag.startswith("weak_") for flag in proactive_item["pressure_flags"])
     assert proactive_item["score"] < 100
-    assert proactive_item["fix_steps"]
+    assert any(step.startswith("建议：") and "挫折" in step for step in proactive_item["fix_steps"])  # "She succeeds."
 
     assert reactive_item["recommended_status"] == "maybe"
-    assert "fake_dilemma" in reactive_item["pressure_flags"]
-    assert "weak_decision_next_goal" in reactive_item["pressure_flags"]
+    assert "placeholder_dilemma" in reactive_item["pressure_flags"]  # "Stay or leave."
+    assert "placeholder_decision" in reactive_item["pressure_flags"]  # "She decides."
+    assert "fake_dilemma" not in reactive_item["pressure_flags"]
     assert reactive_item["score"] < 100
     assert reactive_item["fix_steps"]
 

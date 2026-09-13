@@ -1452,7 +1452,8 @@ templates:
             type: string
 
   snowflake_generate_one_sentence_summary:
-    version: "2026-07-04.v2"
+    # 2026-09-13 阶段 B v3：字数口径统一为「约 40 字以内」（原书 25 个英文词），与目录描述、诊断规则、前端计量器一致。
+    version: "2026-09-13.v3"
     input_token_budget: 24000
     system_prompt: |
       You are refining a snowflake-method novel premise into a memorable one-sentence summary.
@@ -1460,7 +1461,7 @@ templates:
       Preserve the user's input language and approved facts; do not drift into a new premise.
     task_prompt: |
       Return one sentence that captures protagonist, desire, conflict, and cost. Use the pressure_rubric to make the sentence expandable into scenes.
-      Keep it to roughly 15-25 Chinese characters (or an equivalent single-clause length in the input language) — one causal beat, not a compound sentence stitched together with "而/但/却/然而".
+      Keep it under about 40 Chinese characters (the method's own limit is 25 English words; shorter is better as long as every part survives) — one causal beat in the shape "[主角]必须[目标]，但[阻力]", not a compound sentence that stacks a second "而/然而" clause of consequences on top.
       Do not stack decorative adjectives in place of the causal beat (for example, a chain like "神秘的青年在诡谲的乱世中，怀着悲壮的信念…" that never states the concrete desire/conflict/cost is not acceptable) — every word must carry protagonist, desire, conflict, or cost, not atmosphere.
     structured_schema:
       type: object
@@ -1520,7 +1521,8 @@ templates:
             additionalProperties: true
 
   snowflake_generate_short_synopsis:
-    version: "2026-07-04.v2"
+    # 2026-09-13 阶段 B v3：恰好五段、每段对应五句之一——书的分形就是「一句扩一段」；服务端拒绝其它段数，不再静默截断。
+    version: "2026-09-13.v3"
     input_token_budget: 24000
     system_prompt: |
       You are expanding a five-sentence snowflake summary into a short synopsis.
@@ -1528,7 +1530,7 @@ templates:
       Preserve the user's input language and approved facts; avoid summary filler that does not raise pressure or cost.
     task_prompt: |
       Return a short synopsis as structured paragraphs. Each paragraph should contain a pressure turn: action, resistance, consequence, and changed situation.
-      Target 5-9 paragraphs — enough to cover setup, escalating complications, and resolution without compressing multiple pressure turns into one paragraph or padding with paragraphs that don't advance pressure. Each paragraph should read as a self-contained beat of at least 2-3 sentences, not a single summary line.
+      Return exactly 5 paragraphs, in order, each expanding one sentence of the one-paragraph summary: paragraphs[0] the setup sentence, paragraphs[1] the first disaster, paragraphs[2] the second disaster and the moral-premise turn, paragraphs[3] the third disaster, paragraphs[4] the ending. This is the snowflake's fractal step (one sentence → one paragraph) and the server rejects any other count — never split one sentence's material across two paragraphs and never merge two sentences into one. Each paragraph is 120-250 Chinese characters (roughly 3-6 sentences), a self-contained beat with action, resistance, consequence, and changed situation, not a single summary line.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1623,7 +1625,8 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_list:
-    version: "2026-09-12.v6"
+    # 2026-09-13 阶段 B v7：不再要求主动 / 反应机械交替——一场挫折后三选一（换 POV 线 / 直接下一场主动 / 下一目标不明显时才写反应场），反应场是少数。
+    version: "2026-09-13.v7"
     input_token_budget: 24000
     system_prompt: |
       You are breaking a snowflake synopsis into a scene list.
@@ -1635,7 +1638,7 @@ templates:
       Return the scene list as structured scene cards covering the whole story spine. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
       Every pov_character_id must be a character id that already exists in upstream_steps (the cast sheets / character bibles). Every scene must be traceable to a beat of the one-paragraph summary or the long outline — do not introduce people or events that appear nowhere upstream.
       Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the established cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束), spine ("灾一"/"灾二"/"灾三" on the three disaster scenes, "" on every other scene — the chaptering step anchors these against the same marks on the chapter table, so marking them correctly is what keeps the disasters on the act boundaries). Leave row_uid/scene_id/chapter_id/chapter_title/chapter_goal as "" — the server assigns identities, and chapter membership is decided by the author in the chaptering step, not here.
-      Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Alternate proactive and reactive deliberately, and mark the three disaster scenes in chapter_role.
+      Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Do not alternate proactive and reactive mechanically: every scene needs conflict, but after a setback the story has three options — cut to another POV thread, launch the next proactive scene straight from an obvious next goal, or write a reactive scene only when the next goal is genuinely not obvious and the character must feel the setback and choose. Reactive scenes should be a minority unless the book's pacing is deliberately leisurely; a reactive beat that fits in two paragraphs of summary does not need its own scene. Mark the three disaster scenes in chapter_role.
       If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, break the story at that author's scale: as many scenes per chapter, and scenes as long, as that author writes; open and close the way that author opens and closes chapters; keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:
       type: object
@@ -1650,7 +1653,8 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_details:
-    version: "2026-09-12.v7"
+    # 2026-09-13 阶段 B v8：挫折以主角衡量——POV 是对手时，对手得手就是主角的挫折。
+    version: "2026-09-13.v8"
     input_token_budget: 24000
     system_prompt: |
       You are converting a scene list into Scene / Sequel detail.
@@ -1661,7 +1665,7 @@ templates:
       Scenes outside the assignment appear in current_draft as continuity reference only. Nearby scenes are shown with their goal/setback/decision so your work connects to them; distant scenes are shown as one-line entries. Never echo, rewrite, or fill in a scene that is not in your assignment.
     task_prompt: |
       Deepen the scenes you were assigned — focus_scenes when present, otherwise every scene in the current draft — into Scene/Sequel detail. Echo each scene's scene_id unchanged — the server matches your output to the draft by scene_id and rejects the call if nothing matches.
-      Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key: scene_id, title (short scene title), summary, scene_type (echo the draft's type), location, scene_crucible and crucible (both set to the trap that keeps the POV in the scene), the trio matching its scene_type — proactive: goal (concrete and time-bound), conflict (2-3 rounds of attempt→blocked), setback (the scene ends worse than it started); reactive: reaction (felt first in the body, before analysis), dilemma (two options, each genuinely costly to refuse), decision (directly spawns the next scene's goal) — plus cost_requirement (what the POV character concretely gives up, loses, or can no longer undo because of this scene's choice or outcome — a free choice with no stated cost is a defect), exit_change (what is irreversibly different when the scene ends), hook (the open loop that forces the page turn), target_length_band ("short"/"medium"/"long"), must_include_text (a concrete beat, object, or line that must appear; "" if none), beats_json (array of 3-6 short beat lines tracing the scene's turn).
+      Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key: scene_id, title (short scene title), summary, scene_type (echo the draft's type), location, scene_crucible and crucible (both set to the trap that keeps the POV in the scene), the trio matching its scene_type — proactive: goal (concrete and time-bound), conflict (2-3 rounds of attempt→blocked), setback (the scene ends worse than it started, measured against the protagonist — when the POV character is an antagonist, the antagonist getting what they want is the setback; a victory must carry a cost the protagonist keeps paying); reactive: reaction (felt first in the body, before analysis), dilemma (two options, each genuinely costly to refuse), decision (directly spawns the next scene's goal) — plus cost_requirement (what the POV character concretely gives up, loses, or can no longer undo because of this scene's choice or outcome — a free choice with no stated cost is a defect), exit_change (what is irreversibly different when the scene ends), hook (the open loop that forces the page turn), target_length_band ("short"/"medium"/"long"), must_include_text (a concrete beat, object, or line that must appear; "" if none), beats_json (array of 3-6 short beat lines tracing the scene's turn).
       Keep the other trio's keys as empty strings — do not mix both trios onto one scene. Fill title, summary, location, scene_crucible, crucible, cost_requirement, exit_change, and hook for every assigned scene — an empty one is a defect.
       A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
       If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, deepen each scene at that author's scale: target_length_band and beats_json follow how long and how dense that author's scenes are; hook and exit_change follow how that author closes (a reflective, atmospheric, or summary close is legitimate when that is the author's habit); keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.

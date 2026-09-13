@@ -836,6 +836,9 @@ class SnowflakeWorkspaceService:
         builder，本方法不改它。
         """
         chapters = self._chaptering.ensure_chapter_plans(project.project_id)
+        # 阶段 B（雪花评估 B5）：挫折 / 胜利以主角衡量，不以 POV 衡量——Ingermanson：POV 是对手时，
+        # 对手得手就是主角的挫折。把角色摘要表里的主角带进每一场的简报，结构简报会渲染它。
+        protagonist = self._protagonist_hint(project.project_id)
         by_plan_id = {chapter.chapter_plan_id: chapter for chapter in chapters}
         grouped: dict[str, list[SnowflakeScenePlan]] = {chapter.chapter_plan_id: [] for chapter in chapters}
         for scene in scene_plans:
@@ -853,6 +856,9 @@ class SnowflakeWorkspaceService:
             scenes_payload: list[dict[str, Any]] = []
             for seq, scene in enumerate(members, start=1):
                 detail = _scene_plan_payload(scene)
+                if protagonist is not None:
+                    detail["protagonist_hint"] = protagonist["display_name"]
+                    detail["protagonist_character_id"] = protagonist["character_id"]
                 scene_type = detail.get("primary_form") or "proactive"
                 scenes_payload.append(
                     {
@@ -915,6 +921,18 @@ class SnowflakeWorkspaceService:
             ],
             "chapters": chapter_payloads,
         }
+
+    def _protagonist_hint(self, project_id: str) -> dict[str, str] | None:
+        """角色摘要表里定位为主角的人（第一个）；没有就返回 None，简报不带这两个键。"""
+        rows = self.session.execute(
+            select(SnowflakeCharacterPlan)
+            .where(SnowflakeCharacterPlan.project_id == project_id)
+            .order_by(SnowflakeCharacterPlan.created_at.asc(), SnowflakeCharacterPlan.character_id.asc())
+        ).scalars().all()
+        for row in rows:
+            if _is_protagonist_role(row.role):
+                return {"character_id": row.character_id, "display_name": row.display_name}
+        return None
 
     def approve_outline(self, project_id: str) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -2534,6 +2552,23 @@ class SnowflakeWorkspaceService:
             latest_by_step=latest_by_step,
         )
         return merged_step
+
+
+_PROTAGONIST_EXCLUDE_ZH = ("对手", "反派", "对立", "配角", "敌")
+_PROTAGONIST_TOKENS_EN = ("protagonist", "main character", "heroine", "hero", "lead")
+_PROTAGONIST_EXCLUDE_EN = ("antagonist", "opposition", "villain", "rival", "supporting")
+
+
+def _is_protagonist_role(role: Any) -> bool:
+    """角色定位是不是主角：中文含「主角」且不含对手 / 反派类字眼；英文 lead / protagonist / hero(ine)。"""
+    text = str(role or "").strip().lower()
+    if not text:
+        return False
+    if "主角" in text:
+        return not any(token in text for token in _PROTAGONIST_EXCLUDE_ZH)
+    if any(token in text for token in _PROTAGONIST_EXCLUDE_EN):
+        return False
+    return any(token in text for token in _PROTAGONIST_TOKENS_EN)
 
 
 # 集合步里成员身份键：按它对位合并，而不是整表替换。

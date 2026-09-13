@@ -126,6 +126,18 @@ def render_scene_structure_brief(scene: SceneCard, session: Session | None = Non
     if onstage_ids:
         onstage = list(dict.fromkeys(names.get(item) or item for item in onstage_ids))
         lines.append("Onstage characters: " + ", ".join(onstage))
+    # 阶段 B（B5）：挫折 / 胜利以主角衡量。POV 不是主角时明说——POV 得手就是主角的挫折。
+    protagonist = _text(brief.get("protagonist_hint"))
+    if protagonist:
+        protagonist_id = _text(brief.get("protagonist_character_id"))
+        pov_name = names.get(pov_id) or pov_id
+        pov_is_protagonist = bool(pov_id) and (
+            (protagonist_id and protagonist_id == pov_id) or (not protagonist_id and pov_name == protagonist)
+        )
+        line = f"Protagonist (挫折以此人衡量): {protagonist}"
+        if pov_id and not pov_is_protagonist:
+            line += " — the POV character is not the protagonist; Setback and Victory are measured against the protagonist, so the POV character getting what they want is the Setback"
+        lines.append(line)
     crucible = _text(brief.get("scene_crucible")) or _text(brief.get("crucible"))
     lines.append(f"Scene crucible (坩埚): {crucible or _UNPLANNED}")
     primary_values: list[str] = []

@@ -70,7 +70,7 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
         "label": "一句话概括",
         "english_label": "One-Sentence Summary",
         "phase": "雪花第1步",
-        "description": "用一句话（最好25字以内）概括整部小说。这是最强营销工具——让人听完就想说「告诉我更多！」",
+        "description": "用一句话（最好 40 字以内，原书的尺度是 25 个英文词）概括整部小说。这是最强营销工具——让人听完就想说「告诉我更多！」",
         "default_draft": {"summary": ""},
         "editor": {
             "kind": "form",
@@ -284,7 +284,7 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
         "label": "场景规划",
         "english_label": "Scene Planning",
         "phase": "雪花第9步",
-        "description": "为每个场景规划关键信息。主动场景制造紧张，被动场景让读者喘息并期待——两者交替构成故事的引擎。",
+        "description": "为每个场景规划关键信息。主动场景制造紧张；反应场景让人物消化挫败、做出下一个决定——它是少数，写不写、写多长由节奏决定，不要机械交替。",
         "default_draft": {"scenes": []},
         "editor": {
             "kind": "form",
@@ -351,7 +351,7 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "key": "setback",
                                     "kind": "textarea",
                                     "label": "挫折",
-                                    "hint": "结尾主角比开场更糟——制造「开放循环」迫使读者翻页",
+                                    "hint": "以主角衡量结尾更糟（POV 是对手时，对手得手就是挫折）——制造「开放循环」迫使读者翻页",
                                     "placeholder": "例：警探宣布以「妨碍司法」拘留48小时——正好是真凶行动的关键窗口期",
                                     "rows": 2,
                                 },
@@ -445,7 +445,7 @@ _REFERENCE_STEP_INSTRUCTIONS: dict[str, str] = {
         "格式参考：\n"
         "「一位[有特点的角色]必须[完成某个目标]，但[核心障碍阻拦着他]。」\n\n"
         "要求：\n"
-        "① 不超过25字\n"
+        "① 不超过 40 字（原书的尺度是 25 个英文词；能更短更好）\n"
         "② 突出主角独特性\n"
         "③ 明确故事核心目标\n"
         "④ 制造悬念，不透露结局"
@@ -505,19 +505,19 @@ _REFERENCE_STEP_INSTRUCTIONS: dict[str, str] = {
         "⚠️ 铁律三条：\n"
         "① 每个场景必须包含冲突（内部或外部）\n"
         "② 没有冲突的场景→删除\n"
-        "③ 主动场景（目标→冲突→挫折）和被动场景（反应→困境→决定）交替出现，形成呼吸节奏"
+        "③ 一场挫折之后有三种走法：切到另一条 POV 线、直接开下一场主动场景、或在下一目标不明显时写一场反应场景（反应→困境→决定）——反应场是少数，可以缩成两段概述，不要机械交替"
     ),
     "scene_details": (
         "【主动场景】\n"
         "目标：角色想达成什么？要具体可拍摄/量化\n"
         "坩埚：什么力量将角色困在这个处境里？\n"
         "冲突：多轮尝试→受阻的循环\n"
-        "挫折：结尾比开场更糟，制造「开放循环」迫使读者翻页\n\n"
+        "挫折：以主角衡量，结尾比开场更糟（POV 是对手时，对手得手就是挫折），制造「开放循环」迫使读者翻页\n\n"
         "【反应场景】\n"
         "反应：情感先于理性——用身体/行为呈现，别直说「他很害怕」\n"
         "困境：真正的两难——每个选项都有代价\n"
         "决定：必须决断，决定引发下一个目标\n\n"
-        "主动→被动→主动→被动……是故事前进的引擎。"
+        "挫折接反应、或直接接下一个目标；决定接目标——链条不能断，但不要机械交替，反应场是少数。"
     ),
 }
 
@@ -601,7 +601,7 @@ _FIELD_HELP: dict[str, dict[str, str]] = {
     "crucible": {"hint": "困住人物、让他们不能轻易退出的力量。", "placeholder": "退缩会让上一场损失固化，继续行动又会付出新代价。"},
     "goal": {"hint": "主动场景里可被拍出来的具体目标。", "placeholder": "在审讯结束前拿到离开许可。"},
     "conflict": {"hint": "多轮尝试和受阻，不只是一次拒绝。", "placeholder": "提出证据被否定；要求见律师被拖延；激怒对方反而暴露新风险。"},
-    "setback": {"hint": "结尾让人物比开场更糟，或赢了但付出代价。", "placeholder": "拿到线索，却发现线索指向最亲近的人。"},
+    "setback": {"hint": "以主角衡量：结尾更糟，或赢了但付出代价；POV 是对手时，对手得手就是挫折。", "placeholder": "拿到线索，却发现线索指向最亲近的人。"},
     "reaction": {"hint": "先身体和情绪，后理性分析。", "placeholder": "手发抖、反复回想上一场坏消息，随后才意识到真正损失。"},
     "dilemma": {"hint": "两个选择都要付出真实代价。", "placeholder": "公开会伤害家人；沉默会让真相再次被掩埋。"},
     "decision": {"hint": "必须触发下一场的新目标。", "placeholder": "决定去见掌握时间线的人。"},
@@ -694,22 +694,28 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
         delight_reason = _text(payload.get("delight_reason"))
         genre_promise = _text(payload.get("genre_promise"))
         expected_emotion = _text(payload.get("expected_reader_emotion"))
-        if _looks_generic(target_reader):
+        if _looks_generic(target_reader, min_chars=12):
             flags.append("reader_promise_too_generic")
             fix_steps.append("把目标读者收窄成可感知的读者承诺，不要只写宽泛类型。")
         else:
             strengths.append("目标读者已经能作为可用读者承诺")
-        if _looks_generic(story_kind) or _looks_generic(delight_reason) or _looks_generic(genre_promise):
+        if (
+            _looks_generic(story_kind, min_chars=12)
+            or _looks_generic(delight_reason, min_chars=12)
+            or _looks_generic(genre_promise, min_chars=12)
+        ):
             flags.append("story_pressure_too_generic")
             fix_steps.append("把故事类型、爽点和类型承诺落到具体压力、阻力与代价上。")
         else:
             strengths.append("故事压力和类型承诺已经连上")
-        if _looks_generic(expected_emotion):
+        if _looks_generic(expected_emotion, min_chars=8):
             flags.append("reader_emotion_missing")
             fix_steps.append("写清楚读者在压力升级中持续感到的情绪。")
     elif step_key == "one_sentence_summary":
+        # 阶段 B：一句话的契约是「主角必须目标，但阻力」——看要素，不看字数。提示词要求 40 字以内，
+        # 旧规则却把 28 字以下一律判空泛，合规的 logline 必被标弱、再被回灌给模型去「修」。
         summary = _text(payload.get("summary"))
-        if _looks_generic(summary) or not _has_pressure_turn(summary):
+        if _looks_generic(summary, min_chars=10) or not _has_pressure_turn(summary):
             flags.append("logline_lacks_pressure_turn")
             fix_steps.append("把主角、目标、阻力和代价压缩进一句因果句。")
         else:
@@ -720,7 +726,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
             flags.append("five_sentence_spine_incomplete")
             fix_steps.append("补齐五句话：开局、三次灾难和结局方向。")
         disaster_text = " ".join(str(item or "") for item in derive_three_act(payload).values())
-        if _looks_generic(disaster_text) or not _has_pressure_turn(disaster_text):
+        if _looks_generic(disaster_text, min_chars=12) or not _has_pressure_turn(disaster_text):
             flags.append("disaster_chain_too_soft")
             fix_steps.append("让每次灾难都迫使承诺、价值转变或不可逆升级。")
         else:
@@ -736,7 +742,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
                 _text(character.get(key))
                 for key in ("goal", "ambition", "conflict", "epiphany", "synopsis", "deepest_fear", "how_character_changes")
             )
-            if _looks_generic(pressure_text) or not _has_pressure_turn(pressure_text):
+            if _looks_generic(pressure_text, min_chars=12) or not _has_pressure_turn(pressure_text):
                 flags.append(f"{_flag_key(label)}_pressure_too_soft")
             else:
                 strengths.append(f"{label} 已经有目标、冲突和变化压力")
@@ -757,10 +763,12 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
         if not scenes:
             flags.append("scene_list_missing")
             fix_steps.append("按顺序列出具体场景，并让每场都有视角压力和结果/变化。")
+        # chapter_role 本来就是「起疑 / 取证 / 灾难一」这样的短标签，只要求非空、不是泛泛短语。
         weak_scenes = [
             str(scene.get("scene_id") or index)
             for index, scene in enumerate(scenes, start=1)
-            if _looks_generic(_text(scene.get("summary"))) or _looks_generic(_text(scene.get("chapter_role")))
+            if _looks_generic(_text(scene.get("summary")), min_chars=6)
+            or _looks_generic(_text(scene.get("chapter_role")), min_chars=2)
         ]
         if weak_scenes:
             flags.append("scene_jobs_too_generic")
@@ -841,11 +849,12 @@ def _normalize_character_bible(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_scene_item(item: dict[str, Any], *, index: int) -> dict[str, Any]:
+    del index  # 2026-09-13 阶段 B：默认形态不再按行号奇偶交替——Ingermanson 说的是「反应场是少数」，不是一主一反
     normalized = deepcopy(item)
     primary_form = str(
         normalized.get("primary_form")
         or normalized.get("scene_type")
-        or ("proactive" if index % 2 else "reactive")
+        or "proactive"
     ).strip().lower()
     if primary_form not in {"proactive", "reactive"}:
         primary_form = "proactive"
@@ -859,7 +868,8 @@ def _normalize_scene_item(item: dict[str, Any], *, index: int) -> dict[str, Any]
 
 
 def _scene_detail_seed(scene: dict[str, Any], index: int) -> dict[str, Any]:
-    scene_type = str(scene.get("primary_form") or scene.get("scene_type") or ("proactive" if index % 2 else "reactive")).strip().lower() or "proactive"
+    # 形态跟随第 9 步的标注；没标就是主动场（阶段 B：不再按奇偶交替播种反应场）。
+    scene_type = str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip().lower() or "proactive"
     if scene_type not in {"proactive", "reactive"}:
         scene_type = "proactive"
     base = {
@@ -996,7 +1006,7 @@ def diagnose_scene_detail(scene: dict[str, Any], *, index: int = 1) -> dict[str,
     scene_core_empty = not _has_value(payload.get("title")) and not _has_value(payload.get("summary"))
     if scene_core_empty and all(field in missing_fields for field in required):
         pressure_flags.append("scene_core_empty")
-    weak_flags = _weak_scene_pressure_flags(payload, scene_type)
+    weak_flags, advice = _weak_scene_pressure_flags(payload, scene_type)
     pressure_flags.extend(flag for flag in weak_flags if flag not in pressure_flags)
 
     score = round((filled_fields / total_fields) * 100) if total_fields else 0
@@ -1020,15 +1030,28 @@ def diagnose_scene_detail(scene: dict[str, Any], *, index: int = 1) -> dict[str,
         "score": score,
         "missing_fields": missing_fields,
         "pressure_flags": pressure_flags,
-        "fix_steps": _diagnostic_fix_steps(scene_type, missing_fields, recommended_status, pressure_flags=pressure_flags),
+        # 建议只是建议：不扣分、不改状态，作者与 LLM 分诊才判质量。
+        "advice": advice,
+        "fix_steps": _diagnostic_fix_steps(
+            scene_type, missing_fields, recommended_status, pressure_flags=pressure_flags, advice=advice
+        ),
     }
 
 
-def _weak_scene_pressure_flags(scene: dict[str, Any], scene_type: str) -> list[str]:
+# 2026-09-13 阶段 B（雪花评估 B4）：规则层只认两类弱点——字段还是**占位**（空、等于编辑器提示语 /
+# 占位例句 / 修复例句、含「待补」、或命中泛泛短语表），以及**缺代价**。「冲突是否升级、两难是否真两难、
+# 决定是否引出下一目标」这类质量判断只给建议，不扣分、不改状态：它们靠长度阈值与关键词猜，
+# 把 Ingermanson 自己书里的场景计划（目标只有一句「拿到时间戳」、两难是「跑不掉、打不过、没处躲」）
+# 判成 55 分「需修补」。质量判断交给 LLM 分诊与作者，并且永远可覆盖。
+_PLACEHOLDER_MARKERS = ("待补", "TODO", "todo", "TBD", "tbd", "占位")
+
+
+def _weak_scene_pressure_flags(scene: dict[str, Any], scene_type: str) -> tuple[list[str], list[str]]:
     flags: list[str] = []
+    advice: list[str] = []
     crucible = _text(scene.get("scene_crucible") or scene.get("crucible"))
-    if crucible and _looks_generic(crucible):
-        flags.append("weak_crucible_pressure")
+    if crucible and _scene_field_placeholder_like("crucible", crucible):
+        flags.append("placeholder_crucible")
 
     # Blueprint §4: "「代价」字段是关键 — AI 最常见的毛病是免费选择。
     # 角色做了决定但什么都没牺牲 = 注水。"
@@ -1037,28 +1060,73 @@ def _weak_scene_pressure_flags(scene: dict[str, Any], scene_type: str) -> list[s
     if not _has_value(scene.get("cost_requirement")):
         flags.append("missing_cost_requirement")
 
+    beats = ("reaction", "dilemma", "decision") if scene_type == "reactive" else ("goal", "conflict", "setback")
+    for key in beats:
+        value = _text(scene.get(key))
+        if value and _scene_field_placeholder_like(key, value):
+            flags.append(f"placeholder_{key}")
+
     if scene_type == "reactive":
-        reaction = _text(scene.get("reaction"))
         dilemma = _text(scene.get("dilemma"))
         decision = _text(scene.get("decision"))
-        if reaction and _looks_generic(reaction):
-            flags.append("weak_reaction_specificity")
-        if dilemma and (_looks_generic(dilemma) or not _has_true_choice_cost(dilemma)):
-            flags.append("fake_dilemma")
-        if decision and (_looks_generic(decision) or not _points_to_next_goal(decision)):
-            flags.append("weak_decision_next_goal")
-        return flags
+        if dilemma and not _has_true_choice_cost(dilemma):
+            advice.append("建议：两难要写出两个都要付代价的选项——只有一个真选项就不是两难。")
+        if decision and not _points_to_next_goal(decision):
+            advice.append("建议：决定应直接变成下一场的具体目标。")
+        return flags, advice
 
     conflict = _text(scene.get("conflict"))
     setback = _text(scene.get("setback"))
-    goal = _text(scene.get("goal"))
-    if goal and _looks_generic(goal):
-        flags.append("weak_goal_specificity")
-    if conflict and (_looks_generic(conflict) or not _has_escalating_conflict(conflict)):
-        flags.append("weak_conflict_escalation")
-    if setback and (_looks_generic(setback) or not _has_cost_or_reversal(setback)):
-        flags.append("weak_setback_cost")
-    return flags
+    if conflict and not _has_escalating_conflict(conflict):
+        advice.append("建议：冲突写成 2–3 轮尝试→受阻，不只是一次拒绝。")
+    if setback and not _has_cost_or_reversal(setback):
+        advice.append("建议：让挫折比开场更糟，或让胜利带上代价——以主角衡量。")
+    return flags, advice
+
+
+def _scene_field_placeholder_like(field_key: str, value: str) -> bool:
+    """字段内容是否仍是占位：空、等于编辑器提示语 / 占位例句 / 修复例句、含「待补」、或命中泛泛短语表。不看长度。"""
+    text = _text(value)
+    if not text:
+        return True
+    if _normalize_placeholder_text(text) in _SCENE_PLACEHOLDER_TEXTS.get(field_key, frozenset()):
+        return True
+    if any(marker in text for marker in _PLACEHOLDER_MARKERS):
+        return True
+    return _looks_generic(text, min_chars=0)
+
+
+def _normalize_placeholder_text(value: str) -> str:
+    text = " ".join(str(value or "").split())
+    for prefix in ("例：", "例:"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text.rstrip("。.；;，, ").strip()
+
+
+def _collect_scene_placeholder_texts() -> dict[str, frozenset[str]]:
+    """编辑器提示语、占位例句、修复例句——作者把它们原样留在字段里就等于没写。"""
+    collected: dict[str, set[str]] = {}
+
+    def add(field_key: str, *texts: Any) -> None:
+        key = "crucible" if field_key == "scene_crucible" else field_key
+        bucket = collected.setdefault(key, set())
+        for text in texts:
+            normalized = _normalize_placeholder_text(str(text or ""))
+            if normalized:
+                bucket.add(normalized)
+            # 多行占位例句（「① … ② … ③ …」）也按整段登记；单独一行不算占位——作者可能真写了一轮。
+
+    for field in get_step_definition("scene_details")["editor"]["fields"]:
+        for mode in field.get("scene_modes") or []:
+            for mode_field in mode.get("fields") or []:
+                add(str(mode_field.get("key") or ""), mode_field.get("hint"), mode_field.get("placeholder"))
+    for field_key, help_text in _FIELD_HELP.items():
+        if field_key in {"crucible", "scene_crucible", "goal", "conflict", "setback", "reaction", "dilemma", "decision", "cost_requirement"}:
+            add(field_key, help_text.get("hint"), help_text.get("placeholder"))
+    for field_key, example in SCENE_FIELD_EXAMPLES.items():
+        add(field_key, example)
+    return {key: frozenset(values) for key, values in collected.items()}
 
 
 def _diagnostic_fix_steps(
@@ -1067,9 +1135,10 @@ def _diagnostic_fix_steps(
     recommended_status: str,
     *,
     pressure_flags: list[str] | None = None,
+    advice: list[str] | None = None,
 ) -> list[str]:
     if recommended_status == "pass":
-        return []
+        return list(advice or [])
     if recommended_status == "rewrite":
         return [
             "围绕具体坩埚重建这一场：谁被困住、被什么压力困住、结尾发生什么变化。",
@@ -1091,6 +1160,14 @@ def _diagnostic_fix_steps(
         }
     steps = [labels[field] for field in missing_fields if field in labels]
     weak_labels = {
+        "placeholder_crucible": "坩埚还是占位或泛泛之词：写出困住角色的具体陷阱、倒计时、社会代价或不可逆损失。",
+        "placeholder_goal": "目标还是占位或泛泛之词：写成页面上可见、可检验的具体目标。",
+        "placeholder_conflict": "冲突还是占位或泛泛之词：写出这一场里具体的尝试与受阻。",
+        "placeholder_setback": "挫折还是占位或泛泛之词：写出结尾具体怎么更糟，或胜利付了什么代价。",
+        "placeholder_reaction": "反应还是占位或泛泛之词：用身体反应、行为或迟来的意识写出来。",
+        "placeholder_dilemma": "两难还是占位或泛泛之词：写出两个都有代价的具体选项。",
+        "placeholder_decision": "决定还是占位或泛泛之词：写出角色接下来具体要去做什么。",
+        # 旧标记名保留给历史分诊行（库里存过的 pressure_flags_json）。
         "weak_crucible_pressure": "把坩埚具体化：写出困住角色的陷阱、倒计时、社会代价或不可逆损失。",
         "weak_goal_specificity": "让场景目标在页面上可见、可检验。",
         "weak_conflict_escalation": "把冲突改成多轮尝试和更强阻力。",
@@ -1101,6 +1178,7 @@ def _diagnostic_fix_steps(
         "missing_cost_requirement": "写出角色为这个选择付出了什么——什么信任被消耗、什么可能性被关闭、什么代价不可逆。免费选择 = 注水。",
     }
     steps.extend(weak_labels[flag] for flag in pressure_flags or [] if flag in weak_labels)
+    steps.extend(advice or [])
     return _unique(steps)
 
 
@@ -1178,27 +1256,40 @@ def _flag_key(value: str) -> str:
     return "".join(char.lower() if char.isalnum() else "_" for char in str(value or "")).strip("_") or "field"
 
 
-def _looks_generic(value: str) -> bool:
+_GENERIC_FRAGMENTS = (
+    "a mystery",
+    "a story",
+    "they argue",
+    "she decides",
+    "he decides",
+    "she is upset",
+    "feels bad",
+    "stay or leave",
+    "like mysteries",
+    "likes mysteries",
+    "喜欢 mysteries",
+    "喜欢故事",
+    "一段故事",
+    "喜欢悬疑的读者",
+    "发生了一些事",
+    "一些事情发生",
+)
+
+
+def _looks_generic(value: str, *, min_chars: int = 8) -> bool:
+    """空、短于本字段的最小长度、或命中泛泛短语表。
+
+    阶段 B（雪花评估）：旧版对所有字段统一用 28 字阈值，结果一句话概括的合规输出（提示词要求 40 字以内）、
+    场景目标「拿到昨天各事件的时间戳」、章内职能「承压」全部被判空泛。最小长度改由调用方按字段传入，
+    场景三拍不看长度（见 ``_scene_field_placeholder_like``）。
+    """
     text = _text(value)
     if not text:
         return True
-    if len(text) < 28:
+    if len(text) < min_chars:
         return True
-    generic_fragments = {
-        "a mystery",
-        "a story",
-        "they argue",
-        "she decides",
-        "he decides",
-        "she is upset",
-        "feels bad",
-        "stay or leave",
-        "喜欢 mysteries",
-        "喜欢故事",
-        "一段故事",
-    }
     lowered = text.lower()
-    return any(fragment in lowered for fragment in generic_fragments)
+    return any(fragment in lowered for fragment in _GENERIC_FRAGMENTS)
 
 
 def _has_pressure_turn(value: str) -> bool:
@@ -1212,7 +1303,7 @@ def _has_pressure_turn(value: str) -> bool:
         "force",
         "阻",
         "却",
-        "但是",
+        "但",
         "代价",
         "失去",
         "逼",
@@ -1334,3 +1425,19 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
         else:
             merged[key] = deepcopy(value)
     return merged
+
+
+# 场景三拍的修复例句：LLM 关闭时「应用修复补丁」写进字段的就是它们（snowflake_workspace_llm
+# ``_fallback_repair_patch``），所以它们同时登记为占位文本——例句留在字段里就等于没写。
+SCENE_FIELD_EXAMPLES: dict[str, str] = {
+    "crucible": "一个具体压力把视角角色困在这里；离开会让损失永久化。",
+    "goal": "在场景倒计时结束前，拿到某个具体证据、许可或让步。",
+    "conflict": "角色先直接索取，再尝试策略绕路，最后冒险揭露；每一轮都遇到更强阻力。",
+    "setback": "角色拿到线索，但代价指向一个他无法失去的人。",
+    "reaction": "角色先出现身体和情绪反应，然后才开始分析损害。",
+    "dilemma": "一个选择保护关系却埋掉真相，另一个选择暴露真相却烧掉保护。",
+    "decision": "角色选择代价更高的路径，并制造下一场的具体目标。",
+    "cost_requirement": "拿到线索的同时，永久失去了这个线人的信任。",
+}
+
+_SCENE_PLACEHOLDER_TEXTS: dict[str, frozenset[str]] = _collect_scene_placeholder_texts()
