@@ -711,37 +711,35 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
     strengths: list[str] = []
     fix_steps: list[str] = []
 
+    # 2026-09-13 阶段 H（雪花评估第二轮）：关键词与短语表只能给**建议**，不再改状态、不再扣分——
+    # 「但 / 却 / cost」这类标记验证不了灾难链，泛泛短语表也判不了一句话是否有压力；把它们当旗标，
+    # 合规的产出会被判「需修补」再回灌给模型去「修」。规则层只认缺失（完整度）与数量契约。
     if step_key == "book_brief":
         target_reader = _text(payload.get("target_reader"))
         story_kind = _text(payload.get("story_kind"))
         delight_reason = _text(payload.get("delight_reason"))
         genre_promise = _text(payload.get("genre_promise"))
         expected_emotion = _text(payload.get("expected_reader_emotion"))
-        if _looks_generic(target_reader, min_chars=12):
-            flags.append("reader_promise_too_generic")
-            fix_steps.append("把目标读者收窄成可感知的读者承诺，不要只写宽泛类型。")
-        else:
+        if target_reader and _looks_generic(target_reader, min_chars=12):
+            fix_steps.append("建议：把目标读者收窄成可感知的读者承诺，不要只写宽泛类型。")
+        elif target_reader:
             strengths.append("目标读者已经能作为可用读者承诺")
-        if (
-            _looks_generic(story_kind, min_chars=12)
-            or _looks_generic(delight_reason, min_chars=12)
-            or _looks_generic(genre_promise, min_chars=12)
+        if any(
+            text and _looks_generic(text, min_chars=12)
+            for text in (story_kind, delight_reason, genre_promise)
         ):
-            flags.append("story_pressure_too_generic")
-            fix_steps.append("把故事类型、爽点和类型承诺落到具体压力、阻力与代价上。")
-        else:
+            fix_steps.append("建议：把故事类型、爽点和类型承诺落到具体压力、阻力与代价上。")
+        elif story_kind and delight_reason and genre_promise:
             strengths.append("故事压力和类型承诺已经连上")
-        if _looks_generic(expected_emotion, min_chars=8):
-            flags.append("reader_emotion_missing")
-            fix_steps.append("写清楚读者在压力升级中持续感到的情绪。")
+        if expected_emotion and _looks_generic(expected_emotion, min_chars=8):
+            fix_steps.append("建议：写清楚读者在压力升级中持续感到的情绪。")
     elif step_key == "one_sentence_summary":
         # 阶段 B：一句话的契约是「主角必须目标，但阻力」——看要素，不看字数。提示词要求 40 字以内，
         # 旧规则却把 28 字以下一律判空泛，合规的 logline 必被标弱、再被回灌给模型去「修」。
         summary = _text(payload.get("summary"))
-        if _looks_generic(summary, min_chars=10) or not _has_pressure_turn(summary):
-            flags.append("logline_lacks_pressure_turn")
-            fix_steps.append("把主角、目标、阻力和代价压缩进一句因果句。")
-        else:
+        if summary and (_looks_generic(summary, min_chars=10) or not _has_pressure_turn(summary)):
+            fix_steps.append("建议：把主角、目标、阻力和代价压缩进一句因果句。")
+        elif summary:
             strengths.append("一句话已经带出可用的压力转折")
     elif step_key == "one_paragraph_summary":
         sentences = [_text(item) for item in payload.get("sentences") or [] if _text(item)]
@@ -749,28 +747,32 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
             flags.append("five_sentence_spine_incomplete")
             fix_steps.append("补齐五句话：开局、三次灾难和结局方向。")
         disaster_text = " ".join(str(item or "") for item in derive_three_act(payload).values())
-        if _looks_generic(disaster_text, min_chars=12) or not _has_pressure_turn(disaster_text):
-            flags.append("disaster_chain_too_soft")
-            fix_steps.append("让每次灾难都迫使承诺、价值转变或不可逆升级。")
-        else:
+        if sentences and (_looks_generic(disaster_text, min_chars=12) or not _has_pressure_turn(disaster_text)):
+            fix_steps.append("建议：让每次灾难都迫使承诺、价值转变或不可逆升级。")
+        elif sentences:
             strengths.append("三幕灾难链已经有可见压力")
     elif step_key in {"character_sheets", "character_synopses", "character_bibles"}:
         characters = [item for item in payload.get("characters") or [] if isinstance(item, dict)]
         if not characters:
             flags.append("character_pressure_missing")
             fix_steps.append("至少补入主角、对手/阻力，以及一个能承载压力的盟友或映照角色。")
-        for index, character in enumerate(characters[:4], start=1):
+        # 阶段 H：留白即合法——原著的角色表满是「尚未定义」，配角甚至只有一行定位。只有主角 / 对手
+        # 空着才提醒；写了但泛泛只给建议；角色全档案的压力文本读嵌套的心理 / 性格档，不再读被归一化
+        # 搬走的顶层键（那个错位让每个全档案角色永远「压力不足」）。
+        soft: list[str] = []
+        for index, character in enumerate(characters, start=1):
             label = _text(character.get("display_name") or character.get("name") or f"character_{index}")
-            pressure_text = " ".join(
-                _text(character.get(key))
-                for key in ("goal", "ambition", "conflict", "epiphany", "synopsis", "deepest_fear", "how_character_changes")
-            )
+            pressure_text = _character_pressure_text(character)
+            if not pressure_text:
+                if _is_lead_role(character.get("role")):
+                    soft.append(label)
+                continue
             if _looks_generic(pressure_text, min_chars=12) or not _has_pressure_turn(pressure_text):
-                flags.append(f"{_flag_key(label)}_pressure_too_soft")
+                soft.append(label)
             else:
                 strengths.append(f"{label} 已经有目标、冲突和变化压力")
-        if characters and not any(item.startswith("至少补入") for item in fix_steps):
-            fix_steps.append("把薄弱角色的具体目标、阻挡力量、价值冲突和变化再压实。")
+        if soft:
+            fix_steps.append("建议：把 " + "、".join(soft[:4]) + " 的具体目标、阻挡力量、价值冲突和变化再压实；配角可以留白。")
         if step_key == "character_sheets":
             # 阶段 D：书里的角色表还有一句话/一段话故事线，价值观要「没有什么比___更重要」写 2–3 条且互相有张力。
             # 这些是建议，不是旗标——缺了不降状态，只提醒。
@@ -790,8 +792,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
             flags.append("synopsis_missing")
             fix_steps.append("把上一层扩成因果相连的压力节点。")
         elif not _has_pressure_turn(" ".join(paragraphs)):
-            flags.append("synopsis_lacks_escalation")
-            fix_steps.append("加入可见反转、上升代价，以及会改变下一段目标的转向。")
+            fix_steps.append("建议：加入可见反转、上升代价，以及会改变下一段目标的转向。")
         else:
             strengths.append("梗概已经包含压力升级")
     elif step_key == "scene_list":
@@ -807,8 +808,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
             or _looks_generic(_text(scene.get("chapter_role")), min_chars=2)
         ]
         if weak_scenes:
-            flags.append("scene_jobs_too_generic")
-            fix_steps.append("给每个场景明确职责：什么改变、谁在阻挡、为什么下一场必须发生。")
+            fix_steps.append("建议：给每个场景明确职责——什么改变、谁在阻挡、为什么下一场必须发生（" + "、".join(weak_scenes[:5]) + "）。")
         if scenes and not weak_scenes:
             strengths.append("场景列表已经有可用职责")
 
@@ -846,15 +846,11 @@ def default_step_draft(step_key: str, *, latest_by_step: dict[str, Any] | None =
 
 def _normalize_step_draft(step_key: str, draft: dict[str, Any]) -> dict[str, Any]:
     payload = deepcopy(draft if isinstance(draft, dict) else {})
-    if step_key == "short_synopsis":
-        paragraphs = _coerce_string_list(payload.get("paragraphs"))
-        while len(paragraphs) < 5:
-            paragraphs.append("")
-        payload["paragraphs"] = paragraphs[:5]
-    elif step_key == "long_synopsis":
-        # 阶段 D：五段展开——补齐到五槽，但不截断（多出来的段由生成侧的数量契约拒绝，
-        # 作者手写的内容绝不静默丢失）。
-        paragraphs = _coerce_string_list(payload.get("paragraphs"))
+    if step_key in {"short_synopsis", "long_synopsis"}:
+        # 阶段 D / H：五段是**按位置**的槽（第 n 段扩第 n 句）——补齐到五槽，保留中间的空槽，
+        # 永不截断（多出来的段由生成侧的数量契约拒绝；作者手写的第六段绝不静默丢失，
+        # 空着的第二段也不能让第三段顶上去）。
+        paragraphs = _coerce_positional_list(payload.get("paragraphs"))
         while len(paragraphs) < LONG_SYNOPSIS_PARAGRAPHS:
             paragraphs.append("")
         payload["paragraphs"] = paragraphs
@@ -1097,18 +1093,26 @@ def _weak_scene_pressure_flags(scene: dict[str, Any], scene_type: str) -> tuple[
     if crucible and _scene_field_placeholder_like("crucible", crucible):
         flags.append("placeholder_crucible")
 
-    # Blueprint §4: "「代价」字段是关键 — AI 最常见的毛病是免费选择。
-    # 角色做了决定但什么都没牺牲 = 注水。"
-    # Tracked as a pressure flag so it consistently triggers "maybe" status
-    # and a fix-step prompt, without distorting the base score formula.
+    # 阶段 H：「代价」是本项目对原著的强化，不是原著的三拍——按原著五分钟写法规划的场不该因此
+    # 拿不到「通过」。缺代价只提醒（Blueprint §4 的道理仍在：免费选择 = 注水）。
     if not _has_value(scene.get("cost_requirement")):
-        flags.append("missing_cost_requirement")
+        advice.append("建议：写出角色为这个选择付出了什么——什么信任被消耗、什么可能性被关闭、什么代价不可逆；免费选择 = 注水。")
 
     beats = ("reaction", "dilemma", "decision") if scene_type == "reactive" else ("goal", "conflict", "setback")
+    generic_beats: list[str] = []
     for key in beats:
         value = _text(scene.get(key))
-        if value and _scene_field_placeholder_like(key, value):
+        if not value:
+            continue
+        if _scene_field_placeholder_like(key, value):
             flags.append(f"placeholder_{key}")
+        elif _looks_generic(value, min_chars=0):
+            generic_beats.append(_field_display_label(key))
+    if crucible and not _scene_field_placeholder_like("crucible", crucible) and _looks_generic(crucible, min_chars=0):
+        generic_beats.insert(0, _field_display_label("crucible"))
+    if generic_beats:
+        # 短语表只能猜「泛泛」，猜错就把原著级的短句判成占位——所以只提醒，不改状态。
+        advice.append("建议：" + "、".join(generic_beats) + " 还是泛泛短语，写成这一场里具体的人、物、动作。")
 
     if scene_type == "reactive":
         dilemma = _text(scene.get("dilemma"))
@@ -1129,15 +1133,14 @@ def _weak_scene_pressure_flags(scene: dict[str, Any], scene_type: str) -> tuple[
 
 
 def _scene_field_placeholder_like(field_key: str, value: str) -> bool:
-    """字段内容是否仍是占位：空、等于编辑器提示语 / 占位例句 / 修复例句、含「待补」、或命中泛泛短语表。不看长度。"""
+    """字段内容是否仍是占位：空、等于编辑器提示语 / 占位例句 / 修复例句、或含「待补」。不看长度。
+    阶段 H：泛泛短语表不再算占位（只给建议）——它猜错就把原著级的短句判成占位。"""
     text = _text(value)
     if not text:
         return True
     if _normalize_placeholder_text(text) in _SCENE_PLACEHOLDER_TEXTS.get(field_key, frozenset()):
         return True
-    if any(marker in text for marker in _PLACEHOLDER_MARKERS):
-        return True
-    return _looks_generic(text, min_chars=0)
+    return any(marker in text for marker in _PLACEHOLDER_MARKERS)
 
 
 def _normalize_placeholder_text(value: str) -> str:
@@ -1321,6 +1324,32 @@ _GENERIC_FRAGMENTS = (
 )
 
 
+_LEAD_ROLE_MARKERS = ("主角", "主人公", "对手", "反派", "protagonist", "antagonist", "hero", "heroine", "villain", "lead")
+
+
+def _is_lead_role(role: Any) -> bool:
+    """主角 / 对手一类的定位——原著只对他们要求完整的角色表。"""
+    lowered = _text(role).lower()
+    return any(marker in lowered for marker in _LEAD_ROLE_MARKERS)
+
+
+def _character_pressure_text(character: dict[str, Any]) -> str:
+    """角色三步共用的「压力文本」：摘要表的目标 / 抱负 / 冲突 / 顿悟，背景的 synopsis，
+    全档案嵌套的心理 / 性格档（归一化把旧的顶层 deepest_fear / how_character_changes 搬进了这里）。"""
+    parts = [
+        _text(character.get(key))
+        for key in ("goal", "ambition", "conflict", "epiphany", "synopsis", "deepest_fear", "how_character_changes")
+    ]
+    for profile_key, keys in (
+        ("psychological_profile", ("deepest_fear", "greatest_hope", "character_arc", "philosophy", "worst_memory")),
+        ("personality_profile", ("strongest_trait", "weakest_trait")),
+    ):
+        profile = character.get(profile_key)
+        if isinstance(profile, dict):
+            parts.extend(_text(profile.get(key)) for key in keys)
+    return " ".join(part for part in parts if part)
+
+
 def _looks_generic(value: str, *, min_chars: int = 8) -> bool:
     """空、短于本字段的最小长度、或命中泛泛短语表。
 
@@ -1440,6 +1469,15 @@ def _unique(values: Any) -> list[Any]:
         seen.add(marker)
         result.append(value)
     return result
+
+
+def _coerce_positional_list(value: Any) -> list[str]:
+    """按位置的字符串槽：列表原样保留空槽；纯文本（旧数据）按行拆、丢空行。"""
+    if isinstance(value, str):
+        return [item.strip() for item in value.splitlines() if item.strip()]
+    if not isinstance(value, list):
+        return []
+    return [str(item or "").strip() for item in value]
 
 
 def _coerce_string_list(value: Any) -> list[str]:

@@ -1829,11 +1829,12 @@ class SnowflakeWorkspaceService:
             if scene_id and scene_id != scene_label:
                 scene_display = f"「{scene_label}」（{scene_id}）"
             if triage_source == "auto_diagnosis" and status == "unreviewed":
+                # 阶段 H：规则层的「重写」只是缺失 / 占位的机械判断，不能挡物化——作者与 LLM 分诊拍板。
                 if recommended_status == "rewrite":
                     add_scene_item(
-                        severity="blocker",
-                        kind="triage_confirmation_required",
-                        message=f"{scene_display} 系统建议重写，请先确认急救判断。",
+                        severity="warning",
+                        kind="triage_unreviewed_rewrite",
+                        message=f"{scene_display} 三拍或坩埚还缺着，系统建议重写；整理前请先确认急救判断。",
                         item=item,
                     )
                 elif recommended_status == "maybe":

@@ -291,12 +291,15 @@ def test_closeout2_diagnose_reads_disasters_from_the_spine() -> None:
         ],
         "moral_premise": "逃避只会扩大伤害，承担代价才能终结伤害。",
     }
-    strong_flags = diagnose_step_pressure("one_paragraph_summary", strong)["pressure_flags"]
-    assert "disaster_chain_too_soft" not in strong_flags
+    strong_diag = diagnose_step_pressure("one_paragraph_summary", strong)
+    assert "disaster_chain_too_soft" not in strong_diag["pressure_flags"]
+    assert not any("灾难都迫使" in step for step in strong_diag["fix_steps"])
 
+    # 阶段 H：关键词判不了灾难链——软五句只得到建议，不再是旗标
     soft = {"sentences": ["背景介绍。", "一些事情发生了。", "然后又发生了别的。", "最后结束了。", "结局。"]}
-    soft_flags = diagnose_step_pressure("one_paragraph_summary", soft)["pressure_flags"]
-    assert "disaster_chain_too_soft" in soft_flags
+    soft_diag = diagnose_step_pressure("one_paragraph_summary", soft)
+    assert "disaster_chain_too_soft" not in soft_diag["pressure_flags"]
+    assert any(step.startswith("建议：") and "灾难都迫使" in step for step in soft_diag["fix_steps"])
 
 
 def test_closeout2_generator_does_not_persist_three_act(client) -> None:

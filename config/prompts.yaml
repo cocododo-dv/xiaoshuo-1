@@ -1535,7 +1535,9 @@ templates:
   snowflake_generate_character_sheets:
     # 2026-09-13 阶段 D v4：价值观按书里的句式「没有什么比___更重要」写 2–3 条且互相有张力；
     # one_sentence_summary / one_paragraph_summary 是这个角色自己的一句话 / 一段话故事线（书里角色表的两栏）。
-    version: "2026-09-13.v4"
+    # 阶段 H v5：留白即合法——只有主角与对手要填满；反派常常没有顿悟、配角常常没有故事线，留空不是缺陷，
+    # 编造才是（原著的 Goldilocks 角色表满是「尚未定义」）。
+    version: "2026-09-13.v5"
     input_token_budget: 24000
     system_prompt: |
       You are outlining major character pressure inside a snowflake-method workspace.
@@ -1544,7 +1546,7 @@ templates:
     task_prompt: |
       Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
       Each character object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: character_id (reuse the id from upstream_steps or current_draft when the character already exists; leave "" for a brand-new character and the server assigns one), display_name, role (主角/对手/盟友/镜像 in the input language), goal (concrete, scene-actionable desire), ambition (the deeper abstract want behind the goal), values (array of 2-3 value statements, each phrased exactly as "没有什么比___更重要" — the blank filled with what this character will sacrifice everything else for; the statements must be in tension with each other, and the protagonist's and the antagonist's statements must collide), conflict (who or what blocks the goal, and why that opposition cannot be waved away — the belief this character must risk belongs here), epiphany (what changes and what concrete event triggers it), one_sentence_summary (this character's own storyline in one sentence: what they want, who blocks it, what it costs — the character is the lead of that sentence), one_paragraph_summary (that storyline expanded to one paragraph: how they enter the story, how each of the three disasters lands on them, how their story ends, and what kind of scenes their pressure can generate).
-      Fill every key for every character with substantive content — an empty string or a name-only entry is a defect. Keep characters distinct: if two characters share the same goal/conflict shape, sharpen one until the overlap is gone.
+      Fill the protagonist and the antagonist completely. For every other character fill only what the story actually gives them: a villain often has no epiphany, a mentor or a minor character may have no storyline or only one value — leave such keys as "" rather than inventing content to complete the form (the method's own sheets read "no epiphany defined yet"). A fabricated value statement, epiphany or storyline is a defect; an honest empty key is not. Keep characters distinct: if two characters share the same goal/conflict shape, sharpen one until the overlap is gone.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1581,7 +1583,8 @@ templates:
 
   snowflake_generate_character_synopses:
     # 2026-09-13 阶段 D v4：第六个前缀行「视角故事：」——从这个角色的视角把整本书讲一遍（书里的第 5 步）。
-    version: "2026-09-13.v4"
+    # 阶段 H v5：留白即合法——配角的某一行没有内容就留空，不替作者编旧伤或恐惧。
+    version: "2026-09-13.v5"
     input_token_budget: 24000
     system_prompt: |
       You are writing character synopses for a snowflake workspace: a compact backstory plus the whole story retold from each character's point of view.
@@ -1597,7 +1600,7 @@ templates:
       恐惧：what they cannot afford to face, and the visible scene behavior it produces (a tic, an avoidance, a ritual).
       关系：how they enter the central conflict, and their charged link to other named characters.
       视角故事：the whole story of the book retold from this character's point of view, half a page to a page (roughly 300-600 Chinese characters): what they see, what they believe is happening, what they want at each turn, what each of the three disasters costs them, and how the ending looks to them. Written as continuous prose; it may run over several lines, and every line after the prefix belongs to it.
-      Every prefixed line must carry substantive content specific to this character — an empty or generic line is a defect. Each character's synopsis must retell the story from a genuinely different vantage: surface at least one motive or information gap that collides with another character's synopsis, not the same events with the subject swapped.
+      For the protagonist and the antagonist every prefixed line carries substantive content specific to that character. For a minor character a line with nothing behind it stays empty after its prefix — do not invent a wound, a fear or a secret to fill the slot; a generic or fabricated line is worse than an empty one. Each character's synopsis must retell the story from a genuinely different vantage: surface at least one motive or information gap that collides with another character's synopsis, not the same events with the subject swapped.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1642,7 +1645,8 @@ templates:
             additionalProperties: true
 
   snowflake_generate_character_bibles:
-    version: "2026-07-06.v3"
+    # 2026-09-13 阶段 H v4：留白即合法——原著：对你和你的读者重要的才写下来，否则不写；空字段好过泛泛填充。
+    version: "2026-09-13.v4"
     input_token_budget: 24000
     system_prompt: |
       You are deepening character bibles for a snowflake-method novel.
@@ -1651,7 +1655,7 @@ templates:
     task_prompt: |
       Return complete character-bible entries for the core cast. Prioritize wounds, values, contradictions, fears, and visible behaviors under pressure.
       Each character object must use exactly the canonical keys and nested structure the workspace stores — the server discards any other key, so a different key name means lost content: character_id and display_name and role (reuse identities from the approved cast), physical_profile {age, height, appearance, style}, personality_profile {strongest_trait, weakest_trait, humor, preferences (array of concrete likes/dislikes)}, environment_profile {home, family_background, education, work, relationships}, psychological_profile {best_memory, worst_memory (the formative wound behind current behavior), deepest_fear, greatest_hope, philosophy (the value they claim to live by), self_image, public_image (where it diverges from self_image is the contradiction), character_arc (how story pressure forces the change)}.
-      Fill every nested field for every character with concrete, story-specific content — empty strings and generic filler ("普通身高", "性格开朗") are defects. appearance and style must carry at least one visible tic, habit, or object that makes the inner wound legible on the page.
+      Fill what the story needs and leave the rest "" — the method's own rule is to write down what matters to this book and its readers and to skip what does not; generic filler ("普通身高", "性格开朗") is a defect, an honest empty field is not. The protagonist and the antagonist deserve the deepest entries; a minor character may have only a few fields. appearance and style must carry at least one visible tic, habit, or object that makes the inner wound legible on the page when the character is important enough to be seen up close.
       Every entry must earn its place by being callable in a scene: reject encyclopedia-style trivia unless it directly explains how the character acts, speaks, or decides under pressure — family_background/education/work must each end by naming the behavior it produces today.
     structured_schema:
       type: object
@@ -1698,7 +1702,8 @@ templates:
   snowflake_generate_scene_details:
     # 2026-09-13 阶段 B v8：挫折以主角衡量——POV 是对手时，对手得手就是主角的挫折。
     # 阶段 C v9：反应场多一个 rendering_mode（full / summary）——反应场是少数，两段概述装得下就不必整场。
-    version: "2026-09-13.v9"
+    # 阶段 H v10：必填的只有坩埚与三拍；代价 / 离场变化 / 钩子按场景实际有无写，没有就留空，不编。
+    version: "2026-09-13.v10"
     input_token_budget: 24000
     system_prompt: |
       You are converting a scene list into Scene / Sequel detail.
@@ -1710,7 +1715,7 @@ templates:
     task_prompt: |
       Deepen the scenes you were assigned — focus_scenes when present, otherwise every scene in the current draft — into Scene/Sequel detail. Echo each scene's scene_id unchanged — the server matches your output to the draft by scene_id and rejects the call if nothing matches.
       Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key: scene_id, title (short scene title), summary, scene_type (echo the draft's type), location, scene_crucible and crucible (both set to the trap that keeps the POV in the scene), the trio matching its scene_type — proactive: goal (concrete and time-bound), conflict (2-3 rounds of attempt→blocked), setback (the scene ends worse than it started, measured against the protagonist — when the POV character is an antagonist, the antagonist getting what they want is the setback; a victory must carry a cost the protagonist keeps paying); reactive: reaction (felt first in the body, before analysis), dilemma (two options, each genuinely costly to refuse), decision (directly spawns the next scene's goal) — plus cost_requirement (what the POV character concretely gives up, loses, or can no longer undo because of this scene's choice or outcome — a free choice with no stated cost is a defect), exit_change (what is irreversibly different when the scene ends), hook (the open loop that forces the page turn), target_length_band ("short"/"medium"/"long"), rendering_mode (reactive scenes only: "full" when the beat deserves a dramatised scene, "summary" when two or three paragraphs of narrative summary carry it — the modern trend is fewer full reactive scenes; leave it "full" for every proactive scene), must_include_text (a concrete beat, object, or line that must appear; "" if none), beats_json (array of 3-6 short beat lines tracing the scene's turn).
-      Keep the other trio's keys as empty strings — do not mix both trios onto one scene. Fill title, summary, location, scene_crucible, crucible, cost_requirement, exit_change, and hook for every assigned scene — an empty one is a defect.
+      Keep the other trio's keys as empty strings — do not mix both trios onto one scene. Fill title, summary, location, scene_crucible, crucible and the scene's own trio for every assigned scene — those are the design. cost_requirement, exit_change and hook are filled when the scene genuinely has them: leave cost_requirement "" when the outcome costs nothing lasting (and say so in the setback), leave hook "" when the setback or the decision itself is the pull — a fabricated cost or hook is a defect, an honest empty one is not.
       A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
       If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, deepen each scene at that author's scale: target_length_band and beats_json follow how long and how dense that author's scenes are; hook and exit_change follow how that author closes (a reflective, atmospheric, or summary close is legitimate when that is the author's habit); keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:

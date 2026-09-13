@@ -708,9 +708,10 @@ def test_workspace_v2_step_health_reports_structural_pressure_gaps(client) -> No
     health = step["health"]
 
     assert isinstance(health["pressure_score"], int)
-    assert health["pressure_status"] in {"maybe", "rewrite"}
-    assert "reader_promise_too_generic" in health["pressure_flags"]
-    assert "story_pressure_too_generic" in health["pressure_flags"]
+    # 阶段 H：泛泛短语只给建议，不再改状态——「Readers who like mysteries.」是建议项，不是缺陷旗标
+    assert "reader_promise_too_generic" not in health["pressure_flags"]
+    assert "story_pressure_too_generic" not in health["pressure_flags"]
+    assert any(step.startswith("建议：") and "读者" in step for step in health["fix_steps"])
     assert health["fix_steps"]
     assert isinstance(health["strengths"], list)
     assert health["score"] == health["pressure_score"]
@@ -948,7 +949,9 @@ def test_workspace_v2_cost_requirement_clears_missing_flag_and_persists_through_
 
     baseline_items = workspace["triage_items"]
     baseline_item = next(item for item in baseline_items if item["scene_id"] == scenes[0]["scene_id"])
-    assert "missing_cost_requirement" in baseline_item["pressure_flags"], baseline_item
+    # 阶段 H：缺代价只提醒，不再是旗标、不再扣分
+    assert "missing_cost_requirement" not in baseline_item["pressure_flags"], baseline_item
+    assert any("代价" in step for step in baseline_item["fix_steps"]), baseline_item
     baseline_score = baseline_item["score"]
 
     cost_text = "拿到线索的代价是永久失去这个线人的信任。"
@@ -962,11 +965,12 @@ def test_workspace_v2_cost_requirement_clears_missing_flag_and_persists_through_
     triage_items = patch_response.json()["data"]["workspace"]["triage_items"]
     filled_item = next(item for item in triage_items if item["scene_id"] == scenes[0]["scene_id"])
     bare_item = next(item for item in triage_items if item["scene_id"] == scenes[1]["scene_id"])
-    # 同一场景填前/填后对比：只应该是 cost_requirement 这一个变量的效应。
+    # 同一场景填前/填后对比：只应该是 cost_requirement 这一个变量的效应——建议消失，分数不变（不扣分）。
     assert "missing_cost_requirement" not in filled_item["pressure_flags"], filled_item
-    assert filled_item["score"] > baseline_score
-    # 没碰过的场景（对照组）应该保持原样，继续报缺失。
-    assert "missing_cost_requirement" in bare_item["pressure_flags"], bare_item
+    assert not any("免费选择" in step for step in filled_item["fix_steps"]), filled_item
+    assert filled_item["score"] == baseline_score
+    # 没碰过的场景（对照组）应该保持原样，继续提醒。
+    assert any("免费选择" in step for step in bare_item["fix_steps"]), bare_item
 
     # 编辑已确认的 scene_details 会把它打回 pending_review，需要重新确认才能物化。
     _approve_step(client, project["project_id"], "scene_details")
@@ -1694,18 +1698,12 @@ def test_workspace_v2_computes_rule_first_scene_diagnostics_and_blocks_auto_rewr
     assert maybe_item["missing_fields"] == ["setback"]
 
     gate = diagnosed["materialization_gate"]
-    assert gate["status"] == "blocked"
-    assert any(broken_scene["scene_id"] in blocker for blocker in gate["blockers"])
-    assert any(item["kind"] == "triage_confirmation_required" for item in gate["items"])
+    # 阶段 H：规则层的「重写」只是缺失 / 占位的机械判断——是警告，不是 blocker；作者与 LLM 分诊拍板
+    assert gate["status"] == "warning"
+    assert any(broken_scene["scene_id"] in warning for warning in gate["warnings"])
+    assert any(item["kind"] == "triage_unreviewed_rewrite" and item["severity"] == "warning" for item in gate["items"])
+    assert not any(item["kind"] == "triage_confirmation_required" for item in gate["items"])
     assert all("marked rewrite" not in blocker for blocker in gate["blockers"])
-
-    materialize_response = client.post(
-        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/materialize",
-        json={},
-        headers={"X-Idempotency-Key": "materialize-auto-rewrite-blocked"},
-    )
-    assert materialize_response.status_code == 409
-    assert materialize_response.json()["error"]["details"]["materialization_gate"]["status"] == "blocked"
 
 
 def test_workspace_v2_flags_weak_scene_pressure_even_when_required_fields_are_present(client) -> None:
@@ -1754,19 +1752,17 @@ def test_workspace_v2_flags_weak_scene_pressure_even_when_required_fields_are_pr
     proactive_item = next(item for item in items if item["scene_id"] == weak_proactive["scene_id"])
     reactive_item = next(item for item in items if item["scene_id"] == weak_reactive["scene_id"])
 
-    # 阶段 B：规则层只认「占位 / 泛泛短语」与缺代价；「挫折没有代价」这类质量判断降为建议。
-    assert proactive_item["recommended_status"] == "maybe"
-    assert "placeholder_conflict" in proactive_item["pressure_flags"]  # "They argue."
-    assert not any(flag.startswith("weak_") for flag in proactive_item["pressure_flags"])
-    assert proactive_item["score"] < 100
+    # 阶段 B / H：规则层只认「缺失 / 占位」；泛泛短语、缺代价、「挫折没有代价」这类质量判断全部降为建议。
+    assert proactive_item["recommended_status"] == "pass"
+    assert proactive_item["pressure_flags"] == []
+    assert proactive_item["score"] == 100
+    assert any(step.startswith("建议：") and "泛泛短语" in step for step in proactive_item["fix_steps"])  # "They argue."
     assert any(step.startswith("建议：") and "挫折" in step for step in proactive_item["fix_steps"])  # "She succeeds."
 
-    assert reactive_item["recommended_status"] == "maybe"
-    assert "placeholder_dilemma" in reactive_item["pressure_flags"]  # "Stay or leave."
-    assert "placeholder_decision" in reactive_item["pressure_flags"]  # "She decides."
+    assert reactive_item["recommended_status"] == "pass"
+    assert reactive_item["pressure_flags"] == []
     assert "fake_dilemma" not in reactive_item["pressure_flags"]
-    assert reactive_item["score"] < 100
-    assert reactive_item["fix_steps"]
+    assert any(step.startswith("建议：") and "泛泛短语" in step for step in reactive_item["fix_steps"])  # "Stay or leave." / "She decides."
 
 
 def test_workspace_v2_manual_triage_override_of_auto_rewrite_becomes_gate_warning(client) -> None:
@@ -1809,7 +1805,8 @@ def test_workspace_v2_manual_triage_override_of_auto_rewrite_becomes_gate_warnin
         headers={"X-Idempotency-Key": "approve-auto-diagnosis-override-scenes"},
     )
     assert approve_response.status_code == 200, approve_response.text
-    assert approve_response.json()["data"]["workspace"]["materialization_gate"]["status"] == "blocked"
+    # 阶段 H：规则层的「重写」是警告，不再挡物化
+    assert approve_response.json()["data"]["workspace"]["materialization_gate"]["status"] == "warning"
 
     triage_response = client.post(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/scene-triage",

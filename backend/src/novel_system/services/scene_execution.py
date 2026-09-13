@@ -334,9 +334,9 @@ class SceneExecutionContractService:
         # §4 cost_requirement — blocking for scenes with explicit structured specs
         # (scene_crucible in writer_brief or blueprint), advisory for simple/legacy scenes.
         # Blueprint §4: "「代价」字段是关键 — AI 最常见的毛病是免费选择"
+        # 阶段 H：代价是本项目的强化，不是原著的三拍——按原著规划的场不能因此被合同挡住。
         if not _has_text(payload.get("cost_requirement")):
-            is_explicit = payload.get("_has_explicit_crucible", False)
-            missing.append("cost_requirement" if is_explicit else "cost_requirement(advisory)")
+            missing.append("cost_requirement(advisory)")
         # §10 function_tag — advisory but tracked for rhythm enforcement
         if not _has_text(payload.get("function_tag")):
             missing.append("function_tag(advisory)")

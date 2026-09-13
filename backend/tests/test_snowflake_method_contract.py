@@ -81,16 +81,19 @@ GOLDILOCKS_SCENES = {
 def test_ingermansons_own_scene_plans_pass_the_rule_layer(key: str) -> None:
     scene = dict(GOLDILOCKS_SCENES[key])
     diagnosis = diagnose_scene_detail(scene)
-    # 书里的草图没有「代价」栏——那是本项目有意的强化，所以只剩这一个 maybe 级标记。
-    assert diagnosis["pressure_flags"] == ["missing_cost_requirement"], diagnosis
-    assert diagnosis["recommended_status"] == "maybe"
+    # 书里的草图没有「代价」栏——那是本项目有意的强化。阶段 H：缺代价只提醒，原著的场景计划直接「通过」。
+    assert diagnosis["pressure_flags"] == [], diagnosis
+    assert diagnosis["recommended_status"] == "pass"
+    assert diagnosis["score"] == 100
     assert diagnosis["missing_fields"] == []
+    assert any(step.startswith("建议：") and "免费选择" in step for step in diagnosis["fix_steps"])
 
     with_cost = dict(scene, cost_requirement="她偷了相机，从此在熊爸爸那里再无信用。")
     diagnosis = diagnose_scene_detail(with_cost)
     assert diagnosis["pressure_flags"] == [], diagnosis
     assert diagnosis["recommended_status"] == "pass"
     assert diagnosis["score"] == 100
+    assert not any("免费选择" in step for step in diagnosis["fix_steps"])
     # 质量判断只剩建议：可以有，但不改状态、不扣分
     assert all(step.startswith("建议：") for step in diagnosis["fix_steps"])
     assert diagnosis["fix_steps"] == diagnosis["advice"]
@@ -110,14 +113,15 @@ def test_placeholder_and_generic_fields_are_still_flagged() -> None:
     }
     diagnosis = diagnose_scene_detail(scene)
     assert diagnosis["recommended_status"] == "maybe"
+    # 阶段 H：泛泛短语（"They argue."）只给建议，占位（提示语 / 例句 / 待补）仍是旗标
     assert set(diagnosis["pressure_flags"]) == {
         "placeholder_crucible",
         "placeholder_goal",
-        "placeholder_conflict",
         "placeholder_setback",
     }
     assert diagnosis["score"] < 100
     assert any("占位" in step for step in diagnosis["fix_steps"])
+    assert any(step.startswith("建议：") and "泛泛短语" in step for step in diagnosis["advice"])
     # 旧的关键词标记名不再产生
     assert not any(flag.startswith("weak_") or flag == "fake_dilemma" for flag in diagnosis["pressure_flags"])
 
@@ -158,9 +162,12 @@ def test_compliant_loglines_pass_the_rule_layer(summary: str) -> None:
     assert diagnosis["status"] == "pass"
 
 
-def test_logline_without_an_obstacle_is_still_flagged() -> None:
+def test_logline_without_an_obstacle_only_gets_advice() -> None:
+    # 阶段 H：「但 / 却」这类标记验证不了压力转折——只提醒，不改状态
     diagnosis = diagnose_step_pressure("one_sentence_summary", {"summary": "一个少年在雨城寻找失踪多年的父亲"})
-    assert "logline_lacks_pressure_turn" in diagnosis["pressure_flags"]
+    assert diagnosis["pressure_flags"] == []
+    assert diagnosis["status"] == "pass"
+    assert any(step.startswith("建议：") and "阻力" in step for step in diagnosis["fix_steps"])
 
 
 def test_logline_copy_agrees_on_forty_characters() -> None:
@@ -257,7 +264,7 @@ def test_guidance_and_prompts_drop_mechanical_alternation() -> None:
     assert "Alternate proactive and reactive deliberately" not in scene_list["task_prompt"]
     assert "Reactive scenes should be a minority" in scene_list["task_prompt"]
     scene_details = templates["snowflake_generate_scene_details"]
-    assert scene_details["version"] == "2026-09-13.v9"
+    assert scene_details["version"] == "2026-09-13.v10"
     assert "measured against the protagonist" in scene_details["task_prompt"]
     one_sentence = templates["snowflake_generate_one_sentence_summary"]
     assert one_sentence["version"] == "2026-09-13.v3"
@@ -580,12 +587,12 @@ def test_phase_d_prompt_versions_and_contracts() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     sheets = templates["snowflake_generate_character_sheets"]
-    assert sheets["version"] == "2026-09-13.v4"
+    assert sheets["version"] == "2026-09-13.v5"
     assert "没有什么比___更重要" in sheets["task_prompt"] and "in tension" in sheets["task_prompt"]
     assert "one_sentence_summary (this character's own storyline" in sheets["task_prompt"]
 
     synopses = templates["snowflake_generate_character_synopses"]
-    assert synopses["version"] == "2026-09-13.v4"
+    assert synopses["version"] == "2026-09-13.v5"
     assert "exactly these six prefixed lines" in synopses["task_prompt"] and "视角故事：" in synopses["task_prompt"]
 
     outline = templates["snowflake_generate_long_synopsis"]
