@@ -684,3 +684,59 @@ def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
     assert llm_call.project_id == PROJECT_ID
     assert llm_call.chapter_id == CHAPTER_ID
     assert llm_call.scene_id is None
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-13 阶段 D：成稿后的场景三问（坩埚可辨 / 三拍落地 / Yes-No-Maybe），随评审记录持久化、非阻断
+# ---------------------------------------------------------------------------
+
+
+def test_scene_story_check_is_normalized_recorded_and_surfaced(session) -> None:
+    from novel_system.api.routes.scenes import _serialize_near_final_summary
+    from novel_system.db.models import AttemptTracker
+    from novel_system.services.catalog import CatalogService
+    from novel_system.services.near_final import _normalize_acceptance_payload
+
+    # 归一：字符串旗标、缺省判定推导、缺席为 None
+    normalized = _normalize_acceptance_payload({
+        **_near_final_pass(),
+        "scene_story_check": {"crucible_identified": "yes", "shape_landed": False, "note": "决定没有落到动作上。"},
+    })["scene_story_check"]
+    assert normalized == {"crucible_identified": True, "shape_landed": False, "verdict": "maybe", "note": "决定没有落到动作上。"}
+    assert _normalize_acceptance_payload({**_near_final_pass(), "scene_story_check": {"crucible_identified": True, "shape_landed": True}})["scene_story_check"]["verdict"] == "yes"
+    assert _normalize_acceptance_payload({**_near_final_pass(), "scene_story_check": {"crucible_identified": False, "shape_landed": False}})["scene_story_check"]["verdict"] == "no"
+    assert _normalize_acceptance_payload({**_near_final_pass(), "scene_story_check": {"verdict": "NO", "note": "写错人了"}})["scene_story_check"] == {"crucible_identified": None, "shape_landed": None, "verdict": "no", "note": "写错人了"}
+    assert _normalize_acceptance_payload(_near_final_pass())["scene_story_check"] is None
+    assert _normalize_acceptance_payload({**_near_final_pass(), "scene_story_check": "not a dict"})["scene_story_check"] is None
+
+    # 随评审记录持久化，并且不改变通过与否
+    _seed_scene(session)
+    payload = {**_near_final_pass(), "scene_story_check": {"crucible_identified": True, "shape_landed": True, "verdict": "yes", "note": "坩埚是船坞的封锁。"}}
+    service = NearFinalAcceptanceService(session, llm_client=SequencedClient([payload]))
+    content = (
+        "林岑按住录音带。公开它能证明篡改，也会暴露阿砚。许望问：\"你要真相，还是要活人？\""
+        "她把录音带分成两份，一份交给许望，一份藏进船坞石缝，然后转身看见雾墙上的第二枚盐钟。"
+    )
+    result = service.evaluate_scene(
+        SCENE_ID,
+        bundle={"bundle_id": "bundle_sc", "bundle_snapshot_hash": "hash_sc", "snapshot": {"inline_digests": {}}},
+        source_draft_row_id="draft_sc",
+        source_content=content,
+    )
+    session.commit()
+    assert result["near_final_status"] == "near_final_ready"
+    assert result["scene_story_check"]["verdict"] == "yes"
+    attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.scene_id == SCENE_ID, AttemptTracker.step == "near_final_acceptance_review")
+    ).scalars().one()
+    assert attempt.details_json["scene_story_check"] == {
+        "crucible_identified": True, "shape_landed": True, "verdict": "yes", "note": "坩埚是船坞的封锁。",
+    }
+    # 工作台摘要与目录场景行都按最近一次评审透出
+    assert _serialize_near_final_summary(session, SCENE_ID)["scene_story_check"]["verdict"] == "yes"
+    catalog = CatalogService(session)
+    assert catalog.story_checks([SCENE_ID])[SCENE_ID]["verdict"] == "yes"
+    assert catalog.story_checks([]) == {}
+    tree = catalog.catalog(PROJECT_ID)
+    scene_row = next(s for c in tree["chapters"] for s in c["scenes"] if s["scene_id"] == SCENE_ID)
+    assert scene_row["story_check"]["shape_landed"] is True

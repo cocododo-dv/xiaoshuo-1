@@ -568,7 +568,7 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     assert "restate paragraph 3" not in templates["hard_qc"]["task_prompt"]
     assert templates["soft_qc"]["version"] == "2026-09-13.v6"
     assert "only where the reference author demonstrably does not do these things" in templates["soft_qc"]["task_prompt"]
-    assert templates["near_final_acceptance_review"]["version"] == "2026-09-13.v5"
+    assert templates["near_final_acceptance_review"]["version"] == "2026-09-13.v6"
     assert "If no [STYLE_REFERENCE] block is present, do not pass scenes" in templates["near_final_acceptance_review"]["task_prompt"]
 
 

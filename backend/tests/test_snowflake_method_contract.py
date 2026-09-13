@@ -253,7 +253,7 @@ def test_guidance_and_prompts_drop_mechanical_alternation() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     scene_list = templates["snowflake_generate_scene_list"]
-    assert scene_list["version"] == "2026-09-13.v7"
+    assert scene_list["version"] == "2026-09-13.v8"
     assert "Alternate proactive and reactive deliberately" not in scene_list["task_prompt"]
     assert "Reactive scenes should be a minority" in scene_list["task_prompt"]
     scene_details = templates["snowflake_generate_scene_details"]
@@ -446,3 +446,165 @@ def test_short_synopsis_generation_fails_loudly_after_the_second_count_mismatch(
     assert excinfo.value.details["next_action"] == "regenerate_with_exact_count"
     assert "8 段" in excinfo.value.message
     assert len(calls) == 2  # 只重试一次，不会无限循环
+
+
+# ---------------------------------------------------------------------------
+# 阶段 D（方法保真）：07 五段展开、角色表故事线、06 视角故事
+# ---------------------------------------------------------------------------
+
+
+def _long_synopsis_base() -> dict:
+    return merge_step_draft("long_synopsis", None)
+
+
+def test_long_synopsis_default_has_five_expansion_slots_and_never_truncates() -> None:
+    """书里的第 6 步：一页梗概的五段各扩成约一页。默认五槽；归一化只补空槽，作者手写的段绝不静默丢。"""
+    from novel_system.services.snowflake_steps import LONG_SYNOPSIS_PARAGRAPHS
+
+    assert LONG_SYNOPSIS_PARAGRAPHS == 5
+    assert _long_synopsis_base()["paragraphs"] == ["", "", "", "", ""]
+    assert _long_synopsis_base()["chapters"] == []
+    legacy = merge_step_draft("long_synopsis", {"paragraphs": ["第一幕", "第二幕", "第三幕", ""], "chapters": []})
+    assert legacy["paragraphs"] == ["第一幕", "第二幕", "第三幕", "", ""]
+    handwritten = merge_step_draft("long_synopsis", {"paragraphs": _paragraphs(6)})
+    assert len(handwritten["paragraphs"]) == 6, "归一化不得截断作者的段落"
+
+
+def test_long_synopsis_generation_rejects_a_sixth_expansion_paragraph() -> None:
+    with pytest.raises(StructuredCountMismatch) as excinfo:
+        _sanitize_step_patch(
+            "long_synopsis",
+            {"paragraphs": _paragraphs(6), "chapters": []},
+            latest_by_step={},
+            project_id="P",
+            base=_long_synopsis_base(),
+        )
+    assert "恰好 5 段" in str(excinfo.value) and "6 段" in str(excinfo.value) and "章表另列" in str(excinfo.value)
+
+    kept = _sanitize_step_patch(
+        "long_synopsis", {"paragraphs": _paragraphs(5)}, latest_by_step={}, project_id="P", base=_long_synopsis_base()
+    )
+    assert len(kept["paragraphs"]) == 5
+    # 教练补丁：丢键不报废回复（与一页梗概同一策略）
+    dropped = _sanitize_step_patch(
+        "long_synopsis", {"paragraphs": _paragraphs(7)}, latest_by_step={}, project_id="P",
+        base=_long_synopsis_base(), count_policy="drop",
+    )
+    assert "paragraphs" not in dropped
+
+
+def test_long_synopsis_generation_retries_once_with_the_rejection_reason(session, monkeypatch) -> None:
+    from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+
+    calls: list[dict] = []
+    chapters = [
+        {"row_uid": "", "chapter_seq": 1, "act": 1, "title": "雨夜来信", "summary": "信件迫使她回乡", "spine": "灾一", "chapter_goal": "把她钉在雨城"},
+        {"row_uid": "", "chapter_seq": 2, "act": 2, "title": "旧屋回声", "summary": "旧证词出现裂缝", "spine": "", "chapter_goal": "让证词开始反噬"},
+    ]
+
+    def responder(request):
+        payload = _payload_of(request)
+        calls.append(payload)
+        count = 6 if len(calls) == 1 else 5
+        return _respond({"paragraphs": _paragraphs(count), "chapters": chapters})
+
+    _install_llm(monkeypatch, responder)
+    _seed_synopsis_project(session, "prj-outline-five")
+
+    result = SnowflakeWorkspaceService(session).generate_step("prj-outline-five", "long_synopsis", {})
+
+    assert len(calls) == 2
+    repair = calls[1]["completeness_repair"]
+    assert "6 段" in repair["instruction"] and "exactly the required number" in repair["instruction"]
+    draft = result["step"]["draft"]
+    assert len(draft["paragraphs"]) == 5 and draft["paragraphs"][4].startswith("第5段")
+    assert [c["title"] for c in draft["chapters"]] == ["雨夜来信", "旧屋回声"], "章表照常整表落库"
+
+
+def test_prose_expansions_never_parse_into_chapters() -> None:
+    """五段展开是散文，不是章行镜像：没有 chapters 时回退解析必须得到空表，绝不造假章。"""
+    from novel_system.services.snowflake_chaptering import parse_outline_chapters
+
+    prose = {"paragraphs": _paragraphs(5), "chapters": []}
+    assert parse_outline_chapters(prose) == []
+    # 历史草稿的章行格式仍然认得
+    legacy = {"paragraphs": ["01 雨夜来信：信件迫使她回乡（灾一）\n02 旧屋回声：旧证词出现裂缝", "", "", ""]}
+    parsed = parse_outline_chapters(legacy)
+    assert [c["title"] for c in parsed] == ["雨夜来信", "旧屋回声"]
+    assert parsed[0]["spine"] == "灾一"
+    # 结构化章表优先，散文段落不干扰
+    both = {"paragraphs": _paragraphs(5), "chapters": [{"act": 2, "title": "中点", "summary": "养母", "spine": "灾二"}]}
+    assert [c["title"] for c in parse_outline_chapters(both)] == ["中点"]
+
+
+def test_reference_instructions_carry_storylines_pov_story_and_five_expansions() -> None:
+    from novel_system.services.snowflake_steps import _REFERENCE_STEP_INSTRUCTIONS, get_step_definition
+
+    sheets = _REFERENCE_STEP_INSTRUCTIONS["character_sheets"]
+    assert "一句话故事线" in sheets and "一段话故事线" in sheets and "没有什么比___更重要" in sheets
+    assert "视角故事" in _REFERENCE_STEP_INSTRUCTIONS["character_synopses"]
+    outline = _REFERENCE_STEP_INSTRUCTIONS["long_synopsis"]
+    assert "恰好五段" in outline and "章节表" in outline
+    template = next(f for f in get_step_definition("character_sheets")["editor"]["fields"] if f["key"] == "characters")["template"]
+    assert {"one_sentence_summary", "one_paragraph_summary", "values"} <= set(template)
+    label = next(f for f in get_step_definition("long_synopsis")["editor"]["fields"] if f["key"] == "paragraphs")["label"]
+    assert "五段展开" in label
+
+
+def test_character_sheet_diagnosis_advises_storyline_and_values_without_flagging() -> None:
+    """阶段 B 的纪律：启发式只给建议，不降状态。故事线 / 价值观条数缺了是「建议」，不是旗标。"""
+    full = {
+        "characters": [
+            {
+                "display_name": "林岑", "role": "主角", "goal": "查清谁改了档案，但恩师挡路",
+                "ambition": "被看见", "conflict": "恩师挡路，但她必须交出证据", "epiphany": "给活人",
+                "values": ["没有什么比真相更重要", "没有什么比弟弟活着更重要"],
+                "one_sentence_summary": "林岑必须交出母本，但交出去弟弟就没了退路。",
+            }
+        ]
+    }
+    diagnosis = diagnose_step_pressure("character_sheets", full)
+    assert not any("故事线" in step for step in diagnosis["fix_steps"])
+
+    thin = {"characters": [{**full["characters"][0], "values": ["没有什么比真相更重要"], "one_sentence_summary": ""}]}
+    thin_diagnosis = diagnose_step_pressure("character_sheets", thin)
+    advice = [step for step in thin_diagnosis["fix_steps"] if step.startswith("建议：")]
+    assert advice and "林岑" in advice[0] and "一句话故事线" in advice[0] and "没有什么比___更重要" in advice[0]
+    assert thin_diagnosis["pressure_flags"] == diagnosis["pressure_flags"], "建议不产生旗标"
+    assert thin_diagnosis["pressure_status"] == diagnosis["pressure_status"]
+
+
+def test_phase_d_prompt_versions_and_contracts() -> None:
+    """阶段 D 的提示词契约：角色表故事线 + 价值观句式、06 六前缀行、07 恰好五段展开、09 读五段、准定稿评审出场景三问。"""
+    templates = yaml.safe_load(
+        (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
+    )["templates"]
+    sheets = templates["snowflake_generate_character_sheets"]
+    assert sheets["version"] == "2026-09-13.v4"
+    assert "没有什么比___更重要" in sheets["task_prompt"] and "in tension" in sheets["task_prompt"]
+    assert "one_sentence_summary (this character's own storyline" in sheets["task_prompt"]
+
+    synopses = templates["snowflake_generate_character_synopses"]
+    assert synopses["version"] == "2026-09-13.v4"
+    assert "exactly these six prefixed lines" in synopses["task_prompt"] and "视角故事：" in synopses["task_prompt"]
+
+    outline = templates["snowflake_generate_long_synopsis"]
+    assert outline["version"] == "2026-09-13.v5"
+    assert "exactly 5 paragraphs" in outline["task_prompt"] and "300-600 Chinese characters" in outline["task_prompt"]
+    assert "never write chapter lists or headings into `paragraphs`" in outline["task_prompt"]
+    assert "`chapters` is the source of truth for chapter membership" in outline["task_prompt"]
+
+    scene_list = templates["snowflake_generate_scene_list"]
+    assert scene_list["version"] == "2026-09-13.v8"
+    assert "long_synopsis.paragraphs are five page-length expansions" in scene_list["task_prompt"]
+    assert "视角故事" in scene_list["task_prompt"]
+
+    review = templates["near_final_acceptance_review"]
+    assert review["version"] == "2026-09-13.v6"
+    assert "Always fill scene_story_check" in review["task_prompt"]
+    assert "must not change near_final_status or pass_flag" in review["task_prompt"]
+    schema = review["structured_schema"]
+    assert "scene_story_check" in schema["required"]
+    check = schema["properties"]["scene_story_check"]
+    assert check["required"] == ["crucible_identified", "shape_landed", "verdict", "note"]
+    assert check["properties"]["verdict"]["enum"] == ["yes", "no", "maybe"]

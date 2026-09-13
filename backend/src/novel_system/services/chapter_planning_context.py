@@ -57,7 +57,9 @@ _CANON_STEP_KEYS = (
     "character_synopses",
 )
 # 单步 canon 摘要的字符预算（长大纲最大）；超出截断并标注。
-_CANON_CHAR_BUDGET = {"long_synopsis": 2000, "character_synopses": 1200}
+# 2026-09-13 阶段 D：长篇大纲 = 五段各约一页（≤600 字）的展开 + 章表，3200 才装得下整份；
+# _truncate_value 对 list 值不扣预算，所以章表不会被散文挤掉。
+_CANON_CHAR_BUDGET = {"long_synopsis": 3200, "character_synopses": 1200}
 _CANON_DEFAULT_BUDGET = 600
 
 # 张力邻域窗口：前 3 章 + 本章 + 后 2 章。

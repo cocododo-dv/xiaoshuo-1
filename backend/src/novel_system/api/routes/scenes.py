@@ -2012,6 +2012,8 @@ def _serialize_near_final_summary(session: Session, scene_id: str) -> dict | Non
         "pipeline_stage": _near_final_pipeline_stage(near_final_status),
         "failure_class": failure_class,
         "failure_reason": _near_final_failure_label(failure_class),
+        # 阶段 D：成稿后的场景三问（坩埚可辨 / 三拍落地 / Yes-No-Maybe），非阻断
+        "scene_story_check": details.get("scene_story_check"),
         "auto_rewrite_eligible": (
             bool(latest_evaluation.auto_rewrite_eligible)
             if latest_evaluation is not None

@@ -38,8 +38,9 @@ from novel_system.services.errors import DomainError
 STRATEGIES = ("spine_anchor", "even", "keep_current")
 SPINE_MARKS = ("灾一", "灾二", "灾三")
 _SPINE_PATTERN = re.compile(r"灾[一二三]")
-# NN 章名：一句话（灾一）—— 提示词 snowflake_generate_long_synopsis 要求的行格式，
-# 也是前端 07 脚手架折成 paragraphs 时用的格式。
+# NN 章名：一句话（灾一）—— 2026-09-13 阶段 D 之前提示词 snowflake_generate_long_synopsis 与前端 07
+# 脚手架把章表镜像进 paragraphs 时用的行格式。现在 paragraphs 是五段展开的散文，章表只在 chapters 里；
+# 这个正则只为没有 chapters 的历史草稿服务。
 _OUTLINE_LINE = re.compile(r"^(\d+)\s+([^：:]+)[：:]?(.*)$")
 
 # 一章分到的场数超过均值这么多倍时给个提醒（不阻断——长章是合法的作者选择）
@@ -883,8 +884,9 @@ def parse_outline_chapters(draft: dict[str, Any] | None) -> list[dict[str, Any]]
     """07 长篇大纲草稿 → 结构化章表。
 
     优先读结构化 ``chapters``（新契约）；缺席时回退解析 ``paragraphs`` 的文本行
-    （历史草稿与旧 LLM 输出——提示词至今仍要求 ``NN 章名：一句话（灾一）`` 这个格式）。
-    回退解析对不合格式的行也给出一章：宁可让作者在分章面板里改标题，也不要静默丢章。
+    （历史草稿与旧 LLM 输出曾用 ``NN 章名：一句话（灾一）`` 这个格式）。
+    2026-09-13 阶段 D 起 ``paragraphs`` 是五段展开的散文（书里的第 6 步），不再是章行镜像，
+    所以回退解析只对历史草稿有意义——散文段落里解析不出章行就得到空表，绝不造假章。
     """
     payload = draft if isinstance(draft, dict) else {}
     structured = [item for item in (payload.get("chapters") or []) if isinstance(item, dict)]

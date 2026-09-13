@@ -1119,6 +1119,20 @@ function ManuWriting({ picked, go, onSubmit, gate, canSubmit, blockReason }) {
 }
 
 /* ---------- 结构 ---------- */
+/* 阶段 D：成稿后的场景三问（Ingermanson 的 Yes / No / Maybe 分诊）——准定稿评审随评审记录给出，
+   目录按场透出（catalog story_check）。只是提示，不阻断任何流转。 */
+const MS_STORY_VERDICT = { yes: ["Yes", "这一场成立"], no: ["No", "不成立"], maybe: ["Maybe", "能修"] };
+function ManuStoryCheck({ check }) {
+  if (!check) return <span className="ms-story-check is-none" />;
+  const verdict = MS_STORY_VERDICT[check.verdict] || ["—", "未判"];
+  const mark = (flag) => (flag === true ? "✓" : flag === false ? "✗" : "?");
+  const title = `成稿后场景三问（准定稿评审）：坩埚可辨 ${mark(check.crucible_identified)} · 三拍落地 ${mark(check.shape_landed)} · 判定 ${verdict[0]}（${verdict[1]}）${check.note ? "\n" + check.note : ""}`;
+  return (
+    <span className={`ms-story-check is-${check.verdict || "none"}`} title={title} data-testid="ms-story-check">
+      <b>{verdict[0]}</b> 坩埚{mark(check.crucible_identified)} 三拍{mark(check.shape_landed)}
+    </span>
+  );
+}
 function ManuStructure({ picked, body, catCh }) {
   const drama = (body && body.drama) || manuDramaOf(catCh);
   /* 场景拼接：优先目录真实场景（含状态/字数），种子章回落演示归档 */
@@ -1129,6 +1143,7 @@ function ManuStructure({ picked, body, catCh }) {
           idx: String(i + 1).padStart(2, "0"), title: s.title,
           meta: paras ? `${paras.join("").length} 字 · 已归档` : (typeof s.words === "number" && s.words > 0 ? `${s.words.toLocaleString()} 字` : "未展开"),
           done: !!paras || s.state === "done",
+          check: s.storyCheck || null,
         };
       })
     : (body && body.scenes ? body.scenes.map(s => ({ idx: s.idx, title: s.title, meta: `${s.paras.join("").length} 字 · 已归档`, done: true })) : []);
@@ -1153,6 +1168,7 @@ function ManuStructure({ picked, body, catCh }) {
             <li key={i} className={s.done ? "" : "is-ghost"}>
               <span className="ms-scene-idx">{s.idx}</span>
               <span className={s.done ? "text-serif fw-600" : "text-muted"}>{s.title}</span>
+              <ManuStoryCheck check={s.check} />
               <span className="text-muted text-sm">{s.meta}</span>
               {s.done ? <I.Check size={13} style={{color: "var(--sage)"}} /> : <I.Dot size={13} />}
             </li>

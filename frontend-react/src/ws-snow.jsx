@@ -262,11 +262,12 @@ const S2_STEP_DATA = {
     target: 240,
     scaffold: { type: "charsheet" },
     guide: {
-      task: "情节与角色交替展开——第一次切到角色轨道。角色的价值观冲突产生你所有的场景冲突。给每人一张摘要表：目标、抱负、价值观、阻碍、顿悟。",
+      task: "情节与角色交替展开——第一次切到角色轨道。角色的价值观冲突产生你所有的场景冲突。给每人一张摘要表：目标、抱负、价值观、阻碍、顿悟，再加她自己的一句话 / 一段话故事线。",
       writing: [
         { k: "目标要具体", v: "写看得见、可验证的东西——不是「寻找自我」，是「查清谁改了档案」" },
-        { k: "价值观要碰撞", v: "用「没有什么比 ___ 更重要」写 3 条，互相有张力——主角和对手这句话必须冲突" },
+        { k: "价值观要碰撞", v: "用「没有什么比 ___ 更重要」写 2–3 条，互相有张力——主角和对手这句话必须冲突" },
         { k: "反派也是主角", v: "每个角色都是自己故事的主角，包括反派——在她自己的故事里，她也是对的" },
+        { k: "她自己的故事线", v: "一句话 + 一段话：在她自己的故事里她要什么、谁挡着、三次灾难怎样打在她身上、她的结局" },
       ],
       checklist: [
         "每个角色都有一个具体的、可验证的目标。",
@@ -559,13 +560,14 @@ function s2BlankScaffolds() {
   return {
     audience: { genre: "", reader: "", pleasure: "", source: "", exclude: "", emotion: "" },
     paragraph: { premiseF: "", premiseT: "", setup: "", d1: "", d2: "", d3: "", resolution: "" },
-    characters: { sel: "c1", chars: { c1: { name: "", role: "主角", goal: "", ambition: "", values: "", conflict: "", epiphany: "" } } },
+    characters: { sel: "c1", chars: { c1: { name: "", role: "主角", goal: "", ambition: "", values: "", conflict: "", epiphany: "", storyline: "", storyline_para: "" } } },
     planning: { sel: "", plans: {} },
-    backstory: { sel: "c1", chars: { c1: { name: "", role: "主角", belief: "", wound: "", desire: "", fear: "", relation: "" } } },
+    backstory: { sel: "c1", chars: { c1: { name: "", role: "主角", belief: "", wound: "", desire: "", fear: "", relation: "", povstory: "" } } },
     profile: { sel: "c1", chars: { c1: { name: "", role: "主角", physical: "", psych: "", environment: "", personality: "", contradiction: "", views: "" } } },
     scenes: { lines: [], list: [] },
     synopsis: { paras: { setup: "", d1: "", d2: "", d3: "", resolution: "" } },
-    outline: { chapters: [] },
+    // 阶段 D：07 = 五段展开（05 的每一段扩成约一页，书里的第 6 步）+ 章节表（分章真相）
+    outline: { chapters: [], expansions: { setup: "", d1: "", d2: "", d3: "", resolution: "" } },
   };
 }
 function s2DefaultDrafts() { return Object.fromEntries(S2_STEPS.map(s => [s.key, ""])); }
@@ -1890,18 +1892,44 @@ const S2_CHAR_FIELDS = [
   { f: "role",     label: "角色",          hint: "主角 / 对立面 / 导师 / 帮手…", short: true },
   { f: "goal",     label: "目标（具体）",  hint: "这个故事里她要的、看得见的东西" },
   { f: "ambition", label: "抱负（抽象）",  hint: "她对人生说不出口的渴望" },
-  { f: "values",   label: "价值观",        hint: "「没有什么比 ___ 更重要」", prefix: "没有什么比", suffix: "更重要" },
   { f: "conflict", label: "阻碍",          hint: "什么挡在她和目标之间" },
+  // 阶段 D：价值观按书里的句式一行一条（2–3 条，互相有张力）；脚手架仍存一个字符串，换行分隔
+  { f: "values",   label: "价值观",        hint: "「没有什么比 ___ 更重要」写 2–3 条，互相有张力——主角和对手这句话必须冲突", kind: "values", prefix: "没有什么比", suffix: "更重要", wide: true },
   { f: "epiphany", label: "顿悟",          hint: "故事结束时她学到什么（反派常无）" },
+  // 阶段 D：书里的角色表还有两栏——这个角色自己的一句话 / 一段话故事线（规范键 one_sentence_summary / one_paragraph_summary）
+  { f: "storyline",      label: "一句话故事线", hint: "她自己的故事，一句话：要什么、谁挡着、代价是什么", wide: true },
+  { f: "storyline_para", label: "一段话故事线", hint: "扩成一段：她怎样进入故事、三次灾难怎样打在她身上、她的结局，以及她能生出哪些场景", rows: 3, wide: true },
 ];
+/* 价值观列表：一行一条「没有什么比 ___ 更重要」。脚手架里仍是一个字符串（换行分隔），
+   canonFromFE 上行时才拆成数组并补全句式——旧缓存里的单行字符串自然成为第一条。 */
+function S2ValuesList({ value, prefix, suffix, onChange }) {
+  const rows = String(value || "").split("\n");
+  const setLine = (i, v) => { const next = [...rows]; next[i] = v.replace(/\n/g, " "); onChange(next.join("\n")); };
+  const addLine = () => onChange([...rows, ""].join("\n"));
+  const delLine = (i) => { const next = rows.filter((_, j) => j !== i); onChange((next.length ? next : [""]).join("\n")); };
+  return (
+    <div className="sf-values">
+      {rows.map((line, i) => (
+        <span key={i} className="sf-field-affix sf-values-row">
+          <span className="sf-affix">{prefix}</span>
+          <input className="sf-field-input" value={line} placeholder={i === 0 ? "真相" : "…与上一条有张力"} onChange={(e) => setLine(i, e.target.value)} />
+          <span className="sf-affix">{suffix}</span>
+          {rows.length > 1 && <button type="button" className="sf-values-del" onClick={() => delLine(i)} title="删除这条价值观"><I.X size={12} /></button>}
+        </span>
+      ))}
+      <button type="button" className="sf-values-add" onClick={addLine} title="价值观要互相有张力——主角和对手的这句话必须冲突"><I.Plus size={12} /> 再加一条</button>
+    </div>
+  );
+}
 function S2CharSheet({ scaffold, onScaffold, ai }) {
   const ids = Object.keys(scaffold.chars);
   const sel = scaffold.chars[scaffold.sel] ? scaffold.sel : ids[0];
   const ch = scaffold.chars[sel] || {};
+  const setField = (f, v) => onScaffold(s => ({ ...s, chars: { ...s.chars, [sel]: { ...s.chars[sel], [f]: v } } }));
   const addChar = () => onScaffold(s => {
     let n = 1; while (s.chars["c" + n]) n++;
     const id = "c" + n;
-    return { ...s, sel: id, chars: { ...s.chars, [id]: { name: "新角色", role: "次要", goal: "", ambition: "", values: "", conflict: "", epiphany: "" } } };
+    return { ...s, sel: id, chars: { ...s.chars, [id]: { name: "新角色", role: "次要", goal: "", ambition: "", values: "", conflict: "", epiphany: "", storyline: "", storyline_para: "" } } };
   });
   const delChar = () => {
     if (ids.length <= 1) { window.alert("至少保留一个角色。"); return; }
@@ -1941,22 +1969,21 @@ function S2CharSheet({ scaffold, onScaffold, ai }) {
         <button className="btn btn-quiet btn-sm" onClick={delChar} title="删除这个角色"><I.X size={13} /> 删除角色</button>
       </div>
       <div className="sf-fields">
-        {S2_CHAR_FIELDS.map(fl => (
-          <label key={fl.f} className={`sf-field ${fl.short ? "is-short" : ""}`}>
-            <span className="sf-field-label">{fl.label}<span className="sf-field-hint">{fl.hint}</span></span>
-            {fl.prefix ? (
-              <span className="sf-field-affix">
-                <span className="sf-affix">{fl.prefix}</span>
-                <input className="sf-field-input" value={ch[fl.f] || ""}
-                  onChange={(e) => onScaffold(s => ({ ...s, chars: { ...s.chars, [sel]: { ...s.chars[sel], [fl.f]: e.target.value } } }))} />
-                <span className="sf-affix">{fl.suffix}</span>
-              </span>
-            ) : (
-              <input className="sf-field-input" value={ch[fl.f] || ""}
-                onChange={(e) => onScaffold(s => ({ ...s, chars: { ...s.chars, [sel]: { ...s.chars[sel], [fl.f]: e.target.value } } }))} />
-            )}
-          </label>
-        ))}
+        {S2_CHAR_FIELDS.map(fl => {
+          const Wrap = fl.kind === "values" ? "div" : "label";
+          return (
+            <Wrap key={fl.f} className={`sf-field ${fl.short ? "is-short" : ""} ${fl.wide ? "is-wide" : ""}`}>
+              <span className="sf-field-label">{fl.label}<span className="sf-field-hint">{fl.hint}</span></span>
+              {fl.kind === "values" ? (
+                <S2ValuesList value={ch[fl.f] || ""} prefix={fl.prefix} suffix={fl.suffix} onChange={(v) => setField(fl.f, v)} />
+              ) : fl.rows ? (
+                <textarea className="sf-field-input sf-field-text" rows={fl.rows} value={ch[fl.f] || ""} onChange={(e) => setField(fl.f, e.target.value)} placeholder={`写「${fl.label}」…`} />
+              ) : (
+                <input className="sf-field-input" value={ch[fl.f] || ""} onChange={(e) => setField(fl.f, e.target.value)} />
+              )}
+            </Wrap>
+          );
+        })}
       </div>
     </div>
   );
@@ -1969,6 +1996,8 @@ const S2_BACKSTORY_FIELDS = [
   { f: "desire",   label: "内心渴望",   hint: "她真正渴望的是什么？为何渴望" },
   { f: "fear",     label: "隐秘恐惧",   hint: "最怕被人发现什么——故事将击中的靶心" },
   { f: "relation", label: "关系与行为", hint: "与其他角色的纠葛；压力下她会怎么做" },
+  // 阶段 D：书里的第 5 步——从每个角色的视角把整本书讲一遍（规范值是 synopsis 里的第六个前缀行「视角故事：」）
+  { f: "povstory",  label: "视角故事",   hint: "从她的视角把整个故事讲一遍：她看见什么、以为什么、要什么、付出什么——半页到一页", rows: 5, accent: true },
 ];
 const S2_PROFILE_FIELDS = [
   { f: "physical",      label: "生理",       hint: "外貌、习惯、标志性细节" },
@@ -2049,7 +2078,7 @@ function S2CharDeep({ scaffold, onScaffold, fields, note, icon, roster, go, ai }
         {fields.map(fl => (
           <label key={fl.f} className={`sf-deep-field ${fl.accent ? "is-accent" : ""}`}>
             <span className="sf-field-label">{fl.label}<span className="sf-field-hint">{fl.hint}</span></span>
-            <textarea className="sf-deep-text" rows={2} value={ch[fl.f] || ""} onChange={(e) => setField(fl.f, e.target.value)} placeholder={`写「${fl.label}」…`} />
+            <textarea className="sf-deep-text" rows={fl.rows || 2} value={ch[fl.f] || ""} onChange={(e) => setField(fl.f, e.target.value)} placeholder={`写「${fl.label}」…`} />
           </label>
         ))}
       </div>
@@ -2168,6 +2197,11 @@ const S2_ACTS = [
 ];
 function S2ChapterOutline({ scaffold, onScaffold, refs }) {
   const chapters = scaffold.chapters || [];
+  /* 阶段 D：书里的第 6 步——05 的每一段再扩成约一页（五段展开）；章节表在它下面，仍是分章的真相。 */
+  const expansions = scaffold.expansions || {};
+  const syn05 = ((refs && refs.synopsis) || {}).paras || {};
+  const setExp = (f, v) => onScaffold(s => ({ ...s, expansions: { ...(s.expansions || {}), [f]: v } }));
+  const expFilled = S2_SYN_BEATS.filter(b => (expansions[b.f] || "").trim()).length;
   const setCh = (id, f, v) => onScaffold(s => ({ ...s, chapters: s.chapters.map(c => c.id === id ? { ...c, [f]: v } : c) }));
   const delCh = (id) => onScaffold(s => ({ ...s, chapters: s.chapters.filter(c => c.id !== id) }));
   const addCh = (act) => onScaffold(s => {
@@ -2214,7 +2248,41 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
       )}
       <div className="sf-scaffold-note">
         <I.Layers size={14} />
-        <span>第三次展开：把一页梗概拆成<b>三幕章节</b>。三个灾难必须落在幕与幕的交界——它们是结构的铰链。</span>
+        <span>第三次展开：先把 05 的每一段扩成<b>约一页</b>（五段展开），再落成<b>三幕章节表</b>。三个灾难必须落在幕与幕的交界——它们是结构的铰链。</span>
+      </div>
+      <div className="sf-outline-expand" data-testid="snow-outline-expansions">
+        <div className="sf-syn-prog">
+          <span className="sf-syn-prog-c"><b>{expFilled}</b> / 5 段已扩成一页</span>
+          <span className="sf-syn-prog-note">每段 300–600 字：具体场景设定、行动与反应、关键对话要点、情感节点、支线穿插</span>
+          <div className="sf-syn-track">{S2_SYN_BEATS.map(b => <span key={b.f} className={`sf-syn-tick tone-${b.tone} ${(expansions[b.f] || "").trim() ? "is-on" : ""}`} />)}</div>
+        </div>
+        {S2_SYN_BEATS.map((b, i) => {
+          const src = syn05[b.f] || "";
+          const expanded = expansions[b.f] || "";
+          const len = expanded.replace(/\s/g, "").length;
+          const grew = len > src.replace(/\s/g, "").length;
+          return (
+            <div key={b.f} className={`sf-syn-row tone-${b.tone}`}>
+              <div className="sf-syn-side">
+                <span className="sf-syn-idx">{i + 1}</span>
+                <span className="sf-syn-label">{b.label}</span>
+                <span className="sf-syn-desc">{b.desc}</span>
+              </div>
+              <div className="sf-syn-main">
+                <div className="sf-syn-src" title="展开自 05 一页梗概的这一段">
+                  <span className="sf-syn-src-tag"><I.ArrowRight size={10} style={{ transform: "rotate(180deg)" }} /> 展开自 05</span>
+                  <span className="sf-syn-src-text">{src || <em className="sf-syn-empty">（05 这一段还没写）</em>}</span>
+                </div>
+                <textarea className="sf-syn-text" rows={5} value={expanded} onChange={(e) => setExp(b.f, e.target.value)} placeholder={`把「${b.label}」这一段扩成约一页…`} />
+                {expanded.trim() && (
+                  <div className={`sf-syn-meta ${grew ? "is-ok" : "is-warn"}`}>
+                    {grew ? <><I.Check size={10} /> 已展开（{len} 字{len < 300 ? "，离一页还差些" : ""}）</> : <><I.AlertTriangle size={10} /> 还没比 05 的源段长——再填画面与行动</>}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
       <div className="sf-scene-stats">
         <span className="sf-sstat"><b>{chapters.length}</b> 章</span>

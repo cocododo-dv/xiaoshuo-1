@@ -10,6 +10,8 @@ SNOWFLAKE_METHOD_VERSION = "2026-04-29.v2"
 RENDERING_MODES: tuple[str, ...] = ("full", "summary")
 # summary 场物化时拿到的数值篇幅带：起草 / 长度补丁按数值带硬约束，而不是靠「short」这种提示。
 SUMMARY_LENGTH_BAND = "200-500"
+# 阶段 D：第 6 步的分形——一页梗概的五段各扩成约一页，恰好五段。
+LONG_SYNOPSIS_PARAGRAPHS = 5
 MATERIALIZATION_REQUIRED_STEPS = [
     "book_brief",
     "one_sentence_summary",
@@ -173,14 +175,15 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
         "label": "长篇大纲",
         "english_label": "Long Synopsis",
         "phase": "雪花第6步",
-        "description": "将一页梗概扩展为四到五页详细大纲。这是最接近实际写作的规划阶段。",
-        # P2：章表成为结构化字段。paragraphs 保留为可读文本镜像（提示词和历史草稿仍用
-        # 「NN 章名：一句话（灾一）」的行格式），但真相是 chapters —— 物化分章读的是它。
-        "default_draft": {"paragraphs": ["", "", "", ""], "chapters": []},
+        "description": "把一页梗概的每一段再扩成约一页（五段展开，第 6 步的分形），再落成三幕章节表。这是最接近实际写作的规划阶段。",
+        # 阶段 D：paragraphs 回到书里的第 6 步——五段各扩自一页梗概的一段（每段约一页）。
+        # 章表仍是分章真相（物化分章读的是 chapters）；paragraphs 不再是章行的文本镜像。
+        # 历史草稿里「NN 章名：一句话（灾一）」格式的段落只在没有 chapters 时被回退解析。
+        "default_draft": {"paragraphs": ["", "", "", "", ""], "chapters": []},
         "editor": {
             "kind": "form",
             "fields": [
-                {"key": "paragraphs", "kind": "paragraphs", "label": "长篇大纲段落"},
+                {"key": "paragraphs", "kind": "paragraphs", "label": "五段展开（每段扩自一页梗概的一段）"},
                 {
                     "key": "chapters",
                     "kind": "chapters",
@@ -479,9 +482,11 @@ _REFERENCE_STEP_INSTRUCTIONS: dict[str, str] = {
         "• 角色定位：主角/反派/导师/伙伴...\n"
         "• 具体目标：这个故事里他要达成什么？\n"
         "• 抽象野心：他人生最深处渴望什么？\n"
-        "• 核心价值观：「没有什么比___更重要」（写3条，互相有张力）\n"
+        "• 核心价值观：「没有什么比___更重要」（写2–3条，互相有张力）\n"
         "• 阻碍：什么阻止他实现目标？\n"
-        "• 顿悟：故事结束时他学到/改变了什么？\n\n"
+        "• 顿悟：故事结束时他学到/改变了什么？\n"
+        "• 一句话故事线：这个角色自己的故事，一句话\n"
+        "• 一段话故事线：把那一句扩成一段——他怎样进入故事、三次灾难怎样打在他身上、他的结局\n\n"
         "⚠️ 每个角色都是自己故事的主角，包括反派。"
     ),
     "short_synopsis": (
@@ -497,16 +502,18 @@ _REFERENCE_STEP_INSTRUCTIONS: dict[str, str] = {
         "• 成长经历：哪些关键事件塑造了他的性格？\n"
         "• 内心世界：他真正渴望的是什么？为何渴望？\n"
         "• 在故事中的作用：他如何推动主线剧情？\n"
-        "• 与其他角色的关系纠葛\n\n"
+        "• 与其他角色的关系纠葛\n"
+        "• 视角故事：从这个角色的视角把整本书讲一遍（半页到一页）——他看见什么、以为什么、要什么\n\n"
         "⚠️ 特别提示：给反派足够的理解——他相信自己是对的。"
     ),
     "long_synopsis": (
-        "将第4步的每一段扩展为约400字的一页：\n\n"
+        "将一页梗概的每一段扩展为约一页（300–600 字），恰好五段：\n\n"
         "• 加入具体的场景设定（时间、地点、氛围）\n"
         "• 详细的角色行动与反应\n"
         "• 关键对话的要点提示\n"
         "• 情感变化的节点\n"
-        "• 次要情节线的穿插"
+        "• 次要情节线的穿插\n\n"
+        "章节表另列：它是分章的真相，五段展开是场景列表的素材。"
     ),
     "character_bibles": (
         "每个角色全档案包含四个维度：\n\n"
@@ -764,6 +771,19 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
                 strengths.append(f"{label} 已经有目标、冲突和变化压力")
         if characters and not any(item.startswith("至少补入") for item in fix_steps):
             fix_steps.append("把薄弱角色的具体目标、阻挡力量、价值冲突和变化再压实。")
+        if step_key == "character_sheets":
+            # 阶段 D：书里的角色表还有一句话/一段话故事线，价值观要「没有什么比___更重要」写 2–3 条且互相有张力。
+            # 这些是建议，不是旗标——缺了不降状态，只提醒。
+            thin = [
+                _text(character.get("display_name") or character.get("name") or f"character_{index}")
+                for index, character in enumerate(characters[:4], start=1)
+                if len([item for item in _coerce_string_list(character.get("values")) if _text(item)]) < 2
+                or not _text(character.get("one_sentence_summary"))
+            ]
+            if thin:
+                fix_steps.append(
+                    "建议：给 " + "、".join(thin) + " 补上一句话故事线，并把价值观写成至少两条互相有张力的「没有什么比___更重要」。"
+                )
     elif step_key in {"short_synopsis", "long_synopsis"}:
         paragraphs = [_text(item) for item in payload.get("paragraphs") or [] if _text(item)]
         if not paragraphs:
@@ -831,6 +851,13 @@ def _normalize_step_draft(step_key: str, draft: dict[str, Any]) -> dict[str, Any
         while len(paragraphs) < 5:
             paragraphs.append("")
         payload["paragraphs"] = paragraphs[:5]
+    elif step_key == "long_synopsis":
+        # 阶段 D：五段展开——补齐到五槽，但不截断（多出来的段由生成侧的数量契约拒绝，
+        # 作者手写的内容绝不静默丢失）。
+        paragraphs = _coerce_string_list(payload.get("paragraphs"))
+        while len(paragraphs) < LONG_SYNOPSIS_PARAGRAPHS:
+            paragraphs.append("")
+        payload["paragraphs"] = paragraphs
     elif step_key == "character_bibles":
         payload["characters"] = [_normalize_character_bible(item) for item in payload.get("characters") or [] if isinstance(item, dict)]
     elif step_key in {"scene_list", "scene_details"}:

@@ -276,12 +276,13 @@ def test_generate_templates_mention_every_canonical_collection_key() -> None:
         leaked = sorted(key for key in rogue_keys if key in task_prompt)
         assert not leaked, f"{step_key} 模板出现契约外键名：{leaked}"
 
-    # 前端可解析格式的两处标记：背景故事五前缀行 / 大纲章行格式
+    # 前端可解析格式的两处标记：背景故事六前缀行（阶段 D 加「视角故事：」）/ 大纲 = 恰好五段展开 + 结构化章表
     synopses_prompt = _load_generate_template("character_synopses")["task_prompt"]
-    for prefix in ("信念：", "旧伤：", "欲望：", "恐惧：", "关系："):
+    for prefix in ("信念：", "旧伤：", "欲望：", "恐惧：", "关系：", "视角故事："):
         assert prefix in synopses_prompt
     outline_prompt = _load_generate_template("long_synopsis")["task_prompt"]
-    assert "章名：" in outline_prompt and "灾一" in outline_prompt
+    assert "exactly 5 paragraphs" in outline_prompt and "灾一" in outline_prompt
+    assert "章名：" not in outline_prompt, "阶段 D：paragraphs 不再是章行镜像"
 
 
 def test_collect_generation_gaps_drills_into_collections() -> None:

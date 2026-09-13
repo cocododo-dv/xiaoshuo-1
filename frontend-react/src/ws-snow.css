@@ -508,6 +508,18 @@
 .sf-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .sf-field { display: flex; flex-direction: column; gap: 5px; }
 .sf-field.is-short { grid-column: span 1; }
+.sf-field.is-wide { grid-column: 1 / -1; }
+.sf-field-text { font-family: var(--font-serif); line-height: 1.6; resize: vertical; min-height: 64px; }
+/* 阶段 D：价值观一行一条「没有什么比 ___ 更重要」 */
+.sf-values { display: flex; flex-direction: column; gap: 6px; }
+.sf-values-row .sf-field-input { flex: 1; min-width: 0; }
+.sf-values-del { border: 0; background: transparent; color: var(--ink-3); cursor: pointer; padding: 2px; display: inline-flex; }
+.sf-values-del:hover { color: var(--crimson); }
+.sf-values-add { align-self: flex-start; border: 1px dashed var(--line-1); background: transparent; color: var(--ink-3); font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }
+.sf-values-add:hover { color: var(--crimson); border-color: var(--crimson); }
+/* 阶段 D：07 五段展开（书里的第 6 步）在章节表之上 */
+.sf-outline-expand { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.sf-syn-prog-note { font-size: 11px; color: var(--ink-3); }
 .sf-charsheet .sf-field:not(.is-short) { grid-column: span 2; }
 .sf-field-label { font-size: 12px; font-weight: 600; color: var(--ink-2); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .sf-field-hint { font-size: 10.5px; font-weight: 400; color: var(--ink-4); }

@@ -109,6 +109,8 @@ function catFromApiScene(s) {
     povName: s.pov_character_name || "",
     povId: s.pov_character_id || "",
     kindFields: reactive ? KIND_FIELDS_RDD : KIND_FIELDS_GCS,
+    // 阶段 D：最近一次准定稿评审的场景三问（坩埚可辨 / 三拍落地 / Yes-No-Maybe），无评审则 null
+    storyCheck: s.story_check || null,
   };
 }
 

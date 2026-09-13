@@ -28,6 +28,20 @@ const activeWork = () => { try { return (WsWorks && WsWorks.activeId()) || ""; }
 
 /* ---------- FE → BE：规范字段（喂完备性闸门 / scene plans 同步） ---------- */
 const txt = (v) => (typeof v === "string" ? v.trim() : "");
+/* 阶段 D：价值观按书里的句式「没有什么比___更重要」存规范值（一条一元素）；
+   脚手架只存中间那截，换行分隔一行一条。已经是整句的（含「更重要」）原样上行。 */
+const VALUE_RE = /^没有什么比(.+?)更重要[。．.!！]?$/;
+const valuesToCanon = (raw) => String(raw || "").split("\n").map(s => s.trim()).filter(Boolean)
+  .map(s => (s.includes("更重要") ? s : `没有什么比${s}更重要`));
+const valuesFromCanon = (arr) => (Array.isArray(arr) ? arr : (arr ? [arr] : []))
+  .map(v => { const s = String(v || "").trim(); const m = VALUE_RE.exec(s); return m ? m[1].trim() : s; })
+  .filter(Boolean).join("\n");
+/* 07 历史草稿的 paragraphs 是「NN 章名：一句话（灾一）」的章行镜像；阶段 D 起是五段展开的散文。 */
+const OUTLINE_LINE_RE = /^(\d+)\s+([^：:]+)[：:]?(.*)$/;
+const isChapterMirror = (para) => {
+  const lines = String(para || "").split("\n").map(x => x.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every(l => OUTLINE_LINE_RE.test(l));
+};
 function canonFromFE(feKey, saved) {
   const sc = ((saved || {}).scaffolds || {})[feKey] || {};
   const draftText = txt(((saved || {}).drafts || {})[feKey]);
@@ -47,7 +61,11 @@ function canonFromFE(feKey, saved) {
   if (feKey === "characters") {
     return { characters: Object.entries(sc.chars || {}).map(([id, c]) => ({
       character_id: id, display_name: txt(c.name), role: txt(c.role), goal: txt(c.goal),
-      ambition: txt(c.ambition), values: txt(c.values) ? [txt(c.values)] : [], conflict: txt(c.conflict), epiphany: txt(c.epiphany),
+      ambition: txt(c.ambition), values: valuesToCanon(c.values), conflict: txt(c.conflict), epiphany: txt(c.epiphany),
+      // 阶段 D：每个角色自己的一句话 / 一段话故事线（书里角色表的两栏）。旧缓存没有这两个键时不上行——
+      // mergeCanon 只在 FE 键缺席时保服务端值，AI 生成过的故事线不会被一次自动保存清空。
+      ...(c.storyline != null ? { one_sentence_summary: txt(c.storyline) } : {}),
+      ...(c.storyline_para != null ? { one_paragraph_summary: txt(c.storyline_para) } : {}),
     })) };
   }
   if (feKey === "synopsis") {
@@ -57,17 +75,18 @@ function canonFromFE(feKey, saved) {
   if (feKey === "backstory") {
     return { characters: Object.entries(sc.chars || {}).map(([id, c]) => ({
       character_id: id, display_name: txt(c.name), role: txt(c.role),
-      synopsis: [c.belief && `信念：${txt(c.belief)}`, c.wound && `旧伤：${txt(c.wound)}`, c.desire && `欲望：${txt(c.desire)}`, c.fear && `恐惧：${txt(c.fear)}`, c.relation && `关系：${txt(c.relation)}`].filter(Boolean).join("\n"),
+      synopsis: [c.belief && `信念：${txt(c.belief)}`, c.wound && `旧伤：${txt(c.wound)}`, c.desire && `欲望：${txt(c.desire)}`, c.fear && `恐惧：${txt(c.fear)}`, c.relation && `关系：${txt(c.relation)}`,
+        // 阶段 D：第六行——从这个角色的视角讲整本书（书里的第 5 步）
+        c.povstory && `视角故事：${txt(c.povstory)}`].filter(Boolean).join("\n"),
     })) };
   }
   if (feKey === "outline") {
-    /* P2：章表升级为结构化字段。paragraphs 保留为可读文本镜像（提示词与历史草稿仍用
-       「NN 章名：一句话（灾一）」的行格式），但物化分章读的是 chapters —— 以前只发
-       文本、后端再用正则解析回来，章名里带个全角冒号就会解错。 */
-    const byAct = (n) => (sc.chapters || []).filter(c => c.act === n)
-      .map(c => `${c.id} ${txt(c.title)}：${txt(c.summary)}${c.spine ? `（${c.spine}）` : ""}`).join("\n");
+    /* P2：章表是结构化字段 chapters，物化分章读的是它。
+       阶段 D：paragraphs 回到书里的第 6 步——五段展开（05 的每一段扩成约一页），
+       不再用章行的文本镜像去覆盖它。 */
+    const ex = sc.expansions || {};
     return {
-      paragraphs: [byAct(1), byAct(2), byAct(3), ""],
+      paragraphs: [txt(ex.setup), txt(ex.d1), txt(ex.d2), txt(ex.d3), txt(ex.resolution)],
       chapters: (sc.chapters || []).map((c, i) => ({
         row_uid: txt(c.row_uid), chapter_seq: i + 1, act: c.act || 1,
         title: txt(c.title), summary: txt(c.summary), spine: txt(c.spine), chapter_goal: txt(c.goal),
@@ -131,20 +150,25 @@ function feFromCanon(feKey, draft) {
     (d.characters || []).forEach((c, i) => {
       const id = c.character_id || "c" + (i + 1);
       if (feKey === "characters") {
-        chars[id] = { name: c.display_name || "", role: c.role || "主角", goal: c.goal || "", ambition: c.ambition || "", values: (c.values || []).join("、"), conflict: c.conflict || "", epiphany: c.epiphany || "" };
+        chars[id] = {
+          name: c.display_name || "", role: c.role || "主角", goal: c.goal || "", ambition: c.ambition || "",
+          values: valuesFromCanon(c.values), conflict: c.conflict || "", epiphany: c.epiphany || "",
+          storyline: c.one_sentence_summary || "", storyline_para: c.one_paragraph_summary || "",
+        };
       } else if (feKey === "backstory") {
-        // 往返保真：canonFromFE 打包成「信念：…\n旧伤：…」的前缀行，这里拆回五个字段；
-        // AI/自由文本没有前缀时整段进「信念」（旧行为），续行跟随最近一个前缀字段。
-        const bk = { name: c.display_name || "", role: c.role || "主角", belief: "", wound: "", desire: "", fear: "", relation: "" };
-        const prefixMap = { "信念": "belief", "旧伤": "wound", "欲望": "desire", "恐惧": "fear", "关系": "relation" };
+        // 往返保真：canonFromFE 打包成「信念：…\n旧伤：…」的前缀行，这里拆回六个字段；
+        // AI/自由文本没有前缀时整段进「视角故事」（阶段 D：没有前缀的整段角色梗概就是
+        // 书里第 5 步的视角故事，不是信念），续行跟随最近一个前缀字段。
+        const bk = { name: c.display_name || "", role: c.role || "主角", belief: "", wound: "", desire: "", fear: "", relation: "", povstory: "" };
+        const prefixMap = { "信念": "belief", "旧伤": "wound", "欲望": "desire", "恐惧": "fear", "关系": "relation", "视角故事": "povstory" };
         let cursor = null, plain = [];
         String(c.synopsis || "").split("\n").forEach(line => {
-          const m = /^(信念|旧伤|欲望|恐惧|关系)[：:]\s*(.*)$/.exec(line.trim());
+          const m = /^(信念|旧伤|欲望|恐惧|关系|视角故事)[：:]\s*(.*)$/.exec(line.trim());
           if (m) { cursor = prefixMap[m[1]]; bk[cursor] = bk[cursor] ? bk[cursor] + "\n" + m[2] : m[2]; }
           else if (cursor) bk[cursor] += (line.trim() ? "\n" + line : "");
           else if (line.trim()) plain.push(line);
         });
-        if (plain.length) bk.belief = (plain.join("\n") + (bk.belief ? "\n" + bk.belief : ""));
+        if (plain.length) bk.povstory = (plain.join("\n") + (bk.povstory ? "\n" + bk.povstory : ""));
         chars[id] = bk;
       } else {
         chars[id] = {
@@ -163,21 +187,27 @@ function feFromCanon(feKey, draft) {
     return { scaffold: { paras: { setup: p[0] || "", d1: p[1] || "", d2: p[2] || "", d3: p[3] || "", resolution: p[4] || "" } } };
   }
   if (feKey === "outline") {
+    // 阶段 D：paragraphs 是五段展开（05 的每一段扩成约一页）；历史草稿里的章行镜像不是展开文，水合成空槽
+    const paras = Array.isArray(d.paragraphs) ? d.paragraphs : [];
+    const slot = (i) => (isChapterMirror(paras[i]) ? "" : String(paras[i] || ""));
+    const expansions = { setup: slot(0), d1: slot(1), d2: slot(2), d3: slot(3), resolution: slot(4) };
     // 结构化 chapters 优先（P2 新契约，无损）；缺席时才回退解析文本行（历史草稿 / 旧 LLM 输出）
     if (Array.isArray(d.chapters) && d.chapters.length) {
-      return { scaffold: { chapters: d.chapters.map((c, i) => ({
+      return { scaffold: { expansions, chapters: d.chapters.map((c, i) => ({
         row_uid: c.row_uid || "", id: pad2(i + 1), act: Math.min(Math.max(c.act || 1, 1), 3),
         title: c.title || "", summary: c.summary || "", spine: c.spine || "", goal: c.chapter_goal || "",
       })) } };
     }
+    // 回退只认真正的章行（与后端 parse_outline_chapters 同一纪律）：散文段落解析不出章，绝不造假章
     const chapters = [];
-    (d.paragraphs || []).forEach((para, ai) => {
+    paras.forEach((para, ai) => {
       String(para || "").split("\n").map(x => x.trim()).filter(Boolean).forEach(line => {
-        const m = /^(\d+)\s+([^：:]+)[：:]?(.*)$/.exec(line);
-        chapters.push({ id: m ? m[1] : pad2(chapters.length + 1), act: Math.min(ai + 1, 3), title: m ? m[2].trim() : line.slice(0, 16), summary: m ? m[3].replace(/（.*?）$/, "").trim() : "", spine: /灾[一二三]/.test(line) ? (line.match(/灾[一二三]/) || [""])[0] : "" });
+        const m = OUTLINE_LINE_RE.exec(line);
+        if (!m) return;
+        chapters.push({ id: m[1], act: Math.min(ai + 1, 3), title: m[2].trim(), summary: m[3].replace(/（.*?）$/, "").trim(), spine: /灾[一二三]/.test(line) ? (line.match(/灾[一二三]/) || [""])[0] : "" });
       });
     });
-    return { scaffold: { chapters } };
+    return { scaffold: { expansions, chapters } };
   }
   if (feKey === "scenes") {
     return { scaffold: { lines: [], list: (d.scenes || []).map((s, i) => ({
@@ -207,7 +237,9 @@ function canonHasContent(feKey, draft) {
   if (feKey === "logline") return !!txt(d.summary);
   if (feKey === "audience") return !!(txt(d.category) || txt(d.target_reader) || txt(d.delight_reason));
   if (feKey === "paragraph") return (d.sentences || []).some(s => txt(s)) || !!txt(d.moral_premise);
-  if (feKey === "synopsis" || feKey === "outline") return (d.paragraphs || []).some(s => txt(s));
+  if (feKey === "synopsis") return (d.paragraphs || []).some(s => txt(s));
+  // 阶段 D：07 只有章表、五段展开还空着，也算服务端有内容（否则水合会跳过它）
+  if (feKey === "outline") return (d.paragraphs || []).some(s => txt(s)) || (Array.isArray(d.chapters) && d.chapters.length > 0);
   if (feKey === "characters" || feKey === "backstory" || feKey === "profile") return (d.characters || []).length > 0;
   return (d.scenes || []).length > 0;
 }

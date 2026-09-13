@@ -2030,7 +2030,7 @@
 }
 .ms-struct-scenes li {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  grid-template-columns: auto 1fr auto auto auto;
   gap: 12px;
   align-items: center;
   padding: 11px 13px;
@@ -2039,6 +2039,13 @@
   border-radius: 9px;
 }
 .ms-struct-scenes li.is-ghost { background: transparent; border-style: dashed; opacity: 0.7; }
+/* 阶段 D：成稿后场景三问徽标（Yes / No / Maybe），非阻断 */
+.ms-story-check { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-1); color: var(--ink-3); white-space: nowrap; }
+.ms-story-check b { font-family: var(--font-mono); font-size: 10.5px; }
+.ms-story-check.is-none { border-color: transparent; padding: 0; }
+.ms-story-check.is-yes { color: var(--sage); border-color: color-mix(in oklab, var(--sage) 45%, var(--line-1)); }
+.ms-story-check.is-no { color: var(--crimson); border-color: color-mix(in oklab, var(--crimson) 45%, var(--line-1)); }
+.ms-story-check.is-maybe { color: var(--gold); border-color: color-mix(in oklab, var(--gold) 45%, var(--line-1)); }
 
 /* Diff */
 .ms-diff { padding: 24px 34px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }

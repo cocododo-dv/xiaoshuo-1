@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
+    AttemptTracker,
     AuthorDraft,
     ChapterGoal,
     SceneCard,
@@ -147,6 +148,7 @@ class CatalogService:
         slug = f"ch{index + 1:02d}"
         scenes = self.scene_rows(chapter.chapter_id)
         words_cur = sum(int(s.words_current or 0) for s in scenes)
+        story_checks = self.story_checks([s.scene_id for s in scenes])
         return {
             "chapter_id": chapter.chapter_id,
             "slug": slug,
@@ -166,10 +168,42 @@ class CatalogService:
             "promise": narrative.get("promise"),
             "drama": dict(narrative.get("drama") or {}),
             "threads": list(narrative.get("threads") or []),
-            "scenes": [self.scene_payload(scene, chapter_slug=slug) for scene in scenes],
+            "scenes": [
+                self.scene_payload(scene, chapter_slug=slug, story_check=story_checks.get(scene.scene_id))
+                for scene in scenes
+            ],
         }
 
-    def scene_payload(self, scene: SceneCard, *, chapter_slug: str) -> dict[str, Any]:
+    def story_checks(self, scene_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """阶段 D：每场最近一次准定稿评审的场景三问（一次查询，按 attempt 倒序取首条）。"""
+        if not scene_ids:
+            return {}
+        rows = self.session.execute(
+            select(AttemptTracker.scene_id, AttemptTracker.details_json)
+            .where(
+                AttemptTracker.scene_id.in_(scene_ids),
+                AttemptTracker.step == "near_final_acceptance_review",
+            )
+            .order_by(AttemptTracker.attempt_id.desc())
+        ).all()
+        seen: set[str] = set()
+        result: dict[str, dict[str, Any]] = {}
+        for scene_id, details in rows:
+            if scene_id in seen:
+                continue
+            seen.add(scene_id)
+            check = (details or {}).get("scene_story_check") if isinstance(details, dict) else None
+            if isinstance(check, dict):
+                result[scene_id] = check
+        return result
+
+    def scene_payload(
+        self,
+        scene: SceneCard,
+        *,
+        chapter_slug: str,
+        story_check: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         kind = scene_kind(scene)
         brief_json = dict(scene.writer_brief_json or {})
         keys = SCENE_BRIEF_GCS if kind == "proactive" else SCENE_BRIEF_RDD
@@ -193,6 +227,8 @@ class CatalogService:
             # 章节编排 LLM 规划（2026-07-16）可填的两个交接槽；可加性扩展，旧前端忽略即可。
             "exit_change": str(scene.exit_change or ""),
             "hook": str(scene.hook or ""),
+            # 阶段 D：最近一次准定稿评审的场景三问（无评审则 null），成稿中心按场展示，非阻断
+            "story_check": dict(story_check) if isinstance(story_check, dict) else None,
         }
 
     # ---------- 写 ----------
@@ -790,7 +826,11 @@ class CatalogService:
         project = self._projects.require_project(chapter.project_id)
         chapters = self.chapter_rows(chapter.project_id)
         index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter.chapter_id)
-        return self.scene_payload(scene, chapter_slug=f"ch{index + 1:02d}")
+        return self.scene_payload(
+            scene,
+            chapter_slug=f"ch{index + 1:02d}",
+            story_check=self.story_checks([scene.scene_id]).get(scene.scene_id),
+        )
 
     def _insert_scene(
         self,

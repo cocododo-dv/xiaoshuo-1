@@ -32,6 +32,7 @@ from novel_system.services.snowflake_prompt_budget import (
     budget_audit_fields,
 )
 from novel_system.services.snowflake_steps import (
+    LONG_SYNOPSIS_PARAGRAPHS,
     RENDERING_MODES,
     SCENE_FIELD_EXAMPLES,
     STEP_ORDER,
@@ -1589,14 +1590,22 @@ def _sanitize_field_value(
     key = str(field.get("key") or "")
     if kind in {"text", "textarea"}:
         return str(value or "").strip()
-    if kind == "paragraphs" and step_key == "short_synopsis":
+    if kind == "paragraphs" and step_key in {"short_synopsis", "long_synopsis"}:
         # 阶段 B：一页梗概 = 五句各扩一段，恰好五段。多出来的段不再静默截掉。
+        # 阶段 D：长篇大纲的五段展开同理——一页梗概的五段各扩成约一页，恰好五段。
         items = _coerce_string_list(value)
-        if len(items) > SHORT_SYNOPSIS_PARAGRAPHS:
-            message = (
-                f"一页梗概要求恰好 {SHORT_SYNOPSIS_PARAGRAPHS} 段（每段对应五句之一），"
-                f"模型返回了 {len(items)} 段；本次结果已丢弃。"
-            )
+        expected = SHORT_SYNOPSIS_PARAGRAPHS if step_key == "short_synopsis" else LONG_SYNOPSIS_PARAGRAPHS
+        if len(items) > expected:
+            if step_key == "short_synopsis":
+                message = (
+                    f"一页梗概要求恰好 {expected} 段（每段对应五句之一），"
+                    f"模型返回了 {len(items)} 段；本次结果已丢弃。"
+                )
+            else:
+                message = (
+                    f"长篇大纲的五段展开要求恰好 {expected} 段（每段扩自一页梗概的一段，章表另列），"
+                    f"模型返回了 {len(items)} 段；本次结果已丢弃。"
+                )
             if count_policy == "raise":
                 raise StructuredCountMismatch(message)
             return None

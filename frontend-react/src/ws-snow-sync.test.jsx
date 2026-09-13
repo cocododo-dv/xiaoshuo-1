@@ -305,7 +305,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(hydrated.scaffold.plans.S03.rendering).toBe("full");
   });
 
-  it("feFromCanon backstory：前缀行拆回五字段，无前缀散文整段进「信念」", async () => {
+  it("feFromCanon backstory：前缀行拆回六字段，无前缀散文整段进「视角故事」", async () => {
     const { mod } = await loadSync({});
     const withPrefix = mod.feFromCanon("backstory", { characters: [{
       character_id: "c1", display_name: "林岑", role: "主角",
@@ -320,7 +320,82 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     const prose = mod.feFromCanon("backstory", { characters: [{
       character_id: "c2", display_name: "周岚", role: "对手", synopsis: "她在暴雨夜做了那个决定。\n此后每一年都在偿还。",
     }] });
-    expect(prose.scaffold.chars.c2.belief).toBe("她在暴雨夜做了那个决定。\n此后每一年都在偿还。");
+    // 阶段 D：没有前缀的整段角色梗概就是书里第 5 步的视角故事，不再塞进「信念」
+    expect(prose.scaffold.chars.c2.povstory).toBe("她在暴雨夜做了那个决定。\n此后每一年都在偿还。");
+    expect(prose.scaffold.chars.c2.belief).toBe("");
+  });
+
+  /* —— 阶段 D（方法保真）：04 故事线两栏 + 多条价值观、06 视角故事第六行、07 五段展开 —— */
+  it("characters 往返：价值观一行一条按「没有什么比___更重要」上行，故事线两栏往返，旧缓存缺键不上行", async () => {
+    const { mod } = await loadSync({});
+    const saved = { scaffolds: { characters: { sel: "c1", chars: {
+      c1: { name: "林岑", role: "主角", goal: "查清谁改了档案", ambition: "被看见", values: "真相\n弟弟活着", conflict: "恩师挡路", epiphany: "给活人",
+            storyline: "林岑必须交出母本，但交出去弟弟就没了退路。", storyline_para: "她从档案室的一页缺口进入故事……" },
+      // 旧缓存：hydrate 于阶段 D 之前，没有 storyline 键 —— 不能把服务端 AI 生成过的故事线清空
+      c2: { name: "周岚", role: "对立面", goal: "封存档案", ambition: "", values: "没有什么比体面更重要。", conflict: "", epiphany: "" },
+    } } } };
+    const canon = mod.canonFromFE("characters", saved);
+    const byId = Object.fromEntries(canon.characters.map(c => [c.character_id, c]));
+    expect(byId.c1.values).toEqual(["没有什么比真相更重要", "没有什么比弟弟活着更重要"]);
+    expect(byId.c1.one_sentence_summary).toBe("林岑必须交出母本，但交出去弟弟就没了退路。");
+    expect(byId.c1.one_paragraph_summary).toBe("她从档案室的一页缺口进入故事……");
+    expect(byId.c2.values).toEqual(["没有什么比体面更重要。"]);            // 已是整句：原样上行
+    expect(byId.c2).not.toHaveProperty("one_sentence_summary");
+    expect(byId.c2).not.toHaveProperty("one_paragraph_summary");
+
+    const hydrated = mod.feFromCanon("characters", { characters: [{
+      character_id: "c1", display_name: "林岑", role: "主角",
+      values: ["没有什么比真相更重要", "没有什么比弟弟活着更重要。", "相信记录即救赎"],
+      one_sentence_summary: "一句话线", one_paragraph_summary: "一段话线",
+    }] });
+    const c1 = hydrated.scaffold.chars.c1;
+    expect(c1.values).toBe("真相\n弟弟活着\n相信记录即救赎");   // 句式剥掉给输入框，旧式陈述原样保留
+    expect(c1.storyline).toBe("一句话线");
+    expect(c1.storyline_para).toBe("一段话线");
+  });
+
+  it("backstory 往返：视角故事作为第六个前缀行打包并拆回", async () => {
+    const { mod } = await loadSync({});
+    const saved = { scaffolds: { backstory: { sel: "c1", chars: {
+      c1: { name: "林岑", role: "主角", belief: "记录即救赎", wound: "", desire: "", fear: "", relation: "周岚的养女", povstory: "在她眼里这是一场归还。\n她以为周岚只是怕丑闻。" },
+    } } } };
+    const canon = mod.canonFromFE("backstory", saved);
+    expect(canon.characters[0].synopsis).toBe("信念：记录即救赎\n关系：周岚的养女\n视角故事：在她眼里这是一场归还。\n她以为周岚只是怕丑闻。");
+    const back = mod.feFromCanon("backstory", { characters: [{ character_id: "c1", display_name: "林岑", role: "主角", synopsis: canon.characters[0].synopsis }] });
+    expect(back.scaffold.chars.c1.povstory).toBe("在她眼里这是一场归还。\n她以为周岚只是怕丑闻。");
+    expect(back.scaffold.chars.c1.relation).toBe("周岚的养女");
+    expect(back.scaffold.chars.c1.belief).toBe("记录即救赎");
+  });
+
+  it("outline 往返：paragraphs 是五段展开而非章行镜像；历史章行镜像水合成空槽；散文不造假章", async () => {
+    const { mod } = await loadSync({});
+    const saved = { scaffolds: { outline: {
+      expansions: { setup: "雨城的第一天，她在档案室数缺页……", d1: "", d2: "中点：她发现改档案的是养母……", d3: "", resolution: "" },
+      chapters: [
+        { row_uid: "ch_a", id: "01", act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一", goal: "" },
+        { row_uid: "ch_b", id: "02", act: 2, title: "旧屋回声", summary: "旧证词出现裂缝", spine: "", goal: "" },
+      ],
+    } } };
+    const canon = mod.canonFromFE("outline", saved);
+    expect(canon.paragraphs).toEqual(["雨城的第一天，她在档案室数缺页……", "", "中点：她发现改档案的是养母……", "", ""]);
+    expect(canon.paragraphs.some(p => /章名|雨夜来信/.test(p))).toBe(false);   // 不再把章行写进 paragraphs
+    expect(canon.chapters.map(c => c.title)).toEqual(["雨夜来信", "旧屋回声"]);
+
+    // 阶段 D 之前的草稿：paragraphs 是按幕的章行镜像 —— 不是展开文，水合成空槽；章表照旧
+    const legacy = mod.feFromCanon("outline", {
+      paragraphs: ["01 雨夜来信：信件迫使主角回乡（灾一）\n02 旧屋回声：旧证词出现裂缝", "03 中点：养母", "", ""],
+      chapters: [{ row_uid: "ch_a", act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一", chapter_goal: "" }],
+    });
+    expect(legacy.scaffold.expansions).toEqual({ setup: "", d1: "", d2: "", d3: "", resolution: "" });
+    expect(legacy.scaffold.chapters.map(c => c.title)).toEqual(["雨夜来信"]);
+
+    // 新草稿：五段散文进五槽；没有章表时散文绝不被解析成假章（与后端 parse_outline_chapters 同一纪律）
+    const prose = mod.feFromCanon("outline", { paragraphs: ["第一段展开。", "第二段展开。", "第三段展开。", "第四段展开。", "第五段展开。"] });
+    expect(prose.scaffold.expansions).toEqual({ setup: "第一段展开。", d1: "第二段展开。", d2: "第三段展开。", d3: "第四段展开。", resolution: "第五段展开。" });
+    expect(prose.scaffold.chapters).toEqual([]);
+    // 历史纯文本草稿（无 chapters）：只有真正的章行才成章
+    const legacyText = mod.feFromCanon("outline", { paragraphs: ["01 雨夜来信：信件迫使主角回乡（灾一）\n这一行不是章", "", "", ""] });
+    expect(legacyText.scaffold.chapters).toEqual([{ id: "01", act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一" }]);
   });
 
   /* —— 物化后回流（resync 补接）：pending 状态只读后端真相；resync() 同步后

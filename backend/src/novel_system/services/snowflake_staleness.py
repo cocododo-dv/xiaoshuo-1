@@ -38,7 +38,9 @@ FIELDS_CONSUMED: dict[str, dict[str, set[str]]] = {
     "character_synopses": {"character_sheets": {"characters"}},
     "long_synopsis": {"short_synopsis": {"paragraphs"}},
     "character_bibles": {"character_sheets": {"characters"}},
-    "scene_list": {"long_synopsis": {"paragraphs"}},
+    # 阶段 D：07 的 paragraphs 是五段展开（拆场素材），chapters 是章表——以前章表镜像在 paragraphs 里，
+    # 改章表自然让 09 失效；镜像去掉后把 chapters 明确登记进来，语义不变。
+    "scene_list": {"long_synopsis": {"paragraphs", "chapters"}},
     "scene_details": {"scene_list": {"scenes"}},
 }
 

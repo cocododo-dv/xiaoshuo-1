@@ -1161,7 +1161,8 @@ templates:
     # 注入），「author voice match」对照的是参考原文样例与声音特征，而不是评审自己的默认口味。
     # 2026-09-13 阶段 A v5：有 Scene Structure (Snowflake) 段时 scene_structure_failure 按两条书中的 Yes 标准判：
     # 坩埚在正文里可辨认、设计的三拍落地且代价可见。
-    version: "2026-09-13.v5"
+    # 阶段 D v6：另出一份 scene_story_check（坩埚可辨 / 三拍落地 / Yes-No-Maybe 分诊 + 一句话）——给作者的分诊提示，不是闸门。
+    version: "2026-09-13.v6"
     input_token_budget: 64000
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
@@ -1175,6 +1176,7 @@ templates:
       When a [STYLE_REFERENCE] block is present, judge those same things against the [风格样例]: abstract summary, narratorial explanation, a reflective or atmospheric close, or an even pace that the reference author uses is the reference voice and must not fail the scene; fail only what the bundle facts, the must-includes, or the reference's own manner would reject.
       Use failure_class only from: fact_blocker, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, chapter_payoff_gap, reference_safety.
       If a Scene Structure (Snowflake) section is present, judge scene_structure_failure against it with two tests: the scene crucible is identifiable in the prose, and the designed beats land — Goal, Conflict, Setback for a proactive scene; Reaction, Dilemma, Decision for a reactive scene — with the Cost paid visible on the page. A scene that fails either test is not ready.
+      Always fill scene_story_check, the author's post-draft triage of this one scene: crucible_identified (true when a reader can tell from the prose alone what traps the POV character in this scene and why they cannot simply leave), shape_landed (true when the scene's designed beats — the proactive or reactive trio — actually happen on the page in order, with the cost visible; when no Scene Structure section exists, judge the shape the prose itself sets up), verdict ("yes" = the scene works as a story unit and belongs in the book; "no" = it does not work as written — it should be rewritten from its plan or cut; "maybe" = it can be fixed with targeted revision), and note (one Chinese sentence naming the single most important thing that makes it a yes, a no, or a maybe). scene_story_check is advisory triage for the author; it must not change near_final_status or pass_flag, which follow the readiness dimensions above.
       If the scene is ready, near_final_status must be near_final_ready and pass_flag true. Otherwise near_final_status must be revision_required and pass_flag false.
       This review checks whether the scene's contractual promises are fulfilled, not hard factual correctness — that is hard_qc's job. Go clause by clause against the execution contract and architecture artifacts rather than re-checking facts from scratch.
       Give every findings entry the same key set: dimension (which readiness dimension from above it concerns), evidence (the specific passage or absence supporting the finding), severity. Give every revision_brief entry: target (what to change), issue (what is wrong), fix_direction (how to fix it).
@@ -1190,6 +1192,7 @@ templates:
         - revision_brief
         - failure_class
         - requires_human_review
+        - scene_story_check
       properties:
         near_final_status:
           type: string
@@ -1215,6 +1218,27 @@ templates:
           type: string
         requires_human_review:
           type: boolean
+        scene_story_check:
+          type: object
+          additionalProperties: false
+          required:
+            - crucible_identified
+            - shape_landed
+            - verdict
+            - note
+          properties:
+            crucible_identified:
+              type: boolean
+            shape_landed:
+              type: boolean
+            verdict:
+              type: string
+              enum:
+                - "yes"
+                - "no"
+                - maybe
+            note:
+              type: string
 
   chapter_near_final_review:
     version: "2026-07-04.v2"
@@ -1501,7 +1525,9 @@ templates:
           type: string
 
   snowflake_generate_character_sheets:
-    version: "2026-07-06.v3"
+    # 2026-09-13 阶段 D v4：价值观按书里的句式「没有什么比___更重要」写 2–3 条且互相有张力；
+    # one_sentence_summary / one_paragraph_summary 是这个角色自己的一句话 / 一段话故事线（书里角色表的两栏）。
+    version: "2026-09-13.v4"
     input_token_budget: 24000
     system_prompt: |
       You are outlining major character pressure inside a snowflake-method workspace.
@@ -1509,7 +1535,7 @@ templates:
       Preserve the user's input language and approved facts; every important character should feel like the lead of their own pressure story.
     task_prompt: |
       Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
-      Each character object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: character_id (reuse the id from upstream_steps or current_draft when the character already exists; leave "" for a brand-new character and the server assigns one), display_name, role (主角/对手/盟友/镜像 in the input language), goal (concrete, scene-actionable desire), ambition (the deeper abstract want behind the goal), values (array of belief statements, each phrased like "相信……"), conflict (who or what blocks the goal, and why that opposition cannot be waved away — the belief this character must risk belongs here), epiphany (what changes and what concrete event triggers it), one_sentence_summary (this character's private arc in one sentence), one_paragraph_summary (that arc expanded to a short paragraph tied to the three disasters, ending with what kind of scenes this character's pressure can generate).
+      Each character object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: character_id (reuse the id from upstream_steps or current_draft when the character already exists; leave "" for a brand-new character and the server assigns one), display_name, role (主角/对手/盟友/镜像 in the input language), goal (concrete, scene-actionable desire), ambition (the deeper abstract want behind the goal), values (array of 2-3 value statements, each phrased exactly as "没有什么比___更重要" — the blank filled with what this character will sacrifice everything else for; the statements must be in tension with each other, and the protagonist's and the antagonist's statements must collide), conflict (who or what blocks the goal, and why that opposition cannot be waved away — the belief this character must risk belongs here), epiphany (what changes and what concrete event triggers it), one_sentence_summary (this character's own storyline in one sentence: what they want, who blocks it, what it costs — the character is the lead of that sentence), one_paragraph_summary (that storyline expanded to one paragraph: how they enter the story, how each of the three disasters lands on them, how their story ends, and what kind of scenes their pressure can generate).
       Fill every key for every character with substantive content — an empty string or a name-only entry is a defect. Keep characters distinct: if two characters share the same goal/conflict shape, sharpen one until the overlap is gone.
     structured_schema:
       type: object
@@ -1546,22 +1572,24 @@ templates:
             type: string
 
   snowflake_generate_character_synopses:
-    version: "2026-07-06.v3"
+    # 2026-09-13 阶段 D v4：第六个前缀行「视角故事：」——从这个角色的视角把整本书讲一遍（书里的第 5 步）。
+    version: "2026-09-13.v4"
     input_token_budget: 24000
     system_prompt: |
-      You are writing concise character-backstory synopses for a snowflake workspace.
+      You are writing character synopses for a snowflake workspace: a compact backstory plus the whole story retold from each character's point of view.
       Emphasize how each character enters the story conflict and changes under pressure.
       Preserve the user's input language and approved facts; do not invent unrelated cast members.
     task_prompt: |
-      Return the backstory synopsis layer for the current cast. Tie each backstory to present-story desire, fear, opposition, and visible scene behavior.
+      Return the character synopsis layer for the current cast. Tie each backstory to present-story desire, fear, opposition, and visible scene behavior, then retell the story through this character's eyes.
       Each character object must use exactly the canonical keys the workspace stores — the server discards any other key: character_id and display_name and role (reuse identities from the approved character sheets; do not rename the cast), synopsis.
-      Write synopsis as multi-line text in the input language using exactly these five prefixed lines, in this order, so the workspace form can split them into editable slots:
+      Write synopsis as multi-line text in the input language using exactly these six prefixed lines, in this order, so the workspace form can split them into editable slots:
       信念：the belief this character lives by, and how their history installed it.
       旧伤：the formative injury — the single concrete event that made them who they are.
       欲望：what they want now because of that history, plus the information gap they carry (what they know or believe that others in the cast do not).
       恐惧：what they cannot afford to face, and the visible scene behavior it produces (a tic, an avoidance, a ritual).
       关系：how they enter the central conflict, and their charged link to other named characters.
-      Every prefixed line must carry substantive content specific to this character — an empty or generic line is a defect. Each character's five lines must retell the story from a genuinely different vantage: surface at least one motive or information gap that collides with another character's synopsis, not the same events with the subject swapped.
+      视角故事：the whole story of the book retold from this character's point of view, half a page to a page (roughly 300-600 Chinese characters): what they see, what they believe is happening, what they want at each turn, what each of the three disasters costs them, and how the ending looks to them. Written as continuous prose; it may run over several lines, and every line after the prefix belongs to it.
+      Every prefixed line must carry substantive content specific to this character — an empty or generic line is a defect. Each character's synopsis must retell the story from a genuinely different vantage: surface at least one motive or information gap that collides with another character's synopsis, not the same events with the subject swapped.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1575,17 +1603,19 @@ templates:
             additionalProperties: true
 
   snowflake_generate_long_synopsis:
-    version: "2026-07-25.v4"
+    # 2026-09-13 阶段 D v5：paragraphs 回到书里的第 6 步——一页梗概的五段各扩成约一页，恰好五段（服务端拒绝其它段数）；
+    # 章表仍是分章真相，不再要求 paragraphs 做章行镜像。
+    version: "2026-09-13.v5"
     input_token_budget: 24000
     system_prompt: |
-      You are expanding a short snowflake synopsis into a chapter-grain long outline.
+      You are expanding a short snowflake synopsis into a long synopsis plus a chapter-grain outline.
       Preserve escalation, reversals, and ending cost.
       Preserve the user's input language and approved facts; deepen the same story rather than replacing it.
     task_prompt: |
-      Return BOTH a structured `chapters` array and the readable `paragraphs` mirror. `chapters` is the source of truth — materialization groups scenes by it, so a chapter missing from `chapters` never reaches the author's catalog.
-      Each chapter object: act (1/2/3), title (the chapter's name, no numbering prefix), summary (one causal sentence stating what changes and why it cannot be undone), spine ("灾一"/"灾二"/"灾三" on the three disaster chapters, "" on all others), chapter_goal (what this chapter must accomplish for the book). Leave row_uid as "" — the server assigns identities. Order the array in reading order; do not number the titles.
-      `paragraphs` is the same content as readable text, one entry per act: paragraphs[0] = act one, paragraphs[1] = act two, paragraphs[2] = act three. Inside each, write one line per chapter as "NN 章名：本章的因果推进一句话", appending （灾一）/（灾二）/（灾三） on the disaster chapters.
-      Plan 12-20 chapters total so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
+      Return BOTH `paragraphs` (the long synopsis) and a structured `chapters` array (the chapter table). They are two different layers of the same story.
+      `paragraphs` is the snowflake's fractal step: exactly 5 paragraphs, in order, each expanding ONE paragraph of the short synopsis in upstream_steps to about a page — paragraphs[0] expands the setup paragraph, paragraphs[1] the first disaster, paragraphs[2] the second disaster and the moral-premise turn, paragraphs[3] the third disaster, paragraphs[4] the ending. Each is 300-600 Chinese characters of continuous prose: concrete settings (time, place, atmosphere), the characters' actions and reactions, the gist of key exchanges, the emotional turning points, and where the subplots weave in. The server rejects any other paragraph count — never split one short-synopsis paragraph across two, never merge two into one, and never write chapter lists or headings into `paragraphs`.
+      `chapters` is the source of truth for chapter membership — materialization groups scenes by it, so a chapter missing from `chapters` never reaches the author's catalog. Each chapter object: act (1/2/3), title (the chapter's name, no numbering prefix), summary (one causal sentence stating what changes and why it cannot be undone), spine ("灾一"/"灾二"/"灾三" on the three disaster chapters, "" on all others), chapter_goal (what this chapter must accomplish for the book). Leave row_uid as "" — the server assigns identities. Order the array in reading order; do not number the titles.
+      Plan 12-20 chapters total so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided. The chapters must be consistent with the five paragraphs: every chapter's summary should be traceable to one of them.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1629,7 +1659,8 @@ templates:
 
   snowflake_generate_scene_list:
     # 2026-09-13 阶段 B v7：不再要求主动 / 反应机械交替——一场挫折后三选一（换 POV 线 / 直接下一场主动 / 下一目标不明显时才写反应场），反应场是少数。
-    version: "2026-09-13.v7"
+    # 阶段 D v8：长篇大纲的五段展开（long_synopsis.paragraphs）是拆场的素材，章表只定章归属；角色表的故事线与视角故事给每条 POV 线提供压力。
+    version: "2026-09-13.v8"
     input_token_budget: 24000
     system_prompt: |
       You are breaking a snowflake synopsis into a scene list.
@@ -1641,6 +1672,7 @@ templates:
       Return the scene list as structured scene cards covering the whole story spine. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
       Every pov_character_id must be a character id that already exists in upstream_steps (the cast sheets / character bibles). Every scene must be traceable to a beat of the one-paragraph summary or the long outline — do not introduce people or events that appear nowhere upstream.
       Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the established cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束), spine ("灾一"/"灾二"/"灾三" on the three disaster scenes, "" on every other scene — the chaptering step anchors these against the same marks on the chapter table, so marking them correctly is what keeps the disasters on the act boundaries). Leave row_uid/scene_id/chapter_id/chapter_title/chapter_goal as "" — the server assigns identities, and chapter membership is decided by the author in the chaptering step, not here.
+      Break the story from the long synopsis: upstream_steps long_synopsis.paragraphs are five page-length expansions (setup, disaster one, disaster two, disaster three, ending) — every scene must be traceable to a passage in one of them, and the chapters table there only says which chapter a passage belongs to. Use each character's storyline (one_sentence_summary / one_paragraph_summary on the character sheets) and their 视角故事 line in the character synopses to give each POV thread its own pressure rather than repeating the protagonist's.
       Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Do not alternate proactive and reactive mechanically: every scene needs conflict, but after a setback the story has three options — cut to another POV thread, launch the next proactive scene straight from an obvious next goal, or write a reactive scene only when the next goal is genuinely not obvious and the character must feel the setback and choose. Reactive scenes should be a minority unless the book's pacing is deliberately leisurely; a reactive beat that fits in two paragraphs of summary does not need its own scene. Mark the three disaster scenes in chapter_role.
       If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, break the story at that author's scale: as many scenes per chapter, and scenes as long, as that author writes; open and close the way that author opens and closes chapters; keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:

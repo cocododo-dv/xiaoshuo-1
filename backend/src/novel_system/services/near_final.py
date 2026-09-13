@@ -613,6 +613,8 @@ class NearFinalAcceptanceService:
                 "llm_call_id": llm_call_id,
                 "failure_class": payload.get("failure_class"),
                 "execution_step_key": execution_step_key,
+                # 阶段 D：场景三问随评审记录持久化，工作台 / 目录按最近一次评审透出
+                "scene_story_check": payload.get("scene_story_check"),
             },
         )
         self.session.flush()
@@ -1048,6 +1050,54 @@ def _promotion_blockers_from_acceptance(payload: dict[str, Any]) -> list[str]:
     return []
 
 
+SCENE_STORY_CHECK_VERDICTS = ("yes", "no", "maybe")
+
+
+def _normalize_scene_story_check(value: Any) -> dict[str, Any] | None:
+    """2026-09-13 阶段 D：成稿后的场景三问（Ingermanson 的 Yes / No / Maybe 分诊）。
+
+    评审在结构判断之外单独回答：坩埚在正文里认得出来吗、设计的三拍落地了吗，
+    以及一句总判——Yes（这一场成立）/ No（不成立，重写或删）/ Maybe（能修）。
+    只做归一，不改变通过与否：它是给作者的分诊提示，不是闸门。
+    """
+    if not isinstance(value, dict):
+        return None
+
+    def _flag(raw: Any) -> bool | None:
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return bool(raw)
+        text = str(raw or "").strip().lower()
+        if text in {"true", "yes", "y", "是", "有", "1"}:
+            return True
+        if text in {"false", "no", "n", "否", "无", "0"}:
+            return False
+        return None
+
+    crucible = _flag(value.get("crucible_identified"))
+    shape = _flag(value.get("shape_landed"))
+    verdict = str(value.get("verdict") or "").strip().lower()
+    if verdict not in SCENE_STORY_CHECK_VERDICTS:
+        if crucible is True and shape is True:
+            verdict = "yes"
+        elif crucible is False and shape is False:
+            verdict = "no"
+        elif crucible is None and shape is None:
+            verdict = ""
+        else:
+            verdict = "maybe"
+    note = _scalar_text(value.get("note")) or ""
+    if crucible is None and shape is None and not verdict and not note:
+        return None
+    return {
+        "crucible_identified": crucible,
+        "shape_landed": shape,
+        "verdict": verdict or None,
+        "note": note,
+    }
+
+
 def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _execution_failure_payload("near-final reviewer returned an invalid payload")
@@ -1077,6 +1127,7 @@ def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:
         "revision_brief": revision_brief,
         "failure_class": failure_class,
         "requires_human_review": requires_human_review or status == "human_review_required",
+        "scene_story_check": _normalize_scene_story_check(payload.get("scene_story_check")),
     }
 
 
