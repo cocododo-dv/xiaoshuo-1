@@ -683,3 +683,9 @@
   .snow-cols { grid-template-columns: 1fr; }
   .snow-steps { display: none; }
 }
+
+/* 阶段 C：反应场呈现方式（完整场 / 概述两段） */
+.sf-plan-render { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.sf-plan-render .sf-field-label { margin-right: 2px; }
+.sf-plan-render-opt { border: 1px solid var(--line-1); background: transparent; color: var(--ink-2); border-radius: 999px; padding: 3px 9px; font-size: 12px; cursor: pointer; transition: background var(--t-fast), color var(--t-fast); }
+.sf-plan-render-opt.is-on { background: var(--gold-wash); color: var(--ink-1); border-color: var(--gold); font-weight: 700; }

@@ -276,6 +276,35 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(byId.c9.goal).toBe("递出钥匙");
   });
 
+  it("planning 往返：反应场的呈现方式 full / summary 上行并水合，主动场不上行该键", async () => {
+    const { mod } = await loadSync({});
+    const saved = {
+      scaffolds: {
+        scenes: { lines: [], list: [
+          { id: "S01", type: "proactive", pov: "c1", place: "码头", event: "取账本", crucible: "退不出", fn: "起疑", spine: "" },
+          { id: "S02", type: "reactive", pov: "c1", place: "旅馆", event: "消化挫败", crucible: "无人可信", fn: "转向", spine: "" },
+        ] },
+        planning: { sel: "S02", plans: {
+          S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧", cost_requirement: "失去遗物", rendering: "summary" },
+          S02: { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人", cost_requirement: "弟弟不再信她", rendering: "summary" },
+        } },
+      },
+    };
+    const canon = mod.canonFromFE("planning", saved);
+    // 主动场没有「概述两段」这一说：即便本机脚手架残留了 rendering，也不上行
+    expect(canon.scenes[0]).not.toHaveProperty("rendering_mode");
+    expect(canon.scenes[1].rendering_mode).toBe("summary");
+
+    const hydrated = mod.feFromCanon("planning", { scenes: [
+      { row_uid: "S01", primary_form: "proactive", goal: "拿到账本" },
+      { row_uid: "S02", primary_form: "reactive", reaction: "手抖", rendering_mode: "summary" },
+      { row_uid: "S03", primary_form: "reactive", reaction: "沉默" },
+    ] });
+    expect(hydrated.scaffold.plans.S01.rendering).toBe("full");
+    expect(hydrated.scaffold.plans.S02.rendering).toBe("summary");
+    expect(hydrated.scaffold.plans.S03.rendering).toBe("full");
+  });
+
   it("feFromCanon backstory：前缀行拆回五字段，无前缀散文整段进「信念」", async () => {
     const { mod } = await loadSync({});
     const withPrefix = mod.feFromCanon("backstory", { characters: [{

@@ -47,8 +47,10 @@ from novel_system.services.snowflake_steps import (
     MATERIALIZATION_REQUIRED_STEPS,
     MATERIALIZATION_WARNING_STEPS,
     QUALITY_POLICY,
+    RENDERING_MODES,
     SNOWFLAKE_METHOD_VERSION,
     STEP_ORDER,
+    SUMMARY_LENGTH_BAND,
     default_step_draft,
     diagnose_step_pressure,
     diagnose_scene_detail,
@@ -100,7 +102,17 @@ SCENE_PATCH_FIELDS = {
     "exit_change",
     "hook",
     "target_length_band",
+    # 阶段 C：反应场的呈现方式（full / summary）。主动场写入时一律回到 full。
+    "rendering_mode",
 }
+
+
+def _effective_rendering_mode(scene_type: Any, value: Any) -> str:
+    """呈现方式只对反应场有意义；非法值与主动场一律 full。"""
+    mode = str(value or "").strip().lower()
+    if str(scene_type or "").strip().lower() != "reactive":
+        return "full"
+    return mode if mode in RENDERING_MODES else "full"
 
 
 class SnowflakeWorkspaceService:
@@ -860,6 +872,13 @@ class SnowflakeWorkspaceService:
                     detail["protagonist_hint"] = protagonist["display_name"]
                     detail["protagonist_character_id"] = protagonist["character_id"]
                 scene_type = detail.get("primary_form") or "proactive"
+                # 阶段 C：summary 反应场拿到数值篇幅带（起草 / 长度补丁按数值硬约束），
+                # 并把呈现方式写进简报，结构简报会渲染它。
+                rendering_mode = _effective_rendering_mode(scene_type, detail.get("rendering_mode"))
+                detail["rendering_mode"] = rendering_mode
+                detail["target_length_band"] = (
+                    SUMMARY_LENGTH_BAND if rendering_mode == "summary" else (detail.get("target_length_band") or "medium")
+                )
                 scenes_payload.append(
                     {
                         "scene_id": scene.scene_id,
@@ -872,9 +891,16 @@ class SnowflakeWorkspaceService:
                         "beats_json": _scene_card_beats(scene_type, detail),
                         "must_include_text": detail.get("must_include_text") or detail.get("summary") or "",
                         "forbidden_text": "不得复制参考书原文表达、人物、设定或桥段。",
-                        "exit_change": detail.get("exit_change") or "场景结束时至少改变一个信息、关系或行动目标。",
+                        # 与 _scene_card_resync_patch 同一配方：规划行没写离场变化就用挫折 / 决定。
+                        # 两边配方不同时，刚物化完的每一场都会被报成「待同步」（纯假阳性）。
+                        "exit_change": (
+                            detail.get("exit_change")
+                            or detail.get("setback")
+                            or detail.get("decision")
+                            or "场景结束时至少改变一个信息、关系或行动目标。"
+                        ),
                         "hook": detail.get("hook") or "以未解决的选择、代价或发现推动下一场。",
-                        "target_length_band": detail.get("target_length_band") or "medium",
+                        "target_length_band": detail["target_length_band"],
                         "primary_form": scene_type,
                         "scene_type": scene_type,
                         "is_chapter_last": 1 if seq == len(members) else 0,
@@ -1337,6 +1363,15 @@ class SnowflakeWorkspaceService:
 
     @staticmethod
     def _scene_card_resync_patch(plan: SnowflakeScenePlan, scene: SceneCard) -> dict[str, Any]:
+        # 阶段 C：呈现方式与篇幅带同物化一个口径——summary 反应场回流也拿数值带。
+        rendering_mode = _effective_rendering_mode(plan.scene_type, plan.rendering_mode)
+        if rendering_mode == "summary":
+            target_length_band = SUMMARY_LENGTH_BAND
+        else:
+            # 从概述改回完整场：规划行多半没有显式篇幅带（前端不上行它），不能让场景卡
+            # 继续挂着 200-500 的概述带——回到默认 medium。
+            current_band = scene.target_length_band if scene.target_length_band != SUMMARY_LENGTH_BAND else None
+            target_length_band = plan.target_length_band or current_band or "medium"
         brief = {
             **dict(scene.writer_brief_json or {}),
             "source": "snowflake_resync",
@@ -1354,6 +1389,8 @@ class SnowflakeWorkspaceService:
             "decision": plan.decision,
             "cost_requirement": plan.cost_requirement,
             "primary_form": plan.scene_type,
+            "rendering_mode": rendering_mode,
+            "timebox": target_length_band or "medium",
         }
         # 与物化同一配方（_scene_card_beats）：两个写入方各算一套，刚物化完的每一场
         # 都会因 beats_json 不同被报成「待同步」，横幅在物化当刻就喊 N 场。
@@ -1365,7 +1402,7 @@ class SnowflakeWorkspaceService:
             "must_include_text": plan.must_include_text or scene.must_include_text,
             "exit_change": plan.exit_change or plan.setback or plan.decision or scene.exit_change,
             "hook": plan.hook or scene.hook,
-            "target_length_band": plan.target_length_band or scene.target_length_band,
+            "target_length_band": target_length_band,
             # P2：重新分章后，回流要把场景卡也搬到新章去，否则目录停留在上一版结构。
             "chapter_id": plan.chapter_id or scene.chapter_id,
             "scene_seq": plan.scene_seq or scene.scene_seq,
@@ -1395,6 +1432,11 @@ class SnowflakeWorkspaceService:
             if item is None or (isinstance(item, str) and not item.strip()):
                 continue
             comparable[key] = item
+        # 阶段 C：呈现方式只在非默认（summary）时参与比较——阶段 C 之前物化的场景卡没有这个键，
+        # 把「缺席」当成 full，才不会让全书在升级当刻集体报「待同步」。
+        rendering_mode = str(value.get("rendering_mode") or "").strip().lower()
+        if rendering_mode and rendering_mode != "full":
+            comparable["rendering_mode"] = rendering_mode
         return comparable
 
     @staticmethod
@@ -2247,8 +2289,15 @@ class SnowflakeWorkspaceService:
             elif key == "scene_type":
                 scene_type = str(value or "").strip().lower()
                 setattr(scene, key, scene_type if scene_type in {"proactive", "reactive"} else "proactive")
+            elif key == "rendering_mode":
+                mode = str(value or "").strip().lower()
+                scene.rendering_mode = mode if mode in RENDERING_MODES else "full"
             else:
                 setattr(scene, key, str(value or "").strip())
+        # 补丁键的顺序不可依赖（SCENE_PATCH_FIELDS 是集合）：类型定下来之后再统一收口——
+        # 主动场没有「概述两段」这一说。
+        if (scene.scene_type or "proactive") != "reactive":
+            scene.rendering_mode = "full"
 
     def _supersede_same_step(self, run: SnowflakeStepRun) -> None:
         rows = self.session.execute(
@@ -2738,6 +2787,7 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "exit_change": scene.exit_change or "",
         "hook": scene.hook or "",
         "target_length_band": scene.target_length_band or "",
+        "rendering_mode": scene.rendering_mode or "full",
         "status": scene.status,
         "stale_reason": scene.stale_reason or "",
         "stale_accepted_at": scene.stale_accepted_at,

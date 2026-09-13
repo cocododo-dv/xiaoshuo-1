@@ -907,6 +907,15 @@ def test_resync_survives_a_chapter_that_is_not_in_the_catalog_yet(client, sessio
     """
     project_id = _materialized_project(client, "resync-fk")
     _rechapter_into_unmaterialized_chapters(client, project_id)
+    # 真的改一处内容再回流。以前这里不改也能过：物化与回流的 exit_change 配方不同，刚物化完的
+    # 每一场都被算成「有改动」（阶段 C 把两边配方统一后，这个假阳性消失了）。
+    board = client.get(f"/api/v2/projects/{project_id}/snowflake-workspace").json()["data"]["scene_board"]
+    first_plan_id = board["scenes"][0]["scene_plan_id"]
+    edited = client.patch(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/scenes/{first_plan_id}",
+        json={"hook": "回流前改过的钩子"},
+    )
+    assert edited.status_code == 200, edited.text
 
     response = client.post(f"/api/v2/projects/{project_id}/snowflake-workspace/resync", json={})
     assert response.status_code == 200, response.text
@@ -914,6 +923,8 @@ def test_resync_survives_a_chapter_that_is_not_in_the_catalog_yet(client, sessio
 
     # 内容改动照常回流
     assert any(item["synced"] for item in data["results"])
+    synced_ids = {item["scene_plan_id"] for item in data["results"] if item["synced"]}
+    assert first_plan_id in synced_ids
     # 搬章这件事如实上报，而不是静默跳过
     notice = data.get("notice") or {}
     assert notice.get("code") == "CHAPTER_MOVE_NEEDS_MATERIALIZE"

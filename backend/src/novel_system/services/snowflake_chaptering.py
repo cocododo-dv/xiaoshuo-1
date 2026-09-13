@@ -322,6 +322,8 @@ class SnowflakeChapteringService:
                             "spine": scene_spine(scene),
                             "anchored": bool(scene_spine(scene)) and scene_spine(scene) == (chapter.spine or ""),
                             "planned": bool((scene.goal or scene.reaction or "").strip()),
+                            # 阶段 C：概述两段的反应场在节奏体检里按半场计
+                            "rendering_mode": (scene.rendering_mode or "full") if (scene.scene_type or "proactive") == "reactive" else "full",
                         }
                         for seq, scene in enumerate(members, start=1)
                     ],
@@ -802,7 +804,21 @@ def _rhythm_report(chapter_payloads: list[dict[str, Any]]) -> dict[str, Any]:
     判断——这里还没有正文。
     """
     counts = [item["scene_count"] for item in chapter_payloads]
-    non_empty = [count for count in counts if count]
+    # 阶段 C：概述两段的反应场只有一两百字，按半场计入均值——它不该把一章「撑」成长章。
+    weighted = [
+        sum(
+            0.5 if str(scene.get("rendering_mode") or "full") == "summary" else 1.0
+            for scene in (item.get("scenes") or [])
+        )
+        for item in chapter_payloads
+    ]
+    summary_scene_count = sum(
+        1
+        for item in chapter_payloads
+        for scene in (item.get("scenes") or [])
+        if str(scene.get("rendering_mode") or "full") == "summary"
+    )
+    non_empty = [count for count in weighted if count]
     mean = (sum(non_empty) / len(non_empty)) if non_empty else 0.0
 
     acts: dict[int, dict[str, int]] = {}
@@ -835,11 +851,14 @@ def _rhythm_report(chapter_payloads: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
 
+    raw_non_empty = [count for count in counts if count]
     return {
         "scene_counts": counts,
+        "weighted_scene_counts": weighted,
+        "summary_scene_count": summary_scene_count,
         "mean_scenes_per_chapter": round(mean, 2),
-        "min_scenes": min(non_empty) if non_empty else 0,
-        "max_scenes": max(non_empty) if non_empty else 0,
+        "min_scenes": min(raw_non_empty) if raw_non_empty else 0,
+        "max_scenes": max(raw_non_empty) if raw_non_empty else 0,
         "empty_chapter_count": sum(1 for count in counts if not count),
         "acts": [
             {"act": act, **acts[act]}

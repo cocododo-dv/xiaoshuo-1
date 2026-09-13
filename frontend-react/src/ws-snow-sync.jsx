@@ -106,6 +106,8 @@ function canonFromFE(feKey, saved) {
         goal: txt(plan.goal), conflict: txt(plan.conflict), setback: txt(plan.setback),
         reaction: txt(plan.reaction), dilemma: txt(plan.dilemma), decision: txt(plan.decision),
         cost_requirement: txt(plan.cost_requirement),
+        // 阶段 C：反应场的呈现方式（full / summary）。只对反应场上行；主动场服务端恒为 full。
+        ...(form === "reactive" ? { rendering_mode: plan.rendering === "summary" ? "summary" : "full" } : {}),
       };
     }) };
   }
@@ -192,6 +194,7 @@ function feFromCanon(feKey, draft) {
         goal: s.goal || "", conflict: s.conflict || "", setback: s.setback || "",
         reaction: s.reaction || "", dilemma: s.dilemma || "", decision: s.decision || "",
         cost_requirement: s.cost_requirement || "",
+        rendering: s.rendering_mode === "summary" ? "summary" : "full",
       };
     });
     return { scaffold: { sel: Object.keys(plans)[0] || "", plans } };

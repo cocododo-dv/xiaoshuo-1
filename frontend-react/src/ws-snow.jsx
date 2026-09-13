@@ -2533,7 +2533,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const selIdx = list.findIndex(s => s.id === selId);
   // 类型跟随 09 的真相：主动/反应在场景列表里定，这里不再各说各话
   const proactive = scene ? scene.type !== "reactive" : true;
-  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", ...(plans[selId] || {}) };
+  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", ...(plans[selId] || {}) };
   plan.mode = proactive ? "proactive" : "reactive";
   const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...plan, [f]: v } } }));
   const selScene = (id) => onScaffold(s => ({ ...s, sel: id }));
@@ -2618,7 +2618,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
               <button key={s.id}
                 className={`sf-plan-cell st-${st} ${s.id === selId ? "is-sel" : ""} ${s.type === "reactive" ? "is-rea" : "is-pro"} ${s.spine ? "is-spine" : ""} ${tri ? "tri-" + tri.status : ""}`}
                 onClick={() => selScene(s.id)}
-                title={`${s2SceneNo(s.id, i)} · ${s.type === "reactive" ? "反应" : "主动"}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
+                title={`${s2SceneNo(s.id, i)} · ${s.type === "reactive" ? "反应" : "主动"}${s.type === "reactive" && (plans[s.id] || {}).rendering === "summary" ? " · 概述" : ""}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
                 {i + 1}
               </button>
             );
@@ -2641,6 +2641,14 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           {proactive ? "主动 · GCS" : "反应 · RDD"}
           <button className="sf-plan-type-go" onClick={() => go && go("scenes")} title="在 09 修改类型">09</button>
         </span>
+        {/* 阶段 C：反应场的呈现方式——Ingermanson：反应场是少数，可以整场写，也可以缩成两段概述 */}
+        {!proactive && (
+          <span className="sf-plan-render" title="整场戏剧化，还是两段概述（约 200–500 字）？概述场物化后拿到 200-500 的篇幅带，起草按概述写">
+            <span className="sf-field-label">呈现</span>
+            <button type="button" className={`sf-plan-render-opt ${plan.rendering !== "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
+            <button type="button" className={`sf-plan-render-opt ${plan.rendering === "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "summary")}>概述两段</button>
+          </span>
+        )}
         {ai && (
           <button className="btn btn-quiet btn-sm" disabled={ai.structBusy} onClick={() => ai.onFillScene(selId)}
             title="只补全这一场的三槽/坩埚/钩子，其余场景不动（生成前自动留底）">

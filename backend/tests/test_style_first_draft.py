@@ -556,7 +556,7 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["style_first_draft"]["version"] == "2026-09-13.v2"
+    assert templates["style_first_draft"]["version"] == "2026-09-13.v3"
     assert templates["style_first_draft"]["input_token_budget"] == 64000
     assert "The bundle decides what happens" in templates["style_first_draft"]["system_prompt"]
     assert "the author's manner wins and the fact of the field stays" in templates["style_first_draft"]["task_prompt"]

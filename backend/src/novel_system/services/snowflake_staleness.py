@@ -84,7 +84,22 @@ def semantic_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     也不能触发下游雪花步骤失效。
     """
     data = payload if isinstance(payload, dict) else {}
-    return {key: value for key, value in data.items() if not str(key).startswith("fe_")}
+    result = {key: value for key, value in data.items() if not str(key).startswith("fe_")}
+    scenes = result.get("scenes")
+    if isinstance(scenes, list):
+        # 阶段 C：rendering_mode 的默认值 full 与「缺席」同义——阶段 C 之前存的草稿没有这个键，
+        # 前端水合后总会把 full 发回来；不剥掉默认值，已确认的场景规划会在升级当刻被打回待审。
+        result["scenes"] = [_strip_default_rendering_mode(item) for item in scenes]
+    return result
+
+
+def _strip_default_rendering_mode(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    mode = str(item.get("rendering_mode") or "").strip().lower()
+    if "rendering_mode" in item and mode in {"", "full"}:
+        return {key: value for key, value in item.items() if key != "rendering_mode"}
+    return item
 
 
 def field_sigs(payload: dict[str, Any] | None) -> dict[str, str]:

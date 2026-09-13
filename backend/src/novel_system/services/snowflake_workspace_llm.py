@@ -32,6 +32,7 @@ from novel_system.services.snowflake_prompt_budget import (
     budget_audit_fields,
 )
 from novel_system.services.snowflake_steps import (
+    RENDERING_MODES,
     SCENE_FIELD_EXAMPLES,
     STEP_ORDER,
     diagnose_scene_detail,
@@ -1927,6 +1928,7 @@ def _sanitize_scene_detail_items(
         "decision",
         "cost_requirement",
         "target_length_band",
+        "rendering_mode",
         "must_include_text",
         "exit_change",
         "hook",
@@ -1943,6 +1945,13 @@ def _sanitize_scene_detail_items(
         overlay = overlay_by_id.get(scene_id, {})
         for key in allowed_keys:
             if key not in overlay:
+                continue
+            if key == "rendering_mode":
+                # 阶段 C：模型只对反应场建议 full / summary；主动场与非法值一律不落键（保持 full）。
+                mode = str(overlay.get(key) or "").strip().lower()
+                form = str(merged.get("primary_form") or merged.get("scene_type") or "proactive").strip().lower()
+                if mode in RENDERING_MODES and form == "reactive":
+                    merged[key] = mode
                 continue
             if key in {"primary_form", "scene_type"}:
                 scene_type = str(

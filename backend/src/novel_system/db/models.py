@@ -288,6 +288,10 @@ class SnowflakeScenePlan(Base):
     cost_requirement: Mapped[str | None] = mapped_column(Text, nullable=True)
     downstream_obligations_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     target_length_band: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 2026-09-13 阶段 C：反应场的呈现方式——full（整场戏剧化）/ summary（两段概述，200–500 字）。
+    # Ingermanson：反应场可以整场写、缩成两段概述、或干脆略过；第一版只做前两档，主动场恒为 full。
+    # 迁移 20260913_0084 加列，server_default="full"。
+    rendering_mode: Mapped[str] = mapped_column(String, default="full")
     status: Mapped[str] = mapped_column(String, default="draft")
     source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
     stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

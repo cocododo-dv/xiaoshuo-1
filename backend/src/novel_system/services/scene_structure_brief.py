@@ -164,6 +164,13 @@ def render_scene_structure_brief(scene: SceneCard, session: Session | None = Non
     band = _text(getattr(scene, "target_length_band", None))
     if band:
         lines.append(f"Target length band: {band}")
+    # 阶段 C：作者把这场反应场定为「概述两段」——这是作者的呈现决定，起草不得戏剧化成整场。
+    if _text(brief.get("rendering_mode")).lower() == "summary":
+        lines.append(
+            "Rendering mode: summary (概述两段) — the author wants this reactive beat told in two or three "
+            "paragraphs of narrative summary, about 200–500 Chinese characters: the Reaction felt, the options "
+            "weighed and rejected, the Decision committed; no scene-length dramatisation, no dialogue expansion"
+        )
     follow_up = [f"{_BEAT_LABELS[key]}: {_text(brief.get(key))}" for key in secondary if _text(brief.get(key))]
     if follow_up:
         lines.append("Follow-up beats (secondary form, keep them subordinate): " + "; ".join(follow_up))

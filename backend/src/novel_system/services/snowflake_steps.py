@@ -5,6 +5,11 @@ from typing import Any
 
 
 SNOWFLAKE_METHOD_VERSION = "2026-04-29.v2"
+# 2026-09-13 阶段 C：反应场的呈现方式。full = 整场戏剧化；summary = 两段概述（约 200–500 字）。
+# Ingermanson：反应场可以整场写、缩成概述、或略过——第一版做前两档；主动场恒为 full。
+RENDERING_MODES: tuple[str, ...] = ("full", "summary")
+# summary 场物化时拿到的数值篇幅带：起草 / 长度补丁按数值带硬约束，而不是靠「short」这种提示。
+SUMMARY_LENGTH_BAND = "200-500"
 MATERIALIZATION_REQUIRED_STEPS = [
     "book_brief",
     "one_sentence_summary",
@@ -312,6 +317,7 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                         "decision": "",
                         "cost_requirement": "",
                         "target_length_band": "medium",
+                        "rendering_mode": "full",
                         "must_include_text": "",
                         "exit_change": "",
                         "hook": "",
@@ -408,6 +414,16 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "hint": "角色为这个决定具体付出了什么？免费的选择 = 注水",
                                     "placeholder": "例：认罪换来的不是安全，而是失去律师执照、也失去了亲手抓到真凶的机会",
                                     "rows": 2,
+                                },
+                                {
+                                    "key": "rendering_mode",
+                                    "kind": "select",
+                                    "label": "呈现方式",
+                                    "hint": "整场戏剧化，还是两段概述？Ingermanson：反应场是少数，可以缩成两段概述（约 200–500 字）",
+                                    "options": [
+                                        {"value": "full", "label": "完整场"},
+                                        {"value": "summary", "label": "概述两段"},
+                                    ],
                                 },
                             ],
                         },
@@ -889,6 +905,7 @@ def _scene_detail_seed(scene: dict[str, Any], index: int) -> dict[str, Any]:
         "dilemma": "",
         "decision": "",
         "cost_requirement": "",
+        "rendering_mode": "full",
         "triage_status": "",
         "triage_notes": "",
         "triage_missing_fields": [],
@@ -1241,6 +1258,7 @@ _FIELD_DISPLAY_LABELS = {
     "exit_change": "离场变化",
     "hook": "钩子",
     "target_length_band": "目标篇幅",
+    "rendering_mode": "呈现方式",
 }
 
 

@@ -826,6 +826,8 @@ def _scene_writer_brief(scene_type: str, detail: dict[str, Any]) -> dict[str, An
         # 阶段 B：挫折 / 胜利以主角衡量（Ingermanson）；物化时由角色摘要表带入，没有就是 None。
         "protagonist_hint": detail.get("protagonist_hint"),
         "protagonist_character_id": detail.get("protagonist_character_id"),
+        # 阶段 C：反应场的呈现方式（full / summary）；主动场恒为 full。
+        "rendering_mode": str(detail.get("rendering_mode") or "full"),
         "tension_target": detail.get("tension_target"),
         "function_tag": detail.get("function_tag"),
         "involved_foreshadowing": detail.get("involved_foreshadowing") or detail.get("involved_foreshadowing_json") or [],
