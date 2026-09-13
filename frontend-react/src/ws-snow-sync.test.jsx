@@ -1019,4 +1019,99 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(state.error).toBeNull();
     expect(state.failures || []).toHaveLength(0);
   });
+  it("阶段 M：钩子 / 离场变化往返；09 行只读章归属水合（章号退化值不显示，且从不上行）", async () => {
+    const { mod } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, steps: [] } });
+    const saved = {
+      drafts: {}, checks: {}, states: {},
+      scaffolds: {
+        scenes: { lines: [], list: [
+          { id: "S01", type: "proactive", pov: "c1", place: "码头", event: "取账本", crucible: "退不出的困局", fn: "起疑", spine: "", chapter: "第一章 雨夜来信" },
+        ] },
+        planning: { sel: "S01", plans: {
+          S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧", hook: "烧账本的人留下了她的名字", exit_change: "证据没了，嫌疑落到她头上" },
+        } },
+      },
+    };
+    const canon = mod.canonFromFE("planning", saved);
+    expect(canon.scenes[0].hook).toBe("烧账本的人留下了她的名字");
+    expect(canon.scenes[0].exit_change).toBe("证据没了，嫌疑落到她头上");
+    // 章归属是分章面板的事：09 上行行里没有它
+    expect(mod.canonFromFE("scenes", saved).scenes[0]).not.toHaveProperty("chapter");
+
+    const hydrated = mod.feFromCanon("planning", { scenes: [
+      { row_uid: "S01", primary_form: "proactive", hook: "她听见楼上有脚步", exit_change: "旅馆不再安全" },
+      { row_uid: "S02", primary_form: "reactive" },
+    ] });
+    expect(hydrated.scaffold.plans.S01).toEqual(expect.objectContaining({ hook: "她听见楼上有脚步", exit_change: "旅馆不再安全" }));
+    expect(hydrated.scaffold.plans.S02).toEqual(expect.objectContaining({ hook: "", exit_change: "" }));
+
+    const scenes = mod.feFromCanon("scenes", { scenes: [
+      { row_uid: "S01", scene_id: "prj-main_SC01", chapter_id: "prj-main_CH01", chapter_title: "第一章 雨夜来信", summary: "取账本" },
+      // 服务端没有章题时会用 chapter_id 顶替——那不是章题，不展示
+      { row_uid: "S02", scene_id: "prj-main_SC02", chapter_id: "prj-main_CH01", chapter_title: "prj-main_CH01", summary: "消化挫败" },
+      { row_uid: "S03", scene_id: "prj-main_SC03", summary: "找证人" },
+    ] }).scaffold.list;
+    expect(scenes.map(s => s.chapter)).toEqual(["第一章 雨夜来信", "", ""]);
+  });
+
+  it("阶段 M：分诊随工作台水合——按 scene_id 对到 09 的 row_uid，作者裁定优先于系统建议", async () => {
+    const ws = {
+      ready_to_materialize: false, current_step_key: "scene_details",
+      steps: [
+        { step_key: "scene_list", status: "approved", gate_satisfied: true, health: {}, completeness: {},
+          draft: { scenes: [
+            { row_uid: "S01", scene_id: "prj-main_SC01", summary: "取账本", primary_form: "proactive" },
+            { row_uid: "S02", scene_id: "prj-main_SC02", summary: "消化挫败", primary_form: "reactive" },
+          ] } },
+      ],
+      triage_items: [
+        // 只有系统建议（未裁定）：状态取建议
+        { triage_id: "", scene_plan_id: "sp1", scene_id: "prj-main_SC01", status: "", recommended_status: "maybe", effective_status: "unreviewed",
+          triage_source: "auto_diagnosis", score: 55, notes: "", missing_fields: ["crucible"], fix_steps: ["补坩埚"], repair_patch: {} },
+        // 作者已裁定通过（覆盖了系统的重写建议）：状态取裁定
+        { triage_id: "t2", scene_plan_id: "sp2", scene_id: "prj-main_SC02", status: "pass", recommended_status: "rewrite", effective_status: "pass",
+          triage_source: "author_saved", score: 30, notes: "反应场就该短", missing_fields: [], fix_steps: [], repair_patch: { reaction: "手抖" }, manual_override: true },
+        // 对不上任何 09 行的条目：按 scene_id 兜底键
+        { triage_id: "", scene_plan_id: "sp9", scene_id: "prj-main_SC09", recommended_status: "pass", effective_status: "unreviewed", triage_source: "auto_diagnosis", score: 90 },
+      ],
+    };
+    const { mod } = await loadSync({ snowflakeWorkspace: ws });
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "prj-main" }));
+    await vi.waitFor(() => expect(mod.SnowSync.triageItems("prj-main")).toBeTruthy(), T);
+    const saved = mod.SnowSync.triageItems("prj-main");
+    expect(saved.source).toBe("workspace");
+    expect(Object.keys(saved.items).sort()).toEqual(["S01", "S02", "prj-main_SC09"]);
+    expect(saved.items.S01).toEqual(expect.objectContaining({ status: "maybe", score: 55, fix_steps: ["补坩埚"], missing_fields: ["crucible"], scene_plan_id: "sp1" }));
+    expect(saved.items.S02).toEqual(expect.objectContaining({ status: "pass", recommended_status: "rewrite", notes: "反应场就该短", repair_patch: { reaction: "手抖" }, triage_id: "t2" }));
+    expect(mod.SnowSync.triageItems("someone-else")).toBeNull();
+  });
+
+  it("阶段 M：skipStep 走 generate skip=true 并带理由，回包刷新本步与整个工作台的健康；未知步在同步层就拒绝", async () => {
+    const { mod, client } = await loadSync({});
+    client.apiPost.mockClear();
+    client.apiPost.mockResolvedValueOnce({ step: {
+      step_key: "character_sheets", status: "skipped", gate_satisfied: true, skip_reason: "先按梗概走，人物表等第二稿",
+      draft: { characters: [] }, health: {}, completeness: {}, artifact: { step_run_id: "run_chars_skip", input_refs: {} },
+    }, workspace: { steps: [
+      { step_key: "short_synopsis", status: "approved", gate_satisfied: true, draft: { paragraphs: [] }, health: {}, completeness: {}, artifact: { step_run_id: "run_syn_v1", input_refs: {} } },
+    ] } });
+    const events = [];
+    const onHealth = () => events.push("health");
+    window.addEventListener("ws:snow-health", onHealth);
+    const health = await mod.SnowSync.skipStep("prj-main", "characters", "先按梗概走，人物表等第二稿");
+    window.removeEventListener("ws:snow-health", onHealth);
+    const call = client.apiPost.mock.calls.find(c => String(c[0]).includes("/steps/character_sheets/generate"));
+    expect(call).toBeTruthy();
+    expect(call[1]).toEqual({ skip: true, skip_reason: "先按梗概走，人物表等第二稿" });
+    expect(health.beStatus).toBe("skipped");
+    expect(mod.SnowSync.health("prj-main").characters.beStatus).toBe("skipped");
+    expect(mod.SnowSync.health("prj-main").synopsis.gateSatisfied).toBe(true); // 回包里的 workspace 也收进来
+    expect(events).toContain("health");
+
+    // 服务端拒绝（必填步 / 缺理由）：错误上抛给视图，本地健康不动
+    client.apiPost.mockRejectedValueOnce(new Error("SNOWFLAKE_STEP_NOT_SKIPPABLE"));
+    await expect(mod.SnowSync.skipStep("prj-main", "logline", "想跳过")).rejects.toThrow("SNOWFLAKE_STEP_NOT_SKIPPABLE");
+    expect((mod.SnowSync.health("prj-main").logline || {}).beStatus || null).not.toBe("skipped");
+    await expect(mod.SnowSync.skipStep("prj-main", "not-a-step", "x")).rejects.toThrow("步骤未知");
+  });
 });

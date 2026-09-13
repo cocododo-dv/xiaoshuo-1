@@ -337,12 +337,16 @@
 .sf-rhythm-dot.is-pro { background: var(--crimson); }
 .sf-rhythm-dot.is-rea { background: var(--slate); }
 .sf-scene-table { display: flex; flex-direction: column; border: 1px solid var(--line-1); border-radius: 11px; overflow: hidden; }
-.sf-scene-thead, .sf-scene-row { display: grid; grid-template-columns: 2.6em 3.2em 4.6em 5em 1.5fr 1.3fr 1.2fr 3.8em; gap: 8px; align-items: center; }
+.sf-scene-thead, .sf-scene-row { display: grid; grid-template-columns: 2.6em 3.2em 4.6em 5em 1.5fr 1.3fr 1.2fr 5.4em; gap: 8px; align-items: center; }
 .sf-scene-thead { padding: 8px 12px; background: var(--paper-2); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700; color: var(--ink-3); }
 .sf-scene-row { padding: 8px 12px; border-top: 1px solid var(--line-1); position: relative; }
 .sf-scene-row.is-spine { background: var(--gold-wash); }
 .sf-scene-row.is-nocru { background: color-mix(in oklab, var(--crimson-wash) 55%, transparent); }
 .sf-scene-row.is-spine.is-nocru { background: var(--crimson-wash); }
+/* 阶段 M：拖拽换位 + 章头行（只读章归属） */
+.sf-scene-row[draggable="true"] { cursor: grab; }
+.sf-scene-row.is-dragging { opacity: 0.45; }
+.sf-scene-chapter { padding: 5px 12px; border-top: 1px solid var(--line-1); background: var(--paper-2); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; color: var(--ink-3); }
 .sc-in { width: 100%; border: 1px solid transparent; border-radius: 6px; background: transparent; padding: 4px 6px; font-size: 12px; color: var(--ink-1); transition: border-color var(--t-fast), background var(--t-fast); }
 .sc-in:hover { background: var(--paper-0); }
 .sc-in:focus { outline: none; border-color: var(--crimson); background: var(--paper-0); }

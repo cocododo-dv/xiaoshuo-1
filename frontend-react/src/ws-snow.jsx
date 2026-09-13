@@ -152,6 +152,14 @@ function s2PlanSlots(plan, type) {
   const mode = type ? (type === "reactive" ? "reactive" : "proactive") : (plan && plan.mode);
   return mode === "reactive" ? ["reaction", "dilemma", "decision"] : ["goal", "conflict", "setback"];
 }
+// 阶段 M：拖拽换位——把 from 位置的场挪到 to 位置（其余顺序不变），纯函数，供单测
+function s2ReorderScenes(list, from, to) {
+  const items = Array.isArray(list) ? list.slice() : [];
+  if (from === to || from < 0 || to < 0 || from >= items.length || to >= items.length) return items;
+  const [moved] = items.splice(from, 1);
+  items.splice(to, 0, moved);
+  return items;
+}
 // 0 = 未规划 · 1 = 填了一半 · 2 = 三槽齐
 function s2PlanState(plan, type) {
   if (!plan) return 0;
@@ -857,10 +865,24 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       setUpDiff({ key, loading: false, items: [], error: (err && err.message) || "拉取上游历史失败", reason });
     }
   };
-  const skipStep = () => {
+  const skipStep = async () => {
+    /* 阶段 M：略过写回服务端。必填步（01/02/03/09/10）不能略过——以前本地一点就「略过」，后端永远不知道，
+       硬闸门于是静默卡住。可略过的步要一个理由（后端必填），服务端记为 skipped 并让下游视之为已满足。 */
+    if (active.essential) { showToast(`${active.name} 是物化前的必填步，不能略过——先补上再确认`, "crimson"); return; }
+    const reason = window.prompt(`略过「${active.name}」的理由（会记在服务端，下游步骤照常继续）`, "");
+    if (reason == null) return;
+    if (!reason.trim()) { showToast("略过需要写一句理由", "crimson"); return; }
+    let workId = null; try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+    try {
+      if (!workId || !(window.SnowSync && window.SnowSync.skipStep)) throw new Error("同步层未就绪");
+      await window.SnowSync.skipStep(workId, activeKey, reason.trim());
+    } catch (err) {
+      showToast("略过未能记入服务端：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      return;
+    }
     setStates(prev => ({ ...prev, [activeKey]: prev[activeKey] === "done" ? "done" : "skip" }));
-    pushHist("略过此步", `${active.num} ${active.name}`);
-    showToast(`已略过 · ${active.name}`, "slate"); goStep(idx + 1);
+    pushHist("略过此步", `${active.num} ${active.name} · ${reason.trim()}`);
+    showToast(`已略过 · ${active.name}（已在服务端留痕）`, "slate"); goStep(idx + 1);
   };
 
   const regenerate = async () => {
@@ -1018,6 +1040,19 @@ function WsSnowflake({ go, initialStep, onOverview }) {
      分诊结果随手存档（save_scene_triage）——「重写」场会真实阻挡物化闸门；
      会话内记住 triage_id，复诊时原行更新而不是堆新行。 */
   const [triage, setTriage] = useSS(null);   // { items: rowUid -> item, at, source }
+  // 阶段 M：分诊结果随工作台水合——刷新后第 10 步仍能看到上次存档的分诊；本会话新跑的分诊优先
+  React.useEffect(() => {
+    const restore = () => {
+      if (triage) return;
+      try {
+        const saved = window.SnowSync && window.SnowSync.triageItems && window.SnowSync.triageItems();
+        if (saved && saved.items && Object.keys(saved.items).length) setTriage(saved);
+      } catch (e) {}
+    };
+    restore();
+    window.addEventListener("ws:snow-hydrated", restore);
+    return () => window.removeEventListener("ws:snow-hydrated", restore);
+  }, [triage]);
   const [triageBusy, setTriageBusy] = useSS(false);
   const triageIdsRef = useSR({});            // scene_plan_id -> triage_id（会话内复用）
   const runTriage = async () => {
@@ -2501,6 +2536,14 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
     const j = i + d; if (j < 0 || j >= s.list.length) return s;
     const l = s.list.slice(); [l[i], l[j]] = [l[j], l[i]]; return { ...s, list: l };
   });
+  // 阶段 M：原著的场景表是可以随手挪动的电子表格——在某一场后面插一场、拖拽换位
+  const insertSceneAfter = (i) => onScaffold(s => {
+    const prev = s.list[i] || {};
+    const fresh = { id: s2NextSceneRowId(s.list), type: "proactive", line: prev.line || hiLine || "main", pov: prev.pov || mainCharId, place: prev.place || "", event: "", crucible: "", fn: "", spine: "" };
+    return { ...s, list: [...s.list.slice(0, i + 1), fresh, ...s.list.slice(i + 1)] };
+  });
+  const [dragIdx, setDragIdx] = useSS(null);
+  const dropOn = (i) => { if (dragIdx == null || dragIdx === i) { setDragIdx(null); return; } onScaffold(s => ({ ...s, list: s2ReorderScenes(s.list, dragIdx, i) })); setDragIdx(null); };
 
   const setLine = (id, f, v) => onScaffold(s => ({ ...s, lines: (s.lines || []).map(ln => ln.id === id ? { ...ln, [f]: v } : ln) }));
   const addLine = () => onScaffold(s => {
@@ -2614,8 +2657,13 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
         {list.map((s, i) => {
           const lt = toneOf(s.line || "main");
           const dim = hiLine && (s.line || "main") !== hiLine;
+          // 阶段 M：章归属只读——同一章的第一场前插一行章头（章在分章面板里改，这里只看）
+          const chapterHead = s.chapter && s.chapter !== ((list[i - 1] || {}).chapter || "") ? s.chapter : "";
           return (
-          <div key={i} className={`sf-scene-row line-${lt} ${s.spine ? "is-spine" : ""} ${!(s.crucible || "").trim() ? "is-nocru" : ""} ${dim ? "is-dim" : ""}`}>
+          <React.Fragment key={s.id || i}>
+          {chapterHead ? <div className="sf-scene-chapter" data-testid={`snow-scene-chapter-${i}`} title="章归属（在「整理为章节结构」里改）">{chapterHead}</div> : null}
+          <div data-testid={`snow-scene-row-${i}`} draggable onDragStart={() => setDragIdx(i)} onDragOver={(e) => e.preventDefault()} onDrop={() => dropOn(i)} onDragEnd={() => setDragIdx(null)}
+            className={`sf-scene-row line-${lt} ${s.spine ? "is-spine" : ""} ${!(s.crucible || "").trim() ? "is-nocru" : ""} ${dim ? "is-dim" : ""} ${dragIdx === i ? "is-dragging" : ""}`} title="拖拽换位">
             <span className="sc-c-id"><span className="sc-no" title={s.id}>{s2SceneNo(s.id, i)}</span></span>
             <span className="sc-c-type">
               <button className={`sc-type ${s.type === "proactive" ? "is-pro" : "is-rea"}`} onClick={() => setScene(i, "type", s.type === "proactive" ? "reactive" : "proactive")} title="切换 主动 GCS / 反应 RDD">
@@ -2642,9 +2690,11 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
             <span className="sc-c-act">
               <button className="sc-act" onClick={() => moveScene(i, -1)} disabled={i === 0} title="上移"><I.ChevronRight size={13} style={{ transform: "rotate(-90deg)" }} /></button>
               <button className="sc-act" onClick={() => moveScene(i, 1)} disabled={i === list.length - 1} title="下移"><I.ChevronRight size={13} style={{ transform: "rotate(90deg)" }} /></button>
+              <button className="sc-act" data-testid={`snow-scene-insert-${i}`} onClick={() => insertSceneAfter(i)} title="在这一场后面插一场"><I.Plus size={13} /></button>
               <button className="sc-act sc-act-del" onClick={() => delScene(i)} title="删除"><I.X size={13} /></button>
             </span>
           </div>
+          </React.Fragment>
           );
         })}
       </div>
@@ -2665,7 +2715,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const selIdx = list.findIndex(s => s.id === selId);
   // 类型跟随 09 的真相：主动/反应在场景列表里定，这里不再各说各话
   const proactive = scene ? scene.type !== "reactive" : true;
-  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", onstage: [], story_time: "", reader_emotion: "", ...(plans[selId] || {}) };
+  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", onstage: [], story_time: "", reader_emotion: "", hook: "", exit_change: "", ...(plans[selId] || {}) };
   plan.mode = proactive ? "proactive" : "reactive";
   const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...plan, [f]: v } } }));
   const selScene = (id) => onScaffold(s => ({ ...s, sel: id }));
@@ -2801,6 +2851,11 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           <input className="sf-field-input" data-testid="snow-plan-story-time" value={plan.story_time || ""} onChange={(e) => setPlan("story_time", e.target.value)} placeholder="如：第三天傍晚" title="原著场景表的时间戳——连续性的锚" /></label>
         <label className="sf-field"><span className="sf-field-label">读者应感到</span>
           <input className="sf-field-input" data-testid="snow-plan-reader-emotion" value={plan.reader_emotion || ""} onChange={(e) => setPlan("reader_emotion", e.target.value)} placeholder="这一场读完，读者该被留在什么情绪里" title="Dynamite Scene 分诊第 5 步：写下这一场要给读者的情绪；近终稿评审据此判落地没有" /></label>
+        {/* 阶段 M：钩子与离场变化——一直是场景卡的列，此前前端没有输入框 */}
+        <label className="sf-field"><span className="sf-field-label">离场变化</span>
+          <input className="sf-field-input" data-testid="snow-plan-exit-change" value={plan.exit_change || ""} onChange={(e) => setPlan("exit_change", e.target.value)} placeholder="这一场结束时什么不可逆地变了（留空 = 就是挫折 / 决定）" /></label>
+        <label className="sf-field"><span className="sf-field-label">钩子</span>
+          <input className="sf-field-input" data-testid="snow-plan-hook" value={plan.hook || ""} onChange={(e) => setPlan("hook", e.target.value)} placeholder="逼读者翻页的未解之事（留空 = 挫折 / 决定本身就是牵引）" /></label>
         <span className={`sf-plan-type ${proactive ? "is-pro" : "is-rea"}`} title="类型跟随 09 场景列表——要改去 09 切换">
           {proactive ? "主动 · GCS" : "反应 · RDD"}
           <button className="sf-plan-type-go" onClick={() => go && go("scenes")} title="在 09 修改类型">09</button>
@@ -3391,4 +3446,4 @@ function WsConstruct({ go }) {
 Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2NextSceneRowId, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift };
+export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2NextSceneRowId, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2ReorderScenes };

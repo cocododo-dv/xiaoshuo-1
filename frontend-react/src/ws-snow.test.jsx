@@ -16,7 +16,7 @@ vi.mock("./ws-works.jsx", () => ({
   },
 }));
 
-import { WsSnowflake, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2NormalizeState } from "./ws-snow.jsx";
+import { WsSnowflake, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2NormalizeState, s2ReorderScenes } from "./ws-snow.jsx";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -155,3 +155,136 @@ describe("阶段 E · 场景规划覆盖格与本地失效图", () => {
     expect(normalized.states.logline).toBe("done");
   });
 });
+
+
+/* —— 阶段 M：09 是一张能随手挪的表；10 有钩子 / 离场变化；分诊随水合回来；略过写回服务端 —— */
+describe("阶段 M · 09/10 交互", () => {
+  const CACHE = "ws_snow_state_v2::new-book";
+  const threeScenes = () => ({
+    scaffolds: {
+      characters: { sel: "c1", chars: { c1: { name: "林岑", role: "主角", goal: "", ambition: "", values: "", conflict: "", epiphany: "" } } },
+      scenes: { lines: [], list: [
+        { id: "S01", type: "proactive", line: "main", pov: "c1", place: "码头", event: "取账本", crucible: "退不出的困局", fn: "起疑", spine: "", chapter: "第一章 雨夜来信" },
+        { id: "S02", type: "reactive", line: "main", pov: "c1", place: "旅馆", event: "消化挫败", crucible: "无人可信", fn: "转向", spine: "", chapter: "第一章 雨夜来信" },
+        { id: "S03", type: "proactive", line: "main", pov: "c1", place: "旧屋", event: "找证人", crucible: "证人也在撒谎", fn: "逼近", spine: "灾一", chapter: "第二章 旧屋回声" },
+      ] },
+      planning: { sel: "S01", plans: { S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧" } } },
+    },
+    states: { audience: "done", logline: "done", paragraph: "done", scenes: "done" },
+  });
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    catalog.get.mockReturnValue([]);
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+    window.SnowSync = { chapterPreview: vi.fn(), materialize: vi.fn(), skipStep: vi.fn(async () => ({ beStatus: "skipped" })) };
+  });
+  afterEach(async () => {
+    while (mounted.length) {
+      const { root, host } = mounted.pop();
+      await act(async () => root.unmount());
+      host.remove();
+    }
+    vi.restoreAllMocks();
+    try { delete window.SnowSync; } catch (e) {}
+  });
+
+  async function renderAt(step) {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => root.render(<WsSnowflake initialStep={step} onOverview={vi.fn()} />));
+    return host;
+  }
+  const rowIds = (host) => [...host.querySelectorAll(".sf-scene-row .sc-no")].map(el => el.getAttribute("title"));
+
+  it("s2ReorderScenes：把一场挪到另一位置，其余顺序不变；越界或原地是无操作且不改原数组", () => {
+    const list = [{ id: "S01" }, { id: "S02" }, { id: "S03" }, { id: "S04" }];
+    expect(s2ReorderScenes(list, 0, 2).map(s => s.id)).toEqual(["S02", "S03", "S01", "S04"]);
+    expect(s2ReorderScenes(list, 3, 0).map(s => s.id)).toEqual(["S04", "S01", "S02", "S03"]);
+    expect(s2ReorderScenes(list, 1, 1).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
+    expect(s2ReorderScenes(list, 1, 9).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
+    expect(s2ReorderScenes(list, -1, 0).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
+    expect(list.map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
+    expect(s2ReorderScenes(undefined, 0, 1)).toEqual([]);
+  });
+
+  it("09 场景表：同一章的第一场前有只读章头；「在这一场后面插一场」插在原位之后并继承线 / POV / 地点；拖放换位走同一纯函数", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
+    const host = await renderAt("scenes");
+    expect(rowIds(host)).toEqual(["S01", "S02", "S03"]);
+    expect(host.querySelector('[data-testid="snow-scene-chapter-0"]').textContent).toBe("第一章 雨夜来信");
+    expect(host.querySelector('[data-testid="snow-scene-chapter-1"]')).toBeNull();     // 同章第二场不重复章头
+    expect(host.querySelector('[data-testid="snow-scene-chapter-2"]').textContent).toBe("第二章 旧屋回声");
+
+    await act(async () => host.querySelector('[data-testid="snow-scene-insert-0"]').click());
+    const ids = rowIds(host);
+    expect(ids).toHaveLength(4);
+    expect(ids[0]).toBe("S01");
+    expect(ids[2]).toBe("S02");
+    expect(ids[3]).toBe("S03");
+    expect(["S01", "S02", "S03"]).not.toContain(ids[1]);
+    const inserted = host.querySelector('[data-testid="snow-scene-row-1"]');
+    expect(inserted.querySelector(".sc-pov").value).toBe("c1");            // 继承前一场的 POV
+    expect(inserted.querySelector(".sc-in-place").value).toBe("码头");      // 继承地点
+    expect(inserted.querySelector(".sc-in-event").value).toBe("");          // 事件留白，等作者写
+
+    // 拖放：把第 4 行（S03）放到第 1 行之前
+    const drag = (i, type) => act(async () => {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      host.querySelector(`[data-testid="snow-scene-row-${i}"]`).dispatchEvent(ev);
+    });
+    await drag(3, "dragstart");
+    await drag(0, "drop");
+    expect(rowIds(host)).toEqual(["S03", "S01", ids[1], "S02"]);
+  });
+
+  it("10 场景规划：钩子 / 离场变化有输入框；存档的分诊随水合回来并显示在当前场上", async () => {
+    const seeded = threeScenes();
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    window.SnowSync.triageItems = vi.fn(() => ({ at: 1, source: "workspace", items: {
+      S01: { status: "maybe", score: 55, notes: "坩埚说得太笼统", fix_steps: ["把困局写成具体的退路被断"], missing_fields: [], repair_patch: {} },
+    } }));
+    const host = await renderAt("planning");
+    const hook = host.querySelector('[data-testid="snow-plan-hook"]');
+    const exit = host.querySelector('[data-testid="snow-plan-exit-change"]');
+    expect(hook).toBeTruthy();
+    expect(exit).toBeTruthy();
+    expect(host.querySelector(".sf-triage-badge").textContent).toBe("需修补");
+    expect(host.querySelector(".sf-triage-notes").textContent).toBe("坩埚说得太笼统");
+    expect(host.querySelector(".sf-triage-fixes li").textContent).toBe("把困局写成具体的退路被断");
+
+    const setNative = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => { setNative.call(hook, "烧账本的人留下了她的名字"); hook.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(host.querySelector('[data-testid="snow-plan-hook"]').value).toBe("烧账本的人留下了她的名字");
+  });
+
+  it("略过此步：必填步不能略过（不弹理由、不打服务端）；可略过的步要一句理由并写回服务端", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("先按梗概走，人物表等第二稿");
+    const findSkip = (host) => [...host.querySelectorAll("button")].find(b => b.textContent.trim() === "略过此步");
+
+    const essential = await renderAt("logline");
+    await act(async () => findSkip(essential).click());
+    expect(prompt).not.toHaveBeenCalled();
+    expect(window.SnowSync.skipStep).not.toHaveBeenCalled();
+
+    const optional = await renderAt("characters");
+    await act(async () => findSkip(optional).click());
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(window.SnowSync.skipStep).toHaveBeenCalledWith("new-book", "characters", "先按梗概走，人物表等第二稿");
+
+    // 服务端拒绝：本地不标略过
+    window.SnowSync.skipStep.mockRejectedValueOnce(new Error("SNOWFLAKE_STEP_NOT_SKIPPABLE"));
+    const again = await renderAt("synopsis");
+    await act(async () => findSkip(again).click());
+    expect(window.SnowSync.skipStep).toHaveBeenCalledTimes(2);
+    // 取消理由框：什么都不发生
+    prompt.mockReturnValueOnce(null);
+    const cancelled = await renderAt("backstory");
+    await act(async () => findSkip(cancelled).click());
+    expect(window.SnowSync.skipStep).toHaveBeenCalledTimes(2);
+  });
+});
+

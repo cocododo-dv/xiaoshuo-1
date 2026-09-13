@@ -134,6 +134,8 @@ function canonFromFE(feKey, saved) {
         // 阶段 J：原著的几栏——在场人物（角色 id 列表）、故事时间、读者应感到
         onstage_chars_json: Array.isArray(plan.onstage) ? plan.onstage.map(txt).filter(Boolean) : [],
         story_time: txt(plan.story_time), expected_reader_emotion: txt(plan.reader_emotion),
+        // 阶段 M：钩子与离场变化——后端一直有这两列，前端此前没有输入框，文案却承诺「钩子」
+        hook: txt(plan.hook), exit_change: txt(plan.exit_change),
         // 阶段 C / I：反应场的呈现方式（full / summary / skip）。只对反应场上行；主动场服务端恒为 full。
         ...(form === "reactive" ? { rendering_mode: (plan.rendering === "summary" || plan.rendering === "skip") ? plan.rendering : "full" } : {}),
       };
@@ -224,6 +226,8 @@ function feFromCanon(feKey, draft) {
       id: s.row_uid || "S" + pad2(i + 1), type: s.primary_form === "reactive" ? "reactive" : "proactive", line: "main",
       pov: s.pov_character_id || "", place: s.location || "", event: s.summary || "", crucible: s.crucible || "", fn: s.chapter_role || "",
       spine: s.spine || "",
+      // 阶段 M：章归属只读展示（分章面板才是编辑处；章号退化值不显示）
+      chapter: (s.chapter_title && s.chapter_title !== s.chapter_id) ? s.chapter_title : "",
     })) } };
   }
   if (feKey === "planning") {
@@ -236,6 +240,7 @@ function feFromCanon(feKey, draft) {
         cost_requirement: s.cost_requirement || "",
         onstage: Array.isArray(s.onstage_chars_json) ? s.onstage_chars_json.filter(Boolean) : [],
         story_time: s.story_time || "", reader_emotion: s.expected_reader_emotion || "",
+        hook: s.hook || "", exit_change: s.exit_change || "",
         rendering: (s.rendering_mode === "summary" || s.rendering_mode === "skip") ? s.rendering_mode : "full",
       };
     });
@@ -453,6 +458,35 @@ function captureResync(workId, ws) {
   try { window.dispatchEvent(new CustomEvent("ws:snow-resync", { detail: workId })); } catch (e) {}
 }
 
+/* 阶段 M：分诊结果随工作台回包水合——以前只活在组件内存里，一刷新就没了。
+   后端条目按 scene_id 记，09 的行按 row_uid 记：用同一份工作台里的场景列表把两者对上。 */
+const snowTriage = {}; // workId -> { items: rowUid -> item, at, source }
+function captureTriage(workId, ws) {
+  if (!workId || !ws || !Array.isArray(ws.triage_items)) return;
+  const rowBySceneId = {};
+  (ws.steps || []).forEach(step => {
+    if (!step || step.step_key !== "scene_list") return;
+    ((step.draft || {}).scenes || []).forEach(s => { if (s && s.scene_id && s.row_uid) rowBySceneId[s.scene_id] = s.row_uid; });
+  });
+  const items = {};
+  ws.triage_items.forEach(it => {
+    if (!it) return;
+    const key = it.row_uid || rowBySceneId[it.scene_id] || it.scene_id;
+    if (!key) return;
+    items[key] = {
+      scene_plan_id: it.scene_plan_id || "", scene_id: it.scene_id || "", triage_id: it.triage_id || "",
+      status: (it.effective_status && it.effective_status !== "unreviewed") ? it.effective_status : (it.recommended_status || it.status || ""),
+      recommended_status: it.recommended_status || "", effective_status: it.effective_status || "",
+      score: typeof it.score === "number" ? it.score : null, notes: it.notes || "",
+      missing_fields: Array.isArray(it.missing_fields) ? it.missing_fields : [],
+      fix_steps: Array.isArray(it.fix_steps) ? it.fix_steps : [],
+      repair_patch: (it.repair_patch && typeof it.repair_patch === "object") ? it.repair_patch : {},
+      source: it.triage_source || "",
+    };
+  });
+  snowTriage[workId] = { items, at: Date.now(), source: "workspace" };
+}
+
 function captureChapterStatus(workId, ws) {
   if (!workId || !ws || !ws.chapter_plan_status) return;
   const s = ws.chapter_plan_status;
@@ -489,6 +523,7 @@ async function snowHydrate(workId, opts) {
   snowReadyFlags[workId] = !!(ws && ws.ready_to_materialize);
   captureResync(workId, ws);
   captureChapterStatus(workId, ws);
+  captureTriage(workId, ws);
   const remote = { drafts: {}, scaffolds: {}, checks: {}, states: {}, _t: 0 };
   const health = {};
   let any = false;
@@ -726,6 +761,7 @@ async function attachMaterializationGate(result, workId) {
     snowReadyFlags[workId] = !!(workspace && workspace.ready_to_materialize);
     captureResync(workId, workspace);
     captureChapterStatus(workId, workspace);
+    captureTriage(workId, workspace);
     return { ...(result || {}), materialization_gate: (workspace && workspace.materialization_gate) || null };
   } catch (error) {
     // 预览本身已经成功时，不因第二次只读检查失败而抹掉方案；最终 materialize 仍会
@@ -983,6 +1019,24 @@ const SnowSync = {
      顶部「整理为章节结构」据此决定是直接开面板还是先提示补 07 章表。 */
   chapterPlanStatus(workId) { return snowChapterStatus[workId || activeWork()] || { chapter_count: 0, unassigned_scene_count: 0, chaptered: false }; },
   /* 分章预览：只读推演，不落库。strategy = spine_anchor（默认，脊柱锚点）/ even / keep_current。 */
+  /* 阶段 M：工作台里存档的分诊（rowUid -> item），刷新后第 10 步也能看到上次的分诊。 */
+  triageItems(workId) { return snowTriage[workId || activeWork()] || null; },
+  /* 阶段 M：「略过此步」写回服务端（generate skip=true，理由必填；只有 04–08 可略过）——以前只在本地，
+     后端永远收不到，硬闸门于是静默卡住。回包刷新本步与整个工作台的健康。 */
+  async skipStep(workId, feKey, reason) {
+    const id = workId || activeWork();
+    const beKey = BE_BY_FE[feKey];
+    if (!id || !beKey) throw new Error("步骤未知，无法略过");
+    const res = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}/generate`, { skip: true, skip_reason: String(reason || "").trim() });
+    const mine = lastPushed[id] || (lastPushed[id] = {});
+    mine[feKey] = { ...(mine[feKey] || {}), state: "skip", approvalPending: false };
+    if (res && res.step) {
+      (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(res.step);
+      captureWorkspaceHealth(id, res.workspace);
+      try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+    }
+    return (snowHealth[id] || {})[feKey] || null;
+  },
   /* 阶段 K：按场景列表提议章表并落库（Ingermanson：章是列完场之后的包装决定）。已有章表时要带 replace。 */
   async chapterPropose(options, workId) {
     const id = workId || activeWork();
