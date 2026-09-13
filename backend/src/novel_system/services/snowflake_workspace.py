@@ -972,16 +972,36 @@ class SnowflakeWorkspaceService:
         }
 
     def _protagonist_hint(self, project_id: str) -> dict[str, str] | None:
-        """角色摘要表里定位为主角的人（第一个）；没有就返回 None，简报不带这两个键。"""
+        """全书主角：04 角色摘要表显式指定的 ``protagonist_character_id`` 优先（双主角作品由作者定），
+        否则取定位为主角的第一人；都没有返回 None，简报不带这两个键。"""
         rows = self.session.execute(
             select(SnowflakeCharacterPlan)
             .where(SnowflakeCharacterPlan.project_id == project_id)
             .order_by(SnowflakeCharacterPlan.created_at.asc(), SnowflakeCharacterPlan.character_id.asc())
         ).scalars().all()
+        explicit = self._explicit_protagonist_id(project_id)
+        if explicit:
+            for row in rows:
+                if row.character_id == explicit:
+                    return {"character_id": row.character_id, "display_name": row.display_name}
         for row in rows:
             if _is_protagonist_role(row.role):
                 return {"character_id": row.character_id, "display_name": row.display_name}
         return None
+
+    def _explicit_protagonist_id(self, project_id: str) -> str:
+        run = self.session.execute(
+            select(SnowflakeStepRun)
+            .where(
+                SnowflakeStepRun.project_id == project_id,
+                SnowflakeStepRun.step_key == "character_sheets",
+                SnowflakeStepRun.status != "superseded",
+            )
+            .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
+        ).scalars().first()
+        if run is None:
+            return ""
+        return str((run.draft_json or {}).get("protagonist_character_id") or "").strip()
 
     def approve_outline(self, project_id: str) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -1028,6 +1048,7 @@ class SnowflakeWorkspaceService:
         results: list[dict[str, Any]] = []
         affected_scene_ids: list[str] = []
         pending_moves: list[dict[str, Any]] = []
+        touched_chapter_ids: set[str] = set()
         for plan in plans:
             scene = self.session.get(SceneCard, plan.scene_id)
             if scene is None or scene.project_id != project.project_id:
@@ -1041,7 +1062,7 @@ class SnowflakeWorkspaceService:
                     }
                 )
                 continue
-            chapter = self.session.get(ChapterGoal, scene.chapter_id)
+            source_chapter_id = str(scene.chapter_id or "")
             scene_patch = self._scene_card_resync_patch(plan, scene)
             blocked_move = self._unmaterialized_chapter_move(project.project_id, scene, scene_patch)
             if blocked_move:
@@ -1057,6 +1078,10 @@ class SnowflakeWorkspaceService:
                 affected_scene_ids.append(scene.scene_id)
             if not dry_run and diff:
                 self._apply_scene_card_resync(scene, scene_patch)
+                # 阶段 L：章目标写到场**搬进去之后**所在的章（以前先取旧章再搬，跨章移动会把目标章的
+                # 章目标盖到旧章上）；两头的章都记下，最后重算 is_chapter_last。
+                touched_chapter_ids.update({source_chapter_id, str(scene.chapter_id or "")})
+                chapter = self.session.get(ChapterGoal, scene.chapter_id)
                 if chapter is not None:
                     chapter.writer_brief_json = {
                         **dict(chapter.writer_brief_json or {}),
@@ -1093,6 +1118,9 @@ class SnowflakeWorkspaceService:
                 entry["blocked_chapter_move"] = blocked_move
                 pending_moves.append({"scene_id": scene.scene_id, **blocked_move})
             results.append(entry)
+        if not dry_run and touched_chapter_ids:
+            self.session.flush()
+            self._recompute_chapter_last(project.project_id, touched_chapter_ids)
 
         if not dry_run:
             self.session.flush()
@@ -1406,6 +1434,23 @@ class SnowflakeWorkspaceService:
             "pending_scene_plan_ids": [item["scene_plan_id"] for item in pending],
             "pending_scenes": pending,
         }
+
+    def _recompute_chapter_last(self, project_id: str, chapter_ids: set[str]) -> None:
+        """回流搬过场之后重算每章的章末标记（scene_criticality 把章末当高潮位）——物化时算过一次，
+        搬动后旧章的末场变了、新章的末场也变了，以前都没有重算。"""
+        for chapter_id in sorted(cid for cid in chapter_ids if cid):
+            cards = self.session.execute(
+                select(SceneCard).where(
+                    SceneCard.project_id == project_id,
+                    SceneCard.chapter_id == chapter_id,
+                    SceneCard.trashed_flag == 0,
+                )
+            ).scalars().all()
+            if not cards:
+                continue
+            last = max(cards, key=lambda card: (int(card.scene_seq or 0), str(card.scene_id)))
+            for card in cards:
+                card.is_chapter_last = 1 if card is last else 0
 
     @staticmethod
     def _scene_card_resync_patch(plan: SnowflakeScenePlan, scene: SceneCard) -> dict[str, Any]:

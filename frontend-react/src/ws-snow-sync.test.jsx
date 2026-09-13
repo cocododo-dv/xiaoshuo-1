@@ -365,6 +365,21 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(hydrated.scaffold.plans.S02).toEqual(expect.objectContaining({ onstage: [], story_time: "", reader_emotion: "" }));
   });
 
+  it("阶段 L：04 的全书主角往返保真；旧缓存没有这个键时不上行", async () => {
+    const { mod } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, steps: [] } });
+    const withPick = { drafts: {}, checks: {}, states: {}, scaffolds: { characters: { sel: "c1", protagonist: "c2", chars: {
+      c1: { name: "甲", role: "主角", goal: "x", values: "" }, c2: { name: "乙", role: "主角", goal: "y", values: "" },
+    } } } };
+    expect(mod.canonFromFE("characters", withPick).protagonist_character_id).toBe("c2");
+    const legacy = { drafts: {}, checks: {}, states: {}, scaffolds: { characters: { sel: "c1", chars: { c1: { name: "甲", role: "主角", goal: "x", values: "" } } } } };
+    expect(mod.canonFromFE("characters", legacy)).not.toHaveProperty("protagonist_character_id");
+    const hydrated = mod.feFromCanon("characters", { protagonist_character_id: "c2", characters: [
+      { character_id: "c1", display_name: "甲", role: "主角" }, { character_id: "c2", display_name: "乙", role: "主角" },
+    ] });
+    expect(hydrated.scaffold.protagonist).toBe("c2");
+    expect(mod.feFromCanon("profile", { characters: [{ character_id: "c1", display_name: "甲" }] }).scaffold).not.toHaveProperty("protagonist");
+  });
+
   it("feFromCanon backstory：前缀行拆回六字段，无前缀散文整段进「视角故事」", async () => {
     const { mod } = await loadSync({});
     const withPrefix = mod.feFromCanon("backstory", { characters: [{

@@ -2012,6 +2012,14 @@ function S2CharSheet({ scaffold, onScaffold, ai }) {
         })}
         <button className="sf-char-add" onClick={addChar} title="添加角色（06/08 名册同步继承）"><I.Plus size={15} /></button>
       </div>
+      {/* 阶段 L：全书主角——每一场的挫折 / 胜利以此人衡量；双主角时由作者定，不再猜「第一个主角」 */}
+      <label className="sf-field is-short sf-char-protagonist" data-testid="snow-protagonist">
+        <span className="sf-field-label">全书主角<span className="sf-field-hint">每场的挫折以此人衡量；双主角时选结局归属的那一个</span></span>
+        <select className="sf-field-input" value={scaffold.protagonist || ""} onChange={(e) => onScaffold(s => ({ ...s, protagonist: e.target.value }))}>
+          <option value="">（按定位自动：第一个「主角」）</option>
+          {ids.map(id => <option key={id} value={id}>{(scaffold.chars[id] || {}).name || id}</option>)}
+        </select>
+      </label>
       <div className="sf-chardeep-head">
         <input className="sf-chardeep-name" value={ch.name || ""} placeholder="角色名"
           onChange={(e) => onScaffold(s => ({ ...s, chars: { ...s.chars, [sel]: { ...s.chars[sel], name: e.target.value } } }))} />

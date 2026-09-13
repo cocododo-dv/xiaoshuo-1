@@ -260,7 +260,7 @@ def test_guidance_and_prompts_drop_mechanical_alternation() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     scene_list = templates["snowflake_generate_scene_list"]
-    assert scene_list["version"] == "2026-09-13.v8"
+    assert scene_list["version"] == "2026-09-14.v9"
     assert "Alternate proactive and reactive deliberately" not in scene_list["task_prompt"]
     assert "Reactive scenes should be a minority" in scene_list["task_prompt"]
     scene_details = templates["snowflake_generate_scene_details"]
@@ -587,7 +587,7 @@ def test_phase_d_prompt_versions_and_contracts() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     sheets = templates["snowflake_generate_character_sheets"]
-    assert sheets["version"] == "2026-09-13.v5"
+    assert sheets["version"] == "2026-09-14.v6"
     assert "没有什么比___更重要" in sheets["task_prompt"] and "in tension" in sheets["task_prompt"]
     assert "one_sentence_summary (this character's own storyline" in sheets["task_prompt"]
 
@@ -602,7 +602,7 @@ def test_phase_d_prompt_versions_and_contracts() -> None:
     assert "`chapters` is the source of truth for chapter membership" in outline["task_prompt"]
 
     scene_list = templates["snowflake_generate_scene_list"]
-    assert scene_list["version"] == "2026-09-13.v8"
+    assert scene_list["version"] == "2026-09-14.v9"
     assert "long_synopsis.paragraphs are five page-length expansions" in scene_list["task_prompt"]
     assert "视角故事" in scene_list["task_prompt"]
 

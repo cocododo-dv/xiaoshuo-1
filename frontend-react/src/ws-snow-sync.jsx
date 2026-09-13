@@ -62,7 +62,10 @@ function canonFromFE(feKey, saved) {
     };
   }
   if (feKey === "characters") {
-    return { characters: Object.entries(sc.chars || {}).map(([id, c]) => ({
+    return {
+      // 阶段 L：全书主角（挫折以此人衡量）——旧缓存没有这个键时不上行，不清服务端 / AI 给的值
+      ...(sc.protagonist != null ? { protagonist_character_id: txt(sc.protagonist) } : {}),
+      characters: Object.entries(sc.chars || {}).map(([id, c]) => ({
       character_id: id, display_name: txt(c.name), role: txt(c.role), goal: txt(c.goal),
       ambition: txt(c.ambition), values: valuesToCanon(c.values), conflict: txt(c.conflict), epiphany: txt(c.epiphany),
       // 阶段 D：每个角色自己的一句话 / 一段话故事线（书里角色表的两栏）。旧缓存没有这两个键时不上行——
@@ -186,7 +189,8 @@ function feFromCanon(feKey, draft) {
       }
     });
     const sel = Object.keys(chars)[0] || "c1";
-    return { scaffold: { sel, chars } };
+    // 阶段 L：04 的全书主角随名册一起水合（06 / 08 没有这个键）
+    return { scaffold: { sel, chars, ...(feKey === "characters" ? { protagonist: d.protagonist_character_id || "" } : {}) } };
   }
   if (feKey === "synopsis") {
     const p = d.paragraphs || [];

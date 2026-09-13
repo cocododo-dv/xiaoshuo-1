@@ -194,7 +194,7 @@ def test_prompts_say_leave_empty_do_not_invent() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     expectations = {
-        "snowflake_generate_character_sheets": ("2026-09-13.v5", "an honest empty key is not"),
+        "snowflake_generate_character_sheets": ("2026-09-14.v6", "an honest empty key is not"),
         "snowflake_generate_character_synopses": ("2026-09-13.v5", "stays empty after its prefix"),
         "snowflake_generate_character_bibles": ("2026-09-13.v4", "an honest empty field is not"),
         "snowflake_generate_scene_details": ("2026-09-14.v12", "an honest empty one is not"),

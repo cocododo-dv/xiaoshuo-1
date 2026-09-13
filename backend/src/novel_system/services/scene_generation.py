@@ -3931,6 +3931,13 @@ _STYLE_FIRST_LENGTH_SLACK_DEFAULT = 0.5
 def _style_first_length_slack(bundle: Mapping[str, Any] | None) -> float:
     if not is_style_bound(bundle):
         return 0.0
+    # 阶段 L：「概述两段」的反应场是作者的呈现决定（200–500 字），风格直起也不把它放宽成整场。
+    try:
+        structure = str(((bundle or {}).get("inline_digests") or {}).get("scene_structure_brief") or "")
+    except AttributeError:
+        structure = ""
+    if "Rendering mode: summary" in structure:
+        return 0.0
     try:
         budget = load_yaml_config("injection_budget")
     except FileNotFoundError:

@@ -1548,7 +1548,8 @@ templates:
     # one_sentence_summary / one_paragraph_summary 是这个角色自己的一句话 / 一段话故事线（书里角色表的两栏）。
     # 阶段 H v5：留白即合法——只有主角与对手要填满；反派常常没有顿悟、配角常常没有故事线，留空不是缺陷，
     # 编造才是（原著的 Goldilocks 角色表满是「尚未定义」）。
-    version: "2026-09-13.v5"
+    # 阶段 L v6：protagonist_character_id——全书主角（挫折以此人衡量），双主角时选故事最终归属的那一个。
+    version: "2026-09-14.v6"
     input_token_budget: 24000
     system_prompt: |
       You are outlining major character pressure inside a snowflake-method workspace.
@@ -1557,6 +1558,7 @@ templates:
     task_prompt: |
       Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
       Each character object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: character_id (reuse the id from upstream_steps or current_draft when the character already exists; leave "" for a brand-new character and the server assigns one), display_name, role (主角/对手/盟友/镜像 in the input language), goal (concrete, scene-actionable desire), ambition (the deeper abstract want behind the goal), values (array of 2-3 value statements, each phrased exactly as "没有什么比___更重要" — the blank filled with what this character will sacrifice everything else for; the statements must be in tension with each other, and the protagonist's and the antagonist's statements must collide), conflict (who or what blocks the goal, and why that opposition cannot be waved away — the belief this character must risk belongs here), epiphany (what changes and what concrete event triggers it), one_sentence_summary (this character's own storyline in one sentence: what they want, who blocks it, what it costs — the character is the lead of that sentence), one_paragraph_summary (that storyline expanded to one paragraph: how they enter the story, how each of the three disasters lands on them, how their story ends, and what kind of scenes their pressure can generate).
+      Also return protagonist_character_id: the character_id of the book's protagonist — the person every scene's Setback and Victory are measured against (Ingermanson: "everything in your story is measured by your protagonist"); with co-leads pick the one whose story the ending resolves. Reuse the id from the characters array.
       Fill the protagonist and the antagonist completely. For every other character fill only what the story actually gives them: a villain often has no epiphany, a mentor or a minor character may have no storyline or only one value — leave such keys as "" rather than inventing content to complete the form (the method's own sheets read "no epiphany defined yet"). A fabricated value statement, epiphany or storyline is a defect; an honest empty key is not. Keep characters distinct: if two characters share the same goal/conflict shape, sharpen one until the overlap is gone.
     structured_schema:
       type: object
@@ -1564,6 +1566,8 @@ templates:
       required:
         - characters
       properties:
+        protagonist_character_id:
+          type: string
         characters:
           type: array
           items:
@@ -1684,7 +1688,8 @@ templates:
   snowflake_generate_scene_list:
     # 2026-09-13 阶段 B v7：不再要求主动 / 反应机械交替——一场挫折后三选一（换 POV 线 / 直接下一场主动 / 下一目标不明显时才写反应场），反应场是少数。
     # 阶段 D v8：长篇大纲的五段展开（long_synopsis.paragraphs）是拆场的素材，章表只定章归属；角色表的故事线与视角故事给每条 POV 线提供压力。
-    version: "2026-09-13.v8"
+    # 阶段 L v9：重生成时保留还留着的场的 row_uid / scene_id（第 10 步的三拍才不会挂到别的场上）；只有全新的场留空。
+    version: "2026-09-14.v9"
     input_token_budget: 24000
     system_prompt: |
       You are breaking a snowflake synopsis into a scene list.
@@ -1695,7 +1700,7 @@ templates:
     task_prompt: |
       Return the scene list as structured scene cards covering the whole story spine. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
       Every pov_character_id must be a character id that already exists in upstream_steps (the cast sheets / character bibles). Every scene must be traceable to a beat of the one-paragraph summary or the long outline — do not introduce people or events that appear nowhere upstream.
-      Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the established cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束), spine ("灾一"/"灾二"/"灾三" on the three disaster scenes, "" on every other scene — the chaptering step anchors these against the same marks on the chapter table, so marking them correctly is what keeps the disasters on the act boundaries). Leave row_uid/scene_id/chapter_id/chapter_title/chapter_goal as "" — the server assigns identities, and chapter membership is decided by the author in the chaptering step, not here.
+      Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the established cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束), spine ("灾一"/"灾二"/"灾三" on the three disaster scenes, "" on every other scene — the chaptering step anchors these against the same marks on the chapter table, so marking them correctly is what keeps the disasters on the act boundaries). Identity: when current_draft already lists scenes, every scene you keep — even one whose summary you rewrite — must echo that scene's row_uid and scene_id unchanged (the planning step's beats hang on them); leave row_uid and scene_id "" only for a genuinely new scene, and drop a scene by omitting it. Leave chapter_id/chapter_title/chapter_goal as "" — chapter membership is decided by the author in the chaptering step, not here.
       Break the story from the long synopsis: upstream_steps long_synopsis.paragraphs are five page-length expansions (setup, disaster one, disaster two, disaster three, ending) — every scene must be traceable to a passage in one of them, and the chapters table there only says which chapter a passage belongs to. Use each character's storyline (one_sentence_summary / one_paragraph_summary on the character sheets) and their 视角故事 line in the character synopses to give each POV thread its own pressure rather than repeating the protagonist's.
       Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Do not alternate proactive and reactive mechanically: every scene needs conflict, but after a setback the story has three options — cut to another POV thread, launch the next proactive scene straight from an obvious next goal, or write a reactive scene only when the next goal is genuinely not obvious and the character must feel the setback and choose. Reactive scenes should be a minority unless the book's pacing is deliberately leisurely; a reactive beat that fits in two paragraphs of summary does not need its own scene. Mark the three disaster scenes in chapter_role.
       If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, break the story at that author's scale: as many scenes per chapter, and scenes as long, as that author writes; open and close the way that author opens and closes chapters; keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.

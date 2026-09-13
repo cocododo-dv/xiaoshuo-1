@@ -116,10 +116,13 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
         "english_label": "Character Sheets",
         "phase": "雪花第3步",
         "description": "为每个重要角色创建基础档案。优秀小说由立体角色驱动——角色的价值观冲突产生了你所有的场景冲突。",
-        "default_draft": {"characters": []},
+        # 阶段 L：protagonist_character_id——全书主角（挫折以此人衡量）；双主角作品由作者显式指定，
+        # 缺席时退回「第一个定位为主角的人」。
+        "default_draft": {"characters": [], "protagonist_character_id": ""},
         "editor": {
             "kind": "form",
             "fields": [
+                {"key": "protagonist_character_id", "kind": "text", "label": "全书主角", "optional": True},
                 {
                     "key": "characters",
                     "kind": "characters",
