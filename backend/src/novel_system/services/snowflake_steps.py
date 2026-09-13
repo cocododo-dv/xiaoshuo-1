@@ -7,7 +7,9 @@ from typing import Any
 SNOWFLAKE_METHOD_VERSION = "2026-04-29.v2"
 # 2026-09-13 阶段 C：反应场的呈现方式。full = 整场戏剧化；summary = 两段概述（约 200–500 字）。
 # Ingermanson：反应场可以整场写、缩成概述、或略过——第一版做前两档；主动场恒为 full。
-RENDERING_MODES: tuple[str, ...] = ("full", "summary")
+# 阶段 C：full（整场戏剧化）/ summary（两段概述）；阶段 I 补上原著的第三个选项 skip（页面上略过，
+# 直接进下一场主动场景——反应 / 两难 / 决定照样写，它们决定下一场的目标，也进下一场的设计上下文）。
+RENDERING_MODES: tuple[str, ...] = ("full", "summary", "skip")
 # summary 场物化时拿到的数值篇幅带：起草 / 长度补丁按数值带硬约束，而不是靠「short」这种提示。
 SUMMARY_LENGTH_BAND = "200-500"
 # 阶段 D：第 6 步的分形——一页梗概的五段各扩成约一页，恰好五段。
@@ -422,10 +424,11 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "key": "rendering_mode",
                                     "kind": "select",
                                     "label": "呈现方式",
-                                    "hint": "整场戏剧化，还是两段概述？Ingermanson：反应场是少数，可以缩成两段概述（约 200–500 字）",
+                                    "hint": "整场戏剧化、两段概述，还是页面上略过？Ingermanson：反应场是少数，可以缩成两段概述（约 200–500 字），也可以干脆略过——三拍照样写，它们决定下一场",
                                     "options": [
                                         {"value": "full", "label": "完整场"},
                                         {"value": "summary", "label": "概述两段"},
+                                        {"value": "skip", "label": "略过（不落页）"},
                                     ],
                                 },
                             ],

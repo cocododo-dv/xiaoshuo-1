@@ -388,7 +388,15 @@ def _neighbour_lines(
         pov = names.get(_text(previous.pov_character_id)) or _text(previous.pov_character_id)
         head = f"Previous scene (S{int(previous.scene_seq or 0):02d}"
         head += f", POV {pov})" if pov else ")"
-        if _text(previous.scene_type) == "reactive" and _text(previous.decision):
+        if _is_skipped(previous):
+            # 阶段 I：页面上略过的反应场——读者没看到它，写手却要知道它：三拍整段带过来。
+            beats = "; ".join(
+                f"{label}: {_text(getattr(previous, key))}"
+                for key, label in (("reaction", "Reaction"), ("dilemma", "Dilemma"), ("decision", "Decision"))
+                if _text(getattr(previous, key))
+            )
+            previous_line = f"{head} is skipped on the page (the reader never sees it); its designed beat — {beats or _text(previous.summary)}"
+        elif _text(previous.scene_type) == "reactive" and _text(previous.decision):
             previous_line = f"{head} ended on Decision: {_text(previous.decision)}"
         elif _text(previous.setback):
             previous_line = f"{head} ended on Setback: {_text(previous.setback)}"
@@ -397,6 +405,8 @@ def _neighbour_lines(
     next_line = None
     if following is not None:
         head = f"Next scene (S{int(following.scene_seq or 0):02d})"
+        if _is_skipped(following):
+            head += " is skipped on the page; it"
         if _text(following.scene_type) == "reactive" and _text(following.reaction):
             next_line = f"{head} opens on Reaction: {_text(following.reaction)}"
         elif _text(following.goal):
@@ -404,6 +414,10 @@ def _neighbour_lines(
         elif _text(following.summary):
             next_line = f"{head}: {_text(following.summary)}"
     return previous_line, next_line
+
+
+def _is_skipped(plan: SnowflakeScenePlan) -> bool:
+    return _text(plan.scene_type) == "reactive" and _text(plan.rendering_mode).lower() == "skip"
 
 
 def _as_list(value: Any) -> list[Any]:

@@ -2693,7 +2693,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
     ? [
         { f: "goal",     label: "目标 · Goal",     desc: "POV 角色进入这场时想要的、具体可达的东西" },
         { f: "conflict", label: "冲突 · Conflict", desc: "一连串挡在目标前的阻碍，逐级升级" },
-        { f: "setback",  label: "挫败 · Setback",  desc: "结尾给一记打击——通常是「是的，但…」" },
+        { f: "setback",  label: "挫败 · Setback",  desc: "结尾给一记打击——通常是「是的，但…」；非赢不可时写带代价的胜利，以主角衡量" },
         { f: "cost_requirement", label: "代价 · Cost", desc: "角色为这个结果具体付出了什么——免费的选择 = 注水" },
       ]
     : [
@@ -2701,6 +2701,18 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
         { f: "dilemma",  label: "两难 · Dilemma",  desc: "没有好选项，只有两个坏选项" },
         { f: "decision", label: "决定 · Decision", desc: "她选一个坏选项——它成为下一场的目标" },
         { f: "cost_requirement", label: "代价 · Cost", desc: "角色为这个决定具体付出了什么——免费的选择 = 注水" },
+      ];
+  const [secondaryOpen, setSecondaryOpen] = useSS(false);
+  const secondaryTriples = proactive
+    ? [
+        { f: "reaction", label: "反应 · Reaction", desc: "挫败之后当场的情绪反应" },
+        { f: "dilemma",  label: "两难 · Dilemma",  desc: "当场权衡的两个坏选项" },
+        { f: "decision", label: "决定 · Decision", desc: "当场选定的下一步——本场以它收尾" },
+      ]
+    : [
+        { f: "goal",     label: "目标 · Goal",     desc: "决定之后立刻去做的事" },
+        { f: "conflict", label: "冲突 · Conflict", desc: "当场遇到的阻碍" },
+        { f: "setback",  label: "挫败 · Setback",  desc: "当场的打击——本场以它收尾" },
       ];
   return (
     <div className="sf-scaffold sf-scene">
@@ -2743,7 +2755,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
               <button key={s.id}
                 className={`sf-plan-cell st-${st} ${s.id === selId ? "is-sel" : ""} ${s.type === "reactive" ? "is-rea" : "is-pro"} ${s.spine ? "is-spine" : ""} ${tri ? "tri-" + tri.status : ""}`}
                 onClick={() => selScene(s.id)}
-                title={`${s2SceneNo(s.id, i)} · ${s.type === "reactive" ? "反应" : "主动"}${s.type === "reactive" && (plans[s.id] || {}).rendering === "summary" ? " · 概述" : ""}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
+                title={`${s2SceneNo(s.id, i)} · ${s.type === "reactive" ? "反应" : "主动"}${s.type === "reactive" && (plans[s.id] || {}).rendering === "summary" ? " · 概述" : s.type === "reactive" && (plans[s.id] || {}).rendering === "skip" ? " · 略过" : ""}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
                 {i + 1}
               </button>
             );
@@ -2770,8 +2782,9 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
         {!proactive && (
           <span className="sf-plan-render" title="整场戏剧化，还是两段概述（约 200–500 字）？概述场物化后拿到 200-500 的篇幅带，起草按概述写">
             <span className="sf-field-label">呈现</span>
-            <button type="button" className={`sf-plan-render-opt ${plan.rendering !== "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
+            <button type="button" className={`sf-plan-render-opt ${(plan.rendering !== "summary" && plan.rendering !== "skip") ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
             <button type="button" className={`sf-plan-render-opt ${plan.rendering === "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "summary")}>概述两段</button>
+            <button type="button" className={`sf-plan-render-opt ${plan.rendering === "skip" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "skip")} title="页面上略过这一场，直接进下一场主动场景——反应 / 两难 / 决定照样写，它们决定下一场的目标，也会带给下一场的写手">略过</button>
           </span>
         )}
         {ai && (
@@ -2825,6 +2838,23 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           </div>
         ))}
       </div>
+
+      {/* 阶段 I：一场可以接着另一组三拍（原著 Goldilocks 场景 1 / 8 / 13）——主三拍之后接着发生，本场以最后一拍收尾。可选。 */}
+      <details className="sf-plan-secondary" data-testid="snow-plan-secondary" open={secondaryOpen || secondaryTriples.some(t => (plan[t.f] || "").trim())} onToggle={(e) => setSecondaryOpen(!!e.target.open)}>
+        <summary className="text-muted text-sm">接着的次要三拍（可选）——{proactive ? "挫败之后在同一场里反应、两难、决定" : "决定之后在同一场里立刻行动、受阻、挫败"}</summary>
+        <div className="sf-gcs">
+          {secondaryTriples.map((t, i) => (
+            <div key={t.f} className={`sf-beat ${proactive ? "tone-slate" : "tone-crimson"}`}>
+              <div className="sf-beat-side"><span className="sf-beat-idx">{triples.length + i + 1}</span></div>
+              <div className="sf-beat-main">
+                <div className="sf-beat-label">{t.label}<span className="sf-beat-desc">{t.desc}</span></div>
+                <textarea className="sf-beat-text" rows={2} value={plan[t.f] || ""}
+                  onChange={(e) => setPlan(t.f, e.target.value)} placeholder={`写「${t.label.split(" · ")[0]}」…（留空 = 本场没有这一拍）`} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </details>
 
       <div className="sf-plan-foot">
         <button className="btn btn-ghost btn-sm" disabled={selIdx <= 0} onClick={() => selScene(list[selIdx - 1].id)}><I.ChevronLeft size={13} /> {selIdx > 0 ? s2SceneNo(list[selIdx - 1].id, selIdx - 1) : "上一场"}</button>

@@ -873,7 +873,12 @@ class SnowflakeWorkspaceService:
 
         chapter_payloads: list[dict[str, Any]] = []
         for index, chapter in enumerate(chapters, start=1):
-            members = sorted(grouped[chapter.chapter_plan_id], key=lambda item: (item.scene_seq, item.scene_id))
+            # 阶段 I：页面上略过的反应场不物化——没有正文要写；它的三拍经下一场的设计上下文到达写手。
+            members = [
+                item
+                for item in sorted(grouped[chapter.chapter_plan_id], key=lambda item: (item.scene_seq, item.scene_id))
+                if _effective_rendering_mode(item.scene_type, item.rendering_mode) != "skip"
+            ]
             if not members:
                 continue  # 空章不落库：预览里已经就此告警过，作者选择保留就是不要它
             chapter_id = chapter_target_id(project.project_id, index)
@@ -1403,6 +1408,7 @@ class SnowflakeWorkspaceService:
     def _scene_card_resync_patch(plan: SnowflakeScenePlan, scene: SceneCard) -> dict[str, Any]:
         # 阶段 C：呈现方式与篇幅带同物化一个口径——summary 反应场回流也拿数值带。
         rendering_mode = _effective_rendering_mode(plan.scene_type, plan.rendering_mode)
+        skipped = rendering_mode == "skip"
         if rendering_mode == "summary":
             target_length_band = SUMMARY_LENGTH_BAND
         else:
@@ -1429,12 +1435,21 @@ class SnowflakeWorkspaceService:
             "primary_form": plan.scene_type,
             "rendering_mode": rendering_mode,
             "timebox": target_length_band or "medium",
+            # 阶段 I：规划里改成「略过」的已物化场，回流把场景卡送进回收站（可恢复）；改回来时再取回。
+            # 作者自己扔进回收站的卡不带这个标记，回流不碰它。
+            "skipped_by_plan": skipped,
         }
         # 与物化同一配方（_scene_card_beats）：两个写入方各算一套，刚物化完的每一场
         # 都会因 beats_json 不同被报成「待同步」，横幅在物化当刻就喊 N 场。
         detail = _scene_plan_payload(plan)
         beats = _scene_card_beats(str(detail.get("scene_type") or "proactive"), detail)
+        trash_patch: dict[str, Any] = {}
+        if skipped:
+            trash_patch["trashed_flag"] = 1
+        elif int(scene.trashed_flag or 0) and bool((scene.writer_brief_json or {}).get("skipped_by_plan")):
+            trash_patch["trashed_flag"] = 0
         return {
+            **trash_patch,
             "scene_goal": plan.summary or plan.goal or scene.scene_goal,
             "beats_json": beats or list(scene.beats_json or []),
             "must_include_text": plan.must_include_text or scene.must_include_text,

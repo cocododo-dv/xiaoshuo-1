@@ -116,11 +116,13 @@ def test_only_reactive_scenes_keep_a_summary_rendering_mode(session) -> None:
 
 
 def test_effective_rendering_mode_and_seed_defaults() -> None:
-    assert RENDERING_MODES == ("full", "summary")
+    assert RENDERING_MODES == ("full", "summary", "skip")
     assert _effective_rendering_mode("reactive", "summary") == "summary"
     assert _effective_rendering_mode("reactive", "SUMMARY ") == "summary"
     assert _effective_rendering_mode("proactive", "summary") == "full"
-    assert _effective_rendering_mode("reactive", "skip") == "full"
+    assert _effective_rendering_mode("reactive", "skip") == "skip"  # 阶段 I：原著的第三个选项
+    assert _effective_rendering_mode("proactive", "skip") == "full"
+    assert _effective_rendering_mode("reactive", "bogus") == "full"
     assert _scene_detail_seed({"summary": "x", "primary_form": "reactive"}, 1)["rendering_mode"] == "full"
 
 
@@ -261,8 +263,8 @@ def test_prompts_know_the_summary_rendering_mode() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-13.v10"
+    assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-13.v11"
     assert "rendering_mode (reactive scenes only" in templates["snowflake_generate_scene_details"]["task_prompt"]
-    for name, version in (("neutral_draft", "2026-09-13.v9"), ("style_first_draft", "2026-09-13.v4"), ("scene_blueprint", "2026-09-13.v7")):
+    for name, version in (("neutral_draft", "2026-09-13.v10"), ("style_first_draft", "2026-09-13.v5"), ("scene_blueprint", "2026-09-13.v8")):
         assert templates[name]["version"] == version, name
         assert "Rendering mode: summary" in templates[name]["task_prompt"], name

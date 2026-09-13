@@ -418,10 +418,10 @@ def test_prompt_templates_teach_both_scene_forms() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     expectations = {
-        "neutral_draft": ("2026-09-13.v9", "never on a clean win the section did not plan"),
-        "style_first_draft": ("2026-09-13.v4", "may not skip the Decision"),
-        "scene_blueprint": ("2026-09-13.v7", "derive the proposal from it instead of re-inventing the scene"),
-        "hard_qc": ("2026-09-13.v4", "its facts are bundle facts"),
+        "neutral_draft": ("2026-09-13.v10", "never on a clean win the section did not plan"),
+        "style_first_draft": ("2026-09-13.v5", "may not skip the Decision"),
+        "scene_blueprint": ("2026-09-13.v8", "derive the proposal from it instead of re-inventing the scene"),
+        "hard_qc": ("2026-09-13.v5", "its facts are bundle facts"),
         "soft_qc": ("2026-09-13.v6", 'issue_key "scene_shape"'),
         "near_final_acceptance_review": ("2026-09-13.v6", "the scene crucible is identifiable in the prose"),
     }

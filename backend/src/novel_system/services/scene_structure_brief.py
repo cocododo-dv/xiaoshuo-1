@@ -173,7 +173,11 @@ def render_scene_structure_brief(scene: SceneCard, session: Session | None = Non
         )
     follow_up = [f"{_BEAT_LABELS[key]}: {_text(brief.get(key))}" for key in secondary if _text(brief.get(key))]
     if follow_up:
-        lines.append("Follow-up beats (secondary form, keep them subordinate): " + "; ".join(follow_up))
+        # 阶段 I：一场接着另一组三拍（原著自己的场景 1 / 8 / 13 就是这样）——它们在主三拍之后发生，
+        # 这一场以最后一个次要拍收尾，硬 QC 核验「结尾达成什么」时看的是它。
+        lines.append("Follow-up beats (after the primary trio, in this order): " + "; ".join(follow_up))
+        last_key = [key for key in secondary if _text(brief.get(key))][-1]
+        lines.append(f"Scene ends on: {_BEAT_LABELS[last_key]} (the last follow-up beat)")
     return "\n".join(lines)
 
 

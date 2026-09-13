@@ -197,7 +197,7 @@ def test_prompts_say_leave_empty_do_not_invent() -> None:
         "snowflake_generate_character_sheets": ("2026-09-13.v5", "an honest empty key is not"),
         "snowflake_generate_character_synopses": ("2026-09-13.v5", "stays empty after its prefix"),
         "snowflake_generate_character_bibles": ("2026-09-13.v4", "an honest empty field is not"),
-        "snowflake_generate_scene_details": ("2026-09-13.v10", "an honest empty one is not"),
+        "snowflake_generate_scene_details": ("2026-09-13.v11", "an honest empty one is not"),
     }
     for name, (version, phrase) in expectations.items():
         template = templates[name]

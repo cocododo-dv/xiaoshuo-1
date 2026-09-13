@@ -556,14 +556,14 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["style_first_draft"]["version"] == "2026-09-13.v4"
+    assert templates["style_first_draft"]["version"] == "2026-09-13.v5"
     assert templates["style_first_draft"]["input_token_budget"] == 64000
     assert "The bundle decides what happens" in templates["style_first_draft"]["system_prompt"]
     assert "the author's manner wins and the fact of the field stays" in templates["style_first_draft"]["task_prompt"]
     assert templates["style_draft"]["version"] == "2026-09-12.v10"
     assert "First Draft already in the reference author's hand" in templates["style_draft"]["task_prompt"]
     assert "Never wash the voice back toward a neutral register" in templates["style_draft"]["task_prompt"]
-    assert templates["hard_qc"]["version"] == "2026-09-13.v4"
+    assert templates["hard_qc"]["version"] == "2026-09-13.v5"
     assert "never a hard violation" in templates["hard_qc"]["task_prompt"]
     assert "restate paragraph 3" not in templates["hard_qc"]["task_prompt"]
     assert templates["soft_qc"]["version"] == "2026-09-13.v6"

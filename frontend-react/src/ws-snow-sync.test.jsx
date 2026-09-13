@@ -303,6 +303,38 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(hydrated.scaffold.plans.S03.rendering).toBe("full");
   });
 
+  it("阶段 I：反应场的第三档 skip 与次要三拍往返保真", async () => {
+    const { mod } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, steps: [] } });
+    const saved = {
+      drafts: {}, checks: {}, states: {},
+      scaffolds: {
+        scenes: { lines: [], list: [
+          { id: "S01", type: "proactive", pov: "c1", place: "码头", event: "取账本", crucible: "退不出的困局", fn: "起疑", spine: "" },
+          { id: "S02", type: "reactive", pov: "c1", place: "旅馆", event: "消化挫败", crucible: "无人可信", fn: "转向", spine: "" },
+        ] },
+        planning: { sel: "S01", plans: {
+          // 主动场接着次要三拍（原著场景 1）：反应 / 两难 / 决定一起上行
+          S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧", reaction: "她蹲在码头发抖", dilemma: "报警或沉默", decision: "去找证人", rendering: "skip" },
+          S02: { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人", rendering: "skip" },
+        } },
+      },
+    };
+    const canon = mod.canonFromFE("planning", saved);
+    expect(canon.scenes[0]).not.toHaveProperty("rendering_mode"); // 主动场不上行呈现方式
+    expect(canon.scenes[0]).toEqual(expect.objectContaining({ reaction: "她蹲在码头发抖", dilemma: "报警或沉默", decision: "去找证人" }));
+    expect(canon.scenes[1].rendering_mode).toBe("skip");
+
+    const hydrated = mod.feFromCanon("planning", { scenes: [
+      { row_uid: "S01", primary_form: "proactive", goal: "拿到账本", reaction: "她蹲在码头发抖", decision: "去找证人" },
+      { row_uid: "S02", primary_form: "reactive", reaction: "手抖", rendering_mode: "skip" },
+      { row_uid: "S03", primary_form: "reactive", reaction: "沉默", rendering_mode: "bogus" },
+    ] });
+    expect(hydrated.scaffold.plans.S01.reaction).toBe("她蹲在码头发抖");
+    expect(hydrated.scaffold.plans.S01.decision).toBe("去找证人");
+    expect(hydrated.scaffold.plans.S02.rendering).toBe("skip");
+    expect(hydrated.scaffold.plans.S03.rendering).toBe("full");
+  });
+
   it("feFromCanon backstory：前缀行拆回六字段，无前缀散文整段进「视角故事」", async () => {
     const { mod } = await loadSync({});
     const withPrefix = mod.feFromCanon("backstory", { characters: [{

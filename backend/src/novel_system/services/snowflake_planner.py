@@ -869,5 +869,8 @@ def _scene_writer_brief(scene_type: str, detail: dict[str, Any]) -> dict[str, An
 
 
 def _beats_from_detail(scene_type: str, detail: dict[str, Any]) -> list[str]:
-    keys = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
-    return [str(detail.get(key) or "").strip() for key in keys if str(detail.get(key) or "").strip()]
+    # 阶段 I：一场可以接着另一组三拍（原著 Goldilocks 场景 1：目标 / 冲突 / 挫折之后紧接反应 / 两难 / 决定）——
+    # 主形态的三拍在前，次要三拍在后，节拍顺序就是它们在页面上发生的顺序。
+    primary = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
+    secondary = ["goal", "conflict", "setback"] if scene_type == "reactive" else ["reaction", "dilemma", "decision"]
+    return [str(detail.get(key) or "").strip() for key in [*primary, *secondary] if str(detail.get(key) or "").strip()]
