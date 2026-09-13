@@ -34,6 +34,10 @@ from novel_system.services.llm_task_runner import (
 )
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.scene_structure_brief import (
+    SCENE_STRUCTURE_SECTION_KEY,
+    render_scene_structure_brief,
+)
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 
@@ -389,6 +393,14 @@ class NearFinalPlanningService:
                 sort_keys=True,
             ),
         }
+        # 2026-09-13 阶段 A：近终稿评审按作者写下的场景结构核验「三拍是否兑现、坩埚是否可辨认」。
+        structure_brief = render_scene_structure_brief(scene, self.session)
+        if structure_brief:
+            source_refs[SCENE_STRUCTURE_SECTION_KEY] = scene.scene_id
+            injections.append(
+                {"slot": SCENE_STRUCTURE_SECTION_KEY, "ref_id": scene.scene_id, "digest_key": SCENE_STRUCTURE_SECTION_KEY}
+            )
+            inline_digests[SCENE_STRUCTURE_SECTION_KEY] = structure_brief
         if scene_blueprint is not None:
             source_refs["scene_blueprint_row_id"] = scene_blueprint.row_id
             injections.append({"slot": "scene_blueprint", "ref_id": scene_blueprint.row_id, "digest_key": "scene_blueprint"})

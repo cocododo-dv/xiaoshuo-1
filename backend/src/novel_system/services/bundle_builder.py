@@ -36,6 +36,10 @@ from novel_system.services.character_continuity import (
 )
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.scene_ownership import require_scene_project_id
+from novel_system.services.scene_structure_brief import (
+    SCENE_STRUCTURE_SECTION_KEY,
+    render_scene_structure_brief,
+)
 from novel_system.services.style_reference.config_loader import (
     load_optional_yaml_config,
 )
@@ -551,6 +555,20 @@ class BundleBuilder:
             "chapter_goal": chapter.chapter_goal,
             "scene_card": scene_card_digest(scene),
         }
+        # 2026-09-13 阶段 A：雪花 / 章节编排写下的场景结构（形态、坩埚、三拍、代价）直读
+        # 原始键进入 bundle，作为与 scene_card 同级的事实 section。此前它只经 v2 简报的
+        # 归一化通道到达写作，而那条通道会把这些键全部丢掉——起草模型从未见过作者的三拍。
+        structure_brief = render_scene_structure_brief(scene, self.session)
+        if structure_brief:
+            source_version_refs[SCENE_STRUCTURE_SECTION_KEY] = scene.scene_id
+            ordered_injections.append(
+                {
+                    "slot": SCENE_STRUCTURE_SECTION_KEY,
+                    "ref_id": scene.scene_id,
+                    "digest_key": SCENE_STRUCTURE_SECTION_KEY,
+                }
+            )
+            inline_digests[SCENE_STRUCTURE_SECTION_KEY] = structure_brief
         source_version_refs["style_reference_runtime_contract_version"] = (
             STYLE_RUNTIME_CONTRACT_VERSION
         )

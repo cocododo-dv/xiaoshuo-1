@@ -103,6 +103,10 @@ class Settings:
     # Test/acceptance fixture import is a write-capable maintenance boundary.
     # It is absent from OpenAPI and disabled unless an operator opts in.
     fixture_import_enabled: bool = False
+    # 2026-09-13 阶段 A：雪花 / 章节编排写下的场景结构（形态、坩埚、三拍、代价）作为
+    # ``Scene Structure (Snowflake)`` 事实 section 进入起草 bundle、蓝图与近终稿快照。
+    # 默认开；``NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF=false`` 只作回滚开关。
+    scene_structure_brief_enabled: bool = True
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -196,6 +200,7 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_enabled = core_runtime.llm_enabled
     llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
     llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
+    scene_structure_brief_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
     accounting_runtime = load_llm_accounting_runtime()
     llm_daily_token_limit = accounting_runtime.daily_token_limit
     llm_monthly_token_limit = accounting_runtime.monthly_token_limit
@@ -258,6 +263,7 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_enabled=llm_enabled,
         llm_auto_critique_enabled=llm_auto_critique_enabled,
         llm_event_extraction_enabled=llm_event_extraction_enabled,
+        scene_structure_brief_enabled=scene_structure_brief_enabled,
         llm_daily_token_limit=llm_daily_token_limit,
         llm_monthly_token_limit=llm_monthly_token_limit,
         llm_project_daily_token_limit=llm_project_daily_token_limit,

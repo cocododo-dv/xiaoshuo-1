@@ -37,6 +37,9 @@ class PromptSection:
 SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("chapter_goal", "Chapter Goal", ("chapter_goal",)),
     ("scene_card", "Scene Card", ("scene_card",)),
+    # 2026-09-13 阶段 A：雪花 / 章节编排的场景结构（形态、POV、坩埚、三拍、代价）。与
+    # scene_card 同级的事实 section——不进任何压缩 / 省略名单（见 scene_structure_brief.py）。
+    ("scene_structure_brief", "Scene Structure (Snowflake)", ("scene_structure_brief",)),
     ("chapter_writer_brief", "Chapter Writer Brief", ("chapter_writer_brief",)),
     ("scene_writer_brief", "Scene Writer Brief", ("scene_writer_brief",)),
     ("author_instruction", "Author Instruction", ("author_instruction",)),

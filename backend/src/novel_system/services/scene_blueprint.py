@@ -17,6 +17,10 @@ from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.scene_structure_brief import (
+    SCENE_STRUCTURE_SECTION_KEY,
+    render_scene_structure_brief,
+)
 from novel_system.services.style_reference.narrative_guidance import (
     NARRATIVE_GUIDANCE_SECTION_KEY,
     collect_narrative_guidance,
@@ -209,6 +213,15 @@ class SceneBlueprintService:
                 "scene_writer_brief": json.dumps(normalize_scene_writer_brief(scene.writer_brief_json), ensure_ascii=False, sort_keys=True),
             },
         }
+        # 2026-09-13 阶段 A：蓝图从作者写下的场景结构（形态、坩埚、三拍、代价）推导，
+        # 而不是从被 v2 归一化抽空的简报重新猜一遍欲望 / 抉择 / 代价。
+        structure_brief = render_scene_structure_brief(scene, self.session)
+        if structure_brief:
+            snapshot["source_version_refs"][SCENE_STRUCTURE_SECTION_KEY] = scene.scene_id
+            snapshot["ordered_injections"].append(
+                {"slot": SCENE_STRUCTURE_SECTION_KEY, "ref_id": scene.scene_id, "digest_key": SCENE_STRUCTURE_SECTION_KEY}
+            )
+            snapshot["inline_digests"][SCENE_STRUCTURE_SECTION_KEY] = structure_brief
         # 2026-09 风格模仿 v2（规格 §2.W5.4）：规划层也看参考作品的叙事取舍机制——
         # 注入 narrative_guidance（无语言层特征），让 information_release / pacing /
         # ending_action 受其牵引。2026-09-12 结构跟随：再加结构画像（章 / 场尺度、开合方式、

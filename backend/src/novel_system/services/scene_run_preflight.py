@@ -14,6 +14,7 @@ from novel_system.services.qc_constraints import (
 )
 from novel_system.services.resolver import Resolver
 from novel_system.services.scene_execution import SceneExecutionContractService
+from novel_system.services.scene_structure_brief import missing_structure_fields, scene_has_structure
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
 
 
@@ -341,6 +342,24 @@ class SceneRunPreflightService:
                     "technical_hint": "POST /api/v1/scenes/{scene_id}/literary-blueprint",
                 }
             )
+        # 2026-09-13 阶段 A：带场景结构（雪花 / 章节编排的三拍与坩埚）的场按结构本身体检，
+        # 不再拿 v2 简报的字段清单去要求一个已经走完十步的作者「再填一套」。
+        if scene_has_structure(scene):
+            missing_beats = missing_structure_fields(scene)
+            if missing_beats:
+                items.append(
+                    {
+                        "code": "SCENE_STRUCTURE_INCOMPLETE",
+                        "title": "场景结构三拍不完整",
+                        "detail": (
+                            "这一场带着场景结构，但还缺：" + ", ".join(missing_beats)
+                            + "。回到构思的场景规划或章节编排补齐，起草模型拿到的结构简报才完整。"
+                        ),
+                        "technical_hint": "scene_card.writer_brief_json: scene_crucible + goal/conflict/setback or reaction/dilemma/decision",
+                    }
+                )
+            return items
+
         brief = normalize_scene_writer_brief(scene.writer_brief_json)
         missing_intent = [
             key
