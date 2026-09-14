@@ -95,10 +95,10 @@ def test_dimension_weights_include_conflict_too_clean():
 # ---------------------------------------------------------------------------
 
 
-def test_cost_requirement_blocking_for_explicit_scenes(session):
-    """Scenes with explicit scene_crucible in blueprint but no cost_requirement
-    should be blocked. Scenes with cost_requirement (via exit_change fallback)
-    should be active.
+def test_cost_requirement_advisory_for_explicit_scenes(session):
+    """阶段 H：代价（cost_requirement）永远是建议，不是闸门——原著的三拍里没有这一栏，
+    Ingermanson 自己的场景草图也没有它。有坩埚没代价的场：合同 active，缺项里记 ``cost_requirement(advisory)``；
+    有代价（exit_change 兜底）的场：active 且没有这条提醒。
 
     Uses the service directly because scene_crucible arrives via SceneBlueprint,
     not writer_brief_json (which has its own field allowlist).
@@ -132,8 +132,9 @@ def test_cost_requirement_blocking_for_explicit_scenes(session):
 
     svc = SceneExecutionContractService(session)
     contract1 = svc.generate("BP_CH01_SC01", actor_ref="test")
-    assert contract1.status == "blocked"
-    assert "cost_requirement" in (contract1.missing_fields_json or [])
+    assert contract1.status == "active"
+    assert "cost_requirement(advisory)" in (contract1.missing_fields_json or [])
+    assert "cost_requirement" not in (contract1.missing_fields_json or [])
 
     # Scene WITH blueprint crucible AND exit_change (cost fallback) → active
     session.add(SceneCard(
@@ -160,6 +161,7 @@ def test_cost_requirement_blocking_for_explicit_scenes(session):
 
     contract2 = svc.generate("BP_CH01_SC02", actor_ref="test")
     assert contract2.status == "active"
+    assert not [f for f in (contract2.missing_fields_json or []) if f.startswith("cost_requirement")]
 
 
 # ---------------------------------------------------------------------------

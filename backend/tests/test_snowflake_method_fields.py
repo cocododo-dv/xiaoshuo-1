@@ -11,7 +11,9 @@ import pathlib
 
 import yaml
 
-from novel_system.db.models import SceneCard, SnowflakeStepRun, StoryCharacter
+from sqlalchemy import select
+
+from novel_system.db.models import SceneCard, SnowflakeStepRun, StoryCharacter, StoryProject
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
@@ -114,3 +116,50 @@ def test_prompts_and_templates_carry_the_method_fields() -> None:
     for name, version in (("neutral_draft", "2026-09-14.v11"), ("style_first_draft", "2026-09-14.v6")):
         assert templates[name]["version"] == version, name
         assert "Narrative stance" in templates[name]["task_prompt"] and "Reader should feel" in templates[name]["task_prompt"], name
+
+
+def _book_brief_runs(session, project_id: str) -> list[tuple[int, str]]:
+    rows = session.execute(
+        select(SnowflakeStepRun)
+        .where(SnowflakeStepRun.project_id == project_id, SnowflakeStepRun.step_key == "book_brief")
+        .order_by(SnowflakeStepRun.version)
+    ).scalars().all()
+    return [(row.version, row.status) for row in rows]
+
+
+def test_empty_narrative_stance_is_not_a_content_change(session) -> None:
+    """阶段 J 给 01 加的 narrative_stance 是可选栏：升级前确认过的 01 草稿里没有这个键，前端水合后会把
+    "" 原样发回，default_draft 也会把 "" 合并进每一次 re-PATCH。空值与缺席同义——不能让已确认的 01
+    回到待审、不能制造新版本（阶段 C 的 rendering_mode=full 是同一条规则）；真填了人称与时态才是内容改动。
+    全套回归里 test_snowflake_reapprove_invalidation 的两条「原样 re-PATCH」用例就是这样被打红的。"""
+    from novel_system.services.snowflake_staleness import semantic_payload
+
+    assert semantic_payload({"a": "", "b": None, "c": [], "d": {}, "e": "x", "fe_t": 1}) == {"e": "x"}
+    assert semantic_payload({"narrative_stance": "  "}) == semantic_payload({})
+    assert semantic_payload({"narrative_stance": "第一人称，现在时"}) != semantic_payload({})
+
+    project_id = "prj-stance"
+    session.add(StoryProject(project_id=project_id, title="人称", outline_text="大纲", planning_mode="snowflake", snowflake_workflow_mode="explore", target_word_count=100000))
+    session.flush()
+    service = SnowflakeWorkspaceService(session)
+    brief = {
+        "category": "文学悬疑", "target_reader": "想看旧案与家庭代价的读者", "story_kind": "家庭真相悬疑",
+        "genre_promise": "真相越清晰失去越多", "delight_reason": "线索逼近真相的同时抬高代价",
+        "expected_reader_emotion": "压迫与向前的拉力", "safety_rules": ["只借鉴抽象手法"],
+    }
+    service.update_step(project_id, "book_brief", {"draft": brief})
+    service.approve_step(project_id, "book_brief")
+    run = session.execute(select(SnowflakeStepRun).where(SnowflakeStepRun.project_id == project_id, SnowflakeStepRun.step_key == "book_brief")).scalars().one()
+    assert run.status == "approved"
+    # 模拟阶段 J 之前存下的已确认草稿：没有 narrative_stance 这个键
+    run.draft_json = {key: value for key, value in dict(run.draft_json or {}).items() if key != "narrative_stance"}
+    session.flush()
+
+    service.update_step(project_id, "book_brief", {"draft": {**brief, "narrative_stance": ""}})
+    session.flush()
+    assert _book_brief_runs(session, project_id) == [(1, "approved")]
+
+    service.update_step(project_id, "book_brief", {"draft": {**brief, "narrative_stance": "第三人称限知，过去时"}})
+    session.flush()
+    assert _book_brief_runs(session, project_id) == [(1, "approved"), (2, "pending_review")]
+

@@ -178,13 +178,31 @@ def semantic_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     也不能触发下游雪花步骤失效。
     """
     data = payload if isinstance(payload, dict) else {}
-    result = {key: value for key, value in data.items() if not str(key).startswith("fe_")}
+    # 顶层的空值与「缺席」同义：阶段 J 给 01 加了可选的 narrative_stance，default_draft 会把 "" 合并进
+    # 每一次 re-PATCH——若把「有这个键但为空」当成内容，升级前确认过的 01 会在第一次原样保存时被打回
+    # 待审（阶段 C 的 rendering_mode=full 是同一类问题）。真正的清空（有值 → 空）仍然算改动：旧签名有键、
+    # 新签名没有。
+    result = {
+        key: value
+        for key, value in data.items()
+        if not str(key).startswith("fe_") and not _is_empty_value(value)
+    }
     scenes = result.get("scenes")
     if isinstance(scenes, list):
         # 阶段 C：rendering_mode 的默认值 full 与「缺席」同义——阶段 C 之前存的草稿没有这个键，
         # 前端水合后总会把 full 发回来；不剥掉默认值，已确认的场景规划会在升级当刻被打回待审。
         result["scenes"] = [_strip_default_rendering_mode(item) for item in scenes]
     return result
+
+
+def _is_empty_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict, tuple)):
+        return len(value) == 0
+    return False
 
 
 def _strip_default_rendering_mode(item: Any) -> Any:

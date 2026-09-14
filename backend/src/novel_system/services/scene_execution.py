@@ -331,8 +331,8 @@ class SceneExecutionContractService:
             for f in ("goal", "conflict", "setback_or_victory"):
                 if not _has_text(payload.get(f)):
                     missing.append(f)
-        # §4 cost_requirement — blocking for scenes with explicit structured specs
-        # (scene_crucible in writer_brief or blueprint), advisory for simple/legacy scenes.
+        # §4 cost_requirement — always advisory (阶段 H): 代价是本项目在原著三拍之外加的一栏，
+        # 原著自己的场景草图没有它也合法；缺了只提醒，从不把合同打成 blocked。
         # Blueprint §4: "「代价」字段是关键 — AI 最常见的毛病是免费选择"
         # 阶段 H：代价是本项目的强化，不是原著的三拍——按原著规划的场不能因此被合同挡住。
         if not _has_text(payload.get("cost_requirement")):
