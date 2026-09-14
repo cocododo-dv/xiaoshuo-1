@@ -102,6 +102,25 @@ PROSE_SHAPE_METRIC_NAMES: tuple[str, ...] = (
 # 且遗漏全角冒号 `：` 与全角括号 `（）`。现去重并补全,计数函数同时做防御性去重。
 _PUNCT_CHARS = "。！？，；：、—…“”\"‘’「」『』《》（）()【】!?,;:."
 _CLASSICAL_MARKERS = ("之", "乎", "者", "也", "焉", "矣", "哉", "曰", "兮", "其")
+# 2026-09-14 保真修补:文言比例只认文言**用法**。「也 / 其 / 者 / 之」在现代汉语里是最常见的
+# 副词、代词与后缀(也许、其他、作者、之后),按字面计数会让一本现代网文得到「文言虚词比例较高频」。
+_CLASSICAL_FINAL_PARTICLES = ("也", "矣", "焉", "哉", "乎", "兮", "耳", "欤", "邪", "云")
+_CLASSICAL_ZHI_MODERN = (
+    "之后", "之前", "之间", "之一", "之中", "之外", "之内", "之上", "之下", "之类", "之所以",
+    "之际", "之处", "之余", "之久", "之多", "之大", "之高", "之长", "之远", "之近", "之极",
+    "之初", "之末", "之路", "之地", "之心", "之情", "之力", "之意", "之词", "之举", "之物",
+    "总之", "反之", "加之", "随之", "因之", "分之", "言之", "换言之", "简言之", "久而久之",
+)
+_CLASSICAL_QI_MODERN = (
+    "其他", "其它", "其实", "其中", "其余", "其次", "尤其", "极其", "与其", "其后", "其间",
+    "其一", "其二", "其三", "其内", "其外", "如其", "任其", "令其", "使其", "将其", "把其",
+    "对其", "向其", "为其", "自其", "从其", "由其", "及其", "其所", "其数", "其乐", "其谈",
+    "其貌", "其名", "其人", "其事", "其父", "其母", "其妻", "其子", "其家", "其身", "其上",
+    "其下", "其前", "其后", "其左", "其右",
+)
+_CLASSICAL_SENTENCE_TAIL_STRIP = "”’」』\"'）)】》"
+_CLASSICAL_PUNCT_STRIP = "。！？!?…；;，,：:"
+_CLASSICAL_ZHE_RE = re.compile(r"者(?:也|[，,])")
 _COLLOQUIAL_MARKERS = ("吧", "呢", "啊", "嗯", "哎", "嘛", "哦", "哪", "呀", "罢", "嘞")
 # 比喻关键词;TODO(PR-3):LLM 抽取增强,目前以词表近似
 _METAPHOR_MARKERS = ("像", "如同", "仿佛", "犹如", "好似", "恰似", "宛如", "似的", "好像")
@@ -222,7 +241,7 @@ class MetricsEngine:
         if name == "question_density_per_1k":
             return _density_per_1k_chars(p.text, "？?")
         if name == "classical_word_ratio":
-            return _word_occurrence_ratio(p.text, _CLASSICAL_MARKERS)
+            return _classical_usage_ratio(p.text)
         if name == "colloquial_marker_ratio":
             return _word_occurrence_ratio(p.text, _COLLOQUIAL_MARKERS)
         if name == "metaphor_density_per_1k":
@@ -411,3 +430,27 @@ def _word_occurrence_ratio(text: str, words: tuple[str, ...] | list[str]) -> flo
         return 0.0
     matched = sum(1 for s in sentences if any(w in s for w in words))
     return matched / len(sentences)
+
+
+def _classical_usage_hit(sentence: str) -> bool:
+    """句中是否出现文言用法:句末语气词(也 / 矣 / 焉 / 哉 / 乎 / 兮 …)、「曰」、
+    「…者也 / …者，」、不在现代复合词里的「之」「其」。"""
+    body = sentence.strip().rstrip(_CLASSICAL_SENTENCE_TAIL_STRIP)
+    core = body.rstrip(_CLASSICAL_PUNCT_STRIP).rstrip(_CLASSICAL_SENTENCE_TAIL_STRIP)
+    if core and core[-1] in _CLASSICAL_FINAL_PARTICLES:
+        return True
+    if "曰" in body or _CLASSICAL_ZHE_RE.search(body):
+        return True
+    zhi = body.count("之") - sum(body.count(word) for word in _CLASSICAL_ZHI_MODERN)
+    if zhi > 0:
+        return True
+    qi = body.count("其") - sum(body.count(word) for word in _CLASSICAL_QI_MODERN)
+    return qi > 0
+
+
+def _classical_usage_ratio(text: str) -> float:
+    """含文言用法的句子占比(2026-09-14 起替代 _CLASSICAL_MARKERS 的字面命中)。"""
+    sentences = split_sentences(text)
+    if not sentences:
+        return 0.0
+    return sum(1 for s in sentences if _classical_usage_hit(s)) / len(sentences)

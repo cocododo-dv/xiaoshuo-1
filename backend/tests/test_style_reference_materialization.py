@@ -13,8 +13,6 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.materialization import (
     MaterializationService,
-    REVIEW_CALIB_PREFIX,
-    REVIEW_PREFIX,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import BindingScope
@@ -105,7 +103,8 @@ def _seed_profile_with_findings(seed: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_apply_dispatches_findings_to_4_item_types() -> None:
+def test_apply_builds_rag_index_and_writes_no_review_items() -> None:
+    """2026-09-14 减法:apply 只落 binding + 激活 + RAG 索引,不再物化 ReviewItem。"""
     profile_id = _seed_profile_with_findings("dispatch")
     with SessionLocal() as session:
         svc = MaterializationService(session)
@@ -114,32 +113,21 @@ def test_apply_dispatches_findings_to_4_item_types() -> None:
         )
         session.commit()
 
-    # 期望 item_type_counts:style_rule_set 1 (language obs), narrative_pattern 2
-    # (narrative.pacing obs + scene.dialogue obs), banned_rule_cluster 1 (forbid),
-    # calibration_candidate 2 (2 lines)
-    assert result.item_type_counts.get("style_rule_set") == 1
-    assert result.item_type_counts.get("narrative_pattern") == 2
-    assert result.item_type_counts.get("banned_rule_cluster") == 1
-    assert result.item_type_counts.get("calibration_candidate") == 2
     assert result.rag_index["signature_version"].startswith(
         "zh_content_restrained_style_signature_"
     )
     assert result.rag_index["status"] in {"ready", "rebuilt"}
-
-
-def test_review_id_prefix_style_ref() -> None:
-    profile_id = _seed_profile_with_findings("prefix")
+    assert not hasattr(result, "review_ids")
     with SessionLocal() as session:
-        svc = MaterializationService(session)
-        result = svc.apply_profile(
-            profile_id, scope=BindingScope.PROJECT, scope_ref_id="proj_y"
+        reviews = list(
+            session.execute(
+                select(ReviewItem).where(ReviewItem.review_id.like("review_style_ref_%"))
+            )
+            .scalars()
+            .all()
         )
-        session.commit()
+    assert reviews == []
 
-    for rid in result.review_ids:
-        assert rid.startswith(REVIEW_PREFIX) or rid.startswith(
-            REVIEW_CALIB_PREFIX
-        ), f"review_id {rid!r} 应以 style_ref 前缀开头"
 
 
 def test_apply_activates_profile_for_injection() -> None:
@@ -188,7 +176,7 @@ def test_apply_creates_binding_row() -> None:
     assert binding.strategy == "mixed"
 
 
-def test_apply_idempotent_same_inputs_no_extra_reviews() -> None:
+def test_apply_idempotent_same_inputs_reuses_binding() -> None:
     profile_id = _seed_profile_with_findings("idem")
     with SessionLocal() as session:
         svc = MaterializationService(session)
@@ -202,30 +190,9 @@ def test_apply_idempotent_same_inputs_no_extra_reviews() -> None:
             profile_id, scope=BindingScope.PROJECT, scope_ref_id="proj_z"
         )
         session.commit()
-    # 同 profile+scope 复用 binding,review_id 也复用(set 相等)
+    # 同 profile+scope 复用 binding
     assert r1.binding_id == r2.binding_id
-    assert set(r1.review_ids) == set(r2.review_ids)
 
-
-def test_review_items_written_with_correct_target_collection() -> None:
-    """ReviewItem.target_collection(Computed 列)应路由到 4 集合命名。"""
-    profile_id = _seed_profile_with_findings("target_col")
-    with SessionLocal() as session:
-        svc = MaterializationService(session)
-        svc.apply_profile(profile_id, scope=BindingScope.PROJECT, scope_ref_id="proj_t")
-        session.commit()
-    with SessionLocal() as session:
-        reviews = list(
-            session.execute(
-                select(ReviewItem).where(ReviewItem.review_id.like(f"{REVIEW_PREFIX}%"))
-            )
-            .scalars()
-            .all()
-        )
-    target_collections = {r.target_collection for r in reviews}
-    assert "style_rules" in target_collections
-    assert "narrative_patterns" in target_collections
-    assert "banned_rule_clusters" in target_collections
 
 
 def test_apply_profile_not_found() -> None:

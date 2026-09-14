@@ -615,7 +615,7 @@ def test_blueprint_snapshot_carries_structure_card_and_scene_craft(session) -> N
     assert prompt.index("## Style Reference — Structure Card") < prompt.index("## Scene Blueprint Target")
     assert "共 5 章" in prompt and "- 对白：对白短促，常以一句反问收束" in prompt
     template = load_prompt_templates()["scene_blueprint"]
-    assert template.version == "2026-09-13.v8"
+    assert template.version == "2026-09-14.v9"
     assert "If a Style Reference — Narrative Mechanisms section is present" in template.task_prompt
     assert "Structure Card ([结构画像]) or Scene Craft ([场景手法])" in template.task_prompt
     assert "anti_summary_rule may be exactly 「无」" in template.task_prompt
@@ -890,7 +890,7 @@ def test_snowflake_budget_sheds_samples_then_the_card_before_story_material() ->
 @pytest.mark.parametrize(
     ("name", "version"),
     [
-        ("scene_blueprint", "2026-09-13.v8"),
+        ("scene_blueprint", "2026-09-14.v9"),
         ("chapter_story_architecture", "2026-09-12.v3"),
         ("chapter_scene_plan_candidates", "2026-09-12.v2"),
         ("chapter_scene_plan_fill", "2026-09-12.v3"),

@@ -135,7 +135,6 @@ def _bind_style_profile(
     return {
         "profile_id": result.profile_id,
         "binding_id": result.binding_id,
-        "review_ids": result.review_ids,
         "rag_index": result.rag_index,
     }
 

@@ -141,6 +141,8 @@ _NON_VISIBLE_RE = re.compile(rf"[^A-Za-z0-9{_CJK}]+")
 _NON_CJK_RE = re.compile(rf"[^{_CJK}]+")
 _FOUR_CHAR_RE = re.compile(rf"(?<![{_CJK}])[{_CJK}]{{4}}(?![{_CJK}])")
 _AA_RE = re.compile(rf"([{_CJK}])\1")
+# 引号内的对白(中文弯引号 / 直角引号),用于人称统计前剥离;上限防未闭合引号吞掉整段
+_QUOTED_SPAN_RE = re.compile(r"[“「『‘][^”」』’]{0,400}[”」』’]")
 _AABB_RE = re.compile(rf"([{_CJK}])\1([{_CJK}])\2")
 _ABAB_RE = re.compile(rf"([{_CJK}])([{_CJK}])\1\2")
 _ELLIPSIS_RE = re.compile(r"……|…|\.{3,}")
@@ -559,8 +561,15 @@ def compute_voice_signature(
     features["fw_total_per_1k"] = _per_1k(fw_total, char_count)
 
     # --- 人称 -------------------------------------------------------------
+    # 2026-09-14 保真修补:只看叙述——剥离引号内的对白再数人称。对白占六成的第三人称小说里
+    # 「我 / 你」几乎全是人物在说话,不剥离会把叙述人称判成「混用」,结构画像与声音习惯都跟着错。
+    narration_only = _QUOTED_SPAN_RE.sub("", joined)
+    narration_exclusive = (
+        _exclusive_counts(narration_only, lexicon) if narration_only.strip() else exclusive
+    )
     person_counts = {
-        key: sum(exclusive.get(word, 0) for word in words) for key, words in lexicon.person.items()
+        key: sum(narration_exclusive.get(word, 0) for word in words)
+        for key, words in lexicon.person.items()
     }
     person_total = sum(person_counts.values())
     for key in ("first", "second", "third"):

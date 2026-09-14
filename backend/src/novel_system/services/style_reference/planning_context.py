@@ -19,11 +19,17 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.narrative_guidance import (
+    NARRATIVE_GUIDANCE_SECTION_KEY,
+    collect_narrative_guidance,
+    render_narrative_section,
+)
 from novel_system.services.style_reference.policy import cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
@@ -33,6 +39,22 @@ from novel_system.services.style_reference.structure import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 2026-09-12 结构跟随（Step 2 Track B）/ 2026-09-14 保真修补（WP6.1）：场景蓝图与近终稿规划
+# （章架构、人物压力）的来源快照共用这三个摘要键。``style_narrative_guidance`` 在
+# ``context_budget.SECTION_SPECS`` 里（PromptBuilder 渲染成 Narrative Mechanisms section）；
+# 结构画像 / 场景手法不在那张表里（它属于场景 bundle），由调用方通过
+# :func:`style_reference_prompt_blocks` 直接渲染进 user prompt（体量由渲染器封顶：画像
+# ≤1,500 字 + ≤6 条 ≤150 字样例 + ≤10 行手法）。
+STYLE_STRUCTURE_CARD_KEY = "style_structure_card"
+STYLE_PLANNING_GUIDANCE_KEY = "style_planning_guidance"
+STYLE_REFERENCE_DIGEST_KEYS: tuple[str, ...] = (
+    NARRATIVE_GUIDANCE_SECTION_KEY,
+    STYLE_STRUCTURE_CARD_KEY,
+    STYLE_PLANNING_GUIDANCE_KEY,
+)
+STRUCTURE_CARD_PROMPT_HEADING = "## Style Reference — Structure Card"
+PLANNING_GUIDANCE_PROMPT_HEADING = "## Style Reference — Scene Craft"
 
 PLANNING_REFERENCE_TASK_TYPE = "scene_generation"
 STRUCTURE_REFERENCE_HOW_TO_USE = (
@@ -134,10 +156,121 @@ def resolve_project_style_reference(
         return None
 
 
+@dataclass(frozen=True)
+class PlanningStyleReference:
+    """一份规划快照要登记的风格参考：契约哈希、按固定次序的摘要块、来源引用字段。"""
+
+    contract_hash: str
+    digests: dict[str, str]
+    refs: dict[str, Any]
+
+
+def build_planning_style_reference(
+    contract: Mapping[str, Any] | None,
+    *,
+    session: Session | None = None,
+) -> PlanningStyleReference | None:
+    """从（按场景作用域解析出的）契约生成规划层三块摘要。
+
+    叙事机制（``narrative_guidance``，无语言层特征）、结构画像（+ 允许送云端时的章首 / 章尾
+    样例）、场景手法。无绑定 / 旧画像无键 → ``None``：调用方连契约哈希也不登记（与旧画像行为
+    一致）。``refs`` 里 ``style_narrative_guidance_line_count`` 只要有任一块就记（可为 0），
+    ``style_structure_card_chars`` / ``style_planning_guidance_line_count`` 只在对应块存在时记。
+    """
+    if not isinstance(contract, Mapping):
+        return None
+    contract_hash = str(contract.get("contract_hash") or "")
+    lines = collect_narrative_guidance(contract)
+    reference = render_planning_reference(contract, session=session)
+    digests: dict[str, str] = {}
+    if lines:
+        digests[NARRATIVE_GUIDANCE_SECTION_KEY] = render_narrative_section(lines)
+    if reference is not None:
+        card = structure_card_text(reference)
+        if card:
+            digests[STYLE_STRUCTURE_CARD_KEY] = card
+        guidance = str(reference.get("planning_guidance") or "")
+        if guidance:
+            digests[STYLE_PLANNING_GUIDANCE_KEY] = guidance
+    if not digests:
+        return None
+    refs: dict[str, Any] = {
+        "style_reference_runtime_contract_hash": contract_hash,
+        "style_narrative_guidance_line_count": len(lines),
+    }
+    if STYLE_STRUCTURE_CARD_KEY in digests:
+        refs["style_structure_card_chars"] = len(digests[STYLE_STRUCTURE_CARD_KEY])
+    if STYLE_PLANNING_GUIDANCE_KEY in digests:
+        refs["style_planning_guidance_line_count"] = sum(
+            1 for line in digests[STYLE_PLANNING_GUIDANCE_KEY].splitlines() if line.startswith("- ")
+        )
+    return PlanningStyleReference(
+        contract_hash=contract_hash,
+        digests={key: digests[key] for key in STYLE_REFERENCE_DIGEST_KEYS if key in digests},
+        refs=refs,
+    )
+
+
+def register_planning_style_reference(snapshot: dict[str, Any], reference: PlanningStyleReference) -> None:
+    """把摘要块登记进来源快照（``source_version_refs`` / ``ordered_injections`` / ``inline_digests``）。
+
+    次序固定为 :data:`STYLE_REFERENCE_DIGEST_KEYS`，``ref_id`` 是契约哈希，``digest_key`` 与
+    slot 同名——快照哈希因此随参考设计变化。
+    """
+    refs = snapshot.setdefault("source_version_refs", {})
+    injections = snapshot.setdefault("ordered_injections", [])
+    digests = snapshot.setdefault("inline_digests", {})
+    refs.update(reference.refs)
+    for key, text in reference.digests.items():
+        injections.append({"slot": key, "ref_id": reference.contract_hash, "digest_key": key})
+        digests[key] = text
+
+
+def snapshot_has_style_reference(snapshot: Any) -> bool:
+    """来源快照是否带任一风格参考块（叙事机制 / 结构画像 / 场景手法）。"""
+    if not isinstance(snapshot, Mapping):
+        return False
+    digests = snapshot.get("inline_digests")
+    if not isinstance(digests, Mapping):
+        return False
+    return any(str(digests.get(key) or "").strip() for key in STYLE_REFERENCE_DIGEST_KEYS)
+
+
+def style_reference_prompt_blocks(source: Mapping[str, Any] | None) -> list[str]:
+    """结构画像 / 场景手法不在 SECTION_SPECS 里，直接渲染进 user prompt（体量已由渲染器封顶）。
+
+    接受 ``{"snapshot": {...}}`` 形式的来源字典，也接受快照本身。
+    """
+    if not isinstance(source, Mapping):
+        return []
+    snapshot = source.get("snapshot") if isinstance(source.get("snapshot"), Mapping) else source
+    digests = snapshot.get("inline_digests") if isinstance(snapshot, Mapping) else None
+    if not isinstance(digests, Mapping):
+        return []
+    blocks: list[str] = []
+    card = str(digests.get(STYLE_STRUCTURE_CARD_KEY) or "").strip()
+    if card:
+        blocks.extend(["", STRUCTURE_CARD_PROMPT_HEADING, card])
+    guidance = str(digests.get(STYLE_PLANNING_GUIDANCE_KEY) or "").strip()
+    if guidance:
+        blocks.extend(["", PLANNING_GUIDANCE_PROMPT_HEADING, guidance])
+    return blocks
+
+
 __all__ = [
+    "PLANNING_GUIDANCE_PROMPT_HEADING",
     "PLANNING_REFERENCE_TASK_TYPE",
+    "PlanningStyleReference",
+    "STRUCTURE_CARD_PROMPT_HEADING",
     "STRUCTURE_REFERENCE_HOW_TO_USE",
+    "STYLE_PLANNING_GUIDANCE_KEY",
+    "STYLE_REFERENCE_DIGEST_KEYS",
+    "STYLE_STRUCTURE_CARD_KEY",
+    "build_planning_style_reference",
+    "register_planning_style_reference",
     "render_planning_reference",
     "resolve_project_style_reference",
+    "snapshot_has_style_reference",
     "structure_card_text",
+    "style_reference_prompt_blocks",
 ]

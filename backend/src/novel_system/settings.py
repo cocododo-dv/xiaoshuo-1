@@ -37,6 +37,9 @@ class Settings:
     llm_auto_critique_enabled: bool = False
     # §2 opt-in: extract narrative events from finished prose (not just the spec).
     llm_event_extraction_enabled: bool = False
+    # 2026-09-14 opt-in: multi-candidate style drafts on standard / critical scenes
+    # (criticality-driven N, blinded author terminal selection on critical scenes).
+    scene_best_of_n_enabled: bool = False
     # Singleton-local hard fences, all opt-in: ``0`` disables a fence outright.
     # A single-author desktop install has no third party to fence off, and a
     # finite default only ever fires at the author mid-draft, so every fence
@@ -204,6 +207,7 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_enabled = core_runtime.llm_enabled
     llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
     llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
+    scene_best_of_n_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", False)
     scene_structure_brief_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
     scene_design_context_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_DESIGN_CONTEXT", True)
     accounting_runtime = load_llm_accounting_runtime()
@@ -268,6 +272,7 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_enabled=llm_enabled,
         llm_auto_critique_enabled=llm_auto_critique_enabled,
         llm_event_extraction_enabled=llm_event_extraction_enabled,
+        scene_best_of_n_enabled=scene_best_of_n_enabled,
         scene_structure_brief_enabled=scene_structure_brief_enabled,
         scene_design_context_enabled=scene_design_context_enabled,
         llm_daily_token_limit=llm_daily_token_limit,

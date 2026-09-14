@@ -642,7 +642,8 @@ def test_apply_profile(client: TestClient) -> None:
     data = resp.json()["data"]
     assert data["binding_id"]
     # finding observation + language → style_rule_set;+ calibration_candidate(2 lines profile_json 含 1)
-    assert "style_rule_set" in data["item_type_counts"]
+    assert "item_type_counts" not in data and "review_ids" not in data  # 2026-09-14 减法
+    assert data["binding_id"]
     with SessionLocal() as session:
         binding = StyleReferenceRepository(session).get_binding(data["binding_id"])
         assert binding is not None

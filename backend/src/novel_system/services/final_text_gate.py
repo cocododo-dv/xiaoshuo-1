@@ -450,15 +450,21 @@ class FinalTextGateService:
             risky_dimensions = [
                 dimension for dimension, signal in signals.items() if bool(signal.get("risk"))
             ]
-            warnings = [
-                {
-                    "issue_key": f"literary:{dimension}",
-                    "quality_level": "Q3",
-                    "blocking": False,
-                    "message": str(signals[dimension].get("evidence") or dimension),
-                }
-                for dimension in risky_dimensions
-            ]
+            # 2026-09-14 风格保真修补:有绑定时 21 维词表检测出的房风风险不再作为 Q3 警告挂在
+            # 成稿中心(作者的习惯与词表撞车时每一场都会被永久标红);risky_dimensions 仍进审计。
+            warnings = (
+                []
+                if style_bound
+                else [
+                    {
+                        "issue_key": f"literary:{dimension}",
+                        "quality_level": "Q3",
+                        "blocking": False,
+                        "message": str(signals[dimension].get("evidence") or dimension),
+                    }
+                    for dimension in risky_dimensions
+                ]
+            )
             return {
                 "available": True,
                 "overall_score": overall_score,

@@ -2418,3 +2418,327 @@ describe("scene run step labels（风格直起）", () => {
     expect(view.host.querySelector('[role="status"]')?.textContent).not.toContain("neutral_running");
   });
 });
+
+/* ---- 2026-09-14 风格保真修补 WP4「作者看得见」：风格链路提示条 + 本场参考窗口 ----
+   后端早已算出 STYLE_* notices 与本场实际进入提示的参考书样例窗口，此前没有视图渲染。
+   这里验证：规整（只认合法条目）、提示条按严重度着色与中文标签、窗口面板默认收起、
+   展开时按区间取原文并缓存、随运行记录持久化、真实场景页能看见。 */
+describe("风格链路提示与本场参考窗口（WP4）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+  });
+
+  afterEach(async () => {
+    while (mountedRoots.length) {
+      const { root, host } = mountedRoots.pop();
+      await act(async () => root.unmount());
+      host.remove();
+    }
+    vi.restoreAllMocks();
+  });
+
+  const NOTICES = [
+    { code: "STYLE_FIRST_DRAFT", severity: "info", message: "首稿已按参考作者手笔直接起草。" },
+    { code: "STYLE_INJECTION_DEGRADED", severity: "warning", message: "输入预算不足，风格参考前缀被整体裁掉。" },
+    { code: "STYLE_PLAGIARISM_HIT", severity: "blocking", message: "风格稿与参考作品原文存在确定性 n-gram 重叠。", hit_count: 2, stage: "style_draft" },
+    { code: "STYLE_SOMETHING_NEW", severity: "error", message: "后端新增的提示" },
+    { not: "a notice" },
+    "garbage",
+  ];
+  const STYLE_WINDOWS = {
+    book_id: "book-1",
+    profile_id: "profile-1",
+    step: "style_draft",
+    windows: [
+      { start: 0, end: 59, chapter: 1, position: "opening", paragraph_type: "narration", paragraphs: 60, chars: 3800 },
+      { start: 640, end: 662, chapter: 9, position: "closing", paragraph_type: "dialogue", paragraphs: 23, chars: 1510 },
+      { start: 5, end: 2 },
+      { end: 9 },
+    ],
+  };
+  const PARAGRAPHS_URL = /^\/api\/v2\/style-reference\/books\/([^/]+)\/paragraphs\?start=(\d+)&end=(\d+)$/;
+
+  function routeParagraphs(client, responder) {
+    const base = client.apiGet.getMockImplementation();
+    const calls = [];
+    client.apiGet.mockImplementation((url, options) => {
+      const m = PARAGRAPHS_URL.exec(url);
+      if (m) {
+        calls.push(url);
+        return responder({ bookId: m[1], start: Number(m[2]), end: Number(m[3]) }, calls.length);
+      }
+      return base(url, options);
+    });
+    return calls;
+  }
+
+  it("scnStyleNoticesFrom / scnStyleWindowsFrom：只认 generation_summary 里的合法条目并规整字段名", async () => {
+    const { mod } = await loadSceneRun();
+    const notices = mod.scnStyleNoticesFrom({ generation_summary: { notices: NOTICES } });
+    expect(notices.map((n) => n.code)).toEqual(["STYLE_FIRST_DRAFT", "STYLE_INJECTION_DEGRADED", "STYLE_PLAGIARISM_HIT", "STYLE_SOMETHING_NEW"]);
+    expect(notices.map((n) => n.severity)).toEqual(["info", "warning", "error", "error"]);
+    expect(notices[2]).toMatchObject({ blocking: true, hitCount: 2, stage: "style_draft" });
+    expect(notices[0].blocking).toBe(false);
+    expect(mod.scnStyleNoticesFrom({ generation_summary: { notices: "nope" } })).toEqual([]);
+    expect(mod.scnStyleNoticesFrom({ generation_summary: null })).toEqual([]);
+    expect(mod.scnStyleNoticesFrom(null)).toEqual([]);
+
+    const windows = mod.scnStyleWindowsFrom({ generation_summary: { style_windows: STYLE_WINDOWS } });
+    expect(windows).toEqual({
+      bookId: "book-1",
+      profileId: "profile-1",
+      step: "style_draft",
+      windows: [
+        { start: 0, end: 59, chapter: 1, position: "opening", paragraphType: "narration", paragraphs: 60, chars: 3800 },
+        { start: 640, end: 662, chapter: 9, position: "closing", paragraphType: "dialogue", paragraphs: 23, chars: 1510 },
+      ],
+    });
+    expect(mod.scnStyleWindowsFrom({ generation_summary: { style_windows: null } })).toBeNull();
+    expect(mod.scnStyleWindowsFrom({ generation_summary: { style_windows: { book_id: "b", windows: [] } } })).toBeNull();
+    expect(mod.scnStyleWindowsFrom({ generation_summary: { style_windows: { windows: [{ start: 3, end: 1 }] } } })).toBeNull();
+    expect(mod.scnStyleWindowLabel(windows.windows[0])).toBe("第1章 · 章首 · 叙述 · 第1–60段 · 3800字");
+    expect(mod.scnStyleWindowLabel({ start: 4, end: 4, chapter: 0, position: "", paragraphType: "x_new", paragraphs: 1, chars: 12 })).toBe("x_new · 第5–5段 · 12字");
+  });
+
+  it("提示条：每条一行、中文标签、按严重度着色；未知 code 回退为「code: message」", async () => {
+    const { mod } = await loadSceneRun();
+    const view = await renderRunJobControl(mod.SceneStyleNoticeStrip, {
+      notices: mod.scnStyleNoticesFrom({ generation_summary: { notices: NOTICES } }),
+    });
+    const strip = view.host.querySelector('[data-testid="scene-style-notices"]');
+    expect(strip).not.toBeNull();
+    const rows = Array.from(strip.querySelectorAll("li"));
+    expect(rows.length).toBe(4);
+    expect(rows[0].className).toContain("sev-info");
+    expect(rows[0].dataset.code).toBe("STYLE_FIRST_DRAFT");
+    expect(rows[0].textContent).toContain(mod.STYLE_NOTICE_LABELS.STYLE_FIRST_DRAFT);
+    expect(rows[0].textContent).toContain("首稿已按参考作者手笔直接起草。");
+    expect(rows[1].className).toContain("sev-warning");
+    expect(rows[1].textContent).toContain(mod.STYLE_NOTICE_LABELS.STYLE_INJECTION_DEGRADED);
+    expect(rows[2].className).toContain("sev-error");
+    expect(rows[2].className).toContain("is-blocking");
+    expect(rows[2].textContent).toContain("命中 2 处");
+    expect(rows[3].className).toContain("sev-error");
+    expect(rows[3].textContent).toContain("STYLE_SOMETHING_NEW: 后端新增的提示");
+    expect(rows.every((row) => row.className.includes("scn2-style-notice"))).toBe(true);
+  });
+
+  it("提示条：无 notices 时不渲染", async () => {
+    const { mod } = await loadSceneRun();
+    const empty = await renderRunJobControl(mod.SceneStyleNoticeStrip, { notices: [] });
+    expect(empty.host.querySelector('[data-testid="scene-style-notices"]')).toBeNull();
+    expect(empty.host.innerHTML).toBe("");
+    const missing = await renderRunJobControl(mod.SceneStyleNoticeStrip, {});
+    expect(missing.host.querySelector('[data-testid="scene-style-notices"]')).toBeNull();
+  });
+
+  it("参考窗口面板：一窗一行、默认收起；展开时按窗口区间取原文并只读展示，收起再展开不重复请求", async () => {
+    const { mod, client } = await loadSceneRun();
+    const calls = routeParagraphs(client, ({ bookId, start, end }) => Promise.resolve({
+      book_id: bookId,
+      start,
+      end,
+      capped: false,
+      paragraphs: [
+        { paragraph_index: start, paragraph_type: "narration", text: "潮水退去的时候，滩涂上只剩一只鞋。" },
+        { paragraph_index: start + 1, paragraph_type: "dialogue", text: "“你来晚了。”" },
+      ],
+    }));
+    const view = await renderRunJobControl(mod.SceneStyleWindowsPanel, {
+      styleWindows: mod.scnStyleWindowsFrom({ generation_summary: { style_windows: STYLE_WINDOWS } }),
+    });
+    const panel = view.host.querySelector('[data-testid="scene-style-windows"]');
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain("本场参考窗口 · 2");
+    expect(panel.textContent).toContain("风格稿");
+    const rows = Array.from(panel.querySelectorAll('[data-testid="scene-style-window-row"]'));
+    expect(rows.length).toBe(2);
+    expect(rows[0].textContent).toContain("第1章 · 章首 · 叙述 · 第1–60段 · 3800字");
+    expect(rows[1].textContent).toContain("第9章 · 章尾 · 对白 · 第641–663段 · 1510字");
+    expect(view.host.querySelector('[data-testid="scene-style-window-text"]')).toBeNull();
+    expect(calls).toEqual([]);
+
+    const button = rows[0].querySelector("button");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(button.disabled).toBe(false);
+    await click(button);
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[data-testid="scene-style-window-text"]')?.textContent).toContain("潮水退去的时候，滩涂上只剩一只鞋。");
+    }, T);
+    expect(calls).toEqual(["/api/v2/style-reference/books/book-1/paragraphs?start=0&end=59"]);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    const text = view.host.querySelector('[data-testid="scene-style-window-text"]');
+    expect(text.textContent).toContain("“你来晚了。”");
+    expect(text.querySelectorAll("p").length).toBe(2);
+    expect(text.querySelector("textarea, input, [contenteditable]")).toBeNull();
+
+    await click(button);
+    expect(view.host.querySelector('[data-testid="scene-style-window-text"]')).toBeNull();
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    await click(button);
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[data-testid="scene-style-window-text"]')?.textContent).toContain("潮水退去的时候");
+    }, T);
+    expect(calls.length).toBe(1);
+
+    // 第二窗独立取回，区间是它自己的
+    await click(rows[1].querySelector("button"));
+    await vi.waitFor(() => expect(calls.length).toBe(2), T);
+    expect(calls[1]).toBe("/api/v2/style-reference/books/book-1/paragraphs?start=640&end=662");
+  });
+
+  it("参考窗口面板：无窗口不渲染；参考书不可用时不能展开；取回失败显示错误并可重试；截断有提示", async () => {
+    const { mod, client } = await loadSceneRun();
+    const none = await renderRunJobControl(mod.SceneStyleWindowsPanel, { styleWindows: null });
+    expect(none.host.querySelector('[data-testid="scene-style-windows"]')).toBeNull();
+    const emptyList = await renderRunJobControl(mod.SceneStyleWindowsPanel, { styleWindows: { bookId: "b", windows: [] } });
+    expect(emptyList.host.querySelector('[data-testid="scene-style-windows"]')).toBeNull();
+
+    const noBook = await renderRunJobControl(mod.SceneStyleWindowsPanel, {
+      styleWindows: mod.scnStyleWindowsFrom({ generation_summary: { style_windows: { ...STYLE_WINDOWS, book_id: null } } }),
+    });
+    const noBookButton = noBook.host.querySelector('[data-testid="scene-style-window-row"] button');
+    expect(noBookButton.disabled).toBe(true);
+    expect(noBook.host.textContent).toContain("参考书已不可用");
+
+    const calls = routeParagraphs(client, ({ bookId, start, end }, n) => (n === 1
+      ? Promise.reject(new Error("后端不可达"))
+      : Promise.resolve({ book_id: bookId, start, end: start + 79, capped: true, paragraphs: [{ paragraph_index: start, paragraph_type: "narration", text: "第二次取回成功。" }] })));
+    const view = await renderRunJobControl(mod.SceneStyleWindowsPanel, {
+      styleWindows: mod.scnStyleWindowsFrom({ generation_summary: { style_windows: STYLE_WINDOWS } }),
+    });
+    const button = view.host.querySelector('[data-testid="scene-style-window-row"] button');
+    await click(button);
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[data-testid="scene-style-window-text"] [role="alert"]')?.textContent).toContain("后端不可达");
+    }, T);
+    expect(calls.length).toBe(1);
+    await click(button);
+    await click(button);
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[data-testid="scene-style-window-text"]')?.textContent).toContain("第二次取回成功。");
+    }, T);
+    expect(calls.length).toBe(2);
+    expect(view.host.querySelector('[data-testid="scene-style-window-text"]').textContent).toContain("只显示了这一窗的前 80 段");
+    expect(view.host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("scnHydrateFromBackend：把 notices 与 style_windows 记到运行记录，并随 scnRunSave 持久化", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          style_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "near_final" },
+          generation_summary: { draft_mode: "style_first", notices: NOTICES, style_windows: STYLE_WINDOWS },
+        });
+      }
+      return baseGet(url, options);
+    });
+    const restored = await mod.scnHydrateFromBackend("ch01s1", {});
+    expect(restored).toBeTruthy();
+    expect(restored.styleNotices.map((n) => n.code)).toEqual(["STYLE_FIRST_DRAFT", "STYLE_INJECTION_DEGRADED", "STYLE_PLAGIARISM_HIT", "STYLE_SOMETHING_NEW"]);
+    expect(restored.styleWindows.bookId).toBe("book-1");
+    expect(restored.styleWindows.windows.length).toBe(2);
+    mod.scnRunSave("ch01s1", restored);
+    const reloaded = mod.scnRunLoad("ch01s1");
+    expect(reloaded.styleNotices.map((n) => n.code)).toEqual(restored.styleNotices.map((n) => n.code));
+    expect(reloaded.styleWindows).toEqual(restored.styleWindows);
+
+    // 没有 notices / 窗口的运行：空列表与 null，不是 undefined（场景页据此清掉上一轮的提示）
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          neutral_draft: { content: "潮水退去。" },
+          scene_run_state: { scene_status: "neutral_running" },
+          generation_summary: { draft_mode: "neutral_first", notices: [], style_windows: null },
+        });
+      }
+      return baseGet(url, options);
+    });
+    const plain = await mod.scnHydrateFromBackend("ch01s1", {});
+    expect(plain.styleNotices).toEqual([]);
+    expect(plain.styleWindows).toBeNull();
+  });
+
+  it("scnRun：运行记录带 styleNotices / styleWindows，运行日志写一行提示摘要", async () => {
+    const { mod, client } = await loadSceneRun();
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiPost.mockImplementation((url) => {
+      if (/\/api\/v1\/scenes\/s1\/run\/jobs$/.test(url)) {
+        return Promise.resolve({ job_id: "job-wp4", scene_id: "s1", status: "running" });
+      }
+      return Promise.resolve({});
+    });
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/run-jobs/job-wp4") {
+        return Promise.resolve({ job_id: "job-wp4", scene_id: "s1", status: "completed", current_step: "near_final" });
+      }
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          style_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "near_final" },
+          generation_summary: { draft_mode: "style_first", notices: NOTICES.slice(0, 2), style_windows: STYLE_WINDOWS },
+        });
+      }
+      return baseGet(url);
+    });
+    vi.useFakeTimers();
+    let result;
+    try {
+      const runPromise = mod.scnRun({ sid: "ch01s1", kind: "主动场景" }, "", "", {});
+      await vi.runAllTimersAsync();
+      result = await runPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(result.styleNotices.map((n) => n.code)).toEqual(["STYLE_FIRST_DRAFT", "STYLE_INJECTION_DEGRADED"]);
+    expect(result.styleWindows.windows.length).toBe(2);
+    const texts = result.log.map((l) => l.text);
+    expect(texts.some((t) => t.includes("风格链路提示 2 条") && t.includes(mod.STYLE_NOTICE_LABELS.STYLE_INJECTION_DEGRADED))).toBe(true);
+    expect(texts.some((t) => t.includes("参考书原文窗口 2 个") && t.includes("5310 字"))).toBe(true);
+  });
+
+  it("真实场景页：从 workbench 恢复的风格提示渲染成提示条，本场参考窗口进证据栏并可展开原文", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    await queueSceneIntent({ sid: "ch01s1" });
+    client.getLatestSceneRunJob.mockResolvedValue({
+      job_id: "job-page-wp4",
+      scene_id: "s1",
+      status: "running",
+      current_step: "style_running",
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          neutral_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "style_running" },
+          generation_summary: { draft_mode: "style_first", notices: NOTICES.slice(0, 3), style_windows: STYLE_WINDOWS },
+        });
+      }
+      return baseGet(url, options);
+    });
+    const calls = routeParagraphs(client, ({ bookId, start, end }) => Promise.resolve({
+      book_id: bookId, start, end, capped: false,
+      paragraphs: [{ paragraph_index: start, paragraph_type: "narration", text: "页面里展开的参考原文。" }],
+    }));
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-page-wp4");
+      expect(view.host.querySelectorAll('[data-testid="scene-style-notices"] li').length).toBe(3);
+      expect(view.host.querySelectorAll('[data-testid="scene-style-window-row"]').length).toBe(2);
+    }, T);
+    const strip = view.host.querySelector('[data-testid="scene-style-notices"]');
+    expect(strip.textContent).toContain(mod.STYLE_NOTICE_LABELS.STYLE_PLAGIARISM_HIT);
+    expect(strip.querySelector("li.sev-error")).not.toBeNull();
+    await click(view.host.querySelector('[data-testid="scene-style-window-row"] button'));
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[data-testid="scene-style-window-text"]')?.textContent).toContain("页面里展开的参考原文。");
+    }, T);
+    expect(calls).toEqual(["/api/v2/style-reference/books/book-1/paragraphs?start=0&end=59"]);
+  });
+});

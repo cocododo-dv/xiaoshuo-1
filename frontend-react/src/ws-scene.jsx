@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnSetQcThresholds, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
+import { SceneRunJobControl, SceneStyleNoticeStrip, SceneStyleWindowsPanel, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnSetQcThresholds, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { WsWorks } from "./ws-works.jsx";
@@ -470,7 +470,7 @@ function WsSceneBoard({ go, t }) {
     const attempt = ((runs[id] && runs[id].attempt) || 0) + 1;
     const prevText = runs[id] && runs[id].draft ? runs[id].draft.map(p => p.parts.map(x => x.text).join("")).join("\n") : "";
     const t0 = new Date().toTimeString().slice(0, 8);
-    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, authorNote: normalizedNote, error: null, needsCards: false, budgetBlock: null,
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, authorNote: normalizedNote, error: null, needsCards: false, budgetBlock: null, styleNotices: [], styleWindows: null,
       log: [{ t: t0, who: "system", text: `预检通过 · 第 ${attempt} 次尝试${normalizedNote ? " · 改写指令已附" : ""}` }, { t: t0, who: "sonnet", text: "起草进行中……整稿返回后过质检" }] } }));
     const tick = setInterval(() => setRuns(m => {
       const cur = m[id];
@@ -709,6 +709,7 @@ function WsSceneBoard({ go, t }) {
             refreshSignal={runJobRefreshTick}
           />
         )}
+        {scene.fromCard && <SceneStyleNoticeStrip notices={scene.styleNotices} />}
         <Pipeline scene={scene} state={renderState} />
         <div className="scn2-stage-body">
           {renderState === "queued"   && <Preflight scene={scene} />}
@@ -1572,6 +1573,8 @@ function Evidence({ scene, state, activeBeat, setActiveBeat, onView }) {
           </ul>
         </section>
       )}
+
+      <SceneStyleWindowsPanel styleWindows={scene.styleWindows} />
 
       {scene.attempts && scene.attempts.length > 0 && (
         <section className="scn2-evi-block">

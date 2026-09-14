@@ -28,6 +28,10 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
+from novel_system.services.style_reference.text_utils import (
+    is_paratext_paragraph,
+    is_scene_break_paragraph,
+)
 from novel_system.services.style_reference.untrusted_data import secure_reference_block
 from novel_system.services.style_reference.validation.plagiarism import (
     check_plagiarism,
@@ -57,6 +61,10 @@ _COLOPHON_RE = re.compile(
     r"(?:[一二三四五六七八九十〇零\d]{1,3}[日号])?[。．.]?[）)]?[。]?$"
 )
 _COLOPHON_MAX_CHARS = 20
+# 2026-09-14(WP5):章首 / 章尾样例只从「像一章」的章里取——短于此字数的「章」多半是卷首语 /
+# 内容简介 / 目录残片;含书名页标记(某某 著 / 简介)的前置章整章不入统计与样例。
+_SAMPLE_CHAPTER_MIN_CHARS = 1200
+_FRONT_MATTER_RE = re.compile(r"^(?:[\w\u4e00-\u9fff·]{1,20}\s*著|(?:内容)?简介\s*[：:]?|作者\s*[：:].{0,20})$")
 _PARAGRAPH_TYPE_ORDER: tuple[str, ...] = (
     "dialogue",
     "narration",
@@ -117,21 +125,21 @@ def _field(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
-def _ordered_rows(paragraphs: Iterable[Any]) -> list[tuple[str, str]]:
-    """(正文, 段型) 序列：按 paragraph_index 稳定排序（缺索引时保持输入顺序），剥空段。"""
+def _ordered_rows(paragraphs: Iterable[Any]) -> list[tuple[str, str, int]]:
+    """(正文, 段型, 段索引) 序列：按 paragraph_index 稳定排序（缺索引时保持输入顺序），剥空段。"""
     indexed: list[tuple[int, int, Any]] = []
     for position, item in enumerate(paragraphs):
         raw_index = _field(item, "paragraph_index")
         index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else position
         indexed.append((index, position, item))
     indexed.sort(key=lambda entry: (entry[0], entry[1]))
-    rows: list[tuple[str, str]] = []
-    for _index, _position, item in indexed:
+    rows: list[tuple[str, str, int]] = []
+    for index, _position, item in indexed:
         text = " ".join(str(_field(item, "text", "") or "").split())
         if not text:
             continue
         ptype = str(_field(item, "paragraph_type", "") or "").strip() or "narration"
-        rows.append((text, ptype))
+        rows.append((text, ptype, int(index)))
     return rows
 
 
@@ -151,28 +159,65 @@ def _marker_style(title: str) -> str:
     return "序跋式"
 
 
+_END_MATTER = frozenset({"完", "（完）", "(完)", "全文完", "全书完", "本书完", "终", "the end", "end", "fin", "—完—", "－完－"})
+
+
 def _is_colophon(text: str) -> bool:
+    if text.strip().lower() in _END_MATTER:
+        return True
     return len(text) <= _COLOPHON_MAX_CHARS and _COLOPHON_RE.match(text) is not None
 
 
-def _split_chapters(rows: Sequence[tuple[str, str]]) -> tuple[list[list[tuple[str, str]]], Counter]:
-    """按标题段切章。标题段本身不入章正文；连续标题（卷 → 章）不产生空章。"""
-    chapters: list[list[tuple[str, str]]] = []
-    current: list[tuple[str, str]] = []
+def _is_front_matter(rows: Sequence[tuple[str, str, int]]) -> bool:
+    """第一个章题之前的块是否为书名页 / 简介(含「某某 著」「内容简介：」「作者：」行)。"""
+    return any(_FRONT_MATTER_RE.match(text.strip()) is not None for text, _ptype, _index in rows)
+
+
+def _split_chapters(
+    rows: Sequence[tuple[str, str, int]],
+    scene_breaks: set[int] | None = None,
+) -> tuple[list[list[tuple[str, str, int]]], Counter, list[int]]:
+    """按标题段切章。标题段本身不入章正文；连续标题（卷 → 章）不产生空章。
+
+    2026-09-14(WP5)：同时数每章的场界——纯符号分隔行（不入正文）与导入期记录的空行型场界
+    （``scene_breaks``：其后有场界的段索引）；章末的场界不计。返回 (章, 章题形态计数, 每章场界数)。
+    """
+    chapters: list[list[tuple[str, str, int]]] = []
+    breaks_per_chapter: list[int] = []
+    current: list[tuple[str, str, int]] = []
+    current_breaks = 0
+    pending_break = False
     markers: Counter = Counter()
-    for text, ptype in rows:
+    break_set = set(scene_breaks or ())
+
+    def _close() -> None:
+        nonlocal current, current_breaks, pending_break
+        if current:
+            chapters.append(current)
+            breaks_per_chapter.append(current_breaks)
+        current = []
+        current_breaks = 0
+        pending_break = False
+
+    for text, ptype, index in rows:
         if is_title_paragraph(text):
             markers[_marker_style(text)] += 1
+            _close()
+            continue
+        if _is_colophon(text) or is_paratext_paragraph(text):
+            continue
+        if is_scene_break_paragraph(text):
             if current:
-                chapters.append(current)
-            current = []
+                pending_break = True
             continue
-        if _is_colophon(text):
-            continue
-        current.append((text, ptype))
-    if current:
-        chapters.append(current)
-    return chapters, markers
+        if pending_break:
+            current_breaks += 1
+            pending_break = False
+        current.append((text, ptype, index))
+        if index in break_set:
+            pending_break = True
+    _close()
+    return chapters, markers, breaks_per_chapter
 
 
 def _percentile(values: Sequence[int | float], q: float) -> float:
@@ -210,14 +255,18 @@ def _share(part: int, total: int) -> float:
     return round(part / total, 3) if total > 0 else 0.0
 
 
-def _chapter_entry(index: int, rows: Sequence[tuple[str, str]]) -> dict[str, Any]:
-    opening_text, opening_type = rows[0]
-    closing_text, closing_type = rows[-1]
+def _chapter_entry(index: int, rows: Sequence[tuple[str, str, int]], scene_breaks: int = 0) -> dict[str, Any]:
+    opening_text, opening_type, _opening_index = rows[0]
+    closing_text, closing_type, _closing_index = rows[-1]
+    char_count = sum(len(text) for text, _ptype, _index in rows)
     return {
         "index": index,
-        "char_count": sum(len(text) for text, _ in rows),
+        "char_count": char_count,
         "paragraph_count": len(rows),
-        "dialogue_share": _share(sum(1 for _, ptype in rows if ptype == "dialogue"), len(rows)),
+        "dialogue_share": _share(sum(1 for _text, ptype, _index in rows if ptype == "dialogue"), len(rows)),
+        # 2026-09-14(WP5):显式场界数;有场界的章按 (场界 + 1) 算场数
+        "scene_breaks": int(scene_breaks),
+        "scene_count": int(scene_breaks) + 1 if scene_breaks > 0 else None,
         "opening_type": opening_type,
         "opening_excerpt": _head(opening_text),
         "opening_chars": len(opening_text),
@@ -277,14 +326,21 @@ def compute_structure_card(
     paragraphs: Iterable[Any],
     *,
     voice_signature: Mapping[str, Any] | None = None,
+    scene_breaks: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     """从段落表确定性算出结构画像（无 LLM）。
 
     ``paragraphs`` 元素可以是 ORM 段落行或 ``{"text", "paragraph_type", "paragraph_index"}``
-    映射。返回值是纯 JSON 值（int / float / str / list / dict），可直接落 ``profile_json``。
+    映射；``scene_breaks`` 是导入期记录的空行型场界（其后有场界的段索引）。返回值是纯 JSON 值
+    （int / float / str / list / dict），可直接落 ``profile_json``。
     """
     rows = _ordered_rows(paragraphs)
-    chapters, markers = _split_chapters(rows)
+    break_set = {int(item) for item in (scene_breaks or ()) if isinstance(item, int) and not isinstance(item, bool)}
+    chapters, markers, breaks_per_chapter = _split_chapters(rows, break_set)
+    if markers and len(chapters) > 1 and _is_front_matter(chapters[0]):
+        # 有章题的书:第一个章题之前的书名页 / 简介块不是正文章
+        chapters = chapters[1:]
+        breaks_per_chapter = breaks_per_chapter[1:]
     has_markers = bool(markers)
     card: dict[str, Any] = {
         "version": STRUCTURE_CARD_VERSION,
@@ -302,6 +358,11 @@ def compute_structure_card(
         "opening_type_distribution": {},
         "closing_type_distribution": {},
         "person": _person_profile(voice_signature),
+        # 2026-09-14(WP5):场级——显式场界(纯符号行 / 空行型)覆盖的章数、每章场数与场长分布
+        "scene_break_style": "none",
+        "scene_break_chapters": 0,
+        "scenes_per_chapter": {"median": 0, "p10": 0, "p90": 0},
+        "scene_chars": {"median": 0, "p10": 0, "p90": 0},
         "chapters": [],
         "chapters_listed": 0,
         "samples": {"chapter_openings": [], "chapter_endings": []},
@@ -310,14 +371,34 @@ def compute_structure_card(
         return card
 
     body_rows = [row for chapter in chapters for row in chapter]
-    total_chars = sum(len(text) for text, _ in body_rows)
+    total_chars = sum(len(text) for text, _ptype, _index in body_rows)
     paragraph_count = len(body_rows)
-    type_counts = Counter(ptype for _, ptype in body_rows)
-    dialogue_chars = sum(len(text) for text, ptype in body_rows if ptype == "dialogue")
-    entries = [_chapter_entry(index + 1, chapter) for index, chapter in enumerate(chapters)]
+    type_counts = Counter(ptype for _text, ptype, _index in body_rows)
+    dialogue_chars = sum(len(text) for text, ptype, _index in body_rows if ptype == "dialogue")
+    entries = [
+        _chapter_entry(index + 1, chapter, breaks_per_chapter[index] if index < len(breaks_per_chapter) else 0)
+        for index, chapter in enumerate(chapters)
+    ]
+    with_breaks = [entry for entry in entries if entry["scene_count"]]
+    if with_breaks and len(with_breaks) * 10 >= len(entries) * 3:
+        card.update(
+            {
+                "scene_break_style": "explicit",
+                "scene_break_chapters": len(with_breaks),
+                "scenes_per_chapter": _spread([int(entry["scene_count"]) for entry in with_breaks]),
+                "scene_chars": _spread(
+                    [int(round(entry["char_count"] / entry["scene_count"])) for entry in with_breaks]
+                ),
+            }
+        )
+    else:
+        card["scene_break_chapters"] = len(with_breaks)
 
     listed = _spread_indexes(len(entries), _MAX_CHAPTER_ENTRIES)
-    sample_slots = _spread_indexes(len(entries), STRUCTURE_SAMPLES_PER_SIDE)
+    sample_pool = [index for index, entry in enumerate(entries) if entry["char_count"] >= _SAMPLE_CHAPTER_MIN_CHARS]
+    if not sample_pool:
+        sample_pool = list(range(len(entries)))
+    sample_slots = [sample_pool[index] for index in _spread_indexes(len(sample_pool), STRUCTURE_SAMPLES_PER_SIDE)]
     card.update(
         {
             "total_chars": total_chars,
@@ -456,6 +537,9 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
                 pp90=_fmt_int(per_chapter.get("p90")),
             )
         )
+    scene_line = _scene_line(card)
+    if scene_line:
+        lines.append(scene_line)
     lines.append(
         f"- 全书：{_fmt_int(card.get('total_chars'))} 字、{_fmt_int(card.get('paragraph_count'))} 段，"
         f"段均 {_fmt_int(card.get('paragraph_mean_chars'))} 字"
@@ -486,6 +570,12 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
             f"（{_fmt_int(chapter_chars.get('p10'))}–{_fmt_int(chapter_chars.get('p90'))} 字为常态）、"
             f"约 {_fmt_int(per_chapter.get('median'))} 段"
         )
+    if str(card.get("scene_break_style") or "") == "explicit":
+        scenes = card.get("scenes_per_chapter") if isinstance(card.get("scenes_per_chapter"), Mapping) else {}
+        scene_chars = card.get("scene_chars") if isinstance(card.get("scene_chars"), Mapping) else {}
+        hint.append(
+            f"每章约 {_fmt_int(scenes.get('median'))} 场、场长约 {_fmt_int(scene_chars.get('median'))} 字"
+        )
     open_type = _dominant_type(card.get("opening_type_distribution"))
     close_type = _dominant_type(card.get("closing_type_distribution"))
     if open_type or close_type:
@@ -493,6 +583,22 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
     hint.append(f"对白段约占 {_pct(card.get('dialogue_share'))}")
     lines.append("- 规划提示：按此尺度规划——" + "；".join(hint) + "。")
     return lines
+
+
+def _scene_line(card: Mapping[str, Any]) -> str:
+    """场级一行:显式场界时给每章场数与场长分布,否则说明无显式场分隔。"""
+    style = str(card.get("scene_break_style") or "")
+    if style == "explicit":
+        scenes = card.get("scenes_per_chapter") if isinstance(card.get("scenes_per_chapter"), Mapping) else {}
+        scene_chars = card.get("scene_chars") if isinstance(card.get("scene_chars"), Mapping) else {}
+        return (
+            f"- 场：有显式场分隔（{_fmt_int(card.get('scene_break_chapters'))} 章），每章约 "
+            f"{_fmt_int(scenes.get('median'))} 场（p10 {_fmt_int(scenes.get('p10'))} · p90 {_fmt_int(scenes.get('p90'))}）；"
+            f"场长中位 {_fmt_int(scene_chars.get('median'))} 字（p10 {_fmt_int(scene_chars.get('p10'))} · p90 {_fmt_int(scene_chars.get('p90'))}）"
+        )
+    if int(card.get("chapter_count") or 0) > 0:
+        return "- 场：无显式场分隔；场的长度按章长与段数规划"
+    return ""
 
 
 def _fit_lines(lines: Sequence[str], max_chars: int) -> str:

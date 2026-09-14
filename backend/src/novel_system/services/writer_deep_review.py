@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from statistics import mean
 from types import SimpleNamespace
@@ -34,9 +35,15 @@ from novel_system.services.llm_task_runner import (
 )
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.style_prompt_injection import (
+    PLANNING_FEW_SHOT_K_CAP,
+    inject_style_reference_prefix,
+    resolve_style_scope,
+)
 from novel_system.settings import get_settings
 
 
+_LOGGER = logging.getLogger(__name__)
 LITERARY_REVISION_RUBRIC_ID = "literary_revision_v1"
 LITERARY_REVISION_DIMENSIONS: tuple[str, ...] = (
     "character_contradiction",
@@ -432,6 +439,16 @@ class WriterDeepReviewService:
             "chapter_summary": source.get("content") if object_type == "chapter" else None,
         }
         prompt = self.prompt_builder.build(snapshot, "writer_deep_review")
+        # 2026-09-14 WP6.3：评审在参考作者的手笔下判断「复读 / 意象必要性 / 声音辨识度」
+        prompt = self._inject_style_reference_prefix(
+            prompt,
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=chapter_id,
+            scene_id=scene_id,
+            context_text=str(source.get("content") or "") or None,
+            final_user_prompt=prompt["user_prompt"],
+        )
         execution_step_key = f"writer_deep_review:{object_type}:{object_id}"
         context = self._llm_context(
             object_type=object_type,
@@ -577,6 +594,24 @@ class WriterDeepReviewService:
         prompt = self.prompt_builder.build(snapshot, "writer_passage_patch")
         object_type = _required_text(payload, "object_type")
         object_id = _required_text(payload, "object_id")
+        user_prompt = _passage_patch_user_prompt(
+            prompt["user_prompt"],
+            source_excerpt=source_excerpt,
+            issue_dimension=issue_dimension,
+            target_text_ref=target_text_ref,
+            source_draft=source_draft,
+            preference=preference,
+        )
+        # 2026-09-14 WP6.3：局部补丁在参考作者的手笔下改句（k≤3 样例窗口，作者稿作选窗上下文）
+        prompt = self._inject_style_reference_prefix(
+            prompt,
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=_optional_text(payload, "chapter_id"),
+            scene_id=_optional_text(payload, "scene_id"),
+            context_text=(source_draft.content if source_draft is not None else source_excerpt) or None,
+            final_user_prompt=user_prompt,
+        )
         execution_step_key = f"writer_passage_patch:{object_type}:{object_id}"
         context = self._llm_context(
             object_type=object_type,
@@ -594,14 +629,7 @@ class WriterDeepReviewService:
             node_id="writer_passage_patch",
             step="writer_passage_patch",
             prompt=prompt,
-            user_prompt=_passage_patch_user_prompt(
-                prompt["user_prompt"],
-                source_excerpt=source_excerpt,
-                issue_dimension=issue_dimension,
-                target_text_ref=target_text_ref,
-                source_draft=source_draft,
-                preference=preference,
-            ),
+            user_prompt=user_prompt,
             execution_step_key=execution_step_key,
             context=context,
         )
@@ -633,6 +661,52 @@ class WriterDeepReviewService:
             )
         normalized["generation_llm_call_id"] = generation_llm_call_id
         return normalized
+
+    def _inject_style_reference_prefix(
+        self,
+        prompt: dict[str, Any],
+        *,
+        object_type: str,
+        object_id: str,
+        chapter_id: str | None,
+        scene_id: str | None,
+        context_text: str | None,
+        final_user_prompt: str,
+    ) -> dict[str, Any]:
+        """2026-09-14 保真修补（WP6.3）：深评 / 局部补丁按项目 / 场景的 active 绑定拿到 ``[STYLE_REFERENCE]``。
+
+        场景对象按场景作用域（窗口按场景轮换），章对象按 project + global 作用域；样例窗口封顶
+        :data:`PLANNING_FEW_SHOT_K_CAP`（评审与补丁只需少量样例定标准），被评 / 被改的文本作
+        选窗上下文，并按最终 user prompt 压进模板预算。无绑定 → 提示词逐字不变；解析 / 注入
+        失败 → 回退基础 prompt（可选增强，绝不阻断评审或补丁）。
+        """
+        try:
+            scope = resolve_style_scope(
+                self.session,
+                scene_id=scene_id or (object_id if object_type == "scene" else None),
+                chapter_id=chapter_id or (object_id if object_type == "chapter" else None),
+            )
+            if scope is None:
+                return prompt
+            injected = inject_style_reference_prefix(
+                self.session,
+                prompt,
+                scope,
+                None,
+                task_type="scene_generation",
+                context_text=context_text,
+                final_user_prompt=final_user_prompt,
+                few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP,
+            )
+            return injected if injected is not None else prompt
+        except Exception:  # noqa: BLE001 — 可选增强：注入失败只记日志，不阻断评审 / 补丁
+            _LOGGER.warning(
+                "writer style reference prefix skipped for %s %s",
+                object_type,
+                object_id,
+                exc_info=True,
+            )
+            return prompt
 
     def _source_draft(self, source_draft_id: str | None) -> AuthorDraft | None:
         if not source_draft_id:

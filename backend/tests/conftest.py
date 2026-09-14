@@ -52,10 +52,6 @@ def isolated_database(
     reset_engine()
     Base.metadata.drop_all(bind=engine())
     Base.metadata.create_all(bind=engine())
-    # PR-12 — 模块级 metrics cache 不随 SQLite 隔离重置,显式清理避免跨 test 脏读
-    from novel_system.services.style_reference.metrics_aggregator import clear_metrics_cache
-
-    clear_metrics_cache()
     yield
     Base.metadata.drop_all(bind=engine())
 

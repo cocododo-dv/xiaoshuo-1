@@ -152,11 +152,13 @@ task_routing:
     temperature: 0.15
     max_output_tokens: 3600
     response_format: json_object
+  # 2026-09-14 风格保真修补：soft_qc 要对照数万字原文样例判「像不像」并写出可执行的补丁简报，
+  # 小模型做不好这件事——默认改走强模型；库内 models 快照仍可覆盖。
   soft_qc:
     provider: openai_compatible
-    model: gpt-5-mini
+    model: gpt-5
     temperature: 0.2
-    max_output_tokens: 1800
+    max_output_tokens: 2600
     response_format: json_object
   archive:
     provider: openai_compatible

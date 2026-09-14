@@ -11,17 +11,21 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SceneCard
+from novel_system.db.models import ChapterGoal, SceneCard
 from novel_system.services.style_reference.injection import (
+    scene_sampling_hints,
     InjectionService,
     fit_fragments_to_input_budget,
     ordered_character_ids,
 )
 from novel_system.services.style_reference.runtime_contract import (
+    StyleRuntimeContractState,
     extract_style_generation_context,
     resolve_style_runtime_contract_state,
 )
@@ -32,7 +36,73 @@ _LOGGER = logging.getLogger(__name__)
 # （翻译成 STYLE_GATE_UNAVAILABLE notice）都要认它；两者不能互相 import，所以放在这里。
 STYLED_GATE_UNAVAILABLE_VERDICT = "unavailable"
 
-__all__ = ["STYLED_GATE_UNAVAILABLE_VERDICT", "inject_style_reference_prefix"]
+# 2026-09-14 保真修补(WP6):规划(scene_blueprint)与评审 / 局部补丁(writer_deep_review /
+# writer_passage_patch)节点只要少量样例窗口;起草类调用不传上限,行为逐字不变。
+PLANNING_FEW_SHOT_K_CAP = 3
+# 调用方显式给出契约(而非 bundle)时的审计标签:契约是本次调用按当前 active 绑定解析的,
+# 与冻结进 SceneBundle 的契约区分开。
+RESOLVED_CONTRACT_STATUS = "resolved_live"
+RESOLVED_CONTRACT_MODE = "resolved"
+
+__all__ = [
+    "PLANNING_FEW_SHOT_K_CAP",
+    "RESOLVED_CONTRACT_MODE",
+    "RESOLVED_CONTRACT_STATUS",
+    "STYLED_GATE_UNAVAILABLE_VERDICT",
+    "inject_style_reference_prefix",
+    "resolve_style_scope",
+]
+
+
+def resolve_style_scope(
+    session: Session,
+    *,
+    scene_id: str | None = None,
+    chapter_id: str | None = None,
+    project_id: str | None = None,
+) -> Any | None:
+    """写手侧 / 章级调用的风格作用域对象(WP6.3)。
+
+    ``inject_style_reference_prefix`` 只按属性读作用域(``project_id`` / ``scene_id`` /
+    ``pov_character_id`` / ``onstage_chars_json`` / 选窗提示),所以:
+
+    - 有场景行 → 直接用 ``SceneCard``(scene > character > project > global 全部作用域;
+      旧场景行没有 ``project_id`` 时补上其章的 ``project_id``,否则 project 层绑定看不见);
+    - 只有章 / 项目(整章稿、项目稿、章级评审) → 一个只带 ``project_id`` 的作用域对象
+      (project + global 层;无场景种子,窗口取确定性前 k);
+    - 连项目都定不出 → ``None``(调用方跳过注入)。
+    """
+    scene = session.get(SceneCard, str(scene_id)) if scene_id else None
+    if scene is not None and getattr(scene, "project_id", None):
+        return scene
+    resolved_project = str(project_id or "").strip() or None
+    lookup_chapter_id = chapter_id or (getattr(scene, "chapter_id", None) if scene is not None else None)
+    if not resolved_project and lookup_chapter_id:
+        chapter = session.get(ChapterGoal, str(lookup_chapter_id))
+        resolved_project = getattr(chapter, "project_id", None) if chapter is not None else None
+    if not resolved_project:
+        return scene  # 场景层 / 角色层绑定仍可命中;None 时调用方直接跳过
+    if scene is not None:
+        return SimpleNamespace(
+            project_id=str(resolved_project),
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            pov_character_id=getattr(scene, "pov_character_id", None),
+            onstage_chars_json=list(getattr(scene, "onstage_chars_json", None) or []),
+            scene_seq=getattr(scene, "scene_seq", 0),
+            is_chapter_last=getattr(scene, "is_chapter_last", 0),
+            writer_brief_json=dict(getattr(scene, "writer_brief_json", None) or {}),
+        )
+    return SimpleNamespace(
+        project_id=str(resolved_project),
+        scene_id=None,
+        chapter_id=str(lookup_chapter_id) if lookup_chapter_id else None,
+        pov_character_id=None,
+        onstage_chars_json=[],
+        scene_seq=0,
+        is_chapter_last=0,
+        writer_brief_json={},
+    )
 
 
 def inject_style_reference_prefix(
@@ -44,6 +114,8 @@ def inject_style_reference_prefix(
     task_type: str = "scene_generation",
     context_text: str | None = None,
     final_user_prompt: str | None = None,
+    few_shot_k_cap: int | None = None,
+    runtime_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """PR-8 §5.1 — 把冻结契约渲染成 ``[STYLE_REFERENCE]`` 前缀，prepend 到 system_prompt。
 
@@ -58,6 +130,12 @@ def inject_style_reference_prefix(
 
     立项 C §12 — ``context_text``（续写最新正文）透传给 Strategy C（RAG）作为三粒度检索
     query；其余策略忽略此参数。
+
+    2026-09-14 保真修补(WP6):``few_shot_k_cap`` 把样例窗口数压到 ``min(k(intensity), cap)``
+    (规划 / 评审 / 局部补丁节点用 :data:`PLANNING_FEW_SHOT_K_CAP`;不传 = 起草通道逐字不变)。
+    ``runtime_contract`` 让调用方直接给出**本次调用已解析**的契约(scene_blueprint 的来源快照
+    按当前 active 绑定解析契约并登记其哈希,前缀必须与那份契约同源),此时不看 ``bundle``;审计
+    记 ``runtime_contract_status=resolved_live`` / ``mode=resolved``。
     """
     if prompt is None or scene is None:
         return prompt
@@ -72,9 +150,13 @@ def inject_style_reference_prefix(
     if not project_id and not character_ids and not scene_id:
         return prompt
     svc = InjectionService(session)
+    svc.few_shot_k_cap = int(few_shot_k_cap) if few_shot_k_cap is not None else None
     # 2026-09-09 样例优先:few-shot 窗口按场景轮换——同一场景的 style_draft / soft_qc /
     # 近终稿改写 / 验收评审看到同一组窗口,不同场景看到不同窗口。
     svc.few_shot_seed = str(scene_id) if scene_id else None
+    # 2026-09-14 保真修补(WP3.4):章首 / 章末场偏好参考书的开章 / 收章窗口,概述场偏好叙述窗口——
+    # 第一稿没有可分析的正文时这是选窗唯一的场景信号。
+    svc.scene_position, svc.scene_hint_types = scene_sampling_hints(scene)
     # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
     # when drift guidance includes structured dimension data) so the few-shot
     # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
@@ -108,13 +190,22 @@ def inject_style_reference_prefix(
         source_kind="generation_source" if context_text else "profile_fallback",
         max_chars=int(load_rag_config().get("rag_context_query_max_chars", 2000)),
     )
+    # 调用方显式给出的契约与下面按 bundle 解析出的 ``runtime_contract`` 局部变量分开持有
+    caller_contract = dict(runtime_contract) if runtime_contract is not None else None
     runtime_contract = None
     contract_state = None
     try:
-        contract_state = resolve_style_runtime_contract_state(
-            bundle,
-            task_type=task_type,
-        )
+        if caller_contract is not None:
+            contract_state = StyleRuntimeContractState(
+                status=RESOLVED_CONTRACT_STATUS,
+                mode=RESOLVED_CONTRACT_MODE,
+                contract=caller_contract,
+            )
+        else:
+            contract_state = resolve_style_runtime_contract_state(
+                bundle,
+                task_type=task_type,
+            )
         runtime_contract = contract_state.contract
         if contract_state.error_code is not None:
             raise ValueError(contract_state.error_code)

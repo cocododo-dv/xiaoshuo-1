@@ -22,6 +22,7 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.author_actions import author_action
+from novel_system.services.bundle_builder import resolve_scene_style_runtime_contract
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
@@ -37,6 +38,11 @@ from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import (
     SCENE_STRUCTURE_SECTION_KEY,
     render_scene_structure_brief,
+)
+from novel_system.services.style_reference.planning_context import (
+    build_planning_style_reference,
+    register_planning_style_reference,
+    style_reference_prompt_blocks,
 )
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
@@ -217,7 +223,7 @@ class NearFinalPlanningService:
                 node_id=CHAPTER_ARCHITECTURE_ARTIFACT,
                 step=CHAPTER_ARCHITECTURE_ARTIFACT,
                 prompt=prompt,
-                user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter),
+                user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter, source=source),
                 execution_step_key=execution_step_key,
             )
         except LLMNodeExecutionError as exc:
@@ -271,7 +277,7 @@ class NearFinalPlanningService:
                 node_id=CHARACTER_PRESSURE_ARTIFACT,
                 step=CHARACTER_PRESSURE_ARTIFACT,
                 prompt=prompt,
-                user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter),
+                user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter, source=source),
                 execution_step_key=execution_step_key,
             )
         except LLMNodeExecutionError as exc:
@@ -439,12 +445,36 @@ class NearFinalPlanningService:
             "ordered_injections": injections,
             "inline_digests": inline_digests,
         }
+        # 2026-09-14 保真修补（WP6.1）：章架构 / 人物压力与场景蓝图看同一套参考——叙事机制
+        # （SECTION_SPECS 里的 Narrative Mechanisms section）、结构画像与场景手法（由
+        # ``_planning_user_prompt`` 直接渲染）。chapter_story_architecture 模板早有 [结构画像]
+        # 条款却从未收到过这一块；character_pressure_blueprint v3 起「without explanatory
+        # summary」只在没有这些块时成立。无绑定 / 旧画像 / 解析失败 → 快照逐字不变。
+        contract = self._style_reference_contract(scene)
+        if contract is not None:
+            reference = build_planning_style_reference(contract, session=self.session)
+            if reference is not None:
+                register_planning_style_reference(snapshot, reference)
         source_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
         return {
             "source_bundle_id": f"near_final_planning_source_{scene.scene_id}",
             "source_bundle_hash": source_hash,
             "snapshot": snapshot,
         }
+
+    def _style_reference_contract(self, scene: SceneCard) -> dict[str, Any] | None:
+        """场景作用域按当前 active 绑定解析出的契约；无绑定 → None，解析失败 → None（只记日志）。"""
+        try:
+            return resolve_scene_style_runtime_contract(self.session, scene)
+        except Exception:  # noqa: BLE001 — 可选增强：解析失败只记日志，不阻断规划
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "near-final planning style reference skipped for scene %s",
+                scene.scene_id,
+                exc_info=True,
+            )
+            return None
 
     def _chapter_scene_digest(self, chapter_id: str) -> list[dict[str, Any]]:
         rows = self.session.execute(
@@ -574,9 +604,12 @@ class NearFinalAcceptanceService:
             )
             payload = _execution_failure_payload(exc.message)
 
+        style_bound = _bundle_style_bound(bundle)
         payload = _apply_scene_near_final_gates(
-            payload, source_content, style_bound=_bundle_style_bound(bundle)
+            payload, source_content, style_bound=style_bound
         )
+        if style_bound:
+            payload = _apply_style_bound_rewrite_policy(payload)
         source = {
             "content": source_content,
             "source_text_ref": f"source_draft:{source_draft_row_id}",
@@ -778,6 +811,8 @@ class NearFinalAcceptanceService:
     def _should_rewrite(payload: dict[str, Any]) -> bool:
         if payload.get("pass_flag") or payload.get("requires_human_review"):
             return False
+        if payload.get("auto_rewrite_blocked"):
+            return False
         return str(payload.get("failure_class") or "") in AUTOMATED_REWRITE_FAILURE_CLASSES
 
     def _persist_evaluation(
@@ -966,10 +1001,17 @@ class NearFinalAcceptanceService:
         return require_chapter(self.session, chapter_id)
 
 
-def _planning_user_prompt(base_prompt: str, *, scene: SceneCard, chapter: ChapterGoal) -> str:
+def _planning_user_prompt(
+    base_prompt: str,
+    *,
+    scene: SceneCard,
+    chapter: ChapterGoal,
+    source: dict[str, Any] | None = None,
+) -> str:
     return "\n".join(
         [
             base_prompt,
+            *style_reference_prompt_blocks(source),
             "",
             "## Planning Target",
             f"Scene ID: {scene.scene_id}",
@@ -1113,9 +1155,13 @@ def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:
     elif status not in {"near_final_ready", "revision_required", "human_review_required"}:
         status = "near_final_ready" if pass_flag else "revision_required"
     failure_class = _scalar_text(payload.get("failure_class"))
+    failure_class_coerced = False
     if pass_flag:
         failure_class = None
     elif failure_class not in SCENE_FAILURE_CLASSES:
+        # 评审没给出合法失败类时归到 prose_model_voice(可自动重写类);2026-09-14 起把这次
+        # 强转记下来——有绑定时它不再授权一次房风整场重写(见 _apply_style_bound_rewrite_policy)。
+        failure_class_coerced = True
         failure_class = "prose_model_voice"
     overall_score = _score(payload.get("overall_score"))
     return {
@@ -1126,9 +1172,30 @@ def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:
         "findings": findings,
         "revision_brief": revision_brief,
         "failure_class": failure_class,
+        "failure_class_coerced": failure_class_coerced,
         "requires_human_review": requires_human_review or status == "human_review_required",
         "scene_story_check": _normalize_scene_story_check(payload.get("scene_story_check")),
     }
+
+
+def _apply_style_bound_rewrite_policy(payload: dict[str, Any]) -> dict[str, Any]:
+    """2026-09-14 风格保真修补:有绑定时自动重写只认评审自己的判断。
+
+    近终稿重写是温度 0.55、允许重排 / 合并 / 拆段的整场改写,且改写稿直接成为终稿;
+    有绑定时它只能由评审明确给出的失败类 **和** 修改简报触发——被强转的失败类
+    (评审返回了未知类)或空简报(否则 orchestrator 会用房风默认简报)一律 ``auto_rewrite_blocked``,
+    停在 revision_required 交给作者。neutral_first / 无绑定行为不变。
+    """
+    if payload.get("pass_flag") or payload.get("requires_human_review"):
+        return payload
+    reasons: list[str] = []
+    if payload.get("failure_class_coerced"):
+        reasons.append("failure_class_coerced")
+    if not payload.get("revision_brief"):
+        reasons.append("no_reviewer_brief")
+    if not reasons:
+        return payload
+    return {**payload, "auto_rewrite_blocked": "style_bound:" + ",".join(reasons)}
 
 
 def _bundle_style_bound(bundle: Any) -> bool:

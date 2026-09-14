@@ -17,7 +17,7 @@ import { apiGet, apiPost, cancelRunJob, getLatestSceneRunJob } from "./lib/clien
    · 持久化：每场的运行结果存 scn-run:sid（按作品隔离），刷新不丢
    ========================================================== */
 
-const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock", "authorNote", "draftMode"];
+const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock", "authorNote", "draftMode", "styleNotices", "styleWindows"];
 const scnRunKey = (sid) => (wsKey ? wsKey("scn-run:" + sid) : "scn-run:" + sid);
 const scnQueueKey = () => (wsKey ? wsKey("scn-queue:v1") : "scn-queue:v1");
 const scnDismissKey = () => (wsKey ? wsKey("scn-queue-dismissed:v1") : "scn-queue-dismissed:v1");
@@ -61,6 +61,210 @@ function scnDraftModeFrom(wb) {
   const summary = wb && wb.generation_summary;
   const mode = summary && typeof summary === "object" ? String(summary.draft_mode || "") : "";
   return mode === "style_first" || mode === "neutral_first" ? mode : null;
+}
+
+/* ---- 2026-09-14 风格保真修补（WP4.2「作者看得见」）：风格链路提示 + 本场参考窗口 ----
+   后端每次运行都算出 STYLE_* notices（generation_summary.notices）和这一场提示里实际放入的
+   参考书样例窗口（generation_summary.style_windows：{book_id, profile_id, step, windows[]}，窗口
+   只有段落序号闭区间与读数，不含原文），此前没有任何视图渲染。这里把两者规整后记进运行
+   记录（随 scnRunSave 持久化），场景页渲染：提示条按严重度着色；窗口面板默认收起，展开时
+   才按区间取原文（GET /api/v2/style-reference/books/{book_id}/paragraphs?start=&end=）并在
+   组件内缓存。词表外的 code 回退为「code: message」，绝不吞掉后端的新提示。 */
+const STYLE_NOTICE_LABELS = {
+  STYLE_FIRST_DRAFT: "首稿已按参考作者手笔直起",
+  STYLE_DRAFT_FALLBACK_NEUTRAL: "风格稿未通过，已回退为中性稿",
+  STYLE_INJECTION_MISS: "参考已绑定，但本次没有注入任何风格块",
+  STYLE_INJECTION_DEGRADED: "风格注入失败或被输入预算裁掉",
+  STYLE_PLAGIARISM_HIT: "与参考原文重叠（抄袭红线命中）",
+  STYLE_BANNED_TERM_HIT: "命中参考画像的禁用词",
+  STYLE_GATE_UNAVAILABLE: "参考来源安全检查未能执行",
+};
+/* 后端严重度 info / warning / error / blocking → 三档着色（blocking 与 error 同色，另带 is-blocking） */
+function scnStyleNoticeSeverity(value) {
+  const key = String(value || "").toLowerCase();
+  if (key === "error" || key === "blocking") return "error";
+  if (key === "warning") return "warning";
+  return "info";
+}
+function scnStyleNoticeLabel(notice) {
+  const code = String((notice && notice.code) || "");
+  return STYLE_NOTICE_LABELS[code] || code;
+}
+/* workbench / run 结果里的 generation_summary.notices → [{code, severity, message, blocking, hitCount?, stage?}] */
+function scnStyleNoticesFrom(wb) {
+  const summary = wb && wb.generation_summary;
+  const raw = summary && typeof summary === "object" ? summary.notices : null;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((n) => n && typeof n === "object" && n.code)
+    .map((n) => {
+      const item = {
+        code: String(n.code),
+        severity: scnStyleNoticeSeverity(n.severity),
+        blocking: String(n.severity || "").toLowerCase() === "blocking",
+        message: typeof n.message === "string" ? n.message : "",
+      };
+      if (Number.isFinite(Number(n.hit_count)) && n.hit_count != null) item.hitCount = Number(n.hit_count);
+      if (n.stage) item.stage = String(n.stage);
+      return item;
+    });
+}
+/* generation_summary.style_windows → {bookId, profileId, step, windows: [{start, end, chapter, position, paragraphType, paragraphs, chars}]} | null */
+function scnStyleWindowsFrom(wb) {
+  const summary = wb && wb.generation_summary;
+  const raw = summary && typeof summary === "object" ? summary.style_windows : null;
+  if (!raw || typeof raw !== "object" || !Array.isArray(raw.windows)) return null;
+  const windows = raw.windows
+    .filter((w) => w && typeof w === "object" && Number.isInteger(w.start) && Number.isInteger(w.end) && w.start >= 0 && w.end >= w.start)
+    .map((w) => ({
+      start: w.start,
+      end: w.end,
+      chapter: Number.isInteger(w.chapter) ? w.chapter : 0,
+      position: String(w.position || ""),
+      paragraphType: String(w.paragraph_type || ""),
+      paragraphs: Number.isInteger(w.paragraphs) && w.paragraphs > 0 ? w.paragraphs : (w.end - w.start + 1),
+      chars: Number.isInteger(w.chars) ? w.chars : 0,
+    }));
+  if (!windows.length) return null;
+  return {
+    bookId: raw.book_id ? String(raw.book_id) : null,
+    profileId: raw.profile_id ? String(raw.profile_id) : null,
+    step: raw.step ? String(raw.step) : null,
+    windows,
+  };
+}
+const STYLE_WINDOW_POSITION_LABELS = { opening: "章首", middle: "章中", closing: "章尾", whole: "整章" };
+const STYLE_PARAGRAPH_TYPE_LABELS = {
+  dialogue: "对白", narration: "叙述", psychology: "心理", description_env: "环境描写",
+  description_char: "人物描写", action: "动作", transition: "过渡", flashback: "回忆",
+};
+const STYLE_WINDOW_STEP_LABELS = { style_draft: "风格稿", neutral_draft: "首稿", scene_literary_rewrite: "近终稿重写稿" };
+/* 一行窗口标签：第{章}章 · 位置 · 段型 · 第{起}–{止}段 · {字}字。后端段落序号从 0 起，作者看到的是从 1 起的段号。 */
+function scnStyleWindowLabel(w) {
+  const parts = [];
+  if (w.chapter > 0) parts.push(`第${w.chapter}章`);
+  const position = STYLE_WINDOW_POSITION_LABELS[w.position] || w.position;
+  if (position) parts.push(position);
+  const ptype = STYLE_PARAGRAPH_TYPE_LABELS[w.paragraphType] || w.paragraphType;
+  if (ptype) parts.push(ptype);
+  parts.push(`第${w.start + 1}–${w.end + 1}段`);
+  parts.push(`${w.chars}字`);
+  return parts.join(" · ");
+}
+function scnStyleWindowKey(bookId, w) { return `${bookId || ""}:${w.start}:${w.end}`; }
+async function scnFetchStyleWindowText(bookId, w) {
+  const query = `start=${encodeURIComponent(w.start)}&end=${encodeURIComponent(w.end)}`;
+  return apiGet(`/api/v2/style-reference/books/${encodeURIComponent(bookId)}/paragraphs?${query}`);
+}
+
+function SceneStyleNoticeStrip({ notices }) {
+  const items = Array.isArray(notices) ? notices.filter((n) => n && n.code) : [];
+  if (!items.length) return null;
+  return (
+    <ul className="scn2-style-notices" data-testid="scene-style-notices" aria-label="风格链路提示">
+      {items.map((n, i) => {
+        const severity = scnStyleNoticeSeverity(n.severity);
+        const known = Boolean(STYLE_NOTICE_LABELS[n.code]);
+        const message = typeof n.message === "string" ? n.message : "";
+        return (
+          <li
+            key={`${n.code}-${i}`}
+            className={`scn2-style-notice sev-${severity}${n.blocking || String(n.severity || "").toLowerCase() === "blocking" ? " is-blocking" : ""}`}
+            data-code={n.code}
+            data-severity={severity}
+          >
+            {severity === "info" ? <I.Info size={13} /> : <I.AlertTriangle size={13} />}
+            <span className="scn2-style-notice-body">
+              <strong className="scn2-style-notice-label">{known ? scnStyleNoticeLabel(n) : n.code}</strong>
+              {message && <span className="scn2-style-notice-msg">{known ? ` — ${message}` : `: ${message}`}</span>}
+              {n.hitCount != null && <span className="scn2-style-notice-msg">（命中 {n.hitCount} 处）</span>}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function SceneStyleWindowsPanel({ styleWindows, fetchText = scnFetchStyleWindowText }) {
+  const [open, setOpen] = React.useState({});
+  const [texts, setTexts] = React.useState({});
+  const [loading, setLoading] = React.useState({});
+  const aliveRef = React.useRef(true);
+  React.useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
+  const windows = styleWindows && Array.isArray(styleWindows.windows) ? styleWindows.windows : [];
+  if (!windows.length) return null;
+  const bookId = styleWindows.bookId || null;
+  const stepLabel = styleWindows.step ? (STYLE_WINDOW_STEP_LABELS[styleWindows.step] || styleWindows.step) : "";
+  const toggle = async (w) => {
+    const key = scnStyleWindowKey(bookId, w);
+    const next = !open[key];
+    setOpen((m) => ({ ...m, [key]: next }));
+    const cached = texts[key];
+    if (!next || !bookId || loading[key] || (cached && !cached.error)) return;
+    setLoading((m) => ({ ...m, [key]: true }));
+    try {
+      const data = await fetchText(bookId, w);
+      const paragraphs = Array.isArray(data && data.paragraphs)
+        ? data.paragraphs.filter((p) => p && typeof p.text === "string")
+        : [];
+      if (aliveRef.current) setTexts((m) => ({ ...m, [key]: { paragraphs, capped: Boolean(data && data.capped) } }));
+    } catch (e) {
+      if (aliveRef.current) setTexts((m) => ({ ...m, [key]: { error: (e && e.message) || "原文取回失败，请重试" } }));
+    } finally {
+      if (aliveRef.current) setLoading((m) => ({ ...m, [key]: false }));
+    }
+  };
+  return (
+    <section className="scn2-evi-block scn2-style-windows" data-testid="scene-style-windows">
+      <h3 className="scn2-evi-h"><I.BookOpen size={13} /> 本场参考窗口 · {windows.length}</h3>
+      <p className="scn2-style-windows-hint">
+        这一场提示里实际放入的参考书原文窗口{stepLabel ? `（${stepLabel}）` : ""}，展开可核对{bookId ? "" : "；参考书已不可用，无法展开原文"}。
+      </p>
+      <ul className="scn2-style-window-list">
+        {windows.map((w, i) => {
+          const key = scnStyleWindowKey(bookId, w);
+          const isOpen = Boolean(open[key]);
+          const entry = texts[key];
+          const busy = Boolean(loading[key]);
+          const panelId = `scn2-style-window-${i}`;
+          return (
+            <li key={key} className={`scn2-style-window${isOpen ? " is-open" : ""}`} data-testid="scene-style-window-row">
+              <button
+                type="button"
+                className="scn2-style-window-row"
+                aria-expanded={isOpen ? "true" : "false"}
+                aria-controls={panelId}
+                disabled={!bookId}
+                onClick={() => toggle(w)}
+              >
+                {isOpen ? <I.ChevronDown size={12} /> : <I.ChevronRight size={12} />}
+                <span className="scn2-style-window-label">{scnStyleWindowLabel(w)}</span>
+              </button>
+              {isOpen && (
+                <div id={panelId} className="scn2-style-window-text" data-testid="scene-style-window-text">
+                  {busy && <span className="scn2-style-window-status">正在取回原文…</span>}
+                  {entry && entry.error && <span className="scn2-style-window-status is-error" role="alert">{entry.error}（再点一次重试）</span>}
+                  {entry && entry.paragraphs && (entry.paragraphs.length
+                    ? entry.paragraphs.map((p) => (
+                        <p key={p.paragraph_index}>
+                          <span className="scn2-style-window-idx tab-num">{Number.isInteger(p.paragraph_index) ? p.paragraph_index + 1 : ""}</span>
+                          {p.text}
+                        </p>
+                      ))
+                    : <span className="scn2-style-window-status">这段区间已没有可显示的段落（参考书可能已重新导入）</span>)}
+                  {entry && entry.capped && <span className="scn2-style-window-status">只显示了这一窗的前 80 段</span>}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
 }
 
 function runJobErrorText(error) {
@@ -718,6 +922,8 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
   // 的 can_archive=false 误渲染成 Q0/Q1 阻断，也不能再展示待裁决按钮。
   qc.state = pipeState === "archived" ? "archived" : "ready";
   qc.draftMode = scnDraftModeFrom(wb);
+  qc.styleNotices = scnStyleNoticesFrom(wb);
+  qc.styleWindows = scnStyleWindowsFrom(wb);
   qc.budgetBlock = budgetBlock;
   if (budgetBlock) {
     qc.gate = {
@@ -733,6 +939,12 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
     budgetBlock
       ? { t: tm(secs), who: "pipeline", text: `${budgetBlock.label}；已有正文与恢复点均已保留，需作者显式追加预算后续跑` }
       : scnGateLog(qc.gate, tm(secs)),
+    qc.styleNotices.length
+      ? { t: tm(secs), who: "pipeline", text: `风格链路提示 ${qc.styleNotices.length} 条：${qc.styleNotices.map(scnStyleNoticeLabel).join("；")}` }
+      : null,
+    qc.styleWindows
+      ? { t: tm(secs), who: "pipeline", text: `本场提示放入参考书原文窗口 ${qc.styleWindows.windows.length} 个（${qc.styleWindows.windows.reduce((sum, w) => sum + (w.chars || 0), 0)} 字），见右栏「本场参考窗口」` }
+      : null,
     { t: tm(secs + 1), who: "qc", text: `本地复检：短句率 ${qc.metrics[0].val} · 句式重复 ${qc.metrics[1].val} · ${qc.verdict.risks}` },
   ].filter(Boolean);
   qc.cost = [
@@ -808,6 +1020,8 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
       cost: [],
       recoveredWithoutDraft: true,
       draftMode: scnDraftModeFrom(wb),
+      styleNotices: scnStyleNoticesFrom(wb),
+      styleWindows: scnStyleWindowsFrom(wb),
       pipeState,
     };
   }
@@ -825,6 +1039,8 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
   qc.rewriteBrief = scnRewriteBriefFrom(wb);
   qc.authorNote = authorNote;
   qc.draftMode = scnDraftModeFrom(wb);
+  qc.styleNotices = scnStyleNoticesFrom(wb);
+  qc.styleWindows = scnStyleWindowsFrom(wb);
   qc.budgetBlock = budgetBlock;
   if (qc.budgetBlock) {
     qc.gate = {
@@ -1074,4 +1290,4 @@ function scnPickList(queuedSids) {
 }
 
 /* 场景工作台只通过显式 ESM 导出连接，不再写入 window 全局命名空间。 */
-export { SceneRunJobControl, runJobStepLabel, scnDraftModeFrom, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+export { SceneRunJobControl, SceneStyleNoticeStrip, SceneStyleWindowsPanel, STYLE_NOTICE_LABELS, runJobStepLabel, scnDraftModeFrom, scnStyleNoticesFrom, scnStyleWindowsFrom, scnStyleNoticeLabel, scnStyleWindowLabel, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

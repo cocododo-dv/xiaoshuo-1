@@ -47,6 +47,7 @@ from novel_system.services.llm_task_runner import LLMNodeContinuityError, LLMNod
 from novel_system.services.prompt_builder import (
     CHAPTER_INPUT_TOKEN_BUDGET,
     PLANNING_INPUT_TOKEN_BUDGET,
+    PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     RUNTIME_MIN_INPUT_BUDGETS,
     SCENE_INPUT_TOKEN_BUDGET,
     SCENE_INPUT_TOKEN_BUDGET_ENV,
@@ -267,11 +268,17 @@ def test_repo_prompt_budgets_match_runtime_floors() -> None:
     }
     assert mismatched == {}
     assert SCENE_INPUT_TOKEN_BUDGET == 24000
-    assert STYLE_PASS_INPUT_TOKEN_BUDGET == 64000
+    assert STYLE_PASS_INPUT_TOKEN_BUDGET == 96000  # 2026-09-14 保真修补:样例块 60000 字
     assert PLANNING_INPUT_TOKEN_BUDGET == 8000
+    assert PLANNING_STYLE_INPUT_TOKEN_BUDGET == 24000  # 2026-09-14 WP6:规划 / 局部改写 + k≤3 样例窗口
     assert CHAPTER_INPUT_TOKEN_BUDGET == 30000
     for name in ("neutral_draft", "hard_qc"):
         assert RUNTIME_MIN_INPUT_BUDGETS[name] == SCENE_INPUT_TOKEN_BUDGET
+    # 2026-09-14 WP6:拿到参考(结构画像 / 场景手法 / k≤3 样例窗口)的规划与局部改写节点
+    for name in ("scene_blueprint", "chapter_story_architecture", "character_pressure_blueprint", "writer_passage_patch"):
+        assert RUNTIME_MIN_INPUT_BUDGETS[name] == PLANNING_STYLE_INPUT_TOKEN_BUDGET
+    # WP6.3:作者稿建议拿到完整 k 的样例块,与风格通道同档
+    assert RUNTIME_MIN_INPUT_BUDGETS["author_proposal_generate"] == STYLE_PASS_INPUT_TOKEN_BUDGET
     # 2026-09-09 样例优先:拿到 [STYLE_REFERENCE] 前缀(≤3 万字原文样例)的节点单独一档
     for name in (
         "style_draft",

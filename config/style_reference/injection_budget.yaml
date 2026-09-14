@@ -43,9 +43,13 @@ metric_guidance_max_items: 6
 #   漂移修正激活时不轮换
 # few_shot_affinity_scan_chars:计算窗口辨识度时只看窗口前 N 字(控制大窗口的计算开销)
 # 2026-09-12 最大化模仿(Step 2):k 8→10、单窗 3500→4000、整块 30000→40000。满强度约 3 万字原文。
-few_shot_k: 10
+# 2026-09-14 保真修补(WP3):k 10→12、整块 40000→60000、轮换池倍数 3→6;样例改由全书窗口索引
+#   (profile_json.exemplar_windows / exemplar_index.py)选取——根哈希一致时整本书任何一窗都可进提示,
+#   按场景段型、章内位置(开章 / 收章)、辨识度排序,同一章不重复选,再按场景轮换。旧画像无索引时
+#   惰性复算;根哈希失配时退回证据引文路径。风格通道输入预算随之 64000→96000(prompt_builder)。
+few_shot_k: 12
 few_shot_k_min: 3
-few_shot_block_max_chars: 40000
+few_shot_block_max_chars: 60000
 few_shot_window_paragraphs: 60
 few_shot_window_max_chars: 4000
 few_shot_paragraph_max_chars: 1500
@@ -54,8 +58,10 @@ few_shot_quote_max_chars: 120
 few_shot_candidate_scan_per_type: 12
 few_shot_contract_neighbour_span: 2
 few_shot_rotate_per_scene: true
-few_shot_rotation_pool_multiplier: 3
+few_shot_rotation_pool_multiplier: 6
 few_shot_affinity_scan_chars: 1200
+# exemplar_index_min_window_chars:全书窗口索引里短于此的窗口并入前一窗或丢弃(章只有一窗时保留)
+exemplar_index_min_window_chars: 600
 
 # 2026-09-12 风格直起(Step 2,docs/style-first-draft-plan-2026-09-12.md):
 # draft_mode_default:绑定 config_json 未写 draft_mode 时的起草方式——

@@ -25,30 +25,34 @@ from novel_system.services.scene_structure_brief import (
     SCENE_STRUCTURE_SECTION_KEY,
     render_scene_structure_brief,
 )
-from novel_system.services.style_reference.narrative_guidance import (
-    NARRATIVE_GUIDANCE_SECTION_KEY,
-    collect_narrative_guidance,
-    render_narrative_section,
+from novel_system.services.style_prompt_injection import (
+    PLANNING_FEW_SHOT_K_CAP,
+    inject_style_reference_prefix,
 )
 from novel_system.services.style_reference.planning_context import (
-    render_planning_reference,
-    structure_card_text,
+    STYLE_PLANNING_GUIDANCE_KEY,
+    STYLE_REFERENCE_DIGEST_KEYS,
+    STYLE_STRUCTURE_CARD_KEY,
+    build_planning_style_reference,
+    register_planning_style_reference,
+    snapshot_has_style_reference,
+    style_reference_prompt_blocks,
 )
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 _LOGGER = logging.getLogger(__name__)
 
 # 2026-09-12 结构跟随（Step 2 Track B）：蓝图除叙事机制外再看参考作者的结构画像与场景手法。
-# 这两个摘要键不在 context_budget.SECTION_SPECS 里（那张表属于场景 bundle），由
-# ``_blueprint_user_prompt`` 直接渲染进 user prompt；体量由渲染器封顶（画像 ≤1,500 字 +
-# ≤6 条 ≤150 字样例 + ≤10 行手法）。
-STYLE_STRUCTURE_CARD_KEY = "style_structure_card"
-STYLE_PLANNING_GUIDANCE_KEY = "style_planning_guidance"
-STYLE_REFERENCE_DIGEST_KEYS: tuple[str, ...] = (
-    NARRATIVE_GUIDANCE_SECTION_KEY,
-    STYLE_STRUCTURE_CARD_KEY,
-    STYLE_PLANNING_GUIDANCE_KEY,
-)
+# 三个摘要键与登记 / 渲染逻辑自 2026-09-14（WP6.1）起与近终稿规划共用，定义在
+# ``style_reference.planning_context``；这里保留同名导出给既有调用方。
+__all__ = [
+    "SCENE_BLUEPRINT_FIELDS",
+    "STYLE_PLANNING_GUIDANCE_KEY",
+    "STYLE_REFERENCE_DIGEST_KEYS",
+    "STYLE_STRUCTURE_CARD_KEY",
+    "SceneBlueprintService",
+    "snapshot_has_style_reference",
+]
 # 有风格参考时这两个字段允许「无」：参考作者惯以概述 / 氛围收场，就不硬造一个动作结尾。
 _STYLE_OPTIONAL_FIELDS: frozenset[str] = frozenset({"ending_action", "anti_summary_rule"})
 _NONE_MARKERS: frozenset[str] = frozenset({"无", "無", "none", "n/a"})
@@ -110,6 +114,13 @@ class SceneBlueprintService:
         chapter = self._require_chapter(scene.chapter_id)
         source = self._source_snapshot(scene, chapter)
         prompt = self.prompt_builder.build(source["snapshot"], "scene_blueprint")
+        user_prompt = _blueprint_user_prompt(
+            prompt["user_prompt"],
+            scene=scene,
+            chapter=chapter,
+            source=source,
+        )
+        prompt = self._inject_style_reference_prefix(prompt, scene, source, final_user_prompt=user_prompt)
         try:
             node_result = self._llm_runner.run(
                 scene_id=scene.scene_id,
@@ -119,12 +130,7 @@ class SceneBlueprintService:
                 node_id="scene_blueprint",
                 step="scene_blueprint",
                 prompt=prompt,
-                user_prompt=_blueprint_user_prompt(
-                    prompt["user_prompt"],
-                    scene=scene,
-                    chapter=chapter,
-                    source=source,
-                ),
+                user_prompt=user_prompt,
                 execution_step_key=execution_step_key,
             )
             payload = _validate_blueprint_payload(
@@ -240,48 +246,28 @@ class SceneBlueprintService:
         # ending_action 受其牵引。2026-09-12 结构跟随：再加结构画像（章 / 场尺度、开合方式、
         # 章首章尾样例）与场景手法（scene.* / theme.* 观察陈述）。无绑定 / 旧画像 / 解析失败
         # → 对应块不注入；三块都空时连契约哈希也不登记（与旧画像行为一致）。
-        style = self._style_reference_context(scene)
-        if style is not None:
-            contract, contract_hash = style
-            lines = collect_narrative_guidance(contract)
-            reference = render_planning_reference(contract, session=self.session)
-            digests: dict[str, str] = {}
-            if lines:
-                digests[NARRATIVE_GUIDANCE_SECTION_KEY] = render_narrative_section(lines)
+        # 2026-09-14（WP6.1）：三块的生成与登记与近终稿规划共用 planning_context 的助手。
+        contract = self._style_reference_contract(scene)
+        if contract is not None:
+            reference = build_planning_style_reference(contract, session=self.session)
             if reference is not None:
-                card = structure_card_text(reference)
-                if card:
-                    digests[STYLE_STRUCTURE_CARD_KEY] = card
-                if reference.get("planning_guidance"):
-                    digests[STYLE_PLANNING_GUIDANCE_KEY] = str(reference["planning_guidance"])
-            if digests:
-                refs = snapshot["source_version_refs"]
-                refs["style_reference_runtime_contract_hash"] = contract_hash
-                refs["style_narrative_guidance_line_count"] = len(lines)
-                if STYLE_STRUCTURE_CARD_KEY in digests:
-                    refs["style_structure_card_chars"] = len(digests[STYLE_STRUCTURE_CARD_KEY])
-                if STYLE_PLANNING_GUIDANCE_KEY in digests:
-                    refs["style_planning_guidance_line_count"] = sum(
-                        1 for line in digests[STYLE_PLANNING_GUIDANCE_KEY].splitlines() if line.startswith("- ")
-                    )
-                for key in STYLE_REFERENCE_DIGEST_KEYS:
-                    if key not in digests:
-                        continue
-                    snapshot["ordered_injections"].append(
-                        {"slot": key, "ref_id": contract_hash, "digest_key": key}
-                    )
-                    snapshot["inline_digests"][key] = digests[key]
+                register_planning_style_reference(snapshot, reference)
         source_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
         return {
             "source_bundle_id": source_bundle_id,
             "source_bundle_hash": state.current_bundle_hash if state and state.current_bundle_hash else source_hash,
             "snapshot": snapshot,
+            # WP6.2：蓝图的 [STYLE_REFERENCE] 前缀必须与快照登记的契约同源（同一次解析、同一哈希）
+            "style_runtime_contract": contract,
         }
 
-    def _style_reference_context(self, scene: SceneCard) -> tuple[dict[str, Any], str] | None:
-        """场景作用域的冻结契约 + 哈希；无绑定 → None，解析失败 → None（只记日志，不阻断规划）。"""
+    def _style_reference_contract(self, scene: SceneCard) -> dict[str, Any] | None:
+        """场景作用域（scene > character > project > global）按当前 active 绑定解析出的契约。
+
+        无绑定 → None，解析失败 → None（只记日志，不阻断规划）。
+        """
         try:
-            contract = resolve_scene_style_runtime_contract(self.session, scene)
+            return resolve_scene_style_runtime_contract(self.session, scene)
         except Exception:  # noqa: BLE001 — 可选增强：解析失败只记日志，不阻断规划
             _LOGGER.warning(
                 "scene_blueprint style reference skipped for scene %s",
@@ -289,9 +275,47 @@ class SceneBlueprintService:
                 exc_info=True,
             )
             return None
-        if contract is None:
-            return None
-        return contract, str(contract["contract_hash"])
+
+    def _inject_style_reference_prefix(
+        self,
+        prompt: dict[str, Any],
+        scene: SceneCard,
+        source: dict[str, Any],
+        *,
+        final_user_prompt: str,
+    ) -> dict[str, Any]:
+        """2026-09-14 保真修补（WP6.2）：有绑定时蓝图也拿到 ``[STYLE_REFERENCE]`` 前缀。
+
+        ending_action / information_release / image_anchor / anti_summary_rule 决定的是作者
+        怎样收场、怎样放信息——只看叙事机制与结构画像的摘要而看不到原文，蓝图仍会按房风
+        写「动作收尾」。前缀按来源快照登记的同一份契约渲染（``runtime_contract=``），样例
+        窗口封顶 :data:`PLANNING_FEW_SHOT_K_CAP`，``context_text=None``（规划期没有稿子），
+        并按最终 user prompt 压进模板预算（装不下时按整窗口卸载）。无绑定 → 提示词逐字不变；
+        注入失败 → 回退基础 prompt（可选增强，绝不阻断规划）。
+        """
+        contract = source.get("style_runtime_contract") if isinstance(source, dict) else None
+        if not contract:
+            return prompt
+        try:
+            injected = inject_style_reference_prefix(
+                self.session,
+                prompt,
+                scene,
+                None,
+                task_type="scene_generation",
+                context_text=None,
+                final_user_prompt=final_user_prompt,
+                few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP,
+                runtime_contract=contract,
+            )
+            return injected if injected is not None else prompt
+        except Exception:  # noqa: BLE001 — 可选增强：注入失败只记日志，不阻断规划
+            _LOGGER.warning(
+                "scene_blueprint style reference prefix skipped for scene %s",
+                scene.scene_id,
+                exc_info=True,
+            )
+            return prompt
 
     def _require_scene(self, scene_id: str) -> SceneCard:
         return require_scene(self.session, scene_id)
@@ -300,37 +324,11 @@ class SceneBlueprintService:
         return require_chapter(self.session, chapter_id)
 
 
-def snapshot_has_style_reference(snapshot: Any) -> bool:
-    """来源快照是否带任一风格参考块（叙事机制 / 结构画像 / 场景手法）。"""
-    if not isinstance(snapshot, dict):
-        return False
-    digests = snapshot.get("inline_digests")
-    if not isinstance(digests, dict):
-        return False
-    return any(str(digests.get(key) or "").strip() for key in STYLE_REFERENCE_DIGEST_KEYS)
-
-
-def _style_reference_prompt_blocks(source: dict[str, Any]) -> list[str]:
-    """结构画像 / 场景手法不在 SECTION_SPECS 里，直接渲染进 user prompt（体量已由渲染器封顶）。"""
-    snapshot = source.get("snapshot") if isinstance(source, dict) else None
-    digests = snapshot.get("inline_digests") if isinstance(snapshot, dict) else None
-    if not isinstance(digests, dict):
-        return []
-    blocks: list[str] = []
-    card = str(digests.get(STYLE_STRUCTURE_CARD_KEY) or "").strip()
-    if card:
-        blocks.extend(["", "## Style Reference — Structure Card", card])
-    guidance = str(digests.get(STYLE_PLANNING_GUIDANCE_KEY) or "").strip()
-    if guidance:
-        blocks.extend(["", "## Style Reference — Scene Craft", guidance])
-    return blocks
-
-
 def _blueprint_user_prompt(base_prompt: str, *, scene: SceneCard, chapter: ChapterGoal, source: dict[str, Any]) -> str:
     return "\n".join(
         [
             base_prompt,
-            *_style_reference_prompt_blocks(source),
+            *style_reference_prompt_blocks(source),
             "",
             "## Scene Blueprint Target",
             f"Scene ID: {scene.scene_id}",

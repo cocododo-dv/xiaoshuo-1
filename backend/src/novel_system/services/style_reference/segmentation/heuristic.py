@@ -84,12 +84,14 @@ _TITLE_RE = re.compile(
     r"|序[章幕言]?|楔子|尾声|后记|番外|引子|终章|上篇|中篇|下篇"
     r"|chapter\s*\d+"
     r"|《[^》]{1,40}》"
-    r")(?:\s*[：:·—\-\s]\s*\S{1,30})?$",
+    # 2026-09-14 保真修补:副题允许含空格与双语(「第一幕 卡塞尔之门 The Gate to Cassell」),
+    # 但不能含分句标点(，、；),避免把普通短句当标题。
+    r")(?:\s*[：:·—\-\s]\s*[^\s，、；,;][^，、；,;]{0,46})?$",
     re.IGNORECASE,
 )
 _SENTENCE_END_CHARS = "。！？!?…"
 _SHORT_PARAGRAPH_CHARS = 30
-_TITLE_MAX_CHARS = 40
+_TITLE_MAX_CHARS = 48  # 2026-09-14:双语副题的章题可超过 40 字
 _INHERITABLE_TYPES = frozenset(
     {
         "dialogue",
