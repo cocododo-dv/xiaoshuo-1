@@ -217,12 +217,6 @@ def cleanup_metric_events(
             {"cutoff": cutoff},
         )
         session.flush()
-        # PR-12 — 真删后失效聚合缓存,避免 GET /metrics 返回删前的旧快照
-        from novel_system.services.style_reference.metrics_aggregator import (
-            clear_metrics_cache,
-        )
-
-        clear_metrics_cache()
 
     return {
         "deleted_count": deleted_count,

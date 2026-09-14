@@ -2157,7 +2157,7 @@ class StyleReferenceMetricEvent(Base):
     """PR-10 §13 — 可观测性事件流(append-only,无 FK)。
 
     InjectionService / qc gate / ValidationOrchestrator / SceneAutoRewriteService
-    各调用点写 1 行;MetricsAggregator 按 event_kind + 时间窗口 group by。
+    各调用点写 1 行;style_continuity 读 style_drift_observed,其余为审计(2026-09-14 起无聚合端点)。
     event_kind 5 个允许值(由文档约束,**不**是 Python Enum):
     injection_invoked / qc_gate_decided / validation_executed /
     auto_rewrite_triggered / auto_rewrite_completed

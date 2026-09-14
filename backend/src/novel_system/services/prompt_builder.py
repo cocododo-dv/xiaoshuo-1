@@ -66,8 +66,15 @@ SCENE_INPUT_TOKEN_BUDGET = 24000
 # 近终稿改写与验收评审）在场景族之上再加最多约 3 万字原文样例（injection_budget.yaml
 # few_shot_block_max_chars）+ 抽象块 + 完整中性稿，所以单独一档 64000。同样受
 # NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET 整体覆盖；装不下时注入器按整窗口卸载样例。
-STYLE_PASS_INPUT_TOKEN_BUDGET = 64000
+STYLE_PASS_INPUT_TOKEN_BUDGET = 96000  # 2026-09-14 保真修补:样例块 60000 字 + bundle + 稿件仍不卸载
 PLANNING_INPUT_TOKEN_BUDGET = 8000
+# 2026-09-14 保真修补(WP6):拿到参考的规划 / 局部改写节点——scene_blueprint(k≤3 样例窗口
+# ≤12k 字 + 抽象块 + 结构画像 / 场景手法摘要)、chapter_story_architecture 与
+# character_pressure_blueprint(结构画像 + 样例 + 手法 + 叙事机制,约 3.5k tok,原 8000 在
+# 12 场章上只剩 200 tok 余量)、writer_passage_patch(k≤3 窗口 + 摘录 + 截断上下文)——在
+# 规划族 8000 之上再留样例块的余量。更大的预算从不拒绝更小的提示词;无绑定时提示词本身
+# 不变。writer_deep_review 留在章节族 30000(≥ 24000,且必须继续装下 15000 字的整章)。
+PLANNING_STYLE_INPUT_TOKEN_BUDGET = 24000
 CHAPTER_INPUT_TOKEN_BUDGET = 30000
 SCENE_INPUT_TOKEN_BUDGET_ENV = "NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET"
 RUNTIME_MIN_INPUT_BUDGETS = {
@@ -83,15 +90,17 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "style_salvage_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "soft_qc": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "near_final_acceptance_review": STYLE_PASS_INPUT_TOKEN_BUDGET,
-    # 规划族 + 局部改写（载荷有界）
-    "scene_blueprint": PLANNING_INPUT_TOKEN_BUDGET,
-    "chapter_story_architecture": PLANNING_INPUT_TOKEN_BUDGET,
-    "character_pressure_blueprint": PLANNING_INPUT_TOKEN_BUDGET,
-    "writer_passage_patch": PLANNING_INPUT_TOKEN_BUDGET,
+    # 规划族 + 局部改写（载荷有界）+ 2026-09-14 WP6 的参考块余量
+    "scene_blueprint": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
+    "chapter_story_architecture": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
+    "character_pressure_blueprint": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
+    "writer_passage_patch": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     # 章节族（author_* 两个模板同时服务场景稿与整章稿，按最大者归章节族）
     "chapter_near_final_review": CHAPTER_INPUT_TOKEN_BUDGET,
     "writer_deep_review": CHAPTER_INPUT_TOKEN_BUDGET,
-    "author_proposal_generate": CHAPTER_INPUT_TOKEN_BUDGET,
+    # 2026-09-14 WP6.3：作者稿建议（整稿 / 续写 / 近终稿改写 / 语言 / 对白）拿到完整 k 的
+    # 样例块（≤60000 字），与风格通道同一档；无绑定时仍是整章稿也装得下的上限。
+    "author_proposal_generate": STYLE_PASS_INPUT_TOKEN_BUDGET,
 }
 CHARACTER_CONTINUITY_INSTRUCTION = (
     "Preserve character identity and pronoun continuity across the scene. "

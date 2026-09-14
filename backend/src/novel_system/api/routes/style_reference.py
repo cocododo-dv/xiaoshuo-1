@@ -19,13 +19,14 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
-from novel_system.db.models import ReviewItem, utcnow
+from novel_system.db.models import ReviewItem, StyleReferenceParagraph, utcnow
 
 logger = logging.getLogger(__name__)
 from novel_system.services.errors import DomainError
@@ -49,7 +50,6 @@ from novel_system.services.style_reference.injection import (
     default_injection_strategy,
     injection_task_defaults,
 )
-from novel_system.services.style_reference.metrics_aggregator import MetricsAggregator
 from novel_system.services.style_reference.schemas import (
     BindingScope,
     InjectionPreviewRequest,
@@ -474,6 +474,65 @@ def get_book(
             status_code=404,
         )
     return ok({"book": _serialize_book(book)}, req_id=_req_id(request))
+
+
+# 2026-09-14 风格保真修补(WP4.2):本场参考窗口「展开原文」——按段落序号闭区间读参考书原文。
+# 只服务本机作者读自己导入的书,不做云策略门(原文不出本机);每次最多 PARAGRAPH_RANGE_MAX 段,
+# 超出的按 start 截到上限并以 capped=true 告知,调用方按返回的 end 续读。
+PARAGRAPH_RANGE_MAX = 80
+
+
+@router.get(f"{PATH_PREFIX}/books/{{book_id}}/paragraphs")
+def get_book_paragraph_range(
+    book_id: str,
+    request: Request,
+    start: int,
+    end: int,
+    session: Session = Depends(get_session),
+):
+    """只读:``[start, end]``(闭区间,段落序号从 0 起)内的段落原文,按序号升序。"""
+    repo = StyleReferenceRepository(session)
+    book = repo.get_book(book_id)
+    if book is None:
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_NOT_FOUND",
+            f"book {book_id!r} not found",
+            status_code=404,
+        )
+    if start < 0 or end < start:
+        raise DomainError(
+            "STYLE_REFERENCE_PARAGRAPH_RANGE_INVALID",
+            "paragraph range must satisfy 0 <= start <= end",
+            status_code=400,
+            details={"start": start, "end": end},
+        )
+    effective_end = min(end, start + PARAGRAPH_RANGE_MAX - 1)
+    rows = session.scalars(
+        select(StyleReferenceParagraph)
+        .where(
+            StyleReferenceParagraph.book_id == book_id,
+            StyleReferenceParagraph.paragraph_index >= start,
+            StyleReferenceParagraph.paragraph_index <= effective_end,
+        )
+        .order_by(StyleReferenceParagraph.paragraph_index)
+    ).all()
+    return ok(
+        {
+            "book_id": book_id,
+            "start": start,
+            "end": effective_end,
+            "capped": effective_end < end,
+            "paragraphs": [
+                {
+                    "paragraph_index": row.paragraph_index,
+                    "paragraph_type": row.paragraph_type,
+                    "text": row.text,
+                }
+                for row in rows
+            ],
+        },
+        req_id=_req_id(request),
+    )
 
 
 @router.delete(f"{PATH_PREFIX}/books/{{book_id}}")
@@ -1060,8 +1119,6 @@ def apply_profile(
         return {
             "profile_id": result.profile_id,
             "binding_id": result.binding_id,
-            "review_ids": result.review_ids,
-            "item_type_counts": result.item_type_counts,
             "rag_index": result.rag_index,
         }
 
@@ -1491,12 +1548,24 @@ def dryrun_injection_preview(
     if payload.include_metric is not None:
         config["include_metric"] = payload.include_metric
     strategy = payload.strategy or default_injection_strategy(payload.task_type)
-    fragments, stats = InjectionService(session).render_preview(profile, strategy, config)
+    svc = InjectionService(session)
+    if payload.scene_id:
+        # 2026-09-14 保真修补(WP4.3):按场景预览——与注入器同一轮换种子与位置提示,
+        # 作者看到的就是这一场实际会拿到的窗口(场景不存在时只按种子轮换)。
+        from novel_system.db.models import SceneCard
+        from novel_system.services.style_reference.injection import scene_sampling_hints
+
+        svc.few_shot_seed = str(payload.scene_id)
+        svc.scene_position, svc.scene_hint_types = scene_sampling_hints(
+            session.get(SceneCard, payload.scene_id)
+        )
+    fragments, stats = svc.render_preview(profile, strategy, config)
     return ok(
         InjectionPreviewResponse(
             fragments=fragments,
             prefix=fragments.to_system_prompt_prefix(),
             stats=InjectionPreviewStats(**stats),
+            window_refs=[dict(item) for item in svc.last_few_shot_window_refs],
         ).model_dump(),
         req_id=_req_id(request),
     )
@@ -1536,30 +1605,3 @@ def get_injection_layers(
     return ok(data, req_id=_req_id(request))
 
 
-# ---------------------------------------------------------------------------
-# PR-10 — Metrics endpoint
-# ---------------------------------------------------------------------------
-
-
-@router.get(f"{PATH_PREFIX}/metrics")
-def get_style_reference_metrics(
-    request: Request,
-    window_hours: int = 168,
-    session: Session = Depends(get_session),
-):
-    """PR-10 §13 — 4 个运营指标 + sample_counts。window_hours=0 = 全部历史。"""
-    aggregator = MetricsAggregator(session)
-    snapshot = aggregator.compute_all(window_hours=max(0, int(window_hours)))
-    return ok({"metrics": snapshot}, req_id=_req_id(request))
-
-
-@router.get(f"{PATH_PREFIX}/metrics/daily")
-def get_style_reference_metrics_daily(
-    request: Request,
-    window_days: int = 14,
-    session: Session = Depends(get_session),
-):
-    """PR-22 — injection 调用量每日趋势(零填充连续轴,window_days 钳 [1,90])。"""
-    aggregator = MetricsAggregator(session)
-    result = aggregator.daily_injection_counts(window_days=int(window_days))
-    return ok(result, req_id=_req_id(request))

@@ -50,6 +50,98 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
+# 2026-09-14 保真修补:副文本(盗版站声明 / 脚注 / 译注)不是作者的文字——导入时剥离,已导入的书在
+# 结构样例、样例窗口与抽取采样处过滤。真实书上它们曾成为「章首样例」与样例窗口的一部分。
+_PARATEXT_FOOTNOTE_RE = re.compile(
+    r"^\s*(?:\[\d{1,3}\]|【\d{1,3}】|〔\d{1,3}〕|\(\d{1,3}\)|（\d{1,3}）|[①-⑳]|注\s*[：:]|译注\s*[：:])"
+)
+_PARATEXT_LINK_RE = re.compile(
+    r"(?:https?://|www\.|[A-Za-z0-9-]+\.(?:com|net|org|cn|cc|me|info|top|xyz)\b)",
+    re.IGNORECASE,
+)
+_PARATEXT_SITE_WORDS: tuple[str, ...] = (
+    "用户上传",
+    "本站",
+    "电子书",
+    "免费下载",
+    "存储服务",
+    "版权",
+    "TXT",
+    "txt",
+    "更多精彩",
+    "更新最快",
+    "手打",
+)
+
+
+# 2026-09-14 保真修补(WP5):场分隔——纯符号行(*** / ——— / ※ / ~~~ …)与原文里 3 个以上连续换行。
+# 结构画像据此得到每章场数与场长,样例窗口不跨场。
+_SCENE_BREAK_RE = re.compile(
+    r"^[\s\*＊※◇◆□■○●〇△▲☆★~～\-—―–_＿=＝#＃\.·•…、:：;；\|｜/／\\<>《》()（）\[\]【】]{1,40}$"
+)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def is_scene_break_paragraph(text: str) -> bool:
+    """段落是否为纯符号的场分隔行(不含任何汉字,≤40 字符)。"""
+    stripped = str(text or "").strip()
+    if not stripped or len(stripped) > 40 or _CJK_RE.search(stripped):
+        return False
+    return _SCENE_BREAK_RE.match(stripped) is not None
+
+
+def explicit_scene_breaks(text: str) -> list[int]:
+    """原文(已统一换行、**尚未**合并多余空行)里 3 个以上连续换行所在的段落边界。
+
+    返回「其后紧跟该空白的段落」在 :func:`split_paragraphs` 编号下的索引(空行切段口径;
+    若该书退化为单换行切段,空行不是段界,返回空列表由调用方处理)。
+    """
+    if not text:
+        return []
+    breaks: list[int] = []
+    count = 0
+    for part in re.split(r"(\n\s*\n)", text):
+        if not part:
+            continue
+        if part.startswith("\n") and part.strip() == "":
+            if part.count("\n") >= 3 and count > 0:
+                breaks.append(count - 1)
+            continue
+        if part.strip():
+            count += 1
+    return sorted(set(breaks))
+
+
+# 单独命中即判副文本的强标记(「----用户上传之内容开始----」这类分隔线只含一个站点用语)
+_PARATEXT_STRONG_WORDS: tuple[str, ...] = (
+    "用户上传",
+    "免费下载",
+    "本站只提供",
+    "版权与本站",
+    "更新最快",
+    "内容简介",
+    "作者简介",
+)
+
+
+def is_paratext_paragraph(text: str) -> bool:
+    """段落是否为副文本:脚注 / 译注、网址、盗版站声明(强标记单独命中,或 ≥2 个站点用语命中)。"""
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    if _PARATEXT_FOOTNOTE_RE.match(stripped):
+        return True
+    if any(word in stripped for word in _PARATEXT_STRONG_WORDS):
+        return True
+    hits = sum(1 for word in _PARATEXT_SITE_WORDS if word in stripped)
+    if hits >= 2:
+        return True
+    # 网址只在短行或伴随站点用语时算副文本——小说正文里人物也会「键入网址」
+    if _PARATEXT_LINK_RE.search(stripped) and (len(stripped) <= 60 or hits >= 1):
+        return True
+    return False
+
+
 def compute_text_checksum(normalized_text: str) -> str:
     """对清洗后文本计算 SHA256 hexdigest。
 

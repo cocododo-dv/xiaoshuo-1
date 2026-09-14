@@ -5,7 +5,7 @@
 重置。
 
 支持的 name 与 §A 配置文件清单一致(input_thresholds / sensory_lexicon /
-extraction / banned_adjectives / tolerance_floors / candidate_rerank),v2 声音签名
+extraction / banned_adjectives / tolerance_floors),v2 声音签名
 另加 function_words / voice_baseline。`anti_plagiarism_template.txt`
 不是 YAML,用 `load_text_template` 加载。
 
@@ -38,7 +38,7 @@ def _load_yaml(name: str) -> Any:
         raise FileNotFoundError(
             f"style_reference config not found: {path}"
             f" (expected one of: input_thresholds / sensory_lexicon / extraction / "
-            f"banned_adjectives / tolerance_floors / candidate_rerank / "
+            f"banned_adjectives / tolerance_floors / "
             f"function_words / voice_baseline)"
         )
     return yaml.safe_load(path.read_text(encoding="utf-8"))

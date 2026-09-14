@@ -331,7 +331,7 @@ def test_budget_allocation_and_k_follow_spec_formulas() -> None:
     assert sum(_allocate_abstract_budget(100, 5).values()) <= 2400 * 1.7
     assert sum(_allocate_abstract_budget(100, 5).values()) > 2400 * 1.6
     # 2026-09-12 最大化模仿:k_min=3 / k_max=10;50 → round(6.5)=7(四舍五入,不用银行家舍入)
-    assert _few_shot_k(0) == 3 and _few_shot_k(50) == 7 and _few_shot_k(100) == 10
+    assert _few_shot_k(0) == 3 and _few_shot_k(50) == 8 and _few_shot_k(100) == 12  # 2026-09-14:k 3→12
     assert _few_shot_k(25) == 5  # round(3 + 7 × 0.25) = round(4.75) = 5
 
 
@@ -549,14 +549,14 @@ def test_few_shot_windows_are_multi_paragraph_and_bounded() -> None:
     block = fragments.few_shot_block
     assert "[UNTRUSTED_REFERENCE_DATA:few_shot]" in block
     assert "风格样例" in block
-    assert stats["few_shot_windows"] == stats["few_shot_k"] == 10
+    assert stats["few_shot_windows"] == stats["few_shot_k"] == 12
     assert "连续" in block and "段窗口" in block  # 多段窗口
     # 窗口内段落以换行分隔(模型能看到换段)
     windows = [seg.split("」")[0] for seg in block.split("「")[1:] if "」" in seg]
     assert any("\n" in window for window in windows)
-    assert stats["few_shot_chars"] <= 40000
+    assert stats["few_shot_chars"] <= 60000
     inner = block.split("[UNTRUSTED_REFERENCE_DATA:few_shot]")[1].split("[/UNTRUSTED_REFERENCE_DATA]")[0]
-    assert len(inner) <= 40000 + 400
+    assert len(inner) <= 60000 + 400
     # 样例优先:标题明令「以这位作者的手笔写本场」,不再限定「只学句法节奏」
     assert "手笔" in block and "只学习句群" not in block
     # 窗口不重叠:同一段落不出现两次
@@ -572,7 +572,7 @@ def test_few_shot_window_count_follows_intensity() -> None:
         _fragments, stats = _render(profile_id, "mixed", {"intensity": intensity})
         counts.append(stats["few_shot_windows"])
         assert stats["few_shot_windows"] == _few_shot_k(intensity)
-    assert counts == [3, 7, 10]
+    assert counts == [3, 8, 12]  # 2026-09-14:k 3→12
 
 
 def test_dialogue_heavy_scene_gets_dialogue_windows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -597,7 +597,7 @@ def test_dialogue_heavy_scene_gets_dialogue_windows(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(injection_module, "_pick_sample_windows", _spy)
     fragments, stats = _render(profile_id, "B", {"intensity": 100}, context_text=dialogue_context)
     # render_preview 必须把调用方设置的 context_text 传给 _render:配额真的生效
-    assert calls and calls[-1] == {"k": 10, "dialogue_quota": math.ceil(10 / 2)}
+    assert calls and calls[-1] == {"k": 12, "dialogue_quota": math.ceil(12 / 2)}
     block = fragments.few_shot_block
     windows = [seg.split("」")[0] for seg in block.split("「")[1:]]
     assert len(windows) == stats["few_shot_windows"] >= 4
@@ -606,7 +606,7 @@ def test_dialogue_heavy_scene_gets_dialogue_windows(monkeypatch: pytest.MonkeyPa
     # 无上下文时不设配额(对照组)
     calls.clear()
     _render(profile_id, "B", {"intensity": 100})
-    assert calls and calls[-1] == {"k": 10, "dialogue_quota": 0}
+    assert calls and calls[-1] == {"k": 12, "dialogue_quota": 0}
 
 
 def test_few_shot_respects_local_only_and_missing_index() -> None:

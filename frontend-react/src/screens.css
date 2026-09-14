@@ -1555,6 +1555,32 @@
 .scn2-evi-h { display: flex; align-items: center; gap: 7px; font-family: var(--font-sans); font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 0; }
 .scn2-evi-h svg { color: var(--ink-3); }
 
+/* 2026-09-14 WP4「作者看得见」：风格链路提示条（横幅之下）+ 本场参考窗口（证据栏） */
+.scn2-style-notices { list-style: none; margin: 0; padding: 8px 32px 0; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+.scn2-style-notice { display: flex; align-items: flex-start; gap: 8px; padding: 7px 11px; border-radius: 8px; font-size: 12.5px; line-height: 1.55; background: var(--slate-wash); color: var(--slate); min-width: 0; }
+.scn2-style-notice svg { flex-shrink: 0; margin-top: 3px; }
+.scn2-style-notice.sev-warning { background: var(--gold-wash); color: var(--gold); }
+.scn2-style-notice.sev-error { background: var(--crimson-wash); color: var(--crimson); }
+.scn2-style-notice.is-blocking .scn2-style-notice-label { text-decoration: underline; text-underline-offset: 3px; }
+.scn2-style-notice-body { min-width: 0; overflow-wrap: anywhere; }
+.scn2-style-notice-label { font-weight: 600; }
+.scn2-style-notice-msg { color: var(--ink-2); }
+.scn2-style-windows-hint { margin: 0; font-size: 11.5px; color: var(--ink-3); line-height: 1.5; }
+.scn2-style-window-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.scn2-style-window-row { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: var(--paper-0); border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 12px; line-height: 1.5; color: var(--ink-1); cursor: pointer; transition: border-color var(--t-fast); }
+.scn2-style-window-row:hover:not(:disabled) { border-color: var(--line-3); }
+.scn2-style-window-row:disabled { cursor: default; color: var(--ink-3); }
+.scn2-style-window-row svg { flex-shrink: 0; color: var(--ink-3); }
+.scn2-style-window-label { min-width: 0; overflow-wrap: anywhere; }
+.scn2-style-window-text { margin: 4px 0 2px; padding: 8px 10px; background: var(--paper-1); border-left: 2px solid var(--line-3); border-radius: 0 8px 8px 0; font-size: 12.5px; line-height: 1.8; color: var(--ink-2); max-height: 320px; overflow-y: auto; }
+.scn2-style-window-text p { margin: 0 0 6px; overflow-wrap: anywhere; }
+.scn2-style-window-idx { font-family: var(--font-mono); font-size: 10px; color: var(--ink-4); margin-right: 6px; }
+.scn2-style-window-status { display: block; font-size: 11.5px; color: var(--ink-3); }
+.scn2-style-window-status.is-error { color: var(--crimson); }
+@media (max-width: 640px) {
+  .scn2-style-notices { padding: 8px 16px 0; }
+}
+
 .scn2-meters { display: flex; flex-direction: column; gap: 12px; }
 .scn2-meter-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
 .scn2-meter-label { font-size: 12.5px; color: var(--ink-2); }

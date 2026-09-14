@@ -687,6 +687,9 @@ class InjectionPreviewRequest(BaseModel):
     include_positive: bool = True
     include_forbidden: bool = True
     include_metric: bool | None = None
+    # 2026-09-14 保真修补(WP4.3):按场景预览——同一轮换种子与场景位置提示,作者看到的就是
+    # 这一场实际拿到的窗口;不传则为无种子的通用预览。
+    scene_id: str | None = Field(default=None, max_length=128)
 
 
 class InjectionPreviewStats(BaseModel):
@@ -719,3 +722,6 @@ class InjectionPreviewResponse(BaseModel):
     fragments: SystemPromptFragments
     prefix: str
     stats: InjectionPreviewStats | None = None
+    # 2026-09-14 保真修补(WP4.1):本次渲染实际选中的样例窗口(起止段 / 章 / 位置 / 段型 / 字数),
+    # 只有索引选窗路径填写;证据引文兜底路径为空列表。
+    window_refs: list[dict[str, Any]] = Field(default_factory=list)

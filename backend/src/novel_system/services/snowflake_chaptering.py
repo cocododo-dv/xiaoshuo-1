@@ -287,7 +287,20 @@ class SnowflakeChapteringService:
             )
         project = self.session.get(StoryProject, project_id)
         target = _as_int(body.get("target_chapter_count")) or int(getattr(project, "target_chapter_count", 0) or 0)
-        per_chapter = max(1, _as_int(body.get("scenes_per_chapter")) or 3)
+        explicit_per_chapter = _as_int(body.get("scenes_per_chapter"))
+        # 2026-09-14 风格保真修补(WP5):作者没有定章数、也没有定每章场数时,按参考作者的章长
+        # (结构画像 chapter_chars 中位)与场长(显式场界时 scene_chars 中位,否则按中等场 1500 字)推每章场数。
+        reference_hint = (
+            _reference_chapter_scale_hint(self.session, project_id)
+            if not target and not explicit_per_chapter
+            else None
+        )
+        per_chapter = max(
+            1,
+            explicit_per_chapter
+            or int((reference_hint or {}).get("scenes_per_chapter") or 0)
+            or 3,
+        )
         chunks = propose_chapter_chunks(scenes, target_chapter_count=target, scenes_per_chapter=per_chapter)
 
         removed_at = utcnow()
@@ -344,6 +357,7 @@ class SnowflakeChapteringService:
                     "replaced_chapter_count": len(existing),
                     "target_chapter_count": target,
                     "scenes_per_chapter": per_chapter,
+                    "reference_hint": reference_hint,
                     "actor_ref": actor_ref or "operator",
                     "proposed_at": removed_at,
                 },
@@ -1082,6 +1096,45 @@ def _as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+# 参考作者无显式场界时,推每章场数所用的「中等场」字数(与场景卡 medium 长度带同量级)
+_REFERENCE_DEFAULT_SCENE_CHARS = 1500
+_REFERENCE_MAX_SCENES_PER_CHAPTER = 12
+
+
+def _reference_chapter_scale_hint(session: Any, project_id: str) -> dict[str, Any] | None:
+    """项目 / 全局作用域绑定的参考画像 → {chapter_chars_median, scene_chars_median, scenes_per_chapter}。
+
+    任何异常都返回 None(可选增强,分章提议不能因参考失败而失败)。
+    """
+    try:
+        from novel_system.services.style_reference.injection import InjectionService
+
+        service = InjectionService(session)
+        layers = service.resolve_binding_layers(str(project_id), "scene_generation", character_ids=[], scene_id=None)
+        if not layers:
+            return None
+        profile = service.repo.get_profile(str(getattr(layers[-1], "profile_id", "") or ""))
+        card = (getattr(profile, "profile_json", None) or {}).get("structure_card") if profile is not None else None
+        if not isinstance(card, dict) or int(card.get("chapter_count") or 0) <= 1:
+            return None
+        chapter_median = int((card.get("chapter_chars") or {}).get("median") or 0)
+        if chapter_median <= 0:
+            return None
+        scene_median = 0
+        if str(card.get("scene_break_style") or "") == "explicit":
+            scene_median = int((card.get("scene_chars") or {}).get("median") or 0)
+        typical_scene = scene_median or _REFERENCE_DEFAULT_SCENE_CHARS
+        scenes_per_chapter = max(1, min(_REFERENCE_MAX_SCENES_PER_CHAPTER, int(round(chapter_median / typical_scene))))
+        return {
+            "profile_id": str(getattr(profile, "profile_id", "") or ""),
+            "chapter_chars_median": chapter_median,
+            "scene_chars_median": scene_median or None,
+            "scenes_per_chapter": scenes_per_chapter,
+        }
+    except Exception:  # noqa: BLE001 — 可选增强
+        return None
 
 
 def propose_chapter_chunks(

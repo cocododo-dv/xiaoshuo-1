@@ -7003,12 +7003,27 @@ class Orchestrator:
     def _best_of_n_count(self, contract, *, criticality=None) -> int:
         """Number of style-draft candidates to generate for this run.
 
-        The evidence-gated Best-of-N authorization policy was retired; production
-        runs always draft a single candidate.  Tests may override this method to
-        exercise the multi-candidate selection machinery.
+        2026-09-14:the evidence-gated authorization (benchmark report hash) is gone with the
+        benchmark package; Best-of-N is now a plain opt-in switch
+        (``NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED``, default off → always one candidate).
+        When enabled the scene's criticality decides: transition scenes still draft one,
+        standard scenes ``initial_best_of_n`` (2) with progressive top-up to ``max_best_of_n``,
+        and critical scenes pause at the blinded author terminal selection (``human_gate``).
+        Tests may still override this method directly.
         """
-        self._best_of_n_policy_cap = 1
-        return 1
+        from novel_system.settings import get_settings
+
+        try:
+            enabled = bool(getattr(get_settings(), "scene_best_of_n_enabled", False))
+        except Exception:  # noqa: BLE001 — settings 读不到就按关闭
+            enabled = False
+        if not enabled or criticality is None:
+            self._best_of_n_policy_cap = 1
+            return 1
+        initial = max(1, int(getattr(criticality, "initial_best_of_n", 1) or 1))
+        maximum = max(initial, int(getattr(criticality, "max_best_of_n", initial) or initial))
+        self._best_of_n_policy_cap = maximum
+        return initial
 
     def _best_of_n_max_count(self, *, criticality=None, initial_count: int) -> int:
         """Cap progressive candidate expansion by the evidence authorization.
@@ -7041,9 +7056,6 @@ class Orchestrator:
         import uuid
         from novel_system.db.models import HumanReviewEvent
         from novel_system.services.source_safety import scan_source_safety
-        from novel_system.services.style_reference.style_feedback import (
-            build_candidate_style_snapshot,
-        )
 
         valid_candidates: list[Any] = []
         for cand in candidates:
@@ -7085,12 +7097,6 @@ class Orchestrator:
                 "selected_row_id": None,
                 "tokens_used": int(state.scene_tokens_used or 0),
                 "decision_history": [],
-                # Kept server-side and omitted from the blinded GET response.
-                # Contains only scores/hashes/IDs—never candidate or source prose.
-                "style_feedback_snapshot": build_candidate_style_snapshot(
-                    valid_candidates
-                ),
-                "style_feedback_history": [],
             },
             default_action="select",
         )

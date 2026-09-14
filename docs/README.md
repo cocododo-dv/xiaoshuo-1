@@ -20,9 +20,10 @@
 - [风格参考设计](style_reference_module_design_v1.1.md)、[实施账本](style-reference-progress.md)与[Phase 3 完成记录](style-reference-phase3-backlog.md)：后两者是历史实施依据，Phase 3 A/B/C 已全部完成。
 - [风格参考动态模仿 v2](style-reference-dynamic-imitation-v2-2026-08-20.md)：任意参考语料契约、软分布提示、自然度门控、独立评测和开源融合决策。
 - [风格参考 RAG v2：内容克制检索](style-reference-rag-content-independence.md)：结构化风格签名、旧索引迁移、合成 A/B 及证据边界。
-- [风格参考运行时契约与反馈闭环](style-reference-runtime-contract.md)：冻结风格血缘、统一上下文/基线、降级规则和盲选校准反馈。文末「v2 附记」记录 2026-09 新增的冻结键、Bundle section、notices 与 styled-draft gate。
+- [风格参考运行时契约与反馈闭环](style-reference-runtime-contract.md)：冻结风格血缘、统一上下文/基线、降级规则和盲选终选（2026-09-14 起风格反馈层已删除，盲选门由 `NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED` 打开）。文末「v2 附记」记录 2026-09 新增的冻结键、Bundle section、notices 与 styled-draft gate。
 - [风格参考 · 样例优先（2026-09-09，Step 1）](style-exemplar-first-2026-09-09.md)：v2 之后的三步计划第一步——原文样例成为主信号（默认约 2 万字、满强度约 2.4 万字原文进系统提示、按场景轮换、契约冻结整本书段落根哈希、预算按整窗口卸载）、四个风格通道提示词改写、解码惩罚归零；含改前改后的阅读方法与部署注意。
 - [风格参考 · 风格直起与结构跟随（2026-09-12，Step 2 计划，最大化版）](style-first-draft-plan-2026-09-12.md)：三步计划第二步——有绑定时首稿直接以参考作者手笔从 bundle 写、`style_draft` 改为再靠近一层的复读、去模板门 / 自动批评 / 近终稿确定性门 / 成稿门 / 新鲜度词表在有绑定时整体让位、参考的结构画像进入雪花场景规划 / 章架构 / 章内规划 / 蓝图 / 章级评审；`binding.config_json.draft_mode` 冻结进运行时契约，`neutral_first` 即现状对照组。
+- [风格参考 · 保真修补（2026-09-14）](style-fidelity-fixes-2026-09-14.md)：第三次评估后的修复方案——修复 / 补丁带风格、形状归一化让位、近终稿自动重写收紧、soft_qc 换强模型、新鲜度预算只留内容级、导入层按真实书修（章题、副文本、人称、文言标记）、全书窗口索引选窗、作者可见的通知与窗口、规划与写手侧注入；§8 为完成记录。
 - [风格模仿 v2 执行方案（2026-09-05，实施中）](style-imitation-v2-plan-2026-09-05.md)：声音级模仿 / 叙事层迁移 / 跨场景一致性三项的根因、共享契约（`profile_json` 新键、Bundle 新 section、`injection_budget.yaml` 键、intensity 语义、`style_drift_observed` 事件）、W1–W8 工作包与验收；§5 为完成记录，与代码冲突时以该文为准并回写。
 
 ## 文档维护规则

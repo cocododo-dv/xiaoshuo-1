@@ -1,20 +1,9 @@
-"""MaterializationService — profile → ReviewItem → 4 集合自动分发。
+"""MaterializationService — profile → binding 行编排(apply)。
 
-参见《风格参考模块重构执行手册 v1.1》§3 / §10 与 plans/style-reference-v1-1-fancy-shannon.md
-§"Materialization 流程"。
-
-PR-4 决策:按 sub_dim layer 自动分发(用户拍板选 A):
-- observation + language.*           → item_type=style_rule_set     → style_rules
-- observation + narrative.*/scene.*/theme.* → item_type=narrative_pattern → narrative_patterns
-- forbidden_pattern (任 sub_dim)     → item_type=banned_rule_cluster  → banned_rule_clusters
-- profile.calibration_guidance       → item_type=calibration_candidate → calibration_lines
-
-ReviewItem 写入时 review_id 用前缀 `review_style_ref_apply_`(与旧 review_apply_*
-物理隔离),candidate_payload_json.source="style_reference_apply"。
-
-approve 时由仓库现有 `services/versioning/review_materialization.py:
-ReviewMaterializationService.materialize_review(review_id)` 通过
-review_items.target_collection Computed 列自动写入 4 集合。
+apply_profile 只做三件事:校验画像可用(存在 / 未失效 / 未归档)、按 scope 幂等落 binding、
+激活画像并幂等建 Strategy C 的 RAG 索引。生成期读的是 profile_json 与冻结进 bundle 的运行时契约,
+不再经过 ReviewItem(2026-09-14 减法:review_style_ref_apply_* / review_style_ref_calib_* 的
+物化与其早已删除的消费方 services/versioning/review_materialization 一起退役;cleanup 仍清理旧行)。
 """
 
 from __future__ import annotations
@@ -41,9 +30,8 @@ from novel_system.services.style_reference.schemas import (
 logger = logging.getLogger(__name__)
 
 
-REVIEW_PREFIX = "review_style_ref_apply_"
-REVIEW_CALIB_PREFIX = "review_style_ref_calib_"
-PAYLOAD_SOURCE = "style_reference_apply"
+# 2026-09-14 减法:ReviewItem 物化(review_style_ref_apply_* / review_style_ref_calib_*)已删除;
+# cleanup.purge_derived_data 仍按这两个字面前缀清理旧库里的残留行。
 
 
 @dataclass
@@ -52,13 +40,11 @@ class MaterializeResult:
 
     profile_id: str
     binding_id: str
-    review_ids: list[str] = field(default_factory=list)
-    item_type_counts: dict[str, int] = field(default_factory=dict)
     rag_index: dict[str, Any] = field(default_factory=dict)
 
 
 class MaterializationService:
-    """Profile → ReviewItem(prefix `review_style_ref_apply_`)→ binding 行编排。"""
+    """Profile → binding 行编排(激活画像 + 幂等建 RAG 索引)。"""
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -112,54 +98,8 @@ class MaterializationService:
 
             strategy = default_injection_strategy(task_type)
 
-        # 1. finding → ReviewItem(按 sub_dim layer 分发)
-        review_ids: list[str] = []
-        counts: dict[str, int] = {}
-        finding_ids = profile.source_finding_ids_json or []
-        for finding_id in finding_ids:
-            finding = self.repo.get_finding(finding_id)
-            if finding is None:
-                logger.warning("finding %s not found, skipping", finding_id)
-                continue
-            item_type = _classify_finding_item_type(finding)
-            review_id = _make_review_id(REVIEW_PREFIX, profile_id, finding_id)
-            self._upsert_review_item(
-                review_id=review_id,
-                item_type=item_type,
-                candidate_text=finding.statement,
-                candidate_payload_json={
-                    "source": PAYLOAD_SOURCE,
-                    "scope": _enum_value(scope),
-                    "scope_ref_id": scope_ref_id,
-                    "profile_id": profile_id,
-                    "finding_id": finding_id,
-                    "sub_dimension": finding.sub_dimension,
-                    "finding_kind": finding.finding_kind,
-                },
-            )
-            review_ids.append(review_id)
-            counts[item_type] = counts.get(item_type, 0) + 1
-
-        # 2. calibration_guidance → ReviewItem(独立路径)
-        calib_lines = (profile.profile_json or {}).get("calibration_guidance") or []
-        for idx, line in enumerate(calib_lines):
-            if not isinstance(line, str) or not line.strip():
-                continue
-            review_id = _make_calibration_review_id(profile_id, idx, line)
-            self._upsert_review_item(
-                review_id=review_id,
-                item_type="calibration_candidate",
-                candidate_text=line.strip(),
-                candidate_payload_json={
-                    "source": PAYLOAD_SOURCE,
-                    "scope": _enum_value(scope),
-                    "scope_ref_id": scope_ref_id,
-                    "profile_id": profile_id,
-                    "calibration_index": idx,
-                },
-            )
-            review_ids.append(review_id)
-            counts["calibration_candidate"] = counts.get("calibration_candidate", 0) + 1
+        # 2026-09-14 减法:apply 不再把 finding / calibration 物化成 ReviewItem——它们的消费方
+        # services/versioning/review_materialization 早已删除,生成期只读 profile_json 与冻结契约。
 
         # 3. 写 binding 行
         binding_id = self._upsert_binding(
@@ -201,40 +141,10 @@ class MaterializationService:
         return MaterializeResult(
             profile_id=profile_id,
             binding_id=binding_id,
-            review_ids=review_ids,
-            item_type_counts=counts,
             rag_index=rag_index,
         )
 
     # ------------------------------------------------------------- internals
-
-    def _upsert_review_item(
-        self,
-        *,
-        review_id: str,
-        item_type: str,
-        candidate_text: str,
-        candidate_payload_json: dict[str, Any],
-    ) -> None:
-        """已存在则 update payload + status reset to pending(幂等 apply)。"""
-        existing = self.session.get(ReviewItem, review_id)
-        if existing is None:
-            review = ReviewItem(
-                review_id=review_id,
-                item_type=item_type,
-                status="pending",
-                candidate_text=candidate_text,
-                candidate_payload_json=candidate_payload_json,
-                active_on_approve=1,
-            )
-            self.session.add(review)
-            self.session.flush()
-            return
-        existing.item_type = item_type
-        existing.candidate_text = candidate_text
-        existing.candidate_payload_json = candidate_payload_json
-        # 不动 status / materialize_status,允许人工反复审核
-        self.session.flush()
 
     def _upsert_binding(
         self,
@@ -279,33 +189,7 @@ class MaterializationService:
 # ---------------------------------------------------------------------------
 
 
-def _classify_finding_item_type(finding) -> str:  # noqa: ANN001
-    """按 sub_dim layer 与 finding_kind 决定 item_type。
 
-    决策表(PR-4 用户拍板,plans §"PR-4 已敲定决策"):
-      forbidden_pattern → banned_rule_cluster
-      observation + sub_dim 以 "language." 开头 → style_rule_set
-      observation + sub_dim 以 "narrative."/"scene."/"theme." 开头 → narrative_pattern
-    """
-    if finding.finding_kind == "forbidden_pattern":
-        return "banned_rule_cluster"
-    sub_dim = finding.sub_dimension or ""
-    if sub_dim.startswith("language."):
-        return "style_rule_set"
-    # narrative / scene / theme 都归 narrative_pattern
-    return "narrative_pattern"
-
-
-def _make_review_id(prefix: str, profile_id: str, finding_id: str) -> str:
-    p = profile_id[-12:] if len(profile_id) > 12 else profile_id
-    f = finding_id[-12:] if len(finding_id) > 12 else finding_id
-    return f"{prefix}{p}_{f}"
-
-
-def _make_calibration_review_id(profile_id: str, idx: int, line: str) -> str:
-    p = profile_id[-12:] if len(profile_id) > 12 else profile_id
-    line_hash = hashlib.sha256(line.strip().encode("utf-8")).hexdigest()[:8]
-    return f"{REVIEW_CALIB_PREFIX}{p}_{idx:02d}_{line_hash}"
 
 
 def _enum_value(value: Any) -> str:

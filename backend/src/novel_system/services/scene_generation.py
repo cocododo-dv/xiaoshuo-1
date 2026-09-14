@@ -394,6 +394,14 @@ _STYLE_SAFETY_REPAIR_TASK_PROMPT = (
     "already pass; change only the exact hard-constraint failures listed below. Return one complete replacement "
     "scene_text and no commentary."
 )
+# 2026-09-14 风格保真修补:有绑定时修复 / 补丁的附加句——参考是唯一的风格权威,增删文字用作者
+# 自己的手段,不用房风的「加动作反应 / 删修饰」。
+_STYLE_BOUND_REPAIR_CLAUSE = (
+    " The [STYLE_REFERENCE] block above is the style authority: keep the draft in the reference author's "
+    "hand, and wherever the repair must add or remove text, do it with that author's own means as the "
+    "[风格样例] show (summary, digression, dialogue, description, reflection), never with generic "
+    "action-reaction filler; never reuse the samples' sentences, names, or events."
+)
 _STYLE_DE_TEMPLATE_REPAIR_TASK_PROMPT = (
     "Edit the labeled style draft directly. Apply only the listed de-template corrections while preserving its "
     "facts, chronology, functional paragraph architecture, broad style distribution, distinctive wording, and ending function. "
@@ -1186,48 +1194,12 @@ class SceneGenerationService:
                     break
             candidates.sort(key=lambda pair: pair[1], reverse=True)
 
-        quality_scores = {result.row_id: score for result, score in candidates}
-        try:
-            from novel_system.services.style_reference.candidate_rerank import (
-                StyleCandidateReranker,
+        # 2026-09-14 减法:候选重排层(shadow / active、基准授权)已删除——候选保持质量序;每个
+        # 候选仍算一次冻结画像的贴合读数与 12 字抄袭守卫(盲选门据此剔除抄袭候选,工作台读数据此展示)。
+        for rank, (result, score) in enumerate(candidates):
+            result.ranking_audit = self._candidate_style_assessment(
+                bundle, result, float(score), rank=rank
             )
-
-            rerank = StyleCandidateReranker(self.session).rerank(
-                scene,
-                bundle,
-                [result for result, _score in candidates],
-                quality_scores=quality_scores,
-            )
-            for result in rerank.ordered_candidates:
-                assessment = rerank.assessments[result.row_id].to_audit_dict()
-                result.ranking_audit = {**assessment, "rerank": rerank.audit}
-            candidates = [
-                (result, quality_scores[result.row_id])
-                for result in rerank.ordered_candidates
-            ]
-        except Exception as exc:
-            # Candidate generation must remain deliverable if the optional local
-            # scorer degrades.  Preserve the established quality order and expose
-            # a typed, non-sensitive audit reason instead of silently changing it.
-            _LOGGER.warning(
-                "style candidate reranking degraded for scene %s",
-                scene_id,
-                exc_info=True,
-            )
-            for rank, (result, score) in enumerate(candidates):
-                result.ranking_audit = {
-                    "row_id": result.row_id,
-                    "quality_score": round(float(score), 6),
-                    "style_score": None,
-                    "rank": rank,
-                    "selected": rank == 0,
-                    "selection_reason": "quality_order_rerank_degraded",
-                    "rerank": {
-                        "applied_mode": "off",
-                        "reason": "reranker_internal_error",
-                        "error_code": getattr(exc, "code", exc.__class__.__name__),
-                    },
-                }
 
         best_result = candidates[0][0]
         state.current_style_draft_row_id = best_result.row_id
@@ -1242,6 +1214,87 @@ class SceneGenerationService:
 
         return [result for result, _ in candidates]
 
+    def _candidate_style_assessment(
+        self,
+        bundle: dict[str, Any],
+        result: "StyleGenerationResult",
+        quality_score: float,
+        *,
+        rank: int,
+    ) -> dict[str, Any]:
+        """单个候选的风格贴合读数 + 抄袭守卫(纯函数评分核;失败只降级为质量序读数)。"""
+        rerank: dict[str, Any] = {"applied_mode": "off", "reason": None}
+        fallback = {
+            "row_id": result.row_id,
+            "quality_score": round(float(quality_score), 6),
+            "style_score": None,
+            "rank": rank,
+            "selected": rank == 0,
+            "selection_reason": "quality_order",
+        }
+        try:
+            from novel_system.services.style_reference.candidate_rerank import (
+                CandidateRerankPolicy,
+                assess_candidate_text,
+                build_style_target,
+            )
+            from novel_system.services.style_reference.repository import (
+                StyleReferenceRepository,
+            )
+            from novel_system.services.style_reference.runtime_contract import (
+                contract_profile_objects,
+            )
+            from novel_system.services.style_reference.validation.core import (
+                _load_plagiarism_corpus,
+            )
+
+            contract_state = resolve_style_runtime_contract_state(bundle)
+            rerank["runtime_contract_status"] = contract_state.status
+            contract = contract_state.contract
+            target = None
+            corpus: list[str] = []
+            if contract_state.mode == "absent" or contract is None:
+                rerank["reason"] = (
+                    "bundle_has_no_style_profile"
+                    if contract_state.mode == "absent"
+                    else (contract_state.error_code or "frozen_runtime_contract_unavailable")
+                )
+            else:
+                target = build_style_target(contract_profile_objects(contract))
+                if target is None:
+                    rerank["reason"] = "profile_metrics_insufficient"
+                repo = StyleReferenceRepository(self.session)
+                for profile_id in contract.get("profile_ids") or []:
+                    profile = repo.get_profile(str(profile_id))
+                    if profile is not None:
+                        corpus.extend(
+                            _load_plagiarism_corpus(repo, str(getattr(profile, "book_id", "") or ""))
+                        )
+            assessment = assess_candidate_text(
+                result.row_id,
+                result.content or "",
+                float(quality_score),
+                target,
+                CandidateRerankPolicy(),
+                plagiarism_corpus=corpus,
+            )
+        except Exception as exc:  # noqa: BLE001 — 读数是可选增强,不阻断候选交付
+            _LOGGER.warning(
+                "style candidate assessment degraded for scene %s", result.row_id, exc_info=True
+            )
+            return {
+                **fallback,
+                "rerank": {
+                    **rerank,
+                    "reason": "assessment_internal_error",
+                    "error_code": getattr(exc, "code", exc.__class__.__name__),
+                },
+            }
+        assessment.rank = rank
+        assessment.selected = rank == 0
+        assessment.selection_reason = "quality_order"
+        return {**assessment.to_audit_dict(), "rerank": rerank}
+
     def generate_style_patch(
         self,
         scene_id: str,
@@ -1255,6 +1308,9 @@ class SceneGenerationService:
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        # 2026-09-14 风格保真修补:有绑定时软补丁低温、未点名的句子逐字保留——补丁的 schema 仍要求
+        # 返回整篇 scene_text,温度 0.8 会把整场措辞重掷一遍。neutral_first 不变。
+        style_first = is_style_bound(bundle)
         result = self._run_style_generation(
             scene=scene,
             state=state,
@@ -1265,7 +1321,16 @@ class SceneGenerationService:
             neutral_content=source_style_content,
             source_label="Current Style Draft",
             source_row_id=source_style_draft_row_id,
-            extra_instruction="Apply only the controlled patch brief; do not rewrite the full scene.",
+            extra_instruction=(
+                "Apply only the controlled patch brief; do not rewrite the full scene."
+                + (
+                    " Keep every sentence the brief does not name verbatim; for the sentences you do change, "
+                    "the [STYLE_REFERENCE] block is the style authority."
+                    if style_first
+                    else ""
+                )
+            ),
+            temperature_override=0.3 if style_first else None,
             patch_brief=rewrite_brief,
             source_draft_row_id=source_style_draft_row_id,
             source_draft_content=source_style_content,
@@ -2139,6 +2204,9 @@ class SceneGenerationService:
             and _parse_numeric_length_band(scene.target_length_band) is not None
         )
         length_patch_audit: dict[str, Any] | None = None
+        # 2026-09-14 风格保真修补:有绑定时修复 / 补丁也在作者的原文面前进行(见下方注入分支),
+        # 且扩缩指令改用作者自己的手段;neutral_first 逐字不变。
+        style_first = is_style_bound(bundle)
         if is_length_patch:
             # 整篇“修长度”在真实模型上会稳定退化成摘要。程序先给原文分段编号，
             # 模型只提交 segment_id + new_text；原文定位和套用不依赖模型复制精度。
@@ -2169,6 +2237,7 @@ class SceneGenerationService:
                     scene,
                     source_length=_visible_char_count(source_content),
                     editable_segment_ids=editable_segment_ids,
+                    style_first=style_first,
                 ),
             )
         else:
@@ -2177,6 +2246,7 @@ class SceneGenerationService:
                     scene=scene,
                     source_content=source_content,
                     authoritative_content=authoritative_content,
+                    style_first=style_first,
                 )
             else:
                 repair_brief = _de_template_rewrite_brief(quality_gate)
@@ -2210,6 +2280,7 @@ class SceneGenerationService:
                         "turning them into counts or punctuation quotas, and do not flatten the prose back to a neutral draft."
                     )
                     + repair_length_instruction
+                    + (_STYLE_BOUND_REPAIR_CLAUSE if style_first else "")
                 ),
                 patch_brief=repair_brief,
                 patch_heading=(
@@ -2218,13 +2289,37 @@ class SceneGenerationService:
                     else "De-template Rewrite Brief"
                 ),
             )
-        if is_safety_repair and not is_length_patch:
-            # 这一遍只负责把已生成的风格稿恢复到事实、长度与正文完整性硬约束内。
-            # 再注入完整画像会按“不合格源稿”的异常篇幅重算段数/分号目标，并把
-            # 一个局部修复重新变成风格重写；真实基准中这会诱发过度压缩与事实丢失。
-            # 被拒稿本身已承载可复用风格，故安全修复只使用冻结的原始 style 模板。
-            prompt = dict(base_prompt)
-        elif not is_length_patch:
+        if is_length_patch:
+            if style_first:
+                # 2026-09-14 风格保真修补:有绑定时长度补丁也带 [STYLE_REFERENCE](样例、声音、
+                # 正向、禁忌、红线),新增 / 替换的段落以作者手笔写。context_text=None:
+                # [风格分布指导] 不按被拒稿的异常篇幅算「当前」偏差,局部补丁不会变成风格重写。
+                prompt = self._inject_style_reference(
+                    prompt,
+                    scene,
+                    task_type="scene_generation",
+                    bundle=bundle,
+                    context_text=None,
+                    final_user_prompt=user_prompt,
+                )
+        elif is_safety_repair:
+            if style_first:
+                # 同上:安全修复只修硬约束,但修的时候仍要看着作者的原文。
+                prompt = self._inject_style_reference(
+                    base_prompt,
+                    scene,
+                    task_type="scene_generation",
+                    bundle=bundle,
+                    context_text=None,
+                    final_user_prompt=user_prompt,
+                )
+            else:
+                # 这一遍只负责把已生成的风格稿恢复到事实、长度与正文完整性硬约束内。
+                # 再注入完整画像会按“不合格源稿”的异常篇幅重算段数/分号目标，并把
+                # 一个局部修复重新变成风格重写；真实基准中这会诱发过度压缩与事实丢失。
+                # 被拒稿本身已承载可复用风格，故安全修复只使用冻结的原始 style 模板。
+                prompt = dict(base_prompt)
+        else:
             prompt = self._inject_style_reference(
                 base_prompt,
                 scene,
@@ -3597,6 +3692,10 @@ def _normalize_style_paragraph_shape(
                 **audit,
                 "reason": "frozen_runtime_contract_unavailable",
             }
+        if is_style_bound(bundle):
+            # 2026-09-14 风格保真修补:有绑定时不再按全书平均段密度机械合并段落——合并规则按累计
+            # 字数硬拼、不认对白行,对白密的场会被黏成一段;样例本身已示范作者怎么分段。
+            return text, {**audit, "reason": "deferred_to_reference"}
 
         from novel_system.services.style_reference.candidate_rerank import (
             build_style_target,
@@ -3712,6 +3811,10 @@ def _assess_style_anchor_conformance(
                 **audit,
                 "unavailable_reason": "frozen_runtime_contract_unavailable",
             }
+        if is_style_bound(bundle):
+            # 2026-09-14 风格保真修补:段密度 / 分号包络是全书均值,一场的形态偏离均值不是错误;
+            # 有绑定时不再据此触发去模板改写(只记录),风格稿的形状由样例决定。
+            return {**audit, "unavailable_reason": "deferred_to_reference", "deferred": True}
 
         from novel_system.services.style_reference.candidate_rerank import (
             build_style_target,
@@ -4272,6 +4375,7 @@ def _style_length_patch_instruction(
     *,
     source_length: int,
     editable_segment_ids: Sequence[str],
+    style_first: bool = False,
 ) -> str:
     length_range = _parse_numeric_length_band(scene.target_length_band)
     if length_range is None:
@@ -4311,7 +4415,15 @@ def _style_length_patch_instruction(
         f"{', '.join(editable_segment_ids) if editable_segment_ids else '(none)'}. "
         "The final source segment marked PROTECTED_ENDING is forbidden. Segment markers are addresses and must "
         "never appear in new_text."
-        f"{required_rule} Return edits only, never scene_text or the complete scene."
+        f"{required_rule}"
+        + (
+            " Every new_text is written in the reference author's hand: expand or compress with that author's "
+            "own means as the [风格样例] show (summary, digression, dialogue, description, reflection), never "
+            "with generic action-reaction filler, and never reuse the samples' sentences, names, or events."
+            if style_first
+            else ""
+        )
+        + " Return edits only, never scene_text or the complete scene."
     )
 
 
@@ -4471,6 +4583,7 @@ def _style_safety_repair_brief(
     scene: SceneCard,
     source_content: str,
     authoritative_content: str,
+    style_first: bool = False,
 ) -> list[str]:
     """把确定性失败翻译成一次可执行、无正文泄漏的修复清单。"""
     del authoritative_content  # 仅表明调用方已提供可信事实基线；正文不进入提示。
@@ -4513,8 +4626,14 @@ def _style_safety_repair_brief(
         if current_length < minimum:
             brief.append(
                 f"Add {local_minimum - current_length}-{local_maximum - current_length} visible characters; do not return fewer or more than that correction range. "
-                "Keep every existing factual beat in order; add concrete action-reaction, blocking, perception, or consequence "
-                f"inside the same event until {local_minimum}-{local_maximum} visible characters are present."
+                "Keep every existing factual beat in order; "
+                + (
+                    "expand inside the same event with the reference author's own means as the [风格样例] show "
+                    "(summary, digression, dialogue, description, reflection) "
+                    if style_first
+                    else "add concrete action-reaction, blocking, perception, or consequence inside the same event "
+                )
+                + f"until {local_minimum}-{local_maximum} visible characters are present."
             )
         elif current_length > maximum:
             brief.append(

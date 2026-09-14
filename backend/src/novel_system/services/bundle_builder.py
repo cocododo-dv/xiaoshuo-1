@@ -1246,18 +1246,22 @@ class BundleBuilder:
         budget: dict[str, Any] = {
             "schema_version": "literary_freshness_budget_v1",
             "source_scene_ids": [row.scene_id for row in source_rows],
-            "avoid_action_templates": action_templates,
-            "avoid_image_fields": image_fields[:6],
-            "vary_syntax_shapes": syntax_shapes[:5],
         }
         if style_bound:
+            # 2026-09-14 风格保真修补:动作模板 / 意象场 / 句形三张表是从本系统自己已按作者手笔写成的
+            # 前几场里挖出来的——有绑定时它们就是作者的声音,不再当作要避开的东西发给起草;只保留
+            # 内容级复读检查(近场 n-gram、语义复读、全书禁用表达)。
             budget["house_taste_lists"] = "deferred_to_reference"
+            budget["voice_lists"] = "deferred_to_reference"
             budget["instruction"] = (
-                "Use this as a freshness budget against repeating your own earlier scenes only: "
-                "do not reuse the action templates and image fields listed here. The reference "
-                "author's habits, cadence, and closing moves are never repetition to avoid."
+                "Use this as a freshness budget against repeating your own earlier scenes' content only: "
+                "do not reuse the recent n-grams or the semantic beats listed here. The reference "
+                "author's habits, cadence, syntax shapes, image fields, and closing moves are never repetition to avoid."
             )
         else:
+            budget["avoid_action_templates"] = action_templates
+            budget["avoid_image_fields"] = image_fields[:6]
+            budget["vary_syntax_shapes"] = syntax_shapes[:5]
             budget["avoid_false_clarity"] = ["她知道", "他知道", "忽然意识到", "突然意识到"]
             budget["avoid_summary_endings"] = [
                 "这意味着",

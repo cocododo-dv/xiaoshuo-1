@@ -369,9 +369,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "Soft QC",
         "quality",
         template_name="soft_qc",
-        model="gpt-5-mini",
         temperature=0.2,
-        max_output_tokens=1800,
+        max_output_tokens=2600,
     ),
     LLMNodeSpec(
         "near_final_acceptance_review",

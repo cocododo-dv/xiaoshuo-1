@@ -119,7 +119,7 @@ def test_windows_rotate_by_scene_seed_but_stay_stable_for_same_seed() -> None:
     other, other_stats = _render_with_seed(profile_id, "scene-B", intensity=50)
     unseeded, _ = _render_with_seed(profile_id, None, intensity=50)
     assert first.few_shot_block == again.few_shot_block, "同一 seed 必须得到同一组窗口"
-    assert first_stats["few_shot_windows"] == other_stats["few_shot_windows"] == 7
+    assert first_stats["few_shot_windows"] == other_stats["few_shot_windows"] == 8  # k(50) = 8 since 2026-09-14
     assert first.few_shot_block != other.few_shot_block, "不同场景应看到不同窗口"
     assert unseeded.few_shot_block != first.few_shot_block or unseeded.few_shot_block != other.few_shot_block
     # 窗口按原书顺序呈现:各窗口首段在原书中的序号单调递增

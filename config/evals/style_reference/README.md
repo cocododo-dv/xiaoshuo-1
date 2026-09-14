@@ -1,49 +1,12 @@
-# 风格参考跨内容基准 v1
+# 风格参考评测清单
 
-这套基准用于回答一个窄而重要的问题：同一份原创场景事实，经过当前
-Style Reference 模块后，是否比中性稿更接近指定参考风格，同时不丢事实、
-不复制参考正文，也不把隐藏评分作品送进生成提示词。
+本目录现在只保留 **RAG 内容克制 A/B 清单** `rag_content_independence_v1.json`：
+`services/style_reference/rag_evaluation.py` 用它做 Strategy C（RAG）检索机制的确定性回归
+（`backend/tests/test_style_reference_rag.py`、`test_style_reference_rag_chroma.py`）——
+「异题材同风格 vs 同题材异风格」的合成 A/B，只证明检索按风格签名而不是题材词召回，
+不是风格贴合度结论（`policy_evidence_eligible: false`）。
 
-首版基准内置两位公版作者、8 个原创场景和 24 个生成单元。这里的作者只用于
-隔离评测，**不是生产模块的固定风格或作者白名单**；生产画像始终从用户实际
-导入的任意参考文本动态派生。朱自清侧已扩充到
-16 篇固定 revision 公版散文；训练集与隐藏评分集
-按完整作品切分；隐藏侧只在全部生成完成后由评分器加载。用户不需要另行准备
-语料或人工标注。
-
-## 运行
-
-从 `backend` 目录执行：
-
-```powershell
-python -m novel_system.tools.style_reference_benchmark inspect
-python -m novel_system.tools.style_reference_benchmark prepare
-python -m novel_system.tools.style_reference_benchmark run-live
-```
-
-`run-live` 会使用隔离 SQLite 数据库复用产品真实链路：摄取、四层抽取、Profile
-合成、项目绑定、中性稿和风格稿。它要求所有相关模型路由均启用且具有凭据；
-缺失时会在任何模型调用和工作区写入之前停止。运行中每完成一个单元即写原子
-checkpoint，可用 `--resume` 续跑。
-
-产物默认位于 `backend/.style-benchmark/`，并已被 Git 忽略：
-
-- `results.json`：生成正文、实际提示词和血缘元数据；
-- `report.json`：隐藏自动评分，不回显隐藏正文；
-- `blind_packet.json`：候选身份盲化的人工复核包；
-- `blind_key.json`：与盲评包分离的答案键；
-- `benchmark.db`：隔离运行数据库。
-
-命令退出码：`0` 表示所有冻结门槛通过，`2` 表示基准完整执行但至少一项门槛
-未通过，`1` 表示配置、凭据或输入错误。
-
-## 结论边界
-
-自动分数只证明“跨内容相对风格信号”，不等于自然度、审美质量、作者身份鉴定，
-也不能证明文本不会被所谓 AI 检测器识别。最终产品结论仍应结合独立盲评；首版
-两位作者的隐藏语料规模也不均衡，因此报告采用宏平均并明确保留该限制。
-
-当前评分还会检查：生成提示不得暴露精确风格配额；隐藏文体评估不得复用画像生成
-所依赖的 MetricsEngine 特征族；风格稿不得出现高置信机械复读或正文完整性失败，
-并需相对对应中性稿保持自然度不退化。详细设计见
-`docs/style-reference-dynamic-imitation-v2-2026-08-20.md`。
+2026-09-14 减法：跨内容基准包（`services/style_reference/benchmark/`、
+`style_benchmark_v1.public.json` / `.private.json`、`tools.style_reference_benchmark` CLI）已删除。
+它自 2026-09 批次 1 起没有 CLI、没有路由、从未用真实模型跑过；「像不像」由作者阅读评测
+（见 `docs/style-fidelity-fixes-2026-09-14.md` §9）。

@@ -59,7 +59,7 @@ from novel_system.services.style_reference.schemas import (
     FindingKind,
     SupplementEvidenceOutput,
 )
-from novel_system.services.style_reference.text_utils import compact_ws
+from novel_system.services.style_reference.text_utils import compact_ws, is_paratext_paragraph
 from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
 if TYPE_CHECKING:
@@ -653,6 +653,8 @@ class BaseExtractor:
         min_per_type = int(observations_cfg.get("min_samples_per_type", 1))
 
         paragraphs = self.repo.list_paragraphs(self.book_id)
+        # 2026-09-14 保真修补:副文本(脚注 / 站点声明)不进抽取样本池(旧书段落表里仍可能有)
+        paragraphs = [p for p in paragraphs if not is_paratext_paragraph(p.text or "")]
         # extraction 域禁用词(用户在任一 profile 上登记):含此词的段落不进抽取
         # 样本池——典型用途是把源书专名/标志性意象隔离在 finding/quote 之外
         banned = [

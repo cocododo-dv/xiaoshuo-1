@@ -56,6 +56,9 @@ from novel_system.services.style_reference.segmentation import (
 from novel_system.services.style_reference.text_utils import (
     compute_text_checksum,
     decode_text,
+    explicit_scene_breaks,
+    is_paratext_paragraph,
+    is_scene_break_paragraph,
     normalize_text,
     split_paragraphs,
 )
@@ -249,6 +252,27 @@ def assess_input_size(total_chars: int) -> dict[str, str]:
     return result
 
 
+def _scene_break_indexes(
+    decoded: str,
+    paragraph_spans: list[tuple[int, int, str]],
+    raw_span_count: int,
+) -> list[int]:
+    """场界所在的段落索引(「其后有场界」),按剥离副文本后的 ``paragraph_spans`` 编号。
+
+    空行型场界只在书按空行切段、且副文本剥离前后段数一致时可靠映射(否则只用符号行)。
+    """
+    breaks: set[int] = set()
+    pre_collapse = decoded.replace("\r\n", "\n").replace("\r", "\n")
+    if len(paragraph_spans) == raw_span_count:
+        blank_line_breaks = explicit_scene_breaks(pre_collapse)
+        if blank_line_breaks and max(blank_line_breaks) < len(paragraph_spans):
+            breaks.update(blank_line_breaks)
+    for index, (_start, _end, body) in enumerate(paragraph_spans):
+        if is_scene_break_paragraph(body):
+            breaks.add(index)
+    return sorted(breaks)
+
+
 class IngestService:
     """Style Reference 书籍导入服务。"""
 
@@ -403,7 +427,8 @@ class IngestService:
         cloud_policy: str | CloudPolicy,
         rights_declaration: dict[str, Any] | None = None,
     ) -> IngestResult:
-        normalized = normalize_text(decode_text(raw_bytes))
+        decoded = decode_text(raw_bytes)
+        normalized = normalize_text(decoded)
         if not normalized:
             raise EmptyBookError("normalize")
 
@@ -425,8 +450,18 @@ class IngestService:
 
         # 段落切分
         paragraph_spans = split_paragraphs(normalized)
+        # 2026-09-14 保真修补:副文本(站点声明 / 脚注 / 网址)不是作者的文字,不入段落表——
+        # 否则它们会进指标、声音签名、样例窗口与结构画像的章首 / 章尾样例。
+        raw_span_count = len(paragraph_spans)
+        paragraph_spans = [
+            span for span in paragraph_spans if not is_paratext_paragraph(span[2])
+        ]
+        paratext_dropped = raw_span_count - len(paragraph_spans)
         if not paragraph_spans:
             raise EmptyBookError("segmentation")
+        # 2026-09-14 保真修补(WP5):场分隔——原文 3 个以上连续换行(合并前算)与纯符号行,
+        # 记为「其后有场界」的段落索引(按剥离副文本后的编号);结构画像与样例窗口消费。
+        scene_breaks = _scene_break_indexes(decoded, paragraph_spans, raw_span_count)
 
         # LLM / 启发式分类(local_only 的书强制走启发式,段落不出本机)
         use_llm = self._llm_enabled and policy != CloudPolicy.LOCAL_ONLY
@@ -441,6 +476,8 @@ class IngestService:
         stats_json = {
             **self._classification_stats(paragraph_spans, seg_result),
             "input_assessment": assess_input_size(len(normalized)),
+            "paratext_dropped": paratext_dropped,
+            "scene_breaks": scene_breaks,
             "safety": safety_payload,
             "rights_declaration": rights,
             # v2 W3:全书确定性声音签名(闭类词 / 标点 / 引导句 / 节奏),内容安全,

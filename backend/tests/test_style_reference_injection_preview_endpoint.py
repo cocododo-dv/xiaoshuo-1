@@ -167,7 +167,7 @@ def test_get_binding_preview_returns_real_stats(client: TestClient) -> None:
     assert stats["voice_lines"] == 0  # 旧画像无 voice_signature
     assert stats["total_prefix_chars"] == len(data["prefix"])
     assert stats["intensity_effective_total_chars"] == 900 + (2400 - 900) * 80 // 100
-    assert stats["few_shot_k"] == 9  # round(3 + 7 × 0.8) = round(8.6)(2026-09-12:k 3→10)
+    assert stats["few_shot_k"] == 10  # round(3 + 9 × 0.8) = round(10.2)(2026-09-14:k 3→12)
     assert stats["few_shot_windows"] == 0  # local_only 书:原文样例不出
 
 

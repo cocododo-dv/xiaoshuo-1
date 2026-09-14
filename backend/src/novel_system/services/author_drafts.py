@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import difflib
+import logging
 import re
 import uuid
 from typing import Any
@@ -42,6 +43,10 @@ from novel_system.services.manuscript_html import sanitize_manuscript_html
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+from novel_system.services.style_prompt_injection import (
+    inject_style_reference_prefix,
+    resolve_style_scope,
+)
 from novel_system.services.writer_briefs import (
     empty_chapter_writer_brief,
     empty_scene_writer_brief,
@@ -61,6 +66,10 @@ AUTHOR_DRAFT_EVENT_TYPES = {
 }
 
 _RUNTIME_FINAL_UNAVAILABLE = object()
+_LOGGER = logging.getLogger(__name__)
+# 2026-09-14 保真修补（WP6.3）：产出正文的建议类型才注入 [STYLE_REFERENCE]（整稿 / 场景稿 /
+# 章节稿 / 续写 / 近终稿改写 / 语言 / 对白 / 局部段落）；结构候选是修订笔记，不是正文。
+_NON_PROSE_PROPOSAL_KINDS = frozenset({"structure_note"})
 
 # 发现稿「提取结构」允许导入的雪花步骤；提示词契约、归一化与错误提示共用这一份。
 PROJECT_DISCOVERY_STEP_KEYS = (
@@ -685,6 +694,14 @@ class AuthorDraftService:
             preference_summary=preference_summary,
         )
         prompt = PromptBuilder().build(snapshot, "author_proposal_generate")
+        user_prompt = _proposal_generate_user_prompt(prompt["user_prompt"], draft=draft, target=target_for_prompt)
+        if proposal_kind not in _NON_PROSE_PROPOSAL_KINDS:
+            prompt = self._inject_style_reference_prefix(
+                prompt,
+                target,
+                context_text=draft.content or None,
+                final_user_prompt=user_prompt,
+            )
         bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
         runner = LLMNodeRunner(self.session)
         execution_step_key = f"author_proposal_generate:{draft.draft_id}:{proposal_type}"
@@ -704,7 +721,7 @@ class AuthorDraftService:
                 node_id="author_proposal_generate",
                 step="author_proposal_generate",
                 prompt=prompt,
-                user_prompt=_proposal_generate_user_prompt(prompt["user_prompt"], draft=draft, target=target_for_prompt),
+                user_prompt=user_prompt,
                 source_draft_row_id=draft.draft_id,
                 source_draft_content=draft.content,
                 execution_step_key=execution_step_key,
@@ -729,6 +746,49 @@ class AuthorDraftService:
         normalized["source_llm_call_id"] = node_result.llm_call_id
         return normalized
 
+
+    def _inject_style_reference_prefix(
+        self,
+        prompt: dict[str, Any],
+        target: dict[str, Any],
+        *,
+        context_text: str | None,
+        final_user_prompt: str,
+    ) -> dict[str, Any]:
+        """2026-09-14 保真修补（WP6.3）：作者稿建议按项目 / 场景的 active 绑定拿到 ``[STYLE_REFERENCE]``。
+
+        场景稿按场景作用域（scene > character > project > global，窗口按场景轮换），整章稿 /
+        项目稿按 project + global 作用域；完整 k 的样例窗口（这是要写正文的节点），作者的当前
+        稿作为选窗上下文，并按最终 user prompt 压进模板预算。无绑定 → 提示词逐字不变；解析 /
+        注入失败 → 回退基础 prompt（可选增强，绝不阻断建议生成）。
+        """
+        try:
+            scope = resolve_style_scope(
+                self.session,
+                scene_id=target.get("scene_id"),
+                chapter_id=target.get("chapter_id"),
+                project_id=target.get("project_id"),
+            )
+            if scope is None:
+                return prompt
+            injected = inject_style_reference_prefix(
+                self.session,
+                prompt,
+                scope,
+                None,
+                task_type="scene_generation",
+                context_text=context_text,
+                final_user_prompt=final_user_prompt,
+            )
+            return injected if injected is not None else prompt
+        except Exception:  # noqa: BLE001 — 可选增强：注入失败只记日志，不阻断建议生成
+            _LOGGER.warning(
+                "author proposal style reference prefix skipped for %s %s",
+                target.get("object_type"),
+                target.get("object_id"),
+                exc_info=True,
+            )
+            return prompt
 
     # FE-ALIGN F2 修订历史：每次 revision_no 推进存完整内容快照，支撑成稿中心版本对比。
     def _snapshot_revision(self, draft: AuthorDraft, *, actor_ref: str, origin: str) -> None:

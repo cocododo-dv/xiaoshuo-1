@@ -31,7 +31,7 @@ import re
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Mapping, TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -272,6 +272,14 @@ class ProfileSynthesizer:
         # voice_signature 同一原则——任何失败只让画像缺键,绝不拖垮合成。
         structure_card = _compute_structure_card_block(paragraphs, book_stats)
         planning_guidance = _derive_planning_guidance_block(findings, corpus_texts)
+        # 2026-09-14 保真修补(WP3):全书样例窗口索引——渲染期在整本书里选窗,不再只能以
+        # 抽取证据引文为中心。确定性派生,失败只让画像缺键(渲染期会惰性复算)。
+        exemplar_windows = _compute_exemplar_index_block(
+            paragraphs,
+            voice_signature=voice_signature,
+            metrics_baseline=metrics_baseline,
+            scene_breaks=book_stats.get("scene_breaks") if isinstance(book_stats, Mapping) else None,
+        )
 
         metric_summary = _deterministic_metric_summary(metrics_baseline)
         profile_json: dict[str, Any] = {
@@ -315,6 +323,9 @@ class ProfileSynthesizer:
             profile_json["structure_card"] = structure_card
         if planning_guidance is not None:
             profile_json["planning_guidance"] = planning_guidance
+        if exemplar_windows is not None:
+            # 不进冻结键:契约冻结的是段落根哈希,根哈希一致时索引可按同一算法复算。
+            profile_json["exemplar_windows"] = exemplar_windows
 
         profile = self.repo.create_profile(
             profile_id=f"sr_profile_{uuid.uuid4().hex[:12]}",
@@ -1343,6 +1354,36 @@ def _compute_voice_signature_block(paragraph_texts: list[str]) -> dict[str, Any]
     return {**dict(signature), "habits": habit_lines}
 
 
+def _compute_exemplar_index_block(
+    paragraphs: list[Any],
+    *,
+    voice_signature: Mapping[str, Any] | None,
+    metrics_baseline: Mapping[str, Any] | None,
+    scene_breaks: Any = None,
+) -> dict[str, Any] | None:
+    """全书样例窗口索引(2026-09-14 WP3);任何失败返回 None,合成不受影响。"""
+    try:
+        from novel_system.services.style_reference.exemplar_index import (
+            build_exemplar_window_index,
+        )
+        from novel_system.services.style_reference.injection import (
+            _WindowAffinityScorer,
+            exemplar_index_window_config,
+        )
+
+        scorer = _WindowAffinityScorer(voice_signature, dict(metrics_baseline or {}))
+        index = build_exemplar_window_index(
+            paragraphs,
+            scorer=scorer,
+            scene_breaks=[int(i) for i in scene_breaks if isinstance(i, int)] if isinstance(scene_breaks, list) else None,
+            **exemplar_index_window_config(),
+        )
+        return index if index.get("windows") else None
+    except Exception:  # noqa: BLE001 — 确定性派生失败只让画像缺键
+        logger.warning("exemplar window index computation failed", exc_info=True)
+        return None
+
+
 def _compute_structure_card_block(
     paragraphs: list[Any],
     book_stats: Mapping[str, Any] | None,
@@ -1353,9 +1394,12 @@ def _compute_structure_card_block(
         voice_signature = (
             book_stats.get("voice_signature") if isinstance(book_stats, Mapping) else None
         )
+        raw_breaks = book_stats.get("scene_breaks") if isinstance(book_stats, Mapping) else None
         card = compute_structure_card(
             paragraphs,
             voice_signature=voice_signature if isinstance(voice_signature, Mapping) else None,
+            # 2026-09-14(WP5):导入期记录的场界 → 每章场数 / 场长
+            scene_breaks=[int(i) for i in raw_breaks if isinstance(i, int)] if isinstance(raw_breaks, list) else None,
         )
         # 与 voice_signature 同理:profile_json 是 JSON 列,先规整成纯 JSON 值。
         return json.loads(json.dumps(card, ensure_ascii=False, default=_json_scalar_fallback))

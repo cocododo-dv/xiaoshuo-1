@@ -264,21 +264,15 @@ def test_critical_scene_pauses_before_selection(session) -> None:
     assert all(
         item["rerank"]["reason"] == "bundle_has_no_style_profile" for item in rankings
     )
-    assert all(item["rerank"]["applied_mode"] == "shadow" for item in rankings)
+    assert all(item["rerank"]["applied_mode"] == "off" for item in rankings)
     assert details["decision_status"] == "awaiting"
     assert details["candidate_row_ids"]
     assert sorted(details["blinded_order"]) == sorted(details["candidate_row_ids"])
     assert "tokens_used" in details
-    assert details["style_feedback_snapshot"]["candidate_count"] == len(
-        details["candidate_row_ids"]
-    )
-    assert "Provider-generated draft" not in json.dumps(
-        details["style_feedback_snapshot"],
-        ensure_ascii=False,
-    )
+    assert "style_feedback_snapshot" not in details  # 2026-09-14 减法:风格反馈层已删除
 
 
-def test_explicit_style_selection_reason_records_non_activating_feedback(
+def test_explicit_style_selection_reason_is_recorded_in_decision_history(
     client,
     session,
 ) -> None:
@@ -299,16 +293,14 @@ def test_explicit_style_selection_reason_records_non_activating_feedback(
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["style_feedback_recorded"] is True
+    assert "style_feedback_recorded" not in response.json()["data"]
     session.refresh(gate)
-    feedback = gate.details_json["style_feedback"]
-    assert feedback["preference_tags"] == ["style_match"]
-    assert feedback["style_attributed"] is True
-    assert feedback["policy_evidence_eligible"] is False
+    assert gate.details_json["preference_tags"] == ["style_match"]
+    assert "style_feedback" not in gate.details_json
     assert gate.status == "resolved"
     history = gate.details_json["decision_history"]
     assert history[-1]["duration_ms"] == 1234
-    assert history[-1]["style_feedback_id"] == feedback["feedback_id"]
+    assert history[-1]["preference_tags"] == ["style_match"]
 
 
 def test_selection_rejects_unknown_feedback_reason(client, session) -> None:

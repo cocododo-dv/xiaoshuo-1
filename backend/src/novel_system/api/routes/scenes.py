@@ -26,6 +26,7 @@ from novel_system.db.models import (
     SceneDraft,
     SceneMemory,
     SceneRunState,
+    StyleReferenceProfile,
     WriterEvaluation,
 )
 from novel_system.services.archiver import Archiver
@@ -183,6 +184,17 @@ class StyleCandidateSelectRequest(BaseModel):
             "plot_fidelity",
         ]
     ] = Field(default_factory=list, max_length=7)
+
+
+_ALLOWED_PREFERENCE_TAGS = frozenset(
+    {"style_match", "rhythm", "voice", "imagery", "dialogue", "overall_quality", "plot_fidelity"}
+)
+
+
+def _normalize_preference_tags(values: Any) -> list[str]:
+    """终选时作者勾选的偏好标签:去重、只留白名单(与 StyleCandidateSelectRequest 同集合)。"""
+    tags = [str(value or "").strip() for value in (values or [])]
+    return list(dict.fromkeys(tag for tag in tags if tag in _ALLOWED_PREFERENCE_TAGS))
 
 
 class StyleCandidateReopenRequest(BaseModel):
@@ -888,10 +900,6 @@ def select_style_candidate(
 
     def _select(session: Session) -> dict[str, Any]:
         from novel_system.db.models import utcnow as now_iso
-        from novel_system.services.style_reference.style_feedback import (
-            build_candidate_selection_feedback,
-            normalize_preference_tags,
-        )
 
         AuthorLifecycleService(session).require_active_scene(scene_id)
         draft = session.get(SceneDraft, row_id)
@@ -908,8 +916,7 @@ def select_style_candidate(
             )
 
         gate = _latest_selection_gate_event(session, scene_id)
-        preference_tags = normalize_preference_tags(body.get("preference_tags"))
-        feedback_recorded = False
+        preference_tags = _normalize_preference_tags(body.get("preference_tags"))
         if gate is not None:
             details = dict(gate.details_json or {})
             decision_status = details.get("decision_status")
@@ -941,29 +948,13 @@ def select_style_candidate(
                     status_code=409,
                     details={"scene_id": scene_id, "row_id": row_id},
                 )
-            # A reopened decision gets a new current feedback record; immutable
-            # prior observations remain in style_feedback_history.
+            # 2026-09-14 减法:终选不再生成「风格反馈」记录(作者选择 vs 机器领先者的一致性,
+            # policy_evidence_eligible 恒 False,从未被任何策略消费);只留决定历史。
             details.pop("style_feedback", None)
             details.pop("style_feedback_error_code", None)
+            details.pop("style_feedback_history", None)
+            details.pop("style_feedback_snapshot", None)
             decided_at = now_iso()
-            feedback = None
-            feedback_error_code = None
-            try:
-                feedback = build_candidate_selection_feedback(
-                    details,
-                    scene_id=scene_id,
-                    selected_row_id=row_id,
-                    preference_tags=preference_tags,
-                    no_clear_difference=bool(body.get("no_clear_difference")),
-                    observed_at=decided_at,
-                )
-            except Exception as exc:  # feedback must not block the author's choice
-                feedback_error_code = exc.__class__.__name__
-                _LOGGER.warning(
-                    "style candidate feedback degraded for scene %s",
-                    scene_id,
-                    exc_info=True,
-                )
             history = list(details.get("decision_history") or [])
             history.append(
                 {
@@ -978,17 +969,8 @@ def select_style_candidate(
                         if isinstance(body.get("duration_ms"), (int, float))
                         else {}
                     ),
-                    **(
-                        {"style_feedback_id": feedback["feedback_id"]}
-                        if feedback is not None
-                        else {}
-                    ),
                 }
             )
-            feedback_history = list(details.get("style_feedback_history") or [])
-            if feedback is not None:
-                feedback_history.append(feedback)
-                feedback_recorded = True
             gate.details_json = {
                 **details,
                 "decision_status": "selected",
@@ -997,13 +979,6 @@ def select_style_candidate(
                 "no_clear_difference": bool(body.get("no_clear_difference")),
                 "preference_tags": preference_tags,
                 "decision_history": history,
-                "style_feedback_history": feedback_history,
-                **({"style_feedback": feedback} if feedback is not None else {}),
-                **(
-                    {"style_feedback_error_code": feedback_error_code}
-                    if feedback_error_code is not None
-                    else {}
-                ),
             }
             gate.status = "resolved"
         else:
@@ -1042,7 +1017,6 @@ def select_style_candidate(
                         }
                     ],
                     "tokens_used": int(getattr(state, "scene_tokens_used", 0) or 0),
-                    "style_feedback_history": [],
                 },
                 default_action="select",
             )
@@ -1056,7 +1030,6 @@ def select_style_candidate(
             "scene_id": scene_id,
             "selected_row_id": row_id,
             "decision_status": "selected",
-            "style_feedback_recorded": feedback_recorded,
             "message": "Candidate selected for human terminal review",
         }
 
@@ -1837,6 +1810,10 @@ def _serialize_generation_summary(
         # 2026-09-12 风格直起:本次运行的起草方式(style_first / neutral_first),工作台据此
         # 把中性步位标成「首稿（作者手笔）」或「中性稿」。
         "draft_mode": _current_run_draft_mode(session, scene_id, state),
+        # 2026-09-14 风格保真修补(WP4.1):本场提示里实际放入的参考书样例窗口(段落序号闭区间,
+        # 无原文;原文由 GET /api/v2/style-reference/books/{book_id}/paragraphs 按需取)。同样只读
+        # 本次运行的 bundle;没有带窗口的尝试时为 null。
+        "style_windows": _current_run_style_windows(session, scene_id, state),
     }
     return summary
 
@@ -1869,6 +1846,106 @@ def _current_run_style_notices(
     if not bundle_id:
         return []
     return latest_style_notices(session, scene_id, bundle_id=bundle_id)
+
+
+# WP4.1:本场参考窗口从哪几步的尝试回读,按优先级——风格稿(style_draft)是成稿前最后一次带
+# 样例的通道;风格直起下中性步位的首稿同样带窗口;近终稿重写稿作兜底。
+STYLE_WINDOW_ATTEMPT_STEPS: tuple[str, ...] = (
+    "style_draft",
+    "neutral_draft",
+    "scene_literary_rewrite",
+)
+_STYLE_WINDOW_INT_KEYS: tuple[str, ...] = ("chapter", "paragraphs", "chars")
+
+
+def _style_window_ref(item: Any) -> dict | None:
+    """把审计里的一条 few_shot_window_refs 规整成 API 形状;起止段缺失或倒置的丢弃。"""
+    if not isinstance(item, dict):
+        return None
+    start = item.get("start")
+    end = item.get("end")
+    if (
+        not isinstance(start, int)
+        or not isinstance(end, int)
+        or isinstance(start, bool)
+        or isinstance(end, bool)
+        or start < 0
+        or end < start
+    ):
+        return None
+    ref: dict[str, Any] = {
+        "start": start,
+        "end": end,
+        "position": str(item.get("position") or ""),
+        "paragraph_type": str(item.get("paragraph_type") or ""),
+    }
+    for key in _STYLE_WINDOW_INT_KEYS:
+        value = item.get(key)
+        ref[key] = value if isinstance(value, int) and not isinstance(value, bool) else 0
+    if ref["paragraphs"] <= 0:
+        ref["paragraphs"] = end - start + 1
+    return ref
+
+
+def _style_window_source(
+    session: Session, runtime_audit: dict
+) -> tuple[str | None, str | None]:
+    """(profile_id, book_id):样例窗口来自最具体层,契约 profile_ids 以层序排列、最具体层在末尾。"""
+    raw_ids = runtime_audit.get("profile_ids")
+    profile_ids = [str(item) for item in raw_ids if item] if isinstance(raw_ids, list) else []
+    for profile_id in reversed(profile_ids):
+        profile = session.get(StyleReferenceProfile, profile_id)
+        if profile is not None:
+            return profile.profile_id, profile.book_id
+    return (profile_ids[-1] if profile_ids else None), None
+
+
+def _current_run_style_windows(
+    session: Session, scene_id: str, state: SceneRunState
+) -> dict | None:
+    """当前运行 bundle 内实际进入提示的参考书样例窗口(WP4.1);解析不出 bundle 时为 None。
+
+    与 notices 同一范围规则:只看本次运行的 bundle。按 STYLE_WINDOW_ATTEMPT_STEPS 的优先级取
+    最近一次 completed 且 ``details_json.style_reference_runtime.few_shot_window_refs`` 非空的
+    尝试;返回 ``{step, profile_id, book_id, windows}``,窗口只有段落序号区间与读数,不含原文。
+    """
+    bundle_id = _resolve_current_run_bundle_id(session, scene_id, state)
+    if not bundle_id:
+        return None
+    for step in STYLE_WINDOW_ATTEMPT_STEPS:
+        row = (
+            session.execute(
+                select(AttemptTracker)
+                .where(
+                    AttemptTracker.scene_id == scene_id,
+                    AttemptTracker.step == step,
+                    AttemptTracker.status == "completed",
+                    AttemptTracker.source_bundle_id == bundle_id,
+                )
+                .order_by(AttemptTracker.attempt_id.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if row is None:
+            continue
+        runtime_audit = (row.details_json or {}).get("style_reference_runtime")
+        if not isinstance(runtime_audit, dict):
+            continue
+        refs = runtime_audit.get("few_shot_window_refs")
+        if not isinstance(refs, list):
+            continue
+        windows = [ref for ref in (_style_window_ref(item) for item in refs) if ref]
+        if not windows:
+            continue
+        profile_id, book_id = _style_window_source(session, runtime_audit)
+        return {
+            "step": step,
+            "profile_id": profile_id,
+            "book_id": book_id,
+            "windows": windows,
+        }
+    return None
 
 
 def _resolve_generation_llm_call(

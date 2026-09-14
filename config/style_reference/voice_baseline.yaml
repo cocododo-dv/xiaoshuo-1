@@ -5,7 +5,7 @@
 # render_voice_habits 以 p15 / p85 判「偏低 / 偏高」;feature_z_scores 用 mean / std。
 # 再生成(backend 目录下):
 #   python -m novel_system.services.style_reference.voice_signature build-baseline --block-chars 1500
-# generated_at: 2026-09-05
+# generated_at: 2026-09-14
 version: voice_baseline_v1
 signature_version: voice_signature_v1
 block_chars: 1500
@@ -63,9 +63,9 @@ features:
   redup_aabb_per_1k: {mean: 0.892308, std: 0.950103, p15: 0.0, p50: 0.749907, p85: 1.802705}
   redup_abab_per_1k: {mean: 0.458866, std: 0.60866, p15: 0.0, p50: 0.0, p85: 1.229167}
   redup_total_per_1k: {mean: 9.769146, std: 4.143014, p15: 5.599955, p50: 9.04361, p85: 13.959438}
-  person_first_share: {mean: 0.386626, std: 0.213789, p15: 0.132387, p50: 0.404404, p85: 0.612549}
-  person_second_share: {mean: 0.112089, std: 0.096138, p15: 0.019306, p50: 0.098316, p85: 0.188091}
-  person_third_share: {mean: 0.501286, std: 0.195948, p15: 0.289091, p50: 0.470861, p85: 0.744758}
+  person_first_share: {mean: 0.367246, std: 0.261324, p15: 0.0, p50: 0.423059, p85: 0.636478}
+  person_second_share: {mean: 0.034902, std: 0.082429, p15: 0.0, p50: 0.0, p85: 0.083333}
+  person_third_share: {mean: 0.597851, std: 0.274314, p15: 0.306712, p50: 0.538143, p85: 1.0}
   lexical_char_ttr: {mean: 0.326227, std: 0.022605, p15: 0.306434, p50: 0.325849, p85: 0.348256}
   lexical_bigram_hapax_ratio: {mean: 0.87309, std: 0.023436, p15: 0.855471, p50: 0.876025, p85: 0.891427}
 top_words:
