@@ -85,7 +85,7 @@
 
 - 提示词改动对存过 prompts 快照的安装静默无效：`cd backend && python -m novel_system.tools.sync_prompt_templates` → `--execute`。
 - `models.yaml` 的 `soft_qc` 路由改动同样被库内 models 快照盖过：已存过路由的安装在系统配置界面把 `soft_qc` 改到强模型。
-- 已导入的书：副文本过滤与选窗改动在**重新合成画像**后生效（`exemplar_windows` 合成期写入）；人称与文言指标在重新导入后生效。
+- 已导入的书：副文本过滤与选窗改动在**重新合成画像**后生效（`exemplar_windows` 合成期写入）；人称、文言指标、副文本剥离与符号场界可以不删书就地刷新：`python -m novel_system.tools.refresh_style_reference_books [--book ID] --execute`（默认干跑；空行型场界只有重新导入原文才能恢复；段落根哈希会变，已冻结的契约退回引文兜底路径）。
 
 ## 8. 完成记录（2026-09-14）
 
