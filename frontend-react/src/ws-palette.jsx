@@ -63,7 +63,6 @@ function WsPalette({ open, onClose, run, theme }) {
       kw: "new work xinjian zuopin xinshu", run: () => run({ type: "new-work" }) });
 
     cmds.push({ g: "导航", icon: "Home", label: "回到主页", hint: "主页", kw: "home zhuye shouye", run: () => run({ type: "go", view: "home" }) });
-    cmds.push({ g: "导航", icon: "GitBranch", label: "创作流程地图", hint: "流程", kw: "flowmap liucheng pipeline", run: () => run({ type: "go", view: "flowmap" }) });
     cmds.push({ g: "导航", icon: "Snowflake", label: "打开构思 · 雪花十步", hint: "构思", kw: "snowflake gousi xuehua", run: () => run({ type: "go", view: "snowflake" }) });
     cmds.push({ g: "导航", icon: "Pen", label: "进入写作房间", hint: "写作", kw: "writer xiezuo", run: () => run({ type: "go", view: "writer" }) });
     cmds.push({ g: "导航", icon: "Beaker", label: "风格参考 · 维度矩阵", hint: "风格", kw: "styleref fengge canzhao", run: () => run({ type: "go", view: "styleref" }) });

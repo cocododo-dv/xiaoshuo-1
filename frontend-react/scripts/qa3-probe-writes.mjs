@@ -28,7 +28,7 @@ seg = "A:cold-load-home";
 await page.goto(BASE + "#home"); await waitApp(); await page.waitForTimeout(1500);
 
 // 段2-7: 纯 hash 导航，绝不 reload
-for (const v of ["flowmap", "writer", "review", "library", "settings", "trash", "home"]) {
+for (const v of ["writer", "review", "library", "settings", "trash", "home"]) {
   seg = `B:nav→${v}`;
   await page.evaluate((view) => { location.hash = "#" + view; }, v);
   await page.waitForTimeout(1300);

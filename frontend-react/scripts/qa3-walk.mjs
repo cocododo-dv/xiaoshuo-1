@@ -71,9 +71,6 @@ ctx = "home"; await go(WORK, "home"); await probe("home"); await shot("01-home")
 const homeBtns = await page.locator(".ws-content button").allTextContents().catch(() => []);
 rec("buttons", `home=[${homeBtns.map(s => s.trim()).filter(Boolean).slice(0, 12).join(" | ")}]`);
 
-// ---------- 2) flowmap ----------
-ctx = "flowmap"; await go(WORK, "flowmap"); await probe("flowmap"); await shot("02-flowmap");
-
 // ---------- 3) snowflake ----------
 ctx = "snowflake"; await go(WORK, "snowflake"); await probe("snowflake");
 await clickText("总览"); await page.waitForTimeout(400); await shot("03-snow-overview");

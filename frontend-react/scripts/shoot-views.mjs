@@ -14,7 +14,7 @@ const API = process.argv[4] || null; // 可选：覆盖 novel-system-api-base（
 fs.mkdirSync(OUT, { recursive: true });
 
 const VIEWS = [
-  "home", "flowmap", "snowflake", "writer", "styleref", "review", "library",
+  "home", "snowflake", "writer", "styleref", "review", "library",
   "author", "scene", "manuscripts", "longform", "index", "interop", "settings", "trash",
 ];
 

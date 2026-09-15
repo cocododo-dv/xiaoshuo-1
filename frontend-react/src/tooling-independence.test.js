@@ -91,7 +91,7 @@ describe("React 工具链独立性", () => {
   it("新的 ESM-only 模块不再写入 window 全局命名空间", () => {
     const esmOnly = [
       "icons.jsx", "tweaks-panel.jsx", "ws-ai-providers.jsx", "ws-chapter-plan.jsx",
-      "ws-cost.jsx", "ws-deep.jsx", "ws-home.jsx",
+      "ws-cost.jsx", "ws-deep.jsx", "ws-home.jsx", "ws-home-derive.js",
       "ws-palette.jsx", "ws-quality.jsx", "ws-settings.jsx", "ws-settings-ai.jsx",
       "ws-settings-shared.jsx", "ws-styleref-val.jsx", "ws-scene-run.jsx",
       "ws-author-data.jsx", "ws-author-doctor.jsx", "ws-author-loom.jsx",

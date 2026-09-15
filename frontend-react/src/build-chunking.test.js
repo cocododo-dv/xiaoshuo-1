@@ -40,7 +40,7 @@ describe("生产构建业务域分块", () => {
     const srcRoot = path.dirname(fileURLToPath(import.meta.url));
     const app = fs.readFileSync(path.join(srcRoot, "ws-app.jsx"), "utf8");
     for (const moduleName of [
-      "ws-home.jsx", "ws-snow.jsx", "ws-flowmap.jsx", "ws-styleref.jsx", "ws-library.jsx",
+      "ws-home.jsx", "ws-snow.jsx", "ws-styleref.jsx", "ws-library.jsx",
       "ws-author.jsx", "ws-scene.jsx", "ws-manuscripts.jsx", "ws-quality.jsx",
       "ws-cost.jsx", "ws-settings.jsx", "ws-writer.jsx",
     ]) {

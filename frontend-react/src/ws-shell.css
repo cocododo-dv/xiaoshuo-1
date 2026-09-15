@@ -275,6 +275,41 @@
 .hm-chap.s-review .hm-chap-bar i { background: var(--gold); }
 .hm-chap.s-draft .hm-chap-bar i { background: var(--slate); }
 .hm-chap.s-writing .hm-chap-bar i { background: var(--crimson); }
+.hm-chap-st.st-planned, .hm-chap-st.st-todo { color: var(--ink-3); background: var(--paper-3); }
+
+/* whole-book progress spine (merged from the retired 流程 view, 2026-09-16) */
+.hm-spine {
+  background: var(--paper-1); border: 1px solid var(--line-1); border-radius: var(--r-lg);
+  padding: 14px 16px 14px; margin-bottom: 16px;
+}
+.hm-spine-head { display: flex; align-items: center; justify-content: space-between; gap: 10px 18px; flex-wrap: wrap; }
+.hm-spine-legend { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.hm-leg { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ink-3); }
+.hm-leg i { width: 10px; height: 10px; border-radius: 3px; background: var(--paper-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.hm-leg.st-approved i { background: var(--sage); box-shadow: none; }
+.hm-leg.st-review i { background: var(--gold); box-shadow: none; }
+.hm-leg.st-draft i { background: var(--slate); box-shadow: none; }
+.hm-leg.st-writing i { background: var(--crimson); box-shadow: none; }
+.hm-leg b { color: var(--ink-1); font-weight: 600; }
+.hm-spine-scenes { font-size: 11.5px; color: var(--ink-3); }
+.hm-spine-scenes b { color: var(--ink-1); font-weight: 600; }
+.hm-spine-bar { display: flex; gap: 3px; height: 28px; margin-top: 24px; }
+.hm-seg {
+  flex: 1 1 0; min-width: 3px; border: 0; padding: 0; border-radius: 3px; position: relative; cursor: pointer;
+  background: var(--paper-3); box-shadow: inset 0 0 0 1px var(--line-2);
+  transition: transform var(--t-fast), filter var(--t-fast);
+}
+.hm-seg:hover { transform: translateY(-2px); filter: brightness(1.05); }
+.hm-seg.s-approved { background: var(--sage); box-shadow: none; }
+.hm-seg.s-review { background: var(--gold); box-shadow: none; }
+.hm-seg.s-draft { background: var(--slate); box-shadow: none; }
+.hm-seg.s-writing { background: var(--crimson); box-shadow: none; }
+.hm-seg.is-front { box-shadow: 0 0 0 2px var(--paper-1), 0 0 0 3px var(--crimson); z-index: 2; }
+.hm-seg-flag {
+  position: absolute; top: -19px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; font-weight: 700; letter-spacing: 0.1em; color: var(--crimson); white-space: nowrap;
+}
+.hm-chaps-sub { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); margin-bottom: 10px; }
 
 /* home — responsive (narrow desk / preview) */
 @media (max-width: 960px) {

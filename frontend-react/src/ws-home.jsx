@@ -4,6 +4,7 @@ import { WsWorks, useActiveWork, useWorksStatus, wsKey } from "./ws-works.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { RV_KINDS, rvOpenItems, rvMarkResolved } from "./ws-review.jsx";
 import { WsAiProviders, useAiProviders } from "./ws-ai-providers.jsx";
+import { HM_CHAPTER_STATES, HM_CHAPTER_STATE_LABELS, hmCurrentChapter, hmDeriveSpine } from "./ws-home-derive.js";
 
 /* global React, I, useActiveWork, useCatalogChapters */
 /* ==========================================================
@@ -11,13 +12,16 @@ import { WsAiProviders, useAiProviders } from "./ws-ai-providers.jsx";
    One question, answered the moment you arrive:
    「此刻该写哪一幕?」 — everything else is quiet context.
    Layout: masthead (identity + book progress) → focus hero
-   (the one scene + last lines you wrote) → 雪花/待办 → 最近章节.
+   (the one scene + last lines you wrote) → 雪花/待办 → 全书章节
+   (progress spine + recent chapters).
+   2026-09-16：「流程」视图并入主页——整本书逐章所在阶段与场景计数在这里
+   （ws-home-derive.js 纯派生）；#flowmap 只是回主页的路由别名。
    ----------------------------------------------------------
    现在所有身份与进度数据都来自「当前作品」(useActiveWork)。
    一部刚新建的空白作品会显示引导性空状态，而不是空指标。
    ========================================================== */
 
-const HOME_CHAP_ST = { approved: "定稿", review: "送审", draft: "草稿", writing: "在写", planned: "规划" };
+const HM_BEAT_TONES = ["sage", "gold", "crimson"];
 
 function WsHome({ go }) {
   const work = useActiveWork();
@@ -59,7 +63,7 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
   const home = p.home || {};
 
   /* —— 当前章 / 当前场（单一真相源）—— */
-  const cur = chapters.find(c => c.current) || chapters.find(c => c.state === "writing") || chapters[chapters.length - 1];
+  const cur = hmCurrentChapter(chapters);
   const wIdx = cur ? cur.scenes.findIndex(s => s.state === "writing") : -1;
   const sIdx = wIdx >= 0 ? wIdx : 0;
   const curScene = cur && cur.scenes[sIdx] ? cur.scenes[sIdx] : null;
@@ -67,11 +71,12 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
     ? `CH ${cur.n} · SC ${String(sIdx + 1).padStart(2, "0")} · ${(curScene.kind || "主动")}场景`
     : (home.slug || "");
   const sceneTitle = curScene ? curScene.title : (home.scene || "—");
-  const gos = curScene ? [
-    { k: "目标", tone: "sage", v: curScene.goal || "（本场目标待规划）" },
-    { k: "阻碍", tone: "gold", v: curScene.obstacle || "（阻碍待规划）" },
-    { k: "挫折", tone: "crimson", v: curScene.turn || "（挫折待规划）" },
-  ] : (home.gos || []);
+  /* 三拍标签跟着场景形态走：目录给反应场景的是 反应/两难/决定（kindFields），主动场景是 目标/阻碍/挫折 */
+  const beatKeys = curScene && Array.isArray(curScene.kindFields) && curScene.kindFields.length === 3
+    ? curScene.kindFields : ["目标", "阻碍", "挫折"];
+  const gos = curScene ? [curScene.goal, curScene.obstacle, curScene.turn].map((v, i) => ({
+    k: beatKeys[i], tone: HM_BEAT_TONES[i], v: v || `（${i === 0 ? "本场" : ""}${beatKeys[i]}待规划）`,
+  })) : (home.gos || []);
 
   /* —— 进度（与切换器 / 成稿中心同源）—— */
   const totals = WsCatalog ? WsCatalog.totals() : { words: p.wordsTotal, written: p.chaptersWritten, planned: chapters.length };
@@ -110,6 +115,13 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
     pct: c.words && c.words.target ? Math.min(100, Math.round(((c.words.cur || 0) / c.words.target) * 100)) : 0,
     active: !!(c.current || c.state === "writing"),
   }));
+
+  /* —— 全书进度脊（并入的「流程」内容）：逐章所在阶段 + 场景计数，与最近章节读同一份目录 —— */
+  const spine = hmDeriveSpine(chapters);
+  const openChapter = (seg) => {
+    if (seg && seg.sid) go("writer", { type: "ws:writer-scene", detail: seg.sid });
+    else go("writer");
+  };
 
   // 与「待办收件箱」同源（store）：取优先级最高的几条，主页只做速览；
   // 在这里「标记处理」会真实落盘，徽标与收件箱同步消失。
@@ -240,18 +252,49 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
         </div>
       </section>
 
-      {/* ===== recent chapters ===== */}
+      {/* ===== whole book: per-chapter progress spine + recent chapters ===== */}
       <section className="hm-chaps">
         <div className="hm-chaps-head">
-          <div className="hm-chaps-title">最近章节</div>
+          <div className="hm-chaps-title">全书 {spine.total} 章</div>
           <button className="btn btn-quiet btn-sm" onClick={() => go("writer")}>全部章节 <I.ArrowRight size={13} /></button>
         </div>
+        <div className="hm-spine" data-testid="home-spine">
+          <div className="hm-spine-head">
+            <div className="hm-spine-legend" aria-label="各阶段章数">
+              {HM_CHAPTER_STATES.map(k => (
+                <span key={k} className={`hm-leg st-${k}`}><i />{HM_CHAPTER_STATE_LABELS[k]} <b>{spine.counts[k] || 0}</b></span>
+              ))}
+            </div>
+            <div className="hm-spine-scenes">
+              {spine.scenes.total
+                ? <>已规划 <b>{spine.scenes.total}</b> 场 · 完成 {spine.scenes.done} · 在写 {spine.scenes.writing} · 待写 {spine.scenes.todo}</>
+                : "还没有规划场景"}
+            </div>
+          </div>
+          <div className="hm-spine-bar" aria-label="全书各章所在阶段">
+            {spine.segments.map(s => {
+              const label = `第 ${s.n} 章${s.title ? `《${s.title}》` : ""} · ${HM_CHAPTER_STATE_LABELS[s.state]}${s.front ? " · 前线" : ""}`;
+              return (
+                <button
+                  key={s.n} type="button"
+                  className={`hm-seg s-${s.state} ${s.front ? "is-front" : ""}`}
+                  data-testid={`home-spine-ch-${s.n}`}
+                  title={label} aria-label={label}
+                  onClick={() => openChapter(s)}
+                >
+                  {s.front && <span className="hm-seg-flag">前线</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="hm-chaps-sub">最近章节</div>
         <div className="hm-chap-track">
           {chaps.map(c => (
             <button key={c.n} className={`hm-chap s-${c.s} ${c.active ? "is-active" : ""}`} onClick={() => go("writer")}>
               <div className="hm-chap-top">
                 <span className="hm-chap-n">CH {c.n}</span>
-                <span className={`hm-chap-st st-${c.s}`}>{HOME_CHAP_ST[c.s] || "草稿"}</span>
+                <span className={`hm-chap-st st-${c.s}`}>{HM_CHAPTER_STATE_LABELS[c.s] || "草稿"}</span>
               </div>
               <div className="hm-chap-t">{c.t}</div>
               <div className="hm-chap-bar"><i style={{ width: c.pct + "%" }} /></div>

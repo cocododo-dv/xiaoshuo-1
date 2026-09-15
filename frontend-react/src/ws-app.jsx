@@ -12,7 +12,7 @@ import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, ReactDOM, I, useTweaks, TweaksPanel, TweakSection, TweakSlider, TweakToggle, TweakRadio,
    WsHome, WsReview, WsSnowflake, WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, SceneTweaks,
-   WsFlowmap, WsLibrary, WsTrash, WsStyleRef, WsAuthor, WsScene, WsManuscripts, WsQuality, WsEval,
+   WsLibrary, WsTrash, WsStyleRef, WsAuthor, WsScene, WsManuscripts, WsQuality, WsEval,
    WsCost, WsIndex, WsInterop, WsSettings, WsPalette, WsWorks, useActiveWork, useWorks */
 const { useState: useAS, useEffect: useAE, useRef: useARef } = React;
 const wsPortal = ReactDOM.createPortal;
@@ -39,7 +39,6 @@ function lazySnowNamed(loader, exportName) {
 const LazyWsHome = lazyNamed(() => import("./ws-home.jsx"), "WsHome");
 const LazyWsConstruct = lazySnowNamed(() => import("./ws-snow.jsx"), "WsConstruct");
 const LazyWsReview = lazyNamed(() => import("./ws-review.jsx"), "WsReview");
-const LazyWsFlowmap = lazyNamed(() => import("./ws-flowmap.jsx"), "WsFlowmap");
 const LazyWsStyleRef = lazyNamed(() => import("./ws-styleref.jsx"), "WsStyleRef");
 const LazyWsLibrary = lazyNamed(() => import("./ws-library.jsx"), "WsLibrary");
 const LazyWsTrash = lazyNamed(() => import("./ws-library.jsx"), "WsTrash");
@@ -94,7 +93,6 @@ const WS_NAV_GROUPS = [
     id: "daily", label: "日常写作",
     items: [
       { id: "home",      label: "主页", icon: "Home" },
-      { id: "flowmap",   label: "流程", icon: "GitBranch" },
       { id: "snowflake", label: "构思", icon: "Snowflake" },
       { id: "writer",    label: "写作", icon: "Pen" },
       { id: "styleref",  label: "风格", icon: "Beaker" },
@@ -134,11 +132,12 @@ const WS_VIEW_LABELS = (() => {
 })();
 const WS_ALL_VIEWS = Object.keys(WS_VIEW_LABELS);
 const WS_PROJECT_SCOPED_VIEWS = new Set([
-  "flowmap", "snowflake", "writer", "library", "author", "scene",
+  "snowflake", "writer", "library", "author", "scene",
   "manuscripts", "quality",
 ]);
-/* 旧路由别名：独立深改台已并入写作台，深链重定向到深改姿态 */
-const WS_VIEW_ALIAS = { deepdesk: "writer" };
+/* 旧路由别名：独立深改台已并入写作台，深链重定向到深改姿态；
+   「流程」视图（#flowmap）于 2026-09-16 并入主页（全书进度脊 + 场景计数），深链回主页 */
+const WS_VIEW_ALIAS = { deepdesk: "writer", flowmap: "home" };
 
 function App() {
   const [t, setTweak] = useTweaks(WS_DEFAULTS);
@@ -247,7 +246,6 @@ function App() {
       case "home":        return <LazyWsHome go={go} />;
       case "snowflake":   return <LazyWsConstruct go={go} />;
       case "review":      return <LazyWsReview go={go} />;
-      case "flowmap":     return <LazyWsFlowmap go={go} />;
       case "styleref":    return <LazyWsStyleRef go={go} />;
       case "library":     return <LazyWsLibrary go={go} />;
       case "author":      return <LazyWsAuthor go={go} />;

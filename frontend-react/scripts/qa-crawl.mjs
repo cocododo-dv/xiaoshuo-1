@@ -17,7 +17,7 @@ fs.mkdirSync(path.join(OUT, "shots"), { recursive: true });
 
 // 权威视图清单（取自 ws-app.jsx WS_NAV_GROUPS；含 quality）
 const VIEWS = [
-  "home", "flowmap", "snowflake", "writer", "styleref", "review", "library",
+  "home", "snowflake", "writer", "styleref", "review", "library",
   "author", "scene", "manuscripts", "longform", "quality",
   "index", "interop", "settings", "trash",
 ];
