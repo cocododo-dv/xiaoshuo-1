@@ -139,10 +139,10 @@ def test_prompts_know_follow_up_beats_skip_and_costly_victory() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     details = templates["snowflake_generate_scene_details"]
-    assert details["version"] == "2026-09-14.v12"
+    assert details["version"] == "2026-09-15.v13"
     assert "follow-up beats" in details["task_prompt"] and '"skip"' in details["task_prompt"]
     assert "a mixed victory is a legitimate setback" in details["task_prompt"]
-    for name, version in (("neutral_draft", "2026-09-14.v11"), ("style_first_draft", "2026-09-14.v6"), ("hard_qc", "2026-09-13.v5"), ("scene_blueprint", "2026-09-14.v9")):
+    for name, version in (("neutral_draft", "2026-09-15.v12"), ("style_first_draft", "2026-09-15.v7"), ("hard_qc", "2026-09-15.v6"), ("scene_blueprint", "2026-09-15.v10")):
         template = templates[name]
         assert template["version"] == version, name
         assert "Follow-up beats" in template["task_prompt"], name

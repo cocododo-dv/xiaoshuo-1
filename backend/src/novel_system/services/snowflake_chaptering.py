@@ -36,6 +36,8 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.snowflake_steps import effective_rendering_mode
+from novel_system.services.snowflake_triage import excluded_scene_plan_ids
 
 STRATEGIES = ("spine_anchor", "even", "keep_current")
 SPINE_MARKS = ("灾一", "灾二", "灾三")
@@ -439,6 +441,7 @@ class SnowflakeChapteringService:
     ) -> dict[str, Any]:
         by_chapter: dict[str, list[SnowflakeScenePlan]] = {chapter.row_uid: [] for chapter in chapters}
         unassigned: list[SnowflakeScenePlan] = []
+        excluded = self._excluded_scene_plan_ids(project_id)
         for scene in scenes:
             target = assignment.get(scene.scene_plan_id)
             if target and target in by_chapter:
@@ -472,8 +475,10 @@ class SnowflakeChapteringService:
                             "spine": scene_spine(scene),
                             "anchored": bool(scene_spine(scene)) and scene_spine(scene) == (chapter.spine or ""),
                             "planned": bool((scene.goal or scene.reaction or "").strip()),
-                            # 阶段 C：概述两段的反应场在节奏体检里按半场计
-                            "rendering_mode": (scene.rendering_mode or "full") if (scene.scene_type or "proactive") == "reactive" else "full",
+                            # 阶段 C / N：概述场在节奏体检里按半场计（两种形态都可以概述）
+                            "rendering_mode": effective_rendering_mode(scene.scene_type, scene.rendering_mode),
+                            # 阶段 N：作者裁定该重写 / 待删——不物化，节奏按 0 计
+                            "excluded": scene.scene_plan_id in excluded,
                         }
                         for seq, scene in enumerate(members, start=1)
                     ],
@@ -884,6 +889,10 @@ class SnowflakeChapteringService:
 
     # ------------------------------------------------------- 物化前置检查
 
+    def _excluded_scene_plan_ids(self, project_id: str) -> set[str]:
+        # 阶段 N：作者裁定该重写 / 待删的场不物化——节奏体检按 0 计（口径在 snowflake_triage）。
+        return excluded_scene_plan_ids(self.session, project_id)
+
     def status(self, project_id: str, scene_plans: list[SnowflakeScenePlan]) -> dict[str, Any]:
         """分章现状（**只读**，不建行、不绑定）。
 
@@ -956,9 +965,13 @@ def _rhythm_report(chapter_payloads: list[dict[str, Any]]) -> dict[str, Any]:
     counts = [item["scene_count"] for item in chapter_payloads]
     # 阶段 C：概述两段的反应场只有一两百字，按半场计入均值——它不该把一章「撑」成长章。
     # 阶段 I：页面上略过的反应场不占篇幅，按 0 计。
+    # 阶段 N：作者裁定该重写 / 待删的场（excluded）不物化，同样按 0 计。
     _weight = {"summary": 0.5, "skip": 0.0}
     weighted = [
-        sum(_weight.get(str(scene.get("rendering_mode") or "full"), 1.0) for scene in (item.get("scenes") or []))
+        sum(
+            0.0 if scene.get("excluded") else _weight.get(str(scene.get("rendering_mode") or "full"), 1.0)
+            for scene in (item.get("scenes") or [])
+        )
         for item in chapter_payloads
     ]
     summary_scene_count = sum(

@@ -163,6 +163,8 @@ function s2ReorderScenes(list, from, to) {
 // 0 = 未规划 · 1 = 填了一半 · 2 = 三槽齐
 function s2PlanState(plan, type) {
   if (!plan) return 0;
+  // 阶段 R：写了破例理由 = 这一场故意不按三拍走（原著：不过关也可放行，但要知道理由）——按已规划计
+  if ((plan.exception || "").trim()) return 2;
   const slots = s2PlanSlots(plan, type);
   const n = slots.filter(f => (plan[f] || "").trim()).length;
   return n === slots.length ? 2 : n ? 1 : 0;
@@ -671,6 +673,34 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const [tabByStep, setTabByStep] = useSS({});
   const [drafts, setDrafts] = useSS(() => ({ ...s2DefaultDrafts(), ...(saved.drafts || {}) }));
   const [scaffolds, setScaffolds] = useSS(() => s2MergeScaffolds(saved.scaffolds));
+  /* 阶段 R：从成稿中心的场景三问回跳第 10 步并选中那一场（按 scene_id 对到 09 的 row_uid）。
+     挂起目标先读 window.__snowSceneTarget（跨视图挂载竞态），再监听实时事件；水合后再试一次（对照表来自工作台）。 */
+  useSE(() => {
+    const focus = (sceneId) => {
+      if (!sceneId) return false;
+      let rowUid = "";
+      try { rowUid = (window.SnowSync && window.SnowSync.rowUidForSceneId && window.SnowSync.rowUidForSceneId(snowWorkId, sceneId)) || ""; } catch (e) {}
+      if (!rowUid) {
+        const list = ((latestRef.current.scaffolds || {}).scenes || {}).list || [];
+        if (list.some(s => s.id === sceneId)) rowUid = sceneId;
+      }
+      if (!rowUid) return false;
+      setActiveKey("planning");
+      setScaffolds(prev => ({ ...prev, planning: { ...(prev.planning || {}), sel: rowUid } }));
+      return true;
+    };
+    const pending = () => {
+      const target = window.__snowSceneTarget;
+      // 只有以第 10 步为 key 挂载的实例才消费掉目标：ws:snow-step 会让 WsConstruct 换 key 重挂，
+      // 旧实例上的选中会随之丢掉，目标要留给新实例再选一次。
+      if (target && focus(target) && initialStep === "planning") window.__snowSceneTarget = null;
+    };
+    pending();
+    const onScene = (e) => { window.__snowSceneTarget = e.detail; pending(); };
+    window.addEventListener("ws:snow-scene", onScene);
+    window.addEventListener("ws:snow-hydrated", pending);
+    return () => { window.removeEventListener("ws:snow-scene", onScene); window.removeEventListener("ws:snow-hydrated", pending); };
+  }, []);
   const [checks, setChecks] = useSS(() => s2MergeChecks(saved.checks));
   const [states, setStates] = useSS(() => ({ ...s2DefaultStates(), ...(saved.states || {}) }));
   const [history, setHistory] = useSS(() => saved.history || []);
@@ -1115,9 +1145,32 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     showToast(`已应用修复补丁 · ${rowUid} · 可回滚`, "gold");
   };
 
+  /* 阶段 R：作者对某一场的裁定（pass / maybe / rewrite / cut）——本地即时更新，服务端存档（失败回滚并提示） */
+  const setTriageVerdict = async (rowUid, status) => {
+    const prevTriage = triage;
+    const cur = (triage && triage.items && triage.items[rowUid]) || {};
+    const next = { ...(triage || { at: Date.now(), source: "author" }), items: { ...((triage && triage.items) || {}), [rowUid]: { ...cur, status, manual: true } } };
+    setTriage(next);
+    try {
+      let workId = null;
+      try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+      if (!workId || !(window.SnowSync && window.SnowSync.saveTriageVerdict)) throw new Error("作品尚未就绪");
+      const saved = await window.SnowSync.saveTriageVerdict(workId, { ...cur, row_uid: rowUid, status });
+      if (saved && saved.triage_id) {
+        if (saved.scene_plan_id) triageIdsRef.current[saved.scene_plan_id] = saved.triage_id;
+        setTriage(t => t ? { ...t, items: { ...t.items, [rowUid]: { ...(t.items[rowUid] || {}), triage_id: saved.triage_id, scene_plan_id: saved.scene_plan_id || (t.items[rowUid] || {}).scene_plan_id, recommended_status: saved.recommended_status || (t.items[rowUid] || {}).recommended_status } } } : t);
+      }
+      pushHist("分诊裁定", `10 场景规划 · ${rowUid} → ${S2_TRIAGE_LABEL[status] || status}`, "我");
+      showToast(status === "cut" ? `${rowUid} 已标待删 · 整理时不建卡，三拍留在构思里` : status === "rewrite" ? `${rowUid} 标为该重写 · 整理时先不建卡` : `${rowUid} 裁定：${S2_TRIAGE_LABEL[status] || status}`, "gold");
+    } catch (err) {
+      setTriage(prevTriage);
+      showToast("裁定未保存：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+    }
+  };
+
   /* 传给 09/10 脚手架的 AI 工具面 */
   const sceneAI = {
-    structBusy, triage, triageBusy, onTriage: runTriage, onApplyRepair: applyTriageRepair,
+    structBusy, triage, triageBusy, onTriage: runTriage, onApplyRepair: applyTriageRepair, onVerdict: setTriageVerdict,
     onGenerateAll: () => structuredGenerate({
       histAction: "AI 生成场景表", doneAction: "AI 生成场景表",
       doneNote: "依上游大纲与角色生成整表", toastOk: "场景表已生成 · 依上游材料 · 可回滚",
@@ -2571,7 +2624,7 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
     <div className="sf-scaffold sf-scenelist">
       <div className="sf-scaffold-note">
         <I.List size={14} />
-        <span>分形展开接近底层：把大纲拆成<b>一行一场</b>。每场都要有坩埚（困住角色的冲突）；主线与支线在此<b>编织</b>；反应场是<b>少数</b>，只在下一目标不明显时才写，不要机械交替。</span>
+        <span>分形展开接近底层：把大纲拆成<b>一行一场</b>。每场都要有坩埚（困住角色的力量），而且每场的坩埚都要<b>新</b>；POV 选这一场里<b>损失最大的人</b>；主线与支线在此<b>编织</b>；反应场是<b>少数</b>，只在下一目标不明显时才写，不要机械交替。</span>
       </div>
 
       <div className="sf-scene-stats">
@@ -2704,7 +2757,9 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
   );
 }
 
-const S2_TRIAGE_LABEL = { pass: "可通过", maybe: "需修补", rewrite: "该重写" };
+// 阶段 R：cut（待删）是作者专用的裁定——原著「杀要杀得对：不真删，标记待删，下一稿再删」；该重写 / 待删的场不物化、不阻断全书
+const S2_TRIAGE_LABEL = { pass: "可通过", maybe: "需修补", rewrite: "该重写", cut: "待删" };
+const S2_VERDICTS = ["pass", "maybe", "rewrite", "cut"];
 
 function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const list = ((refs && refs.scenes) || {}).list || [];
@@ -2715,7 +2770,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const selIdx = list.findIndex(s => s.id === selId);
   // 类型跟随 09 的真相：主动/反应在场景列表里定，这里不再各说各话
   const proactive = scene ? scene.type !== "reactive" : true;
-  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", onstage: [], story_time: "", reader_emotion: "", hook: "", exit_change: "", ...(plans[selId] || {}) };
+  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", onstage: [], story_time: "", reader_emotion: "", hook: "", exit_change: "", title: "", length: "", must_include: "", exception: "", ...(plans[selId] || {}) };
   plan.mode = proactive ? "proactive" : "reactive";
   const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...plan, [f]: v } } }));
   const selScene = (id) => onScaffold(s => ({ ...s, sel: id }));
@@ -2798,6 +2853,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
               <span className="tri-pass">{triCount("pass")} 过</span>
               <span className="tri-maybe">{triCount("maybe")} 修</span>
               <span className="tri-rewrite">{triCount("rewrite")} 重写</span>
+              {triCount("cut") > 0 && <span className="tri-cut">{triCount("cut")} 待删</span>}
             </span>
           )}
         </div>
@@ -2814,7 +2870,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
               <button key={s.id}
                 className={`sf-plan-cell st-${st} ${s.id === selId ? "is-sel" : ""} ${s.type === "reactive" ? "is-rea" : "is-pro"} ${s.spine ? "is-spine" : ""} ${tri ? "tri-" + tri.status : ""}`}
                 onClick={() => selScene(s.id)}
-                title={`${s2SceneNo(s.id, i)} · ${s.type === "reactive" ? "反应" : "主动"}${s.type === "reactive" && (plans[s.id] || {}).rendering === "summary" ? " · 概述" : s.type === "reactive" && (plans[s.id] || {}).rendering === "skip" ? " · 略过" : ""}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
+                title={`${s2SceneNo(s.id, i)} · ${s.type === "reactive" ? "反应" : "主动"}${(plans[s.id] || {}).rendering === "summary" ? " · 概述" : s.type === "reactive" && (plans[s.id] || {}).rendering === "skip" ? " · 略过" : ""}${s.spine ? " · " + s.spine : ""} · ${((plans[s.id] || {}).exception || "").trim() ? "破例" : st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
                 {i + 1}
               </button>
             );
@@ -2827,10 +2883,13 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
         <div className="sf-plan-cur">
           <span className="sf-plan-cur-id" title={scene.id}>{s2SceneNo(scene.id, selIdx)}</span>
           <span className="sf-plan-cur-body">
-            <span className="sf-plan-cur-title">{scene.event || scene.place || "（未命名场景）"}</span>
+            <span className="sf-plan-cur-title">{plan.title || scene.event || scene.place || "（未命名场景）"}</span>
             <span className="sf-plan-cur-sub">{scene.place}{scene.spine ? ` · ${scene.spine}` : ""}{scene.fn ? ` · ${scene.fn}` : ""}</span>
           </span>
         </div>
+        {/* 阶段 R：场景题名（原著第 9 步每场有标题；留空 = 跟随 09 的事件文本，模型给的短题名不再被覆盖） */}
+        <label className="sf-field is-short"><span className="sf-field-label">题名</span>
+          <input className="sf-field-input" data-testid="snow-plan-title" value={plan.title || ""} onChange={(e) => setPlan("title", e.target.value)} placeholder={scene.event || "场景题名（留空 = 跟随 09）"} title="这一场的短题名；留空时跟随 09 的事件文本" /></label>
         <label className="sf-field is-short"><span className="sf-field-label">POV 角色</span>
           <S2PovPick value={plan.pov} roster={roster} onChange={(v) => setPlan("pov", v)} className="sf-field-input" placeholder={s2PovLabel(scene.pov, roster) || "POV"} /></label>
         {/* 阶段 J：原著第 9 步「列出在场人物」——从 04 名册点选，POV 之外的人 */}
@@ -2856,17 +2915,31 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           <input className="sf-field-input" data-testid="snow-plan-exit-change" value={plan.exit_change || ""} onChange={(e) => setPlan("exit_change", e.target.value)} placeholder="这一场结束时什么不可逆地变了（留空 = 就是挫折 / 决定）" /></label>
         <label className="sf-field"><span className="sf-field-label">钩子</span>
           <input className="sf-field-input" data-testid="snow-plan-hook" value={plan.hook || ""} onChange={(e) => setPlan("hook", e.target.value)} placeholder="逼读者翻页的未解之事（留空 = 挫折 / 决定本身就是牵引）" /></label>
+        {/* 阶段 R：原著第 9 步「好的对话片段」——必须出现的对话 / 物件 / 一句话；一直是场景卡的列，此前只有模型能写 */}
+        <label className="sf-field"><span className="sf-field-label">必须出现</span>
+          <input className="sf-field-input" data-testid="snow-plan-must-include" value={plan.must_include || ""} onChange={(e) => setPlan("must_include", e.target.value)} placeholder="记下这一场想到的好对话、必须出现的物件或一句话（原著第 9 步的「对话片段」）" /></label>
+        {/* 阶段 R：破例理由——原著「不过关也可以放行，但我要知道理由」；写了理由，缺的三拍 / 坩埚不再算缺失 */}
+        <label className="sf-field"><span className="sf-field-label">破例理由</span>
+          <input className="sf-field-input" data-testid="snow-plan-exception" value={plan.exception || ""} onChange={(e) => setPlan("exception", e.target.value)} placeholder="这一场故意不按三拍走？写下理由（如：全书收尾的叙述交代，没有新冲突）" title="原著第 22 场「冲突：无」——破例要知道理由；写了理由，规则层不再把缺的三拍算缺失，起草与评审按理由判" /></label>
         <span className={`sf-plan-type ${proactive ? "is-pro" : "is-rea"}`} title="类型跟随 09 场景列表——要改去 09 切换">
           {proactive ? "主动 · GCS" : "反应 · RDD"}
           <button className="sf-plan-type-go" onClick={() => go && go("scenes")} title="在 09 修改类型">09</button>
         </span>
-        {/* 阶段 C：反应场的呈现方式——Ingermanson：反应场是少数，可以整场写，也可以缩成两段概述 */}
-        {!proactive && (
-          <span className="sf-plan-render" title="整场戏剧化，还是两段概述（约 200–500 字）？概述场物化后拿到 200-500 的篇幅带，起草按概述写">
-            <span className="sf-field-label">呈现</span>
-            <button type="button" className={`sf-plan-render-opt ${(plan.rendering !== "summary" && plan.rendering !== "skip") ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
-            <button type="button" className={`sf-plan-render-opt ${plan.rendering === "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "summary")}>概述两段</button>
-            <button type="button" className={`sf-plan-render-opt ${plan.rendering === "skip" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "skip")} title="页面上略过这一场，直接进下一场主动场景——反应 / 两难 / 决定照样写，它们决定下一场的目标，也会带给下一场的写手">略过</button>
+        {/* 阶段 C / N：呈现方式——概述对两种形态都合法（原著第 1 场就是主动场的叙述概述，收尾几场也是）；略过只给反应场 */}
+        <span className="sf-plan-render" data-testid="snow-plan-render" title="整场戏剧化，还是两三段叙述概述（约 200–500 字）？概述场物化后拿到 200-500 的篇幅带，起草按概述写">
+          <span className="sf-field-label">呈现</span>
+          <button type="button" className={`sf-plan-render-opt ${(plan.rendering !== "summary" && plan.rendering !== "skip") ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
+          <button type="button" className={`sf-plan-render-opt ${plan.rendering === "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "summary")}>概述两段</button>
+          {!proactive && <button type="button" className={`sf-plan-render-opt ${plan.rendering === "skip" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "skip")} title="页面上略过这一场，直接进下一场主动场景——反应 / 两难 / 决定照样写，它们决定下一场的目标，也会带给下一场的写手">略过</button>}
+        </span>
+        {/* 阶段 R：篇幅带——原著「场景长度没有标准，一百词到五千词都可以」；短 / 中 / 长或自定义字数区间（如 800-1200，数值带会被起草硬约束）；概述场固定 200–500 */}
+        {plan.rendering !== "summary" && plan.rendering !== "skip" && (
+          <span className="sf-plan-render sf-plan-length" data-testid="snow-plan-length" title="这一场的篇幅：短 / 中 / 长只是给写手的提示，自定义字数区间（如 800-1200）会被起草按数值硬约束；原著说场景长度没有标准，选适合这一场的">
+            <span className="sf-field-label">篇幅</span>
+            {[["short", "短"], ["medium", "中"], ["long", "长"]].map(([v, l]) => (
+              <button key={v} type="button" className={`sf-plan-render-opt ${(plan.length || "medium") === v ? "is-on" : ""}`} onClick={() => setPlan("length", v)}>{l}</button>
+            ))}
+            <input className="sf-field-input sf-plan-length-custom" data-testid="snow-plan-length-custom" value={/^\d+\s*[-–—]\s*\d+$/.test(plan.length || "") ? plan.length : ""} onChange={(e) => setPlan("length", e.target.value.trim())} placeholder="自定义 如 800-1200" />
           </span>
         )}
         {ai && (
@@ -2876,6 +2949,17 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           </button>
         )}
       </div>
+
+      {/* 阶段 R：作者的裁定——原著的 Yes / No / Maybe 由作者拍板；该重写 / 待删的场不物化、不阻断全书 */}
+      {ai && ai.onVerdict && (
+        <div className="sf-plan-verdict" data-testid="snow-plan-verdict" title="你的裁定：通过 = 这一场成立；需修补 = 能修；该重写 = 从设计重建，整理时先不建卡；待删 = 标记待删（不真删，三拍留在构思里，整理时不建卡）">
+          <span className="sf-field-label">你的裁定</span>
+          {S2_VERDICTS.map(v => (
+            <button key={v} type="button" data-testid={`snow-verdict-${v}`} className={`sf-plan-render-opt tri-${v} ${selTri && selTri.status === v && selTri.manual ? "is-on" : ""}`} onClick={() => ai.onVerdict(selId, v)}>{S2_TRIAGE_LABEL[v]}</button>
+          ))}
+          {selTri && !selTri.manual && selTri.status && <span className="text-muted text-sm">系统建议：{S2_TRIAGE_LABEL[selTri.status] || selTri.status}</span>}
+        </div>
+      )}
 
       {/* 本场分诊结果：状态 + 诊断 + 修复步骤 + 一键应用补丁 */}
       {selTri && (

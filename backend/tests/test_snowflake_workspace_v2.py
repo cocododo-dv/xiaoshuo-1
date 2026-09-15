@@ -215,10 +215,11 @@ def test_workspace_v2_creates_snowflake_project_and_exposes_structured_steps(cli
     proactive_conflict = next(field for field in proactive_mode["fields"] if field["key"] == "conflict")
     reactive_crucible = next(field for field in reactive_mode["fields"] if field["key"] == "crucible")
     assert proactive_goal["label"] == "目标"
-    assert proactive_goal["hint"] == "角色想达成什么？（可拍摄/量化）"
+    # 阶段 O：目标提示带原著好目标的五条（能拍下来、装得进时间槽、可能、难但不可笑、合乎价值观与志向）
+    assert proactive_goal["hint"].startswith("角色想达成什么？能拍下来") and "时间槽" in proactive_goal["hint"]
     assert proactive_goal["rows"] == 2
-    assert proactive_goal["placeholder"].startswith("例：在审讯结束前")
-    assert proactive_conflict["hint"] == "写出2-3轮「尝试→受阻」的循环"
+    assert proactive_goal["placeholder"].startswith("例：让警探放弃拘留")  # 阶段 O：不再给每个目标硬塞倒计时
+    assert "至少两轮" in proactive_conflict["hint"] and "2-3" not in proactive_conflict["hint"]  # 阶段 O：回合数没有规则
     assert "警探拿出监控截图否定" in proactive_conflict["placeholder"]
     assert reactive_crucible["hint"] == "是什么让角色无法回避这个困境？"
     assert reactive_crucible["placeholder"] == "例：真凶今晚就要行动，主角却被关着，而且没有人相信他的话"
@@ -1594,22 +1595,12 @@ def test_workspace_v2_persists_triage_repair_metadata_and_blocks_rewrite_materia
     triaged = triage_response.json()["data"]
     assert triaged["items"][0]["missing_fields"] == ["goal", "conflict", "setback"]
     assert triaged["items"][0]["fix_steps"][0].startswith("Rebuild")
-    assert triaged["workspace"]["materialization_gate"]["status"] == "blocked"
-
-    materialize_response = client.post(
-        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/materialize",
-        json={},
-        headers={"X-Idempotency-Key": "materialize-rewrite-blocked"},
-    )
-
-    assert materialize_response.status_code == 409
-    error = materialize_response.json()["error"]
-    assert error["code"] == "SNOWFLAKE_TRIAGE_BLOCKED"
-    assert error["details"]["materialization_gate"]["status"] == "blocked"
-    # 回归守护：这条 message 曾经硬编码英文，直接被 React 前端 window.alert 原样展示给
-    # 中文用户（ws-snow.jsx::materializeFromHeader）。锁定为中文，避免再次退化。
-    assert "重写" in error["message"], error["message"]
-    assert all(ch.isascii() is False or not ch.isalpha() for ch in error["message"]), error["message"]
+    # 阶段 N（2026-09-15）：作者的「该重写」不再阻断全书——这一场被排除在物化之外（警告），其余照常整理。
+    gate = triaged["workspace"]["materialization_gate"]
+    assert gate["status"] != "blocked"
+    rewrite_items = [item for item in gate["items"] if item["kind"] == "triage_rewrite"]
+    assert len(rewrite_items) == 1 and rewrite_items[0]["severity"] == "warning"
+    assert "不建它的场景卡" in rewrite_items[0]["message"] and "该重写" in rewrite_items[0]["message"]
 
     session.expire_all()
     first_triage = (

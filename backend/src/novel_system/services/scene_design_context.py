@@ -37,6 +37,7 @@ from novel_system.db.models import (
     StoryCharacter,
 )
 from novel_system.services.context_budget import compress_design_context
+from novel_system.services.snowflake_triage import latest_triage_plan_ids
 from novel_system.settings import get_settings
 
 SCENE_DESIGN_SECTION_KEY = "scene_design_context"
@@ -213,6 +214,10 @@ def _ordered_plans(session: Session, project_id: str) -> list[SnowflakeScenePlan
             SnowflakeScenePlan.removed_at.is_(None),
         )
     ).scalars().all()
+    # 阶段 N：作者裁定「待删」的场对相邻场来说已经不存在——上一场 / 下一场跳过它。
+    # 「该重写」的场仍是设计里的一场（等着重建），照旧当邻居。
+    cut_ids = latest_triage_plan_ids(session, project_id, frozenset({"cut"}))
+    plans = [plan for plan in plans if plan.scene_plan_id not in cut_ids]
     chapter_seq: dict[str, int] = {
         row.chapter_plan_id: int(row.chapter_seq or 0)
         for row in session.execute(

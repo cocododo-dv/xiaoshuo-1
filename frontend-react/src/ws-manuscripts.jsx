@@ -539,7 +539,7 @@ function WsManuscripts({ go }) {
               : (
               <>
                 {view === "read"      && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={retryCanonical} />}
-                {view === "structure" && <ManuStructure picked={picked} body={body} catCh={catPicked} />}
+                {view === "structure" && <ManuStructure picked={picked} body={body} catCh={catPicked} go={go} />}
                 {view === "diff"      && <ManuDiff picked={picked} catCh={catPicked} />}
               </>
               )}
@@ -1122,18 +1122,35 @@ function ManuWriting({ picked, go, onSubmit, gate, canSubmit, blockReason }) {
 /* 阶段 D：成稿后的场景三问（Ingermanson 的 Yes / No / Maybe 分诊）——准定稿评审随评审记录给出，
    目录按场透出（catalog story_check）。只是提示，不阻断任何流转。 */
 const MS_STORY_VERDICT = { yes: ["Yes", "这一场成立"], no: ["No", "不成立"], maybe: ["Maybe", "能修"] };
-function ManuStoryCheck({ check }) {
+function ManuStoryCheck({ check, sceneId, sid, go }) {
   if (!check) return <span className="ms-story-check is-none" />;
   const verdict = MS_STORY_VERDICT[check.verdict] || ["—", "未判"];
   const mark = (flag) => (flag === true ? "✓" : flag === false ? "✗" : "?");
   const title = `成稿后场景三问（准定稿评审）：坩埚可辨 ${mark(check.crucible_identified)} · 三拍落地 ${mark(check.shape_landed)} · 判定 ${verdict[0]}（${verdict[1]}）${check.note ? "\n" + check.note : ""}`;
+  /* 阶段 R：原著的七步救治从这里回路——Maybe / No 都回第 10 步改形态与三拍再重写；No 还可以标记待删（回收站可恢复，不真删） */
+  const backToPlan = () => {
+    if (!go || !sceneId) return;
+    // 视图意图在构思视图就绪后依次派发：先切到第 10 步，再选中这一场（ws-snow 自己处理挂载竞态）
+    go("snowflake", [{ type: "ws:snow-step", detail: "planning" }, { type: "ws:snow-scene", detail: sceneId }]);
+  };
+  const markCut = () => {
+    if (!sid || !(window.WsCatalog && window.WsCatalog.removeScenes)) return;
+    if (!window.confirm("把这一场送进回收站（可恢复）？原著的做法是标记待删、下一稿再决定，不真删。")) return;
+    window.WsCatalog.removeScenes([sid]);
+  };
   return (
     <span className={`ms-story-check is-${check.verdict || "none"}`} title={title} data-testid="ms-story-check">
       <b>{verdict[0]}</b> 坩埚{mark(check.crucible_identified)} 三拍{mark(check.shape_landed)}
+      {go && sceneId && check.verdict !== "yes" && (
+        <button type="button" className="ms-story-check-act" data-testid="ms-story-check-plan" onClick={backToPlan} title="回第 10 步：先定这一场是主动还是反应场，写下三拍与坩埚，再重写、再评">回第 10 步</button>
+      )}
+      {sid && check.verdict === "no" && (
+        <button type="button" className="ms-story-check-act" data-testid="ms-story-check-cut" onClick={markCut} title="标记待删：送进回收站，可恢复">标待删</button>
+      )}
     </span>
   );
 }
-function ManuStructure({ picked, body, catCh }) {
+function ManuStructure({ picked, body, catCh, go }) {
   const drama = (body && body.drama) || manuDramaOf(catCh);
   /* 场景拼接：优先目录真实场景（含状态/字数），种子章回落演示归档 */
   const rows = catCh && (catCh.scenes || []).length
@@ -1144,6 +1161,7 @@ function ManuStructure({ picked, body, catCh }) {
           meta: paras ? `${paras.join("").length} 字 · 已归档` : (typeof s.words === "number" && s.words > 0 ? `${s.words.toLocaleString()} 字` : "未展开"),
           done: !!paras || s.state === "done",
           check: s.storyCheck || null,
+          sceneId: s.backendId || "", sid: s.sid || "",
         };
       })
     : (body && body.scenes ? body.scenes.map(s => ({ idx: s.idx, title: s.title, meta: `${s.paras.join("").length} 字 · 已归档`, done: true })) : []);
@@ -1168,7 +1186,7 @@ function ManuStructure({ picked, body, catCh }) {
             <li key={i} className={s.done ? "" : "is-ghost"}>
               <span className="ms-scene-idx">{s.idx}</span>
               <span className={s.done ? "text-serif fw-600" : "text-muted"}>{s.title}</span>
-              <ManuStoryCheck check={s.check} />
+              <ManuStoryCheck check={s.check} sceneId={s.sceneId} sid={s.sid} go={go} />
               <span className="text-muted text-sm">{s.meta}</span>
               {s.done ? <I.Check size={13} style={{color: "var(--sage)"}} /> : <I.Dot size={13} />}
             </li>

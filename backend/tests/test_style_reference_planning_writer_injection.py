@@ -698,7 +698,7 @@ def test_writer_prefix_failure_degrades_to_the_base_prompt(session, monkeypatch)
     [
         (
             "scene_blueprint",
-            "2026-09-14.v9",
+            "2026-09-15.v10",
             24000,
             "If a [STYLE_REFERENCE] block with [风格样例] is prepended, decide ending_action, information_release, image_anchor and anti_summary_rule",
         ),

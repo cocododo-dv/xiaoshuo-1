@@ -58,6 +58,7 @@ from novel_system.services.snowflake_steps import (
     diagnose_step_pressure,
     diagnose_scene_detail,
     editor_payload,
+    effective_rendering_mode,
     get_step_definition,
     list_step_definitions,
     merge_step_draft,
@@ -70,6 +71,7 @@ from novel_system.services.snowflake_chaptering import (
     mint_chapter_row_uid,
     parse_outline_chapters,
 )
+from novel_system.services.snowflake_triage import EXCLUDED_TRIAGE_STATUSES, excluded_scene_plan_ids, latest_triage_rows
 from novel_system.services.snowflake_workspace_assistant import SnowflakeWorkspaceAssistantService
 from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService, draft_has_content
 
@@ -105,20 +107,20 @@ SCENE_PATCH_FIELDS = {
     "exit_change",
     "hook",
     "target_length_band",
-    # 阶段 C：反应场的呈现方式（full / summary）。主动场写入时一律回到 full。
+    # 阶段 C / N：呈现方式——summary 对两种形态都合法，skip 只给反应场（见 snowflake_steps.effective_rendering_mode）。
     "rendering_mode",
     # 阶段 J：原著的几栏——读者应感到什么、故事时间（在场人物已在上面）。
     "expected_reader_emotion",
     "story_time",
+    # 阶段 N：作者的破例理由（原著：不过关也可以放行，但要知道理由）。
+    "exception_reason",
 }
 
 
+
 def _effective_rendering_mode(scene_type: Any, value: Any) -> str:
-    """呈现方式只对反应场有意义；非法值与主动场一律 full。"""
-    mode = str(value or "").strip().lower()
-    if str(scene_type or "").strip().lower() != "reactive":
-        return "full"
-    return mode if mode in RENDERING_MODES else "full"
+    """呈现方式的收口规则——单一实现在 ``snowflake_steps.effective_rendering_mode``。"""
+    return effective_rendering_mode(scene_type, value)
 
 
 class SnowflakeWorkspaceService:
@@ -696,6 +698,10 @@ class SnowflakeWorkspaceService:
             triage_id = str(item.get("triage_id") or "").strip()
             row = self.session.get(SnowflakeSceneTriageItem, triage_id) if triage_id else None
             if row is None:
+                # 阶段 N：没带 triage_id 时按场景对回已有的记录（作者的裁定是这一场的**状态**，不是一条条日志）——
+                # 否则一场会堆出多行，旧的「待删」行还留在库里，物化排除照旧生效。
+                row = self._latest_triage_row(project.project_id, scene.scene_plan_id)
+            if row is None:
                 row = SnowflakeSceneTriageItem(
                     triage_id=f"snowflake_triage_{project.project_id}_{scene.scene_id}_{uuid.uuid4().hex[:8]}",
                     project_id=project.project_id,
@@ -714,7 +720,8 @@ class SnowflakeWorkspaceService:
             row.repair_patch_json = _sanitize_scene_patch(item.get("repair_patch") or {})
             row.pressure_flags_json = _coerce_string_list(item.get("pressure_flags")) or diagnosis["pressure_flags"]
             row.notes = str(item.get("notes") or "").strip()
-            row.blocking = 1 if effective_status == "rewrite" else 0
+            # blocking = 这一场被排除在物化之外（该重写 / 待删）；阶段 N 起它不再阻断全书。
+            row.blocking = 1 if effective_status in EXCLUDED_TRIAGE_STATUSES else 0
             row.manual_override = 1 if manual_status and manual_status != recommended_status else 0
             row.llm_call_id = str(item.get("llm_call_id") or "").strip() or row.llm_call_id
         self.session.flush()
@@ -740,10 +747,18 @@ class SnowflakeWorkspaceService:
         row.fix_steps_json = scene.diagnosis_json["fix_steps"]
         row.pressure_flags_json = scene.diagnosis_json["pressure_flags"]
         row.effective_status = row.manual_status or row.recommended_status
-        row.blocking = 1 if row.effective_status == "rewrite" else 0
+        row.blocking = 1 if row.effective_status in EXCLUDED_TRIAGE_STATUSES else 0
         row.manual_override = 1 if row.manual_status and row.manual_status != row.recommended_status else 0
         self.session.flush()
         return {"triage": self._triage_payload(row), "scene": _scene_plan_payload(scene), "workspace": self.workspace(project.project_id)}
+
+    def _latest_triage_row(self, project_id: str, scene_plan_id: str) -> SnowflakeSceneTriageItem | None:
+        return latest_triage_rows(self.session, project_id).get(scene_plan_id)
+
+    def _excluded_scene_plan_ids(self, project_id: str) -> set[str]:
+        """作者裁定为该重写 / 待删的场景计划（阶段 N）：不物化、回流进回收站、节奏按 0 计。
+        每一场只看最新的一条分诊记录（历史数据可能一场多行）。"""
+        return excluded_scene_plan_ids(self.session, project_id)
 
     def accept_stale_scenes(self, project_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -819,16 +834,6 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         gate = workspace.get("materialization_gate") or {}
         if gate.get("status") == "blocked":
-            if any(
-                str(item.get("effective_status") or item.get("status") or "").strip().lower() == "rewrite"
-                for item in workspace.get("triage_items") or []
-            ):
-                raise DomainError(
-                    "SNOWFLAKE_TRIAGE_BLOCKED",
-                    "存在被标记为「重写」的场景，需要先修复才能整理为章节结构。",
-                    status_code=409,
-                    details={"materialization_gate": gate},
-                )
             raise DomainError(
                 "SNOWFLAKE_NOT_READY",
                 "雪花工作台还没有通过整理前的检查，暂时无法整理为章节结构；请查看具体阻断项后重试。",
@@ -867,11 +872,13 @@ class SnowflakeWorkspaceService:
         # 阶段 B（雪花评估 B5）：挫折 / 胜利以主角衡量，不以 POV 衡量——Ingermanson：POV 是对手时，
         # 对手得手就是主角的挫折。把角色摘要表里的主角带进每一场的简报，结构简报会渲染它。
         protagonist = self._protagonist_hint(project.project_id)
+        # 阶段 N：作者裁定该重写 / 待删的场不物化（三拍留在构思里，回流时再补建或取回）。
+        excluded = self._excluded_scene_plan_ids(project.project_id)
         by_plan_id = {chapter.chapter_plan_id: chapter for chapter in chapters}
         grouped: dict[str, list[SnowflakeScenePlan]] = {chapter.chapter_plan_id: [] for chapter in chapters}
         for scene in scene_plans:
             key = scene.chapter_plan_id or ""
-            if key in grouped:
+            if key in grouped and scene.scene_plan_id not in excluded:
                 grouped[key].append(scene)
 
         chapter_payloads: list[dict[str, Any]] = []
@@ -893,7 +900,7 @@ class SnowflakeWorkspaceService:
                     detail["protagonist_hint"] = protagonist["display_name"]
                     detail["protagonist_character_id"] = protagonist["character_id"]
                 scene_type = detail.get("primary_form") or "proactive"
-                # 阶段 C：summary 反应场拿到数值篇幅带（起草 / 长度补丁按数值硬约束），
+                # 阶段 C / N：summary 场（两种形态都可以）拿到数值篇幅带（起草 / 长度补丁按数值硬约束），
                 # 并把呈现方式写进简报，结构简报会渲染它。
                 rendering_mode = _effective_rendering_mode(scene_type, detail.get("rendering_mode"))
                 detail["rendering_mode"] = rendering_mode
@@ -1049,6 +1056,7 @@ class SnowflakeWorkspaceService:
         affected_scene_ids: list[str] = []
         pending_moves: list[dict[str, Any]] = []
         touched_chapter_ids: set[str] = set()
+        excluded = self._excluded_scene_plan_ids(project.project_id)
         for plan in plans:
             scene = self.session.get(SceneCard, plan.scene_id)
             if scene is None or scene.project_id != project.project_id:
@@ -1063,7 +1071,7 @@ class SnowflakeWorkspaceService:
                 )
                 continue
             source_chapter_id = str(scene.chapter_id or "")
-            scene_patch = self._scene_card_resync_patch(plan, scene)
+            scene_patch = self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
             blocked_move = self._unmaterialized_chapter_move(project.project_id, scene, scene_patch)
             if blocked_move:
                 # 搬不动就别搬：``SceneCard.chapter_id`` 是指向 chapter_goals 的外键，
@@ -1414,11 +1422,14 @@ class SnowflakeWorkspaceService:
 
     def _resync_status(self, project_id: str, scene_plans: list[SnowflakeScenePlan]) -> dict[str, Any]:
         pending: list[dict[str, Any]] = []
+        excluded = self._excluded_scene_plan_ids(project_id)
         for plan in scene_plans:
             scene = self.session.get(SceneCard, plan.scene_id)
             if scene is None or scene.project_id != project_id:
                 continue
-            diff = self._scene_card_diff(scene, self._scene_card_resync_patch(plan, scene))
+            diff = self._scene_card_diff(
+                scene, self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
+            )
             if not diff:
                 continue
             pending.append(
@@ -1453,10 +1464,11 @@ class SnowflakeWorkspaceService:
                 card.is_chapter_last = 1 if card is last else 0
 
     @staticmethod
-    def _scene_card_resync_patch(plan: SnowflakeScenePlan, scene: SceneCard) -> dict[str, Any]:
-        # 阶段 C：呈现方式与篇幅带同物化一个口径——summary 反应场回流也拿数值带。
+    def _scene_card_resync_patch(plan: SnowflakeScenePlan, scene: SceneCard, *, excluded: bool = False) -> dict[str, Any]:
+        # 阶段 C：呈现方式与篇幅带同物化一个口径——summary 场回流也拿数值带。
         rendering_mode = _effective_rendering_mode(plan.scene_type, plan.rendering_mode)
-        skipped = rendering_mode == "skip"
+        # 阶段 N：作者裁定该重写 / 待删的场与「略过」同路——卡进回收站，改回裁定时取回。
+        skipped = rendering_mode == "skip" or bool(excluded)
         if rendering_mode == "summary":
             target_length_band = SUMMARY_LENGTH_BAND
         else:
@@ -1482,12 +1494,14 @@ class SnowflakeWorkspaceService:
             "cost_requirement": plan.cost_requirement,
             "expected_reader_emotion": plan.expected_reader_emotion or "",
             "story_time": plan.story_time or "",
+            "exception_reason": plan.exception_reason or "",
             "primary_form": plan.scene_type,
             "rendering_mode": rendering_mode,
             "timebox": target_length_band or "medium",
             # 阶段 I：规划里改成「略过」的已物化场，回流把场景卡送进回收站（可恢复）；改回来时再取回。
-            # 作者自己扔进回收站的卡不带这个标记，回流不碰它。
+            # 作者自己扔进回收站的卡不带这个标记，回流不碰它。阶段 N：该重写 / 待删的裁定走同一条路。
             "skipped_by_plan": skipped,
+            "excluded_by_triage": bool(excluded),
         }
         # 与物化同一配方（_scene_card_beats）：两个写入方各算一套，刚物化完的每一场
         # 都会因 beats_json 不同被报成「待同步」，横幅在物化当刻就喊 N 场。
@@ -1524,7 +1538,7 @@ class SnowflakeWorkspaceService:
     # 场卡其余内容（scene_goal/beats/hook/location/POV/scene_type…）由顶层列对比兜底。
     _BRIEF_CONTENT_KEYS = (
         "scene_crucible", "goal", "conflict", "setback", "reaction", "dilemma", "decision", "cost_requirement",
-        "expected_reader_emotion", "story_time",
+        "expected_reader_emotion", "story_time", "exception_reason",
     )
 
     @staticmethod
@@ -1914,10 +1928,18 @@ class SnowflakeWorkspaceService:
                     )
                 continue
             if status == "rewrite":
+                # 阶段 N：该重写不再阻断全书——这一场不建卡，重建并重新分诊后经回流补建。
                 add_scene_item(
-                    severity="blocker",
+                    severity="warning",
                     kind="triage_rewrite",
-                    message=f"{scene_display} 被标为废除重写，需先重建。",
+                    message=f"{scene_display} 被标为该重写：整理时不建它的场景卡，重建并重新分诊后经回流补建。",
+                    item=item,
+                )
+            elif status == "cut":
+                add_scene_item(
+                    severity="warning",
+                    kind="triage_cut",
+                    message=f"{scene_display} 已标待删：整理时不建它的场景卡，三拍留在构思里；确定不要时在 09 删除，改主意时改回裁定。",
                     item=item,
                 )
             elif status == "maybe":
@@ -1934,6 +1956,26 @@ class SnowflakeWorkspaceService:
                     message=f"{scene_display} 人工覆盖了自动废除重写诊断；整理前请复核急救备注。",
                     item=item,
                 )
+
+        # 阶段 N：作者把每一场都裁成该重写 / 待删（或略过）时，物化没有东西可建——挡在前面说清楚。
+        excluded_plan_ids = {
+            str(item.get("scene_plan_id") or "")
+            for item in triage_items
+            if str(item.get("effective_status") or item.get("status") or "").strip().lower() in EXCLUDED_TRIAGE_STATUSES
+        }
+        materializable = [
+            scene
+            for scene in scene_plans or []
+            if scene.scene_plan_id not in excluded_plan_ids
+            and effective_rendering_mode(scene.scene_type, scene.rendering_mode) != "skip"
+        ]
+        if scene_plans and not materializable:
+            add_step_item(
+                severity="blocker",
+                kind="no_materializable_scene",
+                message="每一场都被裁成该重写 / 待删或略过，没有可整理的场景；先把至少一场改回可用的裁定。",
+                step_key="scene_details",
+            )
 
         # P2 分章闸门：章归属没定就物化，等于回到「全书落进一章」的老路。
         # 这一条把它挡在前面，并把作者送进分章面板而不是让他对着结果发懵。
@@ -2410,9 +2452,8 @@ class SnowflakeWorkspaceService:
             else:
                 setattr(scene, key, str(value or "").strip())
         # 补丁键的顺序不可依赖（SCENE_PATCH_FIELDS 是集合）：类型定下来之后再统一收口——
-        # 主动场没有「概述两段」这一说。
-        if (scene.scene_type or "proactive") != "reactive":
-            scene.rendering_mode = "full"
+        # 阶段 N：概述对两种形态都合法，略过只给反应场。
+        scene.rendering_mode = _effective_rendering_mode(scene.scene_type, scene.rendering_mode)
 
     def _supersede_same_step(self, run: SnowflakeStepRun) -> None:
         rows = self.session.execute(
@@ -2928,6 +2969,7 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "rendering_mode": scene.rendering_mode or "full",
         "expected_reader_emotion": scene.expected_reader_emotion or "",
         "story_time": scene.story_time or "",
+        "exception_reason": scene.exception_reason or "",
         "status": scene.status,
         "stale_reason": scene.stale_reason or "",
         "stale_accepted_at": scene.stale_accepted_at,
@@ -2991,8 +3033,9 @@ def _coerce_string_list(value: Any) -> list[str]:
 
 
 def _coerce_triage_status(value: Any) -> str:
+    # 阶段 N：cut（待删）是作者专用的裁定——原著「杀要杀得对：不真删，标记待删」；LLM 分诊只出 pass / maybe / rewrite。
     status = str(value or "").strip().lower()
-    return status if status in {"pass", "maybe", "rewrite"} else ""
+    return status if status in {"pass", "maybe", "rewrite", "cut"} else ""
 
 
 def _step_display_label(step_key: str) -> str:

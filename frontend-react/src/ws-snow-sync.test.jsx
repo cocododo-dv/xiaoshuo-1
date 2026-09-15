@@ -289,8 +289,8 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       },
     };
     const canon = mod.canonFromFE("planning", saved);
-    // 主动场没有「概述两段」这一说：即便本机脚手架残留了 rendering，也不上行
-    expect(canon.scenes[0]).not.toHaveProperty("rendering_mode");
+    // 阶段 N：概述对两种形态都合法（原著第 1 场是主动场的叙述概述）——主动场的 summary 照样上行
+    expect(canon.scenes[0].rendering_mode).toBe("summary");
     expect(canon.scenes[1].rendering_mode).toBe("summary");
 
     const hydrated = mod.feFromCanon("planning", { scenes: [
@@ -320,7 +320,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       },
     };
     const canon = mod.canonFromFE("planning", saved);
-    expect(canon.scenes[0]).not.toHaveProperty("rendering_mode"); // 主动场不上行呈现方式
+    expect(canon.scenes[0].rendering_mode).toBe("full"); // 略过只给反应场：主动场残留的 skip 收口成 full
     expect(canon.scenes[0]).toEqual(expect.objectContaining({ reaction: "她蹲在码头发抖", dilemma: "报警或沉默", decision: "去找证人" }));
     expect(canon.scenes[1].rendering_mode).toBe("skip");
 
@@ -1113,5 +1113,66 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     await expect(mod.SnowSync.skipStep("prj-main", "logline", "想跳过")).rejects.toThrow("SNOWFLAKE_STEP_NOT_SKIPPABLE");
     expect((mod.SnowSync.health("prj-main").logline || {}).beStatus || null).not.toBe("skipped");
     await expect(mod.SnowSync.skipStep("prj-main", "not-a-step", "x")).rejects.toThrow("步骤未知");
+  });
+
+  it("阶段 R：题名 / 篇幅带 / 必须出现 / 破例理由往返；题名留空不上行；scene_id ↔ row_uid 对照；裁定走 scene-triage 端点", async () => {
+    const ws = {
+      ready_to_materialize: false, current_step_key: "scene_details",
+      steps: [
+        { step_key: "scene_list", status: "approved", gate_satisfied: true, health: {}, completeness: {},
+          draft: { scenes: [
+            { row_uid: "S01", scene_id: "prj-main_SC01", summary: "取账本", primary_form: "proactive" },
+            { row_uid: "S02", scene_id: "prj-main_SC02", summary: "消化挫败", primary_form: "reactive" },
+          ] } },
+      ],
+      triage_items: [
+        { triage_id: "t2", scene_plan_id: "sp2", scene_id: "prj-main_SC02", status: "cut", manual_status: "cut", recommended_status: "maybe", effective_status: "cut",
+          triage_source: "author_saved", score: 30, notes: "", missing_fields: [], fix_steps: [], repair_patch: {}, manual_override: true },
+      ],
+    };
+    const { mod, client } = await loadSync({ snowflakeWorkspace: ws });
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "prj-main" }));
+    await vi.waitFor(() => expect(mod.SnowSync.triageItems("prj-main")).toBeTruthy(), T);
+    expect(mod.SnowSync.rowUidForSceneId("prj-main", "prj-main_SC02")).toBe("S02");
+    expect(mod.SnowSync.sceneIdForRow("prj-main", "S01")).toBe("prj-main_SC01");
+    expect(mod.SnowSync.triageItems("prj-main").items.S02).toEqual(expect.objectContaining({ status: "cut", manual: true }));
+
+    const saved = { drafts: {}, checks: {}, states: {}, scaffolds: {
+      scenes: { lines: [], list: [
+        { id: "S01", type: "proactive", pov: "c1", place: "码头", event: "取账本", crucible: "退不出的困局", fn: "起疑", spine: "" },
+        { id: "S02", type: "reactive", pov: "c1", place: "旅馆", event: "消化挫败", crucible: "无人可信", fn: "转向", spine: "" },
+      ] },
+      planning: { sel: "S01", plans: {
+        S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧", title: "", length: "800-1200", must_include: "「你以为我不知道？」", exception: "" },
+        S02: { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人", title: "雨夜旅馆", exception: "过场：决定在上一场已经做了" },
+      } } } };
+    const canon = mod.canonFromFE("planning", saved);
+    expect(canon.scenes[0]).not.toHaveProperty("title"); // 题名留空 = 跟随 09，不再覆盖服务端（模型）的短题名
+    expect(canon.scenes[0]).toEqual(expect.objectContaining({ target_length_band: "800-1200", must_include_text: "「你以为我不知道？」", exception_reason: "" }));
+    expect(canon.scenes[1]).toEqual(expect.objectContaining({ title: "雨夜旅馆", exception_reason: "过场：决定在上一场已经做了" }));
+    // 旧缓存没有这些键：不上行，服务端（模型）给的值不被抹掉
+    const legacy = mod.canonFromFE("planning", { scaffolds: { scenes: saved.scaffolds.scenes, planning: { sel: "S01", plans: { S01: { mode: "proactive", goal: "g" } } } } });
+    expect(legacy.scenes[0]).not.toHaveProperty("target_length_band");
+    expect(legacy.scenes[0]).not.toHaveProperty("must_include_text");
+    expect(legacy.scenes[0]).not.toHaveProperty("exception_reason");
+
+    const hydrated = mod.feFromCanon("planning", { scenes: [
+      { row_uid: "S01", primary_form: "proactive", summary: "取账本", title: "取账本", target_length_band: "long", must_include_text: "账本", exception_reason: "" },
+      { row_uid: "S02", primary_form: "reactive", summary: "消化挫败", title: "雨夜旅馆", exception_reason: "过场" },
+    ] });
+    expect(hydrated.scaffold.plans.S01).toEqual(expect.objectContaining({ title: "", length: "long", must_include: "账本", exception: "" }));
+    expect(hydrated.scaffold.plans.S02).toEqual(expect.objectContaining({ title: "雨夜旅馆", exception: "过场" }));
+
+    client.apiPost.mockClear();
+    client.apiPost.mockResolvedValueOnce({
+      items: [{ triage_id: "t1", scene_plan_id: "sp1", scene_id: "prj-main_SC01", status: "cut", effective_status: "cut", recommended_status: "pass" }],
+      workspace: { ...ws, ready_to_materialize: true, triage_items: [] },
+    });
+    const result = await mod.SnowSync.saveTriageVerdict("prj-main", { row_uid: "S01", status: "cut" });
+    const call = client.apiPost.mock.calls.find(c => String(c[0]).includes("/snowflake-workspace/scene-triage"));
+    expect(call).toBeTruthy();
+    expect(call[1].items[0]).toEqual(expect.objectContaining({ scene_id: "prj-main_SC01", status: "cut" }));
+    expect(result).toEqual(expect.objectContaining({ triage_id: "t1" }));
+    await expect(mod.SnowSync.saveTriageVerdict("prj-main", { row_uid: "S01", status: "bogus" })).rejects.toThrow("非法的裁定");
   });
 });

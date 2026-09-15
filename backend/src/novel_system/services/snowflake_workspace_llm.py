@@ -643,10 +643,24 @@ class SnowflakeWorkspaceLLMService:
             "approved_context": approved_context,
             "pressure_rubric": _pressure_rubric(step_key),
             "current_pressure_diagnosis": diagnose_step_pressure(step_key, draft),
+            # 阶段 Q：按原著分诊的口径——Yes 的两条、No 的四条、Maybe 的七步救治（与 snowflake_scene_triage_suggest v3 同一句话）。
             "triage_rules": {
-                "pass": "The scene has enough pressure and the required trio is present.",
-                "maybe": "The scene is salvageable but its pressure, clarity, or required trio is incomplete.",
-                "rewrite": "The scene core is too hollow and should be reworked from premise level.",
+                "pass": (
+                    "Yes: the plan is a miniature story on its own (a POV character inside a scene crucible, with a goal/conflict/setback "
+                    "or a reaction/dilemma/decision that would give the reader one powerful emotional experience) AND the scene crucible "
+                    "can be named. A summary or skipped rendering, follow-up beats, a mixed victory, an empty cost, and a scene that carries "
+                    "an author's exception_reason that holds are all still Yes."
+                ),
+                "maybe": (
+                    "Maybe: the elements are present but weak, generic, or under-specified in a way a targeted patch fixes; or the "
+                    "exception_reason does not justify the missing beats. fix_steps follow the method's rescue: confirm the form, write the "
+                    "weak beat and the crucible, decide summary / skip / full for a reactive scene, state the reader emotion, rewrite the plan."
+                ),
+                "rewrite": (
+                    "No: the scene no longer fits the big story, cannot deliver an emotional experience and never will, has no crucible and "
+                    "none can be welded on, or is not a story and cannot become one (it only sets the stage, explains, or shows motivation). "
+                    "Rebuild it from its plan; only the author may mark it cut."
+                ),
             },
             "scene_rules": _scene_rules(step_key),
         }
@@ -1949,6 +1963,8 @@ def _sanitize_scene_detail_items(
         "onstage_chars_json",
         "story_time",
         "expected_reader_emotion",
+        # 阶段 N：破例理由——作者写的，模型只能原样回显；提示词要求它不编。
+        "exception_reason",
     }
     result = []
     for base_item in base_items:
@@ -1961,10 +1977,10 @@ def _sanitize_scene_detail_items(
             if key not in overlay:
                 continue
             if key == "rendering_mode":
-                # 阶段 C：模型只对反应场建议 full / summary；主动场与非法值一律不落键（保持 full）。
+                # 阶段 C / N：summary 对两种形态都合法，skip 只给反应场；非法值不落键（保持 full）。
                 mode = str(overlay.get(key) or "").strip().lower()
                 form = str(merged.get("primary_form") or merged.get("scene_type") or "proactive").strip().lower()
-                if mode in RENDERING_MODES and form == "reactive":
+                if mode in RENDERING_MODES and (mode != "skip" or form == "reactive"):
                     merged[key] = mode
                 continue
             if key in {"primary_form", "scene_type"}:

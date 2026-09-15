@@ -418,12 +418,12 @@ def test_prompt_templates_teach_both_scene_forms() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     expectations = {
-        "neutral_draft": ("2026-09-14.v11", "never on a clean win the section did not plan"),
-        "style_first_draft": ("2026-09-14.v6", "may not skip the Decision"),
-        "scene_blueprint": ("2026-09-14.v9", "derive the proposal from it instead of re-inventing the scene"),
-        "hard_qc": ("2026-09-13.v5", "its facts are bundle facts"),
-        "soft_qc": ("2026-09-14.v7", 'issue_key "scene_shape"'),
-        "near_final_acceptance_review": ("2026-09-14.v7", "the scene crucible is identifiable in the prose"),
+        "neutral_draft": ("2026-09-15.v12", "never on a clean win the section did not plan"),
+        "style_first_draft": ("2026-09-15.v7", "may not skip the Decision"),
+        "scene_blueprint": ("2026-09-15.v10", "derive the proposal from it instead of re-inventing the scene"),
+        "hard_qc": ("2026-09-15.v6", "its facts are bundle facts"),
+        "soft_qc": ("2026-09-15.v8", 'issue_key "scene_shape"'),
+        "near_final_acceptance_review": ("2026-09-15.v8", "the scene crucible is identifiable in the prose"),
     }
     for name, (version, phrase) in expectations.items():
         template = templates[name]

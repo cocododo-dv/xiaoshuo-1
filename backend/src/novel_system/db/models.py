@@ -296,6 +296,10 @@ class SnowflakeScenePlan(Base):
     # 迁移 20260914_0085 加列，可空。
     expected_reader_emotion: Mapped[str | None] = mapped_column(Text, nullable=True)
     story_time: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 2026-09-15 阶段 N：作者写下的破例理由（原著：「冲突：无」的收尾课、没有三拍的叙述收尾场——
+    # 不过关也可以放行，但要知道理由）。有理由时规则层不再把缺三拍 / 缺坩埚记成缺失。
+    # 迁移 20260915_0086 加列，可空。
+    exception_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String, default="draft")
     source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
     stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

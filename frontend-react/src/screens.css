@@ -2072,6 +2072,8 @@
 .ms-story-check.is-yes { color: var(--sage); border-color: color-mix(in oklab, var(--sage) 45%, var(--line-1)); }
 .ms-story-check.is-no { color: var(--crimson); border-color: color-mix(in oklab, var(--crimson) 45%, var(--line-1)); }
 .ms-story-check.is-maybe { color: var(--gold); border-color: color-mix(in oklab, var(--gold) 45%, var(--line-1)); }
+.ms-story-check-act { font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; line-height: 16px; }
+.ms-story-check-act:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
 
 /* Diff */
 .ms-diff { padding: 24px 34px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }

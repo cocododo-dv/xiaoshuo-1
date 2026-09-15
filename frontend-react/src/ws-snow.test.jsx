@@ -286,5 +286,43 @@ describe("阶段 M · 09/10 交互", () => {
     await act(async () => findSkip(cancelled).click());
     expect(window.SnowSync.skipStep).toHaveBeenCalledTimes(2);
   });
+
+  it("阶段 R：10 有题名 / 必须出现 / 破例理由 / 篇幅带输入框；主动场也能选概述两段但没有略过；破例即按已规划计", async () => {
+    const seeded = threeScenes();
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    const host = await renderAt("planning");
+    for (const id of ["snow-plan-title", "snow-plan-must-include", "snow-plan-exception", "snow-plan-length", "snow-plan-length-custom", "snow-plan-render", "snow-plan-verdict"]) {
+      expect(host.querySelector(`[data-testid="${id}"]`), id).toBeTruthy();
+    }
+    const renderOpts = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-plan-render-opt')].map(b => b.textContent);
+    expect(renderOpts).toEqual(["完整场", "概述两段"]); // S01 是主动场：可以概述，没有「略过」
+    expect(s2PlanState({ exception: "全书收尾的叙述交代" }, "proactive")).toBe(2);
+    expect(s2PlanState({ goal: "g" }, "proactive")).toBe(1);
+    const longBtn = [...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-plan-render-opt')].find(b => b.textContent === "长");
+    await act(async () => { longBtn.click(); });
+    expect([...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-plan-render-opt')].find(b => b.textContent === "长").className).toContain("is-on");
+    // 概述两段：篇幅带固定 200–500，篇幅选择器让位
+    const summaryBtn = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-plan-render-opt')].find(b => b.textContent === "概述两段");
+    await act(async () => { summaryBtn.click(); });
+    expect(host.querySelector('[data-testid="snow-plan-length"]')).toBeNull();
+  });
+
+  it("阶段 R：作者裁定——点「待删」经 SnowSync.saveTriageVerdict 写回服务端并高亮；失败回滚到上一次裁定", async () => {
+    const seeded = threeScenes();
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    window.SnowSync.saveTriageVerdict = vi.fn(async () => ({ triage_id: "t1", scene_plan_id: "sp1", recommended_status: "maybe" }));
+    const host = await renderAt("planning");
+    const cutBtn = host.querySelector('[data-testid="snow-verdict-cut"]');
+    expect(cutBtn).toBeTruthy();
+    await act(async () => { cutBtn.click(); });
+    await vi.waitFor(() => expect(window.SnowSync.saveTriageVerdict).toHaveBeenCalledWith("new-book", expect.objectContaining({ row_uid: "S01", status: "cut" })));
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-verdict-cut"]').className).toContain("is-on"));
+    expect(host.querySelector(".sf-triage-badge").textContent).toBe("待删");
+
+    window.SnowSync.saveTriageVerdict = vi.fn(async () => { throw new Error("网络断了"); });
+    await act(async () => { host.querySelector('[data-testid="snow-verdict-pass"]').click(); });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-verdict-cut"]').className).toContain("is-on"));
+    expect(host.querySelector('[data-testid="snow-verdict-pass"]').className).not.toContain("is-on");
+  });
 });
 

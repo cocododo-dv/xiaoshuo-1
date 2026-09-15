@@ -748,6 +748,8 @@ def _outline_scene_list(project: StoryProject, lines: list[str], *, zh: bool) ->
         chapter_id = f"{project.project_id}_CH{chapter_index:02d}"
         chapter_point = spine[chapter_index - 1]
         for scene_index in range(1, 3):
+            # v1 规划器只为测试保留（批次二减法候选）：每章一场主动加一场反应是**测试夹具的形状**——
+            # 回流 / 目录测试要有一个反应场样本。产品路径（v2）默认主动、不按奇偶交替。
             primary_form = "proactive" if scene_index == 1 else "reactive"
             summary = (
                 f"{'行动' if scene_index == 1 else '反应'}：{chapter_point}"
@@ -775,7 +777,8 @@ def _outline_scene_list(project: StoryProject, lines: list[str], *, zh: bool) ->
 
 
 def _outline_scene_detail(scene: dict[str, Any], index: int, lines: list[str], *, zh: bool) -> dict[str, Any]:
-    primary_form = str(scene.get("primary_form") or scene.get("scene_type") or ("proactive" if index % 2 else "reactive")).strip().lower()
+    # 阶段 S：默认主动，不按行号奇偶交替（原著：反应场是少数）。
+    primary_form = str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip().lower()
     if primary_form not in {"proactive", "reactive"}:
         primary_form = "proactive"
     summary = str(scene.get("summary") or lines[(index - 1) % len(lines)]).strip()
@@ -826,8 +829,10 @@ def _scene_writer_brief(scene_type: str, detail: dict[str, Any]) -> dict[str, An
         # 阶段 B：挫折 / 胜利以主角衡量（Ingermanson）；物化时由角色摘要表带入，没有就是 None。
         "protagonist_hint": detail.get("protagonist_hint"),
         "protagonist_character_id": detail.get("protagonist_character_id"),
-        # 阶段 C：反应场的呈现方式（full / summary）；主动场恒为 full。
+        # 阶段 C / N：呈现方式（full / summary / skip）——summary 对两种形态都合法，skip 只给反应场。
         "rendering_mode": str(detail.get("rendering_mode") or "full"),
+        # 阶段 N：作者的破例理由——结构简报带给起草与 QC，「未规划」的三拍是故意的。
+        "exception_reason": detail.get("exception_reason") or "",
         "tension_target": detail.get("tension_target"),
         "function_tag": detail.get("function_tag"),
         "involved_foreshadowing": detail.get("involved_foreshadowing") or detail.get("involved_foreshadowing_json") or [],

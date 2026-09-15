@@ -80,18 +80,21 @@ def scene_structure_form(scene: SceneCard) -> str | None:
 
 
 def scene_has_structure(scene: SceneCard) -> bool:
-    """简报里有没有场景结构：任一三拍或坩埚非空即算。v2-only 简报与空简报都返回 False。"""
+    """简报里有没有场景结构：任一三拍或坩埚非空即算；作者写了破例理由也算（阶段 N——
+    「这一场故意没有三拍」本身就是要带给写手的设计事实）。v2-only 简报与空简报都返回 False。"""
     brief = _brief(scene)
     return any(
         _text(brief.get(key))
-        for key in (*PROACTIVE_BEATS, *REACTIVE_BEATS, "scene_crucible", "crucible")
+        for key in (*PROACTIVE_BEATS, *REACTIVE_BEATS, "scene_crucible", "crucible", "exception_reason")
     )
 
 
 def missing_structure_fields(scene: SceneCard) -> list[str]:
     """按形态列出还缺的必填结构字段（坩埚 + 本形态三拍）。没有结构的场返回空表——
-    那是 v2 简报的事，由预检的另一条规则处理。"""
+    那是 v2 简报的事，由预检的另一条规则处理。作者写了破例理由时也返回空表（阶段 N）。"""
     if not scene_has_structure(scene):
+        return []
+    if _text(_brief(scene).get("exception_reason")):
         return []
     brief = _brief(scene)
     form = scene_structure_form(scene) or "proactive"
@@ -172,12 +175,24 @@ def render_scene_structure_brief(scene: SceneCard, session: Session | None = Non
     band = _text(getattr(scene, "target_length_band", None))
     if band:
         lines.append(f"Target length band: {band}")
-    # 阶段 C：作者把这场反应场定为「概述两段」——这是作者的呈现决定，起草不得戏剧化成整场。
-    if _text(brief.get("rendering_mode")).lower() == "summary":
+    # 阶段 N：作者的破例理由——「未规划」的三拍是故意的，起草不得替作者补，QC 不得因缺它判失败。
+    exception_reason = _text(brief.get("exception_reason"))
+    if exception_reason:
         lines.append(
-            "Rendering mode: summary (概述两段) — the author wants this reactive beat told in two or three "
-            "paragraphs of narrative summary, about 200–500 Chinese characters: the Reaction felt, the options "
-            "weighed and rejected, the Decision committed; no scene-length dramatisation, no dialogue expansion"
+            f"Author's exception (破例理由): {exception_reason} — the beats marked {_UNPLANNED} above are "
+            "deliberately unplanned; do not invent them and do not fail the scene for their absence; judge the scene by this reason"
+        )
+    # 阶段 C / N：作者把这一场定为「概述两段」——这是作者的呈现决定，起草不得戏剧化成整场。两种形态都可以概述。
+    if _text(brief.get("rendering_mode")).lower() == "summary":
+        if form == "reactive":
+            beats_told = "the Reaction felt, the options weighed and rejected, the Decision committed"
+        else:
+            beats_told = "the Goal stated, the attempts and what blocked them, the Setback landed"
+        lines.append(
+            "Rendering mode: summary (概述两段) — the author wants this "
+            f"{'reactive' if form == 'reactive' else 'proactive'} beat told in two or three "
+            f"paragraphs of narrative summary, about 200–500 Chinese characters: {beats_told}; "
+            "no scene-length dramatisation, no dialogue expansion"
         )
     follow_up = [f"{_BEAT_LABELS[key]}: {_text(brief.get(key))}" for key in secondary if _text(brief.get(key))]
     if follow_up:

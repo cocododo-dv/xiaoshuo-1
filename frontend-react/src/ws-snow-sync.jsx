@@ -125,7 +125,9 @@ function canonFromFE(feKey, saved) {
       const plan = plans[s.id] || {};
       const form = (plan.mode || (s.type === "reactive" ? "reactive" : "proactive"));
       return {
-        row_uid: s.id || `S${String(i + 1).padStart(2, "0")}`, title: txt(s.event), summary: txt(s.event),
+        row_uid: s.id || `S${String(i + 1).padStart(2, "0")}`, summary: txt(s.event),
+        // 阶段 R：场景题名只在作者写了时上行——以前每次保存都拿 09 的事件文本覆盖服务端（模型）给的短题名
+        ...(txt(plan.title) ? { title: txt(plan.title) } : {}),
         primary_form: form, location: txt(s.place), crucible: txt(s.crucible), scene_crucible: txt(s.crucible), spine: txt(s.spine),
         pov_character_id: txt(plan.pov) || txt(s.pov),
         goal: txt(plan.goal), conflict: txt(plan.conflict), setback: txt(plan.setback),
@@ -136,8 +138,12 @@ function canonFromFE(feKey, saved) {
         story_time: txt(plan.story_time), expected_reader_emotion: txt(plan.reader_emotion),
         // 阶段 M：钩子与离场变化——后端一直有这两列，前端此前没有输入框，文案却承诺「钩子」
         hook: txt(plan.hook), exit_change: txt(plan.exit_change),
-        // 阶段 C / I：反应场的呈现方式（full / summary / skip）。只对反应场上行；主动场服务端恒为 full。
-        ...(form === "reactive" ? { rendering_mode: (plan.rendering === "summary" || plan.rendering === "skip") ? plan.rendering : "full" } : {}),
+        // 阶段 R：篇幅带 / 必须出现 / 破例理由——旧本地缓存没有这些键时不上行，服务端（模型）给的值不被抹掉
+        ...(plan.length !== undefined ? { target_length_band: txt(plan.length) || "medium" } : {}),
+        ...(plan.must_include !== undefined ? { must_include_text: txt(plan.must_include) } : {}),
+        ...(plan.exception !== undefined ? { exception_reason: txt(plan.exception) } : {}),
+        // 阶段 C / I / N：呈现方式——概述对两种形态都合法（原著第 1 场是主动场的叙述概述），略过只给反应场
+        rendering_mode: plan.rendering === "summary" ? "summary" : (form === "reactive" && plan.rendering === "skip") ? "skip" : "full",
       };
     }) };
   }
@@ -242,6 +248,9 @@ function feFromCanon(feKey, draft) {
         story_time: s.story_time || "", reader_emotion: s.expected_reader_emotion || "",
         hook: s.hook || "", exit_change: s.exit_change || "",
         rendering: (s.rendering_mode === "summary" || s.rendering_mode === "skip") ? s.rendering_mode : "full",
+        // 阶段 R：题名只在与摘要不同（模型 / 作者另起的短题名）时水合，等于摘要时留空 = 跟随 09 的事件
+        title: (s.title && s.title !== s.summary) ? s.title : "",
+        length: s.target_length_band || "", must_include: s.must_include_text || "", exception: s.exception_reason || "",
       };
     });
     return { scaffold: { sel: Object.keys(plans)[0] || "", plans } };
@@ -461,13 +470,17 @@ function captureResync(workId, ws) {
 /* 阶段 M：分诊结果随工作台回包水合——以前只活在组件内存里，一刷新就没了。
    后端条目按 scene_id 记，09 的行按 row_uid 记：用同一份工作台里的场景列表把两者对上。 */
 const snowTriage = {}; // workId -> { items: rowUid -> item, at, source }
+// 阶段 R：scene_id ↔ row_uid 的对照（成稿中心按 scene_id 回跳第 10 步、裁定按 scene_id 存档）
+const snowSceneIds = {}; // workId -> { rowBySceneId, sceneByRow }
 function captureTriage(workId, ws) {
   if (!workId || !ws || !Array.isArray(ws.triage_items)) return;
   const rowBySceneId = {};
+  const sceneByRow = {};
   (ws.steps || []).forEach(step => {
     if (!step || step.step_key !== "scene_list") return;
-    ((step.draft || {}).scenes || []).forEach(s => { if (s && s.scene_id && s.row_uid) rowBySceneId[s.scene_id] = s.row_uid; });
+    ((step.draft || {}).scenes || []).forEach(s => { if (s && s.scene_id && s.row_uid) { rowBySceneId[s.scene_id] = s.row_uid; sceneByRow[s.row_uid] = s.scene_id; } });
   });
+  if (Object.keys(rowBySceneId).length) snowSceneIds[workId] = { rowBySceneId, sceneByRow };
   const items = {};
   ws.triage_items.forEach(it => {
     if (!it) return;
@@ -477,6 +490,8 @@ function captureTriage(workId, ws) {
       scene_plan_id: it.scene_plan_id || "", scene_id: it.scene_id || "", triage_id: it.triage_id || "",
       status: (it.effective_status && it.effective_status !== "unreviewed") ? it.effective_status : (it.recommended_status || it.status || ""),
       recommended_status: it.recommended_status || "", effective_status: it.effective_status || "",
+      // 阶段 R：作者裁定过（manual_status 非空）才算「你的裁定」，否则显示为系统建议
+      manual: !!(it.manual_status || it.status),
       score: typeof it.score === "number" ? it.score : null, notes: it.notes || "",
       missing_fields: Array.isArray(it.missing_fields) ? it.missing_fields : [],
       fix_steps: Array.isArray(it.fix_steps) ? it.fix_steps : [],
@@ -1021,6 +1036,27 @@ const SnowSync = {
   /* 分章预览：只读推演，不落库。strategy = spine_anchor（默认，脊柱锚点）/ even / keep_current。 */
   /* 阶段 M：工作台里存档的分诊（rowUid -> item），刷新后第 10 步也能看到上次的分诊。 */
   triageItems(workId) { return snowTriage[workId || activeWork()] || null; },
+  /* 阶段 R：scene_id ↔ 09 row_uid 对照（来自最近一次水合的工作台） */
+  rowUidForSceneId(workId, sceneId) { const m = snowSceneIds[workId || activeWork()]; return (m && m.rowBySceneId[sceneId]) || ""; },
+  sceneIdForRow(workId, rowUid) { const m = snowSceneIds[workId || activeWork()]; return (m && m.sceneByRow[rowUid]) || ""; },
+  /* 阶段 R：作者对某一场的分诊裁定（pass / maybe / rewrite / cut）写回服务端——原著的 Yes / No / Maybe 由作者拍板；
+     cut（待删）是作者专用：不建卡、不阻断、三拍留在构思里。返回服务端的条目（含 triage_id），失败抛错。 */
+  async saveTriageVerdict(workId, item) {
+    const id = workId || activeWork();
+    const status = String((item && item.status) || "").trim().toLowerCase();
+    if (!["pass", "maybe", "rewrite", "cut"].includes(status)) throw new Error("非法的裁定");
+    const sceneId = (item && item.scene_id) || this.sceneIdForRow(id, item && item.row_uid);
+    if (!(item && item.scene_plan_id) && !sceneId) throw new Error("这一场还没同步到服务端，稍后再裁定");
+    const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/scene-triage`, { items: [{
+      triage_id: (item && item.triage_id) || "", scene_plan_id: (item && item.scene_plan_id) || "", scene_id: sceneId,
+      status, recommended_status: (item && item.recommended_status) || "",
+      notes: (item && item.notes) || "", missing_fields: (item && item.missing_fields) || [], fix_steps: (item && item.fix_steps) || [],
+      repair_patch: (item && item.repair_patch) || {},
+    }] });
+    if (data && data.workspace) { captureTriage(id, data.workspace); snowReadyFlags[id] = !!data.workspace.ready_to_materialize; }
+    const saved = ((data && data.items) || []).find(it => it && (it.scene_id === sceneId || (item && item.scene_plan_id && it.scene_plan_id === item.scene_plan_id)));
+    return saved || null;
+  },
   /* 阶段 M：「略过此步」写回服务端（generate skip=true，理由必填；只有 04–08 可略过）——以前只在本地，
      后端永远收不到，硬闸门于是静默卡住。回包刷新本步与整个工作台的健康。 */
   async skipStep(workId, feKey, reason) {

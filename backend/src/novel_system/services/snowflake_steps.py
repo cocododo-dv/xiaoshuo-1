@@ -12,6 +12,22 @@ SNOWFLAKE_METHOD_VERSION = "2026-04-29.v2"
 RENDERING_MODES: tuple[str, ...] = ("full", "summary", "skip")
 # summary 场物化时拿到的数值篇幅带：起草 / 长度补丁按数值带硬约束，而不是靠「short」这种提示。
 SUMMARY_LENGTH_BAND = "200-500"
+
+
+def effective_rendering_mode(scene_type: Any, value: Any) -> str:
+    """呈现方式的单一收口规则（2026-09-15 阶段 N）。
+
+    - ``summary`` 对两种形态都合法：原著自己的第 1 场就是带两组三拍的「叙述概述」（主动场），
+      收尾的几场也是叙述——一个主动场同样可以按两三段概述写；
+    - ``skip`` 只对反应场合法（原著：略过反应场，直接进下一场主动场景）；
+    - 非法值一律 ``full``。
+    """
+    mode = str(value or "").strip().lower()
+    if mode not in RENDERING_MODES:
+        return "full"
+    if mode == "skip" and str(scene_type or "").strip().lower() != "reactive":
+        return "full"
+    return mode
 # 阶段 D：第 6 步的分形——一页梗概的五段各扩成约一页，恰好五段。
 LONG_SYNOPSIS_PARAGRAPHS = 5
 MATERIALIZATION_REQUIRED_STEPS = [
@@ -340,6 +356,8 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                         "onstage_chars_json": [],
                         "story_time": "",
                         "expected_reader_emotion": "",
+                        # 阶段 N：作者的破例理由——原著「不过关也可以放行，但我要知道理由」（第 22 场「冲突：无」）。
+                        "exception_reason": "",
                     },
                     "readonly_fields": ["scene_id", "chapter_id", "row_uid"],
                     "scene_modes": [
@@ -351,8 +369,9 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "key": "goal",
                                     "kind": "textarea",
                                     "label": "目标",
-                                    "hint": "角色想达成什么？（可拍摄/量化）",
-                                    "placeholder": "例：在审讯结束前（约2小时内），让警探放弃拘留，拿到离开许可",
+                                    # 阶段 O：原著好目标的五条——能拍下来、装得进这一场的时间槽、对这个 POV 可能、难但不可笑、合乎他的价值观与志向
+                                    "hint": "角色想达成什么？能拍下来（读者知道「赢」长什么样）、装得进这一场的时间槽、对他可能、难但不可笑、合乎他的价值观与志向",
+                                    "placeholder": "例：让警探放弃拘留，拿到离开许可",
                                     "rows": 2,
                                 },
                                 {
@@ -367,7 +386,8 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "key": "conflict",
                                     "kind": "textarea",
                                     "label": "冲突过程",
-                                    "hint": "写出2-3轮「尝试→受阻」的循环",
+                                    # 阶段 O：回合数没有规则——至少两轮，关键场可以很多轮；张力逐级升到顶就冲破，不平台化
+                                    "hint": "多轮「尝试→受阻」，逐级升级：至少两轮，全书最重要的场可以拉得很长；升到顶就冲破坩埚，不要平台化",
                                     "placeholder": "① 提供不在场证明→警探拿出监控截图否定\n② 要求见律师→以「证据收集期」为由拒绝\n③ 故意激怒警探犯程序错误→警探更冷静地追问",
                                     "rows": 4,
                                 },
@@ -387,6 +407,26 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "placeholder": "例：虽然拿到了漏洞，但唯一的线人从此断联，这条消息来源永久失去了",
                                     "rows": 2,
                                 },
+                                {
+                                    # 阶段 N：主动场也可以按叙述概述写（原著第 1 场、收尾几场）；略过只给反应场
+                                    "key": "rendering_mode",
+                                    "kind": "select",
+                                    "label": "呈现方式",
+                                    "hint": "整场戏剧化，还是两三段叙述概述（约 200–500 字）？原著自己的开场与收尾就是叙述概述",
+                                    "options": [
+                                        {"value": "full", "label": "完整场"},
+                                        {"value": "summary", "label": "概述两段"},
+                                    ],
+                                },
+                                {
+                                    "key": "exception_reason",
+                                    "kind": "textarea",
+                                    "label": "破例理由",
+                                    "hint": "这一场故意不按三拍走时写下理由（原著：不过关也可以放行，但要知道理由）；写了理由，缺的三拍与坩埚不再算缺失",
+                                    "placeholder": "例：全书收尾的叙述交代，没有新的冲突；读者需要看到每个人的去向",
+                                    "rows": 2,
+                                    "optional": True,
+                                },
                             ],
                         },
                         {
@@ -397,7 +437,8 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "key": "reaction",
                                     "kind": "textarea",
                                     "label": "反应",
-                                    "hint": "先情感后理性——用身体/行为呈现，别直说「他很害怕」",
+                                    # 阶段 O：原著好反应的四条——呈现而不点名、合性格、（有时）反映价值观、与挫折成比例
+                                    "hint": "先情感后理性——用身体/行为呈现，别直说「他很害怕」；合这个角色的性格；与上一场的挫折成比例（小挫折一句，大挫折几页）",
                                     "placeholder": "例：主角发现手在颤抖；脑子里反复回放那段被篡改的视频；连警探说话都听不进去；最后才意识到48小时意味着什么",
                                     "rows": 3,
                                 },
@@ -413,7 +454,8 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "key": "dilemma",
                                     "kind": "textarea",
                                     "label": "困境",
-                                    "hint": "真正的两难——每个选项都必须付出代价",
+                                    # 阶段 O：两难落在角色的断层线上——两条互相矛盾的价值观（04 的「没有什么比___更重要」）被逼分出高下
+                                    "hint": "真正的两难——每个选项都必须付出代价，最好落在角色的断层线上：他 04 里两条互相矛盾的价值观被逼分出高下；两难期间不行动，只权衡",
                                     "placeholder": "选A：认罪换取假释→永远背负污点，无法再执业，且以后无法追凶\n选B：继续抵抗→今晚真凶得逞，又一条人命，且自己罪名更重",
                                     "rows": 3,
                                 },
@@ -421,7 +463,8 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "key": "decision",
                                     "kind": "textarea",
                                     "label": "决定",
-                                    "hint": "角色最终如何选择？这个决定必须直接引发下一个场景的目标",
+                                    # 阶段 O：原著好决定的四条——逼着走、能当下一场目标、承认风险、全押；不承诺就不算决定
+                                    "hint": "角色最终如何选择？逼着对手走的一步、能当下一场的目标、对自己承认风险、全押——不承诺就不算决定，一承诺场景就结束",
                                     "placeholder": "例：决定认罪——但在签字前悄悄发出了一条给记者的暗语短信",
                                     "rows": 2,
                                 },
@@ -443,6 +486,15 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                         {"value": "summary", "label": "概述两段"},
                                         {"value": "skip", "label": "略过（不落页）"},
                                     ],
+                                },
+                                {
+                                    "key": "exception_reason",
+                                    "kind": "textarea",
+                                    "label": "破例理由",
+                                    "hint": "这一场故意不按三拍走时写下理由（原著：不过关也可以放行，但要知道理由）；写了理由，缺的三拍与坩埚不再算缺失",
+                                    "placeholder": "例：这一场只是让读者喘口气的过场，决定在上一场已经做了",
+                                    "rows": 2,
+                                    "optional": True,
                                 },
                             ],
                         },
@@ -491,7 +543,8 @@ _REFERENCE_STEP_INSTRUCTIONS: dict[str, str] = {
         "第②句：第一灾难→第一幕终点（主角被迫卷入，无法回头）\n"
         "第③句：第二灾难→第二幕中点（世界观被打碎，开始改变）\n"
         "第④句：第三灾难→第二幕终点（局势失控，逼向终局）\n"
-        "第⑤句：第三幕→决战与收尾"
+        "第⑤句：第三幕→决战与收尾：主角成功还是失败，结局是喜、悲，还是苦乐参半——三种都合法，但要自己选定\n\n"
+        "三次灾难各逼一件事：第一灾逼主角投入（再也退不出），第二灾逼他从错误的信念转向正确的（道德前提在这里翻转），第三灾逼所有人走向终局。"
     ),
     "character_sheets": (
         "每个角色包含：\n\n"
@@ -523,7 +576,7 @@ _REFERENCE_STEP_INSTRUCTIONS: dict[str, str] = {
         "⚠️ 特别提示：给反派足够的理解——他相信自己是对的。"
     ),
     "long_synopsis": (
-        "将一页梗概的每一段扩展为约一页（300–600 字），恰好五段：\n\n"
+        "将一页梗概的每一段扩展为约一页（600–1000 字，长篇取上限），恰好五段：\n\n"
         "• 加入具体的场景设定（时间、地点、氛围）\n"
         "• 详细的角色行动与反应\n"
         "• 关键对话的要点提示\n"
@@ -540,23 +593,26 @@ _REFERENCE_STEP_INSTRUCTIONS: dict[str, str] = {
     ),
     "scene_list": (
         "场景列表格式：\n\n"
-        "「编号 | 类型（主动/被动）| 视角人物 | 地点/时间 | 坩埚（困住角色的力量）| 结果/转变」\n\n"
+        "「编号 | 类型（主动/反应）| 视角人物 | 地点/时间 | 坩埚（困住角色的力量）| 结果/转变」\n\n"
         "⚠️ 铁律三条：\n"
         "① 每个场景必须包含冲突（内部或外部）\n"
         "② 没有冲突的场景→删除\n"
-        "③ 一场挫折之后有三种走法：切到另一条 POV 线、直接开下一场主动场景、或在下一目标不明显时写一场反应场景（反应→困境→决定）——反应场是少数，可以缩成两段概述，不要机械交替"
+        "③ 一场挫折之后有三种走法：切到另一条 POV 线、直接开下一场主动场景、或在下一目标不明显时写一场反应场景（反应→困境→决定）——反应场是少数，可以缩成两段概述，不要机械交替\n\n"
+        "视角人物选这一场里损失最大的那个人——损失最大的人情感最强烈；只用一个 POV 的书无需选择。\n"
+        "场景坩埚每场都要新：新旧坩埚可以有部分相同，但至少一部分被打破、至少一部分不同。"
     ),
     "scene_details": (
         "【主动场景】\n"
-        "目标：角色想达成什么？要具体可拍摄/量化\n"
-        "坩埚：什么力量将角色困在这个处境里？\n"
-        "冲突：多轮尝试→受阻的循环\n"
-        "挫折：以主角衡量，结尾比开场更糟（POV 是对手时，对手得手就是挫折），制造「开放循环」迫使读者翻页\n\n"
+        "目标：角色想达成什么？好目标过五关——能拍下来、装得进这一场的时间槽、对这个 POV 可能、难但不可笑、合乎他的价值观与志向\n"
+        "坩埚：什么力量将角色困在这个处境里？（世界、其他角色、角色自身，或它们的组合）\n"
+        "冲突：多轮尝试→受阻的循环，逐级升级——至少两轮，关键场可以很多轮；升到顶就冲破，不平台化\n"
+        "挫折：最后一次尝试，越短越好；以主角衡量，结尾比开场更糟（POV 是对手时，对手得手就是挫折）；非赢不可时写带代价的胜利；制造「开放循环」迫使读者翻页\n\n"
         "【反应场景】\n"
-        "反应：情感先于理性——用身体/行为呈现，别直说「他很害怕」\n"
-        "困境：真正的两难——每个选项都有代价\n"
-        "决定：必须决断，决定引发下一个目标\n\n"
-        "挫折接反应、或直接接下一个目标；决定接目标——链条不能断，但不要机械交替，反应场是少数。"
+        "反应：情感先于理性——用身体/行为呈现，别直说「他很害怕」；合性格；与挫折成比例\n"
+        "困境：真正的两难——每个选项都有代价，最好落在角色两条价值观的断层线上（见 04）；两难期间不行动\n"
+        "决定：逼着走的一步、能当下一场的目标、承认风险、全押——不承诺就不算决定，一承诺场景就结束\n\n"
+        "挫折接反应、或直接接下一个目标；决定接目标——链条不能断，但不要机械交替，反应场是少数。\n"
+        "破例要知道理由：某一场故意不按三拍走（收尾的叙述交代、「冲突：无」的过场），在「破例理由」里写明，规则层就不再把缺的三拍算缺失。"
     ),
 }
 
@@ -638,12 +694,13 @@ _FIELD_HELP: dict[str, dict[str, str]] = {
     "scenes": {"hint": "每个场景都要推动信息、关系或行动目标变化。", "placeholder": "按章节顺序列出场景。"},
     "scene_crucible": {"hint": "困住人物、让他们不能轻易退出的力量。", "placeholder": "退缩会让上一场损失固化，继续行动又会付出新代价。"},
     "crucible": {"hint": "困住人物、让他们不能轻易退出的力量。", "placeholder": "退缩会让上一场损失固化，继续行动又会付出新代价。"},
-    "goal": {"hint": "主动场景里可被拍出来的具体目标。", "placeholder": "在审讯结束前拿到离开许可。"},
-    "conflict": {"hint": "多轮尝试和受阻，不只是一次拒绝。", "placeholder": "提出证据被否定；要求见律师被拖延；激怒对方反而暴露新风险。"},
+    "goal": {"hint": "主动场景里可被拍出来的具体目标：装得进这一场、对他可能、难但不可笑、合乎他的价值观。", "placeholder": "拿到离开许可。"},
+    "conflict": {"hint": "多轮尝试和受阻、逐级升级，不只是一次拒绝；回合数没有上限。", "placeholder": "提出证据被否定；要求见律师被拖延；激怒对方反而暴露新风险。"},
     "setback": {"hint": "以主角衡量：结尾更糟，或赢了但付出代价；POV 是对手时，对手得手就是挫折。", "placeholder": "拿到线索，却发现线索指向最亲近的人。"},
-    "reaction": {"hint": "先身体和情绪，后理性分析。", "placeholder": "手发抖、反复回想上一场坏消息，随后才意识到真正损失。"},
-    "dilemma": {"hint": "两个选择都要付出真实代价。", "placeholder": "公开会伤害家人；沉默会让真相再次被掩埋。"},
-    "decision": {"hint": "必须触发下一场的新目标。", "placeholder": "决定去见掌握时间线的人。"},
+    "reaction": {"hint": "先身体和情绪，后理性分析；合性格；与挫折成比例。", "placeholder": "手发抖、反复回想上一场坏消息，随后才意识到真正损失。"},
+    "dilemma": {"hint": "两个选择都要付出真实代价，最好落在角色两条价值观的断层线上。", "placeholder": "公开会伤害家人；沉默会让真相再次被掩埋。"},
+    "decision": {"hint": "逼着走、能当下一场目标、承认风险、全押——必须触发下一场的新目标。", "placeholder": "决定去见掌握时间线的人。"},
+    "exception_reason": {"hint": "故意不按三拍走时的理由；写了理由，缺的三拍与坩埚不再算缺失。", "placeholder": "全书收尾的叙述交代，没有新的冲突。"},
     "cost_requirement": {"hint": "角色为这个选择或结果具体付出了什么代价——免费的选择等于注水。", "placeholder": "拿到线索的同时，永久失去了这个线人的信任。"},
     "moral_premise": {"hint": "人物误信什么，又会学会什么。", "placeholder": "沉默不能保护人，承担代价才可能结束伤害。"},
 }
@@ -827,6 +884,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
             fix_steps.append("建议：给每个场景明确职责——什么改变、谁在阻挡、为什么下一场必须发生（" + "、".join(weak_scenes[:5]) + "）。")
         if scenes and not weak_scenes:
             strengths.append("场景列表已经有可用职责")
+        fix_steps.extend(_repeated_crucible_advice(scenes))
 
     for missing_field in missing_fields[:3]:
         fix_steps.append(f"补齐必填字段：{_field_display_label(missing_field)}。")
@@ -948,6 +1006,7 @@ def _scene_detail_seed(scene: dict[str, Any], index: int) -> dict[str, Any]:
         "onstage_chars_json": list(scene.get("onstage_chars_json") or []),
         "story_time": scene.get("story_time") or "",
         "expected_reader_emotion": "",
+        "exception_reason": "",
         "triage_status": "",
         "triage_notes": "",
         "triage_missing_fields": [],
@@ -1023,6 +1082,7 @@ def _diagnose_scene_step_pressure(step_key: str, draft: dict[str, Any]) -> dict[
     diagnoses = [diagnose_scene_detail(scene, index=index) for index, scene in enumerate(scenes, start=1)]
     flags = _unique(flag for diagnosis in diagnoses for flag in diagnosis.get("pressure_flags") or [])
     fix_steps = _unique(step for diagnosis in diagnoses for step in diagnosis.get("fix_steps") or [])
+    fix_steps.extend(_repeated_crucible_advice(scenes))
     strengths = []
     pass_count = sum(1 for diagnosis in diagnoses if diagnosis.get("recommended_status") == "pass")
     if pass_count:
@@ -1045,6 +1105,10 @@ def _diagnose_scene_step_pressure(step_key: str, draft: dict[str, Any]) -> dict[
 
 
 def _missing_scene_detail_fields(scene: dict[str, Any]) -> list[str]:
+    if _text(scene.get("exception_reason")):
+        # 阶段 N：作者写了破例理由——原著「不过关也可以放行，但我要知道理由」；缺的三拍 / 坩埚不再算缺失，
+        # 理由本身进结构简报，分诊与作者仍可判断它成不成立。
+        return []
     scene_type = str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip().lower()
     required = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
     missing = []
@@ -1069,6 +1133,9 @@ def diagnose_scene_detail(scene: dict[str, Any], *, index: int = 1) -> dict[str,
         pressure_flags.append("scene_core_empty")
     weak_flags, advice = _weak_scene_pressure_flags(payload, scene_type)
     pressure_flags.extend(flag for flag in weak_flags if flag not in pressure_flags)
+    exception_reason = _text(payload.get("exception_reason"))
+    if exception_reason:
+        advice.insert(0, f"作者破例：{exception_reason}——缺的三拍 / 坩埚不计入缺失；分诊时仍请判断这个理由成不成立。")
 
     score = round((filled_fields / total_fields) * 100) if total_fields else 0
     if scene_core_empty:
@@ -1091,6 +1158,7 @@ def diagnose_scene_detail(scene: dict[str, Any], *, index: int = 1) -> dict[str,
         "score": score,
         "missing_fields": missing_fields,
         "pressure_flags": pressure_flags,
+        "exception_reason": exception_reason,
         # 建议只是建议：不扣分、不改状态，作者与 LLM 分诊才判质量。
         "advice": advice,
         "fix_steps": _diagnostic_fix_steps(
@@ -1147,7 +1215,7 @@ def _weak_scene_pressure_flags(scene: dict[str, Any], scene_type: str) -> tuple[
     conflict = _text(scene.get("conflict"))
     setback = _text(scene.get("setback"))
     if conflict and not _has_escalating_conflict(conflict):
-        advice.append("建议：冲突写成 2–3 轮尝试→受阻，不只是一次拒绝。")
+        advice.append("建议：冲突写成多轮尝试→受阻并逐级升级（至少两轮，关键场可以更多），不只是一次拒绝。")
     if setback and not _has_cost_or_reversal(setback):
         advice.append("建议：让挫折比开场更糟，或让胜利带上代价——以主角衡量。")
     return flags, advice
@@ -1250,6 +1318,26 @@ def _diagnostic_fix_steps(
     return _unique(steps)
 
 
+def _repeated_crucible_advice(scenes: list[dict[str, Any]]) -> list[str]:
+    """阶段 O：场景坩埚每场都要新（原著：新旧坩埚可以部分相同，但至少一部分被打破、一部分不同）。
+    只认相邻两场坩埚一字不差——短语相似度判不准，猜错就冤枉作者；所以只提醒，不改状态。"""
+    advice: list[str] = []
+    previous_label = ""
+    previous_crucible = ""
+    for index, scene in enumerate(scenes, start=1):
+        if not isinstance(scene, dict):
+            continue
+        label = _text(scene.get("title")) or _text(scene.get("scene_id")) or f"第 {index} 场"
+        crucible = " ".join(_text(scene.get("scene_crucible") or scene.get("crucible")).split())
+        if crucible and previous_crucible and crucible == previous_crucible:
+            advice.append(
+                f"建议：{previous_label} 与 {label} 的坩埚一字不差——场景坩埚每场都要新，至少一部分被打破、一部分不同。"
+            )
+        previous_label = label
+        previous_crucible = crucible
+    return advice
+
+
 def _pressure_result(step_key: str, *, flags: list[str], fix_steps: list[str], strengths: list[str]) -> dict[str, Any]:
     unique_flags = _unique(flags)
     unique_fix_steps = _unique(fix_steps)
@@ -1312,6 +1400,7 @@ _FIELD_DISPLAY_LABELS = {
     "hook": "钩子",
     "target_length_band": "目标篇幅",
     "rendering_mode": "呈现方式",
+    "exception_reason": "破例理由",
 }
 
 
@@ -1537,7 +1626,7 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
 # ``_fallback_repair_patch``），所以它们同时登记为占位文本——例句留在字段里就等于没写。
 SCENE_FIELD_EXAMPLES: dict[str, str] = {
     "crucible": "一个具体压力把视角角色困在这里；离开会让损失永久化。",
-    "goal": "在场景倒计时结束前，拿到某个具体证据、许可或让步。",
+    "goal": "拿到某个具体证据、许可或让步——读者能看出「赢」长什么样。",
     "conflict": "角色先直接索取，再尝试策略绕路，最后冒险揭露；每一轮都遇到更强阻力。",
     "setback": "角色拿到线索，但代价指向一个他无法失去的人。",
     "reaction": "角色先出现身体和情绪反应，然后才开始分析损害。",

@@ -1,7 +1,9 @@
 """阶段 C（2026-09-13 雪花评估）：反应场的呈现方式 full / summary，从第 10 步一路带到起草。
 
 Ingermanson：反应场可以整场写、缩成两段概述、或干脆略过；现代趋势是少写反应场。第一版做前两档：
-- 第 10 步只对反应场保存 rendering_mode；主动场与非法值一律 full；
+- 第 10 步保存 rendering_mode；非法值一律 full；
+- 2026-09-15 阶段 N：summary 对两种形态都合法（原著自己的第 1 场就是带两组三拍的叙述概述，收尾几场也是），
+  skip 仍只给反应场；
 - 物化 / 回流：summary 场拿到数值篇幅带 200-500（现有数值长度机制据此硬约束），简报带 rendering_mode，
   改回 full 时场景卡回到 medium；
 - 结构简报渲染「Rendering mode: summary」，起草 / 蓝图 / 场景规划提示词认识它；
@@ -73,7 +75,7 @@ def _seed(session) -> SnowflakeWorkspaceService:
             "cost_requirement": "失去遗物",
         }
         if scene["row_uid"] == "u1":
-            row["rendering_mode"] = "summary"  # 主动场：必须被收口成 full
+            row["rendering_mode"] = "summary"  # 阶段 N：主动场也可以按叙述概述写
         elif scene["row_uid"] == "u2":
             row["rendering_mode"] = "summary"
         else:
@@ -92,25 +94,31 @@ def _plan(session, row_uid: str) -> SnowflakeScenePlan:
 
 
 # ---------------------------------------------------------------------------
-# 第 10 步：只有反应场能选 summary
+# 第 10 步：两种形态都能选 summary；skip 只给反应场（阶段 N）
 # ---------------------------------------------------------------------------
 
 
-def test_only_reactive_scenes_keep_a_summary_rendering_mode(session) -> None:
+def test_summary_is_legal_for_both_forms_and_skip_only_for_reactive(session) -> None:
     service = _seed(session)
-    assert _plan(session, "u1").rendering_mode == "full"
+    assert _plan(session, "u1").rendering_mode == "summary"  # 主动场的叙述概述（原著第 1 场）
     assert _plan(session, "u2").rendering_mode == "summary"
-    assert _plan(session, "u3").rendering_mode == "full"
+    assert _plan(session, "u3").rendering_mode == "full"  # 非法值
 
     payload = next(
         step for step in service.workspace(PROJECT_ID)["steps"] if step["step_key"] == "scene_details"
     )["draft"]["scenes"]
     by_uid = {scene["row_uid"]: scene for scene in payload}
     assert by_uid["u2"]["rendering_mode"] == "summary"
-    assert by_uid["u1"]["rendering_mode"] == "full"
+    assert by_uid["u1"]["rendering_mode"] == "summary"
 
-    # 场景类型改回主动：呈现方式跟着收口
+    # 场景类型改回主动：概述照样保留；略过则收口成 full
     plan = _plan(session, "u2")
+    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"primary_form": "proactive"})
+    assert _plan(session, "u2").rendering_mode == "summary"
+    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"rendering_mode": "skip"})
+    assert _plan(session, "u2").rendering_mode == "full"
+    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"primary_form": "reactive", "rendering_mode": "skip"})
+    assert _plan(session, "u2").rendering_mode == "skip"
     service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"primary_form": "proactive"})
     assert _plan(session, "u2").rendering_mode == "full"
 
@@ -119,29 +127,32 @@ def test_effective_rendering_mode_and_seed_defaults() -> None:
     assert RENDERING_MODES == ("full", "summary", "skip")
     assert _effective_rendering_mode("reactive", "summary") == "summary"
     assert _effective_rendering_mode("reactive", "SUMMARY ") == "summary"
-    assert _effective_rendering_mode("proactive", "summary") == "full"
+    assert _effective_rendering_mode("proactive", "summary") == "summary"  # 阶段 N：主动场也可以概述
     assert _effective_rendering_mode("reactive", "skip") == "skip"  # 阶段 I：原著的第三个选项
-    assert _effective_rendering_mode("proactive", "skip") == "full"
+    assert _effective_rendering_mode("proactive", "skip") == "full"  # 略过只给反应场
     assert _effective_rendering_mode("reactive", "bogus") == "full"
     assert _scene_detail_seed({"summary": "x", "primary_form": "reactive"}, 1)["rendering_mode"] == "full"
 
 
-def test_llm_output_may_suggest_summary_for_reactive_scenes_only() -> None:
+def test_llm_output_may_suggest_summary_for_both_forms_and_skip_for_reactive_only() -> None:
     base = [
         {"scene_id": "SC1", "primary_form": "proactive", "scene_type": "proactive", "summary": "取账本"},
         {"scene_id": "SC2", "primary_form": "reactive", "scene_type": "reactive", "summary": "消化挫败"},
+        {"scene_id": "SC3", "primary_form": "proactive", "scene_type": "proactive", "summary": "开场概述"},
     ]
     merged = _sanitize_scene_detail_items(
         [
-            {"scene_id": "SC1", "rendering_mode": "summary", "goal": "拿到账本"},
+            {"scene_id": "SC1", "rendering_mode": "skip", "goal": "拿到账本"},
             {"scene_id": "SC2", "rendering_mode": "Summary", "reaction": "手抖"},
+            {"scene_id": "SC3", "rendering_mode": "summary", "goal": "交代来路"},
         ],
         project_id="P",
         base_items=base,
     )
     by_id = {item["scene_id"]: item for item in merged}
-    assert "rendering_mode" not in by_id["SC1"]
+    assert "rendering_mode" not in by_id["SC1"]  # 主动场不能略过
     assert by_id["SC2"]["rendering_mode"] == "summary"
+    assert by_id["SC3"]["rendering_mode"] == "summary"  # 主动场的叙述概述
 
 
 # ---------------------------------------------------------------------------
@@ -177,21 +188,27 @@ def test_materialization_gives_summary_scenes_a_numeric_band_and_briefs_carry_th
     plan_json = _materialize(session, service)
     scenes = {scene["scene_id"]: scene for chapter in plan_json["chapters"] for scene in chapter["scenes"]}
     summary_scene = scenes[_plan(session, "u2").scene_id]
-    full_scene = scenes[_plan(session, "u1").scene_id]
-    other_reactive = scenes[_plan(session, "u3").scene_id]
+    proactive_summary = scenes[_plan(session, "u1").scene_id]
+    full_scene = scenes[_plan(session, "u3").scene_id]
 
     assert summary_scene["target_length_band"] == SUMMARY_LENGTH_BAND == "200-500"
     assert summary_scene["writer_brief_json"]["rendering_mode"] == "summary"
     assert summary_scene["writer_brief_json"]["timebox"] == SUMMARY_LENGTH_BAND
+    # 阶段 N：主动场的叙述概述拿同一条数值带
+    assert proactive_summary["target_length_band"] == SUMMARY_LENGTH_BAND
+    assert proactive_summary["writer_brief_json"]["rendering_mode"] == "summary"
     assert full_scene["target_length_band"] == "medium"
     assert full_scene["writer_brief_json"]["rendering_mode"] == "full"
-    assert other_reactive["writer_brief_json"]["rendering_mode"] == "full"
 
     card = session.get(SceneCard, summary_scene["scene_id"])
     assert card.target_length_band == SUMMARY_LENGTH_BAND
     brief = render_scene_structure_brief(card, session)
-    assert "Rendering mode: summary (概述两段)" in brief
+    assert "Rendering mode: summary (概述两段) — the author wants this reactive beat" in brief
+    assert "the Reaction felt, the options weighed and rejected, the Decision committed" in brief
     assert "Target length band: 200-500" in brief
+    proactive_brief = render_scene_structure_brief(session.get(SceneCard, proactive_summary["scene_id"]), session)
+    assert "Rendering mode: summary (概述两段) — the author wants this proactive beat" in proactive_brief
+    assert "the Goal stated, the attempts and what blocked them, the Setback landed" in proactive_brief
     assert "Rendering mode" not in render_scene_structure_brief(session.get(SceneCard, full_scene["scene_id"]), session)
 
 
@@ -263,8 +280,8 @@ def test_prompts_know_the_summary_rendering_mode() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-14.v12"
-    assert "rendering_mode (reactive scenes only" in templates["snowflake_generate_scene_details"]["task_prompt"]
-    for name, version in (("neutral_draft", "2026-09-14.v11"), ("style_first_draft", "2026-09-14.v6"), ("scene_blueprint", "2026-09-14.v9")):
+    assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-15.v13"
+    assert 'rendering_mode: "full" / "summary" for either form' in templates["snowflake_generate_scene_details"]["task_prompt"]
+    for name, version in (("neutral_draft", "2026-09-15.v12"), ("style_first_draft", "2026-09-15.v7"), ("scene_blueprint", "2026-09-15.v10")):
         assert templates[name]["version"] == version, name
         assert "Rendering mode: summary" in templates[name]["task_prompt"], name
