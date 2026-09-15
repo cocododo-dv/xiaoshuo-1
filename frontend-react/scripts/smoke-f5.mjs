@@ -41,8 +41,8 @@ await page.waitForTimeout(1500);
 
 let bookId = null;
 
-await check("① multipart 导入 → 落库", async () => {
-  bookId = await page.evaluate(async ({ apiBase, title, text }) => {
+await check("① 没有 LLM：导入直接 409（严格 LLM，2026-09-15：没有启发式兜底）", async () => {
+  const outcome = await page.evaluate(async ({ apiBase, title, text }) => {
     const fd = new FormData();
     fd.append("file", new Blob([text], { type: "text/plain" }), "sample.txt");
     fd.append("title", title);
@@ -51,39 +51,19 @@ await check("① multipart 导入 → 落库", async () => {
       method: "POST", headers: { "X-Idempotency-Key": "smoke-sr-" + Date.now() }, body: fd,
     });
     const body = await res.json();
-    if (!body.ok) throw new Error(JSON.stringify(body.error));
-    return body.data.book.book_id;
+    return { status: res.status, code: body.error && body.error.code, action: body.error && body.error.details && body.error.details.author_action };
   }, { apiBase: API, title: TITLE, text: SAMPLE });
-  if (!bookId) throw new Error("no book id");
+  if (outcome.status !== 409 || outcome.code !== "STYLE_REFERENCE_LLM_REQUIRED") throw new Error(JSON.stringify(outcome));
+  if (!outcome.action || outcome.action.view !== "systemConfig") throw new Error("author_action missing");
 });
 
-await check("② 书库视图渲染真实书", async () => {
+await check("② 书库视图：没有书时给空态，不再有演示书", async () => {
   await page.evaluate(async () => { await window.srSyncBooks(); });
   await page.evaluate(() => { location.hash = "#styleref"; });
   await page.waitForTimeout(1500);
   const text = await page.evaluate(() => document.body.innerText);
-  if (!text.includes(TITLE)) throw new Error("book not rendered");
-  const real = await page.evaluate(() => (window.SR_BOOKS || []).length);
-  // SR_BOOKS 是模块内绑定，window 上没有——改从 DOM 断言演示书已被替换
   if (text.includes("呐喊 · 短篇集")) throw new Error("demo books still shown");
-  // 真实书的书库行必须暴露删除入口（按需 hover 显现，但 DOM 中常驻）
-  const hasDel = await page.evaluate((id) => !!document.querySelector(`.sr-book-del[data-sr-del="${id}"]`), bookId);
-  if (!hasDel) throw new Error("delete control missing in UI for real book");
-});
-
-await check("③ LLM 不可用：启动抽取 → 明确引导而非假进度", async () => {
-  dialogs.length = 0;
-  await page.evaluate(async (id) => { await window.srBookAction("rerun", id); }, bookId);
-  await page.waitForTimeout(800);
-  // 两类诚实降级都接受：LLM 未启用（引导去设置）/ LLM 已启用但任务路由未配置（透传真实错误）
-  if (!dialogs.some(m => m.includes("启用 LLM") || m.includes("操作失败"))) throw new Error(`dialogs: ${JSON.stringify(dialogs)}`);
-});
-
-await check("④ 删除 → 列表回落", async () => {
-  await page.evaluate(async (id) => { await window.srDeleteBook(id); }, bookId);
-  await page.waitForTimeout(600);
-  const data = await page.evaluate(async (u) => (await fetch(u)).json(), API + "/api/v2/style-reference/books");
-  if ((data.data.books || []).some(b => b.book_id === bookId)) throw new Error("book still listed");
+  if (!text.includes("参考书库")) throw new Error("style reference view not rendered");
 });
 
 await browser.close();

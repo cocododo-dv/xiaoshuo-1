@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ from novel_system.db.models import StyleReferenceRun
 
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.background_heartbeat import periodic_heartbeat
-from novel_system.services.style_reference.dimensions import Layer
+from novel_system.services.style_reference.dimensions import LAYER_TO_SUB_DIMS, Layer, SubDimension
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.extractors import (
     BaseExtractor,
@@ -69,6 +70,113 @@ class RunResult:
     status: str
     layers: list[str] = field(default_factory=list)
     sub_dim_results: list[ExtractionRunResult] = field(default_factory=list)
+
+
+def _initial_progress(layers: list[Layer], *, completed: int = 0) -> dict[str, Any]:
+    """``coverage_json["progress"]`` 的完整形状(2026-09-15 子维粒度)。
+
+    层粒度键(``layers_total / layers_done / current_layer``)保留给老读者;子维粒度键给
+    活动清单 / 前端进度条:``sub_dims_total / sub_dims_done / current_sub_dim``、累计
+    ``llm_calls`` 与其中的 ``retries``(同一子维的第 2 次起调用:补抽 / 整维重抽),
+    以及每个已完成子维的耗时 ``sub_dim_seconds``(活动清单据此估算剩余时间)。
+    """
+    return {
+        "layers_total": len(layers),
+        "layers_done": 0,
+        "current_layer": layers[0].value if layers else None,
+        "sub_dims_total": sum(len(LAYER_TO_SUB_DIMS[layer]) for layer in layers),
+        "sub_dims_done": int(completed),
+        "current_sub_dim": None,
+        "llm_calls": 0,
+        "retries": 0,
+        "sub_dim_seconds": [],
+        "updated_at": _utcnow_iso(),
+    }
+
+
+class _RunProgressTracker:
+    """抽取器的 ``ExtractionProgress`` 实现:把子维粒度进度写进 run 的 ``coverage_json``。
+
+    后台模式(``commit=True``)每次汇报都 commit,轮询端点立刻可见;同步模式只更新
+    session,随请求事务一起提交。写失败只记日志,绝不打断抽取。
+    """
+
+    def __init__(
+        self,
+        repo: StyleReferenceRepository,
+        session: Session,
+        run_id: str,
+        layers: list[Layer],
+        *,
+        commit: bool,
+        completed: int = 0,
+    ) -> None:
+        self._repo = repo
+        self._session = session
+        self._run_id = run_id
+        self._commit = commit
+        self.progress = _initial_progress(layers, completed=completed)
+        self._calls_in_sub_dim = 0
+        self._sub_dim_started_monotonic: float | None = None
+
+    def layer_started(self, layer: Layer, layers_done: int) -> None:
+        self.progress["layers_done"] = int(layers_done)
+        self.progress["current_layer"] = layer.value
+        self._write()
+
+    def layers_finished(self, layers: list[Layer]) -> None:
+        self.progress["layers_done"] = len(layers)
+        self.progress["current_layer"] = None
+        self.progress["current_sub_dim"] = None
+        self.progress["sub_dims_done"] = self.progress["sub_dims_total"]
+        self._write()
+
+    # ---- ExtractionProgress ------------------------------------------------
+    def sub_dim_started(self, sub_dim: SubDimension) -> None:
+        self.progress["current_sub_dim"] = sub_dim.value
+        self._calls_in_sub_dim = 0
+        self._sub_dim_started_monotonic = time.monotonic()
+        self._write()
+
+    def sub_dim_done(self, sub_dim: SubDimension) -> None:  # noqa: ARG002
+        self.progress["sub_dims_done"] = int(self.progress.get("sub_dims_done") or 0) + 1
+        self.progress["current_sub_dim"] = None
+        if self._sub_dim_started_monotonic is not None:
+            seconds = list(self.progress.get("sub_dim_seconds") or [])
+            seconds.append(round(time.monotonic() - self._sub_dim_started_monotonic, 1))
+            self.progress["sub_dim_seconds"] = seconds[-64:]
+        self._sub_dim_started_monotonic = None
+        self._write()
+
+    def llm_call(self, node_id: str) -> None:  # noqa: ARG002
+        self.progress["llm_calls"] = int(self.progress.get("llm_calls") or 0) + 1
+        self._calls_in_sub_dim += 1
+        if self._calls_in_sub_dim > 1:
+            self.progress["retries"] = int(self.progress.get("retries") or 0) + 1
+        self._write()
+
+    def _write(self) -> None:
+        self.progress["updated_at"] = _utcnow_iso()
+        try:
+            run = self._repo.get_run(self._run_id)
+            if run is None:
+                return
+            coverage = dict(run.coverage_json or {})
+            coverage["progress"] = dict(self.progress)
+            self._repo.update_run(
+                self._run_id,
+                coverage_json=coverage,
+                heartbeat_at=_utcnow_iso(),
+            )
+            if self._commit:
+                self._session.commit()
+        except Exception:  # pragma: no cover - progress must never break extraction
+            logger.exception("failed to write extraction progress for run %s", self._run_id)
+            if self._commit:
+                try:
+                    self._session.rollback()
+                except Exception:  # pragma: no cover
+                    logger.exception("progress rollback failed for run %s", self._run_id)
 
 
 class RunOrchestrator:
@@ -131,6 +239,22 @@ class RunOrchestrator:
             )
         # 附录 B — local_only 的书禁止把段落送往云端 LLM
         ensure_cloud_llm_allowed(book, operation="start_extract_run")
+        # 2026-09-15 严格 LLM:分类还没完成(或失败)的书不能抽取——段型是采样与窗口的依据
+        if str(book.status or "") != "ready":
+            raise DomainError(
+                "STYLE_REFERENCE_BOOK_NOT_READY",
+                f"book {book_id!r} is {book.status!r}: paragraph classification has not finished",
+                status_code=409,
+                details={
+                    "book_id": book_id,
+                    "status": book.status,
+                    "author_action": {
+                        "action": "wait_or_resume_classification",
+                        "view": "styleref",
+                        "label": "等这本书的段落分类完成（或在「参考书活动」里继续分类）后再抽取",
+                    },
+                },
+            )
         # 僵尸 run 回收:同书遗留的超时 RUNNING run 降级 FAILED
         self._reap_stale_runs(book_id)
         # 并发守卫:同书已有活跃 run 时拒绝再启(两个后台线程并发抽同一本书
@@ -176,13 +300,7 @@ class RunOrchestrator:
             layers = kept
 
         run_id = f"sr_run_{uuid.uuid4().hex[:12]}"
-        coverage_json: dict[str, Any] = {
-            "progress": {
-                "layers_total": len(layers),
-                "layers_done": 0,
-                "current_layer": layers[0].value,
-            }
-        }
+        coverage_json: dict[str, Any] = {"progress": _initial_progress(layers)}
         if skipped_layers:
             coverage_json["skipped_layers"] = skipped_layers
         self.repo.create_run(
@@ -295,6 +413,18 @@ class RunOrchestrator:
         """
         sub_dim_results: list[ExtractionRunResult] = []
         rng = self._run_rng(run_id, book_id)
+        requested_sub_dims = {
+            sub_dim.value for layer in layers for sub_dim in LAYER_TO_SUB_DIMS[layer]
+        }
+        already_done = len(requested_sub_dims & set(completed_sub_dimensions or set()))
+        tracker = _RunProgressTracker(
+            self.repo,
+            self.session,
+            run_id,
+            layers,
+            commit=progress_commits,
+            completed=already_done,
+        )
         try:
             for i, layer in enumerate(layers):
                 if progress_commits:
@@ -326,9 +456,7 @@ class RunOrchestrator:
                             layers=[la.value for la in layers],
                             sub_dim_results=sub_dim_results,
                         )
-                self._write_progress(run_id, layers, layers_done=i, current=layer)
-                if progress_commits:
-                    self.session.commit()
+                tracker.layer_started(layer, i)
                 extractor_cls = _LAYER_EXTRACTOR_MAP[layer]
                 extractor = extractor_cls(
                     self.session,
@@ -344,6 +472,7 @@ class RunOrchestrator:
                         if progress_commits
                         else None
                     ),
+                    progress=tracker,
                 )
                 skip = {
                     sub_dim
@@ -370,13 +499,10 @@ class RunOrchestrator:
                 self.session.commit()
             raise
 
+        tracker.layers_finished(layers)
         run = self.repo.get_run(run_id)
         coverage = dict(run.coverage_json or {}) if run is not None else {}
-        coverage["progress"] = {
-            "layers_total": len(layers),
-            "layers_done": len(layers),
-            "current_layer": None,
-        }
+        coverage["progress"] = dict(tracker.progress)
         coverage["sub_dimensions"] = self._persisted_subdimension_coverage(run_id)
         self.repo.update_run(
             run_id,
@@ -467,29 +593,6 @@ class RunOrchestrator:
         # 后台 session:refresh 拿到其他事务提交的 cancel / reap
         self.session.refresh(run)
         return run.status
-
-    def _write_progress(
-        self,
-        run_id: str,
-        layers: list[Layer],
-        *,
-        layers_done: int,
-        current: Layer | None,
-    ) -> None:
-        run = self.repo.get_run(run_id)
-        if run is None:
-            return
-        coverage = dict(run.coverage_json or {})
-        coverage["progress"] = {
-            "layers_total": len(layers),
-            "layers_done": layers_done,
-            "current_layer": current.value if current is not None else None,
-        }
-        self.repo.update_run(
-            run_id,
-            coverage_json=coverage,
-            heartbeat_at=_utcnow_iso(),
-        )
 
     def _checkpoint_background_run(self, run_id: str) -> None:
         """Commit a sub-dimension and renew its durable heartbeat together."""

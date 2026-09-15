@@ -405,9 +405,13 @@ export async function apiGet(path, { signal, timeoutMs } = {}) {
    method、body 有无（undefined 表示无 body：不带 Content-Type/请求体，且幂等
    签名的载荷为空串）、adminToken 真值时附加 X-Admin-Token（空令牌不加头，
    保持无令牌 loopback 后端契约）。 */
-async function mutationRequest(method, path, body, { adminToken = "", signal, timeoutMs } = {}) {
+async function mutationRequest(method, path, body, { adminToken = "", signal, timeoutMs, idempotencyKey = "" } = {}) {
   const clientRequestId = buildClientRequestId();
-  const { key, signature } = acquireIdempotencyKey(method, path, body);
+  // 调用方显式给键（2026-09-15：风格参考的合成 / 重新分类要用同一个键去轮询服务端进度）时
+  // 直接用它，不进签名表；否则按「方法+路径+载荷」签名持键。
+  const { key, signature } = idempotencyKey
+    ? { key: String(idempotencyKey), signature: null }
+    : acquireIdempotencyKey(method, path, body);
   try {
     const headers = withAccessToken({
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -419,12 +423,12 @@ async function mutationRequest(method, path, body, { adminToken = "", signal, ti
     const init = { method, headers };
     if (body !== undefined) init.body = JSON.stringify(body);
     const data = await requestEnvelope(path, init, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
-    releaseIdempotencyKey(signature);
+    if (signature) releaseIdempotencyKey(signature);
     return data;
   } catch (error) {
     const normalized = normalizeRequestError(error, clientRequestId);
     // 在途冲突/可重试失败保留键供重试重放；确定性失败（4xx 校验类）丢键防脏复用
-    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
+    if (signature && !normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
       releaseIdempotencyKey(signature);
     }
     throw normalized;

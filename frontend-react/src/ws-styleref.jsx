@@ -283,6 +283,36 @@ function WsStyleRef({ go }) {
     window.addEventListener("sr:books-changed", f);
     return () => window.removeEventListener("sr:books-changed", f);
   }, []);
+  /* 导入进度：页面挂着时失败只在面板里显示（不弹窗）；导入成功自动切到新书。 */
+  React.useEffect(() => {
+    SR_VIEW_MOUNTED = true;
+    const onImported = (event) => {
+      const id = event && event.detail && event.detail.bookId;
+      if (id) setBookId(id);
+    };
+    window.addEventListener("sr:book-imported", onImported);
+    return () => {
+      SR_VIEW_MOUNTED = false;
+      window.removeEventListener("sr:book-imported", onImported);
+    };
+  }, []);
+  /* 参考书活动：挂载时拉一次活动清单（刷新页面后续接在跑的抽取 / 合成），变化时重渲染
+     （头部按钮禁用、书库徽标「抽取中」）。 */
+  const [, setActPing] = useStSR(0);
+  React.useEffect(() => {
+    const f = () => setActPing((p) => p + 1);
+    window.addEventListener("sr:activity-changed", f);
+    srActivityStart();
+    return () => window.removeEventListener("sr:activity-changed", f);
+  }, []);
+  const extracting = book && book.real ? srActivityFor(book.id, "extract") : null;
+  const reclassifying = book && book.real ? (srActivityFor(book.id, "reclassify") || srActivityFor(book.id, "import")) : null;
+  const notReady = !!(book && book.real && book.rawStatus && book.rawStatus !== "ready");
+  const headerLocked = !!headerBusy || !!extracting || !!reclassifying || notReady;
+  const headerLockReason = extracting ? "正在后台抽取，完成后可再抽取"
+    : reclassifying ? "正在分类段落，完成后才能抽取"
+    : notReady ? "段落分类未完成：在左栏「参考书活动」里继续分类，或删除后重新导入"
+    : undefined;
 
   const busyRef = React.useRef(null);
   const runHeaderAction = (id) => {
@@ -338,6 +368,8 @@ function WsStyleRef({ go }) {
             <button className="btn btn-accent btn-sm" aria-label="导入参考书" onClick={() => setImportOpen(true)}><I.Plus size={13} /></button>
           </header>
 
+          <SrImportProgressPanel onOpenBook={setBookId} />
+
           <ul className="sr-book-list">
             {SR_BOOKS.map(b => (
               <li key={b.id} className="sr-book-item">
@@ -348,7 +380,7 @@ function WsStyleRef({ go }) {
                     <span className="sr-book-author">{b.author} · {(b.chars/10000).toFixed(1)} 万字</span>
                     <span className="sr-book-run">{b.run}</span>
                   </span>
-                  <SrBookState s={b.status} />
+                  <SrBookState s={srActivityFor(b.id, "extract") ? "extracting" : b.status} />
                 </button>
                 {b.real && (
                   <button
@@ -396,11 +428,15 @@ function WsStyleRef({ go }) {
               </div>
             </div>
             <div className="flex gap-2 items-center">
-              <button className="btn btn-quiet btn-sm" disabled={!!headerBusy} onClick={() => runHeaderAction("reclassify")}>
-                <span className={headerBusy === "reclassify" ? "sr-spin" : ""} style={{ display: "inline-flex" }}><I.Refresh size={13} /></span> {headerBusy === "reclassify" ? "重新分类中…" : "重新分类"}
+              <button className="btn btn-quiet btn-sm" data-testid="sr-header-reclassify" disabled={headerLocked} title={headerLockReason} onClick={() => runHeaderAction("reclassify")}>
+                <span className={headerBusy === "reclassify" || reclassifying ? "sr-spin" : ""} style={{ display: "inline-flex" }}><I.Refresh size={13} /></span> {reclassifying ? `分类中 ${srActivityView(reclassifying).percentText}` : headerBusy === "reclassify" ? "重新分类中…" : "重新分类"}
               </button>
-              <button className="btn btn-ghost btn-sm" disabled={!!headerBusy} onClick={() => runHeaderAction("rerun")}>
-                {headerBusy === "rerun" ? <><span className="sr-spin" style={{ display: "inline-flex" }}><I.Refresh size={13} /></span> 重跑抽取中…</> : "重跑抽取"}
+              <button className="btn btn-ghost btn-sm" data-testid="sr-header-rerun" disabled={headerLocked} title={headerLockReason} onClick={() => runHeaderAction("rerun")}>
+                {extracting
+                  ? <><span className="sr-spin" style={{ display: "inline-flex" }}><I.Refresh size={13} /></span> 抽取中 {srActivityView(extracting).percentText}</>
+                  : reclassifying ? "等待分类完成"
+                  : notReady ? "分类未完成"
+                  : headerBusy === "rerun" ? <><span className="sr-spin" style={{ display: "inline-flex" }}><I.Refresh size={13} /></span> 重跑抽取中…</> : "重跑抽取"}
               </button>
             </div>
           </header>
@@ -580,6 +616,9 @@ function SrBookState({ s }) {
   const map = {
     ready:      { tone: "sage",  label: "已就绪" },
     extracting: { tone: "gold",  label: "抽取中" },
+    importing:  { tone: "gold",  label: "分类中" },
+    cancelling: { tone: "slate", label: "取消中" },
+    failed:     { tone: "rose",  label: "未完成" },
     pending:    { tone: "slate", label: "等待" },
   };
   const m = map[s] || map.pending;
@@ -604,9 +643,61 @@ function SrOverview({ book, go }) {
   const dimCovered = deep && deep.dimCounts ? Object.keys(deep.dimCounts).length : 0;
   const runStatus = deep && deep.run ? deep.run.status : null;
   const runProgress = (deep && deep.run && deep.run.coverage_json && deep.run.coverage_json.progress) || null;
+  /* 正在跑的抽取（活动表）优先于缓存里的上一条 run：srPickLatestRun 偏好 done，重跑期间
+     不能让总览写着「抽取完成」。 */
+  const [, setActPing] = useStSR(0);
+  React.useEffect(() => {
+    const f = () => setActPing((p) => p + 1);
+    window.addEventListener("sr:activity-changed", f);
+    return () => window.removeEventListener("sr:activity-changed", f);
+  }, []);
+  const live = isRealBook ? srActivityFor(book.id, "extract") : null;
+  const liveView = live ? srActivityView(live) : null;
+  /* 段落分类（2026-09-15 严格 LLM 的后台任务）：在跑时显示进度，没完成时给「继续分类」。 */
+  const classifying = isRealBook ? (srActivityFor(book.id, "import") || srActivityFor(book.id, "reclassify")) : null;
+  const classifyView = classifying ? srActivityView(classifying) : null;
+  const rawStatus = isRealBook ? book.rawStatus : null;
+  const classifyIncomplete = !!(rawStatus && rawStatus !== "ready" && !classifying);
+  const [resumeBusy, setResumeBusy] = useStSR(false);
+  const onResume = async () => {
+    if (resumeBusy || !window.srResumeClassification) return;
+    setResumeBusy(true);
+    try { await window.srResumeClassification(book.id); }
+    catch (e) { window.alert("继续分类失败：" + ((e && e.message) || e)); }
+    finally { setResumeBusy(false); }
+  };
 
   return (
     <div className="sr-overview">
+      {(classifying || classifyIncomplete) && (
+        <div className="card" data-testid="sr-overview-classify">
+          <div className="card-head">
+            <div><div className="card-title">段落分类</div><div className="card-sub">{classifying ? "整本由 LLM 逐批分类（后台任务，可续跑）" : "上次分类没有完成"}</div></div>
+            <span className={`pill ${classifying ? "pill-gold" : "pill-rose"}`}><span className="pill-dot" />{classifying ? `分类中 ${classifyView.percentText}` : rawStatus === "cancelling" ? "取消中" : "未完成"}</span>
+          </div>
+          {classifying ? (
+            <div className="sr-ov-live">
+              <div className="sr-import-bar" role="progressbar" aria-label="段落分类进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={classifyView.percent}>
+                <span className="sr-import-bar-fill" style={{ width: `${classifyView.percent}%` }} />
+              </div>
+              <div className="sr-import-meta">{classifyView.detail}</div>
+              <p className="text-xs text-muted" style={{ margin: "8px 0 0" }}>分类完成后才能抽取；可在左栏「参考书活动」里取消。</p>
+            </div>
+          ) : (
+            <div className="sr-ov-live">
+              <p className="text-sm" style={{ margin: "0 0 10px" }}>
+                {(book.classification && book.classification.error && book.classification.error.code === "STYLE_REFERENCE_IMPORT_CANCELLED")
+                  ? "分类被取消。"
+                  : `分类失败${book.classification && book.classification.error ? `：${book.classification.error.message || ""}［${book.classification.error.code || ""}］` : "。"}`}
+                {book.classification && book.classification.batches_total ? ` 已完成 ${book.classification.batches_done}/${book.classification.batches_total} 批，续跑只补剩下的。` : ""}
+              </p>
+              <button type="button" className="btn btn-accent btn-sm" data-testid="sr-overview-resume" disabled={resumeBusy} onClick={onResume}>
+                {resumeBusy ? "启动中…" : "继续分类"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="sr-ov-grid">
         <div className="card sr-ov-metrics">
           <div className="card-head">
@@ -647,7 +738,9 @@ function SrOverview({ book, go }) {
             <ul className="meta-rows">
               <li><span>锚定集</span><strong>{calib ? `前 ${calib.anchor_size} 段 · 强模型` : "前 200 段 · 强模型"}</strong></li>
               <li><span>快模型一致率</span><strong className="tab-num">{calib && calib.fast_model_agreement != null ? Number(calib.fast_model_agreement).toFixed(2) : "—"}</strong></li>
-              <li><span>是否降级</span><strong style={{color: calib && calib.fallback_to_strong ? "var(--gold)" : "var(--sage)"}}>{calib ? (calib.fallback_to_strong ? "是" : "否") : "否"}</strong></li>
+              <li><span>余段改走强模型</span><strong style={{color: calib && calib.fallback_to_strong ? "var(--gold)" : "var(--sage)"}}>{calib ? (calib.fallback_to_strong ? "是" : "否") : "否"}</strong></li>
+              <li><span>锚定集之外</span><strong>{calib ? srRestClassifierLabel(calib) : "—"}</strong></li>
+              <li><span>LLM 分类段数</span><strong className="tab-num">{calib && calib.llm_classified_paragraphs != null ? Number(calib.llm_classified_paragraphs).toLocaleString() : "—"}</strong></li>
             </ul>
           </div>
         </div>
@@ -666,7 +759,7 @@ function SrOverview({ book, go }) {
             </div>
           ))}
           {dist.length === 0 && (
-            <div className="text-xs text-muted" style={{padding:"6px 2px"}}>暂无段型分布——导入后自动分类，启用 LLM 后可在右上「重新分类」提升精度。</div>
+            <div className="text-xs text-muted" style={{padding:"6px 2px"}}>暂无段型分布——段落分类（整本由 LLM 逐批完成）结束后显示。</div>
           )}
         </div>
       </div>
@@ -695,13 +788,21 @@ function SrOverview({ book, go }) {
       ) : (
         <div className="card">
           <div className="card-head">
-            <div><div className="card-title">抽取进展</div><div className="card-sub">最近一次抽取 run</div></div>
-            <span className={`pill ${runStatus === "done" ? "pill-sage" : runStatus === "running" ? "pill-gold" : ""}`}>
+            <div><div className="card-title">抽取进展</div><div className="card-sub">{live ? "正在后台抽取" : "最近一次抽取 run"}</div></div>
+            <span className={`pill ${live ? "pill-gold" : runStatus === "done" ? "pill-sage" : runStatus === "running" ? "pill-gold" : ""}`}>
               <span className="pill-dot" />
-              {runStatus === "done" ? "抽取完成" : runStatus === "running" ? "抽取中" : runStatus === "failed" ? "抽取失败" : "尚未抽取"}
+              {live ? `抽取中 ${liveView.percentText}` : runStatus === "done" ? "抽取完成" : runStatus === "running" ? "抽取中" : runStatus === "failed" ? "抽取失败" : "尚未抽取"}
             </span>
           </div>
-          {runStatus ? (
+          {live ? (
+            <div className="sr-ov-live" data-testid="sr-overview-live">
+              <div className="sr-import-bar" role="progressbar" aria-label="后台抽取进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={liveView.percent}>
+                <span className="sr-import-bar-fill" style={{ width: `${liveView.percent}%` }} />
+              </div>
+              <div className="sr-import-meta">{liveView.detail}</div>
+              <p className="text-xs text-muted" style={{ margin: "8px 0 0" }}>可在左栏「参考书活动」里取消；完成后维度矩阵自动刷新。</p>
+            </div>
+          ) : runStatus ? (
             <ul className="meta-rows">
               <li><span>覆盖维度</span><strong className="tab-num">{dimCovered} / 16</strong></li>
               {runProgress && <li><span>层进度</span><strong className="tab-num">{runProgress.layers_done ?? 0} / {runProgress.layers_total ?? 4}{runProgress.current_layer ? ` · ${runProgress.current_layer}` : ""}</strong></li>}
@@ -750,6 +851,19 @@ function srAdaptFinding(f) {
   };
 }
 
+/* 矩阵空态的引导：先看这本书正在跑什么（抽取 / 分类），再看书的状态，最后才是「去点重跑抽取」。 */
+function srMatrixEmptyHint(book) {
+  const running = book && book.real ? srActivityFor(book.id) : null;
+  if (running) {
+    const v = srActivityView(running);
+    return `正在${SR_ACTIVITY_KIND_LABEL[running.kind] || running.kind}：${v.detail}。完成后此矩阵按真实 findings 点亮，左栏「参考书活动」可看进度。`;
+  }
+  const raw = book && book.rawStatus;
+  if (raw === "failed") return "上次段落分类没有完成（失败或已取消）：在左栏「参考书活动」里「继续分类」，或删除后重新导入；分类完成前不能抽取。";
+  if (raw === "ingesting" || raw === "cancelling") return "这本书的段落分类还在进行：等它完成后再抽取（左栏「参考书活动」可看进度）。";
+  return "这本书还没有抽取产物——点右上「重跑抽取」启动后台抽取（需已接入 LLM）。完成后此矩阵按真实 findings 点亮。";
+}
+
 function SrMatrix({ go, book }) {
   const deep = useSrDeep(book);
   const isRealBook = !!(book && book.real);
@@ -761,6 +875,12 @@ function SrMatrix({ go, book }) {
   const [kindFilter, setKindFilter] = useStSR("all");
   const [hover, setHover] = useStSR(null);
   const [synthBusy, setSynthBusy] = useStSR(false);
+  const [, setActPingM] = useStSR(0);
+  React.useEffect(() => {
+    const f = () => setActPingM((p) => p + 1);
+    window.addEventListener("sr:activity-changed", f);
+    return () => window.removeEventListener("sr:activity-changed", f);
+  }, []);
 
   // 有效单元数据：真模式叠加 dimCounts + input_assessment(skip)
   const cellData = (layerId, sub) => {
@@ -855,9 +975,9 @@ function SrMatrix({ go, book }) {
       `}</style>
       <div className="sr-matrix-side">
         {realEmpty && (
-          <div className="sr-fewshot-warn" style={{marginBottom: 12}}>
+          <div className="sr-fewshot-warn" style={{marginBottom: 12}} data-testid="sr-matrix-empty">
             <I.Info size={13} />
-            <span>这本书还没有抽取产物——点右上「重跑抽取」启动后台抽取（需启用 LLM）。完成后此矩阵按真实 findings 点亮。</span>
+            <span>{srMatrixEmptyHint(book)}</span>
           </div>
         )}
         <div className="sr-matrix-legend">
@@ -1276,8 +1396,8 @@ function SrPreview({ profileId }) {
   const [err, setErr] = useStSR(null);
   const run = React.useCallback(() => {
     if (!profileId) return;
-    setLoading(true); setErr(null);
-    window.srPreviewSamples(profileId)
+    setLoading(true); setErr(null); setSamples([]);
+    window.srPreviewSamples(profileId, { onSample: (list) => setSamples(list) })
       .then(r => setSamples((r && r.samples) || []))
       .catch(e => setErr(e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED")
         ? "预览生成需要启用 LLM（系统设置 → 模型与接入）。"
@@ -1293,9 +1413,9 @@ function SrPreview({ profileId }) {
   return (
     <div className="sr-preview">
       <div className="sr-preview-head">
-        <span className="text-muted text-sm">{profileId ? "生成 3 段示例 + 自跑回测（sync_only）" : "apply 前自动生成 3 段示例 + 自跑回测"}</span>
+        <span className="text-muted text-sm">{profileId ? "按段型逐张生成 3 段示例 + 自跑回测（sync_only）" : "apply 前自动生成 3 段示例 + 自跑回测"}</span>
         <button className="btn btn-quiet btn-sm" disabled={loading || !profileId} onClick={run}>
-          {loading ? <><span className="sr-spin" style={{display:"inline-flex"}}><I.Refresh size={13} /></span> 生成中…</> : <><I.Refresh size={13} /> 重新生成</>}
+          {loading ? <><span className="sr-spin" style={{display:"inline-flex"}}><I.Refresh size={13} /></span> 生成中 {(samples || []).length}/3…</> : <><I.Refresh size={13} /> 重新生成</>}
         </button>
       </div>
       {err && <div className="sr-fewshot-warn"><I.Info size={13} /><span>{err}</span></div>}
@@ -2117,10 +2237,22 @@ function SrBundleReal({ preview, previewErr }) {
    ========================================================== */
 let SR_REAL = false;
 
+/* 后端 book.status → 书库徽标：ready / ingesting（分类中，2026-09-15 严格 LLM 的后台任务）/
+   cancelling / failed；「抽取中」由活动表叠加（srActivityFor）。 */
 function srMapStatus(s) {
   if (s === "ready") return "ready";
+  if (s === "ingesting") return "importing";
+  if (s === "cancelling") return "cancelling";
+  if (s === "failed") return "failed";
   if (/extract|run/i.test(s || "")) return "extracting";
   return "pending";
+}
+function srRunLabel(status) {
+  if (status === "ready") return "已导入 · 待抽取";
+  if (status === "ingesting") return "段落分类中";
+  if (status === "cancelling") return "正在取消分类";
+  if (status === "failed") return "分类未完成";
+  return status;
 }
 
 async function srSyncBooks() {
@@ -2139,8 +2271,10 @@ async function srSyncBooks() {
     author: b.author_label || "未署名",
     chars: b.total_chars || 0,
     status: srMapStatus(b.status),
+    rawStatus: b.status,
+    classification: b.classification || null,
     profiles: 0,
-    run: b.status === "ready" ? "已导入 · 待抽取" : b.status,
+    run: srRunLabel(b.status),
     color: colors[i % colors.length],
     real: true,
   }));
@@ -2159,7 +2293,380 @@ function srBuildRightsDeclaration(cloudPolicy, rights) {
   };
 }
 
-/* 导入参考书：文件选择 → POST import-upload（multipart，带幂等键 + 权属声明） */
+/* 锚定集之外的段落是怎么分类的（2026-09-15 严格 LLM：每一段都是 LLM 分的，余段按锚定校准
+   结果走快模型或强模型；书不超过锚定集时没有余段）。老书若还有启发式份额，如实标出。 */
+function srRestClassifierLabel(calib) {
+  const heuristicCount = Number(calib.heuristic_classified_paragraphs || 0);
+  if (calib.rest_classifier === "heuristic") {
+    return `${heuristicCount.toLocaleString()} 段启发式（旧版导入；重新分类可全部交给 LLM）`;
+  }
+  if (calib.rest_classifier === "strong_llm") return "强模型逐批";
+  if (calib.rest_classifier === "fast_llm") return "快模型逐批";
+  if (!calib.rest_classifier) return "无余段（整本在锚定集内）";
+  return String(calib.rest_classifier);
+}
+
+/* ---- 参考书活动（2026-09-15，从「导入进度」扩成整个模块的活动表）----
+   风格参考里所有会让人等的操作共用一张活动表 SR_ACTIVITY（key → 条目），左栏「参考书活动」
+   面板据此画进度条：
+   - 导入：srRunImport 发请求前登记本地条目，POST 挂起期间每秒轮询
+     GET …/imports/{key}/progress（404 = 服务端尚未登记或进程已换，不当失败，以 POST 结果为准）；
+   - 抽取 / 合成画像 / 重新分类 / 应用画像建索引 / 回测：由 GET …/activity 一个轮询喂
+     （服务端把进程内登记簿与库里的 durable 行合成一份），页面刷新后重新挂载时也能续接；
+   - 示例预览：前端按段型逐张请求，本地条目记 n/3。
+   条目到达终态时按 kind 刷新对应缓存（深层数据 / 书库）；完成 / 失败都只在面板里显示，不再弹 alert。
+   owned=true 的条目由发起它的调用方掌握终态（POST 结果为准），服务端快照只补阶段 / 百分比。 */
+const SR_ACTIVITY = new Map();
+const SR_IMPORT_POLL_MS = 1000;
+const SR_ACTIVITY_POLL_MS = 1500;
+const SR_ACTIVITY_KIND_LABEL = {
+  import: "导入", reclassify: "重新分类", extract: "抽取", synthesize: "合成画像",
+  rag_index: "应用画像 · 建索引", validate: "回测", preview: "示例预览",
+};
+const SR_ACTIVITY_DONE_LABEL = {
+  import: "已导入", reclassify: "已重新分类", extract: "抽取完成", synthesize: "画像已合成",
+  rag_index: "索引已就绪", validate: "回测完成", preview: "示例已生成",
+};
+const SR_ACTIVITY_REFRESH_DEEP = new Set(["import", "extract", "synthesize", "reclassify", "rag_index", "validate"]);
+let SR_VIEW_MOUNTED = false;
+
+function srActivityEntries() {
+  return Array.from(SR_ACTIVITY.values()).sort((a, b) => b.startedAt - a.startedAt);
+}
+const srImportEntries = srActivityEntries;
+function srActivityEmit() {
+  window.dispatchEvent(new CustomEvent("sr:activity-changed"));
+}
+function srActivitySet(key, patch) {
+  const current = SR_ACTIVITY.get(key) || { key, kind: "import", status: "running", startedAt: Date.now() };
+  const next = { ...current, ...patch, updatedAt: Date.now() };
+  SR_ACTIVITY.set(key, next);
+  srActivityEmit();
+  return next;
+}
+const srImportSet = srActivitySet;
+function srActivityDismiss(key) {
+  if (!SR_ACTIVITY.delete(key)) return;
+  srActivityEmit();
+}
+const srImportDismiss = srActivityDismiss;
+/* 某本书正在跑的某类操作（头部按钮禁用、书库徽标、总览「进行中」块据此判断） */
+function srActivityFor(bookId, kind = null) {
+  if (!bookId) return null;
+  for (const e of SR_ACTIVITY.values()) {
+    if (e.status === "running" && e.bookId === bookId && (!kind || e.kind === kind)) return e;
+  }
+  return null;
+}
+function srActivityAnyRunning() {
+  for (const e of SR_ACTIVITY.values()) if (e.status === "running") return true;
+  return false;
+}
+function srActivityKey(prefix) {
+  return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+function srImportKey() {
+  return srActivityKey("sr-import");
+}
+function srActivityErrorText(e) {
+  if (!e) return "未知错误";
+  const message = e.message || String(e);
+  return e.code && !message.includes(e.code) ? `${message}［${e.code}］` : message;
+}
+function srBookTitle(bookId) {
+  const book = bookId ? SR_BOOKS.find((b) => b.id === bookId) : null;
+  return book ? book.title : null;
+}
+function srFormatDuration(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/* 纯函数：一条活动记录（本地状态 + 最近一次服务端快照）→ 面板显示的百分比与文案。
+   导入条目的文案与 2026-09-15 导入进度条的契约一致；其余 kind 走通用的「阶段 · 步骤 · 已用 · 预计」。 */
+function srActivityView(entry, now = Date.now()) {
+  const kind = (entry && entry.kind) || "import";
+  const server = (entry && entry.server) || null;
+  const elapsed = Math.max(0, (now - ((entry && entry.startedAt) || now)) / 1000);
+  let percent = 0;
+  if (entry.status === "succeeded") percent = 100;
+  else if (server) percent = Math.max(0, Math.min(99, Math.round(Number(server.percent) || 0)));
+  else if (entry.percent != null) percent = Math.max(0, Math.min(99, Math.round(Number(entry.percent) || 0)));
+  const percentText = `${percent}%`;
+  const used = `已用 ${srFormatDuration(elapsed)}`;
+
+  if (kind === "import") {
+    if (entry.status === "succeeded") {
+      const chars = entry.chars ? `${Number(entry.chars).toLocaleString()} 字` : null;
+      const paras = entry.paragraphs != null ? `${Number(entry.paragraphs).toLocaleString()} 段` : null;
+      return { percent, percentText, detail: ["已导入", chars, paras, `用时 ${srFormatDuration(elapsed)}`].filter(Boolean).join(" · ") };
+    }
+    if (entry.status === "failed") {
+      return { percent, percentText, detail: `导入失败：${entry.error || "未知错误"}` };
+    }
+    if (!server) {
+      return { percent, percentText, detail: `上传中 · ${used}` };
+    }
+    const classify = server.classify || {};
+    const parts = [server.phase_label || server.phase || "处理中"];
+    if (server.phase === "classify") {
+      // 2026-09-15 严格 LLM：产品路径只有 mode="llm"；「启发式」只会来自离线夹具，如实标出
+      if (classify.batches_total > 0) parts[0] = `段落分类 ${classify.batches_done ?? 0}/${classify.batches_total} 批`;
+      else if (classify.mode && classify.mode !== "llm") parts[0] = "段落分类（启发式）";
+    }
+    parts.push(used);
+    if (server.phase === "classify" && server.eta_seconds != null) parts.push(`预计还需 ${srFormatDuration(server.eta_seconds)}`);
+    return { percent, percentText, detail: parts.join(" · ") };
+  }
+
+  const kindLabel = SR_ACTIVITY_KIND_LABEL[kind] || kind;
+  if (entry.status === "succeeded") {
+    const parts = [SR_ACTIVITY_DONE_LABEL[kind] || "完成"];
+    const result = (server && server.result) || entry.result || null;
+    if (kind === "validate" && result && result.verdict) parts.push(`结论 ${result.verdict}`);
+    if (kind === "extract" && server && server.llm_calls) parts.push(`模型调用 ${server.llm_calls} 次`);
+    parts.push(`用时 ${srFormatDuration(elapsed)}`);
+    return { percent, percentText, detail: parts.join(" · ") };
+  }
+  if (entry.status === "failed") {
+    return { percent, percentText, detail: `${kindLabel}失败：${entry.error || "未知错误"}` };
+  }
+  if (entry.status === "cancelled") {
+    return { percent, percentText, detail: `已取消 · 用时 ${srFormatDuration(elapsed)}` };
+  }
+  if (!server) {
+    return { percent, percentText, detail: `${entry.phase === "start" ? "启动中" : "处理中"} · ${used}` };
+  }
+  const label = server.phase_label || server.phase || "处理中";
+  const steps = server.steps && Number(server.steps.total) > 0 ? server.steps : null;
+  const parts = [];
+  if (kind === "extract") {
+    parts.push(steps ? `${label} · ${steps.label ? `${steps.label} · ` : ""}第 ${Math.min(Number(steps.done) + 1, Number(steps.total))}/${steps.total} 维` : label);
+  } else if (kind === "reclassify") {
+    const classify = server.classify || {};
+    if (server.phase === "classify" && classify.batches_total > 0) parts.push(`段落分类 ${classify.batches_done ?? 0}/${classify.batches_total} 批`);
+    else if (server.phase === "classify" && classify.mode && classify.mode !== "llm") parts.push("段落分类（启发式）");
+    else parts.push(label);
+  } else if (steps) {
+    parts.push(`${label} ${steps.done}/${steps.total}${steps.label ? ` ${steps.label}` : ""}`);
+  } else {
+    parts.push(label);
+  }
+  parts.push(used);
+  if (server.eta_seconds != null) parts.push(`预计还需 ${srFormatDuration(server.eta_seconds)}`);
+  if (kind === "extract" && server.llm_calls) {
+    parts.push(`模型调用 ${server.llm_calls} 次${server.retries ? `（含补抽 ${server.retries} 次）` : ""}`);
+  }
+  return { percent, percentText, detail: parts.join(" · ") };
+}
+const srImportProgressView = srActivityView;
+
+/* 终态副作用：按 kind 刷新对应缓存，再广播 sr:activity-finished（页面据此可做提示）。 */
+async function srActivityFinished(entry) {
+  try {
+    if (SR_ACTIVITY_REFRESH_DEEP.has(entry.kind) && entry.bookId) await srLoadDeep(entry.bookId, { force: true });
+    if (entry.kind === "extract" || entry.kind === "import") await srSyncBooks();
+  } catch (e) { /* 刷新失败不影响面板本身 */ }
+  window.dispatchEvent(new CustomEvent("sr:activity-finished", { detail: entry }));
+}
+
+/* 把服务端活动清单合进本地表：新条目直接收下；已有条目更新快照；从 running 到终态的那一次
+   触发 srActivityFinished。owned 条目（本页发起并 await 着 POST 的导入 / 合成 / 重新分类）只在
+   本地仍 running 时补服务端阶段，状态由 POST 结果决定。 */
+function srActivityApply(items) {
+  const finished = [];
+  for (const item of items || []) {
+    if (!item || !item.key) continue;
+    const local = SR_ACTIVITY.get(item.key) || null;
+    const status = item.status || "running";
+    if (local && local.owned) {
+      if (local.status === "running") srActivitySet(item.key, { server: item, phase: item.phase, percent: item.percent });
+      continue;
+    }
+    const prevStatus = local ? local.status : null;
+    const startedAt = (local && local.startedAt) || (item.started_at ? Date.parse(item.started_at) : NaN) || Date.now();
+    const next = srActivitySet(item.key, {
+      kind: item.kind || (local && local.kind) || "import",
+      title: item.title || (local && local.title) || null,
+      bookId: item.book_id || (local && local.bookId) || null,
+      targetId: item.target_id || (local && local.targetId) || null,
+      status,
+      phase: item.phase,
+      percent: item.percent,
+      server: item,
+      error: item.error ? `${item.error.message || ""}${item.error.code ? `［${item.error.code}］` : ""}` : ((local && local.error) || null),
+      startedAt,
+      local: false,
+    });
+    if (prevStatus === "running" && status !== "running") finished.push(next);
+  }
+  finished.forEach((entry) => { srActivityFinished(entry); });
+  return finished;
+}
+
+let srActivityTimer = null;
+let srActivityBusy = false;
+function srActivitySchedule(ms = SR_ACTIVITY_POLL_MS) {
+  clearTimeout(srActivityTimer);
+  srActivityTimer = setTimeout(srActivityTick, ms);
+}
+async function srActivityTick() {
+  srActivityTimer = null;
+  if (srActivityBusy) { srActivitySchedule(); return; }
+  srActivityBusy = true;
+  try {
+    const data = await apiGet("/api/v2/style-reference/activity");
+    srActivityApply(data && Array.isArray(data.items) ? data.items : []);
+  } catch (e) { /* 网络抖动下一轮再试 */ }
+  finally { srActivityBusy = false; }
+  if (srActivityAnyRunning()) srActivitySchedule();
+}
+/* 有操作开始 / 页面挂载时调用：立刻拉一次活动清单，有在跑的就持续轮询，空了自动停。 */
+function srActivityStart() {
+  if (srActivityTimer != null) return;
+  srActivitySchedule(0);
+}
+function srActivityStop() {
+  clearTimeout(srActivityTimer);
+  srActivityTimer = null;
+}
+
+/* 真正发请求的一段（可单测）：登记本地进度 → 轮询服务端进度 → POST → 终态 + 刷新书库。
+   成功时广播 sr:book-imported（页面据此切到新书），失败时把原因写进面板并向调用方抛出。 */
+async function srRunImport({ file, title, cloudPolicy, rightsDeclaration = null, importKey = srImportKey(), pollMs = SR_IMPORT_POLL_MS }) {
+  srImportSet(importKey, { kind: "import", title, status: "running", phase: "upload", percent: 0, server: null, error: null, bookId: null, chars: null, paragraphs: null, owned: true, local: true });
+  let stopped = false;
+  let pollTimer = null;
+  const pollTick = async () => {
+    if (stopped) return;
+    try {
+      const data = await apiGet(`/api/v2/style-reference/imports/${encodeURIComponent(importKey)}/progress`);
+      const server = data && data.progress;
+      if (server && !stopped) srImportSet(importKey, { server, phase: server.phase });
+    } catch (e) { /* 404 = 尚未登记 / 进程已换；网络抖动下一轮再试 */ }
+    if (!stopped) pollTimer = setTimeout(pollTick, pollMs);
+  };
+  pollTimer = setTimeout(pollTick, pollMs);
+  const stop = () => { stopped = true; clearTimeout(pollTimer); };
+  try {
+    const fd = new FormData();
+    fd.append("file", file, file.name);
+    fd.append("title", title);
+    // 策略必须来自作者在导入前的显式选择；默认 local_only，绝不静默放宽出域范围。
+    fd.append("cloud_policy", cloudPolicy);
+    // 后端以 JSON 串的 Form 字段接收声明（api/routes/style_reference.py import_book_upload）。
+    if (rightsDeclaration) fd.append("rights_declaration", JSON.stringify(rightsDeclaration));
+    const headers = { "X-Idempotency-Key": importKey, "X-Operator-Ref": getOperatorRef() };
+    const accessToken = getRemoteAccessToken();
+    if (accessToken) headers["X-Novel-Access-Token"] = accessToken;
+    const res = await fetch(buildUrl("/api/v2/style-reference/books/import-upload"), { method: "POST", headers, body: fd });
+    const body = await res.json();
+    if (!body.ok) {
+      // 原样透出后端信封里的 message（含 STYLE_REFERENCE_SEND_RIGHTS_* 的引导语），附 code 便于对照日志。
+      const err = (body && body.error) || {};
+      const message = err.message || `导入失败（HTTP ${res.status}）`;
+      throw new Error(err.code ? `${message}［${err.code}］` : message);
+    }
+    stop();
+    const data = body.data || {};
+    const book = data.book || {};
+    if (book.status === "ingesting") {
+      // 2026-09-15 严格 LLM：请求只做了准备工作，整本 LLM 分类在后台任务里逐批跑（几分钟到几小时）；
+      // 条目交给活动清单继续跟（同一个键），完成时 srActivityFinished 刷新书库与深层数据。
+      srImportSet(importKey, { status: "running", phase: "classify", bookId: book.book_id || null, chars: book.total_chars || null, paragraphs: data.paragraphs_count ?? null, owned: false, local: false });
+      await srSyncBooks();
+      window.dispatchEvent(new CustomEvent("sr:book-imported", { detail: { bookId: book.book_id || null, importKey } }));
+      srActivityStart();
+      return book;
+    }
+    srImportSet(importKey, { status: "succeeded", phase: "done", percent: 100, bookId: book.book_id || null, chars: book.total_chars || null, paragraphs: data.paragraphs_count ?? null });
+    await srSyncBooks();
+    window.dispatchEvent(new CustomEvent("sr:book-imported", { detail: { bookId: book.book_id || null, importKey } }));
+    return book;
+  } catch (e) {
+    stop();
+    srImportSet(importKey, { status: "failed", error: (e && e.message) || String(e) });
+    throw e;
+  }
+}
+
+/* 左栏「参考书活动」：每条操作一根进度条；在跑时每秒重绘（已用时间）；抽取可取消，终态给「打开 / 关闭」。 */
+function SrActivityPanel({ onOpenBook }) {
+  const [, bump] = useStSR(0);
+  const [cancelBusy, setCancelBusy] = useStSR(null);
+  React.useEffect(() => {
+    const f = () => bump((x) => x + 1);
+    window.addEventListener("sr:activity-changed", f);
+    return () => window.removeEventListener("sr:activity-changed", f);
+  }, []);
+  const entries = srActivityEntries();
+  const anyRunning = entries.some((e) => e.status === "running");
+  React.useEffect(() => {
+    if (!anyRunning) return undefined;
+    const timer = setInterval(() => bump((x) => x + 1), 1000);
+    return () => clearInterval(timer);
+  }, [anyRunning]);
+  if (!entries.length) return null;
+  const cancel = async (e) => {
+    setCancelBusy(e.key);
+    try {
+      if (e.kind === "extract") await srCancelRun(e.targetId);
+      else await srCancelClassification(e.bookId);
+    } catch (err) { window.alert("取消失败：" + ((err && err.message) || err)); }
+    finally { setCancelBusy(null); }
+  };
+  const resume = async (e) => {
+    setCancelBusy(e.key);
+    try { await srResumeClassification(e.bookId); srActivityDismiss(e.key); }
+    catch (err) { window.alert("继续分类失败：" + ((err && err.message) || err)); }
+    finally { setCancelBusy(null); }
+  };
+  return (
+    <div className="sr-import-progress" data-testid="sr-import-progress" aria-live="polite">
+      {entries.map((e) => {
+        const v = srActivityView(e);
+        const kindLabel = SR_ACTIVITY_KIND_LABEL[e.kind] || e.kind;
+        const title = e.title ? `《${e.title}》` : "";
+        const canCancel = e.status === "running" && (
+          (e.kind === "extract" && !!e.targetId)
+          || ((e.kind === "import" || e.kind === "reclassify") && !!e.bookId && !!(e.server && e.server.cancellable))
+        );
+        const canResume = e.status !== "running" && (e.kind === "import" || e.kind === "reclassify") && !!e.bookId && !!(e.server && e.server.resumable);
+        return (
+          <div key={e.key} className={`sr-import-item is-${e.status}`} data-import-key={e.key} data-import-status={e.status} data-activity-kind={e.kind}>
+            <div className="sr-import-row">
+              <span className="sr-import-title text-serif"><span className="sr-activity-kind">{kindLabel}</span>{title}</span>
+              <span className="sr-import-pct tab-num">{v.percentText}</span>
+            </div>
+            <div className="sr-import-bar" role="progressbar" aria-label={`${kindLabel}${title}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={v.percent}>
+              <span className="sr-import-bar-fill" style={{ width: `${v.percent}%` }} />
+            </div>
+            <div className="sr-import-meta">{v.detail}</div>
+            {(e.status !== "running" || canCancel) && (
+              <div className="sr-import-actions">
+                {canCancel && (
+                  <button type="button" className="btn btn-ghost btn-sm" data-testid="sr-activity-cancel" disabled={cancelBusy === e.key} onClick={() => cancel(e)}>取消</button>
+                )}
+                {canResume && (
+                  <button type="button" className="btn btn-accent btn-sm" data-testid="sr-activity-resume" disabled={cancelBusy === e.key} onClick={() => resume(e)}>继续分类</button>
+                )}
+                {e.status === "succeeded" && e.kind === "import" && e.bookId && onOpenBook && (
+                  <button type="button" className="btn btn-quiet btn-sm" onClick={() => { onOpenBook(e.bookId); srActivityDismiss(e.key); }}>打开</button>
+                )}
+                {e.status !== "running" && (
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => srActivityDismiss(e.key)}>关闭</button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+const SrImportProgressPanel = SrActivityPanel;
+
+/* 导入参考书：文件选择 → 书名 → srRunImport（multipart，带幂等键 + 权属声明，进度在左栏面板） */
 function srImportBook(cloudPolicy = "local_only", rights = null) {
   if (!SR_CLOUD_POLICIES.some((item) => item.id === cloudPolicy)) {
     throw new Error("未知的参考书数据策略");
@@ -2179,66 +2686,64 @@ function srImportBook(cloudPolicy = "local_only", rights = null) {
     const title = (window.prompt("书名（用于书库显示）", f.name.replace(/\.[^.]+$/, "")) || "").trim();
     if (!title) return;
     try {
-      const fd = new FormData();
-      fd.append("file", f, f.name);
-      fd.append("title", title);
-      // 策略必须来自作者在导入前的显式选择；默认 local_only，绝不静默放宽出域范围。
-      fd.append("cloud_policy", cloudPolicy);
-      // 后端以 JSON 串的 Form 字段接收声明（api/routes/style_reference.py import_book_upload）。
-      if (rightsDeclaration) fd.append("rights_declaration", JSON.stringify(rightsDeclaration));
-      const headers = {
-        "X-Idempotency-Key": "sr-import-" + Date.now().toString(36),
-        "X-Operator-Ref": getOperatorRef(),
-      };
-      const accessToken = getRemoteAccessToken();
-      if (accessToken) headers["X-Novel-Access-Token"] = accessToken;
-      const res = await fetch(buildUrl("/api/v2/style-reference/books/import-upload"), {
-        method: "POST",
-        headers,
-        body: fd,
-      });
-      const body = await res.json();
-      if (!body.ok) {
-        // 原样透出后端信封里的 message（含 STYLE_REFERENCE_SEND_RIGHTS_* 的引导语），附 code 便于对照日志。
-        const err = (body && body.error) || {};
-        const message = err.message || `导入失败（HTTP ${res.status}）`;
-        throw new Error(err.code ? `${message}［${err.code}］` : message);
-      }
-      await srSyncBooks();
-      window.alert(`已导入《${title}》（${(((body.data || {}).book || {}).total_chars || 0).toLocaleString()} 字）。`);
-    } catch (e) { window.alert("导入失败：" + (e.message || e)); }
+      await srRunImport({ file: f, title, cloudPolicy, rightsDeclaration });
+    } catch (e) {
+      // 进度面板已显示失败原因；风格参考页没挂着（作者已切走）时用弹窗兜底。
+      if (!SR_VIEW_MOUNTED) window.alert("导入失败：" + ((e && e.message) || e));
+    }
   };
   input.click();
 }
 
-/* 头部动作（真实书）：重跑抽取 / 重新分类。LLM 未启用时给明确引导。 */
+/* 头部动作（真实书）：重跑抽取 / 重新分类。LLM 未启用时给明确引导。
+   两者的进度都在左栏「参考书活动」面板：抽取是后台 run（服务端按子维推进，可取消），
+   重新分类是同步 POST（按幂等键登记阶段，POST 结果为准）；完成不再弹窗。 */
 async function srBookAction(action, bookId, opts = {}) {
   try {
     if (action === "rerun") {
-      // 后台模式：立即返回 run_id，按 coverage_json.progress 轮询(2.5s),
-      // 全 16 维抽取可达数分钟,同步等待会撞 HTTP 超时
       const res = await apiPost(`/api/v2/style-reference/books/${bookId}/runs`, { background: true, force: !!opts.force });
       const runId = res && res.run_id;
-      window.alert("抽取已在后台启动（按层推进），完成后会提示。");
       if (runId) srPollRun(runId, bookId);
     } else if (action === "reclassify") {
-      await apiPost(`/api/v2/style-reference/books/${bookId}/reclassify`, {});
-      // 重分类改写 stats_json 并清空派生数据 → 概览 / 矩阵 / 画像页必须立即重读
+      const key = srActivityKey("sr-reclassify");
+      srActivitySet(key, { kind: "reclassify", title: srBookTitle(bookId), bookId, status: "running", phase: "start", percent: 0, server: null, error: null, owned: true, local: true });
+      srActivityStart();
+      try {
+        await apiPost(`/api/v2/style-reference/books/${bookId}/reclassify`, {}, { idempotencyKey: key });
+      } catch (e) {
+        srActivitySet(key, { status: "failed", error: srActivityErrorText(e) });
+        throw e;
+      }
+      // 2026-09-15 严格 LLM：请求只清了派生数据并把书置 ingesting，整本 LLM 分类在后台任务里逐批跑；
+      // 条目交给活动清单继续跟（同一个键），完成时 srActivityFinished 重读深层数据。
+      srActivitySet(key, { phase: "classify", owned: false, local: false });
+      srActivityStart();
+      // 派生数据已清空 → 概览 / 矩阵 / 画像页立即重读（矩阵回到空态）
       await srLoadDeep(bookId, { force: true });
-      window.alert("已重新分类段落。");
     }
   } catch (e) {
-    if (e && e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED") {
-      window.alert("这本书的云端策略是「仅本地」，风格抽取需要把段落送 LLM 分析。请删除后以「按段落送云」策略重新导入。");
-    } else if (e && e.code === "STYLE_REFERENCE_INPUT_TOO_SMALL" && !opts.force) {
+    if (e && e.code === "STYLE_REFERENCE_INPUT_TOO_SMALL" && !opts.force) {
       // §6.4 输入量门槛：全部分析层被评估为 skip。给一键强制重试（明知样本少仍要抽）
       const goOn = window.confirm(
         "这本书字数太少，按输入量门槛所有分析层都被评估为「跳过」，抽取不会执行。\n\n" +
         "建议补足语料后重新导入；也可以点「确定」强制抽取（样本过少时画像可信度很低）。"
       );
       if (goOn) return srBookAction("rerun", bookId, { force: true });
+    } else if (e && e.code === "STYLE_REFERENCE_RUN_ALREADY_ACTIVE") {
+      window.alert("这本书已有正在进行的抽取，请等它完成或先在左栏「参考书活动」里取消。");
+      srActivityStart();
+    } else if (e && e.code === "STYLE_REFERENCE_CLASSIFICATION_ALREADY_ACTIVE") {
+      window.alert("这本书正在分类，请等它完成或先在左栏「参考书活动」里取消。");
+      srActivityStart();
+    } else if (e && e.code === "STYLE_REFERENCE_BOOK_NOT_READY") {
+      window.alert("这本书的段落分类还没完成（或未完成）：等它完成，或在左栏「参考书活动」里继续分类后再抽取。");
+      srActivityStart();
+    } else if (e && e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED") {
+      window.alert("这本书是「仅本机」策略：需要本地模型（如 Ollama）才能处理，或以送云策略重新导入。");
     } else if (e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || /llm/i.test(e.code || ""))) {
       window.alert("风格抽取需要先启用 LLM：请到「系统设置 → 模型与接入」配置并开启后重试。");
+    } else if (e && e.code === "REQUEST_TIMEOUT") {
+      window.alert("请求超过了前端等待上限，但服务端仍在处理；进度继续在左栏「参考书活动」里显示。");
     } else {
       window.alert("操作失败：" + (e.message || e));
     }
@@ -2246,60 +2751,47 @@ async function srBookAction(action, bookId, opts = {}) {
   await srSyncBooks();
 }
 
-const srPollRegistry = window.__srStylePollRegistry instanceof Map
-  ? window.__srStylePollRegistry
-  : new Map();
-window.__srStylePollRegistry = srPollRegistry;
-
-function srStopPoll(runId, token) {
-  const current = srPollRegistry.get(runId);
-  if (!current || (token && current.token !== token)) return;
-  clearTimeout(current.timer);
-  srPollRegistry.delete(runId);
+/* 后台抽取：登记一条 extract 活动条目（key = run:<run_id>）并启动活动清单轮询。
+   服务端按子维推进进度、30 s 心跳、可取消；条目到终态时 srActivityFinished 强制重载该书的
+   深层数据并刷新书库，让矩阵 / 概览 / 画像 / 注入页立即刷新。刷新页面后重新挂载时，
+   在跑的 run 仍会从 GET …/activity 回来，不需要本地登记。 */
+function srPollRun(runId, bookId = null) {
+  if (!runId) return;
+  srActivitySet(`run:${runId}`, { kind: "extract", title: srBookTitle(bookId), bookId, targetId: runId, status: "running", phase: "start", percent: 0, server: null, error: null, local: true });
+  srActivityStart();
 }
 
-/* 后台抽取轮询：层粒度进度，完成/失败时提示并刷新书库。最长轮询 20 分钟。
-   run 到达终态（done / failed / cancelled）时强制重载该书的深层数据（srLoadDeep force），
-   让矩阵 / 概览 / 画像 / 注入页立即刷新，不依赖整页刷新。bookId 优先取调用方传入，
-   否则用 run.book_id。 */
-async function srPollRun(runId, bookId = null) {
-  if (!runId) return;
-  srStopPoll(runId);
-  const startedAt = Date.now();
-  const token = Symbol(runId);
-  const record = { token, timer: null };
-  srPollRegistry.set(runId, record);
-  const schedule = () => {
-    if (srPollRegistry.get(runId)?.token !== token) return;
-    record.timer = setTimeout(tick, 2500);
-  };
-  const settle = async (run) => {
-    const bid = bookId || (run && run.book_id) || null;
-    if (bid) { try { await srLoadDeep(bid, { force: true }); } catch (e) { /* 深层重载失败不阻断提示 */ } }
-    await srSyncBooks();
-  };
-  const tick = async () => {
-    if (srPollRegistry.get(runId)?.token !== token) return;
-    if (Date.now() - startedAt > 20 * 60 * 1000) { srStopPoll(runId, token); return; }
-    let run = null;
-    try { run = ((await apiGet(`/api/v2/style-reference/runs/${runId}`)) || {}).run || null; } catch (e) { /* 网络抖动下一轮再试 */ }
-    if (srPollRegistry.get(runId)?.token !== token) return;
-    const status = run && run.status;
-    if (status === "done") {
-      srStopPoll(runId, token);
-      await settle(run);
-      window.alert("风格抽取完成，维度矩阵已可查看。");
-      return;
-    }
-    if (status === "failed" || status === "cancelled") {
-      srStopPoll(runId, token);
-      await settle(run);
-      window.alert(status === "failed" ? "风格抽取失败，可重试或查看系统日志。" : "风格抽取已取消。");
-      return;
-    }
-    schedule();
-  };
-  schedule();
+/* 取消后台抽取：POST cancel，随后立刻拉一次活动清单让条目进入「已取消」。 */
+async function srCancelRun(runId) {
+  await apiPost(`/api/v2/style-reference/runs/${runId}/cancel`, {});
+  srActivityStart();
+  srActivitySchedule(0);
+  return true;
+}
+
+/* 取消后台分类（导入 / 重新分类）：worker 在下一批边界退出，书标未完成，可续跑或删书。 */
+async function srCancelClassification(bookId) {
+  await apiPost(`/api/v2/style-reference/books/${bookId}/classification/cancel`, {});
+  srActivityStart();
+  srActivitySchedule(0);
+  return true;
+}
+
+/* 继续分类：从上次的游标续跑（失败 / 取消 / 中断后），登记一条新的 reclassify 条目。 */
+async function srResumeClassification(bookId) {
+  const key = srActivityKey("sr-reclassify");
+  srActivitySet(key, { kind: "reclassify", title: srBookTitle(bookId), bookId, status: "running", phase: "start", percent: 0, server: null, error: null, owned: true, local: true });
+  srActivityStart();
+  try {
+    await apiPost(`/api/v2/style-reference/books/${bookId}/reclassify`, { resume: true }, { idempotencyKey: key });
+  } catch (e) {
+    srActivitySet(key, { status: "failed", error: srActivityErrorText(e) });
+    throw e;
+  }
+  srActivitySet(key, { phase: "classify", owned: false, local: false });
+  srActivityStart();
+  await srSyncBooks();
+  return true;
 }
 
 async function srDeleteBook(bookId) {
@@ -2435,9 +2927,24 @@ async function srUnbind(bindingId, bookId) {
   return true;
 }
 
-/* 合成画像：POST synthesize（需 LLM）后强制重载。LLM 未启用时抛 ApiRequestError(409)。 */
+/* 合成画像：POST synthesize（需 LLM，同步请求几分钟）。按幂等键登记一条 synthesize 活动条目，
+   服务端用同一个键汇报阶段（汇总 → 声音签名 → 模型合成 → 安全过滤 → 结构与索引 → 写入 → RAG 索引），
+   POST 返回后强制重载。LLM 未启用时抛 ApiRequestError(409)；同书已有一份在合成时后端 409
+   STYLE_REFERENCE_SYNTHESIS_ALREADY_ACTIVE。 */
 async function srSynthesize(runId, bookId) {
-  const r = await apiPost(`/api/v2/style-reference/runs/${runId}/synthesize`, {});
+  const key = srActivityKey("sr-synth");
+  srActivitySet(key, { kind: "synthesize", title: srBookTitle(bookId), bookId, targetId: runId, status: "running", phase: "start", percent: 0, server: null, error: null, owned: true, local: true });
+  srActivityStart();
+  let r;
+  try {
+    r = await apiPost(`/api/v2/style-reference/runs/${runId}/synthesize`, {}, { idempotencyKey: key });
+  } catch (e) {
+    const timedOut = !!(e && e.code === "REQUEST_TIMEOUT");
+    // 前端等待上限到了但服务端仍在合成：条目交还给活动清单继续跟；其余失败原样写进面板。
+    srActivitySet(key, { status: timedOut ? "running" : "failed", error: srActivityErrorText(e), owned: !timedOut });
+    throw e;
+  }
+  srActivitySet(key, { status: "succeeded", percent: 100 });
   await srLoadDeep(bookId, { force: true });
   return r;
 }
@@ -2456,9 +2963,29 @@ async function srFindingFeedback(findingId, vote, bookId) {
   return true;
 }
 
-/* 画像预览：生成 3 段示例 + 自跑回测（需 LLM）。 */
-async function srPreviewSamples(profileId) {
-  return apiPost(`/api/v2/style-reference/profiles/${profileId}/preview`, {});
+/* 画像预览：按段型逐张生成示例 + 自跑回测（需 LLM）。三次串行请求各带 paragraph_types，
+   每张回来就通过 onSample 交给页面渲染，本地活动条目记 n/3；返回值形状与旧的一次性接口相同。 */
+const SR_PREVIEW_TYPES = ["dialogue", "description_env", "psychology"];
+async function srPreviewSamples(profileId, { onSample = null, types = SR_PREVIEW_TYPES, title = null } = {}) {
+  const key = srActivityKey("sr-preview");
+  const label = (t) => SR_PARA_LABEL[t] || t;
+  const snapshot = (i, phaseLabel) => ({ phase_label: phaseLabel, steps: { done: i, total: types.length, label: "段" }, percent: Math.round(99 * i / types.length) });
+  srActivitySet(key, { kind: "preview", title, bookId: null, status: "running", phase: "generate", owned: true, local: true, server: snapshot(0, `生成 ${label(types[0])}`) });
+  const samples = [];
+  try {
+    for (let i = 0; i < types.length; i += 1) {
+      const t = types[i];
+      srActivitySet(key, { server: snapshot(i, `生成 ${label(t)}`) });
+      const r = await apiPost(`/api/v2/style-reference/profiles/${profileId}/preview`, { paragraph_types: [t] });
+      samples.push(...(((r && r.samples) || [])));
+      if (onSample) onSample(samples.slice());
+    }
+    srActivitySet(key, { status: "succeeded", percent: 100, server: snapshot(types.length, "完成") });
+    return { profile_id: profileId, samples };
+  } catch (e) {
+    srActivitySet(key, { status: "failed", error: srActivityErrorText(e) });
+    throw e;
+  }
 }
 
 if (window.__srStyleGlobalHandlers) {
@@ -2473,9 +3000,10 @@ window.addEventListener("hashchange", srHashChange);
 window.__srStyleGlobalHandlers = { hydrateTimer: srHydrateTimer, hashchange: srHashChange };
 
 Object.assign(window, {
-  WsStyleRef, srSyncBooks, srImportBook, srBookAction, srDeleteBook,
+  WsStyleRef, srSyncBooks, srImportBook, srRunImport, srBookAction, srDeleteBook,
   srLoadDeep, srDeepFor, srInjectionPreview, srUnbind,
   srSynthesize, srReviewFinding, srFindingFeedback, srPreviewSamples,
+  srCancelRun, srActivityStart, srActivityFor, srCancelClassification, srResumeClassification,
 });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留）。
@@ -2485,4 +3013,8 @@ export {
   SrMatrix, SrProfile, SrApply, SR_TASKS, SR_LAYERS,
   buildDimOptions, computeIntensityReadout, computeResynthState, findShadowedBinding, srPickLatestRun,
   srLoadDeep, srDeepFor, srDropDeep, srPollRun, srBookAction, srDeleteBook, srSynthesize,
+  srRunImport, srImportProgressView, srImportEntries, srImportDismiss, SrImportProgressPanel,
+  SrActivityPanel, srActivityView, srActivityEntries, srActivitySet, srActivityDismiss, srActivityFor,
+  srActivityApply, srActivityStart, srActivityStop, srCancelRun, srPreviewSamples, SrOverview,
+  srCancelClassification, srResumeClassification, srMapStatus, srRunLabel, srMatrixEmptyHint, srRestClassifierLabel,
 };

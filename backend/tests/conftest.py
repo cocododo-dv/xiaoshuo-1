@@ -71,9 +71,9 @@ def session():
         db.close()
 
 
-@pytest.fixture
-def fake_paragraph_classifier():
-    """Deterministic LLMClient mock,供 segmentation/llm 测试用。
+def build_fake_paragraph_classifier():
+    """Deterministic LLMClient mock 的类(不经 fixture 也能用:路由测试的导入助手需要它——
+    2026-09-15 严格 LLM 后,产品路由的导入 / 重新分类没有 LLM 就 409)。
 
     返回一个 FakeLLMClient 类(测试调 `FakeLLMClient(rule="dialogue_heavy")` 实例化)。
     `rule` 控制启发式行为,便于覆盖锚定校准 agreement >= 0.85 与 < 0.85 两条路径。
@@ -164,6 +164,12 @@ def fake_paragraph_classifier():
             return "narration"
 
     return FakeLLMClient
+
+
+@pytest.fixture
+def fake_paragraph_classifier():
+    """见 build_fake_paragraph_classifier;fixture 形式供 segmentation / 路由测试注入。"""
+    return build_fake_paragraph_classifier()
 
 
 @pytest.fixture

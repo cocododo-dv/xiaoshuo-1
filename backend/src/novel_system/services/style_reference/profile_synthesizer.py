@@ -45,6 +45,10 @@ from novel_system.services.style_reference.errors import LLMRequiredError, Synth
 from novel_system.services.style_reference.narrative_guidance import (
     mark_forbidden_narrative_statement,
 )
+from novel_system.services.style_reference.import_progress import (
+    ImportProgressReporter,
+    NullImportProgress,
+)
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.profile_fields import REFERENCE_BASIS_VERSION
 from novel_system.services.style_reference.repository import StyleReferenceRepository
@@ -62,6 +66,7 @@ from novel_system.services.style_reference.untrusted_data import (
     render_untrusted_user_prompt,
 )
 from novel_system.services.style_reference.validation.plagiarism import (
+    CorpusOverlapIndex,
     check_plagiarism,
     normalize_text_for_matching,
 )
@@ -161,6 +166,7 @@ class ProfileSynthesizer:
         *,
         llm_client: Any | None = None,
         llm_enabled: bool | None = None,
+        progress: ImportProgressReporter | NullImportProgress | None = None,
     ) -> None:
         self.session = session
         self.repo = StyleReferenceRepository(session)
@@ -170,10 +176,13 @@ class ProfileSynthesizer:
 
             llm_enabled = bool(get_settings().llm_enabled)
         self._llm_enabled = llm_enabled
+        # 合成进度(2026-09-15):kind=synthesize 的登记簿句柄;无消费者时用空实现。
+        self._progress = progress if progress is not None else NullImportProgress()
 
     def synthesize(self, book_id: str, run_id: str) -> "StyleReferenceProfile":
         if not self._llm_enabled or self._llm_client is None:
             raise LLMRequiredError(operation="synthesize_profile")
+        self._progress.phase("collect")
 
         book = self.repo.get_book(book_id)
         if book is None:
@@ -214,8 +223,19 @@ class ProfileSynthesizer:
         scene_samples_index = _build_scene_samples_index(quotes, paragraph_types)
         finding_summaries = _build_finding_summaries_payload(findings, evidences)
         corpus_texts = [str(p.text or "") for p in paragraphs if str(p.text or "")]
+        # 2026-09-15:源文重合过滤要对上百行逐行判定,先把语料建成 8-gram 索引(一次几秒),
+        # 之后每行微秒级;判定与逐行 check_plagiarism 完全等价,见 CorpusOverlapIndex。
+        overlap_index = CorpusOverlapIndex(
+            corpus_texts, threshold_chars=_PROFILE_SOURCE_OVERLAP_THRESHOLD
+        )
+        self._progress.set_totals(
+            chars_total=int(book.total_chars or 0) or None,
+            paragraphs_total=len(paragraphs),
+            title=book.title,
+        )
         # W3 确定性声音签名:未就绪 / 失败都不阻断合成,只是画像没有 voice_signature。
-        voice_signature = _compute_voice_signature_block(corpus_texts)
+        self._progress.phase("voice")
+        voice_signature = _compute_voice_signature_block(corpus_texts, overlap=overlap_index)
         voice_habits = list(voice_signature.get("habits") or []) if voice_signature else []
         # 锚引文只作机制锚点送入合成模型(cloud policy 已由 ensure_cloud_llm_allowed 把关,
         # 与抽取阶段送段落同一权限面);输出侧仍经 _contains_source_overlap 过滤。
@@ -243,10 +263,11 @@ class ProfileSynthesizer:
         ) = self._synthesize_validated_profile(
             payload,
             template=template,
-            corpus_texts=corpus_texts,
+            corpus_texts=overlap_index,
             book_id=book_id,
             run_id=run_id,
         )
+        self._progress.phase("filter")
         safe_forbidden_findings = [
             {
                 "finding_id": str(f.finding_id),
@@ -257,7 +278,7 @@ class ProfileSynthesizer:
             for f in findings
             if f.finding_kind == "forbidden_pattern"
             and str(f.statement or "").strip()
-            and not _contains_source_overlap(str(f.statement), corpus_texts)
+            and not _contains_source_overlap(str(f.statement), overlap_index)
         ]
         overlap_audit["dropped_forbidden_finding_count"] = sum(
             1 for f in findings if f.finding_kind == "forbidden_pattern"
@@ -266,12 +287,13 @@ class ProfileSynthesizer:
         narrative_guidance = _derive_narrative_guidance(
             safe_profile["narrative_patterns"],
             safe_forbidden_findings,
-            corpus_texts,
+            overlap_index,
         )
         # 2026-09-12 结构跟随(Track B):结构画像与规划层指引都是确定性派生,与
         # voice_signature 同一原则——任何失败只让画像缺键,绝不拖垮合成。
+        self._progress.phase("derive")
         structure_card = _compute_structure_card_block(paragraphs, book_stats)
-        planning_guidance = _derive_planning_guidance_block(findings, corpus_texts)
+        planning_guidance = _derive_planning_guidance_block(findings, overlap_index)
         # 2026-09-14 保真修补(WP3):全书样例窗口索引——渲染期在整本书里选窗,不再只能以
         # 抽取证据引文为中心。确定性派生,失败只让画像缺键(渲染期会惰性复算)。
         exemplar_windows = _compute_exemplar_index_block(
@@ -327,6 +349,7 @@ class ProfileSynthesizer:
             # 不进冻结键:契约冻结的是段落根哈希,根哈希一致时索引可按同一算法复算。
             profile_json["exemplar_windows"] = exemplar_windows
 
+        self._progress.phase("persist")
         profile = self.repo.create_profile(
             profile_id=f"sr_profile_{uuid.uuid4().hex[:12]}",
             book_id=book_id,
@@ -343,10 +366,16 @@ class ProfileSynthesizer:
         )
         # 立项 C — profile 就绪即建三粒度 RAG 索引(Strategy C 召回的数据底座)。
         # 容错:向量后端不可用(如 Windows 原生 chroma)或失败均不阻断 synthesize。
+        self._progress.phase("index")
         try:
             from novel_system.services.style_reference.rag import build_rag_index
 
-            build_rag_index(self.session, profile, book_id=book_id)
+            build_rag_index(
+                self.session,
+                profile,
+                book_id=book_id,
+                progress=_rag_progress_adapter(self._progress),
+            )
         except Exception:  # noqa: BLE001
             logger.warning(
                 "rag index build failed for profile %s", profile.profile_id, exc_info=True
@@ -386,6 +415,7 @@ class ProfileSynthesizer:
         attempt_no: int = 1,
     ) -> dict[str, Any]:
         # PR-8 §"_call_llm 统一" — 复用 _llm_helper.call_llm_node
+        self._progress.llm_call(node_id)
         try:
             return call_llm_node(
                 node_id,
@@ -411,7 +441,7 @@ class ProfileSynthesizer:
         payload: dict[str, Any],
         *,
         template: PromptTemplate,
-        corpus_texts: list[str],
+        corpus_texts: list[str] | CorpusOverlapIndex,
         book_id: str,
         run_id: str,
     ) -> tuple[SynthesizedProfile, dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -421,6 +451,9 @@ class ProfileSynthesizer:
         first_failure: dict[str, Any] | None = None
         retry_budget_audit: dict[str, Any] | None = None
         for attempt_no in (1, 2):
+            self._progress.phase(
+                "llm", detail=f"第 {attempt_no} 次" if attempt_no > 1 else None
+            )
             structured = self._call_llm(
                 SYNTHESIZE_NODE_ID,
                 attempt_payload,
@@ -877,9 +910,13 @@ def _synthesis_metric_drop_order(metrics: dict[str, Any]) -> list[str]:
     return [*nonpriority, *reversed(priority)]
 
 
-def _contains_source_overlap(text: str, corpus_texts: list[str]) -> bool:
+def _contains_source_overlap(
+    text: str, corpus_texts: list[str] | CorpusOverlapIndex
+) -> bool:
     if not text.strip() or not corpus_texts:
         return False
+    if isinstance(corpus_texts, CorpusOverlapIndex):
+        return corpus_texts.contains_overlap(text, ngram_size=6)
     return not check_plagiarism(
         text,
         corpus_texts,
@@ -890,7 +927,7 @@ def _contains_source_overlap(text: str, corpus_texts: list[str]) -> bool:
 
 def _sanitize_synthesized_profile(
     synthesized: SynthesizedProfile,
-    corpus_texts: list[str],
+    corpus_texts: list[str] | CorpusOverlapIndex,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """阻止聚合模型把参考原句伪装成抽象风格指令带入生成提示。"""
 
@@ -1256,7 +1293,7 @@ def _build_anchor_quotes_payload(
 def _derive_narrative_guidance(
     narrative_patterns: list[str],
     safe_forbidden_findings: list[dict[str, Any]],
-    corpus_texts: list[str],
+    corpus_texts: list[str] | CorpusOverlapIndex,
     *,
     max_lines: int = _NARRATIVE_GUIDANCE_MAX_LINES,
 ) -> list[str]:
@@ -1301,7 +1338,24 @@ def _json_scalar_fallback(value: Any) -> float | str:
         return str(value)
 
 
-def _compute_voice_signature_block(paragraph_texts: list[str]) -> dict[str, Any] | None:
+def _rag_progress_adapter(progress: Any) -> Any:
+    """``build_rag_index`` 的 ``progress(stage, done, total)`` 回调 → 登记簿步骤。"""
+
+    def report(stage: str, done: int, total: int) -> None:
+        label = "段" if stage == "signatures" else "粒度"
+        try:
+            progress.set_steps(int(done), int(total), label=label)
+        except Exception:  # noqa: BLE001 — 进度汇报绝不打断建索引
+            logger.debug("rag progress report failed", exc_info=True)
+
+    return report
+
+
+def _compute_voice_signature_block(
+    paragraph_texts: list[str],
+    *,
+    overlap: CorpusOverlapIndex | None = None,
+) -> dict[str, Any] | None:
     """调用 W3 的确定性声音签名;模块未就绪(ImportError)或任何异常都不阻断合成。
 
     返回 ``{**signature, "habits": [...]}``(habits ≤12 行,已过原文重合过滤),
@@ -1346,7 +1400,7 @@ def _compute_voice_signature_block(paragraph_texts: list[str]) -> dict[str, Any]
         line = " ".join(str(habit).split()).strip()
         if not line or line in habit_lines:
             continue
-        if _contains_source_overlap(line, paragraph_texts):
+        if _contains_source_overlap(line, overlap if overlap is not None else paragraph_texts):
             continue
         habit_lines.append(line)
         if len(habit_lines) >= _VOICE_HABITS_MAX_LINES:
@@ -1412,7 +1466,7 @@ def _compute_structure_card_block(
 
 def _derive_planning_guidance_block(
     findings: list[Any],
-    corpus_texts: list[str],
+    corpus_texts: list[str] | CorpusOverlapIndex,
 ) -> list[str] | None:
     """2026-09-12 结构跟随:scene.* / theme.* 观察陈述 → ≤10 行规划层指引;失败 → None(缺键)。"""
 

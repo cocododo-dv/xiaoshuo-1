@@ -192,48 +192,74 @@ def test_preview_blocked_for_local_only_book():
             svc.generate(profile_id)
 
 
-def test_ingest_local_only_falls_back_to_heuristic_classification():
-    """local_only 导入时段落不送云:LLM client 一次都不许被调用。"""
+def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic():
+    """2026-09-15 严格 LLM:local_only 的段落不送云,也没有启发式兜底——云端模型直接拒绝,
+    LLM client 一次都不许被调用;本地模型(打桩 runtime_llm_is_local)才分类。"""
+    from novel_system.services.style_reference import policy as policy_module
+
     sentinel = _SentinelLLM()
     with SessionLocal() as session:
         service = IngestService(session, llm_client=sentinel, llm_enabled=True)
-        result = service.ingest_upload(
-            raw_bytes=SAMPLE_TEXT.encode("utf-8"),
-            file_name="local_only_book.txt",
-            title="本地书",
-            author_label=None,
-            cloud_policy="local_only",
-        )
-        session.commit()
-    assert result.paragraphs_count > 0
+        with pytest.raises(CloudPolicyBlockedError) as caught:
+            service.ingest_upload(
+                raw_bytes=SAMPLE_TEXT.encode("utf-8"),
+                file_name="local_only_book.txt",
+                title="本地书",
+                author_label=None,
+                cloud_policy="local_only",
+            )
+    assert caught.value.details["author_action"]["view"] == "systemConfig"
     assert not sentinel.called
 
+    original = policy_module.runtime_llm_is_local
+    policy_module.runtime_llm_is_local = lambda settings=None: True
+    try:
+        from tests.conftest import build_fake_paragraph_classifier
 
-def test_async_full_skips_semantic_for_local_only_book():
-    """local_only 不出云；async_full 缺语义证据时只能给 partial。"""
+        fake = build_fake_paragraph_classifier()(rule="default")
+        with SessionLocal() as session:
+            service = IngestService(session, llm_client=fake, llm_enabled=True)
+            result = service.ingest_upload(
+                raw_bytes=SAMPLE_TEXT.encode("utf-8"),
+                file_name="local_only_book_local_llm.txt",
+                title="本地书",
+                author_label=None,
+                cloud_policy="local_only",
+            )
+            session.commit()
+    finally:
+        policy_module.runtime_llm_is_local = original
+    assert result.paragraphs_count > 0
+    assert fake.call_count >= 1
+    assert result.book.stats_json["classifier_calibration"]["fallback_to_heuristic"] is False
+
+
+def test_async_full_for_local_only_book_is_refused_without_a_local_llm():
+    """2026-09-15 严格 LLM:local_only 不出云,全量三路也不再降成 partial——云端模型直接 409。"""
     book_id = _seed_book("async_local", cloud_policy="local_only")
     profile_id = _seed_profile_for_book("async_local", book_id)
     sentinel = _SentinelLLM()
     with SessionLocal() as session:
         orch = ValidationOrchestrator(session, llm_client=sentinel, llm_enabled=True)
-        resp = orch.validate(
-            profile_id,
-            ValidateRequest(generated_text="一段完全原创的全新文本表达", mode=ValidationMode.ASYNC_FULL),
-        )
-        session.commit()
-    deadline = time.monotonic() + 5.0
-    verdict = ""
-    while time.monotonic() < deadline:
-        with SessionLocal() as session:
-            row = StyleReferenceRepository(session).get_validation_report(resp.report_id)
-            if row is not None and row.verdict:
-                verdict = row.verdict
-                semantic_json = row.semantic_json
-                break
-        time.sleep(0.05)
-    assert verdict == "partial"
-    assert semantic_json == []
+        with pytest.raises(CloudPolicyBlockedError):
+            orch.validate(
+                profile_id,
+                ValidateRequest(generated_text="一段完全原创的全新文本表达", mode=ValidationMode.ASYNC_FULL),
+            )
     assert not sentinel.called
+
+
+def test_async_full_without_llm_is_refused():
+    """全量三路必须有 LLM:未启用 → 409 STYLE_REFERENCE_LLM_REQUIRED,不再静默降级。"""
+    book_id = _seed_book("async_no_llm", cloud_policy="segments_only")
+    profile_id = _seed_profile_for_book("async_no_llm", book_id)
+    with SessionLocal() as session:
+        orch = ValidationOrchestrator(session, llm_client=None, llm_enabled=False)
+        with pytest.raises(LLMRequiredError):
+            orch.validate(
+                profile_id,
+                ValidateRequest(generated_text="一段完全原创的全新文本表达", mode=ValidationMode.ASYNC_FULL),
+            )
 
 
 # ---------------------------------------------------------------------------

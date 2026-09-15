@@ -70,8 +70,18 @@ async def _lifespan(_app: FastAPI):
             shutdown_style_reference_validation_executor,
         )
 
+        from novel_system.services.style_reference.rag import (
+            shutdown_style_reference_rag_index_executor,
+        )
+
+        from novel_system.services.style_reference.import_job import (
+            shutdown_style_reference_classification_executor,
+        )
+
         shutdown_style_reference_run_executor(wait=False)
         shutdown_style_reference_validation_executor(wait=False)
+        shutdown_style_reference_rag_index_executor(wait=False)
+        shutdown_style_reference_classification_executor(wait=False)
 
 
 def _is_loopback_host(host: str | None) -> bool:

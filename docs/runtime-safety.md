@@ -40,6 +40,8 @@
 
 启用后，全局日/月/项目 token 配额对尚未结束的调用按 reservation 占位，对终态调用按供应商返回的实际 `total_tokens`（缺失时按保守估算）计费。场景预算的 `budget_charged_tokens` 仍受 reservation 上限约束；它不是全局供应商用量口径。
 
+供应商真实用量超出 reservation（典型来源：思考型中转把 reasoning token 计入 `completion_tokens` 且不受 `max_tokens` 封顶）只在**有栅栏武装**时拦截响应（`LLM_USAGE_EXCEEDS_RESERVATION`：任一全局配额，或武装态的场景预算）。没有任何栅栏时，响应照常交付并按真实用量落账，超出量记在审计摘要的 `usage_overage_tokens`，后端日志记一条 warning。
+
 ## 内容与来源安全
 
 - `NOVEL_SYSTEM_CONTENT_SAFETY_MODE=review`（默认）：少数高风险复合启发式命中会阻止无人值守归档，正文不会丢失；作者逐项核对后可确认精确 finding code 再提交。

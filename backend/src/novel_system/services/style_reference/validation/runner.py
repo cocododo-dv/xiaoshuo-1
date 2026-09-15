@@ -25,6 +25,8 @@ from novel_system.services.llm_accounting import (
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference._llm_helper import LLMNodeError
 from novel_system.services.style_reference.background_heartbeat import periodic_heartbeat
+from novel_system.services.style_reference.errors import LLMRequiredError
+from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     ValidateRequest,
@@ -85,6 +87,11 @@ class ValidationOrchestrator:
         if req.mode == ValidationMode.SYNC_ONLY:
             response = self._run_sync_only(profile_id, profile, req)
         else:
+            # 2026-09-15 严格 LLM:全量三路必须有 LLM,没有就 409(不再静默降成 partial);
+            # 「仅本机」的书要求本地模型。
+            if not self._llm_enabled or self._llm_client is None:
+                raise LLMRequiredError(operation="validate_async_full")
+            ensure_cloud_llm_allowed(self.repo.get_book(profile.book_id), operation="validate_async_full")
             response = self._run_async_full(
                 profile_id,
                 profile,
@@ -275,6 +282,9 @@ def _async_worker(
     from novel_system.services.style_reference.validation.quantitative import check_quantitative
     from novel_system.services.style_reference.validation.semantic import check_semantic
 
+    from novel_system.services.style_reference.import_progress import start_import_progress
+
+    progress = None
     try:
         with SessionLocal() as bg_session:
             claimed_at = utcnow()
@@ -314,59 +324,61 @@ def _async_worker(
                         "style reference profile disappeared before validation started",
                         status_code=404,
                     )
+                book = bg_repo.get_book(profile.book_id)
+                # 进度(2026-09-15):活动清单用登记簿的阶段,报告行给终态。
+                progress = start_import_progress(
+                    f"validate:{report_id}",
+                    kind="validate",
+                    title=book.title if book is not None else None,
+                    source="validate",
+                    book_id=profile.book_id,
+                    target_id=report_id,
+                )
+                progress.phase("local")
 
                 corpus = _load_plagiarism_corpus(bg_repo, profile.book_id)
                 plag = check_plagiarism(generated_text, corpus)
                 forbid_local = check_forbidden_local(generated_text, profile_id, bg_session)
                 quant = check_quantitative(generated_text, profile)
-                _heartbeat_report(bg_session, report_id)
-
-                book = bg_repo.get_book(profile.book_id)
-                policy_allows_llm = cloud_llm_allowed(book) if book is not None else True
-                semantic: list = []
-                forbid_sem: list = []
-                semantic_available = bool(
-                    llm_enabled and llm_client is not None and policy_allows_llm
+                # 本地三路先落库:前端轮询到 running 报告时逐路点亮,不必等语义路结束。
+                _persist_partial_report(
+                    bg_session,
+                    report_id,
+                    quantitative_json=[q.model_dump() for q in quant],
+                    plagiarism_json=plag.model_dump(),
+                    forbidden_hits_json=[h.model_dump() for h in forbid_local],
                 )
-                # async_full 的 pass 必须代表语义路真实执行过。LLM 未启用、
-                # 无 client、策略禁止出云，或 critic 返回空结果时，只能给
-                # partial，不能借 core 中 sync_only 的缺省分数伪装成完整通过。
-                semantic_degraded = not semantic_available
-                if semantic_available:
-                    try:
-                        semantic = check_semantic(
-                            generated_text,
-                            profile,
-                            bg_session,
-                            llm_client,
-                            report_id=report_id,
-                        )
-                    except Exception as exc:  # pylint: disable=broad-except
-                        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-                            raise
-                        if not isinstance(exc, LLMNodeError):
-                            raise
-                        semantic_degraded = True
-                        logger.warning("async_worker semantic failed: %s", exc)
-                    if not semantic:
-                        semantic_degraded = True
-                    _heartbeat_report(bg_session, report_id)
-                    try:
-                        forbid_sem = check_forbidden_semantic(
-                            generated_text,
-                            profile,
-                            bg_session,
-                            llm_client,
-                            report_id=report_id,
-                        )
-                    except Exception as exc:  # pylint: disable=broad-except
-                        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-                            raise
-                        if not isinstance(exc, LLMNodeError):
-                            raise
-                        semantic_degraded = True
-                        logger.warning("async_worker forbidden_semantic failed: %s", exc)
-                    _heartbeat_report(bg_session, report_id)
+
+                # 2026-09-15 严格 LLM:async_full 在派发前已确认 LLM 可用且策略放行
+                # (validate 里 409),worker 里 critic 调用失败就是报告失败,不再降成 partial。
+                if not (llm_enabled and llm_client is not None and cloud_llm_allowed(book)):
+                    raise LLMRequiredError(operation="validate_async_full")
+                progress.phase("semantic")
+                progress.llm_call("style_ref_validate_semantic")
+                semantic: list = check_semantic(
+                    generated_text,
+                    profile,
+                    bg_session,
+                    llm_client,
+                    report_id=report_id,
+                )
+                # critic 真的跑了但没给出任何维度分:结论只能是 partial(不是兜底,是模型答案为空)
+                semantic_degraded = not semantic
+                _persist_partial_report(
+                    bg_session,
+                    report_id,
+                    semantic_json=[s.model_dump() for s in semantic],
+                )
+                progress.phase("forbidden")
+                progress.llm_call("style_ref_validate_forbidden")
+                forbid_sem: list = check_forbidden_semantic(
+                    generated_text,
+                    profile,
+                    bg_session,
+                    llm_client,
+                    report_id=report_id,
+                )
+                _heartbeat_report(bg_session, report_id)
 
                 all_forbid = list(forbid_local) + list(forbid_sem)
                 verdict = _compute_full_verdict(
@@ -401,11 +413,45 @@ def _async_worker(
             if completed.rowcount != 1:
                 bg_session.rollback()
                 logger.warning("async validation %s lost its running state", report_id)
+                if progress is not None:
+                    progress.fail(
+                        code="STYLE_REFERENCE_VALIDATION_LOST_OWNERSHIP",
+                        message="async validation lost its running state",
+                    )
                 return
             bg_session.commit()
+            if progress is not None:
+                progress.succeed(result={"verdict": verdict.value, "report_id": report_id})
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("async_worker fatal: %s", exc)
         _mark_validation_failed(report_id, exc)
+        if progress is not None:
+            progress.fail(
+                code=str(getattr(exc, "code", None) or exc.__class__.__name__),
+                message=str(exc),
+            )
+
+
+def _persist_partial_report(session: Session, report_id: str, **columns: Any) -> None:
+    """把已完成的路先写进 running 报告(附带续心跳);失败只记日志,不打断校验。"""
+
+    try:
+        touched = session.execute(
+            update(StyleReferenceValidationReport)
+            .where(
+                StyleReferenceValidationReport.report_id == report_id,
+                StyleReferenceValidationReport.status == "running",
+            )
+            .values(heartbeat_at=utcnow(), **columns)
+            .execution_options(synchronize_session=False)
+        )
+        if touched.rowcount == 1:
+            session.commit()
+        else:
+            session.rollback()
+    except Exception:  # pragma: no cover - progress must never break validation
+        logger.exception("failed to persist partial validation report %s", report_id)
+        session.rollback()
 
 
 def _heartbeat_report(session: Session, report_id: str) -> None:

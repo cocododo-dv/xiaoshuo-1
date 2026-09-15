@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import array
+import bisect
 import unicodedata
 
 from novel_system.services.style_reference.schemas import (
@@ -144,3 +146,61 @@ def check_plagiarism(
         ngram_size=ngram_size,
         threshold_chars=threshold_chars,
     )
+
+
+class CorpusOverlapIndex:
+    """语料的 ``threshold_chars``-gram 哈希索引:一次建好,逐行 O(len(line)) 判「有无重叠」。
+
+    2026-09-15:合成画像要对上百行(风格特征 / 叙事模式 / 禁忌 / 规划指引)逐行做源文重合
+    过滤,每行调一次 ``check_plagiarism`` 都要重新规范化并单遍扫描整本书——190 万字的书
+    实测 2.5 s/行,一次合成 3 到 5 分钟耗在这里。
+
+    判定与 ``check_plagiarism(text, corpus, ngram_size=k, threshold_chars=t)``(``k ≤ t``)
+    完全等价:存在 ≥ t 个规范化字符的连续重叠 ⇔ 该行某个 t-gram 是某段语料的子串。索引
+    存的是段内 t-gram 的 64 位哈希(排序数组 + 二分,190 万字约 12 MB),否定答案精确;
+    肯定答案再用 ``check_plagiarism`` 精确复核,哈希碰撞不会误删一行。
+    """
+
+    def __init__(self, corpus_texts: list[str], *, threshold_chars: int = 12) -> None:
+        self.corpus_texts = [text for text in corpus_texts if text]
+        self.threshold_chars = max(1, int(threshold_chars))
+        width = self.threshold_chars
+        hashes = array.array("q")
+        append = hashes.append
+        for text in self.corpus_texts:
+            norm = _normalize(text)
+            for i in range(len(norm) - width + 1):
+                append(hash(norm[i : i + width]))
+        self._hashes = array.array("q", sorted(hashes))
+        self.ngram_count = len(self._hashes)
+
+    def __len__(self) -> int:
+        return len(self.corpus_texts)
+
+    def _has_ngram(self, value: int) -> bool:
+        pos = bisect.bisect_left(self._hashes, value)
+        return pos < len(self._hashes) and self._hashes[pos] == value
+
+    def may_overlap(self, text: str) -> bool:
+        """有任一 t-gram 命中索引;False 是精确的否定。"""
+        norm = _normalize(text or "")
+        width = self.threshold_chars
+        if len(norm) < width:
+            return False
+        for i in range(len(norm) - width + 1):
+            if self._has_ngram(hash(norm[i : i + width])):
+                return True
+        return False
+
+    def contains_overlap(self, text: str, *, ngram_size: int = 8) -> bool:
+        """与 ``not check_plagiarism(...).passed`` 同值;命中先过索引,再精确复核。"""
+        if not self.corpus_texts or not text or not text.strip():
+            return False
+        if not self.may_overlap(text):
+            return False
+        return not check_plagiarism(
+            text,
+            self.corpus_texts,
+            ngram_size=min(int(ngram_size), self.threshold_chars),
+            threshold_chars=self.threshold_chars,
+        ).passed

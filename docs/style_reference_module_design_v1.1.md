@@ -437,6 +437,14 @@ class ValidateResponse(BaseModel):
 
 ### 6.2 段落分类器锚定集校准
 
+> **2026-09-15 更新（严格 LLM）**：下面这段「余段上限 + 启发式」的有界导入已经撤销——LLM 可用时整本每一段都由 LLM 分类，没有启发式兜底；大书的分类是可续跑的后台任务（`import_job.py`），进度在「参考书活动」面板，见 `style-reference-progress.md` 同日条目。
+>
+> **2026-09-15 补充（有界导入）：** 下文三步中「余下段落」只有在不超过
+> `segmentation/llm.py::LLM_BULK_PARAGRAPH_CAP`（1000 段）时才逐批过 LLM；更大的书余段整体走
+> 顺序感知启发式，快模型锚定对照省掉，`calibration` 额外记录 `rest_classifier` /
+> `heuristic_anchor_agreement` / `llm_classified_paragraphs` / `heuristic_classified_paragraphs`。
+> 原因：一本 26,677 段的书按本节设计要 1,059 次串行分类调用，同步导入请求扛不住。
+
 为防止 `local_fast` 在 8 类段落分类上准确率不足(直接影响后续所有统计的输入质量),引入**锚定集校准策略**。
 
 ```python

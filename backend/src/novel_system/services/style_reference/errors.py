@@ -6,6 +6,8 @@ PR-1 落地完整错误层级,后续 PR 直接 raise。
 
 from __future__ import annotations
 
+from typing import Any
+
 from novel_system.services.errors import DomainError
 
 
@@ -105,29 +107,71 @@ class LLMRequiredError(StyleReferenceError, DomainError):
         self.next_action = "enable_llm_provider_in_system_config"
 
 
+class ClassificationFailedError(StyleReferenceError, DomainError):
+    """段落分类的 LLM 调用失败(2026-09-15 严格 LLM:不再降级到启发式)。
+
+    502 + retryable + author_action:检查模型接入后重试;导入任务会把它记在书的
+    ``stats_json.classification.error`` 上,作者在「参考书活动」里看到原因后可「继续分类」。
+    """
+
+    def __init__(self, *, code: str, message: str, book_id: str | None = None) -> None:
+        DomainError.__init__(
+            self,
+            "STYLE_REFERENCE_CLASSIFICATION_FAILED",
+            f"paragraph classification failed ({code}): {message}",
+            status_code=502,
+            details={
+                "reason_code": code,
+                "book_id": book_id,
+                "retryable": True,
+                "author_action": {
+                    "action": "check_llm_provider_then_retry",
+                    "view": "systemConfig",
+                    "label": "段落分类的模型调用失败：检查模型接入后重试",
+                },
+            },
+        )
+        self.reason_code = code
+        self.book_id = book_id
+
+
 class CloudPolicyBlockedError(StyleReferenceError, DomainError):
     """书籍 cloud_policy=local_only 时禁止任何把书籍内容送往云端 LLM 的操作。
 
     与 LLMRequiredError 同理继承 DomainError,API 层映射 409 + author_action。
     """
 
-    def __init__(self, *, book_id: str, operation: str) -> None:
+    def __init__(
+        self,
+        *,
+        book_id: str,
+        operation: str,
+        provider: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        # 2026-09-15 严格 LLM:「仅本机」的书没有启发式兜底了,它的段落只能交给本地模型;
+        # 运行时模型是云端接入时拒绝,并告诉作者两条路(本地模型 / 换策略重导)。
+        details: dict[str, Any] = {
+            "book_id": book_id,
+            "operation": operation,
+            "cloud_policy": "local_only",
+            "author_action": {
+                "action": "configure_local_llm_or_change_cloud_policy",
+                "view": "systemConfig",
+                "label": "该参考书为「仅本机」策略：需要本地模型（如 Ollama）才能处理，或改用送云策略重新导入",
+            },
+        }
+        if provider is not None:
+            details["provider"] = provider
+        if base_url is not None:
+            details["base_url"] = base_url
         DomainError.__init__(
             self,
             "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED",
             f"book {book_id!r} has cloud_policy=local_only; "
-            f"operation {operation!r} would send book content to a cloud LLM and is blocked",
+            f"operation {operation!r} needs a local LLM and the configured provider is not local",
             status_code=409,
-            details={
-                "book_id": book_id,
-                "operation": operation,
-                "cloud_policy": "local_only",
-                "author_action": {
-                    "action": "review_cloud_policy",
-                    "view": "styleref",
-                    "label": "该参考书为「仅本地」策略,需调整云端策略后才能执行此操作",
-                },
-            },
+            details=details,
         )
         self.book_id = book_id
         self.operation = operation

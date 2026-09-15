@@ -147,6 +147,7 @@ def test_heuristic_narration_fallback() -> None:
 
 
 def test_classify_paragraphs_offline_uses_heuristic() -> None:
+    """离线夹具模式(llm_enabled=False):只有测试与本地语料工具走这里,产品路由没有 LLM 就 409。"""
     paragraphs = [(0, 5, "几日后。"), (5, 30, "他心里想着,觉得不安。"), (30, 60, "故事从一个平凡的午后开始。")]
     result = classify_paragraphs(paragraphs, llm_enabled=False)
     assert isinstance(result, SegmentationResult)
@@ -279,8 +280,10 @@ def test_classify_paragraphs_moves_template_placeholder_before_bounded_payload(
     )
 
     assert len(result.classifications) == 1
-    assert result.calibration["fast_model_agreement"] == 1.0
-    assert len(client.requests) == 2
+    # 书不超过锚定集:没有余段就不做快模型对照(2026-09-15),只有一次强模型调用
+    assert result.calibration["fast_model_agreement"] is None
+    assert result.calibration["rest_classifier"] is None
+    assert len(client.requests) == 1
     for request in client.requests:
         user_prompt = request.messages[-1]["content"]
         opening = f"[UNTRUSTED_REFERENCE_DATA:{request.node_id}]"
@@ -335,9 +338,11 @@ def test_segmentation_renderer_failure_uses_stable_error_without_calling_client(
 
 
 def test_classify_paragraphs_llm_agreement_high(
-    fake_paragraph_classifier, session
+    fake_paragraph_classifier, session, monkeypatch
 ) -> None:
-    """默认 fake classifier 在 anchor/bulk 上返回相同结果,agreement=1.0 → 用 fast 路径。"""
+    """默认 fake classifier 在 anchor/bulk 上返回相同结果,agreement=1.0 → 用 fast 路径。
+    锚定集缩到 2 段,让 3 段的样本有余段(没有余段就不做快模型对照)。"""
+    monkeypatch.setattr(segmentation_llm, "ANCHOR_SIZE", 2)
     client = fake_paragraph_classifier()
     paragraphs = [
         (0, 10, "他说:“你好。”"),
@@ -360,8 +365,10 @@ def test_classify_paragraphs_llm_agreement_high(
 def test_classify_paragraphs_llm_agreement_low_falls_back_to_strong(
     fake_paragraph_classifier,
     session,
+    monkeypatch,
 ) -> None:
     """rule=disagree_after_anchor 使 bulk 返回全 transition,与 anchor 大量不一致 → fallback to strong。"""
+    monkeypatch.setattr(segmentation_llm, "ANCHOR_SIZE", 2)
     client = fake_paragraph_classifier(rule="disagree_after_anchor")
     paragraphs = [
         (0, 10, "他说:“你好。”"),
@@ -379,9 +386,11 @@ def test_classify_paragraphs_llm_agreement_low_falls_back_to_strong(
     assert result.calibration["fast_model_agreement"] < 0.85
 
 
-def test_classify_paragraphs_llm_failure_falls_back_to_heuristic(session) -> None:
-    """LLM 调用 raise 任意异常 → 降级到启发式,calibration 标 fallback_reason。"""
+def test_classify_paragraphs_llm_failure_is_an_error_not_a_heuristic_fallback(session) -> None:
+    """2026-09-15 严格 LLM:LLM 调用失败就是失败(502 + 原因 + author_action),不降级到启发式。"""
 
+    from novel_system.services.errors import DomainError
+    from novel_system.services.style_reference.errors import ClassificationFailedError
     from tests.accounted_llm_fakes import AccountedGenerateMixin
 
     class FailingClient(AccountedGenerateMixin):
@@ -389,15 +398,21 @@ def test_classify_paragraphs_llm_failure_falls_back_to_heuristic(session) -> Non
             raise RuntimeError("network down")
 
     paragraphs = [(0, 5, "几日后。"), (5, 30, "他心里想着,觉得不安。")]
-    result = classify_paragraphs(
-        paragraphs,
-        llm_enabled=True,
-        llm_client=FailingClient(),
-        session=session,
-        scope_id="sr_book_failure",
-    )
-    assert result.calibration["fallback_to_heuristic"] is True
-    assert "fallback_reason" in result.calibration
+    with pytest.raises(ClassificationFailedError) as caught:
+        classify_paragraphs(
+            paragraphs,
+            llm_enabled=True,
+            llm_client=FailingClient(),
+            session=session,
+            scope_id="sr_book_failure",
+        )
+    err = caught.value
+    assert isinstance(err, DomainError)
+    assert err.status_code == 502
+    assert err.code == "STYLE_REFERENCE_CLASSIFICATION_FAILED"
+    assert err.details["reason_code"] == "STYLE_REF_LLM_GENERATE_FAILED"
+    assert err.details["book_id"] == "sr_book_failure"
+    assert err.details["author_action"]["view"] == "systemConfig"
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +551,69 @@ def test_heuristic_speech_exclusions_reuse_function_words_yaml() -> None:
     assert {"知道", "应该", "道理", "小说"} <= yaml_exclusions
     assert yaml_exclusions <= set(_speech_exclusions())
     assert {"叫做", "念头"} <= set(_speech_exclusions())
+
+
+# ---------- 2026-09-15 有界导入:余段过 LLM 有上限,大书余段整体走启发式 ----------
+#
+# 真实故障:一本 26,677 段的书在 segments_only 策略下导入,锚定集之外的 26,477 段按
+# BATCH_SIZE=25 逐批过快模型 = 1,059 次串行调用;路由到思考型中转时实测 17.7 s/次 ≈ 5 小时,
+# 同步 HTTP 请求里作者看到的只有「导入没成功」。
+
+
+def _plain_paragraphs(count: int) -> list[tuple[int, int, str]]:
+    bodies = [
+        "他把灯拧暗了一点,窗外的雨声就显得更近。",
+        "「你来了。」她说。",
+        "几日后。",
+        "门外的脚步声走到一半,又退了回去。她没有立刻回答。",
+    ]
+    return [
+        (index * 40, index * 40 + 30, bodies[index % len(bodies)]) for index in range(count)
+    ]
+
+
+def test_classify_paragraphs_classifies_every_paragraph_with_the_llm(
+    fake_paragraph_classifier, monkeypatch, session
+) -> None:
+    """2026-09-15 严格 LLM:没有余段上限,书的每一段都由 LLM 分类。"""
+    monkeypatch.setattr(segmentation_llm, "ANCHOR_SIZE", 25)
+
+    class CapturingClient(fake_paragraph_classifier):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests = []
+
+        def generate(self, request):  # noqa: ANN001
+            self.requests.append(request)
+            return super().generate(request)
+
+    client = CapturingClient()
+    paragraphs = _plain_paragraphs(25 + 30)  # 锚定 25 + 余段 30:设计的三步
+
+    result = classify_paragraphs(
+        paragraphs,
+        llm_enabled=True,
+        llm_client=client,
+        session=session,
+        scope_id="sr_book_at_cap",
+    )
+
+    # 强模型锚定 1 批 + 快模型锚定 1 批 + 余段 30 段 2 批
+    assert client.call_count == 4
+    assert [request.node_id for request in client.requests] == [
+        segmentation_llm.NODE_ANCHOR,
+        segmentation_llm.NODE_BULK,
+        segmentation_llm.NODE_BULK,
+        segmentation_llm.NODE_BULK,
+    ]
+    assert len(result.classifications) == 55
+    assert {item.classifier_confidence_level for item in result.classifications} == {"high"}
+    calibration = result.calibration
+    assert calibration["rest_classifier"] == "fast_llm"
+    assert calibration["fast_model_agreement"] == 1.0
+    assert calibration["fallback_to_strong"] is False
+    assert calibration["llm_classified_paragraphs"] == 55
+    assert calibration["heuristic_classified_paragraphs"] == 0
+    assert calibration["fallback_to_heuristic"] is False
+    assert "heuristic_anchor_agreement" not in calibration
+    assert "llm_bulk_paragraph_cap" not in calibration

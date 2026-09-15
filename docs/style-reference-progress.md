@@ -512,4 +512,67 @@ OpenAI 的 reasoning 参数,8192 预算照样烧光,run 再次失败。最终解
 - 冻结画像改为字段白名单；质检使用冻结禁用词，RAG/质检/主动重排核对参考书版本，
   避免 Profile 或语料在建包后变化造成“生成、评分、质检各读一版”。
 
+
+## 2026-09-15 · 导入有界化（真实故障修补）
+
+- 一本 26,677 段的书在 `segments_only` 下导入：锚定集之外 26,477 段按 25 段/批逐批过快模型
+  = 1,059 次串行调用；路由到思考型中转（reasoning token 计入 `completion_tokens`、不受
+  `max_tokens` 封顶）时实测 17.7 s/次 ≈ 5 小时，同步 HTTP 请求里作者只看到「导入没成功」，
+  且上传路由是 `async def` 直接在事件循环里跑，整个工作台在导入期间假死。
+- 记账层：供应商用量超出预留额（`usage_exceeds_reservation`）只在有栅栏武装时拦截响应；
+  没有栅栏时按真实用量落账、照常交付（`llm_accounting._usage_overage_is_fenced`）。
+- 分类器：余段只有 ≤ `LLM_BULK_PARAGRAPH_CAP`（1000 段 = 40 次调用）时才过 LLM；更大的书
+  余段整体走顺序感知启发式，省掉快模型锚定对照，`classifier_calibration` 记
+  `rest_classifier` / `heuristic_anchor_agreement` / `llm_classified_paragraphs` /
+  `heuristic_classified_paragraphs`，总览页「锚定集之外」一行透出。整本 LLM 分类需要异步
+  导入任务（未做）。
+- 路由：`import_book_upload` 的同步导入改在线程池执行，导入期间其他请求不再挂起。
+- 导入进度：两条导入路由按请求的 `X-Idempotency-Key` 在进程内登记簿
+  （`import_progress.py`）记录阶段（解码切段 → 段落分类（按批推进）→ 统计 → 写入）与百分比，
+  `GET …/imports/{key}/progress` 轮询读出（不落库，终态保留十分钟）；前端 `srRunImport` 在
+  POST 挂起期间每秒轮询，参考书库左栏画进度条，成功后自动切到新书，不再弹「已导入」窗。
+
 详细契约见 `docs/style-reference-runtime-contract.md`。
+
+## 2026-09-15 · 参考书活动面板（全模块进度交互）
+
+- 评估：九条耗时路径里只有导入有进度；抽取 run 有层粒度进度但前端不上屏、不续接、20 分钟即停；
+  合成 / 重新分类 / 应用画像 / 回测 / 示例预览都是同步请求加按钮转圈。实测（『龙族』190 万字 +
+  作者的思考型中转）：抽取 9 分 16 秒（17 次调用，单次 8–78 秒，层间最长 3.4 分钟无变化）；合成
+  5–9 分钟，其中逐行源文重合过滤 2.5 秒/行 × 约百行；apply 在收件箱 resolve 事务里建 RAG 索引
+  34.7 秒；回测前端 60 秒即报超时。
+- 登记簿泛化：`import_progress.py` 成为模块级操作登记簿（kind：import / reclassify / synthesize /
+  rag_index / validate，各自阶段表与权重；通用 `phase / plan_steps / set_steps / step_done /
+  llm_call / succeed / fail`），导入契约不变。
+- 活动清单：`activity.py` + `GET …/activity` 把登记簿条目与 durable 行（在跑的 run、十分钟内结束的
+  run、回测报告）合成统一形状；抽取 run 的进度改为子维粒度写在 `coverage_json.progress`
+  （`sub_dims_*` / `llm_calls` / `retries` / `sub_dim_seconds` → 预计剩余），无需迁移。
+- 接线：重新分类走登记簿；合成按幂等键登记阶段并加同书活跃守卫（409
+  `STYLE_REFERENCE_SYNTHESIS_ALREADY_ACTIVE`），源文重合过滤改用一次建好的 8-gram 哈希索引
+  （`CorpusOverlapIndex`，判定与逐行 `check_plagiarism` 等价）；apply / 收件箱批准只落绑定，索引由
+  提交后的后台 worker 建（同画像构建加锁，生成期惰性 ensure 等它建完）；回测 worker 先落本地三路
+  再跑语义路；预览端点接受 `paragraph_types`。
+- 前端：一张活动表 + 一个 `/activity` 轮询喂左栏「参考书活动」面板（类型标签、进度条、已用 /
+  预计、抽取可取消、终态可关闭），刷新页面后续接；头部按钮在抽取 / 重新分类期间锁定，书库徽标与
+  总览显示进行中；完成不再弹窗；回测去掉 60 秒上限、四路逐路点亮；预览逐张点亮。
+- 未做：合成的 durable 任务行（登记簿在进程内，后端重启时在途合成与导入一样丢失）；策略 C 去留。
+
+## 2026-09-15 · 严格 LLM（没有兜底）+ 后台分类任务
+
+- 作者的要求：LLM 是系统运行的基础，LLM 可用时只准用 LLM，不可用就报错去买资源，不要任何兜底。
+- 产品路由：导入 / 重新分类没有 LLM 就 409 `STYLE_REFERENCE_LLM_REQUIRED`；分类器不再降级到
+  启发式（LLM 失败 → 502 `STYLE_REFERENCE_CLASSIFICATION_FAILED`）；余段上限删除，整本每一段都由
+  LLM 分类；书不超过锚定集时不做快模型对照。启发式只剩服务层的离线夹具模式（测试 / 本地语料工具）。
+- 后台任务（`import_job.py`）：请求只做准备工作（书 `ingesting` + 未分类段落行 + `stats_json.classification`
+  游标），单线程执行器逐批分类、逐批提交，可续跑（`reclassify {resume:true}`）、可取消
+  （`classification/cancel`，book.status=cancelling，下一批边界生效）、重启后由启动恢复续跑；
+  完成后才算 `ready`，抽取对非 ready 的书 409 `STYLE_REFERENCE_BOOK_NOT_READY`。
+- 「仅本机」策略：只能由本地模型（ollama 或回环 base_url）处理，云端模型一律 409
+  `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`（author_action 指向系统配置）；有本地模型时抽取 / 合成 /
+  回测都可用。
+- 回测：全量三路没有 LLM 就 409；critic 调用失败即报告失败，不再降成 partial；同步快路径仍是显式的
+  无 LLM 模式。
+- 前端：书库徽标「分类中 / 取消中 / 未完成」，总览「段落分类」卡（进度 / 继续分类），活动面板的
+  取消 / 继续分类，头部按钮在分类 / 抽取期间锁定并带原因（「重跑抽取没反应」就是这个锁没有反馈），
+  矩阵空态按正在跑的操作说话。
+- 未做：分批并行调用 / 更大的 BATCH_SIZE（缩短整本分类的小时级耗时）；合成的 durable 任务行。

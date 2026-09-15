@@ -53,6 +53,27 @@
 }
 .sr-safe-note svg { flex-shrink: 0; margin-top: 1px; color: var(--sage); }
 
+/* 导入进度（2026-09-15）：左栏书库头部下方，每条导入一根进度条 */
+.sr-import-progress { margin: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+.sr-import-item { border: 1px solid var(--line-1); border-radius: 10px; padding: 10px 12px; background: var(--paper-0); }
+.sr-import-item.is-succeeded { border-color: var(--sage); }
+.sr-import-item.is-failed { border-color: var(--crimson); }
+.sr-import-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
+.sr-import-title { font-weight: 600; color: var(--ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-import-pct { font-size: 12px; color: var(--ink-3); flex-shrink: 0; }
+.sr-import-bar { height: 6px; border-radius: 999px; background: var(--paper-3); overflow: hidden; margin: 8px 0 6px; }
+.sr-import-bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--ink-2); transition: width .4s ease; }
+.sr-import-item.is-running .sr-import-bar-fill { background: var(--gold); }
+.sr-import-item.is-succeeded .sr-import-bar-fill { background: var(--sage); }
+.sr-import-item.is-failed .sr-import-bar-fill { background: var(--crimson); }
+.sr-import-meta { font-size: 11.5px; color: var(--ink-3); line-height: 1.5; word-break: break-all; }
+.sr-import-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
+/* 参考书活动（2026-09-15）：条目前的操作类型标签、取消态、总览里的进行中块 */
+.sr-activity-kind { display: inline-block; font-family: var(--font-sans); font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--ink-3); border: 1px solid var(--line-1); border-radius: 999px; padding: 1px 7px; margin-right: 6px; vertical-align: 1px; }
+.sr-import-item.is-cancelled { border-color: var(--line-2, var(--line-1)); opacity: .85; }
+.sr-import-item.is-cancelled .sr-import-bar-fill { background: var(--ink-3); }
+.sr-ov-live { padding: 6px 2px 2px; }
+
 /* Stage */
 .sr-stage { display: flex; flex-direction: column; min-width: 0; }
 .sr-stage-head { display: flex; justify-content: space-between; align-items: center; padding: 20px 32px 16px; border-bottom: 1px solid var(--line-1); background: var(--paper-0); }

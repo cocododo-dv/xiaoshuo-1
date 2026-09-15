@@ -13,6 +13,7 @@ from __future__ import annotations
 # `/inject` / `InjectionBundle` HTTP API in the current implementation.
 
 import logging
+import re
 import uuid
 import json
 from typing import Annotated, Any, Literal
@@ -21,6 +22,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from novel_system.api.deps import get_session
 from novel_system.api.mutations import idempotent_response
@@ -32,13 +34,28 @@ logger = logging.getLogger(__name__)
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.cleanup import purge_derived_data
 from novel_system.services.style_reference.dimensions import Layer
+from novel_system.services.style_reference.activity import list_activity
+from novel_system.services.style_reference.import_progress import (
+    IMPORT_KEY_MAX_LENGTH,
+    find_running_operation,
+    get_import_progress,
+    start_import_progress,
+)
+from novel_system.services.style_reference.errors import LLMRequiredError
+from novel_system.services.style_reference.import_job import (
+    classification_state,
+    request_classification_cancel,
+    start_style_reference_classification_worker,
+)
 from novel_system.services.style_reference.ingest import (
     MAX_REFERENCE_BOOK_BYTES,
     IngestService,
 )
+from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed, ensure_local_only_llm
 from novel_system.services.style_reference.materialization import MaterializationService
 from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
+from novel_system.services.style_reference.rag import start_style_reference_rag_index_worker
 from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.run_orchestrator import (
@@ -76,6 +93,35 @@ PATH_PREFIX = "/api/v2/style-reference"
 # ---------------------------------------------------------------------------
 # Pydantic request models
 # ---------------------------------------------------------------------------
+
+
+class PreviewRequest(BaseModel):
+    """示例预览(2026-09-15):前端按段型逐张请求,进度自然可见;不传 = 三种默认段型一次生成。"""
+
+    model_config = ConfigDict(extra="forbid")
+    paragraph_types: (
+        list[
+            Literal[
+                "dialogue",
+                "description_env",
+                "psychology",
+                "narration",
+                "action",
+                "description_char",
+                "transition",
+                "flashback",
+            ]
+        ]
+        | None
+    ) = Field(default=None, max_length=3)
+
+
+class ReclassifyRequest(BaseModel):
+    """重新分类(2026-09-15 严格 LLM:后台任务)。``resume=true`` 从上次的游标继续(失败 / 取消 /
+    中断后),否则清派生数据从头分类。"""
+
+    model_config = ConfigDict(extra="forbid")
+    resume: bool = False
 
 
 class ImportPathRequest(BaseModel):
@@ -190,6 +236,7 @@ def _serialize_book(book) -> dict[str, Any]:
         "total_chars": book.total_chars,
         "status": book.status,
         "stats_json": book.stats_json or {},
+        "classification": _serialize_classification(book),
         "created_at": book.created_at,
         "updated_at": book.updated_at,
     }
@@ -341,12 +388,21 @@ def import_book_path(
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json")
 
+    op_key = request.headers.get("X-Idempotency-Key")
+    client = _require_import_llm(body["cloud_policy"])
+    progress = start_import_progress(op_key, title=body["title"], source="path")
+
     def _do() -> dict[str, Any]:
-        # 与 reclassify 一致:按运行时 LLM 配置 + 书的 cloud_policy 自动选 LLM /
-        # 启发式分类(local_only 仍强制启发式),stats_json.classifier_calibration
-        # .fallback_to_heuristic 如实记录实际走的路径。
-        client, enabled = _get_llm_client_and_enabled()
-        service = IngestService(session, llm_client=client, llm_enabled=enabled)
+        # 严格 LLM(2026-09-15):导入只做准备工作,整本 LLM 分类由提交后派发的后台任务
+        # 逐批执行(import_job),没有启发式兜底。
+        service = IngestService(
+            session,
+            llm_client=client,
+            llm_enabled=True,
+            progress=progress,
+            classification_mode="job",
+            op_key=op_key,
+        )
         result = service.ingest_path(
             file_path=body["file_path"],
             title=body["title"],
@@ -358,16 +414,63 @@ def import_book_path(
             "book": _serialize_book(result.book),
             "paragraphs_count": result.paragraphs_count,
             "safety": result.safety_payload,
+            "classification": _serialize_classification(result.book),
         }
 
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/import-path",
-        payload=body,
-        action=_do,
+    try:
+        return idempotent_response(
+            request,
+            session,
+            method="POST",
+            path_template=f"{PATH_PREFIX}/books/import-path",
+            payload=body,
+            action=_do,
+            after_commit=lambda result: _dispatch_classification(result, client=client, op_key=op_key),
+        )
+    except BaseException as exc:
+        progress.fail(code=_error_code_of(exc), message=str(exc))
+        raise
+
+
+def _error_code_of(exc: BaseException) -> str:
+    return str(getattr(exc, "code", None) or exc.__class__.__name__)
+
+
+def _require_import_llm(cloud_policy: str):
+    """2026-09-15 严格 LLM:导入 / 重新分类没有启发式兜底——LLM 未启用 409
+    ``STYLE_REFERENCE_LLM_REQUIRED``;「仅本机」策略要求运行时模型是本地的。"""
+    client, enabled = _get_llm_client_and_enabled()
+    if not enabled or client is None:
+        raise LLMRequiredError(operation="import_book")
+    if cloud_policy == "local_only":
+        ensure_local_only_llm(operation="import_book")
+    return client
+
+
+def _dispatch_classification(result: dict[str, Any], *, client: Any, op_key: str | None) -> None:
+    book = result.get("book") or {}
+    if str(book.get("status") or "") != "ingesting":
+        return
+    start_style_reference_classification_worker(
+        book_id=str(book.get("book_id") or ""), llm_client=client, op_key=op_key
     )
+
+
+def _serialize_classification(book) -> dict[str, Any] | None:
+    state = classification_state(book)
+    if state is None:
+        return None
+    return {
+        "state": state.get("state"),
+        "kind": state.get("kind"),
+        "op_key": state.get("op_key"),
+        "batches_done": state.get("batches_done"),
+        "batches_total": state.get("batches_total"),
+        "llm_calls": state.get("llm_calls"),
+        "cursor": state.get("cursor"),
+        "error": state.get("error"),
+        "cancel_requested": str(getattr(book, "status", "") or "") == "cancelling",
+    }
 
 
 """上传体积上限:参考书是纯文本,30 万字 UTF-8 约 1MB;10MB 已极宽裕,
@@ -418,9 +521,22 @@ async def import_book_upload(
         "rights_declaration": rights_obj,
     }
 
+    # 导入进度按客户端幂等键登记(进程内),前端在 POST 挂起期间轮询
+    # GET …/imports/{key}/progress 画进度条;同一个键已有在跑的导入时这里拿到的是空实现,
+    # 不会改写真正在执行的那条进度。请求返回后后台分类任务接着同一条继续汇报。
+    op_key = request.headers.get("X-Idempotency-Key")
+    client = _require_import_llm(cloud_policy)
+    progress = start_import_progress(op_key, title=title, source="upload")
+
     def _do() -> dict[str, Any]:
-        client, enabled = _get_llm_client_and_enabled()
-        service = IngestService(session, llm_client=client, llm_enabled=enabled)
+        service = IngestService(
+            session,
+            llm_client=client,
+            llm_enabled=True,
+            progress=progress,
+            classification_mode="job",
+            op_key=op_key,
+        )
         result = service.ingest_upload(
             raw_bytes=raw_bytes,
             file_name=payload["file_name"],
@@ -433,16 +549,71 @@ async def import_book_upload(
             "book": _serialize_book(result.book),
             "paragraphs_count": result.paragraphs_count,
             "safety": result.safety_payload,
+            "classification": _serialize_classification(result.book),
         }
 
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/import-upload",
-        payload=payload,
-        action=_do,
+    # 这个处理器因为要 await 读上传体而是 async def,但导入本身(安全扫描、切段、最多几十次
+    # 串行 LLM 分类调用、指标计算)是同步的 CPU/网络工作。2026-09-15 前它直接在事件循环里
+    # 跑,一本大书导入的几分钟到几小时内后端对所有其他请求都无响应(工作台整体假死)。
+    # 与 FastAPI 对同步路由的做法一致,放到线程池里执行;请求级 Session 只在这一个线程里用。
+    def _run_import() -> Any:
+        # 幂等边界在这里显式调用(tests/test_route_mutation_policy 按 AST 找调用点),
+        # 整段在线程池里执行;分类 worker 在事务提交后派发。
+        return idempotent_response(
+            request,
+            session,
+            method="POST",
+            path_template=f"{PATH_PREFIX}/books/import-upload",
+            payload=payload,
+            action=_do,
+            after_commit=lambda result: _dispatch_classification(result, client=client, op_key=op_key),
+        )
+
+    try:
+        return await run_in_threadpool(_run_import)
+    except BaseException as exc:
+        progress.fail(code=_error_code_of(exc), message=str(exc))
+        raise
+
+
+_IMPORT_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,%d}$" % IMPORT_KEY_MAX_LENGTH)
+
+
+@router.get(f"{PATH_PREFIX}/activity")
+def get_activity(request: Request, session: Session = Depends(get_session)):
+    """参考书活动清单(2026-09-15):模块里所有在跑 / 十分钟内结束的耗时操作,统一形状。
+
+    进程内登记簿(导入 / 重新分类 / 合成画像 / 应用画像建索引 / 回测阶段)+ durable 行
+    (抽取 run 的子维粒度进度、回测报告终态)合成一份;前端一个轮询画全部进度条,刷新页面
+    后也能续接。见 ``services/style_reference/activity.py``。
+    """
+    return ok(
+        {"items": list_activity(session), "server_time": utcnow()},
+        req_id=_req_id(request),
     )
+
+
+@router.get(f"{PATH_PREFIX}/imports/{{import_key}}/progress")
+def get_import_progress_route(import_key: str, request: Request):
+    """只读:一次导入(按其 ``X-Idempotency-Key``)的阶段 / 分类批次 / 百分比。
+
+    进度只存在于执行那条导入的进程里,终态条目保留十分钟;不认识的键(还没到服务端、
+    换了进程、或已过期)一律 404,前端把它当「尚未登记」继续等 POST 的结果。
+    """
+    if not _IMPORT_KEY_RE.match(import_key or ""):
+        raise DomainError(
+            "STYLE_REFERENCE_IMPORT_PROGRESS_UNKNOWN",
+            "import key is not a valid idempotency key",
+            status_code=404,
+        )
+    snapshot = get_import_progress(import_key)
+    if snapshot is None:
+        raise DomainError(
+            "STYLE_REFERENCE_IMPORT_PROGRESS_UNKNOWN",
+            "no import with this key is running or recently finished in this process",
+            status_code=404,
+        )
+    return ok({"progress": snapshot}, req_id=_req_id(request))
 
 
 @router.get(f"{PATH_PREFIX}/books")
@@ -545,6 +716,9 @@ def delete_book(
     def _do() -> dict[str, Any]:
         repo = StyleReferenceRepository(session)
         book = repo.get_book(book_id)
+        if book is not None and book.status in ("ingesting", "cancelling"):
+            # 分类 worker 在下一批边界看到书没了 / 取消状态即退出
+            request_classification_cancel(session, book_id)
         if book is None:
             raise DomainError(
                 "STYLE_REFERENCE_BOOK_NOT_FOUND",
@@ -572,30 +746,95 @@ def delete_book(
 def reclassify_book(
     book_id: str,
     request: Request,
+    payload: ReclassifyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    """重跑段落分类(2026-09-15 严格 LLM:后台任务,整本都由 LLM 分类)。
+
+    非续跑先清空派生数据(runs / findings / profiles / bindings 等;paragraphs 与 book 保留),
+    书置 ``ingesting``,分类 worker 在事务提交后派发;``resume=true`` 从上次游标继续。
+    LLM 未启用 409 ``STYLE_REFERENCE_LLM_REQUIRED``;「仅本机」的书需要本地模型。
+    """
+    resume = bool(payload.resume) if payload is not None else False
+    op_key = request.headers.get("X-Idempotency-Key")
+    existing = StyleReferenceRepository(session).get_book(book_id)
+    client = _require_import_llm(existing.cloud_policy if existing is not None else "")
+    if existing is not None:
+        state = classification_state(existing)
+        if existing.status in ("ingesting", "cancelling") and state is not None and state.get("state") in ("queued", "running"):
+            raise DomainError(
+                "STYLE_REFERENCE_CLASSIFICATION_ALREADY_ACTIVE",
+                "这本书正在分类,请等它完成或先取消",
+                status_code=409,
+                details={"book_id": book_id, "op_key": state.get("op_key")},
+            )
+    progress = (
+        start_import_progress(
+            op_key, kind="reclassify", title=existing.title, source="reclassify", book_id=book_id
+        )
+        if existing is not None
+        else start_import_progress(None)
+    )
+
+    def _do() -> dict[str, Any]:
+        service = IngestService(
+            session,
+            llm_client=client,
+            llm_enabled=True,
+            progress=progress,
+            classification_mode="job",
+            op_key=op_key,
+        )
+        state = service.start_reclassify_job(book_id, resume=resume)
+        book = StyleReferenceRepository(session).get_book(book_id)
+        return {
+            "book": _serialize_book(book),
+            "book_id": book_id,
+            "status": "classifying",
+            "resume": resume,
+            "paragraphs_count": int(state.get("total_paragraphs") or 0),
+            "classification": _serialize_classification(book),
+        }
+
+    try:
+        return idempotent_response(
+            request,
+            session,
+            method="POST",
+            path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
+            payload={"book_id": book_id, "resume": resume},
+            action=_do,
+            after_commit=lambda result: _dispatch_classification(result, client=client, op_key=op_key),
+        )
+    except BaseException as exc:
+        progress.fail(code=_error_code_of(exc), message=str(exc))
+        raise
+
+
+@router.post(f"{PATH_PREFIX}/books/{{book_id}}/classification/cancel")
+def cancel_classification(
+    book_id: str,
+    request: Request,
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    """PR-23 — 重跑段落分类器(复用 ingest 的 classify_paragraphs 管线)。
-
-    更新 paragraph_type / stats_json 并清空派生数据(paragraphs 与 book 保留)。
-    分类需要 LLM;不可用时 IngestService.reclassify 抛 LLMRequiredError。
-    """
+    """取消进行中的分类任务:置标志,worker 在下一批边界退出,书标 failed(可「继续分类」或删书)。"""
 
     def _do() -> dict[str, Any]:
-        client, enabled = _get_llm_client_and_enabled()
-        service = IngestService(session, llm_client=client, llm_enabled=enabled)
-        paragraphs_count = service.reclassify(book_id)
-        return {
-            "book_id": book_id,
-            "status": "reclassified",
-            "paragraphs_count": paragraphs_count,
-        }
+        state = request_classification_cancel(session, book_id)
+        if state is None:
+            raise DomainError(
+                "STYLE_REFERENCE_BOOK_NOT_FOUND",
+                f"book {book_id!r} has no classification job",
+                status_code=404,
+            )
+        return {"book_id": book_id, "state": state.get("state"), "cancel_requested": bool(state.get("cancel_requested"))}
 
     return idempotent_response(
         request,
         session,
         method="POST",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
+        path_template=f"{PATH_PREFIX}/books/{{book_id}}/classification/cancel",
         payload={"book_id": book_id},
         action=_do,
     )
@@ -958,6 +1197,35 @@ def synthesize_profile(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
+    # 进度 + 活跃守卫(2026-09-15):合成是几分钟的同步请求,按幂等键登记阶段;同书已有一份
+    # 在合成时拒绝再起(刷新页面后再点一次曾会并发跑第二份,各写一份画像)。
+    op_key = request.headers.get("X-Idempotency-Key")
+    existing_run = StyleReferenceRepository(session).get_run(run_id)
+    progress = start_import_progress(None)
+    if existing_run is not None:
+        active = find_running_operation(kind="synthesize", book_id=existing_run.book_id)
+        if active is not None and active.get("op_key") != (op_key or ""):
+            raise DomainError(
+                "STYLE_REFERENCE_SYNTHESIS_ALREADY_ACTIVE",
+                "这本书已有正在进行的画像合成,请等它完成后再合成",
+                status_code=409,
+                details={
+                    "op_key": active.get("op_key"),
+                    "run_id": active.get("target_id"),
+                    "book_id": existing_run.book_id,
+                },
+            )
+        existing_book = StyleReferenceRepository(session).get_book(existing_run.book_id)
+        progress = start_import_progress(
+            op_key,
+            kind="synthesize",
+            title=existing_book.title if existing_book is not None else None,
+            source="synthesize",
+            book_id=existing_run.book_id,
+            target_id=run_id,
+        )
+    outcome: dict[str, Any] = {}
+
     def _do() -> dict[str, Any]:
         repo = StyleReferenceRepository(session)
         run = repo.get_run(run_id)
@@ -968,8 +1236,11 @@ def synthesize_profile(
                 status_code=404,
             )
         client, enabled = _get_llm_client_and_enabled()
-        synth = ProfileSynthesizer(session, llm_client=client, llm_enabled=enabled)
+        synth = ProfileSynthesizer(
+            session, llm_client=client, llm_enabled=enabled, progress=progress
+        )
         profile = synth.synthesize(run.book_id, run_id)
+        outcome["profile_id"] = profile.profile_id
         # FE-ALIGN P5：风格学习完成 → 全局 decision 卡（任一作品的收件箱可见；
         # 「应用到本项目」effect 在 resolve 时以当前作品为 scope 执行绑定）
         try:
@@ -1013,14 +1284,20 @@ def synthesize_profile(
             logger.exception("style profile decision card creation failed")
         return {"profile": _serialize_profile(profile)}
 
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/runs/{{run_id}}/synthesize",
-        payload={"run_id": run_id},
-        action=_do,
-    )
+    try:
+        response = idempotent_response(
+            request,
+            session,
+            method="POST",
+            path_template=f"{PATH_PREFIX}/runs/{{run_id}}/synthesize",
+            payload={"run_id": run_id},
+            action=_do,
+        )
+    except BaseException as exc:
+        progress.fail(code=_error_code_of(exc), message=str(exc))
+        raise
+    progress.succeed(profile_id=outcome.get("profile_id"))
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -1064,13 +1341,17 @@ def get_profile(
 def preview_profile(
     profile_id: str,
     request: Request,
-    payload: EmptyRequest | None = None,
+    payload: PreviewRequest | None = None,
     session: Session = Depends(get_session),
 ):
+    paragraph_types = (
+        tuple(payload.paragraph_types) if payload is not None and payload.paragraph_types else None
+    )
+
     def _do() -> dict[str, Any]:
         client, enabled = _get_llm_client_and_enabled()
         svc = PreviewService(session, llm_client=client, llm_enabled=enabled)
-        results = svc.generate(profile_id)
+        results = svc.generate(profile_id, target_types=paragraph_types)
         return {
             "profile_id": profile_id,
             "samples": [r.model_dump() for r in results],
@@ -1081,7 +1362,7 @@ def preview_profile(
         session,
         method="POST",
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/preview",
-        payload={"profile_id": profile_id},
+        payload={"profile_id": profile_id, "paragraph_types": list(paragraph_types or [])},
         action=_do,
     )
 
@@ -1115,12 +1396,21 @@ def apply_profile(
             task_type=task_type,
             strategy=strategy,
             config_json=payload.injection_config() or None,
+            # 2026-09-15:索引在提交后由后台 worker 建(见 _dispatch),不占请求与写锁
+            build_rag_index=False,
         )
         return {
             "profile_id": result.profile_id,
             "binding_id": result.binding_id,
             "rag_index": result.rag_index,
         }
+
+    def _dispatch(result: dict[str, Any]) -> None:
+        rag_index = dict(result.get("rag_index") or {})
+        start_style_reference_rag_index_worker(
+            profile_id=str(result.get("profile_id") or profile_id),
+            book_id=rag_index.get("book_id") or None,
+        )
 
     return idempotent_response(
         request,
@@ -1129,6 +1419,7 @@ def apply_profile(
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/apply",
         payload={"profile_id": profile_id, **body},
         action=_do,
+        after_commit=_dispatch,
     )
 
 

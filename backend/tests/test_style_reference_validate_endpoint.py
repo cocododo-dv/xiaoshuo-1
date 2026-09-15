@@ -64,9 +64,17 @@ def test_validate_endpoint_sync_only_happy(client: TestClient, monkeypatch) -> N
     assert data["report_id"].startswith("sr_rep_")
 
 
-def test_validate_endpoint_async_returns_polling_url(client: TestClient, monkeypatch) -> None:
-    """async_full 应立返 polling_url + sync_result=None。"""
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
+def test_validate_endpoint_async_returns_polling_url(
+    client: TestClient, monkeypatch, fake_validation_llm
+) -> None:
+    """async_full 应立返 polling_url + sync_result=None。2026-09-15 严格 LLM:全量三路必须有
+    LLM,「仅本机」的书要求本地模型——测试给一个假 critic 并把运行时模型标成本地。"""
+    import novel_system.api.routes.style_reference as sr_routes
+    from novel_system.services.style_reference import policy as policy_module
+
+    fake = fake_validation_llm("with_quote")
+    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
+    monkeypatch.setattr(policy_module, "runtime_llm_is_local", lambda settings=None: True)
     profile_id = _seed_profile("vasync")
     resp = client.post(
         f"{PREFIX}/profiles/{profile_id}/validate",
@@ -82,12 +90,16 @@ def test_validate_endpoint_async_returns_polling_url(client: TestClient, monkeyp
 
 
 def test_async_validation_dispatches_only_after_idempotency_commit(
-    client: TestClient, monkeypatch
+    client: TestClient, monkeypatch, fake_validation_llm
 ) -> None:
     from novel_system.db.models import IdempotencyKey, StyleReferenceValidationReport
     import novel_system.api.routes.style_reference as sr_routes
+    from novel_system.services.style_reference import policy as policy_module
 
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
+    # 严格 LLM:async_full 先要有 LLM(这里派发被观察函数顶替,worker 不会真跑)
+    fake = fake_validation_llm("with_quote")
+    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
+    monkeypatch.setattr(policy_module, "runtime_llm_is_local", lambda settings=None: True)
     observations: list[tuple[str | None, str | None]] = []
 
     def observe_dispatch(**kwargs) -> None:  # noqa: ANN003

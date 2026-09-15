@@ -14,7 +14,7 @@ import logging
 import random
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -83,6 +83,16 @@ class ExtractionRetryPolicy:
     max_targeted_retries: int = 2
     max_targeted_findings_per_batch: int = 2
     max_full_retries: int = 1
+
+
+class ExtractionProgress(Protocol):
+    """抽取器向 run 进度汇报的最小接口(2026-09-15 子维粒度进度;实现在 run_orchestrator)。"""
+
+    def sub_dim_started(self, sub_dim: SubDimension) -> None: ...
+
+    def sub_dim_done(self, sub_dim: SubDimension) -> None: ...
+
+    def llm_call(self, node_id: str) -> None: ...
 
 
 @dataclass
@@ -235,6 +245,7 @@ class BaseExtractor:
         retry_policy: ExtractionRetryPolicy | None = None,
         rng: random.Random | None = None,
         checkpoint: Any | None = None,
+        progress: ExtractionProgress | None = None,
     ) -> None:
         self.session = session
         self.llm_client = llm_client
@@ -257,6 +268,8 @@ class BaseExtractor:
         # 一层 4 个 sub_dim 的写事务会跨着多次分钟级 LLM 调用持有 SQLite 写锁,
         # 期间任何 UI 写操作等满 busy_timeout 后报 "database is busy"。
         self._checkpoint = checkpoint
+        # 子维粒度进度(每个 sub_dim 开始 / 结束、每次 LLM 调用),无消费者时为 None。
+        self._progress = progress
 
     @property
     def sub_dimensions(self) -> list[SubDimension]:
@@ -278,8 +291,13 @@ class BaseExtractor:
                 # 未中断执行相同的位置；不发 LLM、不重复落库。
                 self._sample_paragraphs(sub_dim)
                 continue
+            progress = getattr(self, "_progress", None)
+            if progress is not None:
+                progress.sub_dim_started(sub_dim)
             result = self._extract_with_retry(sub_dim)
             results.append(result)
+            if progress is not None:
+                progress.sub_dim_done(sub_dim)
             if self._checkpoint is not None:
                 self._checkpoint()
         return results
@@ -614,6 +632,9 @@ class BaseExtractor:
 
     def _call_llm(self, node_id: str, payload: dict) -> dict[str, Any]:
         # PR-8 §"_call_llm 统一" — 复用 _llm_helper.call_llm_node,统一 LLM 调用入口
+        progress = getattr(self, "_progress", None)
+        if progress is not None:
+            progress.llm_call(node_id)
         try:
             return call_llm_node(
                 node_id,

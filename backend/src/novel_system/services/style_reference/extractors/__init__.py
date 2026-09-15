@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from novel_system.services.style_reference.extractors.base import (
     BaseExtractor,
+    ExtractionProgress,
     ExtractionRetryPolicy,
     ExtractionRunResult,
 )
@@ -18,6 +19,7 @@ from novel_system.services.style_reference.extractors.theme import ThemeExtracto
 
 __all__ = [
     "BaseExtractor",
+    "ExtractionProgress",
     "ExtractionRetryPolicy",
     "ExtractionRunResult",
     "LanguageExtractor",

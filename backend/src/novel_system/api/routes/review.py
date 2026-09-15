@@ -15,6 +15,7 @@ from novel_system.db.models import ReviewItem
 from novel_system.services.errors import DomainError
 from novel_system.services.pagination import paginate_select, resolve_pagination_request
 from novel_system.services.review_cards import ReviewCardService
+from novel_system.services.review_effects import run_deferred_dispatches
 
 router = APIRouter(tags=["review"])
 
@@ -166,6 +167,8 @@ def resolve_review_card(
             project_id=body.get("project_id"),
             actor_ref=actor_ref,
         ),
+        # effect 登记的后台派发(如风格画像应用后的 RAG 建索引)在事务提交后执行
+        after_commit=lambda result: run_deferred_dispatches((result or {}).get("effect_result")),
     )
 
 @router.post("/api/v1/review-items/{review_id}/unresolve")

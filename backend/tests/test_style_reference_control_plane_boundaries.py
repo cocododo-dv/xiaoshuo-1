@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -212,10 +213,11 @@ def test_validation_worker_persists_control_plane_failure_at_every_boundary(
     assert row.semantic_json == []
 
 
-def test_validation_worker_still_degrades_explicit_provider_failure(
+def test_validation_worker_fails_the_report_on_explicit_provider_failure(
     session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """2026-09-15 严格 LLM:critic 调用失败就是报告失败(status=failed + 可重试),不再降成 partial。"""
     degraded: list[bool] = []
 
     def provider_failure(*_args: Any, **_kwargs: Any) -> None:
@@ -248,22 +250,57 @@ def test_validation_worker_still_degrades_explicit_provider_failure(
         llm_enabled=True,
     )
 
-    assert degraded == [True]
+    assert degraded == []  # 没有走到结论计算:报告直接失败
     session.expire_all()
     row = session.get(StyleReferenceValidationReport, report_id)
     assert row is not None
-    assert row.verdict == "partial"
-    assert row.status == "completed"
-    assert row.error_code is None
+    assert row.status == "failed"
+    assert row.verdict == "fail"
+    assert row.error_code == "STYLE_REFERENCE_VALIDATION_FAILED"
+    assert row.retryable is True
+
+
+def test_async_full_worker_without_llm_fails_the_report(
+    session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-09-15 严格 LLM:worker 只在 validate() 确认 LLM 可用后才会派发;没有 LLM 的 worker
+    是状态错误,报告直接 failed(STYLE_REFERENCE_LLM_REQUIRED),不再降成 partial。"""
+    report_id = _seed_durable_validation_report(session, "semantic_unavailable")
+    profile_id = "sr_profile_cp_semantic_unavailable"
+    monkeypatch.setattr(validation_core, "_load_plagiarism_corpus", lambda *_args: [])
+    monkeypatch.setattr(
+        plagiarism,
+        "check_plagiarism",
+        lambda *_args: SimpleNamespace(passed=True, model_dump=lambda: {"passed": True}),
+    )
+    monkeypatch.setattr(quantitative, "check_quantitative", lambda *_args: [])
+    monkeypatch.setattr(forbidden_local, "check_forbidden_local", lambda *_args: [])
+    monkeypatch.setattr(policy, "cloud_llm_allowed", lambda _book: True)
+
+    runner._async_worker(
+        report_id=report_id,
+        profile_id=profile_id,
+        generated_text="generated",
+        llm_client=None,
+        llm_enabled=False,
+    )
+
+    session.expire_all()
+    row = session.get(StyleReferenceValidationReport, report_id)
+    assert row is not None
+    assert row.status == "failed"
+    assert row.verdict == "fail"
+    assert row.error_code == "STYLE_REFERENCE_LLM_REQUIRED"
+    assert row.retryable is True
 
 
 @pytest.mark.parametrize(
     ("llm_enabled", "llm_client", "expected_semantic_calls"),
     [
-        (False, None, 0),
         (True, object(), 1),
     ],
-    ids=("semantic-unavailable", "semantic-empty-result"),
+    ids=("semantic-empty-result",),
 )
 def test_async_full_without_semantic_evidence_cannot_report_full_pass(
     session,
@@ -315,3 +352,62 @@ def test_async_full_without_semantic_evidence_cannot_report_full_pass(
     assert row is not None
     assert row.verdict == "partial"
     assert row.status == "completed"
+
+
+def test_segmentation_delivers_reasoning_inflated_usage_when_no_fence_is_armed(session) -> None:
+    """2026-09-15 真实回归：参考书导入的分类节点路由到 gemini-*-high 类中转，中转把思考
+    token 计入 completion_tokens 且不受 max_tokens 封顶（2000 上限的分类应答回报 11776 个
+    completion token），预留额被超出——过去整本导入在这一批 500。没有任何配额栅栏武装时，
+    分类结果必须照常交付，账本按真实用量落账并记下超出量。"""
+    from novel_system.db.models import LlmCall, LlmCallAttempt
+    from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
+
+    class ThinkingRelayClient(OnlineAccountedExecution):
+        def __init__(self) -> None:
+            self.requests: list[Any] = []
+
+        def generate_accounted(self, request, *, accounting_hook):
+            self.requests.append(request)
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            structured = {
+                "classifications": [
+                    {"paragraph_index": 0, "paragraph_type": "dialogue", "confidence": "high"},
+                    {"paragraph_index": 1, "paragraph_type": "narration", "confidence": "medium"},
+                ]
+            }
+            usage = {"prompt_tokens": 2244, "completion_tokens": 11776, "total_tokens": 14020}
+            response = LLMResponse(
+                request_id="thinking-relay",
+                provider="openai",
+                model=request.model,
+                text=json.dumps(structured, ensure_ascii=False),
+                structured_output=structured,
+                response_format="json_object",
+                raw_response={},
+                usage=dict(usage),
+                raw_usage=dict(usage),
+                usage_present=True,
+                usage_complete=True,
+            )
+            accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+            return response
+
+    client = ThinkingRelayClient()
+    result = segmentation_llm._classify_via_node(
+        [(0, 6, "「你来了。」"), (6, 20, "他没有回答，只是把门关上。")],
+        segmentation_llm.NODE_BULK,
+        client,
+        session=session,
+        scope_id="sr_book_thinking_relay",
+    )
+
+    assert result == [("dialogue", 0.9), ("narration", 0.6)]
+    assert client.requests[0].max_output_tokens == 2000
+    parent = session.query(LlmCall).one()
+    attempt = session.query(LlmCallAttempt).one()
+    assert parent.accounting_status == attempt.accounting_status == "settled"
+    assert parent.total_tokens == 14020
+    assert attempt.total_tokens > attempt.reserved_tokens
+    assert parent.response_payload_summary["usage_overage_tokens"] == (
+        attempt.total_tokens - attempt.reserved_tokens
+    )

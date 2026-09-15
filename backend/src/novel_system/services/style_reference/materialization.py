@@ -59,6 +59,7 @@ class MaterializationService:
         task_type: TaskType | str = TaskType.SCENE_GENERATION,
         strategy: InjectionStrategy | str | None = None,
         config_json: dict[str, Any] | None = None,
+        build_rag_index: bool = True,
     ) -> MaterializeResult:
         """``config_json`` 落入 binding(intensity / sub_dimensions / include 开关),
         由 InjectionService._render 在注入时消费——前端强度滑块的端到端落点。"""
@@ -122,6 +123,20 @@ class MaterializationService:
         # 5. v2 内容克制 RAG 索引就绪检查。新画像在 synthesize 时通常已建好；
         #    老画像或曾中断的部分索引在 apply/re-apply 时自动、幂等升级。向量后端
         #    属于增强能力，失败不得撤销已经合法完成的绑定与 ReviewItem 写入。
+        # 2026-09-15:``build_rag_index=False``(HTTP apply 与收件箱「批准应用」走这条)时,
+        # 绑定与激活照常落库,RAG 索引留给调用方在事务提交后交给后台 worker
+        # (``rag.start_style_reference_rag_index_worker``)——190 万字的书建索引要 35 秒,
+        # 不该占着 SQLite 写锁,也该在「参考书活动」面板里看得见。
+        if not build_rag_index:
+            return MaterializeResult(
+                profile_id=profile_id,
+                binding_id=binding_id,
+                rag_index={
+                    "status": "scheduled",
+                    "profile_id": profile.profile_id,
+                    "book_id": profile.book_id,
+                },
+            )
         try:
             from novel_system.services.style_reference.rag import ensure_rag_index
 

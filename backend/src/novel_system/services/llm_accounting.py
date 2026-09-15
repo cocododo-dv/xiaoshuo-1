@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import uuid
 from collections.abc import Callable
@@ -41,6 +42,8 @@ from novel_system.services.llm_client import (
 )
 from novel_system.services.llm_providers.base import LLMDispatchKind
 
+
+logger = logging.getLogger(__name__)
 
 MESSAGE_TOKEN_OVERHEAD = 4
 ACCOUNTING_EXECUTION_MODE_KEY = "_accounting_provider_execution_mode"
@@ -891,6 +894,34 @@ def _global_fences_armed(settings: Any) -> bool:
     )
 
 
+def _usage_overage_is_fenced(session: Session, scene_id: str | None) -> bool:
+    """Whether provider usage beyond the reservation must block delivery.
+
+    The reservation is the pre-dispatch fence input, not a promise the provider
+    keeps: thinking backends report reasoning tokens inside ``completion_tokens``
+    and relays routinely do not cap them under ``max_tokens`` (a 2,000-token
+    classification answer came back with 11,776 completion tokens), so actual
+    usage can legitimately exceed any deterministic estimate.  While a fence is
+    armed — any singleton-wide quota, or an armed scene token budget — the
+    overage means that fence was checked against too small a number, and the
+    response stays blocked exactly as before.  With nothing armed (the
+    single-author default) there is no fence to protect: the tokens are already
+    spent, so the response is delivered and settled at actual usage, with the
+    overage kept in the audit summary as ``usage_overage_tokens``.
+    """
+
+    if _global_fences_armed(load_llm_accounting_runtime()):
+        return True
+    if scene_id is None:
+        return False
+    state = session.get(SceneRunState, scene_id)
+    if state is None or state.scene_token_budget is None:
+        return False
+    from novel_system.services import scene_budget
+
+    return not scene_budget.is_scene_budget_disarmed(state)
+
+
 def _enforce_global_llm_quotas(
     session: Session,
     context: LLMCallContext,
@@ -1453,7 +1484,9 @@ def _record_unknown_dispatch(
         )
         provider_request_id = None
     now = utcnow()
-    exceeds = usage.total_tokens > request_estimate.reserved_tokens
+    exceeds = usage.total_tokens > request_estimate.reserved_tokens and _usage_overage_is_fenced(
+        session, context.scene_id
+    )
     attempt = LlmCallAttempt(
         attempt_id=f"llmattempt_{uuid.uuid4().hex}",
         llm_call_id=call_id,
@@ -2070,7 +2103,21 @@ class _LedgerAttemptHook:
         assert attempt is not None
         reserved_tokens = int(attempt.reserved_tokens or 0)
         charged = min(usage.total_tokens, reserved_tokens)
-        exceeds = usage.total_tokens > reserved_tokens
+        overage_tokens = usage.total_tokens - reserved_tokens
+        exceeds = overage_tokens > 0 and _usage_overage_is_fenced(
+            self._session, self._context.scene_id
+        )
+        if overage_tokens > 0 and not exceeds:
+            logger.warning(
+                "llm accounting: provider usage %d exceeded the reservation %d by %d tokens "
+                "on call %s (attempt %s); no fence is armed, so the response is delivered "
+                "and settled at actual usage",
+                usage.total_tokens,
+                reserved_tokens,
+                overage_tokens,
+                self._call_id,
+                attempt_id,
+            )
         target_status = (
             "usage_exceeds_reservation" if exceeds else ("settled" if succeeded else "failed")
         )
@@ -2309,6 +2356,9 @@ def _finalize_parent_failure(
         summary = dict(parent.response_payload_summary or {})
         summary["usage_overage_tokens"] = usage_overage_tokens
         parent.response_payload_summary = sanitize_audit_summary(summary)
+    # The blocking status follows the attempts (fenced overage only); an
+    # unfenced overage is audit data on an otherwise ordinary failure.
+    if _has_exceeded_attempt(session, call_id):
         parent.accounting_status = "usage_exceeds_reservation"
     else:
         parent.accounting_status = "rejected" if rejected_before_dispatch else "failed"
@@ -2361,7 +2411,9 @@ def _settle_open_attempts_for_failure(
                 total_tokens=attempt.estimated_tokens,
                 usage_is_estimate=True,
             )
-        exceeds = usage.total_tokens > attempt.reserved_tokens
+        exceeds = usage.total_tokens > attempt.reserved_tokens and _usage_overage_is_fenced(
+            session, parent.scene_id
+        )
         attempt.prompt_tokens = usage.prompt_tokens
         attempt.completion_tokens = usage.completion_tokens
         attempt.total_tokens = usage.total_tokens
@@ -2397,7 +2449,9 @@ def mark_postprocess_failure(
         raise KeyError(f"unknown llm call {llm_call_id}")
     usage_overage_tokens = _usage_overage_tokens(session, llm_call_id)
     parent.accounting_status = (
-        "usage_exceeds_reservation" if usage_overage_tokens else "failed"
+        "usage_exceeds_reservation"
+        if _has_exceeded_attempt(session, llm_call_id)
+        else "failed"
     )
     parent.error_code = error_code
     summary = dict(parent.response_payload_summary or {})

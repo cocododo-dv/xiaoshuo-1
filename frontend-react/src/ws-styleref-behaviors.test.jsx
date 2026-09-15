@@ -66,8 +66,22 @@ function fixture({ profileStatus = "draft", stale = false, profileRunId = "run1"
   };
 }
 
+/* 活动清单（2026-09-15）：抽取 run 的终态经 GET …/activity 回到前端（不再逐 run 轮询 + alert）。 */
+function activityItemsFor(runStatus) {
+  const status = runStatus === "done" ? "succeeded" : runStatus;
+  return [{
+    key: "run:run1", kind: "extract", kind_label: "抽取", status, book_id: "bk1", target_id: "run1",
+    phase: status === "succeeded" ? "done" : "failed", phase_label: status === "succeeded" ? "完成" : "失败",
+    percent: status === "succeeded" ? 100 : 40, steps: null, llm_calls: 7, retries: 1,
+    started_at: "2026-09-05T00:00:00Z", updated_at: "2026-09-05T00:09:00Z", elapsed_seconds: 540, eta_seconds: null,
+    error: status === "failed" ? { code: "STYLE_REFERENCE_EXTRACTION_FAILED", message: "extraction failed" } : null,
+    result: null, cancellable: false, retryable: status === "failed",
+  }];
+}
+
 function installStyleRefRouter(client, fx, { previewStats = PREVIEW_STATS, runStatus = "done" } = {}) {
   client.apiGet.mockImplementation((url) => {
+    if (url === "/api/v2/style-reference/activity") return Promise.resolve({ items: activityItemsFor(runStatus) });
     if (url === "/api/v2/style-reference/books") return Promise.resolve({ books: [] });
     if (url === "/api/v2/style-reference/books/bk1") return Promise.resolve({ book: fx.book });
     if (url === "/api/v2/style-reference/books/bk1/runs") return Promise.resolve({ runs: fx.runs });
@@ -229,7 +243,7 @@ describe("W7 纯函数", () => {
 
 /* ---------------- (a) 缓存失效 ---------------- */
 describe("深层缓存失效", () => {
-  it("run 到达 done 后 srLoadDeep 被 force 重读（非 force 命中缓存不发请求）", async () => {
+  it("run 到达 done 后 srLoadDeep 被 force 重读（非 force 命中缓存不发请求）；完成走活动面板，不弹窗", async () => {
     vi.useFakeTimers();
     const { mod, client } = await load(fixture());
     await mod.srLoadDeep("bk1");
@@ -240,33 +254,58 @@ describe("深层缓存失效", () => {
     expect(urls(client)).not.toContain("/api/v2/style-reference/books/bk1");
 
     mod.srPollRun("run1", "bk1");
-    await vi.advanceTimersByTimeAsync(2600);
+    // 本地先登记一条在跑的 extract 条目（key = run:<run_id>）
+    expect(mod.srActivityEntries()[0]).toMatchObject({ key: "run:run1", kind: "extract", status: "running", bookId: "bk1" });
+    await vi.advanceTimersByTimeAsync(50);
     vi.useRealTimers();
+    await vi.waitFor(() => expect(urls(client)).toContain("/api/v2/style-reference/activity"), T);
     await vi.waitFor(() => expect(urls(client)).toContain("/api/v2/style-reference/books/bk1"), T);
-    await vi.waitFor(() => expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("抽取完成")), T);
-    expect(urls(client)).toContain("/api/v2/style-reference/runs/run1");
+    await vi.waitFor(() => expect(mod.srActivityEntries()[0].status).toBe("succeeded"), T);
+    expect(window.alert).not.toHaveBeenCalled();
+    expect(mod.srActivityView(mod.srActivityEntries()[0]).detail).toContain("抽取完成");
+    // 不再逐 run 轮询
+    expect(urls(client)).not.toContain("/api/v2/style-reference/runs/run1");
+    mod.srActivityStop();
   });
 
-  it("run failed 同样强制重读（bookId 取 run.book_id）", async () => {
+  it("run failed 同样强制重读（bookId 来自活动清单的 book_id），失败原因写进条目", async () => {
     vi.useFakeTimers();
     const { mod, client } = await load(fixture(), { runStatus: "failed" });
     await mod.srLoadDeep("bk1");
     client.apiGet.mockClear();
-    mod.srPollRun("run1"); // 不传 bookId → 用 run.book_id
-    await vi.advanceTimersByTimeAsync(2600);
+    mod.srPollRun("run1"); // 不传 bookId → 活动清单里的 book_id
+    await vi.advanceTimersByTimeAsync(50);
     vi.useRealTimers();
     await vi.waitFor(() => expect(urls(client)).toContain("/api/v2/style-reference/books/bk1"), T);
-    await vi.waitFor(() => expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("失败")), T);
+    await vi.waitFor(() => expect(mod.srActivityEntries()[0].status).toBe("failed"), T);
+    const entry = mod.srActivityEntries()[0];
+    expect(entry.bookId).toBe("bk1");
+    expect(entry.error).toContain("STYLE_REFERENCE_EXTRACTION_FAILED");
+    expect(mod.srActivityView(entry).detail).toContain("抽取失败");
+    expect(window.alert).not.toHaveBeenCalled();
+    mod.srActivityStop();
   });
 
-  it("重新分类成功后强制重读深层数据", async () => {
+  it("重新分类：按幂等键登记活动条目，POST 返回后交给活动清单跟后台分类，任务完成时重读深层数据，不弹窗", async () => {
     const { mod, client } = await load(fixture());
     await mod.srLoadDeep("bk1");
     client.apiGet.mockClear();
     await mod.srBookAction("reclassify", "bk1");
     expect(postUrls(client)).toContain("/api/v2/style-reference/books/bk1/reclassify");
+    const call = client.apiPost.mock.calls.find(([u]) => u.endsWith("/reclassify"));
+    expect(call[2]).toEqual({ idempotencyKey: expect.stringMatching(/^sr-reclassify-/) });
+    // 请求里已清派生数据 → 立即重读一次
     expect(urls(client)).toContain("/api/v2/style-reference/books/bk1");
-    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("重新分类"));
+    expect(window.alert).not.toHaveBeenCalled();
+    let entry = mod.srActivityEntries().find((e) => e.kind === "reclassify");
+    // 2026-09-15 严格 LLM：分类是后台任务，POST 返回时条目仍在跑、交由活动清单（owned=false）
+    expect(entry).toMatchObject({ key: call[2].idempotencyKey, status: "running", owned: false, bookId: "bk1", phase: "classify" });
+    client.apiGet.mockClear();
+    mod.srActivityApply([{ key: entry.key, kind: "reclassify", status: "succeeded", book_id: "bk1", percent: 100, phase: "done", phase_label: "完成" }]);
+    await vi.waitFor(() => expect(urls(client)).toContain("/api/v2/style-reference/books/bk1"), T);
+    entry = mod.srActivityEntries().find((e) => e.kind === "reclassify");
+    expect(entry.status).toBe("succeeded");
+    mod.srActivityStop();
   });
 
   it("删书成功后本地深层缓存被清掉并广播", async () => {

@@ -29,7 +29,9 @@ import json
 import logging
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+import threading
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -50,6 +52,28 @@ from novel_system.services.style_reference.style_signature import (
 from novel_system.services.vector_store import VectorStore, get_vector_store
 
 logger = logging.getLogger(__name__)
+
+# ``build_rag_index`` 的进度回调:``(stage, done, total)``,stage ∈ {"signatures", "write"}。
+RagProgress = Callable[[str, int, int], None]
+RAG_PROGRESS_EVERY_PARAGRAPHS = 250
+
+# 同一画像的索引构建串行化:apply 的后台构建与生成期 ``_render_rag`` 的惰性 ensure 同时到达时,
+# 后者等前者建完直接读到 ready,而不是各建一份互相覆盖。
+_BUILD_LOCKS: dict[str, threading.Lock] = {}
+_BUILD_LOCKS_GUARD = threading.Lock()
+
+# apply 后台建索引的执行器(单线程;索引是 CPU 工作,串行避免两本大书同时吃满 CPU)。
+_RAG_EXECUTOR: ThreadPoolExecutor | None = None
+_RAG_EXECUTOR_LOCK = threading.Lock()
+
+
+def _profile_build_lock(profile_id: str) -> threading.Lock:
+    with _BUILD_LOCKS_GUARD:
+        lock = _BUILD_LOCKS.get(profile_id)
+        if lock is None:
+            lock = threading.Lock()
+            _BUILD_LOCKS[profile_id] = lock
+        return lock
 
 # 三粒度(顺序即 "由细到粗",用于稳定排序的次序权重)
 GRANULARITIES: tuple[str, ...] = ("sentence", "paragraph", "scene")
@@ -230,6 +254,7 @@ def build_rag_index(
     *,
     vector_store: VectorStore | None = None,
     book_id: str | None = None,
+    progress: RagProgress | None = None,
 ) -> dict[str, Any]:
     """为 profile 构建三粒度向量索引。
 
@@ -262,7 +287,14 @@ def build_rag_index(
 
     sentence_docs: list[dict[str, Any]] = []
     paragraph_docs: list[dict[str, Any]] = []
-    for para in paragraphs:
+    total_paragraphs = len(paragraphs)
+    if progress is not None:
+        progress("signatures", 0, total_paragraphs)
+    for index, para in enumerate(paragraphs, start=1):
+        if progress is not None and (
+            index % RAG_PROGRESS_EVERY_PARAGRAPHS == 0 or index == total_paragraphs
+        ):
+            progress("signatures", index, total_paragraphs)
         ptext = (getattr(para, "text", "") or "").strip()
         if not ptext:
             continue
@@ -310,9 +342,13 @@ def build_rag_index(
         "scene": scene_docs,
     }
     counts: dict[str, Any] = {}
-    for gran, docs in docs_by_gran.items():
+    if progress is not None:
+        progress("write", 0, len(docs_by_gran))
+    for written, (gran, docs) in enumerate(docs_by_gran.items(), start=1):
         store.write_collection(rag_collection_name(profile_id, gran), docs)
         counts[gran] = len(docs)
+        if progress is not None:
+            progress("write", written, len(docs_by_gran))
     counts["profile_id"] = profile_id
     counts["signature_version"] = STYLE_SIGNATURE_VERSION
     store.write_collection(
@@ -336,17 +372,40 @@ def ensure_rag_index(
     *,
     book_id: str | None = None,
     vector_store: VectorStore | None = None,
+    progress: RagProgress | None = None,
 ) -> dict[str, Any]:
     """Ensure a complete v2 index exists without rebuilding healthy collections.
 
     The version is part of the collection name and a completion marker is written
     only after all three collections succeed. Missing or partial collections
-    trigger one idempotent full rebuild.
+    trigger one idempotent full rebuild. Builds of the same profile are serialized
+    (2026-09-15): a caller arriving while the background build runs waits for it
+    and then reads ``ready`` instead of starting a second build.
     """
     store = _resolve_store(vector_store)
     if store is None:
         return {"skipped": "vector_store_unavailable"}
     profile_id = str(profile.profile_id)
+    with _profile_build_lock(profile_id):
+        return _ensure_rag_index_locked(
+            session,
+            profile,
+            store=store,
+            profile_id=profile_id,
+            book_id=book_id,
+            progress=progress,
+        )
+
+
+def _ensure_rag_index_locked(
+    session: Any,
+    profile: Any,
+    *,
+    store: VectorStore,
+    profile_id: str,
+    book_id: str | None,
+    progress: RagProgress | None,
+) -> dict[str, Any]:
     try:
         collections_ready = all(
             store.collection_exists(rag_collection_name(profile_id, granularity))
@@ -377,8 +436,86 @@ def ensure_rag_index(
         profile,
         book_id=book_id,
         vector_store=store,
+        progress=progress,
     )
     return {**rebuilt, "status": "rebuilt"}
+
+
+# ---------------------------------------------------------------------------
+# apply 后台建索引(2026-09-15):索引构建不再占着 apply / 收件箱 resolve 的写事务
+# ---------------------------------------------------------------------------
+
+
+def rag_index_operation_key(profile_id: str) -> str:
+    return f"rag_index:{profile_id}"
+
+
+def start_style_reference_rag_index_worker(
+    *,
+    profile_id: str,
+    book_id: str | None,
+) -> None:
+    """提交一次后台 ``ensure_rag_index``(幂等;已就绪的索引立刻返回 ready)。"""
+
+    global _RAG_EXECUTOR
+    with _RAG_EXECUTOR_LOCK:
+        if _RAG_EXECUTOR is None:
+            _RAG_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sr_rag_index")
+        _RAG_EXECUTOR.submit(_rag_index_worker, profile_id=str(profile_id), book_id=book_id)
+
+
+def shutdown_style_reference_rag_index_executor(*, wait: bool = False) -> None:
+    global _RAG_EXECUTOR
+    with _RAG_EXECUTOR_LOCK:
+        executor = _RAG_EXECUTOR
+        _RAG_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=False)
+
+
+def _rag_index_worker(*, profile_id: str, book_id: str | None) -> None:
+    from novel_system.db.session import SessionLocal
+    from novel_system.services.style_reference.import_progress import start_import_progress
+
+    progress = None
+    try:
+        with SessionLocal() as session:
+            repo = StyleReferenceRepository(session)
+            profile = repo.get_profile(profile_id)
+            if profile is None:
+                logger.warning("rag index worker: profile %s disappeared", profile_id)
+                return
+            resolved_book_id = book_id or profile.book_id
+            book = repo.get_book(resolved_book_id) if resolved_book_id else None
+            progress = start_import_progress(
+                rag_index_operation_key(profile_id),
+                kind="rag_index",
+                title=book.title if book is not None else None,
+                source="apply",
+                book_id=resolved_book_id,
+                target_id=profile_id,
+            )
+            progress.phase("signatures")
+
+            def report(stage: str, done: int, total: int) -> None:
+                if stage == "write":
+                    progress.phase("write")
+                progress.set_steps(int(done), int(total), label="段" if stage == "signatures" else "粒度")
+
+            result = ensure_rag_index(
+                session,
+                profile,
+                book_id=resolved_book_id,
+                progress=report,
+            )
+            progress.succeed(result={k: v for k, v in result.items() if k != "profile_id"})
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("background rag index build failed for profile %s", profile_id)
+        if progress is not None:
+            progress.fail(
+                code=str(getattr(exc, "code", None) or exc.__class__.__name__),
+                message=str(exc),
+            )
 
 
 def build_query_signatures(

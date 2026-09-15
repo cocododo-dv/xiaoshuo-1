@@ -87,6 +87,31 @@ function srvNormalize(rep) {
   };
 }
 
+/* 前端只在服务端彻底失联时才放弃轮询（报告行有 10 分钟孤儿回收，正常失败会先变 failed）。 */
+const SRV_POLL_HARD_CAP_MS = 30 * 60 * 1000;
+
+function srvFormatDuration(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/* 纯函数：running 报告的原始快照 → 四路的完成状态。后端 worker 先把量化 / 抄袭 / 本地禁忌落库
+   （plagiarism_json.passed 有值即本地三路完成），再跑语义路（semantic_json 有值即完成）；
+   禁忌语义判定只在报告终态才落，所以 async_full 下禁忌一行要等 verdict。 */
+function srvRunningRows(partial, mode) {
+  const plag = partial && partial.plagiarism_json;
+  const localDone = !!(plag && typeof plag === "object" && plag.passed != null);
+  const semanticDone = !!(partial && Array.isArray(partial.semantic_json) && partial.semantic_json.length);
+  const finished = !!(partial && partial.verdict);
+  const rows = [
+    { id: "quant", label: "量化对齐 · 本地计算", done: localDone },
+  ];
+  if (mode === "async_full") rows.push({ id: "semantic", label: "语义评分 · critic LLM", done: semanticDone || finished });
+  rows.push({ id: "plagiarism", label: "抄袭检测 · 规范化 n-gram", done: localDone });
+  rows.push({ id: "forbidden", label: "禁忌检查 · 逐条判定", done: mode === "async_full" ? finished : localDone });
+  return rows;
+}
+
 function srvVerdictMeta(v) {
   switch (v) {
     case "pass": return { kind: "pass", label: "通过", sub: "四路校验达标" };
@@ -96,6 +121,8 @@ function srvVerdictMeta(v) {
     default: return { kind: "partial", label: "待定", sub: "" };
   }
 }
+
+export { srvRunningRows, SRV_POLL_HARD_CAP_MS };
 
 export function SrValidation({ book, go, deepFor, loadDeep }) {
   const isReal = !!(book && book.real);
@@ -115,10 +142,18 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
   const [text, setText] = useStSRV("");
   const [running, setRunning] = useStSRV(false);
   const [report, setReport] = useStSRV(null);   // 归一化的真实报告
+  const [partial, setPartial] = useStSRV(null); // running 报告的原始快照（本地三路先落库，逐路点亮）
+  const [runStartedAt, setRunStartedAt] = useStSRV(null);
+  const [, tick] = useStSRV(0);
   const [done, setDone] = useStSRV(false);
   const [err, setErr] = useStSRV(null);
   const pollRef = React.useRef(null);
   const pollGeneration = React.useRef(0);
+  React.useEffect(() => {
+    if (!running) return undefined;
+    const timer = setInterval(() => tick((x) => x + 1), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
   React.useEffect(() => {
     pollGeneration.current += 1;
     clearTimeout(pollRef.current);
@@ -132,7 +167,7 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
 
   const run = async () => {
     if (running) return;
-    setRunning(true); setDone(false); setErr(null); setReport(null);
+    setRunning(true); setDone(false); setErr(null); setReport(null); setPartial(null); setRunStartedAt(Date.now());
     clearTimeout(pollRef.current);
     const generation = ++pollGeneration.current;
     try {
@@ -146,13 +181,18 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
       const rid = resp && resp.report_id;
       if (!rid) throw new Error("校验未返回 report_id");
       const startedAt = Date.now();
+      /* 2026-09-15：不再 60 秒就报「校验超时」——两次 critic 调用在慢中转上常超一分钟，服务端
+         报告行有心跳与孤儿回收（10 分钟无心跳降级 failed），前端只跟报告状态；硬上限只防
+         服务端彻底失联时无限轮询。 */
       const poll = async () => {
         if (generation !== pollGeneration.current) return;
-        if (Date.now() - startedAt > 60000) { setRunning(false); setErr("校验超时，请重试。"); return; }
+        if (Date.now() - startedAt > SRV_POLL_HARD_CAP_MS) { setRunning(false); setErr("校验超过 30 分钟仍未完成，请稍后重试。"); return; }
         let rep = null;
         try { rep = ((await apiGet(`/api/v2/style-reference/reports/${rid}`)) || {}).report || null; } catch (e) { /* 抖动下一轮 */ }
         if (generation !== pollGeneration.current) return;
+        if (rep) setPartial(rep);
         if (rep && rep.verdict) { setReport(srvNormalize(rep)); setRunning(false); setDone(true); return; }
+        if (rep && rep.status === "failed") { setRunning(false); setErr(`校验失败：${rep.error_text || rep.error_code || "未知原因"}`); return; }
         pollRef.current = setTimeout(poll, 1200);
       };
       pollRef.current = setTimeout(poll, 800);
@@ -226,16 +266,25 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
         </div>
 
         {/* Report */}
-        {running && (
-          <div className="card srv-running">
-            <div className="srv-run-rows">
-              <div className="srv-run-row"><span className="step-spin-dark" /><span>量化对齐 · 本地计算</span></div>
-              {mode === "async_full" && <div className="srv-run-row"><span className="step-spin-dark" /><span>语义评分 · critic LLM</span></div>}
-              <div className="srv-run-row"><span className="step-spin-dark" /><span>抄袭检测 · 规范化 n-gram</span></div>
-              <div className="srv-run-row"><span className="step-spin-dark" /><span>禁忌检查 · 逐条判定</span></div>
+        {running && (() => {
+          const rows = srvRunningRows(partial, mode);
+          const elapsed = runStartedAt ? Math.max(0, (Date.now() - runStartedAt) / 1000) : 0;
+          return (
+            <div className="card srv-running" data-testid="srv-running">
+              <div className="srv-run-rows">
+                {rows.map((row) => (
+                  <div key={row.id} className={`srv-run-row${row.done ? " is-done" : ""}`} data-testid={`srv-run-${row.id}`} data-done={row.done ? "1" : "0"}>
+                    {row.done ? <I.Check size={13} style={{ color: "var(--sage)" }} /> : <span className="step-spin-dark" />}
+                    <span>{row.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="text-xs text-muted" style={{ marginTop: 8 }}>
+                已用 {srvFormatDuration(elapsed)}{partial && partial.status === "pending" ? " · 排队中" : ""}{mode === "async_full" ? " · 语义路由 critic 模型评审，慢中转上常需一两分钟" : ""}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
         {!running && realMode && !report && (
           <div className="card" style={{padding:"32px 20px", textAlign:"center"}}>
             <I.Beaker size={26} style={{color:"var(--ink-3)"}} />

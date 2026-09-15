@@ -31,6 +31,11 @@ SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心
 
 
 PREFIX = "/api/v2/style-reference"
+from tests.style_reference_route_helpers import (  # noqa: E402
+    fake_import_llm,
+    import_book,
+    wait_book_status,
+)
 
 
 def test_legacy_reference_books_routes_are_never_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,22 +52,9 @@ def test_legacy_reference_books_routes_are_never_exposed(monkeypatch: pytest.Mon
 # ---------------------------------------------------------------------------
 
 
-def _import_book(client: TestClient) -> str:
-    files = {"file": ("sample.txt", io.BytesIO(SAMPLE_TXT), "text/plain")}
-    resp = client.post(
-        f"{PREFIX}/books/import-upload",
-        files=files,
-        data={
-            "title": "测试",
-            "cloud_policy": "segments_only",
-            "rights_declaration": json.dumps(
-                {"analysis_rights": True, "send_rights": True}
-            ),
-        },
-        headers={"X-Idempotency-Key": "imp_1"},
-    )
-    assert resp.status_code == 200, resp.text
-    return resp.json()["data"]["book"]["book_id"]
+def _import_book(client: TestClient, fake: Any | None = None) -> str:
+    """2026-09-15 严格 LLM:导入必须有 LLM——用假分类器顶替运行时客户端,并等后台分类完成。"""
+    return import_book(client, text=SAMPLE_TXT, fake=fake)
 
 
 def test_import_upload_rejects_malformed_rights_json(client: TestClient) -> None:
@@ -178,12 +170,13 @@ def test_import_upload_segments_only_requires_rights_declaration(
     client: TestClient,
 ) -> None:
     files = {"file": ("undeclared.txt", io.BytesIO(SAMPLE_TXT), "text/plain")}
-    resp = client.post(
-        f"{PREFIX}/books/import-upload",
-        files=files,
-        data={"title": "未声明", "cloud_policy": "segments_only"},
-        headers={"X-Idempotency-Key": "imp_undeclared"},
-    )
+    with fake_import_llm():
+        resp = client.post(
+            f"{PREFIX}/books/import-upload",
+            files=files,
+            data={"title": "未声明", "cloud_policy": "segments_only"},
+            headers={"X-Idempotency-Key": "imp_undeclared"},
+        )
     assert resp.status_code == 400
     assert (
         resp.json()["error"]["code"]
@@ -206,17 +199,20 @@ def test_import_upload_idempotency_replay(client: TestClient) -> None:
             {"analysis_rights": True, "send_rights": True}
         ),
     }
-    r1 = client.post(
-        f"{PREFIX}/books/import-upload", files=files, data=data, headers=headers
-    )
-    files2 = {"file": ("a.txt", io.BytesIO(SAMPLE_TXT), "text/plain")}
-    r2 = client.post(
-        f"{PREFIX}/books/import-upload", files=files2, data=data, headers=headers
-    )
+    with fake_import_llm():
+        r1 = client.post(
+            f"{PREFIX}/books/import-upload", files=files, data=data, headers=headers
+        )
+        files2 = {"file": ("a.txt", io.BytesIO(SAMPLE_TXT), "text/plain")}
+        r2 = client.post(
+            f"{PREFIX}/books/import-upload", files=files2, data=data, headers=headers
+        )
     assert r1.status_code == 200
     assert r2.status_code == 200
     # idempotency replay 应返回 X-Idempotency-Status="replayed"(或 "stored" 首次)
     assert "X-Idempotency-Status" in r2.headers
+    # 重放不会再派一份分类任务(worker 认领时已在跑 / 已完成),书最终 ready
+    wait_book_status(client, r1.json()["data"]["book"]["book_id"])
 
 
 def test_list_books(client: TestClient) -> None:
@@ -354,8 +350,11 @@ def test_reclassify_llm_required_when_disabled(client: TestClient, monkeypatch) 
         f"{PREFIX}/books/{book_id}/reclassify",
         headers={"X-Idempotency-Key": "rec_disabled"},
     )
-    # LLMRequiredError 同 start_run / synthesize 惯例:非 200
-    assert resp.status_code >= 400
+    # 2026-09-15 严格 LLM:没有 LLM 就 409 + author_action,绝不启发式兜底
+    assert resp.status_code == 409, resp.text
+    err = resp.json()["error"]
+    assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
+    assert err["details"]["author_action"]
 
 
 def test_reclassify_executes_and_purges_derived_data(
@@ -369,17 +368,20 @@ def test_reclassify_executes_and_purges_derived_data(
     monkeypatch.setattr(
         sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True)
     )
-    book_id = _import_book(client)
+    book_id = _import_book(client, fake)
     run_id, finding_id, profile_id = _seed_full_chain(book_id)
 
+    # 2026-09-15 严格 LLM:重新分类是后台任务——请求里清派生数据、书置 ingesting,worker 逐批分类
     resp = client.post(
         f"{PREFIX}/books/{book_id}/reclassify",
         headers={"X-Idempotency-Key": "rec_real"},
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    assert data["status"] == "reclassified"
+    assert data["status"] == "classifying"
+    assert data["book"]["status"] == "ingesting"
     assert data["paragraphs_count"] >= 1
+    assert data["classification"]["kind"] == "reclassify"
 
     # 派生数据全部消失
     assert client.get(f"{PREFIX}/runs/{run_id}").status_code == 404
@@ -391,9 +393,11 @@ def test_reclassify_executes_and_purges_derived_data(
         # paragraphs 与 book 保留
         assert len(repo.list_paragraphs(book_id)) == data["paragraphs_count"]
 
-    book = client.get(f"{PREFIX}/books/{book_id}").json()["data"]["book"]
+    book = wait_book_status(client, book_id)
     assert book["stats_json"]["paragraph_type_distribution"]
-    assert "classifier_calibration" in book["stats_json"]
+    assert book["stats_json"]["classifier_calibration"]["fallback_to_heuristic"] is False
+    assert book["classification"]["state"] == "done"
+    assert book["classification"]["batches_done"] == book["classification"]["batches_total"] >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -778,37 +782,64 @@ def test_import_upload_uses_runtime_llm_classifier_when_enabled(
 
     fake = fake_paragraph_classifier(rule="default")
     monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
-    book_id = _import_book(client)  # segments_only + 送出权 → 走 LLM 分类
-    assert fake.call_count >= 2, "anchor + bulk 至少两次分类调用"
+    book_id = _import_book(client, fake)  # segments_only + 送出权 → 走 LLM 分类
+    # 样本只有几段(不超过锚定集):只有强模型一遍,没有余段就不做快模型对照
+    assert fake.call_count >= 1, "至少一次分类调用"
     calibration = _book_calibration(client, book_id)
     assert calibration["fallback_to_heuristic"] is False
-    assert calibration["fast_model_agreement"] == 1.0
+    assert calibration["llm_classified_paragraphs"] >= 1
+    assert calibration["heuristic_classified_paragraphs"] == 0
 
 
-def test_import_upload_local_only_book_stays_heuristic_even_with_llm(
+def test_import_upload_local_only_book_needs_a_local_llm(
     client: TestClient, monkeypatch, fake_paragraph_classifier
 ) -> None:
+    """2026-09-15 严格 LLM:「仅本机」没有启发式兜底——云端模型 409,本地模型才分类。"""
     import novel_system.api.routes.style_reference as sr_routes
+    from novel_system.services.style_reference import policy as policy_module
 
     fake = fake_paragraph_classifier(rule="default")
     monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
+    monkeypatch.setattr(policy_module, "runtime_llm_is_local", lambda settings=None: False)
     resp = client.post(
         f"{PREFIX}/books/import-upload",
         files={"file": ("local.txt", io.BytesIO(SAMPLE_TXT), "text/plain")},
         data={"title": "local", "cloud_policy": "local_only"},
-        headers={"X-Idempotency-Key": "imp_local_heuristic"},
+        headers={"X-Idempotency-Key": "imp_local_cloud"},
+    )
+    assert resp.status_code == 409, resp.text
+    err = resp.json()["error"]
+    assert err["code"] == "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED"
+    assert err["details"]["author_action"]["view"] == "systemConfig"
+    assert fake.call_count == 0, "云端模型不得碰「仅本机」的段落"
+
+    monkeypatch.setattr(policy_module, "runtime_llm_is_local", lambda settings=None: True)
+    resp = client.post(
+        f"{PREFIX}/books/import-upload",
+        files={"file": ("local.txt", io.BytesIO(SAMPLE_TXT), "text/plain")},
+        data={"title": "local", "cloud_policy": "local_only"},
+        headers={"X-Idempotency-Key": "imp_local_local"},
     )
     assert resp.status_code == 200, resp.text
-    assert fake.call_count == 0, "local_only 的段落不得送往 LLM"
-    calibration = _book_calibration(client, resp.json()["data"]["book"]["book_id"])
-    assert calibration["fallback_to_heuristic"] is True
+    book_id = resp.json()["data"]["book"]["book_id"]
+    wait_book_status(client, book_id)
+    assert fake.call_count >= 1, "本地模型分类「仅本机」的书"
+    assert _book_calibration(client, book_id)["fallback_to_heuristic"] is False
 
 
-def test_import_upload_without_llm_records_heuristic_fallback(
-    client: TestClient, monkeypatch
-) -> None:
+def test_import_upload_without_llm_is_refused(client: TestClient, monkeypatch) -> None:
+    """2026-09-15 严格 LLM:没有 LLM 不导入(409 + author_action),不再启发式兜底。"""
     import novel_system.api.routes.style_reference as sr_routes
 
     monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (None, False))
-    book_id = _import_book(client)
-    assert _book_calibration(client, book_id)["fallback_to_heuristic"] is True
+    resp = client.post(
+        f"{PREFIX}/books/import-upload",
+        files={"file": ("sample.txt", io.BytesIO(SAMPLE_TXT), "text/plain")},
+        data={"title": "无模型", "cloud_policy": "local_only"},
+        headers={"X-Idempotency-Key": "imp_no_llm"},
+    )
+    assert resp.status_code == 409, resp.text
+    err = resp.json()["error"]
+    assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
+    assert err["details"]["author_action"]["view"] == "systemConfig"
+    assert client.get(f"{PREFIX}/books").json()["data"]["books"] == []

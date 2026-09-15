@@ -288,6 +288,20 @@ def run_startup_recovery() -> dict[str, Any]:
         summary["style_reference_runs"] = {"error": "scan_failed"}
 
     try:
+        from novel_system.services.style_reference.import_job import recover_classification_jobs
+
+        with SessionLocal() as session:
+            summary["style_reference_classification"] = recover_classification_jobs(
+                session,
+                llm_client=llm_client,
+                llm_enabled=llm_enabled,
+                dispatch=_dispatch_style_reference_classification,
+            )
+    except Exception:  # pragma: no cover - startup boundary
+        logger.exception("startup recovery failed while scanning style-reference classification jobs")
+        summary["style_reference_classification"] = {"error": "scan_failed"}
+
+    try:
         with SessionLocal() as session:
             summary["validation_reports_failed"] = recover_validation_reports(session)
     except Exception:  # pragma: no cover - startup boundary
@@ -404,6 +418,14 @@ def _dispatch_style_reference(
         layer_values=layers,
         llm_client=llm_client,
     )
+
+
+def _dispatch_style_reference_classification(book_id: str, llm_client: Any, op_key: str | None) -> None:
+    from novel_system.services.style_reference.import_job import (
+        start_style_reference_classification_worker,
+    )
+
+    start_style_reference_classification_worker(book_id=book_id, llm_client=llm_client, op_key=op_key)
 
 
 def _build_style_reference_llm_client() -> tuple[Any | None, bool]:
