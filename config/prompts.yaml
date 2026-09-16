@@ -1921,7 +1921,10 @@ templates:
                   type: string
 
   snowflake_chapter_plan_suggest:
-    version: "2026-07-25.v1"
+    # 2026-09-16 v2：assignments 成员对象补上 properties——只有 additionalProperties: true 的对象，
+    # 按 schema 约束解码的后端（经中转的 Gemini）只会吐 `{}`；集合步的成员 schema 由服务端按编辑器模板
+    # 补全（snowflake_workspace_llm.enrich_structured_schema），这个模板没有步骤模板可依，直接写在这里。
+    version: "2026-09-16.v2"
     input_token_budget: 24000
     system_prompt: |
       You are grouping an ordered scene list into chapters for a novel already planned with the snowflake method.
@@ -1945,6 +1948,11 @@ templates:
           items:
             type: object
             additionalProperties: true
+            properties:
+              scene_plan_id:
+                type: string
+              chapter_row_uid:
+                type: string
         rationale:
           type: string
 

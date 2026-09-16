@@ -54,6 +54,16 @@ from novel_system.services.system_config import load_llm_provider_runtime_config
 from novel_system.settings import get_settings
 
 
+class SparseGenerationOutput(ValueError):
+    """整步生成清洗后只剩身份键 / 空字段（模型回传了 `{}` 一类的空成员）。
+
+    2026-09-16 真实故障：Responses API 把模板 structured_schema 作为 json_schema 下发，而集合步的
+    成员对象只写了 ``additionalProperties: true``、没有 ``properties``——按 schema 约束解码的后端
+    （经中转的 Gemini）对这种对象只能吐 ``{}``，每个角色都成了空对象。schema 现已按编辑器模板
+    补全 properties（见 ``enrich_structured_schema``）；这个异常是它之后的兜底：带原因重试一次，
+    再空就如实报错。"""
+
+
 class StructuredCountMismatch(ValueError):
     """模型违反了数量契约（一段话概括恰好五句、一页梗概恰好五段）。
 
@@ -406,6 +416,7 @@ class SnowflakeWorkspaceLLMService:
                 if (focus_scenes and step_key == "scene_details")
                 else _sanitize_canonical_draft(current_draft)
             ),
+            "current_draft_how_to_use": CURRENT_DRAFT_HOW_TO_USE,
             "pressure_rubric": _pressure_rubric(step_key),
             "current_pressure_diagnosis": diagnose_step_pressure(step_key, current_draft),
             "scene_rules": _scene_rules(step_key),
@@ -473,6 +484,7 @@ class SnowflakeWorkspaceLLMService:
             template_name=f"snowflake_generate_{step_key}",
             project_id=project.project_id,
             step_ref=step_key,
+            schema_step_key=step_key,
             normalize_output=lambda output: _normalize_full_step_output(
                 step_key,
                 output,
@@ -485,17 +497,25 @@ class SnowflakeWorkspaceLLMService:
         try:
             result = self._run_structured_task(prompt_payload=prompt_payload, **run_kwargs)
         except DomainError as exc:
-            if not (getattr(exc, "details", None) or {}).get("count_mismatch"):
+            details = getattr(exc, "details", None) or {}
+            if not (details.get("count_mismatch") or details.get("sparse_output")):
                 raise
-            # 数量契约（五句 / 五段）被违反：带着拒绝理由再给模型一次机会；再错就如实报错，
-            # 绝不静默截断。completeness_repair 是受预算保护的键，降载时不会被削掉。
+            # 数量契约（五句 / 五段）被违反，或集合步只回了空成员：带着拒绝理由再给模型一次机会；
+            # 再错就如实报错，绝不静默截断 / 落一版空表。completeness_repair 是受预算保护的键，
+            # 降载时不会被削掉。
+            if details.get("count_mismatch"):
+                follow_up = "Return exactly the required number of items, in order, and nothing else."
+            else:
+                follow_up = (
+                    "The blank slots in current_draft are what this step must write, not the author's deliberate "
+                    "blanks; expand the adopted direction and upstream material into full sheets — at minimum the "
+                    "protagonist and the antagonist carry role, goal, ambition, values, conflict and storyline. "
+                    "Use only the canonical keys named in the task; an item that is an empty object is discarded."
+                )
             repair_payload = dict(prompt_payload)
             repair_payload["completeness_repair"] = {
                 "empty_fields": [],
-                "instruction": (
-                    f"The previous attempt was rejected: {exc.message} "
-                    "Return exactly the required number of items, in order, and nothing else."
-                ),
+                "instruction": f"The previous attempt was rejected: {exc.message} {follow_up}",
             }
             result = self._run_structured_task(prompt_payload=repair_payload, **run_kwargs)
         if result.source != "llm":
@@ -636,6 +656,7 @@ class SnowflakeWorkspaceLLMService:
         return self._run_structured_task(
             task_key="snowflake_workspace_assistant",
             template_name="snowflake_workspace_assistant",
+            schema_step_key=step_key,
             project_id=str(project.get("project_id") or ""),
             step_ref=step_key,
             prompt_payload=prompt_payload,
@@ -694,6 +715,7 @@ class SnowflakeWorkspaceLLMService:
         return self._run_structured_task(
             task_key="snowflake_scene_triage",
             template_name="snowflake_scene_triage_suggest",
+            schema_step_key="scene_details",
             project_id=str(project.get("project_id") or ""),
             step_ref=step_key,
             prompt_payload=prompt_payload,
@@ -746,7 +768,11 @@ class SnowflakeWorkspaceLLMService:
         prompt_payload: dict[str, Any],
         normalize_output: Callable[[dict[str, Any]], dict[str, Any]],
         fallback_payload: dict[str, Any] | None = None,
+        schema_step_key: str | None = None,
     ) -> WorkspaceLLMResult:
+        """``schema_step_key``：按这一步的编辑器模板把模板 structured_schema 里没有 properties 的
+        成员对象补全（见 ``enrich_structured_schema``）——下发给 provider 的 json_schema 与提示词
+        点名的规范键一致，按 schema 约束解码的后端才写得出内容。"""
         if not self._llm_enabled():
             # 主生成路径（generate_step）fail-closed：不再静默返回罐头稿，引导作者去配置。
             # 顾问型端点（候选建议/驻场教练/场景急救）传入 fallback_payload → 诚实规则回退
@@ -808,7 +834,12 @@ class SnowflakeWorkspaceLLMService:
             step_key=step_ref,
         )
         user_prompt = _render_user_prompt(template, prompt_payload)
-        prompt_hash = _prompt_hash(template_name, template.version, template.system_prompt, user_prompt, template.structured_schema)
+        structured_schema, schema_enriched = enrich_structured_schema(
+            template.structured_schema,
+            step_key=schema_step_key,
+            template_name=template_name,
+        )
+        prompt_hash = _prompt_hash(template_name, template.version, template.system_prompt, user_prompt, structured_schema)
         llm_call_id = f"llm_call_project_{task_key}_{uuid.uuid4().hex[:12]}"
         request = build_llm_request(
             task_config,
@@ -817,7 +848,7 @@ class SnowflakeWorkspaceLLMService:
                 {"role": "system", "content": template.system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            response_schema={"name": template.name, "schema": template.structured_schema},
+            response_schema={"name": template.name, "schema": structured_schema},
         )
         request_summary = sanitize_audit_summary(
             {
@@ -825,6 +856,9 @@ class SnowflakeWorkspaceLLMService:
                 "template_name": template.name,
                 "template_version": template.version,
                 "step_key": step_ref,
+                # 哪些成员对象的 schema 是按编辑器模板补全的——审计里留痕，
+                # 「模型为什么只回了空对象」才查得出是 schema 的锅还是模型的锅。
+                "response_schema_enriched": schema_enriched,
                 # 降载过的提示词必须在审计里留痕：否则「模型怎么把这个角色写丢了」
                 # 将永远查不出是预算削的还是模型的锅。摊平是为了在摘要超限压缩时存活。
                 **budget_audit_fields(budget_report),
@@ -888,6 +922,13 @@ class SnowflakeWorkspaceLLMService:
                 },
             )
             count_mismatch = isinstance(exc, StructuredCountMismatch)
+            sparse_output = isinstance(exc, SparseGenerationOutput)
+            if count_mismatch:
+                next_action = "regenerate_with_exact_count"
+            elif sparse_output:
+                next_action = "regenerate_with_substantive_content"
+            else:
+                next_action = "retry_or_adjust_prompt_schema"
             raise DomainError(
                 "SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA",
                 str(exc),
@@ -896,8 +937,9 @@ class SnowflakeWorkspaceLLMService:
                     "llm_call_id": llm_call_id,
                     "node_id": task_key,
                     "error_code": "LLM_RESPONSE_INVALID_SCHEMA",
-                    "next_action": "regenerate_with_exact_count" if count_mismatch else "retry_or_adjust_prompt_schema",
+                    "next_action": next_action,
                     "count_mismatch": count_mismatch,
+                    "sparse_output": sparse_output,
                     "structured_output": response.structured_output,
                 },
             ) from exc
@@ -1068,6 +1110,16 @@ UPSTREAM_STEPS_HOW_TO_USE = (
     "confirmed=true 是作者确认过的事实。confirmed=false 是作者当前的工作稿：同样不得忽略或改写，"
     "但它里面空着或写着「未定」的槽位是作者有意留白，不要替作者从想象里补满——"
     "留白照样留白，只在本步的产出里写本步该写的东西。"
+)
+
+# 本步自己的草稿与上游留白规则的分界：上游空槽是作者的留白，本步空槽是这次要写的目标。
+# 2026-09-16 真实故障的另一半：只有「留白照样留白」而没有这句，模型面对一张只有 role 的空角色表
+# 有理由把空槽当成作者意图原样交回。
+CURRENT_DRAFT_HOW_TO_USE = (
+    "current_draft 是本步现有的规范草稿，可能只是一张空脚手架：其中已有内容的字段是作者已经写下的事实，"
+    "保留并深化；空着的字段正是本次要生成的目标——它们不是作者的留白（上游步骤里的留白才是，见 "
+    "upstream_steps_how_to_use）。current_pressure_diagnosis 只评价已写下的内容，不会把空槽记为缺口；"
+    "有 adopted_direction 时以它为蓝本把这些字段全部展开。"
 )
 
 
@@ -1372,6 +1424,105 @@ def _prompt_hash(
     ).hex
 
 
+def enrich_structured_schema(
+    schema: dict[str, Any] | None,
+    *,
+    step_key: str | None = None,
+    template_name: str | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """把模板 structured_schema 里没有 properties 的对象按编辑器模板补全；返回 (schema, 补全了的路径)。
+
+    为什么：两条 OpenAI 线路都把 structured_schema 作为 json_schema 下发（``openai_common.
+    openai_text_format``）。集合步的成员对象在 prompts.yaml 里只写了 ``additionalProperties: true``——
+    对 OpenAI 的非 strict 模式这等于「随便写」，但对按 schema 约束解码的后端（经中转的 Gemini）它是
+    「一个键都不许写」：每个角色 / 场景都被解码成 ``{}``（2026-09-16 真实故障：角色摘要表「采纳并
+    结构化」连续三次「过于稀疏」，审计里的输出正是 54 / 57 字节的 ``[{},{}]`` / ``[{},{},{}]``）。
+    编辑器模板本来就是这些成员的规范键（提示词也明说「服务端丢弃其它键」），从它派生 properties，
+    yaml 与步骤目录不会漂移。``additionalProperties`` 保持 yaml 原样、不加 ``required``：留白规则允许
+    成员省略字段，只是不能一个键都没有。
+
+    覆盖：整步生成的集合字段（characters / scenes / chapters）、教练的 ``candidate_patch``（本步
+    编辑器全部字段）、场景分诊的 ``items[].repair_patch``（修补器接受的场景键）。
+    """
+    enriched = deepcopy(schema) if isinstance(schema, dict) else {}
+    properties = enriched.get("properties")
+    if not isinstance(properties, dict):
+        return enriched, []
+    applied: list[str] = []
+    editor_properties = _editor_schema_properties(step_key) if step_key else {}
+    for key, node in properties.items():
+        if not isinstance(node, dict):
+            continue
+        if key == "candidate_patch" and _is_open_object(node) and editor_properties:
+            node["properties"] = deepcopy(editor_properties)
+            applied.append(key)
+            continue
+        items = node.get("items") if node.get("type") == "array" else None
+        if not isinstance(items, dict):
+            continue
+        if _is_open_object(items):
+            derived = editor_properties.get(key)
+            derived_items = derived.get("items") if isinstance(derived, dict) else None
+            if isinstance(derived_items, dict) and isinstance(derived_items.get("properties"), dict):
+                items["properties"] = deepcopy(derived_items["properties"])
+                # 标签用审计能原样保留的标识符形（字母 / 下划线），"characters[]" 一类会被指纹化
+                applied.append(f"{key}_items")
+        item_properties = items.get("properties")
+        if template_name == "snowflake_scene_triage_suggest" and isinstance(item_properties, dict):
+            patch = item_properties.get("repair_patch")
+            if _is_open_object(patch):
+                patch["properties"] = {name: {"type": "string"} for name in sorted(_SCENE_REPAIR_PATCH_KEYS)}
+                applied.append(f"{key}_items_repair_patch")
+    return enriched, applied
+
+
+def _is_open_object(node: Any) -> bool:
+    return isinstance(node, dict) and node.get("type") == "object" and not node.get("properties")
+
+
+def _editor_schema_properties(step_key: str) -> dict[str, Any]:
+    """本步编辑器字段 → JSON-schema properties（文本 → string；列表 / 段 / 句 → string 数组；
+    object 字段 → 子键皆 string；带 template 的集合 → 成员对象按模板递归）。"""
+    try:
+        definition = get_step_definition(step_key)
+    except KeyError:
+        return {}
+    out: dict[str, Any] = {}
+    for field in (definition.get("editor") or {}).get("fields") or []:
+        key = field.get("key")
+        kind = str(field.get("kind") or "")
+        if not isinstance(key, str):
+            continue
+        if kind in {"text", "textarea"}:
+            out[key] = {"type": "string"}
+        elif kind in {"list", "paragraphs", "sentences"}:
+            out[key] = {"type": "array", "items": {"type": "string"}}
+        elif kind == "object":
+            out[key] = {
+                "type": "object",
+                "properties": {
+                    str(nested.get("key")): {"type": "string"}
+                    for nested in field.get("fields") or []
+                    if isinstance(nested.get("key"), str)
+                },
+            }
+        elif isinstance(field.get("template"), dict):
+            out[key] = {"type": "array", "items": _schema_from_template(field["template"])}
+    return out
+
+
+def _schema_from_template(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return {"type": "object", "properties": {str(k): _schema_from_template(v) for k, v in value.items()}}
+    if isinstance(value, list):
+        return {"type": "array", "items": {"type": "string"}}
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, int):
+        return {"type": "integer"}
+    return {"type": "string"}
+
+
 def _normalize_candidates_output(output: dict[str, Any]) -> dict[str, Any]:
     """FE-ALIGN G5：候选数组裁剪到原型契约形状（≤4 条；label/tag/notes 限长）。"""
     items = output.get("candidates") if isinstance(output, dict) else None
@@ -1590,16 +1741,15 @@ def _assert_meaningful_generation_patch(step_key: str, patch: dict[str, Any]) ->
         return
     characters = patch.get("characters") if isinstance(patch, dict) else None
     if not isinstance(characters, list) or not characters:
-        raise ValueError(
-            "character_sheets LLM output is empty: return at least one character with role plus concrete "
-            "goal, ambition, values, conflict, epiphany, or summary content."
+        raise SparseGenerationOutput(
+            "角色摘要表生成结果为空：模型没有回传任何有内容的角色。每个角色至少要有定位（role），"
+            "再加上具体的目标、野心、价值观、阻碍、顿悟或故事线。"
         )
     if any(_has_meaningful_character_sheet_content(item) for item in characters if isinstance(item, dict)):
         return
-    raise ValueError(
-        "character_sheets LLM output is too sparse: model returned only IDs/names or blank fields. "
-        "Each generated character must include role plus concrete goal, ambition, values, conflict, "
-        "epiphany, or summary content."
+    raise SparseGenerationOutput(
+        "角色摘要表生成结果过于稀疏：模型只回传了 id / 姓名或空字段。每个角色至少要有定位（role），"
+        "再加上具体的目标、野心、价值观、阻碍、顿悟或故事线。"
     )
 
 
@@ -1868,6 +2018,12 @@ def _sanitize_character_items(
         item = {}
         display_name = str(raw_item.get("display_name") or raw_item.get("name") or "").strip()
         character_id = str(raw_item.get("character_id") or "").strip()
+        if not display_name and not character_id and not any(
+            _has_value(raw_item.get(field_key)) for field_key in template if field_key != "character_id"
+        ):
+            # 完全空的成员（按 schema 约束解码的后端会回 `{}`）：不铸 id、不进名册——否则每个
+            # 空对象都变成一个只有 id 的幽灵角色。
+            continue
         if not character_id and display_name:
             character_id = existing_by_name.get(display_name, "")
         if not character_id:
@@ -1931,6 +2087,9 @@ def _sanitize_scene_list_items(
     current_chapter_id = ""
     for index, raw_item in enumerate(value, start=1):
         if not isinstance(raw_item, dict):
+            continue
+        if not any(_has_value(raw_item.get(field_key)) for field_key in (*template, "title", "mode", "spine")):
+            # 完全空的成员（`{}`）不进场表：否则它会被铸成一场没有概要的幽灵场景。
             continue
         chapter_id = str(raw_item.get("chapter_id") or current_chapter_id or f"{project_id}_CH01").strip()
         current_chapter_id = chapter_id
@@ -2213,10 +2372,9 @@ def _fallback_repair_patch(
     return {key: examples[key] for key in keys if key in examples}
 
 
-def _sanitize_scene_repair_patch(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    allowed = {
+# 场景分诊修补器接受的场景键——也是分诊 wire schema 里 repair_patch 的 properties（enrich_structured_schema）。
+_SCENE_REPAIR_PATCH_KEYS = frozenset(
+    {
         "title",
         "summary",
         "primary_form",
@@ -2236,6 +2394,13 @@ def _sanitize_scene_repair_patch(value: Any) -> dict[str, str]:
         "target_length_band",
         "must_include_text",
     }
+)
+
+
+def _sanitize_scene_repair_patch(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    allowed = _SCENE_REPAIR_PATCH_KEYS
     return {key: str(value.get(key) or "").strip() for key in allowed if key in value and str(value.get(key) or "").strip()}
 
 

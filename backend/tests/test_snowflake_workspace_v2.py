@@ -1235,9 +1235,12 @@ def test_workspace_v2_live_rejects_blank_character_sheet_llm_candidates(client, 
     assert response.status_code == 409
     error = response.json()["error"]
     assert error["code"] == "SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA"
-    assert "character_sheets" in error["message"]
+    # 2026-09-16：报错是给作者看的中文；稀疏结果先带原因重试一次，再空才到这里（details.sparse_output）
+    assert "角色摘要表" in error["message"] and "过于稀疏" in error["message"]
     assert "role" in error["message"]
     assert error["details"]["node_id"] == "snowflake_step_generate"
+    assert error["details"]["sparse_output"] is True
+    assert error["details"]["next_action"] == "regenerate_with_substantive_content"
 
     session.expire_all()
     assert (
@@ -1249,20 +1252,23 @@ def test_workspace_v2_live_rejects_blank_character_sheet_llm_candidates(client, 
         .count()
         == 0
     )
-    failed_call = session.scalars(
+    # 首轮 + 一次带原因的重试：两次调用都如实记成 failed / INVALID_SCHEMA，每次的 attempt 都已结算
+    failed_calls = session.scalars(
         select(LlmCall).where(
             LlmCall.project_id == project["project_id"],
             LlmCall.node_id == "snowflake_step_generate",
         )
-    ).one()
-    assert failed_call.accounting_status == "failed"
-    assert failed_call.error_code == "LLM_RESPONSE_INVALID_SCHEMA"
-    failed_attempt = session.scalars(
-        select(LlmCallAttempt).where(
-            LlmCallAttempt.llm_call_id == failed_call.llm_call_id
-        )
-    ).one()
-    assert failed_attempt.accounting_status == "settled"
+    ).all()
+    assert len(failed_calls) == 2
+    for failed_call in failed_calls:
+        assert failed_call.accounting_status == "failed"
+        assert failed_call.error_code == "LLM_RESPONSE_INVALID_SCHEMA"
+        failed_attempt = session.scalars(
+            select(LlmCallAttempt).where(
+                LlmCallAttempt.llm_call_id == failed_call.llm_call_id
+            )
+        ).one()
+        assert failed_attempt.accounting_status == "settled"
 
 
 def test_workspace_v2_live_missing_snowflake_route_explains_node_route_gap(client, monkeypatch) -> None:

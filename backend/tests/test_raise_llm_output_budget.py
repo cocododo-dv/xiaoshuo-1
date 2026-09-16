@@ -22,6 +22,13 @@ BASE_CONFIG = {
             "max_output_tokens": 2400, "response_format": "text",
         },
     },
+    # 系统设置「一键补齐」同步进库的节点路由——运行时它优先于 task_routing（resolve_node_route）。
+    "node_routing": {
+        "snowflake_step_generate": {
+            "provider": "openai", "provider_id": "openai", "model": "gemini-relay-model", "temperature": 0.25,
+            "max_output_tokens": 3200, "response_format": "json_object", "api_mode": "responses",
+        },
+    },
 }
 
 
@@ -34,9 +41,13 @@ def _activate(session, payload: dict) -> None:
     service.activate(created["snapshot"]["snapshot_id"], actor_ref="test")
 
 
-def _active_routing(session) -> dict:
+def _active_payload(session) -> dict:
     category = SystemConfigService(session).overview()["categories"]["models"]
-    return yaml.safe_load(category["yaml_raw"])["task_routing"]
+    return yaml.safe_load(category["yaml_raw"])
+
+
+def _active_routing(session) -> dict:
+    return _active_payload(session)["task_routing"]
 
 
 def test_dry_run_changes_nothing(session, capsys):
@@ -44,8 +55,10 @@ def test_dry_run_changes_nothing(session, capsys):
 
     assert tool.main([]) == 0
     out = capsys.readouterr().out
-    assert "3200 → 8192" in out and "干跑" in out
+    assert "task_routing.snowflake_step_generate: 3200 → 8192" in out and "干跑" in out
+    assert "node_routing.snowflake_step_generate: 3200 → 8192" in out
     assert _active_routing(session)["snowflake_step_generate"]["max_output_tokens"] == 3200
+    assert _active_payload(session)["node_routing"]["snowflake_step_generate"]["max_output_tokens"] == 3200
 
 
 def test_execute_raises_only_the_budget_and_keeps_ui_routing(session, capsys):
@@ -62,12 +75,19 @@ def test_execute_raises_only_the_budget_and_keeps_ui_routing(session, capsys):
     assert target["temperature"] == 0.25
     # 未点名的节点一律不动
     assert routing["scene_draft"] == BASE_CONFIG["task_routing"]["scene_draft"]
+    # 运行时真正生效的是 node_routing（界面同步的那份）——它必须一起抬，其余字段原样
+    node = _active_payload(session)["node_routing"]["snowflake_step_generate"]
+    assert node["max_output_tokens"] == 8192
+    assert node["model"] == "gemini-relay-model" and node["provider_id"] == "openai"
 
 
 def test_already_high_enough_is_a_no_op(session, capsys):
     payload = {**BASE_CONFIG, "task_routing": {
         **BASE_CONFIG["task_routing"],
         "snowflake_step_generate": {**BASE_CONFIG["task_routing"]["snowflake_step_generate"],
+                                    "max_output_tokens": 8192},
+    }, "node_routing": {
+        "snowflake_step_generate": {**BASE_CONFIG["node_routing"]["snowflake_step_generate"],
                                     "max_output_tokens": 8192},
     }}
     _activate(session, payload)
@@ -83,6 +103,23 @@ def test_node_all_covers_every_low_node(session, capsys):
     routing = _active_routing(session)
     assert routing["snowflake_step_generate"]["max_output_tokens"] == 4096
     assert routing["scene_draft"]["max_output_tokens"] == 4096
+    assert _active_payload(session)["node_routing"]["snowflake_step_generate"]["max_output_tokens"] == 4096
+
+
+def test_task_routing_already_high_but_node_routing_low_is_still_raised(session, capsys):
+    """真实故障形态：task_routing 早已 8192，界面同步的 node_routing 还是 3200——运行时按 3200 发。"""
+    payload = {**BASE_CONFIG, "task_routing": {
+        **BASE_CONFIG["task_routing"],
+        "snowflake_step_generate": {**BASE_CONFIG["task_routing"]["snowflake_step_generate"],
+                                    "max_output_tokens": 8192},
+    }}
+    _activate(session, payload)
+
+    assert tool.main(["--execute"]) == 0
+    out = capsys.readouterr().out
+    assert "node_routing.snowflake_step_generate: 3200 → 8192" in out
+    assert "task_routing.snowflake_step_generate" not in out
+    assert _active_payload(session)["node_routing"]["snowflake_step_generate"]["max_output_tokens"] == 8192
 
 
 def test_no_active_snapshot_says_the_repo_file_is_live(session, capsys):

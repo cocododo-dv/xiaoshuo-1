@@ -69,7 +69,9 @@ _SAFE_LITERAL_SUFFIXES = (
     "_type",
     "_version",
 )
-_SAFE_LITERAL_LIST_KEYS = frozenset({"included_sections", "prompt_budget_applied"})
+# response_schema_enriched：雪花请求里按编辑器模板补全了 properties 的成员标签（"characters_items" 一类），
+# 是结构标签不是内容——保持可读，「模型为什么只回了空对象」才能在审计里直接看出来。
+_SAFE_LITERAL_LIST_KEYS = frozenset({"included_sections", "prompt_budget_applied", "response_schema_enriched"})
 # These identifiers originate outside the application trust boundary.  They
 # need deterministic correlation, but never a readable ``*_id`` fast path.
 _UNTRUSTED_IDENTIFIER_KEYS = frozenset({"provider_request_id", "request_id"})

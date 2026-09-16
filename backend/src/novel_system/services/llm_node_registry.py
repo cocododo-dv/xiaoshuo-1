@@ -233,7 +233,10 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "snowflake",
         template_name="snowflake_step_generate",
         temperature=0.25,
-        max_output_tokens=3200,
+        # 整步生成一次要吐出全表（角色表多人多字段、场景列表 / 场景规划几十场），reasoning 模型的
+        # 思考 token 同样吃这个预算：3200 装不下（config/models.yaml 同名 task 早已是 8192，但系统设置
+        # 同步进库的 node_routing 以这里的默认值为准、且运行时优先于 task_routing——两处必须一致）。
+        max_output_tokens=8192,
         model_profile="quality_strong",
     ),
     LLMNodeSpec(
