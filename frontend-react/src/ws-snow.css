@@ -725,3 +725,41 @@
 .sf-plan-render .sf-field-label { margin-right: 2px; }
 .sf-plan-render-opt { border: 1px solid var(--line-1); background: transparent; color: var(--ink-2); border-radius: 999px; padding: 3px 9px; font-size: 12px; cursor: pointer; transition: background var(--t-fast), color var(--t-fast); }
 .sf-plan-render-opt.is-on { background: var(--gold-wash); color: var(--ink-1); border-color: var(--gold); font-weight: 700; }
+
+/* ====== 阶段 T：本步要点（作者意图要点）卡 · 教练页 ====== */
+.sf-brief { display: flex; flex-direction: column; gap: 9px; padding: 11px 13px; border-radius: 12px; border: 1px solid var(--line-1, #e2e0db); background: var(--paper-0, #fff); }
+.sf-brief.is-busy { opacity: .75; }
+.sf-brief-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.sf-brief-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 800; color: var(--ink-1); }
+.sf-brief-count { font-size: 11px; font-weight: 800; padding: 1px 7px; border-radius: 999px; background: var(--gold-wash); color: var(--gold); }
+.sf-brief-hint { font-size: 11.5px; font-weight: 500; color: var(--ink-3, #999); }
+.sf-brief-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sf-brief-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); cursor: pointer; }
+.sf-brief-stale { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 11px; border-radius: 10px; background: var(--gold-wash); color: var(--ink-1); font-size: 12.5px; }
+.sf-brief-empty { font-size: 12.5px; color: var(--ink-3, #999); padding: 4px 2px; }
+.sf-brief-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sf-brief-line { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 9px; background: var(--paper-1, #f6f5f2); }
+.sf-brief-kind { flex: 0 0 auto; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 999px; border: 0; background: var(--paper-0, #fff); color: var(--ink-2); cursor: pointer; }
+.sf-brief-kind.is-static { cursor: default; }
+.sf-brief-line.is-decision .sf-brief-kind { color: var(--gold); background: var(--gold-wash); }
+.sf-brief-line.is-rejection .sf-brief-kind { color: var(--crimson, #a33); background: rgba(170, 51, 51, .08); }
+.sf-brief-line.is-constraint .sf-brief-kind { color: var(--ink-1); }
+.sf-brief-line.is-pending .sf-brief-kind { color: var(--ink-3, #999); }
+.sf-brief-text { flex: 1; min-width: 0; font-size: 13px; line-height: 1.55; color: var(--ink-1); cursor: text; }
+.sf-brief-text.is-dismissed { color: var(--ink-3, #999); text-decoration: line-through; cursor: default; }
+.sf-brief-edit { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line-1, #ddd); background: var(--paper-0, #fff); color: var(--ink-1); }
+.sf-brief-scope { flex: 0 0 auto; font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line-1, #ddd); background: transparent; color: var(--ink-3, #999); cursor: pointer; }
+.sf-brief-scope.is-book { color: var(--gold); border-color: var(--gold); }
+.sf-brief-origin { flex: 0 0 auto; font-size: 11px; color: var(--ink-3, #999); }
+.sf-brief-x { flex: 0 0 auto; border: 0; background: transparent; color: var(--ink-3, #999); font-size: 15px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.sf-brief-x:hover { color: var(--crimson, #a33); }
+.sf-brief-add { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.sf-brief-add select { font: inherit; font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line-1, #ddd); background: var(--paper-0, #fff); color: var(--ink-2); }
+.sf-brief-add input { flex: 1; min-width: 160px; font: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--line-1, #ddd); background: var(--paper-0, #fff); color: var(--ink-1); }
+.sf-brief-inherited, .sf-brief-dismissed { display: flex; flex-direction: column; gap: 5px; }
+.sf-brief-inherited.is-off { opacity: .55; }
+.sf-brief-sub { font-size: 11.5px; font-weight: 700; color: var(--ink-3, #999); }
+.sf-brief-inherited ul, .sf-brief-dismissed ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sf-brief-inherited li, .sf-brief-dismissed li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+.sf-brief-from { font-size: 11px; color: var(--ink-3, #999); margin-left: auto; white-space: nowrap; }
+.sf-coach-actions { display: flex; gap: 8px; flex-wrap: wrap; }

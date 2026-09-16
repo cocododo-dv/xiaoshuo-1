@@ -242,7 +242,7 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "snowflake",
         template_name="snowflake_workspace_assistant",
         temperature=0.35,
-        max_output_tokens=2200,
+        max_output_tokens=3200,
         model_profile="quality_strong",
     ),
     LLMNodeSpec(

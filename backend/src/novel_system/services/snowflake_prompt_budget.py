@@ -22,6 +22,8 @@ from novel_system.services.context_budget import estimate_tokens
 
 # 本步契约与作者显式意图：任何情况下都不降载。降了它们模型就不知道要产出什么，
 # 省下的预算换来一次废调用。
+AUTHOR_DIRECTION_BRIEF_KEY = "author_direction_brief"
+
 PROTECTED_KEYS = frozenset(
     {
         "step_key",
@@ -40,6 +42,9 @@ PROTECTED_KEYS = frozenset(
         "adopted_direction",
         "completeness_repair",
         "upstream_steps_how_to_use",
+        # 2026-09-16 阶段 T：作者意图要点（教练对话蒸馏、作者核过）。条目数与单条长度在
+        # snowflake_direction_brief 里有硬上限（16 条 × 160 字 + 继承 24 条），受保护也不会失控。
+        AUTHOR_DIRECTION_BRIEF_KEY,
     }
 )
 

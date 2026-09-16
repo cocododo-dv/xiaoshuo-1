@@ -37,6 +37,10 @@ class SnowflakeStepGenerateRequest(StrictRequestModel):
     # 缺了这个字段整个 envelope 就 422，作者的每一次 AI 生成点击都被校验层挡下。
     # 界定成小写下划线短标识，而不是把 StrictRequestModel 放开成任意忽略字段。
     source: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9_]+$")
+    # 阶段 T：作者意图要点默认带入生成；false 是「纯探索」开关。direction_kind 说明 direction_text
+    # 的来源（candidate = 候选正文 / coach_reply = 教练回复），决定它在提示里的用法说明。
+    use_direction_brief: bool | None = None
+    direction_kind: str | None = Field(default=None, max_length=32, pattern=r"^[a-z_]+$")
 
 
 class LegacySnowflakeStepGenerateRequest(StrictRequestModel):
@@ -56,6 +60,24 @@ class SnowflakeFeCandidatesRequest(StrictRequestModel):
     context: str | None = Field(default=None, max_length=6000)
     draft: str | None = Field(default=None, max_length=3000)
     target_chars: int | None = Field(default=None, ge=40, le=400)
+    use_direction_brief: bool | None = None
+
+
+class SnowflakeDirectionBriefLineRequest(StrictRequestModel):
+    """作者意图要点的一条：带 line_id 对上既有条目，不带则为新条目。"""
+
+    line_id: str | None = Field(default=None, max_length=64)
+    kind: str | None = Field(default=None, max_length=32)
+    scope: str | None = Field(default=None, max_length=16)
+    text: str | None = Field(default=None, max_length=1000)
+    status: str | None = Field(default=None, max_length=16)
+
+
+class SnowflakeDirectionBriefRequest(StrictRequestModel):
+    """PUT …/steps/{step_key}/direction-brief：lines 就是作者要的列表（缺席的活动条目 = 撤下）。"""
+
+    lines: list[SnowflakeDirectionBriefLineRequest] | None = Field(default=None, max_length=64)
+    inherit_upstream: bool | None = None
 
 
 class SnowflakeStepRestoreRequest(StrictRequestModel):

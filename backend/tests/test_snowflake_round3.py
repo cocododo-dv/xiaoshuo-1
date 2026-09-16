@@ -347,7 +347,8 @@ def test_round3_prompt_versions_and_contracts() -> None:
         assert phrase in details["task_prompt"], phrase
     assert "2-3 rounds" not in details["task_prompt"] and "time-bound" not in details["task_prompt"]
     for name in ("snowflake_workspace_assistant", "snowflake_step_candidates"):
-        assert templates[name]["version"] == "2026-09-15.v4", name
+        # 阶段 T（2026-09-16）v5：教练有记忆并重述作者意图要点；候选在要点范围内分岔。留白规则不变。
+        assert templates[name]["version"] == "2026-09-16.v5", name
         prompt = templates[name]["task_prompt"] if name == "snowflake_workspace_assistant" else templates[name]["system_prompt"]
         assert "deliberate blanks" in prompt, name
         assert "Treat all of them as this book's established facts" not in prompt, name

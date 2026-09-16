@@ -12,6 +12,7 @@ from novel_system.api.snowflake_requests import (
     SnowflakeAcceptStaleScenesRequest,
     SnowflakeAcceptStaleStepRequest,
     SnowflakeAssistantRequest,
+    SnowflakeDirectionBriefRequest,
     SnowflakeFeCandidatesRequest,
     SnowflakeOrphanResolveRequest,
     SnowflakeResyncRequest,
@@ -210,6 +211,26 @@ def request_workspace_assistant(
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/assistant",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).request_assistant(project_id, body),
+    )
+
+
+@router.put("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/direction-brief")
+def update_workspace_direction_brief(
+    project_id: str,
+    step_key: str,
+    request: Request,
+    payload: SnowflakeDirectionBriefRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    """阶段 T：作者编辑本步意图要点（撤下 / 改写 / 加条 / 切换范围 / 恢复 / 是否继承上游）。"""
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="PUT",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/direction-brief",
+        payload={"project_id": project_id, "step_key": step_key, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).update_direction_brief(project_id, step_key, body),
     )
 
 

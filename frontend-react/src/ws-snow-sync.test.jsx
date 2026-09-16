@@ -11,6 +11,7 @@ vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
   apiPatch: vi.fn(),
+  apiPut: vi.fn(),
   apiDelete: vi.fn(),
 }));
 
@@ -1174,5 +1175,81 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(call[1].items[0]).toEqual(expect.objectContaining({ scene_id: "prj-main_SC01", status: "cut" }));
     expect(result).toEqual(expect.objectContaining({ triage_id: "t1" }));
     await expect(mod.SnowSync.saveTriageVerdict("prj-main", { row_uid: "S01", status: "bogus" })).rejects.toThrow("非法的裁定");
+  });
+});
+
+
+/* —— 阶段 T（2026-09-16）：作者意图要点镜像（direction_briefs）与作者编辑的乐观写入 / 回滚 —— */
+describe("阶段 T · 作者意图要点镜像", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+  });
+
+  const BRIEF = {
+    step_key: "one_sentence_summary", revision: 2, inherit_upstream: true, active_count: 1,
+    lines: [{ line_id: "dl_1", kind: "decision", scope: "step", text: "主角是被动卷入", origin: "coach", status: "active" }],
+    inherited: [{ step_key: "book_brief", step_label: "读者定位", line_id: "dl_0", kind: "constraint", text: "基调冷" }],
+  };
+  const WS = {
+    ready_to_materialize: false,
+    current_step_key: "one_sentence_summary",
+    direction_briefs: { one_sentence_summary: BRIEF },
+    steps: [{
+      step_key: "one_sentence_summary", status: "pending_review", gate_satisfied: false, draft: { summary: "她回到雨城。" },
+      health: { score: 60, status: "maybe", gaps: [], next_actions: [],
+        direction_brief: { used: true, revision: 1, sha: "abc", line_ids: ["dl_1"], inherited_line_ids: [], inherit_upstream: true } },
+      completeness: { filled_count: 1, total_count: 1, missing_fields: [] },
+    }],
+  };
+
+  it("水合把每步要点落镜像；health.direction_brief 的版本落后于当前 revision 即 stale", async () => {
+    const { mod } = await loadSync({ snowflakeWorkspace: WS });
+    await vi.waitFor(() => expect(mod.SnowSync.directionBrief("prj-main", "logline")).toBeTruthy(), T);
+    expect(mod.SnowSync.directionBrief("prj-main", "logline").revision).toBe(2);
+    expect(mod.SnowSync.directionBrief("prj-main", "audience")).toBeNull();
+    expect(mod.SnowSync.briefUsage("prj-main", "logline")).toMatchObject({ hasBrief: true, stale: true, usedRevision: 1, currentRevision: 2 });
+    expect(mod.SnowSync.briefUsage("prj-main", "audience")).toMatchObject({ hasBrief: false, stale: false });
+    // 教练回包直接落镜像
+    mod.SnowSync.setDirectionBrief("prj-main", "logline", { ...BRIEF, revision: 3, active_count: 2 });
+    expect(mod.SnowSync.briefUsage("prj-main", "logline").currentRevision).toBe(3);
+  });
+
+  it("saveDirectionBrief：乐观写入（缺席 = 撤下、改过归作者），服务端结果覆盖镜像；失败回滚并上抛", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: WS });
+    await vi.waitFor(() => expect(mod.SnowSync.directionBrief("prj-main", "logline")).toBeTruthy(), T);
+    const served = {
+      ...BRIEF, revision: 3, active_count: 2,
+      lines: [
+        { ...BRIEF.lines[0], scope: "book", origin: "author" },
+        { line_id: "dl_2", kind: "constraint", scope: "step", text: "不出现凶手", origin: "author", status: "active" },
+      ],
+    };
+    let resolveServer = null;
+    client.apiPut.mockImplementationOnce(() => new Promise(resolve => { resolveServer = () => resolve({ direction_brief: served }); }));
+    const pending = mod.SnowSync.saveDirectionBrief("prj-main", "logline", { lines: [
+      { line_id: "dl_1", kind: "decision", scope: "book", text: "主角是被动卷入" },
+      { kind: "constraint", scope: "step", text: "不出现凶手" },
+    ] });
+    // 乐观：本地立刻反映——改了范围的条目归作者，新条目带临时 id，请求体不带临时 id
+    const optimistic = mod.SnowSync.directionBrief("prj-main", "logline");
+    expect(optimistic.lines.find(l => l.line_id === "dl_1")).toMatchObject({ scope: "book", origin: "author" });
+    expect(optimistic.lines.find(l => l.text === "不出现凶手").line_id).toMatch(/^local_/);
+    expect(optimistic.active_count).toBe(2);
+    const [url, body] = client.apiPut.mock.calls[0];
+    expect(url).toBe("/api/v2/projects/prj-main/snowflake-workspace/steps/one_sentence_summary/direction-brief");
+    expect(body.lines[0]).toMatchObject({ line_id: "dl_1", scope: "book", status: "active" });
+    expect(body.lines[1].line_id).toBeUndefined();
+    expect(body.inherit_upstream).toBeUndefined();
+    resolveServer();
+    await pending;
+    expect(mod.SnowSync.directionBrief("prj-main", "logline").revision).toBe(3);
+    expect(mod.SnowSync.directionBrief("prj-main", "logline").lines[1].line_id).toBe("dl_2");
+
+    // 失败：回滚到失败前的镜像，错误上抛给视图诚实提示
+    client.apiPut.mockRejectedValueOnce(new Error("network down"));
+    await expect(mod.SnowSync.saveDirectionBrief("prj-main", "logline", { inherit_upstream: false })).rejects.toThrow("network down");
+    expect(mod.SnowSync.directionBrief("prj-main", "logline").inherit_upstream).toBe(true);
+    expect(mod.SnowSync.directionBrief("prj-main", "logline").revision).toBe(3);
   });
 });

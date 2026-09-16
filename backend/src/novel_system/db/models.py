@@ -173,6 +173,32 @@ class SnowflakeAssistantTurn(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class SnowflakeDirectionBrief(Base):
+    """2026-09-16 作者意图要点：驻场教练对话蒸馏出的、作者可编辑的本步意图。
+
+    一步一行。``lines_json`` 是带 ``line_id`` 的条目列表（决定 / 否决 / 约束 / 待定，本步 / 全书），
+    含已撤条目以便恢复。教练只能改写或撤下自己提出的条目，作者改过的条目归作者。
+    生成 / 候选 / 分诊把当前活动条目（加上游各步的全书级条目）作为受保护的提示键读入，
+    生成出的版本在 ``health_json.direction_brief`` 记录消费了哪一版。
+    """
+
+    __tablename__ = "snowflake_direction_briefs"
+    __table_args__ = (
+        Index("ix_snowflake_direction_briefs_step", "project_id", "step_key", unique=True),
+    )
+
+    brief_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    step_key: Mapped[str] = mapped_column(String)
+    lines_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    inherit_upstream: Mapped[int] = mapped_column(Integer, default=1)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    source_turn_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=list)
+    author_edited_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class SnowflakeCharacterPlan(Base):
     __tablename__ = "snowflake_character_plans"
 

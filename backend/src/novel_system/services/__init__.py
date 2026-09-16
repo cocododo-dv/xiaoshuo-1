@@ -9,8 +9,8 @@ __all__ = [
     "projects",
     "qc_validator",
     "resolver",
+    "snowflake_direction_brief",
     "snowflake_steps",
     "snowflake_workspace",
-    "snowflake_workspace_assistant",
     "vector_store",
 ]

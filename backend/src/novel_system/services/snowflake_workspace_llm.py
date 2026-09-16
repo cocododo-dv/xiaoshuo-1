@@ -26,7 +26,9 @@ from novel_system.services.llm_accounting import (
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
 from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
+from novel_system.services.snowflake_direction_brief import coerce_brief_update
 from novel_system.services.snowflake_prompt_budget import (
+    AUTHOR_DIRECTION_BRIEF_KEY,
     STYLE_REFERENCE_STRUCTURE_KEY,
     apply_snowflake_prompt_budget,
     budget_audit_fields,
@@ -118,8 +120,14 @@ class SnowflakeWorkspaceLLMService:
         focus_scene_refs: list[str] | None = None,
         focus_character_refs: list[str] | None = None,
         draft_override: dict[str, Any] | None = None,
+        author_direction_brief: dict[str, Any] | None = None,
+        direction_kind: str | None = None,
     ) -> WorkspaceLLMResult:
-        """整步生成入口。场景规划的「整表生成 / 全部补全」在这里分批派发。"""
+        """整步生成入口。场景规划的「整表生成 / 全部补全」在这里分批派发。
+
+        ``author_direction_brief``（阶段 T）是工作台层解析好的作者意图要点（本步活动条目 + 继承的全书级
+        条目 + how_to_use），原样进受保护键；``direction_kind`` 说明 ``adopted_direction`` 的来源
+        （候选正文 / 教练回复），决定它的用法说明。"""
         if step_key == "scene_details" and not focus_scene_refs:
             current_draft = merge_step_draft(
                 step_key,
@@ -159,6 +167,8 @@ class SnowflakeWorkspaceLLMService:
                     base_draft=current_draft,
                     batches=batches,
                     pending=pending,
+                    author_direction_brief=author_direction_brief,
+                    direction_kind=direction_kind,
                 )
         return self._generate_step_once(
             project=project,
@@ -168,6 +178,8 @@ class SnowflakeWorkspaceLLMService:
             focus_scene_refs=focus_scene_refs,
             focus_character_refs=focus_character_refs,
             draft_override=draft_override,
+            author_direction_brief=author_direction_brief,
+            direction_kind=direction_kind,
         )
 
     def _generate_scene_details_batched(
@@ -179,6 +191,8 @@ class SnowflakeWorkspaceLLMService:
         base_draft: dict[str, Any],
         batches: list[list[str]],
         pending: int,
+        author_direction_brief: dict[str, Any] | None = None,
+        direction_kind: str | None = None,
     ) -> WorkspaceLLMResult:
         """把整表深化拆成若干次定向生成，逐批把结果并回底稿。
 
@@ -205,6 +219,8 @@ class SnowflakeWorkspaceLLMService:
                     focus_scene_refs=batch,
                     focus_character_refs=None,
                     draft_override=accumulated,
+                    author_direction_brief=author_direction_brief,
+                    direction_kind=direction_kind,
                 )
             except DomainError as exc:
                 if index == 0:
@@ -274,6 +290,8 @@ class SnowflakeWorkspaceLLMService:
         focus_scene_refs: list[str] | None = None,
         focus_character_refs: list[str] | None = None,
         draft_override: dict[str, Any] | None = None,
+        author_direction_brief: dict[str, Any] | None = None,
+        direction_kind: str | None = None,
     ) -> WorkspaceLLMResult:
         step_definition = get_step_definition(step_key)
         # draft_override：FE 与上行 PATCH 同源的本地最新规范草稿（service 层已并入
@@ -399,17 +417,15 @@ class SnowflakeWorkspaceLLMService:
             if style_reference:
                 prompt_payload[STYLE_REFERENCE_STRUCTURE_KEY] = style_reference
         if adopted_direction:
-            prompt_payload["adopted_direction"] = {
-                "text": adopted_direction,
-                "how_to_use": (
-                    # 定向采纳（候选 × 焦点成员）与整步采纳的蓝本用法不同：前者只落到焦点成员
-                    "作者已选定这段文字作为定向蓝本：只把它落实到 focus 指定的成员上，"
-                    "保留它的核心意象、人物立场与转折；焦点外的成员一律不动、不复述。"
-                    if (focus_scenes or focus_characters)
-                    else "作者已选定这段文字作为本步的方向蓝本：以它为基调把本步全部字段结构化展开，"
-                    "保留它的核心意象、人物立场与转折，不要另起新方向；它没有覆盖到的字段按上游材料补全。"
-                ),
-            }
+            prompt_payload["adopted_direction"] = _adopted_direction_payload(
+                adopted_direction,
+                kind=direction_kind,
+                focused=bool(focus_scenes or focus_characters),
+            )
+        # 2026-09-16 阶段 T：作者意图要点——教练对话蒸馏、作者核过的决定 / 否决 / 约束 / 待定
+        # （加上游各步的全书级条目）。受保护键：降载阶梯永不削它。
+        if author_direction_brief:
+            prompt_payload[AUTHOR_DIRECTION_BRIEF_KEY] = author_direction_brief
         if focus_scenes:
             prompt_payload["focus_scenes"] = {
                 "scenes": normalize(focus_scenes),
@@ -538,6 +554,7 @@ class SnowflakeWorkspaceLLMService:
         current_draft: str,
         target_chars: int,
         latest_by_step: Mapping[str, Any] | None = None,
+        author_direction_brief: dict[str, Any] | None = None,
     ) -> WorkspaceLLMResult:
         step_definition = get_step_definition(step_key)
         guidance = step_guidance(step_key)
@@ -567,6 +584,9 @@ class SnowflakeWorkspaceLLMService:
                     "current_pressure_diagnosis": diagnose_step_pressure(step_key, current_canonical),
                 }
             )
+        # 阶段 T：三条候选在作者要的范围内分岔，而不是在作者否决过的方向上抽卡
+        if author_direction_brief:
+            prompt_payload[AUTHOR_DIRECTION_BRIEF_KEY] = author_direction_brief
         return self._run_structured_task(
             task_key="snowflake_step_candidates",
             template_name="snowflake_step_candidates",
@@ -585,9 +605,12 @@ class SnowflakeWorkspaceLLMService:
         message: str,
         approved_context: list[dict[str, Any]],
         latest_by_step: Mapping[str, Any],
-        fallback_factory: Callable[[], dict[str, Any]],
+        conversation: dict[str, Any] | None = None,
         focus_scene_id: str | None = None,
     ) -> WorkspaceLLMResult:
+        """驻场教练。2026-09-16 阶段 T 起 **fail-closed**：LLM 未启用即 409（与整步生成同一条路），
+        不再回规则罐头——罐头回合既不是辅导，也不能进作者意图要点。``conversation`` 是工作台层
+        组好的既有对话（当前要点 + 作者撤下的条目 + 继承的全书级要点 + 本步最近几轮）。"""
         step_key = str(step.get("step_key") or "book_brief").strip() or "book_brief"
         guidance_payload = step.get("guidance") if isinstance(step.get("guidance"), dict) else {}
         prompt_payload = {
@@ -608,6 +631,8 @@ class SnowflakeWorkspaceLLMService:
             "current_pressure_diagnosis": diagnose_step_pressure(step_key, step.get("draft") if isinstance(step.get("draft"), dict) else {}),
             "scene_rules": _scene_rules(step_key),
         }
+        if conversation:
+            prompt_payload["conversation"] = conversation
         return self._run_structured_task(
             task_key="snowflake_workspace_assistant",
             template_name="snowflake_workspace_assistant",
@@ -620,7 +645,6 @@ class SnowflakeWorkspaceLLMService:
                 latest_by_step=dict(latest_by_step),
                 base_draft=step.get("draft") if isinstance(step.get("draft"), dict) else {},
             ),
-            fallback_payload=fallback_factory(),
         )
 
     def scene_triage_suggestions(
@@ -629,6 +653,7 @@ class SnowflakeWorkspaceLLMService:
         project: dict[str, Any],
         step: dict[str, Any],
         approved_context: list[dict[str, Any]],
+        author_direction_brief: dict[str, Any] | None = None,
     ) -> WorkspaceLLMResult:
         step_key = "scene_details"
         draft = step.get("draft") if isinstance(step.get("draft"), dict) else {}
@@ -664,6 +689,8 @@ class SnowflakeWorkspaceLLMService:
             },
             "scene_rules": _scene_rules(step_key),
         }
+        if author_direction_brief:
+            prompt_payload[AUTHOR_DIRECTION_BRIEF_KEY] = author_direction_brief
         return self._run_structured_task(
             task_key="snowflake_scene_triage",
             template_name="snowflake_scene_triage_suggest",
@@ -984,6 +1011,30 @@ class SnowflakeWorkspaceLLMService:
             }
         )
         self.session.commit()
+
+
+def _adopted_direction_payload(text: str, *, kind: str | None, focused: bool) -> dict[str, Any]:
+    """「采纳并结构化」的方向蓝本。来源不同用法不同：候选正文是可直接展开的基调；教练回复是判断与建议，
+    要照它点名的缺口 / 走向 / 禁忌去展开，而不是把回复当成正文意象来保留。"""
+    if kind == "coach_reply":
+        how = (
+            "作者已选定驻场教练的这段回复作为定向方向：只把它落实到 focus 指定的成员上——"
+            "它点名的缺口必须补上、它建议的走向必须落实、它否定的写法不得出现；焦点外的成员一律不动、不复述。"
+            if focused
+            else "作者已选定驻场教练的这段回复作为本步的方向：按它的判断与建议展开本步全部字段——"
+            "它点名的缺口必须补上、它建议的走向必须落实、它否定的写法不得出现，不要另起新方向；"
+            "它没有覆盖到的字段按上游材料补全。"
+        )
+    else:
+        how = (
+            # 定向采纳（候选 × 焦点成员）与整步采纳的蓝本用法不同：前者只落到焦点成员
+            "作者已选定这段文字作为定向蓝本：只把它落实到 focus 指定的成员上，"
+            "保留它的核心意象、人物立场与转折；焦点外的成员一律不动、不复述。"
+            if focused
+            else "作者已选定这段文字作为本步的方向蓝本：以它为基调把本步全部字段结构化展开，"
+            "保留它的核心意象、人物立场与转折，不要另起新方向；它没有覆盖到的字段按上游材料补全。"
+        )
+    return {"text": text, "source": kind or "candidate", "how_to_use": how}
 
 
 def _project_prompt_payload(project: StoryProject) -> dict[str, Any]:
@@ -1412,6 +1463,8 @@ def _normalize_assistant_output(
         "suggestions": suggestions,
         "candidate_label": candidate_label or None,
         "candidate_patch": patch or None,
+        # 阶段 T：教练对作者意图要点的完整重述；没有该键（旧提示词快照）→ None，本轮不动要点
+        "brief_update": coerce_brief_update(output.get("brief_update")),
     }
 
 

@@ -543,17 +543,34 @@ def test_focus_scene_payload_matches_row_uid() -> None:
     assert _focus_scene_payload(step, "S99") == {"scene_id": "S99"}
 
 
-def test_assistant_endpoint_replies_and_persists_history(client) -> None:
-    """驻场教练：LLM 关闭也能回规则建议；回合服务端持久化，历史随回包增长。"""
+def test_assistant_endpoint_replies_and_persists_history(client, monkeypatch) -> None:
+    """驻场教练：回合服务端持久化，历史随回包增长。阶段 T 起 LLM 未启用即 409——没有规则回退。"""
     pid = _create_project(client, key="coach", title="教练之书")
+    off = client.post(
+        f"/api/v2/projects/{pid}/snowflake-workspace/assistant",
+        json={"step_key": "book_brief", "message": "这一步还缺什么？"},
+    )
+    assert off.status_code == 409, off.text
+    assert off.json()["error"]["code"] == "SNOWFLAKE_LLM_NOT_CONFIGURED"
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    captured: list = []
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        _fake_generate_capturing(
+            captured,
+            {"reply": "先把目标读者写实。", "suggestions": ["写清楚快感来源"], "candidate_label": "", "candidate_patch": {},
+             "brief_update": {"lines": []}},
+        ),
+    )
     first = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/assistant",
         json={"step_key": "book_brief", "message": "这一步还缺什么？", "draft_override": {"category": "文学悬疑"}},
     )
     assert first.status_code == 200, first.text
     data = first.json()["data"]
-    assert data["reply"]
-    assert data["source"] == "fallback"
+    assert data["reply"] == "先把目标读者写实。"
+    assert data["source"] == "llm"
     assert data["step_key"] == "book_brief"
     assert len(data["assistant_history"]) == 1
     assert data["assistant_history"][0]["message"] == "这一步还缺什么？"

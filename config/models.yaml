@@ -235,7 +235,9 @@ task_routing:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.35
-    max_output_tokens: 2200
+    # 2026-09-16 阶段 T：回复之外还要回传作者意图要点的完整重述（≤12 条），2200 留给补丁的余量不够；
+    # 已存过系统配置快照的安装要用 tools/raise_llm_output_budget 抬这个节点，改这里对它无效。
+    max_output_tokens: 3200
     response_format: json_object
     model_profile: quality_strong
   snowflake_scene_triage:

@@ -654,6 +654,8 @@ def test_workspace_v2_supports_structured_save_assistant_and_step_approval(clien
     assert saved["step"]["draft"]["target_reader"].startswith("Readers who want")
     assert saved["step"]["artifact"]["status"] == "pending_review"
 
+    # 阶段 T（2026-09-16）：驻场教练不再有规则罐头回退——LLM 未启用即 409，也不落回合。
+    # 罐头回合既不是辅导，也不能进作者意图要点（生成 / 候选 / 分诊读的就是那份要点）。
     assistant_response = client.post(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/assistant",
         json={
@@ -661,23 +663,13 @@ def test_workspace_v2_supports_structured_save_assistant_and_step_approval(clien
             "message": "Can you narrow the target reader a little more?",
         },
     )
-    assert assistant_response.status_code == 200, assistant_response.text
-    assistant = assistant_response.json()["data"]
-    assert assistant["reply"]
-    assert assistant["step_key"] == "book_brief"
-    assert assistant["source"] == "fallback"
-    assert assistant["candidate_patch"] is None
-    assert assistant["llm_call_id"] is None
-    assert assistant["assistant_history"][0]["message"].startswith("Can you narrow")
-    assert assistant["assistant_history"][0]["reply"] == assistant["reply"]
+    assert assistant_response.status_code == 409, assistant_response.text
+    assert assistant_response.json()["error"]["code"] == "SNOWFLAKE_LLM_NOT_CONFIGURED"
 
     history_response = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace")
     assert history_response.status_code == 200, history_response.text
-    history = history_response.json()["data"]["assistant_history"]
-    assert len(history) == 1
-    assert history[0]["step_key"] == "book_brief"
-    assert history[0]["message"] == "Can you narrow the target reader a little more?"
-    assert history[0]["reply"] == assistant["reply"]
+    assert history_response.json()["data"]["assistant_history"] == []
+    assert history_response.json()["data"]["direction_briefs"] == {}
 
     approve_response = _approve_step(client, project["project_id"], "book_brief")
     workspace = approve_response["workspace"]

@@ -7,4 +7,4 @@ from __future__ import annotations
 # 每个启动脚本（start-dev.cmd / start-all-linux.sh / React 合约 E2E）都在等 /ready。
 # 2026-09-13 阶段 C 加了 0084 却没有推它，于是所有迁移到新 head 的安装都「永远没就绪」，
 # CI 的 E2E 连红两次。tests/test_schema_contract_revision.py 现在把它钉在 Alembic head 上。
-CURRENT_SCHEMA_REVISION = "20260915_0086"
+CURRENT_SCHEMA_REVISION = "20260916_0087"

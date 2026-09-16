@@ -72,7 +72,7 @@ from novel_system.services.snowflake_chaptering import (
     parse_outline_chapters,
 )
 from novel_system.services.snowflake_triage import EXCLUDED_TRIAGE_STATUSES, excluded_scene_plan_ids, latest_triage_rows
-from novel_system.services.snowflake_workspace_assistant import SnowflakeWorkspaceAssistantService
+from novel_system.services.snowflake_direction_brief import DirectionBriefStore, delta_changed
 from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService, draft_has_content
 
 STRUCTURED_GATE_STATUSES = set(GATE_STATUSES)
@@ -130,7 +130,8 @@ class SnowflakeWorkspaceService:
         self._planner = SnowflakePlannerService(session)
         self._chaptering = SnowflakeChapteringService(session)
         self._llm = SnowflakeWorkspaceLLMService(session)
-        self._assistant = SnowflakeWorkspaceAssistantService()
+        # 阶段 T：作者意图要点（教练对话蒸馏、作者可编辑），生成 / 候选 / 分诊 / 教练都从这里读
+        self._briefs = DirectionBriefStore(session)
 
     def list_projects(self) -> dict[str, Any]:
         rows = self._projects.list()
@@ -202,6 +203,8 @@ class SnowflakeWorkspaceService:
             "scene_board": scene_board,
             "triage_items": triage_items,
             "assistant_history": self._assistant_history(project_id),
+            # 阶段 T：每步的作者意图要点（含已撤条目供恢复、继承的上游全书级条目）
+            "direction_briefs": self._briefs.all_payloads(project_id),
             "materialization_gate": gate,
             "resync_status": self._resync_status(project.project_id, scene_plans),
             "steps": steps,
@@ -220,6 +223,7 @@ class SnowflakeWorkspaceService:
         # 落库作为这一版草稿的出处事实，与 generation_source（llm/fallback/skip）并列。
         # 请求层已界定为有界短标识，这里只做去空白。
         trigger_source = str(body.get("source") or "").strip()[:64] or None
+        brief_ref: dict[str, Any] | None = None
         if body.get("skip"):
             draft = self._skip_draft(step_key, body)
             source = "skip"
@@ -255,6 +259,14 @@ class SnowflakeWorkspaceService:
                     status_code=409,
                     details={"node_id": "snowflake_step_generate", "next_action": "configure_llm_then_retry"},
                 )
+            # 阶段 T：作者意图要点默认带入（use_direction_brief=false 是「纯探索」开关）；
+            # 消费了哪一版随 health_json.direction_brief 落库，前端据此提示「本稿未采用最新要点」。
+            use_brief = body.get("use_direction_brief")
+            use_brief = True if use_brief is None else bool(use_brief)
+            brief_rows = self._briefs.rows(project.project_id)
+            brief_prompt = self._briefs.prompt_payload_for(project.project_id, step_key, brief_rows) if use_brief else None
+            brief_ref = self._briefs.fingerprint_for(project.project_id, step_key, used=use_brief, rows=brief_rows)
+            direction_kind = str(body.get("direction_kind") or "").strip() or None
             llm_result = self._llm.generate_step(
                 project=project,
                 step_key=step_key,
@@ -267,6 +279,8 @@ class SnowflakeWorkspaceService:
                     else None
                 ),
                 draft_override=draft_override,
+                author_direction_brief=brief_prompt,
+                direction_kind=direction_kind,
             )
             draft = llm_result.payload
             source = llm_result.source
@@ -290,6 +304,7 @@ class SnowflakeWorkspaceService:
                 generation_source=source,
                 generation_notice=generation_notice,
                 trigger_source=trigger_source,
+                direction_brief=brief_ref,
             ),
             input_refs_json=self._input_refs(step_key, latest_by_step),
             llm_call_id=llm_call_id,
@@ -305,6 +320,7 @@ class SnowflakeWorkspaceService:
                 step_key, draft, status, generation_source=source,
                 generation_notice=generation_notice or sync_notice,
                 trigger_source=trigger_source,
+                direction_brief=brief_ref,
             )
         if status == "skipped":
             self._supersede_same_step(run)
@@ -325,6 +341,8 @@ class SnowflakeWorkspaceService:
             target_chars = max(40, min(int(body.get("target_chars") or 120), 400))
         except (TypeError, ValueError):
             target_chars = 120
+        use_brief = body.get("use_direction_brief")
+        use_brief = True if use_brief is None else bool(use_brief)
         llm_result = self._llm.step_candidates(
             project=project,
             step_key=step_key,
@@ -332,6 +350,9 @@ class SnowflakeWorkspaceService:
             current_draft=str(body.get("draft") or "")[:3000],
             target_chars=target_chars,
             latest_by_step=self._latest_by_step(project.project_id),
+            author_direction_brief=(
+                self._briefs.prompt_payload_for(project.project_id, step_key) if use_brief else None
+            ),
         )
         return {
             "source": llm_result.source,
@@ -629,6 +650,12 @@ class SnowflakeWorkspaceService:
         step = self._step_with_override(step, body.get("draft_override"), latest_by_step=latest_by_step)
         approved_context = self._approved_context(workspace)
         focus_scene_id = str(body.get("focus_scene_id") or "").strip() or None
+        # 阶段 T：教练有记忆——当前要点（含作者撤下的）、继承的全书级要点、本步最近几轮问答
+        conversation = self._briefs.conversation_payload(
+            project.project_id,
+            step_key,
+            turns=workspace.get("assistant_history") or [],
+        )
         llm_result = self._llm.assistant_reply(
             project=workspace["project"],
             step=step,
@@ -636,16 +663,11 @@ class SnowflakeWorkspaceService:
             approved_context=approved_context,
             latest_by_step=latest_by_step,
             focus_scene_id=focus_scene_id,
-            fallback_factory=lambda: self._assistant.reply(
-                project=workspace["project"],
-                step=step,
-                message=str(body.get("message") or ""),
-                approved_context=approved_context,
-                focus_scene_id=focus_scene_id,
-            ),
+            conversation=conversation,
         )
+        brief_update = llm_result.payload.get("brief_update")
         result = {
-            **llm_result.payload,
+            **{key: value for key, value in llm_result.payload.items() if key != "brief_update"},
             "step_key": step_key,
             "source": llm_result.source,
             "llm_call_id": llm_result.llm_call_id,
@@ -657,13 +679,61 @@ class SnowflakeWorkspaceService:
             focus_scene_id=focus_scene_id,
             result=result,
         )
+        # 教练本轮对作者意图的完整重述 → 按 line_id 求差落到要点表（作者的条目不归教练管）
+        _row, brief_delta = self._briefs.record_coach_restatement(
+            project.project_id, step_key, brief_update, turn_id=turn.turn_id
+        )
+        if delta_changed(brief_delta):
+            self.session.add(
+                OperationLog(
+                    event_type="snowflake_direction_brief_restated",
+                    object_type="snowflake_direction_brief",
+                    object_ref=f"{project.project_id}:{step_key}",
+                    payload_json={"project_id": project.project_id, "step_key": step_key, "turn_id": turn.turn_id, **brief_delta},
+                )
+            )
         history = self._assistant_history(project.project_id)
         return {
             **result,
             "turn_id": turn.turn_id,
             "created_at": turn.created_at,
             "assistant_history": history,
+            "direction_brief": self._briefs.payload_for(project.project_id, step_key),
+            "brief_delta": brief_delta,
         }
+
+    def update_direction_brief(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """阶段 T：作者编辑本步意图要点（撤下 / 改写 / 加条 / 切换范围 / 恢复 / 是否继承上游）。
+        请求里的 lines 就是作者要的列表；作者改过的条目归作者，教练此后不能再改写或撤下。"""
+        project = self._require_snowflake_project(project_id)
+        self._require_step(step_key)
+        body = payload or {}
+        lines = body.get("lines")
+        if lines is not None and not isinstance(lines, list):
+            raise DomainError("SNOWFLAKE_DIRECTION_BRIEF_INVALID", "要点列表必须是数组。", status_code=400)
+        inherit = body.get("inherit_upstream")
+        row = self._briefs.save_author_edit(
+            project.project_id,
+            step_key,
+            lines=[item for item in (lines or []) if isinstance(item, dict)] if lines is not None else None,
+            inherit_upstream=bool(inherit) if inherit is not None else None,
+        )
+        self.session.add(
+            OperationLog(
+                event_type="snowflake_direction_brief_edited",
+                object_type="snowflake_direction_brief",
+                object_ref=row.brief_id,
+                payload_json={
+                    "project_id": project.project_id,
+                    "step_key": step_key,
+                    "revision": row.revision,
+                    "active_count": sum(1 for line in (row.lines_json or []) if isinstance(line, dict) and line.get("status") == "active"),
+                    "inherit_upstream": bool(row.inherit_upstream),
+                },
+            )
+        )
+        self.session.flush()
+        return {"direction_brief": self._briefs.payload_for(project.project_id, step_key)}
 
     def suggest_scene_triage(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -677,6 +747,7 @@ class SnowflakeWorkspaceService:
             project=workspace["project"],
             step=step,
             approved_context=self._approved_context(workspace),
+            author_direction_brief=self._briefs.prompt_payload_for(project.project_id, "scene_details"),
         )
         return {
             "items": self._attach_triage_identity(project.project_id, llm_result.payload.get("items") or []),
@@ -2602,6 +2673,7 @@ class SnowflakeWorkspaceService:
         generation_source: str | None = None,
         generation_notice: dict[str, Any] | None = None,
         trigger_source: str | None = None,
+        direction_brief: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if status == "skipped":
             health = {
@@ -2636,6 +2708,9 @@ class SnowflakeWorkspaceService:
         # 只在 FE 真的带了触发入口时写入：脚本 / 旧客户端的运行不凭空长出一个标签。
         if trigger_source:
             health["trigger_source"] = trigger_source
+        # 阶段 T：这一版消费了哪一版作者意图要点（used=False = 作者本次关掉了带入）
+        if direction_brief:
+            health["direction_brief"] = deepcopy(direction_brief)
         return health
 
     @staticmethod

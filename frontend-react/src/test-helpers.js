@@ -105,5 +105,8 @@ export function installApiRouter(client, opts = {}) {
   });
   client.apiPost.mockResolvedValue({});
   client.apiPatch.mockResolvedValue({});
+  // vi.mock 的模块代理对工厂没定义的导出会在「访问」时抛错（不是返回 undefined）：
+  // 只有工厂里给了 apiPut 的 spec（ws-snow-sync 的要点编辑）才重置它，其余 spec 不碰。
+  if (Object.prototype.hasOwnProperty.call(client, "apiPut") && typeof client.apiPut === "function") client.apiPut.mockResolvedValue({});
   client.apiDelete.mockResolvedValue({});
 }

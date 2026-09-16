@@ -1,4 +1,4 @@
-import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { apiGet, apiPatch, apiPost, apiPut } from "./lib/client.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow.jsx";
@@ -400,6 +400,8 @@ function shapeStepHealth(step) {
     stepRunId: (step && step.artifact && step.artifact.step_run_id) || null,
     inputRefs: (step && step.artifact && step.artifact.input_refs && typeof step.artifact.input_refs === "object")
       ? { ...step.artifact.input_refs } : {},
+    // 阶段 T：这一版生成消费了哪一版作者意图要点（used / revision / sha），用于「本稿未采用最新要点」提示
+    directionBrief: (h.direction_brief && typeof h.direction_brief === "object") ? { ...h.direction_brief } : null,
   };
 }
 
@@ -472,6 +474,17 @@ function captureResync(workId, ws) {
 const snowTriage = {}; // workId -> { items: rowUid -> item, at, source }
 // 阶段 R：scene_id ↔ row_uid 的对照（成稿中心按 scene_id 回跳第 10 步、裁定按 scene_id 存档）
 const snowSceneIds = {}; // workId -> { rowBySceneId, sceneByRow }
+/* 阶段 T：作者意图要点（后端 direction_briefs 镜像）：workId -> beKey -> brief payload
+   （含已撤条目供恢复、继承的上游全书级条目）。教练回包 / 生成回包 / 全量水合都会刷新它。 */
+const snowBriefs = {};
+function emitBrief(workId) { try { window.dispatchEvent(new CustomEvent("ws:snow-brief", { detail: workId })); } catch (e) {} }
+function captureDirectionBriefs(workId, ws) {
+  if (!workId || !ws || !ws.direction_briefs || typeof ws.direction_briefs !== "object") return false;
+  snowBriefs[workId] = { ...ws.direction_briefs };
+  emitBrief(workId);
+  return true;
+}
+
 function captureTriage(workId, ws) {
   if (!workId || !ws || !Array.isArray(ws.triage_items)) return;
   const rowBySceneId = {};
@@ -539,6 +552,7 @@ async function snowHydrate(workId, opts) {
   captureResync(workId, ws);
   captureChapterStatus(workId, ws);
   captureTriage(workId, ws);
+  captureDirectionBriefs(workId, ws);
   const remote = { drafts: {}, scaffolds: {}, checks: {}, states: {}, _t: 0 };
   const health = {};
   let any = false;
@@ -777,6 +791,7 @@ async function attachMaterializationGate(result, workId) {
     captureResync(workId, workspace);
     captureChapterStatus(workId, workspace);
     captureTriage(workId, workspace);
+    captureDirectionBriefs(workId, workspace);
     return { ...(result || {}), materialization_gate: (workspace && workspace.materialization_gate) || null };
   } catch (error) {
     // 预览本身已经成功时，不因第二次只读检查失败而抹掉方案；最终 materialize 仍会
@@ -890,6 +905,7 @@ const SnowSync = {
     snowReadyFlags[id] = !!(workspace && workspace.ready_to_materialize);
     captureResync(id, workspace || {});
     captureChapterStatus(id, workspace || {});
+    captureDirectionBriefs(id, workspace || {});
     const normalizedLocal = s2NormalizeState(local);
     try { localStorage.setItem(snowCacheKey(id), JSON.stringify(normalizedLocal)); } catch (e) {}
     // The import already wrote and approved every step. Seed the autosave
@@ -1029,6 +1045,89 @@ const SnowSync = {
     const server = id ? ((snowCanon[id] || {})[feKey] || null) : null;
     const base = server ? mergeCanon(server, canon) : canon;
     return feFromCanon(feKey, applyCanonPatch(base, patch || {}));
+  },
+  /* 阶段 T：本步的作者意图要点（后端 direction_briefs 镜像）；没有 → null */
+  directionBrief(workId, feKey) {
+    const id = workId || activeWork();
+    const beKey = BE_BY_FE[feKey];
+    return (id && beKey && snowBriefs[id] && snowBriefs[id][beKey]) || null;
+  },
+  /* 生成 / 批准等回包自带整份 workspace 时顺手刷新要点镜像 */
+  captureBriefs(workId, ws) { return captureDirectionBriefs(workId || activeWork(), ws); },
+  /* 教练回包带本步最新要点 → 直接落镜像 */
+  setDirectionBrief(workId, feKey, brief) {
+    const id = workId || activeWork();
+    const beKey = BE_BY_FE[feKey];
+    if (!id || !beKey) return;
+    const bucket = snowBriefs[id] || (snowBriefs[id] = {});
+    if (brief) bucket[beKey] = brief; else delete bucket[beKey];
+    emitBrief(id);
+  },
+  /* 作者编辑要点：乐观写入（本地立刻反映），失败回滚并上抛由视图诚实提示。
+     lines 是作者要的完整列表（缺席的活动条目 = 撤下；带 status=active 的已撤条目 = 恢复）；
+     inherit_upstream 可单独改。 */
+  async saveDirectionBrief(workId, feKey, { lines, inherit_upstream } = {}) {
+    const id = workId || activeWork();
+    const beKey = BE_BY_FE[feKey];
+    if (!id || !beKey) throw new Error("步骤未知，无法保存要点");
+    const bucket = snowBriefs[id] || (snowBriefs[id] = {});
+    const prev = bucket[beKey] ? JSON.parse(JSON.stringify(bucket[beKey])) : null;
+    const body = {};
+    if (Array.isArray(lines)) {
+      body.lines = lines.map(l => {
+        const item = { kind: l.kind, scope: l.scope, text: l.text, status: l.status || "active" };
+        if (l.line_id && !String(l.line_id).startsWith("local_")) item.line_id = l.line_id;
+        return item;
+      });
+    }
+    if (inherit_upstream != null) body.inherit_upstream = !!inherit_upstream;
+    const optimistic = { ...(prev || { step_key: beKey, revision: 0, inherit_upstream: true, inherited: [], lines: [], active_count: 0 }) };
+    if (Array.isArray(lines)) {
+      const known = new Map((prev ? prev.lines : []).map(l => [l.line_id, l]));
+      const keep = new Set();
+      const next = lines.map(l => {
+        const base = l.line_id ? known.get(l.line_id) : null;
+        if (l.line_id) keep.add(l.line_id);
+        const same = !!base && base.text === l.text && base.kind === l.kind && base.scope === l.scope;
+        return { ...(base || {}), line_id: l.line_id || `local_${Math.random().toString(36).slice(2, 10)}`,
+          kind: l.kind, scope: l.scope, text: l.text, status: l.status || "active", dismissed_by: null,
+          origin: same ? (base.origin || "coach") : "author" };
+      });
+      (prev ? prev.lines : []).forEach(l => {
+        if (keep.has(l.line_id)) return;
+        next.push(l.status === "dismissed" ? l : { ...l, status: "dismissed", dismissed_by: "author" });
+      });
+      optimistic.lines = next;
+      optimistic.active_count = next.filter(l => l.status === "active").length;
+    }
+    if (inherit_upstream != null) optimistic.inherit_upstream = !!inherit_upstream;
+    bucket[beKey] = optimistic;
+    emitBrief(id);
+    try {
+      const res = await apiPut(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}/direction-brief`, body);
+      if (res && res.direction_brief) bucket[beKey] = res.direction_brief;
+      emitBrief(id);
+      return bucket[beKey];
+    } catch (err) {
+      if (prev) bucket[beKey] = prev; else delete bucket[beKey];
+      emitBrief(id);
+      throw err;
+    }
+  },
+  /* 本步最新一版生成消费了哪一版要点（health.direction_brief）：要点改过而本稿没跟上 → stale */
+  briefUsage(workId, feKey) {
+    const id = workId || activeWork();
+    const brief = this.directionBrief(id, feKey);
+    const used = (((snowHealth[id] || {})[feKey]) || {}).directionBrief || null;
+    const current = brief ? (Number(brief.revision) || 0) : 0;
+    const active = brief ? (Number(brief.active_count) || 0) : 0;
+    const inheritedCount = brief && Array.isArray(brief.inherited) && brief.inherit_upstream !== false ? brief.inherited.length : 0;
+    const hasBrief = active > 0 || inheritedCount > 0;
+    const usedRevision = used && typeof used.revision === "number" ? used.revision : null;
+    if (!hasBrief) return { hasBrief: false, stale: false, disabled: false, usedRevision, currentRevision: current };
+    const disabled = !!used && used.used === false;
+    const stale = !!used && !disabled && usedRevision != null && usedRevision < current;
+    return { hasBrief: true, stale, disabled, usedRevision, currentRevision: current };
   },
   /* 分章现状（后端只读真相）：{chapter_count, unassigned_scene_count, chaptered, …}。
      顶部「整理为章节结构」据此决定是直接开面板还是先提示补 07 章表。 */
