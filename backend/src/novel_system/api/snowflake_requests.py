@@ -41,6 +41,10 @@ class SnowflakeStepGenerateRequest(StrictRequestModel):
     # 的来源（candidate = 候选正文 / coach_reply = 教练回复），决定它在提示里的用法说明。
     use_direction_brief: bool | None = None
     direction_kind: str | None = Field(default=None, max_length=32, pattern=r"^[a-z_]+$")
+    # 阶段 U（2026-09-17）：方向来自教练日志里的哪一回合——candidates 回合还要指明第几条。服务端据此在
+    # 回合上记 adoption（「已按此生成」）、在 health.direction 记出处，并由回合种类推出 direction_kind。
+    direction_turn_id: str | None = Field(default=None, max_length=255)
+    direction_index: int | None = Field(default=None, ge=0, le=8)
 
 
 class LegacySnowflakeStepGenerateRequest(StrictRequestModel):
@@ -61,6 +65,12 @@ class SnowflakeFeCandidatesRequest(StrictRequestModel):
     draft: str | None = Field(default=None, max_length=3000)
     target_chars: int | None = Field(default=None, ge=40, le=400)
     use_direction_brief: bool | None = None
+    # 阶段 U（2026-09-17）：「先看 3 个方向」是教练日志里的一种回合。ask 是作者对这一组方向的要求
+    # （教练输入框里的那句话）；draft_override 与 generate / assistant 同源（本地最新规范草稿盖在存档上），
+    # 取代以前前端折叠的 context 文本；focus_scene_id 让第 10 步的方向只针对选中的那一场。
+    ask: str | None = Field(default=None, max_length=600)
+    draft_override: BoundedJsonObject | None = None
+    focus_scene_id: str | None = Field(default=None, max_length=255)
 
 
 class SnowflakeDirectionBriefLineRequest(StrictRequestModel):

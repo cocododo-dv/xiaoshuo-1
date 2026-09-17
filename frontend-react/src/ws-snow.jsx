@@ -28,8 +28,10 @@ import { dayTimeLabel } from "./lib/ago.js";
      (Proactive G-C-S vs Reactive R-D-D).
 
    Layout: left step list (always visible) · center canvas with
-   tabs (编辑/候选/历史/引用) · right live context. Context folds
+   tabs (编辑/教练/历史/引用) · right live context. Context folds
    into a slide-over drawer on narrow screens.
+   阶段 U（2026-09-17）：「候选」页签并入教练——「先看 3 个方向」是教练日志里的一种回合，
+   方向与教练回复都可「按此生成本步」；本步要点（作者意图）在教练页编辑、右栏只读、编辑页工具条提示。
    ========================================================== */
 const { useState: useSS, useEffect: useSE, useRef: useSR } = React;
 
@@ -407,69 +409,8 @@ const S2_STEP_DATA = {
 
 /* generic candidate set for steps without a bespoke one */
 
-/* ---- AI candidate generation (后端节点 snowflake_step_candidates，G5) ----
-   Gather the confirmed upstream layers as context and let the backend
-   template produce 3 divergent candidates. Scaffold data remains editable
-   when the LLM is unavailable; generation itself fails closed. */
+/* 方向卡的字母编号（A/B/C…） */
 const S2_ID_LETTERS = ["A", "B", "C", "D"];
-
-// fold one step's content (draft, else scaffold) to a short context line
-function s2StepText(key, drafts, scaffolds) {
-  const t = s2Content((drafts || {})[key], (scaffolds || {})[key]).replace(/\s+/g, " ").trim();
-  return t.length > 180 ? t.slice(0, 180) + "…" : t;
-}
-
-// upstream anchor material the model must stay consistent with
-function s2UpstreamContext(activeKey, drafts, scaffolds) {
-  const idx = S2_STEPS.findIndex(s => s.key === activeKey);
-  const lines = [];
-  S2_STEPS.forEach((s, i) => {
-    if (i >= idx) return;
-    const txt = s2StepText(s.key, drafts, scaffolds);
-    if (txt) lines.push(`【${s.num} ${s.name}】${txt}`);
-  });
-  const para = (scaffolds || {}).paragraph || {};
-  const pf = (para.premiseF || "").trim(), pt = (para.premiseT || "").trim();
-  if (pf || pt) lines.push(`【道德前提·脊柱】错误信念「${pf || "—"}」→ 翻转为「${pt || "—"}」`);
-  return lines.join("\n");
-}
-
-function s2GenPrompt(active, data, contextStr, currentDraft) {
-  const target = data.target || 120;
-  const cap = Math.max(40, Math.min(target, 190));
-  return [
-    "你是雪花写作法（Snowflake Method）的写作助手，正在帮助作者完成长篇小说的构思。",
-    `当前步骤：第「${active.num} ${active.name}」步（雪花${active.book}）。`,
-    `这一步的任务：${(data.guide && data.guide.task) || active.blurb}`,
-    `扩展倍率：${active.grow}。本步整体目标体量约 ${target} 字。`,
-    "",
-    contextStr ? "已确认的上游材料（人物、冲突、道德前提必须与之严格一致，不得另起炉灶）：\n" + contextStr : "（暂无上游材料，请基于这一步的任务从零提供方向。）",
-    "",
-    currentDraft && currentDraft.trim() ? "作者当前草稿（可在此基础上改写，也可提出不同方向推翻它）：\n" + currentDraft.trim() : "（作者尚未动笔。）",
-    "",
-    "请生成 3 条走不同方向的候选草稿（例如：情绪向 / 推进向 / 对照向，或任何贴合本步的差异化角度）。",
-    `每条 text 是可直接采纳的正文本身，不要解释或加标题，控制在 ${cap} 字以内。`,
-    "三条之间方向要有真实差异，但都要紧扣上游，自洽可用。",
-    "只输出一个 JSON 数组，不要任何额外文字、不要代码围栏：",
-    '[{"label":"短标签(≤4字)","tag":"一句定位(≤12字)","text":"候选正文","notes":["要点(≤6字)","要点(≤6字)"]}]',
-  ].join("\n");
-}
-
-function s2ParseCands(raw) {
-  if (!raw) throw new Error("空响应");
-  let s = String(raw).trim().replace(/```json/gi, "").replace(/```/g, "").trim();
-  const a = s.indexOf("["), b = s.lastIndexOf("]");
-  if (a >= 0 && b > a) s = s.slice(a, b + 1);
-  const arr = JSON.parse(s);
-  if (!Array.isArray(arr) || !arr.length) throw new Error("非数组");
-  return arr.slice(0, 4).map((c, i) => ({
-    id: S2_ID_LETTERS[i] || String(i + 1),
-    label: (c.label || `方向 ${i + 1}`).toString().slice(0, 8),
-    tag: (c.tag || "AI 候选").toString().slice(0, 16),
-    text: (c.text || "").toString().trim(),
-    notes: Array.isArray(c.notes) ? c.notes.slice(0, 3).map(n => n.toString().slice(0, 10)) : [],
-  })).filter(c => c.text);
-}
 
 /* FE→BE 步骤键映射（正源；ws-snow-sync 复用同一份避免漂移） */
 const S2_BE_STEPS = [
@@ -486,42 +427,29 @@ const S2_BE_STEPS = [
 ];
 const S2_BE_KEY = Object.fromEntries(S2_BE_STEPS);
 
-/* FE-ALIGN G5：候选生成走后端节点 snowflake_step_candidates（提示词模板在
-   config/prompts.yaml）；上下文/草稿折叠文本随请求带入（原型脚手架形状只在
-   前端）。LLM 不可用 → 抛引导（默认展示的本地启发式候选不受影响）。 */
-async function s2GenerateCands(active, data, drafts, scaffolds, useBrief = true) {
+/* 「先看 3 个方向」：走后端节点 snowflake_step_candidates（提示词模板在 config/prompts.yaml）。
+   阶段 U：结果是教练日志里的一种回合（turn_kind=candidates），回包带整条教练历史；底稿与整步生成
+   同源（draft_override），作者在输入框里写的要求作为 ask 一并带上；第 10 步只针对选中的那一场。
+   fail-closed：LLM 不可用 → 后端 409，错误原样上抛由调用方提示。 */
+async function s2RequestDirections(active, data, cache, { ask = "", focusRow = "" } = {}) {
   let workId = null;
   try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
   const beKey = S2_BE_KEY[active.key];
   if (!workId || !beKey) throw new Error("作品尚未就绪，稍后重试");
-  let res = null;
+  const body = { target_chars: data.target || 120 };
+  if (ask) body.ask = ask;
+  if (active.key === "planning" && focusRow) body.focus_scene_id = focusRow;
   try {
-    res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/fe-candidates`, {
-      context: s2UpstreamContext(active.key, drafts, scaffolds),
-      draft: ((drafts || {})[active.key] || ""),
-      target_chars: data.target || 120,
-      // 阶段 T：三条候选在作者意图要点的范围内分岔（「生成时带入」关掉 = 纯探索）
-      use_direction_brief: useBrief !== false,
-    });
-  } catch (e) {
-    throw new Error("AI 候选生成失败：" + ((e && e.message) || e));
-  }
-  const cands = (res && res.candidates) || [];
-  if (res && res.source === "fallback") {
-    throw new Error("AI 候选需要可用的 LLM：请到「系统设置 → 模型与接入」启用后重试（当前展示的是本地启发式候选）。");
-  }
-  if (!cands.length) throw new Error("未能解析出候选，请重试一次");
-  return cands.map((c, i) => ({
-    id: S2_ID_LETTERS[i] || String(i + 1),
-    label: (c.label || `方向 ${i + 1}`).toString().slice(0, 8),
-    tag: (c.tag || "AI 候选").toString().slice(0, 16),
-    text: (c.text || "").toString().trim(),
-    notes: Array.isArray(c.notes) ? c.notes.slice(0, 3) : [],
-  })).filter(c => c.text);
+    const dOv = (window.SnowSync && window.SnowSync.pushCanon) ? window.SnowSync.pushCanon(active.key, cache, workId) : null;
+    if (dOv && Object.keys(dOv).length) body.draft_override = dOv;
+  } catch (e) {}
+  const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/fe-candidates`, body);
+  if (!res || !res.turn_id) throw new Error("方向回包缺少回合");
+  return res;
 }
 
-/* 「采纳并结构化」等入口统一走视图内的 structuredGenerate（后端 generate 节点：
-   每步专用模板 + 权威上游材料 + 压力诊断 + 空字段定向重试；require_llm 保证
+/* 「AI 生成本步」「按此生成本步」等入口统一走视图内的 structuredGenerate（后端 generate 节点：
+   每步专用模板 + 权威上游材料 + 压力诊断 + 本步要点 + 空字段定向重试；require_llm 保证
    LLM 不可用时诚实报错，绝不落一版启发式草稿冒充）。 */
 
 /* ---- downstream staleness (the fractal method's cheap-backtracking core) ----
@@ -721,11 +649,12 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const [importError, setImportError] = useSS("");
   const [ctxOpen, setCtxOpen] = useSS(false);
   const [snapDiff, setSnapDiff] = useSS(null);   // 待预览的历史快照条目
-  const [genCands, setGenCands] = useSS({});   // ai-generated candidates, keyed by step
-  /* busy / 错误也按步骤隔离：全局布尔会让"生成中…"在所有步骤的按钮上亮起，
-     并挡住其它步骤发起自己的生成 */
-  const [genBusyMap, setGenBusyMap] = useSS({});
-  const [genErrMap, setGenErrMap] = useSS({});
+  /* AI 忙态 / 错误按步骤隔离：全局布尔会让"生成中…"在所有步骤的按钮上亮起，并挡住其它步骤发起自己的生成 */
+  const [dirBusyMap, setDirBusyMap] = useSS({});   // 「先看 3 个方向」进行中
+  const [genErrMap, setGenErrMap] = useSS({});     // 本步最近一次 AI 动作的错误（编辑页 AI 工具条显示）
+  /* 驻场教练日志（后端 assistant_history，全步骤，服务端持久化；阶段 U 起方向回合也在里面） */
+  const [coachHist, setCoachHist] = useSS([]);
+  const [coachBusy, setCoachBusy] = useSS(false);
   /* 后端 per-step 权威健康（score/status/缺字段/前序闸门）——来自 SnowSync
      （hydrate 全量 + 每次保存后 PATCH 回包增量），与「实时自评」的本地正则估算区分展示 */
   const [beHealth, setBeHealth] = useSS(() => { try { return (window.SnowSync && window.SnowSync.health()) || {}; } catch (e) { return {}; } });
@@ -796,17 +725,13 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const tab = tabByStep[activeKey] || "edit";
   const setTabFor = (key, v) => setTabByStep(prev => ({ ...prev, [key]: v }));
   const setTab = (v) => setTabFor(activeKey, v);
-  const genBusy = !!genBusyMap[activeKey];
+  const dirBusy = !!dirBusyMap[activeKey];
   const genErr = genErrMap[activeKey] || null;
   const seedHints = null;
   const draft = drafts[activeKey] || "";
   const setDraft = (v) => setDrafts(prev => ({ ...prev, [activeKey]: typeof v === "function" ? v(prev[activeKey]) : v }));
   const updateScaffold = (updater) => setScaffolds(prev => ({ ...prev, [activeKey]: updater(prev[activeKey]) }));
   const toggleCheck = (i) => setChecks(prev => ({ ...prev, [activeKey]: (prev[activeKey] || []).map((v, j) => j === i ? !v : v) }));
-  const gen = genCands[activeKey];
-  /* 候选只来自后端 AI 生成通道；未生成时列表为空，不再用本地启发式拼假候选 */
-  const cands = (gen && gen.list) || [];
-  const candMeta = gen ? { ai: true, at: gen.at } : { ai: false };
   const idx = S2_STEPS.findIndex(s => s.key === activeKey);
   const doneCount = S2_STEPS.filter(s => states[s.key] === "done").length;
   /* 阶段 E（E3 第二步）：需复核只来自后端 status=stale（未确认仍有效）；值是按 input_refs 算出的
@@ -917,34 +842,37 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     showToast(`已略过 · ${active.name}（已在服务端留痕）`, "slate"); goStep(idx + 1);
   };
 
-  const regenerate = async () => {
-    const key = activeKey;
-    if (genBusyMap[key]) return;
+  /* 「先看 3 个方向」（阶段 U）：教练给本步三个不同方向，作为教练日志里的一种回合；ask 是作者顺手写下的要求。
+     进行中就切到教练页（方向卡出现在那里）；失败按步记错误并提示（LLM 未配置的 409 也走这里）。 */
+  const requestDirections = async (ask = "") => {
+    const key = activeKey, step = active;
+    if (dirBusyMap[key]) return false;
     setGenErrMap(prev => ({ ...prev, [key]: null }));
-    setGenBusyMap(prev => ({ ...prev, [key]: true }));
+    setDirBusyMap(prev => ({ ...prev, [key]: true }));
+    setTabFor(key, "coach");
     try {
-      const list = await s2GenerateCands(active, data, drafts, scaffolds, useBrief);
-      setGenCands(prev => ({ ...prev, [key]: { list, at: Date.now() } }));
-      pushHist(`生成 ${list.length} 条候选`, `${active.num} ${active.name}`, "Claude");
-      showToast(`已生成 ${list.length} 条候选 · 依据上游材料与诊断缺口`, "gold");
+      const focusRow = key === "planning" ? ((scaffolds.planning || {}).sel || "") : "";
+      const res = await s2RequestDirections(step, data, { drafts, scaffolds }, { ask: String(ask || "").trim(), focusRow });
+      if (Array.isArray(res.assistant_history)) setCoachHist(res.assistant_history);
+      const n = (res.candidates || []).length;
+      pushHist(`教练给了 ${n} 个方向`, `${step.num} ${step.name}${focusRow ? " · 聚焦 " + focusRow : ""}`, "Claude");
+      showToast(`教练给了 ${n} 个方向 · 选一个「按此生成本步」`, "gold");
+      return true;
     } catch (err) {
-      setGenErrMap(prev => ({ ...prev, [key]: (err && err.message) || "生成失败，请稍后重试" }));
+      const msg = (err && err.message) || "方向生成失败，请稍后重试";
+      setGenErrMap(prev => ({ ...prev, [key]: msg }));
+      showToast(msg.slice(0, 60), "crimson");
+      return false;
     } finally {
-      setGenBusyMap(prev => ({ ...prev, [key]: false }));
+      setDirBusyMap(prev => ({ ...prev, [key]: false }));
     }
   };
 
-  /* 编辑区「让 AI 生成候选」→ 跳候选页并（还没有 AI 候选时）触发生成 */
-  const openCands = () => { setTab("candidates"); if (!gen && !genBusy) regenerate(); };
-
-  /* 结构化生成通用通道：候选采纳 / 整表生成 / 全部补全 / 单场补全共用——
+  /* 结构化生成通用通道：按方向生成 / AI 生成本步 / 整表生成 / 全部补全 / 单场补全共用——
      后端 generate → 整步规范草稿经 applyServerStep 反推回脚手架，健康评分随回包刷新。
-     focusRow 时只回写焦点场的规划（其余场保留本地态，防止未上行编辑被服务端旧值盖掉）。 */
-  /* 阶段 T：生成 / 候选是否带入作者意图要点——界面偏好，按作品记在 localStorage；默认带入。
-     关掉 = 纯探索（后端 use_direction_brief=false，health 记 used=false）。 */
-  const briefPrefKey = () => { let id = null; try { id = WsWorks && WsWorks.activeId(); } catch (e) {} return `ws_snow_use_brief::${id || "none"}`; };
-  const [useBrief, setUseBriefState] = useSS(() => { try { return localStorage.getItem(briefPrefKey()) !== "0"; } catch (e) { return true; } });
-  const setUseBrief = (v) => { setUseBriefState(!!v); try { localStorage.setItem(briefPrefKey(), v ? "1" : "0"); } catch (e) {} };
+     focusRow 时只回写焦点场的规划（其余场保留本地态，防止未上行编辑被服务端旧值盖掉）。
+     本步要点默认带入（服务端 use_direction_brief 缺省 true）；阶段 U 去掉了「生成时带入」开关——
+     不想让某条要点约束生成，撤下那条即可，不必背一个全局开关。 */
   /* 要点镜像在 SnowSync 里；镜像或健康变了就重算（教练回包 / 作者编辑 / 生成回包都会发事件） */
   const [briefTick, setBriefTick] = useSS(0);
   useSE(() => {
@@ -958,11 +886,16 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   void briefTick;
   const [structBusyMap, setStructBusyMap] = useSS({});
   const structBusy = !!structBusyMap[activeKey];
-  const structuredGenerate = async ({ direction = null, directionKind = null, focus = null, focusRow = null, focusChars = null, focusChar = null, source = null, histAction, histNote, doneAction, doneNote, toastOk, toastFail, switchTab = false, fallbackText = null }) => {
+  /* 正在生成的是哪个入口（{kind, turnId, index, focused, id}）：忙态按步隔离，但「生成中…」只该亮在被点的那个按钮上——
+     三张方向卡共用一个 structBusy 时，点一张、三张都转圈，看起来像全触发了；其余按钮只禁用、不改文案。 */
+  const [genTargetMap, setGenTargetMap] = useSS({});
+  const genTarget = genTargetMap[activeKey] || null;
+  const structuredGenerate = async ({ direction = null, directionKind = null, directionTurnId = null, directionIndex = null, focus = null, focusRow = null, focusChars = null, focusChar = null, source = null, target = null, histAction, histNote, doneAction, doneNote, toastOk, toastFail, switchTab = false, fallbackText = null }) => {
     const key = activeKey, step = active;
     if (structBusyMap[key]) return false;
     setGenErrMap(prev => ({ ...prev, [key]: null }));
     setStructBusyMap(prev => ({ ...prev, [key]: true }));
+    setGenTargetMap(prev => ({ ...prev, [key]: target || { kind: source || "generate" } }));
     pushHist(histAction, `${step.num} ${step.name}${histNote ? " · " + histNote : ""} · 生成前留底`, "我", snapNow(key));
     try {
       let workId = null;
@@ -971,8 +904,12 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       if (!workId || !beKey) throw new Error("作品尚未就绪，稍后重试");
       const body = { require_llm: true, source: source || (focus ? "fe_scene_focus_ai" : focusChars ? "fe_char_focus_ai" : (direction ? "fe_candidate_adopt" : "fe_scaffold_ai")) };
       if (direction) body.direction_text = direction;
-      if (direction && directionKind) body.direction_kind = directionKind; // 教练回复 vs 候选正文：用法说明不同
-      body.use_direction_brief = !!useBrief; // 阶段 T：作者意图要点默认带入，关掉 = 纯探索
+      if (direction && directionKind) body.direction_kind = directionKind; // 教练回复 vs 方向正文：用法说明不同
+      // 阶段 U：方向来自教练日志里的哪一回合——服务端在回合上记「已按此生成」、在 health.direction 记出处
+      if (direction && directionTurnId) {
+        body.direction_turn_id = directionTurnId;
+        if (directionIndex != null) body.direction_index = directionIndex;
+      }
       if (focus) body.focus_scene_refs = focus;
       if (focusChars) body.focus_character_refs = focusChars;
       /* 本地最新规范草稿随请求带入（与上行 PATCH 同源）：消除「刚加的角色/场
@@ -984,6 +921,8 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/generate`, body);
       if (!res || !res.step) throw new Error("生成回包缺少 step");
       try { if (res.workspace && window.SnowSync && window.SnowSync.captureBriefs) window.SnowSync.captureBriefs(workId, res.workspace); } catch (e) {}
+      // 回包的教练历史带「已按此生成」标记（adoption）——方向卡 / 回复上的徽章据此更新
+      if (res.workspace && Array.isArray(res.workspace.assistant_history)) setCoachHist(res.workspace.assistant_history);
       const fe = (window.SnowSync && window.SnowSync.applyServerStep)
         ? window.SnowSync.applyServerStep(workId, key, res.step) : null;
       if (fe && fe.scaffold) {
@@ -1030,6 +969,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       return false;
     } finally {
       setStructBusyMap(prev => ({ ...prev, [key]: false }));
+      setGenTargetMap(prev => ({ ...prev, [key]: null }));
     }
   };
 
@@ -1047,18 +987,8 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     return ok;
   };
 
-  /* 采纳并结构化：候选正文作为方向蓝本，展开整步 */
-  const adoptStructured = (t, id) => structuredGenerate({
-    direction: t, switchTab: true, fallbackText: t,
-    histAction: `采纳候选 ${id} · 结构化`, histNote: "采纳前留底",
-    doneAction: "结构化整步", doneNote: `依候选 ${id} 展开全部字段`,
-    toastOk: `候选 ${id} 已结构化写入「${active.name}」· 可回滚`,
-    toastFail: "结构化失败 · 候选仍可「仅作草稿」采纳",
-  });
-
-  /* 多成员步骤（04/06/08 角色 · 10 场景规划）的增量采纳：候选方向 + 焦点定向组合，
-     只更新当前选中的成员，其余保持不动 */
-  const candFocus = (() => {
+  /* 多成员步骤（04/06/08 角色 · 10 场景规划）的定向生成：方向只落到当前选中的成员，其余保持不动 */
+  const aiFocus = (() => {
     if (activeKey === "characters" || activeKey === "backstory" || activeKey === "profile") {
       const sc = scaffolds[activeKey] || {};
       const roster = activeKey === "characters" ? (sc.chars || {}) : (((scaffolds.characters || {}).chars) || {});
@@ -1077,14 +1007,47 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     }
     return null;
   })();
-  const adoptStructuredFocused = candFocus ? (t, id) => structuredGenerate({
-    direction: t, switchTab: true,
-    ...(candFocus.kind === "char" ? { focusChars: [candFocus.id], focusChar: candFocus.id } : { focus: [candFocus.id], focusRow: candFocus.id }),
-    histAction: `采纳候选 ${id} · 定向「${candFocus.label}」`, histNote: "采纳前留底",
-    doneAction: "定向结构化", doneNote: `依候选 ${id} 只更新「${candFocus.label}」`,
-    toastOk: `候选 ${id} 已定向写入「${candFocus.label}」· 其余成员未动 · 可回滚`,
-    toastFail: "定向结构化失败 · 可改用整步结构化或仅作草稿",
-  }) : null;
+  /* 「按此生成本步」（阶段 U）：教练日志里的一个方向（方向回合的第 index 条）或一段教练回复，作为这一次生成的蓝本。
+     服务端按回合种类决定用法说明（方向正文 = 可直接展开的基调；教练回复 = 照它点名的缺口 / 走向 / 禁忌），
+     回合记「已按此生成」，这一版 health.direction 记出处（编辑页工具条显示「本稿按方向「X」生成」）。
+     focused = 只更新当前选中的成员（04/06/08 角色、10 场景）。 */
+  const adoptDirection = (turn, index = null, { focused = false } = {}) => {
+    const isCards = !!(turn && turn.turn_kind === "candidates");
+    const item = isCards ? (((turn.candidates || [])[index]) || null) : null;
+    const text = String(isCards ? ((item && item.text) || "") : ((turn && turn.reply) || "")).slice(0, 2000);
+    if (!text) return Promise.resolve(false);
+    const label = isCards ? ((item && item.label) || `方向 ${index + 1}`) : "教练回复";
+    const useFocus = focused && aiFocus;
+    const focusBody = useFocus
+      ? (aiFocus.kind === "char" ? { focusChars: [aiFocus.id], focusChar: aiFocus.id } : { focus: [aiFocus.id], focusRow: aiFocus.id })
+      : {};
+    const verb = useFocus ? `按「${label}」只更新「${aiFocus.label}」` : `按「${label}」生成本步`;
+    return structuredGenerate({
+      direction: text, directionKind: isCards ? "candidate" : "coach_reply",
+      directionTurnId: turn.turn_id || null, directionIndex: isCards ? index : null,
+      source: isCards ? "fe_candidate_adopt" : "fe_coach_adopt", switchTab: true, ...focusBody,
+      target: { kind: "direction", turnId: turn.turn_id || null, index: isCards ? index : null, focused: !!useFocus },
+      histAction: verb, histNote: "生成前留底",
+      doneAction: verb,
+      doneNote: useFocus ? "其余成员未动" : (isCards ? "按这个方向展开本步全部字段" : "按这段回复的判断与建议展开本步"),
+      toastOk: useFocus ? `已按「${label}」更新「${aiFocus.label}」· 其余未动 · 可回滚` : `已按「${label}」生成「${active.name}」· 可回滚`,
+      toastFail: "按方向生成失败",
+    });
+  };
+  /* 02 一句话概括是自由文本：方向本身就是那一句，直接采用，不必再让模型转述一遍 */
+  const adoptDirectionAsText = (turn, index) => {
+    const item = ((turn && turn.candidates) || [])[index];
+    if (!item || !item.text) return;
+    pushHist(`采用方向「${item.label || index + 1}」`, `${active.num} ${active.name} · 采纳前留底`, "我", snapNow(activeKey));
+    setDraft(item.text); setTab("edit");
+    showToast(`已采用「${item.label || "方向"}」· 写入「${active.name}」`, "gold");
+  };
+  /* 「AI 生成本步」：按上游材料 + 本步要点整步生成（01–08；09/10 的整表生成 / 全部补全在脚手架里） */
+  const generateStep = () => structuredGenerate({
+    source: "fe_scaffold_ai", switchTab: true, target: { kind: "bar" },
+    histAction: "AI 生成本步", doneAction: "AI 生成本步", doneNote: "依上游材料与本步要点整步生成",
+    toastOk: `已生成「${active.name}」· 可回滚`, toastFail: "生成失败",
+  });
 
   /* 场景分诊（第 10 步）：后端逐场评估 pass/maybe/rewrite + 修复建议/补丁。
      draft_override 带本地最新折叠草稿，免受自动保存节流竞态影响。
@@ -1192,16 +1155,19 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   /* 传给 09/10 脚手架的 AI 工具面 */
   const sceneAI = {
     structBusy, triage, triageBusy, onTriage: runTriage, onApplyRepair: applyTriageRepair, onVerdict: setTriageVerdict,
+    busyTarget: genTarget,
     onGenerateAll: () => structuredGenerate({
+      target: { kind: "scenes_all" },
       histAction: "AI 生成场景表", doneAction: "AI 生成场景表",
       doneNote: "依上游大纲与角色生成整表", toastOk: "场景表已生成 · 依上游材料 · 可回滚",
     }),
     onFillAll: () => structuredGenerate({
+      target: { kind: "fill_all" },
       histAction: "AI 补全所有场景", doneAction: "AI 补全所有场景",
       doneNote: "逐场补齐 GCS/RDD 与钩子", toastOk: "所有场景已补全 · 可回滚",
     }),
     onFillScene: (rowUid) => structuredGenerate({
-      focus: [rowUid], focusRow: rowUid,
+      focus: [rowUid], focusRow: rowUid, target: { kind: "fill_scene", id: rowUid },
       histAction: `AI 补全 ${rowUid}`, doneAction: `AI 补全 ${rowUid}`,
       doneNote: "单场定向生成", toastOk: `${rowUid} 已补全 · 其余场景未动 · 可回滚`,
     }),
@@ -1211,10 +1177,11 @@ function WsSnowflake({ go, initialStep, onOverview }) {
      后端 focus_character_refs 定向生成，其余角色（含名册顺序）保持不动 */
   const charAI = {
     structBusy,
+    busyTarget: genTarget,
     onFillChar: (charId, charName) => {
       const label = (charName || "").trim() || charId;
       return structuredGenerate({
-        focusChars: [charId], focusChar: charId,
+        focusChars: [charId], focusChar: charId, target: { kind: "fill_char", id: charId },
         histAction: `AI 补全角色「${label}」`, doneAction: `AI 补全角色「${label}」`,
         doneNote: "单角色定向生成", toastOk: `「${label}」已补全 · 其余角色未动 · 可回滚`,
       });
@@ -1223,9 +1190,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
 
   /* 驻场教练（snowflake_workspace_assistant）：逐步对话辅导，回合服务端持久化。
      第 10 步自动聚焦当前选中场（row_uid，后端已兼容）；带 draft_override 免竞态。
-     candidate_patch 是咨询式补丁：应用时空值不清空、按 id 对位、不删成员。 */
-  const [coachHist, setCoachHist] = useSS([]);     // 后端 assistant_history（全步骤，服务端持久化）
-  const [coachBusy, setCoachBusy] = useSS(false);
+     candidate_patch 是教练的「改写」：应用时空值不清空、按 id 对位、不删成员。 */
   const coachFocusRow = activeKey === "planning" ? ((scaffolds.planning || {}).sel || "") : "";
   /* 进教练页且本地还没有历史 → 从 workspace 懒加载（跨会话回合可见） */
   useSE(() => {
@@ -1235,7 +1200,8 @@ function WsSnowflake({ go, initialStep, onOverview }) {
         const workId = WsWorks && WsWorks.activeId();
         if (!workId) return;
         const ws = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
-        if (ws && Array.isArray(ws.assistant_history) && ws.assistant_history.length) setCoachHist(ws.assistant_history);
+        // 只在本地仍为空时采用：「先看 3 个方向」会先切到教练页再收到更新的历史，懒加载的旧回包不能把它盖掉
+        if (ws && Array.isArray(ws.assistant_history) && ws.assistant_history.length) setCoachHist(prev => (prev.length ? prev : ws.assistant_history));
       } catch (e) {}
     })();
   }, [tab]);
@@ -1255,32 +1221,27 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       if (key === "planning" && coachFocusRow) body.focus_scene_id = coachFocusRow;
       const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/assistant`, body);
       setCoachHist((res && res.assistant_history) || []);
-      // 阶段 T：教练每轮重述作者意图要点——回包带本步最新要点与差异，落镜像并告诉作者改了什么
+      // 阶段 T：教练每轮重述作者意图要点——回包带本步最新要点，落镜像；差异随回合落表，日志里那一轮自己会说
       if (res && res.direction_brief && window.SnowSync && window.SnowSync.setDirectionBrief) window.SnowSync.setDirectionBrief(workId, key, res.direction_brief);
-      const delta = (res && res.brief_delta) || {};
-      const parts = [];
-      if ((delta.added || []).length) parts.push(`+${delta.added.length}`);
-      if ((delta.updated || []).length) parts.push(`改 ${delta.updated.length}`);
-      if ((delta.superseded || []).length) parts.push(`撤 ${delta.superseded.length}`);
+      const parts = s2BriefDeltaParts(res && res.brief_delta);
       pushHist("教练问答", `${step.num} ${step.name}${body.focus_scene_id ? " · 聚焦 " + body.focus_scene_id : ""}${parts.length ? " · 要点 " + parts.join(" / ") : ""}`, "Claude");
-      if (parts.length) showToast(`本步要点已更新 · ${parts.join(" · ")} · 请在教练页核对`, "gold");
     } catch (err) {
       showToast("教练回复失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
     } finally {
       setCoachBusy(false);
     }
   };
-  /* 应用教练补丁（当前步任意带补丁的回合）：咨询式合并——空值不清空、按 id 对位、不删成员 */
+  /* 填入教练的改写（当前步任意带改写的回合）：咨询式合并——空值不清空、按 id 对位、不删成员 */
   const applyCoachPatch = (turn) => {
     const patch = turn && turn.candidate_patch;
     if (!patch || !Object.keys(patch).length) return;
-    pushHist("应用教练补丁", `${active.num} ${active.name} · 应用前留底`, "我", snapNow(activeKey));
+    pushHist("填入教练改写", `${active.num} ${active.name} · 填入前留底`, "我", snapNow(activeKey));
     const fe = (window.SnowSync && window.SnowSync.applyCanonPatch)
       ? window.SnowSync.applyCanonPatch(activeKey, { drafts, scaffolds }, patch, null) : null;
     if (fe && fe.scaffold) setScaffolds(prev => ({ ...prev, [activeKey]: fe.scaffold }));
     else if (fe && fe.text != null) setDraft(fe.text);
     setTab("edit");
-    showToast(`已应用「${(turn && turn.candidate_label) || "教练补丁"}」· 可回滚`, "gold");
+    showToast(`已填入「${(turn && turn.candidate_label) || "教练改写"}」· 可回滚`, "gold");
   };
   /* 阶段 T：作者编辑本步要点（撤下 / 改写 / 加条 / 范围 / 恢复 / 继承）——乐观写入，失败由 store 回滚并上抛 */
   const [briefBusy, setBriefBusy] = useSS(false);
@@ -1303,13 +1264,6 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     histAction: "按最新要点重新生成", histNote: "生成前留底",
     doneAction: "按最新要点重新生成", doneNote: "本步按最新意图要点重新展开",
     toastOk: "已按最新要点重新生成 · 可回滚", toastFail: "重新生成失败",
-  });
-  /* 「以此为方向生成」：教练的这段回复作为本步方向（direction_kind=coach_reply，用法说明不同于候选正文） */
-  const adoptCoachReply = (turn) => structuredGenerate({
-    direction: String((turn && turn.reply) || "").slice(0, 2000), directionKind: "coach_reply", source: "fe_coach_adopt", switchTab: true,
-    histAction: "以教练回复为方向生成", histNote: "生成前留底",
-    doneAction: "以教练回复为方向生成", doneNote: "按这段回复的判断与建议展开本步",
-    toastOk: `已按教练回复展开「${active.name}」· 可回滚`, toastFail: "按教练回复生成失败",
   });
 
   useSE(() => {
@@ -1642,33 +1596,35 @@ function WsSnowflake({ go, initialStep, onOverview }) {
 
             <div className="snow-tabs" role="tablist" aria-label={`${active.name}工作区`}>
               <S2Tab id="edit" cur={tab} on={setTab}>编辑</S2Tab>
-              <S2Tab id="candidates" cur={tab} on={setTab}>候选 <span className="cand-tab-num">{cands.length}</span></S2Tab>
               <S2Tab id="coach" cur={tab} on={setTab}>教练{coachHist.filter(t => t.step_key === S2_BE_KEY[activeKey]).length ? <span className="cand-tab-num">{coachHist.filter(t => t.step_key === S2_BE_KEY[activeKey]).length}</span> : null}</S2Tab>
               <S2Tab id="history" cur={tab} on={setTab}>历史</S2Tab>
               <S2Tab id="ref" cur={tab} on={setTab}>引用上下文</S2Tab>
             </div>
 
             {tab === "edit" && (
-              data.scaffold
-                ? <React.Fragment>
-                    {draft.trim() ? <S2DraftOverride draft={draft} setDraft={setDraft} stepName={active.name} /> : null}
-                    <S2Scaffold kind={data.scaffold.type} scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} hints={seedHints} refs={scaffolds} go={setActiveKey}
-                      ai={(data.scaffold.type === "scenelist" || data.scaffold.type === "scene") ? sceneAI
-                        : (data.scaffold.type === "charsheet" || data.scaffold.type === "backstory" || data.scaffold.type === "profile") ? charAI : undefined} />
-                  </React.Fragment>
-                : <S2Edit draft={draft} setDraft={setDraft} stepName={active.name} target={data.target} meter={data.meter} hints={seedHints} onAICands={openCands} />
-            )}
-            {tab === "candidates" && (
-              <S2Cands draft={draft} cands={cands} meta={candMeta} busy={genBusy} err={genErr} onRegen={regenerate}
-                structBusy={structBusy} onAdoptStructured={adoptStructured}
-                onAdoptFocused={adoptStructuredFocused} focusLabel={candFocus ? candFocus.label : null}
-                onAdopt={(t, id) => { pushHist(`采纳候选 ${id}`, `${active.num} ${active.name} · 采纳前留底`, "我", snapNow(activeKey)); setDraft(t); setTab("edit"); showToast(`已采纳候选 ${id} · 写入「${active.name}」草稿`, "gold"); }} />
+              <React.Fragment>
+                <S2AiBar stepName={active.name} canGenerate={!(data.scaffold && (data.scaffold.type === "scenelist" || data.scaffold.type === "scene"))}
+                  structBusy={structBusy} busyTarget={genTarget} dirBusy={dirBusy} onGenerate={generateStep} onDirections={() => requestDirections("")}
+                  brief={brief} usage={briefUsage} health={beHealth[activeKey]} onOpenCoach={() => setTab("coach")}
+                  onRegenWithBrief={regenWithBrief} err={genErr} onClearErr={() => setGenErrMap(prev => ({ ...prev, [activeKey]: null }))} />
+                {data.scaffold
+                  ? <React.Fragment>
+                      {draft.trim() ? <S2DraftOverride draft={draft} setDraft={setDraft} stepName={active.name} /> : null}
+                      <S2Scaffold kind={data.scaffold.type} scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} hints={seedHints} refs={scaffolds} go={setActiveKey}
+                        ai={(data.scaffold.type === "scenelist" || data.scaffold.type === "scene") ? sceneAI
+                          : (data.scaffold.type === "charsheet" || data.scaffold.type === "backstory" || data.scaffold.type === "profile") ? charAI : undefined} />
+                    </React.Fragment>
+                  : <S2Edit draft={draft} setDraft={setDraft} stepName={active.name} target={data.target} meter={data.meter} hints={seedHints} />}
+              </React.Fragment>
             )}
             {tab === "coach" && (
-              <S2Coach active={active} beKey={S2_BE_KEY[activeKey]} history={coachHist} busy={coachBusy}
-                focusRow={coachFocusRow} onSend={sendCoach} onApplyPatch={applyCoachPatch}
-                brief={brief} briefBusy={briefBusy} onSaveBrief={saveBrief} useBrief={useBrief} onToggleUseBrief={setUseBrief}
-                briefUsage={briefUsage} onRegenWithBrief={regenWithBrief} onAdoptReply={adoptCoachReply} structBusy={structBusy} />
+              <S2Coach active={active} beKey={S2_BE_KEY[activeKey]} history={coachHist} busy={coachBusy} dirBusy={dirBusy}
+                focusRow={coachFocusRow} focusLabel={aiFocus ? aiFocus.label : null} freeText={!data.scaffold}
+                onSend={sendCoach} onDirections={requestDirections} onApplyPatch={applyCoachPatch}
+                onAdoptDirection={adoptDirection} onAdoptDirectionAsText={adoptDirectionAsText}
+                brief={brief} briefBusy={briefBusy} onSaveBrief={saveBrief}
+                briefUsage={briefUsage} onRegenWithBrief={regenWithBrief} structBusy={structBusy} busyTarget={genTarget}
+                err={genErr} onClearErr={() => setGenErrMap(prev => ({ ...prev, [activeKey]: null }))} />
             )}
             {tab === "history" && <S2History history={history} go={setActiveKey} onRestore={restoreSnap} />}
             {tab === "ref" && <S2Ref active={active} drafts={drafts} scaffolds={scaffolds} />}
@@ -1714,6 +1670,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
           </div>
           <S2Guide guide={data.guide} rubric={data.rubric || S2_RUBRIC} checks={checks[activeKey] || []} onToggle={toggleCheck}
             stepKey={activeKey} draft={draft} scaffold={scaffolds[activeKey]} target={data.target} go={setActiveKey} refs={scaffolds} health={beHealth[activeKey]} />
+          <S2BriefRail brief={brief} onOpen={() => { setTab("coach"); setCtxOpen(false); }} />
           <S2Spine active={active} go={setActiveKey} para={scaffolds.paragraph} />
           <S2Links active={active} states={states} go={setActiveKey} staleMap={staleMap} />
         </aside>
@@ -1971,21 +1928,17 @@ function S2Guide({ guide, rubric, checks, onToggle, stepKey, draft, scaffold, ta
 }
 
 /* ====== Freeform editor (+ optional word meter) ====== */
-function S2Edit({ draft, setDraft, stepName, target, meter, hints, onAICands }) {
+function S2Edit({ draft, setDraft, stepName, target, meter, hints }) {
   return (
     <div className="edit-pane">
       <div className="edit-toolbar">
-        <div className="flex items-center gap-2">
-          <button className="btn btn-quiet btn-sm" onClick={() => onAICands && onAICands()} title="让 AI 读上游材料与诊断缺口，生成 3 条方向候选">
-            <I.Wand size={13} /> 让 AI 生成候选
-          </button>
-        </div>
+        <div className="text-muted text-sm">自己写，或用上面的 AI 工具条</div>
         <div className="text-muted text-sm">{draft.length} 字{target ? ` · 目标约 ${target}` : ""}</div>
       </div>
       {meter && <S2Meter len={draft.length} target={meter.target} note={meter.note} />}
       <textarea className="edit-text" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={`在这里写「${stepName}」…`} />
       <div className="edit-hints">
-        {(hints && hints.length ? hints : [{ icon: "Info", tone: "slate", text: "随时可以让 AI 基于上游步骤生成候选，再挑一条采纳。" }]).map((h, i) => (
+        {(hints && hints.length ? hints : [{ icon: "Info", tone: "slate", text: "「AI 生成本步」按上游材料和本步要点直接写；「先看 3 个方向」让教练给三个不同走向，挑一个再生成。" }]).map((h, i) => (
           <S2Hint key={i} icon={h.icon} tone={h.tone} text={h.text} />
         ))}
       </div>
@@ -2012,8 +1965,9 @@ function S2Hint({ icon, tone, text }) {
   return <div className={`hint hint-${tone}`}><Ic size={14} /><span>{text}</span></div>;
 }
 
-/* 采纳候选后的自由草稿，在有脚手架的步骤上可见可编可退——
-   它会优先于脚手架参与评分 / 引用 / 导出，所以必须明示，不能藏在水面下 */
+/* 旧版「仅作草稿」留下的自由草稿，在有脚手架的步骤上可见可编可退——
+   它会优先于脚手架参与评分 / 引用 / 导出，所以必须明示，不能藏在水面下。
+   阶段 U 起不再有新入口写它（方向一律「按此生成本步」进脚手架）；清掉即回到脚手架。 */
 function S2DraftOverride({ draft, setDraft, stepName }) {
   const clear = () => {
     if (!window.confirm(`清除这段自由草稿？本步将回到结构化脚手架作为唯一内容源。`)) return;
@@ -2022,7 +1976,7 @@ function S2DraftOverride({ draft, setDraft, stepName }) {
   return (
     <div className="sf-dov">
       <div className="sf-dov-head">
-        <span className="sf-dov-tag"><I.Wand size={12} /> 自由草稿（采纳候选所得）</span>
+        <span className="sf-dov-tag"><I.Wand size={12} /> 自由草稿（旧版采纳候选所得）</span>
         <span className="sf-dov-note">只要这段非空，本步的评分、引用与导出都优先用它，而非下方脚手架。</span>
         <button className="btn btn-quiet btn-sm" onClick={clear} title="清除草稿，回到脚手架"><I.X size={12} /> 清除草稿</button>
       </div>
@@ -2173,7 +2127,7 @@ function S2CharSheet({ scaffold, onScaffold, ai }) {
         {ai && (
           <button className="btn btn-quiet btn-sm" disabled={ai.structBusy} onClick={() => ai.onFillChar(sel, ch.name)}
             title="只让 AI 补全当前选中的这个角色——其余角色保持不动（依据上游材料，与其他角色保持一致）">
-            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 补全此角色"}
+            <I.Wand size={13} className={s2BusyOn(ai, "fill_char", sel) ? "sf-spin" : ""} /> {s2BusyOn(ai, "fill_char", sel) ? "生成中…" : "AI 补全此角色"}
           </button>
         )}
         <button className="btn btn-quiet btn-sm" onClick={delChar} title="删除这个角色"><I.X size={13} /> 删除角色</button>
@@ -2277,7 +2231,7 @@ function S2CharDeep({ scaffold, onScaffold, fields, note, icon, roster, go, ai }
         {ai && (
           <button className="btn btn-quiet btn-sm" disabled={ai.structBusy} onClick={() => ai.onFillChar(sel, meta.name)}
             title="只让 AI 补全当前选中的这个角色——其余角色保持不动（依据上游材料，与其他角色保持一致）">
-            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 补全此角色"}
+            <I.Wand size={13} className={s2BusyOn(ai, "fill_char", sel) ? "sf-spin" : ""} /> {s2BusyOn(ai, "fill_char", sel) ? "生成中…" : "AI 补全此角色"}
           </button>
         )}
         <button className="sf-lineage" onClick={() => go && go("characters")} title="改名 / 改定位 / 增删角色，都在 04">
@@ -2702,7 +2656,7 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
                 !window.confirm(`AI 会依上游材料重新生成整份场景表，现有 ${list.length} 场将被整体替换（已留底可回滚）。继续？`)) return;
               ai.onGenerateAll();
             }}>
-            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 生成整表"}
+            <I.Wand size={13} className={s2BusyOn(ai, "scenes_all") ? "sf-spin" : ""} /> {s2BusyOn(ai, "scenes_all") ? "生成中…" : "AI 生成整表"}
           </button>
         )}
       </div>
@@ -2905,7 +2859,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
             if (!window.confirm(`AI 会逐场补齐 GCS/RDD、坩埚与钩子，已填内容会被深化改写（已留底可回滚）。继续？`)) return;
             ai.onFillAll();
           }} title="让 AI 依上游材料逐场补齐目标/冲突/挫败（或反应/两难/决定）">
-            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 补全所有场景"}
+            <I.Wand size={13} className={s2BusyOn(ai, "fill_all") ? "sf-spin" : ""} /> {s2BusyOn(ai, "fill_all") ? "生成中…" : "AI 补全所有场景"}
           </button>
           {triItems && (
             <span className="sf-triage-sum" title={`分诊于 ${new Date(ai.triage.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · ${ai.triage.source === "llm" ? "AI 评估" : "规则诊断"}`}>
@@ -3004,7 +2958,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
         {ai && (
           <button className="btn btn-quiet btn-sm" disabled={ai.structBusy} onClick={() => ai.onFillScene(selId)}
             title="只补全这一场的三槽/坩埚/钩子，其余场景不动（生成前自动留底）">
-            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 补全这一场"}
+            <I.Wand size={13} className={s2BusyOn(ai, "fill_scene", selId) ? "sf-spin" : ""} /> {s2BusyOn(ai, "fill_scene", selId) ? "生成中…" : "AI 补全这一场"}
           </button>
         )}
       </div>
@@ -3091,12 +3045,42 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
 }
 
 /* ====== 驻场教练：逐步对话辅导（回合服务端持久化；第 10 步自动聚焦选中场） ====== */
-/* ====== 阶段 T：本步要点（作者意图要点）卡 ======
-   教练每轮蒸馏、作者定夺：撤下 / 改写 / 切换类型与范围 / 加条 / 恢复；「继承上游」决定上游全书级要点是否带入本步，
-   「生成时带入」是纯探索开关；要点改过而本稿没跟上时给「按最新要点重新生成」。 */
+/* ====== 阶段 T / U：本步要点（作者意图要点）卡 ======
+   教练每轮蒸馏、作者定夺：撤下 / 改写 / 切换类型与范围 / 加条 / 恢复；「继承上游」决定上游全书级要点是否带入本步；
+   要点改过而本稿没跟上时给「按最新要点重新生成」。要点永远带入生成（阶段 U 去掉了「生成时带入」开关：
+   不想让某条约束生成，撤下那条即可）。 */
 const BRIEF_KIND_LABEL = { decision: "决定", rejection: "否决", constraint: "约束", pending: "待定" };
 const BRIEF_KIND_ORDER = ["decision", "constraint", "rejection", "pending"];
-function S2BriefCard({ brief, busy, onSave, useBrief, onToggleUseBrief, usage, onRegen, structBusy }) {
+/* 教练某轮对要点的差异 → 「+2 / 改 1 / 撤 1」 */
+function s2BriefDeltaParts(delta) {
+  const d = delta || {};
+  const parts = [];
+  if ((d.added || []).length) parts.push(`+${d.added.length}`);
+  if ((d.updated || []).length) parts.push(`改 ${d.updated.length}`);
+  if ((d.superseded || []).length) parts.push(`撤 ${d.superseded.length}`);
+  return parts;
+}
+/* 「生成中…」只亮在被点的那个入口：ai.busyTarget 是本步正在生成的入口（kind + 可选的成员 id） */
+function s2BusyOn(ai, kind, id) {
+  const t = ai && ai.busyTarget;
+  if (!ai || !ai.structBusy || !t || t.kind !== kind) return false;
+  return id == null || t.id == null || t.id === id;
+}
+/* 本步当前版本的出处（后端 health）：AI 按哪个方向 / 哪版要点生成的 */
+function s2Provenance(health) {
+  const h = health || {};
+  if (h.generationSource !== "llm") return null;
+  const dir = h.direction || null;
+  const used = h.directionBrief || null;
+  const bits = [];
+  if (dir && dir.kind === "candidate") bits.push(`按方向「${dir.label || "方向"}」生成`);
+  else if (dir && dir.kind === "coach_reply") bits.push("按教练回复生成");
+  else bits.push("AI 生成");
+  if (used && used.used === false) bits.push("未带要点");
+  else if (used && typeof used.revision === "number" && used.revision > 0) bits.push(`带第 ${used.revision} 版要点`);
+  return bits.join(" · ");
+}
+function S2BriefCard({ brief, busy, onSave, usage, onRegen, structBusy }) {
   const [editing, setEditing] = useSS(null);
   const [adding, setAdding] = useSS({ kind: "decision", scope: "step", text: "" });
   const [showDismissed, setShowDismissed] = useSS(false);
@@ -3138,21 +3122,18 @@ function S2BriefCard({ brief, busy, onSave, useBrief, onToggleUseBrief, usage, o
       <div className="sf-brief-head">
         <div className="sf-brief-title">
           <I.Sparkles size={14} /> 本步要点 <span className="sf-brief-count">{active.length}</span>
-          <span className="sf-brief-hint">教练每轮蒸馏、你来定夺；AI 生成、候选、分诊都照它写</span>
+          <span className="sf-brief-hint">你定下的、否决的、还在犹豫的——教练记，你改；AI 生成、方向、分诊都照它写</span>
         </div>
         <div className="sf-brief-tools">
-          <label className="sf-brief-toggle" title="关掉 = 纯探索：生成与候选不带任何要点">
-            <input type="checkbox" checked={!!useBrief} onChange={(e) => onToggleUseBrief(e.target.checked)} data-testid="snow-brief-use" /> 生成时带入
-          </label>
           <label className="sf-brief-toggle" title="把上游各步标为「全书」的要点一并带入本步">
             <input type="checkbox" checked={inherit} disabled={busy} onChange={(e) => save(undefined, e.target.checked)} data-testid="snow-brief-inherit" /> 继承上游
           </label>
           {active.length > 0 && <button className="btn btn-quiet btn-sm" disabled={busy} onClick={clearAll} data-testid="snow-brief-clear">清空</button>}
         </div>
       </div>
-      {usage && usage.stale && useBrief && (
+      {usage && usage.stale && (
         <div className="sf-brief-stale" data-testid="snow-brief-stale">
-          <span>本稿按第 {usage.usedRevision} 版要点生成，要点已改到第 {usage.currentRevision} 版。</span>
+          <span>要点改过了（第 {usage.currentRevision} 版），本步草稿还是按第 {usage.usedRevision} 版写的。</span>
           <button className="btn btn-accent btn-sm" disabled={structBusy} onClick={onRegen} data-testid="snow-brief-regen"><I.Wand size={12} /> 按最新要点重新生成</button>
         </div>
       )}
@@ -3209,216 +3190,223 @@ function S2BriefCard({ brief, busy, onSave, useBrief, onToggleUseBrief, usage, o
 const S2_COACH_QUICKS = [
   "这一步还缺什么？先告诉我最要命的一个缺口。",
   "帮我把这一步的压力再抬高一档——具体到代价。",
-  "请直接给我一版可用的改写（作为补丁）。",
+  "请直接给我一版可用的改写。",
 ];
 
-function S2Coach({ active, beKey, history, busy, focusRow, onSend, onApplyPatch, brief, briefBusy, onSaveBrief, useBrief, onToggleUseBrief, briefUsage, onRegenWithBrief, onAdoptReply, structBusy }) {
+/* 方向回合：三张方向卡，每张可「按此生成本步」（02 自由文本步：「就用这一句」）；
+   多成员步骤另给「只更新「X」」；被采纳过的卡打「已按此生成」徽章（回合的 adoption）。 */
+function S2DirectionCards({ turn, freeText, focusLabel, structBusy, busyTarget, onAdopt, onAdoptText }) {
+  const items = (turn && turn.candidates) || [];
+  const chosen = turn && turn.adoption && typeof turn.adoption.candidate_index === "number" ? turn.adoption.candidate_index : null;
+  // 只有被点的那张卡转圈；其余卡在生成期间只是禁用，文案不变
+  const busyOn = (i, focused) => !!(structBusy && busyTarget && busyTarget.kind === "direction" && busyTarget.turnId === turn.turn_id && busyTarget.index === i && !!busyTarget.focused === focused);
+  return (
+    <div className="sf-dir-cards" data-testid="snow-direction-cards">
+      {items.map((c, i) => (
+        <article key={i} className={`sf-dir-card ${chosen === i ? "is-chosen" : ""} ${busyOn(i, false) || busyOn(i, true) ? "is-busy" : ""}`} data-testid="snow-direction-card">
+          <header className="sf-dir-head">
+            <span className="sf-dir-id">{S2_ID_LETTERS[i] || i + 1}</span>
+            <span className="sf-dir-label">{c.label}</span>
+            {c.tag && <span className="pill text-xs"><span className="pill-dot" />{c.tag}</span>}
+            {chosen === i && <span className="pill pill-sage text-xs sf-dir-chosen" title="本步有一版就是按这个方向生成的"><span className="pill-dot" />已按此生成</span>}
+          </header>
+          <p className="sf-dir-text">{c.text}</p>
+          {(c.notes || []).length > 0 && <div className="sf-dir-notes">{c.notes.map((n, j) => <span key={j} className="pill text-xs">{n}</span>)}</div>}
+          <div className="sf-dir-actions">
+            {freeText ? (
+              <button className="btn btn-primary btn-sm" onClick={() => onAdoptText(turn, i)} data-testid="snow-direction-use-text" title="这一句就是本步的内容，直接采用（不再调用模型）">
+                <I.Check size={13} /> 就用这一句
+              </button>
+            ) : (
+              <button className="btn btn-primary btn-sm" disabled={structBusy} onClick={() => onAdopt(turn, i)} data-testid="snow-direction-adopt"
+                title="以这个方向为蓝本，让 AI 把本步全部字段整套写好（生成前留底，可回滚）">
+                {busyOn(i, false) ? <I.Refresh size={13} className="sf-spin" /> : <I.Wand size={13} />} {busyOn(i, false) ? "生成中…" : "按此生成本步"}
+              </button>
+            )}
+            {!freeText && focusLabel && (
+              <button className="btn btn-quiet btn-sm" disabled={structBusy} onClick={() => onAdopt(turn, i, { focused: true })} data-testid="snow-direction-adopt-focused"
+                title={`只按这个方向更新当前选中的「${focusLabel}」，其余成员保持不动（可回滚）`}>
+                {busyOn(i, true) ? <I.Refresh size={13} className="sf-spin" /> : null} {busyOn(i, true) ? "定向中…" : `只更新「${focusLabel}」`}
+              </button>
+            )}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function S2Coach({ active, beKey, history, busy, dirBusy, focusRow, focusLabel, freeText, onSend, onDirections, onApplyPatch, onAdoptDirection, onAdoptDirectionAsText, brief, briefBusy, onSaveBrief, briefUsage, onRegenWithBrief, structBusy, busyTarget, err, onClearErr }) {
   const [input, setInput] = useSS("");
   const turns = (history || []).filter(t => t.step_key === beKey);
   const endRef = useSR(null);
-  useSE(() => { try { endRef.current && endRef.current.scrollIntoView({ block: "end" }); } catch (e) {} }, [turns.length, busy]);
+  useSE(() => { try { endRef.current && endRef.current.scrollIntoView({ block: "end" }); } catch (e) {} }, [turns.length, busy, dirBusy]);
   const send = (text) => { const t = (text != null ? text : input).trim(); if (!t || busy) return; onSend(t); setInput(""); };
+  const directions = () => { if (busy || dirBusy) return; const ask = input.trim(); setInput(""); onDirections(ask); };
   return (
     <div className="sf-coach">
       <div className="sf-coach-note">
         <I.Sparkles size={14} />
-        <span>驻场教练记得本步的对话，读得到你<b>本步草稿</b>与上游材料{focusRow ? <>，当前聚焦场景 <b>{focusRow}</b>（跟随左侧选中）</> : null}；它把你定下的、否决的、还在犹豫的记进下面的<b>本步要点</b>，AI 生成、候选与分诊都照要点写。要它直接改写时，回复会附带「补丁」，可一键应用、可回滚。</span>
+        <span>教练记得本步的对话，读得到你<b>本步草稿</b>与上游材料{focusRow ? <>，当前聚焦场景 <b>{focusRow}</b>（跟随左侧选中）</> : null}。
+          三件事：<b>聊</b>——问缺口、抬压力；<b>记</b>——它把你定下的、否决的、还在犹豫的记进下面的「本步要点」，生成都照要点写；
+          <b>写</b>——「先看 3 个方向」挑一个「按此生成本步」，或让它「直接改写」再「填入本步」。</span>
       </div>
-      <S2BriefCard brief={brief} busy={briefBusy} onSave={onSaveBrief} useBrief={useBrief} onToggleUseBrief={onToggleUseBrief}
-        usage={briefUsage} onRegen={onRegenWithBrief} structBusy={structBusy} />
+      <S2BriefCard brief={brief} busy={briefBusy} onSave={onSaveBrief} usage={briefUsage} onRegen={onRegenWithBrief} structBusy={structBusy} />
       <div className="sf-coach-log">
-        {!turns.length && !busy && (
-          <div className="sf-coach-empty">还没有对话。从下面的快捷提问开始，或直接问「{active.name}」这一步的任何问题。</div>
+        {!turns.length && !busy && !dirBusy && (
+          <div className="sf-coach-empty">还没有对话。从下面的快捷提问开始，问「{active.name}」这一步的任何问题，或直接「先看 3 个方向」。</div>
         )}
-        {turns.map(t => (
-          <div key={t.turn_id} className="sf-coach-turn">
-            <div className="sf-coach-q"><span className="sf-coach-who">我</span><span>{t.message || "（生成建议）"}</span></div>
-            <div className="sf-coach-a">
-              <span className={`sf-coach-who ${t.source === "llm" ? "is-ai" : ""}`}>{t.source === "llm" ? "教练" : "规则"}</span>
-              <div className="sf-coach-body">
-                <p>{t.reply}</p>
-                {(t.suggestions || []).length > 0 && (
-                  <ul className="sf-coach-sugs">{(t.suggestions || []).slice(0, 4).map((s, i) => <li key={i}>{s}</li>)}</ul>
-                )}
-                {((t.candidate_patch && Object.keys(t.candidate_patch).length > 0) || (t.source === "llm" && t.reply && onAdoptReply)) && (
-                  <div className="sf-coach-actions">
-                    {t.candidate_patch && Object.keys(t.candidate_patch).length > 0 && (
-                      <button className="btn btn-accent btn-sm" onClick={() => onApplyPatch(t)}
-                        title="把教练给出的结构化补丁合并进本步（空字段不清空、按角色/场景对位；应用前自动留底）">
-                        <I.Check size={13} /> 应用补丁{t.candidate_label ? `「${t.candidate_label}」` : ""}
-                      </button>
-                    )}
-                    {t.source === "llm" && t.reply && onAdoptReply && (
-                      <button className="btn btn-quiet btn-sm" disabled={structBusy} onClick={() => onAdoptReply(t)} data-testid="snow-coach-adopt"
-                        title="把这段回复作为本步的方向展开整步（按它点名的缺口 / 走向 / 禁忌；生成前留底，可回滚）">
-                        <I.Wand size={13} /> 以此为方向生成
-                      </button>
-                    )}
-                  </div>
-                )}
-                {t.focus_scene_id && <span className="sf-coach-focus">聚焦 {t.focus_scene_id}</span>}
+        {turns.map(t => {
+          const isCards = t.turn_kind === "candidates";
+          const deltaParts = s2BriefDeltaParts(t.brief_delta);
+          const hasPatch = !!(t.candidate_patch && Object.keys(t.candidate_patch).length > 0);
+          const adopted = !!t.adoption;
+          return (
+            <div key={t.turn_id} className={`sf-coach-turn ${isCards ? "is-directions" : ""}`} data-testid={isCards ? "snow-coach-turn-directions" : "snow-coach-turn"}>
+              <div className="sf-coach-q"><span className="sf-coach-who">我</span><span>{t.message || "（生成建议）"}</span></div>
+              <div className="sf-coach-a">
+                <span className={`sf-coach-who ${t.source === "llm" ? "is-ai" : ""}`}>{t.source === "llm" ? "教练" : "规则"}</span>
+                <div className="sf-coach-body">
+                  {isCards ? (
+                    <S2DirectionCards turn={t} freeText={freeText} focusLabel={focusLabel} structBusy={structBusy} busyTarget={busyTarget}
+                      onAdopt={onAdoptDirection} onAdoptText={onAdoptDirectionAsText} />
+                  ) : (
+                    <React.Fragment>
+                      <p>{t.reply}</p>
+                      {(t.suggestions || []).length > 0 && (
+                        <ul className="sf-coach-sugs">{(t.suggestions || []).slice(0, 4).map((s, i) => <li key={i}>{s}</li>)}</ul>
+                      )}
+                      {(hasPatch || (t.source === "llm" && t.reply)) && (
+                        <div className="sf-coach-actions">
+                          {hasPatch && (
+                            <button className="btn btn-accent btn-sm" onClick={() => onApplyPatch(t)} data-testid="snow-coach-patch"
+                              title="把教练给出的改写合并进本步（空字段不清空、按角色/场景对位；填入前自动留底）">
+                              <I.Check size={13} /> 填入本步{t.candidate_label ? `「${t.candidate_label}」` : ""}
+                            </button>
+                          )}
+                          {t.source === "llm" && t.reply && (
+                            <button className="btn btn-quiet btn-sm" disabled={structBusy} onClick={() => onAdoptDirection(t)} data-testid="snow-coach-adopt"
+                              title="把这段回复作为本步的方向重新展开整步（按它点名的缺口 / 走向 / 禁忌；生成前留底，可回滚）">
+                              {(structBusy && busyTarget && busyTarget.kind === "direction" && busyTarget.turnId === t.turn_id) ? <I.Refresh size={13} className="sf-spin" /> : <I.Wand size={13} />} {(structBusy && busyTarget && busyTarget.kind === "direction" && busyTarget.turnId === t.turn_id) ? "生成中…" : "按此生成本步"}
+                            </button>
+                          )}
+                          {adopted && <span className="pill pill-sage text-xs sf-dir-chosen" title="本步有一版就是按这段回复生成的"><span className="pill-dot" />已按此生成</span>}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  )}
+                  {(deltaParts.length > 0 || t.focus_scene_id) && (
+                    <div className="sf-coach-meta">
+                      {deltaParts.length > 0 && <span className="sf-coach-delta" data-testid="snow-coach-delta" title="这一轮教练对本步要点做的改动（上面的要点卡里可核对）">要点 {deltaParts.join(" · ")}</span>}
+                      {t.focus_scene_id && <span className="sf-coach-focus">聚焦 {t.focus_scene_id}</span>}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {busy && <div className="sf-coach-busy"><I.Refresh size={13} className="sf-spin" /> 教练正在读你的草稿…</div>}
+        {dirBusy && <div className="sf-coach-busy" data-testid="snow-directions-busy"><I.Refresh size={13} className="sf-spin" /> 教练正在依上游材料与本步要点想三个方向…</div>}
         <div ref={endRef} />
       </div>
+      {err && (
+        <div className="sf-cand-err" role="alert" data-testid="snow-coach-error">
+          <I.AlertTriangle size={13} /><span>{err}</span>
+          <button className="btn btn-quiet btn-sm" onClick={onClearErr}>知道了</button>
+        </div>
+      )}
       <div className="sf-coach-quicks">
         {S2_COACH_QUICKS.map((q, i) => (
           <button key={i} className="btn btn-quiet btn-sm" disabled={busy} onClick={() => send(q)}>{q.slice(0, 18)}…</button>
         ))}
       </div>
       <div className="sf-coach-input">
-        <textarea rows={2} value={input} disabled={busy} placeholder={`问「${active.name}」这一步的任何问题；让教练“直接给改写”会得到可应用的补丁…`}
+        <textarea rows={2} value={input} disabled={busy || dirBusy} placeholder={`问「${active.name}」这一步的任何问题；写下要求再点「给 3 个方向」，教练按要求给方向…`}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); e.stopPropagation(); send(); } }} />
-        <button className="btn btn-primary" disabled={busy || !input.trim()} onClick={() => send()}>
-          {busy ? <I.Refresh size={14} className="sf-spin" /> : <I.ArrowRight size={14} />} 发送
-        </button>
+        <div className="sf-coach-send">
+          <button className="btn btn-primary" disabled={busy || dirBusy || !input.trim()} onClick={() => send()}>
+            {busy ? <I.Refresh size={14} className="sf-spin" /> : <I.ArrowRight size={14} />} 发送
+          </button>
+          <button className="btn btn-quiet" disabled={busy || dirBusy} onClick={directions} data-testid="snow-coach-directions"
+            title="让教练给本步三个不同方向（输入框里写了要求就按要求给）">
+            {dirBusy ? <I.Refresh size={14} className="sf-spin" /> : <I.Compass size={14} />} 给 3 个方向
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-function S2Cands({ onAdopt, onAdoptStructured, onAdoptFocused, focusLabel, structBusy, draft, cands, meta, busy, err, onRegen }) {
-  const list = cands && cands.length ? cands : [];
-  const [sel, setSel] = useSS(list[0] ? list[0].id : "A");
-  const [compare, setCompare] = useSS(false);
-  useSE(() => { if (list[0] && !list.find(c => c.id === sel)) setSel(list[0].id); }, [cands]);
-  const selCand = list.find(c => c.id === sel) || list[0] || { id: "A", text: "", notes: [] };
-
-  useSE(() => {
-    const onKey = (e) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const el = e.target;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
-      if (["1", "2", "3"].includes(e.key) && list[+e.key - 1]) { e.preventDefault(); setSel(list[+e.key - 1].id); }
-      else if (e.key.toLowerCase() === "c") { e.preventDefault(); setCompare(v => !v); }
-      else if (e.key.toLowerCase() === "r") { e.preventDefault(); if (onRegen && !busy) onRegen(); }
-      else if (e.key === "Enter") { e.preventDefault(); onAdopt(selCand.text, selCand.id); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [sel, compare, selCand, list, busy]);
-
-  const isAi = meta && meta.ai;
-  const stamp = isAi && meta.at ? new Date(meta.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : null;
+/* 编辑页顶部的 AI 工具条（阶段 U）：每一步都有同一组入口——「AI 生成本步」（09/10 的整表生成 / 全部补全在脚手架里）、
+   「先看 3 个方向」（去教练页看方向卡）、要点条数（点去教练页编辑）；下面一行说本步当前版本是怎么来的
+   （按方向「X」/ 教练回复 / AI 生成 · 带第 N 版要点），要点改过而本稿没跟上时给「按最新要点重新生成」。 */
+function S2AiBar({ stepName, canGenerate, structBusy, busyTarget, dirBusy, onGenerate, onDirections, brief, usage, health, onOpenCoach, onRegenWithBrief, err, onClearErr }) {
+  const active = ((brief && brief.lines) || []).filter(l => l && l.status === "active").length;
+  const genBusy = !!(structBusy && busyTarget && busyTarget.kind === "bar");
+  const inherited = (brief && brief.inherit_upstream !== false && Array.isArray(brief.inherited)) ? brief.inherited.length : 0;
+  const provenance = s2Provenance(health);
   return (
-    <div className="cands">
-      <div className="cands-head">
-        <div>
-          <div className="fw-600">
-            {list.length} 条候选 · {isAi ? `AI 生成${stamp ? " · " + stamp : ""}` : "示例候选"}
-          </div>
-          <div className="text-muted text-sm">
-            {isAi ? "依据后端已批准的上游材料与本步诊断缺口生成。「采纳并结构化」会把候选方向展开成本步全部字段。" : "点「AI 生成」让 Claude 读上游各步与诊断缺口，按本步任务重写候选。"}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className={`btn btn-sm ${compare ? "btn-primary" : "btn-ghost"}`} onClick={() => setCompare(v => !v)}><I.Layout size={13} /> 对比草稿</button>
-          <button className={`btn btn-sm ${isAi ? "btn-ghost" : "btn-accent"} sf-regen`} onClick={() => onRegen && onRegen()} disabled={busy} title="基于上游材料生成（R）">
-            <I.Refresh size={13} className={busy ? "sf-spin" : ""} /> {busy ? "生成中…" : (isAi ? "重新生成" : "AI 生成")}
+    <div className="sf-aibar" data-testid="snow-aibar">
+      <div className="sf-aibar-row">
+        {canGenerate && (
+          <button className="btn btn-accent btn-sm" disabled={structBusy} onClick={onGenerate} data-testid="snow-ai-generate"
+            title={`让 AI 按上游材料和本步要点整步写好「${stepName}」（生成前留底，可回滚）`}>
+            {genBusy ? <I.Refresh size={13} className="sf-spin" /> : <I.Wand size={13} />} {genBusy ? "生成中…" : "AI 生成本步"}
           </button>
-        </div>
+        )}
+        <button className="btn btn-quiet btn-sm" disabled={dirBusy} onClick={onDirections} data-testid="snow-ai-directions"
+          title="让教练先给三个不同方向（出现在教练页），挑一个再生成">
+          {dirBusy ? <I.Refresh size={13} className="sf-spin" /> : <I.Compass size={13} />} {dirBusy ? "想方向中…" : "先看 3 个方向"}
+        </button>
+        <button className="sf-aibar-brief" onClick={onOpenCoach} data-testid="snow-ai-brief" title="本步要点：你定下的、否决的、约束的——AI 生成、方向、分诊都照它写；去教练页编辑">
+          <I.Sparkles size={12} /> 要点 <b>{active}</b> 条{inherited ? <span className="sf-aibar-inh"> · 继承 {inherited}</span> : null}
+        </button>
       </div>
-
+      {(provenance || (usage && usage.stale)) && (
+        <div className={`sf-aibar-prov ${usage && usage.stale ? "is-stale" : ""}`} data-testid="snow-ai-provenance">
+          {provenance && <span>本稿：{provenance}</span>}
+          {usage && usage.stale && (
+            <React.Fragment>
+              <span>要点已改到第 {usage.currentRevision} 版，本稿还是按第 {usage.usedRevision} 版写的。</span>
+              <button className="btn btn-quiet btn-sm" disabled={structBusy} onClick={onRegenWithBrief} data-testid="snow-ai-regen-brief"><I.Wand size={12} /> 按最新要点重新生成</button>
+            </React.Fragment>
+          )}
+        </div>
+      )}
       {err && (
-        <div className="sf-cand-err">
-          <I.AlertTriangle size={13} />
-          <span>{err}</span>
-          <button className="btn btn-quiet btn-sm" onClick={() => onRegen && onRegen()} disabled={busy}>重试</button>
-        </div>
-      )}
-
-      {busy && (
-        <div className="sf-cand-gen">
-          <I.Refresh size={13} className="sf-spin" />
-          <span>正在依据上游已确认材料生成候选…</span>
-        </div>
-      )}
-
-      <div className="sf-cand-tabs">
-        {list.map((c, i) => (
-          <button key={c.id} className={`sf-cand-tab ${sel === c.id ? "is-sel" : ""}`} onClick={() => setSel(c.id)}>
-            <span className="sf-cand-tab-key">{i + 1}</span>
-            <span className="sf-cand-tab-id">候选 {c.id}</span>
-            <span className="sf-cand-tab-label">{c.label}</span>
-          </button>
-        ))}
-        <span className="sf-cand-hint"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 选 · <kbd>C</kbd> 对比 · <kbd>R</kbd> 生成 · <kbd>↵</kbd> 采纳</span>
-      </div>
-
-      {compare ? (
-        <div className="sf-compare">
-          <div className="sf-compare-col">
-            <div className="sf-compare-h"><span className="pill pill-slate text-xs"><span className="pill-dot" />当前草稿</span></div>
-            <p className="cand-text">{draft}</p>
-          </div>
-          <div className="sf-compare-arrow"><I.ArrowRight size={16} /></div>
-          <div className="sf-compare-col is-new">
-            <div className="sf-compare-h"><span className="pill pill-gold text-xs"><span className="pill-dot" />候选 {selCand.id} · {selCand.label}</span></div>
-            <p className="cand-text">{selCand.text}</p>
-            <div className="cand-notes">{selCand.notes.map((n, i) => <span key={i} className="pill text-xs">{n}</span>)}</div>
-            {isAi && onAdoptStructured ? (
-              <React.Fragment>
-                <button className="btn btn-accent btn-sm sf-compare-adopt" disabled={structBusy} onClick={() => onAdoptStructured(selCand.text, selCand.id)}
-                  title="以候选为方向蓝本，让 AI 把本步全部结构化字段整套填好（可回滚）">
-                  {structBusy ? <I.Refresh size={13} className="sf-spin" /> : <I.Check size={13} />} {structBusy ? "结构化中…" : `采纳候选 ${selCand.id} 并结构化整步`}
-                </button>
-                {onAdoptFocused && focusLabel && (
-                  <button className="btn btn-primary btn-sm sf-compare-adopt" disabled={structBusy} onClick={() => onAdoptFocused(selCand.text, selCand.id)}
-                    title={`以候选为定向蓝本，只更新当前选中的「${focusLabel}」——其余成员保持不动（可回滚）`}>
-                    {structBusy ? "定向中…" : `只更新「${focusLabel}」`}
-                  </button>
-                )}
-                <button className="btn btn-quiet btn-sm sf-compare-adopt" disabled={structBusy} onClick={() => onAdopt(selCand.text, selCand.id)}
-                  title="只把候选文本放进自由草稿，不动结构化脚手架">仅作草稿替换</button>
-              </React.Fragment>
-            ) : (
-              <button className="btn btn-accent btn-sm sf-compare-adopt" onClick={() => onAdopt(selCand.text, selCand.id)}><I.Check size={13} /> 采纳候选 {selCand.id}，整体替换草稿</button>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="cands-list">
-          {list.map(c => (
-            <article key={c.id} className={`cand sf-cand ${sel === c.id ? "is-sel" : ""}`} onClick={() => setSel(c.id)}>
-              <header className="cand-head">
-                <span className="cand-id">候选 {c.id}</span>
-                <div className="flex items-center gap-2">
-                  <span className="cand-label">{c.label}</span>
-                  <span className="pill"><span className="pill-dot" />{c.tag}</span>
-                </div>
-                <div className="flex gap-2 cand-actions">
-                  <button className="btn btn-quiet btn-sm" onClick={(e) => { e.stopPropagation(); setSel(c.id); setCompare(true); }}>对比</button>
-                  {isAi && onAdoptStructured ? (
-                    <React.Fragment>
-                      <button className="btn btn-quiet btn-sm" disabled={structBusy} title="只把候选文本放进自由草稿，不动结构化脚手架"
-                        onClick={(e) => { e.stopPropagation(); onAdopt(c.text, c.id); }}>仅作草稿</button>
-                      {onAdoptFocused && focusLabel && (
-                        <button className="btn btn-quiet btn-sm" disabled={structBusy} title={`以候选为定向蓝本，只更新当前选中的「${focusLabel}」——其余成员保持不动（可回滚）`}
-                          onClick={(e) => { e.stopPropagation(); onAdoptFocused(c.text, c.id); }}>
-                          {structBusy ? "定向中…" : `只更新「${focusLabel}」`}
-                        </button>
-                      )}
-                      <button className="btn btn-primary btn-sm" disabled={structBusy} title="以候选为方向蓝本，让 AI 把本步全部结构化字段整套填好（可回滚）"
-                        onClick={(e) => { e.stopPropagation(); onAdoptStructured(c.text, c.id); }}>
-                        {structBusy ? "结构化中…" : "采纳并结构化"}
-                      </button>
-                    </React.Fragment>
-                  ) : (
-                    <button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); onAdopt(c.text, c.id); }}>采纳</button>
-                  )}
-                </div>
-              </header>
-              <p className="cand-text">{c.text}</p>
-              <div className="cand-notes">{c.notes.map((n, i) => <span key={i} className="pill text-xs">{n}</span>)}</div>
-            </article>
-          ))}
+        <div className="sf-cand-err" role="alert" data-testid="snow-ai-error">
+          <I.AlertTriangle size={13} /><span>{err}</span>
+          <button className="btn btn-quiet btn-sm" onClick={onClearErr}>知道了</button>
         </div>
       )}
     </div>
+  );
+}
+
+/* 右栏的只读要点镜像：编辑时随时看得到本步意图；编辑去教练页 */
+function S2BriefRail({ brief, onOpen }) {
+  const lines = ((brief && brief.lines) || []).filter(l => l && l.status === "active");
+  const inherit = !brief || brief.inherit_upstream !== false;
+  const inherited = (brief && inherit && Array.isArray(brief.inherited)) ? brief.inherited : [];
+  return (
+    <S2Sec label="本步要点" meta={lines.length ? `${lines.length} 条${inherited.length ? ` · 继承 ${inherited.length}` : ""}` : null} collapsible defaultOpen>
+      <div className="sfx-brief" data-testid="snow-brief-rail">
+        {!lines.length && !inherited.length && <p className="sfx-note">还没有要点。和教练聊几句，或在教练页直接加一条——AI 生成、方向、分诊都照要点写。</p>}
+        {lines.length > 0 && (
+          <ul className="sfx-brief-list">
+            {lines.map(l => <li key={l.line_id} className={`is-${l.kind}`}><span className="sfx-brief-kind">{BRIEF_KIND_LABEL[l.kind] || l.kind}</span><span>{l.text}</span></li>)}
+          </ul>
+        )}
+        {inherited.length > 0 && (
+          <ul className="sfx-brief-list is-inherited">
+            {inherited.map(i => <li key={i.line_id} className={`is-${i.kind}`}><span className="sfx-brief-kind">{BRIEF_KIND_LABEL[i.kind] || i.kind}</span><span>{i.text}</span><span className="sfx-brief-from">{i.step_label}</span></li>)}
+          </ul>
+        )}
+        <button className="btn btn-quiet btn-sm" onClick={onOpen} data-testid="snow-brief-rail-open"><I.Edit size={12} /> 去教练页编辑</button>
+      </div>
+    </S2Sec>
   );
 }
 
@@ -3485,10 +3473,6 @@ function S2Ref({ active, drafts, scaffolds }) {
           <p className="ref-premise"><span className="ref-premise-f">{pf || "—"}</span><I.ArrowRight size={12} /><span className="ref-premise-t">{pt || "—"}</span></p>
         </div>
       )}
-      <div className="card-flat ref-card">
-        <div className="ref-card-h"><span className="sf-trk-tag trk-orient">风格</span><span className="fw-600">参考画像·冷峻短句</span></div>
-        <p className="text-muted text-sm" style={{ lineHeight: 1.6 }}>倾向短句、动词驱动；克制描述抽象情绪，多用具体物件；段落短促，避免华丽形容词堆叠。</p>
-      </div>
     </div>
   );
 }
@@ -3499,14 +3483,6 @@ function S2Links({ active, states, go, staleMap }) {
   const kids = S2_STEPS.filter(s => s.fromKey === active.key);
   return (
     <S2Sec label="关联与影响" meta={kids.length ? `下游 ${kids.length}` : null} collapsible defaultOpen={false}>
-      <div className="sfx-links-grp">
-        <div className="sfx-links-sub">参考画像</div>
-        <div className="sfx-chips">
-          <span className="pill pill-gold"><span className="pill-dot" />冷峻短句</span>
-          <span className="pill"><span className="pill-dot" />克制叙事</span>
-        </div>
-        <p className="sfx-note">影响候选生成的节奏与句式。</p>
-      </div>
       <div className="sfx-links-grp">
         <div className="sfx-links-sub">本步影响下游</div>
         {kids.length ? kids.map(s => {
@@ -3713,7 +3689,7 @@ function WsConstruct({ go }) {
 /* P2：s2Materialize（前端脊柱锚点物化引擎）与 s2AdoptOutline 已删除 —— 分章算法
    搬到后端 snowflake_chaptering.py，成为唯一实现；「整理为章节结构」只剩
    分章预览面板一条路径。 */
-Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState });
+Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2RequestDirections, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2NextSceneRowId, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2ReorderScenes };

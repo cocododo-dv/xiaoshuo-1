@@ -562,39 +562,55 @@ class SnowflakeWorkspaceLLMService:
             return retry
         return result
 
-    # FE-ALIGN G5：构思视图的「生成 3 条候选」——提示词由模板组装。
-    # 上下文以后端权威材料为主（approved 各步规范草稿 + 当前步压力诊断），
-    # 前端折叠文本降级为「本地未上行编辑」的补充信号。
+    # 「先看 3 个方向」（阶段 U 起是教练日志里的一种回合）——提示词由模板组装。
+    # 上下文以后端权威材料为主（各步规范草稿 + 当前步压力诊断），draft_override 与整步生成同源；
+    # 旧客户端折叠的 context / draft 文本仍作「本地未上行编辑」的补充信号。fail-closed：LLM 未启用即 409。
     def step_candidates(
         self,
         *,
         project: StoryProject,
         step_key: str,
-        context_text: str,
-        current_draft: str,
+        context_text: str = "",
+        current_draft: str = "",
         target_chars: int,
         latest_by_step: Mapping[str, Any] | None = None,
+        draft_override: dict[str, Any] | None = None,
+        author_ask: str | None = None,
+        focus_scene_id: str | None = None,
         author_direction_brief: dict[str, Any] | None = None,
     ) -> WorkspaceLLMResult:
         step_definition = get_step_definition(step_key)
         guidance = step_guidance(step_key)
-        prompt_payload = {
+        prompt_payload: dict[str, Any] = {
             "project": _project_prompt_payload(project),
             "step_key": step_key,
             "step_label": step_definition.get("label"),
             "step_english_label": step_definition.get("english_label"),
             "step_description": step_definition.get("description"),
             "step_instruction": guidance.get("instruction"),
-            "fe_local_context": context_text,
-            "current_draft_text": current_draft,
             "target_chars": target_chars,
         }
+        if str(context_text or "").strip():
+            prompt_payload["fe_local_context"] = context_text
+        if str(current_draft or "").strip():
+            prompt_payload["current_draft_text"] = current_draft
+        # 阶段 U：作者对这一组方向的要求（教练输入框里的那句话）——三条方向都要满足它，在它划定的范围内分岔
+        if str(author_ask or "").strip():
+            prompt_payload["author_ask"] = {
+                "text": str(author_ask).strip(),
+                "how_to_use": (
+                    "这是作者对这一组方向的要求：三条方向都必须满足它，在它划定的范围内分岔；"
+                    "它与 author_direction_brief 冲突时以它为准（它更新）。"
+                ),
+            }
         if latest_by_step is not None:
-            current_canonical = merge_step_draft(
-                step_key,
-                latest_by_step.get(step_key).artifact_json if latest_by_step.get(step_key) is not None else None,
-                latest_by_step=dict(latest_by_step),
+            latest = latest_by_step.get(step_key)
+            current_source = (
+                draft_override
+                if draft_override
+                else (latest.artifact_json if latest is not None else None)
             )
+            current_canonical = merge_step_draft(step_key, current_source, latest_by_step=dict(latest_by_step))
             prompt_payload.update(
                 {
                     "upstream_steps": _upstream_step_context(latest_by_step, step_key=step_key),
@@ -604,7 +620,11 @@ class SnowflakeWorkspaceLLMService:
                     "current_pressure_diagnosis": diagnose_step_pressure(step_key, current_canonical),
                 }
             )
-        # 阶段 T：三条候选在作者要的范围内分岔，而不是在作者否决过的方向上抽卡
+            # 第 10 步：方向只针对选中的那一场（与教练的聚焦场同一口径，row_uid / scene_id 皆可指）
+            if focus_scene_id and step_key == "scene_details":
+                prompt_payload["focus_scene_id"] = focus_scene_id
+                prompt_payload["focus_scene"] = _focus_scene_payload({"draft": current_canonical}, focus_scene_id)
+        # 阶段 T：三条方向在作者要的范围内分岔，而不是在作者否决过的方向上抽卡
         if author_direction_brief:
             prompt_payload[AUTHOR_DIRECTION_BRIEF_KEY] = author_direction_brief
         return self._run_structured_task(
@@ -614,7 +634,6 @@ class SnowflakeWorkspaceLLMService:
             step_ref=step_key,
             prompt_payload=prompt_payload,
             normalize_output=_normalize_candidates_output,
-            fallback_payload={"candidates": []},
         )
 
     def assistant_reply(
@@ -1524,7 +1543,7 @@ def _schema_from_template(value: Any) -> dict[str, Any]:
 
 
 def _normalize_candidates_output(output: dict[str, Any]) -> dict[str, Any]:
-    """FE-ALIGN G5：候选数组裁剪到原型契约形状（≤4 条；label/tag/notes 限长）。"""
+    """方向数组裁剪到契约形状（≤4 条；label/tag/notes 限长）。"""
     items = output.get("candidates") if isinstance(output, dict) else None
     normalized: list[dict[str, Any]] = []
     for item in (items or [])[:4]:
@@ -1537,7 +1556,7 @@ def _normalize_candidates_output(output: dict[str, Any]) -> dict[str, Any]:
         normalized.append(
             {
                 "label": str(item.get("label") or f"方向 {len(normalized) + 1}").strip()[:8],
-                "tag": str(item.get("tag") or "AI 候选").strip()[:16],
+                "tag": str(item.get("tag") or "AI 方向").strip()[:16],
                 "text": text,
                 "notes": [str(n).strip()[:10] for n in notes[:3] if str(n).strip()],
             }

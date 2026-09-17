@@ -1,5 +1,6 @@
-"""构思视图候选生成节点（FE-ALIGN G5：snowflake_step_candidates）与
-「采纳并结构化」接缝（generate 的 adopted_direction / require_llm）。"""
+"""构思视图「先看 3 个方向」节点（snowflake_step_candidates）与「按此生成本步」接缝
+（generate 的 adopted_direction / require_llm）。阶段 U（2026-09-17）起方向是教练日志里的回合，
+fail-closed；回合 / 采纳 / 教练记忆的契约在 test_snowflake_coach_directions.py。"""
 
 from __future__ import annotations
 
@@ -63,19 +64,21 @@ def _create_project(client, key: str = "fe-cands-project", title: str = "候选�
     return response.json()["data"]["project"]["project_id"]
 
 
-def test_fe_candidates_llm_disabled_falls_back(client) -> None:
+def test_fe_candidates_is_fail_closed_without_llm_and_records_no_turn(client) -> None:
+    """阶段 U（2026-09-17）：「先看 3 个方向」与教练同一条路——LLM 未启用即 409，不再回 source=fallback + 空列表
+    让前端自己猜；也不往教练日志里写回合。"""
     pid = _create_project(client)
     response = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/one_sentence_summary/fe-candidates",
         json={"context": "【01 读者定位】文学悬疑", "draft": "她发现恩师改写了档案。", "target_chars": 120},
         headers={"X-Idempotency-Key": "fe-cands-fallback"},
     )
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    # LLM 关闭：诚实回退（FE 据此展示本地启发式候选 + 引导），绝不伪造生成
-    assert data["source"] == "fallback"
-    assert data["candidates"] == []
-    assert data["llm_call_id"] is None
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["code"] == "SNOWFLAKE_LLM_NOT_CONFIGURED"
+    assert error["details"]["author_action"]
+    workspace = client.get(f"/api/v2/projects/{pid}/snowflake-workspace").json()["data"]
+    assert workspace["assistant_history"] == []
 
 
 def test_fe_candidates_rejects_unknown_step(client) -> None:

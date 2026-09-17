@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from copy import deepcopy
 from typing import Any
@@ -224,6 +225,9 @@ class SnowflakeWorkspaceService:
         # 请求层已界定为有界短标识，这里只做去空白。
         trigger_source = str(body.get("source") or "").strip()[:64] or None
         brief_ref: dict[str, Any] | None = None
+        direction_ref: dict[str, Any] | None = None
+        direction_turn: SnowflakeAssistantTurn | None = None
+        direction_index: int | None = None
         if body.get("skip"):
             draft = self._skip_draft(step_key, body)
             source = "skip"
@@ -242,16 +246,7 @@ class SnowflakeWorkspaceService:
             focus_character_refs = [str(ref or "").strip() for ref in (body.get("focus_character_refs") or []) if str(ref or "").strip()]
             # draft_override：FE 带来的本地最新规范草稿（与上行 PATCH 同源），盖在
             # 存档之上作为生成底稿——消除「刚加的角色/场还没自动保存上行」的竞态。
-            draft_override = body.get("draft_override") if isinstance(body.get("draft_override"), dict) else None
-            if draft_override:
-                latest = latest_by_step.get(step_key)
-                base_payload = {
-                    key: value
-                    for key, value in (((latest.artifact_json if latest is not None else None) or {}).items())
-                    if not str(key).startswith("fe_")
-                }
-                override_payload = {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
-                draft_override = _merge_dicts_keeping_members(base_payload, override_payload)
+            draft_override = self._merged_draft_override(latest_by_step, step_key, body.get("draft_override"))
             if body.get("require_llm") and not self._llm.llm_enabled():
                 raise DomainError(
                     "SNOWFLAKE_LLM_REQUIRED",
@@ -267,6 +262,21 @@ class SnowflakeWorkspaceService:
             brief_prompt = self._briefs.prompt_payload_for(project.project_id, step_key, brief_rows) if use_brief else None
             brief_ref = self._briefs.fingerprint_for(project.project_id, step_key, used=use_brief, rows=brief_rows)
             direction_kind = str(body.get("direction_kind") or "").strip() or None
+            # 阶段 U：方向来自教练日志里的哪一回合（「先看 3 个方向」的第几条 / 教练某轮回复）。
+            # 回合种类决定用法说明；生成后回合记 adoption，这一版的 health.direction 记出处。
+            direction_turn, direction_index, direction_label = self._resolve_direction_turn(
+                project.project_id, body, direction_text=direction_text
+            )
+            if direction_turn is not None:
+                direction_kind = "candidate" if direction_turn.turn_kind == "candidates" else "coach_reply"
+            if direction_text:
+                direction_ref = {
+                    "kind": direction_kind or "candidate",
+                    "sha": hashlib.sha256(direction_text.encode("utf-8")).hexdigest()[:16],
+                    "turn_id": direction_turn.turn_id if direction_turn is not None else None,
+                    "candidate_index": direction_index,
+                    "label": direction_label,
+                }
             llm_result = self._llm.generate_step(
                 project=project,
                 step_key=step_key,
@@ -305,6 +315,7 @@ class SnowflakeWorkspaceService:
                 generation_notice=generation_notice,
                 trigger_source=trigger_source,
                 direction_brief=brief_ref,
+                direction=direction_ref,
             ),
             input_refs_json=self._input_refs(step_key, latest_by_step),
             llm_call_id=llm_call_id,
@@ -312,6 +323,14 @@ class SnowflakeWorkspaceService:
         )
         self.session.add(run)
         self.session.flush()
+        if direction_turn is not None:
+            # 「已按此生成」：回合记住它被哪一版采纳过（方向回合还记第几条）——界面打徽章，教练下一轮看得到作者选了哪个方向
+            direction_turn.adoption_json = {
+                "step_run_id": run.step_run_id,
+                "candidate_index": direction_index,
+                "adopted_at": utcnow(),
+            }
+            flag_modified(direction_turn, "adoption_json")
         sync_notice = self._sync_structured_step_data(project, step_key, draft, run)
         if sync_notice:
             # 章表收缩只有落库时才知道（要比对既有章行），此时 health_json 已经建好——
@@ -321,6 +340,7 @@ class SnowflakeWorkspaceService:
                 generation_notice=generation_notice or sync_notice,
                 trigger_source=trigger_source,
                 direction_brief=brief_ref,
+                direction=direction_ref,
             )
         if status == "skipped":
             self._supersede_same_step(run)
@@ -329,10 +349,11 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
 
-    # FE-ALIGN G5：构思视图「生成候选」。上下文以后端权威材料为主
-    # （approved 各步规范草稿 + 当前步压力诊断，见 step_candidates），FE 折叠
-    # 文本只作「本地未上行编辑」补充。LLM 关闭 → source="fallback" + 空候选
-    # （FE 退静态启发式并给引导）。
+    # 阶段 U（2026-09-17）：「先看 3 个方向」是教练日志里的一种回合，不再是独立的「候选」页签。
+    # fail-closed（LLM 未启用即 409，与教练同一条路——以前 source="fallback" + 空列表让前端自己猜）；
+    # 底稿与 generate / assistant 同源（draft_override 盖在存档上），作者的要求（ask）与第 10 步的
+    # 聚焦场进提示；结果落成 turn_kind=candidates 的回合，回包带整条教练历史，教练下一轮就看得到
+    # 作者看过哪些方向、选了哪个。
     def fe_step_candidates(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         self._require_step(step_key)
@@ -343,21 +364,49 @@ class SnowflakeWorkspaceService:
             target_chars = 120
         use_brief = body.get("use_direction_brief")
         use_brief = True if use_brief is None else bool(use_brief)
+        ask = str(body.get("ask") or "").strip()[:600]
+        focus_scene_id = str(body.get("focus_scene_id") or "").strip() or None
+        if step_key != "scene_details":
+            focus_scene_id = None
+        latest_by_step = self._latest_by_step(project.project_id)
         llm_result = self._llm.step_candidates(
             project=project,
             step_key=step_key,
             context_text=str(body.get("context") or "")[:6000],
             current_draft=str(body.get("draft") or "")[:3000],
             target_chars=target_chars,
-            latest_by_step=self._latest_by_step(project.project_id),
+            latest_by_step=latest_by_step,
+            draft_override=self._merged_draft_override(latest_by_step, step_key, body.get("draft_override")),
+            author_ask=ask or None,
+            focus_scene_id=focus_scene_id,
             author_direction_brief=(
                 self._briefs.prompt_payload_for(project.project_id, step_key) if use_brief else None
             ),
         )
+        candidates = list((llm_result.payload or {}).get("candidates") or [])
+        if not candidates:
+            raise DomainError(
+                "SNOWFLAKE_CANDIDATES_EMPTY",
+                "模型这次没有给出可用的方向，请再试一次（可以在输入框里把要求说得更具体）。",
+                status_code=502,
+                details={"node_id": "snowflake_step_candidates", "step_key": step_key, "llm_call_id": llm_result.llm_call_id},
+            )
+        turn = self._record_assistant_turn(
+            project.project_id,
+            step_key=step_key,
+            message=ask or CANDIDATES_DEFAULT_ASK,
+            focus_scene_id=focus_scene_id,
+            result={"reply": "", "suggestions": [], "source": llm_result.source, "llm_call_id": llm_result.llm_call_id},
+            turn_kind="candidates",
+            candidates={"items": candidates, "target_chars": target_chars},
+        )
         return {
             "source": llm_result.source,
             "llm_call_id": llm_result.llm_call_id,
-            "candidates": list((llm_result.payload or {}).get("candidates") or []),
+            "candidates": candidates,
+            "turn_id": turn.turn_id,
+            "turn": self._assistant_turn_payload(turn),
+            "assistant_history": self._assistant_history(project.project_id),
         }
 
     def update_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -684,6 +733,8 @@ class SnowflakeWorkspaceService:
             project.project_id, step_key, brief_update, turn_id=turn.turn_id
         )
         if delta_changed(brief_delta):
+            # 阶段 U：差异随回合落表——日志里每一轮自己说「要点 +1 / 改 1 / 撤 1」，不靠一闪而过的提示
+            turn.brief_delta_json = deepcopy(brief_delta)
             self.session.add(
                 OperationLog(
                     event_type="snowflake_direction_brief_restated",
@@ -1724,6 +1775,8 @@ class SnowflakeWorkspaceService:
         message: str,
         focus_scene_id: str | None,
         result: dict[str, Any],
+        turn_kind: str = "chat",
+        candidates: dict[str, Any] | None = None,
     ) -> SnowflakeAssistantTurn:
         turn = SnowflakeAssistantTurn(
             turn_id=f"snowflake_assistant_turn_{project_id}_{uuid.uuid4().hex[:10]}",
@@ -1737,13 +1790,60 @@ class SnowflakeWorkspaceService:
             candidate_patch_json=deepcopy(result.get("candidate_patch") or {}) or None,
             source=str(result.get("source") or "fallback").strip() or "fallback",
             llm_call_id=str(result.get("llm_call_id") or "").strip() or None,
+            turn_kind="candidates" if turn_kind == "candidates" else "chat",
+            candidates_json=deepcopy(candidates) if candidates else None,
         )
         self.session.add(turn)
         self.session.flush()
         return turn
 
+    def _resolve_direction_turn(
+        self,
+        project_id: str,
+        body: dict[str, Any],
+        *,
+        direction_text: str,
+    ) -> tuple[SnowflakeAssistantTurn | None, int | None, str | None]:
+        """阶段 U：方向来源的教练回合。返回 (回合, 方向回合里的第几条, 那一条的标签)；没指回合 → (None, None, None)。"""
+        turn_id = str(body.get("direction_turn_id") or "").strip()
+        if not turn_id:
+            return None, None, None
+        if not direction_text:
+            raise DomainError(
+                "SNOWFLAKE_DIRECTION_TEXT_REQUIRED",
+                "指明了方向来源的回合，却没有带方向正文。",
+                status_code=400,
+                details={"direction_turn_id": turn_id},
+            )
+        turn = self.session.get(SnowflakeAssistantTurn, turn_id)
+        if turn is None or turn.project_id != project_id:
+            raise DomainError(
+                "SNOWFLAKE_DIRECTION_TURN_NOT_FOUND",
+                "方向来源的教练回合不存在（可能已被清理），请重新让教练给方向。",
+                status_code=404,
+                details={"direction_turn_id": turn_id},
+            )
+        if turn.turn_kind != "candidates":
+            return turn, None, None
+        items = list((turn.candidates_json or {}).get("items") or [])
+        raw_index = body.get("direction_index")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            index = -1
+        if index < 0 or index >= len(items):
+            raise DomainError(
+                "SNOWFLAKE_DIRECTION_INDEX_INVALID",
+                "要采纳的方向编号不在这一组方向里。",
+                status_code=400,
+                details={"direction_turn_id": turn_id, "direction_index": raw_index, "count": len(items)},
+            )
+        item = items[index] if isinstance(items[index], dict) else {}
+        return turn, index, (str(item.get("label") or "").strip() or None)
+
     @staticmethod
     def _assistant_turn_payload(row: SnowflakeAssistantTurn) -> dict[str, Any]:
+        turn_kind = "candidates" if (row.turn_kind or "chat") == "candidates" else "chat"
         return {
             "turn_id": row.turn_id,
             "project_id": row.project_id,
@@ -1757,6 +1857,15 @@ class SnowflakeWorkspaceService:
             "source": row.source or "fallback",
             "llm_call_id": row.llm_call_id,
             "created_at": row.created_at,
+            # 阶段 U：回合种类（chat / candidates）、方向回合的几条方向、本轮要点差异、被哪一版生成采纳过
+            "turn_kind": turn_kind,
+            "candidates": (
+                [deepcopy(item) for item in ((row.candidates_json or {}).get("items") or []) if isinstance(item, dict)]
+                if turn_kind == "candidates"
+                else []
+            ),
+            "brief_delta": deepcopy(row.brief_delta_json) if row.brief_delta_json else None,
+            "adoption": deepcopy(row.adoption_json) if row.adoption_json else None,
         }
 
     def _triage_payload(self, row: SnowflakeSceneTriageItem) -> dict[str, Any]:
@@ -2674,6 +2783,7 @@ class SnowflakeWorkspaceService:
         generation_notice: dict[str, Any] | None = None,
         trigger_source: str | None = None,
         direction_brief: dict[str, Any] | None = None,
+        direction: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if status == "skipped":
             health = {
@@ -2711,6 +2821,9 @@ class SnowflakeWorkspaceService:
         # 阶段 T：这一版消费了哪一版作者意图要点（used=False = 作者本次关掉了带入）
         if direction_brief:
             health["direction_brief"] = deepcopy(direction_brief)
+        # 阶段 U：这一版按哪个方向生成（方向回合的第几条 / 教练某轮回复）；没有方向时键不出现
+        if direction:
+            health["direction"] = deepcopy(direction)
         return health
 
     @staticmethod
@@ -2821,6 +2934,25 @@ class SnowflakeWorkspaceService:
         ]
 
     @staticmethod
+    def _merged_draft_override(
+        latest_by_step: dict[str, SnowflakeStepRun],
+        step_key: str,
+        draft_override: Any,
+    ) -> dict[str, Any] | None:
+        """FE 带来的本地最新规范草稿（与上行 PATCH 同源）盖在存档之上作为生成 / 方向的底稿——
+        消除「刚加的角色 / 场还没自动保存上行」的竞态；剥 fe_* 写穿键，按成员对位合并。没带 → None。"""
+        if not isinstance(draft_override, dict) or not draft_override:
+            return None
+        latest = latest_by_step.get(step_key)
+        base_payload = {
+            key: value
+            for key, value in (((latest.artifact_json if latest is not None else None) or {}).items())
+            if not str(key).startswith("fe_")
+        }
+        override_payload = {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
+        return _merge_dicts_keeping_members(base_payload, override_payload)
+
+    @staticmethod
     def _step_with_override(
         step: dict[str, Any],
         draft_override: Any,
@@ -2845,6 +2977,9 @@ class SnowflakeWorkspaceService:
         )
         return merged_step
 
+
+# 阶段 U：「先看 3 个方向」没带作者要求时，回合里的「我」这一行写这句
+CANDIDATES_DEFAULT_ASK = "给我 3 个不同方向"
 
 _PROTAGONIST_EXCLUDE_ZH = ("对手", "反派", "对立", "配角", "敌")
 _PROTAGONIST_TOKENS_EN = ("protagonist", "main character", "heroine", "hero", "lead")

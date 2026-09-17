@@ -63,6 +63,7 @@ _TURN_MESSAGE_CHARS = 600
 _TURN_REPLY_CHARS = 800
 _TURN_SUGGESTION_CHARS = 120
 _TURN_SUGGESTIONS = 3
+_TURN_DIRECTION_CHARS = 160     # 方向回合里每条方向给教练看的正文上限
 
 AUTHOR_DIRECTION_BRIEF_HOW_TO_USE = (
     "这是作者在驻场教练对话里定下、并亲手核过的本步意图要点。效力等同作者自己的草稿："
@@ -81,6 +82,9 @@ CONVERSATION_HOW_TO_USE = (
     "语气、立场、篇幅、必须出现的元素记为 constraint；作者明确不要的记为 rejection。"
     "scope=book 只给统摄全书的意图（基调、叙事立场、结局类型、题材承诺），其余一律 step。"
     "每条不超过 60 个汉字，不写写作建议（建议放在 suggestions），用作者的语言。"
+    "recent_turns 里 kind=candidates 的回合是你此前给过的几个方向（directions）以及作者选去生成的那一个（chosen）："
+    "作者选定的方向等于作者接受了它，可以记为 decision；没选的方向不算否决，除非作者说了不要。"
+    "kind=chat 的回合带 adopted_as_direction=true 时，作者已按那轮回复生成过本步。"
 )
 
 _WS_RE = re.compile(r"\s+")
@@ -542,6 +546,47 @@ class DirectionBriefStore:
             for turn in turns
             if isinstance(turn, dict) and turn.get("step_key") == step_key and turn.get("source") == "llm"
         ][-RECENT_TURNS:]
+        recent: list[dict[str, Any]] = []
+        for turn in step_turns:
+            if turn.get("turn_kind") == "candidates":
+                # 阶段 U：方向回合——教练看得到自己给过哪些方向、作者选了哪个去生成
+                items = [item for item in (turn.get("candidates") or []) if isinstance(item, dict)]
+                adoption = turn.get("adoption") if isinstance(turn.get("adoption"), dict) else None
+                chosen_index = adoption.get("candidate_index") if adoption is not None else None
+                chosen = (
+                    items[chosen_index]
+                    if isinstance(chosen_index, int) and 0 <= chosen_index < len(items)
+                    else None
+                )
+                recent.append(
+                    {
+                        "kind": "candidates",
+                        "message": _truncate(turn.get("message"), _TURN_MESSAGE_CHARS),
+                        "directions": [
+                            {
+                                "label": str(item.get("label") or ""),
+                                "tag": str(item.get("tag") or ""),
+                                "text": _truncate(item.get("text"), _TURN_DIRECTION_CHARS),
+                            }
+                            for item in items
+                        ],
+                        "chosen": str(chosen.get("label") or "") if chosen else "",
+                    }
+                )
+                continue
+            recent.append(
+                {
+                    "kind": "chat",
+                    "message": _truncate(turn.get("message"), _TURN_MESSAGE_CHARS),
+                    "reply": _truncate(turn.get("reply"), _TURN_REPLY_CHARS),
+                    "suggestions": [
+                        _truncate(item, _TURN_SUGGESTION_CHARS)
+                        for item in list(turn.get("suggestions") or [])[:_TURN_SUGGESTIONS]
+                    ],
+                    "candidate_label": str(turn.get("candidate_label") or ""),
+                    "adopted_as_direction": bool(turn.get("adoption")),
+                }
+            )
         return {
             "brief": {
                 "lines": [
@@ -560,18 +605,7 @@ class DirectionBriefStore:
                 {"step": item["step_label"], "kind": item["kind"], "text": item["text"]}
                 for item in (self.inherited_for(step_key, rows) if inherit else [])
             ],
-            "recent_turns": [
-                {
-                    "message": _truncate(turn.get("message"), _TURN_MESSAGE_CHARS),
-                    "reply": _truncate(turn.get("reply"), _TURN_REPLY_CHARS),
-                    "suggestions": [
-                        _truncate(item, _TURN_SUGGESTION_CHARS)
-                        for item in list(turn.get("suggestions") or [])[:_TURN_SUGGESTIONS]
-                    ],
-                    "candidate_label": str(turn.get("candidate_label") or ""),
-                }
-                for turn in step_turns
-            ],
+            "recent_turns": recent,
             "how_to_use": CONVERSATION_HOW_TO_USE,
         }
 

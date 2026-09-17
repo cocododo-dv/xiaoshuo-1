@@ -170,6 +170,14 @@ class SnowflakeAssistantTurn(Base):
     candidate_patch_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
     source: Mapped[str] = mapped_column(String, default="fallback")
     llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 2026-09-17 阶段 U（迁移 20260917_0088）：教练日志里有两种回合——chat（问答）与 candidates（「先看 3 个方向」）。
+    # candidates_json = {"items": [{label, tag, text, notes}], "target_chars": n}；brief_delta_json 是这一轮对
+    # 作者意图要点的差异（+ / 改 / 撤），落表后日志自己会说话；adoption_json 记这一回合被哪一版生成采纳过
+    # （{step_run_id, candidate_index, adopted_at}）——「已按此生成」的徽章与教练看到的「作者选了哪个方向」都靠它。
+    turn_kind: Mapped[str] = mapped_column(String, default="chat")
+    candidates_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    brief_delta_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    adoption_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 

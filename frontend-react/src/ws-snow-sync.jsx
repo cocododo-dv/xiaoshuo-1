@@ -402,6 +402,10 @@ function shapeStepHealth(step) {
       ? { ...step.artifact.input_refs } : {},
     // 阶段 T：这一版生成消费了哪一版作者意图要点（used / revision / sha），用于「本稿未采用最新要点」提示
     directionBrief: (h.direction_brief && typeof h.direction_brief === "object") ? { ...h.direction_brief } : null,
+    // 阶段 U：这一版怎么来的——generation_source（llm / fallback / skip）与按哪个方向生成
+    // （{kind: candidate|coach_reply, turn_id, candidate_index, label, sha}）；编辑页 AI 工具条据此写「本稿：按方向「X」生成」
+    generationSource: h.generation_source || null,
+    direction: (h.direction && typeof h.direction === "object") ? { ...h.direction } : null,
   };
 }
 
