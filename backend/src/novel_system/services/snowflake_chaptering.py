@@ -6,13 +6,21 @@ LLM 把 chapter_id 留空说「server assigns」，而服务端的起始值就�
 大纲在后端只是四段自由文本，物化时完全不读。
 
 这个模块把分章变成一次**可预览、可调整、可确认**的显式动作：
-- ``preview`` 是纯函数式的只读推演（不写库），三种策略都确定性可复算；
-- ``save`` 把作者在面板里确认的归属落到 ``SnowflakeScenePlan.chapter_plan_id`` /
-  ``chapter_id`` / ``scene_seq``；
-- 物化改读章表分组，章标题/章目标来自作者在 07 写的东西，而不是章 id 字符串。
+- ``preview`` 是只读推演（分章方案不写库），每种策略都确定性可复算；
+- ``save`` 把作者在面板里确认的归属落到 ``SnowflakeScenePlan.chapter_plan_id`` / ``chapter_id``；
+- 物化改读章表分组，章标题/章目标来自章表，而不是章 id 字符串。
 
 脊柱锚点算法取自原前端 ``s2MaterializePreview``（那条降级路径反而是唯一分对章的），
 搬到后端成为唯一实现，前端不再持有第二套。
+
+2026-09-18（阶段 V）起的纪律——对应一次真实的「整理出来乱七八糟」：
+- **章是故事序上连续的一段。** 故事序只有一个来源：09 场景列表草稿的行序（``snowflake_scene_order``）；
+  ``scene_seq`` 只表示章内位置、只由 ``renumber_scene_seq`` 写。这里读场景永远按故事序，
+  ``save`` 不看载荷里的章内先后。
+- **章在场景之后**（阶段 K）：``from_scenes`` 策略按场景列表提议章表——三个灾难各自收束一章，每章场数的
+  来历写在回包的 ``scale`` 里。它和别的策略一样是预览；确认时 ``save(replace_chapters=true)`` 才建章
+  （``new:N`` → 真 row_uid）、软删没列出来的旧章、镜像回 07。``auto`` 由服务端按现状挑策略。
+- 灾难标记既认场上的 ``spine`` 列，也认功能标签里的「灾难一 / 二 / 三」（``spine_from_role``）。
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from novel_system.db.models import (
     ChapterGoal,
     OperationLog,
+    SceneCard,
     SnowflakeChapterPlan,
     SnowflakeScenePlan,
     SnowflakeStepRun,
@@ -36,12 +45,30 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.snowflake_scene_order import renumber_scene_seq, sort_in_story_order
 from novel_system.services.snowflake_steps import effective_rendering_mode
 from novel_system.services.snowflake_triage import excluded_scene_plan_ids
 
-STRATEGIES = ("spine_anchor", "even", "keep_current")
+#: ``from_scenes`` = 按场景列表推一份章表（不落库的预览，确认时才建章）；``auto`` = 由服务端按现状挑：
+#: 已有归属 → keep_current，07 里有作者写的章表 → spine_anchor，否则 → from_scenes。
+STRATEGIES = ("spine_anchor", "even", "keep_current", "from_scenes")
 SPINE_MARKS = ("灾一", "灾二", "灾三")
 _SPINE_PATTERN = re.compile(r"灾[一二三]")
+# chapter_role 里的灾难标记。提示词给模型的范例就是「灾难一·一幕高潮」——只认「灾一」的旧正则
+# 连自己文档里的例子都匹配不上，于是模型生成的场景表永远没有锚，三幕铰链从不生效
+# （2026-09-18 真实数据：17 场里三场标着 灾难一 / 灾难二 / 灾难三，分章却报「没有任何一章标着灾一」）。
+_SPINE_ROLE_PATTERN = re.compile(
+    r"灾难?\s*([一二三123])"
+    r"|第\s*([一二三123])\s*(?:个|次|场|重)?\s*灾难?"
+    r"|disaster\s*#?\s*([123])",
+    re.IGNORECASE,
+)
+_SPINE_BY_ORDINAL = {"一": "灾一", "1": "灾一", "二": "灾二", "2": "灾二", "三": "灾三", "3": "灾三"}
+#: 提议章表时，新章在面板里的临时身份前缀（确认时由 ``save`` 铸成真正的 row_uid）。
+NEW_CHAPTER_PREFIX = "new:"
+_PLACEHOLDER_TITLE_MARKERS = ("待补", "TODO", "todo", "TBD", "tbd", "占位")
+#: 系统起的占位章名「第 N 章」——它跟着章序走，不是作者的命名
+_AUTO_TITLE_PATTERN = re.compile(r"^第\s*\d+\s*章$")
 # NN 章名：一句话（灾一）—— 2026-09-13 阶段 D 之前提示词 snowflake_generate_long_synopsis 与前端 07
 # 脚手架把章表镜像进 paragraphs 时用的行格式。现在 paragraphs 是五段展开的散文，章表只在 chapters 里；
 # 这个正则只为没有 chapters 的历史草稿服务。
@@ -69,8 +96,57 @@ def scene_spine(plan: SnowflakeScenePlan) -> str:
     explicit = str(getattr(plan, "spine", "") or "").strip()
     if explicit:
         return explicit if explicit in SPINE_MARKS else ""
-    match = _SPINE_PATTERN.search(str(plan.chapter_role or ""))
-    return match.group(0) if match else ""
+    return spine_from_role(plan.chapter_role)
+
+
+def spine_from_role(chapter_role: Any) -> str:
+    """功能标签里的灾难标记：灾一 / 灾难一 / 灾难 1 / 第一个灾难 / Disaster 1 → ``灾一``。"""
+    match = _SPINE_ROLE_PATTERN.search(str(chapter_role or ""))
+    if not match:
+        return ""
+    ordinal = next((group for group in match.groups() if group), "")
+    return _SPINE_BY_ORDINAL.get(ordinal, "")
+
+
+def spine_positions(scenes: list[SnowflakeScenePlan]) -> dict[str, int]:
+    """每个灾难标记落在第几场（按传入顺序，-1 = 没有）。
+
+    作者显式标的（``spine`` 列）压过从功能标签里认出来的；同一个标记出现多次时取**最后**一场——
+    灾难是它所在章的收束点，一个两场连打的灾难要在第二场之后才断章。
+    """
+    positions: dict[str, int] = {}
+    for mark in SPINE_MARKS:
+        explicit = [
+            index for index, scene in enumerate(scenes) if str(getattr(scene, "spine", "") or "").strip() == mark
+        ]
+        inferred = [index for index, scene in enumerate(scenes) if scene_spine(scene) == mark]
+        hits = explicit or inferred
+        positions[mark] = hits[-1] if hits else -1
+    return positions
+
+
+def is_auto_chapter_title(title: Any) -> bool:
+    """章名是不是系统起的占位（空、「第 N 章」、「（待补）」一类）——AI 起章名只碰这些，作者起的名字不碰。"""
+    text = str(title or "").strip()
+    return (
+        not text
+        or bool(_AUTO_TITLE_PATTERN.match(text))
+        or any(marker in text for marker in _PLACEHOLDER_TITLE_MARKERS)
+    )
+
+
+def is_placeholder_chapter(chapter: Any) -> bool:
+    """07 编辑器「添加章节」点出来、还没写任何东西的章行（标题空 / 「（待补）」，摘要、章目标、脊柱全空）。
+
+    这种章表不是作者的分章决定：把场均摊进几个「（待补）」只会得到一份没有意义的结构，
+    面板应该当它不存在、直接按场景列表提议。
+    """
+    title = str(getattr(chapter, "title", "") or "").strip()
+    blank_title = not title or any(marker in title for marker in _PLACEHOLDER_TITLE_MARKERS)
+    has_content = any(
+        str(getattr(chapter, field, "") or "").strip() for field in ("summary", "chapter_goal", "spine")
+    )
+    return blank_title and not has_content
 
 
 class SnowflakeChapteringService:
@@ -92,16 +168,19 @@ class SnowflakeChapteringService:
         )
 
     def scene_plans(self, project_id: str) -> list[SnowflakeScenePlan]:
-        return list(
-            self.session.execute(
-                select(SnowflakeScenePlan)
-                .where(
-                    SnowflakeScenePlan.project_id == project_id,
-                    SnowflakeScenePlan.removed_at.is_(None),
-                )
-                .order_by(SnowflakeScenePlan.scene_seq.asc(), SnowflakeScenePlan.scene_id.asc())
-            ).scalars()
-        )
+        """活跃场景计划，按**故事序**（09 场景列表的行序）。
+
+        曾按 ``(scene_seq, scene_id)`` 排——``scene_seq`` 在第一次分章落库后就是章内序，于是第二次
+        分章读到的是各章的场交错洗在一起的顺序（1、10、2、11……）。故事序的唯一来源见
+        ``snowflake_scene_order``。
+        """
+        rows = self.session.execute(
+            select(SnowflakeScenePlan).where(
+                SnowflakeScenePlan.project_id == project_id,
+                SnowflakeScenePlan.removed_at.is_(None),
+            )
+        ).scalars().all()
+        return sort_in_story_order(self.session, project_id, rows)
 
     # ------------------------------------------------------ 章表惰性派生
 
@@ -211,6 +290,20 @@ class SnowflakeChapteringService:
         )
         if not rows:
             return []
+        # 只认**雪花物化出来的章**——章里有场景计划对应的场景卡。作者在章节编排里手建的章
+        # （比如新建作品后随手点出来的「第 1 章 / 开场」）不是构思侧的分章决定：把它当章表，
+        # 面板就会显示「一章 + 全书的场都未分配」，而真正要整理的章一章都没有。
+        plan_scene_ids = {plan.scene_id for plan in self.scene_plans(project_id)}
+        materialized_chapter_ids = {
+            card.chapter_id
+            for card in self.session.execute(
+                select(SceneCard).where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
+            ).scalars()
+            if card.scene_id in plan_scene_ids
+        }
+        rows = [chapter for chapter in rows if chapter.chapter_id in materialized_chapter_ids]
+        if not rows:
+            return []
         rows.sort(key=lambda chapter: (chapter.display_order is None, chapter.display_order or 0, chapter.chapter_id))
         derived: list[dict[str, Any]] = []
         for index, chapter in enumerate(rows, start=1):
@@ -265,10 +358,13 @@ class SnowflakeChapteringService:
         """按已经列好的场景提议一份章表并落库（Ingermanson：章是列完场之后的包装决定）。
 
         - 三个灾难是幕的铰链：带 灾一 / 灾二 / 灾三 的场必须是它所在章的最后一场；
-        - 章数 = ``target_chapter_count``（载荷 / 作品设置），否则按每章 ``scenes_per_chapter``（默认 3）场推；
-        - 每幕至少一章；章标题给占位「第 N 章」，摘要取本章第一场的一句话，作者随后改；
+        - 章的尺度见 :meth:`chapter_scale`（载荷的章数 / 每章场数 → 作品设置 → 参考书章长 → 每章 3 场）；
+        - 每幕至少一章；章标题给占位「第 N 章」，摘要取本章**最后一场**的一句话（这一章把局面推到哪），作者随后改；
         - 已有章表时必须显式 ``replace=true`` 才覆盖（旧章软删，归属重排）；
         - 章表同时镜像进 07 草稿的 ``chapters``，前端表格能看到。
+
+        面板不再走这条路——它用 ``preview(strategy="from_scenes")`` 拿到同一份提议的**预览**，
+        作者确认时才由 ``save(replace_chapters=true)`` 落库；这个端点留给脚本 / API 调用方。
         """
         body = payload or {}
         scenes = self.scene_plans(project_id)
@@ -287,66 +383,29 @@ class SnowflakeChapteringService:
                 status_code=409,
                 details={"chapter_count": len(existing)},
             )
-        project = self.session.get(StoryProject, project_id)
-        target = _as_int(body.get("target_chapter_count")) or int(getattr(project, "target_chapter_count", 0) or 0)
-        explicit_per_chapter = _as_int(body.get("scenes_per_chapter"))
-        # 2026-09-14 风格保真修补(WP5):作者没有定章数、也没有定每章场数时,按参考作者的章长
-        # (结构画像 chapter_chars 中位)与场长(显式场界时 scene_chars 中位,否则按中等场 1500 字)推每章场数。
-        reference_hint = (
-            _reference_chapter_scale_hint(self.session, project_id)
-            if not target and not explicit_per_chapter
-            else None
+        scale = self.chapter_scale(project_id, body, scenes)
+        chunks = propose_chapter_chunks(
+            scenes,
+            target_chapter_count=scale["target_chapter_count"],
+            scenes_per_chapter=scale["scenes_per_chapter"],
         )
-        per_chapter = max(
-            1,
-            explicit_per_chapter
-            or int((reference_hint or {}).get("scenes_per_chapter") or 0)
-            or 3,
-        )
-        chunks = propose_chapter_chunks(scenes, target_chapter_count=target, scenes_per_chapter=per_chapter)
-
-        removed_at = utcnow()
-        for row in existing:
-            row.removed_at = removed_at
-            row.removed_by = actor_ref or "operator"
-        for plan in scenes:
-            plan.chapter_plan_id = None
-        self.session.flush()
-
-        created: list[SnowflakeChapterPlan] = []
-        for index, chunk in enumerate(chunks, start=1):
-            first = chunk["scenes"][0]
-            row = self._create_chapter_plan(
-                project_id,
-                {
-                    "row_uid": "",
-                    "chapter_seq": index,
-                    "act": chunk["act"],
-                    "title": f"第 {index} 章",
-                    "summary": str(first.summary or first.title or "").strip(),
-                    "spine": chunk["spine"],
-                    "chapter_goal": "",
-                },
-            )
-            created.append(row)
-        self.session.flush()
-        assignments = [
-            {"scene_plan_id": scene.scene_plan_id, "chapter_row_uid": row.row_uid}
-            for row, chunk in zip(created, chunks)
-            for scene in chunk["scenes"]
-        ]
+        proposed_at = utcnow()
         self.save(
             project_id,
             {
+                "replace_chapters": True,
                 "chapters": [
-                    {"row_uid": row.row_uid, "title": row.title, "act": row.act, "spine": row.spine, "chapter_goal": row.chapter_goal, "summary": row.summary}
-                    for row in created
+                    {"row_uid": f"{NEW_CHAPTER_PREFIX}{index}", **_chunk_chapter_fields(index, chunk)}
+                    for index, chunk in enumerate(chunks, start=1)
                 ],
-                "assignments": assignments,
+                "assignments": [
+                    {"scene_plan_id": scene.scene_plan_id, "chapter_row_uid": f"{NEW_CHAPTER_PREFIX}{index}"}
+                    for index, chunk in enumerate(chunks, start=1)
+                    for scene in chunk["scenes"]
+                ],
             },
             actor_ref=actor_ref,
         )
-        self._mirror_chapters_into_long_synopsis(project_id, created)
         self.session.add(
             OperationLog(
                 event_type="snowflake_chapter_plan_proposed",
@@ -354,25 +413,77 @@ class SnowflakeChapteringService:
                 object_ref=project_id,
                 payload_json={
                     "project_id": project_id,
-                    "chapter_count": len(created),
+                    "chapter_count": len(chunks),
                     "scene_count": len(scenes),
                     "replaced_chapter_count": len(existing),
-                    "target_chapter_count": target,
-                    "scenes_per_chapter": per_chapter,
-                    "reference_hint": reference_hint,
+                    "target_chapter_count": scale["target_chapter_count"],
+                    "scenes_per_chapter": scale["scenes_per_chapter"],
+                    "scale_source": scale["source"],
+                    "reference_hint": scale["reference_hint"],
                     "actor_ref": actor_ref or "operator",
-                    "proposed_at": removed_at,
+                    "proposed_at": proposed_at,
                 },
             )
         )
         self.session.flush()
         preview = self.preview(project_id, {"strategy": "keep_current"})
-        preview["created_chapter_count"] = len(created)
+        preview["created_chapter_count"] = len(chunks)
         preview["replaced_chapter_count"] = len(existing)
+        preview["scale"] = scale
         return preview
 
+    def chapter_scale(
+        self,
+        project_id: str,
+        body: dict[str, Any] | None,
+        scenes: list[SnowflakeScenePlan],
+    ) -> dict[str, Any]:
+        """一章大约装几场——以及这个数是从哪来的（面板要向作者解释，不能是个黑盒）。
+
+        优先级：作者这一次指名的章数 → 这一次指名的每章场数 → 作品设置的目标章数 →
+        参考书的章长（结构画像 chapter_chars 中位 ÷ 场长中位，无显式场界按中等场 1500 字）→ 每章 3 场。
+        作者在面板里填「每章约 N 场」必须压过作品设置里的目标章数——那是建项目时随手填的数，
+        不该让面板上的输入框形同虚设。铰链优先于这一切：三个灾难各自收束一章，见 ``hinge_min_chapters``。
+        """
+        payload = body or {}
+        total = len(scenes)
+        requested_target = _as_int(payload.get("target_chapter_count"))
+        requested_per = _as_int(payload.get("scenes_per_chapter"))
+        project = self.session.get(StoryProject, project_id)
+        project_target = int(getattr(project, "target_chapter_count", 0) or 0)
+        reference_hint = None
+        target = 0
+        if requested_target > 0:
+            source, target = "request_target", requested_target
+            per_chapter = max(1, math.ceil(total / requested_target)) if total else 1
+        elif requested_per > 0:
+            source, per_chapter = "request_per_chapter", requested_per
+        elif project_target > 0:
+            source, target = "project_target", project_target
+            per_chapter = max(1, math.ceil(total / project_target)) if total else 1
+        else:
+            # 2026-09-14 风格保真修补(WP5)：作者什么都没定时，按参考作者的章长推每章场数。
+            reference_hint = _reference_chapter_scale_hint(self.session, project_id)
+            if reference_hint:
+                source, per_chapter = "reference", int(reference_hint["scenes_per_chapter"])
+            else:
+                source, per_chapter = "default", 3
+        return {
+            "source": source,
+            "target_chapter_count": target,
+            "scenes_per_chapter": max(1, per_chapter),
+            "scene_count": total,
+            "hinge_min_chapters": hinge_min_chapters(scenes),
+            "reference_hint": reference_hint,
+        }
+
     def _mirror_chapters_into_long_synopsis(self, project_id: str, chapters: list[SnowflakeChapterPlan]) -> None:
-        """把提议出来的章表写回 07 最新草稿的 ``chapters``（带 row_uid），前端 07 表格与章表行才是同一份。"""
+        """把章表写回 07 最新草稿的 ``chapters``（带 row_uid），前端 07 表格与章表行才是同一份。
+
+        草稿里的 ``fe_scaffold.chapters`` 是前端写穿缓存，水合时**优先于**规范字段——只改 ``chapters``
+        的话，新浏览器看到的仍是旧章表（真实故障里是两行「（待补）」），下一次 07 上行还会把它们
+        当成作者的章表同步回来、把刚确认的分章冲掉。两处一起写。
+        """
         run = self.session.execute(
             select(SnowflakeStepRun)
             .where(
@@ -384,6 +495,7 @@ class SnowflakeChapteringService:
         ).scalars().first()
         if run is None:
             return
+        ordered = sorted(chapters, key=lambda row: (int(row.chapter_seq or 0), row.row_uid))
         draft = dict(run.draft_json or {})
         draft["chapters"] = [
             {
@@ -395,8 +507,25 @@ class SnowflakeChapteringService:
                 "spine": row.spine or "",
                 "chapter_goal": row.chapter_goal or "",
             }
-            for row in chapters
+            for row in ordered
         ]
+        scaffold = draft.get("fe_scaffold")
+        if isinstance(scaffold, dict):
+            draft["fe_scaffold"] = {
+                **scaffold,
+                "chapters": [
+                    {
+                        "row_uid": row.row_uid,
+                        "id": f"{index:02d}",
+                        "act": min(max(int(row.act or 1), 1), 3),
+                        "title": row.title or "",
+                        "summary": row.summary or "",
+                        "spine": row.spine or "",
+                        "goal": row.chapter_goal or "",
+                    }
+                    for index, row in enumerate(ordered, start=1)
+                ],
+            }
         run.draft_json = draft
         flag_modified(run, "draft_json")
 
@@ -405,12 +534,16 @@ class SnowflakeChapteringService:
     def preview(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         body = payload or {}
         strategy = str(body.get("strategy") or "spine_anchor").strip()
+        if strategy == "auto":
+            strategy = self._auto_strategy(project_id)
         if strategy not in STRATEGIES:
             raise DomainError(
                 "SNOWFLAKE_CHAPTER_STRATEGY_INVALID",
-                f"分章策略只能是 {'、'.join(STRATEGIES)} 之一。",
+                f"分章策略只能是 {'、'.join((*STRATEGIES, 'auto'))} 之一。",
                 status_code=400,
             )
+        if strategy == "from_scenes":
+            return self._preview_from_scenes(project_id, body)
         chapters = self.ensure_chapter_plans(project_id)
         scenes = self.scene_plans(project_id)
         if not chapters:
@@ -429,7 +562,113 @@ class SnowflakeChapteringService:
             )
 
         assignment = _assign(strategy, chapters, scenes)
-        return self._shape_preview(project_id, strategy, chapters, scenes, assignment)
+        shaped = self._shape_preview(project_id, strategy, chapters, scenes, assignment)
+        shaped["scale"] = self.chapter_scale(project_id, body, scenes)
+        shaped["chapter_table"] = self._chapter_table_info(project_id)
+        return shaped
+
+    def _chapter_table_info(self, project_id: str) -> dict[str, Any]:
+        """落了库的章表现在是什么状态——面板据此决定哪几种分法点得动。
+
+        ``authored``：至少有一章不是「（待补）」占位（作者在 07 写的，或上一次确认留下的）；
+        ``saved``：已经有场分进了章（「已保存的分章」才有东西可摆）。
+        """
+        chapters = self.chapter_plans(project_id)
+        valid = {chapter.chapter_plan_id for chapter in chapters}
+        return {
+            "count": len(chapters),
+            "authored": any(not is_placeholder_chapter(chapter) for chapter in chapters),
+            "saved": any(plan.chapter_plan_id in valid for plan in self.scene_plans(project_id)),
+        }
+
+    def _auto_strategy(self, project_id: str) -> str:
+        """面板打开时该给作者看什么（不替作者做决定，只挑「现状」最诚实的那一种）。
+
+        - 已经有场分进了章 → ``keep_current``：作者上次确认 / 调整过的结果原样摆出来，新加的场跟着
+          故事序上的前一场走。以前面板一打开就按脊柱锚点**重算**一遍，作者手调过的归属每次都被抹平。
+        - 一场都没分、但 07 里有作者真的写过的章表 → ``spine_anchor``：把场倒进作者的章。
+        - 没有章表，或者章表只是几行「（待补）」占位 → ``from_scenes``：章是列完场之后的包装决定，
+          直接按场景列表提议（阶段 K）。
+        """
+        chapters = self.chapter_plans(project_id) or self.ensure_chapter_plans(project_id)
+        if not chapters:
+            return "from_scenes"
+        valid = {chapter.chapter_plan_id for chapter in chapters}
+        if any(plan.chapter_plan_id in valid for plan in self.scene_plans(project_id)):
+            return "keep_current"
+        if all(is_placeholder_chapter(chapter) for chapter in chapters):
+            return "from_scenes"
+        return "spine_anchor"
+
+    def _preview_from_scenes(self, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """按场景列表提议章表——**只读预览**，章行此刻并不存在。
+
+        回包里的章带临时身份 ``new:N``；作者确认时面板把整张章表连同 ``replace_chapters=true``
+        交回来，``save`` 才铸 row_uid、软删旧章。和另外几种策略一样：确认之前什么都不落库。
+        """
+        scenes = self.scene_plans(project_id)
+        if not scenes:
+            raise DomainError(
+                "SNOWFLAKE_SCENES_REQUIRED",
+                "09 场景列表还没有场景，无法按场景提议章表。",
+                status_code=409,
+                details={"step_key": "scene_list"},
+            )
+        scale = self.chapter_scale(project_id, body, scenes)
+        chunks = propose_chapter_chunks(
+            scenes,
+            target_chapter_count=scale["target_chapter_count"],
+            scenes_per_chapter=scale["scenes_per_chapter"],
+        )
+        # 场完全相同的章就是同一章：沿用它的身份（row_uid）、作者 / AI 起的章名、章摘要与章目标。
+        # 重新按场景分章（换一个每章场数、09 加了一场）不该把没变的章也打回「第 N 章」、另铸一行。
+        live = self.chapter_plans(project_id)
+        members_of: dict[str, list[str]] = {}
+        for scene in scenes:
+            if scene.chapter_plan_id:
+                members_of.setdefault(scene.chapter_plan_id, []).append(scene.scene_plan_id)
+        unchanged = {
+            frozenset(members_of[chapter.chapter_plan_id]): chapter
+            for chapter in live
+            if members_of.get(chapter.chapter_plan_id)
+        }
+        chapters: list[SnowflakeChapterPlan] = []
+        assignment: dict[str, str | None] = {}
+        reused: set[str] = set()
+        for index, chunk in enumerate(chunks, start=1):
+            fields = _chunk_chapter_fields(index, chunk)
+            same = unchanged.get(frozenset(scene.scene_plan_id for scene in chunk["scenes"]))
+            if same is not None and same.row_uid not in reused:
+                reused.add(same.row_uid)
+                row_uid = same.row_uid
+                if not is_auto_chapter_title(same.title):
+                    fields["title"] = same.title
+                fields["summary"] = (same.summary or "").strip() or fields["summary"]
+                fields["chapter_goal"] = (same.chapter_goal or "").strip()
+            else:
+                row_uid = f"{NEW_CHAPTER_PREFIX}{index}"
+            # 不进 session 的瞬态行：只为了复用 _shape_preview 的同一套成形逻辑
+            chapters.append(
+                SnowflakeChapterPlan(
+                    chapter_plan_id=same.chapter_plan_id if row_uid in reused and same is not None else "",
+                    project_id=project_id,
+                    row_uid=row_uid,
+                    chapter_seq=index,
+                    act=fields["act"],
+                    title=fields["title"],
+                    summary=fields["summary"],
+                    spine=fields["spine"],
+                    chapter_goal=fields["chapter_goal"],
+                    status="draft",
+                )
+            )
+            for scene in chunk["scenes"]:
+                assignment[scene.scene_plan_id] = row_uid
+        shaped = self._shape_preview(project_id, "from_scenes", chapters, scenes, assignment)
+        shaped["scale"] = scale
+        shaped["chapter_table"] = self._chapter_table_info(project_id)
+        shaped["replaces_chapter_count"] = len(live) - len(reused)
+        return shaped
 
     def _shape_preview(
         self,
@@ -442,6 +681,8 @@ class SnowflakeChapteringService:
         by_chapter: dict[str, list[SnowflakeScenePlan]] = {chapter.row_uid: [] for chapter in chapters}
         unassigned: list[SnowflakeScenePlan] = []
         excluded = self._excluded_scene_plan_ids(project_id)
+        # 故事序号（09 场景列表里的第几场）：面板靠它让作者一眼看出「章是不是故事序上连续的一段」
+        story_index = {scene.scene_plan_id: index for index, scene in enumerate(scenes, start=1)}
         for scene in scenes:
             target = assignment.get(scene.scene_plan_id)
             if target and target in by_chapter:
@@ -462,7 +703,9 @@ class SnowflakeChapteringService:
                     "title": chapter.title or "",
                     "summary": chapter.summary or "",
                     "spine": chapter.spine or "",
-                    "chapter_goal": chapter.chapter_goal or chapter.summary or "",
+                    # 章目标原样给（不拿摘要顶替）：面板会把它原样交回来，顶替过的值一存就成了「作者写的章目标」，
+                    # 之后拆章 / 并章它就一直描述着一场已经搬走的戏。物化时章目标缺席自会退回摘要。
+                    "chapter_goal": chapter.chapter_goal or "",
                     "scene_count": len(members),
                     "scenes": [
                         {
@@ -470,7 +713,12 @@ class SnowflakeChapteringService:
                             "row_uid": scene.row_uid or "",
                             "scene_id": scene.scene_id,
                             "scene_seq": seq,
+                            "story_index": story_index.get(scene.scene_plan_id, 0),
                             "title": scene.title or scene.summary or scene.scene_id,
+                            # 09 的「功能」栏（起疑 / 取证 / 灾难一·一幕高潮…）：一场在故事里的活儿，
+                            # 比一整句事件摘要好扫读
+                            "function": scene.chapter_role or "",
+                            "summary": scene.summary or "",
                             "primary_form": scene.scene_type or "proactive",
                             "spine": scene_spine(scene),
                             "anchored": bool(scene_spine(scene)) and scene_spine(scene) == (chapter.spine or ""),
@@ -494,7 +742,10 @@ class SnowflakeChapteringService:
                 {
                     "scene_plan_id": scene.scene_plan_id,
                     "scene_id": scene.scene_id,
+                    "story_index": story_index.get(scene.scene_plan_id, 0),
                     "title": scene.title or scene.summary or scene.scene_id,
+                    "function": scene.chapter_role or "",
+                    "primary_form": scene.scene_type or "proactive",
                     "reason": "no_anchor_segment",
                 }
                 for scene in unassigned
@@ -645,6 +896,35 @@ class SnowflakeChapteringService:
                             ),
                         }
                     )
+        # 章必须是故事序上连续的一段：章内顺序永远等于 09 场景列表的顺序，所以一场如果排在它前面
+        # 那些章的场之前，目录里读到的顺序就和场景列表不一样了（常见成因：分章之后又在 09 里拖过行）。
+        running_max = 0
+        misplaced: list[dict[str, Any]] = []
+        for item in chapter_payloads:
+            indices = [int(scene.get("story_index") or 0) for scene in item["scenes"]]
+            for scene in item["scenes"]:
+                if 0 < int(scene.get("story_index") or 0) < running_max:
+                    misplaced.append({"chapter": item, "scene": scene})
+            if indices:
+                running_max = max(running_max, max(indices))
+        if misplaced:
+            first = misplaced[0]
+            more = f" 等 {len(misplaced)} 场" if len(misplaced) > 1 else ""
+            warnings.append(
+                {
+                    "kind": "chapter_order_conflict",
+                    "severity": "advisory",
+                    "message": (
+                        f"「{_clip(first['scene']['title'])}」{more}在场景列表里排在前面几章的场之前，却分在"
+                        f"《{first['chapter']['title'] or first['chapter']['chapter_id']}》——章是场景列表上连续的一段，"
+                        "目录里读到的顺序会和场景列表不一致。把它移回相邻的章，或者按场景重新分章。"
+                    ),
+                    "scene_plan_ids": [entry["scene"]["scene_plan_id"] for entry in misplaced],
+                }
+            )
+
+        warnings.extend(self._catalog_warnings(project_id, chapter_payloads))
+
         # 节奏体检的提示（P3）：只提醒、从不阻断 —— 作者故意把灾二后置是合法选择。
         for item in _rhythm_report(chapter_payloads)["spine_placement"]:
             if not item.get("placed"):
@@ -682,6 +962,81 @@ class SnowflakeChapteringService:
             )
         return warnings
 
+    def _catalog_warnings(self, project_id: str, chapter_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """章节目录里和这次分章对不上的章——只提醒，不阻断，也绝不替作者删。
+
+        - 作者在章节编排里手建的章（不是雪花整理出来的）：新章接在它们后面，不覆盖、不挪动；
+        - 上一版分章留下、这一版已经没有场的章：场景卡搬走之后它们会变成空章留在目录里。
+        """
+        rows = list(
+            self.session.execute(
+                select(ChapterGoal).where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
+            ).scalars()
+        )
+        if not rows:
+            return []
+        targets = {item["chapter_id"] for item in chapter_payloads if item["scene_count"]}
+        snowflake_id = re.compile(rf"^{re.escape(project_id)}_CH\d{{2,}}$")
+        hand_made = [row for row in rows if not snowflake_id.match(row.chapter_id)]
+        leftover = [row for row in rows if snowflake_id.match(row.chapter_id) and row.chapter_id not in targets]
+        warnings: list[dict[str, Any]] = []
+
+        def names(items: list[ChapterGoal]) -> str:
+            labels = [
+                str((item.narrative_json or {}).get("title") or (item.writer_brief_json or {}).get("chapter_title") or item.chapter_id)
+                for item in items[:3]
+            ]
+            return "、".join(f"「{label}」" for label in labels) + (f" 等 {len(items)} 章" if len(items) > 3 else "")
+
+        if hand_made:
+            warnings.append(
+                {
+                    "kind": "catalog_hand_made_chapters",
+                    "severity": "advisory",
+                    "message": (
+                        f"章节目录里已有 {len(hand_made)} 章不是雪花整理出来的（{names(hand_made)}）。"
+                        "新章会接在它们后面，不覆盖也不挪动；不要的可以到章节编排里删。"
+                    ),
+                }
+            )
+        if leftover:
+            # 场景卡搬走之后还剩不剩东西：只装着计划内场景卡的章会变空 → 确认写入时移入回收站；
+            # 里面还有作者手加的场（或回收站里的场）的章原样保留。
+            plan_scene_ids = {plan.scene_id for plan in self.scene_plans(project_id)}
+            leftover_ids = {row.chapter_id for row in leftover}
+            keeps_something = {
+                card.chapter_id
+                for card in self.session.execute(
+                    select(SceneCard).where(SceneCard.project_id == project_id, SceneCard.chapter_id.in_(sorted(leftover_ids)))
+                ).scalars()
+                if card.scene_id not in plan_scene_ids or int(card.trashed_flag or 0) == 1
+            }
+            emptied = [row for row in leftover if row.chapter_id not in keeps_something]
+            kept = [row for row in leftover if row.chapter_id in keeps_something]
+            if emptied:
+                warnings.append(
+                    {
+                        "kind": "catalog_leftover_chapters",
+                        "severity": "advisory",
+                        "message": (
+                            f"上一版分章留在目录里的 {names(emptied)} 在这一版里没有场了——确认写入后这些空章会移入回收站"
+                            "（可在回收站取回）。"
+                        ),
+                    }
+                )
+            if kept:
+                warnings.append(
+                    {
+                        "kind": "catalog_leftover_chapters_kept",
+                        "severity": "advisory",
+                        "message": (
+                            f"{names(kept)} 在这一版里没有场了，但里面还有你手加的场（或回收站里的场）——这几章原样保留，"
+                            "可到章节编排里处理。"
+                        ),
+                    }
+                )
+        return warnings
+
     # -------------------------------------------------------------- 落库
 
     def save(
@@ -691,22 +1046,47 @@ class SnowflakeChapteringService:
         *,
         actor_ref: str = "operator",
     ) -> dict[str, Any]:
+        """落一版分章。
+
+        ``replace_chapters=true``（面板确认时总是带）= 载荷里的 ``chapters`` 是**整张章表**：
+        - 认得的 ``row_uid`` → 改标题 / 幕 / 脊柱 / 章目标 / 顺序；
+        - ``new:N``（或空）→ 新建一章（按场景提议的章、面板里「从这里另起一章」拆出来的章）；
+        - 没列出来的章 → 软删（并入上一章之后空掉的章、被整张替换的旧章表）。
+        不带这个标记时是旧契约：只更新列出来的章，认不得的 row_uid 报 404。
+
+        场的章内顺序不看载荷里的先后——它永远等于故事序（09 场景列表的行序），由
+        ``renumber_scene_seq`` 统一重算。章是故事序上连续的一段，面板也只提供挪章界、拆章、并章。
+        """
         body = payload or {}
-        chapters = self.ensure_chapter_plans(project_id)
+        replace_chapters = bool(body.get("replace_chapters"))
+        chapters = self.chapter_plans(project_id) if replace_chapters else self.ensure_chapter_plans(project_id)
         by_row_uid = {chapter.row_uid: chapter for chapter in chapters}
         scenes = {plan.scene_plan_id: plan for plan in self.scene_plans(project_id)}
 
         # 章的元数据（标题/幕/脊柱/章目标/顺序）——作者可以在面板里直接改
         incoming_chapters = [item for item in (body.get("chapters") or []) if isinstance(item, dict)]
+        if replace_chapters and not incoming_chapters:
+            raise DomainError(
+                "SNOWFLAKE_CHAPTER_PLAN_PAYLOAD_EMPTY",
+                "整张替换章表时必须带上新的章表；空章表不会被当成「删掉所有章」。",
+                status_code=400,
+            )
+        alias: dict[str, SnowflakeChapterPlan] = {}
+        listed: set[str] = set()
         for index, item in enumerate(incoming_chapters, start=1):
             row_uid = str(item.get("row_uid") or "").strip()
             chapter = by_row_uid.get(row_uid)
+            if chapter is None and replace_chapters and (not row_uid or row_uid.startswith(NEW_CHAPTER_PREFIX)):
+                chapter = self._create_chapter_plan(project_id, {"chapter_seq": index, "act": item.get("act")})
+                by_row_uid[chapter.row_uid] = chapter
             if chapter is None:
                 raise DomainError(
                     "SNOWFLAKE_CHAPTER_PLAN_NOT_FOUND",
                     f"未找到章「{item.get('title') or row_uid}」。",
                     status_code=404,
                 )
+            alias[row_uid or f"{NEW_CHAPTER_PREFIX}{index}"] = chapter
+            listed.add(chapter.row_uid)
             chapter.chapter_seq = index
             if "title" in item:
                 chapter.title = str(item.get("title") or "").strip()
@@ -728,7 +1108,8 @@ class SnowflakeChapteringService:
                 "没有收到任何场景归属，无法保存分章。",
                 status_code=400,
             )
-        seq_by_chapter: dict[str, int] = {}
+        # 新建的章必须先落库：场景行的 chapter_plan_id 是外键，而 ORM 没有声明关系来排依赖顺序
+        self.session.flush()
         touched: list[SnowflakeScenePlan] = []
         for item in assignments:
             scene_plan_id = str(item.get("scene_plan_id") or "").strip()
@@ -741,7 +1122,7 @@ class SnowflakeChapteringService:
                     details={"scene_plan_id": scene_plan_id},
                 )
             row_uid = str(item.get("chapter_row_uid") or "").strip()
-            chapter = by_row_uid.get(row_uid)
+            chapter = alias.get(row_uid) or by_row_uid.get(row_uid)
             if chapter is None:
                 raise DomainError(
                     "SNOWFLAKE_CHAPTER_PLAN_NOT_FOUND",
@@ -749,14 +1130,53 @@ class SnowflakeChapteringService:
                     status_code=404,
                     details={"chapter_row_uid": row_uid},
                 )
-            next_seq = seq_by_chapter.get(row_uid, 0) + 1
-            seq_by_chapter[row_uid] = next_seq
             plan.chapter_plan_id = chapter.chapter_plan_id
-            plan.chapter_id = chapter_target_id(project_id, chapter.chapter_seq)
-            plan.chapter_title = chapter.title or plan.chapter_title
-            plan.chapter_goal = chapter.chapter_goal or chapter.summary or plan.chapter_goal
-            plan.scene_seq = next_seq
             touched.append(plan)
+
+        # 整张替换：没列出来的章软删，还挂在上面的场退回「未分章」
+        removed: list[SnowflakeChapterPlan] = []
+        if replace_chapters:
+            removed_at = utcnow()
+            for chapter in chapters:
+                if chapter.row_uid in listed:
+                    continue
+                chapter.removed_at = removed_at
+                chapter.removed_by = actor_ref or "operator"
+                removed.append(chapter)
+                for plan in scenes.values():
+                    if plan.chapter_plan_id == chapter.chapter_plan_id:
+                        plan.chapter_plan_id = None
+                self.session.add(
+                    OperationLog(
+                        event_type="snowflake_chapter_plan_removed",
+                        object_type="snowflake_chapter_plan",
+                        object_ref=chapter.chapter_plan_id,
+                        payload_json={
+                            "project_id": project_id,
+                            "row_uid": chapter.row_uid,
+                            "title": chapter.title or "",
+                            "removed_at": removed_at,
+                            "reason": "chapter_plan_replaced",
+                        },
+                    )
+                )
+
+        # 章序可能整体变了（拆章 / 并章 / 重排），所以给**每一场**重盖章戳，而不只是这次点名的场——
+        # 否则没被点名的场还带着旧的物化目标章号，回流会把场景卡搬进错的章。
+        live = {chapter.chapter_plan_id: chapter for chapter in by_row_uid.values() if not chapter.removed_at}
+        if replace_chapters:
+            self._refresh_auto_chapter_fields(list(live.values()), list(scenes.values()))
+        for plan in scenes.values():
+            chapter = live.get(plan.chapter_plan_id or "")
+            if chapter is None:
+                continue
+            plan.chapter_id = chapter_target_id(project_id, chapter.chapter_seq)
+            # 不退回场景行上的旧值：那是它上一个章的标题 / 章目标，回流还会把它写进场景卡的简报
+            plan.chapter_title = chapter.title or ""
+            plan.chapter_goal = chapter.chapter_goal or chapter.summary or ""
+        self.session.flush()
+        renumber_scene_seq(self.session, project_id)
+        self._mirror_chapters_into_long_synopsis(project_id, list(live.values()))
 
         self.session.add(
             OperationLog(
@@ -765,8 +1185,10 @@ class SnowflakeChapteringService:
                 object_ref=project_id,
                 payload_json={
                     "project_id": project_id,
-                    "chapter_count": len(chapters),
+                    "chapter_count": len(live),
                     "assigned_scene_count": len(touched),
+                    "created_chapter_count": sum(1 for chapter in live.values() if chapter not in chapters),
+                    "removed_chapter_count": len(removed),
                     "actor_ref": actor_ref or "operator",
                     "saved_at": utcnow(),
                 },
@@ -774,6 +1196,29 @@ class SnowflakeChapteringService:
         )
         self.session.flush()
         return {"assigned_scene_count": len(touched)}
+
+    @staticmethod
+    def _refresh_auto_chapter_fields(chapters: list[SnowflakeChapterPlan], scenes: list[SnowflakeScenePlan]) -> None:
+        """整张章表落库时，把**系统起的**章名与章摘要按新的结构重算；作者写的一个字都不动。
+
+        - 章名空着、或是占位「第 N 章」→ 按现在的章序重编（拆章 / 并章之后「第 3 章」不能排在第 4 位，
+          空章名物化进目录会变成章 id 字符串）；
+        - 章摘要空着、或与某一场的摘要一字不差（= 提议时从场上抄来的）→ 取这一章现在的最后一场。
+          作者自己写的摘要不会和某一场的摘要逐字相同。
+        """
+        scene_summaries = {str(scene.summary or "").strip() for scene in scenes if str(scene.summary or "").strip()}
+        members: dict[str, list[SnowflakeScenePlan]] = {}
+        for scene in scenes:  # scenes 已按故事序
+            members.setdefault(scene.chapter_plan_id or "", []).append(scene)
+        for chapter in chapters:
+            title = str(chapter.title or "").strip()
+            if not title or _AUTO_TITLE_PATTERN.match(title):
+                chapter.title = f"第 {int(chapter.chapter_seq or 1)} 章"
+            summary = str(chapter.summary or "").strip()
+            mine = members.get(chapter.chapter_plan_id) or []
+            if mine and (not summary or summary in scene_summaries):
+                last = mine[-1]
+                chapter.summary = str(last.summary or last.title or "").strip()
 
     def suggest(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """让 LLM 给一份分章建议（P3，只读 —— 不落库）。
@@ -832,12 +1277,179 @@ class SnowflakeChapteringService:
             )
             for scene in scenes
         }
+        assignment = _enforce_contiguity(assignment, chapters, scenes)
         shaped = self._shape_preview(project_id, "llm_suggested", chapters, scenes, assignment)
+        shaped["chapter_table"] = self._chapter_table_info(project_id)
         shaped["rationale"] = result.payload.get("rationale") or ""
         shaped["source"] = result.source
         shaped["llm_call_id"] = result.llm_call_id
         shaped["kept_from_deterministic"] = sorted(result.payload.get("missing_scene_plan_ids") or [])
         return shaped
+
+    # ------------------------------------------------------------ 阶段 W：AI 起章名
+
+    #: 一次 LLM 调用起几章的名字 / 一次请求最多几批。整本书的章名 + 章摘要一次要不完
+    #: （思考型中转的推理 token 也算在输出里），分批还让后面的批看得见前面已经起好的名字，口径一致。
+    TITLE_BATCH_SIZE = 12
+    TITLE_MAX_BATCHES = 6
+
+    def suggest_titles(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """AI 起章名（**只读**——不落库，名字回到面板里由作者改、由作者确认）。
+
+        载荷的 ``chapters`` 是面板此刻的章表（含还没落库的 ``new:N`` 章、作者手调过的归属）：
+        ``[{row_uid, title, act, spine, scene_plan_ids}]``；不带就按已保存的分章起。
+        只给**系统起的占位名**（空 / 「第 N 章」/「（待补）」）起名，作者自己起的名字不碰——
+        ``rename_all=true`` 才全部重起。fail-closed：模型没配好就 409，不拿规则拼的名字冒充。
+        """
+        from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService
+
+        body = payload or {}
+        scenes = self.scene_plans(project_id)
+        order = {scene.scene_plan_id: index for index, scene in enumerate(scenes, start=1)}
+        by_id = {scene.scene_plan_id: scene for scene in scenes}
+        incoming = [item for item in (body.get("chapters") or []) if isinstance(item, dict)]
+        if not incoming:
+            saved = self.preview(project_id, {"strategy": "keep_current"})
+            incoming = [
+                {
+                    "row_uid": chapter["row_uid"],
+                    "title": chapter["title"],
+                    "act": chapter["act"],
+                    "spine": chapter["spine"],
+                    "scene_plan_ids": [scene["scene_plan_id"] for scene in chapter["scenes"]],
+                }
+                for chapter in saved["chapters"]
+            ]
+
+        rename_all = bool(body.get("rename_all"))
+        chapters: list[dict[str, Any]] = []
+        for position, item in enumerate(incoming, start=1):
+            row_uid = str(item.get("row_uid") or "").strip() or f"{NEW_CHAPTER_PREFIX}{position}"
+            title = str(item.get("title") or "").strip()
+            members = sorted(
+                {str(value or "").strip() for value in (item.get("scene_plan_ids") or [])} & set(by_id),
+                key=lambda scene_plan_id: order[scene_plan_id],
+            )
+            chapters.append(
+                {
+                    "row_uid": row_uid,
+                    "position": position,
+                    "title": title,
+                    "auto": rename_all or is_auto_chapter_title(title),
+                    "act": _coerce_act(item.get("act"), 1),
+                    "spine": str(item.get("spine") or "").strip(),
+                    "scene_plan_ids": members,
+                }
+            )
+        targets = [chapter for chapter in chapters if chapter["auto"] and chapter["scene_plan_ids"]]
+        authored = [chapter for chapter in chapters if not chapter["auto"]]
+        result: dict[str, Any] = {
+            "titles": [],
+            "requested_count": len(targets),
+            "named_count": 0,
+            "remaining_count": len(targets),
+            "skipped_authored_count": len(authored),
+            "notice": None,
+            "source": "llm",
+            "llm_call_ids": [],
+        }
+        if not targets:
+            result["notice"] = {
+                "code": "CHAPTER_TITLES_NOTHING_TO_NAME",
+                "severity": "info",
+                "message": "每一章都已经有你起的名字了；想让 AI 重起某一章，先把它的章名清空。",
+            }
+            return result
+
+        llm = SnowflakeWorkspaceLLMService(self.session)
+        project = self._project_payload(project_id)
+        book = self._book_context(project_id)
+        named = [{"position": chapter["position"], "title": chapter["title"]} for chapter in authored]
+        batches = [
+            targets[start : start + self.TITLE_BATCH_SIZE] for start in range(0, len(targets), self.TITLE_BATCH_SIZE)
+        ]
+        for batch_index, batch in enumerate(batches[: self.TITLE_MAX_BATCHES]):
+            try:
+                outcome = llm.chapter_title_suggestions(
+                    project=project,
+                    book=book,
+                    named_chapters=sorted(named, key=lambda item: item["position"]),
+                    chapters=[
+                        {
+                            "row_uid": chapter["row_uid"],
+                            "position": chapter["position"],
+                            "of": len(chapters),
+                            "act": chapter["act"],
+                            "spine": chapter["spine"],
+                            "scenes": [
+                                {
+                                    "story_index": order[scene_plan_id],
+                                    "function": by_id[scene_plan_id].chapter_role or "",
+                                    "spine": scene_spine(by_id[scene_plan_id]),
+                                    "form": by_id[scene_plan_id].scene_type or "proactive",
+                                    "summary": _clip(by_id[scene_plan_id].summary or by_id[scene_plan_id].title, 160),
+                                }
+                                for scene_plan_id in chapter["scene_plan_ids"]
+                            ],
+                        }
+                        for chapter in batch
+                    ],
+                )
+            except DomainError as exc:
+                if not result["titles"]:
+                    raise
+                # 前面几批已经起好了名字：如实交回去，剩下的说清楚为什么没起成
+                result["notice"] = {
+                    "code": "CHAPTER_TITLES_PARTIAL",
+                    "severity": "warning",
+                    "message": f"起到第 {batch_index} 批时模型调用失败（{exc.message}）；已经起好的章名先给你，其余的可以再点一次。",
+                }
+                break
+            if outcome.llm_call_id:
+                result["llm_call_ids"].append(outcome.llm_call_id)
+            position_of = {chapter["row_uid"]: chapter["position"] for chapter in batch}
+            for item in outcome.payload.get("titles") or []:
+                result["titles"].append(item)
+                named.append({"position": position_of[item["row_uid"]], "title": item["title"]})
+
+        if not result["titles"]:
+            raise DomainError(
+                "SNOWFLAKE_CHAPTER_TITLES_EMPTY",
+                "模型这一次没有给出可用的章名（空的、重复的或只是「高潮」「结局」这类标签都不算）。可以再点一次。",
+                status_code=502,
+                details={"llm_call_ids": result["llm_call_ids"]},
+            )
+        result["named_count"] = len(result["titles"])
+        result["remaining_count"] = len(targets) - len(result["titles"])
+        if result["remaining_count"] and result["notice"] is None:
+            result["notice"] = {
+                "code": "CHAPTER_TITLES_PARTIAL",
+                "severity": "info",
+                "message": f"这一次起了 {result['named_count']} 章的名字，还有 {result['remaining_count']} 章没起成；再点一次接着起。",
+            }
+        return result
+
+    def _book_context(self, project_id: str) -> dict[str, Any]:
+        """章名要带着全书的调子：已确认的一句话与五句脊柱（未确认的草稿不算事实，不给）。"""
+        context: dict[str, Any] = {}
+        for step_key, field, target in (
+            ("one_sentence_summary", "summary", "logline"),
+            ("one_paragraph_summary", "sentences", "five_sentence_spine"),
+            ("one_paragraph_summary", "moral_premise", "moral_premise"),
+        ):
+            run = self.session.execute(
+                select(SnowflakeStepRun)
+                .where(
+                    SnowflakeStepRun.project_id == project_id,
+                    SnowflakeStepRun.step_key == step_key,
+                    SnowflakeStepRun.status.in_(["approved", "stale"]),
+                )
+                .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
+            ).scalars().first()
+            value = (run.draft_json or {}).get(field) if run is not None else None
+            if value:
+                context[target] = value
+        return context
 
     def _project_payload(self, project_id: str) -> dict[str, Any]:
         from novel_system.services.projects import ProjectService, project_payload
@@ -1161,7 +1773,7 @@ def propose_chapter_chunks(
     ordered = list(scenes)
     if not ordered:
         return []
-    marks = {mark: next((i for i, scene in enumerate(ordered) if scene_spine(scene) == mark), -1) for mark in SPINE_MARKS}
+    marks = spine_positions(ordered)
     # 幕的边界：灾一收束第一幕，灾三收束第二幕；灾二是第二幕内部的铰链（也收束它所在的章）
     boundaries: list[int] = []
     for mark in ("灾一", "灾三"):
@@ -1179,34 +1791,83 @@ def propose_chapter_chunks(
 
     total = len(ordered)
     wanted = int(target_chapter_count or 0) or max(1, math.ceil(total / max(1, scenes_per_chapter)))
-    # 铰链优先于章数：每幕至少一章；灾二在第二幕中间时，它后面的场还要再起一章，灾二才能收束自己的章。
+    # 铰链优先于章数：每幕至少一章；灾二在一幕中间时，那一幕至少两章——它后面的场还要再起一章，
+    # 灾二才能收束自己的章。下限按幕给，而不是只抬总数：以前多出来的那一章可能被分给别的幕，
+    # 灾二和灾三于是挤在同一章里，章上只剩一个脊柱标记。
     hinge = marks.get("灾二", -1)
-    min_required = len(acts)
-    if hinge >= 0:
-        act_of_hinge = next((members for _number, members in acts if ordered[hinge] in members), None)
-        if act_of_hinge is not None and act_of_hinge[-1] is not ordered[hinge]:
-            min_required += 1
-    wanted = max(min_required, min(wanted, total))
-    # 按场数比例分章，保证每幕至少一章、每章至少一场
-    quotas = [max(1, round(wanted * len(members) / total)) for _number, members in acts]
-    while sum(quotas) > wanted:
-        biggest = max(range(len(quotas)), key=lambda i: (quotas[i], -i))
-        if quotas[biggest] <= 1:
-            break
-        quotas[biggest] -= 1
+    minimums = [
+        2 if (0 <= hinge < total and ordered[hinge] in members and members[-1] is not ordered[hinge]) else 1
+        for _number, members in acts
+    ]
+    wanted = max(sum(minimums), min(wanted, total))
+    # 余下的章一章一章发给「此刻每章场数最多」的那一幕，保证每章至少一场
+    quotas = list(minimums)
     while sum(quotas) < wanted:
-        biggest = max(range(len(quotas)), key=lambda i: (len(acts[i][1]) / quotas[i], -i))
-        if quotas[biggest] >= len(acts[biggest][1]):
+        growable = [i for i in range(len(acts)) if quotas[i] < len(acts[i][1])]
+        if not growable:
             break
-        quotas[biggest] += 1
+        fullest = max(growable, key=lambda i: (len(acts[i][1]) / quotas[i], -i))
+        quotas[fullest] += 1
 
     chunks: list[dict[str, Any]] = []
     for (act_number, members), quota in zip(acts, quotas):
-        pieces = _split_act(members, quota, hinge=marks.get("灾二", -1), ordered=ordered)
+        pieces = _split_act(members, quota, hinge=hinge, ordered=ordered)
         for piece in pieces:
-            spine = next((scene_spine(scene) for scene in piece if scene_spine(scene)), "")
+            # 一章收束在哪个灾难上：取章内**最后**一个标记（灾难是章的收束点）
+            spine = next((scene_spine(scene) for scene in reversed(piece) if scene_spine(scene)), "")
             chunks.append({"act": min(3, act_number), "spine": spine, "scenes": piece})
     return chunks
+
+
+def hinge_min_chapters(scenes: list[SnowflakeScenePlan]) -> int:
+    """三个灾难各自收束一章时，最少要几章（面板向作者解释「为什么不是你填的那个数」时用）。"""
+    return len(propose_chapter_chunks(scenes, target_chapter_count=1)) if scenes else 0
+
+
+def _chunk_chapter_fields(index: int, chunk: dict[str, Any]) -> dict[str, Any]:
+    """按场景提议出来的一章的默认字段。
+
+    摘要取本章**最后一场**的一句话：07 章表里这一栏问的是「这一章把局面推到哪」，那是章末的事；
+    以前取第一场，整章的摘要 / 章目标于是只描述了开头（物化时它还会变成目录里的章目标）。
+    标题只给占位「第 N 章」——章名是作者的事，面板里可以直接改。
+    """
+    last = chunk["scenes"][-1]
+    return {
+        "title": f"第 {index} 章",
+        "act": int(chunk["act"]),
+        "spine": str(chunk["spine"] or ""),
+        "summary": str(last.summary or last.title or "").strip(),
+        "chapter_goal": "",
+    }
+
+
+def _clip(text: Any, limit: int = 24) -> str:
+    value = str(text or "").strip()
+    return value if len(value) <= limit else f"{value[:limit]}…"
+
+
+def _enforce_contiguity(
+    assignment: dict[str, str | None],
+    chapters: list[SnowflakeChapterPlan],
+    scenes: list[SnowflakeScenePlan],
+) -> dict[str, str | None]:
+    """章是故事序上连续的一段：沿故事序走，章序只许不降。
+
+    模型给的分章建议可能把第 9 场放回第 2 章——章内顺序永远等于故事序，那样目录里读到的顺序就和
+    场景列表分家了。回退的归属被拉平到它前面已经到达的那一章；没有归属的场原样留着（由面板报未分配）。
+    """
+    order = {chapter.row_uid: index for index, chapter in enumerate(chapters)}
+    fixed: dict[str, str | None] = {}
+    reached = -1
+    for scene in scenes:
+        target = assignment.get(scene.scene_plan_id)
+        index = order.get(target or "", -1)
+        if index < 0:
+            fixed[scene.scene_plan_id] = target if target in order else None
+            continue
+        reached = max(reached, index)
+        fixed[scene.scene_plan_id] = chapters[reached].row_uid
+    return fixed
 
 
 def _split_act(
@@ -1291,8 +1952,9 @@ def _assign_spine_anchor(
     只保留场序与章序**同时**单调递增的锚（否则铺展区间会反向，产生乱序的章）。
     """
     anchors: list[tuple[int, int]] = []
+    scene_marks = spine_positions(scenes)
     for mark in SPINE_MARKS:
-        scene_index = next((i for i, scene in enumerate(scenes) if scene_spine(scene) == mark), -1)
+        scene_index = scene_marks.get(mark, -1)
         chapter_index = next((j for j, chapter in enumerate(chapters) if (chapter.spine or "") == mark), -1)
         if scene_index >= 0 and chapter_index >= 0:
             anchors.append((scene_index, chapter_index))

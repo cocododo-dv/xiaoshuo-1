@@ -192,8 +192,11 @@ def test_closeout1_reorder_changes_only_scene_seq(client, session) -> None:
     scenes = _scene_list_step(workspace)["draft"]["scenes"]
     id_before = {scene["row_uid"]: scene["scene_id"] for scene in scenes}
 
-    # Bump every scene_seq by 10 — a pure reorder. Identity must not move.
-    reordered = [{**scene, "scene_seq": scene["scene_seq"] + 10} for scene in scenes]
+    # A pure reorder: the row order **is** the story order (阶段 V). The numbers a client puts in
+    # ``scene_seq`` are not trusted any more (the React 09 board sends a global index, models send
+    # anything) — so reverse the rows, and send nonsense in scene_seq to prove it is ignored.
+    # Identity must not move.
+    reordered = [{**scene, "scene_seq": scene["scene_seq"] + 10} for scene in reversed(scenes)]
     save = client.patch(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_list",
         json={"draft": {"scenes": reordered}},
@@ -206,7 +209,17 @@ def test_closeout1_reorder_changes_only_scene_seq(client, session) -> None:
     assert len(plans) == len(scenes)
     for plan in plans:
         assert plan.scene_id == id_before[plan.row_uid]
-        assert plan.scene_seq >= 11
+    # scene_seq = position inside the chapter, following the new row order
+    by_chapter: dict[str, list[SnowflakeScenePlan]] = {}
+    for plan in plans:
+        by_chapter.setdefault(plan.chapter_id, []).append(plan)
+    wanted = [scene["row_uid"] for scene in reordered]
+    for members in by_chapter.values():
+        ordered = sorted(members, key=lambda plan: plan.scene_seq)
+        assert [plan.scene_seq for plan in ordered] == list(range(1, len(ordered) + 1))
+        assert [plan.row_uid for plan in ordered] == [uid for uid in wanted if uid in {m.row_uid for m in members}]
+    hydrated = _scene_list_step(_workspace(client, pid))["draft"]["scenes"]
+    assert [scene["row_uid"] for scene in hydrated] == wanted, "工作台交回的 09 必须是作者排的顺序"
 
 
 def test_closeout1_scene_details_reuses_scene_list_identity(client, session) -> None:

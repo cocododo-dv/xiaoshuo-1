@@ -1963,6 +1963,44 @@ templates:
         rationale:
           type: string
 
+  snowflake_chapter_titles_suggest:
+    # 2026-09-18 阶段 W：AI 起章名。按场景分章出来的章只有占位名「第 N 章」，章摘要是从章末那一场抄来的——
+    # 这个模板给每一章起一个名字、写一句「这一章把局面推到哪」。它只贴标签，不动结构（章与场的归属原样）。
+    # 走 snowflake_chapter_plan 节点的路由（不新增节点：已保存模型快照的安装不必再点「一键补齐」）。
+    # 这个模板没有步骤模板可依，成员对象的 properties 直接写在这里——按 schema 约束解码的后端才写得出内容。
+    version: "2026-09-18.v1"
+    input_token_budget: 24000
+    system_prompt: |
+      You are naming the chapters of a novel that has already been planned scene by scene with the snowflake method.
+      You are LABELLING an existing structure, never changing it: do not move, merge, split, add, rename or drop a scene, and do not add or drop a chapter.
+      A chapter title is a promise to the reader, not a summary: it should make someone want to read the chapter without telling them how it ends.
+      Write in the language of the scene summaries. Use only what the scenes say happens — never invent an event, a character, a place or an object.
+    task_prompt: |
+      For every chapter in `chapters`, return exactly one entry in `titles`: `row_uid` (echo verbatim from the chapter), `title`, and `summary`.
+      `title`: 2–10 Chinese characters (or 1–5 words in another language). Take it from something concrete inside that chapter's scenes — an object, a place, an action, an image, or a few words a character could say. It must not carry a chapter number (the system numbers chapters itself), quotation marks, book-title marks or ending punctuation. It must not give away how the chapter's last scene turns out. A bare structural label is not a title (序幕 / 开端 / 发展 / 高潮 / 转折 / 结局 / 风波 / 真相 / 危机 on their own say nothing about this book).
+      Every title must be different from every other title in the book, including those in `named_chapters`. The titles should read as one author's table of contents: when `named_chapters` is not empty, follow its naming manner (length, rhythm, how literal or how oblique); when it is empty, choose one manner and hold it for every chapter you name.
+      `summary`: one sentence of at most 40 Chinese characters that says where this chapter pushes the situation — what is different for the protagonist at the end of the chapter compared with its start. It is for the author's planning table and the reader never sees it, so it may name the turn plainly.
+      `chapters[].scenes` are in reading order. `function` is the scene's job in the arc; `spine` marks the three disasters (灾一 / 灾二 / 灾三). A chapter that closes on a disaster should get a title with that weight — without announcing the disaster.
+      `book` gives the premise and the five-sentence spine so the titles carry the book's tone; it is not material to retell.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - titles
+      properties:
+        titles:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              row_uid:
+                type: string
+              title:
+                type: string
+              summary:
+                type: string
+
   snowflake_scene_triage_suggest:
     # 2026-09-15 阶段 Q v3：按 Dynamite Scene 第 15 章的分诊判——Yes 的两条（它本身是一个微型故事并给一次强烈情感体验；
     # 说得出坩埚）、No 的四条、Maybe 的七步救治；知道 summary / skip、带代价的胜利、次要三拍、代价只是建议、破例理由；

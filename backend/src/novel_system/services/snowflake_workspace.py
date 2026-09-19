@@ -5,7 +5,7 @@ import uuid
 from copy import deepcopy
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import Session
 
@@ -30,7 +30,13 @@ from novel_system.db.models import (
 )
 from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
-from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService, outline_plan_payload, project_payload
+from novel_system.services.projects import (
+    PLAN_STATUS_PENDING_REVIEW,
+    ProjectService,
+    outline_plan_payload,
+    project_payload,
+    trash_emptied_snowflake_chapters,
+)
 from novel_system.services.project_runtime_invalidation import ProjectRuntimeInvalidationService
 from novel_system.services.snowflake_planner import (
     GATE_STATUSES,
@@ -72,6 +78,7 @@ from novel_system.services.snowflake_chaptering import (
     mint_chapter_row_uid,
     parse_outline_chapters,
 )
+from novel_system.services.snowflake_scene_order import positions_from_rows, renumber_scene_seq, sort_in_story_order
 from novel_system.services.snowflake_triage import EXCLUDED_TRIAGE_STATUSES, excluded_scene_plan_ids, latest_triage_rows
 from novel_system.services.snowflake_direction_brief import DirectionBriefStore, delta_changed
 from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService, draft_has_content
@@ -435,7 +442,12 @@ class SnowflakeWorkspaceService:
                 "step_run": self._step_run_payload(latest),
             }
 
-        if latest is not None and latest.status == "pending_review":
+        # 2026-09-18 抹空保护：pending_review 步平时原位改写（不为每次键入造版本），但「整步抹空」不行——
+        # 旧稿有成段的故事文字、新稿一个字都没有时另起一版，旧稿留在历史里可用 restore 取回。前端同步层
+        # 已有水合闸门拦住「没水合过的空白默认稿」，这里是最后一道：原位改写没有历史，未确认的草稿一旦被
+        # 空白覆盖就是永久丢失。作者亲手重置同样多留一版，可反悔。
+        wipes_story = latest is not None and _would_wipe_story(latest.draft_json, draft)
+        if latest is not None and latest.status == "pending_review" and not wipes_story:
             run = latest
             run.draft_json = draft
             run.input_refs_json = self._input_refs(step_key, latest_by_step)
@@ -456,6 +468,20 @@ class SnowflakeWorkspaceService:
                 input_refs_json=self._input_refs(step_key, latest_by_step),
             )
             self.session.add(run)
+            if wipes_story and latest is not None and latest.status == "pending_review":
+                self.session.add(
+                    OperationLog(
+                        event_type="snowflake_step_wipe_preserved",
+                        object_type="snowflake_step_run",
+                        object_ref=run.step_run_id,
+                        payload_json={
+                            "project_id": project.project_id,
+                            "step_key": step_key,
+                            "preserved_step_run_id": latest.step_run_id,
+                            "preserved_version": latest.version,
+                        },
+                    )
+                )
 
         self.session.flush()
         self._sync_structured_step_data(project, step_key, draft, run)
@@ -1006,9 +1032,10 @@ class SnowflakeWorkspaceService:
         chapter_payloads: list[dict[str, Any]] = []
         for index, chapter in enumerate(chapters, start=1):
             # 阶段 I：页面上略过的反应场不物化——没有正文要写；它的三拍经下一场的设计上下文到达写手。
+            # 章内顺序 = 故事序：scene_plans 进来时已经按 09 场景列表的行序排好，这里只分组、不再重排。
             members = [
                 item
-                for item in sorted(grouped[chapter.chapter_plan_id], key=lambda item: (item.scene_seq, item.scene_id))
+                for item in grouped[chapter.chapter_plan_id]
                 if _effective_rendering_mode(item.scene_type, item.rendering_mode) != "skip"
             ]
             if not members:
@@ -1144,6 +1171,9 @@ class SnowflakeWorkspaceService:
             "workspace": workspace,
             "created_chapter_count": result.get("created_chapter_count", 0),
             "created_scene_count": result.get("created_scene_count", 0),
+            # 阶段 W：重新分章后变空的旧章已移入回收站 / 这一版又用到的章已从回收站取回——前端如实告诉作者
+            "trashed_empty_chapters": result.get("trashed_empty_chapters", []),
+            "restored_chapter_ids": result.get("restored_chapter_ids", []),
         }
 
     def resync_materialized_scenes(
@@ -1179,9 +1209,48 @@ class SnowflakeWorkspaceService:
         pending_moves: list[dict[str, Any]] = []
         touched_chapter_ids: set[str] = set()
         excluded = self._excluded_scene_plan_ids(project.project_id)
+        order_drift = self._scene_card_order_drift(project.project_id)
+        # 第一遍：只算补丁（不动库）。场景卡的位置 = 章 + 章内序，两样都受唯一索引
+        # (chapter_id, scene_seq) 约束；一张一张地改会撞上还没搬走的那一张，所以位置留到最后
+        # 由 _settle_scene_card_order 两阶段统一落位，补丁里不再带 scene_seq。
+        prepared: list[tuple[SnowflakeScenePlan, SceneCard | None, dict[str, Any], dict[str, Any] | None]] = []
         for plan in plans:
             scene = self.session.get(SceneCard, plan.scene_id)
             if scene is None or scene.project_id != project.project_id:
+                prepared.append((plan, None, {}, None))
+                continue
+            scene_patch = self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
+            blocked_move = self._unmaterialized_chapter_move(project.project_id, scene, scene_patch)
+            if blocked_move:
+                # 搬不动就别搬：``SceneCard.chapter_id`` 是指向 chapter_goals 的外键，
+                # 写一个目录里还不存在的章号 = FOREIGN KEY constraint failed，整次回流
+                # 500「database operation failed」，连能同步的内容改动一起赔进去。
+                # 作者重新分了章但还没「整理为章节结构」时这就是常态，不是异常。
+                scene_patch.pop("chapter_id", None)
+            prepared.append((plan, scene, scene_patch, blocked_move))
+
+        if not dry_run:
+            repositioned = {
+                str(chapter_id)
+                for _plan, scene, scene_patch, _blocked in prepared
+                if scene is not None
+                for chapter_id in (
+                    (scene.chapter_id, scene_patch.get("chapter_id"))
+                    if (
+                        (scene_patch.get("chapter_id") and scene_patch.get("chapter_id") != scene.chapter_id)
+                        or scene.scene_id in order_drift
+                        or "trashed_flag" in scene_patch
+                    )
+                    else ()
+                )
+                if chapter_id
+            }
+            settle = self._park_scene_cards(project.project_id, repositioned)
+        else:
+            settle = None
+
+        for plan, scene, scene_patch, blocked_move in prepared:
+            if scene is None:
                 results.append(
                     {
                         "scene_plan_id": plan.scene_plan_id,
@@ -1193,17 +1262,9 @@ class SnowflakeWorkspaceService:
                 )
                 continue
             source_chapter_id = str(scene.chapter_id or "")
-            scene_patch = self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
-            blocked_move = self._unmaterialized_chapter_move(project.project_id, scene, scene_patch)
-            if blocked_move:
-                # 搬不动就别搬：``SceneCard.chapter_id`` 是指向 chapter_goals 的外键，
-                # 写一个目录里还不存在的章号 = FOREIGN KEY constraint failed，整次回流
-                # 500「database operation failed」，连能同步的内容改动一起赔进去。
-                # 作者重新分了章但还没「整理为章节结构」时这就是常态，不是异常。
-                # scene_seq 跟着一起放弃：位置 = 章 + 序，只搬序会让它在**旧**章里撞号。
-                scene_patch.pop("chapter_id", None)
-                scene_patch.pop("scene_seq", None)
             diff = self._scene_card_diff(scene, scene_patch)
+            if scene.scene_id in order_drift:
+                diff["scene_order"] = order_drift[scene.scene_id]
             if diff:
                 affected_scene_ids.append(scene.scene_id)
             if not dry_run and diff:
@@ -1248,9 +1309,22 @@ class SnowflakeWorkspaceService:
                 entry["blocked_chapter_move"] = blocked_move
                 pending_moves.append({"scene_id": scene.scene_id, **blocked_move})
             results.append(entry)
-        if not dry_run and touched_chapter_ids:
+        trashed_empty_chapters: list[dict[str, Any]] = []
+        if not dry_run:
             self.session.flush()
-            self._recompute_chapter_last(project.project_id, touched_chapter_ids)
+            if settle is not None:
+                self._settle_scene_card_order(project.project_id, settle)
+            remaining = touched_chapter_ids - set((settle or {}).get("chapter_ids") or ())
+            if remaining:
+                self._recompute_chapter_last(project.project_id, remaining)
+            if settle is not None:
+                # 场景卡跨章搬完之后，雪花建的旧章如果一张卡都不剩、这一版分章也不再用它，就移入回收站
+                # （与「确认写入」同一条规则；章还被某个场景计划指着时绝不动它）。
+                trashed_empty_chapters = trash_emptied_snowflake_chapters(
+                    self.session,
+                    project.project_id,
+                    keep_chapter_ids={str(plan.chapter_id or "") for plan in self._scene_plans(project.project_id)},
+                )
 
         if not dry_run:
             self.session.flush()
@@ -1259,6 +1333,7 @@ class SnowflakeWorkspaceService:
             "dry_run": dry_run,
             "results": results,
             "affected_runtime": affected_runtime,
+            "trashed_empty_chapters": trashed_empty_chapters,
             "workspace": self.workspace(project.project_id),
         }
         if pending_moves:
@@ -1275,6 +1350,107 @@ class SnowflakeWorkspaceService:
                 "pending_moves": pending_moves,
             }
         return result
+
+    # ------------------------------------------------ 场景卡的章内顺序（回流）
+    #
+    # 目录里一章的场景卡 = 有场景计划的卡（顺序永远跟故事序走）+ 作者在章节编排里手加的卡（计划外，
+    # 原来跟在哪张卡后面就还跟在哪）。回流不再逐张写 scene_seq：那一列受唯一索引
+    # (chapter_id, scene_seq) 约束，两张卡对调、或一张卡搬进别的章，第一条 UPDATE 就会撞上还没挪走的
+    # 那一张（500「database operation failed」）。改成：先把要动的章里所有活跃卡停到高位序号，
+    # 改完内容 / 章归属之后，再按最终顺序一次落位。
+
+    def _active_cards_by_chapter(self, project_id: str, chapter_ids: set[str] | None = None) -> dict[str, list[SceneCard]]:
+        query = select(SceneCard).where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
+        if chapter_ids is not None:
+            query = query.where(SceneCard.chapter_id.in_(sorted(chapter_ids)))
+        grouped: dict[str, list[SceneCard]] = {}
+        for card in self.session.execute(query).scalars():
+            grouped.setdefault(str(card.chapter_id), []).append(card)
+        for cards in grouped.values():
+            cards.sort(key=lambda card: (int(card.scene_seq or 0), str(card.scene_id)))
+        return grouped
+
+    def _scene_card_order_drift(
+        self,
+        project_id: str,
+        scene_plans: list[SnowflakeScenePlan] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """目录里章内顺序和故事序对不上的场景卡：``scene_id → {before, after}``（都是章内第几场）。
+
+        只比有场景计划的卡彼此之间的先后——计划外的卡（作者手加的场）和被略过 / 待删的场不占位，
+        所以它们的存在不会让整章被误报成「待同步」。
+        """
+        plans = scene_plans if scene_plans is not None else self._scene_plans(project_id)
+        rank = {plan.scene_id: index for index, plan in enumerate(plans)}
+        drift: dict[str, dict[str, Any]] = {}
+        for cards in self._active_cards_by_chapter(project_id).values():
+            planned = [card for card in cards if card.scene_id in rank]
+            wanted = sorted(planned, key=lambda card: rank[card.scene_id])
+            for index, card in enumerate(planned):
+                if wanted[index] is not card:
+                    drift[card.scene_id] = {"before": index + 1, "after": wanted.index(card) + 1}
+        return drift
+
+    def _park_scene_cards(self, project_id: str, chapter_ids: set[str]) -> dict[str, Any] | None:
+        """两阶段落位的第一阶段：记下这些章此刻的顺序，把它们的活跃卡停到不会冲突的高位序号上。"""
+        if not chapter_ids:
+            return None
+        grouped = self._active_cards_by_chapter(project_id, chapter_ids)
+        cards = [card for members in grouped.values() for card in members]
+        old_order = {chapter_id: [card.scene_id for card in members] for chapter_id, members in grouped.items()}
+        old_seq = {card.scene_id: int(card.scene_seq or 1) for card in cards}
+        if cards:
+            # 停靠位要高过这些章里**所有**卡的序号——包括回收站里的：这次回流可能正要把其中一张取回来
+            # （改回「略过」/「待删」的裁定），它带着自己的旧序号变回活跃，不能和停靠位撞上。
+            highest = self.session.execute(
+                select(func.max(SceneCard.scene_seq)).where(
+                    SceneCard.project_id == project_id, SceneCard.chapter_id.in_(sorted(chapter_ids))
+                )
+            ).scalar()
+            park_base = int(highest or 0) + 1_000_000
+            for offset, card in enumerate(cards):
+                card.scene_seq = park_base + offset
+            self.session.flush()
+        return {"chapter_ids": set(chapter_ids), "old_order": old_order, "old_seq": old_seq}
+
+    def _settle_scene_card_order(self, project_id: str, parked: dict[str, Any]) -> None:
+        """第二阶段：每一章按「计划内的卡跟故事序、计划外的卡跟着它原来的前一张」重新编号。"""
+        rank = {plan.scene_id: index for index, plan in enumerate(self._scene_plans(project_id))}
+        # 计划外的卡原来前面依次是哪些计划内的卡（近的在前）：最近的那张若搬去了别的章，就跟再前面那张
+        preceding_of: dict[str, list[str]] = {}
+        for members in (parked.get("old_order") or {}).values():
+            seen: list[str] = []
+            for scene_id in members:
+                if scene_id in rank:
+                    seen.insert(0, scene_id)
+                else:
+                    preceding_of[scene_id] = list(seen)
+        grouped = self._active_cards_by_chapter(project_id, set(parked["chapter_ids"]))
+        for members in grouped.values():
+            planned = sorted((card for card in members if card.scene_id in rank), key=lambda card: rank[card.scene_id])
+            staying = {card.scene_id for card in planned}
+            trailing: dict[str | None, list[SceneCard]] = {}
+            for card in members:
+                if card.scene_id in rank:
+                    continue
+                anchor = next((item for item in preceding_of.get(card.scene_id, []) if item in staying), None)
+                trailing.setdefault(anchor, []).append(card)
+            ordered = list(trailing.get(None, []))
+            for card in planned:
+                ordered.append(card)
+                ordered.extend(trailing.get(card.scene_id, []))
+            for index, card in enumerate(ordered, start=1):
+                card.scene_seq = index
+                card.is_chapter_last = 1 if index == len(ordered) else 0
+        # 这次回流送进回收站的卡：把停靠前的序号还给它（回收站里的卡不受唯一索引约束）——
+        # 作者从回收站手动恢复时，目录按这个序号把它插回原来的位置。
+        old_seq = parked.get("old_seq") or {}
+        if old_seq:
+            for card in self.session.execute(
+                select(SceneCard).where(SceneCard.scene_id.in_(sorted(old_seq)), SceneCard.trashed_flag == 1)
+            ).scalars():
+                card.scene_seq = old_seq[card.scene_id]
+        self.session.flush()
 
     def _unmaterialized_chapter_move(
         self,
@@ -1514,16 +1690,20 @@ class SnowflakeWorkspaceService:
         ).scalars().first()
 
     def _scene_plans(self, project_id: str) -> list[SnowflakeScenePlan]:
-        """活跃场景计划。软删的场（P1-3）在这里就被挡掉——工作台、诊断、闸门、
-        回流状态和物化输入全部经过这一个入口，所以幽灵场不会再从任何一处冒出来。"""
-        return self.session.execute(
-            select(SnowflakeScenePlan)
-            .where(
+        """活跃场景计划，按**故事序**（09 场景列表的行序，见 ``snowflake_scene_order``）。
+
+        软删的场（P1-3）在这里就被挡掉——工作台、诊断、闸门、回流状态和物化输入全部经过这一个
+        入口，所以幽灵场不会再从任何一处冒出来。顺序同理只有这一个口径：09 / 10 两步交给前端的
+        草稿就是按它排的，曾经的 ``(chapter_id, scene_seq)`` 在分章之后会把场景表按章重新洗一遍，
+        新浏览器水合到的 09 于是不是作者排的那张表，下一次保存再把乱序写回去。
+        """
+        rows = self.session.execute(
+            select(SnowflakeScenePlan).where(
                 SnowflakeScenePlan.project_id == project_id,
                 SnowflakeScenePlan.removed_at.is_(None),
             )
-            .order_by(SnowflakeScenePlan.chapter_id.asc(), SnowflakeScenePlan.scene_seq.asc(), SnowflakeScenePlan.scene_id.asc())
         ).scalars().all()
+        return sort_in_story_order(self.session, project_id, rows)
 
     def _scene_board(self, project_id: str, *, scene_plans: list[SnowflakeScenePlan] | None = None) -> dict[str, Any]:
         scenes = [_scene_plan_payload(scene) for scene in (scene_plans if scene_plans is not None else self._scene_plans(project_id))]
@@ -1545,6 +1725,7 @@ class SnowflakeWorkspaceService:
     def _resync_status(self, project_id: str, scene_plans: list[SnowflakeScenePlan]) -> dict[str, Any]:
         pending: list[dict[str, Any]] = []
         excluded = self._excluded_scene_plan_ids(project_id)
+        order_drift = self._scene_card_order_drift(project_id, scene_plans)
         for plan in scene_plans:
             scene = self.session.get(SceneCard, plan.scene_id)
             if scene is None or scene.project_id != project_id:
@@ -1552,6 +1733,8 @@ class SnowflakeWorkspaceService:
             diff = self._scene_card_diff(
                 scene, self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
             )
+            if scene.scene_id in order_drift:
+                diff["scene_order"] = order_drift[scene.scene_id]
             if not diff:
                 continue
             pending.append(
@@ -1643,8 +1826,9 @@ class SnowflakeWorkspaceService:
             "hook": plan.hook or scene.hook,
             "target_length_band": target_length_band,
             # P2：重新分章后，回流要把场景卡也搬到新章去，否则目录停留在上一版结构。
+            # 章内顺序不在补丁里：它由 _settle_scene_card_order 按故事序两阶段落位，
+            # 待同步判定走 _scene_card_order_drift（只比计划内的卡彼此的先后）。
             "chapter_id": plan.chapter_id or scene.chapter_id,
-            "scene_seq": plan.scene_seq or scene.scene_seq,
             "scene_type": plan.scene_type or scene.scene_type,
             "pov_character_id": plan.pov_character_id or scene.pov_character_id,
             "onstage_chars_json": list(plan.onstage_chars_json or scene.onstage_chars_json or []),
@@ -2439,8 +2623,10 @@ class SnowflakeWorkspaceService:
                 chapter_id = plan.chapter_id or input_chapter_id
             current_chapter_id = chapter_id
 
-            next_seq = seq_by_chapter.get(chapter_id, 0) + 1
-            scene_seq = _coerce_int(item.get("scene_seq"), next_seq)
+            # scene_seq = 这一场在它所在章里的位置，按草稿行序逐章计数；草稿行自带的 scene_seq 不再采信——
+            # 前端 09 发的是全书序 i + 1，模型给的什么都有，混进来会让同一列有两种语义
+            # （循环结束后 renumber_scene_seq 还会按故事序对**全部**活跃场统一重算一遍）。
+            scene_seq = seq_by_chapter.get(chapter_id, 0) + 1
             seq_by_chapter[chapter_id] = scene_seq
 
             if created:
@@ -2507,6 +2693,15 @@ class SnowflakeWorkspaceService:
 
         if step_key == "scene_list" and touched_row_uids:
             self._reconcile_removed_scene_plans(project_id, touched_row_uids)
+
+        # 章内序统一重算（scene_seq 的唯一写入方）。故事序的来源：09 同步用**这一份**草稿的行序；
+        # 第 10 步的草稿可能只带回一部分场（分批生成 / 单场补全），不能拿它当全书顺序——读最新 09 草稿。
+        self.session.flush()
+        renumber_scene_seq(
+            self.session,
+            project_id,
+            positions=positions_from_rows(scenes) if step_key == "scene_list" else None,
+        )
 
         if minted and isinstance(run.draft_json, dict):
             run.draft_json = {**run.draft_json, "scenes": scenes}
@@ -2980,6 +3175,34 @@ class SnowflakeWorkspaceService:
 
 # 阶段 U：「先看 3 个方向」没带作者要求时，回合里的「我」这一行写这句
 CANDIDATES_DEFAULT_ASK = "给我 3 个不同方向"
+
+# 抹空保护：一步草稿里不算「故事文字」的键——身份、枚举与排序，空白默认稿也会带着它们（如角色步的 role=主角）
+_NON_STORY_KEYS = frozenset({
+    "character_id", "row_uid", "scene_id", "scene_plan_id", "chapter_id", "role", "primary_form", "scene_type",
+    "rendering_mode", "target_length_band", "act", "chapter_seq", "scene_seq", "spine", "status", "version",
+    "pov_character_id", "protagonist_character_id", "onstage_chars_json",
+})
+_WIPE_GUARD_MIN_CHARS = 8  # 两三个字的试笔被清空不值得多留一版
+
+
+def _story_text_chars(value: Any, key: str | None = None) -> int:
+    if key is not None and (key in _NON_STORY_KEYS or str(key).startswith("fe_")):
+        return 0
+    if isinstance(value, str):
+        return len(value.strip())
+    if isinstance(value, list):
+        return sum(_story_text_chars(item) for item in value)
+    if isinstance(value, dict):
+        return sum(_story_text_chars(item, str(name)) for name, item in value.items())
+    return 0
+
+
+def _would_wipe_story(previous: Any, incoming: Any) -> bool:
+    """整步抹空：旧稿有成段的故事文字，新稿一个字都没有（只剩身份 / 枚举 / fe_* 写穿键）。"""
+    return (
+        _story_text_chars(semantic_payload(previous if isinstance(previous, dict) else {})) >= _WIPE_GUARD_MIN_CHARS
+        and _story_text_chars(semantic_payload(incoming if isinstance(incoming, dict) else {})) == 0
+    )
 
 _PROTAGONIST_EXCLUDE_ZH = ("对手", "反派", "对立", "配角", "敌")
 _PROTAGONIST_TOKENS_EN = ("protagonist", "main character", "heroine", "hero", "lead")

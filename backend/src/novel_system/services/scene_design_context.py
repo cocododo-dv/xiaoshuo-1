@@ -37,6 +37,7 @@ from novel_system.db.models import (
     StoryCharacter,
 )
 from novel_system.services.context_budget import compress_design_context
+from novel_system.services.snowflake_scene_order import sort_in_story_order
 from novel_system.services.snowflake_triage import latest_triage_plan_ids
 from novel_system.settings import get_settings
 
@@ -218,24 +219,9 @@ def _ordered_plans(session: Session, project_id: str) -> list[SnowflakeScenePlan
     # 「该重写」的场仍是设计里的一场（等着重建），照旧当邻居。
     cut_ids = latest_triage_plan_ids(session, project_id, frozenset({"cut"}))
     plans = [plan for plan in plans if plan.scene_plan_id not in cut_ids]
-    chapter_seq: dict[str, int] = {
-        row.chapter_plan_id: int(row.chapter_seq or 0)
-        for row in session.execute(
-            select(SnowflakeChapterPlan).where(
-                SnowflakeChapterPlan.project_id == project_id,
-                SnowflakeChapterPlan.removed_at.is_(None),
-            )
-        ).scalars().all()
-    }
-    return sorted(
-        plans,
-        key=lambda item: (
-            chapter_seq.get(item.chapter_plan_id or "", 0),
-            _text(item.chapter_id),
-            int(item.scene_seq or 0),
-            _text(item.scene_id),
-        ),
-    )
+    # 上一场 / 下一场按**故事序**（09 场景列表的行序）——和分章、物化、回流同一个口径。
+    # 曾按（章序，章内 scene_seq）排：scene_seq 有过两种语义，分章之后两章的场会被交错成邻居。
+    return sort_in_story_order(session, project_id, plans)
 
 
 def _character_names(session: Session, project_id: str) -> dict[str, str]:

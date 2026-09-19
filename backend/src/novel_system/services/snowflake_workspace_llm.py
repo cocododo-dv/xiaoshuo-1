@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
@@ -777,6 +778,37 @@ class SnowflakeWorkspaceLLMService:
             ),
         )
 
+    def chapter_title_suggestions(
+        self,
+        *,
+        project: dict[str, Any],
+        book: dict[str, Any],
+        chapters: list[dict[str, Any]],
+        named_chapters: list[dict[str, Any]],
+    ) -> WorkspaceLLMResult:
+        """AI 起章名（阶段 W，顾问通道）：给 ``chapters`` 里每一章一个章名和一句章摘要。
+
+        和分章建议一样 **fail-closed**（不给 ``fallback_payload``）：作者点的是「AI 起章名」，模型没配好
+        就如实报 409，不拿规则拼出来的名字冒充。走 ``snowflake_chapter_plan`` 节点的路由——同一个面板、
+        同一类顾问调用；另立节点的话，已保存模型快照的安装还得先点一次「一键补齐」才用得上。
+        """
+        prompt_payload = {
+            "project": project,
+            "book": book,
+            "named_chapters": named_chapters,
+            "chapters": chapters,
+        }
+        allowed_row_uids = {str(item.get("row_uid") or "") for item in chapters}
+        taken_titles = {str(item.get("title") or "").strip() for item in named_chapters}
+        return self._run_structured_task(
+            task_key="snowflake_chapter_plan",
+            template_name="snowflake_chapter_titles_suggest",
+            project_id=str(project.get("project_id") or ""),
+            step_ref="long_synopsis",
+            prompt_payload=prompt_payload,
+            normalize_output=lambda output: _normalize_chapter_titles_output(output, allowed_row_uids, taken_titles),
+        )
+
     def _run_structured_task(
         self,
         *,
@@ -1484,6 +1516,11 @@ def enrich_structured_schema(
             derived_items = derived.get("items") if isinstance(derived, dict) else None
             if isinstance(derived_items, dict) and isinstance(derived_items.get("properties"), dict):
                 items["properties"] = deepcopy(derived_items["properties"])
+                if step_key == "scene_list" and key == "scenes":
+                    # spine 故意不在 09 的编辑器模板里（见 _apply_scene_list_spine），于是从模板派生的
+                    # properties 里也没有它——按 schema 约束解码的后端因此**写不出**提示词点名要的
+                    # 灾一 / 灾二 / 灾三，三个灾难只能挤进 chapter_role 的自由文本。wire schema 单独补上。
+                    items["properties"]["spine"] = {"type": "string"}
                 # 标签用审计能原样保留的标识符形（字母 / 下划线），"characters[]" 一类会被指纹化
                 applied.append(f"{key}_items")
         item_properties = items.get("properties")
@@ -1940,6 +1977,65 @@ def _normalize_chapter_plan_output(
         "rationale": rationale,
         "missing_scene_plan_ids": sorted(allowed_scene_ids - seen),
     }
+
+
+#: 章名的硬上限（字符）。提示词要的是 2–10 个字；超过这个数的不是章名，是一句话。
+CHAPTER_TITLE_MAX_CHARS = 24
+CHAPTER_SUMMARY_MAX_CHARS = 120
+_TITLE_WRAPPERS = "《》〈〉「」『』“”\"'‘’【】[]（）()"
+_TITLE_NUMBER_PREFIX = re.compile(
+    r"^\s*(?:第\s*[0-9０-９一二三四五六七八九十百千零〇两]+\s*[章回节幕卷]|chapter\s*[0-9ivxlc]+)\s*[:：·\-—.、\s]*",
+    re.IGNORECASE,
+)
+_GENERIC_TITLES = frozenset({"序幕", "开端", "发展", "高潮", "转折", "结局", "风波", "真相", "危机", "尾声", "开始", "结束"})
+
+
+def clean_chapter_title(value: Any) -> str:
+    """模型给的章名 → 可以直接落进章表的章名；不合格返回空串（那一章就留着等作者起名）。
+
+    去掉包裹的引号 / 书名号、模型自己加的「第三章：」前缀（章号由系统编）、句末标点；
+    空的、超长的（一句话不是章名）、光秃秃的结构标签（高潮 / 结局…）一律不要。
+    """
+    title = str(value or "").strip()
+    title = _TITLE_NUMBER_PREFIX.sub("", title).strip()
+    while title and title[0] in _TITLE_WRAPPERS:
+        title = title[1:].strip()
+    while title and title[-1] in _TITLE_WRAPPERS + "。．.！!？?，,；;：:、":
+        title = title[:-1].strip()
+    if not title or len(title) > CHAPTER_TITLE_MAX_CHARS or title in _GENERIC_TITLES:
+        return ""
+    return title
+
+
+def _normalize_chapter_titles_output(
+    output: dict[str, Any],
+    allowed_row_uids: set[str],
+    taken_titles: set[str],
+) -> dict[str, Any]:
+    """把模型起的章名约束回一份可以安全展示的提案（违约的条目过滤掉，不报错——建议允许不完美）。
+
+    - 只认白名单里的 ``row_uid``，一章只认第一次出现；
+    - 章名过 ``clean_chapter_title``；与已有章名、与本批前面的章名重复的不要（全书章名互不相同）；
+    - 章摘要截到上限；章名不合格时整条不要（只有摘要的条目没有意义）。
+    """
+    raw = output.get("titles") if isinstance(output, dict) else None
+    titles: list[dict[str, str]] = []
+    seen_uids: set[str] = set()
+    used = {title for title in taken_titles if title}
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        row_uid = str(item.get("row_uid") or "").strip()
+        if row_uid not in allowed_row_uids or row_uid in seen_uids:
+            continue
+        title = clean_chapter_title(item.get("title"))
+        if not title or title in used:
+            continue
+        seen_uids.add(row_uid)
+        used.add(title)
+        summary = " ".join(str(item.get("summary") or "").split())[:CHAPTER_SUMMARY_MAX_CHARS]
+        titles.append({"row_uid": row_uid, "title": title, "summary": summary})
+    return {"titles": titles, "missing_row_uids": sorted(allowed_row_uids - seen_uids)}
 
 
 _SPINE_MARKS = ("灾一", "灾二", "灾三")

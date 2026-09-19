@@ -119,7 +119,10 @@ def test_collection_item_schemas_list_the_canonical_keys() -> None:
             if field["key"] == field_key
         )
         item_schema = enriched["properties"][field_key]["items"]
-        assert set(item_schema["properties"]) == set(editor_template)
+        # 09 多一个 spine：它故意不在编辑器模板里（模型没回时不能落一个空串把作者的标记抹掉），
+        # 但提示词点名要模型标灾一 / 灾二 / 灾三——wire schema 里没有它，按 schema 解码的后端就写不出来。
+        extra = {"spine"} if step_key == "scene_list" else set()
+        assert set(item_schema["properties"]) == set(editor_template) | extra
         # yaml 原有的 additionalProperties 原样保留；不加 required（留白规则允许成员省略字段）
         assert item_schema["additionalProperties"] is True
         assert "required" not in item_schema
@@ -180,6 +183,7 @@ def test_every_snowflake_template_reaches_the_wire_without_property_less_objects
     step_by_template["snowflake_workspace_assistant"] = "character_sheets"
     step_by_template["snowflake_scene_triage_suggest"] = "scene_details"
     step_by_template["snowflake_chapter_plan_suggest"] = None
+    step_by_template["snowflake_chapter_titles_suggest"] = None
     step_by_template["snowflake_step_candidates"] = None
 
     def open_objects(node, path=""):
@@ -329,7 +333,14 @@ def test_snowflake_step_generate_output_budget_matches_models_yaml() -> None:
     )
 
 
-@pytest.mark.parametrize("template_name", ["snowflake_chapter_plan_suggest"])
-def test_step_less_templates_carry_their_properties_in_yaml(template_name: str) -> None:
+@pytest.mark.parametrize(
+    ("template_name", "collection", "keys"),
+    [
+        ("snowflake_chapter_plan_suggest", "assignments", {"scene_plan_id", "chapter_row_uid"}),
+        # 阶段 W：AI 起章名——同样没有步骤模板可依，成员键写在 yaml 里
+        ("snowflake_chapter_titles_suggest", "titles", {"row_uid", "title", "summary"}),
+    ],
+)
+def test_step_less_templates_carry_their_properties_in_yaml(template_name: str, collection: str, keys: set[str]) -> None:
     schema = load_prompt_templates()[template_name].structured_schema
-    assert set(schema["properties"]["assignments"]["items"]["properties"]) == {"scene_plan_id", "chapter_row_uid"}
+    assert set(schema["properties"][collection]["items"]["properties"]) == keys

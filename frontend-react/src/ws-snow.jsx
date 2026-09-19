@@ -335,18 +335,18 @@ const S2_STEP_DATA = {
     target: 600,
     scaffold: { type: "chapters" },
     guide: {
-      task: "第三次分形展开：一页梗概的每一段再长成一页，得到四五页的章节大纲。这是最接近实际写作的规划阶段。",
+      task: "第三次分形展开：一页梗概的每一段再长成一页，得到四五页的长篇梗概。这是最接近实际写作的规划阶段。",
       writing: [
         { k: "一段变一页", v: "05 的每一段 → 这里的一页：加入具体场景设定、角色行动与反应、关键对话要点、情感变化节点" },
         { k: "灾难定位", v: "三个灾难必须落在幕与幕的交界——它们是结构的铰链" },
-        { k: "每章推局面", v: "章末的局面必须和章头不同。原地打转的章节要砍" },
+        { k: "章表可以后补", v: "章是列完场之后的包装决定：章节表可以先空着，09 场景列好后「整理为章节结构」按场景分章，确认的章表会回填到这里" },
       ],
       checklist: [
-        "每一章都推动了局面，没有原地打转。",
-        "三个灾难在大纲里有明确位置。",
-        "章节数量和目标篇幅匹配。",
+        "五段都扩成了约一页，每一段都比 05 的源段多出画面与行动。",
+        "三个灾难在展开里有明确位置。",
+        "写了章节表的话：每一章都推动了局面，没有原地打转（章表也可以留空）。",
       ],
-      note: "大纲是场景列表的上游：章定不了，场就拆不开。先把骨架立住。",
+      note: "五段展开是场景列表的上游：09 的每一场都要能追溯到这里的一段。章怎么分，等场列出来再定。",
     },
   },
   profile: {
@@ -714,8 +714,15 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const onChapterPlanDone = (result) => {
     setChapterPlanOpen(false);
     const chapters = (result && result.created_chapter_count) || 0;
+    const trashed = ((result && result.trashed_empty_chapters) || []).length;
+    const restored = ((result && result.restored_chapter_ids) || []).length;
+    const extras = [
+      trashed ? `${trashed} 个变空的旧章已移入回收站` : "",
+      restored ? `${restored} 章从回收站取回` : "",
+    ].filter(Boolean).join(" · ");
     showToast(
-      chapters ? `已整理并写入 ${chapters} 章 · 可到章节编排复核` : "章节目录已是最新 · 未重复写入同名章节",
+      (chapters ? `已整理并写入 ${chapters} 章 · 可到章节编排复核` : "章节结构已按这一版更新 · 可到章节编排复核")
+        + (extras ? ` · ${extras}` : ""),
       "sage",
     );
   };
@@ -2354,7 +2361,7 @@ function S2SynopsisBeats({ scaffold, onScaffold, refs }) {
   );
 }
 
-/* ---- 07 长篇大纲：三幕 · 章节表（对应后端 ChapterGoal；章定不了，场就拆不开）---- */
+/* ---- 07 长篇大纲：五段展开 + 三幕章节表（章表可留空——章是列完场之后的包装决定，阶段 K / V）---- */
 const S2_ACTS = [
   { act: 1, label: "第一幕", desc: "铺垫 → 灾难一", tone: "slate" },
   { act: 2, label: "第二幕", desc: "灾难二（中点翻转）", tone: "gold" },
@@ -2375,13 +2382,16 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
     return { ...s, chapters: [...s.chapters, { id: nid, act, title: "（待补）", summary: "", spine: "" }] };
   });
   const spineHits = chapters.filter(c => c.spine).length;
-  const placeholders = chapters.filter(c => !c.summary.trim() || c.title.includes("待补")).length;
+  /* 占位章 = 「添加章节」点出来、还什么都没写的行（章名空或「（待补）」，摘要 / 章目标 / 脊柱全空）。
+     与后端 is_placeholder_chapter 同一口径：整张表都是占位时，分章面板当它不存在、直接按场景分章。 */
+  const isPlaceholder = (c) => (!(c.title || "").trim() || (c.title || "").includes("待补"))
+    && !(c.summary || "").trim() && !(c.goal || "").trim() && !(c.spine || "").trim();
+  const placeholders = chapters.filter(isPlaceholder).length;
   /* 采用到章节编排 = 打开同一个分章预览面板（P2 路径合一）。
      以前这里和顶部按钮共用 s2AdoptOutline，但那条契约按闸门状态在三种落库路径之间
      分叉，结果同一个动作在不同状态下产出完全不同的章节结构。现在两个入口一条路。 */
   const [adopted, setAdopted] = useSS(null);
   const [planOpen, setPlanOpen] = useSS(false);
-  const adoptable = chapters.filter(c => (c.title || "").trim() && !c.title.includes("待补"));
   const adopt = () => setPlanOpen(true);
   /* 并入成功后的第二动线：把已规划好的 todo 场批量送进 AI 起草台（入列后跳转） */
   const goDraft = async () => {
@@ -2413,7 +2423,7 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
       )}
       <div className="sf-scaffold-note">
         <I.Layers size={14} />
-        <span>第三次展开：先把 05 的每一段扩成<b>约一页</b>（五段展开），再落成<b>三幕章节表</b>。三个灾难必须落在幕与幕的交界——它们是结构的铰链。</span>
+        <span>第三次展开：把 05 的每一段扩成<b>约一页</b>（五段展开）。下面的<b>章节表可以先空着</b>——章是列完场之后的包装决定：09 场景列好后点「整理为章节结构」按场景分章（三个灾难各自收束一章），确认的章表会回填到这里；想先自己定章也可以在这里写。</span>
       </div>
       <div className="sf-outline-expand" data-testid="snow-outline-expansions">
         <div className="sf-syn-prog">
@@ -2452,11 +2462,15 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
       <div className="sf-scene-stats">
         <span className="sf-sstat"><b>{chapters.length}</b> 章</span>
         <span className="sf-sstat tone-gold"><b>{spineHits}</b> 脊柱落点</span>
-        <span className={`sf-sstat ${placeholders ? "tone-rose" : "tone-sage"}`}>{placeholders ? <><I.AlertTriangle size={11} /> {placeholders} 章占位待补</> : <><I.Check size={11} /> 骨架已立</>}</span>
+        {chapters.length ? (
+          <span className={`sf-sstat ${placeholders ? "tone-gold" : "tone-sage"}`}>{placeholders ? <><I.AlertTriangle size={11} /> {placeholders} 章还是占位（分章时不算数，可删）</> : <><I.Check size={11} /> 章表已写</>}</span>
+        ) : (
+          <span className="sf-sstat">章表空着 · 列完场再分章</span>
+        )}
         <span style={{ flex: 1 }} />
         {adopted == null ? (
-          <button className="btn btn-quiet btn-sm" data-testid="snow-materialize" onClick={adopt} disabled={!adoptable.length} title="把这份大纲落进章节编排 / 写作目录，不用再手工重建">
-            <I.Layout size={13} /> 采用到章节编排
+          <button className="btn btn-quiet btn-sm" data-testid="snow-materialize" onClick={adopt} title="打开分章预览：章表空着就按 09 的场景分章，写了章表就把场倒进你的章；确认后写入章节编排 / 写作目录">
+            <I.Layout size={13} /> 整理为章节结构
           </button>
         ) : (
           <>

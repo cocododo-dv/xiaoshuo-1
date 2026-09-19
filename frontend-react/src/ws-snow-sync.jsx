@@ -17,6 +17,11 @@ import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow.jsx";
      服务端则本地为准（未上行的编辑不被覆盖）。
    - 失效真相在后端（E3 第二步已移除本地 revs/confirmRevs 图）；history（过程
      快照日志）留本地（体积大、跨会话价值低，账本记录）。
+   - 水合闸门（2026-09-18）：本会话没成功读到过服务端工作台之前绝不上行；从没动过的
+     空白步不是作者的编辑——水合时让位给服务端内容，上行时从不拿去覆盖服务端。
+     起因：新浏览器 / 清过缓存的会话里，视图挂载 450ms 后就把空白默认稿落盘并排队上行；
+     水合失败（或只是比它慢）时，这份空白稿会 force 覆盖十步——后端对 pending_review
+     步是原位改写，未确认的草稿没有历史可回。
    ========================================================== */
 
 // G5：FE→BE 步骤键映射统一以 ws-snow 的 S2_BE_STEPS 为正源（避免双份漂移）
@@ -361,10 +366,42 @@ function stepSig(fragment) {
   return JSON.stringify(sigPart);
 }
 
+/* ---------- 空白步判定（水合闸门用） ----------
+   「从没动过的空白步」= 没有自由草稿、状态还是待写 / 进行中、脚手架里的非空叶子都是空白默认稿自带的
+   （如角色步的 sel=c1 / role=主角）。它不是作者的编辑：水合时让位给服务端内容，上行时不拿去覆盖服务端。
+   作者同步过之后再亲手清空的步骤不在此列——那一步在 lastPushed 里有账，照常上行。 */
+let blankLeafSets = null;
+function nonEmptyLeaves(value, path, out) {
+  if (typeof value === "string") { if (value.trim()) out.push(`${path}=${value.trim()}`); }
+  else if (typeof value === "number" || typeof value === "boolean") out.push(`${path}=${value}`);
+  else if (Array.isArray(value)) value.forEach((item, i) => nonEmptyLeaves(item, `${path}.${i}`, out));
+  else if (value && typeof value === "object") Object.keys(value).forEach(k => nonEmptyLeaves(value[k], `${path}.${k}`, out));
+  return out;
+}
+function blankLeavesFor(feKey) {
+  if (!blankLeafSets) {
+    const blank = s2NormalizeState({});
+    blankLeafSets = Object.fromEntries(SNOW_STEPS.map(([fe]) => [fe, new Set(nonEmptyLeaves((blank.scaffolds || {})[fe], "", []))]));
+  }
+  return blankLeafSets[feKey] || new Set();
+}
+function stepIsPristine(feKey, cache) {
+  const c = cache || {};
+  if (txt((c.drafts || {})[feKey])) return false;
+  const st = (c.states || {})[feKey];
+  if (st && st !== "todo" && st !== "active") return false;
+  const blank = blankLeavesFor(feKey);
+  return nonEmptyLeaves((c.scaffolds || {})[feKey], "", []).every(leaf => blank.has(leaf));
+}
+
 /* ---------- 水合 ---------- */
 const snowHydratedOnce = {};
 const snowReadyFlags = {};
 const snowUnsupported = {};
+/* 水合闸门：workId -> true = 本会话至少成功读到过一次服务端工作台（含「服务端还没有构思数据」）。
+   没读到过就不知道本机缓存相对服务端是新是旧，此时上行等于盲写。并发的水合请求合并成一条链。 */
+const snowHydrateOk = {};
+const snowHydrateInflight = {};
 /* 后端 per-step 权威健康（score/status/gaps/completeness）：只读后端真相，
    与前端写穿缓存分开存（避免被本地 save 覆盖）。hydrate 时全量捕获，
    每次 update_step 的 PATCH 响应里带最新 step.health → 增量更新。 */
@@ -532,11 +569,29 @@ function captureChapterStatus(workId, ws) {
   try { window.dispatchEvent(new CustomEvent("ws:snow-chapter-plan", { detail: workId })); } catch (e) {}
 }
 
-async function snowHydrate(workId, opts) {
+/* 水合入口：去重（每个作品自动水合一次，force 强制重拉）+ 串行（同一作品的水合排成一条链，
+   调用方 await 到的是「这次水合做完」）。返回 true = 成功读到了服务端工作台。永不 reject。 */
+function snowHydrate(workId, opts) {
   const force = !!(opts && opts.force);
-  if (!workId || snowUnsupported[workId]) return;
-  if (!force && snowHydratedOnce[workId]) return;
+  if (!workId || snowUnsupported[workId]) return Promise.resolve(false);
+  if (!force && snowHydratedOnce[workId]) return snowHydrateInflight[workId] || Promise.resolve(!!snowHydrateOk[workId]);
   snowHydratedOnce[workId] = true;
+  const prior = snowHydrateInflight[workId];
+  const run = (prior ? prior.catch(() => false) : Promise.resolve()).then(() => snowHydrateRun(workId)).catch(() => false);
+  const tracked = run.finally(() => { if (snowHydrateInflight[workId] === tracked) delete snowHydrateInflight[workId]; });
+  snowHydrateInflight[workId] = tracked;
+  return tracked;
+}
+/* 上行前确认本会话读到过服务端：有在途的水合就等它，仍没读到再强制补一次。 */
+async function ensureHydrated(workId) {
+  if (snowHydrateOk[workId]) return true;
+  if (snowUnsupported[workId]) return false;
+  if (snowHydrateInflight[workId]) await snowHydrateInflight[workId];
+  if (!snowHydrateOk[workId] && !snowUnsupported[workId]) await snowHydrate(workId, { force: true });
+  return !!snowHydrateOk[workId];
+}
+
+async function snowHydrateRun(workId) {
   let ws = null;
   try {
     ws = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
@@ -546,8 +601,9 @@ async function snowHydrate(workId, opts) {
     if (!(e && (e.status === 409 || e.status === 404))) {
       setSnowSyncState(workId, { phase: "error", error: snowErrorShape(e, "无法读取服务器构思版本", "hydrate"), pendingSteps: [] });
     }
-    return;
+    return false;
   }
+  snowHydrateOk[workId] = true;
   const priorSyncState = readSnowSyncState(workId);
   if (priorSyncState.phase === "idle" || (priorSyncState.phase === "error" && priorSyncState.error && priorSyncState.error.scope === "hydrate")) {
     setSnowSyncState(workId, { phase: "synced", error: null, lastSyncedAt: Date.now() });
@@ -592,7 +648,7 @@ async function snowHydrate(workId, opts) {
   });
   snowHealth[workId] = health;
   try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId })); } catch (e) {}
-  if (!any) return; // 服务端还没有构思数据：保留本地（含种子门控默认）
+  if (!any) return true; // 服务端还没有构思数据：保留本地（含种子门控默认）
   // BUG-2 防回退：用后端真相预填 lastPushed（去重账本），使随后第一个 autosave 不再把这些未改动的步骤
   // 全量 re-push。否则新会话 lastPushed 为空 → snowPushKey 全量上行：后端 update_step 对非 pending_review
   // 步走 else 分支新建 pending_review 版本，把「已确认」步静默打回待审，并产生无谓写/approve 噪声。
@@ -622,15 +678,39 @@ async function snowHydrate(workId, opts) {
   let local = null;
   try { local = JSON.parse(localStorage.getItem(key)); } catch (e) {}
   if (local && (local._t || 0) >= remote._t) {
+    /* 本地不旧于服务端：本地为准——但只对作者真的动过的步骤成立。视图挂载 450ms 后就会把空白默认稿
+       落盘（_t = 此刻，必然比服务端新），水合只要比它慢一点，「本地为准」就会让一份从没水合过的空白稿
+       赢过服务端，随后的上行再把空白写回去。所以：本地从没动过的空白步，服务端有内容就接服务端的。 */
+    const rescuable = (cache) => SNOW_STEPS.map(([feKey]) => feKey)
+      .filter(feKey => stepIsPristine(feKey, cache) && !stepIsPristine(feKey, remote));
+    if (rescuable(local).length) {
+      // 先让仍挂载的视图把此刻的内存态落盘（同步事件）：胜负已定，重读不改变判定，只避免接回时吃掉最后几百毫秒的键入
+      try { window.dispatchEvent(new CustomEvent("ws:snow-flush-local", { detail: { workId } })); } catch (e) {}
+      try { local = JSON.parse(localStorage.getItem(key)) || local; } catch (e) {}
+      const rescued = rescuable(local);
+      if (rescued.length) {
+        const merged = { ...local, drafts: { ...(local.drafts || {}) }, scaffolds: { ...(local.scaffolds || {}) },
+          checks: { ...(local.checks || {}) }, states: { ...(local.states || {}) } };
+        rescued.forEach(feKey => {
+          ["drafts", "scaffolds", "checks", "states"].forEach(part => {
+            if (remote[part] && remote[part][feKey] !== undefined) merged[part][feKey] = remote[part][feKey];
+          });
+        });
+        if (!Array.isArray(local.history) || !local.history.length) { if (Array.isArray(remote.history)) merged.history = remote.history; }
+        try { localStorage.setItem(key, JSON.stringify(merged)); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: workId })); } catch (e) {}
+      }
+    }
     // 水合本身就发现“本机已确认、服务端仍待审”时主动补批，不再依赖视图恰好
     // 触发一次 autosave 或作者手点重试。尤其是十步草稿预先导入的场景，若只补第 1 步，
     // UI 会误报“服务器已同步”，真正的物化闸门却仍卡在第 2 步。
     if (approvalRetryNeeded) schedulePush(key);
-    return; // 本地不旧于服务端：本地为准
+    return true; // 本地不旧于服务端：作者动过的步骤以本地为准
   }
   try { localStorage.setItem(key, JSON.stringify(remote)); } catch (e) {}
   try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: workId })); } catch (e) {}
   if (approvalRetryNeeded) schedulePush(key);
+  return true;
 }
 
 /* ---------- 上行 ---------- */
@@ -647,8 +727,25 @@ async function snowPushKey(cacheKey) {
     setSnowSyncState(workId, { phase: "error", error: snowErrorShape(e, "无法读取本机构思缓存", "local") });
   }
   if (!saved) return readSnowSyncState(workId);
+  /* 水合闸门：本会话还没成功读到过服务端工作台，就不知道这份本机缓存相对服务端是新是旧——此时上行是盲写，
+     新浏览器里那份从没水合过的空白默认稿会 force 覆盖十步。先等 / 补一次水合；仍读不到就停在「仅本机」，
+     本机版本原样保留，等作者点重试（重试还是先走这道闸）。 */
+  if (!(await ensureHydrated(workId))) {
+    if (snowUnsupported[workId]) return readSnowSyncState(workId);
+    const prior = readSnowSyncState(workId);
+    setSnowSyncState(workId, {
+      phase: "error", pendingSteps: SNOW_STEPS.map(([feKey]) => feKey).filter(feKey => !stepIsPristine(feKey, saved)),
+      error: { ...snowErrorShape((prior.error && prior.error.scope === "hydrate") ? prior.error : null, "读不到服务器上的构思版本", "hydrate"),
+        message: "读不到服务器上的构思版本，已暂停上行以免覆盖服务器内容；本机版本已保留" },
+    });
+    return readSnowSyncState(workId);
+  }
+  // 水合可能刚改写过本机缓存（服务端较新 / 空白步接回了服务端内容）——按最新的缓存算差异
+  try { saved = JSON.parse(localStorage.getItem(cacheKey)) || saved; } catch (e) {}
   const mine = lastPushed[workId] || (lastPushed[workId] = {});
   const work = SNOW_STEPS.filter(([feKey]) => {
+    // 从没同步过、也从没动过的空白步：没有可保存的东西，更不能拿去覆盖服务端（水合没认出内容的步骤也靠这条兜底）
+    if (!mine[feKey] && stepIsPristine(feKey, saved)) return false;
     const fragment = buildStepFragment(feKey, saved, workId);
     const prev = mine[feKey] || {};
     return prev.sig !== stepSig(fragment) || prev.approvalPending === true;
@@ -788,6 +885,51 @@ async function flushSnowPush(workId) {
   return readSnowSyncState(id);
 }
 
+/* 分章面板确认之后：章表是**服务端**改的（按场景新建、改名、拆章、并章），本机的 07 章节表与 09 行上的
+   章标签必须立刻接过来。水合帮不上忙——本机缓存的 _t 总比服务端新，「本地为准」会让旧章表（真实故障里
+   是两行「（待补）」）留在 07，下一次 07 上行再把它们当成作者的章表同步回去、把刚确认的分章冲掉。
+   调用时机保证安全：materialize 之前已经 flushSnowPush，本机与服务端只差服务端刚改的这一块。 */
+async function adoptServerChapters(workId) {
+  let ws = null;
+  try { ws = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`); } catch (e) { return false; }
+  snowReadyFlags[workId] = !!(ws && ws.ready_to_materialize);
+  captureResync(workId, ws);
+  captureChapterStatus(workId, ws);
+  captureTriage(workId, ws);
+  captureWorkspaceHealth(workId, ws);
+  const stepDraft = (beKey) => (((ws && ws.steps) || []).find(s => s && s.step_key === beKey) || {}).draft || null;
+  const outlineDraft = stepDraft("long_synopsis");
+  const sceneDraft = stepDraft("scene_list");
+  try { window.dispatchEvent(new CustomEvent("ws:snow-flush-local", { detail: { workId } })); } catch (e) {}
+  const key = snowCacheKey(workId);
+  let local = null;
+  try { local = JSON.parse(localStorage.getItem(key)); } catch (e) {}
+  if (!local || typeof local !== "object") return false;
+  const scaffolds = { ...(local.scaffolds || {}) };
+  if (outlineDraft && Array.isArray(outlineDraft.chapters) && outlineDraft.chapters.length) {
+    const fresh = (feFromCanon("outline", { ...outlineDraft, paragraphs: [] }).scaffold || {}).chapters || [];
+    scaffolds.outline = { ...(scaffolds.outline || {}), chapters: fresh };
+  }
+  if (sceneDraft && Array.isArray(sceneDraft.scenes) && scaffolds.scenes && Array.isArray(scaffolds.scenes.list)) {
+    const titleByRow = {};
+    sceneDraft.scenes.forEach(s => { if (s && s.row_uid) titleByRow[s.row_uid] = (s.chapter_title && s.chapter_title !== s.chapter_id) ? s.chapter_title : ""; });
+    scaffolds.scenes = { ...scaffolds.scenes, list: scaffolds.scenes.list.map(row => (row && row.id in titleByRow) ? { ...row, chapter: titleByRow[row.id] } : row) };
+  }
+  const merged = { ...local, scaffolds };
+  try { localStorage.setItem(key, JSON.stringify(merged)); } catch (e) { return false; }
+  // 服务端规范镜像与去重账一并对齐：这不是作者的编辑，不该引出一次 07 / 09 的上行
+  const canonMine = snowCanon[workId] || (snowCanon[workId] = {});
+  const mine = lastPushed[workId] || (lastPushed[workId] = {});
+  [["outline", outlineDraft], ["scenes", sceneDraft], ["planning", stepDraft("scene_details")]].forEach(([feKey, draft]) => {
+    if (!draft) return;
+    canonMine[feKey] = stripFe(draft);
+    if (mine[feKey]) mine[feKey] = { ...mine[feKey], sig: stepSig(buildStepFragment(feKey, merged, workId)) };
+  });
+  try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId })); } catch (e) {}
+  try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: workId })); } catch (e) {}
+  return true;
+}
+
 async function attachMaterializationGate(result, workId) {
   try {
     const workspace = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
@@ -855,6 +997,8 @@ const SnowSync = {
     return readSnowSyncState(id);
   },
   readyToMaterialize(workId) { return !!snowReadyFlags[workId || activeWork()]; },
+  /* 水合闸门：本会话是否已成功读到过服务端工作台（没读到过之前一律不上行） */
+  hydrated(workId) { return !!snowHydrateOk[workId || activeWork()]; },
   /* 结构化雪花计划导入：这是作者从既有策划稿/外部大纲迁入十步工作台的正常入口。
      UI 一次提交后仍逐步走现有 PATCH + approve 契约，依赖闸门、历史版本、场景身份铸造
      和审计日志均不绕过；任一步失败立即停止，不把半成品谎称为 10/10。 */
@@ -906,6 +1050,7 @@ const SnowSync = {
     }
 
     const workspace = await apiGet(`/api/v2/projects/${id}/snowflake-workspace`);
+    snowHydrateOk[id] = true; // 导入逐步写过、此刻又读到了服务端工作台：本机缓存就是服务端真相，水合闸门放行
     snowReadyFlags[id] = !!(workspace && workspace.ready_to_materialize);
     captureResync(id, workspace || {});
     captureChapterStatus(id, workspace || {});
@@ -1136,7 +1281,6 @@ const SnowSync = {
   /* 分章现状（后端只读真相）：{chapter_count, unassigned_scene_count, chaptered, …}。
      顶部「整理为章节结构」据此决定是直接开面板还是先提示补 07 章表。 */
   chapterPlanStatus(workId) { return snowChapterStatus[workId || activeWork()] || { chapter_count: 0, unassigned_scene_count: 0, chaptered: false }; },
-  /* 分章预览：只读推演，不落库。strategy = spine_anchor（默认，脊柱锚点）/ even / keep_current。 */
   /* 阶段 M：工作台里存档的分诊（rowUid -> item），刷新后第 10 步也能看到上次的分诊。 */
   triageItems(workId) { return snowTriage[workId || activeWork()] || null; },
   /* 阶段 R：scene_id ↔ 09 row_uid 对照（来自最近一次水合的工作台） */
@@ -1182,13 +1326,20 @@ const SnowSync = {
     if (!id) throw new Error("作品尚未就绪");
     const body = options && typeof options === "object" ? options : {};
     const result = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/propose`, body);
-    try { await snowHydrate(id, { force: true }); } catch (e) {}
+    try { await adoptServerChapters(id); } catch (e) {}
     return result;
   },
-  async chapterPreview(strategy, workId) {
-    const id = workId || activeWork();
+  /* 分章预览（只读）。strategy：auto（服务端按现状挑）/ from_scenes（按场景分章）/ spine_anchor / even /
+     keep_current。options.scenesPerChapter / options.targetChapterCount 只对 from_scenes 有意义——
+     作者在面板里填的「每章约 N 场」。 */
+  async chapterPreview(strategy, options, workId) {
+    const opts = options && typeof options === "object" ? options : {};
+    const id = (typeof options === "string" ? options : workId) || activeWork();
     await flushSnowPush(id);
-    const preview = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/preview`, strategy ? { strategy } : {});
+    const body = strategy ? { strategy } : {};
+    if (Number(opts.scenesPerChapter) > 0) body.scenes_per_chapter = Math.round(Number(opts.scenesPerChapter));
+    if (Number(opts.targetChapterCount) > 0) body.target_chapter_count = Math.round(Number(opts.targetChapterCount));
+    const preview = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/preview`, body);
     return attachMaterializationGate(preview, id);
   },
   /* 让 AI 给一份分章建议（只读，不落库）。fail-closed：LLM 没配好会 409 上抛，
@@ -1199,6 +1350,17 @@ const SnowSync = {
     const suggestion = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/suggest`,
       baseStrategy ? { base_strategy: baseStrategy } : {});
     return attachMaterializationGate(suggestion, id);
+  },
+  /* AI 起章名（阶段 W，只读，不落库）：chapters = 面板此刻的章表 [{row_uid, title, act, spine, scene_plan_ids}]
+     （含还没确认的 new:* 章）。只给系统起的占位名起名；options.renameAll 连作者起过的也重起。
+     fail-closed：LLM 没配好 409 上抛，模型没给出可用章名 502 上抛——调用方如实提示。 */
+  async chapterTitles(chapters, options, workId) {
+    const opts = options && typeof options === "object" ? options : {};
+    const id = workId || activeWork();
+    if (!id) throw new Error("作品尚未就绪");
+    const body = { chapters: Array.isArray(chapters) ? chapters : [] };
+    if (opts.renameAll) body.rename_all = true;
+    return apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/titles`, body);
   },
   /* 处置孤儿场：action = "discard"（正文一并进回收站）/ "keep"（正文留在目录里）。
      孤儿场 = 作者从 09 删掉、但目录里已经有场景卡（可能已写正文）的那些场。它们是
@@ -1216,6 +1378,7 @@ const SnowSync = {
     const id = workId || activeWork();
     const data = await apiPatch(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan`, payload || {});
     if (data && data.workspace) captureChapterStatus(id, data.workspace);
+    try { await adoptServerChapters(id); } catch (e) {}
     return data;
   },
   /* 物化主路径：approved scene plans → ChapterGoal/SceneCard（成功后目录重拉）。
@@ -1227,10 +1390,19 @@ const SnowSync = {
     const id = workId || activeWork();
     await flushSnowPush(id);
     const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/materialize`, plan || {});
+    // 分章此刻已经落库（与 materialize 同一事务）：不管下面的 outline/approve 成不成，本机的 07 章节表
+    // 都要先接过服务端的章表——否则一次失败的批准之后，本机旧章表会在下一次 07 上行时把它冲掉。
+    try { await adoptServerChapters(id); } catch (e) {}
     const approved = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/outline/approve`, {});
     try { if (WsCatalog && WsCatalog.reset) WsCatalog.reset(); } catch (e) {}
     const createdChapters = (approved && approved.created_chapter_count) || 0;
-    return { ...(data || {}), created_chapter_count: createdChapters };
+    return {
+      ...(data || {}),
+      created_chapter_count: createdChapters,
+      // 阶段 W：重新分章后变空的旧章已移入回收站 / 这一版又用到的章已从回收站取回
+      trashed_empty_chapters: (approved && approved.trashed_empty_chapters) || [],
+      restored_chapter_ids: (approved && approved.restored_chapter_ids) || [],
+    };
   },
 };
 
@@ -1238,4 +1410,4 @@ Object.assign(window, { SnowSync });
 
 // mergeCanon / applyCanonPatch / feFromCanon / canonFromFE 一并导出：供 store 单测
 // 直接验证「保真合并」「咨询式补丁」与「规范字段 ↔ 原型形状」的往返契约
-export { SnowSync, mergeCanon, applyCanonPatch, feFromCanon, canonFromFE };
+export { SnowSync, mergeCanon, applyCanonPatch, feFromCanon, canonFromFE, stepIsPristine };

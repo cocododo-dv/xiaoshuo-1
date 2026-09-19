@@ -19,7 +19,10 @@ task_routing:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.7
-    max_output_tokens: 1800
+    # 2026-09-18：三条方向各可到 400 字 + reasoning 的思考 token，1800 每次都被截断、靠翻倍重试才出得来；
+    # 与 llm_node_registry 的同名 spec 保持一致。已存过 models 快照的安装改这里无效，用
+    # `python -m novel_system.tools.raise_llm_output_budget --node snowflake_step_candidates --floor 4096 --execute`。
+    max_output_tokens: 4096
     response_format: json_object
     model_profile: quality_strong
   extraction:

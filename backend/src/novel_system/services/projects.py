@@ -25,6 +25,7 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.db.session import SessionLocal
+from novel_system.services.chapter_approval import is_chapter_approved
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.author_actions import llm_setup_action
@@ -62,6 +63,187 @@ REFERENCE_SAFETY_RULES = [
     "不得复刻参考书人物、设定、桥段、特殊意象或标志性句式。",
     "运行时只使用节奏、句法、叙事手法、结构技巧和禁复刻规则。",
 ]
+
+
+#: 雪花物化 / 回流写进 ``ChapterGoal.writer_brief_json["source"]`` 的值
+_SNOWFLAKE_CHAPTER_SOURCES = frozenset({"snowflake_method", "snowflake_resync"})
+#: 「重新分章后变空、被系统送进回收站」的标记（``trashed_by``）。带这个标记的章是空着进回收站的，
+#: 以后的分章又用到它的章号时可以无损取回。
+AUTO_TRASHED_EMPTY_CHAPTER = "snowflake_rechapter"
+
+
+def trash_emptied_snowflake_chapters(
+    session: Session,
+    project_id: str,
+    *,
+    keep_chapter_ids: set[str],
+    actor_ref: str = AUTO_TRASHED_EMPTY_CHAPTER,
+) -> list[dict[str, Any]]:
+    """重新分章之后，把**雪花整理出来、现在已经空了**的旧章移入回收站（可恢复），返回被移走的章。
+
+    章号是位置式的（``{project}_CH{seq:02d}``）：6 章改成 4 章，CH05 / CH06 的场景卡搬走之后就是两个空壳，
+    挂在目录里还占着章序。以前只在面板上提醒作者自己去删。
+
+    只动同时满足这几条的章：雪花物化 / 回流建的（不碰作者在章节编排里手建的章）、不在这一版分章里、
+    一张场景卡都没有（活跃的、回收站里的都算——里面还有作者手加的场就原样保留）、没有终审通过。
+    走回收站而不是物理删除：作者随时可以在回收站里取回。
+    """
+    snowflake_id = re.compile(rf"^{re.escape(project_id)}_CH\d{{2,}}$")
+    trashed: list[dict[str, Any]] = []
+    now = utcnow()
+    chapters = session.execute(
+        select(ChapterGoal).where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
+    ).scalars().all()
+    for chapter in chapters:
+        if chapter.chapter_id in keep_chapter_ids or not snowflake_id.match(chapter.chapter_id):
+            continue
+        if str((chapter.writer_brief_json or {}).get("source") or "") not in _SNOWFLAKE_CHAPTER_SOURCES:
+            continue
+        has_cards = session.execute(
+            select(SceneCard.scene_id).where(SceneCard.chapter_id == chapter.chapter_id).limit(1)
+        ).first()
+        if has_cards is not None or is_chapter_approved(session, chapter):
+            continue
+        chapter.trashed_flag = 1
+        chapter.trashed_at = now
+        chapter.trashed_by = actor_ref
+        title = str(
+            (chapter.narrative_json or {}).get("title")
+            or (chapter.writer_brief_json or {}).get("chapter_title")
+            or chapter.chapter_id
+        )
+        trashed.append({"chapter_id": chapter.chapter_id, "title": title})
+        session.add(
+            OperationLog(
+                event_type="snowflake_empty_chapter_trashed",
+                object_type="chapter_goal",
+                object_ref=chapter.chapter_id,
+                payload_json={"project_id": project_id, "title": title, "trashed_at": now, "reason": "emptied_by_rechaptering"},
+            )
+        )
+    if trashed:
+        session.flush()
+    return trashed
+
+
+class _CatalogPlacement:
+    """批准大纲计划时章序与场序的落位——不撞唯一索引，也不挤掉目录里已经在的东西。
+
+    两条唯一索引管着目录：``(project_id, display_order)``（活跃章）与 ``(chapter_id, scene_seq)``
+    （活跃场景卡）。批准逻辑过去直接写计划里的序号、一张卡一张卡地搬，于是：
+
+    - 目录里已有别的章时（作者手建的「第 1 章」、上一版物化留下的章），新章的 ``display_order``
+      撞上去 → 整次批准 500「database operation failed」（2026-09-18 真实故障：作者点了「确认写入」，
+      章节从没落进目录）；
+    - 重新分章后再物化，场景卡跨章搬动：第一张卡要占的 ``(章, 序)`` 还被下一张没搬走的卡占着
+      → 同样的 500。
+
+    做法是两阶段：先把会受影响的活跃场景卡停到一段不会冲突的高位序号上，再按最终顺序落位。
+    计划之外、但住在目标章里的卡（作者在章节编排里手加的场）不删不丢：原来跟在哪张计划内的卡后面，
+    现在还跟在它后面。
+    """
+
+    def __init__(self, session: Session, project_id: str, chapter_plans: list[dict[str, Any]]) -> None:
+        self.session = session
+        self.project_id = project_id
+        self._target_ids = [
+            str(item.get("chapter_id") or "").strip() for item in chapter_plans if str(item.get("chapter_id") or "").strip()
+        ]
+        targets = set(self._target_ids)
+        self._planned_scene_ids: set[str] = set()
+        for item in chapter_plans:
+            chapter_id = str(item.get("chapter_id") or "").strip()
+            for index, scene_plan in enumerate(item.get("scenes") or [], start=1):
+                self._planned_scene_ids.add(str(scene_plan.get("scene_id") or f"{chapter_id}_SC{index:02d}").strip())
+
+        active_chapters = list(
+            session.execute(
+                select(ChapterGoal).where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
+            ).scalars()
+        )
+        self._occupied_orders = {int(item.display_order) for item in active_chapters if item.display_order is not None}
+        # 新章接在计划之外的章后面（不挪动它们——它们可能已经终审通过）
+        self._order_offset = max(
+            (int(item.display_order or 0) for item in active_chapters if item.chapter_id not in targets),
+            default=0,
+        )
+
+        cards = [
+            card
+            for card in session.execute(
+                select(SceneCard).where(
+                    SceneCard.trashed_flag == 0,
+                    or_(SceneCard.project_id == project_id, SceneCard.chapter_id.in_(sorted(targets))),
+                )
+            ).scalars()
+            if card.chapter_id in targets or card.scene_id in self._planned_scene_ids
+        ]
+        cards.sort(key=lambda card: (str(card.chapter_id), int(card.scene_seq or 0), str(card.scene_id)))
+        self._old_order: dict[str, list[str]] = {}
+        self._cards = {card.scene_id: card for card in cards}
+        self._source_chapter_ids = {str(card.chapter_id) for card in cards if card.scene_id in self._planned_scene_ids}
+        for card in cards:
+            if card.chapter_id in targets:
+                self._old_order.setdefault(str(card.chapter_id), []).append(card.scene_id)
+        self._sizes: dict[str, int] = {}
+        if cards:
+            park_base = max(int(card.scene_seq or 0) for card in cards) + 1_000_000
+            for offset, card in enumerate(cards):
+                card.scene_seq = park_base + offset
+            session.flush()
+
+    def display_order_for_new_chapter(self, requested: int) -> int:
+        candidate = self._order_offset + max(1, int(requested))
+        while candidate in self._occupied_orders:
+            candidate += 1
+        self._occupied_orders.add(candidate)
+        return candidate
+
+    def final_scene_seq(self, chapter_id: str, scene_plans: list[dict[str, Any]]) -> dict[str, int]:
+        """这一章里每张计划内场景卡的最终序号；计划外的卡在这里一并落到它们的新位置。"""
+        planned = [
+            str(scene_plan.get("scene_id") or f"{chapter_id}_SC{index:02d}").strip()
+            for index, scene_plan in enumerate(scene_plans, start=1)
+        ]
+        staying = set(planned)
+        anchored: dict[str | None, list[str]] = {}
+        anchor: str | None = None
+        for scene_id in self._old_order.get(chapter_id, []):
+            if scene_id in staying:
+                anchor = scene_id
+            elif scene_id not in self._planned_scene_ids:
+                anchored.setdefault(anchor, []).append(scene_id)
+        merged = list(anchored.get(None, []))
+        for scene_id in planned:
+            merged.append(scene_id)
+            merged.extend(anchored.get(scene_id, []))
+        self._sizes[chapter_id] = len(merged)
+        final = {scene_id: index for index, scene_id in enumerate(merged, start=1)}
+        for scene_id, seq in final.items():
+            if scene_id in staying:
+                continue
+            card = self._cards[scene_id]
+            card.scene_seq = seq
+            card.is_chapter_last = 1 if seq == len(merged) else 0
+        return final
+
+    def chapter_size(self, chapter_id: str) -> int:
+        return self._sizes.get(chapter_id, 0)
+
+    def finish(self) -> None:
+        """场景卡被搬走的源章（不在这次计划里的章）：剩下的卡重算「章末」标记。"""
+        self.session.flush()
+        for chapter_id in self._source_chapter_ids - set(self._target_ids):
+            remaining = list(
+                self.session.execute(
+                    select(SceneCard).where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
+                ).scalars()
+            )
+            if not remaining:
+                continue
+            last = max(remaining, key=lambda card: (int(card.scene_seq or 0), str(card.scene_id)))
+            for card in remaining:
+                card.is_chapter_last = 1 if card is last else 0
 
 
 class ProjectService:
@@ -218,6 +400,8 @@ class ProjectService:
 
         created_chapter_count = 0
         created_scene_count = 0
+        restored_chapter_ids: list[str] = []
+        placement = _CatalogPlacement(self.session, project.project_id, chapters)
         for chapter_plan in chapters:
             chapter_id = str(chapter_plan.get("chapter_id") or "").strip()
             if not chapter_id:
@@ -226,6 +410,7 @@ class ProjectService:
                 )
             chapter = self.session.get(ChapterGoal, chapter_id)
             is_new_chapter = chapter is None
+            revived_trashed_at: str | None = None
             if chapter is None:
                 chapter = ChapterGoal(chapter_id=chapter_id, chapter_goal="")
                 self.session.add(chapter)
@@ -234,6 +419,18 @@ class ProjectService:
                 raise DomainError(
                     "CHAPTER_ALREADY_OWNED", "chapter belongs to another project"
                 )
+            elif int(chapter.trashed_flag or 0) == 1:
+                # 章号是位置式的：6 章收成 4 章时 CH05 / CH06 空了、进了回收站，之后又分回 6 章，
+                # 计划指向的就是回收站里的那一行。不取回的话场景卡会被搬进一个目录里看不见的章。
+                # 取回时当新章对待（章名 / 章序按这一版重新播种）；和它一起进回收站的计划内场景卡跟着回来，
+                # 作者更早单独删掉的卡不动。
+                revived_trashed_at = chapter.trashed_at
+                chapter.trashed_flag = 0
+                chapter.trashed_at = None
+                chapter.trashed_by = None
+                chapter.display_order = None
+                is_new_chapter = True
+                restored_chapter_ids.append(chapter_id)
 
             chapter.project_id = project.project_id
             chapter.outline_plan_id = plan.plan_id
@@ -258,7 +455,24 @@ class ProjectService:
                     }
                 display_order = chapter_plan.get("display_order")
                 if display_order is not None:
-                    chapter.display_order = int(display_order)
+                    # 目录里可能已经有别的章占着这个序号（作者手建的章、上一版物化的章）——
+                    # 直接写计划里的序号会撞 (project_id, display_order) 唯一索引，整次批准 500。
+                    chapter.display_order = placement.display_order_for_new_chapter(int(display_order))
+            else:
+                # 重新物化：章名 / 幕 / 脊柱跟着这一版计划走——**只要目录里的值还是上一次物化播下去的那个**
+                # （上一次播的值留在 writer_brief_json 里）。章号是位置式的，重新分章之后 CH02 可能已经是
+                # 另一组场：不更新的话，作者在分章面板里确认的章名（含 AI 起的）到不了目录，目录挂着上一版的名字。
+                # 作者在章节编排里亲手改过的（目录值 ≠ 上次播的值）照旧不碰。
+                seeded = dict(chapter.writer_brief_json or {})
+                current = dict(chapter.narrative_json or {})
+                incoming = dict(chapter_plan.get("narrative_json") or {})
+                followed = {
+                    key: incoming[key]
+                    for key, seeded_key in (("title", "chapter_title"), ("act", "chapter_act"), ("spine", "chapter_spine"))
+                    if key in incoming and (key not in current or current.get(key) == seeded.get(seeded_key))
+                }
+                if followed:
+                    chapter.narrative_json = {**current, **followed}
             chapter.main_plot_push = _optional_text(chapter_plan.get("main_plot_push"))
             chapter.emotional_target = _optional_text(
                 chapter_plan.get("emotional_target")
@@ -293,6 +507,7 @@ class ProjectService:
                 )
 
             scenes = list(chapter_plan.get("scenes") or [])
+            final_seq = placement.final_scene_seq(chapter_id, scenes)
             for index, scene_plan in enumerate(scenes, start=1):
                 scene_id = str(
                     scene_plan.get("scene_id") or f"{chapter_id}_SC{index:02d}"
@@ -302,7 +517,7 @@ class ProjectService:
                     scene = SceneCard(
                         scene_id=scene_id,
                         chapter_id=chapter_id,
-                        scene_seq=index,
+                        scene_seq=final_seq[scene_id],
                         scene_goal="",
                     )
                     self.session.add(scene)
@@ -311,11 +526,19 @@ class ProjectService:
                     raise DomainError(
                         "SCENE_ALREADY_OWNED", "scene belongs to another project"
                     )
+                elif (
+                    revived_trashed_at is not None
+                    and int(scene.trashed_flag or 0) == 1
+                    and scene.trashed_at == revived_trashed_at
+                ):
+                    scene.trashed_flag = 0
+                    scene.trashed_at = None
+                    scene.trashed_by = None
 
                 scene.chapter_id = chapter_id
                 scene.project_id = project.project_id
                 scene.outline_plan_id = plan.plan_id
-                scene.scene_seq = int(scene_plan.get("scene_seq") or index)
+                scene.scene_seq = final_seq[scene_id]
                 scene.pov_character_id = _optional_text(
                     scene_plan.get("pov_character_id")
                 )
@@ -344,7 +567,7 @@ class ProjectService:
                 scene.scene_type = (
                     _optional_text(scene_plan.get("scene_type")) or "outline_driven"
                 )
-                scene.is_chapter_last = 1 if index == len(scenes) else 0
+                scene.is_chapter_last = 1 if final_seq[scene_id] == placement.chapter_size(chapter_id) else 0
                 scene.writer_brief_json = {
                     "source": (plan.plan_json or {}).get("source")
                     or "project_outline_plan",
@@ -365,6 +588,12 @@ class ProjectService:
                         SceneRunState(scene_id=scene.scene_id, scene_status="ready")
                     )
 
+        placement.finish()
+        trashed_empty_chapters = trash_emptied_snowflake_chapters(
+            self.session,
+            project.project_id,
+            keep_chapter_ids={str(item.get("chapter_id") or "").strip() for item in chapters},
+        )
         plan.status = PLAN_STATUS_APPROVED
         plan.approved_at = utcnow()
         project.active_outline_plan_id = plan.plan_id
@@ -376,6 +605,8 @@ class ProjectService:
             "plan": outline_plan_payload(plan),
             "created_chapter_count": created_chapter_count,
             "created_scene_count": created_scene_count,
+            "restored_chapter_ids": restored_chapter_ids,
+            "trashed_empty_chapters": trashed_empty_chapters,
         }
 
     def require_project(self, project_id: str) -> StoryProject:

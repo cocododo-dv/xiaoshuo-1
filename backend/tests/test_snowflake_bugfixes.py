@@ -73,9 +73,11 @@ def test_resync_cross_chapter_move_keeps_the_source_chapter_goal_and_recomputes_
     # 旧章的章目标没被目标章的盖掉
     assert session.get(ChapterGoal, first_id).chapter_goal == "第一章的目标"
     assert session.get(ChapterGoal, second_id).chapter_goal == "第二章的目标"
-    # 章末标记重算：第一章只剩 u1，第二章末场是 u2
+    # 章末标记重算：第一章只剩 u1。第二章里 u2 排在 u3 前面——章内顺序永远等于故事序（09 的行序 u1、u2、u3），
+    # 不看分章载荷里的先后（阶段 V：章是故事序上连续的一段，没有第二套「章内手排」），所以章末是 u3。
     assert u1.is_chapter_last == 1
-    assert u3.is_chapter_last == 0 and u2.is_chapter_last == 1
+    assert (u2.scene_seq, u3.scene_seq) == (1, 2)
+    assert u2.is_chapter_last == 0 and u3.is_chapter_last == 1
 
 
 def test_explicit_protagonist_outranks_the_first_lead_role(session) -> None:

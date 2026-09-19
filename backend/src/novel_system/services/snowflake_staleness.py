@@ -51,9 +51,12 @@ FIELDS_CONSUMED: dict[str, dict[str, set[str]]] = {
     "character_synopses": {"character_sheets": {"characters"}, "short_synopsis": {"paragraphs"}},
     "long_synopsis": {"short_synopsis": {"paragraphs"}},
     "character_bibles": {"character_sheets": {"characters"}, "character_synopses": {"characters"}},
-    # 阶段 D：07 的 paragraphs 是五段展开（拆场素材），chapters 是章表——以前章表镜像在 paragraphs 里，
-    # 改章表自然让 09 失效；镜像去掉后把 chapters 明确登记进来，语义不变。
-    "scene_list": {"long_synopsis": {"paragraphs", "chapters"}},
+    # 09 只消费 07 的五段展开（拆场素材）。章表**不是** 09 的输入：章是列完场之后的包装决定（阶段 K），
+    # 07 的 chapters 现在由分章面板按场景列表回填（阶段 V 的镜像）——把它登记成 09 的上游就是一个环：
+    # 确认一次分章、或只改一个章名，再确认 07，09 就被判「需复核」，而场景一个字都没变。
+    # （阶段 D 曾把 chapters 登记进来，那时章表还在场景之前。）章表改动对已物化场景的影响另有其人：
+    # project_runtime_invalidation 按章行定位到场，起草时 Scene Design Context 读的也是现行章表。
+    "scene_list": {"long_synopsis": {"paragraphs"}},
     "scene_details": {"scene_list": {"scenes"}},
 }
 
@@ -192,8 +195,28 @@ def semantic_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     if isinstance(scenes, list):
         # 阶段 C：rendering_mode 的默认值 full 与「缺席」同义——阶段 C 之前存的草稿没有这个键，
         # 前端水合后总会把 full 发回来；不剥掉默认值，已确认的场景规划会在升级当刻被打回待审。
-        result["scenes"] = [_strip_default_rendering_mode(item) for item in scenes]
+        result["scenes"] = [_strip_packaging_keys(_strip_default_rendering_mode(item)) for item in scenes]
     return result
+
+
+# 场景行上**不属于 09 / 10 故事内容**的键：由分章决定的章归属，以及计划行的服务端状态。工作台交给
+# 前端的场景行是从计划行现算的，这些键跟着分章结果 / 批准状态变；前端的保真合并会把它们原样带回
+# 上行的草稿——不剥掉的话，作者在分章面板里点一次确认（或只是确认了 09），已批准的 09 / 10 就会在下一次
+# 自动保存时被判成「故事改了」、打回待重新确认，物化闸门随即拦下刚确认的分章（2026-09-18 真实故障：
+# 第 10 步在十几分钟里被这样造出四个版本，差异只有行上的 status 与章字段）。章归属是分章那一步的决定，
+# 场的先后由列表顺序本身表达，状态 / 失效留痕 / 诊断是服务端算出来的。
+_SCENE_ROW_PACKAGING_KEYS: frozenset[str] = frozenset(
+    {
+        "scene_plan_id", "chapter_plan_id", "chapter_id", "chapter_title", "chapter_goal", "scene_seq",
+        "status", "stale_reason", "stale_accepted_at", "stale_accepted_by", "stale_accepted_note", "diagnosis",
+    }
+)
+
+
+def _strip_packaging_keys(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    return {key: value for key, value in item.items() if key not in _SCENE_ROW_PACKAGING_KEYS}
 
 
 def _is_empty_value(value: Any) -> bool:

@@ -113,7 +113,10 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "project",
         template_name="snowflake_step_candidates",
         temperature=0.7,
-        max_output_tokens=1800,
+        # 三条方向各可到 400 字，外加标签 / 要点与 reasoning 模型的思考 token：1800 连可见输出的最坏情况都
+        # 装不下，每次都要靠客户端的截断阶梯翻倍重试一遍（白花一次完整调用）。与 models.yaml 同名 task 必须一致
+        # （node_routing 以这里为准且优先于 task_routing）；已存过 models 快照的安装用 raise_llm_output_budget 抬。
+        max_output_tokens=4096,
     ),
     LLMNodeSpec(
         "style_ref_paragraph_classify_anchor",

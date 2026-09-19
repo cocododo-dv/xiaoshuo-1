@@ -120,7 +120,8 @@ def test_propose_persists_assigns_and_mirrors_into_the_outline(session) -> None:
     session.refresh(run)
     mirrored = run.draft_json["chapters"]
     assert [item["row_uid"] for item in mirrored] == [chapter.row_uid for chapter in chapters]
-    assert mirrored[0]["summary"] == "第 1 场"
+    # 章摘要 =「这一章把局面推到哪」→ 取章末那一场（第一章装第 1–2 场），不是开头那一场
+    assert mirrored[0]["summary"] == "第 2 场"
 
     # 已有章表：不带 replace 拒绝；带 replace 重排（旧章软删）
     with pytest.raises(DomainError) as exc:

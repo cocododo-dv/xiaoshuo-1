@@ -656,6 +656,9 @@ def test_candidates_node_registered_with_routing_and_template() -> None:
     root = Path(__file__).resolve().parents[2]
     models = yaml.safe_load((root / "config" / "models.yaml").read_text(encoding="utf-8"))
     assert "snowflake_step_candidates" in models.get("task_routing", {})
+    # 输出预算：三条方向 + 思考 token，1800 装不下；spec 与 task_routing 必须一致（node_routing 以 spec 为准且优先）
+    routed = models["task_routing"]["snowflake_step_candidates"]["max_output_tokens"]
+    assert node.max_output_tokens == routed and routed >= 4096
     prompts = yaml.safe_load((root / "config" / "prompts.yaml").read_text(encoding="utf-8"))
     template = prompts.get("templates", {}).get("snowflake_step_candidates")
     assert template and template.get("structured_schema", {}).get("required") == ["candidates"]

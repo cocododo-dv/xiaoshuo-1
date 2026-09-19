@@ -42,6 +42,8 @@ const I = {
   List: (p) => <Icon {...p}><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></Icon>,
   ChevronRight: (p) => <Icon {...p}><path d="M9 18l6-6-6-6" /></Icon>,
   ChevronDown: (p) => <Icon {...p}><path d="M6 9l6 6 6-6" /></Icon>,
+  ChevronUp: (p) => <Icon {...p}><path d="M18 15l-6-6-6 6" /></Icon>,
+  Scissors: (p) => <Icon {...p}><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4L8.12 15.88" /><path d="M14.47 14.48L20 20" /><path d="M8.12 8.12L12 12" /></Icon>,
   ChevronLeft: (p) => <Icon {...p}><path d="M15 18l-6-6 6-6" /></Icon>,
   Check: (p) => <Icon {...p}><path d="M20 6L9 17l-5-5" /></Icon>,
   CheckCircle: (p) => <Icon {...p}><circle cx="12" cy="12" r="10" /><path d="M8 12l3 3 5-6" /></Icon>,

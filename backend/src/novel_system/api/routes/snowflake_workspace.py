@@ -424,6 +424,30 @@ def suggest_chapter_plan(
     )
 
 
+@router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/titles")
+def suggest_chapter_titles(
+    project_id: str,
+    payload: BoundedJsonObject | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """AI 起章名（阶段 W，只读，不落库）：给系统起的占位章名（空 / 「第 N 章」）各起一个名字、写一句章摘要。
+
+    载荷 ``chapters``：面板此刻的章表 ``[{row_uid, title, act, spine, scene_plan_ids}]``（含未落库的 ``new:N``）；
+    不带就按已保存的分章。``rename_all=true`` 连作者起过名字的章也重起。
+    fail-closed：LLM 没配好 409 + author_action；模型没给出可用章名 502 ``SNOWFLAKE_CHAPTER_TITLES_EMPTY``。
+    """
+    body = payload or {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/titles",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeChapteringService(session).suggest_titles(project_id, body),
+    )
+
+
 @router.patch("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan")
 def save_chapter_plan(
     project_id: str,

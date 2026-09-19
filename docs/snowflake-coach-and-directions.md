@@ -49,6 +49,11 @@
 - 不给方向做「对比草稿」视图与 1/2/3/C/R/↵ 快捷键：方向卡在对话里，比较的是三个走向，不是逐字 diff。
 - 不做「纯探索」开关：撤下要点即可。
 
-## 6. 测试
+## 6. 同一批的两处加固（2026-09-18）
 
-后端 `tests/test_snowflake_coach_directions.py`、`tests/test_migration_0088_assistant_turn_kinds.py`，以及改过契约的 `tests/test_snowflake_fe_candidates.py`（fail-closed）；前端 `src/ws-snow-coach.test.jsx`（取代 `ws-snow-brief.test.jsx`）。
+- **方向节点的输出预算** 1800 → 4096（`llm_node_registry` 与 `config/models.yaml` 两处一致）：三条方向各可到 400 字，再加思考 token，1800 每次都被截断，只能靠客户端的翻倍重试出结果。已存过 models 快照的安装用 `python -m novel_system.tools.raise_llm_output_budget --node snowflake_step_candidates --floor 4096 --execute`。
+- **水合闸门与抹空保护**：新浏览器或清过缓存的会话里，水合失败（或只是比视图的首次自动保存慢）时，一份从没水合过的空白默认稿以前会强制覆盖十步，而未确认步骤在服务端是原位改写、没有历史可回。现在同步层在本会话读到服务端之前绝不上行，从没动过的空白步让位给服务端内容、也从不拿去覆盖服务端；服务端对「整步抹空」另起一版，旧稿留在历史里，可用 `POST …/steps/{step_key}/restore` 取回。底部同步状态会写「读不到服务器上的构思版本，已暂停上行以免覆盖服务器内容；本机版本已保留」，点重试即可。
+
+## 7. 测试
+
+后端 `tests/test_snowflake_coach_directions.py`、`tests/test_migration_0088_assistant_turn_kinds.py`、`tests/test_snowflake_wipe_guard.py`，以及改过契约的 `tests/test_snowflake_fe_candidates.py`（fail-closed、预算钉）；前端 `src/ws-snow-coach.test.jsx`（取代 `ws-snow-brief.test.jsx`）与 `src/ws-snow-sync.test.jsx` 的「水合闸门与空白步保护」一组。

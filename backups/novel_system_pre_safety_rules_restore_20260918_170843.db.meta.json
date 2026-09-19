@@ -1,0 +1,13 @@
+{
+  "alembic_revisions": [
+    "20260917_0088"
+  ],
+  "checksum": "4619894129bbf82354bb189928ae34c14f2227f8c9b34828d699072505fb3c2b",
+  "created_at": "2026-09-18T08:08:47Z",
+  "foreign_key_violations": 0,
+  "integrity": "ok",
+  "page_count": 52913,
+  "page_size": 4096,
+  "source": "/home/ubuntu/xiaoshuo/backend/novel_system.db",
+  "tool": "db_backup.v2"
+}
