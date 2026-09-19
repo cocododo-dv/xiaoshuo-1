@@ -504,6 +504,22 @@ function shapeResync(ws) {
     })),
   };
 }
+/* 阶段 X「确认即同步」：确认 09 / 10 时带 sync_catalog，服务端把已物化的场景卡当场跟上这一版构思
+   （回包 catalog_sync）。这里接住结果：待同步横幅立刻按回包更新、目录重拉（写作台 / AI 起草台读到新卡）、
+   并广播给视图出一句回执——同步了几场、哪几场留给作者自己看差异。 */
+const SNOW_APPROVE_BODY = { sync_catalog: true };
+function afterApproveCatalogSync(workId, res) {
+  const sync = res && res.catalog_sync;
+  if (!workId || !sync) return;
+  if (res.workspace) captureResync(workId, res.workspace);
+  if (sync.synced_count > 0) {
+    try { if (WsCatalog && WsCatalog.__refresh) WsCatalog.__refresh(workId); } catch (e) {}
+  }
+  if (sync.synced_count > 0 || sync.held_count > 0) {
+    try { window.dispatchEvent(new CustomEvent("ws:snow-catalog-synced", { detail: { workId, ...sync } })); } catch (e) {}
+  }
+}
+
 function captureResync(workId, ws) {
   if (!workId || !ws || !ws.resync_status) return;
   snowResync[workId] = shapeResync(ws);
@@ -807,13 +823,14 @@ async function snowPushKey(cacheKey) {
       && (currentLedger.approvalPending === true || (prev.state && prev.state !== "done"));
     if (!shouldApprove) continue;
     try {
-      const appr = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/approve`, {});
+      const appr = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/approve`, SNOW_APPROVE_BODY);
       mine[feKey] = { ...(mine[feKey] || {}), state: "done", approvalPending: false };
       if (appr && appr.step) {
         (snowHealth[workId] || (snowHealth[workId] = {}))[feKey] = shapeStepHealth(appr.step);
         captureWorkspaceHealth(workId, appr.workspace); // 下游 stale 立即可见
         window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId }));
       }
+      afterApproveCatalogSync(workId, appr);
     } catch (error) {
       mine[feKey] = { ...(mine[feKey] || {}), state: "done", approvalPending: true };
       // 「需要先确认前面的雪花步骤」不是同步故障：本步 draft 已由上面的 PATCH 存到服务器，
@@ -1103,7 +1120,7 @@ const SnowSync = {
     const id = workId || activeWork();
     const beKey = BE_BY_FE[feKey];
     if (!id || !beKey) throw new Error("步骤未知，无法确认");
-    const res = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}/approve`, {});
+    const res = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}/approve`, SNOW_APPROVE_BODY);
     const mine = lastPushed[id] || (lastPushed[id] = {});
     mine[feKey] = { ...(mine[feKey] || {}), state: "done", approvalPending: false };
     if (res && res.step) {
@@ -1111,6 +1128,7 @@ const SnowSync = {
       captureWorkspaceHealth(id, res.workspace);
       try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
     }
+    afterApproveCatalogSync(id, res);
     return (snowHealth[id] || {})[feKey] || null;
   },
   /* 本步是否「确认过又改了、等作者重新确认」（后端 pending_review + revised_after_approval）。 */
@@ -1402,6 +1420,8 @@ const SnowSync = {
       // 阶段 W：重新分章后变空的旧章已移入回收站 / 这一版又用到的章已从回收站取回
       trashed_empty_chapters: (approved && approved.trashed_empty_chapters) || [],
       restored_chapter_ids: (approved && approved.restored_chapter_ids) || [],
+      // 阶段 X：手建的空白占位章（「第 1 章 / 开场」，一个字没写）已移入回收站，这一版的章从第 1 章排起
+      trashed_placeholder_chapters: (approved && approved.trashed_placeholder_chapters) || [],
     };
   },
 };

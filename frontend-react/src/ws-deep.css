@@ -71,24 +71,7 @@ mark.wr-dx.is-active { outline: 2px solid var(--crimson); outline-offset: 1px; }
 .wr-dxd-note { border: 1px dashed color-mix(in oklab, var(--sage) 50%, transparent); background: var(--sage-wash);
   border-radius: var(--r-sm); padding: 8px 10px; font-size: 11.5px; line-height: 1.6; color: var(--ink-2); }
 
-/* ---- 场景卡随行（起草姿态 · 正文上方）---- */
-.wr-scard { margin: 0 0 6px; background: var(--paper-1); border: 1px solid var(--line-1);
-  border-radius: var(--r-md); padding: 10px 14px; display: flex; flex-direction: column; gap: 7px; }
-.wr-scard-top { display: flex; align-items: center; gap: 8px; }
-.wr-scard-kind { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700;
-  padding: 2px 8px; border-radius: var(--r-pill); background: var(--crimson-wash); color: var(--crimson); }
-.wr-scard-kind.is-react { background: var(--slate-wash); color: var(--slate); }
-.wr-scard-src { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em;
-  color: var(--ink-4); display: inline-flex; align-items: center; gap: 5px; }
-.wr-scard-edit { border: 0; background: transparent; font: inherit; font-size: 10.5px; font-weight: 600;
-  color: var(--ink-3); cursor: pointer; padding: 2px 4px; border-radius: var(--r-xs); }
-.wr-scard-edit:hover { color: var(--crimson); background: var(--paper-2); }
-.wr-scard-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 16px; }
-.wr-scard-f { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.wr-scard-k { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-4); }
-.wr-scard-v { font-size: 12px; line-height: 1.55; color: var(--ink-2); }
-.wr-scard-v.is-empty { color: var(--ink-4); font-style: italic; }
-@media (max-width: 900px) { .wr-scard-grid { grid-template-columns: 1fr; } }
+/* 场景卡随行（正文上方）现在是共用设计卡 sdc-*（本文件末尾）；旧的 wr-scard-* 已随 WrSceneCard 一起删除 */
 
 /* ---- 章节编排：场景行分流动作 ---- */
 .arr-scene-fork { display: flex; gap: 6px; align-items: center; flex: none;
@@ -131,3 +114,58 @@ mark.wr-dx.is-active { outline: 2px solid var(--crimson); outline-offset: 1px; }
 .mr-check-strong input { margin-top: 3px; }
 .mr-error { padding: 9px 11px; border: 1px solid color-mix(in oklab, var(--crimson) 35%, var(--line-1)); border-radius: var(--r-sm); background: var(--crimson-wash); color: var(--crimson); font-size: 12px; line-height: 1.55; }
 .mr-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ==========================================================
+   场景设计卡 sdc-*（阶段 X）——写作台与 AI 起草台共用的同一张卡（ws-scene-design.jsx）
+   ========================================================== */
+.sdc { display: grid; gap: 8px; margin: 0 0 8px; padding: 12px 14px; background: var(--paper-1);
+  border: 1px solid var(--line-1); border-radius: 10px; font-family: var(--font-sans); text-align: left; }
+.sdc.is-compact { padding: 10px 12px; gap: 6px; }
+.sdc-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sdc-kind { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; padding: 2px 8px;
+  border-radius: 999px; background: var(--crimson-wash); color: var(--crimson); }
+.sdc-kind.is-react { background: var(--slate-wash); color: var(--slate); }
+.sdc-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 600; padding: 2px 7px;
+  border-radius: 999px; background: var(--paper-2); color: var(--ink-3); }
+.sdc-chip.tone-gold { background: var(--gold-wash); color: var(--gold); }
+.sdc-src { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--ink-4); }
+.sdc-link { border: 0; background: transparent; font: inherit; font-size: 10.5px; font-weight: 600; color: var(--ink-3);
+  padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.sdc-link:hover { color: var(--crimson); background: var(--paper-2); }
+.sdc-sync { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--gold-wash);
+  color: var(--ink-2); font-size: 11.5px; line-height: 1.5; }
+.sdc-sync span { flex: 1; min-width: 0; }
+.sdc-sync-btn { flex: 0 0 auto; border: 1px solid var(--gold); background: transparent; color: var(--gold); font: inherit;
+  font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; cursor: pointer; }
+.sdc-sync-btn[disabled] { opacity: 0.6; cursor: default; }
+.sdc-summary { margin: 0; font-family: var(--font-serif); font-size: 13px; line-height: 1.75; color: var(--ink-2); }
+.sdc-facts { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.sdc-facts li { display: inline-flex; align-items: baseline; gap: 6px; font-size: 11.5px; min-width: 0; }
+.sdc-facts li span { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-4); }
+.sdc-facts li strong { font-weight: 600; color: var(--ink-2); }
+.sdc-beats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 16px; }
+.sdc.is-compact .sdc-beats { grid-template-columns: 1fr; }
+.sdc-beats.is-followup { padding-top: 6px; border-top: 1px dashed var(--line-1); }
+.sdc-beat { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sdc-beat-k, .sdc-row-k { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-4); }
+.sdc-beat-v, .sdc-row-v { font-size: 12px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; }
+.sdc-beat-v.is-empty { color: var(--ink-4); font-style: italic; }
+.sdc-row { display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: baseline; }
+.sdc-row.tone-crimson .sdc-row-k { color: var(--crimson); }
+.sdc-row.tone-gold .sdc-row-k { color: var(--gold); }
+.sdc-chapter { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line-1); }
+.sdc-chapter-head { display: flex; align-items: center; gap: 8px; }
+.sdc-chapter-n { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; color: var(--ink-4); }
+.sdc-chapter-t { font-family: var(--font-serif); font-size: 13px; font-weight: 600; color: var(--ink-1); }
+.sdc-chapter-sum { margin: 0; font-size: 11.5px; line-height: 1.65; color: var(--ink-3); }
+@media (max-width: 900px) { .sdc-beats { grid-template-columns: 1fr; } }
+/* 写作台右侧的上下文抽屉只有两百多像素宽：三拍竖排、标签在上，来源与链接另起一行 */
+.wr-drawer .sdc { padding: 10px 12px; }
+.wr-drawer .sdc-beats { grid-template-columns: 1fr; gap: 8px; }
+.wr-drawer .sdc-row { grid-template-columns: 1fr; gap: 1px; }
+.wr-drawer .sdc-src { margin-left: 0; flex-basis: 100%; }
+/* 收起的设计卡：只留头部一行（形态 / 篇幅 / 来源 / 链接） */
+.sdc-toggle { border: 0; background: transparent; font: inherit; font-size: 10.5px; font-weight: 600; color: var(--ink-4);
+  padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.sdc-toggle:hover { color: var(--ink-2); background: var(--paper-2); }
+.sdc.is-collapsed { gap: 0; }

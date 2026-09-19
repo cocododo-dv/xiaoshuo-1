@@ -39,12 +39,18 @@ await check("目录来自后端（tide 10 章，含戏剧卡）", async () => {
   const res = await page.evaluate(() => {
     const chs = window.WsCatalog.get();
     const ch1 = chs[0];
-    return { n: chs.length, title: ch1 && ch1.title, spine: ch1 && ch1.drama && ch1.drama.spine, sid: ch1 && ch1.scenes[0] && ch1.scenes[0].sid };
+    const first = ch1 && ch1.scenes[0];
+    return {
+      n: chs.length, title: ch1 && ch1.title, spine: ch1 && ch1.drama && ch1.drama.spine,
+      sid: first && first.sid, backendId: first && first.backendId, legacySid: first && first.legacySid,
+    };
   });
   if (res.n !== 10) throw new Error(`chapters: ${res.n}`);
   if (res.title !== "样章01") throw new Error(`title: ${res.title}`);
   if (!res.spine) throw new Error("drama.spine missing");
-  if (res.sid !== "ch01s1") throw new Error(`sid: ${res.sid}`);
+  // 阶段 X：场景 sid = 稳定的 scene_id（身份跟着行走）；位置式旧 slug 只留作 legacySid
+  if (!res.sid || res.sid !== res.backendId) throw new Error(`sid: ${res.sid} / ${res.backendId}`);
+  if (res.legacySid !== "ch01s1") throw new Error(`legacySid: ${res.legacySid}`);
 });
 
 await check("主页（dashboard 兜底 + 目录同源）渲染", async () => {

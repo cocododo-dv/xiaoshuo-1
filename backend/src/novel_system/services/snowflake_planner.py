@@ -842,6 +842,10 @@ def _scene_writer_brief(scene_type: str, detail: dict[str, Any]) -> dict[str, An
         "causal_prerequisite_scene_id": detail.get("causal_prerequisite_scene_id"),
         "downstream_obligations": detail.get("downstream_obligations") or detail.get("downstream_obligations_json") or [],
     }
+    # 阶段 X：一场可以接着另一组三拍（阶段 I / N）。过去物化只写主形态那三个键，后续三拍要等一次回流才
+    # 进得了场景卡——刚物化完的场于是没有 ``Follow-up beats``，还被当场报成「待同步」。与回流同一口径：写了才带。
+    secondary = ("goal", "conflict", "setback") if scene_type == "reactive" else ("reaction", "dilemma", "decision")
+    common.update({key: str(detail.get(key) or "") for key in secondary if str(detail.get(key) or "").strip()})
     if scene_type == "reactive":
         return {
             "source": "snowflake_method",

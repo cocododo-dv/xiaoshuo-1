@@ -17,6 +17,7 @@ from novel_system.api.snowflake_requests import (
     SnowflakeOrphanResolveRequest,
     SnowflakeResyncRequest,
     SnowflakeSceneTriageSuggestRequest,
+    SnowflakeStepApproveRequest,
     SnowflakeStepGenerateRequest,
     SnowflakeStepRestoreRequest,
 )
@@ -158,17 +159,19 @@ def approve_workspace_step(
     project_id: str,
     step_key: str,
     request: Request,
-    payload: EmptyRequest | None = None,
+    payload: SnowflakeStepApproveRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload.model_dump(mode="json") if payload else {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     return optional_idempotent_response(
         request,
         session,
         method="POST",
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
         payload={"project_id": project_id, "step_key": step_key, "body": body},
-        action=lambda: SnowflakeWorkspaceService(session).approve_step(project_id, step_key),
+        action=lambda: SnowflakeWorkspaceService(session).approve_step(
+            project_id, step_key, body, actor_ref=_actor(request)
+        ),
     )
 
 
@@ -509,6 +512,15 @@ def resolve_orphaned_scene(
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/orphaned-scenes/{scene_plan_id}/resolve",
         payload={"project_id": project_id, "scene_plan_id": scene_plan_id, "action": action},
         action=resolve,
+    )
+
+
+@router.get("/api/v2/projects/{project_id}/snowflake-workspace/resync-status")
+def get_workspace_resync_status(project_id: str, request: Request, session: Session = Depends(get_session)):
+    """阶段 X：写作台 / AI 起草台用的轻量读口——哪几场的场景卡落后于构思。"""
+    return ok(
+        SnowflakeWorkspaceService(session).resync_status(project_id),
+        req_id=getattr(request.state, "request_id", None),
     )
 
 

@@ -613,3 +613,7 @@
   .arr-dgroup-fields, .arr-guard-grid { grid-template-columns: 1fr; }
   .arr-handoff { grid-template-columns: 1fr; }
 }
+
+/* 阶段 X：章卡上的脊柱标记（灾一 / 灾二 / 灾三，来自构思的分章） */
+.arr-card-spine { margin-left: 6px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+  background: var(--gold-wash); color: var(--gold); }

@@ -427,3 +427,6 @@
    Narrow-screen fallback — desk behaves like the overlay mode
    (handled by base wr-redesign.css; nothing extra needed here)
    ========================================================== */
+
+/* 阶段 X：大纲上的场景题名一行放完（整句摘要在 title 提示里） */
+.wr-sc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -2,6 +2,8 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { storeAlert } from "./lib/store-utils.js";
 import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
+import { SceneDesignCard, planIntentsForScene, sceneDesignModel } from "./ws-scene-design.jsx";
+import { useDesignSync } from "./ws-design-sync.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
 import { WrCanonicalControl } from "./wr-canonical-control.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
@@ -15,7 +17,7 @@ import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { WriterTweaks, WRITER_TWEAK_DEFAULTS } from "./ws-shell-tweaks.jsx";
-import { navigateWithViewIntent, setViewIntentTargetReady } from "./ws-view-intents.js";
+import { navigateWithViewIntent, queueViewIntents, setViewIntentTargetReady } from "./ws-view-intents.js";
 import { sanitizeManuscriptHTML } from "./manuscript-html.js";
 import { wrPickedText, wrPlainText, wrSentences } from "./writer-candidates.js";
 
@@ -59,7 +61,13 @@ const WR_DOC_PLACEHOLDER = "<p>在这里开始写这一场……</p>";
 function wrSeedHTML(sid) {
   return WR_DOC_PLACEHOLDER;
 }
-function wrCountOf(el) { return el ? el.innerText.replace(/\s/g, "").length : 0; }
+/* 空白页上那句「在这里开始写这一场……」是占位，不是作者的字：不计入本场字数 */
+const WR_DOC_PLACEHOLDER_TEXT = "在这里开始写这一场……";
+function wrCountOf(el) {
+  if (!el) return 0;
+  const text = el.innerText.replace(/\s/g, "");
+  return text === WR_DOC_PLACEHOLDER_TEXT ? 0 : text.length;
+}
 /* 落盘前去掉深改姿态的诊断标注，保证 wr-doc 始终是干净正文 */
 function wrCleanHTML(el) {
   if (!el) return "";
@@ -75,8 +83,13 @@ function wrFromCatalog() {
   if (!cat) return [];
   return cat.map(c => ({
     id: c.id, n: c.n, title: c.title, state: c.state,
+    // 阶段 X：章从哪来 / 构思里的章摘要 / 脊柱标记——大纲上看得见这一章在书里的位置
+    origin: c.origin || "manual", summary: c.summary || "", spine: c.spine || "",
     expanded: !!(c.current || c.state === "writing"),
-    scenes: (c.scenes || []).map(s => ({ id: s.sid, title: s.title, state: s.state === "writing" ? "active" : (s.state || "todo") })),
+    scenes: (c.scenes || []).map(s => ({
+      id: s.sid, title: s.title, summary: s.summary || "", kind: s.kind || "主动",
+      state: s.state === "writing" ? "active" : (s.state || "todo"),
+    })),
   }));
 }
 function wrInitialScene() {
@@ -195,10 +208,16 @@ function wrCtx(sceneId) {
   const hit = WsCatalog ? WsCatalog.sceneById(sceneId) : null;
   if (hit) {
     const c = hit.chapter, s = hit.scene;
+    /* 阶段 X：POV / 时间 / 地点 / 出场先读**这一场**的设计（雪花物化进场景卡的），章上的值只作兜底。
+       过去只读章——雪花的章上没有这些字段，于是雪花的每一场都是「— / — / —」。 */
+    const d = s.design || {};
+    const pov = s.povName || c.pov || "";
+    const cast = (d.cast || []).map(x => [x.name, x.name === pov ? "POV" : "出场"]).filter(x => x[0]);
+    if (pov && !cast.some(x => x[0] === pov)) cast.unshift([pov, "POV"]);
     return {
-      pov: c.pov ? c.pov + "（限知）" : "—", time: c.time || "—", place: c.place || "—", type: (s.kind || "主动") + "场景",
+      pov: pov ? pov + "（限知）" : "—", time: d.storyTime || c.time || "—", place: d.location || c.place || "—", type: (s.kind || "主动") + "场景",
       gmc: { goal: s.goal || "（本场目标待规划）", conflict: s.obstacle || "（阻碍待规划）", setback: s.turn || "（挑战待规划）" },
-      cast: c.pov ? [[c.pov, "POV"]] : [],
+      cast,
       risks: [],
       portrait: [["短句率", 0, 70, false], ["动词驱动", 0, 65, false], ["具象意象", 0, 80, false]],
     };
@@ -241,8 +260,10 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       setChapters(wrFromCatalog());
       setActiveScene(prev => {
         // 切换作品/目录重载时，旧作品的 scene id 绝不能继续留在编辑器里。
-        if (prev && WsCatalog.sceneById(prev)) return prev;
-        const w = WsCatalog.writingScene();
+        // 命中就换成目录里现在的 sid：乐观创建时的临时 sid、旧深链里的位置式 sid 都经别名解析到同一场。
+        const kept = prev ? WsCatalog.sceneById(prev) : null;
+        if (kept) return kept.scene.sid;
+        const w = WsCatalog.focusScene ? WsCatalog.focusScene() : WsCatalog.writingScene();
         return w && w.scene ? w.scene.sid : null;
       });
     };
@@ -675,7 +696,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     else if (e.key === "Escape") { e.preventDefault(); closeMention(); }
   };
 
-  const recount = () => { const el = editorRef.current; if (el) setWordCount(el.innerText.replace(/\s/g, "").length); };
+  const recount = () => { const el = editorRef.current; if (el) setWordCount(wrCountOf(el)); };
 
   const updateActive = useWC(() => {
     const el = editorRef.current;
@@ -1078,14 +1099,23 @@ function WriterRoom({ t, setTweak, onExit, go }) {
           title: s.title,
           type: hit && hit.scene.kind ? hit.scene.kind + "场景" : (s.state === "active" ? "主动场景" : (i % 2 === 0 ? "主动场景" : "反应场景")),
           goal: (hit && hit.scene.goal) || "（本场目标待规划）",
-          card: hit ? { kind: hit.scene.kind || "主动", goal: hit.scene.goal || "", obstacle: hit.scene.obstacle || "", turn: hit.scene.turn || "" } : null,
+          // 阶段 X：正文上方随行的是与 AI 起草台同一张设计卡（坩埚 / POV·时间·地点 / 三拍 / 后续三拍）
+          design: hit ? sceneDesignModel(hit) : null,
         };
       }
     }
     return {};
   };
   const am = sceneMeta(activeScene);
+  const designSync = useDesignSync();
+  const designSyncFor = (model) => (model && model.backendId && designSync.pendingFor(model.backendId)
+    ? { pending: true, busy: designSync.isBusy(model.backendId), onSync: () => designSync.syncScenes([model.backendId]) }
+    : null);
   const flatScenes = chapters.flatMap(c => c.scenes);
+  const nextSceneTitle = (() => {
+    const i = flatScenes.findIndex(x => x.id === activeScene);
+    return i >= 0 && flatScenes[i + 1] ? flatScenes[i + 1].title : "";
+  })();
   const sceneAt = (off) => {
     const i = flatScenes.findIndex(s => s.id === activeScene);
     if (i < 0) return null;
@@ -1196,8 +1226,10 @@ function WriterRoom({ t, setTweak, onExit, go }) {
             <header className="wr-scene-head">
               <div className="wr-stamp">{am.stamp} · {am.type}</div>
               <h1 className="wr-scene-title">{am.title}</h1>
-              {am.card
-                ? <WrSceneCard card={am.card} onEdit={go ? () => go("author") : null} />
+              {am.design
+                ? <SceneDesignCard model={am.design} variant="compact" sync={designSyncFor(am.design)}
+                    onEditPlan={go ? () => go("snowflake", planIntentsForScene(am.design.backendId)) : null}
+                    onEditCard={go ? () => go("author") : null} />
                 : <div className="wr-goal"><span className="wr-goal-k">本场目标</span><span className="wr-goal-v">{am.goal}</span></div>}
               {approvedLocked && <div className="wr-final-lock" role="status"><I.Lock size={13} /> 已批准终稿只读。需要改写时，请先到成稿中心重新打开本章。</div>}
               {posture === "deep" && <div className="wr-deep-note"><span className="dot" />深改姿态 · 正文只读 · 点击高亮句直达诊断</div>}
@@ -1240,7 +1272,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
         {coexist && leftOpen && <div className="wr-resize wr-resize-l" onPointerDown={startRail("l")} onDoubleClick={() => resetRail("l")} title="拖拽调整大纲栏宽 · 双击重置" />}
         {coexist && rightOpen && <div className="wr-resize wr-resize-r" onPointerDown={startRail("r")} onDoubleClick={() => resetRail("r")} title="拖拽调整上下文栏宽 · 双击重置" />}
 
-        <WrNextCue show={nextCue && (coexist || !drawerOpen)} onGo={() => { const n = sceneAt(1); if (n) setActiveScene(n); setNextCue(false); }} onDismiss={() => { setNextCue(false); setNextDismissed(true); }} />
+        <WrNextCue show={nextCue && !!nextSceneTitle && (coexist || !drawerOpen)} nextTitle={nextSceneTitle} onGo={() => { const n = sceneAt(1); if (n) setActiveScene(n); setNextCue(false); }} onDismiss={() => { setNextCue(false); setNextDismissed(true); }} />
       </div>
 
       <div className={`wr-scrim wr-scrim-drawer ${drawerOpen ? "show" : ""}`} onClick={() => { setLeftOpen(false); setRightOpen(false); }} />
@@ -1329,36 +1361,12 @@ function WrEntityPop({ pop, onOpen }) {
   );
 }
 
-/* ---- 场景卡随行：目录里的 GMC 卡常驻正文上方，对着规划写 ---- */
-function WrSceneCard({ card, onEdit }) {
-  const isReact = card.kind === "反应";
-  const fields = isReact
-    ? [["反应", card.goal], ["困境", card.obstacle], ["决定", card.turn]]
-    : [["目标", card.goal], ["阻碍", card.obstacle], ["出口", card.turn]];
-  return (
-    <div className="wr-scard">
-      <div className="wr-scard-top">
-        <span className={`wr-scard-kind ${isReact ? "is-react" : ""}`}>{card.kind}场景</span>
-        <span className="wr-scard-src">本场的卡 · 来自章节编排</span>
-        {onEdit && <button className="wr-scard-edit" onClick={onEdit} title="到章节编排修改这张卡">编辑卡 ↗</button>}
-      </div>
-      <div className="wr-scard-grid">
-        {fields.map(([k, v]) => (
-          <div className="wr-scard-f" key={k}>
-            <span className="wr-scard-k">{k}</span>
-            <span className={`wr-scard-v ${v && !v.includes("（待") ? "" : "is-empty"}`}>{v && !v.includes("（待") ? v : "（待规划）"}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 /* ---- next cue ---- */
-function WrNextCue({ show, onGo, onDismiss }) {
+function WrNextCue({ show, nextTitle, onGo, onDismiss }) {
+  /* 下一场的名字读目录里真的下一场（这里曾经写死着已退役演示作品的场名）；全书最后一场没有「下一场」，不出提示 */
   return (
     <div className={`wr-next ${show ? "show" : ""}`}>
-      <span className="wr-next-text">本场已达目标字数 · 下一场 <b>馆长出现</b></span>
+      <span className="wr-next-text">本场已达目标字数 · 下一场 <b>{nextTitle}</b></span>
       <button className="wr-next-go" onClick={onGo}>写下一场 <I.ArrowRight size={13} /></button>
       <button className="wr-next-dismiss" onClick={onDismiss} title="稍后"><I.X size={14} /></button>
     </div>
@@ -1449,8 +1457,12 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onD
   const [editing, setEditing] = useWS(null);
   const [editVal, setEditVal] = useWS("");
   const dragFrom = useWR(null);
-  const tone = { approved: "sage", draft: "slate", writing: "crimson" }[ch.state] || "slate";
-  const label = { approved: "已批准", draft: "草稿", writing: "进行中" }[ch.state] || ch.state;
+  const tone = { approved: "sage", review: "gold", draft: "slate", writing: "crimson" }[ch.state] || "slate";
+  /* 与后端 CHAPTER_STATES 同一份词表——雪花整理出来的章是 planned，过去这里没有它，徽标上印的是英文原词 */
+  const label = { approved: "已批准", review: "送审", draft: "草稿", writing: "进行中", planned: "规划", todo: "待写" }[ch.state] || "规划";
+  const holdsActive = ch.scenes.some(s => s.id === activeScene);
+  /* 落点换到这一章（上一场 / 下一场、深链、从别的台子跳过来）时自动展开 */
+  useWE(() => { if (holdsActive) setOpen(true); }, [holdsActive]);
   const locked = ch.state === "approved";
   const startEdit = (s) => { if (!locked) { setEditing(s.id); setEditVal(s.title); } };
   const commit = () => { if (editing && onRename) onRename(ch.id, editing, editVal.trim() || "未命名"); setEditing(null); };
@@ -1466,7 +1478,8 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onD
         <button className="wr-ch-row" onClick={() => setOpen(v => !v)}>
           <span className="wr-ch-chev" style={{ transform: open ? "rotate(90deg)" : "none" }}><I.ChevronRight size={13} /></span>
           <span className="wr-ch-num">{ch.n}</span>
-          <span className="wr-ch-title">{ch.title}</span>
+          {/* 大纲栏很窄（224px）：脊柱标记与章摘要放进提示，不再多挤一枚徽标把章名压成省略号 */}
+          <span className="wr-ch-title" title={[ch.spine ? `收在${ch.spine}` : "", ch.summary || ch.title].filter(Boolean).join(" · ")}>{ch.title}</span>
           <span className={`pill pill-${tone} text-xs`} style={{ padding: "0 6px" }}><span className="pill-dot" />{label}</span>
         </button>
         {!selectMode && (
@@ -1508,7 +1521,7 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onD
                     onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } else if (e.key === "Escape") { e.preventDefault(); setEditing(null); } }}
                     onBlur={commit} />
                 ) : (
-                  <span className="wr-sc-name" onDoubleClick={(e) => { e.stopPropagation(); startEdit(s); }}>{s.title}</span>
+                  <span className="wr-sc-name" title={s.summary || s.title} onDoubleClick={(e) => { e.stopPropagation(); startEdit(s); }}>{s.title}</span>
                 )}
                 {editing !== s.id && !selectMode && (
                   <span className="wr-sc-act">
@@ -1594,14 +1607,25 @@ function WrTabBtn({ id, cur, on, icon, label, badge }) {
 }
 function WrCtxScene({ scene }) {
   const c = wrCtx(scene);
+  const hit = (() => { try { return WsCatalog ? WsCatalog.sceneById(scene) : null; } catch (e) { return null; } })();
+  const model = sceneDesignModel(hit);
+  const designSync = useDesignSync();
+  const sync = model && model.backendId && designSync.pendingFor(model.backendId)
+    ? { pending: true, busy: designSync.isBusy(model.backendId), onSync: () => designSync.syncScenes([model.backendId]) }
+    : null;
   /* 写作台 → AI 起草台的直达动线：这一场在目录里存在时，单场入列并跳转
      （此前整场起草只能绕道章节编排的「交给 AI」，三个台子像各自为战） */
-  const inCatalog = (() => { try { return !!(WsCatalog && WsCatalog.sceneById(scene)); } catch (e) { return false; } })();
   const forkAI = () => {
     navigateWithViewIntent("scene", "ws:scene-enqueue", { sid: scene });
   };
-  return (
-    <>
+  /* 回构思第 10 步并对准这一场（与成稿中心「回第 10 步」同一组意图） */
+  const toPlan = () => {
+    queueViewIntents("snowflake", planIntentsForScene(model.backendId));
+    window.location.hash = "#snowflake";
+  };
+  if (!model) {
+    /* 这一场不在目录里（目录还没装载）：只剩骨架可给 */
+    return (
       <section className="wr-block">
         <div className="wr-block-h">场景定位</div>
         <ul className="wr-meta">
@@ -1611,27 +1635,19 @@ function WrCtxScene({ scene }) {
           <li><span>类型</span><strong className="text-serif">{c.type}</strong></li>
         </ul>
       </section>
+    );
+  }
+  return (
+    <>
+      {/* 阶段 X：与 AI 起草台预检里的是同一张设计卡——坩埚、POV / 时间 / 地点 / 出场、按形态命名的三拍
+          （反应场是 反应 / 两难 / 决定，不再套着 Goal / Conflict / Setback 的标签）、后续三拍、钩子、章摘要 */}
       <section className="wr-block">
-        <div className="wr-block-h">戏剧弧 · GMC</div>
-        <ul className="wr-gmc">
-          <li><div className="k">Goal · 目标</div><div className="v">{c.gmc.goal}</div></li>
-          <li><div className="k">Conflict · 阻碍</div><div className="v">{c.gmc.conflict}</div></li>
-          <li><div className="k">Setback · 挫折</div><div className="v">{c.gmc.setback}</div></li>
-        </ul>
-        {inCatalog && (
-          <button className="btn btn-quiet btn-sm" style={{ marginTop: 10, width: "100%", justifyContent: "center" }} onClick={forkAI}
-            title="把这一场送进 AI 起草台排队：按上面的三拍与雪花上下文起草整场，归档后写回这里的正文">
-            <I.Play size={13} /> 交给 AI 起草整场
-          </button>
-        )}
-      </section>
-      <section className="wr-block">
-        <div className="wr-block-h">出场角色</div>
-        <div className="wr-chips">
-          {c.cast.map(([name, role]) => (
-            <span key={name} className="pill"><span className="pill-dot" />{name}（{role}）</span>
-          ))}
-        </div>
+        <SceneDesignCard model={model} sync={sync} onEditPlan={toPlan}
+          onEditCard={() => { window.location.hash = "#author"; }} />
+        <button className="btn btn-quiet btn-sm" style={{ marginTop: 4, width: "100%", justifyContent: "center" }} onClick={forkAI}
+          title="把这一场交给 AI 起草台：按上面这张设计卡与雪花上下文起草整场，归档后写回这里的正文">
+          <I.Play size={13} /> 交给 AI 起草整场
+        </button>
       </section>
     </>
   );

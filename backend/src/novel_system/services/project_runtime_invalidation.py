@@ -253,6 +253,21 @@ class SnowflakeImpactAnalyzer:
         }
 
 
+def _run_state_is_pristine(state: SceneRunState) -> bool:
+    """这一场从没进过管线：状态还是 ready，没有任何运行时指针。"""
+    return str(state.scene_status or "ready") == "ready" and not any(
+        (
+            state.current_bundle_id,
+            state.current_neutral_draft_row_id,
+            state.current_style_draft_row_id,
+            state.current_final_scene_row_id,
+            state.current_human_review_event_id,
+            state.current_qc_report_id,
+            state.latest_valid_draft_row_id,
+        )
+    )
+
+
 class ProjectRuntimeInvalidationService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -293,7 +308,13 @@ class ProjectRuntimeInvalidationService:
         if not scenes:
             return impact
         scene_ids = [scene.scene_id for scene in scenes]
-        chapter_ids = sorted({scene.chapter_id for scene in scenes})
+        chapter_by_scene = {scene.scene_id: scene.chapter_id for scene in scenes}
+        # 阶段 X：只有**真的有运行时产物**的场才谈得上「失效」。一场从没进过管线（运行态还是 ready、
+        # 没有任何指针，没有执行契约 / 草稿 / QC / 定稿）时，构思改了就是改了——场景卡跟上即可，没有东西
+        # 需要「重新规划」。过去这样的场也被打成 needs_replan：起草台把它当成在办的失败稿摆出来
+        # （author_state = generation_failed），待办里多一张「这稿需要重新规划」的卡（其实没有稿），
+        # 作品状态还被置成 chapter_blocked——作者还没开始写，只是在确认设计。
+        invalidated: set[str] = set()
 
         for row in self.session.execute(
             select(SceneExecutionContract).where(
@@ -302,30 +323,40 @@ class ProjectRuntimeInvalidationService:
             )
         ).scalars().all():
             row.status = "stale"
+            invalidated.add(row.scene_id)
 
         for row in self.session.execute(
             select(SceneDraft).where(SceneDraft.scene_id.in_(scene_ids), SceneDraft.status != "stale")
         ).scalars().all():
             row.status = "stale"
+            invalidated.add(row.scene_id)
 
         for row in self.session.execute(
             select(QcReport).where(QcReport.scene_id.in_(scene_ids), QcReport.status != "stale")
         ).scalars().all():
             row.status = "stale"
+            invalidated.add(row.scene_id)
 
-
-        final_row_ids = [
-            row.current_final_scene_row_id
-            for row in self.session.execute(select(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids))).scalars().all()
-            if row.current_final_scene_row_id
-        ]
+        states = self.session.execute(select(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids))).scalars().all()
+        final_row_ids = [row.current_final_scene_row_id for row in states if row.current_final_scene_row_id]
         if final_row_ids:
             for row in self.session.execute(
                 select(FinalScene).where(FinalScene.row_id.in_(final_row_ids))
             ).scalars().all():
                 row.status = "stale"
+                invalidated.add(row.scene_id)
 
-        for state in self.session.execute(select(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids))).scalars().all():
+        for state in states:
+            if not _run_state_is_pristine(state):
+                invalidated.add(state.scene_id)
+        impact["invalidated_scene_ids"] = sorted(invalidated)
+        if not invalidated:
+            return impact
+        chapter_ids = sorted({chapter_by_scene[scene_id] for scene_id in invalidated if scene_id in chapter_by_scene})
+
+        for state in states:
+            if state.scene_id not in invalidated:
+                continue
             state.scene_status = "needs_replan"
             state.current_bundle_id = None
             state.current_bundle_hash = None

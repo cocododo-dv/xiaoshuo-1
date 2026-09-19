@@ -58,7 +58,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -Action start
 - 作品与远端状态：`src/ws-works.jsx`
 - 雪花主线：`src/ws-snow.jsx`、`src/ws-snow-sync.jsx`
 - 写作与恢复：`src/ws-writer.jsx`、`src/wr-doc-store.jsx`、`src/wr-recovery-center.jsx`
-- AI 起草台：`src/ws-scene.jsx`、`src/ws-scene-run.jsx`
+- 目录（章 / 场的唯一交接面，场景 sid = 后端 `scene_id`）：`src/ws-catalog.jsx`；共用场景设计卡 `src/ws-scene-design.jsx`、场景卡同步状态 `src/ws-design-sync.jsx`（契约见 `docs/book-spine-catalog-contract.md`）
+- AI 起草台（左栏是全书书脊）：`src/ws-scene.jsx`、`src/ws-scene-run.jsx`
 - 章节运行与成稿：`src/ws-chapter-run.jsx`、`src/ws-manuscripts.jsx`、`src/ws-manuscripts-store.jsx`
 - API 客户端：`src/lib/client.js`
 
@@ -68,6 +69,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -Action start
 npx vitest run src/ws-works.test.jsx src/ws-snow.test.jsx src/ws-snow-sync.test.jsx
 npx vitest run src/wr-doc-store.test.jsx src/wr-recovery-center.test.jsx src/ws-writer-content-safety.test.jsx
 npx vitest run src/ws-scene-run.test.jsx src/lib/client.test.js
+npx vitest run src/ws-catalog.test.jsx src/ws-book-spine.test.jsx src/ws-scene-spine.test.jsx src/ws-writer-spine.test.jsx
 npx vitest run src/ws-chapter-run.test.jsx src/ws-manuscripts.test.jsx src/ws-manuscripts-flow.test.jsx
 npm run build
 ```

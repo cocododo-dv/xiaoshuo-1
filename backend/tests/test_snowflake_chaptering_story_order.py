@@ -375,10 +375,18 @@ def test_a_scene_dragged_out_of_its_chapter_range_is_reported(session) -> None:
     rows.insert(1, rows.pop(13))  # 二幕后段的第 14 场被拖到第 2 位，章归属还留在原章
     service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": rows}})
     preview = chaptering.preview(PROJECT_ID, {"strategy": "keep_current"})
-    kinds = [warning["kind"] for warning in preview["warnings"]]
-    assert "chapter_order_conflict" in kinds
+    # 阶段 X：章必须是故事序上连续的一段——面板摆出来的就是会落库的那一版。被拖进第一章范围里的那一场
+    # 并入它前一场所在的章，**只有这一场换章**（不会把后面整本书拽进它原来的那一章），并如实告诉作者。
+    healed = [warning for warning in preview["warnings"] if warning["kind"] == "chapter_order_healed"]
+    assert len(healed) == 1 and len(healed[0]["scene_plan_ids"]) == 1
+    assert "chapter_order_conflict" not in [warning["kind"] for warning in preview["warnings"]]
+    assert "empty_chapter" not in [warning["kind"] for warning in preview["warnings"]]
     assert all(warning["severity"] != "blocker" for warning in preview["warnings"])
-    # 按场景重新分章就回到连续的一段一段
+    first = preview["chapters"][0]["scenes"]
+    assert [scene["scene_plan_id"] for scene in first][1] == healed[0]["scene_plan_ids"][0]
+    flat = [scene["story_index"] for chapter in preview["chapters"] for scene in chapter["scenes"]]
+    assert flat == sorted(flat)
+    # 按场景重新分章同样是连续的一段一段
     fresh = chaptering.preview(PROJECT_ID, {"strategy": "from_scenes"})
     assert "chapter_order_conflict" not in [warning["kind"] for warning in fresh["warnings"]]
 
@@ -450,8 +458,10 @@ def test_materializing_next_to_a_hand_made_chapter_does_not_500(client, session)
     project_id = _create_project(client, "hand-made")
     seed_project(client, project_id)
     _pass_triage(client, project_id)
+    # 阶段 X：一个字没写、章名还是系统起的「第 N 章」的占位章会在确认写入时移入回收站
+    # （test_catalog_book_spine.py）；这里守的是**作者真的起过名**的手建章——它原地不动。
     created = client.post(
-        f"/api/v2/projects/{project_id}/catalog/chapters", json={"title": "第 1 章"},
+        f"/api/v2/projects/{project_id}/catalog/chapters", json={"title": "楔子 · 旧日志"},
         headers={"X-Idempotency-Key": "hand-made-chapter"},
     )
     assert created.status_code == 200, created.text

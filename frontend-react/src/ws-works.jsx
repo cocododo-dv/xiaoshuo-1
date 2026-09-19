@@ -100,7 +100,10 @@ function wsAdaptHome(d) {
         { k: "挫折", tone: "crimson", v: brief.setback || "" },
       ];
   const resume = d.resume || {};
-  const sceneNo = String((resume.scene_slug || "").split("s")[1] || "");
+  /* 章内第几场：后端单独给（阶段 X 起 scene_slug 是稳定的 scene_id，不再含位置）；
+     旧后端没有 scene_no 时退回从位置式 slug（ch08s3）里读。 */
+  const legacyNo = /^ch\d+s(\d+)$/.exec(resume.scene_slug || "");
+  const sceneNo = String(resume.scene_no || (legacyNo ? legacyNo[1] : "") || "");
   const snow = (d.snowflake || []).map(s => ({ name: WS_SNOW_SHORT[s.step_key] || s.label, s: s.status }));
   const act = (d.snowflake || []).find(s => s.status === "active");
   return {

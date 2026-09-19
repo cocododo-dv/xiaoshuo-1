@@ -1304,11 +1304,12 @@ class AuthorDraftService:
             self.lifecycle.require_active_chapter(object_id)
             return {"source_text_ref": f"author_blank:chapter:{object_id}", "content": ""}
         scene = self.lifecycle.require_active_scene(object_id)
-        chapter = self.lifecycle.require_active_chapter(scene.chapter_id)
-        return {
-            "source_text_ref": f"scene_card:{scene.scene_id}:blank",
-            "content": _scene_blank_scaffold(scene, chapter_goal=chapter.chapter_goal),
-        }
+        self.lifecycle.require_active_chapter(scene.chapter_id)
+        # 阶段 X：空白稿就是空白。过去这里把场景卡抄成一段「【章节目标】…【场景目标】…【节拍】…」脚手架
+        # 塞进正文——那是没有随行场景卡的旧作者台留下的做法。现在设计卡常驻在正文旁边（写作台 / AI 起草台
+        # 同一张），抄进正文的那份只会：算进字数、要作者先删掉才能动笔、构思改了它也不跟着变
+        # （一份永远停在首次打开那一刻的旧卡），忘了删还会被一起提升成权威正文。
+        return {"source_text_ref": f"scene_card:{scene.scene_id}:blank", "content": ""}
 
     def _scene_source(self, scene_id: str) -> dict[str, str]:
         scene = self.lifecycle.require_active_scene(scene_id)
@@ -1998,23 +1999,5 @@ def _serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
-
-
-def _scene_blank_scaffold(scene: SceneCard, *, chapter_goal: str) -> str:
-    parts: list[str] = []
-    if chapter_goal:
-        parts.append(f"【章节目标】{chapter_goal}")
-    if scene.scene_goal:
-        parts.append(f"【场景目标】{scene.scene_goal}")
-    if scene.location:
-        parts.append(f"【地点】{scene.location}")
-    beats = [str(item).strip() for item in (scene.beats_json or []) if str(item).strip()]
-    if beats:
-        parts.append(f"【节拍】{' / '.join(beats)}")
-    if scene.exit_change:
-        parts.append(f"【结尾变化】{scene.exit_change}")
-    if scene.hook:
-        parts.append(f"【读者钩子】{scene.hook}")
-    return "\n".join(parts)
 
 

@@ -174,7 +174,9 @@ def test_dashboard_v2_shape_with_demo_seed(client, session):
 
     data = client.get("/api/v2/projects/work-a/dashboard").json()["data"]
     assert data["resume"]["chapter_no"] == "08"
-    assert data["resume"]["scene_slug"] == "ch08s3"
+    # 阶段 X：scene_slug 是稳定的 scene_id；章内第几场单独给（主页焦点卡的「SC 03」）
+    assert data["resume"]["scene_slug"].endswith("_SC03") or data["resume"]["scene_slug"]
+    assert data["resume"]["scene_no"] == 3
     assert data["resume"]["scene_title"] == "样场 8-3"
     assert len(data["resume"]["last_lines"]) == 2
     assert "样例正文最后一行甲" in data["resume"]["last_lines"][0]

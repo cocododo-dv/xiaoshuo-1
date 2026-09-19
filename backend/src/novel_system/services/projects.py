@@ -25,6 +25,10 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.db.session import SessionLocal
+from novel_system.services.catalog_placeholders import (  # noqa: F401  (re-exported for callers / tests)
+    AUTO_TRASHED_PLACEHOLDER_CHAPTER,
+    trash_pristine_placeholder_chapters,
+)
 from novel_system.services.chapter_approval import is_chapter_approved
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from novel_system.services.chapter_runner import ChapterRunnerService
@@ -401,6 +405,15 @@ class ProjectService:
         created_chapter_count = 0
         created_scene_count = 0
         restored_chapter_ids: list[str] = []
+        # 阶段 X：雪花的章进目录之前，先把手建的空白占位章（「第 1 章 / 开场」，一个字没写）移入回收站——
+        # 必须在落位之前：新章的章序是「接在计划之外的章后面」算的。只对雪花计划做；作者写过东西的章不动。
+        trashed_placeholder_chapters: list[dict[str, Any]] = []
+        if str((plan.plan_json or {}).get("source") or "") == "snowflake_method":
+            trashed_placeholder_chapters = trash_pristine_placeholder_chapters(
+                self.session,
+                project.project_id,
+                keep_chapter_ids={str(item.get("chapter_id") or "").strip() for item in chapters},
+            )
         placement = _CatalogPlacement(self.session, project.project_id, chapters)
         for chapter_plan in chapters:
             chapter_id = str(chapter_plan.get("chapter_id") or "").strip()
@@ -568,7 +581,8 @@ class ProjectService:
                     _optional_text(scene_plan.get("scene_type")) or "outline_driven"
                 )
                 scene.is_chapter_last = 1 if final_seq[scene_id] == placement.chapter_size(chapter_id) else 0
-                scene.writer_brief_json = {
+                previous_brief = dict(scene.writer_brief_json or {})
+                incoming_brief = {
                     "source": (plan.plan_json or {}).get("source")
                     or "project_outline_plan",
                     "project_id": project.project_id,
@@ -579,6 +593,12 @@ class ProjectService:
                     ),
                     **dict(scene_plan.get("writer_brief_json") or {}),
                 }
+                # 阶段 X：作者在台子上给这一场改过的题名（≠ 上次物化播下去的）跨重新物化保留；
+                # 其余设计键整张按这一版计划重写，「台面改动」记号随之清掉（简报是整张替换的）。
+                kept_title = str(previous_brief.get("title") or "").strip()
+                if kept_title and kept_title != str(previous_brief.get("seeded_title") or "").strip():
+                    incoming_brief["title"] = kept_title
+                scene.writer_brief_json = incoming_brief
                 # SceneRunState has an immediate FK to SceneCard and the ORM models
                 # intentionally do not declare relationships for dependency ordering.
                 self.session.flush()
@@ -597,7 +617,15 @@ class ProjectService:
         plan.status = PLAN_STATUS_APPROVED
         plan.approved_at = utcnow()
         project.active_outline_plan_id = plan.plan_id
-        project.current_chapter_id = str(chapters[0]["chapter_id"])
+        # 「当前章」是作者的书签。第一次物化（或书签指着的章已经不在目录里——占位章刚被移走、
+        # 旧章重新分章后空了）才把它放到这一版的第一章；重新物化不得把写到第 8 章的作者拽回第 1 章。
+        bookmark = self.session.get(ChapterGoal, project.current_chapter_id) if project.current_chapter_id else None
+        if (
+            bookmark is None
+            or bookmark.project_id != project.project_id
+            or int(bookmark.trashed_flag or 0) == 1
+        ):
+            project.current_chapter_id = str(chapters[0]["chapter_id"])
         project.status = PROJECT_STATUS_CHAPTER_READY
         self.session.flush()
         return {
@@ -607,6 +635,7 @@ class ProjectService:
             "created_scene_count": created_scene_count,
             "restored_chapter_ids": restored_chapter_ids,
             "trashed_empty_chapters": trashed_empty_chapters,
+            "trashed_placeholder_chapters": trashed_placeholder_chapters,
         }
 
     def require_project(self, project_id: str) -> StoryProject:

@@ -711,21 +711,67 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     setActiveKey(pair[0]);
     setTabFor(pair[0], "edit");
   };
+  /* 阶段 X：「确认写入」之后不再只丢一句回执就把作者晾在构思里——给一条常驻的交付条：
+     目录现在是什么样（几章几场）、顺手做了什么（空白占位章 / 变空的旧章进了回收站），
+     以及下一步去哪：写作台从「现在该写的那一场」开始写，或去 AI 起草台（书脊上已经是这一版的章与场）。 */
+  const [delivered, setDelivered] = useSS(null);
   const onChapterPlanDone = (result) => {
     setChapterPlanOpen(false);
     const chapters = (result && result.created_chapter_count) || 0;
     const trashed = ((result && result.trashed_empty_chapters) || []).length;
     const restored = ((result && result.restored_chapter_ids) || []).length;
-    const extras = [
+    const placeholders = ((result && result.trashed_placeholder_chapters) || []).length;
+    const notes = [
+      placeholders ? `${placeholders} 个没动过笔的空白占位章已移入回收站，这一版的章从第 1 章排起` : "",
       trashed ? `${trashed} 个变空的旧章已移入回收站` : "",
       restored ? `${restored} 章从回收站取回` : "",
-    ].filter(Boolean).join(" · ");
+    ].filter(Boolean);
     showToast(
-      (chapters ? `已整理并写入 ${chapters} 章 · 可到章节编排复核` : "章节结构已按这一版更新 · 可到章节编排复核")
-        + (extras ? ` · ${extras}` : ""),
+      (chapters ? `已整理并写入 ${chapters} 章` : "章节结构已按这一版更新") + (notes.length ? ` · ${notes.join(" · ")}` : ""),
       "sage",
     );
+    setDelivered({ created: chapters, notes });
   };
+  /* 跟着目录走：确认写入之后目录是整份重拉的，交付条上的「几章几场」要等它回来再报（不能报 0 章 0 场）。
+     听 ws:catalog-changed 广播而不是多引一个 hook——这张视图的单测把 ws-catalog 整个 mock 掉了。 */
+  const [, setCatalogTick] = useSS(0);
+  useSE(() => {
+    const bump = () => setCatalogTick(t => t + 1);
+    window.addEventListener("ws:catalog-changed", bump);
+    return () => window.removeEventListener("ws:catalog-changed", bump);
+  }, []);
+  const catalogChapters = (WsCatalog && WsCatalog.get ? WsCatalog.get() : []) || [];
+  const deliveredTotals = delivered
+    ? { chapters: catalogChapters.length, scenes: catalogChapters.reduce((n, c) => n + (c.scenes || []).length, 0) }
+    : null;
+  const goWriteFirst = () => {
+    const focus = WsCatalog && WsCatalog.focusScene ? WsCatalog.focusScene() : null;
+    if (focus) navigateWithViewIntent("writer", "ws:writer-scene", focus.scene.sid);
+    else location.hash = "#writer";
+  };
+  /* 确认 09 / 10 之后场景卡自动跟上构思（SnowSync 广播 ws:snow-catalog-synced）：出一句回执。
+     作者点「确认本步」时，确认流程随后还会出它自己的回执——两句并成一句（catalogSyncRef 留 4 秒），
+     不让「同步了几场」被后一句盖掉；键入后自动补批准的那条路没有第二句，这里直接出。 */
+  const catalogSyncRef = useSR(null);
+  const catalogSyncText = (d) => {
+    const held = d.held_count || 0;
+    return [
+      d.synced_count ? `${d.synced_count} 场的改动已同步到目录（写作台 / AI 起草台读到的是新卡）` : "",
+      held ? `${held} 场留给你看差异——用上方的「同步到目录」` : "",
+    ].filter(Boolean).join(" · ");
+  };
+  useSE(() => {
+    const onSynced = (e) => {
+      const d = (e && e.detail) || {};
+      if (d.workId && WsWorks && WsWorks.activeId && d.workId !== WsWorks.activeId()) return;
+      const text = catalogSyncText(d);
+      if (!text) return;
+      catalogSyncRef.current = { at: Date.now(), text };
+      pushToast({ text, tone: d.held_count && !d.synced_count ? "gold" : "sage", timeout: 6000 });
+    };
+    window.addEventListener("ws:snow-catalog-synced", onSynced);
+    return () => window.removeEventListener("ws:snow-catalog-synced", onSynced);
+  }, []);
   const active = S2_STEPS.find(s => s.key === activeKey) || S2_STEPS[2];
   const data = S2_STEP_DATA[activeKey] || {};
   /* 当前步骤的页签 / busy / 错误视图（底层都按步骤存） */
@@ -795,7 +841,12 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     }
     setStates(prev => ({ ...prev, [activeKey]: "done" }));
     pushHist(reconfirm ? "重新确认" : "确认本步", `${active.num} ${active.name}`, "我", snapNow(activeKey));
-    showToast(reconfirm ? `已重新确认 · ${active.name}，下游按新版本核对` : `已确认 · ${active.name}`, "sage");
+    const synced = catalogSyncRef.current && Date.now() - catalogSyncRef.current.at < 4000 ? catalogSyncRef.current.text : "";
+    catalogSyncRef.current = null;
+    pushToast({
+      text: (reconfirm ? `已重新确认 · ${active.name}，下游按新版本核对` : `已确认 · ${active.name}`) + (synced ? ` · ${synced}` : ""),
+      tone: "sage", timeout: synced ? 7000 : 4200,
+    });
     const ni = nextUnfinished(idx); if (ni >= 0) goStep(ni);
   };
   /* re-review a stale step in place. 阶段 E（E3 第二步）：「已复核」= 在服务端记下「仍然有效」
@@ -1480,6 +1531,24 @@ function WsSnowflake({ go, initialStep, onOverview }) {
           </div>
         </div>
       </div>
+
+      {delivered && deliveredTotals && (
+        <div className="sf-stale-banner sf-resync-banner" data-testid="snow-delivered">
+          <span className="sf-stale-banner-ic"><I.Check size={15} /></span>
+          <div className="sf-stale-body">
+            <div className="sf-stale-title">章节结构已写入目录{deliveredTotals.chapters ? ` · 现在是 ${deliveredTotals.chapters} 章 ${deliveredTotals.scenes} 场` : " · 正在读取目录…"}</div>
+            <div className="sf-stale-sub">
+              写作台的大纲、AI 起草台的书脊、章节编排读的都是这一份——每一场带着它的设计卡（坩埚 / POV / 三拍 / 钩子）。
+              {delivered.notes.length ? ` ${delivered.notes.join("；")}。` : ""}
+              之后再改 09 / 10，点「确认本步」场景卡就自动跟上。
+            </div>
+          </div>
+          <button className="btn btn-accent btn-sm sf-stale-ok" data-testid="snow-delivered-write" onClick={goWriteFirst} title="进写作台，落在现在该写的那一场上"><I.Pen size={13} /> 去写作台</button>
+          <button className="btn btn-ghost btn-sm" data-testid="snow-delivered-draft" onClick={() => { location.hash = "#scene"; }} title="AI 起草台的书脊上已经是这一版的章与场"><I.Play size={13} /> 去 AI 起草台</button>
+          <button className="btn btn-quiet btn-sm" onClick={() => { location.hash = "#author"; }}>章节编排</button>
+          <button className="btn btn-quiet btn-sm" aria-label="收起" onClick={() => setDelivered(null)}><I.X size={13} /></button>
+        </div>
+      )}
 
       {resyncInfo.pendingCount > 0 && (
         <div className="sf-stale-banner sf-resync-banner">
@@ -2393,19 +2462,10 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
   const [adopted, setAdopted] = useSS(null);
   const [planOpen, setPlanOpen] = useSS(false);
   const adopt = () => setPlanOpen(true);
-  /* 并入成功后的第二动线：把已规划好的 todo 场批量送进 AI 起草台（入列后跳转） */
+  /* 并入成功后的第二动线：去 AI 起草台。阶段 X 起它的左栏就是全书书脊（与目录同源），
+     不必再把几十场塞进一份队列——先等目录重拉完，落点自然在「现在该写的那一场」上。 */
   const goDraft = async () => {
-    try {
-      if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh();
-      const sids = [];
-      (WsCatalog ? WsCatalog.get() : []).forEach(c => (c.scenes || []).forEach(s => {
-        if (s.sid && s.state !== "done" && (s.goal || "").trim() && !(s.goal || "").includes("待规划")) sids.push(s.sid);
-      }));
-      if (sids.length) {
-        navigateWithViewIntent("scene", "ws:scene-enqueue", { sids: sids.slice(0, 40) });
-        return;
-      }
-    } catch (e) {}
+    try { if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh(); } catch (e) {}
     location.hash = "#scene";
   };
   return (
@@ -2477,7 +2537,7 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
             <button className="btn btn-quiet btn-sm" onClick={() => { location.hash = "#author"; }}>
               <I.Check size={13} /> {adopted ? `已并入 ${adopted} 章` : "无新增（同名已存在）"} · 去编排查看
             </button>
-            <button className="btn btn-accent btn-sm" data-testid="snow-go-draft" onClick={goDraft} title="把已规划好的场批量送进 AI 起草台排队，按场景卡三拍与雪花上下文起草整场">
+            <button className="btn btn-accent btn-sm" data-testid="snow-go-draft" onClick={goDraft} title="AI 起草台的书脊上已经是这一版的章与场：逐场按设计卡与雪花上下文起草">
               <I.Play size={13} /> 去 AI 起草
             </button>
           </>

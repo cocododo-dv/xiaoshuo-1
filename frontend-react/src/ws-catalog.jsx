@@ -27,22 +27,19 @@ const catKey = (base) => (wsKey ? wsKey(base) : base);
 const catActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 
 
-/* ---- 确定性补齐场景 sid：chId + "s" + 序号（兼容写作器历史 id）---- */
+/* ---- 给乐观创建、还没有后端 id 的场补一个**临时** sid ----
+   后端建好之后目录重拉，这一场拿到稳定的 scene_id；临时 sid 经 catTrackAliases 仍解析到同一场。
+   临时 sid 刻意不长成位置式旧 slug（ch02s1）的样子：那个形状留给旧深链的兜底解析，两者不能撞名。 */
+let catTempSeq = 0;
 function catStamp(list) {
-  return (list || []).map((c) => {
-    const used = new Set((c.scenes || []).map(s => s.sid).filter(Boolean));
-    let i = 0;
-    return {
-      ...c,
-      scenes: (c.scenes || []).map((s) => {
-        if (s.sid) return s;
-        i += 1; let sid = c.id + "s" + i;
-        while (used.has(sid)) { i += 1; sid = c.id + "s" + i; }
-        used.add(sid);
-        return { ...s, sid };
-      }),
-    };
-  });
+  return (list || []).map((c) => ({
+    ...c,
+    scenes: (c.scenes || []).map((s) => {
+      if (s.sid) return s;
+      catTempSeq += 1;
+      return { ...s, sid: `tmp_${c.id}_${Date.now().toString(36)}_${catTempSeq}` };
+    }),
+  }));
 }
 
 function catSeedFor(workId) {
@@ -93,13 +90,46 @@ const KIND_FIELDS_GCS = ["目标", "阻碍", "挫折"];
 const KIND_FIELDS_RDD = ["反应", "两难", "决定"];
 const CAT_MIGRATED_LS = "ws_catalog_migrated_v1";
 
+/* 阶段 X：整张设计卡（坩埚 / 地点 / 时间 / 出场 / 读者情绪 / 必须包含·隐瞒 / 代价 / 篇幅带 / 呈现方式 /
+   后续三拍 / 破例理由）随目录到达台子。后端没给（旧后端、测试夹具）时是一张空卡，视图照常渲染。 */
+function catDesignFromApi(s) {
+  const d = (s && s.design) || {};
+  const followup = d.followup || {};
+  return {
+    origin: d.origin === "snowflake" ? "snowflake" : "manual",
+    crucible: d.crucible || "",
+    location: d.location || "",
+    storyTime: d.story_time || "",
+    cast: Array.isArray(d.cast) ? d.cast.map(c => ({ id: c.character_id || "", name: c.name || c.character_id || "" })).filter(c => c.name) : [],
+    readerEmotion: d.reader_emotion || "",
+    mustInclude: d.must_include || "",
+    mustWithhold: d.must_withhold || "",
+    cost: d.cost || "",
+    lengthBand: d.length_band || "",
+    renderingMode: d.rendering_mode || "full",
+    followup: {
+      goal: followup.goal || "", conflict: followup.conflict || "", setback: followup.setback || "",
+      reaction: followup.reaction || "", dilemma: followup.dilemma || "", decision: followup.decision || "",
+    },
+    exceptionReason: d.exception_reason || "",
+    protagonist: d.protagonist || "",
+    chapterLast: !!d.is_chapter_last,
+    deskEdited: !!d.desk_edited,
+  };
+}
+
 function catFromApiScene(s) {
   const reactive = s.kind === "reactive";
   const b = s.brief || {};
+  const work = s.work || {};
   return {
+    /* 场景 sid = 后端给的 slug。阶段 X 起它就是稳定的 scene_id（身份跟着行走，不跟着位置走）；
+       位置式旧 slug（ch08s3）只留作 legacySid，给旧深链兜底、给本机旧键做一次性迁移。 */
     sid: s.slug,
+    legacySid: s.legacy_slug || "",
     backendId: s.scene_id,
     title: s.title,
+    summary: s.summary || "",
     kind: reactive ? "反应" : "主动",
     state: s.state,
     words: s.words || 0,
@@ -109,18 +139,37 @@ function catFromApiScene(s) {
     povName: s.pov_character_name || "",
     povId: s.pov_character_id || "",
     kindFields: reactive ? KIND_FIELDS_RDD : KIND_FIELDS_GCS,
+    exitChange: s.exit_change || "",
+    hook: s.hook || "",
     // 阶段 D：最近一次准定稿评审的场景三问（坩埚可辨 / 三拍落地 / Yes-No-Maybe），无评审则 null
     storyCheck: s.story_check || null,
+    design: catDesignFromApi(s),
+    // 真实的工作状态（目录 state 只是作者手打的标签）：管线状态 / 有无定稿 / 有无正文
+    work: { runStatus: work.run_status || "", hasFinal: !!work.has_final, hasWords: !!work.has_words },
   };
+}
+
+/* 目录侧的幕只有 act1 / act2 / act3。后端读取时已归一；这里再守一道——章节编排按 act === "act1" 分卷，
+   认不出的值会让一章从看板上整个消失（雪花物化曾把幕写成整数 1 / 2 / 3，正是这么消失的）。 */
+function catNormalizeAct(value) {
+  const text = String(value == null ? "" : value).trim().toLowerCase();
+  if (text === "act1" || text === "act2" || text === "act3") return text;
+  const digit = /[123]/.exec(text);
+  return digit ? "act" + digit[0] : "act1";
 }
 
 function catFromApiChapter(c) {
   return {
     id: c.slug,
     backendId: c.chapter_id,
-    act: c.act || "act1",
+    act: catNormalizeAct(c.act),
     n: c.no,
     title: c.title,
+    // 阶段 X：章从哪来（雪花整理 / 手建）、构思里给它写的章摘要 / 章目标 / 脊柱标记
+    origin: c.origin === "snowflake" ? "snowflake" : "manual",
+    summary: c.summary || "",
+    goal: c.goal || "",
+    spine: c.spine || "",
     state: c.state,
     tension: typeof c.tension === "number" ? c.tension : 0.3,
     pov: c.pov || "",
@@ -205,9 +254,80 @@ const catErrorMap = {};    // workId → 最近一次装载错误；区分“真
 const catSubs = createSubscribers();
 const catPendingCreates = {}; // slug/sid → 创建中的 Promise（后端 id 待回填）
 
+const catAliasMap = {};       // workId → { 旧 sid（乐观创建时的临时 sid）: 现在的 sid }
+const CAT_SID_MIGRATED_LS = "ws_sid_migrated_v1";
+/* 按场景落地的本机键前缀（写作台读缓存 / 未同步标记 / 场景笔记，AI 起草台运行记录）与两份 sid 名单 */
+const CAT_SID_KEY_PREFIXES = ["wr-doc:", "wr-doc-pending:", "wr-notes:", "wr-notes-pending:", "scn-run:"];
+const CAT_SID_LIST_KEYS = ["scn-queue:v1", "scn-queue-dismissed:v1"];
+
 function catNotify() {
   catSubs.notify();
   try { window.dispatchEvent(new CustomEvent("ws:catalog-changed")); } catch (e) {}
+}
+
+/* sid 解析：直接命中 → 会话内别名（乐观创建的临时 sid，建好之后后端给的是稳定 id）→ 位置式旧 slug
+   （待办卡 / 旧深链里存下来的 ch08s3；语义与从前一样——「现在排在那个位置上的场」）。 */
+function catResolveScene(workId, sid) {
+  if (!sid) return null;
+  const chapters = catLoad(workId);
+  const find = (pred) => {
+    for (const c of chapters) {
+      const s = (c.scenes || []).find(pred);
+      if (s) return { chapter: c, scene: s, index: c.scenes.indexOf(s) };
+    }
+    return null;
+  };
+  const direct = find(x => x.sid === sid);
+  if (direct) return direct;
+  const alias = (catAliasMap[workId] || {})[sid];
+  if (alias) { const hit = find(x => x.sid === alias); if (hit) return hit; }
+  return find(x => x.legacySid && x.legacySid === sid);
+}
+
+/* 目录重拉后：上一份缓存里同一个后端场景换了 sid（只会是乐观创建的临时 sid）→ 记别名，
+   手里还攥着临时 sid 的视图（刚建完章就开始写的写作台）继续找得到这一场。 */
+function catTrackAliases(workId, prev, next) {
+  const bySceneId = {};
+  next.forEach(c => (c.scenes || []).forEach(s => { if (s.backendId) bySceneId[s.backendId] = s.sid; }));
+  const map = catAliasMap[workId] || (catAliasMap[workId] = {});
+  (prev || []).forEach(c => (c.scenes || []).forEach(s => {
+    const now = s.backendId && bySceneId[s.backendId];
+    if (now && now !== s.sid) map[s.sid] = now;
+  }));
+}
+
+/* 一次性迁移（每部作品一次）：场景 sid 从位置式（ch08s3）换成稳定的 scene_id 之后，把按旧 sid 落地的
+   本机键挪到新 sid 上——映射取此刻的目录位置，与升级前「下次打开时会读到的那一场」完全一致，不引入新错位。 */
+function catMigrateSidKeys(workId, chapters) {
+  try {
+    const marker = CAT_SID_MIGRATED_LS + "::" + workId;
+    if (localStorage.getItem(marker)) return;
+    const map = {};
+    chapters.forEach(c => (c.scenes || []).forEach(s => { if (s.legacySid && s.legacySid !== s.sid) map[s.legacySid] = s.sid; }));
+    if (!Object.keys(map).length) return; // 旧后端（slug 仍是位置式）：没有可迁的，也不打标记
+    Object.keys(map).forEach((legacy) => {
+      CAT_SID_KEY_PREFIXES.forEach((prefix) => {
+        const from = `${prefix}${legacy}::${workId}`;
+        const to = `${prefix}${map[legacy]}::${workId}`;
+        const value = localStorage.getItem(from);
+        if (value == null) return;
+        if (localStorage.getItem(to) == null) localStorage.setItem(to, value);
+        localStorage.removeItem(from);
+      });
+    });
+    CAT_SID_LIST_KEYS.forEach((base) => {
+      const key = `${base}::${workId}`;
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      try {
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) localStorage.setItem(key, JSON.stringify([...new Set(list.map(x => map[x] || x))]));
+      } catch (e) {}
+    });
+    localStorage.setItem(marker, new Date().toISOString());
+  } catch (e) {
+    console.warn("[WsCatalog] 本机场景键迁移失败（下次再试）:", e);
+  }
 }
 const catApiBase = (id) => `/api/v2/projects/${id}/catalog`;
 
@@ -233,7 +353,10 @@ function catFetch(workId, options) {
           chapters = (data && data.chapters) || [];
         }
       }
-      catCache[workId] = chapters.map(catFromApiChapter);
+      const mapped = chapters.map(catFromApiChapter);
+      catMigrateSidKeys(workId, mapped);
+      catTrackAliases(workId, catCache[workId], mapped);
+      catCache[workId] = mapped;
       catReadyMap[workId] = true;
       delete catErrorMap[workId];
       catNotify();
@@ -285,13 +408,7 @@ async function catBackendChapterId(chId) {
   return id;
 }
 async function catBackendSceneId(sid) {
-  const lookup = () => {
-    for (const c of catLoad(catActiveId())) {
-      const s = (c.scenes || []).find(x => x.sid === sid);
-      if (s) return { scene: s, chapter: c };
-    }
-    return null;
-  };
+  const lookup = () => catResolveScene(catActiveId(), sid);
   let hit = lookup();
   if (hit && !hit.scene.backendId && catPendingCreates[hit.chapter.id]) {
     await catPendingCreates[hit.chapter.id];
@@ -505,25 +622,34 @@ const WsCatalog = {
     return this.get();
   },
   /* —— 查找 —— */
-  sceneById(sid) {
-    for (const c of this.get()) { const s = (c.scenes || []).find(x => x.sid === sid); if (s) return { chapter: c, scene: s, index: c.scenes.indexOf(s) }; }
-    return null;
+  sceneById(sid) { return catResolveScene(catActiveId(), sid); },
+  /* 后端场景 id → 现在的 sid（待办卡 / 同步状态按后端 id 说话） */
+  sidForBackendId(sceneId) {
+    if (!sceneId) return "";
+    for (const c of this.get()) { const s = (c.scenes || []).find(x => x.backendId === sceneId); if (s) return s.sid; }
+    return "";
   },
   currentChapter() {
     const chs = this.get();
     return chs.find(c => c.current) || chs.find(c => c.state === "writing") || chs[chs.length - 1] || null;
   },
-  writingScene() {
-    const chs = this.get();
-    const cur = this.currentChapter();
-    if (cur) {
-      const s = (cur.scenes || []).find(x => x.state === "writing");
-      if (s) return { chapter: cur, scene: s, index: cur.scenes.indexOf(s) };
-    }
-    for (const c of chs) { const s = (c.scenes || []).find(x => x.state === "writing"); if (s) return { chapter: c, scene: s, index: c.scenes.indexOf(s) }; }
-    if (cur && cur.scenes && cur.scenes.length) return { chapter: cur, scene: cur.scenes[0], index: 0 };
+  /* 「现在该写哪一场」——主页的继续写作、写作台的落点、AI 起草台的落点共用这一条规则
+     （后端 catalog.focus_scene_payload 是它的镜像）：当前章里在写的那一场 → 第一场没写完的 → 末场；
+     当前章还没铺场就往后找第一章有场的。过去三处各有各的规则——写作台会取全书任何一场「在写」的场，
+     于是雪花刚整理完，它开在一张手建的空白占位场上，而主页指着雪花的第一场。 */
+  focusScene() {
+    const pick = (c) => {
+      const scenes = (c && c.scenes) || [];
+      if (!scenes.length) return null;
+      const s = scenes.find(x => x.state === "writing") || scenes.find(x => x.state !== "done") || scenes[scenes.length - 1];
+      return { chapter: c, scene: s, index: scenes.indexOf(s) };
+    };
+    const hit = pick(this.currentChapter());
+    if (hit) return hit;
+    for (const c of this.get()) { const next = pick(c); if (next) return next; }
     return null;
   },
+  writingScene() { return this.focusScene(); },
   /* —— 写作器结构操作（经 set() 的 diff 引擎落端点）—— */
   renameScene(chId, sid, title) {
     this.set(this.get().map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.map(s => s.sid === sid ? { ...s, title } : s) }));

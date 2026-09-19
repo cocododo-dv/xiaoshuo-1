@@ -280,7 +280,8 @@ def test_confirmed_chapter_plan_materializes_the_authored_chapters(client, sessi
     assert [chapter_title(chapter) for chapter in chapters] == [c["title"] for c in _CHAPTERS]
     # 章 id 字符串绝不能再出现在作者眼前
     assert all(chapter_title(chapter) != chapter.chapter_id for chapter in chapters)
-    assert [chapter.narrative_json["act"] for chapter in chapters] == [c["act"] for c in _CHAPTERS]
+    # 阶段 X：幕写成目录侧的口径 act1 / act2 / act3（章节编排按它分卷；整数幕的章在看板上不显示）
+    assert [chapter.narrative_json["act"] for chapter in chapters] == [f"act{c['act']}" for c in _CHAPTERS]
     assert [chapter.display_order for chapter in chapters] == list(range(1, len(_CHAPTERS) + 1))
 
     cards = list(session.execute(select(SceneCard).where(SceneCard.project_id == project_id)).scalars())

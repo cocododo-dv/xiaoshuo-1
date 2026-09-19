@@ -126,6 +126,22 @@ describe("WsHome · 全书进度脊（并入的「流程」内容）", () => {
     expect(go.mock.calls[go.mock.calls.length - 1].length).toBe(1);
   });
 
+  it("阶段 X：焦点卡与「进入写作房间」指着同一场——当前章里第一场没写完的（雪花刚整理完：没有任何一场标着在写）", async () => {
+    // 真实故障的形状：雪花整理出来的当前章一场都没开始写；前面有一章手建的、里面一场标着「在写」
+    fx.chapters = [
+      CH(1, "writing", [SC("hand1", "writing")]),
+      CH(2, "planned", [SC("snow1", "done"), SC("snow2", "todo", { title: "翻出案卷" }), SC("snow3", "todo")], { current: true }),
+    ];
+    const go = vi.fn();
+    await mount(go);
+    expect(container.querySelector(".hm-slug").textContent).toContain("CH 02 · SC 02");
+    expect(container.querySelector(".hm-scene").textContent).toBe("翻出案卷");
+    await act(async () => {
+      container.querySelector('[data-testid="home-enter-writer"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(go).toHaveBeenLastCalledWith("writer", { type: "ws:writer-scene", detail: "snow2" });
+  });
+
   it("反应场景的三拍标签跟着目录的 kindFields 走，缺项占位也用对应标签", async () => {
     await mount(vi.fn());
     const rows = [...container.querySelectorAll(".hm-gos-row")].map(r => [

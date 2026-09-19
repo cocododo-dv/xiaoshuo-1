@@ -35,7 +35,9 @@ def test_create_first_chapter_becomes_writing_and_current(client):
     assert data["chapter"]["current"] is True
     assert data["chapter"]["slug"] == "ch01"
     assert len(data["chapter"]["scenes"]) == 1  # 默认开场场景
-    assert data["chapter"]["scenes"][0]["slug"] == "ch01s1"
+    # 阶段 X：场景 slug = scene_id（稳定身份）；位置式旧 slug 只作为 legacy_slug 供前端迁移本机旧键
+    assert data["chapter"]["scenes"][0]["slug"] == data["chapter"]["scenes"][0]["scene_id"]
+    assert data["chapter"]["scenes"][0]["legacy_slug"] == "ch01s1"
     assert data["chapter"]["scenes"][0]["state"] == "writing"
 
     second = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "第二章", "current": False})
@@ -131,7 +133,10 @@ def test_scene_crud_insert_and_kind_brief(client):
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     scenes = tree["chapters"][0]["scenes"]
     assert [s["title"] for s in scenes] == ["插入到最前", "开场", "反应场"]
-    assert [s["slug"] for s in scenes] == ["ch01s1", "ch01s2", "ch01s3"]
+    assert [s["legacy_slug"] for s in scenes] == ["ch01s1", "ch01s2", "ch01s3"]
+    # 插到最前面之后，原来那两场的 slug 一个字都没变——身份跟着行走，不跟着位置走
+    assert [s["slug"] for s in scenes] == [s["scene_id"] for s in scenes]
+    assert s2["slug"] == s2["scene_id"] == scenes[2]["slug"]
 
     patched = client.patch(
         f"/api/v2/projects/{pid}/catalog/scenes/{s2['scene_id']}",

@@ -63,10 +63,23 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
   const home = p.home || {};
 
   /* —— 当前章 / 当前场（单一真相源）—— */
+  /* 阶段 X：与写作台 / AI 起草台同一条「现在该写哪一场」规则（在写 → 第一场没写完的 → 末场）。
+     焦点卡上写的是哪一场，「进入写作房间」就打开哪一场——过去主页指着雪花的第一场，
+     写作台却开在全书里任何一场标着「在写」的场上（那张手建的空白占位场）。 */
   const cur = hmCurrentChapter(chapters);
-  const wIdx = cur ? cur.scenes.findIndex(s => s.state === "writing") : -1;
-  const sIdx = wIdx >= 0 ? wIdx : 0;
-  const curScene = cur && cur.scenes[sIdx] ? cur.scenes[sIdx] : null;
+  const curScenes = (cur && cur.scenes) || [];
+  const focusIdx = (() => {
+    const writing = curScenes.findIndex(s => s.state === "writing");
+    if (writing >= 0) return writing;
+    const pending = curScenes.findIndex(s => s.state !== "done");
+    return pending >= 0 ? pending : Math.max(0, curScenes.length - 1);
+  })();
+  const sIdx = focusIdx;
+  const curScene = curScenes[sIdx] ? curScenes[sIdx] : null;
+  const enterWriter = () => {
+    if (curScene && curScene.sid) go("writer", { type: "ws:writer-scene", detail: curScene.sid });
+    else go("writer");
+  };
   const slug = cur && curScene
     ? `CH ${cur.n} · SC ${String(sIdx + 1).padStart(2, "0")} · ${(curScene.kind || "主动")}场景`
     : (home.slug || "");
@@ -180,12 +193,12 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
             ))}
           </div>
           <div className="hm-hero-actions">
-            <button className="btn btn-accent btn-lg" onClick={() => go("writer")}><I.Pen size={16} /> 进入写作房间</button>
+            <button className="btn btn-accent btn-lg" data-testid="home-enter-writer" onClick={enterWriter}><I.Pen size={16} /> 进入写作房间</button>
             <button className="btn btn-ghost btn-lg" onClick={() => go("snowflake")}><I.Snowflake size={16} /> 回到构思</button>
           </div>
         </div>
 
-        <button className="hm-resume" onClick={() => go("writer")} title="回到上次中断处">
+        <button className="hm-resume" onClick={enterWriter} title="回到上次中断处">
           <span className="hm-resume-tab">CH {resume.ch}</span>
           <div className="hm-resume-head"><I.Quote size={12} /> 上次写到这里</div>
           <div className="hm-resume-body">

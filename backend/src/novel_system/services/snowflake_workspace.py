@@ -17,6 +17,7 @@ from novel_system.db.models import (
     OperationLog,
     OutlinePlan,
     SceneCard,
+    SceneRunState,
     SnowflakeAssistantTurn,
     SnowflakeCharacterPlan,
     SnowflakeRevisionLink,
@@ -29,6 +30,7 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.author_actions import author_action
+from novel_system.services.catalog import normalize_act
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import (
     PLAN_STATUS_PENDING_REVIEW,
@@ -605,15 +607,31 @@ class SnowflakeWorkspaceService:
             "workspace": workspace,
         }
 
-    def approve_step(self, project_id: str, step_key: str) -> dict[str, Any]:
+    def approve_step(
+        self,
+        project_id: str,
+        step_key: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
+        # 阶段 X：``sync_catalog``（工作台总是带）= 这一步确认之后，把已经物化的场景卡跟上这一版构思。
+        # 脚本 / 旧调用方不带它，行为与从前一样（待同步留给显式的 ``resync``）。
+        sync_catalog = bool((payload or {}).get("sync_catalog")) and step_key in CATALOG_SYNC_STEPS
         latest_by_step = self._latest_by_step(project.project_id)
         run = latest_by_step.get(step_key)
         if run is None:
             raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "这一步骤还没有草稿。", status_code=404)
         if run.status in {"approved", "skipped"}:
+            # 已经确认过的步骤再点一次确认：没有新的构思可跟，但上次留下的待同步（比如当时目录里
+            # 还没有目标章）现在可能已经搬得动了。
+            catalog_sync = self._auto_sync_catalog(project.project_id, actor_ref=actor_ref) if sync_catalog else None
             workspace = self.workspace(project.project_id)
-            return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
+            result = {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
+            if catalog_sync is not None:
+                result["catalog_sync"] = catalog_sync
+            return result
         if run.status != "pending_review":
             raise DomainError("SNOWFLAKE_STEP_RUN_NOT_APPROVABLE", "这一步骤当前状态不能被确认。", status_code=409)
 
@@ -669,12 +687,108 @@ class SnowflakeWorkspaceService:
             }
         )
         self.session.flush()
+        catalog_sync = self._auto_sync_catalog(project.project_id, actor_ref=actor_ref) if sync_catalog else None
         workspace = self.workspace(project.project_id)
-        return {
+        result = {
             "step": self._step_from_workspace(workspace, step_key),
             "workspace": workspace,
             "impact": self._combine_approval_impact(step_key, downstream_impact, runtime_impact),
         }
+        if catalog_sync is not None:
+            result["catalog_sync"] = catalog_sync
+        return result
+
+    # ------------------------------------------------ 阶段 X：确认即同步
+    #
+    # 物化之后，构思和目录是两份数据：作者在 09 / 10 改了一场、点了「确认本步」，运行时失效当场就按
+    # 改动范围标了（``invalidate_for_snowflake_step``），可场景卡还停在旧三拍上，要等作者再去横幅上点一次
+    # 「同步到目录」——不点，写作台 / AI 起草台读到的就是旧卡，作者感受到的是「构思和台子是两套东西」。
+    # 确认一步 = 这一版构思定了，目录就该跟上。只有三种卡不自动动，留给显式回流的差异预览：
+    #   - 这一场的规划还没确认 / 被上游标了需复核（``plan.status != approved``）；
+    #   - 作者在台子上改过这张卡的设计（``desk_edited_at``）——自动回流会把那次改动静默盖掉；
+    #   - 这次同步要把一张**已经有活儿**的卡送进回收站（略过 / 该重写 / 待删）。
+    # 要搬去的章目录里还没有的卡照常同步内容、只是不搬（与显式回流同一口径），回包的 notice 会说清楚。
+
+    def _auto_sync_catalog(self, project_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
+        plans = self._scene_plans(project_id)
+        excluded = self._excluded_scene_plan_ids(project_id)
+        order_drift = self._scene_card_order_drift(project_id, plans)
+        eligible: list[str] = []
+        held: list[dict[str, Any]] = []
+        for plan in plans:
+            scene = self.session.get(SceneCard, plan.scene_id)
+            if scene is None or scene.project_id != project_id:
+                continue  # 还没物化的场：进目录走「整理为章节结构」
+            patch = self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
+            diff = self._scene_card_diff(scene, patch)
+            if scene.scene_id in order_drift:
+                diff["scene_order"] = order_drift[scene.scene_id]
+            if not diff:
+                continue
+            reason = self._auto_sync_hold_reason(plan, scene, patch)
+            if reason:
+                held.append(
+                    {
+                        "scene_plan_id": plan.scene_plan_id,
+                        "scene_id": plan.scene_id,
+                        "title": plan.title or plan.summary or plan.scene_id,
+                        "reason": reason,
+                    }
+                )
+            else:
+                eligible.append(plan.scene_plan_id)
+        synced: list[str] = []
+        trashed_empty_chapters: list[dict[str, Any]] = []
+        notice: dict[str, Any] | None = None
+        if eligible:
+            outcome = self.resync_materialized_scenes(
+                project_id,
+                {"scene_plan_ids": eligible},
+                actor_ref=f"auto_sync:{actor_ref or 'operator'}",
+                include_workspace=False,
+            )
+            synced = [item["scene_id"] for item in outcome.get("results") or [] if item.get("synced")]
+            trashed_empty_chapters = list(outcome.get("trashed_empty_chapters") or [])
+            notice = outcome.get("notice")
+        return {
+            "synced_count": len(synced),
+            "synced_scene_ids": synced,
+            "held_count": len(held),
+            "held": held,
+            "trashed_empty_chapters": trashed_empty_chapters,
+            **({"notice": notice} if notice else {}),
+        }
+
+    def _auto_sync_hold_reason(self, plan: SnowflakeScenePlan, scene: SceneCard, patch: dict[str, Any]) -> str:
+        if str(plan.status or "") != "approved":
+            return "plan_not_confirmed"
+        if str((scene.writer_brief_json or {}).get("desk_edited_at") or "").strip():
+            return "desk_edited"
+        if int(patch.get("trashed_flag") or 0) == 1 and self._scene_card_has_work(scene):
+            return "would_trash_written_scene"
+        return ""
+
+    def _scene_card_has_work(self, scene: SceneCard) -> bool:
+        if int(scene.words_current or 0) > 0:
+            return True
+        state = self.session.get(SceneRunState, scene.scene_id)
+        if state is not None and (state.current_final_scene_row_id or str(state.scene_status or "ready") != "ready"):
+            return True
+        return (
+            self.session.execute(select(FinalScene.row_id).where(FinalScene.scene_id == scene.scene_id).limit(1)).first()
+            is not None
+        )
+
+    def resync_status(self, project_id: str) -> dict[str, Any]:
+        """台子用的轻量读口：哪几场的场景卡落后于构思（不必为此拉整个工作台）。
+
+        写作台 / AI 起草台对每一部作品都会问这一句，包括不是雪花法的作品——那不是错误：
+        如实回答「这部作品没有构思侧可同步」（``supported: false``），而不是 409（浏览器会把它记成一条控制台报错）。
+        """
+        project = self._projects.require_project(project_id)
+        if str(getattr(project, "planning_mode", "") or "") != "snowflake":
+            return {"supported": False, "pending_count": 0, "pending_scene_plan_ids": [], "pending_scenes": []}
+        return {"supported": True, **self._resync_status(project.project_id, self._scene_plans(project.project_id))}
 
     def accept_stale_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -1083,7 +1197,11 @@ class SnowflakeWorkspaceService:
                         "primary_form": scene_type,
                         "scene_type": scene_type,
                         "is_chapter_last": 1 if seq == len(members) else 0,
-                        "writer_brief_json": _scene_writer_brief(scene_type, detail),
+                        "writer_brief_json": {
+                            **_scene_writer_brief(scene_type, detail),
+                            # 阶段 X：构思里起过的短题名随卡进目录（整句摘要不算题名）
+                            **_scene_title_seed(detail),
+                        },
                     }
                 )
             chapter_payloads.append(
@@ -1099,15 +1217,17 @@ class SnowflakeWorkspaceService:
                     "ending_effect": "用新的选择、代价或信息推动下一章。",
                     "must_not": "不得复制参考书原文表达、人物、设定或桥段。",
                     "notes": "由雪花法分章物化，需确认后进入逐章运行。",
+                    # 阶段 X：幕写成目录侧的口径 act1 / act2 / act3。过去写整数 1 / 2 / 3，而章节编排按
+                    # ``act === "act1"`` 分卷——雪花整理出来的章在编排台上一张都不显示。
                     "narrative_json": {
                         "title": chapter.title or chapter_id,
-                        "act": int(chapter.act or 1),
+                        "act": normalize_act(chapter.act),
                         "spine": chapter.spine or "",
                     },
                     "writer_brief_json": {
                         "source": "snowflake_method",
                         "chapter_title": chapter.title or chapter_id,
-                        "chapter_act": int(chapter.act or 1),
+                        "chapter_act": normalize_act(chapter.act),
                         "chapter_spine": chapter.spine or "",
                     },
                     "scenes": scenes_payload,
@@ -1174,6 +1294,8 @@ class SnowflakeWorkspaceService:
             # 阶段 W：重新分章后变空的旧章已移入回收站 / 这一版又用到的章已从回收站取回——前端如实告诉作者
             "trashed_empty_chapters": result.get("trashed_empty_chapters", []),
             "restored_chapter_ids": result.get("restored_chapter_ids", []),
+            # 阶段 X：手建的空白占位章（「第 1 章 / 开场」，一个字没写）已移入回收站
+            "trashed_placeholder_chapters": result.get("trashed_placeholder_chapters", []),
         }
 
     def resync_materialized_scenes(
@@ -1182,6 +1304,7 @@ class SnowflakeWorkspaceService:
         payload: dict[str, Any] | None = None,
         *,
         actor_ref: str = "operator",
+        include_workspace: bool = True,
     ) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         body = payload or {}
@@ -1334,8 +1457,10 @@ class SnowflakeWorkspaceService:
             "results": results,
             "affected_runtime": affected_runtime,
             "trashed_empty_chapters": trashed_empty_chapters,
-            "workspace": self.workspace(project.project_id),
         }
+        if include_workspace:
+            # 确认即同步（approve_step）自己会在最后取一次工作台，不必在这里再算一遍
+            result["workspace"] = self.workspace(project.project_id)
         if pending_moves:
             # 静默跳过等于撒谎：作者以为回流做完了，目录其实还停在上一版章节结构。
             targets = sorted({item["target_chapter_id"] for item in pending_moves})
@@ -1743,6 +1868,9 @@ class SnowflakeWorkspaceService:
                     "scene_id": plan.scene_id,
                     "title": plan.title or plan.summary or plan.scene_id,
                     "changed_fields": sorted(diff.keys()),
+                    # 阶段 X：台子只提示**已确认**的规划落后于目录；还在改的草稿不算「待同步」
+                    "plan_status": str(plan.status or ""),
+                    "desk_edited": bool(str((scene.writer_brief_json or {}).get("desk_edited_at") or "").strip()),
                 }
             )
         return {
@@ -1781,8 +1909,12 @@ class SnowflakeWorkspaceService:
             # 继续挂着 200-500 的概述带——回到默认 medium。
             current_band = scene.target_length_band if scene.target_length_band != SUMMARY_LENGTH_BAND else None
             target_length_band = plan.target_length_band or current_band or "medium"
+        previous_brief = dict(scene.writer_brief_json or {})
+        carried = {key: value for key, value in previous_brief.items() if key not in {"title", "seeded_title", "desk_edited_at"}}
         brief = {
-            **dict(scene.writer_brief_json or {}),
+            **carried,
+            # 阶段 X：题名跟构思走，除非作者在台子上改过；回流之后这张卡与构思一致，「台面改动」记号清掉
+            **_followed_scene_title(previous_brief, _real_scene_title(plan.title, plan.summary)),
             "source": "snowflake_resync",
             "scene_plan_id": plan.scene_plan_id,
             "project_id": plan.project_id,
@@ -1870,11 +2002,16 @@ class SnowflakeWorkspaceService:
         diff: dict[str, dict[str, Any]] = {}
         for field, after in patch.items():
             before = getattr(scene, field)
-            if field == "writer_brief_json" and (
-                SnowflakeWorkspaceService._writer_brief_comparable(before)
-                == SnowflakeWorkspaceService._writer_brief_comparable(after)
-            ):
-                continue
+            if field == "writer_brief_json":
+                before_cmp = SnowflakeWorkspaceService._writer_brief_comparable(before)
+                after_cmp = SnowflakeWorkspaceService._writer_brief_comparable(after)
+                # 阶段 X：构思里的题名改了也算待同步——但只对播过题名的卡比（``seeded_title`` 键在）。
+                # 阶段 X 之前物化的卡没有这个键；拿「缺席」去比，全书会在升级当刻集体报「待同步」。
+                if isinstance(before, dict) and "seeded_title" in before and isinstance(before_cmp, dict):
+                    before_cmp["seeded_title"] = str(before.get("seeded_title") or "")
+                    after_cmp["seeded_title"] = str((after or {}).get("seeded_title") or "")
+                if before_cmp == after_cmp:
+                    continue
             if before != after:
                 diff[field] = {"before": before, "after": after}
         return diff
@@ -3410,6 +3547,38 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "stale_accepted_note": scene.stale_accepted_note or "",
         "diagnosis": deepcopy(scene.diagnosis_json or {}),
     }
+
+
+#: 确认这两步时（工作台带 ``sync_catalog``）已物化的场景卡自动跟上构思
+CATALOG_SYNC_STEPS = frozenset({"scene_list", "scene_details"})
+
+#: 构思里的场景题名超过这个长度就当它是摘要（09 没单独起题名时 title 会跟着摘要走）
+_SCENE_TITLE_SEED_MAX_CHARS = 40
+
+
+def _real_scene_title(title: Any, summary: Any) -> str:
+    """构思里**真起过**的场景短题名；空、和摘要一字不差、或长得像一句摘要的都不算。"""
+    value = " ".join(str(title or "").split())
+    if not value or value == " ".join(str(summary or "").split()) or len(value) > _SCENE_TITLE_SEED_MAX_CHARS:
+        return ""
+    return value
+
+
+def _scene_title_seed(detail: dict[str, Any]) -> dict[str, str]:
+    """物化写进场景卡简报的题名键：``title``（目录显示用，作者可在台子上改）+ ``seeded_title``
+    （这次播下去的值——之后题名还等于它，就说明作者没改过，回流 / 重新物化可以跟着构思走）。"""
+    real = _real_scene_title(detail.get("title"), detail.get("summary"))
+    # seeded_title 总是写（哪怕是空串）：这个键在，就说明这张卡是阶段 X 之后播的，题名可以参与「待同步」比较
+    return {"title": real, "seeded_title": real} if real else {"seeded_title": ""}
+
+
+def _followed_scene_title(previous_brief: dict[str, Any], real: str) -> dict[str, str]:
+    """回流 / 重新物化时题名怎么走：作者在台子上改过的（≠ 上次播的）原样保留，否则跟构思。"""
+    current = str(previous_brief.get("title") or "").strip()
+    seeded = str(previous_brief.get("seeded_title") or "").strip()
+    if current and current != seeded:
+        return {"title": current, "seeded_title": real}
+    return {"title": real, "seeded_title": real} if real else {"seeded_title": ""}
 
 
 def _scene_card_beats(scene_type: str, detail: dict[str, Any]) -> list[str]:

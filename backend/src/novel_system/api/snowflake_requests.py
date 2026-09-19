@@ -126,6 +126,12 @@ class SnowflakeOrphanResolveRequest(StrictRequestModel):
     action: str | None = Field(default=None, max_length=64)
 
 
+class SnowflakeStepApproveRequest(StrictRequestModel):
+    """确认一步。``sync_catalog``（工作台总是带）= 确认 09 / 10 之后，已物化的场景卡自动跟上这一版构思。"""
+
+    sync_catalog: bool | None = None
+
+
 class SnowflakeResyncRequest(StrictRequestModel):
     dry_run: bool | None = None
     scene_plan_ids: list[SnowflakeReference] | None = Field(

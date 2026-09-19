@@ -8,13 +8,22 @@
 - 场景顺序 = 既有 scene_seq（与 v1 scene-order 端点同一套逻辑，不另建列）。
 - 章标题写 narrative_json["title"]；读取回退 writer_brief_json.chapter_title →
   writer_brief_json.title → chapter_goal 首行。
-- slug 不入库：章 slug = "ch"+序号两位，场景 slug = 章slug+"s"+scene_seq（原型
-  ch08s3 格式，⌘K/深链/写作器历史 id 都用它）。
+- slug 不入库。章 slug = "ch"+序号两位（位置式，只当显示序号与界面键用）；**场景 slug = scene_id**
+  （阶段 X，2026-09-19）。它过去是位置式的 ``ch08s3``，而前端所有按场景落地的本机状态
+  （写作台的草稿绑定与读缓存、AI 起草台的运行记录与队列、场景笔记）都拿它当身份：目录里任何一次
+  结构变动——雪花重新分章 / 回流搬场、手动增删章、场景重排——都会让同一个 slug 指向另一场，
+  于是正文存进别的场的草稿、A 场的 AI 稿被采用到 B 场。场景的身份必须跟着行走，不跟着位置走。
+  旧的位置式 slug 仍以 ``legacy_slug`` 给出，只供前端把旧键一次性迁到新键。
 - C4 裁决：scene brief 按 kind 返回 GCS（proactive）或 RDD（reactive），
   前端 store 适配层负责映射到视图槽位。
+- 阶段 X「一条书脊」：目录是构思（雪花）与三张台子（章节编排 / 写作台 / AI 起草台）之间唯一的交接面，
+  所以场景载荷带上整张设计卡（``design``：坩埚、地点、时间、出场、读者情绪、必须包含 / 隐瞒、
+  代价、篇幅带、呈现方式、后续三拍、破例理由）与真实的工作状态（``work``：管线状态、有无定稿），
+  章载荷带上来源（``origin``）、章摘要、章目标与脊柱标记——台子不再各自去猜，也不必再开雪花工作台。
 """
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -29,6 +38,7 @@ from novel_system.db.models import (
     SceneRunState,
     StoryCharacter,
     StoryProject,
+    utcnow,
 )
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
@@ -64,6 +74,55 @@ NARRATIVE_FIELDS = (
 SCENE_BRIEF_GCS = ("goal", "conflict", "setback")
 SCENE_BRIEF_RDD = ("reaction", "dilemma", "decision")
 
+#: ``writer_brief_json["source"]`` 为这两个值的章 / 场来自雪花物化或回流
+SNOWFLAKE_SOURCES = frozenset({"snowflake_method", "snowflake_resync"})
+#: 目录侧的幕（章节编排按它分卷）
+CATALOG_ACTS = ("act1", "act2", "act3")
+#: 目录里显示用的场景短题上限（整句摘要另有 ``summary``）
+SCENE_TITLE_MAX_CHARS = 18
+#: 台子上改动这些简报键（或场景卡的 POV / 离场变化 / 钩子）= 作者在目录侧改了这张雪花场景卡的设计
+#: （自动回流不得静默盖掉；改题名走 ``title`` / ``seeded_title``，改状态不算改设计）
+DESK_DESIGN_KEYS = (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD)
+
+_ACT_DIGIT = re.compile(r"[123]")
+_ACT_CN = {"一": "act1", "二": "act2", "三": "act3"}
+_TITLE_CLAUSE_BREAK = re.compile(r"[，。；：！？,;:!?\n]")
+
+
+def normalize_act(value: Any) -> str:
+    """目录侧的幕只有 ``act1`` / ``act2`` / ``act3``。
+
+    雪花物化曾把幕写成整数 1 / 2 / 3，而章节编排按 ``act === "act1"`` 分卷——整数幕的章在看板和
+    章节序列里**一张都不显示**（2026-09-19 真实故障：目录 6 章，编排台只看得见手建的那一章）。
+    读取时统一归一，写入方也已改成字符串；认不出的值落到第一幕，绝不让一章从看板上消失。
+    """
+    text = str(value if value is not None else "").strip().lower()
+    if text in CATALOG_ACTS:
+        return text
+    digit = _ACT_DIGIT.search(text)
+    if digit:
+        return f"act{digit.group(0)}"
+    for char, act in _ACT_CN.items():
+        if char in text:
+            return act
+    return "act1"
+
+
+def is_snowflake_origin(brief: dict[str, Any] | None) -> bool:
+    return str((brief or {}).get("source") or "").strip() in SNOWFLAKE_SOURCES
+
+
+def short_scene_title(text: Any) -> str:
+    """整句摘要 → 列表里放得下的短题：够短就原样；否则取第一个分句；分句也太长就截断加省略号。"""
+    value = " ".join(str(text or "").split())
+    if len(value) <= SCENE_TITLE_MAX_CHARS:
+        return value
+    head = _TITLE_CLAUSE_BREAK.split(value, 1)[0].strip()
+    if 4 <= len(head) <= SCENE_TITLE_MAX_CHARS:
+        return head
+    base = head if len(head) > SCENE_TITLE_MAX_CHARS else value
+    return f"{base[: SCENE_TITLE_MAX_CHARS - 1].rstrip()}…"
+
 
 def scene_kind(scene: SceneCard) -> str:
     brief = dict(scene.writer_brief_json or {})
@@ -90,6 +149,35 @@ def scene_title(scene: SceneCard) -> str:
     return str(scene.scene_goal or "").strip() or scene.scene_id
 
 
+def scene_display_title(scene: SceneCard) -> str:
+    """目录载荷里的场景题名：作者 / 构思起的题名原样用；没有题名时从摘要里取一个短题。
+
+    雪花场景卡的 ``scene_goal`` 是 09 的整句摘要（六七十字）——拿它当题名，大纲、队列、命令面板
+    每一行都是一整段话。整句另以 ``summary`` 给出，:func:`scene_title` 的口径（规划上下文、回收站）不变。
+    """
+    brief = dict(scene.writer_brief_json or {})
+    if str(brief.get("title") or "").strip():
+        return str(brief["title"]).strip()
+    return short_scene_title(scene.scene_goal) or scene.scene_id
+
+
+def focus_scene_payload(scenes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """一章里「现在该写哪一场」：在写的那一场 → 第一场没写完的 → 最后一场。
+
+    主页的「继续写作」、写作台的落点、AI 起草台的落点共用这一条规则（前端 ``WsCatalog.focusScene``
+    是它的镜像）。过去三处各有各的规则：主页取章里最后一场，写作台取全书任何一场「在写」的场，
+    于是雪花刚物化完，主页指着第 5 场、写作台却开在一张手建的空白占位场上。
+    """
+    if not scenes:
+        return None
+    for wanted in ("writing",):
+        hit = next((scene for scene in scenes if scene.get("state") == wanted), None)
+        if hit is not None:
+            return hit
+    pending = next((scene for scene in scenes if scene.get("state") != "done"), None)
+    return pending if pending is not None else scenes[-1]
+
+
 class CatalogService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -100,13 +188,38 @@ class CatalogService:
     def catalog(self, project_id: str) -> dict[str, Any]:
         project = self._projects.require_project(project_id)
         chapters = self.chapter_rows(project_id)
+        context = self.read_context(project_id, [chapter.chapter_id for chapter in chapters])
         return {
             "project_id": project_id,
             "chapters": [
-                self.chapter_payload(project, chapter, index)
+                self.chapter_payload(project, chapter, index, context=context)
                 for index, chapter in enumerate(chapters)
             ],
         }
+
+    def read_context(self, project_id: str, chapter_ids: list[str]) -> dict[str, Any]:
+        """整本目录一次读完要用的查表（角色名、场景管线状态）——逐场去查是 N+1。
+
+        管线状态按章号取（不按 ``SceneCard.project_id``）：v1 建的旧场景卡没有 project_id，
+        归属是从章上推出来的。
+        """
+        names = {
+            row.character_id: row.display_name or ""
+            for row in self.session.execute(
+                select(StoryCharacter).where(StoryCharacter.project_id == project_id)
+            ).scalars()
+        }
+        run_states: dict[str, SceneRunState] = {}
+        if chapter_ids:
+            run_states = {
+                row.scene_id: row
+                for row in self.session.execute(
+                    select(SceneRunState)
+                    .join(SceneCard, SceneCard.scene_id == SceneRunState.scene_id)
+                    .where(SceneCard.chapter_id.in_(chapter_ids), SceneCard.trashed_flag == 0)
+                ).scalars()
+            }
+        return {"character_names": names, "run_states": run_states}
 
     def chapter_rows(self, project_id: str) -> list[ChapterGoal]:
         rows = list(
@@ -142,22 +255,32 @@ class CatalogService:
         )
 
     def chapter_payload(
-        self, project: StoryProject, chapter: ChapterGoal, index: int
+        self,
+        project: StoryProject,
+        chapter: ChapterGoal,
+        index: int,
+        *,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         narrative = dict(chapter.narrative_json or {})
+        brief = dict(chapter.writer_brief_json or {})
         slug = f"ch{index + 1:02d}"
         scenes = self.scene_rows(chapter.chapter_id)
         words_cur = sum(int(s.words_current or 0) for s in scenes)
         story_checks = self.story_checks([s.scene_id for s in scenes])
+        title = chapter_title(chapter)
+        origin = "snowflake" if is_snowflake_origin(brief) else "manual"
+        goal = str(chapter.chapter_goal or "").strip()
+        summary = str(chapter.main_plot_push or "").strip()
         return {
             "chapter_id": chapter.chapter_id,
             "slug": slug,
             "no": f"{index + 1:02d}",
-            "title": chapter_title(chapter),
+            "title": title,
             "state": str(chapter.state or "planned"),
             "current": chapter.chapter_id == project.current_chapter_id,
             "words": {"cur": words_cur, "target": chapter.words_target},
-            "act": narrative.get("act"),
+            "act": normalize_act(narrative.get("act")),
             "tension": narrative.get("tension"),
             "pov": narrative.get("pov"),
             "time_label": narrative.get("time_label"),
@@ -168,8 +291,18 @@ class CatalogService:
             "promise": narrative.get("promise"),
             "drama": dict(narrative.get("drama") or {}),
             "threads": list(narrative.get("threads") or []),
+            # 阶段 X：章从哪来、构思里给它写了什么——台子上不用再开雪花工作台去对
+            "origin": origin,
+            "summary": summary if summary != title else "",
+            "goal": goal if goal != title else "",
+            "spine": str(narrative.get("spine") or "").strip(),
             "scenes": [
-                self.scene_payload(scene, chapter_slug=slug, story_check=story_checks.get(scene.scene_id))
+                self.scene_payload(
+                    scene,
+                    chapter_slug=slug,
+                    story_check=story_checks.get(scene.scene_id),
+                    context=context,
+                )
                 for scene in scenes
             ],
         }
@@ -203,32 +336,86 @@ class CatalogService:
         *,
         chapter_slug: str,
         story_check: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         kind = scene_kind(scene)
         brief_json = dict(scene.writer_brief_json or {})
         keys = SCENE_BRIEF_GCS if kind == "proactive" else SCENE_BRIEF_RDD
+        names = (context or {}).get("character_names")
         pov_id = str(scene.pov_character_id or "")
-        pov_name = ""
-        if pov_id:
-            character = self.session.get(StoryCharacter, pov_id)
-            pov_name = character.display_name if character is not None else ""
         return {
             "scene_id": scene.scene_id,
             "chapter_id": scene.chapter_id,
-            "slug": f"{chapter_slug}s{scene.scene_seq}",
+            # 场景 slug = scene_id（稳定身份，见模块说明）；位置式旧 slug 只供前端迁移本机旧键
+            "slug": scene.scene_id,
+            "legacy_slug": f"{chapter_slug}s{scene.scene_seq}",
             "seq": scene.scene_seq,
-            "title": scene_title(scene),
+            "title": scene_display_title(scene),
+            "summary": str(scene.scene_goal or "").strip(),
             "kind": kind,
             "state": str(scene.state or "todo"),
             "words": int(scene.words_current or 0),
             "brief": {"kind": kind, **{key: str(brief_json.get(key) or "") for key in keys}},
             "pov_character_id": pov_id,
-            "pov_character_name": pov_name,
+            "pov_character_name": self._character_name(pov_id, names),
             # 章节编排 LLM 规划（2026-07-16）可填的两个交接槽；可加性扩展，旧前端忽略即可。
             "exit_change": str(scene.exit_change or ""),
             "hook": str(scene.hook or ""),
             # 阶段 D：最近一次准定稿评审的场景三问（无评审则 null），成稿中心按场展示，非阻断
             "story_check": dict(story_check) if isinstance(story_check, dict) else None,
+            # 阶段 X：整张设计卡 + 真实工作状态
+            "design": self._scene_design(scene, kind=kind, names=names),
+            "work": self._scene_work(scene, context=context),
+        }
+
+    def _character_name(self, character_id: str, names: dict[str, str] | None) -> str:
+        if not character_id:
+            return ""
+        if names is not None and character_id in names:
+            return names[character_id]
+        # 查表里没有（旧角色行没带 project_id）：退回单行读取
+        character = self.session.get(StoryCharacter, character_id)
+        return (character.display_name or "") if character is not None else ""
+
+    def _scene_design(self, scene: SceneCard, *, kind: str, names: dict[str, str] | None) -> dict[str, Any]:
+        """场景卡上的设计（雪花物化 / 回流写进去的，或作者在章节编排里填的）——只读地摊给台子。"""
+        brief = dict(scene.writer_brief_json or {})
+
+        def text(key: str) -> str:
+            return str(brief.get(key) or "").strip()
+
+        other = SCENE_BRIEF_RDD if kind == "proactive" else SCENE_BRIEF_GCS
+        cast_ids = [str(item).strip() for item in (scene.onstage_chars_json or []) if str(item or "").strip()]
+        rendering_mode = text("rendering_mode").lower() or "full"
+        return {
+            "origin": "snowflake" if is_snowflake_origin(brief) else "manual",
+            "crucible": text("scene_crucible"),
+            "location": str(scene.location or "").strip(),
+            "story_time": text("story_time"),
+            "cast": [{"character_id": cid, "name": self._character_name(cid, names) or cid} for cid in cast_ids],
+            "reader_emotion": text("expected_reader_emotion"),
+            "must_include": str(scene.must_include_text or "").strip(),
+            "must_withhold": text("must_withhold"),
+            "cost": text("cost_requirement"),
+            "length_band": str(scene.target_length_band or "").strip(),
+            "rendering_mode": rendering_mode if rendering_mode in {"full", "summary", "skip"} else "full",
+            # 一场可以接着另一组三拍（阶段 I / N）：主形态在 brief，另一组在这里
+            "followup": {key: text(key) for key in other if text(key)},
+            "exception_reason": text("exception_reason"),
+            "protagonist": text("protagonist_hint"),
+            "is_chapter_last": bool(scene.is_chapter_last),
+            # 作者在台子上改过这张雪花卡的设计（三拍 / 形态 / POV）；回流会先让作者看差异
+            "desk_edited": bool(text("desk_edited_at")),
+        }
+
+    def _scene_work(self, scene: SceneCard, *, context: dict[str, Any] | None) -> dict[str, Any]:
+        """这一场真实干到哪了：目录的 ``state`` 只是作者手打的标签，管线状态和定稿才是事实。"""
+        run_states = (context or {}).get("run_states")
+        state = run_states.get(scene.scene_id) if run_states is not None else self.session.get(SceneRunState, scene.scene_id)
+        return {
+            "run_status": str(state.scene_status or "ready") if state is not None else "",
+            "has_final": bool(state is not None and state.current_final_scene_row_id),
+            "has_words": int(scene.words_current or 0) > 0,
         }
 
     # ---------- 写 ----------
@@ -387,6 +574,13 @@ class CatalogService:
             for key in (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD):
                 if key in nested:
                     brief[key] = str(nested[key] or "")
+        # 阶段 X：作者在台子上改了一张**雪花场景卡**的设计（三拍 / 形态）。记下来——构思确认后的
+        # 自动回流看到这个记号就不动这张卡，留给「同步到目录」的差异预览由作者裁决；回流 / 重新物化清掉它。
+        before = dict(scene.writer_brief_json or {})
+        desk_design_changed = is_snowflake_origin(before) and (
+            any(str(before.get(key) or "") != str(brief.get(key) or "") for key in (*DESK_DESIGN_KEYS, "primary_form"))
+            or any(key in updates and str(updates[key] or "") != str(getattr(scene, key) or "") for key in ("exit_change", "hook"))
+        )
         # POV 角色:按 id 选既有角色,或按名 find-or-create(让冷启动作品无需走完整雪花
         # 物化即可设 pov,解执行契约的 pov_character_id 硬阻断);空串显式清空。
         needs_character_create = False
@@ -413,6 +607,13 @@ class CatalogService:
                     updates["pov_character_id"] = existing_character.character_id
             else:
                 updates["pov_character_id"] = None
+        if is_snowflake_origin(before) and (
+            needs_character_create
+            or ("pov_character_id" in updates and (updates["pov_character_id"] or None) != (scene.pov_character_id or None))
+        ):
+            desk_design_changed = True  # 换了 POV 也是改设计
+        if desk_design_changed:
+            brief["desk_edited_at"] = utcnow()
         if brief != dict(scene.writer_brief_json or {}):
             updates["writer_brief_json"] = brief
         changed_fields = [

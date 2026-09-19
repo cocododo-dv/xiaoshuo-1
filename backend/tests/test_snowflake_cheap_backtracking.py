@@ -225,16 +225,25 @@ def test_runtime_invalidation_is_advisory_for_book_level_steps_and_scoped_for_sc
     assert accepted.status_code == 200, accepted.text
 
     scenes = _step(_workspace(client, pid), "scene_list")["draft"]["scenes"]
+    # 第一场已经跑过管线（有东西可失效）；第二场从没进过管线
+    ran = session.get(SceneRunState, scenes[0]["scene_id"])
+    ran.scene_status = "archived"
+    session.commit()
     edited = [dict(scene) for scene in scenes]
     edited[0]["summary"] = "第一场换了事件：她没有追送信人，而是回家烧信。"
+    edited[1]["summary"] = "第二场也换了事件：她把信寄了回去。"
     result = _revise_and_approve(client, pid, "scene_list", {"scenes": edited, "_rev": "g9"})
     runtime = result["impact"]["runtime"]
     assert runtime["scope"] == "scene"
-    assert runtime["affected_scene_ids"] == [scenes[0]["scene_id"]]
+    assert runtime["affected_scene_ids"] == [scenes[0]["scene_id"], scenes[1]["scene_id"]]
+    # 阶段 X：只有真的有运行时产物的场才谈得上失效——从没进过管线的场，构思改了就是改了，
+    # 不该被打成 needs_replan（起草台会把它当成失败稿、待办里多一张「这稿需要重新规划」的卡，可根本没有稿）
+    assert runtime["invalidated_scene_ids"] == [scenes[0]["scene_id"]]
     session.expire_all()
     states = {row.scene_id: row.scene_status for row in session.execute(select(SceneRunState)).scalars().all()}
     assert states[scenes[0]["scene_id"]] == "needs_replan"
-    assert all(states[scene["scene_id"]] == states_before[scene["scene_id"]] for scene in scenes[1:])
+    assert states[scenes[1]["scene_id"]] == "ready"
+    assert all(states[scene["scene_id"]] == states_before[scene["scene_id"]] for scene in scenes[2:])
 
 
 # ---------------------------------------------------------------------------

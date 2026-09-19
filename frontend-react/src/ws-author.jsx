@@ -188,6 +188,9 @@ function ArrTensionCurve({ chapters, numOf, pickedId, onPick }) {
 function ArrChapterCard({ c, num, picked, onOpen, dnd, selectMode, selected, onToggleSelect }) {
   const done = c.scenes.filter((s) => s.state === "done").length;
   const locked = c.state === "approved";
+  /* 阶段 X：雪花整理出来的章没有「章承诺」和章级 POV——卡上不留空，用构思里的章摘要和各场的 POV 顶上 */
+  const blurb = c.promise || c.summary || "";
+  const povLine = c.pov || [...new Set(c.scenes.map((s) => s.povName).filter(Boolean))].slice(0, 3).join(" · ");
   return (
     <div className={`arr-card s-${c.state} ${picked ? "is-picked" : ""} ${selected ? "is-selected" : ""} ${selectMode && locked ? "is-unselectable" : ""}`}
       {...(selectMode ? {} : dnd)}
@@ -205,12 +208,13 @@ function ArrChapterCard({ c, num, picked, onOpen, dnd, selectMode, selected, onT
       <div className="arr-card-top">
         <span className="arr-card-num">{num}</span>
         <ArrChPill s={c.state} sm />
+        {c.spine && <span className="arr-card-spine" title="这一章收在这个灾难上（来自构思的分章）">{c.spine}</span>}
       </div>
       <div className="arr-card-title text-serif">{c.title}</div>
-      <div className="arr-card-promise">{c.promise}</div>
+      <div className="arr-card-promise" title={blurb}>{blurb}</div>
       <div className="arr-card-foot">
         <span className="arr-card-scenes"><ArrMiniScenes scenes={c.scenes} /><span className="arr-card-scenes-num">{done}/{c.scenes.length}</span></span>
-        <span className="arr-card-pov"><I.Eye size={12} />{c.pov}</span>
+        <span className="arr-card-pov"><I.Eye size={12} />{povLine}</span>
       </div>
       <ArrBudgetBar cur={c.words.cur} target={c.words.target} />
     </div>
@@ -268,7 +272,8 @@ function ArrOverview({ chapters, numOf, pickedId, onOpen, chDnd, boardDnd, onNew
         <ArrMetric k="卷" v={ARR_ACTS.length} sub="三幕结构" />
         <ArrMetric k="章节" v={chapters.length} sub={`${drafted} 起草 · ${approved} 批准`} />
         <ArrMetric k="字数" v={totalCur.toLocaleString()} sub={`目标 ${totalTarget.toLocaleString()}`} />
-        <ArrMetric k="进度" v={Math.round((totalCur / totalTarget) * 100) + "%"} sub="全书完成度" tone="crimson" />
+        {/* 雪花刚整理出来的章还没有字数目标（target 为空）：0 / 0 不是 NaN% */}
+        <ArrMetric k="进度" v={(totalTarget > 0 ? Math.round((totalCur / totalTarget) * 100) : 0) + "%"} sub="全书完成度" tone="crimson" />
       </div>
 
       {/* book doctor */}

@@ -20,7 +20,7 @@ function hmCurrentChapter(chapters) {
 }
 
 /* 目录 → 进度脊模型：
-   segments  每章一段（n / title / state / front / sid），sid 指向该章在写的场景（否则第一场），供深链进写作房间
+   segments  每章一段（n / title / state / front / sid），sid 指向该章在写的场景（否则第一场没写完的；整章写完则第一场），供深链进写作房间
    counts    各章节状态的章数（图例）
    scenes    全书场景计数（已规划 / 完成 / 在写 / 待写，以及铺了场的章数）
    未知的章节状态归入 planned；未知的场景状态归入 todo。 */
@@ -41,7 +41,9 @@ function hmDeriveSpine(chapters) {
       else if (s.state === "writing") scenes.writing += 1;
       else scenes.todo += 1;
     });
-    const target = rows.find(s => s.state === "writing") || rows[0] || null;
+    /* 点一章的分段 = 进这一章：在写的那一场 → 第一场没写完的（与 WsCatalog.focusScene 同一条规则）；
+       整章都写完了就从头读（第一场）——这是「进这一章」，不是「现在该写哪一场」。 */
+    const target = rows.find(s => s.state === "writing") || rows.find(s => s.state !== "done") || rows[0] || null;
     return {
       n: c.n,
       title: c.title || "",

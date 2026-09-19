@@ -23,7 +23,7 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryProject,
 )
-from novel_system.services.catalog import CatalogService
+from novel_system.services.catalog import CatalogService, focus_scene_payload
 from novel_system.services.projects import ProjectService
 from novel_system.services.snowflake_steps import list_step_definitions
 from novel_system.services.writing_stats import WritingStatsService, count_words
@@ -139,12 +139,16 @@ class ProjectOverviewService:
         scenes = list(current.get("scenes") or [])
         if not scenes:
             return None, None
-        scene = next((s for s in scenes if s["state"] == "writing"), scenes[-1])
+        # 阶段 X：与目录 / 写作台 / AI 起草台同一条「现在该写哪一场」规则（在写 → 第一场没写完的 → 末场）。
+        # 过去这里取章里的**最后一场**：雪花刚物化完的 5 场章，主页的「继续写作」指着第 5 场。
+        scene = focus_scene_payload(scenes) or scenes[-1]
         draft = self._current_scene_drafts([scene["scene_id"]]).get(scene["scene_id"])
         lines = _content_lines(draft.content if draft else None)
         resume = {
             "chapter_no": current["no"],
             "scene_slug": scene["slug"],
+            # 场景 slug 已是稳定的 scene_id（不再含位置）；章内第几场单独给
+            "scene_no": scenes.index(scene) + 1,
             "scene_title": scene["title"],
             "last_lines": lines[-2:],
             "scene_words": count_words(draft.content) if draft else int(scene.get("words") or 0),

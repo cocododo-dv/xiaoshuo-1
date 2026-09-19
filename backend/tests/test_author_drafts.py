@@ -662,7 +662,8 @@ def test_ensure_blank_creates_author_drafts_without_runtime_final_scene(client, 
     assert chapter_draft["source_text_ref"] == "author_blank:chapter:AD500"
     assert chapter_draft["content"] == ""
     assert scene_draft["source_text_ref"] == "scene_card:AD500_SC01:blank"
-    assert "场景目标 AD500_SC01" in scene_draft["content"]
+    # 阶段 X：空白稿就是空白——场景卡常驻在正文旁边，不再抄成脚手架塞进正文
+    assert scene_draft["content"] == ""
     assert session.query(FinalScene).count() == 0
 
 

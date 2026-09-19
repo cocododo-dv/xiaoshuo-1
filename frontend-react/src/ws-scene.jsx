@@ -1,8 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
-import { WsCatalog } from "./ws-catalog.jsx";
-import { SceneRunJobControl, SceneStyleNoticeStrip, SceneStyleWindowsPanel, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnSetQcThresholds, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
+import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
+import { SceneDesignCard, planIntentsForScene, sceneDesignModel } from "./ws-scene-design.jsx";
+import { useDesignSync } from "./ws-design-sync.jsx";
+import { SceneRunJobControl, SceneStyleNoticeStrip, SceneStyleWindowsPanel, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnSetQcThresholds, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { WsWorks } from "./ws-works.jsx";
@@ -17,7 +19,7 @@ const scnPortal = ReactDOM.createPortal;
    场景工作台 — Scene Workbench  (refactor v2)
    One-screen closed loop:  流程在上 · 正文居中 · 裁决在下
    ┌──────────┬─────────────────────────────────┬──────────┐
-   │ 运行队列  │  Pipeline strip (live)          │ 证据      │
+   │ 全书场景  │  Pipeline strip (live)          │ 证据      │
    │          │  ─────────────────────────       │ · 质检    │
    │          │  正文 / 起草过程 (reading stage) │ · 戏剧卡  │
    │          │  ─────────────────────────       │ · 开销    │
@@ -56,8 +58,11 @@ function scnSidOf(n) {
   return m ? `ch${m[1]}s${parseInt(m[2], 10)}` : null;
 }
 
-/* 章节编排「交给 AI」入列：从目录场景卡派生一条队列项 */
-function scnFromCatalog(sid) {
+/* 目录场景卡 → 起草台的一条工作项。
+   阶段 X：左栏不再是一份手工挑出来的队列，而是全书的书脊（章 → 场，与写作台大纲同一份目录）。
+   工作项分两种：**在办**（作者交给 AI 的、跑过管线的——持久化，刷新还在）与 **transient**（只是在书脊上
+   点开看看——不落盘，点别的场就收走）。只是翻一遍书，不该把十七场都塞进在办清单。 */
+function scnFromCatalog(sid, options) {
   if (!sid || !WsCatalog) return null;
   const hit = WsCatalog.sceneById(sid);
   if (!hit) return null;
@@ -66,12 +71,15 @@ function scnFromCatalog(sid) {
   if (s.goal) beats.push({ beat: "goal", text: s.goal });
   if (s.obstacle) beats.push({ beat: "conflict", text: s.obstacle });
   if (s.turn) beats.push({ beat: "exit", text: s.turn });
+  /* 目标篇幅读这一场的设计（构思里定的数值区间 / 概述场的 200–500）；没定才是默认的 1500–1800——
+     头部曾经对每一场都写死「目标 1500–1800 字」，和设计卡上的篇幅对不上 */
+  const band = /^(\d+)\s*[-–~]\s*(\d+)$/.exec(String((s.design && s.design.lengthBand) || "").trim());
   return {
-    id: "cq-" + sid, sid, fromCard: true,
+    id: "cq-" + s.sid, sid: s.sid, fromCard: true, transient: !!(options && options.transient),
     n: `CH ${c.n} · SC ${String(index + 1).padStart(2, "0")}`,
     title: s.title, kind: (s.kind || "主动") + "场景",
     state: "queued", progress: 0, stageIdx: 0, attempt: 0,
-    targetWords: "1500–1800",
+    targetWords: band ? `${band[1]}–${band[2]}` : "1500–1800",
     brief: beats, draft: [], metrics: [], alignment: [], cost: [], log: [],
   };
 }
@@ -88,11 +96,23 @@ function WsSceneBoard({ go, t }) {
     const runs0 = {};
     items.forEach(it => { const r = scnRunLoad ? scnRunLoad(it.sid) : null; if (r) runs0[it.id] = r; });
     if (scnQueueSave) scnQueueSave(items.map(i => i.sid));
+    /* 在办清单是空的：落在「现在该写哪一场」上（与主页 / 写作台同一条规则），不再给一块「队列是空的」的空白 */
+    if (!items.length && WsCatalog && WsCatalog.focusScene) {
+      const focus = WsCatalog.focusScene();
+      const item = focus ? scnFromCatalog(focus.scene.sid, { transient: true }) : null;
+      if (item) {
+        items.push(item);
+        const r = scnRunLoad ? scnRunLoad(item.sid) : null;
+        if (r) runs0[item.id] = r;
+      }
+    }
     initRef.current = { items, runs0 };
   }
   const [extras, setExtras] = useSt8(initRef.current.items);
   const [runs, setRuns] = useSt8(initRef.current.runs0);
-  const [picker, setPicker] = useSt8(false);
+  const [spineFilter, setSpineFilter] = useSt8("all");   // all = 全书 · active = 只看在办
+  /* 只有在办的场落盘；transient（只是点开看看）不进 localStorage */
+  const persistQueue = (list) => { if (scnQueueSave) scnQueueSave(list.filter(i => !i.transient).map(i => i.sid)); };
   const [qSelMode, setQSelMode] = useSt8(false);          // 队列多选态（会话内，不持久化）
   const [qSel, setQSel] = useSt8(() => new Set());
   const { toast, show: showNotice, clear: clearNotice } = useUndoToast();
@@ -111,6 +131,8 @@ function WsSceneBoard({ go, t }) {
   const [dxDone, setDxDone] = useSt8(() => ({ ...(window.__sceneDxDone || {}) }));  // scene n → adopted-issue count (深改回传)
   const pickedIdRef = useRef8(pickedId);
   pickedIdRef.current = pickedId;
+  const runsRef = useRef8(runs);
+  runsRef.current = runs;
   const archiveUiEpoch = useRef8(0);
   const archivePreviewLocks = useRef8(new Set());
   const archiveCommitLocks = useRef8(new Set());
@@ -142,31 +164,49 @@ function WsSceneBoard({ go, t }) {
     runProgressTimers.current = {};
   }, [pickedId]);
 
-  const enqueueSid = (sid) => {
-    const it = scnFromCatalog(sid);
+  /* 把一场放上台面。pin=true：交给 AI（入列，落盘）；pin=false：只是在书脊上点开看看（transient）。
+     已经在台面上的 transient 项再被「交给 AI」时转成在办。 */
+  const bringScene = (sid, { pin = true, pick = true } = {}) => {
+    const it = scnFromCatalog(sid, { transient: !pin });
     if (!it) return;
-    if (scnQueueDismissClear) scnQueueDismissClear([sid]);   // 重新入列 = 撤销之前的移出
+    const id = it.id;
+    if (pin && scnQueueDismissClear) scnQueueDismissClear([it.sid]);   // 重新入列 = 撤销之前的移出
     setExtras(x => {
-      if (x.some(y => y.id === it.id)) return x;
-      const nx = [it, ...x];
-      if (scnQueueSave) scnQueueSave(nx.map(i => i.sid));
+      const existing = x.find(y => y.id === id);
+      let nx;
+      if (existing) {
+        if (!pin || !existing.transient) return x;
+        nx = x.map(y => (y.id === id ? { ...y, transient: false } : y));
+      } else {
+        /* 点开另一场时，把上一张「只是看看」且没有任何产出的 transient 收走 */
+        const kept = pin ? x : x.filter(y => !y.transient || !!runsRef.current[y.id]);
+        nx = pin ? [it, ...kept] : [...kept, it];
+      }
+      persistQueue(nx);
       return nx;
     });
-    setQSel(prev => (prev.size ? new Set([...prev].filter(id => id !== "cq-" + sid)) : prev));
-    const r = scnRunLoad ? scnRunLoad(sid) : null;
-    if (r) setRuns(m => ({ ...m, ["cq-" + sid]: r }));
+    setQSel(prev => (prev.size ? new Set([...prev].filter(x => x !== id)) : prev));
+    const r = scnRunLoad ? scnRunLoad(it.sid) : null;
+    if (r) setRuns(m => (m[id] ? m : { ...m, [id]: r }));
     else if (scnHydrateFromBackend) {
       // 本地无记录：尝试从后端 workbench 恢复既有产出（不覆盖期间跑起来的运行）
-      scnHydrateFromBackend(sid)
+      scnHydrateFromBackend(it.sid)
         .then(hr => {
           if (hr && scenePageMounted.current) {
-            setRuns(m => (m["cq-" + sid] ? m : { ...m, ["cq-" + sid]: hr }));
-            if (scnRunSave) scnRunSave(sid, hr);
+            setRuns(m => (m[id] ? m : { ...m, [id]: hr }));
+            if (scnRunSave) scnRunSave(it.sid, hr);
           }
         })
         .catch(() => {});
     }
-    setPicked("cq-" + sid);
+    if (pick) setPicked(id);
+  };
+  const enqueueSid = (sid) => bringScene(sid, { pin: true });
+  const viewSid = (sid) => bringScene(sid, { pin: false });
+  /* 整章入列：本章没写完的场一次交给 AI（不自动起草，逐场点开始）；落点在其中第一场 */
+  const enqueueChapter = (sids) => {
+    const list = (sids || []).filter(Boolean);
+    list.slice().reverse().forEach((sid, i) => bringScene(sid, { pin: true, pick: i === list.length - 1 }));
   };
 
   /* 移出队列：只把这一场从「在办清单」里拿掉——场景卡、已生成的 AI 稿和后端运行记录
@@ -191,7 +231,7 @@ function WsSceneBoard({ go, t }) {
     if (scnQueueDismissAdd) scnQueueDismissAdd(removedSids);
     const nx = extras.filter(x => !removeIds.has(x.id));
     setExtras(nx);
-    if (scnQueueSave) scnQueueSave(nx.map(i => i.sid));
+    persistQueue(nx);
     if (removeIds.has(prevPicked)) setPicked(nx.length ? nx[0].id : null);
     setQSel(prev => (prev.size ? new Set([...prev].filter(id => !removeIds.has(id))) : prev));
     showNotice({
@@ -202,7 +242,7 @@ function WsSceneBoard({ go, t }) {
       onAction: () => {
         if (scnQueueDismissClear) scnQueueDismissClear(removedSids);
         setExtras(snapshot);
-        if (scnQueueSave) scnQueueSave(snapshot.map(i => i.sid));
+        persistQueue(snapshot);
         setPicked(prevPicked);
       },
     });
@@ -243,11 +283,15 @@ function WsSceneBoard({ go, t }) {
       if (!alive || !sids.length) return;
       const restored = sids.map(sid => scnFromCatalog(sid)).filter(Boolean);
       setExtras(prev => {
-        const have = new Set(prev.map(i => i.sid));
+        const restoredSids = new Set(restored.map(item => item.sid));
+        const have = new Set(prev.filter(i => !i.transient).map(i => i.sid));
         const add = restored.filter(item => !have.has(item.sid));
-        if (!add.length) return prev;
-        const nx = [...prev, ...add];
-        if (scnQueueSave) scnQueueSave(nx.map(i => i.sid));
+        /* 进过管线的场是在办的：台面上同一场的 transient 项就地转正，不重复加一条 */
+        const upgraded = prev.map(i => (i.transient && restoredSids.has(i.sid) ? { ...i, transient: false } : i));
+        const fresh = add.filter(item => !upgraded.some(i => i.sid === item.sid));
+        if (!fresh.length && upgraded.every((item, index) => item === prev[index])) return prev;
+        const nx = [...upgraded, ...fresh];
+        persistQueue(nx);
         return nx;
       });
       /* 空本地队列从后端恢复时必须选中首场，才能挂载 latest 控件。 */
@@ -447,16 +491,24 @@ function WsSceneBoard({ go, t }) {
     setContentSafetyError("");
   }, [pickedId]);
 
+  /* 统计只数在办的场；只是点开看看的 transient 不算 */
   const counts = useMemo8(() => {
     const c = { running: 0, queued: 0, ready: 0, archived: 0 };
-    queue.forEach(q => { c[q.state || "queued"]++; });
+    queue.forEach(q => { if (!q.transient) c[q.state || "queued"]++; });
     return c;
   }, [queue]);
+  const chapters = useCatalogChapters();
+  const designSync = useDesignSync();
 
   /* —— 真·运行：起草 / 退回重写（同一条路，带指令） —— */
   const startRun = async (sc, note, options = {}) => {
     if (!sc || !sc.fromCard) return;
     const id = sc.id;
+    if (sc.transient) {
+      /* 开始起草 = 这一场进入在办（落盘；之前移出过的销名） */
+      if (scnQueueDismissClear) scnQueueDismissClear([sc.sid]);
+      setExtras(x => { const nx = x.map(y => (y.id === id ? { ...y, transient: false } : y)); persistQueue(nx); return nx; });
+    }
     if (runAbortControllers.current[id]) runAbortControllers.current[id].abort();
     if (runProgressTimers.current[id]) clearInterval(runProgressTimers.current[id]);
     const controller = new AbortController();
@@ -655,48 +707,67 @@ function WsSceneBoard({ go, t }) {
     }
   };
 
-  /* 空队列（非演示作品）：引导入列 */
-  if (!queue.length || !scene) {
+  const pinnedQueue = queue.filter(q => !q.transient);
+  const spine = (
+    <SceneSpine
+      chapters={chapters} queue={queue} pickedId={pickedId} counts={counts} dxDone={dxDone}
+      filter={spineFilter} setFilter={setSpineFilter}
+      pendingSync={(backendId) => !!designSync.pendingFor(backendId)}
+      onPickItem={setPicked} onViewScene={viewSid} onEnqueueChapter={enqueueChapter}
+      onRemove={(id) => removeFromQueue([id])}
+      select={{
+        mode: qSelMode,
+        has: (id) => qSel.has(id),
+        count: qSel.size,
+        total: pinnedQueue.length,
+        onToggleMode: () => { setQSelMode(v => !v); setQSel(new Set()); },
+        onToggle: (id) => setQSel(prev => {
+          const nextSel = new Set(prev);
+          if (nextSel.has(id)) nextSel.delete(id); else nextSel.add(id);
+          return nextSel;
+        }),
+        onSelectAll: () => setQSel(prev => (prev.size === pinnedQueue.length ? new Set() : new Set(pinnedQueue.map(q => q.id)))),
+        onRemoveSelected: () => { removeFromQueue([...qSel]); setQSelMode(false); },
+      }}
+    />
+  );
+
+  /* 台面上没有场：目录里还没有场景卡（只有空章），或在办的场刚被全部移出 */
+  if (!scene) {
+    const hasScenes = chapters.some(c => (c.scenes || []).length > 0);
     return (
       <div className="scn2" data-screen-label="scene" data-density={tw.scnDensity || "cozy"} style={{ "--scn-font": (tw.scnFont || 16) + "px" }}>
-        <div style={{ gridColumn: "1 / -1", display: "grid", placeItems: "center", minHeight: "70vh", textAlign: "center" }}>
+        {hasScenes && spine}
+        <div style={{ gridColumn: hasScenes ? "2 / -1" : "1 / -1", display: "grid", placeItems: "center", minHeight: "70vh", textAlign: "center" }}>
           <div style={{ maxWidth: 440, display: "grid", gap: 14, justifyItems: "center" }}>
             <I.Play size={26} style={{ color: "var(--ink-3)" }} />
-            <div style={{ fontFamily: "var(--font-serif)", fontSize: 21, color: "var(--ink-1)" }}>运行队列还是空的</div>
-            <p style={{ color: "var(--ink-3)", fontSize: 13.5, lineHeight: 1.9, margin: 0 }}>从章节目录挑一场入列，AI 会按场景卡（目标 / 阻碍 / 转折）和雪花构思起草，过质检后由你裁决。</p>
-            <button className="btn btn-accent" data-testid="scene-add" onClick={() => setPicker(true)}><I.Plus size={14} /> 加入场景</button>
+            <div style={{ fontFamily: "var(--font-serif)", fontSize: 21, color: "var(--ink-1)" }}>{hasScenes ? "从左边的书脊上点一场" : "目录里还没有场景"}</div>
+            <p style={{ color: "var(--ink-3)", fontSize: 13.5, lineHeight: 1.9, margin: 0 }}>
+              {hasScenes
+                ? "AI 会按这一场的设计卡（坩埚 / 三拍 / POV）和雪花构思起草，过质检后由你裁决。"
+                : "先在构思里把雪花「整理为章节结构」，或去章节编排给章加场、填好场景卡，再回来起草。"}
+            </p>
+            {!hasScenes && <button className="btn btn-accent" onClick={() => go && go("snowflake")}><I.Layout size={14} /> 去构思</button>}
           </div>
         </div>
-        {picker && <ScenePicker queued={extras.map(x => x.sid)} onPick={(sid) => { enqueueSid(sid); setPicker(false); }} onClose={() => setPicker(false)} />}
         <UndoToast toast={toast} onClose={clearNotice} />
       </div>
     );
   }
+
+  const sceneHit = WsCatalog && scene.sid ? WsCatalog.sceneById(scene.sid) : null;
+  const designModel = sceneDesignModel(sceneHit);
+  const designSyncProps = designModel && designModel.backendId && designSync.pendingFor(designModel.backendId)
+    ? { pending: true, busy: designSync.isBusy(designModel.backendId), onSync: () => designSync.syncScenes([designModel.backendId]) }
+    : null;
+  const onEditPlan = designModel && go ? () => go("snowflake", planIntentsForScene(designModel.backendId)) : null;
 
   return (
     <div className="scn2" data-screen-label="scene"
       data-density={tw.scnDensity || "cozy"}
       data-beats={tw.scnBeats === false ? "off" : "on"}
       style={{ "--scn-font": (tw.scnFont || 16) + "px" }}>
-      <SceneQueue
-        queue={queue} sceneOfX={sceneOfX}
-        pickedId={pickedId} setPicked={setPicked} counts={counts} dxDone={dxDone}
-        onAdd={() => setPicker(true)}
-        onRemove={(id) => removeFromQueue([id])}
-        select={{
-          mode: qSelMode,
-          has: (id) => qSel.has(id),
-          count: qSel.size,
-          onToggleMode: () => { setQSelMode(v => !v); setQSel(new Set()); },
-          onToggle: (id) => setQSel(prev => {
-            const nextSel = new Set(prev);
-            if (nextSel.has(id)) nextSel.delete(id); else nextSel.add(id);
-            return nextSel;
-          }),
-          onSelectAll: () => setQSel(prev => (prev.size === queue.length ? new Set() : new Set(queue.map(q => q.id)))),
-          onRemoveSelected: () => { removeFromQueue([...qSel]); setQSelMode(false); },
-        }}
-      />
+      {spine}
 
       <section className="scn2-stage" key={pickedId}>
         <SceneHead scene={scene} state={renderState} hideAbort={scene.fromCard} onRerun={scene.fromCard ? () => startSelectedRun("") : null} />
@@ -712,7 +783,7 @@ function WsSceneBoard({ go, t }) {
         {scene.fromCard && <SceneStyleNoticeStrip notices={scene.styleNotices} />}
         <Pipeline scene={scene} state={renderState} />
         <div className="scn2-stage-body">
-          {renderState === "queued"   && <Preflight scene={scene} />}
+          {renderState === "queued"   && <Preflight scene={scene} model={designModel} sync={designSyncProps} onEditPlan={onEditPlan} onEditCard={go ? () => go("author") : null} />}
           {renderState === "running"  && <RunningStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} logOpen={logOpen} setLogOpen={setLogOpen} />}
           {renderState === "ready" && scene.fromCard && scene.gate && scene.gate.authorState === "awaiting_author_choice"
             ? <CandidatePicker sid={scene.sid} onDone={async (resumed) => {
@@ -745,7 +816,6 @@ function WsSceneBoard({ go, t }) {
       </section>
 
       <Evidence scene={scene} state={renderState} activeBeat={activeBeat} setActiveBeat={setActiveBeat} onView={setCompare} />
-      {picker && <ScenePicker queued={extras.map(x => x.sid)} onPick={(sid) => { enqueueSid(sid); setPicker(false); }} onClose={() => setPicker(false)} />}
       <UndoToast toast={toast} onClose={clearNotice} />
       {adoptionDecision && scnPortal(
         <AdoptionProtectDialog
@@ -872,18 +942,40 @@ function AdoptionProtectDialog({ decision, busy, message, onClose, onCandidate, 
   );
 }
 
-/* ============================ Queue ============================ */
+/* ============================ Spine ============================ */
 
-function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, onAdd, onRemove, select }) {
+/* 左栏 = 全书的书脊（章 → 场），与写作台大纲、章节编排读同一份目录。
+   在办的场（交给 AI 的、跑过管线的）带着管线状态和「移出」；其余的场按目录状态显示，点一下就放上台面。
+   在办的行沿用原队列的测试标识（scene-queue-item / scene-queue-remove），其余的行是 scene-spine-item。 */
+const SPINE_IDLE_LABEL = { done: "已完成", writing: "在写", todo: "待起草" };
+const SPINE_IDLE_TONE = { done: "sage", writing: "slate", todo: "idle" };
+
+function SceneSpine({ chapters, queue, pickedId, counts, dxDone, filter, setFilter, pendingSync, onPickItem, onViewScene, onEnqueueChapter, onRemove, select }) {
   const sel = select || {};
   const selectMode = !!sel.mode;
   const selectedCount = sel.count || 0;
+  const itemBySid = {};
+  queue.forEach(q => { itemBySid[q.sid] = q; });
+  const pinnedCount = queue.filter(q => !q.transient).length;
+  const onlyActive = filter === "active" || selectMode;
+  const pickedSid = (queue.find(q => q.id === pickedId) || {}).sid || "";
+  const totalScenes = chapters.reduce((n, c) => n + (c.scenes || []).length, 0);
+  /* 章的展开态：书不大就全展开；大了只展开当前章、落点所在章和有在办场的章。作者手动开合的优先。 */
+  const [openMap, setOpenMap] = useSt8({});
+  const isOpen = (c) => {
+    if (openMap[c.id] != null) return openMap[c.id];
+    if (onlyActive || totalScenes <= 40) return true;
+    return !!c.current || (c.scenes || []).some(s => s.sid === pickedSid || (itemBySid[s.sid] && !itemBySid[s.sid].transient));
+  };
+  const rows = chapters
+    .map(c => ({ c, scenes: (c.scenes || []).filter(s => !onlyActive || (itemBySid[s.sid] && !itemBySid[s.sid].transient)) }))
+    .filter(g => g.scenes.length);
   return (
-    <aside className="scn2-queue">
+    <aside className="scn2-queue" data-testid="scene-spine">
       <header className="scn2-queue-head">
         <div className="page-eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>AI 起草台</div>
-        <h2 className="text-serif scn2-queue-title">运行队列</h2>
-        <p className="scn2-queue-sub">从章节编排的场景卡入列 · 一场一裁</p>
+        <h2 className="text-serif scn2-queue-title">全书场景</h2>
+        <p className="scn2-queue-sub">与写作台、章节编排同一份目录 · 一场一裁</p>
       </header>
 
       <div className="scn2-stats">
@@ -893,12 +985,21 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, onAd
         <QStat n={counts.archived} label="归档" tone="sage" />
       </div>
 
+      {!selectMode && (
+        <div className="scn2-spine-filter" role="tablist" aria-label="书脊筛选">
+          <button role="tab" aria-selected={filter !== "active"} data-testid="scene-spine-filter-all"
+            className={`scn2-spine-tab ${filter !== "active" ? "is-on" : ""}`} onClick={() => setFilter("all")}>全书 · {totalScenes}</button>
+          <button role="tab" aria-selected={filter === "active"} data-testid="scene-spine-filter-active"
+            className={`scn2-spine-tab ${filter === "active" ? "is-on" : ""}`} onClick={() => setFilter("active")}>在办 · {pinnedCount}</button>
+        </div>
+      )}
+
       {selectMode && (
-        <div className="scn2-queue-batch" role="toolbar" aria-label="队列批量操作">
+        <div className="scn2-queue-batch" role="toolbar" aria-label="在办批量操作">
           <div className="scn2-queue-batch-top">
-            <span className="scn2-queue-batch-n">已选 <strong>{selectedCount}</strong> / {queue.length}</span>
+            <span className="scn2-queue-batch-n">已选 <strong>{selectedCount}</strong> / {sel.total || 0}</span>
             <button className="btn btn-quiet btn-sm" onClick={sel.onSelectAll}>
-              {selectedCount === queue.length && queue.length ? "取消全选" : "全选"}
+              {selectedCount === (sel.total || 0) && sel.total ? "取消全选" : "全选"}
             </button>
           </div>
           <div className="scn2-queue-batch-top">
@@ -911,53 +1012,121 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, onAd
         </div>
       )}
 
-      <ul className="scn2-queue-list">
-        {queue.map(q => {
-          const s = sceneOfX(q.id);
-          const st = q.state;
-          const active = pickedId === q.id;
-          const checked = !!(sel.has && sel.has(q.id));
+      <div className="scn2-queue-list scn2-spine-list">
+        {!rows.length && (
+          <p className="scn2-spine-empty">{onlyActive ? "还没有在办的场——在「全书」里点一场开始起草，或用章标题上的「整章入列」。" : "目录里还没有场景。"}</p>
+        )}
+        {rows.map(({ c, scenes }) => {
+          const all = c.scenes || [];
+          const finished = all.filter(s => s.state === "done" || (itemBySid[s.sid] && itemBySid[s.sid].state === "archived")).length;
+          const batch = all.filter(s => s.state !== "done" && !(itemBySid[s.sid] && !itemBySid[s.sid].transient)).map(s => s.sid);
+          const open = isOpen(c);
           return (
-            <li key={q.id} className={`scn2-qrow-wrap ${checked ? "is-selected" : ""}`}>
-              {selectMode && (
-                <label className="scn2-qrow-check" title="选中后可批量移出队列">
-                  <input type="checkbox" checked={checked} aria-label={`选择 ${s.n} ${s.title}`} onChange={() => sel.onToggle(q.id)} />
-                </label>
+            <section key={c.id} className="scn2-spine-ch" data-testid="scene-spine-chapter" data-chapter-id={c.id}>
+              <header className="scn2-spine-chhead">
+                <button className="scn2-spine-chbtn" aria-expanded={open}
+                  onClick={() => setOpenMap(m => ({ ...m, [c.id]: !open }))} title={c.summary || c.title}>
+                  <span className="scn2-spine-chev" style={{ transform: open ? "rotate(90deg)" : "none" }}><I.ChevronRight size={12} /></span>
+                  <span className="scn2-spine-chn">{c.n}</span>
+                  <span className="scn2-spine-cht text-serif">{c.title}</span>
+                  {c.spine && <span className="scn2-spine-mark">{c.spine}</span>}
+                  <span className="scn2-spine-chp tab-num">{finished}/{all.length}</span>
+                </button>
+                {!selectMode && !onlyActive && batch.length > 0 && (
+                  <button className="scn2-spine-chall" data-testid="scene-spine-enqueue-chapter"
+                    title="把本章还没写完的场都交给 AI（入列，不自动起草——逐场点「开始起草」）"
+                    onClick={() => onEnqueueChapter && onEnqueueChapter(batch)}>整章入列</button>
+                )}
+              </header>
+              {open && (
+                <ul className="scn2-spine-scenes">
+                  {scenes.map((s) => {
+                    const index = all.indexOf(s);
+                    const item = itemBySid[s.sid];
+                    const pinned = !!(item && !item.transient);
+                    const st = pinned ? (item.state || "queued") : (SPINE_IDLE_LABEL[s.state] ? s.state : "todo");
+                    const active = !!item && pickedId === item.id;
+                    const checked = pinned && !!(sel.has && sel.has(item.id));
+                    const label = `SC ${String(index + 1).padStart(2, "0")}`;
+                    const stale = pendingSync && s.backendId ? pendingSync(s.backendId) : false;
+                    return (
+                      <li key={s.sid} className={`scn2-qrow-wrap ${checked ? "is-selected" : ""}`}>
+                        {selectMode && pinned && (
+                          <label className="scn2-qrow-check" title="选中后可批量移出在办清单">
+                            <input type="checkbox" checked={checked} aria-label={`选择 ${label} ${s.title}`} onChange={() => sel.onToggle(item.id)} />
+                          </label>
+                        )}
+                        <button className={`scn2-qrow ${active ? "is-active" : ""} ${pinned ? "s-" + st : "is-idle"}`}
+                          data-testid={pinned ? "scene-queue-item" : "scene-spine-item"} data-scene-sid={s.sid || ""}
+                          title={s.summary || s.title}
+                          onClick={() => {
+                            if (selectMode) { if (pinned) sel.onToggle(item.id); return; }
+                            if (item) onPickItem(item.id); else onViewScene(s.sid);
+                          }}>
+                          <span className={`scn2-qrow-spine ${pinned ? "s-" + st : "s-idle"}`} />
+                          <div className="scn2-qrow-main">
+                            <div className="scn2-qrow-top">
+                              <span className="scn2-qrow-num">{label} · {s.kind || "主动"}</span>
+                              {pinned
+                                ? <span className={`scn2-chip s-${st}`}>{st === "running" && <span className="scn2-chip-pulse" />}{STATE_LABEL[st]}</span>
+                                : <span className={`scn2-chip s-idle tone-${SPINE_IDLE_TONE[st]}`}>{SPINE_IDLE_LABEL[st]}</span>}
+                            </div>
+                            <div className="scn2-qrow-title text-serif">{s.title}</div>
+                            {stale && <span className="scn2-qrow-dx" title="构思里这一场已经更新，场景卡还没同步"><I.Refresh size={11} /> 构思已更新</span>}
+                            {pinned && dxDone && dxDone[item.n] != null && <span className="scn2-qrow-dx"><I.Microscope size={11} /> 已深改 · {dxDone[item.n]} 处</span>}
+                            {pinned && (
+                              <div className="scn2-qrow-bar">
+                                <div className={`scn2-qrow-fill s-${st}`} style={{ width: (st === "running" ? item.progress * 100 : 100) + "%" }} />
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                        {!selectMode && pinned && (
+                          <button className="scn2-qrow-x" data-testid="scene-queue-remove" aria-label={`把 ${s.title} 移出在办`}
+                            title="移出在办清单（保留场景卡与已生成的 AI 稿，可撤销）"
+                            onClick={(e) => { e.stopPropagation(); onRemove && onRemove(item.id); }}><I.Trash size={12} /></button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
-              <button className={`scn2-qrow ${active ? "is-active" : ""} s-${st}`} data-testid="scene-queue-item" data-scene-sid={s.sid || ""}
-                onClick={() => (selectMode ? sel.onToggle(q.id) : setPicked(q.id))}>
-                <span className={`scn2-qrow-spine s-${st}`} />
-                <div className="scn2-qrow-main">
-                  <div className="scn2-qrow-top">
-                    <span className="scn2-qrow-num">{s.n}</span>
-                    <span className={`scn2-chip s-${st}`}>{st === "running" && <span className="scn2-chip-pulse" />}{STATE_LABEL[st]}</span>
-                  </div>
-                  <div className="scn2-qrow-title text-serif">{s.title}</div>
-                  {dxDone && dxDone[s.n] != null && <span className="scn2-qrow-dx"><I.Microscope size={11} /> 已深改 · {dxDone[s.n]} 处</span>}
-                  <div className="scn2-qrow-bar">
-                    <div className={`scn2-qrow-fill s-${st}`} style={{ width: (st === "running" ? q.progress * 100 : 100) + "%" }} />
-                  </div>
-                </div>
-              </button>
-              {!selectMode && (
-                <button className="scn2-qrow-x" data-testid="scene-queue-remove" aria-label={`把 ${s.title} 移出队列`}
-                  title="移出队列（保留场景卡与已生成的 AI 稿，可撤销）"
-                  onClick={(e) => { e.stopPropagation(); onRemove && onRemove(q.id); }}><I.Trash size={12} /></button>
-              )}
-            </li>
+            </section>
           );
         })}
-      </ul>
+      </div>
 
       {!selectMode && (
         <div className="scn2-queue-foot">
-          <button className="btn btn-accent btn-sm" data-testid="scene-add" style={{ flex: 1 }} onClick={onAdd}><I.Plus size={13} /> 加入场景</button>
-          <button className="btn btn-quiet btn-sm" data-testid="scene-queue-select-mode"
-            disabled={!queue.length} title="多选后可一次移出多场" onClick={sel.onToggleMode}>
-            <I.Check size={13} /> 多选
+          <button className="btn btn-quiet btn-sm" data-testid="scene-queue-select-mode" style={{ flex: 1 }}
+            disabled={!pinnedCount} title="多选在办的场，一次移出多场" onClick={sel.onToggleMode}>
+            <I.Check size={13} /> 多选在办的场
           </button>
         </div>
       )}
+      <style>{`
+.scn2-spine-filter { display: flex; gap: 4px; padding: 0 14px 8px; }
+.scn2-spine-tab { flex: 1; border: 1px solid var(--line-1); background: transparent; color: var(--ink-3); font: inherit; font-size: 11.5px; font-weight: 600; padding: 5px 0; border-radius: 8px; cursor: pointer; }
+.scn2-spine-tab.is-on { background: var(--paper-0, #fff); color: var(--ink-1); border-color: var(--ink-3); }
+.scn2-spine-list { display: grid; gap: 6px; align-content: start; }
+.scn2-spine-empty { margin: 8px 14px; font-size: 12px; line-height: 1.8; color: var(--ink-3); }
+.scn2-spine-chhead { display: flex; align-items: center; gap: 4px; padding: 0 8px 0 6px; }
+.scn2-spine-chbtn { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; background: transparent; font: inherit; color: var(--ink-2); padding: 6px 4px; cursor: pointer; text-align: left; }
+.scn2-spine-chev { display: inline-flex; transition: transform 120ms ease; color: var(--ink-4); }
+.scn2-spine-chn { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; color: var(--ink-4); }
+.scn2-spine-cht { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scn2-spine-mark { flex: 0 0 auto; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--gold-wash); color: var(--gold); }
+.scn2-spine-chp { flex: 0 0 auto; font-size: 10.5px; color: var(--ink-4); }
+.scn2-spine-chall { flex: 0 0 auto; border: 0; background: transparent; font: inherit; font-size: 10.5px; font-weight: 600; color: var(--ink-3); padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+.scn2-spine-chall:hover { color: var(--crimson); background: var(--paper-2); }
+.scn2-spine-scenes { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.scn2-qrow.is-idle { opacity: 0.92; }
+.scn2-qrow.is-idle .scn2-qrow-title { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scn2-qrow-spine.s-idle { background: var(--line-1); }
+.scn2-chip.s-idle { background: var(--paper-2); color: var(--ink-3); }
+.scn2-chip.s-idle.tone-sage { background: var(--sage-wash); color: var(--sage); }
+.scn2-chip.s-idle.tone-slate { background: var(--slate-wash); color: var(--slate); }
+      `}</style>
     </aside>
   );
 }
@@ -1075,27 +1244,24 @@ function Draft({ scene, activeBeat, setActiveBeat, typing }) {
 
 /* ============================ Preflight (queued) ============================ */
 
-function Preflight({ scene }) {
-  const briefBeats = (scene.brief || []).map(b => b.beat);
-  const checks = scene.fromCard
+/* 预检 = 起草前对着这一场的设计卡看一眼。清单只列真的能从卡上读出来的事实
+   （过去这里有一条写死的「参考画像未绑定 · 可选」和一组演示用的假清单）。 */
+function Preflight({ scene, model, sync, onEditPlan, onEditCard }) {
+  const m = model;
+  const checks = m
     ? [
-        { ok: briefBeats.includes("goal"),     text: "场景卡 · 目标已填" },
-        { ok: briefBeats.includes("conflict"), text: "场景卡 · 阻碍已填" },
-        { ok: briefBeats.includes("exit"),     text: "场景卡 · 出口已填" },
-        { ok: false, text: "参考画像未绑定 · 可选" },
+        { ok: m.beatsFilled === 3, text: m.beatsFilled === 3 ? `三拍齐了（${m.beats.map(b => b.label).join(" / ")}）` : `三拍填了 ${m.beatsFilled}/3——缺的拍子 AI 只能自己猜` },
+        { ok: !!(m.facts.find(f => f.k === "POV") || {}).v, text: (m.facts.find(f => f.k === "POV") || {}).v ? `POV · ${(m.facts.find(f => f.k === "POV") || {}).v}` : "还没定 POV 角色" },
+        { ok: !!m.crucible, text: m.crucible ? "坩埚已写（为什么此刻非面对不可）" : "坩埚还没写 · 可选" },
+        { ok: !!(m.facts.find(f => f.k === "地点") || {}).v, text: (m.facts.find(f => f.k === "地点") || {}).v ? `地点 · ${(m.facts.find(f => f.k === "地点") || {}).v}` : "地点还没写 · 可选" },
       ]
-    : [
-        { ok: true,  text: "戏剧卡完整 · 6/6 字段" },
-        { ok: true,  text: "出场角色已绑定 · 3 位" },
-        { ok: true,  text: "上一场出口已对齐入口" },
-        { ok: false, text: "参考画像未绑定 · 可选" },
-      ];
+    : [];
   return (
     <div className="scn2-pre scn2-scroll">
       <div className="scn2-pre-card">
-        {scene.fromCard && (
+        {m && m.origin === "snowflake" && (
           <div className="scn2-archived-note" style={{ marginBottom: 12 }}>
-            <I.ArrowRight size={14} /> 由章节编排「交给 AI」入列 · 预检校验的就是这张场景卡
+            <I.ArrowRight size={14} /> 这一场来自构思 · 起草读的就是下面这张设计卡，加上雪花里已确认的全书设计
           </div>
         )}
         <div className="scn2-pre-eyebrow"><I.ShieldCheck size={14} /> 预检清单</div>
@@ -1108,15 +1274,19 @@ function Preflight({ scene }) {
           ))}
         </ul>
         <div className="scn2-pre-brief">
-          <div className="scn2-pre-eyebrow"><I.Compass size={14} /> 本场戏剧卡{scene.fromCard ? " · 与章节编排同一张" : ""}</div>
-          <ul className="scn2-brief-list">
-            {scene.brief.map((b, i) => (
-              <li key={i}>
-                <span className={`scn2-brief-tag tone-${BEAT_META[b.beat].tone}`}>{BEAT_META[b.beat].label.split(" ")[0]}</span>
-                <span className="scn2-brief-text">{b.text}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="scn2-pre-eyebrow"><I.Compass size={14} /> 本场设计卡 · 与写作台同一张</div>
+          {m
+            ? <SceneDesignCard model={m} sync={sync} onEditPlan={onEditPlan} onEditCard={onEditCard} />
+            : (
+              <ul className="scn2-brief-list">
+                {(scene.brief || []).map((b, i) => (
+                  <li key={i}>
+                    <span className={`scn2-brief-tag tone-${BEAT_META[b.beat].tone}`}>{BEAT_META[b.beat].label.split(" ")[0]}</span>
+                    <span className="scn2-brief-text">{b.text}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
         </div>
       </div>
     </div>
@@ -1722,78 +1892,12 @@ function AttemptCompare({ attempt, scene, onClose, onRewrite }) {
   );
 }
 
-/* ============================ 选场入列 ============================ */
-function ScenePicker({ queued, onPick, onClose }) {
-  const chs = scnPickList ? scnPickList(queued) : [];
-  const stLabel = { done: "已完成", writing: "在写", todo: "待写" };
-  const batchOf = (c) => c.scenes.filter(s => !s.queued && s.sid && s.state !== "done");
-  return (
-    <div className="scn2-cmp" role="dialog" aria-modal="true">
-      <div className="scn2-cmp-card" style={{ maxWidth: 620 }}>
-        <header className="scn2-cmp-head">
-          <div className="scn2-cmp-title">
-            <span className="scn2-cmp-n">加入场景</span>
-            <span className="scn2-cmp-time">从章节目录挑一场交给 AI 起草</span>
-          </div>
-          <button className="scn2-cmp-x" onClick={onClose} aria-label="关闭"><I.X size={16} /></button>
-        </header>
-        <div className="scn2-cmp-body scn2-scroll" style={{ display: "grid", gap: 14 }}>
-          {!chs.length && (
-            <div className="scn2-cmp-empty">章节目录还是空的——先在构思的「下游交付」把雪花整理成章节结构，或去章节编排建章。</div>
-          )}
-          {chs.map(c => {
-            const batch = batchOf(c);
-            return (
-            <div key={c.id}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-3)", flex: 1 }}>第 {c.n} 章 · {c.title}</span>
-                {batch.length > 1 && (
-                  <button className="btn btn-quiet btn-sm" onClick={() => batch.forEach(s => onPick(s.sid, true))} title="把本章未完成的场全部入列（不自动起草，逐场点开始）">
-                    <I.Plus size={12} /> 整章入列 · {batch.length} 场
-                  </button>
-                )}
-              </div>
-              <div style={{ display: "grid", gap: 6 }}>
-                {c.scenes.map(s => (
-                  <button key={s.sid} className="scn2-pick-row" disabled={s.queued} onClick={() => onPick(s.sid)}>
-                    <span className={`scn2-pick-kind ${s.kind === "反应" ? "is-rea" : "is-pro"}`}>{s.kind || "主动"}</span>
-                    <span className="scn2-pick-title">{s.title}</span>
-                    {s.hasDraft && <span className="scn2-pick-draft" title="这一场已有 AI 稿（入列后可直接裁决或重跑）"><I.Sparkles size={11} /> 有 AI 稿</span>}
-                    {!s.ready && <span className="scn2-pick-warn" title="场景卡的目标还是占位——起草质量会打折"><I.AlertTriangle size={11} /> 卡未填全</span>}
-                    <span className="scn2-pick-st">{s.queued ? "已在队列" : (stLabel[s.state] || s.state || "—")}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-            );
-          })}
-        </div>
-        <footer className="scn2-cmp-foot">
-          <span className="scn2-cmp-hint">入列后点「开始起草」：Claude 读雪花构思 + 场景卡起草，过本地质检后由你裁决</span>
-          <button className="btn btn-quiet btn-sm" onClick={onClose}>关闭</button>
-        </footer>
-      </div>
-      <style>{`
-.scn2-pick-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 9px 12px; border: 1px solid var(--line-1, #ddd); border-radius: 10px; background: var(--paper-0, #fff); cursor: pointer; font: inherit; }
-.scn2-pick-row:hover:not([disabled]) { border-color: var(--ink-3); }
-.scn2-pick-row[disabled] { opacity: 0.55; cursor: default; }
-.scn2-pick-kind { flex: 0 0 auto; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
-.scn2-pick-kind.is-pro { background: var(--crimson-wash); color: var(--crimson); }
-.scn2-pick-kind.is-rea { background: var(--paper-1, #f3f2ef); color: var(--ink-2); }
-.scn2-pick-title { flex: 1; min-width: 0; font-size: 13px; color: var(--ink-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.scn2-pick-warn { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; color: var(--gold); flex: 0 0 auto; }
-.scn2-pick-draft { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; color: var(--sage); flex: 0 0 auto; }
-.scn2-pick-st { flex: 0 0 auto; font-size: 11px; color: var(--ink-3); }
-      `}</style>
-    </div>
-  );
-}
-
-/* 运行队列：从章节目录加场入列——真实起草：读雪花构思 + 场景卡，质检后写回正文。 */
+/* AI 起草台：左栏是全书书脊（与目录同源）——读雪花构思 + 场景设计卡起草，质检后写回正文。 */
 function WsScene(props) {
-  const hasCatalog = (() => { try { return WsCatalog && WsCatalog.get().length > 0; } catch (e) { return false; } })();
-  if (hasCatalog) return <WsSceneBoard {...props} />;
+  /* 订阅目录：雪花刚「整理为章节结构」、目录晚到，这里都要跟着换到书脊，而不是停在空状态上 */
+  const catalogChapters = useCatalogChapters();
   const work = WsWorks ? WsWorks.active() : { title: "这部作品" };
+  if (catalogChapters.length > 0) return <WsSceneBoard key={(work && work.id) || "work"} {...props} />;
   return (
     <div className="page" data-screen-label="scene · empty">
       <div style={{ display: "grid", placeItems: "center", minHeight: "70vh", textAlign: "center" }}>

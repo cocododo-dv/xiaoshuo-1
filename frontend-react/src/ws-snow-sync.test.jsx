@@ -901,6 +901,38 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(mod.SnowSync.needsReconfirm("prj-main", "audience")).toBe(false);
   });
 
+  it("阶段 X：确认本步带 sync_catalog——场景卡当场跟上构思：待同步数按回包更新、目录重拉、给视图一句回执", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: JSON.parse(JSON.stringify(WS_WITH_BOOK_BRIEF)) });
+    await vi.waitFor(() => expect(mod.SnowSync.hydrated("prj-main")).toBe(true), T);
+    client.apiPost.mockImplementation(async (url) => {
+      if (String(url).endsWith("/steps/scene_details/approve")) {
+        return {
+          step: { step_key: "scene_details", status: "approved", draft: {}, health: {}, completeness: {} },
+          workspace: { steps: [], resync_status: { pending_count: 1, pending_scene_plan_ids: ["sp2"], pending_scenes: [{ scene_plan_id: "sp2", scene_id: "SC2", title: "留给作者的一场" }] } },
+          catalog_sync: { synced_count: 3, synced_scene_ids: ["SC1", "SC3", "SC4"], held_count: 1, held: [{ scene_id: "SC2", reason: "desk_edited" }] },
+        };
+      }
+      return {};
+    });
+    const receipts = [];
+    const onSynced = (e) => receipts.push(e.detail);
+    window.addEventListener("ws:snow-catalog-synced", onSynced);
+    const catalogGets = () => client.apiGet.mock.calls.filter(([url]) => /\/catalog$/.test(String(url))).length;
+    const before = catalogGets();
+    try {
+      await mod.SnowSync.approveStep("prj-main", "planning");
+    } finally {
+      window.removeEventListener("ws:snow-catalog-synced", onSynced);
+    }
+    const call = client.apiPost.mock.calls.find(([url]) => String(url).endsWith("/steps/scene_details/approve"));
+    expect(call[1]).toEqual({ sync_catalog: true });
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ workId: "prj-main", synced_count: 3, held_count: 1 });
+    // 写作台 / AI 起草台读到的是新卡：目录重拉了；横幅上的待同步数是回包里剩下的那一场
+    await vi.waitFor(() => expect(catalogGets()).toBeGreaterThan(before), T);
+    expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(1);
+  });
+
   it("阶段 G：水合发现 pending_review 但 revised_after_approval：不补 approve（等作者重新确认）", async () => {
     const scaffold = {
       genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫",

@@ -28,6 +28,7 @@ from __future__ import annotations
 import math
 import re
 import uuid
+from bisect import bisect_right
 from typing import Any
 
 from sqlalchemy import select
@@ -44,6 +45,7 @@ from novel_system.db.models import (
     StoryProject,
     utcnow,
 )
+from novel_system.services.catalog_placeholders import pristine_placeholder_chapters
 from novel_system.services.errors import DomainError
 from novel_system.services.snowflake_scene_order import renumber_scene_seq, sort_in_story_order
 from novel_system.services.snowflake_steps import effective_rendering_mode
@@ -534,8 +536,12 @@ class SnowflakeChapteringService:
     def preview(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         body = payload or {}
         strategy = str(body.get("strategy") or "spine_anchor").strip()
+        healed_from_saved = False
         if strategy == "auto":
             strategy = self._auto_strategy(project_id)
+            healed_from_saved = strategy == "from_scenes" and bool(
+                misplaced_scene_plan_ids(self.chapter_plans(project_id), self.scene_plans(project_id))
+            )
         if strategy not in STRATEGIES:
             raise DomainError(
                 "SNOWFLAKE_CHAPTER_STRATEGY_INVALID",
@@ -543,7 +549,20 @@ class SnowflakeChapteringService:
                 status_code=400,
             )
         if strategy == "from_scenes":
-            return self._preview_from_scenes(project_id, body)
+            shaped = self._preview_from_scenes(project_id, body)
+            if healed_from_saved:
+                shaped.setdefault("warnings", []).insert(
+                    0,
+                    {
+                        "kind": "chapter_order_healed",
+                        "severity": "advisory",
+                        "message": (
+                            "上一次保存的分章里，有的章装着故事序上不相邻的场（章必须是场景列表上连续的一段）。"
+                            "这里已经按场景列表重新提议了一版；确认写入后替换旧的分章，目录里的场景卡会跟着搬到新章。"
+                        ),
+                    },
+                )
+            return shaped
         chapters = self.ensure_chapter_plans(project_id)
         scenes = self.scene_plans(project_id)
         if not chapters:
@@ -562,7 +581,26 @@ class SnowflakeChapteringService:
             )
 
         assignment = _assign(strategy, chapters, scenes)
+        healed_ids: list[str] = []
+        if strategy == "keep_current":
+            # 面板摆出来的必须就是「确认写入」会落库的那一版：保存时非连续的归属会被并回相邻的章，这里先并给作者看。
+            fixed = heal_assignment(assignment, chapters, scenes)
+            healed_ids = [key for key, value in fixed.items() if value != assignment.get(key)]
+            assignment = fixed
         shaped = self._shape_preview(project_id, strategy, chapters, scenes, assignment)
+        if healed_ids:
+            shaped.setdefault("warnings", []).insert(
+                0,
+                {
+                    "kind": "chapter_order_healed",
+                    "severity": "advisory",
+                    "message": (
+                        f"已保存的分章里有 {len(healed_ids)} 场分在了故事序之外的章；章必须是场景列表上连续的一段，"
+                        "这里已把它们并回相邻的章。想重新来过，用「按场景重新分章」。"
+                    ),
+                    "scene_plan_ids": healed_ids,
+                },
+            )
         shaped["scale"] = self.chapter_scale(project_id, body, scenes)
         shaped["chapter_table"] = self._chapter_table_info(project_id)
         return shaped
@@ -594,8 +632,12 @@ class SnowflakeChapteringService:
         if not chapters:
             return "from_scenes"
         valid = {chapter.chapter_plan_id for chapter in chapters}
-        if any(plan.chapter_plan_id in valid for plan in self.scene_plans(project_id)):
-            return "keep_current"
+        scenes = self.scene_plans(project_id)
+        if any(plan.chapter_plan_id in valid for plan in scenes):
+            # 阶段 X：已保存的分章如果不是故事序上的连续切片（阶段 V 之前交错洗过的归属，被面板的
+            # 「从这里另起一章」继续切下去——2026-09-19 真实项目：第 4 章 = 第 4、10–13 场），就不再把它
+            # 原样摆出来让作者用只会挪章界的工具去修一个修不好的东西：直接按场景列表重新提议。
+            return "keep_current" if not misplaced_scene_plan_ids(chapters, scenes) else "from_scenes"
         if all(is_placeholder_chapter(chapter) for chapter in chapters):
             return "from_scenes"
         return "spine_anchor"
@@ -977,7 +1019,13 @@ class SnowflakeChapteringService:
             return []
         targets = {item["chapter_id"] for item in chapter_payloads if item["scene_count"]}
         snowflake_id = re.compile(rf"^{re.escape(project_id)}_CH\d{{2,}}$")
-        hand_made = [row for row in rows if not snowflake_id.match(row.chapter_id)]
+        # 阶段 X：手建的章分两种——作者真写过东西的（原样保留，新章接在后面）与空白占位章
+        # （「第 1 章 / 开场」，一个字没写：确认写入时移入回收站，雪花的章从第 1 章排起）。
+        placeholder_ids = {chapter.chapter_id for chapter, _cards in pristine_placeholder_chapters(self.session, project_id)}
+        placeholders = [row for row in rows if row.chapter_id in placeholder_ids]
+        hand_made = [
+            row for row in rows if not snowflake_id.match(row.chapter_id) and row.chapter_id not in placeholder_ids
+        ]
         leftover = [row for row in rows if snowflake_id.match(row.chapter_id) and row.chapter_id not in targets]
         warnings: list[dict[str, Any]] = []
 
@@ -988,6 +1036,17 @@ class SnowflakeChapteringService:
             ]
             return "、".join(f"「{label}」" for label in labels) + (f" 等 {len(items)} 章" if len(items) > 3 else "")
 
+        if placeholders:
+            warnings.append(
+                {
+                    "kind": "catalog_placeholder_chapters",
+                    "severity": "advisory",
+                    "message": (
+                        f"章节目录里的 {names(placeholders)} 是还没动过笔的空白占位章——确认写入时会移入回收站"
+                        "（可在回收站取回），这一版的章从第 1 章排起。"
+                    ),
+                }
+            )
         if hand_made:
             warnings.append(
                 {
@@ -1164,6 +1223,24 @@ class SnowflakeChapteringService:
         # 章序可能整体变了（拆章 / 并章 / 重排），所以给**每一场**重盖章戳，而不只是这次点名的场——
         # 否则没被点名的场还带着旧的物化目标章号，回流会把场景卡搬进错的章。
         live = {chapter.chapter_plan_id: chapter for chapter in by_row_uid.values() if not chapter.removed_at}
+        # 阶段 X：「章是故事序上连续的一段」由服务端守住，不再信面板。面板只提供挪章界 / 拆章 / 并章，
+        # 从一版连续的分章出发不会越界；可它手里的那一版如果本来就是交错的（旧数据、API 调用方），
+        # 再怎么拆也是交错的——落库前过一遍 heal_assignment：保住章序的最长不降子序列，离群的场并入故事序上前一场的章。
+        ordered_chapters = sorted(live.values(), key=lambda chapter: (int(chapter.chapter_seq or 0), chapter.chapter_plan_id))
+        by_uid = {chapter.row_uid: chapter for chapter in ordered_chapters}
+        by_plan_id = {chapter.chapter_plan_id: chapter for chapter in ordered_chapters}
+        story_scenes = list(scenes.values())  # scene_plans() 已按故事序
+        current = {
+            plan.scene_plan_id: by_plan_id[plan.chapter_plan_id].row_uid if plan.chapter_plan_id in by_plan_id else None
+            for plan in story_scenes
+        }
+        fixed = heal_assignment(current, ordered_chapters, story_scenes)
+        healed: list[str] = []
+        for plan in story_scenes:
+            target = fixed.get(plan.scene_plan_id)
+            if target and target != current.get(plan.scene_plan_id):
+                plan.chapter_plan_id = by_uid[target].chapter_plan_id
+                healed.append(plan.scene_plan_id)
         if replace_chapters:
             self._refresh_auto_chapter_fields(list(live.values()), list(scenes.values()))
         for plan in scenes.values():
@@ -1189,13 +1266,14 @@ class SnowflakeChapteringService:
                     "assigned_scene_count": len(touched),
                     "created_chapter_count": sum(1 for chapter in live.values() if chapter not in chapters),
                     "removed_chapter_count": len(removed),
+                    "healed_scene_plan_ids": healed,
                     "actor_ref": actor_ref or "operator",
                     "saved_at": utcnow(),
                 },
             )
         )
         self.session.flush()
-        return {"assigned_scene_count": len(touched)}
+        return {"assigned_scene_count": len(touched), "healed_scene_plan_ids": healed}
 
     @staticmethod
     def _refresh_auto_chapter_fields(chapters: list[SnowflakeChapterPlan], scenes: list[SnowflakeScenePlan]) -> None:
@@ -1844,6 +1922,79 @@ def _chunk_chapter_fields(index: int, chunk: dict[str, Any]) -> dict[str, Any]:
 def _clip(text: Any, limit: int = 24) -> str:
     value = str(text or "").strip()
     return value if len(value) <= limit else f"{value[:limit]}…"
+
+
+def misplaced_scene_plan_ids(
+    chapters: list[SnowflakeChapterPlan],
+    scenes: list[SnowflakeScenePlan],
+) -> list[str]:
+    """已保存的分章里，哪些场分在了故事序之外的章（沿故事序走，章序出现回退的那些场）。空 = 每章都是连续的一段。"""
+    order = {chapter.chapter_plan_id: index for index, chapter in enumerate(chapters)}
+    misplaced: list[str] = []
+    reached = -1
+    for scene in scenes:
+        index = order.get(scene.chapter_plan_id or "", -1)
+        if index < 0:
+            continue
+        if index < reached:
+            misplaced.append(scene.scene_plan_id)
+        else:
+            reached = index
+    return misplaced
+
+
+def heal_assignment(
+    assignment: dict[str, str | None],
+    chapters: list[SnowflakeChapterPlan],
+    scenes: list[SnowflakeScenePlan],
+) -> dict[str, str | None]:
+    """把一份归属修成「每章都是故事序上连续的一段」，**改动的场尽量少**。
+
+    沿故事序看每场的章序：保住最长的那条不降子序列（这些场的归属本来就是对的），其余的场是离群的——
+    作者在 09 里把一场拖到了别的章的范围里、或者旧数据里两章的场交错着——各自并入故事序上前一场所在的章
+    （排在全书最前面的离群场并入后一场的章）。只拖了一场，就只有这一场换章；不会像「章序只许不降」的
+    简单拉平那样，一场跳到前面，后面整本书都被拽进它原来的那一章。没有归属的场原样留着。
+    """
+    order = {chapter.row_uid: index for index, chapter in enumerate(chapters)}
+    indexed = [
+        (position, order[assignment[scene.scene_plan_id]])
+        for position, scene in enumerate(scenes)
+        if assignment.get(scene.scene_plan_id) in order
+    ]
+    if not indexed:
+        return dict(assignment)
+    # 最长不降子序列（patience）：tails[k] = 长度 k+1 的子序列的最小结尾值，links 记前驱以便回溯
+    tails: list[int] = []
+    tail_at: list[int] = []
+    links: list[int] = [-1] * len(indexed)
+    for i, (_position, value) in enumerate(indexed):
+        k = bisect_right(tails, value)
+        if k == len(tails):
+            tails.append(value)
+            tail_at.append(i)
+        else:
+            tails[k] = value
+            tail_at[k] = i
+        links[i] = tail_at[k - 1] if k > 0 else -1
+    keep: set[int] = set()
+    cursor = tail_at[-1]
+    while cursor >= 0:
+        keep.add(indexed[cursor][0])
+        cursor = links[cursor]
+
+    fixed = dict(assignment)
+    kept_positions = sorted(keep)
+    first_kept = kept_positions[0]
+    previous_uid: str | None = None
+    for position, scene in enumerate(scenes):
+        uid = assignment.get(scene.scene_plan_id)
+        if uid not in order:
+            continue
+        if position in keep:
+            previous_uid = uid
+            continue
+        fixed[scene.scene_plan_id] = previous_uid or assignment[scenes[first_kept].scene_plan_id]
+    return fixed
 
 
 def _enforce_contiguity(
