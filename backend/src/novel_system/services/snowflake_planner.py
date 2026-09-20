@@ -225,7 +225,7 @@ class SnowflakePlannerService:
                     "scene_goal": detail.get("summary") or item.get("summary") or item.get("scene_goal") or chapter["chapter_goal"],
                     "beats_json": detail.get("beats_json") or _beats_from_detail(scene_type, detail),
                     "must_include_text": detail.get("must_include_text") or item.get("summary") or project.outline_text[:120],
-                    "forbidden_text": "不得复制参考书原文表达、人物、设定或桥段。",
+                    "forbidden_text": "",
                     "exit_change": detail.get("exit_change") or "",
                     "hook": detail.get("hook") or "",
                     "target_length_band": detail.get("target_length_band") or "medium",

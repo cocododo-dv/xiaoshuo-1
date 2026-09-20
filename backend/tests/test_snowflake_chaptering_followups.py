@@ -208,53 +208,106 @@ def _active_chapters(session, project_id: str) -> list[ChapterGoal]:
     ).scalars())
 
 
-def test_chapters_emptied_by_rechaptering_go_to_the_trash_and_come_back_when_needed(client, session) -> None:
+def _chapter_of(client, project_id: str) -> dict[int, str]:
+    """故事序号（09 的第几场）→ 它现在所在的目录章 id。场景 id 由 row_uid 铸，这里按目录顺序数。"""
+    chapters = client.get(f"/api/v2/projects/{project_id}/catalog").json()["data"]["chapters"]
+    planned = [(chapter["chapter_id"], scene) for chapter in chapters for scene in chapter["scenes"] if scene["design"]["origin"] == "snowflake"]
+    return {index: chapter_id for index, (chapter_id, _scene) in enumerate(planned, start=1)}
+
+
+def test_chapters_emptied_by_rechaptering_go_to_the_trash_and_the_rest_keep_their_rows(client, session) -> None:
+    """阶段 Y：章 id 钉在章计划上。6 章收成 4 章——场至少一半还在的章还是目录里的那一行（对半时归靠前的一章），
+    场被分光的章进回收站；再分回 6 章时新出现的章拿新的序列号、插在章表里它该在的位置；手加的场跟着锚点场走。"""
     project_id = _create_project(client, "leftover")
     _seed(client, project_id)
     _pass_triage(client, project_id)
 
     six = _preview(client, project_id, scenes_per_chapter=2)
-    assert len(six["chapters"]) == 6
+    assert [[s["story_index"] for s in c["scenes"]] for c in six["chapters"]] == [[1], [2, 3], [4, 5], [6, 7], [8, 9], [10, 11, 12]]
     _confirm(client, project_id, six, "leftover-6")
-    assert len(_active_chapters(session, project_id)) == 6
+    before = _chapter_of(client, project_id)
+    assert [chapter.chapter_id[-5:] for chapter in _active_chapters(session, project_id)] == [f"_CH0{i}" for i in range(1, 7)]
 
-    # 手加一场到第 6 章：这一章之后不再有计划内的场，但它不是空的 → 必须原样保留
-    sixth = f"{project_id}_CH06"
+    # 手加一场到最后一章的末尾：它的锚点是第 12 场
+    last_chapter = before[12]
     assert client.post(
-        f"/api/v2/projects/{project_id}/catalog/chapters/{sixth}/scenes",
+        f"/api/v2/projects/{project_id}/catalog/chapters/{last_chapter}/scenes",
         json={"title": "作者手加的一场"}, headers={"X-Idempotency-Key": "leftover-extra"},
     ).status_code == 200
 
     four = _preview(client, project_id, scenes_per_chapter=3)
-    assert len(four["chapters"]) == 4
-    kinds = {warning["kind"]: warning["message"] for warning in four["warnings"]}
-    assert "回收站" in kinds["catalog_leftover_chapters"]
-    assert "原样保留" in kinds["catalog_leftover_chapters_kept"]
+    assert [[s["story_index"] for s in c["scenes"]] for c in four["chapters"]] == [[1, 2, 3], [4, 5, 6, 7], [8, 9], [10, 11, 12]]
+    # 面板预览里就看得出每一章还是原来的哪一章（钉着目录章号）：[4–7] 是 [4,5] 与 [6,7] 对半并成的，归靠前的 [4,5]
+    assert [c["chapter_id"] for c in four["chapters"]] == [before[2], before[4], before[8], before[10]]
+    assert "回收站" in {w["kind"]: w["message"] for w in four["warnings"]}["catalog_leftover_chapters"]
     result = _confirm(client, project_id, four, "leftover-4")
-    assert [item["chapter_id"] for item in result["trashed_empty_chapters"]] == [f"{project_id}_CH05"]
+    assert sorted(item["chapter_id"] for item in result["trashed_empty_chapters"]) == sorted({before[1], before[6]})
 
-    active = _active_chapters(session, project_id)
-    assert [chapter.chapter_id[-5:] for chapter in active] == ["_CH01", "_CH02", "_CH03", "_CH04", "_CH06"]
-    fifth = session.get(ChapterGoal, f"{project_id}_CH05")
-    assert fifth.trashed_flag == 1 and fifth.trashed_by == AUTO_TRASHED_EMPTY_CHAPTER
-    cards = session.execute(select(SceneCard).where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)).scalars().all()
-    assert len(cards) == 13 and all(card.chapter_id != fifth.chapter_id for card in cards)
-
-    # 又分回 6 章：计划指向回收站里的 CH05 —— 取回它，而不是把场景卡搬进一个目录里看不见的章
-    again = _preview(client, project_id, scenes_per_chapter=2)
-    result = _confirm(client, project_id, again, "leftover-6-again")
-    assert result["restored_chapter_ids"] == [f"{project_id}_CH05"]
-    assert result["trashed_empty_chapters"] == []
-    active = _active_chapters(session, project_id)
-    assert {chapter.chapter_id[-5:] for chapter in active} == {f"_CH0{i}" for i in range(1, 7)}
-    orders = [chapter.display_order for chapter in active]
-    assert orders == sorted(set(orders)), "取回的章不能和别的章撞章序"
-    fifth = session.get(ChapterGoal, f"{project_id}_CH05")
-    assert fifth.trashed_flag == 0 and fifth.trashed_by is None
-    in_fifth = session.execute(
-        select(SceneCard).where(SceneCard.chapter_id == fifth.chapter_id, SceneCard.trashed_flag == 0)
+    after = _chapter_of(client, project_id)
+    assert [after[i] for i in (1, 4, 6, 8, 12)] == [before[2], before[4], before[4], before[8], before[12]]
+    assert [chapter.chapter_id for chapter in _active_chapters(session, project_id)] == [before[2], before[4], before[8], before[12]]
+    for chapter_id in (before[1], before[6]):
+        row = session.get(ChapterGoal, chapter_id)
+        assert row.trashed_flag == 1 and row.trashed_by == AUTO_TRASHED_EMPTY_CHAPTER
+    cards = session.execute(
+        select(SceneCard).where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
     ).scalars().all()
-    assert len(in_fifth) == 2
+    assert len(cards) == 13
+    hand_made = next(card for card in cards if (card.writer_brief_json or {}).get("source") == "catalog_api")
+    assert hand_made.chapter_id == after[12] and hand_made.is_chapter_last == 1, "手加的场还跟在第 12 场后面"
+
+    # 再分回 6 章：[2,3] / [4,5] / [8,9] / [10–12] 还是自己那一行；[1] 与 [6,7] 是新章——拿新的序列号，
+    # 绝不复用回收站里那两行的号（那两行随时可能被作者取回），并且插在章表里它该在的位置，不是接到全书最后
+    result = _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=2), "leftover-6-again")
+    again = _chapter_of(client, project_id)
+    assert [again[i] for i in (2, 4, 8, 12)] == [before[2], before[4], before[8], before[12]]
+    assert {again[1], again[6]}.isdisjoint(set(before.values()))
+    assert result["trashed_empty_chapters"] == [] and result["restored_chapter_ids"] == []
+    active = _active_chapters(session, project_id)
+    assert [chapter.chapter_id for chapter in active] == [again[1], again[2], again[4], again[6], again[8], again[12]]
+    orders = [chapter.display_order for chapter in active]
+    assert orders == sorted(set(orders)) and len(orders) == 6
+
+
+def test_a_chapter_that_was_emptied_comes_back_from_the_trash_when_scenes_return_to_it(client, session) -> None:
+    """一章在章表里留着、场被挪空 → 目录里那一行进回收站；场又挪回这一章 → 取回同一行，不把卡搬进看不见的章。"""
+    project_id = _create_project(client, "leftover-revive")
+    _seed(client, project_id)
+    _pass_triage(client, project_id)
+    _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=3), "revive-1")
+    kept = client.post(f"{_base(project_id)}/chapter-plan/preview", json={"strategy": "keep_current"}).json()["data"]
+    third = kept["chapters"][2]
+    assert [s["story_index"] for s in third["scenes"]] == [8, 9]
+
+    # 把第 3 章的两场并进第 2 章，但第 3 章留在章表里（空章）
+    payload = _payload(kept)
+    second_uid = kept["chapters"][1]["row_uid"]
+    moved = {scene["scene_plan_id"] for scene in third["scenes"]}
+    for item in payload["assignments"]:
+        if item["scene_plan_id"] in moved:
+            item["chapter_row_uid"] = second_uid
+    result = _confirm_payload(client, project_id, payload, "revive-2")
+    assert [item["chapter_id"] for item in result["trashed_empty_chapters"]] == [third["chapter_id"]]
+
+    # 挪回去：计划指着回收站里的那一行 → 取回
+    result = _confirm_payload(client, project_id, _payload(kept), "revive-3")
+    assert result["restored_chapter_ids"] == [third["chapter_id"]] and result["trashed_empty_chapters"] == []
+    row = session.get(ChapterGoal, third["chapter_id"])
+    session.refresh(row)
+    assert row.trashed_flag == 0 and row.trashed_by is None
+    active = _active_chapters(session, project_id)
+    assert [chapter.chapter_id for chapter in active] == [chapter["chapter_id"] for chapter in kept["chapters"]]
+    assert len(session.execute(
+        select(SceneCard).where(SceneCard.chapter_id == third["chapter_id"], SceneCard.trashed_flag == 0)
+    ).scalars().all()) == 2
+
+
+def _confirm_payload(client, project_id: str, payload: dict, key: str) -> dict:
+    materialize = client.post(f"{_base(project_id)}/materialize", json=payload, headers={"X-Idempotency-Key": f"{key}-mat"})
+    assert materialize.status_code == 200, materialize.text
+    approve = client.post(f"{_base(project_id)}/outline/approve", json={}, headers={"X-Idempotency-Key": f"{key}-approve"})
+    assert approve.status_code == 200, approve.text
+    return approve.json()["data"]
 
 
 def test_hand_made_and_approved_chapters_are_never_auto_trashed(client, session) -> None:
@@ -267,16 +320,17 @@ def test_hand_made_and_approved_chapters_are_never_auto_trashed(client, session)
     )
     assert created.status_code == 200, created.text
     _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=2), "guards-6")
-    # 第 6 章已终审通过：场搬走之后就算空了也不许动（终审不可变）
-    sixth = session.get(ChapterGoal, f"{project_id}_CH06")
-    sixth.state = "approved"
+    before = _chapter_of(client, project_id)
+    # 6 → 4 章：[4–7] 沿用的是 [4,5] 那一行；空出来的是第 1 场与第 6、7 场原来的章
+    approved = session.get(ChapterGoal, before[6])
+    approved.state = "approved"
     session.commit()
-
     result = _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=3), "guards-4")
-    assert [item["chapter_id"][-5:] for item in result["trashed_empty_chapters"]] == ["_CH05"]
+    assert [item["chapter_id"] for item in result["trashed_empty_chapters"]] == [before[1]]
     titles = [(chapter.narrative_json or {}).get("title") for chapter in _active_chapters(session, project_id)]
     assert "手建的空章" in titles
-    assert session.get(ChapterGoal, f"{project_id}_CH06").trashed_flag == 0
+    session.expire_all()
+    assert session.get(ChapterGoal, before[6]).trashed_flag == 0, "终审过的章空了也不许动"
 
 
 def test_resync_applies_the_same_cleanup(client, session) -> None:
@@ -284,13 +338,34 @@ def test_resync_applies_the_same_cleanup(client, session) -> None:
     _seed(client, project_id)
     _pass_triage(client, project_id)
     _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=2), "resync-6")
-    # 只保存分章（不物化）→ 回流把场景卡搬进前四章
+    before = _chapter_of(client, project_id)
+    # 只保存分章（不物化）：4 章全都沿用目录里已有的行 → 回流直接把场景卡搬过去，空出来的两章进回收站
     four = _preview(client, project_id, scenes_per_chapter=3)
+    assert all(chapter["chapter_id"] for chapter in four["chapters"])
     assert client.patch(f"{_base(project_id)}/chapter-plan", json=_payload(four)).status_code == 200
     resync = client.post(f"{_base(project_id)}/resync", json={})
     assert resync.status_code == 200, resync.text
-    assert [item["chapter_id"][-5:] for item in resync.json()["data"]["trashed_empty_chapters"]] == ["_CH05", "_CH06"]
-    assert len(_active_chapters(session, project_id)) == 4
+    data = resync.json()["data"]
+    assert not data.get("notice")
+    assert sorted(item["chapter_id"] for item in data["trashed_empty_chapters"]) == sorted({before[1], before[6]})
+    after = _chapter_of(client, project_id)
+    assert [after[i] for i in (1, 6, 7)] == [before[2], before[4], before[4]]
+
+
+def test_resync_leaves_scenes_bound_for_a_chapter_the_catalog_does_not_have_yet(client, session) -> None:
+    project_id = _create_project(client, "leftover-resync-new")
+    _seed(client, project_id)
+    _pass_triage(client, project_id)
+    _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=3), "resync-new-4")
+    before = _chapter_of(client, project_id)
+    # 只保存分章：第 1 场、第 6–7 场各成一章新章（目录里还没有这一行）→ 这三场暂时搬不动，其余的照常回流
+    six = _preview(client, project_id, scenes_per_chapter=2)
+    assert [bool(chapter["chapter_id"]) for chapter in six["chapters"]] == [False, True, True, False, True, True]
+    assert client.patch(f"{_base(project_id)}/chapter-plan", json=_payload(six)).status_code == 200
+    data = client.post(f"{_base(project_id)}/resync", json={}).json()["data"]
+    assert data["notice"]["code"] == "CHAPTER_MOVE_NEEDS_MATERIALIZE"
+    assert data["trashed_empty_chapters"] == []
+    assert _chapter_of(client, project_id) == before, "目标章还没物化的场留在原地，等「整理为章节结构」"
 
 
 # ------------------------------------------------------------------ 3. 07 章表不是 09 的输入
@@ -329,9 +404,11 @@ def _catalog_titles(session, project_id: str) -> list[str]:
     return [str((chapter.narrative_json or {}).get("title") or "") for chapter in _active_chapters(session, project_id)]
 
 
-def test_catalog_chapter_names_follow_the_confirmed_table_unless_the_author_renamed_them_there(client, session) -> None:
-    """章号是位置式的：重新分章之后 CH02 可能已经是另一组场。目录章名只在首次建章时写的话，
-    作者在面板里确认的章名（含 AI 起的）到不了目录——目录挂着上一版的名字。"""
+def test_catalog_chapter_names_follow_the_confirmed_table_and_a_desk_rename_is_the_same_name(client, session) -> None:
+    """目录章名只在首次建章时写的话，作者在面板里确认的章名（含 AI 起的）到不了目录——目录挂着上一版的名字。
+    阶段 Y：章 id 钉在章计划上，那一章跟着它的场走（这里它从第二章变成了第一章）。
+    阶段 Z「章名只有一个」：作者在章节编排里改的名字写穿到章计划——分章面板摆出来的就是这个名字，确认写入时它原样留着；
+    之后在面板里再改，目录也跟着走（过去台面上改的是目录里的另一份：面板看不见它，目录从此也不再跟面板）。"""
     project_id = _create_project(client, "catalog-names")
     _seed(client, project_id)
     _pass_triage(client, project_id)
@@ -344,20 +421,32 @@ def test_catalog_chapter_names_follow_the_confirmed_table_unless_the_author_rena
     assert client.post(f"{_base(project_id)}/outline/approve", json={}, headers={"X-Idempotency-Key": "names-app-1"}).status_code == 200
     assert _catalog_titles(session, project_id) == ["旧日志", "撕掉的一页", "磁带", "雪线", "认罪书", "铁窗"]
 
-    # 作者在章节编排里亲手把第二章改了名
+    # 作者在章节编排里亲手把第二章（第 2、3 场）改了名
+    renamed_chapter = _chapter_of(client, project_id)[2]
     renamed = client.patch(
-        f"/api/v2/projects/{project_id}/catalog/chapters/{project_id}_CH02", json={"title": "我在目录里改的名字"},
+        f"/api/v2/projects/{project_id}/catalog/chapters/{renamed_chapter}", json={"title": "我在目录里改的名字"},
         headers={"X-Idempotency-Key": "names-rename"},
     )
     assert renamed.status_code == 200, renamed.text
 
+    # [1–3] 还是第 2、3 场的那一章（同一行章计划）：面板摆出来的就是作者在目录里起的名字
     four = _preview(client, project_id, scenes_per_chapter=3)
+    assert four["chapters"][0]["title"] == "我在目录里改的名字"
     payload = _payload(four)
-    for index, name in enumerate(["风雪夜", "水窖", "火柴梗", "传唤令"]):
+    for index, name in enumerate(["水窖", "火柴梗", "传唤令"], start=1):
         payload["chapters"][index]["title"] = name
     assert client.post(f"{_base(project_id)}/materialize", json=payload, headers={"X-Idempotency-Key": "names-mat-2"}).status_code == 200
     assert client.post(f"{_base(project_id)}/outline/approve", json={}, headers={"X-Idempotency-Key": "names-app-2"}).status_code == 200
-    assert _catalog_titles(session, project_id) == ["风雪夜", "我在目录里改的名字", "火柴梗", "传唤令"]
+    # 它现在排第一，名字留着；其余三章跟面板
+    assert _chapter_of(client, project_id)[2] == renamed_chapter
+    assert _catalog_titles(session, project_id) == ["我在目录里改的名字", "水窖", "火柴梗", "传唤令"]
+
+    # 同一个名字：之后在面板里给它改名，目录跟着走
+    again = _payload(_preview(client, project_id, strategy="keep_current"))
+    again["chapters"][0]["title"] = "风雪夜"
+    assert client.post(f"{_base(project_id)}/materialize", json=again, headers={"X-Idempotency-Key": "names-mat-3"}).status_code == 200
+    assert client.post(f"{_base(project_id)}/outline/approve", json={}, headers={"X-Idempotency-Key": "names-app-3"}).status_code == 200
+    assert _catalog_titles(session, project_id) == ["风雪夜", "水窖", "火柴梗", "传唤令"]
 
 
 def test_reproposing_keeps_the_chapters_whose_scenes_did_not_change(client, session) -> None:
@@ -377,10 +466,20 @@ def test_reproposing_keeps_the_chapters_whose_scenes_did_not_change(client, sess
     assert again["chapters"][0]["summary"] == "他第一次怀疑那本日志被人动过。"
     assert again["replaces_chapter_count"] == 0
 
-    # 换成每章 3 场：12 场里只有灾三之后的尾章可能没变；没变的沿用，变了的是新章（占位名按新位置编号）
+    # 换成每章 3 场（阶段 Y）：场至少一半还在的章还是那一章——[1–3] ← [2,3]，[4–7] ← [4,5]（对半时归靠前的一章），
+    # [8,9] 与 [10–12] 没变。没有一章是新的；被替换掉的只有场被分光的两章。系统起的占位名按新位置重编。
+    ordered = sorted(saved.values(), key=lambda c: c.chapter_seq)
     four = _preview(client, project_id, scenes_per_chapter=3)
-    reused = [c for c in four["chapters"] if not c["row_uid"].startswith("new:")]
-    fresh = [c for c in four["chapters"] if c["row_uid"].startswith("new:")]
-    assert all(c["row_uid"] in saved for c in reused)
-    assert fresh and all(c["title"] == f"第 {c['chapter_seq']} 章" for c in fresh)
-    assert four["replaces_chapter_count"] == len(saved) - len(reused)
+    assert [c["row_uid"] for c in four["chapters"]] == [ordered[i].row_uid for i in (1, 2, 4, 5)]
+    assert [c["chapter_id"] for c in four["chapters"]] == [ordered[i].catalog_chapter_id for i in (1, 2, 4, 5)]
+    assert [c["title"] for c in four["chapters"]] == [f"第 {n} 章" for n in (1, 2, 3, 4)]
+    assert four["replaces_chapter_count"] == 2
+
+    # 存下这 4 章再换回每章 2 场：第 1 场、第 6–7 场各自够不上任何一章的一半 → 这两章才是新章
+    # （占位名按新位置编号，还没有目录章号——确认写入时才铸）
+    assert client.patch(f"{_base(project_id)}/chapter-plan", json=_payload(four)).status_code == 200
+    six = _preview(client, project_id, scenes_per_chapter=2)
+    fresh = [c for c in six["chapters"] if c["row_uid"].startswith("new:")]
+    assert [[s["story_index"] for s in c["scenes"]] for c in fresh] == [[1], [6, 7]]
+    assert all(c["title"] == f"第 {c['chapter_seq']} 章" and c["chapter_id"] == "" for c in fresh)
+    assert six["replaces_chapter_count"] == 0, "四章都还在，只是多出两章"

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from novel_system.db.models import SceneCard
-from novel_system.services.qc_constraints import constraint_terms, contains_forbidden_term, source_field_satisfied
+from novel_system.services.qc_constraints import contains_forbidden_term, forbidden_terms, source_field_satisfied
 
 Q0 = "Q0"
 Q1 = "Q1"
@@ -124,7 +124,7 @@ def _verify_forbidden_term(scene: SceneCard | None, content: str, issue: dict[st
     forbidden = getattr(scene, "forbidden_text", None) if scene is not None else None
     if not contains_forbidden_term(forbidden, content or ""):
         return None
-    matched = [term for term in constraint_terms(forbidden or "") if term in (content or "")]
+    matched = [term for term in forbidden_terms(forbidden) if term in (content or "")]
     return {
         "verified_by": "scene_card_forbidden_term",
         "authority_ref": f"scene_card:{getattr(scene, 'scene_id', '')}.forbidden_text",

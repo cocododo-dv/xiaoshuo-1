@@ -87,7 +87,8 @@ function sceneDesignModel(hit) {
     summaryMode: design.renderingMode === "summary",
     exceptionReason: sdText(design.exceptionReason),
     chapterLast: !!design.chapterLast,
-    deskEdited: !!design.deskEdited,
+    // 这张卡的设计在哪里改：构思第 10 步（台子上只读），还是就在章节编排里
+    planOwned: design.owner ? design.owner === "plan" : design.origin === "snowflake",
     chapter: chapterModel,
   };
 }
@@ -114,7 +115,7 @@ function sdLoadCollapsed() {
 function SceneDesignCard({ model, variant = "full", sync, onEditPlan, onEditCard }) {
   const [collapsed, setCollapsed] = React.useState(sdLoadCollapsed);
   if (!model) return null;
-  const fromPlan = model.origin === "snowflake";
+  const fromPlan = !!model.planOwned;
   const facts = model.facts.filter(f => f.v);
   const compact = variant === "compact";
   const folded = compact && collapsed;
@@ -148,9 +149,7 @@ function SceneDesignCard({ model, variant = "full", sync, onEditPlan, onEditCard
       {sync && sync.pending && (
         <div className="sdc-sync" data-testid="scene-design-sync" role="status">
           <I.Refresh size={12} />
-          <span>{model.deskEdited
-            ? "构思里这一场已经更新；你在台子上也改过这张卡——同步会以构思为准。"
-            : "构思里这一场已经更新，这张卡还是旧的。"}</span>
+          <span>构思里这一场已经更新，这张卡还是旧的。</span>
           <button type="button" className="sdc-sync-btn" disabled={!!sync.busy} onClick={sync.onSync}>
             {sync.busy ? "同步中…" : "同步这一场"}
           </button>

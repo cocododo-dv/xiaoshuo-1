@@ -578,6 +578,40 @@ def test_archiver_blocks_verified_continuity_issue(client, session):
     assert final.status == "near_final_ready"
 
 
+def test_archiver_is_not_blocked_by_the_legacy_reference_policy_sentence(client, session):
+    """2026-09-20 真实故障的后半截：物化写进每张场景卡 forbidden_text 的防抄袭政策句被按顿号拆成禁用词，
+
+    正文里出现「人物」两个字就是 continuity:forbidden_text，归档被拦。政策句不是禁用词表。
+    """
+    _create_chapter(client, "chapter_archive_gate_policy")
+    _create_scene(
+        client,
+        "scene_archive_gate_policy",
+        chapter_id="chapter_archive_gate_policy",
+        scene_seq=1,
+    )
+    scene = session.get(SceneCard, "scene_archive_gate_policy")
+    scene.forbidden_text = "不得复制参考书原文表达、人物、设定或桥段。"
+    final = FinalScene(
+        row_id="final_archive_gate_policy_v1",
+        scene_id=scene.scene_id,
+        chapter_id=scene.chapter_id,
+        content="这号人物他见得多了。她推开门，雨声从院子里涌了进来。",
+        status="near_final_ready",
+        source_bundle_id="bundle_archive_gate_policy",
+        source_bundle_hash="hash_archive_gate_policy",
+    )
+    session.add(final)
+    session.flush()
+
+    result = Archiver(session).archive_final_scene(final.scene_id, final.row_id)
+
+    gate = result["final_text_gate"]
+    assert gate["archivable"] is True
+    assert "continuity:forbidden_text" not in gate["archive_blockers"]
+    assert final.status == "archived"
+
+
 def test_archiver_keeps_literary_findings_advisory(client, session):
     _create_chapter(client, "chapter_archive_gate_literary")
     _create_scene(

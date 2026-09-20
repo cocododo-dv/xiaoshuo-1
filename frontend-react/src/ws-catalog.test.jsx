@@ -212,6 +212,42 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     await vi.waitFor(() => expect(mod.WsCatalog.get().map((c) => c.id)).toEqual(["ch01", "ch02"]), T);
   });
 
+  it("构思分出来的章：结构归属随目录到达；在台子上改名后，本机的雪花缓存接过服务端的章表（阶段 Z）", async () => {
+    const planned = {
+      ...DEFAULT_CHAP,
+      origin: "snowflake",
+      tension: null,
+      structure: { owner: "plan", row_uid: "chrow_1", scene_range: { first: 6, last: 12 }, planned_scene_count: 7, title_auto: true },
+      scenes: [{ ...DEFAULT_CHAP.scenes[0], design: { origin: "snowflake", owner: "plan", story_index: 6 } }],
+    };
+    const { mod, client } = await loadCatalog({ catalog: [planned] });
+    const [chapter] = mod.WsCatalog.get();
+    expect(chapter.structure).toEqual({ owner: "plan", rowUid: "chrow_1", sceneRange: { first: 6, last: 12 }, plannedSceneCount: 7, titleAuto: true });
+    expect(chapter.tensionSet).toBe(false);        // 没设过张力：镜头和体检不拿 0.3 的默认值当事实
+    expect(chapter.scenes[0].design.storyIndex).toBe(6);
+
+    const adopt = vi.fn(async () => true);
+    window.SnowSync = { adoptServerChapters: adopt };
+    client.apiPatch.mockResolvedValue({ chapter: {}, changed: true, plan_title_synced: true });
+    mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({ ...c, title: "旧案重开" })));
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledWith("prj-main"), T);
+    expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/prj-main/catalog/chapters/c1", { title: "旧案重开" });
+
+    // 后端没说写穿（手建的章、值没变）就不去动雪花缓存
+    adopt.mockClear();
+    client.apiPatch.mockResolvedValue({ chapter: {}, changed: true, plan_title_synced: false });
+    mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({ ...c, promise: "读者知道旧信是谁寄的" })));
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/prj-main/catalog/chapters/c1", { promise: "读者知道旧信是谁寄的" }), T);
+    expect(adopt).not.toHaveBeenCalled();
+    delete window.SnowSync;
+  });
+
+  it("手建的章（旧载荷没有 structure）归台面：可拖、可改，章名不写穿", async () => {
+    const { mod } = await loadCatalog();
+    expect(mod.WsCatalog.get()[0].structure).toEqual({ owner: "desk", rowUid: "", sceneRange: null, plannedSceneCount: 0, titleAuto: false });
+    expect(mod.WsCatalog.get()[0].tensionSet).toBe(true);
+  });
+
   it("章节拖拽顺序通过完整真实 ID 集合持久化", async () => {
     const second = {
       ...DEFAULT_CHAP,

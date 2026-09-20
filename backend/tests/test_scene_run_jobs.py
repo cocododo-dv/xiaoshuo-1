@@ -150,7 +150,7 @@ def test_scene_run_job_serialization_prefers_authoritative_scene_column(session)
     assert serialized["scene_id"] == "SCENE_COLUMN"
 
 
-def test_scene_run_job_returns_preflight_blocker_before_starting_worker(client) -> None:
+def _create_job_block_scene(client, *, key: str, **scene_fields) -> None:
     chapter_response = client.post(
         "/api/v1/chapters",
         json={
@@ -161,7 +161,7 @@ def test_scene_run_job_returns_preflight_blocker_before_starting_worker(client) 
             "emotional_target": "Keep operator informed",
             "ending_effect": "Pollable blocked state",
         },
-        headers={"X-Idempotency-Key": "chapter-job-block-create"},
+        headers={"X-Idempotency-Key": f"chapter-job-block-create-{key}"},
     )
     assert chapter_response.status_code == 200
     scene_response = client.post(
@@ -173,15 +173,21 @@ def test_scene_run_job_returns_preflight_blocker_before_starting_worker(client) 
             "pov_character_id": "CHAR_A",
             "onstage_chars_json": ["CHAR_A"],
             "location": "Control room",
-            "scene_goal": "Expose a missing voice card before drafting",
+            "scene_goal": "Expose a preflight blocker before drafting",
             "beats_json": ["start", "block"],
             "target_length_band": "short",
             "scene_type": "test",
             "is_chapter_last": 1,
+            **scene_fields,
         },
-        headers={"X-Idempotency-Key": "scene-job-preflight-block"},
+        headers={"X-Idempotency-Key": f"scene-job-preflight-block-{key}"},
     )
     assert scene_response.status_code == 200
+
+
+def test_scene_run_job_returns_preflight_blocker_before_starting_worker(client) -> None:
+    # 场景卡自相矛盾（必须写进去的词同时被禁用）是起草前真正要作者先处理的事
+    _create_job_block_scene(client, key="conflict", must_include_text="铜钥匙", forbidden_text="铜钥匙")
 
     response = client.post("/api/v1/scenes/CHJOB_BLOCK_SC01/run/jobs")
 
@@ -189,9 +195,30 @@ def test_scene_run_job_returns_preflight_blocker_before_starting_worker(client) 
     job = response.json()["data"]
     assert job["status"] == "blocked"
     assert job["current_step"] == "preflight_blocked"
-    assert job["error_code"] == "VOICE_PROFILE_MISSING"
+    assert job["error_code"] == "SCENE_CONSTRAINT_CONFLICT"
     assert job["run_preflight"]["can_run"] is False
-    assert job["result_summary"]["next_action"].startswith("Create or release missing knowledge cards")
+    assert job["run_preflight"]["constraint_conflicts"][0]["term"] == "铜钥匙"
+    # 下一步说的是这个冲突本身，不再是「Create or release missing knowledge cards」
+    assert "禁用规则" in job["result_summary"]["next_action"]
+
+
+def test_scene_run_job_is_not_blocked_by_missing_voice_or_relation_cards(client) -> None:
+    """2026-09-20 真实故障：POV 声线卡 / 同场关系卡没有任何地方能写，却是每一场起草的硬前提——
+
+    真实作品的每一次「开始起草」都以 blocked / VOICE_PROFILE_MISSING 结束。缺卡不再拦起草。
+    """
+    _create_job_block_scene(client, key="no-cards", onstage_chars_json=["CHAR_B", "CHAR_C"])
+
+    response = client.post("/api/v1/scenes/CHJOB_BLOCK_SC01/run/jobs?start=false")
+
+    assert response.status_code == 200
+    job = response.json()["data"]
+    assert job["status"] == "queued"
+    assert job["error_code"] is None
+    assert job["run_preflight"]["can_run"] is True
+    assert job["run_preflight"]["blocking_items"] == []
+    assert "missing_dependencies" not in job["run_preflight"]
+    assert "create_actions" not in job["run_preflight"]
 
 
 def test_scene_run_job_latest_qc_exposes_issue_keys_for_operator_next_action(client, session) -> None:

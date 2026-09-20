@@ -160,7 +160,6 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
         "/api/v1/chapters/UNKNOWN/deep-review",
         "/api/v1/chapters/UNKNOWN/run/full",
         "/api/v1/scenes/UNKNOWN/deep-review",
-        "/api/v1/scenes/UNKNOWN/preflight/create-cards",
         "/api/v1/scenes/UNKNOWN/resume-after-selection",
         "/api/v1/system-config/UNKNOWN/activate",
         "/api/v1/system-config/llm/providers/UNKNOWN/default",

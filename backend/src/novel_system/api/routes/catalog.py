@@ -82,7 +82,9 @@ def update_catalog_chapter(
         method="PATCH",
         path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
-        action=lambda: CatalogService(session).update_chapter(project_id, chapter_id, body),
+        action=lambda: CatalogService(session).update_chapter(
+            project_id, chapter_id, body, actor_ref=_operator(request)
+        ),
     )
 
 

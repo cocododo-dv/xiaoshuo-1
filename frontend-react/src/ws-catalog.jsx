@@ -114,7 +114,27 @@ function catDesignFromApi(s) {
     exceptionReason: d.exception_reason || "",
     protagonist: d.protagonist || "",
     chapterLast: !!d.is_chapter_last,
-    deskEdited: !!d.desk_edited,
+    /* 阶段 Y「设计只有一处可改」：owner = "plan" 的场（雪花整理出来、构思里那一行还在）设计只在构思第 10 步改，
+       台子上只读；"desk" = 就在章节编排里改。旧载荷没有 owner 时按来源猜。 */
+    owner: (d.owner === "plan" || (d.owner == null && d.origin === "snowflake")) ? "plan" : "desk",
+    /* 阶段 Z：它在构思里是第几场（故事序，1 起；不在构思里的场为 0）——与分章面板、09 场景列表同一套编号 */
+    storyIndex: Number(d.story_index) || 0,
+  };
+}
+
+/* 阶段 Z「一张章表、两扇门」：这一章的结构归谁改。owner = "plan" 的章（构思的分章钉着它）彼此的先后与幕
+   只在「整理章节结构」里改；章名两边改的是同一个（后端写穿到章计划）。sceneRange = 它装着故事序上第几到第几场。 */
+function catStructureFromApi(c) {
+  const st = (c && c.structure) || {};
+  const span = st.scene_range && Number(st.scene_range.first) > 0
+    ? { first: Number(st.scene_range.first), last: Number(st.scene_range.last) || Number(st.scene_range.first) }
+    : null;
+  return {
+    owner: st.owner === "plan" ? "plan" : "desk",
+    rowUid: st.row_uid || "",
+    sceneRange: span,
+    plannedSceneCount: Number(st.planned_scene_count) || 0,
+    titleAuto: !!st.title_auto,
   };
 }
 
@@ -170,8 +190,11 @@ function catFromApiChapter(c) {
     summary: c.summary || "",
     goal: c.goal || "",
     spine: c.spine || "",
+    structure: catStructureFromApi(c),
     state: c.state,
     tension: typeof c.tension === "number" ? c.tension : 0.3,
+    /* 张力没有任何编辑入口（旧数据 / 夹具才有）：没设过就别让镜头和体检拿 0.3 的默认值当事实 */
+    tensionSet: typeof c.tension === "number",
     pov: c.pov || "",
     time: c.time_label || "",
     place: c.place || "",
@@ -497,6 +520,7 @@ async function catTrash(path, body) {
    场景删除也必须早于 scene-order（后端要求顺序集合覆盖章内全部在册场景）。 */
 async function catDispatchDiff(workId, prev, next) {
   const ops = [];
+  let planTitleSynced = false;
   const prevById = Object.fromEntries(prev.map(c => [c.id, c]));
   const nextIds = new Set(next.map(c => c.id));
   const trashChapterIds = [];
@@ -524,7 +548,12 @@ async function catDispatchDiff(workId, prev, next) {
     if (Object.keys(patch).length) {
       ops.push(async () => {
         const chapterId = await catBackendChapterId(nc.id);
-        if (chapterId) await apiPatch(`${catApiBase(workId)}/chapters/${chapterId}`, patch);
+        if (!chapterId) return;
+        const res = await apiPatch(`${catApiBase(workId)}/chapters/${chapterId}`, patch);
+        /* 阶段 Z「章名只有一个」：构思分出来的章在这里改了名，后端已经写穿到章计划（07 章节表 / 09 章头的
+           服务端镜像跟着变了）。本机的雪花缓存必须立刻接过服务端这一版——它的合并规则是「本机为准」，
+           不接的话下一次 07 上行会把旧章名当成作者的编辑同步回去。 */
+        if (res && res.plan_title_synced) planTitleSynced = true;
       });
     }
     const prevScenes = pc.scenes || [];
@@ -586,6 +615,12 @@ async function catDispatchDiff(workId, prev, next) {
   if (!ops.length) return;
   try {
     for (const op of ops) await op();
+    if (planTitleSynced) {
+      try {
+        const sync = window.SnowSync;
+        if (sync && typeof sync.adoptServerChapters === "function") await sync.adoptServerChapters(workId);
+      } catch (e) { console.warn("[WsCatalog] 本机雪花缓存接章表失败（下次打开构思时水合）:", e); }
+    }
     catFetch(workId, { migrate: false }); // 以服务端编号/rollup 收敛
     try { window.dispatchEvent(new CustomEvent("ws:trash-changed")); } catch (e) {}
   } catch (e) {

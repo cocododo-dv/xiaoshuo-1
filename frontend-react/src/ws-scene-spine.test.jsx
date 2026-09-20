@@ -154,4 +154,17 @@ describe("AI 起草台 · 全书书脊", () => {
       { type: "ws:snow-step", detail: "planning" }, { type: "ws:snow-scene", detail: "SC_b" },
     ]);
   });
+
+  it("阶段 Y：雪花整理出来的场，决策条上不再让作者去章节编排「编辑场景卡」——设计只在构思里改", async () => {
+    const go = vi.fn();
+    const { WsScene } = await loadScene();
+    const host = await render(<WsScene t={{}} go={go} />);
+    const button = host.querySelector('[data-testid="scene-decide-edit-plan"]');
+    expect(button.textContent).toBe("在构思里改");
+    expect([...host.querySelectorAll(".scn2-decide-acts button")].map(b => b.textContent)).not.toContain("编辑场景卡");
+    await click(button);
+    expect(go).toHaveBeenCalledWith("snowflake", [
+      { type: "ws:snow-step", detail: "planning" }, { type: "ws:snow-scene", detail: "SC_b" },
+    ]);
+  });
 });

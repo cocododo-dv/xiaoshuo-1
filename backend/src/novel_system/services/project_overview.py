@@ -96,8 +96,10 @@ class ProjectOverviewService:
     def _chapter_views(self, project: StoryProject) -> list[dict[str, Any]]:
         """FE-ALIGN P3：与目录 API 同源（CatalogService 序列化），主页/编排/成稿一致。"""
         views: list[dict[str, Any]] = []
-        for index, chapter in enumerate(self._catalog.chapter_rows(project.project_id)):
-            payload = self._catalog.chapter_payload(project, chapter, index)
+        chapter_rows = self._catalog.chapter_rows(project.project_id)
+        context = self._catalog.read_context(project.project_id, [chapter.chapter_id for chapter in chapter_rows])
+        for index, chapter in enumerate(chapter_rows):
+            payload = self._catalog.chapter_payload(project, chapter, index, context=context)
             words = payload["words"]
             pct = (
                 min(100, round((words["cur"] or 0) * 100 / words["target"]))

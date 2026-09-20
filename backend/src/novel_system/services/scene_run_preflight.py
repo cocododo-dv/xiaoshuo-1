@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import RelationProfile, SceneBlueprint, SceneCard, VoiceProfile
+from novel_system.db.models import SceneBlueprint, SceneCard
 from novel_system.services.qc_constraints import (
     constraint_alternatives,
-    constraint_terms,
+    forbidden_terms as literal_forbidden_terms,
     named_scene_card_sources,
 )
-from novel_system.services.resolver import Resolver
+from novel_system.services.scene_design_ownership import design_owned_by_plan
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_structure_brief import missing_structure_fields, scene_has_structure
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
@@ -21,7 +20,6 @@ from novel_system.services.writer_briefs import normalize_scene_writer_brief
 class SceneRunPreflightService:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self.resolver = Resolver()
         self.contracts = SceneExecutionContractService(session)
 
     def build(self, scene: SceneCard, chapter_state: dict[str, Any]) -> dict[str, Any]:
@@ -29,8 +27,6 @@ class SceneRunPreflightService:
         blocking_items = self._blocking_items(scene, execution_contract)
         warning_items = self._warning_items(scene)
         context_items = self._context_items(chapter_state)
-        missing_dependencies = self._missing_dependencies(scene)
-        create_actions = self._create_actions(scene.scene_id, missing_dependencies)
         constraint_conflicts = self._constraint_conflicts(scene)
 
         if blocking_items or constraint_conflicts:
@@ -49,157 +45,14 @@ class SceneRunPreflightService:
             "blocking_items": blocking_items,
             "warning_items": warning_items,
             "context_items": context_items,
-            "missing_dependencies": missing_dependencies,
-            "create_actions": create_actions,
             "constraint_conflicts": constraint_conflicts,
         }
-
-    def _missing_dependencies(self, scene: SceneCard) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-
-        voice_profile_id = self.resolver.resolve_voice_profile_id(scene)
-        if voice_profile_id and self.resolver.resolve_active_voice_profile(self.session, scene) is None:
-            items.append(
-                {
-                    "dependency_type": "voice_card",
-                    "lineage_key": voice_profile_id,
-                    "character_id": scene.pov_character_id,
-                    "blocking_code": "VOICE_PROFILE_MISSING",
-                }
-            )
-
-        relation_profile_id = self.resolver.resolve_relation_profile_id(scene)
-        if relation_profile_id and self.resolver.resolve_active_relation_profile(self.session, scene) is None:
-            character_ids = list(dict.fromkeys(scene.onstage_chars_json or []))
-            items.append(
-                {
-                    "dependency_type": "relation_card",
-                    "lineage_key": relation_profile_id,
-                    "character_ids": character_ids[:2],
-                    "blocking_code": "RELATION_PROFILE_MISSING",
-                }
-            )
-
-        return items
-
-    def _create_actions(self, scene_id: str, missing_dependencies: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        # 可执行落点：所有缺失卡都可经此端点确定性建出最小 active 卡解阻（见 create_missing_cards）。
-        # 历史上该动作只带 review.item_type="voice_profile"，但该 item_type 无 effect/物化落点（死胡同）；
-        # 现补 endpoint/method/executable 让前端真正点得动，review 块保留向后兼容。
-        endpoint = f"/api/v1/scenes/{scene_id}/preflight/create-cards"
-        actions: list[dict[str, Any]] = []
-        for dependency in missing_dependencies:
-            dependency_type = dependency.get("dependency_type")
-            lineage_key = str(dependency.get("lineage_key") or "")
-            if dependency_type == "voice_card":
-                character_id = str(dependency.get("character_id") or "")
-                actions.append(
-                    {
-                        "action": "create_minimal_voice_card",
-                        "lineage_key": lineage_key,
-                        "label": f"Create voice card for {character_id}",
-                        "executable": True,
-                        "endpoint": endpoint,
-                        "method": "POST",
-                        "review": {
-                            "item_type": "voice_profile",
-                            "candidate_payload_json": {
-                                "lineage_key": lineage_key,
-                                "character_id": character_id,
-                                "content": f"{character_id}: keep speech and interiority consistent.",
-                                "source": "scene_run_preflight",
-                            },
-                        },
-                    }
-                )
-            elif dependency_type == "relation_card":
-                character_ids = [str(item) for item in dependency.get("character_ids", [])]
-                actions.append(
-                    {
-                        "action": "create_minimal_relation_card",
-                        "lineage_key": lineage_key,
-                        "label": f"Create relation card for {' / '.join(character_ids)}",
-                        "executable": True,
-                        "endpoint": endpoint,
-                        "method": "POST",
-                        "review": {
-                            "item_type": "relation_profile",
-                            "candidate_payload_json": {
-                                "lineage_key": lineage_key,
-                                "character_ids": character_ids,
-                                "content": "Define the current emotional pressure, information asymmetry, and trust boundary.",
-                                "source": "scene_run_preflight",
-                            },
-                        },
-                    }
-                )
-        return actions
-
-    def create_missing_cards(self, scene: SceneCard) -> dict[str, Any]:
-        """确定性地为当前场景缺失的 voice/relation 依赖建出最小可用(active)卡，解阻 run 预检。
-
-        幂等：已有 active 卡则跳过。这是 create_minimal_voice_card / create_minimal_relation_card
-        预检动作的真实执行落点（此前该动作无 effect/物化路径，是死胡同）。
-        """
-        created: list[dict[str, Any]] = []
-        for dependency in self._missing_dependencies(scene):
-            dependency_type = dependency.get("dependency_type")
-            lineage_key = str(dependency.get("lineage_key") or "")
-            if not lineage_key:
-                continue
-            if dependency_type == "voice_card":
-                if self.resolver.resolve_active_voice_profile(self.session, scene) is not None:
-                    continue
-                character_id = str(dependency.get("character_id") or scene.pov_character_id or "")
-                version = self._next_profile_version(VoiceProfile, VoiceProfile.voice_profile_id, lineage_key)
-                self.session.add(
-                    VoiceProfile(
-                        row_id=f"voice_card__{lineage_key}__v{version}__{uuid4().hex[:8]}",
-                        voice_profile_id=lineage_key,
-                        version=version,
-                        character_id=character_id,
-                        content=f"{character_id}：保持其说话方式、用词与内心独白的一致性（最小占位声线，建议后续在声线工作台细化）。",
-                        active_flag=1,
-                        runtime_eligible=1,
-                        runtime_eligibility_basis="manual_minimal",
-                        source_note="scene_run_preflight.create_missing_cards",
-                    )
-                )
-                created.append({"dependency_type": "voice_card", "lineage_key": lineage_key, "character_id": character_id})
-            elif dependency_type == "relation_card":
-                if self.resolver.resolve_active_relation_profile(self.session, scene) is not None:
-                    continue
-                character_ids = [str(item) for item in dependency.get("character_ids") or []]
-                left = character_ids[0] if character_ids else (scene.pov_character_id or "")
-                right = character_ids[1] if len(character_ids) > 1 else (scene.pov_character_id or "")
-                version = self._next_profile_version(RelationProfile, RelationProfile.relation_profile_id, lineage_key)
-                self.session.add(
-                    RelationProfile(
-                        row_id=f"relation_card__{lineage_key}__v{version}__{uuid4().hex[:8]}",
-                        relation_profile_id=lineage_key,
-                        left_character_id=left,
-                        right_character_id=right,
-                        version=version,
-                        content="定义当前的情感压力、信息不对称与信任边界（最小占位关系卡，建议后续细化）。",
-                        active_flag=1,
-                        runtime_eligible=1,
-                        runtime_eligibility_basis="manual_minimal",
-                        source_note="scene_run_preflight.create_missing_cards",
-                    )
-                )
-                created.append({"dependency_type": "relation_card", "lineage_key": lineage_key})
-        self.session.flush()
-        return {"created": created, "run_preflight": self.build(scene, {})}
-
-    def _next_profile_version(self, model: Any, id_column: Any, lineage_key: str) -> int:
-        versions = self.session.execute(select(model.version).where(id_column == lineage_key)).scalars().all()
-        return (max(versions) + 1) if versions else 1
 
     def _constraint_conflicts(self, scene: SceneCard) -> list[dict[str, Any]]:
         forbidden_text = scene.forbidden_text
         if not isinstance(forbidden_text, str) or not forbidden_text.strip():
             return []
-        forbidden_terms = constraint_terms(forbidden_text)
+        forbidden_terms = literal_forbidden_terms(forbidden_text)
         if not forbidden_terms:
             return []
         positive_sources = self._positive_constraint_sources(scene)
@@ -248,30 +101,12 @@ class SceneRunPreflightService:
                 }
             )
 
-        voice_profile_id = self.resolver.resolve_voice_profile_id(scene)
-        if voice_profile_id and self.resolver.resolve_active_voice_profile(self.session, scene) is None:
-            items.append(
-                {
-                    "code": "VOICE_PROFILE_MISSING",
-                    "title": "缺少 POV 声线档案，当前不宜运行场景",
-                    "detail": "请先补齐当前 POV 角色的可用声线档案，再执行完整场景运行。",
-                    "technical_hint": f"expected active voice profile: {voice_profile_id}",
-                }
-            )
-
-        relation_profile_id = self.resolver.resolve_relation_profile_id(scene)
-        if relation_profile_id and self.resolver.resolve_active_relation_profile(self.session, scene) is None:
-            items.append(
-                {
-                    "code": "RELATION_PROFILE_MISSING",
-                    "title": "缺少同场角色关系档案，当前不宜运行场景",
-                    "detail": "请先补齐当前同场角色组合的可用关系档案，再执行完整场景运行。",
-                    "technical_hint": f"expected active relation profile: {relation_profile_id}",
-                }
-            )
-
+        # 2026-09-20：POV 声线卡 / 同场关系卡不再是起草的前提。这两类卡是 2026-09 减法删掉的知识卡体系留下的，
+        # 产品里已经没有任何地方能写它们——唯一的来路是预检自己铸的一句占位套话（还带着裸角色 id），
+        # 于是每一部真实作品的每一场都在这里被拦下（作者报「任务总是提示被阻断」），解阻的办法是把套话当
+        # 事实喂给起草模型。角色的声音与关系来自构思：Scene Design Context 带着 POV 角色摘要、价值观、
+        # 视角故事与同场角色一句话。库里真有声线 / 关系卡时 bundle 照旧注入，没有就是没有这一节。
         return items
-
 
     @staticmethod
     def _positive_constraint_sources(scene: SceneCard) -> list[tuple[str, str]]:
@@ -353,7 +188,12 @@ class SceneRunPreflightService:
                         "title": "场景结构三拍不完整",
                         "detail": (
                             "这一场带着场景结构，但还缺：" + ", ".join(missing_beats)
-                            + "。回到构思的场景规划或章节编排补齐，起草模型拿到的结构简报才完整。"
+                            + (
+                                "。这一场是雪花整理出来的：回构思第 10 步「场景规划」补齐并确认，场景卡会自动跟上"
+                                if design_owned_by_plan(self.session, scene)
+                                else "。到章节编排补齐这张场景卡"
+                            )
+                            + "，起草模型拿到的结构简报才完整。"
                         ),
                         "technical_hint": "scene_card.writer_brief_json: scene_crucible + goal/conflict/setback or reaction/dilemma/decision",
                     }

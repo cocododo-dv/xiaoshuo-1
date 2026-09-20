@@ -253,6 +253,9 @@ class SnowflakeChapterPlan(Base):
     chapter_goal: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String, default="draft")
     source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 阶段 Y：这一章在目录里的 id（ChapterGoal.chapter_id）。一经铸出永不随章序改变——章的身份跟着
+    # row_uid 走，不跟着位置走；没物化过、也还没保存过分章的章是 NULL。
+    catalog_chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
     removed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     removed_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)

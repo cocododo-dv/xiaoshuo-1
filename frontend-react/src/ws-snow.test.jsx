@@ -217,6 +217,12 @@ describe("阶段 M · 09/10 交互", () => {
     expect(host.querySelector('[data-testid="snow-scene-chapter-0"]').textContent).toBe("第一章 雨夜来信");
     expect(host.querySelector('[data-testid="snow-scene-chapter-1"]')).toBeNull();     // 同章第二场不重复章头
     expect(host.querySelector('[data-testid="snow-scene-chapter-2"]').textContent).toBe("第二章 旧屋回声");
+    // 阶段 Z：章头是一扇门——点它开分章面板（章归属只在那里改），不再只是一句提示
+    expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeNull();
+    await act(async () => host.querySelector('[data-testid="snow-scene-chapter-2"]').click());
+    expect(host.querySelector('[data-testid="chapter-plan-panel"]')).not.toBeNull();
+    await act(async () => host.querySelector('[data-testid="chapter-plan-panel"] .wr-drawer-x').click());
+    expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeNull();
 
     await act(async () => host.querySelector('[data-testid="snow-scene-insert-0"]').click());
     const ids = rowIds(host);

@@ -29,6 +29,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.catalog import focus_scene_payload, normalize_act, short_scene_title
 from novel_system.services.catalog_placeholders import AUTO_TRASHED_PLACEHOLDER_CHAPTER
+from novel_system.services.scene_design_ownership import PLAN_OWNED_SCENE_FIELDS
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService, misplaced_scene_plan_ids
 from tests.test_snowflake_chaptering import (
     _approve,
@@ -172,14 +173,21 @@ def test_a_chapter_the_author_touched_is_never_moved(client, session, touch: str
 
 
 def test_rematerializing_keeps_the_authors_bookmark(client, session) -> None:
+    """书签夹在「第 10–12 场的那一章」上。重新分章后这一章从第四章变成第三章——阶段 Y 起章 id 钉在章上，
+    书签还夹着同一章（位置式章号的年代 CH04 这一行会消失，书签被拽回第 1 章）。"""
     project_id = _materialized(client, "spine-bookmark", scenes_per_chapter=3)
-    third = f"{project_id}_CH03"
-    moved = client.patch(f"/api/v2/projects/{project_id}/catalog/chapters/{third}", json={"current": True})
+    fourth = _catalog(client, project_id)[3]
+    assert fourth["no"] == "04" and len(fourth["scenes"]) == 3
+    moved = client.patch(f"/api/v2/projects/{project_id}/catalog/chapters/{fourth['chapter_id']}", json={"current": True})
     assert moved.status_code == 200, moved.text
 
     _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=4), "spine-bookmark-2")
     session.expire_all()
-    assert session.get(StoryProject, project_id).current_chapter_id == third, "重新物化不得把书签拽回第 1 章"
+    assert session.get(StoryProject, project_id).current_chapter_id == fourth["chapter_id"], "重新物化不得把书签拽回第 1 章"
+    chapters = _catalog(client, project_id)
+    assert [chapter["no"] for chapter in chapters] == ["01", "02", "03"]
+    assert chapters[2]["chapter_id"] == fourth["chapter_id"] and chapters[2]["current"] is True
+    assert [scene["scene_id"] for scene in chapters[2]["scenes"]][-3:] == [scene["scene_id"] for scene in fourth["scenes"]]
 
     # 书签指着的章不在目录里了（重新分章后空了、进了回收站）→ 才回到这一版的第一章
     project = session.get(StoryProject, project_id)
@@ -187,7 +195,7 @@ def test_rematerializing_keeps_the_authors_bookmark(client, session) -> None:
     session.commit()
     _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=6), "spine-bookmark-3")
     session.expire_all()
-    assert session.get(StoryProject, project_id).current_chapter_id == f"{project_id}_CH01"
+    assert session.get(StoryProject, project_id).current_chapter_id == _catalog(client, project_id)[0]["chapter_id"]
 
 
 # ------------------------------------------------------------------ 3. 场景身份
@@ -348,34 +356,143 @@ def test_without_the_flag_confirming_a_step_leaves_the_cards_alone(client, sessi
     assert _catalog(client, project_id)[0]["scenes"][1]["brief"]["goal"] == "事件2·目标"
 
 
-def test_a_card_the_author_edited_at_a_desk_is_held_for_the_diff_preview(client, session) -> None:
-    project_id = _materialized(client, "spine-deskedit", scenes_per_chapter=3)
+def test_the_design_of_a_snowflake_scene_is_edited_in_one_place(client, session) -> None:
+    """阶段 Y「设计只有一处可改」。阶段 X 的做法是台子上照样能改雪花场景卡的三拍，改了打一个 ``desk_edited`` 记号、
+    自动回流绕开它——构思和目录从此各说各话，要等作者去看差异。现在：构思里那一行还在的雪花场景卡，
+    形态 / 三拍 / POV / 离场变化 / 钩子只在构思第 10 步改，目录 API 不收；题名、状态照常。"""
+    project_id = _materialized(client, "spine-owner", scenes_per_chapter=3)
     scene_id = _scene_ids(client, project_id)[1]
+    url = f"/api/v2/projects/{project_id}/catalog/scenes/{scene_id}"
+    card = _catalog(client, project_id)[0]["scenes"][1]
+    assert card["design"]["origin"] == "snowflake" and card["design"]["owner"] == "plan"
+    assert "desk_edited" not in card["design"]
+
+    for body, field in (
+        ({"brief": {"goal": "我在编排台改的目标"}}, "goal"),
+        ({"kind": "reactive"}, "kind"),
+        ({"hook": "门外有脚步声"}, "hook"),
+        ({"exit_change": "她不再相信他"}, "exit_change"),
+        ({"pov_character_name": "一个新名字"}, "pov"),
+    ):
+        refused = client.patch(url, json=body)
+        assert refused.status_code == 409, (body, refused.text)
+        error = refused.json()["error"]
+        assert error["code"] == "CATALOG_SCENE_DESIGN_OWNED_BY_PLAN"
+        assert error["details"]["fields"] == [field] and error["details"]["scene_id"] == scene_id
+        assert field in PLAN_OWNED_SCENE_FIELDS, "回包里的字段名是一份公开的词表"
+        action = error["details"]["author_action"]
+        assert action["target_view"] == "snowflake" and action["target_ref"] == f"snowflake_step:scene_details:{scene_id}"
+    unchanged = _catalog(client, project_id)[0]["scenes"][1]
+    assert unchanged["brief"] == card["brief"] and unchanged["hook"] == card["hook"]
+    assert unchanged["pov_character_name"] == card["pov_character_name"]
+
+    # 前端整卡回写、值一个没变：不是改设计，照常通过；题名与状态不是设计
+    beats = {key: value for key, value in card["brief"].items() if key != "kind"}
+    same = client.patch(url, json={"brief": beats, "kind": card["kind"], "hook": card["hook"], "title": "撬柜"})
+    assert same.status_code == 200, same.text
+    assert same.json()["data"]["scene"]["title"] == "撬柜"
+    assert client.patch(url, json={"state": "writing"}).status_code == 200
+
+    # 在构思里改、确认：卡跟着走（没有「台面改动」要绕开了）
+    _edit_scene_details(client, project_id, {2: {"conflict": "柜门焊死了"}})
+    data = _approve_with_sync(client, project_id, "scene_details")
+    assert data["catalog_sync"]["synced_count"] == 1 and data["catalog_sync"]["held"] == []
+    synced = _catalog(client, project_id)[0]["scenes"][1]
+    assert synced["brief"]["conflict"] == "柜门焊死了" and synced["title"] == "撬柜" and synced["state"] == "writing"
+
+
+def test_a_scene_the_plan_no_longer_holds_belongs_to_the_desk(client, session) -> None:
+    """手加的场一直归台面；雪花的场在构思里那一行删掉之后（卡因为写过字被留下）也归台面——否则它的设计哪里都改不了。"""
+    project_id = _materialized(client, "spine-owner-desk", scenes_per_chapter=3)
+    chapter = _catalog(client, project_id)[0]
+    created = client.post(
+        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter['chapter_id']}/scenes", json={"title": "手加的一场"},
+        headers={"X-Idempotency-Key": "owner-desk-hand"},
+    ).json()["data"]["scene"]
+    assert created["design"]["owner"] == "desk"
     edited = client.patch(
-        f"/api/v2/projects/{project_id}/catalog/scenes/{scene_id}", json={"brief": {"goal": "我在编排台改的目标"}}
+        f"/api/v2/projects/{project_id}/catalog/scenes/{created['scene_id']}", json={"brief": {"goal": "手加场的目标"}, "hook": "钩子"},
     )
     assert edited.status_code == 200, edited.text
-    assert edited.json()["data"]["scene"]["design"]["desk_edited"] is True
 
-    _edit_scene_details(client, project_id, {2: {"conflict": "柜门焊死了"}, 3: {"goal": "追上去"}})
-    data = _approve_with_sync(client, project_id, "scene_details")
-    assert data["catalog_sync"]["synced_count"] == 1
-    assert [(item["scene_id"], item["reason"]) for item in data["catalog_sync"]["held"]] == [(scene_id, "desk_edited")]
-    scenes = _catalog(client, project_id)[0]["scenes"]
-    assert scenes[1]["brief"]["goal"] == "我在编排台改的目标", "自动回流不得静默盖掉台面上的改动"
-    assert scenes[2]["brief"]["goal"] == "追上去"
+    scene_id = chapter["scenes"][1]["scene_id"]
+    plan = session.execute(select(SnowflakeScenePlan).where(SnowflakeScenePlan.scene_id == scene_id)).scalars().one()
+    plan.removed_at = "2026-09-20T00:00:00Z"
+    session.commit()
+    orphan = next(scene for scene in _catalog(client, project_id)[0]["scenes"] if scene["scene_id"] == scene_id)
+    assert orphan["design"]["origin"] == "snowflake" and orphan["design"]["owner"] == "desk"
+    assert client.patch(
+        f"/api/v2/projects/{project_id}/catalog/scenes/{scene_id}", json={"brief": {"goal": "归了台面之后改的目标"}},
+    ).status_code == 200
 
-    # 改状态、改题名不算改设计；换 POV、改钩子算
-    third = _scene_ids(client, project_id)[2]
-    for body, expected in (({"state": "writing"}, False), ({"title": "追"}, False), ({"hook": "门外有脚步声"}, True)):
-        patched = client.patch(f"/api/v2/projects/{project_id}/catalog/scenes/{third}", json=body)
-        assert patched.status_code == 200, patched.text
-        assert patched.json()["data"]["scene"]["design"]["desk_edited"] is expected, body
 
-    # 作者看过差异、显式回流之后，这张卡与构思一致，记号清掉
-    assert client.post(f"{_base(project_id)}/resync", json={"scene_ids": [scene_id]}).status_code == 200
-    card = _catalog(client, project_id)[0]["scenes"][1]
-    assert card["design"]["desk_edited"] is False and card["brief"]["conflict"] == "柜门焊死了"
+def test_the_order_of_snowflake_scenes_is_the_story_order(client, session) -> None:
+    """雪花的场彼此的先后 = 构思第 9 步的行序：台子上挪了，下一次同步就摆回去，所以不收。手加的场可以挪到任何两场之间。"""
+    project_id = _materialized(client, "spine-owner-order", scenes_per_chapter=3)
+    chapter = _catalog(client, project_id)[0]
+    first, second, third = [scene["scene_id"] for scene in chapter["scenes"]]
+    hand_made = client.post(
+        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter['chapter_id']}/scenes", json={"title": "手加的一场"},
+        headers={"X-Idempotency-Key": "owner-order-hand"},
+    ).json()["data"]["scene"]["scene_id"]
+    url = f"/api/v1/chapters/{chapter['chapter_id']}/scene-order"
+
+    refused = client.post(
+        url, json={"scene_ids": [second, first, third, hand_made], "last_scene_id": hand_made},
+        headers={"X-Idempotency-Key": "owner-order-1"},
+    )
+    assert refused.status_code == 409, refused.text
+    error = refused.json()["error"]
+    assert error["code"] == "CATALOG_SCENE_ORDER_OWNED_BY_PLAN"
+    assert error["details"]["author_action"]["target_ref"] == "snowflake_step:scene_list"
+
+    moved = client.post(
+        url, json={"scene_ids": [first, hand_made, second, third], "last_scene_id": third},
+        headers={"X-Idempotency-Key": "owner-order-2"},
+    )
+    assert moved.status_code == 200, moved.text
+    assert [scene["scene_id"] for scene in _catalog(client, project_id)[0]["scenes"]] == [first, hand_made, second, third]
+
+
+def test_the_chapter_planning_ai_does_not_fill_the_design_of_a_snowflake_scene(client, session) -> None:
+    """章节规划 AI 的补丁是「只填空」——但雪花的场上那个空是构思里的空：在目录里填了，下一次回流就按构思的空值
+    盖回去。所以设计槽一律不填（``design_owned_by_plan``），追加新场、填占位题名照常。"""
+    from novel_system.services.chapter_plan_llm import _empty_slot_gaps, sanitize_plan_patch
+
+    project_id = _materialized(client, "spine-owner-ai", scenes_per_chapter=3)
+    _edit_scene_details(client, project_id, {1: {"setback": ""}})
+    _approve_with_sync(client, project_id, "scene_details")
+    chapter = _catalog(client, project_id)[0]
+    scene_id = chapter["scenes"][0]["scene_id"]
+    assert chapter["scenes"][0]["brief"]["setback"] == ""
+
+    body = {"patch": {
+        "scenes": [{"scene_id": scene_id, "set": {"setback": "AI 想替构思补上的挫折", "hook": "AI 想补的钩子"}}],
+        "append_scenes": [{"title": "AI 建议加的一场", "kind": "proactive", "brief": {"goal": "追上去"}}],
+    }}
+    applied = client.post(
+        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter['chapter_id']}/plan/apply", json=body,
+        headers={"X-Idempotency-Key": "owner-ai-apply"},
+    )
+    assert applied.status_code == 200, applied.text
+    data = applied.json()["data"]
+    assert data["applied"] == {"drama": 0, "scenes": 0, "appended": 1}
+    assert {(item["field"], item["reason"]) for item in data["skipped"]} == {
+        ("setback", "design_owned_by_plan"), ("hook", "design_owned_by_plan"),
+    }
+    after = _catalog(client, project_id)[0]["scenes"]
+    assert after[0]["brief"]["setback"] == "" and after[0]["hook"] == chapter["scenes"][0]["hook"]
+    assert after[-1]["title"] == "AI 建议加的一场" and after[-1]["design"]["owner"] == "desk"
+
+    # 离线清单照样列出这个空槽，但说清楚去哪里补
+    cards = list(session.execute(
+        select(SceneCard).where(SceneCard.chapter_id == chapter["chapter_id"], SceneCard.trashed_flag == 0)
+    ).scalars())
+    gaps = _empty_slot_gaps(cards, plan_owned_scene_ids={scene_id})
+    assert any(scene_id in line and "在构思第 10 步补" in line for line in gaps)
+    # 不带归属集合的调用（旧调用方 / 手建作品）行为不变
+    clean, _dropped = sanitize_plan_patch(cards, body["patch"])
+    assert clean["scenes"] == [{"scene_id": scene_id, "set": {"setback": "AI 想替构思补上的挫折", "hook": "AI 想补的钩子"}}]
 
 
 def test_a_written_scene_is_never_auto_trashed(client, session) -> None:

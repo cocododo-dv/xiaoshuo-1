@@ -704,6 +704,21 @@ function WsSnowflake({ go, initialStep, onOverview }) {
      说「并入 12 章」、实际写 1 章。现在只有一条：预览 → 作者确认 → 一次落库。 */
   const [chapterPlanOpen, setChapterPlanOpen] = useSS(false);
   const openChapterPlan = () => setChapterPlanOpen(true);
+  /* 阶段 Z：09 场景列表里的章头就是一扇门——点它开分章面板（过去只有一句「在整理为章节结构里改」的提示）。
+     章头在场景脚手架组件里，够不着这里的状态，走一个窗口事件。 */
+  useSE(() => {
+    const open = () => setChapterPlanOpen(true);
+    window.addEventListener("ws:snow-chapter-plan", open);
+    return () => window.removeEventListener("ws:snow-chapter-plan", open);
+  }, []);
+  /* 分章面板里的一场 → 第 10 步的那一场。先换步（WsConstruct 以 planning 为 key 重挂），再给场景目标——
+     与成稿中心 / 章节编排跨视图回跳同一个顺序，挂起目标由新实例消费。 */
+  const goToPlanScene = (sceneId) => {
+    setChapterPlanOpen(false);
+    window.__snowSceneTarget = sceneId;
+    window.dispatchEvent(new CustomEvent("ws:snow-step", { detail: "planning" }));
+    window.dispatchEvent(new CustomEvent("ws:snow-scene", { detail: sceneId }));
+  };
   const goToMaterializationStep = (beKey) => {
     const pair = S2_BE_STEPS.find(([, candidate]) => candidate === beKey);
     if (!pair) return;
@@ -720,11 +735,15 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     const chapters = (result && result.created_chapter_count) || 0;
     const trashed = ((result && result.trashed_empty_chapters) || []).length;
     const restored = ((result && result.restored_chapter_ids) || []).length;
+    const restoredScenes = ((result && result.restored_scene_ids) || []).length;
     const placeholders = ((result && result.trashed_placeholder_chapters) || []).length;
     const notes = [
       placeholders ? `${placeholders} 个没动过笔的空白占位章已移入回收站，这一版的章从第 1 章排起` : "",
       trashed ? `${trashed} 个变空的旧章已移入回收站` : "",
       restored ? `${restored} 章从回收站取回` : "",
+      // 作者先删了旧章再回来重新分章：随旧章进回收站的场景卡跟着这一版回来
+      restoredScenes ? `${restoredScenes} 场随旧章进了回收站的场景卡已取回` : "",
+      (result && result.chapter_order_held) ? "目录里有已终审的章，按章表排会挪动它——新章暂时接在最后，到成稿中心重新打开后再整理一次" : "",
     ].filter(Boolean);
     showToast(
       (chapters ? `已整理并写入 ${chapters} 章` : "章节结构已按这一版更新") + (notes.length ? ` · ${notes.join(" · ")}` : ""),
@@ -1769,7 +1788,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
 
       {chapterPlanOpen && (
         <WsChapterPlanPanel onClose={() => setChapterPlanOpen(false)} onDone={onChapterPlanDone}
-          onGoToStep={goToMaterializationStep} />
+          onGoToStep={goToMaterializationStep} onGoToScene={goToPlanScene} />
       )}
 
       <UndoToast toast={toast} onClose={clearToast} />
@@ -2479,6 +2498,12 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
             setPlanOpen(false);
             if (pair) window.dispatchEvent(new CustomEvent("ws:snow-step", { detail: pair[0] }));
           }}
+          onGoToScene={(sceneId) => {
+            setPlanOpen(false);
+            window.__snowSceneTarget = sceneId;
+            window.dispatchEvent(new CustomEvent("ws:snow-step", { detail: "planning" }));
+            window.dispatchEvent(new CustomEvent("ws:snow-scene", { detail: sceneId }));
+          }}
         />
       )}
       <div className="sf-scaffold-note">
@@ -2801,7 +2826,13 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
           const chapterHead = s.chapter && s.chapter !== ((list[i - 1] || {}).chapter || "") ? s.chapter : "";
           return (
           <React.Fragment key={s.id || i}>
-          {chapterHead ? <div className="sf-scene-chapter" data-testid={`snow-scene-chapter-${i}`} title="章归属（在「整理为章节结构」里改）">{chapterHead}</div> : null}
+          {chapterHead ? (
+            <button type="button" className="sf-scene-chapter" data-testid={`snow-scene-chapter-${i}`}
+              title="章归属在「整理为章节结构」里改——点这里打开分章面板（拆章 / 并章 / 挪章界 / 改章名）"
+              onClick={() => window.dispatchEvent(new CustomEvent("ws:snow-chapter-plan"))}>
+              <span>{chapterHead}</span><I.Layout size={11} />
+            </button>
+          ) : null}
           <div data-testid={`snow-scene-row-${i}`} draggable onDragStart={() => setDragIdx(i)} onDragOver={(e) => e.preventDefault()} onDrop={() => dropOn(i)} onDragEnd={() => setDragIdx(null)}
             className={`sf-scene-row line-${lt} ${s.spine ? "is-spine" : ""} ${!(s.crucible || "").trim() ? "is-nocru" : ""} ${dim ? "is-dim" : ""} ${dragIdx === i ? "is-dragging" : ""}`} title="拖拽换位">
             <span className="sc-c-id"><span className="sc-no" title={s.id}>{s2SceneNo(s.id, i)}</span></span>

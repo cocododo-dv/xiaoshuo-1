@@ -36,6 +36,7 @@ from novel_system.services.catalog import (
     scene_title,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.scene_design_ownership import plan_owned_scene_ids
 from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.style_reference.planning_context import (
     STRUCTURE_REFERENCE_HOW_TO_USE,
@@ -98,6 +99,8 @@ class ChapterPlanningContextBuilder:
             raise DomainError("CHAPTER_NOT_FOUND", "chapter not found in project", status_code=404)
         chapter = chapters[index]
         scenes = self._catalog.scene_rows(chapter_id)
+        # 阶段 Y：雪花整理出来、构思里那一行还在的场，设计归构思第 10 步所有——告诉模型别往里填
+        self._plan_owned = plan_owned_scene_ids(self.session, project_id, scenes)
 
         refs: dict[str, Any] = {
             "project_id": project_id,
@@ -205,6 +208,7 @@ class ChapterPlanningContextBuilder:
             "exit_change": str(scene.exit_change or ""),
             "hook": str(scene.hook or ""),
             "words_current": int(scene.words_current or 0),
+            "design_owner": "plan" if scene.scene_id in getattr(self, "_plan_owned", set()) else "desk",
         }
 
     def _neighbor_slot(self, chapters: list[ChapterGoal], index: int) -> dict[str, Any]:

@@ -38,6 +38,11 @@ const RUN_JOB_STATUS_LABELS = {
    2026-09-12 风格直起：neutral_running 步位不动、内容换——绑定 draft_mode=style_first 时这一步
    写的是作者手笔首稿，标签按 workbench generation_summary.draft_mode 切换；词表外的 token 原样回显。 */
 const RUN_JOB_STEP_LABELS = {
+  // 管线阶段之外的几个步位：过去原样回显成「运行任务 · 已阻断 · preflight_blocked」
+  queued: "等待接管",
+  preflight_blocked: "起草前检查未通过",
+  blocked: "管线中止",
+  cancelled: "已取消",
   planning_running: "规划蓝图",
   bundle_built: "上下文已冻结",
   neutral_running: "中性稿",
@@ -702,15 +707,12 @@ function scnFriendly(e) {
   const msg = (e && e.message) || String(e || "");
   if (code === "SCENE_EXECUTION_CONTRACT_BLOCKED") {
     const miss = (((e && e.details) || {}).missing_fields || []).join("、");
-    return new Error(`这一场的执行契约还缺关键字段${miss ? `（${miss}）` : ""}——先在章节编排把场景卡补全，或走「构思 → 物化」主路径生成完整场景卡。`);
+    return new Error(`这一场的执行契约还缺关键字段${miss ? `（${miss}）` : ""}——雪花整理出来的场回构思第 10 步补齐并确认（场景卡自动跟上），手加的场在章节编排把场景卡补全。`);
   }
   if (code === "VOICE_PROFILE_MISSING" || code === "RELATION_PROFILE_MISSING") {
-    // Fix C：缺声线/关系卡现可一键补齐最小卡解阻（scnCreateCards → /preflight/create-cards）
-    const what = code === "VOICE_PROFILE_MISSING" ? "POV 声线卡" : "同场角色关系卡";
-    const err = new Error(`这一场缺少可用的${what}，暂不能起草——可点「补齐声线卡并重试」一键生成后自动续跑，或在声线/关系工作台细化。`);
-    err.code = code;
-    err.canCreateCards = true; // 起草台据此在阻断态显示「补齐声线卡并重试」按钮
-    return err;
+    // 2026-09-20：这项前置检查已经取消（声线 / 关系卡早就没有地方能写，它拦下的是每一部真实作品的每一场）。
+    // 只有取消之前留下的旧任务行还带着这个码——如实告诉作者重跑即可，不再有「补齐声线卡」这个动作。
+    return new Error("上一次起草被「声线 / 关系卡」前置检查拦下了——这项检查已经取消，直接点「开始起草」重跑即可。");
   }
   if (/LLM/i.test(code) || /llm|provider|api.?key/i.test(msg)) {
     return new Error("AI 起草需要可用的 LLM：请到「系统设置 → 模型与接入」配置并启用后重试。原始信息：" + msg);
@@ -718,12 +720,21 @@ function scnFriendly(e) {
   return new Error("起草失败：" + msg);
 }
 
-/* Fix C：一键补齐当前场景缺失的最小 voice/relation 卡(active)，解阻 run 预检。
-   返回 { created, run_preflight }。这是 create_minimal_voice_card 预检动作的真实执行入口。 */
-async function scnCreateCards(sid) { // eslint-disable-line no-unused-vars
-  const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
-  if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
-  return apiPost(`/api/v1/scenes/${sceneId}/preflight/create-cards`, {});
+/* 终态任务（blocked / failed / cancelled）没有留下可审阅草稿时，给作者看的那句话。
+   起草台有两条路会写这句话：startRun 的 catch（scnRun 抛出的 scnFriendly）与「终态任务恢复」effect
+   （ws-scene.jsx）。两条路必须说同一句：过去 effect 用一句笼统的「任务已阻断…请检查阻断原因后重试」
+   盖掉了 catch 里那句带着原因与出口的话（真实故障：作者只看到「被阻断」，不知道为什么，也没有地方可查）。 */
+function scnTerminalJobMessage(job) {
+  const status = String((job && job.status) || "");
+  if (status === "cancelled") return "任务已取消，可重新起草";
+  const code = String((job && job.error_code) || "");
+  const text = String((job && job.error_text) || "");
+  if (!code && !text) {
+    return status === "blocked"
+      ? "任务已阻断，没有产出可审阅的草稿，任务也没有留下阻断原因——请重试"
+      : "任务运行失败，没有产出可审阅的草稿——请重试";
+  }
+  return scnFriendly({ code, message: text, details: { missing_fields: (job && job.missing_fields) || [] } }).message;
 }
 
 /* 一份质检摘要里的改写指令条目。后端 workbench 已把 rewrite_brief 摊平成字符串列表
@@ -1290,4 +1301,4 @@ function scnPickList(queuedSids) {
 }
 
 /* 场景工作台只通过显式 ESM 导出连接，不再写入 window 全局命名空间。 */
-export { SceneRunJobControl, SceneStyleNoticeStrip, SceneStyleWindowsPanel, STYLE_NOTICE_LABELS, runJobStepLabel, scnDraftModeFrom, scnStyleNoticesFrom, scnStyleWindowsFrom, scnStyleNoticeLabel, scnStyleWindowLabel, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+export { SceneRunJobControl, SceneStyleNoticeStrip, SceneStyleWindowsPanel, STYLE_NOTICE_LABELS, runJobStepLabel, scnDraftModeFrom, scnStyleNoticesFrom, scnStyleWindowsFrom, scnStyleNoticeLabel, scnStyleWindowLabel, scnRun, scnTerminalJobMessage, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

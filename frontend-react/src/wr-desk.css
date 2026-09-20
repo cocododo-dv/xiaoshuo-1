@@ -264,6 +264,8 @@
 /* outline scene drag-reorder — grip + drop indicator */
 .wr-sc-grip { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--ink-4); opacity: 0; margin-left: -6px; margin-right: -3px; cursor: grab; transition: opacity var(--t-fast); }
 .wr-sc:hover .wr-sc-grip { opacity: 0.75; }
+.wr-sc-grip.is-fixed { cursor: default; }
+.wr-sc:hover .wr-sc-grip.is-fixed { opacity: 0.3; }
 .wr-sc-list li { cursor: grab; }
 .wr-sc-list li:active { cursor: grabbing; }
 .wr-sc.is-over { background: var(--paper-3); box-shadow: inset 0 2px 0 0 var(--crimson); }

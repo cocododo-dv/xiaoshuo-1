@@ -243,6 +243,16 @@
 .arr-gmc-input:hover { border-bottom-color: var(--line-2); }
 .arr-gmc-input:focus { border-bottom-color: var(--crimson); color: var(--ink-1); }
 .arr-gmc-input::placeholder { color: var(--ink-4); }
+/* 阶段 Y：雪花整理出来的场，设计在构思里改——这里只读，不给输入框的手感 */
+.arr-scene-brief.is-plan-owned .arr-gmc-input { cursor: default; }
+.arr-scene-brief.is-plan-owned .arr-gmc-input:hover,
+.arr-scene-brief.is-plan-owned .arr-gmc-input:focus { border-bottom-color: transparent; color: inherit; }
+.arr-plan-link {
+  border: 0; background: none; padding: 0; font: inherit; font-size: 11.5px; color: var(--ink-4);
+  cursor: pointer; white-space: nowrap; opacity: 0; transition: opacity var(--t-fast), color var(--t-fast);
+}
+.arr-scene:hover .arr-plan-link, .arr-plan-link:focus-visible { opacity: 1; }
+.arr-plan-link:hover { color: var(--crimson); text-decoration: underline; }
 
 /* chapter delete (subtle until hovered) */
 .arr-del-ch { color: var(--ink-3); }
@@ -369,6 +379,8 @@
 .arr-scene[data-dragging="true"] { opacity: 0.4; }
 .arr-scene-grip { color: var(--ink-4); opacity: 0; cursor: grab; display: flex; transition: opacity var(--t-fast); }
 .arr-scene:hover .arr-scene-grip { opacity: 1; }
+.arr-scene-grip.is-fixed { cursor: default; }
+.arr-scene:hover .arr-scene-grip.is-fixed { opacity: .35; }
 .arr-scene-num { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); font-weight: 600; text-align: center; }
 .arr-scene-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .arr-scene-title { font-size: 14.5px; font-weight: 600; color: var(--ink-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -617,3 +629,83 @@
 /* 阶段 X：章卡上的脊柱标记（灾一 / 灾二 / 灾三，来自构思的分章） */
 .arr-card-spine { margin-left: 6px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
   background: var(--gold-wash); color: var(--gold); }
+
+/* ==========================================================
+   阶段 Z「一张章表、两扇门」：章节编排接上构思的分章
+   ========================================================== */
+
+/* 构思分出来的章：先后与卷由章表决定，抓手只是个标记、不能拖 */
+.arr-card-grip.is-fixed, .arr-rail-grip.is-fixed { cursor: default; }
+.arr-card:hover .arr-card-grip.is-fixed, .arr-rail-row:hover .arr-rail-grip.is-fixed { opacity: .3; }
+.arr-card-range { margin-left: auto; font-size: 10.5px; color: var(--ink-4); letter-spacing: 0.02em; white-space: nowrap; }
+
+/* 构思条：这一章在构思里是什么 + 两扇门 */
+.arr-planstrip { border: 1px solid var(--line-1); border-left: 3px solid var(--gold); border-radius: 10px; background: var(--paper-1); padding: 10px 14px; display: grid; gap: 6px; }
+.arr-planstrip.is-desk { display: flex; align-items: baseline; gap: 10px; border-left-color: var(--line-3); }
+.arr-planstrip-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.arr-planstrip-k { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; letter-spacing: 0.08em; font-weight: 700; color: var(--gold); white-space: nowrap; }
+.arr-planstrip.is-desk .arr-planstrip-k { color: var(--ink-4); }
+.arr-planstrip-tag { font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; }
+.arr-planstrip-tag.tone-sage { background: var(--sage-wash); color: var(--sage); }
+.arr-planstrip-tag.tone-gold { background: var(--gold-wash); color: var(--gold); }
+.arr-planstrip-tag.tone-crimson { background: var(--crimson-wash); color: var(--crimson); }
+.arr-planstrip-head .arr-card-spine { margin-left: 0; }
+.arr-planstrip-range { font-size: 12px; color: var(--ink-2); font-weight: 600; }
+.arr-planstrip-hint { font-size: 10.5px; color: var(--rose); background: var(--rose-wash); padding: 1px 7px; border-radius: 999px; }
+.arr-planstrip-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.arr-planstrip-sum { margin: 0; font-size: 13.5px; line-height: 1.7; color: var(--ink-1); }
+.arr-planstrip-goal, .arr-planstrip-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--ink-3); }
+.arr-planstrip-goal b { margin-right: 8px; font-size: 10.5px; letter-spacing: 0.06em; color: var(--ink-4); }
+
+/* 交接条上的「取自首尾两场」 */
+.arr-ho-src { margin-left: 8px; font-style: normal; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-4); }
+
+/* 结构镜头：卷 → 章 → 场 */
+.arr-spine { display: grid; gap: 12px; padding: 4px 2px 2px; }
+.arr-spine-acts { display: flex; gap: 10px; align-items: stretch; overflow-x: auto; padding-bottom: 4px; }
+.arr-spine-act { flex: 1 1 0; min-width: 150px; display: grid; grid-template-rows: auto 1fr; gap: 6px; border-top: 2px solid var(--line-2); padding-top: 6px; }
+.arr-spine-act.tone-sage { border-top-color: var(--sage); }
+.arr-spine-act.tone-gold { border-top-color: var(--gold); }
+.arr-spine-act.tone-crimson { border-top-color: var(--crimson); }
+.arr-spine-acthead { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; color: var(--ink-3); }
+.arr-spine-act.tone-sage .arr-spine-acthead { color: var(--sage); }
+.arr-spine-act.tone-gold .arr-spine-acthead { color: var(--gold); }
+.arr-spine-act.tone-crimson .arr-spine-acthead { color: var(--crimson); }
+.arr-spine-chapters { display: flex; gap: 8px; align-items: stretch; }
+.arr-spine-ch { flex: 1 1 0; min-width: 96px; display: grid; grid-template-rows: auto 1fr auto; gap: 6px; padding: 8px; border: 1px solid var(--line-1); border-radius: 10px; background: var(--paper-0); }
+.arr-spine-ch.is-current { border-color: var(--line-3); }
+.arr-spine-ch.is-picked { border-color: var(--crimson-soft); box-shadow: 0 0 0 1px var(--crimson-soft) inset; }
+.arr-spine-chhead { display: flex; align-items: baseline; gap: 6px; min-width: 0; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; color: var(--ink-1); }
+.arr-spine-chhead:hover .arr-spine-chtitle { color: var(--crimson); }
+.arr-spine-chnum { font-size: 10.5px; color: var(--ink-4); font-weight: 600; }
+.arr-spine-chtitle { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arr-spine-mark { margin-left: auto; font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 999px; background: var(--gold-wash); color: var(--gold); white-space: nowrap; }
+.arr-spine-cells { display: flex; flex-wrap: wrap; gap: 4px; align-content: flex-start; }
+.arr-spine-cell { width: 24px; height: 24px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid var(--crimson-soft); background: transparent; color: var(--crimson); font-size: 10px; font-weight: 600; cursor: pointer; transition: transform var(--t-fast); }
+.arr-spine-cell:hover { transform: translateY(-1px); }
+.arr-spine-cell.k-reactive { border-color: var(--slate); color: var(--slate); border-radius: 50%; }
+.arr-spine-cell.s-writing { background: var(--crimson-wash); }
+.arr-spine-cell.k-reactive.s-writing { background: var(--slate-wash); }
+.arr-spine-cell.s-done { background: var(--crimson); color: var(--paper-0); }
+.arr-spine-cell.k-reactive.s-done { background: var(--slate); color: var(--paper-0); }
+.arr-spine-cell.is-hinge { box-shadow: 0 0 0 2px var(--gold-soft); }
+.arr-spine-cell.is-handmade { border-style: dashed; border-color: var(--line-3); color: var(--ink-4); }
+.arr-spine-empty { font-size: 11px; color: var(--ink-4); }
+.arr-spine-chfoot { font-size: 10.5px; color: var(--ink-4); letter-spacing: 0.02em; }
+.arr-spine-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; font-size: 11px; color: var(--ink-4); }
+.arr-spine-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.arr-spine-legend-note { margin-left: auto; }
+.arr-spine-key { width: 11px; height: 11px; border-radius: 3px; border: 1px solid var(--crimson-soft); display: inline-block; }
+.arr-spine-key.k-reactive { border-color: var(--slate); border-radius: 50%; }
+.arr-spine-key.s-done { background: var(--crimson); }
+.arr-spine-key.s-writing { background: var(--crimson-wash); }
+.arr-spine-key.is-hinge { border-color: var(--line-3); box-shadow: 0 0 0 2px var(--gold-soft); }
+
+/* 交接条现在真的有字了（取自首尾两场，六七十字一句）：格子不能被一行不换行的长句撑破，长句收成两三行，整句在提示里 */
+.arr-ho-cell { min-width: 0; }
+.arr-ho-side .arr-ho-text { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.arr-ho-clamp { min-width: 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.arr-ho-entry, .arr-ho-exit { font-weight: 400; }
+/* 右栏「视角 · 时空」的值也长了：标签不被挤成竖排，值靠右折行 */
+.arr-meta li span { flex-shrink: 0; white-space: nowrap; }
+.arr-meta li strong { min-width: 0; text-align: right; }

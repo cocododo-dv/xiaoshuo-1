@@ -123,7 +123,9 @@ def _create_catalog_scene(client, project_id: str, chapter_id: str) -> str:
 
 
 def _catalog_chapter_ready_to_run(client) -> tuple[str, str, str]:
-    """v2 目录建章 + 唯一场景（目录按序号把最后一场标成 is_chapter_last=1）→ 设 POV → 预检建卡。"""
+    """v2 目录建章 + 唯一场景（目录按序号把最后一场标成 is_chapter_last=1）→ 设 POV。
+
+    带 POV 的场过去还要先走 preflight/create-cards 铸一张占位声线卡才跑得起来；2026-09-20 起缺卡不再拦。"""
 
     project_id = _create_project(client)
     chapter_id = _create_catalog_chapter(client, project_id)
@@ -134,11 +136,6 @@ def _catalog_chapter_ready_to_run(client) -> tuple[str, str, str]:
         headers={"X-Idempotency-Key": _key("fix-ac-scene-pov")},
     )
     assert patched.status_code == 200, patched.text
-    cards = client.post(
-        f"/api/v1/scenes/{scene_id}/preflight/create-cards",
-        headers={"X-Idempotency-Key": _key("fix-ac-cards")},
-    )
-    assert cards.status_code == 200, cards.text
     return project_id, chapter_id, scene_id
 
 

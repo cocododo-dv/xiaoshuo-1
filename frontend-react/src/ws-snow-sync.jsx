@@ -1014,6 +1014,16 @@ const SnowSync = {
     return readSnowSyncState(id);
   },
   readyToMaterialize(workId) { return !!snowReadyFlags[workId || activeWork()]; },
+  /* 阶段 Z：章表在构思之外被改了（章节编排里给雪花的章改名 → 后端写穿章计划）——本机缓存接过服务端这一版 */
+  async adoptServerChapters(workId) {
+    const id = workId || activeWork();
+    if (!id) return false;
+    // 与 materialize 同一条纪律：先排空本机还没上行的编辑，本机与服务端才只差服务端刚改的这一块
+    try { await flushSnowPush(id); } catch (e) {}
+    return adoptServerChapters(id);
+  },
+  /* 后端步骤键 → 构思视图的步骤键（别的视图要带着意图跳进构思的某一步时用） */
+  feStepKey(beKey) { return FE_BY_BE[beKey] || ""; },
   /* 水合闸门：本会话是否已成功读到过服务端工作台（没读到过之前一律不上行） */
   hydrated(workId) { return !!snowHydrateOk[workId || activeWork()]; },
   /* 结构化雪花计划导入：这是作者从既有策划稿/外部大纲迁入十步工作台的正常入口。
@@ -1420,8 +1430,11 @@ const SnowSync = {
       // 阶段 W：重新分章后变空的旧章已移入回收站 / 这一版又用到的章已从回收站取回
       trashed_empty_chapters: (approved && approved.trashed_empty_chapters) || [],
       restored_chapter_ids: (approved && approved.restored_chapter_ids) || [],
+      restored_scene_ids: (approved && approved.restored_scene_ids) || [],
       // 阶段 X：手建的空白占位章（「第 1 章 / 开场」，一个字没写）已移入回收站，这一版的章从第 1 章排起
       trashed_placeholder_chapters: (approved && approved.trashed_placeholder_chapters) || [],
+      // 阶段 Y：目录里有已终审的章，按章表排会挪动它 → 这次没排，新章接在最后
+      chapter_order_held: !!(approved && approved.chapter_order_held),
     };
   },
 };

@@ -756,14 +756,9 @@ class BundleBuilder:
                 sort_keys=True,
             )
 
-        voice_profile_id = self.resolver.resolve_voice_profile_id(scene)
+        # 声线卡 / 关系卡是可选的注入：库里有就带上，没有就没有这一节。过去缺卡会在这里 409
+        # BUNDLE_SOURCE_MISSING——可产品里早已没有地方能写这两类卡（见 scene_run_preflight._blocking_items）。
         voice_profile = self.resolver.resolve_active_voice_profile(self.session, scene)
-        if voice_profile_id and voice_profile is None:
-            raise DomainError(
-                "BUNDLE_SOURCE_MISSING",
-                f"active voice profile missing for {voice_profile_id}",
-                status_code=409,
-            )
         if voice_profile:
             source_version_refs["voice_profile_id"] = voice_profile.voice_profile_id
             source_version_refs["voice_profile_row_id"] = voice_profile.row_id
@@ -777,16 +772,9 @@ class BundleBuilder:
             )
             inline_digests["voice_card"] = voice_profile.content
 
-        relation_profile_id = self.resolver.resolve_relation_profile_id(scene)
         relation_profile = self.resolver.resolve_active_relation_profile(
             self.session, scene
         )
-        if relation_profile_id and relation_profile is None:
-            raise DomainError(
-                "BUNDLE_SOURCE_MISSING",
-                f"active relation profile missing for {relation_profile_id}",
-                status_code=409,
-            )
         if relation_profile:
             source_version_refs["relation_profile_id"] = (
                 relation_profile.relation_profile_id

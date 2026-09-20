@@ -47,8 +47,6 @@ _ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "cancel_requested"})
 _SCENE_CARD_ERROR_CODES = frozenset(
     {
         "SCENE_EXECUTION_CONTRACT_BLOCKED",
-        "VOICE_PROFILE_MISSING",
-        "RELATION_PROFILE_MISSING",
         "SCENE_CARD_INCOMPLETE",
     }
 )

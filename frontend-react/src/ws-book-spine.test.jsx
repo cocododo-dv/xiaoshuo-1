@@ -40,7 +40,7 @@ const SNOW_CATALOG = [
           origin: "snowflake", crucible: "停职通知明早生效", location: "雨城旧码头", story_time: "第二日 · 晨",
           cast: [{ character_id: "c2", name: "沈越" }], reader_emotion: "悲壮", must_include: "你欠这座城一个交代。",
           must_withhold: "", cost: "放弃安稳的工作", length_band: "1300-1600", rendering_mode: "full",
-          followup: { goal: "翻进档案馆" }, exception_reason: "", protagonist: "林昭", is_chapter_last: true, desk_edited: false,
+          followup: { goal: "翻进档案馆" }, exception_reason: "", protagonist: "林昭", is_chapter_last: true, owner: "plan",
         },
         work: { run_status: "ready", has_final: false, has_words: false },
       }),
@@ -97,12 +97,13 @@ describe("目录 store：设计卡、幕、场景身份、落点", () => {
     expect(reactive.summary).toBe("ch01s2 的整句摘要");
     expect(reactive.design).toMatchObject({
       origin: "snowflake", crucible: "停职通知明早生效", location: "雨城旧码头", storyTime: "第二日 · 晨",
-      readerEmotion: "悲壮", cost: "放弃安稳的工作", lengthBand: "1300-1600", chapterLast: true,
+      readerEmotion: "悲壮", cost: "放弃安稳的工作", lengthBand: "1300-1600", chapterLast: true, owner: "plan",
     });
     expect(reactive.design.cast).toEqual([{ id: "c2", name: "沈越" }]);
     expect(reactive.design.followup.goal).toBe("翻进档案馆");
     // 旧后端 / 夹具没给 design：是一张空卡，不是 undefined
     expect(first.scenes[0].design.origin).toBe("manual");
+    expect(first.scenes[0].design.owner).toBe("desk");
     expect(first.scenes[0].work).toEqual({ runStatus: "", hasFinal: false, hasWords: false });
   });
 
@@ -252,11 +253,11 @@ describe("WsDesignSync（场景卡落后于已确认的构思了吗）", () => {
 
   it("只认已确认的规划：还在改的草稿不算待同步，不在台子上打扰作者", async () => {
     const { WsDesignSync } = await loadSync([
-      { scene_id: "P_SC_b", plan_status: "approved", changed_fields: ["writer_brief_json"], desk_edited: true },
+      { scene_id: "P_SC_b", plan_status: "approved", changed_fields: ["writer_brief_json"] },
       { scene_id: "P_SC_c", plan_status: "draft", changed_fields: ["scene_goal"] },
     ]);
     await WsDesignSync.refresh();
-    expect(WsDesignSync.pendingFor("P_SC_b")).toEqual({ fields: ["writer_brief_json"], deskEdited: true });
+    expect(WsDesignSync.pendingFor("P_SC_b")).toEqual({ fields: ["writer_brief_json"] });
     expect(WsDesignSync.pendingFor("P_SC_c")).toBeNull();
     expect(WsDesignSync.pendingCount()).toBe(1);
   });

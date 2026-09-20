@@ -859,24 +859,10 @@ def _first_preflight_blocker(run_preflight: dict[str, Any]) -> dict[str, Any]:
             "detail": conflict.get("human_readable_reason") or "scene constraint conflict",
             "technical_hint": f"{conflict.get('required_source')} conflicts with {conflict.get('forbidden_source')}",
         }
-    dependencies = run_preflight.get("missing_dependencies") or []
-    if dependencies:
-        dependency = dict(dependencies[0] or {})
-        return {
-            "code": dependency.get("blocking_code") or "SCENE_DEPENDENCY_MISSING",
-            "detail": f"missing dependency: {dependency.get('lineage_key') or dependency.get('dependency_type')}",
-            "technical_hint": dependency.get("lineage_key"),
-        }
     return {}
 
 
 def _preflight_next_action(run_preflight: dict[str, Any]) -> str:
-    actions = run_preflight.get("create_actions") or []
-    if actions:
-        labels = [str(action.get("label") or action.get("action") or "").strip() for action in actions[:2]]
-        labels = [item for item in labels if item]
-        if labels:
-            return "Create or release missing knowledge cards: " + "; ".join(labels)
     blocker = _first_preflight_blocker(run_preflight)
     return str(blocker.get("detail") or blocker.get("technical_hint") or "Resolve preflight blockers before running.")
 

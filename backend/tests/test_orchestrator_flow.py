@@ -133,7 +133,11 @@ def test_run_full_scene_records_voice_and_relation_bundle_provenance(client, ses
     assert snapshot["inline_digests"]["relation_card"] == "reunion tension; B knows slightly more than A"
 
 
-def test_run_full_scene_fails_when_traceable_bundle_sources_missing(client) -> None:
+def test_run_full_scene_runs_without_voice_and_relation_cards(client, session) -> None:
+    """2026-09-20：声线 / 关系卡是可选注入。过去缺卡在这里 409 BUNDLE_SOURCE_MISSING——可产品里早已没有
+
+    地方能写这两类卡，真实作品的场永远过不了这一关。缺卡照常起草，bundle 里只是没有这两节的出处。
+    """
     seed_story(client)
 
     response = client.post(
@@ -141,8 +145,16 @@ def test_run_full_scene_fails_when_traceable_bundle_sources_missing(client) -> N
         headers={"X-Idempotency-Key": "scene-run-missing-bundle-sources"},
     )
 
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "BUNDLE_SOURCE_MISSING"
+    assert response.status_code == 200, response.text
+    from novel_system.db.models import SceneBundle
+
+    bundle = session.get(SceneBundle, response.json()["data"]["current_bundle_id"])
+    assert bundle is not None
+    snapshot = bundle.frozen_snapshot_json
+    assert "voice_profile_id" not in snapshot["source_version_refs"]
+    assert "relation_profile_id" not in snapshot["source_version_refs"]
+    assert "voice_card" not in snapshot["inline_digests"]
+    assert "relation_card" not in snapshot["inline_digests"]
 
 
 def test_run_full_scene_archives_memory_and_updates_status(client, session) -> None:

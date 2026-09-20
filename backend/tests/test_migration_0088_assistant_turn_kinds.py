@@ -29,7 +29,7 @@ def test_0088_adds_turn_kind_with_chat_backfill_and_downgrades(tmp_path: Path, m
         )
         connection.commit()
 
-    _migrate(path, "head", monkeypatch, tmp_path)
+    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)  # 升到本迁移自己的版本：后续迁移不必回头改这里
     assert NEW_COLUMNS <= _columns(path, TABLE)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (CURRENT_HEAD,)

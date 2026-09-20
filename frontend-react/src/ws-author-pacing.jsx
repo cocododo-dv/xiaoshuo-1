@@ -14,9 +14,13 @@ import { arrActSpans } from "./ws-author-loom.jsx";
 
 const PACE_TONES = ["crimson", "gold", "sage", "slate", "rose"];
 
+/* 一章的 POV：章节编排传进来的是「镜头用的章」（arrLensChapters）——章级 POV 没填时 pov = 本章场次最多的
+   那一位、povs = 本章各场出现过的全部视角。旧调用方只有 pov 也照常工作。 */
+const pacePovs = (c) => (Array.isArray(c.povs) && c.povs.length ? c.povs : [c.pov]);
+
 function arrPovMap(chapters) {
   const m = {}; let i = 0;
-  chapters.forEach((c) => { if (!(c.pov in m)) { m[c.pov] = PACE_TONES[i % PACE_TONES.length]; i++; } });
+  chapters.forEach((c) => pacePovs(c).forEach((p) => { if (!(p in m)) { m[p] = PACE_TONES[i % PACE_TONES.length]; i++; } }));
   return m;
 }
 
@@ -42,7 +46,7 @@ function ArrPacingLens({ chapters, numOf, onOpen }) {
   const avgPct = (avg / maxV) * 100;
 
   const povCounts = {};
-  chapters.forEach((c) => { povCounts[c.pov] = (povCounts[c.pov] || 0) + 1; });
+  chapters.forEach((c) => pacePovs(c).forEach((p) => { povCounts[p] = (povCounts[p] || 0) + 1; }));
   const povList = Object.keys(povCounts);
 
   // pacing outliers among drafted chapters
@@ -89,12 +93,13 @@ function ArrPacingLens({ chapters, numOf, onOpen }) {
             </div>
           )}
           {chapters.map((c, ci) => {
-            const th = Math.max(2, (c.words.target / maxV) * 100);
+            /* 没设目标的章（雪花整理出来的章都没有）不画目标虚影、也不谈超额 */
+            const th = c.words.target > 0 ? Math.max(2, (c.words.target / maxV) * 100) : 0;
             const fh = (c.words.cur / maxV) * 100;
-            const over = c.words.cur > c.words.target * 1.08;
+            const over = c.words.target > 0 && c.words.cur > c.words.target * 1.08;
             return (
               <button key={c.id} className="pace-barcell" style={{ gridColumn: ci + 2 }} onClick={() => onOpen(c.id)}
-                title={`第 ${numOf[c.id]} 章 · ${c.title}\n${c.words.cur.toLocaleString()} / ${c.words.target.toLocaleString()} 字 · POV ${c.pov}`}>
+                title={`第 ${numOf[c.id]} 章 · ${c.title}\n${c.words.cur.toLocaleString()}${c.words.target > 0 ? ` / ${c.words.target.toLocaleString()}` : ""} 字 · POV ${pacePovs(c).join(" / ")}`}>
                 <span className="pace-ghost" style={{ height: th + "%" }} />
                 <span className={`pace-fill tone-fill-${pov[c.pov]} ${c.words.cur === 0 ? "is-empty" : ""} ${over ? "is-over" : ""}`} style={{ height: Math.max(c.words.cur === 0 ? 0 : 2, fh) + "%" }} />
               </button>
@@ -121,10 +126,10 @@ function ArrPacingLens({ chapters, numOf, onOpen }) {
             <div key={p} className="loom-row pace-lane" style={gridVars}>
               <div className={`pace-lane-name tone-${pov[p]}`}>{p}</div>
               {chapters.map((c, ci) => {
-                const on = c.pov === p;
+                const on = pacePovs(c).includes(p);
                 // run edges for rounded segment ends
-                const prevOn = ci > 0 && chapters[ci - 1].pov === p;
-                const nextOn = ci < n - 1 && chapters[ci + 1].pov === p;
+                const prevOn = ci > 0 && pacePovs(chapters[ci - 1]).includes(p);
+                const nextOn = ci < n - 1 && pacePovs(chapters[ci + 1]).includes(p);
                 return (
                   <span key={c.id} className={`pace-lane-cell ${on ? "is-on tone-fill-" + pov[p] : ""} ${on && !prevOn ? "is-start" : ""} ${on && !nextOn ? "is-end" : ""}`}
                     style={{ gridColumn: ci + 2 }} />

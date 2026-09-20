@@ -1401,40 +1401,104 @@ describe("SceneRunJobControl", () => {
     expect(client.apiPost.mock.calls.filter(([url]) => /\/run\/jobs$/.test(url))).toEqual([]);
   });
 
-  it("补齐声线卡等待期间切换场景，自动续跑仍显式绑定原目标场景", async () => {
-    const { client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT], catalog: [TWO_SCENE_CHAP] });
-    window.localStorage.setItem(window.wsKey("scn-run:ch01s1"), JSON.stringify({
-      state: "queued", progress: 0, draft: [], metrics: [], alignment: [], cost: [], log: [], attempts: [],
-      error: "缺少 POV 声线卡", needsCards: true,
-    }));
-    await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
-    client.getLatestSceneRunJob.mockRejectedValue(
-      Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
-    );
-    const cards = deferred();
+  /* 2026-09-20 真实故障：预检拦下的任务，作者只看到一句「任务已阻断…请检查阻断原因后重试」——原因没说，
+     也没有地方可查。终态任务恢复（effect）与 startRun 的 catch 现在说同一句：任务自己留下的原因。 */
+  // 裁决条那一句（页面上还有一条任务控制条，同样是 .scn2-decide）
+  const decideSummary = (host) => host.querySelector('[data-testid="scene-start"]')
+    ?.closest(".scn2-decide")?.querySelector(".scn2-decide-sum")?.textContent || "";
+  it("预检阻断且没有草稿：起草台说任务留下的原因，而不是一句笼统的「请检查阻断原因」", async () => {
+    const { client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    await queueSceneIntent({ sid: "ch01s1" });
+    client.getLatestSceneRunJob.mockResolvedValue({
+      job_id: "job-preflight-blocked",
+      scene_id: "s1",
+      status: "blocked",
+      current_step: "preflight_blocked",
+      error_code: "SCENE_EXECUTION_CONTRACT_BLOCKED",
+      error_text: "Fill the missing execution contract fields before drafting: scene_turn",
+      missing_fields: ["scene_turn"],
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") return Promise.resolve({ scene_run_state: { scene_status: "ready" } });
+      return baseGet(url, options);
+    });
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+
+    await vi.waitFor(() => expect(decideSummary(view.host)).toContain("执行契约还缺关键字段"), T);
+    const summary = decideSummary(view.host);
+    expect(summary).toContain("scene_turn");
+    expect(summary).not.toContain("请检查阻断原因");
+    expect(view.host.querySelector('[data-testid="scene-start"]')).toBeTruthy();
+  });
+
+  it("点了开始起草被预检拦下：catch 与终态恢复两条路落在同一句原因上", async () => {
+    const { client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    await queueSceneIntent({ sid: "ch01s1" });
+    const blocked = {
+      job_id: "job-click-blocked",
+      scene_id: "s1",
+      status: "blocked",
+      current_step: "preflight_blocked",
+      error_code: "SCENE_EXECUTION_CONTRACT_BLOCKED",
+      error_text: "Fill the missing execution contract fields before drafting: scene_turn",
+      missing_fields: ["scene_turn"],
+    };
+    let created = false;
+    client.getLatestSceneRunJob.mockImplementation(() => (created
+      ? Promise.resolve(blocked)
+      : Promise.reject(Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }))));
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") return Promise.resolve({ scene_run_state: { scene_status: "ready" } });
+      if (url === "/api/v1/run-jobs/job-click-blocked") return Promise.resolve(blocked);
+      return baseGet(url, options);
+    });
     const basePost = client.apiPost.getMockImplementation();
-    client.apiPost.mockImplementation((url, body, options = {}) => {
-      if (url === "/api/v1/scenes/s1/preflight/create-cards") return cards.promise;
-      if (/\/api\/v1\/scenes\/s1\/run\/jobs$/.test(url)) {
-        return new Promise((resolve, reject) => {
-          void resolve;
-          options.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-        });
-      }
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (url === "/api/v1/scenes/s1/run/jobs") { created = true; return Promise.resolve(blocked); }
       return basePost(url, body, options);
     });
     const page = await import("./ws-scene.jsx");
     const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
-    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-create-cards"]')).toBeTruthy(), T);
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-start"]')).toBeTruthy(), T);
 
-    await click(view.host.querySelector('[data-testid="scene-create-cards"]'));
-    const rowB = Array.from(view.host.querySelectorAll(".scn2-qrow")).find(row => row.textContent.includes("回潮"));
-    await click(rowB);
-    await act(async () => { cards.resolve({ created: [{ dependency_type: "voice_profile" }] }); await Promise.resolve(); });
+    await click(view.host.querySelector('[data-testid="scene-start"]'));
 
-    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => url === "/api/v1/scenes/s1/run/jobs")).toBe(true), T);
-    expect(client.apiPost.mock.calls.some(([url]) => url === "/api/v1/scenes/s2/run/jobs")).toBe(false);
-    expect(view.host.querySelector(".scn2-qrow.is-active")?.textContent).toContain("回潮");
+    await vi.waitFor(() => expect(decideSummary(view.host)).toContain("执行契约还缺关键字段"), T);
+    // 两条路都写完之后仍然是这一句（过去后写的那条会把它盖成「请检查阻断原因后重试」）
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+    const summary = decideSummary(view.host);
+    expect(summary).toContain("scene_turn");
+    expect(summary).not.toContain("请检查阻断原因");
+    expect(summary).not.toContain("正在恢复");
+  });
+
+  it("取消之前留下的「声线 / 关系卡」阻断任务：如实说检查已取消，出口是重新起草，不再有补卡按钮", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    expect(mod.scnCreateCards).toBeUndefined();
+    await queueSceneIntent({ sid: "ch01s1" });
+    client.getLatestSceneRunJob.mockResolvedValue({
+      job_id: "job-legacy-voice",
+      scene_id: "s1",
+      status: "blocked",
+      current_step: "preflight_blocked",
+      error_code: "VOICE_PROFILE_MISSING",
+      error_text: "请先补齐当前 POV 角色的可用声线档案，再执行完整场景运行。",
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") return Promise.resolve({ scene_run_state: { scene_status: "ready" } });
+      return baseGet(url, options);
+    });
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+
+    await vi.waitFor(() => expect(decideSummary(view.host)).toContain("这项检查已经取消"), T);
+    expect(view.host.querySelector('[data-testid="scene-create-cards"]')).toBeNull();
+    expect(view.host.querySelector('[data-testid="scene-start"]')).toBeTruthy();
+    expect(client.apiPost.mock.calls.some(([url]) => /preflight\/create-cards/.test(url))).toBe(false);
   });
 
   it("追加预算等待期间切换场景，续跑仍绑定原场景和原作者指令", async () => {

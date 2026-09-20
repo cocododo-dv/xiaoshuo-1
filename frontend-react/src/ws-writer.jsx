@@ -89,6 +89,8 @@ function wrFromCatalog() {
     scenes: (c.scenes || []).map(s => ({
       id: s.sid, title: s.title, summary: s.summary || "", kind: s.kind || "主动",
       state: s.state === "writing" ? "active" : (s.state || "todo"),
+      // 阶段 Y：雪花整理出来的场，先后 = 构思第 9 步的行序——大纲里不给拖（手加的场照常）
+      planOwned: !!(s.design && s.design.owner === "plan"),
     })),
   }));
 }
@@ -1492,8 +1494,8 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onD
         <ul className="wr-sc-list">
           {ch.scenes.map((s, i) => (
             <li key={s.id}
-              draggable={!locked && !selectMode && editing !== s.id}
-              onDragStart={(e) => { dragFrom.current = i; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; }}
+              draggable={!locked && !selectMode && editing !== s.id && !s.planOwned}
+              onDragStart={(e) => { if (s.planOwned) { e.preventDefault(); return; } dragFrom.current = i; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; }}
               onDragOver={(e) => { e.preventDefault(); if (over !== i) setOver(i); }}
               onDrop={(e) => { e.preventDefault(); const from = dragFrom.current; if (from != null && from !== i && onReorder) onReorder(ch.id, from, i); dragFrom.current = null; setOver(null); }}
               onDragEnd={() => { dragFrom.current = null; setOver(null); }}>
@@ -1507,7 +1509,8 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onD
                       aria-label={`选择场景 ${s.title}`} onChange={() => onToggleSc && onToggleSc(s.id)} />
                   </label>
                 ) : (
-                  <span className="wr-sc-grip" title={locked ? "终稿已锁定" : "拖拽重排"}><I.GripVertical size={13} /></span>
+                  <span className={`wr-sc-grip ${s.planOwned ? "is-fixed" : ""}`}
+                    title={locked ? "终稿已锁定" : s.planOwned ? "雪花整理出来的场：先后在构思第 9 步「场景列表」里拖动，确认后自动同步到这里" : "拖拽重排"}><I.GripVertical size={13} /></span>
                 )}
                 <span className={`wr-sc-mark s-${s.state}`}>
                   {s.state === "done" && <I.Check size={11} />}

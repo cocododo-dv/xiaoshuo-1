@@ -356,8 +356,13 @@ def test_split_and_merge_through_save(session) -> None:
     stamped = {plan.row_uid: (plan.chapter_title, plan.chapter_goal) for plan in chaptering.scene_plans(PROJECT_ID)}
     assert stamped["u03"] == ("拆出来的一章", "第 5 场") and stamped["u17"] == ("第 4 章", "第 17 场")
     assert [uid for chapter in _uids(after) for uid in chapter] == [f"u{i:02d}" for i in range(1, 18)]
-    # 物化目标章号跟着新的章序走——包括这次没被「点名搬动」的场
-    assert {plan.chapter_id for plan in chaptering.scene_plans(PROJECT_ID) if plan.row_uid in {"u06", "u12"}} == {f"{PROJECT_ID}_CH03"}
+    # 阶段 Y：物化目标章号钉在章上，不跟章序漂——原来的第二章现在排第三，仍是 CH02；拆出来的新章拿下一个
+    # 没用过的序列号（CH04 被并掉的那一章占过，不复用）；并进第三章的场跟着第三章的号
+    targets = {plan.row_uid: plan.chapter_id for plan in chaptering.scene_plans(PROJECT_ID)}
+    assert {targets[uid] for uid in ("u06", "u12")} == {f"{PROJECT_ID}_CH02"}
+    assert {targets[uid] for uid in ("u03", "u04", "u05")} == {f"{PROJECT_ID}_CH05"}
+    assert {targets[uid] for uid in ("u13", "u16", "u17")} == {f"{PROJECT_ID}_CH03"}
+    assert [chapter["chapter_id"][-5:] for chapter in after["chapters"]] == ["_CH01", "_CH05", "_CH02", "_CH03"]
 
     with pytest.raises(DomainError) as exc:
         chaptering.save(PROJECT_ID, {"replace_chapters": True, "chapters": [], "assignments": payload["assignments"]})
@@ -498,6 +503,7 @@ def test_rematerializing_after_rechaptering_moves_cards_without_a_constraint_err
 
     session.expire_all()
     first_chapter = f"{project_id}_CH01"
+    opening_scene_plan_id = first["chapters"][0]["scenes"][0]["scene_plan_id"]
     extra = client.post(
         f"/api/v2/projects/{project_id}/catalog/chapters/{first_chapter}/scenes",
         json={"title": "作者手加的一场", "at": 1}, headers={"X-Idempotency-Key": "remat-extra"},
@@ -523,8 +529,12 @@ def test_rematerializing_after_rechaptering_moves_cards_without_a_constraint_err
         select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == project_id)
     ).scalars()}
     assert all(card.chapter_id == plans[card.scene_id].chapter_id for card in cards if card.scene_id in plans)
+    # 阶段 Y：手加的场跟着它的锚点场走——第 1 场单独成了一章新章（第 2、3 场那一章还是原来的 CH01），
+    # 手加的场跟着第 1 场进了新章，不留在旧章里被另一组场夹住
     hand_made = next(card for card in cards if card.scene_id not in plans)
-    assert hand_made.chapter_id == first_chapter and hand_made.scene_seq == 2, "手加的场还跟在第 1 场后面"
+    opening = next(plan for plan in plans.values() if plan.scene_plan_id == opening_scene_plan_id)
+    assert opening.chapter_id != first_chapter
+    assert hand_made.chapter_id == opening.chapter_id and hand_made.scene_seq == 2, "手加的场还跟在第 1 场后面"
 
 
 # ------------------------------------------------------------------ 回流：章内顺序

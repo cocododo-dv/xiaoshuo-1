@@ -909,7 +909,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
         return {
           step: { step_key: "scene_details", status: "approved", draft: {}, health: {}, completeness: {} },
           workspace: { steps: [], resync_status: { pending_count: 1, pending_scene_plan_ids: ["sp2"], pending_scenes: [{ scene_plan_id: "sp2", scene_id: "SC2", title: "留给作者的一场" }] } },
-          catalog_sync: { synced_count: 3, synced_scene_ids: ["SC1", "SC3", "SC4"], held_count: 1, held: [{ scene_id: "SC2", reason: "desk_edited" }] },
+          catalog_sync: { synced_count: 3, synced_scene_ids: ["SC1", "SC3", "SC4"], held_count: 1, held: [{ scene_id: "SC2", reason: "would_trash_written_scene" }] },
         };
       }
       return {};

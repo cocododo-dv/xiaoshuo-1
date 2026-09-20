@@ -20,6 +20,10 @@
   所以场景载荷带上整张设计卡（``design``：坩埚、地点、时间、出场、读者情绪、必须包含 / 隐瞒、
   代价、篇幅带、呈现方式、后续三拍、破例理由）与真实的工作状态（``work``：管线状态、有无定稿），
   章载荷带上来源（``origin``）、章摘要、章目标与脊柱标记——台子不再各自去猜，也不必再开雪花工作台。
+- 阶段 Z「一张章表、两扇门」：章载荷的 ``structure`` 说这一章的结构归谁（``plan`` = 构思的分章钉着它：
+  先后与幕只在「整理章节结构」里改，目录 API 409；章名两边改的是同一个，写穿到章计划）、它在章表里是哪一行、
+  装着故事序上第几到第几场；场景载荷的 ``design.story_index`` 是它在构思里的场次——章节编排、分章面板、
+  09 场景列表说的是同一套编号。
 """
 from __future__ import annotations
 
@@ -38,17 +42,31 @@ from novel_system.db.models import (
     SceneRunState,
     StoryCharacter,
     StoryProject,
-    utcnow,
 )
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
     require_chapter_mutation_allowed,
 )
 from novel_system.services.chapter_state import ensure_chapter_state
+from novel_system.services.chapter_structure_ownership import (
+    chapter_structure_owned_by_plan_action,
+    live_chapter_plans_by_catalog_id,
+    story_scene_numbers,
+    structure_owned_by_plan,
+)
+from novel_system.services.chapter_title_sync import adopt_catalog_title, is_auto_chapter_title
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import (
     PROJECT_STATUS_CHAPTER_FINAL_REVIEW,
     ProjectService,
+)
+from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-exported: 目录的读者从这里拿)
+    PLAN_OWNED_SCENE_FIELDS,
+    SNOWFLAKE_SOURCES,
+    design_owned_by_plan,
+    design_owned_by_plan_action,
+    is_snowflake_origin,
+    live_plan_scene_ids,
 )
 
 CHAPTER_STATES = ("planned", "todo", "writing", "draft", "review", "approved")
@@ -74,16 +92,10 @@ NARRATIVE_FIELDS = (
 SCENE_BRIEF_GCS = ("goal", "conflict", "setback")
 SCENE_BRIEF_RDD = ("reaction", "dilemma", "decision")
 
-#: ``writer_brief_json["source"]`` 为这两个值的章 / 场来自雪花物化或回流
-SNOWFLAKE_SOURCES = frozenset({"snowflake_method", "snowflake_resync"})
 #: 目录侧的幕（章节编排按它分卷）
 CATALOG_ACTS = ("act1", "act2", "act3")
 #: 目录里显示用的场景短题上限（整句摘要另有 ``summary``）
 SCENE_TITLE_MAX_CHARS = 18
-#: 台子上改动这些简报键（或场景卡的 POV / 离场变化 / 钩子）= 作者在目录侧改了这张雪花场景卡的设计
-#: （自动回流不得静默盖掉；改题名走 ``title`` / ``seeded_title``，改状态不算改设计）
-DESK_DESIGN_KEYS = (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD)
-
 _ACT_DIGIT = re.compile(r"[123]")
 _ACT_CN = {"一": "act1", "二": "act2", "三": "act3"}
 _TITLE_CLAUSE_BREAK = re.compile(r"[，。；：！？,;:!?\n]")
@@ -106,10 +118,6 @@ def normalize_act(value: Any) -> str:
         if char in text:
             return act
     return "act1"
-
-
-def is_snowflake_origin(brief: dict[str, Any] | None) -> bool:
-    return str((brief or {}).get("source") or "").strip() in SNOWFLAKE_SOURCES
 
 
 def short_scene_title(text: Any) -> str:
@@ -219,7 +227,14 @@ class CatalogService:
                     .where(SceneCard.chapter_id.in_(chapter_ids), SceneCard.trashed_flag == 0)
                 ).scalars()
             }
-        return {"character_names": names, "run_states": run_states}
+        return {
+            "character_names": names,
+            "run_states": run_states,
+            "plan_scene_ids": live_plan_scene_ids(self.session, project_id),
+            # 阶段 Z：哪些目录章被构思的分章钉着、每一场在故事序上是第几场
+            "chapter_plans": live_chapter_plans_by_catalog_id(self.session, project_id),
+            "story_numbers": story_scene_numbers(self.session, project_id),
+        }
 
     def chapter_rows(self, project_id: str) -> list[ChapterGoal]:
         rows = list(
@@ -265,6 +280,10 @@ class CatalogService:
         narrative = dict(chapter.narrative_json or {})
         brief = dict(chapter.writer_brief_json or {})
         slug = f"ch{index + 1:02d}"
+        if context is None:
+            # 单章回包（建章 / 改章）与整本目录说同一套话：结构归属、故事序场次、设计归属都要查表。
+            # 逐章循环的调用方应当自己先取一次 read_context 传进来（review_derived / project_overview 都是）。
+            context = self.read_context(project.project_id, [chapter.chapter_id])
         scenes = self.scene_rows(chapter.chapter_id)
         words_cur = sum(int(s.words_current or 0) for s in scenes)
         story_checks = self.story_checks([s.scene_id for s in scenes])
@@ -296,6 +315,8 @@ class CatalogService:
             "summary": summary if summary != title else "",
             "goal": goal if goal != title else "",
             "spine": str(narrative.get("spine") or "").strip(),
+            # 阶段 Z：这一章的结构归谁改、它是章表里的哪一行、装着故事序上第几到第几场
+            "structure": self._chapter_structure(chapter, title=title, context=context),
             "scenes": [
                 self.scene_payload(
                     scene,
@@ -305,6 +326,36 @@ class CatalogService:
                 )
                 for scene in scenes
             ],
+        }
+
+    def _chapter_structure(
+        self,
+        chapter: ChapterGoal,
+        *,
+        title: str,
+        context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """这一章的结构在哪里改（见 ``chapter_structure_ownership``）。
+
+        ``title_auto``：章名还是系统起的占位（「第 N 章」）——章节编排据此提醒「还没起名」，与分章面板的
+        「AI 起章名」同一条判定。
+        """
+        pinned = (context or {}).get("chapter_plans")
+        if pinned is None:
+            pinned = live_chapter_plans_by_catalog_id(self.session, chapter.project_id)
+        if not structure_owned_by_plan(chapter, pinned):
+            return {"owner": "desk", "row_uid": "", "scene_range": None, "planned_scene_count": 0, "title_auto": False}
+        plan = pinned[chapter.chapter_id]
+        numbers = (context or {}).get("story_numbers")
+        if numbers is None:
+            numbers = story_scene_numbers(self.session, chapter.project_id)
+        span = (numbers.get("by_chapter_plan_id") or {}).get(plan.chapter_plan_id)
+        return {
+            "owner": "plan",
+            "row_uid": plan.row_uid,
+            "scene_range": {"first": span["first"], "last": span["last"]} if span else None,
+            "planned_scene_count": int(span["count"]) if span else 0,
+            "title_auto": is_auto_chapter_title(title),
         }
 
     def story_checks(self, scene_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -364,7 +415,13 @@ class CatalogService:
             # 阶段 D：最近一次准定稿评审的场景三问（无评审则 null），成稿中心按场展示，非阻断
             "story_check": dict(story_check) if isinstance(story_check, dict) else None,
             # 阶段 X：整张设计卡 + 真实工作状态
-            "design": self._scene_design(scene, kind=kind, names=names),
+            "design": self._scene_design(
+                scene,
+                kind=kind,
+                names=names,
+                plan_scene_ids=(context or {}).get("plan_scene_ids"),
+                story_numbers=(context or {}).get("story_numbers"),
+            ),
             "work": self._scene_work(scene, context=context),
         }
 
@@ -377,7 +434,15 @@ class CatalogService:
         character = self.session.get(StoryCharacter, character_id)
         return (character.display_name or "") if character is not None else ""
 
-    def _scene_design(self, scene: SceneCard, *, kind: str, names: dict[str, str] | None) -> dict[str, Any]:
+    def _scene_design(
+        self,
+        scene: SceneCard,
+        *,
+        kind: str,
+        names: dict[str, str] | None,
+        plan_scene_ids: set[str] | None = None,
+        story_numbers: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """场景卡上的设计（雪花物化 / 回流写进去的，或作者在章节编排里填的）——只读地摊给台子。"""
         brief = dict(scene.writer_brief_json or {})
 
@@ -389,6 +454,10 @@ class CatalogService:
         rendering_mode = text("rendering_mode").lower() or "full"
         return {
             "origin": "snowflake" if is_snowflake_origin(brief) else "manual",
+            # 阶段 Y：这张卡的设计在哪里改——``plan`` = 构思第 10 步（台子上只读），``desk`` = 就在台子上
+            "owner": "plan" if design_owned_by_plan(self.session, scene, plan_scene_ids=plan_scene_ids) else "desk",
+            # 阶段 Z：它在构思里是第几场（故事序，1 起；不在构思里的场为 0）——与分章面板、09 场景列表同一套编号
+            "story_index": int(((story_numbers or {}).get("by_scene_id") or {}).get(scene.scene_id) or 0),
             "crucible": text("scene_crucible"),
             "location": str(scene.location or "").strip(),
             "story_time": text("story_time"),
@@ -404,8 +473,6 @@ class CatalogService:
             "exception_reason": text("exception_reason"),
             "protagonist": text("protagonist_hint"),
             "is_chapter_last": bool(scene.is_chapter_last),
-            # 作者在台子上改过这张雪花卡的设计（三拍 / 形态 / POV）；回流会先让作者看差异
-            "desk_edited": bool(text("desk_edited_at")),
         }
 
     def _scene_work(self, scene: SceneCard, *, context: dict[str, Any] | None) -> dict[str, Any]:
@@ -420,7 +487,14 @@ class CatalogService:
 
     # ---------- 写 ----------
 
-    def update_chapter(self, project_id: str, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_chapter(
+        self,
+        project_id: str,
+        chapter_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
         project = self._projects.require_project(project_id)
         chapter = self._require_chapter(project_id, chapter_id)
         body = payload or {}
@@ -466,6 +540,22 @@ class CatalogService:
             value = body["words_target"]
             updates["words_target"] = int(value) if value not in (None, "") else None
         narrative = dict(chapter.narrative_json or {})
+        # 阶段 Z：构思的分章钉着的章——幕由分章决定（三个灾难各自收束一幕），目录里单独改只会各说各话
+        plan_owned = structure_owned_by_plan(
+            chapter, live_chapter_plans_by_catalog_id(self.session, project_id)
+        )
+        if plan_owned and "act" in body and normalize_act(body["act"]) != normalize_act(narrative.get("act")):
+            raise DomainError(
+                "CATALOG_CHAPTER_STRUCTURE_OWNED_BY_PLAN",
+                "这一章是构思里分出来的：它在第几幕由「整理章节结构」决定，确认写入后目录跟着走。",
+                status_code=409,
+                details={
+                    "chapter_id": chapter.chapter_id,
+                    "fields": ["act"],
+                    "author_action": chapter_structure_owned_by_plan_action(),
+                },
+            )
+        previous_title = chapter_title(chapter)
         for key in NARRATIVE_FIELDS:
             if key in body:
                 narrative[key] = body[key]
@@ -489,11 +579,20 @@ class CatalogService:
             if set_current:
                 project.current_chapter_id = chapter.chapter_id
             self.session.flush()
+        # 阶段 Z「章名只有一个」：这一章是构思分出来的，作者在这里改了名 → 章计划、09 的章头、07 的章节表
+        # 在同一事务里接过同一个名字（否则分章面板还挂着旧名，「AI 起章名」会给起过名的章再起一遍）。
+        plan_title = None
+        if changed and plan_owned and "title" in body and chapter_title(chapter) != previous_title:
+            plan_title = adopt_catalog_title(
+                self.session, project_id, chapter.chapter_id, chapter_title(chapter), actor_ref=actor_ref
+            )
         chapters = self.chapter_rows(project_id)
         index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter_id)
         return {
             "chapter": self.chapter_payload(project, chapter, index),
             "changed": changed,
+            # 章名写穿到了构思的章表：前端据此让本机的雪花缓存（07 章节表 / 09 章头）接过服务端这一版
+            "plan_title_synced": bool(plan_title and plan_title.get("changed")),
         }
 
     def create_chapter(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -574,12 +673,17 @@ class CatalogService:
             for key in (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD):
                 if key in nested:
                     brief[key] = str(nested[key] or "")
-        # 阶段 X：作者在台子上改了一张**雪花场景卡**的设计（三拍 / 形态）。记下来——构思确认后的
-        # 自动回流看到这个记号就不动这张卡，留给「同步到目录」的差异预览由作者裁决；回流 / 重新物化清掉它。
+        # 阶段 Y：构思里那一行还在的雪花场景卡，设计只能在构思里改（见 design_owned_by_plan）。
+        # 只拦**真的改了**的字段——前端整卡回写、值没变的请求照常通过。
         before = dict(scene.writer_brief_json or {})
-        desk_design_changed = is_snowflake_origin(before) and (
-            any(str(before.get(key) or "") != str(brief.get(key) or "") for key in (*DESK_DESIGN_KEYS, "primary_form"))
-            or any(key in updates and str(updates[key] or "") != str(getattr(scene, key) or "") for key in ("exit_change", "hook"))
+        design_changes = [
+            key for key in (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD) if str(before.get(key) or "") != str(brief.get(key) or "")
+        ]
+        if "scene_type" in updates and updates["scene_type"] != scene_kind(scene):
+            design_changes.append("kind")
+        design_changes.extend(
+            key for key in ("exit_change", "hook")
+            if key in updates and str(updates[key] or "") != str(getattr(scene, key) or "")
         )
         # POV 角色:按 id 选既有角色,或按名 find-or-create(让冷启动作品无需走完整雪花
         # 物化即可设 pov,解执行契约的 pov_character_id 硬阻断);空串显式清空。
@@ -607,13 +711,21 @@ class CatalogService:
                     updates["pov_character_id"] = existing_character.character_id
             else:
                 updates["pov_character_id"] = None
-        if is_snowflake_origin(before) and (
-            needs_character_create
-            or ("pov_character_id" in updates and (updates["pov_character_id"] or None) != (scene.pov_character_id or None))
+        if needs_character_create or (
+            "pov_character_id" in updates and (updates["pov_character_id"] or None) != (scene.pov_character_id or None)
         ):
-            desk_design_changed = True  # 换了 POV 也是改设计
-        if desk_design_changed:
-            brief["desk_edited_at"] = utcnow()
+            design_changes.append("pov")
+        if design_changes and design_owned_by_plan(self.session, scene):
+            raise DomainError(
+                "CATALOG_SCENE_DESIGN_OWNED_BY_PLAN",
+                "这一场是雪花整理出来的，它的设计（形态、三拍、POV、离场变化、钩子）在构思第 10 步改，确认后自动同步到目录。",
+                status_code=409,
+                details={
+                    "scene_id": scene.scene_id,
+                    "fields": design_changes,
+                    "author_action": design_owned_by_plan_action(scene.scene_id),
+                },
+            )
         if brief != dict(scene.writer_brief_json or {}):
             updates["writer_brief_json"] = brief
         changed_fields = [
@@ -784,6 +896,23 @@ class CatalogService:
             }
 
         by_id = {chapter.chapter_id: chapter for chapter in current_rows}
+        # 阶段 Z：构思分出来的章彼此的先后 = 章表的顺序（章是故事序上连续的一段）。在目录里把它们互相挪开，
+        # 目录的章序就不再是故事的顺序，下一次「确认写入」又会悄悄排回去。手建的章照常可以挪到任何两章之间。
+        pinned = live_chapter_plans_by_catalog_id(self.session, project_id)
+        plan_owned_ids = {
+            chapter.chapter_id for chapter in current_rows if structure_owned_by_plan(chapter, pinned)
+        }
+        if [cid for cid in requested if cid in plan_owned_ids] != [cid for cid in current_ids if cid in plan_owned_ids]:
+            raise DomainError(
+                "CATALOG_CHAPTER_ORDER_OWNED_BY_PLAN",
+                "构思里分出来的章，彼此的先后由「整理章节结构」的章表决定（章是场景列表上连续的一段），确认写入后目录跟着走。",
+                status_code=409,
+                details={
+                    "fields": ["order"],
+                    "plan_owned_chapter_ids": [cid for cid in current_ids if cid in plan_owned_ids],
+                    "author_action": chapter_structure_owned_by_plan_action(),
+                },
+            )
         approved_ids = {
             chapter.chapter_id
             for chapter in current_rows

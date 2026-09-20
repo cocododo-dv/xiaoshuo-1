@@ -154,8 +154,10 @@ def _pipeline_blocked(session: Session, project: StoryProject) -> list[dict[str,
         return []
     catalog = CatalogService(session)
     slug_map: dict[str, tuple[str, str, str]] = {}
-    for index, chapter in enumerate(catalog.chapter_rows(project.project_id)):
-        payload = catalog.chapter_payload(project, chapter, index)
+    chapter_rows = catalog.chapter_rows(project.project_id)
+    context = catalog.read_context(project.project_id, [chapter.chapter_id for chapter in chapter_rows])
+    for index, chapter in enumerate(chapter_rows):
+        payload = catalog.chapter_payload(project, chapter, index, context=context)
         for scene in payload["scenes"]:
             slug_map[scene["scene_id"]] = (scene["slug"], scene["title"], payload["no"])
     cards: list[dict[str, Any]] = []
@@ -188,8 +190,9 @@ def _catalog_anomalies(session: Session, project: StoryProject) -> list[dict[str
     catalog = CatalogService(session)
     cards: list[dict[str, Any]] = []
     chapters = catalog.chapter_rows(project.project_id)
+    context = catalog.read_context(project.project_id, [chapter.chapter_id for chapter in chapters])
     for index, chapter in enumerate(chapters):
-        payload = catalog.chapter_payload(project, chapter, index)
+        payload = catalog.chapter_payload(project, chapter, index, context=context)
         scenes = payload["scenes"]
         no = payload["no"]
         title = payload["title"]

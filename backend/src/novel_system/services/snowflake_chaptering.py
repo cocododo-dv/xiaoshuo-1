@@ -33,7 +33,6 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
 from novel_system.db.models import (
     ChapterGoal,
@@ -46,7 +45,15 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.catalog_placeholders import pristine_placeholder_chapters
+from novel_system.services.catalog_trash_cascade import split_trashed_planned_cards
+from novel_system.services.chapter_title_sync import (  # noqa: F401  (is_auto_chapter_title 从这里再导出)
+    AUTO_TITLE_PATTERN,
+    PLACEHOLDER_TITLE_MARKERS,
+    is_auto_chapter_title,
+    mirror_chapters_into_long_synopsis,
+)
 from novel_system.services.errors import DomainError
+from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.snowflake_scene_order import renumber_scene_seq, sort_in_story_order
 from novel_system.services.snowflake_steps import effective_rendering_mode
 from novel_system.services.snowflake_triage import excluded_scene_plan_ids
@@ -68,9 +75,10 @@ _SPINE_ROLE_PATTERN = re.compile(
 _SPINE_BY_ORDINAL = {"一": "灾一", "1": "灾一", "二": "灾二", "2": "灾二", "三": "灾三", "3": "灾三"}
 #: 提议章表时，新章在面板里的临时身份前缀（确认时由 ``save`` 铸成真正的 row_uid）。
 NEW_CHAPTER_PREFIX = "new:"
-_PLACEHOLDER_TITLE_MARKERS = ("待补", "TODO", "todo", "TBD", "tbd", "占位")
-#: 系统起的占位章名「第 N 章」——它跟着章序走，不是作者的命名
-_AUTO_TITLE_PATTERN = re.compile(r"^第\s*\d+\s*章$")
+# 占位章名的判定（「第 N 章」/「（待补）」/「未命名章节」）与章表在 07 草稿里的镜像搬到了叶子模块
+# chapter_title_sync（阶段 Z）：目录服务也要用，而它不能反过来引用本模块。
+_PLACEHOLDER_TITLE_MARKERS = PLACEHOLDER_TITLE_MARKERS
+_AUTO_TITLE_PATTERN = AUTO_TITLE_PATTERN
 # NN 章名：一句话（灾一）—— 2026-09-13 阶段 D 之前提示词 snowflake_generate_long_synopsis 与前端 07
 # 脚手架把章表镜像进 paragraphs 时用的行格式。现在 paragraphs 是五段展开的散文，章表只在 chapters 里；
 # 这个正则只为没有 chapters 的历史草稿服务。
@@ -84,9 +92,17 @@ def mint_chapter_row_uid() -> str:
     return f"chrow_{uuid.uuid4().hex}"
 
 
-def chapter_target_id(project_id: str, chapter_seq: int) -> str:
-    """章的物化目标 id。与 ``display_order`` 同源，保证目录里的章序稳定。"""
-    return f"{project_id}_CH{chapter_seq:02d}"
+def chapter_target_id(project_id: str, serial: int) -> str:
+    """第 ``serial`` 个被铸出来的雪花章在目录里的 id。
+
+    阶段 Y（2026-09-20）：这个数字是**序列号，不是章序**。过去物化目标按章序算（第 3 章 = ``…_CH03``），
+    重新分章之后同一个 id 指着另一组场：目录里那一行的章级状态（章状态、字数目标、戏剧卡、运行任务、终审）
+    留在「第 3 个位置」上，从拆点往后的每张场景卡都要换章，场景运行时表上冗余的 chapter_id 成片过期。
+    现在 id 钉在章计划行上（``SnowflakeChapterPlan.catalog_chapter_id``，见
+    :meth:`SnowflakeChapteringService.catalog_chapter_id`）：第一次物化按章序铸出 CH01…CHnn（与从前一样），
+    之后新出现的章拿下一个没用过的号，已有的章永远是它自己的那个号；显示的章序只由 ``display_order`` 决定。
+    """
+    return f"{project_id}_CH{serial:02d}"
 
 
 def scene_spine(plan: SnowflakeScenePlan) -> str:
@@ -127,16 +143,6 @@ def spine_positions(scenes: list[SnowflakeScenePlan]) -> dict[str, int]:
     return positions
 
 
-def is_auto_chapter_title(title: Any) -> bool:
-    """章名是不是系统起的占位（空、「第 N 章」、「（待补）」一类）——AI 起章名只碰这些，作者起的名字不碰。"""
-    text = str(title or "").strip()
-    return (
-        not text
-        or bool(_AUTO_TITLE_PATTERN.match(text))
-        or any(marker in text for marker in _PLACEHOLDER_TITLE_MARKERS)
-    )
-
-
 def is_placeholder_chapter(chapter: Any) -> bool:
     """07 编辑器「添加章节」点出来、还没写任何东西的章行（标题空 / 「（待补）」，摘要、章目标、脊柱全空）。
 
@@ -168,6 +174,47 @@ class SnowflakeChapteringService:
                 .order_by(SnowflakeChapterPlan.chapter_seq.asc(), SnowflakeChapterPlan.row_uid.asc())
             ).scalars()
         )
+
+    # ------------------------------------------------------ 章在目录里的 id（阶段 Y）
+
+    def catalog_chapter_id(self, chapter: SnowflakeChapterPlan, *, mint: bool = True) -> str:
+        """这一章在目录里的 id。钉过就用钉的；没钉过且 ``mint`` 时铸下一个序列号并钉上。
+
+        预览里的瞬态章（``new:N``，不在 session 里）从不铸号：确认之前什么都不落库。
+        """
+        pinned = str(chapter.catalog_chapter_id or "").strip()
+        if pinned or not mint or not chapter.chapter_plan_id:
+            return pinned
+        chapter.catalog_chapter_id = chapter_target_id(chapter.project_id, self._next_catalog_serial(chapter.project_id))
+        self.session.flush()
+        return chapter.catalog_chapter_id
+
+    def _is_pinnable_chapter_id(self, project_id: str, chapter_id: str) -> bool:
+        """目录里真有这一章（属于本作品），或者是本作品序列号的形状——才钉。
+
+        场景行上的章戳可能是规划器 / 模型随手写的字符串（``ch1``、别的作品的章号）：钉上去就成了物化目标，
+        批准时要么建出一个怪 id 的章，要么撞上 ``CHAPTER_ALREADY_OWNED``。不钉的留空，保存分章时照常铸号。
+        """
+        row = self.session.get(ChapterGoal, chapter_id)
+        if row is not None:
+            return row.project_id == project_id
+        return re.fullmatch(rf"{re.escape(project_id)}_CH\d+", chapter_id) is not None
+
+    def _next_catalog_serial(self, project_id: str) -> int:
+        """下一个没用过的序列号：目录里现有的章（含回收站）与所有钉过的号（含已软删的章计划）都算占用。"""
+        pattern = re.compile(rf"^{re.escape(project_id)}_CH(\d+)$")
+        used = [
+            *self.session.execute(select(ChapterGoal.chapter_id).where(ChapterGoal.project_id == project_id)).scalars(),
+            *self.session.execute(
+                select(SnowflakeChapterPlan.catalog_chapter_id).where(
+                    SnowflakeChapterPlan.project_id == project_id,
+                    SnowflakeChapterPlan.catalog_chapter_id.is_not(None),
+                )
+            ).scalars(),
+        ]
+        # 场景行上的章戳不算占用：前端那一路给所有场盖的是退化默认值 ``…_CH01``，那不是一个真的章。
+        serials = [int(match.group(1)) for value in used if (match := pattern.match(str(value or "")))]
+        return max(serials, default=0) + 1
 
     def scene_plans(self, project_id: str) -> list[SnowflakeScenePlan]:
         """活跃场景计划，按**故事序**（09 场景列表的行序）。
@@ -211,6 +258,11 @@ class SnowflakeChapteringService:
         if not derived:
             return []
         created = [self._create_chapter_plan(project_id, item) for item in derived]
+        for item, row in zip(derived, created):
+            # 从目录 / 场景行的章戳反推出来的章：那个章号就是它在目录里的身份，钉住
+            source = str(item.get("source_chapter_id") or "").strip()
+            if source and self._is_pinnable_chapter_id(project_id, source):
+                row.catalog_chapter_id = source
         # 来源自带归属的（目录 / 场景行上的 chapter_id）：归属是既成事实，不是待决策项，
         # 建完章顺手绑上，作者不必为「系统已经知道的事」再点一次确认。
         by_source_chapter_id = {
@@ -392,16 +444,23 @@ class SnowflakeChapteringService:
             scenes_per_chapter=scale["scenes_per_chapter"],
         )
         proposed_at = utcnow()
+        # 阶段 Y：与面板同一套身份沿用——场至少一半相同的章还是那一章（目录里同一行），其余才是新章
+        matches = match_chunks_to_chapters(existing, scenes, chunks)
+        scene_summaries = {str(scene.summary or "").strip() for scene in scenes if str(scene.summary or "").strip()}
+        uid_of = {
+            index: (matches[index - 1][0].row_uid if index - 1 in matches else f"{NEW_CHAPTER_PREFIX}{index}")
+            for index in range(1, len(chunks) + 1)
+        }
         self.save(
             project_id,
             {
                 "replace_chapters": True,
                 "chapters": [
-                    {"row_uid": f"{NEW_CHAPTER_PREFIX}{index}", **_chunk_chapter_fields(index, chunk)}
+                    {"row_uid": uid_of[index], **_proposed_chapter_fields(index, chunk, matches.get(index - 1), scene_summaries)}
                     for index, chunk in enumerate(chunks, start=1)
                 ],
                 "assignments": [
-                    {"scene_plan_id": scene.scene_plan_id, "chapter_row_uid": f"{NEW_CHAPTER_PREFIX}{index}"}
+                    {"scene_plan_id": scene.scene_plan_id, "chapter_row_uid": uid_of[index]}
                     for index, chunk in enumerate(chunks, start=1)
                     for scene in chunk["scenes"]
                 ],
@@ -480,56 +539,8 @@ class SnowflakeChapteringService:
         }
 
     def _mirror_chapters_into_long_synopsis(self, project_id: str, chapters: list[SnowflakeChapterPlan]) -> None:
-        """把章表写回 07 最新草稿的 ``chapters``（带 row_uid），前端 07 表格与章表行才是同一份。
-
-        草稿里的 ``fe_scaffold.chapters`` 是前端写穿缓存，水合时**优先于**规范字段——只改 ``chapters``
-        的话，新浏览器看到的仍是旧章表（真实故障里是两行「（待补）」），下一次 07 上行还会把它们
-        当成作者的章表同步回来、把刚确认的分章冲掉。两处一起写。
-        """
-        run = self.session.execute(
-            select(SnowflakeStepRun)
-            .where(
-                SnowflakeStepRun.project_id == project_id,
-                SnowflakeStepRun.step_key == "long_synopsis",
-                SnowflakeStepRun.status != "superseded",
-            )
-            .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
-        ).scalars().first()
-        if run is None:
-            return
-        ordered = sorted(chapters, key=lambda row: (int(row.chapter_seq or 0), row.row_uid))
-        draft = dict(run.draft_json or {})
-        draft["chapters"] = [
-            {
-                "row_uid": row.row_uid,
-                "chapter_seq": row.chapter_seq,
-                "act": row.act,
-                "title": row.title or "",
-                "summary": row.summary or "",
-                "spine": row.spine or "",
-                "chapter_goal": row.chapter_goal or "",
-            }
-            for row in ordered
-        ]
-        scaffold = draft.get("fe_scaffold")
-        if isinstance(scaffold, dict):
-            draft["fe_scaffold"] = {
-                **scaffold,
-                "chapters": [
-                    {
-                        "row_uid": row.row_uid,
-                        "id": f"{index:02d}",
-                        "act": min(max(int(row.act or 1), 1), 3),
-                        "title": row.title or "",
-                        "summary": row.summary or "",
-                        "spine": row.spine or "",
-                        "goal": row.chapter_goal or "",
-                    }
-                    for index, row in enumerate(ordered, start=1)
-                ],
-            }
-        run.draft_json = draft
-        flag_modified(run, "draft_json")
+        """把章表写回 07 最新草稿的 ``chapters`` 与 ``fe_scaffold.chapters``（见 ``chapter_title_sync``）。"""
+        mirror_chapters_into_long_synopsis(self.session, project_id, chapters)
 
     # -------------------------------------------------------------- 预览
 
@@ -662,39 +673,33 @@ class SnowflakeChapteringService:
             target_chapter_count=scale["target_chapter_count"],
             scenes_per_chapter=scale["scenes_per_chapter"],
         )
-        # 场完全相同的章就是同一章：沿用它的身份（row_uid）、作者 / AI 起的章名、章摘要与章目标。
-        # 重新按场景分章（换一个每章场数、09 加了一场）不该把没变的章也打回「第 N 章」、另铸一行。
+        # 重新按场景分章（换一个每章场数、09 加了一场）不该把所有章都当成新章：
+        # - 场**完全相同**的章就是同一章：沿用它的身份（row_uid）、作者 / AI 起的章名、章摘要与章目标；
+        # - 阶段 Y：场**至少一半相同**的章也还是那一章（新旧两边都不少于一半；恰好对半时归靠前的那一个），
+        #   整拆 / 整并而谁都不过半时归开头对得上的那一个（见 match_chunks_to_chapters）——身份沿用，于是它在目录里
+        #   还是同一行（章状态 / 字数目标 / 戏剧卡 / 运行任务不丢）；作者起过的章名与章目标留着，章摘要按新的末场
+        #   重算（除非是作者自己写的）。
         live = self.chapter_plans(project_id)
-        members_of: dict[str, list[str]] = {}
-        for scene in scenes:
-            if scene.chapter_plan_id:
-                members_of.setdefault(scene.chapter_plan_id, []).append(scene.scene_plan_id)
-        unchanged = {
-            frozenset(members_of[chapter.chapter_plan_id]): chapter
-            for chapter in live
-            if members_of.get(chapter.chapter_plan_id)
-        }
+        matches = match_chunks_to_chapters(live, scenes, chunks)
+        scene_summaries = {str(scene.summary or "").strip() for scene in scenes if str(scene.summary or "").strip()}
         chapters: list[SnowflakeChapterPlan] = []
         assignment: dict[str, str | None] = {}
         reused: set[str] = set()
         for index, chunk in enumerate(chunks, start=1):
-            fields = _chunk_chapter_fields(index, chunk)
-            same = unchanged.get(frozenset(scene.scene_plan_id for scene in chunk["scenes"]))
-            if same is not None and same.row_uid not in reused:
+            same = matches[index - 1][0] if index - 1 in matches else None
+            fields = _proposed_chapter_fields(index, chunk, matches.get(index - 1), scene_summaries)
+            if same is not None:
                 reused.add(same.row_uid)
                 row_uid = same.row_uid
-                if not is_auto_chapter_title(same.title):
-                    fields["title"] = same.title
-                fields["summary"] = (same.summary or "").strip() or fields["summary"]
-                fields["chapter_goal"] = (same.chapter_goal or "").strip()
             else:
                 row_uid = f"{NEW_CHAPTER_PREFIX}{index}"
             # 不进 session 的瞬态行：只为了复用 _shape_preview 的同一套成形逻辑
             chapters.append(
                 SnowflakeChapterPlan(
-                    chapter_plan_id=same.chapter_plan_id if row_uid in reused and same is not None else "",
+                    chapter_plan_id=same.chapter_plan_id if same is not None else "",
                     project_id=project_id,
                     row_uid=row_uid,
+                    catalog_chapter_id=same.catalog_chapter_id if same is not None else None,
                     chapter_seq=index,
                     act=fields["act"],
                     title=fields["title"],
@@ -740,7 +745,8 @@ class SnowflakeChapteringService:
                     "row_uid": chapter.row_uid,
                     "chapter_plan_id": chapter.chapter_plan_id,
                     "chapter_seq": index,
-                    "chapter_id": chapter_target_id(project_id, index),
+                    # 钉过的目录章号；还没物化过 / 预览里的新章是空串（确认写入时才铸号）
+                    "chapter_id": self.catalog_chapter_id(chapter, mint=False),
                     "act": int(chapter.act or 1),
                     "title": chapter.title or "",
                     "summary": chapter.summary or "",
@@ -920,7 +926,7 @@ class SnowflakeChapteringService:
                 {
                     "kind": "empty_chapter",
                     "severity": "warning",
-                    "message": f"「{item['title'] or item['chapter_id']}」没有分到任何场，物化后会是一章空壳。",
+                    "message": f"「{item['title'] or '第 ' + str(item['chapter_seq']) + ' 章'}」没有分到任何场，物化后会是一章空壳。",
                 }
             )
         counts = [item["scene_count"] for item in chapter_payloads if item["scene_count"]]
@@ -933,7 +939,7 @@ class SnowflakeChapteringService:
                             "kind": "oversized_chapter",
                             "severity": "warning",
                             "message": (
-                                f"「{item['title'] or item['chapter_id']}」分到 {item['scene_count']} 场，"
+                                f"「{item['title'] or '第 ' + str(item['chapter_seq']) + ' 章'}」分到 {item['scene_count']} 场，"
                                 f"约是平均值（{mean:.1f}）的 {item['scene_count'] / mean:.1f} 倍。"
                             ),
                         }
@@ -958,7 +964,7 @@ class SnowflakeChapteringService:
                     "severity": "advisory",
                     "message": (
                         f"「{_clip(first['scene']['title'])}」{more}在场景列表里排在前面几章的场之前，却分在"
-                        f"《{first['chapter']['title'] or first['chapter']['chapter_id']}》——章是场景列表上连续的一段，"
+                        f"《{first['chapter']['title'] or '第 ' + str(first['chapter']['chapter_seq']) + ' 章'}》——章是场景列表上连续的一段，"
                         "目录里读到的顺序会和场景列表不一致。把它移回相邻的章，或者按场景重新分章。"
                     ),
                     "scene_plan_ids": [entry["scene"]["scene_plan_id"] for entry in misplaced],
@@ -1007,27 +1013,31 @@ class SnowflakeChapteringService:
     def _catalog_warnings(self, project_id: str, chapter_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """章节目录里和这次分章对不上的章——只提醒，不阻断，也绝不替作者删。
 
-        - 作者在章节编排里手建的章（不是雪花整理出来的）：新章接在它们后面，不覆盖、不挪动；
-        - 上一版分章留下、这一版已经没有场的章：场景卡搬走之后它们会变成空章留在目录里。
+        - 作者在章节编排里手建的章（不是雪花整理出来的）：原样保留——雪花的章按章表的顺序排，手建的章
+          原来跟在哪一章后面现在还跟在它后面（``_CatalogPlacement.settle_chapter_order``）；
+        - 上一版分章留下、这一版已经没有场的章：场景卡搬走之后空了的进回收站，还留着东西的原样保留。
         """
         rows = list(
             self.session.execute(
                 select(ChapterGoal).where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
             ).scalars()
         )
+        trash_warnings = self._trashed_card_warnings(project_id, chapter_payloads)
         if not rows:
-            return []
-        targets = {item["chapter_id"] for item in chapter_payloads if item["scene_count"]}
-        snowflake_id = re.compile(rf"^{re.escape(project_id)}_CH\d{{2,}}$")
+            return trash_warnings
+        targets = {item["chapter_id"] for item in chapter_payloads if item["scene_count"] and item["chapter_id"]}
+
+        # 阶段 Y：哪一章是雪花整理出来的，看它的来源，不看 id 长什么样（章号不再有位置含义）
+        def made_by_snowflake(row: ChapterGoal) -> bool:
+            return is_snowflake_origin(row.writer_brief_json)
+
         # 阶段 X：手建的章分两种——作者真写过东西的（原样保留，新章接在后面）与空白占位章
         # （「第 1 章 / 开场」，一个字没写：确认写入时移入回收站，雪花的章从第 1 章排起）。
         placeholder_ids = {chapter.chapter_id for chapter, _cards in pristine_placeholder_chapters(self.session, project_id)}
         placeholders = [row for row in rows if row.chapter_id in placeholder_ids]
-        hand_made = [
-            row for row in rows if not snowflake_id.match(row.chapter_id) and row.chapter_id not in placeholder_ids
-        ]
-        leftover = [row for row in rows if snowflake_id.match(row.chapter_id) and row.chapter_id not in targets]
-        warnings: list[dict[str, Any]] = []
+        hand_made = [row for row in rows if not made_by_snowflake(row) and row.chapter_id not in placeholder_ids]
+        leftover = [row for row in rows if made_by_snowflake(row) and row.chapter_id not in targets]
+        warnings: list[dict[str, Any]] = list(trash_warnings)
 
         def names(items: list[ChapterGoal]) -> str:
             labels = [
@@ -1054,21 +1064,29 @@ class SnowflakeChapteringService:
                     "severity": "advisory",
                     "message": (
                         f"章节目录里已有 {len(hand_made)} 章不是雪花整理出来的（{names(hand_made)}）。"
-                        "新章会接在它们后面，不覆盖也不挪动；不要的可以到章节编排里删。"
+                        "它们原样保留、不会被覆盖：原来排在最前面的还在最前面，原来跟在哪一章后面的还跟在那一章后面；"
+                        "不要的可以到章节编排里删。"
                     ),
                 }
             )
         if leftover:
-            # 场景卡搬走之后还剩不剩东西：只装着计划内场景卡的章会变空 → 确认写入时移入回收站；
-            # 里面还有作者手加的场（或回收站里的场）的章原样保留。
+            # 确认写入之后这一章还剩不剩东西。计划内的卡搬走，作者手加的场**跟着它的锚点场一起走**（阶段 Y，
+            # 见 ``_CatalogPlacement``）；留得下来的只有回收站里的卡，和整章一张计划内的活跃卡都没有（没有锚点
+            # 可跟）的章里的卡。什么都不剩的章 → 确认写入时移入回收站。
             plan_scene_ids = {plan.scene_id for plan in self.scene_plans(project_id)}
             leftover_ids = {row.chapter_id for row in leftover}
-            keeps_something = {
-                card.chapter_id
-                for card in self.session.execute(
+            leftover_cards = list(
+                self.session.execute(
                     select(SceneCard).where(SceneCard.project_id == project_id, SceneCard.chapter_id.in_(sorted(leftover_ids)))
                 ).scalars()
-                if card.scene_id not in plan_scene_ids or int(card.trashed_flag or 0) == 1
+            )
+            anchored = {
+                card.chapter_id for card in leftover_cards
+                if card.scene_id in plan_scene_ids and int(card.trashed_flag or 0) == 0
+            }
+            keeps_something = {
+                card.chapter_id for card in leftover_cards
+                if int(card.trashed_flag or 0) == 1 or card.chapter_id not in anchored
             }
             emptied = [row for row in leftover if row.chapter_id not in keeps_something]
             kept = [row for row in leftover if row.chapter_id in keeps_something]
@@ -1089,11 +1107,56 @@ class SnowflakeChapteringService:
                         "kind": "catalog_leftover_chapters_kept",
                         "severity": "advisory",
                         "message": (
-                            f"{names(kept)} 在这一版里没有场了，但里面还有你手加的场（或回收站里的场）——这几章原样保留，"
-                            "可到章节编排里处理。"
+                            f"{names(kept)} 在这一版里没有场了，但里面还留着东西（回收站里的场，或整章只有你手加的场）"
+                            "——这几章原样保留，可到章节编排里处理。"
                         ),
                     }
                 )
+        return warnings
+
+    def _trashed_card_warnings(self, project_id: str, chapter_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """这一版章表里的场，场景卡此刻却在回收站里——确认写入之前说清楚哪些会回来、哪些不会。
+
+        随旧章一起删的（作者先在章节编排里删了旧章，再回来重新分章）确认写入时取回；作者单独删掉的那几场
+        是对那一场的裁定，不替作者取回（判定见 ``catalog_trash_cascade``）。
+        """
+        scene_ids = [
+            str(scene.get("scene_id") or "")
+            for item in chapter_payloads
+            for scene in item.get("scenes") or []
+            if not scene.get("excluded") and scene.get("rendering_mode") != "skip"
+        ]
+        cascade, individual = split_trashed_planned_cards(
+            self.session,
+            project_id,
+            scene_ids,
+            target_chapter_ids=[str(item.get("chapter_id") or "") for item in chapter_payloads],
+        )
+        warnings: list[dict[str, Any]] = []
+        if cascade:
+            warnings.append(
+                {
+                    "kind": "catalog_trashed_scenes_return",
+                    "severity": "advisory",
+                    "scene_ids": [card.scene_id for card in cascade],
+                    "message": (
+                        f"这一版里有 {len(cascade)} 场的场景卡是随着旧章一起进回收站的——确认写入时会取回，"
+                        "放进这一版的章里（卡上的正文与运行记录都在）。"
+                    ),
+                }
+            )
+        if individual:
+            warnings.append(
+                {
+                    "kind": "catalog_trashed_scenes_kept",
+                    "severity": "advisory",
+                    "scene_ids": [card.scene_id for card in individual],
+                    "message": (
+                        f"这一版里有 {len(individual)} 场的场景卡是你单独删掉的（在回收站里）——确认写入不会替你取回，"
+                        "目录里仍然看不到这几场：要写就到回收站恢复；不要这一场，就在构思第 10 步把它裁定为「待删」。"
+                    ),
+                }
+            )
         return warnings
 
     # -------------------------------------------------------------- 落库
@@ -1243,11 +1306,15 @@ class SnowflakeChapteringService:
                 healed.append(plan.scene_plan_id)
         if replace_chapters:
             self._refresh_auto_chapter_fields(list(live.values()), list(scenes.values()))
+        # 阶段 Y：每章在目录里的 id 钉在章计划行上——按章序铸号（第一次物化仍是 CH01…CHnn），
+        # 已经钉过的章不管现在排第几都还是它自己的号：拆章 / 并章 / 重排只动真的换了章的场。
+        for chapter in ordered_chapters:
+            self.catalog_chapter_id(chapter)
         for plan in scenes.values():
             chapter = live.get(plan.chapter_plan_id or "")
             if chapter is None:
                 continue
-            plan.chapter_id = chapter_target_id(project_id, chapter.chapter_seq)
+            plan.chapter_id = chapter.catalog_chapter_id
             # 不退回场景行上的旧值：那是它上一个章的标题 / 章目标，回流还会把它写进场景卡的简报
             plan.chapter_title = chapter.title or ""
             plan.chapter_goal = chapter.chapter_goal or chapter.summary or ""
@@ -1922,6 +1989,90 @@ def _chunk_chapter_fields(index: int, chunk: dict[str, Any]) -> dict[str, Any]:
 def _clip(text: Any, limit: int = 24) -> str:
     value = str(text or "").strip()
     return value if len(value) <= limit else f"{value[:limit]}…"
+
+
+def _proposed_chapter_fields(
+    index: int,
+    chunk: dict[str, Any],
+    match: tuple[SnowflakeChapterPlan, bool] | None,
+    scene_summaries: set[str],
+) -> dict[str, Any]:
+    """按场景提议出来的一章的字段；对上了已有的章就沿用作者写过的东西。
+
+    章名：作者 / AI 起过的留着（占位名「第 N 章」照新的章序重编）；章目标：原样留着；
+    章摘要：场完全没变、或是作者自己写的（不与任何一场的摘要逐字相同）才留，否则取新的末场。
+    """
+    fields = _chunk_chapter_fields(index, chunk)
+    if match is None:
+        return fields
+    same, identical = match
+    if not is_auto_chapter_title(same.title):
+        fields["title"] = same.title
+    old_summary = (same.summary or "").strip()
+    if old_summary and (identical or old_summary not in scene_summaries):
+        fields["summary"] = old_summary
+    fields["chapter_goal"] = (same.chapter_goal or "").strip()
+    return fields
+
+
+def match_chunks_to_chapters(
+    live: list[SnowflakeChapterPlan],
+    scenes: list[SnowflakeScenePlan],
+    chunks: list[dict[str, Any]],
+) -> dict[int, tuple[SnowflakeChapterPlan, bool]]:
+    """按场景重新提议的每一段，是不是已有的某一章？返回 ``{段下标: (那一章, 场是否完全相同)}``。
+
+    章的身份 = 章计划这一行 = 它钉着的目录章（章名、书签、章级状态、戏剧卡都挂在那一行上）。两条规则，
+    都和面板上的手势同一个口径（「从这里另起一章」是前半截留着原章，「并入上一章」是上一章留着）：
+
+    1. **内容过半**：这一段与那一章的公共场不少于两边各自的一半 → 同一章。恰好对半时（一章从正中拆开、
+       两章等长地并成一章）归故事序上靠前的那一个。沿故事序逐段认领，一段取公共场最多的候选，并列取靠前的章。
+    2. **整拆 / 整并**（第 1 条没说话的时候才用）：一章被整个拆成几小段、或几章整个并成一段，谁都不过半——
+       身份归**开头对得上**的那一个：这一段的第一场就是那一章的第一场，并且一方整个包在另一方里。
+       不这样的话，一章 7 场拆成 2 / 2 / 3，原来那一行会整个进回收站，作者起的章名和戏剧卡跟着不见了。
+
+    一章只被认领一次。``live`` 按章序、``scenes`` / ``chunks`` 按故事序给：同一份章表、同一个故事序，
+    永远得出同一种对法。
+    """
+    members: dict[str, set[str]] = {}
+    first_scene_of: dict[str, str] = {}
+    owner_of: dict[str, str] = {}
+    for scene in scenes:
+        if scene.chapter_plan_id:
+            members.setdefault(scene.chapter_plan_id, set()).add(scene.scene_plan_id)
+            first_scene_of.setdefault(scene.chapter_plan_id, scene.scene_plan_id)
+            owner_of[scene.scene_plan_id] = scene.chapter_plan_id
+    by_id = {chapter.chapter_plan_id: chapter for chapter in live}
+    claimed: set[str] = set()
+    matched: dict[int, tuple[SnowflakeChapterPlan, bool]] = {}
+    for index, chunk in enumerate(chunks):
+        chunk_ids = {scene.scene_plan_id for scene in chunk["scenes"]}
+        best: tuple[SnowflakeChapterPlan, int, bool] | None = None
+        for chapter in live:
+            if chapter.chapter_plan_id in claimed:
+                continue
+            old_ids = members.get(chapter.chapter_plan_id) or set()
+            shared = len(old_ids & chunk_ids)
+            if not shared or shared * 2 < len(old_ids) or shared * 2 < len(chunk_ids):
+                continue
+            if best is None or shared > best[1]:
+                best = (chapter, shared, old_ids == chunk_ids)
+        if best is not None:
+            claimed.add(best[0].chapter_plan_id)
+            matched[index] = (best[0], best[2])
+    for index, chunk in enumerate(chunks):
+        if index in matched or not chunk["scenes"]:
+            continue
+        opening = chunk["scenes"][0].scene_plan_id
+        owner = by_id.get(owner_of.get(opening, ""))
+        if owner is None or owner.chapter_plan_id in claimed or first_scene_of.get(owner.chapter_plan_id) != opening:
+            continue
+        chunk_ids = {scene.scene_plan_id for scene in chunk["scenes"]}
+        old_ids = members[owner.chapter_plan_id]
+        if chunk_ids <= old_ids or old_ids <= chunk_ids:
+            claimed.add(owner.chapter_plan_id)
+            matched[index] = (owner, False)
+    return matched
 
 
 def misplaced_scene_plan_ids(

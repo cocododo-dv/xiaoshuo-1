@@ -7,14 +7,13 @@ import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.j
    WsDesignSync — 「这张场景卡落后于已确认的构思了吗」（阶段 X）
    ----------------------------------------------------------
    物化之后构思和目录是两份数据。确认 09 / 10 时工作台带 sync_catalog，绝大多数卡当场就跟上了；
-   留下来的只有需要作者看一眼的那几种（作者在台子上改过这张卡、同步会把一张写过的卡送进回收站、
-   要搬去的章目录里还没有）。写作台 / AI 起草台不必为此拉整个雪花工作台——读这个轻量口。
+   留下来的只有需要作者看一眼的那几种（同步会把一张写过的卡送进回收站、要搬去的章目录里还没有）。写作台 / AI 起草台不必为此拉整个雪花工作台——读这个轻量口。
    只认**已确认**的规划：还在改的草稿不算「待同步」，不在台子上打扰作者。
    ESM 模块，不写 window。
    ========================================================== */
 
 const dsSubs = createSubscribers();
-const dsPending = {};      // workId → { [sceneId]: { fields, deskEdited } }
+const dsPending = {};      // workId → { [sceneId]: { fields } }
 const dsUnsupported = {};  // workId → true（非雪花作品：后端答 supported:false，别再问）
 const dsFetching = {};
 let dsBusy = {};           // sceneId → true（同步中）
@@ -41,7 +40,7 @@ function dsRefresh(workId = dsWorkId(), options = {}) {
       const next = {};
       ((data && data.pending_scenes) || []).forEach((item) => {
         if (!item || !item.scene_id || item.plan_status !== "approved") return;
-        next[item.scene_id] = { fields: item.changed_fields || [], deskEdited: !!item.desk_edited };
+        next[item.scene_id] = { fields: item.changed_fields || [] };
       });
       dsPending[workId] = next;
       dsSubs.notify();

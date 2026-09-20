@@ -23,6 +23,7 @@ from novel_system.services.chapter_approval import (
 )
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
+from novel_system.services.scene_design_ownership import plan_owned_scene_ids, scene_order_owned_by_plan_action
 from novel_system.services.text_validation import validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
@@ -306,6 +307,22 @@ def _reorder_chapter_scenes(session: Session, chapter_id: str, payload: dict) ->
         raise DomainError("SCENE_ORDER_INCOMPLETE", "scene_ids must include every scene in the chapter", status_code=409)
 
     ordered_scenes = [chapter_scene_map[scene_id] for scene_id in scene_ids]
+    # 阶段 Y「设计只有一处可改」：雪花整理出来的场，彼此的先后 = 故事序（构思第 9 步的行序）。台子上挪了，
+    # 下一次同步就会按故事序摆回去——所以这里不收；手加的场照常可以挪到任何两场之间。
+    owned = plan_owned_scene_ids(session, chapter.project_id, list(chapter_scenes))
+    if owned:
+        current_owned = [
+            scene.scene_id
+            for scene in sorted(chapter_scenes, key=lambda item: (int(item.scene_seq or 0), item.scene_id))
+            if scene.scene_id in owned
+        ]
+        if [scene_id for scene_id in scene_ids if scene_id in owned] != current_owned:
+            raise DomainError(
+                "CATALOG_SCENE_ORDER_OWNED_BY_PLAN",
+                "这几场是雪花整理出来的，它们的先后在构思第 9 步「场景列表」里拖动，确认后自动同步到目录；手加的场可以在这里挪。",
+                status_code=409,
+                details={"chapter_id": chapter_id, "author_action": scene_order_owned_by_plan_action()},
+            )
     changed_fields = [
         f"scene:{scene.scene_id}.order"
         for index, scene in enumerate(ordered_scenes, start=1)

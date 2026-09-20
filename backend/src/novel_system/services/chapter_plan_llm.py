@@ -36,6 +36,7 @@ from novel_system.services.catalog import (
     scene_title,
 )
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
+from novel_system.services.scene_design_ownership import plan_owned_scene_ids
 from novel_system.services.chapter_planning_context import (
     CHAPTER_ARCHITECTURE_ARTIFACT,
     STYLE_REFERENCE_SLOT,
@@ -287,7 +288,10 @@ class ChapterPlanService:
                 "source": "fallback",
                 "patch": {"drama": {}, "scenes": [], "append_scenes": []},
                 "notes": [],
-                "gaps": _empty_slot_gaps(context.scenes, context.chapter),
+                "gaps": _empty_slot_gaps(
+                    context.scenes, context.chapter,
+                    plan_owned_scene_ids=self._plan_owned_scene_ids(project_id, context.scenes),
+                ),
                 "dropped": [],
                 "author_action": self._llm_action(),
                 "degraded_slots": context.degraded_slots,
@@ -316,6 +320,7 @@ class ChapterPlanService:
             context.scenes,
             raw.get("patch"),
             chapter=context.chapter,
+            plan_owned_scene_ids=self._plan_owned_scene_ids(project_id, context.scenes),
         )
         return {
             "source": "llm",
@@ -346,7 +351,9 @@ class ChapterPlanService:
             project_id=project_id,
             step_ref=f"chapter_plan:review:{chapter_id}",
             prompt_payload=context.prompt_payload,
-            normalize_output=lambda output: _normalize_review_output(output, context.scenes),
+            normalize_output=lambda output: _normalize_review_output(
+                output, context.scenes, plan_owned_scene_ids=self._plan_owned_scene_ids(project_id, context.scenes),
+            ),
         )
         return {
             "source": "llm",
@@ -372,6 +379,7 @@ class ChapterPlanService:
             scenes,
             (body or {}).get("patch"),
             chapter=chapter,
+            plan_owned_scene_ids=self._plan_owned_scene_ids(project_id, scenes),
         )
         drama_updates = patch.get("drama") or {}
         scene_items = patch["scenes"]
@@ -443,6 +451,10 @@ class ChapterPlanService:
         }
 
     # ---------- LLM plumbing（与雪花工作区同款计量/审计路径） ----------
+
+    def _plan_owned_scene_ids(self, project_id: str, scenes: list[SceneCard]) -> set[str]:
+        """设计归构思侧所有的场景卡（雪花物化 / 回流出来的，且构思里那一行还在）——章节规划 AI 不往它们的设计里填。"""
+        return plan_owned_scene_ids(self.session, project_id, scenes)
 
     def llm_enabled(self) -> bool:
         return self._llm_enabled()
@@ -693,12 +705,16 @@ def sanitize_plan_patch(
     patch: Any,
     *,
     chapter: ChapterGoal | None = None,
+    plan_owned_scene_ids: set[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """把 LLM 补丁裁剪成「只填空」的安全子集。
 
     返回 (clean_patch, dropped)；dropped 逐条记录被拒写入及原因，供 UI 展示。
     性质：不覆盖非空、不删除、不重排、新卡只追加且有上限、未知 scene_id 丢弃。
+    阶段 Y：``plan_owned_scene_ids`` 里的场景卡，设计（三拍 / POV / 离场变化 / 钩子）归构思第 10 步所有——
+    在这里填了，下一次回流就会按构思里的空值盖回去；一律丢弃（``design_owned_by_plan``），题名照旧规则。
     """
+    owned = plan_owned_scene_ids or set()
     dropped: list[dict[str, str]] = []
     clean_scenes: list[dict[str, Any]] = []
     clean_appends: list[dict[str, Any]] = []
@@ -744,6 +760,11 @@ def sanitize_plan_patch(
             value = _clean_text(raw_value, _MAX_TITLE_CHARS if key == "title" else _MAX_FIELD_CHARS)
             if not value:
                 dropped.append({"scene_id": scene_id, "field": key, "reason": "empty_value"})
+                continue
+            if scene_id in owned and key != "title" and (
+                key in (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD) or key in ("pov_character_name", "exit_change", "hook")
+            ):
+                dropped.append({"scene_id": scene_id, "field": key, "reason": "design_owned_by_plan"})
                 continue
             if key in brief_keys:
                 if not _is_empty_slot(brief.get(key)):
@@ -810,9 +831,10 @@ def sanitize_plan_patch(
 
 
 def _empty_slot_gaps(
-    scenes: list[SceneCard], chapter: ChapterGoal | None = None
+    scenes: list[SceneCard], chapter: ChapterGoal | None = None, *, plan_owned_scene_ids: set[str] | None = None
 ) -> list[str]:
     """离线降级：列出每张卡待补的空槽，让 UI 依然给出可执行清单。"""
+    owned = plan_owned_scene_ids or set()
     gaps: list[str] = []
     if chapter is not None:
         drama = dict(dict(chapter.narrative_json or {}).get("drama") or {})
@@ -827,7 +849,8 @@ def _empty_slot_gaps(
         if not scene.pov_character_id:
             missing.append("pov")
         if missing:
-            gaps.append(f"{scene_title(scene)}（{scene.scene_id}）：待补 {', '.join(missing)}")
+            where = "——在构思第 10 步补" if scene.scene_id in owned else ""
+            gaps.append(f"{scene_title(scene)}（{scene.scene_id}）：待补 {', '.join(missing)}{where}")
     return gaps
 
 
@@ -908,7 +931,7 @@ def _normalize_candidates_output(
 
 
 def _normalize_review_output(
-    output: dict[str, Any], scenes: list[SceneCard]
+    output: dict[str, Any], scenes: list[SceneCard], *, plan_owned_scene_ids: set[str] | None = None
 ) -> dict[str, Any]:
     known_ids = {scene.scene_id for scene in scenes}
     findings: list[dict[str, Any]] = []
@@ -938,7 +961,7 @@ def _normalize_review_output(
         }
         suggestion = raw.get("suggestion_patch")
         if isinstance(suggestion, dict) and suggestion:
-            clean_patch, _ = sanitize_plan_patch(scenes, suggestion)
+            clean_patch, _ = sanitize_plan_patch(scenes, suggestion, plan_owned_scene_ids=plan_owned_scene_ids)
             if clean_patch["scenes"] or clean_patch["append_scenes"]:
                 finding["suggestion_patch"] = clean_patch
         findings.append(finding)

@@ -31,6 +31,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.author_actions import author_action
 from novel_system.services.catalog import normalize_act
+from novel_system.services.chapter_title_sync import follow_plan_titles
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import (
     PLAN_STATUS_PENDING_REVIEW,
@@ -74,9 +75,9 @@ from novel_system.services.snowflake_steps import (
     step_completeness,
     step_guidance,
 )
+from novel_system.services.scene_rehome import rehome_scenes
 from novel_system.services.snowflake_chaptering import (
     SnowflakeChapteringService,
-    chapter_target_id,
     mint_chapter_row_uid,
     parse_outline_chapters,
 )
@@ -703,10 +704,11 @@ class SnowflakeWorkspaceService:
     # 物化之后，构思和目录是两份数据：作者在 09 / 10 改了一场、点了「确认本步」，运行时失效当场就按
     # 改动范围标了（``invalidate_for_snowflake_step``），可场景卡还停在旧三拍上，要等作者再去横幅上点一次
     # 「同步到目录」——不点，写作台 / AI 起草台读到的就是旧卡，作者感受到的是「构思和台子是两套东西」。
-    # 确认一步 = 这一版构思定了，目录就该跟上。只有三种卡不自动动，留给显式回流的差异预览：
+    # 确认一步 = 这一版构思定了，目录就该跟上。只有两种卡不自动动，留给显式回流的差异预览：
     #   - 这一场的规划还没确认 / 被上游标了需复核（``plan.status != approved``）；
-    #   - 作者在台子上改过这张卡的设计（``desk_edited_at``）——自动回流会把那次改动静默盖掉；
     #   - 这次同步要把一张**已经有活儿**的卡送进回收站（略过 / 该重写 / 待删）。
+    # （阶段 X 还有第三种：作者在台子上改过这张卡的设计。阶段 Y 起构思里那一行还在的雪花场景卡，设计
+    #  只能在构思里改——目录 API 不收——台面与构思不会再各说各话，这一条也就没有了。）
     # 要搬去的章目录里还没有的卡照常同步内容、只是不搬（与显式回流同一口径），回包的 notice 会说清楚。
 
     def _auto_sync_catalog(self, project_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
@@ -762,8 +764,6 @@ class SnowflakeWorkspaceService:
     def _auto_sync_hold_reason(self, plan: SnowflakeScenePlan, scene: SceneCard, patch: dict[str, Any]) -> str:
         if str(plan.status or "") != "approved":
             return "plan_not_confirmed"
-        if str((scene.writer_brief_json or {}).get("desk_edited_at") or "").strip():
-            return "desk_edited"
         if int(patch.get("trashed_flag") or 0) == 1 and self._scene_card_has_work(scene):
             return "would_trash_written_scene"
         return ""
@@ -1154,7 +1154,8 @@ class SnowflakeWorkspaceService:
             ]
             if not members:
                 continue  # 空章不落库：预览里已经就此告警过，作者选择保留就是不要它
-            chapter_id = chapter_target_id(project.project_id, index)
+            # 阶段 Y：目录里的章 id 钉在章计划行上（不再按章序算）——这一章以前物化过，就还是目录里的那一行
+            chapter_id = self._chaptering.catalog_chapter_id(chapter)
             goal = (chapter.chapter_goal or chapter.summary or "").strip() or f"推进本章：{chapter.title or chapter_id}"
             scenes_payload: list[dict[str, Any]] = []
             for seq, scene in enumerate(members, start=1):
@@ -1183,7 +1184,9 @@ class SnowflakeWorkspaceService:
                         # 阶段 F：摘要不再冒充「必须包含」的硬约束（它本来就含挫折，写成硬约束会让
                         # 硬 QC 拿一句概括去卡正文）；钩子 / 离场变化没写就留空，简报只陈述作者写过的。
                         "must_include_text": detail.get("must_include_text") or "",
-                        "forbidden_text": "不得复制参考书原文表达、人物、设定或桥段。",
+                        # 2026-09-20：不再把防抄袭政策句写进 forbidden_text——那个字段是「按字面查的禁用词」，
+                        # 这句话会被拆出禁用词「人物」，正文里一出现就是 Q1 硬伤（见 qc_constraints）。
+                        "forbidden_text": "",
                         # 与 _scene_card_resync_patch 同一配方：规划行没写离场变化就用挫折 / 决定。
                         # 两边配方不同时，刚物化完的每一场都会被报成「待同步」（纯假阳性）。
                         "exit_change": (
@@ -1294,8 +1297,11 @@ class SnowflakeWorkspaceService:
             # 阶段 W：重新分章后变空的旧章已移入回收站 / 这一版又用到的章已从回收站取回——前端如实告诉作者
             "trashed_empty_chapters": result.get("trashed_empty_chapters", []),
             "restored_chapter_ids": result.get("restored_chapter_ids", []),
+            "restored_scene_ids": result.get("restored_scene_ids", []),
             # 阶段 X：手建的空白占位章（「第 1 章 / 开场」，一个字没写）已移入回收站
             "trashed_placeholder_chapters": result.get("trashed_placeholder_chapters", []),
+            # 阶段 Y：目录里有已终审的章、按章表排会挪动它 → 这次没排章序，新章接在最后
+            "chapter_order_held": bool(result.get("chapter_order_held")),
         }
 
     def resync_materialized_scenes(
@@ -1331,6 +1337,7 @@ class SnowflakeWorkspaceService:
         affected_scene_ids: list[str] = []
         pending_moves: list[dict[str, Any]] = []
         touched_chapter_ids: set[str] = set()
+        moved_scenes: dict[str, tuple[str, str]] = {}  # 阶段 Y：换了章的场，运行时行要跟着走
         excluded = self._excluded_scene_plan_ids(project.project_id)
         order_drift = self._scene_card_order_drift(project.project_id)
         # 第一遍：只算补丁（不动库）。场景卡的位置 = 章 + 章内序，两样都受唯一索引
@@ -1392,6 +1399,8 @@ class SnowflakeWorkspaceService:
                 affected_scene_ids.append(scene.scene_id)
             if not dry_run and diff:
                 self._apply_scene_card_resync(scene, scene_patch)
+                if source_chapter_id and scene.chapter_id and scene.chapter_id != source_chapter_id:
+                    moved_scenes[scene.scene_id] = (source_chapter_id, str(scene.chapter_id))
                 # 阶段 L：章目标写到场**搬进去之后**所在的章（以前先取旧章再搬，跨章移动会把目标章的
                 # 章目标盖到旧章上）；两头的章都记下，最后重算 is_chapter_last。
                 touched_chapter_ids.update({source_chapter_id, str(scene.chapter_id or "")})
@@ -1437,6 +1446,8 @@ class SnowflakeWorkspaceService:
             self.session.flush()
             if settle is not None:
                 self._settle_scene_card_order(project.project_id, settle)
+            if moved_scenes:
+                rehome_scenes(self.session, project.project_id, moved_scenes)
             remaining = touched_chapter_ids - set((settle or {}).get("chapter_ids") or ())
             if remaining:
                 self._recompute_chapter_last(project.project_id, remaining)
@@ -1585,7 +1596,7 @@ class SnowflakeWorkspaceService:
     ) -> dict[str, Any] | None:
         """这条补丁想把场景卡搬进一个目录里还不存在的章吗？
 
-        重新分章只写构思侧（``SnowflakeScenePlan.chapter_id`` = ``{project}_CH{seq:02d}``），
+        重新分章只写构思侧（``SnowflakeScenePlan.chapter_id`` = 那一章钉住的目录章号，新章是刚铸的号），
         目录里的 ``ChapterGoal`` 要等「整理为章节结构」才建。两者之间的窗口里，构思侧
         指向的章号可以完全没有对应的目录行——而 ``SceneCard.chapter_id`` 是外键。
         """
@@ -1870,7 +1881,6 @@ class SnowflakeWorkspaceService:
                     "changed_fields": sorted(diff.keys()),
                     # 阶段 X：台子只提示**已确认**的规划落后于目录；还在改的草稿不算「待同步」
                     "plan_status": str(plan.status or ""),
-                    "desk_edited": bool(str((scene.writer_brief_json or {}).get("desk_edited_at") or "").strip()),
                 }
             )
         return {
@@ -1913,7 +1923,7 @@ class SnowflakeWorkspaceService:
         carried = {key: value for key, value in previous_brief.items() if key not in {"title", "seeded_title", "desk_edited_at"}}
         brief = {
             **carried,
-            # 阶段 X：题名跟构思走，除非作者在台子上改过；回流之后这张卡与构思一致，「台面改动」记号清掉
+            # 阶段 X：题名跟构思走，除非作者在台子上改过（``desk_edited_at`` 是阶段 X 留下的旧记号，回流时顺手清掉）
             **_followed_scene_title(previous_brief, _real_scene_title(plan.title, plan.summary)),
             "source": "snowflake_resync",
             "scene_plan_id": plan.scene_plan_id,
@@ -2630,6 +2640,11 @@ class SnowflakeWorkspaceService:
         if minted and isinstance(run.draft_json, dict):
             run.draft_json = {**run.draft_json, "chapters": incoming}
             flag_modified(run, "draft_json")
+
+        # 阶段 Z「章名只有一个」：07 里改的章名不必等下一次「确认写入」——09 的章头（场景行上的章名戳）
+        # 和目录里那一章（名字还是上次由章表播下去的）当场跟上。
+        self.session.flush()
+        follow_plan_titles(self.session, project_id)
 
         loosened = sum(item["unbound_scene_count"] for item in dropped)
         if not loosened:

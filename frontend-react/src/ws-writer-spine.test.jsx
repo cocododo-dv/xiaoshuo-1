@@ -132,6 +132,10 @@ describe("写作台 · 雪花整理出来的章", () => {
     const names = [...chapters[1].querySelectorAll(".wr-sc-name")];
     expect(names.map(n => n.textContent)).toEqual(["旧信到了", "雨里站着", "档案馆夜访"]);
     expect(names[1].getAttribute("title")).toBe("雨里站着——整句摘要");
+    // 阶段 Y：雪花整理出来的场，先后 = 构思第 9 步的行序——大纲里不给拖；没有设计归属的场（手加的）照常能拖
+    const rows = [...chapters[1].querySelectorAll(".wr-sc-list > li")].filter(li => li.querySelector(".wr-sc-name"));
+    expect(rows.map(li => li.getAttribute("draggable"))).toEqual(["true", "false", "true"]);
+    expect(rows[1].querySelector(".wr-sc-grip").getAttribute("title")).toContain("构思第 9 步");
   });
 
   it("「下一场」的名字读目录里真的下一场（这里曾写死着已退役演示作品的场名）", async () => {

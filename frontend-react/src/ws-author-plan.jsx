@@ -73,6 +73,8 @@ const CP_DROP_REASONS = {
   empty_value: "空建议",
   append_cap_reached: "追加数量达上限",
   title_required: "缺标题",
+  // 阶段 Y：雪花整理出来的场，设计在构思第 10 步改——章节规划 AI 不往里填
+  design_owned_by_plan: "这一场的设计在构思第 10 步改",
 };
 
 /* ==========================================================
@@ -276,7 +278,10 @@ function ArrPlanPanel({ ch, locked }) {
         <div>
           <div className="card-title">AI 编排</div>
           <div className="card-sub">
-            基于全书上下文（蓝图 / 雪花构思 / 伏笔台账 / 张力曲线）给场景卡出主意。所有建议只填空、须经你逐条确认，绝不覆盖你写过的内容。
+            {/* 阶段 Z：说它真的能做的事。伏笔台账 / 张力曲线是已经删掉的模块；雪花整理出来的场设计归构思（阶段 Y），这里不往里填。 */}
+            {(ch.scenes || []).some((s) => s.design && s.design.owner === "plan")
+              ? "基于全书上下文（章节蓝图 / 雪花构思）补这一章的戏剧卡、给你手加的场出主意。雪花整理出来的场，设计在构思第 10 步改——这里不往里填。所有建议须经你逐条确认，绝不覆盖你写过的内容。"
+              : "基于全书上下文（章节蓝图 / 雪花构思）给场景卡出主意。所有建议只填空、须经你逐条确认，绝不覆盖你写过的内容。"}
           </div>
         </div>
         <div className="flex gap-2 items-center">
@@ -379,7 +384,9 @@ function ArrPlanPanel({ ch, locked }) {
       {snap.applied && (
         <div className="arr-sync" style={{ marginTop: 8 }} role="status">
           <I.Check size={13} /> 已补全戏剧卡 {snap.applied.drama} 项、写入 {snap.applied.scenes} 张场景卡、追加 {snap.applied.appended} 场
-          {snap.applied.skipped.length ? `；${snap.applied.skipped.length} 条因已有内容被跳过` : ""}。
+          {snap.applied.skipped.length
+            ? `；${snap.applied.skipped.length} 条被跳过（${snap.applied.skipped.some(d => d.reason === "design_owned_by_plan") ? "已有内容，或这一场的设计在构思第 10 步改" : "已有内容"}）`
+            : ""}。
         </div>
       )}
     </section>

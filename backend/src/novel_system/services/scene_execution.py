@@ -23,6 +23,7 @@ from novel_system.db.models import (
     StyleReferenceProfile,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
     normalize_story_slot,
@@ -211,7 +212,8 @@ class SceneExecutionContractService:
             "must_withhold": _first_text(
                 brief.get("must_withhold"),
                 brief.get("secret_or_misunderstanding"),
-                scene.forbidden_text,
+                # 防抄袭政策句不是「这一场要瞒住什么」（见 qc_constraints.REFERENCE_POLICY_SENTENCES）
+                strip_reference_policy(scene.forbidden_text),
             ),
             "exit_change": _first_text(scene.exit_change, brief.get("irreversible_change")),
             "next_scene_pull": _first_text(scene.hook, brief.get("reader_question"), brief.get("next_scene_pull")),

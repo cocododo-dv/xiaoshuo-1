@@ -169,6 +169,29 @@ def test_forbidden_text_verified_only_when_term_present() -> None:
     assert clean["downgraded_from"] == "Q1"
 
 
+def test_the_legacy_reference_policy_sentence_never_verifies_a_forbidden_text_issue() -> None:
+    """旧卡的 forbidden_text 是物化写下的防抄袭政策句：正文里出现「人物」不是已证实的硬伤。"""
+    scene = _scene(forbidden_text="不得复制参考书原文表达、人物、设定或桥段。")
+    issue = classify_issue(
+        {"issue_key": "forbidden_text", "message": "出现禁用词：人物"},
+        scene=scene,
+        content="这号人物他见得多了。",
+    )
+    assert issue["quality_level"] == "Q2"
+    assert issue["downgraded_from"] == "Q1"
+    assert issue["blocking"] is False
+
+    # 同一张卡上作者另外写了真正的禁用词：照常是已证实的 Q1
+    scene = _scene(forbidden_text="不得复制参考书原文表达、人物、设定或桥段。青花瓷")
+    hit = classify_issue(
+        {"issue_key": "forbidden_text", "message": "出现禁用词"},
+        scene=scene,
+        content="这号人物端着一只青花瓷瓶。",
+    )
+    assert hit["quality_level"] == "Q1"
+    assert hit["evidence_spans"] == [{"text": "青花瓷"}]
+
+
 def test_constraint_conflict_annotation_is_verified_q1() -> None:
     issue = classify_issue(
         {

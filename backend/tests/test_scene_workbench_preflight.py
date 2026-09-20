@@ -168,8 +168,6 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
         "blocking_items": [],
         "warning_items": [],
         "context_items": [],
-        "missing_dependencies": [],
-        "create_actions": [],
         "constraint_conflicts": [],
     }
     assert payload["generation_summary"] is None
@@ -395,46 +393,52 @@ def test_workbench_payload_includes_latest_anti_template_quality_summary(client,
     assert summary["recommended_next_action"]["action"] == "open_deepdesk_patch"
 
 
-def test_workbench_preflight_blocks_when_voice_profile_is_missing(client, session: Session) -> None:
+def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(client) -> None:
+    """2026-09-20 真实故障：声线卡 / 关系卡在产品里已经没有地方能写，却是每一场起草的硬前提——
+
+    真实作品的每一次「开始起草」都被预检拦下（VOICE_PROFILE_MISSING / RELATION_PROFILE_MISSING），
+    唯一的出路是让预检自己铸一句占位套话。缺卡不再拦起草，也不再有「铸最小卡」这个动作。
+    """
     create_chapter(client, "CH911")
     create_scene(client, chapter_id="CH911", scene_id="CH911_SC01")
-    seed_relation_profile(session)
 
     response = client.get("/api/v1/scenes/CH911_SC01/workbench")
 
     assert response.status_code == 200
     preflight = response.json()["data"]["run_preflight"]
-    assert preflight["can_run"] is False
-    assert preflight["overall_status"] == "blocked"
-    assert preflight["blocking_items"] == [
-        {
-            "code": "VOICE_PROFILE_MISSING",
-            "title": "缺少 POV 声线档案，当前不宜运行场景",
-            "detail": "请先补齐当前 POV 角色的可用声线档案，再执行完整场景运行。",
-            "technical_hint": "expected active voice profile: VOICE_CHAR_A",
-        }
-    ]
+    assert preflight["can_run"] is True
+    assert preflight["blocking_items"] == []
+    assert "missing_dependencies" not in preflight
+    assert "create_actions" not in preflight
+    assert client.post(
+        "/api/v1/scenes/CH911_SC01/preflight/create-cards", headers={"X-Idempotency-Key": "gone-create-cards"}
+    ).status_code == 404
 
 
-def test_workbench_preflight_blocks_when_relation_profile_is_missing(client, session: Session) -> None:
+def test_bundle_builds_without_voice_or_relation_cards_and_still_injects_existing_ones(
+    client, session: Session
+) -> None:
+    """缺卡时 bundle 照常构建（过去 409 BUNDLE_SOURCE_MISSING），只是没有这两节；库里真有卡时照旧注入。"""
+    from novel_system.services.bundle_builder import BundleBuilder
+
     create_chapter(client, "CH912")
     create_scene(client, chapter_id="CH912", scene_id="CH912_SC01")
+
+    bare = BundleBuilder(session).build("CH912_SC01")["snapshot"]
+    assert "voice_card" not in bare["inline_digests"]
+    assert "relation_card" not in bare["inline_digests"]
+    assert "voice_profile_id" not in bare["source_version_refs"]
+    assert "relation_profile_id" not in bare["source_version_refs"]
+    # 角色身份契约不依赖这两张卡
+    assert "CHAR_A" in bare["inline_digests"]["character_contract"]
+
     seed_voice_profile(session)
-
-    response = client.get("/api/v1/scenes/CH912_SC01/workbench")
-
-    assert response.status_code == 200
-    preflight = response.json()["data"]["run_preflight"]
-    assert preflight["can_run"] is False
-    assert preflight["overall_status"] == "blocked"
-    assert preflight["blocking_items"] == [
-        {
-            "code": "RELATION_PROFILE_MISSING",
-            "title": "缺少同场角色关系档案，当前不宜运行场景",
-            "detail": "请先补齐当前同场角色组合的可用关系档案，再执行完整场景运行。",
-            "technical_hint": "expected active relation profile: REL_CHAR_A_CHAR_B",
-        }
-    ]
+    seed_relation_profile(session)
+    carded = BundleBuilder(session).build("CH912_SC01", force_rebuild=True)["snapshot"]
+    assert carded["inline_digests"]["voice_card"] == "short clipped lines; pressure makes the tone harder"
+    assert carded["inline_digests"]["relation_card"] == "reunion tension; B knows slightly more than A"
+    assert carded["source_version_refs"]["voice_profile_id"] == "VOICE_CHAR_A"
+    assert carded["source_version_refs"]["relation_profile_id"] == "REL_CHAR_A_CHAR_B"
 
 
 def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(client) -> None:
@@ -467,39 +471,6 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
         "SCENE_BLUEPRINT_MISSING",
         "SCENE_LITERARY_INTENT_INCOMPLETE",
     ]
-
-
-def test_workbench_preflight_returns_structured_create_actions_for_missing_dependencies(client) -> None:
-    create_chapter(client, "CH918")
-    create_scene(client, chapter_id="CH918", scene_id="CH918_SC01")
-
-    response = client.get("/api/v1/scenes/CH918_SC01/workbench")
-
-    assert response.status_code == 200
-    preflight = response.json()["data"]["run_preflight"]
-    assert preflight["can_run"] is False
-    assert [item["dependency_type"] for item in preflight["missing_dependencies"]] == [
-        "voice_card",
-        "relation_card",
-    ]
-    assert preflight["missing_dependencies"][0] == {
-        "dependency_type": "voice_card",
-        "lineage_key": "VOICE_CHAR_A",
-        "character_id": "CHAR_A",
-        "blocking_code": "VOICE_PROFILE_MISSING",
-    }
-    assert preflight["missing_dependencies"][1] == {
-        "dependency_type": "relation_card",
-        "lineage_key": "REL_CHAR_A_CHAR_B",
-        "character_ids": ["CHAR_A", "CHAR_B"],
-        "blocking_code": "RELATION_PROFILE_MISSING",
-    }
-    assert [action["action"] for action in preflight["create_actions"]] == [
-        "create_minimal_voice_card",
-        "create_minimal_relation_card",
-    ]
-    assert preflight["create_actions"][0]["review"]["item_type"] == "voice_profile"
-    assert preflight["create_actions"][1]["review"]["item_type"] == "relation_profile"
 
 
 def test_workbench_preflight_surfaces_constraint_conflicts(client, session: Session) -> None:

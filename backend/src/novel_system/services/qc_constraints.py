@@ -8,6 +8,32 @@ def constraint_terms(text: str) -> list[str]:
     return [term.strip() for term in re.split(r"[,，、;；\n]+", text) if len(term.strip()) >= 2]
 
 
+#: 防抄袭**政策句**。雪花物化 / v1 规划器曾把它写进每一张场景卡的 ``forbidden_text``——可那个字段的契约是
+#: 「要按字面查的禁用词，顿号 / 逗号分隔」：这句话于是被拆成 ``不得复制参考书原文表达`` / ``人物`` /
+#: ``设定或桥段。`` 三个「禁用词」，正文里只要出现「人物」两个字（这号人物、可疑人物、大人物……）就是一条
+#: 已证实的 Q1 硬伤，不能归档（2026-09-20 在真实作品的 17 张卡上查实）。防抄袭由专门的机制负责
+#: （参考书 n-gram 查重、受保护专名、风格注入里的红线段），不靠这个字段。物化不再写它；已经带着它的卡，
+#: 所有按字面读这个字段的地方都先把它剔掉。
+REFERENCE_POLICY_SENTENCES: tuple[str, ...] = (
+    "不得复制参考书原文表达、人物、设定或桥段。",
+    "不得复制参考书原文表达、人物、设定或桥段",
+)
+
+
+def strip_reference_policy(text: Any) -> str:
+    """``forbidden_text`` 去掉防抄袭政策句之后剩下的、作者真正写的禁用词；没有就是空串。"""
+    if not isinstance(text, str):
+        return ""
+    for sentence in REFERENCE_POLICY_SENTENCES:
+        text = text.replace(sentence, " ")
+    return text.strip()
+
+
+def forbidden_terms(text: Any) -> list[str]:
+    """场景卡 ``forbidden_text`` → 要按字面查的禁用词（政策句不是禁用词表）。"""
+    return constraint_terms(strip_reference_policy(text))
+
+
 def constraint_alternatives(term: str) -> list[str]:
     """拆分一个约束的等价写法；``A|B`` 表示满足任意一项即可。"""
     return [
@@ -42,7 +68,7 @@ def contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
         return False
     return any(
         alternative in content
-        for term in constraint_terms(forbidden_text)
+        for term in forbidden_terms(forbidden_text)
         for alternative in (constraint_alternatives(term) or [term])
     )
 

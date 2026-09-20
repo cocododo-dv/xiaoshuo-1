@@ -34,6 +34,7 @@ const isNewChapter = (chapter) => String((chapter && chapter.rowUid) || "").star
 
 const shapeScene = (s, fallbackForm) => ({
   scenePlanId: s.scene_plan_id,
+  sceneId: s.scene_id || "",
   title: s.title || "",
   summary: s.summary || "",
   fn: s.function || "",
@@ -275,7 +276,9 @@ export function homeChapterFor(draft, scene) {
   return home;
 }
 
-export function WsChapterPlanPanel({ onClose, onDone, onGoToStep }) {
+/* 这张面板有两扇门：构思页头的「整理为章节结构」，和章节编排里的「整理章节结构」（阶段 Z）。章的结构只有
+   这一个编辑器；onGoToScene(sceneId) 让面板里的一场直达构思第 10 步的那一场（由宿主视图决定怎么跳）。 */
+export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene }) {
   const [busy, setBusy] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -477,6 +480,12 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep }) {
     || (s.needsSaved && table && !table.saved);
   const scaleNote = draft && draft.strategy === "from_scenes" ? scaleExplanation(draft.scale) : "";
   const sceneText = (scene) => (scene.title && scene.title !== scene.summary ? scene.title : (scene.summary || scene.title));
+  /* 去改这一场：面板里还没确认的调整会丢，先问一句 */
+  const goToScene = (scene) => {
+    if (typeof onGoToScene !== "function" || !scene.sceneId || saving) return;
+    if (dirty && !window.confirm("去构思里改这一场会关掉面板，面板里还没确认的调整（挪章界 / 拆章 / 并章 / 改章名）不会保留。继续？")) return;
+    onGoToScene(scene.sceneId);
+  };
 
   return (
     <div className="sf-sd-scrim" role="dialog" aria-modal="true" aria-label="整理为章节结构" onClick={saving ? undefined : onClose}>
@@ -626,6 +635,14 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep }) {
                                 {scene.spine && <span className="sf-chapterplan-anchor" title="灾难场：它收束所在的章">●{scene.spine}</span>}
                                 {!scene.planned && <span className="sf-chapterplan-unplanned" title="第 10 步还没规划三拍">未规划</span>}
                                 <span className="sf-chapterplan-sceneacts">
+                                  {typeof onGoToScene === "function" && scene.sceneId && (
+                                    <button className="btn btn-ghost btn-xs" disabled={saving}
+                                      title="去构思第 10 步改这一场的设计（形态 / 三拍 / POV）" aria-label="在构思里改这一场"
+                                      data-testid={`chapter-plan-scene-edit-${scene.storyIndex || si}`}
+                                      onClick={() => goToScene(scene)}>
+                                      <I.Pen size={12} />
+                                    </button>
+                                  )}
                                   {isFirst && chapter.index > 0 && (
                                     <button className="btn btn-ghost btn-xs" disabled={saving}
                                       title="这一章的第一场并入上一章（成为上一章的最后一场）" aria-label="并入上一章"

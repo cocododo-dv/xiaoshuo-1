@@ -1230,6 +1230,10 @@ class CanonContinuityService:
         self.session.flush()
         return snapshot
 
+    def rebuild_chapter_snapshot(self, project_id: str, chapter_id: str) -> ContinuitySnapshot:
+        """章级连续性快照是按章内的场重建的投影：场景卡跨章搬动之后，两头的章都要重算（见 scene_rehome）。"""
+        return self._rebuild_chapter_snapshot(project_id, chapter_id)
+
     def _rebuild_chapter_snapshot(self, project_id: str, chapter_id: str) -> ContinuitySnapshot:
         scene_rows = list(
             self.session.execute(

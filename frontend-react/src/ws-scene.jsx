@@ -4,7 +4,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { SceneDesignCard, planIntentsForScene, sceneDesignModel } from "./ws-scene-design.jsx";
 import { useDesignSync } from "./ws-design-sync.jsx";
-import { SceneRunJobControl, SceneStyleNoticeStrip, SceneStyleWindowsPanel, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnSetQcThresholds, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
+import { SceneRunJobControl, SceneStyleNoticeStrip, SceneStyleWindowsPanel, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnSetQcThresholds, scnRun, scnTerminalJobMessage, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { WsWorks } from "./ws-works.jsx";
@@ -404,7 +404,6 @@ function WsSceneBoard({ go, t }) {
           state: "queued",
           progress: 0,
           error: authoritativeStatus === "blocked" ? "任务已阻断，正在恢复可审阅产出…" : "任务已完成，正在恢复产出…",
-          needsCards: false,
         }));
       (async () => {
         let hydrated = null;
@@ -419,22 +418,21 @@ function WsSceneBoard({ go, t }) {
             // to its top-up action. Ordinary recovered manuscripts clear stale
             // errors as before.
             error: hydrated.recoveredWithoutDraft ? hydrated.error : null,
-            needsCards: false,
           }));
           return;
         }
+        // 没有草稿可恢复：说任务自己留下的原因（与 startRun 的 catch 同一句，见 scnTerminalJobMessage）——
+        // 过去这里写一句笼统的「请检查阻断原因后重试」，把 catch 里带着原因的那句盖掉了。
         const message = authoritativeStatus === "blocked"
-          ? "任务已阻断，尚未取得可审阅草稿，请检查阻断原因后重试"
+          ? scnTerminalJobMessage(currentAuthoritativeJob)
           : "任务已完成，但暂未取回草稿，请稍后重试";
         commit(previous => hasUsableLocalResult(previous)
           ? previous
-          : ({ ...previous, state: "queued", progress: 0, error: message, needsCards: false }));
+          : ({ ...previous, state: "queued", progress: 0, error: message }));
       })();
     } else {
-      const message = authoritativeStatus === "cancelled"
-        ? "任务已取消，可重新起草"
-        : "任务运行失败，请检查任务详情后重试";
-      commit(previous => ({ ...previous, state: "queued", progress: 0, error: message, needsCards: false }));
+      const message = scnTerminalJobMessage(currentAuthoritativeJob);
+      commit(previous => ({ ...previous, state: "queued", progress: 0, error: message }));
     }
     return () => {
       alive = false;
@@ -522,7 +520,7 @@ function WsSceneBoard({ go, t }) {
     const attempt = ((runs[id] && runs[id].attempt) || 0) + 1;
     const prevText = runs[id] && runs[id].draft ? runs[id].draft.map(p => p.parts.map(x => x.text).join("")).join("\n") : "";
     const t0 = new Date().toTimeString().slice(0, 8);
-    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, authorNote: normalizedNote, error: null, needsCards: false, budgetBlock: null, styleNotices: [], styleWindows: null,
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, authorNote: normalizedNote, error: null, budgetBlock: null, styleNotices: [], styleWindows: null,
       log: [{ t: t0, who: "system", text: `预检通过 · 第 ${attempt} 次尝试${normalizedNote ? " · 改写指令已附" : ""}` }, { t: t0, who: "sonnet", text: "起草进行中……整稿返回后过质检" }] } }));
     const tick = setInterval(() => setRuns(m => {
       const cur = m[id];
@@ -554,30 +552,12 @@ function WsSceneBoard({ go, t }) {
       stopProgress();
       if (runSeq.current[id] !== token) return;
       if (e && e.code === "SCENE_RUN_UI_ABORTED") return;
-      // Fix C：缺声线/关系卡的阻断带 canCreateCards 标记 → 起草台据此显示「补齐声线卡并重试」
-      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "起草失败，请重试", needsCards: !!(e && e.canCreateCards), budgetBlock: (e && e.budgetBlock) || null } }));
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "起草失败，请重试", budgetBlock: (e && e.budgetBlock) || null } }));
     } finally {
       if (runAbortControllers.current[id] === controller) delete runAbortControllers.current[id];
     }
   };
   const startSelectedRun = (note, options = {}) => startRun(sceneOfX(pickedId), note, options);
-  // Fix C：一键补齐缺失的最小声线/关系卡(active)解阻预检，成功后自动续跑起草
-  const createCards = async () => {
-    const sc = sceneOfX(pickedId);
-    if (!sc || !sc.fromCard) return;
-    const id = sc.id;
-    const t0 = new Date().toTimeString().slice(0, 8);
-    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.04, error: null, needsCards: false,
-      log: [{ t: t0, who: "system", text: "正在补齐最小声线/关系卡……" }] } }));
-    try {
-      const res = await scnCreateCards(sc.sid);
-      const made = ((res && res.created) || []).map(c => c.dependency_type).join("、") || "(已就绪)";
-      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), log: [...((m[id] || {}).log || []), { t: new Date().toTimeString().slice(0, 8), who: "system", text: `已补齐：${made} · 自动续跑起草` }] } }));
-      await startRun(sc, "");
-    } catch (e) {
-      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "补齐声线卡失败，请重试", needsCards: false } }));
-    }
-  };
   const topupBudget = async () => {
     const sc = sceneOfX(pickedId);
     const current = sc && sc.fromCard ? runs[sc.id] : null;
@@ -806,7 +786,7 @@ function WsSceneBoard({ go, t }) {
             <button type="button" onClick={() => setAdoptionMessage("")} aria-label="关闭采用提示"><I.X size={12} /></button>
           </div>
         )}
-        <DecisionBar scene={scene} state={renderState} runJobStatus={authoritativeStatus} go={go} onArchive={onArchive} onRun={startSelectedRun} onCreateCards={createCards} onBudgetTopup={topupBudget} archiveBusy={archivePreviewBusy || Boolean(adoptionBusy)} />
+        <DecisionBar scene={scene} state={renderState} runJobStatus={authoritativeStatus} go={go} onEditPlan={designModel && designModel.planOwned ? onEditPlan : null} onArchive={onArchive} onRun={startSelectedRun} onBudgetTopup={topupBudget} archiveBusy={archivePreviewBusy || Boolean(adoptionBusy)} />
         {compare && <AttemptCompare attempt={compare} scene={scene} onClose={() => setCompare(null)}
           onRewrite={scene.fromCard ? () => {
             const attemptNo = compare.n || compare.attempt || "所选";
@@ -1492,7 +1472,7 @@ function ArchivedStage({ scene, activeBeat, setActiveBeat }) {
 
 /* ============================ Decision bar ============================ */
 
-function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreateCards, onBudgetTopup, archiveBusy = false }) {
+function DecisionBar({ scene, state, runJobStatus, go, onEditPlan = null, onArchive, onRun, onBudgetTopup, archiveBusy = false }) {
   const [rework, setRework] = useSt8(false);
   const [note, setNote] = useSt8("");
   const normalizedNoteLength = Array.from(note.trim()).length;
@@ -1528,11 +1508,12 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
               : <><I.Clock size={14} /> 预检就绪 · 会把雪花构思与场景卡一起喂给 Claude</>}
           </div>
           <div className="scn2-decide-acts">
-            <button className="btn btn-quiet btn-sm" onClick={() => go("author")} title="场景卡在章节编排里维护">编辑场景卡</button>
+            {/* 阶段 Y：雪花整理出来的场，设计在构思第 10 步改；手加的场的卡在章节编排里改 */}
+            {onEditPlan
+              ? <button className="btn btn-quiet btn-sm" data-testid="scene-decide-edit-plan" onClick={onEditPlan} title="这一场是雪花整理出来的：设计在构思第 10 步改，确认后这张卡自动跟上">在构思里改</button>
+              : <button className="btn btn-quiet btn-sm" onClick={() => go("author")} title="场景卡在章节编排里维护">编辑场景卡</button>}
             {scene.budgetBlock && onBudgetTopup
               ? <button className="btn btn-accent" data-testid="scene-budget-topup" onClick={() => onBudgetTopup()}><I.Plus size={13} /> 追加预算并继续</button>
-              : scene.needsCards && onCreateCards
-              ? <button className="btn btn-accent" data-testid="scene-create-cards" onClick={() => onCreateCards()} title="确定性建出最小 active 声线/关系卡解阻，再自动续跑起草"><I.Refresh size={13} /> 补齐声线卡并重试</button>
               : <button className="btn btn-accent" data-testid="scene-start" onClick={() => onRun && onRun("")}><I.Play size={13} /> 开始起草</button>}
           </div>
         </div>
