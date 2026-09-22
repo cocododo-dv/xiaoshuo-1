@@ -41,6 +41,7 @@ from novel_system.db.models import (
     FinalScene,
     PassagePatchCandidate,
     SceneCard,
+    SceneDraft,
     SceneRunState,
     WriterEvaluation,
 )
@@ -385,9 +386,14 @@ def _evaluation_findings(
     for index, item in enumerate(row.findings_json or []):
         if not isinstance(item, dict):
             continue
-        dimension = str(item.get("dimension") or "unknown")
+        issue_text = str(item.get("issue") or "").strip()
+        recommendation = str(item.get("recommendation") or "").strip()
+        if not issue_text and not recommendation:
+            # 真实安装上见过的空成员（schema-enforcing 中转把没声明 properties 的成员解码成 {}）：
+            # 没有一个字可给作者看，不当作一条「unknown」发现列出来
+            continue
+        dimension = str(item.get("dimension") or item.get("category") or item.get("kind") or "").strip() or "review_note"
         excerpt = _compact(str(item.get("evidence_excerpt") or ""))
-        recommendation = str(item.get("recommendation") or "")
         evidence = _locate(text.paragraphs, needle=excerpt, excerpt=excerpt) if excerpt else None
         seed = excerpt or str(item.get("issue") or "") or str(index)
         signal_id = f"{source}:{dimension}:{_digest(seed)}"
@@ -398,10 +404,10 @@ def _evaluation_findings(
                 "quality_signal_id": signal_id,
                 "source": source,
                 "dimension": dimension,
-                "label": label_for.get(dimension) or dimension_label(dimension) or AI_DIMENSION_LABELS.get(dimension) or REVIEW_DIMENSION_LABELS.get(dimension) or dimension,
+                "label": label_for.get(dimension) or dimension_label(dimension) or AI_DIMENSION_LABELS.get(dimension) or REVIEW_DIMENSION_LABELS.get(dimension) or SOURCE_LABELS.get(source, dimension),
                 "lens": lens if lens in LENS_LABELS else None,
                 "severity": _severity(item.get("severity") or item.get("classification")),
-                "issue": str(item.get("issue") or ""),
+                "issue": issue_text,
                 "recommendation": recommendation,
                 "why": str(item.get("why_it_matters") or ""),
                 "evidence": evidence,
@@ -591,12 +597,17 @@ class SceneDiagnosisService:
         if text.layer == "none":
             return "stale"
         ref = str(row.source_text_ref or "")
+        # 终稿行 / 管线稿行（准定稿评审记的是 source_draft:<scene_drafts.row_id>）都不会改：直接比字
+        frozen = None
         if ref.startswith("final_scene:"):
-            final = self.session.get(FinalScene, ref.split(":", 1)[1])
-            if final is None:
-                return "stale"
-            reviewed = " ".join(part for part in manuscript_paragraphs(final.content or "") if part.strip())
+            frozen = self.session.get(FinalScene, ref.split(":", 1)[1])
+        elif ref.startswith("source_draft:"):
+            frozen = self.session.get(SceneDraft, ref.split(":", 1)[1])
+        if frozen is not None:
+            reviewed = " ".join(part for part in manuscript_paragraphs(frozen.content or "") if part.strip())
             return "current" if _compact(reviewed) == text.compact() else "stale"
+        if ref.startswith(("final_scene:", "source_draft:")):
+            return "stale"
         if ref.startswith("author_draft:"):
             if ref != str(text.ref or ""):
                 return "stale"

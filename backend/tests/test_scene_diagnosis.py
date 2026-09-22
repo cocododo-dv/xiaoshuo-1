@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from novel_system.db.models import ChapterGoal, SceneCard, StoryProject, WriterEvaluation
+from novel_system.db.models import ChapterGoal, SceneCard, SceneDraft, StoryProject, WriterEvaluation
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.final_text_gate import FinalTextGateService
 from novel_system.services.literary_quality import (
@@ -395,7 +395,19 @@ def test_ai_deep_review_merges_into_the_diagnosis_and_goes_stale_when_the_text_c
 
 
 def test_near_final_review_findings_join_the_diagnosis(client: TestClient, session) -> None:
-    _seed_scene(session)
+    draft_id = _seed_scene(session)
+    # 准定稿评审记的是管线稿行（source_draft:<scene_drafts.row_id>）；作者稿与它一字不差 → 评审是「对着这份字」的
+    session.add(
+        SceneDraft(
+            row_id="sd_diag",
+            scene_id=SCENE_ID,
+            chapter_id=CHAPTER_ID,
+            stage="style_draft",
+            content=DRAFT_HTML,
+            source_bundle_id="bundle_diag",
+            source_bundle_hash="hash_diag",
+        )
+    )
     session.add(
         WriterEvaluation(
             evaluation_id="near_final_eval_diag",
@@ -404,7 +416,7 @@ def test_near_final_review_findings_join_the_diagnosis(client: TestClient, sessi
             chapter_id=CHAPTER_ID,
             scene_id=SCENE_ID,
             rubric_id=NEAR_FINAL_RUBRIC_ID,
-            source_text_ref="final_scene:missing_row",
+            source_text_ref="source_draft:sd_diag",
             lens="near_final_acceptance",
             overall_score=0.61,
             scores_json={},
@@ -417,7 +429,9 @@ def test_near_final_review_findings_join_the_diagnosis(client: TestClient, sessi
                     "evidence_excerpt": "突然意识到",
                     "evidence_location": "scene body",
                     "why_it_matters": "叙述不能替读者总结。",
-                }
+                },
+                {},
+                {"severity": "taste", "evidence_excerpt": "", "issue": "", "recommendation": ""},
             ],
             revision_brief_json=[{"dimension": "model_voice_risk", "action": "去掉总结句。", "priority": "medium"}],
             failure_class="prose_model_voice",
@@ -429,12 +443,22 @@ def test_near_final_review_findings_join_the_diagnosis(client: TestClient, sessi
     payload = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     review = _finding(payload, "review", "model_voice_risk")
     assert review["label"] == "模型腔"
+    # 真实安装上的准定稿评审存过 [{}]（中转把空成员解码成 {}）：没有字的成员不成为一条「unknown」发现
+    assert [item["dimension"] for item in payload["findings"] if item["source"] == "review"] == ["model_voice_risk"]
     assert review["evidence"]["paragraph_index"] == 0 and review["evidence"]["excerpt"] == "突然意识到"
     assert review["origin"]["evaluation_id"] == "near_final_eval_diag"
-    assert payload["review"]["status"] == "stale", "评审的终稿行已经不在了"
+    assert payload["review"]["status"] == "current", "作者稿与评审看的管线稿一字不差"
     assert payload["review"]["failure_class"] == "prose_model_voice"
     assert payload["review"]["revision_brief"][0]["action"] == "去掉总结句。"
     assert payload["ai"]["status"] == "not_run", "准定稿评审不冒充 AI 深评"
+
+    # 作者改了字：评审就是改前的了
+    service = AuthorDraftService(session)
+    current = service.ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]
+    assert current["draft_id"] == draft_id
+    service.save(current["draft_id"], {"content": "<p>门外很安静。她把证据袋交给了许望。</p>", "base_revision_no": current["revision_no"]}, actor_ref="writer")
+    session.commit()
+    assert client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]["review"]["status"] == "stale"
 
 
 # ---------------------------------------------------------------------------
