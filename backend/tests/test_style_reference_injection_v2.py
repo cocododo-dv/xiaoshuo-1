@@ -547,7 +547,7 @@ def test_few_shot_windows_are_multi_paragraph_and_bounded() -> None:
     _book_id, profile_id = _seed_full("windows")
     fragments, stats = _render(profile_id, "B", {"intensity": 100})
     block = fragments.few_shot_block
-    assert "[UNTRUSTED_REFERENCE_DATA:few_shot]" in block
+    assert block.startswith("[风格样例](") and block.rstrip().endswith("[/风格样例]")
     assert "风格样例" in block
     assert stats["few_shot_windows"] == stats["few_shot_k"] == 12
     assert "连续" in block and "段窗口" in block  # 多段窗口
@@ -555,7 +555,7 @@ def test_few_shot_windows_are_multi_paragraph_and_bounded() -> None:
     windows = [seg.split("」")[0] for seg in block.split("「")[1:] if "」" in seg]
     assert any("\n" in window for window in windows)
     assert stats["few_shot_chars"] <= 60000
-    inner = block.split("[UNTRUSTED_REFERENCE_DATA:few_shot]")[1].split("[/UNTRUSTED_REFERENCE_DATA]")[0]
+    inner = block.split("\n", 1)[1].split("[/风格样例]")[0]
     assert len(inner) <= 60000 + 400
     # 样例优先:标题明令「以这位作者的手笔写本场」,不再限定「只学句法节奏」
     assert "手笔" in block and "只学习句群" not in block

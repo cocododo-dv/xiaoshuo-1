@@ -132,10 +132,11 @@ def _unbind_all(session) -> None:
     session.commit()
 
 
-def _few_shot_block(system_prompt: str) -> str:
-    start = system_prompt.find("[UNTRUSTED_REFERENCE_DATA:few_shot]")
-    end = system_prompt.find("[/UNTRUSTED_REFERENCE_DATA]", start)
-    return system_prompt[start:end] if start >= 0 and end >= 0 else ""
+def _few_shot_block(text: str) -> str:
+    """样例块:``[风格样例](…`` 标题行到 ``[/风格样例]``(2026-09-22 起不再有不可信数据边界)。"""
+    start = text.find("[风格样例](")
+    end = text.find("[/风格样例]", start)
+    return text[start:end] if start >= 0 and end >= 0 else ""
 
 
 def _few_shot_entries(block: str) -> list[str]:
@@ -537,6 +538,8 @@ def test_resolve_style_scope_prefers_the_scene_and_falls_back_to_the_project(ses
 
 
 def test_author_proposal_prompt_carries_the_style_prefix_for_prose_types(session, monkeypatch) -> None:
+    # 七次连续建议 × 完整 k 样例:场景 token 预算(套件默认武装 ×5)会在最后几次前耗尽——预算不是本用例的对象
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "0")
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
     captured: list[LLMRequest] = []
 
@@ -574,12 +577,15 @@ def test_author_proposal_prompt_carries_the_style_prefix_for_prose_types(session
     for proposal_type in ("whole_draft", "continuation", "near_final_rewrite", "language_pass", "dialogue_pass", "passage_candidate"):
         service.generate_proposal(draft["draft_id"], {"proposal_type": proposal_type, "instruction": "保持作者手笔。"})
         system = captured[-1].messages[0]["content"]
+        user = captured[-1].messages[1]["content"]
         assert system.startswith("[STYLE_REFERENCE]"), proposal_type
         assert system.endswith(template.system_prompt), proposal_type
-        assert "[风格样例]" in system, proposal_type
-        assert "保持作者手笔。" in captured[-1].messages[1]["content"]
+        # 2026-09-22 风格参考优先:写手建议也把样例放到 user 消息末尾,system 只留一句指路
+        assert "参考作者的原文样例在 user 消息的末尾" in system, proposal_type
+        assert "[/风格样例]" in user and user.rstrip().endswith("输出仍只返回前文要求的 JSON。"), proposal_type
+        assert "保持作者手笔。" in user
     # 建议是要写正文的节点：完整 k，不封顶
-    assert len(_few_shot_entries(_few_shot_block(captured[-1].messages[0]["content"]))) > PLANNING_FEW_SHOT_K_CAP
+    assert len(_few_shot_entries(_few_shot_block(captured[-1].messages[1]["content"]))) > PLANNING_FEW_SHOT_K_CAP
 
     # 结构候选是修订笔记，不是正文 → 不注入
     service.generate_proposal(draft["draft_id"], {"proposal_type": "structure_candidate"})

@@ -64,7 +64,10 @@ from novel_system.services.style_reference.runtime_contract import (
     resolve_style_runtime_contract_state,
 )
 from novel_system.services.style_prompt_injection import (  # noqa: F401  (re-export for callers/tests)
+    PLACEMENT_USER_TAIL,
+    STYLE_USER_TAIL_KEY,
     STYLED_GATE_UNAVAILABLE_VERDICT,
+    apply_style_user_tail,
     inject_style_reference_prefix,
 )
 
@@ -208,6 +211,8 @@ def _prompt_carries_style_reference(prompt: Mapping[str, Any] | None) -> bool:
         return False
     audit = prompt.get("_style_reference_runtime_audit")
     if isinstance(audit, Mapping) and str(audit.get("outcome") or "") == "injected":
+        return True
+    if str(prompt.get(STYLE_USER_TAIL_KEY) or "").strip():
         return True
     return "[STYLE_REFERENCE]" in str(prompt.get("system_prompt") or "")
 
@@ -438,8 +443,10 @@ _DIVERSIFICATION_PROMPT = (
 # §6.3 style emphasis rotation prefixes — rotate which style dimension the LLM focuses on
 _STYLE_EMPHASIS_ROTATION: list[str] = [
     (
-        "[风格强调·禁忌优先] 本次生成请特别关注参考风格中的禁忌模式——"
-        "绝对避开被标记为禁忌的表达方式,并让'不做什么'成为本次风格选择的首要约束。\n\n"
+        # 2026-09-22 风格参考优先:补候选时也不把「不做什么」抬成首要约束——先在心里复读三段样例的
+        # 句法与口吻再动笔;禁忌只作校核。
+        "[风格强调·样例优先] 本次生成请先在心里复读 [风格样例] 里的三段原文——它的句子怎么起、"
+        "在哪儿停、旁白怎么插话、对白怎么接——再动笔,让每一段都像那位作者写的;禁忌模式只用来自检。\n\n"
     ),
     (
         "[风格强调·节奏分布优先] 本次生成关注风格参考中的整体节奏倾向——"
@@ -594,7 +601,9 @@ class SceneGenerationService:
                 bundle=bundle,
                 context_text=None,
                 final_user_prompt=user_prompt,
+                placement=PLACEMENT_USER_TAIL,
             )
+            user_prompt = apply_style_user_tail(prompt, user_prompt)
             notices = style_injection_notices(prompt)
             if _prompt_carries_style_reference(prompt):
                 notices.append(
@@ -681,10 +690,12 @@ class SceneGenerationService:
                     bundle=bundle,
                     context_text=None,
                     final_user_prompt=repair_prompt,
+                    placement=PLACEMENT_USER_TAIL,
                 )
                 if style_first
                 else prompt
             )
+            repair_prompt = apply_style_user_tail(repair_prompt_payload, repair_prompt)
             try:
                 repaired_result = self._llm_runner.run(
                     scene_id=scene_id,
@@ -1480,7 +1491,9 @@ class SceneGenerationService:
             bundle=bundle,
             context_text=neutral_content,
             final_user_prompt=user_prompt,
+            placement=PLACEMENT_USER_TAIL,
         )
+        user_prompt = apply_style_user_tail(prompt, user_prompt)
         # v2（规格 §2.W5.6）：注入命中与否、回退中性稿、styled-draft gate 命中都进
         # 同一份 notices——随结果对象返回并写进 AttemptTracker，绝不静默。
         notices: list[dict[str, Any]] = style_injection_notices(prompt)
@@ -2012,7 +2025,9 @@ class SceneGenerationService:
             bundle=bundle,
             context_text=neutral_content,
             final_user_prompt=user_prompt,
+            placement=PLACEMENT_USER_TAIL,
         )
+        user_prompt = apply_style_user_tail(prompt, user_prompt)
         salvage_audit: dict[str, Any]
         try:
             node_result = self._llm_runner.run(
@@ -2301,6 +2316,7 @@ class SceneGenerationService:
                     bundle=bundle,
                     context_text=None,
                     final_user_prompt=user_prompt,
+                    placement=PLACEMENT_USER_TAIL,
                 )
         elif is_safety_repair:
             if style_first:
@@ -2312,6 +2328,7 @@ class SceneGenerationService:
                     bundle=bundle,
                     context_text=None,
                     final_user_prompt=user_prompt,
+                    placement=PLACEMENT_USER_TAIL,
                 )
             else:
                 # 这一遍只负责把已生成的风格稿恢复到事实、长度与正文完整性硬约束内。
@@ -2327,7 +2344,9 @@ class SceneGenerationService:
                 bundle=bundle,
                 context_text=source_content,
                 final_user_prompt=user_prompt,
+                placement=PLACEMENT_USER_TAIL,
             )
+        user_prompt = apply_style_user_tail(prompt, user_prompt)
         try:
             node_result = self._llm_runner.run(
                 scene_id=scene.scene_id,
@@ -2558,11 +2577,14 @@ class SceneGenerationService:
         bundle: dict[str, Any] | None = None,
         context_text: str | None = None,
         final_user_prompt: str | None = None,
+        placement: str = "system",
     ) -> dict[str, Any] | None:
         """PR-8 §5.1 — 把 active StyleProfile 注入到 prompt["system_prompt"] 头部。
 
         v2（W5）：核心逻辑抽成模块级 ``inject_style_reference_prefix``，qc_engine 在
         soft_qc 阶段复用同一前缀；本方法只做委派，契约不变。
+        2026-09-22 风格参考优先:起草通道传 ``placement=PLACEMENT_USER_TAIL``——样例块落到
+        user 消息末尾,调用方随后用 :func:`apply_style_user_tail` 接上。
         """
         return inject_style_reference_prefix(
             self.session,
@@ -2572,6 +2594,7 @@ class SceneGenerationService:
             task_type=task_type,
             context_text=context_text,
             final_user_prompt=final_user_prompt,
+            placement=placement,
         )
 
     def _styled_draft_style_gate(

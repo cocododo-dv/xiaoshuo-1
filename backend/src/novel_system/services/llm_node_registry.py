@@ -376,7 +376,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "quality",
         template_name="soft_qc",
         temperature=0.2,
-        max_output_tokens=2600,
+        # 2026-09-22:2600 装不下 Claude 一级模型带证据串的评审 JSON(真实运行三次顶到上限作废)
+        max_output_tokens=5000,
     ),
     LLMNodeSpec(
         "near_final_acceptance_review",
@@ -384,7 +385,7 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "quality",
         template_name="near_final_acceptance_review",
         temperature=0.15,
-        max_output_tokens=2600,
+        max_output_tokens=5000,
         fallback_route_ids=("soft_qc", "hard_qc", "style_draft", "neutral_draft"),
     ),
     LLMNodeSpec(

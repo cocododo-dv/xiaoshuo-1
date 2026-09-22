@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -15,6 +16,8 @@ from novel_system.db.models import (
 from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class Archiver:
@@ -32,6 +35,7 @@ class Archiver:
         finalize_scene_status: bool = True,
         author_confirmed_final: bool = False,
         accepted_warning_codes: list[str] | None = None,
+        observe_style_drift: bool = True,
     ) -> dict:
         final_scene = self.session.get(FinalScene, final_scene_row_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -206,7 +210,15 @@ class Archiver:
             self.session.add(archive_attempt)
         self.session.flush()
 
+        # 2026-09-22 风格参考优先:每一条归档路径都做确定性声音漂移读数(W6)。此前只有编排器自己的
+        # 归档检查点做,而起草台「采用」(adopt-current)与成稿中心走的是本函数——真实项目两场归档
+        # 0 条 style_drift_observed,跨场校准从未运行。检查点路径自己读数,传 False 免得读两遍。
+        style_drift: dict[str, Any] | None = None
+        if observe_style_drift:
+            style_drift = self._observe_style_drift(scene_id, execution_id=execution_id)
+
         return {
+            "style_drift": style_drift,
             "scene_memory_row_id": memory_row_id,
             "chapter_rolling_note_row_id": rolling.row_id,
             "archive_attempt_id": archive_attempt.attempt_id,
@@ -222,6 +234,28 @@ class Archiver:
             "final_text_gate": final_text_gate,
             "canon_continuity": canon_continuity,
         }
+
+
+    def _observe_style_drift(
+        self, scene_id: str, *, execution_id: str | None
+    ) -> dict[str, Any] | None:
+        """归档期漂移读数;任何异常吞掉记 warning,绝不阻断归档。"""
+        try:
+            from novel_system.db.models import SceneCard
+            from novel_system.services.scene_archive_effects import SceneArchiveEffects
+
+            scene = self.session.get(SceneCard, scene_id)
+            if scene is None:
+                return None
+            effects = SceneArchiveEffects(
+                self.session, None, execution_id=execution_id, run_job_id=None
+            )
+            return effects._detect_and_store_style_drift(scene)
+        except Exception as exc:  # noqa: BLE001 — 读数失败不影响归档
+            _LOGGER.warning(
+                "style drift observation skipped on archive for scene %s", scene_id, exc_info=True
+            )
+            return {"outcome": "degraded", "error_code": exc.__class__.__name__}
 
 
 def _scene_memory_row_id(scene_id: str, final_scene_row_id: str) -> str:

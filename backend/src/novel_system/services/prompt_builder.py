@@ -108,6 +108,16 @@ CHARACTER_CONTINUITY_INSTRUCTION = (
     "relation digest, previous scene memory, or source draft. "
     "When pronouns are ambiguous, repeat the character name."
 )
+# 2026-09-22 风格参考优先:风格通道的连续性提醒不再要求「代词有歧义就重复人名」——主语省略与
+# 代词习惯是作者手笔的一部分,歧义按作者的办法解(点名、动作或上下文)。
+STYLE_CHARACTER_CONTINUITY_INSTRUCTION = (
+    "Preserve character identity and pronoun continuity across the scene. "
+    "Do not change a character's gender, role, or name cues from the scene card, POV voice, "
+    "relation digest, previous scene memory, or source draft. "
+    "Keep who is speaking or acting unambiguous the way the reference author does — "
+    "a name, a gesture, or context — not by mechanically repeating names."
+)
+_STYLE_CONTINUITY_TEMPLATES = frozenset({"style_draft", "style_first_draft"})
 DRAFTING_TEMPLATE_NAMES = {
     "neutral_draft",
     "style_draft",
@@ -399,7 +409,12 @@ def _append_runtime_template_instruction(user_prompt: str, template_name: str) -
     }
     instruction = instructions.get(template_name)
     if instruction:
-        instruction = f"{instruction} {CHARACTER_CONTINUITY_INSTRUCTION}"
+        continuity = (
+            STYLE_CHARACTER_CONTINUITY_INSTRUCTION
+            if template_name in _STYLE_CONTINUITY_TEMPLATES
+            else CHARACTER_CONTINUITY_INSTRUCTION
+        )
+        instruction = f"{instruction} {continuity}"
     if not instruction or instruction in user_prompt:
         return user_prompt
     return f"{user_prompt}\n{instruction}"

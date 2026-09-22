@@ -23,7 +23,10 @@ from novel_system.services.style_reference.text_utils import (
 
 logger = logging.getLogger(__name__)
 
-EXEMPLAR_INDEX_VERSION = "exemplar_windows_v1"
+# 2026-09-22 风格参考优先 v2:affinity 从「相对通用基线最偏离」改为「最像这位作者的典型手笔」
+# (窗口声音签名到画像签名的距离,见 injection._WindowAffinityScorer);旧画像里存的 v1 索引按
+# 版本号失效、惰性复算。
+EXEMPLAR_INDEX_VERSION = "exemplar_windows_v2"
 DEFAULT_WINDOW_PARAGRAPHS = 60
 DEFAULT_WINDOW_MAX_CHARS = 4000
 DEFAULT_MIN_WINDOW_CHARS = 600

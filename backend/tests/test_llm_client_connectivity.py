@@ -432,3 +432,79 @@ def test_schema_degrade_inlines_schema_into_prompt() -> None:
     client.generate(_request(model="inline-model", response_schema=schema))
     sys3 = seen_payloads[2]["messages"][0]["content"]
     assert '"statement"' in sys3
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-22 风格参考优先附带的两条连通性修补
+# ---------------------------------------------------------------------------
+
+
+def _responses_ok(text: str = '{"ok": true}', *, output_tokens: int = 1) -> httpx.Response:
+    return httpx.Response(200, json={
+        "id": "resp-1",
+        "object": "response",
+        "model": "m",
+        "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
+        "usage": {"input_tokens": 1, "output_tokens": output_tokens, "total_tokens": 1 + output_tokens},
+    })
+
+
+def test_thinking_with_forced_tool_rejection_degrades_reasoning_off_and_caches_it() -> None:
+    import json as _json
+
+    from novel_system.services import llm_client as mod
+
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content)
+        bodies.append(body)
+        if body.get("reasoning"):
+            return httpx.Response(400, json={"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": (
+                '{"type":"error","error":{"type":"invalid_request_error","message":'
+                '"Thinking may not be enabled when tool_choice forces tool use."}}'
+            )}})
+        return _responses_ok()
+
+    client = _client(handler)
+    response = client.generate(_request(reasoning_level="medium"))
+    assert response.structured_output == {"ok": True}
+    assert [("reasoning" in b) for b in bodies] == [True, False]
+    # 连通性缓存记住了 reasoning off:第二次调用直接不带 reasoning
+    assert mod._CONNECTIVITY_CAPS[("openai_compatible", "test-model")]["reasoning_level"] == "off"
+    client.generate(_request(reasoning_level="medium"))
+    assert "reasoning" not in bodies[-1]
+
+
+def test_malformed_json_at_the_output_ceiling_is_treated_as_truncation() -> None:
+    import json as _json
+
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content)
+        bodies.append(body)
+        cap = int(body.get("max_output_tokens") or 0)
+        if cap <= 200:
+            # 中转不报 finish_reason,但输出 token 数正好顶到上限——被砍断的 JSON
+            return _responses_ok('{"ok": tr', output_tokens=cap)
+        return _responses_ok(output_tokens=40)
+
+    client = _client(handler)
+    response = client.generate(_request(max_output_tokens=200, reasoning_level="off"))
+    assert response.structured_output == {"ok": True}
+    # 第一跳 200 顶满 → TRUNCATED → 预算翻倍重试,而不是原样重发同一上限
+    assert [b["max_output_tokens"] for b in bodies] == [200, 400]
+
+
+def test_malformed_json_below_the_ceiling_is_still_invalid_json() -> None:
+    from novel_system.services.llm_client import LLMResponseError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _responses_ok('{"ok": tr', output_tokens=20)
+
+    client = _client(handler, max_retries=0)
+    with pytest.raises(LLMResponseError) as excinfo:
+        client.generate(_request(max_output_tokens=200, reasoning_level="off"))
+    assert excinfo.value.code == "LLM_RESPONSE_INVALID_JSON"

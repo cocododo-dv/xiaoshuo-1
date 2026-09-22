@@ -44,6 +44,8 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.style_prompt_injection import (
+    PLACEMENT_USER_TAIL,
+    apply_style_user_tail,
     inject_style_reference_prefix,
     resolve_style_scope,
 )
@@ -702,6 +704,8 @@ class AuthorDraftService:
                 context_text=draft.content or None,
                 final_user_prompt=user_prompt,
             )
+            # 2026-09-22 风格参考优先:写手建议(整稿 / 续写 / 改写)也把样例放到 user 消息末尾
+            user_prompt = apply_style_user_tail(prompt, user_prompt)
         bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
         runner = LLMNodeRunner(self.session)
         execution_step_key = f"author_proposal_generate:{draft.draft_id}:{proposal_type}"
@@ -779,6 +783,7 @@ class AuthorDraftService:
                 task_type="scene_generation",
                 context_text=context_text,
                 final_user_prompt=final_user_prompt,
+                placement=PLACEMENT_USER_TAIL,
             )
             return injected if injected is not None else prompt
         except Exception:  # noqa: BLE001 — 可选增强：注入失败只记日志，不阻断建议生成

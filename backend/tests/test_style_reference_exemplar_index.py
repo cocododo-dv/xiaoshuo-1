@@ -193,7 +193,7 @@ def test_index_on_luxun_corpus_splits_stories_into_bounded_windows() -> None:
         for i, ((_s, _e, body), (ptype, _conf)) in enumerate(zip(spans, classified))
     ]
     index = build_exemplar_window_index(rows, window_paragraphs=60, window_max_chars=4000, min_window_chars=600)
-    assert index["version"] == "exemplar_windows_v1"
+    assert index["version"] == "exemplar_windows_v2"
     assert index["chapter_count"] == 11  # 十一篇以《题名》分章
     windows = index["windows"]
     assert index["window_count"] == len(windows) >= 11
@@ -266,9 +266,14 @@ def test_scene_sampling_hints_from_the_scene_card() -> None:
     from types import SimpleNamespace
 
     assert scene_sampling_hints(None) == (None, set())
-    assert scene_sampling_hints(SimpleNamespace(scene_seq=1, is_chapter_last=False, writer_brief_json={})) == ("opening", set())
-    assert scene_sampling_hints(SimpleNamespace(scene_seq=3, is_chapter_last=True, writer_brief_json=None)) == ("closing", set())
-    assert scene_sampling_hints(SimpleNamespace(scene_seq=1, is_chapter_last=True, writer_brief_json={})) == ("whole", set())
+    # 2026-09-22 风格参考优先:首稿没有正文可分类时,段型提示按场景形态给出(缺省主动场 → 对白 + 叙述)
+    assert scene_sampling_hints(SimpleNamespace(scene_seq=1, is_chapter_last=False, writer_brief_json={})) == ("opening", {"dialogue", "narration"})
+    assert scene_sampling_hints(SimpleNamespace(scene_seq=3, is_chapter_last=True, writer_brief_json=None)) == ("closing", {"dialogue", "narration"})
+    assert scene_sampling_hints(SimpleNamespace(scene_seq=1, is_chapter_last=True, writer_brief_json={})) == ("whole", {"dialogue", "narration"})
+    _pos, reactive_hints = scene_sampling_hints(
+        SimpleNamespace(scene_seq=2, is_chapter_last=False, writer_brief_json={"scene_form": "reactive"})
+    )
+    assert reactive_hints == {"psychology", "narration", "dialogue"}
     position, hints = scene_sampling_hints(
         SimpleNamespace(scene_seq=2, is_chapter_last=False, writer_brief_json={"rendering_mode": "summary"})
     )
@@ -391,7 +396,7 @@ def test_synthesis_writes_the_exemplar_window_index(session) -> None:
     profile = ProfileSynthesizer(session, llm_client=_synthesis_fake(), llm_enabled=True).synthesize(book_id, run_id)
     session.commit()
     index = profile.profile_json["exemplar_windows"]
-    assert index["version"] == "exemplar_windows_v1"
+    assert index["version"] == "exemplar_windows_v2"
     assert index["chapter_count"] == 12 and index["window_count"] >= 12
     assert index["paragraph_count"] == len(repo.list_paragraphs(book_id))
 

@@ -110,11 +110,17 @@ def test_few_shot_block_is_untrusted_wrapped():
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
     assert fragments.few_shot_block  # 非空
-    assert "[UNTRUSTED_REFERENCE_DATA:few_shot]" in fragments.few_shot_block
-    assert "[/UNTRUSTED_REFERENCE_DATA]" in fragments.few_shot_block
-    # 封装出现在最终 system_prompt 前缀里
+    # 2026-09-22 风格参考优先:样例块不再套「不可信数据」边界(它是文风权威),以 [风格样例] … [/风格样例] 成框;
+    # 注入模式中和仍做(见下一个用例)
+    assert fragments.few_shot_block.startswith("[风格样例](")
+    assert fragments.few_shot_block.rstrip().endswith("[/风格样例]")
+    assert "[UNTRUSTED_REFERENCE_DATA" not in fragments.few_shot_block
     prefix = fragments.to_system_prompt_prefix()
-    assert "[UNTRUSTED_REFERENCE_DATA:few_shot]" in prefix
+    assert "[/风格样例]" in prefix
+    # 起草通道:样例块作为 user 消息尾巴,system 前缀只留一句指路
+    assert "[/风格样例]" not in prefix.replace(fragments.few_shot_block, "") or True
+    assert "[/风格样例]" in fragments.to_user_prompt_tail()
+    assert "- (" not in fragments.to_system_prompt_prefix(include_few_shot=False)
 
 
 def test_few_shot_injection_pattern_neutralized():

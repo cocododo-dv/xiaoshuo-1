@@ -616,6 +616,22 @@ class ValidateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# 2026-09-22 风格参考优先:样例块进 user 消息末尾时,system 前缀开头的一句指路——模型在 system 里看到
+# 抽象块与红线,在 user 消息末尾看到样例本身。
+FEW_SHOT_IN_USER_MESSAGE_NOTE = (
+    "[风格样例](参考作者的原文样例在 user 消息的末尾,紧挨着你要写的正文;"
+    "它是本场唯一的文风权威,下面的抽象特征只用来自检)"
+)
+# 样例块之后的收口指令:离输出最近的一段话,把「照这个手笔写」说成最后一句。
+FEW_SHOT_CLOSING_MANDATE = (
+    "以上 [风格样例] 是本场唯一的文风权威。现在按前文的场景卡与场景结构写这一场，"
+    "用这位作者的手笔来写：他的用词与口头禅、意象取向、句式长短与停顿、叙述姿态与旁白的口吻、"
+    "对白的写法与换段，都照样例来，敢于用他会用的词和他会打的比方；人物、地名、事件与专名一律用本书的，"
+    "不用样例里的；不整句照搬样例（连续 12 字以上与样例相同即视为照搬）。"
+    "篇幅按前文的长度要求；输出仍只返回前文要求的 JSON。"
+)
+
+
 class SystemPromptFragments(BaseModel):
     """注入到 LLM system_prompt 头部的 4 块文本 + strategy 回填(PR-8 §5.1)。
 
@@ -643,14 +659,16 @@ class SystemPromptFragments(BaseModel):
     anti_plagiarism_block: str = ""
     strategy: InjectionStrategy = InjectionStrategy.A
 
-    def to_system_prompt_prefix(self) -> str:
+    def to_system_prompt_prefix(self, *, include_few_shot: bool = True) -> str:
         # 顺序(2026-09-09 样例优先):few_shot → rag → voice → positive → forbidden →
         # metric → anti_plagiarism。原文样例是主信号,排最前;抽象块作校核;量化分布最末;
         # 红线段永远最后、永不截断。(v2 §1.2 的旧顺序把样例排在抽象块之后。)
+        # 2026-09-22 风格参考优先:起草通道把样例块放到 user 消息末尾(:meth:`to_user_prompt_tail`),
+        # 此时 ``include_few_shot=False``——system 前缀只剩抽象块与红线,并留一句指路。
         blocks = [
             block
             for block in (
-                self.few_shot_block,
+                self.few_shot_block if include_few_shot else "",
                 self.rag_block,
                 self.voice_block,
                 self.positive_block,
@@ -659,11 +677,23 @@ class SystemPromptFragments(BaseModel):
             )
             if block.strip()
         ]
+        if not include_few_shot and self.few_shot_block.strip():
+            blocks.insert(0, FEW_SHOT_IN_USER_MESSAGE_NOTE)
         if not blocks:
             return ""
         if self.anti_plagiarism_block.strip():
             blocks.append(self.anti_plagiarism_block)
         return "[STYLE_REFERENCE]\n" + "\n\n".join(blocks) + "\n[/STYLE_REFERENCE]\n\n"
+
+    def to_user_prompt_tail(self) -> str:
+        """2026-09-22 风格参考优先:样例块作为 user 消息的**末尾**——离输出最近的位置。
+
+        样例之后紧跟一段收口指令(``FEW_SHOT_CLOSING_MANDATE``):以样例手笔写前文定下的这一场、
+        人物地名事件用本书的、不整句照搬、篇幅与 JSON 仍按前文。样例为空时返回空串。
+        """
+        if not self.few_shot_block.strip():
+            return ""
+        return "\n\n" + self.few_shot_block.rstrip() + "\n\n" + FEW_SHOT_CLOSING_MANDATE + "\n"
 
 
 # ---------------------------------------------------------------------------

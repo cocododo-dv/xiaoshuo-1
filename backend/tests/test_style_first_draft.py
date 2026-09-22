@@ -210,8 +210,14 @@ def test_style_first_writes_the_first_draft_in_the_reference_hand(session) -> No
     assert call["step"] == "neutral_draft" and call["node_id"] == "style_draft"
     assert call["prompt"]["template_name"] == "style_first_draft"
     assert call["prompt"]["system_prompt"].startswith("[STYLE_REFERENCE]\n")
-    assert "[风格样例]" in call["prompt"]["system_prompt"]
-    assert "in the hand of a specific reference author" in call["prompt"]["system_prompt"]
+    assert "in the hand of one specific reference author" in call["prompt"]["system_prompt"]
+    # 2026-09-22 风格参考优先:样例块落在 user 消息末尾(紧挨输出),system 只留抽象块与一句指路
+    assert "- (" not in call["prompt"]["system_prompt"].split("[/STYLE_REFERENCE]")[0]
+    assert "参考作者的原文样例在 user 消息的末尾" in call["prompt"]["system_prompt"]
+    assert call["user_prompt"].rstrip().endswith("输出仍只返回前文要求的 JSON。")
+    tail = call["user_prompt"][call["user_prompt"].find("[风格样例](") :]
+    assert "[/风格样例]" in tail and "以上 [风格样例] 是本场唯一的文风权威" in tail
+    assert "[UNTRUSTED_REFERENCE_DATA" not in call["user_prompt"]
     assert "Scene Length Guide" not in call["user_prompt"]  # band "short" 不是数字带
     assert result.draft_mode == DRAFT_MODE_STYLE_FIRST
     codes = [item["code"] for item in result.notices]
@@ -280,6 +286,7 @@ def test_style_first_repair_keeps_the_prefix_and_label(session) -> None:
     repair_call = runner.calls[1]
     assert repair_call["step"] == "neutral_draft_repair" and repair_call["node_id"] == "style_draft"
     assert repair_call["prompt"]["system_prompt"].startswith("[STYLE_REFERENCE]\n")
+    assert "[/风格样例]" in repair_call["user_prompt"]  # 修复稿同样把样例放在 user 消息末尾
     assert "Rejected First Draft Requiring One Deterministic Repair" in repair_call["user_prompt"]
     assert "keep the reference author's manner" in repair_call["user_prompt"]
 
@@ -556,11 +563,18 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["style_first_draft"]["version"] == "2026-09-15.v7"
+    assert templates["style_first_draft"]["version"] == "2026-09-22.v8"
     assert templates["style_first_draft"]["input_token_budget"] == 96000
     assert "The bundle decides what happens" in templates["style_first_draft"]["system_prompt"]
     assert "the author's manner wins and the fact of the field stays" in templates["style_first_draft"]["task_prompt"]
-    assert templates["style_draft"]["version"] == "2026-09-14.v11"
+    assert templates["style_draft"]["version"] == "2026-09-22.v12"
+    # 2026-09-22 风格参考优先:样例在 user 消息末尾;幽灵标签 [禁止复刻] 不再出现在任何模板里
+    for name in ("style_first_draft", "style_draft"):
+        assert "[风格样例] block at the end of the user message" in templates[name]["system_prompt"]
+        assert "[禁止复刻]" not in templates[name]["system_prompt"] + templates[name]["task_prompt"]
+        assert "even when the reference author uses another" not in templates[name]["task_prompt"]
+    assert "[禁止复刻]" not in templates["soft_qc"]["task_prompt"]
+    assert "decimals between 0 and 1" in templates["soft_qc"]["task_prompt"]
     assert "First Draft already in the reference author's hand" in templates["style_draft"]["task_prompt"]
     # 2026-09-14 保真修补:系统提示不再与长度指导矛盾(作者尺度优先),偏好画像只在不冲突时服从
     assert "never imitate their length" not in templates["style_draft"]["system_prompt"]
@@ -570,12 +584,12 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     assert templates["hard_qc"]["version"] == "2026-09-15.v6"
     assert "never a hard violation" in templates["hard_qc"]["task_prompt"]
     assert "restate paragraph 3" not in templates["hard_qc"]["task_prompt"]
-    assert templates["soft_qc"]["version"] == "2026-09-15.v8"
+    assert templates["soft_qc"]["version"] == "2026-09-22.v9"
     assert "only where the reference author demonstrably does not do these things" in templates["soft_qc"]["task_prompt"]
     assert "Emotional clarity is a goal only when no [STYLE_REFERENCE] block is present" in templates["soft_qc"]["system_prompt"]
-    assert templates["style_length_patch"]["version"] == "2026-09-14.v4"
-    assert templates["style_salvage_patch"]["version"] == "2026-09-14.v2"
-    assert templates["scene_literary_rewrite"]["version"] == "2026-09-14.v4"
+    assert templates["style_length_patch"]["version"] == "2026-09-22.v5"
+    assert templates["style_salvage_patch"]["version"] == "2026-09-22.v3"
+    assert templates["scene_literary_rewrite"]["version"] == "2026-09-22.v5"
     assert templates["near_final_acceptance_review"]["version"] == "2026-09-15.v8"
     assert "If no [STYLE_REFERENCE] block is present, do not pass scenes" in templates["near_final_acceptance_review"]["task_prompt"]
 

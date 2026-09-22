@@ -375,6 +375,32 @@ def _previous_chapter(session: Session, scene: SceneCard) -> ChapterGoal | None:
     return session.execute(stmt).scalars().first()
 
 
+REFERENCE_FIRST_MEMORY_NOTE = (
+    "（上一场结尾节选，只用于衔接事实、位置、道具与时序；文风以参考样例为准，不要延续这段文字的腔调）"
+)
+
+
+def reference_first_memory_digest(content: str, *, max_chars: int | None = None) -> str:
+    """2026-09-22 风格参考优先:style_first 下上一场正文只留结尾节选给衔接,不再整篇进提示。
+
+    节选长度沿用 ``continuity_anchor_max_chars``(缺省 900);尽量从段落边界起。空正文 → 空串。
+    """
+    limit = (
+        int(max_chars)
+        if max_chars is not None
+        else int(load_continuity_budget()["continuity_anchor_max_chars"])
+    )
+    text = str(content or "").strip()
+    if limit <= 0 or not text:
+        return ""
+    tail = text if len(text) <= limit else text[-limit:]
+    if len(text) > limit:
+        cut = tail.find("\n")
+        if 0 < cut < len(tail) // 2:
+            tail = tail[cut + 1 :].lstrip()
+    return f"{REFERENCE_FIRST_MEMORY_NOTE}\n{tail}"
+
+
 def previous_scene_voice_anchor(
     session: Session,
     scene: SceneCard,
@@ -587,6 +613,9 @@ class BundleBuilder:
                 }
             )
             inline_digests[SCENE_DESIGN_SECTION_KEY] = design_context.text
+        # 2026-09-22 风格参考优先:契约写了 style_first 时,本系统自己的前文不再作为「声音」进入提示
+        # (前文声音锚 / 相似场景 / 整篇上一场正文)——第 1 场若跑偏,后面每一场都被要求接着那个腔写。
+        reference_first = False
         source_version_refs["style_reference_runtime_contract_version"] = (
             STYLE_RUNTIME_CONTRACT_VERSION
         )
@@ -603,6 +632,9 @@ class BundleBuilder:
                     task_type="scene_generation",
                 )
                 if style_runtime_contract is not None:
+                    reference_first = (
+                        str(style_runtime_contract.get("draft_mode") or "") == "style_first"
+                    )
                     source_version_refs["style_reference_runtime_contract_hash"] = (
                         style_runtime_contract["contract_hash"]
                     )
@@ -843,7 +875,9 @@ class BundleBuilder:
 
         # v2（规格 §1.3）：前文声音锚 / 漂移校准——只对 style_draft 可见
         # （context_budget.NEUTRAL_DRAFT_STYLE_SECTIONS 让中性稿看不到）。
-        voice_anchor = self._previous_scene_voice_anchor(scene)
+        voice_anchor = None if reference_first else self._previous_scene_voice_anchor(scene)
+        if reference_first:
+            source_version_refs["previous_scene_voice_anchor_deferred"] = "reference_first"
         if voice_anchor is not None:
             source_version_refs["previous_scene_voice_anchor_scene_id"] = voice_anchor[
                 "source_scene_id"
@@ -884,7 +918,7 @@ class BundleBuilder:
                 f"- {line}" for line in drift_lines
             )
 
-        similar_scenes = self._similar_scene_context(scene)
+        similar_scenes = None if reference_first else self._similar_scene_context(scene)
         if similar_scenes:
             inline_digests["similar_scene"] = similar_scenes
 
@@ -897,7 +931,11 @@ class BundleBuilder:
                     "digest_key": "scene_memory",
                 }
             )
-            inline_digests["scene_memory"] = previous_memory.content
+            inline_digests["scene_memory"] = (
+                reference_first_memory_digest(previous_memory.content)
+                if reference_first
+                else previous_memory.content
+            )
 
         freshness_budget = self._literary_freshness_budget(scene)
         if freshness_budget is not None:

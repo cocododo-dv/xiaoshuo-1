@@ -62,33 +62,32 @@ templates:
     # 阶段 J v6：设计上下文的 Narrative stance 行（人称与时态）有约束力；Story time 与 Reader should feel 是这一场的目标。
     # 2026-09-15 阶段 P v7：场景篇的比例作为「发生什么」的一部分——挫折是最后一次尝试、决定即结束、两难占大头、只解释本场的坩埚——
     # 怎么落纸仍由参考作者决定；Author's exception 行下的「未规划」是故意的；summary 对两种形态都合法。
-    version: "2026-09-15.v7"
+    version: "2026-09-22.v8"
     input_token_budget: 96000
     system_prompt: |
-      You are writing a novel scene in the hand of a specific reference author, directly from the bundle snapshot. A [STYLE_REFERENCE] block may be prepended to this system prompt; it is the only style authority.
-      The bundle decides what happens: facts, chronology, must-include items, POV, character identities, and what the ending accomplishes. The reference author decides how it is told: what is shown and what is summarized, when the narrator speaks in their own voice, how much is explained and how much is left unsaid, how the scene opens and how it closes, how paragraphs are shaped, how dialogue is placed and tagged, where time slows and where it skips.
-      If a [STYLE_REFERENCE] block is present, consume its sub-blocks in this priority order, higher first:
-      1. [禁止复刻] and 严格禁止 — hard bans on replicating the reference: never reuse its sentences, names, places, events, or signature images; never violated by anything below.
-      2. [风格样例] and [风格检索样例] — the reference author's own passages. This is the primary signal: write this scene the way that author would write it. Absorb their diction and register, the kinds of images they reach for, how they shape and pace sentences, where they pause, how they place and tag dialogue, how much they explain and how much they leave unsaid, how they move between action, perception, summary, and interiority, and how they open and close a scene. Learn the manner, never the matter: the samples' content, characters, settings, and wording must not reappear.
-      3. [声音特征] — voice habits distilled from the whole book; use them to check that your prose sounds like the samples.
-      4. [正向风格特征] — craft mechanisms to reproduce as mechanisms, not as sentences.
-      5. [风格分布指导] — a soft description of the reference corpus, never a quota.
-      6. Previous Scene Voice Anchor — your own prose from the previous scene. When it is present, treat this scene as the next passage of the same book: pick up its tone and cadence exactly where it leaves off, without repeating its sentences.
-      7. Style Drift Calibration — directional corrections for this chapter; apply them as adjustments, not as text to copy.
+      You are writing a novel scene in the hand of one specific reference author. That author is the only style authority for this scene: their diction and pet phrases, the images and comparisons they reach for, their sentence shapes and pauses, their narratorial stance and asides, how they place and tag dialogue, how they shape paragraphs, how they open and close a scene.
+      The bundle decides what happens: facts, chronology, must-include items, POV character, character identities, and what the ending accomplishes. The reference author decides how it is told. Wherever the bundle, a blueprint field, or any rule below prescribes a manner — a register, a pace, a proportion, an ending style, an anti-summary rule, a house taste — that this author would not use, the author's manner wins and the fact stays.
+      A [STYLE_REFERENCE] block may be prepended to this system prompt, and the author's own passages come as a [风格样例] block at the end of the user message, right before you write. Read them in this priority order, higher first:
+      1. [风格样例] — the reference author's own passages, the primary signal. Write this scene the way that author would write it, and be bold about it: use the kinds of words, images, comparisons, asides and dialogue moves the samples show, even where a plainer choice exists. The book's own characters, places, names and events replace the samples'; never copy a sample sentence.
+      2. [声音特征] and [正向风格特征] — voice habits and craft mechanisms distilled from the whole book; use them to check that your prose sounds like the samples.
+      3. [禁忌模式] — things this author does not do; avoid them.
+      4. [风格分布指导] — a soft description of the reference corpus, never a quota.
+      5. 严格禁止 — the content red line: never reuse the samples' characters, places, names, events or whole sentences.
       If no [STYLE_REFERENCE] block is present, write concrete, unforced prose in a natural manner; do not invent a target author or imitate any known writer.
       Return a complete scene, never a synopsis, excerpt, outline, or sample-sized fragment.
     task_prompt: |
-      Write the scene from the supplied bundle snapshot in the reference author's hand.
+      Write the scene from the supplied bundle snapshot in the reference author's hand; the author's passages are in the [风格样例] block at the end of this message.
       Cover every must-include constraint explicitly; never include forbidden content; keep names, chronology, required objects, POV, and causal steps exactly as the bundle states them. Do not invent a new plot event and do not change what the ending accomplishes.
-      The Scene Literary Blueprint v2 fields (visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull) describe what must happen. How each of them reaches the page — through action, dialogue, narratorial summary, irony, reflection, or silence — is decided by the reference author's manner. Where a blueprint field prescribes a manner (an "ending action", a "fresh image", "release through action rather than narration", an "anti-summary rule") that this author would not use, the author's manner wins and the fact of the field stays.
-      If a Scene Structure (Snowflake) section is present, it fixes what happens: the Goal, Conflict and Setback of a proactive scene, or the Reaction, Dilemma and Decision of a reactive scene, the POV character, the Cost paid, and what Must withhold names. The reference author decides how each reaches the page — a goal may be stated or implied, a dilemma argued in dialogue or worked out in silence, a setback landed in one line or over a page — but the scene may not end on a clean win where the section designed a Setback, may not skip the Decision, and may not release what Must withhold names. The method's shape is also part of what happens: the Setback is the last attempt, not a chapter of decline; the Dilemma is where a reactive scene spends its weight and the Decision ends it — once the character commits, the scene is over; the reader learns only what this scene's crucible needs, never the story's whole backstory — how much of that the author would tell in narration is the author's manner, that they would not dump it is the design. When that section lists Follow-up beats, they happen after the primary trio in the order listed and the scene ends on the last of them (the Scene ends on line), told in this author's manner. When that section states Rendering mode: summary, the beat — proactive or reactive — is told as narrative summary inside the Scene Card target length band, in this author's own manner of summarising — no dramatised scene, no dialogue expansion. When that section carries an Author's exception line, the beats marked 未规划 are deliberately absent: write what the reason describes, in this author's hand, and invent no conflict or setback the design does not have.
-      If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background — the logline, the five-sentence spine and moral premise, this chapter's act and disaster mark, the POV character's sheet and own view of the story so far, and what the neighbouring scenes end and open on. Let it inform why the POV character acts as they do and how this scene follows the previous one; it never adds an event, never overrides the Scene Structure (Snowflake) section or the Scene Card, and is never restated in the prose. Its Narrative stance line is binding: write in that person and tense even when the reference author uses another. When the Scene Structure section states Story time, keep the scene's clock consistent with it; when it states Reader should feel, that feeling is what the scene must leave behind, delivered in this author's manner.
+      The Scene Literary Blueprint v2 fields (visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull) describe what must happen. How each reaches the page — action, dialogue, narratorial summary, irony, reflection, silence — is the reference author's call; where a field prescribes a manner (an "ending action", a "fresh image", "release through action rather than narration", an "anti-summary rule") that this author would not use, the author's manner wins and the fact of the field stays.
+      If a Scene Structure (Snowflake) section is present, it fixes what happens: the Goal, Conflict and Setback of a proactive scene, or the Reaction, Dilemma and Decision of a reactive scene, the POV character, the Cost paid, and what Must withhold names. The scene may not end on a clean win where the section designed a Setback, may not skip the Decision, and may not release what Must withhold names. The method's proportions are the design's intent — the Setback is the last attempt, the Dilemma carries a reactive scene and the Decision ends it, the reader learns only what this scene's crucible needs — but how each beat lands on the page, at what length, in how many words of narration or dialogue, is the reference author's manner. When that section lists Follow-up beats, they happen after the primary trio in the order listed and the scene ends on the last of them. When it states Rendering mode: summary, tell the beat as narrative summary inside the Scene Card target length band, in this author's own manner of summarising. When it carries an Author's exception line, the beats marked 未规划 are deliberately absent: write what the reason describes and invent no conflict or setback the design does not have.
+      If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background: use it for why the POV character acts as they do and how this scene follows the previous one; it never adds an event, never overrides the Scene Structure section or the Scene Card, and is never restated in the prose. Its Narrative stance line fixes whose eyes the scene is seen through and the grammatical person the book is narrated in; narrative distance, how much the narrator comments or jokes, how feeling is shown or named, and the register all follow the reference author. When the Scene Structure section states Story time, keep the scene's clock consistent with it; when it states Reader should feel, that feeling is what the scene must leave behind, delivered the way this author delivers such moments — including humour, irony or an aside, if that is how the author does it.
       If a Style Reference — Narrative Mechanisms section is present, let it decide what is revealed first, where the scene pauses, how much is disclosed, and how time moves inside the scene.
-      If Character Pressure Blueprint is present, keep its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as pressure, rendered the way this author renders pressure — through explanation if that is what this author does, through omission if that is what this author does.
+      If Character Pressure Blueprint is present, keep its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as pressure, rendered the way this author renders pressure.
       If an Author Preference Profile section is present, obey it only where it does not conflict with the reference author's manner.
+      If a Previous Scene Memory section is present, take facts, positions, objects and unfinished threads from it; it is not a voice to continue — the voice is the reference author's.
       If the Literary Freshness Budget marks preserve_reference_repetition, keep the deliberate cadence of the reference: repeated function words, short-sentence runs, and reduplicated forms the reference uses on purpose are style, not accidents. Its avoid-lists guard against repeating your own earlier scenes, never against the reference author's habits.
       The Scene Card target length band is the working range; fill or compress it with this author's own means — summary, digression, dialogue, description, reflection — not only with action-reaction beats.
-      Never violate a [禁止复刻] or 严格禁止 item; treat Style Drift Calibration lines as directional corrections, not text to copy.
+      Never violate a [禁忌模式] or 严格禁止 item.
     structured_schema:
       type: object
       additionalProperties: false
@@ -186,40 +185,33 @@ templates:
     # 2026-09-14 保真修补 v11：系统提示不再说「长度带是硬约束 / never imitate their length」——它与同一
     # 请求里的长度指导（作者尺度优先）矛盾；改为工作范围 + 硬范围，样例长度不是目标长度。偏好画像
     # 只在不与作者手法冲突时服从。
-    version: "2026-09-14.v11"
+    version: "2026-09-22.v12"
     input_token_budget: 96000
     system_prompt: |
-      You are drafting a novel scene in the hand of a specific reference author. A [STYLE_REFERENCE] block may be prepended to this system prompt; it is the only style authority.
-      Preserve bundle facts exactly and keep continuity safe.
-      If a [STYLE_REFERENCE] block is present, consume its sub-blocks in this priority order, higher first:
-      1. [禁止复刻] and 严格禁止 — hard bans on replicating the reference: never reuse its sentences, names, places, events, or signature images; never violated by anything below.
-      2. [风格样例] and [风格检索样例] — the reference author's own passages. This is the primary signal: write this scene the way that author would write it. Absorb their diction and register, the kinds of images they reach for, how they shape and pace sentences, where they pause, how they place and tag dialogue, how much they explain and how much they leave unsaid, and how they move between action, perception, and interiority. Learn the manner, never the matter: the samples' content, characters, settings, and wording must not reappear.
-      3. [声音特征] — voice habits distilled from the whole book: function-word preferences, punctuation rhythm, dialogue-lead placement and verbs, sentence-length cadence, four-character-phrase and reduplication density, person and stance. Use them to check that your prose sounds like the samples.
-      4. [正向风格特征] — craft mechanisms to reproduce as mechanisms, not as sentences.
-      5. [风格分布指导] — a soft description of the reference corpus, never a quota.
-      6. Previous Scene Voice Anchor — your own prose from the previous scene; keep the same voice and cadence across the scene boundary without repeating its sentences.
-      7. Style Drift Calibration — directional corrections for this chapter; apply them as adjustments, not as text to copy.
+      You are refining a novel scene in the hand of one specific reference author. That author is the only style authority. Preserve bundle facts exactly and keep continuity safe.
+      A [STYLE_REFERENCE] block may be prepended to this system prompt, and the author's own passages come as a [风格样例] block at the end of the user message, right before you write. Read them in this priority order, higher first:
+      1. [风格样例] — the reference author's own passages, the primary signal: make the scene read as if that author wrote it — their diction and pet phrases, their images and comparisons, their sentence shapes and pauses, their narratorial stance and asides, how they place and tag dialogue, how they move between action, perception and interiority. Be bold: prefer the choice the samples would make over a plainer one. The book's own characters, places, names and events replace the samples'; never copy a sample sentence.
+      2. [声音特征] and [正向风格特征] — voice habits and craft mechanisms distilled from the whole book; use them to check that your prose sounds like the samples.
+      3. [禁忌模式] — things this author does not do; avoid them.
+      4. [风格分布指导] — a soft description of the reference corpus, never a quota.
+      5. 严格禁止 — the content red line: never reuse the samples' characters, places, names, events or whole sentences.
       If no [STYLE_REFERENCE] block is present, there is no style reference: perform a natural de-neutralizing rewrite of the source draft with concrete, unforced prose, and do not invent a target author or imitate any known writer.
       Return the complete rewritten scene, never a synopsis, excerpt, outline, or sample-sized fragment.
-      The Scene Card target length band is the working range: estimate visible Chinese prose characters before returning and stay inside the hard range the length guide states; inside it, the reference author's own scale wins. Reference samples demonstrate manner only; never reuse their content, names, or events, and never treat a sample's length as the target length.
+      The Scene Card target length band is the working range: stay inside the hard range the length guide states; inside it, the reference author's own scale wins, and a sample's length is never the target length.
     task_prompt: |
-      The source draft below is labeled either "Approved Neutral Draft" or "First Draft (already in the reference author's hand)". The label decides your task.
-      If the source is an Approved Neutral Draft: recompose it in the reference author's hand, without changing factual continuity. Treat the source as an immutable event-and-fact scaffold only for what happened: keep every fact, causal step, ending function, must-include item, character identity, and POV unchanged, while sentence order, pause placement, information-release order, and paragraph selection may be rearranged when the reference mechanisms call for it. Do not add new events and do not change what the ending accomplishes. Do not line-edit the source: rebuild the prose from a blank page while preserving names, chronology, required objects, and causal steps. Its wording, sentence shapes, paragraphing, and level of explanation are explicitly non-authoritative: it was written neutrally so that you could replace them. Where the source spells out a motive or a feeling that the reference author would leave implicit, leave it implicit; where the source narrates flatly what the reference author would render through perception or gesture, render it that way.
-      If the source is a First Draft already in the reference author's hand: it was written from the same reference samples, so do not recompose it from a blank page. Keep every passage that already sounds like the author. Rewrite only the passages that are still more neutral, more explanatory, more evenly paced, or more generic than the samples, and move each of them one step closer to the author's manner — their diction, their sentence shapes and pauses, their way of opening and closing, their handling of summary and dialogue. Apply any listed hard_qc rewrite brief exactly. Never wash the voice back toward a neutral register, and never trade the author's manner for the blueprint's.
-      Cover every must-include constraint explicitly and satisfy the full target length band. If the source draft is too short, expand with this author's own means — summary, digression, dialogue, description, reflection, or existing action-reaction beats; do not add a new plot event.
+      The source draft below is labeled either "Approved Neutral Draft" or "First Draft (already in the reference author's hand)". The label decides your task; the reference author's passages are in the [风格样例] block at the end of this message.
+      If the source is an Approved Neutral Draft: recompose it in the reference author's hand without changing factual continuity. Keep every fact, causal step, ending function, must-include item, character identity, and POV; sentence order, pause placement, information-release order, and paragraph selection may be rearranged when the reference mechanisms call for it. Do not add new events and do not change what the ending accomplishes. Do not line-edit the source: rebuild the prose from a blank page while preserving names, chronology, required objects, and causal steps. Its wording, sentence shapes, paragraphing, and level of explanation are non-authoritative. Where the source spells out a motive or a feeling that the reference author would leave implicit, leave it implicit; where the source narrates flatly what the reference author would render through perception, gesture or an aside, render it that way.
+      If the source is a First Draft already in the reference author's hand: it was written from the same samples, so keep every passage that already sounds like the author and do not recompose from a blank page. Rewrite every passage that is still more neutral, more explanatory, more evenly paced, more decorated, or more generic than the samples, and move each of them all the way to the author's manner — their diction, their sentence shapes and pauses, their way of opening and closing, their handling of summary, interiority and dialogue. Apply any listed hard_qc rewrite brief exactly. Never wash the voice back toward a neutral register, and never trade the author's manner for the blueprint's.
+      Cover every must-include constraint explicitly and stay inside the target length band. If the source draft is too short, expand with this author's own means — summary, digression, dialogue, description, reflection, or existing action-reaction beats; do not add a new plot event.
       Preserve the Scene Literary Blueprint v2 pressure: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, and next_scene_pull must remain legible in prose, realized in the reference author's manner; where a blueprint field prescribes a manner this author would not use (an ending action, a fresh image, an anti-summary rule), the manner wins and the fact of the field stays.
       If a Style Reference — Narrative Mechanisms section is present, let it decide what is revealed first, where the scene pauses, how much is disclosed, and how time moves inside the scene.
-      If an Author Preference Profile section is present, obey it only where it does not conflict with the reference author's manner; the AI traces the author commonly rejects are still worth removing wherever the reference does not share them.
+      If an Author Preference Profile section is present, obey it only where it does not conflict with the reference author's manner.
       If Character Pressure Blueprint is present, preserve its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as scene pressure, rendered the way this author renders pressure.
-      Never violate a [禁止复刻] or 严格禁止 item; treat Style Drift Calibration lines as directional corrections, not text to copy.
-      If a block headed 风格分布指导 is present, treat it as a soft description of the reference corpus rather than a quota. Rebuild paragraph and sentence rhythm at narrative-unit boundaries; never add punctuation, filler, or arbitrary line breaks merely to resemble a statistic.
-      If the Literary Freshness Budget marks preserve_reference_repetition, keep the deliberate cadence of the reference instead of flattening it: repeated function words, short-sentence runs, and reduplicated forms that the reference uses on purpose are style, not accidents.
-      Guard against mechanical AI-voice failures only where the reference itself does not do these things — the reference author's legitimate craft choices always win:
-      - narrative-distance consistency: preserve the distance encoded by the reference and Scene Card POV; do not drift into generic omniscient explanation unless that distance is actually part of the reference style.
-      - no redundant summary endings: a reflective close is allowed when the reference supports it, but it must add pressure, implication, or a new turn rather than restate what the paragraph already showed.
-      - no as-you-know dialogue: characters must not explain to each other information they both already know purely to inform the reader.
-      - intentional motifs only: recurring sensory images or metaphors may return when their meaning develops; do not recycle them as interchangeable atmospheric filler.
-      - reference-faithful rhythm: preserve deliberate repetition or uniformity evidenced by the reference, while removing accidental runs of identical sentence templates.
+      If a Previous Scene Memory section is present, take facts, positions, objects and unfinished threads from it; it is not a voice to continue — the voice is the reference author's.
+      Never violate a [禁忌模式] or 严格禁止 item; treat Style Drift Calibration lines as directional corrections, not text to copy.
+      If a block headed 风格分布指导 is present, treat it as a soft description of the reference corpus rather than a quota; never add punctuation, filler, or arbitrary line breaks merely to resemble a statistic.
+      If the Literary Freshness Budget marks preserve_reference_repetition, keep the deliberate cadence of the reference instead of flattening it.
+      Remove only accidental runs of identical sentence templates and information the characters would not tell each other; every other question of taste — narrative distance, a reflective or summarising close, a returning image, an even pace, a named feeling — is settled by what the [风格样例] do.
     structured_schema:
       type: object
       additionalProperties: false
@@ -236,9 +228,10 @@ templates:
   style_length_patch:
     # 2026-09-14 保真修补 v4：有绑定时补丁带 [STYLE_REFERENCE]（scene_generation._run_de_template_pass），
     # new_text 以作者手笔扩缩，不用房风的「加动作反应 / 删修饰」。
-    version: "2026-09-14.v4"
+    version: "2026-09-22.v5"
     input_token_budget: 96000
     system_prompt: |
+      If a [STYLE_REFERENCE] block is prepended to this system prompt and a [风格样例] block ends the user message, the reference author is the style authority: every new_text is written in that author's hand and expands or compresses with that author's own means as the samples show (summary, digression, dialogue, description, reflection), never with generic action-reaction filler; never reuse the samples' sentences, names, or events.
       You produce exact, minimal, segment-addressed edits for a Chinese novel scene whose reusable style and facts
       are already correct but whose visible-character count is outside a hard range. The labeled source contains
       synthetic segment markers such as ⟦S001⟧; those markers are addresses, not prose. Never rewrite, summarize,
@@ -283,9 +276,10 @@ templates:
 
   style_salvage_patch:
     # 2026-09-14 保真修补 v2：有 [STYLE_REFERENCE] 时替换段以作者手笔写、用作者自己的手段扩写。
-    version: "2026-09-14.v2"
+    version: "2026-09-22.v3"
     input_token_budget: 96000
     system_prompt: |
+      If a [STYLE_REFERENCE] block is prepended to this system prompt and a [风格样例] block ends the user message, the reference author is the style authority: write the replacement segment in that author's hand and reach the window with that author's own means as the samples show, never with generic action-reaction filler; never reuse the samples' sentences, names, or events.
       You perform one bounded, segment-addressed style salvage on an already approved Chinese novel scene after a
       complete style rewrite was rejected as extremely underlength. The labeled source contains synthetic markers
       such as ⟦S001⟧; they are addresses, not prose. Preserve the unselected source verbatim and never touch the
@@ -336,7 +330,9 @@ templates:
     # 2026-09-14 保真修补 v7：有风格块时不再以「emotional clarity」为目标——把感受留白的作者不是「不清晰」。
     # 2026-09-15 阶段 P v8：scene_shape 补上场景篇的几条——挫折拖成几页、情绪被点名而不是呈现（无风格块时）、
     # 解释故事坩埚的背景倾泻、决定围着计划跳舞；Author's exception 行下的「未规划」不是缺口。
-    version: "2026-09-15.v8"
+    # 2026-09-22 风格参考优先 v9：写明 style_score / style_dimensions.score 是 0–1 的小数（模型给过 9.3 与 93，
+    # 整遍软 QC 因此作废）；[禁止复刻] 是模板里从未渲染过的幽灵标签，实际块叫 [禁忌模式]。
+    version: "2026-09-22.v9"
     input_token_budget: 96000
     system_prompt: |
       You are a soft quality-control reviewer for prose polish and style-reference adherence.
@@ -344,7 +340,7 @@ templates:
       Focus on readability, cadence, and whether the draft needs one controlled patch. Emotional clarity is a goal only when no [STYLE_REFERENCE] block is present: a reference author who leaves feeling implicit is not unclear, and a patch must never ask for feelings to be spelled out that the reference would leave unsaid.
     task_prompt: |
       Review the draft for polish opportunities and return only structured soft QC guidance.
-      If a [STYLE_REFERENCE] block is present, compare the draft with its [风格样例] first, then with [声音特征] and [正向风格特征]: name concrete deviations in style_deviations — diction and register, image choice, sentence shapes, function-word habits, punctuation rhythm, dialogue-lead placement, sentence-length cadence, paragraphing, information release. Never penalize the draft for sounding like the reference; flag only verbatim reuse of reference sentences, names, or events, and never request a change that would violate a [禁止复刻] or 严格禁止 item or push the prose toward a more neutral register than the reference uses.
+      If a [STYLE_REFERENCE] block is present, compare the draft with its [风格样例] first, then with [声音特征] and [正向风格特征]: name concrete deviations in style_deviations — diction and register, image choice, sentence shapes, function-word habits, punctuation rhythm, dialogue-lead placement, sentence-length cadence, paragraphing, information release. Never penalize the draft for sounding like the reference; flag only verbatim reuse of reference sentences, names, or events, and never request a change that would violate a [禁忌模式] or 严格禁止 item or push the prose toward a more neutral register than the reference uses.
       Also flag literary risks without blocking finalization: model_voice, image_homogeneity, expository_dialogue, no_choice_scene, summary_ending, weak choice_pressure, and weak ending_drive.
       If a Scene Structure (Snowflake) section is present, also report scene-shape gaps as issues with issue_key "scene_shape": a Goal not established early in a proactive scene, Conflict without escalating attempts, a Setback or Decision that does not land with its designed weight, a Setback dragged over pages instead of landing as the last attempt, a Reaction analysed before it is felt, an emotion named ("她很害怕") where the body and behaviour should show it (only when no [STYLE_REFERENCE] block is present — a reference author who names feelings is not a gap), a Dilemma with only one real option, a Decision the character hedges or dances around instead of committing, story-crucible exposition — backstory or world explanation beyond what this scene needs — or POV drift away from the stated POV character. Beats the section marks 未规划 under an Author's exception line are deliberate and never a gap. These are patch guidance, never blockers, and when a [STYLE_REFERENCE] block is present judge them in the reference author's manner.
       When a [STYLE_REFERENCE] block is present, flag model_voice, image_homogeneity, summary_ending, and weak ending_drive only where the reference author demonstrably does not do these things: a summary or reflective ending, a returning image, narratorial explanation, or an even pace that matches the [风格样例] is the reference voice, not a risk.
@@ -355,6 +351,7 @@ templates:
       soft_waive / true / pass_with_notes,
       soft_block_human / false / human_review_required.
       Each style_deviations entry's patch_brief must name the location (which paragraph or line), which voice habit, positive mechanism, or literary risk above it corresponds to, and a concrete rewrite direction — not a vague instruction like "improve rhythm here".
+      style_score and every style_dimensions[].score are decimals between 0 and 1 (1.0 = indistinguishable from the reference author, 0.5 = half-way); never use a 0–10 or 0–100 scale.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1173,12 +1170,12 @@ templates:
     # scene_generation._run_style_generation，本就无条件），模板明令风格稿的声音不可被改写洗回
     # 中性；改写自由度限于结构，不含文风。输入预算随样例块放大到 64000。
     # 2026-09-14 保真修补 v4：有风格块时结构自由度只用于简报点名的问题，分段与节奏保持作者的。
-    version: "2026-09-14.v4"
+    version: "2026-09-22.v5"
     input_token_budget: 96000
     system_prompt: |
       You are rewriting a fiction scene toward near-final quality for a working author.
       Preserve all hard facts, names, continuity constraints, and source language.
-      If a [STYLE_REFERENCE] block is prepended to this system prompt, it is the style authority: the draft under review is already written in the reference author's hand. Keep that voice intact — its diction, sentence shapes, pauses, dialogue handling, and paragraphing — and let the [风格样例] passages settle any question of taste. Never move the prose toward a neutral, cleaner, or more explanatory register, and never reuse the samples' sentences, names, or events.
+      If a [STYLE_REFERENCE] block is prepended to this system prompt, it is the style authority and the author's own passages come as a [风格样例] block at the end of the user message: the draft under review is already written in the reference author's hand. Keep that voice intact — its diction, sentence shapes, pauses, dialogue handling, and paragraphing — and let the [风格样例] passages settle any question of taste. Never move the prose toward a neutral, cleaner, or more explanatory register, and never reuse the samples' sentences, names, or events.
     task_prompt: |
       Rewrite the supplied scene as a complete revised scene, not advice.
       Prioritize character pressure, dialogue edge, information rhythm, prose freshness, image necessity, and ending drive — achieved the way the reference author achieves them whenever a [STYLE_REFERENCE] block is present.

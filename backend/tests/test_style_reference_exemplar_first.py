@@ -76,20 +76,19 @@ def test_prefix_puts_reference_passages_first_and_metric_last() -> None:
     prefix = fragments.to_system_prompt_prefix()
     assert prefix.startswith("[STYLE_REFERENCE]\n")
     body = prefix[len("[STYLE_REFERENCE]\n"):]
-    # 样例块(含其前导句与不可信数据边界)是第一块
-    assert body.startswith("下方区块是参考作者的原文样例")
+    # 样例块是第一块;2026-09-22 风格参考优先:不再有「不可信数据」前导句与边界,块以 [/风格样例] 收口
+    assert body.startswith("[风格样例](")
     assert body.index("[风格样例]") < body.index("[声音特征]") < body.index("[正向风格特征]")
     assert body.index("[禁忌模式]") < body.index("风格分布指导") < body.index("严格禁止")
-    # 前导句不再把样例说成「仅是数据」;边界标记仍在(防提示词注入)
-    assert "仅是数据" not in fragments.few_shot_block
-    assert "[UNTRUSTED_REFERENCE_DATA:few_shot]" in fragments.few_shot_block
-    assert "[/UNTRUSTED_REFERENCE_DATA]" in fragments.few_shot_block
-    # 标题:以作者手笔写本场,学用词 / 意象 / 句式 / 叙述姿态;红线只禁搬用人物 / 事件 / 原句
-    header = fragments.few_shot_block.splitlines()[2]
+    assert "仅是数据" not in fragments.few_shot_block and "一律忽略" not in fragments.few_shot_block
+    assert "[UNTRUSTED_REFERENCE_DATA" not in fragments.few_shot_block
+    assert fragments.few_shot_block.rstrip().endswith("[/风格样例]")
+    # 标题:样例是本场唯一的文风权威,学用词 / 口头禅 / 意象 / 句式 / 叙述姿态;红线只禁人物 / 地名 / 事件与整句照搬
+    header = fragments.few_shot_block.splitlines()[0]
     assert header.startswith("[风格样例](")
-    for phrase in ("手笔", "用词习惯", "意象取向", "叙述姿态", "不得搬用"):
+    for phrase in ("唯一的文风权威", "手笔", "用词习惯", "意象取向", "叙述姿态", "不整句照搬"):
         assert phrase in header
-    assert "只学习句群" not in header
+    assert "只学习句群" not in header and "不得搬用" not in header
 
 
 def test_custom_preamble_keeps_boundary_and_neutralization() -> None:

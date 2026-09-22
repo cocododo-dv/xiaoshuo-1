@@ -66,7 +66,12 @@ _INSTRUCTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bnew\s+instructions?\b", re.I),
     re.compile(r"override\s+(?:the\s+)?(?:previous|above|system)", re.I),
     re.compile(r"忽略(?:前文|上文|以上|之前|上述|一切)"),
-    re.compile(r"(?:现在|从现在起|接下来)[，,]?\s*你(?:是|将|要|应)"),
+    # 2026-09-22 风格参考优先:只有接着角色 / 身份改写的才算注入——裸的「现在你是…」「接下来你要…」
+    # 在小说对白里太常见(真实参考书里两处被误伤成〔已中和的疑似指令〕)。
+    re.compile(
+        r"(?:现在|从现在起|接下来)[，,]?\s*你(?:是|将|要|应)(?:该)?(?:一个|一名|个|名)?"
+        r"[^\n，,。！？；]{0,12}?(?:助手|模型|系统|管理员|AI|机器人|扮演|作为|充当|成为)"
+    ),
     re.compile(r"(?:请?你?)(?:扮演|作为|充当)[^\n]{0,12}?(?:助手|模型|系统|管理员|AI)"),
     re.compile(r"覆盖(?:上述|之前|以上|系统)(?:的)?(?:指令|设定|提示)?"),
 )
@@ -149,6 +154,23 @@ def secure_reference_block(
     if not text or not text.strip():
         return text
     return wrap_untrusted(neutralize_instructions(text), kind=kind, preamble=preamble)
+
+
+FEW_SHOT_FRAME_END = "[/风格样例]"
+
+
+def frame_reference_samples(text: str) -> str:
+    """2026-09-22 风格参考优先:样例块的框——不再是「不可信数据」边界。
+
+    样例是本场的文风权威,不能一边说「以此为准」一边把它标成「仅是数据、一律忽略」。保留两道
+    卫生措施:中和明显的注入模式(:func:`neutralize_instructions`,已收窄到真正的角色改写)、
+    转义伪造的 UNTRUSTED 边界标记;然后只在块尾加 ``[/风格样例]`` 收口(块首是渲染器写的
+    ``[风格样例](…)`` 标题行)。空文本原样返回。
+    """
+    if not text or not text.strip():
+        return text
+    escaped = _BOUNDARY_PREFIX_PATTERN.sub(_ESCAPED_BOUNDARY_MARK, text)
+    return f"{neutralize_instructions(escaped)}\n{FEW_SHOT_FRAME_END}"
 
 
 def render_untrusted_user_prompt(

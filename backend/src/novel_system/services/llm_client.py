@@ -117,6 +117,14 @@ def _structured_output_rejection_signature(text: str | None) -> bool:
     return any(sig in lowered for sig in _STRUCTURED_OUTPUT_ERROR_SIGNATURES)
 
 
+def _thinking_with_forced_tool_rejection(text: str | None) -> bool:
+    """Anthropic 400:「Thinking may not be enabled when tool_choice forces tool use」(中转实现 json_schema 的副作用)。"""
+    lowered = (text or "").lower()
+    return "thinking may not be enabled" in lowered or (
+        "thinking" in lowered and "tool_choice" in lowered and "forces" in lowered
+    )
+
+
 def resolve_request_timeout(timeout_seconds: float | None) -> httpx.Timeout:
     """把配置的秒数翻译成 httpx 超时:<=0 / None = **生成**不限时。
 
@@ -264,6 +272,14 @@ def _degrade_request_after_failure(
             "api_mode responses→chat(/responses 404,中转仅支持 chat completions)",
         )
     detail_text = f"{getattr(exc, 'message', '')} {json.dumps(getattr(exc, 'details', None) or {}, ensure_ascii=False, default=str)}"
+    # 2026-09-22:Anthropic 系模型经中转走 json_schema 时,中转把结构化输出实现成强制工具调用,
+    # 而 Anthropic 不允许「思考」与强制工具并存(400 "Thinking may not be enabled when tool_choice
+    # forces tool use")。关掉 reasoning 重试一跳;成功后连通性缓存记住 reasoning off,后续不再浪费。
+    if _thinking_with_forced_tool_rejection(detail_text) and request.reasoning_level != "off":
+        return (
+            replace(request, reasoning_level="off"),
+            "reasoning 降级:中转把 json_schema 实现成强制工具调用,Anthropic 不允许同时开启思考",
+        )
     if _structured_output_rejection_signature(detail_text):
         if request.response_schema is not None:
             return (
@@ -915,11 +931,21 @@ class LLMClient(OnlineAccountedExecution):
             try:
                 structured_output = _loads_json_object_text(text)
             except json.JSONDecodeError as exc:
-                if str(finish_reason or "").strip().lower() in TRUNCATED_FINISH_REASONS:
+                # 2026-09-22:中转(Responses 模式)常不报 finish_reason;输出 token 数顶到
+                # max_output_tokens 同样说明被砍断——按 TRUNCATED 抬预算重试,而不是原样重发
+                # 三次同一个 2600 上限(真实运行:soft_qc / 验收评审各浪费 18 万 token 后作废)。
+                output_tokens = _usage_output_tokens(raw_usage)
+                hit_ceiling = (
+                    output_tokens is not None
+                    and request.max_output_tokens > 0
+                    and output_tokens >= request.max_output_tokens
+                )
+                if str(finish_reason or "").strip().lower() in TRUNCATED_FINISH_REASONS or hit_ceiling:
                     raise LLMResponseError(
                         "LLM_RESPONSE_TRUNCATED",
                         "llm output hit the max output token ceiling before the JSON was complete "
-                        f"(finish_reason={finish_reason}, max_output_tokens={request.max_output_tokens})",
+                        f"(finish_reason={finish_reason}, output_tokens={output_tokens}, "
+                        f"max_output_tokens={request.max_output_tokens})",
                     ) from exc
                 raise LLMResponseError(
                     "LLM_RESPONSE_INVALID_JSON",
@@ -1324,6 +1350,18 @@ def _extract_raw_usage(body: dict[str, Any]) -> dict[str, Any] | None:
     ollama_keys = ("prompt_eval_count", "eval_count")
     if any(key in body for key in ollama_keys):
         return {key: body.get(key) for key in ollama_keys if key in body}
+    return None
+
+
+def _usage_output_tokens(raw_usage: dict[str, Any] | None) -> int | None:
+    """各家用法里的「输出 token 数」(OpenAI completion_tokens / Responses output_tokens /
+    Gemini candidatesTokenCount / Ollama eval_count);取不到返 None。"""
+    if not isinstance(raw_usage, dict):
+        return None
+    for key in ("completion_tokens", "output_tokens", "candidatesTokenCount", "eval_count"):
+        number = _usage_number(raw_usage.get(key))
+        if number is not None:
+            return number
     return None
 
 

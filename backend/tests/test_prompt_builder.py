@@ -728,17 +728,19 @@ def test_style_draft_prompt_sees_all_three_v2_sections_and_new_contract_wording(
     assert "Style Feature Contract" not in system_prompt
     assert "Longform Structure Guidance" not in user_prompt
     assert "Chapter Story Architecture" not in user_prompt
-    for block in ("[禁止复刻]", "[声音特征]", "[正向风格特征]", "[风格分布指导]", "[风格样例]"):
+    for block in ("[禁忌模式]", "[声音特征]", "[正向风格特征]", "[风格分布指导]", "[风格样例]"):
         assert block in system_prompt
-    assert "Previous Scene Voice Anchor" in system_prompt
-    assert "Style Drift Calibration" in system_prompt
+    assert "[禁止复刻]" not in system_prompt  # 2026-09-22:幽灵标签删除,真实块名是 [禁忌模式]
+    assert "[风格样例] block at the end of the user message" in system_prompt
+    assert "Style Drift Calibration" in user_prompt
     assert "If no [STYLE_REFERENCE] block is present" in system_prompt
     # 骨架约束放宽 + 新鲜度预算复沓豁免的预留句
     assert "sentence order, pause placement, information-release order, and paragraph selection may be rearranged" in user_prompt
     assert "Do not add new events" in user_prompt
     assert "preserve_reference_repetition" in user_prompt
-    # 「不可变骨架」只限定事实层（what happened），不再禁止重排句序 / 段落取舍
-    assert "immutable event-and-fact scaffold only for what happened" in user_prompt
+    # 「不可变骨架」只限定事实层（what happened），不再禁止重排句序 / 段落取舍（2026-09-22 v12 措辞）
+    assert "Keep every fact, causal step, ending function, must-include item, character identity, and POV" in user_prompt
+    assert "rebuild the prose from a blank page" in user_prompt
     assert "do not preserve its sentence shapes" not in user_prompt
 
 

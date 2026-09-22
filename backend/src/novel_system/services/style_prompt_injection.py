@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, SceneCard
 from novel_system.services.style_reference.injection import (
+    scene_dialogue_heavy,
     scene_sampling_hints,
     InjectionService,
     fit_fragments_to_input_budget,
@@ -43,15 +44,35 @@ PLANNING_FEW_SHOT_K_CAP = 3
 # 与冻结进 SceneBundle 的契约区分开。
 RESOLVED_CONTRACT_STATUS = "resolved_live"
 RESOLVED_CONTRACT_MODE = "resolved"
+# 2026-09-22 风格参考优先:样例块的落点。``system`` = 整个 [STYLE_REFERENCE](含样例)prepend 到
+# system 提示(规划 / 评审节点、旧行为);``user_tail`` = 抽象块与红线留在 system,样例块作为
+# user 消息的末尾紧挨输出(起草通道:首稿 / 修复 / 风格稿 / 近终稿改写 / 各类补丁 / 写手建议)。
+PLACEMENT_SYSTEM = "system"
+PLACEMENT_USER_TAIL = "user_tail"
+# 注入器把样例尾巴放在 prompt dict 的这个键下;调用方用 :func:`apply_style_user_tail` 接到最终
+# user prompt 上(runner 的 user_prompt 是单独传的,注入器改不到)。
+STYLE_USER_TAIL_KEY = "_style_reference_user_tail"
 
 __all__ = [
+    "PLACEMENT_SYSTEM",
+    "PLACEMENT_USER_TAIL",
     "PLANNING_FEW_SHOT_K_CAP",
     "RESOLVED_CONTRACT_MODE",
     "RESOLVED_CONTRACT_STATUS",
     "STYLED_GATE_UNAVAILABLE_VERDICT",
+    "STYLE_USER_TAIL_KEY",
+    "apply_style_user_tail",
     "inject_style_reference_prefix",
     "resolve_style_scope",
 ]
+
+
+def apply_style_user_tail(prompt: Mapping[str, Any] | None, user_prompt: str) -> str:
+    """把注入器留下的样例尾巴接到最终 user prompt 末尾;没有尾巴时原样返回。"""
+    tail = prompt.get(STYLE_USER_TAIL_KEY) if isinstance(prompt, Mapping) else None
+    if not tail:
+        return user_prompt
+    return str(user_prompt).rstrip() + str(tail)
 
 
 def resolve_style_scope(
@@ -116,6 +137,7 @@ def inject_style_reference_prefix(
     final_user_prompt: str | None = None,
     few_shot_k_cap: int | None = None,
     runtime_contract: Mapping[str, Any] | None = None,
+    placement: str = PLACEMENT_SYSTEM,
 ) -> dict[str, Any] | None:
     """PR-8 §5.1 — 把冻结契约渲染成 ``[STYLE_REFERENCE]`` 前缀，prepend 到 system_prompt。
 
@@ -156,7 +178,9 @@ def inject_style_reference_prefix(
     svc.few_shot_seed = str(scene_id) if scene_id else None
     # 2026-09-14 保真修补(WP3.4):章首 / 章末场偏好参考书的开章 / 收章窗口,概述场偏好叙述窗口——
     # 第一稿没有可分析的正文时这是选窗唯一的场景信号。
+    # 2026-09-22:段型提示与对白配额也从场景形态 / 台上人物推出(首稿没有正文可分类)。
     svc.scene_position, svc.scene_hint_types = scene_sampling_hints(scene)
+    svc.scene_dialogue_heavy = scene_dialogue_heavy(scene)
     # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
     # when drift guidance includes structured dimension data) so the few-shot
     # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
@@ -240,7 +264,12 @@ def inject_style_reference_prefix(
                 user_prompt=final_user_prompt,
                 target_input_tokens=int(target_input_tokens),
             )
-        prefix = fragments.to_system_prompt_prefix()
+        if placement == PLACEMENT_USER_TAIL:
+            prefix = fragments.to_system_prompt_prefix(include_few_shot=False)
+            user_tail = fragments.to_user_prompt_tail()
+        else:
+            prefix = fragments.to_system_prompt_prefix()
+            user_tail = ""
     except Exception as exc:  # noqa: BLE001
         # 风格注入是可选增强：召回/渲染失败时吞掉并回退到基础 prompt，不阻断 LLM 生成
         # 流程（顾问型降级，与离线退役无关）。
@@ -271,6 +300,7 @@ def inject_style_reference_prefix(
         return degraded
     if (
         not prefix
+        and not user_tail
         and runtime_contract is None
         and not (budget_fit_audit or {}).get("compacted")
     ):
@@ -282,24 +312,28 @@ def inject_style_reference_prefix(
     injected = dict(prompt)
     if prefix:
         injected["system_prompt"] = prefix + (prompt.get("system_prompt") or "")
+    if user_tail:
+        injected[STYLE_USER_TAIL_KEY] = user_tail
     if svc.last_runtime_audit is not None:
         assert contract_state is not None
         injected["_style_reference_runtime_audit"] = {
             **svc.last_runtime_audit,
             "runtime_contract_status": contract_state.status,
             "runtime_contract_mode": contract_state.mode,
+            "placement": placement,
         }
         if budget_fit_audit is not None:
+            rendered = prefix + user_tail
             injected["_style_reference_runtime_audit"].update(
                 {
                     "outcome": (
                         "hit"
-                        if prefix
+                        if rendered
                         else "degraded_budget"
                     ),
-                    "prefix_chars": len(prefix),
+                    "prefix_chars": len(rendered),
                     "prefix_sha256": hashlib.sha256(
-                        prefix.encode("utf-8")
+                        rendered.encode("utf-8")
                     ).hexdigest(),
                     "budget_fit": budget_fit_audit,
                 }

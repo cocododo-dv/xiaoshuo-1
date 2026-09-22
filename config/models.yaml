@@ -161,7 +161,7 @@ task_routing:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.2
-    max_output_tokens: 2600
+    max_output_tokens: 5000
     response_format: json_object
   archive:
     provider: openai_compatible
@@ -204,7 +204,7 @@ task_routing:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.15
-    max_output_tokens: 2600
+    max_output_tokens: 5000
     response_format: json_object
   chapter_near_final_review:
     provider: openai_compatible

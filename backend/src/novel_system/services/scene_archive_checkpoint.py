@@ -108,6 +108,8 @@ class SceneArchiveCheckpoint:
                 carry_notes_json=carry_notes,
                 execution_id=self._orch._execution_id,
                 finalize_scene_status=False,
+                # 检查点在 progress < 11 时自己做漂移读数(archive:style_drift:0 产物)
+                observe_style_drift=False,
             )
             archive_core_product = self._orch._archive_product(
                 scene=scene,

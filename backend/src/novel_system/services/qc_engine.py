@@ -4,7 +4,7 @@ import hashlib
 import logging
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -713,6 +713,41 @@ def _append_unique_rewrite_briefs(
 
 
 # ---- Hard/Soft QC 共享实现（两引擎逐字相同的私有方法统一收敛到这里） ----
+
+
+def _normalize_soft_qc_scores(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """2026-09-22:把 0–10 / 0–100 量级的分数归一到契约的 0–1。
+
+    真实运行里模型给过 ``style_score: 9.3`` 与 ``93``(提示词从未说过分数范围),Pydantic 的
+    ``le=1`` 拒收后整遍软 QC 被判 ``invalid_soft_qc_payload`` → 豁免——运行中唯一对照参考纠偏的
+    环节从未生效。按量级归一,不再让一个分数尺度作废整遍评审;提示词 v9 同时写明范围。
+    """
+
+    def _norm(value: Any) -> Any:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return value
+        if number != number:  # NaN
+            return None
+        if number > 1.0:
+            if number <= 10.0:
+                return round(number / 10.0, 4)
+            if number <= 100.0:
+                return round(number / 100.0, 4)
+            return 1.0
+        return number if number >= 0.0 else 0.0
+
+    normalized = dict(payload)
+    if normalized.get("style_score") is not None:
+        normalized["style_score"] = _norm(normalized["style_score"])
+    dims = normalized.get("style_dimensions")
+    if isinstance(dims, list):
+        normalized["style_dimensions"] = [
+            {**dim, "score": _norm(dim.get("score"))} if isinstance(dim, Mapping) else dim
+            for dim in dims
+        ]
+    return normalized
 
 
 def _qc_build_user_prompt(base_prompt: str, draft_content: str) -> str:
@@ -2523,6 +2558,7 @@ class SoftQcEngine:
         source_draft_row_id: str,
         payload: dict[str, Any],
     ) -> QcReport:
+        payload = _normalize_soft_qc_scores(payload)
         report = SoftQCOutput.model_validate(
             {
                 **payload,
