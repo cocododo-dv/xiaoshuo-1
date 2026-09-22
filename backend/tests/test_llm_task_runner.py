@@ -721,7 +721,9 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         RunVisitor(relative_path).visit(tree)
 
-    assert len(calls) == 14
+    # 2026-09-22 场景诊断第二轮：writer_deep_review.run_passage_review（「AI 看这一处」局部深评）是第 15 个调用点，
+    # 带 context（scene 作用域）——与整场深评 / 段落修补同一条记账路径。
+    assert len(calls) == 15
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context
 
