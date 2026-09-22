@@ -74,6 +74,10 @@ exemplar_index_min_window_chars: 600
 #   → 600–2700),作者自己的场景尺度优先于系统的长度带;越界才触发长度补丁。
 draft_mode_default: style_first
 style_first_length_slack: 0.5
+# 2026-09-22 结构跟随参考书:style_first 下按参考作者的章长中位 ÷ 本章场数推算「这位作者的一场
+# 多长」(有显式场界的书直接用场长中位),硬范围上限至少抬到它 × (1 + slack),长度指引把它说成写作
+# 目标;这个键是推算值的上限(字),防止只有 1–2 场的章把一场推成万字。
+style_first_reference_scene_chars_max: 5000
 
 # 多层叠加(scene > character > project > global):抽象总额 ×(1 + layered_total_scale_per_layer
 # × (层数 - 1)),上限 × layered_total_scale_max;按权重 [1..n] 切给各层(越具体越多)。

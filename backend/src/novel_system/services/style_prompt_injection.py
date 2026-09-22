@@ -30,6 +30,8 @@ from novel_system.services.style_reference.runtime_contract import (
     extract_style_generation_context,
     resolve_style_runtime_contract_state,
 )
+from novel_system.services.style_reference.schemas import FEW_SHOT_CLOSING_MANDATE_FINAL
+from novel_system.services.style_reference.structure import chapter_boundary_habits
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,9 +64,49 @@ __all__ = [
     "STYLED_GATE_UNAVAILABLE_VERDICT",
     "STYLE_USER_TAIL_KEY",
     "apply_style_user_tail",
+    "attach_chapter_position_mandate",
+    "chapter_position_mandate",
     "inject_style_reference_prefix",
     "resolve_style_scope",
 ]
+
+
+def chapter_position_mandate(position: str | None, contract: Mapping[str, Any] | None) -> str:
+    """2026-09-22 结构跟随参考书:章首 / 章末场的收口补充——开章 / 收章照样例里标着「章首」「章末」的
+    窗口,以及参考作者开章 / 收章最常用的段型(结构画像);中间场返回空串。"""
+    if position not in ("opening", "closing", "whole"):
+        return ""
+    card = None
+    layers = contract.get("layers") if isinstance(contract, Mapping) else None
+    if isinstance(layers, list) and layers and isinstance(layers[-1], Mapping):
+        profile = layers[-1].get("profile") if isinstance(layers[-1].get("profile"), Mapping) else {}
+        profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
+        card = profile_json.get("structure_card") if isinstance(profile_json.get("structure_card"), Mapping) else None
+    habits = chapter_boundary_habits(card)
+    parts: list[str] = []
+    if position in ("opening", "whole"):
+        habit = f"（这位作者的章多以{habits['opening']}起手）" if habits.get("opening") else ""
+        parts.append(
+            "本场是本章的第一场：怎样开章，照样例里标着「章首」的窗口来"
+            f"{habit}，用这位作者开章的方式起手，不用总结式或交代式的开头。"
+        )
+    if position in ("closing", "whole"):
+        habit = f"（这位作者的章多以{habits['closing']}收束）" if habits.get("closing") else ""
+        parts.append(
+            "本场是本章的最后一场：怎样收章，照样例里标着「章末」的窗口来"
+            f"{habit}，收在场景结构定下的那一拍上，用这位作者收章的方式收束。"
+        )
+    return "".join(parts)
+
+
+def attach_chapter_position_mandate(user_tail: str, mandate: str) -> str:
+    """把开章 / 收章补充插在收口指令最后一句（篇幅 / 只返回 JSON）之前；没有那一句就接在尾巴末尾。"""
+    if not mandate or not user_tail:
+        return user_tail
+    if FEW_SHOT_CLOSING_MANDATE_FINAL in user_tail:
+        head, _sep, rest = user_tail.rpartition(FEW_SHOT_CLOSING_MANDATE_FINAL)
+        return head + mandate + FEW_SHOT_CLOSING_MANDATE_FINAL + rest
+    return user_tail.rstrip("\n") + "\n" + mandate + "\n"
 
 
 def apply_style_user_tail(prompt: Mapping[str, Any] | None, user_prompt: str) -> str:
@@ -267,6 +309,8 @@ def inject_style_reference_prefix(
         if placement == PLACEMENT_USER_TAIL:
             prefix = fragments.to_system_prompt_prefix(include_few_shot=False)
             user_tail = fragments.to_user_prompt_tail()
+            mandate = chapter_position_mandate(svc.scene_position, runtime_contract) if user_tail else ""
+            user_tail = attach_chapter_position_mandate(user_tail, mandate)
         else:
             prefix = fragments.to_system_prompt_prefix()
             user_tail = ""

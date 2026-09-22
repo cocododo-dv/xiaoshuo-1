@@ -590,7 +590,7 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     assert templates["style_length_patch"]["version"] == "2026-09-22.v5"
     assert templates["style_salvage_patch"]["version"] == "2026-09-22.v3"
     assert templates["scene_literary_rewrite"]["version"] == "2026-09-22.v5"
-    assert templates["near_final_acceptance_review"]["version"] == "2026-09-15.v8"
+    assert templates["near_final_acceptance_review"]["version"] == "2026-09-22.v9"
     assert "If no [STYLE_REFERENCE] block is present, do not pass scenes" in templates["near_final_acceptance_review"]["task_prompt"]
 
 

@@ -84,6 +84,7 @@ from novel_system.services.style_reference.validation import (
     start_style_reference_validation_worker,
 )
 from novel_system.services.system_config import require_admin_token
+from novel_system.services.scene_planning_staleness import supersede_for_binding_scope
 
 router = APIRouter(tags=["style_reference"])
 
@@ -1447,6 +1448,18 @@ def delete_binding(
 ):
     def _do() -> dict[str, Any]:
         repo = StyleReferenceRepository(session)
+        binding = repo.get_binding(binding_id)
+        # 2026-09-22 结构跟随参考书:绑定删了,它作用范围内按这本参考做的规划产物作废(下一次运行重做)
+        superseded = (
+            supersede_for_binding_scope(
+                session,
+                scope=str(binding.scope),
+                scope_ref_id=binding.scope_ref_id,
+                reason=f"style_binding_deleted:{binding_id}",
+            )
+            if binding is not None
+            else None
+        )
         rowcount = repo.delete_binding(binding_id)
         if rowcount == 0:
             raise DomainError(
@@ -1454,7 +1467,7 @@ def delete_binding(
                 f"binding {binding_id!r} not found",
                 status_code=404,
             )
-        return {"binding_id": binding_id, "deleted": True}
+        return {"binding_id": binding_id, "deleted": True, "superseded_planning": superseded}
 
     return idempotent_response(
         request,

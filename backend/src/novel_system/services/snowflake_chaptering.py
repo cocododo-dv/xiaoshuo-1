@@ -1509,6 +1509,8 @@ class SnowflakeChapteringService:
         llm = SnowflakeWorkspaceLLMService(self.session)
         project = self._project_payload(project_id)
         book = self._book_context(project_id)
+        # 2026-09-22 结构跟随参考书:章名照参考作家起题名的方式起(题名样例 + 形态);无绑定 → None
+        reference_titles = _reference_chapter_titles(self.session, project_id)
         named = [{"position": chapter["position"], "title": chapter["title"]} for chapter in authored]
         batches = [
             targets[start : start + self.TITLE_BATCH_SIZE] for start in range(0, len(targets), self.TITLE_BATCH_SIZE)
@@ -1519,6 +1521,7 @@ class SnowflakeChapteringService:
                     project=project,
                     book=book,
                     named_chapters=sorted(named, key=lambda item: item["position"]),
+                    reference_titles=reference_titles,
                     chapters=[
                         {
                             "row_uid": chapter["row_uid"],
@@ -1871,6 +1874,16 @@ def _as_int(value: Any) -> int:
 # 参考作者无显式场界时,推每章场数所用的「中等场」字数(与场景卡 medium 长度带同量级)
 _REFERENCE_DEFAULT_SCENE_CHARS = 1500
 _REFERENCE_MAX_SCENES_PER_CHAPTER = 12
+
+
+def _reference_chapter_titles(session: Any, project_id: str) -> dict[str, Any] | None:
+    """参考作家的章题画像(``planning_context.reference_titles_payload``);任何异常 → None(可选增强)。"""
+    try:
+        from novel_system.services.style_reference.planning_context import reference_titles_payload
+
+        return reference_titles_payload(session, project_id)
+    except Exception:  # noqa: BLE001 — 可选增强
+        return None
 
 
 def _reference_chapter_scale_hint(session: Any, project_id: str) -> dict[str, Any] | None:

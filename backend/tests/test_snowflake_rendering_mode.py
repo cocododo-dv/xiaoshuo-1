@@ -280,7 +280,7 @@ def test_prompts_know_the_summary_rendering_mode() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-15.v13"
+    assert templates["snowflake_generate_scene_details"]["version"] == "2026-09-22.v14"
     assert 'rendering_mode: "full" / "summary" for either form' in templates["snowflake_generate_scene_details"]["task_prompt"]
     for name, version in (("neutral_draft", "2026-09-15.v12"), ("style_first_draft", "2026-09-22.v8"), ("scene_blueprint", "2026-09-15.v10")):
         assert templates[name]["version"] == version, name

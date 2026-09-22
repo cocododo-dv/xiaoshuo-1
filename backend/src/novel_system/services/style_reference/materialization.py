@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ReviewItem
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.scene_planning_staleness import supersede_for_binding_scope
 from novel_system.services.style_reference.schemas import (
     BindingScope,
     BindingStatus,
@@ -110,6 +111,14 @@ class MaterializationService:
             task_type=task_type,
             strategy=strategy,
             config_json=config_json,
+        )
+        # 2026-09-22 结构跟随参考书:参考变了(应用 / 重应用 / 调强度),作用范围内已做的场景蓝图、
+        # 人物压力蓝图与章架构作废——它们是按旧参考(或没有参考)规划的,下一次运行重做。
+        supersede_for_binding_scope(
+            self.session,
+            scope=_enum_value(scope),
+            scope_ref_id=scope_ref_id,
+            reason=f"style_binding_applied:{binding_id}",
         )
 
         # 4. Q1 修复：激活 profile。此前 synthesize 产 DRAFT、apply 只建 active binding，

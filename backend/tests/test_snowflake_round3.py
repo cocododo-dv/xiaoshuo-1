@@ -339,9 +339,9 @@ def test_round3_prompt_versions_and_contracts() -> None:
     sentence = templates["snowflake_generate_one_sentence_summary"]
     assert sentence["version"] == "2026-09-15.v4" and "do not reveal the ending" in sentence["task_prompt"]
     scene_list = templates["snowflake_generate_scene_list"]
-    assert scene_list["version"] == "2026-09-15.v10" and "most to lose" in scene_list["task_prompt"] and "fresh scene crucible" in scene_list["task_prompt"]
+    assert scene_list["version"] == "2026-09-22.v11" and "most to lose" in scene_list["task_prompt"] and "fresh scene crucible" in scene_list["task_prompt"]
     details = templates["snowflake_generate_scene_details"]
-    assert details["version"] == "2026-09-15.v13"
+    assert details["version"] == "2026-09-22.v14"
     for phrase in ("five tests", "no upper limit", "the last attempt, told briefly", "own fault line", "committing all the way",
                    'rendering_mode: "full" / "summary" for either form', "exception_reason", "cost_requirement is advisory", "never make every scene medium by default"):
         assert phrase in details["task_prompt"], phrase
@@ -358,7 +358,7 @@ def test_round3_prompt_versions_and_contracts() -> None:
         "style_first_draft": ("2026-09-22.v8", ("Author's exception", "the Setback is the last attempt", "proactive or reactive — is told as narrative summary")),
         "hard_qc": ("2026-09-15.v6", ("Author's exception", "is not a violation")),
         "soft_qc": ("2026-09-22.v9", ("story-crucible exposition", "an emotion named", "dragged over pages", "never a gap")),
-        "near_final_acceptance_review": ("2026-09-15.v8", ("Author's exception", "whether that reason holds")),
+        "near_final_acceptance_review": ("2026-09-22.v9", ("Author's exception", "whether that reason holds")),
         "scene_blueprint": ("2026-09-15.v10", ("Author's exception", "the Setback itself (for a proactive scene)")),
     }
     for name, (version, phrases) in drafting.items():

@@ -1205,7 +1205,7 @@ templates:
     # 阶段 D v6：另出一份 scene_story_check（坩埚可辨 / 三拍落地 / Yes-No-Maybe 分诊 + 一句话）——给作者的分诊提示，不是闸门。
     # 阶段 J v7：结构简报写了 Reader should feel 时，note 里说一句读者的情绪落地没有。
     # 2026-09-15 阶段 P v8：Author's exception 行下的场按理由判（原著：不过关也可放行，但要知道理由）——三问的 shape_landed 看作者描述的形态。
-    version: "2026-09-15.v8"
+    version: "2026-09-22.v9"
     input_token_budget: 96000
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
@@ -1217,6 +1217,7 @@ templates:
       A ready scene must have story necessity, character pressure, forced choice pressure, dialogue edge, information release, prose freshness, ending drive, continuity, author voice match, low model_voice_risk, and reference safety.
       If no [STYLE_REFERENCE] block is present, do not pass scenes that rely on abstract summary, explanatory cause-and-effect, no-choice motion, generic "she knew" clarity, or soft atmospheric ending instead of a hard next-scene action.
       When a [STYLE_REFERENCE] block is present, judge those same things against the [风格样例]: abstract summary, narratorial explanation, a reflective or atmospheric close, or an even pace that the reference author uses is the reference voice and must not fail the scene; fail only what the bundle facts, the must-includes, or the reference's own manner would reject.
+      When a [STYLE_REFERENCE] block is present, the Reader should feel line names the effect, not the register: a feeling reached through this author's own means — an aside, a joke that stops, a flat report, a digression — is delivered; never ask for a graver or more literary register than the samples use. When the Scene Structure section says the scene opens or closes its chapter, judge the opening or the close against how the reference author opens and closes chapters (the [风格样例] windows marked 章首 / 章末 and the structure card's habits), not against a house rule about hard actions; the scale of the scene follows the reference author's chapters, so length inside the stated hard range is never a finding.
       Use failure_class only from: fact_blocker, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, chapter_payoff_gap, reference_safety.
       If a Scene Structure (Snowflake) section is present, judge scene_structure_failure against it with two tests: the scene crucible is identifiable in the prose, and the designed beats land — Goal, Conflict, Setback for a proactive scene; Reaction, Dilemma, Decision for a reactive scene — with the Cost paid visible on the page. A scene that fails either test is not ready. When the section carries an Author's exception line, the beats marked 未规划 are the author's deliberate choice (the method allows a scene to break the rule when the author knows why): judge the scene against the reason given instead of the missing beats, and in scene_story_check say whether that reason holds on the page.
       Always fill scene_story_check, the author's post-draft triage of this one scene: crucible_identified (true when a reader can tell from the prose alone what traps the POV character in this scene and why they cannot simply leave), shape_landed (true when the scene's designed beats — the proactive or reactive trio — actually happen on the page in order, with the cost visible; when no Scene Structure section exists, judge the shape the prose itself sets up), verdict ("yes" = the scene works as a story unit and belongs in the book; "no" = it does not work as written — it should be rewritten from its plan or cut; "maybe" = it can be fixed with targeted revision), and note (one Chinese sentence naming the single most important thing that makes it a yes, a no, or a maybe; when the Scene Structure section states Reader should feel, say in the same sentence whether the prose actually delivers that feeling). scene_story_check is advisory triage for the author; it must not change near_final_status or pass_flag, which follow the readiness dimensions above.
@@ -1284,17 +1285,19 @@ templates:
               type: string
 
   chapter_near_final_review:
-    version: "2026-07-04.v2"
+    version: "2026-09-22.v3"
     input_token_budget: 30000
     system_prompt: |
       You are a near-final acceptance editor for chapter-level long-form fiction.
       A chapter can fail even when individual scenes are readable if promise, escalation, payoff, or ending drive are weak.
+      If a [STYLE_REFERENCE] block is prepended to this system prompt, the chapter is written in that reference author's manner: judge promise, escalation, payoff and ending drive the way that author's chapters deliver them — a reflective, summarising, atmospheric or joking close, an even pace, or narratorial commentary that matches the [风格样例] is the reference voice, not a weakness — and never require a cleaner, graver or more explanatory register than the reference uses. Judge how the chapter opens and how it ends against how that author opens and closes chapters (the [结构画像] habits and the windows marked 章首 / 章末).
     task_prompt: |
       Review the supplied chapter aggregate for chapter-level near-final readiness.
       Write Chinese string fields while preserving English schema keys.
       Use failure_class only from: chapter_payoff_gap, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, fact_blocker, reference_safety.
       Before scoring, first list the chapter's scenes in the order they appear. Then judge each scene-to-scene transition in turn — does it carry forward the chapter's promise, escalate pressure, and set up the eventual payoff — rather than evaluating only the opening scenes and extrapolating.
       Ground promise, escalation, payoff, and ending drive in specifics: name which scene carries the promise, where escalation stalls or repeats if it does, and whether the ending scene answers the chapter's opening question.
+      When a [STYLE_REFERENCE] block is present, prose_model_voice and ending_weakness are judged against the [风格样例] only: a device the reference author uses on purpose is that author's craft, not a failure; the chapter's length and scene count follow the reference author's scale and are never a finding by themselves.
       Give every findings entry the same key set: dimension, evidence, severity. Give every revision_brief entry: target, issue, fix_direction.
     structured_schema:
       type: object
@@ -1739,7 +1742,7 @@ templates:
     # 阶段 D v8：长篇大纲的五段展开（long_synopsis.paragraphs）是拆场的素材，章表只定章归属；角色表的故事线与视角故事给每条 POV 线提供压力。
     # 阶段 L v9：重生成时保留还留着的场的 row_uid / scene_id（第 10 步的三拍才不会挂到别的场上）；只有全新的场留空。
     # 2026-09-15 阶段 O v10：POV 选这一场里损失最大的人；场景坩埚每场都要新；不写只铺垫 / 交代 / 展示动机的场。
-    version: "2026-09-15.v10"
+    version: "2026-09-22.v11"
     input_token_budget: 24000
     system_prompt: |
       You are breaking a snowflake synopsis into a scene list.
@@ -1754,7 +1757,7 @@ templates:
       Break the story from the long synopsis: upstream_steps long_synopsis.paragraphs are five page-length expansions (setup, disaster one, disaster two, disaster three, ending) — every scene must be traceable to a passage in one of them, and the chapters table there only says which chapter a passage belongs to. Use each character's storyline (one_sentence_summary / one_paragraph_summary on the character sheets) and their 视角故事 line in the character synopses to give each POV thread its own pressure rather than repeating the protagonist's.
       Choose each scene's POV character as the person with the most to lose in that scene — the strongest emotional experience belongs to them (a one-POV book needs no choice). Give every scene a fresh scene crucible: it may share part of the previous scene's crucible, but at least part of it must be broken through and at least part must be new — two consecutive scenes with the same crucible is a design error, not economy. A scene that only sets the stage, explains backstory, or shows motivation is not a scene: it must also tell a story with a goal or a dilemma of its own.
       Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Do not alternate proactive and reactive mechanically: every scene needs conflict, but after a setback the story has three options — cut to another POV thread, launch the next proactive scene straight from an obvious next goal, or write a reactive scene only when the next goal is genuinely not obvious and the character must feel the setback and choose. Reactive scenes should be a minority unless the book's pacing is deliberately leisurely; a reactive beat that fits in two paragraphs of summary does not need its own scene. Mark the three disaster scenes in chapter_role.
-      If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, break the story at that author's scale: as many scenes per chapter, and scenes as long, as that author writes; open and close the way that author opens and closes chapters; keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
+      If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, break the story at that author's scale: as many scenes per chapter, and scenes as long, as that author writes (when its project_scale gives a per-scene character count, that is the scale each scene is planned at); open and close the way that author opens and closes chapters; keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Its [场景手法] lines on 情绪基调 / 价值取向 / 叙事观 are that author's temperament: conceive each scene's crucible, summary and closing the way that author would reach them — the humour, irony, digression or flat report that author uses is part of the design, not something to replace with a graver literary register the book brief may describe. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1776,7 +1779,7 @@ templates:
     # 2026-09-15 阶段 N / O v13：好目标五条、好反应四条、好决定四条（Dynamite Scene 第 6、7 章）；两难落在角色的价值断层线上；
     # 冲突回合数没有规则（至少两轮，关键场拉长，升到顶就冲破）；挫折是最后一次尝试、要短；代价只是建议（不再自相矛盾）；
     # summary 对两种形态都合法（原著第 1 场是带两组三拍的叙述概述）、skip 只给反应场；exception_reason 是作者的破例理由，只能回显。
-    version: "2026-09-15.v13"
+    version: "2026-09-22.v14"
     input_token_budget: 24000
     system_prompt: |
       You are converting a scene list into Scene / Sequel detail.
@@ -1795,7 +1798,7 @@ templates:
       must_include_text (a concrete beat, object, or line of dialogue that must appear — the method's "good dialogue snippets"; "" if none), beats_json (array of 3-6 short beat lines tracing the scene's turn), onstage_chars_json (the character ids present in this scene besides the POV character, from the established cast — the method's "list of characters in the scene"; [] when the POV character is alone), story_time (when the scene happens in story time, e.g. "第三天傍晚" or "案发后第七周·雨夜" — the method's time-stamp column; keep it consistent with neighbouring scenes and leave "" only when the story has no usable clock), expected_reader_emotion (one line: what the reader should be feeling by the end of this scene — the powerful emotional experience the scene is built to deliver; "" when you genuinely cannot say, but then the scene is probably not pulling its weight).
       A scene has one primary form, and normally the other trio's keys stay empty strings. When the scene genuinely continues into the other movement on the page — a proactive scene whose setback is felt, deliberated and decided in the same scene, or a reactive scene whose decision is acted on at once and meets its own conflict — fill the other trio too as follow-up beats in the order they happen; the scene then ends on the last follow-up beat. Fill title, summary, location, scene_crucible, crucible and the scene's own trio for every assigned scene that carries no exception_reason — those are the design.
       A dilemma is fake if one option is clearly superior once its cost is stated plainly. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
-      If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, deepen each scene at that author's scale: target_length_band and beats_json follow how long and how dense that author's scenes are; hook and exit_change follow how that author closes (a reflective, atmospheric, or summary close is legitimate when that is the author's habit); keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
+      If style_reference_structure (参考作者结构画像 / [结构画像] / [场景手法]) is present, deepen each scene at that author's scale: target_length_band and beats_json follow how long and how dense that author's scenes are — when its project_scale gives a per-scene character count derived from the reference chapter length and this book's scenes per chapter, target_length_band is a numeric range around that count (for example 3600 → "3000-4200"), never the short/medium/long words; hook and exit_change follow how that author closes (a reflective, atmospheric, or summary close is legitimate when that is the author's habit); keep that author's dialogue-versus-narration share and use summary where that author uses it; reuse that author's kinds of scenes and closing moves. Its [场景手法] lines on 情绪基调 / 价值取向 / 叙事观 are that author's temperament: write expected_reader_emotion as the feeling the reader is left with and conceive the hook, the reaction and the dilemma the way that author reaches such moments — the humour, irony, digression or flat report that author uses is part of the design, not something to replace with a graver literary register the book brief may describe. Learn structure and craft only — never reuse the samples' characters, places, events, or sentences.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1972,7 +1975,7 @@ templates:
     # 这个模板给每一章起一个名字、写一句「这一章把局面推到哪」。它只贴标签，不动结构（章与场的归属原样）。
     # 走 snowflake_chapter_plan 节点的路由（不新增节点：已保存模型快照的安装不必再点「一键补齐」）。
     # 这个模板没有步骤模板可依，成员对象的 properties 直接写在这里——按 schema 约束解码的后端才写得出内容。
-    version: "2026-09-18.v1"
+    version: "2026-09-22.v2"
     input_token_budget: 24000
     system_prompt: |
       You are naming the chapters of a novel that has already been planned scene by scene with the snowflake method.
@@ -1986,6 +1989,7 @@ templates:
       `summary`: one sentence of at most 40 Chinese characters that says where this chapter pushes the situation — what is different for the protagonist at the end of the chapter compared with its start. It is for the author's planning table and the reader never sees it, so it may name the turn plainly.
       `chapters[].scenes` are in reading order. `function` is the scene's job in the arc; `spine` marks the three disasters (灾一 / 灾二 / 灾三). A chapter that closes on a disaster should get a title with that weight — without announcing the disaster.
       `book` gives the premise and the five-sentence spine so the titles carry the book's tone; it is not material to retell.
+      If `reference_titles` is present, it is the reference author the book is bound to, seen through the titles of that author's own chapters (numbers stripped; `name_chars` gives their length, `samples` a spread of them): name these chapters the way that author names chapters — the same length, the same kind of thing (an object, a place, a person, a phrase, a line of speech), the same directness or obliqueness, a subtitle only where the samples carry one — and when `named_chapters` and `reference_titles` disagree in manner, follow `reference_titles`. Never return one of those sample titles, nor one with a word or two changed; the chapters' own scenes supply the concrete thing each title names.
     structured_schema:
       type: object
       additionalProperties: false

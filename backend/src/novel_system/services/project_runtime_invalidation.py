@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.services.snowflake_staleness import scene_row_content
+from novel_system.services.scene_planning_staleness import supersede_scene_planning_artifacts
 from novel_system.db.models import (
     ChapterGoal,
     ChapterState,
@@ -309,6 +310,14 @@ class ProjectRuntimeInvalidationService:
             return impact
         scene_ids = [scene.scene_id for scene in scenes]
         chapter_by_scene = {scene.scene_id: scene.chapter_id for scene in scenes}
+        # 2026-09-22 结构跟随参考书:设计变了,受影响场的蓝图 / 人物压力蓝图与章架构一并作废——
+        # 它们原本「有就复用」,下一次运行会拿着按旧设计做的规划起草。
+        impact["superseded_planning"] = supersede_scene_planning_artifacts(
+            self.session,
+            scene_ids=scene_ids,
+            chapter_ids=sorted({chapter for chapter in chapter_by_scene.values() if chapter}),
+            reason=f"snowflake_step:{step_key}",
+        )
         # 阶段 X：只有**真的有运行时产物**的场才谈得上「失效」。一场从没进过管线（运行态还是 ready、
         # 没有任何指针，没有执行契约 / 草稿 / QC / 定稿）时，构思改了就是改了——场景卡跟上即可，没有东西
         # 需要「重新规划」。过去这样的场也被打成 needs_replan：起草台把它当成在办的失败稿摆出来

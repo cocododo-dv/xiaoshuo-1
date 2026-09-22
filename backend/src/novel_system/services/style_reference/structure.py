@@ -38,11 +38,20 @@ from novel_system.services.style_reference.validation.plagiarism import (
     normalize_text_for_matching,
 )
 
-STRUCTURE_CARD_VERSION = "structure_card_v1"
+# 2026-09-22 结构跟随参考书:v2 多了 ``chapter_titles``(章题形态与题名样例);旧画像缺键时
+# ``planning_context`` 按段落表惰性补算,不要求重新合成。
+STRUCTURE_CARD_VERSION = "structure_card_v2"
 STRUCTURE_CARD_HEADER = "[结构画像]"
 STRUCTURE_CARD_MAX_CHARS = 1500
 STRUCTURE_SAMPLE_MAX_CHARS = 150
 STRUCTURE_SAMPLES_PER_SIDE = 3
+# 章题样例条数(跨全书均匀取样)与单条上限(与标题启发式的 _TITLE_MAX_CHARS 同口径)
+STRUCTURE_TITLE_SAMPLES = 8
+STRUCTURE_TITLE_MAX_CHARS = 48
+# 2026-09-22 结构跟随参考书:style_first 下按参考章长推场长时的上限(字),防止 2 场的章把一场
+# 推成万字;可由 injection_budget.yaml 的 style_first_reference_scene_chars_max 覆盖。
+REFERENCE_SCENE_CHARS_CEILING = 5000
+REFERENCE_SCENE_CHARS_FLOOR = 300
 STRUCTURE_SAMPLES_KIND = "structure_samples"
 STRUCTURE_SAMPLES_PREAMBLE = (
     "下方是参考作者各章的开头与结尾片段原文，只用于学习章 / 场的开合方式；"
@@ -176,25 +185,31 @@ def _is_front_matter(rows: Sequence[tuple[str, str, int]]) -> bool:
 def _split_chapters(
     rows: Sequence[tuple[str, str, int]],
     scene_breaks: set[int] | None = None,
-) -> tuple[list[list[tuple[str, str, int]]], Counter, list[int]]:
+) -> tuple[list[list[tuple[str, str, int]]], Counter, list[int], list[str]]:
     """按标题段切章。标题段本身不入章正文；连续标题（卷 → 章）不产生空章。
 
     2026-09-14(WP5)：同时数每章的场界——纯符号分隔行（不入正文）与导入期记录的空行型场界
-    （``scene_breaks``：其后有场界的段索引）；章末的场界不计。返回 (章, 章题形态计数, 每章场界数)。
+    （``scene_breaks``：其后有场界的段索引）；章末的场界不计。
+    2026-09-22：同时记下开启每一章的章题（连续标题取最后一条，即最贴近正文的那条；第一个章题
+    之前的块记 ""）。返回 (章, 章题形态计数, 每章场界数, 每章章题)。
     """
     chapters: list[list[tuple[str, str, int]]] = []
     breaks_per_chapter: list[int] = []
+    titles_per_chapter: list[str] = []
     current: list[tuple[str, str, int]] = []
     current_breaks = 0
     pending_break = False
+    pending_title = ""
     markers: Counter = Counter()
     break_set = set(scene_breaks or ())
 
     def _close() -> None:
-        nonlocal current, current_breaks, pending_break
+        nonlocal current, current_breaks, pending_break, pending_title
         if current:
             chapters.append(current)
             breaks_per_chapter.append(current_breaks)
+            titles_per_chapter.append(pending_title)
+            pending_title = ""
         current = []
         current_breaks = 0
         pending_break = False
@@ -203,6 +218,7 @@ def _split_chapters(
         if is_title_paragraph(text):
             markers[_marker_style(text)] += 1
             _close()
+            pending_title = text.strip()[:STRUCTURE_TITLE_MAX_CHARS]
             continue
         if _is_colophon(text) or is_paratext_paragraph(text):
             continue
@@ -217,7 +233,113 @@ def _split_chapters(
         if index in break_set:
             pending_break = True
     _close()
-    return chapters, markers, breaks_per_chapter
+    return chapters, markers, breaks_per_chapter, titles_per_chapter
+
+
+# 章题的「编号 / 分隔」部分:去掉它剩下的才是作者起的题名(「第一幕 卡塞尔之门 The Gate to Cassell」
+# → 「卡塞尔之门 The Gate to Cassell」;「第二十一章」→ "")。与分类器的 _TITLE_RE 同一套标记。
+_TITLE_MARKER_RE = re.compile(
+    r"^(?:"
+    r"第\s*[零〇一二三四五六七八九十百千两\d]+\s*[章节回卷部集幕场篇]"
+    r"|卷\s*[零〇一二三四五六七八九十百\d]+"
+    r"|[一二三四五六七八九十百]{1,3}"
+    r"|\d{1,3}"
+    r"|[（(]\s*[一二三四五六七八九十\d]+\s*[）)]"
+    r"|序\s*[章幕言]?|楔子|尾声|后记|番外|引子|终章|上篇|中篇|下篇"
+    r"|chapter\s*\d+"
+    r")(?=$|[\s：:·—\-、])\s*[：:·—\-、]?\s*",
+    re.IGNORECASE,
+)
+
+
+def title_name_part(title: str) -> str:
+    """章题里作者起的那部分(去编号、去分隔、去《》);纯编号章题返回 ""。"""
+    stripped = " ".join(str(title or "").split())
+    if not stripped:
+        return ""
+    if stripped.startswith("《") and stripped.endswith("》"):
+        return stripped[1:-1].strip()
+    return _TITLE_MARKER_RE.sub("", stripped, count=1).strip()
+
+
+def chapter_titles_summary(titles: Sequence[str]) -> dict[str, Any]:
+    """章题画像:多少章有题、主要形态、题名字数分位、跨全书均匀取的题名样例(只取主要形态的章题,
+    书名页的《书名》行之类少数派不入样例)。纯 JSON 值;没有章题 → ``count`` 为 0。"""
+    cleaned = [" ".join(str(item or "").split())[:STRUCTURE_TITLE_MAX_CHARS] for item in titles]
+    cleaned = [item for item in cleaned if item]
+    summary: dict[str, Any] = {
+        "count": len(cleaned),
+        "marker_style": None,
+        "named_count": 0,
+        "name_chars": {"median": 0, "p10": 0, "p90": 0},
+        "samples": [],
+    }
+    if not cleaned:
+        return summary
+    styles = Counter(_marker_style(item) for item in cleaned)
+    dominant = styles.most_common(1)[0][0]
+    summary["marker_style"] = dominant
+    named = [(item, title_name_part(item)) for item in cleaned if _marker_style(item) == dominant]
+    named = [(item, name) for item, name in named if name]
+    summary["named_count"] = sum(1 for item in cleaned if title_name_part(item))
+    if named:
+        summary["name_chars"] = _spread([len(name) for _item, name in named])
+        slots = _spread_indexes(len(named), STRUCTURE_TITLE_SAMPLES)
+        summary["samples"] = [named[index][1] for index in slots]
+    return summary
+
+
+def reference_scene_scale(
+    card: Mapping[str, Any] | None,
+    *,
+    scenes_in_chapter: int,
+    ceiling: int = REFERENCE_SCENE_CHARS_CEILING,
+) -> dict[str, Any] | None:
+    """参考作者「一场多长」的推算(2026-09-22 结构跟随参考书)。
+
+    有显式场界的书直接用场长中位;没有的书(多数)按 **章长中位 ÷ 本作品这一章的场数** 推——
+    读者感受到的是章的体量,本作品一章切几场是作者的分章决定,两者相除就是这本书的场该有的尺度。
+    单章书(章长 = 全书)不推。结果封顶 ``ceiling``、保底 ``REFERENCE_SCENE_CHARS_FLOOR``。
+    """
+    if not isinstance(card, Mapping) or int(card.get("chapter_count") or 0) <= 1:
+        return None
+    chapter_chars = card.get("chapter_chars") if isinstance(card.get("chapter_chars"), Mapping) else {}
+    chapter_median = int(chapter_chars.get("median") or 0)
+    scene_chars = card.get("scene_chars") if isinstance(card.get("scene_chars"), Mapping) else {}
+    explicit_median = (
+        int(scene_chars.get("median") or 0) if str(card.get("scene_break_style") or "") == "explicit" else 0
+    )
+    scenes = max(1, int(scenes_in_chapter or 0))
+    if explicit_median > 0:
+        basis, derived = "explicit_scene_breaks", explicit_median
+    elif chapter_median > 0:
+        basis, derived = "chapter_median_over_scenes", int(round(chapter_median / scenes))
+    else:
+        return None
+    limit = max(REFERENCE_SCENE_CHARS_FLOOR, int(ceiling or REFERENCE_SCENE_CHARS_CEILING))
+    return {
+        "basis": basis,
+        "derived_scene_chars": max(REFERENCE_SCENE_CHARS_FLOOR, min(derived, limit)),
+        "raw_scene_chars": derived,
+        "chapter_chars": {
+            "median": chapter_median,
+            "p10": int(chapter_chars.get("p10") or 0),
+            "p90": int(chapter_chars.get("p90") or 0),
+        },
+        "scene_chars_median": explicit_median or None,
+        "scenes_in_chapter": scenes,
+        "ceiling": limit,
+    }
+
+
+def chapter_boundary_habits(card: Mapping[str, Any] | None) -> dict[str, str]:
+    """参考作者开章 / 收章最常用的段型(中文标签;没有画像 → 空串)。"""
+    if not isinstance(card, Mapping):
+        return {"opening": "", "closing": ""}
+    return {
+        "opening": _dominant_type(card.get("opening_type_distribution")),
+        "closing": _dominant_type(card.get("closing_type_distribution")),
+    }
 
 
 def _percentile(values: Sequence[int | float], q: float) -> float:
@@ -336,11 +458,12 @@ def compute_structure_card(
     """
     rows = _ordered_rows(paragraphs)
     break_set = {int(item) for item in (scene_breaks or ()) if isinstance(item, int) and not isinstance(item, bool)}
-    chapters, markers, breaks_per_chapter = _split_chapters(rows, break_set)
+    chapters, markers, breaks_per_chapter, titles = _split_chapters(rows, break_set)
     if markers and len(chapters) > 1 and _is_front_matter(chapters[0]):
         # 有章题的书:第一个章题之前的书名页 / 简介块不是正文章
         chapters = chapters[1:]
         breaks_per_chapter = breaks_per_chapter[1:]
+        titles = titles[1:]
     has_markers = bool(markers)
     card: dict[str, Any] = {
         "version": STRUCTURE_CARD_VERSION,
@@ -366,6 +489,8 @@ def compute_structure_card(
         "chapters": [],
         "chapters_listed": 0,
         "samples": {"chapter_openings": [], "chapter_endings": []},
+        # 2026-09-22 结构跟随参考书:章题形态与题名样例(AI 起章名照此起)
+        "chapter_titles": chapter_titles_summary(titles),
     }
     if not chapters:
         return card
@@ -379,6 +504,8 @@ def compute_structure_card(
         _chapter_entry(index + 1, chapter, breaks_per_chapter[index] if index < len(breaks_per_chapter) else 0)
         for index, chapter in enumerate(chapters)
     ]
+    for index, entry in enumerate(entries):
+        entry["title"] = titles[index] if index < len(titles) else ""
     with_breaks = [entry for entry in entries if entry["scene_count"]]
     if with_breaks and len(with_breaks) * 10 >= len(entries) * 3:
         card.update(
@@ -526,6 +653,9 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
             lines.append(f"- 章节标记：有，共 {chapter_count} 章{style_note}")
     else:
         lines.append("- 章节标记：无章节标记（全书按一章计，章长统计即全书）")
+    title_line = _title_line(card)
+    if title_line:
+        lines.append(title_line)
     if chapter_count > 1:
         lines.append(
             "- 章长：中位 {median} 字（p10 {p10} · p90 {p90}）；每章段数中位 {pm} 段（p10 {pp10} · p90 {pp90}）".format(
@@ -585,6 +715,38 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _title_line(card: Mapping[str, Any]) -> str:
+    """章题一行:有几章有题、主要形态、题名字数;旧画像没有 chapter_titles → 空串。"""
+    titles = card.get("chapter_titles")
+    if not isinstance(titles, Mapping) or int(titles.get("count") or 0) <= 0:
+        return ""
+    count = int(titles.get("count") or 0)
+    style = str(titles.get("marker_style") or "")
+    named = int(titles.get("named_count") or 0)
+    if named <= 0:
+        return f"- 章题：{count} 章有章题，形态「{style}」，只有编号没有题名"
+    chars = titles.get("name_chars") if isinstance(titles.get("name_chars"), Mapping) else {}
+    return (
+        f"- 章题：{count} 章有章题，形态「{style}」，其中 {named} 章带题名；"
+        f"题名中位 {_fmt_int(chars.get('median'))} 字（p10 {_fmt_int(chars.get('p10'))} · p90 {_fmt_int(chars.get('p90'))}）"
+    )
+
+
+def _title_sample_lines(card: Mapping[str, Any]) -> list[str]:
+    """章题样例一行(题名部分,去编号;跨全书取样)。"""
+    titles = card.get("chapter_titles")
+    if not isinstance(titles, Mapping):
+        return []
+    samples = [
+        " ".join(str(item or "").split())[:STRUCTURE_TITLE_MAX_CHARS]
+        for item in (titles.get("samples") or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if not samples:
+        return []
+    return ["章题样例（题名部分，编号由系统另加）：" + "".join(f"「{item}」" for item in samples[:STRUCTURE_TITLE_SAMPLES])]
+
+
 def _scene_line(card: Mapping[str, Any]) -> str:
     """场级一行:显式场界时给每章场数与场长分布,否则说明无显式场分隔。"""
     style = str(card.get("scene_break_style") or "")
@@ -638,19 +800,26 @@ def render_structure_card_parts(
     profile_json: Mapping[str, Any] | None,
     *,
     include_samples: bool = True,
+    chapter_titles: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
-    """返回 (``[结构画像]`` 块, 已封装的样例块)。旧画像 / 形状不对 → ``("", "")``。"""
+    """返回 (``[结构画像]`` 块, 已封装的样例块)。旧画像 / 形状不对 → ``("", "")``。
+
+    ``chapter_titles``:旧画像(v1)没有章题键时调用方按段落表惰性算出的章题画像;画像自带时忽略。
+    """
     if not isinstance(profile_json, Mapping):
         return "", ""
     card = profile_json.get("structure_card")
     if not isinstance(card, Mapping) or int(card.get("chapter_count") or 0) <= 0:
         return "", ""
+    if chapter_titles is not None and not isinstance(card.get("chapter_titles"), Mapping):
+        card = {**card, "chapter_titles": dict(chapter_titles)}
     stats = _fit_lines(_card_lines(card), STRUCTURE_CARD_MAX_CHARS)
     samples_block = ""
     if include_samples:
         sample_lines = [
             *_sample_lines(card.get("samples"), "chapter_openings", "章首样例"),
             *_sample_lines(card.get("samples"), "chapter_endings", "章尾样例"),
+            *_title_sample_lines(card),
         ]
         if sample_lines:
             samples_block = secure_reference_block(
@@ -665,9 +834,12 @@ def render_structure_card(
     profile_json: Mapping[str, Any] | None,
     *,
     include_samples: bool = True,
+    chapter_titles: Mapping[str, Any] | None = None,
 ) -> str:
-    """``[结构画像]`` 块（≤1,500 字）+ 章首 / 章尾样例（封装原文）；旧画像 → ``""``。"""
-    stats, samples = render_structure_card_parts(profile_json, include_samples=include_samples)
+    """``[结构画像]`` 块（≤1,500 字）+ 章首 / 章尾 / 章题样例（封装原文）；旧画像 → ``""``。"""
+    stats, samples = render_structure_card_parts(
+        profile_json, include_samples=include_samples, chapter_titles=chapter_titles
+    )
     return "\n".join(part for part in (stats, samples) if part)
 
 

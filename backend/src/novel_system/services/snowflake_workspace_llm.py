@@ -9,7 +9,9 @@ from typing import Any, Callable, Mapping
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import LlmCall, StoryProject
+from sqlalchemy import func, select
+
+from novel_system.db.models import LlmCall, SnowflakeScenePlan, StoryProject
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.llm_client import (
@@ -785,8 +787,12 @@ class SnowflakeWorkspaceLLMService:
         book: dict[str, Any],
         chapters: list[dict[str, Any]],
         named_chapters: list[dict[str, Any]],
+        reference_titles: dict[str, Any] | None = None,
     ) -> WorkspaceLLMResult:
         """AI 起章名（阶段 W，顾问通道）：给 ``chapters`` 里每一章一个章名和一句章摘要。
+
+        2026-09-22 结构跟随参考书：``reference_titles``（参考作家的题名样例与形态）进载荷；样例本身
+        当作已占用的名字，模型照抄一条就当重复丢掉。
 
         和分章建议一样 **fail-closed**（不给 ``fallback_payload``）：作者点的是「AI 起章名」，模型没配好
         就如实报 409，不拿规则拼出来的名字冒充。走 ``snowflake_chapter_plan`` 节点的路由——同一个面板、
@@ -798,8 +804,15 @@ class SnowflakeWorkspaceLLMService:
             "named_chapters": named_chapters,
             "chapters": chapters,
         }
+        if reference_titles:
+            prompt_payload["reference_titles"] = dict(reference_titles)
         allowed_row_uids = {str(item.get("row_uid") or "") for item in chapters}
         taken_titles = {str(item.get("title") or "").strip() for item in named_chapters}
+        taken_titles |= {
+            str(item or "").strip()
+            for item in ((reference_titles or {}).get("samples") or [])
+            if str(item or "").strip()
+        }
         return self._run_structured_task(
             task_key="snowflake_chapter_plan",
             template_name="snowflake_chapter_titles_suggest",
@@ -1025,9 +1038,59 @@ class SnowflakeWorkspaceLLMService:
                 for key in ("structure_card", "structure_samples", "planning_guidance"):
                     if reference.get(key):
                         member[key] = reference[key]
+                # 2026-09-22 结构跟随参考书:按参考章长与本书每章场数推算的每场字数(本书已分章时)
+                scale = self._project_reference_scale(project_id, reference.get("card"))
+                if scale:
+                    member["project_scale"] = scale
             self._style_reference_cache[project_id] = member
         cached = self._style_reference_cache[project_id]
         return dict(cached) if cached else None
+
+    def _project_reference_scale(self, project_id: str, card: Any) -> dict[str, Any] | None:
+        """本书每章几场 × 参考作者章长 → 每场约几字(``structure.reference_scene_scale``)。
+
+        场数取当前分章里各章场数的中位(已分章的活跃场景计划);还没分章 → 只给参考章长,
+        由模型把每章场数与场长一起定。任何异常 → None(可选增强)。
+        """
+        try:
+            from novel_system.services.style_reference.structure import reference_scene_scale
+
+            if not isinstance(card, dict) or int(card.get("chapter_count") or 0) <= 1:
+                return None
+            rows = self.session.execute(
+                select(SnowflakeScenePlan.chapter_plan_id, func.count())
+                .where(
+                    SnowflakeScenePlan.project_id == project_id,
+                    SnowflakeScenePlan.removed_at.is_(None),
+                    SnowflakeScenePlan.chapter_plan_id.is_not(None),
+                )
+                .group_by(SnowflakeScenePlan.chapter_plan_id)
+            ).all()
+            counts = sorted(int(count or 0) for _chapter, count in rows if int(count or 0) > 0)
+            chapter_chars = card.get("chapter_chars") if isinstance(card.get("chapter_chars"), dict) else {}
+            if not counts:
+                return {
+                    "scenes_per_chapter": None,
+                    "derived_scene_chars": None,
+                    "chapter_chars_median": int(chapter_chars.get("median") or 0) or None,
+                    "note": "本书还没有分章：先按参考章长定每章场数，再让每场字数 × 每章场数落在参考章长附近。",
+                }
+            scenes_per_chapter = counts[len(counts) // 2]
+            scale = reference_scene_scale(card, scenes_in_chapter=scenes_per_chapter)
+            if not scale:
+                return None
+            return {
+                "scenes_per_chapter": scenes_per_chapter,
+                "derived_scene_chars": scale["derived_scene_chars"],
+                "chapter_chars_median": scale["chapter_chars"]["median"],
+                "basis": scale["basis"],
+                "note": (
+                    f"本书当前每章约 {scenes_per_chapter} 场；参考作者单章中位 {scale['chapter_chars']['median']} 字，"
+                    f"推算每场约 {scale['derived_scene_chars']} 字——target_length_band 取它附近的数字区间。"
+                ),
+            }
+        except Exception:  # noqa: BLE001 — 可选增强
+            return None
 
     def _input_token_budget(self, template: Any) -> int:
         """本次渲染的输入预算：环境变量优先（小上下文的本地模型要能收紧），

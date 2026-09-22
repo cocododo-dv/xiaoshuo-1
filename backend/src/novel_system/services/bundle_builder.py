@@ -6,7 +6,9 @@ import logging
 import re
 from typing import Any
 
-from sqlalchemy import select
+from collections.abc import Mapping
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
@@ -56,6 +58,10 @@ from novel_system.services.style_reference.narrative_guidance import (
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
     build_style_runtime_contract,
+)
+from novel_system.services.style_reference.structure import (
+    REFERENCE_SCENE_CHARS_CEILING,
+    reference_scene_scale,
 )
 from novel_system.services.style_reference.style_continuity import (
     contract_deliberate_repetition,
@@ -638,6 +644,18 @@ class BundleBuilder:
                     source_version_refs["style_reference_runtime_contract_hash"] = (
                         style_runtime_contract["contract_hash"]
                     )
+                    # 2026-09-22 结构跟随参考书:style_first 下按参考作者的章长与本章的场数推算
+                    # 「这位作者的一场多长」,起草通道据此把硬范围上限抬到参考尺度(见
+                    # scene_generation._parse_numeric_length_band)。以 _ 开头:不进 section。
+                    if reference_first:
+                        scene_scale = self._reference_scene_scale(scene, style_runtime_contract)
+                        if scene_scale:
+                            source_version_refs["style_reference_scene_scale"] = int(
+                                scene_scale["derived_scene_chars"]
+                            )
+                            inline_digests["_style_reference_scene_scale"] = json.dumps(
+                                scene_scale, ensure_ascii=False, sort_keys=True
+                            )
                     source_version_refs["reference_binding_ids"] = (
                         style_runtime_contract["binding_ids"]
                     )
@@ -1075,6 +1093,34 @@ class BundleBuilder:
             "bundle_snapshot_hash": bundle_hash,
             "snapshot": snapshot,
         }
+
+    def _reference_scene_scale(
+        self, scene: SceneCard, contract: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """最具体一层画像的结构画像 × 本章活跃场数 → ``structure.reference_scene_scale``;缺画像 → None。"""
+        layers = contract.get("layers") if isinstance(contract, Mapping) else None
+        if not isinstance(layers, list) or not layers or not isinstance(layers[-1], Mapping):
+            return None
+        profile = layers[-1].get("profile") if isinstance(layers[-1].get("profile"), Mapping) else {}
+        profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
+        card = profile_json.get("structure_card")
+        if not isinstance(card, Mapping):
+            return None
+        scenes_in_chapter = int(
+            self.session.execute(
+                select(func.count())
+                .select_from(SceneCard)
+                .where(SceneCard.chapter_id == scene.chapter_id, SceneCard.trashed_flag == 0)
+            ).scalar()
+            or 0
+        )
+        ceiling = REFERENCE_SCENE_CHARS_CEILING
+        try:
+            raw = load_optional_yaml_config("injection_budget")
+            ceiling = int(raw.get("style_first_reference_scene_chars_max", ceiling) or ceiling)
+        except Exception:  # noqa: BLE001 — 配置损坏不应让 bundle 构建失败
+            ceiling = REFERENCE_SCENE_CHARS_CEILING
+        return reference_scene_scale(card, scenes_in_chapter=scenes_in_chapter, ceiling=ceiling)
 
     def _latest_planning_artifact(
         self,

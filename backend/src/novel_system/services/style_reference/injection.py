@@ -737,6 +737,21 @@ def scene_dialogue_heavy(scene: Any) -> bool:
     return bool(others) or _scene_form_hint(scene, brief if isinstance(brief, Mapping) else {}) == "proactive"
 
 
+_WINDOW_POSITION_LABELS = {"opening": "章首", "closing": "章末", "whole": "整章"}
+
+
+def _window_position_tag(window: Mapping[str, Any]) -> str:
+    """样例行开头的位置标签「第N章·章首；」;中间窗口 / 无章号的窗口返回空串。"""
+    label = _WINDOW_POSITION_LABELS.get(str(window.get("position") or ""))
+    if not label:
+        return ""
+    try:
+        chapter = int(window.get("chapter") or 0)
+    except (TypeError, ValueError):
+        chapter = 0
+    return f"第{chapter}章·{label}；" if chapter > 0 else f"{label}；"
+
+
 def _pick_index_windows(
     candidates: list[dict[str, Any]],
     *,
@@ -2685,7 +2700,9 @@ class InjectionService:
             chars = _visible_chars(text)
             if not text or chars < paragraph_min:
                 continue
-            line = f"- ({candidate['ptype']}；连续{len(items)}段窗口；{chars}字)「{text}」"
+            # 2026-09-22 结构跟随参考书:开章 / 收章 / 整章的窗口标出位置——章首 / 章末场的收口指令
+            # 让模型照这些窗口开章 / 收章;中间窗口不标(格式与旧行一致)。
+            line = f"- ({_window_position_tag(window)}{candidate['ptype']}；连续{len(items)}段窗口；{chars}字)「{text}」"
             if used + 1 + len(line) > block_max:
                 # 整块上限:装不下的窗口整只丢弃,不截半窗
                 continue

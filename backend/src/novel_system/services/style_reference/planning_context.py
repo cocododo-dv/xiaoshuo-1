@@ -22,8 +22,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.narrative_guidance import (
     NARRATIVE_GUIDANCE_SECTION_KEY,
@@ -33,7 +35,10 @@ from novel_system.services.style_reference.narrative_guidance import (
 from novel_system.services.style_reference.policy import cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
+from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.structure import (
+    STRUCTURE_TITLE_MAX_CHARS,
+    chapter_titles_summary,
     render_planning_guidance,
     render_structure_card_parts,
 )
@@ -57,11 +62,64 @@ STRUCTURE_CARD_PROMPT_HEADING = "## Style Reference — Structure Card"
 PLANNING_GUIDANCE_PROMPT_HEADING = "## Style Reference — Scene Craft"
 
 PLANNING_REFERENCE_TASK_TYPE = "scene_generation"
+# 2026-09-22 结构跟随参考书 / 简报气质让位:场景手法里的情绪基调、价值取向、叙事观也是这位作家的
+# 气质——每一场的读者情绪与钩子按他到达它们的方式设想;project_scale 给出的每场字数直接进长度带。
 STRUCTURE_REFERENCE_HOW_TO_USE = (
     "这是作者绑定的参考作家的结构画像与场景手法：按其章 / 场尺度（每章场数与字数、"
     "开章与收章方式、对白与叙述比重、何处用概述）规划，沿用其惯用的场景类型与收场方式；"
-    "只学结构与手法，绝不复用样例里的人物、地点、事件与句子。"
+    "[场景手法] 里的情绪基调、价值取向与叙事观也是这位作家的气质——每一场的读者情绪、钩子与收场"
+    "都按这位作家到达它们的方式来设想（他会用什么样的对冲、幽默、反讽或留白），不要替他换成另一种"
+    "文学气质；project_scale 给出按参考章长与本书每章场数推算的每场字数时，target_length_band 取"
+    "它附近的数字区间；只学结构与手法，绝不复用样例里的人物、地点、事件与句子。"
 )
+REFERENCE_TITLES_HOW_TO_USE = (
+    "这是作者绑定的参考作家给自己各章起的题名（编号已去掉，编号由系统另加）：照这位作家起题名的"
+    "方式来起——题名长短按 name_chars、是具体物象 / 人名 / 地名还是一句话、直白还是含蓄、有没有副题；"
+    "样例本身一个也不能用，也不能改一两个字冒充。"
+)
+# 旧画像(structure_card_v1)没有 chapter_titles:按段落表惰性补算,按 (book_id, 段落数) 缓存。
+_CHAPTER_TITLES_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
+_CHAPTER_TITLES_CACHE_MAX = 64
+
+
+def chapter_titles_for_book(session: Session | None, book_id: str | None) -> dict[str, Any] | None:
+    """从段落表算出章题画像(``structure.chapter_titles_summary``);读库失败 → ``None``。
+
+    只扫短段(≤ ``STRUCTURE_TITLE_MAX_CHARS`` 字)再过标题启发式,190 万字的书也只是几万行的
+    一次 SQL;同一 (book, 段落数) 只算一次。
+    """
+    if session is None or not book_id:
+        return None
+    try:
+        count = int(
+            session.execute(
+                select(func.count())
+                .select_from(StyleReferenceParagraph)
+                .where(StyleReferenceParagraph.book_id == str(book_id))
+            ).scalar()
+            or 0
+        )
+        key = (str(book_id), count)
+        cached = _CHAPTER_TITLES_CACHE.get(key)
+        if cached is not None:
+            return dict(cached)
+        rows = session.execute(
+            select(StyleReferenceParagraph.text)
+            .where(
+                StyleReferenceParagraph.book_id == str(book_id),
+                StyleReferenceParagraph.char_count <= STRUCTURE_TITLE_MAX_CHARS,
+            )
+            .order_by(StyleReferenceParagraph.paragraph_index)
+        ).scalars().all()
+    except Exception:  # noqa: BLE001 — 可选增强
+        logger.debug("chapter titles unavailable for book %s", book_id, exc_info=True)
+        return None
+    titles = [str(text or "") for text in rows if is_title_paragraph(str(text or ""))]
+    summary = chapter_titles_summary(titles)
+    if len(_CHAPTER_TITLES_CACHE) >= _CHAPTER_TITLES_CACHE_MAX:
+        _CHAPTER_TITLES_CACHE.clear()
+    _CHAPTER_TITLES_CACHE[key] = summary
+    return dict(summary)
 
 
 def _samples_allowed(layer: Mapping[str, Any], session: Session | None) -> bool:
@@ -93,9 +151,16 @@ def render_planning_reference(
         return None
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
+    card = profile_json.get("structure_card") if isinstance(profile_json.get("structure_card"), Mapping) else None
+    # 2026-09-22:v1 画像没有章题——按冻结层的书惰性补算(章题不是内容,不必等重新合成)
+    chapter_titles = card.get("chapter_titles") if card is not None else None
+    if card is not None and not isinstance(chapter_titles, Mapping):
+        book = layer.get("book") if isinstance(layer.get("book"), Mapping) else {}
+        chapter_titles = chapter_titles_for_book(session, str(book.get("book_id") or "") or None)
     structure_card, structure_samples = render_structure_card_parts(
         profile_json,
         include_samples=_samples_allowed(layer, session),
+        chapter_titles=chapter_titles if isinstance(chapter_titles, Mapping) else None,
     )
     planning_guidance = render_planning_guidance(profile_json)
     if not structure_card and not planning_guidance:
@@ -106,6 +171,33 @@ def render_planning_reference(
         "structure_card": structure_card,
         "structure_samples": structure_samples,
         "planning_guidance": planning_guidance,
+        # 原始画像与章题画像:分章面板起章名、规划期推场长用;提示词载荷只挑上面三块
+        "card": dict(card) if card is not None else None,
+        "chapter_titles": dict(chapter_titles) if isinstance(chapter_titles, Mapping) else None,
+        "samples_allowed": _samples_allowed(layer, session),
+    }
+
+
+def reference_titles_payload(session: Session, project_id: str | None) -> dict[str, Any] | None:
+    """AI 起章名的参考载荷:参考作家的章题形态与题名样例(project + global 绑定);无绑定 / 无章题 /
+    书不许送云端 → ``None``。样例是原文题名,与章首 / 章尾样例同一送云端口径。"""
+    reference = resolve_project_style_reference(session, project_id)
+    if not reference:
+        return None
+    titles = reference.get("chapter_titles")
+    if not isinstance(titles, Mapping) or int(titles.get("count") or 0) <= 0:
+        return None
+    samples = [str(item) for item in (titles.get("samples") or []) if str(item or "").strip()]
+    if not reference.get("samples_allowed", True):
+        samples = []
+    return {
+        "profile_id": str(reference.get("profile_id") or ""),
+        "count": int(titles.get("count") or 0),
+        "named_count": int(titles.get("named_count") or 0),
+        "marker_style": titles.get("marker_style"),
+        "name_chars": dict(titles.get("name_chars") or {}),
+        "samples": samples,
+        "how_to_use": REFERENCE_TITLES_HOW_TO_USE,
     }
 
 
@@ -261,8 +353,11 @@ __all__ = [
     "PLANNING_GUIDANCE_PROMPT_HEADING",
     "PLANNING_REFERENCE_TASK_TYPE",
     "PlanningStyleReference",
+    "REFERENCE_TITLES_HOW_TO_USE",
     "STRUCTURE_CARD_PROMPT_HEADING",
     "STRUCTURE_REFERENCE_HOW_TO_USE",
+    "chapter_titles_for_book",
+    "reference_titles_payload",
     "STYLE_PLANNING_GUIDANCE_KEY",
     "STYLE_REFERENCE_DIGEST_KEYS",
     "STYLE_STRUCTURE_CARD_KEY",

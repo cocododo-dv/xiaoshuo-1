@@ -199,7 +199,7 @@ def test_is_title_paragraph_alias_recognises_title_shapes() -> None:
 def test_structure_card_splits_synthetic_book_at_chapter_titles() -> None:
     card = compute_structure_card(_synthetic_rows(), voice_signature=_voice(0.7, 0.1, 0.2))
 
-    assert card["version"] == "structure_card_v1"
+    assert card["version"] == "structure_card_v2"
     assert card["has_chapter_markers"] is True
     assert card["chapter_marker_style"] == "第X章式"
     assert card["chapter_count"] == 5
@@ -479,7 +479,7 @@ def test_synthesize_writes_structure_card_and_planning_guidance(session) -> None
 
     pj = profile.profile_json
     card = pj["structure_card"]
-    assert card["version"] == "structure_card_v1"
+    assert card["version"] == "structure_card_v2"
     assert card["has_chapter_markers"] is True and card["chapter_count"] == 5
     assert card["chapter_marker_style"] == "第X章式"
     assert [entry["paragraph_count"] for entry in card["chapters"]] == [4, 6, 8, 10, 12]
@@ -534,7 +534,11 @@ def test_resolve_project_style_reference_degrades_and_renders(session, monkeypat
     _seed_style_binding(session, project_id=PROJECT_ID, profile_json=_profile_json_with_structure(), seed="live")
     reference = module.resolve_project_style_reference(session, PROJECT_ID)
     assert reference is not None
-    assert set(reference) == {"contract_hash", "profile_id", "structure_card", "structure_samples", "planning_guidance"}
+    assert set(reference) == {
+        "contract_hash", "profile_id", "structure_card", "structure_samples", "planning_guidance",
+        # 2026-09-22 结构跟随参考书：原始画像 / 章题画像 / 样例送云端权——分章面板起章名与规划期场尺度用
+        "card", "chapter_titles", "samples_allowed",
+    }
     assert len(reference["contract_hash"]) == 64
     assert reference["profile_id"] == "sr_profile_live"
     assert reference["structure_card"].startswith("[结构画像]")
@@ -895,8 +899,8 @@ def test_snowflake_budget_sheds_samples_then_the_card_before_story_material() ->
         ("chapter_scene_plan_candidates", "2026-09-12.v2"),
         ("chapter_scene_plan_fill", "2026-09-20.v4"),
         ("chapter_plan_review", "2026-09-20.v3"),
-        ("snowflake_generate_scene_list", "2026-09-15.v10"),
-        ("snowflake_generate_scene_details", "2026-09-15.v13"),
+        ("snowflake_generate_scene_list", "2026-09-22.v11"),
+        ("snowflake_generate_scene_details", "2026-09-22.v14"),
     ],
 )
 def test_planning_templates_are_bumped_and_follow_the_reference_structure(name: str, version: str) -> None:

@@ -124,6 +124,11 @@ def render_scene_structure_brief(scene: SceneCard, session: Session | None = Non
     names = _character_names(session, [pov_id, *onstage_ids])
 
     lines = [f"Scene form: {_FORM_LINES[form]}"]
+    # 2026-09-22 结构跟随参考书:这一场在章里的位置是事实——开章 / 收章的场要照参考作者开章 / 收章
+    # 的方式写(样例窗口里标着「章首」「章末」的就是),评审也按此判。
+    position_line = _chapter_position_line(scene)
+    if position_line:
+        lines.append(position_line)
     if pov_id:
         lines.append(f"POV character: {names.get(pov_id) or pov_id}")
     if onstage_ids:
@@ -202,6 +207,24 @@ def render_scene_structure_brief(scene: SceneCard, session: Session | None = Non
         last_key = [key for key in secondary if _text(brief.get(key))][-1]
         lines.append(f"Scene ends on: {_BEAT_LABELS[last_key]} (the last follow-up beat)")
     return "\n".join(lines)
+
+
+def _chapter_position_line(scene: SceneCard) -> str:
+    """章内位置:第一场 / 最后一场 / 唯一一场 / 中间的第几场;没有序号 → 空串。"""
+    try:
+        seq = int(getattr(scene, "scene_seq", 0) or 0)
+    except (TypeError, ValueError):
+        seq = 0
+    last = bool(getattr(scene, "is_chapter_last", 0))
+    if seq <= 0:
+        return ""
+    if seq == 1 and last:
+        return "Chapter position: the chapter's only scene — it opens and closes the chapter"
+    if seq == 1:
+        return "Chapter position: first scene of the chapter — it opens the chapter"
+    if last:
+        return f"Chapter position: last scene of the chapter (scene {seq}) — it closes the chapter"
+    return f"Chapter position: scene {seq} of the chapter (neither opening nor closing it)"
 
 
 def _brief(scene: SceneCard) -> dict[str, Any]:

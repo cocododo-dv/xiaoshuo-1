@@ -4052,16 +4052,77 @@ def _visible_char_count(text: str) -> int:
 # 上下文变量,所有解析长度带的判定 / 指令 / 补丁窗口自动跟随;默认 0 = 现状。
 _LENGTH_BAND_SLACK: ContextVar[float] = ContextVar("scene_length_band_slack", default=0.0)
 _STYLE_FIRST_LENGTH_SLACK_DEFAULT = 0.5
+# 2026-09-22 结构跟随参考书:bundle 冻结的「参考作者一场多长」(bundle_builder 按参考章长 ÷ 本章场数
+# 推算,inline_digests["_style_reference_scene_scale"])。style_first 下硬范围上限抬到这个尺度
+# (× (1 + slack),封顶 ceiling),长度指引把它说成写作目标;neutral_first / 概述场不设。
+_REFERENCE_SCENE_SCALE: ContextVar[dict[str, Any] | None] = ContextVar("scene_reference_scale", default=None)
+_REFERENCE_SCENE_SCALE_KEY = "_style_reference_scene_scale"
+
+
+def _bundle_inline_digests(bundle: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """bundle 既可能是 BundleBuilder 返回的外壳(``{"snapshot": {...}}``)也可能是快照本身。"""
+    if not isinstance(bundle, Mapping):
+        return {}
+    digests = bundle.get("inline_digests")
+    if isinstance(digests, Mapping):
+        return digests
+    snapshot = bundle.get("snapshot")
+    if isinstance(snapshot, Mapping) and isinstance(snapshot.get("inline_digests"), Mapping):
+        return snapshot["inline_digests"]
+    return {}
+
+
+def _reference_scene_scale_from_bundle(bundle: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    raw = _bundle_inline_digests(bundle).get(_REFERENCE_SCENE_SCALE_KEY)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        derived = int(payload.get("derived_scene_chars") or 0)
+    except (TypeError, ValueError):
+        return None
+    if derived <= 0:
+        return None
+    return payload
+
+
+def _reference_scale_sentence(scale: Mapping[str, Any] | None) -> str:
+    """长度指引里说明参考尺度的一句(没有尺度 → 空串)。"""
+    if not scale:
+        return ""
+    derived = int(scale.get("derived_scene_chars") or 0)
+    if derived <= 0:
+        return ""
+    if str(scale.get("basis") or "") == "explicit_scene_breaks":
+        return (
+            f" Measured on the reference book: this author's scenes run about {derived:,} visible characters — "
+            "write at that scale; the card's band is the plan's floor, not a ceiling."
+        )
+    chapter = scale.get("chapter_chars") if isinstance(scale.get("chapter_chars"), Mapping) else {}
+    median = int(chapter.get("median") or 0)
+    p10 = int(chapter.get("p10") or 0)
+    p90 = int(chapter.get("p90") or 0)
+    scenes = int(scale.get("scenes_in_chapter") or 1)
+    spread = f" ({p10:,}–{p90:,} is normal)" if p10 and p90 else ""
+    return (
+        f" Measured on the reference book: a chapter runs about {median:,} characters{spread} and this chapter has "
+        f"{scenes} scene{'s' if scenes != 1 else ''}, so a scene of this author's is about {derived:,} visible characters — "
+        "write at that scale; the card's band is the plan's floor, not a ceiling."
+    )
 
 
 def _style_first_length_slack(bundle: Mapping[str, Any] | None) -> float:
     if not is_style_bound(bundle):
         return 0.0
     # 阶段 L：「概述两段」的反应场是作者的呈现决定（200–500 字），风格直起也不把它放宽成整场。
-    try:
-        structure = str(((bundle or {}).get("inline_digests") or {}).get("scene_structure_brief") or "")
-    except AttributeError:
-        structure = ""
+    # 2026-09-22：bundle 在真实管线里是 ``{"snapshot": {...}}`` 外壳——此前只看顶层 inline_digests，
+    # 概述场的豁免在真实运行里从未生效。
+    structure = str(_bundle_inline_digests(bundle).get("scene_structure_brief") or "")
     if "Rendering mode: summary" in structure:
         return 0.0
     try:
@@ -4077,10 +4138,14 @@ def _style_first_length_slack(bundle: Mapping[str, Any] | None) -> float:
 
 @contextlib.contextmanager
 def _length_band_slack_for(bundle: Mapping[str, Any] | None):
-    token = _LENGTH_BAND_SLACK.set(_style_first_length_slack(bundle))
+    slack = _style_first_length_slack(bundle)
+    token = _LENGTH_BAND_SLACK.set(slack)
+    # 参考尺度只在放宽生效(style_first 且非概述场)时随行;否则 None = 现状。
+    scale_token = _REFERENCE_SCENE_SCALE.set(_reference_scene_scale_from_bundle(bundle) if slack > 0 else None)
     try:
         yield
     finally:
+        _REFERENCE_SCENE_SCALE.reset(scale_token)
         _LENGTH_BAND_SLACK.reset(token)
 
 
@@ -4098,6 +4163,15 @@ def _parse_numeric_length_band(
     if effective_slack > 0:
         minimum = max(1, int(round(minimum * (1.0 - effective_slack))))
         maximum = max(minimum, int(round(maximum * (1.0 + effective_slack))))
+        # 2026-09-22 结构跟随参考书:硬范围上限至少抬到参考作者的场尺度 × (1 + slack)(封顶 ceiling),
+        # 作者(或第 10 步的模型)定的带不再把一场压在参考尺度之下;下限不动。显式 slack 的调用
+        # (计划值)不看参考尺度。
+        scale = _REFERENCE_SCENE_SCALE.get() if slack is None else None
+        if scale:
+            derived = int(scale.get("derived_scene_chars") or 0)
+            ceiling = int(scale.get("ceiling") or 0) or derived
+            if derived > 0:
+                maximum = max(maximum, min(int(round(derived * (1.0 + effective_slack))), max(ceiling, derived)))
     return minimum, maximum
 
 
@@ -4299,11 +4373,13 @@ def _style_first_length_instruction(
             delta_rule = (
                 f" Remove at least {previous_length - maximum} visible characters; do not remove a required fact."
             )
+    scale_note = _reference_scale_sentence(_REFERENCE_SCENE_SCALE.get())
     return (
         "\n\n[Scene Length Guide]\n"
         f"The scene card planned {planned[0]}-{planned[1]} visible non-whitespace Chinese prose characters. "
         f"The reference author's own scale for a scene like this takes precedence inside the hard range {minimum}-{maximum}: "
-        "the scene may run shorter or longer the way that author's scenes do, but must stay inside the hard range. "
+        "the scene may run shorter or longer the way that author's scenes do, but must stay inside the hard range."
+        f"{scale_note} "
         "Fill or compress with this author's own means — summary, digression, dialogue, description, reflection — "
         f"not only action-reaction beats; never drop a required fact and never add a new event.{prior}{retry_rule}{delta_rule}"
     )
@@ -4322,10 +4398,12 @@ def _style_length_instruction(
     safe_minimum, safe_maximum, target = _safe_length_window(minimum, maximum)
     if style_first:
         planned = _parse_numeric_length_band(scene.target_length_band, slack=0.0) or length_range
+        scale_note = _reference_scale_sentence(_REFERENCE_SCENE_SCALE.get())
         return (
             "\n\n[Style Revision Length Guide]\n"
             f"The first draft is about {source_length} visible characters; the scene card planned {planned[0]}-{planned[1]}. "
-            f"The complete revision must stay inside the hard range {minimum}-{maximum}; within it, the reference author's own scale wins. "
+            f"The complete revision must stay inside the hard range {minimum}-{maximum}; within it, the reference author's own scale wins."
+            f"{scale_note} "
             "Count once before returning. Fill or compress with this author's own means — summary, digression, dialogue, description, reflection — "
             "never by dropping a required beat."
         )
