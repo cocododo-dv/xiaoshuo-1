@@ -641,7 +641,7 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
         for message in style_request.messages
     )
     assert any(
-        "immutable event-and-fact scaffold" in message["content"]
+        "Keep every fact, causal step, ending function, must-include item, character identity, and POV" in message["content"]
         for message in style_request.messages
     )
     assert sum(message["content"].count("Return JSON that matches the structured schema exactly.") for message in style_request.messages) == 1
