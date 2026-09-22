@@ -213,7 +213,19 @@ describe("WsQuality 视图", () => {
     client.apiGet.mockImplementation((u) => (String(u).includes("/literary-quality/overview")
       ? Promise.resolve({
         ...overviewPayload(),
-        items: [{ ...overviewPayload().items[0], findings: [{ dimension: "image_homogeneity", severity: "taste", issue: "The same image field repeats too often: 手.", evidence_excerpt: "</p><p>他伸出手", recommendation: "Keep one anchor image." }] }],
+        items: [{
+          ...overviewPayload().items[0],
+          ignored_count: 1,
+          open_dimensions: ["image_homogeneity"],
+          /* 2026-09-22：发现是服务端统一形状——中文问题 / 改法、稳定 signal_id（写作台深改面板里是同一条） */
+          findings: [{
+            signal_id: "rules:image_homogeneity:1a2b3c4d", quality_signal_id: "rules:image_homogeneity:1a2b3c4d", source: "rules",
+            dimension: "image_homogeneity", label: "意象同质", severity: "taste",
+            issue: "同一个意象反复出现：手。", recommendation: "留一个锚定意象，其余靠动作、物件、温度、声音或空间变化换质感。",
+            issue_en: "The same image field repeats too often: 手.", evidence_excerpt: "</p><p>他伸出手", context: "</p><p>他伸出手",
+          }],
+          recommended_next_action: { action: "open_deepdesk_patch", label: "去写作台处理这一处", signal_id: "rules:image_homogeneity:1a2b3c4d" },
+        }],
       })
       : Promise.resolve({})));
     host = document.createElement("div");
@@ -236,7 +248,7 @@ describe("WsQuality 视图", () => {
     expect([...host.querySelectorAll("option")].some((o) => o.value === "c1" && o.textContent === "第 1 章 · 盐场的早班")).toBe(true);
   });
 
-  it("展开后：问题是中文、证据去掉 HTML 标签；「去写作台处理这一场」带着场景意图", async () => {
+  it("展开后：问题是服务端给的中文、证据去掉 HTML 标签；「去写作台处理这一场」带着场景意图和这条发现的 signal_id", async () => {
     const { go } = await mount();
     const row = host.querySelector(".q-item-row");
     expect(row.hasAttribute("aria-controls")).toBe(false);          // 收起时详情不在 DOM 里：不指向悬空的 id
@@ -246,11 +258,19 @@ describe("WsQuality 视图", () => {
     expect(detail.textContent).toContain("同一个意象反复出现：手。");
     expect(detail.textContent).toContain("他伸出手");
     expect(detail.textContent).not.toContain("</p>");
+    expect(host.querySelector(".q-item").textContent).toContain("已忽略 1"); // 这一项还有一条在写作台忽略过
     const button = [...detail.querySelectorAll("button")].find((b) => b.textContent.includes("去写作台处理这一场"));
     await act(async () => { button.click(); });
     expect(go).toHaveBeenCalledWith("writer", [
       { type: "ws:writer-scene", detail: "sid-1" },
-      { type: "ws:writer-posture", detail: "deep" },
+      { type: "ws:writer-posture", detail: { posture: "deep", signal_id: "rules:image_homogeneity:1a2b3c4d" } },
+    ]);
+    // 每条发现自己也能过去：同一个 id
+    const locate = [...detail.querySelectorAll("button")].find((b) => b.textContent.includes("在写作台看这一处"));
+    await act(async () => { locate.click(); });
+    expect(go).toHaveBeenLastCalledWith("writer", [
+      { type: "ws:writer-scene", detail: "sid-1" },
+      { type: "ws:writer-posture", detail: { posture: "deep", signal_id: "rules:image_homogeneity:1a2b3c4d" } },
     ]);
   });
 

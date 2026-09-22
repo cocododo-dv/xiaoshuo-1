@@ -156,14 +156,23 @@ function QualityOverview({ go, filters, setFilters, draft, setDraft }) {
   );
 }
 
-function QualityFinding({ finding, evidence }) {
+/* 一条发现：问题 / 改法是服务端给的中文（与写作台深改面板同一份）；onLocate 带着它的 signal_id
+   去写作台——深改面板到了诊断就选中同一条并滚到那一句 */
+function QualityFinding({ finding, evidence, onLocate }) {
   const text = qFindingText(finding);
-  const excerpt = qPlainText(evidence);
+  const excerpt = qPlainText(finding.context || evidence);
+  const label = finding.label || qDimLabel(finding.dimension);
+  const signalId = finding.signal_id || finding.quality_signal_id;
   return (
     <li className="q-finding">
       <div className="q-finding-head">
         <Tag tone={qSevTone(finding.severity)}>{qSevLabel(finding.severity)}</Tag>
-        <strong title={QUALITY_DIMS[finding.dimension] ? undefined : finding.dimension}>{qDimLabel(finding.dimension)}</strong>
+        <strong title={QUALITY_DIMS[finding.dimension] || finding.label ? undefined : finding.dimension}>{label}</strong>
+        {onLocate && signalId && (
+          <button type="button" className="btn btn-quiet btn-sm q-finding-go" onClick={() => onLocate(signalId)}>
+            <I.Pen size={12} /> 在写作台看这一处
+          </button>
+        )}
       </div>
       {text.issue && <p className="q-finding-issue" title={text.english || undefined}>{text.issue}</p>}
       {!text.issue && finding.issue && <p className="q-finding-issue">{finding.issue}</p>}
@@ -181,16 +190,20 @@ function QualityItem({ item, chapters, go }) {
   const label = qObjectLabel(item, chapters);
   const layer = Q_ITEM_LAYER[item.text_layer] || "";
   const detailId = `q-item-${String(item.object_id || "x").replace(/[^a-zA-Z0-9_-]/g, "_")}-${item.text_layer || ""}`;
-  /* 深链到这一场：写作台按场景 sid 定位（目录里的 sid 与后端 scene_id 不同名，靠目录换算）；
+  /* 深链到这一场：写作台按场景 sid 定位（目录里的 sid 与后端 scene_id 不同名，靠目录换算），
+     带着发现的 signal_id 进深改姿态——那边的诊断和这里是同一份，落地就是同一条；
      章级结果没有单一场景可去，就只回写作台。 */
   const sceneHit = item.object_type === "scene" ? findSceneByBackendId(chapters, item.scene_id || item.object_id) : null;
   const sceneSid = (sceneHit && sceneHit.scene.sid) || "";
-  const toWriter = () => {
+  const toWriter = (signalId) => {
     if (!go) return;
+    const posture = signalId ? { posture: "deep", signal_id: signalId } : "deep";
     go("writer", sceneSid
-      ? [{ type: "ws:writer-scene", detail: sceneSid }, { type: "ws:writer-posture", detail: "deep" }]
+      ? [{ type: "ws:writer-scene", detail: sceneSid }, { type: "ws:writer-posture", detail: posture }]
       : []);
   };
+  const topSignal = rna.signal_id || rna.quality_signal_id || null;
+  const ignoredCount = Number(item.ignored_count) || 0;
   return (
     <article className={`q-item ${open ? "is-open" : ""}`}>
       {/* 详情只在展开时渲染：收起时不写 aria-controls，免得指向一个不存在的 id */}
@@ -202,6 +215,7 @@ function QualityItem({ item, chapters, go }) {
             {layer && <Tag tone="info" outline>{layer}</Tag>}
             {riskDims.slice(0, 5).map((k) => <Tag key={k} tone="accent" dot>{qDimLabel(k)}</Tag>)}
             {riskDims.length > 5 && <span className="q-more">另 {riskDims.length - 5} 项</span>}
+            {ignoredCount > 0 && <Tag tone="neutral" outline title="在写作台深改面板里忽略过的发现，这里不再列出">已忽略 {ignoredCount}</Tag>}
           </span>
         </span>
         <span className="q-chev" data-open={open} aria-hidden="true"><I.ChevronDown size={16} /></span>
@@ -209,15 +223,18 @@ function QualityItem({ item, chapters, go }) {
       {open && (
         <div className="q-item-detail" id={detailId}>
           {findings.length === 0 ? (
-            <p className="q-finding-issue">这一项没有触发风险维度。</p>
+            <p className="q-finding-issue">{ignoredCount > 0 ? "触发的发现都已在写作台忽略。" : "这一项没有触发风险维度。"}</p>
           ) : (
             <ul className="q-findings">
-              {findings.map((f, i) => <QualityFinding key={i} finding={f} evidence={f.evidence_excerpt} />)}
+              {findings.map((f, i) => (
+                <QualityFinding key={f.signal_id || i} finding={f} evidence={f.evidence_excerpt}
+                  onLocate={sceneSid && go ? toWriter : null} />
+              ))}
             </ul>
           )}
           {rna.action === "open_deepdesk_patch" && (
             <div className="q-item-actions">
-              <button type="button" className="btn btn-ghost btn-sm" onClick={toWriter}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => toWriter(sceneSid ? topSignal : null)}>
                 <I.Pen size={13} /> {sceneSid ? "去写作台处理这一场" : "去写作台处理"}
               </button>
             </div>

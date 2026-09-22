@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import logging
 import re
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import select
@@ -11,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import AuthorDraft, ChapterGoal, ChapterMemory, ChapterState, FinalScene, SceneCard, SceneRunState
 from novel_system.services.errors import DomainError
+from novel_system.services.manuscript_html import plain_manuscript_text
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -177,6 +180,143 @@ QUALITY_TEXT_LAYERS = {
     "chapter_memory_final",
     "chapter_assembled",
 }
+
+# 2026-09-22 场景诊断统一：规则发现的锚点种类。``text`` = 钉在 needle（命中的词 / 句）上，
+# ``ending`` = 钉在结尾一拍上，``scene`` = 整场缺席（无处可钉，只列出）。
+FINDING_ANCHORS: tuple[str, ...] = ("text", "ending", "scene")
+RULE_SIGNAL_SOURCE = "rules"
+
+# 21 维的中文名与「问题 / 改法」。这里是唯一一份：文学质量视图、写作台深改面板、成稿门
+# 都读服务端给出的中文，不再各自维护一张英文 → 中文的对照表。
+DIMENSION_LABELS: dict[str, str] = {
+    "model_voice": "模型腔",
+    "image_homogeneity": "意象同质",
+    "repetitive_action": "动作重复",
+    "expository_dialogue": "说明式对白",
+    "no_choice_scene": "无抉择场景",
+    "summary_ending": "概述式收尾",
+    "choice_pressure": "抉择压力",
+    "ending_drive": "收束驱动",
+    "template_action_reuse": "模板动作复用",
+    "image_field_reuse": "意象场复用",
+    "syntax_monotony": "句式单调",
+    "false_clarity": "虚假清晰",
+    "valid_ambiguity": "有效留白",
+    "painless_scene": "无痛场景",
+    "decorative_imagery": "装饰性意象",
+    "dialogue_as_report": "对白即汇报",
+    "over_explained_motive": "过度解释动机",
+    "false_poetic_closure": "伪诗意收束",
+    "perception_filter": "感知过滤",
+    "self_repetition": "自我重复",
+    "conflict_too_clean": "冲突过净",
+}
+
+# (问题, 改法)。带 {needle} 的问题句把命中的词写进去。
+DIMENSION_NOTES: dict[str, tuple[str, str]] = {
+    "model_voice": ("「{needle}」像模型腔，或一句空泛的情绪捷径。", "把抽象的「领悟」换成具体的选择、动作或感官后果。"),
+    "image_homogeneity": ("同一个意象反复出现：{needle}。", "留一个锚定意象，其余靠动作、物件、温度、声音或空间变化换质感。"),
+    "repetitive_action": ("同一个动作节拍反复出现：{needle}。", "留下最有力的一拍，其余换成选择、物件移动、沉默或走位变化。"),
+    "template_action_reuse": ("动作节拍在重复同一个句子模板。", "留一拍，其余变换走位、物件、沉默或人物之间的压力。"),
+    "image_field_reuse": ("氛围意象承担了太多重复的工作：{needle}。", "让一个意象负责氛围，下一拍靠物件、决定或身体位置推进。"),
+    "expository_dialogue": ("对白在做解释（「{needle}」），而不是施压或留潜台词。", "把事实挪进动作、沉默、矛盾或只答一半的回答里。"),
+    "dialogue_as_report": ("对白在汇报情节（「{needle}」），没有改变人物之间的压力。", "把事实变成不肯回答的问题、指控、筹码或关系里的伤口。"),
+    "no_choice_scene": ("这一场在纸面上看不到明确的抉择。", "给人物两个不能兼得的选项，让其中一个看得见地付出代价。"),
+    "choice_pressure": ("抉择缺少看得见的压力或代价。", "用动作写出这个选择丢掉、冒险或拒绝了什么。"),
+    "summary_ending": ("结尾在解释效果（「{needle}」），而不是落在动作或画面上。", "删掉概括句，停在最后一个不可逆的动作上。"),
+    "ending_drive": ("最后一拍没有把读者推进下一场。", "用新的动作、物件移动、到来、离开、揭露或拒绝收尾。"),
+    "false_poetic_closure": ("结尾用诗意的笃定（「{needle}」）收束，而不是一个硬的下一步动作。", "停在看得见的动作、交出的物件、拒绝、离开或不可逆的揭露上。"),
+    "decorative_imagery": ("意象（「{needle}」等）更多在渲染氛围，没有推动行动、关系、信息或主题。", "只留下能改变人物行为、揭出隐瞒或加重代价的那个意象。"),
+    "syntax_monotony": ("连续几句用了同一种句式。", "用一个短句、一个压住不说的反应，或从后果开头的句子打断节奏。"),
+    "false_clarity": ("把本该由压力揭示的东西直接告诉了读者（「{needle}」）。", "删掉解释，让选择、拒绝、交出物件或沉默替读者推断。"),
+    "over_explained_motive": ("动机被直接解释（「{needle}」），而不是被逼成行动或省略。", "让读者从人物拒绝、拖延、隐瞒或在压力下的选择里推断动机。"),
+    "painless_scene": ("结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。", "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。"),
+    "perception_filter": ("叙述用「{needle}」这类感知动词转述，而不是直接呈现。", "删掉感知动词，让刺激直接落成动作、物件或感官细节。"),
+    "self_repetition": ("有一句实质内容被逐字重复。", "事实只说一次；把重复的句子换成新的后果、反应或信息。"),
+    "conflict_too_clean": ("冲突解决得太干净：「{needle}」之后人物很快就互相理解了。", "留下代价或余波：一句没说出口的怨、一个被接受的半谎，或一个人物本不想给的让步。"),
+    "valid_ambiguity": ("有效留白。", ""),
+}
+
+
+def dimension_label(dimension: str) -> str:
+    return DIMENSION_LABELS.get(str(dimension or ""), "")
+
+
+def rule_signal_id(finding: Mapping[str, Any]) -> str:
+    """Stable id of a rule finding, derived from what it points at — not from where.
+
+    ``rules:<dimension>:<8 hex of the needle>`` for findings pinned to a term / sentence,
+    ``rules:<dimension>:ending`` / ``rules:<dimension>:scene`` for the anchored ones.
+    The same finding on the same text always gets the same id, and an id survives
+    edits elsewhere in the scene, so the author's 「忽略」 sticks to the finding.
+    """
+
+    dimension = str(finding.get("dimension") or "unknown")
+    needle = _compact_ws(str(finding.get("needle") or ""))
+    anchor = str(finding.get("anchor") or "text")
+    if needle:
+        digest = hashlib.sha1(needle.encode("utf-8")).hexdigest()[:8]
+        return f"{RULE_SIGNAL_SOURCE}:{dimension}:{digest}"
+    return f"{RULE_SIGNAL_SOURCE}:{dimension}:{anchor if anchor in FINDING_ANCHORS and anchor != 'text' else 'scene'}"
+
+
+def describe_rule_finding(finding: Mapping[str, Any]) -> tuple[str, str]:
+    """Chinese (issue, recommendation) for a rule finding; falls back to the engine's English."""
+
+    dimension = str(finding.get("dimension") or "")
+    notes = DIMENSION_NOTES.get(dimension)
+    if notes is None:
+        return str(finding.get("issue") or ""), str(finding.get("recommendation") or "")
+    needle = _compact_ws(str(finding.get("needle") or ""))
+    issue, fix = notes
+    if "{needle}" in issue:
+        if needle:
+            issue = issue.replace("{needle}", needle[:40])
+        else:
+            issue = re.sub(r"[（(]「\{needle\}」[)）]|「\{needle\}」|：\{needle\}", "", issue)
+    return issue, fix
+
+
+def unify_rule_finding(finding: Mapping[str, Any]) -> dict[str, Any]:
+    """The rule engine's finding in the unified scene-diagnosis shape (no location yet)."""
+
+    issue, recommendation = describe_rule_finding(finding)
+    dimension = str(finding.get("dimension") or "unknown")
+    return {
+        **dict(finding),
+        "signal_id": rule_signal_id(finding),
+        "source": RULE_SIGNAL_SOURCE,
+        "dimension": dimension,
+        "label": dimension_label(dimension) or dimension,
+        "severity": str(finding.get("severity") or "revision"),
+        "issue": issue,
+        "recommendation": recommendation,
+        "issue_en": str(finding.get("issue") or ""),
+        "recommendation_en": str(finding.get("recommendation") or ""),
+        "needle": str(finding.get("needle") or ""),
+        "anchor": str(finding.get("anchor") or "text"),
+    }
+
+
+def ignored_rule_dimensions(text: str, ignored_keys: Iterable[str]) -> set[str]:
+    """Dimensions whose every rule finding on ``text`` the author has ignored in the writer.
+
+    The final-text gate drops its Q3 warnings for those dimensions: a finding dismissed
+    in the deep drawer must not come back as a warning in 成稿中心.
+    """
+
+    ignored = {str(key) for key in ignored_keys or [] if str(key)}
+    if not ignored:
+        return set()
+    _, findings = analyze_literary_quality(text)
+    by_dimension: dict[str, list[str]] = {}
+    for finding in findings:
+        by_dimension.setdefault(str(finding.get("dimension") or ""), []).append(rule_signal_id(finding))
+    return {
+        dimension
+        for dimension, ids in by_dimension.items()
+        if dimension and ids and all(signal_id in ignored for signal_id in ids)
+    }
 
 MODEL_VOICE_TERMS = (
     "suddenly realized",
@@ -627,7 +767,16 @@ class LiteraryQualityService:
                 continue
             source = self._scene_source(scene, text_layer=text_layer)
             if source is not None:
-                items.append(self._analyze_item("scene", scene.scene_id, scene.chapter_id, scene.scene_id, source))
+                items.append(
+                    self._analyze_item(
+                        "scene",
+                        scene.scene_id,
+                        scene.chapter_id,
+                        scene.scene_id,
+                        source,
+                        ignored_keys=self._scene_ignored_keys(scene),
+                    )
+                )
 
         items = _filter_quality_items(items, risk_type=risk_type, min_severity=min_severity)
         mean_score = round(sum(item["score"] for item in items) / len(items), 4) if items else None
@@ -674,6 +823,7 @@ class LiteraryQualityService:
         object_id = _optional_string(payload.get("object_id")) or "scratch"
         chapter_id = _optional_string(payload.get("chapter_id")) or object_id
         scene_id = _optional_string(payload.get("scene_id"))
+        scene = self.session.get(SceneCard, scene_id) if scene_id else None
         item = self._analyze_item(
             object_type,
             object_id,
@@ -684,6 +834,7 @@ class LiteraryQualityService:
                 "source_ref": _optional_string(payload.get("source_ref")) or f"ad_hoc:{object_id}",
                 "content": content,
             },
+            ignored_keys=self._scene_ignored_keys(scene),
         )
         return {
             **item,
@@ -735,7 +886,16 @@ class LiteraryQualityService:
                 scene_source = self._scene_source(scene, text_layer=text_layer)
                 if scene_source is None:
                     continue
-                scene_items.append(self._analyze_item("scene", scene.scene_id, chapter.chapter_id, scene.scene_id, scene_source))
+                scene_items.append(
+                    self._analyze_item(
+                        "scene",
+                        scene.scene_id,
+                        chapter.chapter_id,
+                        scene.scene_id,
+                        scene_source,
+                        ignored_keys=self._scene_ignored_keys(scene),
+                    )
+                )
                 source_rows.append(
                     {
                         "object_type": "scene",
@@ -784,17 +944,24 @@ class LiteraryQualityService:
         chapter_id: str,
         scene_id: str | None,
         source: dict[str, str],
+        *,
+        ignored_keys: Iterable[str] = (),
     ) -> dict[str, Any]:
-        text = source["content"] or ""
-        signals, findings = analyze_literary_quality(text)
-        findings = _enrich_findings(
-            findings,
+        # 作者稿是 HTML：按可见文字算，否则「第一句」里带着 <p>，同一条发现在写作台和这里 id 不同
+        text = plain_manuscript_text(source["content"] or "")
+        signals, raw_findings = analyze_literary_quality(text)
+        all_findings = _enrich_findings(
+            raw_findings,
             object_type=object_type,
             object_id=object_id,
             chapter_id=chapter_id,
             scene_id=scene_id,
             source_ref=source["source_ref"],
+            ignored_keys=ignored_keys,
         )
+        # 作者在写作台忽略过的发现不再列出（分数照算——分数是文本的事实，忽略是作者的决定）
+        findings = [finding for finding in all_findings if not finding.get("ignored")]
+        ignored_findings = [finding for finding in all_findings if finding.get("ignored")]
         fingerprint = fingerprint_literary_quality(text)
         raw_score = round(
             sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS),
@@ -815,9 +982,21 @@ class LiteraryQualityService:
             "automated_assessment": automated_assessment,
             "signals": signals,
             "findings": findings,
+            "ignored_findings": [
+                {"signal_id": finding["signal_id"], "dimension": finding["dimension"], "label": finding["label"]}
+                for finding in ignored_findings
+            ],
+            "ignored_count": len(ignored_findings),
+            "open_dimensions": list(dict.fromkeys(str(finding.get("dimension") or "") for finding in findings)),
             "fingerprint": fingerprint,
             "recommended_next_action": _recommended_next_action(findings, signals),
         }
+
+    @staticmethod
+    def _scene_ignored_keys(scene: SceneCard | None) -> list[str]:
+        if scene is None:
+            return []
+        return [str(key) for key in (scene.deep_review_ignored_keys_json or []) if str(key)]
 
     def _chapters(self) -> list[ChapterGoal]:
         return self.session.execute(
@@ -1055,6 +1234,7 @@ def _add_self_repetition_signal(
             "The passage repeats a substantive sentence verbatim.",
             evidence,
             "Keep the fact once; replace the repeated sentence with a new consequence, reaction, or information beat.",
+            needle=evidence,
         )
     )
 
@@ -1268,22 +1448,30 @@ def _enrich_findings(
     chapter_id: str,
     scene_id: str | None,
     source_ref: str,
+    ignored_keys: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
+    """Findings in the unified shape (Chinese text, stable ``signal_id``), tagged with the object.
+
+    ``quality_signal_id`` is kept as an alias of ``signal_id`` — it is the column name a
+    passage patch candidate records for the handoff. ``ignored`` marks the findings the
+    author dismissed in the writer's deep drawer (the scene's ignore list holds ids).
+    """
+
+    ignored = {str(key) for key in ignored_keys or [] if str(key)}
     enriched: list[dict[str, Any]] = []
     for finding in findings:
-        dimension = finding.get("dimension", "unknown")
-        signal_id = f"quality:{object_type}:{object_id}:{dimension}"
+        unified = unify_rule_finding(finding)
         enriched.append(
             {
-                **finding,
-                "quality_signal_id": signal_id,
-                "signal_id": signal_id,
+                **unified,
+                "quality_signal_id": unified["signal_id"],
                 "object_type": object_type,
                 "object_id": object_id,
                 "chapter_id": chapter_id,
                 "scene_id": scene_id,
                 "source_ref": source_ref,
                 "target_text_ref": source_ref,
+                "ignored": unified["signal_id"] in ignored,
             }
         )
     return enriched
@@ -1292,13 +1480,18 @@ def _enrich_findings(
 def _span_findings(content: str, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     spans: list[dict[str, Any]] = []
     for finding in findings:
-        span = _locate_finding_span(content, str(finding.get("evidence_excerpt") or ""))
+        span = _locate_finding_span(
+            content,
+            str(finding.get("evidence_excerpt") or ""),
+            needle=str(finding.get("needle") or ""),
+        )
         if span is None:
             continue
         start, end, evidence = span
         spans.append(
             {
                 "dimension": finding.get("dimension") or "unknown",
+                "label": finding.get("label") or dimension_label(str(finding.get("dimension") or "")),
                 "severity": finding.get("severity") or "revision",
                 "start": start,
                 "end": end,
@@ -1306,15 +1499,23 @@ def _span_findings(content: str, findings: list[dict[str, Any]]) -> list[dict[st
                 "issue": finding.get("issue") or "",
                 "recommended_action": finding.get("recommendation") or "",
                 "quality_signal_id": finding.get("quality_signal_id"),
+                "signal_id": finding.get("signal_id") or finding.get("quality_signal_id"),
+                "ignored": bool(finding.get("ignored")),
             }
         )
     return spans
 
 
-def _locate_finding_span(content: str, evidence: str) -> tuple[int, int, str] | None:
+def _locate_finding_span(content: str, evidence: str, *, needle: str = "") -> tuple[int, int, str] | None:
     source = str(content or "")
     if not source:
         return None
+    # 命中的词 / 句本身是最准的锚点：先钉它，再退到证据窗口
+    exact = str(needle or "").strip()
+    if exact:
+        index = source.find(exact)
+        if index >= 0:
+            return index, index + len(exact), exact
     for fragment in _evidence_fragments(evidence):
         index = source.find(fragment)
         if index >= 0:
@@ -1348,17 +1549,22 @@ def _evidence_fragments(evidence: str) -> list[str]:
 
 
 def _recommended_next_action(findings: list[dict[str, Any]], signals: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if not findings:
-        return {"action": "none", "label": "暂无动作", "reason": "未发现明显文学质量风险。"}
-    priority = sorted(findings, key=lambda item: (SEVERITY_RANK.get(item.get("severity"), 99), item.get("dimension", "")))[0]
+    open_findings = [finding for finding in findings if not finding.get("ignored")]
+    if not open_findings:
+        reason = "未发现明显文学质量风险。" if not findings else "剩下的发现都已在写作台忽略。"
+        return {"action": "none", "label": "暂无动作", "reason": reason}
+    priority = sorted(open_findings, key=lambda item: (SEVERITY_RANK.get(item.get("severity"), 99), item.get("dimension", "")))[0]
     dimension = priority.get("dimension") or "quality"
+    # 动作名保留旧值（前端与测试都认它）；落点是写作台的深改姿态，带着这条发现的 signal_id 过去
     action = "open_deepdesk_patch"
-    label = "去深改台生成局部候选"
+    label = "去写作台处理这一处"
+    signal_id = priority.get("signal_id") or priority.get("quality_signal_id")
     return {
         "action": action,
         "label": label,
         "risk_type": dimension,
-        "quality_signal_id": priority.get("quality_signal_id"),
+        "signal_id": signal_id,
+        "quality_signal_id": signal_id,
         "target_text_ref": priority.get("target_text_ref"),
         "source_excerpt": priority.get("evidence_excerpt") or signals.get(dimension, {}).get("evidence") or "",
         "reason": priority.get("issue") or "",
@@ -1907,7 +2113,7 @@ def _add_term_signal(
     if term:
         evidence = _excerpt(text, term)
         signals[dimension] = {"risk": True, "score": 0.0, "evidence": evidence}
-        findings.append(_finding(dimension, "revision", issue, evidence, recommendation))
+        findings.append(_finding(dimension, "revision", issue, evidence, recommendation, needle=term))
         return
     signals[dimension] = {"risk": False, "score": 1.0, "evidence": ""}
 
@@ -1927,7 +2133,7 @@ def _add_absence_signal(
         return
     evidence = _excerpt(text, "")
     signals[dimension] = {"risk": True, "score": 0.0, "evidence": evidence}
-    findings.append(_finding(dimension, "revision", issue, evidence, recommendation))
+    findings.append(_finding(dimension, "revision", issue, evidence, recommendation, anchor="scene"))
 
 
 def _add_expository_dialogue_signal(
@@ -1947,6 +2153,7 @@ def _add_expository_dialogue_signal(
                     "Dialogue is carrying explanation instead of pressure or subtext.",
                     evidence,
                     "Move the fact into gesture, silence, contradiction, or a partial answer.",
+                    needle=term,
                 )
             )
             return
@@ -1971,6 +2178,7 @@ def _add_dialogue_as_report_signal(
                 "Dialogue is reporting plot information instead of changing pressure between characters.",
                 evidence,
                 "Turn the fact into a withheld answer, accusation, bargaining chip, or relationship wound.",
+                needle=term,
             )
         )
         return
@@ -2045,6 +2253,7 @@ def _add_conflict_too_clean_signal(
                 evidence,
                 "Leave residual friction: an unspoken resentment, a half-lie accepted, "
                 "or agreement that costs something the character didn't want to give.",
+                needle=conflict_hits[0],
             )
         )
     else:
@@ -2070,6 +2279,8 @@ def _add_painless_scene_signal(
             "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
             evidence,
             "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+            needle=choice_term or "",
+            anchor="text" if choice_term else "scene",
         )
     )
 
@@ -2092,6 +2303,7 @@ def _add_decorative_imagery_signal(
             "The image work is carrying atmosphere more than action, relationship, information, or theme pressure.",
             evidence,
             "Keep the strongest image only if it changes what a character does, reveals a withheld fact, or sharpens the cost of the choice.",
+            needle=hits[0],
         )
     )
 
@@ -2114,6 +2326,7 @@ def _add_over_explained_motive_signal(
             "The motive is being explained directly instead of being pressured into action or omission.",
             evidence,
             "Let the reader infer motive from what the character refuses, delays, hides, or chooses under pressure.",
+            needle=term,
         )
     )
 
@@ -2137,6 +2350,8 @@ def _add_false_poetic_closure_signal(
             "The ending closes with poetic certainty rather than a hard next-scene action.",
             evidence,
             "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance.",
+            needle=term,
+            anchor="ending",
         )
     )
 
@@ -2159,6 +2374,7 @@ def _add_perception_filter_signal(
             "The narration routes sensation through a perception verb instead of rendering the stimulus directly.",
             evidence,
             "Delete the perception verb and let the stimulus land as action, object, or sensory detail.",
+            needle=term,
         )
     )
 
@@ -2186,6 +2402,7 @@ def _add_image_signal(
                 f"The same image field repeats too often: {term}.",
                 evidence,
                 "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail.",
+                needle=term,
             )
         )
         return
@@ -2217,6 +2434,7 @@ def _add_repetitive_action_signal(
             f"The same action beat repeats too often: {term}.",
             evidence,
             "Keep the strongest beat, then replace the others with a choice, object movement, silence, or changed blocking.",
+            needle=term,
         )
     )
 
@@ -2233,7 +2451,8 @@ def _add_template_action_reuse_signal(
     if count < 3:
         signals["template_action_reuse"] = {"risk": False, "score": 1.0, "evidence": ""}
         return
-    evidence = " / ".join(sentence for sentence in sentences if _action_template(sentence) == template)[:180]
+    matching = [sentence for sentence in sentences if _action_template(sentence) == template]
+    evidence = " / ".join(matching)[:180]
     signals["template_action_reuse"] = {"risk": True, "score": 0.0, "evidence": evidence}
     findings.append(
         _finding(
@@ -2242,6 +2461,7 @@ def _add_template_action_reuse_signal(
             "Action beats are repeating the same sentence template.",
             evidence,
             "Keep one beat, then vary blocking, object movement, silence, or relational pressure.",
+            needle=matching[0] if matching else "",
         )
     )
 
@@ -2268,6 +2488,7 @@ def _add_image_field_reuse_signal(
             f"The atmospheric image field is doing too much repeated work: {', '.join(sorted(set(hits))[:5])}.",
             evidence,
             "Let one image carry mood, and make the next beat change through an object, decision, or body position.",
+            needle=hits[0],
         )
     )
 
@@ -2284,7 +2505,8 @@ def _add_syntax_monotony_signal(
     if count < 3:
         signals["syntax_monotony"] = {"risk": False, "score": 1.0, "evidence": ""}
         return
-    evidence = " / ".join(sentence for sentence in sentences if _syntax_pattern(sentence) == pattern)[:180]
+    matching = [sentence for sentence in sentences if _syntax_pattern(sentence) == pattern]
+    evidence = " / ".join(matching)[:180]
     signals["syntax_monotony"] = {"risk": True, "score": 0.0, "evidence": evidence}
     findings.append(
         _finding(
@@ -2293,6 +2515,7 @@ def _add_syntax_monotony_signal(
             "Several consecutive sentences use the same syntactic shape.",
             evidence,
             "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture.",
+            needle=matching[0] if matching else "",
         )
     )
 
@@ -2315,6 +2538,7 @@ def _add_false_clarity_signal(
             "The passage tells the reader what became clear instead of letting pressure reveal it.",
             evidence,
             "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference.",
+            needle=term,
         )
     )
 
@@ -2344,6 +2568,8 @@ def _add_summary_ending_signal(
                 "The ending explains the effect instead of landing on an action or image.",
                 evidence,
                 "Cut the summarizing sentence and end on the last irreversible action.",
+                needle=term,
+                anchor="ending",
             )
         )
         return
@@ -2369,17 +2595,38 @@ def _add_ending_drive_signal(
             "The final beat does not push the reader into the next scene.",
             evidence,
             "End with a new action, object movement, arrival, departure, reveal, or refusal.",
+            anchor="ending",
         )
     )
 
 
-def _finding(dimension: str, severity: str, issue: str, evidence: str, recommendation: str) -> dict[str, str]:
+def _finding(
+    dimension: str,
+    severity: str,
+    issue: str,
+    evidence: str,
+    recommendation: str,
+    *,
+    needle: str = "",
+    anchor: str = "text",
+) -> dict[str, str]:
+    """One rule finding.
+
+    ``needle`` is the exact text the rule matched (a term, the repeated sentence, …) —
+    the workbench pins the finding to that string in the manuscript and the finding's
+    stable id is derived from it. Findings without a needle carry an ``anchor``:
+    ``scene`` (an absence — nothing in the text to point at) or ``ending`` (the last
+    beat). ``text`` with an empty needle means "locate by the excerpt".
+    """
+
     return {
         "dimension": dimension,
         "severity": severity,
         "issue": issue,
         "evidence_excerpt": evidence,
         "recommendation": recommendation,
+        "needle": needle or "",
+        "anchor": anchor if anchor in FINDING_ANCHORS else "text",
     }
 
 

@@ -41,20 +41,37 @@ export async function wrContinueMulti(instruction, sceneId) {
   return wrContinueCandidates(generated);
 }
 
-export async function wrRequestRewrite({ sceneId, text, instruction }) {
+/* finding：深改面板交过来的那条发现（signal_id / dimension / issue / patch.candidate_category）。
+   带着它时改写请求按维度走：后端的修补类别、改写策略与偏好画像学的是「对白潜台词」这种维度，
+   不再是「润色」两个字；没有发现时维度是 author_instruction，指令本身走 instruction。
+   也带上作者稿 id：后端把整场正文当上下文，补丁才接得上前后文。 */
+export async function wrRequestRewrite({ sceneId, text, instruction, finding = null }) {
   const sid = sceneId || fallbackSceneId();
   let backendId = null;
   try {
     backendId = sid && WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
   } catch (e) {}
   if (!backendId) throw wrAiLocalError("no-scene");
-  const data = await apiPost("/api/v1/passages/patch-candidates", {
+  let draftId = null;
+  try { draftId = await WrDocs.draftId(sid); } catch (e) {}
+  const body = {
     object_type: "scene",
     object_id: backendId,
     scene_id: backendId,
     source_excerpt: String(text || "").slice(0, 2000),
-    issue_dimension: instruction,
-  });
+    issue_dimension: finding && finding.dimension ? String(finding.dimension) : "author_instruction",
+    instruction: String(instruction || "").slice(0, 4000),
+  };
+  if (draftId) {
+    body.source_draft_id = draftId;
+    body.target_text_ref = `author_draft:${draftId}`;
+  }
+  if (finding) {
+    if (finding.signal_id) body.quality_signal_id = String(finding.signal_id);
+    if (finding.issue) body.issue_note = String(finding.issue).slice(0, 2000);
+    if (finding.patch && finding.patch.candidate_category) body.candidate_category = finding.patch.candidate_category;
+  }
+  const data = await apiPost("/api/v1/passages/patch-candidates", body);
   const cand = data && data.candidate;
   const options = (cand && cand.replacement_options) || [];
   if (wrIsOfflinePlaceholder(cand && cand.rationale)) throw wrAiLocalError("no-model");

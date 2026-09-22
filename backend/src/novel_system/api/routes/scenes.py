@@ -41,7 +41,6 @@ from novel_system.services.chapter_approval import (
 )
 from novel_system.services.canonical_manuscripts import CanonicalSceneService
 from novel_system.services.errors import DomainError
-from novel_system.services.literary_quality import LiteraryQualityService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import (
     NEAR_FINAL_REWRITE_TYPE,
@@ -1679,9 +1678,8 @@ def scene_workbench(
                 {"row_id": final.row_id, "content": final.content} if final else None
             ),
             "source_safety_scan": source_safety_scan,
-            "anti_template_quality_summary": _serialize_anti_template_quality_summary(
-                session, final
-            ),
+            # 2026-09-22：终稿的 21 维体检不再随工作台载荷每次轮询重算——它在写作台深改面板
+            # （GET /api/v1/scenes/{id}/deep-review）里，和其他诊断来源一起、按作者的忽略清单过滤。
             "literary_blueprint": blueprint_service.latest_payload(scene_id),
             "execution_contract": contract_service.serialize(execution_contract),
             "scene_memory": (
@@ -1737,23 +1735,6 @@ def scene_workbench(
         req_id=getattr(request.state, "request_id", None),
     )
     return response
-
-
-def _serialize_anti_template_quality_summary(
-    session: Session, final: FinalScene | None
-) -> dict | None:
-    if final is None or not (final.content or "").strip():
-        return None
-    return LiteraryQualityService(session).analyze_text(
-        {
-            "content": final.content or "",
-            "object_type": "scene",
-            "object_id": final.scene_id,
-            "chapter_id": final.chapter_id,
-            "scene_id": final.scene_id,
-            "source_ref": f"final_scene:{final.row_id}",
-        }
-    )
 
 
 def _serialize_generation_summary(

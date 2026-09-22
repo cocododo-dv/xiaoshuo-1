@@ -357,42 +357,6 @@ def test_workbench_payload_loads_dynamic_safety_terms_from_bound_profile(client,
     assert any(risk["risk_type"] == "exact_term" for risk in scan["risks"])
 
 
-def test_workbench_payload_includes_latest_anti_template_quality_summary(client, session: Session) -> None:
-    create_chapter(client, "CH922")
-    create_scene(client, chapter_id="CH922", scene_id="CH922_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
-    final = FinalScene(
-        row_id="final_scene_CH922_SC01_v1",
-        scene_id="CH922_SC01",
-        chapter_id="CH922",
-        content=(
-            "她低头看着钥匙，沉默了片刻。"
-            "他低头看着录音，沉默了片刻。"
-            "她低头看着门缝，沉默了片刻。"
-            "她知道真相必须公开。"
-        ),
-        status="approved",
-        source_bundle_id="bundle_CH922_SC01_v1",
-        source_bundle_hash="hash_CH922_SC01_v1",
-    )
-    state = session.get(SceneRunState, "CH922_SC01")
-    assert state is not None
-    state.scene_status = "archived"
-    state.current_final_scene_row_id = final.row_id
-    session.add(final)
-    session.commit()
-
-    response = client.get("/api/v1/scenes/CH922_SC01/workbench")
-
-    assert response.status_code == 200
-    summary = response.json()["data"]["anti_template_quality_summary"]
-    assert summary["source_ref"] == "final_scene:final_scene_CH922_SC01_v1"
-    assert summary["score"] < 0.75
-    assert summary["signals"]["template_action_reuse"]["risk"] is True
-    assert summary["recommended_next_action"]["action"] == "open_deepdesk_patch"
-
-
 def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(client) -> None:
     """2026-09-20 真实故障：声线卡 / 关系卡在产品里已经没有地方能写，却是每一场起草的硬前提——
 

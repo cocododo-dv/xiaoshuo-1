@@ -20,7 +20,6 @@ from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
 from novel_system.services.writer_deep_review import LITERARY_REVISION_RUBRIC_ID
 from novel_system.services.writer_deep_review import WriterDeepReviewService
-from novel_system.services.writer_deep_review import _infer_scene_form
 from novel_system.services.writer_deep_review import _normalize_deep_review_output
 
 
@@ -38,11 +37,6 @@ CHAPTER_ID = "DEEP_CH01"
 SCENE_ID = "DEEP_CH01_SC01"
 FINAL_ROW_ID = "final_DEEP_CH01_SC01"
 PROJECT_ID = "PROJECT_DEEP_CH01"
-
-
-def test_scene_form_inference_recognizes_chinese_atmosphere_markers() -> None:
-    assert _infer_scene_form("雨夜里灯光晃了一下。") == "atmosphere_scene"
-    assert _infer_scene_form("雪落在门前。") == "atmosphere_scene"
 
 
 def test_normalize_deep_review_output_validates_model_lens_evaluations() -> None:
@@ -158,46 +152,49 @@ def _seed_finished_scene(session) -> None:
     session.commit()
 
 
-def test_scene_deep_review_creates_strict_literary_evaluation_and_theme_lens(client: TestClient, session) -> None:
+def test_scene_deep_review_is_fail_closed_without_a_live_llm(client: TestClient, session) -> None:
+    """2026-09-22：深评是拒绝式节点——没有真实模型就 409 + author_action，不再有本地词表兜底，也不动历史。"""
+
     _seed_finished_scene(session)
 
     response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
 
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_REQUIRED"
+    session.expire_all()
+    assert session.query(WriterEvaluation).filter_by(object_type="scene", object_id=SCENE_ID).count() == 0
+
+    # 服务层：author_action 指向系统配置
+    from novel_system.services.errors import DomainError
+
+    try:
+        WriterDeepReviewService(session).run_scene_review(SCENE_ID)
+    except DomainError as exc:
+        assert exc.code == "WRITER_DEEP_REVIEW_LLM_REQUIRED"
+        assert exc.details["author_action"]["target_view"] == "config"
+        assert exc.details["node_id"] == "writer_deep_review"
+    else:  # pragma: no cover - the assertion above is the contract
+        raise AssertionError("deep review must refuse without a live LLM")
+
+
+def test_scene_deep_review_get_returns_the_unified_diagnosis_before_any_ai_run(client: TestClient, session) -> None:
+    """GET 是统一诊断载荷：规则 / 节奏发现已经在，AI 部分标 not_run；旧契约的键照旧。"""
+
+    _seed_finished_scene(session)
+
+    response = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+
     assert response.status_code == 200
     payload = response.json()["data"]
-    evaluation = payload["latest_evaluation"]
-
+    assert payload["status"] == "not_run"
+    assert payload["latest_evaluation"] is None
     assert payload["rubric_id"] == LITERARY_REVISION_RUBRIC_ID
-    assert evaluation["rubric_id"] == LITERARY_REVISION_RUBRIC_ID
-    assert evaluation["overall_score"] <= 0.85
-    severities = {item["severity"] for item in evaluation["findings"]}
-    assert {"blocking", "revision", "taste", "ignore_ok"}.issubset(severities)
-    assert evaluation["scene_form"] in {
-        "plot_scene",
-        "atmosphere_scene",
-        "relationship_scene",
-        "revelation_scene",
-        "transition_scene",
-    }
-    assert all(
-        item.get("evidence_excerpt") is not None
-        and item.get("why_it_matters")
-        and item.get("recommendation")
-        and item.get("scene_form")
-        for item in evaluation["findings"]
-    )
-    assert "theme" in {item["lens"] for item in payload["lens_evaluations"]}
-    assert any(item["dimension"] == "repetitive_expression" for item in evaluation["findings"])
-    assert any(item["classification"] == "revision" for item in evaluation["revision_brief"])
-
-    session.expire_all()
-    aggregate_rows = session.query(WriterEvaluation).filter_by(
-        object_type="scene",
-        object_id=SCENE_ID,
-        rubric_id=LITERARY_REVISION_RUBRIC_ID,
-        parent_evaluation_id=None,
-    ).all()
-    assert len(aggregate_rows) == 1
+    assert payload["ai"]["status"] == "not_run"
+    assert payload["text"]["layer"] == "runtime_final_scene"
+    assert payload["findings"], "the 21-dimension rules already diagnose the final text"
+    assert {item["source"] for item in payload["findings"]} <= {"rules", "craft"}
+    assert all(item["signal_id"] and item["label"] and item["issue"] for item in payload["findings"])
+    assert payload["summary"]["open"] == len(payload["findings"])
 
 
 def test_scene_deep_review_uses_llm_when_live(client: TestClient, session, monkeypatch) -> None:
@@ -270,7 +267,8 @@ def test_scene_deep_review_uses_llm_when_live(client: TestClient, session, monke
     assert evaluation["findings"][0]["issue"] == "The choice is described rather than enacted."
 
 
-def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(client: TestClient, session) -> None:
+def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(client: TestClient, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
     _seed_finished_scene(session)
     draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     AuthorDraftService(session).save(

@@ -34,8 +34,8 @@ export const QUALITY_DIM_KEYS = Object.keys(QUALITY_DIMS);
 /* 后端新加的维度前端还没有中文名时，不把英文键摊给作者（原键放在 title 里） */
 export const qDimLabel = (k) => QUALITY_DIMS[k] || "其他维度";
 
-/* 每个维度发现的问题与改法（后端给的是英文句子，原文放在 title 里）。
-   带具体词的问题（「反复出现的意象：手」）从英文句尾取出那个词。 */
+/* 发现的问题与改法现在由服务端用中文给出（literary_quality.DIMENSION_NOTES，写作台深改面板读的是同一份）；
+   视图直接显示 finding.issue / finding.recommendation。下面这张表只作后端还没给中文的旧载荷的兜底。 */
 const QUALITY_DIM_NOTES = {
   model_voice: ["可能是模型腔，或一句空泛的情绪捷径。", "把抽象的「领悟」换成具体的选择、动作或感官后果。"],
   image_homogeneity: ["同一个意象反复出现", "留一个锚定意象，其余靠动作、物件、温度、声音或空间变化换质感。"],
@@ -60,16 +60,23 @@ const QUALITY_DIM_NOTES = {
 };
 const Q_TOKEN_DIMS = new Set(["image_homogeneity", "repetitive_action", "image_field_reuse"]);
 
+/* 一条发现要显示的字：服务端给了中文（有 signal_id 的统一发现，或本来就是中文句）就原样用；
+   旧载荷（英文 issue，句首是拉丁字母）按维度表翻译，带具体词的问题从英文句尾取出那个词。 */
+const LATIN_LEAD_RE = /^\s*[A-Za-z]/;
 export function qFindingText(finding) {
+  const issueRaw = String((finding && finding.issue) || "");
+  const fixRaw = String((finding && (finding.recommendation || finding.recommended_action)) || "");
+  if (finding && (finding.signal_id || (issueRaw && !LATIN_LEAD_RE.test(issueRaw)))) {
+    return { issue: issueRaw, fix: fixRaw, english: finding.issue_en ? [finding.issue_en, finding.recommendation_en].filter(Boolean).join("\n") : "" };
+  }
   const notes = QUALITY_DIM_NOTES[finding && finding.dimension];
-  const english = String((finding && finding.issue) || "");
-  if (!notes) return { issue: "", fix: "", english };
+  if (!notes) return { issue: issueRaw, fix: fixRaw, english: "" };
   let issue = notes[0];
   if (Q_TOKEN_DIMS.has(finding.dimension)) {
-    const hit = /:\s*([^:]+?)\.?$/.exec(english);
+    const hit = /:\s*([^:]+?)\.?$/.exec(issueRaw);
     issue += hit ? `：${hit[1].trim()}。` : "。";
   }
-  return { issue, fix: notes[1], english: [english, finding.recommendation].filter(Boolean).join("\n") };
+  return { issue, fix: notes[1], english: [issueRaw, fixRaw].filter(Boolean).join("\n") };
 }
 
 /* 证据摘录来自作者稿（HTML），截断处可能带半个标签：只留文字 */
@@ -114,7 +121,10 @@ export const Q_ITEM_LAYER = {
 /* ---- helpers ---- */
 export const qPct = (v) => (v === null || v === undefined || Number.isNaN(v) ? "—" : Math.round(v * 100));
 export const qScore = (v) => (v === null || v === undefined || Number.isNaN(v) ? "—" : `${Math.round(v * 100)} 分`);
+/* 一项的风险维度：后端给了 open_dimensions（去掉作者在写作台忽略过的发现之后还开着的维度）就用它，
+   旧载荷回落到 signals 里 risk 为真的维度 */
 export function qRiskDims(item) {
+  if (item && Array.isArray(item.open_dimensions)) return item.open_dimensions.filter(Boolean);
   const sig = (item && item.signals) || {};
   return Object.keys(sig).filter((k) => sig[k] && sig[k].risk);
 }

@@ -42,6 +42,10 @@ class PassagePatchCreateRequest(StrictRequestModel):
     target_range: PassageTargetRangeRequest | None = None
     revision_strategy: str | None = Field(default=None, max_length=4000)
     preference_tags: list[PreferenceTag] = Field(default_factory=list, max_length=64)
+    # 2026-09-22 场景诊断统一：作者 / 诊断给的改法（工具条指令、发现的建议）与发现的问题句。
+    # issue_dimension 从此只放维度键（发现的 dimension，或自由改写的 author_instruction）。
+    instruction: str | None = Field(default=None, max_length=4000)
+    issue_note: str | None = Field(default=None, max_length=2000)
 
 
 class PassagePatchAcceptRequest(StrictRequestModel):

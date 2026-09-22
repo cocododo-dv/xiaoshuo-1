@@ -19,6 +19,7 @@ from novel_system.services.literary_quality import (
     QUALITY_DIMENSIONS,
     analyze_literary_quality,
     get_dimension_weights,
+    ignored_rule_dimensions,
 )
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
 from novel_system.services.qc_constraints import contains_forbidden_term, source_field_satisfied
@@ -450,6 +451,12 @@ class FinalTextGateService:
             risky_dimensions = [
                 dimension for dimension, signal in signals.items() if bool(signal.get("risk"))
             ]
+            # 2026-09-22 场景诊断统一:作者在写作台深改面板里忽略过的发现不再回到成稿中心当警告。
+            # 忽略清单记的是发现的 signal_id;整个维度的发现都被忽略了,这个维度才算作者拍过板。
+            ignored_dimensions = ignored_rule_dimensions(
+                content,
+                (getattr(scene, "deep_review_ignored_keys_json", None) or []) if scene is not None else [],
+            )
             # 2026-09-14 风格保真修补:有绑定时 21 维词表检测出的房风风险不再作为 Q3 警告挂在
             # 成稿中心(作者的习惯与词表撞车时每一场都会被永久标红);risky_dimensions 仍进审计。
             warnings = (
@@ -463,6 +470,7 @@ class FinalTextGateService:
                         "message": str(signals[dimension].get("evidence") or dimension),
                     }
                     for dimension in risky_dimensions
+                    if dimension not in ignored_dimensions
                 ]
             )
             return {
@@ -479,6 +487,7 @@ class FinalTextGateService:
                 },
                 "signals": signals,
                 "risky_dimensions": risky_dimensions,
+                "ignored_dimensions": sorted(ignored_dimensions),
                 "findings": findings,
                 "promotion_blockers": promotion_blockers,
                 "warnings": warnings,

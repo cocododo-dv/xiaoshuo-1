@@ -75,7 +75,11 @@ function onToolbarKeyDown(event) {
   buttons[next].focus();
 }
 
-export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnly = false, deep = false, onRewriteSelection, onOpenSettings }) {
+/* finding / onFindingDone（2026-09-22 诊断统一）：深改面板「选中这一句去改写 / 按诊断改写」带过来的那条发现。
+   带着它时每一次改写请求都附上发现的 id / 维度 / 改法（后端按维度定修补类别、偏好画像按维度学）；
+   工具条多一个「按诊断改写」，autoRun 的发现一弹出工具条就直接出候选。
+   作者把选区换到别处、关掉弹层、换场，这条发现就作废（onFindingDone）。 */
+export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnly = false, deep = false, onRewriteSelection, onOpenSettings, finding = null, onFindingDone }) {
   const [rect, setRect] = useState(null);
   const [phase, setPhase] = useState("idle"); // idle | custom | tune | loading | result | error | anno | rev
   const [results, setResults] = useState([]);
@@ -103,6 +107,14 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
   const revElRef = useRef(null);
   const patchRef = useRef(null);      // 这一次改写候选的裁决把手
   const reqRef = useRef(0);
+  const findingRef = useRef(finding);       // 深改交来的发现（run 与选区处理读最新的）
+  const findingDoneRef = useRef(onFindingDone);
+  const autoRanRef = useRef(null);          // 「按诊断改写」只自动跑一次（按发现 id）
+  useEffect(() => { findingRef.current = finding; findingDoneRef.current = onFindingDone; });
+  const dropFinding = () => {
+    autoRanRef.current = null;
+    if (findingRef.current && findingDoneRef.current) findingDoneRef.current();
+  };
   const locked = readOnly;
 
   /* 切到只读（批准锁定）时收起一切正在进行的弹层 */
@@ -146,11 +158,28 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
         if (wrSameRange(sel.getRangeAt(0), quietRef.current)) return;
         quietRef.current = null;
       }
-      if (!captureSelection()) setRect(null);
+      const captured = captureSelection();
+      if (!captured) setRect(null);
+      /* 选区换到了和发现无关的字：这条发现作废，接下来是普通改写 */
+      const current = captured ? findingRef.current : null;
+      if (current && current.evidence && current.evidence.excerpt) {
+        const excerpt = String(current.evidence.excerpt);
+        const picked = String(selRef.current || "");
+        if (!(picked.includes(excerpt) || excerpt.includes(picked))) dropFinding();
+      }
     };
     document.addEventListener("selectionchange", onSel);
     return () => document.removeEventListener("selectionchange", onSel);
   }, [phase, locked]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* 「按诊断改写」：深改把那一句选中、带着发现回到起草，工具条一弹出来就按发现的改法出候选 */
+  useEffect(() => {
+    if (phase !== "idle" || !rect || locked || deep) return;
+    const current = finding;
+    if (!current || !current.autoRun || autoRanRef.current === current.signal_id) return;
+    autoRanRef.current = current.signal_id;
+    run(current.recommendation || WR_RW_ACTIONS[0].instr);
+  }, [rect, phase, finding]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* 焦点在工具条 / 弹层里（或随着它们消失掉到了 <body> 上）时，把焦点还给正文。
      caret：动过正文之后光标该落的位置；没有就把打开前的选区原样还回去（它不再弹工具条）。 */
@@ -186,6 +215,7 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     setPhase("idle"); setRect(null); setResults([]); setPick(0); setError(null); setCustom(""); setAnnoText("");
     setAnnoSaveError(null); setStaleSel(false); setCopied(false);
     annoRef.current = null; revElRef.current = null;
+    dropFinding(); // 这一轮改写结束：深改交来的发现用过了
   };
 
   /* 换了一场（或换了作品）：上一场的选区、改写候选、没存的新批注全部作废。
@@ -305,7 +335,7 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     lastInstr.current = instr;
     setPhase("loading"); setError(null); setStaleSel(false);
     try {
-      const { texts, patch } = await wrRequestRewrite({ sceneId, text: selRef.current, instruction: instr });
+      const { texts, patch } = await wrRequestRewrite({ sceneId, text: selRef.current, instruction: instr, finding: findingRef.current });
       if (reqRef.current !== id) { wrDecidePatch(patch, 0, false); return; }
       patchRef.current = patch;
       setResults(texts); setPick(0); setPhase("result");
@@ -479,6 +509,12 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
       <div className="wr-irw-bar" ref={barRef} role="toolbar" aria-label="改写选中的文字" aria-keyshortcuts="Alt+F10" style={pos(448)}
         onMouseDown={(e) => e.preventDefault()} onKeyDown={onToolbarKeyDown}>
         <span className="wr-irw-spark" aria-hidden="true"><I.Sparkles size={13} /></span>
+        {finding && (
+          <button type="button" className="wr-irw-btn accent" title={finding.issue || ""}
+            onClick={() => run(finding.recommendation || WR_RW_ACTIONS[0].instr)}>
+            按诊断改写
+          </button>
+        )}
         {WR_RW_ACTIONS.map((action) => (
           <button type="button" key={action.id} className="wr-irw-btn" onClick={() => run(action.instr)}>{action.label}</button>
         ))}
@@ -535,7 +571,7 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
   }
   return (
     <div className="wr-irw-pop" ref={popRef} tabIndex={-1} role="dialog" aria-label="AI 改写选中的文字" style={popStyle} onMouseDown={(e) => e.stopPropagation()}>
-      <div className="wr-irw-head"><I.Sparkles size={14} /> AI 改写{phase === "result" && results.length > 1 ? `（${results.length} 版）` : ""} <span className="sp">选中 {selRef.current.length} 字</span></div>
+      <div className="wr-irw-head"><I.Sparkles size={14} /> AI 改写{phase === "result" && results.length > 1 ? `（${results.length} 版）` : ""}{finding ? ` · 按诊断：${finding.label || ""}` : ""} <span className="sp">选中 {selRef.current.length} 字</span></div>
       {phase === "custom" && (
         <div className="wr-irw-custom">
           <input className="wr-irw-input" autoFocus value={custom} aria-label="改写要求" placeholder="如：更冷一点、删掉比喻、加一个动作…"

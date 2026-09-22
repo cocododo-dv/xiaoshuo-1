@@ -324,7 +324,13 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     else if (action === "immersion") setImmersion((v) => !v);
     else if (action === "deep") deep.setPosture("deep");
   });
-  const onPostureIntent = useWrEvent((next) => deep.setPosture(next === "deep" ? "deep" : "draft"));
+  /* 姿态意图的 detail：字符串（"deep" / "draft"），或 { posture, signal_id }——文学质量 / 待办 / 成稿中心
+     带着一条发现跳进来，深改面板到了诊断就选中那一条并滚过去 */
+  const onPostureIntent = useWrEvent((detail) => {
+    const next = typeof detail === "string" ? detail : (detail && detail.posture);
+    const signalId = detail && typeof detail === "object" ? (detail.signal_id || detail.signalId || null) : null;
+    deep.setPosture(next === "deep" ? "deep" : "draft", { signalId });
+  });
   useEffect(() => {
     const onScene = (e) => { if (e.detail) onSceneIntent(e.detail); };
     const onAction = (e) => onActionIntent(e.detail);
@@ -392,7 +398,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
           onOpenOutline={layout.openLeft}
           posture={posture}
           onPosture={deep.setPosture}
-          deepIssueCount={deep.issues.length}
+          deepIssueCount={deep.openCount}
           hasScene={!!activeScene}
           approvedLocked={approvedLocked}
           counter={counter}
@@ -497,8 +503,13 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
         onDeleteChapter={outline.onDeleteChapter} onDeleteBatch={outline.onDeleteBatch} onAdd={outline.onAdd}
         onPick={pickScene} onClose={layout.closeLeft} />
       {posture === "deep"
-        ? <WrDeepDrawer open={rightOpen} issues={deep.issues} activeKey={deep.activeKey} onPick={deep.pick} onIgnore={deep.ignore}
-            onRescan={deep.rescanAll} onSelect={deep.selectForRewrite} log={deep.log} persistenceStatus={deep.persistenceStatus} onClose={layout.closeRight} />
+        ? <WrDeepDrawer open={rightOpen} loading={deep.loading} error={deep.error} onRetry={deep.reload}
+            diagnosis={deep.diagnosis} findings={deep.findings} activeKey={deep.activeKey}
+            filter={deep.filter} onFilter={deep.setFilter} showIgnored={deep.showIgnored} onToggleIgnored={deep.toggleIgnored}
+            onPick={deep.pick} onIgnore={deep.ignore} onRestore={deep.restore} onRescan={deep.rescan}
+            onSelect={deep.selectForRewrite} onRewrite={deep.rewriteFromFinding}
+            aiBusy={deep.aiBusy} aiError={deep.aiError} onRunAi={deep.runAi} onOpenSettings={onOpenSettings}
+            handoffMiss={deep.handoffMiss} log={deep.log} persistenceStatus={deep.persistenceStatus} onClose={layout.closeRight} />
         : <WrContext open={rightOpen} tab={rightTab} setTab={setRightTab} onClose={layout.closeRight} place={tw.aiPlace}
             tight={dockRight && railR < 232} sceneId={activeScene} design={design} designVariant={contextVariant} sync={sync} go={go}
             editorRef={editorRef} annoKey={annoKey} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} onOpenSettings={onOpenSettings} />}
@@ -509,7 +520,8 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
         pov={designPov(design)} />
       <UndoToast toast={toast} onClose={clearNotice} />
       <WrInlineRewrite editorRef={editorRef} sceneId={activeScene} annoKey={annoKey} onCommit={commitEdit}
-        readOnly={approvedLocked} deep={posture === "deep"} onRewriteSelection={deep.selectForRewrite} onOpenSettings={onOpenSettings} />
+        readOnly={approvedLocked} deep={posture === "deep"} onRewriteSelection={deep.selectForRewrite} onOpenSettings={onOpenSettings}
+        finding={deep.rewriteFinding} onFindingDone={deep.clearRewriteFinding} />
       <WrEntityPop pop={entities.entityPop} />
       <WrMentionPicker mention={mention.mention} list={mention.mentionList} idx={mention.mentionIdx}
         onPick={mention.insertMention} onHover={mention.setMentionIdx} />

@@ -24,6 +24,7 @@ from novel_system.db.models import (
     StoryProject,
     WriterEvaluation,
 )
+from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.author_preferences import merge_preference_summaries, safe_preference_summary_for_prompt
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
@@ -34,7 +35,19 @@ from novel_system.services.llm_task_runner import (
     current_llm_execution_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.scene_design_context import render_scene_design_context
+from novel_system.services.scene_diagnosis import (
+    LITERARY_REVISION_RUBRIC_ID,
+    PATCH_CATEGORIES,
+    SCENE_FORMS,
+    SceneDiagnosisService,
+    candidate_category_for_dimension,
+    scene_form_from_findings,
+    serialize_evaluation as _serialize_evaluation,
+    serialize_patch_candidate as _serialize_patch_candidate,
+)
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.style_prompt_injection import (
     PLANNING_FEW_SHOT_K_CAP,
     inject_style_reference_prefix,
@@ -44,7 +57,16 @@ from novel_system.settings import get_settings
 
 
 _LOGGER = logging.getLogger(__name__)
-LITERARY_REVISION_RUBRIC_ID = "literary_revision_v1"
+# LITERARY_REVISION_RUBRIC_ID / SCENE_FORMS / PATCH_CATEGORIES 定义在 scene_diagnosis（这里再导出）。
+__all__ = [
+    "LITERARY_REVISION_RUBRIC_ID",
+    "LITERARY_REVISION_DIMENSIONS",
+    "DEEP_REVIEW_LENSES",
+    "SCENE_FORMS",
+    "PATCH_CATEGORIES",
+    "WriterDeepReviewOutputError",
+    "WriterDeepReviewService",
+]
 LITERARY_REVISION_DIMENSIONS: tuple[str, ...] = (
     "character_contradiction",
     "choice_pressure",
@@ -58,21 +80,8 @@ LITERARY_REVISION_DIMENSIONS: tuple[str, ...] = (
     "theme_pressure",
 )
 DEEP_REVIEW_LENSES: tuple[str, ...] = ("story", "character", "prose", "reader", "theme")
-SCENE_FORMS: tuple[str, ...] = (
-    "plot_scene",
-    "atmosphere_scene",
-    "relationship_scene",
-    "revelation_scene",
-    "transition_scene",
-)
-PATCH_CATEGORIES: tuple[str, ...] = (
-    "dialogue_rewrite",
-    "action_replace",
-    "ending_pressure",
-    "information_reorder",
-    "de_model_voice",
-    "local_patch",
-)
+# 写作台工具条的自由改写（没有对应的诊断维度）用这个维度键；指令本身走 instruction 字段
+AUTHOR_INSTRUCTION_DIMENSION = "author_instruction"
 
 
 class WriterDeepReviewOutputError(ValueError):
@@ -125,17 +134,20 @@ class WriterDeepReviewService:
         )
 
     def scene_summary(self, scene_id: str) -> dict[str, Any]:
-        self._require_scene(scene_id)
-        return self._review_payload("scene", scene_id)
+        """写作台深改面板的载荷：统一的场景诊断（规则 / 节奏 / 评审 / AI 深评），见 scene_diagnosis。"""
+
+        return SceneDiagnosisService(self.session).payload(scene_id)
 
     def chapter_summary(self, chapter_id: str) -> dict[str, Any]:
         self._require_chapter(chapter_id)
         return self._review_payload("chapter", chapter_id)
 
     def run_scene_review(self, scene_id: str, actor_ref: str = "operator") -> dict[str, Any]:
+        """「AI 深评」：对当前作者稿跑一次 writer_deep_review 节点，返回统一诊断载荷。拒绝式：无模型即 409。"""
+
         scene = self._require_scene(scene_id)
         source = self._scene_source(scene)
-        return self._create_deep_review(
+        self._create_deep_review(
             object_type="scene",
             object_id=scene.scene_id,
             chapter_id=scene.chapter_id,
@@ -143,6 +155,7 @@ class WriterDeepReviewService:
             source=source,
             actor_ref=actor_ref,
         )
+        return SceneDiagnosisService(self.session).payload(scene.scene_id)
 
     def run_chapter_review(self, chapter_id: str, actor_ref: str = "operator") -> dict[str, Any]:
         chapter = self._require_chapter(chapter_id)
@@ -157,13 +170,29 @@ class WriterDeepReviewService:
         )
 
     def create_patch_candidate(self, payload: dict[str, Any], actor_ref: str = "operator") -> dict[str, Any]:
+        """局部改写候选。
+
+        ``issue_dimension`` 是维度键（一条诊断发现的 ``dimension``，或工具条自由改写的
+        ``author_instruction``）；作者 / 诊断给的改法走 ``instruction``，发现的问题句走
+        ``issue_note``，发现的 id 走 ``quality_signal_id``——修补类别、改写策略与偏好标签按
+        维度推，画像学到的是「对白潜台词」而不是「润色」两个字。
+        """
+
         source_excerpt = _required_text(payload, "source_excerpt")
         issue_dimension = _required_text(payload, "issue_dimension")
         object_type = _required_text(payload, "object_type")
         object_id = _required_text(payload, "object_id")
         if object_type not in {"scene", "chapter"}:
             raise DomainError("PASSAGE_PATCH_INVALID", "object_type must be scene or chapter", status_code=400)
-        patch_payload = self._run_passage_patch(payload, source_excerpt=source_excerpt, issue_dimension=issue_dimension)
+        instruction = _optional_text(payload, "instruction")
+        issue_note = _optional_text(payload, "issue_note")
+        patch_payload = self._run_passage_patch(
+            payload,
+            source_excerpt=source_excerpt,
+            issue_dimension=issue_dimension,
+            instruction=instruction,
+            issue_note=issue_note,
+        )
         row = PassagePatchCandidate(
             patch_id=f"passage_patch_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,
@@ -179,8 +208,8 @@ class WriterDeepReviewService:
             issue_dimension=issue_dimension,
             candidate_category=_candidate_category(payload, issue_dimension),
             target_range_json=_target_range(payload.get("target_range")),
-            revision_strategy=_revision_strategy(payload, issue_dimension),
-            preference_tags_json=_preference_tags(payload, issue_dimension),
+            revision_strategy=_revision_strategy(payload, issue_dimension, instruction=instruction),
+            preference_tags_json=_preference_tags(payload, issue_dimension, instruction=instruction),
             inserted_into_author_draft=0,
             replacement_options_json=patch_payload["replacement_options"],
             rationale=patch_payload.get("rationale"),
@@ -238,66 +267,11 @@ class WriterDeepReviewService:
 
     @staticmethod
     def serialize_evaluation(row: WriterEvaluation | None) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        return {
-            "evaluation_id": row.evaluation_id,
-            "object_type": row.object_type,
-            "object_id": row.object_id,
-            "chapter_id": row.chapter_id,
-            "scene_id": row.scene_id,
-            "rubric_id": row.rubric_id,
-            "source_text_ref": row.source_text_ref,
-            "source_bundle_id": row.source_bundle_id,
-            "evaluator_llm_call_id": row.evaluator_llm_call_id,
-            "lens": row.lens or "aggregate",
-            "parent_evaluation_id": row.parent_evaluation_id,
-            "evidence_spans": row.evidence_spans_json or [],
-            "overall_score": row.overall_score,
-            "scores": row.scores_json or {},
-            "findings": row.findings_json or [],
-            "failure_class": row.failure_class,
-            "auto_rewrite_eligible": bool(row.auto_rewrite_eligible) if row.auto_rewrite_eligible is not None else None,
-            "contract_field_refs": row.contract_field_refs_json or {},
-            "promotion_blockers": row.promotion_blockers_json or [],
-            "scene_form": _scene_form_from_findings(row.findings_json or [], row.object_type),
-            "revision_brief": row.revision_brief_json or [],
-            "requires_human_review": bool(row.requires_human_review),
-            "status": row.status,
-            "created_at": row.created_at,
-        }
+        return _serialize_evaluation(row)
 
     @staticmethod
     def serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
-        return {
-            "patch_id": row.patch_id,
-            "object_type": row.object_type,
-            "object_id": row.object_id,
-            "chapter_id": row.chapter_id,
-            "scene_id": row.scene_id,
-            "source_text_ref": row.source_text_ref,
-            "target_text_ref": row.target_text_ref,
-            "source_draft_id": row.source_draft_id,
-            "generation_llm_call_id": row.generation_llm_call_id,
-            "quality_signal_id": row.quality_signal_id,
-            "source_excerpt": row.source_excerpt,
-            "issue_dimension": row.issue_dimension,
-            "candidate_category": row.candidate_category,
-            "target_range": row.target_range_json or None,
-            "revision_strategy": row.revision_strategy,
-            "preference_tags": row.preference_tags_json or [],
-            "inserted_into_author_draft": bool(row.inserted_into_author_draft),
-            "replacement_options": row.replacement_options_json or [],
-            "rationale": row.rationale,
-            "manual_only": bool(row.manual_only),
-            "status": row.status,
-            "author_decision": row.author_decision,
-            "selected_option_id": row.selected_option_id,
-            "author_decision_note": row.author_decision_note,
-            "created_by": row.created_by,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-        }
+        return _serialize_patch_candidate(row)
 
     @staticmethod
     def serialize_preference_profile(row: AuthorPreferenceProfile) -> dict[str, Any]:
@@ -324,98 +298,30 @@ class WriterDeepReviewService:
         source: dict[str, Any],
         actor_ref: str,
     ) -> dict[str, Any]:
-        for row in self.session.execute(
-            select(WriterEvaluation).where(
-                WriterEvaluation.object_type == object_type,
-                WriterEvaluation.object_id == object_id,
-                WriterEvaluation.rubric_id == LITERARY_REVISION_RUBRIC_ID,
-                WriterEvaluation.parent_evaluation_id.is_(None),
-            )
-        ).scalars().all():
-            row.status = "superseded"
+        """深评是拒绝式的 LLM 节点：没有真实模型就 409 + author_action，不再有本地词表兜底。
 
-        if get_settings().llm_enabled:
-            return self._create_deep_review_with_llm(
-                object_type=object_type,
-                object_id=object_id,
-                chapter_id=chapter_id,
-                scene_id=scene_id,
-                source=source,
-            )
+        （2026-09-22 之前这里有一条 ``_diagnose_by_lens``：按「保护 / 真相 / 公开 / 隐藏」这类
+        写死的词给出套话——那是退役演示故事的残留，对任何真实作品都在说谎。）
+        """
 
-        lens_rows: list[WriterEvaluation] = []
-        lens_payloads = _diagnose_by_lens(source["content"])
-        aggregate_findings: list[dict[str, Any]] = []
-        aggregate_scores = {dimension: 0.78 for dimension in LITERARY_REVISION_DIMENSIONS}
-        for lens, payload in lens_payloads.items():
-            aggregate_findings.extend({**finding, "lens": lens} for finding in payload["findings"])
-            for dimension, score in payload["scores"].items():
-                aggregate_scores[dimension] = min(aggregate_scores.get(dimension, score), score)
-
-        if not source["content"].strip():
-            aggregate_findings.append(
-                _finding(
-                    lens="story",
-                    dimension="source_text",
-                    classification="blocking",
-                    issue="没有可诊断的正文。",
-                    recommendation="先生成或导入正文，再运行深改诊断。",
-                    evidence="",
-                    why="深改必须基于作者实际文本，不能凭空判断。",
-                )
+        if not get_settings().llm_enabled:
+            raise DomainError(
+                "WRITER_DEEP_REVIEW_LLM_REQUIRED",
+                "写作台的 AI 深评需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。",
+                status_code=409,
+                details={
+                    "node_id": "writer_deep_review",
+                    "next_action": "configure_writer_deep_review_route_and_retry",
+                    "author_action": llm_setup_action(llm_enabled=False, generation_mode="offline_disabled"),
+                },
             )
-        aggregate_scores = _cap_scores_for_findings(aggregate_scores, aggregate_findings)
-        revision_brief = _revision_brief_from_findings(aggregate_findings)
-        aggregate_score = round(mean(aggregate_scores.values()), 2) if aggregate_scores else None
-        parent = WriterEvaluation(
-            evaluation_id=f"writer_deep_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
+        return self._create_deep_review_with_llm(
             object_type=object_type,
             object_id=object_id,
             chapter_id=chapter_id,
             scene_id=scene_id,
-            rubric_id=LITERARY_REVISION_RUBRIC_ID,
-            source_text_ref=source.get("source_text_ref"),
-            source_bundle_id=source.get("source_bundle_id"),
-            evaluator_llm_call_id=None,
-            lens="aggregate",
-            parent_evaluation_id=None,
-            evidence_spans_json=_evidence_spans(source["content"], aggregate_findings),
-            overall_score=aggregate_score,
-            scores_json=aggregate_scores,
-            findings_json=aggregate_findings,
-            revision_brief_json=revision_brief,
-            requires_human_review=1 if any(item["severity"] == "blocking" for item in aggregate_findings) else 0,
-            status="completed",
+            source=source,
         )
-        self.session.add(parent)
-        self.session.flush()
-
-        for lens, payload in lens_payloads.items():
-            scores = _cap_scores_for_findings(payload["scores"], payload["findings"])
-            row = WriterEvaluation(
-                evaluation_id=f"writer_deep_eval_{object_type}_{object_id}_{lens}_{uuid.uuid4().hex[:8]}",
-                object_type=object_type,
-                object_id=object_id,
-                chapter_id=chapter_id,
-                scene_id=scene_id,
-                rubric_id=LITERARY_REVISION_RUBRIC_ID,
-                source_text_ref=source.get("source_text_ref"),
-                source_bundle_id=source.get("source_bundle_id"),
-                evaluator_llm_call_id=None,
-                lens=lens,
-                parent_evaluation_id=parent.evaluation_id,
-                evidence_spans_json=_evidence_spans(source["content"], payload["findings"]),
-                overall_score=round(mean(scores.values()), 2) if scores else None,
-                scores_json=scores,
-                findings_json=payload["findings"],
-                revision_brief_json=_revision_brief_from_findings(payload["findings"]),
-                requires_human_review=1 if any(item["severity"] == "blocking" for item in payload["findings"]) else 0,
-                status="completed",
-            )
-            self.session.add(row)
-            lens_rows.append(row)
-        self.session.flush()
-        return self._review_payload(object_type, object_id)
 
     def _create_deep_review_with_llm(
         self,
@@ -438,6 +344,10 @@ class WriterDeepReviewService:
             "scene_summary": source.get("content") if object_type == "scene" else None,
             "chapter_summary": source.get("content") if object_type == "chapter" else None,
         }
+        if object_type == "scene":
+            # 2026-09-22：深评按作者设计的这一场判断（形态 / 三拍 / 代价 / 该藏的），不把设计好的
+            # 反应场当成「压力不足」；设计背景是可压缩的 section，缺了也不影响评审本身。
+            snapshot.update(self._scene_design_sections(scene_id or object_id))
         prompt = self.prompt_builder.build(snapshot, "writer_deep_review")
         # 2026-09-14 WP6.3：评审在参考作者的手笔下判断「复读 / 意象必要性 / 声音辨识度」
         prompt = self._inject_style_reference_prefix(
@@ -485,6 +395,16 @@ class WriterDeepReviewService:
                 },
             ) from exc
         normalized = _normalize_deep_review_output(node_result.response.structured_output or {})
+        # 模型答完了才让旧的一轮退位：被拒绝 / 失败的一次不动历史
+        for row in self.session.execute(
+            select(WriterEvaluation).where(
+                WriterEvaluation.object_type == object_type,
+                WriterEvaluation.object_id == object_id,
+                WriterEvaluation.rubric_id == LITERARY_REVISION_RUBRIC_ID,
+                WriterEvaluation.parent_evaluation_id.is_(None),
+            )
+        ).scalars().all():
+            row.status = "superseded"
         parent = WriterEvaluation(
             evaluation_id=f"writer_deep_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,
@@ -536,6 +456,27 @@ class WriterDeepReviewService:
         self.session.flush()
         return self._review_payload(object_type, object_id)
 
+    def _scene_design_sections(self, scene_id: str) -> dict[str, str]:
+        """这一场的结构事实段 + 设计背景段（有就给，任何一段渲染失败都只是少一段）。"""
+
+        sections: dict[str, str] = {}
+        scene = self.session.get(SceneCard, scene_id)
+        if scene is None:
+            return sections
+        try:
+            brief = render_scene_structure_brief(scene, self.session)
+            if brief:
+                sections["scene_structure_brief"] = brief
+        except Exception:  # noqa: BLE001 — 背景段是可选增强
+            _LOGGER.debug("scene structure brief unavailable for %s", scene_id, exc_info=True)
+        try:
+            context = render_scene_design_context(scene, self.session)
+            if context:
+                sections["scene_design_context"] = context
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("scene design context unavailable for %s", scene_id, exc_info=True)
+        return sections
+
     def _review_payload(self, object_type: str, object_id: str) -> dict[str, Any]:
         latest = self.session.execute(
             select(WriterEvaluation)
@@ -579,6 +520,8 @@ class WriterDeepReviewService:
         *,
         source_excerpt: str,
         issue_dimension: str,
+        instruction: str | None = None,
+        issue_note: str | None = None,
     ) -> dict[str, Any]:
         target_text_ref = _optional_text(payload, "target_text_ref") or _optional_text(payload, "source_text_ref") or ""
         source_draft = self._source_draft(_optional_text(payload, "source_draft_id"))
@@ -590,6 +533,8 @@ class WriterDeepReviewService:
             target_text_ref=target_text_ref,
             source_draft=source_draft,
             preference=preference,
+            instruction=instruction,
+            issue_note=issue_note,
         )
         prompt = self.prompt_builder.build(snapshot, "writer_passage_patch")
         object_type = _required_text(payload, "object_type")
@@ -601,6 +546,8 @@ class WriterDeepReviewService:
             target_text_ref=target_text_ref,
             source_draft=source_draft,
             preference=preference,
+            instruction=instruction,
+            issue_note=issue_note,
         )
         # 2026-09-14 WP6.3：局部补丁在参考作者的手笔下改句（k≤3 样例窗口，作者稿作选窗上下文）
         prompt = self._inject_style_reference_prefix(
@@ -911,6 +858,8 @@ def _passage_patch_snapshot(
     target_text_ref: str,
     source_draft: AuthorDraft | None,
     preference: AuthorPreferenceProfile | None,
+    instruction: str | None = None,
+    issue_note: str | None = None,
 ) -> dict[str, Any]:
     preference_summary = preference.summary_json if preference is not None else {}
     inline_digests = {
@@ -921,6 +870,8 @@ def _passage_patch_snapshot(
                 "target_text_ref": target_text_ref,
                 "source_excerpt": source_excerpt,
                 "issue_dimension": issue_dimension,
+                "instruction": instruction or "",
+                "issue_note": issue_note or "",
                 "source_draft_id": source_draft.draft_id if source_draft is not None else None,
                 "source_draft_context": _compact_text(source_draft.content if source_draft is not None else source_excerpt, 1200),
             },
@@ -969,15 +920,24 @@ def _passage_patch_user_prompt(
     target_text_ref: str,
     source_draft: AuthorDraft | None,
     preference: AuthorPreferenceProfile | None,
+    instruction: str | None = None,
+    issue_note: str | None = None,
 ) -> str:
     preference_summary = preference.summary_json if preference is not None else {}
+    target_lines = [
+        "## Passage Patch Target",
+        f"Target Text Ref: {target_text_ref}",
+        f"Issue Dimension: {issue_dimension}",
+    ]
+    if issue_note:
+        target_lines.append(f"Diagnosed Issue: {issue_note}")
+    if instruction:
+        target_lines.append(f"Author Instruction: {instruction}")
     return "\n".join(
         [
             base_prompt,
             "",
-            "## Passage Patch Target",
-            f"Target Text Ref: {target_text_ref}",
-            f"Issue Dimension: {issue_dimension}",
+            *target_lines,
             "Source Excerpt:",
             source_excerpt,
             "",
@@ -1110,36 +1070,11 @@ def _compact_text(value: str, limit: int) -> str:
     return f"{text[:head]}\n...\n{text[-tail:]}"
 
 
-def _infer_scene_form(text: str) -> str:
-    value = str(text or "")
-    if _contains_any(value, ("选择", "决定", "必须", "代价", "公开", "保护", "不能")):
-        return "plot_scene"
-    if _contains_any(value, ("真相", "证据", "秘密", "录音", "发现", "揭示")):
-        return "revelation_scene"
-    if _contains_any(value, ("关系", "信任", "背叛", "靠近", "疏远", "沉默", "对视")):
-        return "relationship_scene"
-    if _contains_any(value, ("离开", "抵达", "回到", "之后", "翌日", "穿过", "转入")):
-        return "transition_scene"
-    if _contains_any(value, ("雨", "雪", "风", "灯", "雾", "影", "气味", "夜", "门", "窗", "月", "光")):
-        return "atmosphere_scene"
-    return "plot_scene"
-
 def _candidate_category(payload: dict[str, Any], issue_dimension: str) -> str:
     explicit = _optional_text(payload, "candidate_category")
     if explicit in PATCH_CATEGORIES:
         return explicit
-    dimension = str(issue_dimension or "")
-    if dimension in {"dialogue_subtext", "dialogue_edge", "relationship_tension"}:
-        return "dialogue_rewrite"
-    if dimension in {"image_necessity", "repetitive_expression", "template_action_reuse"}:
-        return "action_replace"
-    if dimension in {"ending_drive", "summary_ending"}:
-        return "ending_pressure"
-    if dimension in {"information_rhythm", "expository_dialogue", "false_clarity"}:
-        return "information_reorder"
-    if dimension in {"model_voice", "prose_model_voice", "image_homogeneity", "syntax_monotony"}:
-        return "de_model_voice"
-    return "local_patch"
+    return candidate_category_for_dimension(issue_dimension)
 
 
 def _target_range(value: Any) -> dict[str, Any] | None:
@@ -1155,10 +1090,12 @@ def _target_range(value: Any) -> dict[str, Any] | None:
     return result or None
 
 
-def _revision_strategy(payload: dict[str, Any], issue_dimension: str) -> str:
+def _revision_strategy(payload: dict[str, Any], issue_dimension: str, *, instruction: str | None = None) -> str:
     explicit = _optional_text(payload, "revision_strategy")
     if explicit:
         return explicit
+    if instruction:
+        return instruction
     category = _candidate_category(payload, issue_dimension)
     return {
         "dialogue_rewrite": "用反问、截断或沉默替代解释性对白。",
@@ -1169,7 +1106,7 @@ def _revision_strategy(payload: dict[str, Any], issue_dimension: str) -> str:
     }.get(category, f"围绕 {issue_dimension} 做局部深改。")
 
 
-def _preference_tags(payload: dict[str, Any], issue_dimension: str) -> list[str]:
+def _preference_tags(payload: dict[str, Any], issue_dimension: str, *, instruction: str | None = None) -> list[str]:
     raw = payload.get("preference_tags")
     if isinstance(raw, list):
         tags = [str(item).strip() for item in raw if str(item).strip()]
@@ -1183,163 +1120,16 @@ def _preference_tags(payload: dict[str, Any], issue_dimension: str) -> list[str]
         "information_reorder": ["信息分段释放"],
         "de_model_voice": ["去模型腔", "少抽象总结"],
     }
-    return defaults.get(category, [issue_dimension])[:8]
+    if category in defaults:
+        return defaults[category][:8]
+    # 自由改写：偏好画像记作者说的那句话（不是维度键）
+    if instruction and issue_dimension == AUTHOR_INSTRUCTION_DIMENSION:
+        return [instruction[:40]]
+    return [issue_dimension][:8]
 
 
-def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
-    return any(token and token in text for token in tokens)
-
-
-def _scene_form_from_findings(findings: list[dict[str, Any]], object_type: str | None = None) -> str | None:
-    if object_type != "scene":
-        return None
-    for finding in findings:
-        scene_form = str(finding.get("scene_form") or "")
-        if scene_form in SCENE_FORMS:
-            return scene_form
-    return "plot_scene"
-
-
-def _scene_form_note(scene_form: str) -> str:
-    labels = {
-        "plot_scene": "场景形态判断：情节场。已有选择、阻碍或代价信号，不必再为了钩子额外加压。",
-        "atmosphere_scene": "场景形态判断：氛围场。它可以优先建立气息、视角和读者身体感，不必强行制造重大选择。",
-        "relationship_scene": "场景形态判断：关系场。核心价值在关系微转，而不是外部事件大小。",
-        "revelation_scene": "场景形态判断：认知/揭示场。重点是信息释放的节奏和后果。",
-        "transition_scene": "场景形态判断：过渡场。它可以服务位置、时间或状态切换，但仍应有清晰的读者方向。",
-    }
-    return labels.get(scene_form, labels["plot_scene"])
-
-
-def _scene_form_evidence(text: str) -> str:
-    excerpt = str(text or "").strip()
-    return excerpt[:80]
-
-
-def _diagnose_by_lens(content: str) -> dict[str, dict[str, Any]]:
-    findings: dict[str, list[dict[str, Any]]] = {lens: [] for lens in DEEP_REVIEW_LENSES}
-    text = content or ""
-    scene_form = _infer_scene_form(text)
-    if len(text.strip()) < 80:
-        findings["story"].append(
-            _finding(
-                lens="story",
-                dimension="choice_pressure",
-                classification="blocking",
-                issue="正文太短，尚不足以承载深改判断。",
-                recommendation="补足人物选择、阻碍和结尾变化后再诊断。",
-                evidence=text[:40],
-                why="短文本容易让系统误把设定摘要当成完整场景。",
-            )
-        )
-    if not any(token in text for token in ("选择", "决定", "必须", "不能", "公开", "隐藏", "保护")):
-        findings["character"].append(
-            _finding(
-                lens="character",
-                dimension="choice_pressure",
-                classification="blocking",
-                issue="人物没有被逼到必须选择的位置。",
-                recommendation="让人物在两个代价之间做出可见动作。",
-                evidence=text[:36],
-                why="读者需要看到人物承担后果，而不是只接收线索。",
-            )
-        )
-    elif "解释" in text and not any(token in text for token in ("藏", "交给", "删掉", "撕掉", "承认")):
-        findings["character"].append(
-            _finding(
-                lens="character",
-                dimension="character_contradiction",
-                classification="blocking",
-                issue="人物说出了正确理由，但选择还没有落成不可逆动作。",
-                recommendation="让人物为保护或公开付出一个立刻可见的代价。",
-                evidence=_first_match(text, ("解释", "保护")),
-                why="深改阶段不能只让人物站在正确立场上，必须让她失去或冒犯什么。",
-            )
-        )
-    if not any(mark in text for mark in ("“", "\"", "说", "问", "答")) or "解释" in text:
-        findings["prose"].append(
-            _finding(
-                lens="prose",
-                dimension="dialogue_subtext",
-                classification="revision",
-                issue="对白承担了解释功能，潜台词压力不足。",
-                recommendation="把解释改成回避、截断、反问或动作。",
-                evidence=_first_match(text, ("解释", "说")),
-                why="深改台需要让对白产生关系摩擦，而不是复述动机。",
-            )
-        )
-    repeated_terms = _repeated_ai_trace_terms(text)
-    if repeated_terms:
-        findings["prose"].append(
-            _finding(
-                lens="prose",
-                dimension="repetitive_expression",
-                classification="revision",
-                issue=f"出现重复手势或同质 AI 氛围词：{'、'.join(repeated_terms)}。",
-                recommendation="保留一个核心动作，其余改成关系反应或物理后果。",
-                evidence=repeated_terms[0],
-                why="重复的漂亮动作会让作者声线变薄，削弱人物独特性。",
-            )
-        )
-    if not text.rstrip().endswith(("？", "?", "。")) or not any(token in text[-80:] for token in ("心跳", "证据", "谁", "不能", "独自", "公开", "隐藏")):
-        findings["reader"].append(
-            _finding(
-                lens="reader",
-                dimension="ending_drive",
-                classification="taste",
-                issue="结尾可以更硬地把读者推向下一场。",
-                recommendation="用一个未回答的动作或视觉钩子收束，而不是总结。",
-                evidence=text[-40:],
-                why="结尾不是装饰，它决定读者是否愿意继续翻页。",
-            )
-        )
-    if not any(token in text for token in ("保护", "真相", "代价", "背叛", "公开", "隐藏")):
-        findings["theme"].append(
-            _finding(
-                lens="theme",
-                dimension="theme_pressure",
-                classification="revision",
-                issue="场景的主题压力还没有落到人物选择上。",
-                recommendation="把主题问题压进人物的具体取舍。",
-                evidence=text[:40],
-                why="深改阶段需要知道这场戏触碰了作品真正关心的问题。",
-            )
-        )
-    else:
-        findings["theme"].append(
-            _finding(
-                lens="theme",
-                dimension="theme_pressure",
-                classification="taste",
-                issue="主题压力已经出现，但还可以更不体面。",
-                recommendation="让人物承认自己也从隐瞒中获益，而不只是正确地保护他人。",
-                evidence=_first_match(text, ("保护", "真相", "公开", "隐藏")),
-                why="人物有不体面的一瞬间，主题才会有重量。",
-            )
-        )
-    if text.strip():
-        findings["story"].append(
-            _finding(
-                lens="story",
-                dimension="scene_form",
-                classification="ignore_ok",
-                issue=_scene_form_note(scene_form),
-                recommendation="按这个场景形态检查它是否完成对应功能，不必把每一场都强行加成大钩子或 forced choice。",
-                evidence=_scene_form_evidence(text),
-                why="场景可以承担氛围、认知、关系微转、信息释放或过渡功能；判断形态能避免把所有文本压成同一种商业场。",
-                scene_form=scene_form,
-            )
-        )
-    payloads: dict[str, dict[str, Any]] = {}
-    for lens in DEEP_REVIEW_LENSES:
-        lens_findings = findings[lens]
-        for finding in lens_findings:
-            finding.setdefault("scene_form", scene_form)
-        payloads[lens] = {
-            "findings": lens_findings,
-            "scores": _scores_for_findings(lens_findings),
-        }
-    return payloads
+# 供旧调用方 / 测试按名字取：场景形态推断现在只看模型给的 scene_form（scene_diagnosis）
+_scene_form_from_findings = scene_form_from_findings
 
 
 def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1463,31 +1253,6 @@ def _normalize_revision_brief(value: Any, findings: list[dict[str, Any]]) -> lis
     return _revision_brief_from_findings(findings)
 
 
-def _finding(
-    *,
-    lens: str,
-    dimension: str,
-    classification: str,
-    issue: str,
-    recommendation: str,
-    evidence: str,
-    why: str,
-    scene_form: str | None = None,
-) -> dict[str, Any]:
-    return {
-        "lens": lens,
-        "dimension": dimension,
-        "severity": classification,
-        "classification": classification,
-        "issue": issue,
-        "recommendation": recommendation,
-        "evidence_excerpt": evidence,
-        "evidence_location": "source text",
-        "why_it_matters": why,
-        "scene_form": scene_form or "plot_scene",
-    }
-
-
 def _scores_for_findings(findings: list[dict[str, Any]]) -> dict[str, float]:
     scores = {dimension: 0.78 for dimension in LITERARY_REVISION_DIMENSIONS}
     for finding in findings:
@@ -1501,21 +1266,6 @@ def _scores_for_findings(findings: list[dict[str, Any]]) -> dict[str, float]:
         elif finding.get("severity") == "taste":
             scores[dimension] = min(scores[dimension], 0.72)
     return scores
-
-
-def _cap_scores_for_findings(scores: dict[str, float], findings: list[dict[str, Any]]) -> dict[str, float]:
-    capped = dict(scores)
-    actionable_findings = [finding for finding in findings if finding.get("severity") != "ignore_ok"]
-    if actionable_findings:
-        for dimension in capped:
-            capped[dimension] = min(capped[dimension], 0.85)
-    for finding in actionable_findings:
-        dimension = finding.get("dimension")
-        if dimension in capped and finding.get("severity") == "blocking":
-            capped[dimension] = min(capped[dimension], 0.42)
-        elif dimension in capped and finding.get("severity") == "revision":
-            capped[dimension] = min(capped[dimension], 0.58)
-    return capped
 
 
 def _revision_brief_from_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:

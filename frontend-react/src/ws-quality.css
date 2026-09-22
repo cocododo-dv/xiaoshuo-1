@@ -58,7 +58,8 @@
 
 .q-findings { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 14px; }
 .q-finding { padding-left: 12px; border-left: 3px solid var(--line-2); }
-.q-finding-head { display: flex; align-items: center; gap: 8px; }
+.q-finding-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.q-finding-go { margin-left: auto; }
 .q-finding-head strong { font-size: var(--fs-md); font-weight: 600; color: var(--ink-1); }
 .q-finding-issue { margin: 6px 0 0; font-size: var(--fs-md); line-height: var(--lh-ui); color: var(--ink-2); }
 .q-finding-evidence {
