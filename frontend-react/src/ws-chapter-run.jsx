@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 
@@ -101,6 +102,7 @@ function ArrChapterRunAction({
   const confirmingRef = useRef(false);
   const completedRef = useRef(null);
   const statusRef = useRef(EMPTY_RUN.status);   // 上一次看到的状态：判断这次是不是「亲眼看着」的变化
+  const completedCountRef = useRef(0);          // 上一次看到的已完成场数：多了就刷新这一章的诊断角标
 
   const clearPoll = () => {
     if (timerRef.current != null) {
@@ -153,6 +155,11 @@ function ArrChapterRunAction({
       });
       return;
     }
+    // 后台作业又归档了几场：这一章的诊断角标随之更新（服务端改了这几场的正文，浏览器这边没有别的信号）
+    if (wasLive && nextRun.completedCount > completedCountRef.current) {
+      try { WsDiagnosis.refreshChapter(chapterId); } catch (error) { /* 角标不是闸门 */ }
+    }
+    completedCountRef.current = nextRun.completedCount;
     statusRef.current = nextRun.status;
     setRun(nextRun);
     // 进行中的运行总是摊开；终态只在作者看着它从进行中走到终态时弹出

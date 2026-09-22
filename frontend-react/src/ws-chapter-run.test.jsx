@@ -11,6 +11,9 @@ vi.mock("./ws-works.jsx", () => ({
   WsWorks: { activeId: vi.fn(() => "project-1") },
 }));
 
+vi.mock("./ws-diagnosis-summary.jsx", () => ({
+  WsDiagnosis: { refreshChapter: vi.fn(() => Promise.resolve()), refreshScene: vi.fn(() => Promise.resolve()) },
+}));
 vi.mock("./ws-catalog.jsx", () => ({
   WsCatalog: {
     __refresh: vi.fn(() => Promise.resolve()),
@@ -20,6 +23,7 @@ vi.mock("./ws-catalog.jsx", () => ({
 
 import { apiGet, apiPost } from "./lib/client.js";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { ArrChapterRunAction, normalizeRun } from "./ws-chapter-run.jsx";
 
@@ -143,6 +147,8 @@ describe("章节编排 · 运行本章真实接线", () => {
     expect(view.host.textContent).toContain("正在运行");
     expect(view.host.textContent).toContain("1 / 3 个场景");
     expect(view.host.textContent).toContain("33%");
+    /* 后台作业归档了第一场：这一章的诊断角标随之刷新 */
+    expect(WsDiagnosis.refreshChapter).toHaveBeenCalledWith("chapter-1");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(25);
@@ -153,6 +159,7 @@ describe("章节编排 · 运行本章真实接线", () => {
     expect(WsCatalog.__refresh).toHaveBeenCalledTimes(1);
     expect(WsCatalog.__refresh).toHaveBeenCalledWith("project-1");
     expect(onCatalogRefresh).toHaveBeenCalledWith([]);
+    expect(WsDiagnosis.refreshChapter).toHaveBeenCalledTimes(2);
 
     await click(view.host.querySelector('[data-testid="chapter-run-review"]'));
     expect(onOpenReview).toHaveBeenCalledTimes(1);

@@ -289,7 +289,7 @@ function DxFindingRow({ finding, active, onPick }) {
         <span className="wr-dxd-h">
           <span className="wr-dxd-src">{src}{finding.lens && WR_DX_LENS[finding.lens] ? ` · ${WR_DX_LENS[finding.lens]}` : ""}{finding.origin && WR_DX_ORIGIN[finding.origin.kind] ? ` · ${WR_DX_ORIGIN[finding.origin.kind]}` : ""}{carried ? "（沿用上次）" : ""}</span>
           {finding.related && <span className="wr-dxd-related-tag">{relatedTag(finding)}</span>}
-          {calibrated && <span className="wr-dxd-calibrated">参考作者也常这样</span>}
+          {calibrated && <span className="wr-dxd-calibrated">{finding.calibrated.kind === "profile_deliberate_repetition" ? "画像：刻意重复" : (finding.calibrated.level === "common" ? "参考作者也常见" : "参考作者的常态")}</span>}
           {finding.opinion && WR_DX_VERDICT[finding.opinion.verdict] && <span className="wr-dxd-opinion-tag">{WR_DX_VERDICT[finding.opinion.verdict].label}</span>}
           {finding.stale && <span className="wr-dxd-stale">证据已不在正文里</span>}
           {!finding.evidence && !finding.stale && <span className="wr-dxd-stale">整场</span>}
@@ -462,9 +462,16 @@ function WrDeepDrawer({
         {diagnosis && diagnosis.style_bound && (
           <Notice tone="info" className="wr-dxd-notice">
             {diagnosis.craft_calibration && diagnosis.craft_calibration.rules
-              ? "本场绑定了参考画像：规则体检已按参考书校准——这位作者的常用词不当毛病，这位作者常态的检查只作提示；仍与样例冲突时以样例为准。"
+              ? "本场绑定了参考画像：规则体检已按参考书校准——词表词按这位作者的密度判，这位作者常态的检查只作提示；仍与样例冲突时以样例为准。"
               : "本场绑定了参考画像：规则体检是房风词表的意见，与参考作者的做法冲突时以样例为准。"}
             {diagnosis.craft_calibration && diagnosis.craft_calibration.note ? ` ${diagnosis.craft_calibration.note}` : ""}
+            {diagnosis.craft_calibration && Array.isArray(diagnosis.craft_calibration.waived_in_scene) && diagnosis.craft_calibration.waived_in_scene.length > 0 && (
+              <span className="wr-dxd-waived" data-testid="dx-waived">
+                {" "}本场按这位作者的密度放过 {diagnosis.craft_calibration.waived_in_scene.length} 个词：
+                {diagnosis.craft_calibration.waived_in_scene.slice(0, 6).map((item) => `${item.term} ×${item.count}`).join("、")}
+                {diagnosis.craft_calibration.waived_in_scene.length > 6 ? "…" : ""}。
+              </span>
+            )}
           </Notice>
         )}
         {lastPassage && (

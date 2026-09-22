@@ -42,6 +42,7 @@ import hashlib
 import re
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import func, select
@@ -67,13 +68,13 @@ from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.literary_quality import (
     DEFAULT_RULE_CALIBRATION,
     FAULT_LEXICONS,
-    RULE_DIMENSION_HABIT_SHARE,
     RULE_ENDING_DIMENSIONS,
-    RULE_NEEDLE_HABIT_PER_10K,
     SEVERITY_RANK,
     RuleCalibration,
     analyze_literary_quality,
+    calibrate_lexicons,
     dimension_label,
+    dimension_level,
     unify_rule_finding,
 )
 from novel_system.services.scene_lookup import require_chapter, require_scene
@@ -154,12 +155,15 @@ CRAFT_LONG_PARAGRAPH_CHARS = 170
 # 参考作者的习惯：每千段里贴邻叠句 / 三句同字开头的段落数到了这个水平，就是这位作者的手法，不提示
 CRAFT_ECHO_HABIT_PER_1K = 5.0
 CRAFT_SAME_OPENING_HABIT_PER_1K = 10.0
-# 21 维规则的校准：参考书按标题段 / 场分隔行切成单元，单元内按 ~2400 字（一场的量）切窗口；
-# 一般维度在最多 48 个窗口上量「响的比例」，收尾三条只在最多 48 个真实单元末尾上量，且至少要有 8 个末尾
+# 21 维规则的校准：参考书按标题段 / 场分隔行 / 导入时记下的场界切成单元，单元内按 ~2400 字（一场的量）切窗口；
+# 一般维度在最多 96 个窗口上量「响的比例」，收尾三条只在最多 96 个真实收尾（章末 / 场界，不够时补转场段之前的
+# 那一段）上量；窗口 / 收尾都至少要 4 个才算数（更少的样本连 Wilson 下界也撑不起来）
 RULE_CALIBRATION_WINDOW_CHARS = 2400
-RULE_CALIBRATION_MAX_WINDOWS = 48
-RULE_CALIBRATION_MAX_ENDINGS = 48
-RULE_CALIBRATION_MIN_ENDINGS = 8
+RULE_CALIBRATION_MAX_WINDOWS = 96
+RULE_CALIBRATION_MAX_ENDINGS = 96
+RULE_CALIBRATION_MIN_WINDOWS = 4
+RULE_CALIBRATION_MIN_ENDINGS = 4
+TRANSITION_PARAGRAPH_TYPE = "transition"
 # 局部深评：整场不超过这个字数就全文给模型（焦点段与前后段标出），再长的远段只留开头
 PASSAGE_SCENE_FULL_CHARS = 12000
 PASSAGE_FAR_PARAGRAPH_HEAD = 40
@@ -361,15 +365,20 @@ class CraftCalibration:
             reason = "这位作者刻意用重复" if self.deliberate_repetition else "这位作者常这么写"
             parts.append(f"{' / '.join(habits)}不提示（{reason}）")
         if self.rules.active:
-            if self.rules.habitual_needles:
-                sample = self.rules.as_dict()["habitual_needles"][:4]
-                parts.append(
-                    f"词表里 {len(self.rules.habitual_needles)} 个词是这位作者的常用词（{'、'.join(sample)}"
-                    f"{'…' if len(self.rules.habitual_needles) > len(sample) else ''}），不当毛病"
-                )
+            rules = self.rules.as_dict()
+            if rules["top_needles"]:
+                sample = "、".join(f"{item['term']} {item['per_10k']:g}" for item in rules["top_needles"][:4])
+                parts.append(f"词表词按这位作者的密度判（每万字：{sample}…），寻常用法不当毛病")
             if self.rules.habitual_dimensions:
                 labels = [dimension_label(item) or item for item in sorted(self.rules.habitual_dimensions)]
-                parts.append(f"「{' / '.join(labels[:4])}{'…' if len(labels) > 4 else ''}」在这位作者的场里也常见，只作提示")
+                parts.append(f"「{' / '.join(labels[:4])}{'…' if len(labels) > 4 else ''}」是这位作者的常态，只作提示")
+            if self.rules.common_dimensions:
+                labels = [dimension_label(item) or item for item in sorted(self.rules.common_dimensions)]
+                parts.append(f"「{' / '.join(labels[:4])}{'…' if len(labels) > 4 else ''}」在这位作者的场里也常见，按审美看")
+            if self.rules.endings_source == "none":
+                parts.append("参考书没有章节与场的分界，收尾三条没有校准")
+            elif self.rules.endings_source in {"transitions", "units+transitions"}:
+                parts.append(f"收尾三条按 {self.rules.endings} 个真实收尾校准（含转场段之前的那一段）")
         return f"按{title}校准：{'；'.join(parts)}。"
 
     def as_dict(self) -> dict[str, Any]:
@@ -418,31 +427,78 @@ def _needle_rates(corpus: str, chars: int) -> dict[str, float]:
     return rates
 
 
-def compute_reference_rules(paragraphs: list[str]) -> dict[str, Any]:
-    """参考书上的 21 维规则读数：词表词的密度（每万字）与每条规则在场级窗口上「响」的比例。
+def _reference_units(
+    paragraphs: list[str],
+    *,
+    paragraph_types: list[str] | None,
+    scene_breaks: Iterable[int] | None,
+) -> tuple[list[list[str]], int, int]:
+    """参考书切成单元：标题段 / 纯符号分隔行 / 导入时记下的场界（含空行分界）都是结构分界。
+    结构分界太少时（不到 ``RULE_CALIBRATION_MIN_ENDINGS`` 个真实收尾）再按转场段补：分类器标为
+    ``transition`` 的段之前的那一段也算一个收尾。返回 (单元, 结构分界数, 转场补充数)。"""
 
-    参考书按标题段 / 场分隔行切成单元，单元内按 ~2400 字切窗口；收尾三条（summary_ending /
-    ending_drive / false_poetic_closure）只在真实的单元末尾上量——随手切的窗口末尾不是收尾。
-    """
-
-    units: list[list[str]] = []
-    current: list[str] = []
-    for paragraph in paragraphs:
+    types = list(paragraph_types or [])
+    break_after = {int(index) for index in (scene_breaks or ()) if isinstance(index, int) and not isinstance(index, bool)}
+    kept: list[tuple[int, str, str]] = []  # (原索引, 正文, 段型)
+    for index, paragraph in enumerate(paragraphs):
         body = str(paragraph or "").strip()
-        if not body:
-            continue
-        if is_title_paragraph(body) or is_scene_break_paragraph(body):
-            if current:
+        if body:
+            kept.append((index, body, str(types[index] if index < len(types) else "") or ""))
+
+    def cut(use_transitions: bool) -> tuple[list[list[str]], int, int]:
+        units: list[list[str]] = []
+        current: list[str] = []
+        structural = 0
+        transitional = 0
+        for position, (index, body, paragraph_type) in enumerate(kept):
+            if is_title_paragraph(body) or is_scene_break_paragraph(body):
+                if current:
+                    units.append(current)
+                    current = []
+                    structural += 1
+                continue
+            if use_transitions and paragraph_type == TRANSITION_PARAGRAPH_TYPE and current and position > 0:
                 units.append(current)
                 current = []
-            continue
-        current.append(body)
-    if current:
-        units.append(current)
+                transitional += 1
+            current.append(body)
+            if index in break_after:
+                units.append(current)
+                current = []
+                structural += 1
+        if current:
+            units.append(current)
+        return units, structural, transitional
+
+    units, structural, _ = cut(False)
+    if structural + 1 >= RULE_CALIBRATION_MIN_ENDINGS:
+        return units, structural, 0
+    with_transitions, structural_again, transitional = cut(True)
+    if transitional:
+        return with_transitions, structural_again, transitional
+    return units, structural, 0
+
+
+def compute_reference_rules(
+    paragraphs: list[str],
+    *,
+    paragraph_types: list[str] | None = None,
+    scene_breaks: Iterable[int] | None = None,
+) -> dict[str, Any]:
+    """参考书上的 21 维规则读数：词表词的密度（每万字）与每条规则在场级窗口上「响」的次数。
+
+    参考书按 ``_reference_units`` 切成单元，单元内按 ~2400 字切窗口；收尾三条（summary_ending /
+    ending_drive / false_poetic_closure）只在真实的单元末尾上量——随手切的窗口末尾不是收尾。
+    ``endings_source`` 记收尾从哪来：``units``（章末 / 场界）、``units+transitions`` / ``transitions``
+    （补了转场段之前的那一段）、``none``（不够 4 个真实收尾：收尾三条不校准）。
+    """
+
+    units, structural, transitional = _reference_units(paragraphs, paragraph_types=paragraph_types, scene_breaks=scene_breaks)
     corpus = "\n".join(paragraph for unit in units for paragraph in unit)
     chars = len(_WS_RE.sub("", corpus))
+    empty = {"chars": 0, "windows": 0, "endings": 0, "endings_source": "none", "needle_rates": {}, "dimension_stats": {}, "dimension_shares": {}}
     if not chars:
-        return {"chars": 0, "windows": 0, "endings": 0, "needle_rates": {}, "dimension_shares": {}}
+        return empty
 
     windows: list[str] = []
     endings: list[str] = []
@@ -469,45 +525,70 @@ def compute_reference_rules(paragraphs: list[str]) -> dict[str, Any]:
         windows = list(endings)
     windows = _evenly(windows, RULE_CALIBRATION_MAX_WINDOWS)
     endings = _evenly(endings, RULE_CALIBRATION_MAX_ENDINGS)
+    endings_usable = len(endings) >= RULE_CALIBRATION_MIN_ENDINGS
+    if not endings_usable:
+        endings_source = "none"
+    elif transitional and structural:
+        endings_source = "units+transitions"
+    elif transitional:
+        endings_source = "transitions"
+    else:
+        endings_source = "units"
 
-    fired: Counter[str] = Counter()
-    for window in windows:
-        _, findings = analyze_literary_quality(window)
-        for dimension in {str(item.get("dimension") or "") for item in findings}:
-            if dimension and dimension not in RULE_ENDING_DIMENSIONS:
-                fired[dimension] += 1
-    ending_fired: Counter[str] = Counter()
-    if len(endings) >= RULE_CALIBRATION_MIN_ENDINGS:
+    stats: dict[str, dict[str, int]] = {}
+    if len(windows) >= RULE_CALIBRATION_MIN_WINDOWS:
+        fired: Counter[str] = Counter()
+        for window in windows:
+            _, findings = analyze_literary_quality(window)
+            for dimension in {str(item.get("dimension") or "") for item in findings}:
+                if dimension and dimension not in RULE_ENDING_DIMENSIONS:
+                    fired[dimension] += 1
+        stats.update({dimension: {"fired": count, "n": len(windows)} for dimension, count in fired.items()})
+    if endings_usable:
+        ending_fired: Counter[str] = Counter()
         for window in endings:
             _, findings = analyze_literary_quality(window)
             for dimension in {str(item.get("dimension") or "") for item in findings}:
                 if dimension in RULE_ENDING_DIMENSIONS:
                     ending_fired[dimension] += 1
-    shares = {dimension: round(count / len(windows), 3) for dimension, count in fired.items() if windows}
-    if len(endings) >= RULE_CALIBRATION_MIN_ENDINGS:
-        shares.update({dimension: round(count / len(endings), 3) for dimension, count in ending_fired.items()})
+        stats.update({dimension: {"fired": count, "n": len(endings)} for dimension, count in ending_fired.items()})
     return {
         "chars": chars,
         "windows": len(windows),
-        "endings": len(endings),
+        "endings": len(endings) if endings_usable else 0,
+        "endings_source": endings_source,
         "needle_rates": _needle_rates(corpus, chars),
-        "dimension_shares": shares,
+        "dimension_stats": stats,
+        "dimension_shares": {dimension: round(item["fired"] / item["n"], 3) for dimension, item in stats.items() if item["n"]},
     }
 
 
-def rule_calibration_from_reference(stats: dict[str, Any] | None) -> RuleCalibration:
+def rule_calibration_from_reference(stats: dict[str, Any] | None, *, deliberate_repetition: bool = False) -> RuleCalibration:
     if not stats or not int(stats.get("chars") or 0):
         return DEFAULT_RULE_CALIBRATION
     rates = {str(key): float(value) for key, value in (stats.get("needle_rates") or {}).items()}
-    shares = {str(key): float(value) for key, value in (stats.get("dimension_shares") or {}).items()}
+    dimension_stats: dict[str, dict[str, Any]] = {}
+    for dimension, item in (stats.get("dimension_stats") or {}).items():
+        fired = int((item or {}).get("fired") or 0)
+        total = int((item or {}).get("n") or 0)
+        if total <= 0:
+            continue
+        level, lower = dimension_level(fired, total)
+        dimension_stats[str(dimension)] = {
+            "fired": fired,
+            "n": total,
+            "share": round(fired / total, 3),
+            "lower_bound": round(lower, 3),
+            "level": level,
+        }
     return RuleCalibration(
         source="reference",
-        habitual_needles=frozenset(term for term, rate in rates.items() if rate >= RULE_NEEDLE_HABIT_PER_10K),
-        habitual_dimensions=frozenset(dimension for dimension, share in shares.items() if share >= RULE_DIMENSION_HABIT_SHARE),
         needle_rates=rates,
-        dimension_shares=shares,
+        dimension_stats=dimension_stats,
+        deliberate_repetition=bool(deliberate_repetition),
         windows=int(stats.get("windows") or 0),
         endings=int(stats.get("endings") or 0),
+        endings_source=str(stats.get("endings_source") or "none"),
         chars=int(stats.get("chars") or 0),
     )
 
@@ -566,7 +647,7 @@ def calibration_from_reference(
         flag_echo=not deliberate_repetition and echo_rate < CRAFT_ECHO_HABIT_PER_1K,
         flag_same_opening=not deliberate_repetition and opening_rate < CRAFT_SAME_OPENING_HABIT_PER_1K,
         deliberate_repetition=deliberate_repetition,
-        rules=rule_calibration_from_reference(rule_stats),
+        rules=rule_calibration_from_reference(rule_stats, deliberate_repetition=deliberate_repetition),
     )
 
 
@@ -633,7 +714,12 @@ def rule_findings(
         why = ""
         if calibrated is not None:
             share = int(round(100 * float(calibrated.get("share") or 0.0)))
-            why = f"参考作者的场里约 {share}% 也是这样，只作提示。"
+            if calibrated.get("kind") == "profile_deliberate_repetition":
+                why = "画像标了这位作者刻意用重复，只作提示。"
+            elif calibrated.get("level") == "habit":
+                why = f"参考作者的场里约 {share}% 也是这样（{int(calibrated.get('n') or 0)} 个窗口），只作提示。"
+            else:
+                why = f"参考作者的场里约 {share}% 也是这样（{int(calibrated.get('n') or 0)} 个窗口），按审美看。"
         findings.append(
             {
                 "signal_id": unified["signal_id"],
@@ -731,8 +817,15 @@ def craft_findings(
     return findings
 
 
-def cached_text_findings(scene_id: str, text: DiagnosisText, *, calibration: CraftCalibration, house_taste: bool) -> list[dict[str, Any]]:
-    """规则 + 节奏发现，按（场、正文哈希、校准、绑定）缓存在进程里；返回的是副本，调用方随便改。"""
+def cached_text_findings(
+    scene_id: str,
+    text: DiagnosisText,
+    *,
+    calibration: CraftCalibration,
+    house_taste: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """规则 + 节奏发现，以及这一稿里按参考作者放过的词表词；按（场、正文哈希、校准、绑定）缓存在进程里；
+    返回的是副本，调用方随便改。"""
 
     key = (
         str(scene_id),
@@ -748,14 +841,15 @@ def cached_text_findings(scene_id: str, text: DiagnosisText, *, calibration: Cra
     cached = _FINDINGS_CACHE.get(key)
     if cached is not None:
         _FINDINGS_CACHE.move_to_end(key)
-        return copy.deepcopy(cached)
+        return copy.deepcopy(cached["findings"]), copy.deepcopy(cached["waived"])
     findings = rule_findings(text, house_taste=house_taste, calibration=calibration.rules) + craft_findings(
         text, calibration=calibration, house_taste=house_taste
     )
-    _FINDINGS_CACHE[key] = copy.deepcopy(findings)
+    waived = calibrate_lexicons(calibration.rules, text.plain)[1] if calibration.rules.active else []
+    _FINDINGS_CACHE[key] = {"findings": copy.deepcopy(findings), "waived": copy.deepcopy(waived)}
     while len(_FINDINGS_CACHE) > _FINDINGS_CACHE_MAX:
         _FINDINGS_CACHE.popitem(last=False)
-    return findings
+    return findings, waived
 
 
 def _craft_finding(
@@ -1331,19 +1425,24 @@ class SceneDiagnosisService:
                 return DEFAULT_CRAFT_CALIBRATION
             key = (str(profile.book_id), count, str(latest or ""))
             stats = _REFERENCE_CRAFT_CACHE.get(key)
-            if stats is None or "rules" not in stats:
-                texts = [
-                    str(item or "")
-                    for item in self.session.execute(
-                        select(StyleReferenceParagraph.text)
-                        .where(StyleReferenceParagraph.book_id == profile.book_id)
-                        .order_by(StyleReferenceParagraph.paragraph_index.asc())
-                    ).scalars().all()
-                ]
-                stats = {**compute_reference_craft(texts), "rules": compute_reference_rules(texts)}
+            book = self.session.get(StyleReferenceBook, profile.book_id)
+            if stats is None or "rules" not in stats or "endings_source" not in (stats.get("rules") or {}):
+                rows = self.session.execute(
+                    select(StyleReferenceParagraph.text, StyleReferenceParagraph.paragraph_type)
+                    .where(StyleReferenceParagraph.book_id == profile.book_id)
+                    .order_by(StyleReferenceParagraph.paragraph_index.asc())
+                ).all()
+                texts = [str(row[0] or "") for row in rows]
+                types = [str(row[1] or "") for row in rows]
+                # 导入时记下的场界（含空行分界，段落表本身看不出来）："其后有场界" 的段落索引
+                book_stats = getattr(book, "stats_json", None) if book is not None else None
+                scene_breaks = (book_stats or {}).get("scene_breaks") if isinstance(book_stats, dict) else None
+                stats = {
+                    **compute_reference_craft(texts),
+                    "rules": compute_reference_rules(texts, paragraph_types=types, scene_breaks=scene_breaks if isinstance(scene_breaks, list) else None),
+                }
                 _REFERENCE_CRAFT_CACHE.clear()
                 _REFERENCE_CRAFT_CACHE[key] = stats
-            book = self.session.get(StyleReferenceBook, profile.book_id)
             return calibration_from_reference(
                 profile_id=profile.profile_id,
                 book_id=profile.book_id,
@@ -1370,8 +1469,10 @@ class SceneDiagnosisService:
         ignored = {str(key) for key in (scene.deep_review_ignored_keys_json or []) if str(key)}
 
         findings: list[dict[str, Any]] = []
+        waived: list[dict[str, Any]] = []
         if text.layer != "none":
-            findings.extend(cached_text_findings(scene.scene_id, text, calibration=calibration, house_taste=style_bound))
+            text_findings, waived = cached_text_findings(scene.scene_id, text, calibration=calibration, house_taste=style_bound)
+            findings.extend(text_findings)
 
         review_row = self.latest_evaluation(scene.scene_id, NEAR_FINAL_RUBRIC_ID)
         ai_row = self.latest_evaluation(scene.scene_id, LITERARY_REVISION_RUBRIC_ID)
@@ -1438,7 +1539,8 @@ class SceneDiagnosisService:
                 "chars": text.chars,
             },
             "style_bound": style_bound,
-            "craft_calibration": calibration.as_dict(),
+            # 这一稿里按参考作者的密度放过的词表词（词、次数、作者每万字次数、一场的量里的期望、这个次数的概率）
+            "craft_calibration": {**calibration.as_dict(), "waived_in_scene": waived},
             "findings": deduped,
             "summary": _finding_counts(deduped),
             "ai": {

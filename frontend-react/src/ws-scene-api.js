@@ -119,6 +119,8 @@ async function scnRun(item, note, _prevText, lifecycle = {}) {
   try { wb = await trackedGet(`/api/v1/scenes/${sceneId}/workbench`); } catch (e) {}
   scnThrowIfAborted(signal);
   const pipeState = wb && wb.scene_run_state ? wb.scene_run_state.scene_status : last.status;
+  // 后端原子归档了终稿（reliable / 无警告路径）：服务端改了这一场的正文，只拉这一章的诊断角标
+  if (pipeState === "archived") { try { WsDiagnosis.refreshScene(sceneId); } catch (e) {} }
   const record = scnRunRecordFromWorkbench(wb, { job: last, authorNote, pipeState });
   const budgetBlock = record.budgetBlock;
   if (!record.draft.length) {

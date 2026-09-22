@@ -159,4 +159,18 @@ describe("WsDiagnosis · 每场 / 每章开着的发现数", () => {
     expect(WsDiagnosis.sceneCounts("s1")).toMatchObject({ open: 1 });
     expect(WsDiagnosis.totals()).toMatchObject({ open: 1, blocking: 0 });
   });
+
+  it("refreshChapter：章运行的后台作业归档了几场，只拉这一章的 rollup（同一章在途的只拉一次）", async () => {
+    const { client, WsDiagnosis } = await load();
+    await WsDiagnosis.refresh();
+    client.apiGet.mockResolvedValueOnce({ project_id: "prj-main", chapter_id: "c1", chapters: { c1: { ...C1, open: 3, blocking: 0, chapter_level: 0, chapter_level_blocking: 0 } }, scenes: { s1: { ...S1, open: 2, blocking: 0 }, s2: { ...S2, open: 1 } } });
+    const first = WsDiagnosis.refreshChapter("c1");
+    const second = WsDiagnosis.refreshChapter("c1");
+    expect(second).toBe(first);
+    await first;
+    expect(client.apiGet).toHaveBeenLastCalledWith("/api/v1/chapters/c1/diagnosis-rollup");
+    expect(client.apiGet).toHaveBeenCalledTimes(2);
+    expect(WsDiagnosis.chapterCounts("c1")).toMatchObject({ open: 3 });
+    expect(WsDiagnosis.totals()).toMatchObject({ open: 3, blocking: 0 });
+  });
 });

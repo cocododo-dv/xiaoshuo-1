@@ -111,3 +111,5 @@ mark.wr-dx.is-active { outline: 2px solid var(--accent); outline-offset: 1px; }
 .wr-dxd-related-tag { font-size: var(--fs-xs); color: var(--warn-ink); }
 .wr-dxd-calibrated { font-size: var(--fs-xs); color: var(--info-ink); }
 mark.wr-dx.is-related { background: var(--info-wash); color: inherit; }
+
+.wr-dxd-waived { display: inline; }

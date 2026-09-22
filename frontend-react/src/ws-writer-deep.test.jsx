@@ -553,4 +553,28 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     expect(counts).toMatchObject({ open: 1, ignored: 1 });
     void WsDiagnosis;
   });
+
+  it("有参考绑定：面板说规则已按参考书校准、本场放过了哪些词；常态 / 常见的发现在行上标出来", async () => {
+    const habit = { ...ABSENCE, severity: "info", house_taste: true, calibrated: { kind: "dimension_habit", level: "habit", share: 0.9, lower_bound: 0.82, n: 96 }, why: "参考作者的场里约 90% 也是这样（96 个窗口），只作提示。" };
+    const common = { ...AI_FINDING, signal_id: "rules:model_voice:eeee5555", quality_signal_id: "rules:model_voice:eeee5555", source: "rules", dimension: "model_voice", label: "模型腔", lens: null, severity: "taste", house_taste: true, origin: null, calibrated: { kind: "dimension_habit", level: "common", share: 0.38, lower_bound: 0.3, n: 96 } };
+    const diagnosis = diagnosisPayload([common, habit], {
+      style_bound: true,
+      craft_calibration: {
+        source: "reference", book_title: "龙族", note: "按《龙族》校准：段落超过 194 字才提示；词表词按这位作者的密度判（每万字：看 41、手 30…），寻常用法不当毛病。",
+        rules: { endings_source: "units", top_needles: [{ term: "看", per_10k: 41 }], habitual_dimensions: ["no_choice_scene"], common_dimensions: ["model_voice"] },
+        waived_in_scene: [{ term: "看", count: 5, reference_per_10k: 41, expected: 9.8, probability: 0.96 }, { term: "光", count: 2, reference_per_10k: 12, expected: 2.9, probability: 0.78 }],
+      },
+    });
+    const { WriterRoom, WrDocs } = await loadWriter({ diagnosis });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    await click(deepRadio(host));
+    const drawer = host.querySelector(".wr-dxd");
+    await vi.waitFor(() => expect(drawer.textContent).toContain("已按参考书校准"), T);
+    expect(drawer.textContent).toContain("按《龙族》校准");
+    expect(drawer.querySelector('[data-testid="dx-waived"]').textContent).toContain("本场按这位作者的密度放过 2 个词：看 ×5、光 ×2");
+    expect(drawer.textContent).toContain("参考作者也常见");
+    expect(drawer.textContent).toContain("参考作者的常态");
+  });
 });

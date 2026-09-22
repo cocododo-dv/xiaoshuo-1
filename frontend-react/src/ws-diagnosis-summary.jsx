@@ -168,6 +168,18 @@ function dgRefreshScene(sceneId, workId = dgWorkId()) {
   return dgSceneFetching[sceneId];
 }
 
+/* 章运行（后台作业逐场归档终稿）：每完成一场就拉一次这一章的 rollup；同一章在途的只拉一次 */
+function dgRefreshChapter(chapterId, workId = dgWorkId()) {
+  if (!chapterId || !workId) return Promise.resolve();
+  const key = `chapter:${chapterId}`;
+  if (dgSceneFetching[key]) return dgSceneFetching[key];
+  dgSceneFetching[key] = apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/diagnosis-rollup`)
+    .then((rollup) => { dgApplyRollup(rollup, workId); })
+    .catch(() => {})
+    .finally(() => { delete dgSceneFetching[key]; });
+  return dgSceneFetching[key];
+}
+
 const WsDiagnosis = {
   refresh(workId) { return dgRefresh(workId || dgWorkId()); },
   /* 写入的响应里带的 diagnosis_rollup → 合进表；返回是否用上了 */
@@ -176,6 +188,8 @@ const WsDiagnosis = {
   applySceneFindings(sceneId, findings) { return dgApplySceneFindings(sceneId, findings); },
   /* 服务端改了这一场的正文（起草台归档终稿）：只拉这一章 */
   refreshScene(sceneId) { return dgRefreshScene(sceneId); },
+  /* 章运行的后台作业归档了几场：只拉这一章 */
+  refreshChapter(chapterId) { return dgRefreshChapter(chapterId); },
   reconcile() { dgReconcile(); },
   /* 某一场（后端 scene_id）的计数；还没读到 / 读不到 → null（视图不画角标，不画 0） */
   sceneCounts(sceneId) {

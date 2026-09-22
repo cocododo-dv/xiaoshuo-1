@@ -67,14 +67,14 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 - 深链：`ws:writer-posture` 的 detail 可以是 `"deep"` 或 `{ posture: "deep", signal_id }`。文学质量的每条发现与条目级按钮、成稿中心「直达深改」、待办卡都能带 id；到了诊断就选中那一条并滚过去，当前作者稿里没有它就提示。
 - 文学质量视图：问题 / 改法读服务端中文；条目上有「已忽略 N」；风险维度只算还开着的。
 
-## 4. 开放项（第三轮之后）
+## 4. 开放项（第三轮收尾之后）
 
-第二轮留下的四项（局部深评只看一段、规则不按参考书校准、章级通读整章一次、计数按需拉取）第三轮全部做完，见 §8。还开着的：
+第二轮留下的四项（局部深评只看一段、规则不按参考书校准、章级通读整章一次、计数按需拉取）第三轮全部做完（§8），第三轮留下的三项（阈值是定值、无分界的书收尾不校准、后台作业归档后角标不更新）同日收尾（§8.5）。还开着的：
 
-- 规则校准的两个阈值（每万字 1 次的常用词、一半以上窗口的常态维度）是定的，不是从画像里学的；参考书没有标题段也没有场分隔行时收尾三条不校准（没有真实的收尾可量）。
 - 局部深评一次最多 40 段；整场超过 12,000 字时远段只留开头。
 - 只通读改过的场时，未改的场只沿用上一轮钉在它上面的发现；上一轮钉不到任何一场的章级发现由模型重说，不沿用。
-- 起草管线在服务端改了终稿（场景运行归档）时，浏览器要等起草台自己的归档回调才拉那一章的计数；后台作业（章运行）归档的场，计数到下次挂载 / 换作品才更新。
+- 校准的统计口径本身（泊松尾概率 1/10、Wilson 80% 下界、一半 / 四分之一两档）是约定的口径，不是从作者的采纳 / 忽略里学的；作者在面板里忽略过的发现只按 id 生效，还没有反过来调整这本书的校准。
+- 另一个标签页 / 别的进程改了正文，本页的角标要等它自己的写入或下次挂载。
 
 ## 5. 测试
 
@@ -114,3 +114,17 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 **8.4 计数随写回传（推送）。** 每一次会改动发现的写入都在响应里带 `diagnosis_rollup {project_id, chapter_id, chapters: {id: 章条目}, scenes: {id: 场条目}}`（这一场所在那一章的章条目 + 章里每一场的条目；`scene_rollup` / `chapter_rollup`，与 `project_summary` 同一种条目形状）：`PATCH /api/v1/author-drafts/{id}`（字改了才带）、`PATCH …/deep-review/preferences`（忽略 / 恢复）、`GET/POST …/scenes/{id}/deep-review`、`POST …/deep-review/passage`、`GET/POST …/chapters/{id}/deep-review`；另有 `GET /api/v1/scenes/{id}/diagnosis-rollup`（起草台归档终稿之后拉这一章）。前端 `WsDiagnosis`：整本书只在挂载 / 换作品时读一次；`applyRollup` 合进表（章里旧的场条目换成新的，进了回收站的场随之消失）、`totals` 本地按服务端 `summarize_counts` 同一条规则汇总（`__summarize` 与服务端 totals 相等，测试钉住）；忽略 / 恢复先按面板清单 `applySceneFindings` 记一笔、章按差额重算；`ws:diagnosis-changed` 带 `rollup` 或 `findings` 就用它，什么都没带才重拉；`ws:catalog-changed` 只剪掉不在目录里的场 / 章（`reconcile`），20 秒节流没有了。作者稿保存（`WrDocs.pushSave`）、深改面板（`useDeepPosture`）、成稿中心通读、起草台归档（`ws-scene-api` adopt-current → `refreshScene`）都接上了。章条目多 `chapter_level_blocking`。
 
 测试：`tests/test_scene_diagnosis_round3.py`（校准的词表 / 维度 / 过量 / 房风不变、绑定场与文学质量视图一致、`passage_scope`、范围深评与跨段发现与退位规则、只通读改过的场全流程与退回、计数随写回传与汇总相等）、`tests/test_scene_diagnosis.py` 的两处标记断言；前端 `ws-diagnosis-summary.test.js`（推送模型）、`ws-manuscripts-diagnosis.test.jsx`（只通读改过的场）、`ws-writer-deep.test.jsx`（AI 看这几段、跨段发现、忽略后本地计数）。部署：无迁移；有提示词快照的安装需要 `sync_prompt_templates --execute`（`writer_deep_review` v6、`writer_passage_review` v2）。
+
+### 8.5 收尾（同日）：第三轮留下的三项
+
+作者把 §8 末尾的「还开着的」三条贴回来：「把这也完成完善优化」。
+
+**阈值从参考书学，不是定值。** (1) 词表词不再有「每万字 ≥ 1 次算常用词」和「4 倍 + 3 次算过量」两个定值：记的是参考作者每万字用某个词的次数（`needle_rates`），诊断一稿时按这位作者的密度算这个词在**一场的量**（至少 `RULE_JUDGE_WINDOW_CHARS` = 2,400 字——校准量的就是这种窗口，短稿不吃亏）里的期望次数，稿子里的次数在泊松分布下的尾概率 ≥ `RULE_NEEDLE_TAIL_ALPHA`（1/10）就是这位作者的寻常用法、不提示；更小（作者从不用的词，或用得比作者密得多）才照提示——一条规则同时管「放过」与「过量」（`literary_quality.calibrate_lexicons`，`poisson_tail`）。放过了哪些词随载荷回来：`craft_calibration.waived_in_scene [{term, count, reference_per_10k, expected, probability}]`，写作台的绑定提示说「本场按这位作者的密度放过 N 个词：看 ×5、光 ×2…」。(2) 维度不再是「一半以上算常态」的单一门槛：每条规则在参考书窗口上响的比例按 80% 置信的 Wilson 下界定档（`wilson_lower_bound` / `dimension_level`）——下界 ≥ 一半是常态（发现降为 `info`），≥ 四分之一是常见（降为 `taste`，只降不升）；窗口少的书要观察到更高的比例才算数（48 个窗口里响 28 个说不上一半以上，96 个里响 56 个就说得上），所以采样窗口从 48 提到 96。`calibrated {kind, level habit|common, share, lower_bound, n}`，`why` 说「参考作者的场里约 N% 也是这样（M 个窗口），只作提示 / 按审美看」；面板行上标「参考作者的常态」/「参考作者也常见」。(3) 画像的话直接算数：`voice_signature.deliberate_repetition` 为真时重复一族（`RULE_REPETITION_DIMENSIONS`：重复动作 / 模板句 / 自我重复 / 意象同质 / 意象场复用）不看比例就是常态（`calibrated.kind = profile_deliberate_repetition`，行上标「画像：刻意重复」）。口径本身（1/10、80%、一半 / 四分之一）写进 `craft_calibration.rules.thresholds` 与文档，不再散在代码里。
+
+**没有标题段和场分隔行的书也校准收尾。** 参考书切单元的分界有三种：标题段、纯符号分隔行、**导入时记下的场界**（`StyleReferenceBook.stats_json.scene_breaks`，含段落表本身看不出来的空行分界）；结构分界不到 4 个真实收尾时再按**转场段**补：分类器标为 `transition` 的段之前的那一段也是一个收尾（`_reference_units`）。`endings_source ∈ units | units+transitions | transitions | none`（`none` = 连转场段都没有：收尾三条如实不校准，注记说出来）；收尾 / 窗口都至少要 4 个才算数（Wilson 下界撑不起更少的样本）。校准读参考书时连段型一起读。
+
+**后台作业归档终稿之后角标即时更新。** 新路由 `GET /api/v1/chapters/{id}/diagnosis-rollup`（`chapter_rollup`）；`WsDiagnosis.refreshChapter(chapterId)`（同一章在途的只拉一次）。章运行（`ws-chapter-run.jsx`）轮询到 `completed_count` 比上一次多、且是亲眼看着的运行时拉这一章的 rollup（打开一章时水合到的「上次已完成」不拉）；起草台的 `scnRun` 在后端原子归档（`scene_status = archived`）时拉这一场所在的章（`refreshScene`）；起草台的采纳归档已在第三轮接上。
+
+真实项目（『龙族』绑定，实库只读探针）：收尾按 96 个章末校准（`endings_source = units`）；常态维度 6 个（意象同质 / 句式单调 / 重复动作 / 意象场复用 / 说明式对白 / 过度解释动机），常见 3 个（抉择压力 / 收束驱动 / 模型腔——48 个窗口下抉择压力曾被判成常态，96 个窗口的 Wilson 下界把它放到「常见」）；那一场 25 段的作者稿按密度放过 13 个词（手 ×9、光 ×4、眼 ×4、冷 ×3……），规则发现 1 条修订 + 2 条审美 + 2 条提示。
+
+测试：`tests/test_scene_diagnosis_round3.py` 的统计助手、学阈值、分档与画像声明、收尾来源四个用例 + 绑定场用例（无标题段、靠场界）+ 章 rollup 路由；前端 `ws-chapter-run.test.jsx`（完成一场就刷新）、`ws-diagnosis-summary.test.js`（`refreshChapter`）、`ws-writer-deep.test.jsx`（放过的词与常态 / 常见标记）。部署：无迁移、无提示词改动。

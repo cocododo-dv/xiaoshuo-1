@@ -194,6 +194,14 @@ def get_scene_diagnosis_rollup(scene_id: str, request: Request, session: Session
     return ok(service.scene_rollup(scene), req_id=getattr(request.state, "request_id", None))
 
 
+@router.get("/api/v1/chapters/{chapter_id}/diagnosis-rollup")
+def get_chapter_diagnosis_rollup(chapter_id: str, request: Request, session: Session = Depends(get_session)):
+    """这一章的计数（章条目 + 章里每一场的条目）：章运行 / 场景运行在服务端归档了终稿之后前端据此更新角标。"""
+
+    payload = SceneDiagnosisService(session).chapter_rollup(chapter_id)
+    return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
 @router.get("/api/v1/chapters/{chapter_id}/deep-review")
 def get_chapter_deep_review(chapter_id: str, request: Request, session: Session = Depends(get_session)):
     payload = WriterDeepReviewService(session).chapter_summary(chapter_id)
