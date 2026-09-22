@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks, useActiveWork, useWorksStatus, wsKey } from "./ws-works.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
+import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { RV_KINDS, rvMarkResolved, useReviewOpenItems } from "./ws-review.jsx";
 import { Notice } from "./ws-ui.jsx";
 import { LEGACY_DRAFT_PLACEHOLDER, hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
@@ -225,6 +226,10 @@ function WsHomeFull({ work: p, go, mode, chapters, remote }) {
   const hero = hmFocusModel(WsCatalog.focusScene(), home);
   const spine = hmDeriveSpine(chapters, hero.chapter);
   const windowed = hmChapterWindow(chapters, spine);
+  /* 各章还开着的诊断发现数（写作台深改面板的同一份）：章卡角标 + 进度脊一句 */
+  const diag = useDiagnosisSummary();
+  const diagnosis = { byChapter: {}, totals: diag.loaded() ? diag.totals() : null };
+  chapters.forEach((c) => { const counts = c && c.backendId ? diag.chapterCounts(c.backendId) : null; if (counts) diagnosis.byChapter[c.id] = counts; });
   const openScene = (sid) => {
     if (sid) go("writer", { type: "ws:writer-scene", detail: sid });
     else go("writer");
@@ -351,7 +356,7 @@ function WsHomeFull({ work: p, go, mode, chapters, remote }) {
       </section>
 
       {/* ===== whole book: per-chapter progress spine + chapters around the front ===== */}
-      <HmChapters spine={spine} windowed={windowed} allChapters={allChapters} openScene={openScene} />
+      <HmChapters spine={spine} windowed={windowed} allChapters={allChapters} openScene={openScene} diagnosis={diagnosis} />
     </div>
   );
 }

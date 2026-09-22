@@ -268,3 +268,8 @@
 @media (max-width: 720px) {
   .hm-start-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- 诊断角标（写作台深改面板里还开着的发现数）---- */
+.hm-spine-diag { color: var(--accent-ink); }
+.hm-chap-tags { display: inline-flex; align-items: center; gap: 6px; }
+.hm-chap-diag { font-size: var(--fs-xs); padding: 1px 7px; border-radius: 999px; background: var(--accent-wash); color: var(--accent-ink); white-space: nowrap; }

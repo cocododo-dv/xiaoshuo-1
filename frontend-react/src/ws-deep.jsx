@@ -106,6 +106,10 @@ async function wrDxFetch(backendId) {
 async function wrDxRunAi(backendId) {
   return apiPost(`/api/v1/scenes/${encodeURIComponent(backendId)}/deep-review`, {});
 }
+/* 「AI 看这一处」：body 是 { signal_id } （复核一条发现）或 { paragraph_index, excerpt }（独立看一段），可带 question */
+async function wrDxReviewPassage(backendId, body) {
+  return apiPost(`/api/v1/scenes/${encodeURIComponent(backendId)}/deep-review/passage`, body || {});
+}
 
 /* 发现的 ignored 按本机忽略清单重算（忽略 / 恢复不必等服务端往返） */
 function wrDxWithIgnored(findings, skips) {
@@ -120,6 +124,13 @@ const WR_DX_SOURCES = {
 };
 const WR_DX_SOURCE_ORDER = ["rules", "craft", "review", "ai"];
 const WR_DX_LENS = { story: "故事", character: "人物", prose: "文字", reader: "读者", theme: "主题" };
+const WR_DX_ORIGIN = { passage: "局部", chapter: "通读" };
+const WR_DX_VERDICT = {
+  holds: { label: "AI：成立", tone: "accent" },
+  partly: { label: "AI：部分成立", tone: "warn" },
+  does_not_hold: { label: "AI：不成立", tone: "ok" },
+  no_finding: { label: "AI：没有要改的", tone: "ok" },
+};
 /* 类名写全，设计守卫按字面找引用 */
 const WR_DX_SEV_CLASS = { blocking: "sev-blocking", revision: "sev-revision", taste: "sev-taste", info: "sev-info" };
 const sevClass = (sev) => WR_DX_SEV_CLASS[sev] || WR_DX_SEV_CLASS.info;
@@ -252,7 +263,8 @@ function DxFindingRow({ finding, active, onPick }) {
       <span className="wr-dxd-body">
         <span className="wr-dxd-t">{finding.issue}</span>
         <span className="wr-dxd-h">
-          <span className="wr-dxd-src">{src}{finding.lens && WR_DX_LENS[finding.lens] ? ` · ${WR_DX_LENS[finding.lens]}` : ""}</span>
+          <span className="wr-dxd-src">{src}{finding.lens && WR_DX_LENS[finding.lens] ? ` · ${WR_DX_LENS[finding.lens]}` : ""}{finding.origin && WR_DX_ORIGIN[finding.origin.kind] ? ` · ${WR_DX_ORIGIN[finding.origin.kind]}` : ""}</span>
+          {finding.opinion && WR_DX_VERDICT[finding.opinion.verdict] && <span className="wr-dxd-opinion-tag">{WR_DX_VERDICT[finding.opinion.verdict].label}</span>}
           {finding.stale && <span className="wr-dxd-stale">证据已不在正文里</span>}
           {!finding.evidence && !finding.stale && <span className="wr-dxd-stale">整场</span>}
         </span>
@@ -261,18 +273,55 @@ function DxFindingRow({ finding, active, onPick }) {
   );
 }
 
-function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore }) {
+/* 「AI 看这一处」对这条发现的判断：成立 / 部分成立 / 不成立 + 评语 + 这一处的改法 */
+function DxOpinion({ finding, opinion, onRewrite, onIgnore }) {
+  const meta = WR_DX_VERDICT[opinion.verdict] || WR_DX_VERDICT.no_finding;
+  const canRewrite = !!(opinion.rewrite_brief && finding.evidence && finding.evidence.excerpt && onRewrite);
+  return (
+    <div className="wr-dxd-opinion">
+      <div className="wr-dxd-opinion-head">
+        <Tag tone={meta.tone}>{meta.label}</Tag>
+        {opinion.status === "stale" && <span className="wr-dxd-stale">改前的判断</span>}
+      </div>
+      {opinion.assessment && <p className="wr-dxd-opinion-t">{opinion.assessment}</p>}
+      {opinion.rewrite_brief && <p className="wr-dxd-fix">AI 的改法：{opinion.rewrite_brief}</p>}
+      <div className="wr-dxd-row-acts">
+        {canRewrite && (
+          <button type="button" className="btn btn-accent btn-sm" onClick={() => onRewrite(finding, { instruction: opinion.rewrite_brief })}>
+            <I.Sparkles size={13} /> 按 AI 的改法改写
+          </button>
+        )}
+        {opinion.verdict === "does_not_hold" && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => onIgnore(finding)}>按 AI 的判断忽略</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore, onPassageReview, passageBusy, passageError, onOpenSettings }) {
   const ev = finding.evidence;
   const canSelect = !!(ev && ev.excerpt && onSelect);
   /* 服务端只钉到段（偏移为空）、或整段就是证据（段落偏长）：选中的是一段 */
   const paragraphLevel = !!(ev && (ev.start == null || ev.end == null || finding.dimension === "long_paragraph"));
+  const reviewing = passageBusy === finding.signal_id;
+  const canReview = !!(ev && onPassageReview && !finding.stale);
+  const reviewError = passageError && passageError.key === finding.signal_id ? passageError.error : null;
   return (
     <div className="wr-dxd-detail">
       {(ev && ev.excerpt) ? <blockquote className="wr-dxd-ev">{ev.excerpt}</blockquote>
         : (finding.context ? <blockquote className="wr-dxd-ev">{finding.context}</blockquote> : null)}
       {finding.recommendation && <p className="wr-dxd-fix">改法：{finding.recommendation}</p>}
       {finding.why && <p className="wr-dxd-why">{finding.why}</p>}
+      {finding.opinion && <DxOpinion finding={finding} opinion={finding.opinion} onRewrite={onRewrite} onIgnore={onIgnore} />}
+      {reviewError && <DxAiError error={reviewError} onRetry={() => onPassageReview(finding)} onOpenSettings={onOpenSettings} />}
       <div className="wr-dxd-row-acts">
+        {canReview && (
+          <button type="button" className="btn btn-ghost btn-sm" disabled={!!passageBusy} onClick={() => onPassageReview(finding)}
+            title="让模型只看这一段：这条发现成不成立、这一处怎么改">
+            {reviewing ? <Spinner size={13} /> : <I.Sparkles size={13} />} {reviewing ? "AI 在看…" : "AI 看这一处"}
+          </button>
+        )}
         {canSelect && finding.recommendation && !finding.stale && onRewrite && (
           <button type="button" className="btn btn-accent btn-sm" onClick={() => onRewrite(finding)}>
             <I.Sparkles size={13} /> 按诊断改写
@@ -289,12 +338,39 @@ function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore }) {
   );
 }
 
+/* 独立看一段（没有复核某条发现）的结果：判定 + 评语 + 这一段的改法；新发现已并进清单 */
+function DxPassageNote({ passage, onRewriteParagraph }) {
+  if (!passage || passage.about_signal_id) return null;
+  const meta = WR_DX_VERDICT[passage.verdict] || WR_DX_VERDICT.no_finding;
+  const pid = Number.isInteger(passage.paragraph_index) ? passage.paragraph_index : null;
+  return (
+    <section className="wr-dxd-passage" aria-label="AI 看这一段">
+      <div className="wr-dxd-opinion-head">
+        <span className="wr-dxd-sub"><I.Sparkles size={13} /> AI 看了{pid != null ? `第 ${pid + 1} 段` : "这一段"}</span>
+        <Tag tone={meta.tone}>{meta.label}</Tag>
+        {passage.status === "stale" && <span className="wr-dxd-stale">改前的判断</span>}
+      </div>
+      {passage.assessment && <p className="wr-dxd-opinion-t">{passage.assessment}</p>}
+      {passage.rewrite_brief && <p className="wr-dxd-fix">AI 的改法：{passage.rewrite_brief}</p>}
+      {passage.findings_count > 0 && <p className="wr-dxd-why">新看出的 {passage.findings_count} 条已并进下面的清单。</p>}
+      {passage.rewrite_brief && pid != null && onRewriteParagraph && (
+        <div className="wr-dxd-row-acts">
+          <button type="button" className="btn btn-accent btn-sm" onClick={() => onRewriteParagraph(pid, passage.rewrite_brief, passage)}>
+            <I.Sparkles size={13} /> 按这个改法改写这一段
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function WrDeepDrawer({
   open, loading = false, error = null, onRetry,
   diagnosis, findings = [], activeKey, filter = "all", onFilter,
   showIgnored = false, onToggleIgnored,
   onPick, onIgnore, onRestore, onRescan, onSelect, onRewrite,
   aiBusy = false, aiError = null, onRunAi, onOpenSettings,
+  onPassageReview, passageBusy = null, passageError = null, lastPassage = null, onRewriteParagraph,
   handoffMiss = false,
   log, persistenceStatus = "idle", onClose,
 }) {
@@ -343,8 +419,12 @@ function WrDeepDrawer({
 
         {diagnosis && diagnosis.style_bound && (
           <Notice tone="info" className="wr-dxd-notice">
-            本场绑定了参考画像：规则体检和节奏提示是房风词表的意见，与参考作者的做法冲突时以样例为准。
+            本场绑定了参考画像：规则体检是房风词表的意见，与参考作者的做法冲突时以样例为准。
+            {diagnosis.craft_calibration && diagnosis.craft_calibration.note ? ` ${diagnosis.craft_calibration.note}` : ""}
           </Notice>
+        )}
+        {lastPassage && (
+          <DxPassageNote passage={lastPassage} onRewriteParagraph={onRewriteParagraph} />
         )}
         {handoffMiss && (
           <Notice tone="warn" className="wr-dxd-notice">
@@ -385,7 +465,8 @@ function WrDeepDrawer({
                 <li key={f.signal_id}>
                   <DxFindingRow finding={f} active={!!(active && active.signal_id === f.signal_id)} onPick={onPick} />
                   {active && active.signal_id === f.signal_id && (
-                    <DxFindingDetail finding={f} onSelect={onSelect} onRewrite={onRewrite} onIgnore={onIgnore} />
+                    <DxFindingDetail finding={f} onSelect={onSelect} onRewrite={onRewrite} onIgnore={onIgnore}
+                      onPassageReview={onPassageReview} passageBusy={passageBusy} passageError={passageError} onOpenSettings={onOpenSettings} />
                   )}
                 </li>
               ))}
@@ -437,7 +518,7 @@ function WrDeepDrawer({
 }
 
 export {
-  wrDeepMark, wrDeepUnmark, wrDxRangeFor, wrDxFetch, wrDxRunAi, wrDxWithIgnored,
+  wrDeepMark, wrDeepUnmark, wrDxRangeFor, wrDxFetch, wrDxRunAi, wrDxReviewPassage, wrDxWithIgnored,
   wrDxLog, wrDxPushLog, wrDxAddSkip, wrDxRemoveSkip, wrDxClearSkips, wrDxSkips, wrDxSnapshot,
   wrDxApplyPreferences, wrDxMergePreferences, wrDxLoadPreferences, wrDxSavePreferences,
   WR_DX_SOURCES, WrDeepDrawer,

@@ -95,6 +95,8 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "chapter_story_architecture": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     "character_pressure_blueprint": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     "writer_passage_patch": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
+    # 2026-09-22 场景诊断：局部深评只看一段 + 结构简报 + k≤3 样例窗口，与局部改写同档
+    "writer_passage_review": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     # 章节族（author_* 两个模板同时服务场景稿与整章稿，按最大者归章节族）
     "chapter_near_final_review": CHAPTER_INPUT_TOKEN_BUDGET,
     "writer_deep_review": CHAPTER_INPUT_TOKEN_BUDGET,

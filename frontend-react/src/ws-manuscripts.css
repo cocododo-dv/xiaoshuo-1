@@ -401,3 +401,36 @@
 .ms-dialog-check { display: flex; align-items: flex-start; gap: 8px; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-2); cursor: pointer; }
 .ms-dialog-check input { accent-color: var(--accent); margin-top: 3px; }
 .ms-dialog-check.is-strong { padding: 11px 12px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--paper-2); color: var(--ink-1); }
+
+/* ---- 诊断页签（2026-09-22 场景诊断统一）：章级通读 + 各场计数 ---- */
+.ms-diag { padding: 24px 28px; display: flex; flex-direction: column; gap: 16px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.ms-diag .card-title { display: inline-flex; align-items: center; gap: 6px; }
+.ms-diag-meta { margin: 0; font-size: var(--fs-sm); line-height: 1.6; color: var(--ink-3); }
+.ms-diag-brief { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ms-diag-brief li { font-size: var(--fs-sm); line-height: 1.6; color: var(--ink-2); padding-left: 12px; position: relative; }
+.ms-diag-brief li::before { content: "·"; position: absolute; left: 0; color: var(--ink-3); }
+.ms-diag-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.ms-diag-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ms-diag-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line-1); border-radius: var(--r-sm); background: var(--paper-2); }
+.ms-diag-mark { flex: none; font-size: var(--fs-xs); font-weight: 600; white-space: nowrap; padding: 2px 7px; border-radius: var(--r-xs); max-width: 8em; overflow: hidden; text-overflow: ellipsis; background: var(--warn-wash); color: var(--warn-ink); }
+.ms-diag-mark.sev-blocking { background: var(--danger-wash); color: var(--danger-ink); }
+.ms-diag-mark.sev-revision { background: var(--accent-wash); color: var(--accent-ink); }
+.ms-diag-mark.sev-taste { background: var(--warn-wash); color: var(--warn-ink); }
+.ms-diag-mark.sev-info { background: var(--info-wash); color: var(--info-ink); }
+.ms-diag-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.ms-diag-t { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); line-height: 1.5; }
+.ms-diag-fix { font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.55; }
+.ms-diag-stale { font-size: var(--fs-xs); color: var(--warn-ink); }
+.ms-diag-empty { margin: 0; font-size: var(--fs-sm); color: var(--ink-3); }
+.ms-diag-scenes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ms-diag-scene { border: 1px solid var(--line-1); border-radius: var(--r-sm); padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+.ms-diag-scene-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ms-diag-scene-title { font-family: var(--font-serif); font-weight: 600; color: var(--ink-1); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-diag-chip { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--accent-ink); background: var(--accent-wash); white-space: nowrap; }
+.ms-diag-chip.is-clear { color: var(--ok-ink); background: var(--ok-wash); border-color: transparent; }
+.ms-diag-chip.is-empty { color: var(--ink-3); background: transparent; }
+.ms-diag-chip.is-stale { color: var(--warn-ink); background: var(--warn-wash); border-color: transparent; }
+.ms-diag-chip-btn { cursor: pointer; font: inherit; font-size: var(--fs-xs); }
+.ms-diag-chip-btn:hover { filter: brightness(0.97); }
+.ms-diag-go { margin-left: auto; }
+.ms-list-diag { color: var(--accent-ink); }

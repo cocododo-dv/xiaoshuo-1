@@ -2,9 +2,10 @@ import React from "react";
 import { WsCatalog } from "./ws-catalog.jsx";
 import {
   wrDeepMark, wrDeepUnmark, wrDxAddSkip, wrDxApplyPreferences, wrDxFetch, wrDxLoadPreferences,
-  wrDxMergePreferences, wrDxPushLog, wrDxRemoveSkip, wrDxRunAi, wrDxSavePreferences, wrDxSkips,
+  wrDxMergePreferences, wrDxPushLog, wrDxRemoveSkip, wrDxReviewPassage, wrDxRunAi, wrDxSavePreferences, wrDxSkips,
   wrDxSnapshot, wrDxWithIgnored,
 } from "./ws-deep.jsx";
+import { announceDiagnosisChanged } from "./ws-diagnosis-summary.jsx";
 import { wrRangeForOffsets, wrRangeForText } from "./ws-writer-manuscript.js";
 import { useWrEvent } from "./ws-writer-hooks.js";
 
@@ -54,6 +55,9 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
   const [showIgnored, setShowIgnored] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState(null);
+  const [passageBusy, setPassageBusy] = useState(null);     // 正在看的那条发现的 id，或 "para:N"
+  const [passageError, setPassageError] = useState(null);   // { key, error }
+  const [lastPassage, setLastPassage] = useState(null);     // 最近一次独立看一段的结果（复核某条发现的结果挂在那条发现上）
   const [handoffMiss, setHandoffMiss] = useState(false);
   const [rewriteFinding, setRewriteFinding] = useState(null);
   const [log, setLog] = useState([]);
@@ -227,6 +231,8 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
       setDiagnosis(null);
       setError(null);
       setAiError(null);
+      setPassageError(null);
+      setLastPassage(null);
       setHandoffMiss(false);
       setFilter("all");
       setShowIgnored(false);
@@ -268,6 +274,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     setLog(wrDxPushLog(activeScene, `忽略 · ${shortIssue(finding)}`));
     setSkipTick((t) => t + 1);
     queuePersist(activeScene);
+    announceDiagnosisChanged({ sid: activeScene });
     if (activeKey === finding.signal_id) {
       const next = findings.find((item) => !item.ignored && item.signal_id !== finding.signal_id);
       setActiveKey(next ? next.signal_id : null);
@@ -280,6 +287,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     setSkipTick((t) => t + 1);
     queuePersist(activeScene);
     setActiveKey(finding.signal_id);
+    announceDiagnosisChanged({ sid: activeScene });
   });
   const rescan = useWrEvent(() => { if (activeScene) load(activeScene); });
   const toggleIgnored = useWrEvent(() => setShowIgnored((v) => !v));
@@ -297,11 +305,47 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
       setLog(wrDxPushLog(sceneId, score != null ? `AI 深评 · 总分 ${score}` : "AI 深评"));
       applyPayload(sceneId, payload);
       queuePersist(sceneId);
+      announceDiagnosisChanged({ sid: sceneId });
     } catch (err) {
       if (sceneRef.current !== sceneId) return;
       setAiError(err || new Error("deep review failed"));
     } finally {
       if (sceneRef.current === sceneId) setAiBusy(false);
+    }
+  });
+
+  /* 「AI 看这一处」：target 是一条发现（复核：成立 / 部分成立 / 不成立 + 改法）或 { paragraph_index, excerpt }（独立看一段）。
+     结果并进同一份诊断：复核的意见挂在那条发现上（finding.opinion），独立的结果放 lastPassage，新看出的发现进清单。 */
+  const reviewPassage = useWrEvent(async (target, { question } = {}) => {
+    if (!activeScene || !target || passageBusy) return;
+    const sceneId = activeScene;
+    const isFinding = !!target.signal_id;
+    const key = isFinding ? target.signal_id : `para:${target.paragraph_index}`;
+    const body = isFinding
+      ? { signal_id: target.signal_id }
+      : { paragraph_index: target.paragraph_index, excerpt: String(target.excerpt || "").slice(0, 2000) || undefined };
+    if (question) body.question = String(question).slice(0, 2000);
+    setPassageBusy(key);
+    setPassageError(null);
+    const backendId = await resolveBackendId(sceneId);
+    try {
+      const payload = await wrDxReviewPassage(backendId, body);
+      if (sceneRef.current !== sceneId) return;
+      const review = (payload && payload.passage_review) || null;
+      const verdict = review && review.verdict_label ? review.verdict_label : "";
+      setLog(wrDxPushLog(sceneId, isFinding
+        ? `AI 看这一处 · ${shortIssue(target)}${verdict ? "：" + verdict : ""}`
+        : `AI 看了第 ${Number(target.paragraph_index) + 1} 段${verdict ? "：" + verdict : ""}`));
+      pendingSignalRef.current = isFinding ? target.signal_id : null;
+      applyPayload(sceneId, payload);
+      setLastPassage(review && !review.about_signal_id ? review : null);
+      queuePersist(sceneId);
+      announceDiagnosisChanged({ sid: sceneId });
+    } catch (err) {
+      if (sceneRef.current !== sceneId) return;
+      setPassageError({ key, error: err || new Error("passage review failed") });
+    } finally {
+      if (sceneRef.current === sceneId) setPassageBusy(null);
     }
   });
 
@@ -359,13 +403,31 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
       Promise.all(running.map((anim) => anim.finished.catch(() => null))).then(select);
     }, 80);
   });
-  const rewriteFromFinding = useWrEvent((finding) => selectForRewrite(finding, { autoRun: true }));
+  const rewriteFromFinding = useWrEvent((finding, { instruction } = {}) => selectForRewrite(
+    instruction ? { ...finding, recommendation: instruction } : finding,
+    { autoRun: true },
+  ));
+  /* 独立看一段之后「按这个改法改写这一段」：整段选中，工具条按 AI 的改法出候选（改写请求记作局部深评的改法） */
+  const rewriteParagraph = useWrEvent((paragraphIndex, instruction, passage) => {
+    if (!Number.isInteger(paragraphIndex) || !instruction) return;
+    selectForRewrite({
+      signal_id: `passage:${(passage && passage.evaluation_id) || paragraphIndex}`,
+      source: "ai",
+      dimension: "author_instruction",
+      label: "AI 看这一段",
+      issue: (passage && passage.assessment) || "",
+      recommendation: instruction,
+      evidence: { paragraph_index: paragraphIndex, excerpt: "", start: null, end: null },
+      patch: { candidate_category: "local_patch", revision_strategy: instruction },
+    }, { autoRun: true });
+  });
   const clearRewriteFinding = useWrEvent(() => setRewriteFinding(null));
 
   return {
     posture, setPosture, diagnosis, findings, openCount, activeKey, setActiveKey,
     filter, setFilter, showIgnored, toggleIgnored, loading, error, reload: rescan,
     aiBusy, aiError, runAi, handoffMiss, log, persistenceStatus,
+    passageBusy, passageError, lastPassage, reviewPassage, rewriteParagraph,
     pick, ignore, restore, rescan, selectForRewrite, rewriteFromFinding, rewriteFinding, clearRewriteFinding,
   };
 }

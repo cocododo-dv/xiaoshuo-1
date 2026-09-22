@@ -36,14 +36,20 @@ from novel_system.services.llm_task_runner import (
 )
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_design_context import render_scene_design_context
+from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.scene_diagnosis import (
+    LITERARY_REVISION_PASSAGE_RUBRIC_ID,
     LITERARY_REVISION_RUBRIC_ID,
+    PASSAGE_VERDICTS,
     PATCH_CATEGORIES,
     SCENE_FORMS,
     SceneDiagnosisService,
     candidate_category_for_dimension,
+    locate_in_paragraphs,
+    passage_window,
     scene_form_from_findings,
     serialize_evaluation as _serialize_evaluation,
+    serialize_passage_review,
     serialize_patch_candidate as _serialize_patch_candidate,
 )
 from novel_system.services.scene_lookup import require_chapter, require_scene
@@ -60,6 +66,7 @@ _LOGGER = logging.getLogger(__name__)
 # LITERARY_REVISION_RUBRIC_ID / SCENE_FORMS / PATCH_CATEGORIES 定义在 scene_diagnosis（这里再导出）。
 __all__ = [
     "LITERARY_REVISION_RUBRIC_ID",
+    "LITERARY_REVISION_PASSAGE_RUBRIC_ID",
     "LITERARY_REVISION_DIMENSIONS",
     "DEEP_REVIEW_LENSES",
     "SCENE_FORMS",
@@ -139,8 +146,9 @@ class WriterDeepReviewService:
         return SceneDiagnosisService(self.session).payload(scene_id)
 
     def chapter_summary(self, chapter_id: str) -> dict[str, Any]:
-        self._require_chapter(chapter_id)
-        return self._review_payload("chapter", chapter_id)
+        """成稿中心「AI 通读本章」的载荷：章级判断 + 各场的诊断计数 + 落到各场的通读发现（scene_diagnosis.chapter_payload）。"""
+
+        return SceneDiagnosisService(self.session).chapter_payload(chapter_id)
 
     def run_scene_review(self, scene_id: str, actor_ref: str = "operator") -> dict[str, Any]:
         """「AI 深评」：对当前作者稿跑一次 writer_deep_review 节点，返回统一诊断载荷。拒绝式：无模型即 409。"""
@@ -158,9 +166,11 @@ class WriterDeepReviewService:
         return SceneDiagnosisService(self.session).payload(scene.scene_id)
 
     def run_chapter_review(self, chapter_id: str, actor_ref: str = "operator") -> dict[str, Any]:
+        """「AI 通读本章」：对整章（各场作者稿按场标出）跑一次 writer_deep_review，发现落到各场。拒绝式。"""
+
         chapter = self._require_chapter(chapter_id)
         source = self._chapter_source(chapter)
-        return self._create_deep_review(
+        self._create_deep_review(
             object_type="chapter",
             object_id=chapter.chapter_id,
             chapter_id=chapter.chapter_id,
@@ -168,6 +178,183 @@ class WriterDeepReviewService:
             source=source,
             actor_ref=actor_ref,
         )
+        return SceneDiagnosisService(self.session).chapter_payload(chapter.chapter_id)
+
+    def run_passage_review(
+        self,
+        scene_id: str,
+        *,
+        signal_id: str | None = None,
+        paragraph_index: int | None = None,
+        excerpt: str | None = None,
+        question: str | None = None,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        """「AI 看这一处」：只看一段（焦点段 + 前后各一段）的局部深评。
+
+        带 ``signal_id`` 时是对那条发现的复核（成立 / 部分成立 / 不成立）加改法；只给段落或选中的字时
+        是对这一处的独立判断。结果落成一行 rubric ``literary_revision_passage_v1`` 的评审（同一段再看一次，
+        旧的退位），它的发现与意见并入统一诊断（scene_diagnosis）。拒绝式：无模型即 409。
+        """
+
+        self._require_live_llm("writer_passage_review")
+        scene = self._require_scene(scene_id)
+        diagnosis_service = SceneDiagnosisService(self.session)
+        text = diagnosis_service.text_for_scene(scene)
+        if text.layer == "none":
+            raise DomainError("WRITER_PASSAGE_REVIEW_NO_TEXT", "这一场还没有正文，没有可看的段落。", status_code=409)
+        about: dict[str, Any] | None = None
+        if signal_id:
+            diagnosis = diagnosis_service.diagnose_scene(scene, with_patches=False)
+            about = next((item for item in diagnosis["findings"] if item["signal_id"] == signal_id), None)
+            if about is None:
+                raise DomainError(
+                    "WRITER_PASSAGE_REVIEW_FINDING_NOT_FOUND",
+                    "这条发现不在当前作者稿的诊断里（可能已经改掉，或来自另一层文本）。",
+                    status_code=404,
+                    details={"signal_id": signal_id},
+                )
+            evidence = about.get("evidence") or {}
+            if paragraph_index is None and isinstance(evidence.get("paragraph_index"), int):
+                paragraph_index = int(evidence["paragraph_index"])
+            if not excerpt and evidence.get("excerpt"):
+                excerpt = str(evidence["excerpt"])
+        if paragraph_index is None and excerpt:
+            hit = locate_in_paragraphs(text.paragraphs, excerpt)
+            paragraph_index = hit["paragraph_index"] if hit else None
+        if paragraph_index is None or not (0 <= int(paragraph_index) < len(text.paragraphs)):
+            raise DomainError(
+                "WRITER_PASSAGE_REVIEW_TARGET_INVALID",
+                "要看的那一段不在正文里：给一个段落序号，或一句正文里的原话。",
+                status_code=400,
+                details={"paragraph_count": len(text.paragraphs)},
+            )
+        focus = int(paragraph_index)
+        window = passage_window(text.paragraphs, focus)
+        snapshot: dict[str, Any] = {
+            "object_type": "scene",
+            "object_id": scene.scene_id,
+            "chapter_id": scene.chapter_id,
+            "scene_id": scene.scene_id,
+            "rubric_id": LITERARY_REVISION_PASSAGE_RUBRIC_ID,
+            "dimensions": list(LITERARY_REVISION_DIMENSIONS),
+            "lenses": list(DEEP_REVIEW_LENSES),
+            "passage": {"paragraph_index": focus, "start": window["start"], "end": window["end"]},
+            "about_signal_id": signal_id,
+            "scene_summary": window["text"],
+        }
+        # 段落窗口与这一场的结构 / 设计背景都作为 inline digest 进用户消息（见 _create_deep_review_with_llm）
+        snapshot["inline_digests"] = {"scene_summary": window["text"], **self._scene_design_sections(scene.scene_id)}
+        prompt = self.prompt_builder.build(snapshot, "writer_passage_review")
+        user_prompt = _passage_review_user_prompt(
+            prompt["user_prompt"],
+            window=window,
+            about=about,
+            excerpt=excerpt,
+            question=question,
+        )
+        prompt = self._inject_style_reference_prefix(
+            prompt,
+            object_type="scene",
+            object_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            scene_id=scene.scene_id,
+            context_text=window["focus_text"] or None,
+            final_user_prompt=user_prompt,
+        )
+        execution_step_key = f"writer_passage_review:{scene.scene_id}:{focus}"
+        context = self._llm_context(
+            object_type="scene",
+            object_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            scene_id=scene.scene_id,
+            node_id="writer_deep_review",
+            execution_step_key=execution_step_key,
+        )
+        try:
+            node_result = self._llm_runner.run(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                bundle_id=text.ref or f"writer_passage_review:{scene.scene_id}",
+                bundle_hash=hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
+                node_id="writer_deep_review",
+                step="writer_passage_review",
+                prompt=prompt,
+                user_prompt=user_prompt,
+                execution_step_key=execution_step_key,
+                context=context,
+            )
+        except LLMNodeExecutionError as exc:
+            raise DomainError(
+                "WRITER_DEEP_REVIEW_LLM_FAILED",
+                exc.message,
+                status_code=409,
+                details={
+                    "llm_call_id": exc.llm_call_id,
+                    "node_id": "writer_deep_review",
+                    "step": "writer_passage_review",
+                    "error_code": exc.error_code,
+                    "next_action": "configure_writer_deep_review_route_and_retry",
+                    "response_summary": exc.response_summary,
+                },
+            ) from exc
+        normalized = _normalize_passage_review_output(
+            node_result.response.structured_output or {},
+            has_finding=about is not None,
+        )
+        if not normalized["assessment"] and not normalized["findings"] and not normalized["rewrite_brief"]:
+            raise DomainError(
+                "WRITER_PASSAGE_REVIEW_EMPTY",
+                "模型这次没有给出可用的判断。换个问法，或稍后再试。",
+                status_code=502,
+                details={"llm_call_id": node_result.llm_call_id, "node_id": "writer_deep_review"},
+            )
+        # 同一段（或同一条发现）再看一次：旧的退位，面板只留最新的意见
+        for row in diagnosis_service.passage_rows(scene.scene_id):
+            meta = row.contract_field_refs_json if isinstance(row.contract_field_refs_json, dict) else {}
+            same_target = meta.get("paragraph_index") == focus or (signal_id and meta.get("about_signal_id") == signal_id)
+            if same_target:
+                row.status = "superseded"
+        row = WriterEvaluation(
+            evaluation_id=f"writer_passage_eval_{scene.scene_id}_{uuid.uuid4().hex[:10]}",
+            object_type="scene",
+            object_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            scene_id=scene.scene_id,
+            rubric_id=LITERARY_REVISION_PASSAGE_RUBRIC_ID,
+            source_text_ref=text.ref,
+            source_bundle_id=None,
+            evaluator_llm_call_id=node_result.llm_call_id,
+            lens="passage",
+            parent_evaluation_id=None,
+            evidence_spans_json=[{"paragraph_index": focus, "text": window["focus_text"][:80]}],
+            overall_score=None,
+            scores_json={},
+            findings_json=[{**item, "passage_paragraph_index": focus} for item in normalized["findings"]],
+            revision_brief_json=(
+                [{"dimension": (about or {}).get("dimension") or "passage", "classification": "revision", "action": normalized["rewrite_brief"], "priority": "medium"}]
+                if normalized["rewrite_brief"]
+                else []
+            ),
+            # 这一行「看的是什么、说了什么」：段落序号、复核的发现 id、判定、评语、改法、作者的问题
+            contract_field_refs_json={
+                "kind": "passage",
+                "paragraph_index": focus,
+                "about_signal_id": signal_id,
+                "verdict": normalized["verdict"],
+                "assessment": normalized["assessment"],
+                "rewrite_brief": normalized["rewrite_brief"],
+                "question": question or "",
+                "excerpt": excerpt or "",
+            },
+            requires_human_review=0,
+            status="completed",
+        )
+        self.session.add(row)
+        self.session.flush()
+        payload = diagnosis_service.diagnose_scene(scene)
+        payload["passage_review"] = serialize_passage_review(row, "current")
+        return payload
 
     def create_patch_candidate(self, payload: dict[str, Any], actor_ref: str = "operator") -> dict[str, Any]:
         """局部改写候选。
@@ -304,23 +491,29 @@ class WriterDeepReviewService:
         写死的词给出套话——那是退役演示故事的残留，对任何真实作品都在说谎。）
         """
 
-        if not get_settings().llm_enabled:
-            raise DomainError(
-                "WRITER_DEEP_REVIEW_LLM_REQUIRED",
-                "写作台的 AI 深评需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。",
-                status_code=409,
-                details={
-                    "node_id": "writer_deep_review",
-                    "next_action": "configure_writer_deep_review_route_and_retry",
-                    "author_action": llm_setup_action(llm_enabled=False, generation_mode="offline_disabled"),
-                },
-            )
+        self._require_live_llm("writer_deep_review")
         return self._create_deep_review_with_llm(
             object_type=object_type,
             object_id=object_id,
             chapter_id=chapter_id,
             scene_id=scene_id,
             source=source,
+        )
+
+    @staticmethod
+    def _require_live_llm(step: str) -> None:
+        if get_settings().llm_enabled:
+            return
+        raise DomainError(
+            "WRITER_DEEP_REVIEW_LLM_REQUIRED",
+            "写作台的 AI 深评需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。",
+            status_code=409,
+            details={
+                "node_id": "writer_deep_review",
+                "step": step,
+                "next_action": "configure_writer_deep_review_route_and_retry",
+                "author_action": llm_setup_action(llm_enabled=False, generation_mode="offline_disabled"),
+            },
         )
 
     def _create_deep_review_with_llm(
@@ -340,14 +533,22 @@ class WriterDeepReviewService:
             "rubric_id": LITERARY_REVISION_RUBRIC_ID,
             "dimensions": list(LITERARY_REVISION_DIMENSIONS),
             "lenses": list(DEEP_REVIEW_LENSES),
-            "source": source,
-            "scene_summary": source.get("content") if object_type == "scene" else None,
-            "chapter_summary": source.get("content") if object_type == "chapter" else None,
+            "source": {**source, "content": _prompt_text(source.get("content"))},
+            "scene_summary": _prompt_text(source.get("content")) if object_type == "scene" else None,
+            "chapter_summary": _prompt_text(source.get("content")) if object_type == "chapter" else None,
         }
+        # 提示词装配只渲染 inline_digests 里的 section（context_budget.collect_prompt_sections）——
+        # 顶层的 scene_summary / chapter_summary 从来没进过用户消息：深评节点在接进面板之前从未被调用，
+        # 所以这个空载荷一直没人发现。正文（可见文字）与这一场的结构 / 设计背景都从这里进。
+        digests: dict[str, str] = {}
+        prompt_text = _prompt_text(source.get("content"))
+        if prompt_text:
+            digests["scene_summary" if object_type == "scene" else "chapter_summary"] = prompt_text
         if object_type == "scene":
             # 2026-09-22：深评按作者设计的这一场判断（形态 / 三拍 / 代价 / 该藏的），不把设计好的
             # 反应场当成「压力不足」；设计背景是可压缩的 section，缺了也不影响评审本身。
-            snapshot.update(self._scene_design_sections(scene_id or object_id))
+            digests.update(self._scene_design_sections(scene_id or object_id))
+        snapshot["inline_digests"] = digests
         prompt = self.prompt_builder.build(snapshot, "writer_deep_review")
         # 2026-09-14 WP6.3：评审在参考作者的手笔下判断「复读 / 意象必要性 / 声音辨识度」
         prompt = self._inject_style_reference_prefix(
@@ -746,10 +947,11 @@ class WriterDeepReviewService:
             select(SceneCard).where(SceneCard.chapter_id == chapter.chapter_id, SceneCard.trashed_flag == 0).order_by(SceneCard.scene_seq.asc())
         ).scalars().all()
         parts: list[str] = []
-        for scene in scenes:
+        for index, scene in enumerate(scenes, start=1):
             source = self._scene_source(scene)
             if source["content"]:
-                parts.append(source["content"])
+                # 通读整章时每一场标出来：评审能说「第 3 场」，发现的引文仍逐字来自各场正文
+                parts.append(f"【第 {index} 场】\n{_prompt_text(source['content'])}")
         return {
             "content": "\n\n".join(parts),
             "source_text_ref": f"chapter_assembled:{chapter.chapter_id}",
@@ -848,6 +1050,65 @@ class WriterDeepReviewService:
         review.approved_item_row_id = None
         review.approved_item_id = None
         return review
+
+
+def _prompt_text(content: Any) -> str:
+    """作者稿是 HTML：给模型看的是可见文字（段落之间空一行），否则它会把 <p> 引进证据里。"""
+
+    text = str(content or "")
+    if "<" not in text:
+        return text
+    return "\n\n".join(part for part in manuscript_paragraphs(text) if part.strip())
+
+
+def _passage_review_user_prompt(
+    base_prompt: str,
+    *,
+    window: dict[str, Any],
+    about: dict[str, Any] | None,
+    excerpt: str | None,
+    question: str | None,
+) -> str:
+    lines = [
+        base_prompt,
+        "",
+        "## Passage Under Review",
+        f"Focus paragraph: {int(window['focus']) + 1} (paragraphs {int(window['start']) + 1}–{int(window['end']) + 1} of the scene are shown; the focus paragraph is marked 【焦点段】)",
+    ]
+    if excerpt:
+        lines.append(f"Selected text: {excerpt}")
+    if about is not None:
+        lines.extend(
+            [
+                "",
+                "## Finding To Verify",
+                f"Source: {about.get('source')} · Dimension: {about.get('dimension')} ({about.get('label')}) · Severity: {about.get('severity')}",
+                f"Issue: {about.get('issue')}",
+                f"Suggested fix: {about.get('recommendation')}",
+            ]
+        )
+    else:
+        lines.extend(["", "## Finding To Verify", "(none — judge the focus paragraph on its own; verdict is no_finding unless you find something)"])
+    if question:
+        lines.extend(["", "## Author's Question", str(question)])
+    return "\n".join(lines)
+
+
+def _normalize_passage_review_output(payload: Any, *, has_finding: bool) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    if verdict not in PASSAGE_VERDICTS:
+        verdict = "partly" if has_finding else "no_finding"
+    if not has_finding and verdict in {"holds", "partly", "does_not_hold"}:
+        verdict = "no_finding"
+    findings = _normalize_findings(payload.get("findings"))
+    return {
+        "verdict": verdict,
+        "assessment": str(payload.get("assessment") or "").strip(),
+        "findings": findings,
+        "rewrite_brief": str(payload.get("rewrite_brief") or "").strip(),
+    }
 
 
 def _passage_patch_snapshot(

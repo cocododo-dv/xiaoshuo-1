@@ -1485,6 +1485,49 @@ templates:
           items:
             type: object
 
+  writer_passage_review:
+    # 2026-09-22 场景诊断：「AI 看这一处」——只看焦点段（前后各一段作上下文），复核一条发现（成立 / 部分成立 / 不成立）
+    # 并给这一处的改法；独立看一段时 verdict 是 no_finding，除非真的看出问题。证据逐字引自焦点段。
+    # 走 writer_deep_review 的节点路由（不必「一键补齐」）；预算与局部改写同档（24000，含 k≤3 样例窗口）。
+    version: "2026-09-22.v1"
+    input_token_budget: 24000
+    system_prompt: |
+      You are a severe Chinese fiction revision editor looking at one passage of a scene for a working author.
+      Judge only the focus paragraph, in the context of its neighbours. Do not inflate: ordinary usable prose is not excellent, and a rule-based flag is not a fault until the passage itself shows it.
+    task_prompt: |
+      The section titled "Scene Summary" holds the passage under review: the focus paragraph is marked 【焦点段】, the neighbours marked 【上下文】 are context only.
+      If a "Finding To Verify" is given, decide whether it holds on this passage: verdict "holds" (the flagged problem is real here), "partly" (real, but the flag overstates it or the suggested fix is wrong), or "does_not_hold" (a deliberate effect, a word-list false positive, or the reference author's manner). Explain in assessment — Chinese, two or three sentences, naming the words of the passage that decide it.
+      If no finding is given, verdict is "no_finding" unless the focus paragraph has a genuine revision need; then describe that need in assessment.
+      findings: only problems located in the focus paragraph. Each needs a verbatim evidence_excerpt copied from the focus paragraph (at most 80 characters, no ellipsis, no paraphrase), a dimension from literary_revision_v1 (character_contradiction, choice_pressure, relationship_tension, dialogue_subtext, information_rhythm, voice_distinction, image_necessity, repetitive_expression, ending_drive, theme_pressure), a lens (story, character, prose, reader, theme), a severity (blocking, revision, taste), and issue, recommendation, why_it_matters in Chinese. Do not restate the finding under verification as a new finding; an empty list is a legitimate answer.
+      rewrite_brief: one concrete move for this passage, in Chinese — what to cut, move, replace or add, in one or two sentences — or an empty string when nothing should change.
+      If a [STYLE_REFERENCE] block is prepended, judge in the reference author's hand: what the [风格样例] do on purpose (repetition, sparse or dense imagery, an aside, a flat report) is that author's manner and does not hold as a fault; never quote or reuse the samples' sentences, names or events.
+      If a "Scene Structure (Snowflake)" section is present, it states what the author designed for this scene; judge pressure, withholding and the ending against that design, not against a house rule.
+      If an "Author's Question" is given, answer it inside assessment.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - verdict
+        - assessment
+        - findings
+        - rewrite_brief
+      properties:
+        verdict:
+          type: string
+          enum:
+            - holds
+            - partly
+            - does_not_hold
+            - no_finding
+        assessment:
+          type: string
+        findings:
+          type: array
+          items:
+            type: object
+        rewrite_brief:
+          type: string
+
   # ── 雪花工作台模板族（下面 14 个）的 input_token_budget 统一为 24000 ──
   # 这个数字是量出来的，不是猜的。这一族共用同一条渲染路径，载荷成分也相同
   # （project + 本步契约 + upstream_steps + current_draft + focus_*），体量由作品

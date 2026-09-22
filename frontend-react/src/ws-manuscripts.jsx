@@ -13,6 +13,8 @@ import { useManuCanonical, useManuWorkflow } from "./ws-manuscripts-workflow.js"
 import { ManuHero } from "./ws-manuscripts-hero.jsx";
 import { ManuFootNote, ManuRead, ManuState, ManuStructure } from "./ws-manuscripts-reader.jsx";
 import { ManuCanon } from "./ws-manuscripts-canon.jsx";
+import { ManuDiagnosis } from "./ws-manuscripts-diagnosis.jsx";
+import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { ManuDiff } from "./ws-manuscripts-diff.jsx";
 import { ManuApprovalDialog, ManuReopenDialog, ManuReturnDialog } from "./ws-manuscripts-dialogs.jsx";
 
@@ -52,6 +54,8 @@ function WsManuscripts({ go }) {
   const catPicked = catChs.find((c) => c.id === activeId) || null;
 
   const [chosenView, setView] = useState("read");
+  /* 每场 / 每章开着的诊断发现数（与写作台深改面板同一份，忽略过的不算）：左栏、场景拼接、诊断页签都读它 */
+  const diag = useDiagnosisSummary();
   const { snapshot: canonical, bump } = useManuCanonical(catPicked);
   const flow = useManuWorkflow({ picked, chapter: catPicked, canonical, bump, book, chapters: catChs, go });
 
@@ -76,10 +80,12 @@ function WsManuscripts({ go }) {
   /* 有服务端章节时，正文只能来自权威聚合；加载失败也不退回任何示例稿 */
   const body = manuBuildBody(catPicked, canonical);
   const synced = !!(catPicked && catPicked.backendId);
+  const chapterDiag = catPicked && catPicked.backendId ? diag.chapterCounts(catPicked.backendId) : null;
   const tabOptions = [
     { value: "read", label: "正文" },
     { value: "structure", label: "结构" },
     { value: "canon", label: "正史", testId: "manuscript-canon-tab" },
+    { value: "diagnosis", label: chapterDiag && chapterDiag.open ? `诊断 ${chapterDiag.open}` : "诊断", testId: "manuscript-diagnosis-tab" },
     ...(canDiff ? [{ value: "diff", label: "对比" }] : []),
   ];
   const message = flow.status.message;
@@ -94,7 +100,7 @@ function WsManuscripts({ go }) {
       />
 
       <div className="ms-cols">
-        <ManuChapterList groups={manuListGroups(chs)} activeId={activeId} onPick={setPicked} />
+        <ManuChapterList groups={manuListGroups(chs)} activeId={activeId} onPick={setPicked} diag={diag} />
 
         <section className="ms-reader" aria-label={chapterLabel(picked, { maxTitle: Infinity })}>
           <header className="ms-reader-head">
@@ -135,7 +141,8 @@ function WsManuscripts({ go }) {
             <ManuCanon projectId={WsWorks.activeId()} chapterId={catPicked && catPicked.backendId} canonical={canonical} onChanged={bump} />
           )}
           {view === "read" && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={flow.retryCanonical} />}
-          {view === "structure" && <ManuStructure body={body} chapter={catPicked} canonical={canonical} go={go} />}
+          {view === "structure" && <ManuStructure body={body} chapter={catPicked} canonical={canonical} go={go} diag={diag} />}
+          {view === "diagnosis" && <ManuDiagnosis chapter={catPicked} go={go} />}
           {view === "diff" && <ManuDiff picked={picked} chapter={catPicked} />}
 
           <footer className="ms-reader-foot">
@@ -188,7 +195,7 @@ function ManuEmptyPage({ go }) {
 }
 
 /* 左栏：按阶段分组的章（先放要你拍板的，定稿放最后），也是唯一的选章入口 */
-function ManuChapterList({ groups, activeId, onPick }) {
+function ManuChapterList({ groups, activeId, onPick, diag }) {
   return (
     <nav className="ms-list" aria-label="章节">
       {groups.map((g) => (
@@ -201,6 +208,7 @@ function ManuChapterList({ groups, activeId, onPick }) {
             {g.items.map((c) => {
               // 「第 N 章」只在有真章名时作小字放在名字前；占位名（第 N 章 / 未命名）只写一遍
               const head = chapterHeading(c);
+              const counts = diag && c.backendId ? diag.chapterCounts(c.backendId) : null;
               return (
                 <li key={c.id}>
                   <button type="button" className={`ms-list-row ${activeId === c.id ? "is-active" : ""}`} aria-current={activeId === c.id ? "true" : undefined}
@@ -213,6 +221,7 @@ function ManuChapterList({ groups, activeId, onPick }) {
                       <span className="ms-list-meta">
                         {c.words ? `${c.words.toLocaleString()} 字` : "还没有字"}
                         {c.stage === "approved" ? ` · ${c.scenes} 场` : ` · ${SCENE_STATE_META.done.label} ${c.sceneDone}/${c.scenes} 场`}
+                        {counts && counts.open > 0 && <span className="ms-list-diag" title="写作台深改面板里还开着的诊断发现（忽略过的不算）"> · 诊断 {counts.open}</span>}
                       </span>
                     </span>
                   </button>

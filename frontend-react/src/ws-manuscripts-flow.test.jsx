@@ -39,6 +39,21 @@ vi.mock("./ws-works.jsx", () => ({
   },
 }));
 vi.mock("./ws-review.jsx", () => ({ rvPush: vi.fn() }));
+/* 诊断计数与诊断页签：这里只验成稿中心把它们接在哪儿；面板本身在 ws-manuscripts-diagnosis.test.jsx */
+const diagFx = vi.hoisted(() => ({ chapters: {}, scenes: {} }));
+vi.mock("./ws-diagnosis-summary.jsx", () => ({
+  useDiagnosisSummary: () => ({
+    loaded: () => true,
+    totals: () => null,
+    chapterCounts: (id) => (diagFx.chapters[id] ? { open: 0, blocking: 0, ...diagFx.chapters[id] } : { open: 0, blocking: 0 }),
+    sceneCounts: (id) => (diagFx.scenes[id] ? { open: 0, blocking: 0, ...diagFx.scenes[id] } : { open: 0, blocking: 0 }),
+  }),
+  announceDiagnosisChanged: vi.fn(),
+}));
+vi.mock("./ws-manuscripts-diagnosis.jsx", async () => {
+  const React = await import("react");
+  return { ManuDiagnosis: ({ chapter }) => React.createElement("div", { "data-testid": "manuscript-diagnosis-stub" }, chapter ? chapter.backendId : "") };
+});
 vi.mock("./ws-manuscripts-store.jsx", () => ({
   WsManuStore: flow,
   manuscriptChapterEligible: () => true,
@@ -719,5 +734,33 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
     await click(host.querySelector('[data-testid="approve-final-open"]'));
     expect(dialog().querySelector('[role="alert"]')).toBeNull();
     expect(document.querySelector('[data-testid="approve-read-confirm"]').checked).toBe(false);
+  });
+});
+
+
+describe("成稿中心 · 诊断计数与诊断页签", () => {
+  it("左栏章行与页签标出还开着的发现数；结构页签的场景行给「诊断 N」并带深改姿态进写作台；诊断页签挂面板", async () => {
+    diagFx.chapters = { c1: { open: 3, blocking: 1 } };
+    diagFx.scenes = { s1: { open: 3, blocking: 1 } };
+    const go = vi.fn();
+    const host = await renderPage("writing", go);
+    expect(host.querySelector('[data-testid="manuscript-chapter-item"]').textContent).toContain("诊断 3");
+    const tab = [...host.querySelectorAll('[role="radio"]')].find((node) => node.textContent.includes("诊断"));
+    expect(tab.textContent).toContain("诊断 3");
+
+    const structure = [...host.querySelectorAll('[role="radio"]')].find((node) => node.textContent === "结构");
+    await act(async () => structure.click());
+    const chip = host.querySelector('[data-testid="ms-scene-diag"]');
+    expect(chip.textContent).toBe("诊断 3");
+    await act(async () => chip.click());
+    expect(go).toHaveBeenLastCalledWith("writer", [
+      { type: "ws:writer-scene", detail: "ch01s1" },
+      { type: "ws:writer-posture", detail: "deep" },
+    ]);
+
+    await act(async () => tab.click());
+    expect(host.querySelector('[data-testid="manuscript-diagnosis-stub"]').textContent).toBe("c1");
+    diagFx.chapters = {};
+    diagFx.scenes = {};
   });
 });

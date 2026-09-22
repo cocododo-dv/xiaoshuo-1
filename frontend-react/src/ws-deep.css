@@ -98,3 +98,10 @@ mark.wr-dx.is-active { outline: 2px solid var(--accent); outline-offset: 1px; }
   border-radius: var(--r-sm); padding: 8px 10px; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); }
 
 /* 场景卡随行（正文上方）现在是共用设计卡 sdc-*（样式在 ws-scene-design.css）；旧的 wr-scard-* 已随 WrSceneCard 一起删除 */
+
+/* ---- 「AI 看这一处」的判断（挂在那条发现下面）与独立看一段的结果 ---- */
+.wr-dxd-opinion { border-left: 3px solid var(--accent-wash); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--paper-2); border-radius: 0 var(--r-xs) var(--r-xs) 0; }
+.wr-dxd-opinion-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wr-dxd-opinion-t { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); }
+.wr-dxd-opinion-tag { font-size: var(--fs-xs); color: var(--accent-ink); }
+.wr-dxd-passage { border: 1px solid var(--line-1); border-radius: var(--r-sm); padding: 9px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--paper-2); }

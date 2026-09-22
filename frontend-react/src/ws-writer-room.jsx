@@ -509,6 +509,8 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
             onPick={deep.pick} onIgnore={deep.ignore} onRestore={deep.restore} onRescan={deep.rescan}
             onSelect={deep.selectForRewrite} onRewrite={deep.rewriteFromFinding}
             aiBusy={deep.aiBusy} aiError={deep.aiError} onRunAi={deep.runAi} onOpenSettings={onOpenSettings}
+            onPassageReview={deep.reviewPassage} passageBusy={deep.passageBusy} passageError={deep.passageError}
+            lastPassage={deep.lastPassage} onRewriteParagraph={deep.rewriteParagraph}
             handoffMiss={deep.handoffMiss} log={deep.log} persistenceStatus={deep.persistenceStatus} onClose={layout.closeRight} />
         : <WrContext open={rightOpen} tab={rightTab} setTab={setRightTab} onClose={layout.closeRight} place={tw.aiPlace}
             tight={dockRight && railR < 232} sceneId={activeScene} design={design} designVariant={contextVariant} sync={sync} go={go}
@@ -521,6 +523,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
       <UndoToast toast={toast} onClose={clearNotice} />
       <WrInlineRewrite editorRef={editorRef} sceneId={activeScene} annoKey={annoKey} onCommit={commitEdit}
         readOnly={approvedLocked} deep={posture === "deep"} onRewriteSelection={deep.selectForRewrite} onOpenSettings={onOpenSettings}
+        onPassageReview={(slice) => deep.reviewPassage({ paragraph_index: slice.pid, excerpt: slice.find })} passageBusy={!!deep.passageBusy}
         finding={deep.rewriteFinding} onFindingDone={deep.clearRewriteFinding} />
       <WrEntityPop pop={entities.entityPop} />
       <WrMentionPicker mention={mention.mention} list={mention.mentionList} idx={mention.mentionIdx}

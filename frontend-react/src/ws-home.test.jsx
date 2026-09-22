@@ -23,6 +23,16 @@ const fx = vi.hoisted(() => ({
   },
 }));
 
+/* 诊断计数 store（写作台深改面板里还开着的发现数）：主页只读它的同步缓存 */
+const diagFx = vi.hoisted(() => ({ byChapter: {}, totals: null }));
+vi.mock("./ws-diagnosis-summary.jsx", () => ({
+  useDiagnosisSummary: () => ({
+    loaded: () => diagFx.totals != null,
+    totals: () => diagFx.totals,
+    chapterCounts: (id) => (diagFx.byChapter[id] ? { open: 0, blocking: 0, ...diagFx.byChapter[id] } : (diagFx.totals != null ? { open: 0, blocking: 0 } : null)),
+    sceneCounts: () => null,
+  }),
+}));
 vi.mock("./ws-works.jsx", () => ({
   WsWorks: { retry: vi.fn(() => Promise.resolve()) },
   useActiveWork: () => fx.work,
@@ -672,5 +682,44 @@ describe("WsHome · 单一真相（阶段 2 重构）", () => {
     fx.chapters = [];
     await mount(vi.fn());
     expect(container.textContent).toContain("这部作品还是一张白纸");
+  });
+});
+
+
+describe("WsHome · 诊断角标（写作台深改面板里还开着的发现数）", () => {
+  it("章卡上标「诊断 N」、进度脊一句「诊断待改 N」；没有计数时什么也不画", async () => {
+    const { mount, restore } = await (async () => {
+      const mod = await import("./ws-home.jsx");
+      const hosts = [];
+      return {
+        mount: async () => {
+          const host = document.createElement("div");
+          document.body.appendChild(host);
+          const root = createRoot(host);
+          hosts.push({ root, host });
+          await act(async () => root.render(React.createElement(mod.WsHome, { go: vi.fn() })));
+          return host;
+        },
+        restore: async () => { for (const { root, host } of hosts) { await act(async () => root.unmount()); host.remove(); } },
+      };
+    })();
+    fx.chapters = [
+      { id: "ch01", backendId: "c1", n: "01", title: "盐场的早班", state: "writing", current: true, words: { cur: 3600, target: 4000 }, scenes: [{ sid: "ch01s1", backendId: "s1", title: "交班", state: "writing", kind: "proactive", brief: {} }] },
+      { id: "ch02", backendId: "c2", n: "02", title: "潮位", state: "planned", words: { cur: 0, target: 4000 }, scenes: [{ sid: "ch02s1", backendId: "s2", title: "涨潮", state: "todo", kind: "proactive", brief: {} }] },
+    ];
+    diagFx.byChapter = { c1: { open: 3, blocking: 1 } };
+    diagFx.totals = { open: 3 };
+    let host = await mount();
+    expect(host.querySelector('[data-testid="home-chap-diag-01"]').textContent).toBe("诊断 3");
+    expect(host.querySelector('[data-testid="home-chap-diag-02"]')).toBeNull();
+    expect(host.textContent).toContain("诊断待改 3");
+    await restore();
+
+    diagFx.byChapter = {};
+    diagFx.totals = null;
+    host = await mount();
+    expect(host.querySelector('[data-testid="home-chap-diag-01"]')).toBeNull();
+    expect(host.textContent).not.toContain("诊断待改");
+    await restore();
   });
 });

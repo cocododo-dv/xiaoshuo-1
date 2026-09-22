@@ -11,6 +11,7 @@ from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest, StrictRequestModel
 from novel_system.api.response import ok
 from novel_system.services.scene_deep_review_preferences import SceneDeepReviewPreferencesService
+from novel_system.services.scene_diagnosis import SceneDiagnosisService
 from novel_system.services.writer_deep_review import WriterDeepReviewService
 
 router = APIRouter(tags=["writer-deep-review"])
@@ -60,6 +61,15 @@ class PassagePatchRejectRequest(StrictRequestModel):
 class DeepReviewDecisionRequest(StrictRequestModel):
     at: int = Field(ge=0, le=(1 << 63) - 1)
     text: str = Field(min_length=1, max_length=1000)
+
+
+class PassageReviewRequest(StrictRequestModel):
+    """「AI 看这一处」：复核一条发现（signal_id），或独立地看一段（paragraph_index / 选中的原话）。"""
+
+    signal_id: str | None = Field(default=None, max_length=255)
+    paragraph_index: int | None = Field(default=None, ge=0, le=100_000)
+    excerpt: str | None = Field(default=None, max_length=2000)
+    question: str | None = Field(default=None, max_length=2000)
 
 
 class SceneDeepReviewPreferencesSaveRequest(StrictRequestModel):
@@ -126,6 +136,40 @@ def run_scene_deep_review(
         payload={"scene_id": scene_id},
         action=lambda: WriterDeepReviewService(session).run_scene_review(scene_id, actor_ref=actor_ref),
     )
+
+
+@router.post("/api/v1/scenes/{scene_id}/deep-review/passage")
+def run_scene_passage_review(
+    scene_id: str,
+    payload: PassageReviewRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    body = payload.model_dump(mode="json", exclude_unset=True)
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/deep-review/passage",
+        payload={"scene_id": scene_id, "body": body},
+        action=lambda: WriterDeepReviewService(session).run_passage_review(
+            scene_id,
+            signal_id=body.get("signal_id"),
+            paragraph_index=body.get("paragraph_index"),
+            excerpt=body.get("excerpt"),
+            question=body.get("question"),
+            actor_ref=actor_ref,
+        ),
+    )
+
+
+@router.get("/api/v1/projects/{project_id}/diagnosis-summary")
+def get_project_diagnosis_summary(project_id: str, request: Request, session: Session = Depends(get_session)):
+    """一本书每一场 / 每一章开着的发现数（主页、成稿中心、起草台的角标）。"""
+
+    payload = SceneDiagnosisService(session).project_summary(project_id)
+    return ok(payload, req_id=getattr(request.state, "request_id", None))
 
 
 @router.get("/api/v1/chapters/{chapter_id}/deep-review")

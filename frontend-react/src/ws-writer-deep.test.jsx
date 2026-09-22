@@ -99,7 +99,7 @@ function diagnosisPayload(findings = [ECHO], extra = {}) {
 }
 
 /* diagnosis：GET 的答复；aiRun：POST（AI 深评）的答复或要抛的错误；patch：改写接口的答复 */
-async function loadWriter({ diagnosis = diagnosisPayload(), aiRun = null, patch = null } = {}) {
+async function loadWriter({ diagnosis = diagnosisPayload(), aiRun = null, patch = null, passage = null } = {}) {
   const client = await import("./lib/client.js");
   installApiRouter(client);
   const baseGet = client.apiGet.getMockImplementation();
@@ -114,6 +114,10 @@ async function loadWriter({ diagnosis = diagnosisPayload(), aiRun = null, patch 
     if (/\/deep-review$/.test(target)) {
       if (aiRun instanceof Error) return Promise.reject(aiRun);
       return Promise.resolve(aiRun || (typeof diagnosis === "function" ? diagnosis(target) : diagnosis));
+    }
+    if (/\/deep-review\/passage$/.test(target)) {
+      if (passage instanceof Error) return Promise.reject(passage);
+      return Promise.resolve(typeof passage === "function" ? passage(body) : (passage || diagnosisPayload()));
     }
     if (/\/passages\/patch-candidates$/.test(target)) {
       return Promise.resolve(patch || { candidate: { patch_id: "p1", replacement_options: [{ option_id: "o1", replacement_text: "门外很安静，静得能听见潮水。" }] } });
@@ -444,5 +448,53 @@ describe("写作台 · AI 放在抽屉里", () => {
 
     const tray = await render(<WriterRoom t={{ aiPlace: "tray" }} setTweak={() => {}} />);
     expect([...tray.querySelectorAll(".wr-drawer.right [role='tab']")].map((node) => node.textContent)).toEqual(["戏剧", "批注", "笔记"]);
+  });
+});
+
+
+describe("写作台 · AI 看这一处（局部深评）", () => {
+  it("复核一条发现：POST deep-review/passage 带 signal_id，意见挂在那条发现上；「按 AI 的判断忽略」走忽略", async () => {
+    const opinion = { evaluation_id: "writer_passage_eval_1", paragraph_index: 0, about_signal_id: ECHO.signal_id, verdict: "does_not_hold", verdict_label: "不成立", assessment: "这是刻意的回响，不是毛病。", rewrite_brief: "", question: "", findings_count: 0, status: "current" };
+    const passage = diagnosisPayload([{ ...ECHO, opinion }], { passage_reviews: [opinion], passage_review: opinion });
+    const { WriterRoom, WrDocs, client } = await loadWriter({ passage });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    await click(deepRadio(host));
+    const drawer = host.querySelector(".wr-dxd");
+    await vi.waitFor(() => expect(drawer.textContent).toContain("贴邻重复"), T);
+
+    await click(drawerButton(host, "AI 看这一处"));
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/deep-review/passage", { signal_id: ECHO.signal_id }), T);
+    await vi.waitFor(() => expect(drawer.textContent).toContain("AI：不成立"), T);
+    expect(drawer.textContent).toContain("这是刻意的回响，不是毛病。");
+    expect(drawer.textContent).toContain("AI 看这一处 · 贴邻叠句");
+
+    await click(drawerButton(host, "按 AI 的判断忽略"));
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
+      "/api/v1/scenes/s1/deep-review/preferences",
+      expect.objectContaining({ ignored_issue_keys: ["craft:adjacent_echo:11111111"] }),
+    ), T);
+    expect(drawer.textContent).toContain("已忽略 1 项");
+  });
+
+  it("深改姿态里选中一段：「AI 看这一段」独立看这一段，结果与新发现并进面板", async () => {
+    const note = { evaluation_id: "writer_passage_eval_2", paragraph_index: 0, about_signal_id: null, verdict: "no_finding", verdict_label: "没有要改的", assessment: "这一段的回响是节奏，不必动。", rewrite_brief: "", question: "", findings_count: 0, status: "current" };
+    const passage = (body) => diagnosisPayload([ECHO], { passage_reviews: [note], passage_review: { ...note, paragraph_index: body.paragraph_index } });
+    const { WriterRoom, WrDocs, client } = await loadWriter({ passage });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    await click(deepRadio(host));
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("贴邻重复"), T);
+
+    await selectByOffsets(host.querySelector(".wr-editor"), 0, 5);
+    const bar = document.querySelector(".wr-irw-bar");
+    expect(bar).not.toBeNull();
+    await click([...bar.querySelectorAll("button")].find((node) => node.textContent.includes("AI 看这一段")));
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/deep-review/passage", { paragraph_index: 0, excerpt: "门外很安静" }), T);
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("AI 看了第 1 段"), T);
+    expect(host.querySelector(".wr-dxd").textContent).toContain("这一段的回响是节奏，不必动。");
+    expect(host.querySelector(".wr-dxd").textContent).toContain("AI：没有要改的");
   });
 });

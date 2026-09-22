@@ -11,7 +11,18 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from novel_system.db.models import ChapterGoal, SceneCard, SceneDraft, StoryProject, WriterEvaluation
+from novel_system.db.models import (
+    ChapterGoal,
+    SceneCard,
+    SceneDraft,
+    StoryProject,
+    StyleReferenceBook,
+    StyleReferenceInjectionBinding,
+    StyleReferenceParagraph,
+    StyleReferenceProfile,
+    StyleReferenceRun,
+    WriterEvaluation,
+)
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.final_text_gate import FinalTextGateService
 from novel_system.services.literary_quality import (
@@ -25,11 +36,17 @@ from novel_system.services.literary_quality import (
 from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
 from novel_system.services.near_final import NEAR_FINAL_RUBRIC_ID as PIPELINE_NEAR_FINAL_RUBRIC_ID
 from novel_system.services.scene_diagnosis import (
+    BoundProfile,
+    CRAFT_ECHO_HABIT_PER_1K,
+    CRAFT_SAME_OPENING_HABIT_PER_1K,
+    LITERARY_REVISION_PASSAGE_RUBRIC_ID,
     LITERARY_REVISION_RUBRIC_ID,
     NEAR_FINAL_RUBRIC_ID,
     DiagnosisText,
     SceneDiagnosisService,
+    calibration_from_reference,
     candidate_category_for_dimension,
+    compute_reference_craft,
     craft_findings,
     locate_in_paragraphs,
     manuscript_paragraphs,
@@ -181,10 +198,10 @@ def test_craft_findings_port_the_writer_rules_and_defer_paragraph_scale_to_a_ref
     assert findings["long_paragraph"]["issue"] == "第 2 段偏长（171 字）。"
     assert findings["same_opening"]["issue"] == "连续三句以「她」开头。"
     assert findings["same_opening"]["evidence"]["paragraph_index"] == 2
-    # 有风格绑定：段落尺度让位给参考作者；其余标 house_taste
+    # 有风格绑定但没有可校准的读数（默认阈值）：三条都在，标 house_taste
     bound = {item["dimension"]: item for item in craft_findings(text, house_taste=True)}
-    assert "long_paragraph" not in bound
-    assert bound["adjacent_echo"]["house_taste"] is True
+    assert set(bound) == {"adjacent_echo", "long_paragraph", "same_opening"}
+    assert all(item["house_taste"] for item in bound.values())
 
 
 def test_candidate_category_knows_both_vocabularies() -> None:
@@ -577,3 +594,418 @@ def test_scene_without_text_diagnoses_nothing(client: TestClient, session) -> No
     assert payload["text"]["layer"] == "none"
     assert payload["findings"] == []
     assert payload["summary"]["open"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 第二轮（同日）：节奏检查按参考作者校准
+# ---------------------------------------------------------------------------
+
+
+def _distinct_chars(count: int) -> str:
+    return "".join(chr(0x4E00 + index) for index in range(count))
+
+
+def test_reference_craft_calibration_raises_the_paragraph_limit_and_drops_the_authors_habits() -> None:
+    reference = ["门外很安静，安静到能听见潮水。"] * 30 + [_distinct_chars(300)] * 10 + ["她走了。她停了。她笑了。"] * 5
+    stats = compute_reference_craft(reference)
+    assert stats["paragraphs"] == 45 and stats["long_paragraph_p95"] == 300
+    assert stats["echo_per_1k"] > CRAFT_ECHO_HABIT_PER_1K and stats["same_opening_per_1k"] > CRAFT_SAME_OPENING_HABIT_PER_1K
+
+    calibration = calibration_from_reference(profile_id="prof", book_id="book", book_title="龙族", stats=stats, deliberate_repetition=False)
+    assert calibration.source == "reference"
+    assert calibration.long_paragraph_chars == 300
+    assert calibration.flag_echo is False and calibration.flag_same_opening is False
+    assert "《龙族》" in calibration.note and "300" in calibration.note and "常这么写" in calibration.note
+
+    text = DiagnosisText(layer="author_draft", ref=None, content="", paragraphs=["门外很安静，安静到能听见潮水。", _distinct_chars(200), "她走了。她停了。她笑了。"])
+    assert {item["dimension"] for item in craft_findings(text)} == {"adjacent_echo", "long_paragraph", "same_opening"}
+    assert craft_findings(text, calibration=calibration, house_taste=True) == []
+    longer = DiagnosisText(layer="author_draft", ref=None, content="", paragraphs=[_distinct_chars(301)])
+    flagged = craft_findings(longer, calibration=calibration)
+    assert [item["dimension"] for item in flagged] == ["long_paragraph"]
+    assert "超过参考作者段落的长尾 300 字" in flagged[0]["issue"]
+
+    # 参考作者不常这么写：照常提示、阈值不低于 170；刻意重复的作者：两条重复检查都不提示
+    sparse_stats = {"paragraphs": 100, "long_paragraph_p95": 120, "echo_per_1k": 1.0, "same_opening_per_1k": 2.0}
+    sparse = calibration_from_reference(profile_id="p", book_id="b", book_title=None, stats=sparse_stats, deliberate_repetition=False)
+    assert sparse.flag_echo and sparse.flag_same_opening and sparse.long_paragraph_chars == 170
+    deliberate = calibration_from_reference(profile_id="p", book_id="b", book_title="书", stats=sparse_stats, deliberate_repetition=True)
+    assert not deliberate.flag_echo and not deliberate.flag_same_opening and "刻意" in deliberate.note
+
+
+def test_diagnosis_calibrates_craft_to_the_bound_reference_book(client: TestClient, session, monkeypatch) -> None:
+    _seed_scene(session)
+    reference = ["门外很安静，安静到能听见潮水。"] * 30 + ["她走了。她停了。她笑了。"] * 5 + [_distinct_chars(300)] * 10
+    session.add(StyleReferenceBook(book_id="book_diag", title="龙族", source_kind="upload", cloud_policy="segments_only", text_checksum="diag"))
+    session.add(StyleReferenceRun(run_id="run_diag", book_id="book_diag", status="completed", phase="synthesize", dispatch_state="completed", requested_layers_json=["language"]))
+    session.add_all(
+        [
+            StyleReferenceParagraph(
+                paragraph_id=f"para_diag_{index}",
+                book_id="book_diag",
+                paragraph_index=index,
+                paragraph_type="narration",
+                start_offset=0,
+                end_offset=len(text),
+                text=text,
+                char_count=len(text),
+            )
+            for index, text in enumerate(reference)
+        ]
+    )
+    session.add(
+        StyleReferenceProfile(
+            profile_id="prof_diag",
+            book_id="book_diag",
+            run_id="run_diag",
+            title="龙族画像",
+            profile_json={"voice_signature": {"deliberate_repetition": False}},
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(
+        SceneDiagnosisService,
+        "binding_profile",
+        lambda self, scene: (True, BoundProfile(profile_id="prof_diag", book_id="book_diag", deliberate_repetition=False)),
+    )
+
+    payload = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
+    assert payload["style_bound"] is True
+    calibration = payload["craft_calibration"]
+    assert calibration["source"] == "reference" and calibration["book_title"] == "龙族" and calibration["paragraphs"] == 45
+    assert calibration["long_paragraph_chars"] == 300
+    assert calibration["flag_echo"] is False and calibration["flag_same_opening"] is False
+    assert calibration["note"].startswith("按《龙族》校准")
+    assert not [item for item in payload["findings"] if item["source"] == "craft"], "叠句与句首重复是这位作者的习惯"
+    assert all(item["house_taste"] for item in payload["findings"] if item["source"] == "rules")
+    # 第二次读走进程缓存：结果一致
+    assert client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]["craft_calibration"] == calibration
+
+
+def test_binding_profile_resolves_the_most_specific_active_binding_without_loading_profile_json(session) -> None:
+    """轻量解析（不加载几十万字的 profile_json）：scene > character > project > global，画像不 active 的绑定不算。"""
+
+    _seed_scene(session)
+    session.add(StyleReferenceBook(book_id="book_a", title="甲", source_kind="upload", cloud_policy="segments_only", text_checksum="a"))
+    session.add(StyleReferenceBook(book_id="book_b", title="乙", source_kind="upload", cloud_policy="segments_only", text_checksum="b"))
+    session.add(StyleReferenceRun(run_id="run_a", book_id="book_a", status="completed", phase="synthesize", dispatch_state="completed", requested_layers_json=[]))
+    session.add(StyleReferenceRun(run_id="run_b", book_id="book_b", status="completed", phase="synthesize", dispatch_state="completed", requested_layers_json=[]))
+    session.add(StyleReferenceProfile(profile_id="prof_a", book_id="book_a", run_id="run_a", title="甲画像", status="active", profile_json={"voice_signature": {"deliberate_repetition": True}}))
+    session.add(StyleReferenceProfile(profile_id="prof_b", book_id="book_b", run_id="run_b", title="乙画像", status="active", profile_json={}))
+    session.add(StyleReferenceProfile(profile_id="prof_draft", book_id="book_b", run_id="run_b", title="草稿画像", status="draft", profile_json={}))
+    session.flush()
+    session.add(StyleReferenceInjectionBinding(binding_id="bind_project", profile_id="prof_a", scope="project", scope_ref_id=PROJECT_ID, task_type="scene_generation", strategy="mixed", config_json={}, status="active"))
+    session.commit()
+    scene = session.get(SceneCard, SCENE_ID)
+
+    bound, profile = SceneDiagnosisService(session).binding_profile(scene)
+    assert bound is True and profile == BoundProfile(profile_id="prof_a", book_id="book_a", deliberate_repetition=True)
+
+    # 场景层的绑定比项目层具体；画像还是草稿的绑定不算
+    session.add(StyleReferenceInjectionBinding(binding_id="bind_scene_draft", profile_id="prof_draft", scope="scene", scope_ref_id=SCENE_ID, task_type="scene_generation", strategy="mixed", config_json={}, status="active"))
+    session.commit()
+    assert SceneDiagnosisService(session).binding_profile(scene)[1].profile_id == "prof_a"
+    session.add(StyleReferenceInjectionBinding(binding_id="bind_scene", profile_id="prof_b", scope="scene", scope_ref_id=SCENE_ID, task_type="scene_generation", strategy="mixed", config_json={}, status="active"))
+    session.commit()
+    bound, profile = SceneDiagnosisService(session).binding_profile(scene)
+    assert bound is True and profile == BoundProfile(profile_id="prof_b", book_id="book_b", deliberate_repetition=False)
+
+    # 另一个任务类型 / 不 active 的绑定：不算
+    session.query(StyleReferenceInjectionBinding).delete()
+    session.add(StyleReferenceInjectionBinding(binding_id="bind_other", profile_id="prof_a", scope="project", scope_ref_id=PROJECT_ID, task_type="fine_tuning", strategy="mixed", config_json={}, status="active"))
+    session.add(StyleReferenceInjectionBinding(binding_id="bind_off", profile_id="prof_a", scope="project", scope_ref_id=PROJECT_ID, task_type="scene_generation", strategy="mixed", config_json={}, status="archived"))
+    session.commit()
+    assert SceneDiagnosisService(session).binding_profile(scene) == (False, None)
+
+
+# ---------------------------------------------------------------------------
+# 「AI 看这一处」：局部深评
+# ---------------------------------------------------------------------------
+
+
+def _scripted_runner(output: dict, calls: list):
+    class _Runner:
+        def __init__(self, session, **kwargs) -> None:
+            self.session = session
+
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
+        def run(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                llm_call_id=f"llm_call_scripted_{len(calls)}",
+                response=SimpleNamespace(structured_output=output),
+            )
+
+    return _Runner
+
+
+PASSAGE_OUTPUT = {
+    "verdict": "does_not_hold",
+    "assessment": "「突然意识到」在这里是人物对自己的一句嘲讽，不是叙述替读者总结。",
+    "findings": [
+        {
+            "lens": "prose",
+            "dimension": "information_rhythm",
+            "severity": "taste",
+            "issue": "钟响那一句来得太早。",
+            "recommendation": "把钟响挪到她开口之后。",
+            "evidence_excerpt": "录音里传来三声钟响",
+            "why_it_matters": "信息释放的先后决定悬念。",
+        }
+    ],
+    "rewrite_brief": "删掉「突然意识到」，让她直接做动作。",
+}
+
+
+def test_passage_review_verifies_one_finding_and_joins_the_diagnosis(client: TestClient, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    calls: list = []
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _scripted_runner(PASSAGE_OUTPUT, calls))
+    _seed_scene(session)
+    before = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
+    voice = _finding(before, "rules", "model_voice")
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/deep-review/passage",
+        json={"signal_id": voice["signal_id"], "question": "这是自嘲吗？"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    review = payload["passage_review"]
+    assert review["verdict"] == "does_not_hold" and review["verdict_label"] == "不成立"
+    assert review["about_signal_id"] == voice["signal_id"]
+    assert review["paragraph_index"] == voice["evidence"]["paragraph_index"]
+    assert review["findings_count"] == 1 and review["status"] == "current"
+    call = calls[-1]
+    assert call["node_id"] == "writer_deep_review" and call["step"] == "writer_passage_review"
+    # 段落窗口真的在用户消息里（不只是模板里提到「焦点段」）：焦点段 + 下一段，标着记号，没有 HTML
+    assert "【焦点段】门外很安静" in call["user_prompt"] and "【上下文】许望没有回答" in call["user_prompt"]
+    assert "## Finding To Verify" in call["user_prompt"] and "## Author's Question" in call["user_prompt"] and "这是自嘲吗" in call["user_prompt"]
+    assert "<p>" not in call["user_prompt"], "模型看的是可见文字，不是作者稿的 HTML"
+    assert call["prompt"]["template_name"] == "writer_passage_review"
+
+    verified = _finding(payload, "rules", "model_voice")
+    assert verified["opinion"]["verdict"] == "does_not_hold"
+    assert verified["opinion"]["rewrite_brief"] == "删掉「突然意识到」，让她直接做动作。"
+    assert verified["opinion"]["assessment"].startswith("「突然意识到」在这里")
+    rhythm = _finding(payload, "ai", "information_rhythm")
+    assert rhythm["origin"]["kind"] == "passage" and rhythm["origin"]["about_signal_id"] == voice["signal_id"]
+    assert rhythm["evidence"]["paragraph_index"] == 1
+    assert len(payload["passage_reviews"]) == 1
+
+    # 同一条再看一次：旧的退位，面板只留最新的意见
+    again = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"signal_id": voice["signal_id"]})
+    assert again.status_code == 200
+    assert len(again.json()["data"]["passage_reviews"]) == 1
+    session.expire_all()
+    rows = session.query(WriterEvaluation).filter_by(object_type="scene", object_id=SCENE_ID, rubric_id=LITERARY_REVISION_PASSAGE_RUBRIC_ID).all()
+    assert sorted(row.status for row in rows) == ["completed", "superseded"]
+    # 全场深评没跑过，局部深评不冒充它
+    assert again.json()["data"]["ai"]["status"] == "not_run"
+
+
+def test_passage_review_on_a_paragraph_without_a_finding_and_its_guards(client: TestClient, session, monkeypatch) -> None:
+    _seed_scene(session)
+    denied = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 1})
+    assert denied.status_code == 409
+    assert denied.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_REQUIRED"
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    calls: list = []
+    output = {"verdict": "holds", "assessment": "这一段没有要改的。", "findings": [], "rewrite_brief": ""}
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _scripted_runner(output, calls))
+
+    bad = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 99})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "WRITER_PASSAGE_REVIEW_TARGET_INVALID"
+    unknown = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"signal_id": "rules:model_voice:deadbeef"})
+    assert unknown.status_code == 404 and unknown.json()["error"]["code"] == "WRITER_PASSAGE_REVIEW_FINDING_NOT_FOUND"
+
+    # 选中一句原话：按它找到段落；没有要复核的发现时 holds 归为 no_finding
+    ok = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"excerpt": "许望没有回答"})
+    assert ok.status_code == 200
+    review = ok.json()["data"]["passage_review"]
+    assert review["paragraph_index"] == 1 and review["about_signal_id"] is None
+    assert review["verdict"] == "no_finding" and review["verdict_label"] == "没有要改的"
+    assert "## Finding To Verify" in calls[-1]["user_prompt"] and "(none" in calls[-1]["user_prompt"]
+    assert "## Author's Question" not in calls[-1]["user_prompt"]
+    assert "【焦点段】许望没有回答" in calls[-1]["user_prompt"]
+
+
+# ---------------------------------------------------------------------------
+# 「AI 通读本章」：章级深评落到各场
+# ---------------------------------------------------------------------------
+
+SCENE2_ID = "DIAG_CH01_SC02"
+SCENE2_HTML = "<p>许望把钟停了。</p><p>她终于开口，把证据袋放在桌上。</p>"
+
+
+def _add_second_scene(session, html: str = SCENE2_HTML) -> str:
+    session.add(
+        SceneCard(
+            scene_id=SCENE2_ID,
+            chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
+            scene_seq=2,
+            scene_goal="她开口。",
+            beats_json=[],
+            exit_change="",
+            hook="",
+        )
+    )
+    session.commit()
+    service = AuthorDraftService(session)
+    draft = service.ensure_blank("scene", SCENE2_ID, actor_ref="writer")["draft"]
+    service.save(draft["draft_id"], {"content": html, "base_revision_no": draft["revision_no"]}, actor_ref="writer")
+    session.commit()
+    return draft["draft_id"]
+
+
+def test_chapter_read_through_lands_findings_on_scenes_and_keeps_chapter_level_ones(client: TestClient, session) -> None:
+    _seed_scene(session)
+    _add_second_scene(session)
+    session.add(
+        WriterEvaluation(
+            evaluation_id="chapter_eval_diag",
+            object_type="chapter",
+            object_id=CHAPTER_ID,
+            chapter_id=CHAPTER_ID,
+            scene_id=None,
+            rubric_id=LITERARY_REVISION_RUBRIC_ID,
+            source_text_ref=f"chapter_assembled:{CHAPTER_ID}",
+            lens="aggregate",
+            overall_score=0.52,
+            scores_json={},
+            findings_json=[
+                {
+                    "lens": "story",
+                    "dimension": "choice_pressure",
+                    "severity": "revision",
+                    "issue": "第二场的选择说出来了，没有落成动作。",
+                    "recommendation": "让证据袋真的离开她的手。",
+                    "evidence_excerpt": "把证据袋放在桌上",
+                    "why_it_matters": "读者要看见代价。",
+                },
+                {
+                    "lens": "reader",
+                    "dimension": "ending_drive",
+                    "severity": "blocking",
+                    "issue": "本章开头的承诺到结尾没有兑现。",
+                    "recommendation": "让最后一场回答第一场的问题。",
+                    "evidence_excerpt": "",
+                    "why_it_matters": "章的收束。",
+                },
+            ],
+            revision_brief_json=[{"action": "让最后一场回答第一场的问题。", "priority": "high"}],
+            status="completed",
+        )
+    )
+    session.commit()
+
+    chapter = client.get(f"/api/v1/chapters/{CHAPTER_ID}/deep-review").json()["data"]
+    assert chapter["ai"]["status"] == "current" and chapter["ai"]["overall_score"] == 0.52
+    assert [entry["scene_id"] for entry in chapter["scenes"]] == [SCENE_ID, SCENE2_ID]
+    second = chapter["scenes"][1]
+    assert [item["dimension"] for item in second["findings_from_chapter"]] == ["choice_pressure"]
+    assert second["findings_from_chapter"][0]["evidence"]["paragraph_index"] == 1
+    assert second["findings_from_chapter"][0]["origin"]["kind"] == "chapter"
+    assert [item["dimension"] for item in chapter["chapter_findings"]] == ["ending_drive"]
+    assert chapter["chapter_findings"][0]["evidence"] is None and chapter["chapter_findings"][0]["stale"] is False
+    assert chapter["summary"]["chapter_level"] == 1 and chapter["summary"]["blocking"] >= 1
+    assert chapter["summary"]["scenes"] == 2
+    assert chapter["status"] == "reviewed" and chapter["latest_evaluation"]["evaluation_id"] == "chapter_eval_diag"
+    assert chapter["ai"]["revision_brief"][0]["action"] == "让最后一场回答第一场的问题。"
+
+    # 写作台里第二场的诊断也有这一条（origin 通读）；第一场没有
+    scene2 = client.get(f"/api/v1/scenes/{SCENE2_ID}/deep-review").json()["data"]
+    landed = _finding(scene2, "ai", "choice_pressure")
+    assert landed["origin"]["kind"] == "chapter" and landed["origin"]["evaluation_id"] == "chapter_eval_diag"
+    assert scene2["chapter_review"] == {"status": "current", "evaluation_id": "chapter_eval_diag", "created_at": scene2["chapter_review"]["created_at"], "findings_here": 1}
+    scene1 = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
+    assert not [item for item in scene1["findings"] if (item.get("origin") or {}).get("kind") == "chapter"]
+    assert scene1["chapter_review"]["findings_here"] == 0
+
+    # 改了第二场的字：整章的通读就是改前的
+    service = AuthorDraftService(session)
+    draft = service.ensure_blank("scene", SCENE2_ID, actor_ref="writer")["draft"]
+    service.save(draft["draft_id"], {"content": "<p>她走了。</p>", "base_revision_no": draft["revision_no"]}, actor_ref="writer")
+    session.commit()
+    after = client.get(f"/api/v1/chapters/{CHAPTER_ID}/deep-review").json()["data"]
+    assert after["ai"]["status"] == "stale"
+    assert after["chapter_findings"] and all(item["stale"] for item in after["chapter_findings"] if item["context"]), "引的那句已经改掉"
+
+
+def test_chapter_read_through_runs_the_node_on_scene_marked_plain_text(client: TestClient, session, monkeypatch) -> None:
+    _seed_scene(session)
+    _add_second_scene(session)
+    denied = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review")
+    assert denied.status_code == 409 and denied.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_REQUIRED"
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    calls: list = []
+    output = {
+        "overall_score": 0.6,
+        "scores": {"choice_pressure": 0.5},
+        "findings": [
+            {
+                "lens": "story",
+                "dimension": "choice_pressure",
+                "severity": "revision",
+                "issue": "第二场开头停钟的动作没有代价。",
+                "recommendation": "让停钟惊动别人。",
+                "evidence_excerpt": "许望把钟停了",
+                "why_it_matters": "代价。",
+            }
+        ],
+        "revision_brief": [{"dimension": "choice_pressure", "classification": "revision", "action": "让停钟惊动别人。", "priority": "medium"}],
+        "requires_human_review": False,
+        "lens_evaluations": [],
+    }
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _scripted_runner(output, calls))
+
+    response = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review")
+    assert response.status_code == 200
+    prompt = calls[-1]["user_prompt"]
+    assert "【第 1 场】" in prompt and "【第 2 场】" in prompt and "<p>" not in prompt
+    payload = response.json()["data"]
+    assert payload["ai"]["status"] == "current" and payload["ai"]["evaluation_id"]
+    assert payload["scenes"][1]["findings_from_chapter"][0]["evidence"]["paragraph_index"] == 0
+    assert payload["chapter_findings"] == []
+
+
+# ---------------------------------------------------------------------------
+# 全书计数
+# ---------------------------------------------------------------------------
+
+
+def test_project_diagnosis_summary_counts_every_scene_and_chapter(client: TestClient, session) -> None:
+    _seed_scene(session)
+    _add_second_scene(session)
+
+    summary = client.get(f"/api/v1/projects/{PROJECT_ID}/diagnosis-summary").json()["data"]
+    scene1 = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]["summary"]
+    assert summary["scenes"][SCENE_ID]["open"] == scene1["open"]
+    assert summary["scenes"][SCENE_ID]["blocking"] == scene1["by_severity"]["blocking"]
+    assert summary["scenes"][SCENE_ID]["chapter_id"] == CHAPTER_ID and summary["scenes"][SCENE_ID]["ai_status"] == "not_run"
+    assert summary["chapters"][CHAPTER_ID]["scenes"] == 2
+    assert summary["chapters"][CHAPTER_ID]["open"] == summary["scenes"][SCENE_ID]["open"] + summary["scenes"][SCENE2_ID]["open"]
+    assert summary["totals"]["scenes"] == 2 and summary["totals"]["scenes_with_text"] == 2
+    assert summary["totals"]["open"] == summary["chapters"][CHAPTER_ID]["open"]
+    assert summary["totals"]["chapters_reviewed"] == 0
+
+    # 在写作台忽略一条：计数跟着少一
+    voice = _finding(client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"], "rules", "model_voice")
+    saved = client.patch(
+        f"/api/v1/scenes/{SCENE_ID}/deep-review/preferences",
+        json={"decision_log": [], "ignored_issue_keys": [voice["signal_id"]], "base_revision_no": 0},
+    )
+    assert saved.status_code == 200
+    after = client.get(f"/api/v1/projects/{PROJECT_ID}/diagnosis-summary").json()["data"]
+    assert after["scenes"][SCENE_ID]["open"] == summary["scenes"][SCENE_ID]["open"] - 1
+    assert after["scenes"][SCENE_ID]["ignored"] == 1
+    assert after["totals"]["ignored"] == 1
+
+    assert client.get("/api/v1/projects/nope/diagnosis-summary").status_code == 404

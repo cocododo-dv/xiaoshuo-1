@@ -9,7 +9,10 @@ import { SCENE_STATE_META } from "./ws-labels.js";
    同一份（ws-labels）：规划中但已经有字的章，这里和成稿中心都读作「写作中」；场的三态也是同一份词。
    ========================================================== */
 
-function HmChapters({ spine, windowed, allChapters, openScene }) {
+/* diagnosis：{ byChapter: { [目录章 id]: { open, blocking } }, totals: { open } | null }——写作台深改面板里还开着的发现数 */
+function HmChapters({ spine, windowed, allChapters, openScene, diagnosis = null }) {
+  const byChapter = (diagnosis && diagnosis.byChapter) || {};
+  const totals = (diagnosis && diagnosis.totals) || null;
   return (
     <section className="hm-chaps" aria-label="全书章节">
       <div className="hm-chaps-head">
@@ -32,6 +35,9 @@ function HmChapters({ spine, windowed, allChapters, openScene }) {
                 <span>{SCENE_STATE_META.done.label} {spine.scenes.done}</span>
                 <span>{SCENE_STATE_META.writing.label} {spine.scenes.writing}</span>
                 <span>{SCENE_STATE_META.todo.label} {spine.scenes.todo}</span>
+                {totals && totals.open > 0 && (
+                  <span className="hm-spine-diag" title="写作台深改面板里还开着的诊断发现（忽略过的不算）">诊断待改 <b>{totals.open}</b></span>
+                )}
               </>
             ) : "还没有规划场景"}
           </div>
@@ -57,7 +63,12 @@ function HmChapters({ spine, windowed, allChapters, openScene }) {
             aria-current={c.front ? "true" : undefined} onClick={() => openScene(c.sid)}>
             <div className="hm-chap-top">
               {c.title ? <span className="hm-chap-n">{c.num}</span> : <span />}
-              <Tag tone={c.tone}>{c.stateLabel}</Tag>
+              <span className="hm-chap-tags">
+                {byChapter[c.id] && byChapter[c.id].open > 0 && (
+                  <span className="hm-chap-diag" data-testid={`home-chap-diag-${c.n}`} title="这一章各场还开着的诊断发现">诊断 {byChapter[c.id].open}</span>
+                )}
+                <Tag tone={c.tone}>{c.stateLabel}</Tag>
+              </span>
             </div>
             <div className="hm-chap-t">{c.title || c.num}</div>
             <div className="hm-chap-bar" aria-hidden="true"><i style={{ width: c.pct + "%" }} /></div>

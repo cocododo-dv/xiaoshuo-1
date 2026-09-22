@@ -40,7 +40,7 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 **四个来源：**
 
 - `rules`：`literary_quality.analyze_literary_quality` 的 21 维。每条规则发现现在带 `needle`（命中的词 / 句）与 `anchor`（`text` / `ending` / `scene`），`rule_signal_id` 由「命中了什么」而不是「在第几段」算出（`rules:<dimension>:<8 hex of needle>`，缺席类 `rules:<dimension>:scene`，结尾类 `…:ending`）——前面加一段、别处改几个字，id 不变，「忽略」跟着发现走。中文问题 / 改法在 `literary_quality.DIMENSION_NOTES`，唯一一份。
-- `craft`：原写作台的三条本地规则搬到服务端（`craft_findings`）：贴邻叠句（taste）、段落偏长（info，>170 字）、连续三句同字开头（info）。有风格绑定时不出「段落偏长」（参考作者的段落尺度说了算）。
+- `craft`：原写作台的三条本地规则搬到服务端（`craft_findings`）：贴邻叠句（taste）、段落偏长（info，>170 字）、连续三句同字开头（info）。有风格绑定时按参考作者校准（§7.1）：阈值取参考书段长的长尾，参考作者常用的叠句 / 句首重复不提示。
 - `review`：起草台准定稿评审（`writer_evaluations` 里 rubric `near_final_acceptance_v1`）最近一行的发现，含 `failure_class` 与 `revision_brief`。
 - `ai`：写作台的 AI 深评（rubric `literary_revision_v1`）最近一行的发现、`revision_brief`、各镜头分数。
 
@@ -67,12 +67,12 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 - 深链：`ws:writer-posture` 的 detail 可以是 `"deep"` 或 `{ posture: "deep", signal_id }`。文学质量的每条发现与条目级按钮、成稿中心「直达深改」、待办卡都能带 id；到了诊断就选中那一条并滚过去，当前作者稿里没有它就提示。
 - 文学质量视图：问题 / 改法读服务端中文；条目上有「已忽略 N」；风险维度只算还开着的。
 
-## 4. 没做与开放项
+## 4. 开放项（第二轮之后）
 
-- 深评仍是整场一次（10 维 × 5 镜头）；没有按段落 / 按发现的局部深评。
-- `craft` 三条规则仍是 2026-09-21 那版的口径（170 字、三句同字），没有按参考作者校准。
-- 章级深评接口（`POST /api/v1/chapters/{id}/deep-review`）保留、同样拒绝式，但没有界面。
-- 目录载荷没有每场的「开着的发现数」；成稿中心 / 主页不显示诊断计数。
+- 局部深评每次只看一段（焦点段 + 前后各一段）；跨段的问题（一场里两处互相矛盾）仍靠整场深评。
+- 参考作者校准只覆盖节奏三条；21 维规则本身在有绑定时仍只是标 `house_taste`，没有按参考书校准词表。
+- 章级通读是整章一次；没有「只通读改过的几场」。
+- 计数是按需拉取（视图挂载、诊断改动、目录事件节流 20 秒），不是推送。
 
 ## 5. 测试
 
@@ -81,3 +81,20 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 ## 6. 部署
 
 无迁移。有已保存提示词快照的安装需要 `cd backend; python -m novel_system.tools.sync_prompt_templates --execute`（`writer_deep_review` v5）。设置里的「写作台：深度审读」节点从此真的会被调用。
+
+## 7. 第二轮（同日）：四个开放项做完
+
+作者：「把没做的部分也做了」。
+
+**7.1 节奏检查按参考作者校准。** 有风格绑定的场，`SceneDiagnosisService.craft_calibration` 按绑定画像的参考书算三个读数（进程内按「书、段落数、最新段落时间」缓存；『龙族』26,616 段首算约 1.1 秒）：段长 p95 → 「段落偏长」的阈值 = max(170, p95)（『龙族』：194 字）；每千段贴邻叠句数 ≥ 5、每千段三句同字开头 ≥ 10、或画像标了 `deliberate_repetition` → 那条检查对这位作者不提示（『龙族』：贴邻叠句不提示）。载荷带 `craft_calibration {source, book_title, long_paragraph_chars, echo_per_1k, same_opening_per_1k, flag_echo, flag_same_opening, deliberate_repetition, note}`，面板的绑定提示里把 `note` 说出来（「按《龙族》校准：段落超过 194 字才提示；贴邻叠句不提示（这位作者常这么写）。」）。
+
+**7.2 「AI 看这一处」（局部深评）。** `POST /api/v1/scenes/{id}/deep-review/passage`，body `{signal_id}`（复核一条发现）或 `{paragraph_index | excerpt}`（独立看一段），可带 `question`。模板 `writer_passage_review` v1（走 `writer_deep_review` 的节点路由，预算 24000 = 局部改写档）：只看焦点段 + 前后各一段（`passage_window`，焦点段标【焦点段】），返回 `verdict ∈ holds | partly | does_not_hold | no_finding`、`assessment`、只落在焦点段的 `findings`（证据逐字）、`rewrite_brief`。结果落成一行 rubric `literary_revision_passage_v1` 的 `WriterEvaluation`（`lens=passage`，`contract_field_refs_json` 记段落 / 复核的发现 id / 判定 / 评语 / 改法 / 问题；同一段或同一条发现再看一次，旧的 `superseded`）。统一诊断把它并进来：复核的意见挂在那条发现上（`finding.opinion`），新看出的发现进清单（`origin.kind = passage`），`passage_reviews[]` 列出有效的几次。面板：每条发现的「AI 看这一处」；意见块（AI：成立 / 部分成立 / 不成立 + 评语 + AI 的改法，「按 AI 的改法改写」「按 AI 的判断忽略」）；深改姿态里选中一段的工具条多一个「AI 看这一段」，独立结果显示为「AI 看了第 N 段」并可「按这个改法改写这一段」。
+
+**7.3 「AI 通读本章」（成稿中心 · 诊断页签）。** `GET/POST /api/v1/chapters/{id}/deep-review` 改为章级诊断载荷（`chapter_payload`）：`ai {status not_run | current | stale（任何一场作者稿在它之后改过）, overall_score, revision_brief}`、`chapter_findings[]`（钉不到任何一场的章级判断：承诺 / 升级 / 兑现）、`scenes[] {scene_id, summary, ai_status, review_status, findings_from_chapter[]}`、`summary`。通读的发现按证据钉到哪一场就落到哪一场（写作台那一场的深改面板里也是同一条，`origin.kind = chapter`；`chapter_review {status, findings_here}`），整章文本按场标出「【第 N 场】」。成稿中心的「诊断」页签（`ws-manuscripts-diagnosis.jsx`）：通读按钮与状态、整章的判断、各场行（开着 N · 阻断 N · 深评状态 · 落到这一场的通读发现）、「去写作台看」/「在写作台看这一处」深链；结构页签的场景行与左栏章行带「诊断 N」。
+
+**7.4 全书计数。** `GET /api/v1/projects/{id}/diagnosis-summary`（`project_summary`）：每场 `{open, blocking, revision, taste, info, ignored, stale, ai_status, review_status, text_layer}`、每章 `{open, blocking, chapter_level, scenes, scenes_with_findings, ai_status}`、`totals`。前端 `ws-diagnosis-summary.jsx`（`WsDiagnosis` / `useDiagnosisSummary`，与 `ws-design-sync` 同一套节流：挂载拉一次，`ws:diagnosis-changed` 立刻重拉，目录事件 20 秒内不重拉；深改面板的忽略 / 恢复 / 深评 / 局部深评之后广播）。主页章卡「诊断 N」+ 进度脊「诊断待改 N」；成稿中心如 7.3。
+
+**7.5 顺手修好的两件事。** (1) 深评的用户消息从来没带过正文：`PromptBuilder` 只渲染 `inline_digests` 里的 section，而深评把 `scene_summary` 放在快照顶层——节点在接进面板之前从未被调用，所以没人发现。现在正文（可见文字，不是作者稿的 HTML）、结构简报、设计背景都作为 inline digest 进用户消息，章级通读的正文按场标出。(2) 全书计数一开始要 4.5 秒：`InjectionService.resolve_binding_layers` 每场加载一次带整本书窗口索引的 `profile_json`（0.66 秒）。`binding_profile` 改为轻量解析（只读绑定行与画像状态，`json_extract` 取 `deliberate_repetition`；scene > character > project > global 与 `_binding_rank` 同一条规则，测试钉住），规则 / 节奏发现按（场、正文哈希、校准、绑定）缓存在进程里。真实项目 17 场：冷 1.4 秒（含参考书首算），热 0.43 秒；章级载荷 0.16 秒。
+
+测试：`tests/test_scene_diagnosis.py` 第二轮块（校准、轻量绑定解析、局部深评与它的守卫、章级通读落场与拒绝式、全书计数）；前端 `ws-writer-deep.test.jsx`（AI 看这一处 / 看这一段）、`ws-manuscripts-diagnosis.test.jsx`、`ws-diagnosis-summary.test.js`、`ws-manuscripts-flow.test.jsx` 与 `ws-home.test.jsx` 的计数用例。部署：无迁移；新模板 `writer_passage_review` 走既有节点路由；有提示词快照的安装需要 `sync_prompt_templates --execute`。
+

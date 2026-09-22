@@ -79,7 +79,7 @@ function onToolbarKeyDown(event) {
    带着它时每一次改写请求都附上发现的 id / 维度 / 改法（后端按维度定修补类别、偏好画像按维度学）；
    工具条多一个「按诊断改写」，autoRun 的发现一弹出工具条就直接出候选。
    作者把选区换到别处、关掉弹层、换场，这条发现就作废（onFindingDone）。 */
-export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnly = false, deep = false, onRewriteSelection, onOpenSettings, finding = null, onFindingDone }) {
+export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnly = false, deep = false, onRewriteSelection, onOpenSettings, finding = null, onFindingDone, onPassageReview, passageBusy = false }) {
   const [rect, setRect] = useState(null);
   const [phase, setPhase] = useState("idle"); // idle | custom | tune | loading | result | error | anno | rev
   const [results, setResults] = useState([]);
@@ -490,9 +490,20 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
 
   if (phase === "idle" && deep) {
     return (
-      <div className="wr-irw-bar" ref={barRef} role="toolbar" aria-label="深改姿态下的选区" aria-keyshortcuts="Alt+F10" style={pos(220)}
+      <div className="wr-irw-bar" ref={barRef} role="toolbar" aria-label="深改姿态下的选区" aria-keyshortcuts="Alt+F10" style={pos(onPassageReview ? 340 : 220)}
         onMouseDown={(e) => e.preventDefault()} onKeyDown={onToolbarKeyDown}>
         <span className="wr-irw-spark" aria-hidden="true"><I.Pen size={13} /></span>
+        {onPassageReview && (
+          <button type="button" className="wr-irw-btn" disabled={passageBusy}
+            title="让模型只看选中的这一段：有没有要改的、怎么改"
+            onClick={() => {
+              const slice = selBlockRef.current;
+              setRect(null);
+              if (slice) onPassageReview({ pid: slice.pid, find: slice.text });
+            }}>
+            AI 看这一段
+          </button>
+        )}
         <button type="button" className="wr-irw-btn accent"
           onClick={() => {
             const slice = selBlockRef.current;
