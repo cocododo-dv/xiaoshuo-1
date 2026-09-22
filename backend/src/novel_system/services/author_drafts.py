@@ -333,6 +333,17 @@ class AuthorDraftService:
         response["changed"] = True
         if words_rollup is not None:
             response["words_rollup"] = words_rollup
+        if draft.object_type == "scene":
+            # 2026-09-22 场景诊断第三轮：正文一存，这一场 / 这一章开着的发现数随响应回传
+            # （规则 + 节奏发现按正文哈希缓存；算不出来只是少一个键，保存本身不受影响）
+            try:
+                from novel_system.services.scene_diagnosis import SceneDiagnosisService
+
+                scene_row = self.session.get(SceneCard, draft.object_id)
+                if scene_row is not None:
+                    response["diagnosis_rollup"] = SceneDiagnosisService(self.session).scene_rollup(scene_row)
+            except Exception:  # noqa: BLE001 — 角标不是闸门
+                _LOGGER.debug("diagnosis rollup unavailable after draft save %s", draft_id, exc_info=True)
         return response
 
 

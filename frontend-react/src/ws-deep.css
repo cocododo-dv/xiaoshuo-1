@@ -105,3 +105,9 @@ mark.wr-dx.is-active { outline: 2px solid var(--accent); outline-offset: 1px; }
 .wr-dxd-opinion-t { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); }
 .wr-dxd-opinion-tag { font-size: var(--fs-xs); color: var(--accent-ink); }
 .wr-dxd-passage { border: 1px solid var(--line-1); border-radius: var(--r-sm); padding: 9px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--paper-2); }
+
+/* 2026-09-22 第三轮：跨段发现（与第 N 段矛盾 / 重复 / 承接）与参考书校准的标记 */
+.wr-dxd-related { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.wr-dxd-related-tag { font-size: var(--fs-xs); color: var(--warn-ink); }
+.wr-dxd-calibrated { font-size: var(--fs-xs); color: var(--info-ink); }
+mark.wr-dx.is-related { background: var(--info-wash); color: inherit; }

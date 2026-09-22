@@ -104,7 +104,7 @@ describe("成稿中心 · 诊断页签", () => {
     apiGet.mockResolvedValue(fresh);
     await click(button(host, "重新通读"));
     await vi.waitFor(() => expect(host.textContent).toContain("对着现在各场的正文"), T);
-    expect(apiPost).toHaveBeenCalledWith("/api/v1/chapters/c1/deep-review", {});
+    expect(apiPost).toHaveBeenCalledWith("/api/v1/chapters/c1/deep-review", { scope: "all" });
     expect(host.textContent).toContain("总分 70");
     expect(host.textContent).not.toContain("本章开头的承诺");
     expect(changed).toHaveBeenCalled();
@@ -121,5 +121,53 @@ describe("成稿中心 · 诊断页签", () => {
     const host = await render(<ManuDiagnosis chapter={{ ...CHAPTER, backendId: "" }} go={vi.fn()} />);
     expect(host.textContent).toContain("还没有同步到服务器");
     expect(apiGet).not.toHaveBeenCalled();
+  });
+
+  it("改前的通读且服务端算得出改过的场：给「只通读改过的 N 场」（POST scope=changed）与「整章重新通读」；沿用的发现标出来；没改过时说一句", async () => {
+    const go = vi.fn();
+    const stale = payload({
+      ai: { status: "stale", evaluation_id: "chapter_eval_1", overall_score: 0.52, revision_brief: [], created_at: "2026-09-22T10:00:00Z", scope: "all", reviewed_scene_ids: ["s1", "s2"], carried_scene_ids: [], carried_from: null, changed_scene_ids: ["s2"], changed_count: 1, incremental_available: true },
+      scenes: [
+        { scene_id: "s1", scene_seq: 1, title: "", text_layer: "author_draft", summary: { open: 1, by_severity: { blocking: 0 } }, ai_status: "not_run", review_status: "not_run", findings_from_chapter: [], changed_since_review: false, carried: false },
+        { scene_id: "s2", scene_seq: 2, title: "", text_layer: "author_draft", summary: { open: 0, by_severity: { blocking: 0 } }, ai_status: "not_run", review_status: "not_run", findings_from_chapter: [], changed_since_review: true, carried: false },
+      ],
+    });
+    apiGet.mockResolvedValue(stale);
+    const incremental = payload({
+      ai: { status: "current", evaluation_id: "chapter_eval_2", overall_score: 0.6, revision_brief: [], created_at: "2026-09-22T11:00:00Z", scope: "changed", reviewed_scene_ids: ["s2"], carried_scene_ids: ["s1"], carried_from: "chapter_eval_1", changed_scene_ids: [], changed_count: 0, incremental_available: false },
+      chapter_findings: [],
+      scenes: [
+        {
+          scene_id: "s1", scene_seq: 1, title: "", text_layer: "author_draft", summary: { open: 1, by_severity: { blocking: 0 } }, ai_status: "not_run", review_status: "not_run", changed_since_review: false, carried: true,
+          findings_from_chapter: [
+            { signal_id: "ai:information_rhythm:cccc3333", source: "ai", dimension: "information_rhythm", label: "信息节奏", severity: "taste", issue: "钟响来得太早。", recommendation: "把钟响挪后。", evidence: { paragraph_index: 1, excerpt: "三声钟响", start: 0, end: 4 }, stale: false, origin: { kind: "chapter", carried_from: "chapter_eval_1" } },
+          ],
+        },
+        { scene_id: "s2", scene_seq: 2, title: "", text_layer: "author_draft", summary: { open: 0, by_severity: { blocking: 0 } }, ai_status: "not_run", review_status: "not_run", findings_from_chapter: [], changed_since_review: false, carried: false },
+      ],
+      diagnosis_rollup: { project_id: "prj-main", chapter_id: "c1", chapters: { c1: { open: 1, blocking: 0, chapter_level: 0, chapter_level_blocking: 0, scenes: 2, scenes_with_findings: 1, ai_status: "current" } }, scenes: { s1: { chapter_id: "c1", open: 1, blocking: 0 }, s2: { chapter_id: "c1", open: 0, blocking: 0 } } },
+    });
+    apiPost.mockResolvedValue(incremental);
+    const changed = vi.fn();
+    window.addEventListener("ws:diagnosis-changed", changed);
+    const host = await render(<ManuDiagnosis chapter={CHAPTER} go={go} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("改过 1 场：第 2 场"), T);
+    expect(host.textContent).toContain("通读后改过");
+    expect(button(host, "整章重新通读")).not.toBeUndefined();
+    apiGet.mockResolvedValue(incremental);
+    await click(button(host, "只通读改过的 1 场"));
+    await vi.waitFor(() => expect(host.textContent).toContain("上次只通读了改过的 1 场，其余 1 场沿用更早的通读"), T);
+    expect(apiPost).toHaveBeenCalledWith("/api/v1/chapters/c1/deep-review", { scope: "changed" });
+    expect(host.textContent).toContain("沿用上次通读");
+    expect(host.textContent).toContain("钟响来得太早");
+    expect(changed).toHaveBeenCalled();
+    expect(changed.mock.calls[0][0].detail.rollup.chapter_id).toBe("c1");
+    window.removeEventListener("ws:diagnosis-changed", changed);
+
+    /* 现在是对着现在的正文：只剩「重新通读」；服务端说没改过时给一句 */
+    expect(button(host, "只通读改过的")).toBeUndefined();
+    apiPost.mockResolvedValueOnce({ ...incremental, notice: { code: "CHAPTER_REVIEW_UP_TO_DATE", message: "上次通读之后没有场改过字，不必再通读。" } });
+    await click(button(host, "重新通读"));
+    await vi.waitFor(() => expect(host.textContent).toContain("不必再通读"), T);
   });
 });

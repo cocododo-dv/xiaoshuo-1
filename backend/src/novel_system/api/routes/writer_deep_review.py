@@ -12,6 +12,7 @@ from novel_system.api.request_types import EmptyRequest, StrictRequestModel
 from novel_system.api.response import ok
 from novel_system.services.scene_deep_review_preferences import SceneDeepReviewPreferencesService
 from novel_system.services.scene_diagnosis import SceneDiagnosisService
+from novel_system.services.scene_lookup import require_scene
 from novel_system.services.writer_deep_review import WriterDeepReviewService
 
 router = APIRouter(tags=["writer-deep-review"])
@@ -64,12 +65,21 @@ class DeepReviewDecisionRequest(StrictRequestModel):
 
 
 class PassageReviewRequest(StrictRequestModel):
-    """「AI 看这一处」：复核一条发现（signal_id），或独立地看一段（paragraph_index / 选中的原话）。"""
+    """「AI 看这一处」：复核一条发现（signal_id），或独立地看一段（paragraph_index / 选中的原话）/ 一段范围
+    （paragraph_start–paragraph_end，含两端）；模型同时看到整场正文，跨段的矛盾也能指出。"""
 
     signal_id: str | None = Field(default=None, max_length=255)
     paragraph_index: int | None = Field(default=None, ge=0, le=100_000)
+    paragraph_start: int | None = Field(default=None, ge=0, le=100_000)
+    paragraph_end: int | None = Field(default=None, ge=0, le=100_000)
     excerpt: str | None = Field(default=None, max_length=2000)
     question: str | None = Field(default=None, max_length=2000)
+
+
+class ChapterReviewRequest(StrictRequestModel):
+    """「AI 通读本章」：``all`` 整章一次；``changed`` 只把上次通读之后改过字的场全文送审（未改的场沿用上次的发现）。"""
+
+    scope: str | None = Field(default=None, pattern="^(all|changed)$")
 
 
 class SceneDeepReviewPreferencesSaveRequest(StrictRequestModel):
@@ -157,6 +167,8 @@ def run_scene_passage_review(
             scene_id,
             signal_id=body.get("signal_id"),
             paragraph_index=body.get("paragraph_index"),
+            paragraph_start=body.get("paragraph_start"),
+            paragraph_end=body.get("paragraph_end"),
             excerpt=body.get("excerpt"),
             question=body.get("question"),
             actor_ref=actor_ref,
@@ -166,10 +178,20 @@ def run_scene_passage_review(
 
 @router.get("/api/v1/projects/{project_id}/diagnosis-summary")
 def get_project_diagnosis_summary(project_id: str, request: Request, session: Session = Depends(get_session)):
-    """一本书每一场 / 每一章开着的发现数（主页、成稿中心、起草台的角标）。"""
+    """一本书每一场 / 每一章开着的发现数——视图挂载 / 换作品时读一次；之后的变化随各写入的响应回传
+    （``diagnosis_rollup``），见 GET …/scenes/{id}/diagnosis-rollup。"""
 
     payload = SceneDiagnosisService(session).project_summary(project_id)
     return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v1/scenes/{scene_id}/diagnosis-rollup")
+def get_scene_diagnosis_rollup(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    """这一场所在那一章的计数（章条目 + 章里每一场的条目）：起草台归档终稿之后前端据此更新角标，不必拉整本书。"""
+
+    service = SceneDiagnosisService(session)
+    scene = require_scene(session, scene_id, trashed_as_conflict=True)
+    return ok(service.scene_rollup(scene), req_id=getattr(request.state, "request_id", None))
 
 
 @router.get("/api/v1/chapters/{chapter_id}/deep-review")
@@ -182,17 +204,18 @@ def get_chapter_deep_review(chapter_id: str, request: Request, session: Session 
 def run_chapter_deep_review(
     chapter_id: str,
     request: Request,
-    payload: EmptyRequest | None = None,
+    payload: ChapterReviewRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    scope = (payload.scope if payload is not None else None) or "all"
     return optional_idempotent_response(
         request,
         session,
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/deep-review",
-        payload={"chapter_id": chapter_id},
-        action=lambda: WriterDeepReviewService(session).run_chapter_review(chapter_id, actor_ref=actor_ref),
+        payload={"chapter_id": chapter_id, "scope": scope},
+        action=lambda: WriterDeepReviewService(session).run_chapter_review(chapter_id, actor_ref=actor_ref, scope=scope),
     )
 
 

@@ -55,7 +55,16 @@ class SceneDeepReviewPreferencesService:
                 details={"current_revision_no": current_revision},
             )
         self.session.expire_all()
-        return self._payload(self._require_scene(scene_id))
+        scene = self._require_scene(scene_id)
+        payload = self._payload(scene)
+        # 2026-09-22 场景诊断第三轮：忽略 / 恢复之后这一场 / 这一章开着的发现数随响应回传（角标不是闸门）
+        try:
+            from novel_system.services.scene_diagnosis import SceneDiagnosisService
+
+            payload["diagnosis_rollup"] = SceneDiagnosisService(self.session).scene_rollup(scene)
+        except Exception:  # noqa: BLE001
+            pass
+        return payload
 
     def _require_scene(self, scene_id: str) -> SceneCard:
         return require_scene(self.session, scene_id, trashed_as_conflict=True)

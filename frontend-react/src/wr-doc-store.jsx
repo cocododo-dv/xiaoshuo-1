@@ -1,6 +1,7 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
 import { manuscriptToDocHTML, sanitizeManuscriptHTML } from "./manuscript-html.js";
+import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { wsToast } from "./ws-notify.jsx";
 
 /* ==========================================================
@@ -397,6 +398,10 @@ async function pushSave(sid, html, saveVersion) {
     }
     if (data && data.words_rollup && window.WsCatalog && window.WsCatalog.__applyWordsRollup) {
       window.WsCatalog.__applyWordsRollup(sid, data.words_rollup);
+    }
+    /* 2026-09-22 场景诊断第三轮：正文一存，服务端把这一场 / 这一章开着的发现数带回来，角标随之更新 */
+    if (data && data.diagnosis_rollup) {
+      try { WsDiagnosis.applyRollup(data.diagnosis_rollup); } catch (e) {}
     }
     notifyState(sid);
     return data;

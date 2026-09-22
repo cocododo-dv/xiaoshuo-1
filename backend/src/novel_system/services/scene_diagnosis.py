@@ -20,12 +20,19 @@
   ``start / end`` 是这一段可见文字里的偏移；正文是作者稿 HTML，这里按同一规则拆段。
 * ``stale``：评审 / 深评的证据在当前正文里已找不到（多半改掉了）；``ai.status`` /
   ``review.status`` 另说整份评审是不是改前的。
-* ``opinion``：「AI 看这一处」对这条发现的判断（成立 / 部分成立 / 不成立）与改法。
-* 有风格绑定的场，节奏检查按参考作者校准（``craft_calibration``：段落偏长的阈值取参考书
-  段长的长尾，参考作者常用的贴邻叠句 / 句首重复不再提示），规则与节奏发现标 ``house_taste``。
+* ``opinion``：「AI 看这一处」对这条发现的判断（成立 / 部分成立 / 不成立）与改法。局部深评看的是
+  焦点段（一段、一段范围或几条发现所在的段）加**整场正文**（``passage_scope``：焦点段与前后段标出，
+  其余段全文给到 ``PASSAGE_SCENE_FULL_CHARS`` 字，再长的远段只留开头），所以它能指出焦点段与本场
+  另一段的矛盾——那样的发现带 ``related``（另一段的原话与段号）。
+* 有风格绑定的场，检查按参考作者校准（``craft_calibration``）：节奏三条（段落偏长的阈值取参考书
+  段长的长尾，参考作者常用的贴邻叠句 / 句首重复不再提示）+ 21 维规则的词表与维度
+  （``literary_quality.RuleCalibration``：参考作者每万字用到一次以上的词表词不当毛病，在参考书一半
+  以上的场级窗口上都会响的规则降为提示并带 ``calibrated``）；规则与节奏发现标 ``house_taste``。
+* 计数随写回传：``scene_rollup`` / ``chapter_rollup`` 是作者稿保存、深评动作、通读的响应里带的
+  ``diagnosis_rollup``——主页 / 成稿中心的角标不必再拉整本书的汇总。
 
-叶子模块：只依赖 ``literary_quality``、``manuscript_html``、模型与风格绑定解析；
-``writer_deep_review`` / ``api.routes`` 从这里取载荷。
+叶子模块：只依赖 ``literary_quality``、``manuscript_html``、两个纯函数的段型判断、模型与风格绑定
+解析；``writer_deep_review`` / ``api.routes`` 从这里取载荷。
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import re
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,12 +65,20 @@ from novel_system.db.models import (
 from novel_system.services.errors import DomainError
 from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.literary_quality import (
+    DEFAULT_RULE_CALIBRATION,
+    FAULT_LEXICONS,
+    RULE_DIMENSION_HABIT_SHARE,
+    RULE_ENDING_DIMENSIONS,
+    RULE_NEEDLE_HABIT_PER_10K,
     SEVERITY_RANK,
+    RuleCalibration,
     analyze_literary_quality,
     dimension_label,
     unify_rule_finding,
 )
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
+from novel_system.services.style_reference.text_utils import is_scene_break_paragraph
 
 # 评审来源的 rubric id。深评的在这里定义（writer_deep_review 从这里取）；准定稿评审的
 # 与 near_final.NEAR_FINAL_RUBRIC_ID 相同——测试钉住两者相等，这里不 import near_final
@@ -139,6 +154,17 @@ CRAFT_LONG_PARAGRAPH_CHARS = 170
 # 参考作者的习惯：每千段里贴邻叠句 / 三句同字开头的段落数到了这个水平，就是这位作者的手法，不提示
 CRAFT_ECHO_HABIT_PER_1K = 5.0
 CRAFT_SAME_OPENING_HABIT_PER_1K = 10.0
+# 21 维规则的校准：参考书按标题段 / 场分隔行切成单元，单元内按 ~2400 字（一场的量）切窗口；
+# 一般维度在最多 48 个窗口上量「响的比例」，收尾三条只在最多 48 个真实单元末尾上量，且至少要有 8 个末尾
+RULE_CALIBRATION_WINDOW_CHARS = 2400
+RULE_CALIBRATION_MAX_WINDOWS = 48
+RULE_CALIBRATION_MAX_ENDINGS = 48
+RULE_CALIBRATION_MIN_ENDINGS = 8
+# 局部深评：整场不超过这个字数就全文给模型（焦点段与前后段标出），再长的远段只留开头
+PASSAGE_SCENE_FULL_CHARS = 12000
+PASSAGE_FAR_PARAGRAPH_HEAD = 40
+PASSAGE_RELATION_KINDS: tuple[str, ...] = ("contradiction", "repetition", "continuity")
+PASSAGE_RELATION_LABELS: dict[str, str] = {"contradiction": "矛盾", "repetition": "重复", "continuity": "承接"}
 _ECHO_RE = re.compile(r"([一-龥]{2,5})([，、；]?)\1")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?])")
 _WS_RE = re.compile(r"\s+")
@@ -236,20 +262,47 @@ def _locate(paragraphs: list[str], *, needle: str = "", excerpt: str = "", ancho
     return None
 
 
-def passage_window(paragraphs: list[str], focus: int, *, before: int = 1, after: int = 1) -> dict[str, Any]:
-    """局部深评看的那一小段：焦点段和前后各一段（有多少给多少），文本里把焦点段标出来。"""
+def passage_scope(
+    paragraphs: list[str],
+    focus: list[int],
+    *,
+    context: int = 1,
+    full_chars: int = PASSAGE_SCENE_FULL_CHARS,
+) -> dict[str, Any]:
+    """局部深评看的范围：焦点段（一段、一段范围或几条发现所在的段）标 【焦点段 N】，前后各 ``context``
+    段标 【上下文 N】，其余段按 【第 N 段】 全文给出——整场不超过 ``full_chars`` 字时模型看得到全场，
+    跨段的矛盾就能对上；再长的远段只留开头（【第 N 段·略】），至少知道前后发生了什么。"""
 
-    start = max(0, focus - before)
-    end = min(len(paragraphs), focus + after + 1)
+    total = len(paragraphs)
+    focus_set = sorted({int(index) for index in focus if 0 <= int(index) < total})
+    near = {
+        neighbour
+        for index in focus_set
+        for neighbour in range(index - context, index + context + 1)
+        if 0 <= neighbour < total and neighbour not in focus_set
+    }
+    whole_scene = sum(len(paragraph) for paragraph in paragraphs) <= full_chars
     lines: list[str] = []
-    for index in range(start, end):
-        marker = "【焦点段】" if index == focus else "【上下文】"
-        lines.append(f"{marker}{paragraphs[index]}")
+    abbreviated = 0
+    for index, paragraph in enumerate(paragraphs):
+        if index in focus_set:
+            lines.append(f"【焦点段 {index + 1}】{paragraph}")
+        elif index in near:
+            lines.append(f"【上下文 {index + 1}】{paragraph}")
+        elif whole_scene:
+            lines.append(f"【第 {index + 1} 段】{paragraph}")
+        else:
+            head = paragraph[:PASSAGE_FAR_PARAGRAPH_HEAD]
+            abbreviated += 1
+            lines.append(f"【第 {index + 1} 段·略】{head}{'……' if len(paragraph) > len(head) else ''}")
+    shown = sorted(set(focus_set) | near)
     return {
-        "focus": focus,
-        "start": start,
-        "end": end - 1,
-        "focus_text": paragraphs[focus] if 0 <= focus < len(paragraphs) else "",
+        "focus": focus_set,
+        "start": shown[0] if shown else 0,
+        "end": shown[-1] if shown else 0,
+        "whole_scene": whole_scene,
+        "abbreviated": abbreviated,
+        "focus_text": "\n\n".join(paragraphs[index] for index in focus_set),
         "text": "\n\n".join(lines),
     }
 
@@ -290,6 +343,8 @@ class CraftCalibration:
     flag_echo: bool = True
     flag_same_opening: bool = True
     deliberate_repetition: bool = False
+    # 2026-09-22 第三轮：21 维规则的词表 / 维度校准也挂在这里（写作台读的是同一个 craft_calibration 载荷）
+    rules: RuleCalibration = DEFAULT_RULE_CALIBRATION
 
     @property
     def note(self) -> str:
@@ -305,6 +360,16 @@ class CraftCalibration:
         if habits:
             reason = "这位作者刻意用重复" if self.deliberate_repetition else "这位作者常这么写"
             parts.append(f"{' / '.join(habits)}不提示（{reason}）")
+        if self.rules.active:
+            if self.rules.habitual_needles:
+                sample = self.rules.as_dict()["habitual_needles"][:4]
+                parts.append(
+                    f"词表里 {len(self.rules.habitual_needles)} 个词是这位作者的常用词（{'、'.join(sample)}"
+                    f"{'…' if len(self.rules.habitual_needles) > len(sample) else ''}），不当毛病"
+                )
+            if self.rules.habitual_dimensions:
+                labels = [dimension_label(item) or item for item in sorted(self.rules.habitual_dimensions)]
+                parts.append(f"「{' / '.join(labels[:4])}{'…' if len(labels) > 4 else ''}」在这位作者的场里也常见，只作提示")
         return f"按{title}校准：{'；'.join(parts)}。"
 
     def as_dict(self) -> dict[str, Any]:
@@ -320,12 +385,131 @@ class CraftCalibration:
             "flag_echo": self.flag_echo,
             "flag_same_opening": self.flag_same_opening,
             "deliberate_repetition": self.deliberate_repetition,
+            "rules": self.rules.as_dict() if self.rules.active else None,
             "note": self.note,
         }
 
 
 DEFAULT_CRAFT_CALIBRATION = CraftCalibration()
 _REFERENCE_CRAFT_CACHE: dict[tuple[str, int, str], dict[str, Any]] = {}
+
+
+def _evenly(items: list[str], limit: int) -> list[str]:
+    if len(items) <= limit:
+        return list(items)
+    step = len(items) / float(limit)
+    return [items[int(index * step)] for index in range(limit)]
+
+
+def _needle_rates(corpus: str, chars: int) -> dict[str, float]:
+    """「命中即毛病」词表里每个词在参考书里每万字的次数（一遍正则；短词加上含它的长词的命中）。"""
+
+    needles = sorted({term for terms in FAULT_LEXICONS.values() for term in terms if term.strip()}, key=len, reverse=True)
+    if not needles or chars <= 0:
+        return {}
+    pattern = re.compile("|".join(re.escape(term.lower()) for term in needles))
+    counts: Counter[str] = Counter(match.group(0) for match in pattern.finditer(corpus.lower()))
+    rates: dict[str, float] = {}
+    for term in needles:
+        lowered = term.lower()
+        count = counts.get(lowered, 0) + sum(hits for hit, hits in counts.items() if hit != lowered and lowered in hit)
+        if count:
+            rates[term] = round(10000.0 * count / chars, 3)
+    return rates
+
+
+def compute_reference_rules(paragraphs: list[str]) -> dict[str, Any]:
+    """参考书上的 21 维规则读数：词表词的密度（每万字）与每条规则在场级窗口上「响」的比例。
+
+    参考书按标题段 / 场分隔行切成单元，单元内按 ~2400 字切窗口；收尾三条（summary_ending /
+    ending_drive / false_poetic_closure）只在真实的单元末尾上量——随手切的窗口末尾不是收尾。
+    """
+
+    units: list[list[str]] = []
+    current: list[str] = []
+    for paragraph in paragraphs:
+        body = str(paragraph or "").strip()
+        if not body:
+            continue
+        if is_title_paragraph(body) or is_scene_break_paragraph(body):
+            if current:
+                units.append(current)
+                current = []
+            continue
+        current.append(body)
+    if current:
+        units.append(current)
+    corpus = "\n".join(paragraph for unit in units for paragraph in unit)
+    chars = len(_WS_RE.sub("", corpus))
+    if not chars:
+        return {"chars": 0, "windows": 0, "endings": 0, "needle_rates": {}, "dimension_shares": {}}
+
+    windows: list[str] = []
+    endings: list[str] = []
+    for unit in units:
+        chunks: list[str] = []
+        buffer: list[str] = []
+        size = 0
+        for paragraph in unit:
+            buffer.append(paragraph)
+            size += len(paragraph)
+            if size >= RULE_CALIBRATION_WINDOW_CHARS:
+                chunks.append(" ".join(buffer))
+                buffer, size = [], 0
+        if buffer:
+            if chunks and size < RULE_CALIBRATION_WINDOW_CHARS // 4:
+                chunks[-1] = chunks[-1] + " " + " ".join(buffer)
+            else:
+                chunks.append(" ".join(buffer))
+        if not chunks:
+            continue
+        endings.append(chunks[-1])
+        windows.extend(chunks[:-1])
+    if not windows:
+        windows = list(endings)
+    windows = _evenly(windows, RULE_CALIBRATION_MAX_WINDOWS)
+    endings = _evenly(endings, RULE_CALIBRATION_MAX_ENDINGS)
+
+    fired: Counter[str] = Counter()
+    for window in windows:
+        _, findings = analyze_literary_quality(window)
+        for dimension in {str(item.get("dimension") or "") for item in findings}:
+            if dimension and dimension not in RULE_ENDING_DIMENSIONS:
+                fired[dimension] += 1
+    ending_fired: Counter[str] = Counter()
+    if len(endings) >= RULE_CALIBRATION_MIN_ENDINGS:
+        for window in endings:
+            _, findings = analyze_literary_quality(window)
+            for dimension in {str(item.get("dimension") or "") for item in findings}:
+                if dimension in RULE_ENDING_DIMENSIONS:
+                    ending_fired[dimension] += 1
+    shares = {dimension: round(count / len(windows), 3) for dimension, count in fired.items() if windows}
+    if len(endings) >= RULE_CALIBRATION_MIN_ENDINGS:
+        shares.update({dimension: round(count / len(endings), 3) for dimension, count in ending_fired.items()})
+    return {
+        "chars": chars,
+        "windows": len(windows),
+        "endings": len(endings),
+        "needle_rates": _needle_rates(corpus, chars),
+        "dimension_shares": shares,
+    }
+
+
+def rule_calibration_from_reference(stats: dict[str, Any] | None) -> RuleCalibration:
+    if not stats or not int(stats.get("chars") or 0):
+        return DEFAULT_RULE_CALIBRATION
+    rates = {str(key): float(value) for key, value in (stats.get("needle_rates") or {}).items()}
+    shares = {str(key): float(value) for key, value in (stats.get("dimension_shares") or {}).items()}
+    return RuleCalibration(
+        source="reference",
+        habitual_needles=frozenset(term for term, rate in rates.items() if rate >= RULE_NEEDLE_HABIT_PER_10K),
+        habitual_dimensions=frozenset(dimension for dimension, share in shares.items() if share >= RULE_DIMENSION_HABIT_SHARE),
+        needle_rates=rates,
+        dimension_shares=shares,
+        windows=int(stats.get("windows") or 0),
+        endings=int(stats.get("endings") or 0),
+        chars=int(stats.get("chars") or 0),
+    )
 
 
 def _same_opening_hit(paragraph: str) -> dict[str, Any] | None:
@@ -366,6 +550,7 @@ def calibration_from_reference(
     book_title: str | None,
     stats: dict[str, Any],
     deliberate_repetition: bool,
+    rule_stats: dict[str, Any] | None = None,
 ) -> CraftCalibration:
     echo_rate = float(stats.get("echo_per_1k") or 0.0)
     opening_rate = float(stats.get("same_opening_per_1k") or 0.0)
@@ -381,6 +566,7 @@ def calibration_from_reference(
         flag_echo=not deliberate_repetition and echo_rate < CRAFT_ECHO_HABIT_PER_1K,
         flag_same_opening=not deliberate_repetition and opening_rate < CRAFT_SAME_OPENING_HABIT_PER_1K,
         deliberate_repetition=deliberate_repetition,
+        rules=rule_calibration_from_reference(rule_stats),
     )
 
 
@@ -424,8 +610,16 @@ def candidate_category_for_dimension(dimension: str) -> str:
     return "local_patch"
 
 
-def rule_findings(text: DiagnosisText, *, house_taste: bool = False) -> list[dict[str, Any]]:
-    _, raw = analyze_literary_quality(text.plain)
+def rule_findings(
+    text: DiagnosisText,
+    *,
+    house_taste: bool = False,
+    calibration: RuleCalibration = DEFAULT_RULE_CALIBRATION,
+) -> list[dict[str, Any]]:
+    """21 维规则的发现。``calibration`` 来自参考书时：作者的常用词不再命中，作者常态的维度降为提示
+    （``calibrated`` 说明它在参考书多少窗口上也会响）。"""
+
+    _, raw = analyze_literary_quality(text.plain, calibration=calibration if calibration.active else None)
     findings: list[dict[str, Any]] = []
     for item in raw:
         unified = unify_rule_finding(item)
@@ -435,6 +629,11 @@ def rule_findings(text: DiagnosisText, *, house_taste: bool = False) -> list[dic
             excerpt=unified.get("evidence_excerpt") or "",
             anchor=unified.get("anchor") or "text",
         )
+        calibrated = unified.get("calibrated") if isinstance(unified.get("calibrated"), dict) else None
+        why = ""
+        if calibrated is not None:
+            share = int(round(100 * float(calibrated.get("share") or 0.0)))
+            why = f"参考作者的场里约 {share}% 也是这样，只作提示。"
         findings.append(
             {
                 "signal_id": unified["signal_id"],
@@ -446,13 +645,14 @@ def rule_findings(text: DiagnosisText, *, house_taste: bool = False) -> list[dic
                 "severity": _severity(unified.get("severity")),
                 "issue": unified["issue"],
                 "recommendation": unified["recommendation"],
-                "why": "",
+                "why": why,
                 "evidence": evidence,
                 "context": _compact(unified.get("evidence_excerpt") or ""),
                 "anchor": unified.get("anchor") or "text",
                 "ignored": False,
                 "stale": False,
                 "house_taste": house_taste,
+                "calibrated": calibrated,
                 "origin": None,
                 "opinion": None,
                 "patch": _patch_hint(unified["dimension"], unified["recommendation"]),
@@ -542,13 +742,16 @@ def cached_text_findings(scene_id: str, text: DiagnosisText, *, calibration: Cra
         calibration.long_paragraph_chars,
         calibration.flag_echo,
         calibration.flag_same_opening,
+        calibration.rules.signature,
         bool(house_taste),
     )
     cached = _FINDINGS_CACHE.get(key)
     if cached is not None:
         _FINDINGS_CACHE.move_to_end(key)
         return copy.deepcopy(cached)
-    findings = rule_findings(text, house_taste=house_taste) + craft_findings(text, calibration=calibration, house_taste=house_taste)
+    findings = rule_findings(text, house_taste=house_taste, calibration=calibration.rules) + craft_findings(
+        text, calibration=calibration, house_taste=house_taste
+    )
     _FINDINGS_CACHE[key] = copy.deepcopy(findings)
     while len(_FINDINGS_CACHE) > _FINDINGS_CACHE_MAX:
         _FINDINGS_CACHE.popitem(last=False)
@@ -609,10 +812,28 @@ def _evaluation_findings(
         excerpt = _compact(str(item.get("evidence_excerpt") or ""))
         evidence = _locate(text.paragraphs, needle=excerpt, excerpt=excerpt) if excerpt else None
         if evidence is None and origin_kind == "passage":
-            # 局部深评没引到原句时，仍然钉在它看的那一段上
-            focus = meta.get("paragraph_index")
+            # 局部深评没引到原句时，仍然钉在它看的那（第一）段上
+            focus_list = [int(value) for value in (meta.get("focus_paragraphs") or []) if isinstance(value, int)]
+            focus = focus_list[0] if focus_list else meta.get("paragraph_index")
             if isinstance(focus, int) and 0 <= focus < len(text.paragraphs):
                 evidence = {"excerpt": text.paragraphs[focus][:80], "paragraph_index": focus, "start": None, "end": None}
+        # 跨段的发现（焦点段与本场另一段矛盾 / 重复 / 承接）：另一段的原话也钉到段
+        related: dict[str, Any] | None = None
+        related_excerpt = _compact(str(item.get("related_excerpt") or ""))
+        if related_excerpt:
+            related_hit = _locate(text.paragraphs, needle=related_excerpt, excerpt=related_excerpt)
+            related_kind = str(item.get("relation") or "contradiction").strip().lower()
+            related = {
+                "excerpt": related_excerpt[:160],
+                "paragraph_index": related_hit["paragraph_index"] if related_hit else (
+                    int(item["related_paragraph_index"]) if isinstance(item.get("related_paragraph_index"), int) else None
+                ),
+                "start": related_hit["start"] if related_hit else None,
+                "end": related_hit["end"] if related_hit else None,
+                "kind": related_kind if related_kind in PASSAGE_RELATION_KINDS else "contradiction",
+                "stale": related_hit is None,
+            }
+            related["label"] = PASSAGE_RELATION_LABELS[related["kind"]]
         seed = excerpt or str(item.get("issue") or "") or str(index)
         signal_id = f"{source}:{dimension}:{_digest(seed)}"
         lens = str(item.get("lens") or "") or None
@@ -624,7 +845,11 @@ def _evaluation_findings(
         }
         if origin_kind == "passage":
             origin["paragraph_index"] = meta.get("paragraph_index")
+            origin["focus_paragraphs"] = list(meta.get("focus_paragraphs") or ([meta["paragraph_index"]] if isinstance(meta.get("paragraph_index"), int) else []))
             origin["about_signal_id"] = meta.get("about_signal_id")
+        if origin_kind == "chapter" and item.get("carried_from"):
+            # 只通读改过的场时，未改的场沿用上一次通读的发现：记下它原来的那一轮
+            origin["carried_from"] = str(item.get("carried_from"))
         findings.append(
             {
                 "signal_id": signal_id,
@@ -643,6 +868,7 @@ def _evaluation_findings(
                 # 有证据却在当前正文里找不到：多半已经改掉了
                 "stale": bool(excerpt) and evidence is None,
                 "house_taste": False,
+                "related": related,
                 "origin": origin,
                 "opinion": None,
                 "patch": _patch_hint(dimension, recommendation),
@@ -755,10 +981,18 @@ def serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
 def serialize_passage_review(row: WriterEvaluation, status: str) -> dict[str, Any]:
     meta = row.contract_field_refs_json if isinstance(row.contract_field_refs_json, dict) else {}
     verdict = str(meta.get("verdict") or "no_finding")
+    focus_paragraphs = [int(value) for value in (meta.get("focus_paragraphs") or []) if isinstance(value, int)]
+    if not focus_paragraphs and isinstance(meta.get("paragraph_index"), int):
+        focus_paragraphs = [int(meta["paragraph_index"])]
     return {
         "evaluation_id": row.evaluation_id,
         "paragraph_index": meta.get("paragraph_index"),
+        "focus_paragraphs": focus_paragraphs,
+        "paragraph_start": meta.get("paragraph_start", focus_paragraphs[0] if focus_paragraphs else None),
+        "paragraph_end": meta.get("paragraph_end", focus_paragraphs[-1] if focus_paragraphs else None),
+        "whole_scene": bool(meta.get("whole_scene", False)),
         "about_signal_id": meta.get("about_signal_id"),
+        "about_signal_ids": [str(value) for value in (meta.get("about_signal_ids") or ([meta["about_signal_id"]] if meta.get("about_signal_id") else []))],
         "verdict": verdict if verdict in PASSAGE_VERDICTS else "no_finding",
         "verdict_label": PASSAGE_VERDICT_LABELS.get(verdict, PASSAGE_VERDICT_LABELS["no_finding"]),
         "assessment": str(meta.get("assessment") or ""),
@@ -913,17 +1147,68 @@ class SceneDiagnosisService:
             return "current"
         return "stale"
 
-    def _chapter_evaluation_status(self, row: WriterEvaluation | None, texts: list[DiagnosisText]) -> str:
-        """章级深评看的是各场拼起来的字：任何一场的作者稿在它之后改过，整份就是改前的。"""
+    def _chapter_evaluation_status(
+        self,
+        row: WriterEvaluation | None,
+        texts: list[DiagnosisText],
+        scene_ids: list[str] | None = None,
+    ) -> str:
+        """章级深评看的是各场拼起来的字。通读行记了每场正文的哈希（``contract_field_refs_json.scenes``）时按
+        哈希判：哪一场的字变了、多了一场有字的、少了一场，整份就是改前的；老的行没有哈希，退回时间戳
+        （任何一场的作者稿在它之后改过）。"""
 
         if row is None:
             return "not_run"
         if not texts or all(text.layer == "none" for text in texts):
             return "stale"
+        if scene_ids is not None:
+            changes = self.chapter_review_changes(row, scene_ids, texts)
+            if changes is not None:
+                return "stale" if changes["changed_scene_ids"] or changes["removed_scene_ids"] else "current"
         for text in texts:
             if text.layer == "author_draft" and text.updated_at and row.created_at and str(text.updated_at) > str(row.created_at):
                 return "stale"
         return "current"
+
+    def _scene_view_chapter_status(self, row: WriterEvaluation | None, scene: SceneCard, text: DiagnosisText) -> str:
+        """写作台里这一场看到的通读新旧：只问「通读看的是不是这一场现在的字」（别的场改没改、多没多，那是成稿中心的事）。"""
+
+        if row is None:
+            return "not_run"
+        changes = self.chapter_review_changes(row, [scene.scene_id], [text])
+        if changes is not None:
+            return "stale" if scene.scene_id in changes["changed_scene_ids"] else "current"
+        return self._chapter_evaluation_status(row, [text])
+
+    @staticmethod
+    def chapter_review_changes(
+        row: WriterEvaluation | None,
+        scene_ids: list[str],
+        texts: list[DiagnosisText],
+    ) -> dict[str, Any] | None:
+        """上一次通读之后哪些场的字变了。通读行没记哈希（老的行）→ None。"""
+
+        meta = row.contract_field_refs_json if row is not None and isinstance(row.contract_field_refs_json, dict) else {}
+        recorded = meta.get("scenes")
+        if not isinstance(recorded, list):
+            return None
+        recorded_sha = {
+            str(item.get("scene_id")): str(item.get("sha256") or "")
+            for item in recorded
+            if isinstance(item, dict) and item.get("scene_id")
+        }
+        changed: list[str] = []
+        unchanged: list[str] = []
+        for scene_id, text in zip(scene_ids, texts):
+            current_sha = text.sha256 if text.layer != "none" else ""
+            if scene_id not in recorded_sha:
+                (changed if current_sha else unchanged).append(scene_id)
+            elif recorded_sha[scene_id] != current_sha:
+                changed.append(scene_id)
+            else:
+                unchanged.append(scene_id)
+        removed = [scene_id for scene_id in recorded_sha if scene_id not in set(scene_ids) and recorded_sha[scene_id]]
+        return {"changed_scene_ids": changed, "unchanged_scene_ids": unchanged, "removed_scene_ids": removed}
 
     # -- 风格绑定与校准 ----------------------------------------------------
 
@@ -1017,8 +1302,21 @@ class SceneDiagnosisService:
     def style_bound(self, scene: SceneCard) -> bool:
         return self.binding_profile(scene)[0]
 
+    def scene_calibration(self, scene: SceneCard) -> tuple[bool, CraftCalibration]:
+        """这一场的（绑定与否，校准）：有绑定按参考书，没有就是房风默认。"""
+
+        style_bound, profile = self.binding_profile(scene)
+        return style_bound, (self.craft_calibration(profile) if style_bound else DEFAULT_CRAFT_CALIBRATION)
+
+    def rule_calibration_for_scene(self, scene: SceneCard) -> RuleCalibration | None:
+        """文学质量视图用的解析器（路由层注入 LiteraryQualityService）：有绑定给参考书的规则校准，否则 None。"""
+
+        style_bound, calibration = self.scene_calibration(scene)
+        return calibration.rules if style_bound and calibration.rules.active else None
+
     def craft_calibration(self, profile: BoundProfile | None) -> CraftCalibration:
-        """按绑定画像的参考书校准节奏检查；读数按（书、段落数、最新段落时间）缓存在进程里。"""
+        """按绑定画像的参考书校准节奏检查与 21 维规则；读数按（书、段落数、最新段落时间）缓存在进程里
+        （『龙族』26k 段：节奏读数 ≈1.1 s、规则读数 ≈0.6 s，每个进程每本书算一次）。"""
 
         if profile is None or not profile.book_id:
             return DEFAULT_CRAFT_CALIBRATION
@@ -1033,13 +1331,16 @@ class SceneDiagnosisService:
                 return DEFAULT_CRAFT_CALIBRATION
             key = (str(profile.book_id), count, str(latest or ""))
             stats = _REFERENCE_CRAFT_CACHE.get(key)
-            if stats is None:
-                texts = self.session.execute(
-                    select(StyleReferenceParagraph.text)
-                    .where(StyleReferenceParagraph.book_id == profile.book_id)
-                    .order_by(StyleReferenceParagraph.paragraph_index.asc())
-                ).scalars().all()
-                stats = compute_reference_craft([str(item or "") for item in texts])
+            if stats is None or "rules" not in stats:
+                texts = [
+                    str(item or "")
+                    for item in self.session.execute(
+                        select(StyleReferenceParagraph.text)
+                        .where(StyleReferenceParagraph.book_id == profile.book_id)
+                        .order_by(StyleReferenceParagraph.paragraph_index.asc())
+                    ).scalars().all()
+                ]
+                stats = {**compute_reference_craft(texts), "rules": compute_reference_rules(texts)}
                 _REFERENCE_CRAFT_CACHE.clear()
                 _REFERENCE_CRAFT_CACHE[key] = stats
             book = self.session.get(StyleReferenceBook, profile.book_id)
@@ -1049,6 +1350,7 @@ class SceneDiagnosisService:
                 book_title=getattr(book, "title", None),
                 stats=stats,
                 deliberate_repetition=bool(profile.deliberate_repetition),
+                rule_stats=stats.get("rules"),
             )
         except Exception:  # noqa: BLE001 — 校准失败退回默认阈值，不让诊断失败
             return DEFAULT_CRAFT_CALIBRATION
@@ -1064,8 +1366,7 @@ class SceneDiagnosisService:
         text: DiagnosisText | None = None,
     ) -> dict[str, Any]:
         text = text if text is not None else self.text_for_scene(scene)
-        style_bound, profile = self.binding_profile(scene)
-        calibration = self.craft_calibration(profile) if style_bound else DEFAULT_CRAFT_CALIBRATION
+        style_bound, calibration = self.scene_calibration(scene)
         ignored = {str(key) for key in (scene.deep_review_ignored_keys_json or []) if str(key)}
 
         findings: list[dict[str, Any]] = []
@@ -1097,8 +1398,8 @@ class SceneDiagnosisService:
         for row in passage_rows:
             entry = serialize_passage_review(row, self._evaluation_status(row, text))
             passage_reviews.append(entry)
-            if entry["about_signal_id"]:
-                opinions[str(entry["about_signal_id"])] = entry
+            for about_id in entry["about_signal_ids"]:
+                opinions[str(about_id)] = entry
 
         seen: set[str] = set()
         deduped: list[dict[str, Any]] = []
@@ -1123,7 +1424,7 @@ class SceneDiagnosisService:
             if with_patches
             else []
         )
-        chapter_status = self._chapter_evaluation_status(chapter_row, [text]) if chapter_row is not None else "not_run"
+        chapter_status = self._scene_view_chapter_status(chapter_row, scene, text)
 
         return {
             "scene_id": scene.scene_id,
@@ -1186,17 +1487,21 @@ class SceneDiagnosisService:
             "lens_evaluations": [item for item in (serialize_evaluation(row) for row in ai_lenses) if item],
         }
 
-    def payload(self, scene_id: str) -> dict[str, Any]:
+    def payload(self, scene_id: str, *, with_rollup: bool = True) -> dict[str, Any]:
         scene = require_scene(self.session, scene_id, trashed_as_conflict=True)
-        return self.diagnose_scene(scene)
+        payload = self.diagnose_scene(scene)
+        if with_rollup:
+            payload["diagnosis_rollup"] = self.scene_rollup(scene)
+        return payload
 
     # -- 一章的诊断（成稿中心「AI 通读本章」）-------------------------------
 
-    def chapter_payload(self, chapter_id: str) -> dict[str, Any]:
-        chapter = require_chapter(self.session, chapter_id)
+    def _chapter_block(self, chapter: ChapterGoal) -> dict[str, Any]:
+        """一章的全部读数（一次算完，chapter_payload / project_summary / rollup 共用）：每场的诊断、落到各场的
+        通读发现、钉不到任何一场的章级发现、章级通读的新旧与改过的场。"""
+
         scenes = self.chapter_scenes(chapter.chapter_id)
         chapter_row = self.latest_evaluation(chapter.chapter_id, LITERARY_REVISION_RUBRIC_ID, object_type="chapter")
-
         scene_entries: list[dict[str, Any]] = []
         texts: list[DiagnosisText] = []
         located_ids: set[str] = set()
@@ -1216,6 +1521,8 @@ class SceneDiagnosisService:
                     "ai_status": diagnosis["ai"]["status"],
                     "review_status": diagnosis["review"]["status"],
                     "findings_from_chapter": from_chapter,
+                    "carried": any((item.get("origin") or {}).get("carried_from") for item in from_chapter),
+                    "counts": _scene_counts_entry(chapter.chapter_id, diagnosis),
                 }
             )
 
@@ -1230,6 +1537,59 @@ class SceneDiagnosisService:
                 chapter_findings.append(item)
             chapter_findings.sort(key=_finding_sort_key)
 
+        scene_ids = [scene.scene_id for scene in scenes]
+        changes = self.chapter_review_changes(chapter_row, scene_ids, texts) if chapter_row is not None else None
+        ai_status = self._chapter_evaluation_status(chapter_row, texts, scene_ids) if chapter_row is not None else "not_run"
+        changed_ids = list(changes["changed_scene_ids"]) if changes else (
+            [scene.scene_id for scene, text in zip(scenes, texts) if text.layer != "none"] if ai_status == "stale" else []
+        )
+        for entry in scene_entries:
+            entry["changed_since_review"] = entry["scene_id"] in set(changed_ids)
+        meta = chapter_row.contract_field_refs_json if chapter_row is not None and isinstance(chapter_row.contract_field_refs_json, dict) else {}
+        chapter_level_blocking = sum(1 for item in chapter_findings if item["severity"] == "blocking")
+        counts = {
+            "open": sum(entry["summary"]["open"] for entry in scene_entries) + len(chapter_findings),
+            "blocking": sum(entry["summary"]["by_severity"]["blocking"] for entry in scene_entries) + chapter_level_blocking,
+            "chapter_level": len(chapter_findings),
+            "chapter_level_blocking": chapter_level_blocking,
+            "scenes": len(scene_entries),
+            "scenes_with_findings": sum(1 for entry in scene_entries if entry["summary"]["open"]),
+            "ai_status": ai_status,
+        }
+        return {
+            "chapter": chapter,
+            "row": chapter_row,
+            "scenes": scenes,
+            "texts": texts,
+            "scene_entries": scene_entries,
+            "chapter_findings": chapter_findings,
+            "counts": counts,
+            "ai": {
+                "status": ai_status,
+                "evaluation_id": chapter_row.evaluation_id if chapter_row is not None else None,
+                "overall_score": chapter_row.overall_score if chapter_row is not None else None,
+                "revision_brief": list(chapter_row.revision_brief_json or []) if chapter_row is not None else [],
+                "llm_call_id": chapter_row.evaluator_llm_call_id if chapter_row is not None else None,
+                "created_at": chapter_row.created_at if chapter_row is not None else None,
+                "source_text_ref": chapter_row.source_text_ref if chapter_row is not None else None,
+                # 2026-09-22 第三轮：这一轮通读看了哪些场（scope all / changed）、哪些场的发现是沿用上一轮的，
+                # 以及通读之后又改过字的场——成稿中心据此给「只通读改过的 N 场」
+                "scope": str(meta.get("scope") or ("all" if chapter_row is not None else "")),
+                "reviewed_scene_ids": [str(value) for value in (meta.get("reviewed_scene_ids") or [])],
+                "carried_scene_ids": [str(value) for value in (meta.get("carried_scene_ids") or [])],
+                "carried_from": meta.get("carried_from"),
+                "changed_scene_ids": changed_ids,
+                "changed_count": len(changed_ids),
+                "incremental_available": bool(changes is not None and changed_ids and changes["unchanged_scene_ids"]),
+            },
+        }
+
+    def chapter_payload(self, chapter_id: str) -> dict[str, Any]:
+        chapter = require_chapter(self.session, chapter_id)
+        block = self._chapter_block(chapter)
+        chapter_row = block["row"]
+        chapter_findings = block["chapter_findings"]
+        scene_entries = block["scene_entries"]
         latest_evaluation = serialize_evaluation(chapter_row)
         lens_rows = self.lens_rows(chapter_row.evaluation_id) if chapter_row is not None else []
         patch_rows = self.session.execute(
@@ -1238,29 +1598,20 @@ class SceneDiagnosisService:
             .order_by(PassagePatchCandidate.created_at.desc(), PassagePatchCandidate.patch_id.desc())
             .limit(PATCH_CANDIDATE_LIMIT)
         ).scalars().all()
-        open_total = sum(entry["summary"]["open"] for entry in scene_entries) + len(chapter_findings)
         return {
             "chapter_id": chapter.chapter_id,
             "project_id": chapter.project_id,
-            "ai": {
-                "status": self._chapter_evaluation_status(chapter_row, texts),
-                "evaluation_id": chapter_row.evaluation_id if chapter_row is not None else None,
-                "overall_score": chapter_row.overall_score if chapter_row is not None else None,
-                "revision_brief": list(chapter_row.revision_brief_json or []) if chapter_row is not None else [],
-                "llm_call_id": chapter_row.evaluator_llm_call_id if chapter_row is not None else None,
-                "created_at": chapter_row.created_at if chapter_row is not None else None,
-                "source_text_ref": chapter_row.source_text_ref if chapter_row is not None else None,
-            },
+            "ai": block["ai"],
             "chapter_findings": chapter_findings,
-            "scenes": scene_entries,
+            "scenes": [{key: value for key, value in entry.items() if key != "counts"} for entry in scene_entries],
             "summary": {
-                "open": open_total,
+                "open": block["counts"]["open"],
                 "chapter_level": len(chapter_findings),
                 "scenes": len(scene_entries),
-                "scenes_with_findings": sum(1 for entry in scene_entries if entry["summary"]["open"]),
-                "blocking": sum(entry["summary"]["by_severity"]["blocking"] for entry in scene_entries)
-                + sum(1 for item in chapter_findings if item["severity"] == "blocking"),
+                "scenes_with_findings": block["counts"]["scenes_with_findings"],
+                "blocking": block["counts"]["blocking"],
             },
+            "diagnosis_rollup": _rollup_from_block(block),
             "patch_candidates": [serialize_patch_candidate(row) for row in patch_rows],
             # 旧契约的键
             "status": "reviewed" if chapter_row is not None else "not_run",
@@ -1276,6 +1627,9 @@ class SceneDiagnosisService:
     # -- 一本书的计数（主页 / 成稿中心 / 起草台的角标）-----------------------
 
     def project_summary(self, project_id: str) -> dict[str, Any]:
+        """整本书的计数——视图挂载 / 换作品时读一次；之后的变化由 ``scene_rollup`` / ``chapter_rollup``
+        随写回传（同一种 ``scenes`` / ``chapters`` 条目形状，前端本地汇总 ``totals``）。"""
+
         project = self.session.get(StoryProject, project_id)
         if project is None:
             raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
@@ -1288,73 +1642,93 @@ class SceneDiagnosisService:
         )
         scenes_out: dict[str, dict[str, Any]] = {}
         chapters_out: dict[str, dict[str, Any]] = {}
-        totals = {
-            "open": 0,
-            "blocking": 0,
-            "revision": 0,
-            "taste": 0,
-            "info": 0,
-            "ignored": 0,
-            "stale": 0,
-            "scenes": 0,
-            "scenes_with_text": 0,
-            "scenes_with_findings": 0,
-            "ai_reviewed_scenes": 0,
-            "chapters_reviewed": 0,
-        }
         for chapter in chapters:
-            chapter_row = self.latest_evaluation(chapter.chapter_id, LITERARY_REVISION_RUBRIC_ID, object_type="chapter")
-            scenes = self.chapter_scenes(chapter.chapter_id)
-            chapter_counts = {"open": 0, "blocking": 0, "chapter_level": 0, "scenes": len(scenes), "scenes_with_findings": 0, "ai_status": "not_run"}
-            texts: list[DiagnosisText] = []
-            located_ids: set[str] = set()
-            for scene in scenes:
-                text = self.text_for_scene(scene)
-                texts.append(text)
-                diagnosis = self.diagnose_scene(scene, chapter_row=chapter_row, with_patches=False, text=text)
-                summary = diagnosis["summary"]
-                located_ids.update(
-                    item["signal_id"] for item in diagnosis["findings"] if (item.get("origin") or {}).get("kind") == "chapter"
-                )
-                entry = {
-                    "chapter_id": chapter.chapter_id,
-                    "text_layer": diagnosis["text"]["layer"],
-                    "open": summary["open"],
-                    "blocking": summary["by_severity"]["blocking"],
-                    "revision": summary["by_severity"]["revision"],
-                    "taste": summary["by_severity"]["taste"],
-                    "info": summary["by_severity"]["info"],
-                    "ignored": summary["ignored"],
-                    "stale": summary["stale"],
-                    "ai_status": diagnosis["ai"]["status"],
-                    "review_status": diagnosis["review"]["status"],
-                }
-                scenes_out[scene.scene_id] = entry
-                totals["scenes"] += 1
-                if diagnosis["text"]["layer"] != "none":
-                    totals["scenes_with_text"] += 1
-                for key in ("open", "blocking", "revision", "taste", "info", "ignored", "stale"):
-                    totals[key] += entry[key]
-                if entry["open"]:
-                    totals["scenes_with_findings"] += 1
-                    chapter_counts["scenes_with_findings"] += 1
-                if entry["ai_status"] != "not_run":
-                    totals["ai_reviewed_scenes"] += 1
-                chapter_counts["open"] += entry["open"]
-                chapter_counts["blocking"] += entry["blocking"]
-            chapter_counts["ai_status"] = self._chapter_evaluation_status(chapter_row, texts) if chapter_row is not None else "not_run"
-            if chapter_row is not None:
-                totals["chapters_reviewed"] += 1
-                # 钉不到任何一场的章级发现（承诺 / 升级 / 兑现）也算这一章开着的
-                empty = DiagnosisText(layer="chapter", ref=chapter_row.source_text_ref, content="", paragraphs=[])
-                chapter_level = [
-                    item
-                    for item in _evaluation_findings(chapter_row, empty, source="ai", label_for=AI_DIMENSION_LABELS, origin_kind="chapter")
-                    if item["signal_id"] not in located_ids
-                ]
-                chapter_counts["chapter_level"] = len(chapter_level)
-                chapter_counts["open"] += len(chapter_level)
-                chapter_counts["blocking"] += sum(1 for item in chapter_level if item["severity"] == "blocking")
-                totals["open"] += len(chapter_level)
-            chapters_out[chapter.chapter_id] = chapter_counts
-        return {"project_id": project_id, "totals": totals, "chapters": chapters_out, "scenes": scenes_out}
+            block = self._chapter_block(chapter)
+            for entry in block["scene_entries"]:
+                scenes_out[entry["scene_id"]] = entry["counts"]
+            chapters_out[chapter.chapter_id] = dict(block["counts"])
+        return {"project_id": project_id, "totals": summarize_counts(scenes_out, chapters_out), "chapters": chapters_out, "scenes": scenes_out}
+
+    # -- 随写回传的计数 --------------------------------------------------------
+
+    def scene_rollup(self, scene: SceneCard) -> dict[str, Any]:
+        """这一场所在那一章的计数（章条目 + 章里每一场的条目）：作者稿保存 / 深评动作 / 忽略之后随响应回传，
+        主页与成稿中心的角标据此更新，不必再拉整本书。没有章的场只回这一场。"""
+
+        chapter = self.session.get(ChapterGoal, scene.chapter_id) if scene.chapter_id else None
+        if chapter is None:
+            diagnosis = self.diagnose_scene(scene, with_patches=False)
+            return {
+                "project_id": getattr(scene, "project_id", None),
+                "chapter_id": scene.chapter_id,
+                "chapters": {},
+                "scenes": {scene.scene_id: _scene_counts_entry(scene.chapter_id, diagnosis)},
+            }
+        return _rollup_from_block(self._chapter_block(chapter))
+
+    def chapter_rollup(self, chapter_id: str) -> dict[str, Any]:
+        chapter = require_chapter(self.session, chapter_id)
+        return _rollup_from_block(self._chapter_block(chapter))
+
+
+def _scene_counts_entry(chapter_id: str | None, diagnosis: dict[str, Any]) -> dict[str, Any]:
+    summary = diagnosis["summary"]
+    return {
+        "chapter_id": chapter_id,
+        "text_layer": diagnosis["text"]["layer"],
+        "open": summary["open"],
+        "blocking": summary["by_severity"]["blocking"],
+        "revision": summary["by_severity"]["revision"],
+        "taste": summary["by_severity"]["taste"],
+        "info": summary["by_severity"]["info"],
+        "ignored": summary["ignored"],
+        "stale": summary["stale"],
+        "ai_status": diagnosis["ai"]["status"],
+        "review_status": diagnosis["review"]["status"],
+    }
+
+
+def _rollup_from_block(block: dict[str, Any]) -> dict[str, Any]:
+    chapter = block["chapter"]
+    return {
+        "project_id": chapter.project_id,
+        "chapter_id": chapter.chapter_id,
+        "chapters": {chapter.chapter_id: dict(block["counts"])},
+        "scenes": {entry["scene_id"]: entry["counts"] for entry in block["scene_entries"]},
+    }
+
+
+def summarize_counts(scenes: dict[str, dict[str, Any]], chapters: dict[str, dict[str, Any]]) -> dict[str, int]:
+    """``totals`` 从场 / 章条目汇总（前端的 store 用同一条规则本地汇总，随写回传的 rollup 不必带 totals）。"""
+
+    totals = {
+        "open": 0,
+        "blocking": 0,
+        "revision": 0,
+        "taste": 0,
+        "info": 0,
+        "ignored": 0,
+        "stale": 0,
+        "scenes": 0,
+        "scenes_with_text": 0,
+        "scenes_with_findings": 0,
+        "ai_reviewed_scenes": 0,
+        "chapters_reviewed": 0,
+    }
+    for entry in scenes.values():
+        totals["scenes"] += 1
+        if entry.get("text_layer") not in (None, "none"):
+            totals["scenes_with_text"] += 1
+        for key in ("open", "blocking", "revision", "taste", "info", "ignored", "stale"):
+            totals[key] += int(entry.get(key) or 0)
+        if int(entry.get("open") or 0):
+            totals["scenes_with_findings"] += 1
+        if entry.get("ai_status") and entry.get("ai_status") != "not_run":
+            totals["ai_reviewed_scenes"] += 1
+    for counts in chapters.values():
+        if counts.get("ai_status") and counts.get("ai_status") != "not_run":
+            totals["chapters_reviewed"] += 1
+        # 钉不到任何一场的章级发现（承诺 / 升级 / 兑现）也算开着的
+        totals["open"] += int(counts.get("chapter_level") or 0)
+        totals["blocking"] += int(counts.get("chapter_level_blocking") or 0)
+    return totals

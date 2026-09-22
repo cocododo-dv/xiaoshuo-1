@@ -1,6 +1,7 @@
 import { apiGet, apiPost } from "./lib/client.js";
 import { WsWorks, wsKey } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
 import { hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
 import {
@@ -417,6 +418,8 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       ...c, scenes: (c.scenes || []).map(s => s.sid === sid ? { ...s, state: "done" } : s),
     })));
   } catch (e) {}
+  // 服务端改了这一场的正文：只拉这一章的诊断计数（主页 / 成稿中心的角标），不拉整本书
+  try { WsDiagnosis.refreshScene(sceneId); } catch (e) {}
   // 3) 归档后重新拉服务端状态（起草台运行记录与管线真相收敛）
   try {
     const status = await apiGet(`/api/v1/scenes/${sceneId}/status`);

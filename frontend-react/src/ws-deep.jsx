@@ -178,6 +178,20 @@ function wrDxRangeFor(el, finding) {
 function wrDeepMark(el, findings, activeKey) {
   if (!el) return;
   wrDeepUnmark(el);
+  /* 选中的跨段发现：另一段的那句也标出来（同一条 data-dx，淡一层） */
+  const activeFinding = (findings || []).find((f) => f.signal_id === activeKey && !f.ignored);
+  if (activeFinding && activeFinding.related && activeFinding.related.excerpt && !activeFinding.related.stale) {
+    const hit = wrDxRangeFor(el, { evidence: activeFinding.related });
+    if (hit && hit.range.toString().trim() !== (hit.block.textContent || "").trim()) {
+      try {
+        const mk = document.createElement("mark");
+        mk.className = "wr-dx is-related";
+        mk.setAttribute("data-dx", activeFinding.signal_id);
+        mk.appendChild(hit.range.extractContents());
+        hit.range.insertNode(mk);
+      } catch (e) { /* 标不上就只标焦点 */ }
+    }
+  }
   (findings || []).forEach((f) => {
     if (f.ignored || !f.evidence) return;
     const hit = wrDxRangeFor(el, f);
@@ -255,15 +269,27 @@ function DxAiBlock({ ai, busy, error, onRun, onRetry, onOpenSettings }) {
   );
 }
 
+/* 跨段发现（局部深评对照全场看出的矛盾 / 重复 / 承接）：另一段的段号与关系 */
+function relatedTag(finding) {
+  const related = finding && finding.related;
+  if (!related) return "";
+  const where = Number.isInteger(related.paragraph_index) ? `与第 ${related.paragraph_index + 1} 段` : "与另一段";
+  return `${where}${related.label || "矛盾"}`;
+}
+
 function DxFindingRow({ finding, active, onPick }) {
   const src = WR_DX_SOURCES[finding.source] || finding.source;
+  const carried = !!(finding.origin && finding.origin.carried_from);
+  const calibrated = !!(finding.calibrated && finding.calibrated.kind);
   return (
     <button type="button" className={`wr-dxd-row ${active ? "is-active" : ""}`} aria-pressed={active} onClick={() => onPick(finding.signal_id)}>
       <span className={`wr-dxd-mark ${sevClass(finding.severity)}`} title={`严重程度：${qSevLabel(finding.severity)}`}>{finding.label || finding.dimension}</span>
       <span className="wr-dxd-body">
         <span className="wr-dxd-t">{finding.issue}</span>
         <span className="wr-dxd-h">
-          <span className="wr-dxd-src">{src}{finding.lens && WR_DX_LENS[finding.lens] ? ` · ${WR_DX_LENS[finding.lens]}` : ""}{finding.origin && WR_DX_ORIGIN[finding.origin.kind] ? ` · ${WR_DX_ORIGIN[finding.origin.kind]}` : ""}</span>
+          <span className="wr-dxd-src">{src}{finding.lens && WR_DX_LENS[finding.lens] ? ` · ${WR_DX_LENS[finding.lens]}` : ""}{finding.origin && WR_DX_ORIGIN[finding.origin.kind] ? ` · ${WR_DX_ORIGIN[finding.origin.kind]}` : ""}{carried ? "（沿用上次）" : ""}</span>
+          {finding.related && <span className="wr-dxd-related-tag">{relatedTag(finding)}</span>}
+          {calibrated && <span className="wr-dxd-calibrated">参考作者也常这样</span>}
           {finding.opinion && WR_DX_VERDICT[finding.opinion.verdict] && <span className="wr-dxd-opinion-tag">{WR_DX_VERDICT[finding.opinion.verdict].label}</span>}
           {finding.stale && <span className="wr-dxd-stale">证据已不在正文里</span>}
           {!finding.evidence && !finding.stale && <span className="wr-dxd-stale">整场</span>}
@@ -299,7 +325,7 @@ function DxOpinion({ finding, opinion, onRewrite, onIgnore }) {
   );
 }
 
-function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore, onPassageReview, passageBusy, passageError, onOpenSettings }) {
+function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore, onPassageReview, passageBusy, passageError, onOpenSettings, onLocateParagraph }) {
   const ev = finding.evidence;
   const canSelect = !!(ev && ev.excerpt && onSelect);
   /* 服务端只钉到段（偏移为空）、或整段就是证据（段落偏长）：选中的是一段 */
@@ -307,10 +333,21 @@ function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore, onPassageRevi
   const reviewing = passageBusy === finding.signal_id;
   const canReview = !!(ev && onPassageReview && !finding.stale);
   const reviewError = passageError && passageError.key === finding.signal_id ? passageError.error : null;
+  const related = finding.related || null;
+  const relatedIndex = related && Number.isInteger(related.paragraph_index) ? related.paragraph_index : null;
   return (
     <div className="wr-dxd-detail">
       {(ev && ev.excerpt) ? <blockquote className="wr-dxd-ev">{ev.excerpt}</blockquote>
         : (finding.context ? <blockquote className="wr-dxd-ev">{finding.context}</blockquote> : null)}
+      {related && (
+        <div className="wr-dxd-related">
+          <span className="wr-dxd-sub">{relatedTag(finding)}{related.stale ? "（那句已不在正文里）" : ""}</span>
+          <blockquote className="wr-dxd-ev">{related.excerpt}</blockquote>
+          {relatedIndex != null && onLocateParagraph && (
+            <button type="button" className="btn btn-quiet btn-sm" onClick={() => onLocateParagraph(relatedIndex)}>看第 {relatedIndex + 1} 段</button>
+          )}
+        </div>
+      )}
       {finding.recommendation && <p className="wr-dxd-fix">改法：{finding.recommendation}</p>}
       {finding.why && <p className="wr-dxd-why">{finding.why}</p>}
       {finding.opinion && <DxOpinion finding={finding} opinion={finding.opinion} onRewrite={onRewrite} onIgnore={onIgnore} />}
@@ -338,15 +375,20 @@ function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore, onPassageRevi
   );
 }
 
-/* 独立看一段（没有复核某条发现）的结果：判定 + 评语 + 这一段的改法；新发现已并进清单 */
+/* 独立看一段 / 一段范围（没有复核某条发现）的结果：判定 + 评语 + 这一处的改法；新发现已并进清单。
+   模型看的是整场（焦点段标出），所以「看了第 2–3 段」也可能指出与别处的矛盾。 */
 function DxPassageNote({ passage, onRewriteParagraph }) {
   if (!passage || passage.about_signal_id) return null;
   const meta = WR_DX_VERDICT[passage.verdict] || WR_DX_VERDICT.no_finding;
-  const pid = Number.isInteger(passage.paragraph_index) ? passage.paragraph_index : null;
+  const focus = Array.isArray(passage.focus_paragraphs) && passage.focus_paragraphs.length
+    ? passage.focus_paragraphs
+    : (Number.isInteger(passage.paragraph_index) ? [passage.paragraph_index] : []);
+  const pid = focus.length === 1 ? focus[0] : null;
+  const where = focus.length > 1 ? `第 ${focus[0] + 1}–${focus[focus.length - 1] + 1} 段` : (pid != null ? `第 ${pid + 1} 段` : "这一段");
   return (
     <section className="wr-dxd-passage" aria-label="AI 看这一段">
       <div className="wr-dxd-opinion-head">
-        <span className="wr-dxd-sub"><I.Sparkles size={13} /> AI 看了{pid != null ? `第 ${pid + 1} 段` : "这一段"}</span>
+        <span className="wr-dxd-sub"><I.Sparkles size={13} /> AI 看了{where}</span>
         <Tag tone={meta.tone}>{meta.label}</Tag>
         {passage.status === "stale" && <span className="wr-dxd-stale">改前的判断</span>}
       </div>
@@ -370,7 +412,7 @@ function WrDeepDrawer({
   showIgnored = false, onToggleIgnored,
   onPick, onIgnore, onRestore, onRescan, onSelect, onRewrite,
   aiBusy = false, aiError = null, onRunAi, onOpenSettings,
-  onPassageReview, passageBusy = null, passageError = null, lastPassage = null, onRewriteParagraph,
+  onPassageReview, passageBusy = null, passageError = null, lastPassage = null, onRewriteParagraph, onLocateParagraph,
   handoffMiss = false,
   log, persistenceStatus = "idle", onClose,
 }) {
@@ -419,7 +461,9 @@ function WrDeepDrawer({
 
         {diagnosis && diagnosis.style_bound && (
           <Notice tone="info" className="wr-dxd-notice">
-            本场绑定了参考画像：规则体检是房风词表的意见，与参考作者的做法冲突时以样例为准。
+            {diagnosis.craft_calibration && diagnosis.craft_calibration.rules
+              ? "本场绑定了参考画像：规则体检已按参考书校准——这位作者的常用词不当毛病，这位作者常态的检查只作提示；仍与样例冲突时以样例为准。"
+              : "本场绑定了参考画像：规则体检是房风词表的意见，与参考作者的做法冲突时以样例为准。"}
             {diagnosis.craft_calibration && diagnosis.craft_calibration.note ? ` ${diagnosis.craft_calibration.note}` : ""}
           </Notice>
         )}
@@ -466,7 +510,8 @@ function WrDeepDrawer({
                   <DxFindingRow finding={f} active={!!(active && active.signal_id === f.signal_id)} onPick={onPick} />
                   {active && active.signal_id === f.signal_id && (
                     <DxFindingDetail finding={f} onSelect={onSelect} onRewrite={onRewrite} onIgnore={onIgnore}
-                      onPassageReview={onPassageReview} passageBusy={passageBusy} passageError={passageError} onOpenSettings={onOpenSettings} />
+                      onPassageReview={onPassageReview} passageBusy={passageBusy} passageError={passageError} onOpenSettings={onOpenSettings}
+                      onLocateParagraph={onLocateParagraph} />
                   )}
                 </li>
               ))}

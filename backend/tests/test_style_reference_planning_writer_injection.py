@@ -718,7 +718,7 @@ def test_writer_prefix_failure_degrades_to_the_base_prompt(session, monkeypatch)
         ("author_proposal_generate", "2026-09-14.v3", 96000, "write the proposal in the reference author's hand"),
         ("writer_passage_patch", "2026-09-14.v3", 24000, "patch in the reference author's hand"),
         # 2026-09-22 场景诊断统一 v5：证据逐字引用 + 按雪花结构判断；风格条款不变
-        ("writer_deep_review", "2026-09-22.v5", 30000, "judge in the reference author's hand"),
+        ("writer_deep_review", "2026-09-22.v6", 30000, "judge in the reference author's hand"),
     ],
 )
 def test_wp6_templates_are_bumped_with_style_clauses(name: str, version: str, budget: int, clause: str) -> None:

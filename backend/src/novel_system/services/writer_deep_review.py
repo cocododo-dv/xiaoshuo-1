@@ -15,7 +15,6 @@ from novel_system.db.models import (
     AuthorDraft,
     AuthorPreferenceProfile,
     ChapterGoal,
-    ChapterMemory,
     FinalScene,
     PassagePatchCandidate,
     ReviewItem,
@@ -43,10 +42,11 @@ from novel_system.services.scene_diagnosis import (
     PASSAGE_VERDICTS,
     PATCH_CATEGORIES,
     SCENE_FORMS,
+    PASSAGE_RELATION_KINDS,
     SceneDiagnosisService,
     candidate_category_for_dimension,
     locate_in_paragraphs,
-    passage_window,
+    passage_scope,
     scene_form_from_findings,
     serialize_evaluation as _serialize_evaluation,
     serialize_passage_review,
@@ -165,11 +165,38 @@ class WriterDeepReviewService:
         )
         return SceneDiagnosisService(self.session).payload(scene.scene_id)
 
-    def run_chapter_review(self, chapter_id: str, actor_ref: str = "operator") -> dict[str, Any]:
-        """「AI 通读本章」：对整章（各场作者稿按场标出）跑一次 writer_deep_review，发现落到各场。拒绝式。"""
+    def run_chapter_review(self, chapter_id: str, actor_ref: str = "operator", *, scope: str = "all") -> dict[str, Any]:
+        """「AI 通读本章」：对整章跑一次 writer_deep_review，发现落到各场。拒绝式。
+
+        ``scope="all"``：各场作者稿全文按场标出，整章一次。``scope="changed"``（2026-09-22 第三轮）：只把上次
+        通读之后改过字的场全文送审，未改的场只给开头 / 结尾 / 上次的发现作摘要，它们的发现沿用上一轮
+        （``carried_from``）；章级判断（承诺 / 升级 / 兑现）由模型对着上次的章级发现重新说一遍。通读行记下
+        每场正文的哈希（``contract_field_refs_json.scenes``），新旧从此按哈希判。上次之后没有场改过 → 不调
+        模型，载荷带 ``notice.code = CHAPTER_REVIEW_UP_TO_DATE``；上一轮没记哈希（老的行）→ 退回整章。
+        """
 
         chapter = self._require_chapter(chapter_id)
-        source = self._chapter_source(chapter)
+        scope = scope if scope in {"all", "changed"} else "all"
+        diagnosis_service = SceneDiagnosisService(self.session)
+        scenes = diagnosis_service.chapter_scenes(chapter.chapter_id)
+        texts = [diagnosis_service.text_for_scene(scene) for scene in scenes]
+        previous = diagnosis_service.latest_evaluation(chapter.chapter_id, LITERARY_REVISION_RUBRIC_ID, object_type="chapter")
+        changes = diagnosis_service.chapter_review_changes(previous, [scene.scene_id for scene in scenes], texts) if previous is not None else None
+        incremental = scope == "changed" and changes is not None and bool(changes["unchanged_scene_ids"])
+        if scope == "changed" and changes is not None and not changes["changed_scene_ids"] and not changes["removed_scene_ids"]:
+            payload = diagnosis_service.chapter_payload(chapter.chapter_id)
+            payload["notice"] = {"code": "CHAPTER_REVIEW_UP_TO_DATE", "message": "上次通读之后没有场改过字，不必再通读。"}
+            return payload
+        full_scene_ids = set(changes["changed_scene_ids"]) if incremental else {scene.scene_id for scene in scenes}
+        carried = _carry_previous_scene_findings(previous, scenes, texts, full_scene_ids) if incremental else []
+        source = self._chapter_source(
+            chapter,
+            scenes=scenes,
+            texts=texts,
+            full_scene_ids=full_scene_ids if incremental else None,
+            previous=previous if incremental else None,
+        )
+        prompt_tail = _chapter_review_prompt_tail(scenes, texts, full_scene_ids, previous, carried) if incremental else None
         self._create_deep_review(
             object_type="chapter",
             object_id=chapter.chapter_id,
@@ -177,8 +204,27 @@ class WriterDeepReviewService:
             scene_id=None,
             source=source,
             actor_ref=actor_ref,
+            prompt_tail=prompt_tail,
+            extra_findings=carried,
+            meta={
+                "kind": "chapter",
+                "scope": "changed" if incremental else "all",
+                "scenes": [
+                    {
+                        "scene_id": scene.scene_id,
+                        "scene_seq": scene.scene_seq,
+                        "sha256": text.sha256 if text.layer != "none" else "",
+                        "layer": text.layer,
+                        "ref": text.ref,
+                    }
+                    for scene, text in zip(scenes, texts)
+                ],
+                "reviewed_scene_ids": [scene.scene_id for scene in scenes if scene.scene_id in full_scene_ids],
+                "carried_scene_ids": [scene.scene_id for scene in scenes if scene.scene_id not in full_scene_ids] if incremental else [],
+                "carried_from": previous.evaluation_id if incremental and previous is not None else None,
+            },
         )
-        return SceneDiagnosisService(self.session).chapter_payload(chapter.chapter_id)
+        return diagnosis_service.chapter_payload(chapter.chapter_id)
 
     def run_passage_review(
         self,
@@ -186,15 +232,19 @@ class WriterDeepReviewService:
         *,
         signal_id: str | None = None,
         paragraph_index: int | None = None,
+        paragraph_start: int | None = None,
+        paragraph_end: int | None = None,
         excerpt: str | None = None,
         question: str | None = None,
         actor_ref: str = "operator",
     ) -> dict[str, Any]:
-        """「AI 看这一处」：只看一段（焦点段 + 前后各一段）的局部深评。
+        """「AI 看这一处」：局部深评——焦点是一段（``paragraph_index`` / 选中的原话）、一段范围
+        （``paragraph_start``–``paragraph_end``）或一条发现所在的段（``signal_id``），模型同时看到整场正文
+        （``passage_scope``），所以能指出焦点段与本场另一段的矛盾 / 重复（发现带 ``related``）。
 
-        带 ``signal_id`` 时是对那条发现的复核（成立 / 部分成立 / 不成立）加改法；只给段落或选中的字时
-        是对这一处的独立判断。结果落成一行 rubric ``literary_revision_passage_v1`` 的评审（同一段再看一次，
-        旧的退位），它的发现与意见并入统一诊断（scene_diagnosis）。拒绝式：无模型即 409。
+        带 ``signal_id`` 时是对那条发现的复核（成立 / 部分成立 / 不成立）加改法；否则是对这一处的独立判断。
+        结果落成一行 rubric ``literary_revision_passage_v1`` 的评审（焦点段有交集、或复核同一条发现的旧行退位），
+        它的发现与意见并入统一诊断（scene_diagnosis）。拒绝式：无模型即 409。
         """
 
         self._require_live_llm("writer_passage_review")
@@ -204,6 +254,7 @@ class WriterDeepReviewService:
         if text.layer == "none":
             raise DomainError("WRITER_PASSAGE_REVIEW_NO_TEXT", "这一场还没有正文，没有可看的段落。", status_code=409)
         about: dict[str, Any] | None = None
+        focus: list[int] = []
         if signal_id:
             diagnosis = diagnosis_service.diagnose_scene(scene, with_patches=False)
             about = next((item for item in diagnosis["findings"] if item["signal_id"] == signal_id), None)
@@ -215,22 +266,41 @@ class WriterDeepReviewService:
                     details={"signal_id": signal_id},
                 )
             evidence = about.get("evidence") or {}
-            if paragraph_index is None and isinstance(evidence.get("paragraph_index"), int):
-                paragraph_index = int(evidence["paragraph_index"])
+            if isinstance(evidence.get("paragraph_index"), int):
+                focus.append(int(evidence["paragraph_index"]))
+            related = about.get("related") or {}
+            if isinstance(related.get("paragraph_index"), int):
+                focus.append(int(related["paragraph_index"]))
             if not excerpt and evidence.get("excerpt"):
                 excerpt = str(evidence["excerpt"])
-        if paragraph_index is None and excerpt:
+        if paragraph_start is not None or paragraph_end is not None:
+            start = int(paragraph_start if paragraph_start is not None else paragraph_end)
+            end = int(paragraph_end if paragraph_end is not None else paragraph_start)
+            if start > end:
+                start, end = end, start
+            focus.extend(range(start, end + 1))
+        if paragraph_index is not None:
+            focus.append(int(paragraph_index))
+        if not focus and excerpt:
             hit = locate_in_paragraphs(text.paragraphs, excerpt)
-            paragraph_index = hit["paragraph_index"] if hit else None
-        if paragraph_index is None or not (0 <= int(paragraph_index) < len(text.paragraphs)):
+            if hit:
+                focus.append(int(hit["paragraph_index"]))
+        focus = sorted({index for index in focus if 0 <= index < len(text.paragraphs)})
+        if not focus:
             raise DomainError(
                 "WRITER_PASSAGE_REVIEW_TARGET_INVALID",
-                "要看的那一段不在正文里：给一个段落序号，或一句正文里的原话。",
+                "要看的那一段不在正文里：给一个段落序号或范围，或一句正文里的原话。",
                 status_code=400,
                 details={"paragraph_count": len(text.paragraphs)},
             )
-        focus = int(paragraph_index)
-        window = passage_window(text.paragraphs, focus)
+        if len(focus) > PASSAGE_MAX_FOCUS_PARAGRAPHS:
+            raise DomainError(
+                "WRITER_PASSAGE_REVIEW_TARGET_INVALID",
+                f"一次最多看 {PASSAGE_MAX_FOCUS_PARAGRAPHS} 段；要看整场就跑 AI 深评。",
+                status_code=400,
+                details={"paragraph_count": len(text.paragraphs), "focus_count": len(focus)},
+            )
+        scope = passage_scope(text.paragraphs, focus)
         snapshot: dict[str, Any] = {
             "object_type": "scene",
             "object_id": scene.scene_id,
@@ -239,16 +309,21 @@ class WriterDeepReviewService:
             "rubric_id": LITERARY_REVISION_PASSAGE_RUBRIC_ID,
             "dimensions": list(LITERARY_REVISION_DIMENSIONS),
             "lenses": list(DEEP_REVIEW_LENSES),
-            "passage": {"paragraph_index": focus, "start": window["start"], "end": window["end"]},
+            "passage": {
+                "focus_paragraphs": focus,
+                "start": scope["start"],
+                "end": scope["end"],
+                "whole_scene": scope["whole_scene"],
+            },
             "about_signal_id": signal_id,
-            "scene_summary": window["text"],
+            "scene_summary": scope["text"],
         }
-        # 段落窗口与这一场的结构 / 设计背景都作为 inline digest 进用户消息（见 _create_deep_review_with_llm）
-        snapshot["inline_digests"] = {"scene_summary": window["text"], **self._scene_design_sections(scene.scene_id)}
+        # 段落范围与这一场的结构 / 设计背景都作为 inline digest 进用户消息（见 _create_deep_review_with_llm）
+        snapshot["inline_digests"] = {"scene_summary": scope["text"], **self._scene_design_sections(scene.scene_id)}
         prompt = self.prompt_builder.build(snapshot, "writer_passage_review")
         user_prompt = _passage_review_user_prompt(
             prompt["user_prompt"],
-            window=window,
+            scope=scope,
             about=about,
             excerpt=excerpt,
             question=question,
@@ -259,10 +334,10 @@ class WriterDeepReviewService:
             object_id=scene.scene_id,
             chapter_id=scene.chapter_id,
             scene_id=scene.scene_id,
-            context_text=window["focus_text"] or None,
+            context_text=scope["focus_text"] or None,
             final_user_prompt=user_prompt,
         )
-        execution_step_key = f"writer_passage_review:{scene.scene_id}:{focus}"
+        execution_step_key = f"writer_passage_review:{scene.scene_id}:{focus[0]}-{focus[-1]}"
         context = self._llm_context(
             object_type="scene",
             object_id=scene.scene_id,
@@ -309,10 +384,14 @@ class WriterDeepReviewService:
                 status_code=502,
                 details={"llm_call_id": node_result.llm_call_id, "node_id": "writer_deep_review"},
             )
-        # 同一段（或同一条发现）再看一次：旧的退位，面板只留最新的意见
+        # 焦点段有交集、或复核的是同一条发现：旧的退位，面板只留最新的意见
+        focus_set = set(focus)
         for row in diagnosis_service.passage_rows(scene.scene_id):
             meta = row.contract_field_refs_json if isinstance(row.contract_field_refs_json, dict) else {}
-            same_target = meta.get("paragraph_index") == focus or (signal_id and meta.get("about_signal_id") == signal_id)
+            old_focus = {int(value) for value in (meta.get("focus_paragraphs") or []) if isinstance(value, int)}
+            if not old_focus and isinstance(meta.get("paragraph_index"), int):
+                old_focus = {int(meta["paragraph_index"])}
+            same_target = bool(old_focus & focus_set) or bool(signal_id and meta.get("about_signal_id") == signal_id)
             if same_target:
                 row.status = "superseded"
         row = WriterEvaluation(
@@ -327,20 +406,25 @@ class WriterDeepReviewService:
             evaluator_llm_call_id=node_result.llm_call_id,
             lens="passage",
             parent_evaluation_id=None,
-            evidence_spans_json=[{"paragraph_index": focus, "text": window["focus_text"][:80]}],
+            evidence_spans_json=[{"paragraph_index": index, "text": text.paragraphs[index][:80]} for index in focus[:8]],
             overall_score=None,
             scores_json={},
-            findings_json=[{**item, "passage_paragraph_index": focus} for item in normalized["findings"]],
+            findings_json=[{**item, "passage_paragraph_index": focus[0]} for item in normalized["findings"]],
             revision_brief_json=(
                 [{"dimension": (about or {}).get("dimension") or "passage", "classification": "revision", "action": normalized["rewrite_brief"], "priority": "medium"}]
                 if normalized["rewrite_brief"]
                 else []
             ),
-            # 这一行「看的是什么、说了什么」：段落序号、复核的发现 id、判定、评语、改法、作者的问题
+            # 这一行「看的是什么、说了什么」：焦点段、看到的范围、复核的发现 id、判定、评语、改法、作者的问题
             contract_field_refs_json={
                 "kind": "passage",
-                "paragraph_index": focus,
+                "paragraph_index": focus[0],
+                "focus_paragraphs": focus,
+                "paragraph_start": scope["start"],
+                "paragraph_end": scope["end"],
+                "whole_scene": scope["whole_scene"],
                 "about_signal_id": signal_id,
+                "about_signal_ids": [signal_id] if signal_id else [],
                 "verdict": normalized["verdict"],
                 "assessment": normalized["assessment"],
                 "rewrite_brief": normalized["rewrite_brief"],
@@ -354,6 +438,7 @@ class WriterDeepReviewService:
         self.session.flush()
         payload = diagnosis_service.diagnose_scene(scene)
         payload["passage_review"] = serialize_passage_review(row, "current")
+        payload["diagnosis_rollup"] = diagnosis_service.scene_rollup(scene)
         return payload
 
     def create_patch_candidate(self, payload: dict[str, Any], actor_ref: str = "operator") -> dict[str, Any]:
@@ -484,6 +569,9 @@ class WriterDeepReviewService:
         scene_id: str | None,
         source: dict[str, Any],
         actor_ref: str,
+        prompt_tail: str | None = None,
+        extra_findings: list[dict[str, Any]] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """深评是拒绝式的 LLM 节点：没有真实模型就 409 + author_action，不再有本地词表兜底。
 
@@ -498,6 +586,9 @@ class WriterDeepReviewService:
             chapter_id=chapter_id,
             scene_id=scene_id,
             source=source,
+            prompt_tail=prompt_tail,
+            extra_findings=extra_findings,
+            meta=meta,
         )
 
     @staticmethod
@@ -524,6 +615,9 @@ class WriterDeepReviewService:
         chapter_id: str | None,
         scene_id: str | None,
         source: dict[str, Any],
+        prompt_tail: str | None = None,
+        extra_findings: list[dict[str, Any]] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         snapshot = {
             "object_type": object_type,
@@ -536,6 +630,7 @@ class WriterDeepReviewService:
             "source": {**source, "content": _prompt_text(source.get("content"))},
             "scene_summary": _prompt_text(source.get("content")) if object_type == "scene" else None,
             "chapter_summary": _prompt_text(source.get("content")) if object_type == "chapter" else None,
+            "review_scope": (meta or {}).get("scope") or "all",
         }
         # 提示词装配只渲染 inline_digests 里的 section（context_budget.collect_prompt_sections）——
         # 顶层的 scene_summary / chapter_summary 从来没进过用户消息：深评节点在接进面板之前从未被调用，
@@ -550,6 +645,8 @@ class WriterDeepReviewService:
             digests.update(self._scene_design_sections(scene_id or object_id))
         snapshot["inline_digests"] = digests
         prompt = self.prompt_builder.build(snapshot, "writer_deep_review")
+        # 只通读改过的场时，用户消息尾部说明哪些场是全文、哪些只是摘要，并列出上次的章级发现
+        user_prompt = prompt["user_prompt"] + (f"\n\n{prompt_tail}" if prompt_tail else "")
         # 2026-09-14 WP6.3：评审在参考作者的手笔下判断「复读 / 意象必要性 / 声音辨识度」
         prompt = self._inject_style_reference_prefix(
             prompt,
@@ -558,7 +655,7 @@ class WriterDeepReviewService:
             chapter_id=chapter_id,
             scene_id=scene_id,
             context_text=str(source.get("content") or "") or None,
-            final_user_prompt=prompt["user_prompt"],
+            final_user_prompt=user_prompt,
         )
         execution_step_key = f"writer_deep_review:{object_type}:{object_id}"
         context = self._llm_context(
@@ -578,7 +675,7 @@ class WriterDeepReviewService:
                 node_id="writer_deep_review",
                 step="writer_deep_review",
                 prompt=prompt,
-                user_prompt=prompt["user_prompt"],
+                user_prompt=user_prompt,
                 execution_step_key=execution_step_key,
                 context=context,
             )
@@ -596,6 +693,12 @@ class WriterDeepReviewService:
                 },
             ) from exc
         normalized = _normalize_deep_review_output(node_result.response.structured_output or {})
+        if extra_findings:
+            # 未改的场沿用上一轮通读的发现（带 carried_from）；模型这次又说到同一处的，以模型的为准
+            seen = {(str(item.get("dimension")), _compact_text(str(item.get("evidence_excerpt") or ""), 200)) for item in normalized["findings"]}
+            normalized["findings"] = list(normalized["findings"]) + [
+                item for item in extra_findings if (str(item.get("dimension")), _compact_text(str(item.get("evidence_excerpt") or ""), 200)) not in seen
+            ]
         # 模型答完了才让旧的一轮退位：被拒绝 / 失败的一次不动历史
         for row in self.session.execute(
             select(WriterEvaluation).where(
@@ -623,6 +726,7 @@ class WriterDeepReviewService:
             scores_json=normalized["scores"],
             findings_json=normalized["findings"],
             revision_brief_json=normalized["revision_brief"],
+            contract_field_refs_json=dict(meta) if meta else None,
             requires_human_review=1 if normalized["requires_human_review"] else 0,
             status="completed",
         )
@@ -924,34 +1028,52 @@ class WriterDeepReviewService:
             "source_bundle_id": final_row.source_bundle_id if final_row else (state.current_bundle_id if state else None),
         }
 
-    def _chapter_source(self, chapter: ChapterGoal) -> dict[str, Any]:
-        author_draft = self._current_author_draft("chapter", chapter.chapter_id)
-        if author_draft is not None:
-            return {
-                "content": author_draft.content or "",
-                "source_text_ref": f"author_draft:{author_draft.draft_id}",
-                "source_bundle_id": None,
-            }
-        final_memory = self.session.execute(
-            select(ChapterMemory)
-            .where(ChapterMemory.chapter_id == chapter.chapter_id, ChapterMemory.aggregate_stage == "final")
-            .order_by(ChapterMemory.created_at.desc(), ChapterMemory.row_id.desc())
-        ).scalars().first()
-        if final_memory:
-            return {
-                "content": final_memory.content,
-                "source_text_ref": f"chapter_memory:{final_memory.row_id}",
-                "source_bundle_id": None,
-            }
-        scenes = self.session.execute(
-            select(SceneCard).where(SceneCard.chapter_id == chapter.chapter_id, SceneCard.trashed_flag == 0).order_by(SceneCard.scene_seq.asc())
-        ).scalars().all()
+    def _chapter_source(
+        self,
+        chapter: ChapterGoal,
+        *,
+        scenes: list[SceneCard] | None = None,
+        texts: list[Any] | None = None,
+        full_scene_ids: set[str] | None = None,
+        previous: WriterEvaluation | None = None,
+    ) -> dict[str, Any]:
+        """通读整章给模型看的字：各场的诊断正文（作者稿，其次运行终稿——与写作台看到的同一份）按场标出，
+        评审能说「第 3 场」，发现的引文仍逐字来自各场正文。只通读改过的场时（``full_scene_ids`` 是子集），
+        未改的场只给开头 / 结尾与上一轮对它的发现作摘要。
+
+        2026-09-22 第三轮起不再取章级作者稿 / 章记忆：诊断把发现钉到各场的正文上，通读看的必须是同一份字。
+        """
+
+        diagnosis_service = SceneDiagnosisService(self.session)
+        if scenes is None:
+            scenes = diagnosis_service.chapter_scenes(chapter.chapter_id)
+        if texts is None:
+            texts = [diagnosis_service.text_for_scene(scene) for scene in scenes]
+        full = set(full_scene_ids) if full_scene_ids is not None else {scene.scene_id for scene in scenes}
+        previous_by_scene = _previous_findings_by_scene(previous, scenes, texts) if previous is not None else {}
         parts: list[str] = []
-        for index, scene in enumerate(scenes, start=1):
-            source = self._scene_source(scene)
-            if source["content"]:
-                # 通读整章时每一场标出来：评审能说「第 3 场」，发现的引文仍逐字来自各场正文
-                parts.append(f"【第 {index} 场】\n{_prompt_text(source['content'])}")
+        for index, (scene, text) in enumerate(zip(scenes, texts), start=1):
+            if text.layer == "none":
+                continue
+            paragraphs = [paragraph for paragraph in text.paragraphs if paragraph.strip()]
+            if scene.scene_id in full:
+                marker = f"【第 {index} 场】" if full_scene_ids is None else f"【第 {index} 场 · 本次通读】"
+                parts.append(f"{marker}\n" + "\n\n".join(paragraphs))
+                continue
+            digest = [f"【第 {index} 场 · 未改 · 摘要】"]
+            if paragraphs:
+                digest.append(f"（开头）{paragraphs[0][:CHAPTER_DIGEST_EDGE_CHARS]}")
+                if len(paragraphs) > 1:
+                    digest.append("……")
+                    digest.append(f"（结尾）{paragraphs[-1][-CHAPTER_DIGEST_EDGE_CHARS:]}")
+            previous_items = previous_by_scene.get(scene.scene_id) or []
+            if previous_items:
+                digest.append("上次通读对这一场的发现：")
+                digest.extend(
+                    f"- [{item.get('dimension')}] {item.get('issue')}（改法：{item.get('recommendation')}）"
+                    for item in previous_items[:CHAPTER_DIGEST_MAX_FINDINGS]
+                )
+            parts.append("\n".join(digest))
         return {
             "content": "\n\n".join(parts),
             "source_text_ref": f"chapter_assembled:{chapter.chapter_id}",
@@ -1061,19 +1183,31 @@ def _prompt_text(content: Any) -> str:
     return "\n\n".join(part for part in manuscript_paragraphs(text) if part.strip())
 
 
+PASSAGE_MAX_FOCUS_PARAGRAPHS = 40
+CHAPTER_DIGEST_EDGE_CHARS = 200
+CHAPTER_DIGEST_MAX_FINDINGS = 6
+
+
 def _passage_review_user_prompt(
     base_prompt: str,
     *,
-    window: dict[str, Any],
+    scope: dict[str, Any],
     about: dict[str, Any] | None,
     excerpt: str | None,
     question: str | None,
 ) -> str:
+    focus = [int(index) + 1 for index in scope["focus"]]
+    focus_label = f"{focus[0]}" if len(focus) == 1 else (f"{focus[0]}–{focus[-1]}" if focus == list(range(focus[0], focus[-1] + 1)) else ", ".join(str(index) for index in focus))
+    coverage = (
+        "the whole scene is shown: focus paragraphs are marked 【焦点段 N】, their neighbours 【上下文 N】, every other paragraph 【第 N 段】"
+        if scope.get("whole_scene")
+        else f"focus paragraphs are marked 【焦点段 N】, their neighbours 【上下文 N】; {int(scope.get('abbreviated') or 0)} far paragraphs are abbreviated to their opening and marked 【第 N 段·略】"
+    )
     lines = [
         base_prompt,
         "",
         "## Passage Under Review",
-        f"Focus paragraph: {int(window['focus']) + 1} (paragraphs {int(window['start']) + 1}–{int(window['end']) + 1} of the scene are shown; the focus paragraph is marked 【焦点段】)",
+        f"Focus paragraph{'s' if len(focus) > 1 else ''}: {focus_label} ({coverage}).",
     ]
     if excerpt:
         lines.append(f"Selected text: {excerpt}")
@@ -1087,8 +1221,18 @@ def _passage_review_user_prompt(
                 f"Suggested fix: {about.get('recommendation')}",
             ]
         )
+        related = about.get("related") or {}
+        if related.get("excerpt"):
+            lines.append(f"Related passage (paragraph {int(related['paragraph_index']) + 1 if isinstance(related.get('paragraph_index'), int) else '?'}): {related['excerpt']}")
     else:
-        lines.extend(["", "## Finding To Verify", "(none — judge the focus paragraph on its own; verdict is no_finding unless you find something)"])
+        lines.extend(["", "## Finding To Verify", "(none — judge the focus paragraphs on their own; verdict is no_finding unless you find something)"])
+    lines.extend(
+        [
+            "",
+            "## Cross-Paragraph Check",
+            "Check the focus paragraphs against every other paragraph shown: a fact, object, time, place, injury, or who-knows-what that contradicts another paragraph; a beat, image or sentence the focus repeats from elsewhere; a setup elsewhere that the focus fails to pick up. Report such a finding with evidence_excerpt copied verbatim from a focus paragraph, related_excerpt copied verbatim (at most 80 characters) from the other paragraph, related_paragraph_index as the number in that paragraph's marker, and relation = contradiction | repetition | continuity. Findings that concern only the focus paragraphs leave these fields empty.",
+        ]
+    )
     if question:
         lines.extend(["", "## Author's Question", str(question)])
     return "\n".join(lines)
@@ -1103,12 +1247,104 @@ def _normalize_passage_review_output(payload: Any, *, has_finding: bool) -> dict
     if not has_finding and verdict in {"holds", "partly", "does_not_hold"}:
         verdict = "no_finding"
     findings = _normalize_findings(payload.get("findings"))
+    for finding in findings:
+        # 跨段发现：另一段的原话 + 标记里的段号（模型看到的是 1 起的序号，存 0 起的段索引）
+        related_excerpt = str(finding.get("related_excerpt") or "").strip()
+        finding["related_excerpt"] = related_excerpt
+        raw_index = finding.get("related_paragraph_index")
+        related_index: int | None = None
+        if related_excerpt and raw_index not in (None, ""):
+            try:
+                related_index = int(raw_index) - 1
+            except (TypeError, ValueError):
+                related_index = None
+        finding["related_paragraph_index"] = related_index if related_index is not None and related_index >= 0 else None
+        relation = str(finding.get("relation") or "").strip().lower()
+        finding["relation"] = relation if relation in PASSAGE_RELATION_KINDS else ("contradiction" if related_excerpt else "")
     return {
         "verdict": verdict,
         "assessment": str(payload.get("assessment") or "").strip(),
         "findings": findings,
         "rewrite_brief": str(payload.get("rewrite_brief") or "").strip(),
     }
+
+
+def _previous_findings_by_scene(
+    previous: WriterEvaluation | None,
+    scenes: list[SceneCard],
+    texts: list[Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """上一轮通读的发现按「引文钉在哪一场」分组（钉不到任何一场的是章级发现，不在这里）。"""
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    if previous is None:
+        return grouped
+    for item in previous.findings_json or []:
+        if not isinstance(item, dict):
+            continue
+        excerpt = _compact_text(str(item.get("evidence_excerpt") or ""), 400)
+        if not excerpt:
+            continue
+        for scene, text in zip(scenes, texts):
+            if text.layer != "none" and locate_in_paragraphs(text.paragraphs, excerpt) is not None:
+                grouped.setdefault(scene.scene_id, []).append(item)
+                break
+    return grouped
+
+
+def _carry_previous_scene_findings(
+    previous: WriterEvaluation | None,
+    scenes: list[SceneCard],
+    texts: list[Any],
+    full_scene_ids: set[str],
+) -> list[dict[str, Any]]:
+    """只通读改过的场时，未改的场沿用上一轮的发现（带 ``carried_from``）；改过的场由模型重判，章级发现由模型重说。"""
+
+    if previous is None:
+        return []
+    carried: list[dict[str, Any]] = []
+    for scene_id, items in _previous_findings_by_scene(previous, scenes, texts).items():
+        if scene_id in full_scene_ids:
+            continue
+        for item in items:
+            carried.append({**{key: value for key, value in item.items() if key != "carried_from"}, "carried_from": str(item.get("carried_from") or previous.evaluation_id)})
+    return carried
+
+
+def _chapter_review_prompt_tail(
+    scenes: list[SceneCard],
+    texts: list[Any],
+    full_scene_ids: set[str],
+    previous: WriterEvaluation | None,
+    carried: list[dict[str, Any]],
+) -> str:
+    full_numbers = [str(index) for index, scene in enumerate(scenes, start=1) if scene.scene_id in full_scene_ids]
+    digest_numbers = [str(index) for index, (scene, text) in enumerate(zip(scenes, texts), start=1) if scene.scene_id not in full_scene_ids and text.layer != "none"]
+    lines = [
+        "## Read-Through Scope",
+        f"This is an incremental read-through. Scenes {', '.join(full_numbers)} changed since the previous read-through and are shown in full under 【第 N 场 · 本次通读】: judge them completely. "
+        f"Scenes {', '.join(digest_numbers) or '—'} did not change and appear only as 【第 N 场 · 未改 · 摘要】 (opening, ending, the previous read-through's findings on them); their findings are kept automatically — do not restate them, and report a finding on an unchanged scene only when a changed scene now contradicts or undercuts it (quote the changed scene as evidence). "
+        "Judge the chapter as a whole again (promise, escalation, payoff, ending) with the changed scenes in place.",
+    ]
+    if previous is not None:
+        located = {(str(item.get("dimension")), _compact_text(str(item.get("evidence_excerpt") or ""), 200)) for item in carried}
+        chapter_level = [
+            item
+            for item in (previous.findings_json or [])
+            if isinstance(item, dict)
+            and (str(item.get("dimension")), _compact_text(str(item.get("evidence_excerpt") or ""), 200)) not in located
+            and not _compact_text(str(item.get("evidence_excerpt") or ""), 200)
+        ]
+        if chapter_level:
+            lines.extend(
+                [
+                    "",
+                    "### Previous Chapter-Level Findings",
+                    "These chapter-level findings came from the previous read-through. Re-issue each one that still holds (the wording may stay), drop the ones the changes resolved, add new ones:",
+                ]
+            )
+            lines.extend(f"- [{item.get('dimension')}] {item.get('issue')}（改法：{item.get('recommendation')}）" for item in chapter_level[:CHAPTER_DIGEST_MAX_FINDINGS])
+    return "\n".join(lines)
 
 
 def _passage_patch_snapshot(

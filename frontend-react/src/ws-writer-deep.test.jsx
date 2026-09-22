@@ -497,4 +497,60 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     expect(host.querySelector(".wr-dxd").textContent).toContain("这一段的回响是节奏，不必动。");
     expect(host.querySelector(".wr-dxd").textContent).toContain("AI：没有要改的");
   });
+
+  it("选中跨两段的字：「AI 看这几段」按范围看（POST paragraph_start / paragraph_end），面板说「看了第 1–2 段」", async () => {
+    const note = { evaluation_id: "writer_passage_eval_3", paragraph_index: 0, focus_paragraphs: [0, 1], paragraph_start: 0, paragraph_end: 1, whole_scene: true, about_signal_id: null, about_signal_ids: [], verdict: "no_finding", verdict_label: "没有要改的", assessment: "两段之间没有矛盾。", rewrite_brief: "", question: "", findings_count: 0, status: "current" };
+    const passage = () => diagnosisPayload([ECHO], { passage_reviews: [note], passage_review: note });
+    const { WriterRoom, WrDocs, client } = await loadWriter({ passage });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p><p>许望没有回答。录音里传来三声钟响。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("三声钟响"), T);
+    await click(deepRadio(host));
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("贴邻重复"), T);
+
+    /* 第 1 段第 10 个字起，选到第 2 段前 5 个字 */
+    await selectByOffsets(host.querySelector(".wr-editor"), 10, 20);
+    const bar = document.querySelector(".wr-irw-bar");
+    expect(bar).not.toBeNull();
+    const button = [...bar.querySelectorAll("button")].find((node) => node.textContent.includes("AI 看这几段"));
+    expect(button).not.toBeUndefined();
+    await click(button);
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/deep-review/passage", { paragraph_start: 0, paragraph_end: 1 }), T);
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("AI 看了第 1–2 段"), T);
+    expect(host.querySelector(".wr-dxd").textContent).toContain("两段之间没有矛盾。");
+    /* 范围的判断没有「按这个改法改写这一段」（改写只能选一段） */
+    expect(drawerButton(host, "按这个改法改写这一段")).toBeUndefined();
+  });
+
+  it("跨段的发现：行上标「与第 2 段矛盾」，展开给另一段的原话与「看第 2 段」；忽略后计数本地先记一笔", async () => {
+    const CROSS = {
+      ...AI_FINDING,
+      signal_id: "ai:character_contradiction:dddd4444", quality_signal_id: "ai:character_contradiction:dddd4444",
+      dimension: "character_contradiction", label: "人物自相矛盾",
+      issue: "她「没有再看他」和前面等他回答的姿态矛盾。", recommendation: "让她在钟响之后才转开视线。",
+      evidence: { excerpt: "安静到能听见潮水", paragraph_index: 0, start: 6, end: 14 },
+      related: { excerpt: "三声钟响", paragraph_index: 1, start: 12, end: 16, kind: "contradiction", stale: false, label: "矛盾" },
+      origin: { kind: "passage", evaluation_id: "writer_passage_eval_9", created_at: "2026-09-22T10:00:00Z", focus_paragraphs: [0], about_signal_id: null },
+    };
+    const { WriterRoom, WrDocs, WsDiagnosis } = await loadWriter({ diagnosis: diagnosisPayload([CROSS, ECHO]) });
+    const summary = await import("./ws-diagnosis-summary.jsx");
+    summary.WsDiagnosis.__reset();
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p><p>许望没有回答。录音里传来三声钟响。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("三声钟响"), T);
+    await click(deepRadio(host));
+    const drawer = host.querySelector(".wr-dxd");
+    await vi.waitFor(() => expect(drawer.textContent).toContain("与第 2 段矛盾"), T);
+    /* 第一条（阻断 / 修订排前）默认展开：另一段的原话与跳转按钮；正文里另一段那句也标了 */
+    expect(drawer.textContent).toContain("三声钟响");
+    expect(drawerButton(host, "看第 2 段")).not.toBeUndefined();
+    await vi.waitFor(() => expect(host.querySelector(".wr-editor mark.wr-dx.is-related")).not.toBeNull(), T);
+    expect(host.querySelector(".wr-editor mark.wr-dx.is-related").textContent).toBe("三声钟响");
+
+    await click(drawerButton(host, "忽略这一项"));
+    await vi.waitFor(() => expect(drawer.textContent).toContain("已忽略 1 项"), T);
+    const counts = summary.WsDiagnosis.sceneCounts("s1");
+    expect(counts).toMatchObject({ open: 1, ignored: 1 });
+    void WsDiagnosis;
+  });
 });

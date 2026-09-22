@@ -782,8 +782,9 @@ def test_passage_review_verifies_one_finding_and_joins_the_diagnosis(client: Tes
     assert review["findings_count"] == 1 and review["status"] == "current"
     call = calls[-1]
     assert call["node_id"] == "writer_deep_review" and call["step"] == "writer_passage_review"
-    # 段落窗口真的在用户消息里（不只是模板里提到「焦点段」）：焦点段 + 下一段，标着记号，没有 HTML
-    assert "【焦点段】门外很安静" in call["user_prompt"] and "【上下文】许望没有回答" in call["user_prompt"]
+    # 段落范围真的在用户消息里（不只是模板里提到「焦点段」）：焦点段标号、邻段标上下文、其余段全文（第三轮：整场可见），没有 HTML
+    assert "【焦点段 1】门外很安静" in call["user_prompt"] and "【上下文 2】许望没有回答" in call["user_prompt"]
+    assert "【第 3 段】她知道真相" in call["user_prompt"] and "## Cross-Paragraph Check" in call["user_prompt"]
     assert "## Finding To Verify" in call["user_prompt"] and "## Author's Question" in call["user_prompt"] and "这是自嘲吗" in call["user_prompt"]
     assert "<p>" not in call["user_prompt"], "模型看的是可见文字，不是作者稿的 HTML"
     assert call["prompt"]["template_name"] == "writer_passage_review"
@@ -832,7 +833,7 @@ def test_passage_review_on_a_paragraph_without_a_finding_and_its_guards(client: 
     assert review["verdict"] == "no_finding" and review["verdict_label"] == "没有要改的"
     assert "## Finding To Verify" in calls[-1]["user_prompt"] and "(none" in calls[-1]["user_prompt"]
     assert "## Author's Question" not in calls[-1]["user_prompt"]
-    assert "【焦点段】许望没有回答" in calls[-1]["user_prompt"]
+    assert "【焦点段 2】许望没有回答" in calls[-1]["user_prompt"]
 
 
 # ---------------------------------------------------------------------------

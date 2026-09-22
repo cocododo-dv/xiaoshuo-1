@@ -5,7 +5,8 @@ import math
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -734,9 +735,106 @@ PERCEPTION_FILTER_TERMS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# 2026-09-22 第三轮：按参考书校准 21 维规则（词表 + 维度）
+# ---------------------------------------------------------------------------
+
+RULE_NEEDLE_HABIT_PER_10K = 1.0       # 参考作者每万字用到 ≥1 次的词表词是这位作者的常用词，不当作毛病
+RULE_NEEDLE_OVERUSE_FACTOR = 4.0      # …除非稿子里的密度到了参考作者的 4 倍以上（且至少 3 次）：那是过量，照提示
+RULE_NEEDLE_OVERUSE_MIN_COUNT = 3
+RULE_DIMENSION_HABIT_SHARE = 0.5      # 一条规则在参考书一半以上的场级窗口上都会响：这位作者的常态，只作提示
+RULE_ENDING_DIMENSIONS: frozenset[str] = frozenset({"summary_ending", "ending_drive", "false_poetic_closure"})
+
+
+@dataclass(frozen=True)
+class RuleCalibration:
+    """按绑定的参考书校准 21 维规则。
+
+    * ``habitual_needles``：参考作者每万字用到 ``RULE_NEEDLE_HABIT_PER_10K`` 次以上的词表词——在这位作者
+      的手里不是毛病，规则不再按它们提示（稿子里的密度到了参考的 ``RULE_NEEDLE_OVERUSE_FACTOR`` 倍且至少
+      ``RULE_NEEDLE_OVERUSE_MIN_COUNT`` 次才算过量，照提示）。只校准「命中即毛病」的词表（``FAULT_LEXICONS``）；
+      抉择 / 压力 / 代价 / 收尾动作这些「缺席才是毛病」的词表不动。
+    * ``habitual_dimensions``：在参考书一半以上的场级窗口上都会响的规则（收尾三条只在真实的章尾上量）——
+      这位作者的常态，发现降为 ``info`` 并带 ``calibrated`` 说明，不再当修订项。
+    """
+
+    source: str = "default"  # default | reference
+    habitual_needles: frozenset[str] = frozenset()
+    habitual_dimensions: frozenset[str] = frozenset()
+    needle_rates: Mapping[str, float] = field(default_factory=dict)      # 参考书里每万字的次数（只记 > 0 的）
+    dimension_shares: Mapping[str, float] = field(default_factory=dict)  # 参考书窗口里响过的比例
+    windows: int = 0
+    endings: int = 0
+    chars: int = 0
+
+    @property
+    def active(self) -> bool:
+        return self.source == "reference" and bool(self.habitual_needles or self.habitual_dimensions)
+
+    @property
+    def signature(self) -> str:
+        if not self.active:
+            return "default"
+        payload = "|".join(sorted(self.habitual_needles)) + "#" + "|".join(sorted(self.habitual_dimensions))
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "windows": self.windows,
+            "endings": self.endings,
+            "chars": self.chars,
+            "habitual_needles": sorted(self.habitual_needles, key=lambda term: (-float(self.needle_rates.get(term) or 0.0), term)),
+            "habitual_dimensions": sorted(self.habitual_dimensions),
+            "dimension_shares": {key: round(float(value), 3) for key, value in sorted(self.dimension_shares.items())},
+        }
+
+
+DEFAULT_RULE_CALIBRATION = RuleCalibration()
+RuleCalibrationResolver = Callable[[SceneCard], "RuleCalibration | None"]
+
+
+def calibrated_lexicons(calibration: RuleCalibration | None, text: str) -> dict[str, tuple[str, ...]]:
+    """规则要读的「命中即毛病」词表，去掉参考作者的常用词（稿子里过量的仍留着）。"""
+
+    lexicons = dict(FAULT_LEXICONS)
+    if calibration is None or not calibration.habitual_needles:
+        return lexicons
+    lowered = str(text or "").lower()
+    chars = max(1, len(re.sub(r"\s+", "", str(text or ""))))
+
+    def keep(term: str) -> bool:
+        if term not in calibration.habitual_needles:
+            return True
+        count = lowered.count(term.lower())
+        if count < RULE_NEEDLE_OVERUSE_MIN_COUNT:
+            return False
+        reference = max(float(calibration.needle_rates.get(term) or 0.0), RULE_NEEDLE_HABIT_PER_10K)
+        return 10000.0 * count / chars >= RULE_NEEDLE_OVERUSE_FACTOR * reference
+
+    return {name: tuple(term for term in terms if keep(term)) for name, terms in lexicons.items()}
+
+
+def _apply_dimension_calibration(findings: list[dict[str, Any]], calibration: RuleCalibration | None) -> None:
+    if calibration is None or not calibration.habitual_dimensions:
+        return
+    for finding in findings:
+        dimension = str(finding.get("dimension") or "")
+        if dimension not in calibration.habitual_dimensions:
+            continue
+        finding["severity"] = "info"
+        finding["calibrated"] = {
+            "kind": "dimension_habit",
+            "share": round(float(calibration.dimension_shares.get(dimension) or 0.0), 3),
+        }
+
+
 class LiteraryQualityService:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, rule_calibration_resolver: RuleCalibrationResolver | None = None) -> None:
         self.session = session
+        # 2026-09-22 第三轮：文学质量视图与写作台深改面板用同一份参考书校准（路由层注入 scene_diagnosis 的解析器；
+        # 这里不能 import scene_diagnosis——它在本模块之上）
+        self._rule_calibration_resolver = rule_calibration_resolver
 
     def overview(
         self,
@@ -775,6 +873,7 @@ class LiteraryQualityService:
                         scene.scene_id,
                         source,
                         ignored_keys=self._scene_ignored_keys(scene),
+                        scene=scene,
                     )
                 )
 
@@ -835,6 +934,7 @@ class LiteraryQualityService:
                 "content": content,
             },
             ignored_keys=self._scene_ignored_keys(scene),
+            scene=scene,
         )
         return {
             **item,
@@ -946,10 +1046,18 @@ class LiteraryQualityService:
         source: dict[str, str],
         *,
         ignored_keys: Iterable[str] = (),
+        scene: SceneCard | None = None,
     ) -> dict[str, Any]:
         # 作者稿是 HTML：按可见文字算，否则「第一句」里带着 <p>，同一条发现在写作台和这里 id 不同
         text = plain_manuscript_text(source["content"] or "")
-        signals, raw_findings = analyze_literary_quality(text)
+        calibration: RuleCalibration | None = None
+        if scene is not None and self._rule_calibration_resolver is not None:
+            try:
+                calibration = self._rule_calibration_resolver(scene)
+            except Exception:  # noqa: BLE001 — 校准失败按房风词表看
+                _LOGGER.debug("rule calibration unavailable for %s", scene.scene_id, exc_info=True)
+                calibration = None
+        signals, raw_findings = analyze_literary_quality(text, calibration=calibration)
         all_findings = _enrich_findings(
             raw_findings,
             object_type=object_type,
@@ -988,6 +1096,7 @@ class LiteraryQualityService:
             ],
             "ignored_count": len(ignored_findings),
             "open_dimensions": list(dict.fromkeys(str(finding.get("dimension") or "") for finding in findings)),
+            "rule_calibration": calibration.as_dict() if calibration is not None and calibration.active else None,
             "fingerprint": fingerprint,
             "recommended_next_action": _recommended_next_action(findings, signals),
         }
@@ -1123,30 +1232,35 @@ def analyze_literary_quality(
     text: str,
     *,
     external_signals: dict[str, dict[str, Any]] | None = None,
+    calibration: RuleCalibration | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+    """21 维规则。``calibration``（有风格绑定时由 scene_diagnosis 按参考书算出）：参考作者的常用词从「命中即
+    毛病」的词表里去掉，作者常态的维度降为 ``info``——没有校准时就是房风词表，行为与从前逐字相同。"""
+
     normalized = _compact_ws(text)
     signals: dict[str, dict[str, Any]] = {}
     findings: list[dict[str, str]] = []
+    lex = calibrated_lexicons(calibration, normalized) if calibration is not None and calibration.active else dict(FAULT_LEXICONS)
 
     _add_term_signal(
         signals,
         findings,
         "model_voice",
         normalized,
-        MODEL_VOICE_TERMS,
+        lex["model_voice"],
         issue="Possible model voice or generic emotional shortcut.",
         recommendation="Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
     )
-    _add_image_signal(signals, findings, normalized)
-    _add_repetitive_action_signal(signals, findings, normalized)
+    _add_image_signal(signals, findings, normalized, terms=lex["image"])
+    _add_repetitive_action_signal(signals, findings, normalized, terms=lex["repetitive_action"])
     _add_template_action_reuse_signal(signals, findings, normalized)
-    _add_image_field_reuse_signal(signals, findings, normalized)
+    _add_image_field_reuse_signal(signals, findings, normalized, terms=lex["atmospheric_image"])
     _add_syntax_monotony_signal(signals, findings, normalized)
     _add_self_repetition_signal(signals, findings, normalized)
-    _add_false_clarity_signal(signals, findings, normalized)
+    _add_false_clarity_signal(signals, findings, normalized, terms=lex["false_clarity"])
     _add_valid_ambiguity_signal(signals, findings, normalized)
-    _add_expository_dialogue_signal(signals, findings, normalized)
-    _add_dialogue_as_report_signal(signals, findings, normalized)
+    _add_expository_dialogue_signal(signals, findings, normalized, terms=lex["expository_dialogue"])
+    _add_dialogue_as_report_signal(signals, findings, normalized, terms=lex["report_dialogue"])
     _add_absence_signal(
         signals,
         findings,
@@ -1156,7 +1270,7 @@ def analyze_literary_quality(
         issue="The passage does not show a clear choice on the page.",
         recommendation="Give the character two incompatible options and make one option visibly cost something.",
     )
-    _add_summary_ending_signal(signals, findings, normalized)
+    _add_summary_ending_signal(signals, findings, normalized, terms=lex["summary_ending"])
     _add_absence_signal(
         signals,
         findings,
@@ -1168,17 +1282,20 @@ def analyze_literary_quality(
     )
     _add_ending_drive_signal(signals, findings, normalized)
     _add_painless_scene_signal(signals, findings, normalized)
-    _add_conflict_too_clean_signal(signals, findings, normalized)
-    _add_decorative_imagery_signal(signals, findings, normalized)
-    _add_over_explained_motive_signal(signals, findings, normalized)
-    _add_false_poetic_closure_signal(signals, findings, normalized)
-    _add_perception_filter_signal(signals, findings, normalized)
+    _add_conflict_too_clean_signal(
+        signals, findings, normalized, conflict_terms=lex["conflict"], reconciliation_terms=lex["reconciliation"]
+    )
+    _add_decorative_imagery_signal(signals, findings, normalized, terms=lex["decorative_image"])
+    _add_over_explained_motive_signal(signals, findings, normalized, terms=lex["motive_explanation"])
+    _add_false_poetic_closure_signal(signals, findings, normalized, terms=lex["poetic_closure"])
+    _add_perception_filter_signal(signals, findings, normalized, terms=lex["perception_filter"])
 
     if external_signals:
         for dim, signal in external_signals.items():
             if dim in QUALITY_DIMENSIONS:
                 signals[dim] = signal
 
+    _apply_dimension_calibration(findings, calibration)
     for dimension in QUALITY_DIMENSIONS:
         signals.setdefault(dimension, {"risk": False, "score": 1.0, "evidence": ""})
     evidence_sufficiency = automated_evidence_sufficiency(normalized)
@@ -2140,9 +2257,11 @@ def _add_expository_dialogue_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = EXPOSITORY_DIALOGUE_TERMS,
 ) -> None:
     for dialogue in _dialogue_spans(text):
-        term = _first_present_term(dialogue, EXPOSITORY_DIALOGUE_TERMS)
+        term = _first_present_term(dialogue, terms)
         if term:
             evidence = _excerpt(dialogue, term)
             signals["expository_dialogue"] = {"risk": True, "score": 0.0, "evidence": evidence}
@@ -2164,9 +2283,11 @@ def _add_dialogue_as_report_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = REPORT_DIALOGUE_TERMS,
 ) -> None:
     for dialogue in _dialogue_spans(text):
-        term = _first_present_term(dialogue, REPORT_DIALOGUE_TERMS)
+        term = _first_present_term(dialogue, terms)
         if not term:
             continue
         evidence = _excerpt(dialogue, term)
@@ -2198,11 +2319,32 @@ RECONCILIATION_TERMS = (
     "relent", "soften", "reconcile",
 )
 
+# 「命中即毛病」的词表——按参考书校准词表时只动这些；抉择 / 压力 / 代价 / 收尾动作是「缺席才是毛病」，不动
+FAULT_LEXICONS: dict[str, tuple[str, ...]] = {
+    "model_voice": MODEL_VOICE_TERMS,
+    "expository_dialogue": EXPOSITORY_DIALOGUE_TERMS,
+    "report_dialogue": REPORT_DIALOGUE_TERMS,
+    "summary_ending": SUMMARY_ENDING_TERMS,
+    "repetitive_action": REPETITIVE_ACTION_TERMS,
+    "image": IMAGE_TERMS,
+    "atmospheric_image": ATMOSPHERIC_IMAGE_TERMS,
+    "false_clarity": FALSE_CLARITY_TERMS,
+    "decorative_image": DECORATIVE_IMAGE_TERMS,
+    "motive_explanation": MOTIVE_EXPLANATION_TERMS,
+    "poetic_closure": POETIC_CLOSURE_TERMS,
+    "perception_filter": PERCEPTION_FILTER_TERMS,
+    "conflict": CONFLICT_TERMS,
+    "reconciliation": RECONCILIATION_TERMS,
+}
+
 
 def _add_conflict_too_clean_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    conflict_terms: tuple[str, ...] = CONFLICT_TERMS,
+    reconciliation_terms: tuple[str, ...] = RECONCILIATION_TERMS,
 ) -> None:
     """Blueprint §8: detect conflict that resolves too cleanly.
 
@@ -2211,8 +2353,8 @@ def _add_conflict_too_clean_signal(
     outnumber or match conflict terms — this signals 'too-clean' resolution.
     """
     lowered = text.lower()
-    conflict_hits = [t for t in CONFLICT_TERMS if t.lower() in lowered]
-    reconcile_hits = [t for t in RECONCILIATION_TERMS if t.lower() in lowered]
+    conflict_hits = [t for t in conflict_terms if t.lower() in lowered]
+    reconcile_hits = [t for t in reconciliation_terms if t.lower() in lowered]
 
     if not conflict_hits or not reconcile_hits:
         signals["conflict_too_clean"] = {"risk": False, "score": 1.0, "evidence": ""}
@@ -2289,8 +2431,10 @@ def _add_decorative_imagery_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = DECORATIVE_IMAGE_TERMS,
 ) -> None:
-    hits = [term for term in DECORATIVE_IMAGE_TERMS if term.lower() in text.lower()]
+    hits = [term for term in terms if term.lower() in text.lower()]
     if len(hits) < 2:
         signals["decorative_imagery"] = {"risk": False, "score": 1.0, "evidence": ""}
         return
@@ -2312,8 +2456,10 @@ def _add_over_explained_motive_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = MOTIVE_EXPLANATION_TERMS,
 ) -> None:
-    term = _first_present_term(text, MOTIVE_EXPLANATION_TERMS)
+    term = _first_present_term(text, terms)
     if not term:
         signals["over_explained_motive"] = {"risk": False, "score": 1.0, "evidence": ""}
         return
@@ -2335,9 +2481,11 @@ def _add_false_poetic_closure_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = POETIC_CLOSURE_TERMS,
 ) -> None:
     ending = _ending_slice(text)
-    term = _first_present_term(ending, POETIC_CLOSURE_TERMS)
+    term = _first_present_term(ending, terms)
     if not term or _first_present_term(ending, POETIC_CLOSURE_ACTION_TERMS):
         signals["false_poetic_closure"] = {"risk": False, "score": 1.0, "evidence": ""}
         return
@@ -2360,8 +2508,10 @@ def _add_perception_filter_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = PERCEPTION_FILTER_TERMS,
 ) -> None:
-    term = _first_present_term(text, PERCEPTION_FILTER_TERMS)
+    term = _first_present_term(text, terms)
     if not term:
         signals["perception_filter"] = {"risk": False, "score": 1.0, "evidence": ""}
         return
@@ -2383,10 +2533,12 @@ def _add_image_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = IMAGE_TERMS,
 ) -> None:
     counts = Counter()
     lowered = text.lower()
-    for term in IMAGE_TERMS:
+    for term in terms:
         if re.fullmatch(r"[a-z]+", term):
             counts[term] = len(re.findall(rf"\b{re.escape(term)}\b", lowered))
         else:
@@ -2413,10 +2565,12 @@ def _add_repetitive_action_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = REPETITIVE_ACTION_TERMS,
 ) -> None:
     counts = Counter()
     lowered = text.lower()
-    for term in REPETITIVE_ACTION_TERMS:
+    for term in terms:
         if re.fullmatch(r"[a-z]+", term):
             counts[term] = len(re.findall(rf"\b{re.escape(term)}\b", lowered))
         else:
@@ -2470,10 +2624,12 @@ def _add_image_field_reuse_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = ATMOSPHERIC_IMAGE_TERMS,
 ) -> None:
     lowered = text.lower()
     hits: list[str] = []
-    for term in ATMOSPHERIC_IMAGE_TERMS:
+    for term in terms:
         count = len(re.findall(rf"\b{re.escape(term)}\b", lowered)) if re.fullmatch(r"[a-z]+", term) else lowered.count(term.lower())
         hits.extend([term] * count)
     if len(hits) < 4 or len(set(hits)) < 3:
@@ -2524,8 +2680,10 @@ def _add_false_clarity_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = FALSE_CLARITY_TERMS,
 ) -> None:
-    term = _first_present_term(text, FALSE_CLARITY_TERMS)
+    term = _first_present_term(text, terms)
     if not term:
         signals["false_clarity"] = {"risk": False, "score": 1.0, "evidence": ""}
         return
@@ -2555,9 +2713,11 @@ def _add_summary_ending_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
     text: str,
+    *,
+    terms: tuple[str, ...] = SUMMARY_ENDING_TERMS,
 ) -> None:
     ending = _ending_slice(text)
-    term = _first_present_term(ending, SUMMARY_ENDING_TERMS)
+    term = _first_present_term(ending, terms)
     if term:
         evidence = _excerpt(ending, term)
         signals["summary_ending"] = {"risk": True, "score": 0.0, "evidence": evidence}

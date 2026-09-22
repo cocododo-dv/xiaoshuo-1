@@ -139,9 +139,15 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     selRangeTextRef.current = range.toString();
     let block = range.startContainer;
     while (block && block.parentNode !== ed) block = block.parentNode;
-    const pid = block ? Array.from(ed.querySelectorAll("p, blockquote")).indexOf(block) : -1;
+    const blocks = Array.from(ed.querySelectorAll("p, blockquote"));
+    const pid = block ? blocks.indexOf(block) : -1;
+    /* 选区跨了几段：记下结束段的序号（深改的「AI 看这几段」按范围看；改写仍只取起始段里的那一截） */
+    let endBlock = range.endContainer;
+    while (endBlock && endBlock.parentNode !== ed) endBlock = endBlock.parentNode;
+    let pidEnd = endBlock ? blocks.indexOf(endBlock) : pid;
+    if (pidEnd > pid && range.endOffset === 0) pidEnd -= 1; // 选区停在下一段的开头：不算下一段
     const slice = pid >= 0 ? wrBlockSlice(block, range) : null;
-    selBlockRef.current = slice && slice.text.trim() ? { pid, ...slice } : null;
+    selBlockRef.current = slice && slice.text.trim() ? { pid, pidEnd: pidEnd >= pid ? pidEnd : pid, ...slice } : null;
     const r = range.getBoundingClientRect();
     setRect({ top: r.top, bottom: r.bottom, left: r.left + r.width / 2 });
     return true;
@@ -495,13 +501,13 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
         <span className="wr-irw-spark" aria-hidden="true"><I.Pen size={13} /></span>
         {onPassageReview && (
           <button type="button" className="wr-irw-btn" disabled={passageBusy}
-            title="让模型只看选中的这一段：有没有要改的、怎么改"
+            title="让模型对着整场看选中的这几段：有没有要改的、和别处矛不矛盾、怎么改"
             onClick={() => {
               const slice = selBlockRef.current;
               setRect(null);
-              if (slice) onPassageReview({ pid: slice.pid, find: slice.text });
+              if (slice) onPassageReview({ pid: slice.pid, pidEnd: slice.pidEnd, find: slice.text });
             }}>
-            AI 看这一段
+            {selBlockRef.current && selBlockRef.current.pidEnd > selBlockRef.current.pid ? "AI 看这几段" : "AI 看这一段"}
           </button>
         )}
         <button type="button" className="wr-irw-btn accent"

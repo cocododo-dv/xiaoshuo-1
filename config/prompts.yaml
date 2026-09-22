@@ -1437,7 +1437,10 @@ templates:
     # 该藏的事实没揭不是虚假清晰）。
     # 2026-09-14 保真修补 WP6.3 v4：项目 / 场景有风格绑定时深评拿到 [STYLE_REFERENCE]（k≤3 样例窗口）——「复读 /
     # 意象必要性 / 声音辨识度」以参考作者的做法为标准，而不是房风词表。预算不变（章节族 30000 ≥ 规划风格档 24000）。
-    version: "2026-09-22.v5"
+    # 2026-09-22 第三轮 v6：章级通读可以只通读改过的场（用户消息尾部的 "Read-Through Scope"：全文的场 / 摘要的场 /
+    # 上次的章级发现）；findings 成员的 properties 写明（schema-enforcing 中转对没声明 properties 的成员只会解码成 {}，
+    # 真实安装上的准定稿评审已经出过 [{}]）。
+    version: "2026-09-22.v6"
     input_token_budget: 30000
     system_prompt: |
       You are a severe Chinese fiction revision editor for a working author.
@@ -1446,6 +1449,7 @@ templates:
     task_prompt: |
       Diagnose the supplied passage against literary_revision_v1.
       Write Chinese string fields while preserving English schema keys.
+      A "Chapter Summary" section holds a whole chapter with its scenes marked 【第 N 场】; judge the chapter as a sequence (promise, escalation, payoff, ending) as well as each scene. If a "Read-Through Scope" section follows, only the scenes marked 【第 N 场 · 本次通读】 are shown in full and must be judged; scenes marked 【第 N 场 · 未改 · 摘要】 are unchanged digests whose findings are kept automatically — do not restate them, and report one on such a scene only when a changed scene now contradicts or undercuts it.
       If a [STYLE_REFERENCE] block is prepended, judge in the reference author's hand: repetitive expression, image necessity and voice distinction are judged against what the reference author does in the [风格样例] (deliberate repetition, sparse or dense imagery, and that author's narrative stance are not faults when the samples show them), and recommendations must move the passage closer to that hand; never quote or reuse the samples' sentences, names or events.
       If a "Scene Structure (Snowflake)" section is present, it states what the author designed for this scene (form, Goal/Conflict/Setback or Reaction/Dilemma/Decision, cost, what must stay withheld): judge choice pressure, ending drive and theme pressure against that design. A reactive scene that lands its Decision is not a pressure failure; a fact the design says to withhold is not a clarity failure; a scene marked as narrative summary is not a scene-shape failure.
       Every finding must cite source-text evidence and classify the issue as blocking, revision, or taste.
@@ -1474,6 +1478,22 @@ templates:
           type: array
           items:
             type: object
+            additionalProperties: true
+            properties:
+              dimension:
+                type: string
+              lens:
+                type: string
+              severity:
+                type: string
+              issue:
+                type: string
+              recommendation:
+                type: string
+              evidence_excerpt:
+                type: string
+              why_it_matters:
+                type: string
         revision_brief:
           type: array
           items:
@@ -1486,19 +1506,23 @@ templates:
             type: object
 
   writer_passage_review:
-    # 2026-09-22 场景诊断：「AI 看这一处」——只看焦点段（前后各一段作上下文），复核一条发现（成立 / 部分成立 / 不成立）
-    # 并给这一处的改法；独立看一段时 verdict 是 no_finding，除非真的看出问题。证据逐字引自焦点段。
-    # 走 writer_deep_review 的节点路由（不必「一键补齐」）；预算与局部改写同档（24000，含 k≤3 样例窗口）。
-    version: "2026-09-22.v1"
+    # 2026-09-22 场景诊断：「AI 看这一处」——复核一条发现（成立 / 部分成立 / 不成立）并给这一处的改法；独立看一段时
+    # verdict 是 no_finding，除非真的看出问题。证据逐字引自焦点段。
+    # 第三轮 v2：焦点可以是一段、一段范围或一条发现所在的段，模型同时看到整场正文（焦点段 / 上下文 / 其余段都标出；
+    # 超长的场远段只留开头），所以要对照全场查矛盾 / 重复 / 承接——跨段的发现带 related_excerpt（另一段的原话）、
+    # related_paragraph_index（那一段标记里的序号）、relation。findings 成员的 properties 写明（schema-enforcing 中转
+    # 对没声明 properties 的成员只会解码成 {}）。走 writer_deep_review 的节点路由（不必「一键补齐」）；预算与局部改写
+    # 同档（24000，含 k≤3 样例窗口）。
+    version: "2026-09-22.v2"
     input_token_budget: 24000
     system_prompt: |
       You are a severe Chinese fiction revision editor looking at one passage of a scene for a working author.
-      Judge only the focus paragraph, in the context of its neighbours. Do not inflate: ordinary usable prose is not excellent, and a rule-based flag is not a fault until the passage itself shows it.
+      Judge the focus paragraphs, in the context of the whole scene. Do not inflate: ordinary usable prose is not excellent, and a rule-based flag is not a fault until the passage itself shows it.
     task_prompt: |
-      The section titled "Scene Summary" holds the passage under review: the focus paragraph is marked 【焦点段】, the neighbours marked 【上下文】 are context only.
+      The section titled "Scene Summary" holds the scene: the focus paragraphs are marked 【焦点段 N】, their neighbours 【上下文 N】, the rest of the scene 【第 N 段】 (or 【第 N 段·略】 when a far paragraph is abbreviated to its opening). N is the paragraph's number in the scene.
       If a "Finding To Verify" is given, decide whether it holds on this passage: verdict "holds" (the flagged problem is real here), "partly" (real, but the flag overstates it or the suggested fix is wrong), or "does_not_hold" (a deliberate effect, a word-list false positive, or the reference author's manner). Explain in assessment — Chinese, two or three sentences, naming the words of the passage that decide it.
-      If no finding is given, verdict is "no_finding" unless the focus paragraph has a genuine revision need; then describe that need in assessment.
-      findings: only problems located in the focus paragraph. Each needs a verbatim evidence_excerpt copied from the focus paragraph (at most 80 characters, no ellipsis, no paraphrase), a dimension from literary_revision_v1 (character_contradiction, choice_pressure, relationship_tension, dialogue_subtext, information_rhythm, voice_distinction, image_necessity, repetitive_expression, ending_drive, theme_pressure), a lens (story, character, prose, reader, theme), a severity (blocking, revision, taste), and issue, recommendation, why_it_matters in Chinese. Do not restate the finding under verification as a new finding; an empty list is a legitimate answer.
+      If no finding is given, verdict is "no_finding" unless the focus paragraphs have a genuine revision need; then describe that need in assessment.
+      findings: problems located in the focus paragraphs, including a focus paragraph's conflict with another paragraph of the scene (see "Cross-Paragraph Check"). Each needs a verbatim evidence_excerpt copied from a focus paragraph (at most 80 characters, no ellipsis, no paraphrase), a dimension from literary_revision_v1 (character_contradiction, choice_pressure, relationship_tension, dialogue_subtext, information_rhythm, voice_distinction, image_necessity, repetitive_expression, ending_drive, theme_pressure), a lens (story, character, prose, reader, theme), a severity (blocking, revision, taste), and issue, recommendation, why_it_matters in Chinese. A cross-paragraph finding also carries related_excerpt (verbatim from the other paragraph, at most 80 characters), related_paragraph_index (that paragraph's N) and relation (contradiction, repetition or continuity); other findings leave those three empty. Do not restate the finding under verification as a new finding; an empty list is a legitimate answer.
       rewrite_brief: one concrete move for this passage, in Chinese — what to cut, move, replace or add, in one or two sentences — or an empty string when nothing should change.
       If a [STYLE_REFERENCE] block is prepended, judge in the reference author's hand: what the [风格样例] do on purpose (repetition, sparse or dense imagery, an aside, a flat report) is that author's manner and does not hold as a fault; never quote or reuse the samples' sentences, names or events.
       If a "Scene Structure (Snowflake)" section is present, it states what the author designed for this scene; judge pressure, withholding and the ending against that design, not against a house rule.
@@ -1525,6 +1549,28 @@ templates:
           type: array
           items:
             type: object
+            additionalProperties: true
+            properties:
+              dimension:
+                type: string
+              lens:
+                type: string
+              severity:
+                type: string
+              issue:
+                type: string
+              recommendation:
+                type: string
+              evidence_excerpt:
+                type: string
+              why_it_matters:
+                type: string
+              related_excerpt:
+                type: string
+              related_paragraph_index:
+                type: integer
+              relation:
+                type: string
         rewrite_brief:
           type: string
 

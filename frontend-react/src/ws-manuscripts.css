@@ -433,4 +433,6 @@
 .ms-diag-chip-btn { cursor: pointer; font: inherit; font-size: var(--fs-xs); }
 .ms-diag-chip-btn:hover { filter: brightness(0.97); }
 .ms-diag-go { margin-left: auto; }
+.ms-diag-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ms-diag-carried { font-size: var(--fs-xs); color: var(--ink-3); }
 .ms-list-diag { color: var(--accent-ink); }

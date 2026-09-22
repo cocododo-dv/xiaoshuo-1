@@ -67,12 +67,14 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 - 深链：`ws:writer-posture` 的 detail 可以是 `"deep"` 或 `{ posture: "deep", signal_id }`。文学质量的每条发现与条目级按钮、成稿中心「直达深改」、待办卡都能带 id；到了诊断就选中那一条并滚过去，当前作者稿里没有它就提示。
 - 文学质量视图：问题 / 改法读服务端中文；条目上有「已忽略 N」；风险维度只算还开着的。
 
-## 4. 开放项（第二轮之后）
+## 4. 开放项（第三轮之后）
 
-- 局部深评每次只看一段（焦点段 + 前后各一段）；跨段的问题（一场里两处互相矛盾）仍靠整场深评。
-- 参考作者校准只覆盖节奏三条；21 维规则本身在有绑定时仍只是标 `house_taste`，没有按参考书校准词表。
-- 章级通读是整章一次；没有「只通读改过的几场」。
-- 计数是按需拉取（视图挂载、诊断改动、目录事件节流 20 秒），不是推送。
+第二轮留下的四项（局部深评只看一段、规则不按参考书校准、章级通读整章一次、计数按需拉取）第三轮全部做完，见 §8。还开着的：
+
+- 规则校准的两个阈值（每万字 1 次的常用词、一半以上窗口的常态维度）是定的，不是从画像里学的；参考书没有标题段也没有场分隔行时收尾三条不校准（没有真实的收尾可量）。
+- 局部深评一次最多 40 段；整场超过 12,000 字时远段只留开头。
+- 只通读改过的场时，未改的场只沿用上一轮钉在它上面的发现；上一轮钉不到任何一场的章级发现由模型重说，不沿用。
+- 起草管线在服务端改了终稿（场景运行归档）时，浏览器要等起草台自己的归档回调才拉那一章的计数；后台作业（章运行）归档的场，计数到下次挂载 / 换作品才更新。
 
 ## 5. 测试
 
@@ -98,3 +100,17 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 
 测试：`tests/test_scene_diagnosis.py` 第二轮块（校准、轻量绑定解析、局部深评与它的守卫、章级通读落场与拒绝式、全书计数）；前端 `ws-writer-deep.test.jsx`（AI 看这一处 / 看这一段）、`ws-manuscripts-diagnosis.test.jsx`、`ws-diagnosis-summary.test.js`、`ws-manuscripts-flow.test.jsx` 与 `ws-home.test.jsx` 的计数用例。部署：无迁移；新模板 `writer_passage_review` 走既有节点路由；有提示词快照的安装需要 `sync_prompt_templates --execute`。
 
+
+## 8. 第三轮（同日）：「重构修复优化」——第二轮的四个开放项
+
+作者把第二轮的「还开着的」四条原样贴回来：「重构修复优化」。
+
+**8.1 局部深评看整场（跨段的矛盾）。** `POST …/deep-review/passage` 的焦点可以是一段（`paragraph_index` / `excerpt`）、一段范围（`paragraph_start`–`paragraph_end`，含两端；一次最多 40 段）或一条发现所在的段（`signal_id`；跨段的发现把另一段也算进焦点）。模型看到的不再是「焦点段 ± 一段」而是**整场**（`passage_scope`：焦点段标【焦点段 N】、前后段标【上下文 N】、其余段标【第 N 段】全文；整场超过 12,000 字时远段只留开头，标【第 N 段·略】），用户消息尾部多一节「Cross-Paragraph Check」：焦点段与本场任何一段的事实 / 物件 / 时间 / 谁知道什么矛盾、重复、承接失落，都要报，并给 `related_excerpt`（另一段的原话，≤80 字）、`related_paragraph_index`（那一段标记里的序号）、`relation ∈ contradiction | repetition | continuity`。统一发现多一个 `related {excerpt, paragraph_index, start, end, kind, label, stale}`（另一段的原话钉到段；那句已不在正文里就 `stale`）。评审行记 `focus_paragraphs / paragraph_start / paragraph_end / whole_scene / about_signal_ids`；焦点段有交集、或复核同一条发现的旧行退位。模板 `writer_passage_review` v2（findings 成员的 properties 写明——schema-enforcing 中转对没声明 properties 的成员只会解码成 `{}`；`writer_deep_review` v6 同样补上）。写作台：深改姿态里选中跨几段的字，工具条按钮变成「AI 看这几段」（POST 范围）；面板行上标「与第 N 段矛盾 / 重复 / 承接」，展开给另一段的原话与「看第 N 段」，正文里另一段那句也标出来（`mark.wr-dx.is-related`）；独立看范围的结果显示「AI 看了第 2–3 段」。
+
+**8.2 21 维规则按参考书校准词表与维度。** `literary_quality.RuleCalibration`（数据在 `literary_quality`，算法在 `scene_diagnosis`，import 方向不变）：`compute_reference_rules` 把参考书按标题段 / 场分隔行切成单元、单元内按 ~2,400 字切窗口（最多 48 个，均匀取），量两样——(a) **词表词的密度**：「命中即毛病」的 14 张词表（`FAULT_LEXICONS`：模型腔、说明式对白、汇报式对白、总结式收尾、重复动作、意象、氛围意象、虚假清晰、装饰意象、动机说明、诗化收尾、感知过滤、冲突 / 和解）里每个词每万字的次数，一遍正则；每万字 ≥ 1 次的是这位作者的常用词（`habitual_needles`），规则不再按它们提示——除非稿子里的密度到了参考的 4 倍以上且至少 3 次（过量，照提示）；「缺席才是毛病」的词表（抉择 / 压力 / 代价 / 收尾动作）不动。(b) **每条规则在窗口上响的比例**：≥ 50% 的规则是这位作者的常态（`habitual_dimensions`），发现降为 `info`、带 `calibrated {kind: dimension_habit, share}`，`why` 说「参考作者的场里约 N% 也是这样，只作提示」；收尾三条（总结式收尾 / 收束驱动 / 诗化收尾）只在真实的单元末尾上量（最多 48 个，至少 8 个才算）。读数与节奏读数存在同一个进程缓存里（『龙族』：规则读数 ≈0.8 秒一次）；`craft_calibration.rules {habitual_needles, habitual_dimensions, dimension_shares, windows, endings, chars}`，`note` 把常用词与常态维度说出来。文学质量视图读同一份校准：路由把 `SceneDiagnosisService.rule_calibration_for_scene` 注进 `LiteraryQualityService(rule_calibration_resolver=…)`（`literary_quality` 不能 import `scene_diagnosis`），条目带 `rule_calibration`。真实项目（『龙族』绑定）：26 个常用词（看、手、血、眼、风、光、走、门、火、笑、因为…），常态维度 7 个（意象同质 100%、句式单调 100%、重复动作 85%、意象场复用 81%、抉择压力 58%、说明式对白 56%、动机说明 56%）；一场 25 段的作者稿从 5 条修订变成 2 条修订 + 3 条提示。没有绑定时词表与行为逐字不变。
+
+**8.3 只通读改过的场。** 通读行的 `contract_field_refs_json` 记 `{kind: chapter, scope: all | changed, scenes: [{scene_id, scene_seq, sha256, layer, ref}], reviewed_scene_ids, carried_scene_ids, carried_from}`；章级 `ai.status` 从此按每场正文的哈希判（哪一场的字变了、多了一场有字的、少了一场 → `stale`；老的行没有哈希，退回时间戳），并给 `changed_scene_ids / changed_count / incremental_available / scope / reviewed_scene_ids / carried_scene_ids / carried_from`，每场条目带 `changed_since_review / carried`。`POST …/chapters/{id}/deep-review {scope: "all" | "changed"}`：`changed` 时改过的场全文（【第 N 场 · 本次通读】），未改的场只给开头 / 结尾 / 上一轮钉在它上面的发现（【第 N 场 · 未改 · 摘要】），用户消息尾部一节「Read-Through Scope」+ 上一轮的章级发现（让模型重说哪些还成立）；模型答完后未改的场沿用上一轮的发现（`carried_from`，写作台里 `origin.carried_from`，同一条 id），改过的场按模型的新发现，章级发现以模型的为准。上次之后没有场改过 → 不调模型，载荷带 `notice.code = CHAPTER_REVIEW_UP_TO_DATE`；上一轮没记哈希 → 退回整章。`_chapter_source` 从此只从各场的诊断正文拼（不再取章级作者稿 / 章记忆：发现要钉到各场的字上）。成稿中心：改前的通读且算得出改过的场时给「只通读改过的 N 场」（主）与「整章重新通读」，状态行说「改过 N 场：第 x 场」「上次只通读了改过的 N 场，其余沿用更早的通读」，场行标「通读后改过」「沿用上次通读」，发现标「沿用上次通读」。
+
+**8.4 计数随写回传（推送）。** 每一次会改动发现的写入都在响应里带 `diagnosis_rollup {project_id, chapter_id, chapters: {id: 章条目}, scenes: {id: 场条目}}`（这一场所在那一章的章条目 + 章里每一场的条目；`scene_rollup` / `chapter_rollup`，与 `project_summary` 同一种条目形状）：`PATCH /api/v1/author-drafts/{id}`（字改了才带）、`PATCH …/deep-review/preferences`（忽略 / 恢复）、`GET/POST …/scenes/{id}/deep-review`、`POST …/deep-review/passage`、`GET/POST …/chapters/{id}/deep-review`；另有 `GET /api/v1/scenes/{id}/diagnosis-rollup`（起草台归档终稿之后拉这一章）。前端 `WsDiagnosis`：整本书只在挂载 / 换作品时读一次；`applyRollup` 合进表（章里旧的场条目换成新的，进了回收站的场随之消失）、`totals` 本地按服务端 `summarize_counts` 同一条规则汇总（`__summarize` 与服务端 totals 相等，测试钉住）；忽略 / 恢复先按面板清单 `applySceneFindings` 记一笔、章按差额重算；`ws:diagnosis-changed` 带 `rollup` 或 `findings` 就用它，什么都没带才重拉；`ws:catalog-changed` 只剪掉不在目录里的场 / 章（`reconcile`），20 秒节流没有了。作者稿保存（`WrDocs.pushSave`）、深改面板（`useDeepPosture`）、成稿中心通读、起草台归档（`ws-scene-api` adopt-current → `refreshScene`）都接上了。章条目多 `chapter_level_blocking`。
+
+测试：`tests/test_scene_diagnosis_round3.py`（校准的词表 / 维度 / 过量 / 房风不变、绑定场与文学质量视图一致、`passage_scope`、范围深评与跨段发现与退位规则、只通读改过的场全流程与退回、计数随写回传与汇总相等）、`tests/test_scene_diagnosis.py` 的两处标记断言；前端 `ws-diagnosis-summary.test.js`（推送模型）、`ws-manuscripts-diagnosis.test.jsx`（只通读改过的场）、`ws-writer-deep.test.jsx`（AI 看这几段、跨段发现、忽略后本地计数）。部署：无迁移；有提示词快照的安装需要 `sync_prompt_templates --execute`（`writer_deep_review` v6、`writer_passage_review` v2）。

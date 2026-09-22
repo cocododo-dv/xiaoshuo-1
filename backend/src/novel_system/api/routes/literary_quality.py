@@ -11,6 +11,13 @@ from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import StrictRequestModel
 from novel_system.api.response import ok
 from novel_system.services.literary_quality import LiteraryQualityService
+from novel_system.services.scene_diagnosis import SceneDiagnosisService
+
+
+def _quality_service(session: Session) -> LiteraryQualityService:
+    """文学质量视图与写作台深改面板读同一份参考书校准（2026-09-22 第三轮）。"""
+
+    return LiteraryQualityService(session, rule_calibration_resolver=SceneDiagnosisService(session).rule_calibration_for_scene)
 
 router = APIRouter(tags=["literary_quality"])
 
@@ -46,7 +53,7 @@ def literary_quality_overview(
     project_id: str | None = None,
     session: Session = Depends(get_session),
 ):
-    payload = LiteraryQualityService(session).overview(
+    payload = _quality_service(session).overview(
         text_layer=text_layer,
         chapter_id=chapter_id,
         risk_type=risk_type,
@@ -69,7 +76,7 @@ def literary_quality_analyze_text(
         method="POST",
         path_template="/api/v1/literary-quality/analyze-text",
         payload=body,
-        action=lambda: LiteraryQualityService(session).analyze_text(body),
+        action=lambda: _quality_service(session).analyze_text(body),
     )
 
 
@@ -86,5 +93,5 @@ def literary_quality_chapter_set_review(
         method="POST",
         path_template="/api/v1/literary-quality/chapter-set-review",
         payload=body,
-        action=lambda: LiteraryQualityService(session).chapter_set_review(body),
+        action=lambda: _quality_service(session).chapter_set_review(body),
     )

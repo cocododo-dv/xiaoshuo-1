@@ -1,42 +1,101 @@
 import { WsWorks } from "./ws-works.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 import { apiGet } from "./lib/client.js";
 import { createSubscribers, useStoreTick } from "./lib/store-utils.js";
 
 /* ==========================================================
-   WsDiagnosis — 一本书每一场 / 每一章开着的诊断发现数（2026-09-22 场景诊断统一）
+   WsDiagnosis — 一本书每一场 / 每一章开着的诊断发现数（2026-09-22 场景诊断统一；第三轮改成随写回传）
    ----------------------------------------------------------
-   读 GET /api/v1/projects/{id}/diagnosis-summary：服务端把每一场的统一诊断（规则 / 节奏 / 评审 / AI 深评，
-   减去作者在写作台忽略过的）数一遍。主页的章卡、成稿中心的章列表与场景拼接、章级「AI 通读」面板
-   都读这一份；写作台深改面板里忽略 / 恢复 / 跑深评之后广播 ws:diagnosis-changed，这里重拉。
-   ws:catalog-changed 连字数回写都会广播——事件触发的重拉节流 20 秒；视图挂载时的那次不节流。
+   整本书的汇总只在视图挂载 / 换作品时读一次（GET /api/v1/projects/{id}/diagnosis-summary）。之后每一次会改动
+   发现的写入——作者稿保存、深改面板里的忽略 / 恢复、AI 深评、AI 看这一处、成稿中心的 AI 通读——都在响应里带
+   diagnosis_rollup（这一场所在那一章的章条目 + 章里每一场的条目），store 把它合进表、本地汇总 totals
+   （与服务端 scene_diagnosis.summarize_counts 同一条规则），订阅的视图即得；不再按目录事件节流拉取。
+   忽略 / 恢复先按面板里的清单本地记一笔（applySceneFindings），服务端的 rollup 到了再以它为准。
+   起草台归档终稿（服务端改了这一场的正文）时 refreshScene 只拉这一章的 rollup；目录成员变了（场进了回收站）
+   只把不在目录里的条目剪掉。读不到就当没有计数：这是角标，不是闸门。
    ESM 模块，不写 window。
    ========================================================== */
 
 const dgSubs = createSubscribers();
-const dgSummary = {};    // workId → { totals, chapters, scenes }
-const dgFetching = {};
-const dgFetchedAt = {};
-const dgFailed = {};     // workId → true（读不到就当没有计数：这是角标，不是闸门）
-const DG_EVENT_MIN_INTERVAL_MS = 20_000;
+const dgSummary = {};       // workId → { totals, chapters, scenes }
+const dgFetching = {};      // workId → Promise
+const dgFailed = {};        // workId → true
+const dgSceneFetching = {}; // sceneId → Promise
+const DG_COUNT_KEYS = ["open", "blocking", "revision", "taste", "info", "ignored", "stale"];
 
 function dgWorkId() {
   try { const id = WsWorks.activeId(); return id && id !== "__loading__" ? id : null; } catch (e) { return null; }
 }
 
-function dgRefresh(workId = dgWorkId(), options = {}) {
+const EMPTY_SCENE = { open: 0, blocking: 0, revision: 0, taste: 0, info: 0, ignored: 0, stale: 0, ai_status: "not_run", review_status: "not_run" };
+const EMPTY_CHAPTER = { open: 0, blocking: 0, chapter_level: 0, chapter_level_blocking: 0, scenes: 0, scenes_with_findings: 0, ai_status: "not_run" };
+
+/* totals 从场 / 章条目汇总：与服务端 summarize_counts 同一条规则（章级发现算开着的，章条目里带 chapter_level） */
+function dgSummarize(scenes, chapters) {
+  const totals = { open: 0, blocking: 0, revision: 0, taste: 0, info: 0, ignored: 0, stale: 0, scenes: 0, scenes_with_text: 0, scenes_with_findings: 0, ai_reviewed_scenes: 0, chapters_reviewed: 0 };
+  Object.values(scenes || {}).forEach((entry) => {
+    totals.scenes += 1;
+    if (entry.text_layer && entry.text_layer !== "none") totals.scenes_with_text += 1;
+    DG_COUNT_KEYS.forEach((key) => { totals[key] += Number(entry[key] || 0); });
+    if (Number(entry.open || 0)) totals.scenes_with_findings += 1;
+    if (entry.ai_status && entry.ai_status !== "not_run") totals.ai_reviewed_scenes += 1;
+  });
+  Object.values(chapters || {}).forEach((counts) => {
+    if (counts.ai_status && counts.ai_status !== "not_run") totals.chapters_reviewed += 1;
+    totals.open += Number(counts.chapter_level || 0);
+    totals.blocking += Number(counts.chapter_level_blocking || 0);
+  });
+  return totals;
+}
+
+/* 一场的计数从面板里的发现清单算（忽略 / 恢复不必等往返）：与服务端 _finding_counts 同一条规则 */
+function dgCountsFromFindings(findings, base) {
+  const list = Array.isArray(findings) ? findings : [];
+  const open = list.filter((f) => !f.ignored);
+  const by = (severity) => open.filter((f) => f.severity === severity).length;
+  return {
+    ...EMPTY_SCENE, ...(base || {}),
+    open: open.length, ignored: list.length - open.length, stale: open.filter((f) => f.stale).length,
+    blocking: by("blocking"), revision: by("revision"), taste: by("taste"), info: by("info"),
+  };
+}
+
+/* 一章的 open / blocking / scenes_with_findings 由它的场条目重算（章级发现的数目留在 chapter_level 里） */
+function dgRechapter(scenes, chapters, chapterId) {
+  if (!chapterId) return chapters;
+  const base = { ...EMPTY_CHAPTER, ...(chapters[chapterId] || {}) };
+  const mine = Object.values(scenes).filter((entry) => entry.chapter_id === chapterId);
+  return {
+    ...chapters,
+    [chapterId]: {
+      ...base,
+      scenes: mine.length,
+      open: mine.reduce((sum, entry) => sum + Number(entry.open || 0), 0) + Number(base.chapter_level || 0),
+      blocking: mine.reduce((sum, entry) => sum + Number(entry.blocking || 0), 0) + Number(base.chapter_level_blocking || 0),
+      scenes_with_findings: mine.filter((entry) => Number(entry.open || 0) > 0).length,
+    },
+  };
+}
+
+function dgEnsure(workId) {
+  if (!dgSummary[workId]) dgSummary[workId] = { totals: dgSummarize({}, {}), chapters: {}, scenes: {} };
+  return dgSummary[workId];
+}
+
+function dgCommit(workId, scenes, chapters) {
+  dgSummary[workId] = { totals: dgSummarize(scenes, chapters), chapters, scenes };
+  delete dgFailed[workId];
+  dgSubs.notify();
+}
+
+function dgRefresh(workId = dgWorkId()) {
   if (!workId) return Promise.resolve();
   if (dgFetching[workId]) return dgFetching[workId];
-  if (!options.force && dgFetchedAt[workId] && Date.now() - dgFetchedAt[workId] < DG_EVENT_MIN_INTERVAL_MS) {
-    return Promise.resolve();
-  }
-  dgFetchedAt[workId] = Date.now();
   dgFetching[workId] = apiGet(`/api/v1/projects/${encodeURIComponent(workId)}/diagnosis-summary`)
     .then((data) => {
-      dgSummary[workId] = {
-        totals: (data && data.totals) || {},
-        chapters: (data && data.chapters) || {},
-        scenes: (data && data.scenes) || {},
-      };
+      const scenes = (data && data.scenes) || {};
+      const chapters = (data && data.chapters) || {};
+      dgSummary[workId] = { totals: (data && data.totals) || dgSummarize(scenes, chapters), chapters, scenes };
       delete dgFailed[workId];
       dgSubs.notify();
     })
@@ -48,11 +107,76 @@ function dgRefresh(workId = dgWorkId(), options = {}) {
   return dgFetching[workId];
 }
 
-const EMPTY_SCENE = { open: 0, blocking: 0, revision: 0, taste: 0, info: 0, ignored: 0, stale: 0, ai_status: "not_run", review_status: "not_run" };
-const EMPTY_CHAPTER = { open: 0, blocking: 0, chapter_level: 0, scenes: 0, scenes_with_findings: 0, ai_status: "not_run" };
+/* 一次写入回传的 rollup：{ project_id?, chapter_id, chapters: {id: counts}, scenes: {id: counts} }。
+   服务端整章算，章里每一场都在里面：先清掉这一章旧的场条目再合并（进了回收站的场随之消失）。 */
+function dgApplyRollup(rollup, workId = dgWorkId()) {
+  if (!rollup || typeof rollup !== "object" || !workId) return false;
+  if (rollup.project_id && rollup.project_id !== workId) return false;
+  const summary = dgEnsure(workId);
+  const chapterIds = new Set(Object.keys(rollup.chapters || {}));
+  const scenes = {};
+  Object.entries(summary.scenes).forEach(([id, entry]) => { if (!chapterIds.has(entry.chapter_id)) scenes[id] = entry; });
+  Object.entries(rollup.scenes || {}).forEach(([id, entry]) => { scenes[id] = { ...EMPTY_SCENE, ...entry }; });
+  const chapters = { ...summary.chapters };
+  Object.entries(rollup.chapters || {}).forEach(([id, counts]) => { chapters[id] = { ...EMPTY_CHAPTER, ...counts }; });
+  dgCommit(workId, scenes, chapters);
+  return true;
+}
+
+/* 深改面板里忽略 / 恢复了一条：按面板里的清单先记一笔，章条目按差额重算 */
+function dgApplySceneFindings(sceneId, findings, workId = dgWorkId()) {
+  if (!sceneId || !workId) return false;
+  const summary = dgEnsure(workId);
+  const previous = summary.scenes[sceneId] || null;
+  const next = dgCountsFromFindings(findings, previous);
+  const scenes = { ...summary.scenes, [sceneId]: next };
+  dgCommit(workId, scenes, dgRechapter(scenes, summary.chapters, next.chapter_id));
+  return true;
+}
+
+/* 目录成员变了：不在目录里的场 / 章剪掉（新加的场没有正文，问到就是零，不必拉） */
+function dgReconcile(workId = dgWorkId()) {
+  if (!workId || !dgSummary[workId]) return;
+  let chapters;
+  try { chapters = WsCatalog.get() || []; } catch (e) { return; }
+  const sceneIds = new Set();
+  const chapterIds = new Set();
+  chapters.forEach((chapter) => {
+    if (chapter && chapter.backendId) chapterIds.add(chapter.backendId);
+    (chapter && chapter.scenes ? chapter.scenes : []).forEach((scene) => { if (scene && scene.backendId) sceneIds.add(scene.backendId); });
+  });
+  if (!sceneIds.size && !chapterIds.size) return;
+  const summary = dgSummary[workId];
+  const keptScenes = Object.keys(summary.scenes).filter((id) => sceneIds.has(id));
+  const keptChapters = Object.keys(summary.chapters).filter((id) => chapterIds.has(id));
+  if (keptScenes.length === Object.keys(summary.scenes).length && keptChapters.length === Object.keys(summary.chapters).length) return;
+  const scenes = {};
+  keptScenes.forEach((id) => { scenes[id] = summary.scenes[id]; });
+  let next = {};
+  keptChapters.forEach((id) => { next[id] = summary.chapters[id]; });
+  keptChapters.forEach((id) => { next = dgRechapter(scenes, next, id); });
+  dgCommit(workId, scenes, next);
+}
+
+function dgRefreshScene(sceneId, workId = dgWorkId()) {
+  if (!sceneId || !workId) return Promise.resolve();
+  if (dgSceneFetching[sceneId]) return dgSceneFetching[sceneId];
+  dgSceneFetching[sceneId] = apiGet(`/api/v1/scenes/${encodeURIComponent(sceneId)}/diagnosis-rollup`)
+    .then((rollup) => { dgApplyRollup(rollup, workId); })
+    .catch(() => {})
+    .finally(() => { delete dgSceneFetching[sceneId]; });
+  return dgSceneFetching[sceneId];
+}
 
 const WsDiagnosis = {
-  refresh(workId) { return dgRefresh(workId || dgWorkId(), { force: true }); },
+  refresh(workId) { return dgRefresh(workId || dgWorkId()); },
+  /* 写入的响应里带的 diagnosis_rollup → 合进表；返回是否用上了 */
+  applyRollup(rollup) { return dgApplyRollup(rollup); },
+  /* 深改面板里忽略 / 恢复后按清单记一笔（服务端的 rollup 到了再以它为准） */
+  applySceneFindings(sceneId, findings) { return dgApplySceneFindings(sceneId, findings); },
+  /* 服务端改了这一场的正文（起草台归档终稿）：只拉这一章 */
+  refreshScene(sceneId) { return dgRefreshScene(sceneId); },
+  reconcile() { dgReconcile(); },
   /* 某一场（后端 scene_id）的计数；还没读到 / 读不到 → null（视图不画角标，不画 0） */
   sceneCounts(sceneId) {
     const workId = dgWorkId();
@@ -82,30 +206,39 @@ const WsDiagnosis = {
   subscribe(fn) { return dgSubs.subscribe(fn); },
   /* 测试用：清空模块级状态 */
   __reset() {
-    [dgSummary, dgFetching, dgFetchedAt, dgFailed].forEach((map) => Object.keys(map).forEach((key) => delete map[key]));
+    [dgSummary, dgFetching, dgFailed, dgSceneFetching].forEach((map) => Object.keys(map).forEach((key) => delete map[key]));
   },
+  __summarize: dgSummarize,
 };
 
-/* 写作台深改面板里的动作（忽略 / 恢复 / AI 深评 / AI 看这一处）之后广播：计数马上重拉 */
+/* 写作台深改面板 / 成稿中心里的动作之后广播。detail.rollup（写入响应里的 diagnosis_rollup）或
+   detail.findings（面板里的清单）带着计数一起来，别的视图不必重拉；什么都没带才重拉一次。 */
 function announceDiagnosisChanged(detail) {
   try { window.dispatchEvent(new CustomEvent("ws:diagnosis-changed", { detail: detail || {} })); } catch (e) {}
 }
 
-/* hook：视图挂载时拉一次；诊断变了立刻重拉；目录 / 作品变了节流重拉 */
+function dgOnChanged(event) {
+  const detail = (event && event.detail) || {};
+  if (detail.rollup && dgApplyRollup(detail.rollup)) return;
+  if (detail.sceneId && Array.isArray(detail.findings) && dgApplySceneFindings(detail.sceneId, detail.findings)) return;
+  dgRefresh(dgWorkId());
+}
+
+/* hook：视图挂载 / 换作品时读一次整本书；写入随响应推送；目录成员变了只剪掉不在目录里的条目 */
 function useDiagnosisSummary() {
   useStoreTick((bump) => {
     const un = WsDiagnosis.subscribe(bump);
-    const onChanged = () => { dgRefresh(dgWorkId(), { force: true }); };
-    const onCatalog = () => { dgRefresh(); };
-    window.addEventListener("ws:diagnosis-changed", onChanged);
+    const onWork = () => { dgRefresh(dgWorkId()); };
+    const onCatalog = () => { dgReconcile(); };
+    window.addEventListener("ws:diagnosis-changed", dgOnChanged);
     window.addEventListener("ws:catalog-changed", onCatalog);
-    window.addEventListener("ws:work-changed", onChanged);
-    dgRefresh(dgWorkId(), { force: true });
+    window.addEventListener("ws:work-changed", onWork);
+    dgRefresh(dgWorkId());
     return () => {
       un();
-      window.removeEventListener("ws:diagnosis-changed", onChanged);
+      window.removeEventListener("ws:diagnosis-changed", dgOnChanged);
       window.removeEventListener("ws:catalog-changed", onCatalog);
-      window.removeEventListener("ws:work-changed", onChanged);
+      window.removeEventListener("ws:work-changed", onWork);
     };
   });
   return WsDiagnosis;

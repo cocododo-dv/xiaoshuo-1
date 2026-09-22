@@ -5,7 +5,7 @@ import {
   wrDxMergePreferences, wrDxPushLog, wrDxRemoveSkip, wrDxReviewPassage, wrDxRunAi, wrDxSavePreferences, wrDxSkips,
   wrDxSnapshot, wrDxWithIgnored,
 } from "./ws-deep.jsx";
-import { announceDiagnosisChanged } from "./ws-diagnosis-summary.jsx";
+import { WsDiagnosis, announceDiagnosisChanged } from "./ws-diagnosis-summary.jsx";
 import { wrRangeForOffsets, wrRangeForText } from "./ws-writer-manuscript.js";
 import { useWrEvent } from "./ws-writer-hooks.js";
 
@@ -21,6 +21,8 @@ import { useWrEvent } from "./ws-writer-hooks.js";
    进入深改时有未落盘的改动先存（正文马上变只读，诊断要对着存下去的字）；没改过就不存。
    从文学质量 / 待办 / 成稿中心带着 signal_id 跳进来：诊断到了就选中那一条并滚过去；
    当前作者稿里没有这一条时给一句提示（handoffMiss）。
+   计数随写回传（2026-09-22 第三轮）：深评 / 局部深评 / 偏好保存的响应里带 diagnosis_rollup，直接合进
+   WsDiagnosis；忽略 / 恢复先按面板里的清单本地记一笔，不再让别的视图重拉整本书。
    ESM 模块，不写 window。
    ========================================================== */
 
@@ -150,6 +152,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
           result = await wrDxSavePreferences(backendId, snapshot, remote.revision_no);
         }
         state.revisionNo = result.revision_no;
+        if (result && result.diagnosis_rollup) WsDiagnosis.applyRollup(result.diagnosis_rollup);
         if (prefsRef.current === state && sceneRef.current === sceneId) {
           wrDxApplyPreferences(sceneId, result);
           setLog(result.decision_log || []);
@@ -167,6 +170,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     setDiagnosis(payload || null);
     setLoading(false);
     setError(null);
+    if (payload && payload.diagnosis_rollup) WsDiagnosis.applyRollup(payload.diagnosis_rollup);
     const remote = (payload && payload.preferences) || { decision_log: [], ignored_issue_keys: [], revision_no: 0 };
     let state = prefsRef.current;
     if (state.sceneId !== sceneId) {
@@ -268,13 +272,20 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     const finding = findings.find((item) => item.signal_id === key);
     if (finding) setTimeout(() => locateFinding(finding), 60);
   });
+  /* 忽略 / 恢复之后：计数按面板里的清单先记一笔并广播（带着清单，别的视图不必重拉），服务端的 rollup 随偏好保存回来 */
+  const announceCounts = useWrEvent(() => {
+    const backendId = diagnosis && diagnosis.scene_id ? diagnosis.scene_id : null;
+    const list = diagnosis && activeScene ? wrDxWithIgnored(diagnosis.findings, wrDxSkips(activeScene)) : [];
+    if (backendId) WsDiagnosis.applySceneFindings(backendId, list);
+    announceDiagnosisChanged({ sid: activeScene, sceneId: backendId, findings: backendId ? list : undefined });
+  });
   const ignore = useWrEvent((finding) => {
     if (!activeScene || !finding) return;
     wrDxAddSkip(activeScene, finding.signal_id);
     setLog(wrDxPushLog(activeScene, `忽略 · ${shortIssue(finding)}`));
     setSkipTick((t) => t + 1);
     queuePersist(activeScene);
-    announceDiagnosisChanged({ sid: activeScene });
+    announceCounts();
     if (activeKey === finding.signal_id) {
       const next = findings.find((item) => !item.ignored && item.signal_id !== finding.signal_id);
       setActiveKey(next ? next.signal_id : null);
@@ -287,7 +298,11 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     setSkipTick((t) => t + 1);
     queuePersist(activeScene);
     setActiveKey(finding.signal_id);
-    announceDiagnosisChanged({ sid: activeScene });
+    announceCounts();
+  });
+  /* 跨段发现的另一段（「与第 N 段矛盾」）：滚到那一段 */
+  const locateParagraph = useWrEvent((paragraphIndex) => {
+    if (Number.isInteger(paragraphIndex)) locatePara(paragraphIndex);
   });
   const rescan = useWrEvent(() => { if (activeScene) load(activeScene); });
   const toggleIgnored = useWrEvent(() => setShowIgnored((v) => !v));
@@ -305,7 +320,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
       setLog(wrDxPushLog(sceneId, score != null ? `AI 深评 · 总分 ${score}` : "AI 深评"));
       applyPayload(sceneId, payload);
       queuePersist(sceneId);
-      announceDiagnosisChanged({ sid: sceneId });
+      announceDiagnosisChanged({ sid: sceneId, rollup: payload && payload.diagnosis_rollup });
     } catch (err) {
       if (sceneRef.current !== sceneId) return;
       setAiError(err || new Error("deep review failed"));
@@ -314,16 +329,21 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     }
   });
 
-  /* 「AI 看这一处」：target 是一条发现（复核：成立 / 部分成立 / 不成立 + 改法）或 { paragraph_index, excerpt }（独立看一段）。
+  /* 「AI 看这一处」：target 是一条发现（复核：成立 / 部分成立 / 不成立 + 改法）、{ paragraph_index, excerpt }（独立看一段）
+     或 { paragraph_start, paragraph_end }（选中了几段：看这一段范围）。模型同时看到整场正文，跨段的矛盾也能指出。
      结果并进同一份诊断：复核的意见挂在那条发现上（finding.opinion），独立的结果放 lastPassage，新看出的发现进清单。 */
   const reviewPassage = useWrEvent(async (target, { question } = {}) => {
     if (!activeScene || !target || passageBusy) return;
     const sceneId = activeScene;
     const isFinding = !!target.signal_id;
-    const key = isFinding ? target.signal_id : `para:${target.paragraph_index}`;
-    const body = isFinding
-      ? { signal_id: target.signal_id }
-      : { paragraph_index: target.paragraph_index, excerpt: String(target.excerpt || "").slice(0, 2000) || undefined };
+    const isRange = !isFinding && Number.isInteger(target.paragraph_start) && Number.isInteger(target.paragraph_end) && target.paragraph_end !== target.paragraph_start;
+    const rangeStart = isRange ? Math.min(target.paragraph_start, target.paragraph_end) : null;
+    const rangeEnd = isRange ? Math.max(target.paragraph_start, target.paragraph_end) : null;
+    const key = isFinding ? target.signal_id : (isRange ? `para:${rangeStart}-${rangeEnd}` : `para:${target.paragraph_index}`);
+    let body;
+    if (isFinding) body = { signal_id: target.signal_id };
+    else if (isRange) body = { paragraph_start: rangeStart, paragraph_end: rangeEnd };
+    else body = { paragraph_index: Number.isInteger(target.paragraph_index) ? target.paragraph_index : target.paragraph_start, excerpt: String(target.excerpt || "").slice(0, 2000) || undefined };
     if (question) body.question = String(question).slice(0, 2000);
     setPassageBusy(key);
     setPassageError(null);
@@ -333,14 +353,15 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
       if (sceneRef.current !== sceneId) return;
       const review = (payload && payload.passage_review) || null;
       const verdict = review && review.verdict_label ? review.verdict_label : "";
+      const where = isRange ? `第 ${rangeStart + 1}–${rangeEnd + 1} 段` : `第 ${Number(body.paragraph_index) + 1} 段`;
       setLog(wrDxPushLog(sceneId, isFinding
         ? `AI 看这一处 · ${shortIssue(target)}${verdict ? "：" + verdict : ""}`
-        : `AI 看了第 ${Number(target.paragraph_index) + 1} 段${verdict ? "：" + verdict : ""}`));
+        : `AI 看了${where}${verdict ? "：" + verdict : ""}`));
       pendingSignalRef.current = isFinding ? target.signal_id : null;
       applyPayload(sceneId, payload);
       setLastPassage(review && !review.about_signal_id ? review : null);
       queuePersist(sceneId);
-      announceDiagnosisChanged({ sid: sceneId });
+      announceDiagnosisChanged({ sid: sceneId, rollup: payload && payload.diagnosis_rollup });
     } catch (err) {
       if (sceneRef.current !== sceneId) return;
       setPassageError({ key, error: err || new Error("passage review failed") });
@@ -427,7 +448,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     posture, setPosture, diagnosis, findings, openCount, activeKey, setActiveKey,
     filter, setFilter, showIgnored, toggleIgnored, loading, error, reload: rescan,
     aiBusy, aiError, runAi, handoffMiss, log, persistenceStatus,
-    passageBusy, passageError, lastPassage, reviewPassage, rewriteParagraph,
+    passageBusy, passageError, lastPassage, reviewPassage, rewriteParagraph, locateParagraph,
     pick, ignore, restore, rescan, selectForRewrite, rewriteFromFinding, rewriteFinding, clearRewriteFinding,
   };
 }
