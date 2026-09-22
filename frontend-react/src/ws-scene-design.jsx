@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { chapterHeading, sceneLabel } from "./ws-labels.js";
 
 /* ==========================================================
    场景设计卡 — 写作台与 AI 起草台共用的同一张卡（阶段 X「一条书脊」）
@@ -13,7 +14,7 @@ import { I } from "./icons.jsx";
    纯展示 + 一个纯函数模型；不读 store、不写 window。
    ========================================================== */
 
-const BEATS_PROACTIVE = [["goal", "目标"], ["conflict", "冲突"], ["setback", "挫折"]];
+const BEATS_PROACTIVE = [["goal", "目标"], ["conflict", "冲突"], ["setback", "挫败"]];
 const BEATS_REACTIVE = [["reaction", "反应"], ["dilemma", "两难"], ["decision", "决定"]];
 const LENGTH_BAND_LABEL = { short: "短", medium: "中", long: "长" };
 /* 系统占位（「（本场目标待规划）」「（待规划）」「（待补）」）不是作者写的内容：卡上按「没填」处理 */
@@ -30,6 +31,15 @@ function sdLengthLabel(band) {
   if (LENGTH_BAND_LABEL[raw]) return `篇幅 ${LENGTH_BAND_LABEL[raw]}`;
   const range = /^(\d+)\s*[-–~]\s*(\d+)$/.exec(raw);
   return range ? `${range[1]}–${range[2]} 字` : raw;
+}
+
+/* 数字篇幅（「1300-1600」）→ { min, max }；短 / 中 / 长没有约定的字数，不编一个目标出来，返回 null */
+function sdLengthRange(band) {
+  const range = /^(\d+)\s*[-–~]\s*(\d+)$/.exec(String(band || "").trim());
+  if (!range) return null;
+  const min = Number(range[1]);
+  const max = Number(range[2]);
+  return min > 0 && max >= min ? { min, max } : null;
 }
 
 /* 目录命中（WsCatalog.sceneById 的返回）→ 设计卡模型。纯函数，可单测。 */
@@ -56,7 +66,7 @@ function sceneDesignModel(hit) {
     sceneCount: (chapter.scenes || []).length,
   } : null;
   const facts = [
-    { k: "POV", v: scene.povName || (chapter && chapter.pov) || "" },
+    { k: "视角", v: scene.povName || (chapter && chapter.pov) || "" },
     { k: "时间", v: design.storyTime || (chapter && chapter.time) || "" },
     { k: "地点", v: design.location || (chapter && chapter.place) || "" },
     { k: "出场", v: cast.join("、") },
@@ -66,7 +76,8 @@ function sceneDesignModel(hit) {
     sid: scene.sid,
     backendId: scene.backendId || "",
     origin: design.origin === "snowflake" ? "snowflake" : "manual",
-    stamp: chapter ? `CH ${chapter.n} · SC ${String((index || 0) + 1).padStart(2, "0")}` : "",
+    // 位置一律「第 1 章 · 第 3 场」（ws-labels），不再有 CH / SC 缩写
+    stamp: chapter ? sceneLabel(chapter, index || 0) : "",
     kind: reactive ? "反应" : "主动",
     reactive,
     title: scene.title || "",
@@ -84,6 +95,7 @@ function sceneDesignModel(hit) {
     mustWithhold: sdText(design.mustWithhold),
     cost: sdText(design.cost),
     lengthLabel: sdLengthLabel(design.lengthBand),
+    lengthRange: sdLengthRange(design.lengthBand),
     summaryMode: design.renderingMode === "summary",
     exceptionReason: sdText(design.exceptionReason),
     chapterLast: !!design.chapterLast,
@@ -110,20 +122,83 @@ function sdLoadCollapsed() {
   try { return localStorage.getItem(SDC_COLLAPSED_LS) === "1"; } catch (e) { return false; }
 }
 
+/* 卡头上的「在构思里改」/「编辑卡」：这张卡的设计在哪里改，就只给那一个入口 */
+function SdEditLinks({ fromPlan, onEditPlan, onEditCard }) {
+  return (
+    <>
+      <span className="sdc-src">{fromPlan ? "本场的设计 · 来自构思" : "本场的卡 · 来自章节编排"}</span>
+      {fromPlan && onEditPlan && (
+        <button type="button" className="sdc-link" data-testid="scene-design-edit-plan" onClick={onEditPlan}
+          title="回构思第 10 步改这一场的设计；确认那一步之后，这张卡自动跟上">在构思里改</button>
+      )}
+      {!fromPlan && onEditCard && (
+        <button type="button" className="sdc-link" data-testid="scene-design-edit-card" onClick={onEditCard}
+          title="到章节编排修改这张卡">编辑卡</button>
+      )}
+    </>
+  );
+}
+
+/* 卡底的「所在章」：章摘要 / 章目标 / 脊柱标记。
+   章名还是系统起的占位（「第 N 章」「未命名」）时只写一遍章号，不再「第 01 章 第 1 章」并排 */
+function SdChapter({ chapter }) {
+  if (!chapter || !(chapter.summary || chapter.goal || chapter.spine)) return null;
+  const head = chapterHeading(chapter);
+  return (
+    <footer className="sdc-chapter">
+      <div className="sdc-chapter-head">
+        {head.title && <span className="sdc-chapter-n">{head.num}</span>}
+        <span className="sdc-chapter-t">{head.title || head.num}</span>
+        {chapter.spine && <span className="sdc-chip tone-gold"><I.Activity size={9} /> {chapter.spine}</span>}
+      </div>
+      {chapter.summary && <p className="sdc-chapter-sum">{chapter.summary}</p>}
+      {chapter.goal && chapter.goal !== chapter.summary && (
+        <p className="sdc-chapter-sum"><b>章目标</b>　{chapter.goal}</p>
+      )}
+    </footer>
+  );
+}
+
+/* 写作台右侧抽屉里那张（variant="context"）：正文上方的卡已经给了坩埚 / 事实行 / 三拍，
+   抽屉只补它没有的——整句摘要、离场变化、钩子、读者感受、代价、必须包含 / 隐瞒、所在章，
+   免得同一段三拍在屏幕上并排出现两遍。 */
+function SceneDesignContext({ model, fromPlan, onEditPlan, onEditCard }) {
+  const rows = [
+    ["离场变化", model.exitChange], ["钩子", model.hook], ["读者感受", model.readerEmotion],
+    ["代价", model.cost], ["必须包含", model.mustInclude], ["必须隐瞒", model.mustWithhold],
+  ].filter(([, v]) => v);
+  return (
+    <section className="sdc is-context" data-testid="scene-design-card" data-origin={model.origin}>
+      <header className="sdc-head">
+        <SdEditLinks fromPlan={fromPlan} onEditPlan={onEditPlan} onEditCard={onEditCard} />
+      </header>
+      {model.summary && <p className="sdc-summary">{model.summary}</p>}
+      {rows.map(([k, v]) => <SdRow key={k} k={k} v={v} />)}
+      {!model.summary && !rows.length && (
+        <p className="sdc-context-empty">三拍与事实在正文上方的卡里；离场变化、钩子、代价这些这一场还没有填。</p>
+      )}
+      <SdChapter chapter={model.chapter} />
+    </section>
+  );
+}
+
 /* sync = { pending: bool, busy: bool, onSync: fn }（这张卡落后于已确认的构思时才给）
-   onEditPlan：回构思第 10 步改这一场；onEditCard：去章节编排改这张卡。variant="compact" 只给三拍 + 事实行。 */
-function SceneDesignCard({ model, variant = "full", sync, onEditPlan, onEditCard }) {
+   onEditPlan：回构思第 10 步改这一场；onEditCard：去章节编排改这张卡。variant="compact" 只给三拍 + 事实行；
+   variant="context" 只给 compact 没有的那部分（写作台抽屉用）。onCollapsedChange：compact 收起 / 展开时告诉宿主。 */
+function SceneDesignCard({ model, variant = "full", sync, onEditPlan, onEditCard, onCollapsedChange }) {
   const [collapsed, setCollapsed] = React.useState(sdLoadCollapsed);
   if (!model) return null;
   const fromPlan = !!model.planOwned;
+  if (variant === "context") return <SceneDesignContext model={model} fromPlan={fromPlan} onEditPlan={onEditPlan} onEditCard={onEditCard} />;
   const facts = model.facts.filter(f => f.v);
   const compact = variant === "compact";
   const folded = compact && collapsed;
-  const toggle = () => setCollapsed((value) => {
-    const next = !value;
+  const toggle = () => {
+    const next = !collapsed;
     try { localStorage.setItem(SDC_COLLAPSED_LS, next ? "1" : "0"); } catch (e) {}
-    return next;
-  });
+    setCollapsed(next);
+    if (onCollapsedChange) onCollapsedChange(next);
+  };
   return (
     <section className={`sdc ${compact ? "is-compact" : ""} ${folded ? "is-collapsed" : ""}`} data-testid="scene-design-card" data-origin={model.origin}>
       <header className="sdc-head">
@@ -131,15 +206,7 @@ function SceneDesignCard({ model, variant = "full", sync, onEditPlan, onEditCard
         {model.summaryMode && <span className="sdc-chip" title="构思里定的呈现方式：两三段叙述性概述，不逐拍展开">概述</span>}
         {model.lengthLabel && <span className="sdc-chip">{model.lengthLabel}</span>}
         {model.chapterLast && <span className="sdc-chip" title="本章最后一场">章末</span>}
-        <span className="sdc-src">{fromPlan ? "本场的设计 · 来自构思" : "本场的卡 · 来自章节编排"}</span>
-        {fromPlan && onEditPlan && (
-          <button type="button" className="sdc-link" data-testid="scene-design-edit-plan" onClick={onEditPlan}
-            title="回构思第 10 步改这一场的设计；确认那一步之后，这张卡自动跟上">在构思里改 ↗</button>
-        )}
-        {!fromPlan && onEditCard && (
-          <button type="button" className="sdc-link" data-testid="scene-design-edit-card" onClick={onEditCard}
-            title="到章节编排修改这张卡">编辑卡 ↗</button>
-        )}
+        <SdEditLinks fromPlan={fromPlan} onEditPlan={onEditPlan} onEditCard={onEditCard} />
         {compact && (
           <button type="button" className="sdc-toggle" data-testid="scene-design-toggle" aria-expanded={!folded} onClick={toggle}
             title={folded ? "展开这一场的设计卡" : "收起设计卡，只留这一行"}>{folded ? "展开" : "收起"}</button>
@@ -197,19 +264,7 @@ function SceneDesignCard({ model, variant = "full", sync, onEditPlan, onEditCard
         </>
       )}
 
-      {!compact && model.chapter && (model.chapter.summary || model.chapter.goal || model.chapter.spine) && (
-        <footer className="sdc-chapter">
-          <div className="sdc-chapter-head">
-            <span className="sdc-chapter-n">第 {model.chapter.n} 章</span>
-            <span className="sdc-chapter-t">{model.chapter.title}</span>
-            {model.chapter.spine && <span className="sdc-chip tone-gold"><I.Activity size={9} /> {model.chapter.spine}</span>}
-          </div>
-          {model.chapter.summary && <p className="sdc-chapter-sum">{model.chapter.summary}</p>}
-          {model.chapter.goal && model.chapter.goal !== model.chapter.summary && (
-            <p className="sdc-chapter-sum"><b>章目标</b>　{model.chapter.goal}</p>
-          )}
-        </footer>
-      )}
+      {!compact && <SdChapter chapter={model.chapter} />}
       </>)}
     </section>
   );
@@ -223,4 +278,4 @@ function planIntentsForScene(backendSceneId) {
   ];
 }
 
-export { SceneDesignCard, planIntentsForScene, sceneDesignModel, sdLengthLabel };
+export { SceneDesignCard, planIntentsForScene, sceneDesignModel, sdLengthLabel, sdLengthRange, sdLoadCollapsed };

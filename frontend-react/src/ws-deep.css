@@ -1,171 +1,57 @@
 /* ==========================================================
-   ws-deep.css — 写作台深改姿态 + 场景卡随行 + 编排分流动作
+   ws-deep.css — 写作台深改姿态
    ========================================================== */
 
-/* ---- 姿态切换（写作房间顶栏）---- */
-.wr-posture { display: flex; align-items: center; background: var(--paper-2); border: 1px solid var(--line-2);
-  border-radius: var(--r-pill); padding: 2px; gap: 2px; margin-left: 10px; flex: none; }
-.wr-posture button { border: 0; background: transparent; font: inherit; font-size: 12px; font-weight: 600;
-  color: var(--ink-3); padding: 4px 13px; border-radius: var(--r-pill); cursor: pointer; display: inline-flex;
-  align-items: center; gap: 5px; transition: background var(--t-fast), color var(--t-fast); }
-.wr-posture button:hover { color: var(--ink-1); }
-.wr-posture button.is-on { background: var(--crimson); color: #fff; box-shadow: var(--shadow-sm); }
-.wr-posture .wr-posture-n { font-family: var(--font-mono); font-size: 10px; background: rgba(255,255,255,0.25);
-  border-radius: var(--r-pill); padding: 0 5px; }
-.wr-posture button:not(.is-on) .wr-posture-n { background: var(--rose-wash); color: var(--rose); }
+/* 姿态切换（写作房间顶栏）现在是共享的分段控件 .seg（ws-ui.jsx Segmented），位置规则在 wr-redesign.css */
 
 /* ---- 深改姿态：正文只读提示 + 风险标注 ---- */
 .wr-root[data-posture="deep"] .wr-editor { caret-color: transparent; }
-.wr-deep-note { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 10.5px;
-  letter-spacing: 0.12em; color: var(--crimson); margin: 0 0 10px; }
-.wr-deep-note .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--crimson); }
+.wr-deep-note { margin: 12px 0 6px; }
 
 mark.wr-dx { border-radius: 3px; padding: 1px 1px; cursor: pointer; color: inherit;
   background: var(--gold-wash); box-shadow: inset 0 -2px 0 var(--gold); }
 mark.wr-dx.k-echo { background: var(--rose-wash); box-shadow: inset 0 -2px 0 var(--rose); }
 mark.wr-dx.k-rdn  { background: var(--slate-wash); box-shadow: inset 0 -2px 0 var(--line-3); }
-mark.wr-dx.is-active { outline: 2px solid var(--crimson); outline-offset: 1px; }
+mark.wr-dx.is-active { outline: 2px solid var(--accent); outline-offset: 1px; }
 .wr-editor .wr-dx-para { background: var(--gold-wash); border-radius: var(--r-sm);
   box-shadow: 0 0 0 6px var(--gold-wash); cursor: pointer; }
-.wr-editor .wr-dx-para.is-active { outline: 2px solid var(--crimson); outline-offset: 5px; }
+.wr-editor .wr-dx-para.is-active { outline: 2px solid var(--accent); outline-offset: 5px; }
 
 /* ---- 深改面板（复用 wr-drawer right 外壳）---- */
 .wr-dxd { display: flex; flex-direction: column; }
+.wr-dxd-head-acts { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: none; }
 .wr-dxd .wr-drawer-x { margin-left: 0; }
 .wr-dxd-scroll { flex: 1; overflow-y: auto; padding: 10px 12px 16px; display: flex; flex-direction: column; gap: 12px; }
 .wr-dxd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .wr-dxd-row { display: flex; gap: 9px; align-items: flex-start; width: 100%; text-align: left; border: 0;
-  background: transparent; font: inherit; padding: 8px 9px; border-radius: var(--r-sm); cursor: pointer; }
+  background: transparent; color: inherit; font: inherit; padding: 8px 9px; border-radius: var(--r-sm); cursor: pointer; }
 .wr-dxd-row:hover { background: var(--paper-2); }
 .wr-dxd-row.is-active { background: var(--paper-2); outline: 1px solid var(--line-2); }
-.wr-dxd-mark { flex: none; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
-  padding: 3px 6px; border-radius: var(--r-xs); margin-top: 1px; }
-.wr-dxd-mark.sev-high { background: var(--rose-wash); color: var(--rose); }
-.wr-dxd-mark.sev-mid  { background: var(--gold-wash); color: var(--gold); }
-.wr-dxd-mark.sev-low  { background: var(--slate-wash); color: var(--slate); }
+.wr-dxd-mark { flex: none; font-size: var(--fs-xs); font-weight: 600; white-space: nowrap;
+  padding: 2px 7px; border-radius: var(--r-xs); margin-top: 1px; }
+.wr-dxd-mark.sev-high { background: var(--danger-wash); color: var(--danger-ink); }
+.wr-dxd-mark.sev-mid  { background: var(--warn-wash); color: var(--warn-ink); }
+.wr-dxd-mark.sev-low  { background: var(--info-wash); color: var(--info-ink); }
 .wr-dxd-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.wr-dxd-t { font-size: 12.5px; font-weight: 600; color: var(--ink-1); line-height: 1.45; }
-.wr-dxd-h { font-size: 11.5px; color: var(--ink-3); line-height: 1.5; }
+.wr-dxd-t { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); line-height: 1.45; }
+.wr-dxd-h { font-size: var(--fs-xs); color: var(--ink-3); line-height: 1.5; }
 
 .wr-dxd-cands { border-top: 1px solid var(--line-1); padding-top: 10px; display: flex; flex-direction: column; gap: 9px; }
-.wr-dxd-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: var(--ink-3); }
-.wr-dxd-cand { background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 10px 12px; }
-.wr-dxd-cand-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
-.wr-dxd-cand-label { font-family: var(--font-serif); font-weight: 600; font-size: 12.5px; }
-.wr-dxd-cand-text { font-family: var(--font-serif); font-size: 12.8px; line-height: 1.75; color: var(--ink-2); margin: 0 0 8px; }
-.wr-dxd-cand-text.is-del { color: var(--ink-4); font-style: italic; }
-.wr-dxd-cand-acts { display: flex; justify-content: flex-end; gap: 6px; }
-.wr-dxd-row-acts { display: flex; gap: 6px; justify-content: flex-end; }
+.wr-dxd-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); }
+.wr-dxd-row-acts { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .wr-dxd-clear { display: grid; justify-items: center; gap: 8px; text-align: center; padding: 28px 14px;
-  color: var(--sage); }
+  color: var(--ok); }
 .wr-dxd-clear-t { font-family: var(--font-serif); font-weight: 600; font-size: 14.5px; color: var(--ink-1); }
-.wr-dxd-clear p { margin: 0; font-size: 12px; line-height: 1.7; color: var(--ink-3); }
+.wr-dxd-clear p { margin: 0; font-size: var(--fs-xs); line-height: 1.7; color: var(--ink-3); }
 
 .wr-dxd-log { border-top: 1px solid var(--line-1); padding-top: 10px; }
 .wr-dxd-log ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.wr-dxd-dec { display: flex; gap: 8px; font-size: 11.5px; line-height: 1.55; }
-.wr-dxd-dec-t { flex: none; font-family: var(--font-mono); font-size: 10px; color: var(--ink-4); margin-top: 2px; }
+.wr-dxd-dec { display: flex; gap: 8px; font-size: var(--fs-xs); line-height: 1.55; }
+.wr-dxd-dec-t { flex: none; font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .wr-dxd-dec-x { color: var(--ink-2); }
 
-.wr-dxd-note { border: 1px dashed color-mix(in oklab, var(--sage) 50%, transparent); background: var(--sage-wash);
-  border-radius: var(--r-sm); padding: 8px 10px; font-size: 11.5px; line-height: 1.6; color: var(--ink-2); }
+.wr-dxd-note { border: 1px dashed var(--line-2); background: var(--paper-2);
+  border-radius: var(--r-sm); padding: 8px 10px; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); }
 
-/* 场景卡随行（正文上方）现在是共用设计卡 sdc-*（本文件末尾）；旧的 wr-scard-* 已随 WrSceneCard 一起删除 */
-
-/* ---- 章节编排：场景行分流动作 ---- */
-.arr-scene-fork { display: flex; gap: 6px; align-items: center; flex: none;
-  opacity: 0; transition: opacity var(--t-fast); }
-.arr-scene:hover .arr-scene-fork, .arr-scene.is-active .arr-scene-fork { opacity: 1; }
-.arr-fork-btn { border: 1px solid var(--line-2); background: var(--paper-0); border-radius: var(--r-sm);
-  font: inherit; font-size: 11px; font-weight: 600; color: var(--ink-2); padding: 4px 9px; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.arr-fork-btn:hover { border-color: var(--line-3); color: var(--ink-1); }
-.arr-fork-btn.is-write { background: var(--crimson); border-color: var(--crimson); color: #fff; }
-.arr-fork-btn.is-write:hover { background: var(--crimson-soft); }
-
-/* ---- 成稿中心：退回小修对话框 ---- */
-.mr-scrim { position: fixed; inset: 0; z-index: 90; background: color-mix(in oklab, var(--ink-1) 38%, transparent);
-  display: grid; place-items: center; padding: 24px; }
-.mr-card { width: min(520px, 94vw); background: var(--paper-1); border: 1px solid var(--line-2);
-  border-radius: var(--r-lg); box-shadow: var(--shadow-lg); padding: 20px; display: flex; flex-direction: column; gap: 14px; }
-.mr-head { display: flex; align-items: flex-start; gap: 10px; }
-.mr-title { font-size: 17px; font-weight: 600; }
-.mr-sub { font-size: 12px; color: var(--ink-3); margin-top: 3px; }
-.mr-x { margin-left: auto; border: 0; background: transparent; color: var(--ink-3); cursor: pointer;
-  width: 30px; height: 30px; border-radius: var(--r-sm); display: grid; place-items: center; flex: none; }
-.mr-x:hover { background: var(--paper-2); color: var(--ink-1); }
-.mr-field { display: flex; flex-direction: column; gap: 6px; }
-.mr-k { font-size: 11.5px; font-weight: 700; color: var(--ink-3); }
-.mr-k em { font-style: normal; color: var(--crimson); font-weight: 600; margin-left: 4px; }
-.mr-area { border: 1px solid var(--line-2); background: var(--paper-0); border-radius: var(--r-sm);
-  padding: 10px 12px; font-family: var(--font-serif); font-size: 13.5px; line-height: 1.7; color: var(--ink-1); resize: vertical; }
-.mr-area:focus { outline: 2px solid color-mix(in oklab, var(--crimson) 35%, transparent); }
-.mr-scenes { display: flex; flex-wrap: wrap; gap: 6px; }
-.mr-scene { border: 1px solid var(--line-2); background: var(--paper-0); border-radius: var(--r-pill);
-  font: inherit; font-size: 12px; font-weight: 600; color: var(--ink-2); padding: 5px 12px; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 6px; }
-.mr-scene-n { font-family: var(--font-mono); font-size: 10px; color: var(--ink-4); }
-.mr-scene.is-sel { background: var(--crimson-wash); border-color: color-mix(in oklab, var(--crimson) 45%, transparent); color: var(--crimson); }
-.mr-scene.is-sel .mr-scene-n { color: var(--crimson); }
-.mr-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
-.mr-check input { accent-color: var(--crimson); }
-.mr-check-strong { align-items: flex-start; padding: 11px 12px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--paper-2); line-height: 1.55; }
-.mr-check-strong input { margin-top: 3px; }
-.mr-error { padding: 9px 11px; border: 1px solid color-mix(in oklab, var(--crimson) 35%, var(--line-1)); border-radius: var(--r-sm); background: var(--crimson-wash); color: var(--crimson); font-size: 12px; line-height: 1.55; }
-.mr-foot { display: flex; justify-content: flex-end; gap: 8px; }
-
-/* ==========================================================
-   场景设计卡 sdc-*（阶段 X）——写作台与 AI 起草台共用的同一张卡（ws-scene-design.jsx）
-   ========================================================== */
-.sdc { display: grid; gap: 8px; margin: 0 0 8px; padding: 12px 14px; background: var(--paper-1);
-  border: 1px solid var(--line-1); border-radius: 10px; font-family: var(--font-sans); text-align: left; }
-.sdc.is-compact { padding: 10px 12px; gap: 6px; }
-.sdc-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.sdc-kind { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 700; padding: 2px 8px;
-  border-radius: 999px; background: var(--crimson-wash); color: var(--crimson); }
-.sdc-kind.is-react { background: var(--slate-wash); color: var(--slate); }
-.sdc-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 600; padding: 2px 7px;
-  border-radius: 999px; background: var(--paper-2); color: var(--ink-3); }
-.sdc-chip.tone-gold { background: var(--gold-wash); color: var(--gold); }
-.sdc-src { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--ink-4); }
-.sdc-link { border: 0; background: transparent; font: inherit; font-size: 10.5px; font-weight: 600; color: var(--ink-3);
-  padding: 2px 6px; border-radius: 6px; cursor: pointer; }
-.sdc-link:hover { color: var(--crimson); background: var(--paper-2); }
-.sdc-sync { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--gold-wash);
-  color: var(--ink-2); font-size: 11.5px; line-height: 1.5; }
-.sdc-sync span { flex: 1; min-width: 0; }
-.sdc-sync-btn { flex: 0 0 auto; border: 1px solid var(--gold); background: transparent; color: var(--gold); font: inherit;
-  font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; cursor: pointer; }
-.sdc-sync-btn[disabled] { opacity: 0.6; cursor: default; }
-.sdc-summary { margin: 0; font-family: var(--font-serif); font-size: 13px; line-height: 1.75; color: var(--ink-2); }
-.sdc-facts { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
-.sdc-facts li { display: inline-flex; align-items: baseline; gap: 6px; font-size: 11.5px; min-width: 0; }
-.sdc-facts li span { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-4); }
-.sdc-facts li strong { font-weight: 600; color: var(--ink-2); }
-.sdc-beats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 16px; }
-.sdc.is-compact .sdc-beats { grid-template-columns: 1fr; }
-.sdc-beats.is-followup { padding-top: 6px; border-top: 1px dashed var(--line-1); }
-.sdc-beat { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.sdc-beat-k, .sdc-row-k { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-4); }
-.sdc-beat-v, .sdc-row-v { font-size: 12px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; }
-.sdc-beat-v.is-empty { color: var(--ink-4); font-style: italic; }
-.sdc-row { display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: baseline; }
-.sdc-row.tone-crimson .sdc-row-k { color: var(--crimson); }
-.sdc-row.tone-gold .sdc-row-k { color: var(--gold); }
-.sdc-chapter { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line-1); }
-.sdc-chapter-head { display: flex; align-items: center; gap: 8px; }
-.sdc-chapter-n { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; color: var(--ink-4); }
-.sdc-chapter-t { font-family: var(--font-serif); font-size: 13px; font-weight: 600; color: var(--ink-1); }
-.sdc-chapter-sum { margin: 0; font-size: 11.5px; line-height: 1.65; color: var(--ink-3); }
-@media (max-width: 900px) { .sdc-beats { grid-template-columns: 1fr; } }
-/* 写作台右侧的上下文抽屉只有两百多像素宽：三拍竖排、标签在上，来源与链接另起一行 */
-.wr-drawer .sdc { padding: 10px 12px; }
-.wr-drawer .sdc-beats { grid-template-columns: 1fr; gap: 8px; }
-.wr-drawer .sdc-row { grid-template-columns: 1fr; gap: 1px; }
-.wr-drawer .sdc-src { margin-left: 0; flex-basis: 100%; }
-/* 收起的设计卡：只留头部一行（形态 / 篇幅 / 来源 / 链接） */
-.sdc-toggle { border: 0; background: transparent; font: inherit; font-size: 10.5px; font-weight: 600; color: var(--ink-4);
-  padding: 2px 6px; border-radius: 6px; cursor: pointer; }
-.sdc-toggle:hover { color: var(--ink-2); background: var(--paper-2); }
-.sdc.is-collapsed { gap: 0; }
+/* 场景卡随行（正文上方）现在是共用设计卡 sdc-*（样式在 ws-scene-design.css）；旧的 wr-scard-* 已随 WrSceneCard 一起删除 */

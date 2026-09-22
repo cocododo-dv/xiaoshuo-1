@@ -82,6 +82,8 @@ function runPayload(status, overrides = {}) {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  // 运行本章前有一道确认（外壳提示层没挂载时 wsConfirm 退回 window.confirm）
+  vi.spyOn(window, "confirm").mockReturnValue(true);
   WsWorks.activeId.mockReturnValue("project-1");
   WsCatalog.__refresh.mockResolvedValue();
   WsCatalog.get.mockReturnValue([]);
@@ -89,6 +91,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   while (mounted.length) {
     const record = mounted.pop();
     if (record.live) {
@@ -180,7 +183,10 @@ describe("章节编排 · 运行本章真实接线", () => {
 
     await click(view.button());
 
-    expect(view.host.textContent).toContain("当前章节尚未同步到后端");
+    // 旁边是短句，整句原因在悬停提示里（窄屏章头也放得下）
+    expect(view.host.querySelector(".arr-run-reason").textContent).toBe("尚未同步到后端");
+    expect(view.host.querySelector(".arr-run-reason").title).toContain("当前章节尚未同步到后端");
+    expect(view.button().title).toContain("当前章节尚未同步到后端");
     expect(apiPost).not.toHaveBeenCalled();
     expect(apiGet).not.toHaveBeenCalled();
   });
@@ -286,5 +292,58 @@ describe("章节编排 · 运行本章真实接线", () => {
 
     expect(apiGet).toHaveBeenCalledTimes(2);
     expect(view.button().disabled).toBe(false);
+  });
+
+  it("运行本章先确认要跑几场；作者取消就不提交任务", async () => {
+    window.confirm.mockReturnValue(false);
+    const view = await renderRun();
+
+    await click(view.button());
+
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(window.confirm.mock.calls[0][0]).toContain("本章的 3 场");
+    expect(apiPost).not.toHaveBeenCalled();
+    expect(view.button().disabled).toBe(false);
+  });
+
+  it("打开一章时读到「上次已完成」：只给一枚安静的小标签，不弹浮层、不重拉目录；点开能看、能收起", async () => {
+    apiGet.mockResolvedValueOnce(runPayload("completed", { completed_count: 3, progress_pct: 100 }));
+    const view = await renderRun();
+
+    expect(view.host.querySelector(".arr-run-card")).toBeNull();
+    const chip = view.host.querySelector(".arr-run-chip");
+    expect(chip.textContent).toBe("上次运行：已完成");
+    expect(WsCatalog.__refresh).not.toHaveBeenCalled();
+
+    await click(chip);
+    expect(view.host.querySelector(".arr-run-card").textContent).toContain("本章已完成");
+    expect(view.host.querySelector('[data-testid="chapter-run-review"]')).not.toBeNull();
+    await click(view.host.querySelector(".arr-run-close"));
+    expect(view.host.querySelector(".arr-run-card")).toBeNull();
+    expect(view.host.querySelector(".arr-run-chip")).not.toBeNull();
+  });
+
+  it("亲眼看着跑完的完成卡也能收起", async () => {
+    apiPost.mockResolvedValueOnce({ run: runPayload("running", { completed_count: 1, progress_pct: 33 }) });
+    apiGet
+      .mockResolvedValueOnce(runPayload("idle", { job_id: null }))
+      .mockResolvedValueOnce(runPayload("completed", { completed_count: 3, progress_pct: 100 }));
+    const view = await renderRun();
+    await click(view.button());
+    await act(async () => { await vi.advanceTimersByTimeAsync(25); await Promise.resolve(); });
+    expect(view.host.querySelector(".arr-run-card").textContent).toContain("本章已完成");
+    expect(WsCatalog.__refresh).toHaveBeenCalledTimes(1);
+
+    await click(view.host.querySelector(".arr-run-close"));
+    expect(view.host.querySelector(".arr-run-card")).toBeNull();
+    expect(view.host.querySelector(".arr-run-chip").textContent).toBe("上次运行：已完成");
+  });
+
+  it("不能运行的原因直接写在按钮旁边", async () => {
+    const nonCurrent = await renderRun({ chapter: { ...CHAPTER, current: false, backendId: "chapter-old" } });
+    expect(nonCurrent.host.querySelector(".arr-run-reason").textContent).toBe("只能运行当前章");
+    const unsynced = await renderRun({ chapter: { id: "local-only", title: "未同步章节", current: true } });
+    expect(unsynced.host.querySelector(".arr-run-reason").textContent).toContain("尚未同步到后端");
+    expect(unsynced.host.querySelector(".arr-run-card")).toBeNull();
   });
 });

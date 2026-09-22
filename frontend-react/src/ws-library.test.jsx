@@ -22,14 +22,14 @@ vi.mock("./lib/client.js", () => ({
   apiDelete: vi.fn(),
 }));
 
+// 回收站已搬到 ws-trash.jsx（它的桩在 ws-trash.test.jsx）；资料库只用目录。
 vi.mock("./ws-catalog.jsx", () => ({
-  WsTrashStore: {
-    subscribe: () => () => {},
-    list: () => [],
-    restore: vi.fn(),
-    purge: vi.fn(),
-    clear: vi.fn(),
-  },
+  // 大事记的「所在章」按目录解析；资料库视图订阅目录
+  WsCatalog: { get: () => [], subscribe: () => () => {} },
+  useCatalogChapters: () => [
+    { id: "ch01", backendId: "prj-main_CH01", n: 1, title: "雾港" },
+    { id: "ch02", backendId: "prj-main_CH02", n: 2, title: "潮信" },
+  ],
 }));
 
 const T = { timeout: 5000, interval: 25 };
@@ -169,11 +169,61 @@ describe("WsLibrary 视图与异步资料快照连通", () => {
     const root = createRoot(host);
     try {
       await act(async () => root.render(<WsLibrary go={vi.fn()} />));
-      expect(host.textContent).toContain("这部作品的档案库还是空的");
+      // 还在读：说在读，不先说「还是空的」、也不摆「新建第一份档案」
+      expect(host.textContent).toContain("正在读取档案库");
+      expect(host.textContent).not.toContain("这部作品的档案库还是空的");
 
       await act(async () => { library.resolve(libResponse()); await library.promise; });
       await vi.waitFor(() => expect(host.textContent).toContain("林岑"), T);
       expect(host.textContent).not.toContain("这部作品的档案库还是空的");
+      expect(host.textContent).not.toContain("正在读取档案库");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("读不到资料库：只有一处错误和重试，不冒充空档案库；重试成功后显示条目；真读到空才请作者新建", async () => {
+    const client = await import("./lib/client.js");
+    let mode = "fail";
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [{ project_id: "prj-main", title: "北岸手记" }] });
+      if (url === "/api/v2/projects/prj-main/library") {
+        if (mode === "fail") return Promise.reject(Object.assign(new Error("连接接口失败"), { code: "NETWORK_ERROR" }));
+        return Promise.resolve(mode === "empty" ? { characters: [], entities: [], timeline: [], relations: [] } : libResponse());
+      }
+      return Promise.resolve({});
+    });
+    window.localStorage.setItem("ws_active_work_v1", "prj-main");
+
+    const { WsWorks } = await import("./ws-works.jsx");
+    await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
+    const data = await import("./ws-library-data.jsx");
+    const { WsLibrary } = await import("./ws-library.jsx");
+    await vi.waitFor(() => expect(data.libLoadState().status).toBe("error"), T);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<WsLibrary go={vi.fn()} />));
+      const notice = host.querySelector('[data-testid="library-load-error"]');
+      expect(notice.getAttribute("role")).toBe("alert");
+      expect(notice.textContent).toContain("连接接口失败");
+      expect(notice.textContent).not.toContain("NETWORK_ERROR");
+      expect(host.textContent).not.toContain("这部作品的档案库还是空的");
+      expect(host.textContent).not.toContain("新建第一份档案");
+
+      mode = "ok";
+      const retry = [...notice.querySelectorAll("button")].find((b) => b.textContent === "重试");
+      await act(async () => { retry.click(); });
+      await vi.waitFor(() => expect(host.textContent).toContain("林岑"), T);
+      expect(host.querySelector('[data-testid="library-load-error"]')).toBeNull();
+
+      // 真读到了空库：这时才是「还是空的 · 新建第一份档案」
+      mode = "empty";
+      await act(async () => { await data.libRefetch(); });
+      await vi.waitFor(() => expect(host.textContent).toContain("这部作品的档案库还是空的"), T);
+      expect(host.textContent).toContain("新建第一份档案");
     } finally {
       await act(async () => root.unmount());
       host.remove();
@@ -293,5 +343,405 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
 
     const relationPosts = client.apiPost.mock.calls.filter(c => /\/library\/relations$/.test(c[0]));
     expect(relationPosts).toHaveLength(2);
+  });
+});
+
+describe("WsLibrary 编辑层：每个可编辑字段都真的写回后端", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("人物的标签与置顶写进 details（人物没有 tags 列）", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPatch.mockClear();
+    expect(await edit.LIB_persist({ lin: { tags: ["主线"], pinned: true } })).toBe(true);
+    const call = client.apiPatch.mock.calls.find(c => /\/characters\/lin$/.test(c[0]));
+    expect(call).toBeTruthy();
+    expect(call[1].details).toEqual(expect.objectContaining({ tags: ["主线"], pinned: true }));
+    expect(call[1]).not.toHaveProperty("tags");
+  });
+
+  it("世界的类型按中文名反查写回 entity.kind", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPatch.mockClear();
+    await edit.LIB_persist({ arch: { kind: "机构" } });
+    expect(client.apiPatch).toHaveBeenCalledWith(
+      "/api/v2/projects/prj-main/library/entities/arch",
+      expect.objectContaining({ kind: "faction" }));
+  });
+
+  it("大事记的时间、所在章与相关档案写进 time_label / chapter_ref / entity_refs", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPatch.mockClear();
+    await edit.LIB_persist({ e1: { timeLabel: "开篇前三年", chapterRef: "prj-main_CH02", links: [{ id: "zhou" }, { id: "arch" }] } });
+    expect(client.apiPatch).toHaveBeenCalledWith(
+      "/api/v2/projects/prj-main/library/timeline/e1",
+      { time_label: "开篇前三年", chapter_ref: "prj-main_CH02", entity_refs: ["character:zhou", "entity:arch"] });
+  });
+
+  it("改了已有关系的类型或标签：先删旧关系再建新关系（以前直接被跳过）", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPost.mockClear();
+    client.apiDelete.mockClear();
+    expect(await edit.LIB_persist({ lin: { links: [{ id: "zhou", type: "ally", rel: "旧识", relationId: "r1" }] } })).toBe(true);
+    expect(client.apiDelete).toHaveBeenCalledWith("/api/v2/projects/prj-main/library/relations/r1");
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v2/projects/prj-main/library/relations",
+      { from_ref: "character:lin", to_ref: "character:zhou", kind: "ally", note: "旧识" });
+  });
+
+  it("关系没变时不发任何关系请求", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPost.mockClear();
+    client.apiDelete.mockClear();
+    await edit.LIB_persist({ lin: { name: "林岑", links: [{ id: "zhou", type: "conflict", rel: "宿敌", relationId: "r1" }] } });
+    expect(client.apiDelete).not.toHaveBeenCalled();
+    expect(client.apiPost).not.toHaveBeenCalled();
+  });
+
+  it("没写标签的关系不把英文类型键当成标签显示", async () => {
+    const lib = libResponse();
+    lib.relations[0].note = "";
+    const { data } = await loadLib(lib);
+    expect(data.LIB_BY_ID.lin.links.find(l => l.id === "zhou")).toMatchObject({ rel: "", type: "conflict" });
+  });
+
+  it("新建先落后端，返回服务端 id 并刷新列表", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPost.mockResolvedValueOnce({ entity_id: "ENT_NEW" });
+    const id = await edit.LIB_createEntry("world", "钟楼", { kind: "location" });
+    expect(id).toBe("ENT_NEW");
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v2/projects/prj-main/library/entities",
+      expect.objectContaining({ name: "钟楼", kind: "location" }));
+  });
+
+  it("旧本机覆盖层迁移：资料库没读到时不上行也不写完成标记，读到后才 PATCH 并记完成", async () => {
+    const { client, edit } = await loadLib();
+    window.localStorage.setItem("ws-lib-edits-v1::prj-main", JSON.stringify({ lin: { blurb: "旧的本机简述" } }));
+    client.apiPatch.mockClear();
+    client.apiGet.mockImplementation((url) => {
+      if (/\/library$/.test(url)) return Promise.reject(new Error("offline"));
+      return Promise.resolve({ items: [{ project_id: "prj-main", title: "北岸手记" }] });
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await edit.LIB_migrateLegacy()).toBe(false);
+    expect(client.apiPatch).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("ws-lib-migrated-v1::prj-main")).toBeNull();
+
+    routeApiGet(client, libResponse());
+    expect(await edit.LIB_migrateLegacy()).toBe(true);
+    expect(client.apiPatch).toHaveBeenCalledWith(
+      "/api/v2/projects/prj-main/library/characters/lin",
+      expect.objectContaining({ details: expect.objectContaining({ blurb: "旧的本机简述" }) }),
+    );
+    expect(window.localStorage.getItem("ws-lib-migrated-v1::prj-main")).not.toBeNull();
+  });
+
+  it("删除人物遇到「仍在使用」时说清原因并返回 false", async () => {
+    const { client, edit, data } = await loadLib();
+    client.apiDelete.mockRejectedValueOnce(Object.assign(new Error("character is still referenced"), {
+      code: "LIBRARY_CHARACTER_IN_USE", details: { dependencies: { catalog_scenes: 2, snowflake_scenes: 1 } },
+    }));
+    expect(await edit.LIB_deleteEntry(data.LIB_BY_ID.lin)).toBe(false);
+    expect(client.apiDelete).toHaveBeenCalledWith("/api/v2/projects/prj-main/library/characters/lin");
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("3 处"));
+  });
+});
+
+function setField(el, value) {
+  const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+async function mountLibrary(lib) {
+  const client = await import("./lib/client.js");
+  let current = lib;
+  client.apiGet.mockImplementation((url) => {
+    if (url === "/api/v2/projects") return Promise.resolve({ items: [{ project_id: "prj-main", title: "北岸手记" }] });
+    if (url === "/api/v2/projects/prj-main/library") return Promise.resolve(current);
+    return Promise.resolve({});
+  });
+  client.apiPost.mockResolvedValue({});
+  client.apiPatch.mockResolvedValue({});
+  client.apiDelete.mockResolvedValue({});
+  window.localStorage.setItem("ws_active_work_v1", "prj-main");
+  const { WsWorks } = await import("./ws-works.jsx");
+  await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
+  const data = await import("./ws-library-data.jsx");
+  await data.libRefetch();
+  const { WsLibrary } = await import("./ws-library.jsx");
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => root.render(<WsLibrary go={vi.fn()} />));
+  return {
+    client, host,
+    setLibrary: (next) => { current = next; },
+    unmount: async () => { await act(async () => root.unmount()); host.remove(); },
+  };
+}
+
+const click = async (el) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); }); };
+const buttonByText = (root, text) => Array.from(root.querySelectorAll("button")).find(b => b.textContent.trim().includes(text));
+
+describe("WsLibrary 视图：新建、键盘与删除", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("新建一份档案：列表里只有一条，编辑器打开在服务端条目上", async () => {
+    const view = await mountLibrary(libResponse());
+    try {
+      await click(buttonByText(view.host, "新建档案"));
+      const nameInput = view.host.querySelector(".dcreate-name-input");
+      expect(nameInput).toBeTruthy();
+      await act(async () => setField(nameInput, "新来的邻居"));
+      view.client.apiPost.mockResolvedValueOnce({ character_id: "CHAR_NEW" });
+      const withNew = libResponse();
+      withNew.characters.push({ character_id: "CHAR_NEW", name: "新来的邻居", role: "", summary: "", ref: "character:CHAR_NEW", details: {} });
+      view.setLibrary(withNew);
+      await click(buttonByText(view.host, "创建并编辑"));
+      await vi.waitFor(() => expect(view.host.querySelector(".dform-name")).toBeTruthy(), T);
+      expect(view.host.querySelector(".dform-name").value).toBe("新来的邻居");
+      const rows = Array.from(view.host.querySelectorAll(".lib2-item")).filter(b => b.textContent.includes("新来的邻居"));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].getAttribute("data-lib-id")).toBe("CHAR_NEW");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("编辑表单里按 ↓ 不会跳到下一条、也不会丢掉正在写的内容", async () => {
+    const view = await mountLibrary(libResponse());
+    try {
+      const first = view.host.querySelector('.lib2-item[data-lib-id="lin"]');
+      await click(first);
+      await click(buttonByText(view.host, "编辑档案"));
+      const area = view.host.querySelector("textarea.dform-area");
+      expect(area).toBeTruthy();
+      await act(async () => setField(area, "写到一半"));
+      await act(async () => {
+        area.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+      });
+      expect(view.host.querySelector("textarea.dform-area")).toBeTruthy();
+      expect(view.host.querySelector("textarea.dform-area").value).toBe("写到一半");
+      expect(view.host.querySelector(".dform-name").value).toBe("林岑");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("焦点在列表条目上时 ↓ 翻到下一条", async () => {
+    const view = await mountLibrary(libResponse());
+    try {
+      const first = view.host.querySelector(".lib2-item");
+      await click(first);
+      const firstId = first.getAttribute("data-lib-id");
+      await act(async () => {
+        first.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+      });
+      const active = view.host.querySelector(".lib2-item.is-active");
+      expect(active).toBeTruthy();
+      expect(active.getAttribute("data-lib-id")).not.toBe(firstId);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("搜索框里输入法组词时的 ↓ / Esc 属于输入法：不跳进列表、不清空搜索词", async () => {
+    const view = await mountLibrary(libResponse());
+    try {
+      const search = view.host.querySelector(".lib2-search input");
+      await act(async () => { search.focus(); setField(search, "林"); });
+      const key = async (init) => {
+        await act(async () => { search.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })); });
+        await act(async () => { await new Promise(r => setTimeout(r, 40)); });   // 等过跳焦点用的那一帧
+      };
+      await key({ key: "ArrowDown", isComposing: true, keyCode: 229 });
+      expect(document.activeElement).toBe(search);
+      await key({ key: "Escape", isComposing: true, keyCode: 229 });
+      expect(search.value).toBe("林");
+      // 组完词之后 ↓ 照常跳进列表（证明上面停在搜索框不是因为快捷键本身坏了）
+      await key({ key: "ArrowDown" });
+      expect(document.activeElement.classList.contains("lib2-item")).toBe(true);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("打开资料库时把旧版只存在本机的新建档案上行一次", async () => {
+    window.localStorage.setItem("ws-lib-additions-v1::prj-main", JSON.stringify([
+      { id: "u-old1", cat: "world", name: "旧本机地点", kind: "", summary: "", blurb: "", tags: [], facts: [], links: [] },
+    ]));
+    const view = await mountLibrary(libResponse());
+    try {
+      await vi.waitFor(() => expect(view.client.apiPost).toHaveBeenCalledWith(
+        "/api/v2/projects/prj-main/library/entities",
+        expect.objectContaining({ name: "旧本机地点" }),
+      ), T);
+      await vi.waitFor(() => expect(window.localStorage.getItem("ws-lib-migrated-v1::prj-main")).not.toBeNull(), T);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("删除真实条目：先确认，确认后调 DELETE 并回到总览", async () => {
+    const view = await mountLibrary(libResponse());
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      await click(view.host.querySelector('.lib2-item[data-lib-id="arch"]'));
+      await click(buttonByText(view.host, "删除"));
+      await vi.waitFor(() => expect(view.client.apiDelete).toHaveBeenCalledWith("/api/v2/projects/prj-main/library/entities/arch"), T);
+      expect(confirm).toHaveBeenCalled();
+      await vi.waitFor(() => expect(view.host.querySelector('[data-screen-label="library-overview"]')).toBeTruthy(), T);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("取消删除确认：不发 DELETE", async () => {
+    const view = await mountLibrary(libResponse());
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      await click(view.host.querySelector('.lib2-item[data-lib-id="arch"]'));
+      await click(buttonByText(view.host, "删除"));
+      await act(async () => { await Promise.resolve(); });
+      expect(view.client.apiDelete).not.toHaveBeenCalled();
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("总览不再显示假的就绪度 / 待你处理，而是还没写简述的档案", async () => {
+    const lib = libResponse();
+    lib.timeline[0].chapter_ref = "prj-main_CH02";
+    const view = await mountLibrary(lib);
+    try {
+      const text = view.host.textContent;
+      expect(text).not.toContain("就绪度");
+      expect(text).not.toContain("待你处理");
+      expect(text).toContain("还没写简述");
+      // 大事记的所在章经目录解析成「第 N 章 · 标题」
+      await click(view.host.querySelector('.lib2-item[data-lib-id="e1"]'));
+      expect(view.host.textContent).toContain("2003");
+      expect(view.host.textContent).toContain("第 2 章 · 潮信");
+      expect(view.host.textContent).not.toContain("prj-main_CH02");
+    } finally {
+      await view.unmount();
+    }
+  });
+});
+
+describe("WsLibrary 视图：图谱与时间线", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const radio = (root, text) => Array.from(root.querySelectorAll('[role="radio"]')).find(b => b.textContent.includes(text));
+  const keydown = async (el, key) => {
+    await act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
+  };
+
+  it("没有任何关联时图谱给空态，不画一堆散点", async () => {
+    const lib = libResponse();
+    lib.relations = [];
+    lib.timeline[0].entity_refs = [];
+    const view = await mountLibrary(lib);
+    try {
+      await click(radio(view.host, "图谱"));
+      expect(view.host.textContent).toContain("还没有关联");
+      expect(view.host.querySelector(".graph-node")).toBeNull();
+      await click(buttonByText(view.host, "去档案里添加关系"));
+      expect(radio(view.host, "档案").getAttribute("aria-checked")).toBe("true");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("图谱节点能用键盘走到：空格选中、回车打开档案", async () => {
+    const view = await mountLibrary(libResponse());
+    try {
+      await click(radio(view.host, "图谱"));
+      const nodes = Array.from(view.host.querySelectorAll(".graph-node"));
+      expect(nodes).toHaveLength(4);
+      nodes.forEach(n => expect(n.getAttribute("tabindex")).toBe("0"));
+      const zhou = nodes.find(n => (n.getAttribute("aria-label") || "").startsWith("周岚"));
+      await keydown(zhou, " ");
+      expect(view.host.querySelector(".graph-panel").textContent).toContain("周岚");
+      await keydown(zhou, "Enter");
+      expect(radio(view.host, "档案").getAttribute("aria-checked")).toBe("true");
+      expect(view.host.querySelector(".dossier-name").textContent).toBe("周岚");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("选中节点的面板只数它自己的关联，键盘焦点移到别的节点时不跟着变", async () => {
+    const lib = libResponse();
+    lib.relations.push({ relation_id: "r2", from_ref: "character:lin", to_ref: "entity:arch", kind: "ally", note: "" });
+    const view = await mountLibrary(lib);
+    try {
+      await click(radio(view.host, "图谱"));
+      const nodes = Array.from(view.host.querySelectorAll(".graph-node"));
+      const byName = (name) => nodes.find(n => (n.getAttribute("aria-label") || "").startsWith(name));
+      await keydown(byName("周岚"), " ");
+      const rel = () => view.host.querySelector(".graph-panel-rel").textContent.trim();
+      expect(rel()).toBe("1 项关联");
+      // 林岑有好几条关联；焦点移过去只影响高亮，面板说的仍是周岚
+      await act(async () => { byName("林岑").dispatchEvent(new FocusEvent("focusin", { bubbles: true })); });
+      expect(byName("林岑").classList.contains("is-lit")).toBe(true);
+      expect(view.host.querySelector(".graph-panel").textContent).toContain("周岚");
+      expect(rel()).toBe("1 项关联");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("图例和筛选只列数据里出现过的类别与关系类型", async () => {
+    const view = await mountLibrary(libResponse());
+    try {
+      await click(radio(view.host, "图谱"));
+      const legend = view.host.querySelector(".graph-legend").textContent;
+      expect(legend).toContain("人物");
+      expect(legend).toContain("对立");
+      expect(legend).not.toContain("同盟");
+      await click(buttonByText(view.host, "筛选"));
+      const pop = view.host.querySelector(".graph-pop");
+      expect(pop).toBeTruthy();
+      expect(pop.textContent).not.toContain("同盟");
+      // 关掉「对立」这一类关系：那条边不画了，图例上划掉
+      const conflict = Array.from(pop.querySelectorAll("label")).find(l => l.textContent.includes("对立"));
+      await click(conflict.querySelector("input"));
+      expect(view.host.querySelector(".graph-edge.rel-conflict")).toBeNull();
+      const off = Array.from(view.host.querySelectorAll(".graph-legend-item.is-off")).map(li => li.textContent);
+      expect(off).toContain("对立");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("时间线上的大事记按回车直接打开档案（不必双击）", async () => {
+    const view = await mountLibrary(libResponse());
+    try {
+      await click(radio(view.host, "时间线"));
+      const card = view.host.querySelector(".tl-event");
+      expect(card.textContent).toContain("第三潮汐事件");
+      await keydown(card, "Enter");
+      expect(radio(view.host, "档案").getAttribute("aria-checked")).toBe("true");
+      expect(view.host.querySelector(".dossier-name").textContent).toBe("第三潮汐事件");
+    } finally {
+      await view.unmount();
+    }
   });
 });

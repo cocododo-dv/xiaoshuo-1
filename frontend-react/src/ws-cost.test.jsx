@@ -10,6 +10,20 @@ vi.mock("./lib/client.js", () => ({
   apiDelete: vi.fn(),
 }));
 
+/* 成本看板用目录把后端章 / 场 id 换成「第 N 章 · 第 M 场」；这里不测目录，给空目录 */
+const fx = vi.hoisted(() => ({ catalog: [] }));
+vi.mock("./ws-catalog.jsx", () => ({
+  WsCatalog: { get: () => fx.catalog, subscribe: () => () => {} },
+  useCatalogChapters: () => fx.catalog,
+}));
+
+/* 成本看板跟随当前作品（ws-works 的 useActiveWorkIdentity）；作品 id 由夹具给 */
+const works = vi.hoisted(() => ({ id: "P1" }));
+vi.mock("./ws-works.jsx", () => ({
+  WsWorks: { activeId: () => works.id },
+  useActiveWorkIdentity: () => ({ id: works.id, title: "测试长篇" }),
+}));
+
 async function loadStore() {
   const client = await import("./lib/client.js");
   return { client, mod: await import("./ws-cost.jsx") };
@@ -142,5 +156,96 @@ describe("WsCost store（成本看板）", () => {
     const r = await mod.costLoad("");
     expect(r).toBeNull();
     expect(client.apiGet).not.toHaveBeenCalled();
+  });
+});
+
+/* ---------- 视图：章 / 场用目录里的叫法，金额与状态是给作者看的 ---------- */
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
+
+describe("WsCost 视图", () => {
+  let root;
+  let host;
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    fx.catalog = [{
+      id: "ch01", backendId: "C1", n: "01", title: "盐场的早班",
+      scenes: [{ sid: "sid-a", backendId: "S1", title: "交班" }, { sid: "sid-b", backendId: "S2", title: "夜渡" }],
+    }];
+    works.id = "P1";
+  });
+  afterEach(async () => {
+    if (root) await act(async () => root.unmount());
+    if (host) host.remove();
+    root = null;
+    host = null;
+    vi.restoreAllMocks();
+  });
+
+  it("按章节用后端 id 找到目录章名；调用明细里场景、状态、金额都是作者读得懂的样子", async () => {
+    const { client, mod } = await loadStore();
+    client.apiGet.mockResolvedValue({
+      ...DASH,
+      summary: { ...DASH.summary, total_cost: 402.7712 },
+      top_calls: [
+        { llm_call_id: "c1", cost: 26.84951, total_tokens: 300, phase: "candidate_generation", node_id: "style_draft", accounting_status: "settled", scene_id: "S2", latency_ms: 1520 },
+        { llm_call_id: "c2", cost: 0.0042, total_tokens: 10, phase: "quality_check", node_id: "made_up_node", accounting_status: "reserved" },
+      ],
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root.render(<mod.WsCost />));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(host.textContent).toContain("第 1 章 · 盐场的早班");
+    expect([...host.querySelectorAll("td")].some((td) => td.textContent === "C1")).toBe(false);
+    expect(host.textContent).toContain("第 1 章 · 第 2 场");
+    expect(host.textContent).toContain("已结算");
+    expect(host.textContent).not.toContain("settled");
+    expect(host.textContent).toContain("风格稿");
+    expect(host.textContent).toContain("402.77 USD");
+    expect(host.textContent).toContain("26.85 USD");
+    expect(host.textContent).toContain("0.0042 USD");
+    expect(host.textContent).toContain("1.5 秒");
+    // 开发者口径（配置文件路径）收在「口径说明」里，不在页头
+    expect(host.querySelector(".ws-page-head").textContent).not.toContain("pricing.yaml");
+  });
+
+  it("场景预算解除武装时显示「不限」，而不是悄悄丢掉预算卡", async () => {
+    const { client, mod } = await loadStore();
+    client.apiGet.mockResolvedValueOnce(DASH);
+    await mod.costLoad("P1");
+    client.apiGet.mockResolvedValueOnce({
+      level: "scene",
+      summary: { scene_id: "S1", total_cost: 0.5, currency: "USD", call_count: 1, total_tokens: 20, budget: { budget: null, used: 1234, disarmed: true } },
+    });
+    await mod.costLoad("P1", { sceneId: "S1" });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root.render(<mod.WsCost />));
+    expect(host.textContent).toContain("第 1 章 · 第 1 场「交班」");
+    expect(host.textContent).toContain("不限");
+    expect(host.textContent).toContain("已用 1,234 token");
+  });
+
+  it("作品列表还没到（__loading__）时不拉账本；当前作品落定后按它的 id 拉", async () => {
+    works.id = "__loading__";
+    const { client, mod } = await loadStore();
+    client.apiGet.mockResolvedValue(DASH);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root.render(<mod.WsCost />));
+    expect(client.apiGet).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("还没有选作品");
+
+    works.id = "P2";
+    await act(async () => root.render(<mod.WsCost />));
+    await act(async () => { await Promise.resolve(); });
+    expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/P2/cost-dashboard?days=30");
   });
 });

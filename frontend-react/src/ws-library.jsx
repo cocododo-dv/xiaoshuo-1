@@ -1,18 +1,22 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { agoLabel } from "./lib/ago.js";
-import { useStoreTick } from "./lib/store-utils.js";
-import { WsTrashStore } from "./ws-catalog.jsx";
-import { LIB_BY_ID, LIB_CATS, LIB_ENTRIES, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
-import { LIB_REL_TYPES, LIB_SORTS, LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_groupConnections, LIB_health, LIB_isCited, LIB_nextAction, LIB_sortWithPin } from "./ws-library-derive.jsx";
+import { useCatalogChapters } from "./ws-catalog.jsx";
+import { LIB_CATS, LIB_ENTRIES, libLoadState, libRefetch, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
+import {
+  LIB_SORTS, LIB_buildBacklinks, LIB_connections, LIB_entrySub, LIB_overviewFacts, LIB_sortWithPin,
+} from "./ws-library-derive.jsx";
+import { Dossier, DossierNav } from "./ws-library-dossier.jsx";
 import { LibGraph } from "./ws-library-graph.jsx";
 import { LibTimeline } from "./ws-library-timeline.jsx";
 import { LibOverview } from "./ws-library-overview.jsx";
-import { DossierCreate, DossierEdit, LIB_applyEdit, LIB_deleteEntry, LIB_loadAdds, LIB_loadEdits, LIB_newEntry, LIB_persist, LIB_persistAdds, LIB_seedOn } from "./ws-library-edit.jsx";
-import { WsWorks } from "./ws-works.jsx";
-import { navigateWithViewIntent, setViewIntentTargetReady } from "./ws-view-intents.js";
+import { LibEntryRow, libCatLabel } from "./ws-library-parts.jsx";
+import { DossierCreate, DossierEdit, LIB_createEntry, LIB_deleteEntry, LIB_migrateLegacy, LIB_persist } from "./ws-library-edit.jsx";
+import { WsWorks, useActiveWorkIdentity } from "./ws-works.jsx";
+import { setViewIntentTargetReady } from "./ws-view-intents.js";
+import { wsConfirm } from "./ws-notify.jsx";
+import { isImeComposing } from "./ws-dialog.jsx";
+import { EmptyState, Notice, PageHeader, Segmented, Spinner } from "./ws-ui.jsx";
 
-/* global React, I, LIB_CATS, LIB_ENTRIES, LIB_BY_ID, LibGraph, LibTimeline, LibOverview, LIB_loadEdits, LIB_persist, LIB_applyEdit, DossierEdit, DossierCreate, LIB_loadAdds, LIB_persistAdds, LIB_newEntry, LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_health, LIB_SORTS, LIB_sortWithPin, LIB_isCited, LIB_nextAction, LIB_groupConnections, LIB_REL_TYPES */
 const {
   useState: useLb,
   useMemo: useLbMemo,
@@ -22,11 +26,21 @@ const {
 } = React;
 
 /* ==========================================================
-   Library — 档案库 (master-detail codex)
+   资料 · 故事圣经（左目录 | 右详情），另有图谱与时间线两种看法。
+   数据只有一份：ws-library-data.jsx 从后端装载的 LIB_ENTRIES；这里不再叠本地覆盖层——
+   新建先落后端再选中，编辑保存后以服务端为准刷新。
+   这个文件只管页面：目录、筛选、选中与编辑态的切换。档案阅读视图在 ws-library-dossier.jsx，
+   编辑 / 新建表单在 ws-library-edit.jsx，共用的行与字块在 ws-library-parts.jsx；回收站在 ws-trash.jsx。
    ========================================================== */
 
-const ACC = (a) => `acc-${a || "ink"}`;
-const CAT_META = LIB_CATS.reduce((m, c) => { m[c.id] = c; return m; }, {});
+const VIEW_OPTIONS = [
+  { value: "files", label: "档案", icon: <I.Layout size={14} /> },
+  { value: "graph", label: "图谱", icon: <I.Compass size={14} /> },
+  { value: "timeline", label: "时间线", icon: <I.Clock size={14} /> },
+];
+
+/* 列表里的方向键只在焦点落在某一条上时接管；输入框、下拉框里的方向键原样交给它们。 */
+const isFormField = (el) => !!(el && el.closest && el.closest("input, textarea, select, [contenteditable='true']"));
 
 function WsLibrary({ go }) {
   const [query, setQuery]   = useLb("");
@@ -34,30 +48,31 @@ function WsLibrary({ go }) {
   const [selId, setSelId]   = useLb(null);          /* null → 总览落地页 */
   const [vmode, setVmode]   = useLb("files");
   const [sort, setSort]     = useLb("recent");
-  const [edits, setEdits]   = useLb(() => LIB_loadEdits());
-  const [adds, setAdds]     = useLb(() => LIB_loadAdds());
   const [editing, setEditing] = useLb(false);
   const [creating, setCreating] = useLb(false);
-  const searchRef = useLbRef(null);
+  const [pane, setPane]     = useLb("list");        /* 窄屏（≤820px）只显示一栏：list | detail */
+  const [pinOverride, setPinOverride] = useLb({});   /* 置顶的乐观值，服务端刷新后撤掉 */
+  const listRef = useLbRef(null);
   const pendingEdit = useLbRef(null);   /* 新建后自动进入编辑态的目标 id */
+  const editDirty = useLbRef(false);    /* 编辑表单是否有没保存的改动（DossierEdit 回报） */
   const libraryRevision = useLbExternalStore(libSubscribe, libSnapshot, libSnapshot);
+  const chapters = useCatalogChapters ? useCatalogChapters() : [];
+  const work = useActiveWorkIdentity ? useActiveWorkIdentity() : (WsWorks ? WsWorks.active() : { title: "" });
 
-  /* single source of truth — (种子按作品门控 + 用户新建) 再叠加编辑覆盖层 */
-  const rawEntries = useLbMemo(
-    () => [...(LIB_seedOn && !LIB_seedOn() ? [] : LIB_ENTRIES), ...adds],
-    [adds, libraryRevision]
+  const entries = useLbMemo(
+    () => LIB_ENTRIES.map(e => (e.id in pinOverride ? { ...e, pinned: pinOverride[e.id] } : e)),
+    [libraryRevision, pinOverride] // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const entries    = useLbMemo(() => rawEntries.map(e => LIB_applyEdit(e, edits)), [rawEntries, edits]);
   const byId       = useLbMemo(() => entries.reduce((m, e) => { m[e.id] = e; return m; }, {}), [entries]);
   const backlinks  = useLbMemo(() => LIB_buildBacklinks(entries), [entries]);
-  const health     = useLbMemo(() => LIB_health(entries), [entries]);
+  const facts      = useLbMemo(() => LIB_overviewFacts(entries), [entries]);
 
-  /* counts per category, respecting the live query (entries 已是合并后数据) */
+  /* counts per category, respecting the live query */
   const matches = useLbMemo(() => {
     const q = query.trim().toLowerCase();
     return entries.filter(e => {
       if (!q) return true;
-      const hay = [e.name, e.summary, e.blurb, e.kind, e.code, ...(e.tags || [])].join(" ").toLowerCase();
+      const hay = [e.name, e.summary, e.blurb, e.kind, e.timeLabel, ...(e.tags || [])].join(" ").toLowerCase();
       return hay.includes(q);
     });
   }, [query, entries]);
@@ -86,7 +101,6 @@ function WsLibrary({ go }) {
   const visible = useLbMemo(() => groups.flatMap(g => g.items), [groups]);
 
   const sel = selId ? byId[selId] : null;
-  const mergedSel = sel;   /* entries 已合并编辑覆盖 */
   const selConns = useLbMemo(
     () => (sel ? LIB_connections(sel, byId, backlinks) : []),
     [sel, byId, backlinks]
@@ -107,531 +121,322 @@ function WsLibrary({ go }) {
     }
   }, [selId]);
 
-  const saveEdit = (patch) => {
-    const next = { ...edits, [selId]: { ...(edits[selId] || {}), ...patch } };
-    setEdits(next); LIB_persist(next); setEditing(false);
-  };
-  const resetEdit = () => {
-    const next = { ...edits }; delete next[selId];
-    setEdits(next); LIB_persist(next); setEditing(false);
-  };
-
-  /* 直接对任意条目打补丁（状态推进 / 置顶开关），持久化并实时联动各视图 */
-  const patchEntry = (id, patch) => {
-    const next = { ...edits, [id]: { ...(edits[id] || {}), ...patch } };
-    setEdits(next); LIB_persist(next);
+  /* 离开编辑态之前：有没保存的改动就先问一句（切条目、回总览、新建、换看法都走这里） */
+  const leaveEdit = (fn) => {
+    if (!editing || !editDirty.current) { fn(); return; }
+    wsConfirm({
+      title: "放弃没保存的修改？",
+      body: "这份档案里还有没保存的改动，离开后就没了。",
+      confirmLabel: "放弃修改",
+      cancelLabel: "继续编辑",
+      tone: "danger",
+    }).then((ok) => { if (ok) { editDirty.current = false; fn(); } });
   };
 
-  /* 新建档案 */
-  const startCreate = () => { setCreating(true); setSelId(null); setEditing(false); };
-  const doCreate = (catId, name) => {
-    const ne = LIB_newEntry(catId, name);
-    const next = [...adds, ne];
-    setAdds(next); LIB_persistAdds(next);
-    pendingEdit.current = ne.id;
-    setCreating(false); setSelId(ne.id);
-  };
-  /* 删除用户新建的档案（Q2 修复：真删后端，否则 refetch 后复活） */
-  const deleteEntry = (id) => {
-    const base = byId[id];
-    const next = adds.filter(a => a.id !== id);
-    setAdds(next); LIB_persistAdds(next);
-    if (edits[id]) { const e2 = { ...edits }; delete e2[id]; setEdits(e2); LIB_persist(e2); }
-    if (base) LIB_deleteEntry(base);
-    setSelId(null); setEditing(false);
-  };
+  /* 外部跳转的监听只挂一次，经 ref 调到最新的 leaveEdit（否则拿到的是首帧的 editing=false，护不住没保存的表单） */
+  const leaveEditRef = useLbRef(leaveEdit);
+  leaveEditRef.current = leaveEdit;
 
-  /* follow a cross-link: select + reveal in the list */
-  const navTo = (id) => {
-    if (!byId[id]) return;
+  const openEntry = (id, { reveal = false } = {}) => leaveEdit(() => {
     setCreating(false);
+    if (reveal) { setQuery(""); setCat("all"); }
     setSelId(id);
+    setPane("detail");
+  });
+  /* 图谱 / 时间线里「打开档案」：回到档案看法，清掉筛选让这一条一定在目录里 */
+  const openFromView = (id) => { setSelId(id); setCreating(false); setCat("all"); setQuery(""); setVmode("files"); setPane("detail"); };
+  const goOverview = () => leaveEdit(() => { setSelId(null); setCreating(false); setEditing(false); setPane("detail"); });
+  const startCreate = () => leaveEdit(() => { setVmode("files"); setCreating(true); setSelId(null); setEditing(false); setPane("detail"); });
+  const switchView = (mode) => leaveEdit(() => { setVmode(mode); setEditing(false); });
+  const cancelEdit = () => leaveEdit(() => setEditing(false));
+
+  const saveEdit = async (patch) => {
+    const id = selId;
+    const ok = await LIB_persist({ [id]: patch });
+    if (!ok) return false;
+    await libRefetch();
+    editDirty.current = false;
+    setEditing(false);
+    return true;
+  };
+
+  /* 置顶：乐观显示，写进扩展字段组 details.pinned；失败撤回 */
+  const togglePin = async (entry) => {
+    const next = !entry.pinned;
+    setPinOverride(prev => ({ ...prev, [entry.id]: next }));
+    const ok = await LIB_persist({ [entry.id]: { pinned: next } });
+    if (ok) await libRefetch();
+    setPinOverride(prev => { const n = { ...prev }; delete n[entry.id]; return n; });
+  };
+
+  /* 新建：先落后端，拿到服务端 id 再选中并打开编辑 */
+  const doCreate = async (catId, name, options) => {
+    const id = await LIB_createEntry(catId, name, options);
+    if (!id) return null;
+    pendingEdit.current = id;
+    setCreating(false);
     setQuery("");
     setCat("all");
+    setSelId(id);
+    return id;
   };
-  const goOverview = () => { setSelId(null); setCreating(false); setEditing(false); };
-  /* 轻量选择：保持当前筛选/搜索，用于上一条/下一条翻阅 */
-  const selectId = (id) => { setCreating(false); setSelId(id); };
+
+  const deleteEntry = async (entry) => {
+    const conns = LIB_connections(entry, byId, backlinks).length;
+    const body = entry.cat === "events"
+      ? "这条大事记会被删除（不进回收站），删除后不能恢复。"
+      : `这份档案${conns ? `和它的 ${conns} 条关联` : ""}会一起删除（不进回收站），删除后不能恢复。${entry.cat === "people" ? "构思或场景里还在用这个人物时，删除会被拒绝。" : ""}`;
+    const ok = await wsConfirm({ title: `删除「${entry.name}」？`, body, confirmLabel: "删除", tone: "danger" });
+    if (!ok) return;
+    const done = await LIB_deleteEntry(entry);
+    if (done) { setSelId(null); setEditing(false); }
+  };
+
+  /* 旧版本机覆盖层（只存在浏览器里的改动 / 新建）一次性上行到服务端；每部作品成功一次，失败下次打开再试 */
+  const workId = work && work.id;
+  useLbEffect(() => { LIB_migrateLegacy(); }, [workId]);
 
   /* 外部跳转：从正文写作点击实体 → 打开对应档案 */
   useLbEffect(() => {
-    const open = (id) => { if (!id) return; setVmode("files"); setCreating(false); setQuery(""); setCat("all"); setSelId(id); };
-    const h = (e) => open(e.detail);
+    const h = (e) => {
+      const id = e.detail;
+      if (!id) return;
+      leaveEditRef.current(() => { setVmode("files"); setCreating(false); setQuery(""); setCat("all"); setSelId(id); setPane("detail"); });
+    };
     window.addEventListener("ws:lib-open", h);
     setViewIntentTargetReady("library");
     return () => {
       setViewIntentTargetReady("library", false);
       window.removeEventListener("ws:lib-open", h);
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* keyboard: ↑/↓ moves through the visible list */
-  useLbEffect(() => {
-    const onKey = (ev) => {
-      if (document.activeElement === searchRef.current) return;
-      if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
-      if (!visible.length) return;
-      ev.preventDefault();
-      const idx = visible.findIndex(e => e.id === selId);
-      const next = ev.key === "ArrowDown"
-        ? Math.min(visible.length - 1, idx < 0 ? 0 : idx + 1)
-        : Math.max(0, idx < 0 ? 0 : idx - 1);
-      setSelId(visible[next].id);
+  /* 键盘：焦点在列表某一条上时，↑/↓ 翻条目，Home/End 到首尾；焦点跟着走 */
+  const focusItem = (id) => {
+    const run = () => {
+      const root = listRef.current;
+      if (!root) return;
+      const el = Array.from(root.querySelectorAll(".lib2-item")).find(n => n.getAttribute("data-lib-id") === id);
+      if (el) el.focus();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [visible, selId]);
+    (window.requestAnimationFrame || ((cb) => setTimeout(cb, 0)))(run);
+  };
+  const onListKeyDown = (ev) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(ev.key)) return;
+    if (isFormField(ev.target) || !visible.length) return;
+    const item = ev.target && ev.target.closest && ev.target.closest(".lib2-item");
+    if (!item) return;
+    ev.preventDefault();
+    const idx = visible.findIndex(e => e.id === item.getAttribute("data-lib-id"));
+    let next = idx;
+    if (ev.key === "Home") next = 0;
+    else if (ev.key === "End") next = visible.length - 1;
+    else if (ev.key === "ArrowDown") next = Math.min(visible.length - 1, idx + 1);
+    else next = Math.max(0, idx - 1);
+    const target = visible[next];
+    if (!target || target.id === selId) return;
+    openEntry(target.id);
+    focusItem(target.id);
+  };
+  const onSearchKeyDown = (ev) => {
+    if (isImeComposing(ev)) return;   // 组词时的 ↓ / Esc 属于输入法，不能跳走或清空搜索词
+    if (ev.key === "ArrowDown" && visible.length) { ev.preventDefault(); focusItem((visible.find(e => e.id === selId) || visible[0]).id); }
+    if (ev.key === "Escape" && query) { ev.preventDefault(); setQuery(""); }
+  };
+  const tabStopId = (visible.find(e => e.id === selId) || visible[0] || {}).id;
+
+  const workTitle = (work && work.title) || "这部作品";
+  const header = (
+    <PageHeader
+      title="故事圣经"
+      description={`《${workTitle}》的人物、世界设定与大事记，彼此关联。登记过的名字在写作台里会高亮，点一下就能查。`}
+      actions={(
+        <>
+          <Segmented label="看法" value={vmode} onChange={switchView} options={VIEW_OPTIONS} />
+          <button type="button" className="btn btn-accent" onClick={startCreate}><I.Plus size={14} /> 新建档案</button>
+        </>
+      )}
+    />
+  );
+
+  let body;
+  /* 空列表有三种原因，只有「真的读到了、就是空的」才请作者新建第一份档案：
+     还在读就说在读；读不到就只给一处错误和重试（不再同时摆出「还是空的」和新建按钮） */
+  const load = libLoadState();
+  if (entries.length === 0 && !creating && load.status === "error") {
+    body = (
+      <Notice tone="danger" title="档案库没有读出来" testId="library-load-error"
+        actions={<button type="button" className="btn btn-ghost btn-sm" onClick={() => libRefetch()}>重试</button>}>
+        {load.message}
+      </Notice>
+    );
+  } else if (entries.length === 0 && !creating && load.status === "loading") {
+    body = (
+      <div className="lib2-emptypage">
+        <EmptyState compact title={<><Spinner size={13} /> 正在读取档案库…</>} />
+      </div>
+    );
+  } else if (entries.length === 0 && !creating) {
+    body = (
+      <div className="lib2-emptypage">
+        <EmptyState
+          icon="Library"
+          title="这部作品的档案库还是空的"
+          actions={<button type="button" className="btn btn-accent" onClick={startCreate}><I.Plus size={14} /> 新建第一份档案</button>}
+        >
+          人物、地点、术语在这里登记后，写作台里会自动高亮，写的时候随手就能查。
+        </EmptyState>
+      </div>
+    );
+  } else if (vmode === "graph") {
+    body = (
+      <LibGraph
+        entries={entries} byId={byId}
+        selId={selId}
+        onSelect={setSelId}
+        onOpen={openFromView}
+        onBrowse={() => switchView("files")}
+      />
+    );
+  } else if (vmode === "timeline") {
+    body = (
+      <LibTimeline
+        entries={entries} byId={byId} chapters={chapters}
+        selId={selId}
+        onSelect={setSelId}
+        onNew={startCreate}
+        onOpen={openFromView}
+      />
+    );
+  } else {
+    const catOptions = [{ value: "all", label: "全部", count: counts.all }, ...LIB_CATS.map(k => ({ value: k.id, label: k.label, count: counts[k.id] }))];
+    const sortOptions = Object.keys(LIB_SORTS).map(k => ({ value: k, label: LIB_SORTS[k].label }));
+    body = (
+      <div className="lib2-shell" data-pane={pane}>
+        {/* ---- index ---- */}
+        <aside className="lib2-index" aria-label="档案目录">
+          <button type="button" className={`lib2-overview-btn ${selId === null && !creating ? "is-active" : ""}`} onClick={goOverview}>
+            <span className="lib2-overview-ic" aria-hidden="true"><I.Activity size={15} /></span>
+            <span className="lib2-overview-tx">
+              <span className="t">总览</span>
+              <span className="s">待补的档案与最近改动</span>
+            </span>
+          </button>
+
+          <div className="lib2-search">
+            <span className="lib2-search-ic" aria-hidden="true"><I.Search size={15} /></span>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onSearchKeyDown}
+              placeholder="搜索人物、地点、术语…"
+              aria-label="搜索档案"
+              spellCheck={false}
+            />
+            {query && (
+              <button type="button" className="lib2-search-clear" onClick={() => setQuery("")} aria-label="清空搜索" title="清空搜索">
+                <I.X size={14} />
+              </button>
+            )}
+          </div>
+
+          <div className="lib2-cats">
+            <Segmented block label="按类别筛选" value={cat} onChange={setCat} options={catOptions} />
+          </div>
+
+          <div className="lib2-sortbar">
+            <span className="lib2-sortbar-k">排序</span>
+            <Segmented label="排序" value={sort} onChange={setSort} options={sortOptions} />
+          </div>
+
+          <div className="lib2-list" ref={listRef} onKeyDown={onListKeyDown}>
+            {visible.length === 0 && (
+              <EmptyState compact icon="Search" title={query ? `没有匹配「${query}」的档案` : `还没有${cat === "all" ? "" : libCatLabel(cat)}档案`} />
+            )}
+            {groups.map(g => (
+              <div key={g.cat} role="group" aria-label={libCatLabel(g.cat)}>
+                {cat === "all" && (
+                  <div className="lib2-group-label" aria-hidden="true">
+                    {libCatLabel(g.cat)}
+                    <span className="n">{g.items.length}</span>
+                  </div>
+                )}
+                {g.items.map(e => {
+                  const active = selId === e.id && !creating;
+                  return (
+                    <LibEntryRow
+                      key={e.id}
+                      entry={e}
+                      sub={LIB_entrySub(e)}
+                      pinned={e.pinned}
+                      active={active}
+                      className="lib2-item"
+                      data-lib-id={e.id}
+                      tabIndex={e.id === tabStopId ? 0 : -1}
+                      aria-current={active ? "true" : undefined}
+                      onClick={() => openEntry(e.id)}
+                    />
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        {/* ---- detail ---- */}
+        <section className="lib2-detail" aria-label="档案详情">
+          <button type="button" className="lib2-back" onClick={() => leaveEdit(() => setPane("list"))}>
+            <I.ChevronLeft size={15} /> 档案列表
+          </button>
+          {creating ? (
+            <DossierCreate onCreate={doCreate} onCancel={() => { setCreating(false); setPane("list"); }} />
+          ) : selId === null ? (
+            <LibOverview
+              facts={facts}
+              onSelect={(id) => openEntry(id)}
+              onPickCat={(c) => { setCat(c); setSelId(null); setPane("list"); }}
+              onGoGraph={() => switchView("graph")}
+            />
+          ) : sel ? (
+            editing
+              ? <DossierEdit key={sel.id} entry={sel} allEntries={entries} byId={byId} chapters={chapters}
+                  onSave={saveEdit} onCancel={cancelEdit} onDirtyChange={(d) => { editDirty.current = d; }} />
+              : (
+                <React.Fragment>
+                  <DossierNav
+                    entry={sel} pos={selIdx} total={visible.length} prev={prevEntry} next={nextEntry}
+                    onHome={goOverview}
+                    onCat={() => { setCat(sel.cat); setPane("list"); }}
+                    onOpen={(id) => openEntry(id)}
+                  />
+                  <Dossier
+                    entry={sel} conns={selConns} byId={byId} chapters={chapters}
+                    onNav={(id) => openEntry(id, { reveal: true })}
+                    onEdit={() => setEditing(true)}
+                    onDelete={() => deleteEntry(sel)}
+                    onTogglePin={() => togglePin(sel)}
+                  />
+                </React.Fragment>
+              )
+          ) : (
+            <EmptyState icon="BookOpen" title="这份档案已经不在了"
+              actions={<button type="button" className="btn btn-ghost btn-sm" onClick={goOverview}>回到总览</button>}>
+              它可能刚被删除。从左侧目录另选一份。
+            </EmptyState>
+          )}
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="lib2 page" data-screen-label="library">
       <div className="page-narrow">
-        <header className="page-header">
-          <div>
-            <div className="page-eyebrow">档案库</div>
-            <h1 className="page-title">{(WsWorks ? WsWorks.active().title : "未命名作品")} · 故事圣经</h1>
-            <p className="page-subtitle">人物、世界、大事记、参考与知识，全部互相关联。改动这里会影响后续的候选生成。</p>
-          </div>
-          <div className="flex gap-2" style={{ alignItems: "center" }}>
-            <div className="lib2-seg" role="tablist">
-              <button className={`lib2-seg-btn ${vmode === "files" ? "is-active" : ""}`} onClick={() => setVmode("files")}>
-                <I.Layout size={14} /> 档案
-              </button>
-              <button className={`lib2-seg-btn ${vmode === "graph" ? "is-active" : ""}`} onClick={() => setVmode("graph")}>
-                <I.Compass size={14} /> 图谱
-              </button>
-              <button className={`lib2-seg-btn ${vmode === "timeline" ? "is-active" : ""}`} onClick={() => setVmode("timeline")}>
-                <I.Clock size={14} /> 时间线
-              </button>
-            </div>
-            <button className="btn btn-accent" onClick={() => { setVmode("files"); startCreate(); }}><I.Plus size={14} /> 新建档案</button>
-          </div>
-        </header>
-
-        <div className="lib2-bar">
-          <button className="lib2-stat" onClick={() => { setVmode("files"); goOverview(); }} title="返回总览">
-            <div className="lib2-stat-n">{health.total}<span className="unit">份</span></div>
-            <div className="lib2-stat-k">档案条目</div>
-          </button>
-          <button className="lib2-stat" onClick={() => { setVmode("graph"); }} title="在图谱中查看关联">
-            <div className="lib2-stat-n">{health.linksN}</div>
-            <div className="lib2-stat-k">交叉关联</div>
-          </button>
-          <div className="lib2-stat" role="status" title="被正文章节引用的档案数">
-            <div className="lib2-stat-n">{health.cited}</div>
-            <div className="lib2-stat-k">被正文引用</div>
-          </div>
-          <button className="lib2-stat lib2-stat-accent" onClick={() => { setVmode("files"); goOverview(); }} title="查看待处理队列">
-            <div className="lib2-stat-n">{health.buckets.pending + health.buckets.active}</div>
-            <div className="lib2-stat-k">待你处理</div>
-          </button>
-        </div>
-
-        {entries.length === 0 && !creating ? (
-          <div className="lib2-shell" style={{ display: "grid", placeItems: "center", minHeight: "46vh" }}>
-            <div style={{ textAlign: "center", maxWidth: 420, display: "grid", gap: 12, justifyItems: "center" }}>
-              <div style={{ fontFamily: "var(--font-serif)", fontSize: 20, color: "var(--ink-1)" }}>这部作品的档案库还是空的</div>
-              <p style={{ color: "var(--ink-3)", fontSize: 14, lineHeight: 1.8, margin: 0 }}>人物、地点、术语在这里登记后，写作器里会自动高亮并可随写随查。</p>
-              <button className="btn btn-accent" onClick={() => { setVmode("files"); startCreate(); }}><I.Plus size={14} /> 新建第一份档案</button>
-            </div>
-          </div>
-        ) : vmode === "graph" ? (
-          <LibGraph
-            entries={entries} byId={byId} backlinks={backlinks}
-            selId={selId}
-            onSelect={setSelId}
-            onOpen={(id) => { setSelId(id); setCreating(false); setCat("all"); setQuery(""); setVmode("files"); }}
-          />
-        ) : vmode === "timeline" ? (
-          <LibTimeline
-            entries={entries} byId={byId}
-            selId={selId}
-            onSelect={setSelId}
-            onOpen={(id) => { setSelId(id); setCreating(false); setCat("all"); setQuery(""); setVmode("files"); }}
-          />
-        ) : (
-        <div className="lib2-shell">
-          {/* ---- index ---- */}
-          <aside className="lib2-index">
-            <button className={`lib2-overview-btn ${selId === null && !creating ? "is-active" : ""}`} onClick={goOverview}>
-              <span className="lib2-overview-ic"><I.Activity size={15} /></span>
-              <span className="lib2-overview-tx">
-                <span className="t">故事圣经总览</span>
-                <span className="s">健康度 · 待办 · 最近更新</span>
-              </span>
-              {(health.buckets.pending + health.buckets.active) > 0 && (
-                <span className="lib2-overview-badge">{health.buckets.pending + health.buckets.active}</span>
-              )}
-            </button>
-
-            <div className="lib2-search">
-              <span className="lib2-search-ic"><I.Search size={15} /></span>
-              <input
-                ref={searchRef}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜索人物、地点、术语…"
-                spellCheck={false}
-              />
-              {query && (
-                <button className="lib2-search-clear" onClick={() => setQuery("")} title="清空">
-                  <I.X size={14} />
-                </button>
-              )}
-            </div>
-
-            <div className="lib2-cats">
-              <button className={`lib2-cat ${cat === "all" ? "is-active" : ""}`} onClick={() => setCat("all")}>
-                全部<span className="lib2-cat-count">{counts.all}</span>
-              </button>
-              {LIB_CATS.map(k => (
-                <button key={k.id} className={`lib2-cat ${cat === k.id ? "is-active" : ""}`} onClick={() => setCat(k.id)}>
-                  {k.label}<span className="lib2-cat-count">{counts[k.id]}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="lib2-sortbar">
-              <span className="lib2-sortbar-k"><I.Filter size={11} /> 排序</span>
-              {Object.keys(LIB_SORTS).map(k => (
-                <button key={k} className={`lib2-sort ${sort === k ? "is-active" : ""}`} onClick={() => setSort(k)}>
-                  {LIB_SORTS[k].label}
-                </button>
-              ))}
-            </div>
-
-            <div className="lib2-list">
-              {visible.length === 0 && (
-                <div className="lib2-empty">
-                  <I.Search size={22} />
-                  <div>没有匹配「{query}」的档案</div>
-                </div>
-              )}
-              {groups.map(g => (
-                <div key={g.cat}>
-                  {cat === "all" && (
-                    <div className="lib2-group-label">
-                      {CAT_META[g.cat].label}
-                      <span className="n">{g.items.length}</span>
-                    </div>
-                  )}
-                  {g.items.map(e => {
-                    return (
-                    <button
-                      key={e.id}
-                      className={`lib2-item ${ACC(e.accent)} ${selId === e.id ? "is-active" : ""}`}
-                      onClick={() => { setCreating(false); setSelId(e.id); }}
-                    >
-                      <span className="lib2-item-glyph">{e.glyph}</span>
-                      <span className="lib2-item-main">
-                        <span className="lib2-item-name">
-                          {e.name}
-                          {e.pinned && <I.Star className="pin" size={11} />}
-                          {e.user && <span className="lib2-item-mine" title="我新建的">新</span>}
-                        </span>
-                        <span className="lib2-item-sub">{e.summary || CAT_META[e.cat].label}</span>
-                      </span>
-                      <span className="lib2-item-dot" />
-                    </button>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          </aside>
-
-          {/* ---- detail ---- */}
-          <section className="lib2-detail">
-            {creating ? (
-              <DossierCreate onCreate={doCreate} onCancel={() => setCreating(false)} />
-            ) : selId === null ? (
-              <LibOverview
-                health={health} byId={byId}
-                onSelect={(id) => { setCreating(false); setSelId(id); }}
-                onPickCat={(c) => { setCat(c); setSelId(null); }}
-                onGoGraph={() => setVmode("graph")}
-                onNew={startCreate}
-                onAction={(id, patch) => patchEntry(id, patch)}
-              />
-            ) : mergedSel ? (
-              editing
-                ? <DossierEdit entry={mergedSel} allEntries={entries} byId={byId} onSave={saveEdit} onCancel={() => setEditing(false)} onReset={resetEdit} dirty={!!edits[selId]} />
-                : (
-                  <React.Fragment>
-                    <div className="dossier-nav">
-                      <button className="dossier-nav-home" onClick={goOverview}><I.Activity size={13} /> 总览</button>
-                      <span className="dossier-nav-sep">/</span>
-                      <button className="dossier-nav-cat" onClick={() => { setCat(mergedSel.cat); }}>{CAT_META[mergedSel.cat].label}</button>
-                      <span className="dossier-nav-spacer" />
-                      <button className="dossier-nav-btn" disabled={!prevEntry} onClick={() => prevEntry && selectId(prevEntry.id)} title={prevEntry ? "上一条：" + prevEntry.name : "已是第一条"}>
-                        <I.ChevronLeft size={15} />
-                      </button>
-                      {selIdx >= 0 && <span className="dossier-nav-pos">{selIdx + 1} / {visible.length}</span>}
-                      <button className="dossier-nav-btn" disabled={!nextEntry} onClick={() => nextEntry && selectId(nextEntry.id)} title={nextEntry ? "下一条：" + nextEntry.name : "已是最后一条"}>
-                        <I.ChevronRight size={15} />
-                      </button>
-                    </div>
-                    <Dossier entry={mergedSel} conns={selConns} byId={byId} onNav={navTo} go={go} onEdit={() => setEditing(true)} onDelete={mergedSel.user ? () => deleteEntry(selId) : null} onAction={(patch) => patchEntry(selId, patch)} onTogglePin={() => patchEntry(selId, { pinned: !mergedSel.pinned })} dirty={!!edits[selId]} />
-                  </React.Fragment>
-                )
-            ) : (
-              <div className="lib2-empty" style={{ padding: 80 }}>
-                <I.BookOpen size={26} />
-                <div>从左侧选择一份档案</div>
-              </div>
-            )}
-          </section>
-        </div>
-        )}
+        {header}
+        {body}
       </div>
     </div>
   );
 }
 
-/* ---------------- Dossier ---------------- */
-function Dossier({ entry: e, conns, byId, onNav, go, onEdit, onDelete, onAction, onTogglePin, dirty }) {
-  const Ic = I[CAT_META[e.cat].icon] || I.Dot;
-  const realChaps = (e.appears || []).filter(a => a && a !== "—");
-  const cs = conns || [];
-  const relGroups = LIB_groupConnections(cs);
-  return (
-    <div className={ACC(e.accent)} key={e.id}>
-      <header className="dossier-head">
-        <div className="dossier-glyph">{e.glyph}</div>
-        <div className="dossier-head-main">
-          <div className="dossier-code">{e.code}</div>
-          <h2 className="dossier-name">
-            {e.name}
-            {e.state && <span className={`pill pill-${e.state.tone}`}><span className="pill-dot" />{e.state.label}</span>}
-            {dirty && <span className="pill pill-gold"><span className="pill-dot" />已修改</span>}
-          </h2>
-          <div className="dossier-kind"><Ic size={13} style={{ verticalAlign: -2, marginRight: 5 }} />{e.kind}</div>
-        </div>
-        <div className="dossier-head-actions">
-          <button
-            className={`dossier-pin ${e.pinned ? "is-on" : ""}`}
-            onClick={onTogglePin}
-            title={e.pinned ? "取消置顶" : "置顶到总览"}
-          >
-            <I.Star size={14} /> {e.pinned ? "已置顶" : "置顶"}
-          </button>
-        </div>
-      </header>
-
-      <div className="dossier-body">
-        {e.blurb ? (
-          <section className="dossier-section">
-            <div className="dossier-h"><I.Quote size={13} /> 简述</div>
-            <p className="dossier-blurb">{e.blurb}</p>
-          </section>
-        ) : (
-          <section className="dossier-section">
-            <div className="dossier-newhint"><I.Edit size={14} /> 这份档案还很空，点「编辑档案」补充简述、关键信息与关联。</div>
-          </section>
-        )}
-
-        {e.arc && e.arc.from !== "—" && (
-          <section className="dossier-section">
-            <div className="dossier-h"><I.ArrowRight size={13} /> 角色弧</div>
-            <div className="dossier-arc">
-              <div className="arc-node"><span className="lbl">起</span><span className="val">{e.arc.from}</span></div>
-              <div className="arc-flow"><I.ChevronRight size={16} /></div>
-              <div className="arc-node"><span className="lbl">终</span><span className="val">{e.arc.to}</span></div>
-              <div className="arc-note">{e.arc.note}</div>
-            </div>
-          </section>
-        )}
-
-        {typeof e.progress === "number" && (
-          <section className="dossier-section">
-            <div className="dossier-h"><I.Clock size={13} /> 学习进度</div>
-            <div className="dossier-prog">
-              <div className="dossier-prog-track"><div className="dossier-prog-fill" style={{ width: `${Math.round(e.progress * 100)}%` }} /></div>
-              <div className="dossier-prog-label"><span>正在学习该参考书</span><span>{Math.round(e.progress * 100)}%</span></div>
-            </div>
-          </section>
-        )}
-
-        {e.facts && e.facts.length > 0 && (
-          <section className="dossier-section">
-            <div className="dossier-h"><I.Info size={13} /> 关键信息</div>
-            <div className="dossier-facts">
-              {e.facts.map((f, i) => (
-                <div key={i} className="dossier-fact"><span className="k">{f.k}</span><span className="v">{f.v}</span></div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {e.tags && e.tags.length > 0 && (
-          <section className="dossier-section">
-            <div className="dossier-h"><I.Tag size={13} /> 标签</div>
-            <div className="dossier-tags">
-              {e.tags.map(t => <span key={t} className="dossier-tag"><span className="dot" />{t}</span>)}
-            </div>
-          </section>
-        )}
-
-        {cs.length > 0 && (
-          <section className="dossier-section">
-            <div className="dossier-h"><I.Compass size={13} /> 关系网络 · {cs.length}</div>
-            <div className="rel-summary">
-              {relGroups.map(g => {
-                const Ti = I[g.type.icon] || I.Dot;
-                return (
-                  <span key={g.type.id} className={`rel-chip acc-${g.type.accent}`} title={g.type.hint}>
-                    <Ti size={11} />{g.type.label}<b>{g.items.length}</b>
-                  </span>
-                );
-              })}
-            </div>
-            <div className="rel-groups">
-              {relGroups.map(g => {
-                const Ti = I[g.type.icon] || I.Dot;
-                return (
-                  <div key={g.type.id} className={`rel-group acc-${g.type.accent}`}>
-                    <div className="rel-group-h">
-                      <span className="rel-group-ic"><Ti size={12} /></span>
-                      <span className="rel-group-label">{g.type.label}</span>
-                      <span className="rel-group-hint">{g.type.hint}</span>
-                      <span className="rel-group-n">{g.items.length}</span>
-                    </div>
-                    <div className="dossier-links">
-                      {g.items.map((l, i) => {
-                        const t = byId[l.id];
-                        if (!t) return null;
-                        return (
-                          <button key={i} className={`dossier-link ${ACC(t.accent)}`} onClick={() => onNav(l.id)}>
-                            <span className="dossier-link-glyph">{t.glyph}</span>
-                            <span className="dossier-link-main">
-                              <span className="dossier-link-name">{t.name}</span>
-                              <span className="dossier-link-rel">
-                                {l.dir === "in" && <span className="dossier-link-dir" title="反向关联">被引</span>}
-                                {l.rel}
-                              </span>
-                            </span>
-                            <span className="dossier-link-cat">{CAT_META[t.cat].label}</span>
-                            <I.ChevronRight className="chev" size={16} />
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
-        {realChaps.length > 0 && (
-          <section className="dossier-section">
-            <div className="dossier-h"><I.BookOpen size={13} /> 出现于</div>
-            <div className="dossier-chaps">
-              {realChaps.map((c, i) => (
-                <span key={i} className="dossier-chap"><I.FileText size={12} />{c}</span>
-              ))}
-            </div>
-          </section>
-        )}
-      </div>
-
-      <footer className="dossier-foot">
-        <button className="btn btn-quiet btn-sm" onClick={onEdit}><I.Edit size={13} /> 编辑档案</button>
-        <DossierAction entry={e} onAction={onAction} go={go} />
-        <span className="spacer" />
-        {onDelete && (
-          <button className="btn btn-quiet btn-sm dossier-del" onClick={() => { if (confirm("删除这份档案？此操作不可撤销。")) onDelete(); }}><I.Trash size={13} /> 删除</button>
-        )}
-        {realChaps.some(c => /CH\d/.test(c)) && (
-          <button className="btn btn-ghost btn-sm" onClick={() => navigateWithViewIntent("writer", "ws:writer-locate", e.id)}><I.Pen size={13} /> 在正文中定位</button>
-        )}
-      </footer>
-    </div>
-  );
-}
-
-/* contextual primary action by category / state — 真正推进状态 */
-function DossierAction({ entry: e, onAction }) {
-  const act = LIB_nextAction(e);
-  if (!act) {
-    if (!e.state) return <span className="btn btn-primary btn-sm" aria-label="全文已展开"><I.Eye size={13} /> 全文已展开</span>;
-    return null;
-  }
-  const Ic = I[act.icon] || I.Check;
-  const cls = act.kind === "accent" ? "btn-accent" : act.kind === "primary" ? "btn-primary" : "btn-ghost";
-  if (act.disabled) {
-    return <button className="btn btn-ghost btn-sm" disabled><Ic size={13} /> {act.label}</button>;
-  }
-  return (
-    <button className={`btn ${cls} btn-sm`} onClick={() => onAction && act.patch && onAction(act.patch)}>
-      <Ic size={13} /> {act.label}
-    </button>
-  );
-}
-
-/* ---------- Trash — 真实回收站（WsTrashStore，按作品隔离） ---------- */
-function WsTrash() {
-  useStoreTick((fn) => (WsTrashStore ? WsTrashStore.subscribe(fn) : undefined));
-  const items = WsTrashStore ? WsTrashStore.list() : [];
-
-  const restore = (id) => {
-    const ok = WsTrashStore.restore(id);
-    if (!ok) window.alert("恢复失败：原章节已不存在，且当前作品没有可承接的章节。");
-  };
-  const purge = (id) => {
-    if (window.confirm("彻底删除？该条目（含其正文与旁注）将无法找回。")) WsTrashStore.purge(id);
-  };
-  const clearAll = () => {
-    if (items.length && window.confirm(`清空回收站？${items.length} 条内容将无法找回。`)) WsTrashStore.clear();
-  };
-
-  return (
-    <div className="page" data-screen-label="trash">
-      <div className="page-narrow">
-        <header className="page-header">
-          <div>
-            <div className="page-eyebrow">回收站</div>
-            <h1 className="page-title">被回收的内容</h1>
-            <p className="page-subtitle">删除的场景会带着正文进到这里，可以恢复回原章节；在书架里删除的整部作品也会进到这里，可以整体找回。</p>
-          </div>
-          {items.length > 0 && <button className="btn btn-ghost" onClick={clearAll}>清空</button>}
-        </header>
-        {items.length === 0 ? (
-          <div className="card" style={{ display: "grid", placeItems: "center", padding: "64px 24px", textAlign: "center" }}>
-            <div style={{ display: "grid", gap: 10, justifyItems: "center", color: "var(--ink-3)" }}>
-              <I.Trash size={28} />
-              <div style={{ fontFamily: "var(--font-serif)", fontSize: 18, color: "var(--ink-1)" }}>回收站是空的</div>
-              <div style={{ fontSize: 13 }}>在写作器大纲里删除的场景、在书架里删除的作品，都会出现在这里，可随时恢复。</div>
-            </div>
-          </div>
-        ) : (
-          <div className="card" style={{ padding: 0 }}>
-            <table className="lib-table">
-              <thead>
-                <tr><th>类型</th><th>标题</th><th>回收时间</th><th style={{ width: 180 }}></th></tr>
-              </thead>
-              <tbody>
-                {items.map((it) => (
-                  <tr key={it.id}>
-                    <td><span className="pill text-xs">{it.kind || "内容"}</span></td>
-                    <td className="text-serif fw-600">{it.title}</td>
-                    <td className="text-muted text-sm">{agoLabel(it.removedAt || 0)}</td>
-                    <td>
-                      <div className="flex gap-2">
-                        <button className="btn btn-quiet btn-sm" onClick={() => restore(it.id)}>恢复</button>
-                        <button className="btn btn-quiet btn-sm" onClick={() => purge(it.id)}>永久删除</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsLibrary, WsTrash };
+export { WsLibrary };

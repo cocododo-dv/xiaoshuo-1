@@ -1,93 +1,61 @@
 /* ==========================================================
-   待办收件箱 · 案头  (ws-review.css)
-   Tones map to the design-system accents; each kind owns a
-   spine colour, a wash and a chip dot.
+   待办收件箱  (ws-review.css)
+   每类待办有自己的书脊色；筛选 / 页头 / 标签 / 空态用 ws-ui 的共享组件。
+   文学质量与成本看板在 ws-quality.css，成稿中心的流转对话框在 ws-manuscripts.css。
    ========================================================== */
 
 .rv { --rv-c: var(--ink-3); }
 
-/* ---- header ---- */
-.rv-head { margin-bottom: 26px; }
-.rv-eyebrow {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
-  color: var(--crimson); font-weight: 600; margin-bottom: 10px;
-}
-.rv-title { font-family: var(--font-serif); font-size: 34px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.1; }
-.rv-sub { margin-top: 12px; color: var(--ink-2); font-size: 15px; line-height: 1.7; max-width: 56ch; }
-.rv-sub b { font-weight: 600; color: var(--ink-1); font-variant-numeric: tabular-nums; }
-.rv-sub .rv-em { color: var(--crimson); }
+/* ---- header（PageHeader）---- */
+.rv-head .ws-page-desc b { font-weight: 600; color: var(--ink-1); font-variant-numeric: tabular-nums; }
+.rv-head .ws-page-desc .rv-em { color: var(--accent-ink); }
 
-/* ---- toolbar : filter chips + progress ---- */
+/* ---- toolbar : filter (Segmented) + progress ---- */
 .rv-toolbar {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  margin-bottom: 22px; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px 16px;
+  margin-bottom: 18px; flex-wrap: wrap;
 }
-.rv-chips { display: flex; flex-wrap: wrap; gap: 7px; }
-.rv-chip {
-  display: inline-flex; align-items: center; gap: 7px;
-  height: 32px; padding: 0 12px; border-radius: var(--r-pill);
-  background: var(--paper-1); border: 1px solid var(--line-1);
-  color: var(--ink-2); font-size: 13px; font-weight: 500; white-space: nowrap; flex: 0 0 auto;
-  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
-}
-.rv-chip:hover { border-color: var(--line-2); background: var(--paper-2); }
-.rv-chip.is-active { background: var(--ink-1); border-color: var(--ink-1); color: var(--paper-0); }
-.rv-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--rv-c); }
-.rv-chip-n {
-  font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--ink-3);
-  background: var(--paper-2); border-radius: var(--r-pill); padding: 1px 7px; min-width: 20px; text-align: center;
-}
-.rv-chip.is-active .rv-chip-n { background: rgba(255,255,255,0.16); color: var(--paper-0); }
-.rv-chip.t-crimson .rv-chip-dot { background: var(--crimson); }
-.rv-chip.t-rose    .rv-chip-dot { background: var(--rose); }
-.rv-chip.t-slate   .rv-chip-dot { background: var(--slate); }
-.rv-chip.t-gold    .rv-chip-dot { background: var(--gold); }
-.rv-chip.t-sage    .rv-chip-dot { background: var(--sage); }
+.rv-chips { flex-wrap: wrap; }
+.rv-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tone, var(--ink-3)); flex: 0 0 auto; }
 
 .rv-progress {
   display: inline-flex; align-items: center; gap: 7px;
-  font-size: 12.5px; color: var(--ink-3); white-space: nowrap;
+  font-size: var(--fs-sm); color: var(--ink-3); white-space: nowrap;
 }
-.rv-progress svg { color: var(--sage); }
+.rv-progress svg { color: var(--ok); }
 .rv-progress b { color: var(--ink-1); font-variant-numeric: tabular-nums; }
 
-.rv-toolbar-right { display: inline-flex; align-items: center; gap: 14px; }
-.rv-clear-all {
-  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 13px;
-  border-radius: var(--r-pill); background: transparent; border: 1px solid var(--line-2);
-  color: var(--ink-2); font-size: 12.5px; font-weight: 600; white-space: nowrap;
-  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
-}
-.rv-clear-all:hover { background: var(--sage-wash); border-color: color-mix(in srgb, var(--sage) 45%, transparent); color: var(--sage); }
-.rv-clear-all svg { color: var(--sage); }
+.rv-toolbar-right { display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.rv-clear-all svg { color: var(--ok); }
 
-/* keyboard hint */
+/* keyboard hint —— 快捷键只在这里写明，是信息不是装饰：不降透明度（--ink-3 本身刚好 4.5:1） */
 .rv-kbd-hint {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  margin: -8px 2px 20px; font-size: 11.5px; color: var(--ink-4);
-  opacity: 0.7; transition: opacity var(--t-base), color var(--t-fast);
+  margin: -6px 2px 18px; font-size: var(--fs-xs); color: var(--ink-3);
+  transition: color var(--t-fast);
 }
-.rv-kbd-hint.is-lit { opacity: 1; color: var(--ink-3); }
+.rv-kbd-hint.is-lit { color: var(--ink-2); }
 .rv-kbd-hint span { margin-right: 8px; }
 .rv-kbd-hint kbd {
-  font-family: var(--font-mono); font-size: 10.5px; line-height: 1;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1;
   color: var(--ink-3); background: var(--paper-1); border: 1px solid var(--line-2);
   border-radius: var(--r-xs); padding: 3px 6px; min-width: 18px; text-align: center;
   box-shadow: 0 1px 0 var(--line-2);
 }
 .rv-kbd-hint.is-lit kbd { color: var(--ink-1); border-color: var(--line-3); }
 
+.rv-loading { padding: 40px 0; text-align: center; color: var(--ink-3); font-size: var(--fs-sm); }
+
 /* ---- band header ---- */
-.rv-band { display: flex; align-items: baseline; gap: 10px; margin: 8px 2px 4px; }
-.rv-band:first-child { margin-top: 0; }
-.rv-band-label { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: var(--ink-2); }
-.rv-band.b-1 .rv-band-label { color: var(--crimson); }
-.rv-band-hint { font-size: 11.5px; color: var(--ink-4); }
+.rv-band { display: flex; align-items: baseline; gap: 10px; margin: 4px 2px 0; }
+.rv-band-label { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.rv-band.b-1 .rv-band-label { color: var(--accent-ink); }
+.rv-band-hint { font-size: var(--fs-xs); color: var(--ink-3); }
 .rv-band-rule { flex: 1; height: 1px; background: var(--line-1); align-self: center; }
 
 /* ---- list ---- */
-.rv-list { display: flex; flex-direction: column; gap: 12px; }
+.rv-list { display: flex; flex-direction: column; gap: 18px; }
+.rv-group, .rv-group-items { display: flex; flex-direction: column; gap: 12px; }
 
 .rv-item {
   position: relative; display: flex; overflow: hidden;
@@ -122,15 +90,19 @@
   display: grid; place-items: center; margin-top: 1px;
   color: var(--rv-c); background: color-mix(in srgb, var(--rv-c) 13%, var(--paper-0));
 }
+.rv-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-md); }
 .rv-row-main { flex: 1; min-width: 0; }
 .rv-meta { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; flex-wrap: wrap; }
-.rv-where { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); letter-spacing: 0.01em; }
+.rv-where { font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+/* 标题最多两行：长标题（旧表行、后端拼的长句）不再把卡片撑成一堵墙，全文在 title 里 */
 .rv-item-title {
-  font-family: var(--font-serif); font-size: 16px; font-weight: 600; line-height: 1.45;
-  color: var(--ink-1); letter-spacing: -0.005em;
+  font-family: var(--font-serif); font-size: var(--fs-lg); font-weight: 600; line-height: 1.45;
+  color: var(--ink-1); letter-spacing: -0.005em; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
 }
-.rv-time { flex: 0 0 auto; font-size: 11.5px; color: var(--ink-4); white-space: nowrap; margin-top: 3px; }
-.rv-chev { flex: 0 0 auto; color: var(--ink-4); margin-top: 1px; transition: transform var(--t-base), color var(--t-fast); }
+.rv-item.is-open .rv-item-title { -webkit-line-clamp: unset; line-clamp: none; display: block; }
+.rv-time { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; margin-top: 3px; }
+.rv-chev { flex: 0 0 auto; color: var(--ink-3); margin-top: 1px; transition: transform var(--t-base), color var(--t-fast); }
 .rv-chev[data-open="true"] { transform: rotate(180deg); color: var(--ink-2); }
 .rv-row:hover .rv-chev { color: var(--ink-2); }
 
@@ -150,19 +122,19 @@
 }
 .rv-preview-row { display: flex; gap: 10px; align-items: baseline; }
 .rv-preview-tag {
-  flex: 0 0 auto; font-size: 10.5px; font-weight: 700; color: var(--ink-4);
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--ink-3);
   border: 1px solid var(--line-2); border-radius: var(--r-xs); padding: 1px 5px; line-height: 1.5;
 }
-.rv-preview-tag.is-new { color: var(--sage); border-color: color-mix(in srgb, var(--sage) 50%, transparent); }
-.rv-preview-old { font-family: var(--font-serif); font-size: 14px; color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--line-3); }
-.rv-preview-new { font-family: var(--font-serif); font-size: 14px; color: var(--ink-1); }
+.rv-preview-tag.is-new { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+.rv-preview-old { font-family: var(--font-serif); font-size: var(--fs-md); color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--line-3); }
+.rv-preview-new { font-family: var(--font-serif); font-size: var(--fs-md); color: var(--ink-1); }
 
 /* checklist (idea gaps) */
 .rv-checklist {
   list-style: none; margin: 0 16px 12px 59px; padding: 0;
   display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 16px;
 }
-.rv-checklist li { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink-2); }
+.rv-checklist li { display: flex; align-items: center; gap: 7px; font-size: var(--fs-sm); color: var(--ink-2); }
 .rv-checklist li svg { color: var(--gold); flex: 0 0 auto; }
 
 /* option chips (title vote, etc.) */
@@ -172,21 +144,13 @@
   background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 5px 11px;
 }
 
-.rv-src {
-  display: inline-flex; align-items: center; gap: 5px; margin: 0 16px 12px 59px;
-  font-size: 11.5px; color: var(--ink-4);
-}
-.rv-src svg { color: var(--ink-4); }
+.rv-src { margin: 0 16px 12px 59px; font-size: var(--fs-xs); color: var(--ink-3); }
 
 /* actions */
 .rv-actions {
   display: flex; flex-wrap: wrap; gap: 8px;
   padding: 0 16px 15px 59px;
 }
-
-/* empty-this-filter line */
-.rv-none { padding: 28px; text-align: center; color: var(--ink-3); font-size: 13.5px; }
-.rv-link { background: transparent; border: 0; color: var(--crimson); font: inherit; font-size: 13.5px; text-decoration: underline; text-underline-offset: 2px; padding: 0 2px; }
 
 /* ---- snoozed drawer ---- */
 .rv-snoozed { margin-top: 22px; border-top: 1px solid var(--line-1); padding-top: 18px; }
@@ -199,7 +163,7 @@
   font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--ink-3);
   background: var(--paper-2); border-radius: var(--r-pill); padding: 1px 8px;
 }
-.rv-snoozed-chev { margin-left: auto; color: var(--ink-4); transition: transform var(--t-base); }
+.rv-snoozed-chev { margin-left: auto; color: var(--ink-3); transition: transform var(--t-base); }
 .rv-snoozed-chev[data-open="true"] { transform: rotate(180deg); }
 .rv-snoozed-list { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
 .rv-snoozed-item {
@@ -207,40 +171,12 @@
   border-top: 1px solid var(--line-1);
 }
 .rv-snoozed-item:first-child { border-top: 0; }
-.rv-snoozed-title { flex: 1; min-width: 0; font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rv-snoozed-title { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* ---- empty state ---- */
-.rv-empty {
-  display: flex; flex-direction: column; align-items: center; text-align: center;
-  padding: 64px 24px; gap: 4px;
-  background: var(--paper-1); border: 1px solid var(--line-1); border-radius: var(--r-xl);
-}
-.rv-empty-mark {
-  width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center;
-  color: var(--sage); background: var(--sage-wash); margin-bottom: 12px;
-}
-.rv-empty-title { font-family: var(--font-serif); font-size: 22px; font-weight: 600; color: var(--ink-1); }
-.rv-empty-sub { color: var(--ink-3); font-size: 14px; line-height: 1.7; max-width: 42ch; margin: 4px 0 18px; }
+/* ---- empty state（EmptyState 外加一张卡）---- */
+.rv-empty { background: var(--paper-1); border: 1px solid var(--line-1); border-radius: var(--r-xl); }
+.rv-empty .ws-empty-icon { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; color: var(--ok-ink); background: var(--ok-wash); }
 
-/* ---- toast ---- */
-.rv-toast {
-  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
-  z-index: 1200; display: flex; align-items: center; gap: 12px;
-  background: var(--ink-1); color: var(--paper-0);
-  padding: 11px 14px 11px 16px; border-radius: var(--r-pill);
-  box-shadow: var(--shadow-lg); animation: rvToast 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.2);
-  max-width: min(520px, calc(100vw - 48px));
+@media (prefers-reduced-motion: reduce) {
+  .rv-item, .rv-detail, .rv-chev, .rv-snoozed-chev { transition: none; }
 }
-.rv-toast-tick { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--sage); color: white; flex: 0 0 auto; }
-.rv-toast-text { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rv-toast-undo {
-  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
-  background: rgba(255,255,255,0.12); border: 0; color: var(--paper-0);
-  font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 11px; border-radius: var(--r-pill);
-  transition: background var(--t-fast);
-}
-.rv-toast-undo:hover { background: rgba(255,255,255,0.22); }
-@keyframes rvToast { from { opacity: 0; transform: translate(-50%, 14px); } to { opacity: 1; transform: translate(-50%, 0); } }
-@media (prefers-reduced-motion: reduce) { .rv-toast { animation: none; } }
-
-/* dark theme: kind-tint backgrounds already use color-mix against paper, so they adapt */

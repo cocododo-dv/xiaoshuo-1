@@ -1,19 +1,21 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { wsKey, WsWorks } from "./ws-works.jsx";
+import { wsKey } from "./ws-works.jsx";
 import { apiGet, apiPatch } from "./lib/client.js";
+import { CloseButton, IconButton } from "./ws-ui.jsx";
+import { useWrInert } from "./ws-writer-hooks.js";
 
-/* global React, I */
 /* ==========================================================
    ws-deep — 深改引擎 + 写作台深改面板（原独立「深改台」并入写作台）
    ----------------------------------------------------------
    · wrDeepScan(el, sid)      诊断当前场正文 → issues
    · wrDeepMark / wrDeepUnmark  在编辑器里标注 / 清除风险高亮
-   · wrDeepAdopt(el, issue, cand) 把候选写回正文 DOM（调用方负责落盘）
-   · WrDeepDrawer             写作台右栏的诊断面板（问题 + 候选 + 决定日志）
-   诊断使用适用于所有作品的本地启发式规则；候选改写由真实后端单独生成。
+   · WrDeepDrawer             写作台右栏的诊断面板（问题 + 决定日志）
+   诊断是本机的启发式规则，只指出问题、不代笔：每一项都给「选中这一句去改写」，
+   回到起草姿态、选中那一句，改写走选区工具条那条真实的改写接口。
+   （过去这里有一条「采纳候选 · 写回正文」的通路，可诊断从不产出候选，那条路永远走不到。）
+   姿态本身（进出、偏好同步、选中去改写）在 ws-writer-deep-posture.js。
    ========================================================== */
-const { useState: useDX, useEffect: useDXE } = React;
 
 const dxKey = (base) => (wsKey ? wsKey(base) : base);
 
@@ -85,11 +87,12 @@ async function wrDxSavePreferences(sid, snapshot, baseRevisionNo) {
 
 
 const WR_DX_KINDS = {
-  echo: { tag: "ECH", label: "回响" },
-  vague:{ tag: "VAG", label: "抽象" },
-  dump: { tag: "DMP", label: "堆叠" },
-  rdn:  { tag: "RDN", label: "重复" },
+  echo: { label: "回响" },
+  vague: { label: "抽象" },
+  dump: { label: "堆叠" },
+  rdn: { label: "重复" },
 };
+const WR_DX_SEV = { high: "重", mid: "中", low: "轻" };
 
 /* ---- 诊断：启发式规则 ---- */
 function wrDeepScan(el, sid) {
@@ -99,13 +102,8 @@ function wrDeepScan(el, sid) {
   const issues = [];
   const skips = wrDxSkips(sid);
 
-  [].forEach(cu => {
-    const pid = texts.findIndex(t => t.includes(cu.find));
-    if (pid >= 0) issues.push({ ...cu, pid, key: cu.id });
-  });
-
   texts.forEach((t, pid) => {
-    if (!t || /^在这里开始写/.test(t)) return;
+    if (!t) return;
     /* 贴邻叠句：「安静，安静到」式回响 */
     const m = t.match(/([\u4e00-\u9fa5]{2,5})([，、；]?)\1/);
     if (m && !issues.some(it => it.pid === pid && it.find && it.find.includes(m[0]))) {
@@ -192,34 +190,25 @@ function wrDeepMark(el, issues, activeKey) {
   });
 }
 
-/* ---- 采纳：候选写回正文 DOM（纯 DOM 操作，调用方负责高亮重建与落盘）---- */
-function wrDeepAdopt(el, issue, cand) {
-  if (!el) return false;
-  wrDeepUnmark(el);
-  const paras = Array.from(el.querySelectorAll("p, blockquote"));
-  const p = paras[issue.pid];
-  if (!p) return false;
-  const t = p.textContent || "";
-  if (!issue.find || !t.includes(issue.find)) return false;
-  const next = t.replace(issue.find, cand.text);
-  if (!next.trim()) p.remove();
-  else p.textContent = next;
-  return true;
-}
-
 /* ==========================================================
    WrDeepDrawer — 写作台右栏 · 深改面板
    ========================================================== */
-function WrDeepDrawer({ open, issues, activeKey, onPick, onAdopt, onIgnore, onRescan, onEditDraft, onUndo, canUndo, log, persistenceStatus = "idle", onClose }) {
+function WrDeepDrawer({ open, issues, activeKey, onPick, onIgnore, onRescan, onSelect, log, persistenceStatus = "idle", onClose }) {
   const active = issues.find(it => it.key === activeKey) || issues[0] || null;
-  const cands = (active && active.cands) || [];
+  const asideRef = React.useRef(null);
+  /* 收起时只是移出画面：标 inert，Tab 不会走进看不见的按钮 */
+  useWrInert(asideRef, !open);
+  const syncNote = persistenceStatus === "loading" || persistenceStatus === "saving" ? "决定正在同步…"
+    : persistenceStatus === "synced" ? "决定已同步到服务器。"
+    : persistenceStatus === "local" ? "服务器暂时连不上，决定先存在本机，下次操作时再同步。"
+    : "";
   return (
-    <aside className={`wr-drawer right wr-dxd ${open ? "show" : ""}`}>
+    <aside ref={asideRef} className={`wr-drawer right wr-dxd ${open ? "show" : ""}`} aria-label="深改诊断">
       <header className="wr-drawer-head">
-        <span className="wr-drawer-title"><I.Microscope size={15} /> 深改 · 诊断 {issues.length} 项</span>
-        <div className="flex items-center gap-1" style={{ marginLeft: "auto" }}>
-          <button className="btn btn-quiet btn-sm" onClick={onRescan} title="重新诊断本场"><I.Refresh size={13} /></button>
-          <button className="wr-drawer-x" onClick={onClose} title="收起"><I.X size={15} /></button>
+        <span className="wr-drawer-title"><I.Microscope size={15} /> 深改诊断 {issues.length} 项</span>
+        <div className="wr-dxd-head-acts">
+          <IconButton icon="Refresh" label="重新诊断本场（找回忽略过的项）" onClick={onRescan} />
+          <CloseButton className="wr-drawer-x" label="收起深改诊断" onClick={onClose} />
         </div>
       </header>
 
@@ -228,17 +217,18 @@ function WrDeepDrawer({ open, issues, activeKey, onPick, onAdopt, onIgnore, onRe
           <div className="wr-dxd-clear">
             <I.CheckCircle size={22} />
             <div className="wr-dxd-clear-t">本场没有发现待改的句段</div>
-            <p>改过的内容已直接写回正文。可以回到起草姿态继续写，或换一场再诊断。</p>
+            <p>可以回到起草姿态继续写，或者换一场再诊断。</p>
           </div>
         ) : (
           <>
             <ul className="wr-dxd-list">
               {issues.map(it => {
                 const k = WR_DX_KINDS[it.kind] || WR_DX_KINDS.rdn;
+                const on = !!(active && active.key === it.key);
                 return (
                   <li key={it.key}>
-                    <button className={`wr-dxd-row ${active && active.key === it.key ? "is-active" : ""}`} onClick={() => onPick(it.key)}>
-                      <span className={`wr-dxd-mark sev-${it.sev}`}>{k.tag}</span>
+                    <button type="button" className={`wr-dxd-row ${on ? "is-active" : ""}`} aria-pressed={on} onClick={() => onPick(it.key)}>
+                      <span className={`wr-dxd-mark sev-${it.sev}`} title={`严重程度：${WR_DX_SEV[it.sev] || "轻"}`}>{k.label}</span>
                       <span className="wr-dxd-body">
                         <span className="wr-dxd-t">{it.title}</span>
                         <span className="wr-dxd-h">{it.hint}</span>
@@ -251,41 +241,25 @@ function WrDeepDrawer({ open, issues, activeKey, onPick, onAdopt, onIgnore, onRe
 
             {active && (
               <div className="wr-dxd-cands">
-                <div className="wr-dxd-sub">{cands.length ? `改写候选 · ${cands.length}` : "这一项没有现成候选"}</div>
-                {cands.map((c, i) => (
-                  <article key={i} className="wr-dxd-cand">
-                    <header className="wr-dxd-cand-head">
-                      <span className="wr-dxd-cand-label">{c.label}</span>
-                    </header>
-                    {c.text
-                      ? <p className="wr-dxd-cand-text">{c.text}</p>
-                      : <p className="wr-dxd-cand-text is-del">（删去原句，让上文收住）</p>}
-                    <div className="wr-dxd-cand-acts">
-                      <button className="btn btn-accent btn-sm" onClick={() => onAdopt(active, c)}><I.Check size={13} /> 采纳 · 写回正文</button>
-                    </div>
-                  </article>
-                ))}
+                <div className="wr-dxd-sub">这一项怎么处理</div>
                 <div className="wr-dxd-row-acts">
-                  {!cands.length && (
-                    <button className="btn btn-ghost btn-sm" onClick={() => onEditDraft(active)}><I.Pen size={13} /> 回起草修改这一段</button>
+                  {onSelect && (
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSelect({ pid: active.pid, find: active.find || "" })}>
+                      <I.Pen size={13} /> {active.find ? "选中这一句去改写" : "选中这一段去改写"}
+                    </button>
                   )}
-                  <button className="btn btn-quiet btn-sm" onClick={() => onIgnore(active)}>忽略这一项</button>
+                  <button type="button" className="btn btn-quiet btn-sm" onClick={() => onIgnore(active)}>忽略这一项</button>
                 </div>
               </div>
             )}
           </>
         )}
 
-        {(canUndo || (log && log.length > 0)) && (
+        {log && log.length > 0 && (
           <div className="wr-dxd-log">
-            <div className="wr-dxd-sub">最近决定</div>
-            {canUndo && (
-              <button className="btn btn-ghost btn-sm" style={{ width: "100%", marginBottom: 8 }} onClick={onUndo}>
-                <I.Refresh size={13} /> 撤销上一次采纳
-              </button>
-            )}
+            <div className="wr-dxd-sub">最近的决定</div>
             <ul>
-              {(log || []).slice(0, 6).map((d, i) => (
+              {log.slice(0, 6).map((d, i) => (
                 <li key={i} className="wr-dxd-dec">
                   <span className="wr-dxd-dec-t">{new Date(d.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
                   <span className="wr-dxd-dec-x">{d.text}</span>
@@ -296,10 +270,8 @@ function WrDeepDrawer({ open, issues, activeKey, onPick, onAdopt, onIgnore, onRe
         )}
 
         <div className="wr-dxd-note">
-          采纳即写回本场正文并自动保存；忽略的条目不再提示，可点 <I.Refresh size={11} style={{ verticalAlign: "-1px" }} /> 重新诊断找回。
-          {persistenceStatus === "loading" || persistenceStatus === "saving" ? " 决定正在同步…" : null}
-          {persistenceStatus === "synced" ? " 决定已同步。" : null}
-          {persistenceStatus === "local" ? " 服务端暂不可用，决定已保存在本机并会在下次操作重试。" : null}
+          诊断是本机的启发式规则，只指出问题、不替你改字。忽略的条目不再提示，点右上角的重新诊断可以找回。
+          {syncNote ? <> {syncNote}</> : null}
         </div>
       </div>
     </aside>
@@ -307,7 +279,7 @@ function WrDeepDrawer({ open, issues, activeKey, onPick, onAdopt, onIgnore, onRe
 }
 
 export {
-  wrDeepScan, wrDeepMark, wrDeepUnmark, wrDeepAdopt,
+  wrDeepScan, wrDeepMark, wrDeepUnmark,
   wrDxLog, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, wrDxSnapshot,
   wrDxApplyPreferences, wrDxMergePreferences, wrDxLoadPreferences, wrDxSavePreferences,
   WrDeepDrawer,

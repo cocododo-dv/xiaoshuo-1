@@ -19,7 +19,7 @@ const dsFetching = {};
 let dsBusy = {};           // sceneId → true（同步中）
 
 function dsWorkId() {
-  try { const id = WsWorks ? WsWorks.activeId() : null; return id && id !== "__loading__" ? id : null; } catch (e) { return null; }
+  try { const id = WsWorks.activeId(); return id && id !== "__loading__" ? id : null; } catch (e) { return null; }
 }
 
 /* ws:catalog-changed 连写作时的字数回写都会广播——事件触发的重拉必须节流，否则每次自动保存都多打一个请求。
@@ -73,7 +73,7 @@ const WsDesignSync = {
     dsSubs.notify();
     try {
       const result = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/resync`, { scene_ids: ids });
-      if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh(workId);
+      await WsCatalog.__refresh(workId);
       await dsRefresh(workId, { force: true });
       return result;
     } catch (error) {

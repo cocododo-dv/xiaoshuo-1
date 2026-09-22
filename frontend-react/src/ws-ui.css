@@ -1,0 +1,184 @@
+/* ==========================================================
+   共享界面原语（2026-09-21 前端重构）— 与 ws-ui.jsx 配套。
+   在 main.jsx 里紧跟 styles.css 导入：令牌之后、所有视图样式之前，
+   所以视图里的同名覆盖仍然生效；这里只放全应用共用的东西。
+   ========================================================== */
+
+/* ---------- Base corrections ---------- */
+/* 按钮不继承颜色时会用浏览器的 buttontext（黑色）：夜间主题里变成黑底黑字。 */
+button { color: inherit; }
+
+/* 全局禁用态：以前各视图各打补丁，漏掉的地方禁用按钮看起来仍可点。 */
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled:active, .btn[aria-disabled="true"]:active { transform: none; }
+.btn-accent:disabled:hover, .btn-accent[aria-disabled="true"]:hover { background: var(--crimson); }
+.btn-primary:disabled:hover, .btn-primary[aria-disabled="true"]:hover { background: var(--ink-1); }
+.btn-ghost:disabled:hover, .btn-ghost[aria-disabled="true"]:hover { background: transparent; border-color: var(--line-1); }
+.btn-quiet:disabled:hover, .btn-quiet[aria-disabled="true"]:hover { background: transparent; }
+
+/* 方形图标按钮（关闭、更多、折叠……），必须带 aria-label。 */
+.btn-icon { width: 34px; padding: 0; justify-content: center; }
+.btn-icon.btn-sm { width: 28px; }
+.btn-icon.btn-xs { width: 22px; }
+.btn-icon.btn-lg { width: 40px; }
+
+/* 共用动画：视图里不要再各写一份 spin / fade。 */
+@keyframes ws-spin { to { transform: rotate(360deg); } }
+@keyframes ws-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ws-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* ---------- Tone resolver ----------
+   data-tone="accent|ok|warn|danger|info|neutral" 给元素一组 --tone / --tone-wash / --tone-ink，
+   标签、提示条、统计块都从这组变量取色；夜间主题跟着令牌走。 */
+/* 组件的默认色调用 :where()（零特异性），这样任何 [data-tone] 都能覆盖它，与规则先后无关。
+   以前 .ws-tag / .ws-notice 在后面用类选择器写默认值，特异性与属性选择器相同且更靠后，
+   结果所有 Tag / Notice 都忽略了自己的色调（警告、危险提示全画成了信息框）。 */
+:where(.ws-tag, .ws-stat) { --tone: var(--ink-3); --tone-wash: var(--paper-2); --tone-ink: var(--ink-2); }
+:where(.ws-notice) { --tone: var(--info); --tone-wash: var(--info-wash); --tone-ink: var(--info-ink); }
+[data-tone="neutral"] { --tone: var(--ink-3); --tone-wash: var(--paper-2); --tone-ink: var(--ink-2); }
+[data-tone="accent"]  { --tone: var(--accent); --tone-wash: var(--accent-wash); --tone-ink: var(--accent-ink); }
+[data-tone="ok"]      { --tone: var(--ok); --tone-wash: var(--ok-wash); --tone-ink: var(--ok-ink); }
+[data-tone="warn"]    { --tone: var(--warn); --tone-wash: var(--warn-wash); --tone-ink: var(--warn-ink); }
+[data-tone="danger"]  { --tone: var(--danger); --tone-wash: var(--danger-wash); --tone-ink: var(--danger-ink); }
+[data-tone="info"]    { --tone: var(--info); --tone-wash: var(--info-wash); --tone-ink: var(--info-ink); }
+
+/* ---------- Page header ---------- */
+.ws-page-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: var(--s4) var(--s6); flex-wrap: wrap;
+  padding-bottom: var(--s4); margin-bottom: var(--s6);
+  border-bottom: 1px solid var(--line-1);
+}
+.ws-page-head-main { min-width: 0; flex: 1 1 320px; }
+.ws-page-crumb { font-size: var(--fs-xs); color: var(--ink-3); margin-bottom: var(--s1); }
+.ws-page-title {
+  font-family: var(--font-serif); font-size: var(--fs-3xl); font-weight: 600;
+  line-height: var(--lh-tight); letter-spacing: -0.015em; color: var(--ink-1);
+  overflow-wrap: anywhere;
+}
+.ws-page-desc { margin-top: var(--s2); color: var(--ink-3); font-size: var(--fs-md); line-height: var(--lh-ui); max-width: 62ch; }
+.ws-page-meta { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); margin-top: var(--s2); font-size: var(--fs-sm); color: var(--ink-3); }
+.ws-page-meta b { color: var(--ink-1); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ws-page-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); }
+/* 页头动作只有一个尺寸：默认按钮（34px，和 Segmented 同高）。视图里写成 .btn-sm 的也按这个尺寸排，
+   各页的主按钮因此一样大；弹层里的按钮（不是直接子元素）不受影响 */
+.ws-page-actions > .btn { height: 34px; padding: 0 var(--s4); font-size: var(--fs-sm); }
+.ws-page-actions > .btn-icon { width: 34px; padding: 0; }
+
+/* ---------- Segmented control (single choice) ---------- */
+.seg {
+  display: inline-flex; align-items: center;
+  background: var(--paper-2); border: 1px solid var(--line-1);
+  border-radius: 8px; padding: 2px; gap: 2px;
+}
+.seg-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border: 0; padding: 4px 10px; border-radius: 6px;
+  font-size: 12.5px; font-weight: 500; color: var(--ink-3); white-space: nowrap; cursor: pointer;
+}
+.seg-btn:hover:not(:disabled) { color: var(--ink-1); }
+.seg-btn.is-active, .seg-btn.is-on, .seg-btn[aria-checked="true"] {
+  background: var(--paper-0); color: var(--ink-1); font-weight: 600; box-shadow: var(--shadow-sm);
+}
+.seg-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.seg[aria-busy="true"] .seg-btn { cursor: progress; }
+.seg-count { font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--ink-3); font-weight: 500; }
+.seg-btn.is-active .seg-count, .seg-btn[aria-checked="true"] .seg-count { color: var(--ink-2); }
+.seg-block { display: flex; width: 100%; }
+.seg-block .seg-btn { flex: 1; justify-content: center; }
+
+/* ---------- Underline tabs ---------- */
+.ws-tabs {
+  display: flex; align-items: flex-end; gap: var(--s1);
+  border-bottom: 1px solid var(--line-1); overflow-x: auto; scrollbar-width: none;
+}
+.ws-tabs::-webkit-scrollbar { display: none; }
+.ws-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  padding: 8px 12px; border: 0; background: transparent;
+  font-size: var(--fs-md); font-weight: 500; color: var(--ink-3); white-space: nowrap;
+  box-shadow: inset 0 -2px 0 transparent; transition: color var(--t-fast), box-shadow var(--t-fast);
+}
+.ws-tab:hover:not(:disabled) { color: var(--ink-1); }
+.ws-tab[aria-selected="true"] { color: var(--ink-1); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.ws-tab:disabled { opacity: 0.45; cursor: not-allowed; }
+.ws-tab-count {
+  min-width: 18px; padding: 0 6px; border-radius: var(--r-pill);
+  background: var(--paper-2); color: var(--ink-2);
+  font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Tag (status / category chip) ---------- */
+.ws-tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: var(--r-pill);
+  background: var(--tone-wash); color: var(--tone-ink);
+  font-size: var(--fs-xs); font-weight: 500; line-height: 18px; white-space: nowrap;
+}
+.ws-tag-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tone); flex: 0 0 auto; }
+.ws-tag.is-outline { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 40%, transparent); }
+
+/* ---------- Notice (banner / inline message) ---------- */
+.ws-notice {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 14px; border-radius: var(--r-md);
+  background: var(--tone-wash); color: var(--tone-ink);
+  border: 1px solid color-mix(in srgb, var(--tone) 22%, transparent);
+  font-size: var(--fs-sm); line-height: var(--lh-ui);
+}
+.ws-notice-icon { flex: 0 0 auto; margin-top: 2px; color: var(--tone); }
+.ws-notice-body { flex: 1 1 auto; min-width: 0; }
+.ws-notice-title { font-weight: 600; color: var(--tone-ink); }
+.ws-notice-text { color: var(--tone-ink); }
+.ws-notice-title + .ws-notice-text { margin-top: 2px; }
+.ws-notice-actions { display: flex; gap: var(--s2); flex-wrap: wrap; flex: 0 0 auto; align-self: center; }
+
+/* ---------- Empty state ---------- */
+.ws-empty {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: var(--s2); padding: var(--s10) var(--s6); color: var(--ink-3);
+}
+.ws-empty-icon { color: var(--ink-3); margin-bottom: var(--s1); }
+.ws-empty-title { font-family: var(--font-serif); font-size: var(--fs-xl); font-weight: 600; color: var(--ink-1); }
+.ws-empty-text { font-size: var(--fs-sm); line-height: var(--lh-ui); max-width: 44ch; }
+.ws-empty-actions { display: flex; gap: var(--s2); flex-wrap: wrap; justify-content: center; margin-top: var(--s2); }
+.ws-empty.is-compact { padding: var(--s5) var(--s4); gap: var(--s1); }
+.ws-empty.is-compact .ws-empty-title { font-size: var(--fs-md); font-family: var(--font-sans); }
+
+/* ---------- Stat tile ---------- */
+.ws-stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ws-stat-label { font-size: var(--fs-xs); color: var(--ink-3); }
+.ws-stat-value {
+  font-family: var(--font-serif); font-size: var(--fs-2xl); font-weight: 600; line-height: var(--lh-tight);
+  color: var(--ink-1); font-variant-numeric: tabular-nums;
+}
+.ws-stat[data-tone] .ws-stat-value { color: var(--tone-ink); }
+.ws-stat-unit { font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: 500; color: var(--ink-3); margin-left: 2px; }
+.ws-stat-hint { font-size: var(--fs-xs); color: var(--ink-3); }
+
+/* ---------- Section label ---------- */
+.ws-section-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2);
+}
+.ws-section-label-icon { color: var(--ink-3); display: inline-flex; }
+.ws-section-label-aside { margin-left: auto; font-weight: 500; color: var(--ink-3); }
+
+/* ---------- Spinner ---------- */
+.ws-spinner {
+  display: inline-block; flex: 0 0 auto; vertical-align: -2px;
+  width: var(--ws-spinner-size, 14px); height: var(--ws-spinner-size, 14px);
+  border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor; animation: ws-spin 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .ws-spinner { animation-duration: 2.4s; } }
+
+/* ---------- Visually hidden (live regions, labels) ---------- */
+.ws-sr-only {
+  position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ---------- Pressed button ----------
+   放在已有 .btn 上的「按下」态（IconButton pressed、构思的上下文开关也用它）。原在 screens.css 的起草台段落开头。 */
+.btn.is-on { background: var(--paper-2); border-color: var(--line-3); color: var(--ink-1); }

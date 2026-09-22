@@ -2,24 +2,27 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { WsDialog, isImeComposing, topModalLayer } from "./ws-dialog.jsx";
+import { WS_NAV_ITEMS, WS_SNOW_STEPS } from "./ws-nav.js";
+import { modShortcut } from "./lib/platform.js";
+import { sceneLabel } from "./ws-labels.js";
 
-/* global React, I */
 /* ==========================================================
-   WsPalette — 全局命令面板 (⌘K)
-   Calm, keyboard-first. Fuzzy-jump to any scene / step, or run
-   an action. The connective tissue of the whole workspace.
+   WsPalette — 全局命令面板（⌘K / Ctrl+K；提示文字由 lib/platform.js 按平台给）
+   跳到任何一个页面、任何一场、雪花的任何一步，或者执行一个动作。
+   · 页面清单来自 ws-nav.js（和侧栏同一份；过去手抄的清单漏了文学质量 / 成本看板）；
+   · 没输入时场景只列前几条（在写的排前面），输入后在全书所有场景里找（过去只在前 12 场里找）；
+   · 命令列表只在面板打开时构建一次；
+   · 对话框语义：WsDialog（焦点陷阱、Esc、关闭后焦点回到原处）+ 输入框是 combobox、
+     结果是 listbox / option（aria-activedescendant 指向当前项）；
+   · 输入法组字时的回车 / 方向键不当命令。
+   纯 ESM，不写 window。
    ========================================================== */
-const { useState: usePS, useEffect: usePE, useRef: usePR, useMemo: usePM } = React;
 
-/* ---- jumpable data (mirrors the rest of the app) ---- */
-const PAL_SCENES = [];  // 场景跳转真相来自 WsCatalog；无目录时列表为空
-const PAL_STEPS = [
-  { key: "audience", num: "01", name: "读者定位" }, { key: "logline", num: "02", name: "一句话概括" },
-  { key: "paragraph", num: "03", name: "一段话概括" }, { key: "characters", num: "04", name: "角色摘要表" },
-  { key: "synopsis", num: "05", name: "一页梗概" }, { key: "backstory", num: "06", name: "角色背景" },
-  { key: "outline", num: "07", name: "长篇大纲" }, { key: "profile", num: "08", name: "角色全档案" },
-  { key: "scenes", num: "09", name: "场景列表" }, { key: "planning", num: "10", name: "场景规划" },
-];
+const { useState, useEffect, useRef, useMemo } = React;
+
+const SCENES_WHEN_EMPTY = 8;
+const SCENES_WHEN_SEARCHING = 40;
 
 /* ---- fuzzy subsequence match w/ light scoring ---- */
 function fuzzy(q, text) {
@@ -33,165 +36,191 @@ function fuzzy(q, text) {
   return { ok: qi === q.length, score };
 }
 
-function WsPalette({ open, onClose, run, theme }) {
-  const [q, setQ] = usePS("");
-  const [sel, setSel] = usePS(0);
-  const inputRef = usePR(null);
-  const listRef = usePR(null);
-
-  usePE(() => {
-    if (!open) return undefined;
-    setQ("");
-    setSel(0);
-    const timer = window.setTimeout(() => inputRef.current?.focus(), 30);
-    return () => window.clearTimeout(timer);
-  }, [open]);
-
-  /* build command set */
-  const all = usePM(() => {
-    const cmds = [];
-
-    // 作品 — 切换 / 新建（数据来自 WsWorks store）
-    const works = (WsWorks ? WsWorks.list() : []);
-    const activeId = (WsWorks ? WsWorks.activeId() : null);
-    works.forEach(w => {
-      if (w.id === activeId) return;
-      cmds.push({ g: "作品", icon: "BookOpen", label: `切换到《${w.title}》`, hint: w.genre,
-        kw: `work zuopin qiehuan ${w.title} ${w.genre}`, run: () => run({ type: "work", workId: w.id }) });
-    });
-    cmds.push({ g: "作品", icon: "Plus", label: "新建作品", hint: "新书",
-      kw: "new work xinjian zuopin xinshu", run: () => run({ type: "new-work" }) });
-
-    cmds.push({ g: "导航", icon: "Home", label: "回到主页", hint: "主页", kw: "home zhuye shouye", run: () => run({ type: "go", view: "home" }) });
-    cmds.push({ g: "导航", icon: "Snowflake", label: "打开构思 · 雪花十步", hint: "构思", kw: "snowflake gousi xuehua", run: () => run({ type: "go", view: "snowflake" }) });
-    cmds.push({ g: "导航", icon: "Pen", label: "进入写作房间", hint: "写作", kw: "writer xiezuo", run: () => run({ type: "go", view: "writer" }) });
-    cmds.push({ g: "导航", icon: "Beaker", label: "风格参考 · 维度矩阵", hint: "风格", kw: "styleref fengge canzhao", run: () => run({ type: "go", view: "styleref" }) });
-    cmds.push({ g: "导航", icon: "Inbox", label: "查看待办收件箱", hint: "待办", kw: "review daiban shoujianxiang", run: () => run({ type: "go", view: "review" }) });
-    cmds.push({ g: "导航", icon: "Library", label: "资料库 · 人物 / 设定 / 知识", hint: "资料", kw: "library ziliao renwu sheding", run: () => run({ type: "go", view: "library" }) });
-
-    cmds.push({ g: "导航 · 生产", icon: "Layout", label: "章节编排", hint: "高级", kw: "author zhangjie bianpai", run: () => run({ type: "go", view: "author" }) });
-    cmds.push({ g: "导航 · 生产", icon: "Play", label: "AI 起草台", hint: "高级", kw: "scene ai qicao changjing gongzuotai", run: () => run({ type: "go", view: "scene" }) });
-    cmds.push({ g: "导航 · 生产", icon: "BookOpen", label: "成稿中心", hint: "高级", kw: "manuscripts chenggao", run: () => run({ type: "go", view: "manuscripts" }) });
-    cmds.push({ g: "导航 · 生产", icon: "Microscope", label: "写作台 · 深改姿态", hint: "原深改台", kw: "deepdesk shengai shenxiu", run: () => run({ type: "writer-action", action: "deep" }) });
-    cmds.push({ g: "导航 · 系统", icon: "Settings", label: "系统设置", hint: "设置", kw: "settings shezhi", run: () => run({ type: "go", view: "settings" }) });
-    cmds.push({ g: "导航 · 系统", icon: "Trash", label: "回收站", hint: "系统", kw: "trash huishouzhan", run: () => run({ type: "go", view: "trash" }) });
-
-    cmds.push({ g: "动作", icon: "Sparkles", label: "AI 续写当前场景", hint: "⌘J", kw: "ai xuxie sparkles", run: () => run({ type: "writer-action", action: "ai" }) });
-    cmds.push({ g: "动作", icon: "Eye", label: "进入沉浸写作", hint: "⌘.", kw: "immersion chenjin zhuanzhu", run: () => run({ type: "writer-action", action: "immersion" }) });
-    cmds.push({ g: "动作", icon: "Sliders", label: "调节舒适度 · 打开 Tweaks", kw: "tweaks shezhi shushidu", run: () => run({ type: "tweaks" }) });
-    cmds.push({ g: "动作", icon: theme === "night" ? "Sun" : "Moon", label: theme === "night" ? "切换到 白昼主题" : "切换到 夜灯主题", kw: "theme zhuti yejian baizhou", run: () => run({ type: "theme", value: theme === "night" ? "day" : "night" }) });
-    cmds.push({ g: "动作", icon: "Type", label: "切换到 暮色主题", kw: "theme dusk muse", run: () => run({ type: "theme", value: "dusk" }) });
-
-    /* 场景跳转：派生自 WsCatalog（与大纲 / 主页同源），缺席时回退静态表 */
-    const palScenes = (() => {
-      try {
-        if (!WsCatalog) return PAL_SCENES;
-        const out = [];
-        WsCatalog.get().forEach(c => (c.scenes || []).forEach(s => {
-          out.push({ ch: c.n, chTitle: c.title, id: s.sid, title: s.title, state: s.state === "writing" ? "active" : (s.state || "todo") });
-        }));
-        // 在写的场景排最前，最多 12 条，避免淹没命令列表
-        out.sort((a, b) => (a.state === "active" ? -1 : 0) - (b.state === "active" ? -1 : 0));
-        return out.slice(0, 12);
-      } catch (e) { return PAL_SCENES; }
-    })();
-    palScenes.forEach(s => cmds.push({
-      g: "跳转 · 场景", icon: "FileText", label: s.title, hint: `CH ${s.ch} · ${s.chTitle}`, state: s.state,
-      kw: `${s.title} ${s.chTitle} ch${s.ch}`, run: () => run({ type: "scene", sceneId: s.id })
+/* 全书场景（与大纲 / 主页同源：WsCatalog）。在写的排前面。 */
+function catalogScenes() {
+  try {
+    const out = [];
+    WsCatalog.get().forEach(c => (c.scenes || []).forEach((s, i) => {
+      out.push({ ch: c.n, chTitle: c.title, where: sceneLabel(c, i), id: s.sid, title: s.title || "未命名场景", state: s.state === "writing" ? "active" : (s.state || "todo") });
     }));
-    PAL_STEPS.forEach(s => cmds.push({
-      g: "跳转 · 构思", icon: "Compass", label: `${s.num} · ${s.name}`, hint: "雪花",
-      kw: `${s.name} ${s.num} xuehua`, run: () => run({ type: "step", key: s.key })
-    }));
-    return cmds;
-  }, [run, theme]);
+    return out.sort((a, b) => (a.state === "active" ? -1 : 0) - (b.state === "active" ? -1 : 0));
+  } catch (e) { return []; }
+}
 
-  const results = usePM(() => {
-    const scored = all.map(c => {
-      const m = fuzzy(q, c.label + " " + (c.kw || "") + " " + (c.hint || ""));
-      return { c, ...m };
-    }).filter(x => x.ok).sort((a, b) => b.score - a.score);
-    return q ? scored.map(x => x.c) : all;
-  }, [q, all]);
+function buildCommands(theme, run) {
+  const cmds = [];
 
-  /* group while preserving order */
-  const groups = usePM(() => {
-    const order = []; const map = {};
-    results.forEach(c => { if (!map[c.g]) { map[c.g] = []; order.push(c.g); } map[c.g].push(c); });
-    return order.map(g => ({ g, items: map[g] }));
-  }, [results]);
+  // 作品 — 切换 / 新建
+  const works = WsWorks ? WsWorks.list() : [];
+  const activeId = WsWorks ? WsWorks.activeId() : null;
+  works.forEach(w => {
+    if (w.id === activeId) return;
+    cmds.push({ g: "作品", icon: "BookOpen", label: `切换到《${w.title}》`, hint: w.genre,
+      kw: `work zuopin qiehuan ${w.title} ${w.genre}`, run: () => run({ type: "work", workId: w.id }) });
+  });
+  cmds.push({ g: "作品", icon: "Plus", label: "新建作品", kw: "new work xinjian zuopin xinshu", run: () => run({ type: "new-work" }) });
 
-  const flat = usePM(() => groups.flatMap(gr => gr.items), [groups]);
+  // 页面 — 与侧栏同一份导航模型
+  WS_NAV_ITEMS.forEach(it => {
+    cmds.push({ g: "页面", icon: it.icon, label: it.label, hint: it.desc, kw: `${it.id} ${it.kw || ""}`,
+      run: () => run({ type: "go", view: it.id }) });
+  });
 
-  usePE(() => { if (sel >= flat.length) setSel(Math.max(0, flat.length - 1)); }, [flat.length]);
+  // 动作
+  cmds.push({ g: "动作", icon: "Sparkles", label: "AI 续写当前场景", hint: modShortcut("J"), kw: "ai xuxie sparkles", run: () => run({ type: "writer-action", action: "ai" }) });
+  cmds.push({ g: "动作", icon: "Eye", label: "进入沉浸写作", hint: modShortcut("."), kw: "immersion chenjin zhuanzhu", run: () => run({ type: "writer-action", action: "immersion" }) });
+  cmds.push({ g: "动作", icon: "Microscope", label: "深改当前场景", hint: "写作台", kw: "deepdesk shengai shenxiu", run: () => run({ type: "writer-action", action: "deep" }) });
+  cmds.push({ g: "动作", icon: "Sliders", label: "排版与舒适度", kw: "tweaks shushidu paiban ziti hangju", run: () => run({ type: "tweaks" }) });
+  const night = theme === "night";
+  cmds.push({ g: "动作", icon: night ? "Sun" : "Moon", label: night ? "切换到白昼主题" : "切换到夜灯主题", kw: "theme zhuti yedeng baizhou", run: () => run({ type: "theme", value: night ? "day" : "night" }) });
+  if (theme !== "dusk") {
+    cmds.push({ g: "动作", icon: "Type", label: "切换到暮色主题", kw: "theme dusk muse", run: () => run({ type: "theme", value: "dusk" }) });
+  }
 
-  usePE(() => {
-    if (!open) return;
-    const onKey = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); onClose(); }
-      else if (e.key === "ArrowDown") { e.preventDefault(); setSel(s => Math.min(flat.length - 1, s + 1)); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); setSel(s => Math.max(0, s - 1)); }
-      else if (e.key === "Enter") { e.preventDefault(); const c = flat[sel]; if (c) { c.run(); onClose(); } }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, flat, sel, onClose]);
+  // 构思 — 雪花十步
+  WS_SNOW_STEPS.forEach(s => cmds.push({
+    g: "构思", icon: "Compass", label: `${s.num} ${s.name}`, hint: "雪花十步",
+    kw: `${s.name} ${s.num} xuehua`, run: () => run({ type: "step", key: s.key }),
+  }));
+  return cmds;
+}
 
-  usePE(() => {
-    if (!open || !listRef.current) return;
-    const el = listRef.current.querySelector(`[data-i="${sel}"]`);
-    if (el) el.scrollIntoView ? el.scrollIntoView({ block: "nearest" }) : null;
-  }, [sel, open]);
+function sceneCommands(scenes, run) {
+  return scenes.map(s => ({
+    g: "场景", icon: "FileText", label: s.title, hint: s.where, state: s.state,
+    kw: `${s.title} ${s.chTitle} ch${s.ch}`, run: () => run({ type: "scene", sceneId: s.id }),
+  }));
+}
 
+/* 结果按分组排列（组的先后以第一条命中的位置为准） */
+function groupResults(results) {
+  const order = []; const map = {};
+  results.forEach(c => { if (!map[c.g]) { map[c.g] = []; order.push(c.g); } map[c.g].push(c); });
+  return order.map(g => ({ g, items: map[g] }));
+}
+
+function WsPalette({ open, ...rest }) {
   if (!open) return null;
+  return <PaletteDialog {...rest} />;
+}
+
+function PaletteDialog({ onClose, run, theme }) {
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(0);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
+  const runRef = useRef(run);
+  runRef.current = run;
+  const baseId = React.useId();
+  const listId = `${baseId}-list`;
+  const optionId = (i) => `${baseId}-opt-${i}`;
+
+  // 面板打开期间只建一次（App 每次重渲都会换一个 run，这里经 ref 调用最新的）
+  const commands = useMemo(() => buildCommands(theme, (cmd) => runRef.current(cmd)), [theme]);
+  const scenes = useMemo(() => sceneCommands(catalogScenes(), (cmd) => runRef.current(cmd)), []);
+
+  const groups = useMemo(() => {
+    const query = q.trim();
+    if (!query) {
+      return groupResults([...commands.filter(c => c.g !== "构思"), ...scenes.slice(0, SCENES_WHEN_EMPTY), ...commands.filter(c => c.g === "构思")]);
+    }
+    const score = (c) => ({ c, ...fuzzy(query, `${c.label} ${c.kw || ""} ${c.hint || ""}`) });
+    const hitScenes = scenes.map(score).filter(x => x.ok).sort((a, b) => b.score - a.score).slice(0, SCENES_WHEN_SEARCHING);
+    const hits = [...commands.map(score).filter(x => x.ok), ...hitScenes].sort((a, b) => b.score - a.score);
+    return groupResults(hits.map(x => x.c));
+  }, [q, commands, scenes]);
+
+  const flat = useMemo(() => groups.flatMap(gr => gr.items), [groups]);
+
+  useEffect(() => { if (sel >= flat.length) setSel(Math.max(0, flat.length - 1)); }, [flat.length, sel]);
+
+  useEffect(() => {
+    const el = listRef.current && listRef.current.querySelector(`[data-i="${sel}"]`);
+    if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
+  }, [sel]);
+
+  const choose = (c) => {
+    if (!c) return;
+    onClose();
+    c.run();
+  };
+
+  const onKeyDown = (e) => {
+    if (isImeComposing(e)) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setSel(s => Math.min(flat.length - 1, s + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setSel(s => Math.max(0, s - 1)); }
+    else if (e.key === "Enter") { e.preventDefault(); choose(flat[sel]); }
+  };
 
   let running = -1;
   return (
-    <div className="pal-wrap" onMouseDown={onClose}>
-      <div className="pal" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="pal-search">
-          <I.Search size={18} />
-          <input ref={inputRef} className="pal-input" value={q} placeholder="跳转到场景 / 构思步骤，或输入命令…"
-            onChange={(e) => { setQ(e.target.value); setSel(0); }} spellCheck={false} />
-          <kbd className="pal-esc">Esc</kbd>
-        </div>
+    <WsDialog onClose={onClose} label="命令面板" size="lg" className="pal" scrimClassName="pal-wrap" initialFocus={inputRef}>
+      <div className="pal-search">
+        <I.Search size={18} />
+        <input ref={inputRef} className="pal-input" value={q} placeholder="跳到页面、场景或构思步骤，或输入命令…"
+          role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list"
+          aria-activedescendant={flat.length ? optionId(sel) : undefined} aria-label="搜索命令、页面或场景"
+          onChange={(e) => { setQ(e.target.value); setSel(0); }} onKeyDown={onKeyDown} spellCheck={false} />
+        <kbd className="pal-esc">Esc</kbd>
+      </div>
 
-        <div className="pal-list" ref={listRef}>
-          {groups.length === 0 && (
-            <div className="pal-empty"><I.Search size={22} /><span>没有匹配「{q}」的结果</span></div>
-          )}
-          {groups.map(gr => (
-            <div className="pal-group" key={gr.g}>
-              <div className="pal-group-h">{gr.g}</div>
+      <div className="pal-list" ref={listRef} role="listbox" id={listId} aria-label="结果">
+        {groups.length === 0 && (
+          <div className="pal-empty" role="presentation"><I.Search size={22} /><span>没有匹配「{q}」的结果</span></div>
+        )}
+        {groups.map(gr => {
+          const headId = `${baseId}-g-${gr.g}`;
+          return (
+            <div className="pal-group" key={gr.g} role="group" aria-labelledby={headId}>
+              <div className="pal-group-h" id={headId}>{gr.g}</div>
               {gr.items.map(c => {
                 running++;
                 const i = running;
                 const Ic = I[c.icon] || I.Dot;
                 return (
-                  <button key={i} data-i={i} className={`pal-item ${sel === i ? "is-sel" : ""}`}
-                    onMouseEnter={() => setSel(i)} onClick={() => { c.run(); onClose(); }}>
+                  <div key={i} id={optionId(i)} data-i={i} role="option" aria-selected={sel === i}
+                    className={`pal-item ${sel === i ? "is-sel" : ""}`}
+                    onMouseMove={() => { if (sel !== i) setSel(i); }}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => choose(c)}>
                     <span className="pal-item-ic"><Ic size={17} /></span>
                     <span className="pal-item-label">{c.label}</span>
-                    {c.state && <span className={`pal-dot s-${c.state}`} />}
+                    {c.state && <span className={`pal-dot s-${c.state}`} aria-hidden="true" />}
                     {c.hint && <span className="pal-item-hint">{c.hint}</span>}
-                    {sel === i && <span className="pal-enter"><I.ArrowRight size={13} /></span>}
-                  </button>
+                  </div>
                 );
               })}
             </div>
-          ))}
-        </div>
-
-        <div className="pal-foot">
-          <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
-          <span><kbd>↵</kbd> 打开</span>
-          <span><kbd>esc</kbd> 关闭</span>
-          <span className="pal-foot-spacer" />
-          <span className="pal-foot-tip">随时按 <kbd>⌘K</kbd> 唤出</span>
-        </div>
+          );
+        })}
       </div>
-    </div>
+
+      <div className="pal-foot" aria-hidden="true">
+        <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+        <span><kbd>↵</kbd> 打开</span>
+        <span><kbd>Esc</kbd> 关闭</span>
+        <span className="pal-foot-spacer" />
+        <span className="pal-foot-tip">随时按 <kbd>{modShortcut("K")}</kbd> 唤出</span>
+      </div>
+    </WsDialog>
   );
 }
 
-export { WsPalette };
+/* ⌘K / Ctrl+K：开关命令面板（App 挂一次）。别的模态层（确认框、续写托盘、作品切换、抽屉……）开着时不开：
+   面板会压在它的遮罩底下看不见却拿走焦点，回车就把整个应用跳到别页，确认框还悬着。
+   面板自己在最上层时照旧是开关。仍然 preventDefault：不让浏览器把焦点抢去地址栏的搜索。 */
+function usePaletteShortcut(setPalette) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || isImeComposing(e) || String(e.key || "").toLowerCase() !== "k") return;
+      e.preventDefault();
+      const top = topModalLayer();
+      if (top && !(top.classList && top.classList.contains("pal"))) return;
+      setPalette((open) => !open);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setPalette]);
+}
+
+export { WsPalette, fuzzy, usePaletteShortcut };

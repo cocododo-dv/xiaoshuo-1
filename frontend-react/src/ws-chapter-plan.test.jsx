@@ -154,8 +154,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
   });
 
   it("戏剧卡补丁会进入逐项确认，并按勾选结果回传 apply", async () => {
-    await loadStore();
-    const ui = await import("./ws-author-plan.jsx");
+    const { mod: ui } = await loadStore();
     const rows = ui.cpPatchRows(
       {
         drama: { promise: "读者发现旧工牌指向父亲", spine: "调查转向家人" },

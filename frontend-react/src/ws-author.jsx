@@ -1,1007 +1,117 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { ARR_ACTS, ARR_ARCHIVED, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE } from "./ws-author-data.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
-import { ArrThreadLoom, ArrThreadMini, arrDeriveThreads } from "./ws-author-loom.jsx";
-import { ArrPacingLens } from "./ws-author-pacing.jsx";
-import { ArrDoctor } from "./ws-author-doctor.jsx";
-import { wsKey, WsWorks } from "./ws-works.jsx";
-import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
-import { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock } from "./ws-author-plan.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
-import { navigateWithViewIntent, queueViewIntent } from "./ws-view-intents.js";
 import { WsChapterPlanPanel } from "./ws-snow-chapters.jsx";
-import { ArrSpineLens } from "./ws-author-spine.jsx";
-import { arrBookFacts, arrChapterFacts, arrIsPlanChapter, arrLensChapters, arrRangeLabel } from "./ws-author-derive.js";
-
-/* global React, I, ARR_ACTS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
-const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA } = React;
-
-/* 卷名/简介是可选装饰；真实作品只显示
-   通用卷序（卷一/卷二/卷三），不泄漏演示卷名。章节本身走 WsCatalog（已按作品门控）。 */
+import { planIntentsForScene } from "./ws-scene-design.jsx";
+import { arrChapterChecks, arrIsPlanChapter, arrIsPlanScene } from "./ws-author-derive.js";
+import {
+  arrGoView, arrStampIds, useArrChapterList, useArrPref, useAuthorSnow, useChapterDnd, useCtxDrawer, useSceneDnd, useSelection,
+} from "./ws-author-hooks.js";
+import { ArrOverview, ArrOverviewHead } from "./ws-author-overview.jsx";
+import { ArrEditor } from "./ws-author-detail.jsx";
+import { ArrChapterContext, ArrRail } from "./ws-author-side.jsx";
+import { EmptyState, Spinner } from "./ws-ui.jsx";
+import { wsConfirm } from "./ws-notify.jsx";
+import { chapterLabel, chapterOwnTitle } from "./ws-labels.js";
 
 /* ==========================================================
-   章节编排 — Chapter Arrangement
+   章节编排 — Chapter Arrangement（外壳）
    两种模式：
-   · 全书编排（overview）—— 结构镜头（卷 → 章 → 场，故事序）+ 按卷分组的章节看板
-   · 章节详情（detail）—— 序列栏 · 编辑器（构思条 / 戏剧卡 / 场景看板）· 章节体检
+   · 全书编排（overview，ws-author-overview.jsx）—— 结构 / 节奏两个镜头 + 全书体检 + 按卷分组的章节清单
+   · 章节详情（detail）—— 序列栏（ws-author-side.jsx）· 编辑器（ws-author-detail.jsx：构思条 / 场景看板 / 交接 /
+     戏剧卡 / AI 编排）· 章节体检（ws-author-side.jsx）
+   外壳只管：接住目录、现在看哪一章 / 哪种模式、章与场的改动怎么写回、「整理章节结构」面板开在哪。
+   管线在 ws-author-hooks.js，小零件在 ws-author-ui.jsx，AI 编排在 ws-author-ai.jsx，派生事实在 ws-author-derive.js。
 
    阶段 Z「一张章表、两扇门」：雪花整理出来的章（structure.owner === "plan"）是构思分章的延续，不是另一份。
    · 章的结构（哪几场归哪一章、先后、幕）只有一个编辑器——「整理章节结构」面板，这里直接开得出来；
-     这样的章在看板上不能拖（后端同样 409），手建的章照常拖。
+     这样的章在清单上不能拖（后端同样 409），手建的章照常拖、也能用方向键挪。
    · 章名两边改的是同一个名字（后端写穿到章计划，07 章节表 / 09 章头 / 分章面板跟着变）。
    · 章级的入口出口 / 视角 · 时空没有编辑入口：作者没填过就从各场读出来（ws-author-derive.js），不再留空壳。
+   章级张力 / 线索（旧原型的「故事弧线」「线索织布机」）没有编辑入口、也没有东西喂它，连同 UI 一起删了；
+   目录 store 里的 tension / threads 字段是后端契约，原样留着。
    ========================================================== */
 
-/* ---- tiny persistence (per-work namespaced) ---- */
-const arrK = (k) => (wsKey ? wsKey(k) : k);
-const arrLsGet = (k, d) => { try { const v = localStorage.getItem(arrK(k)); return v == null ? d : JSON.parse(v); } catch (_) { return d; } };
-const arrLsSet = (k, v) => { try { localStorage.setItem(arrK(k), JSON.stringify(v)); } catch (_) {} };
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
-/* ensure every scene carries a stable id (for inline-edit + reorder identity) */
-const arrStampIds = (list) => list.map((c) => ({
-  ...c,
-  scenes: c.scenes.map((s, i) => (s.sid ? s : { ...s, sid: c.id + "-s" + i + "-" + Math.random().toString(36).slice(2, 6) })),
-}));
+/* 雪花的场（design.owner === "plan"）：设计字段不在这里改——行上已经是只读的，写回时再兜一层，
+   免得别的入口（快捷键、以后新加的按钮）把一个注定被后端 409 的改动乐观写进本机目录。 */
+const ARR_DESIGN_KEYS = ["goal", "obstacle", "turn", "povName", "kind"];
 
-/* ---- drag-to-reorder hook (constrained within a group) ---- */
-function useArrOrder(ids) {
-  const key = ids.join("|");
-  const [order, setOrder] = useStA(ids);
-  const [drag, setDrag] = useStA(null);
-  useEfA(() => { setOrder(ids); }, [key]);
-  const move = (arr, fromId, toId) => {
-    const a = [...arr]; const f = a.indexOf(fromId), t = a.indexOf(toId);
-    if (f < 0 || t < 0) return arr; a.splice(f, 1); a.splice(t, 0, fromId); return a;
-  };
-  const handlers = (id, group) => ({
-    draggable: true,
-    onDragStart: (e) => { setDrag({ id, group }); e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", id); } catch (_) {} },
-    onDragEnter: () => { if (!drag || drag.id === id || drag.group !== group) return; setOrder((p) => move(p, drag.id, id)); },
-    onDragOver: (e) => e.preventDefault(),
-    onDrop: (e) => { e.preventDefault(); setDrag(null); },
-    onDragEnd: () => setDrag(null),
-    "data-dragging": drag && drag.id === id ? "true" : undefined,
-  });
-  return [order, handlers, drag];
-}
+/* 构思分出来的章：删掉的只是目录里的章和场景卡，构思里的分章还在——下一次「确认写入」会把这些场取回。
+   作者要的多半是并章 / 拆章（用「整理章节结构」），或者真不要这几场（在构思第 9 步删行）。删之前说清楚。 */
+const planDeleteNote = (targets) => (targets.some(arrIsPlanChapter)
+  ? "\n\n其中有构思里分出来的章：这里删掉的只是目录里的章和场景卡，构思的分章还在——下一次「整理章节结构 → 确认写入」会把这些场取回。\n想并章 / 拆章，用「整理章节结构」；真不要这几场，到构思第 9 步删行。"
+  : "");
 
-/* ---- pills ---- */
-function ArrChPill({ s, sm }) {
-  const m = ARR_CH_STATE[s] || ARR_CH_STATE.draft;
-  return <span className={`pill pill-${m.tone} ${sm ? "text-xs" : ""}`}><span className="pill-dot" />{m.label}</span>;
-}
-function ArrScenePill({ s }) {
-  const m = ARR_SCENE_STATE[s] || ARR_SCENE_STATE.todo;
-  return <span className={`pill pill-${m.tone} text-xs`}><span className="pill-dot" />{m.label}</span>;
-}
-
-/* ---- scene progress dots ---- */
-function ArrMiniScenes({ scenes }) {
-  return (
-    <span className="arr-dots" title={`${scenes.length} 场`}>
-      {scenes.map((s, i) => (
-        <span key={i} className="arr-dot" style={{ background: (ARR_SCENE_STATE[s.state] || ARR_SCENE_STATE.todo).dot }} />
-      ))}
-    </span>
-  );
-}
-
-/* ---- word budget bar ---- */
-function ArrBudgetBar({ cur, target, compact }) {
-  /* 没设字数目标（雪花整理出来的章都没有）：不画进度、不谈超额——0 目标下任何字数都会被算成「超额」 */
-  const hasTarget = target > 0;
-  const pct = hasTarget ? Math.min(100, Math.round((cur / target) * 100)) : 0;
-  const over = hasTarget && cur > target * 1.08;
-  return (
-    <div className={`arr-budget ${compact ? "is-compact" : ""}`}>
-      <div className="arr-budget-track">
-        <div className={`arr-budget-fill ${over ? "is-over" : ""} ${cur === 0 ? "is-empty" : ""}`} style={{ width: (cur === 0 ? 0 : Math.max(4, pct)) + "%" }} />
-      </div>
-      {!compact && (
-        <div className="arr-budget-num">
-          <span className="tab-num">{cur.toLocaleString()}</span>
-          <span className="arr-budget-sep">{hasTarget ? `/ ${target.toLocaleString()}` : "字 · 未设目标"}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ==========================================================
-   全书编排 — ArrOverview
-   ========================================================== */
-
-function arrSmoothPath(pts) {
-  if (pts.length < 2) return "";
-  let d = `M ${pts[0].x} ${pts[0].y}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
-    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
-    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x} ${p2.y}`;
-  }
-  return d;
-}
-
-function ArrTensionCurve({ chapters, numOf, pickedId, onPick }) {
-  const W = 1000, H = 248, padL = 40, padR = 24, padT = 30, padB = 34;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const n = chapters.length;
-  const x = (i) => padL + (n <= 1 ? plotW / 2 : (i * plotW) / (n - 1));
-  const y = (t) => padT + (1 - t) * plotH;
-  const pts = chapters.map((c, i) => ({ x: x(i), y: y(c.tension), c, i }));
-  const line = arrSmoothPath(pts);
-  // 单章（pts<2）时 arrSmoothPath 返回 ""，若仍拼接 area 会得到以 " L" 开头、缺起始 M 的非法 path，
-  // 浏览器报 "<path> attribute d: Expected moveto"。line 为空时 area 也置空（单点只渲染圆点即可）。
-  const area = line ? line + ` L ${pts[n - 1].x} ${padT + plotH} L ${pts[0].x} ${padT + plotH} Z` : "";
-
-  // act bands
-  const bands = ARR_ACTS.map((a) => {
-    const idxs = chapters.map((c, i) => (c.act === a.id ? i : -1)).filter((i) => i >= 0);
-    if (!idxs.length) return null;
-    const first = Math.min(...idxs), last = Math.max(...idxs);
-    const x0 = first === 0 ? 0 : (x(first) + x(first - 1)) / 2;
-    const x1 = last === n - 1 ? W : (x(last) + x(last + 1)) / 2;
-    return { a, x0, x1, mid: (x0 + x1) / 2 };
-  }).filter(Boolean);
-
-  const stateColor = (s) => ({ approved: "var(--sage)", review: "var(--gold)", draft: "var(--ink-4)", writing: "var(--crimson)", planned: "var(--line-3)" }[s] || "var(--ink-4)");
-
-  return (
-    <svg className="arr-curve" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label="全书张力弧线">
-      <defs>
-        <linearGradient id="arrCurveFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--crimson)" stopOpacity="0.16" />
-          <stop offset="100%" stopColor="var(--crimson)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-
-      {/* act bands */}
-      {bands.map((b, i) => (
-        <g key={b.a.id}>
-          {i > 0 && <line x1={b.x0} y1={padT - 8} x2={b.x0} y2={padT + plotH + 6} className="arr-curve-actsep" />}
-          <text x={b.mid} y={18} className={`arr-curve-actlabel tone-${b.a.tone}`} textAnchor="middle">{b.a.n}</text>
-        </g>
-      ))}
-
-      {/* gridlines */}
-      {[0.25, 0.5, 0.75].map((t) => (
-        <line key={t} x1={padL} y1={y(t)} x2={W - padR} y2={y(t)} className="arr-curve-grid" />
-      ))}
-      <text x={padL - 8} y={y(0.85) + 4} className="arr-curve-axis" textAnchor="end">高</text>
-      <text x={padL - 8} y={y(0.12) + 4} className="arr-curve-axis" textAnchor="end">低</text>
-
-      {/* current vertical guide */}
-      {pts.filter((p) => p.c.id === pickedId).map((p) => (
-        <line key="guide" x1={p.x} y1={padT - 4} x2={p.x} y2={padT + plotH + 4} className="arr-curve-guide" />
-      ))}
-
-      <path d={area} fill="url(#arrCurveFill)" />
-      <path d={line} className="arr-curve-line" fill="none" />
-
-      {/* dots */}
-      {pts.map((p) => {
-        const active = p.c.id === pickedId;
-        return (
-          <g key={p.c.id} className="arr-curve-node" onClick={() => onPick(p.c.id)} style={{ cursor: "pointer" }}>
-            {p.c.current && <circle cx={p.x} cy={p.y} r="10" className="arr-curve-pulse" />}
-            <circle cx={p.x} cy={p.y} r={active ? 7 : 5} fill={stateColor(p.c.state)} stroke="var(--paper-0)" strokeWidth="2" />
-            <text x={p.x} y={padT + plotH + 22} className={`arr-curve-xlabel ${active ? "is-active" : ""}`} textAnchor="middle">{numOf[p.c.id]}</text>
-            <title>{`第 ${numOf[p.c.id]} 章 · ${p.c.title} — 张力 ${Math.round(p.c.tension * 100)}`}</title>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-const ARR_PLAN_CHAPTER_TIP = "这一章是构思里分出来的：它排第几、在第几卷、装哪几场，由「整理章节结构」决定——点页头的「整理章节结构」去改";
-
-function ArrChapterCard({ c, num, picked, onOpen, dnd, selectMode, selected, onToggleSelect }) {
-  const done = c.scenes.filter((s) => s.state === "done").length;
-  const locked = c.state === "approved";
-  /* 阶段 X：雪花整理出来的章没有「章承诺」和章级 POV——卡上不留空，用构思里的章摘要和各场的 POV 顶上 */
-  const blurb = c.promise || c.summary || "";
-  const povLine = c.pov || [...new Set(c.scenes.map((s) => s.povName).filter(Boolean))].slice(0, 3).join(" · ");
-  /* 阶段 Z：构思分出来的章彼此的先后 = 章表的顺序——这里不给拖，要动去「整理章节结构」 */
-  const planOwned = arrIsPlanChapter(c);
-  const rangeLabel = arrRangeLabel(c.structure);
-  return (
-    <div className={`arr-card s-${c.state} ${picked ? "is-picked" : ""} ${selected ? "is-selected" : ""} ${selectMode && locked ? "is-unselectable" : ""} ${planOwned ? "is-plan-owned" : ""}`}
-      data-testid="arr-chapter-card" data-structure-owner={planOwned ? "plan" : "desk"}
-      {...(selectMode ? {} : dnd)}
-      onClick={() => { if (!selectMode) { onOpen(c.id); return; } if (!locked) onToggleSelect(c.id); }}>
-      {selectMode ? (
-        <label className="arr-card-check" onClick={(e) => e.stopPropagation()}
-          title={locked ? "已批准终稿不可删除——请先到成稿中心重新打开" : "选中本章"}>
-          <input type="checkbox" checked={!!selected} disabled={locked}
-            aria-label={`选择第 ${num} 章 · ${c.title}`}
-            onChange={() => onToggleSelect(c.id)} />
-        </label>
-      ) : (
-        <span className={`arr-card-grip ${planOwned ? "is-fixed" : ""}`}
-          title={planOwned ? ARR_PLAN_CHAPTER_TIP : "拖动重排（可跨卷）"}><I.GripVertical size={15} /></span>
-      )}
-      <div className="arr-card-top">
-        <span className="arr-card-num">{num}</span>
-        <ArrChPill s={c.state} sm />
-        {c.spine && <span className="arr-card-spine" title="这一章收在这个灾难上（来自构思的分章）">{c.spine}</span>}
-        {rangeLabel && <span className="arr-card-range tab-num" title="这一章装着构思「场景列表」里的这几场">{rangeLabel}</span>}
-      </div>
-      <div className="arr-card-title text-serif">{c.title}</div>
-      <div className="arr-card-promise" title={blurb}>{blurb}</div>
-      <div className="arr-card-foot">
-        <span className="arr-card-scenes"><ArrMiniScenes scenes={c.scenes} /><span className="arr-card-scenes-num">{done}/{c.scenes.length}</span></span>
-        <span className="arr-card-pov"><I.Eye size={12} />{povLine}</span>
-      </div>
-      <ArrBudgetBar cur={c.words.cur} target={c.words.target} />
-    </div>
-  );
-}
-
-/* 全书编排的镜头。结构 / 节奏读的是真实数据，永远在；故事弧线（章级张力）与线索织布机（章级线索）读的那两样
-   在产品里没有编辑入口——只有旧数据里真的有才出现，绝不拿默认值画一条平线冒充「张力曲线」。 */
-function arrLensList(book) {
-  return [
-    { key: "spine", label: "结构", title: "全书结构", sub: "卷 → 章 → 场，按故事序。三个灾难各自收束一章；点章进详情，点场落在那一场上。" },
-    { key: "pace", label: "节奏镜头", title: "节奏镜头", sub: "按章字数直方图（虚影为目标）+ POV 着色与泳道（取自各场）。看哪一章注水、哪一章太薄、POV 切换是否健康。" },
-    book.hasTension ? { key: "arc", label: "故事弧线", title: "故事弧线", sub: "全书张力随章推进的走势。点圆点可直接进入该章。" } : null,
-    book.hasThreads ? { key: "loom", label: "线索织布机", title: "线索织布机", sub: "每条线索从引入到收束的全书走向。虚线表示尚未收束，点节点进入该章。" } : null,
-  ].filter(Boolean);
-}
-
-function ArrOverview({ chapters, numOf, pickedId, onOpen, onOpenScene, chDnd, boardDnd, onNew, lens, setLens, batch, snow, onOpenPlan }) {
-  const totalTarget = chapters.reduce((s, c) => s + c.words.target, 0);
-  const totalCur = chapters.reduce((s, c) => s + c.words.cur, 0);
-  const drafted = chapters.filter((c) => c.state !== "planned").length;
-  const approved = chapters.filter((c) => c.state === "approved").length;
-  const bt = batch || {};
-  const selectMode = !!bt.mode;
-  const book = useMemoA(() => arrBookFacts(chapters), [chapters]);
-  const lensChapters = useMemoA(() => arrLensChapters(chapters), [chapters]);
-  const lenses = arrLensList(book);
-  const activeLens = lenses.find((l) => l.key === lens) || lenses[0];
-
-  return (
-    <div className="arr-ov-scroll">
-      {/* lens: book spine / pacing (+ story arc / thread loom when the data exists) */}
-      <section className="card arr-arc">
-        <div className="card-head">
-          <div>
-            <div className="card-title">{activeLens.title}</div>
-            <div className="card-sub">{activeLens.sub}</div>
-          </div>
-          <div className="arr-arc-head-r">
-            <div className="seg">
-              {lenses.map((l) => (
-                <button key={l.key} className={`seg-btn ${activeLens.key === l.key ? "is-active" : ""}`} onClick={() => setLens(l.key)}>{l.label}</button>
-              ))}
-            </div>
-            {activeLens.key === "arc" && (
-              <div className="arr-arc-legend">
-                <span><i className="arr-lg" style={{ background: "var(--sage)" }} />已批准</span>
-                <span><i className="arr-lg" style={{ background: "var(--gold)" }} />审阅</span>
-                <span><i className="arr-lg" style={{ background: "var(--crimson)" }} />进行</span>
-                <span><i className="arr-lg" style={{ background: "var(--line-3)" }} />规划</span>
-              </div>
-            )}
-          </div>
-        </div>
-        {activeLens.key === "loom"
-          ? <ArrThreadLoom chapters={chapters} numOf={numOf} onOpen={onOpen} />
-          : activeLens.key === "pace"
-          ? <ArrPacingLens chapters={lensChapters} numOf={numOf} onOpen={onOpen} />
-          : activeLens.key === "arc"
-          ? <ArrTensionCurve chapters={chapters} numOf={numOf} pickedId={pickedId} onPick={onOpen} />
-          : <ArrSpineLens chapters={chapters} numOf={numOf} pickedId={pickedId} onOpen={onOpen} onOpenScene={onOpenScene} />}
-      </section>
-
-      {/* book stats */}
-      <div className="arr-ov-stats">
-        <ArrMetric k="卷" v={ARR_ACTS.length} sub="三幕结构" />
-        <ArrMetric k="章节" v={chapters.length} sub={`${drafted} 起草 · ${approved} 批准`} />
-        <ArrMetric k="字数" v={totalCur.toLocaleString()} sub={`目标 ${totalTarget.toLocaleString()}`} />
-        {/* 雪花刚整理出来的章还没有字数目标（target 为空）：0 / 0 不是 NaN% */}
-        <ArrMetric k="进度" v={(totalTarget > 0 ? Math.round((totalCur / totalTarget) * 100) : 0) + "%"} sub="全书完成度" tone="crimson" />
-      </div>
-
-      {/* book doctor */}
-      <ArrDoctor chapters={chapters} numOf={numOf} onOpen={onOpen} onLens={setLens} book={book} snow={snow} onOpenPlan={onOpenPlan} />
-
-      {/* board grouped by act */}
-      {ARR_ACTS.map((a) => {
-        const items = chapters.filter((c) => c.act === a.id);
-        const w = items.reduce((s, c) => s + c.words.cur, 0);
-        return (
-          <section className="arr-actsec" key={a.id}>
-            <header className="arr-actsec-head">
-              <span className={`arr-actsec-tag tone-${a.tone}`}>{a.n}</span>
-              <h3 className="arr-actsec-name text-serif"></h3>
-              <span className="arr-actsec-blurb"></span>
-              <span className="arr-actsec-meta tab-num">{items.length} 章 · {w.toLocaleString()} 字</span>
-            </header>
-            <div className="arr-board" {...boardDnd(a.id)}>
-              {/* 多选态不再叠加「当前章」高亮：两者都是 crimson 描边，同屏出现分不清
-                  哪张是选中的、哪张只是上次打开过的 */}
-              {items.map((c) => (
-                <ArrChapterCard key={c.id} c={c} num={numOf[c.id]} picked={!selectMode && c.id === pickedId} onOpen={onOpen} dnd={chDnd(c.id)}
-                  selectMode={selectMode} selected={selectMode && bt.has && bt.has(c.id)} onToggleSelect={bt.onToggle} />
-              ))}
-              {!selectMode && <button className="arr-card-add" onClick={() => onNew(a.id)}><I.Plus size={16} /><span>在{a.n}新建章节</span></button>}
-            </div>
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-function ArrMetric({ k, v, sub, tone }) {
-  return (
-    <div className={`arr-metric ${tone ? "tone-" + tone : ""}`}>
-      <div className="arr-metric-k">{k}</div>
-      <div className="arr-metric-v tab-num">{v}</div>
-      <div className="arr-metric-sub">{sub}</div>
-    </div>
-  );
-}
-
-/* ==========================================================
-   章节详情 — Detail
-   ========================================================== */
-
-const ARR_DRAMA_GROUPS = [
-  { key: "promise", label: "承诺", icon: "Star", tone: "crimson", fields: [
-    { k: "promise", label: "核心承诺", hint: "读完这一章读者会得到什么", primary: true },
-    { k: "problem", label: "章节问题", hint: "本章想问读者一个什么问题" },
-  ] },
-  { key: "drive", label: "推进", icon: "ArrowRight", tone: "gold", fields: [
-    { k: "spine", label: "主线推进", hint: "本章在全书主线上前进了多少" },
-    { k: "arc", label: "人物变化", hint: "主要人物的内在或外在变化" },
-  ] },
-  { key: "close", label: "收束", icon: "Sparkles", tone: "sage", fields: [
-    { k: "aftertaste", label: "结尾余味", hint: "读完最后一段的感觉" },
-    { k: "ending", label: "结尾效果", hint: "最后一句具体的画面 / 动作" },
-  ] },
-];
-
-function ArrDramaField({ f, value, ck, onCommit, locked = false }) {
-  return (
-    <div className={`arr-field ${f.primary ? "is-primary" : ""}`}>
-      <header className="arr-field-head">
-        <span className="arr-field-label">{f.label}</span>
-        <span className="arr-field-hint">{f.hint}</span>
-      </header>
-      <textarea className="arr-field-text" defaultValue={value} key={ck} placeholder="待填…" disabled={locked}
-        aria-label={f.label}
-        onBlur={(e) => onCommit && onCommit(e.target.value)} />
-    </div>
-  );
-}
-
-/* 阶段 Y「设计只有一处可改」：雪花整理出来、构思里那一行还在的场（design.owner === "plan"），
-   形态 / 三拍 / POV 只在构思第 10 步改，确认后自动同步回来。台子上照样能改的话，两边从此各说各话——
-   所以这里只读，给一条直达那一场的链接。题名、状态、删除、分流执行照常。 */
-const arrPlanOwned = (s) => !!(s && s.design && s.design.owner === "plan");
-const ARR_PLAN_OWNED_TIP = "这一场是雪花整理出来的：形态、三拍、POV 在构思第 10 步改，确认后自动同步到这里";
-function arrEditInPlan(s) {
-  queueViewIntent("snowflake", "ws:snow-step", "planning");
-  navigateWithViewIntent("snowflake", "ws:snow-scene", s.backendId || s.sid);
-}
-
-function ArrGmcEdit({ s, onEdit, locked = false }) {
-  const bits = s.kind === "反应"
-    ? [["反应", "goal"], ["困境", "obstacle"], ["决定", "turn"]]
-    : [["目标", "goal"], ["阻碍", "obstacle"], ["出口", "turn"]];
-  const planOwned = arrPlanOwned(s);
-  // POV 角色候选（best-effort，取自资料库人物；冷启动无角色时为空，仍可自由输入新名）
-  const povChars = (() => { try { return (window.LIB_ENTRIES || []).filter(e => e.cat === "people").map(e => e.name).filter(Boolean); } catch (e) { return []; } })();
-  const povListId = "arr-pov-" + s.sid;
-  return (
-    <span className={`arr-scene-brief ${planOwned ? "is-plan-owned" : ""}`} data-testid={planOwned ? "arr-scene-plan-owned" : undefined}>
-      {bits.map(([label, key]) => (
-        <span key={key} className="arr-gmc">
-          <b>{label}</b>
-          <input className="arr-gmc-input" defaultValue={s[key] === "—" ? "" : s[key]} key={s.sid + key + (s[key] || "")}
-            placeholder={planOwned ? "未规划" : "待定"} onClick={(e) => e.stopPropagation()} disabled={locked} aria-label={`${s.title} · ${label}`}
-            readOnly={planOwned} title={planOwned ? ARR_PLAN_OWNED_TIP : undefined}
-            onBlur={(e) => { if (!planOwned) onEdit({ [key]: e.target.value.trim() }); }}
-            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
-        </span>
-      ))}
-      <span className="arr-gmc arr-gmc-pov">
-        <b>POV</b>
-        <input className="arr-gmc-input" list={planOwned ? undefined : povListId} defaultValue={s.povName || ""} key={s.sid + "pov" + (s.povName || "")}
-          placeholder={planOwned ? "未规划" : "谁的视角"}
-          title={planOwned ? ARR_PLAN_OWNED_TIP : "设这一场的 POV 角色（按名字；新角色会自动建档）。起草前置：执行契约需要 POV"}
-          onClick={(e) => e.stopPropagation()} disabled={locked} readOnly={planOwned} aria-label={`${s.title} · POV`}
-          onBlur={(e) => { if (!planOwned) onEdit({ povName: e.target.value.trim() }); }}
-          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
-        {!planOwned && povChars.length ? <datalist id={povListId}>{povChars.map((n, i) => <option key={i} value={n} />)}</datalist> : null}
-      </span>
-      {planOwned && (
-        <button type="button" className="arr-plan-link" data-testid="arr-scene-edit-plan" title={ARR_PLAN_OWNED_TIP}
-          onClick={(e) => { e.stopPropagation(); arrEditInPlan(s); }}>在构思里改 ↗</button>
-      )}
-    </span>
-  );
-}
-
-function ArrSceneRow({ s, n, picked, onPick, onCycleKind, onDelete, onEdit, dragHandle, dropZone, locked = false, selectMode = false, selected = false, onToggleSelect }) {
-  /* 分流执行：同一张场景卡，自己写去写作台，或交给 AI 起草台排队 */
-  const forkWrite = (e) => {
-    e.stopPropagation();
-    navigateWithViewIntent("writer", "ws:writer-scene", s.sid);
-  };
-  const forkAI = (e) => {
-    e.stopPropagation();
-    navigateWithViewIntent("scene", "ws:scene-enqueue", { sid: s.sid });
-  };
-  /* 雪花的场彼此的先后 = 构思第 9 步的行序：这里不给拖（手加的场照常能拖到任何两场之间）；形态也在构思里改 */
-  const planOwned = arrPlanOwned(s);
-  const grip = planOwned ? { draggable: false } : dragHandle;
-  return (
-    <li className={`arr-scene s-${s.state} ${picked ? "is-active" : ""} ${selected ? "is-selected" : ""} ${selectMode ? "is-selecting" : ""}`} {...dropZone}
-      onClick={() => { if (selectMode) { if (!locked) onToggleSelect(s.sid); return; } onPick(); }}>
-      {selectMode ? (
-        <label className="arr-scene-check" onClick={(e) => e.stopPropagation()}>
-          <input type="checkbox" checked={!!selected} disabled={locked} aria-label={`选择场景 ${s.title}`}
-            onChange={() => onToggleSelect(s.sid)} />
-        </label>
-      ) : (
-        <span className={`arr-scene-grip ${planOwned ? "is-fixed" : ""}`}
-          title={locked ? "终稿已锁定" : planOwned ? "雪花整理出来的场：先后在构思第 9 步「场景列表」里拖动，确认后自动同步到这里" : "拖动重排"}
-          {...grip}><I.GripVertical size={14} /></span>
-      )}
-      <span className="arr-scene-num">{n}</span>
-      {/* 多选态：整行只做「选择」——正文编辑、分流执行、单删一律收起，
-          否则一个模式里同时摆着四种含义的点击，误操作只是时间问题 */}
-      <span className="arr-scene-body" onClick={(e) => { if (!selectMode) e.stopPropagation(); }}>
-        <input className="arr-scene-title-input text-serif" defaultValue={s.title} key={s.sid + s.title}
-          disabled={locked || selectMode}
-          onBlur={(e) => onEdit({ title: e.target.value.trim() || "未命名场景" })}
-          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} aria-label="场景标题" />
-        <ArrGmcEdit s={s} onEdit={onEdit} locked={locked || selectMode} />
-      </span>
-      {!selectMode && (
-        <span className="arr-scene-fork" onClick={(e) => e.stopPropagation()}>
-          <button className="arr-fork-btn" disabled={locked} title={locked ? "请先在成稿中心重新打开终稿" : "把这张场景卡送入 AI 起草台排队"} onClick={forkAI}><I.Play size={11} /> 交给 AI</button>
-          <button className="arr-fork-btn is-write" disabled={locked} title={locked ? "请先在成稿中心重新打开终稿" : "带着这张卡去写作台写这一场"} onClick={forkWrite}><I.Pen size={11} /> 自己写</button>
-        </span>
-      )}
-      <span className="arr-scene-tags">
-        <button className="arr-pill-btn arr-cyc" disabled={locked || selectMode || planOwned}
-          title={locked ? "终稿已锁定" : planOwned ? "形态（主动 / 反应）在构思第 10 步改" : "点击切换 主动 / 反应"}
-          onClick={(e) => { e.stopPropagation(); if (!planOwned && onCycleKind) onCycleKind(); }}>
-          <span className={`pill text-xs ${s.kind === "主动" ? "pill-crimson" : "pill-slate"}`}><span className="pill-dot" />{s.kind}</span>
-        </button>
-        <span className="arr-pill-readonly" title="场景完成状态由正文归档流程推进"><ArrScenePill s={s.state} /></span>
-      </span>
-      {!selectMode && (
-        <button className="btn btn-quiet btn-sm arr-scene-more" disabled={locked} title={locked ? "终稿已锁定" : "移入服务端回收站"} onClick={(e) => { e.stopPropagation(); onDelete && onDelete(); }}><I.Trash size={13} /></button>
-      )}
-    </li>
-  );
-}
-
-/* 章与章的交接。入口 / 出口作者填过就用作者的；没填过（产品里没有编辑入口，真实作品全是空的）就从场上读：
-   入口 = 第一场在做什么，出口 = 最后一场离场时变了什么——两章之间接不接得上，一眼看得出来。 */
-function ArrHandoffStrip({ prev, ch, next, numOf, onJump }) {
-  const mine = arrChapterFacts(ch);
-  const prevExit = prev ? arrChapterFacts(prev).exit : null;
-  const nextEntry = next ? arrChapterFacts(next).entry : null;
-  const derived = mine.entry.derived || mine.exit.derived;
-  return (
-    <div className="arr-handoff" data-testid="arr-handoff">
-      <button className={`arr-ho-cell arr-ho-side ${prev ? "" : "is-empty"}`} disabled={!prev} onClick={() => prev && onJump(prev.id)}>
-        <span className="arr-ho-k"><I.ChevronLeft size={12} />承接 {prev ? "CH " + numOf[prev.id] : ""}</span>
-        <span className="arr-ho-text" title={prev ? prevExit.text : undefined}>{prev ? (prevExit.text || "上一章还没有出口") : "全书开篇 · 无前章"}</span>
-      </button>
-      <div className="arr-ho-cell arr-ho-mid">
-        <span className="arr-ho-k">本章 · 入口 → 出口{derived ? <em className="arr-ho-src" title="章级的入口 / 出口没有单独填过：入口取第一场，出口取最后一场的离场变化">取自首尾两场</em> : null}</span>
-        <span className="arr-ho-text arr-ho-entry" title={mine.entry.text}><i className="arr-ho-tick">入</i><span className="arr-ho-clamp">{mine.entry.text}</span></span>
-        <span className="arr-ho-text arr-ho-exit" title={mine.exit.text}><i className="arr-ho-tick is-out">出</i><span className="arr-ho-clamp">{mine.exit.text}</span></span>
-      </div>
-      <button className={`arr-ho-cell arr-ho-side ${next ? "" : "is-empty"}`} disabled={!next} onClick={() => next && onJump(next.id)}>
-        <span className="arr-ho-k">交棒 {next ? "CH " + numOf[next.id] : ""}<I.ChevronRight size={12} /></span>
-        <span className="arr-ho-text" title={next ? nextEntry.text : undefined}>{next ? (nextEntry.text || "下一章还没有场") : "全书收束 · 无后章"}</span>
-      </button>
-    </div>
-  );
-}
-
-/* 构思条（阶段 Z）：这一章在构思里是什么——第几卷、收在哪个灾难上、装着故事序上第几到第几场、章摘要 / 章目标；
-   以及两扇门：整理章节结构（就在这里开面板）、去构思看这几场。手建的章只说一句它不在构思里。 */
-function ArrPlanStrip({ ch, snow, locked, onOpenPlan }) {
-  const planOwned = arrIsPlanChapter(ch);
-  const act = ARR_ACTS.find((a) => a.id === ch.act) || ARR_ACTS[0];
-  const range = arrRangeLabel(ch.structure);
-  const first = (ch.scenes || []).find((s) => arrPlanOwned(s));
-  const goal = ch.goal && ch.goal !== ch.summary ? ch.goal : "";
-  if (!planOwned) {
-    if (!snow || !snow.canPlan) return null;
-    return (
-      <div className="arr-planstrip is-desk" data-testid="arr-plan-strip">
-        <span className="arr-planstrip-k"><I.Snowflake size={12} /> 构思</span>
-        <span className="arr-planstrip-note">这一章是在这里手建的，不在构思的分章里——它的场、先后和名字都在这里改；重新「整理章节结构」时它原样留着。</span>
-      </div>
-    );
-  }
-  return (
-    <div className="arr-planstrip" data-testid="arr-plan-strip">
-      <div className="arr-planstrip-head">
-        <span className="arr-planstrip-k"><I.Snowflake size={12} /> 构思里的这一章</span>
-        <span className={`arr-planstrip-tag tone-${act.tone}`}>{act.n}</span>
-        {ch.spine && <span className="arr-card-spine" title="这一章收在这个灾难上">{ch.spine}</span>}
-        {range && <span className="arr-planstrip-range tab-num">{range}</span>}
-        {ch.structure.titleAuto && <span className="arr-planstrip-hint" title="章名还是系统起的占位——在上面直接改，或到「整理章节结构」里让 AI 起">还没起名</span>}
-        <span className="arr-planstrip-actions">
-          {snow && snow.pending ? (
-            <button className="btn btn-quiet btn-xs" data-testid="arr-plan-resync" onClick={snow.onSync} disabled={locked || snow.busy}
-              title={`构思有 ${snow.pending} 场改动还没同步到目录的场景卡`}>
-              <I.Refresh size={12} /> {snow.busy ? "同步中…" : `同步 ${snow.pending} 场改动`}
-            </button>
-          ) : null}
-          {first && (
-            <button className="btn btn-quiet btn-xs" data-testid="arr-plan-scenes" onClick={() => arrEditInPlan(first)}
-              title="去构思第 10 步，落在这一章的第一场上">
-              在构思里看这几场 ↗
-            </button>
-          )}
-          <button className="btn btn-ghost btn-xs" data-testid="arr-plan-open" onClick={onOpenPlan}
-            title="拆章 / 并章 / 挪章界 / AI 起章名——和构思里的「整理为章节结构」是同一张面板">
-            <I.Layout size={12} /> 整理章节结构
-          </button>
-        </span>
-      </div>
-      {ch.summary && <p className="arr-planstrip-sum text-serif">{ch.summary}</p>}
-      {goal && <p className="arr-planstrip-goal"><b>章目标</b>{goal}</p>}
-    </div>
-  );
-}
-
-function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDragHandle, sceneDropZone, onAddScene, onCycleKind, onDeleteScene, onEditScene, onPatchTitle, onPatchDrama, onDeleteChapter, onOpenTrash, pickedScene, setPickedScene, onJump, onBack, snow, chapterRun, sceneBatch, onOpenPlan }) {
-  const tallies = { todo: 0, writing: 0, done: 0 };
-  ch.scenes.forEach((s) => { tallies[s.state] = (tallies[s.state] || 0) + 1; });
-  const locked = ch.state === "approved";
-  const sb = sceneBatch || {};
-  const sceneSelectMode = !!sb.mode && !locked;
-  const sceneSelected = ch.scenes.filter((s) => sb.has && sb.has(s.sid)).length;
-
-  return (
-    <section className="arr-ed">
-      <header className="arr-ed-head">
-        <div className="arr-ed-head-l">
-          <div className="arr-ed-eyebrow">
-            <button className="arr-back" onClick={onBack} title="返回全书编排"><I.Layers size={13} />全书编排</button>
-            <span className="arr-crumb-sep">/</span>
-            <span>CH {num} · 当前编辑</span>
-          </div>
-          <input className="arr-ed-title text-serif arr-ed-title-input" defaultValue={ch.title} key={ch.id + "|" + ch.title}
-            disabled={locked}
-            title={arrIsPlanChapter(ch) ? "章名只有一个：在这里改，构思的章节表、场景列表的章头和分章面板跟着变" : undefined}
-            onBlur={(e) => onPatchTitle(e.target.value.trim() || (arrIsPlanChapter(ch) ? `第 ${Number(num)} 章` : "未命名章节"))}
-            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} aria-label="章节标题" />
-        </div>
-        <div className="arr-ed-actions">
-          <span className="arr-pill-readonly" title="章节状态由运行、审阅与终稿批准流程推进。"><ArrChPill s={ch.state} /></span>
-          <button className="btn btn-quiet btn-sm" onClick={() => {
-            const card = document.querySelector(".arr-drama");
-            if (card && card.scrollIntoView) card.scrollIntoView({ behavior: "smooth", block: "start" });
-          }}>大纲快查</button>
-          <ArrChapterRunAction chapter={ch} {...chapterRun} />
-          <button className="btn btn-quiet btn-sm arr-del-ch" disabled={locked} title={locked ? "终稿已锁定，请先在成稿中心重新打开" : "删除本章"} onClick={onDeleteChapter}><I.Trash size={13} /></button>
-          <span className="arr-auto-save" title="章节改动会立即写入目录，并由后端版本收敛。"><I.Check size={12} /> 自动保存</span>
-        </div>
-      </header>
-
-      <div className="arr-ed-body">
-        {locked && (
-          <div className="arr-locked-note" role="status">
-            <I.Lock size={14} /> 本章是已批准终稿，章节结构与场景卡均为只读。需要修改请先到成稿中心「重新打开」。
-          </div>
-        )}
-        <ArrPlanStrip ch={ch} snow={snow} locked={locked} onOpenPlan={onOpenPlan} />
-        <ArrHandoffStrip prev={prev} ch={ch} next={next} numOf={numOf} onJump={onJump} />
-
-        {/* drama card */}
-        <section className="card arr-drama">
-          <div className="card-head">
-            <div>
-              <div className="card-title">戏剧卡</div>
-              <div className="card-sub">这一章的写法：承诺、推进和余味。它归这里（不在构思里），会进「章节蓝图」和本章每一场的 AI 起草上下文；留空也能写。</div>
-            </div>
-          </div>
-
-          <div className="arr-drama-groups">
-            {ARR_DRAMA_GROUPS.map((g) => {
-              const Ic = I[g.icon] || I.Dot;
-              return (
-                <div className="arr-dgroup" key={g.key}>
-                  <header className={`arr-dgroup-head tone-${g.tone}`}><Ic size={13} /><span>{g.label}</span><i className="arr-dgroup-rule" /></header>
-                  <div className="arr-dgroup-fields">
-                    {g.fields.map((f) => <ArrDramaField key={f.k} f={f} value={ch.drama[f.k]} ck={ch.id} locked={locked} onCommit={(v) => onPatchDrama(f.k, v)} />)}
-                  </div>
-                </div>
-              );
-            })}
-            <div className="arr-dgroup arr-dgroup-guard">
-              <header className="arr-dgroup-head tone-slate"><I.ShieldCheck size={13} /><span>护栏</span><i className="arr-dgroup-rule" /></header>
-              <div className="arr-guard-grid">
-                <div className="arr-guard tone-rose">
-                  <div className="arr-guard-label"><I.Ban size={12} /> 禁止包含</div>
-                  <textarea className="arr-guard-text" aria-label="禁止包含" disabled={locked} defaultValue={ch.drama.forbidden} key={ch.id + "-fb"} onBlur={(e) => onPatchDrama("forbidden", e.target.value)} />
-                </div>
-                <div className="arr-guard tone-slate">
-                  <div className="arr-guard-label"><I.Quote size={12} /> 备注</div>
-                  <textarea className="arr-guard-text" aria-label="章节备注" disabled={locked} defaultValue={ch.drama.notes} key={ch.id + "-nt"} onBlur={(e) => onPatchDrama("notes", e.target.value)} />
-                </div>
-              </div>
-            </div>
-          </div>
-          {/* 章节蓝图（chapter_story_architecture 一等公民）：作者确认的蓝图注入本章每场起草 */}
-          <ArrBlueprintCard ch={ch} locked={locked} />
-        </section>
-
-        {/* scene board */}
-        <section className="card arr-scenes">
-          {/* 与全书编排同一套模式语言：多选态下看板头部只剩批量操作 */}
-          <div className="card-head">
-            {sceneSelectMode ? (
-              <div className="arr-batch is-inline" role="toolbar" aria-label="场景批量操作">
-                <span className="arr-batch-n">已选 <strong className="tab-num">{sceneSelected}</strong> / {ch.scenes.length} 场</span>
-                <span className="arr-batch-hint">点行选中；删除后进入回收站，可恢复。</span>
-                <button className="btn btn-quiet btn-sm" onClick={sb.onSelectAll}>
-                  {sceneSelected === ch.scenes.length && ch.scenes.length ? "取消全选" : "全选"}
-                </button>
-                <button className="btn btn-danger btn-sm" data-testid="author-batch-delete-scenes" disabled={!sceneSelected} onClick={sb.onDelete}>
-                  <I.Trash size={13} /> 删除所选{sceneSelected ? ` · ${sceneSelected} 场` : ""}
-                </button>
-                <button className="btn btn-ghost btn-sm" data-testid="author-scene-select-exit" onClick={sb.onToggleMode}>完成</button>
-              </div>
-            ) : (
-              <React.Fragment>
-                <div>
-                  <div className="card-title">场景看板</div>
-                  <div className="card-sub">{(ch.scenes || []).some(arrPlanOwned)
-                    ? "雪花整理出来的场：设计与先后跟着构思走（行上有直达那一场的链接），换章用「整理章节结构」。手加的场可以拖到任何两场之间。"
-                    : "排场景顺序，把不要的场移入回收站。拖动 ⠿ 可重排。"}</div>
-                </div>
-                <div className="flex gap-2 items-center">
-                  <div className="seg">
-                    <button className={`seg-btn ${sceneTab === "active" ? "is-active" : ""}`} onClick={() => setSceneTab("active")}>活跃 {ch.scenes.length}</button>
-                    <button className={`seg-btn ${sceneTab === "archived" ? "is-active" : ""}`} onClick={() => setSceneTab("archived")}>回收站</button>
-                  </div>
-                  {sceneTab === "active" && (
-                    <button className="btn btn-quiet btn-sm" data-testid="author-scene-select-mode" disabled={locked || !ch.scenes.length}
-                      title={locked ? "终稿已锁定" : "多选场景后可一次删除"} onClick={sb.onToggleMode}>
-                      <I.Check size={13} /> 多选
-                    </button>
-                  )}
-                  <button className="btn btn-accent btn-sm" disabled={locked} onClick={onAddScene}><I.Plus size={13} /> 新场景</button>
-                </div>
-              </React.Fragment>
-            )}
-          </div>
-
-          {sceneTab === "active" && (
-            <div className="arr-scene-tally">
-              <span><i style={{ background: ARR_SCENE_STATE.done.dot }} />已完 {tallies.done}</span>
-              <span><i style={{ background: ARR_SCENE_STATE.writing.dot }} />写中 {tallies.writing}</span>
-              <span><i style={{ background: ARR_SCENE_STATE.todo.dot }} />待写 {tallies.todo}</span>
-            </div>
-          )}
-
-          {sceneTab === "active" ? (
-            <ul className="arr-scene-list">
-              {ch.scenes.map((s, idx) => (
-                <ArrSceneRow key={s.sid} s={s} n={String(idx + 1).padStart(2, "0")} picked={pickedScene === String(idx)}
-                  onPick={() => setPickedScene(String(idx))} onCycleKind={() => onCycleKind(idx)}
-                  onDelete={() => onDeleteScene(idx)} onEdit={(patch) => onEditScene(idx, patch)}
-                  dragHandle={sceneDragHandle(idx)} dropZone={sceneDropZone(idx)} locked={locked}
-                  selectMode={sceneSelectMode} selected={sceneSelectMode && sb.has && sb.has(s.sid)} onToggleSelect={sb.onToggle} />
-              ))}
-            </ul>
-          ) : (
-            <div className="arr-recycle-empty">
-              <I.Trash size={18} />
-              <span>已删除场景统一保存在服务端回收站，恢复后会重新拉取目录。</span>
-              <button className="btn btn-quiet btn-sm" onClick={onOpenTrash}>打开回收站</button>
-            </div>
-          )}
-        </section>
-
-        {/* AI 编排：三方向候选 + 一键补全，咨询式补丁经作者逐条确认后原子回写目录 */}
-        <ArrPlanPanel ch={ch} locked={locked} />
-      </div>
-    </section>
-  );
-}
-
-/* ---- right context column ---- */
-function ArrCheckRow({ ok, warn, label, val }) {
-  const Ic = ok ? I.Check : warn ? I.AlertTriangle : I.Circle;
-  return (
-    <li className={`arr-check ${ok ? "is-ok" : warn ? "is-warn" : ""}`}>
-      <Ic size={13} />
-      <span className="arr-check-label">{label}</span>
-      <span className="arr-check-val tab-num">{val}</span>
-    </li>
-  );
-}
-
-function ArrChapterContext({ ch, chapters, numOf, snow, onOpenPlan }) {
-  const dramaKeys = ["promise", "spine", "arc", "problem", "aftertaste", "ending"];
-  const dramaDone = dramaKeys.filter((k) => ch.drama[k] && !ch.drama[k].includes("（待")).length;
-  const ready = ch.scenes.filter((s) => s.state === "done" || s.state === "writing").length;
-  const facts = arrChapterFacts(ch);
-  /* 没设字数目标（雪花整理出来的章都没有）就不谈预算：0 目标下任何字数都会被算成「超额」 */
-  const hasTarget = ch.words.target > 0;
-  const pct = hasTarget ? ch.words.cur / ch.words.target : 0;
-  const budget = !hasTarget ? { label: "未设目标" } : ch.words.cur === 0 ? { label: "未开始", warn: true } : pct < 0.85 ? { label: "进行", warn: true } : pct <= 1.12 ? { label: "在轨", ok: true } : { label: "超额", warn: true };
-  const carry = ch.threads.filter((t) => t.role === "延续" || t.role === "新引").length;
-  const woven = useMemoA(() => arrDeriveThreads(chapters, numOf), [chapters, numOf]);
-  const wovenByName = useMemoA(() => Object.fromEntries(woven.map((t) => [t.name, t])), [woven]);
-  const curCi = chapters.findIndex((c) => c.id === ch.id);
-
-  return (
-    <aside className="arr-ctx">
-      <div className="ctx-block">
-        <div className="ctx-head"><I.ShieldCheck size={13} /><span>章节体检</span></div>
-        <ul className="arr-checks">
-          {/* 只报读得出来的事实。「与上一章出口对齐」「线索待交接」读的章级字段没有编辑入口（永远是默认的「已对齐 / 0 项」），
-              不再摆两个假的对勾；换成这一章的场规划到哪了、构思的改动同步过来没有。 */}
-          <ArrCheckRow ok={facts.beats.total > 0 && facts.beats.planned === facts.beats.total} warn={facts.beats.planned < facts.beats.total || !facts.beats.total} label="三拍已规划" val={`${facts.beats.planned}/${facts.beats.total}`} />
-          <ArrCheckRow ok={ready === ch.scenes.length && ch.scenes.length > 0} warn={ready < ch.scenes.length} label="场景动笔" val={`${ready}/${ch.scenes.length}`} />
-          <ArrCheckRow ok={dramaDone === 6} label="戏剧卡（可选）" val={`${dramaDone}/6`} />
-          <ArrCheckRow ok={budget.ok} warn={budget.warn} label="字数预算" val={budget.label} />
-          {snow && snow.canPlan ? <ArrCheckRow ok={!snow.pending} warn={!!snow.pending} label="与构思同步" val={snow.pending ? `${snow.pending} 场待同步` : "已同步"} /> : null}
-          {ch.threads.length ? <ArrCheckRow ok={carry === 0} warn={carry > 0} label="线索待交接" val={`${carry} 项`} /> : null}
-        </ul>
-      </div>
-
-      {/* AI 体检：LLM findings 与上面的规则体检合流（规则免费兜底，AI 补结构性判断） */}
-      <ArrAiHealthBlock ch={ch} locked={ch.state === "approved"} />
-
-      <div className="ctx-block">
-        <div className="ctx-head"><I.Activity size={13} /><span>字数预算</span></div>
-        <ArrBudgetBar cur={ch.words.cur} target={ch.words.target} />
-        <ul className="arr-meta">
-          <li><span>目标</span><strong className="tab-num">{hasTarget ? ch.words.target.toLocaleString() : "未设"}</strong></li>
-          <li><span>当前</span><strong className="tab-num">{ch.words.cur.toLocaleString()}</strong></li>
-          {ch.tensionSet ? <li><span>张力</span><strong className="tab-num">{Math.round(ch.tension * 100)}</strong></li> : null}
-        </ul>
-      </div>
-
-      {ch.threads.length ? (
-      <div className="ctx-block">
-        <div className="ctx-head"><I.GitBranch size={13} /><span>线索</span><span className="arr-thread-hint">横条为全书走向 · 亮格＝本章</span></div>
-        <ul className="arr-threads">
-          {ch.threads.map((t, i) => {
-            const wt = wovenByName[t.name];
-            return (
-              <li key={i}>
-                <div className="arr-thread-top">
-                  <span className="arr-thread-name">{t.name}</span>
-                  <span className={`pill pill-${(ARR_THREAD_ROLE[t.role] || {}).tone || "slate"} text-xs`}><span className="pill-dot" />{t.role}</span>
-                </div>
-                {wt && <ArrThreadMini thread={wt} n={chapters.length} curCi={curCi} />}
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-      ) : null}
-
-      <div className="ctx-block" data-testid="arr-ctx-spacetime">
-        <div className="ctx-head"><I.Eye size={13} /><span>视角 · 时空</span>
-          {(facts.pov.derived || facts.time.derived || facts.place.derived) ? <span className="arr-thread-hint">取自本章各场</span> : null}
-        </div>
-        <ul className="arr-meta">
-          <li><span>POV</span><strong>{facts.pov.text || "—"}</strong></li>
-          <li><span>时间</span><strong>{facts.time.text || "—"}</strong></li>
-          <li><span>地点</span><strong>{facts.place.text || "—"}</strong></li>
-        </ul>
-      </div>
-
-      <div className="ctx-block">
-        <div className="ctx-head"><I.Snowflake size={13} /><span>构思 · 分章</span></div>
-        <p className="arr-sync">
-          {(!snow || !snow.canPlan)
-            ? "这部作品还没有从「构思」整理过章节结构。"
-            : snow.pending
-              ? `构思里有 ${snow.pending} 场改动还没同步到目录的场景卡（三拍 / POV / 章 brief）。`
-              : "目录与构思一致。哪几场归哪一章、章的先后在「整理章节结构」里改；一场的设计在构思第 10 步改。"}
-          {snow && snow.note ? <span style={{ color: "var(--ink-2)" }}> · {snow.note}</span> : null}
-        </p>
-        {snow && snow.canPlan ? (
-          <React.Fragment>
-            <button className="btn btn-ghost btn-sm" style={{ width: "100%" }} data-testid="arr-ctx-open-plan" onClick={onOpenPlan}>
-              <I.Layout size={13} /> 整理章节结构
-            </button>
-            {snow.pending ? (
-              <button className="btn btn-quiet btn-sm" style={{ width: "100%", marginTop: 6 }} onClick={snow.onSync} disabled={snow.busy}>
-                <I.Refresh size={13} /> {snow.busy ? "同步中…" : `同步 ${snow.pending} 场改动`}
-              </button>
-            ) : null}
-          </React.Fragment>
-        ) : (
-          <button className="btn btn-ghost btn-sm" style={{ width: "100%" }} onClick={() => { location.hash = "#snowflake"; }}>
-            <I.Snowflake size={13} /> 去构思
-          </button>
-        )}
-      </div>
-    </aside>
-  );
-}
-
-/* ---- detail left rail ---- */
-function ArrRail({ chapters, numOf, pickedId, onPick, chDnd, boardDnd, onBack, onNew }) {
-  const approved = chapters.filter((c) => c.state === "approved").length;
-  const going = chapters.filter((c) => c.state === "writing" || c.state === "review" || c.state === "draft").length;
-  const planned = chapters.filter((c) => c.state === "planned").length;
-  const lastAct = ARR_ACTS[ARR_ACTS.length - 1].id;
-
-  return (
-    <aside className="arr-rail">
-      <header className="arr-rail-head">
-        <button className="arr-back" onClick={onBack}><I.Layers size={13} />全书编排</button>
-        <h2 className="arr-rail-title text-serif">章节序列</h2>
-      </header>
-      <div className="arr-rail-stat">
-        <span><strong className="tab-num">{approved}</strong> 批准</span>
-        <span><strong className="tab-num">{going}</strong> 进行</span>
-        <span><strong className="tab-num">{planned}</strong> 规划</span>
-      </div>
-      <div className="arr-rail-list">
-        {ARR_ACTS.map((a) => {
-          const items = chapters.filter((c) => c.act === a.id);
-          return (
-            <div className="arr-rail-act" key={a.id} {...boardDnd(a.id)}>
-              <div className={`arr-rail-acthead tone-${a.tone}`}>{a.n}</div>
-              <ul>
-                {items.map((c) => {
-                  const done = c.scenes.filter((s) => s.state === "done").length;
-                  return (
-                    <li key={c.id}>
-                      <button className={`arr-rail-row ${c.id === pickedId ? "is-active" : ""}`} {...chDnd(c.id)} onClick={() => onPick(c.id)}
-                        title={arrIsPlanChapter(c) ? `${arrRangeLabel(c.structure) || "构思分出来的章"} · 先后在「整理章节结构」里改` : undefined}>
-                        <span className={`arr-rail-grip ${arrIsPlanChapter(c) ? "is-fixed" : ""}`}><I.GripVertical size={13} /></span>
-                        <span className="arr-rail-num">{numOf[c.id]}</span>
-                        <span className="arr-rail-body">
-                          <span className="arr-rail-name text-serif">{c.title}</span>
-                          <span className="arr-rail-meta"><ArrMiniScenes scenes={c.scenes} /><span className="tab-num">{done}/{c.scenes.length}</span></span>
-                        </span>
-                        <ArrChPill s={c.state} sm />
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          );
-        })}
-        <button className="arr-rail-new" onClick={() => onNew(lastAct)}><I.Plus size={14} /> 新建章节</button>
-      </div>
-    </aside>
-  );
-}
-
-/* ==========================================================
-   Shell
-   ========================================================== */
 function WsAuthor({ go }) {
-  const catalogChapters = useCatalogChapters ? useCatalogChapters() : null;
-  const [mode, setMode] = useStA(() => arrLsGet("arr.mode", "overview"));
-  const [lens, setLens] = useStA(() => arrLsGet("arr.lens", "spine"));
-  const [pickedId, setPickedId] = useStA(() => arrLsGet("arr.picked", "ch08"));
-  const [sceneTab, setSceneTab] = useStA("active");
-  const [pickedScene, setPickedScene] = useStA("0");
-  const [chapters, setChapters] = useStA(() => {
-    // 本地 state 只负责拖拽中的即时视图；服务端目录始终是单一真相源。
-    if (WsCatalog) return arrStampIds(catalogChapters || WsCatalog.get());
-    const saved = arrLsGet("arr.chapters", null);
-    return arrStampIds(Array.isArray(saved) && saved.length ? saved : []);
-  });
-  const [chDragId, setChDragId] = useStA(null);
-  const [scDragIdx, setScDragIdx] = useStA(null);
-  /* 批量删除的选择集（只活在本次会话里，不落 localStorage：
-     选择是瞬时意图，跨刷新保留只会让作者对着一份看不见来路的勾选下手） */
-  const [chSelectMode, setChSelectMode] = useStA(false);
-  const [chSel, setChSel] = useStA(() => new Set());
-  const [scSelectMode, setScSelectMode] = useStA(false);
-  const [scSel, setScSel] = useStA(() => new Set());
+  const catalogChapters = useCatalogChapters();
+  const [mode, setMode] = useArrPref("arr.mode", "overview");
+  const [lens, setLens] = useArrPref("arr.lens", "spine");
+  const [pickedId, setPickedId] = useArrPref("arr.picked", null);
+  /* 从结构镜头点进来的那一场：短暂标出来，几秒后或下一次点击就撤掉 */
+  const [highlightSid, setHighlightSid] = useState(null);
+  /* 体检抽屉：窗口宽过抽屉断点就自己收起（焦点陷阱不能留在一个看不见的抽屉上） */
+  const [ctxOpen, setCtxOpen] = useCtxDrawer();
+  const list = useArrChapterList(catalogChapters);
+  const { chapters, setChapters, chaptersRef, commit: commitChapters } = list;
+  const chSel = useSelection();
+  const scSel = useSelection();
   const { toast, show: showNotice, clear: clearNotice } = useUndoToast();
-  const chaptersRef = useRefA(chapters);
-  chaptersRef.current = chapters;
+  const notifyError = (text) => showNotice({ text, tone: "danger", timeout: 9000 });
+  const goView = useCallback((view, intents) => arrGoView(go, view, intents), [go]);
 
-  useEfA(() => arrLsSet("arr.mode", mode), [mode]);
-  useEfA(() => arrLsSet("arr.lens", lens), [lens]);
-  useEfA(() => arrLsSet("arr.picked", pickedId), [pickedId]);
-  useEfA(() => {
-    if (!WsCatalog) return;
+  /* 接住目录：服务端目录一变，本页的章表整份换掉 */
+  useEffect(() => {
+    const prevList = chaptersRef.current || [];
     const next = arrStampIds(Array.isArray(catalogChapters) ? catalogChapters : []);
     setChapters(next);
+    /* 章的 id 是位置式的（ch05 = 第 5 章）：前面删了、插了一章，同一个 id 就指向了别的章。
+       先按后端 chapter_id 认回原来那一章；乐观新建、还没有后端 id 的章按它的位置找回。 */
     setPickedId((current) => {
+      const prevAt = prevList.findIndex((c) => c.id === current);
+      const prevCh = prevAt >= 0 ? prevList[prevAt] : null;
+      if (prevCh && prevCh.backendId) {
+        const same = next.find((c) => c.backendId === prevCh.backendId);
+        if (same) return same.id;
+      }
       if (next.some((item) => item.id === current)) return current;
+      if (prevCh && !prevCh.backendId && next[prevAt]) return next[prevAt].id;
       const fallback = next.find((item) => item.current) || next[0];
       return fallback ? fallback.id : null;
     });
-    /* 目录换了：把指向已消失章/场的勾选摘掉，避免对着幽灵 id 再发一次删除 */
-    const liveCh = new Set(next.map((item) => item.id));
-    const liveSc = new Set(next.flatMap((item) => (item.scenes || []).map((s) => s.sid)));
-    const prune = (live) => (prevSel) => {
-      const kept = new Set([...prevSel].filter((id) => live.has(id)));
-      return kept.size === prevSel.size ? prevSel : kept;
-    };
-    setChSel(prune(liveCh));
-    setScSel(prune(liveSc));
+    chSel.prune(new Set(next.map((item) => item.id)));
+    scSel.prune(new Set(next.flatMap((item) => (item.scenes || []).map((s) => s.sid))));
+    // 只跟着目录走：选择集的 prune 用的是函数式更新，拿哪一次渲染的都一样
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalogChapters]);
+  useEffect(() => {
+    if (!highlightSid) return undefined;
+    const timer = setTimeout(() => setHighlightSid(null), 4000);
+    return () => clearTimeout(timer);
+  }, [highlightSid]);
 
-  const commitChapters = (recipe) => {
-    const base = WsCatalog ? arrStampIds(WsCatalog.get()) : chapters;
-    const next = arrStampIds(typeof recipe === "function" ? recipe(base) : recipe);
-    setChapters(next);
-    if (WsCatalog) WsCatalog.set(next);
-    else arrLsSet("arr.chapters", next);
-    return next;
+  const byId = useMemo(() => Object.fromEntries(chapters.map((c) => [c.id, c])), [chapters]);
+  const numOf = useMemo(() => Object.fromEntries(chapters.map((c, i) => [c.id, String(i + 1).padStart(2, "0")])), [chapters]);
+  // 「第 3 章「盐场」」；占位章名（第 N 章 / 未命名）不再跟在章号后面重复一遍
+  const chName = (c, withTitle = true) => {
+    const head = chapterLabel({ n: numOf[c.id] }, { withTitle: false });
+    const own = withTitle ? chapterOwnTitle(c) : "";
+    return own ? `${head}「${own}」` : head;
   };
-  const approvedPositionsStayFixed = (before, after) => before.every((chapter, index) => (
-    chapter.state !== "approved" || (after[index] && after[index].id === chapter.id)
-  ));
-  const publishDraggedOrder = () => {
-    const next = arrStampIds(chaptersRef.current);
-    if (WsCatalog) WsCatalog.set(next);
-    else arrLsSet("arr.chapters", next);
-  };
+  const ch = byId[pickedId] || chapters[0] || null;
 
-  const byId = useMemoA(() => Object.fromEntries(chapters.map((c) => [c.id, c])), [chapters]);
-  const numOf = useMemoA(() => Object.fromEntries(chapters.map((c, i) => [c.id, String(i + 1).padStart(2, "0")])), [chapters]);
+  /* ⚠ 这些 hook 必须在下方「加载中 / 空作品」的 early return 之前调用（React hooks 顺序规则） */
+  const { snow, refreshResync } = useAuthorSnow({ chapters, reload: list.reload, showNotice, notifyError, goView });
+  const chDnd = useChapterDnd({ ...list, notifyError });
+  const scDnd = useSceneDnd({ ...list, ch });
 
-  /* —— 从雪花同步（回流）：把构思 9/10 步的改动写回本作目录场景卡（三拍 / POV / 章 brief）。
-     能力来自全局 SnowSync（与构思页「重新同步」同源）；resync 内部已重拉 WsCatalog，
-     这里再把最新目录灌回本页 chapters。pending 来自后端 resync_status（真相），不再写死。
-     ⚠ 这些 hook 必须在下方「空作品」early-return 之前调用（React hooks 顺序规则）。 */
-  const readSnowResync = () => { try { return (window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0 }; } catch (e) { return { pendingCount: 0 }; } };
-  const [snowResync, setSnowResync] = useStA(readSnowResync);
-  const [snowBusy, setSnowBusy] = useStA(false);
-  const [snowNote, setSnowNote] = useStA(null);   // 最近一次同步结果的内联提示
-  useEfA(() => {
-    const refresh = () => setSnowResync(readSnowResync());
-    window.addEventListener("ws:snow-resync", refresh);
-    window.addEventListener("ws:snow-hydrated", refresh);
-    window.addEventListener("ws:work-changed", refresh);
-    return () => { window.removeEventListener("ws:snow-resync", refresh); window.removeEventListener("ws:snow-hydrated", refresh); window.removeEventListener("ws:work-changed", refresh); };
-  }, []);
-  const snowReady = (() => { try { return !!(window.SnowSync && window.SnowSync.readyToMaterialize && window.SnowSync.readyToMaterialize()); } catch (e) { return false; } })();
-  const hasPlanChapters = chapters.some(arrIsPlanChapter);
-  const syncFromSnow = async () => {
-    if (snowBusy) return;
-    if (!window.SnowSync || !window.SnowSync.resync) { window.alert("同步能力尚未就绪——请刷新页面，或先到「构思」把雪花大纲整理成章节结构。"); return; }
-    if (!snowReady && !hasPlanChapters) {   // 从没走过物化主路径：暂无可回流的场，引导去构思页
-      if (window.confirm("这部作品还没从「构思」物化过章节结构，暂无可回流的场。\n\n现在去构思页把雪花大纲整理成章节结构吗？")) location.hash = "#snowflake";
-      return;
-    }
-    setSnowBusy(true); setSnowNote(null);
-    try {
-      const r = await window.SnowSync.resync();                  // POST /resync，内部已 WsCatalog.__refresh
-      if (WsCatalog) setChapters(arrStampIds(WsCatalog.get()));  // 订阅也会收敛；这里让提示即时可见
-      setSnowResync(readSnowResync());
-      setSnowNote((r && r.synced) ? `已同步 ${r.synced} 场的构思改动到目录` : "目录已是最新，无需同步");
-    } catch (e) {
-      window.alert("从雪花同步失败：" + ((e && e.message) || "请稍后重试，或检查构思各步是否已确认。"));
-    } finally { setSnowBusy(false); }
-  };
-  /* canPlan：页面上给不给「整理章节结构」这扇门。构思的闸门此刻没过（某一步被改动、待重新确认）也要给——目录里
-     已经有构思分出来的章，它们在这里不能拖，门不能跟着消失；面板自己会列出没过的那几项并带你去补。 */
-  const snow = { pending: (snowResync && snowResync.pendingCount) || 0, busy: snowBusy, ready: snowReady, canPlan: snowReady || hasPlanChapters, note: snowNote, onSync: syncFromSnow };
-
-  /* —— 整理章节结构（阶段 Z）：和构思里的「整理为章节结构」是同一张面板、同一条落库路径（SnowSync.materialize）。
+  /* —— 整理章节结构（阶段 Z）：和构思页头的同名按钮是同一张面板、同一条落库路径（SnowSync.materialize）。
      章的结构只有这一个编辑器；章节编排只是它的第二扇门。确认写入之后目录整份重拉，这里给一句回执。 */
-  const [planOpen, setPlanOpen] = useStA(false);
+  const [planOpen, setPlanOpen] = useState(false);
   const openPlan = () => {
-    if (!window.SnowSync || !window.SnowSync.chapterPreview) { window.alert("分章能力尚未就绪——请刷新页面后重试。"); return; }
+    if (!window.SnowSync || !window.SnowSync.chapterPreview) { notifyError("分章能力还没准备好，请刷新页面后再试。"); return; }
     setPlanOpen(true);
   };
   const onPlanDone = (result) => {
@@ -1014,37 +124,61 @@ function WsAuthor({ go }) {
       (r.restored_scene_ids || []).length ? `${r.restored_scene_ids.length} 场随旧章进了回收站的场景卡已取回` : "",
       r.chapter_order_held ? "目录里有已终审的章，按章表排会挪动它——新章暂时接在最后" : "",
     ].filter(Boolean);
-    showNotice({ text: "章节结构已按这一版写入目录" + (notes.length ? ` · ${notes.join(" · ")}` : ""), tone: "sage", timeout: 9000 });
-    setSnowResync(readSnowResync());
+    showNotice({ text: "章节结构已按这一版写入目录" + (notes.length ? ` · ${notes.join(" · ")}` : ""), tone: "ok", timeout: 9000 });
+    refreshResync();
   };
   const goToSnowStep = (beKey) => {
     const feKey = (window.SnowSync && window.SnowSync.feStepKey && window.SnowSync.feStepKey(beKey)) || "";
     setPlanOpen(false);
-    if (feKey) navigateWithViewIntent("snowflake", "ws:snow-step", feKey);
-    else location.hash = "#snowflake";
+    goView("snowflake", feKey ? { type: "ws:snow-step", detail: feKey } : null);
   };
   const goToSnowScene = (sceneId) => {
     setPlanOpen(false);
-    queueViewIntent("snowflake", "ws:snow-step", "planning");
-    navigateWithViewIntent("snowflake", "ws:snow-scene", sceneId);
+    goView("snowflake", planIntentsForScene(sceneId));
   };
   const planPanel = planOpen
     ? <WsChapterPlanPanel onClose={() => setPlanOpen(false)} onDone={onPlanDone} onGoToStep={goToSnowStep} onGoToScene={goToSnowScene} />
     : null;
 
-  if (WsCatalog && !WsCatalog.ready()) {
+  /* 全书编排 ⇄ 章节详情整块换掉：焦点跟过去——进详情落在这一章上（section，tabIndex=-1），
+     回全书编排落在刚才那一章的标题按钮上。过去两边都掉到 <body>，键盘用户得从页首重新 Tab。 */
+  const shellRef = useRef(null);
+  const focusAfterModeRef = useRef(null);
+  useEffect(() => {
+    const want = focusAfterModeRef.current;
+    if (!want || want !== mode) return;
+    focusAfterModeRef.current = null;
+    const shell = shellRef.current;
+    const target = shell && (want === "detail"
+      ? shell.querySelector(".arr-ed")
+      : shell.querySelector(".arr-card.is-picked .arr-card-title"));
+    if (target && typeof target.focus === "function") target.focus({ preventScroll: true });
+  }, [mode]);
+  const backToOverview = () => { focusAfterModeRef.current = "overview"; setMode("overview"); };
+
+  /* 新建一章：全应用只有 WsCatalog.addChapter 这一份配方；这里只决定它接在哪里 */
+  const openChapter = (id) => {
+    if (mode !== "detail") focusAfterModeRef.current = "detail";
+    setPickedId(id); setHighlightSid(null); setMode("detail"); setCtxOpen(false);
+    scSel.exit();   // 换章即清空场景勾选，避免跨章误删
+  };
+  const addChapter = (opts) => {
+    const created = WsCatalog.addChapter(opts || {});
+    if (created && created.id) openChapter(created.id);
+  };
+
+  if (!WsCatalog.ready()) {
     const catalogError = WsCatalog.loadError && WsCatalog.loadError();
     return (
-      <div className="page" data-screen-label="author · loading">
-        <div style={{ display: "grid", placeItems: "center", minHeight: "60vh", color: "var(--ink-3)" }} role="status">
-          {catalogError ? (
-            <div style={{ display: "grid", justifyItems: "center", gap: 12, maxWidth: 460, textAlign: "center" }}>
-              <strong style={{ color: "var(--ink-1)" }}>章节目录加载失败</strong>
-              <span>系统不会把请求失败误判成空作品，也不会用空目录覆盖服务端。</span>
-              <button className="btn btn-ghost" onClick={() => WsCatalog.__refresh && WsCatalog.__refresh()}><I.Refresh size={13} /> 重试加载</button>
-            </div>
-          ) : "正在从服务端加载章节目录…"}
-        </div>
+      <div className="page arr-state" data-screen-label="author · loading">
+        {catalogError ? (
+          <EmptyState icon="AlertTriangle" title="章节目录加载失败"
+            actions={<button type="button" className="btn btn-ghost" onClick={() => WsCatalog.__refresh && WsCatalog.__refresh()}><I.Refresh size={13} /> 重试加载</button>}>
+            系统不会把请求失败当成空作品，也不会用空目录覆盖服务端。
+          </EmptyState>
+        ) : (
+          <div className="arr-loading" role="status"><Spinner size={16} /> 正在从服务端加载章节目录…</div>
+        )}
         {/* 分章面板确认写入时目录会整份重拉（WsCatalog.reset）：面板留在原地把这一步走完 */}
         {planPanel}
       </div>
@@ -1052,371 +186,206 @@ function WsAuthor({ go }) {
   }
 
   /* 空白作品：服务端已确认没有任何章节，先引导建立结构 */
-  if (!chapters.length) {
-    const createFirst = () => {
-      if (!WsCatalog) return;
-      WsCatalog.addChapter();
-    };
+  if (!ch) {
+    const createFirst = () => addChapter();
     return (
-      <div className="page" data-screen-label="author · empty">
-        <div style={{ display: "grid", placeItems: "center", minHeight: "60vh", textAlign: "center" }}>
-          <div style={{ maxWidth: 440, display: "grid", gap: 14, justifyItems: "center" }}>
-            <div style={{ fontFamily: "var(--font-serif)", fontSize: 22, color: "var(--ink-1)" }}>这部作品还没有章节结构</div>
-            <p style={{ color: "var(--ink-3)", fontSize: 14, lineHeight: 1.8, margin: 0 }}>
-              {snowReady
-                ? "构思里的场景已经列好了——把它们整理成章节，章和场就长到这里来；也可以自己从第一章建起。"
-                : "章节编排从第一章开始；也可以先去雪花构思，把大纲长出来再回来编排。"}
-            </p>
-            <div style={{ display: "flex", gap: 10 }}>
-              {snowReady
-                ? <button className="btn btn-accent" data-testid="author-empty-open-plan" onClick={openPlan}><I.Layout size={15} /> 把构思整理成章节</button>
-                : <button className="btn btn-accent" onClick={createFirst}><I.Plus size={15} /> 新建第一章</button>}
-              {snowReady
-                ? <button className="btn btn-ghost" onClick={createFirst}><I.Plus size={15} /> 新建第一章</button>
-                : <button className="btn btn-ghost" onClick={() => { location.hash = "#snowflake"; }}>去构思</button>}
-            </div>
-          </div>
-        </div>
+      <div className="page arr-state" data-screen-label="author · empty">
+        <EmptyState icon="Layers" title="这部作品还没有章节结构"
+          actions={snow.ready ? (
+            <>
+              <button type="button" className="btn btn-accent" data-testid="author-empty-open-plan" onClick={openPlan}><I.Layout size={15} /> 整理章节结构</button>
+              <button type="button" className="btn btn-ghost" onClick={createFirst}><I.Plus size={15} /> 新建第一章</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="btn btn-accent" onClick={createFirst}><I.Plus size={15} /> 新建第一章</button>
+              <button type="button" className="btn btn-ghost" onClick={() => goView("snowflake")}>去构思</button>
+            </>
+          )}>
+          {snow.ready
+            ? "构思里的场景已经列好了——把它们整理成章节，章和场就长到这里来；也可以自己从第一章建起。"
+            : "章节编排从第一章开始；也可以先去雪花构思，把大纲长出来再回来编排。"}
+        </EmptyState>
         {planPanel}
       </div>
     );
   }
 
-  const ch = byId[pickedId] || chapters[0];
   const idx = chapters.findIndex((c) => c.id === ch.id);
   const prev = idx > 0 ? chapters[idx - 1] : null;
   const next = idx >= 0 && idx < chapters.length - 1 ? chapters[idx + 1] : null;
+  const locked = ch.state === "approved";
+  const checks = arrChapterChecks(ch, snow);
+  const warnCount = checks.filter((row) => row.warn).length;
 
-  const openChapter = (id) => {
-    setPickedId(id); setPickedScene("0"); setSceneTab("active"); setMode("detail");
-    setScSelectMode(false); setScSel(new Set());   // 换章即清空场景勾选，避免跨章误删
+  const openChapterScene = (id, sceneIndex) => {
+    openChapter(id);
+    const target = byId[id];
+    const scene = target && (target.scenes || [])[sceneIndex || 0];
+    setHighlightSid(scene ? scene.sid : null);
   };
-  const openChapterScene = (id, sceneIndex) => { openChapter(id); setPickedScene(String(sceneIndex || 0)); };
-  /* 阶段 Z：构思分出来的章彼此的先后与卷由章表决定——这里不给拖（后端同样 409），手建的章照常拖 */
-  const chapterFixed = (item) => !item || item.state === "approved" || arrIsPlanChapter(item);
 
-  /* chapter drag — cross-volume: dragged chapter adopts the target's act + position */
-  const chDnd = (id) => ({
-    draggable: !chapterFixed(chapters.find((item) => item.id === id)),
-    onDragStart: (e) => {
-      if (chapterFixed(chapters.find((item) => item.id === id))) { e.preventDefault(); return; }
-      setChDragId(id); e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", id); } catch (_) {}
-    },
-    onDragEnter: () => {
-      if (!chDragId || chDragId === id) return;
-      if (chapterFixed(chapters.find((item) => item.id === chDragId))) return;
-      setChapters((cs) => {
-        const from = cs.findIndex((c) => c.id === chDragId);
-        const to = cs.findIndex((c) => c.id === id);
-        if (from < 0 || to < 0 || from === to) return cs;
-        const arr = [...cs];
-        const moved = { ...arr[from], act: arr[to].act };
-        arr.splice(from, 1);
-        arr.splice(arr.findIndex((c) => c.id === id), 0, moved);
-        if (!approvedPositionsStayFixed(cs, arr)) return cs;
-        chaptersRef.current = arr;
-        return arr;
-      });
-    },
-    onDragOver: (e) => e.preventDefault(),
-    onDrop: (e) => { e.preventDefault(); publishDraggedOrder(); setChDragId(null); },
-    onDragEnd: () => { publishDraggedOrder(); setChDragId(null); },
-    "data-dragging": chDragId === id ? "true" : undefined,
-  });
-  /* drop on an act's empty space → move dragged chapter to the end of that volume */
-  const boardDnd = (actId) => ({
-    onDragOver: (e) => e.preventDefault(),
-    onDrop: (e) => {
-      e.preventDefault();
-      const dragId = chDragId;
-      setChDragId(null);
-      if (!dragId) return;
-      const cs = chaptersRef.current;
-      {
-        const cur = cs.find((c) => c.id === dragId);
-        if (!cur || chapterFixed(cur) || cur.act === actId) return;
-        const arr = cs.filter((c) => c.id !== dragId);
-        let insertAt = arr.length;
-        for (let i = arr.length - 1; i >= 0; i--) { if (arr[i].act === actId) { insertAt = i + 1; break; } }
-        arr.splice(insertAt, 0, { ...cur, act: actId });
-        if (!approvedPositionsStayFixed(cs, arr)) return;
-        chaptersRef.current = arr;
-        commitChapters(arr);
-      }
-    },
-  });
-
-  /* scene drag within the current chapter */
-  const sceneDragHandle = (i) => ({
-    draggable: ch.state !== "approved",
-    onDragStart: (e) => {
-      if (ch.state === "approved") { e.preventDefault(); return; }
-      setScDragIdx(i); e.dataTransfer.effectAllowed = "move"; e.stopPropagation();
-    },
-    onDragEnd: () => { publishDraggedOrder(); setScDragIdx(null); },
-  });
-  const sceneDropZone = (i) => ({
-    onDragEnter: () => {
-      if (scDragIdx == null || scDragIdx === i) return;
-      if (ch.state === "approved") return;
-      setChapters((cs) => {
-        const next = cs.map((c) => {
-        if (c.id !== ch.id) return c;
-        const s = [...c.scenes]; const m = s.splice(scDragIdx, 1)[0]; s.splice(i, 0, m);
-        return { ...c, scenes: s };
-        });
-        chaptersRef.current = next;
-        return next;
-      });
-      setScDragIdx(i);
-    },
-    onDragOver: (e) => e.preventDefault(),
-    onDrop: (e) => { e.preventDefault(); publishDraggedOrder(); setScDragIdx(null); },
-    "data-dragging": scDragIdx === i ? "true" : undefined,
-  });
-
-  const addChapter = (actId) => {
-    const id = "ch_" + Math.random().toString(36).slice(2, 8);
-    commitChapters((cs) => {
-      const newCh = {
-        id, act: actId, n: "", title: "未命名章节", state: "planned",
-        tension: 0.5, pov: "", time: "待定", place: "待定",
-        words: { cur: 0, target: 4000 },
-        entry: "（待规划）", exit: "（待规划）", align: true, promise: "",
-        drama: { promise: "", spine: "", arc: "", problem: "", aftertaste: "", ending: "",
-          forbidden: "不得出现梦醒、系统提示、参考书专名、原书人物或可识别桥段。", notes: "新建章节 · 待补。" },
-        threads: [], scenes: [{ sid: "s_" + Math.random().toString(36).slice(2, 8), title: "未命名场景", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }],
-      };
-      const arr = [...cs];
-      let insertAt = arr.length;
-      for (let i = arr.length - 1; i >= 0; i--) { if (arr[i].act === actId) { insertAt = i + 1; break; } }
-      arr.splice(insertAt, 0, newCh);
-      return arr;
-    });
-    setPickedId(id); setPickedScene("0"); setSceneTab("active"); setMode("detail");
-  };
+  /* —— 当前章的改动：一律经 commitChapters 交给目录（乐观写 + 服务端收敛） —— */
+  const updateCurrent = (fn) => commitChapters((cs) => cs.map((c) => (c.id === ch.id ? fn(c) : c)));
   const addScene = () => {
-    if (ch.state === "approved") return;
-    commitChapters((cs) => cs.map((c) => c.id === ch.id
-      ? { ...c, scenes: [...c.scenes, { sid: "s_" + Math.random().toString(36).slice(2, 8), title: "未命名场景", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }] }
-      : c));
-    setSceneTab("active");
+    if (locked) return;
+    updateCurrent((c) => ({ ...c, scenes: [...c.scenes, { sid: "s_" + Math.random().toString(36).slice(2, 8), title: "未命名场景", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }] }));
   };
-
-  /* write-back + status helpers */
-  const patchTitle = (val) => { if (ch.state !== "approved") commitChapters((cs) => cs.map((c) => c.id === ch.id ? { ...c, title: val } : c)); };
-  const patchDrama = (key, val) => { if (ch.state !== "approved") commitChapters((cs) => cs.map((c) => {
-    if (c.id !== ch.id) return c;
-    const drama = { ...c.drama, [key]: val };
-    const next = { ...c, drama };
-    if (key === "promise") next.promise = val;
-    return next;
-  })); };
-  /* 雪花的场（design.owner === "plan"）：设计字段不在这里改——行上已经是只读的，这里再兜一层，
-     免得别的入口（快捷键、以后新加的按钮）把一个注定被后端 409 的改动乐观写进本机目录。 */
-  const ARR_DESIGN_KEYS = ["goal", "obstacle", "turn", "povName", "kind"];
+  const patchTitle = (val) => { if (!locked) updateCurrent((c) => ({ ...c, title: val })); };
+  const patchDrama = (key, val) => {
+    if (locked) return;
+    updateCurrent((c) => {
+      const nextCh = { ...c, drama: { ...c.drama, [key]: val } };
+      if (key === "promise") nextCh.promise = val;
+      return nextCh;
+    });
+  };
   const editScene = (i, patch) => {
-    if (ch.state === "approved") return;
-    const target = ch.scenes[i];
-    const allowed = arrPlanOwned(target)
+    if (locked) return;
+    const allowed = arrIsPlanScene(ch.scenes[i])
       ? Object.fromEntries(Object.entries(patch || {}).filter(([key]) => !ARR_DESIGN_KEYS.includes(key)))
       : patch;
     if (!allowed || !Object.keys(allowed).length) return;
-    commitChapters((cs) => cs.map((c) => {
-      if (c.id !== ch.id) return c;
-      return { ...c, scenes: c.scenes.map((sc, idx) => idx === i ? { ...sc, ...allowed } : sc) };
-    }));
+    updateCurrent((c) => ({ ...c, scenes: c.scenes.map((sc, k) => (k === i ? { ...sc, ...allowed } : sc)) }));
   };
-  const cycleKind = (i) => { if (ch.state !== "approved" && !arrPlanOwned(ch.scenes[i])) commitChapters((cs) => cs.map((c) => {
-    if (c.id !== ch.id) return c;
-    return { ...c, scenes: c.scenes.map((sc, idx) => idx === i ? { ...sc, kind: sc.kind === "主动" ? "反应" : "主动" } : sc) };
-  })); };
+  const cycleKind = (i) => {
+    if (locked || arrIsPlanScene(ch.scenes[i])) return;
+    updateCurrent((c) => ({ ...c, scenes: c.scenes.map((sc, k) => (k === i ? { ...sc, kind: sc.kind === "主动" ? "反应" : "主动" } : sc)) }));
+  };
+
+  /* 删完给一条回执（删了几条 / 去了哪 / 怎么找回）——不然作者只能看着东西消失 */
+  const openTrash = () => goView("trash");
+  const noticeTrashed = (text) => showNotice({ text, actionLabel: "打开回收站", onAction: openTrash });
   const deleteScene = (i) => {
-    if (ch.state === "approved") return;
+    if (locked) return;
     const victim = ch.scenes[i];
-    commitChapters((cs) => cs.map((c) => {
-      if (c.id !== ch.id) return c;
-      return { ...c, scenes: c.scenes.filter((_, idx) => idx !== i) };
-    }));
+    updateCurrent((c) => ({ ...c, scenes: c.scenes.filter((_, k) => k !== i) }));
     noticeTrashed(`已把场景「${(victim && victim.title) || "未命名场景"}」移入回收站`);
   };
-  /* 构思分出来的章：删掉的只是目录里的章和场景卡，构思里的分章还在——下一次「确认写入」会把这些场取回。
-     作者要的多半是并章 / 拆章（用「整理章节结构」），或者真不要这几场（在构思第 9 步删行）。删之前说清楚。 */
-  const planDeleteNote = (targets) => (targets.some(arrIsPlanChapter)
-    ? "\n\n其中有构思里分出来的章：这里删掉的只是目录里的章和场景卡，构思的分章还在——下一次「整理章节结构 → 确认写入」会把这些场取回。\n想并章 / 拆章，用「整理章节结构」；真不要这几场，到构思第 9 步删行。"
-    : "");
-  const deleteChapter = () => {
-    if (ch.state === "approved") return;
-    const scenes = (ch.scenes || []).length;
-    if (typeof window !== "undefined" && !window.confirm(`把第 ${numOf[ch.id]} 章「${ch.title}」移入回收站？${scenes ? `连同章下 ${scenes} 个场景。` : ""}${planDeleteNote([ch])}`)) return;
-    const i = chapters.findIndex((c) => c.id === ch.id);
-    const neighbor = chapters[i + 1] || chapters[i - 1];
-    commitChapters((cs) => cs.filter((c) => c.id !== ch.id));
-    if (neighbor) { setPickedId(neighbor.id); setPickedScene("0"); }
-    noticeTrashed(`已把第 ${numOf[ch.id]} 章移入回收站${scenes ? `（含 ${scenes} 场）` : ""}`);
+  const deleteChapter = async () => {
+    if (locked) return;
+    const target = ch;
+    const scenes = (target.scenes || []).length;
+    const ok = await wsConfirm({
+      title: `把${chName(target)}移入回收站？`,
+      body: `${scenes ? `连同章下 ${scenes} 个场景。` : "这一章还没有场景。"}可以在回收站里恢复。${planDeleteNote([target])}`,
+      confirmLabel: "移入回收站",
+      tone: "danger",
+    });
+    if (!ok) return;
+    const cs = chaptersRef.current;
+    const i = cs.findIndex((c) => c.id === target.id);
+    const neighbor = cs[i + 1] || cs[i - 1];
+    commitChapters((all) => all.filter((c) => c.id !== target.id));
+    if (neighbor) { setPickedId(neighbor.id); setHighlightSid(null); }
+    noticeTrashed(`已把${chName(target, false)}移入回收站${scenes ? `（含 ${scenes} 场）` : ""}`);
   };
 
   /* —— 批量删除 ——
      已批准终稿始终排除在选择之外：后端也会 blocked，这里先在 UI 上说清楚，
-     免得作者勾了一批、只删掉一部分还得自己对账。
-     删完给一条回执（删了几条 / 去了哪 / 怎么找回）——不然作者只能看着东西消失。 */
-  const noticeTrashed = (text) => showNotice({
-    text,
-    actionLabel: "打开回收站",
-    onAction: () => { if (go) go("trash"); else location.hash = "#trash"; },
-  });
+     免得作者勾了一批、只删掉一部分还得自己对账。 */
   const selectableChapters = chapters.filter((c) => c.state !== "approved");
-  const toggleChSel = (id) => setChSel((prev) => {
-    const nextSel = new Set(prev);
-    if (nextSel.has(id)) nextSel.delete(id); else nextSel.add(id);
-    return nextSel;
-  });
   const selectedChapters = selectableChapters.filter((c) => chSel.has(c.id));
   const chapterBatch = {
-    mode: chSelectMode,
-    has: (id) => chSel.has(id),
-    onToggle: toggleChSel,
+    mode: chSel.mode,
+    has: chSel.has,
+    onToggle: chSel.toggle,
+    onEnter: chSel.enter,
+    onExit: chSel.exit,
     selectedCount: selectedChapters.length,
     selectableCount: selectableChapters.length,
     allSelected: !!selectableChapters.length && selectedChapters.length === selectableChapters.length,
-    onSelectAll: () => setChSel((prev) => (
-      prev.size === selectableChapters.length ? new Set() : new Set(selectableChapters.map((c) => c.id))
-    )),
-    onExit: () => { setChSelectMode(false); setChSel(new Set()); },
-    onDelete: () => {
+    onSelectAll: () => chSel.toggleAll(selectableChapters.map((c) => c.id)),
+    onDelete: async () => {
       const targets = selectedChapters;
       if (!targets.length) return;
       const scenes = targets.reduce((n, c) => n + (c.scenes || []).length, 0);
       const what = targets.length === 1
-        ? `第 ${numOf[targets[0].id]} 章「${targets[0].title}」`
+        ? chName(targets[0])
         : `所选 ${targets.length} 章`;
-      if (typeof window !== "undefined" && !window.confirm(`把${what}移入回收站？${scenes ? `连同章下 ${scenes} 个场景。` : ""}${planDeleteNote(targets)}`)) return;
+      const ok = await wsConfirm({
+        title: `把${what}移入回收站？`,
+        body: `${scenes ? `连同章下 ${scenes} 个场景。` : ""}可以在回收站里恢复。${planDeleteNote(targets)}`,
+        confirmLabel: "移入回收站",
+        tone: "danger",
+      });
+      if (!ok) return;
       const drop = new Set(targets.map((c) => c.id));
-      const survivor = chapters.find((c) => !drop.has(c.id));
+      const survivor = chaptersRef.current.find((c) => !drop.has(c.id));
       commitChapters((cs) => cs.filter((c) => !drop.has(c.id)));
-      setChSel(new Set());
-      setChSelectMode(false);
-      if (drop.has(pickedId)) { setPickedId(survivor ? survivor.id : null); setPickedScene("0"); }
+      chSel.exit();
+      if (drop.has(pickedId)) { setPickedId(survivor ? survivor.id : null); setHighlightSid(null); }
       noticeTrashed(`已把 ${targets.length} 章移入回收站${scenes ? `（含 ${scenes} 场）` : ""}`);
     },
   };
   const sceneBatch = {
-    mode: scSelectMode,
-    has: (sid) => scSel.has(sid),
-    onToggleMode: () => { setScSelectMode((v) => !v); setScSel(new Set()); },
-    onToggle: (sid) => setScSel((prev) => {
-      const nextSel = new Set(prev);
-      if (nextSel.has(sid)) nextSel.delete(sid); else nextSel.add(sid);
-      return nextSel;
-    }),
-    onSelectAll: () => setScSel((prev) => (
-      prev.size === ch.scenes.length ? new Set() : new Set(ch.scenes.map((s) => s.sid))
-    )),
-    selectedCount: ch.scenes.filter((s) => scSel.has(s.sid)).length,
-    onDelete: () => {
-      if (ch.state === "approved") return;
+    mode: scSel.mode,
+    has: scSel.has,
+    onToggle: scSel.toggle,
+    onToggleMode: scSel.toggleMode,
+    onSelectAll: () => scSel.toggleAll(ch.scenes.map((s) => s.sid)),
+    onDelete: async () => {
+      if (locked) return;
       const targets = ch.scenes.filter((s) => scSel.has(s.sid));
       if (!targets.length) return;
       const what = targets.length === 1 ? `场景「${targets[0].title}」` : `本章 ${targets.length} 个场景`;
-      if (typeof window !== "undefined" && !window.confirm(`把${what}移入回收站？`)) return;
+      const ok = await wsConfirm({ title: `把${what}移入回收站？`, body: "可以在回收站里恢复。", confirmLabel: "移入回收站", tone: "danger" });
+      if (!ok) return;
       const drop = new Set(targets.map((s) => s.sid));
-      commitChapters((cs) => cs.map((c) => (c.id !== ch.id ? c : { ...c, scenes: c.scenes.filter((s) => !drop.has(s.sid)) })));
-      setScSel(new Set());
-      setScSelectMode(false);
-      setPickedScene("0");
+      updateCurrent((c) => ({ ...c, scenes: c.scenes.filter((s) => !drop.has(s.sid)) }));
+      scSel.exit();
+      setHighlightSid(null);
       noticeTrashed(`已把 ${targets.length} 个场景移入回收站`);
     },
   };
+
   const refreshData = async () => {
-    if (!WsCatalog || !WsCatalog.__refresh) return;
+    if (!WsCatalog.__refresh) return;
     await WsCatalog.__refresh();
     const failure = WsCatalog.loadError && WsCatalog.loadError();
     if (failure) {
-      window.alert((failure && failure.message) || "章节目录刷新失败；当前视图仍保留上一次服务端版本。");
+      notifyError((failure && failure.message) || "章节目录刷新失败；当前视图仍保留上一次服务端版本。");
       return;
     }
-    const fresh = arrStampIds(WsCatalog.get());
-    setChapters(fresh);
-    const selected = fresh.find((c) => c.id === pickedId) || fresh.find((c) => c.current) || fresh[0];
-    setPickedId(selected ? selected.id : null);
+    list.reload();
   };
+  const onConfigureModel = () => goView("settings", { type: "ws:settings-tab", detail: "ai" });
   const chapterRun = {
-    onCatalogRefresh: (next) => setChapters(arrStampIds(Array.isArray(next) ? next : [])),
-    onOpenReview: () => {
-      if (go) go("manuscripts");
-      else if (typeof window !== "undefined") window.location.hash = "#manuscripts";
-    },
-    onConfigureModel: () => {
-      if (go) go("settings");
-      else if (typeof window !== "undefined") window.location.hash = "#settings";
-    },
+    onCatalogRefresh: list.reload,
+    onOpenReview: () => goView("manuscripts"),
+    onConfigureModel,
   };
-  const firstAct = ARR_ACTS[0].id;
+  const closeCtx = () => setCtxOpen(false);
 
   return (
-    <div className="arr-shell" data-screen-label="author" data-mode={mode} data-dragging-ch={chDragId ? "true" : undefined}>
-      <div className={`arr-main ${mode === "overview" ? "arr-main-ov" : "arr-main-detail"}`}>
+    <div className="arr-shell" ref={shellRef} data-screen-label="author" data-mode={mode} data-dragging-ch={chDnd.dragId ? "true" : undefined}>
+      <div className={`arr-main ${mode === "overview" ? "arr-main-ov" : "arr-main-detail"} ${ctxOpen ? "is-ctx-open" : ""}`}>
         {mode === "overview" ? (
-          <React.Fragment>
-            {/* 多选是一个独占模式：进入后头部只剩这条批量操作栏，
-                页面上不再同时摆着「新建 / 切视图 / 逐章打开」等与选择无关的动作 */}
-            <header className={`arr-ov-head ${chSelectMode ? "is-selecting" : ""}`}>
-              {chSelectMode ? (
-                <div className="arr-batch" role="toolbar" aria-label="章节批量操作">
-                  <span className="arr-batch-n">已选 <strong className="tab-num">{chapterBatch.selectedCount}</strong> / {chapterBatch.selectableCount} 章</span>
-                  <span className="arr-batch-hint">点卡片选中；已批准终稿不可选。删除后进入回收站，可恢复。</span>
-                  <button className="btn btn-quiet btn-sm" onClick={chapterBatch.onSelectAll} disabled={!chapterBatch.selectableCount}>
-                    {chapterBatch.allSelected ? "取消全选" : "全选"}
-                  </button>
-                  <button className="btn btn-danger btn-sm" data-testid="author-batch-delete-chapters"
-                    disabled={!chapterBatch.selectedCount} onClick={chapterBatch.onDelete}>
-                    <I.Trash size={13} /> 删除所选{chapterBatch.selectedCount ? ` · ${chapterBatch.selectedCount} 章` : ""}
-                  </button>
-                  <button className="btn btn-ghost btn-sm" data-testid="author-chapter-select-exit" onClick={chapterBatch.onExit}>完成</button>
-                </div>
-              ) : (
-                <React.Fragment>
-                  <div>
-                    <div className="page-eyebrow" style={{ margin: 0 }}>章节编排</div>
-                    <h1 className="arr-ov-title text-serif">全书编排 · {WsWorks ? WsWorks.active().title : "未命名作品"}</h1>
-                  </div>
-                  <div className="arr-ov-head-r">
-                    {snow.canPlan && (
-                      <button className="btn btn-ghost btn-sm" data-testid="author-open-plan" onClick={openPlan}
-                        title="拆章 / 并章 / 挪章界 / AI 起章名——和构思里的「整理为章节结构」是同一张面板，确认写入后目录跟着变">
-                        <I.Layout size={13} /> 整理章节结构{snow.pending ? ` · ${snow.pending} 场待同步` : ""}
-                      </button>
-                    )}
-                    <button className="btn btn-quiet btn-sm" onClick={refreshData} title="从服务端重新载入目录"><I.Refresh size={13} /> 刷新</button>
-                    <div className="seg">
-                      <button className="seg-btn is-active" disabled title="当前正在查看全书编排">全书编排</button>
-                      <button className="seg-btn" onClick={() => setMode("detail")}>章节详情</button>
-                    </div>
-                    <button className="btn btn-quiet btn-sm" data-testid="author-chapter-select-mode"
-                      title="多选章节后可一次删除（已批准终稿不可选）"
-                      disabled={!chapterBatch.selectableCount}
-                      onClick={() => { setChSelectMode(true); setChSel(new Set()); }}>
-                      <I.Check size={13} /> 多选
-                    </button>
-                    <button className="btn btn-accent btn-sm" onClick={() => addChapter(firstAct)}><I.Plus size={13} /> 新建章节</button>
-                  </div>
-                </React.Fragment>
-              )}
-            </header>
-            <ArrOverview chapters={chapters} numOf={numOf} pickedId={pickedId} onOpen={openChapter} onOpenScene={openChapterScene} chDnd={chDnd} boardDnd={boardDnd} onNew={addChapter} lens={lens} setLens={setLens} batch={chapterBatch} snow={snow} onOpenPlan={snow.canPlan ? openPlan : null} />
-          </React.Fragment>
+          <>
+            <ArrOverviewHead batch={chapterBatch} snow={snow} onOpenPlan={openPlan} onRefresh={refreshData} onMode={setMode}
+              onNew={() => addChapter({ afterId: byId[pickedId] ? pickedId : undefined })}
+              newTip={byId[pickedId] ? `接在第 ${Number(numOf[pickedId])} 章后面` : "接在全书最后"} />
+            <ArrOverview chapters={chapters} numOf={numOf} pickedId={pickedId} onOpen={openChapter} onOpenScene={openChapterScene}
+              rowDnd={chDnd.row} boardDnd={chDnd.board} onNew={(actId) => addChapter({ act: actId })} lens={lens} setLens={setLens}
+              batch={chapterBatch} snow={snow} onOpenPlan={snow.canPlan ? openPlan : null}
+              canMove={chDnd.canMove} onMoveChapter={chDnd.move} />
+          </>
         ) : (
-          <React.Fragment>
-            <ArrRail chapters={chapters} numOf={numOf} pickedId={pickedId} onPick={openChapter} chDnd={chDnd} boardDnd={boardDnd} onBack={() => setMode("overview")} onNew={addChapter} />
-            <ArrEditor ch={ch} num={numOf[ch.id]} prev={prev} next={next} numOf={numOf} sceneTab={sceneTab} setSceneTab={setSceneTab}
-              sceneDragHandle={sceneDragHandle} sceneDropZone={sceneDropZone} onAddScene={addScene} onCycleKind={cycleKind}
-              onDeleteScene={deleteScene} onEditScene={editScene}
-              onPatchTitle={patchTitle} onPatchDrama={patchDrama} onDeleteChapter={deleteChapter}
-              onOpenTrash={() => { if (go) go("trash"); else location.hash = "#trash"; }}
-              pickedScene={pickedScene} setPickedScene={setPickedScene}
-              onJump={openChapter} onBack={() => setMode("overview")} snow={snow} chapterRun={chapterRun} sceneBatch={sceneBatch} onOpenPlan={openPlan} />
-            <ArrChapterContext ch={ch} chapters={chapters} numOf={numOf} snow={snow} onOpenPlan={openPlan} />
-          </React.Fragment>
+          <>
+            <ArrRail chapters={chapters} numOf={numOf} pickedId={ch.id} onPick={openChapter} rowDnd={chDnd.row} boardDnd={chDnd.board}
+              canMove={chDnd.canMove} onMove={chDnd.move}
+              onBack={backToOverview} onNew={() => addChapter({ afterId: ch.id })} />
+            <ArrEditor ch={ch} num={numOf[ch.id]} prev={prev} next={next} numOf={numOf}
+              sceneDnd={scDnd} onAddScene={addScene} onCycleKind={cycleKind} onDeleteScene={deleteScene} onEditScene={editScene}
+              onPatchTitle={patchTitle} onPatchDrama={patchDrama} onDeleteChapter={deleteChapter} onOpenTrash={openTrash}
+              highlightSid={highlightSid} onClearHighlight={() => setHighlightSid(null)}
+              onJump={openChapter} onBack={backToOverview} snow={snow} chapterRun={chapterRun} sceneBatch={sceneBatch} onOpenPlan={openPlan}
+              ctxOpen={ctxOpen} onToggleCtx={() => setCtxOpen((v) => !v)} warnCount={warnCount}
+              goView={goView} onConfigureModel={onConfigureModel} />
+            <div className="arr-ctx-scrim" aria-hidden="true" onClick={closeCtx} />
+            <ArrChapterContext ch={ch} checks={checks} snow={snow} onOpenPlan={openPlan} open={ctxOpen} onClose={closeCtx}
+              onConfigureModel={onConfigureModel} />
+          </>
         )}
       </div>
       <UndoToast toast={toast} onClose={clearNotice} />
@@ -1425,6 +394,4 @@ function WsAuthor({ go }) {
   );
 }
 
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsAuthor };

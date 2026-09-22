@@ -189,7 +189,8 @@ describe("注入应用 · 起草方式（风格直起）", () => {
     await vi.waitFor(() => expect(host.querySelectorAll('[data-testid="sr-binding-draft-mode"]').length).toBe(3), T);
     const rows = [...host.querySelectorAll(".sr-bindings li")].filter((li) => li.querySelector('[data-testid="sr-binding-draft-mode"]'));
     const chipOf = (refId) => rows.find((li) => li.textContent.includes(refId)).querySelector('[data-testid="sr-binding-draft-mode"]').textContent;
-    expect(chipOf("prj-main")).toBe("作者手笔直起");
+    // 项目级绑定显示作品名（不再印 project id）
+    expect(chipOf("北岸手记")).toBe("作者手笔直起");
     expect(chipOf("s1")).toBe("中性稿再上风格");
     expect(chipOf("c1")).toBe("作者手笔直起");
   });
@@ -215,8 +216,9 @@ describe("注入应用 · 起草方式（风格直起）", () => {
       return baseGet(url);
     });
     const host = await render(<mod.SrApply book={BOOK} go={vi.fn()} />);
-    await vi.waitFor(() => expect([...host.querySelectorAll(".sr-ast")].find((b) => b.textContent.includes("叠加层"))).toBeTruthy(), T);
-    await click([...host.querySelectorAll(".sr-ast")].find((b) => b.textContent.includes("叠加层")));
+    const layersTab = () => [...host.querySelectorAll('[role="tab"]')].find((b) => b.textContent.includes("叠加层"));
+    await vi.waitFor(() => expect(layersTab()).toBeTruthy(), T);
+    await click(layersTab());
     await vi.waitFor(() => expect(host.querySelectorAll(".sr-stack-layer").length).toBe(2), T);
     const chips = [...host.querySelectorAll('[data-testid="sr-layer-draft-mode"]')];
     expect(chips).toHaveLength(1);

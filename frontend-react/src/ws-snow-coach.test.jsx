@@ -17,6 +17,11 @@ vi.mock("./ws-works.jsx", () => ({
   wsKey: (base) => `${base}::coach-book`,
   WsWorks: { activeId: () => "coach-book", active: () => ({ id: "coach-book", title: "方向之书" }) },
 }));
+// 视图从 ws-snow-sync.jsx 直接 import SnowSync；分章面板（与章节编排共用）仍读 window.SnowSync。
+// 每个用例把自己的假 SnowSync 挂在 window 上，这里的模块 mock 转发过去（用例没给的方法读出来是 undefined）。
+vi.mock("./ws-snow-sync.jsx", () => ({
+  SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
+}));
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(async () => ({})),
   apiPost: vi.fn(async () => ({})),
@@ -63,7 +68,7 @@ async function renderSnow(step = "paragraph") {
   document.body.appendChild(host);
   const root = createRoot(host);
   mounted.push({ root, host });
-  await act(async () => root.render(<WsSnowflake initialStep={step} onOverview={vi.fn()} />));
+  await act(async () => root.render(<WsSnowflake initialStep={step} />));
   return host;
 }
 async function openCoach(host) {
@@ -289,6 +294,25 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     await vi.waitFor(() => expect(window.SnowSync.setDirectionBrief).toHaveBeenCalledTimes(1), T);
     expect(window.SnowSync.setDirectionBrief.mock.calls[0][1]).toBe("paragraph");
     expect(window.SnowSync.setDirectionBrief.mock.calls[0][2].revision).toBe(3);
+  });
+
+  it("教练回复里的 markdown 排成段落 / 粗体 / 斜体 / 列表，不再把星号印出来；「按此生成本步」仍把原文交给模型", async () => {
+    const reply = "缺口有两处：\n\n1. **目标**：还不能拍。\n   - *做法*：给一个今晚的期限。\n2. **代价**：还没落地。\n\n<i>这句像标签</i>，照样是文字。";
+    installApi({ history: [{ ...CHAT_TURN, reply, suggestions: ["先把**代价**写实"] }] });
+    const host = await renderSnow("paragraph");
+    await openCoach(host);
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-coach-turn"]')).toBeTruthy(), T);
+    const body = host.querySelector('[data-testid="snow-coach-turn"] .sf-coach-body');
+    expect(Array.from(body.querySelectorAll("ol > li > strong")).map(n => n.textContent)).toEqual(["目标", "代价"]);
+    expect(body.querySelector("ol > li > ul > li > em").textContent).toBe("做法");
+    expect(body.querySelector(".sf-coach-sugs strong").textContent).toBe("代价");
+    expect(body.querySelector("i")).toBeNull();
+    expect(body.textContent).toContain("<i>这句像标签</i>，照样是文字。");
+    expect(body.textContent).not.toContain("**");
+
+    await act(async () => host.querySelector('[data-testid="snow-coach-adopt"]').click());
+    await vi.waitFor(() => expect(generateCalls().length).toBe(1), T);
+    expect(generateCalls()[0][1].direction_text).toBe(reply);
   });
 
   it("要点卡：撤下 = 提交缺了它的完整列表；加条 / 切范围 / 关继承都走 saveDirectionBrief；没有「生成时带入」；右栏有只读镜像", async () => {

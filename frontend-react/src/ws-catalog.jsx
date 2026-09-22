@@ -3,7 +3,6 @@ import { WsWorks, wsKey } from "./ws-works.jsx";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 
-/* global window, React */
 /* ==========================================================
    WsCatalog — 章节 / 场景单一真相源（per-work）
    ----------------------------------------------------------
@@ -65,8 +64,8 @@ function catPushTotals() {
       streak: stats.streak_days || 0,
       chaptersWritten: written,
     };
-    /* 仅在值变化时注入 —— __applyDerived 会广播 ws:work-changed，
-       而本函数又监听该事件，无守卫会形成异步自激循环 */
+    /* 仅在值变化时注入 —— __applyDerived 会通知 WsWorks 的订阅者（并广播 ws:work-stats-changed），
+       值没变也注入只会让主页、切换器白白重渲一轮 */
     if (w && (w.wordsTotal !== next.wordsTotal || w.wordsToday !== next.wordsToday
       || w.streak !== next.streak || w.chaptersWritten !== next.chaptersWritten)) {
       WsWorks.__applyDerived(id, next);
@@ -86,7 +85,8 @@ function catPushTotals() {
    · 一次性迁移：旧 localStorage 目录编辑（arr.chapters.v2::<id>）在后端目录
      为空时经 POST catalog/import 上行，打 ws_catalog_migrated_v1::<id> 标记。 */
 
-const KIND_FIELDS_GCS = ["目标", "阻碍", "挫折"];
+/* 三拍的名字全站只有一套（构思第 10 步、设计卡、主页、章节编排同读）：主动 目标/冲突/挫败，反应 反应/两难/决定 */
+const KIND_FIELDS_GCS = ["目标", "冲突", "挫败"];
 const KIND_FIELDS_RDD = ["反应", "两难", "决定"];
 const CAT_MIGRATED_LS = "ws_catalog_migrated_v1";
 
@@ -423,12 +423,19 @@ function catRecover(error) {
   catFetch(catActiveId(), { migrate: false });
 }
 
-/* 后端 id 解析（含等待乐观创建完成） */
+/* 后端 id 解析（含等待乐观创建完成）。
+   插在中间的新章用的是临时 id（ch-new-*）；前一次写入收尾时目录已经重拉，缓存里就只剩后端给的位置式 slug 了——
+   接连新建两章时，第二次写入的章序要找第一章的后端 id，所以建好时把「作品 + 临时 id → 后端 id」记下来。
+   只记临时 id、按作品分开、最后才查：接在书尾的新章用的是位置式 chNN，这个 id 删章之后会被重用、换一部作品也会重名，
+   记下来就会把下一个同名新章的改名 / 章序发给回收站里的旧章或别的作品。 */
+const catCreatedChapterIds = {};
+let catNewChapterSeq = 0;   // 同一毫秒里连建两章（双击「新建章节」）时临时 id 也不重名
+const catCreatedKey = (workId, chId) => `${workId}::${chId}`;
 async function catBackendChapterId(chId) {
   const find = () => { const c = catLoad(catActiveId()).find(x => x.id === chId); return c && c.backendId; };
   let id = find();
   if (!id && catPendingCreates[chId]) { await catPendingCreates[chId]; id = find(); }
-  return id;
+  return id || catCreatedChapterIds[catCreatedKey(catActiveId(), chId)];
 }
 async function catBackendSceneId(sid) {
   const lookup = () => catResolveScene(catActiveId(), sid);
@@ -446,26 +453,26 @@ async function catBackendSceneId(sid) {
 
 function catCreateChapterViaApi(workId, nc) {
   const p = (async () => {
-    const result = await apiPost(`${catApiBase(workId)}/chapters`, {
+    /* 只上行这一章真有的字段：后端把收到的每个章级叙事字段原样存下来，
+       送一个默认的张力 / 线索 / 「待定」占位，就等于替作者编了一条张力曲线（章节编排曾因此画回假弧线） */
+    const narrative = {
+      tension: nc.tension, pov: nc.pov, time_label: nc.time, place: nc.place,
+      entry: nc.entry, exit: nc.exit, align: nc.align, promise: nc.promise, threads: nc.threads,
+    };
+    const body = {
       title: nc.title,
       state: nc.state === "active" ? "writing" : nc.state,
       current: !!nc.current,
       words_target: (nc.words && nc.words.target) || null,
       act: nc.act,
-      tension: nc.tension,
-      pov: nc.pov,
-      time_label: nc.time,
-      place: nc.place,
-      entry: nc.entry,
-      exit: nc.exit,
-      align: nc.align,
-      promise: nc.promise,
       drama: nc.drama || {},
-      threads: nc.threads || [],
       with_scene: false,
-    });
+    };
+    Object.entries(narrative).forEach(([key, value]) => { if (value !== undefined) body[key] = value; });
+    const result = await apiPost(`${catApiBase(workId)}/chapters`, body);
     const created = result && result.chapter;
     if (!created) return;
+    if (String(nc.id).startsWith("ch-new-")) catCreatedChapterIds[catCreatedKey(workId, nc.id)] = created.chapter_id;
     const mine = catLoad(workId).find(c => c.id === nc.id);
     if (mine) mine.backendId = created.chapter_id;
     for (let i = 0; i < (nc.scenes || []).length; i++) {
@@ -669,9 +676,11 @@ const WsCatalog = {
     return chs.find(c => c.current) || chs.find(c => c.state === "writing") || chs[chs.length - 1] || null;
   },
   /* 「现在该写哪一场」——主页的继续写作、写作台的落点、AI 起草台的落点共用这一条规则
-     （后端 catalog.focus_scene_payload 是它的镜像）：当前章里在写的那一场 → 第一场没写完的 → 末场；
-     当前章还没铺场就往后找第一章有场的。过去三处各有各的规则——写作台会取全书任何一场「在写」的场，
-     于是雪花刚整理完，它开在一张手建的空白占位场上，而主页指着雪花的第一场。 */
+     （后端 catalog.focus_scene_payload 是它的镜像）：当前章里在写的那一场 → 第一场没写完的 → 末场。
+     过去三处各有各的规则——写作台会取全书任何一场「在写」的场，
+     于是雪花刚整理完，它开在一张手建的空白占位场上，而主页指着雪花的第一场。
+     当前章还没铺场时：从当前章往后找第一场没写完的（找到书尾再从头绕回来），而不是从全书第一章找起——
+     那样会落回前面早已写完的章。全书都写完了，就停在当前章之前最近的那一场上（作者刚写完的地方）。 */
   focusScene() {
     const pick = (c) => {
       const scenes = (c && c.scenes) || [];
@@ -679,9 +688,18 @@ const WsCatalog = {
       const s = scenes.find(x => x.state === "writing") || scenes.find(x => x.state !== "done") || scenes[scenes.length - 1];
       return { chapter: c, scene: s, index: scenes.indexOf(s) };
     };
-    const hit = pick(this.currentChapter());
+    const current = this.currentChapter();
+    const hit = pick(current);
     if (hit) return hit;
-    for (const c of this.get()) { const next = pick(c); if (next) return next; }
+    const chapters = this.get();
+    const at = Math.max(0, chapters.indexOf(current));
+    const forward = [...chapters.slice(at + 1), ...chapters.slice(0, at)];
+    for (const c of forward) {
+      const next = pick(c);
+      if (next && next.scene.state !== "done") return next;
+    }
+    const backward = [...chapters.slice(0, at).reverse(), ...chapters.slice(at + 1)];
+    for (const c of backward) { const next = pick(c); if (next) return next; }
     return null;
   },
   writingScene() { return this.focusScene(); },
@@ -696,9 +714,12 @@ const WsCatalog = {
       return { ...c, scenes };
     }));
   },
+  /* 新场景的三拍是空的，和 addChapter 那一场空白场同一份配方：没人写过的目标不替作者编。
+     旧版在这里写进「（本场目标待规划）」这句占位，落库后后端和各处视图都得再把它认作「没填」；
+     场景设计卡本来就把空拍显示成「（待规划）」。 */
   addScene(chId, title) {
     this.set(this.get().map(c => c.id !== chId ? c : {
-      ...c, scenes: [...c.scenes, { title: title || "新场景", kind: "主动", state: "todo", goal: "（本场目标待规划）", obstacle: "", turn: "" }],
+      ...c, scenes: [...c.scenes, { title: title || "新场景", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }],
     }));
   },
   removeScene(chId, sid) {
@@ -727,21 +748,52 @@ const WsCatalog = {
       .filter(c => !dropCh.has(c.id))
       .map(c => (dropSc.size ? { ...c, scenes: (c.scenes || []).filter(s => !dropSc.has(s.sid)) } : c)));
   },
-  addChapter(title) {
+  /* 新建一章——全应用只有这一份配方（章节编排的页头 / 卷尾 / 序列栏 / 空目录、写作台的「创建第一章」都走这里）。
+     addChapter({ title, act, afterId })：
+       · afterId：接在这一章后面，默认沿用它的卷；
+       · 只给 act：接在这一卷的最后一章后面（这一卷还空着就按卷序插在前一卷之后）；
+       · 都不给（写作台的 addChapter()）：接在全书最后，沿用最后一章的卷；
+       · 旧调用 addChapter("章名") 仍然有效。
+     不带张力 / 线索 / 时间 / 地点 / 入口出口 / 章承诺，字数目标为空，戏剧卡是空的，只有一场空白的场——
+     没人填过的东西不替作者编：默认张力会让「故事弧线」和体检的张力项死灰复燃，4000 字的目标会让进度一下变成 100%。
+     返回新章（乐观缓存里的那一份）。 */
+  addChapter(opts) {
+    const o = typeof opts === "string" ? { title: opts } : (opts || {});
     const chs = this.get();
-    const n = String(chs.length + 1).padStart(2, "0");
-    const id = "ch" + n + (chs.some(c => c.id === "ch" + n) ? "-" + Date.now().toString(36) : "");
+    const after = o.afterId ? chs.find(c => c.id === o.afterId) : null;
+    const actOrder = ["act1", "act2", "act3"];
+    const act = catNormalizeAct(o.act || (after && after.act) || (chs.length ? chs[chs.length - 1].act : "act1"));
+    let insertAt = chs.length;
+    if (after) insertAt = chs.indexOf(after) + 1;
+    else if (o.act) {
+      const rank = actOrder.indexOf(act);
+      const lastSame = chs.map(c => c.act).lastIndexOf(act);
+      if (lastSame >= 0) insertAt = lastSame + 1;
+      else {
+        const lastEarlier = chs.reduce((at, c, i) => (actOrder.indexOf(c.act) < rank ? i : at), -1);
+        insertAt = lastEarlier + 1;
+      }
+    }
+    /* 已批准终稿的章在目录里的位置是锁死的（后端 chapter-order 会 409）：新章插在它前面会把它往后挤一格，
+       所以最早只能插在最后一章已批准终稿之后 */
+    const lastApproved = chs.map(c => c.state).lastIndexOf("approved");
+    insertAt = Math.max(insertAt, lastApproved + 1);
+    const first = chs.length === 0;
+    const n = String(insertAt + 1).padStart(2, "0");
+    /* 接在书尾时 id 就是后端会给的位置式 slug（chNN），写作台刚建完就在写也对得上；插在中间时不能占用
+       后面那一章现在的 slug，先给一个临时 id，目录重拉之后章节编排按位置找回它 */
+    const id = insertAt === chs.length && !chs.some(c => c.id === "ch" + n) ? "ch" + n : `ch-new-${Date.now().toString(36)}-${++catNewChapterSeq}`;
     const ch = {
-      id, act: "act1", n, title: (title || "").trim() || `第 ${chs.length + 1} 章`, state: "writing",
-      tension: 0.3, pov: "", time: "", place: "", current: true,
-      words: { cur: 0, target: 4000 },
-      entry: "", exit: "", align: true, promise: "",
+      id, act, n, title: String(o.title || "").trim() || `第 ${insertAt + 1} 章`,
+      state: first ? "writing" : "planned", current: first,
+      words: { cur: 0, target: 0 },
       drama: { promise: "", spine: "", arc: "", problem: "", aftertaste: "", ending: "", forbidden: "", notes: "" },
-      threads: [],
-      scenes: [{ title: "开场", kind: "主动", state: "writing", goal: "（本场目标待规划）", obstacle: "", turn: "" }],
+      scenes: [{ title: "新场景", kind: "主动", state: first ? "writing" : "todo", goal: "", obstacle: "", turn: "" }],
     };
-    this.set([...chs.map(c => ({ ...c, current: false })), ch]);
-    return this.get().find(c => c.id === id);
+    const next = chs.slice();
+    next.splice(insertAt, 0, ch);
+    this.set(next);
+    return this.get().find(c => c.id === id) || null;
   },
   /* 雪花构思 → 目录只有一条路径：分章面板确认 → SnowSync.materialize（后端物化 +
      批准大纲）。这里曾有个 adoptOutline 包装和一个 __adoptByDiff 降级实现 —— P2 之前
@@ -830,6 +882,9 @@ window.addEventListener("ws:work-changed", catOnWorkChanged);
 const trashSubs = createSubscribers();
 let trashCache = [];
 let trashFetching = null;
+/* 读取状态（只读，给视图区分「真的空」「还在读」「读不到」）：以前拉取失败只 console.warn，
+   列表停在 []，作者看到的是「回收站是空的」——删掉的东西像是没了。 */
+let trashLoad = { status: "idle", message: "" };
 const TRASH_KIND_LABEL = { work: "作品", chapter: "章节", scene: "场景" };
 
 function trashNotify() { trashSubs.notify(); }
@@ -841,6 +896,8 @@ function trashAdapt(item) {
     title: item.kind === "work" ? `《${item.title}》· 整部` : item.title,
     removedAt: item.removed_at ? (Date.parse(item.removed_at) || Date.now()) : Date.now(),
     restorable: item.restorable !== false,
+    // 场景条目带所在章：回收站把随章一起回收的场景嵌在章下面（后端 services/trash.py 已返回）
+    chapterId: item.chapter_id || "",
     payload: { type: item.kind },
   };
 }
@@ -849,17 +906,26 @@ function trashFetch() {
   if (trashFetching) return trashFetching;
   const id = catActiveId();
   const qs = id && id !== "__loading__" ? `?project_id=${encodeURIComponent(id)}` : "";
+  // 已经读到过一次时，后台刷新不把状态打回「读取中」（视图不该因此闪一下）
+  if (trashLoad.status !== "ready") { trashLoad = { status: "loading", message: "" }; trashNotify(); }
   trashFetching = apiGet(`/api/v2/trash${qs}`).then((data) => {
     trashCache = ((data && data.items) || []).map(trashAdapt);
+    trashLoad = { status: "ready", message: "" };
     trashNotify();
   }).catch((e) => {
     console.warn("[WsTrashStore] 拉取回收站失败:", e);
+    trashLoad = { status: "error", message: (e && e.message) || "读不到回收站。" };
+    trashNotify();
   }).finally(() => { trashFetching = null; });
   return trashFetching;
 }
 
 const WsTrashStore = {
   list() { return trashCache; },
+  /* { status: idle | loading | ready | error, message }——只读 */
+  loadState() { return trashLoad; },
+  /* 回收站打开时重拉一次：分章 / 物化可能在服务端自动移入或取回了章与场景 */
+  refresh() { return trashFetch(); },
   /* 兼容壳：各软删端点已自动产生后端条目，这里只触发刷新（旧调用点无害化） */
   push(item) {
     trashFetch();

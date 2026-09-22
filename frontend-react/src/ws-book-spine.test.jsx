@@ -165,10 +165,10 @@ describe("场景设计卡（写作台与 AI 起草台共用的同一张）", () 
     const model = sceneDesignModel(WsCatalog.sceneById("P_SC_b"));
     expect(model.beats.map(b => b.label)).toEqual(["反应", "两难", "决定"]);
     expect(model.followup).toEqual([{ key: "goal", label: "目标", text: "翻进档案馆" }]);
-    expect(model.stamp).toBe("CH 01 · SC 02");
+    expect(model.stamp).toBe("第 1 章 · 第 2 场");
     expect(model.lengthLabel).toBe("1300–1600 字");
     expect(model.facts).toEqual([
-      { k: "POV", v: "林昭" }, { k: "时间", v: "第二日 · 晨" }, { k: "地点", v: "雨城旧码头" }, { k: "出场", v: "沈越" },
+      { k: "视角", v: "林昭" }, { k: "时间", v: "第二日 · 晨" }, { k: "地点", v: "雨城旧码头" }, { k: "出场", v: "沈越" },
     ]);
 
     const onEditPlan = vi.fn();
@@ -178,6 +178,8 @@ describe("场景设计卡（写作台与 AI 起草台共用的同一张）", () 
       expect(text).toContain(part);
     });
     expect(text).toContain("来自构思");
+    // 卡底的所在章：真章名旁边放章号
+    expect(host.querySelector(".sdc-chapter-head").textContent).toContain("第 1 章雨夜来信");
     expect(host.querySelector('[data-testid="scene-design-edit-card"]')).toBeNull();
     await click(host.querySelector('[data-testid="scene-design-edit-plan"]'));
     expect(onEditPlan).toHaveBeenCalledTimes(1);

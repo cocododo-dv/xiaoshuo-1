@@ -94,7 +94,7 @@ describe("写作台 · 雪花整理出来的章", () => {
     const { WriterRoom } = await loadWriter();
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} go={vi.fn()} />);
     expect(host.querySelector(".wr-scene-title").textContent).toBe("雨里站着");
-    expect(host.querySelector(".wr-stamp").textContent).toContain("CH 02 · SC 02");
+    expect(host.querySelector(".wr-stamp").textContent).toContain("第 2 章 · 第 2 场");
   });
 
   it("正文上方随行的是与 AI 起草台同一张设计卡：反应场按 反应 / 两难 / 决定 命名，POV / 时间 / 地点读这一场", async () => {
@@ -121,12 +121,34 @@ describe("写作台 · 雪花整理出来的章", () => {
     expect(drawer.textContent).toContain("交给 AI 起草整场");
   });
 
-  it("大纲：章的状态是中文（规划 / 进行中）、脊柱标记与章摘要在章名的提示里、落点所在的章展开、场题名带整句摘要提示", async () => {
+  it("正文上方的卡展开时，抽屉不再重复三拍与事实行；收起正文上方的卡，抽屉给回整张", async () => {
+    const { WriterRoom } = await loadWriter();
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} go={vi.fn()} />);
+    const drawerCard = () => host.querySelector('.wr-drawer.right [data-testid="scene-design-card"]');
+    expect(drawerCard().querySelectorAll(".sdc-beat").length).toBe(0);
+    expect(drawerCard().textContent).not.toContain("她在雨里站了很久");
+    expect(host.querySelector(".wr-scene-head").textContent).toContain("她在雨里站了很久");
+
+    await click(host.querySelector('.wr-scene-head [data-testid="scene-design-toggle"]'));
+    expect([...drawerCard().querySelectorAll(".sdc-beat-k")].map(n => n.textContent)).toEqual(["反应", "两难", "决定"]);
+    expect(drawerCard().textContent).toContain("信封里还有第二张车票。");
+  });
+
+  it("页头只印章场编号（不再猜「反应场景」），字数对照这一场设计的篇幅", async () => {
+    const { WriterRoom } = await loadWriter();
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} go={vi.fn()} />);
+    expect(host.querySelector(".wr-stamp").textContent).toBe("第 2 章 · 第 2 场");
+    expect(host.querySelector(".wr-count").textContent.replace(/\s/g, "")).toBe("0/1300–1600字");
+    expect(host.textContent).not.toContain("/ 1500");
+  });
+
+  it("大纲：章的状态是中文、和成稿中心 / 章节编排同一个词与同一条规则、脊柱标记与章摘要在章名的提示里、落点所在的章展开、场题名带整句摘要提示", async () => {
     const { WriterRoom } = await loadWriter();
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} go={vi.fn()} />);
     const outline = host.querySelector(".wr-drawer.left");
     const chapters = [...outline.querySelectorAll(".wr-ch")];
-    expect(chapters.map(ch => ch.querySelector(".pill").textContent)).toEqual(["进行中", "规划"]);
+    // 第 2 章目录上挂着 planned，但已经写完一场：和成稿中心、章节编排、主页一样读作「写作中」（以前大纲照抄目录说「规划」）
+    expect(chapters.map(ch => ch.querySelector(".wr-ch-pill").textContent)).toEqual(["写作中", "写作中"]);
     expect(outline.textContent).not.toContain("planned");
     expect(chapters[1].querySelector(".wr-ch-title").getAttribute("title")).toBe("收在灾一 · 她被停职了。");
     const names = [...chapters[1].querySelectorAll(".wr-sc-name")];

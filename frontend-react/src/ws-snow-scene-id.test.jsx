@@ -1,12 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: { get: () => [], adoptOutline: vi.fn() } }));
-vi.mock("./ws-works.jsx", () => ({
-  wsKey: (base) => `${base}::t`,
-  WsWorks: { activeId: () => "t", active: () => ({ id: "t", title: "t" }) },
-}));
-
-import { s2NextSceneRowId } from "./ws-snow.jsx";
+// 纯函数住在叶子模块里（不 import 任何东西），不必再为了它拉起整张雪花视图、mock 目录与作品层
+import { s2NextSceneRowId } from "./ws-snow-model.js";
 
 /* 09 场景行的 id 会作为 row_uid 上行，是场景计划的不可变身份锚。
    旧写法 `"S" + (list.length + 1)` 在「删掉中间一场再新增」时会铸出与幸存场同号的 id，

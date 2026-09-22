@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  arrBookFacts, arrBookSpine, arrChapterEdge, arrChapterFacts, arrIsPlanChapter, arrLensChapters, arrRangeLabel,
-  arrSceneBeatsPlanned,
+  arrActSpans, arrBookFacts, arrBookSpine, arrChapterChecks, arrChapterEdge, arrChapterFacts, arrChapterStatus,
+  arrIsPlanChapter, arrLensChapters, arrRangeLabel, arrSceneBeatsPlanned,
 } from "./ws-author-derive.js";
 import { arrDeriveIssues } from "./ws-author-doctor.jsx";
 
@@ -85,8 +85,8 @@ describe("章节编排 · 派生层", () => {
     expect([book.planChapterCount, book.deskChapterCount, book.sceneTotal, book.doneScenes, book.reactiveScenes]).toEqual([2, 1, 4, 1, 1]);
     expect(book.unnamed.map((c) => c.id)).toEqual(["ch01"]);
     expect(book.unplanned.map((x) => x.scene.sid)).toEqual(["s3"]); // 手加的场不归构思管
-    expect(book.hasTension).toBe(false);
-    expect(book.hasThreads).toBe(true);
+    expect(book).not.toHaveProperty("hasTension");   // 章级张力 / 线索的镜头已经删了，不再有门控
+    expect(book).not.toHaveProperty("hasThreads");
     expect(arrIsPlanChapter(chapters[2])).toBe(false);
 
     const spine = arrBookSpine(chapters, { ch01: "01", ch02: "02", ch03: "03" });
@@ -104,24 +104,25 @@ describe("全书体检 · 只报读得出来的事实", () => {
     chapter("ch02", { scenes: [scene("s3", { goal: "" })] }),
   ];
 
-  it("没设字数目标不报超额、没设过张力不报「张力曲线健康」、视角分布按场统计", () => {
+  it("没设字数目标不报超额；视角分布不在体检里重复（结构镜头的摘要条已经画了）", () => {
     const issues = arrDeriveIssues(chapters, numOf);
     const keys = issues.map((x) => x.key);
     expect(keys).not.toContain("fat");       // 真实故障：「字数超额 · 01 第 1 章 · 1,803/0」
     expect(keys).not.toContain("budget");
-    expect(keys).not.toContain("arc");
-    expect(keys).not.toContain("dip");
-    expect(issues.find((x) => x.key === "pov").detail).toBe("林昭 2 场 · 老陈 1 场");
+    expect(keys).not.toContain("pov");
   });
 
-  it("设过目标 / 设过张力的旧数据照旧体检", () => {
+  it("设过目标的章照旧体检字数；章级张力 / 线索即便旧数据里有也不再报（没有编辑入口的东西不当事实）", () => {
     const legacy = [
-      chapter("ch01", { words: { cur: 6000, target: 4000 }, tension: 0.8, tensionSet: true }),
+      chapter("ch01", { words: { cur: 6000, target: 4000 }, tension: 0.8, tensionSet: true, threads: [{ name: "旧信", role: "新引" }] }),
       chapter("ch02", { words: { cur: 100, target: 4000 }, tension: 0.4, tensionSet: true }),
     ];
     const keys = arrDeriveIssues(legacy, numOf).map((x) => x.key);
     expect(keys).toContain("fat");
-    expect(keys).toContain("dip");
+    expect(keys).not.toContain("dip");
+    expect(keys).not.toContain("arc");
+    expect(keys).not.toContain("dangling");
+    expect(keys).not.toContain("open");
   });
 
   it("雪花整理出来的书：待同步 / 没起名的章 / 没规划三拍的场各是一项待办，各带一扇门；都清了才说「与构思一致」", () => {
@@ -132,6 +133,8 @@ describe("全书体检 · 只报读得出来的事实", () => {
     expect(byKey["plan-sync"].action.run).toBe("sync");
     expect(byKey["plan-unnamed"].count).toBe(2);
     expect(byKey["plan-unnamed"].action.run).toBe("plan");
+    // 章号一律「第 N 章」：没起名的章不再写成「01 第 1 章」（章号挨着它自己的占位名）
+    expect(byKey["plan-unnamed"].chips.map((c) => c.text)).toEqual(["第 1 章", "第 2 章"]);
     expect(byKey["plan-unplanned"].chips.map((c) => c.go)).toEqual(["ch02"]);
     expect(byKey.plan).toBeUndefined();
 
@@ -141,5 +144,39 @@ describe("全书体检 · 只报读得出来的事实", () => {
     // 不是雪花的书：这一组一项都不出现
     const manual = [chapter("ch01", { structure: { owner: "desk", rowUid: "", sceneRange: null, plannedSceneCount: 0, titleAuto: false } })];
     expect(arrDeriveIssues(manual, numOf, { book: arrBookFacts(manual), snow: { pending: 0 } }).map((x) => x.key).filter((k) => k.startsWith("plan"))).toEqual([]);
+  });
+});
+
+describe("章的显示状态、章节体检与卷带", () => {
+  it("已批准 / 审阅中来自后端；其余按各场读：有一场动了笔或已经有字 = 写作中，否则规划中", () => {
+    expect(arrChapterStatus(chapter("a", { state: "approved" }))).toEqual({ key: "approved", derived: false });
+    expect(arrChapterStatus(chapter("b", { state: "review" }))).toEqual({ key: "review", derived: false });
+    expect(arrChapterStatus(chapter("c", { state: "planned", scenes: [scene("s1", { state: "done" })] }))).toEqual({ key: "writing", derived: true });
+    expect(arrChapterStatus(chapter("d", { state: "planned", words: { cur: 12, target: 0 } })).key).toBe("writing");
+    expect(arrChapterStatus(chapter("e", { state: "writing", scenes: [scene("s2")] }))).toEqual({ key: "planned", derived: true });
+  });
+
+  it("章节体检：只报读得出来的事实，与构思同步只对有构思分章的书出现", () => {
+    const ch = chapter("ch02", {
+      drama: { promise: "承诺", spine: "（待补）" },
+      words: { cur: 900, target: 0 },
+      scenes: [scene("s1", { state: "writing" }), scene("s2", { goal: "" })],
+    });
+    const rows = arrChapterChecks(ch, { canPlan: true, pending: 2 });
+    const byKey = Object.fromEntries(rows.map((row) => [row.key, row]));
+    expect(byKey.beats).toMatchObject({ val: "1/2", warn: true, ok: false });
+    expect(byKey.started).toMatchObject({ val: "1/2", warn: true });
+    expect(byKey.drama.val).toBe("1/6");          // 「（待补）」是占位，不算写过
+    expect(byKey.budget).toMatchObject({ val: "未设目标", ok: false, warn: false });
+    expect(byKey.sync).toMatchObject({ val: "2 场待同步", warn: true });
+    expect(arrChapterChecks(ch, { canPlan: false, pending: 0 }).map((row) => row.key)).not.toContain("sync");
+    expect(arrChapterChecks(chapter("x", { words: { cur: 4100, target: 4000 } }), null).find((row) => row.key === "budget").val).toBe("在轨");
+  });
+
+  it("全书字数目标只在每一章都设过目标时才算；卷带按章序取首尾", () => {
+    expect(arrBookFacts([chapter("a", { words: { cur: 4004, target: 4000 } }), chapter("b", { words: { cur: 0, target: 0 } })]).wordsTarget).toBe(0);
+    expect(arrBookFacts([chapter("a", { words: { cur: 100, target: 3000 } }), chapter("b", { words: { cur: 50, target: 2000 } })])).toMatchObject({ words: 150, wordsTarget: 5000 });
+    const spans = arrActSpans([chapter("a"), chapter("b"), chapter("c", { act: "act2" }), chapter("d", { act: "act3" })]);
+    expect(spans.map((s) => [s.a.id, s.from, s.to])).toEqual([["act1", 0, 1], ["act2", 2, 2], ["act3", 3, 3]]);
   });
 });

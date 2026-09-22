@@ -61,6 +61,22 @@ describe("WrCanonicalControl", () => {
     expect(host.querySelector("button").disabled).toBe(true);
   });
 
+  it("空白场（none）：不显示「待更新」，也不给提升按钮", async () => {
+    const onPromote = vi.fn();
+    const { host } = await renderControl({ saveStatus: "草稿已加载", canonicalStatus: "none", onPromote });
+    const status = host.querySelector('[data-testid="canonical-status"]');
+    expect(status.textContent).toBe("还没有可提升的正文");
+    expect(status.textContent).not.toContain("待更新");
+    // 状态只留给读屏；提升按钮仍是第一个 <button>，但隐藏且禁用
+    expect(status.classList.contains("ws-sr-only")).toBe(true);
+    const button = host.querySelector("button");
+    expect(button.classList.contains("wr-canonical-promote")).toBe(true);
+    expect(button.hidden).toBe(true);
+    expect(button.disabled).toBe(true);
+    await act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onPromote).not.toHaveBeenCalled();
+  });
+
   it("等待作者内容风险复核时禁止从底层按钮重复提升", async () => {
     const { host } = await renderControl({
       saveStatus: "草稿已保存",

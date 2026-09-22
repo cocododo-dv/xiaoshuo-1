@@ -44,7 +44,7 @@ await check("舒适度面板（本地事件开关）", async () => {
 
 await check("⌘K 面板开关", async () => {
   await page.keyboard.press("Control+k");
-  await page.waitForSelector(".ws-pal, .ws-palette, [class*=pal]", { timeout: 5000 });
+  await page.waitForSelector(".pal[role='dialog']", { timeout: 5000 });
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
 });
@@ -71,10 +71,11 @@ await check("切回样例长卷", async () => {
 });
 
 await check("删除作品进回收站并恢复", async () => {
-  page.once("dialog", (d) => d.accept());
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
-  await page.click('.ws-wsw-row:has-text("冒烟测试书") .ws-wsw-del');
+  await page.click('.ws-wsw-item:has-text("冒烟测试书") .ws-wsw-del');
+  // 删除作品的确认是应用内确认框（ws-notify.jsx），不是浏览器 confirm
+  await page.click('[data-testid="ws-confirm-ok"]');
   await page.waitForTimeout(500);
   await page.keyboard.press("Escape");
   await page.evaluate(() => { location.hash = "#trash"; });

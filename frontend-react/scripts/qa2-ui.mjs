@@ -60,14 +60,24 @@ await page.evaluate(() => { location.hash = "#__bogus__"; });
 await page.waitForTimeout(700);
 chk("非法 hash 不崩溃", await page.evaluate(() => !!document.querySelector(".ws-app")));
 
-// ---- NAV-02 Ctrl+k 命令面板（纠正旧 FP：用 Control+k）----
+// ---- NAV-02 Ctrl+k 命令面板 ----
+// 只认面板本身（.pal 且 role=dialog）：旧选择器 [class*='cmdk'] 会命中侧栏上常驻的 .ws-cmdk 按钮，
+// 面板根本没打开也算通过。
 ctx = "NAV-02";
 await go("work-a", "home");
 await page.keyboard.press("Control+k").catch(() => {});
 await page.waitForTimeout(600);
-const paletteOpen = await page.evaluate(() => !!document.querySelector(".ws-palette, [class*='palette'], [class*='cmdk'], [role='dialog']"));
+const paletteOpen = await page.evaluate(() => !!document.querySelector(".pal[role='dialog']"));
 chk("Ctrl+k 命令面板打开", paletteOpen);
+if (paletteOpen) {
+  await page.keyboard.type("成本");
+  await page.waitForTimeout(200);
+  const costHit = await page.evaluate(() => [...document.querySelectorAll(".pal [role='option']")].some(o => o.textContent.includes("成本看板")));
+  chk("命令面板能搜到「成本看板」（页面清单与侧栏同源）", costHit);
+}
 await page.keyboard.press("Escape").catch(() => {});
+await page.waitForTimeout(300);
+chk("Esc 关闭命令面板", await page.evaluate(() => !document.querySelector(".pal[role='dialog']")));
 
 // ---- SNOW-12 (P1 回归)：打开构思页不盲发 approve ----
 ctx = "SNOW-12";
@@ -83,7 +93,7 @@ ctx = "Q3-UI";
 await go("work-a", "snowflake");
 await page.waitForTimeout(1500);
 const bodyTxt = await page.evaluate(() => document.querySelector(".ws-content")?.innerText || "");
-chk("tide 构思页渲染(含物化/章节字样)", /整理为章节结构|章节结构|物化|场景/.test(bodyTxt), bodyTxt.slice(0, 80));
+chk("tide 构思页渲染(含物化/章节字样)", /整理章节结构|章节结构|物化|场景/.test(bodyTxt), bodyTxt.slice(0, 80));
 await shot("q3-tide-construct");
 
 // ---- AUTHOR-04 (P2 回归)：单章项目故事弧线无 SVG 报错 ----

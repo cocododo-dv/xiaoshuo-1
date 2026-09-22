@@ -15,8 +15,18 @@ vi.mock("./lib/client.js", () => ({
   apiDelete: vi.fn(),
 }));
 
+/* 成本看板用目录把后端章 / 场 id 换成「第 N 章 · 第 M 场」；这里不测目录，给空目录 */
+vi.mock("./ws-catalog.jsx", () => ({
+  WsCatalog: { get: () => [], subscribe: () => () => {} },
+  useCatalogChapters: () => [],
+}));
+
+vi.mock("./ws-works.jsx", () => ({
+  WsWorks: { activeId: () => "P1" },
+  useActiveWorkIdentity: () => ({ id: "P1", title: "测试长篇" }),
+}));
+
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-globalThis.I = globalThis.I || {}; // 图标全局，运行期由应用外壳注入
 
 let root;
 let host;

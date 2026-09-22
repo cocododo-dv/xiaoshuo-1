@@ -248,6 +248,159 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(mod.WsCatalog.get()[0].tensionSet).toBe(true);
   });
 
+  it("addChapter 是唯一的新建配方：不带张力 / 线索 / 占位 / 4000 字目标，接在指定章后面，只建一场空白场", async () => {
+    const second = { ...DEFAULT_CHAP, slug: "ch02", chapter_id: "c2", no: "02", title: "第二章", current: false, act: "act2",
+      scenes: [{ ...DEFAULT_CHAP.scenes[0], slug: "ch02s1", scene_id: "s2" }] };
+    const { mod, client } = await loadCatalog({ catalog: [DEFAULT_CHAP, second] });
+    client.apiPost.mockImplementation((url) => (
+      url.endsWith("/catalog/chapters")
+        ? Promise.resolve({ chapter: { chapter_id: "c-new" } })
+        : Promise.resolve({ scene: { scene_id: "s-new" } })
+    ));
+
+    const created = mod.WsCatalog.addChapter({ afterId: "ch01" });
+    // 乐观缓存：接在第一章后面、沿用它的卷，id 不占用后面那一章现在的位置式 slug
+    expect(mod.WsCatalog.get().map((c) => c.id)).toEqual(["ch01", created.id, "ch02"]);
+    expect(created.id).not.toBe("ch02");
+    expect(created).toMatchObject({ act: "act1", state: "planned", current: false, words: { cur: 0, target: 0 } });
+    expect(created.scenes).toHaveLength(1);
+    expect(created.scenes[0]).toMatchObject({ goal: "", obstacle: "", turn: "" });
+
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => url.endsWith("/catalog/chapters"))).toBe(true), T);
+    const body = client.apiPost.mock.calls.find(([url]) => url.endsWith("/catalog/chapters"))[1];
+    for (const key of ["tension", "threads", "time_label", "place", "entry", "exit", "align", "promise", "pov"]) {
+      expect(body, key).not.toHaveProperty(key);
+    }
+    expect(body).toMatchObject({ act: "act1", words_target: null, with_scene: false });
+    expect(Object.values(body.drama).every((v) => v === "")).toBe(true);
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v2/projects/prj-main/catalog/chapter-order", { chapter_ids: ["c1", "c-new", "c2"] },
+    ), T);
+  });
+
+  it("addScene 与 addChapter 同一份配方：新场的三拍是空的，不写占位目标", async () => {
+    const { mod, client } = await loadCatalog();
+    client.apiPost.mockImplementation((url) => (
+      /\/catalog\/chapters\/c1\/scenes$/.test(url)
+        ? Promise.resolve({ scene: { scene_id: "s-new" } })
+        : Promise.resolve({})
+    ));
+
+    mod.WsCatalog.addScene("ch01", "新的一场");
+    const added = mod.WsCatalog.get()[0].scenes.slice(-1)[0];
+    expect(added).toMatchObject({ title: "新的一场", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" });
+
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => /\/catalog\/chapters\/c1\/scenes$/.test(url))).toBe(true), T);
+    const body = client.apiPost.mock.calls.find(([url]) => /\/catalog\/chapters\/c1\/scenes$/.test(url))[1];
+    // 可证伪：配方里再写回「（本场目标待规划）」，goal 就不是空串
+    expect(body).toMatchObject({ title: "新的一场", kind: "proactive", brief: { goal: "", conflict: "", setback: "" } });
+  });
+
+  it("addChapter：只给卷就接在那一卷最后；写作台的无参调用接在全书最后；已批准终稿之前不插", async () => {
+    const approved = { ...DEFAULT_CHAP, slug: "ch02", chapter_id: "c2", no: "02", title: "定稿章", current: false, state: "approved", act: "act1",
+      scenes: [{ ...DEFAULT_CHAP.scenes[0], slug: "ch02s1", scene_id: "s2" }] };
+    const third = { ...DEFAULT_CHAP, slug: "ch03", chapter_id: "c3", no: "03", title: "第三章", current: false, act: "act2",
+      scenes: [{ ...DEFAULT_CHAP.scenes[0], slug: "ch03s1", scene_id: "s3" }] };
+    const { mod, client } = await loadCatalog({ catalog: [DEFAULT_CHAP, approved, third] });
+    let made = 0;
+    client.apiPost.mockImplementation((url) => {
+      if (url.endsWith("/catalog/chapters")) { made += 1; return Promise.resolve({ chapter: { chapter_id: `c-new-${made}` } }); }
+      return Promise.resolve({ scene: { scene_id: `s-new-${made}` } });
+    });
+    const inAct = mod.WsCatalog.addChapter({ act: "act1" });
+    expect(mod.WsCatalog.get().map((c) => c.id).indexOf(inAct.id)).toBe(2);   // 卷一最后（在定稿章之后）
+    const blocked = mod.WsCatalog.addChapter({ afterId: "ch01" });
+    // 插在第一章后面会把已批准终稿往后挤：最早只能接在定稿章之后
+    expect(mod.WsCatalog.get().map((c) => c.id).indexOf(blocked.id)).toBeGreaterThan(1);
+    const tail = mod.WsCatalog.addChapter();
+    const ids = mod.WsCatalog.get().map((c) => c.id);
+    expect(ids[ids.length - 1]).toBe(tail.id);
+    expect(tail.act).toBe("act2");
+    // 三次新建都落到后端，且每一次提交的章序里定稿章都还在第 2 位（后端对挪动定稿章的章序一律 409）
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.filter(([url]) => url.endsWith("/chapter-order"))).toHaveLength(3), T);
+    client.apiPost.mock.calls.filter(([url]) => url.endsWith("/chapter-order"))
+      .forEach(([, body]) => expect(body.chapter_ids[1]).toBe("c2"));
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+
+  it("addChapter：书尾的位置式 id 删章后被重用时，新章建好之前的改名等它建好、发给它自己，不发给回收站里的旧章", async () => {
+    let server = [DEFAULT_CHAP];
+    const { mod, client } = await loadCatalog();
+    const route = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => (url === "/api/v2/projects/prj-main/catalog" ? Promise.resolve({ chapters: server }) : route(url)));
+    let made = 0;
+    let hold = null;
+    client.apiPost.mockImplementation((url, body) => {
+      if (url.endsWith("/catalog/chapters")) {
+        made += 1;
+        const chapterId = `c-new-${made}`;
+        const done = () => {
+          server = [...server, { ...DEFAULT_CHAP, slug: `ch0${server.length + 1}`, chapter_id: chapterId, title: body.title, current: false, scenes: [] }];
+          return { chapter: { chapter_id: chapterId } };
+        };
+        if (hold) return new Promise((resolve) => { hold.release = () => resolve(done()); });
+        return Promise.resolve(done());
+      }
+      if (url.endsWith("/chapters/trash")) {
+        server = server.filter((c) => !body.chapter_ids.includes(c.chapter_id));
+        return Promise.resolve({ processed: body.chapter_ids, blocked: [] });
+      }
+      return Promise.resolve({ scene: { scene_id: `s-${made}` } });
+    });
+
+    // 书尾新建 → 位置式 ch02 → 后端 c-new-1；再删掉它
+    expect(mod.WsCatalog.addChapter().id).toBe("ch02");
+    await vi.waitFor(() => expect((mod.WsCatalog.get().find((c) => c.id === "ch02") || {}).backendId).toBe("c-new-1"), T);
+    await new Promise((resolve) => setTimeout(resolve, 60));       // 让这一次写入收尾（章序 + 重拉）
+    mod.WsCatalog.set(mod.WsCatalog.get().filter((c) => c.id !== "ch02"));
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => url.endsWith("/chapters/trash"))).toBe(true), T);
+    await vi.waitFor(() => expect(mod.WsCatalog.get()).toHaveLength(1), T);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    // 再在书尾新建：又是 ch02，这一次后端还没回话，作者就改了名
+    hold = {};
+    expect(mod.WsCatalog.addChapter().id).toBe("ch02");
+    client.apiPatch.mockClear();
+    client.apiPatch.mockResolvedValue({ chapter: {}, changed: true });
+    mod.WsCatalog.set(mod.WsCatalog.get().map((c) => (c.id === "ch02" ? { ...c, title: "改过的名字" } : c)));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(client.apiPatch).not.toHaveBeenCalled();                // 在等新章建好，不先发给旧 id
+    await vi.waitFor(() => expect(typeof hold.release).toBe("function"), T);
+    hold.release();
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
+      "/api/v2/projects/prj-main/catalog/chapters/c-new-2", { title: "改过的名字" },
+    ), T);
+    expect(client.apiPatch.mock.calls.some(([url]) => url.includes("/chapters/c-new-1"))).toBe(false);
+  });
+
+  it("focusScene：当前章还没铺场时从当前章往后找没写完的场（找到书尾再绕回），不落回前面写完的章", async () => {
+    const scene = (slug, id, state) => ({ ...DEFAULT_CHAP.scenes[0], slug, scene_id: id, state });
+    const done = { ...DEFAULT_CHAP, current: false, scenes: [scene("A1", "a1", "done"), scene("A2", "a2", "done")] };
+    const empty = { ...DEFAULT_CHAP, slug: "ch02", chapter_id: "c2", no: "02", current: true, scenes: [] };
+    const open = { ...DEFAULT_CHAP, slug: "ch03", chapter_id: "c3", no: "03", current: false, scenes: [scene("C1", "c1s", "done"), scene("C2", "c2s", "todo")] };
+    const { mod } = await loadCatalog({ catalog: [done, empty, open] });
+    expect(mod.WsCatalog.focusScene().scene.sid).toBe("C2");
+  });
+
+  it("focusScene：当前章在书尾且没铺场时绕回书头找，仍然跳过写完的章", async () => {
+    const scene = (slug, id, state) => ({ ...DEFAULT_CHAP.scenes[0], slug, scene_id: id, state });
+    const first = { ...DEFAULT_CHAP, current: false, scenes: [scene("A1", "a1", "done")] };
+    const second = { ...DEFAULT_CHAP, slug: "ch02", chapter_id: "c2", no: "02", current: false, scenes: [scene("B1", "b1", "done"), scene("B2", "b2", "writing")] };
+    const third = { ...DEFAULT_CHAP, slug: "ch03", chapter_id: "c3", no: "03", current: false, scenes: [scene("C1", "c1s", "done")] };
+    const emptyLast = { ...DEFAULT_CHAP, slug: "ch04", chapter_id: "c4", no: "04", current: true, scenes: [] };
+    const { mod } = await loadCatalog({ catalog: [first, second, third, emptyLast] });
+    expect(mod.WsCatalog.focusScene().scene.sid).toBe("B2");
+  });
+
+  it("focusScene：全书都写完时停在当前章之前最近的那一场上", async () => {
+    const scene = (slug, id) => ({ ...DEFAULT_CHAP.scenes[0], slug, scene_id: id, state: "done" });
+    const first = { ...DEFAULT_CHAP, current: false, scenes: [scene("A1", "a1")] };
+    const second = { ...DEFAULT_CHAP, slug: "ch02", chapter_id: "c2", no: "02", current: false, scenes: [scene("B1", "b1"), scene("B2", "b2")] };
+    const empty = { ...DEFAULT_CHAP, slug: "ch03", chapter_id: "c3", no: "03", current: true, scenes: [] };
+    const { mod } = await loadCatalog({ catalog: [first, second, empty] });
+    expect(mod.WsCatalog.focusScene().scene.sid).toBe("B2");
+  });
+
   it("章节拖拽顺序通过完整真实 ID 集合持久化", async () => {
     const second = {
       ...DEFAULT_CHAP,
@@ -297,6 +450,25 @@ describe("WsTrashStore（回收站乐观恢复 + 失败告警）", () => {
 
     await vi.waitFor(() =>
       expect(client.apiPost).toHaveBeenCalledWith("/api/v2/trash/scene%3As9/restore", {}), T);
+  });
+
+  it("读取状态：拉取失败是 error（不是「空」）；重试成功后是 ready，空列表才是真的空", async () => {
+    const client = await import("./lib/client.js");
+    installApiRouter(client, { trash: [] });
+    const route = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => (
+      url.startsWith("/api/v2/trash") ? Promise.reject(new Error("无法连接后端。")) : route(url)));
+    const mod = await import("./ws-catalog.jsx");
+    await settleActive();
+    await vi.waitFor(() => expect(mod.WsTrashStore.loadState().status).toBe("error"), T);
+    expect(mod.WsTrashStore.loadState().message).toBe("无法连接后端。");
+    expect(mod.WsTrashStore.list()).toEqual([]);
+
+    client.apiGet.mockImplementation(route);
+    const again = mod.WsTrashStore.refresh();
+    expect(mod.WsTrashStore.loadState().status).toBe("loading");
+    await again;
+    expect(mod.WsTrashStore.loadState()).toEqual({ status: "ready", message: "" });
   });
 
   it("restore 失败时告警", async () => {

@@ -1,7 +1,8 @@
 // FE-ALIGN G4 冒烟：写作台内联改写接 passages/patch-candidates。
 // 本环境 LLM 不可用 → 验证「真实端点 + 诚实降级（no-model 引导）」；
 // 离线确定性占位与 accept 闭环由 pytest test_passage_patch_candidate_for_fe_scene_offline 覆盖。
-// 运行：cd frontend && node ../frontend-react/scripts/smoke-g4.mjs [BASE] [API]
+// 改写请求在 ws-writer-requests.js（场景 id 显式传入），失败按 ws-writer-ai.js 的 wrAiError 分流。
+// 运行：cd frontend-react && node scripts/smoke-g4.mjs [BASE] [API]（API 是单独的已 seed 后端，不是开发用的 :8000）
 import path from "node:path";
 import { createRequire } from "node:module";
 
@@ -25,6 +26,7 @@ async function check(label, fn) {
 }
 
 const TITLE = "改写之书-" + Date.now().toString(36);
+let SID = null;
 
 await page.goto(BASE);
 await page.evaluate((apiBase) => {
@@ -48,22 +50,26 @@ await check("① 建书建场", async () => {
     return window.WsCatalog.get()[0].scenes[0].sid;
   }, TITLE);
   if (!sid) throw new Error("no sid");
+  SID = sid;
 });
 
-await check("② wrRewriteMulti 走真实端点 → LLM 不可用按 no-model 降级", async () => {
-  const r = await page.evaluate(async () => {
+await check("② 选区改写走真实端点 → LLM 不可用时引导去系统设置", async () => {
+  const r = await page.evaluate(async (sceneId) => {
+    const { wrRequestRewrite } = await import("/src/ws-writer-requests.js");
+    const { wrAiError } = await import("/src/ws-writer-ai.js");
     try {
-      const { wrRewriteMulti } = await import("/src/ws-writer.jsx");
-      const arr = await wrRewriteMulti("她把证据袋放回原处，转身解释了三句。", "更凝练");
-      return { ok: true, n: arr.length, first: arr[0] };
-    } catch (e) { return { ok: false, code: e.code, detail: e.detail || e.message }; }
-  });
+      const { texts } = await wrRequestRewrite({ sceneId, text: "她把证据袋放回原处，转身解释了三句。", instruction: "更凝练" });
+      return { ok: true, n: texts.length, first: texts[0] };
+    } catch (e) { const info = wrAiError(e); return { ok: false, code: e.code, kind: info.kind, settings: !!info.offersSettings }; }
+  }, SID);
   if (r.ok) {
     // 环境若配好 LLM：必须是真实多版本
     if (!r.n || r.n < 1 || !r.first) throw new Error(`bad variants: ${JSON.stringify(r)}`);
     console.log("   (LLM 可用：返回", r.n, "个版本)");
-  } else if (r.code !== "no-model") {
-    throw new Error(`expected no-model, got: ${JSON.stringify(r).slice(0, 120)}`);
+  } else if (!r.settings) {
+    // 没有可用模型时，这个端点现在回的是兜底的 INTERNAL_ERROR（不可重试）：wrAiError 给 unclear，
+    // 同时给「重试」和「去系统设置」；后端把它翻成带 next_action=configure_* 的业务错误后就是 config。
+    throw new Error(`expected a failure that points to 系统设置, got: ${JSON.stringify(r).slice(0, 120)}`);
   }
 });
 

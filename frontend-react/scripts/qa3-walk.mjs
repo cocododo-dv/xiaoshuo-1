@@ -82,7 +82,7 @@ for (let i = 1; i <= 10; i++) {
   if (await loc.count()) { await loc.click().catch(() => {}); await page.waitForTimeout(250); }
 }
 await shot("03-snow-stepped");
-if (await clickText("整理成章节结构") || await clickText("整理为章节结构")) {
+if (await clickText("整理章节结构")) {
   await page.waitForTimeout(700); await shot("03-snow-materialize-modal"); await escAll();
 }
 

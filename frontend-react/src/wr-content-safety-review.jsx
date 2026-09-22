@@ -1,6 +1,6 @@
 import React from "react";
-import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
+import { WsDialog } from "./ws-dialog.jsx";
 
 const { useEffect, useMemo, useRef, useState } = React;
 
@@ -47,47 +47,20 @@ function contentSafetyReviewFromError(error) {
   };
 }
 
-function focusable(root) {
-  if (!root) return [];
-  return [...root.querySelectorAll('button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')];
-}
+/* 严重度 / 判定方式在服务端是英文枚举；给作者看中文 */
+const SEVERITY_LABEL = { critical: "极高", high: "高", medium: "中", low: "低" };
+const CONFIDENCE_LABEL = { heuristic: "启发式规则", model: "模型判断", llm: "模型判断", rule: "规则" };
 
+/* 内容风险逐项确认。建在共享的 WsDialog 上：焦点陷阱、Esc / 点遮罩等于「返回修改」、
+   关闭后焦点回到打开前的元素、遮罩用 --scrim（夜间是压暗而不是泛白）。
+   正在重新校验时，Esc 与遮罩都不关（onBeforeClose 拦下）。 */
 function ContentSafetyReviewDialog({ review, busy = false, error = "", onCancel, onConfirm }) {
   const [checked, setChecked] = useState(() => new Set());
-  const dialogRef = useRef(null);
   const cancelRef = useRef(null);
-  const previousFocus = useRef(null);
   const busyRef = useRef(busy);
   busyRef.current = busy;
   const findings = (review && review.findings) || [];
   useEffect(() => { setChecked(new Set()); }, [review]);
-
-  useEffect(() => {
-    previousFocus.current = document.activeElement;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const frame = requestAnimationFrame(() => cancelRef.current?.focus());
-    const onKey = (event) => {
-      if (event.key === "Escape" && !busyRef.current) {
-        event.preventDefault();
-        onCancel();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const nodes = focusable(dialogRef.current);
-      if (!nodes.length) return;
-      const first = nodes[0], last = nodes[nodes.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      cancelAnimationFrame(frame);
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", onKey);
-      previousFocus.current?.focus?.();
-    };
-  }, []);
 
   const acceptedCodes = useMemo(
     () => findings.filter(item => checked.has(item.code)).map(item => item.code),
@@ -103,78 +76,73 @@ function ContentSafetyReviewDialog({ review, busy = false, error = "", onCancel,
     });
   };
 
-  const node = (
-    <div className="wr-safety-scrim" onMouseDown={(event) => {
-      if (event.target === event.currentTarget && !busy) onCancel();
-    }}>
-      <section
-        ref={dialogRef}
-        className="wr-safety-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="wr-safety-title"
-        aria-describedby="wr-safety-desc"
-      >
-        <header className="wr-safety-head">
-          <span className="wr-safety-shield" aria-hidden="true"><I.ShieldCheck size={19} /></span>
-          <div>
-            <div className="wr-safety-eyebrow">AUTHOR REVIEW · 内容风险复核</div>
-            <h2 id="wr-safety-title">提升前需要你逐项核对</h2>
-            <p id="wr-safety-desc">这是启发式提醒，不是自动判决。系统不会替你勾选，也不会在未确认时提升正文。</p>
-          </div>
-          <button ref={cancelRef} type="button" className="wr-safety-close" onClick={onCancel} disabled={busy} aria-label="取消内容风险确认"><I.X size={18} /></button>
-        </header>
-
-        <div className="wr-safety-findings" aria-label="需要作者确认的内容风险">
-          {findings.map((finding, index) => (
-            <label className={`wr-safety-finding ${checked.has(finding.code) ? "is-checked" : ""}`} key={finding.code}>
-              <input
-                type="checkbox"
-                checked={checked.has(finding.code)}
-                onChange={() => toggle(finding.code)}
-                disabled={busy}
-                aria-describedby={`wr-safety-finding-${index}`}
-              />
-              <span className="wr-safety-check" aria-hidden="true"><I.Check size={13} /></span>
-              <span className="wr-safety-copy" id={`wr-safety-finding-${index}`}>
-                <span className="wr-safety-finding-top"><strong>需人工复核</strong><code>{finding.code}</code></span>
-                <span className="wr-safety-message">{finding.message}</span>
-                {finding.evidenceTerms.length > 0 && (
-                  <span className="wr-safety-evidence"><b>命中词</b>{finding.evidenceTerms.map(term => <em key={term}>{term}</em>)}</span>
-                )}
-                <small>严重度 {finding.severity} · 置信方式 {finding.confidence}</small>
-              </span>
-            </label>
-          ))}
+  return (
+    <WsDialog
+      onClose={() => onCancel()}
+      onBeforeClose={() => !busyRef.current}
+      labelledBy="wr-safety-title"
+      describedBy="wr-safety-desc"
+      size="lg"
+      className="wr-safety-dialog"
+      scrimClassName="wr-safety-scrim"
+      initialFocus={cancelRef}
+    >
+      <header className="wr-safety-head">
+        <span className="wr-safety-shield" aria-hidden="true"><I.ShieldCheck size={19} /></span>
+        <div className="wr-safety-heading">
+          <h2 id="wr-safety-title">提升前请逐项核对内容风险</h2>
+          <p id="wr-safety-desc">这是启发式规则的提醒，不是判决。系统不会替你勾选；每一项都确认过，才会重新校验并提升正文。</p>
         </div>
+        <button ref={cancelRef} type="button" className="wr-safety-close" onClick={onCancel} disabled={busy} aria-label="返回修改，不提升"><I.X size={18} /></button>
+      </header>
 
-        {(review.limitations || []).length > 0 && (
-          <details className="wr-safety-limits">
-            <summary>这类启发式有哪些盲区</summary>
-            <ul>{review.limitations.map(item => <li key={item}>{item}</li>)}</ul>
-          </details>
-        )}
+      <div className="wr-safety-findings" role="group" aria-label="需要作者确认的内容风险">
+        {findings.map((finding, index) => (
+          <label className={`wr-safety-finding ${checked.has(finding.code) ? "is-checked" : ""}`} key={finding.code} data-code={finding.code}>
+            <input
+              type="checkbox"
+              checked={checked.has(finding.code)}
+              onChange={() => toggle(finding.code)}
+              disabled={busy}
+              aria-describedby={`wr-safety-finding-${index}`}
+            />
+            <span className="wr-safety-check" aria-hidden="true"><I.Check size={13} /></span>
+            <span className="wr-safety-copy" id={`wr-safety-finding-${index}`}>
+              <span className="wr-safety-message">{finding.message}</span>
+              {finding.evidenceTerms.length > 0 && (
+                <span className="wr-safety-evidence"><b>命中的词</b>{finding.evidenceTerms.map(term => <em key={term}>{term}</em>)}</span>
+              )}
+              <small>严重程度：{SEVERITY_LABEL[finding.severity] || "未标注"}　判定方式：{CONFIDENCE_LABEL[finding.confidence] || "未标注"}</small>
+            </span>
+          </label>
+        ))}
+      </div>
 
-        <footer className="wr-safety-foot">
-          <div className="wr-safety-progress" role="status" aria-live="polite">
-            已核对 {acceptedCodes.length} / {findings.length} 项
-            {error && <span role="alert">{error}</span>}
-          </div>
-          <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>返回修改</button>
-          <button
-            type="button"
-            className="btn btn-accent"
-            disabled={!allConfirmed || busy}
-            onClick={() => onConfirm(findings.map(item => item.code))}
-            data-testid="content-safety-confirm"
-          >
-            <I.CheckCircle size={14} /> {busy ? "正在重新校验…" : "逐项确认并重试提升"}
-          </button>
-        </footer>
-      </section>
-    </div>
+      {(review.limitations || []).length > 0 && (
+        <details className="wr-safety-limits">
+          <summary>这类规则有哪些盲区</summary>
+          <ul>{review.limitations.map(item => <li key={item}>{item}</li>)}</ul>
+        </details>
+      )}
+
+      <footer className="wr-safety-foot">
+        <div className="wr-safety-progress" role="status" aria-live="polite">
+          已核对 {acceptedCodes.length} / {findings.length} 项
+          {error && <span role="alert">{error}</span>}
+        </div>
+        <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={busy}>返回修改</button>
+        <button
+          type="button"
+          className="btn btn-accent"
+          disabled={!allConfirmed || busy}
+          onClick={() => onConfirm(findings.map(item => item.code))}
+          data-testid="content-safety-confirm"
+        >
+          <I.CheckCircle size={14} /> {busy ? "正在重新校验…" : "都已核对，重新校验并提升"}
+        </button>
+      </footer>
+    </WsDialog>
   );
-  return ReactDOM.createPortal(node, document.body);
 }
 
 export { ContentSafetyReviewDialog, contentSafetyReviewFromError };

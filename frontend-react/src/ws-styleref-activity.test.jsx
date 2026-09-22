@@ -91,8 +91,8 @@ describe("srActivityView", () => {
     expect(queued.detail).toBe("启动中 · 已用 0:00");
     const done = mod.srActivityView({ kind: "extract", status: "succeeded", startedAt: now - 556_000, server: serverItem({ status: "succeeded", percent: 100, llm_calls: 17 }) }, now);
     expect(done).toEqual({ percent: 100, percentText: "100%", detail: "抽取完成 · 模型调用 17 次 · 用时 9:16" });
-    expect(mod.srActivityView({ kind: "extract", status: "failed", startedAt: now, server: serverItem({ status: "failed" }), error: "心跳超时［STYLE_REFERENCE_RUN_INTERRUPTED］" }, now).detail)
-      .toBe("抽取失败：心跳超时［STYLE_REFERENCE_RUN_INTERRUPTED］");
+    expect(mod.srActivityView({ kind: "extract", status: "failed", startedAt: now, server: serverItem({ status: "failed" }), error: "心跳超时", errorCode: "STYLE_REFERENCE_RUN_INTERRUPTED" }, now).detail)
+      .toBe("抽取失败：心跳超时");
     expect(mod.srActivityView({ kind: "extract", status: "cancelled", startedAt: now - 30_000, server: serverItem({ status: "cancelled", percent: 12 }) }, now))
       .toEqual({ percent: 12, percentText: "12%", detail: "已取消 · 用时 0:30" });
   });
@@ -110,11 +110,11 @@ describe("srActivityView", () => {
     expect(mod.srActivityView({ kind: "rag_index", status: "running", startedAt: now, server: { phase: "signatures", phase_label: "计算段落签名", percent: 40, steps: { done: 12000, total: 27000, label: "段" }, eta_seconds: 18 } }, now).detail)
       .toBe("计算段落签名 12000/27000 段 · 已用 0:00 · 预计还需 0:18");
     expect(mod.srActivityView({ kind: "validate", status: "succeeded", startedAt: now - 90_000, server: { status: "succeeded", result: { verdict: "partial" } } }, now).detail)
-      .toBe("回测完成 · 结论 partial · 用时 1:30");
+      .toBe("回测完成 · 结论 部分通过 · 用时 1:30");
     expect(mod.srActivityView({ kind: "preview", status: "running", startedAt: now, server: { phase_label: "生成 环境", steps: { done: 1, total: 3, label: "段" }, percent: 33 } }, now))
       .toEqual({ percent: 33, percentText: "33%", detail: "生成 环境 1/3 段 · 已用 0:00" });
-    expect(mod.srActivityView({ kind: "synthesize", status: "failed", startedAt: now, error: "模型调用失败［STYLE_REFERENCE_SYNTHESIZE_FAILED］" }, now).detail)
-      .toBe("合成画像失败：模型调用失败［STYLE_REFERENCE_SYNTHESIZE_FAILED］");
+    expect(mod.srActivityView({ kind: "synthesize", status: "failed", startedAt: now, error: "模型调用失败", errorCode: "STYLE_REFERENCE_SYNTHESIZE_FAILED" }, now).detail)
+      .toBe("合成画像失败：模型调用失败");
   });
 });
 
@@ -256,7 +256,7 @@ describe("分类任务的面板控制（严格 LLM 的后台分类）", () => {
     expect(mod.srRunLabel("ingesting")).toBe("段落分类中");
     expect(mod.srRunLabel("failed")).toBe("分类未完成");
     const book = { id: "bk1", real: true, rawStatus: "ready" };
-    expect(mod.srMatrixEmptyHint(book)).toContain("重跑抽取");
+    expect(mod.srMatrixEmptyHint(book)).toContain("开始抽取");
     expect(mod.srMatrixEmptyHint({ ...book, rawStatus: "failed" })).toContain("继续分类");
     expect(mod.srMatrixEmptyHint({ ...book, rawStatus: "ingesting" })).toContain("段落分类还在进行");
     mod.srActivityApply([serverItem()]);
@@ -290,7 +290,9 @@ describe("srSynthesize 与 srPreviewSamples", () => {
     await expect(mod.srSynthesize("run1", "bk1")).rejects.toBe(err);
     let entry = mod.srActivityEntries().find((e) => e.kind === "synthesize");
     expect(entry.status).toBe("failed");
-    expect(entry.error).toBe("模型调用失败［STYLE_REFERENCE_SYNTHESIZE_FAILED］");
+    // 作者读到的是那句话；错误代码另存（界面只放进悬停提示）
+    expect(entry.error).toBe("模型调用失败");
+    expect(entry.errorCode).toBe("STYLE_REFERENCE_SYNTHESIZE_FAILED");
     const timeout = Object.assign(new Error("请求超时，请稍后重试。"), { code: "REQUEST_TIMEOUT" });
     client.apiPost.mockRejectedValueOnce(timeout);
     await expect(mod.srSynthesize("run1", "bk1")).rejects.toBe(timeout);

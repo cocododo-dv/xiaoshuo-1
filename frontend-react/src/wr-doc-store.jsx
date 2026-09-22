@@ -1,8 +1,8 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
 import { manuscriptToDocHTML, sanitizeManuscriptHTML } from "./manuscript-html.js";
+import { wsToast } from "./ws-notify.jsx";
 
-/* global window */
 /* ==========================================================
    WrDocs — 写作器正文文档 store（FE-ALIGN Phase 3）
    ----------------------------------------------------------
@@ -259,6 +259,21 @@ function cacheWrite(sid, html) {
   }
 }
 
+/* 本地稿被放进「同步与恢复」时告诉作者一声，并给一个直接打开它的按钮（入口在左侧导航栏底部）。
+   外壳的提示层没挂上时（单测里单独加载 store）退回浏览器提示框。 */
+function recoveryNotice(sid, message) {
+  const shown = wsToast({
+    message,
+    tone: "warn",
+    timeout: 12000,
+    action: {
+      label: "打开同步与恢复",
+      onClick: () => { try { window.dispatchEvent(new CustomEvent("ws:recovery-open", { detail: { sid } })); } catch (e) {} },
+    },
+  });
+  if (!shown) { try { window.alert(message); } catch (e) {} }
+}
+
 function notifyLoaded(sid) {
   try { window.dispatchEvent(new CustomEvent("ws:wr-doc-loaded", { detail: sid })); } catch (e) {}
 }
@@ -276,15 +291,31 @@ function toDocHTML(content) {
 
 /* HTML → 存库内容：原样存 HTML（count_words 服务端会剥标签） */
 
+// 作品id::sid → 正在进行的 ensure。同一场同一时刻只发一次 POST ensure：版本列表、
+// 某一版正文、draftId 常被同时调用（开发模式下 React 还会把挂载 effect 连跑两遍），
+// 两个 ensure 带着同一个幂等键撞在一起，后一个会拿到 409 IDEMPOTENCY_REQUEST_IN_PROGRESS。
+// 请求结束（成功或失败）即移除，之后的调用重新请求。
+const ensureInflight = new Map();
+
 async function ensureDraft(sid) {
   const m = meta(sid);
   if (m.draftId) return m;
-  const sceneId = await backendSceneId(sid);
-  if (!sceneId) return m;
-  const data = await apiPost(`/api/v1/author-drafts/scene/${sceneId}/ensure`, {});
-  absorbServerState(m, data);
-  notifyState(sid);
-  return m;
+  const key = metaKeyOf(sid);
+  const pending = ensureInflight.get(key);
+  if (pending) return pending;
+  const request = (async () => {
+    const sceneId = await backendSceneId(sid);
+    if (!sceneId) return m;
+    const data = await apiPost(`/api/v1/author-drafts/scene/${sceneId}/ensure`, {});
+    absorbServerState(m, data);
+    notifyState(sid);
+    return m;
+  })();
+  const shared = request.finally(() => {
+    if (ensureInflight.get(key) === shared) ensureInflight.delete(key);
+  });
+  ensureInflight.set(key, shared);
+  return shared;
 }
 
 async function hydrate(sid) {
@@ -314,17 +345,12 @@ async function hydrate(sid) {
             m.localDurable = false;
             m.cacheError = Object.assign(new Error("本地恢复空间不足，未覆盖你的本地稿"), { code: backup.storageError || "LOCAL_STORAGE_QUOTA" });
             m.lastSaveError = m.cacheError;
-            storeAlert(null, "发现未同步的本地正文，但浏览器存储空间不足。系统没有覆盖本地稿；请打开“同步与恢复”导出内容或清理旧记录后重试。");
+            storeAlert(null, "发现未同步的本地正文，但浏览器存储空间不足。系统没有覆盖本地稿；请从左侧导航栏底部打开「同步与恢复」，导出内容或清理旧记录后重试。");
             notifyState(sid);
             return;
           }
           pendingClear(sid);
-          try {
-            window.alert(
-              "上次会话有未保存到服务端的本地正文，已加载服务端版本。" +
-              "\n你的本地稿已进入“同步与恢复”，可查看差异、恢复或导出。"
-            );
-          } catch (e2) {}
+          recoveryNotice(sid, "上次会话有没保存到服务端的本地正文，已加载服务端版本。你的本地稿放进了「同步与恢复」，可以比较差异、恢复或导出。");
         } else {
           pendingClear(sid); // 内容一致（上次实际保上了）：静默消费标记
         }
@@ -403,7 +429,7 @@ async function pushSave(sid, html, saveVersion) {
         m.localDurable = false;
         m.cacheError = Object.assign(new Error("冲突稿无法持久备份，已停止覆盖"), { code: backup.storageError || "LOCAL_STORAGE_QUOTA" });
         pendingWrite(sid);
-        storeAlert(null, "正文发生版本冲突，同时浏览器存储空间不足。系统已停止覆盖，本地稿仍在当前编辑器；请先导出或清理恢复记录。");
+        storeAlert(null, "正文发生版本冲突，同时浏览器存储空间不足。系统已停止覆盖，本地稿仍在当前编辑器；请先从左侧导航栏底部的「同步与恢复」导出或清理恢复记录。");
         notifyState(sid);
         throw e;
       }
@@ -412,12 +438,7 @@ async function pushSave(sid, html, saveVersion) {
       m.dirty = false;
       pendingClear(sid); // 409 路径已自带冲突副本，勿让水合再重复备份
       await hydrate(sid);
-      try {
-        window.alert(
-          "这份正文在别处被修改过，已加载服务端最新版本。" +
-          "\n你本地未保存的内容已进入“同步与恢复”，可查看差异、恢复或导出。"
-        );
-      } catch (e2) {}
+      recoveryNotice(sid, "这份正文在别处被修改过，已加载服务端的最新版本。你本地没保存上的内容放进了「同步与恢复」，可以比较差异、恢复或导出。");
     } else {
       // Wave 1：非 409 失败留持久化标记——重启后水合据此走冲突副本而非静默覆盖
       pendingWrite(sid);

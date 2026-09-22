@@ -7,7 +7,7 @@ export function domainChunk(moduleId) {
   if (!source) return undefined;
   if (/^(ws-snow|ws-chapter-plan)/.test(source)) return "domain-snowflake";
   if (/^ws-styleref/.test(source)) return "domain-style-reference";
-  if (/^(ws-writer|ws-deep|ws-signals|wr-canonical-control|wr-content-safety-review)/.test(source)) return "domain-writer";
+  if (/^(ws-writer|ws-deep|wr-canonical-control|wr-content-safety-review)/.test(source)) return "domain-writer";
   if (/^ws-scene/.test(source)) return "domain-scene";
   if (/^(ws-author|ws-chapter-run)/.test(source)) return "domain-author";
   if (/^ws-library/.test(source)) return "domain-library";

@@ -80,9 +80,9 @@ for (const work of ["work-a"]) {
     if (findings.length > before) console.log(`[${ctx}] step ${num} (+${findings.length - before})`);
   }
   await shot(`snow-${work}-stepped`);
-  // “整理为章节结构”使用原生确认框；预先挂一次性 dismiss，确保探针绝不物化。
+  // “整理章节结构”使用原生确认框；预先挂一次性 dismiss，确保探针绝不物化。
   page.once("dialog", (dialog) => dialog.dismiss().catch(() => {}));
-  if (await clickText("整理为章节结构")) {
+  if (await clickText("整理章节结构")) {
     await page.waitForTimeout(500);
     await shot(`snow-${work}-materialize-cancelled`);
   }

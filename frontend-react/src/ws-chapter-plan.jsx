@@ -16,6 +16,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
    状态按「后端 chapter_id」分桶；所有键都是后端 id（视图层负责
    backendId 换算）。写失败不做本地猜测：错误原样挂进桶，目录以
    服务端为准（apply 失败不动 WsCatalog 缓存）。
+   界面在 ws-author-ai.jsx（「AI 编排」卡与 AI 体检）；补丁摊行 / 收回的纯函数在本文件末尾。
    ========================================================== */
 
 const cpState = {};          // backendChapterId → bucket
@@ -247,5 +248,69 @@ export const WsChapterPlan = {
     });
   },
 };
+
+/* ==========================================================
+   补丁 ↔ 可勾选行（纯函数，章节编排的 AI 编排卡用）
+   plan/fill 给的是一整份补丁；作者要逐条勾选，所以先摊成行（每行 = 一处填空或一张追加卡），
+   写入前再按勾选收回补丁形状交给 applyPatch。
+   ========================================================== */
+
+/* 字段中文名：界面上不出现英文字段键 */
+const CP_FIELD_LABELS = {
+  goal: "目标", conflict: "冲突", setback: "挫败",
+  reaction: "反应", dilemma: "两难", decision: "决定",
+  pov_character_name: "视角", exit_change: "离场变化", hook: "钩子", title: "标题",
+  "drama.promise": "核心承诺", "drama.spine": "主线推进",
+  "drama.arc": "人物变化", "drama.problem": "章节问题",
+  "drama.aftertaste": "结尾余味", "drama.ending": "结尾效果",
+};
+export const cpFieldLabel = (key) => CP_FIELD_LABELS[key] || CP_FIELD_LABELS[`drama.${key}`] || "其他字段";
+
+export function cpPatchRows(patch, sceneNameOf) {
+  const rows = [];
+  Object.entries(patch.drama || {}).forEach(([field, value]) => {
+    rows.push({
+      key: `drama:${field}`,
+      kind: "drama", field, value,
+      label: `章节戏剧卡 · ${cpFieldLabel(`drama.${field}`)}`,
+    });
+  });
+  (patch.scenes || []).forEach((item) => {
+    Object.entries(item.set || {}).forEach(([field, value]) => {
+      rows.push({
+        key: `set:${item.scene_id}:${field}`,
+        kind: "set", sceneId: item.scene_id, field, value,
+        label: `${sceneNameOf(item.scene_id)} · ${cpFieldLabel(field)}`,
+      });
+    });
+  });
+  (patch.append_scenes || []).forEach((item, i) => {
+    rows.push({
+      key: `append:${i}`,
+      kind: "append", append: item,
+      label: `新场景 · ${item.title}（${item.kind === "reactive" ? "反应" : "主动"}）`,
+      value: Object.entries(item.brief || {}).map(([k, v]) => `${cpFieldLabel(k)}：${v}`).join(" / ") || "（三拍待写）",
+    });
+  });
+  return rows;
+}
+
+export function cpRowsToPatch(rows, checked) {
+  const drama = {};
+  const sceneMap = {};
+  const appends = [];
+  rows.forEach((row) => {
+    if (!checked[row.key]) return;
+    if (row.kind === "drama") {
+      drama[row.field] = row.value;
+    } else if (row.kind === "set") {
+      sceneMap[row.sceneId] = sceneMap[row.sceneId] || { scene_id: row.sceneId, set: {} };
+      sceneMap[row.sceneId].set[row.field] = row.value;
+    } else {
+      appends.push(row.append);
+    }
+  });
+  return { drama, scenes: Object.values(sceneMap), append_scenes: appends };
+}
 
 export default WsChapterPlan;

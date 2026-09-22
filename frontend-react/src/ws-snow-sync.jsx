@@ -1,7 +1,7 @@
 import { apiGet, apiPatch, apiPost, apiPut } from "./lib/client.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow.jsx";
+import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow-model.js";
 
 /* global window */
 /* ==========================================================
@@ -24,7 +24,7 @@ import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow.jsx";
      步是原位改写，未确认的草稿没有历史可回。
    ========================================================== */
 
-// G5：FE→BE 步骤键映射统一以 ws-snow 的 S2_BE_STEPS 为正源（避免双份漂移）
+// G5：FE→BE 步骤键映射统一以 ws-snow-model 的 S2_BE_STEPS 为正源（避免双份漂移；那是一个不 import 任何东西的叶子模块，视图因此能直接 import 本模块）
 const SNOW_STEPS = S2_BE_STEPS;
 const FE_BY_BE = Object.fromEntries(SNOW_STEPS.map(([fe, be]) => [be, fe]));
 const BE_BY_FE = Object.fromEntries(SNOW_STEPS);
@@ -1424,6 +1424,10 @@ const SnowSync = {
     const approved = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/outline/approve`, {});
     try { if (WsCatalog && WsCatalog.reset) WsCatalog.reset(); } catch (e) {}
     const createdChapters = (approved && approved.created_chapter_count) || 0;
+    // 服务端这一步可能自动把空章 / 占位章移入回收站、或把场景卡取回：让开着的回收站也跟上
+    const trashMoved = ["trashed_empty_chapters", "trashed_placeholder_chapters", "restored_chapter_ids", "restored_scene_ids"]
+      .some((key) => Array.isArray(approved && approved[key]) && approved[key].length > 0);
+    if (trashMoved) { try { window.dispatchEvent(new CustomEvent("ws:trash-changed")); } catch (e) {} }
     return {
       ...(data || {}),
       created_chapter_count: createdChapters,

@@ -78,12 +78,44 @@ Architecture rules:
   writer-side `WrDocs` / `WrDocVersions` / `WrRecovery` (`wr-doc-store.jsx`) — grep `window.WsWorks`,
   not an ES import. The newer stores are plain ES exports: `WsManuStore` (成稿中心,
   `ws-manuscripts-store.jsx`), `WsCost` (`ws-cost.jsx`), `WsAiProviders` (`ws-ai-providers.jsx`),
-  `WsLibrary` / `WsTrash` (`ws-library.jsx`). The window seam is legacy to be *consumed*, not extended:
+  `WsLibrary` (`ws-library.jsx`), `WsTrash` (`ws-trash.jsx`). The window seam is legacy to be *consumed*, not extended:
   `tooling-independence.test.js` fails when a new ESM-only module writes to `window` (see the guard
   tests below). Stores are API-backed with sync in-memory caches (optimistic write + rollback /
-  refetch-on-failure). Writer/advanced mode gating lives in `ws-app.jsx` `WS_NAV_GROUPS`; view aliases
-  (`WS_VIEW_ALIAS`: `deepdesk → writer`, `flowmap → home`) redirect there.
-- **Store unit tests** (vitest + jsdom, `src/**/*.test.{js,jsx}`, 48 files incl. `src/lib/client.test.js`;
+  refetch-on-failure). The navigation model — writer/advanced mode gating `WS_NAV_GROUPS`, view labels,
+  project-scoped views and the aliases (`WS_VIEW_ALIAS`: `deepdesk → writer`, `flowmap → home`) — is the
+  pure data module `ws-nav.js`, shared by the rail (`ws-rail.jsx`) and the ⌘K palette; `ws-app.jsx`
+  keeps only routing, the lazy `import("./ws-*.jsx")` literals and `<ViewReady>`.
+- **Shared UI layer (2026-09-21 whole-frontend refactor, identity kept: ivory paper / ink / crimson /
+  serif headings)**. Use these instead of per-view look-alikes:
+  tokens in `styles.css` (semantic `--accent/--ok/--warn/--danger/--info` each with `-wash` and `-ink` —
+  `-ink` is the only text colour allowed on a `-wash`; `--on-accent`, `--scrim`, `--z-*` stacking scale,
+  `--fs-*` type scale, `color-scheme` per theme, Windows-safe font stacks; the sepia theme lives here too);
+  `ws-ui.jsx` + `ws-ui.css` (imported right after `styles.css`): `PageHeader`, `Segmented` (radiogroup,
+  `.seg/.seg-btn`, per-option `data-value`), `Tabs`, `Tag`, `Notice`, `EmptyState`, `StatTile`,
+  `SectionLabel`, `Spinner`, `IconButton`, `CloseButton`, the `data-tone` resolver (defaults via
+  zero-specificity `:where()`), `button{color:inherit}` and the global `.btn:disabled`;
+  `ws-dialog.jsx` (`WsDialog` — focus trap / Esc stack / backdrop veto / `portal={false}`, StrictMode-safe
+  `useFocusTrap`, `isImeComposing`); `ws-notify.jsx` (`WsToastHost` mounted once in App, `wsToast`,
+  `wsConfirm` → `Promise<boolean>`; `storeAlert` routes there and falls back to native `alert`/`confirm`
+  when no host is mounted, which is what unit tests see); `ws-prefs.js` (one schema for every
+  `ws_tweaks_v1` key, used by the 「排版与舒适度」 panel and 设置·外观); `ws-labels.js` (chapter / scene
+  labels and the one chapter-state vocabulary shared by 主页 and 成稿中心, human labels for review sources,
+  accounting statuses and LLM nodes); `lib/platform.js` (⌘ vs Ctrl). The megafiles are split behind
+  their old entry modules, which keep re-exporting every name tests import: `ws-snow-*` (model / hooks /
+  scaffolds / scenes / coach / rail / chrome …), `ws-writer-*`, `ws-scene-*`, `ws-author-*`,
+  `ws-manuscripts-*`, `ws-styleref-*` (store module `ws-styleref-store.js`), `ws-library-*`,
+  `ws-settings-ai-*`. `screens.css` is retired: its live rules moved into per-view files imported at its
+  old cascade position (`ws-scene.css`, `ws-manuscripts.css`, `ws-settings.css`, …). Event semantics that
+  changed: `ws:work-changed` fires only when the active work switches or the list membership changes
+  (derived word / stat updates fire `ws:work-stats-changed`); `ws:recovery-open` opens the 同步与恢复
+  center, which lives in the rail footer (there is no floating button any more); `ws:settings-tab`
+  (view intent, detail `"ai"` …) opens a 设置 tab; `ws:snow-chapter-plan` is only SnowSync's status
+  broadcast — opening the 整理为章节结构 panel is a callback, never that event. Component and file names
+  in the dated 阶段 T–Z bullets below predate this split (e.g. `S2AiBar` / `S2Coach` now live in
+  `ws-snow-coach.jsx`, the 章节编排 rows in `ws-author-detail.jsx`): grep the name. The UI that read
+  the chapter-level tension / threads fields (`ArrTensionCurve`, `ws-author-loom.jsx`, the 故事弧线 /
+  线索织布机 lenses) is deleted; only the store / API fields remain as a subtraction candidate.
+- **Store unit tests** (vitest + jsdom, `src/**/*.test.{js,jsx}`, 71 files / ~950 tests, ≈3.5 min on the 2-CPU Linux host;
   `vitest.config.js` sets `globals: true`, `restoreMocks` / `clearMocks`): cover the optimistic-write +
   rollback/refetch contract per store — `ws-works`, `ws-catalog` (incl. `WsTrashStore`),
   `ws-review`, `ws-snow-sync`, and the newer `ws-ai-providers` / `ws-chapter-run` / `ws-cost` /
@@ -100,8 +132,17 @@ Architecture rules:
   backend through it); views branch on `ApiRequestError.code` / `details`, never on message text.
 - **Frontend guard tests** (they fail `npm test`, not just lint): `tooling-independence.test.js` —
   Playwright is pinned to an exact version in `frontend-react/package.json`, the static ESM graph has
-  no cycles, and **new ESM-only modules must not write to `window`**; `build-chunking.test.js` — views
-  are `React.lazy` routes (`lazyNamed` in `ws-app.jsx`) with a mount handshake for cross-view intents
+  no cycles, **new ESM-only modules must not write to `window`** (a regex guard — even `window.x ===`
+  reads as a write), and every module that uses the icon object `I` imports it from `icons.jsx`
+  (文学质量 / 成本看板 once crashed on open because a test injected `globalThis.I`);
+  `design-guard.test.js` — fails on `var(--x)` with no definition, animation names with no (or a
+  duplicated) `@keyframes`, a stylesheet not imported exactly once by `main.jsx`, CSS rules whose classes
+  no source / test / smoke references, raw colours in CSS or JSX outside the token file, `--tone` set by
+  anything but `[data-tone]` or `:where()`, a pigment used as text on its own `-wash`, informative text on
+  `--ink-4`, `font-size` below 11px or off the `--fs-*` scale, and ratchets JSX `<style>` injections,
+  `z-index` literals above 40 and off-scale breakpoints (its `KNOWN_*` / `MAX_*` lists only shrink); `build-chunking.test.js` — views
+  are `React.lazy` routes (retryable `lazyNamed` from `ws-lazy.jsx`, the `import("./ws-*.jsx")` literals
+  stay in `ws-app.jsx`) with a mount handshake for cross-view intents
   (`ws-view-intents.js`), `main.jsx` must not preload business modules through side-effect imports,
   the snowflake and author routes must both assemble `SnowSync`, and the production build only splits
   `vendor` (`build-chunks.js`; domain chunks are decided by the lazy routes, not by manual chunking);
@@ -109,8 +150,8 @@ Architecture rules:
   history, fonts are served from the app itself and `index.html` carries the baseline
   `Content-Security-Policy` meta (add no external hosts); `runtime-truth-contract.test.js` — no copy
   or fallback that points at the retired demo seed, and 设置 must not describe a cache clear as a
-  server-side reset. `main.jsx`'s CSS import order carries cascade semantics — reorder only with a
-  visual regression.
+  server-side reset. `main.jsx`'s CSS import order carries cascade semantics — `styles.css` then
+  `ws-ui.css` first (design-guard pins that), view files after; reorder only with a visual regression.
 - localStorage holds only UI preferences and read caches of backend truth
   (`wr-doc:*` is a write-through cache of author-drafts); business writes all go
   through `/api/v1` + `/api/v2` endpoints.
@@ -132,7 +173,13 @@ Architecture rules:
   legacy-backup guard unless `backups/style_reference_legacy_*.json` exists; the committed
   `backups/style_reference_legacy_placeholder.json` satisfies it for every checkout, and the ps1 lane
   additionally points that migration's `STYLE_REFERENCE_REPO_ROOT` test override at a shim so the
-  throwaway e2e DB never touches the real `backups/`.
+  throwaway e2e DB never touches the real `backups/`. **Gotcha for any ad-hoc browser probe**:
+  never point it at `:5174` while the author's live stack may run — `start-all-linux.sh` kills whatever
+  holds 5174, and the live frontend's default API base is the real `:8000` backend. A localStorage
+  `novel-system-api-base` override alone does not help: `client.js` ignores a loopback override unless
+  `novel-system-api-base-default` is also set. Run probes on their own port (e.g. 5175 with
+  `VITE_NOVEL_SYSTEM_API_BASE` pointing at a DB copy), set both keys, and abort `:8000` in the browser
+  context (`context.route(/127\.0\.0\.1:8000/, r => r.abort())`).
 - Current user and engineering documentation is indexed in `docs/README.md`; dated plans and
   evidence describe their original run and are not the current runtime contract.
 

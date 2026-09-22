@@ -158,6 +158,33 @@ describe("WsWorks 远端状态（内联失败与重试契约）", () => {
     expect(WsWorks.active().wordsTotal).toBe(99);
   });
 
+  it("同一部作品的 dashboard 在途时，再来的装载并进这一次（启动时列表装载 + 主页挂载不再各打一个 GET）", async () => {
+    const client = await import("./lib/client.js");
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [{ project_id: "p1", title: "书", stats: {} }] });
+      if (url === "/api/v2/projects/p1/dashboard") return gate.then(() => ({ stats: { words_total: 7 }, chapters_recent: [] }));
+      return Promise.resolve({});
+    });
+    const { WsWorks } = await import("./ws-works.jsx");
+    await vi.waitFor(() => expect(WsWorks.status("p1").dashboard.phase).toBe("loading"));
+    const dashboardGets = () => client.apiGet.mock.calls.filter(([url]) => url === "/api/v2/projects/p1/dashboard").length;
+    expect(dashboardGets()).toBe(1);
+
+    const again = WsWorks.retry("dashboard", "p1");
+    const third = WsWorks.retry("dashboard", "p1");
+    expect(dashboardGets()).toBe(1);
+    release();
+    await Promise.all([again, third]);
+    expect(WsWorks.status("p1").dashboard.phase).toBe("ready");
+    expect(WsWorks.active().wordsTotal).toBe(7);
+
+    // 落定之后再要就是新的一次
+    await WsWorks.retry("dashboard", "p1");
+    expect(dashboardGets()).toBe(2);
+  });
+
   it("离线缓存不会复活已退役的演示作品", async () => {
     window.localStorage.setItem("ws_active_work_v1", "tide");
     window.localStorage.setItem("ws_works_cache_v1", JSON.stringify([
@@ -173,5 +200,92 @@ describe("WsWorks 远端状态（内联失败与重试契约）", () => {
     await vi.waitFor(() => expect(WsWorks.status().projects.phase).toBe("error"));
     expect(WsWorks.list().map((work) => work.id)).toEqual(["project-real"]);
     expect(WsWorks.activeId()).toBe("project-real");
+  });
+});
+
+describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统计回写不再广播它）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function recordEvents() {
+    const seen = [];
+    const onChanged = (event) => seen.push(["ws:work-changed", event.detail]);
+    const onStats = (event) => seen.push(["ws:work-stats-changed", event.detail]);
+    window.addEventListener("ws:work-changed", onChanged);
+    window.addEventListener("ws:work-stats-changed", onStats);
+    return { seen, stop: () => { window.removeEventListener("ws:work-changed", onChanged); window.removeEventListener("ws:work-stats-changed", onStats); } };
+  }
+
+  it("作品 id 第一次从加载占位落定时照旧广播 ws:work-changed", async () => {
+    const rec = recordEvents();
+    try {
+      await loadStore();
+      expect(rec.seen).toContainEqual(["ws:work-changed", "p1"]);
+    } finally { rec.stop(); }
+  });
+
+  it("字数统计回写与档案修改只发 ws:work-stats-changed；切换作品才发 ws:work-changed", async () => {
+    const { mod } = await loadStore([
+      { project_id: "p1", title: "First", stats: {} },
+      { project_id: "p2", title: "Second", stats: {} },
+    ]);
+    const { WsWorks } = mod;
+    // 等启动时的 dashboard 装载也落定，再开始记
+    await vi.waitFor(() => expect(WsWorks.status("p1").dashboard.phase).toBe("ready"));
+    const rec = recordEvents();
+    try {
+      WsWorks.__applyDerived("p1", { wordsToday: 4321 });
+      WsWorks.update("p1", { title: "改过的书名" });
+      expect(rec.seen.map(([type]) => type)).toEqual(["ws:work-stats-changed", "ws:work-stats-changed"]);
+      expect(WsWorks.active().wordsToday).toBe(4321);
+
+      WsWorks.setActive("p2");
+      expect(rec.seen).toContainEqual(["ws:work-changed", "p2"]);
+    } finally { rec.stop(); }
+  });
+
+  it("删掉另一部作品（书架成员变化）也广播 ws:work-changed", async () => {
+    const { mod } = await loadStore([
+      { project_id: "p1", title: "First", stats: {} },
+      { project_id: "p2", title: "Second", stats: {} },
+    ]);
+    await vi.waitFor(() => expect(mod.WsWorks.status("p1").dashboard.phase).toBe("ready"));
+    const rec = recordEvents();
+    try {
+      mod.WsWorks.remove("p2");
+      expect(rec.seen).toEqual([["ws:work-changed", "p1"]]);
+    } finally { rec.stop(); }
+  });
+
+  it("useActiveWorkIdentity 的快照只在身份字段变化时换引用", async () => {
+    const { mod } = await loadStore();
+    const React = (await import("react")).default;
+    const { act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    const renders = [];
+    function Probe() {
+      const identity = mod.useActiveWorkIdentity();
+      renders.push(identity);
+      return <span>{identity.title}</span>;
+    }
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<Probe />));
+      const before = renders.length;
+      await act(async () => { mod.WsWorks.__applyDerived("p1", { wordsTotal: 999, wordsToday: 12 }); });
+      expect(renders.length).toBe(before);
+      await act(async () => { mod.WsWorks.update("p1", { title: "新名字" }); });
+      expect(renders.length).toBe(before + 1);
+      expect(host.textContent).toBe("新名字");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
   });
 });

@@ -40,6 +40,8 @@ await check("删整部书（样例短卷）→ 切换器消失", async () => {
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
   await page.click('.ws-wsw-item:has-text("样例短卷") .ws-wsw-del');
+  // 删除作品的确认是应用内确认框（ws-notify.jsx），不是浏览器 confirm
+  await page.click('[data-testid="ws-confirm-ok"]');
   await page.waitForTimeout(1500);
   await page.keyboard.press("Escape");
   await page.click(".ws-brand");

@@ -39,7 +39,7 @@
   --shadow-sm: 0 1px 2px rgba(58, 52, 45, 0.06);
   --shadow-md: 0 4px 14px rgba(58, 52, 45, 0.08), 0 1px 3px rgba(58, 52, 45, 0.05);
   --shadow-lg: 0 18px 44px rgba(58, 52, 45, 0.12), 0 4px 10px rgba(58, 52, 45, 0.06);
-  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --shadow-up: 0 -18px 50px rgba(58, 52, 45, 0.14);   /* a tray rising from the bottom edge */
 
   /* Radii */
   --r-xs: 4px;
@@ -50,10 +50,73 @@
   --r-2xl: 28px;
   --r-pill: 999px;
 
-  /* Type scale */
-  --font-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", Georgia, serif;
-  --font-sans: "Manrope", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  /* Ink on a wash — text colour that stays ≥ 4.5:1 on the matching *-wash fill
+     (the raw accent colours are for fills, icons and borders; gold / sage / rose
+     on their own wash fall below 4.5:1 in the light theme). */
+  --crimson-ink: #8a3222;
+  --gold-ink: #7a5a22;
+  --sage-ink: #435a34;
+  --slate-ink: #2e3a44;
+  --rose-ink: #963244;
+  --slate-soft: #e3e8ec;
+
+  /* Semantic aliases — views name the meaning, not the pigment. */
+  --accent: var(--crimson);
+  --accent-wash: var(--crimson-wash);
+  --accent-ink: var(--crimson-ink);
+  --ok: var(--sage);
+  --ok-wash: var(--sage-wash);
+  --ok-ink: var(--sage-ink);
+  --warn: var(--gold);
+  --warn-wash: var(--gold-wash);
+  --warn-ink: var(--gold-ink);
+  --danger: var(--rose);
+  --danger-wash: var(--rose-wash);
+  --danger-ink: var(--rose-ink);
+  --info: var(--slate);
+  --info-wash: var(--slate-wash);
+  --info-ink: var(--slate-ink);
+  --on-accent: #ffffff;       /* text on a filled accent button */
+  --scrim: rgba(26, 23, 20, 0.32);  /* backdrop behind modals / drawers / palette; a few % of it = a shade that stays dark at night */
+  --accent-hover: color-mix(in srgb, var(--crimson) 90%, #000);  /* filled accent button, hovered */
+  --mark-shade: #2a1a14;      /* the dark end of a work's accent mark / swatch gradient (both themes) */
+
+  /* Type — serif for the book (titles, prose), sans for all chrome,
+     mono only for machine strings (ids, hashes). Stacks lead with fonts that
+     ship on macOS / Windows / Linux so nothing falls through to a generic face. */
+  --font-serif: "Noto Serif SC", "Source Han Serif SC", "Source Han Serif CN", "思源宋体", "Songti SC", "STSong", "SimSun", Georgia, serif;
+  --font-sans: "Manrope", -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --fs-xs: 12px;       /* meta, captions */
+  --fs-sm: 13px;       /* dense UI */
+  --fs-md: 14px;       /* default UI */
+  --fs-lg: 16px;       /* emphasized UI, form inputs */
+  --fs-xl: 18px;       /* card titles */
+  --fs-2xl: 22px;      /* section titles */
+  --fs-3xl: 28px;      /* page titles */
+  --fs-display: 40px;  /* the work title on 主页 */
+  --lh-tight: 1.25;
+  --lh-ui: 1.5;
+  --lh-prose: 1.9;
+
+  /* Stacking — one scale for the whole app (fixed chrome < drawers < overlays). Anything that
+     floats uses these (a neighbour is calc(one of them ± n)); only stacking inside one
+     component (0–40) is written as a literal — design-guard.test.js keeps it that way. */
+  --z-sticky: 10;
+  --z-popover: 60;
+  --z-drawer: 80;
+  --z-rail: 100;
+  --z-rail-popover: 120; /* popovers anchored to the rail (work switcher): above the rail */
+  --z-overlay: 1500;   /* scrim + dialog */
+  --z-modal: 1600;     /* dialog opened from inside another dialog */
+  --z-toast: 1700;
+  --z-panel: 1800;     /* 排版与舒适度 quick panel */
+
+  /* Breakpoints (documentation only — media queries cannot read custom properties):
+     1440 wide · 1280 right rails become toggled drawers · 1100 left lists collapse,
+     headers stack · 900 single column · 640 phone-narrow dialogs; max-height 820 = short
+     window. Every view must work at 1100 × 760. design-guard.test.js lists the
+     remaining off-scale widths (a ratchet). */
 
   /* Spacing scale (multiples of 4) */
   --s1: 4px;
@@ -70,8 +133,11 @@
 
   /* Layout */
   --rail-w: 64px;
-  --rail-w-open: 252px;
   --content-max: 1180px;
+  /* 页面视图（主页、待办、章节编排总览、质量、成本、资料、设置、回收站）共用一个版心：
+     正文宽 --content-max，四周同一个页边；页头（PageHeader）的位置因此在各页之间不跳 */
+  --page-gutter: var(--s8);
+  --page-pad-bottom: var(--s16);
 
   /* Transitions */
   --t-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -83,7 +149,7 @@
 [data-theme="dark"] {
   --ink-1: #ece5d4;
   --ink-2: #c4bda9;
-  --ink-3: #8c8674;
+  --ink-3: #9e9784;          /* ≥ 4.5:1 on paper-0/1/2 (was #8c8674: 3.9–4.4:1) */
   --ink-4: #5d5849;
 
   --paper-0: #1c1917;
@@ -112,9 +178,48 @@
   --rose: #d97a8a;
   --rose-wash: #3a2126;
 
+  --crimson-ink: #e89478;
+  --gold-ink: #dcb877;
+  --sage-ink: #a9bb90;
+  --slate-ink: #b8c3cb;
+  --rose-ink: #e595a2;
+  --slate-soft: #2b343b;
+  --on-accent: #1c1917;
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  /* 白天的阴影是暖墨色、6–14% 透明度，压在夜间纸色上看不见：夜间换成更深的黑 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.5), 0 4px 10px rgba(0, 0, 0, 0.3);
+  --shadow-up: 0 -18px 50px rgba(0, 0, 0, 0.5);
 }
+
+/* Sepia / dusk theme — warmer than day, lighter than night (moved here from wr-redesign.css). */
+[data-theme="sepia"] {
+  --ink-1: #2a2118;
+  --ink-2: #4a3d2c;
+  --ink-3: #685a44;          /* ≥ 4.5:1 on sepia paper-0/1/2 (was #7a6a52: 3.6–4.3:1) */
+  --ink-4: #ab9a7d;
+
+  --paper-0: #f3e9d4;
+  --paper-1: #ecdfc4;
+  --paper-2: #e3d4b3;
+  --paper-3: #d8c6a0;
+
+  --line-1: #ddcba6;
+  --line-2: #cdb88d;
+  --line-3: #b8a173;
+
+  --crimson: #9a3a2a;
+  --crimson-wash: #ecd2c2;
+  --gold-wash: #ecd9b2;
+  --sage-wash: #d4ddc0;
+  --slate-wash: #cfd8d4;
+  --rose-wash: #eccfc9;
+}
+
+:root { color-scheme: light; }
+[data-theme="dark"] { color-scheme: dark; }
 
 /* ==========================================================
    Base
@@ -129,7 +234,7 @@ html, body {
   background: var(--paper-0);
   color: var(--ink-1);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: var(--fs-md);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -173,490 +278,21 @@ button:focus:not(:focus-visible) { outline: none; }
 }
 
 /* ==========================================================
-   Layout — Shell
+   Page layout (library / trash / settings)
+   The prototype's own shell (app-shell, rail, topbar, cmdk, zen mode) was
+   deleted 2026-09-21 — the workbench shell lives in ws-shell.css; page headers
+   are the PageHeader primitive (ws-ui.jsx / ws-ui.css).
    ========================================================== */
-.app-shell {
-  display: grid;
-  grid-template-columns: var(--rail-w) 1fr;
-  min-height: 100vh;
-  background:
-    radial-gradient(120% 80% at 0% 0%, rgba(176, 133, 69, 0.06), transparent 50%),
-    radial-gradient(80% 60% at 100% 100%, rgba(154, 58, 42, 0.04), transparent 50%),
-    var(--paper-0);
-  transition: grid-template-columns var(--t-base);
-}
-
-.app-shell[data-rail="open"] {
-  grid-template-columns: var(--rail-w-open) 1fr;
-}
-
-/* ===== Rail ===== */
-.rail {
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  background: var(--paper-1);
-  border-right: 1px solid var(--line-1);
-  display: flex;
-  flex-direction: column;
-  padding: var(--s4) var(--s3);
-  gap: var(--s2);
-  overflow: hidden;
-}
-
-.rail-brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  padding: var(--s2) var(--s2);
-  margin-bottom: var(--s3);
-  border-radius: var(--r-md);
-  cursor: pointer;
-  transition: background var(--t-fast);
-}
-.rail-brand:hover { background: var(--paper-2); }
-
-.rail-brand-mark {
-  flex: 0 0 32px;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--ink-1) 0%, var(--ink-2) 100%);
-  color: var(--paper-0);
-  display: grid;
-  place-items: center;
-  font-family: var(--font-serif);
-  font-weight: 700;
-  font-size: 16px;
-  line-height: 1;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
-}
-
-.rail-brand-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  opacity: 0;
-  transition: opacity var(--t-base);
-}
-.app-shell[data-rail="open"] .rail-brand-text { opacity: 1; }
-
-.rail-brand-title {
-  font-family: var(--font-serif);
-  font-weight: 600;
-  font-size: 15px;
-  color: var(--ink-1);
-  line-height: 1.1;
-  white-space: nowrap;
-}
-.rail-brand-sub {
-  font-size: 11px;
-  color: var(--ink-3);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  margin-top: 2px;
-}
-
-.rail-section {
-  margin-top: var(--s4);
-}
-.rail-section-label {
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--ink-4);
-  padding: 0 var(--s3) var(--s2);
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity var(--t-base);
-  height: 16px;
-}
-.app-shell[data-rail="open"] .rail-section-label { opacity: 1; }
-
-.rail-item {
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  padding: 9px 10px;
-  border-radius: var(--r-md);
-  color: var(--ink-2);
-  background: transparent;
-  border: 0;
-  width: 100%;
-  text-align: left;
-  font-weight: 500;
-  font-size: 13.5px;
-  transition: background var(--t-fast), color var(--t-fast);
-  white-space: nowrap;
-  position: relative;
-}
-.rail-item:hover { background: var(--paper-2); color: var(--ink-1); }
-.rail-item.active {
-  background: var(--paper-3);
-  color: var(--ink-1);
-  font-weight: 600;
-}
-.rail-item.active::before {
-  content: "";
-  position: absolute;
-  left: -10px;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 2px;
-  background: var(--crimson);
-}
-.rail-item-icon {
-  flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
-  display: grid;
-  place-items: center;
-  color: var(--ink-3);
-}
-.rail-item.active .rail-item-icon { color: var(--crimson); }
-.rail-item-label {
-  opacity: 0;
-  transition: opacity var(--t-base);
-}
-.app-shell[data-rail="open"] .rail-item-label { opacity: 1; }
-.rail-item-badge {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--ink-3);
-  font-variant-numeric: tabular-nums;
-  opacity: 0;
-  transition: opacity var(--t-base);
-}
-.app-shell[data-rail="open"] .rail-item-badge { opacity: 1; }
-.rail-item-badge.is-attn { color: var(--crimson); font-weight: 600; }
-
-.rail-spacer { flex: 1; }
-
-.rail-scroll {
-  flex: 1;
-  overflow-y: auto;
-  margin: 0 -8px;
-  padding: 0 8px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s2);
-}
-
-.rail-foot {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-/* Mode switch */
-.mode-switch {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--paper-2);
-  border-radius: 8px;
-  margin: 4px 0 8px;
-}
-.mode-btn {
-  flex: 1;
-  background: transparent;
-  border: 0;
-  padding: 5px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink-3);
-  cursor: pointer;
-  transition: background var(--t-fast), color var(--t-fast);
-  white-space: nowrap;
-}
-.mode-btn:hover { color: var(--ink-1); }
-.mode-btn.is-active { background: var(--paper-0); color: var(--ink-1); box-shadow: var(--shadow-sm); }
-.app-shell[data-rail="closed"] .mode-switch { display: none; }
-
-.rail-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  padding: 8px 10px;
-  border-radius: var(--r-md);
-  color: var(--ink-3);
-  background: transparent;
-  border: 0;
-  width: 100%;
-  text-align: left;
-  font-size: 12.5px;
-  transition: background var(--t-fast), color var(--t-fast);
-  white-space: nowrap;
-}
-.rail-toggle:hover { background: var(--paper-2); color: var(--ink-1); }
-.rail-toggle .rail-item-icon { color: var(--ink-3); }
-
-/* ==========================================================
-   Stage — the right side
-   ========================================================== */
-.stage {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  min-width: 0;
-}
-
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 30;
-  display: flex;
-  align-items: center;
-  gap: var(--s4);
-  padding: var(--s4) var(--s6);
-  background: color-mix(in srgb, var(--paper-0) 92%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--line-1);
-}
-
-.crumbs {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  flex: 1;
-  min-width: 0;
-}
-.crumb {
-  font-size: 13px;
-  color: var(--ink-3);
-  white-space: nowrap;
-}
-.crumb.current {
-  color: var(--ink-1);
-  font-weight: 600;
-}
-.crumb-sep {
-  color: var(--ink-4);
-  font-size: 12px;
-}
-
-.topbar-search {
-  flex: 0 1 380px;
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  padding: 7px var(--s3);
-  background: var(--paper-1);
-  border: 1px solid var(--line-1);
-  border-radius: var(--r-md);
-  color: var(--ink-3);
-  font-size: 13px;
-  cursor: pointer;
-  text-align: left;
-}
-.topbar-search:hover { border-color: var(--line-2); }
-.topbar-search kbd {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-3);
-  background: var(--paper-2);
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--line-1);
-}
-
-/* ----- Command palette ----- */
-.cmdk-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(20, 18, 15, 0.4);
-  backdrop-filter: blur(4px);
-  z-index: 2000;
-  display: flex;
-  justify-content: center;
-  padding-top: 12vh;
-  animation: fadeIn 0.12s ease-out;
-}
-[data-theme="dark"] .cmdk-overlay { background: rgba(0,0,0,0.6); }
-.cmdk-panel {
-  width: min(680px, calc(100% - 32px));
-  background: var(--paper-0);
-  border: 1px solid var(--line-2);
-  border-radius: 14px;
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
-  animation: slideDown 0.15s ease-out;
-}
-.cmdk-input-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--line-1);
-}
-.cmdk-input-row svg { color: var(--ink-3); }
-.cmdk-input {
-  flex: 1;
-  background: transparent;
-  border: 0;
-  outline: none;
-  font: inherit;
-  font-size: 15px;
-  color: var(--ink-1);
-  font-family: var(--font-sans);
-}
-.cmdk-input::placeholder { color: var(--ink-4); }
-.cmdk-input-row kbd {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--paper-2);
-  color: var(--ink-3);
-  border: 1px solid var(--line-1);
-}
-.cmdk-list {
-  list-style: none;
-  margin: 0;
-  padding: 6px;
-  max-height: 50vh;
-  overflow-y: auto;
-}
-.cmdk-item {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto;
-  gap: 12px;
-  align-items: center;
-  padding: 9px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 13.5px;
-}
-.cmdk-item.is-sel { background: var(--paper-2); }
-.cmdk-item .pill { white-space: nowrap; }
-.cmdk-label { color: var(--ink-1); }
-.cmdk-hint { font-size: 11.5px; color: var(--ink-3); font-family: var(--font-mono); }
-.cmdk-empty { padding: 26px; text-align: center; color: var(--ink-3); }
-.cmdk-foot {
-  display: flex;
-  gap: 14px;
-  justify-content: center;
-  padding: 8px 16px;
-  border-top: 1px solid var(--line-1);
-  background: var(--paper-1);
-  font-size: 11.5px;
-  color: var(--ink-3);
-}
-.cmdk-foot kbd {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--paper-2);
-  color: var(--ink-3);
-  border: 1px solid var(--line-1);
-  margin-right: 4px;
-}
-
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes slideDown { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
-
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-}
-
-.icon-btn {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--r-md);
-  background: transparent;
-  border: 0;
-  color: var(--ink-2);
-  transition: background var(--t-fast), color var(--t-fast);
-  position: relative;
-}
-.icon-btn:hover { background: var(--paper-2); color: var(--ink-1); }
-.icon-btn .dot {
-  position: absolute;
-  top: 8px;
-  right: 9px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--crimson);
-  box-shadow: 0 0 0 2px var(--paper-0);
-}
-
-.avatar {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--crimson) 0%, var(--gold) 100%);
-  color: white;
-  display: grid;
-  place-items: center;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: var(--font-serif);
-}
-
-/* View-routed screen wrapper (layout only — no ancestor transform,
-   so position:fixed overlays inside screens anchor to the viewport). */
-.view-fade {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-/* Full-immersion zen — the writer hides the global rail + topbar */
-html[data-writer-zen="1"] .rail { display: none; }
-html[data-writer-zen="1"] .topbar { display: none; }
-html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
-
 /* Page content */
 .page {
   flex: 1;
-  padding: var(--s6) var(--s8);
+  padding: var(--page-gutter) var(--page-gutter) var(--page-pad-bottom);
   min-width: 0;
 }
 .page-narrow {
   max-width: var(--content-max);
   margin: 0 auto;
   width: 100%;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--s6);
-  margin-bottom: var(--s6);
-  padding-bottom: var(--s4);
-  border-bottom: 1px solid var(--line-1);
-}
-.page-title {
-  font-size: 28px;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-}
-.page-subtitle {
-  margin-top: var(--s2);
-  color: var(--ink-3);
-  font-size: 14px;
-  max-width: 56ch;
-}
-.page-eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--crimson);
-  font-weight: 600;
-  margin-bottom: var(--s2);
 }
 
 /* ==========================================================
@@ -670,7 +306,7 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
   height: 34px;
   border-radius: var(--r-md);
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   border: 1px solid transparent;
   background: transparent;
   color: var(--ink-1);
@@ -688,10 +324,10 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
 
 .btn-accent {
   background: var(--crimson);
-  color: white;
+  color: var(--on-accent);
   border-color: var(--crimson);
 }
-.btn-accent:hover { background: color-mix(in srgb, var(--crimson) 90%, black); }
+.btn-accent:hover { background: var(--accent-hover); }
 
 .btn-ghost {
   background: transparent;
@@ -707,17 +343,17 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
 .btn-quiet:hover { background: var(--paper-2); }
 
 /* 破坏性动作（批量删除 / 移出队列）：静止态克制、hover 才实心，
-   避免一屏红按钮；禁用态明确不可点，不靠「点了没反应」暗示。 */
+   避免一屏红按钮；禁用态明确不可点，不靠「点了没反应」暗示。
+   字用 --danger-ink：rose 本色压在 rose-wash 上白天只有 3.85:1、护眼 3.53:1。 */
 .btn-danger {
   background: var(--rose-wash);
-  color: var(--rose);
+  color: var(--danger-ink);
   border-color: color-mix(in srgb, var(--rose) 26%, transparent);
 }
 .btn-danger:hover:not([disabled]) { background: var(--rose); color: var(--paper-0); border-color: var(--rose); }
-.btn-danger[disabled] { opacity: 0.45; cursor: not-allowed; }
 
-.btn-lg { height: 40px; padding: 0 var(--s5); font-size: 14px; }
-.btn-sm { height: 28px; padding: 0 var(--s3); font-size: 12px; }
+.btn-lg { height: 40px; padding: 0 var(--s5); font-size: var(--fs-md); }
+.btn-sm { height: 28px; padding: 0 var(--s3); font-size: var(--fs-xs); }
 /* 挤在行内的小动作（分章面板的「移到上一章/下一章」、孤儿场处置）。缺这条定义时
    它们按 .btn 的全高渲染，把每一行场景撑开——用了就得有。 */
 .btn-xs { height: 22px; padding: 0 var(--s2); font-size: 11px; }
@@ -726,17 +362,34 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
    Undo toast — 删除类动作的统一回执（见 ws-undo-toast.jsx）
    ========================================================== */
 .ws-toast {
-  /* left 补偿 .ws-app 左侧 --rail 固定侧栏（ws-shell.css）的一半，使 toast 以内容区为中心；壳外无 --rail 时回退视口居中 */
-  position: fixed; left: calc(50% + var(--rail, 0px) / 2); bottom: 26px; transform: translateX(-50%); z-index: 90;
+  /* left 补偿左侧固定侧栏宽度的一半，使 toast 以内容区为中心。外壳提示层把 toast portal 到 <body>，
+     那里读不到 .ws-app 上的 --rail，就用 :root 的 --rail-w（同样是 64px） */
+  position: fixed; left: calc(50% + var(--rail, var(--rail-w, 0px)) / 2); bottom: 26px; transform: translateX(-50%); z-index: var(--z-toast);
   display: flex; align-items: center; gap: 14px;
   max-width: min(560px, calc(100vw - 32px));
   padding: 11px 12px 11px 16px; border-radius: var(--r-lg);
   background: var(--ink-1); color: var(--paper-0);
-  box-shadow: var(--shadow-lg); font-size: 13px;
+  box-shadow: var(--shadow-lg); font-size: var(--fs-sm);
   animation: wsToastIn 180ms var(--ease, ease-out);
 }
 @keyframes wsToastIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @media (prefers-reduced-motion: reduce) { .ws-toast { animation: none; } }
+/* 提示栈（ws-notify.jsx 的 WsToastHost 挂在 <body> 下）：外壳提示和各视图的回执摞成底部居中的一列，
+   不再各自 fixed 在同一块像素上互相盖住。栈本身不接鼠标，只有提示条接。 */
+.ws-toast-stack {
+  position: fixed; left: calc(50% + var(--rail, var(--rail-w, 0px)) / 2); bottom: 26px; transform: translateX(-50%); z-index: var(--z-toast);
+  display: flex; flex-direction: column; align-items: center; gap: var(--s2);
+  width: max-content; max-width: min(560px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.ws-toast-stack:empty { display: none; }
+.ws-toast-stack > .ws-toast {
+  position: relative; left: auto; bottom: auto; transform: none; z-index: auto;
+  max-width: 100%; pointer-events: auto;
+  animation-name: wsToastStackIn;
+}
+@keyframes wsToastStackIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .ws-toast-stack > .ws-toast { animation: none; } }
 .ws-toast-text { flex: 1; min-width: 0; line-height: 1.5; }
 .ws-toast-action {
   flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--paper-0) 40%, transparent);
@@ -748,9 +401,57 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
 .ws-toast-x {
   flex: 0 0 auto; width: 24px; height: 24px; border: 0; border-radius: 6px;
   background: transparent; color: color-mix(in srgb, var(--paper-0) 70%, transparent);
-  font-size: 16px; line-height: 1; cursor: pointer;
+  font-size: var(--fs-lg); line-height: 1; cursor: pointer;
 }
 .ws-toast-x:hover { background: color-mix(in srgb, var(--paper-0) 16%, transparent); color: var(--paper-0); }
+
+/* ==========================================================
+   Dialog — shared modal shell (ws-dialog.jsx)
+   ========================================================== */
+.ws-dialog-scrim {
+  position: fixed; inset: 0; z-index: var(--z-overlay);
+  display: grid; place-items: center; padding: var(--s6);
+  background: var(--scrim);
+  backdrop-filter: blur(3px);
+  animation: ws-fade 160ms ease-out both;
+}
+.ws-dialog {
+  position: relative;
+  display: flex; flex-direction: column;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  background: var(--paper-0);
+  color: var(--ink-1);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  outline: none;
+  animation: ws-rise 180ms ease-out both;
+}
+.ws-dialog-sm { width: min(420px, 100%); }
+.ws-dialog-lg { width: min(880px, 100%); }
+.ws-dialog-xl { width: min(1180px, 100%); }
+.ws-dialog-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s4);
+  padding: var(--s5) var(--s6) var(--s3);
+}
+.ws-dialog-title { font-size: var(--fs-2xl); line-height: var(--lh-tight); }
+.ws-dialog-desc { margin-top: var(--s1); color: var(--ink-3); font-size: var(--fs-sm); line-height: var(--lh-ui); }
+.ws-dialog-body { padding: var(--s2) var(--s6) var(--s5); min-height: 0; }
+.ws-dialog-foot {
+  display: flex; justify-content: flex-end; gap: var(--s2);
+  padding: var(--s4) var(--s6); border-top: 1px solid var(--line-1);
+  background: var(--paper-1);
+  border-radius: 0 0 var(--r-xl) var(--r-xl);
+}
+.ws-dialog-x {
+  flex: 0 0 auto; display: inline-grid; place-items: center;
+  width: 32px; height: 32px; border: 0; border-radius: var(--r-md);
+  background: transparent; color: var(--ink-3);
+}
+.ws-dialog-x:hover { background: var(--paper-2); color: var(--ink-1); }
+@media (prefers-reduced-motion: reduce) { .ws-dialog-scrim, .ws-dialog { animation: none; } }
 
 /* ==========================================================
    Cards & surfaces
@@ -810,15 +511,15 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
   border-radius: 50%;
   background: var(--ink-3);
 }
-.pill-crimson { background: var(--crimson-wash); color: var(--crimson); border-color: transparent; }
+.pill-crimson { background: var(--crimson-wash); color: var(--crimson-ink); border-color: transparent; }
 .pill-crimson .pill-dot { background: var(--crimson); }
-.pill-gold { background: var(--gold-wash); color: var(--gold); border-color: transparent; }
+.pill-gold { background: var(--gold-wash); color: var(--gold-ink); border-color: transparent; }
 .pill-gold .pill-dot { background: var(--gold); }
-.pill-sage { background: var(--sage-wash); color: var(--sage); border-color: transparent; }
+.pill-sage { background: var(--sage-wash); color: var(--sage-ink); border-color: transparent; }
 .pill-sage .pill-dot { background: var(--sage); }
-.pill-slate { background: var(--slate-wash); color: var(--slate); border-color: transparent; }
+.pill-slate { background: var(--slate-wash); color: var(--slate-ink); border-color: transparent; }
 .pill-slate .pill-dot { background: var(--slate); }
-.pill-rose { background: var(--rose-wash); color: var(--rose); border-color: transparent; }
+.pill-rose { background: var(--rose-wash); color: var(--rose-ink); border-color: transparent; }
 .pill-rose .pill-dot { background: var(--rose); }
 
 /* ==========================================================
@@ -850,14 +551,14 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
 }
 .label {
   display: block;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--ink-2);
   letter-spacing: 0.02em;
   margin-bottom: 6px;
 }
 .help {
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--ink-3);
   margin-top: 4px;
 }
@@ -865,35 +566,14 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
 /* ==========================================================
    Utility
    ========================================================== */
-.flex { display: flex; }
-.flex-col { display: flex; flex-direction: column; }
-.items-center { align-items: center; }
-.items-start { align-items: flex-start; }
-.justify-between { justify-content: space-between; }
-.gap-1 { gap: var(--s1); }
-.gap-2 { gap: var(--s2); }
-.gap-3 { gap: var(--s3); }
-.gap-4 { gap: var(--s4); }
-.gap-5 { gap: var(--s5); }
-.gap-6 { gap: var(--s6); }
 .flex-1 { flex: 1 1 auto; min-width: 0; }
+/* 仍是给人读的字，用 --ink-3（--ink-4 只留给占位 / 禁用，夜间对比度不到 3:1） */
 .text-muted { color: var(--ink-3); }
-.text-subtle { color: var(--ink-4); }
 .text-serif { font-family: var(--font-serif); }
 .text-sm { font-size: 12.5px; }
 .text-xs { font-size: 11.5px; }
-.text-lg { font-size: 16px; }
 .fw-600 { font-weight: 600; }
-.fw-500 { font-weight: 500; }
-.mb-0 { margin-bottom: 0; }
-.mb-2 { margin-bottom: var(--s2); }
-.mb-3 { margin-bottom: var(--s3); }
-.mb-4 { margin-bottom: var(--s4); }
-.mb-6 { margin-bottom: var(--s6); }
-.mt-2 { margin-top: var(--s2); }
-.mt-3 { margin-top: var(--s3); }
 .mt-4 { margin-top: var(--s4); }
-.mt-6 { margin-top: var(--s6); }
 .tab-num { font-variant-numeric: tabular-nums; }
 
 /* Scrollbar */

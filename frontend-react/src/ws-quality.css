@@ -1,0 +1,179 @@
+/* ==========================================================
+   ws-quality.css — 文学质量（ws-quality*.jsx）与成本看板（ws-cost.jsx）。
+   原是 ws-review.css 的后半段；main.jsx 里紧跟 ws-review.css 导入，层叠位置不变。
+   ========================================================== */
+
+/* ==========================================================
+   文学质量（ws-quality.jsx）
+   页头 / 分段 / 统计块 / 提示条 / 空态来自 ws-ui；这里只排版。
+   ========================================================== */
+.q-quality .q-tabs { margin-bottom: 18px; }
+.q-filters {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px;
+  margin-bottom: 16px;
+}
+.q-field { display: inline-flex; flex-direction: column; gap: 4px; min-width: 0; }
+.q-field > span { font-size: var(--fs-xs); color: var(--ink-3); }
+.q-field .select, .q-field .input { width: auto; min-width: 128px; max-width: 260px; padding: 6px 10px; font-size: var(--fs-sm); }
+.q-field-grow { flex: 1 1 220px; }
+.q-field-grow .input { width: 100%; max-width: none; }
+.q-run { margin-left: auto; }
+.q-notice { margin: 0 0 14px; }
+
+.q-stats {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(140px, 100%), 1fr));
+  gap: 10px; margin: 0 0 18px;
+}
+.q-stat {
+  padding: 12px 14px; border-radius: var(--r-lg);
+  background: var(--paper-1); border: 1px solid var(--line-1);
+}
+.q-stat .ws-stat-value { font-size: var(--fs-xl); }
+
+.q-empty { border: 1px dashed var(--line-2); border-radius: var(--r-lg); }
+
+.q-list { display: flex; flex-direction: column; gap: 10px; }
+.q-item {
+  background: var(--paper-1); border: 1px solid var(--line-1); border-radius: var(--r-lg);
+  transition: border-color var(--t-fast), box-shadow var(--t-base);
+}
+.q-item:hover, .q-item.is-open { border-color: var(--line-2); }
+.q-item.is-open { box-shadow: var(--shadow-sm); }
+.q-item-row {
+  display: flex; align-items: flex-start; gap: 12px; width: 100%;
+  padding: 13px 16px; background: transparent; border: 0; text-align: left; cursor: pointer;
+}
+.q-item-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-lg); }
+.q-item-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.q-item-title {
+  font-family: var(--font-serif); font-size: var(--fs-lg); font-weight: 600; line-height: var(--lh-tight);
+  color: var(--ink-1); overflow-wrap: anywhere;
+}
+.q-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.q-more { font-size: var(--fs-xs); color: var(--ink-3); font-weight: 400; }
+.q-chev { flex: 0 0 auto; color: var(--ink-3); transition: transform var(--t-base); margin-top: 2px; }
+.q-chev[data-open="true"] { transform: rotate(180deg); }
+.q-item-detail { padding: 2px 16px 16px; border-top: 1px solid var(--line-1); }
+.q-item-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+.q-findings { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 14px; }
+.q-finding { padding-left: 12px; border-left: 3px solid var(--line-2); }
+.q-finding-head { display: flex; align-items: center; gap: 8px; }
+.q-finding-head strong { font-size: var(--fs-md); font-weight: 600; color: var(--ink-1); }
+.q-finding-issue { margin: 6px 0 0; font-size: var(--fs-md); line-height: var(--lh-ui); color: var(--ink-2); }
+.q-finding-evidence {
+  margin: 8px 0 0; padding: 8px 12px; border-radius: var(--r-sm);
+  background: var(--paper-2); color: var(--ink-2);
+  font-family: var(--font-serif); font-size: var(--fs-sm); line-height: 1.75;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden;
+}
+.q-finding-fix { margin: 6px 0 0; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-3); }
+
+.q-scan { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--line-1); }
+.q-section-title { font-family: var(--font-serif); font-size: var(--fs-xl); font-weight: 600; color: var(--ink-1); }
+.q-section-desc { margin: 4px 0 12px; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-3); max-width: 62ch; }
+.q-scan-actions { margin: 10px 0 12px; }
+.q-analyze { margin-top: 4px; }
+
+.q-set-form { display: grid; gap: 14px; margin-bottom: 16px; }
+.q-set-form .q-filters { margin-bottom: 0; }
+.q-set-chapters { display: flex; flex-wrap: wrap; gap: 8px; border: 0; padding: 0; margin: 0; }
+.q-set-chip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 4px 11px 4px 8px; border-radius: var(--r-pill);
+  background: var(--paper-0); border: 1px solid var(--line-2);
+  font-size: var(--fs-sm); color: var(--ink-2);
+}
+.q-set-chip input { accent-color: var(--accent); margin: 0; }
+.q-set-chip.is-on { background: var(--accent-wash); border-color: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--accent-ink); }
+.q-set-chip:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.q-set-result { display: grid; gap: 14px; }
+.q-block { padding: 12px 14px; border-radius: var(--r-lg); background: var(--paper-1); border: 1px solid var(--line-1); }
+.q-block.is-danger { border-color: color-mix(in srgb, var(--danger) 35%, var(--line-1)); }
+.q-block-title { font-size: var(--fs-md); font-weight: 600; color: var(--ink-1); margin-bottom: 8px; }
+.q-block.is-danger .q-block-title { color: var(--danger-ink); }
+.q-lines { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: var(--fs-sm); color: var(--ink-2); }
+.q-lines li { display: flex; flex-wrap: wrap; gap: 4px 10px; padding-left: 10px; border-left: 2px solid var(--line-2); }
+
+@media (max-width: 900px) {
+  .q-run { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-item, .q-chev { transition: none; }
+}
+
+/* ==========================================================
+   成本看板（ws-cost.jsx）
+   单列网格的轨道必须是 minmax(0,1fr)：否则八列明细表的最小宽度会把整列撑出页面，
+   而 .ws-content 横向是 hidden，被撑出去的部分既看不见也滚不到。表格在卡片内部横向滚动。
+   ========================================================== */
+.q-cost .cs-grid, .cs-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.cs-grid > * { min-width: 0; }
+.cs-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 14px; }
+.cs-split > * { min-width: 0; }
+.cs-card { padding: 14px 16px; }
+.cs-card-title {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin: 0 0 12px; font-family: var(--font-serif); font-size: var(--fs-lg); font-weight: 600; color: var(--ink-1);
+}
+.cs-card-title svg { color: var(--ink-3); }
+.cs-sub { font-family: var(--font-sans); font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); margin-left: 4px; }
+.cs-none { margin: 0; font-size: var(--fs-sm); color: var(--ink-3); }
+.cs-note { margin: 10px 0 0; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
+.cs-note.is-warn { color: var(--warn-ink); }
+.cs-loading { display: flex; align-items: center; gap: 8px; padding: 32px 0; color: var(--ink-3); font-size: var(--fs-sm); }
+
+/* 趋势图 */
+.cs-trend { display: block; background: var(--paper-2); border-radius: var(--r-md); }
+.cs-bar { fill: var(--line-2); }
+.cs-bar.is-on { fill: var(--ok); }
+.cs-trend-axis {
+  display: flex; justify-content: space-between; gap: 8px; margin-top: 6px;
+  font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums;
+}
+
+/* 条形与读数 */
+.cs-bars { display: grid; gap: 10px; }
+.cs-bar-row, .cs-quota-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  font-size: var(--fs-sm); color: var(--ink-2); margin-bottom: 4px;
+}
+.cs-quota-row { margin-bottom: 8px; }
+.cs-quota-item .cs-quota-row { margin-bottom: 4px; }
+.cs-quota-item { margin-bottom: 10px; }
+.cs-bar-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.cs-bar-val { color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.cs-bar-val.is-danger { color: var(--danger-ink); }
+.cs-node { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-node.is-raw { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-2); }
+.cs-meter { height: 8px; border-radius: 5px; background: var(--line-1); overflow: hidden; }
+.cs-meter-fill { height: 100%; background: var(--ok); border-radius: 5px; }
+.cs-meter-fill.is-danger { background: var(--danger); }
+
+/* 表格基座（原 screens.css 的 .lib-table，现在只有成本看板用；尺寸与字号由下面的 .cs-table 给） */
+.lib-table { width: 100%; border-collapse: collapse; }
+.lib-table th, .lib-table td { text-align: left; border-bottom: 1px solid var(--line-1); }
+.lib-table th { color: var(--ink-3); font-weight: 600; background: var(--paper-2); }
+.lib-table tbody tr:last-child td { border-bottom: 0; }
+.lib-table tbody tr:hover { background: var(--paper-2); }
+/* 表格：在卡片里横向滚动，金额 / 耗时不折行 */
+.cs-table-scroll { overflow-x: auto; max-width: 100%; }
+.cs-table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
+.cs-table { width: 100%; }
+.cs-table th, .cs-table td { white-space: nowrap; padding: 9px 12px; font-size: var(--fs-sm); }
+.cs-table th { font-size: var(--fs-xs); font-weight: 600; }
+.cs-table .is-num { text-align: right; font-variant-numeric: tabular-nums; }
+.cs-table .is-act { text-align: right; }
+.cs-scene-link { font-variant-numeric: tabular-nums; }
+
+/* 下钻 */
+.cs-drill-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.cs-drill-title { margin: 0; font-family: var(--font-serif); font-size: var(--fs-xl); font-weight: 600; color: var(--ink-1); }
+
+/* 口径说明 / 怎么设上限（默认收起） */
+.cs-details > summary { cursor: pointer; font-size: var(--fs-sm); font-weight: 500; color: var(--ink-2); }
+.cs-details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-xs); }
+.cs-details-body { display: grid; gap: 10px; margin-top: 10px; }
+.cs-details-body .cs-note { margin: 0; }
+.cs-kv { display: grid; gap: 2px; }
+.cs-kv .cs-quota-row { margin-bottom: 2px; }

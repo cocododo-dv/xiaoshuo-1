@@ -1,9 +1,7 @@
 import React from "react";
-import { I } from "./icons.jsx";
-import { ARR_ACTS, ARR_CH_STATE, ARR_SCENE_STATE } from "./ws-author-data.jsx";
-import { arrActSpans } from "./ws-author-loom.jsx";
-
-/* global React, I, ARR_ACTS, ARR_CH_STATE, ARR_SCENE_STATE, arrActSpans */
+import { ARR_SCENE_STATE } from "./ws-author-data.jsx";
+import { arrActSpans } from "./ws-author-derive.js";
+import { chapterLabel } from "./ws-labels.js";
 
 /* ==========================================================
    节奏镜头 — Pacing Lens
@@ -24,6 +22,13 @@ function arrPovMap(chapters) {
   return m;
 }
 
+/* 泳道名字那一列：所有行共用一个宽度（每一行是各自的 grid，max-content 会让各行对不齐），
+   按最长的名字估，夹在 64–160px 之间；更长的名字省略，整名在悬停提示里。 */
+function paceNameWidth(names) {
+  const longest = names.reduce((n, name) => Math.max(n, String(name || "").length), 0);
+  return Math.min(160, Math.max(64, longest * 13 + 14));
+}
+
 function ArrPaceDots({ scenes }) {
   return (
     <span className="pace-dots" title={`${scenes.length} 场`}>
@@ -35,9 +40,8 @@ function ArrPaceDots({ scenes }) {
 }
 
 function ArrPacingLens({ chapters, numOf, onOpen }) {
-  const { useMemo: useMemoP } = React;
-  const pov = useMemoP(() => arrPovMap(chapters), [chapters]);
-  const bands = useMemoP(() => arrActSpans(chapters), [chapters]);
+  const pov = React.useMemo(() => arrPovMap(chapters), [chapters]);
+  const bands = React.useMemo(() => arrActSpans(chapters), [chapters]);
   const n = chapters.length;
   const maxV = Math.max(...chapters.map((c) => Math.max(c.words.target, c.words.cur)), 1);
   const totalCur = chapters.reduce((s, c) => s + c.words.cur, 0);
@@ -54,42 +58,42 @@ function ArrPacingLens({ chapters, numOf, onOpen }) {
   const fattest = sorted[0];
   const thinnest = sorted[sorted.length - 1];
 
-  const gridVars = { "--loom-cols": n };
+  const gridVars = { "--pace-cols": n, "--pace-name": paceNameWidth(povList) + "px" };
+  // 「第 3 章 · 盐场」；占位章名（第 N 章 / 未命名）只写章号
+  const chName = (c, maxTitle = 12) => chapterLabel({ n: numOf[c.id], title: c.title }, { maxTitle });
 
   return (
     <div className="pace">
-      <div className="loom-summary">
-        <span className="loom-sum-item"><strong className="tab-num">{avg.toLocaleString()}</strong> 字 · 已写章均长</span>
-        <span className="loom-sum-sep" />
-        {fattest && <span className="loom-sum-item loom-sum-long" style={{ marginLeft: 0 }}>最长 · <b>{numOf[fattest.id]} {fattest.title}</b> <span className="tab-num">{fattest.words.cur.toLocaleString()}</span></span>}
-        {thinnest && fattest && thinnest.id !== fattest.id && <span className="loom-sum-item loom-sum-long" style={{ marginLeft: 0 }}>最短 · <b>{numOf[thinnest.id]} {thinnest.title}</b> <span className="tab-num">{thinnest.words.cur.toLocaleString()}</span></span>}
-        <span className="loom-legend" style={{ marginLeft: "auto" }}>
+      <div className="arr-lens-summary">
+        <span className="arr-lens-sum-item"><strong className="tab-num">{avg.toLocaleString()}</strong> 字 · 已写章均长</span>
+        {fattest && <span className="arr-lens-sum-item">最长 <b>{chName(fattest)}</b> <span className="tab-num">{fattest.words.cur.toLocaleString()}</span></span>}
+        {thinnest && fattest && thinnest.id !== fattest.id && <span className="arr-lens-sum-item">最短 <b>{chName(thinnest)}</b> <span className="tab-num">{thinnest.words.cur.toLocaleString()}</span></span>}
+        <span className="arr-lens-legend">
           {povList.map((p) => (
-            <span key={p}><i className={`loom-lg tone-fill-${pov[p]}`} />{p} <span className="tab-num">{povCounts[p]}</span></span>
+            <span key={p} title={`${p}：${povCounts[p]} 章里有这一视角`}><i className={`arr-lens-lg tone-fill-${pov[p]}`} />{p} <span className="tab-num">{povCounts[p]}</span></span>
           ))}
         </span>
       </div>
 
       <div className="pace-grid" style={gridVars}>
         {/* act bands */}
-        <div className="loom-row loom-acts">
+        <div className="pace-row pace-acts">
           <div className="pace-corner" />
           {bands.map((b) => (
-            <div key={b.a.id} className={`loom-act tone-${b.a.tone}`} style={{ gridColumn: `${b.from + 2} / ${b.to + 3}` }}>
-              <span className="loom-act-n">{b.a.n}</span><span className="loom-act-name">{b.a.name}</span>
-            </div>
+            <div key={b.a.id} className="pace-act" data-tone={b.a.tone} style={{ gridColumn: `${b.from + 2} / ${b.to + 3}` }}>{b.a.n}</div>
           ))}
         </div>
 
         {/* histogram */}
-        <div className="loom-row pace-bars">
-          <div className="pace-axis">
+        <div className="pace-row pace-bars">
+          <div className="pace-axis" aria-hidden="true">
             <span>{(maxV / 1000).toFixed(1)}k</span>
             <span>0</span>
           </div>
           {avg > 0 && (
             <div className="pace-avgwrap" style={{ gridColumn: "2 / -1" }}>
-              <span className="pace-avgline" style={{ bottom: avgPct + "%" }}><i>均 {avg.toLocaleString()}</i></span>
+              {/* 均线贴着顶（均长 ≈ 最长）时字标放到线下面，免得顶到上面的卷带 */}
+              <span className={`pace-avgline ${avgPct > 88 ? "is-high" : ""}`} style={{ bottom: avgPct + "%" }}><i>均 {avg.toLocaleString()}</i></span>
             </div>
           )}
           {chapters.map((c, ci) => {
@@ -97,9 +101,10 @@ function ArrPacingLens({ chapters, numOf, onOpen }) {
             const th = c.words.target > 0 ? Math.max(2, (c.words.target / maxV) * 100) : 0;
             const fh = (c.words.cur / maxV) * 100;
             const over = c.words.target > 0 && c.words.cur > c.words.target * 1.08;
+            const tip = `${chName(c, Infinity)}\n${c.words.cur.toLocaleString()}${c.words.target > 0 ? ` / ${c.words.target.toLocaleString()}` : ""} 字 · 视角 ${pacePovs(c).join(" / ")}`;
             return (
-              <button key={c.id} className="pace-barcell" style={{ gridColumn: ci + 2 }} onClick={() => onOpen(c.id)}
-                title={`第 ${numOf[c.id]} 章 · ${c.title}\n${c.words.cur.toLocaleString()}${c.words.target > 0 ? ` / ${c.words.target.toLocaleString()}` : ""} 字 · POV ${pacePovs(c).join(" / ")}`}>
+              <button type="button" key={c.id} className="pace-barcell" style={{ gridColumn: ci + 2 }} onClick={() => onOpen(c.id)}
+                title={tip} aria-label={tip.split("\n")[0]}>
                 <span className="pace-ghost" style={{ height: th + "%" }} />
                 <span className={`pace-fill tone-fill-${pov[c.pov]} ${c.words.cur === 0 ? "is-empty" : ""} ${over ? "is-over" : ""}`} style={{ height: Math.max(c.words.cur === 0 ? 0 : 2, fh) + "%" }} />
               </button>
@@ -108,23 +113,25 @@ function ArrPacingLens({ chapters, numOf, onOpen }) {
         </div>
 
         {/* per-chapter footer: num · scenes · time */}
-        <div className="loom-row pace-foot">
+        <div className="pace-row pace-foot">
           <div className="pace-corner" />
           {chapters.map((c, ci) => (
-            <button key={c.id} className="pace-col" style={{ gridColumn: ci + 2 }} onClick={() => onOpen(c.id)}>
-              <span className={`pace-num ${c.current ? "is-current" : ""}`}>{numOf[c.id]}</span>
+            <button type="button" key={c.id} className="pace-col" style={{ gridColumn: ci + 2 }} onClick={() => onOpen(c.id)}
+              aria-label={`打开${chName(c, Infinity)}`} title={chName(c, Infinity)}>
+              {/* 每章一列，放不下「第 N 章」：列脚只写紧凑的章号，完整叫法在提示与无障碍名里 */}
+              <span className={`pace-num tab-num ${c.current ? "is-current" : ""}`}>{Number(numOf[c.id]) || numOf[c.id]}</span>
               <ArrPaceDots scenes={c.scenes} />
-              <span className="pace-time">{c.time}</span>
+              {c.time ? <span className="pace-time" title={c.time}>{c.time}</span> : null}
             </button>
           ))}
         </div>
 
         {/* POV swimlanes */}
         <div className="pace-lanes">
-          <div className="pace-lanes-label">POV 泳道</div>
+          <div className="pace-lanes-label">视角泳道</div>
           {povList.map((p) => (
-            <div key={p} className="loom-row pace-lane" style={gridVars}>
-              <div className={`pace-lane-name tone-${pov[p]}`}>{p}</div>
+            <div key={p} className="pace-row pace-lane" style={gridVars}>
+              <div className="pace-lane-name" data-pov-tone={pov[p]} title={p}>{p}</div>
               {chapters.map((c, ci) => {
                 const on = pacePovs(c).includes(p);
                 // run edges for rounded segment ends
@@ -143,5 +150,4 @@ function ArrPacingLens({ chapters, numOf, onOpen }) {
   );
 }
 
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { arrPovMap, ArrPacingLens };
+export { ArrPacingLens };

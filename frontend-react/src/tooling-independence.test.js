@@ -88,17 +88,45 @@ describe("React 工具链独立性", () => {
     expect(cycles).toEqual([]);
   });
 
+  it("用到图标对象 I 的模块都显式从 icons.jsx 导入它（原型期的 window.I 已不存在）", () => {
+    // 文学质量 / 成本看板 曾因只写了 `/* global I */` 而在打开时崩溃（I is not defined），
+    // 测试里的 `globalThis.I = {}` 把它掩盖了。
+    const usesIcons = /(^|[^A-Za-z0-9_$.])I\.[A-Z]|<I\.[A-Z]|(^|[^A-Za-z0-9_$.])I\[/m;
+    const importsIcons = /import\s*\{[^}]*\bI\b[^}]*\}\s*from\s*["']\.{1,2}\/(?:[^"']*\/)?icons\.jsx["']/;
+    const missing = sourceModules()
+      .filter((file) => path.basename(file) !== "icons.jsx")
+      .filter((file) => {
+        const source = fs.readFileSync(file, "utf8");
+        return usesIcons.test(source) && !importsIcons.test(source);
+      })
+      .map((file) => path.relative(srcDir, file));
+    expect(missing).toEqual([]);
+  });
+
   it("新的 ESM-only 模块不再写入 window 全局命名空间", () => {
     const esmOnly = [
       "icons.jsx", "tweaks-panel.jsx", "ws-ai-providers.jsx", "ws-chapter-plan.jsx",
       "ws-cost.jsx", "ws-deep.jsx", "ws-home.jsx", "ws-home-derive.js",
       "ws-palette.jsx", "ws-quality.jsx", "ws-settings.jsx", "ws-settings-ai.jsx",
-      "ws-settings-shared.jsx", "ws-styleref-val.jsx", "ws-scene-run.jsx",
-      "ws-author-data.jsx", "ws-author-doctor.jsx", "ws-author-loom.jsx",
-      "ws-author-pacing.jsx", "ws-author-plan.jsx", "ws-library-derive.jsx",
-      "ws-library-graph.jsx", "ws-library-overview.jsx", "ws-library-timeline.jsx",
-      "ws-manuscripts-store.jsx", "ws-manuscripts.jsx", "ws-author.jsx",
-      "ws-scene.jsx", "ws-library.jsx", "ws-writer.jsx",
+      "ws-settings-shared.jsx", "ws-styleref-val.jsx", "ws-styleref-model.js", "ws-styleref-store.js", "ws-styleref-ui.jsx", "ws-styleref-activity.jsx", "ws-styleref-library.jsx", "ws-styleref-overview.jsx", "ws-styleref-matrix.jsx", "ws-styleref-profile.jsx", "ws-styleref-apply.jsx", "ws-styleref-inject.jsx", "ws-scene-run.jsx",
+      "ws-author-data.jsx", "ws-author-doctor.jsx", "ws-author-derive.js", "ws-author-spine.jsx",
+      "ws-author-pacing.jsx", "ws-author-ai.jsx", "ws-author-overview.jsx", "ws-author-detail.jsx",
+      "ws-author-side.jsx", "ws-author-ui.jsx", "ws-author-hooks.js", "ws-library-derive.jsx",
+      "ws-library-graph.jsx", "ws-library-overview.jsx", "ws-library-timeline.jsx", "ws-library-dossier.jsx", "ws-library-parts.jsx", "ws-trash.jsx", "ws-settings-ai-providers.jsx", "ws-settings-ai-routes.jsx", "ws-settings-ai-health.js",
+      "ws-manuscripts-store.jsx", "ws-manuscripts.jsx", "ws-labels.js", "ws-quality-ui.jsx", "ws-author.jsx",
+      "ws-manuscripts-compile.js", "ws-manuscripts-workflow.js", "ws-manuscripts-hero.jsx",
+      "ws-manuscripts-reader.jsx", "ws-manuscripts-canon.jsx", "ws-manuscripts-diff.jsx", "ws-manuscripts-dialogs.jsx",
+      "ws-scene.jsx", "ws-library.jsx", "ws-writer.jsx", "ws-dialog.jsx", "ws-ui.jsx",
+      "ws-nav.js", "ws-lazy.jsx", "ws-rail.jsx", "ws-work-switcher.jsx", "ws-notify.jsx", "ws-prefs.js",
+      "ws-cost-parts.jsx", "ws-cost-store.js", "ws-home-chapters.jsx", "ws-home-parts.jsx", "ws-home-states.jsx", "ws-quality-model.js",
+      "ws-quality-store.js", "ws-snow-chapters-model.js", "ws-snow-chapters-parts.jsx", "ws-snow-reply.jsx", "ws-snow-scene-list.jsx", "ws-snow-scene-plan.jsx",
+      "ws-scene-adopt.jsx", "ws-scene-api.js", "ws-scene-board-state.js", "ws-scene-decide.jsx", "ws-scene-derive.js", "ws-scene-evidence.jsx",
+      "ws-scene-job.jsx", "ws-scene-spine.jsx", "ws-scene-stage.jsx", "ws-scene-store.js", "ws-design-sync.jsx", "ws-chapter-run.jsx",
+      "ws-writer-ai.js", "ws-writer-annotations.js", "ws-writer-candidates.jsx", "ws-writer-catalog.js", "ws-writer-context.jsx", "ws-writer-deep-posture.js",
+      "ws-writer-doc.js", "ws-writer-dock.jsx", "ws-writer-entities.jsx", "ws-writer-header.jsx", "ws-writer-hooks.js", "ws-writer-inline.jsx",
+      "ws-writer-keys.js", "ws-writer-manuscript.js", "ws-writer-notes.jsx", "ws-writer-outline.jsx", "ws-writer-requests.js", "ws-writer-room.jsx",
+      "ws-writer-tray.jsx", "ws-snow-chrome.jsx", "ws-snow-coach.jsx", "ws-snow-fields.jsx", "ws-snow-history.jsx", "ws-snow-hooks.js",
+      "ws-snow-model.js", "ws-snow-rail.jsx", "ws-snow-scaffolds.jsx", "ws-snow-scenes.jsx",
     ];
     for (const name of esmOnly) {
       const source = fs.readFileSync(path.join(srcDir, name), "utf8");

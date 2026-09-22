@@ -11,6 +11,7 @@ import {
   srRunImport, srImportProgressView, srImportEntries, srImportDismiss, SrImportProgressPanel,
   srActivityApply, srActivityStop,
 } from "./ws-styleref.jsx";
+import { srSetViewMounted } from "./ws-styleref-store.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const mounted = [];
@@ -26,6 +27,18 @@ async function renderDialog(props) {
 }
 
 const chooseBtn = (host) => host.querySelector('[data-testid="sr-import-choose-file"]');
+/* 导入单子里自带文件框：把一个合成的文件塞进去并触发 change（jsdom 不开系统文件框）。 */
+const pickFile = (host, name = "参考.md") => act(async () => {
+  const input = host.querySelector('[data-testid="sr-import-file"]');
+  const file = new File(["片段"], name, { type: "text/markdown" });
+  Object.defineProperty(input, "files", { value: [file], configurable: true });
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+});
+const typeInto = (el, value) => act(async () => {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+});
+const PICKED = { file: expect.any(File), title: "参考", author: "" };
 /* 导入成功后 srSyncBooks 会经真实 client 再打 fetch 拉书库，只挑 import-upload 那一次。 */
 const uploadCalls = (fetchMock) => fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/books/import-upload"));
 const tick = (host, testId) => act(async () => host.querySelector(`[data-testid="${testId}"]`).click());
@@ -84,11 +97,12 @@ describe("参考书导入的数据出域选择", () => {
     await act(async () => host.querySelector('input[value="segments_only"]').click());
     await tick(host, "sr-rights-analysis");
     await tick(host, "sr-rights-send");
+    await pickFile(host);
     await act(async () => chooseBtn(host).click());
 
     expect(onChoose).toHaveBeenCalledWith("segments_only", {
       declared: true, analysis_rights: true, send_rights: true,
-    });
+    }, PICKED);
   });
 
   it("云端策略未勾发送权时「选择文件」保持禁用，勾满才放行", async () => {
@@ -98,6 +112,7 @@ describe("参考书导入的数据出域选择", () => {
     // 默认 local_only：只要求分析权，不出现发送权勾选框
     expect(host.querySelector('[data-testid="sr-rights-send"]')).toBeNull();
     expect(host.textContent).toContain(SR_RIGHTS_TERMS.analysis);
+    await pickFile(host);
     expect(chooseBtn(host).disabled).toBe(true);
 
     await act(async () => host.querySelector('input[value="allow_full_cloud"]').click());
@@ -118,7 +133,7 @@ describe("参考书导入的数据出域选择", () => {
     await act(async () => chooseBtn(host).click());
     expect(onChoose).toHaveBeenCalledWith("allow_full_cloud", {
       declared: true, analysis_rights: true, send_rights: true,
-    });
+    }, PICKED);
   });
 
   it("切回仅本机后声明里的发送权恒为 false，不带走多余授权", async () => {
@@ -129,13 +144,62 @@ describe("参考书导入的数据出域选择", () => {
     await tick(host, "sr-rights-analysis");
     await tick(host, "sr-rights-send");
     await act(async () => host.querySelector('input[value="local_only"]').click());
+    await pickFile(host);
 
     expect(host.querySelector('[data-testid="sr-rights-send"]')).toBeNull();
     expect(chooseBtn(host).disabled).toBe(false);
     await act(async () => chooseBtn(host).click());
     expect(onChoose).toHaveBeenCalledWith("local_only", {
       declared: true, analysis_rights: true, send_rights: false,
-    });
+    }, PICKED);
+  });
+
+  it("没选文件不放行；书名默认取文件名、可改，作者随单子一起交出；只收 txt / md", async () => {
+    const onChoose = vi.fn();
+    const host = await renderDialog({ open: true, onClose: vi.fn(), onChoose });
+    await tick(host, "sr-rights-analysis");
+    // 权属齐了但还没有文件：不放行
+    expect(chooseBtn(host).disabled).toBe(true);
+    await act(async () => chooseBtn(host).click());
+    expect(onChoose).not.toHaveBeenCalled();
+
+    await pickFile(host, "封面.pdf");
+    expect(chooseBtn(host).disabled).toBe(true);
+    expect(host.textContent).toContain("只能导入纯文本");
+
+    await pickFile(host, "河湾杂记.txt");
+    const titleInput = host.querySelector('[data-testid="sr-import-title"]');
+    expect(titleInput.value).toBe("河湾杂记");
+    expect(chooseBtn(host).disabled).toBe(false);
+    // 书名清空也不放行
+    await typeInto(titleInput, "  ");
+    expect(chooseBtn(host).disabled).toBe(true);
+    await typeInto(titleInput, "河湾杂记（修订）");
+    await typeInto(host.querySelector('[data-testid="sr-import-author"]'), "某作者");
+    await act(async () => chooseBtn(host).click());
+    expect(onChoose).toHaveBeenCalledWith("local_only", {
+      declared: true, analysis_rights: true, send_rights: false,
+    }, { file: expect.any(File), title: "河湾杂记（修订）", author: "某作者" });
+    expect(onChoose.mock.calls[0][2].file.name).toBe("河湾杂记.txt");
+  });
+
+  it("先填了书名再选文件：书名不被文件名覆盖；清空书名后再换文件才按文件名填", async () => {
+    const onChoose = vi.fn();
+    const host = await renderDialog({ open: true, onClose: vi.fn(), onChoose });
+    const titleInput = () => host.querySelector('[data-testid="sr-import-title"]');
+    await typeInto(titleInput(), "我先起的书名");
+    await pickFile(host, "文件名.txt");
+    expect(titleInput().value).toBe("我先起的书名");
+    await pickFile(host, "另一个文件.md");
+    expect(titleInput().value).toBe("我先起的书名");
+    await typeInto(titleInput(), "");
+    await pickFile(host, "第三个.txt");
+    expect(titleInput().value).toBe("第三个");
+    // 没动过书名：换文件跟着换
+    const again = await renderDialog({ open: true, onClose: vi.fn(), onChoose });
+    await pickFile(again, "甲.txt");
+    await pickFile(again, "乙.txt");
+    expect(again.querySelector('[data-testid="sr-import-title"]').value).toBe("乙");
   });
 
   it("srRightsReady 与后端 _normalize_rights_declaration 的红线一致", () => {
@@ -215,6 +279,28 @@ describe("srImportBook 上传表单的权属声明", () => {
     const undeclared = uploadCalls(fetchMock)[1][1].body;
     expect(undeclared.get("cloud_policy")).toBe("local_only");
     expect(undeclared.has("rights_declaration")).toBe(false);
+    // 旧流程（文件框 + prompt）没有作者：不带 author_label
+    expect(undeclared.has("author_label")).toBe(false);
+  });
+
+  it("导入单子交来文件、书名与作者：不开文件框、不弹 prompt，作者写进 author_label", async () => {
+    const { fetchMock, createSpy } = stubImportPipeline();
+    const file = new File(["片段"], "河湾杂记.md", { type: "text/markdown" });
+
+    srImportBook("local_only", { declared: true, analysis_rights: true, send_rights: false }, { file, title: "河湾杂记", author: "某作者" });
+    await vi.waitFor(() => expect(uploadCalls(fetchMock)).toHaveLength(1));
+    await vi.waitFor(() => expect(importSucceeded()).toHaveLength(1));
+    const body = uploadCalls(fetchMock)[0][1].body;
+    expect(body.get("title")).toBe("河湾杂记");
+    expect(body.get("author_label")).toBe("某作者");
+    expect(body.get("file").name).toBe("河湾杂记.md");
+    expect(window.prompt).not.toHaveBeenCalled();
+    expect(createSpy).not.toHaveBeenCalledWith("input");
+
+    // 作者留空就不带这个字段
+    srImportBook("local_only", { declared: true, analysis_rights: true, send_rights: false }, { file, title: "河湾杂记", author: "  " });
+    await vi.waitFor(() => expect(uploadCalls(fetchMock)).toHaveLength(2));
+    expect(uploadCalls(fetchMock)[1][1].body.has("author_label")).toBe(false);
   });
 
   it("云端策略没有发送权声明：同步抛错，不开文件选择器、不发请求", () => {
@@ -228,7 +314,7 @@ describe("srImportBook 上传表单的权属声明", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("后端仍拒绝时原样透出信封里的 message 与 code", async () => {
+  it("后端仍拒绝时原样透出信封里的 message；code 另存在条目上（只进悬停提示，不拼进作者读的那句话）", async () => {
     const { fetchMock } = stubImportPipeline({
       response: {
         ok: false,
@@ -247,16 +333,26 @@ describe("srImportBook 上传表单的权属声明", () => {
       },
     });
 
-    srImportBook("segments_only", { declared: true, analysis_rights: true, send_rights: true });
-    await vi.waitFor(() => expect(uploadCalls(fetchMock)).toHaveLength(1));
-    // 风格参考页没挂着时弹窗兜底；面板条目同样带原因。
-    await vi.waitFor(() => expect(window.alert).toHaveBeenCalledTimes(1));
+    // 风格参考页挂着也要提示：≤1280 时「参考书活动」收在「参考书库」抽屉里，导入单子一关页面上什么都没变。
+    // （没有提示层时 srNotify 退回 alert，这里据此断言。）
+    srSetViewMounted(true);
+    try {
+      srImportBook("segments_only", { declared: true, analysis_rights: true, send_rights: true });
+      await vi.waitFor(() => expect(uploadCalls(fetchMock)).toHaveLength(1));
+      await vi.waitFor(() => expect(window.alert).toHaveBeenCalledTimes(1));
+    } finally {
+      srSetViewMounted(false);
+    }
     const shown = window.alert.mock.calls[0][0];
     expect(shown).toContain("导入失败");
     expect(shown).toContain("云端策略需要用户显式声明发送权；请确认声明或改用 local_only。");
-    expect(shown).toContain("STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED");
+    expect(shown).not.toContain("STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED");
+    expect(shown).toContain("「参考书库」的「参考书活动」");
+    // 面板条目同样带原因；错误代码另存，界面放进悬停提示
     const failed = srImportEntries().find((e) => e.status === "failed");
-    expect(failed.error).toContain("STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED");
+    expect(failed.error).toContain("云端策略需要用户显式声明发送权");
+    expect(failed.error).not.toContain("STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED");
+    expect(failed.errorCode).toBe("STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED");
   });
 });
 

@@ -91,7 +91,7 @@ export function arrLensChapters(chapters) {
   });
 }
 
-/* 全书层面：这是不是一部雪花整理出来的书、POV 怎么分布、还有哪些章没起名 / 哪些场没规划三拍 */
+/* 全书层面：这是不是一部雪花整理出来的书、POV 怎么分布、还有哪些章没起名 / 哪些场没规划三拍、写了多少字 */
 export function arrBookFacts(chapters) {
   const list = chapters || [];
   const planChapters = list.filter(arrIsPlanChapter);
@@ -106,10 +106,65 @@ export function arrBookFacts(chapters) {
     povScenes: countBy(scenes.map((x) => clean(x.scene.povName))),
     unnamed: planChapters.filter((c) => c.structure.titleAuto),
     unplanned: scenes.filter((x) => arrIsPlanScene(x.scene) && !arrSceneBeatsPlanned(x.scene)),
-    // 这些章级数据产品里没有编辑入口：只有旧数据 / 夹具里才有，有了镜头才出现
-    hasTension: list.some((c) => c.tensionSet),
-    hasThreads: list.some((c) => (c.threads || []).length > 0),
+    words: list.reduce((n, c) => n + ((c.words && c.words.cur) || 0), 0),
+    /* 全书字数目标只在每一章都设过目标时才有意义：只设了一章时「4,004 / 4,000 = 100%」是假的 */
+    wordsTarget: list.length && list.every((c) => c.words && c.words.target > 0)
+      ? list.reduce((n, c) => n + c.words.target, 0) : 0,
   };
+}
+
+/* 章的显示状态。已批准 / 审阅中是后端流程给的；其余（后端的「规划中 / 草稿 / 进行中」写作时从不推进）
+   按各场读：有一场在写 / 写完、或者已经有字 = 写作中，否则 = 规划中。只用于显示，绝不回写。 */
+export function arrChapterStatus(c) {
+  const raw = c && c.state;
+  if (raw === "approved" || raw === "review") return { key: raw, derived: false };
+  const scenes = (c && c.scenes) || [];
+  const started = ((c && c.words && c.words.cur) || 0) > 0
+    || scenes.some((s) => s.state === "writing" || s.state === "done" || (s.words || 0) > 0);
+  return { key: started ? "writing" : "planned", derived: true };
+}
+
+/* 章节体检（右栏 + 页头「体检」按钮上的待办数）：只报读得出来的事实。
+   snow = { canPlan, pending }：这部作品有没有构思的分章、还有几场改动没同步到场景卡。 */
+export function arrChapterChecks(ch, snow) {
+  const scenes = (ch && ch.scenes) || [];
+  const facts = arrChapterFacts(ch);
+  const drama = (ch && ch.drama) || {};
+  const dramaDone = DRAMA_KEYS.filter((k) => !isBlank(drama[k])).length;
+  const ready = scenes.filter((s) => s.state === "done" || s.state === "writing").length;
+  const words = (ch && ch.words) || { cur: 0, target: 0 };
+  /* 没设字数目标（雪花整理出来的章都没有）就不谈预算：0 目标下任何字数都会被算成「超额」 */
+  const pct = words.target > 0 ? words.cur / words.target : 0;
+  const budget = !(words.target > 0) ? { val: "未设目标" }
+    : words.cur === 0 ? { val: "未开始", warn: true }
+    : pct < 0.85 ? { val: "进行", warn: true }
+    : pct <= 1.12 ? { val: "在轨", ok: true }
+    : { val: "超额", warn: true };
+  const rows = [
+    { key: "beats", label: "三拍已规划", val: `${facts.beats.planned}/${facts.beats.total}`,
+      ok: facts.beats.total > 0 && facts.beats.planned === facts.beats.total, warn: facts.beats.planned < facts.beats.total || !facts.beats.total },
+    { key: "started", label: "场景动笔", val: `${ready}/${scenes.length}`,
+      ok: ready === scenes.length && scenes.length > 0, warn: ready < scenes.length },
+    { key: "drama", label: "戏剧卡（可选）", val: `${dramaDone}/${DRAMA_KEYS.length}`, ok: dramaDone === DRAMA_KEYS.length },
+    { key: "budget", label: "字数预算", val: budget.val, ok: !!budget.ok, warn: !!budget.warn },
+  ];
+  if (snow && snow.canPlan) {
+    rows.push({ key: "sync", label: "与构思同步", val: snow.pending ? `${snow.pending} 场待同步` : "已同步", ok: !snow.pending, warn: !!snow.pending });
+  }
+  return rows;
+}
+
+/* 戏剧卡的六格（护栏「禁止包含 / 备注」不算在内） */
+export const DRAMA_KEYS = ["promise", "problem", "spine", "arc", "aftertaste", "ending"];
+
+/* 各卷在章序上占的列（节奏镜头的卷带）。卷在目录里是连续的；不连续时取首尾。 */
+export function arrActSpans(chapters) {
+  const list = chapters || [];
+  return ARR_ACTS.map((a) => {
+    const idxs = list.map((c, i) => (c.act === a.id ? i : -1)).filter((i) => i >= 0);
+    if (!idxs.length) return null;
+    return { a, from: Math.min(...idxs), to: Math.max(...idxs) };
+  }).filter(Boolean);
 }
 
 /* 结构镜头：卷 → 章 → 场（故事序）。章的灾难标记落在它的最后一场上（灾难场收束所在的章）。 */

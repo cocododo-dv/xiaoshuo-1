@@ -15,35 +15,9 @@ vi.mock("./lib/client.js", () => ({
   apiDelete: vi.fn(),
 }));
 
-// SnowSync 只从 ws-snow.jsx 取 S2_BE_STEPS 这份纯映射；mock 掉避免拉入整张雪花视图模块。
-vi.mock("./ws-snow.jsx", () => ({
-  S2_BE_STEPS: [
-    ["audience", "book_brief"], ["logline", "one_sentence_summary"], ["paragraph", "one_paragraph_summary"],
-    ["characters", "character_sheets"], ["synopsis", "short_synopsis"], ["backstory", "character_synopses"],
-    ["outline", "long_synopsis"], ["profile", "character_bibles"], ["scenes", "scene_list"], ["planning", "scene_details"],
-  ],
-  s2NormalizeState: (saved) => {
-    const feKeys = ["audience", "logline", "paragraph", "characters", "synopsis", "backstory", "outline", "profile", "scenes", "planning"];
-    return {
-      ...saved,
-      drafts: { ...Object.fromEntries(feKeys.map(k => [k, ""])), ...(saved.drafts || {}) },
-      scaffolds: {
-        audience: { genre: "", reader: "", pleasure: "", source: "", exclude: "", emotion: "" },
-        paragraph: { premiseF: "", premiseT: "", setup: "", d1: "", d2: "", d3: "", resolution: "" },
-        characters: { sel: "c1", chars: { c1: { name: "", role: "主角", goal: "", ambition: "", values: "", conflict: "", epiphany: "" } } },
-        synopsis: { paras: { setup: "", d1: "", d2: "", d3: "", resolution: "" } },
-        backstory: { sel: "c1", chars: { c1: { name: "", role: "主角", belief: "", wound: "", desire: "", fear: "", relation: "" } } },
-        outline: { chapters: [] },
-        profile: { sel: "c1", chars: { c1: { name: "", role: "主角", physical: "", psych: "", environment: "", personality: "", contradiction: "", views: "" } } },
-        scenes: { lines: [], list: [] }, planning: { sel: "", plans: {} },
-        ...(saved.scaffolds || {}),
-      },
-      checks: { ...Object.fromEntries(feKeys.map(k => [k, []])), ...(saved.checks || {}) },
-      states: { ...Object.fromEntries(feKeys.map(k => [k, "todo"])), ...(saved.states || {}) },
-      history: Array.isArray(saved.history) ? saved.history : [],
-    };
-  },
-}));
+// SnowSync 从 ws-snow-model.js 取 S2_BE_STEPS 与 s2NormalizeState——一个不 import 任何东西的叶子模块，
+// 这里直接用真的（以前它们住在整张雪花视图里，只好 mock 一份简化版；简化版少了几个空白字段，
+// 「从没动过的空白步」的判定用的就不是线上那一份空白稿了）。
 
 const T = { timeout: 5000, interval: 25 };
 const CACHE_KEY = "ws_snow_state_v2::prj-main";

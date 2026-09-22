@@ -185,12 +185,16 @@ describe("章节编排 · 服务端目录真相", () => {
     localStorage.setItem("arr.picked", JSON.stringify("ch01"));
     catalogState.ready = true;
     catalogState.chapters = [chapter("ch01", "第一章", {
-      scenes: [{ sid: "s1", backendId: "b1", title: "开场", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }],
+      scenes: [
+        { sid: "s1", backendId: "b1", title: "开场", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" },
+        { sid: "s2", backendId: "b2", title: "构思的场", kind: "主动", state: "todo", goal: "目标", obstacle: "冲突", turn: "挫折", design: { origin: "snowflake", owner: "plan" } },
+      ],
     })];
     await act(async () => root.render(<WsAuthor />));
 
     expect(byText("button", "交给 AI")).toBeTruthy();
     expect(host.querySelector('input[aria-label="场景标题"]')).toHaveProperty("disabled", false);
+    expect(host.querySelector('[data-testid="arr-scene-edit-plan"]')).not.toBeNull();
 
     await act(async () => click(host.querySelector('[data-testid="author-scene-select-mode"]')));
 
@@ -198,6 +202,11 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(byText("button", "自己写")).toBeUndefined();
     expect(host.querySelector(".arr-scene-more")).toBeNull();
     expect(host.querySelector('input[aria-label="场景标题"]')).toHaveProperty("disabled", true);
+    // 雪花的场：三拍不再是能点开的按钮，直达构思的链接也收起——点哪儿都只是「选中」
+    expect(host.querySelector('[data-testid="arr-scene-edit-plan"]')).toBeNull();
+    expect(host.querySelector("button.arr-beats")).toBeNull();
+    await act(async () => click(host.querySelectorAll(".arr-scene")[1].querySelector(".arr-beats")));
+    expect(host.textContent).toContain("已选 1 / 2 场");
   });
 
   it("批量删除被作者取消时不写目录（confirm 是真闸门，不是装饰）", async () => {
@@ -258,21 +267,39 @@ describe("章节编排 · 服务端目录真相", () => {
 
     const rows = [...host.querySelectorAll(".arr-scene")];
     const [planRow, handRow] = rows;
-    const planInputs = [...planRow.querySelectorAll(".arr-gmc-input")];
-    expect(planInputs).toHaveLength(4);
-    expect(planInputs.every((input) => input.readOnly)).toBe(true);
+    // 雪花的场：三拍与 POV 是整句文字，不是只读输入框（以前的只读框把长句截在 240px，还白占四个 Tab 位）
+    expect(planRow.querySelectorAll(".arr-gmc-input")).toHaveLength(0);
+    const planBeats = planRow.querySelector('[data-testid="arr-scene-plan-owned"]');
+    expect(planBeats.textContent).toContain("查到寄信人");
+    expect(planBeats.textContent).toContain("线索断在码头");
+    expect(planBeats.textContent).toContain("林昭");
+    expect(planRow.querySelector('[data-testid="arr-scene-edit-plan"]')).not.toBeNull();
     expect(planRow.querySelector(".arr-scene-grip").getAttribute("draggable")).toBe("false");
     expect(planRow.querySelector(".arr-cyc")).toHaveProperty("disabled", true);
     expect(planRow.querySelector('input[aria-label="场景标题"]')).toHaveProperty("disabled", false);
-    expect([...handRow.querySelectorAll(".arr-gmc-input")].every((input) => !input.readOnly)).toBe(true);
+    const handInputs = [...handRow.querySelectorAll(".arr-gmc-input")];
+    expect(handInputs).toHaveLength(4);
+    expect(handInputs.every((input) => !input.readOnly && !input.disabled)).toBe(true);
     expect(handRow.querySelector(".arr-scene-grip").getAttribute("draggable")).toBe("true");
     expect(handRow.querySelector(".arr-cyc")).toHaveProperty("disabled", false);
     expect(handRow.querySelector('[data-testid="arr-scene-edit-plan"]')).toBeNull();
 
-    // 只读不是摆设：失焦不会把一个注定被后端 409 的改动乐观写进目录
-    await act(async () => { planInputs[0].focus(); planInputs[0].blur(); });
+    // 只读不是摆设：点三拍只是展开全文、点形态不切换——都不会把一个注定被后端 409 的改动乐观写进目录
+    const beatsToggle = planBeats.querySelector(".arr-beats");
+    await act(async () => click(beatsToggle));
+    expect(beatsToggle.getAttribute("aria-expanded")).toBe("true");
     await act(async () => click(planRow.querySelector(".arr-cyc")));
+    // 失焦但没改：题名与手加场的三拍都不写
+    const planTitle = planRow.querySelector('input[aria-label="场景标题"]');
+    await act(async () => { planTitle.focus(); planTitle.blur(); handInputs[0].focus(); handInputs[0].blur(); });
     expect(WsCatalog.set).not.toHaveBeenCalled();
+
+    // 手加的场：三拍就在这里改，失焦写回
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => { setter.call(handInputs[0], "找到后门"); handInputs[0].dispatchEvent(new Event("input", { bubbles: true })); handInputs[0].focus(); handInputs[0].blur(); });
+    expect(WsCatalog.set).toHaveBeenCalledTimes(1);
+    expect(WsCatalog.set.mock.calls[0][0][0].scenes.find((sc) => sc.sid === "SC_hand").goal).toBe("找到后门");
+    WsCatalog.set.mockClear();
 
     // 「在构思里改」：回构思第 10 步并对准这一场
     const seen = [];
@@ -347,7 +374,14 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(doctor).not.toContain("字数超额");
     expect(doctor).not.toContain("张力曲线健康");
     expect(doctor).toContain("还没起名的章");
-    expect(doctor).toContain("林昭 3 场");
+    // 视角分布只在结构镜头的摘要条上出现一次（体检不再重复一遍）
+    expect(doctor).not.toContain("视角分布");
+    expect(lens.querySelector(".arr-lens-summary").textContent).toContain("林昭 3 场");
+    // 没有「卷 3 / 进度 0%」这种要么是常数、要么是假数的统计块
+    expect(host.querySelector(".arr-ov-stats")).toBeNull();
+    // 章的状态按各场读：写完一场的章是「写作中」，一场没动的仍是「规划中」
+    expect(cards[0].querySelector(".arr-card-state").textContent).toBe("写作中");
+    expect(cards[1].querySelector(".arr-card-state").textContent).toBe("规划中");
 
     // 点场 = 进章节详情并落在那一场上
     await act(async () => click(lens.querySelectorAll(".arr-spine-cell")[1]));
@@ -355,14 +389,19 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(host.querySelectorAll(".arr-scene")[1].className).toContain("is-active");
   });
 
-  it("旧数据里真的有章级张力 / 线索时，那两个镜头才出现", async () => {
+  it("章级张力 / 线索没有编辑入口：旧数据里有也不再画「故事弧线」「线索织布机」，体检不报张力、线索", async () => {
     catalogState.ready = true;
     catalogState.chapters = [
       chapter("ch01", "旧章", { tension: 0.8, tensionSet: true, threads: [{ name: "旧信", role: "新引" }] }),
       chapter("ch02", "旧章二", { tension: 0.4, tensionSet: true }),
     ];
+    localStorage.setItem("arr.lens", JSON.stringify("arc"));   // 旧版记住的镜头：落回结构镜头
     await act(async () => root.render(<WsAuthor />));
-    expect([...host.querySelectorAll(".arr-arc .seg-btn")].map((node) => node.textContent)).toEqual(["结构", "节奏镜头", "故事弧线", "线索织布机"]);
+    expect([...host.querySelectorAll(".arr-arc .seg-btn")].map((node) => node.textContent)).toEqual(["结构", "节奏镜头"]);
+    expect(host.querySelector('[data-testid="arr-spine-lens"]')).not.toBeNull();
+    const doctor = host.querySelector(".arr-doctor").textContent;
+    expect(doctor).not.toContain("张力");
+    expect(doctor).not.toContain("线索");
   });
 
   it("「整理章节结构」就在章节编排里开：同一张面板、同一条落库路径，确认后给回执", async () => {
@@ -485,14 +524,241 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(host.querySelector(".arr-doctor").textContent).not.toContain("与构思一致");
   });
 
-  it("空目录：构思已经就绪时，第一扇门就是「把构思整理成章节」", async () => {
+  it("总览页头和其他页同一个语法：标题上面不再挂作品名小字，页头动作是同一个（默认）尺寸", async () => {
+    installSnowSync();
+    catalogState.ready = true;
+    catalogState.chapters = [planChapter("ch01", "雨夜来信", { scenes: [planScene("SC1", 1)] })];
+    await act(async () => root.render(<WsAuthor />));
+    const head = host.querySelector(".arr-ov-head .ws-page-head");
+    expect(head.querySelector("h1").textContent).toBe("章节编排");
+    expect(head.querySelector(".ws-page-crumb")).toBeNull();
+    expect(head.textContent).not.toContain("测试作品");
+    const buttons = [...head.querySelectorAll(".ws-page-actions > .btn")];
+    const texts = buttons.map((b) => b.textContent.trim());
+    for (const t of ["整理章节结构", "刷新", "多选", "新建章节"]) expect(texts.some((x) => x.startsWith(t))).toBe(true);
+    for (const b of buttons) expect(b.classList.contains("btn-sm")).toBe(false);
+  });
+
+  it("空目录：构思已经就绪时，第一扇门就是「整理章节结构」", async () => {
     installSnowSync();
     catalogState.ready = true;
     catalogState.chapters = [];
     await act(async () => root.render(<WsAuthor />));
+    // 同一张面板在全站只叫一个名字（构思页头、章节编排页头、空目录的第一扇门）
+    expect(host.querySelector('[data-testid="author-empty-open-plan"]').textContent.trim()).toBe("整理章节结构");
     await act(async () => click(host.querySelector('[data-testid="author-empty-open-plan"]')));
     await act(async () => {});
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).not.toBeNull();
+  });
+
+  it("戏剧卡：AI 编排写入 / 目录重拉带来新值时框里显示新值；失焦没改就不写回（以前会把刚应用的建议冲掉）", async () => {
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [chapter("ch01", "第一章", { drama: { promise: "旧的承诺" } })];
+    await act(async () => root.render(<WsAuthor />));
+    const promise = () => host.querySelector('textarea[aria-label="核心承诺"]');
+    expect(promise().value).toBe("旧的承诺");
+
+    // 服务端来了新值（plan/apply 之后的重拉）
+    catalogState.chapters = [chapter("ch01", "第一章", { drama: { promise: "AI 补上的承诺" } })];
+    await act(async () => root.render(<WsAuthor />));
+    expect(promise().value).toBe("AI 补上的承诺");
+    await act(async () => { promise().focus(); promise().blur(); });
+    expect(WsCatalog.set).not.toHaveBeenCalled();
+
+    // 真改了才写回
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    await act(async () => { setter.call(promise(), "作者自己的承诺"); promise().dispatchEvent(new Event("input", { bubbles: true })); promise().focus(); promise().blur(); });
+    expect(WsCatalog.set).toHaveBeenCalledTimes(1);
+    expect(WsCatalog.set.mock.calls[0][0][0].drama.promise).toBe("作者自己的承诺");
+  });
+
+  it("戏剧卡一格都没写时收成一行（场景看板排在它前面）；点开才出现各格", async () => {
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [chapter("ch01", "第一章", { scenes: [{ sid: "s1", backendId: "b1", title: "开场", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }] })];
+    await act(async () => root.render(<WsAuthor />));
+    const toggle = host.querySelector(".arr-drama-toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toContain("可选 · 0/6");
+    expect(host.querySelector('textarea[aria-label="核心承诺"]')).toBeNull();
+    const body = host.querySelector(".arr-ed-body");
+    const order = [...body.children].map((node) => node.className);
+    expect(order.findIndex((name) => name.includes("arr-scenes"))).toBeLessThan(order.findIndex((name) => name.includes("arr-drama")));
+    await act(async () => click(toggle));
+    expect(host.querySelector('textarea[aria-label="核心承诺"]')).not.toBeNull();
+  });
+
+  it("戏剧卡开过就不因内容清空而收起：清空唯一写过的一格、Tab 到下一格，焦点还在下一格里", async () => {
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [chapter("ch01", "第一章", { drama: { promise: "唯一写过的一格" } })];
+    WsCatalog.set.mockImplementationOnce((next) => { catalogState.chapters = next; });
+    await act(async () => root.render(<WsAuthor />));
+    expect(host.querySelector(".arr-drama").className).toContain("is-open");
+
+    const promise = host.querySelector('textarea[aria-label="核心承诺"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    await act(async () => { promise.focus(); setter.call(promise, ""); promise.dispatchEvent(new Event("input", { bubbles: true })); });
+    // Tab 到下一格：焦点先进「章节问题」，失焦写回让内容变空，目录随之重拉
+    await act(async () => { host.querySelector('textarea[aria-label="章节问题"]').focus(); });
+    await act(async () => root.render(<WsAuthor />));
+    expect(WsCatalog.set).toHaveBeenCalledTimes(1);
+    expect(catalogState.chapters[0].drama.promise).toBe("");
+    expect(host.querySelector(".arr-drama").className).toContain("is-open");
+    expect(document.activeElement).toBe(host.querySelector('textarea[aria-label="章节问题"]'));
+  });
+
+  it("输入法选词的那一下回车不算「改完了」：章节标题不失焦、不写目录；真正的回车才写回", async () => {
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [chapter("ch01", "第一章")];
+    await act(async () => root.render(<WsAuthor />));
+    const title = host.querySelector('input[aria-label="章节标题"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => { title.focus(); setter.call(title, "半截"); title.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { title.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true })); });
+    expect(document.activeElement).toBe(title);
+    expect(WsCatalog.set).not.toHaveBeenCalled();
+    await act(async () => { title.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(WsCatalog.set).toHaveBeenCalledTimes(1);
+    expect(WsCatalog.set.mock.calls[0][0][0].title).toBe("半截");
+  });
+
+  it("体检抽屉开着时窗口宽过断点：抽屉自己收起，焦点陷阱不留在看不见的抽屉上", async () => {
+    const listeners = new Set();
+    const mq = {
+      matches: true,
+      addEventListener: (type, fn) => listeners.add(fn),
+      removeEventListener: (type, fn) => listeners.delete(fn),
+    };
+    const other = { matches: false, addEventListener: () => {}, removeEventListener: () => {} };
+    const queries = [];
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: (query) => { queries.push(query); return query === "(max-width: 1360px)" ? mq : other; } });
+    try {
+      localStorage.setItem("arr.mode", JSON.stringify("detail"));
+      localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+      catalogState.ready = true;
+      catalogState.chapters = [chapter("ch01", "第一章")];
+      await act(async () => root.render(<WsAuthor />));
+
+      await act(async () => click(host.querySelector('[data-testid="arr-ctx-toggle"]')));
+      expect(host.querySelector("#arr-ctx").className).toContain("is-open");
+      expect(queries).toContain("(max-width: 1360px)");           // 与 ws-author.css 的抽屉断点是同一个
+      expect(listeners.size).toBe(1);
+
+      mq.matches = false;                                          // 最大化 / 缩放：宽过 1360
+      await act(async () => { listeners.forEach((fn) => fn({ matches: false })); });
+      expect(host.querySelector("#arr-ctx").className).not.toContain("is-open");
+      expect(host.querySelector('[data-testid="arr-ctx-toggle"]').getAttribute("aria-expanded")).toBe("false");
+      expect(listeners.size).toBe(0);                              // 关上就不再听
+    } finally {
+      delete window.matchMedia;
+    }
+  });
+
+  it("新建章节只有一份配方（WsCatalog.addChapter）：页头接在当前章后面，卷尾接在那一卷最后，建好就打开", async () => {
+    catalogState.ready = true;
+    catalogState.chapters = [chapter("ch01", "第一章"), chapter("ch02", "第二章", { act: "act2" })];
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    let made = 0;
+    WsCatalog.addChapter.mockImplementation(() => {
+      made += 1;
+      const created = chapter(`ch-new-${made}`, `新章 ${made}`, { state: "planned", words: { cur: 0, target: 0 } });
+      catalogState.chapters = [catalogState.chapters[0], created, ...catalogState.chapters.slice(1)];
+      return created;
+    });
+    await act(async () => root.render(<WsAuthor />));
+
+    await act(async () => click(byText("button", "在卷二新建章节")));
+    expect(WsCatalog.addChapter).toHaveBeenLastCalledWith({ act: "act2" });
+
+    await act(async () => root.render(<WsAuthor />));
+    await act(async () => click(host.querySelector(".arr-ed-crumb .arr-back")));
+    await act(async () => click([...host.querySelectorAll(".ws-page-actions button")].find((node) => node.textContent.includes("新建章节"))));
+    // 刚才建好、打开过的那一章就是「当前章」：页头的新建接在它后面
+    expect(WsCatalog.addChapter).toHaveBeenLastCalledWith({ afterId: "ch-new-1" });
+    await act(async () => root.render(<WsAuthor />));
+    expect(host.querySelector(".arr-shell").getAttribute("data-mode")).toBe("detail");
+    expect(host.querySelector('input[aria-label="章节标题"]').value).toBe("新章 2");
+    // 视图自己不再拼章（张力 / 占位 / 4000 字目标都不会从这里冒出来）
+    expect(WsCatalog.set).not.toHaveBeenCalled();
+  });
+
+  it("手建的章用抓手上的方向键挪：同卷换位；构思分出来的章抓手只是标记", async () => {
+    installSnowSync();
+    catalogState.ready = true;
+    catalogState.chapters = [
+      chapter("ch01", "手建一"), chapter("ch02", "手建二"),
+      planChapter("ch03", "构思的章", { act: "act2", scenes: [planScene("SC1", 1)] }),
+    ];
+    await act(async () => root.render(<WsAuthor />));
+    const cards = [...host.querySelectorAll('[data-testid="arr-chapter-card"]')];
+    expect(cards[2].querySelector("button.arr-card-grip")).toBeNull();
+    const grip = cards[1].querySelector("button.arr-card-grip");
+    await act(async () => { grip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true })); });
+    expect(WsCatalog.set).toHaveBeenCalledTimes(1);
+    expect(WsCatalog.set.mock.calls[0][0].map((c) => c.id)).toEqual(["ch02", "ch01", "ch03"]);
+  });
+
+  it("章节详情的序列栏：手建的章按 Alt + 方向键挪（光按方向键不挪），挪完焦点还在那一章；构思分出来的章不动", async () => {
+    installSnowSync();
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [
+      chapter("ch01", "手建一"), chapter("ch02", "手建二"),
+      planChapter("ch03", "构思的章", { act: "act2", scenes: [planScene("SC1", 1)] }),
+    ];
+    await act(async () => root.render(<WsAuthor />));
+    const railRow = (id) => host.querySelector(`.arr-rail-row[data-arr-move="ch:${id}"]`);
+    const press = (node, init) => node.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
+
+    await act(async () => { railRow("ch02").focus(); press(railRow("ch02"), { key: "ArrowUp" }); });
+    expect(WsCatalog.set).not.toHaveBeenCalled();
+    await act(async () => { press(railRow("ch03"), { key: "ArrowUp", altKey: true }); });
+    expect(WsCatalog.set).not.toHaveBeenCalled();
+    expect(railRow("ch03").hasAttribute("aria-keyshortcuts")).toBe(false);
+
+    await act(async () => { railRow("ch01").focus(); press(railRow("ch01"), { key: "ArrowDown", altKey: true }); });
+    expect(WsCatalog.set).toHaveBeenCalledTimes(1);
+    expect(WsCatalog.set.mock.calls[0][0].map((c) => c.id)).toEqual(["ch02", "ch01", "ch03"]);
+    expect(document.activeElement).toBe(railRow("ch01"));
+
+    // 到了卷尾再按一下：归到下一卷。那一行在另一卷的列表里重建，焦点要找回来，不然键盘挪位只能挪一格
+    await act(async () => { press(railRow("ch01"), { key: "ArrowDown", altKey: true }); });
+    expect(WsCatalog.set).toHaveBeenCalledTimes(2);
+    expect(WsCatalog.set.mock.calls[1][0].map((c) => `${c.id}:${c.act}`)).toEqual(["ch02:act1", "ch01:act2", "ch03:act2"]);
+    expect(document.activeElement).toBe(railRow("ch01"));
+  });
+
+  it("跨视图的去处都走外壳的 go：构思第 10 步那一场、写作台、AI 起草台、回收站", async () => {
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [chapter("ch01", "雨夜来信", {
+      scenes: [{ sid: "SC_plan", backendId: "SC_plan_b", title: "旧信到了", kind: "主动", state: "todo", goal: "查到寄信人", obstacle: "邮局不肯查", turn: "线索断在码头",
+        povName: "林昭", design: { origin: "snowflake", owner: "plan" } }],
+    })];
+    const go = vi.fn(() => true);
+    await act(async () => root.render(<WsAuthor go={go} />));
+
+    await act(async () => click(host.querySelector('[data-testid="arr-scene-edit-plan"]')));
+    expect(go).toHaveBeenLastCalledWith("snowflake", [
+      { type: "ws:snow-step", detail: "planning" },
+      { type: "ws:snow-scene", detail: "SC_plan_b" },
+    ]);
+    await act(async () => click(byText("button", "交给 AI")));
+    expect(go).toHaveBeenLastCalledWith("scene", [{ type: "ws:scene-enqueue", detail: { sid: "SC_plan" } }]);
+    await act(async () => click(byText("button", "自己写")));
+    expect(go).toHaveBeenLastCalledWith("writer", [{ type: "ws:writer-scene", detail: "SC_plan" }]);
+    await act(async () => click(byText(".arr-scenes-actions button", "回收站")));
+    expect(go).toHaveBeenLastCalledWith("trash");
+    expect(window.location.hash).not.toBe("#snowflake");   // 有外壳就不自己改 hash
   });
 
   it("目录请求失败与真空作品分开呈现，并提供真实重试", async () => {
@@ -505,5 +771,52 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => retry.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(WsCatalog.__refresh).toHaveBeenCalledTimes(1);
     expect(WsCatalog.set).not.toHaveBeenCalled();
+  });
+});
+
+describe("章节编排 · 键盘焦点跟着视图走（2026-09-21 a11y 复审）", () => {
+  it("从全书编排点开一章，焦点落在这一章的详情上；回到全书编排，焦点回到那一章的标题按钮", async () => {
+    catalogState.ready = true;
+    catalogState.chapters = [chapter("ch01", "第一章"), chapter("ch02", "第二章")];
+    await act(async () => root.render(<WsAuthor />));
+    // 章名「第二章」是系统占位：行上只写一遍章号「第 2 章」（不再是「02 第二章」）
+    const title = [...host.querySelectorAll(".arr-card-title")].find((node) => node.textContent === "第 2 章");
+    await act(async () => { title.focus(); });
+    await act(async () => click(title));
+
+    expect(host.querySelector(".arr-shell").getAttribute("data-mode")).toBe("detail");
+    const detail = host.querySelector(".arr-ed");
+    expect(detail.getAttribute("aria-label")).toBe("第 2 章");
+    expect(document.activeElement).toBe(detail);                     // 过去掉到 <body>
+
+    await act(async () => click(host.querySelector(".arr-ed-crumb .arr-back")));
+    expect(host.querySelector(".arr-shell").getAttribute("data-mode")).toBe("overview");
+    expect(document.activeElement.classList.contains("arr-card-title")).toBe(true);
+    expect(document.activeElement.textContent).toBe("第 2 章");
+  });
+
+  it("体检抽屉开着时是模态对话框（role=dialog + aria-modal，名字来自抽屉标题）；收起后只是一块有名字的区域", async () => {
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [chapter("ch01", "第一章")];
+    await act(async () => root.render(<WsAuthor />));
+    const ctx = host.querySelector("#arr-ctx");
+    expect(ctx.getAttribute("role")).toBeNull();
+    expect(ctx.getAttribute("aria-label")).toBe("章节体检与视角时空");
+
+    await act(async () => click(host.querySelector('[data-testid="arr-ctx-toggle"]')));
+    expect(ctx.className).toContain("is-open");
+    expect(ctx.getAttribute("role")).toBe("dialog");
+    expect(ctx.getAttribute("aria-modal")).toBe("true");
+    expect(document.getElementById(ctx.getAttribute("aria-labelledby")).textContent).toBe("本章体检");
+    expect(ctx.contains(document.activeElement)).toBe(true);
+
+    // 输入法组字中的 Esc 不收抽屉；真正的 Esc 收起
+    await act(async () => { document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true, bubbles: true })); });
+    expect(ctx.className).toContain("is-open");
+    await act(async () => { document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(ctx.className).not.toContain("is-open");
+    expect(ctx.getAttribute("role")).toBeNull();
   });
 });

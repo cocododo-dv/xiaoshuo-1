@@ -1,8 +1,9 @@
 import React from "react";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
+import { snowStepByBackendKey } from "./ws-nav.js";
+import { sceneLabel } from "./ws-labels.js";
 
-/* global window */
 /* ==========================================================
    WsWorks — 多作品管理（FE-ALIGN Phase 2：后端为唯一真相源）
    · 列表/创建/档案更新 走 /api/v2/projects（信封契约见 lib/client.js）
@@ -10,7 +11,8 @@ import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.j
    · get/list 保持同步语义：启动用本地缓存影子即时渲染，API 返回后失效更新
    · 字数/进度字段（wordsTotal/wordsToday/streak/chaptersWritten）只读派生：
      由 writing-stats / dashboard 填充，update() 不再回写（原 catPushTotals 回写路径删除）
-   · 公开方法签名/订阅语义/ws:work-changed 事件 与原型完全一致（契约附录）
+   · 公开方法签名/订阅语义与原型一致（契约附录）；ws:work-changed 只在切换作品 / 书架成员变化时广播，
+     派生统计回写改发 ws:work-stats-changed（2026-09-21，见 wsNotify）
    ========================================================== */
 
 const WS_WORKS_LS = "ws_works_created_v1";   // 旧 localStorage 时代的本地作品（一次性上行迁移源）
@@ -26,16 +28,6 @@ function wsIsRetiredDemo(work) {
   );
 }
 
-/* —— 问候语：前端按时段生成（契约附录：不必入库）—— */
-function wsGreetNow() {
-  const h = new Date().getHours();
-  if (h < 5) return "夜深了 · 写完这一段就休息";
-  if (h < 11) return "早上好 · 新的一页刚刚展开";
-  if (h < 14) return "中午好 · 喝口水再继续";
-  if (h < 18) return "下午好 · 光线正适合写作";
-  return "晚上好 · 夜里适合沉下心来";
-}
-
 function wsAgo(iso) {
   if (!iso) return "";
   const then = new Date(iso);
@@ -46,19 +38,16 @@ function wsAgo(iso) {
   return `${days} 天前`;
 }
 
-/* 雪花步骤短名（原型主页 chips 的文案口径） */
-const WS_SNOW_SHORT = {
-  book_brief: "读者定位",
-  one_sentence_summary: "一句话",
-  one_paragraph_summary: "一段话",
-  character_sheets: "角色摘要",
-  short_synopsis: "一页梗概",
-  character_synopses: "角色背景",
-  long_synopsis: "长篇大纲",
-  character_bibles: "角色全档案",
-  scene_list: "场景列表",
-  scene_details: "场景规划",
-};
+/* 雪花步骤短名（主页雪花卡的文案口径，来自 ws-nav.js 的十步表） */
+function wsSnowShort(stepKey, fallback) {
+  const step = snowStepByBackendKey(stepKey);
+  return (step && step.short) || fallback || "";
+}
+
+/* dashboard 的雪花十步 → 主页雪花卡的原料（带后端 step_key，主页据此回到对应那一步） */
+function wsAdaptSnow(d) {
+  return ((d && d.snowflake) || []).map(s => ({ key: s.step_key, name: wsSnowShort(s.step_key, s.label), s: s.status }));
+}
 
 /* —— 响应适配：后端 project payload → 视图作品对象（契约附录形状）—— */
 function wsAdaptProject(item, prevHome) {
@@ -71,7 +60,6 @@ function wsAdaptProject(item, prevHome) {
     mark: item.mark || Array.from(title)[0] || "新",
     accent: item.accent || "slate",
     sub: item.synopsis_line || "",
-    greet: wsGreetNow(),
     wordsTotal: stats.words_total || 0,
     wordsTarget: item.target_word_count || 100000,
     chaptersWritten: item.chapters_written || 0,
@@ -85,7 +73,8 @@ function wsAdaptProject(item, prevHome) {
 
 /* dashboard 载荷 → 原型 home 形状（主页视图的兜底数据源） */
 function wsAdaptHome(d) {
-  if (!d || (!d.resume && !(d.chapters_recent || []).length)) return { blank: true };
+  // 还没有正文的作品也照样带上雪花十步：主页雪花卡只读这一份
+  if (!d || (!d.resume && !(d.chapters_recent || []).length)) return { blank: true, snow: wsAdaptSnow(d) };
   const brief = d.brief || {};
   const reactive = brief.kind === "reactive";
   const gos = reactive
@@ -96,22 +85,22 @@ function wsAdaptHome(d) {
       ]
     : [
         { k: "目标", tone: "sage", v: brief.goal || "" },
-        { k: "阻碍", tone: "gold", v: brief.conflict || "" },
-        { k: "挫折", tone: "crimson", v: brief.setback || "" },
+        { k: "冲突", tone: "gold", v: brief.conflict || "" },
+        { k: "挫败", tone: "crimson", v: brief.setback || "" },
       ];
   const resume = d.resume || {};
   /* 章内第几场：后端单独给（阶段 X 起 scene_slug 是稳定的 scene_id，不再含位置）；
      旧后端没有 scene_no 时退回从位置式 slug（ch08s3）里读。 */
   const legacyNo = /^ch\d+s(\d+)$/.exec(resume.scene_slug || "");
   const sceneNo = String(resume.scene_no || (legacyNo ? legacyNo[1] : "") || "");
-  const snow = (d.snowflake || []).map(s => ({ name: WS_SNOW_SHORT[s.step_key] || s.label, s: s.status }));
+  const snow = wsAdaptSnow(d);
   const act = (d.snowflake || []).find(s => s.status === "active");
   return {
     slug: resume.chapter_no
-      ? `CH ${resume.chapter_no} · SC ${sceneNo.padStart(2, "0")} · ${reactive ? "反应" : "主动"}场景`
+      ? `${sceneLabel({ n: resume.chapter_no }, sceneNo ? Number(sceneNo) - 1 : -1)} · ${reactive ? "反应" : "主动"}场景`
       : "",
     scene: resume.scene_title || "",
-    snowNow: act ? (WS_SNOW_SHORT[act.step_key] || act.label) : "",
+    snowNow: act ? wsSnowShort(act.step_key, act.label) : "",
     gos,
     resume: {
       ch: resume.chapter_no || "01",
@@ -138,7 +127,6 @@ function wsLoadCache() {
       id: "__loading__",
       title: "正在打开书架…",
       genre: "", mark: "汐", accent: "slate", sub: "",
-      greet: wsGreetNow(),
       wordsTotal: 0, wordsTarget: 100000, chaptersWritten: 0, chaptersTotal: 0,
       wordsToday: 0, wordsTargetDay: 1000, streak: 0,
       home: { blank: true },
@@ -156,7 +144,6 @@ const WS_EMPTY_WORK = Object.freeze({
   mark: "新",
   accent: "slate",
   sub: "",
-  greet: "欢迎回来",
   wordsTotal: 0,
   wordsTarget: 100000,
   chaptersWritten: 0,
@@ -220,9 +207,22 @@ function wsSaveCache() {
   } catch (e) {}
 }
 
+/* ws:work-changed 的语义是「当前作品换了 / 书架成员变了」：目录、回收站、待办、资料、雪花都拿它
+   当「重拉本作品的一切」的信号。字数 / 今日 / 连续天数这类派生统计每次自动保存都会回写，过去同样
+   广播它，一次字数汇总就引发约 10 个 GET 和整个应用重渲。现在统计变化只广播
+   ws:work-stats-changed（React 侧走 WsWorks.subscribe），档案字段（书名 / 主色）也只走 subscribe。
+   作品 id 第一次从 __loading__ 落定时 id 变了，照旧广播 ws:work-changed。 */
+function wsMembership() { return WS_WORKS.map(w => w.id).join("\u0001"); }
+let wsBroadcast = { id: WS_ACTIVE_ID, members: wsMembership() };
+
 function wsNotify() {
   wsSubs.notify();
-  try { window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: WS_ACTIVE_ID })); } catch (e) {}
+  const members = wsMembership();
+  const switched = WS_ACTIVE_ID !== wsBroadcast.id || members !== wsBroadcast.members;
+  wsBroadcast = { id: WS_ACTIVE_ID, members };
+  try {
+    window.dispatchEvent(new CustomEvent(switched ? "ws:work-changed" : "ws:work-stats-changed", { detail: WS_ACTIVE_ID }));
+  } catch (e) {}
 }
 
 function wsToastError(error, fallback) {
@@ -304,9 +304,20 @@ async function wsRefresh() {
   return wsRefreshing;
 }
 
-/* —— 当前作品的 dashboard → home + 派生字段 —— */
-async function wsLoadHome(id) {
-  if (!id || id === "__loading__") return;
+/* —— 当前作品的 dashboard → home + 派生字段 ——
+   同一部作品的 dashboard 在途时，再来的请求共用这一次（和 wsRefreshing 一样）：启动时列表装载完会拉一次，
+   主页挂载又会拉一次，开发模式的 StrictMode 还会再挂一次——过去启动就是 2～3 个一模一样的 GET。 */
+const wsHomeInflight = new Map();
+function wsLoadHome(id) {
+  if (!id || id === "__loading__") return Promise.resolve();
+  const pending = wsHomeInflight.get(id);
+  if (pending) return pending;
+  const run = wsFetchHome(id).finally(() => { wsHomeInflight.delete(id); });
+  wsHomeInflight.set(id, run);
+  return run;
+}
+
+async function wsFetchHome(id) {
   wsSetDashboardStatus(id, "loading");
   try {
     const d = await apiGet(`/api/v2/projects/${id}/dashboard`);
@@ -498,10 +509,24 @@ function useWorksStatus(id) {
   return WsWorks.status(id);
 }
 
+/* 外壳只关心当前作品「是谁」：id / 书名 / 题材 / 印记 / 主色。字数统计的回写不该让整棵视图树重渲，
+   所以快照只在这几个字段变化时换引用（useSyncExternalStore 以引用相等判断是否重渲）。 */
+let wsIdentity = null;
+function wsIdentitySnapshot() {
+  const w = WsWorks.active();
+  const next = { id: w.id, title: w.title, genre: w.genre, mark: w.mark, accent: w.accent };
+  if (!wsIdentity || Object.keys(next).some(k => wsIdentity[k] !== next[k])) wsIdentity = next;
+  return wsIdentity;
+}
+function wsSubscribeWorks(fn) { return WsWorks.subscribe(fn); }
+function useActiveWorkIdentity() {
+  return React.useSyncExternalStore(wsSubscribeWorks, wsIdentitySnapshot, wsIdentitySnapshot);
+}
+
 /* 启动即拉一次后端列表（缓存影子先行渲染） */
 wsRefresh();
 
 Object.assign(window, { WsWorks, useActiveWork, useWorks, useWorksStatus, wsKey });
 
-/* ESM 导出（window.* 赋值过渡期保留） */
-export { WsWorks, useActiveWork, useWorks, useWorksStatus, wsKey };
+/* ESM 导出（window.* 赋值过渡期保留；useActiveWorkIdentity 是新接口，只走 ESM） */
+export { WsWorks, useActiveWork, useActiveWorkIdentity, useWorks, useWorksStatus, wsKey };

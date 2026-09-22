@@ -1,5 +1,5 @@
 /* ==========================================================
-   写作台 · 书桌布局 + 进度/会话条 + 质感打磨
+   写作台 · 书桌布局 + 进度线 + 质感打磨
    Layered on top of wr-redesign.css.
 
    Adds a persistent three-column "书桌" layout
@@ -10,7 +10,7 @@
    ========================================================== */
 
 .wr-root {
-  --rail-l: 224px; --rail-r: 264px; --topbar-h: 54px;
+  --rail-l: 240px; --rail-r: 272px; --topbar-h: 54px;
   /* warm desk surface the manuscript sheet rests on (desk layout only) */
   --desk-surface: color-mix(in srgb, var(--paper-1) 62%, var(--paper-0));
   --sheet-shadow:
@@ -31,98 +31,84 @@
    Top progress hairline — quiet, motivating, non-intrusive
    ========================================================== */
 .wr-progress {
-  position: absolute; top: 0; left: 0; height: 2px; z-index: 26;
+  position: absolute; top: 0; left: 0; height: 2px; z-index: calc(var(--z-sticky) + 11);
   background: linear-gradient(90deg, var(--gold), var(--crimson));
   border-radius: 0 2px 2px 0;
   box-shadow: 0 0 10px color-mix(in srgb, var(--crimson) 28%, transparent);
   transition: width var(--dur) var(--ease), opacity var(--dur) var(--ease);
 }
 .wr-root[data-chrome="hidden"] .wr-progress { opacity: 0; }
-.wr-progress.is-full { background: var(--sage); box-shadow: 0 0 10px color-mix(in srgb, var(--sage) 30%, transparent); }
+.wr-progress.is-full { background: var(--ok); box-shadow: 0 0 10px color-mix(in srgb, var(--ok) 30%, transparent); }
 
 /* ==========================================================
-   Top-right stat cluster — save · session clock · goal ring
+   Top-right stat cluster — save · canonical state · word count
    ========================================================== */
-.wr-stat { display: inline-flex; align-items: center; gap: 12px; }
+/* 顶栏右侧的状态组：保存点 + 权威正文状态 + 提升按钮 + 字数。同一种小号胶囊语法，不再四种样式混排 */
+.wr-stat { display: inline-flex; align-items: center; gap: 10px; flex: none; white-space: nowrap; }
 .wr-publish-state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .wr-canonical-state {
-  font-size: 11.5px; color: var(--ink-3); font-weight: 600;
-  padding: 4px 8px; border: 1px solid var(--line-1); border-radius: 999px;
+  position: relative; display: inline-flex; align-items: center; gap: 6px; height: 26px; box-sizing: border-box;
+  font-size: var(--fs-xs); color: var(--ink-3); font-weight: 600;
+  padding: 0 9px; border: 1px solid var(--line-1); border-radius: 999px;
   background: color-mix(in srgb, var(--paper-2) 55%, transparent);
 }
-.wr-canonical-state.is-current { color: var(--sage); border-color: color-mix(in srgb, var(--sage) 35%, var(--line-1)); }
-.wr-canonical-state.is-dirty, .wr-canonical-state.is-promoting, .wr-canonical-state.is-review { color: var(--gold); }
-.wr-canonical-state.is-error, .wr-canonical-state.is-reconcile { color: var(--crimson); }
+.wr-canonical-dot { display: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.wr-canonical-state.is-current { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 35%, var(--line-1)); }
+.wr-canonical-state.is-dirty, .wr-canonical-state.is-promoting, .wr-canonical-state.is-review { color: var(--warn-ink); }
+.wr-canonical-state.is-error, .wr-canonical-state.is-reconcile { color: var(--danger-ink); }
 .wr-canonical-promote {
-  border: 1px solid var(--line-2); border-radius: 7px; background: var(--paper-1);
-  color: var(--ink-2); padding: 5px 9px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  height: 26px; box-sizing: border-box;
+  border: 1px solid var(--line-2); border-radius: 999px; background: var(--paper-0);
+  color: var(--ink-2); padding: 0 11px; font: inherit; font-size: var(--fs-xs); font-weight: 600; cursor: pointer; white-space: nowrap;
   transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
-.wr-canonical-promote:hover:not(:disabled) { color: var(--crimson); border-color: color-mix(in srgb, var(--crimson) 35%, var(--line-2)); background: var(--crimson-wash); }
-.wr-canonical-promote:disabled { cursor: default; opacity: 0.52; }
+.wr-canonical-promote:hover:not(:disabled) { color: var(--accent-ink); border-color: color-mix(in srgb, var(--accent) 35%, var(--line-2)); background: var(--accent-wash); }
+.wr-canonical-promote:disabled { cursor: not-allowed; opacity: 0.45; }
+.wr-canonical-promote[hidden] { display: none; }
 
-/* 内容风险二次确认：只呈现服务端要求作者复核的 exact finding，默认不勾选。 */
-.wr-safety-scrim {
-  position: fixed; inset: 0; z-index: 1700; display: grid; place-items: center; padding: 28px;
-  background: color-mix(in srgb, var(--ink-1) 48%, transparent); backdrop-filter: blur(8px) saturate(.78);
-}
-.wr-safety-dialog {
-  width: min(820px, 100%); max-height: min(820px, calc(100vh - 56px)); overflow: auto;
-  border: 1px solid color-mix(in srgb, var(--gold) 25%, var(--line-1)); border-radius: 17px;
-  background: radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--gold-wash) 56%, transparent), transparent 36%), var(--paper-0);
-  box-shadow: 0 30px 100px color-mix(in srgb, #000 36%, transparent);
-}
-.wr-safety-head { display: flex; align-items: center; gap: 15px; padding: 23px 25px 20px; border-bottom: 1px solid var(--line-1); }
-.wr-safety-shield { width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; border-radius: 12px; color: var(--paper-0); background: var(--ink-1); }
-.wr-safety-eyebrow { color: var(--gold); font: 700 9px/1.2 var(--font-mono, monospace); letter-spacing: .17em; }
-.wr-safety-head h2 { margin: 5px 0 3px; color: var(--ink-1); font: 600 22px/1.2 var(--font-serif); }
-.wr-safety-head p { max-width: 620px; margin: 0; color: var(--ink-3); font-size: 11.5px; line-height: 1.6; }
-.wr-safety-close { margin-left: auto; align-self: flex-start; width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--ink-3); cursor: pointer; }
+/* 内容风险逐项确认：外壳是共享的 WsDialog（.ws-dialog-scrim + .ws-dialog.ws-dialog-lg），
+   这里只排里面的内容。只呈现服务端要求作者复核的 exact finding，默认不勾选。 */
+.ws-dialog.wr-safety-dialog { width: min(820px, 100%); }
+.wr-safety-head { display: flex; align-items: flex-start; gap: 14px; padding: 22px 24px 18px; border-bottom: 1px solid var(--line-1); }
+.wr-safety-shield { width: 40px; height: 40px; flex: 0 0 40px; display: grid; place-items: center; border-radius: 12px; color: var(--warn-ink); background: var(--warn-wash); }
+.wr-safety-heading { min-width: 0; flex: 1; }
+.wr-safety-head h2 { margin: 2px 0 4px; color: var(--ink-1); font: 600 var(--fs-2xl)/var(--lh-tight) var(--font-serif); }
+.wr-safety-head p { max-width: 620px; margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: var(--lh-ui); }
+.wr-safety-close { margin-left: auto; align-self: flex-start; width: 34px; height: 34px; flex: none; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--ink-3); cursor: pointer; }
 .wr-safety-close:hover { color: var(--ink-1); background: var(--paper-2); }
-.wr-safety-findings { display: grid; gap: 10px; padding: 18px 25px 8px; }
-.wr-safety-finding { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; padding: 15px; border: 1px solid var(--line-1); border-radius: 12px; background: color-mix(in srgb, var(--paper-1) 82%, transparent); cursor: pointer; }
-.wr-safety-finding:hover { border-color: color-mix(in srgb, var(--gold) 34%, var(--line-1)); }
-.wr-safety-finding.is-checked { border-color: color-mix(in srgb, var(--sage) 34%, var(--line-1)); box-shadow: inset 3px 0 0 color-mix(in srgb, var(--sage) 68%, transparent); }
+.wr-safety-findings { display: grid; gap: 10px; padding: 18px 24px 8px; }
+.wr-safety-finding { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 14px 15px; border: 1px solid var(--line-1); border-radius: 12px; background: var(--paper-1); cursor: pointer; }
+.wr-safety-finding:hover { border-color: color-mix(in srgb, var(--warn) 34%, var(--line-1)); }
+.wr-safety-finding.is-checked { border-color: color-mix(in srgb, var(--ok) 34%, var(--line-1)); box-shadow: inset 3px 0 0 var(--ok); }
 .wr-safety-finding > input { width: 17px; height: 17px; margin: 3px 0 0; opacity: 0; position: absolute; }
 .wr-safety-check { width: 20px; height: 20px; margin-top: 1px; display: grid; place-items: center; border: 1px solid var(--line-2); border-radius: 5px; color: transparent; background: var(--paper-0); }
-.wr-safety-finding.is-checked .wr-safety-check { color: var(--paper-0); border-color: var(--sage); background: var(--sage); }
+.wr-safety-finding.is-checked .wr-safety-check { color: var(--paper-0); border-color: var(--ok); background: var(--ok); }
 .wr-safety-copy { min-width: 0; display: grid; gap: 7px; }
-.wr-safety-finding-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.wr-safety-finding-top strong { color: var(--crimson); font-size: 10px; letter-spacing: .06em; }
-.wr-safety-finding-top code { overflow-wrap: anywhere; color: var(--ink-3); font: 9px/1.4 var(--font-mono, monospace); }
-.wr-safety-message { color: var(--ink-1); font: 600 13.5px/1.65 var(--font-serif); }
-.wr-safety-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--ink-4); font-size: 9px; }
-.wr-safety-evidence b { margin-right: 3px; color: var(--ink-3); }
-.wr-safety-evidence em { padding: 2px 6px; border-radius: 999px; color: var(--crimson); background: var(--crimson-wash); font-style: normal; }
-.wr-safety-copy small { color: var(--ink-4); font: 9px/1.4 var(--font-mono, monospace); }
-.wr-safety-limits { margin: 7px 25px 4px; padding: 10px 12px; border-top: 1px dashed var(--line-2); color: var(--ink-3); font-size: 10px; }
-.wr-safety-limits summary { cursor: pointer; font-weight: 700; }
+.wr-safety-message { color: var(--ink-1); font: 600 var(--fs-md)/1.65 var(--font-serif); }
+.wr-safety-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--ink-3); font-size: var(--fs-xs); }
+.wr-safety-evidence b { margin-right: 3px; font-weight: 600; }
+.wr-safety-evidence em { padding: 1px 7px; border-radius: 999px; color: var(--danger-ink); background: var(--danger-wash); font-style: normal; }
+.wr-safety-copy small { color: var(--ink-3); font-size: var(--fs-xs); }
+.wr-safety-limits { margin: 7px 24px 4px; padding: 10px 12px; border-top: 1px dashed var(--line-2); color: var(--ink-3); font-size: var(--fs-xs); }
+.wr-safety-limits summary { cursor: pointer; font-weight: 600; }
 .wr-safety-limits ul { margin: 9px 0 0; padding-left: 18px; line-height: 1.7; }
-.wr-safety-foot { display: flex; align-items: center; gap: 9px; padding: 17px 25px 22px; }
-.wr-safety-progress { margin-right: auto; display: grid; gap: 3px; color: var(--ink-3); font-size: 10px; }
-.wr-safety-progress [role="alert"] { max-width: 360px; color: var(--crimson); }
-.wr-safety-close:focus-visible, .wr-safety-finding:focus-within, .wr-safety-foot button:focus-visible { outline: 3px solid color-mix(in srgb, var(--sage) 38%, transparent); outline-offset: 2px; }
-@media (max-width: 650px) {
+.wr-safety-foot { display: flex; align-items: center; gap: 9px; padding: 16px 24px 20px; flex-wrap: wrap; }
+.wr-safety-progress { margin-right: auto; display: grid; gap: 3px; color: var(--ink-3); font-size: var(--fs-xs); }
+.wr-safety-progress [role="alert"] { max-width: 360px; color: var(--danger-ink); }
+.wr-safety-close:focus-visible, .wr-safety-finding:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 640px) {
   .wr-safety-scrim { padding: 0; align-items: stretch; }
-  .wr-safety-dialog { width: 100%; max-height: 100dvh; border: 0; border-radius: 0; }
+  .ws-dialog.wr-safety-dialog { width: 100%; max-height: 100dvh; border: 0; border-radius: 0; }
   .wr-safety-head { padding: 17px; }
   .wr-safety-shield { display: none; }
-  .wr-safety-head h2 { font-size: 19px; }
+  .wr-safety-head h2 { font-size: var(--fs-xl); }
   .wr-safety-findings { padding: 14px 17px 6px; }
   .wr-safety-limits { margin-inline: 17px; }
-  .wr-safety-foot { padding: 15px 17px 20px; flex-wrap: wrap; }
+  .wr-safety-foot { padding: 15px 17px 20px; }
   .wr-safety-progress { width: 100%; }
 }
-.wr-save.is-error { color: var(--crimson); }
-.wr-save.is-error .wr-save-dot { background: var(--crimson); animation: none; }
-.wr-stat-time {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; font-weight: 500;
-  padding: 4px 10px; border-radius: 999px;
-  background: color-mix(in srgb, var(--paper-2) 55%, transparent);
-}
-.wr-stat-time svg { color: var(--ink-4); }
-.wr-stat-time b { color: var(--ink-2); font-weight: 600; }
+.wr-save.is-error { color: var(--danger-ink); }
+.wr-save.is-error .wr-save-dot { background: var(--danger); animation: none; }
 
 .wr-count-wrap { display: inline-flex; align-items: center; gap: 9px; }
 .wr-ring { display: block; transform: rotate(-90deg); flex: 0 0 auto; }
@@ -131,7 +117,7 @@
   fill: none; stroke: var(--crimson); stroke-linecap: round;
   transition: stroke-dashoffset var(--dur) var(--ease), stroke var(--dur) var(--ease);
 }
-.wr-ring-fill.is-full { stroke: var(--sage); }
+.wr-ring-fill.is-full { stroke: var(--ok); }
 .wr-count { padding: 0; }
 
 /* refined scene-goal — wraps cleanly, no clipping */
@@ -139,61 +125,57 @@
 .wr-goal-v { flex: 1; min-width: 0; }
 
 /* ==========================================================
-   Desk layout — persistent three columns (wide screens)
-   Rails dock to the edges; the manuscript reflows between
-   them. No scrim, no dimming — calm reference at the margins.
+   Desk layout — rails dock to the edges and the manuscript reflows
+   between them. Which rail docks is decided in JS from the shared
+   breakpoints (outline ≥ 1000, context ≥ 1280) and written to
+   data-dock-left / data-dock-right; an undocked rail stays a summoned
+   overlay with a scrim. No media queries here, so the rule is one.
    ========================================================== */
-@media (min-width: 1000px) {
-  .wr-root[data-layout="desk"] .wr-scrim-drawer { display: none !important; }
-  .wr-root[data-layout="desk"] .wr-edge { display: none; }
+.wr-root[data-dock-left="on"] .wr-edge.left,
+.wr-root[data-dock-right="on"] .wr-edge.right { display: none; }
 
-  /* rails sit below the whisper bar, full height to the floor */
-  .wr-root[data-layout="desk"] .wr-drawer {
-    top: var(--topbar-h); box-shadow: none;
-    background: color-mix(in srgb, var(--paper-1) 94%, var(--paper-0));
-  }
-  .wr-root[data-layout="desk"] .wr-drawer.left  { width: var(--rail-l); border-right: 1px solid var(--line-1); }
-  .wr-root[data-layout="desk"] .wr-drawer.right { width: var(--rail-r); border-left: 1px solid var(--line-1); }
-
-  /* a soft inner shadow gives the manuscript a sense of sitting "on" the desk */
-  .wr-root[data-layout="desk"] .wr-drawer.left::after,
-  .wr-root[data-layout="desk"] .wr-drawer.right::after {
-    content: ""; position: absolute; top: 0; bottom: 0; width: 16px; pointer-events: none;
-  }
-  .wr-root[data-layout="desk"] .wr-drawer.left::after  { right: -16px; background: linear-gradient(90deg, color-mix(in srgb, var(--ink-1) 5%, transparent), transparent); }
-  .wr-root[data-layout="desk"] .wr-drawer.right::after { left: -16px;  background: linear-gradient(270deg, color-mix(in srgb, var(--ink-1) 5%, transparent), transparent); }
-
-  /* manuscript reflows between whichever rails are open */
-  .wr-root[data-layout="desk"] .wr-scroll {
-    transition: left var(--dur) var(--ease), right var(--dur) var(--ease);
-  }
-  .wr-root[data-layout="desk"][data-left="on"]  .wr-scroll { left: var(--rail-l); }
-  .wr-root[data-layout="desk"][data-right="on"] .wr-scroll { right: var(--rail-r); }
-
-  /* immersion collapses both rails back to centred paper */
-  .wr-root[data-layout="desk"][data-immersion="on"] .wr-scroll { left: 0 !important; right: 0 !important; }
-  .wr-root[data-layout="desk"][data-immersion="on"] .wr-drawer.left  { transform: translateX(-101%) !important; }
-  .wr-root[data-layout="desk"][data-immersion="on"] .wr-drawer.right { transform: translateX(101%) !important; }
-
-  /* docked rail chrome — lighter than the overlay version */
-  .wr-root[data-layout="desk"] .wr-drawer-head {
-    background: transparent;
-    padding-top: 16px;
-  }
-  /* the X becomes a "collapse rail" affordance */
-  .wr-root[data-layout="desk"] .wr-drawer-x { border-radius: 8px; }
+.wr-root[data-dock-left="on"] .wr-drawer.left,
+.wr-root[data-dock-right="on"] .wr-drawer.right {
+  top: var(--topbar-h); box-shadow: none; max-width: none;
+  background: color-mix(in srgb, var(--paper-1) 94%, var(--paper-0));
 }
+.wr-root[data-dock-left="on"] .wr-drawer.left  { width: var(--rail-l); border-right: 1px solid var(--line-1); }
+.wr-root[data-dock-right="on"] .wr-drawer.right { width: var(--rail-r); border-left: 1px solid var(--line-1); }
+
+/* a soft inner shadow gives the manuscript a sense of sitting "on" the desk */
+.wr-root[data-dock-left="on"] .wr-drawer.left::after,
+.wr-root[data-dock-right="on"] .wr-drawer.right::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 16px; pointer-events: none;
+}
+.wr-root[data-dock-left="on"] .wr-drawer.left::after  { right: -16px; background: linear-gradient(90deg, color-mix(in srgb, var(--scrim) 16%, transparent), transparent); }
+.wr-root[data-dock-right="on"] .wr-drawer.right::after { left: -16px;  background: linear-gradient(270deg, color-mix(in srgb, var(--scrim) 16%, transparent), transparent); }
+
+/* manuscript reflows between whichever docked rails are open */
+.wr-root[data-layout="desk"] .wr-scroll {
+  transition: left var(--dur) var(--ease), right var(--dur) var(--ease);
+}
+.wr-root[data-dock-left="on"][data-left="on"]  .wr-scroll { left: var(--rail-l); }
+.wr-root[data-dock-right="on"][data-right="on"] .wr-scroll { right: var(--rail-r); }
+
+/* immersion collapses the docked rails back to centred paper */
+.wr-root[data-layout="desk"][data-immersion="on"] .wr-scroll { left: 0 !important; right: 0 !important; }
+.wr-root[data-dock-left="on"][data-immersion="on"] .wr-drawer.left  { transform: translateX(-101%) !important; }
+.wr-root[data-dock-right="on"][data-immersion="on"] .wr-drawer.right { transform: translateX(101%) !important; }
+
+/* docked rail chrome — lighter than the overlay version */
+.wr-root[data-dock-left="on"] .wr-drawer.left .wr-drawer-head,
+.wr-root[data-dock-right="on"] .wr-drawer.right .wr-drawer-head { background: transparent; padding-top: 14px; }
 
 /* ==========================================================
    Manuscript as a sheet of paper resting on a warm desk
    — gives the centred text real presence on wide screens,
-   so the three columns read as panels framing a page.
+   so the columns read as panels framing a page.
    Dissolves in immersion for pure floating focus.
    ========================================================== */
 @media (min-width: 1000px) {
   .wr-root[data-layout="desk"] .wr-scroll {
     background:
-      radial-gradient(120% 130% at 50% 42%, transparent 56%, color-mix(in srgb, var(--ink-1) 5%, transparent) 100%),
+      radial-gradient(120% 130% at 50% 42%, transparent 56%, color-mix(in srgb, var(--scrim) 16%, transparent) 100%),
       radial-gradient(130% 70% at 50% -4%, color-mix(in srgb, var(--gold-wash) 22%, transparent), transparent 58%),
       var(--desk-surface);
     transition: left var(--dur) var(--ease), right var(--dur) var(--ease), background var(--dur) var(--ease);
@@ -225,81 +207,88 @@
     background: var(--paper-0);
   }
 }
+/* 1200 以下稿纸边距收窄：两栏都停靠时正文一行仍能放下三十来个字 */
+@media (min-width: 1000px) and (max-width: 1199px) {
+  .wr-root[data-layout="desk"][data-immersion="off"] .wr-measure { max-width: calc(var(--measure) + 64px); padding: 44px 32px 48px; }
+}
+@media (max-width: 999px) {
+  .wr-scroll { padding-left: 16px; padding-right: 16px; }
+}
 
 /* ==========================================================
    Desk rail — section header refinements (both layouts)
    ========================================================== */
-.wr-rail-cap {
-  display: flex; align-items: center; gap: 7px;
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em;
-  text-transform: uppercase; color: var(--ink-4); font-weight: 600;
-  padding: 0 2px 10px; margin-bottom: 4px;
-  border-bottom: 1px solid var(--line-1);
-}
 
 /* outline: progress meter at the top of the left rail */
 .wr-rail-progress { margin: 4px 2px 16px; }
 .wr-rail-progress-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 7px; }
-.wr-rail-progress-k { font-size: 11.5px; color: var(--ink-3); font-weight: 600; }
-.wr-rail-progress-v { font-size: 11px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.wr-rail-progress-k { font-size: var(--fs-xs); color: var(--ink-3); font-weight: 600; }
+.wr-rail-progress-v { font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .wr-rail-progress-bar { height: 5px; border-radius: 999px; background: var(--paper-3); overflow: hidden; }
 .wr-rail-progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--gold), var(--crimson)); transition: width var(--dur) var(--ease); }
 
-/* scene-定位 rows: label-left, value fills remaining — wraps cleanly in a narrow rail */
-.wr-meta li { align-items: baseline; justify-content: flex-start; gap: 12px; }
-.wr-meta li > span { flex: 0 0 46px; white-space: nowrap; }
-.wr-meta li strong { flex: 1; min-width: 0; text-align: left; line-height: 1.45; }
-
-/* context tabs never break a label across lines */
-.wr-tab { white-space: nowrap; gap: 5px; padding-left: 4px; padding-right: 4px; }
-
 /* per-scene notes header */
-.wr-notes-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
-.wr-notes-cap { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); font-weight: 700; }
-.wr-notes-state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-4); font-weight: 500; }
-.wr-notes-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sage); transition: background var(--t-base); }
-.wr-notes-state.saving { color: var(--gold); }
-.wr-notes-state.saving .wr-notes-dot { background: var(--gold); animation: wrPulse 1s ease-in-out infinite; }
+.wr-notes-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+.wr-notes-cap { font-size: var(--fs-xs); color: var(--ink-3); font-weight: 600; }
+.wr-notes-state { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--ink-3); font-weight: 500; }
+.wr-notes-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); transition: background var(--t-base); }
+.wr-notes-state.saving { color: var(--warn-ink); }
+.wr-notes-state.saving .wr-notes-dot { background: var(--warn); animation: wrPulse 1s ease-in-out infinite; }
 
-/* outline scene drag-reorder — grip + drop indicator */
-.wr-sc-grip { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--ink-4); opacity: 0; margin-left: -6px; margin-right: -3px; cursor: grab; transition: opacity var(--t-fast); }
+/* outline scene drag-reorder — grip floats in the row's left gutter, never takes layout width.
+   It stays hoverable: its tooltip is the only visible explanation of how to reorder
+   (plan-owned scenes point to 构思第 9 步). */
+.wr-sc-grip {
+  position: absolute; left: -13px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; color: var(--ink-3); opacity: 0; cursor: grab;
+  transition: opacity var(--t-fast);
+}
 .wr-sc:hover .wr-sc-grip { opacity: 0.75; }
 .wr-sc-grip.is-fixed { cursor: default; }
 .wr-sc:hover .wr-sc-grip.is-fixed { opacity: 0.3; }
-.wr-sc-list li { cursor: grab; }
-.wr-sc-list li:active { cursor: grabbing; }
-.wr-sc.is-over { background: var(--paper-3); box-shadow: inset 0 2px 0 0 var(--crimson); }
+.wr-sc-list li[draggable="true"] { cursor: grab; }
+.wr-sc-list li[draggable="true"]:active { cursor: grabbing; }
+.wr-sc.is-over { background: var(--paper-3); box-shadow: inset 0 2px 0 0 var(--accent); }
 
 /* AI candidate — sentence-level picking */
 .wr-sen { cursor: pointer; border-radius: 4px; padding: 0 1px; box-decoration-break: clone; -webkit-box-decoration-break: clone; transition: background var(--t-fast), box-shadow var(--t-fast); }
-.wr-sen:hover { background: color-mix(in srgb, var(--crimson-wash) 45%, transparent); }
-.wr-sen.is-pick { background: color-mix(in srgb, var(--crimson-wash) 85%, transparent); box-shadow: inset 0 -1.5px 0 var(--crimson); }
+.wr-sen:hover { background: color-mix(in srgb, var(--accent-wash) 45%, transparent); }
+.wr-sen.is-pick { background: color-mix(in srgb, var(--accent-wash) 85%, transparent); box-shadow: inset 0 -1.5px 0 var(--accent); }
 .wr-sen.is-pick mark { background: transparent; }
-.wr-cand-pickn { margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--crimson); background: var(--crimson-wash); padding: 1px 8px; border-radius: 999px; }
+.wr-cand-pickn { margin-left: auto; font-size: var(--fs-xs); font-weight: 600; color: var(--accent-ink); background: var(--accent-wash); padding: 1px 8px; border-radius: 999px; }
 
-/* outline scene — inline rename / delete / add */
-.wr-sc-name { flex: 1; min-width: 0; }
-.wr-sc-act { display: inline-flex; gap: 2px; flex: 0 0 auto; opacity: 0; transition: opacity var(--t-fast); }
-.wr-sc:hover .wr-sc-act, .wr-sc:focus-within .wr-sc-act { opacity: 1; }
-.wr-sc-actbtn { width: 22px; height: 22px; display: grid; place-items: center; border: 0; background: transparent; color: var(--ink-4); border-radius: 6px; cursor: pointer; transition: background var(--t-fast), color var(--t-fast); }
-.wr-sc-actbtn:hover { background: var(--paper-0); color: var(--ink-1); }
-.wr-sc-actbtn.danger:hover { background: var(--crimson-wash); color: var(--crimson); }
-.wr-sc-edit { flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--ink-1); background: var(--paper-0); border: 1px solid var(--crimson); border-radius: 6px; padding: 2px 6px; outline: none; }
+/* outline scene — inline rename / delete overlay the row end on hover / focus, add below */
+.wr-sc-act {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; gap: 2px; padding-left: 14px;
+  background: linear-gradient(90deg, transparent, var(--paper-2) 12px);
+  opacity: 0; pointer-events: none; transition: opacity var(--t-fast);
+}
+.wr-sc.is-active .wr-sc-act { background: linear-gradient(90deg, transparent, var(--paper-3) 12px); }
+.wr-sc:hover .wr-sc-act, .wr-sc:focus-within .wr-sc-act { opacity: 1; pointer-events: auto; }
+.wr-sc-actbtn { width: 24px; height: 24px; display: grid; place-items: center; border: 0; background: transparent; color: var(--ink-3); border-radius: 6px; cursor: pointer; transition: background var(--t-fast), color var(--t-fast); }
+.wr-sc-actbtn:hover:not(:disabled) { background: var(--paper-0); color: var(--ink-1); }
+.wr-sc-actbtn.danger:hover:not(:disabled) { background: var(--danger-wash); color: var(--danger-ink); }
+.wr-sc-actbtn:disabled { cursor: not-allowed; opacity: 0.45; }
+.wr-sc-edit { flex: 1; min-width: 0; margin: 3px 4px; font: inherit; font-size: var(--fs-sm); color: var(--ink-1); background: var(--paper-0); border: 1px solid var(--accent); border-radius: 6px; padding: 3px 6px; outline: none; }
 .wr-sc.is-editing { background: var(--paper-2); cursor: default; }
 .wr-sc-add { list-style: none; cursor: default; margin-top: 4px; }
-.wr-sc-add .wr-sc-addbtn { display: inline-flex; align-items: center; gap: 6px; width: 100%; padding: 6px 9px; border: 1px dashed var(--line-2); background: transparent; color: var(--ink-3); border-radius: var(--r-md); font-size: 12.5px; cursor: pointer; transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast); }
-.wr-sc-add .wr-sc-addbtn:hover { background: var(--paper-2); color: var(--ink-1); border-color: var(--line-3); }
+.wr-sc-add .wr-sc-addbtn { display: inline-flex; align-items: center; gap: 6px; width: 100%; padding: 6px 9px; border: 1px dashed var(--line-2); background: transparent; color: var(--ink-3); border-radius: var(--r-md); font: inherit; font-size: var(--fs-xs); cursor: pointer; transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast); }
+.wr-sc-add .wr-sc-addbtn:hover:not(:disabled) { background: var(--paper-2); color: var(--ink-1); border-color: var(--line-3); }
+.wr-sc-add .wr-sc-addbtn:disabled { cursor: not-allowed; opacity: 0.45; }
 
 /* ==========================================================
    Inline rewrite — floating toolbar + result popover
    ========================================================== */
-.wr-irw-bar, .wr-irw-pop { position: fixed; z-index: 38; }
+.wr-irw-bar, .wr-irw-pop { position: fixed; z-index: calc(var(--z-drawer) + 10); }
+/* 弹层容器（tabIndex=-1，Tab 走不到）只在加载中接住焦点：和对话框面板一样不画焦点框，焦点框留给里面的控件 */
+.wr-irw-pop:focus { outline: none; }
 .wr-irw-bar {
   display: flex; align-items: center; gap: 1px; padding: 4px 6px;
   background: var(--paper-1); border: 1px solid var(--line-2); border-radius: var(--r-pill);
   box-shadow: var(--shadow-lg);
 }
-.wr-irw-spark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--crimson); }
+.wr-irw-spark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--accent); }
 .wr-irw-btn {
   display: inline-flex; align-items: center; height: 30px; padding: 0 11px;
   border: 0; background: transparent; color: var(--ink-2); font-size: 12.5px; font-weight: 600;
@@ -307,7 +296,7 @@
   transition: background var(--t-fast), color var(--t-fast);
 }
 .wr-irw-btn:hover { background: var(--paper-2); color: var(--ink-1); }
-.wr-irw-btn.accent { color: var(--crimson); }
+.wr-irw-btn.accent { color: var(--accent-ink); }
 .wr-irw-sep { width: 1px; height: 18px; background: var(--line-1); margin: 0 3px; }
 
 .wr-irw-pop {
@@ -317,11 +306,13 @@
   border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); overflow: hidden;
 }
 .wr-irw-head { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--line-1); font-size: 12.5px; font-weight: 700; color: var(--ink-1); flex: 0 0 auto; }
-.wr-irw-head .sp { margin-left: auto; font-weight: 500; color: var(--ink-4); font-size: 11px; }
+.wr-irw-head .sp { margin-left: auto; font-weight: 500; color: var(--ink-3); font-size: var(--fs-xs); }
 .wr-irw-body { padding: 12px 14px; overflow-y: auto; flex: 1 1 auto; }
-.wr-irw-orig { font-size: 12px; color: var(--ink-3); line-height: 1.6; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-md); padding: 8px 10px; margin-bottom: 10px; max-height: 84px; overflow-y: auto; }
+.wr-irw-orig { font-size: var(--fs-xs); color: var(--ink-3); line-height: 1.6; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-md); padding: 8px 10px; margin-bottom: 10px; max-height: 84px; overflow-y: auto; }
+.wr-irw-stale { margin-bottom: 10px; }
 .wr-irw-new { font-family: var(--font-serif); font-size: 14.5px; line-height: 1.8; color: var(--ink-1); white-space: pre-wrap; }
-.wr-irw-new.is-err { font-family: var(--font-sans); font-size: 13px; color: var(--crimson); }
+.wr-rev-text { flex: 1; min-width: 0; margin: 0; }
+.wr-rev-row + .wr-rev-row { margin-top: 10px; }
 
 /* multi-candidate compare */
 .wr-irw-cands { display: flex; flex-direction: column; gap: 8px; }
@@ -332,52 +323,56 @@
   transition: border-color var(--t-fast), box-shadow var(--t-fast), background var(--t-fast);
 }
 .wr-irw-cand:hover { border-color: var(--line-2); }
-.wr-irw-cand.is-sel { border-color: var(--crimson); box-shadow: 0 0 0 2px var(--crimson-wash); background: color-mix(in srgb, var(--crimson-wash) 22%, var(--paper-0)); }
-.wr-irw-cand-k { flex: 0 0 auto; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; background: var(--paper-2); color: var(--ink-2); font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; margin-top: 2px; }
-.wr-irw-cand.is-sel .wr-irw-cand-k { background: var(--crimson); color: #fff; }
+.wr-irw-cand.is-sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); background: color-mix(in srgb, var(--accent-wash) 22%, var(--paper-0)); }
+.wr-irw-cand-k { flex: 0 0 auto; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; background: var(--paper-2); color: var(--ink-2); font-family: var(--font-sans); font-size: 11px; font-weight: 600; margin-top: 2px; }
+.wr-irw-cand.is-sel .wr-irw-cand-k { background: var(--accent); color: var(--on-accent); }
 .wr-irw-cand-t { flex: 1; min-width: 0; font-family: var(--font-serif); font-size: 13.5px; line-height: 1.7; color: var(--ink-1); }
 .wr-irw-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 14px; border-top: 1px solid var(--line-1); background: var(--paper-2); }
-.wr-irw-load { display: flex; align-items: center; gap: 10px; padding: 20px 16px; color: var(--ink-3); font-size: 13px; }
-.wr-irw-spin { width: 15px; height: 15px; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--crimson); animation: wrSpin .7s linear infinite; flex: 0 0 auto; }
-@keyframes wrSpin { to { transform: rotate(360deg); } }
+.wr-irw-load { display: flex; align-items: center; gap: 10px; padding: 20px 16px; color: var(--ink-3); font-size: var(--fs-sm); }
 .wr-irw-custom { display: flex; gap: 8px; padding: 12px 14px; }
-.wr-irw-input { flex: 1; min-width: 0; font: inherit; font-size: 13px; background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 8px 10px; outline: none; color: var(--ink-1); }
-.wr-irw-input:focus { border-color: var(--crimson); }
+.wr-irw-input { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-sm); background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 8px 10px; outline: none; color: var(--ink-1); }
+.wr-irw-input:focus { border-color: var(--accent); }
 
 /* tone sliders (调音) */
 .wr-tune { padding: 14px; display: flex; flex-direction: column; gap: 15px; }
 .wr-tune-row { display: flex; flex-direction: column; gap: 7px; }
-.wr-tune-poles { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--ink-2); font-weight: 600; }
-.wr-tune-poles .wr-tune-label { color: var(--ink-4); font-size: 9.5px; letter-spacing: 0.12em; font-weight: 700; }
+.wr-tune-poles { display: flex; justify-content: space-between; align-items: center; font-size: var(--fs-xs); color: var(--ink-2); font-weight: 600; }
+.wr-tune-poles .wr-tune-label { color: var(--ink-3); font-size: var(--fs-xs); font-weight: 500; }
 .wr-tune-range { -webkit-appearance: none; appearance: none; accent-color: var(--crimson); width: 100%; height: 4px; border-radius: 999px; background: linear-gradient(90deg, var(--line-2), var(--paper-3)); outline: none; }
 .wr-tune-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--crimson); border: 2px solid var(--paper-0); box-shadow: var(--shadow-sm); cursor: pointer; }
 .wr-tune-range::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--crimson); border: 2px solid var(--paper-0); cursor: pointer; }
-.wr-tune-prev { font-size: 12px; color: var(--ink-2); line-height: 1.6; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-md); padding: 9px 11px; }
+.wr-tune-prev { font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.6; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-md); padding: 9px 11px; }
 
 /* annotations — highlighted, anchored notes */
 .wr-editor mark.wr-anno { background: color-mix(in srgb, var(--gold-wash) 60%, transparent); border-bottom: 2px solid var(--gold); border-radius: 2px 2px 0 0; padding: 0 1px; cursor: pointer; transition: background var(--t-fast); }
 .wr-editor mark.wr-anno:hover { background: var(--gold-wash); }
-.wr-anno-note { display: flex; flex-direction: column; padding: 12px 14px; }
-.wr-anno-note textarea { width: 100%; min-height: 84px; font: inherit; font-size: 13px; line-height: 1.6; color: var(--ink-1); background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 9px 11px; outline: none; resize: vertical; }
+.wr-anno-note { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
+.wr-anno-scope { margin: 0; font-size: var(--fs-xs); color: var(--ink-3); line-height: var(--lh-ui); }
+.wr-anno-note textarea { width: 100%; min-height: 84px; font: inherit; font-size: var(--fs-sm); line-height: 1.6; color: var(--ink-1); background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 9px 11px; outline: none; resize: vertical; }
 .wr-anno-note textarea:focus { border-color: var(--gold); }
 
 /* AI inline-rewrite revision marker (track-changes) */
 .wr-editor .wr-rev { background: color-mix(in srgb, var(--crimson-wash) 26%, transparent); border-bottom: 1px dashed var(--crimson); border-radius: 2px; padding: 0 1px; cursor: pointer; transition: background var(--t-fast); }
 .wr-editor .wr-rev:hover { background: var(--crimson-wash); }
 .wr-rev-row { display: flex; gap: 8px; align-items: flex-start; }
-.wr-rev-tag { flex: 0 0 auto; font-size: 10px; font-weight: 700; color: var(--ink-3); background: var(--paper-2); border-radius: 4px; padding: 2px 6px; margin-top: 2px; }
-.wr-rev-tag.now { color: var(--crimson); background: var(--crimson-wash); }
+.wr-rev-tag { flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--ink-3); background: var(--paper-2); border-radius: 4px; padding: 2px 6px; margin-top: 2px; }
+.wr-rev-tag.now { color: var(--accent-ink); background: var(--accent-wash); }
 
 /* annotation summary list (context rail) */
 .wr-anno-list { display: flex; flex-direction: column; gap: 8px; }
 .wr-anno-item { display: flex; flex-direction: column; gap: 4px; text-align: left; width: 100%; padding: 10px 12px; background: var(--paper-0); border: 1px solid var(--line-1); border-left: 3px solid var(--gold); border-radius: var(--r-md); cursor: pointer; transition: background var(--t-fast), border-color var(--t-fast); }
 .wr-anno-item:hover { background: var(--paper-2); border-left-color: var(--crimson); }
-.wr-anno-item-q { font-family: var(--font-serif); font-size: 13px; color: var(--ink-3); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.wr-anno-item-q { font-family: var(--font-serif); font-size: var(--fs-sm); color: var(--ink-3); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .wr-anno-item-q::before { content: "\201C"; color: var(--gold); }
 .wr-anno-item-q::after { content: "\201D"; color: var(--gold); }
-.wr-anno-item-n { font-size: 12.5px; color: var(--ink-1); line-height: 1.55; }
-.wr-anno-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 16px; color: var(--ink-3); text-align: center; }
-.wr-anno-empty svg { color: var(--ink-4); }
+.wr-anno-item-n { font-size: var(--fs-sm); color: var(--ink-1); line-height: 1.55; }
+.wr-anno-list .wr-anno-scope { margin-bottom: 4px; }
+.wr-anno-scope.is-error { color: var(--danger-ink); }
+.wr-anno-count { text-align: right; font-variant-numeric: tabular-nums; }
+/* 正文改得找不到原文的批注：留在清单里，不能点去定位，可以删 */
+.wr-anno-item.is-lost { cursor: default; border-left-color: var(--line-2); }
+.wr-anno-item.is-lost:hover { background: var(--paper-0); border-left-color: var(--line-2); }
+.wr-anno-item-lost { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-xs); color: var(--ink-3); }
 @keyframes wrAnnoFlash { 0%, 100% { background: color-mix(in srgb, var(--gold-wash) 60%, transparent); } 35% { background: var(--crimson-wash); box-shadow: 0 0 0 4px var(--crimson-wash); } }
 .wr-editor mark.wr-anno.wr-anno-flash { animation: wrAnnoFlash 1.2s var(--ease); }
 
@@ -390,8 +385,8 @@
    Draggable rail dividers — desk-wide only
    ========================================================== */
 .wr-resize {
-  position: absolute; top: var(--topbar-h); bottom: 0; width: 11px; z-index: 33;
-  transform: translateX(-50%); cursor: col-resize; display: none;
+  position: absolute; top: var(--topbar-h); bottom: 0; width: 11px; z-index: calc(var(--z-drawer) + 1);
+  transform: translateX(-50%); cursor: col-resize;
   touch-action: none;
 }
 .wr-resize::after {
@@ -399,13 +394,10 @@
   transform: translateX(-50%); background: transparent;
   transition: background var(--t-fast), width var(--t-fast);
 }
-.wr-resize:hover::after, .wr-root[data-dragging="on"] .wr-resize::after { background: var(--crimson); width: 2px; }
+.wr-resize:hover::after, .wr-root[data-dragging="on"] .wr-resize::after { background: var(--accent); width: 2px; }
 .wr-resize-l { left: var(--rail-l); }
 .wr-resize-r { right: var(--rail-r); }
-@media (min-width: 1000px) {
-  .wr-root[data-layout="desk"] .wr-resize { display: block; }
-  .wr-root[data-layout="desk"][data-immersion="on"] .wr-resize { display: none; }
-}
+.wr-root[data-immersion="on"] .wr-resize { display: none; }
 /* snappy drag — kill the reflow transition while a divider is held */
 .wr-root[data-dragging="on"] .wr-scroll,
 .wr-root[data-dragging="on"] .wr-drawer,
@@ -420,15 +412,22 @@
 .wr-editor > p:first-of-type::first-line { letter-spacing: 0.005em; }
 
 /* selection colour echoes the crimson caret */
-.wr-editor ::selection { background: color-mix(in srgb, var(--crimson-wash) 80%, transparent); }
+.wr-editor ::selection { background: color-mix(in srgb, var(--accent-wash) 80%, transparent); }
 
 /* gentle hover lift on candidate cards already exists; add focus ring for a11y */
-.wr-cand:focus-visible { outline: 2px solid var(--crimson); outline-offset: 2px; }
+.wr-cand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 大纲上的场景题名最多两行（整句摘要在 title 提示里） */
+.wr-sc-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 
 /* ==========================================================
-   Narrow-screen fallback — desk behaves like the overlay mode
-   (handled by base wr-redesign.css; nothing extra needed here)
+   上下文抽屉里的 AI 续写（「AI 放在抽屉里」时）与共用的失败提示
    ========================================================== */
-
-/* 阶段 X：大纲上的场景题名一行放完（整句摘要在 title 提示里） */
-.wr-sc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wr-ai-panel { display: flex; flex-direction: column; gap: 10px; }
+.wr-ai-label { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.wr-ai-run { align-self: flex-start; }
+.wr-ai-note { margin: 0; font-size: var(--fs-xs); color: var(--ink-3); line-height: var(--lh-ui); }
+.wr-ai-error .ws-notice-text { font-size: var(--fs-sm); }
+.wr-irw-body .wr-ai-error { margin: 0; }
+.wr-fork-ai { width: 100%; justify-content: center; margin-top: 6px; }
+.wr-blank { display: grid; place-items: center; min-height: 60vh; text-align: center; color: var(--ink-3); gap: 8px; }

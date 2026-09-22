@@ -359,14 +359,18 @@ describe("分章面板 · 节奏体检（P3）", () => {
     ...over,
   });
 
-  it("报每章场数区间、均值和三幕配比", () => {
-    const lines = rhythmSummary(rhythm());
-    expect(lines[0]).toBe("每章 1–3 场 · 均值 2");
-    expect(lines).toContain("第 2 幕：2 章 / 5 场");
+  // 每一项是 { k, v }：带标签的小项，不再是「每章 2–5 场 · 均值 4.25」这样一串
+  const text = (items) => items.map(i => (i.k ? `${i.k} ${i.v}` : i.v));
+
+  it("报每章场数区间、平均场数和三幕配比，各自带标签", () => {
+    const items = rhythmSummary(rhythm({ mean_scenes_per_chapter: 4.25 }));
+    expect(text(items).slice(0, 2)).toEqual(["每章 1–3 场", "平均 4.3 场"]);
+    expect(text(items)).toContain("第二幕 2 章 / 5 场");
+    expect(items.every(i => !String(i.v).includes("·"))).toBe(true);
   });
 
   it("三个灾难都在铰链上时明确说出来（沉默不等于合格）", () => {
-    expect(rhythmSummary(rhythm())).toContain("三个灾难都落在幕的铰链上");
+    expect(text(rhythmSummary(rhythm()))).toContain("三个灾难都落在幕的铰链上");
   });
 
   it("有灾难偏离或缺失时不给「都合格」的结论", () => {
@@ -375,7 +379,7 @@ describe("分章面板 · 节奏体检（P3）", () => {
       { spine: "灾二", placed: true, on_hinge: true },
       { spine: "灾三", placed: false },
     ] });
-    expect(rhythmSummary(offHinge)).not.toContain("三个灾难都落在幕的铰链上");
+    expect(text(rhythmSummary(offHinge))).not.toContain("三个灾难都落在幕的铰链上");
   });
 
   it("没有体检数据时返回空数组，不编造结论", () => {
@@ -469,10 +473,17 @@ describe("分章面板 · 物化闸门衔接", () => {
     // 07 里只有占位章：「倒进 07 章表」两种分法点不动；没有分过章：「已保存的分章」点不动
     expect(host.querySelector('[data-testid="chapter-plan-strategy-spine_anchor"]').disabled).toBe(true);
     expect(host.querySelector('[data-testid="chapter-plan-strategy-keep_current"]').disabled).toBe(true);
+    // 四种分法是一组单选：选中的那种是 aria-checked 的分段项，不是和「确认写入」一样的红色实心按钮
+    const picked = host.querySelector('[data-testid="chapter-plan-strategy-from_scenes"]');
+    expect(picked.getAttribute("role")).toBe("radio");
+    expect(picked.getAttribute("aria-checked")).toBe("true");
+    expect(picked.classList.contains("btn-accent")).toBe(false);
+    expect(host.querySelectorAll('.sf-chapterplan-bar [role="radiogroup"] [role="radio"]').length).toBe(4);
     // 新章还没落库，AI 看不见它们
     expect(host.querySelector('[data-testid="chapter-plan-suggest"]').disabled).toBe(true);
-    // 场带着场景列表里的序号和功能标签
-    expect(host.textContent).toContain("01");
+    // 场带着场景列表里的序号和功能标签；章名还是「第 1 章」占位时，左边不再并排写一遍章号
+    expect(host.querySelector(".sf-chapterplan-no").textContent).toBe("1");
+    expect(host.querySelector(".sf-chapterplan-chapno")).toBeNull();
     expect(host.textContent).toContain("起势/建置");
 
     const input = host.querySelector('[data-testid="chapter-plan-per-chapter"]');
@@ -502,6 +513,8 @@ describe("分章面板 · 物化闸门衔接", () => {
     window.SnowSync = { chapterPreview: vi.fn(async () => preview), materialize };
     const onDone = vi.fn();
     const host = await renderPanel({ onDone });
+    // 有真章名的章：章名框左边写「第 N 章」
+    expect([...host.querySelectorAll(".sf-chapterplan-chapno")].map(n => n.textContent)).toEqual(["第 1 章", "第 2 章"]);
     await act(async () => host.querySelector('[data-testid="chapter-plan-split-0-2"]').click());
     await act(async () => host.querySelector('[data-testid="chapter-plan-merge-2"]').click());
     await act(async () => { host.querySelector('[data-testid="chapter-plan-confirm"]').click(); await new Promise(resolve => setTimeout(resolve, 0)); });
@@ -591,6 +604,161 @@ describe("分章面板 · 物化闸门衔接", () => {
     expect(host.textContent).toContain("场景清单需要先确认，才能整理章节结构。");
     expect(confirm.disabled).toBe(true);
     expect(host.querySelector('[role="alert"]')).toBeTruthy();
+  });
+
+  it("关闭只有一条路：干净时 Esc / × 直接关；有没确认的调整时 Esc / × / 取消都先问，点遮罩不关", async () => {
+    const preview = {
+      ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
+      strategy: "keep_current",
+      chapters: [
+        { row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "",
+          scenes: [1, 2, 3].map(i => ({ scene_plan_id: `sp${i}`, story_index: i, title: `第 ${i} 场`, primary_form: "proactive", planned: true })) },
+      ],
+      chapter_table: { count: 1, authored: true, saved: true },
+    };
+    window.SnowSync = { chapterPreview: vi.fn(async () => preview) };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const onClose = vi.fn();
+    const host = await renderPanel({ onClose });
+    const panel = host.querySelector('[data-testid="chapter-plan-panel"]');
+    // 真正的对话框：有名字，焦点已经移进面板
+    expect(panel.getAttribute("role")).toBe("dialog");
+    expect(panel.getAttribute("aria-modal")).toBe("true");
+    expect(document.getElementById(panel.getAttribute("aria-labelledby")).textContent).toBe("整理章节结构");
+    expect(panel.contains(document.activeElement)).toBe(true);
+    const esc = () => act(async () => {
+      document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+
+    // 干净：Esc 直接关，不问
+    await esc();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
+
+    // × 是共享的安静图标按钮（CloseButton），不是浏览器默认样式的裸 <button>
+    const closeX = host.querySelector('[data-testid="chapter-plan-panel"] .wr-drawer-x');
+    expect(closeX.getAttribute("aria-label")).toBe("关闭");
+    for (const c of ["btn", "btn-quiet", "btn-icon"]) expect(closeX.classList.contains(c)).toBe(true);
+
+    // 拆一章 → 有调整：Esc / × / 取消 都先问；作者说不，面板留着
+    await act(async () => host.querySelector('[data-testid="chapter-plan-split-0-2"]').click());
+    await esc();
+    await act(async () => host.querySelector('[data-testid="chapter-plan-panel"] .wr-drawer-x').click());
+    const cancel = [...host.querySelectorAll("button")].find(b => b.textContent.trim() === "取消");
+    await act(async () => cancel.click());
+    expect(confirm).toHaveBeenCalledTimes(3);
+    expect(confirm.mock.calls[0][0]).toContain("没确认的调整");
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // 点遮罩：有调整时不关，也不打扰；也不让浏览器把焦点挪到 body（面板在章节编排里也是这样）
+    const scrim = host.querySelector(".sf-chapterplan-scrim");
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    await act(async () => { scrim.dispatchEvent(down); });
+    expect(down.defaultPrevented).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(3);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // 焦点离开了面板（比如点了面板外）：Esc 仍然走同一条关闭路径（文档级监听，不靠焦点在面板里）
+    await act(async () => { document.activeElement.blur(); });
+    expect(panel.contains(document.activeElement)).toBe(false);
+    await act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(confirm).toHaveBeenCalledTimes(4);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // 作者确认放弃：才关
+    confirm.mockReturnValue(true);
+    await act(async () => host.querySelector('[data-testid="chapter-plan-panel"] .wr-drawer-x').click());
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("拆章之后按下的剪刀随场消失：焦点不掉到 body，落在新章的章名框上", async () => {
+    window.SnowSync = { chapterPreview: vi.fn(async () => ({
+      ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
+      strategy: "keep_current",
+      chapters: [
+        { row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "",
+          scenes: [1, 2, 3].map(i => ({ scene_plan_id: `sp${i}`, story_index: i, title: `第 ${i} 场`, primary_form: "proactive", planned: true })) },
+      ],
+      chapter_table: { count: 1, authored: true, saved: true },
+    })) };
+    const host = await renderPanel();
+    const scissors = host.querySelector('[data-testid="chapter-plan-split-0-2"]');
+    scissors.focus();
+    expect(document.activeElement).toBe(scissors);
+    // 浏览器里点击的更新在事件末尾同步提交，然后才轮到定时器；act 要等回调结束才提交，所以分两步
+    await act(async () => scissors.click());
+    expect(host.querySelector('[data-testid="chapter-plan-split-0-2"]')).toBeNull();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    const title = host.querySelector('[data-testid="chapter-plan-chapter-1"] .sf-chapterplan-title');
+    expect(document.activeElement).toBe(title);
+  });
+
+  /* 「怎么分」是一组分段单选：方向键选中下一种分法就会拉预览。以前加载一开始就把整组单选禁用，
+     方向键刚移过去的焦点随即落到 body；作者在确认框里说「不」时，焦点也停在一个没选中的分法上。 */
+  const threeScenePreview = (strategy = "keep_current") => ({
+    ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
+    strategy,
+    chapters: [
+      { row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "",
+        scenes: [1, 2, 3].map(i => ({ scene_plan_id: `sp${i}`, story_index: i, title: `第 ${i} 场`, primary_form: "proactive", planned: true })) },
+    ],
+    chapter_table: { count: 1, authored: true, saved: true },
+  });
+  const radio = (host, key) => host.querySelector(`[data-testid="chapter-plan-strategy-${key}"]`);
+  const pressKey = (el, key) => act(async () => {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
+
+  it("方向键换分法：加载中整组单选照样可用（只标 aria-busy），预览回来后焦点停在新选中的那一种", async () => {
+    let release;
+    window.SnowSync = { chapterPreview: vi.fn(async (strategy) => {
+      if (strategy === "auto") return threeScenePreview("keep_current");
+      await new Promise(resolve => { release = resolve; });
+      return threeScenePreview(strategy);
+    }) };
+    const host = await renderPanel();
+    const group = host.querySelector(".sf-chapterplan-strategies");
+    radio(host, "keep_current").focus();
+    await pressKey(radio(host, "keep_current"), "ArrowRight"); // 末项 → 循环到第一项「按场景分章」
+    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
+    expect(group.getAttribute("aria-busy")).toBe("true");
+    expect([...group.querySelectorAll('[role="radio"]')].some(r => r.disabled)).toBe(false);
+    expect(document.activeElement).toBe(radio(host, "from_scenes"));
+    await act(async () => { release(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(group.hasAttribute("aria-busy")).toBe(false);
+    expect(radio(host, "from_scenes").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(radio(host, "from_scenes"));
+  });
+
+  it("有调整时方向键换分法、作者在确认框里说「不」：选中项不变，焦点回到仍然选中的那一种", async () => {
+    window.SnowSync = { chapterPreview: vi.fn(async () => threeScenePreview("keep_current")) };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const host = await renderPanel();
+    await act(async () => host.querySelector('[data-testid="chapter-plan-split-0-2"]').click());
+    radio(host, "keep_current").focus();
+    await pressKey(radio(host, "keep_current"), "ArrowLeft");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+    expect(radio(host, "keep_current").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(radio(host, "keep_current"));
+  });
+
+  it("「撤销调整」：拆过的章回到这种分法刚算出来的样子，不再请求一次；作者说「不」就什么都不动", async () => {
+    window.SnowSync = { chapterPreview: vi.fn(async () => threeScenePreview("keep_current")) };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const host = await renderPanel();
+    const chapters = () => host.querySelectorAll('[data-testid^="chapter-plan-chapter-"]').length;
+    expect(host.querySelector('[data-testid="chapter-plan-revert"]')).toBeNull(); // 干净时没有这个入口
+    await act(async () => host.querySelector('[data-testid="chapter-plan-split-0-2"]').click());
+    expect(chapters()).toBe(2);
+    const revert = host.querySelector('[data-testid="chapter-plan-revert"]');
+    await act(async () => revert.click());
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(chapters()).toBe(2);
+    confirm.mockReturnValue(true);
+    await act(async () => host.querySelector('[data-testid="chapter-plan-revert"]').click());
+    expect(chapters()).toBe(1);
+    expect(host.querySelector('[data-testid="chapter-plan-revert"]')).toBeNull();
+    expect(host.textContent).not.toContain("有还没确认的调整");
+    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
   });
 
   it("同步模块意外未装配时显示中文恢复提示，不泄漏原始 TypeError", async () => {

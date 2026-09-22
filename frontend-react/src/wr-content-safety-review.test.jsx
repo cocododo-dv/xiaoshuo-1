@@ -117,10 +117,33 @@ describe("canonical 内容风险逐项确认", () => {
         : null;
     }
     await render(<Harness />);
-    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    // 焦点先进了对话框（不是停在打开它的按钮上）；Esc 从对话框里按下，像真实键盘那样冒泡
+    const inside = document.activeElement;
+    expect(document.querySelector(".wr-safety-dialog").contains(inside)).toBe(true);
+    await act(async () => inside.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
 
     expect(document.querySelector(".wr-safety-dialog")).toBeNull();
     expect(document.activeElement).toBe(opener);
     opener.remove();
+  });
+
+  it("重新校验进行中时，Esc 与点遮罩都不会关掉对话框", async () => {
+    const onCancel = vi.fn();
+    await render(<ContentSafetyReviewDialog review={REVIEW} busy onCancel={onCancel} onConfirm={() => {}} />);
+    const inside = document.activeElement;
+    await act(async () => inside.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    const scrim = document.querySelector(".wr-safety-scrim");
+    await act(async () => scrim.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(document.querySelector(".wr-safety-dialog")).not.toBeNull();
+  });
+
+  it("严重程度与判定方式用中文，不把内部风险代码印给作者", async () => {
+    await render(<ContentSafetyReviewDialog review={REVIEW} onCancel={vi.fn()} onConfirm={vi.fn()} />);
+    const text = document.querySelector(".wr-safety-dialog").textContent;
+    expect(text).toContain("严重程度：高");
+    expect(text).toContain("判定方式：启发式规则");
+    expect(text).not.toContain("sexual_content_with_minor_indicators");
+    expect(text).not.toMatch(/\bhigh\b|\bheuristic\b/);
   });
 });

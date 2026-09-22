@@ -83,7 +83,9 @@ await check("分工槽位:写作主力 → 该服务/模型,应用后路由生�
   const row = page.locator('.set-row:has-text("写作主力")');
   await row.locator("select").first().selectOption(PROVIDER_ID);
   await row.locator("select").nth(1).selectOption("test-model-a");
-  await page.click('button:has-text("应用分工")'); // confirm dialog 自动接受
+  await page.click('button:has-text("应用分工")');
+  // 应用分工的确认是应用内确认框（ws-notify.jsx），不是浏览器 confirm
+  await page.click('[data-testid="ws-confirm-ok"]');
   await page.waitForTimeout(2000);
   const overview = await api("/api/v1/system-config/llm");
   const route = overview.node_routes["neutral_draft"]; // scene_generation 组 ∈ drafting 槽
@@ -124,7 +126,8 @@ await check("连接测试:不可达地址返回失败但不崩", async () => {
 
 await check("删除服务:卡片原位删除 → 后端配置移除(路由留作 orphan 待补齐)", async () => {
   const card = page.locator(`.card-flat:has-text("${PROVIDER_ID}")`);
-  await card.locator('button:has-text("删除")').click(); // confirm dialog 自动接受
+  await card.locator('button:has-text("删除")').click();
+  await page.click('[data-testid="ws-confirm-ok"]'); // 应用内确认框
   await page.waitForTimeout(1800);
   if (await page.locator(`.card-flat:has-text("${PROVIDER_ID}")`).count()) throw new Error("card still visible");
   const overview = await api("/api/v1/system-config/llm");

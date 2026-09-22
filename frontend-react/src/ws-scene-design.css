@@ -1,0 +1,60 @@
+/* ==========================================================
+   ws-scene-design.css — 场景设计卡 sdc-*（阶段 X，ws-scene-design.jsx）
+   写作台与 AI 起草台共用的同一张卡。原在 ws-deep.css 末尾；main.jsx 里紧跟 ws-deep.css 导入，层叠位置不变。
+   ========================================================== */
+.sdc { display: grid; gap: 8px; margin: 0 0 8px; padding: 12px 14px; background: var(--paper-1);
+  border: 1px solid var(--line-1); border-radius: 10px; font-family: var(--font-sans); text-align: left; }
+.sdc.is-compact { padding: 10px 12px; gap: 6px; }
+.sdc-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+/* 卡上的小标签：至少 11px、--ink-3（--ink-4 只给占位 / 禁用；夜间它不到 3:1） */
+.sdc-kind { display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; padding: 2px 8px;
+  border-radius: 999px; background: var(--accent-wash); color: var(--accent-ink); }
+.sdc-kind.is-react { background: var(--info-wash); color: var(--info-ink); }
+.sdc-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; padding: 2px 7px;
+  border-radius: 999px; background: var(--paper-2); color: var(--ink-3); }
+.sdc-chip.tone-gold { background: var(--warn-wash); color: var(--warn-ink); }
+.sdc-src { margin-left: auto; font-size: 11px; color: var(--ink-3); }
+.sdc-link { border: 0; background: transparent; font: inherit; font-size: 11px; font-weight: 600; color: var(--ink-3);
+  padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.sdc-link:hover { color: var(--accent-ink); background: var(--paper-2); }
+.sdc-sync { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--warn-wash);
+  color: var(--warn-ink); font-size: var(--fs-xs); line-height: 1.5; }
+.sdc-sync span { flex: 1; min-width: 0; }
+.sdc-sync-btn { flex: 0 0 auto; border: 1px solid var(--warn); background: transparent; color: var(--warn-ink); font: inherit;
+  font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; cursor: pointer; }
+.sdc-sync-btn[disabled] { opacity: 0.6; cursor: default; }
+.sdc-summary { margin: 0; font-family: var(--font-serif); font-size: var(--fs-sm); line-height: 1.75; color: var(--ink-2); }
+.sdc-facts { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.sdc-facts li { display: inline-flex; align-items: baseline; gap: 6px; font-size: 11.5px; min-width: 0; }
+.sdc-facts li span { font-size: 11px; font-weight: 600; color: var(--ink-3); }
+.sdc-facts li strong { font-weight: 600; color: var(--ink-2); }
+.sdc-beats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 16px; }
+.sdc.is-compact .sdc-beats { grid-template-columns: 1fr; }
+.sdc-beats.is-followup { padding-top: 6px; border-top: 1px dashed var(--line-1); }
+.sdc-beat { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sdc-beat-k, .sdc-row-k { font-size: 11px; font-weight: 600; color: var(--ink-3); }
+.sdc-beat-v, .sdc-row-v { font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; }
+.sdc-beat-v.is-empty { color: var(--ink-3); font-style: italic; }
+.sdc-row { display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: baseline; }
+.sdc-row.tone-crimson .sdc-row-k { color: var(--accent-ink); }
+.sdc-row.tone-gold .sdc-row-k { color: var(--warn-ink); }
+.sdc-chapter { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line-1); }
+.sdc-chapter-head { display: flex; align-items: center; gap: 8px; }
+.sdc-chapter-n { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.sdc-chapter-t { font-family: var(--font-serif); font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
+.sdc-chapter-sum { margin: 0; font-size: var(--fs-xs); line-height: 1.65; color: var(--ink-3); }
+@media (max-width: 900px) { .sdc-beats { grid-template-columns: 1fr; } }
+/* 写作台右侧的上下文抽屉只有两百多像素宽：三拍竖排、标签在上，来源与链接另起一行 */
+.wr-drawer .sdc { padding: 10px 12px; }
+.wr-drawer .sdc-beats { grid-template-columns: 1fr; gap: 8px; }
+.wr-drawer .sdc-row { grid-template-columns: 1fr; gap: 1px; }
+.wr-drawer .sdc-src { margin-left: 0; flex-basis: 100%; }
+.wr-drawer .sdc.is-context .sdc-src { flex-basis: auto; margin-right: auto; }
+/* 抽屉里的补充卡（variant="context"）：只有摘要 / 离场变化 / 钩子… / 所在章，没有三拍 */
+.sdc.is-context { gap: 8px; }
+.sdc-context-empty { margin: 0; font-size: var(--fs-xs); color: var(--ink-3); line-height: 1.6; }
+/* 收起的设计卡：只留头部一行（形态 / 篇幅 / 来源 / 链接） */
+.sdc-toggle { border: 0; background: transparent; font: inherit; font-size: 11px; font-weight: 600; color: var(--ink-3);
+  padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.sdc-toggle:hover { color: var(--ink-2); background: var(--paper-2); }
+.sdc.is-collapsed { gap: 0; }

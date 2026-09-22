@@ -1,49 +1,20 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { apiGet, apiPost } from "./lib/client.js";
-
-/* global React, I */
-const { useState: useStSRV } = React;
+import { EmptyState, Notice, SectionLabel, Segmented, Spinner, Tag } from "./ws-ui.jsx";
+import { srFormatDuration, srFormatPct, srFormatWhen, srMetricMeta } from "./ws-styleref-model.js";
+import { srLoadDeep, srLoadReport, srValidate } from "./ws-styleref-store.js";
+import { useSrDeep } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 回测校验 stage + ValidationReportCard
-   Three-way concurrent validation:
-     quantitative (自适应阈值) / semantic (radar) / plagiarism (n-gram)
-     + forbidden_pattern hits
-   真后端：有真画像 → POST /validate（sync 内联 / async 轮询 /reports）；
-   无画像 → 空态引导（不再回退演示数据）。
+   四路校验：量化对齐（自适应容差）/ 语义评分（模型评审，雷达图）/ 抄袭检测（逐字比对）/ 禁忌检查。
+   有画像 → 快速（sync_only）内联出结果 / 完整（async_full）轮询报告；无画像 → 空态引导。
+   本次会话还没跑过时显示这份画像最近一次有结论的回测（「上次回测」，来自深层数据的 lastReport），
+   和步骤条的「回测校验 已完成」说同一件事。
+   请求在 ws-styleref-store.js，指标名与总览、画像基线共用 ws-styleref-model.js 的 SR_METRIC_META。
    ========================================================== */
 
-
 /* ---- 真实 report 字段映射 ---- */
-const SRV_METRIC_META = {
-  avg_sentence_length: { name: "平均句长", unit: "字" },
-  sentence_length_std: { name: "句长标准差", unit: "" },
-  short_sentence_ratio: { name: "短句率", pct: true },
-  long_sentence_ratio: { name: "长句率", pct: true },
-  punctuation_density_per_1k: { name: "标点密度/千", unit: "" },
-  dash_em_density_per_1k: { name: "破折号/千", unit: "" },
-  ellipsis_density_per_1k: { name: "省略号/千", unit: "" },
-  semicolon_density_per_1k: { name: "分号/千", unit: "" },
-  question_density_per_1k: { name: "问号/千", unit: "" },
-  classical_word_ratio: { name: "文言词比率", pct: true },
-  colloquial_marker_ratio: { name: "口语标记率", pct: true },
-  metaphor_density_per_1k: { name: "比喻密度/千", unit: "" },
-  personification_density_per_1k: { name: "拟人密度/千", unit: "" },
-  dialogue_ratio: { name: "对话占比", pct: true },
-  psychology_ratio: { name: "心理占比", pct: true },
-  description_env_ratio: { name: "环境占比", pct: true },
-  description_char_ratio: { name: "人物占比", pct: true },
-  action_ratio: { name: "动作占比", pct: true },
-  narration_ratio: { name: "叙述占比", pct: true },
-  transition_ratio: { name: "转场占比", pct: true },
-  flashback_ratio: { name: "闪回占比", pct: true },
-  sensory_visual_per_1k: { name: "视觉感官/千", unit: "" },
-  sensory_auditory_per_1k: { name: "听觉感官/千", unit: "" },
-  sensory_olfactory_per_1k: { name: "嗅觉感官/千", unit: "" },
-  sensory_tactile_per_1k: { name: "触觉感官/千", unit: "" },
-  sensory_gustatory_per_1k: { name: "味觉感官/千", unit: "" },
-};
 const SRV_SEMANTIC_AXIS = {
   language: "语言贴合", narrative: "叙事贴合", scene: "场景贴合", theme: "主题贴合",
   coherence: "连贯性", originality: "原创度", emotion: "情感基调", style: "风格贴合",
@@ -53,7 +24,7 @@ const SRV_SEMANTIC_AXIS = {
 function srvNormalize(rep) {
   if (!rep) return null;
   const quant = (rep.quantitative_json || []).map(q => {
-    const meta = SRV_METRIC_META[q.metric] || { name: q.metric, unit: "" };
+    const meta = srMetricMeta(q.metric);
     return {
       name: meta.name, pct: !!meta.pct, unit: meta.unit || "",
       target: q.target_mean, std: q.target_std, actual: q.actual,
@@ -90,11 +61,6 @@ function srvNormalize(rep) {
 /* 前端只在服务端彻底失联时才放弃轮询（报告行有 10 分钟孤儿回收，正常失败会先变 failed）。 */
 const SRV_POLL_HARD_CAP_MS = 30 * 60 * 1000;
 
-function srvFormatDuration(seconds) {
-  const s = Math.max(0, Math.round(Number(seconds) || 0));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
-
 /* 纯函数：running 报告的原始快照 → 四路的完成状态。后端 worker 先把量化 / 抄袭 / 本地禁忌落库
    （plagiarism_json.passed 有值即本地三路完成），再跑语义路（semantic_json 有值即完成）；
    禁忌语义判定只在报告终态才落，所以 async_full 下禁忌一行要等 verdict。 */
@@ -106,47 +72,43 @@ function srvRunningRows(partial, mode) {
   const rows = [
     { id: "quant", label: "量化对齐 · 本地计算", done: localDone },
   ];
-  if (mode === "async_full") rows.push({ id: "semantic", label: "语义评分 · critic LLM", done: semanticDone || finished });
-  rows.push({ id: "plagiarism", label: "抄袭检测 · 规范化 n-gram", done: localDone });
+  if (mode === "async_full") rows.push({ id: "semantic", label: "语义评分 · 模型评审", done: semanticDone || finished });
+  rows.push({ id: "plagiarism", label: "抄袭检测 · 逐字比对", done: localDone });
   rows.push({ id: "forbidden", label: "禁忌检查 · 逐条判定", done: mode === "async_full" ? finished : localDone });
   return rows;
 }
 
 function srvVerdictMeta(v) {
   switch (v) {
-    case "pass": return { kind: "pass", label: "通过", sub: "四路校验达标" };
-    case "plagiarism": return { kind: "plagiarism", label: "抄袭风险", sub: "最长重叠超阈值，直接进审核" };
-    case "fail": return { kind: "fail", label: "未通过", sub: "触发硬性禁忌或多路不达标" };
-    case "partial": return { kind: "partial", label: "部分通过", sub: "建议带修改重试一轮" };
-    default: return { kind: "partial", label: "待定", sub: "" };
+    case "pass": return { kind: "pass", label: "通过", sub: "各路校验都达标" };
+    case "plagiarism": return { kind: "plagiarism", label: "疑似抄袭", sub: "与原文的最长重叠超过阈值" };
+    case "fail": return { kind: "fail", label: "未通过", sub: "触发了硬性禁忌，或几路都不达标" };
+    case "partial": return { kind: "partial", label: "部分通过", sub: "建议带着修改意见再写一轮" };
+    default: return { kind: "idle", label: "结论不明", sub: "" };
   }
 }
 
 export { srvRunningRows, SRV_POLL_HARD_CAP_MS };
 
-export function SrValidation({ book, go, deepFor, loadDeep }) {
-  const isReal = !!(book && book.real);
-  const [deep, setDeep] = useStSRV(() => (isReal && deepFor ? deepFor(book.id) : null));
-  React.useEffect(() => {
-    if (!isReal) { setDeep(null); return; }
-    const sync = () => setDeep(deepFor ? deepFor(book.id) : null);
-    sync();
-    if (loadDeep) loadDeep(book.id);
-    window.addEventListener("sr:deep-changed", sync);
-    return () => window.removeEventListener("sr:deep-changed", sync);
-  }, [isReal, book && book.id, deepFor, loadDeep]);
+export function SrValidation({ book, go }) {
+  const deep = useSrDeep(book);
   const profileId = deep && deep.profileId;
   const realMode = !!profileId;
+  const profileTitle = (deep && deep.profile && deep.profile.title) || (book ? `《${book.title}》风格画像` : "这份画像");
+  const textId = React.useId();
+  const hintId = React.useId();
 
-  const [mode, setMode] = useStSRV("async_full");
-  const [text, setText] = useStSRV("");
-  const [running, setRunning] = useStSRV(false);
-  const [report, setReport] = useStSRV(null);   // 归一化的真实报告
-  const [partial, setPartial] = useStSRV(null); // running 报告的原始快照（本地三路先落库，逐路点亮）
-  const [runStartedAt, setRunStartedAt] = useStSRV(null);
-  const [, tick] = useStSRV(0);
-  const [done, setDone] = useStSRV(false);
-  const [err, setErr] = useStSRV(null);
+  const [mode, setMode] = React.useState("async_full");
+  const [text, setText] = React.useState("");
+  const [running, setRunning] = React.useState(false);
+  const [report, setReport] = React.useState(null);   // 归一化的真实报告
+  const [partial, setPartial] = React.useState(null); // running 报告的原始快照（本地三路先落库，逐路点亮）
+  const [runStartedAt, setRunStartedAt] = React.useState(null);
+  const [, tick] = React.useState(0);
+  const [done, setDone] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  // 错误代码只给排查用：放进报错的悬停提示，不拼进作者读的那句话
+  const [errCode, setErrCode] = React.useState("");
   const pollRef = React.useRef(null);
   const pollGeneration = React.useRef(0);
   React.useEffect(() => {
@@ -163,23 +125,32 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
     };
   }, [profileId]);
 
-  const showReport = done && !!report;
+  /* 本次会话还没回测时，显示上次的结论与报告（步骤条的「已完成」就是按它算的） */
+  const lastRaw = (deep && deep.lastReport) || null;
+  // 上次的报告不再有「后台补算」可等：没有模型评分就是没有
+  const lastReport = React.useMemo(() => (lastRaw ? { ...srvNormalize(lastRaw), semanticPending: false } : null), [lastRaw]);
+  const lastWhen = lastRaw ? srFormatWhen(lastRaw.finished_at || lastRaw.created_at) : null;
+  const backgroundRunning = !!(deep && Array.isArray(deep.reports)
+    && deep.reports.some((r) => r && (r.status === "running" || r.status === "pending")));
+  const showingLast = !report && !running && !!lastReport;
+  const shown = report || (showingLast ? lastReport : null);
+  const showReport = (done && !!report) || showingLast;
 
   const run = async () => {
     if (running) return;
-    setRunning(true); setDone(false); setErr(null); setReport(null); setPartial(null); setRunStartedAt(Date.now());
+    setRunning(true); setDone(false); setErr(null); setErrCode(""); setReport(null); setPartial(null); setRunStartedAt(Date.now());
     clearTimeout(pollRef.current);
     const generation = ++pollGeneration.current;
     try {
-      const resp = await apiPost(`/api/v2/style-reference/profiles/${profileId}/validate`, {
-        generated_text: text, target_kind: "manual", mode,
-      });
+      const resp = await srValidate(profileId, { text, mode });
       if (generation !== pollGeneration.current) return;
       if (resp && resp.sync_result) {
-        setReport(srvNormalize(resp.sync_result)); setRunning(false); setDone(true); return;
+        setReport(srvNormalize(resp.sync_result)); setRunning(false); setDone(true);
+        if (book) srLoadDeep(book.id, { force: true });
+        return;
       }
       const rid = resp && resp.report_id;
-      if (!rid) throw new Error("校验未返回 report_id");
+      if (!rid) throw new Error("校验没有返回报告编号");
       const startedAt = Date.now();
       /* 2026-09-15：不再 60 秒就报「校验超时」——两次 critic 调用在慢中转上常超一分钟，服务端
          报告行有心跳与孤儿回收（10 分钟无心跳降级 failed），前端只跟报告状态；硬上限只防
@@ -188,53 +159,66 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
         if (generation !== pollGeneration.current) return;
         if (Date.now() - startedAt > SRV_POLL_HARD_CAP_MS) { setRunning(false); setErr("校验超过 30 分钟仍未完成，请稍后重试。"); return; }
         let rep = null;
-        try { rep = ((await apiGet(`/api/v2/style-reference/reports/${rid}`)) || {}).report || null; } catch (e) { /* 抖动下一轮 */ }
+        try { rep = await srLoadReport(rid); } catch (e) { /* 抖动下一轮 */ }
         if (generation !== pollGeneration.current) return;
         if (rep) setPartial(rep);
-        if (rep && rep.verdict) { setReport(srvNormalize(rep)); setRunning(false); setDone(true); return; }
-        if (rep && rep.status === "failed") { setRunning(false); setErr(`校验失败：${rep.error_text || rep.error_code || "未知原因"}`); return; }
+        if (rep && rep.verdict) {
+          setReport(srvNormalize(rep)); setRunning(false); setDone(true);
+          if (book) srLoadDeep(book.id, { force: true }); // 步骤条「回测校验」与「上次回测」跟上
+          return;
+        }
+        if (rep && rep.status === "failed") {
+          setRunning(false); setErr(`校验失败：${rep.error_text || "服务端没有给出原因"}`); setErrCode(rep.error_code || ""); return;
+        }
         pollRef.current = setTimeout(poll, 1200);
       };
       pollRef.current = setTimeout(poll, 800);
     } catch (e) {
       if (generation !== pollGeneration.current) return;
       setRunning(false);
+      setErrCode((e && e.code) || "");
       setErr(e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED")
-        ? "全量三路的语义评分需启用 LLM；可改用「同步快路径」（量化 + 抄袭，无需 LLM）。"
+        ? "完整校验的模型评分需要先接入模型；可以改用「快速」（量化 + 抄袭，不需要模型）。"
         : ((e && e.message) || "回测失败"));
     }
   };
 
-  const verdict = report ? srvVerdictMeta(report.verdict)
-    : { kind: "partial", label: "待回测", sub: "运行回测查看结论" };
+  const verdict = (() => {
+    if (running) return { kind: "idle", label: "回测中…", sub: "结论出来后显示在这里" };
+    if (report) return srvVerdictMeta(report.verdict);
+    // 步骤条此时写「进行中」：这里也先说有一次回测在后台跑，下面仍可看上一份报告
+    if (backgroundRunning) return { kind: "idle", label: "回测进行中", sub: "之前发起的回测还在后台跑，完成后这里显示结论" };
+    if (showingLast) {
+      const meta = srvVerdictMeta(lastReport.verdict);
+      return { kind: meta.kind, label: `上次回测：${meta.label}`, sub: `${lastWhen ? `${lastWhen} · ` : ""}本次还没回测` };
+    }
+    return { kind: "idle", label: "还没回测", sub: "粘贴一段文字后运行回测" };
+  })();
 
-  // 四路汇总
-  const sum = report ? {
-    quant: report.quant.length ? Math.round(report.quant.filter(q => q.passed).length / report.quant.length * 100) + "%" : "—",
-    semantic: report.semantic.length ? (report.semantic.reduce((s, x) => s + x.score, 0) / report.semantic.length).toFixed(1) : (report.semanticPending ? "异步" : "—"),
-    plag: report.plagiarism.passed ? "通过" : "命中",
-    forbidden: report.forbidden.length,
+  // 四路汇总（本次的报告，或上次的）
+  const sum = shown ? {
+    quant: shown.quant.length ? Math.round(shown.quant.filter(q => q.passed).length / shown.quant.length * 100) + "%" : "—",
+    semantic: shown.semantic.length ? (shown.semantic.reduce((s, x) => s + x.score, 0) / shown.semantic.length).toFixed(1) : (shown.semanticPending ? "后台补算" : "—"),
+    plag: shown.plagiarism.passed ? "通过" : "命中",
+    forbidden: shown.forbidden.length,
   } : null;
 
-  // 真实改写建议：触发禁忌 + 最大偏离量化项
-  const rewriteHints = report ? (() => {
+  // 改写建议：触发的禁忌 + 偏离最大的量化项
+  const rewriteHints = shown ? (() => {
     const hints = [];
-    report.forbidden.slice(0, 2).forEach(f => hints.push({ tone: "gold", label: "禁忌", text: `触发「${f.statement}」${f.excerpt ? `：「${f.excerpt}」` : ""}，建议改具象。` }));
-    const worst = report.quant.filter(q => !q.passed).sort((a, b) => (b.deviation || 0) - (a.deviation || 0))[0];
-    if (worst) hints.push({ tone: "slate", label: "量化", text: `${worst.name} 实测 ${worst.pct ? (worst.actual * 100).toFixed(0) + "%" : (Math.round(worst.actual * 10) / 10)}，偏离目标 ${(worst.deviation || 0).toFixed(2)}×。` });
+    shown.forbidden.slice(0, 2).forEach(f => hints.push({ tone: "warn", label: "禁忌", text: `触发「${f.statement}」${f.excerpt ? `：「${f.excerpt}」` : ""}，建议改成具体的动作或物件。` }));
+    const worst = shown.quant.filter(q => !q.passed).sort((a, b) => (b.deviation || 0) - (a.deviation || 0))[0];
+    if (worst) hints.push({ tone: "info", label: "量化", text: `${worst.name}实测 ${worst.pct ? srFormatPct(worst.actual) : (Math.round(worst.actual * 10) / 10)}，偏离目标 ${(worst.deviation || 0).toFixed(2)} 倍容差。` });
     return hints;
   })() : null;
 
-  /* 真实书但还没有画像:回测无对象,空态引导 */
-  if (isReal && !realMode) {
+  /* 还没有画像：回测无对象，空态引导 */
+  if (!realMode) {
     return (
-      <div className="card" style={{padding: "44px 24px", textAlign: "center"}}>
-        <I.Beaker size={26} style={{color: "var(--ink-3)"}} />
-        <h3 className="text-serif" style={{fontSize: 17, margin: "10px 0 6px"}}>还不能回测</h3>
-        <p className="text-muted text-sm" style={{margin: "0 auto 16px", maxWidth: 420, lineHeight: 1.7}}>
-          回测把生成文本对照「风格画像」做量化/语义/抄袭/禁忌校验——先在「维度矩阵」完成抽取并合成画像。
-        </p>
-        <button className="btn btn-accent btn-sm" onClick={() => go && go("matrix")}>去维度矩阵</button>
+      <div className="card sr-stage-empty-card">
+        <EmptyState icon="Beaker" title="还不能回测" actions={<button type="button" className="btn btn-accent btn-sm" onClick={() => go && go("matrix")}>去维度矩阵</button>}>
+          回测把一段文字对照「风格画像」做量化、语义、抄袭和禁忌检查。先在「维度矩阵」完成抽取并合成画像。
+        </EmptyState>
       </div>
     );
   }
@@ -242,30 +226,41 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
   return (
     <div className="srv">
       <div className="srv-main">
-        {/* Input */}
         <div className="card">
           <div className="card-head">
-            <div><div className="card-title">回测输入</div><div className="card-sub">粘贴一段生成文本，对 {book.author}画像{realMode ? "三路并发校验" : "（演示）"}</div></div>
-            <div className="seg">
-              <button className={`seg-btn ${mode==="sync_only"?"is-active":""}`} onClick={()=>setMode("sync_only")}>同步快路径</button>
-              <button className={`seg-btn ${mode==="async_full"?"is-active":""}`} onClick={()=>setMode("async_full")}>全量三路</button>
-            </div>
+            <div><div className="card-title">回测输入</div><div className="card-sub">用「{profileTitle}」检查一段文字写得像不像</div></div>
+            <Segmented
+              label="校验方式"
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "sync_only", label: "快速（量化 + 抄袭）" },
+                { value: "async_full", label: "完整（四路，含模型评分）" },
+              ]}
+            />
           </div>
-          <textarea className="srv-input textarea" value={text} onChange={e=>setText(e.target.value)} />
+          <label className="label" htmlFor={textId}>要回测的文字</label>
+          <textarea
+            id={textId}
+            className="srv-input textarea"
+            value={text}
+            placeholder="粘贴一段按这份画像写出来的文字，几百字以上结果更可靠。"
+            aria-describedby={hintId}
+            onChange={e => setText(e.target.value)}
+          />
           <div className="srv-input-foot">
-            <div className="srv-mode-hint">
+            <p className="srv-mode-hint" id={hintId}>
               {mode === "sync_only"
-                ? <span><I.Zap size={12} /> 仅量化 + 抄袭，毫秒级返回（qc 落盘 gate 用），语义后台异步补算</span>
-                : <span><I.Beaker size={12} /> 量化 + 语义 + 抄袭 + 禁忌 四路并发，语义走 LLM</span>}
-            </div>
-            <button className="btn btn-accent" onClick={run} disabled={running || (realMode && !text.trim())}>
-              {running ? <><span className="step-spin-dark" style={{width:13,height:13}} /> 回测中…</> : <><I.Play size={13} /> 运行回测</>}
+                ? <><I.Zap size={12} /> 只做量化与抄袭检查，几秒内返回，不需要模型。</>
+                : <><I.Beaker size={12} /> 量化、抄袭、禁忌与模型评分四路一起跑，模型评分通常要一两分钟。</>}
+            </p>
+            <button type="button" className="btn btn-accent" onClick={run} disabled={running || !text.trim()} title={!text.trim() ? "先粘贴要回测的文字" : undefined}>
+              {running ? <><Spinner size={13} /> 回测中…</> : <><I.Play size={13} /> 运行回测</>}
             </button>
           </div>
-          {err && <div className="srv-mode-hint" style={{marginTop:8, color:"var(--rose)"}}><span><I.AlertTriangle size={12} /> {err}</span></div>}
+          {err && <Notice tone="danger" className="srv-error"><span title={errCode ? `错误代码：${errCode}` : undefined}>{err}</span></Notice>}
         </div>
 
-        {/* Report */}
         {running && (() => {
           const rows = srvRunningRows(partial, mode);
           const elapsed = runStartedAt ? Math.max(0, (Date.now() - runStartedAt) / 1000) : 0;
@@ -274,34 +269,31 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
               <div className="srv-run-rows">
                 {rows.map((row) => (
                   <div key={row.id} className={`srv-run-row${row.done ? " is-done" : ""}`} data-testid={`srv-run-${row.id}`} data-done={row.done ? "1" : "0"}>
-                    {row.done ? <I.Check size={13} style={{ color: "var(--sage)" }} /> : <span className="step-spin-dark" />}
+                    {row.done ? <I.Check size={13} className="srv-run-ok" /> : <Spinner size={14} />}
                     <span>{row.label}</span>
                   </div>
                 ))}
               </div>
-              <div className="text-xs text-muted" style={{ marginTop: 8 }}>
-                已用 {srvFormatDuration(elapsed)}{partial && partial.status === "pending" ? " · 排队中" : ""}{mode === "async_full" ? " · 语义路由 critic 模型评审，慢中转上常需一两分钟" : ""}
+              <div className="srv-run-meta">
+                已用 {srFormatDuration(elapsed)}{partial && partial.status === "pending" ? " · 排队中" : ""}{mode === "async_full" ? " · 模型评分在慢的中转上常要一两分钟" : ""}
               </div>
             </div>
           );
         })()}
-        {!running && realMode && !report && (
-          <div className="card" style={{padding:"32px 20px", textAlign:"center"}}>
-            <I.Beaker size={26} style={{color:"var(--ink-3)"}} />
-            <div className="text-muted text-sm mt-2">粘贴生成文本后点「运行回测」，对该画像做{mode === "sync_only" ? "量化 + 抄袭" : "四路"}校验。</div>
-          </div>
+        {showReport && !running && showingLast && (
+          <SectionLabel icon="Clock" className="srv-last-label" aside={lastWhen || undefined}>上次回测的报告</SectionLabel>
         )}
-        {showReport && !running && <ValidationReportCard report={report} mode={mode} />}
+        {showReport && !running && <ValidationReportCard report={shown} mode={mode} />}
       </div>
 
-      {/* Side: verdict + summary + rewrite */}
       <aside className="srv-side">
-        <div className={`srv-verdict v-${verdict.kind}`}>
-          <div className="srv-verdict-icon">
+        <div className={`srv-verdict v-${verdict.kind}`} role="status" data-testid="srv-verdict">
+          <div className="srv-verdict-icon" aria-hidden="true">
             {verdict.kind === "pass" && <I.CheckCircle size={26} />}
             {verdict.kind === "partial" && <I.AlertTriangle size={26} />}
             {verdict.kind === "fail" && <I.X size={26} />}
             {verdict.kind === "plagiarism" && <I.Ban size={26} />}
+            {verdict.kind === "idle" && <I.Beaker size={24} />}
           </div>
           <div className="srv-verdict-label">{verdict.label}</div>
           <div className="srv-verdict-sub">{verdict.sub}</div>
@@ -309,38 +301,33 @@ export function SrValidation({ book, go, deepFor, loadDeep }) {
 
         {sum && (
           <div className="card-flat">
-            <div className="ctx-head" style={{marginBottom:10}}><I.Target size={13} /><span>四路汇总</span></div>
+            <SectionLabel icon="Target">四路汇总</SectionLabel>
             <ul className="srv-summary">
-              <li><span>量化对齐</span><b className="srv-sum-val ok">{sum ? sum.quant : Math.round(quantPassRate()*100) + "%"}</b></li>
-              <li><span>语义评分</span><b className="srv-sum-val ok">{sum ? sum.semantic : "8.2"}</b></li>
-              <li><span>抄袭检测</span><b className={`srv-sum-val ${sum ? (sum.plag === "通过" ? "ok" : "warn") : "ok"}`}>{sum ? sum.plag : "通过"}</b></li>
-              <li><span>禁忌触发</span><b className={`srv-sum-val ${(sum ? sum.forbidden : 1) > 0 ? "warn" : "ok"}`}>{sum ? `${sum.forbidden} 项` : "1 项（轻）"}</b></li>
+              <li><span>量化对齐</span><b className="srv-sum-val">{sum.quant}</b></li>
+              <li><span>语义评分</span><b className="srv-sum-val">{sum.semantic}</b></li>
+              <li><span>抄袭检测</span><b className={`srv-sum-val ${sum.plag === "通过" ? "ok" : "warn"}`}>{sum.plag}</b></li>
+              <li><span>禁忌触发</span><b className={`srv-sum-val ${sum.forbidden > 0 ? "warn" : "ok"}`}>{sum.forbidden} 项</b></li>
             </ul>
           </div>
         )}
 
         {rewriteHints && rewriteHints.length > 0 && (
           <div className="card-flat srv-rewrite">
-            <div className="ctx-head" style={{marginBottom:10}}><I.Wand size={13} /><span>改写建议</span></div>
-            {(rewriteHints || [
-              { tone: "gold", label: "禁忌", text: "把「愈来愈浓的暮色」改为具象动作或物件，避免成语化抒情。" },
-              { tone: "slate", label: "量化", text: "对话占比 5%（目标 23%±9），可在段中补一句短对话。" },
-            ]).map((h, i) => (
+            <SectionLabel icon="Wand">改写建议</SectionLabel>
+            {rewriteHints.map((h, i) => (
               <div key={i} className="srv-rewrite-item">
-                <span className={`pill pill-${h.tone} text-xs`}><span className="pill-dot" />{h.label}</span>
+                <Tag tone={h.tone} dot>{h.label}</Tag>
                 <p>{h.text}</p>
               </div>
             ))}
-            <p className="text-xs text-muted mt-2" style={{textAlign:"center"}}>partial 由生成期 qc 链路自动重试（最多 2 轮）；fail / 抄袭 直接进审核。</p>
+            <p className="srv-rewrite-note">部分通过时，起草流程会自动带着修改意见重试（最多 2 轮）；未通过或疑似抄袭会交给你审核。</p>
           </div>
         )}
 
-        <button className="btn btn-accent btn-lg" style={{width:"100%"}} onClick={() => go && go("apply")}>
-          <I.ArrowRight size={15} /> 进入注入应用
+        <button type="button" className="btn btn-accent btn-lg srv-next" onClick={() => go && go("apply")}>
+          进入注入应用 <I.ArrowRight size={15} />
         </button>
       </aside>
-
-      <style dangerouslySetInnerHTML={{ __html: srvCss }} />
     </div>
   );
 }
@@ -362,11 +349,11 @@ export function ValidationReportCard({ report, mode }) {
       {/* Quantitative */}
       <div className="card">
         <div className="card-head">
-          <div><div className="card-title">量化对齐</div><div className="card-sub">自适应阈值 = max(σ × 1.25, 绝对下限)</div></div>
-          <span className="pill pill-sage"><span className="pill-dot" />{quantPass} / {quant.length} 通过</span>
+          <div><div className="card-title">量化对齐</div><div className="card-sub">容差是基线波动的 1.25 倍，每项另有最小值</div></div>
+          <Tag tone={quant.length && quantPass === quant.length ? "ok" : "warn"} dot>{quantPass} / {quant.length} 通过</Tag>
         </div>
         {quant.length === 0 ? (
-          <div className="text-xs text-muted" style={{padding:"10px 2px"}}>该画像无量化基线（需先合成画像）。</div>
+          <p className="sr-ov-text sr-ov-muted">这份画像没有统计基线，无法做量化对齐。</p>
         ) : (
           <div className="vrc-quant">
             {quant.map((m, i) => <QuantBar key={i} m={m} />)}
@@ -378,49 +365,49 @@ export function ValidationReportCard({ report, mode }) {
         {/* Semantic radar */}
         <div className="card">
           <div className="card-head">
-            <div><div className="card-title">语义评分</div><div className="card-sub">critic LLM · 强制引用证据</div></div>
+            <div><div className="card-title">语义评分</div><div className="card-sub">模型评审，每一项都要引用原文证据</div></div>
             {semanticPending
-              ? <span className="pill pill-slate text-xs"><span className="pill-dot" />异步补算中</span>
+              ? <Tag tone="info" dot>后台补算中</Tag>
               : (semanticMean != null
-                  ? <span className="pill pill-sage text-xs"><span className="pill-dot" />{semanticMean.toFixed(1)} / 10</span>
-                  : <span className="pill pill-slate text-xs"><span className="pill-dot" />无评分</span>)}
+                  ? <Tag tone="ok" dot>{semanticMean.toFixed(1)} / 10</Tag>
+                  : <Tag dot>没有评分</Tag>)}
           </div>
           {semanticPending ? (
             <div className="vrc-async">
-              <span className="step-spin-dark" />
-              <span className="text-muted text-sm">语义路径后台运行中，完成后入库供审核查看…</span>
+              <Spinner size={16} />
+              <span className="sr-ov-muted">模型评分在后台补算，完成后写进这份报告。</span>
             </div>
           ) : semantic.length >= 3 ? (
             <RadarChart data={semantic} />
           ) : semantic.length > 0 ? (
-            <div className="vrc-radar-legend" style={{padding:"6px 0"}}>
+            <div className="vrc-radar-legend vrc-radar-legend-solo">
               {semantic.map((d, i) => (
                 <div key={i} className="vrc-radar-leg"><span className="vrc-radar-leg-name">{d.axis}</span><span className="vrc-radar-leg-val tab-num">{(d.score != null ? d.score : d.v * 10).toFixed(1)}</span></div>
               ))}
             </div>
           ) : (
-            <div className="vrc-async"><span className="text-muted text-sm">本次未产出语义评分。</span></div>
+            <div className="vrc-async"><span className="sr-ov-muted">这次没有产出模型评分。</span></div>
           )}
         </div>
 
         {/* Plagiarism */}
         <div className="card">
           <div className="card-head">
-            <div><div className="card-title">抄袭检测</div><div className="card-sub">规范化 n-gram · {plag.ngram}-gram · 阈值 {plag.threshold} 字</div></div>
-            <span className={`pill ${plag.passed ? "pill-sage" : "pill-crimson"}`}><span className="pill-dot" />{plag.passed ? "通过" : "命中"}</span>
+            <div><div className="card-title">抄袭检测</div><div className="card-sub">逐字比对原书，连续 {plag.threshold} 字以上相同算重叠</div></div>
+            <Tag tone={plag.passed ? "ok" : "danger"} dot>{plag.passed ? "通过" : "命中"}</Tag>
           </div>
           <div className="vrc-plag-meter">
             <div className="vrc-plag-track">
-              <div className="vrc-plag-fill" style={{width: Math.min(100, (plag.maxRun / plag.threshold * 100)) + "%", background: plag.passed ? "var(--sage)" : "var(--crimson)"}} />
-              <div className="vrc-plag-threshold" style={{left: "100%"}} />
+              <div className={`vrc-plag-fill ${plag.passed ? "" : "is-hit"}`} style={{width: Math.min(100, (plag.maxRun / plag.threshold * 100)) + "%"}} />
+              <div className="vrc-plag-threshold" />
             </div>
             <div className="vrc-plag-legend">
               <span>最长连续重叠 <b className="tab-num">{plag.maxRun}</b> 字</span>
-              <span className="text-muted">阈值 {plag.threshold} 字</span>
+              <span className="sr-ov-muted">阈值 {plag.threshold} 字</span>
             </div>
           </div>
           <div className="vrc-plag-flags">
-            {plag.flags.length === 0 && <div className="text-xs text-muted" style={{padding:"4px 2px"}}>未发现超阈值重叠。</div>}
+            {plag.flags.length === 0 && <p className="sr-ov-text sr-ov-muted">没有超过阈值的重叠。</p>}
             {plag.flags.map((f, i) => (
               <div key={i} className={`vrc-plag-flag lv-${f.level}`}>
                 <span className="vrc-plag-run">{f.run} 字</span>
@@ -428,8 +415,8 @@ export function ValidationReportCard({ report, mode }) {
                   <p className="vrc-plag-text text-serif">「…{f.text}…」</p>
                   <p className="vrc-plag-src">{f.source}</p>
                 </div>
-                {f.level === "ok" && <span className="pill pill-sage text-xs"><span className="pill-dot" />安全</span>}
-                {f.level === "hit" && <span className="pill pill-crimson text-xs"><span className="pill-dot" />超阈值</span>}
+                {f.level === "ok" && <Tag tone="ok" dot>安全</Tag>}
+                {f.level === "hit" && <Tag tone="danger" dot>超阈值</Tag>}
               </div>
             ))}
           </div>
@@ -439,13 +426,11 @@ export function ValidationReportCard({ report, mode }) {
       {/* Forbidden */}
       <div className="card">
         <div className="card-head">
-          <div><div className="card-title">禁忌模式检查</div><div className="card-sub">对每条 forbidden_pattern 判断是否触发</div></div>
-          <span className={`pill ${forbiddenHits ? "pill-gold" : "pill-sage"}`}>
-            <span className="pill-dot" />{forbiddenHits} 触发{report ? "" : ` / ${forbidden.length}`}
-          </span>
+          <div><div className="card-title">禁忌检查</div><div className="card-sub">逐条检查画像里的禁忌有没有被触发</div></div>
+          <Tag tone={forbiddenHits ? "warn" : "ok"} dot>{forbiddenHits} 条触发</Tag>
         </div>
         {forbidden.length === 0 ? (
-          <div className="text-xs text-muted" style={{padding:"10px 2px"}}><I.Check size={13} style={{verticalAlign:"-2px", color:"var(--sage)"}} /> 未触发任何禁忌模式。</div>
+          <p className="sr-ov-text sr-ov-muted"><I.Check size={13} className="srv-run-ok" /> 没有触发任何禁忌。</p>
         ) : (
           <ul className="vrc-forbidden">
             {forbidden.map((f, i) => (
@@ -462,9 +447,9 @@ export function ValidationReportCard({ report, mode }) {
                     </div>
                   )}
                 </div>
-                <span className={`pill text-xs ${f.triggered ? (f.severity === "error" ? "pill-crimson" : "pill-gold") : "pill-sage"}`}>
-                  <span className="pill-dot" />{f.triggered ? (f.severity === "error" ? "硬触发" : "触发") : "清白"}
-                </span>
+                <Tag tone={f.triggered ? (f.severity === "error" ? "danger" : "warn") : "ok"} dot>
+                  {f.triggered ? (f.severity === "error" ? "硬性触发" : "触发") : "未触发"}
+                </Tag>
               </li>
             ))}
           </ul>
@@ -487,7 +472,7 @@ function QuantBar({ m }) {
   const bandLo = toPct(m.target - t), bandHi = toPct(m.target + t);
   const actualPct = toPct(m.actual);
   const pass = quantItemPass(m);
-  const fmt = (v) => m.pct ? (v*100).toFixed(0) + "%" : v.toFixed(1);
+  const fmt = (v) => m.pct ? srFormatPct(v) : (Math.round(v * 10) / 10).toFixed(1);
   return (
     <div className="qbar">
       <div className="qbar-head">
@@ -503,8 +488,8 @@ function QuantBar({ m }) {
         <div className={`qbar-actual ${pass ? "ok" : "off"}`} style={{left: actualPct + "%"}} />
       </div>
       <div className="qbar-foot">
-        <span>目标 {fmt(m.target)} ± {m.pct ? (t*100).toFixed(0)+"%" : t.toFixed(1)}</span>
-        <span className={pass ? "ok" : "off"}>偏离 {(Math.abs(m.actual - m.target) / (t || 1e-6)).toFixed(2)}×</span>
+        <span>目标 {fmt(m.target)} ± {fmt(t)}</span>
+        <span className={pass ? "ok" : "off"}>偏离 {(Math.abs(m.actual - m.target) / (t || 1e-6)).toFixed(2)} 倍容差</span>
       </div>
     </div>
   );
@@ -552,96 +537,3 @@ function RadarChart({ data }) {
     </div>
   );
 }
-
-const srvCss = `
-.srv { display: grid; grid-template-columns: 1fr 300px; gap: 18px; align-items: start; }
-.srv-main { display: flex; flex-direction: column; gap: 16px; }
-.srv-input { min-height: 96px; font-size: 15px; line-height: 1.8; }
-.srv-input-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
-.srv-mode-hint { font-size: 12px; color: var(--ink-3); display: flex; align-items: center; }
-.srv-mode-hint span { display: inline-flex; align-items: center; gap: 6px; }
-
-.srv-side { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 0; }
-.srv-verdict { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 22px; border-radius: 14px; text-align: center; }
-.srv-verdict.v-pass { background: var(--sage-wash); color: var(--sage); }
-.srv-verdict.v-partial { background: var(--gold-wash); color: var(--gold); }
-.srv-verdict.v-fail { background: var(--rose-wash); color: var(--rose); }
-.srv-verdict.v-plagiarism { background: var(--crimson-wash); color: var(--crimson); }
-.srv-verdict-label { font-family: var(--font-serif); font-size: 20px; font-weight: 600; margin-top: 4px; }
-.srv-verdict-sub { font-size: 12.5px; opacity: 0.85; }
-.srv-summary { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.srv-summary li { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
-.srv-sum-val { font-family: var(--font-serif); font-size: 15px; }
-.srv-sum-val.ok { color: var(--sage); }
-.srv-sum-val.warn { color: var(--gold); }
-.srv-rewrite-item { display: flex; flex-direction: column; gap: 4px; padding: 10px; background: var(--paper-0); border-radius: 8px; margin-bottom: 8px; }
-.srv-rewrite-item p { font-size: 12.5px; line-height: 1.5; color: var(--ink-1); }
-
-/* ValidationReportCard */
-.vrc { display: flex; flex-direction: column; gap: 16px; }
-.vrc-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; align-items: start; }
-.vrc-quant { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 24px; }
-
-.qbar { display: flex; flex-direction: column; gap: 5px; }
-.qbar-head { display: flex; justify-content: space-between; align-items: baseline; }
-.qbar-name { font-size: 12.5px; font-weight: 600; color: var(--ink-1); }
-.qbar-verdict { display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.qbar-verdict.ok { color: var(--sage); }
-.qbar-verdict.off { color: var(--gold); }
-.qbar-track { position: relative; height: 10px; background: var(--paper-2); border-radius: 5px; }
-.qbar-band { position: absolute; top: 0; bottom: 0; background: var(--sage-wash); border-radius: 3px; }
-.qbar-target { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink-3); border-radius: 1px; }
-.qbar-actual { position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%; transform: translate(-50%, -50%); border: 2px solid var(--paper-0); box-shadow: var(--shadow-sm); }
-.qbar-actual.ok { background: var(--sage); }
-.qbar-actual.off { background: var(--gold); }
-.qbar-foot { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-3); }
-.qbar-foot .ok { color: var(--sage); }
-.qbar-foot .off { color: var(--gold); }
-
-/* Radar */
-.vrc-radar { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
-.vrc-radar-svg { width: 190px; height: 190px; flex-shrink: 0; }
-.vrc-radar-legend { display: flex; flex-direction: column; gap: 6px; flex: 1 1 150px; min-width: 140px; }
-.vrc-radar-leg { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 10px; background: var(--paper-0); border-radius: 6px; }
-.vrc-radar-leg-name { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
-.vrc-radar-leg-val { font-family: var(--font-serif); font-weight: 600; color: var(--crimson); }
-.vrc-async { display: flex; align-items: center; gap: 12px; padding: 30px 16px; justify-content: center; }
-.step-spin-dark { width: 18px; height: 18px; border: 2px solid var(--line-2); border-top-color: var(--crimson); border-radius: 50%; animation: spin 0.8s linear infinite; }
-.srv-running { padding: 18px 20px; }
-.srv-run-rows { display: flex; flex-direction: column; gap: 12px; }
-.srv-run-row { display: flex; align-items: center; gap: 12px; font-size: 13.5px; color: var(--ink-2); }
-.srv-run-row .step-spin-dark { width: 15px; height: 15px; }
-
-/* Plagiarism */
-.vrc-plag-meter { margin-bottom: 14px; }
-.vrc-plag-track { position: relative; height: 8px; background: var(--paper-2); border-radius: 4px; margin-bottom: 8px; }
-.vrc-plag-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--sage); border-radius: 4px; }
-.vrc-plag-threshold { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--rose); }
-.vrc-plag-legend { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-2); }
-.vrc-plag-legend b { font-family: var(--font-serif); font-size: 14px; }
-.vrc-plag-flags { display: flex; flex-direction: column; gap: 8px; }
-.vrc-plag-flag { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: 8px; flex-wrap: wrap; }
-.vrc-plag-run { font-family: var(--font-mono); font-size: 11px; padding: 2px 7px; border-radius: 4px; background: var(--sage-wash); color: var(--sage); flex-shrink: 0; }
-.vrc-plag-body { flex: 1 1 160px; min-width: 140px; }
-.vrc-plag-text { font-size: 13px; color: var(--ink-1); white-space: normal; }
-.vrc-plag-src { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
-
-/* Forbidden */
-.vrc-forbidden { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.vrc-fb { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: 10px; }
-.vrc-fb.is-hit { border-left: 3px solid var(--gold); }
-.vrc-fb-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 999px; background: var(--sage-wash); color: var(--sage); }
-.vrc-fb.is-hit .vrc-fb-mark { background: var(--gold-wash); color: var(--gold); }
-.vrc-fb-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.vrc-fb-statement { font-size: 13.5px; color: var(--ink-1); }
-.vrc-fb-hit { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; background: var(--gold-wash); border-radius: 6px; }
-.vrc-fb-excerpt { font-size: 13px; color: #6a4d1d; }
-.vrc-fb-note { font-size: 11.5px; color: #6a4d1d; opacity: 0.85; }
-
-@media (max-width: 1280px) {
-  .srv { grid-template-columns: 1fr; }
-  .srv-side { position: static; }
-  .vrc-row, .vrc-quant { grid-template-columns: 1fr; }
-  .vrc-radar { flex-direction: column; }
-}
-`;

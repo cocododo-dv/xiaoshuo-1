@@ -3,7 +3,7 @@
 //   (b) 画像 stale / 有新 run / 未激活 → 「重新合成」可点并真的打 synthesize 端点；
 //   (c) 强度读数只来自预览端点返回的 stats，没有 stats 就显示「预览中…」，没有本地公式；
 //   (d) 任务卡只剩 scene_generation（后端 task-defaults 返回多项也只展示一张）；
-//   (e) 维度选择器按画像 sub_dimensions 动态生成；同作用域已有 active 绑定时提示遮蔽。
+//   (e) 维度选择器按画像 sub_dimensions 动态生成；同作用域已有 active 绑定时提示「将替换当前绑定」。
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -280,7 +280,9 @@ describe("深层缓存失效", () => {
     await vi.waitFor(() => expect(mod.srActivityEntries()[0].status).toBe("failed"), T);
     const entry = mod.srActivityEntries()[0];
     expect(entry.bookId).toBe("bk1");
-    expect(entry.error).toContain("STYLE_REFERENCE_EXTRACTION_FAILED");
+    // 条目带服务端给的原因；错误代码另存（界面只放进悬停提示）
+    expect(entry.error).toBe("extraction failed");
+    expect(entry.errorCode).toBe("STYLE_REFERENCE_EXTRACTION_FAILED");
     expect(mod.srActivityView(entry).detail).toContain("抽取失败");
     expect(window.alert).not.toHaveBeenCalled();
     mod.srActivityStop();
@@ -394,8 +396,8 @@ describe("注入应用页", () => {
     const { mod, client } = await load(fixture({ profileStatus: "active" }), { previewStats: null });
     const host = await render(<mod.SrApply book={BOOK} go={vi.fn()} />);
     await vi.waitFor(() => expect(postUrls(client).some((u) => u.endsWith("/injection-preview"))).toBe(true), T);
-    // 预览已到（bundle 面板渲染出 fragments），但读数仍是「预览中…」
-    await vi.waitFor(() => expect(host.textContent).toContain("banned_pattern_block"), T);
+    // 预览已到（bundle 面板按后端顺序渲染出各块，禁忌块在内），但读数仍是「预览中…」
+    await vi.waitFor(() => expect(host.querySelector('[data-block="forbidden_block"]')).toBeTruthy(), T);
     expect(host.querySelector('[data-testid="sr-intensity-readout"]').textContent).toContain("预览中…");
     expect(host.textContent).not.toMatch(/规则 \d+ 行/);
   });
@@ -433,12 +435,12 @@ describe("注入应用页", () => {
     const { mod } = await load(fixture({ profileStatus: "draft", stale: true, bindings }));
     const host = await render(<mod.SrApply book={BOOK} go={vi.fn()} />);
     await vi.waitFor(() => expect(host.querySelector('[data-testid="sr-apply-shadow"]')).toBeTruthy(), T);
-    expect(host.querySelector('[data-testid="sr-apply-shadow"]').textContent).toContain("将遮蔽该作用域已有绑定：作者风格画像");
+    expect(host.querySelector('[data-testid="sr-apply-shadow"]').textContent).toContain("将替换当前绑定：作者风格画像");
     expect(host.querySelector('[data-testid="sr-bindings-inactive"]').textContent).toContain("注入不会生效");
     expect(host.querySelector('[data-testid="sr-apply-inactive"]').textContent).toContain("重新合成");
 
     // 切到「场景」作用域且未选目标 → 不提示遮蔽
-    const sceneBtn = [...host.querySelectorAll(".sr-scope-btn")].find((b) => b.textContent === "场景");
+    const sceneBtn = [...host.querySelectorAll('.sr-scope [role="radio"]')].find((b) => b.textContent === "场景");
     await click(sceneBtn);
     expect(host.querySelector('[data-testid="sr-apply-shadow"]')).toBeNull();
   });

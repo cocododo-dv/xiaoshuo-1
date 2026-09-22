@@ -10,6 +10,17 @@ vi.mock("./lib/client.js", () => ({
   apiDelete: vi.fn(),
 }));
 
+/* 视图从目录取章名 / 场景位置（后端 id → 第 N 章 · 第 M 场）；目录用夹具，不拉后端 */
+const fx = vi.hoisted(() => ({ catalog: [] }));
+vi.mock("./ws-catalog.jsx", () => ({
+  WsCatalog: { get: () => fx.catalog, subscribe: () => () => {} },
+  useCatalogChapters: () => fx.catalog,
+}));
+
+/* 巡检按当前作品过滤（WsWorks.activeId）；默认没有作品 → 退回全局 */
+const works = vi.hoisted(() => ({ id: null }));
+vi.mock("./ws-works.jsx", () => ({ WsWorks: { activeId: () => works.id } }));
+
 const T = { timeout: 5000, interval: 25 };
 
 function overviewPayload() {
@@ -103,14 +114,15 @@ describe("WsQuality store（临时文本扫描 analyze）", () => {
     expect(client.apiPost).not.toHaveBeenCalled(); // 可证伪：若不守卫空串则会发请求
   });
 
-  it("analyze 失败时触发 alert 且置 error（可证伪）", async () => {
+  it("analyze 失败：只记下错误与出错的是哪一步，不弹浏览器对话框（可证伪）", async () => {
     const { client, mod } = await loadStore();
     client.apiPost.mockRejectedValueOnce(new Error("analyze boom"));
 
     await mod.qAnalyzeText("会失败的文字");
 
-    await vi.waitFor(() => expect(window.alert).toHaveBeenCalled(), T);
     expect(mod.qSnapshot().error).toContain("analyze boom");
+    expect(mod.qSnapshot().errorScope).toBe("analyze");
+    expect(window.alert).not.toHaveBeenCalled();
   });
 });
 
@@ -161,11 +173,147 @@ describe("WsQuality store（章组复审 chapter-set-review）", () => {
     expect(client.apiPost).not.toHaveBeenCalled();
   });
 
-  it("章组复审失败时触发 alert 且置 error（可证伪）", async () => {
+  it("章组复审失败：只记下错误与出错的是哪一步，不弹浏览器对话框（可证伪）", async () => {
     const { client, mod } = await loadStore();
     client.apiPost.mockRejectedValueOnce(new Error("review boom"));
     await mod.qChapterSetReview({ chapter_ids: ["c1"] });
-    await vi.waitFor(() => expect(window.alert).toHaveBeenCalled(), T);
     expect(mod.qSnapshot().error).toContain("review boom");
+    expect(mod.qSnapshot().errorScope).toBe("review");
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+});
+
+/* ---------- 视图：错误就地显示、对象用人话名字、证据不带标签 ---------- */
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
+
+describe("WsQuality 视图", () => {
+  let root;
+  let host;
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    fx.catalog = [{
+      id: "ch01", backendId: "c1", n: "01", title: "盐场的早班", state: "writing",
+      scenes: [{ sid: "sid-1", backendId: "s1", title: "交班", state: "done" }],
+    }];
+  });
+  afterEach(async () => {
+    if (root) await act(async () => root.unmount());
+    if (host) host.remove();
+    root = null;
+    host = null;
+    vi.restoreAllMocks();
+  });
+
+  async function mount(go = vi.fn()) {
+    const { client, mod } = await loadStore();
+    client.apiGet.mockImplementation((u) => (String(u).includes("/literary-quality/overview")
+      ? Promise.resolve({
+        ...overviewPayload(),
+        items: [{ ...overviewPayload().items[0], findings: [{ dimension: "image_homogeneity", severity: "taste", issue: "The same image field repeats too often: 手.", evidence_excerpt: "</p><p>他伸出手", recommendation: "Keep one anchor image." }] }],
+      })
+      : Promise.resolve({})));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root.render(<mod.WsQuality go={go} />));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    return { client, mod, go };
+  }
+
+  it("巡检对象显示为「第 N 章 · 第 M 场」，分数读作「N 分」，不再露出后端 id", async () => {
+    await mount();
+    const item = host.querySelector(".q-item");
+    expect(item.textContent).toContain("第 1 章 · 第 1 场「交班」");
+    expect(item.textContent).toContain("55 分");
+    expect(item.textContent).not.toContain("第 55 分");
+    expect(item.textContent).not.toContain("scene:s1");
+    // 章筛选是目录里的章，不是手敲 chapter_id 的输入框
+    expect(host.querySelector('input[placeholder="chapter_id"]')).toBeNull();
+    expect([...host.querySelectorAll("option")].some((o) => o.value === "c1" && o.textContent === "第 1 章 · 盐场的早班")).toBe(true);
+  });
+
+  it("展开后：问题是中文、证据去掉 HTML 标签；「去写作台处理这一场」带着场景意图", async () => {
+    const { go } = await mount();
+    const row = host.querySelector(".q-item-row");
+    expect(row.hasAttribute("aria-controls")).toBe(false);          // 收起时详情不在 DOM 里：不指向悬空的 id
+    await act(async () => { row.click(); });
+    const detail = host.querySelector(".q-item-detail");
+    expect(document.getElementById(row.getAttribute("aria-controls"))).toBe(detail);
+    expect(detail.textContent).toContain("同一个意象反复出现：手。");
+    expect(detail.textContent).toContain("他伸出手");
+    expect(detail.textContent).not.toContain("</p>");
+    const button = [...detail.querySelectorAll("button")].find((b) => b.textContent.includes("去写作台处理这一场"));
+    await act(async () => { button.click(); });
+    expect(go).toHaveBeenCalledWith("writer", [
+      { type: "ws:writer-scene", detail: "sid-1" },
+      { type: "ws:writer-posture", detail: "deep" },
+    ]);
+  });
+
+  it("临时扫描失败：错误显示在扫描区里（role=alert），不弹 window.alert", async () => {
+    const { client } = await mount();
+    client.apiPost.mockRejectedValueOnce(new Error("analyze boom"));
+    const area = host.querySelector("textarea");
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(area, "要扫描的一段文字");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const run = [...host.querySelectorAll("button")].find((b) => b.textContent.includes("扫描这段文字"));
+    await act(async () => { run.click(); });
+    await act(async () => { await Promise.resolve(); });
+    const alertBox = host.querySelector(".q-scan [role='alert']");
+    expect(alertBox).not.toBeNull();
+    expect(alertBox.textContent).toContain("analyze boom");
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+
+  it("巡检读不到时只有一处报错带「重试」：不再同时摆一排 0 和「没有可巡检的稿件」（那是在说稿件是空的）", async () => {
+    const { client, mod } = await loadStore();
+    client.apiGet.mockImplementation((u) => (String(u).includes("/literary-quality/overview")
+      ? Promise.reject(Object.assign(new Error("读不到服务端"), { code: "NETWORK_ERROR" }))
+      : Promise.resolve({})));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root.render(<mod.WsQuality go={vi.fn()} />));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const alertBox = host.querySelector(".q-notice[role='alert']");
+    expect(alertBox.textContent).toContain("读不到服务端");
+    expect(host.querySelector(".q-stat")).toBeNull();
+    expect(host.querySelector(".q-empty")).toBeNull();
+    expect(host.textContent).not.toContain("没有可巡检的稿件");
+    // 重试就是再巡检一轮；这一轮读到了，页面回到正常样子
+    client.apiGet.mockImplementation((u) => (String(u).includes("/literary-quality/overview") ? Promise.resolve(overviewPayload()) : Promise.resolve({})));
+    const retry = [...alertBox.querySelectorAll("button")].find((b) => b.textContent.includes("重试"));
+    await act(async () => { retry.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(host.querySelector(".q-notice[role='alert']")).toBeNull();
+    expect(host.querySelectorAll(".q-stat").length).toBe(6);
+  });
+
+  it("进入时的巡检按当前作品过滤；作品列表还没到时不带 project_id", async () => {
+    works.id = "P1";
+    const { client } = await mount();
+    expect(client.apiGet).toHaveBeenCalledWith(expect.stringContaining("project_id=P1"));
+    works.id = "__loading__";
+    await act(async () => root.unmount());
+    host.remove();
+    const second = await mount();
+    const overviewCalls = second.client.apiGet.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/literary-quality/overview"));
+    expect(overviewCalls.at(-1)).not.toContain("project_id");
+    works.id = null;
+  });
+
+  it("章组复审的章来自目录，不必先巡检", async () => {
+    await mount();
+    const tab = [...host.querySelectorAll('[role="radio"]')].find((b) => b.textContent === "章组复审");
+    await act(async () => { tab.click(); });
+    expect(host.textContent).toContain("第 1 章 · 盐场的早班");
+    expect(host.querySelectorAll('.q-set-chapters input[type="checkbox"]').length).toBe(1);
   });
 });
