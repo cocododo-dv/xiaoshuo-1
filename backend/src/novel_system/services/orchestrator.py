@@ -16,6 +16,22 @@ _LOGGER = logging.getLogger(__name__)
 # 检查点 / near_completion 里，警告随 near_final payload 走。
 NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON = "rewrite_rejected_style_plagiarism"
 NEAR_FINAL_REWRITE_GATE_STAGE = "near_final_rewrite"
+# 风格参考 v3 复核（A/B 实测：定稿改写把整场挤成一段、读数从 92.7 退到 98.3 百分位）：定稿改写稿进 eval1 之前
+# 再过两道确定性门——相对来源稿的基础安全回退（必写事实、禁用内容、文本完整性含整场挤成一段、长度），以及作者手笔
+# 直起时「离作者更远超过容差」。没过 = 与抄袭被拒同一条路径：终稿回到来源稿，eval0 的意见随稿留痕。
+NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON = "rewrite_rejected_base_safety"
+NEAR_FINAL_REWRITE_MOVED_AWAY_SKIP_REASON = "rewrite_rejected_moved_away"
+_NEAR_FINAL_REJECTION_SKIP_REASONS = {
+    "style_plagiarism": NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON,
+    "base_safety": NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON,
+    "moved_away": NEAR_FINAL_REWRITE_MOVED_AWAY_SKIP_REASON,
+}
+
+
+def _near_final_rejection_skip_reason(gate: Any) -> str:
+    """被拒的重写稿 → skip_reason（旧检查点里的抄袭拒绝没有 ``rejected_reason``，按抄袭读）。"""
+    reason = str((gate or {}).get("rejected_reason") or "style_plagiarism") if isinstance(gate, dict) else "style_plagiarism"
+    return _NEAR_FINAL_REJECTION_SKIP_REASONS.get(reason, NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON)
 # 风格参考 v3（P5b）：作者手笔直起时软补丁让稿子离作者更远 → 退回补丁前的稿子。软 QC 收尾记这个 skip_reason，
 # 收尾的决定由补丁前那一轮评审派生（branch=waive、stop_reason 如下），评审的改稿意见随稿留痕。
 STYLE_PATCH_REVERTED_SKIP_REASON = "style_patch_reverted"
@@ -55,6 +71,36 @@ def _near_final_rewrite_gate_warnings(gate: Any) -> list[dict[str, Any]]:
     """重写稿 gate 小结 → Q2 警告（严格模式停点；宽松模式随稿归档、醒目提示）。"""
     if not isinstance(gate, dict):
         return []
+    rejected_reason = str(gate.get("rejected_reason") or "")
+    if gate.get("rejected") and rejected_reason == "base_safety":
+        reasons = "、".join(str(item) for item in (gate.get("rejection") or {}).get("reasons") or []) or "未知"
+        return [
+            {
+                "issue_key": "near_final_rewrite_rejected_base_safety",
+                "quality_level": "Q2",
+                "message": (
+                    f"准终稿重写稿没过确定性安全门（{reasons}），已丢弃；终稿保留重写前的稿子，"
+                    "评审的改稿意见随稿留痕，可以按意见自己改。"
+                ),
+                "recommended_action": "author_review_optional_fix",
+                "verified_by": "near_final_rewrite_base_safety",
+            }
+        ]
+    if gate.get("rejected") and rejected_reason == "moved_away":
+        fidelity = gate.get("rejection") or {}
+        return [
+            {
+                "issue_key": "near_final_rewrite_rejected_moved_away",
+                "quality_level": "Q3",
+                "message": (
+                    "准终稿重写稿离参考作者更远（在作者自己的段落里的位次 "
+                    f"{fidelity.get('source_percentile')} → {fidelity.get('rewrite_percentile')}），已丢弃；"
+                    "终稿保留重写前更像作者的稿子，评审的改稿意见随稿留痕。"
+                ),
+                "recommended_action": "author_review_optional_fix",
+                "verified_by": "style_fidelity_reading",
+            }
+        ]
     if gate.get("rejected"):
         return [
             {
@@ -171,6 +217,7 @@ from novel_system.services.scene_generation import (
     SceneGenerationPostprocessError,
     SceneGenerationService,
     StyleGenerationResult,
+    assess_rewrite_regressions,
     style_notice,
     versioned_scene_artifact_id,
 )
@@ -2449,6 +2496,105 @@ class Orchestrator:
             allow_terminal=allow_terminal,
         )
 
+    def _near_final_rewrite_guard(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        source_generation: StyleGenerationResult,
+        rewrite_generation: StyleGenerationResult,
+        gate: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """定稿改写稿进 eval1 之前的确定性门（见 ``NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON`` 处的说明）。
+
+        返回要存进检查点的 gate 小结：已被抄袭门拒绝的原样返回；新添基础安全回退 → ``rejected_reason="base_safety"``；
+        作者手笔直起、读数可信、且重写稿的 distance 比来源稿大出 ``patch_max_distance_increase`` 以上 →
+        ``rejected_reason="moved_away"``；都没有 → 原来的 gate（重写稿更像或差不多时把读数记进 ``fidelity``）。"""
+        if isinstance(gate, dict) and gate.get("rejected"):
+            return gate
+        regressions = assess_rewrite_regressions(
+            scene,
+            bundle,
+            source_content=source_generation.content,
+            rewritten_content=rewrite_generation.content,
+        )
+        if regressions["regressed"]:
+            return self._rejected_rewrite_gate(
+                gate,
+                reason="base_safety",
+                details={
+                    "reasons": list(regressions["reasons"]),
+                    "integrity_markers": list(regressions["rewritten_integrity_markers"]),
+                },
+            )
+        drift = self._near_final_rewrite_drift(
+            scene=scene,
+            bundle=bundle,
+            source_generation=source_generation,
+            rewrite_generation=rewrite_generation,
+        )
+        if drift is None:
+            return gate
+        if drift["moved_away"]:
+            return self._rejected_rewrite_gate(gate, reason="moved_away", details=drift)
+        return {**gate, "fidelity": drift} if isinstance(gate, dict) else gate
+
+    @staticmethod
+    def _rejected_rewrite_gate(
+        gate: dict[str, Any] | None, *, reason: str, details: dict[str, Any]
+    ) -> dict[str, Any]:
+        base = (
+            dict(gate)
+            if isinstance(gate, dict)
+            else {
+                "stage": NEAR_FINAL_REWRITE_GATE_STAGE,
+                "verdict": "not_run",
+                "plagiarism_hit_count": None,
+                "forbidden_hit_count": None,
+                "error": None,
+                "profile_id": None,
+                "runtime_contract_hash": None,
+                "notice_codes": [],
+            }
+        )
+        base.update(rejected=True, rejected_reason=reason, rejection=deepcopy(details))
+        return base
+
+    def _near_final_rewrite_drift(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        source_generation: StyleGenerationResult,
+        rewrite_generation: StyleGenerationResult,
+    ) -> dict[str, Any] | None:
+        """作者手笔直起时重写稿相对来源稿的读数比较；不适用 / 读不出 / 读数不可信 → ``None``（不拿它拒稿）。"""
+        from novel_system.services.style_policy import style_policy_for_bundle
+
+        policy = style_policy_for_bundle(bundle)
+        if not policy.bound or not policy.style_first:
+            return None
+        thresholds = fidelity_thresholds()
+        try:
+            # 读数可能要先建这本书的窗口索引、写库：放在自己的保存点里，失败只回滚它
+            with self.session.begin_nested():
+                before = style_readings.reading_for_text(self.session, policy, source_generation.content)
+                after = style_readings.reading_for_text(self.session, policy, rewrite_generation.content)
+        except Exception:  # noqa: BLE001 — 读数是观察：读不出就不拿它拒稿
+            _LOGGER.warning("near-final rewrite fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
+            return None
+        if before is None or after is None or not before.reliable or not after.reliable:
+            return None
+        tolerance = float(thresholds.patch_max_distance_increase)
+        return {
+            "moved_away": bool(after.distance > before.distance + tolerance),
+            "source_distance": round(float(before.distance), 4),
+            "rewrite_distance": round(float(after.distance), 4),
+            "source_percentile": round(float(before.percentile), 1) if before.percentile is not None else None,
+            "rewrite_percentile": round(float(after.percentile), 1) if after.percentile is not None else None,
+            "tolerance": tolerance,
+        }
+
     def _ensure_near_final_subcheckpoints(
         self,
         *,
@@ -2579,6 +2725,13 @@ class Orchestrator:
                     )
                 )
                 rewrite_gate = _near_final_rewrite_gate_summary(rewrite_generation)
+                rewrite_gate = self._near_final_rewrite_guard(
+                    scene=scene,
+                    bundle=bundle,
+                    source_generation=source_generation,
+                    rewrite_generation=rewrite_generation,
+                    gate=rewrite_gate,
+                )
                 self._save_near_rewrite_checkpoint(
                     generation=rewrite_generation,
                     source_generation=source_generation,
@@ -2604,10 +2757,11 @@ class Orchestrator:
                         "near-final evaluation exists for a gate-rejected rewrite",
                         status_code=409,
                     )
+                rejection_skip_reason = _near_final_rejection_skip_reason(rewrite_gate)
                 _LOGGER.warning(
-                    "near-final rewrite for scene %s rejected by the styled-draft gate "
-                    "(plagiarism); falling back to the gated source draft %s",
+                    "near-final rewrite for scene %s rejected (%s); falling back to the gated source draft %s",
                     scene.scene_id,
+                    rejection_skip_reason,
                     source_generation.row_id,
                 )
                 # 生成重写稿时 scene_generation 已把当前稿指针推到被拒的重写行;回退后
@@ -2622,7 +2776,7 @@ class Orchestrator:
                     eval0,
                     source_generation,
                     0,
-                    NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON,
+                    rejection_skip_reason,
                     rewrite_gate,
                 )
             if progress < 2:
@@ -3393,7 +3547,7 @@ class Orchestrator:
                         source_generation=source_generation,
                         source_evaluation_id=str(eval0.get("evaluation_id") or ""),
                     )
-                    expected_skip_reason = NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON
+                    expected_skip_reason = _near_final_rejection_skip_reason(rewrite_gate)
                 elif rewrite_gate is not None:
                     raise DomainError(
                         "RUN_CHECKPOINT_CORRUPT",

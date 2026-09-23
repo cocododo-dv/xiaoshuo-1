@@ -4345,9 +4345,27 @@ def _normalize_literal_unicode_escapes(text: str) -> str:
     return _BARE_CJK_UNICODE_ESCAPE_RE.sub(replace_bare_cjk, normalized)
 
 
+# 风格参考 v3 复核（A/B 实测）：模型把 JSON 字符串里的换行吞掉时，整场会回成一整块——对白、叙述、动作挤在
+# 一个段落里。中文小说有对白就一定分段：够长、有对白引号、却一个换行都没有 = 文本损坏，与乱码同一级。
+PARAGRAPH_COLLAPSE_MIN_CHARS = 800
+PARAGRAPH_COLLAPSE_MIN_QUOTES = 4
+_DIALOGUE_QUOTE_RE = re.compile(r"[“”「」『』]")
+
+
+def _paragraphs_collapsed(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if "\n" in stripped:
+        return False
+    if _visible_char_count(stripped) < PARAGRAPH_COLLAPSE_MIN_CHARS:
+        return False
+    return len(_DIALOGUE_QUOTE_RE.findall(stripped)) >= PARAGRAPH_COLLAPSE_MIN_QUOTES
+
+
 def _scene_text_integrity_markers(text: str) -> list[str]:
     """返回不含正文内容的完整性标记，供改写验收和审计使用。"""
     markers: list[str] = []
+    if _paragraphs_collapsed(text):
+        markers.append("paragraphs_collapsed")
     if "\ufffd" in text:
         markers.append("replacement_character")
     if "???" in text:
@@ -5007,6 +5025,34 @@ def _assess_style_base_rewrite(
     }
 
 
+def assess_rewrite_regressions(
+    scene: SceneCard,
+    bundle: Mapping[str, Any] | None,
+    *,
+    source_content: str,
+    rewritten_content: str,
+) -> dict[str, Any]:
+    """「改一整场」的产物（定稿改写）相对来源稿的确定性回退（风格参考 v3 复核，A/B 实测）。
+
+    在与起草同一个长度带放宽下（``_length_band_slack_for``）评估改写稿与来源稿，只报改写稿**新添**的问题——
+    来源稿本来就有的（例如本来就缺的必写项、本来就不在长度带里）不算回退。返回 ``{"regressed", "reasons",
+    "rewritten_integrity_markers"}``；``reasons`` 用 :func:`_assess_style_base_rewrite` 的原因码。"""
+    with _length_band_slack_for(bundle, scene):
+        rewritten = _assess_style_base_rewrite(
+            scene=scene, source_content=source_content, rewritten_content=rewritten_content
+        )
+        baseline = _assess_style_base_rewrite(
+            scene=scene, source_content=source_content, rewritten_content=source_content
+        )
+    carried = set(baseline.get("reasons") or [])
+    reasons = [reason for reason in rewritten.get("reasons") or [] if reason not in carried]
+    return {
+        "regressed": bool(reasons),
+        "reasons": reasons,
+        "rewritten_integrity_markers": list(rewritten.get("rewritten_integrity_markers") or []),
+    }
+
+
 def _resume_base_safety(
     session: Session,
     *,
@@ -5307,6 +5353,11 @@ def _neutral_repair_brief(
     if integrity_markers:
         lines.append(
             "Remove response-format commentary, markdown/JSON wrappers, control tokens, malformed Unicode, and encoding artifacts; output Chinese scene prose only."
+        )
+    if "paragraphs_collapsed" in integrity_markers:
+        lines.append(
+            "The scene came back as one unbroken block. Restore paragraph breaks (a newline between paragraphs): "
+            "start a new paragraph for each speaker's line and at each shift of action, place or time, the way the reference passages do."
         )
     if "target_length_not_met" not in set(assessment.get("reasons") or []):
         lines.append(

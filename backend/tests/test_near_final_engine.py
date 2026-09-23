@@ -761,3 +761,123 @@ def test_near_final_rewrite_brief_reads_the_reviewers_fix_directions() -> None:
     assert Orchestrator._near_final_rewrite_brief({"revision_brief": [{"target": ""}]}) == [
         "Rewrite the full scene so forced choice, paid cost, relationship turn, and ending action are visible."
     ]
+
+
+# ---------------------------------------------------------------------------
+# 风格参考 v3 复核（A/B 实测）：定稿改写稿进 eval1 之前的确定性门
+# ---------------------------------------------------------------------------
+
+_PARAGRAPHS = [
+    "林岑按住录音带，潮气从船坞的木板缝里一阵阵往上冒，她的指尖冻得发麻。",
+    "“你要真相，还是要活人？”许望问。",
+    "“我两样都要。”林岑说，“可今晚只能先保住一样。”",
+    "她把录音带分成两份。林岑把录音带分成两份。一份交给许望，一份塞进石缝，缝里的苔藓湿得像一块旧抹布。",
+    "“别回头。”许望压低声音，“雾墙那边有人。”",
+    "林岑没有回头。她数着自己的呼吸，一、二、三，数到第七下的时候，第二枚盐钟在雾里响了。",
+]
+
+
+def _paragraphed_scene(repeat: int = 6) -> str:
+    return "\n\n".join(_PARAGRAPHS * repeat)
+
+
+def test_a_near_final_rewrite_that_collapses_the_paragraphs_is_never_archived(session) -> None:
+    """定稿改写稿把整场挤成一段（对白、叙述、动作一整块）：没过基础安全门，丢弃；终稿保留重写前的稿子，
+    不再对重写稿做 eval1。"""
+    _seed_scene(session)
+    state = session.get(SceneRunState, SCENE_ID)
+    state.scene_token_budget = 250_000
+    state.attempt_budget = 20
+    state.provider_attempt_budget = 20
+    # 这一场写一千来字（塌成一段的检查只看八百字以上的正文）：长度带放宽，免得先触发长度补丁
+    session.get(SceneCard, SCENE_ID).target_length_band = "800-1800"
+    session.commit()
+    styled = _paragraphed_scene()
+    collapsed = styled.replace("\n\n", "")
+    scene_client = SequencedClient(
+        [
+            {"scene_text": styled, "continuity_notes": []},
+            {"scene_text": styled, "style_notes": []},
+            # 合成正文重复段落，未绑定时的去模板门会先跑一遍补丁：原样交回（仍分段）
+            {"scene_text": styled, "style_notes": []},
+            {"scene_text": collapsed, "style_notes": []},
+        ]
+    )
+    near_final_client = SequencedClient([_near_final_fail()])  # 重写稿被拒 → 不会有第二轮评审
+    orchestrator = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=scene_client),
+        hard_qc_engine=HardQcEngine(session, llm_client=SequencedClient([_hard_pass()])),
+        soft_qc_engine=SoftQcEngine(session, llm_client=SequencedClient([_soft_pass(), _soft_pass()])),
+        planning_service=NearFinalPlanningService(session, llm_client=ScenePipelineOnlineFake()),
+        near_final_service=NearFinalAcceptanceService(session, llm_client=near_final_client),
+    )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=ScenePipelineOnlineFake())
+
+    result = orchestrator.run_scene(SCENE_ID)
+    session.commit()
+
+    assert result["near_final"]["rewrite_count"] == 0
+    gate = result["near_final"]["rewrite_style_gate"]
+    assert gate["rejected"] is True and gate["rejected_reason"] == "base_safety"
+    assert "text_integrity_regressed" in gate["rejection"]["reasons"]
+    assert "paragraphs_collapsed" in gate["rejection"]["integrity_markers"]
+    assert "near_final_rewrite_rejected_base_safety" in [
+        item["issue_key"] for item in result["near_final"].get("warnings") or []
+    ] or "near_final_rewrite_rejected_base_safety" in json.dumps(result, ensure_ascii=False)
+    final = session.execute(select(FinalScene).where(FinalScene.scene_id == SCENE_ID)).scalar_one_or_none()
+    if final is not None:
+        assert "\n" in final.content and final.content.strip() == styled.strip()
+    run_state = session.get(SceneRunState, SCENE_ID)
+    assert run_state.current_style_draft_row_id and "near_final_rewrite" not in run_state.current_style_draft_row_id
+    assert len(near_final_client.requests) == 1
+
+
+def test_near_final_guard_rejects_a_rewrite_that_moves_away_from_the_author(session, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from novel_system.services import orchestrator as orchestrator_module
+
+    orch = object.__new__(Orchestrator)
+    orch.session = session
+    source = SimpleNamespace(content=_paragraphed_scene(), row_id="src")
+    rewrite = SimpleNamespace(content=_paragraphed_scene(3), row_id="rw")
+    monkeypatch.setattr(
+        orchestrator_module, "assess_rewrite_regressions", lambda *a, **k: {"regressed": False, "reasons": [], "rewritten_integrity_markers": []}
+    )
+    drift = {"moved_away": True, "source_distance": 0.99, "rewrite_distance": 1.36, "source_percentile": 92.7, "rewrite_percentile": 98.3, "tolerance": 0.05}
+    monkeypatch.setattr(Orchestrator, "_near_final_rewrite_drift", lambda self, **kwargs: drift)
+    gate = orch._near_final_rewrite_guard(
+        scene=SimpleNamespace(scene_id=SCENE_ID), bundle={}, source_generation=source, rewrite_generation=rewrite, gate=None
+    )
+    assert gate["rejected"] is True and gate["rejected_reason"] == "moved_away"
+    assert orchestrator_module._near_final_rejection_skip_reason(gate) == orchestrator_module.NEAR_FINAL_REWRITE_MOVED_AWAY_SKIP_REASON
+    warning = orchestrator_module._near_final_rewrite_gate_warnings(gate)[0]
+    assert warning["issue_key"] == "near_final_rewrite_rejected_moved_away" and warning["quality_level"] == "Q3"
+    assert "92.7 → 98.3" in warning["message"]
+    # 更像（或差不多）：保留重写稿，把读数记进 gate
+    kept = dict(drift, moved_away=False)
+    monkeypatch.setattr(Orchestrator, "_near_final_rewrite_drift", lambda self, **kwargs: kept)
+    styled_gate = {"stage": "near_final_rewrite", "verdict": "pass", "rejected": False}
+    gate = orch._near_final_rewrite_guard(
+        scene=SimpleNamespace(scene_id=SCENE_ID), bundle={}, source_generation=source, rewrite_generation=rewrite, gate=styled_gate
+    )
+    assert gate["rejected"] is False and gate["fidelity"]["moved_away"] is False
+    # 旧检查点里的抄袭拒绝没有 rejected_reason：按抄袭读
+    assert orchestrator_module._near_final_rejection_skip_reason({"rejected": True}) == NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON
+
+
+def test_paragraph_collapse_is_a_text_integrity_marker() -> None:
+    from novel_system.services.scene_generation import _scene_text_integrity_markers, assess_rewrite_regressions
+
+    styled = _paragraphed_scene()
+    assert "paragraphs_collapsed" not in _scene_text_integrity_markers(styled)
+    assert "paragraphs_collapsed" in _scene_text_integrity_markers(styled.replace("\n\n", ""))
+    # 短文本 / 没有对白的一整段叙述不算
+    assert "paragraphs_collapsed" not in _scene_text_integrity_markers(_PARAGRAPHS[0] * 3)
+    assert "paragraphs_collapsed" not in _scene_text_integrity_markers(("她站在船坞边，雾一层层压下来。" * 80))
+    scene = SceneCard(scene_id="X", chapter_id="C", project_id="P", scene_seq=1, target_length_band="short")
+    regressed = assess_rewrite_regressions(scene, None, source_content=styled, rewritten_content=styled.replace("\n\n", ""))
+    assert regressed["regressed"] and "text_integrity_regressed" in regressed["reasons"]
+    kept = assess_rewrite_regressions(scene, None, source_content=styled, rewritten_content=styled)
+    assert kept == {"regressed": False, "reasons": [], "rewritten_integrity_markers": []}

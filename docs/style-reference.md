@@ -202,7 +202,10 @@
    `reading_failed`、提示说实话；读数在保存点里读，出错不弄坏会话、不耽误检查点。
 5. 软 QC = **参考评审**（样例 4 窗 + 文风卡，16 维各 0–10 分）→ 有不像的维才补丁；补丁后评分变差、或 `distance` 变大而评分没提高 →
    退回补丁前的稿子（`STYLE_PATCH_REVERTED`）。
-6. 准定稿评审（按参考判，分数带范围）。
+6. 准定稿评审（按参考判，分数带范围）。评审要改写时，定稿改写稿进第二轮评审之前先过两道确定性门：相对来源稿的基础安全回退
+   （必写事实、禁用内容、文本完整性——含「整场挤成一段」、长度；`scene_generation.assess_rewrite_regressions`，只算改写稿新添的问题），
+   以及作者手笔直起时读数比来源稿远出 `patch_max_distance_increase` 以上。没过就丢掉改写稿，终稿保留来源稿，评审意见随稿留痕
+   （skip_reason `rewrite_rejected_base_safety` / `rewrite_rejected_moved_away`，前者 Q2、后者 Q3 提示）。
 7. 归档：唯一抄袭门 + 终稿读数。
 
 房风规则只在 `policy.defers_house_taste()` 时让位（反模板门只提示、自动批评不出补丁、成稿门的文学阈值按绑定书校准、新鲜度只留逐字
@@ -279,7 +282,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | `banned_adjectives.yaml` | 空泛评价词：抽取陈述里出现就丢掉那条发现 |
 | `anti_plagiarism_template.txt` | 红线段 |
 
-`fidelity:` 阈值（`style_step.fidelity_thresholds`）都是**临时值**，上线前用真实模型小规模 A/B 定：`style_step_max_percentile` 90、
+`fidelity:` 阈值（`style_step.fidelity_thresholds`；2026-09-24 用作者的真实路由在 3 场 × 3 臂上核过，见变更记录 §7）：`style_step_max_percentile` 90、
 `revision_min_improvement` 0.03、`patch_max_distance_increase` 0.05、`judge_tolerance` 0.1（评审总分 0–1 尺度，= 10 分制上的 1 分：
 两次独立评审的噪声常有半分到一分，更细的容差会把好补丁当成变差退回）。评审节点的分数按模板 `structured_schema` 声明的刻度
 （`maximum`）逐个换算，越界的分丢掉（`review_scores`）；模板没声明刻度（旧提示词快照）时才按一次回答推断量级。
@@ -300,8 +303,8 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
   - 参考进提示（起草、改稿、评审、规划、本场预览、对照检查）同样按**接收这份提示的节点**判，与全局运行时模型无关——全局是本机而起草节点
     走云端 → 不送；全局是云端而起草节点走本机 → 照送（`policy.decide_reference_route`）。「仅本机」的书遇云端节点时**一个字都不送**
     （没有样例、文风卡、声音、专名表），注入适配器原样抛 409，不降级成没有参考的提示去照样调用那个节点。起草管线（首稿、定向修改、
-    风格稿与补丁）因此停下并带 `author_action`；软 QC、准定稿评审、写作台深评 / 补丁 / 建议、场景蓝图的调用方目前自己接住这个错，
-    退回不带参考前缀的基础提示照常调用（参考前缀同样没有送出）。
+    风格稿与补丁）因此停下并带 `author_action`；包着适配器的各处（软 QC、准定稿评审、写作台深评 / 补丁 / 建议、场景蓝图）同样原样抛出，
+    不降级；bundle 里由这本书派生的段（叙事机制指引、参考尺度）按读 bundle 的全部节点判，不许送时不进 bundle。
   - 节点从哪来：调用方给 `inject_style_reference_prefix(..., node_id=...)`；不给就按 `prompt["template_name"]` 推
     （`inject/routing.TEMPLATE_NODE_IDS`：`style_first_draft` / `style_targeted_revision` → `style_draft`；`style_draft` 模板 → `style_draft`
     + `style_patch`（软补丁、去模板、安全修复借这份提示在 `style_patch` 下派发）；`style_length_patch` / `style_salvage_patch` →
