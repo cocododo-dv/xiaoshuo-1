@@ -256,7 +256,7 @@ def record_fidelity_reading(
 
     - ``reading``：调用方已经读过同一段文字时传进来，省一次测量；
     - ``draft_ref`` 给了时幂等：同一场、同一来源 / 阶段 / 稿行、同一段文字、同一画像已有读数就直接返回那一条
-      （检查点续跑、重确认不会重复记）；
+      （检查点续跑、重确认不会重复记）；对照检查（``manual_check``）例外——每次检查都记一条（作业本身只跑一次）；
     - ``judge``：评审模型的按维打分（对照检查 / 软 QC 参考评审），规整成 10 分制；
     - ``copy_check``：抄袭门结果，只记旗标与计数；
     - ``strict=False``（管线默认）：写在保存点里，任何异常只记日志、返回 ``None``——读数是观察，永不阻断管线；
@@ -326,7 +326,8 @@ def _record(
         return None
     sha = text_sha256(content)
     profile_id = str(getattr(policy, "profile_id", "") or "") or None
-    if draft_ref:
+    # 对照检查每做一次就是一条新读数（作者重查同一稿要看到这一次的评审）；管线 / 采纳 / 归档按稿行幂等
+    if draft_ref and source != SOURCE_MANUAL_CHECK:
         existing = _existing(
             session,
             scene_id=scene_id,

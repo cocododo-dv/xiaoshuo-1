@@ -428,6 +428,21 @@ def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) ->
     assert project.json()["data"]["bound"] is True
     assert project.json()["data"]["dimension_averages"]["scene.dialogue"]["judge"] == 6.0
 
+    # 同一稿再查一次：新的一条读数带这一次的评审（对照检查不按稿行去重）
+    monkeypatch.setattr(
+        check_job,
+        "resolve_check_client",
+        lambda: (_JudgeLLM({"overall": 90, "dimensions": {"scene.dialogue": {"score": 80, "note": "好多了"}}}), True),
+    )
+    again = _post_check(client, {"scene_id": scene.scene_id}, "fid-check-scene-again")
+    run_job_inline(again.json()["data"]["job_id"])
+    with SessionLocal() as db:
+        second = db.get(StyleReferenceJob, again.json()["data"]["job_id"])
+        assert second.state == "succeeded", second.error_json
+        assert second.result_json["reading_id"] != job.result_json["reading_id"]
+        assert db.get(StyleFidelityReading, second.result_json["reading_id"]).judge_json["overall"] == 9.0
+    assert client.get(f"/api/v1/scenes/{scene.scene_id}/style-fidelity").json()["data"]["judge"]["overall"] == 9.0
+
 
 def test_check_job_fails_loudly_when_the_judge_fails(client, session, monkeypatch) -> None:
     _book, profile_id = _check_profile(session)
