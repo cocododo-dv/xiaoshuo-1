@@ -1,12 +1,15 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { isImeComposing } from "./ws-dialog.jsx";
+import { wsConfirm } from "./ws-notify.jsx";
 import { EmptyState, Notice, Segmented, Spinner, Tag } from "./ws-ui.jsx";
 import { styleDimensionLabel } from "./ws-labels.js";
-import { SR_DIMENSION_STATES, srDimensionGroups, srFormatWhen, srNormalizeConfig } from "./ws-styleref-model.js";
+import {
+  SR_DIMENSION_STATES, srBindingOwnedByWork, srDimensionGroups, srFormatWhen, srIsLegacyGlobalBinding, srNormalizeConfig,
+} from "./ws-styleref-model.js";
 import {
   srAddBannedTerm, srLoadBannedTerms, srLoadProfile, srLoadProjectBinding, srProfileDetail, srProjectBinding,
-  srRemoveBannedTerm, srSetCardLineState, srSetDimensionState,
+  srRemoveBannedTerm, srSetCardLineState, srSetDimensionState, srSubscribe,
 } from "./ws-styleref-store.js";
 import { SrErrorLine, srActiveWork, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
 import { SrDimensionFidelityBody, SrDimensionFidelityChip, SrWorkFidelityCard, useSrWorkFidelity } from "./ws-styleref-fidelity.jsx";
@@ -16,7 +19,8 @@ import { SrDimensionFidelityBody, SrDimensionFidelityChip, SrWorkFidelityCard, u
    · 气质在最前（每场都要体现）；
    · 16 维按层分组，每维：名字、一句概括、「通用写法」对「这位作者」、这位作者的写法与「作者不这么写」，
      每句都能 ✓（总带上）/ ✗（不用这句）——改了立即生效，不重新学习、画像不失效；展开看原话（依据）与手法；
-   · 每维一个「重点 / 正常 / 不学」：给当前作品设的，写在它的应用上（这本书还没用于当前作品时锁住并说明）；
+   · 每维一个「重点 / 正常 / 不学」：给当前作品设的，写在它自己的应用上（这本书还没用于当前作品时锁住并说明；
+     作品沿用的是旧版的全局应用时也锁住——写在它上面会改掉所有作品的设置）；
    · 这本书正用于当前作品时：顶上一张「像不像」卡（终稿几场在作者范围内、近期常见偏差、走势），每一维右边是作品在
      这一维的平均分（测得 / 评审）与「近期常见偏差」（ws-styleref-fidelity.jsx）；
    · 声音习惯、章与场的尺度、本书专名与禁用词。
@@ -38,8 +42,11 @@ export function SrPortrait({ book, go, onAction }) {
   const profile = entry && entry.data;
   const bindingEntry = workId ? srProjectBinding(workId) : null;
   const binding = bindingEntry && bindingEntry.data && bindingEntry.data.binding;
-  const appliedBinding = binding && binding.profile_id === profileId && binding.binding_id ? binding : null;
-  const workFid = useSrWorkFidelity(appliedBinding ? workId : null, profileId);
+  /* 只有作品自己的应用能写逐维状态；旧版的全局应用（用的也是这份画像）照样在起草时生效，读数照看，但只读 */
+  const inUse = binding && binding.profile_id === profileId && binding.binding_id ? binding : null;
+  const appliedBinding = inUse && srBindingOwnedByWork(inUse, workId) ? inUse : null;
+  const legacyBinding = inUse && srIsLegacyGlobalBinding(inUse) ? inUse : null;
+  const workFid = useSrWorkFidelity(appliedBinding || legacyBinding ? workId : null, profileId);
 
   if (!profileId) {
     return (
@@ -60,7 +67,7 @@ export function SrPortrait({ book, go, onAction }) {
     return <div className="card sr-stage-loading-inline"><Spinner size={14} label="正在读取文风画像" /> 正在读取文风画像…</div>;
   }
 
-  const states = appliedBinding ? srNormalizeConfig(appliedBinding.config).dimension_states : null;
+  const states = appliedBinding || legacyBinding ? srNormalizeConfig((appliedBinding || legacyBinding).config).dimension_states : null;
   const setDimension = async (dimension, state) => {
     if (!appliedBinding) return;
     try { await srSetDimensionState(workId, appliedBinding.binding_id, dimension, state); }
@@ -108,7 +115,7 @@ export function SrPortrait({ book, go, onAction }) {
             </div>
           )}
 
-          {appliedBinding && workFid.data && (
+          {(appliedBinding || legacyBinding) && workFid.data && (
             <SrWorkFidelityCard data={workFid.data} workId={workId} workTitle={work.title || "当前作品"} go={go} />
           )}
 
@@ -116,6 +123,14 @@ export function SrPortrait({ book, go, onAction }) {
             <p className="sr-portrait-states-hint" data-testid="sr-states-hint">
               每一维右边的「重点 / 正常 / 不学」是给《{work.title || "当前作品"}》设的，写在它的应用上。
             </p>
+          ) : legacyBinding ? (
+            <Notice
+              tone="info"
+              testId="sr-states-legacy"
+              actions={go ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => go("apply")}>去用于作品</button> : null}
+            >
+              《{work.title || "当前作品"}》沿用的是一条旧版的「全部作品」应用：它对所有没有自己应用的作品都生效，这里只读（标着「重点」的维照样起作用）。要给《{work.title || "当前作品"}》逐维设「重点 / 不学」，先在「用于作品」里给它单独建一条应用。
+            </Notice>
           ) : (
             <Notice
               tone="info"
@@ -135,7 +150,7 @@ export function SrPortrait({ book, go, onAction }) {
                     key={dim.dimension}
                     dim={dim}
                     state={states ? states[dim.dimension] || "normal" : null}
-                    onSetState={states ? (state) => setDimension(dim.dimension, state) : null}
+                    onSetState={appliedBinding ? (state) => setDimension(dim.dimension, state) : null}
                     onLineState={setLine}
                     fidelity={workFid.averages[dim.dimension] || null}
                     gaps={workFid.gapsByDim[dim.dimension] || null}
@@ -323,13 +338,15 @@ function SrVoiceAndStructure({ profile }) {
   );
 }
 
-/* 本书专名（学习时识别，起草时不许照搬）与作者自己加的禁用词 */
+/* 本书专名（学习时识别，起草时不许照搬）与作者自己加的禁用词。
+   本书专名可以逐个去掉（识别错了的普通词）：先说清去掉之后它不再受保护；重新学习会整组重新识别，学完就重读。 */
 function SrBannedTerms({ profile }) {
   const [terms, setTerms] = React.useState(null);
   const [input, setInput] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [showProtected, setShowProtected] = React.useState(false);
   const profileId = profile.profile_id;
+  const bookId = profile.book_id || null;
   const latest = React.useRef(0);
   const load = React.useCallback(async () => {
     const ticket = ++latest.current;
@@ -338,6 +355,14 @@ function SrBannedTerms({ profile }) {
     if (ticket === latest.current) setTerms(list);
   }, [profileId]);
   React.useEffect(() => { load(); }, [load]);
+  /* 重新学习是就地更新同一份画像（profile_id 不变）：本书专名那一组整组换过，这本书的学习作业一结束就重读 */
+  React.useEffect(() => srSubscribe("finished")((event) => {
+    const entry = event && event.detail;
+    if (!entry || entry.kind !== "learn") return;
+    const sameBook = bookId && entry.book_id === bookId;
+    const sameProfile = entry.profile_id === profileId || (entry.result && entry.result.profile_id === profileId);
+    if (sameBook || sameProfile) load();
+  }), [bookId, profileId, load]);
   const protectedTerms = (terms || []).filter((t) => t.source === "protected_auto");
   const own = (terms || []).filter((t) => t.source !== "protected_auto");
   const add = async () => {
@@ -355,6 +380,16 @@ function SrBannedTerms({ profile }) {
     catch (e) { srNotifyError(e, "没有删掉，请稍后重试。"); }
     finally { setBusy(false); }
   };
+  const unprotect = async (t) => {
+    if (busy) return;
+    const ok = await wsConfirm({
+      title: `不再保护「${t.term}」？`,
+      body: `「${t.term}」是学习时从这本书里识别出的本书专名。去掉之后它不再受保护：起草时不再拦它，正文里可以出现这个词，照搬检查也不再把它当本书专名；重新学习文风时它可能会再被识别出来。`,
+      confirmLabel: "不再保护",
+      tone: "danger",
+    });
+    if (ok) await remove(t.term_id);
+  };
   return (
     <div className="card" data-testid="sr-banned">
       <div className="card-head"><div><div className="card-title">起草时不许出现的词</div><div className="card-sub">本书专名（人名、地名、组织……）学习时自动识别，起草时一律不许照搬；也可以自己加</div></div></div>
@@ -368,7 +403,24 @@ function SrBannedTerms({ profile }) {
               <button type="button" className="btn btn-quiet btn-xs" aria-expanded={showProtected} onClick={() => setShowProtected((v) => !v)}>{showProtected ? "收起" : "看看"}</button>
             )}
           </p>
-          {showProtected && <div className="sr-term-chips">{protectedTerms.map((t) => <Tag key={t.term_id}>{t.term}</Tag>)}</div>}
+          {showProtected && (
+            <ul className="sr-term-chips" data-testid="sr-protected-terms" aria-label="本书专名">
+              {protectedTerms.map((t) => (
+                <li key={t.term_id} className="sr-term-chip" data-term-id={t.term_id}>
+                  <span className="sr-term-chip-text text-serif">{t.term}</span>
+                  <button
+                    type="button"
+                    className="sr-term-chip-x"
+                    aria-label={`不再保护「${t.term}」`}
+                    title="不再保护这个词"
+                    data-testid="sr-protected-remove"
+                    disabled={busy}
+                    onClick={() => unprotect(t)}
+                  ><I.X size={11} /></button>
+                </li>
+              ))}
+            </ul>
+          )}
           <ul className="sr-banned-list">
             {own.map((t) => (
               <li key={t.term_id} className="sr-banned-item">

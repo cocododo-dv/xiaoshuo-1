@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { paragraphTypeLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
-import { srFormatChars, srReferenceModeMeta, srSceneOptions } from "./ws-styleref-model.js";
+import { SR_SEGMENTS_ONLY_LABEL, srFormatChars, srReferenceModeMeta, srSceneOptions } from "./ws-styleref-model.js";
 import { srLoadParagraphs, srLoadWorkScenes, srScenePreview } from "./ws-styleref-store.js";
 import { SrErrorLine } from "./ws-styleref-ui.jsx";
 
@@ -11,7 +11,7 @@ import { SrErrorLine } from "./ws-styleref-ui.jsx";
    与起草同一套选窗、同一个块次序（后端 POST …/injection-preview，只读，不写冻结行）：
    · 样例窗：第几章 · 章首 / 章末 / 整章、字数、学习作业给它打的场面 / 情绪 / 手法标签与一句话梗概，可展开读原文；
    · 文风卡、声音习惯、红线三块的全文；
-   · 各块多少字；书的原文范围压过设置时（只发短句）如实说实际带的是什么。
+   · 各块多少字；书的原文范围压过设置时（起草不发原文）如实说实际带的是什么。
    用的是「用于作品」页上正在编辑的设置（还没保存也能先看）。
    ========================================================== */
 
@@ -120,7 +120,7 @@ function SrScenePreviewResult({ book, preview, outdated }) {
         <div className="is-wide"><dt>一共</dt><dd className="tab-num">约 {srFormatChars(sizes.total_chars || 0)}（样例在提示末尾，文风卡与声音在前面）</dd></div>
       </dl>
       {modeChanged && (
-        <Notice tone="info" testId="sr-scene-preview-mode">这本书只发短句：设置是「{srReferenceModeMeta(preview.requested_reference_mode).label}」，实际只带文风卡。</Notice>
+        <Notice tone="info" testId="sr-scene-preview-mode">这本书导入时选了「{SR_SEGMENTS_ONLY_LABEL}」：设置是「{srReferenceModeMeta(preview.requested_reference_mode).label}」，实际只带文风卡。</Notice>
       )}
       {notices.map((text) => <Notice key={text} tone="warn">{text}</Notice>)}
       {(preview.windows || []).length > 0 && (

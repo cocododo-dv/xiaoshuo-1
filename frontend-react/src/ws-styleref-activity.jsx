@@ -59,10 +59,12 @@ export function SrActivityPanel({ onOpenBook }) {
     finally { setBusyKey(null); }
   };
   const cancel = (e) => run(e, () => (e.kind === "learn" ? srCancelLearn(e.book_id) : srCancelClassification(e.book_id)));
+  /* 续跑通常沿用同一个作业 id：store 已经把这条换成了「排队中」，不能再把它关掉（关掉了就看不到在跑，跑完的
+     结果还会被当成「关掉过」丢掉）；只有续出来的是另一个作业时，才把旧的这条收起 */
   const resume = (e) => run(e, async () => {
-    if (e.kind === "learn") await srStartLearn(e.book_id, { resume: true });
-    else await srResumeClassification(e.book_id);
-    srActivityDismiss(e.key);
+    const data = e.kind === "learn" ? await srStartLearn(e.book_id, { resume: true }) : await srResumeClassification(e.book_id);
+    const jobId = data && data.job_id;
+    if (jobId && `job:${jobId}` !== e.key) srActivityDismiss(e.key);
   });
 
   /* 打开页面前就已结束的条目收进「更早结束的」；没完成的（可以继续）总放在外面 */

@@ -10,7 +10,8 @@ import { srActivityActive, srNormalizeConfig, srSpineColor } from "./ws-styleref
    · 按需读的详情：一本书（含 stats_json）、学习信息（作业 + 估算）、重新分类的估算、文风画像、一部作品的生效绑定
      → sr:detail-changed
    · 参考书活动：作业表条目（段落分类 / 学习文风 / 对照检查，key 以 job: 开头）+ 一个 /activity 轮询；
-     别的条目不收 → sr:activity-changed；某条从进行中走到终态 → sr:activity-finished
+     别的条目不收 → sr:activity-changed；某条从进行中走到终态 → sr:activity-finished；全量清单里消失的在跑条目
+     收尾拿掉（删书），书库摘要里在跑的作业补登进来，读失败退避重试
    · 导入成功 → sr:book-imported（页面据此切到新书）
    写操作都是「先改界面、再等服务端；失败回滚并把错误抛给调用方」（✓ / ✗、改绑定、解除、批量删除、用于作品），
    说法由界面按 ws-styleref-model 的 srErrorInfo 给。所有请求都经 lib/client.js（上传也是：FormData）。
@@ -59,10 +60,17 @@ export function srSubscribe(...channels) {
 
 /* ---------- 页面是否挂着 ----------
    每次挂载清空「本次挂载里读过的键」：详情缓存是模块级的，离开页面期间可能在别处改过绑定、跑完了作业，
-   回来后第一次读必须重读。 */
+   回来后第一次读必须重读。运行时（有没有模型、分类节点在不在本机）同样：作者点「去设置模型」接好模型再回来，
+   页面是重新挂载的——这时必须重读，不然学习卡、参考书页、对照检查一直锁着直到刷新整页。
+   挂着的时候 /activity 读失败（后端在重启）会退避重试；不挂着时只在还有在跑的条目时才接着轮询。 */
 const SR_FRESH = new Set();
+let SR_VIEW_MOUNTED = false;
 export function srSetViewMounted(mounted) {
-  if (mounted) SR_FRESH.clear();
+  SR_VIEW_MOUNTED = !!mounted;
+  if (mounted) {
+    SR_FRESH.clear();
+    SR_RUNTIME_FRESH = false;
+  }
 }
 
 /* ---------- 本次打开应用期间停在哪本书、哪一步（不跨刷新） ---------- */
@@ -105,6 +113,9 @@ export function srMapBook(raw) {
   };
 }
 
+/* 这次打开应用期间删掉的书（书 id 不会复用）：删书请求之前发出的读书库 / 读活动响应晚到时，别让它们复活 */
+const SR_DELETED_BOOKS = new Set();
+
 export async function srSyncBooks() {
   let rows;
   try {
@@ -114,9 +125,10 @@ export async function srSyncBooks() {
     srEmit("books");
     return SR_BOOKS;
   }
-  SR_BOOKS = rows.map(srMapBook);
+  SR_BOOKS = rows.map(srMapBook).filter((b) => !SR_DELETED_BOOKS.has(b.id));
   SR_BOOKS_STATE = { phase: "ready", error: null, code: "" };
   srEmit("books");
+  srActivitySeedFromBooks();
   return SR_BOOKS;
 }
 
@@ -124,19 +136,32 @@ export async function srSyncBooks() {
    导入对话框的默认值（GET /runtime）
    ========================================================== */
 let SR_RUNTIME = { phase: "idle", data: null };
+/* 这次挂载里读过没有（页面每次挂载置 false：见 srSetViewMounted） */
+let SR_RUNTIME_FRESH = false;
+let SR_RUNTIME_INFLIGHT = null;
 export function srRuntime() { return SR_RUNTIME; }
 
-export async function srLoadRuntime({ force = false } = {}) {
-  if (!force && SR_RUNTIME.phase === "ready") return SR_RUNTIME.data;
-  SR_RUNTIME = { ...SR_RUNTIME, phase: "loading" };
-  try {
-    const data = await apiGet(`${API}/runtime`);
-    SR_RUNTIME = { phase: "ready", data: data || null };
-  } catch (e) {
-    SR_RUNTIME = { phase: "error", data: null, error: (e && e.message) || String(e) };
-  }
-  srEmit("detail");
-  return SR_RUNTIME.data;
+/* 读 GET /runtime。这次挂载里读过就用缓存（force 除外）；同一时间只发一个请求。重读期间保留上一次的结果
+   （锁 / 解锁不闪），读到了再换。 */
+export function srLoadRuntime({ force = false } = {}) {
+  if (!force && SR_RUNTIME.phase === "ready" && SR_RUNTIME_FRESH) return Promise.resolve(SR_RUNTIME.data);
+  if (SR_RUNTIME_INFLIGHT) return SR_RUNTIME_INFLIGHT;
+  if (SR_RUNTIME.phase !== "ready") SR_RUNTIME = { ...SR_RUNTIME, phase: "loading" };
+  const promise = (async () => {
+    try {
+      const data = await apiGet(`${API}/runtime`);
+      SR_RUNTIME = { phase: "ready", data: data || null };
+      SR_RUNTIME_FRESH = true;
+    } catch (e) {
+      SR_RUNTIME = { phase: "error", data: null, error: (e && e.message) || String(e) };
+    } finally {
+      SR_RUNTIME_INFLIGHT = null;
+      srEmit("detail");
+    }
+    return SR_RUNTIME.data;
+  })();
+  SR_RUNTIME_INFLIGHT = promise;
+  return promise;
 }
 
 /* ==========================================================
@@ -155,7 +180,11 @@ function srCacheSet(key, value) {
 async function srCacheLoad(key, fetcher, { force = false } = {}) {
   const current = SR_CACHE.get(key);
   if (!force && current && current.phase === "ready" && SR_FRESH.has(key)) return current.data;
-  if (SR_INFLIGHT.has(key)) return SR_INFLIGHT.get(key);
+  /* force 撞上在途的请求：那个请求可能是改动之前发出的——等它回来再重读一次 */
+  if (SR_INFLIGHT.has(key)) {
+    const inflight = SR_INFLIGHT.get(key);
+    return force ? inflight.then(() => srCacheLoad(key, fetcher, { force: true })) : inflight;
+  }
   if (!current || current.phase !== "ready") SR_CACHE.set(key, { phase: "loading", data: current ? current.data : null, error: null });
   const promise = (async () => {
     try {
@@ -213,6 +242,26 @@ export function srLoadProjectBinding(projectId, opts) {
 export function srProfileBindings(profileId) { return srCacheGet(`bindings:${profileId}`); }
 export function srLoadProfileBindings(profileId, opts) {
   return srCacheLoad(`bindings:${profileId}`, async () => ((await apiGet(`${API}/profiles/${encodeURIComponent(profileId)}/bindings`)) || {}).bindings || [], opts);
+}
+
+/* 绑定变了（解除、删书）：读过的作品的生效绑定全部重读（旧版的全局绑定挂在每一部没有自己应用的作品上，
+   解除它影响的不只一部），再加上 extra 与当前作品 */
+function srReloadProjectBindings(...extra) {
+  const ids = new Set(extra.filter(Boolean));
+  const active = srActiveWorkId();
+  if (active) ids.add(active);
+  for (const key of SR_CACHE.keys()) if (key.startsWith("project:")) ids.add(key.slice("project:".length));
+  ids.forEach((id) => { srLoadProjectBinding(id, { force: true }); });
+}
+
+/* 读过的「一份画像的全部绑定」重读（界面上「这份文风还用在」读它；删掉缓存不重读，那一块就消失了） */
+function srReloadBindingLists(profileIds = null) {
+  const only = profileIds ? new Set(profileIds.filter(Boolean)) : null;
+  for (const key of Array.from(SR_CACHE.keys())) {
+    if (!key.startsWith("bindings:")) continue;
+    const profileId = key.slice("bindings:".length);
+    if (!only || only.has(profileId)) srLoadProfileBindings(profileId, { force: true });
+  }
 }
 
 /* ==========================================================
@@ -284,23 +333,26 @@ function srBookOfProfile(profileId) {
 }
 
 /* 把画像用于作品。先把这部作品的生效绑定改成「在用这份」（pending），成功后换成服务端的结果并刷新书库；
-   失败回滚。返回 { binding, created, changed, replaced }。 */
-export async function srApplyProfile(profileId, { projectId, config = {} } = {}) {
+   失败回滚。返回 { binding, created, changed, replaced }。
+   baseConfig：这份画像在这部作品上已有的（停用的）绑定的配置——换回这本书时后端在它上面合并，乐观值也照它算。 */
+export async function srApplyProfile(profileId, { projectId, config = {}, baseConfig = null } = {}) {
   if (!profileId || !projectId) throw Object.assign(new Error("还没有打开作品"), { code: "SR_NO_WORK" });
   const key = `project:${projectId}`;
   const entry = SR_CACHE.get(key);
   const before = entry ? entry.data : null;
   const booksBefore = SR_BOOKS;
   const book = srBookOfProfile(profileId);
+  const sameOwn = !!(before && before.binding && before.binding.profile_id === profileId
+    && before.binding.scope === "project" && before.binding.scope_ref_id === projectId);
   const optimistic = {
     ...(before || { project_id: projectId }),
     binding: {
-      binding_id: before && before.binding && before.binding.profile_id === profileId ? before.binding.binding_id : null,
+      binding_id: sameOwn ? before.binding.binding_id : null,
       profile_id: profileId,
       scope: "project",
       scope_ref_id: projectId,
       status: "active",
-      config: srMergeConfig(before && before.binding && before.binding.profile_id === profileId ? before.binding.config : null, config),
+      config: srMergeConfig(sameOwn ? before.binding.config : baseConfig, config),
       pending: true,
     },
     profile: book ? book.profile : (before ? before.profile : null),
@@ -325,7 +377,10 @@ export async function srApplyProfile(profileId, { projectId, config = {} } = {})
   }
   const current = SR_CACHE.get(key);
   srCacheSet(key, { phase: "ready", data: { ...(current ? current.data : optimistic), binding: result.binding }, error: null });
-  SR_CACHE.delete(`bindings:${profileId}`);
+  /* 「这份文风还用在」读这份画像的绑定清单：重读，不是删掉（删掉没人重读，那一块就消失了）；被这次换下来的
+     别的画像的绑定停用了，读过它们清单的也重读 */
+  srLoadProfileBindings(profileId, { force: true });
+  srReloadBindingLists(((result && result.replaced) || []).map((r) => r && r.profile_id).filter((pid) => pid && pid !== profileId));
   srLoadProjectBinding(projectId, { force: true });
   srSyncBooks();
   return result;
@@ -366,14 +421,20 @@ export function srSetDimensionState(projectId, bindingId, dimension, state) {
   return srUpdateBinding(bindingId, { dimension_states: { [dimension]: state } }, { projectId });
 }
 
-/* 解除一条绑定。先把作品缓存与书库里的「在用」去掉，失败回滚。 */
+/* 解除一条绑定。先把作品缓存与书库里的「在用」去掉，失败回滚。
+   缓存里凡是生效绑定就是这一条的作品都先改成「没有在用」（旧版的全局绑定挂在每一部没有自己应用的作品上）；
+   成功后这些作品、当前作品与 projectId 的生效绑定一律重读——解除的不是作品自己那条时，作品页也不会还说「在用」。 */
 export async function srUnbind(bindingId, { projectId = null, profileId = null } = {}) {
-  const key = projectId ? `project:${projectId}` : null;
-  const entry = key ? SR_CACHE.get(key) : null;
   const booksBefore = SR_BOOKS;
-  if (entry && entry.data && entry.data.binding && entry.data.binding.binding_id === bindingId) {
-    srCacheSet(key, { ...entry, data: { ...entry.data, binding: null } });
+  const touched = [];
+  for (const [key, entry] of Array.from(SR_CACHE.entries())) {
+    if (!key.startsWith("project:")) continue;
+    if (entry && entry.data && entry.data.binding && entry.data.binding.binding_id === bindingId) {
+      touched.push([key, entry]);
+      SR_CACHE.set(key, { ...entry, data: { ...entry.data, binding: null } });
+    }
   }
+  if (touched.length) srEmit("detail");
   srPatchBooksApplied((b) => (
     (b.appliedProjects || []).some((item) => item.binding_id === bindingId)
       ? { ...b, appliedProjects: b.appliedProjects.filter((item) => item.binding_id !== bindingId) }
@@ -381,12 +442,13 @@ export async function srUnbind(bindingId, { projectId = null, profileId = null }
   ));
   try {
     const result = await apiDelete(`${API}/bindings/${encodeURIComponent(bindingId)}`);
-    if (profileId) SR_CACHE.delete(`bindings:${profileId}`);
-    if (projectId) srLoadProjectBinding(projectId, { force: true });
+    if (profileId) srLoadProfileBindings(profileId, { force: true });
+    srReloadProjectBindings(projectId);
     srSyncBooks();
     return result;
   } catch (e) {
-    if (key && entry) srCacheSet(key, entry);
+    touched.forEach(([key, entry]) => SR_CACHE.set(key, entry));
+    if (touched.length) srEmit("detail");
     SR_BOOKS = booksBefore;
     srEmit("books");
     throw e;
@@ -419,10 +481,38 @@ export async function srDeleteBooks(bookIds) {
     SR_BOOKS = [...SR_BOOKS, ...booksBefore.filter((b) => failed.has(b.id))];
     srEmit("books");
   }
-  ids.filter((id) => !failed.has(id)).forEach((id) => {
+  const deleted = ids.filter((id) => !failed.has(id));
+  const deletedProfiles = new Set();
+  deleted.forEach((id) => {
+    SR_DELETED_BOOKS.add(id);
     ["book:", "learn:", "estimate:"].forEach((prefix) => SR_CACHE.delete(`${prefix}${id}`));
-    for (const e of Array.from(SR_ACTIVITY.values())) if (e.book_id === id && !srActivityActive(e)) SR_ACTIVITY.delete(e.key);
+    const was = booksBefore.find((b) => b.id === id);
+    if (was && was.profile && was.profile.profile_id) deletedProfiles.add(was.profile.profile_id);
+    /* 这本书的活动条目全部拿掉——在跑的也是：作业行随书一起删了，服务端不会再列出它们，留着就是一条永远
+       「进行中」的幽灵条目，轮询也因此永远停不下来 */
+    for (const e of Array.from(SR_ACTIVITY.values())) if (e.book_id === id) SR_ACTIVITY.delete(e.key);
   });
+  if (deleted.length) {
+    for (const [key, entry] of SR_CACHE) {
+      if (key.startsWith("profile:") && entry && entry.data && deleted.includes(entry.data.book_id)) deletedProfiles.add(key.slice("profile:".length));
+    }
+    deletedProfiles.forEach((profileId) => {
+      SR_CACHE.delete(`profile:${profileId}`);
+      SR_CACHE.delete(`bindings:${profileId}`);
+    });
+    /* 删书连同它的绑定一起删了：用着它的作品先改成「没有在用」，再把读过的作品生效绑定与各画像的绑定清单
+       都重读，哪一页都不再说它「在用」 */
+    for (const [key, entry] of Array.from(SR_CACHE.entries())) {
+      if (!key.startsWith("project:") || !entry || !entry.data) continue;
+      const bound = entry.data.binding;
+      const bookOf = entry.data.book && entry.data.book.book_id;
+      if ((bound && deletedProfiles.has(bound.profile_id)) || (bookOf && deleted.includes(bookOf))) {
+        SR_CACHE.set(key, { ...entry, data: { ...entry.data, binding: null, profile: null, book: null } });
+      }
+    }
+    srReloadProjectBindings();
+    srReloadBindingLists();
+  }
   srEmit("detail");
   srEmit("activity");
   srSyncBooks();
@@ -544,11 +634,20 @@ export async function srRemoveBannedTerm(termId) {
    参考书活动：作业表条目（段落分类 / 学习文风 / 对照检查）+ /activity 轮询
    · 只收作业表条目（key 以 job: 开头），别的不收；
    · 条目到终态时按 kind 刷新对应缓存，再广播 sr:activity-finished；
-   · 作者关掉的终态条目记下来，别让服务端清单（10 分钟内结束的也会回来）每轮把它们复活。
+   · 作者关掉的终态条目记下来，别让服务端清单（10 分钟内结束的也会回来）每轮把它们复活；
+   · 一次成功的 /activity 就是服务端的全量清单：本地还「进行中」、登记已超过几秒、清单里却没有了的条目
+     （书删了，作业行随书删了；或别处清掉了）收尾拿掉——不然它永远「进行中」，轮询也永远停不下来；
+   · 书库摘要里说在排队 / 在跑的分类、学习作业，活动表里没有就补登（第一次 /activity 失败、刷新了页面……），
+     并开始轮询；/activity 读失败时退避重试（页面挂着、或还有在跑的条目时）。
    ========================================================== */
 const SR_ACTIVITY = new Map();
 const SR_ACTIVITY_DISMISSED = new Set();
+/* 在全量清单里消失、已经收尾拿掉的作业：书库摘要（可能比活动清单旧）不再把它们补登回来 */
+const SR_ACTIVITY_VANISHED = new Set();
 const SR_ACTIVITY_POLL_MS = 1500;
+/* 登记之后这么久还没出现在全量清单里，就当它已经不在了 */
+export const SR_ACTIVITY_VANISH_GRACE_MS = 5000;
+const SR_ACTIVITY_BACKOFF_MAX_MS = 15000;
 
 export function srActivityEntries() {
   return Array.from(SR_ACTIVITY.values()).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
@@ -568,18 +667,70 @@ function srBookTitle(bookId) {
   return book ? book.title : null;
 }
 
-/* 发起作业后先登记一条本地条目（服务端快照到了再覆盖） */
+/* 发起作业后先登记一条本地条目（服务端快照到了再覆盖）。
+   续跑（「继续分类 / 继续学习」）沿用同一个作业 id：旧条目是上一次的终态（失败 / 取消），这次的排队必须盖过它，
+   作者关掉过它的记号也一并清掉——不然界面上看不到在跑，跑完了结果还被当成「关掉过」丢掉。 */
 export function srActivityTrack(jobId, { kind, mode = null, book_id = null, title = null } = {}) {
   if (!jobId) return;
   const key = `job:${jobId}`;
   SR_ACTIVITY_DISMISSED.delete(key);
-  const current = SR_ACTIVITY.get(key);
+  SR_ACTIVITY_VANISHED.delete(key);
+  const current = SR_ACTIVITY.get(key) || null;
+  const live = current && srActivityActive(current) ? current : null;
+  const now = Date.now();
   SR_ACTIVITY.set(key, {
-    key, job_id: jobId, kind, mode, book_id, title, status: "queued", phase_label: "排队中",
-    percent: 0, startedAt: Date.now(), ...(current || {}),
+    ...(live || {}),
+    key,
+    job_id: jobId,
+    kind: kind || (current && current.kind) || null,
+    mode: mode || (current && current.mode) || null,
+    book_id: book_id || (current && current.book_id) || null,
+    title: title || (current && current.title) || null,
+    status: live ? live.status : "queued",
+    phase_label: live ? live.phase_label : "排队中",
+    percent: live && live.percent != null ? live.percent : 0,
+    startedAt: (live && live.startedAt) || now,
+    trackedAt: now,
+    seenTerminal: false,
   });
   srEmit("activity");
   srActivityPoke();
+}
+
+/* 书库摘要里说在排队 / 在跑、活动表里却没有的分类 / 学习作业：补登一条，开始轮询 */
+function srActivitySeedFromBooks() {
+  let seeded = false;
+  const now = Date.now();
+  for (const book of SR_BOOKS) {
+    for (const [kind, job] of [["classify", book.classification], ["learn", book.learn]]) {
+      if (!job || !job.job_id || (job.state !== "queued" && job.state !== "running")) continue;
+      const key = `job:${job.job_id}`;
+      if (SR_ACTIVITY.has(key) || SR_ACTIVITY_DISMISSED.has(key) || SR_ACTIVITY_VANISHED.has(key)) continue;
+      const done = Number(kind === "classify" ? job.batches_done : job.done) || 0;
+      const total = Number(kind === "classify" ? job.batches_total : job.total) || 0;
+      SR_ACTIVITY.set(key, {
+        key,
+        job_id: job.job_id,
+        kind,
+        mode: kind === "classify" ? job.mode || null : null,
+        book_id: book.id,
+        title: book.title,
+        status: job.state,
+        phase_label: job.phase_label || (job.state === "queued" ? "排队中" : "进行中"),
+        percent: total > 0 ? Math.round((1000 * done) / total) / 10 : null,
+        steps: total > 0 ? { done, total } : null,
+        cancel_requested: !!job.cancel_requested,
+        stalled: !!job.stalled,
+        startedAt: Date.parse(job.started_at || job.created_at || "") || now,
+        trackedAt: now,
+        seenTerminal: false,
+      });
+      seeded = true;
+    }
+  }
+  if (!seeded) return;
+  srEmit("activity");
+  srActivityStart();
 }
 
 async function srActivityFinished(entry) {
@@ -599,14 +750,34 @@ async function srActivityFinished(entry) {
   srEmit("finished", entry);
 }
 
-export function srActivityApply(items) {
+/* 在全量清单里消失的条目收尾：书还在就把它的书库摘要与详情重读（结果以那里为准）；不广播 finished（不知道
+   它是怎么结束的，不能说「完成」） */
+function srActivityVanished(entry) {
+  const bookId = entry.book_id;
+  if (!bookId || SR_DELETED_BOOKS.has(bookId)) return;
+  srSyncBooks();
+  srLoadBookDetail(bookId, { force: true });
+  srLoadLearn(bookId, { force: true });
+  SR_CACHE.delete(`estimate:${bookId}`);
+}
+
+/* 把服务端的活动条目并进活动表。
+   complete：这是一次成功的 GET /activity（全量清单）——本地还「进行中」、登记已超过 SR_ACTIVITY_VANISH_GRACE_MS、
+   清单里却没有的作业条目收尾拿掉。sentAt：这次请求发出的时刻——请求发出之后才登记（刚发起 / 续跑）的条目，
+   旧快照里的终态不算数，也不按它判消失。 */
+export function srActivityApply(items, { complete = false, sentAt = null } = {}) {
   const finished = [];
+  const listed = new Set();
   let changed = false;
   for (const item of items || []) {
     if (!item || !item.key || !String(item.key).startsWith("job:")) continue;
+    listed.add(item.key);
+    // 删掉的书：作业行随书删了，删书之前发出的请求晚到时它们不能复活
+    if (item.book_id && SR_DELETED_BOOKS.has(item.book_id)) continue;
     const local = SR_ACTIVITY.get(item.key) || null;
     const active = srActivityActive(item);
     if (!local && !active && SR_ACTIVITY_DISMISSED.has(item.key)) continue;
+    if (local && srActivityActive(local) && !active && sentAt != null && (local.trackedAt || 0) > sentAt) continue;
     const startedAt = (local && local.startedAt) || (item.started_at ? Date.parse(item.started_at) : NaN) || Date.now();
     const next = {
       ...item,
@@ -614,14 +785,29 @@ export function srActivityApply(items) {
       book_id: item.book_id || (local && local.book_id) || null,
       mode: item.mode || (local && local.mode) || null,
       startedAt,
+      trackedAt: (local && local.trackedAt) || Date.now(),
       seenTerminal: local ? !!local.seenTerminal : !active,
     };
     SR_ACTIVITY.set(item.key, next);
+    SR_ACTIVITY_VANISHED.delete(item.key);
     changed = true;
     if (local && srActivityActive(local) && !active) finished.push(next);
   }
+  const vanished = [];
+  if (complete) {
+    const cutoff = (sentAt != null ? sentAt : Date.now()) - SR_ACTIVITY_VANISH_GRACE_MS;
+    for (const [key, entry] of Array.from(SR_ACTIVITY.entries())) {
+      if (!key.startsWith("job:") || listed.has(key) || !srActivityActive(entry)) continue;
+      if ((entry.trackedAt || 0) > cutoff) continue;
+      SR_ACTIVITY.delete(key);
+      SR_ACTIVITY_VANISHED.add(key);
+      vanished.push(entry);
+      changed = true;
+    }
+  }
   if (changed) srEmit("activity");
   finished.forEach((entry) => { srActivityFinished(entry); });
+  vanished.forEach((entry) => { srActivityVanished(entry); });
   return finished;
 }
 
@@ -646,6 +832,7 @@ function srActivityAnyActive() {
 
 let srActivityTimer = null;
 let srActivityBusy = false;
+let srActivityFailures = 0;
 
 function srActivitySchedule(ms = SR_ACTIVITY_POLL_MS) {
   clearTimeout(srActivityTimer);
@@ -656,12 +843,28 @@ async function srActivityTick() {
   srActivityTimer = null;
   if (srActivityBusy) { srActivitySchedule(); return; }
   srActivityBusy = true;
+  let ok = false;
   try {
+    const sentAt = Date.now();
     const data = await apiGet(`${API}/activity`);
-    srActivityApply(data && Array.isArray(data.items) ? data.items : []);
-  } catch (e) { /* 网络抖动：下一轮再试 */ }
+    ok = true;
+    const items = data && Array.isArray(data.items) ? data.items : null;
+    srActivityApply(items || [], { complete: !!items, sentAt });
+  } catch (e) { /* 网络抖动 / 后端在重启：退避后再试 */ }
   finally { srActivityBusy = false; }
-  if (srActivityAnyActive()) srActivitySchedule();
+  if (ok) {
+    const recovered = srActivityFailures > 0;
+    srActivityFailures = 0;
+    // 后端重启回来了：进页面时没读到的书库顺手补读（书库摘要里在跑的作业会补登进活动表）
+    if (recovered && SR_BOOKS_STATE.phase === "error") srSyncBooks();
+    if (srActivityAnyActive()) srActivitySchedule();
+    return;
+  }
+  srActivityFailures += 1;
+  // 读失败：还有在跑的条目，或页面挂着（第一次就没读到，说不定有在跑的作业）——退避后再试，不就此停下
+  if (srActivityAnyActive() || SR_VIEW_MOUNTED) {
+    srActivitySchedule(Math.min(SR_ACTIVITY_BACKOFF_MAX_MS, SR_ACTIVITY_POLL_MS * 2 ** Math.min(srActivityFailures, 4)));
+  }
 }
 
 /* 页面挂载 / 发起作业时调用：立刻拉一次，有在跑的就持续轮询，空了自动停 */
@@ -686,12 +889,18 @@ export function srResetForTests() {
   SR_BOOKS = [];
   SR_BOOKS_STATE = { phase: "loading", error: null, code: "" };
   SR_RUNTIME = { phase: "idle", data: null };
+  SR_RUNTIME_FRESH = false;
+  SR_RUNTIME_INFLIGHT = null;
+  SR_VIEW_MOUNTED = false;
   SR_CACHE.clear();
   SR_INFLIGHT.clear();
   SR_FRESH.clear();
+  SR_DELETED_BOOKS.clear();
   SR_ACTIVITY.clear();
   SR_ACTIVITY_DISMISSED.clear();
+  SR_ACTIVITY_VANISHED.clear();
   SR_SESSION_UI.clear();
+  srActivityFailures = 0;
   srActivityStop();
   srCacheDrop("");
 }

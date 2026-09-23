@@ -5,8 +5,8 @@ import { wsConfirm } from "./ws-notify.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { getOperatorRef } from "./lib/client.js";
 import {
-  SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srAppliedToWork, srBookPipeline, srFilterBooks, srPolicyNeedsSendRights,
-  srRightsReady, srSortBooks,
+  SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srBookPipeline, srDeleteBooksUsage, srErrorInfo, srFilterBooks,
+  srPolicyNeedsSendRights, srRightsReady, srSortBooks,
 } from "./ws-styleref-model.js";
 import {
   srBooks, srBooksState, srDeleteBooks, srLoadRuntime, srRunImport, srRuntime,
@@ -29,20 +29,17 @@ export function srPipelineFor(book) {
   return srBookPipeline(book, { running: srRunningFor(book.id), workId: work ? work.id : null });
 }
 
-/* 删书前确认：返回 true 才删。书名最多列 8 本；正在用于当前作品的书单独点出来。 */
+/* 删书前确认：返回 true 才删。书名最多列 8 本；每本书正用在哪些作品上（不只当前作品）都点出来。 */
 export async function srConfirmDeleteBooks(books) {
   const list = (books || []).filter(Boolean);
   if (!list.length) return false;
   const work = srActiveWork();
   const shown = list.slice(0, 8).map((b) => `《${b.title}》`).join("、");
   const more = list.length > 8 ? ` 等 ${list.length} 本` : "";
-  const inUse = work ? list.filter((b) => srAppliedToWork(b, work.id)) : [];
-  const usage = inUse.length
-    ? `《${work.title || "当前作品"}》正在用${inUse.map((b) => `《${b.title}》`).join("、")}的文风，删除后起草时不再带它。`
-    : "";
+  const usage = srDeleteBooksUsage(list, { workId: work ? work.id : null, workTitle: work ? work.title : "" });
   return wsConfirm({
     title: list.length === 1 ? `删除参考书《${list[0].title}》？` : `删除 ${list.length} 本参考书？`,
-    body: `${list.length > 1 ? `${shown}${more}。` : ""}每本书的原文、文风画像、学习记录、样例窗口与禁用词会一并删除。${usage}此操作无法恢复。`,
+    body: `${list.length > 1 ? `${shown}${more}。` : ""}每本书的原文、文风画像、学习记录、样例窗口与禁用词会一并删除，用在作品、场景、角色上的应用也一并解除。${usage}此操作无法恢复。`,
     confirmLabel: list.length === 1 ? "删除这本书" : `删除 ${list.length} 本`,
     tone: "danger",
   });
@@ -60,7 +57,7 @@ export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
   const sorted = srSortBooks(all, work ? work.id : null);
   const showFilter = all.length > 8;
   const books = showFilter ? srFilterBooks(sorted, query) : sorted;
-  const { phase, error, code } = srBooksState();
+  const { phase, code } = srBooksState();
 
   /* 书没了（删掉 / 别处删的）就从选择里拿掉 */
   React.useEffect(() => {
@@ -87,8 +84,11 @@ export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
       const result = await srDeleteBooks(chosen.map((b) => b.id));
       const failed = (result.results || []).filter((item) => !item.deleted && !(item.error && item.error.code === "STYLE_REFERENCE_BOOK_NOT_FOUND"));
       const done = chosen.length - failed.length;
-      if (failed.length) srNotify(`删除了 ${done} 本，另有 ${failed.length} 本没删成：${failed.map((item) => (item.error && item.error.message) || item.book_id).join("；")}`);
-      else srNotify(`已删除 ${done} 本参考书`, "neutral");
+      const titleOf = (id) => { const b = chosen.find((x) => x.id === id); return b ? `《${b.title}》` : "一本书"; };
+      if (failed.length) {
+        const reasons = failed.map((item) => `${titleOf(item.book_id)}：${srErrorInfo(item.error, "请稍后重试。").message}`).join("");
+        srNotify(`删除了 ${done} 本，另有 ${failed.length} 本没删成。${reasons}`);
+      } else srNotify(`已删除 ${done} 本参考书`, "neutral");
       stopSelecting();
       if (onDeleted) onDeleted(chosen.map((b) => b.id));
     } catch (e) {
@@ -142,7 +142,7 @@ export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
           {[0, 1, 2].map((i) => <li key={i} className="sr-book-skel" aria-hidden="true"><span /><span /></li>)}
         </ul>
       ) : phase === "error" && !all.length ? (
-        <p className="sr-lib-empty sr-lib-error" role="status" title={[error, code && `错误代码：${code}`].filter(Boolean).join("\n")}>
+        <p className="sr-lib-empty sr-lib-error" role="status" title={code ? `错误代码：${code}` : undefined}>
           <I.AlertTriangle size={13} aria-hidden="true" /> 读不到书库
         </p>
       ) : !all.length ? (
@@ -254,9 +254,18 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
   const titleId = React.useId();
   const descId = React.useId();
   const fileInputId = React.useId();
+  /* 这一次打开对话框的编号：导入请求回来时对话框已经关了（或关了又开了一次），结果不能写进新的这一次——
+     失败改走提示层说出来，不然作者再打开时错误已经被清掉，什么也看不到 */
+  const sessionRef = React.useRef(0);
+  const openRef = React.useRef(open);
+  React.useEffect(() => {
+    openRef.current = open;
+    return () => { openRef.current = false; };
+  }, [open]);
 
   React.useEffect(() => {
     if (!open) return;
+    sessionRef.current += 1;
     setPolicy(null);
     setAnalysisRights(false);
     setSendRights(false);
@@ -293,19 +302,27 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
 
   const submit = async () => {
     if (blocker || busy) return;
+    const session = sessionRef.current;
+    const stillHere = () => openRef.current && sessionRef.current === session;
+    const bookTitle = title.trim();
     setBusy(true);
     setError(null);
     try {
       const data = await srRunImport({
         file,
-        title: title.trim(),
+        title: bookTitle,
         authorLabel: author.trim() || null,
         cloudPolicy: effectivePolicy,
         rightsDeclaration: srBuildRightsDeclaration(effectivePolicy, analysisRights, sendRights),
       });
+      if (!stillHere()) return;
       setBusy(false);
       if (onImported) onImported(data);
     } catch (e) {
+      if (!stillHere()) {
+        srNotify(`《${bookTitle}》没有导入：${srErrorInfo(e, "请稍后重试。").message}`);
+        return;
+      }
       setBusy(false);
       setError(e);
     }

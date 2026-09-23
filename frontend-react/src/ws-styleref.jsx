@@ -3,12 +3,12 @@ import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
 import { EmptyState, Spinner, Tag } from "./ws-ui.jsx";
 import {
-  SR_STAGES, SR_STAGE_STATE_LABEL, srActivityActive, srAppliedToWork, srLandingStage, srPickLandingBook, srReadUiPrefs,
-  srRememberUi, srStageStates,
+  SR_STAGES, SR_STAGE_STATE_LABEL, srActivityActive, srAppliedToWork, srErrorInfo, srLandingStage, srPickLandingBook,
+  srReadUiPrefs, srRememberUi, srStageStates,
 } from "./ws-styleref-model.js";
 import {
   srActivityEntries, srActivityStart, srBookById, srBooks, srBooksState, srDeleteBooks, srLoadProjectBinding,
-  srRememberSession, srSessionUi, srSetViewMounted, srSubscribe, srSyncBooks,
+  srLoadRuntime, srRememberSession, srSessionUi, srSetViewMounted, srSubscribe, srSyncBooks,
 } from "./ws-styleref-store.js";
 import { SrMenu, srActiveWork, srNotify, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
 import { srRunningFor } from "./ws-styleref-activity.jsx";
@@ -41,7 +41,9 @@ export function WsStyleRef({ go }) {
   const book = srBookById(bookId);
 
   React.useEffect(() => {
+    /* 每次挂载（包括从「去设置模型」回来）都重读运行时：接好模型之后学习卡、参考书页、对照检查按新配置解锁 */
     srSetViewMounted(true);
+    srLoadRuntime();
     srSyncBooks();
     srActivityStart();
     const offImported = srSubscribe("imported")((event) => {
@@ -121,7 +123,7 @@ export function WsStyleRef({ go }) {
     try {
       const result = await srDeleteBooks([target.id]);
       const failed = (result.results || []).find((item) => !item.deleted && !(item.error && item.error.code === "STYLE_REFERENCE_BOOK_NOT_FOUND"));
-      if (failed) { srNotify(`没有删掉：${(failed.error && failed.error.message) || "请稍后重试"}`); return; }
+      if (failed) { srNotify(`没有删掉：${srErrorInfo(failed.error, "请稍后重试。").message}`); return; }
       afterDeleted([target.id], idx);
       srNotify(`已删除参考书《${target.title}》`, "neutral");
     } catch (e) {
