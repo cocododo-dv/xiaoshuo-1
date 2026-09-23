@@ -40,7 +40,7 @@ from tests.test_scene_run_checkpoint_resume import (
     _SequencedSoftQc,
     _seed_resume_scene,
 )
-from tests.test_style_fidelity_v3 import _install_readings, _reading
+from tests.test_style_fidelity_v3 import PACING_OUT, _install_readings, _reading
 
 SCENE_ID = "CH_RESUME_SC01"
 
@@ -142,6 +142,72 @@ def test_accepted_first_draft_runs_through_soft_qc_near_final_and_archive(sessio
     assert summary["first_draft"]["reading_id"] == rows[0].reading_id
     assert summary["final"]["reading_id"] == final.reading_id and summary["judge"]["overall"] == 8.4
     assert summary["patch"] is None and summary["revision"] is None
+
+
+@pytest.mark.parametrize(
+    ("revision_distance", "expected_decision", "expected_source"),
+    [
+        (1.0, S.DECISION_REVISION_KEPT, S.CONTENT_SOURCE_TARGETED_REVISION),
+        (1.49, S.DECISION_REVISION_REJECTED, S.CONTENT_SOURCE_REVISION_NOT_CLOSER),
+    ],
+    ids=("revision-kept", "revision-not-closer"),
+)
+def test_targeted_revision_runs_through_the_orchestrator_and_resumes_without_replay(
+    session, monkeypatch, revision_distance, expected_decision, expected_source
+) -> None:
+    """首稿越界 → 定向修改（第二次调用，style_draft:0 步位）→ 变近就用修改稿、不够近保留首稿；两种产品都要过
+    检查点校验，同一次执行续跑不重放任何调用。"""
+    _bind_resume_project(session)
+    first_text = "门轴在雨声里轻响"
+    revision_text = "她没有立刻回答"
+    _install_readings(
+        monkeypatch,
+        {first_text: _reading(1.5, 97.0, out_of_band=PACING_OUT), revision_text: _reading(revision_distance, 60.0)},
+    )
+    generation_client = _CountingGenerationClient()
+    soft_qc = _JudgedSoftQc(session, {"soft_qc:0": "continue"}, {"soft_qc:0": 7.9})
+    near_final = _FailNearFinal()
+
+    with pytest.raises(RuntimeError, match="fail after soft checkpoint"):
+        _orchestrator(session, generation_client, soft_qc, near_final).run_scene(
+            SCENE_ID, execution_id=f"idempotency:fid-revise-{expected_decision}"
+        )
+
+    assert len(generation_client.requests) == 2, "首稿 + 定向修改"
+    revision_request = generation_client.requests[1]
+    assert revision_request.node_id == "style_draft"
+    assert "## Dimensions To Move Toward The Author" in revision_request.messages[-1]["content"]
+    state = session.get(SceneRunState, SCENE_ID)
+    style_row = session.get(SceneDraft, state.current_style_draft_row_id)
+    first_row = session.get(SceneDraft, state.current_neutral_draft_row_id)
+    assert style_row.stage == "style_draft" and style_row.generation_llm_call_id != first_row.generation_llm_call_id
+    if expected_decision == S.DECISION_REVISION_KEPT:
+        assert revision_text in style_row.content
+    else:
+        assert style_row.content == first_row.content
+    attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.scene_id == SCENE_ID, AttemptTracker.step == "style_draft")
+    ).scalars().one()
+    assert attempt.details_json["style_step"]["decision"] == expected_decision
+    assert attempt.details_json["content_source"] == expected_source
+    assert attempt.details_json["style_step"]["dimensions"] == ["narrative.pacing"]
+    stages = [(r.source, r.stage) for r in _readings(session)]
+    assert stages == [("pipeline", "first_draft"), ("pipeline", "revision")]
+
+    from novel_system.services.style_fidelity_view import current_run_style_fidelity
+
+    summary = current_run_style_fidelity(session, SCENE_ID, state.current_bundle_id)
+    assert summary["style_step"]["decision"] == expected_decision and summary["style_step"]["llm_call"] is True
+    assert summary["revision"]["distance"] == revision_distance
+
+    # 同一次执行续跑：风格产品（修改稿 / 保留的首稿）过检查点校验，不重放首稿、修改与软 QC
+    with pytest.raises(RuntimeError, match="fail after soft checkpoint"):
+        _orchestrator(session, generation_client, soft_qc, near_final).run_scene(
+            SCENE_ID, execution_id=f"idempotency:fid-revise-{expected_decision}"
+        )
+    assert len(generation_client.requests) == 2
+    assert soft_qc.calls == ["soft_qc:0"]
+    assert near_final.calls == 2
 
 
 def test_patch_that_moves_away_is_reverted_and_the_checkpoint_resumes(session, monkeypatch) -> None:
