@@ -85,6 +85,8 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "style_draft": STYLE_PASS_INPUT_TOKEN_BUDGET,
     # 2026-09-12 风格直起:首稿模板与风格通道同预算(样例 + 完整 bundle)。
     "style_first_draft": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    # 风格参考 v3（P5b）：作者手笔直起时越界首稿的定向修改（首稿 + 样例 + 文风卡），同一档预算
+    "style_targeted_revision": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "scene_literary_rewrite": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "style_length_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "style_salvage_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
@@ -121,11 +123,12 @@ STYLE_CHARACTER_CONTINUITY_INSTRUCTION = (
     "Keep who is speaking or acting unambiguous the way the reference author does — "
     "a name, a gesture, or context — not by mechanically repeating names."
 )
-_STYLE_CONTINUITY_TEMPLATES = frozenset({"style_draft", "style_first_draft"})
+_STYLE_CONTINUITY_TEMPLATES = frozenset({"style_draft", "style_first_draft", "style_targeted_revision"})
 DRAFTING_TEMPLATE_NAMES = {
     "neutral_draft",
     "style_draft",
     "style_first_draft",
+    "style_targeted_revision",
     "scene_literary_rewrite",
     "near_final_rewrite",
     "project_outline_plan",
@@ -159,6 +162,10 @@ CHAPTER_REVIEW_TEMPLATE_NAMES = {
 class PromptBuilder:
     def __init__(self, template_path: str | Path | None = None) -> None:
         self._templates = load_prompt_templates(template_path)
+
+    def has_template(self, template_name: str) -> bool:
+        """模板在不在（保存过提示词快照、还没 ``sync_prompt_templates`` 的安装可能缺新模板）。"""
+        return template_name in self._templates
 
     def build(
         self,
@@ -396,6 +403,10 @@ def _append_runtime_template_instruction(user_prompt: str, template_name: str) -
         ),
         "style_draft": (
             "Preserve the source draft language; do not translate the scene while styling it. "
+            "If the draft or scene card is Chinese, scene_text must remain Chinese prose."
+        ),
+        "style_targeted_revision": (
+            "Preserve the first draft language; do not translate the scene while revising it. "
             "If the draft or scene card is Chinese, scene_text must remain Chinese prose."
         ),
         "style_first_draft": (

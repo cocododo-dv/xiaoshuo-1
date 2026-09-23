@@ -1307,6 +1307,7 @@ def adopt_current_scene(
                 ),
                 author_confirmed_final=True,
                 accepted_warning_codes=accepted_warning_codes,
+                fidelity_source="adopt",
             )
             residue_finalized = SceneRunCheckpointService(
                 session
@@ -1404,6 +1405,7 @@ def adopt_current_scene(
                     "accepted_warning_codes": accepted_warning_codes,
                 },
                 actor_ref=actor_ref,
+                fidelity_source="adopt",
             )
             session.flush()
             session.refresh(draft)
@@ -1543,6 +1545,7 @@ def adopt_current_scene(
             carry_notes_json=carry_notes,
             author_confirmed_final=True,
             accepted_warning_codes=accepted_warning_codes,
+            fidelity_source="adopt",
         )
         # C2 状态一致性债务：归档后无主执行残留（failed@soft_qc_ready 等）
         # 在同一事务内收敛为 completed/archived，运维/展示不再被误导
@@ -1783,8 +1786,24 @@ def _serialize_generation_summary(
         # 无原文;原文由 GET /api/v2/style-reference/books/{book_id}/paragraphs 按需取)。同样只读
         # 本次运行的 bundle;没有带窗口的尝试时为 null。
         "style_windows": _current_run_style_windows(session, scene_id, state),
+        # 风格参考 v3(P5b):本次运行的「像不像」——首稿读数、风格步的决定(不调模型 / 定向修改采用 / 保留首稿)、
+        # 修改稿读数、软补丁的去留、终稿读数、参考评审分;这次运行没有读数时为 null。
+        "style_fidelity": _current_run_style_fidelity(session, scene_id, state),
     }
     return summary
+
+
+def _current_run_style_fidelity(
+    session: Session, scene_id: str, state: SceneRunState
+) -> dict | None:
+    from novel_system.services.style_fidelity_view import current_run_style_fidelity
+
+    try:
+        return current_run_style_fidelity(
+            session, scene_id, _resolve_current_run_bundle_id(session, scene_id, state)
+        )
+    except Exception:  # noqa: BLE001 — 只读展示,读数取不到不影响工作台
+        return None
 
 
 def _current_run_draft_mode(

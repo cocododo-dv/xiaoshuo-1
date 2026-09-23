@@ -33,7 +33,7 @@ from novel_system.services.llm_task_runner import (
     current_llm_run_job_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.review_scores import REVIEW_FEW_SHOT_K_CAP, score_scale, to_unit
+from novel_system.services.review_scores import score_scale, to_unit
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import (
     SCENE_STRUCTURE_SECTION_KEY,
@@ -531,10 +531,12 @@ class NearFinalAcceptanceService:
         """复用 scene_generation / soft_qc 的模块级注入器;任何异常都回退到基础 prompt。"""
         try:
             from novel_system.services.style_prompt_injection import (
+                ROLE_REVIEW,
                 inject_style_reference_prefix,
             )
 
-            # 风格参考 v3（L4）：评审节点只拿 4 窗样例（规划 3 窗，起草按绑定的窗数）
+            # 风格参考 v3（L4）：评审节点按评审口径渲染——冻结选窗的前 4 窗样例（窗数由角色决定，
+            # inject.request.ROLE_K_CAPS 是唯一定义），标题用评审口径
             injected = inject_style_reference_prefix(
                 self.session,
                 prompt,
@@ -543,7 +545,7 @@ class NearFinalAcceptanceService:
                 task_type="scene_generation",
                 context_text=context_text,
                 final_user_prompt=final_user_prompt,
-                few_shot_k_cap=REVIEW_FEW_SHOT_K_CAP,
+                role=ROLE_REVIEW,
             )
             return injected if injected is not None else prompt
         except Exception:  # noqa: BLE001 — 可选增强,不阻断验收评审

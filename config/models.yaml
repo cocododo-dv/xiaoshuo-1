@@ -98,18 +98,6 @@ task_routing:
     max_output_tokens: 4096
     reasoning_level: "off"
     response_format: json_object
-  style_ref_validate_semantic:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 2000
-    response_format: json_object
-  style_ref_validate_forbidden:
-    provider: openai_compatible
-    model: gpt-5-mini
-    temperature: 0.1
-    max_output_tokens: 800
-    response_format: json_object
   # 立项 C §6.1 — Strategy C(RAG)rerank LLM 节点。注意:inject 热路径用确定性
   # rerank(§11 风险6 inject<50ms 无 LLM),此路由仅为离线/预览增强 hook 落地,
   # 默认不在场景生成热路径调用。

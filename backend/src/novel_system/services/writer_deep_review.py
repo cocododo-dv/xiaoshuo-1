@@ -40,7 +40,7 @@ from novel_system.services.reference_copy_gate import (
     introduced_copy,
 )
 from novel_system.services.scene_design_context import render_scene_design_context
-from novel_system.services.manuscript_html import manuscript_paragraphs
+from novel_system.services.manuscript_html import manuscript_paragraphs, plain_manuscript_text
 from novel_system.services.scene_diagnosis import (
     LITERARY_REVISION_PASSAGE_RUBRIC_ID,
     LITERARY_REVISION_RUBRIC_ID,
@@ -59,6 +59,7 @@ from novel_system.services.scene_diagnosis import (
 )
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
+from novel_system.services.style_reference.readings import STAGE_PATCHED, record_author_draft_reading
 from novel_system.services.style_prompt_injection import (
     PLANNING_FEW_SHOT_K_CAP,
     inject_style_reference_prefix,
@@ -518,7 +519,49 @@ class WriterDeepReviewService:
         self.session.flush()
         self._refresh_author_preference_profile(actor_ref=actor_ref)
         self.session.flush()
+        self._record_accepted_patch_reading(row, selected_option_id)
         return {"candidate": self.serialize_patch_candidate(row)}
+
+    def _record_accepted_patch_reading(self, row: PassagePatchCandidate, selected_option_id: str | None) -> None:
+        """风格参考 v3（P5b）：写作台采纳局部改写之后记一条作者稿的「像不像」读数（source=author_draft，stage=patched）。
+
+        改写是浏览器插进正文的，采纳端点到的时候作者稿可能还没保存：正文里已有这条改写 → 读作者稿本身；否则把原句
+        换成改写再读；两样都对不上（作者又改了别处）→ 不记。只对场景稿；读数失败不影响采纳。"""
+        scene_id = row.scene_id or (row.object_id if row.object_type == "scene" else None)
+        if not scene_id:
+            return
+        options = [option for option in row.replacement_options_json or [] if isinstance(option, dict)]
+        chosen = next(
+            (option for option in options if str(option.get("option_id")) == str(selected_option_id or "")),
+            options[0] if options else None,
+        )
+        replacement = str((chosen or {}).get("replacement_text") or "").strip()
+        draft = self._source_draft(row.source_draft_id)
+        if draft is None:
+            draft = self.session.execute(
+                select(AuthorDraft).where(
+                    AuthorDraft.object_type == "scene",
+                    AuthorDraft.object_id == scene_id,
+                    AuthorDraft.status == "current",
+                )
+            ).scalars().first()
+        if draft is None or not replacement:
+            return
+        current = plain_manuscript_text(draft.content or "")
+        excerpt = str(row.source_excerpt or "").strip()
+        if replacement in current:
+            text = current
+        elif excerpt and excerpt in current:
+            text = current.replace(excerpt, replacement, 1)
+        else:
+            return
+        record_author_draft_reading(
+            self.session,
+            scene_id=scene_id,
+            text=text,
+            stage=STAGE_PATCHED,
+            draft_ref=f"passage_patch:{row.patch_id}:{selected_option_id or ''}",
+        )
 
     def _option_copy_check(self, scope: Any, text: str, source_excerpt: str | None):
         """一个改写选项过唯一抄袭门；只算选项新带进来的命中（原句里本来就有的字不算，:func:`introduced_copy`）。"""

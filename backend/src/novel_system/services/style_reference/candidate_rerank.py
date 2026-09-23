@@ -18,18 +18,16 @@ from typing import Any, Mapping, Sequence
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.metrics import (
+    DEFAULT_FLOOR,
     METRIC_NAMES,
     PROSE_SHAPE_METRIC_NAMES,
+    TYPE_RATIO_METRICS,
+    compute_generated_metrics,
 )
 from novel_system.services.style_reference.runtime_contract import (
     blend_profile_metric_baselines,
 )
 from novel_system.services.style_reference.validation.plagiarism import check_plagiarism
-from novel_system.services.style_reference.validation.quantitative import (
-    DEFAULT_FLOOR,
-    TYPE_RATIO_METRICS,
-    compute_generated_metrics,
-)
 
 
 SCORER_VERSION = "style_candidate_rerank_v2"

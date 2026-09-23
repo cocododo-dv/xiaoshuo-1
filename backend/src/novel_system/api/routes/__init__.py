@@ -17,6 +17,7 @@ __all__ = [
     "scenes",
     "snowflake",
     "snowflake_workspace",
+    "style_fidelity",
     "style_reference",
     "system_config",
     "trash",

@@ -46,8 +46,6 @@ const NODE_LABEL_ZH = {
   style_ref_protected_terms: "参考书：识别本书专名",
   style_ref_synthesize_profile: "参考书：写文风卡",
   style_ref_tag_windows: "参考书：给片段打标签",
-  style_ref_validate_forbidden: "参考书：对照检查（作者不这么写）",
-  style_ref_validate_semantic: "参考书：对照检查（评审）",
   writer_deep_review: "写作台：深度审读",
   writer_passage_patch: "写作台：段落修改",
 };

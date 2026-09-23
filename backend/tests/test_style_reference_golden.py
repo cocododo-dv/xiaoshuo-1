@@ -17,10 +17,16 @@ import pytest
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.validation import (
-    check_quantitative,
-    clear_plagiarism_corpus_cache,
-    run_sync_validate,
+from novel_system.services.reference_copy_gate import (
+    check_reference_copy,
+    reset_reference_copy_gate_cache,
+)
+from novel_system.services.style_reference.fidelity import (
+    DEFAULT_MAX_PERCENTILE,
+    clear_reference_cache,
+    read_fidelity,
+    reference_distribution_for_book,
+    within_author_range,
 )
 
 GOLDEN = Path(__file__).resolve().parent / "golden" / "style_reference"
@@ -30,9 +36,11 @@ EXPECTED = GOLDEN / "expected"
 
 @pytest.fixture(autouse=True)
 def _clear_corpus_cache():
-    clear_plagiarism_corpus_cache()
+    reset_reference_copy_gate_cache()
+    clear_reference_cache()
     yield
-    clear_plagiarism_corpus_cache()
+    reset_reference_copy_gate_cache()
+    clear_reference_cache()
 
 
 def _ingest(path: Path, title: str) -> tuple[str, dict, int]:
@@ -111,49 +119,27 @@ def test_kongyiji_assesses_all_skip():
 
 
 # ---------------------------------------------------------------------------
-# 校验闭环:抄袭检出 + 伪华丽腔量化偏差
+# 抄袭门 + 读数闭环(2026-09-23 风格参考 v3 P5b:旧校验层的同步裁决 / 量化回测删除,
+# 抄袭检出走唯一抄袭门 reference_copy_gate,「像不像」走读数 fidelity)
 # ---------------------------------------------------------------------------
 
 
-def _make_profile(session, book_id: str, profile_json: dict) -> str:
-    repo = StyleReferenceRepository(session)
-    repo.create_run(run_id=f"sr_run_gold_{book_id[-6:]}", book_id=book_id, status="done", phase="done")
-    profile = repo.create_profile(
-        profile_id=f"sr_profile_gold_{book_id[-6:]}",
-        book_id=book_id,
-        run_id=f"sr_run_gold_{book_id[-6:]}",
-        title="golden",
-        status="active",
-        profile_json=profile_json,
-        coverage_json={},
-        source_finding_ids_json=[],
-    )
-    return profile.profile_id
-
-
-def test_copying_corpus_passage_yields_plagiarism_verdict():
-    """从原书任意段抄 ≥12 字(含标点微改)必须判 plagiarism——全书语料检测网。"""
+def test_copying_corpus_passage_is_blocked_by_the_copy_gate():
+    """从原书任意段抄 ≥12 字(含标点微改)必须被拦——全书语料检测网。"""
     book_id, _stats, _count = _ingest(CORPUS / "luxun_short_stories.txt", "golden_plag")
     # 《故乡》名句,刻意改标点 + 插空格模拟微改抄袭
     copied = "其实地上本没有路，走的人多了、也便 成了路。这是我自己续写的一句。"
     with SessionLocal() as session:
-        profile_id = _make_profile(session, book_id, {"narrative_summary": "golden"})
-        session.commit()
-        profile = StyleReferenceRepository(session).get_profile(profile_id)
-        report = run_sync_validate(copied, profile, session)
-    assert report.verdict.value == "plagiarism"
-    assert report.plagiarism_json["hits"]
+        check = check_reference_copy(session, copied, book_ids=[book_id])
+    assert check.blocked and check.hits
 
 
-def test_original_text_passes_plagiarism():
+def test_original_text_passes_the_copy_gate():
     book_id, _stats, _count = _ingest(CORPUS / "zhuziqing_essays.txt", "golden_orig")
     original = "码头上的起重机缓缓转动，集装箱在暮色里排成沉默的方阵，无人机的航灯一闪一闪。"
     with SessionLocal() as session:
-        profile_id = _make_profile(session, book_id, {"narrative_summary": "golden"})
-        session.commit()
-        profile = StyleReferenceRepository(session).get_profile(profile_id)
-        report = run_sync_validate(original, profile, session)
-    assert report.verdict.value == "pass"
+        check = check_reference_copy(session, original, book_ids=[book_id])
+    assert not check.blocked and not check.hits
 
 
 FLOWERY_SAMPLE = (
@@ -166,34 +152,28 @@ FLOWERY_SAMPLE = (
 )
 
 
-def test_flowery_sample_busts_sentence_length_anchor():
-    """伪华丽腔(堆砌长句)对鲁迅 baseline 的量化对照:句长锚点必须超容差。
-
-    注:段落级 std 使自适应容差整体偏宽(设计风险 9),整体 verdict 不必然
-    fail;本用例锁定确定性的单指标信号——avg_sentence_length 必须 failed。
-    """
-    expected = json.loads((EXPECTED / "luxun_ingest_expected.json").read_text(encoding="utf-8"))
+def test_flowery_sample_reads_far_outside_the_reference():
+    """伪华丽腔(堆砌长句)对鲁迅全书窗口分布的读数:句式维越界(句子 / 分句偏长),不在作者范围内,
+    且比鲁迅自己的一段原文离作者远得多。"""
+    corpus = (CORPUS / "luxun_short_stories.txt").read_text(encoding="utf-8")
     book_id, _stats, _count = _ingest(CORPUS / "luxun_short_stories.txt", "golden_flowery")
-    baseline = {
-        name: {"mean": m["mean"], "std": m["std"]}
-        for name, m in expected["metrics"].items()
-    }
+    lines = [line for line in corpus.splitlines() if line.strip()]
+    middle = len(lines) // 2
+    own_passage = "\n".join(lines[middle : middle + 40])[:1500]
     with SessionLocal() as session:
-        profile_id = _make_profile(
-            session, book_id,
-            {"narrative_summary": "golden", "metrics_baseline": baseline},
-        )
-        session.commit()
-        profile = StyleReferenceRepository(session).get_profile(profile_id)
-        items = check_quantitative(FLOWERY_SAMPLE, profile)
-    by_name = {i.metric: i for i in items}
-    assert "avg_sentence_length" in by_name
-    assert not by_name["avg_sentence_length"].passed, (
-        f"华丽长句样本句长 {by_name['avg_sentence_length'].actual:.1f} "
-        f"应超出鲁迅 baseline 容差 {by_name['avg_sentence_length'].tolerance:.1f}"
-    )
-    failed = [i.metric for i in items if not i.passed]
-    assert len(failed) >= 2, f"伪华丽腔至少应触发 2 项量化偏差,实际 {failed}"
+        dist = reference_distribution_for_book(session, book_id)
+    assert dist is not None and dist.window_count >= 8
+    flowery = read_fidelity(FLOWERY_SAMPLE, dist)
+    own = read_fidelity(own_passage, dist)
+    too_long = {
+        item["feature"]
+        for item in flowery.out_of_band
+        if item["dimension"] == "language.sentence_structure" and item["direction"] == "high"
+    }
+    assert too_long & {"sent_len_mean", "clause_len_mean"}, flowery.out_of_band
+    assert flowery.percentile > DEFAULT_MAX_PERCENTILE
+    assert not within_author_range(flowery)
+    assert flowery.distance > own.distance * 1.5, (flowery.distance, own.distance)
 
 
 def test_chunk_variance_tightens_std_vs_paragraph_level():

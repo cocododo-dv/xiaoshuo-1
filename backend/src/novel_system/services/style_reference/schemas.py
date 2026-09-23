@@ -116,24 +116,15 @@ class TaskType(str, Enum):
     KEY_CHAPTER = "key_chapter"
 
 
-class ValidationVerdict(str, Enum):
-    """来源:§7.5 _compute_full_verdict。"""
-
-    PASS = "pass"
-    PARTIAL = "partial"
-    FAIL = "fail"
-    PLAGIARISM = "plagiarism"
-
-
 class ValidationMode(str, Enum):
-    """来源:§4.3 validation_reports.mode_executed / §5.2 ValidateRequest.mode。"""
+    """退役(2026-09-23 v3 P5b):旧回测的执行方式;只剩旧 ``/validate`` 路由(P6a / P7 删除)还构造请求体。"""
 
     SYNC_ONLY = "sync_only"
     ASYNC_FULL = "async_full"
 
 
 class ValidationTargetKind(str, Enum):
-    """来源:§5.2 ValidateRequest.target_kind。"""
+    """退役(2026-09-23 v3 P5b):同 :class:`ValidationMode`。"""
 
     SCENE = "scene"
     CHAPTER = "chapter"
@@ -180,11 +171,8 @@ class ExtractionEvidenceInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# PR-4 契约:validation 简化版 / preview
+# 抄袭检测(validation/plagiarism.py 的返回;唯一抄袭门的口径) / preview
 # ---------------------------------------------------------------------------
-
-
-# --- Validation 简化版(PR-4 范围;PR-7 加完整 quantitative / semantic)
 
 
 class PlagiarismHit(BaseModel):
@@ -204,59 +192,13 @@ class PlagiarismReport(BaseModel):
     threshold_chars: int = 12
 
 
-class ForbiddenHit(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    pattern_statement: str
-    matched_excerpt: str
-    severity: str = "error"
-
-
-class ValidationReport(BaseModel):
-    """sync_only 简化版 ValidationReport(PR-4)。
-
-    PR-7 加完整字段:quantitative / semantic / auto_rewrite 等。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    verdict: ValidationVerdict
-    mode_executed: ValidationMode = ValidationMode.SYNC_ONLY
-    quantitative_json: list[dict[str, Any]] = Field(default_factory=list)
-    semantic_json: list[dict[str, Any]] = Field(default_factory=list)
-    plagiarism_json: dict[str, Any] = Field(default_factory=dict)
-    forbidden_hits_json: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# PR-7 契约:validate 完整三路 + 双路径
+# 退役(2026-09-23 v3 P5b):旧回测请求体——只剩 ``api/routes/style_reference.py`` 的旧 ``/validate`` 路由构造它
+# (调用即 410 ``STYLE_REFERENCE_VALIDATION_RETIRED``,由 P6a / P7 删路由时一并删除);新接口是对照检查
+# ``POST /api/v2/style-reference/checks``。
 # ---------------------------------------------------------------------------
-
-
-class QuantitativeReportItem(BaseModel):
-    """单 metric 量化对照(PR-7 §7.2)。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    dimension: str  # 与 SubDimension.value 对应,或 "language" / "narrative" 等粗粒度
-    metric: str  # MetricName(metrics.py 26 项之一)
-    target_mean: float
-    target_std: float
-    actual: float
-    tolerance: float
-    passed: bool
-    deviation_ratio: float  # |actual - mean| / tolerance
-
-
-class SemanticReportItem(BaseModel):
-    """单 dimension 语义评分(PR-7 §7;critic LLM)。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    dimension: str
-    score: float = Field(ge=0.0, le=10.0)
-    explanation: str
-    quotes_found: bool
 
 
 class ValidateRequest(BaseModel):
@@ -268,21 +210,6 @@ class ValidateRequest(BaseModel):
     target_kind: ValidationTargetKind = ValidationTargetKind.MANUAL
     target_ref_id: str | None = Field(default=None, max_length=255)
     mode: ValidationMode = ValidationMode.ASYNC_FULL
-
-
-class ValidateResponse(BaseModel):
-    """`POST /profiles/{profile_id}/validate` 返回结构。
-
-    sync_only 时 sync_result 填完整 ValidationReport;polling_url 为 None。
-    async_full 时 polling_url 指向 GET /reports/{id},sync_result 为 None。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    report_id: str
-    mode_executed: ValidationMode
-    sync_result: ValidationReport | None = None
-    polling_url: str | None = None
 
 
 # ---------------------------------------------------------------------------

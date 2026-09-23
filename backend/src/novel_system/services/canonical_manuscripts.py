@@ -117,7 +117,10 @@ class CanonicalSceneService:
         payload: dict[str, Any] | None = None,
         *,
         actor_ref: str = "operator",
+        fidelity_source: str = "archive",
     ) -> dict[str, Any]:
+        """作者稿提升为权威正文（成稿中心 source=archive；起草台「采用」的精确作者稿 source=adopt——
+        归档时记的「像不像」读数带这个来源）。"""
         body = payload or {}
         draft = self.session.get(AuthorDraft, draft_id)
         if draft is None:
@@ -463,6 +466,7 @@ class CanonicalSceneService:
             carry_notes_json=carry_notes,
             author_confirmed_final=True,
             accepted_warning_codes=accepted_warning_codes,
+            fidelity_source=fidelity_source,
         )
         # Project-less rows only exist in the legacy compatibility surface. They
         # cannot own a CanonCommit (the new ledger deliberately requires a real

@@ -56,9 +56,13 @@ from novel_system.services.style_reference.inject.request import (
     PLAN_K,
     REVIEW_K,
     ROLE_DRAFT,
+    ROLE_PLAN,
+    ROLE_REVIEW,
+    ROLE_REVISE,
     StyleRenderRequest,
     infer_role,
 )
+from novel_system.services.style_reference.tags import normalize_situation_tags
 from novel_system.services.style_reference.inject.selection import (
     derive_situation_tags,
     scene_chapter_position,
@@ -76,9 +80,12 @@ _LOGGER = logging.getLogger(__name__)
 # （翻译成 STYLE_GATE_UNAVAILABLE notice）都要认它；两者不能互相 import，所以放在这里。
 STYLED_GATE_UNAVAILABLE_VERDICT = "unavailable"
 
-# 规划节点（scene_blueprint、写作台的章级 / 局部节点）只要冻结选窗的前 3 窗，评审节点前 4 窗（L4）。
+# 规划节点（scene_blueprint、写作台的章级 / 局部节点）只要冻结选窗的前 3 窗，评审节点前 4 窗（L4）。窗数只有一个
+# 定义（``inject.request`` 的 ROLE_K_CAPS）：这两个名字是它的别名，传了 ``role`` 就不必再传窗数上限。
 PLANNING_FEW_SHOT_K_CAP = PLAN_K
 REVIEW_FEW_SHOT_K_CAP = REVIEW_K
+# 风格参考 v3（N4）：事实版蓝图给这一场标的场面标签随 bundle 冻结在这个 inline digest 里（JSON 数组）；首稿按它挑窗。
+SCENE_SITUATION_TAGS_KEY = "_scene_situation_tags"
 # 调用方显式给出契约(而非 bundle)时的审计标签:契约是本次调用按当前 active 绑定解析的,
 # 与冻结进 SceneBundle 的契约区分开。
 RESOLVED_CONTRACT_STATUS = "resolved_live"
@@ -98,16 +105,42 @@ __all__ = [
     "RESOLVED_CONTRACT_MODE",
     "RESOLVED_CONTRACT_STATUS",
     "REVIEW_FEW_SHOT_K_CAP",
+    "ROLE_DRAFT",
+    "ROLE_PLAN",
+    "ROLE_REVIEW",
+    "ROLE_REVISE",
+    "SCENE_SITUATION_TAGS_KEY",
     "STYLED_GATE_UNAVAILABLE_VERDICT",
     "STYLE_RUNTIME_AUDIT_KEY",
     "STYLE_USER_TAIL_KEY",
     "apply_style_user_tail",
     "attach_chapter_position_mandate",
     "chapter_position_mandate",
+    "frozen_situation_tags",
     "inject_style_reference_prefix",
     "resolve_style_scope",
     "style_render_request_for_scene",
 ]
+
+
+def frozen_situation_tags(bundle: Mapping[str, Any] | None) -> tuple[str, ...] | None:
+    """bundle 冻结的本场场面标签（事实版蓝图给的）；没有冻结 → ``None``（渲染时从场景设计推）。"""
+    if not isinstance(bundle, Mapping):
+        return None
+    snapshot = bundle.get("snapshot") if isinstance(bundle.get("snapshot"), Mapping) else bundle
+    inline = snapshot.get("inline_digests") if isinstance(snapshot, Mapping) else None
+    raw = inline.get(SCENE_SITUATION_TAGS_KEY) if isinstance(inline, Mapping) else None
+    if isinstance(raw, str):
+        try:
+            import json
+
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, (list, tuple)):
+        return None
+    tags = tuple(normalize_situation_tags(list(raw)))
+    return tags or None
 
 
 def apply_style_user_tail(prompt: Mapping[str, Any] | None, user_prompt: str) -> str:

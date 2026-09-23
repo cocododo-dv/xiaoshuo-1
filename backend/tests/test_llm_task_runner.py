@@ -665,6 +665,9 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         ("services/scene_generation.py", "SceneGenerationService", "_run_style_generation_inner"),
         ("services/scene_generation.py", "SceneGenerationService", "_run_de_template_pass"),
         ("services/scene_generation.py", "SceneGenerationService", "_run_style_salvage_pass"),
+        # 2026-09-23 风格参考 v3（P5b）：style_first 下风格步越界时的定向修改（style_targeted_revision，
+        # 走 style_draft 节点路由），与风格稿同一条场景运行记账路径。
+        ("services/scene_generation.py", "SceneGenerationService", "_run_targeted_revision"),
         ("services/scene_blueprint.py", "SceneBlueprintService", "generate"),
         # Hard/Soft QC 的 LLM 调用已收敛为模块级统一降级出口（两引擎共用一个 .run( 调用点）
         ("services/qc_engine.py", "", "_qc_run_node_with_degradation"),
@@ -723,7 +726,8 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
 
     # 2026-09-22 场景诊断第二轮：writer_deep_review.run_passage_review（「AI 看这一处」局部深评）是第 15 个调用点，
     # 带 context（scene 作用域）——与整场深评 / 段落修补同一条记账路径。
-    assert len(calls) == 15
+    # 2026-09-23 风格参考 v3（P5b）：SceneGenerationService._run_targeted_revision 是第 16 个（场景运行派生 context）。
+    assert len(calls) == 16
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context
 

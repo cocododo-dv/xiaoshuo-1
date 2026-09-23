@@ -32,7 +32,6 @@ from novel_system.services.style_reference.runtime_contract import (
     style_runtime_contract_status_from_bundle,
     validate_style_runtime_contract,
 )
-from novel_system.services.style_reference.validation import run_sync_validate_profiles
 
 
 def _seed_reference(
@@ -275,9 +274,17 @@ def test_frozen_contract_samples_require_current_send_rights(session) -> None:
     assert revoked.audit["samples_blocked"] == "cloud_policy_now"
 
 
-def test_frozen_validation_uses_frozen_terms_and_rejects_changed_source(
+def test_styled_gate_uses_the_frozen_banned_terms_not_the_live_table(
     session,
 ) -> None:
+    """冻结契约里的禁用词是本 bundle 的裁决口径：绑定之后改了画像现行的禁用词也不影响。
+
+    （2026-09-23 风格参考 v3 P5b：旧校验层的同步裁决 run_sync_validate_profiles 删除；风格稿门
+    ``qc_engine._styled_gate_report`` 是冻结禁用词的唯一读者。旧用例后半段「书的原文变了 → 同步回测报错」随同步
+    回测删除——书变了由注入适配器的 STYLE_REFERENCE_BOOK_CHANGED 提示与唯一抄袭门处理。）
+    """
+    from novel_system.services.qc_engine import _styled_gate_report
+
     seeded = _seed_reference(session, seed="validation_inputs", strategy="A")
     contract = build_style_runtime_contract(
         seeded.repo,
@@ -285,7 +292,7 @@ def test_frozen_validation_uses_frozen_terms_and_rejects_changed_source(
         task_type="scene_generation",
     )
     assert contract is not None
-    profiles = contract_profile_objects(contract)
+    policy = policy_from_contract(contract, mode="frozen")
 
     term = seeded.repo.list_banned_terms(
         seeded.profile_id,
@@ -293,16 +300,16 @@ def test_frozen_validation_uses_frozen_terms_and_rejects_changed_source(
     )[0]
     term.term = "后来才加入的实时禁用词"
     session.flush()
-    report = run_sync_validate_profiles("她说出不可复用的专名。", profiles, session)
+    report = _styled_gate_report(session, policy, "她说出不可复用的专名，又说了后来才加入的实时禁用词。")
 
     assert [hit["pattern_statement"] for hit in report.forbidden_hits_json] == [
         "不可复用的专名"
     ]
-    book = seeded.repo.get_book(seeded.book_id)
-    book.text_checksum = "changed-before-validation"
-    session.flush()
-    with pytest.raises(ValueError, match="source changed"):
-        run_sync_validate_profiles("她停下脚步。", profiles, session)
+    assert report.verdict == "fail" and report.quantitative_json == []
+    # 现解析（没有冻结契约）按画像现行的词
+    live = SimpleNamespace(contract=None, profile_id=seeded.profile_id, bound=True, book_id=seeded.book_id)
+    live_report = _styled_gate_report(session, live, "她说出不可复用的专名，又说了后来才加入的实时禁用词。")
+    assert [hit["pattern_statement"] for hit in live_report.forbidden_hits_json] == ["后来才加入的实时禁用词"]
 
 
 def test_task_specific_bundle_contract_and_scene_injection_context_are_auditable(
@@ -477,7 +484,7 @@ def test_qc_gate_validates_the_frozen_contract_profiles(session, monkeypatch) ->
     assert frozen_profile["profile_json"]["style_features"] == ["句式舒展，收束克制"]
 
 
-def test_layered_baseline_blends_mean_total_variance_and_validation_target(
+def test_layered_baseline_blends_mean_and_total_variance(
     session,
 ) -> None:
     base = SimpleNamespace(
@@ -498,13 +505,7 @@ def test_layered_baseline_blends_mean_total_variance_and_validation_target(
     blended = blend_profile_metric_baselines([base, specific])
     assert blended["avg_sentence_length"]["mean"] == pytest.approx(50.0 / 3.0)
     assert blended["avg_sentence_length"]["std"] > 2.0
-    report = run_sync_validate_profiles("她停下。门开了。", [base, specific], session)
-    target = next(
-        item
-        for item in report.quantitative_json
-        if item["metric"] == "avg_sentence_length"
-    )
-    assert target["target_mean"] == pytest.approx(50.0 / 3.0)
+    # 2026-09-23 风格参考 v3（P5b）：旧的量化回测（以混合基线为对照目标）随校验层删除，只保留混合本身。
 
 
 def test_context_extractor_is_bounded_normalized_and_audit_contains_only_hash() -> None:

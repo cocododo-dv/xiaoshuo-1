@@ -387,7 +387,16 @@ _NEUTRAL_TEXT = "门外的脚步停住了，他把信封放到桌上，等对面
 
 
 def test_style_notice_codes_are_closed_set() -> None:
-    from novel_system.services.scene_generation import STYLE_NOTICE_FIRST_DRAFT
+    from novel_system.services.scene_generation import (
+        STYLE_NOTICE_FIRST_DRAFT,
+        STYLE_NOTICE_FIRST_DRAFT_ACCEPTED,
+        STYLE_NOTICE_PATCH_REVERTED,
+        STYLE_NOTICE_REFERENCE_BOOK_CHANGED,
+        STYLE_NOTICE_REFERENCE_BOOK_MISSING,
+        STYLE_NOTICE_REFERENCE_NO_WINDOWS,
+        STYLE_NOTICE_REFERENCE_SAMPLES_BLOCKED,
+        STYLE_NOTICE_REVISION_REJECTED,
+    )
 
     assert STYLE_NOTICE_CODES == {
         STYLE_NOTICE_FIRST_DRAFT,
@@ -397,7 +406,16 @@ def test_style_notice_codes_are_closed_set() -> None:
         STYLE_NOTICE_PLAGIARISM_HIT,
         STYLE_NOTICE_BANNED_TERM_HIT,
         STYLE_NOTICE_GATE_UNAVAILABLE,
+        # 2026-09-23 风格参考 v3（P5b）：风格步 / 软补丁的决定，与注入适配器审计转成的提示
+        STYLE_NOTICE_FIRST_DRAFT_ACCEPTED,
+        STYLE_NOTICE_REVISION_REJECTED,
+        STYLE_NOTICE_PATCH_REVERTED,
+        STYLE_NOTICE_REFERENCE_BOOK_CHANGED,
+        STYLE_NOTICE_REFERENCE_SAMPLES_BLOCKED,
+        STYLE_NOTICE_REFERENCE_BOOK_MISSING,
+        STYLE_NOTICE_REFERENCE_NO_WINDOWS,
     }
+    assert all(code.startswith("STYLE_") for code in STYLE_NOTICE_CODES)
     notice = style_notice(STYLE_NOTICE_INJECTION_MISS, "m", severity="info", extra=1, dropped=None)
     assert notice == {"code": STYLE_NOTICE_INJECTION_MISS, "message": "m", "severity": "info", "extra": 1}
     with pytest.raises(ValueError):

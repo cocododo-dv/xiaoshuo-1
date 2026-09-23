@@ -33,6 +33,7 @@ from novel_system.api.routes import (
     scenes,
     snowflake,
     snowflake_workspace,
+    style_fidelity,
     style_reference,
     system_config,
     trash,
@@ -65,6 +66,7 @@ async def _lifespan(_app: FastAPI):
     # --reload 留下的作业不需要人工介入。
     from novel_system.services.style_reference import import_job  # noqa: F401 — 注册 classify 处理器
     from novel_system.services.style_reference import learn_job  # noqa: F401 — 注册 learn 处理器
+    from novel_system.services.style_reference import check_job  # noqa: F401 — 注册 check 处理器
     from novel_system.services.style_reference.jobs import (
         shutdown_job_workers,
         start_job_sweeper,
@@ -74,16 +76,11 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        from novel_system.services.style_reference.validation.runner import (
-            shutdown_style_reference_validation_executor,
-        )
-
         from novel_system.services.style_reference.rag import (
             shutdown_style_reference_rag_index_executor,
         )
 
         shutdown_job_workers(wait=False)
-        shutdown_style_reference_validation_executor(wait=False)
         shutdown_style_reference_rag_index_executor(wait=False)
 
 
@@ -416,5 +413,6 @@ def create_app() -> FastAPI:
     app.include_router(system_config.router)
     app.include_router(literary_quality.router)
     app.include_router(style_reference.router)
+    app.include_router(style_fidelity.router)
     install_api_openapi_contract(app)
     return app

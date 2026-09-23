@@ -19,12 +19,12 @@ from pathlib import Path
 import pytest
 
 from novel_system.db.session import SessionLocal
+from novel_system.services.reference_copy_gate import (
+    check_reference_copy,
+    reset_reference_copy_gate_cache,
+)
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.validation import (
-    clear_plagiarism_corpus_cache,
-    run_sync_validate,
-)
 
 LOCAL_CORPUS = os.environ.get("NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS", "").strip()
 
@@ -36,9 +36,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _clear_corpus_cache():
-    clear_plagiarism_corpus_cache()
+    reset_reference_copy_gate_cache()
     yield
-    clear_plagiarism_corpus_cache()
+    reset_reference_copy_gate_cache()
 
 
 @pytest.fixture(scope="function")
@@ -71,50 +71,26 @@ def test_local_corpus_ingests_with_full_stats(local_book):
 
 
 def test_local_corpus_self_plagiarism_detected(local_book):
-    """从本地书正文中段抄一句 → 抄袭检测(全书语料 + 规范化)必须命中。"""
+    """从本地书正文中段抄一句 → 唯一抄袭门(全书语料 + 规范化)必须拦下。
+
+    (2026-09-23 风格参考 v3 P5b:旧同步回测删除,改走 reference_copy_gate。)
+    """
     book_id, _stats, _count = local_book
     with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        paragraphs = repo.list_paragraphs(book_id)
+        paragraphs = StyleReferenceRepository(session).list_paragraphs(book_id)
         # 取书中部一个 ≥40 字的段落,截 40 字模拟"微改抄袭"(插空格)
         source = next(
             p.text for p in paragraphs[len(paragraphs) // 2 :] if len(p.text) >= 40
         )
         copied = source[:20] + " " + source[20:40] + "——这后半句是我自己写的全新内容。"
-
-        repo.create_run(run_id="sr_run_local", book_id=book_id, status="done", phase="done")
-        profile = repo.create_profile(
-            profile_id="sr_profile_local",
-            book_id=book_id,
-            run_id="sr_run_local",
-            title="本地验证",
-            status="active",
-            profile_json={"narrative_summary": "本地"},
-            coverage_json={},
-            source_finding_ids_json=[],
-        )
-        session.commit()
-        report = run_sync_validate(copied, profile, session)
-    assert report.verdict.value == "plagiarism", "抄原书原文必须被检出"
-    assert report.plagiarism_json["hits"]
+        check = check_reference_copy(session, copied, book_ids=[book_id])
+    assert check.blocked, "抄原书原文必须被拦下"
+    assert check.hits
 
 
 def test_local_corpus_original_text_passes(local_book):
     book_id, _stats, _count = local_book
     original = "深夜的服务器机房里只有风扇的嗡鸣，他盯着滚动的日志，手边的咖啡早凉透了。"
     with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_run(run_id="sr_run_local2", book_id=book_id, status="done", phase="done")
-        profile = repo.create_profile(
-            profile_id="sr_profile_local2",
-            book_id=book_id,
-            run_id="sr_run_local2",
-            title="本地验证2",
-            status="active",
-            profile_json={"narrative_summary": "本地"},
-            coverage_json={},
-            source_finding_ids_json=[],
-        )
-        session.commit()
-        report = run_sync_validate(original, profile, session)
-    assert report.verdict.value == "pass"
+        check = check_reference_copy(session, original, book_ids=[book_id])
+    assert not check.hits

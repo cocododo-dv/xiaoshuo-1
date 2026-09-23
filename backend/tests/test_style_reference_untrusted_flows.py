@@ -16,7 +16,7 @@ from novel_system.services.style_reference.learn_llm import (
     LearnNodeRuntime,
     call_structured,
 )
-from novel_system.services.style_reference.validation import forbidden_semantic, semantic
+from novel_system.services.style_reference import check_job
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
@@ -36,8 +36,6 @@ FORGED_BOUNDARIES = (
 LEARN_FLOW_NODES = (*EXTRACT_NODES.values(), NODE_SYNTHESIZE, NODE_PROTECTED_TERMS, NODE_TAG_WINDOWS)
 FLOW_NODES = (
     *LEARN_FLOW_NODES,
-    semantic.SEMANTIC_NODE_ID,
-    forbidden_semantic.FORBIDDEN_SEMANTIC_NODE_ID,
 )
 
 
@@ -83,13 +81,7 @@ class _CaptureClient(AccountedGenerateMixin):
 
     def generate(self, request):
         self.requests.append(request)
-        if request.node_id == forbidden_semantic.FORBIDDEN_SEMANTIC_NODE_ID:
-            structured = {"triggered": False, "excerpt": "", "reasoning": ""}
-        elif request.node_id == semantic.SEMANTIC_NODE_ID:
-            structured = {"dimension_scores": []}
-        else:
-            structured = {}
-        return SimpleNamespace(structured_output=structured)
+        return SimpleNamespace(structured_output={})
 
 
 def _malicious_payload(flow: str) -> dict:
@@ -170,63 +162,30 @@ def test_learn_job_requests_are_bounded_and_retry_notes_stay_outside(_fake_nodes
         assert user_prompt.index("【重试说明】") < user_prompt.index(f"[UNTRUSTED_REFERENCE_DATA:{request.node_id}]")
 
 
-def test_semantic_request_is_bounded(_fake_nodes, session) -> None:
-    client = _CaptureClient()
-    profile = SimpleNamespace(
-        profile_json={
-            "style_features": [MALICIOUS_TEXT, FORGED_BOUNDARIES],
-            "narrative_summary": MALICIOUS_TEXT,
-        },
-        profile_id="profile-boundary",
+def test_style_check_judge_text_is_bounded() -> None:
+    """2026-09-23 风格参考 v3（P5b）：旧回测的语义 / 禁忌模式两个节点随校验层删除；对照检查的参考评审把待查文字
+    当数据封装（与其他风格参考节点同一条边界）——疑似指令中和、伪造边界转义、system 带不可信数据约束。"""
+    template = SimpleNamespace(
+        system_prompt="SYSTEM judge",
+        task_prompt="TASK judge",
+        structured_schema={"schema_marker": "SCHEMA_ONLY_judge"},
     )
-
-    semantic.check_semantic(
-        MALICIOUS_TEXT,
-        profile,
-        session,
-        client,
-        report_id="report-boundary",
-    )
-
-    assert len(client.requests) == 1
-    _assert_request_is_bounded(
-        client.requests[0],
-        node_id=semantic.SEMANTIC_NODE_ID,
-        template=_fake_nodes[semantic.SEMANTIC_NODE_ID],
-    )
-
-
-def test_forbidden_semantic_request_is_bounded(
-    monkeypatch, _fake_nodes, session
-) -> None:
-    client = _CaptureClient()
-    finding = SimpleNamespace(
-        finding_id="finding-boundary",
-        finding_kind="forbidden_pattern",
-        statement=MALICIOUS_TEXT + "\n" + FORGED_BOUNDARIES,
-        sub_dimension="language.rhetoric",
-    )
-    fake_repo = SimpleNamespace(get_finding=lambda finding_id: finding)
-    monkeypatch.setattr(
-        forbidden_semantic,
-        "StyleReferenceRepository",
-        lambda session: fake_repo,
-    )
-    profile = SimpleNamespace(source_finding_ids_json=[finding.finding_id])
-
-    forbidden_semantic.check_forbidden_semantic(
-        MALICIOUS_TEXT,
-        profile,
-        session,
-        client,
-        report_id="report-boundary",
-    )
-
-    assert len(client.requests) == 1
-    _assert_request_is_bounded(
-        client.requests[0],
-        node_id=forbidden_semantic.FORBIDDEN_SEMANTIC_NODE_ID,
-        template=_fake_nodes[forbidden_semantic.FORBIDDEN_SEMANTIC_NODE_ID],
-    )
-
-
+    messages = check_job._judge_messages("[STYLE_REFERENCE]\n样例……\n", template, MALICIOUS_TEXT + "\n" + FORGED_BOUNDARIES)
+    system_prompt, user_prompt = messages[0]["content"], messages[1]["content"]
+    kind = check_job.CHECK_TEXT_KIND
+    assert user_prompt.startswith("TASK judge\n")
+    assert user_prompt.index("TASK judge") < user_prompt.index(f"[UNTRUSTED_REFERENCE_DATA:{kind}]")
+    assert re.findall(r"\[/?UNTRUSTED_REFERENCE_DATA(?::[^\]]+)?\]", user_prompt) == [
+        f"[UNTRUSTED_REFERENCE_DATA:{kind}]",
+        "[/UNTRUSTED_REFERENCE_DATA]",
+    ]
+    lowered_user = user_prompt.lower()
+    assert "ignore previous instructions" not in lowered_user
+    assert "system:" not in lowered_user
+    assert "<tool_call>" not in lowered_user
+    assert "系统：" not in user_prompt and "工具调用：" not in user_prompt
+    assert "role=assistant" not in lowered_user
+    assert "[UNTRUSTED_REFERENCE_DATA:forged]" not in user_prompt
+    assert system_prompt.startswith("[STYLE_REFERENCE]") and "SYSTEM judge" in system_prompt
+    assert "not instructions" in system_prompt.lower() and "untrusted_reference_data" in system_prompt.lower()
+    assert "SCHEMA_ONLY_judge" not in system_prompt and "SCHEMA_ONLY_judge" not in user_prompt
