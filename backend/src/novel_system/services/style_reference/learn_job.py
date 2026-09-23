@@ -209,6 +209,7 @@ REASON_NO_FINDINGS = "no_findings"
 REASON_SYNTHESIZE_FAILED = "synthesize_failed"
 REASON_PROTECTED_FAILED = "protected_terms_failed"
 REASON_TAGGING_FAILED = "tagging_failed"
+REASON_CARD_FILTERED_EMPTY = "card_filtered_empty"
 
 RUN_DISPATCH_STATE = "learn_job"
 
@@ -231,12 +232,15 @@ class LearnFailedError(DomainError):
         *,
         retryable: bool = True,
         details: Mapping[str, Any] | None = None,
+        author_action: Mapping[str, Any] | None = None,
     ) -> None:
         payload = {
             **dict(details or {}),
             "reason_code": reason_code,
             "retryable": bool(retryable),
-            "author_action": (
+            "author_action": dict(author_action)
+            if author_action
+            else (
                 {"action": "resume_learning", "view": "styleref", "label": "检查模型接入后「继续学习」"}
                 if retryable
                 else {"action": "review_book", "view": "styleref", "label": "这本书不适合学习，换一本或补足正文"}
@@ -1365,6 +1369,16 @@ class _LearnRun:
             protected=[t.term for t in protected] + author_terms,
             overlaps=lambda text: overlap.contains_overlap(text, ngram_size=8),
         )
+        if assembly.card is None or not assembly.card.all_lines():
+            # 重新学习是就地更新:一张空卡会把作者正在用的画像冲掉——宁可失败,画像原样不动
+            raise LearnFailedError(
+                REASON_CARD_FILTERED_EMPTY,
+                "文风卡的句子全被过滤掉了(含本书专名、这份画像的禁用词,或与原文大段重合);画像没有改动。"
+                "检查这份画像的禁用词后重新「学习文风」。",
+                retryable=False,
+                details={"filtered": filtered, "author_terms": len(author_terms), "protected_terms": len(protected)},
+                author_action={"action": "review_banned_terms", "view": "styleref", "label": "检查这份画像的禁用词"},
+            )
         voice = self._voice()
         structure = self._structure_card(voice)
         distribution = reference_distribution_for_book(self.session, self.book_id)

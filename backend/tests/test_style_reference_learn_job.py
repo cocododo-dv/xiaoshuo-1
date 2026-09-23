@@ -519,6 +519,52 @@ def test_protected_terms_replace_only_auto_rows(session, monkeypatch) -> None:
     assert rows == {("韩小暖", "user"), ("程铁", "protected_auto"), (ORG, "protected_auto")}
 
 
+def _author_term(profile_id: str, term: str, scope: str) -> None:
+    with SessionLocal() as db:
+        db.add(
+            StyleReferenceBannedTerm(
+                term_id=f"sr_term_{uuid.uuid4().hex[:8]}",
+                profile_id=profile_id,
+                term=term,
+                replacement_hint=None,
+                source="user",
+                scope=scope,
+            )
+        )
+        db.commit()
+
+
+def test_author_banned_terms_filter_the_card_and_an_emptied_card_leaves_the_profile_alone(session, monkeypatch) -> None:
+    """作者给这份画像录的禁用词(任何域)同样过滤卡片;全被过滤掉时作业失败、画像(就地更新的对象)原样不动。"""
+    _fake1, first = _learn(monkeypatch, session)
+    profile_id = first.result_json["profile_id"]
+    _author_term(profile_id, "第一条", "extraction")
+    _use(monkeypatch, _fake())
+    second_id = _start("learn_book")
+    run_job_inline(second_id)
+    second = _job(second_id)
+    assert second.state == "succeeded", second.error_json
+    texts = [line.text for _dim, line in card_from_profile_json(_profile(profile_id).profile_json).all_lines()]
+    assert texts and not any("第一条" in t for t in texts) and any("第二条" in t for t in texts)
+    assert second.result_json["card"]["filtered_at_finalize"]["protected_term"] >= 1
+    before = _profile(profile_id)
+
+    _author_term(profile_id, "第二条", "generation")
+    _author_term(profile_id, "通用写法", "generation")
+    _use(monkeypatch, _fake())
+    third_id = _start("learn_book")
+    run_job_inline(third_id)
+    third = _job(third_id)
+    assert third.state == "failed"
+    assert third.error_json["code"] == "STYLE_REFERENCE_LEARN_FAILED"
+    details = third.error_json.get("details") or {}
+    assert details["reason_code"] == "card_filtered_empty" and details["retryable"] is False
+    assert details["author_action"]["action"] == "review_banned_terms"
+    after = _profile(profile_id)
+    assert after.version_tag == before.version_tag and after.profile_json == before.profile_json
+    assert after.status == "active"
+
+
 # ---------------------------------------------------------------- tags
 
 
@@ -835,6 +881,21 @@ def test_skipped_layers_are_not_extracted(session, monkeypatch) -> None:
     assert job.state == "succeeded"
     assert fake.count("style_ref_extract_theme") == 0 and fake.count("style_ref_extract_") == 3
     assert job.cursor_json["layers"] == ["language", "narrative", "scene"]
+
+
+def test_a_structure_card_that_cannot_be_computed_only_leaves_that_key_empty(session, monkeypatch) -> None:
+    """结构画像是确定性派生:算不出来时画像只缺这个键(合成不带结构事实),学习照常完成。"""
+
+    def broken(*_args, **_kwargs):
+        raise ValueError("no chapters")
+
+    monkeypatch.setattr(learn_job, "compute_structure_card", broken)
+    fake, job = _learn(monkeypatch, session)
+    assert job.state == "succeeded", job.error_json
+    pj = _profile(job.result_json["profile_id"]).profile_json
+    assert pj["structure_card"] is None and pj["dimension_card"]["dimensions"]
+    synth_payload = next(payload for node, payload in fake.payloads if node == NODE_SYNTH)
+    assert synth_payload["structure_facts"] == []
 
 
 # ---------------------------------------------------------------- card line states
