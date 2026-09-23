@@ -223,3 +223,80 @@ def test_check_job_commits_each_progress_step_before_the_heavy_work(session, mon
     with SessionLocal() as db:
         assert db.get(StyleReferenceJob, job_id).state == "succeeded"
     assert _readings_count() == 1
+
+
+# ---------------------------------------------------------------------------
+# 一场属于哪部作品按场景本身定，不信客户端（界面复核 #7：换过作品后，读数记到了另一部作品名下）
+# ---------------------------------------------------------------------------
+
+
+OTHER_PROJECT = "proj_other_work"
+
+
+def _scene_with_final(session, key: str):
+    from novel_system.db.models import FinalScene, SceneRunState, StoryProject
+    from tests.test_style_fidelity_v3 import _bound_scene
+
+    scene, _bundle, _book, profile_id = _bound_scene(session, key)
+    text = "潮水退去以后，他在闸门前站了很久，才把手里的灯放下。" * 30
+    session.add(
+        FinalScene(
+            row_id=f"final_{key}",
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            content=text,
+            source_bundle_id="author_adopt",
+            source_bundle_hash="author_adopt",
+        )
+    )
+    session.get(SceneRunState, scene.scene_id).current_final_scene_row_id = f"final_{key}"
+    # 界面上换到的另一部作品（客户端带来的是它的 id）
+    session.add(StoryProject(project_id=OTHER_PROJECT, title="另一部", outline_text=""))
+    session.commit()
+    return scene, profile_id
+
+
+def _reading_of(job_id: str) -> StyleFidelityReading:
+    with SessionLocal() as db:
+        job = db.get(StyleReferenceJob, job_id)
+        assert job.state == "succeeded", job.error_json
+        reading = db.get(StyleFidelityReading, job.result_json["reading_id"])
+        db.expunge(reading)
+        return reading
+
+
+def test_scene_check_takes_the_project_from_the_scene_not_from_the_client(session, monkeypatch) -> None:
+    scene, profile_id = _scene_with_final(session, "chk_proj")
+    job = check_job.start_check_job(
+        session,
+        scene_id=scene.scene_id,
+        profile_id=profile_id,
+        project_id=OTHER_PROJECT,
+        llm_client=_FakeJudge(),
+        llm_enabled=True,
+    )
+    session.commit()
+    assert job.params_json["project_id"] == scene.project_id != OTHER_PROJECT
+    register_job_handler(JOB_KIND_CHECK, check_job.run_check_job)
+    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_FakeJudge(), True))
+    run_job_inline(job.job_id)
+    reading = _reading_of(job.job_id)
+    assert (reading.scene_id, reading.project_id) == (scene.scene_id, scene.project_id)
+
+
+def test_scene_check_job_created_with_the_client_project_still_files_under_the_scene_project(session, monkeypatch) -> None:
+    """修正之前建的作业（参数里还是客户端给的另一部作品）：跑的时候照样按场景本身定作品。"""
+    scene, profile_id = _scene_with_final(session, "chk_proj_old")
+    job = StyleJobService(session).create(
+        JOB_KIND_CHECK,
+        book_id=check_job._light_policy(session, {"profile_id": profile_id}).book_id,
+        profile_id=profile_id,
+        params={"target": "scene", "scene_id": scene.scene_id, "profile_id": profile_id, "project_id": OTHER_PROJECT},
+        phase="queued",
+        allow_parallel=True,
+    )
+    session.commit()
+    register_job_handler(JOB_KIND_CHECK, check_job.run_check_job)
+    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_FakeJudge(), True))
+    run_job_inline(job.job_id)
+    assert _reading_of(job.job_id).project_id == scene.project_id

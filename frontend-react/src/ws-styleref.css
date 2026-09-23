@@ -244,7 +244,13 @@
 .sr-plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .sr-plain-list li { position: relative; padding-left: 12px; font-size: var(--fs-sm); line-height: 1.6; color: var(--ink-1); }
 .sr-plain-list li::before { content: ""; position: absolute; left: 2px; top: 0.72em; width: 4px; height: 4px; border-radius: 50%; background: var(--ink-3); }
-.sr-term-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.sr-term-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; padding: 0; list-style: none; }
+/* 本书专名一个一块：词 + 「不再保护」的小叉 */
+.sr-term-chip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 9px; border-radius: var(--r-pill); background: var(--paper-2); color: var(--ink-2); font-size: var(--fs-xs); line-height: 20px; }
+.sr-term-chip-text { white-space: nowrap; }
+.sr-term-chip-x { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--ink-3); cursor: pointer; }
+.sr-term-chip-x:hover:not(:disabled), .sr-term-chip-x:focus-visible { background: var(--paper-3); color: var(--danger-ink); }
+.sr-term-chip-x:disabled { cursor: default; opacity: 0.5; }
 .sr-banned-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 .sr-banned-add .input { flex: 1 1 180px; width: auto; }
 .sr-banned-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }

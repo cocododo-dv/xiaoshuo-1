@@ -256,7 +256,8 @@ def start_check_job(
     """建一个对照检查作业（调用方提交后派发）。
 
     ``text`` 与 ``scene_id`` 恰好给一个：``scene_id`` → 这一场的当前正文与它现在的绑定（给了 ``profile_id`` 时改按
-    那份画像）；``text`` → 给定的画像，或给定作品（``project_id``）当前的绑定。
+    那份画像）；读数记在**这一场所属的作品**名下（``project_id`` 按场景本身定，客户端给的不用）；``text`` → 给定的
+    画像，或给定作品（``project_id``）当前的绑定。
     """
     has_text = bool(str(text or "").strip())
     has_scene = bool(str(scene_id or "").strip())
@@ -294,7 +295,9 @@ def start_check_job(
         scene = session.get(SceneCard, str(scene_id))
         if scene is None:
             raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        params["project_id"] = params["project_id"] or readings.scene_project_id(session, scene)
+        # 一场属于哪部作品只看场景本身，不信客户端给的 project_id：界面换过作品时带来的是另一部作品的 id，
+        # 读数（与记账）会记到别的作品名下，进了那部作品的走势与按维平均
+        params["project_id"] = readings.scene_project_id(session, scene)
         content, _ref = scene_current_text(session, scene.scene_id)
         if not content.strip():
             raise DomainError(
@@ -560,7 +563,13 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
     if not getattr(policy, "bound", False):
         raise _not_bound_error(params)
     scene_id = params.get("scene_id")
+    project_id = params.get("project_id")
     if scene_id:
+        # 作品按场景本身定（修正之前建的作业，参数里可能还是客户端给的另一部作品）
+        scene_row = session.get(SceneCard, str(scene_id))
+        if scene_row is None:
+            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        project_id = readings.scene_project_id(session, scene_row)
         text, text_ref = scene_current_text(session, str(scene_id))
         if not text.strip():
             raise DomainError(CHECK_NO_TEXT_CODE, "这一场还没有正文可检查。", status_code=409, details={"scene_id": scene_id})
@@ -591,7 +600,7 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
         text=visible_text,
         llm_client=llm_client,
         context_scope_id=claimed.job_id,
-        project_id=params.get("project_id"),
+        project_id=project_id,
     )
     # 评审可能走了很久：期间作业被取消 / 被清扫重排给别的工人 / 书被删了——先确认还是自己的，再记读数
     service.check_continue(claimed)
@@ -603,7 +612,7 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
         source=readings.SOURCE_MANUAL_CHECK,
         stage=readings.STAGE_MANUAL,
         scene_id=str(scene_id) if scene_id else None,
-        project_id=params.get("project_id"),
+        project_id=project_id,
         draft_ref=text_ref,
         judge=judge,
         copy_check=copy_check,

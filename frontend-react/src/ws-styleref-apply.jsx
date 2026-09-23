@@ -3,8 +3,9 @@ import { I } from "./icons.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 import { Notice, Spinner, Tag, onRadioGroupKeyDown, radioTabIndex } from "./ws-ui.jsx";
 import {
-  SR_DRAFT_MODES, SR_REFERENCE_MODES, SR_SAMPLE_WINDOWS_MAX, SR_SAMPLE_WINDOWS_MIN, srConfigSummary,
-  srDimensionStatesSummary, srFormatChars, srNormalizeConfig, srSettingsEqual,
+  SR_DRAFT_MODES, SR_REFERENCE_MODES, SR_SAMPLE_WINDOWS_MAX, SR_SAMPLE_WINDOWS_MIN, SR_SEGMENTS_ONLY_LABEL,
+  srBindingOwnedByWork, srBindingSummary, srDimensionStatesSummary, srFormatChars, srIsLegacyGlobalBinding,
+  srNormalizeConfig, srSettingsEqual,
 } from "./ws-styleref-model.js";
 import {
   srApplyProfile, srLoadProfileBindings, srLoadProjectBinding, srProfileBindings, srProjectBinding, srScenePreview,
@@ -15,12 +16,16 @@ import { SrScenePreview } from "./ws-styleref-scene-preview.jsx";
 
 /* ==========================================================
    风格参考 · 第三步「用于作品」：把这本书的文风直接用于当前作品（不再经待办）
-   · 现在这部作品用的是哪一份：这本 / 另一本（用这本会替换它）/ 没有；
+   · 现在这部作品用的是哪一份：这本 / 另一本（用这本会替换它）/ 旧版的全局应用（只读）/ 没有；
+   · 只有这部作品自己的应用（作品层、目标就是它）能在这里保存、解除；旧版的全局应用对所有没有自己应用的作品
+     生效，在这里只读——「用于」给这部作品单独建一条；
+   · 换回一本以前用过的书：表单按它在这部作品上停用的那条应用的设置填（后端就地重新启用那一行，设置真的还在）；
    · 三个旋钮，每个都会以已知方式改变起草时带上的东西：参考方式（三选一）、样例窗数（0–16，旁边是本场预览
-     测出来的真实字数）、起草方式；「重点 / 正常 / 不学」在文风画像里逐维设；
+     测出来的真实字数）、起草方式；「重点 / 正常 / 不学」在文风画像里逐维设；一句话汇总按真正生效的参考方式说
+     （「起草不发原文」的书只用文风卡）；
    · 用于 / 保存设置直接生效，结果就地说明；可解除；这份画像还用在别的作品 / 某一场 / 某个角色上的也列出来；
    · 下面是「本场预览」：挑当前作品的一场，看它起草时会拿到哪些样例窗与文风卡。
-   旧的四种策略、强度滑块、16 个开关、任务类型、全局作用域、待办往返都没有了。
+   旧的四种策略、强度滑块、16 个开关、任务类型、待办往返都没有了。
    ========================================================== */
 
 const SR_SCOPE_WORD = { project: "作品", scene: "某一场", character: "某个角色", global: "全部作品（旧）" };
@@ -58,17 +63,28 @@ export function SrApply({ book, go, onAction }) {
   const bindingEntry = workId ? srProjectBinding(workId) : null;
   const current = bindingEntry && bindingEntry.data;
   const binding = current && current.binding;
-  const ownBinding = binding && binding.profile_id === profileId ? binding : null;
-  const otherBinding = binding && binding.profile_id !== profileId ? binding : null;
+  /* 只有这部作品自己的应用（作品层、目标就是它）能在这里改、解除；旧版的全局应用对所有没有自己应用的作品生效，
+     在这里改它 / 解除它会波及全部作品——只读，要换就给这部作品单独建一条（用于） */
+  const legacyGlobal = srIsLegacyGlobalBinding(binding) ? binding : null;
+  const legacyThisBook = legacyGlobal && legacyGlobal.profile_id === profileId ? legacyGlobal : null;
+  const ownBinding = binding && binding.profile_id === profileId && srBindingOwnedByWork(binding, workId) ? binding : null;
+  const otherBinding = binding && !ownBinding && !legacyGlobal ? binding : null;
+  const otherTitle = (current && current.book && current.book.title) || "另一本参考书";
+  const bindingsEntry = profileId ? srProfileBindings(profileId) : null;
+  const profileBindings = (bindingsEntry && bindingsEntry.data) || [];
+  /* 这份画像在这部作品上已有、被换下来（停用）的那条应用：换回这本书时按它的设置来（后端就地重新启用那一行） */
+  const stored = ownBinding ? null : profileBindings.find((b) => b.profile_id === profileId && srBindingOwnedByWork(b, workId)) || null;
+  const bindingsLoading = !ownBinding && !!profileId && (!bindingsEntry || (!bindingsEntry.data && bindingsEntry.phase !== "error"));
+  const seed = ownBinding || stored || legacyThisBook;
   const samplesBlocked = book.cloudPolicy === "segments_only";
 
-  const [draft, setDraft] = React.useState(() => srNormalizeConfig(ownBinding ? ownBinding.config : null));
+  const [draft, setDraft] = React.useState(() => srNormalizeConfig(seed ? seed.config : null));
   const [busy, setBusy] = React.useState(null);
   const [error, setError] = React.useState(null);
   const [result, setResult] = React.useState(null);
-  const seedKey = `${profileId}|${workId}|${ownBinding ? ownBinding.binding_id || "pending" : "none"}`;
+  const seedKey = `${profileId}|${workId}|${seed ? `${seed.scope}:${seed.binding_id || "pending"}` : "none"}`;
   React.useEffect(() => {
-    setDraft(srNormalizeConfig(ownBinding ? ownBinding.config : null));
+    setDraft(srNormalizeConfig(seed ? seed.config : null));
     setError(null);
   }, [seedKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -93,6 +109,7 @@ export function SrApply({ book, go, onAction }) {
 
   const changed = ownBinding ? !srSettingsEqual(ownBinding.config, draft) : true;
   const set = (patch) => { setDraft((d) => ({ ...d, ...patch })); setResult(null); setError(null); };
+  const summaryOf = (b) => srBindingSummary(b, { cloudPolicy: book.cloudPolicy });
 
   const apply = async () => {
     if (busy) return;
@@ -103,8 +120,12 @@ export function SrApply({ book, go, onAction }) {
         await srUpdateBinding(ownBinding.binding_id, settings, { projectId: workId });
         setResult({ kind: "saved" });
       } else {
-        const data = await srApplyProfile(profileId, { projectId: workId, config: settings });
-        setResult({ kind: "applied", replaced: (data && data.replaced) || [] });
+        /* 从旧版全局应用换成这部作品自己的：逐维的「重点 / 不学」一并带过来，这部作品起草时照旧 */
+        const config = legacyThisBook && !stored
+          ? { ...settings, dimension_states: srNormalizeConfig(legacyThisBook.config).dimension_states }
+          : settings;
+        const data = await srApplyProfile(profileId, { projectId: workId, config, baseConfig: stored ? stored.config : null });
+        setResult({ kind: "applied", replaced: (data && data.replaced) || [], restored: !!stored });
       }
     } catch (e) {
       setError(e);
@@ -134,10 +155,14 @@ export function SrApply({ book, go, onAction }) {
     }
   };
 
-  const primaryLabel = ownBinding ? (changed ? "保存设置" : "已在用") : otherBinding ? `改用这本` : `用于《${workTitle}》`;
-  const others = ((srProfileBindings(profileId) || {}).data || []).filter((b) => (
-    b.status === "active" && !(b.scope === "project" && b.scope_ref_id === workId)
-  ));
+  const primaryLabel = ownBinding ? (changed ? "保存设置" : "已在用")
+    : otherBinding || (legacyGlobal && !legacyThisBook) ? "改用这本"
+    : `用于《${workTitle}》`;
+  const others = profileBindings.filter((b) => b.status === "active" && !srBindingOwnedByWork(b, workId));
+  const projectTitleOf = (projectId) => {
+    const hit = (book.appliedProjects || []).find((p) => p && p.project_id === projectId);
+    return hit && hit.project_title ? `《${hit.project_title}》` : projectId;
+  };
 
   return (
     <div className="sr-apply">
@@ -148,7 +173,7 @@ export function SrApply({ book, go, onAction }) {
           <>
             <div className="sr-apply-status-row">
               <Tag tone="ok" dot>在用</Tag>
-              <span className="sr-apply-status-text">《{workTitle}》正在用这本书的文风：{srConfigSummary(ownBinding.config)} · {srDimensionStatesSummary(srNormalizeConfig(ownBinding.config).dimension_states)}</span>
+              <span className="sr-apply-status-text">《{workTitle}》正在用这本书的文风：{summaryOf(ownBinding)} · {srDimensionStatesSummary(srNormalizeConfig(ownBinding.config).dimension_states)}</span>
             </div>
             <div className="sr-apply-status-actions">
               <button type="button" className="btn btn-quiet btn-sm" data-testid="sr-apply-unbind" disabled={!!busy || ownBinding.pending} onClick={() => unbind(ownBinding, `《${workTitle}》`)}>
@@ -156,11 +181,20 @@ export function SrApply({ book, go, onAction }) {
               </button>
             </div>
           </>
+        ) : legacyGlobal ? (
+          <div className="sr-apply-status-row">
+            <Tag tone={legacyThisBook ? "ok" : "info"} dot>旧版全局应用</Tag>
+            <span className="sr-apply-status-text" data-testid="sr-apply-legacy">
+              {legacyThisBook
+                ? `《${workTitle}》现在沿用一条旧版的「全部作品」应用，用的就是这本书的文风：${summaryOf(legacyThisBook)}。这条旧应用对所有没有自己应用的作品都生效，在这里只读、不改也不解除；点「用于《${workTitle}》」给这部作品单独建一条应用（沿用它的设置，可以先在下面改），别的作品照旧。`
+                : `《${workTitle}》现在沿用一条旧版的「全部作品」应用，用的是《${otherTitle}》的文风；用这本只在《${workTitle}》上盖过它，别的作品照旧用它。`}
+            </span>
+          </div>
         ) : otherBinding ? (
           <div className="sr-apply-status-row">
             <Tag tone="info" dot>用着别的书</Tag>
             <span className="sr-apply-status-text" data-testid="sr-apply-other">
-              《{workTitle}》现在用的是《{(current.book && current.book.title) || "另一本参考书"}》的文风；用这本会替换它（那本的设置保留，换回来还在）。
+              《{workTitle}》现在用的是《{otherTitle}》的文风；用这本会替换它（《{otherTitle}》在《{workTitle}》上的设置保留，以后换回来还在）。
             </span>
           </div>
         ) : (
@@ -168,6 +202,9 @@ export function SrApply({ book, go, onAction }) {
             <Tag tone="neutral" dot>没有在用</Tag>
             <span className="sr-apply-status-text">《{workTitle}》现在起草时不带任何参考书的文风。</span>
           </div>
+        )}
+        {stored && (
+          <p className="sr-ov-hint" data-testid="sr-apply-stored">这本书上次用于《{workTitle}》时的设置已经填在下面，用上就按它来（逐维的「重点 / 不学」也还在）。</p>
         )}
       </div>
 
@@ -183,7 +220,7 @@ export function SrApply({ book, go, onAction }) {
           testId="sr-reference-mode"
         />
         {samplesBlocked && (
-          <Notice tone="info" testId="sr-apply-segments-only">这本书导入时选了「只发短句」：起草时只送文风卡，带原文样例的两种方式用不了（要用，得换一档范围重新导入）。</Notice>
+          <Notice tone="info" testId="sr-apply-segments-only">这本书导入时选了「{SR_SEGMENTS_ONLY_LABEL}」：起草时只送文风卡，带原文样例的两种方式用不了（要用，得换一档范围重新导入）。</Notice>
         )}
 
         <div className={`sr-windows${sendsSamples ? "" : " is-off"}`}>
@@ -222,12 +259,20 @@ export function SrApply({ book, go, onAction }) {
         />
 
         <div className="sr-apply-foot">
-          <button type="button" className="btn btn-accent" data-testid="sr-apply-submit" disabled={!!busy || (ownBinding && !changed) || !!(ownBinding && ownBinding.pending)} onClick={apply}>
+          <button
+            type="button"
+            className="btn btn-accent"
+            data-testid="sr-apply-submit"
+            disabled={!!busy || (ownBinding && !changed) || !!(ownBinding && ownBinding.pending) || bindingsLoading}
+            title={bindingsLoading ? `正在读取这本书在《${workTitle}》上的旧设置` : undefined}
+            onClick={apply}
+          >
             {busy === "apply" ? <><Spinner size={13} /> 正在保存…</> : <><I.Check size={14} /> {primaryLabel}</>}
           </button>
           {result && result.kind === "applied" && (
             <span className="sr-apply-result" role="status" data-testid="sr-apply-result">
               已用于《{workTitle}》：之后起草的场景带上这本书的文风
+              {result.restored ? "（按这本书上次用于它时的设置）" : ""}
               {result.replaced.length ? `（换下了${result.replaced.map((r) => `《${r.book_title || r.profile_title || "另一本"}》`).join("、")}）` : ""}。
             </span>
           )}
@@ -243,12 +288,14 @@ export function SrApply({ book, go, onAction }) {
           <div className="card-head"><div><div className="card-title">这份文风还用在</div><div className="card-sub">场景级 / 角色级的应用在那一场、那个角色上盖过作品层</div></div></div>
           <ul className="sr-others">
             {others.map((b) => {
-              const label = b.scope === "project" ? "另一部作品" : SR_SCOPE_WORD[b.scope] || b.scope;
+              const global = srIsLegacyGlobalBinding(b);
+              const label = global ? "所有沿用它的作品" : b.scope === "project" ? `作品${projectTitleOf(b.scope_ref_id)}` : SR_SCOPE_WORD[b.scope] || b.scope;
+              const target = global ? "没有自己应用的所有作品" : b.scope === "project" ? projectTitleOf(b.scope_ref_id) : b.scope_ref_id;
               return (
-                <li key={b.binding_id} className="sr-other">
+                <li key={b.binding_id} className="sr-other" data-binding-scope={b.scope}>
                   <Tag>{SR_SCOPE_WORD[b.scope] || b.scope}</Tag>
-                  <span className="sr-other-target" title={b.scope_ref_id || undefined}>{b.scope_ref_id}</span>
-                  <span className="sr-other-config">{srConfigSummary(b.config)}</span>
+                  <span className="sr-other-target" title={b.scope_ref_id || undefined}>{target}</span>
+                  <span className="sr-other-config">{summaryOf(b)}</span>
                   <button type="button" className="btn btn-quiet btn-sm" disabled={!!busy} onClick={() => unbind(b, label)}>解除</button>
                 </li>
               );

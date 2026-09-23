@@ -107,6 +107,8 @@ function resetState() {
     estimate: { est_calls: 120, est_input_tokens: 350000, est_output_tokens: 9000, est_minutes: 75, parallel: 3 },
     profile: JSON.parse(JSON.stringify(PROFILE_DETAIL)),
     projectFidelity: {},
+    catalogs: { w1: CATALOG },
+    bannedTerms: [{ term_id: "t1", term: "某地", source: "protected_auto", scope: "generation" }],
   };
 }
 
@@ -126,9 +128,10 @@ function installRoutes() {
     if (m) return Promise.resolve({ paragraphs: [{ paragraph_index: 120, text: "渡口的灯一盏一盏灭了。" }] });
     if (path === `${API}/profiles/pf-a`) return Promise.resolve({ profile: state.profile });
     if (path === `${API}/profiles/pf-a/bindings`) return Promise.resolve({ bindings: state.profileBindings });
-    if (path === `${API}/profiles/pf-a/banned-terms`) return Promise.resolve({ terms: [{ term_id: "t1", term: "某地", source: "protected_auto", scope: "generation" }] });
+    if (path === `${API}/profiles/pf-a/banned-terms`) return Promise.resolve({ terms: state.bannedTerms });
     if (path === `${API}/projects/w1/style-binding`) return Promise.resolve(state.projectBinding);
-    if (path === "/api/v2/projects/w1/catalog") return Promise.resolve(CATALOG);
+    m = path.match(/^\/api\/v2\/projects\/([^/]+)\/catalog$/);
+    if (m) return Promise.resolve(state.catalogs[m[1]] || { chapters: [] });
     if (path === "/api/v1/projects/w1/style-fidelity") return Promise.resolve(state.projectFidelity);
     return Promise.resolve({});
   });
@@ -257,7 +260,7 @@ describe("参考书库：多选删除", () => {
   });
 
   it("正在用于当前作品的书，确认框里点明", async () => {
-    state.books = [bookRow({ profile: PROFILE_SUMMARY, applied_projects: [{ project_id: "w1", binding_id: "bd-1", config: {} }] })];
+    state.books = [bookRow({ profile: PROFILE_SUMMARY, applied_projects: [{ project_id: "w1", project_title: "北岸手记", binding_id: "bd-1", config: {} }] })];
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     await mountView();
     await click(byTestId("sr-books-select"));
@@ -265,6 +268,44 @@ describe("参考书库：多选删除", () => {
     await click(byTestId("sr-books-delete-selected"));
     await settle();
     expect(confirm.mock.calls[0][0]).toContain("《北岸手记》正在用《甲书》的文风");
+  });
+
+  it("用着这本书的每一部作品都点出来，不只当前作品；页头单本删除也一样（复核 #5）", async () => {
+    state.books = [bookRow({
+      profile: PROFILE_SUMMARY,
+      applied_projects: [
+        { project_id: "w1", project_title: "北岸手记", binding_id: "bd-1", config: {} },
+        { project_id: "w2", project_title: "南山", binding_id: "bd-2", config: {} },
+      ],
+    })];
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await mountView();
+    await click(byTestId("sr-books-select"));
+    await click($("[data-sr-select]"));
+    await click(byTestId("sr-books-delete-selected"));
+    await settle();
+    expect(confirm.mock.calls[0][0]).toContain("《北岸手记》、《南山》正在用《甲书》的文风");
+    expect(confirm.mock.calls[0][0]).toContain("这些作品起草新场景时不再带它的文风");
+    await click($(".sr-stage-actions .sr-menu button"));
+    await click(byTestId("sr-header-delete"));
+    await settle();
+    expect(confirm.mock.calls[1][0]).toContain("《北岸手记》、《南山》正在用《甲书》的文风");
+  });
+
+  it("删掉的书没删成：说中文原因，不把后端的英文原话给作者看（复核 #14）", async () => {
+    state.books = [bookRow(), bookRow({ book_id: "bk-b", title: "乙书" })];
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    client.apiPost.mockImplementation((url) => (url === `${API}/books/bulk-delete`
+      ? Promise.resolve({ results: [{ book_id: "bk-a", deleted: false, error: { code: "INTERNAL_ERROR", message: "IntegrityError: FOREIGN KEY constraint failed" } }], deleted_count: 0, failed_count: 1 })
+      : Promise.resolve({})));
+    await mountView();
+    await click(byTestId("sr-books-select"));
+    await click($('[data-sr-select="bk-a"]'));
+    await click(byTestId("sr-books-delete-selected"));
+    await settle();
+    const said = window.alert.mock.calls.map(([m]) => m).join("\n");
+    expect(said).toContain("删除了 0 本，另有 1 本没删成。《甲书》：请稍后重试。");
+    expect(said).not.toContain("IntegrityError");
   });
 });
 
@@ -283,7 +324,9 @@ describe("导入对话框", () => {
     expect(radios.find((r) => r.checked).value).toBe("allow_full_cloud");
     const policyText = byTestId("sr-import-policy").textContent;
     expect(policyText).toContain("仅本机模型");
-    expect(policyText).toContain("只发短句起草时只用文风卡，不发原文");
+    // 中间一档的名字说它真做的事：分类、学习照样发整段，只有起草不发原文（复核 #6）
+    expect(policyText).toContain("起草不发原文分类和学习时正文照样发给云端");
+    expect(policyText).not.toContain("只发短句");
     expect(policyText).toContain("可发送全文");
     expect(policyText).toContain("按当前模型推荐");
     expect(byTestId("sr-rights-send")).toBeTruthy();
@@ -335,6 +378,30 @@ describe("导入对话框", () => {
     expect($(".sr-stage-title").textContent).toBe("乙书");
     expect(byTestId("sr-import-submit")).toBeNull();
   });
+
+  it("请求还在路上时关了对话框：失败走提示层说出来，不因再打开时清空而丢掉（复核 #16）", async () => {
+    await mountView();
+    await openImport();
+    await click(byTestId("sr-rights-analysis"));
+    await click(byTestId("sr-rights-send"));
+    const input = byTestId("sr-import-file");
+    Object.defineProperty(input, "files", { value: [new File(["一段正文。"], "丙书.txt", { type: "text/plain" })], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    let reject;
+    client.apiPost.mockImplementation((url) => (url === `${API}/books/import-upload`
+      ? new Promise((_resolve, rej) => { reject = rej; })
+      : Promise.resolve({})));
+    await click(byTestId("sr-import-submit"));
+    await click($('button[aria-label="关闭导入"]'));
+    await settle();
+    expect(byTestId("sr-import-submit")).toBeNull();
+    await act(async () => { reject(Object.assign(new Error("empty"), { code: "STYLE_REFERENCE_BOOK_EMPTY" })); });
+    await settle();
+    expect(window.alert).toHaveBeenCalledWith("《丙书》没有导入：这个文件里没有可以当参考的正文。");
+    // 再打开：是一次新的导入，不带上一次的错误
+    await openImport();
+    expect(byTestId("sr-import-error")).toBeNull();
+  });
 });
 
 describe("第一步 · 参考书", () => {
@@ -381,6 +448,41 @@ describe("第一步 · 参考书", () => {
     await click(byTestId("sr-overview-resume"));
     expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/reclassify`, { resume: true });
   });
+
+  it("「用模型重新分类」失败了（书一直是 ready）：说清楚、给「继续分类」，不是只剩整本重付的重新分类（复核 #8）", async () => {
+    state.books = [bookRow({
+      profile: PROFILE_SUMMARY,
+      classification: {
+        job_id: "job-rt", mode: "retype", state: "failed", batches_done: 4, batches_total: 10, resumable: true,
+        error: { code: "STYLE_REFERENCE_JOB_FAILED", message: "RuntimeError: relay closed the connection" },
+      },
+    })];
+    await mountView();
+    // 参考书一步「需处理」：落点就在这里
+    expect($(".sr-step.is-active").dataset.stage).toBe("book");
+    expect($('.sr-step[data-stage="book"]').getAttribute("aria-label")).toBe("参考书（需处理）");
+    const card = byTestId("sr-overview-classify");
+    expect(card.textContent).toContain("重新分类没完成");
+    expect(card.textContent).not.toContain("模型已分好");
+    expect(byTestId("sr-overview-retype-unfinished").textContent).toContain("已分好 4/10 批，继续分类只补剩下的");
+    expect(byTestId("sr-overview-classify-reason").textContent).toBe("原因：后台作业出了意外停下了，可以从断点继续。");
+    expect(card.textContent).not.toContain("RuntimeError");
+    expect(byTestId("sr-overview-retype").textContent).toBe("从头重新分类");
+    client.apiPost.mockResolvedValueOnce({ job_id: "job-rt", mode: "retype" });
+    await click(byTestId("sr-overview-resume"));
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/reclassify`, { resume: true });
+    expect(client.apiPost.mock.calls.some(([url, body]) => url.endsWith("/reclassify") && body && body.mode === "retype")).toBe(false);
+  });
+
+  it("取消了的「用模型重新分类」同样能接着分", async () => {
+    state.books = [bookRow({ classification: { job_id: "job-rt", mode: "retype", state: "cancelled", batches_done: 2, batches_total: 8, resumable: true, error: { code: "STYLE_REFERENCE_JOB_CANCELLED", message: "cancelled" } } })];
+    await mountView();
+    await openStage("book");
+    expect(byTestId("sr-overview-classify").textContent).toContain("重新分类已取消");
+    expect(byTestId("sr-overview-retype-unfinished").textContent).toContain("被取消了");
+    expect(byTestId("sr-overview-classify-reason")).toBeNull();
+    expect(byTestId("sr-overview-resume")).toBeTruthy();
+  });
 });
 
 describe("第二步 · 学习文风", () => {
@@ -424,6 +526,41 @@ describe("第二步 · 学习文风", () => {
     await click($('[data-testid="sr-learn-no-llm"] button'));
     expect(go).toHaveBeenCalledWith("settings", { type: "ws:settings-tab", detail: "ai" });
     expect(client.apiPost.mock.calls.some(([url]) => url.endsWith("/learn"))).toBe(false);
+  });
+
+  it("去设置里接好模型再回来（页面重新挂载）：重读运行时，学习文风不再锁着（复核 #2）", async () => {
+    state.runtime = { llm_enabled: false, llm_is_local: false, default_cloud_policy: "local_only" };
+    await mountView();
+    expect(byTestId("sr-learn-no-llm")).toBeTruthy();
+    expect(byTestId("sr-learn-start").disabled).toBe(true);
+    // 去设置（页面卸载），接好模型，再回来——同一次打开应用，store 没有清空
+    for (const { root, host } of mounted.splice(0)) { await act(async () => root.unmount()); host.remove(); }
+    state.runtime = { llm_enabled: true, llm_is_local: false, default_cloud_policy: "allow_full_cloud" };
+    await mountView();
+    await settle();
+    expect(byTestId("sr-learn-no-llm")).toBeNull();
+    expect(byTestId("sr-learn-start").disabled).toBe(false);
+  });
+
+  it("活动清单读不到、书库摘要说在学：照样显示「学习中」（复核 #10）", async () => {
+    state.books = [bookRow({ learn: { job_id: "job-l7", state: "running", done: 3, total: 7, phase_label: "学习文风 · 给片段打标签" } })];
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => (url === `${API}/activity`
+      ? Promise.reject(Object.assign(new Error("down"), { code: "NETWORK_ERROR" }))
+      : baseGet(url)));
+    await mountView();
+    expect(byTestId("sr-learn-status").textContent).toBe("学习中 43%");
+    expect(byTestId("sr-learn-running").textContent).toContain("给片段打标签 3/7");
+    expect($('[data-activity-key="job:job-l7"]')).toBeTruthy();
+  });
+
+  it("上次学习失败的原因只说中文：作业边界记下的英文原话不给作者看（复核 #14）", async () => {
+    state.books = [bookRow({ learn: { job_id: "job-l8", state: "failed", resumable: true, error: { code: "STYLE_REFERENCE_JOB_FAILED", message: "KeyError: 'windows'" } } })];
+    state.learn = { ...state.learn, learn: { job_id: "job-l8", state: "failed", resumable: true, error: { code: "", message: "KeyError: 'windows'" } } };
+    await mountView();
+    const line = byTestId("sr-learn-last-error").textContent;
+    expect(line).toBe("上次学习没有完成：出了意外停下了，可以从断点继续。");
+    expect(document.body.textContent).not.toContain("KeyError");
   });
 
   it("「仅本机模型」的书、学习节点在云端：说清楚并锁住", async () => {
@@ -503,6 +640,61 @@ describe("文风画像", () => {
     await settle();
     expect(client.apiPatch).toHaveBeenCalledWith(`${API}/bindings/bd-1`, { config: { dimension_states: { "scene.dialogue": "emphasize" } } });
     expect(byTestId("sr-dim-state-scene.dialogue-emphasize").getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("作品沿用的是旧版全局应用：逐维状态只读，不往那条全局应用上写（复核 #3）", async () => {
+    const GLOBAL = { ...OWN_BINDING, binding_id: "bd-g", scope: "global", scope_ref_id: null, config: { ...OWN_BINDING.config, dimension_states: { "scene.dialogue": "emphasize" } } };
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.projectBinding = { project_id: "w1", binding: GLOBAL, profile: PROFILE_SUMMARY, book: { book_id: "bk-a", title: "甲书" } };
+    await mountView();
+    await openStage("learn");
+    await settle();
+    expect(byTestId("sr-states-legacy").textContent).toContain("沿用的是一条旧版的「全部作品」应用");
+    expect(byTestId("sr-states-hint")).toBeNull();
+    expect(byTestId("sr-dim-state-scene.dialogue-emphasize")).toBeNull();
+    // 全局应用上标的「重点」照样显示（它在起草时照样起作用）
+    expect($('.sr-dim[data-dimension="scene.dialogue"] .sr-dim-head').textContent).toContain("重点");
+    expect(client.apiPatch).not.toHaveBeenCalled();
+  });
+
+  it("本书专名可以逐个去掉：先说清楚去掉之后不再受保护（复核 #12）", async () => {
+    await openPortrait();
+    const banned = byTestId("sr-banned");
+    expect(banned.textContent).toContain("本书专名 1 个");
+    await click([...banned.querySelectorAll("button")].find((b) => b.textContent === "看看"));
+    const chip = $('[data-term-id="t1"]');
+    expect(chip.textContent).toContain("某地");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+    await click($('[data-testid="sr-protected-remove"]', chip));
+    await settle();
+    expect(confirm.mock.calls[0][0]).toContain("不再保护「某地」？");
+    expect(confirm.mock.calls[0][0]).toContain("起草时不再拦它");
+    expect(client.apiDelete).not.toHaveBeenCalled();
+    confirm.mockReturnValueOnce(true);
+    state.bannedTerms = [];
+    await click($('[data-testid="sr-protected-remove"]', $('[data-term-id="t1"]')));
+    await settle();
+    expect(client.apiDelete).toHaveBeenCalledWith(`${API}/banned-terms/t1`);
+    expect(byTestId("sr-banned").textContent).toContain("本书专名 0 个");
+  });
+
+  it("重新学习（同一份画像）学完：本书专名那一组重读（复核 #13）", async () => {
+    await openPortrait();
+    const termCalls = () => client.apiGet.mock.calls.filter(([url]) => url === `${API}/profiles/pf-a/banned-terms`).length;
+    const before = termCalls();
+    expect(byTestId("sr-banned").textContent).toContain("本书专名 1 个");
+    state.bannedTerms = [
+      { term_id: "t2", term: "某城", source: "protected_auto", scope: "generation" },
+      { term_id: "t3", term: "某人", source: "protected_auto", scope: "generation" },
+    ];
+    // 这本书的学习作业跑完（活动表从在跑走到成功）
+    await act(async () => {
+      store.srActivityApply([{ key: "job:jl", job_id: "jl", kind: "learn", status: "running", book_id: "bk-a", profile_id: "pf-a" }]);
+      store.srActivityApply([{ key: "job:jl", job_id: "jl", kind: "learn", status: "succeeded", book_id: "bk-a", profile_id: "pf-a", result: { profile_id: "pf-a" } }]);
+    });
+    await settle(20);
+    expect(termCalls()).toBeGreaterThan(before);
+    expect(byTestId("sr-banned").textContent).toContain("本书专名 2 个");
   });
 
   it("旧版画像：说明并列出起草时读的句子，含数字的标「起草时不带」", async () => {
@@ -625,7 +817,7 @@ describe("第三步 · 用于作品", () => {
     expect(byTestId("sr-sample-readout").textContent).toBe("只用文风卡：起草时不发原文段落。");
   });
 
-  it("「只发短句」的书：带原文的两种方式用不了", async () => {
+  it("「起草不发原文」的书：带原文的两种方式用不了", async () => {
     await openApply({ bookOver: { cloud_policy: "segments_only" } });
     expect(byTestId("sr-apply-segments-only")).toBeTruthy();
     expect($('[data-testid="sr-reference-mode"] [data-value="full"]').disabled).toBe(true);
@@ -682,6 +874,106 @@ describe("第三步 · 用于作品", () => {
     await settle();
     expect(byTestId("sr-apply-other").textContent).toContain("现在用的是《丁书》的文风；用这本会替换它");
     expect(byTestId("sr-apply-submit").textContent).toContain("改用这本");
+  });
+
+  it("作品沿用旧版全局应用：只读，不 PATCH / 不 DELETE 那条全局应用；「用于」给这部作品单独建一条（复核 #3）", async () => {
+    const GLOBAL = {
+      ...OWN_BINDING, binding_id: "bd-g", scope: "global", scope_ref_id: null,
+      config: { reference_mode: "samples_only", sample_windows: 6, draft_mode: "style_first", dimension_states: { "scene.dialogue": "emphasize" } },
+    };
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.projectBinding = { project_id: "w1", binding: GLOBAL, profile: PROFILE_SUMMARY, book: { book_id: "bk-a", title: "甲书" } };
+    state.profileBindings = [GLOBAL];
+    await mountView();
+    await openStage("apply");
+    await settle();
+    expect(byTestId("sr-apply-legacy").textContent).toContain("沿用一条旧版的「全部作品」应用，用的就是这本书的文风");
+    expect(byTestId("sr-apply-unbind")).toBeNull();
+    const submit = byTestId("sr-apply-submit");
+    expect(submit.textContent).toContain("用于《北岸手记》");
+    expect(submit.disabled).toBe(false);
+    // 表单沿用全局应用的设置
+    expect(byTestId("sr-sample-windows").value).toBe("6");
+    // 「这份文风还用在」里如实列出它（在那里解除才是对全部作品）
+    expect(byTestId("sr-apply-others").textContent).toContain("没有自己应用的所有作品");
+    client.apiPost.mockImplementation((url) => {
+      if (url.endsWith("/apply")) return Promise.resolve({ binding: { ...OWN_BINDING, binding_id: "bd-own" }, created: true, changed: true, replaced: [] });
+      if (url.endsWith("/injection-preview")) return Promise.resolve(PREVIEW);
+      return Promise.resolve({});
+    });
+    await click(submit);
+    await settle();
+    expect(client.apiPatch).not.toHaveBeenCalled();
+    expect(client.apiDelete).not.toHaveBeenCalled();
+    const [, body] = client.apiPost.mock.calls.find(([url]) => url.endsWith("/apply"));
+    expect(body.scope).toBe("project");
+    expect(body.scope_ref_id).toBe("w1");
+    expect(body.config).toMatchObject({ reference_mode: "samples_only", sample_windows: 6, draft_mode: "style_first" });
+    expect(body.config.dimension_states["scene.dialogue"]).toBe("emphasize");
+  });
+
+  it("换回以前用过的这本：表单按它在这部作品上停用的那条应用的设置填，用上就按它来（复核 #4）", async () => {
+    const STORED = {
+      ...OWN_BINDING, binding_id: "bd-old", status: "disabled",
+      config: { reference_mode: "samples_only", sample_windows: 5, draft_mode: "neutral_first", dimension_states: { "theme.values": "exclude" } },
+    };
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.projectBinding = {
+      project_id: "w1", binding: { ...OWN_BINDING, binding_id: "bd-x", profile_id: "pf-x" }, profile: { profile_id: "pf-x" }, book: { book_id: "bk-x", title: "丁书" },
+    };
+    state.profileBindings = [STORED];
+    await mountView();
+    await openStage("apply");
+    await settle();
+    expect(byTestId("sr-apply-other").textContent).toContain("用这本会替换它（《丁书》在《北岸手记》上的设置保留，以后换回来还在）");
+    expect(byTestId("sr-apply-stored").textContent).toContain("这本书上次用于《北岸手记》时的设置已经填在下面");
+    expect($('[data-testid="sr-reference-mode"] [data-value="samples_only"]').getAttribute("aria-checked")).toBe("true");
+    expect(byTestId("sr-sample-windows").value).toBe("5");
+    expect($('[data-testid="sr-draft-mode"] [data-value="neutral_first"]').getAttribute("aria-checked")).toBe("true");
+    client.apiPost.mockImplementation((url) => {
+      if (url.endsWith("/apply")) return Promise.resolve({ binding: { ...STORED, status: "active" }, created: false, changed: true, replaced: [{ binding_id: "bd-x", profile_id: "pf-x", book_title: "丁书" }] });
+      if (url.endsWith("/injection-preview")) return Promise.resolve(PREVIEW);
+      return Promise.resolve({});
+    });
+    await click(byTestId("sr-apply-submit"));
+    await settle();
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/profiles/pf-a/apply`, {
+      scope: "project", scope_ref_id: "w1", config: { reference_mode: "samples_only", sample_windows: 5, draft_mode: "neutral_first" },
+    });
+    expect(byTestId("sr-apply-result").textContent).toContain("按这本书上次用于它时的设置");
+  });
+
+  it("用于之后「这份文风还用在」还在（清单重读，不是删掉了事）（复核 #9）", async () => {
+    const SCENE_BINDING = { ...OWN_BINDING, binding_id: "bd-s", scope: "scene", scope_ref_id: "sc-9" };
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.profileBindings = [SCENE_BINDING];
+    await mountView();
+    await openStage("apply");
+    await settle();
+    expect(byTestId("sr-apply-others").textContent).toContain("某一场");
+    client.apiPost.mockImplementation((url) => {
+      if (url.endsWith("/apply")) {
+        state.profileBindings = [SCENE_BINDING, OWN_BINDING];
+        state.projectBinding = { project_id: "w1", binding: OWN_BINDING, profile: PROFILE_SUMMARY, book: { book_id: "bk-a", title: "甲书" } };
+        return Promise.resolve({ binding: OWN_BINDING, created: true, changed: true, replaced: [] });
+      }
+      if (url.endsWith("/injection-preview")) return Promise.resolve(PREVIEW);
+      return Promise.resolve({});
+    });
+    await click(byTestId("sr-apply-submit"));
+    await settle();
+    await settle();
+    expect(byTestId("sr-apply-result")).toBeTruthy();
+    expect(byTestId("sr-apply-others")).toBeTruthy();
+    expect(byTestId("sr-apply-others").textContent).toContain("某一场");
+  });
+
+  it("「起草不发原文」的书：状态行按真正生效的参考方式说（只用文风卡），不说「全面模仿 · 12 窗」（复核 #11）", async () => {
+    await openApply({ own: true, bookOver: { cloud_policy: "segments_only" } });
+    // 后端给的 effective_reference_mode 在这里缺席也照样按书的原文范围推
+    expect(byTestId("sr-apply-status").textContent).toContain("正在用这本书的文风：只用文风卡（这本书起草不发原文） · 作者手笔直起");
+    expect(byTestId("sr-apply-status").textContent).not.toContain("12 窗");
+    expect(byTestId("sr-apply-segments-only").textContent).toContain("这本书导入时选了「起草不发原文」");
   });
 
   it("本场预览：挑一场，看样例窗（第几章 · 章首 / 章末、梗概、标签）和文风卡", async () => {
@@ -869,6 +1161,33 @@ describe("第四步 · 对照检查", () => {
     expect(byTestId("sr-check-no-llm").textContent).toContain("还没有接入模型");
     expect(byTestId("sr-check-start").disabled).toBe(true);
   });
+
+  it("换了作品：上一部作品里选的那一场不带过来，按钮也不能点（复核 #7）", async () => {
+    let posted = null;
+    state.catalogs.w2 = { chapters: [{ chapter_id: "c9", no: 1, title: "南风", scenes: [{ scene_id: "sc-9", title: "河口" }] }] };
+    await openCheck();
+    routeCheck({
+      post: (body) => { posted = body; return Promise.resolve({ job_id: "job-c", job: JOB("succeeded", { finished_at: "2026-09-23T10:00:00" }), reading: { ...CHECK_READING, scene_id: "sc-2" } }); },
+      get: () => Promise.resolve({}),
+    });
+    await pickScene("sc-2");
+    await click(byTestId("sr-check-start"));
+    await settle();
+    expect(posted).toEqual({ scene_id: "sc-2", profile_id: "pf-a", project_id: "w1" });
+    expect(byTestId("sr-check-result").textContent).toContain("第 1 章 · 第 2 场「夜渡」");
+    // 换到另一部作品
+    workHolder.current = { id: "w2", title: "南山" };
+    await act(async () => { window.dispatchEvent(new CustomEvent("ws:work-changed")); });
+    await settle();
+    await settle();
+    const select = byTestId("sr-check-scene");
+    expect($$("option", select).map((o) => o.value)).toEqual(["", "sc-9"]);
+    expect(select.value).toBe("");
+    expect(byTestId("sr-check-start").disabled).toBe(true);
+    // 上一次的结果还挂着，但说清楚那是另一部作品的一场，不冒充当前作品
+    expect(byTestId("sr-check-result").textContent).toContain("另一部作品的一场");
+    expect(byTestId("sr-check-result").textContent).not.toContain("当前作品的一场");
+  });
 });
 
 describe("参考书活动", () => {
@@ -906,5 +1225,33 @@ describe("参考书活动", () => {
     client.apiPost.mockResolvedValue({ job_id: "j3" });
     await click(byTestId("sr-activity-resume"));
     expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/learn`, { resume: true });
+  });
+
+  it("失败原因是英文原话（作业边界记下的异常串）时说中文（复核 #14）", async () => {
+    state.activity = [
+      { key: "job:j1", job_id: "j1", kind: "classify", mode: "retype", status: "failed", book_id: "bk-a", title: "甲书", resumable: true, error: { code: "", message: "TypeError: 'NoneType' object is not iterable" } },
+    ];
+    await mountView();
+    await settle(20);
+    const item = $('[data-activity-key="job:j1"]');
+    expect(item.textContent).toContain("没有完成：出了意外停下了，可以从断点继续。");
+    expect(byTestId("sr-activity").textContent).not.toMatch(/TypeError|NoneType/);
+  });
+
+  it("「继续学习」沿用同一个作业：条目换成排队、不被关掉；很快跑完的结果照常显示（复核 #15）", async () => {
+    state.activity = [
+      { key: "job:j1", job_id: "j1", kind: "learn", status: "failed", book_id: "bk-a", title: "甲书", resumable: true, error: { code: "STYLE_REFERENCE_LEARN_LLM_CALL_FAILED", message: "x" } },
+    ];
+    await mountView();
+    await settle(20);
+    // 续跑的同一个作业在第一次轮询之前就跑完了
+    state.activity = [{ key: "job:j1", job_id: "j1", kind: "learn", status: "succeeded", book_id: "bk-a", title: "甲书", percent: 100, result: { profile_id: "pf-a" } }];
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/learn") ? { job_id: "j1", state: "queued" } : {}));
+    await click(byTestId("sr-activity-resume"));
+    await settle(30);
+    const item = $('[data-activity-key="job:j1"]');
+    expect(item, "续跑的条目被当成「关掉过」丢掉了").toBeTruthy();
+    expect(item.dataset.activityStatus).toBe("succeeded");
+    expect(item.textContent).toContain("完成");
   });
 });

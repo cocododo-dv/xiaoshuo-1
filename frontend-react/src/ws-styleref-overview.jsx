@@ -4,7 +4,7 @@ import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, paragraphTypeLabel } from "./ws-labels.js";
 import {
   SR_ACTIVITY_WHERE, srActivityKindLabel, srActivityView, srClassifyEstimateText, srCloudPolicyMeta, srFormatPct,
-  srFormatWhen, srProvenanceView,
+  srFormatWhen, srJobErrorText, srProvenanceView, srRetypeUnfinished,
 } from "./ws-styleref-model.js";
 import {
   srActivityFor, srBookDetail, srLoadBookDetail, srLoadClassifyEstimate, srLoadRuntime, srResumeClassification, srRetype,
@@ -21,6 +21,8 @@ import { SrErrorLine, SrProgressBar, useSrStore } from "./ws-styleref-ui.jsx";
 
 const SR_INPUT_LABEL = { skip: "语料不足", low: "偏少", medium: "适中", high: "充足" };
 const SR_INPUT_TONE = { skip: "neutral", low: "info", medium: "warn", high: "ok" };
+
+const srIsCancelCode = (code) => code === "STYLE_REFERENCE_JOB_CANCELLED" || code === "STYLE_REFERENCE_IMPORT_CANCELLED";
 
 function srParaDist(stats) {
   const dist = (stats && stats.paragraph_type_distribution) || {};
@@ -47,13 +49,16 @@ export function SrOverview({ book, onAction }) {
   );
 }
 
-/* 段落分类：在跑 → 进度；没分完 →「继续分类」；分完 → 来源与一致率（旧版启发式要提醒）+「用模型重新分类」 */
+/* 段落分类：在跑 → 进度；没分完 →「继续分类」；分完 → 来源与一致率（旧版启发式要提醒）+「用模型重新分类」；
+   「用模型重新分类」（就地重标，书一直是 ready）失败 / 取消了 → 说清楚并给「继续分类」（只补剩下的，不用整本重付） */
 function SrClassifyCard({ book, onAction }) {
   const [busy, setBusy] = React.useState(null);
   const [error, setError] = React.useState(null);
   const running = srActivityFor(book.id, "classify");
   const view = running ? srActivityView(running) : null;
   const incomplete = !!(book.rawStatus && book.rawStatus !== "ready" && !running);
+  const retypeLeft = !running ? srRetypeUnfinished(book) : null;
+  const learning = !!srActivityFor(book.id, "learn");
   const provenance = srProvenanceView(book.provenance);
   const jobError = book.classification && book.classification.error;
   React.useEffect(() => { srLoadRuntime(); }, []);
@@ -96,6 +101,7 @@ function SrClassifyCard({ book, onAction }) {
   const pill = running ? { tone: "warn", label: `分类中 ${view.percentText}` }
     : book.rawStatus === "cancelling" ? { tone: "neutral", label: "取消中" }
     : incomplete ? { tone: "danger", label: "未完成" }
+    : retypeLeft ? { tone: "warn", label: retypeLeft.cancelled ? "重新分类已取消" : "重新分类没完成" }
     : provenance.legacy ? { tone: "warn", label: "旧版规则标的" }
     : provenance.kind === "llm" ? { tone: "ok", label: "模型已分好" }
     : { tone: "neutral", label: "已分好" };
@@ -118,13 +124,14 @@ function SrClassifyCard({ book, onAction }) {
       ) : incomplete ? (
         <div className="sr-ov-live">
           <p className="sr-ov-text">
-            {jobError && (jobError.code === "STYLE_REFERENCE_JOB_CANCELLED" || jobError.code === "STYLE_REFERENCE_IMPORT_CANCELLED")
-              ? "分类被取消了。"
-              : "分类没有完成。"}
+            {jobError && srIsCancelCode(jobError.code) ? "分类被取消了。" : "分类没有完成。"}
             {book.classification && book.classification.batches_total
               ? ` 已分好 ${book.classification.batches_done}/${book.classification.batches_total} 批，继续分类只补剩下的。`
               : ""}
           </p>
+          {jobError && !srIsCancelCode(jobError.code) && (
+            <p className="sr-ov-hint" data-testid="sr-overview-classify-reason">原因：{srJobErrorText(jobError, { resumable: true })}</p>
+          )}
           {modelGate && <p className="sr-ov-hint" data-testid="sr-overview-model-gate">{modelGate}</p>}
           {modelGate && onAction && (
             <button type="button" className="btn btn-quiet btn-sm" onClick={() => onAction({ type: "settings" })}>去设置模型</button>
@@ -135,7 +142,18 @@ function SrClassifyCard({ book, onAction }) {
         </div>
       ) : (
         <>
-          {provenance.legacy ? (
+          {retypeLeft ? (
+            <div className="sr-ov-live" data-testid="sr-overview-retype-unfinished">
+              <p className="sr-ov-text">
+                {retypeLeft.cancelled ? "上次「用模型重新分类」被取消了" : "上次「用模型重新分类」没有做完"}
+                {retypeLeft.batchesTotal ? `：已分好 ${retypeLeft.batchesDone}/${retypeLeft.batchesTotal} 批，继续分类只补剩下的` : ""}。
+                正文、文风画像和用在作品上的设置都没动；还没重新分到的段落暂时仍是原来的类型。
+              </p>
+              {retypeLeft.error && !retypeLeft.cancelled && (
+                <p className="sr-ov-hint" data-testid="sr-overview-classify-reason">原因：{srJobErrorText(retypeLeft.error, { resumable: true })}</p>
+              )}
+            </div>
+          ) : provenance.legacy ? (
             <Notice tone="warn" testId="sr-overview-legacy-types" title="段落类型大多是旧版规则标的">
               {provenance.kind === "legacy_heuristic"
                 ? `这本书有 ${provenance.heuristicParagraphs.toLocaleString()} 段是旧版导入时用启发式规则标的类型${provenance.agreement != null ? `，在抽查的段落上和模型只有 ${srFormatPct(provenance.agreement)} 一致` : ""}。`
@@ -155,20 +173,37 @@ function SrClassifyCard({ book, onAction }) {
           )}
           <div className="sr-ov-foot">
             <span className="sr-ov-hint" data-testid={modelGate ? "sr-overview-model-gate" : undefined}>
-              {modelGate || "重新分类不动正文，文风画像与用在作品上的设置都保留；会先告诉你大约要多少次模型调用。"}
+              {modelGate
+                || (retypeLeft && retypeLeft.resumable
+                  ? "继续分类从断点接着分，已经分好的批不再花模型调用；从头重新分类会整本重新计费。"
+                  : "重新分类不动正文，文风画像与用在作品上的设置都保留；会先告诉你大约要多少次模型调用。")}
             </span>
             {modelGate && onAction && (
               <button type="button" className="btn btn-quiet btn-sm" onClick={() => onAction({ type: "settings" })}>去设置模型</button>
             )}
+            {retypeLeft && retypeLeft.resumable && (
+              <button
+                type="button"
+                className="btn btn-accent btn-sm"
+                data-testid="sr-overview-resume"
+                disabled={!!busy || !!modelGate || learning}
+                title={learning ? "正在学习文风，学完再继续分类" : undefined}
+                onClick={resume}
+              >
+                {busy === "resume" ? <><Spinner size={12} /> 启动中…</> : "继续分类"}
+              </button>
+            )}
             <button
               type="button"
-              className={`btn ${provenance.legacy ? "btn-accent" : "btn-ghost"} btn-sm`}
+              className={`btn ${provenance.legacy && !retypeLeft ? "btn-accent" : "btn-ghost"} btn-sm`}
               data-testid="sr-overview-retype"
-              disabled={!!busy || !!modelGate || book.rawStatus !== "ready" || !!srActivityFor(book.id, "learn")}
-              title={srActivityFor(book.id, "learn") ? "正在学习文风，学完再重新分类" : undefined}
+              disabled={!!busy || !!modelGate || book.rawStatus !== "ready" || learning}
+              title={learning ? "正在学习文风，学完再重新分类" : undefined}
               onClick={retype}
             >
-              {busy === "estimate" ? <><Spinner size={12} /> 估算中…</> : busy === "retype" ? <><Spinner size={12} /> 启动中…</> : "用模型重新分类（保留画像）"}
+              {busy === "estimate" ? <><Spinner size={12} /> 估算中…</>
+                : busy === "retype" ? <><Spinner size={12} /> 启动中…</>
+                : retypeLeft ? "从头重新分类" : "用模型重新分类（保留画像）"}
             </button>
           </div>
         </>

@@ -40,7 +40,7 @@ export const SR_REFERENCE_MODES = [
     id: "card_only",
     label: "只用文风卡",
     badge: "不发原文",
-    detail: "只带文风卡和声音习惯，不发原文段落（卡上的例子至多 11 个字）。",
+    detail: "只带文风卡和声音习惯，不发原文段落（卡上的例子至多 11 个字，不含本书专名）。",
   },
 ];
 
@@ -104,39 +104,77 @@ export function srDraftModeMeta(id) {
   return SR_DRAFT_MODES.find((m) => m.id === id) || SR_DRAFT_MODES[0];
 }
 
-/* 一条绑定的一句话：「全面模仿 · 12 窗 · 作者手笔直起」（只用文风卡时不说窗数） */
-export function srConfigSummary(config) {
+/* 书的原文范围压过绑定的参考方式（与后端 binding_config.effective_reference_mode 同一口径）：
+   「起草不发原文」（segments_only）的书起草时只用文风卡，不管绑定里设的是哪一种 */
+export function srEffectiveReferenceMode(mode, cloudPolicy) {
+  const m = SR_REFERENCE_MODES.some((x) => x.id === mode) ? mode : "full";
+  return cloudPolicy === "segments_only" && m !== "card_only" ? "card_only" : m;
+}
+
+/* 一条绑定的一句话：「全面模仿 · 12 窗 · 作者手笔直起」（只用文风卡时不说窗数）。
+   effectiveMode：真正生效的参考方式（书的原文范围压过设置时，按它说并注明，不把没在用的窗数说成在用） */
+export function srConfigSummary(config, { effectiveMode = null } = {}) {
   const c = srNormalizeConfig(config);
-  const parts = [srReferenceModeMeta(c.reference_mode).label];
-  if (c.reference_mode !== "card_only") parts.push(`${c.sample_windows} 窗`);
+  const mode = SR_REFERENCE_MODES.some((m) => m.id === effectiveMode) ? effectiveMode : c.reference_mode;
+  const parts = [`${srReferenceModeMeta(mode).label}${mode !== c.reference_mode ? "（这本书起草不发原文）" : ""}`];
+  if (mode !== "card_only") parts.push(`${c.sample_windows} 窗`);
   parts.push(srDraftModeMeta(c.draft_mode).label);
   return parts.join(" · ");
 }
 
+/* 一条绑定（后端 binding_payload）的一句话：按后端给的 effective_reference_mode 说；没有（界面先写的乐观值）
+   就按书的原文范围推 */
+export function srBindingSummary(binding, { cloudPolicy = null } = {}) {
+  if (!binding) return "";
+  const config = srNormalizeConfig(binding.config);
+  const effective = binding.effective_reference_mode || srEffectiveReferenceMode(config.reference_mode, cloudPolicy);
+  return srConfigSummary(config, { effectiveMode: effective });
+}
+
+/* 这条绑定是不是这部作品自己的：作品层、目标就是这部作品。旧版的全局绑定（scope=global）对所有没有自己应用的
+   作品生效，不算哪一部的——在某一部作品的页面上改它 / 解除它会波及全部作品，只能只读 */
+export function srBindingOwnedByWork(binding, workId) {
+  return !!binding && !!workId && binding.scope === "project" && binding.scope_ref_id === workId;
+}
+
+export function srIsLegacyGlobalBinding(binding) {
+  return !!binding && binding.scope === "global";
+}
+
 /* ---------- 导入：原文能发到哪里（书的 cloud_policy） ---------- */
 
+/* 每一档说的都是后端真做到的事（docs/style-reference.md §11）：
+   · 仅本机：按「接收这份提示的节点」判——走云端的节点拿不到这本书的任何东西（样例、文风卡、声音、专名表都不送），
+     起草节点会 409 停下，不降级成没有参考的提示去照样调用；
+   · 中间一档（旧 id segments_only）：分类、学习要把整段正文分批发给云端（这是它和「仅本机」的区别，所以名字不能叫
+     「只发短句」）；只有起草、改稿、评审这些用参考的提示被压成只用文风卡：卡上的例子至多 11 个字、不含本书专名，
+     红线里的专名清单照带（让模型避开这些名字）；
+   · 可发送全文：起草时也可以带原文样例窗。 */
 export const SR_CLOUD_POLICIES = [
   {
     id: "local_only",
     label: "仅本机模型",
-    detail: "正文只交给本机模型（如 Ollama）：分类、学习、起草都要用本机模型，云端模型一律看不到。",
+    detail: "正文和从它学出来的文风卡、声音习惯、本书专名都只交给本机模型（如 Ollama）：分类、学习、起草、对照检查都要走本机模型；哪一步用的是云端模型，那一步就拿不到这本书的任何内容（起草会停下来提示你换成本机模型）。",
   },
   {
     id: "segments_only",
-    label: "只发短句",
-    hint: "起草时只用文风卡，不发原文",
-    detail: "分类和学习时，云端模型会分批读正文；起草时只送文风卡（例子至多 11 个字），不送原文段落。",
+    label: "起草不发原文",
+    hint: "分类和学习时正文照样发给云端",
+    detail: "分类和学习时，云端模型会分批读整段的正文；之后起草、改稿和评审只送文风卡、声音习惯和防照搬红线（卡上的例子至多 11 个字、不含本书专名；红线列出本书专名让模型避开），不送原文段落。",
   },
   {
     id: "allow_full_cloud",
     label: "可发送全文",
-    detail: "分类、学习和起草都可以把原文段落发给已配置的云端模型；起草时带原文样例窗，最像。",
+    detail: "分类、学习和起草都可以把原文段落发给已配置的云端模型；起草时可以带原文样例窗，最像。",
   },
 ];
 
 export function srCloudPolicyMeta(id) {
   return SR_CLOUD_POLICIES.find((p) => p.id === id) || null;
 }
+
+/* 界面各处提到这一档时用同一个名字（「用于作品」的说明、本场预览的提示） */
+export const SR_SEGMENTS_ONLY_LABEL = srCloudPolicyMeta("segments_only").label;
 
 /* 导入权属声明（后端 ingest 的 rights_declaration）：分析权必勾；非「仅本机」还要发送权 */
 export const SR_RIGHTS_TERMS = {
@@ -186,19 +224,59 @@ const SR_ERROR_TEXT = {
   STYLE_REFERENCE_APPLY_TARGET_NOT_FOUND: "要用这本书的作品已经不在了。",
   STYLE_REFERENCE_BINDING_NOT_FOUND: "这条应用已经解除了。",
   STYLE_REFERENCE_PROJECT_NOT_FOUND: "当前作品已经不在了。",
+  STYLE_REFERENCE_APPLY_PARAM_INVALID: "用于作品的设置不对，请刷新页面后重试。",
+  STYLE_REFERENCE_BOOK_ENCODING_UNSUPPORTED: "读不出这个文件的文字编码：另存为 UTF-8 编码的文本再导入。",
+  STYLE_REFERENCE_BANNED_TERM_INVALID: "禁用词不能是空的。",
+  STYLE_REFERENCE_BANNED_TERM_NOT_FOUND: "这个词已经删掉了。",
+  STYLE_REFERENCE_BANNED_TERM_PROTECTED: "预置的禁用词不能删。",
+  STYLE_REFERENCE_PARAGRAPH_RANGE_INVALID: "要读的段落范围不对。",
+  /* 作业的失败与收尾（活动面板、学习 / 分类卡片上的「没有完成：……」） */
+  STYLE_REFERENCE_JOB_FAILED: "后台作业出了意外停下了，请稍后重试。",
+  STYLE_REFERENCE_JOB_CANCELLED: "已经取消了。",
+  STYLE_REFERENCE_IMPORT_CANCELLED: "已经取消了。",
+  STYLE_REFERENCE_JOB_NOT_FOUND: "这项作业已经不在了。",
+  STYLE_REFERENCE_JOB_NOT_RESUMABLE: "这项作业不能接着做了，重新开始即可。",
+  STYLE_REFERENCE_JOB_ALREADY_ACTIVE: "这本书已经有一项作业在跑了，等它结束再试。",
+  STYLE_REFERENCE_CLASSIFICATION_FAILED: "有一批段落模型重试后仍没分出类型：检查模型接入后「继续分类」，只补没分出来的段。",
+  STYLE_REFERENCE_CLASSIFY_INCOMPLETE: "还有段落没分出类型：「继续分类」只补剩下的段。",
+  STYLE_REFERENCE_CLASSIFY_LLM_CALL_FAILED: "分类时模型调用失败：检查模型接入后「继续分类」。",
+  STYLE_REFERENCE_CLASSIFY_OUTPUT_MISMATCH: "模型的分类结果和段落对不上：「继续分类」只重发没分出来的段。",
+  STYLE_REFERENCE_CLASSIFY_ROUTE_MISSING: "段落分类用的模型节点还没配好：去系统配置补齐后再「继续分类」。",
+  STYLE_REFERENCE_CLASSIFY_PROMPT_MISSING: "段落分类的提示词模板缺了：同步提示词模板后再「继续分类」。",
+  STYLE_REFERENCE_CLASSIFY_PROMPT_RENDER_FAILED: "段落分类的提示词模板用不了（可能是旧版本）：同步提示词模板后再「继续分类」。",
+  STYLE_REFERENCE_CLASSIFY_CONFIG_LOAD_FAILED: "读不出段落分类的模型配置：检查系统配置后再「继续分类」。",
+  STYLE_REFERENCE_PARAGRAPHS_CHANGED: "分类期间这本书的段落被改动过，这次分类停下了：重新分类即可。",
+  STYLE_REFERENCE_LEARN_FAILED: "学习文风没有完成。",
+  STYLE_REFERENCE_LEARN_LLM_CALL_FAILED: "学习时模型调用失败：检查模型接入后「继续学习」。",
   NETWORK_ERROR: "连不上后端：检查后端是否在运行后重试。",
   REQUEST_TIMEOUT: "等太久了没有回音，稍后再试。",
 };
 
-const CJK = /[㐀-鿿]/;
+const CJK_ALL = /[㐀-鿿]/g;
+const LATIN_ALL = /[A-Za-z]/g;
+
+/* 后端的原话能不能直接给作者看：要是中文句子——有汉字、汉字不少于英文字母，也不是 Python 异常串
+   （作业边界记的是「TypeError: …」这种，夹几个汉字也不算中文说明）。 */
+export function srIsChineseMessage(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (/^[A-Za-z_.]*(Error|Exception)\b/.test(s)) return false;
+  const cjk = (s.match(CJK_ALL) || []).length;
+  if (!cjk) return false;
+  return cjk >= (s.match(LATIN_ALL) || []).length;
+}
 
 /* 出错 → { code, message, action }。message 优先按错误码给固定的中文；认不出的码用后端的中文原话，
-   英文原话一律不给作者看。action：{ type: "settings" | "open_book" | "learn", label, bookId? } 或 null。 */
+   英文原话一律不给作者看（fallback 也只能给中文：调用方不要把 error.message 当 fallback 传进来）。
+   action：{ type: "settings" | "open_book" | "learn", label, bookId? } 或 null。 */
 export function srErrorInfo(error, fallback = "操作没有完成，请稍后重试。") {
   const code = (error && error.code) || "";
   const details = (error && error.details) || {};
   const serverMessage = String((error && error.message) || "");
-  let message = SR_ERROR_TEXT[code] || (CJK.test(serverMessage) ? serverMessage : fallback);
+  const safeFallback = srIsChineseMessage(fallback) ? fallback : "操作没有完成，请稍后重试。";
+  let message = SR_ERROR_TEXT[code] || (srIsChineseMessage(serverMessage) ? serverMessage : safeFallback);
+  /* 学习失败：后端的中文原话说得更具体（哪一步、为什么），有就用它 */
+  if (code === "STYLE_REFERENCE_LEARN_FAILED" && srIsChineseMessage(serverMessage)) message = serverMessage;
   if (code === "STYLE_REFERENCE_BOOK_DUPLICATE" && details.title) {
     message = `书库里已经有同一份文本：《${details.title}》。`;
   }
@@ -325,6 +403,40 @@ export function srAppliedToWork(book, workId) {
   return (book.appliedProjects || []).find((item) => item && item.project_id === workId) || null;
 }
 
+/* 「用模型重新分类」（就地重标，mode=retype）没做完：书全程是 ready，失败 / 取消只记在最近的分类作业上
+   （book.classification）。没做完 → { cancelled, batchesDone, batchesTotal, error, resumable }，否则 null。 */
+export function srRetypeUnfinished(book) {
+  const c = book && book.classification;
+  if (!c || book.rawStatus !== "ready" || c.mode !== "retype") return null;
+  if (c.state !== "failed" && c.state !== "cancelled") return null;
+  return {
+    cancelled: c.state === "cancelled",
+    batchesDone: Number(c.batches_done || 0),
+    batchesTotal: Number(c.batches_total || 0),
+    error: c.error || null,
+    resumable: c.resumable !== false,
+  };
+}
+
+/* 删书确认里「哪些作品正在用」：每本书列出用着它的全部作品（applied_projects 的作品名），不只当前作品 */
+export function srDeleteBooksUsage(books, { workId = null, workTitle = "" } = {}) {
+  const lines = [];
+  const works = new Set();
+  for (const book of books || []) {
+    const projects = ((book && book.appliedProjects) || []).filter((p) => p && p.project_id);
+    if (!projects.length) continue;
+    const names = [];
+    for (const p of projects) {
+      works.add(p.project_id);
+      const name = p.project_title || (p.project_id === workId && workTitle) || "一部未命名的作品";
+      if (!names.includes(name)) names.push(name);
+    }
+    lines.push(`${names.map((n) => `《${n}》`).join("、")}正在用《${book.title}》的文风`);
+  }
+  if (!lines.length) return "";
+  return `${lines.join("；")}。删除后，${works.size > 1 ? "这些作品" : "这部作品"}起草新场景时不再带它的文风。`;
+}
+
 /* running: { classify, learn }（活动表里这本书正在跑的作业：{ percentText } 或 null） */
 export function srBookPipeline(book, { running = {}, workId = null } = {}) {
   if (!book) return null;
@@ -370,6 +482,7 @@ export function srStageStates(book, { running = {}, workId = null } = {}) {
   const raw = book.rawStatus;
   if (running.classify || raw === "ingesting" || raw === "cancelling") states.book = "running";
   else if (raw === "failed") states.book = "attention";
+  else if (srRetypeUnfinished(book)) states.book = "attention";
   else if (srProvenanceView(book.provenance).legacy) states.book = "attention";
   const ready = raw === "ready" && !running.classify;
   const profile = book.profile;
@@ -426,6 +539,16 @@ export function srActivityActive(entry) {
   return !!entry && (entry.status === "queued" || entry.status === "running");
 }
 
+/* 一个作业为什么没完成（作业表的 error_json：{code, message, details}）：按错误码说中文；认不出的码只用后端的
+   中文原话——作业边界记下的「TypeError: …」这类英文原话不给作者看，换成一句中文 */
+export function srJobErrorText(error, { resumable = false } = {}) {
+  const fallback = resumable ? "出了意外停下了，可以从断点继续。" : "出了意外停下了，请稍后重试。";
+  if (!error) return fallback;
+  // 作业边界兜底记下的失败（原话是异常串）：能不能「继续」看这个作业本身
+  if (error.code === "STYLE_REFERENCE_JOB_FAILED") return `后台作业${fallback}`;
+  return srErrorInfo(error, fallback).message;
+}
+
 function srStripKindPrefix(label, entry) {
   const text = String(label || "");
   const kind = styleJobKindLabel(entry.kind) || entry.kind_label || "";
@@ -452,10 +575,7 @@ export function srActivityView(entry, now = Date.now()) {
     if (entry.stalled) parts.push("后台进程重启过，稍后自动接着跑");
   } else if (entry.status === "succeeded") parts.push("完成");
   else if (entry.status === "cancelled") parts.push("已取消");
-  else if (entry.status === "failed") {
-    const reason = entry.error ? srErrorInfo(entry.error, entry.error.message || "").message : "";
-    parts.push(`没有完成${reason ? `：${reason}` : ""}`);
-  }
+  else if (entry.status === "failed") parts.push(`没有完成：${srJobErrorText(entry.error, { resumable: !!entry.resumable })}`);
   if (Number.isFinite(elapsed) && elapsed > 0) parts.push(`${active ? "已用" : "用时"} ${srFormatDuration(elapsed)}`);
   if (active && entry.eta_seconds != null) parts.push(`预计还需 ${srFormatDuration(entry.eta_seconds)}`);
   if (Number(entry.llm_calls) > 0) parts.push(`模型调用 ${entry.llm_calls} 次`);

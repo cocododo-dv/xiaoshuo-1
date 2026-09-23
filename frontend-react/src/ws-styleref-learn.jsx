@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import {
-  SR_ACTIVITY_WHERE, srActivityView, srErrorInfo, srFormatWhen, srLearnEstimateText, srRelearnText,
+  SR_ACTIVITY_WHERE, srActivityView, srFormatWhen, srJobErrorText, srLearnEstimateText, srRelearnText,
 } from "./ws-styleref-model.js";
 import {
   srActivityFor, srCancelLearn, srLearnInfo, srLoadLearn, srLoadRuntime, srRuntime, srStartLearn,
@@ -83,7 +83,10 @@ export function SrLearnCard({ book, go, onAction }) {
     : profile ? { tone: "ok", label: "已学好" }
     : resumable ? { tone: "danger", label: "学习没有完成" }
     : { tone: "neutral", label: "还没学" };
-  const lastError = !running && lastJob && lastJob.state === "failed" && lastJob.error ? srErrorInfo(lastJob.error, lastJob.error.message || "") : null;
+  /* 上次失败的原因只说中文：作业边界记下的英文原话（「TypeError: …」）换成一句中文 */
+  const lastError = !running && lastJob && lastJob.state === "failed" && lastJob.error
+    ? { message: srJobErrorText(lastJob.error, { resumable: !!lastJob.resumable }) }
+    : null;
 
   return (
     <div className="card sr-learn-card" data-testid="sr-learn-card">

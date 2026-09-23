@@ -36,9 +36,12 @@ export function SrCheck({ book, go, onAction }) {
   const key = srCheckKey(book.id);
   const entry = fidCheck(key);
   const lastTarget = (entry && entry.target) || {};
+  /* 检查记录按书记，不按作品：上一次查的那一场属于别的作品时（换过作品）不能把它恢复成这部作品的选择——
+     下拉框里没有它、按钮却能点，一点就查了别的作品的一场 */
+  const lastSceneHere = lastTarget.sceneId && (!lastTarget.projectId || lastTarget.projectId === workId) ? lastTarget.sceneId : "";
   const [mode, setMode] = React.useState(lastTarget.sceneId ? "scene" : "text");
   const [text, setText] = React.useState(lastTarget.text || "");
-  const [sceneId, setSceneId] = React.useState(lastTarget.sceneId || "");
+  const [sceneId, setSceneId] = React.useState(lastSceneHere);
   const [chapters, setChapters] = React.useState(null);
 
   React.useEffect(() => { srLoadRuntime(); }, []);
@@ -52,6 +55,11 @@ export function SrCheck({ book, go, onAction }) {
       .catch(() => { if (alive) setChapters([]); });
     return () => { alive = false; };
   }, [workId]);
+  /* 选中的场不在这部作品的场景里（换了作品、场被删了）：清掉，不留一个看不见的选择 */
+  const sceneKnown = !!sceneId && srSceneOptions(chapters).some((group) => group.scenes.some((scene) => scene.value === sceneId));
+  React.useEffect(() => {
+    if (chapters && sceneId && !sceneKnown) setSceneId("");
+  }, [chapters, sceneId, sceneKnown]);
 
   if (!profileId) {
     return (
@@ -67,7 +75,7 @@ export function SrCheck({ book, go, onAction }) {
   const applied = srAppliedToWork(book, workId);
   const groups = srSceneOptions(chapters);
   const count = Array.from(text.trim()).length;
-  const ready = mode === "text" ? count > 0 && count <= CHECK_MAX_CHARS : !!sceneId;
+  const ready = mode === "text" ? count > 0 && count <= CHECK_MAX_CHARS : sceneKnown;
 
   const start = async (target = null) => {
     if (busy) return;
@@ -86,7 +94,10 @@ export function SrCheck({ book, go, onAction }) {
 
   const describe = (target) => {
     if (!target) return "";
-    if (target.sceneId) return srSceneLabel(chapters, target.sceneId) || "当前作品的一场";
+    if (target.sceneId) {
+      return srSceneLabel(chapters, target.sceneId)
+        || (target.projectId && target.projectId !== workId ? "另一部作品的一场" : "当前作品的一场");
+    }
     return `贴进来的 ${Array.from(String(target.text || "")).length.toLocaleString("zh-CN")} 字`;
   };
 
