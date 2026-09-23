@@ -334,8 +334,9 @@ def _frozen_bundle(session, scene: SceneCard, *, bundle_id: str) -> dict:
     }
 
 
-def test_styled_gate_prefers_frozen_contract_from_bundle(session) -> None:
-    """冻结契约优先于实时绑定：绑定后新增的禁用词不影响本 bundle 的裁决，冻结的照用。"""
+def test_styled_gate_matches_the_live_banned_term_table_not_the_frozen_contract(session) -> None:
+    """风格参考 v3（H1）：禁用词只认现行的表（与成稿门、抄袭门同一张）——冻结之后新加的词照样认，作者删掉的词
+    （哪怕冻结契约里还记着）立刻不再认；冻结契约里的词只用来渲染提示词的红线。"""
     _seed_style_binding(
         project_id="proj_styled_frozen", seed="styled_frozen", forbidden_terms=["冻结词"],
     )
@@ -348,13 +349,40 @@ def test_styled_gate_prefers_frozen_contract_from_bundle(session) -> None:
             scope="generation", term="事后词", source="manual",
         )
         other.commit()
-    gate = run_styled_draft_style_gate(
-        session, scene, "文中出现了事后词，也出现了冻结词。", stage="style_draft", bundle=bundle
-    )
+    text = "文中出现了事后词，也出现了冻结词。"
+    gate = run_styled_draft_style_gate(session, scene, text, stage="style_draft", bundle=bundle)
     assert gate is not None
     assert gate["runtime_contract_mode"] == "frozen"
     assert gate["runtime_contract_hash"]
-    assert [hit["matched_excerpt"] for hit in gate["forbidden_hits"]] == ["冻结词"]
+    assert [hit["matched_excerpt"] for hit in gate["forbidden_hits"]] == ["事后词", "冻结词"]
+
+    # 作者把「冻结词」从表里删了：冻结契约里还记着，也不再认
+    StyleReferenceRepository(session).delete_banned_term("sr_term_styled_frozen_0")
+    session.commit()
+    gate = run_styled_draft_style_gate(session, scene, text, stage="style_draft", bundle=bundle)
+    assert [hit["matched_excerpt"] for hit in gate["forbidden_hits"]] == ["事后词"]
+
+
+def test_styled_gate_is_unavailable_when_the_bound_book_was_deleted(session) -> None:
+    """风格参考 v3（L4）：bundle 冻结的书后来被删了——抄袭门对它什么也没比对，风格稿门报 unavailable（软 QC 挂 Q2
+    复核、起草链路发 STYLE_GATE_UNAVAILABLE），不能报「通过」。"""
+    from novel_system.services.style_reference.cleanup import delete_reference_book
+
+    _seed_style_binding(project_id="proj_styled_gone", seed="styled_gone", paragraphs=[REFERENCE_PARAGRAPH])
+    scene = _make_scene("proj_styled_gone")
+    bundle = _frozen_bundle(session, scene, bundle_id="bundle_styled_gone")
+    delete_reference_book(session, "sr_book_styled_gone")
+    session.commit()
+
+    gate = run_styled_draft_style_gate(
+        session, scene, f"他回到巷口。{COPIED_SENTENCE}。", stage="style_draft", bundle=bundle
+    )
+    assert gate is not None
+    assert gate["verdict"] == STYLED_GATE_UNAVAILABLE_VERDICT
+    assert gate["error_code"] == "STYLE_REFERENCE_BOOK_MISSING"
+    assert gate["runtime_contract_mode"] == "frozen"
+    events = _metric_events(session, STYLED_DRAFT_GATE_EVENT_KIND)
+    assert [event.outcome for event in events] == ["error"]
 
 
 def test_styled_gate_absent_contract_means_no_binding(session) -> None:

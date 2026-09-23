@@ -75,8 +75,8 @@ def _near_final_rewrite_gate_warnings(gate: Any) -> list[dict[str, Any]]:
                 "issue_key": "near_final_rewrite_banned_term_replicated",
                 "quality_level": "Q2",
                 "message": (
-                    f"准终稿重写稿复刻了参考画像冻结的生成禁用词（{forbidden} 处）；"
-                    "请人工复核并以自己的措辞替换。"
+                    f"准终稿重写稿用了参考画像的生成禁用词 / 受保护专名（{forbidden} 个）；"
+                    "请人工复核：是参考书的专名就换成自己的，日常用词被误收的可以接受。"
                 ),
                 "recommended_action": "author_review_optional_fix",
                 "verified_by": None,
@@ -915,7 +915,9 @@ class Orchestrator:
         # Wave 3（§5.5）：关键场景在候选生成后暂停编排——确定性坏稿淘汰 →
         # 匿名终选 gate；作者选择后经 resume-after-selection 从批判修订/QC 继续。
         # 「§6.3 终选决定质量上界，归人」从推荐信号升级为强制暂停。
-        if criticality.human_gate and len(candidates) > 1:
+        # 风格参考 v3（L2）：按正文去重之后才数候选——作者手笔直起时没过门的修改槽位保留首稿原文，几个槽位可能
+        # 是同一段字；只剩一份不同的正文就没有可选的，不能让作者对着一份稿子「终选」，管线照常往下走
+        if criticality.human_gate and self._distinct_candidate_count(candidates) > 1:
             offered_row_ids = self._offer_candidates_for_selection(
                 scene, state, bundle, candidates
             )
@@ -5123,7 +5125,9 @@ class Orchestrator:
             )
             # 风格参考 v3（P5b，N6 / V7）：作者手笔直起时补丁「不更像就不采用」——参考评审分变差、或确定性
             # distance 明显变大而评审分没提高 → 退回补丁前的稿子（指针与当前 QC 报告随之指回，检查点记退回）。
-            patch_keep = self._style_patch_keep_decision(
+            # L3：这一段夹在 soft_qc:1 的调用与它的检查点之间，只是观察（读数、记读数、记决定）——在保存点里做，
+            # 任何失败只回滚保存点、按「留下补丁」处理，绝不能让一次已派发的调用落不下检查点。
+            patch_keep = self._observe_patch_keep(
                 scene=scene,
                 bundle=bundle,
                 before=style_generation,
@@ -5218,6 +5222,28 @@ class Orchestrator:
             return None
         return max(0.0, min(1.0, value / 10.0))
 
+    def _observe_patch_keep(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        before: StyleGenerationResult,
+        after: StyleGenerationResult,
+        qc0: SoftQcDecision,
+        qc1: SoftQcDecision,
+    ) -> dict[str, Any] | None:
+        """:meth:`_style_patch_keep_decision` 的安全外壳（风格参考 v3 L3）：它夹在 ``soft_qc:1`` 的调用与检查点之间，
+        只做观察（读数、记读数、记决定的尝试行）。整段在保存点里跑，任何失败只回滚这个保存点、记日志、返回 ``None``
+        （= 没有退回的依据，留下补丁，与旧行为一致）——会话照样可用，检查点照常落下。"""
+        try:
+            with self.session.begin_nested():
+                return self._style_patch_keep_decision(
+                    scene=scene, bundle=bundle, before=before, after=after, qc0=qc0, qc1=qc1
+                )
+        except Exception:  # noqa: BLE001 — 观察失败不能让已派发的调用落不下检查点
+            _LOGGER.warning("style patch keep decision failed for scene %s; keeping the patch", scene.scene_id, exc_info=True)
+            return None
+
     def _style_patch_keep_decision(
         self,
         *,
@@ -5242,8 +5268,10 @@ class Orchestrator:
         judge_before = self._report_judge(qc0.qc_report_id)
         judge_after = self._report_judge(qc1.qc_report_id)
         try:
-            reading_before = style_readings.reading_for_text(self.session, policy, before.content)
-            reading_after = style_readings.reading_for_text(self.session, policy, after.content)
+            # 读数可能要先建这本书的窗口索引、写库：放在自己的保存点里，失败只回滚它
+            with self.session.begin_nested():
+                reading_before = style_readings.reading_for_text(self.session, policy, before.content)
+                reading_after = style_readings.reading_for_text(self.session, policy, after.content)
         except Exception:  # noqa: BLE001 — 读数是观察：读不出只看评审分
             _LOGGER.warning("patch fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
             reading_before = reading_after = None
@@ -7333,13 +7361,19 @@ class Orchestrator:
             return max(1, criticality_max)
         return max(1, min(criticality_max, int(policy_cap)))
 
+    @staticmethod
+    def _distinct_candidate_count(candidates: list[Any]) -> int:
+        """候选里不同（非空）正文的份数（终选门按正文去重，见 :meth:`_offer_candidates_for_selection`）。"""
+        return len({(getattr(cand, "content", "") or "").strip() for cand in candidates} - {""})
+
     def _offer_candidates_for_selection(
         self, scene, state, bundle, candidates
     ) -> list[str] | None:
         """Wave 3（§4.4/§5.5）：确定性坏稿淘汰后建立匿名候选终选 gate。
 
         机器只淘汰空文本与来源安全 Q0 命中的无效候选（不按机器分数删，
-        §4.4）；全部无效时返回 None——管线继续，由 QC 层裁决，不装作可选。
+        §4.4）；全部无效时返回 None——管线继续，由 QC 层裁决，不装作可选。候选按正文去重后不到两份时
+        调用方根本不开这道门（:meth:`_distinct_candidate_count`）。
         blinded_order 是随机置换（§5.5 展示顺序必须随机化并记录）。
         """
         import random

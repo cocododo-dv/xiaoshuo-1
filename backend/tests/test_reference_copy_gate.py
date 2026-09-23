@@ -159,6 +159,7 @@ def test_index_is_built_once_per_book_and_results_are_cached(session, monkeypatc
 
 
 def test_protected_names_come_from_generation_banned_terms_and_environment(session, monkeypatch) -> None:
+    """受保护专名（画像现行的生成期禁用词 + 环境变量全局词）只报、从不拦（H1）；检查记录不写词本身。"""
     scene = _seed_scene(session)
     _bind(session, protected_terms=(PROTECTED_NAME,))
     monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["盐湾学院"]')
@@ -167,15 +168,74 @@ def test_protected_names_come_from_generation_banned_terms_and_environment(sessi
 
     check = check_reference_copy(session, text, policy=policy)
 
-    assert check.blocked is True and check.hits == ()
+    assert check.blocked is False and check.hits == ()
+    assert check.audit()["safe"] is True and check.audit()["protected_terms_block"] is False
     assert [(hit.start, hit.end, hit.source) for hit in check.protected_hits] == [
         (0, len(PROTECTED_NAME), "protected_auto"),
         (len(PROTECTED_NAME) + 1, len(PROTECTED_NAME) + 5, "environment"),
     ]
+    assert check.protected_terms() == [PROTECTED_NAME, "盐湾学院"]
     assert PROTECTED_NAME not in str(check.audit()) and "盐湾" not in str(check.audit())
+    # 只有专名、没有原文重合：不拦，也就没有拦下的作者动作
+    assert copy_block_author_action(check) is None
     # 没有任何绑定时只查环境变量里的全局词
     unbound = check_reference_copy(session, text, policy=None)
     assert [hit.source for hit in unbound.protected_hits] == ["environment"]
+
+
+def test_protected_terms_are_read_from_the_live_table_only(session) -> None:
+    """H1：每道门只认现行的禁用词表——作者删掉一个误收的词立刻不再命中；冻结契约里记下的词不参与判定
+    （它们只给提示词渲染红线）。"""
+    from novel_system.db.models import StyleReferenceBannedTerm
+
+    scene = _seed_scene(session)
+    refs = _bind(session, protected_terms=(PROTECTED_NAME, "雾灯码头"))
+    live = style_policy_live(session, scene, freeze_contract=False)
+    text = f"{PROTECTED_NAME}沿着雾灯码头走回去，想起冻结时的旧词。"
+    assert check_reference_copy(session, text, policy=live).protected_terms() == [PROTECTED_NAME, "雾灯码头"]
+
+    # 冻结契约记着一个现行表里没有的词：不参与判定
+    frozen = StylePolicy(
+        bound=True,
+        mode="frozen",
+        contract={
+            "layers": [
+                {
+                    "book": {"book_id": refs["book_id"]},
+                    "profile": {"profile_id": refs["profile_id"]},
+                    "banned_terms": [PROTECTED_NAME, "雾灯码头", "冻结时的旧词"],
+                }
+            ]
+        },
+        profile_id=refs["profile_id"],
+        book_id=refs["book_id"],
+    )
+    assert check_reference_copy(session, text, policy=frozen).protected_terms() == [PROTECTED_NAME, "雾灯码头"]
+
+    # 作者删掉误收的「雾灯码头」：冻结了它的契约照样不再认它
+    session.query(StyleReferenceBannedTerm).filter_by(profile_id=refs["profile_id"], term="雾灯码头").delete()
+    session.commit()
+    assert check_reference_copy(session, text, policy=frozen).protected_terms() == [PROTECTED_NAME]
+    assert check_reference_copy(session, text, policy=live).protected_terms() == [PROTECTED_NAME]
+
+
+def test_a_deleted_book_or_a_degraded_policy_means_unavailable_not_passed(session) -> None:
+    """L4：绑定的书已不在书库、或策略解析降级——这一边什么也没比对，不能当成「查过、没有重合」。"""
+    scene = _seed_scene(session)
+    refs = _bind(session)
+    live = style_policy_live(session, scene, freeze_contract=False)
+    assert check_reference_copy(session, "干净的一句。", policy=live).unavailable is False
+
+    gone = StylePolicy(bound=True, mode="frozen", profile_id=refs["profile_id"], book_id="sr_book_deleted_long_ago")
+    check = check_reference_copy(session, "他想：" + REFERENCE_PASSAGE[:30], policy=gone)
+    assert check.blocked is False and check.checked_books == ()
+    assert check.unavailable is True and check.missing_books == ("sr_book_deleted_long_ago",)
+    assert check.audit()["unavailable"] is True and check.audit()["missing_books"] == ["sr_book_deleted_long_ago"]
+
+    degraded = StylePolicy(mode="degraded", error_code="runtime_contract_invalid")
+    check = check_reference_copy(session, "干净的一句。", policy=degraded, extra_policies=[live])
+    assert check.unavailable is True and check.unavailable_reasons == ("runtime_contract_invalid",)
+    assert check.checked_books == (refs["book_id"],), "降级的那一边报原因，另一边照常比对"
 
 
 def test_unbound_and_empty_text_pass(session) -> None:

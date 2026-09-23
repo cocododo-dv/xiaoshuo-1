@@ -241,11 +241,14 @@ def _prompt_carries_style_reference(prompt: Mapping[str, Any] | None) -> bool:
     if not isinstance(prompt, Mapping):
         return False
     audit = prompt.get("_style_reference_runtime_audit")
+    if isinstance(audit, Mapping) and str(audit.get("outcome") or "") in {"degraded", "degraded_budget", "miss"}:
+        return False
     if isinstance(audit, Mapping) and str(audit.get("outcome") or "") == "injected":
         return True
     if str(prompt.get(STYLE_USER_TAIL_KEY) or "").strip():
         return True
-    return "[STYLE_REFERENCE]" in str(prompt.get("system_prompt") or "")
+    # 注入器把 [STYLE_REFERENCE] 块接在 system 提示最前面；只认开头——风格通道模板的正文自己也提到这个块名
+    return str(prompt.get("system_prompt") or "").lstrip().startswith("[STYLE_REFERENCE]")
 
 
 def style_notice(
@@ -350,7 +353,7 @@ _STYLED_GATE_STAGE_CONSEQUENCE = {
 def _styled_draft_gate_notices(gate: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """styled-draft gate 结果 → notices。
 
-    plagiarism 阻断级；冻结禁用词命中 error 级；gate 自身未能执行（verdict
+    plagiarism 阻断级；生成禁用词命中 error 级；gate 自身未能执行（verdict
     ``unavailable``）error 级 STYLE_GATE_UNAVAILABLE。命中计数取 gate 的真实总数
     （``plagiarism_hit_count`` / ``forbidden_hit_count``），不是被截断到 8 条的证据列表长度。
     """
@@ -367,7 +370,7 @@ def _styled_draft_gate_notices(gate: Mapping[str, Any] | None) -> list[dict[str,
         notices.append(
             style_notice(
                 STYLE_NOTICE_GATE_UNAVAILABLE,
-                f"{label}的抄袭 / 冻结禁用词检查未能执行；本稿未经参考来源安全核对，"
+                f"{label}的抄袭 / 生成禁用词检查未能执行；本稿未经参考来源安全核对，"
                 "soft_qc 阶段将要求人工复核。",
                 severity="error",
                 stage=stage,
@@ -396,7 +399,7 @@ def _styled_draft_gate_notices(gate: Mapping[str, Any] | None) -> list[dict[str,
         notices.append(
             style_notice(
                 STYLE_NOTICE_BANNED_TERM_HIT,
-                f"{label}命中参考画像冻结的生成禁用词；soft_qc 阶段将升级为人工复核。",
+                f"{label}用了参考画像的生成禁用词 / 受保护专名；soft_qc 阶段会请你复核（可以接受），归档不因此被拦。",
                 severity="error",
                 stage=stage,
                 hit_count=int(gate.get("forbidden_hit_count") or len(forbidden_hits)),
@@ -423,7 +426,13 @@ def latest_style_notices(
     style_draft 的 notices 在前，near_final_rewrite（step=scene_literary_rewrite）在后。
     传 ``bundle_id`` 时只看该 bundle（API 层必须传——一次运行的响应不能带上别的运行的
     notices）；不传则取场景最近一次，仅供直接调用方使用。
+
+    风格参考 v3（L7）：Best-of-N 的一次运行有好几份风格稿尝试，``style_draft`` 这一步取**选中**的那一份候选的
+    notices（:func:`~novel_system.services.style_fidelity_view.selected_style_row_id`），不是最后一个槽位的。
     """
+    from novel_system.services.style_fidelity_view import selected_style_row_id
+
+    selected_row = selected_style_row_id(session, scene_id, bundle_id) if bundle_id else None
     merged: list[dict[str, Any]] = []
     for step in STYLE_NOTICE_ATTEMPT_STEPS:
         stmt = (
@@ -437,7 +446,13 @@ def latest_style_notices(
         )
         if bundle_id:
             stmt = stmt.where(AttemptTracker.source_bundle_id == bundle_id)
-        row = session.execute(stmt).scalars().first()
+        rows = list(session.execute(stmt).scalars())
+        row = rows[0] if rows else None
+        if step == "style_draft" and selected_row:
+            row = next(
+                (item for item in rows if str((item.details_json or {}).get("row_id") or "") == selected_row),
+                row,
+            )
         if row is None:
             continue
         raw = (row.details_json or {}).get("notices")
@@ -900,7 +915,7 @@ class SceneGenerationService:
 
         styled_draft_gate: dict[str, Any] | None = None
         if style_first:
-            # 首稿离原文更近:落库后同样过一次确定性抄袭 + 冻结禁用词门(记录 + notice;
+            # 首稿离原文更近:落库后同样过一次确定性抄袭 + 生成禁用词门(记录 + notice;
             # 升级到人工复核由 hard_qc 阶段的同一 n-gram 门完成)。
             styled_draft_gate = self._styled_draft_style_gate(
                 scene, neutral_content, bundle=bundle, stage="neutral_draft"
@@ -959,11 +974,22 @@ class SceneGenerationService:
             llm_call_id=node_result.llm_call_id,
             bundle_id=bundle["bundle_id"],
             bundle_hash=bundle["bundle_snapshot_hash"],
-            execution_step_key="neutral_draft",
+            # 检查点记的是**写出这份稿子的那次调用**的步键：修复稿被采用时是 neutral_draft_repair 那次调用，
+            # 记成 neutral_draft 会让续跑的账本校验（调用的 execution_step_key 对不上）判检查点损坏
+            execution_step_key=self._accepted_draft_step_key(
+                node_result.llm_call_id,
+                repaired=bool(repair_audit and repair_audit.get("accepted")),
+            ),
             draft_mode=draft_mode,
             notices=notices,
             styled_draft_gate=styled_draft_gate,
         )
+
+    def _accepted_draft_step_key(self, llm_call_id: str | None, *, repaired: bool) -> str:
+        """采用的首稿 / 中性稿出自哪一步（账本行记的 execution_step_key 为准；替身运行器没有账本行时按是否修复推断）。"""
+        call = self.session.get(LlmCall, llm_call_id) if llm_call_id else None
+        step_key = str(getattr(call, "execution_step_key", "") or "") if call is not None else ""
+        return step_key or ("neutral_draft_repair" if repaired else "neutral_draft")
 
     def generate_style_draft(
         self,
@@ -1451,6 +1477,8 @@ class SceneGenerationService:
         step_reconciler: Callable[[str], None] | None = None,
         first_reading: Any = None,
         first_reading_id: str | None = None,
+        first_reading_done: bool = False,
+        first_reading_error: str | None = None,
         candidate_mode: bool = False,
         force_accept: bool = False,
         temperature_override: float | None = None,
@@ -1469,11 +1497,15 @@ class SceneGenerationService:
                     product_callback=product_callback,
                 )
             thresholds = style_step.fidelity_thresholds()
-            if first_reading is None and first_reading_id is None:
-                first_reading, first_reading_id = self._record_first_draft_reading(
+            reading_error = first_reading_error
+            if first_reading is None and first_reading_id is None and not first_reading_done:
+                first_reading, first_reading_id, reading_error = self._record_first_draft_reading(
                     scene, policy, first_row_id, first_content, thresholds
                 )
             revise, gate_reason = style_step.style_step_gate(first_reading, thresholds)
+            if reading_error is not None and first_reading is None:
+                # L8：读数出错（异常）与「参考书没有可用的尺子」是两回事，原因与提示分开说
+                gate_reason = style_step.REASON_READING_FAILED
             if candidate_mode and first_reading is not None and first_reading.reliable:
                 # Best-of-N 的修改槽位：首稿在不在范围内都改（候选按 distance 排序，首稿永远在候选里）
                 revise, gate_reason = True, style_step.REASON_CANDIDATE_SLOT
@@ -1527,13 +1559,15 @@ class SceneGenerationService:
         first_row_id: str,
         first_content: str,
         thresholds: Any,
-    ) -> tuple[Any, str | None]:
-        """读首稿并记一条 first_draft 读数（同一稿行幂等）；读数失败只记日志，按「读不出」处理。"""
-        try:
-            reading = style_readings.reading_for_text(self.session, policy, first_content)
-        except Exception:  # noqa: BLE001 — 读数是观察：失败按读不出处理（保留首稿）
-            _LOGGER.warning("first-draft fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
-            return None, None
+    ) -> tuple[Any, str | None, str | None]:
+        """读首稿并记一条 first_draft 读数（同一稿行幂等）→ (读数, 读数行 id, 读数出错时的错误码)。
+
+        读数失败只记日志、按「读不出」处理（保留首稿），但错误码单独返回（L8）：「读数出错」与「参考书没有可用的
+        尺子」在决定与提示里分开说。读数在保存点里读（L3）：它可能要先给这本书建窗口索引、写库，失败只回滚保存点，
+        不弄坏会话。"""
+        reading, error_code = self._observe_reading(policy, first_content, ref=scene.scene_id, what="first-draft")
+        if reading is None:
+            return None, None, error_code
         row = style_readings.record_fidelity_reading(
             self.session,
             policy=policy,
@@ -1546,7 +1580,20 @@ class SceneGenerationService:
             reading=reading,
             max_percentile=thresholds.style_step_max_percentile,
         )
-        return reading, (row.reading_id if row is not None else None)
+        return reading, (row.reading_id if row is not None else None), None
+
+    def _observe_reading(self, policy: Any, text: str, *, ref: str, what: str) -> tuple[Any, str | None]:
+        """读一段文字的「像不像」读数 → (读数或 None, 出错时的错误码)。
+
+        读数是观察，永远不能弄坏管线：在保存点里读（第一次读一本书时要建窗口索引、写库），任何失败只回滚这个保存点、
+        记日志——会话照样可用，后面的落库与检查点照常（风格参考 v3 L3：否则一次已派发的调用会落不下检查点，续跑报
+        ``RUN_CHECKPOINT_OUTPUT_MISSING``）。"""
+        try:
+            with self.session.begin_nested():
+                return style_readings.reading_for_text(self.session, policy, text), None
+        except Exception as exc:  # noqa: BLE001 — 读数是观察：失败按读不出处理
+            _LOGGER.warning("%s fidelity reading failed (%s)", what, ref, exc_info=True)
+            return None, str(getattr(exc, "code", None) or type(exc).__name__)
 
     def _first_draft_lineage(self, first_row_id: str) -> tuple[str | None, str, str | None]:
         """首稿的 (llm_call_id, execution_step_key, execution_id)——「首稿即风格稿」的产品沿用首稿那次调用的谱系。"""
@@ -1702,9 +1749,10 @@ class SceneGenerationService:
                     style_step.REASON_WITHIN_RANGE: "首稿读数在参考作者的正常范围内，风格步没有再调模型，首稿即风格稿。",
                     style_step.REASON_READING_UNRELIABLE: "首稿太短（或参考书的样例窗口太少），读数不可信；为免越改越远，首稿即风格稿。",
                     style_step.REASON_READING_UNAVAILABLE: "参考书还没有可用的读数尺子，风格步没有再调模型，首稿即风格稿。",
+                    style_step.REASON_READING_FAILED: "首稿的读数这次没算出来（读数出了错，不是参考书没有尺子），风格步没有再调模型，首稿即风格稿；下次运行会重新读。",
                     style_step.REASON_CANDIDATE_SLOT: "首稿作为候选之一参与按读数排序。",
                 }.get(reason, "风格步保留了首稿。"),
-                severity=notice_severity,
+                severity="warning" if reason == style_step.REASON_READING_FAILED else notice_severity,
                 reason=reason,
                 percentile=getattr(first_reading, "percentile", None),
                 distance=getattr(first_reading, "distance", None),
@@ -1908,20 +1956,23 @@ class SceneGenerationService:
             scene=scene, source_content=first_content, rewritten_content=revision_content
         )
         copy_check = None
+        introduced = None
         copy_blocked = False
         try:
-            from novel_system.services.reference_copy_gate import check_reference_copy
+            from novel_system.services.reference_copy_gate import check_reference_copy, introduced_copy
 
             copy_check = check_reference_copy(self.session, revision_content, policy=policy)
-            copy_blocked = bool(copy_check.blocked)
+            # M2：只算修改稿**新带进来**的重合——首稿里本来就有的（修改稿照旧留着）不是这次修改的错，不能因此白花
+            # 一次调用、还把「照抄」记到修改头上；首稿自己的重合由硬 QC / 成稿门对全文把关
+            introduced = introduced_copy(copy_check, revision_content, first_content)
+            copy_blocked = bool(introduced.blocked)
         except Exception:  # noqa: BLE001 — 抄袭门查不成：按拦下处理（fail-closed），保留首稿
             _LOGGER.warning("copy gate failed on targeted revision for scene %s", scene.scene_id, exc_info=True)
             copy_blocked = True
-        try:
-            revision_reading = style_readings.reading_for_text(self.session, policy, revision_content)
-        except Exception:  # noqa: BLE001 — 读不出：按「不更像」处理
-            _LOGGER.warning("revision fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
-            revision_reading = None
+        # L3：读数在保存点里读，失败只回滚保存点（读不出按「不更像」处理），不耽误后面落库与检查点
+        revision_reading, _revision_error = self._observe_reading(
+            policy, revision_content, ref=scene.scene_id, what="revision"
+        )
         if candidate_mode:
             keep = bool(base_safety["accepted"]) and not copy_blocked and revision_reading is not None
             keep_reason = (
@@ -1970,7 +2021,7 @@ class SceneGenerationService:
                     STYLE_NOTICE_REVISION_REJECTED,
                     {
                         style_step.REASON_NOT_CLOSER: "定向修改没有让稿子更像参考作者（读数没有变近），保留了首稿。",
-                        style_step.REASON_COPY_BLOCKED: "定向修改稿与参考书原文连续相同或用了受保护专名，已丢弃，保留首稿。",
+                        style_step.REASON_COPY_BLOCKED: "定向修改稿新带进了与参考书原文连续相同的句子，已丢弃，保留首稿。",
                         style_step.REASON_BASE_UNSAFE: "定向修改稿没过确定性安全门（长度 / 必写项 / 禁写内容 / 文本完整性），保留首稿。",
                         style_step.REASON_REVISION_UNREADABLE: "定向修改稿读不出读数，无法确认更像，保留首稿。",
                     }.get(keep_reason, "定向修改没有采用，保留首稿。"),
@@ -2030,6 +2081,8 @@ class SceneGenerationService:
                 reading_id=revision_reading_row.reading_id if revision_reading_row is not None else None,
             ),
             "copy_check": style_readings.copy_check_summary(copy_check),
+            # 去留只看修改稿新带进来的重合（首稿里本来就有的不算这次修改的）
+            "copy_check_introduced": style_readings.copy_check_summary(introduced),
             "base_safety_accepted": bool(base_safety["accepted"]),
             "thresholds": thresholds.audit() if hasattr(thresholds, "audit") else None,
             "candidate_mode": bool(candidate_mode),
@@ -2118,7 +2171,7 @@ class SceneGenerationService:
         """
         with _length_band_slack_for(bundle, scene):
             thresholds = style_step.fidelity_thresholds()
-            first_reading, first_reading_id = self._record_first_draft_reading(
+            first_reading, first_reading_id, first_reading_error = self._record_first_draft_reading(
                 scene, policy, first_row_id, first_content, thresholds
             )
             usable = first_reading is not None and first_reading.reliable
@@ -2127,6 +2180,15 @@ class SceneGenerationService:
             except KeyError:
                 base_temp = 0.7
             slot_count = max(1, int(n_candidates)) if usable else 1
+            # L1：续跑时读数可能与第一次不同（书改过、这次读不出），槽位数不能因此缩回去——已经落下检查点的槽位
+            # （产品或基稿）一个都不能丢，否则检查点里的工作项对不上，续跑报 RUN_CHECKPOINT_CORRUPT
+            resumed_indices = [
+                int(key.split(":", 1)[1])
+                for key in (*resume_products, *resume_bases)
+                if key.startswith("initial:") and key.split(":", 1)[1].isdigit()
+            ]
+            if resumed_indices:
+                slot_count = max(slot_count, max(resumed_indices) + 1)
             results: list[tuple[StyleGenerationResult, int]] = []
             for idx in range(slot_count):
                 slot_key = f"initial:{idx}"
@@ -2152,6 +2214,8 @@ class SceneGenerationService:
                     step_reconciler=step_reconciler,
                     first_reading=first_reading,
                     first_reading_id=first_reading_id,
+                    first_reading_done=True,
+                    first_reading_error=first_reading_error,
                     candidate_mode=idx > 0,
                     force_accept=idx == 0,
                     temperature_override=temperature if idx > 0 else None,
@@ -2184,23 +2248,31 @@ class SceneGenerationService:
         first_reading: Any,
         first_row_id: str,
     ) -> list[StyleGenerationResult]:
-        """按读数 distance 升序排（读不出的排最后，平手时槽位靠前的在前——首稿赢平手）；写每个候选的排序审计。"""
+        """先按抄袭门（与参考书原文连续相同的候选一律排最后——M2：否则一份被拦的首稿可以凭 distance 赢过干净的
+        修改稿、成为风格稿），再按读数 distance 升序排（读不出的排在能读的后面，平手时槽位靠前的在前——首稿赢平手）；
+        写每个候选的排序审计。"""
         from novel_system.services.literary_quality import adversarial_rank_score
+        from novel_system.services.reference_copy_gate import check_reference_copy
 
-        scored: list[tuple[StyleGenerationResult, int, Any]] = []
+        scored: list[tuple[StyleGenerationResult, int, Any, bool]] = []
         for result, idx in results:
             if (result.content or "") == "":
                 reading = None
             elif result.lineage == LINEAGE_FIRST_DRAFT_ACCEPTED or idx == 0:
                 reading = first_reading
             else:
-                try:
-                    reading = style_readings.reading_for_text(self.session, policy, result.content)
-                except Exception:  # noqa: BLE001 — 读不出排最后
-                    reading = None
-            scored.append((result, idx, reading))
+                # L3：读不出排最后；读数在保存点里读，失败不弄坏会话
+                reading, _error = self._observe_reading(
+                    policy, result.content, ref=result.row_id, what="candidate"
+                )
+            try:
+                copy_passed = not check_reference_copy(self.session, result.content or "", policy=policy).blocked
+            except Exception:  # noqa: BLE001 — 抄袭门查不成：候选按未过处理（排最后，终选门会剔除）
+                copy_passed = False
+            scored.append((result, idx, reading, copy_passed))
         scored.sort(
             key=lambda item: (
+                not item[3],
                 item[2] is None,
                 float(item[2].distance) if item[2] is not None else 0.0,
                 item[1],
@@ -2209,17 +2281,10 @@ class SceneGenerationService:
         seen_texts: dict[str, str] = {}
         ranked: list[StyleGenerationResult] = []
         max_percentile = style_step.fidelity_thresholds().style_step_max_percentile
-        for rank, (result, idx, reading) in enumerate(scored):
+        for rank, (result, idx, reading, copy_passed) in enumerate(scored):
             normalized = (result.content or "").strip()
             duplicate_of = seen_texts.get(normalized)
             seen_texts.setdefault(normalized, result.row_id)
-            copy_passed: bool | None = None
-            try:
-                from novel_system.services.reference_copy_gate import check_reference_copy
-
-                copy_passed = not check_reference_copy(self.session, result.content or "", policy=policy).blocked
-            except Exception:  # noqa: BLE001 — 抄袭门查不成：候选按未过处理（终选门会剔除）
-                copy_passed = False
             result.ranking_audit = {
                 "row_id": result.row_id,
                 "rank": rank,
@@ -2544,7 +2609,7 @@ class SceneGenerationService:
                 and rejected_candidate_row_id is None
             ):
                 # v2（规格 §2.W5.5）styled-draft gate：样例预算放大后，每一份落库的
-                # provider 风格化输出都必须过一次确定性抄袭 + 冻结禁用词检查。
+                # provider 风格化输出都必须过一次确定性抄袭 + 生成禁用词检查。
                 # style_draft：命中只记 notice 与审计，升级到人工复核由 soft_qc 阶段的同一
                 # gate 完成；near_final_rewrite：输出会直接成为终稿、没有后续 QC，
                 # orchestrator 读 result.styled_draft_gate 对抄袭裁决采取行动。
@@ -2957,6 +3022,7 @@ class SceneGenerationService:
                 editable_segment_ids=editable_segment_ids,
             ),
         )
+        # 注入包的改稿口径（L6）：救稿只按编号改几段，不是「写这一场」；改稿角色也不带近期偏差
         prompt = self._inject_style_reference(
             prompt,
             scene,
@@ -2965,6 +3031,7 @@ class SceneGenerationService:
             context_text=neutral_content,
             final_user_prompt=user_prompt,
             placement=PLACEMENT_USER_TAIL,
+            role=ROLE_REVISE,
         )
         user_prompt = apply_style_user_tail(prompt, user_prompt)
         salvage_audit: dict[str, Any]
@@ -3256,6 +3323,7 @@ class SceneGenerationService:
                     context_text=None,
                     final_user_prompt=user_prompt,
                     placement=PLACEMENT_USER_TAIL,
+                    role=ROLE_REVISE,
                 )
         elif is_safety_repair:
             if style_first:
@@ -3268,6 +3336,7 @@ class SceneGenerationService:
                     context_text=None,
                     final_user_prompt=user_prompt,
                     placement=PLACEMENT_USER_TAIL,
+                    role=ROLE_REVISE,
                 )
             else:
                 # 这一遍只负责把已生成的风格稿恢复到事实、长度与正文完整性硬约束内。
@@ -3284,6 +3353,7 @@ class SceneGenerationService:
                 context_text=source_content,
                 final_user_prompt=user_prompt,
                 placement=PLACEMENT_USER_TAIL,
+                role=ROLE_REVISE,
             )
         user_prompt = apply_style_user_tail(prompt, user_prompt)
         try:
@@ -3557,7 +3627,7 @@ class SceneGenerationService:
         bundle: dict[str, Any] | None = None,
         stage: str = "style_draft",
     ) -> dict[str, Any] | None:
-        """v2（规格 §2.W5.5）styled-draft gate：对已落库的风格化输出跑抄袭 + 冻结禁用词。
+        """v2（规格 §2.W5.5）styled-draft gate：对已落库的风格化输出跑抄袭 + 生成禁用词。
 
         契约取自本次生成用的 bundle（与注入前缀同一冻结契约）；返回
         qc_engine.run_styled_draft_style_gate 的诊断字典；无绑定 → None；gate 自身失败 →

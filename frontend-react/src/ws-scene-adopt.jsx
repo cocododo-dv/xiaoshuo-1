@@ -96,9 +96,13 @@ function useSceneAdoption({ items, runs, setRuns, pickedId, pickedIdRef, mounted
         setDecision(null);
         setSafetyReview(null);
         setSafetyError("");
+        // 成稿门的不拦警告（用了参考书的专名等）随归档结果说一句：归档照常，语气降一档
+        const gateNotes = Array.isArray(res.gateNotes) ? res.gateNotes.filter(Boolean) : [];
+        const tail = gateNotes.length ? ` ${gateNotes.join(" ")}` : "";
+        const tone = gateNotes.length ? "warn" : "ok";
         setNote(res.authorBackup
-          ? { tone: "ok", recovery: true, text: "已归档；覆盖前的作者稿已自动备份到「同步与恢复」。" }
-          : { tone: "ok", text: "已归档并写入正文文档。" });
+          ? { tone, recovery: true, text: `已归档；覆盖前的作者稿已自动备份到「同步与恢复」。${tail}` }
+          : { tone, text: `已归档并写入正文文档。${tail}` });
       }
       return res;
     } catch (error) {

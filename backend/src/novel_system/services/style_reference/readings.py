@@ -225,11 +225,14 @@ def _existing(
     profile_id: str | None,
 ) -> StyleFidelityReading | None:
     stmt = select(StyleFidelityReading).where(
-        StyleFidelityReading.source == source,
         StyleFidelityReading.stage == stage,
         StyleFidelityReading.draft_ref == draft_ref,
         StyleFidelityReading.text_sha256 == sha,
     )
+    if stage != STAGE_FINAL:
+        stmt = stmt.where(StyleFidelityReading.source == source)
+    # 终稿读数跨来源幂等（L7）：同一场、同一终稿行、同一段文字只是一个点——管线归档之后作者在起草台再确认
+    # （source=adopt）、成稿中心重新归档同一修订（source=archive），都不再多记一条，走势图不出重复点。
     stmt = stmt.where(
         StyleFidelityReading.scene_id == scene_id if scene_id else StyleFidelityReading.scene_id.is_(None)
     )
@@ -259,7 +262,9 @@ def record_fidelity_reading(
 
     - ``reading``：调用方已经读过同一段文字时传进来，省一次测量；
     - ``draft_ref`` 给了时幂等：同一场、同一来源 / 阶段 / 稿行、同一段文字、同一画像已有读数就直接返回那一条
-      （检查点续跑、重确认不会重复记）；对照检查（``manual_check``）例外——每次检查都记一条（作业本身只跑一次）；
+      （检查点续跑不会重复记）；终稿（``stage=final``）不分来源——同一终稿行同一段文字已经记过（不论是管线归档、
+      采纳还是成稿中心记的），重确认 / 重新归档都返回那一条；对照检查（``manual_check``）例外——每次检查都记一条
+      （作业本身只跑一次）；
     - ``judge``：评审模型的按维打分（对照检查 / 软 QC 参考评审），规整成 10 分制；
     - ``copy_check``：抄袭门结果，只记旗标与计数；
     - ``strict=False``（管线默认）：写在保存点里，任何异常只记日志、返回 ``None``——读数是观察，永不阻断管线；

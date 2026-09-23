@@ -337,7 +337,8 @@ def test_soft_qc_reference_judge_scores_are_validated_rescaled_and_persisted(ses
     assert attempt.details_json["reference_judge"] == judge
 
 
-def test_soft_qc_score_scale_is_decided_per_answer() -> None:
+def test_soft_qc_score_scale_is_decided_per_answer_only_for_undeclared_templates() -> None:
+    """模板没声明刻度（旧提示词快照）时的兜底：按这一次回答推断量级。"""
     from novel_system.services.qc_engine import _normalize_soft_qc_scores
 
     percent = _normalize_soft_qc_scores({"style_score": 93, "dimension_scores": {"scene.dialogue": 70}})
@@ -346,6 +347,78 @@ def test_soft_qc_score_scale_is_decided_per_answer() -> None:
     derived = _normalize_soft_qc_scores({"dimension_scores": {"scene.dialogue": 6, "theme.values": 8}})
     assert derived["style_score"] == 0.7
     assert _normalize_soft_qc_scores(derived) == derived
+
+
+def test_soft_qc_scores_follow_the_scale_the_template_declares() -> None:
+    """L5：刻度以模板声明的为准（soft_qc 的 structured_schema：style_score / dimension_scores 的 maximum = 10）——
+    全在 1 以下的回答是十分之一的分（不是满分），误写的 85 丢掉（不把同一次回答里别的分一起按 0–100 除）。"""
+    from novel_system.services.prompt_builder import load_prompt_templates
+    from novel_system.services.qc_engine import _normalize_soft_qc_scores
+    from novel_system.services.review_scores import declared_score_scale
+
+    schema = load_prompt_templates()["soft_qc"].structured_schema
+    assert declared_score_scale(schema, "style_score", "dimension_scores") == 10.0
+
+    small = _normalize_soft_qc_scores(
+        {"style_score": 0.9, "dimension_scores": {"scene.dialogue": 1.0, "theme.values": 0.5}}, schema=schema
+    )
+    assert small["style_score"] == 0.09 and small["dimension_scores"] == {"scene.dialogue": 0.1, "theme.values": 0.05}
+
+    stray = _normalize_soft_qc_scores(
+        {"style_score": 7.5, "dimension_scores": {"scene.dialogue": 85, "theme.values": 6, "language.vocabulary": -1}},
+        schema=schema,
+    )
+    assert stray["style_score"] == 0.75
+    assert stray["dimension_scores"] == {"theme.values": 0.6}, "越界的分丢掉，其余按 0–10 换算"
+
+    # 总分本身越界：丢掉，改取按维分的均值
+    derived = _normalize_soft_qc_scores({"style_score": 93, "dimension_scores": {"scene.dialogue": 8}}, schema=schema)
+    assert derived["style_score"] == 0.8 and derived["dimension_scores"] == {"scene.dialogue": 0.8}
+
+
+def test_soft_qc_run_uses_the_declared_scale_end_to_end(session, monkeypatch) -> None:
+    """L5：真实软 QC 走一遍——模型在 0–10 的模板下给了全在 1 以下的分，落库的参考评审是十分之一的分，不是满分。"""
+    from tests.test_qc_engine_style_validation_gate import (
+        CLEAN_TEXT,
+        REFERENCE_PARAGRAPH,
+        _run_soft_qc,
+        _seed_soft_scene,
+        _seed_style_binding,
+    )
+
+    _seed_style_binding(project_id="proj_v3_scale", seed="v3_scale", paragraphs=[REFERENCE_PARAGRAPH])
+    _seed_soft_scene(session, project_id="proj_v3_scale", draft_content=CLEAN_TEXT)
+    output = _judge_output(style_score=0.9, dimension_scores={"language.rhetoric": 0.5, "theme.emotional_tone": 85})
+    decision = _run_soft_qc(session, _JudgeRunner(output), CLEAN_TEXT)
+    session.commit()
+
+    assert decision.branch == "continue"
+    report = session.execute(select(QcReport).where(QcReport.qc_type == "soft_qc")).scalars().one()
+    judge = next(entry for entry in report.rewrite_brief_json if entry.get("kind") == "reference_judge")
+    assert judge["style_score"] == 0.9 and judge["dimension_scores"] == {"language.rhetoric": 0.5}
+
+
+def test_unbound_soft_qc_never_records_a_reference_judge(session) -> None:
+    """L6：没绑定的场景（润色口径）模型顺手给了一个 style_score——那不是「像不像」的评分，不记成参考评审总分；
+    场景的「像不像」接口也不给没绑定的场景评审分。"""
+    from novel_system.services.style_fidelity_view import scene_style_fidelity
+    from tests.test_qc_engine_style_validation_gate import CLEAN_TEXT, _run_soft_qc, _seed_soft_scene
+
+    scene = _seed_soft_scene(session, project_id="proj_v3_unbound_judge", draft_content=CLEAN_TEXT)
+    output = _judge_output(style_score=8.0)
+    output.pop("dimension_scores")
+    runner = _JudgeRunner(output)
+    decision = _run_soft_qc(session, runner, CLEAN_TEXT)
+    session.commit()
+
+    assert decision.branch == "continue"
+    assert not runner.calls[0]["prompt"]["system_prompt"].startswith("[STYLE_REFERENCE]")
+    report = session.execute(select(QcReport).where(QcReport.qc_type == "soft_qc")).scalars().one()
+    assert [entry for entry in report.rewrite_brief_json if entry.get("kind") == "reference_judge"] == []
+    attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "soft_qc")).scalars().one()
+    assert "reference_judge" not in attempt.details_json
+    payload = scene_style_fidelity(session, scene)
+    assert payload["bound"] is False and payload["judge"] is None
 
 
 def test_prompt_schemas_declare_judge_and_review_score_ranges() -> None:
@@ -371,7 +444,30 @@ def test_prompt_schemas_declare_judge_and_review_score_ranges() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_near_final_scores_follow_the_declared_scale() -> None:
+    """L5：准定稿验收的刻度以模板声明的为准（overall_score / scores 的 maximum = 10）：全在 1 以下的回答是十分之一
+    的分，越界的分丢掉（不夹、不按它改量级）。"""
+    from novel_system.services.near_final import _normalize_acceptance_payload
+    from novel_system.services.prompt_builder import load_prompt_templates
+
+    templates = load_prompt_templates()
+    schema = templates["near_final_acceptance_review"].structured_schema
+    small = _normalize_acceptance_payload(
+        {"overall_score": 0.85, "scores": {"story_necessity": 0.9, "ending_drive": 1.0}}, schema=schema
+    )
+    assert small["overall_score"] == 0.085 and small["scores"] == {"story_necessity": 0.09, "ending_drive": 0.1}
+    stray = _normalize_acceptance_payload(
+        {"overall_score": 8.0, "scores": {"story_necessity": 85, "ending_drive": 7, "continuity": -2}}, schema=schema
+    )
+    assert stray["overall_score"] == 0.8 and stray["scores"] == {"ending_drive": 0.7}
+    # 章级评审的 scores 是开放对象，刻度看 overall_score 的声明
+    chapter_schema = templates["chapter_near_final_review"].structured_schema
+    chapter = _normalize_acceptance_payload({"overall_score": 9.0, "scores": {"escalation": 0.5}}, schema=chapter_schema)
+    assert chapter["overall_score"] == 0.9 and chapter["scores"] == {"escalation": 0.05}
+
+
 def test_near_final_scores_are_rescaled_not_saturated() -> None:
+    """模板没声明刻度（旧快照）时按一次回答推断量级的兜底。"""
     from novel_system.services.near_final import _normalize_acceptance_payload
 
     ten = _normalize_acceptance_payload(

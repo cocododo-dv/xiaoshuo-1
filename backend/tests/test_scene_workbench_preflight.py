@@ -215,7 +215,7 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
     session: Session,
     monkeypatch,
 ) -> None:
-    """全局受保护词（环境变量）也过唯一抄袭门：只报位置与哈希，不报词本身。"""
+    """全局受保护词（环境变量）也过唯一抄袭门：只报位置与哈希，不报词本身；专名只提示、不拦（safe 只看原文重合）。"""
     monkeypatch.setenv(
         "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON",
         '["欧文·灰港", "盐湾学院"]',
@@ -257,7 +257,7 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
 
     assert response.status_code == 200
     scan = response.json()["data"]["source_safety_scan"]
-    assert scan["safe"] is False
+    assert scan["safe"] is True and scan["blocked"] is False and scan["protected_terms_block"] is False
     assert scan["hit_count"] == 0 and scan["protected_hit_count"] == 2
     assert [(item["start"], item["end"], item["source"]) for item in scan["protected_hits"]] == [
         (5, 10, "environment"),

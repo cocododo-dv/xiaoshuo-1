@@ -138,13 +138,15 @@ export function SceneFidelityPanel({ sceneId, runFidelity = null, go = null }) {
   const chain = sceneFidelityChain(runFidelity, scene);
   const bound = scene ? !!scene.bound : !!runFidelity;
   const manual = (scene && scene.readings && scene.readings.manual) || null;
-  const hasChain = !!(chain.first || chain.step || chain.revision || chain.patch || chain.final || chain.judge);
+  // 没绑定的场景没有「参考评审」可言：润色口径的软 QC 顺手给的分不是像不像，不画「参考评审总分」
+  const judgeSource = bound ? chain.judge : null;
+  const hasChain = !!(chain.first || chain.step || chain.revision || chain.patch || chain.final || judgeSource);
   if (!hasChain && !manual && !bound) return null;
 
   const stepView = fidStyleStepView(chain.step);
   const patchView = fidPatchView(chain.patch);
-  const weakest = fidWeakestDims(chain.judge, 3);
-  const judge = fidJudgeView(chain.judge);
+  const weakest = fidWeakestDims(judgeSource, 3);
+  const judge = fidJudgeView(judgeSource);
   const latest = chain.final || chain.revision || chain.first;
   const latestLabel = chain.final ? "终稿" : chain.revision ? "修改稿" : "首稿";
 
@@ -184,7 +186,7 @@ export function SceneFidelityPanel({ sceneId, runFidelity = null, go = null }) {
       {latest && (judge || latest.dimension_scores) && (
         <details className="scn2-fid-dims">
           <summary>16 个维度都看</summary>
-          <FidelityDimensionTable reading={latest} judge={chain.judge} states={fidReadingStates(latest)} />
+          <FidelityDimensionTable reading={latest} judge={judgeSource} states={fidReadingStates(latest)} />
         </details>
       )}
       <CheckBlock sceneId={sceneId} bound={bound} manual={manual} go={go} />

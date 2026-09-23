@@ -4,7 +4,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
 import { hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
-import { copyGateAdoptMessage, isCopyGateError } from "./ws-copy-gate.js";
+import { copyGateAdoptMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { fidPatchView, fidRankText, fidStyleStepView, fidVerdict } from "./ws-fidelity-model.js";
 import {
   RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES, scnPipeStepName, scnParaText,
@@ -431,6 +431,8 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
     return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
   }
   // 2) 服务端已经保存并归档同一修订；这里只吸收回包，不再 PATCH 新修订。
+  // 成稿门的不拦警告（用了参考书的专名 / 原文重合检查这次没做成）：归档照常，告诉作者一声
+  const gateNotes = finalGateNotes(adoption);
   let cacheWarning = null;
   try {
     const synced = WrDocs.acceptCanonical(sid, html, adoption);
@@ -452,9 +454,9 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   // 3) 归档后重新拉服务端状态（起草台运行记录与管线真相收敛）
   try {
     const status = await apiGet(`/api/v1/scenes/${sceneId}/status`);
-    return { ok: true, archived: true, words: count, authorBackup, cacheWarning, contentHash: adoption && adoption.content_hash, serverStatus: (status && status.scene_status) || "archived", authorState: status && status.author_state };
+    return { ok: true, archived: true, words: count, authorBackup, cacheWarning, gateNotes, contentHash: adoption && adoption.content_hash, serverStatus: (status && status.scene_status) || "archived", authorState: status && status.author_state };
   } catch (e) {
-    return { ok: true, archived: true, words: count, authorBackup, cacheWarning, contentHash: adoption && adoption.content_hash, serverStatus: "archived" };
+    return { ok: true, archived: true, words: count, authorBackup, cacheWarning, gateNotes, contentHash: adoption && adoption.content_hash, serverStatus: "archived" };
   }
 }
 

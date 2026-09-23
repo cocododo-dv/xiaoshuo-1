@@ -33,7 +33,7 @@ from novel_system.services.llm_task_runner import (
     current_llm_run_job_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.review_scores import score_scale, to_unit
+from novel_system.services.review_scores import normalize_score, response_score_scale
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import (
     SCENE_STRUCTURE_SECTION_KEY,
@@ -591,7 +591,9 @@ class NearFinalAcceptanceService:
                 source_draft_content=source_content,
                 execution_step_key=execution_step_key,
             )
-            payload = _normalize_acceptance_payload(node_result.response.structured_output)
+            payload = _normalize_acceptance_payload(
+                node_result.response.structured_output, schema=prompt.get("structured_schema")
+            )
             llm_call_id = node_result.llm_call_id
         except LLMNodeExecutionError as exc:
             llm_call_id = self._ledgered_failure_llm_call_id(
@@ -726,7 +728,9 @@ class NearFinalAcceptanceService:
                 execution_step_key=execution_step_key,
                 context=context,
             )
-            payload = _normalize_acceptance_payload(node_result.response.structured_output)
+            payload = _normalize_acceptance_payload(
+                node_result.response.structured_output, schema=prompt.get("structured_schema")
+            )
             llm_call_id = node_result.llm_call_id
         except LLMNodeExecutionError as exc:
             llm_call_id = self._ledgered_failure_llm_call_id(
@@ -1138,13 +1142,19 @@ def _normalize_scene_story_check(value: Any) -> dict[str, Any] | None:
     }
 
 
-def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:
+ACCEPTANCE_SCORE_FIELDS: tuple[str, ...] = ("overall_score", "scores")
+
+
+def _normalize_acceptance_payload(payload: Any, *, schema: Any = None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _execution_failure_payload("near-final reviewer returned an invalid payload")
-    # 风格参考 v3（V7）：分数按这一次回答里的全部分数定量级（0–1 / 0–10 / 0–100）再换算到 0–1——
-    # 此前直接夹到 [0, 1]，0–10 的回答全部饱和成 1.0（实库 3/3 次 overall_score = 1.0）。
+    # 风格参考 v3（V7 / L5）：分数按模板声明的刻度（``schema`` = 这一次调用的 structured_schema，overall_score / scores
+    # 的 maximum）逐个换算到 0–1，越界的丢掉——此前直接夹到 [0, 1]，0–10 的回答全部饱和成 1.0（实库 3/3 次
+    # overall_score = 1.0）；按一次回答的最大分猜量级又会把全在 1 以下的回答读成满分。模板没声明（旧快照）才按回答推断。
     raw_scores = payload.get("scores") if isinstance(payload.get("scores"), dict) else {}
-    scale = score_scale([payload.get("overall_score"), *raw_scores.values()])
+    scale, _source = response_score_scale(
+        schema, ACCEPTANCE_SCORE_FIELDS, [payload.get("overall_score"), *raw_scores.values()]
+    )
     scores = {
         str(key): _score(value, scale) for key, value in raw_scores.items() if _score(value, scale) is not None
     }
@@ -1440,11 +1450,10 @@ def _revision_brief_list(value: Any) -> list[dict[str, Any]]:
 
 
 def _score(value: Any, scale: float = 1.0) -> float | None:
-    """一个分数按量级换算到 0–1（见 ``review_scores``）；非数值 / NaN → None。"""
+    """一个分数按刻度换算到 0–1（见 ``review_scores``）；非数值 / NaN / 越界 → None。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    unit = to_unit(value, scale)
-    return unit if isinstance(unit, float) else None
+    return normalize_score(value, scale)
 
 
 def _scalar_text(value: Any) -> str:

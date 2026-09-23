@@ -33,12 +33,14 @@ style_first_reference_scene_chars_max: 5000
 #   (真实参考书上随机 30 段原文九成 ≤ 90);否则做定向修改。
 # revision_min_improvement:定向修改稿的 distance 至少比首稿小这么多才采用,否则保留首稿(永不越改越远)。
 # patch_max_distance_increase:软补丁后 distance 变大超过它、而参考评审的总分没有提高 → 退回补丁前的稿子。
-# judge_tolerance:参考评审总分(0–1)的波动容差——比补丁前低出它算变差(退回),高出它算提高。
+# judge_tolerance:参考评审总分(0–1)的波动容差——比补丁前低出它算变差(退回),高出它算提高。0.1 = 评审 10 分制
+#   上的 1 分:评审按整数 / 半分给分,两次独立评审的噪声常有半分到一分;原先的 0.02(0.2 分)比评审自己的粒度
+#   还细,好补丁会被噪声退回。
 fidelity:
   style_step_max_percentile: 90
   revision_min_improvement: 0.03
   patch_max_distance_increase: 0.05
-  judge_tolerance: 0.02
+  judge_tolerance: 0.1
 
 # 跨场景连续性(bundle_builder.load_continuity_budget):上一场成稿尾部作 [前文声音锚] 的字数上限
 # (只在 neutral_first / 无绑定时进 bundle;style_first 下作者自己的稿子不当声音参照)。

@@ -1869,6 +1869,45 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
     expect(wrKeys.length).toBeGreaterThan(0);
   });
 
+  it("归档成功但成稿门报了专名（不拦）：结果带上中文的一句，归档照常", async () => {
+    const { mod, client } = await loadWithCatalog();
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (/\/api\/v1\/scenes\/s1\/adopt-current$/.test(url)) {
+        return Promise.resolve({
+          scene_id: "s1",
+          scene_status: "archived",
+          final_scene_row_id: "final_s1_v1",
+          draft_id: body.exact_author_draft.draft_id,
+          draft_revision_no: 2,
+          author_draft: {
+            draft_id: body.exact_author_draft.draft_id,
+            revision_no: 2,
+            content: body.exact_author_draft.content,
+            last_promoted_revision_no: 2,
+            last_promoted_final_scene_row_id: "final_s1_v1",
+            canonical_dirty: false,
+          },
+          validation: {
+            final_text_gate: {
+              archive_blockers: [],
+              warnings: [{ issue_key: "source_safety:protected_term", blocking: false, terms: ["灰港学会"], hit_count: 1 }],
+            },
+          },
+        });
+      }
+      return basePost(url, body, options);
+    });
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT);
+
+    expect(result.ok).toBe(true);
+    expect(result.archived).toBe(true);
+    expect(result.gateNotes).toEqual([
+      "正文用了参考书里的专名「灰港学会」（共 1 处）。这一项不拦归档；是参考书里的人名、地名或设定名的话，建议换成你自己的——只是日常用词被误收进专名表的，可以到文风画像的禁用词里删掉它。",
+    ]);
+  });
+
   it("后端拒绝（409 无稿/来源安全）：不置 done、不写缓存、faithful 返回失败", async () => {
     const { mod, client, cat } = await loadWithCatalog();
     const blocked = Object.assign(new Error("blocked"), { code: "SOURCE_SAFETY_BLOCKED" });
@@ -3063,6 +3102,23 @@ describe("像不像（风格参考 v3）", () => {
     expect(view.host.querySelector('[data-testid="scene-fidelity"]')).toBeNull();
   });
 
+  it("没绑定的场景：有终稿读数也不画「参考评审总分」（润色口径的软 QC 顺手给的分不是像不像）", async () => {
+    const { client } = await loadSceneRun();
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => (url === "/api/v1/scenes/s1/style-fidelity"
+      ? Promise.resolve({
+        scene_id: "s1", bound: false, readings: { final: READ({ reading_id: "r-old-final", percentile: 40, within_range: true }) },
+        decisions: [], judge: { overall: 8.2, dimensions: { "scene.dialogue": { score: 8.2, note: "" } } },
+      })
+      : baseGet(url)));
+    const { SceneFidelityPanel } = await import("./ws-scene-fidelity.jsx");
+    const view = await renderRunJobControl(SceneFidelityPanel, { sceneId: "s1", runFidelity: null });
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-fidelity-final"]')).not.toBeNull(), T);
+    expect(view.host.querySelector('[data-testid="scene-fidelity-judge"]')).toBeNull();
+    expect(view.host.textContent).not.toContain("参考评审总分");
+    expect(view.host.textContent).not.toContain("8.2");
+  });
+
   it("对照检查被拒（没有模型）：说成中文并给「去设置模型」", async () => {
     const { client } = await loadSceneRun();
     const baseGet = client.apiGet.getMockImplementation();
@@ -3093,7 +3149,8 @@ describe("像不像（风格参考 v3）", () => {
     });
     expect(isCopyGateError(error)).toBe(true);
     const message = copyGateAdoptMessage(error);
-    expect(message).toBe("这一稿里有 2 处与参考书原文连续相同、1 处用了参考书里的专名，不能采用：改写这些地方（或退回重写）之后再采用。稿子已保留，写作台的正文没有改动。");
+    // 只有原文重合会拦；同一稿里的专名只顺带一句「不拦」
+    expect(message).toBe("这一稿里有 2 处与参考书原文连续相同，不能采用：改写这些地方（或退回重写）之后再采用。稿子已保留，写作台的正文没有改动。另有 1 处用了参考书里的专名——这一项不拦，定稿前可以换成自己的。");
     expect(isCopyGateError(Object.assign(new Error("x"), { code: "SOURCE_SAFETY_BLOCKED", details: {} }))).toBe(false);
   });
 });

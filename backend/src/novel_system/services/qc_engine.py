@@ -70,12 +70,13 @@ UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {
     "character_pronoun_continuity",
 }
 # 2026-09 风格模仿 v2（W5，规格 §2.W5.5）：styled-draft gate。
-# - 中性稿上的 style gate 只保留确定性 n-gram 抄袭（Q0）裁决；quant / 冻结禁用词不再对
+# - 中性稿上的 style gate 只保留确定性 n-gram 抄袭（Q0）裁决；quant / 生成禁用词不再对
 #   中性稿做（中性稿没有注入任何参考风格，量化容差与禁用词对它没有意义）。
-# - 风格稿（style_draft 落库后 + soft_qc 阶段）跑 plagiarism + 冻结 banned_terms：抄袭命中
+# - 风格稿（style_draft 落库后 + soft_qc 阶段）跑 plagiarism + 生成禁用词：抄袭命中
 #   → Q0 `style_plagiarism`，走既有 human_review 升级路径（不允许软风险接受）；禁用词命中
 #   → Q2 `reference_banned_term_replicated`，soft_qc 要求人工复核（作者可接受软风险）；
-#   quant 结果只记诊断，不产 issue。
+#   quant 结果只记诊断，不产 issue。风格参考 v3（H1）：禁用词读现行的表（与成稿门、抄袭门同一张），
+#   冻结契约里的词只渲染提示词红线；成稿门对同样的命中只报不拦的警告。
 STYLE_PLAGIARISM_ISSUE_KEY = "style_plagiarism"
 STYLE_BANNED_TERM_ISSUE_KEY = "reference_banned_term_replicated"
 # gate 自身没跑成（校验异常 / 契约损坏 / 参考书已删）：不是正文的错，但抄袭 / 禁用词检查
@@ -715,42 +716,77 @@ def _append_unique_rewrite_briefs(
 # ---- Hard/Soft QC 共享实现（两引擎逐字相同的私有方法统一收敛到这里） ----
 
 
-def _normalize_soft_qc_scores(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """把软 QC 的分数统一换算到契约的 0–1（风格参考 v3：与准定稿验收共用 ``review_scores``）。
+SOFT_QC_SCORE_FIELDS: tuple[str, ...] = ("style_score", "dimension_scores")
 
-    真实运行里模型给过 ``style_score: 9.3`` 与 ``93``。量级按**这一次回答里的全部分数**定（``style_score`` +
-    ``style_dimensions[].score`` + 参考评审的 16 维 ``dimension_scores``），同一把尺换算；只留 16 维里的键。
-    没给 ``style_score`` 而给了按维分时，总分取按维分的均值。重复调用是幂等的（换算后全在 0–1）。
+
+def _normalize_soft_qc_scores(payload: Mapping[str, Any], *, schema: Any = None) -> dict[str, Any]:
+    """把软 QC 的分数统一换算到契约的 0–1（风格参考 v3：与准定稿验收共用 ``review_scores``）。**只调一次**——
+    模型回答刚到、校验之前（``_qc_run_node_with_degradation``）；之后的环节拿到的都已是 0–1。
+
+    刻度以这一次调用的模板声明为准（``schema`` = 模板的 ``structured_schema``，``style_score`` /
+    ``dimension_scores`` 的 ``maximum``）：逐个分数按它换算，不在 ``[0, 刻度]`` 里的丢掉（总分丢掉就是没有总分，
+    按维分丢掉那一维，旧的 ``style_dimensions`` 丢掉那一条）。模板没声明刻度（旧提示词快照）时才按这一次回答里的
+    全部分数推断量级（``review_scores.score_scale`` 兜底）。只留 16 维里的键；没给 ``style_score`` 而给了按维分时，
+    总分取按维分的均值。
     """
-    from novel_system.services.review_scores import judge_dimension_scores, score_scale, to_unit
+    from novel_system.services.review_scores import (
+        judge_dimension_scores,
+        normalize_score,
+        response_score_scale,
+    )
 
     normalized = dict(payload)
     dims = normalized.get("style_dimensions")
     judge = judge_dimension_scores(normalized.get("dimension_scores"))
     dim_scores = [dim.get("score") for dim in dims if isinstance(dim, Mapping)] if isinstance(dims, list) else []
-    scale = score_scale([normalized.get("style_score"), *dim_scores, *judge.values()])
+    scale, _source = response_score_scale(
+        schema, SOFT_QC_SCORE_FIELDS, [normalized.get("style_score"), *dim_scores, *judge.values()]
+    )
     if normalized.get("style_score") is not None:
-        normalized["style_score"] = to_unit(normalized["style_score"], scale)
+        normalized["style_score"] = normalize_score(normalized["style_score"], scale)
     if isinstance(dims, list):
-        normalized["style_dimensions"] = [
-            {**dim, "score": to_unit(dim.get("score"), scale)} if isinstance(dim, Mapping) else dim
-            for dim in dims
-        ]
+        kept_dims: list[Any] = []
+        for dim in dims:
+            if not isinstance(dim, Mapping):
+                kept_dims.append(dim)
+                continue
+            score = normalize_score(dim.get("score"), scale)
+            if score is not None:
+                kept_dims.append({**dim, "score": score})
+        normalized["style_dimensions"] = kept_dims
     if "dimension_scores" in normalized:
-        normalized["dimension_scores"] = {key: to_unit(value, scale) for key, value in judge.items()}
+        unit_scores = {key: normalize_score(value, scale) for key, value in judge.items()}
+        normalized["dimension_scores"] = {key: value for key, value in unit_scores.items() if value is not None}
         if normalized.get("style_score") is None and normalized["dimension_scores"]:
             values = list(normalized["dimension_scores"].values())
             normalized["style_score"] = round(sum(values) / len(values), 4)
     return normalized
 
 
-def _reference_judge_record(payload: Mapping[str, Any]) -> dict[str, Any] | None:
-    """参考评审的分数（10 分制，落 qc 报告与尝试记录）；没有按维分也没有总分 → None。"""
+def _prompt_carries_reference(prompt: Mapping[str, Any] | None) -> bool:
+    """这一次评审的提示里真的带着参考（注入器把 ``[STYLE_REFERENCE]`` 块接在 system 提示最前面）——降级、未命中、
+    未绑定都不算。软 QC 模板的正文自己就提到「[STYLE_REFERENCE] 块」，所以只认开头，不认包含。"""
+    if not isinstance(prompt, Mapping):
+        return False
+    audit = prompt.get("_style_reference_runtime_audit")
+    if not isinstance(audit, Mapping) or str(audit.get("outcome") or "") != "hit":
+        return False
+    return str(prompt.get("system_prompt") or "").lstrip().startswith("[STYLE_REFERENCE]")
+
+
+def _reference_judge_record(payload: Mapping[str, Any], *, carried: bool = True) -> dict[str, Any] | None:
+    """参考评审的分数（10 分制，落 qc 报告与尝试记录）；没有按维分也没有总分 → None。
+
+    风格参考 v3（L6）：只有这一次评审**是**参考评审时才记——提示里带着参考（``carried``），或回答给了 16 维的按维分。
+    没绑定的场景（润色口径）模型也可能顺手给一个 ``style_score``，那不是「像不像」的评分，不能冒充参考评审总分。
+    """
     from novel_system.services.review_scores import unit_to_judge_scale
 
     dims = payload.get("dimension_scores") if isinstance(payload.get("dimension_scores"), Mapping) else {}
     style_score = payload.get("style_score")
     if not dims and style_score is None:
+        return None
+    if not carried and not dims:
         return None
     return {
         "kind": "reference_judge",
@@ -864,8 +900,11 @@ def _qc_run_node_with_degradation(
     """
     llm_call_id: str | None = None
     degraded_reason: str | None = None
+    score_schema: Any = None
     try:
         prompt = prompt_builder.build(bundle["snapshot"], step)
+        # 分数的刻度以这一次调用的模板声明为准（review_scores.declared_score_scale）
+        score_schema = prompt.get("structured_schema")
         final_user_prompt = _qc_build_user_prompt(
             prompt["user_prompt"], source_draft_content
         )
@@ -926,10 +965,10 @@ def _qc_run_node_with_degradation(
             # 只对真实 LLM payload 做 normalize（dump 会把 issue 重建为
             # issue_key+message）；此后管线内部字段（source/quality_level 等）
             # 不得再经 validate→dump 往返，否则分级契约被剥掉。
-            # 风格参考 v3：软 QC 的分数先换算量级再校验——此前 9.3 这类回答在这里就被 le=1 拒掉，
-            # 整遍软 QC 被判 invalid 豁免（2026-09-22 的换算只在落库时做，从没轮上）。
+            # 风格参考 v3：软 QC 的分数先按模板声明的刻度换算再校验——此前 9.3 这类回答在这里就被 le=1 拒掉，
+            # 整遍软 QC 被判 invalid 豁免（2026-09-22 的换算只在落库时做，从没轮上）。只在这里换算一次。
             if step == "soft_qc":
-                payload = _normalize_soft_qc_scores(payload)
+                payload = _normalize_soft_qc_scores(payload, schema=score_schema)
             report = validate_qc_report(step, payload)
             payload = report.model_dump()
         except (QCValidationError, ValidationError) as exc:
@@ -1096,7 +1135,7 @@ def run_styled_draft_style_gate(
     stage: str = "style_draft",
     bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """v2（规格 §2.W5.5）styled-draft gate：对**已风格化**文本跑抄袭 + 冻结禁用词。
+    """v2（规格 §2.W5.5）styled-draft gate：对**已风格化**文本跑抄袭 + 生成禁用词。
 
     风格参考 v3：绑定与否只看 :class:`~novel_system.services.style_policy.StylePolicy`（调用方传入的 bundle
     快照 → 场景当前 SceneBundle 冻结快照 → 旧 bundle / 无 bundle 时按当前活动绑定轻量现解析）；原文重合
@@ -1106,7 +1145,7 @@ def run_styled_draft_style_gate(
     gate 不阻断主流程，但「检查没跑」必须与「无绑定」区分开，由调用方挂 Q2 / notice 让作者看见。
 
     返回诊断字典（见 ``_styled_gate_result``）：``verdict`` 为 ``plagiarism`` 表示确定性 n-gram 重叠命中（Q0）；
-    ``forbidden_hits`` 非空表示复刻了冻结的生成禁用词；``quantitative`` 只作诊断。每次裁决（含 gate 自身失败）
+    ``forbidden_hits`` 非空表示用了画像现行的生成禁用词 / 受保护专名；``quantitative`` 只作诊断。每次裁决（含 gate 自身失败）
     写一行 ``styled_draft_gate_decided`` MetricEvent。
     """
     import time as _time
@@ -1144,6 +1183,27 @@ def run_styled_draft_style_gate(
         binding_id = policy.binding_id
         runtime_contract_hash = policy.contract_hash
         report = _styled_gate_report(session, policy, str(text))
+        unavailable_reason = getattr(report, "unavailable_reason", None)
+        if unavailable_reason and report.verdict != "plagiarism":
+            # 风格参考 v3（L4）：绑定的参考书已删（或策略降级）——抄袭门对这本书什么也没比对，不能报「通过」。
+            # 与 gate 自身失败同一形状（verdict=unavailable），软 QC 据此挂 Q2 复核、起草链路发 STYLE_GATE_UNAVAILABLE。
+            _LOGGER.warning(
+                "styled-draft style gate could not check the bound reference for scene %s (stage=%s): %s",
+                getattr(scene, "scene_id", None),
+                stage,
+                unavailable_reason,
+            )
+            result = styled_gate_unavailable_result(
+                stage=stage,
+                error="ReferenceCheckUnavailable",
+                error_code=str(unavailable_reason),
+                profile_id=profile_id,
+                binding_id=binding_id,
+                runtime_contract_hash=runtime_contract_hash,
+                runtime_contract_mode=policy.mode,
+            )
+            outcome = "error"
+            return result
         result = _styled_gate_result(
             stage=stage,
             report=report,
@@ -1228,45 +1288,35 @@ def scene_gate_style_policy(
 
 
 def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
-    """风格稿一道门的读数：原文重合（抄袭门，缓存）+ 冻结 / 现行的生成禁用词。
+    """风格稿一道门的读数：原文重合（抄袭门，缓存）+ 生成禁用词 / 受保护专名。
 
-    禁用词口径不变：冻结契约 → 契约里冻结的词（绑定后新增的不影响本 bundle 的裁决）；现解析 → 画像现行的词。
+    风格参考 v3（H1）：禁用词与成稿门、抄袭门**同一张现行的表**——就是抄袭门的 ``protected_hits``（画像现行的
+    生成期禁用词、学习作业写的受保护专名、环境变量的全局词），同一套规范化匹配。冻结契约里的禁用词只用来渲染
+    提示词的红线，不参与判定：作者删掉一个误收的词，这里立刻不再认它（以前冻结的词会让已建场景一直被拦）。
+    绑定的书查不到 / 策略降级 → ``unavailable_reason``（这一道门没有查成，调用方报 unavailable，不当作通过）。
     风格参考 v3（P5b）：旧校验层的量化回测（只作诊断）随校验层删除，``quantitative`` 恒为空。
     返回与旧校验报告同形的对象，交给 :func:`_styled_gate_result` 压成诊断字典。
     """
     from types import SimpleNamespace
 
     from novel_system.services.reference_copy_gate import check_reference_copy
-    from novel_system.services.style_reference.banned_terms import (
-        banned_term_hits,
-        profile_banned_term_hits,
-    )
-    from novel_system.services.style_reference.runtime_contract import contract_profile_objects
 
     copy = check_reference_copy(session, text, policy=policy)
-    forbidden: list[dict[str, str]] = []
-    seen: set[str] = set()
-    if policy.contract is not None:
-        for profile in contract_profile_objects(policy.contract):
-            frozen_terms = getattr(profile, "runtime_contract_banned_terms", None)
-            hits = (
-                banned_term_hits(text, list(frozen_terms))
-                if isinstance(frozen_terms, list)
-                else profile_banned_term_hits(text, str(getattr(profile, "profile_id", "") or ""), session)
-            )
-            for hit in hits:
-                key = json.dumps(hit, ensure_ascii=False, sort_keys=True)
-                if key not in seen:
-                    seen.add(key)
-                    forbidden.append(hit)
-    elif policy.profile_id:
-        forbidden = profile_banned_term_hits(text, policy.profile_id, session)
+    forbidden = [
+        {"pattern_statement": term, "matched_excerpt": term, "severity": "error"}
+        for term in copy.protected_terms()
+    ]
     if copy.hits:
         verdict = "plagiarism"
-    elif any(str(hit.get("severity") or "error") == "error" for hit in forbidden):
+    elif forbidden:
         verdict = "fail"
     else:
         verdict = "pass"
+    unavailable_reason: str | None = None
+    if copy.missing_books:
+        unavailable_reason = "STYLE_REFERENCE_BOOK_MISSING"
+    elif copy.unavailable_reasons:
+        unavailable_reason = str(copy.unavailable_reasons[0])
     return SimpleNamespace(
         verdict=verdict,
         plagiarism_json={
@@ -1282,6 +1332,7 @@ def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
         },
         forbidden_hits_json=forbidden,
         quantitative_json=[],
+        unavailable_reason=unavailable_reason,
     )
 
 
@@ -1627,7 +1678,7 @@ class HardQcEngine:
 
         scene 无作用域 / 无绑定 / 检查失败 → None（qc 结论直通）；否则 "pass" / "plagiarism"。
 
-        v2（规格 §2.W5.5）：这里只裁决确定性 n-gram 抄袭（Q0）；冻结禁用词 / 量化容差不对中性步位稿产生
+        v2（规格 §2.W5.5）：这里只裁决确定性 n-gram 抄袭（Q0）；生成禁用词 / 量化容差不对中性步位稿产生
         fail / partial（风格稿的对应检查在 ``run_styled_draft_style_gate``）。风格参考 v3：绑定与否看
         StylePolicy（场景当前 bundle 冻结的契约 → 旧 bundle / 无 bundle 时按当前活动绑定轻量现解析），
         原文重合走唯一抄袭门（按书一次索引、同一稿不重复扫描）。
@@ -1895,11 +1946,13 @@ class SoftQcEngine:
         # 前缀（同一冻结契约、同一 task_type），这样才谈得上「对照 [声音特征] /
         # [正向风格特征] 检查偏离」。注入审计随 attempt 落库。
         style_runtime_audit: dict[str, Any] | None = None
+        # 风格参考 v3（L6）：这一遍是不是参考评审（提示里真的带着参考）——决定分数记不记成「参考评审总分」
+        reference_carried = False
 
         def _decorate_soft_qc_prompt(
             prompt: dict[str, Any], final_user_prompt: str
         ) -> dict[str, Any] | None:
-            nonlocal style_runtime_audit
+            nonlocal style_runtime_audit, reference_carried
             injected = self._inject_style_reference_prefix(
                 prompt,
                 scene,
@@ -1914,6 +1967,7 @@ class SoftQcEngine:
             )
             if isinstance(audit, dict):
                 style_runtime_audit = dict(audit)
+            reference_carried = _prompt_carries_reference(injected)
             return injected
 
         # Wave 2（§5.4/§7.7）：软 QC 执行失败不再断头——降级为 waive + Q2 警告
@@ -1939,7 +1993,7 @@ class SoftQcEngine:
             scene, bundle, source_draft_content, payload, qc_type="soft_qc"
         )
         payload = self._apply_quality_grading(scene, source_draft_content, payload)
-        # v2（规格 §2.W5.5）styled-draft gate：风格稿的确定性抄袭 / 冻结禁用词检查。
+        # v2（规格 §2.W5.5）styled-draft gate：风格稿的确定性抄袭 / 生成禁用词检查。
         # 抄袭 → Q0 阻断并升级人工复核（不允许软风险接受）；禁用词 → 要求人工复核
         # （作者可接受软风险）；quant 只记诊断。
         styled_gate = run_styled_draft_style_gate(
@@ -1969,7 +2023,8 @@ class SoftQcEngine:
         attempt_details_extra: dict[str, Any] = {}
         if style_runtime_audit is not None:
             attempt_details_extra["style_reference_runtime"] = style_runtime_audit
-        judge_record = _reference_judge_record(_normalize_soft_qc_scores(payload))
+        # 分数在 _qc_run_node_with_degradation 里已按模板声明的刻度换算成 0–1（只换一次）
+        judge_record = _reference_judge_record(payload, carried=reference_carried)
         if judge_record is not None:
             attempt_details_extra["reference_judge"] = judge_record
         if styled_gate is not None:
@@ -1994,6 +2049,7 @@ class SoftQcEngine:
             bundle=bundle,
             source_draft_row_id=source_draft_row_id,
             payload=payload,
+            reference_carried=reference_carried,
         )
 
         if branch == "human_review_required" and styled_gate_trigger is not None:
@@ -2233,7 +2289,10 @@ class SoftQcEngine:
         payload: dict[str, Any],
         gate: dict[str, Any],
     ) -> dict[str, Any]:
-        """styled-draft gate 冻结禁用词命中 → Q2 issue + 要求人工复核（可软风险接受）。"""
+        """styled-draft gate 生成禁用词 / 受保护专名命中 → Q2 issue + 要求人工复核（可软风险接受）。
+
+        风格参考 v3（H1）：词表与成稿门同一张**现行**的表（抄袭门的受保护专名），成稿门对同样的命中只报不拦的警告；
+        作者在这里接受风险后稿子照常往下走。"""
         terms = [
             str(hit.get("matched_excerpt") or hit.get("pattern_statement") or "")
             for hit in (gate.get("forbidden_hits") or [])
@@ -2244,7 +2303,7 @@ class SoftQcEngine:
             {
                 "issue_key": STYLE_BANNED_TERM_ISSUE_KEY,
                 "message": (
-                    "styled draft replicates frozen generation-banned term(s) of the "
+                    "styled draft uses generation-banned term(s) / protected name(s) of the "
                     f"style reference: {', '.join(terms)}"
                 ),
                 "source": "deterministic",
@@ -2267,9 +2326,10 @@ class SoftQcEngine:
         rewrite_brief = _append_unique_rewrite_briefs(
             rewrite_brief,
             [
-                "风格稿复刻了参考画像冻结的生成禁用词（"
+                "风格稿用了参考画像的生成禁用词 / 受保护专名（"
                 + "、".join(terms)
-                + "）：人工复核后以自己的措辞替换，不得保留这些标志性用语。"
+                + "）：人工复核——是参考书的专名就换成自己的；若只是日常用词被误收进了专名表，可以接受这一处，"
+                "并到文风画像的禁用词里删掉它。"
             ],
         )
         return {
@@ -2481,7 +2541,7 @@ class SoftQcEngine:
         }
 
     @staticmethod
-    def _serialize_rewrite_brief(report: Any) -> list[dict[str, Any]]:
+    def _serialize_rewrite_brief(report: Any, *, reference_carried: bool = True) -> list[dict[str, Any]]:
         entries = [{"instruction": item} for item in report.rewrite_brief]
         if report.resolution_code == "soft_waive" and report.carry_forward_note:
             entries.append(
@@ -2493,8 +2553,10 @@ class SoftQcEngine:
             )
         # 风格参考 v3（V7）：参考评审的按维分与总分随报告落库（此前 style_score 校验完就丢了）。
         # 读简报的地方只认 instruction / carry_forward_note，这一条对它们不可见。
+        # L6：只有参考评审才记（提示带着参考，或回答给了按维分）——没绑定的润色口径顺手给的 style_score 不算。
         judge = _reference_judge_record(
-            {"style_score": report.style_score, "dimension_scores": dict(report.dimension_scores or {})}
+            {"style_score": report.style_score, "dimension_scores": dict(report.dimension_scores or {})},
+            carried=reference_carried,
         )
         if judge is not None:
             entries.append(judge)
@@ -2508,8 +2570,9 @@ class SoftQcEngine:
         bundle: dict[str, Any],
         source_draft_row_id: str,
         payload: dict[str, Any],
+        reference_carried: bool = False,
     ) -> QcReport:
-        payload = _normalize_soft_qc_scores(payload)
+        # 分数已在 _qc_run_node_with_degradation 里按模板声明的刻度换算成 0–1（只换一次；再换会被除两遍）
         report = SoftQCOutput.model_validate(
             {
                 **payload,
@@ -2533,7 +2596,7 @@ class SoftQcEngine:
             pass_flag=1 if payload["pass_flag"] else 0,
             next_action=payload["next_action"],
             issues_json=payload["issues"],
-            rewrite_brief_json=self._serialize_rewrite_brief(report=report),
+            rewrite_brief_json=self._serialize_rewrite_brief(report=report, reference_carried=reference_carried),
         )
         self.session.add(qc_report)
         self.session.flush()

@@ -248,6 +248,15 @@ def test_patch_that_moves_away_is_reverted_and_the_checkpoint_resumes(session, m
     assert sg.STYLE_NOTICE_PATCH_REVERTED in codes and sg.STYLE_NOTICE_FIRST_DRAFT_ACCEPTED in codes
     provider_calls = len(generation_client.requests)
     assert provider_calls == 2, "首稿 + 补丁（风格步没有调用）"
+    # L7：补丁退回了，这一场留下的是补丁前的稿子——工作台 / 场景接口给的评审分是补丁前那一轮（7.5），
+    # 不是评了没采用那一稿的补丁后那一轮（5.0）
+    from novel_system.db.models import SceneCard
+    from novel_system.services.style_fidelity_view import current_run_style_fidelity, scene_style_fidelity
+
+    summary = current_run_style_fidelity(session, SCENE_ID, state.current_bundle_id)
+    assert summary["patch"]["decision"] == S.PATCH_DECISION_REVERTED
+    assert summary["judge"]["overall"] == 7.5 and summary["judge"]["qc_report_id"] == refs["soft_qc0_report_id"]
+    assert scene_style_fidelity(session, session.get(SceneCard, SCENE_ID))["judge"]["overall"] == 7.5
 
     # 同一次执行续跑：接受首稿的风格产品、退回的软 QC 收尾都要过检查点校验，不重放任何调用
     with pytest.raises(RuntimeError, match="fail after soft checkpoint"):
@@ -277,6 +286,90 @@ def test_patch_that_holds_or_improves_is_kept(session, monkeypatch) -> None:
         select(AttemptTracker).where(AttemptTracker.scene_id == SCENE_ID, AttemptTracker.step == S.STYLE_PATCH_KEEP_STEP)
     ).scalars().one()
     assert keep.details_json["decision"] == S.PATCH_DECISION_KEPT and keep.details_json["notices"] == []
+
+
+@pytest.mark.filterwarnings("ignore::sqlalchemy.exc.SAWarning")
+def test_a_failing_patch_keep_observation_cannot_break_the_soft_checkpoint(session, monkeypatch) -> None:
+    """L3：补丁去留的观察（读数、记读数、记决定）夹在 soft_qc:1 的调用与它的检查点之间。它失败了（这里：写库撞主键）
+    也只回滚自己的保存点、按「留下补丁」处理——检查点照常落下，续跑不会报 RUN_CHECKPOINT_OUTPUT_MISSING，也不重放调用。"""
+    _bind_resume_project(session)
+    _install_readings(monkeypatch, {"门轴在雨声里轻响": _reading(0.80, 35.0), "她没有立刻回答": _reading(1.00, 70.0)})
+
+    def broken_observation(self, *, scene, bundle, before, after, qc0, qc1):  # noqa: ANN001
+        row = self.session.get(SceneDraft, before.row_id)
+        self.session.add(
+            SceneDraft(
+                row_id=row.row_id,
+                scene_id=row.scene_id,
+                chapter_id=row.chapter_id,
+                stage=row.stage,
+                content="x",
+                source_bundle_id=row.source_bundle_id,
+                source_bundle_hash=row.source_bundle_hash,
+            )
+        )
+        self.session.flush()
+
+    monkeypatch.setattr(Orchestrator, "_style_patch_keep_decision", broken_observation)
+    generation_client = _CountingGenerationClient()
+    soft_qc = _JudgedSoftQc(session, {"soft_qc:0": "patch", "soft_qc:1": "continue"}, {"soft_qc:0": 7.5, "soft_qc:1": 5.0})
+    near_final = _FailNearFinal()
+
+    with pytest.raises(RuntimeError, match="fail after soft checkpoint"):
+        _orchestrator(session, generation_client, soft_qc, near_final).run_scene(
+            SCENE_ID, execution_id="idempotency:fid-observe-fail"
+        )
+    state = session.get(SceneRunState, SCENE_ID)
+    refs = state.run_checkpoint_json["artifact_refs"]
+    assert state.run_checkpoint == "soft_qc_ready" and state.run_checkpoint_json["sub_index"] == 3
+    assert refs["soft_final_draft_row_id"] == refs["soft_patch_draft_row_id"], "观察失败 = 没有退回的依据，留下补丁"
+    calls = len(generation_client.requests)
+
+    with pytest.raises(RuntimeError, match="fail after soft checkpoint"):
+        _orchestrator(session, generation_client, soft_qc, near_final).run_scene(
+            SCENE_ID, execution_id="idempotency:fid-observe-fail"
+        )
+    assert soft_qc.calls == ["soft_qc:0", "soft_qc:1"] and len(generation_client.requests) == calls
+
+
+def test_a_protected_name_in_the_draft_does_not_stop_the_pipeline_archive(session, monkeypatch) -> None:
+    """H1：稿子里用了画像的受保护专名——管线的归档检查点照常归档（专名只在软 QC 里请作者复核，成稿门只报不拦的警告），
+    以前会在归档检查点 409 SOURCE_SAFETY_BLOCKED、没有任何办法过去。"""
+    from novel_system.db.models import SceneCard, StyleReferenceBannedTerm
+    from novel_system.services.final_text_gate import FinalTextGateService
+
+    profile_id = _bind_resume_project(session)
+    # 首稿（_CountingGenerationClient 的第一段）里的「值夜人」被学习作业收成了本书专名
+    session.add(
+        StyleReferenceBannedTerm(
+            term_id="sr_term_fid_orch_name",
+            profile_id=profile_id,
+            term="值夜人",
+            source="protected_auto",
+            scope="generation",
+        )
+    )
+    session.commit()
+    _install_readings(monkeypatch, {}, default=_reading(0.8, 35.0))
+    orchestrator = _orchestrator(
+        session,
+        _CountingGenerationClient(),
+        _JudgedSoftQc(session, {"soft_qc:0": "continue"}, {"soft_qc:0": 8.0}),
+        _PassNearFinal(session),
+    )
+
+    result = orchestrator.run_scene(SCENE_ID, execution_id="idempotency:fid-protected-archive")
+    session.commit()
+
+    assert result["scene_status"] == "archived"
+    state = session.get(SceneRunState, SCENE_ID)
+    final_text = session.get(SceneDraft, state.current_style_draft_row_id).content
+    assert "值夜人" in final_text
+    gate = FinalTextGateService(session).evaluate(scene_id=SCENE_ID, content=final_text)
+    assert gate["archive_blockers"] == []
+    warning = next(item for item in gate["warnings"] if item["issue_key"] == "source_safety:protected_term")
+    assert warning["terms"] == ["值夜人"] and warning["blocking"] is False
+    assert session.get(SceneCard, SCENE_ID) is not None
 
 
 # ---------------------------------------------------------------------------

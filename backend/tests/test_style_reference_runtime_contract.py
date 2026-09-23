@@ -274,14 +274,14 @@ def test_frozen_contract_samples_require_current_send_rights(session) -> None:
     assert revoked.audit["samples_blocked"] == "cloud_policy_now"
 
 
-def test_styled_gate_uses_the_frozen_banned_terms_not_the_live_table(
+def test_styled_gate_uses_the_live_banned_terms_not_the_frozen_contract(
     session,
 ) -> None:
-    """冻结契约里的禁用词是本 bundle 的裁决口径：绑定之后改了画像现行的禁用词也不影响。
+    """风格参考 v3（H1）：风格稿门的禁用词只认画像**现行**的表——绑定之后改了表，冻结了旧词的契约也按新表判；
+    冻结契约里的禁用词只用来渲染提示词的红线（契约照旧冻结它们，本用例也核对这一点）。
 
-    （2026-09-23 风格参考 v3 P5b：旧校验层的同步裁决 run_sync_validate_profiles 删除；风格稿门
-    ``qc_engine._styled_gate_report`` 是冻结禁用词的唯一读者。旧用例后半段「书的原文变了 → 同步回测报错」随同步
-    回测删除——书变了由注入适配器的 STYLE_REFERENCE_BOOK_CHANGED 提示与唯一抄袭门处理。）
+    （旧用例的方向相反：冻结的词是本 bundle 的裁决口径。那会让作者删掉一个误收的词之后，所有冻结过它的场景
+    照样被拦；v3 的成稿门、抄袭门、软 QC 都改读现行的表。）
     """
     from novel_system.services.qc_engine import _styled_gate_report
 
@@ -292,6 +292,8 @@ def test_styled_gate_uses_the_frozen_banned_terms_not_the_live_table(
         task_type="scene_generation",
     )
     assert contract is not None
+    frozen_terms = [term for layer in contract["layers"] for term in layer.get("banned_terms") or []]
+    assert "不可复用的专名" in frozen_terms, "契约照旧冻结禁用词（给红线渲染用）"
     policy = policy_from_contract(contract, mode="frozen")
 
     term = seeded.repo.list_banned_terms(
@@ -302,11 +304,9 @@ def test_styled_gate_uses_the_frozen_banned_terms_not_the_live_table(
     session.flush()
     report = _styled_gate_report(session, policy, "她说出不可复用的专名，又说了后来才加入的实时禁用词。")
 
-    assert [hit["pattern_statement"] for hit in report.forbidden_hits_json] == [
-        "不可复用的专名"
-    ]
+    assert [hit["pattern_statement"] for hit in report.forbidden_hits_json] == ["后来才加入的实时禁用词"]
     assert report.verdict == "fail" and report.quantitative_json == []
-    # 现解析（没有冻结契约）按画像现行的词
+    # 现解析（没有冻结契约）同样按画像现行的词
     live = SimpleNamespace(contract=None, profile_id=seeded.profile_id, bound=True, book_id=seeded.book_id)
     live_report = _styled_gate_report(session, live, "她说出不可复用的专名，又说了后来才加入的实时禁用词。")
     assert [hit["pattern_statement"] for hit in live_report.forbidden_hits_json] == ["后来才加入的实时禁用词"]

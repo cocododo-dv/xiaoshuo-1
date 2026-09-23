@@ -230,6 +230,43 @@ def _selection_gate(session) -> HumanReviewEvent:
     raise AssertionError("no style_candidate_selection gate event found")
 
 
+class _IdenticalCandidatesClient(FakeSceneClient):
+    """中性稿之后，每一份风格候选都回同一段字（作者手笔直起时没过门的修改槽位保留首稿原文，就是这种情形）。"""
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        index = len(self.requests)
+        text = (
+            "Provider-generated draft #1 for terminal selection."
+            if index == 1
+            else "Every candidate came back with the very same scene text."
+        )
+        return _response({"scene_text": text, "continuity_notes": []}, request_id=f"resp_scene_{index:03d}")
+
+
+def test_critical_scene_does_not_pause_on_candidates_that_share_one_text(session) -> None:
+    """风格参考 v3（L2）：候选按正文去重之后只剩一份——没有可选的，不开终选门（以前按去重之前的候选数判，
+    作者会被叫去对着一份稿子「终选」）。管线照常往下走。"""
+    _seed_scene(session)
+    orchestrator = _make_orchestrator(session)
+    orchestrator.scene_generation_service = SceneGenerationService(session, llm_client=_IdenticalCandidatesClient())
+
+    result = orchestrator.run_scene(SCENE_ID)
+    session.commit()
+
+    assert result["scene_status"] != "awaiting_candidate_selection"
+    assert result.get("candidate_selection_required") is not True
+    gates = [
+        event
+        for event in session.execute(select(HumanReviewEvent)).scalars().all()
+        if (event.details_json or {}).get("gate_type") == "style_candidate_selection"
+    ]
+    assert gates == []
+    state = session.get(SceneRunState, SCENE_ID)
+    assert len(state.run_checkpoint_json["artifact_refs"]["candidate_row_ids"]) >= 2, "确实生成了多份候选"
+
+
+# ---------- 暂停：关键场景未选择前不可归档 ----------
 # ---------- 暂停：关键场景未选择前不可归档 ----------
 
 
