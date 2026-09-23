@@ -9,8 +9,8 @@ import { srActivityActive, srNormalizeConfig, srSpineColor } from "./ws-styleref
      → sr:books-changed
    · 按需读的详情：一本书（含 stats_json）、学习信息（作业 + 估算）、重新分类的估算、文风画像、一部作品的生效绑定
      → sr:detail-changed
-   · 参考书活动：作业表条目（段落分类 / 学习文风 / 对照检查）+ 一个 /activity 轮询；给旧前端的别名条目
-     （compat_alias_of）不收 → sr:activity-changed；某条从进行中走到终态 → sr:activity-finished
+   · 参考书活动：作业表条目（段落分类 / 学习文风 / 对照检查，key 以 job: 开头）+ 一个 /activity 轮询；
+     别的条目不收 → sr:activity-changed；某条从进行中走到终态 → sr:activity-finished
    · 导入成功 → sr:book-imported（页面据此切到新书）
    写操作都是「先改界面、再等服务端；失败回滚并把错误抛给调用方」（✓ / ✗、改绑定、解除、批量删除、用于作品），
    说法由界面按 ws-styleref-model 的 srErrorInfo 给。所有请求都经 lib/client.js（上传也是：FormData）。
@@ -542,7 +542,7 @@ export async function srRemoveBannedTerm(termId) {
 
 /* ==========================================================
    参考书活动：作业表条目（段落分类 / 学习文风 / 对照检查）+ /activity 轮询
-   · 给旧前端的别名条目（compat_alias_of）不收；
+   · 只收作业表条目（key 以 job: 开头），别的不收；
    · 条目到终态时按 kind 刷新对应缓存，再广播 sr:activity-finished；
    · 作者关掉的终态条目记下来，别让服务端清单（10 分钟内结束的也会回来）每轮把它们复活。
    ========================================================== */
@@ -603,7 +603,7 @@ export function srActivityApply(items) {
   const finished = [];
   let changed = false;
   for (const item of items || []) {
-    if (!item || !item.key || item.compat_alias_of) continue;
+    if (!item || !item.key || !String(item.key).startsWith("job:")) continue;
     const local = SR_ACTIVITY.get(item.key) || null;
     const active = srActivityActive(item);
     if (!local && !active && SR_ACTIVITY_DISMISSED.has(item.key)) continue;

@@ -1,5 +1,5 @@
 // 风格参考 store（ws-styleref-store.js）：每个写操作都「先改界面、再等服务端，失败回滚并把错误抛给调用方」；
-// 活动表只收作业表条目（给旧前端的别名 compat_alias_of 不收）、到终态刷新对应缓存；上传经 lib/client 的 FormData。
+// 活动表只收作业表条目（key 以 job: 开头，别的不收）、到终态刷新对应缓存；上传经 lib/client 的 FormData。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./lib/client.js", () => ({ apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn() }));
@@ -326,10 +326,10 @@ describe("参考书活动", () => {
     phase_label: "学习文风 · 分层读原文", started_at: "2026-09-23T10:00:00Z", ...over,
   });
 
-  it("给旧前端的别名条目（compat_alias_of）不收", () => {
+  it("只收作业表条目（key 以 job: 开头），别的条目不收", () => {
     store.srActivityApply([
       jobEntry({ key: "job:j9", kind: "classify", mode: "import" }),
-      { key: "imp-legacy-key", compat_alias_of: "job:j9", kind: "import", status: "running" },
+      { key: "imp-legacy-key", kind: "import", status: "running" },
     ]);
     expect(store.srActivityEntries().map((e) => e.key)).toEqual(["job:j9"]);
   });

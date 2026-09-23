@@ -894,7 +894,7 @@ describe("参考书活动", () => {
     state.activity = [
       { key: "job:j1", job_id: "j1", kind: "learn", status: "failed", book_id: "bk-a", title: "甲书", resumable: true, error: { code: "STYLE_REFERENCE_LLM_REQUIRED" } },
       { key: "job:j2", job_id: "j2", kind: "classify", mode: "import", status: "running", book_id: "bk-a", title: "甲书", percent: 50, cancellable: true },
-      { key: "legacy-op-key", compat_alias_of: "job:j2", kind: "import", status: "running", book_id: "bk-a", title: "甲书" },
+      { key: "legacy-op-key", kind: "import", status: "running", book_id: "bk-a", title: "甲书" },
     ];
     await mountView();
     await settle(20);

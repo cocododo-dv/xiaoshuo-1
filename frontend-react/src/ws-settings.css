@@ -178,7 +178,7 @@ textarea.set-field { resize: vertical; min-height: 56px; }
 .set-route-reason { font-size: var(--fs-xs); color: var(--danger-ink); white-space: nowrap; }
 .set-advanced-foot { max-width: none; }
 
-/* 滑杆（设置、风格回测共用） */
+/* 滑杆（设置、风格参考共用） */
 .range {
   width: 180px;
   accent-color: var(--accent);

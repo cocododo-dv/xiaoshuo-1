@@ -382,3 +382,13 @@ StylePolicy 贯穿（架构守卫：只有 style_policy / runtime_contract 能�
 趋势图，可键盘 / 悬停、带表格视图）与每维的实测 / 评审均值和「近期常见偏差」标记。写作台抄袭门拒绝（409 `SOURCE_SAFETY_BLOCKED`）说清
 重合在第几字、正文没有改动、可再试一次，从不显示参考原文。读数载荷补 `max_percentile` / 重点与不学维 / `reliable` 与原因 / 窗数门槛；
 作品汇总补 `recent_gap_details` 与每场最新终稿读数；起草台窗口引用带窗口号、入选配额与标签梗概。
+
+### P7 收尾
+迁移 `20260923_0091` 删 `style_reference_finding_feedback`、`style_reference_validation_reports` 与 `style_reference_findings.base_confidence`
+（降级只恢复结构）；删 RAG / 策略 C（`rag.py`、`rag_evaluation.py`、`style_signature.py`、评测清单、`rag_*` 预算键、重排节点）、进程内登记簿
+`import_progress.py`（活动只读作业表）、`_llm_helper.py`，`exemplar_index.py` 并入 `windows.py`，`injection.py` 只剩 `InjectionService`；
+评审 / 规划窗数只有 `inject.request.REVIEW_K` / `PLAN_K`。`tests/test_prompt_template_contracts.py` 一张表管所有模板（版本、预算、对象成员
+必须声明 properties、分数带范围、关键模板的必含 / 禁用措辞），各测试里只钉版本号的断言删掉；`tests/style_reference_factories.py` 共享种子。
+契约测试查出三个评审模板违约并修正（`near_final_acceptance_review` v11、`chapter_near_final_review` v4、`writer_deep_review` v7）；顺手修
+准定稿改写简报读错键（评审给的 `target` / `issue` / `fix_direction` 原本被丢掉，改写退回房风默认简报）。现行说明 `docs/style-reference.md`，
+11 份旧文档移到 `docs/history/style/`；CLAUDE.md 196 KB → 153 KB（风格参考一节约 6.5 KB）。
