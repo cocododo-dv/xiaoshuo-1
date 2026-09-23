@@ -156,14 +156,6 @@ def run_sync_validate_profiles(
     )
 
 
-def _compute_verdict(*, plag, forbid) -> ValidationVerdict:
-    if not plag.passed:
-        return ValidationVerdict.PLAGIARISM
-    if any(hit.severity == "error" for hit in forbid):
-        return ValidationVerdict.FAIL
-    return ValidationVerdict.PASS
-
-
 def _compute_full_verdict(
     *,
     quant,

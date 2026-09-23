@@ -151,8 +151,9 @@ def test_section_constants_match_context_budget_registration() -> None:
     # 叙事机制块是 neutral_draft 唯一可见的风格参考块（规格 §1.3）
     assert NARRATIVE_GUIDANCE_SECTION_KEY not in NEUTRAL_DRAFT_STYLE_SECTIONS
     assert "previous_scene_voice_anchor" in NEUTRAL_DRAFT_STYLE_SECTIONS
-    assert "style_drift_calibration" in NEUTRAL_DRAFT_STYLE_SECTIONS
     assert specs["previous_scene_voice_anchor"][0] == (
         "Previous Scene Voice Anchor (own prose; keep the same voice)"
     )
-    assert specs["style_drift_calibration"][0] == "Style Drift Calibration"
+    # 风格参考 v3：漂移校准段已删（不再有 section spec，也不在中性稿屏蔽名单里）
+    assert "style_drift_calibration" not in specs
+    assert "style_drift_calibration" not in NEUTRAL_DRAFT_STYLE_SECTIONS

@@ -1,12 +1,12 @@
 """PR-10 §13 — 统一 metric event 写入入口。
 
-业务路径(InjectionService / qc gate / ValidationOrchestrator /
-SceneAutoRewriteService)在末尾调 ``MetricsRecorder.record(...)`` 落 1 行
-``style_reference_metric_events`` 事件;失败 swallow + warn log,**绝不抛**,
-业务流程不被 metrics 阻塞。
+业务路径(InjectionService / qc gate / ValidationOrchestrator)在末尾调
+``MetricsRecorder.record(...)`` 落 1 行 ``style_reference_metric_events`` 审计事件;失败
+swallow + warn log,**绝不抛**,业务流程不被 metrics 阻塞。
 
-Aggregator 通过 SQL group by 算 4 个指标(injection 命中率 / qc gate 拒绝率
-/ auto_rewrite 通过率 / validation P95 延迟)。
+写入包在 ``session.begin_nested()`` 保存点里(风格参考 v3 V9):遥测这一行 flush 失败只回滚
+保存点,外层事务照常可用——此前失败的 flush 会让整个会话进入 ``PendingRollbackError``,
+吞掉异常反而把业务事务一起拖垮。(聚合端点 2026-09-14 已删,这些行只作审计。)
 """
 
 from __future__ import annotations
@@ -59,8 +59,9 @@ class MetricsRecorder:
                 latency_ms=latency_ms,
                 context_json=context or {},
             )
-            session.add(event)
-            session.flush()
+            # 保存点:遥测写失败只回滚这一行,外层事务不受损(v3 V9)。
+            with session.begin_nested():
+                session.add(event)
             return event_id
         except Exception as exc:  # noqa: BLE001 — metrics 不阻塞主业务
             _LOGGER.warning(

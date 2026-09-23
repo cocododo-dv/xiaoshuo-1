@@ -6,6 +6,7 @@ import difflib
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select, update
@@ -39,8 +40,13 @@ from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
     current_llm_execution_id,
 )
-from novel_system.services.manuscript_html import sanitize_manuscript_html
+from novel_system.services.manuscript_html import plain_manuscript_text, sanitize_manuscript_html
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.reference_copy_gate import (
+    check_reference_copy_for_scope,
+    copy_block_author_action,
+    introduced_copy,
+)
 from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.style_prompt_injection import (
@@ -389,6 +395,9 @@ class AuthorDraftService:
             source_evaluation_id=source_evaluation_id,
             actor_ref=actor_ref,
         )
+        if isinstance(proposal, _CopyBlockedProposal):
+            # 模型写的建议照抄了参考书：不交给作者（写作台是在浏览器里把建议插进正文的，采纳端点拦不住）
+            self._raise_proposal_copy_blocked(draft, proposal.check, proposal_ids=[])
         self.session.flush()
         return {"proposal": self.serialize_proposal(proposal)}
 
@@ -408,7 +417,7 @@ class AuthorDraftService:
         target_range = request_payload.get("target_range") if isinstance(request_payload.get("target_range"), dict) else None
         source_evaluation_id = _optional_text(request_payload, "source_evaluation_id")
         target = self._target_payload(draft.object_type, draft.object_id)
-        proposals: list[AuthorDraftProposal] = []
+        proposals: list[AuthorDraftProposal | _CopyBlockedProposal] = []
         for index, (proposal_type, proposal_kind) in enumerate(_proposal_mode_triads(mode)):
             effective_source = proposal_source
             effective_instruction = instruction
@@ -430,8 +439,17 @@ class AuthorDraftService:
                 source_evaluation_id=source_evaluation_id,
                 actor_ref=actor_ref,
             ))
+        # 照抄参考书的那几版不交给作者（生成时就筛掉、从不落库）；一版都不剩才报错
+        # （写作台在浏览器里插入建议，采纳端点拦不住）
+        blocked_checks = [item.check for item in proposals if isinstance(item, _CopyBlockedProposal)]
+        kept = [item for item in proposals if not isinstance(item, _CopyBlockedProposal)]
+        if not kept and blocked_checks:
+            self._raise_proposal_copy_blocked(draft, blocked_checks[0], proposal_ids=[])
         self.session.flush()
-        return {"draft_id": draft.draft_id, "mode": mode, "proposals": [self.serialize_proposal(row) for row in proposals]}
+        response = {"draft_id": draft.draft_id, "mode": mode, "proposals": [self.serialize_proposal(row) for row in kept]}
+        if blocked_checks:
+            response["reference_copy_blocked_count"] = len(blocked_checks)
+        return response
 
     def proposal_diff(self, draft_id: str, proposal_id: str) -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -491,6 +509,7 @@ class AuthorDraftService:
         apply_mode = _normalize_apply_mode(_optional_text(request_payload, "apply_mode"), proposal)
         if apply_mode not in AUTHOR_PROPOSAL_APPLY_MODES:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_APPLY_MODE_INVALID", "unsupported proposal apply_mode", status_code=400)
+        self._require_proposal_copy_safe(draft, proposal)
         next_content = sanitize_manuscript_html(_apply_proposal_to_content(current, proposal, apply_mode))
         require_author_target_mutation_allowed(
             self.session,
@@ -550,6 +569,7 @@ class AuthorDraftService:
         decision_reason = _optional_text(request_payload, "decision_reason")
         affected_excerpt = _optional_text(request_payload, "affected_excerpt")
 
+        self._require_proposal_copy_safe(draft, proposal)
         current_content = draft.content or ""
         next_content = sanitize_manuscript_html(_apply_proposal_to_content(current_content, proposal, apply_mode))
         require_author_target_mutation_allowed(
@@ -642,7 +662,9 @@ class AuthorDraftService:
         replacement_text: str | None,
         source_evaluation_id: str | None,
         actor_ref: str,
-    ) -> AuthorDraftProposal:
+    ) -> "AuthorDraftProposal | _CopyBlockedProposal":
+        """建一条建议。模型写的建议先过唯一抄袭门：照抄参考书 → 返回 :class:`_CopyBlockedProposal`，不加进会话
+        （LLM 记账会在调用之间提交调用方的会话，加进去再 expunge 撤不回已提交的行）。"""
         source_llm_call_id = None
         generated_rationale: str | None = None
         if replacement_text:
@@ -678,6 +700,10 @@ class AuthorDraftService:
             status="candidate",
             created_by=actor_ref or "author_draft_proposal",
         )
+        if not replacement_text:
+            copy = self._proposal_copy_check(draft, proposal)
+            if copy is not None:
+                return _CopyBlockedProposal(copy)
         self.session.add(proposal)
         return proposal
 
@@ -805,6 +831,73 @@ class AuthorDraftService:
                 exc_info=True,
             )
             return prompt
+
+    def _draft_copy_scope(self, draft: AuthorDraft):
+        return resolve_style_scope(
+            self.session,
+            scene_id=draft.object_id if draft.object_type == "scene" else None,
+            chapter_id=draft.object_id if draft.object_type == "chapter" else None,
+            project_id=draft.object_id if draft.object_type == "project" else None,
+        )
+
+    def _proposal_copy_check(self, draft: AuthorDraft, proposal: AuthorDraftProposal):
+        """模型写的建议文字过唯一抄袭门；拦下 → 返回检查结果，干净 → None。
+
+        只算建议新带进来的命中（:func:`introduced_copy`）：整稿建议原样保留作者稿里已有的字不算。"""
+
+        text = plain_manuscript_text(proposal.content or "")
+        if not text.strip():
+            return None
+        check = check_reference_copy_for_scope(self.session, text, scope=self._draft_copy_scope(draft))
+        check = introduced_copy(check, text, plain_manuscript_text(draft.content or ""))
+        return check if check.blocked else None
+
+    def _raise_proposal_copy_blocked(self, draft: AuthorDraft, check, *, proposal_ids: list[str]) -> None:
+        raise DomainError(
+            "SOURCE_SAFETY_BLOCKED",
+            "the generated proposal copies the bound reference book and was discarded — generate again",
+            status_code=409,
+            details={
+                "draft_id": draft.draft_id,
+                "proposal_ids": proposal_ids,
+                "reference_copy": check.audit(),
+                "author_action": copy_block_author_action(
+                    check,
+                    target_view="writer",
+                    target_ref=f"{draft.object_type}:{draft.object_id}",
+                    subject="这条 AI 建议",
+                ),
+            },
+        )
+
+    def _require_proposal_copy_safe(self, draft: AuthorDraft, proposal: AuthorDraftProposal) -> None:
+        """AI 建议写进作者稿之前过唯一抄袭门（风格参考 v3 V1）：建议带进来的文字与绑定的参考书连续 ≥12 字相同、
+        或含受保护专名 → 409，作者稿不动。只查建议带进来的那段（作者稿里本来就有的字不在这里拦——
+        :func:`introduced_copy`——定稿时成稿门会查全文）；位置是建议文字里的第几字，不印参考原文。"""
+
+        inserted = plain_manuscript_text(proposal.replacement_text or proposal.content or "")
+        if not inserted.strip():
+            return
+        check = check_reference_copy_for_scope(self.session, inserted, scope=self._draft_copy_scope(draft))
+        check = introduced_copy(check, inserted, plain_manuscript_text(draft.content or ""))
+        if not check.blocked:
+            return
+        raise DomainError(
+            "SOURCE_SAFETY_BLOCKED",
+            "reference copy gate blocked applying this AI proposal — the author draft is unchanged",
+            status_code=409,
+            details={
+                "draft_id": draft.draft_id,
+                "proposal_id": proposal.proposal_id,
+                "reference_copy": check.audit(),
+                "author_action": copy_block_author_action(
+                    check,
+                    target_view="writer",
+                    target_ref=f"{draft.object_type}:{draft.object_id}",
+                    subject="这条 AI 建议",
+                ),
+            },
+        )
 
     # FE-ALIGN F2 修订历史：每次 revision_no 推进存完整内容快照，支撑成稿中心版本对比。
     def _snapshot_revision(self, draft: AuthorDraft, *, actor_ref: str, origin: str) -> None:
@@ -1534,6 +1627,13 @@ def _normalize_apply_mode(requested: str | None, proposal: AuthorDraftProposal) 
     if value in AUTHOR_PROPOSAL_APPLY_MODES:
         return value
     return AUTHOR_PROPOSAL_KIND_APPLY_MODES.get(value, _apply_mode_for_proposal(proposal))
+
+
+@dataclass(frozen=True)
+class _CopyBlockedProposal:
+    """生成时被唯一抄袭门拦下的建议（没落库，只带检查结果）。"""
+
+    check: Any
 
 
 def _proposal_generation_mode(mode: str | None) -> str:

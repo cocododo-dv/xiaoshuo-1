@@ -18,8 +18,7 @@ from novel_system.db.models import (
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.errors import DomainError
-from novel_system.services.reference_safety import ReferenceSafetyService
-from novel_system.services.source_safety import source_profile_ids_from_snapshot
+from novel_system.services.reference_copy_gate import check_reference_copy, copy_gate_policies
 from novel_system.services.writer_review import WriterReviewService
 
 
@@ -43,9 +42,10 @@ class ChapterManuscriptService:
         assembled = self._assembled_payload(scene_entries)
         completion = self._completion_contract_from_assembled(assembled)
         aggregate = self._aggregate_payload(self._resolve_final_aggregate(chapter_id, chapter_state))
-        source_safety_scan = ReferenceSafetyService(self.session).scan_runtime_text(
-            [assembled["content"], aggregate["content"] if aggregate else ""],
-            source_profile_ids=self._source_profile_ids_for_entries(scene_entries, final_scenes),
+        source_safety_scan = self._reference_copy_scan(
+            scenes,
+            final_scenes,
+            "\n".join([assembled["content"], aggregate["content"] if aggregate else ""]),
         )
         writer_review = WriterReviewService(self.session)
         writer_review_summary = writer_review.chapter_summary(chapter_id)
@@ -252,42 +252,51 @@ class ChapterManuscriptService:
             "missing_scene_ids": missing_scene_ids,
         }
 
-    def _source_profile_ids_for_entries(
+    def _reference_copy_scan(
         self,
-        scene_entries: list[dict[str, Any]],
+        scenes: list[SceneCard],
         final_scenes: dict[str, FinalScene],
-    ) -> list[str]:
-        values: list[str] = []
-        seen: set[str] = set()
-        bundle_ids = {
-            row.source_bundle_id
-            for row in final_scenes.values()
-            if row.source_bundle_id
-        }
-        bundles = (
-            {
-                bundle.bundle_id: bundle
-                for bundle in self.session.execute(
-                    select(SceneBundle).where(SceneBundle.bundle_id.in_(bundle_ids))
-                ).scalars().all()
-            }
-            if bundle_ids
-            else {}
-        )
-        for scene in scene_entries:
-            final_scene = scene.get("final_scene")
-            if not isinstance(final_scene, dict):
-                continue
-            row = final_scenes.get(str(final_scene.get("row_id") or ""))
-            if row is None or not row.source_bundle_id:
-                continue
-            bundle = bundles.get(row.source_bundle_id)
-            for value in source_profile_ids_from_snapshot(bundle.frozen_snapshot_json if bundle else None):
-                if value in seen:
-                    continue
-                seen.add(value)
-                values.append(value)
-        return values
+        content: str,
+    ) -> dict[str, Any]:
+        """整章正文过唯一抄袭门（风格参考 v3）：每场终稿冻结时的绑定 + 这一场当前的活动绑定，书取并集。
+
+        只读展示：检查失败给 ``safe: False`` + 错误码，不拖垮成稿中心。
+        """
+        try:
+            bundle_ids = {row.source_bundle_id for row in final_scenes.values() if row.source_bundle_id}
+            bundles = (
+                {
+                    bundle.bundle_id: bundle
+                    for bundle in self.session.execute(
+                        select(SceneBundle).where(SceneBundle.bundle_id.in_(bundle_ids))
+                    ).scalars().all()
+                }
+                if bundle_ids
+                else {}
+            )
+            finals_by_scene = {row.scene_id: row for row in final_scenes.values()}
+            policies: list[Any] = []
+            seen: set[tuple[Any, ...]] = set()
+            for scene in scenes:
+                final = finals_by_scene.get(scene.scene_id)
+                bundle = bundles.get(final.source_bundle_id) if final is not None and final.source_bundle_id else None
+                for policy in copy_gate_policies(
+                    self.session,
+                    scope=scene,
+                    bundle_snapshot=bundle.frozen_snapshot_json if bundle is not None else None,
+                ):
+                    key = (policy.mode, policy.binding_id, policy.contract_hash, policy.book_id)
+                    if key not in seen:
+                        seen.add(key)
+                        policies.append(policy)
+            return check_reference_copy(
+                self.session,
+                content,
+                policy=policies[0] if policies else None,
+                extra_policies=policies[1:],
+            ).audit()
+        except Exception as exc:  # noqa: BLE001 — 展示用读数
+            return {"safe": False, "error_code": "SOURCE_SAFETY_UNAVAILABLE", "error_type": type(exc).__name__}
 
     def _editorial_workspace(
         self,

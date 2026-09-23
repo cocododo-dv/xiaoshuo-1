@@ -3,7 +3,6 @@
 from novel_system.services.style_reference.schemas import ValidationReport
 from novel_system.services.style_reference.validation.core import (
     _compute_full_verdict,
-    _compute_verdict,
     _load_plagiarism_corpus,
     clear_plagiarism_corpus_cache,
     run_sync_validate,

@@ -688,6 +688,7 @@ def _v2_style_snapshot() -> dict:
                 "以下是参考作品的叙事取舍机制：\n- 关键信息放段首一次给出\n- 结尾不解释动机"
             ),
             "previous_scene_voice_anchor": "他把杯子放回桌上，没有看她。窗外的雨声更紧了些。",
+            # 风格参考 v3 之前的 bundle 残留：漂移校准段已删，任何模板都不再渲染它
             "style_drift_calibration": "- 逗号再密一点\n- 少用然而",
         }
     )
@@ -711,17 +712,21 @@ def test_neutral_draft_prompt_sees_narrative_mechanisms_only() -> None:
     assert "If a Style Reference — Narrative Mechanisms section is present" in user_prompt
     assert "keep diction neutral" in user_prompt
     omitted = set(payload["token_budget"]["omitted_sections"])
-    assert {"previous_scene_voice_anchor", "style_drift_calibration"} <= omitted
+    assert "previous_scene_voice_anchor" in omitted
     assert "style_narrative_guidance" not in omitted
+    assert "逗号再密一点" not in user_prompt
 
 
-def test_style_draft_prompt_sees_all_three_v2_sections_and_new_contract_wording() -> None:
+def test_style_draft_prompt_sees_v2_sections_and_new_contract_wording() -> None:
     builder = PromptBuilder()
     payload = builder.build(_v2_style_snapshot(), "style_draft")
     user_prompt = payload["user_prompt"]
     assert "## Style Reference — Narrative Mechanisms" in user_prompt
     assert "## Previous Scene Voice Anchor (own prose; keep the same voice)" in user_prompt
-    assert "## Style Drift Calibration" in user_prompt
+    # 风格参考 v3：漂移校准段已删，旧 bundle 里的残留摘要不渲染（style_draft 模板里那句条件式的
+    # 「treat Style Drift Calibration lines as…」留给 P5b 改写风格步时一起删）
+    assert "## Style Drift Calibration" not in user_prompt
+    assert "逗号再密一点" not in user_prompt
     assert "他把杯子放回桌上" in user_prompt
     system_prompt = payload["system_prompt"]
     # 七维契约与已移除层的引用不再出现；真实块名与消费顺序出现
@@ -732,7 +737,6 @@ def test_style_draft_prompt_sees_all_three_v2_sections_and_new_contract_wording(
         assert block in system_prompt
     assert "[禁止复刻]" not in system_prompt  # 2026-09-22:幽灵标签删除,真实块名是 [禁忌模式]
     assert "[风格样例] block at the end of the user message" in system_prompt
-    assert "Style Drift Calibration" in user_prompt
     assert "If no [STYLE_REFERENCE] block is present" in system_prompt
     # 骨架约束放宽 + 新鲜度预算复沓豁免的预留句
     assert "sentence order, pause placement, information-release order, and paragraph selection may be rearranged" in user_prompt
@@ -1070,34 +1074,32 @@ def test_bundle_builder_voice_anchor_honours_attempt_tracker_neutral_fallback_ma
     assert snapshot["source_version_refs"]["previous_scene_voice_anchor_stage"] == "style_patch"
 
 
-def test_bundle_builder_drift_calibration_reads_style_continuity_and_caps_lines(session, monkeypatch) -> None:
-    import novel_system.services.bundle_builder as bundle_builder_module
+def test_bundle_builder_never_carries_drift_calibration(session) -> None:
+    """风格参考 v3：漂移驾驶已删——库里残留的 style_drift_observed 事件不再进 bundle（没有校准段、
+    没有漂移优先选窗的 ``_drift_ptype_priority``、没有 style_drift_calibration_* 引用）。"""
+    from novel_system.db.models import StyleReferenceMetricEvent
 
     _seed_v2_work(session, project_id="P_V2_DC", scenes_per_chapter=2)
-    builder = BundleBuilder(session)
+    session.add(
+        StyleReferenceMetricEvent(
+            event_id="sr_metric_legacy_drift",
+            event_kind="style_drift_observed",
+            target_kind="scene",
+            target_ref_id="P_V2_DC_CH01_SC01",
+            outcome="observed",
+            context_json={
+                "chapter_id": "P_V2_DC_CH01",
+                "scene_seq": 1,
+                "calibration_lines": ["逗号再密一点"],
+                "drift_ptype_priority": ["dialogue"],
+            },
+        )
+    )
+    session.commit()
 
-    # W6 stub：永远返回空 → 不登记
-    plain = builder.build("P_V2_DC_CH01_SC02")["snapshot"]
-    assert "style_drift_calibration" not in plain["inline_digests"]
-
-    captured: dict = {}
-
-    def fake_latest(session_arg, chapter_id, before_scene_seq):  # noqa: ANN001
-        captured["args"] = (chapter_id, before_scene_seq)
-        return ["逗号再密一点", "少用然而", "逗号再密一点", "对白少加引导词", "四字格再少一点"]
-
-    monkeypatch.setattr(bundle_builder_module, "latest_drift_calibration", fake_latest)
-    snapshot = builder.build("P_V2_DC_CH01_SC02")["snapshot"]
-    assert captured["args"] == ("P_V2_DC_CH01", 2)
-    digest = snapshot["inline_digests"]["style_drift_calibration"]
-    # 去重后截到 drift_calibration_max_lines（默认 3）
-    assert digest.split("\n") == ["- 逗号再密一点", "- 少用然而", "- 对白少加引导词"]
-    refs = snapshot["source_version_refs"]
-    assert refs["style_drift_calibration_line_count"] == 3
-    assert refs["style_drift_calibration_before_scene_seq"] == 2
-    slot = next(item for item in snapshot["ordered_injections"] if item["slot"] == "style_drift_calibration")
-    assert slot["digest_key"] == "style_drift_calibration"
-    neutral_payload = PromptBuilder().build(snapshot, "neutral_draft")
-    assert "Style Drift Calibration" not in neutral_payload["user_prompt"]
-    style_payload = PromptBuilder().build(snapshot, "style_draft")
-    assert "## Style Drift Calibration" in style_payload["user_prompt"]
+    snapshot = BundleBuilder(session).build("P_V2_DC_CH01_SC02")["snapshot"]
+    assert "style_drift_calibration" not in snapshot["inline_digests"]
+    assert "_drift_ptype_priority" not in snapshot["inline_digests"]
+    assert not any(key.startswith("style_drift_calibration") for key in snapshot["source_version_refs"])
+    assert not any(item["slot"] == "style_drift_calibration" for item in snapshot["ordered_injections"])
+    assert "逗号再密一点" not in PromptBuilder().build(snapshot, "style_draft")["user_prompt"]

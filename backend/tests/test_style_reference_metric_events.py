@@ -116,3 +116,37 @@ def test_migration_creates_table_smoke():
         session.commit()
         rows = repo.list_metric_events()
         assert len(rows) == 1
+
+
+def test_failed_record_does_not_poison_outer_transaction():
+    """风格参考 v3 V9:遥测写失败只回滚自己的保存点,外层事务照常提交。
+
+    此前 ``record`` 直接 ``session.flush()``:一行事件 INSERT 失败(这里用重复主键复现)会让整个
+    会话进入 ``PendingRollbackError``——异常被吞掉了,业务事务却跟着死掉。
+    """
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from novel_system.db.models import StyleReferenceMetricEvent
+    from novel_system.services.style_reference import metrics_recorder
+
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_metric_event(event_id="sr_metric_0123456789ab", event_kind="seed")
+        session.commit()
+
+        # 外层事务里一条尚未提交的业务写
+        repo.create_metric_event(event_id="sr_metric_outer_business", event_kind="business")
+        with patch.object(
+            metrics_recorder.uuid,
+            "uuid4",
+            return_value=SimpleNamespace(hex="0123456789ab" + "0" * 20),
+        ):
+            event_id = MetricsRecorder.record(session, "qc_gate_decided", outcome="pass")
+        assert event_id is None
+
+        # 会话仍可用,外层的写照常提交
+        session.commit()
+        ids = set(session.scalars(select(StyleReferenceMetricEvent.event_id)).all())
+        assert ids == {"sr_metric_0123456789ab", "sr_metric_outer_business"}

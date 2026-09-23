@@ -524,9 +524,13 @@ def test_near_final_deterministic_gates_defer_under_style_bound() -> None:
     assert deferred == payload
 
 
-def test_final_text_gate_literary_thresholds_defer_under_style_bound(session) -> None:
+def test_final_text_gate_literary_thresholds_defer_under_style_bound(session, monkeypatch) -> None:
     from novel_system.db.models import SceneBundle
     from novel_system.services.final_text_gate import FinalTextGateService
+
+    # 风格参考 v3（V11）：有参考书校准时按校准判（见 test_style_reference_v3_pipeline）；这里守的是校准不可用时
+    # 作者手笔直起仍整体让位的那条退路
+    monkeypatch.setattr(FinalTextGateService, "_rule_calibration", lambda self, policy: None)
 
     _seed_binding("sfd_g4", project_id="proj_sfd_g4")
     scene = _seed_scene(session, project_id="proj_sfd_g4", scene_id="SFD_G4_SC01", chapter_id="SFD_G4")
@@ -548,7 +552,14 @@ def test_final_text_gate_literary_thresholds_defer_under_style_bound(session) ->
     bound = gate._literary(scene, text)
     assert bound["house_taste_thresholds"] == "deferred_to_reference"
     assert not [item for item in bound["promotion_blockers"] if item.startswith("literary:")]
+    # 风格参考 v3：没有 bundle 时按当前活动绑定现解析（仍是作者手笔直起 → 让位）；撤掉绑定才施加房风阈值
     state.current_bundle_id = None
+    session.commit()
+    assert gate._literary(scene, text)["house_taste_thresholds"] == "deferred_to_reference"
+    from novel_system.db.models import StyleReferenceInjectionBinding
+
+    for binding in session.query(StyleReferenceInjectionBinding).all():
+        binding.status = "archived"
     session.commit()
     plain = gate._literary(scene, text)
     assert plain["house_taste_thresholds"] == "applied"
@@ -563,10 +574,15 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["style_first_draft"]["version"] == "2026-09-22.v8"
+    assert templates["style_first_draft"]["version"] == "2026-09-23.v9"
     assert templates["style_first_draft"]["input_token_budget"] == 96000
     assert "The bundle decides what happens" in templates["style_first_draft"]["system_prompt"]
-    assert "the author's manner wins and the fact of the field stays" in templates["style_first_draft"]["task_prompt"]
+    # 风格参考 v3（L5「全学」）：设计只是情节框架，气质照参考走；蓝图只给事实，只为中和写法字段的条款删了
+    assert "is the plot framework only" in templates["style_first_draft"]["system_prompt"]
+    assert "Every item the style card marks 必须 (must) shows up in this scene" in templates["style_first_draft"]["task_prompt"]
+    assert "It never supplies a line to write" in templates["style_first_draft"]["task_prompt"]
+    for gone in ("the author's manner wins and the fact of the field stays", "image_anchor", "anti-summary rule"):
+        assert gone not in templates["style_first_draft"]["task_prompt"], gone
     assert templates["style_draft"]["version"] == "2026-09-22.v12"
     # 2026-09-22 风格参考优先:样例在 user 消息末尾;幽灵标签 [禁止复刻] 不再出现在任何模板里
     for name in ("style_first_draft", "style_draft"):
@@ -574,7 +590,8 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
         assert "[禁止复刻]" not in templates[name]["system_prompt"] + templates[name]["task_prompt"]
         assert "even when the reference author uses another" not in templates[name]["task_prompt"]
     assert "[禁止复刻]" not in templates["soft_qc"]["task_prompt"]
-    assert "decimals between 0 and 1" in templates["soft_qc"]["task_prompt"]
+    # 风格参考 v3（V7）：分数一律 0–10，代码统一换算
+    assert "numbers from 0 to 10" in templates["soft_qc"]["task_prompt"]
     assert "First Draft already in the reference author's hand" in templates["style_draft"]["task_prompt"]
     # 2026-09-14 保真修补:系统提示不再与长度指导矛盾(作者尺度优先),偏好画像只在不冲突时服从
     assert "never imitate their length" not in templates["style_draft"]["system_prompt"]
@@ -584,13 +601,15 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     assert templates["hard_qc"]["version"] == "2026-09-15.v6"
     assert "never a hard violation" in templates["hard_qc"]["task_prompt"]
     assert "restate paragraph 3" not in templates["hard_qc"]["task_prompt"]
-    assert templates["soft_qc"]["version"] == "2026-09-22.v9"
-    assert "only where the reference author demonstrably does not do these things" in templates["soft_qc"]["task_prompt"]
+    assert templates["soft_qc"]["version"] == "2026-09-23.v10"
+    # 风格参考 v3（L2）：有风格块时软 QC 是参考评审，不带房风规则；按 16 维打分
+    assert "Do not bring a house rubric of your own" in templates["soft_qc"]["system_prompt"]
+    assert "dimension_scores" in templates["soft_qc"]["task_prompt"]
     assert "Emotional clarity is a goal only when no [STYLE_REFERENCE] block is present" in templates["soft_qc"]["system_prompt"]
     assert templates["style_length_patch"]["version"] == "2026-09-22.v5"
     assert templates["style_salvage_patch"]["version"] == "2026-09-22.v3"
     assert templates["scene_literary_rewrite"]["version"] == "2026-09-22.v5"
-    assert templates["near_final_acceptance_review"]["version"] == "2026-09-22.v9"
+    assert templates["near_final_acceptance_review"]["version"] == "2026-09-23.v10"
     assert "If no [STYLE_REFERENCE] block is present, do not pass scenes" in templates["near_final_acceptance_review"]["task_prompt"]
 
 

@@ -332,6 +332,9 @@ class ScenePipelineOnlineFake(AccountedGenerateMixin):
                 "ending_action": "the door closes behind them",
                 "next_scene_pull": "the consequence follows immediately",
                 "anti_summary_rule": "end on physical action",
+                # 风格参考 v3：有绑定且作者手笔直起时蓝图跑事实版（多出来的写法字段被校验丢掉）
+                "ending_function": "the setback lands and the plan is dead",
+                "situation_tags": ["对峙审问"],
             }
         elif node_id == "chapter_story_architecture":
             payload = {

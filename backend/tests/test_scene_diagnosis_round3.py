@@ -30,9 +30,8 @@ from novel_system.services.literary_quality import (
     poisson_tail,
     wilson_lower_bound,
 )
+from novel_system.services.style_policy import StylePolicy
 from novel_system.services.scene_diagnosis import (
-    BoundProfile,
-    LITERARY_REVISION_RUBRIC_ID,
     RULE_CALIBRATION_MIN_ENDINGS,
     SceneDiagnosisService,
     compute_reference_rules,
@@ -221,10 +220,11 @@ def _bind_reference_book(session, monkeypatch, *, paragraphs: list[str], scene_b
     )
     session.add(StyleReferenceProfile(profile_id="prof_r3", book_id="book_r3", run_id="run_r3", title="龙族画像", profile_json={"voice_signature": {"deliberate_repetition": deliberate}}))
     session.commit()
+    # 风格参考 v3：诊断按 StylePolicy 判绑定（校准看 bound，房风标记看「让位」）；画像的刻意复沓从库里读
     monkeypatch.setattr(
         SceneDiagnosisService,
-        "binding_profile",
-        lambda self, scene: (True, BoundProfile(profile_id="prof_r3", book_id="book_r3", deliberate_repetition=deliberate)),
+        "style_policy",
+        lambda self, scene: StylePolicy(bound=True, style_first=True, mode="live", profile_id="prof_r3", book_id="book_r3"),
     )
 
 

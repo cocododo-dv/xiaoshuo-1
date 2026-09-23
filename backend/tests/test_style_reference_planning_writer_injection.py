@@ -269,7 +269,14 @@ class _BlueprintRunner:
         self.calls.append(kwargs)
         return SimpleNamespace(
             llm_call_id=f"llm_call_wp6_bp_{len(self.calls)}",
-            response=SimpleNamespace(structured_output={field: f"{field} 内容" for field in SCENE_BLUEPRINT_FIELDS}),
+            response=SimpleNamespace(
+                structured_output={
+                    **{field: f"{field} 内容" for field in SCENE_BLUEPRINT_FIELDS},
+                    # 风格参考 v3：有绑定且作者手笔直起时蓝图跑事实版
+                    "ending_function": "ending_function 内容",
+                    "situation_tags": ["对峙审问"],
+                }
+            ),
         )
 
 
@@ -423,7 +430,8 @@ def test_scene_blueprint_prefix_failure_degrades_to_the_base_prompt(session, mon
     monkeypatch.setattr("novel_system.services.scene_blueprint.inject_style_reference_prefix", _boom)
     service.generate(SCENE_ID)
     prompt = runner.calls[-1]["prompt"]
-    assert prompt["system_prompt"] == load_prompt_templates()["scene_blueprint"].system_prompt
+    # 默认绑定是作者手笔直起 → 风格参考 v3 起蓝图跑事实版；前缀失败只退回该模板的基础提示词
+    assert prompt["system_prompt"] == load_prompt_templates()["scene_blueprint_facts"].system_prompt
     # 快照里的摘要块不受前缀失败影响
     assert STYLE_STRUCTURE_CARD_KEY not in prompt  # prompt 不是快照；只确认调用没有被阻断
     assert service.latest(SCENE_ID) is not None

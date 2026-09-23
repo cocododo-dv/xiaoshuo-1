@@ -48,7 +48,10 @@ from novel_system.services.near_final import (
 )
 from novel_system.services.pagination import paginate_select, resolve_pagination_request
 from novel_system.services.projects import ProjectService
-from novel_system.services.reference_safety import ReferenceSafetyService
+from novel_system.services.reference_copy_gate import (
+    check_reference_copy_for_scope,
+    copy_block_author_action,
+)
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import latest_style_notices
@@ -61,7 +64,6 @@ from novel_system.services.scene_run_jobs import (
     start_scene_run_job_worker,
 )
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
-from novel_system.services.source_safety import source_profile_ids_from_snapshot
 from novel_system.services.text_validation import clean_backfill_markers, validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
 from novel_system.services.writer_review import WriterReviewService
@@ -1467,27 +1469,32 @@ def adopt_current_scene(
                     details={"scene_id": scene_id},
                 )
 
-        # 2) 确定性来源安全守卫（Q0 红线；Q0–Q3 分级阻断策略随 Wave 2 落地）
+        # 2) 唯一抄袭门（Q0 红线；风格参考 v3）：与绑定的参考书连续 ≥12 字相同或含受保护专名即拦。
+        # 比对 bundle 冻结的绑定与这一场当前的活动绑定；归档时成稿门再过一遍同一道门（同一稿命中缓存）。
         target_content = final.content if final is not None else (content or "")
         bundle = (
             session.get(SceneBundle, state.current_bundle_id)
             if state.current_bundle_id
             else None
         )
-        scan = ReferenceSafetyService(session).scan_runtime_text(
+        copy_check = check_reference_copy_for_scope(
+            session,
             target_content,
-            source_profile_ids=source_profile_ids_from_snapshot(
-                bundle.frozen_snapshot_json if bundle else None
-            ),
+            scope=scene,
+            bundle_snapshot=bundle.frozen_snapshot_json if bundle else None,
         )
-        if not scan.get("safe", True):
+        scan = copy_check.audit()
+        if copy_check.blocked:
             raise DomainError(
                 "SOURCE_SAFETY_BLOCKED",
-                "source-safety scan blocked adoption — draft is kept and can be revised",
+                "reference copy gate blocked adoption — draft is kept and can be revised",
                 status_code=409,
                 details={
                     "scene_id": scene_id,
-                    "blocked_terms": scan.get("blocked_terms") or [],
+                    "reference_copy": scan,
+                    "author_action": copy_block_author_action(
+                        copy_check, target_view="writer", target_ref=f"scene:{scene_id}"
+                    ),
                 },
             )
 
@@ -1597,12 +1604,20 @@ def scene_workbench(
         if state is not None and state.current_final_scene_row_id
         else None
     )
-    source_safety_scan = ReferenceSafetyService(session).scan_runtime_text(
-        final.content if final else "",
-        source_profile_ids=source_profile_ids_from_snapshot(
-            bundle.frozen_snapshot_json if bundle else None
-        ),
-    )
+    # 风格参考 v3：终稿过唯一抄袭门的读数（与采纳 / 归档同一道门，同一稿命中缓存）；只读展示，检查失败不拖垮工作台
+    try:
+        source_safety_scan = check_reference_copy_for_scope(
+            session,
+            final.content if final else "",
+            scope=scene,
+            bundle_snapshot=bundle.frozen_snapshot_json if bundle else None,
+        ).audit()
+    except Exception as exc:  # noqa: BLE001 — 展示用读数
+        source_safety_scan = {
+            "safe": False,
+            "error_code": "SOURCE_SAFETY_UNAVAILABLE",
+            "error_type": type(exc).__name__,
+        }
     memory = (
         session.execute(
             select(SceneMemory).where(
@@ -1775,10 +1790,8 @@ def _serialize_generation_summary(
 def _current_run_draft_mode(
     session: Session, scene_id: str, state: SceneRunState
 ) -> str:
-    from novel_system.services.style_reference.runtime_contract import (
-        DRAFT_MODE_NEUTRAL_FIRST,
-        effective_draft_mode,
-    )
+    from novel_system.services.style_policy import style_policy_for_bundle
+    from novel_system.services.style_reference.binding_config import DRAFT_MODE_NEUTRAL_FIRST
 
     bundle_id = _resolve_current_run_bundle_id(session, scene_id, state)
     if not bundle_id:
@@ -1787,7 +1800,8 @@ def _current_run_draft_mode(
     if bundle_row is None:
         return DRAFT_MODE_NEUTRAL_FIRST
     try:
-        return effective_draft_mode(bundle_row.frozen_snapshot_json)
+        # 风格参考 v3：起草方式只看这次运行 bundle 的 StylePolicy（未绑定 → neutral_first）
+        return style_policy_for_bundle(bundle_row.frozen_snapshot_json).draft_mode
     except Exception:  # noqa: BLE001 — 只读展示,不因契约解析失败影响工作台
         return DRAFT_MODE_NEUTRAL_FIRST
 

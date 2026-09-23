@@ -35,7 +35,7 @@ class Archiver:
         finalize_scene_status: bool = True,
         author_confirmed_final: bool = False,
         accepted_warning_codes: list[str] | None = None,
-        observe_style_drift: bool = True,
+        record_fidelity_reading: bool = True,
     ) -> dict:
         final_scene = self.session.get(FinalScene, final_scene_row_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -210,15 +210,14 @@ class Archiver:
             self.session.add(archive_attempt)
         self.session.flush()
 
-        # 2026-09-22 风格参考优先:每一条归档路径都做确定性声音漂移读数(W6)。此前只有编排器自己的
-        # 归档检查点做,而起草台「采用」(adopt-current)与成稿中心走的是本函数——真实项目两场归档
-        # 0 条 style_drift_observed,跨场校准从未运行。检查点路径自己读数,传 False 免得读两遍。
-        style_drift: dict[str, Any] | None = None
-        if observe_style_drift:
-            style_drift = self._observe_style_drift(scene_id, execution_id=execution_id)
+        # 风格参考 v3:每一条归档路径(起草台「采用」、成稿中心、编排器)都在这里记归档终稿的「像不像」
+        # 读数(漂移驾驶已删)。编排器的归档检查点在自己的 archive:style_drift:0 槽位里记,传 False 免得记两遍。
+        fidelity_reading: dict[str, Any] | None = None
+        if record_fidelity_reading:
+            fidelity_reading = self._record_fidelity_reading(scene_id, execution_id=execution_id)
 
         return {
-            "style_drift": style_drift,
+            "fidelity_reading": fidelity_reading,
             "scene_memory_row_id": memory_row_id,
             "chapter_rolling_note_row_id": rolling.row_id,
             "archive_attempt_id": archive_attempt.attempt_id,
@@ -236,10 +235,11 @@ class Archiver:
         }
 
 
-    def _observe_style_drift(
+    def _record_fidelity_reading(
         self, scene_id: str, *, execution_id: str | None
     ) -> dict[str, Any] | None:
-        """归档期漂移读数;任何异常吞掉记 warning,绝不阻断归档。"""
+        """归档终稿的「像不像」读数(见 SceneArchiveEffects._record_archive_fidelity_reading);
+        任何异常吞掉记 warning,绝不阻断归档。"""
         try:
             from novel_system.db.models import SceneCard
             from novel_system.services.scene_archive_effects import SceneArchiveEffects
@@ -250,10 +250,10 @@ class Archiver:
             effects = SceneArchiveEffects(
                 self.session, None, execution_id=execution_id, run_job_id=None
             )
-            return effects._detect_and_store_style_drift(scene)
+            return effects._record_archive_fidelity_reading(scene)
         except Exception as exc:  # noqa: BLE001 — 读数失败不影响归档
             _LOGGER.warning(
-                "style drift observation skipped on archive for scene %s", scene_id, exc_info=True
+                "fidelity reading skipped on archive for scene %s", scene_id, exc_info=True
             )
             return {"outcome": "degraded", "error_code": exc.__class__.__name__}
 

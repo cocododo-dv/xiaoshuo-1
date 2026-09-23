@@ -452,7 +452,8 @@ def test_soft_qc_engine_recomputes_budget_for_final_prompt_before_llm_call(sessi
 
 
 # ---------------------------------------------------------------------------
-# 2026-09 风格模仿 v2（W5，规格 §1.3）：前文声音锚 / 漂移校准 / 叙事机制的预算行为
+# 2026-09 风格模仿 v2（W5，规格 §1.3）：前文声音锚 / 叙事机制的预算行为（风格参考 v3 删掉了漂移校准段；
+# 旧 bundle 里残留的 style_drift_calibration 摘要不再渲染）
 # ---------------------------------------------------------------------------
 
 
@@ -469,6 +470,7 @@ def _v2_snapshot(anchor_sentences: int = 40) -> dict:
             "scene_card": " ".join(["Scene pressure"] * 40),
             "style_narrative_guidance": "以下是参考作品的叙事取舍机制：\n- 关键信息放段首一次给出\n- 结尾不解释动机",
             "previous_scene_voice_anchor": anchor,
+            # 风格参考 v3 之前的 bundle 残留：不再有 section spec，永不渲染
             "style_drift_calibration": "- 逗号再密一点\n- 少用然而",
         },
     }
@@ -508,13 +510,14 @@ def test_voice_anchor_is_compressed_before_any_fact_section() -> None:
     assert status["previous_scene_voice_anchor"]["status"] == "compressed"
     assert status["scene_card"]["status"] == "included"
     assert status["style_narrative_guidance"]["status"] == "included"
-    assert status["style_drift_calibration"]["status"] == "included"
+    assert "style_drift_calibration" not in status
     assert result["budget"]["split_scene_recommended"] is False
     assert "## Previous Scene Voice Anchor (own prose; keep the same voice) (compressed)" in result["user_prompt"]
-    assert "## Style Drift Calibration" in result["user_prompt"]
+    assert "Style Drift Calibration" not in result["user_prompt"]
+    assert "逗号再密一点" not in result["user_prompt"]
 
 
-def test_voice_anchor_and_drift_calibration_are_omitted_before_split_recommendation() -> None:
+def test_voice_anchor_is_omitted_before_split_recommendation() -> None:
     snapshot = _v2_snapshot()
     result = apply_context_budget(
         system_prompt="System prompt.",
@@ -526,13 +529,13 @@ def test_voice_anchor_and_drift_calibration_are_omitted_before_split_recommendat
     )
     status = result["budget"]["section_status"]
     assert status["previous_scene_voice_anchor"]["status"] == "omitted"
-    assert status["style_drift_calibration"]["status"] == "omitted"
+    assert "style_drift_calibration" not in status
     # 事实 section 永不因软性延续信号让路
     assert status["scene_card"]["status"] != "omitted"
     assert "Previous Scene Voice Anchor" not in result["user_prompt"]
 
 
-def test_neutral_draft_keeps_narrative_mechanisms_but_drops_voice_anchor_and_drift() -> None:
+def test_neutral_draft_keeps_narrative_mechanisms_but_drops_voice_anchor() -> None:
     snapshot = _v2_snapshot(anchor_sentences=3)
     result = apply_context_budget(
         system_prompt="System prompt.",
@@ -545,7 +548,7 @@ def test_neutral_draft_keeps_narrative_mechanisms_but_drops_voice_anchor_and_dri
     status = result["budget"]["section_status"]
     assert status["style_narrative_guidance"]["status"] == "included"
     assert status["previous_scene_voice_anchor"]["status"] == "omitted"
-    assert status["style_drift_calibration"]["status"] == "omitted"
+    assert "style_drift_calibration" not in status
     assert "## Style Reference — Narrative Mechanisms" in result["user_prompt"]
     assert "关键信息放段首一次给出" in result["user_prompt"]
     assert "Previous Scene Voice Anchor" not in result["user_prompt"]

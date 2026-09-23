@@ -483,7 +483,7 @@ def test_prompt_templates_teach_the_design_context() -> None:
     )["templates"]
     expectations = {
         "neutral_draft": ("2026-09-15.v12", "never adds an event to this scene"),
-        "style_first_draft": ("2026-09-22.v8", "never restated in the prose"),
+        "style_first_draft": ("2026-09-23.v9", "never restated in the prose"),
         "scene_blueprint": ("2026-09-15.v10", "ground the proposal in it"),
     }
     for name, (version, phrase) in expectations.items():

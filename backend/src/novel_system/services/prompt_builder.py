@@ -92,6 +92,8 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "near_final_acceptance_review": STYLE_PASS_INPUT_TOKEN_BUDGET,
     # 规划族 + 局部改写（载荷有界）+ 2026-09-14 WP6 的参考块余量
     "scene_blueprint": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
+    # 风格参考 v3：有绑定且作者手笔直起时蓝图改跑事实版，同一档预算
+    "scene_blueprint_facts": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     "chapter_story_architecture": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     "character_pressure_blueprint": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     "writer_passage_patch": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
@@ -128,6 +130,7 @@ DRAFTING_TEMPLATE_NAMES = {
     "near_final_rewrite",
     "project_outline_plan",
     "scene_blueprint",
+    "scene_blueprint_facts",
     "chapter_story_architecture",
     "character_pressure_blueprint",
     "snowflake_generate_logline",

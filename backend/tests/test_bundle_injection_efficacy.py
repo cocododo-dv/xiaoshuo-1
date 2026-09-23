@@ -126,60 +126,41 @@ def test_scene_vector_indexing_rejects_stale_same_id_without_overwrite(session):
 # ---------------------------------------------------------------------------
 
 
-def test_bundle_second_scene_carries_drift_calibration_event_id_and_ptype_priority(session):
-    """同章更早场景归档后写了 style_drift_observed，下一场 bundle 渲染校准行并记 event_id / 段型优先级。"""
-    import json
+def test_bundle_never_carries_drift_calibration_even_with_legacy_events(session):
+    """风格参考 v3：漂移驾驶已删——同章更早场景残留的 style_drift_observed 事件不再进下一场 bundle。"""
+    from novel_system.db.models import StyleReferenceMetricEvent
+    from tests.test_style_reference_style_continuity import seed_binding, seed_work, short_dense_reference
 
-    from novel_system.services.style_reference import style_continuity as sc
-    from tests.test_style_reference_style_continuity import (
-        LONG_SENTENCE_TEXT,
-        seed_binding,
-        seed_work,
-        short_dense_reference,
-    )
-
-    seed_work(session, project_id="P_W6_BND", scenes_per_chapter=3)
+    seed_work(session, project_id="P_W6_BND", scenes_per_chapter=2)
     seed_binding(
         session,
         project_id="P_W6_BND",
         seed="w6bnd",
         profile_json={"voice_signature": {"features": short_dense_reference(), "deliberate_repetition": False}},
     )
-    builder = BundleBuilder(session)
-    first = builder.build("P_W6_BND_CH01_SC01")["snapshot"]
-    assert "style_drift_calibration" not in first["inline_digests"]
-    assert "_drift_ptype_priority" not in first["inline_digests"]
-
-    scene1 = session.get(SceneCard, "P_W6_BND_CH01_SC01")
-    contract = builder.session and __import__(
-        "novel_system.services.bundle_builder", fromlist=["resolve_scene_style_runtime_contract"]
-    ).resolve_scene_style_runtime_contract(session, scene1)
-    observed = sc.observe_style_drift(session, scene1, LONG_SENTENCE_TEXT, contract)
+    session.add(
+        StyleReferenceMetricEvent(
+            event_id="sr_metric_legacy_w6",
+            event_kind="style_drift_observed",
+            target_kind="scene",
+            target_ref_id="P_W6_BND_CH01_SC01",
+            profile_id="sr_profile_w6bnd",
+            outcome="observed",
+            context_json={
+                "chapter_id": "P_W6_BND_CH01",
+                "scene_seq": 1,
+                "calibration_lines": ["前一场句子偏长"],
+                "drift_ptype_priority": ["narration"],
+            },
+        )
+    )
     session.commit()
-    assert observed["outcome"] == "observed" and observed["calibration_lines"]
 
-    second = builder.build("P_W6_BND_CH01_SC02")["snapshot"]
-    digest = second["inline_digests"]["style_drift_calibration"]
-    assert digest.split("\n") == [f"- {line}" for line in observed["calibration_lines"]]
-    refs = second["source_version_refs"]
-    assert refs["style_drift_calibration_event_id"] == observed["event_id"]
-    assert refs["style_drift_calibration_source_scene_id"] == "P_W6_BND_CH01_SC01"
-    assert refs["style_drift_calibration_source_scope"] == "chapter"
-    assert refs["style_drift_calibration_ptype_priority"] == observed["drift_ptype_priority"]
-    assert refs["style_drift_calibration_line_count"] == len(observed["calibration_lines"])
-    assert refs["style_drift_calibration_before_scene_seq"] == 2
-    # bundle hash 投影要求 digest 值为 str：段型优先级以 JSON 字符串落 inline_digests
-    priority_digest = second["inline_digests"]["_drift_ptype_priority"]
-    assert isinstance(priority_digest, str)
-    assert json.loads(priority_digest) == observed["drift_ptype_priority"]
-    assert json.loads(priority_digest)[0] == "narration"
-    slot = next(item for item in second["ordered_injections"] if item["slot"] == "style_drift_calibration")
-    assert slot["digest_key"] == "style_drift_calibration"
+    second = BundleBuilder(session).build("P_W6_BND_CH01_SC02")["snapshot"]
+    assert "style_drift_calibration" not in second["inline_digests"]
+    assert "_drift_ptype_priority" not in second["inline_digests"]
+    assert not any(key.startswith("style_drift_calibration") for key in second["source_version_refs"])
     assert "style_drift_calibration" not in (second.get("degraded_slots") or [])
-
-    # 第三场同样读到最近一次（仍是第一场的）读数
-    third = builder.build("P_W6_BND_CH01_SC03")["snapshot"]
-    assert third["source_version_refs"]["style_drift_calibration_event_id"] == observed["event_id"]
 
 
 def test_freshness_budget_prunes_function_word_only_ngrams():
@@ -291,7 +272,8 @@ def test_bundle_freshness_budget_applies_exemptions_from_bound_reference(session
     assert "preserve_reference_repetition" not in norep
 
     # 2026-09-12 风格直起(style_first,缺省):两张房风词表与「以动作收尾」子句让位;
-    # 跨场景动作模板 / 意象场 / n-gram 复用检查保留;刻意复沓时全书禁用表达表也让位。
+    # 风格参考 v3(L8):构式层清单(动作模板 / 意象场 / 句形 / 语义复读 / 全书已用表达)一并让位,
+    # 只剩逐字层的近场重复 n-gram。
     seed_prior_final("P_W6_SFIRST")
     seed_binding(
         session,
@@ -303,7 +285,10 @@ def test_bundle_freshness_budget_applies_exemptions_from_bound_reference(session
     assert bound["house_taste_lists"] == "deferred_to_reference"
     assert "avoid_summary_endings" not in bound and "avoid_false_clarity" not in bound
     assert "hard action" not in bound["instruction"]
-    assert "repeating your own earlier scenes" in bound["instruction"]
+    assert "copying your own earlier scenes word for word only" in bound["instruction"]
+    assert bound["construction_lists"] == "deferred_to_reference"
+    for key in ("avoid_action_templates", "avoid_image_fields", "vary_syntax_shapes", "semantic_repetition_alert"):
+        assert key not in bound
     assert bound["avoid_recent_ngrams"] == ["他把杯子放回桌上"]
     assert bound["preserve_reference_repetition"] is True
     assert "lifetime_banned_expressions" not in bound

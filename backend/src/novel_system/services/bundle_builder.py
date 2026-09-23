@@ -55,6 +55,12 @@ from novel_system.services.style_reference.narrative_guidance import (
     collect_narrative_guidance,
     render_narrative_section,
 )
+from novel_system.services.style_policy import (
+    MODE_FROZEN,
+    UNBOUND,
+    StylePolicy,
+    policy_from_contract,
+)
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
     build_style_runtime_contract,
@@ -65,9 +71,8 @@ from novel_system.services.style_reference.structure import (
 )
 from novel_system.services.style_reference.style_continuity import (
     contract_deliberate_repetition,
-    latest_drift_calibration,
-    latest_drift_event,
 )
+from novel_system.services.style_reference.tags import normalize_situation_tags
 from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
@@ -82,9 +87,11 @@ from novel_system.services.author_instructions import normalize_author_note
 
 _LOGGER = logging.getLogger(__name__)
 
-# 2026-09 风格模仿 v2（W5，规格 §1.3）——三个新 section 的登记名。
+# 2026-09 风格模仿 v2（W5，规格 §1.3）——前文声音锚 section 的登记名。风格参考 v3 删掉了漂移校准段
+# （``style_drift_calibration``）与漂移优先选窗（``_drift_ptype_priority``）：归档读数不再回灌进下一场。
 VOICE_ANCHOR_SECTION_KEY = "previous_scene_voice_anchor"
-DRIFT_CALIBRATION_SECTION_KEY = "style_drift_calibration"
+# 风格参考 v3（N4）：本场场面标签（事实版蓝图给的，词表 tags.SITUATION_TAGS）冻结在这个 inline digest 里
+SCENE_SITUATION_TAGS_KEY = "_scene_situation_tags"
 # 「前文声音锚」取上一场最新的**已风格化**稿：style_draft 本体、反模板重写、软补丁、
 # 安全挽救稿都算；中性稿 / rejected 行不算（前者无目标文风，后者是被否决的文本）。
 STYLED_DRAFT_STAGES: tuple[str, ...] = (
@@ -95,16 +102,13 @@ STYLED_DRAFT_STAGES: tuple[str, ...] = (
 )
 _CONTINUITY_BUDGET_DEFAULTS: dict[str, int] = {
     "continuity_anchor_max_chars": 900,
-    "drift_calibration_max_lines": 3,
 }
 _SENTENCE_END_RE = re.compile(r"[。！？!?…]+[”’」』）)]*")
 
 
 def load_continuity_budget() -> dict[str, int]:
-    """读 ``config/style_reference/injection_budget.yaml`` 的跨场景连续性预算键。
-
-    W4 负责把 ``continuity_anchor_max_chars`` / ``drift_calibration_max_lines`` 写进
-    yaml；文件或键缺失时回到规格 §1.4 的默认值（900 字 / 3 行）。
+    """读 ``config/style_reference/injection_budget.yaml`` 的跨场景连续性预算键
+    （``continuity_anchor_max_chars``）；文件或键缺失时回到规格 §1.4 的默认值（900 字）。
     """
     budget = dict(_CONTINUITY_BUDGET_DEFAULTS)
     try:
@@ -621,6 +625,8 @@ class BundleBuilder:
             inline_digests[SCENE_DESIGN_SECTION_KEY] = design_context.text
         # 2026-09-22 风格参考优先:契约写了 style_first 时,本系统自己的前文不再作为「声音」进入提示
         # (前文声音锚 / 相似场景 / 整篇上一场正文)——第 1 场若跑偏,后面每一场都被要求接着那个腔写。
+        # 风格参考 v3:契约每个 bundle 只建一次,这一次的 StylePolicy 管本 bundle 里所有让位判定(含新鲜度预算)。
+        bundle_policy: StylePolicy = UNBOUND
         reference_first = False
         source_version_refs["style_reference_runtime_contract_version"] = (
             STYLE_RUNTIME_CONTRACT_VERSION
@@ -638,9 +644,8 @@ class BundleBuilder:
                     task_type="scene_generation",
                 )
                 if style_runtime_contract is not None:
-                    reference_first = (
-                        str(style_runtime_contract.get("draft_mode") or "") == "style_first"
-                    )
+                    bundle_policy = policy_from_contract(style_runtime_contract, mode=MODE_FROZEN)
+                    reference_first = bundle_policy.defers_house_taste()
                     source_version_refs["style_reference_runtime_contract_hash"] = (
                         style_runtime_contract["contract_hash"]
                     )
@@ -761,6 +766,16 @@ class BundleBuilder:
                 ensure_ascii=False,
                 sort_keys=True,
             )
+            # 风格参考 v3（N4）：事实版蓝图给这一场标的场面标签随 bundle 冻结（以 _ 开头：不进 section），
+            # 选窗按它挑参考作者写同类场面的原文（同一场所有工序读同一份）。
+            situation_tags = normalize_situation_tags(
+                (scene_blueprint.blueprint_json or {}).get("situation_tags")
+                if isinstance(scene_blueprint.blueprint_json, dict)
+                else None
+            )
+            if situation_tags:
+                source_version_refs["scene_situation_tags"] = situation_tags
+                inline_digests[SCENE_SITUATION_TAGS_KEY] = json.dumps(situation_tags, ensure_ascii=False)
 
         character_pressure = self._latest_planning_artifact(
             artifact_type="character_pressure_blueprint",
@@ -891,7 +906,7 @@ class BundleBuilder:
         if chapter_transition:
             inline_digests["chapter_transition_buffer"] = chapter_transition
 
-        # v2（规格 §1.3）：前文声音锚 / 漂移校准——只对 style_draft 可见
+        # v2（规格 §1.3）：前文声音锚——只对 style_draft 可见
         # （context_budget.NEUTRAL_DRAFT_STYLE_SECTIONS 让中性稿看不到）。
         voice_anchor = None if reference_first else self._previous_scene_voice_anchor(scene)
         if reference_first:
@@ -915,27 +930,6 @@ class BundleBuilder:
             )
             inline_digests[VOICE_ANCHOR_SECTION_KEY] = voice_anchor["text"]
 
-        drift_lines = self._style_drift_calibration(
-            scene,
-            source_version_refs=source_version_refs,
-            inline_digests=inline_digests,
-        )
-        if drift_lines:
-            source_version_refs["style_drift_calibration_line_count"] = len(drift_lines)
-            source_version_refs["style_drift_calibration_before_scene_seq"] = (
-                scene.scene_seq
-            )
-            ordered_injections.append(
-                {
-                    "slot": DRIFT_CALIBRATION_SECTION_KEY,
-                    "ref_id": f"{scene.chapter_id}:before_seq_{scene.scene_seq}",
-                    "digest_key": DRIFT_CALIBRATION_SECTION_KEY,
-                }
-            )
-            inline_digests[DRIFT_CALIBRATION_SECTION_KEY] = "\n".join(
-                f"- {line}" for line in drift_lines
-            )
-
         similar_scenes = None if reference_first else self._similar_scene_context(scene)
         if similar_scenes:
             inline_digests["similar_scene"] = similar_scenes
@@ -955,7 +949,7 @@ class BundleBuilder:
                 else previous_memory.content
             )
 
-        freshness_budget = self._literary_freshness_budget(scene)
+        freshness_budget = self._literary_freshness_budget(scene, bundle_policy)
         if freshness_budget is not None:
             source_version_refs["literary_freshness_source_final_scene_ids"] = (
                 freshness_budget["source_final_scene_ids"]
@@ -1156,82 +1150,6 @@ class BundleBuilder:
             self._slot_degraded(VOICE_ANCHOR_SECTION_KEY, scene)
             return None
 
-    def _style_drift_calibration(
-        self,
-        scene: SceneCard,
-        *,
-        source_version_refs: dict[str, Any] | None = None,
-        inline_digests: dict[str, str] | None = None,
-    ) -> list[str]:
-        """规格 §1.3「漂移校准」：读 W6 的 ``style_drift_observed`` 事件。
-
-        主路径 ``latest_drift_event``（本章更早场景最近一次；同章没有退到上一章）——拿到
-        校准行、``event_id`` 与 few-shot 段型优先级；事件缺失时退到 W5 约定的
-        ``latest_drift_calibration``（list[str] 读取端，供外部替换 / 测试注入）。有行时把
-        ``style_drift_calibration_event_id`` / ``…_source_scene_id`` / ``…_source_scope`` /
-        ``…_ptype_priority`` 记进 ``source_version_refs``，并把段型优先级以 JSON 字符串写进
-        ``inline_digests["_drift_ptype_priority"]``（bundle hash 投影要求 digest 值为 str，
-        scene_generation 消费该键）。返回的行已去重并按 ``drift_calibration_max_lines`` 截断。
-        """
-        event: dict[str, Any] | None = None
-        try:
-            event = latest_drift_event(self.session, scene.chapter_id, scene.scene_seq)
-            if isinstance(event, dict):
-                raw_lines = event.get("calibration_lines")
-            else:
-                event = None
-                raw_lines = latest_drift_calibration(
-                    self.session, scene.chapter_id, scene.scene_seq
-                )
-        except Exception:  # noqa: BLE001 — optional continuity aid degrades visibly
-            self._slot_degraded(DRIFT_CALIBRATION_SECTION_KEY, scene)
-            return []
-        if not isinstance(raw_lines, (list, tuple)):
-            return []
-        max_lines = load_continuity_budget()["drift_calibration_max_lines"]
-        lines: list[str] = []
-        for item in raw_lines:
-            text = " ".join(str(item or "").split())
-            if text and text not in lines:
-                lines.append(text)
-            if len(lines) >= max_lines:
-                break
-        if lines and event is not None:
-            self._record_drift_event_refs(
-                event,
-                source_version_refs=source_version_refs,
-                inline_digests=inline_digests,
-            )
-        return lines
-
-    @staticmethod
-    def _record_drift_event_refs(
-        event: dict[str, Any],
-        *,
-        source_version_refs: dict[str, Any] | None,
-        inline_digests: dict[str, str] | None,
-    ) -> None:
-        """把漂移事件的审计引用与段型优先级写进快照（``_style_drift_calibration`` 的直接 helper）。"""
-        event_id = str(event.get("event_id") or "")
-        priority = [
-            str(ptype)
-            for ptype in (event.get("drift_ptype_priority") or [])
-            if str(ptype or "").strip()
-        ]
-        if source_version_refs is not None:
-            if event_id:
-                source_version_refs["style_drift_calibration_event_id"] = event_id
-            source_scene_id = event.get("scene_id")
-            if source_scene_id:
-                source_version_refs["style_drift_calibration_source_scene_id"] = str(source_scene_id)
-            source_scope = event.get("source_scope")
-            if source_scope:
-                source_version_refs["style_drift_calibration_source_scope"] = str(source_scope)
-            if priority:
-                source_version_refs["style_drift_calibration_ptype_priority"] = list(priority)
-        if inline_digests is not None and priority:
-            inline_digests["_drift_ptype_priority"] = json.dumps(priority, ensure_ascii=False)
-
     def _narrative_state_digest(self, scene: SceneCard) -> str | None:
         """Inject authoritative character state from event log into the prompt."""
         try:
@@ -1262,7 +1180,16 @@ class BundleBuilder:
             self._slot_degraded("narrative_state", scene)
             return None
 
-    def _literary_freshness_budget(self, scene: SceneCard) -> dict[str, Any] | None:
+    def _literary_freshness_budget(
+        self, scene: SceneCard, policy: StylePolicy = UNBOUND
+    ) -> dict[str, Any] | None:
+        """新鲜度预算：防本系统复读自己已写成的前几场。
+
+        风格参考 v3（L8）：让位（``policy.defers_house_taste()``）时只保留逐字层的防复读（近场重复 n-gram）；
+        构式 / 语义层清单（动作模板、意象场、句形、语义复读、全书已用表达）一律不发——这些手法反复出现
+        正是参考作者的风格（真实案例：「劣质 + 材质名词」这类像参考作者的比喻被当成「章内已禁用」）。
+        策略由 bundle 构建时建好的那份契约给出，不再为新鲜度预算另建一次契约。
+        """
         rows = (
             self.session.execute(
                 select(FinalScene)
@@ -1304,31 +1231,26 @@ class BundleBuilder:
             for row in fingerprint.get("syntax_shapes", [])
             if int(row.get("count") or 0) >= 3
         ]
-        # 2026-09-12 风格直起:契约先解析——style_first 下写死的两张房风词表与「以动作而非
-        # 解释收尾」子句整体让位;跨场景动作模板 / 意象场 / 句形复用(防系统自我复读)保留。
-        try:
-            contract = resolve_scene_style_runtime_contract(self.session, scene)
-        except Exception:  # noqa: BLE001 — 豁免标记是可选增强，解析失败按无契约处理
-            _LOGGER.debug("freshness budget contract lookup degraded", exc_info=True)
-            contract = None
-        style_bound = (
-            contract is not None and str(contract.get("draft_mode") or "") == "style_first"
+        style_bound = policy.defers_house_taste()
+        preserve_repetition = bool(
+            policy.bound and policy.contract is not None and contract_deliberate_repetition(policy.contract)
         )
-        preserve_repetition = contract is not None and contract_deliberate_repetition(contract)
         budget: dict[str, Any] = {
             "schema_version": "literary_freshness_budget_v1",
             "source_scene_ids": [row.scene_id for row in source_rows],
         }
         if style_bound:
             # 2026-09-14 风格保真修补:动作模板 / 意象场 / 句形三张表是从本系统自己已按作者手笔写成的
-            # 前几场里挖出来的——有绑定时它们就是作者的声音,不再当作要避开的东西发给起草;只保留
-            # 内容级复读检查(近场 n-gram、语义复读、全书禁用表达)。
+            # 前几场里挖出来的——有绑定时它们就是作者的声音,不再当作要避开的东西发给起草。
+            # 风格参考 v3(L8):语义复读与全书已用表达(比喻 / 意象 / 开头方式 / 动作口癖 / 情绪惯用语)
+            # 也是构式层清单,同样让位;只剩逐字层的近场重复 n-gram。
             budget["house_taste_lists"] = "deferred_to_reference"
             budget["voice_lists"] = "deferred_to_reference"
+            budget["construction_lists"] = "deferred_to_reference"
             budget["instruction"] = (
-                "Use this as a freshness budget against repeating your own earlier scenes' content only: "
-                "do not reuse the recent n-grams or the semantic beats listed here. The reference "
-                "author's habits, cadence, syntax shapes, image fields, and closing moves are never repetition to avoid."
+                "Use this as a freshness budget against copying your own earlier scenes word for word only: "
+                "do not reuse the recent n-grams listed here verbatim. The reference author's habits, devices, "
+                "comparisons, cadence, syntax shapes, image fields, and closing moves are never repetition to avoid."
             )
         else:
             budget["avoid_action_templates"] = action_templates
@@ -1357,8 +1279,10 @@ class BundleBuilder:
             )
             if repeated_ngrams:
                 budget["avoid_recent_ngrams"] = repeated_ngrams
-            corpus_texts, corpus_ids = detector._load_corpus(
-                scene.scene_id, scene.chapter_id, lookback_scenes=6
+            corpus_texts, corpus_ids = (
+                ([], [])
+                if style_bound
+                else detector._load_corpus(scene.scene_id, scene.chapter_id, lookback_scenes=6)
             )
             if corpus_texts:
                 from novel_system.services.self_repetition import (
@@ -1375,15 +1299,16 @@ class BundleBuilder:
                         format_semantic_repetition_guidance(sem_hits)
                     )
             # §9 blueprint: whole-book banned expression list (LifetimeExpressionRegistry)
-            from novel_system.services.self_repetition import LifetimeExpressionRegistry
+            # 风格参考 v3(L8):让位时整张表不发(它把作者反复用的比喻 / 口头禅当成滥用)。
+            if not style_bound:
+                from novel_system.services.self_repetition import LifetimeExpressionRegistry
 
-            lifetime_reg = LifetimeExpressionRegistry(self.session)
-            lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(
-                scene.project_id
-            )
-            # style_first 且参考刻意复沓时,全书禁用表达表也让位(它会把作者的口头禅当成滥用)。
-            if lifetime_guidance and not (style_bound and preserve_repetition):
-                budget["lifetime_banned_expressions"] = lifetime_guidance
+                lifetime_reg = LifetimeExpressionRegistry(self.session)
+                lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(
+                    scene.project_id
+                )
+                if lifetime_guidance:
+                    budget["lifetime_banned_expressions"] = lifetime_guidance
         except Exception:
             self._slot_degraded("literary_freshness_enrichment", scene)
         # v2（规格 §2.W6.3）新鲜度豁免：

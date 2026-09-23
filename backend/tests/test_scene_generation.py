@@ -1627,13 +1627,13 @@ def test_style_anchor_audit_exposes_soft_shape_repair_without_punctuation_quota(
             }
         },
     )
+    from novel_system.services.style_policy import StylePolicy
+
+    # 风格参考 v3：这两道形态整理 / 审计只看 bundle 的 StylePolicy（先中性后润色 → 不让位）
     monkeypatch.setattr(
-        "novel_system.services.scene_generation.resolve_style_runtime_contract_state",
-        lambda _bundle: SimpleNamespace(
-            status="frozen",
-            mode="frozen",
-            error_code=None,
-            contract={"frozen": True},
+        "novel_system.services.scene_generation.style_policy_for_bundle",
+        lambda _bundle, **_kwargs: StylePolicy(
+            bound=True, style_first=False, mode="frozen", contract={"frozen": True}
         ),
     )
     monkeypatch.setattr(
@@ -1667,13 +1667,13 @@ def test_style_paragraph_normalization_only_merges_and_preserves_text_sequence(
             )
         },
     )
+    from novel_system.services.style_policy import StylePolicy
+
+    # 风格参考 v3：这两道形态整理 / 审计只看 bundle 的 StylePolicy（先中性后润色 → 不让位）
     monkeypatch.setattr(
-        "novel_system.services.scene_generation.resolve_style_runtime_contract_state",
-        lambda _bundle: SimpleNamespace(
-            status="frozen",
-            mode="frozen",
-            error_code=None,
-            contract={"frozen": True},
+        "novel_system.services.scene_generation.style_policy_for_bundle",
+        lambda _bundle, **_kwargs: StylePolicy(
+            bound=True, style_first=False, mode="frozen", contract={"frozen": True}
         ),
     )
     monkeypatch.setattr(

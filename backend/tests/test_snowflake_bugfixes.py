@@ -109,13 +109,23 @@ def test_explicit_protagonist_outranks_the_first_lead_role(session) -> None:
 
 
 def test_summary_scenes_get_no_style_first_length_slack(monkeypatch) -> None:
-    import novel_system.services.scene_generation as generation
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(generation, "is_style_bound", lambda bundle: True)
-    full = {"inline_digests": {"scene_structure_brief": "Scene form: reactive scene\nRendering mode: full"}}
-    summary = {"inline_digests": {"scene_structure_brief": "Scene form: reactive scene\nRendering mode: summary (概述两段) — ..."}}
-    assert _style_first_length_slack(full) > 0.0
-    assert _style_first_length_slack(summary) == 0.0
+    import novel_system.services.scene_generation as generation
+    from novel_system.services.style_policy import StylePolicy
+
+    monkeypatch.setattr(
+        generation,
+        "style_policy_for_bundle",
+        lambda bundle, **_kwargs: StylePolicy(bound=True, style_first=True, mode="frozen"),
+    )
+    # 风格参考 v3：呈现方式读场景卡上结构化的 rendering_mode，不再在结构简报文本里找字样
+    bundle = {"inline_digests": {"scene_structure_brief": "Scene form: reactive scene"}}
+    full = SimpleNamespace(writer_brief_json={"rendering_mode": "full"})
+    summary = SimpleNamespace(writer_brief_json={"rendering_mode": "summary"})
+    assert _style_first_length_slack(bundle, full) > 0.0
+    assert _style_first_length_slack(bundle, SimpleNamespace(writer_brief_json={})) > 0.0
+    assert _style_first_length_slack(bundle, summary) == 0.0
 
 
 def test_scene_list_sanitizer_keeps_echoed_identities_and_the_prompt_asks_for_them() -> None:

@@ -12,9 +12,6 @@ from novel_system.db.models import (
     SceneBundle,
     SceneCard,
     SceneRunState,
-    StyleReferenceBook,
-    StyleReferenceProfile,
-    StyleReferenceRun,
     VoiceProfile,
 )
 
@@ -181,26 +178,13 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
         "repeat_issue_count": 0,
     }
     assert payload["human_review_summary"] is None
-    assert payload["source_safety_scan"] == {
-        "safe": True,
-        "blocked_terms": [],
-        "source_profile_ids": [],
-        "protected_terms_source": "none",
-        "coverage": {
-            "configured_exact_terms": True,
-            "profile_exact_terms_and_phrases": False,
-            "profile_scene_bridges": False,
-            "semantic_paraphrase": {
-                "status": "not_evaluated",
-                "blocking": False,
-                "reason": (
-                    "deterministic source safety cannot reliably verify semantic or cross-language paraphrase"
-                ),
-                "recommended_action": "use independent semantic review as advisory evidence",
-            },
-        },
-        "checked_at": payload["source_safety_scan"]["checked_at"],
-    }
+    # 风格参考 v3：终稿读数是唯一抄袭门的检查记录（没有终稿、没有绑定：放行，什么都没比对）
+    scan = payload["source_safety_scan"]
+    assert scan["safe"] is True and scan["blocked"] is False
+    assert scan["version"] == "reference_copy_gate_v1"
+    assert scan["checked_books"] == [] and scan["hits"] == [] and scan["protected_hits"] == []
+    assert scan["hit_count"] == 0 and scan["protected_hit_count"] == 0
+    assert scan["threshold_chars"] == 12
 
 
 def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_run(client, session: Session) -> None:
@@ -231,9 +215,10 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
     session: Session,
     monkeypatch,
 ) -> None:
+    """全局受保护词（环境变量）也过唯一抄袭门：只报位置与哈希，不报词本身。"""
     monkeypatch.setenv(
         "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON",
-        '["路明非", "卡塞尔"]',
+        '["欧文·灰港", "盐湾学院"]',
     )
     create_chapter(client, "CH921")
     create_scene(client, chapter_id="CH921", scene_id="CH921_SC01")
@@ -247,17 +232,14 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
         frozen_snapshot_json={
             "scene_id": "CH921_SC01",
             "chapter_id": "CH921",
-            "source_version_refs": {
-                "reference_profile_id": "refprofile_longzu_safe",
-                "style_rule_set_id": "STYLE_LONGZU_ABSTRACT",
-            },
+            "source_version_refs": {"reference_profile_id": "refprofile_synthetic"},
         },
     )
     final = FinalScene(
         row_id="final_scene_CH921_SC01_v1",
         scene_id="CH921_SC01",
         chapter_id="CH921",
-        content="这一版误把路明非和卡塞尔写进了原创场景。",
+        content="这一版误把欧文·灰港和盐湾学院写进了原创场景。",
         status="approved",
         source_bundle_id=bundle.bundle_id,
         source_bundle_hash=bundle.bundle_snapshot_hash,
@@ -276,85 +258,51 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
     assert response.status_code == 200
     scan = response.json()["data"]["source_safety_scan"]
     assert scan["safe"] is False
-    assert scan["blocked_terms"] == ["路明非", "卡塞尔"]
-    assert scan["source_profile_ids"] == ["refprofile_longzu_safe", "STYLE_LONGZU_ABSTRACT"]
-    assert scan["checked_at"]
+    assert scan["hit_count"] == 0 and scan["protected_hit_count"] == 2
+    assert [(item["start"], item["end"], item["source"]) for item in scan["protected_hits"]] == [
+        (5, 10, "environment"),
+        (11, 15, "environment"),
+    ]
+    assert "欧文" not in str(scan) and "盐湾" not in str(scan)
 
 
-def test_workbench_payload_loads_dynamic_safety_terms_from_bound_profile(client, session: Session) -> None:
+def test_workbench_payload_scans_final_scene_against_the_bound_reference(client, session: Session) -> None:
+    """风格参考 v3：工作台的终稿读数就是唯一抄袭门——绑定的书连续照抄与画像的受保护专名都报。"""
+    from tests.reference_copy_fixtures import PROTECTED_NAME, REFERENCE_PASSAGE, seed_bound_reference
+
     create_chapter(client, "CH921D")
     create_scene(client, chapter_id="CH921D", scene_id="CH921D_SC01")
     seed_voice_profile(session)
     seed_relation_profile(session)
-    session.add(
-        StyleReferenceBook(
-            book_id="refbook_dynamic_workbench",
-            title="Public source",
-            source_kind="path",
-            cloud_policy="local_only",
-            text_checksum="dynamic-workbench-checksum",
-        )
-    )
-    session.flush()
-    session.add(
-        StyleReferenceRun(
-            run_id="run_dynamic_workbench",
-            book_id="refbook_dynamic_workbench",
-            status="done",
-            phase="done",
-        )
-    )
-    session.flush()
-    session.add(
-        StyleReferenceProfile(
-            profile_id="refprofile_dynamic_workbench",
-            book_id="refbook_dynamic_workbench",
-            run_id="run_dynamic_workbench",
-            title="Dynamic safety",
-            status="active",
-            profile_json={
-                "source_safety": {
-                    "ready": True,
-                    "profile_id": "refprofile_dynamic_workbench",
-                    "protected_terms": ["Professor Meridian"],
-                    "distinctive_phrases": [],
-                    "scene_bridges": [],
-                }
-            },
-        )
-    )
-    bundle = SceneBundle(
-        bundle_id="bundle_CH921D_SC01_v1",
-        scene_id="CH921D_SC01",
-        chapter_id="CH921D",
-        bundle_snapshot_hash="hash_CH921D_SC01_v1",
-        frozen_snapshot_json={
-            "source_version_refs": {"reference_profile_ids": ["refprofile_dynamic_workbench"]},
-        },
+    refs = seed_bound_reference(
+        session,
+        seed="workbench",
+        scope="scene",
+        scope_ref_id="CH921D_SC01",
+        protected_terms=(PROTECTED_NAME,),
     )
     final = FinalScene(
         row_id="final_scene_CH921D_SC01_v1",
         scene_id="CH921D_SC01",
         chapter_id="CH921D",
-        content="Professor Meridian crossed the original station.",
+        content=f"{PROTECTED_NAME}低头看表。{REFERENCE_PASSAGE[:30]}",
         status="archived",
-        source_bundle_id=bundle.bundle_id,
-        source_bundle_hash=bundle.bundle_snapshot_hash,
+        source_bundle_id="author_adopt",
+        source_bundle_hash="author_adopt",
     )
     state = session.get(SceneRunState, "CH921D_SC01")
     state.scene_status = "archived"
-    state.current_bundle_id = bundle.bundle_id
-    state.current_bundle_hash = bundle.bundle_snapshot_hash
     state.current_final_scene_row_id = final.row_id
-    session.add_all([bundle, final])
+    session.add(final)
     session.commit()
 
     scan = client.get("/api/v1/scenes/CH921D_SC01/workbench").json()["data"]["source_safety_scan"]
 
     assert scan["safe"] is False
-    assert scan["blocked_terms"] == []
-    assert scan["source_profile_ids"] == ["refprofile_dynamic_workbench"]
-    assert any(risk["risk_type"] == "exact_term" for risk in scan["risks"])
+    assert scan["checked_books"] == [refs["book_id"]]
+    assert scan["protected_hit_count"] == 1 and scan["protected_hits"][0]["source"] == "protected_auto"
+    assert scan["hit_count"] == 1
+    assert REFERENCE_PASSAGE[:12] not in str(scan) and PROTECTED_NAME not in str(scan)
 
 
 def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(client) -> None:

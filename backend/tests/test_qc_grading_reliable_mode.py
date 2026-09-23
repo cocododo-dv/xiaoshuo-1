@@ -524,19 +524,17 @@ def test_strict_mode_without_warnings_archives(session) -> None:
 
 # ---------- style gate：只有确定性抄袭命中保留阻断权 ----------
 
-def test_style_gate_fail_no_longer_blocks(session) -> None:
-    """量化/语义 fail 是 Q3 风格层——降为诊断警告随稿归档，不再断头。"""
+def test_style_gate_pass_adds_no_issue(session) -> None:
+    """中性步位的门只给 pass / plagiarism（风格参考 v3 删掉了 fail / partial 的死分支）：pass 不挂任何 issue。"""
     _seed_scene(session, must_include="")
     orchestrator = _make_orchestrator(session)
-    with patch.object(HardQcEngine, "_apply_style_validation_gate", return_value="fail"):
+    with patch.object(HardQcEngine, "_apply_style_validation_gate", return_value="pass"):
         result = orchestrator.run_scene(SCENE_ID)
     session.commit()
 
     assert result["scene_status"] == "archived"
     report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
-    warning = next(issue for issue in report.issues_json if issue["issue_key"] == "style_validation_fail")
-    assert warning["quality_level"] == "Q3"
-    assert warning["blocking"] is False
+    assert not any(str(issue.get("issue_key") or "").startswith("style_validation") for issue in report.issues_json)
 
 
 def test_style_gate_plagiarism_still_blocks(session) -> None:

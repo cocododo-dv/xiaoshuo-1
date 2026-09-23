@@ -181,7 +181,7 @@ def test_gate_swallows_exception_and_returns_none(session) -> None:
     engine = HardQcEngine(session, llm_client=object())
     scene = _make_scene("proj_explode")
     with patch(
-        "novel_system.services.style_reference.validation.ValidationOrchestrator.validate",
+        "novel_system.services.reference_copy_gate.check_reference_copy",
         side_effect=RuntimeError("boom"),
     ):
         verdict = engine._apply_style_validation_gate(scene, "一段文本")
@@ -267,7 +267,8 @@ def test_styled_gate_clean_text_passes_and_records_event(session) -> None:
     assert gate["plagiarism_passed"] is True
     assert gate["plagiarism_hits"] == [] and gate["forbidden_hits"] == []
     assert gate["profile_id"] == "sr_profile_styled_pass"
-    assert gate["runtime_contract_mode"] == "legacy_live"
+    # 风格参考 v3：没有 bundle 时按当前活动绑定轻量现解析（StylePolicy.mode == "live"）
+    assert gate["runtime_contract_mode"] == "live"
     assert set(gate["quantitative"]) == {"checked", "passed"}
     events = _metric_events(session, STYLED_DRAFT_GATE_EVENT_KIND)
     assert len(events) == 1 and events[0].outcome == "pass"
@@ -376,7 +377,7 @@ def test_styled_gate_failure_is_unavailable_not_no_binding(session) -> None:
     _seed_style_binding(project_id="proj_styled_boom", seed="styled_boom")
     scene = _make_scene("proj_styled_boom")
     with patch(
-        "novel_system.services.style_reference.validation.run_sync_validate",
+        "novel_system.services.reference_copy_gate.check_reference_copy",
         side_effect=RuntimeError("boom secret excerpt"),
     ):
         gate = run_styled_draft_style_gate(session, scene, CLEAN_TEXT)
@@ -622,8 +623,8 @@ def test_soft_qc_styled_gate_unavailable_requests_human_review_and_is_recorded(s
     _seed_soft_scene(session, project_id="proj_soft_unavail", draft_content=styled)
     runner = _SoftPassRunner()
     with patch(
-        "novel_system.services.style_reference.validation.run_sync_validate",
-        side_effect=ValueError("frozen style reference source changed before validation"),
+        "novel_system.services.reference_copy_gate.check_reference_copy",
+        side_effect=ValueError("reference paragraphs unreadable"),
     ):
         decision = _run_soft_qc(session, runner, styled)
     session.commit()

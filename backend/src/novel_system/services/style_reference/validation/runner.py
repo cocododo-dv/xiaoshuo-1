@@ -1,8 +1,11 @@
 """ValidationOrchestrator — sync_only / async_full 双路径(PR-7 §7.1)。
 
-sync_only:仅 plag + forbidden_local,毫秒级落 report → 立返完整 sync_result。
+sync_only:plag + forbidden_local + 量化(量化只作诊断),落 report → 立返完整 sync_result。
+整本书的 n-gram 扫描在大书上是秒级(190 万字约 1.2 s),不是毫秒级;管线里的抄袭检查已改走
+``services/reference_copy_gate``(按书一次索引、同一稿不重复扫描),这里只服务「对照检查」接口。
 async_full:落 pending report(verdict 空)+ ThreadPoolExecutor 起后台 thread
 跑 quant + semantic + plag + forbid_semantic,主线程立即返 polling_url。
+风格参考 v3 的「对照检查」(读数 + 参考评审 + 抄袭门)会取代本模块(P5b / P7)。
 """
 
 from __future__ import annotations

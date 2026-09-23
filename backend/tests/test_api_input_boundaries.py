@@ -165,7 +165,6 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
         "/api/v1/system-config/llm/providers/UNKNOWN/default",
         "/api/v2/projects/UNKNOWN/restore",
         "/api/v2/style-reference/books/UNKNOWN/reclassify",
-        "/api/v2/style-reference/books/UNKNOWN/safety-profile/extract",
         "/api/v2/style-reference/profiles/UNKNOWN/preview",
         "/api/v2/style-reference/runs/UNKNOWN/cancel",
         "/api/v2/style-reference/runs/UNKNOWN/synthesize",

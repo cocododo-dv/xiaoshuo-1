@@ -35,6 +35,7 @@ from novel_system.services.literary_quality import (
 )
 from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
 from novel_system.services.near_final import NEAR_FINAL_RUBRIC_ID as PIPELINE_NEAR_FINAL_RUBRIC_ID
+from novel_system.services.style_policy import StylePolicy
 from novel_system.services.scene_diagnosis import (
     BoundProfile,
     CRAFT_ECHO_HABIT_PER_1K,
@@ -663,10 +664,11 @@ def test_diagnosis_calibrates_craft_to_the_bound_reference_book(client: TestClie
         )
     )
     session.commit()
+    # 风格参考 v3：诊断按 StylePolicy 判绑定（校准看 bound，房风标记看「让位」）；画像的刻意复沓从库里读
     monkeypatch.setattr(
         SceneDiagnosisService,
-        "binding_profile",
-        lambda self, scene: (True, BoundProfile(profile_id="prof_diag", book_id="book_diag", deliberate_repetition=False)),
+        "style_policy",
+        lambda self, scene: StylePolicy(bound=True, style_first=True, mode="live", profile_id="prof_diag", book_id="book_diag"),
     )
 
     payload = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]

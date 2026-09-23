@@ -19,13 +19,16 @@ from novel_system.services.literary_quality import (
     QUALITY_DIMENSIONS,
     analyze_literary_quality,
     get_dimension_weights,
-    ignored_rule_dimensions,
+    rule_signal_id,
 )
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
 from novel_system.services.qc_constraints import contains_forbidden_term, source_field_satisfied
-from novel_system.services.reference_safety import ReferenceSafetyService
+from novel_system.services.reference_copy_gate import (
+    check_reference_copy,
+    copy_block_author_action,
+)
 from novel_system.services.scene_ownership import require_scene_project_id
-from novel_system.services.source_safety import source_profile_ids_from_snapshot
+from novel_system.services.style_policy import StylePolicy, style_policy_for_scene, style_policy_live
 
 
 FINAL_TEXT_GATE_SCHEMA_VERSION = 3
@@ -83,7 +86,12 @@ class FinalTextGateService:
             else [f"bundle_integrity:{bundle_integrity['error_code']}"]
         )
 
-        source_safety, source_blockers = self._source_safety(actual_content, bundle)
+        snapshot = bundle.frozen_snapshot_json if bundle is not None else None
+        # 风格参考 v3：一次评估一份策略（bundle 冻结的契约；旧 bundle / 没有 bundle 时按当前活动绑定轻量现解析）
+        policy = self._style_policy(scene, snapshot)
+        source_safety, source_blockers = self._source_safety(
+            actual_content, scene=scene, scene_id=scene_id, policy=policy
+        )
         content_safety = ContentSafetyService.assess(
             actual_content,
             acknowledged_codes=accepted_warning_codes or [],
@@ -94,7 +102,7 @@ class FinalTextGateService:
             bundle,
             allow_author_waiver=allow_author_waiver,
         )
-        literary = self._literary(scene, actual_content)
+        literary = self._literary(scene, actual_content, policy)
 
         archive_blockers = list(
             dict.fromkeys(
@@ -179,6 +187,10 @@ class FinalTextGateService:
             )
         if any(str(item).startswith("source_safety") for item in blockers):
             unavailable = "source_safety_unavailable" in blockers
+            details: dict[str, Any] = {"scene_id": scene_id, "final_text_gate": result}
+            action = (result.get("source_safety") or {}).get("author_action")
+            if action:
+                details["author_action"] = action
             raise DomainError(
                 "SOURCE_SAFETY_UNAVAILABLE" if unavailable else "SOURCE_SAFETY_BLOCKED",
                 (
@@ -187,7 +199,7 @@ class FinalTextGateService:
                     else "source-safety scan blocked archive — text is kept and can be revised"
                 ),
                 status_code=409,
-                details={"scene_id": scene_id, "final_text_gate": result},
+                details=details,
             )
         if any(str(item).startswith("content_safety_review:") for item in blockers):
             raise DomainError(
@@ -216,17 +228,37 @@ class FinalTextGateService:
             return None
         return bundle
 
+    def _style_policy(self, scene: SceneCard | None, snapshot: Any) -> StylePolicy:
+        try:
+            return style_policy_for_scene(self.session, scene, snapshot if isinstance(snapshot, dict) else None)
+        except Exception:  # noqa: BLE001 — 策略解析失败：按未绑定（房风规则照常；抄袭门另有现解析兜底）
+            return StylePolicy(mode="degraded", error_code="style_policy_unavailable")
+
     def _source_safety(
         self,
         content: str,
-        bundle: SceneBundle | None,
+        *,
+        scene: SceneCard | None,
+        scene_id: str,
+        policy: StylePolicy,
     ) -> tuple[dict[str, Any], list[str]]:
+        """Q0：唯一抄袭门（风格参考 v3 V1）——与绑定的参考书连续 ≥12 字相同、或含受保护专名即拦。
+
+        比对 bundle 冻结的绑定与这一场当前的活动绑定两边的书（正文可能在冻结之后才粘进参考原文）；
+        检查失败 fail-closed（``source_safety_unavailable``）。命中只记哈希与位置，拦下时带 ``author_action``
+        说清是第几字到第几字。
+        """
         try:
-            result = ReferenceSafetyService(self.session).scan_runtime_text(
+            extra: list[StylePolicy] = []
+            if scene is not None and policy.mode != "live":
+                live = style_policy_live(self.session, scene, freeze_contract=False)
+                if live.bound:
+                    extra.append(live)
+            check = check_reference_copy(
+                self.session,
                 content,
-                source_profile_ids=source_profile_ids_from_snapshot(
-                    bundle.frozen_snapshot_json if bundle is not None else None
-                ),
+                policy=policy if policy.bound else None,
+                extra_policies=extra,
             )
         except Exception as exc:  # noqa: BLE001 - a safety assertion must fail closed
             return (
@@ -237,7 +269,17 @@ class FinalTextGateService:
                 },
                 ["source_safety_unavailable"],
             )
-        return result, ([] if result.get("safe", True) else ["source_safety"])
+        payload = check.audit()
+        blockers: list[str] = []
+        if check.hits:
+            blockers.append("source_safety:reference_copy")
+        if check.protected_hits:
+            blockers.append("source_safety:protected_term")
+        if blockers:
+            payload["author_action"] = copy_block_author_action(
+                check, target_view="writer", target_ref=f"scene:{scene_id}"
+            )
+        return payload, blockers
 
     def _continuity(
         self,
@@ -389,41 +431,54 @@ class FinalTextGateService:
             raise TypeError(f"expected {expected.__name__} digest")
         return decoded
 
-    def _scene_style_bound(self, scene: SceneCard | None) -> bool:
-        """场景当前 bundle 的冻结契约是否 style_first(房风阈值让位的统一条件)。"""
-        if scene is None:
-            return False
+    def _rule_calibration(self, policy: StylePolicy) -> Any:
+        """绑定的参考书对 21 维规则的校准（与写作台深改面板 / 文学质量视图同一份）；未绑定或不可用 → None。"""
+        if not policy.bound:
+            return None
         try:
-            state = self.session.get(SceneRunState, scene.scene_id)
-            if state is None or not state.current_bundle_id:
-                return False
-            bundle_row = self.session.get(SceneBundle, state.current_bundle_id)
-            if bundle_row is None:
-                return False
-            from novel_system.services.style_reference.runtime_contract import is_style_bound
+            from novel_system.services.scene_diagnosis import SceneDiagnosisService
 
-            return bool(is_style_bound(bundle_row.frozen_snapshot_json))
-        except Exception:  # noqa: BLE001 — 让位判定失败按现状(施加阈值)处理
-            return False
+            return SceneDiagnosisService(self.session).rule_calibration_for_policy(policy)
+        except Exception:  # noqa: BLE001 — 校准读不出：退回让位规则（见 _literary）
+            return None
 
-    def _literary(self, scene: SceneCard | None, content: str) -> dict[str, Any]:
+    def _literary(
+        self, scene: SceneCard | None, content: str, policy: StylePolicy | None = None
+    ) -> dict[str, Any]:
+        """21 维文学规则的分数、Q3 警告与三道自动晋升阈值。风格参考 v3 V11——一条让位规则：
+
+        * 没有绑定：房风规则照旧（阈值施加，风险维度挂 Q3 警告）；
+        * 有绑定且参考书校准可用：按校准判——这位作者常用的词不算毛病，常态（habit）维度不挂警告、在阈值里
+          按已满足计（分数照实记在 ``signals``，``scores`` 与阈值用校准后的分），其余照常；
+        * 有绑定但校准不可用：作者手笔直起时整体让位（阈值与警告都让给参考），先中性后润色时按房风。
+        """
+        if policy is None:
+            policy = self._style_policy(scene, None)
         try:
-            signals, findings = analyze_literary_quality(content)
+            calibration = self._rule_calibration(policy)
+            calibrated = calibration is not None and bool(getattr(calibration, "active", False))
+            signals, findings = analyze_literary_quality(
+                content, calibration=calibration if calibrated else None
+            )
+            habitual = set(calibration.habitual_dimensions) if calibrated else set()
             weights = get_dimension_weights(scene.project_id if scene is not None else None, self.session)
             if not weights:
                 weights = dict(DIMENSION_WEIGHTS)
+
+            def effective(dimension: str) -> float:
+                if dimension in habitual:
+                    return 1.0
+                return float(signals[dimension].get("score", 1.0))
+
             overall_score = round(
-                sum(
-                    float(signals[dimension].get("score", 1.0)) * float(weights.get(dimension, 0.0))
-                    for dimension in QUALITY_DIMENSIONS
-                ),
+                sum(effective(dimension) * float(weights.get(dimension, 0.0)) for dimension in QUALITY_DIMENSIONS),
                 4,
             )
             core_weight = sum(float(weights.get(dimension, 0.0)) for dimension in _CHARACTER_SCENE_CORE_DIMENSIONS)
             character_scene_core = (
                 round(
                     sum(
-                        float(signals[dimension].get("score", 1.0)) * float(weights.get(dimension, 0.0))
+                        effective(dimension) * float(weights.get(dimension, 0.0))
                         for dimension in _CHARACTER_SCENE_CORE_DIMENSIONS
                     )
                     / core_weight,
@@ -434,14 +489,17 @@ class FinalTextGateService:
             )
             scores = {
                 "character_scene_core": character_scene_core,
-                "ending_drive": round(float(signals["ending_drive"].get("score", 1.0)), 4),
-                "choice_pressure": round(float(signals["choice_pressure"].get("score", 1.0)), 4),
+                "ending_drive": round(effective("ending_drive"), 4),
+                "choice_pressure": round(effective("choice_pressure"), 4),
             }
+            if calibrated:
+                thresholds_mode = "calibrated_to_reference"
+            elif policy.defers_house_taste():
+                thresholds_mode = "deferred_to_reference"
+            else:
+                thresholds_mode = "applied"
             promotion_blockers: list[str] = []
-            # 2026-09-12 风格直起:style_first 下三个文学阈值整体让位(仍计算并展示分数);
-            # 事实 / 安全 / 抄袭门不受影响。
-            style_bound = self._scene_style_bound(scene)
-            if not style_bound:
+            if thresholds_mode != "deferred_to_reference":
                 if scores["character_scene_core"] < CHARACTER_SCENE_CORE_MIN:
                     promotion_blockers.append("literary:character_scene_core")
                 if scores["ending_drive"] < ENDING_DRIVE_MIN:
@@ -453,32 +511,55 @@ class FinalTextGateService:
             ]
             # 2026-09-22 场景诊断统一:作者在写作台深改面板里忽略过的发现不再回到成稿中心当警告。
             # 忽略清单记的是发现的 signal_id;整个维度的发现都被忽略了,这个维度才算作者拍过板。
-            ignored_dimensions = ignored_rule_dimensions(
-                content,
-                (getattr(scene, "deep_review_ignored_keys_json", None) or []) if scene is not None else [],
-            )
-            # 2026-09-14 风格保真修补:有绑定时 21 维词表检测出的房风风险不再作为 Q3 警告挂在
-            # 成稿中心(作者的习惯与词表撞车时每一场都会被永久标红);risky_dimensions 仍进审计。
-            warnings = (
-                []
-                if style_bound
-                else [
-                    {
-                        "issue_key": f"literary:{dimension}",
-                        "quality_level": "Q3",
-                        "blocking": False,
-                        "message": str(signals[dimension].get("evidence") or dimension),
-                    }
-                    for dimension in risky_dimensions
-                    if dimension not in ignored_dimensions
-                ]
-            )
+            # 风格参考 v3:signal_id 从这一次（校准后）的发现里算，与深改面板看到的是同一批。
+            ignored_keys = {
+                str(key)
+                for key in ((getattr(scene, "deep_review_ignored_keys_json", None) or []) if scene is not None else [])
+                if str(key)
+            }
+            ids_by_dimension: dict[str, list[str]] = {}
+            for finding in findings:
+                ids_by_dimension.setdefault(str(finding.get("dimension") or ""), []).append(rule_signal_id(finding))
+            ignored_dimensions = {
+                dimension
+                for dimension, ids in ids_by_dimension.items()
+                if dimension and ids and ignored_keys and all(signal_id in ignored_keys for signal_id in ids)
+            }
+            warn_dimensions = [
+                dimension
+                for dimension in risky_dimensions
+                if dimension not in ignored_dimensions and dimension not in habitual
+            ]
+            if thresholds_mode == "deferred_to_reference":
+                warn_dimensions = []
+            warnings = [
+                {
+                    "issue_key": f"literary:{dimension}",
+                    "quality_level": "Q3",
+                    "blocking": False,
+                    "message": str(signals[dimension].get("evidence") or dimension),
+                }
+                for dimension in warn_dimensions
+            ]
             return {
                 "available": True,
                 "overall_score": overall_score,
                 "scores": scores,
-                "house_taste_thresholds": (
-                    "deferred_to_reference" if style_bound else "applied"
+                "house_taste_thresholds": thresholds_mode,
+                "style_policy": {
+                    "bound": policy.bound,
+                    "style_first": policy.style_first,
+                    "mode": policy.mode,
+                    "contract_hash": policy.contract_hash,
+                },
+                "rule_calibration": (
+                    {
+                        "source": getattr(calibration, "source", None),
+                        "signature": getattr(calibration, "signature", None),
+                        "habitual_dimensions": sorted(habitual),
+                    }
+                    if calibrated
+                    else None
                 ),
                 "thresholds": {
                     "character_scene_core_min": CHARACTER_SCENE_CORE_MIN,

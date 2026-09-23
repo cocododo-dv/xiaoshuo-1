@@ -24,7 +24,6 @@ from novel_system.services.archiver import Archiver
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.canonical_manuscripts import CanonicalSceneService
 from novel_system.services.errors import DomainError
-from novel_system.services.reference_safety import ReferenceSafetyService
 
 
 def _seed_scene(
@@ -150,10 +149,7 @@ def test_content_safety_acknowledgement_is_rechecked_and_audited_at_archive(
         "CONTENT_SAFETY",
         draft_content="<p>角色只有16岁，段落明确描写两人的性行为。</p>",
     )
-    monkeypatch.setattr(
-        "novel_system.services.final_text_gate.ReferenceSafetyService.scan_runtime_text",
-        lambda *args, **kwargs: {"safe": True, "matches": []},
-    )
+    # 风格参考 v3：没有绑定、没有全局受保护词时抄袭门本来就放行，不必再打桩
 
     blocked = _promote(client, seeded, key="content-safety-blocked")
     assert blocked.status_code == 409
@@ -668,10 +664,14 @@ def test_final_text_gate_blocks_before_any_canonical_write_even_without_caller_r
 
 def test_promote_source_safety_and_aggregate_failure_roll_back_everything(client, session, monkeypatch) -> None:
     unsafe = _seed_scene(session, "UNSAFE")
+    from novel_system.services.reference_copy_gate import CopyCheck, CopyHit
+
     monkeypatch.setattr(
-        ReferenceSafetyService,
-        "scan_runtime_text",
-        lambda self, content, **kwargs: {"safe": False, "blocked_terms": ["protected"]},
+        "novel_system.services.final_text_gate.check_reference_copy",
+        lambda *args, **kwargs: CopyCheck(
+            blocked=True,
+            hits=(CopyHit(start=0, end=12, matched_chars=12, sha256="0" * 16, book_id="book_x"),),
+        ),
     )
     unsafe_response = _promote(client, unsafe, key="unsafe")
     assert unsafe_response.status_code == 409

@@ -419,11 +419,11 @@ def test_prompt_templates_teach_both_scene_forms() -> None:
     )["templates"]
     expectations = {
         "neutral_draft": ("2026-09-15.v12", "never on a clean win the section did not plan"),
-        "style_first_draft": ("2026-09-22.v8", "may not skip the Decision"),
+        "style_first_draft": ("2026-09-23.v9", "may not skip the Decision"),
         "scene_blueprint": ("2026-09-15.v10", "derive the proposal from it instead of re-inventing the scene"),
         "hard_qc": ("2026-09-15.v6", "its facts are bundle facts"),
-        "soft_qc": ("2026-09-22.v9", 'issue_key "scene_shape"'),
-        "near_final_acceptance_review": ("2026-09-22.v9", "the scene crucible is identifiable in the prose"),
+        "soft_qc": ("2026-09-23.v10", 'issue_key "scene_shape"'),
+        "near_final_acceptance_review": ("2026-09-23.v10", "the scene crucible is identifiable in the prose"),
     }
     for name, (version, phrase) in expectations.items():
         template = templates[name]

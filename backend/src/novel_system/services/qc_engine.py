@@ -19,7 +19,6 @@ from novel_system.db.models import (
     LlmCall,
     LlmCallAttempt,
     QcReport,
-    SceneBundle,
     SceneCard,
     SceneRunState,
 )
@@ -716,38 +715,52 @@ def _append_unique_rewrite_briefs(
 
 
 def _normalize_soft_qc_scores(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """2026-09-22:把 0–10 / 0–100 量级的分数归一到契约的 0–1。
+    """把软 QC 的分数统一换算到契约的 0–1（风格参考 v3：与准定稿验收共用 ``review_scores``）。
 
-    真实运行里模型给过 ``style_score: 9.3`` 与 ``93``(提示词从未说过分数范围),Pydantic 的
-    ``le=1`` 拒收后整遍软 QC 被判 ``invalid_soft_qc_payload`` → 豁免——运行中唯一对照参考纠偏的
-    环节从未生效。按量级归一,不再让一个分数尺度作废整遍评审;提示词 v9 同时写明范围。
+    真实运行里模型给过 ``style_score: 9.3`` 与 ``93``。量级按**这一次回答里的全部分数**定（``style_score`` +
+    ``style_dimensions[].score`` + 参考评审的 16 维 ``dimension_scores``），同一把尺换算；只留 16 维里的键。
+    没给 ``style_score`` 而给了按维分时，总分取按维分的均值。重复调用是幂等的（换算后全在 0–1）。
     """
-
-    def _norm(value: Any) -> Any:
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return value
-        if number != number:  # NaN
-            return None
-        if number > 1.0:
-            if number <= 10.0:
-                return round(number / 10.0, 4)
-            if number <= 100.0:
-                return round(number / 100.0, 4)
-            return 1.0
-        return number if number >= 0.0 else 0.0
+    from novel_system.services.review_scores import judge_dimension_scores, score_scale, to_unit
 
     normalized = dict(payload)
-    if normalized.get("style_score") is not None:
-        normalized["style_score"] = _norm(normalized["style_score"])
     dims = normalized.get("style_dimensions")
+    judge = judge_dimension_scores(normalized.get("dimension_scores"))
+    dim_scores = [dim.get("score") for dim in dims if isinstance(dim, Mapping)] if isinstance(dims, list) else []
+    scale = score_scale([normalized.get("style_score"), *dim_scores, *judge.values()])
+    if normalized.get("style_score") is not None:
+        normalized["style_score"] = to_unit(normalized["style_score"], scale)
     if isinstance(dims, list):
         normalized["style_dimensions"] = [
-            {**dim, "score": _norm(dim.get("score"))} if isinstance(dim, Mapping) else dim
+            {**dim, "score": to_unit(dim.get("score"), scale)} if isinstance(dim, Mapping) else dim
             for dim in dims
         ]
+    if "dimension_scores" in normalized:
+        normalized["dimension_scores"] = {key: to_unit(value, scale) for key, value in judge.items()}
+        if normalized.get("style_score") is None and normalized["dimension_scores"]:
+            values = list(normalized["dimension_scores"].values())
+            normalized["style_score"] = round(sum(values) / len(values), 4)
     return normalized
+
+
+def _reference_judge_record(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """参考评审的分数（10 分制，落 qc 报告与尝试记录）；没有按维分也没有总分 → None。"""
+    from novel_system.services.review_scores import unit_to_judge_scale
+
+    dims = payload.get("dimension_scores") if isinstance(payload.get("dimension_scores"), Mapping) else {}
+    style_score = payload.get("style_score")
+    if not dims and style_score is None:
+        return None
+    return {
+        "kind": "reference_judge",
+        "scale": "0-10",
+        "style_score": unit_to_judge_scale(style_score),
+        "dimension_scores": {
+            str(key): unit_to_judge_scale(value)
+            for key, value in dims.items()
+            if unit_to_judge_scale(value) is not None
+        },
+    }
 
 
 def _qc_build_user_prompt(base_prompt: str, draft_content: str) -> str:
@@ -912,6 +925,10 @@ def _qc_run_node_with_degradation(
             # 只对真实 LLM payload 做 normalize（dump 会把 issue 重建为
             # issue_key+message）；此后管线内部字段（source/quality_level 等）
             # 不得再经 validate→dump 往返，否则分级契约被剥掉。
+            # 风格参考 v3：软 QC 的分数先换算量级再校验——此前 9.3 这类回答在这里就被 le=1 拒掉，
+            # 整遍软 QC 被判 invalid 豁免（2026-09-22 的换算只在落库时做，从没轮上）。
+            if step == "soft_qc":
+                payload = _normalize_soft_qc_scores(payload)
             report = validate_qc_report(step, payload)
             payload = report.model_dump()
         except (QCValidationError, ValidationError) as exc:
@@ -972,23 +989,6 @@ def _qc_record_attempt(
     )
 
 
-def _neutral_gate_verdict(raw_verdict: Any) -> str:
-    """中性稿 style gate 只认确定性抄袭（Q0）；其余一律视为 pass。
-
-    v2（规格 §2.W5.5）：量化容差 / 冻结禁用词是针对**已注入参考风格的文本**的检查，
-    对没有任何风格注入的中性稿没有意义——原先的 fail / partial 诊断在这里不再产生。
-    """
-    return "plagiarism" if str(raw_verdict or "") == "plagiarism" else "pass"
-
-
-def _frozen_snapshot_for_scene(session: Session, scene: SceneCard) -> Any:
-    state = session.get(SceneRunState, scene.scene_id)
-    if state is None or not state.current_bundle_id:
-        return None
-    bundle_row = session.get(SceneBundle, state.current_bundle_id)
-    return bundle_row.frozen_snapshot_json if bundle_row is not None else None
-
-
 def _styled_gate_result(
     *,
     stage: str,
@@ -1009,9 +1009,9 @@ def _styled_gate_result(
         {
             "position": int(hit.get("position") or 0),
             "matched_length": int(hit.get("matched_length") or 0),
-            "matched_sha256": hashlib.sha256(
-                str(hit.get("matched_text") or "").encode("utf-8")
-            ).hexdigest()[:16],
+            # 抄袭门给的命中本来就只有指纹；旧校验报告带原文，这里就地压成指纹
+            "matched_sha256": str(hit.get("matched_sha256") or "")
+            or hashlib.sha256(str(hit.get("matched_text") or "").encode("utf-8")).hexdigest()[:16],
         }
         for hit in raw_hits[:_STYLED_GATE_MAX_HITS]
         if isinstance(hit, dict)
@@ -1097,32 +1097,21 @@ def run_styled_draft_style_gate(
 ) -> dict[str, Any] | None:
     """v2（规格 §2.W5.5）styled-draft gate：对**已风格化**文本跑抄袭 + 冻结禁用词。
 
-    契约解析顺序：调用方传入的 bundle 快照 → 场景当前 SceneBundle 冻结快照 → （旧 bundle）
-    实时 active 绑定。无绑定 / 契约显式 absent / 文本为空 → ``None``（不登记事件）。
-    契约 degraded 或校验自身失败 → ``verdict="unavailable"`` 的诊断字典（见
-    ``styled_gate_unavailable_result``）并 WARNING 落日志：gate 不阻断主流程，但「检查
-    没跑」必须与「无绑定」区分开，由调用方挂 Q2 / notice 让作者看见。
+    风格参考 v3：绑定与否只看 :class:`~novel_system.services.style_policy.StylePolicy`（调用方传入的 bundle
+    快照 → 场景当前 SceneBundle 冻结快照 → 旧 bundle / 无 bundle 时按当前活动绑定轻量现解析）；原文重合
+    走唯一抄袭门 :func:`~novel_system.services.reference_copy_gate.check_reference_copy`（按书建一次索引、
+    同一稿不重复扫描）。无绑定 / 契约显式 absent / 文本为空 → ``None``（不登记事件）。契约 degraded 或检查
+    自身失败 → ``verdict="unavailable"`` 的诊断字典（见 ``styled_gate_unavailable_result``）并 WARNING 落日志：
+    gate 不阻断主流程，但「检查没跑」必须与「无绑定」区分开，由调用方挂 Q2 / notice 让作者看见。
 
-    返回诊断字典（见 ``_styled_gate_result``）：``verdict`` 为 ``plagiarism`` 表示确定性
-    n-gram 重叠命中（Q0）；``forbidden_hits`` 非空表示复刻了冻结的生成禁用词；``quantitative``
-    只作诊断。每次裁决（含 gate 自身失败）写一行 ``styled_draft_gate_decided`` MetricEvent。
+    返回诊断字典（见 ``_styled_gate_result``）：``verdict`` 为 ``plagiarism`` 表示确定性 n-gram 重叠命中（Q0）；
+    ``forbidden_hits`` 非空表示复刻了冻结的生成禁用词；``quantitative`` 只作诊断。每次裁决（含 gate 自身失败）
+    写一行 ``styled_draft_gate_decided`` MetricEvent。
     """
     import time as _time
 
-    from novel_system.services.style_reference.injection import (
-        InjectionService,
-        ordered_character_ids,
-    )
     from novel_system.services.style_reference.metrics_recorder import (
         MetricsRecorder,
-    )
-    from novel_system.services.style_reference.runtime_contract import (
-        contract_profile_objects,
-        resolve_style_runtime_contract_state,
-    )
-    from novel_system.services.style_reference.validation import (
-        run_sync_validate,
-        run_sync_validate_profiles,
     )
 
     if stage not in STYLED_DRAFT_GATE_STAGES:
@@ -1130,12 +1119,10 @@ def run_styled_draft_style_gate(
     if scene is None or not text or not str(text).strip():
         return None
     project_id = getattr(scene, "project_id", None)
-    character_ids = ordered_character_ids(
-        getattr(scene, "pov_character_id", None),
-        getattr(scene, "onstage_chars_json", None),
-    )
     scene_id = getattr(scene, "scene_id", None)
-    if not project_id and not character_ids and not scene_id:
+    if not project_id and not scene_id and not getattr(scene, "pov_character_id", None) and not (
+        getattr(scene, "onstage_chars_json", None) or []
+    ):
         return None
 
     started_at = _time.perf_counter()
@@ -1143,55 +1130,26 @@ def run_styled_draft_style_gate(
     profile_id: str | None = None
     binding_id: str | None = None
     runtime_contract_hash: str | None = None
-    contract_state: Any = None
+    policy: Any = None
     outcome = "error"
     try:
-        snapshot_source: Any = bundle if isinstance(bundle, dict) else None
-        contract_state = resolve_style_runtime_contract_state(snapshot_source)
-        if snapshot_source is None or contract_state.mode == "legacy_live":
-            frozen_snapshot = _frozen_snapshot_for_scene(session, scene)
-            if frozen_snapshot is not None:
-                contract_state = resolve_style_runtime_contract_state(frozen_snapshot)
-        if contract_state.error_code is not None:
-            raise ValueError(contract_state.error_code)
-        if contract_state.mode == "absent":
+        policy = scene_gate_style_policy(session, scene, bundle)
+        if policy.error_code is not None:
+            raise ValueError(policy.error_code)
+        if not policy.bound:
             outcome = "no_binding"
             return None
-        runtime_contract = contract_state.contract
-        if runtime_contract is not None:
-            profiles = contract_profile_objects(runtime_contract)
-            profile_id = str(runtime_contract["profile_ids"][-1])
-            binding_id = str(runtime_contract["binding_ids"][-1])
-            runtime_contract_hash = str(runtime_contract["contract_hash"])
-            report = run_sync_validate_profiles(text, profiles, session)
-        else:
-            active = InjectionService(session).resolve_active_binding(
-                project_id,
-                "scene_generation",
-                character_ids=character_ids,
-                scene_id=scene_id,
-            )
-            if active is None:
-                outcome = "no_binding"
-                return None
-            from novel_system.services.style_reference.repository import (
-                StyleReferenceRepository,
-            )
-
-            profile = StyleReferenceRepository(session).get_profile(active.profile_id)
-            if profile is None:
-                outcome = "no_binding"
-                return None
-            profile_id = str(active.profile_id)
-            binding_id = str(active.binding_id)
-            report = run_sync_validate(text, profile, session)
+        profile_id = policy.profile_id
+        binding_id = policy.binding_id
+        runtime_contract_hash = policy.contract_hash
+        report = _styled_gate_report(session, policy, str(text))
         result = _styled_gate_result(
             stage=stage,
             report=report,
             profile_id=profile_id,
             binding_id=binding_id,
             runtime_contract_hash=runtime_contract_hash,
-            runtime_contract_mode=contract_state.mode,
+            runtime_contract_mode=policy.mode,
         )
         outcome = result["verdict"] or "pass"
         return result
@@ -1202,11 +1160,7 @@ def run_styled_draft_style_gate(
             stage,
             exc_info=True,
         )
-        contract_error = (
-            getattr(contract_state, "error_code", None)
-            if contract_state is not None
-            else None
-        )
+        contract_error = getattr(policy, "error_code", None) if policy is not None else None
         exc_code = getattr(exc, "code", None)
         result = styled_gate_unavailable_result(
             stage=stage,
@@ -1219,11 +1173,7 @@ def run_styled_draft_style_gate(
             profile_id=profile_id,
             binding_id=binding_id,
             runtime_contract_hash=runtime_contract_hash,
-            runtime_contract_mode=(
-                getattr(contract_state, "mode", None)
-                if contract_state is not None
-                else None
-            ),
+            runtime_contract_mode=getattr(policy, "mode", None) if policy is not None else None,
         )
         outcome = "error"
         return result
@@ -1265,6 +1215,85 @@ def run_styled_draft_style_gate(
             )
             if result is not None:
                 result["metric_event_id"] = event_id
+
+
+def scene_gate_style_policy(
+    session: Session, scene: SceneCard, bundle: Mapping[str, Any] | None = None
+) -> Any:
+    """管线内各道门的风格策略（见 :func:`~novel_system.services.style_policy.style_policy_for_scene`）。"""
+    from novel_system.services.style_policy import style_policy_for_scene
+
+    return style_policy_for_scene(session, scene, bundle if isinstance(bundle, Mapping) else None)
+
+
+def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
+    """风格稿一道门的读数：原文重合（抄袭门，缓存）+ 冻结 / 现行的生成禁用词 + 量化（只作诊断）。
+
+    禁用词口径不变：冻结契约 → 契约里冻结的词（绑定后新增的不影响本 bundle 的裁决）；现解析 → 画像现行的词。
+    返回与 ``ValidationReport`` 同形的对象，交给 :func:`_styled_gate_result` 压成诊断字典。
+    """
+    from types import SimpleNamespace
+
+    from novel_system.services.reference_copy_gate import check_reference_copy
+    from novel_system.services.style_reference.repository import StyleReferenceRepository
+    from novel_system.services.style_reference.runtime_contract import (
+        blend_profile_metric_baselines,
+        contract_profile_objects,
+    )
+    from novel_system.services.style_reference.validation.forbidden_local import (
+        check_forbidden_local,
+        check_forbidden_terms,
+    )
+    from novel_system.services.style_reference.validation.quantitative import (
+        check_quantitative,
+        check_quantitative_against_baseline,
+    )
+
+    copy = check_reference_copy(session, text, policy=policy)
+    forbidden: list[Any] = []
+    seen: set[str] = set()
+    quantitative: list[Any] = []
+    if policy.contract is not None:
+        profiles = contract_profile_objects(policy.contract)
+        for profile in profiles:
+            frozen_terms = getattr(profile, "runtime_contract_banned_terms", None)
+            hits = (
+                check_forbidden_terms(text, list(frozen_terms))
+                if isinstance(frozen_terms, list)
+                else check_forbidden_local(text, str(getattr(profile, "profile_id", "") or ""), session)
+            )
+            for hit in hits:
+                key = str(hit.model_dump(mode="json"))
+                if key not in seen:
+                    seen.add(key)
+                    forbidden.append(hit)
+        quantitative = check_quantitative_against_baseline(text, blend_profile_metric_baselines(profiles))
+    elif policy.profile_id:
+        forbidden = list(check_forbidden_local(text, policy.profile_id, session))
+        profile = StyleReferenceRepository(session).get_profile(policy.profile_id)
+        quantitative = check_quantitative(text, profile) if profile is not None else []
+    if copy.hits:
+        verdict = "plagiarism"
+    elif any(getattr(hit, "severity", "error") == "error" for hit in forbidden):
+        verdict = "fail"
+    else:
+        verdict = "pass"
+    return SimpleNamespace(
+        verdict=verdict,
+        plagiarism_json={
+            "passed": not copy.hits,
+            "hits": [
+                {
+                    "position": hit.start,
+                    "matched_length": hit.matched_chars,
+                    "matched_sha256": hit.sha256,
+                }
+                for hit in copy.hits
+            ],
+        },
+        forbidden_hits_json=[hit.model_dump(mode="json") for hit in forbidden],
+        quantitative_json=[item.model_dump(mode="json") for item in quantitative],
+    )
 
 
 class HardQcEngine:
@@ -1328,9 +1357,8 @@ class HardQcEngine:
         )
         branch = self._branch_for(payload["next_action"])
 
-        # PR-8 §6.6 — style_reference validation gate(qc pass 时二次裁决)
-        # Wave 2（§5.4）：只有确定性 n-gram 抄袭命中（Q0）保留阻断权；
-        # fail/partial 是量化容差/语义评审（Q3 风格层），降为诊断警告不断头。
+        # PR-8 §6.6 — 抄袭门(qc pass 时二次裁决):只有确定性 n-gram 抄袭命中（Q0）保留阻断权。
+        # (风格参考 v3:中性步位的门只会给 pass / plagiarism,原先 fail / partial 的诊断分支是死代码,已删。)
         if branch == "continue":
             style_verdict = self._apply_style_validation_gate(scene, neutral_content)
             if style_verdict == "plagiarism":
@@ -1365,18 +1393,6 @@ class HardQcEngine:
                     llm_call_id=llm_call_id,
                     execution_step_key=execution_step_key,
                 )
-            if style_verdict in ("fail", "partial"):
-                style_issue = classify_issue(
-                    {
-                        "issue_key": f"style_validation_{style_verdict}",
-                        "message": f"style_reference validation verdict: {style_verdict}（风格层诊断，不阻断交付）",
-                        "source": "deterministic",
-                    },
-                    scene=scene,
-                    content=neutral_content,
-                )
-                qc_report.issues_json = [*(qc_report.issues_json or []), style_issue]
-                self.session.flush()
 
         _qc_apply_issue_tracking(state, payload["issues"])
         self._apply_branch_counters(state, branch)
@@ -1618,43 +1634,27 @@ class HardQcEngine:
     def _apply_style_validation_gate(
         self, scene: SceneCard, neutral_content: str
     ) -> str | None:
-        """PR-8 §6.6 — sync_only style validation gate（中性稿）。
+        """PR-8 §6.6 — 中性步位稿（中性稿 / style_first 首稿）的抄袭门。
 
-        scene 无 project_id / 无 active binding / 调用失败 → 返 None(qc 结论直通)。
-        否则返 "pass" / "plagiarism"(小写字串)。
+        scene 无作用域 / 无绑定 / 检查失败 → None（qc 结论直通）；否则 "pass" / "plagiarism"。
 
-        v2（规格 §2.W5.5）：中性稿只保留确定性 n-gram 抄袭（Q0）裁决；量化容差 /
-        冻结禁用词的 fail / partial 不再对没有任何风格注入的中性稿产生——风格稿的
-        对应检查移到 ``run_styled_draft_style_gate``（style_draft 落库后 + soft_qc）。
+        v2（规格 §2.W5.5）：这里只裁决确定性 n-gram 抄袭（Q0）；冻结禁用词 / 量化容差不对中性步位稿产生
+        fail / partial（风格稿的对应检查在 ``run_styled_draft_style_gate``）。风格参考 v3：绑定与否看
+        StylePolicy（场景当前 bundle 冻结的契约 → 旧 bundle / 无 bundle 时按当前活动绑定轻量现解析），
+        原文重合走唯一抄袭门（按书一次索引、同一稿不重复扫描）。
         """
         import time as _time
 
-        from novel_system.services.style_reference.injection import (
-            InjectionService,
-            ordered_character_ids,
-        )
+        from novel_system.services.reference_copy_gate import check_reference_copy
         from novel_system.services.style_reference.metrics_recorder import (
             MetricsRecorder,
         )
-        from novel_system.services.style_reference.schemas import (
-            ValidateRequest,
-            ValidationMode,
-            ValidationTargetKind,
-        )
-        from novel_system.services.style_reference.validation import (
-            ValidationOrchestrator,
-        )
 
-        project_id = getattr(scene, "project_id", None)
-        # PR-14/18 — character scope 用 pov ∪ onstage 匹配集(pov 优先)
-        character_ids = ordered_character_ids(
-            getattr(scene, "pov_character_id", None),
-            getattr(scene, "onstage_chars_json", None),
-        )
-        # PR-15 — scene scope 用 scene_id 匹配(优先级最高)
-        scene_id = getattr(scene, "scene_id", None)
-        if not neutral_content or (
-            not project_id and not character_ids and not scene_id
+        if not neutral_content or not (
+            getattr(scene, "project_id", None)
+            or getattr(scene, "scene_id", None)
+            or getattr(scene, "pov_character_id", None)
+            or (getattr(scene, "onstage_chars_json", None) or [])
         ):
             return None
         started_at = _time.perf_counter()
@@ -1663,68 +1663,16 @@ class HardQcEngine:
         binding_id: str | None = None
         runtime_contract_hash: str | None = None
         try:
-            from novel_system.services.style_reference.runtime_contract import (
-                contract_profile_objects,
-                resolve_style_runtime_contract_state,
-            )
-            from novel_system.services.style_reference.validation import (
-                run_sync_validate_profiles,
-            )
-
-            state = self.session.get(SceneRunState, scene.scene_id)
-            bundle_row = (
-                self.session.get(SceneBundle, state.current_bundle_id)
-                if state is not None and state.current_bundle_id
-                else None
-            )
-            frozen_snapshot = (
-                bundle_row.frozen_snapshot_json if bundle_row is not None else None
-            )
-            contract_state = resolve_style_runtime_contract_state(
-                frozen_snapshot
-            )
-            runtime_contract = contract_state.contract
-            if contract_state.error_code is not None:
-                raise ValueError(contract_state.error_code)
-            if runtime_contract is not None:
-                profiles = contract_profile_objects(runtime_contract)
-                profile_id = str(runtime_contract["profile_ids"][-1])
-                binding_id = str(runtime_contract["binding_ids"][-1])
-                runtime_contract_hash = str(runtime_contract["contract_hash"])
-                response_report = run_sync_validate_profiles(
-                    neutral_content,
-                    profiles,
-                    self.session,
-                )
-                verdict = _neutral_gate_verdict(response_report.verdict.value)
-                return verdict
-            if contract_state.mode == "absent":
+            policy = scene_gate_style_policy(self.session, scene, None)
+            if policy.error_code is not None:
+                raise ValueError(policy.error_code)
+            if not policy.bound:
                 return None
-
-            # PR-14/15/18 — 复用 InjectionService 单点选取(scene > character > project > global)
-            active = InjectionService(self.session).resolve_active_binding(
-                project_id,
-                "scene_generation",
-                character_ids=character_ids,
-                scene_id=scene_id,
-            )
-            if active is None:
-                return None
-            profile_id = active.profile_id
-            binding_id = active.binding_id
-            orchestrator = ValidationOrchestrator(self.session, llm_enabled=False)
-            response = orchestrator.validate(
-                active.profile_id,
-                ValidateRequest(
-                    generated_text=neutral_content,
-                    target_kind=ValidationTargetKind.SCENE,
-                    target_ref_id=scene.scene_id,
-                    mode=ValidationMode.SYNC_ONLY,
-                ),
-            )
-            if response.sync_result is None:
-                return None
-            verdict = _neutral_gate_verdict(response.sync_result.verdict.value)
+            profile_id = policy.profile_id
+            binding_id = policy.binding_id
+            runtime_contract_hash = policy.contract_hash
+            check = check_reference_copy(self.session, neutral_content, policy=policy)
+            verdict = "plagiarism" if check.hits else "pass"
             return verdict
         except (
             Exception
@@ -2032,6 +1980,9 @@ class SoftQcEngine:
         attempt_details_extra: dict[str, Any] = {}
         if style_runtime_audit is not None:
             attempt_details_extra["style_reference_runtime"] = style_runtime_audit
+        judge_record = _reference_judge_record(_normalize_soft_qc_scores(payload))
+        if judge_record is not None:
+            attempt_details_extra["reference_judge"] = judge_record
         if styled_gate is not None:
             attempt_details_extra["styled_draft_gate"] = styled_gate
         validate_qc_report("soft_qc", payload)  # 组合合法性校验（不回写 dump）
@@ -2206,6 +2157,9 @@ class SoftQcEngine:
                 inject_style_reference_prefix,
             )
 
+            from novel_system.services.review_scores import REVIEW_FEW_SHOT_K_CAP
+
+            # 风格参考 v3（L4）：评审节点只拿 4 窗样例（规划 3 窗，起草按绑定的窗数）
             return inject_style_reference_prefix(
                 self.session,
                 prompt,
@@ -2214,6 +2168,7 @@ class SoftQcEngine:
                 task_type="scene_generation",
                 context_text=context_text,
                 final_user_prompt=final_user_prompt,
+                few_shot_k_cap=REVIEW_FEW_SHOT_K_CAP,
             )
         except Exception:  # noqa: BLE001 — 可选增强，不阻断 soft_qc
             _LOGGER.warning(
@@ -2547,6 +2502,13 @@ class SoftQcEngine:
                     "carry_note_text": report.carry_note_text,
                 }
             )
+        # 风格参考 v3（V7）：参考评审的按维分与总分随报告落库（此前 style_score 校验完就丢了）。
+        # 读简报的地方只认 instruction / carry_forward_note，这一条对它们不可见。
+        judge = _reference_judge_record(
+            {"style_score": report.style_score, "dimension_scores": dict(report.dimension_scores or {})}
+        )
+        if judge is not None:
+            entries.append(judge)
         return entries
 
     def _persist_qc_report(

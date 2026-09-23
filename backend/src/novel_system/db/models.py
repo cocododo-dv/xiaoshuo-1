@@ -2197,8 +2197,8 @@ class StyleReferenceBannedTerm(Base):
 class StyleReferenceMetricEvent(Base):
     """PR-10 §13 — 可观测性事件流(append-only,无 FK)。
 
-    InjectionService / qc gate / ValidationOrchestrator / SceneAutoRewriteService
-    各调用点写 1 行;style_continuity 读 style_drift_observed,其余为审计(2026-09-14 起无聚合端点)。
+    InjectionService / qc gate / ValidationOrchestrator 各调用点写 1 行,只作审计(2026-09-14 起无
+    聚合端点;风格参考 v3 删掉了 style_drift_observed 的写端与读端,库里残留的旧行不再被读)。
     event_kind 5 个允许值(由文档约束,**不**是 Python Enum):
     injection_invoked / qc_gate_decided / validation_executed /
     auto_rewrite_triggered / auto_rewrite_completed

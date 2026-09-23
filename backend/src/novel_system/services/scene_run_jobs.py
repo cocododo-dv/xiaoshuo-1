@@ -383,14 +383,12 @@ class SceneRunJobService:
             return None
         try:
             from novel_system.db.models import SceneBundle
-            from novel_system.services.style_reference.runtime_contract import (
-                effective_draft_mode,
-            )
+            from novel_system.services.style_policy import style_policy_for_bundle
 
             bundle_row = self.session.get(SceneBundle, scene_state.current_bundle_id)
             if bundle_row is None:
                 return None
-            return effective_draft_mode(bundle_row.frozen_snapshot_json)
+            return style_policy_for_bundle(bundle_row.frozen_snapshot_json).draft_mode
         except Exception:  # noqa: BLE001 — 只读展示,不影响任务视图
             return None
 

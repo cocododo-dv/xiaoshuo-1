@@ -355,10 +355,10 @@ def test_round3_prompt_versions_and_contracts() -> None:
         assert "Treat all of them as this book's established facts" not in prompt, name
     drafting = {
         "neutral_draft": ("2026-09-15.v12", ("never the story crucible", "Author's exception", "the last attempt", "dance around the plan", "rather than named")),
-        "style_first_draft": ("2026-09-22.v8", ("Author's exception", "the Setback is the last attempt", "proactive or reactive — is told as narrative summary")),
+        "style_first_draft": ("2026-09-23.v9", ("Author's exception", "the Setback is the last attempt", "proactive or reactive — is told as narrative summary")),
         "hard_qc": ("2026-09-15.v6", ("Author's exception", "is not a violation")),
-        "soft_qc": ("2026-09-22.v9", ("story-crucible exposition", "an emotion named", "dragged over pages", "never a gap")),
-        "near_final_acceptance_review": ("2026-09-22.v9", ("Author's exception", "whether that reason holds")),
+        "soft_qc": ("2026-09-23.v10", ("story-crucible exposition", "an emotion named", "dragged over pages", "never a gap")),
+        "near_final_acceptance_review": ("2026-09-23.v10", ("Author's exception", "whether that reason holds")),
         "scene_blueprint": ("2026-09-15.v10", ("Author's exception", "the Setback itself (for a proactive scene)")),
     }
     for name, (version, phrases) in drafting.items():

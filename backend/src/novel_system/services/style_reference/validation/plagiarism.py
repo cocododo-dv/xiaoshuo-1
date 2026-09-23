@@ -49,6 +49,12 @@ def normalize_text_for_matching(text: str) -> str:
     return "".join(ch.lower() for ch in text if not _is_ignorable(ch))
 
 
+def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
+    """与 :func:`normalize_text_for_matching` 同一规则，另返回每个规范化字符在原文里的下标
+    （风格参考 v3 的抄袭门据此把命中区间映射回被检查的文字）。"""
+    return _normalize_with_map(text)
+
+
 _normalize = normalize_text_for_matching
 
 
