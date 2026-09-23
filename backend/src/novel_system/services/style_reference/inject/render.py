@@ -4,27 +4,38 @@
 :class:`~novel_system.services.style_reference.inject.request.StyleRenderRequest` → :class:`RenderedStyle`
 （system 前缀、user 尾块、实际用到的窗、读数、不含正文的审计）。
 
-**参考方式说到做到**（N8 / J8，``policy.reference_mode``）：
+**参考方式说到做到**（N8 / J8，``policy.reference_mode``，渲染时再按书**现在**的云策略压一次——v1 契约的书快照
+没有策略，``segments_only`` 的书照样只送文风卡，L1）：
 
 - ``full``：文风卡（或旧画像的卡替身）+ 声音 + 本场冻结的样例窗 + 红线；
 - ``samples_only``：样例窗 + 红线；
-- ``card_only``：文风卡 + 声音 + 每条卡句至多一句 ≤60 字的证据例句 + 红线，**不送窗口**（``segments_only``
-  的书由 ``effective_reference_mode`` 强制走这里）。
+- ``card_only``：文风卡 + 声音 + 红线，**不送窗口**；卡句后面至多挂一句 ≤11 字的原话例子（取自这句的证据引文，
+  含受保护专名 / 禁用词或疑似指令的片段不用，M3）。``segments_only`` 的书由 ``effective_reference_mode`` 强制走这里。
+
+**云策略按接收提示的节点判**（H1，``policy.decide_reference_route``）：请求带 ``node_ids``（适配器按模板推）；
+「仅本机」的书遇云端节点、或说不出节点 → 抛 409 ``STYLE_REFERENCE_CLOUD_POLICY_BLOCKED``，由这本书派生的东西
+（样例、文风卡、声音、专名表）一个字都不送；判定的结果进缓存键（同一场换了路由不会拿到旧渲染）。
 
 **按角色的口径**（J16）：起草 / 改稿把样例放在 user 消息末尾、紧挨输出（收口指令 + 章首 / 章末补充），system
 里留文风卡、声音、红线与一句指路；评审 / 规划的样例留在 system 里，标题是评审 / 规划的口径，不是「写本场时以
-这些片段的手笔为准」。
+这些片段的手笔为准」。**这一次一窗样例都没有**（只用文风卡、原文不许送、窗口还没建、拟合把窗全去掉了）时，在
+样例原本的位置写明「本次没有附原文样例，照文风卡与声音特征写」（M5）——起草模板说样例在消息末尾，不能让模型
+去找一块不存在的样例。
 
 **旧画像**（还没有 ``dimension_card``——学习作业跑之前的所有画像）：旧的正向特征 / 叙事模式 / 偏离校准与禁忌
 陈述渲染成简单的 ``[正向风格特征]`` / ``[禁忌模式]`` 替身，**含数字的行整行不要**（不再有量化软化机器，J11），
 审计记 ``legacy_profile: true``。
 
+**不学的维**（``dimension_states == exclude``）：卡里整维不出现，声音块里属于这一维的习惯句、近期常见偏差里
+属于这一维的条目也不带（L8）。
+
 **红线**：反抄袭模板 + 画像的生成期禁用词（含学习作业自动登记的受保护专名 ``source="protected_auto"``），
 只要有任一块参考就随注、永不截断。
 
 书被改过（冻结契约的段落根哈希 ≠ 当前窗口索引的根哈希）：按当前索引渲染并在审计里记
-``STYLE_REFERENCE_BOOK_CHANGED``——不再悄悄砍掉 87% 的样例（J6）。同一 (契约, 场景, 角色, 窗数, 参考方式,
-近期偏差……) 的渲染结果进程内缓存（J1），一场的几道工序不重复渲染。
+``STYLE_REFERENCE_BOOK_CHANGED``——不再悄悄砍掉 87% 的样例（J6）；书已删除记 ``STYLE_REFERENCE_BOOK_MISSING``
+（L5）。同一 (契约, 场景, 角色, 窗数, 参考方式, 接收节点与路由, 近期偏差……) 的渲染结果进程内缓存（J1），
+一场的几道工序不重复渲染。
 """
 
 from __future__ import annotations
@@ -33,6 +44,7 @@ import hashlib
 import logging
 import re
 import threading
+import unicodedata
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -45,21 +57,27 @@ from novel_system.db.models import StyleReferenceBook
 from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     REFERENCE_MODE_CARD_ONLY,
+    effective_reference_mode,
 )
+from novel_system.services.style_reference.binding_config import sends_card as mode_sends_card
+from novel_system.services.style_reference.binding_config import sends_samples as mode_sends_samples
 from novel_system.services.style_reference.card import (
     DEFAULT_CARD_BUDGET_CHARS,
+    EXAMPLE_UNIT_PREFIX,
     LINE_STATE_EXCLUDED,
-    LINE_STATE_PINNED,
+    UNIT_GAP,
     DimensionCard,
     card_from_profile_json,
     line_states_from_profile_json,
-    render_card_block,
+    plan_card_block,
 )
 from novel_system.services.style_reference.config_loader import (
     load_optional_yaml_config,
     load_text_template,
 )
+from novel_system.services.style_reference.fidelity import FEATURE_DIMENSIONS
 from novel_system.services.style_reference.inject.audit import build_audit, block_digest
+from novel_system.services.style_reference.inject.gaps import gap_dimensions
 from novel_system.services.style_reference.inject.request import (
     PLACEMENT_USER_TAIL,
     POSITION_CLOSING,
@@ -73,12 +91,15 @@ from novel_system.services.style_reference.inject.request import (
 )
 from novel_system.services.style_reference.inject.selection import (
     EMPTY_SELECTION,
+    NOTICE_BOOK_MISSING,
+    SLOT_REVISE,
     SceneSelection,
     WindowRef,
+    current_bundle_selection,
     resolve_scene_selection,
     role_windows,
 )
-from novel_system.services.style_reference.policy import cloud_llm_allowed
+from novel_system.services.style_reference.policy import decide_reference_route
 from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.runtime_contract import contract_layer
 from novel_system.services.style_reference.schemas import (
@@ -89,6 +110,7 @@ from novel_system.services.style_reference.schemas import (
 from novel_system.services.style_reference.structure import chapter_boundary_habits
 from novel_system.services.style_reference.untrusted_data import (
     FEW_SHOT_FRAME_END,
+    NEUTRALIZED_MARK,
     frame_reference_samples,
 )
 from novel_system.services.style_reference.windows import marker_is_current, window_texts
@@ -103,7 +125,11 @@ STYLE_REFERENCE_CLOSE = "\n[/STYLE_REFERENCE]\n\n"
 
 # 单窗正文上限（切窗规则 ≤4,000 字，短尾窗并入时可放宽 25%；超长的单段窗在句边界截断）
 SAMPLE_WINDOW_MAX_CHARS = 5000
-CARD_EXAMPLE_MAX_CHARS = 60
+# 只用文风卡时卡句后面的原话例子：至多 11 个字（界面的承诺「卡上的例子至多 11 个字」），太短的片段不当例子
+CARD_EXAMPLE_MAX_CHARS = 11
+CARD_EXAMPLE_MIN_CHARS = 4
+_CLAUSE_SPLIT_RE = re.compile(r"[，。！？；：、,.!?;:…—\n\r\t「」『』“”‘’\"'（）()《》〈〉【】\[\]〔〕]+")
+_ESCAPED_BOUNDARY_TOKEN = "UNTRUSTED_BOUNDARY_ESCAPED"
 _DIGIT_RE = re.compile(r"[0-9０-９]")
 _SENTENCE_END = "。！？!?…"
 _CLOSERS = "”’」』\"'）)】"
@@ -145,6 +171,28 @@ FEW_SHOT_CLOSING_MANDATE_REVISE = (
 CLOSING_MANDATES: dict[str, str] = {
     ROLE_DRAFT: FEW_SHOT_CLOSING_MANDATE,
     ROLE_REVISE: FEW_SHOT_CLOSING_MANDATE_REVISE,
+}
+# M5：这一次一窗样例都没带（只用文风卡 / 原文不许送 / 还没有窗口 / 预算拟合去光了窗）时，写在样例原本的位置——
+# 起草 / 改稿模板说样例在消息末尾，不能让模型去找一块不存在的样例，也不能让它以为参考只剩抽象描述时可以随便写。
+# 不用 ``[风格样例]`` 这个标签（有这个标签 = 真的附了原文样例，各处都按它认）。
+NO_SAMPLES_TAIL_NOTES: dict[str, str] = {
+    ROLE_DRAFT: (
+        "（本次没有附参考作者的原文样例：前文说放在这条消息末尾的样例片段，这一次没有。"
+        "照 system 提示 [STYLE_REFERENCE] 里的文风卡与声音特征，用这位作者的手笔写这一场。）"
+    ),
+    ROLE_REVISE: (
+        "（本次没有附参考作者的原文样例：前文说放在这条消息末尾的样例片段，这一次没有。"
+        "改稿时对照 system 提示 [STYLE_REFERENCE] 里的文风卡与声音特征，只改不像这位作者的地方。）"
+    ),
+}
+NO_SAMPLES_SYSTEM_NOTES: dict[str, str] = {
+    ROLE_DRAFT: "（本次没有附参考作者的原文样例：照下面的文风卡与声音特征，用这位作者的手笔写。）",
+    ROLE_REVISE: "（本次没有附参考作者的原文样例：改稿时对照下面的文风卡与声音特征，只改不像这位作者的地方。）",
+    ROLE_REVIEW: (
+        "（本次没有附参考作者的原文样例：评审时对照下面的文风卡与声音特征判断像不像这位作者，"
+        "不因为没有样例就改用通用的写作规范。）"
+    ),
+    ROLE_PLAN: "（本次没有附参考作者的原文样例：规划时按下面的文风卡与声音特征设想这位作者的手法。）",
 }
 VOICE_HEADERS: dict[str, str] = {
     ROLE_DRAFT: "[声音特征](这位作者用词、标点、对白引导与句子节奏的实际习惯；照这个手感写，不数数、不堆砌)",
@@ -251,6 +299,10 @@ def _visible_chars(text: str) -> int:
     return sum(1 for char in text if not char.isspace())
 
 
+def _letter_chars(text: str) -> int:
+    return sum(1 for char in text if unicodedata.category(char)[0] in ("L", "N"))
+
+
 def _clip_at_sentence(text: str, max_chars: int) -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
@@ -310,7 +362,16 @@ class CardSource:
         return ""
 
 
+FIT_EXAMPLE_PREFIX = "__example__:"
+FIT_GAPS_UNIT = "__gaps__"
+
+
 class DimensionCardSource(CardSource):
+    """v3 文风卡。卡自己的预算取舍在 ``card.plan_card_block``（钉住 / 必须的句永远带上，「作者不这么写」有保底，
+    例子先于整维被去掉）；``drop_order`` 是那份保留次序倒过来——外层预算拟合（``inject.fit``）照它一个单元一个
+    单元地去：先去保底之外的「作者不这么写」、多出来的句与它们的例子，再去例子，最后才去每一维的第一句（整维
+    消失）、近期偏差与保底的「作者不这么写」。钉住 / 必须的句与气质不在里面——要去只能整张卡不发（M2）。"""
+
     kind = "card"
 
     def __init__(
@@ -324,62 +385,50 @@ class DimensionCardSource(CardSource):
         budget_chars: int,
         examples: Mapping[str, str] | None = None,
     ) -> None:
-        if examples:
-            dimensions = []
-            for entry in card.dimensions:
-                lines = [
-                    line.model_copy(update={"text": f"{line.text}（例：「{examples[line.line_id]}」）"})
-                    if line.kind == "do" and line.line_id in examples
-                    else line
-                    for line in entry.lines
-                ]
-                dimensions.append(entry.model_copy(update={"lines": lines}))
-            card = card.model_copy(update={"dimensions": dimensions})
         self.card = card
         self.role = role
         self.dimension_states = dict(dimension_states)
         self.line_states = dict(line_states)
         self.recent_gaps = tuple(recent_gaps)
         self.budget_chars = budget_chars
-        self.example_count = len(examples or {})
-        # 预算不够时：先去辨识度最低的非必须、未钉住的句，再去必须 / 钉住的，再去近期偏差，最后去气质
-        ranked = sorted(
-            (
-                (
-                    line.mandatory or self.line_states.get(line.line_id) == LINE_STATE_PINNED,
-                    line.distinctiveness,
-                    entry.distinctiveness,
-                    line.line_id,
-                )
-                for entry in card.dimensions
-                if self.dimension_states.get(entry.dimension) != DIMENSION_EXCLUDE
-                for line in entry.lines
-                if self.line_states.get(line.line_id) != LINE_STATE_EXCLUDED
-            )
-        )
-        order = [item[3] for item in ranked]
-        if self.recent_gaps:
-            order.append("__gaps__")
-        if card.temperament:
-            order.append("__temperament__")
+        self.examples = {str(k): str(v) for k, v in (examples or {}).items() if str(v or "").strip()}
+        plan = self._plan(frozenset())
+        self.example_count = plan.example_count
+        order: list[str] = []
+        for unit in reversed(plan.priority):
+            if unit.kind == UNIT_GAP:
+                unit_id = FIT_GAPS_UNIT
+            elif unit.unit_id.startswith(EXAMPLE_UNIT_PREFIX):
+                unit_id = FIT_EXAMPLE_PREFIX + unit.unit_id[len(EXAMPLE_UNIT_PREFIX) :]
+            else:
+                unit_id = unit.unit_id
+            if unit_id not in order:
+                order.append(unit_id)
         self.drop_order = tuple(order)
 
-    def render(self, excluded: frozenset[str] = frozenset()) -> str:
+    def _plan(self, excluded: frozenset[str]):
         states = dict(self.line_states)
-        for line_id in excluded:
-            if not line_id.startswith("__"):
-                states[line_id] = LINE_STATE_EXCLUDED
+        examples = dict(self.examples)
+        for unit_id in excluded:
+            if unit_id.startswith(FIT_EXAMPLE_PREFIX):
+                examples.pop(unit_id[len(FIT_EXAMPLE_PREFIX) :], None)
+            elif not unit_id.startswith("__"):
+                states[unit_id] = LINE_STATE_EXCLUDED
         card = self.card
         if "__temperament__" in excluded and card.temperament:
             card = card.model_copy(update={"temperament": []})
-        block = render_card_block(
+        return plan_card_block(
             card,
             dimension_states=self.dimension_states,
             line_states=states,
-            recent_gaps=() if "__gaps__" in excluded else self.recent_gaps,
+            recent_gaps=() if FIT_GAPS_UNIT in excluded else self.recent_gaps,
             budget_chars=self.budget_chars,
             role=ROLE_REVIEW if self.role == ROLE_REVIEW else ROLE_DRAFT,
+            examples=examples,
         )
+
+    def render(self, excluded: frozenset[str] = frozenset()) -> str:
+        block = self._plan(excluded).text
         header = CARD_HEADERS.get(self.role)
         if block and header:
             _first, _sep, rest = block.partition("\n")
@@ -523,19 +572,91 @@ def count_card_lines(block: str) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
-def voice_block(profile_json: Mapping[str, Any], role: str) -> str:
-    """``[声音特征]``：画像里的具体习惯句（v3 ``voice.habits``，旧画像 ``voice_signature.habits``）。"""
+# 声音习惯句 → 维度（L8：「不学」的维，声音块里它的习惯句也不带）。v3 的习惯句由
+# ``voice_signature.render_voice_habits`` 按固定句式写出，先按句首认出它说的是哪个测量核特征，再按
+# ``fidelity.FEATURE_DIMENSIONS`` 归维；认不出的旧式习惯句按关键词认；都认不出 → 不知道是哪一维，照带。
+_HABIT_FEATURE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^句子平均"), "sent_len_mean"),
+    (re.compile(r"^段落平均"), "para_len_mean"),
+    (re.compile(r"^(?:几乎通篇是对白|对白约占|几乎没有对白)"), "dialogue_char_share"),
+    (re.compile(r"^对白"), "dialogue_guide_none_share"),
+    (re.compile(r"^句末"), "sentence_final_modal_ratio"),
+    (re.compile(r"^连接"), "fw_connective_per_1k"),
+    (re.compile(r"^(?:常用|几乎不用)(?:省略号|破折号|分号|感叹号|问号|冒号|顿号)"), "punct_comma_per_1k"),
+    (re.compile(r"^(?:第[一二三]人称|以第三人称|叙述里常用第二人称|叙述人称)"), "person_third_share"),
+    (re.compile(r"^常写具体数字"), "digit_run_per_1k"),
+    (re.compile(r"英文词"), "latin_word_per_1k"),
+    (re.compile(r"^常用副词"), "fw_adverb_per_1k"),
+    (re.compile(r"^常把几个极短的句子"), "sent_short_run_ratio"),
+    (re.compile(r"^动作后常带"), "fw_aspect_per_1k"),
+    (re.compile(r"^常用四字"), "four_char_segment_per_1k"),
+    (re.compile(r"^常用叠词"), "redup_total_per_1k"),
+)
+_HABIT_KEYWORD_DIMENSIONS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("对白", "引导词", "说话人"), "scene.dialogue"),
+    (("逗号", "句号", "省略号", "破折号", "分号", "感叹号", "问号", "冒号", "顿号", "标点"), "language.punctuation"),
+    (("人称",), "narrative.perspective"),
+    (("段落", "换段", "分段"), "narrative.pacing"),
+    (("具体数字", "计量"), "narrative.information_density"),
+    (("语气词", "副词", "连接词", "叠词", "四字", "英文词", "文言"), "language.vocabulary"),
+)
+
+
+def habit_dimension(habit: str) -> str | None:
+    """一句声音习惯属于哪一维（认不出 → ``None``）。"""
+    text = " ".join(str(habit or "").split())
+    if not text:
+        return None
+    for pattern, feature in _HABIT_FEATURE_PATTERNS:
+        if pattern.search(text):
+            return FEATURE_DIMENSIONS.get(feature)
+    for keywords, dimension in _HABIT_KEYWORD_DIMENSIONS:
+        if any(keyword in text for keyword in keywords):
+            return dimension
+    return None
+
+
+def _excluded_dimensions(dimension_states: Mapping[str, str] | None) -> set[str]:
+    return {str(dim) for dim, state in (dimension_states or {}).items() if state == DIMENSION_EXCLUDE}
+
+
+def filter_recent_gaps(gaps: Sequence[str], dimension_states: Mapping[str, str] | None) -> tuple[str, ...]:
+    """近期常见偏差去掉「不学」维的条目（L8；认不出维的短语照带）。"""
+    excluded = _excluded_dimensions(dimension_states)
+    if not excluded:
+        return tuple(gaps)
+    kept: list[str] = []
+    for gap in gaps:
+        dims = gap_dimensions([gap])
+        if dims and dims[0] in excluded:
+            continue
+        kept.append(gap)
+    return tuple(kept)
+
+
+def voice_block(
+    profile_json: Mapping[str, Any],
+    role: str,
+    *,
+    dimension_states: Mapping[str, str] | None = None,
+) -> str:
+    """``[声音特征]``：画像里的具体习惯句（v3 ``voice.habits``，旧画像 ``voice_signature.habits``）；
+    「不学」的维的习惯句不带（L8）。"""
     habits: Any = None
     for key in ("voice", "voice_signature"):
         candidate = _mapping(profile_json.get(key)).get("habits")
         if isinstance(candidate, list) and candidate:
             habits = candidate
             break
+    excluded = _excluded_dimensions(dimension_states)
     lines: list[str] = []
     for item in habits or []:
         text = " ".join(str(item or "").split())
-        if text and f"- {text}" not in lines:
-            lines.append(f"- {text}")
+        if not text or f"- {text}" in lines:
+            continue
+        if excluded and habit_dimension(text) in excluded:
+            continue
+        lines.append(f"- {text}")
     if not lines:
         return ""
     return "\n".join([VOICE_HEADERS.get(role, VOICE_HEADERS[ROLE_DRAFT]), *lines])
@@ -556,8 +677,60 @@ def red_line_block(banned_terms: Sequence[str]) -> str:
     return template.replace("{banned_terms_list}", terms_text).strip()
 
 
-def card_examples(session: Session, card: DimensionCard) -> dict[str, str]:
-    """``card_only``：每条卡句至多一句 ≤60 字的证据例句（卡句的 ``evidence_quote_ids`` → 引文表）。"""
+def _term_key(text: str) -> str:
+    return "".join(str(text or "").split()).lower()
+
+
+def card_example_clause(text: str, *, protected_terms: Sequence[str] = ()) -> str:
+    """一条证据引文 → 至多 :data:`CARD_EXAMPLE_MAX_CHARS` 个字的原话例子（M3）。
+
+    整句够短就用整句，否则取最长的一个分句（同长取靠前的）；过短（< :data:`CARD_EXAMPLE_MIN_CHARS`）或含受保护
+    专名 / 禁用词的片段不用——取不出 → ``""``（这一句不挂例子）。整句先过注入中和（中和规则要看到整句上下文）：
+    里面有被中和的疑似指令或被转义的伪造边界的引文，一个字都不拿来当例子（切成分句会把中和标记切碎、把指令的
+    后半截留下来）。字数按可见字算。
+    """
+    original = " ".join(str(text or "").split())
+    safe = safe_reference_text(original)
+    if not safe.strip() or safe != original:
+        return ""
+    terms = [key for key in (_term_key(term) for term in protected_terms) if key]
+    best = ""
+    best_chars = 0
+    for candidate in [safe, *_CLAUSE_SPLIT_RE.split(safe)]:
+        candidate = candidate.strip()
+        chars = _visible_chars(candidate)
+        # 上限按可见字（标点也算一个字，只会更严）；下限按字母数字（「嗯，好，走」不算一个像样的例子）
+        if _letter_chars(candidate) < CARD_EXAMPLE_MIN_CHARS or chars > CARD_EXAMPLE_MAX_CHARS or chars <= best_chars:
+            continue
+        if NEUTRALIZED_MARK in candidate or _ESCAPED_BOUNDARY_TOKEN in candidate:
+            continue
+        key = _term_key(candidate)
+        if any(term in key for term in terms):
+            continue
+        best, best_chars = candidate, chars
+    return best
+
+
+def example_protected_terms(layer: Mapping[str, Any]) -> list[str]:
+    """卡句例子不许带的词：契约冻结的生成期禁用词（含受保护专名）+ 环境变量里的全局受保护专名。"""
+    terms = [str(term) for term in layer.get("banned_terms") or [] if str(term or "").strip()]
+    try:
+        from novel_system.services.source_safety import configured_protected_source_terms
+
+        terms.extend(str(term) for term in configured_protected_source_terms() if str(term or "").strip())
+    except Exception:  # noqa: BLE001 — 全局词表读不出来时只用画像的禁用词
+        logger.debug("configured protected source terms unavailable", exc_info=True)
+    return terms
+
+
+def card_examples(
+    session: Session,
+    card: DimensionCard,
+    *,
+    protected_terms: Sequence[str] = (),
+) -> dict[str, str]:
+    """``card_only``：每条卡句至多一个 ≤11 字的原话例子（卡句的 ``evidence_quote_ids`` → 引文表 →
+    :func:`card_example_clause`）；含受保护专名 / 禁用词的不用。"""
     from novel_system.services.style_reference.repository import StyleReferenceRepository
 
     wanted: dict[str, list[str]] = {}
@@ -579,13 +752,10 @@ def card_examples(session: Session, card: DimensionCard) -> dict[str, str]:
     examples: dict[str, str] = {}
     for line_id, ids in wanted.items():
         for quote_id in ids:
-            text = quotes.get(quote_id, "")
-            if not text:
-                continue
-            if len(text) > CARD_EXAMPLE_MAX_CHARS:
-                text = text[: CARD_EXAMPLE_MAX_CHARS - 1] + "…"
-            examples[line_id] = safe_reference_text(text)
-            break
+            example = card_example_clause(quotes.get(quote_id, ""), protected_terms=protected_terms)
+            if example:
+                examples[line_id] = example
+                break
     return examples
 
 
@@ -621,6 +791,13 @@ class RenderParts:
             return "", []
         return "\n".join([self.samples_header, *(w.line for w in used), FEW_SHOT_FRAME_END]), used
 
+    def no_samples_note(self) -> str:
+        """一窗样例都没带时写在样例位置的那句话（M5；按落点与角色）。"""
+        if self.placement == PLACEMENT_USER_TAIL:
+            note = NO_SAMPLES_TAIL_NOTES.get(self.role, NO_SAMPLES_TAIL_NOTES[ROLE_DRAFT])
+            return note + "\n" + FEW_SHOT_CLOSING_MANDATE_FINAL
+        return NO_SAMPLES_SYSTEM_NOTES.get(self.role, NO_SAMPLES_SYSTEM_NOTES[ROLE_DRAFT])
+
     def assemble(
         self,
         *,
@@ -629,20 +806,33 @@ class RenderParts:
         include_voice: bool = True,
         include_card: bool = True,
     ) -> tuple[str, str, dict[str, Any]]:
-        """(system 前缀, user 尾块, 各块正文)。任一块非空 → 红线随注。"""
+        """(system 前缀, user 尾块, 各块正文)。任一块非空 → 红线随注；有卡 / 声音而一窗样例都没有 → 在样例原本的
+        位置写明「本次没有附原文样例」（M5：起草 / 改稿写在 user 尾部，评审 / 规划写在 system 前缀里）。"""
         samples, used = self.samples_block(keep)
         card = self.card.render(excluded) if (self.card is not None and include_card) else ""
         voice = self.voice if include_voice else ""
         red_line = self.red_line if (samples or card or voice) else ""
+        note = self.no_samples_note() if (not samples and (card or voice)) else ""
         tail = ""
-        if self.placement == PLACEMENT_USER_TAIL and samples:
-            system_blocks = [FEW_SHOT_IN_USER_MESSAGE_NOTE, card, voice, red_line]
-            tail = "\n\n" + samples + ("\n\n" + self.closing if self.closing else "") + "\n"
+        if self.placement == PLACEMENT_USER_TAIL:
+            if samples:
+                system_blocks = [FEW_SHOT_IN_USER_MESSAGE_NOTE, card, voice, red_line]
+                tail = "\n\n" + samples + ("\n\n" + self.closing if self.closing else "") + "\n"
+            else:
+                system_blocks = [card, voice, red_line]
+                tail = "\n\n" + note + "\n" if note else ""
         else:
-            system_blocks = [samples, card, voice, red_line]
+            system_blocks = [samples or note, card, voice, red_line]
         blocks = [block for block in system_blocks if block and block.strip()]
         prefix = STYLE_REFERENCE_OPEN + "\n\n".join(blocks) + STYLE_REFERENCE_CLOSE if (samples or card or voice) else ""
-        return prefix, tail, {"samples": samples, "card": card, "voice": voice, "red_line": red_line, "windows": used}
+        return prefix, tail, {
+            "samples": samples,
+            "card": card,
+            "voice": voice,
+            "red_line": red_line,
+            "windows": used,
+            "no_samples_note": note,
+        }
 
 
 @dataclass(frozen=True)
@@ -706,7 +896,16 @@ def reset_render_cache() -> None:
         _CACHE.clear()
 
 
-def _cache_key(session: Session, policy: Any, request: StyleRenderRequest, *, root: str | None, samples_allowed: bool) -> str:
+def _cache_key(
+    session: Session,
+    policy: Any,
+    request: StyleRenderRequest,
+    *,
+    root: str | None,
+    reference_mode: str,
+    route_token: str,
+    selection_anchor: str = "",
+) -> str:
     try:
         db = str(session.get_bind().url)
     except Exception:  # noqa: BLE001
@@ -716,7 +915,7 @@ def _cache_key(session: Session, policy: Any, request: StyleRenderRequest, *, ro
             db,
             str(getattr(policy, "contract_hash", "") or ""),
             str(getattr(policy, "mode", "") or ""),
-            str(getattr(policy, "reference_mode", "") or ""),
+            str(reference_mode or ""),
             str(request.bundle_id or "live"),
             str(request.scene_id or ""),
             request.role,
@@ -729,7 +928,10 @@ def _cache_key(session: Session, policy: Any, request: StyleRenderRequest, *, ro
             ",".join(request.revise_dimensions),
             hashlib.sha256("\x1f".join(request.recent_gaps).encode("utf-8")).hexdigest()[:16],
             str(root or ""),
-            str(samples_allowed),
+            # 接收提示的节点、路由是否本机、这一次送什么（H1：换了节点路由不会拿到旧渲染）
+            route_token,
+            # 没有 bundle 的渲染用的是哪一份冻结选窗（这一场当前 bundle 的，还是自己的 live 行，M4）
+            selection_anchor,
         ]
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
@@ -755,6 +957,14 @@ def _cache_put(key: str, value: RenderedStyle) -> None:
 # ---------------------------------------------------------------------------
 
 
+def keep_priority(refs: Sequence[WindowRef]) -> list[WindowRef]:
+    """预算拟合的保留次序（先保的在前）：改稿换进来的「示范要改那几维手法」的窗最先保（它们是这一次修改的
+    依据，L3——原来它们占着选窗顺序末尾的位置，拟合第一个就去掉它们），其余按选窗顺序（位置 → 场面 → 手法 →
+    质地 → 典型）。"""
+    revise = [ref for ref in refs if ref.slot == SLOT_REVISE]
+    return revise + [ref for ref in refs if ref.slot != SLOT_REVISE]
+
+
 def _sample_windows(session: Session, book_id: str, refs: Sequence[WindowRef]) -> list[SampleWindow]:
     if not refs:
         return []
@@ -766,7 +976,7 @@ def _sample_windows(session: Session, book_id: str, refs: Sequence[WindowRef]) -
         ],
     )
     windows: list[SampleWindow] = []
-    for priority, ref in enumerate(refs):
+    for priority, ref in enumerate(keep_priority(refs)):
         text = str(texts.get(ref.window_no) or "").strip()
         if not text:
             continue
@@ -784,14 +994,14 @@ def _sample_windows(session: Session, book_id: str, refs: Sequence[WindowRef]) -
     return windows
 
 
-def _samples_allowed(policy: Any, book: StyleReferenceBook | None, book_snapshot: Mapping[str, Any]) -> tuple[bool, str | None]:
-    if book is None:
-        return False, "book_missing"
-    if book_snapshot.get("cloud_llm_allowed_at_freeze") is False:
-        return False, "cloud_policy_at_freeze"
-    if not cloud_llm_allowed(book):
-        return False, "cloud_policy_now"
-    return True, None
+def effective_render_mode(policy: Any, book: StyleReferenceBook | None, book_snapshot: Mapping[str, Any]) -> str:
+    """这一次渲染的参考方式：绑定的参考方式，再按书冻结时与**现在**的云策略各压一次（L1：v1 契约的书快照没有
+    ``cloud_policy``，``policy_from_contract`` 压不到；书现在是 ``segments_only`` 就只送文风卡）。"""
+    mode = str(getattr(policy, "reference_mode", "") or "")
+    mode = effective_reference_mode(mode, cloud_policy=str(book_snapshot.get("cloud_policy") or "") or None)
+    if book is not None:
+        mode = effective_reference_mode(mode, cloud_policy=str(getattr(book, "cloud_policy", "") or "") or None)
+    return mode
 
 
 def build_card_source(
@@ -802,20 +1012,28 @@ def build_card_source(
     *,
     forbidden_findings: Sequence[Mapping[str, Any]],
     examples_allowed: bool,
+    reference_mode: str | None = None,
+    recent_gaps: Sequence[str] | None = None,
+    protected_terms: Sequence[str] = (),
 ) -> CardSource | None:
-    """v3 文风卡 → :class:`DimensionCardSource`；旧画像 → :class:`LegacyCardSource`（空替身 → None）。"""
+    """v3 文风卡 → :class:`DimensionCardSource`；旧画像 → :class:`LegacyCardSource`（空替身 → None）。
+
+    ``card_only`` 且允许送原文时给卡句挂 ≤11 字的原话例子（不含 ``protected_terms``，M3）；``recent_gaps``
+    缺省用请求里的（渲染入口传去掉「不学」维之后的，L8）。"""
     card = card_from_profile_json(profile_json)
     states = dict(getattr(policy, "dimension_states", None) or {})
+    mode = reference_mode if reference_mode is not None else getattr(policy, "reference_mode", None)
+    gaps = tuple(request.recent_gaps if recent_gaps is None else recent_gaps)
     if card is not None:
         examples: dict[str, str] = {}
-        if getattr(policy, "reference_mode", None) == REFERENCE_MODE_CARD_ONLY and examples_allowed and session is not None:
-            examples = card_examples(session, card)
+        if mode == REFERENCE_MODE_CARD_ONLY and examples_allowed and session is not None:
+            examples = card_examples(session, card, protected_terms=protected_terms)
         return DimensionCardSource(
             card,
             role=request.role,
             dimension_states=states,
             line_states=line_states_from_profile_json(profile_json),
-            recent_gaps=request.recent_gaps,
+            recent_gaps=gaps,
             budget_chars=_budget_int("card_budget_chars", DEFAULT_CARD_BUDGET_CHARS),
             examples=examples,
         )
@@ -824,7 +1042,7 @@ def build_card_source(
         forbidden_findings=forbidden_findings,
         dimension_states=states,
         role=request.role,
-        recent_gaps=request.recent_gaps,
+        recent_gaps=gaps,
         budget_chars=_budget_int("card_budget_chars", DEFAULT_CARD_BUDGET_CHARS),
     )
     return None if legacy.is_empty else legacy
@@ -845,6 +1063,10 @@ def render_style(
 
     策略未绑定（或没有契约）→ 空结果（审计 ``outcome="none"``）。样例的选窗每场冻结（``resolve_scene_selection``），
     预览传 ``persist_selection=False``。
+
+    云策略按 ``request.node_ids`` 的实际路由判（H1，``policy.decide_reference_route``）：「仅本机」的书遇云端节点
+    （或说不出节点）、未知策略的书遇云端节点 → 抛 409（``CloudPolicyBlockedError`` / ``CloudPolicyInvalidError``），
+    由这本书派生的东西一个字都不渲染。
     """
     if not getattr(policy, "bound", False) or not isinstance(getattr(policy, "contract", None), Mapping):
         return RenderedStyle(audit={"outcome": "none", "policy": policy.audit() if hasattr(policy, "audit") else {}})
@@ -854,19 +1076,68 @@ def render_style(
     book_snapshot = _mapping(layer.get("book"))
     book_id = str(getattr(policy, "book_id", "") or book_snapshot.get("book_id") or "")
     book = session.get(StyleReferenceBook, book_id) if book_id else None
-    samples_allowed, blocked_reason = _samples_allowed(policy, book, book_snapshot)
+    route = decide_reference_route(
+        book,
+        node_ids=request.node_ids,
+        frozen_book=book_snapshot,
+        operation=f"style_reference_{request.role}",
+    )
+    route.raise_if_blocked()
+    reference_mode = effective_render_mode(policy, book, book_snapshot)
+    sends_samples = mode_sends_samples(reference_mode)
+    sends_card = mode_sends_card(reference_mode)
+    samples_allowed = route.send_samples
+    notices: list[str] = []
+    if book is None:
+        # L5：书已删除——先说书不在（原来被当成「原文被云策略挡下」报）
+        notices.append(NOTICE_BOOK_MISSING)
+    if not route.send_book:
+        # 书不在、冻结快照里又说不清它的云策略：由这本书派生的东西一概不送（不报错——书是作者删的）
+        return RenderedStyle(
+            audit=build_audit(
+                policy=policy,
+                request=request,
+                selection=EMPTY_SELECTION,
+                system_prefix="",
+                user_tail="",
+                blocks={name: block_digest("") for name in ("samples", "card", "voice", "red_line")},
+                window_refs=(),
+                stats=render_stats(system_prefix="", user_tail="", blocks={}, k=0),
+                notices=notices,
+                legacy_profile=False,
+                reference_mode=reference_mode,
+                route=route.audit(),
+            )
+        )
     # 缓存键带当前窗口索引的根哈希：索引还没建 / 已过期时不查缓存（这一次会建索引），渲染完按建好的根哈希存
     live_root = None
     if book is not None and marker_is_current(book.stats_json):
         live_root = str(_mapping(_mapping(book.stats_json).get("window_index")).get("root") or "") or None
+
+    def _selection_anchor(root: str | None) -> str:
+        # 没有 bundle 的场景渲染：用的是这一场当前 bundle 冻结的选窗，还是自己的 live 行（M4）——进缓存键
+        if request.bundle_id is not None or not request.scene_id or not samples_allowed or root is None:
+            return ""
+        shared = current_bundle_selection(session, policy, request, root=root)
+        return f"bundle:{shared[0].selection_id}" if shared is not None else "own"
+
     if use_cache and live_root is not None:
-        cached = _cache_get(_cache_key(session, policy, request, root=live_root, samples_allowed=samples_allowed))
+        cached = _cache_get(
+            _cache_key(
+                session,
+                policy,
+                request,
+                root=live_root,
+                reference_mode=reference_mode,
+                route_token=route.cache_token,
+                selection_anchor=_selection_anchor(live_root),
+            )
+        )
         if cached is not None:
             return cached
 
-    sends_samples = bool(getattr(policy, "sends_samples", False))
-    sends_card = bool(getattr(policy, "sends_card", False))
-    notices: list[str] = []
+    states = dict(getattr(policy, "dimension_states", None) or {})
+    recent_gaps = filter_recent_gaps(request.recent_gaps, states)
     card_source: CardSource | None = None
     voice = ""
     if sends_card:
@@ -877,12 +1148,16 @@ def render_style(
             profile_json,
             forbidden_findings=[item for item in layer.get("forbidden_findings") or [] if isinstance(item, Mapping)],
             examples_allowed=samples_allowed,
+            reference_mode=reference_mode,
+            recent_gaps=recent_gaps,
+            protected_terms=example_protected_terms(layer),
         )
-        voice = voice_block(profile_json, request.role)
+        voice = voice_block(profile_json, request.role, dimension_states=states)
     k = request.effective_k(getattr(policy, "sample_windows", 0))
     selection: SceneSelection = EMPTY_SELECTION
     windows: list[SampleWindow] = []
-    if sends_samples and not samples_allowed and blocked_reason:
+    samples_blocked = route.reason if (sends_samples and not samples_allowed and book is not None) else None
+    if samples_blocked:
         notices.append(NOTICE_SAMPLES_BLOCKED)
     if sends_samples and samples_allowed and k > 0:
         selection = resolve_scene_selection(
@@ -933,7 +1208,10 @@ def render_style(
         legacy_profile=isinstance(card_source, LegacyCardSource),
         legacy_digit_lines_dropped=getattr(card_source, "dropped_digit_lines", 0) if card_source else 0,
         card_examples=getattr(card_source, "example_count", 0) if card_source else 0,
-        samples_blocked=blocked_reason if (sends_samples and not samples_allowed) else None,
+        samples_blocked=samples_blocked,
+        reference_mode=reference_mode,
+        route=route.audit(),
+        no_samples_note=bool(blocks.get("no_samples_note")),
     )
     rendered = RenderedStyle(
         system_prefix=system_prefix,
@@ -948,22 +1226,39 @@ def render_style(
         if stored_root is None and book is not None and marker_is_current(book.stats_json):
             stored_root = str(_mapping(_mapping(book.stats_json).get("window_index")).get("root") or "") or None
         if stored_root is not None or not (sends_samples and samples_allowed and k > 0):
-            _cache_put(_cache_key(session, policy, request, root=stored_root, samples_allowed=samples_allowed), rendered)
+            _cache_put(
+                _cache_key(
+                    session,
+                    policy,
+                    request,
+                    root=stored_root,
+                    reference_mode=reference_mode,
+                    route_token=route.cache_token,
+                    selection_anchor=_selection_anchor(stored_root),
+                ),
+                rendered,
+            )
     return rendered
 
 
 __all__ = [
     "CARD_EXAMPLE_MAX_CHARS",
+    "CARD_EXAMPLE_MIN_CHARS",
     "CARD_HEADERS",
     "CLOSING_MANDATES",
     "CardSource",
     "DimensionCardSource",
     "FEW_SHOT_CLOSING_MANDATE_REVISE",
+    "FIT_EXAMPLE_PREFIX",
+    "FIT_GAPS_UNIT",
     "LEGACY_FORBIDDEN_HEADERS",
     "LEGACY_POSITIVE_HEADERS",
     "LegacyCardSource",
     "NOTICE_BOOK_CHANGED",
+    "NOTICE_BOOK_MISSING",
     "NOTICE_SAMPLES_BLOCKED",
+    "NO_SAMPLES_SYSTEM_NOTES",
+    "NO_SAMPLES_TAIL_NOTES",
     "RECENT_GAPS_HEADER",
     "RenderParts",
     "RenderedStyle",
@@ -975,9 +1270,15 @@ __all__ = [
     "VOICE_HEADERS",
     "attach_chapter_position_mandate",
     "build_card_source",
+    "card_example_clause",
     "card_examples",
     "chapter_position_mandate",
     "count_card_lines",
+    "effective_render_mode",
+    "example_protected_terms",
+    "filter_recent_gaps",
+    "habit_dimension",
+    "keep_priority",
     "red_line_block",
     "render_stats",
     "render_style",

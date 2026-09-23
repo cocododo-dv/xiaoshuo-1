@@ -11,14 +11,21 @@ project > global）；规划一章 / 排一张场表时还没有具体的场，�
   "structure_card", "structure_samples", "planning_guidance"}``。样例块单独成键：雪花提示词
   预算可以先卸样例、再卸整张画像（``snowflake_prompt_budget``）。
 
-章首 / 章尾样例是参考原文：只有该书**冻结时**与**现在**都允许送云端（与 few-shot 的
-「当前发送权」口径一致）才渲染；否则只给带数字的画像。
+云策略按**接收这份规划提示的节点**的实际路由判（H1，与起草注入同一个判定
+``policy.decide_reference_route``）：调用方用 ``node_ids=`` 说是哪个节点；不说时按这个函数的全部消费节点
+（:data:`PROJECT_PLANNING_NODE_IDS` / :data:`SCENE_PLANNING_NODE_IDS` / :data:`CHAPTER_TITLE_NODE_IDS`）判，要求
+每一个都满足——
+
+- 「仅本机」的书：这些节点都走本机模型才给参考（含章首 / 章尾原文样例）；有一个走云端就**什么都不给**
+  （返回 ``None``——规划是可选增强，不报错，但由这本书派生的结构画像、场景手法、叙事机制、章题一个字都不送）；
+- 送云策略的书：章首 / 章尾样例与章题样例是参考原文，只有该书**冻结时**与**现在**都允许送云端（严格发送权声明）
+  才渲染；否则只给带数字的画像。
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,7 +50,7 @@ from novel_system.services.style_reference.narrative_guidance import (
     collect_narrative_guidance,
     render_narrative_section,
 )
-from novel_system.services.style_reference.policy import cloud_llm_allowed
+from novel_system.services.style_reference.policy import ReferenceRouteDecision, decide_reference_route
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract, contract_layer
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
@@ -135,17 +142,41 @@ def chapter_titles_for_book(session: Session | None, book_id: str | None) -> dic
     return dict(summary)
 
 
-def _samples_allowed(layer: Mapping[str, Any], session: Session | None) -> bool:
+# 各入口的消费节点（调用方不说是哪个节点时按全部消费节点判，每一个都要满足）
+# resolve_project_style_reference：雪花 09 / 10 场景表（snowflake_step_generate）、分章起章名（snowflake_chapter_plan）、
+# 章规划的四个节点（chapter_planning_context 的 style_reference 槽）
+PROJECT_PLANNING_NODE_IDS: tuple[str, ...] = (
+    "snowflake_step_generate",
+    "snowflake_chapter_plan",
+    "chapter_story_architecture",
+    "chapter_scene_plan_candidates",
+    "chapter_scene_plan_fill",
+    "chapter_plan_review",
+)
+# build_planning_style_reference：场景蓝图的来源快照、准定稿规划（章架构 / 人物压力）的来源快照
+SCENE_PLANNING_NODE_IDS: tuple[str, ...] = (
+    "scene_blueprint",
+    "chapter_story_architecture",
+    "character_pressure_blueprint",
+)
+# reference_titles_payload：「AI 起章名」
+CHAPTER_TITLE_NODE_IDS: tuple[str, ...] = ("snowflake_chapter_plan",)
+
+
+def _route_decision(
+    layer: Mapping[str, Any],
+    session: Session | None,
+    node_ids: Sequence[str],
+) -> ReferenceRouteDecision:
+    """这一层参考能不能进这些节点的提示（H1）。没有会话（纯函数调用）→ 只按冻结的书快照判。"""
     book = layer.get("book") if isinstance(layer.get("book"), Mapping) else {}
-    if book.get("cloud_llm_allowed_at_freeze") is False:
-        return False
     if session is None:
-        return True
+        return decide_reference_route(
+            None, node_ids=node_ids, frozen_book=book, book_missing=False, operation="style_reference_planning"
+        )
     book_id = str(book.get("book_id") or "")
-    if not book_id:
-        return False
-    row = StyleReferenceRepository(session).get_book(book_id)
-    return row is not None and cloud_llm_allowed(row)
+    row = StyleReferenceRepository(session).get_book(book_id) if book_id else None
+    return decide_reference_route(row, node_ids=node_ids, frozen_book=book, operation="style_reference_planning")
 
 
 CARD_PLANNING_PREFIXES = ("scene.", "theme.")
@@ -209,13 +240,22 @@ def render_planning_reference(
     contract: Mapping[str, Any] | None,
     *,
     session: Session | None = None,
+    node_ids: Sequence[str] | None = None,
 ) -> dict[str, Any] | None:
-    """从冻结契约最具体的一层渲染规划层参考块；没有可渲染内容 → ``None``。"""
+    """从冻结契约最具体的一层渲染规划层参考块；没有可渲染内容 → ``None``。
+
+    ``node_ids``：接收规划提示的节点（缺省 :data:`PROJECT_PLANNING_NODE_IDS`，全部要满足）。这本书的云策略不许
+    送给它们（「仅本机」遇云端节点……）→ ``None``，由这本书派生的东西一个字都不给（H1）。"""
     if not isinstance(contract, Mapping):
         return None
     layer = contract_layer(contract)
     if not layer:
         return None
+    route = _route_decision(layer, session, tuple(node_ids) if node_ids else PROJECT_PLANNING_NODE_IDS)
+    if not route.send_book:
+        logger.debug("planning style reference withheld (%s): %s", route.reason, route.audit())
+        return None
+    samples_allowed = route.send_samples
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
     card = profile_json.get("structure_card") if isinstance(profile_json.get("structure_card"), Mapping) else None
@@ -226,7 +266,7 @@ def render_planning_reference(
         chapter_titles = chapter_titles_for_book(session, str(book.get("book_id") or "") or None)
     structure_card, structure_samples = render_structure_card_parts(
         profile_json,
-        include_samples=_samples_allowed(layer, session),
+        include_samples=samples_allowed,
         chapter_titles=chapter_titles if isinstance(chapter_titles, Mapping) else None,
     )
     binding = layer.get("binding") if isinstance(layer.get("binding"), Mapping) else {}
@@ -250,14 +290,22 @@ def render_planning_reference(
         # 原始画像与章题画像:分章面板起章名、规划期推场长用;提示词载荷只挑上面三块
         "card": dict(card) if card is not None else None,
         "chapter_titles": dict(chapter_titles) if isinstance(chapter_titles, Mapping) else None,
-        "samples_allowed": _samples_allowed(layer, session),
+        "samples_allowed": samples_allowed,
     }
 
 
-def reference_titles_payload(session: Session, project_id: str | None) -> dict[str, Any] | None:
+def reference_titles_payload(
+    session: Session,
+    project_id: str | None,
+    *,
+    node_ids: Sequence[str] | None = None,
+) -> dict[str, Any] | None:
     """AI 起章名的参考载荷:参考作家的章题形态与题名样例(project + global 绑定);无绑定 / 无章题 /
-    书不许送云端 → ``None``。样例是原文题名,与章首 / 章尾样例同一送云端口径。"""
-    reference = resolve_project_style_reference(session, project_id)
+    这本书不许送给起章名的节点(缺省 :data:`CHAPTER_TITLE_NODE_IDS`) → ``None``。样例是原文题名,与章首 /
+    章尾样例同一送云端口径。"""
+    reference = resolve_project_style_reference(
+        session, project_id, node_ids=tuple(node_ids) if node_ids else CHAPTER_TITLE_NODE_IDS
+    )
     if not reference:
         return None
     titles = reference.get("chapter_titles")
@@ -296,9 +344,11 @@ def resolve_project_style_reference(
     project_id: str | None,
     *,
     task_type: str = PLANNING_REFERENCE_TASK_TYPE,
+    node_ids: Sequence[str] | None = None,
 ) -> dict[str, Any] | None:
     """按 project + global 作用域解析 active 绑定、冻结契约、渲染规划层参考块。
 
+    ``node_ids``：接收这份规划提示的节点（缺省 :data:`PROJECT_PLANNING_NODE_IDS`，每一个都要满足书的云策略）。
     任何异常都吞掉并返回 ``None``：这是规划节点的可选增强，缺参考不能让规划失败。
     """
     if not project_id:
@@ -310,7 +360,7 @@ def resolve_project_style_reference(
         contract = build_style_runtime_contract(StyleReferenceRepository(session), layers, task_type=task_type)
         if not contract:
             return None
-        return render_planning_reference(contract, session=session)
+        return render_planning_reference(contract, session=session, node_ids=node_ids)
     except Exception:  # noqa: BLE001 — 可选增强：解析失败只记日志
         logger.debug(
             "project style reference unavailable for project %s", project_id, exc_info=True
@@ -331,6 +381,7 @@ def build_planning_style_reference(
     contract: Mapping[str, Any] | None,
     *,
     session: Session | None = None,
+    node_ids: Sequence[str] | None = None,
 ) -> PlanningStyleReference | None:
     """从（按场景作用域解析出的）契约生成规划层三块摘要。
 
@@ -338,12 +389,17 @@ def build_planning_style_reference(
     样例）、场景手法。无绑定 / 旧画像无键 → ``None``：调用方连契约哈希也不登记（与旧画像行为
     一致）。``refs`` 里 ``style_narrative_guidance_line_count`` 只要有任一块就记（可为 0），
     ``style_structure_card_chars`` / ``style_planning_guidance_line_count`` 只在对应块存在时记。
+    ``node_ids``：接收规划提示的节点（缺省 :data:`SCENE_PLANNING_NODE_IDS`）；这本书不许送给它们 → ``None``（H1）。
     """
     if not isinstance(contract, Mapping):
         return None
+    layer = contract_layer(contract)
+    nodes = tuple(node_ids) if node_ids else SCENE_PLANNING_NODE_IDS
+    if layer and not _route_decision(layer, session, nodes).send_book:
+        return None
     contract_hash = str(contract.get("contract_hash") or "")
     lines = collect_narrative_guidance(contract)
-    reference = render_planning_reference(contract, session=session)
+    reference = render_planning_reference(contract, session=session, node_ids=nodes)
     digests: dict[str, str] = {}
     if lines:
         digests[NARRATIVE_GUIDANCE_SECTION_KEY] = render_narrative_section(lines)
@@ -422,9 +478,12 @@ def style_reference_prompt_blocks(source: Mapping[str, Any] | None) -> list[str]
 __all__ = [
     "CARD_PLANNING_HEADER",
     "CARD_PLANNING_PREFIXES",
+    "CHAPTER_TITLE_NODE_IDS",
     "PLANNING_GUIDANCE_PROMPT_HEADING",
     "PLANNING_REFERENCE_TASK_TYPE",
+    "PROJECT_PLANNING_NODE_IDS",
     "PlanningStyleReference",
+    "SCENE_PLANNING_NODE_IDS",
     "REFERENCE_TITLES_HOW_TO_USE",
     "STRUCTURE_CARD_PROMPT_HEADING",
     "STRUCTURE_REFERENCE_HOW_TO_USE",

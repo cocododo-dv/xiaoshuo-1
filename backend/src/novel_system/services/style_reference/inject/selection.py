@@ -14,6 +14,10 @@
   契约哈希 | scene_id | :data:`SELECTION_VERSION`)），同一 bundle 里这一场以后的每道工序都读这一行——首稿、
   改稿、评审、补丁看到同一组窗（评审取前 4 窗、规划前 3 窗，改稿至多把 2 窗换成示范要改那几维手法的窗）；
   索引的段落根哈希变了（书被改过）才按当前索引重选并覆盖这一行；
+- **没有 bundle 的节点跟着这一场的当前 bundle 走**（M4）：对照检查的评审、写作台的深评 / 局部深评 / 局部补丁 /
+  建议都不带 bundle。这一场的 ``SceneRunState.current_bundle_id`` 已经冻结过选窗、且那一行的契约哈希就是现在
+  这份策略的契约哈希时，直接用那一组窗（不另写一行 "live"）；否则才按 "live" 选窗、冻结。「每场冻结一次」
+  因此是真的每场，不是每个 bundle；
 - 选窗结果按**选窗顺序**存（位置 → 场面 → 手法 → 质地 → 典型），渲染时按原书顺序呈现。
 """
 
@@ -34,6 +38,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
+    SceneRunState,
     StyleReferenceBook,
     StyleReferenceSceneWindows,
     StyleReferenceWindow,
@@ -621,10 +626,11 @@ def compute_selection(
     return [WindowRef.from_index(window, slot) for window, slot in chosen]
 
 
-def selection_key(policy: Any, request: StyleRenderRequest) -> str:
+def selection_key(policy: Any, request: StyleRenderRequest, *, bundle_id: str | None = None) -> str:
+    """冻结行的键：(bundle_id 或 "live", 契约哈希, scene_id, 版本)。``bundle_id`` 缺省取请求里的。"""
     material = "|".join(
         (
-            str(request.bundle_id or "live"),
+            str(bundle_id or request.bundle_id or "live"),
             str(getattr(policy, "contract_hash", "") or ""),
             str(request.scene_id or ""),
             SELECTION_VERSION,
@@ -679,27 +685,32 @@ def _store(
     params: Mapping[str, Any],
     existing: StyleReferenceSceneWindows | None,
 ) -> tuple[str | None, tuple[WindowRef, ...], bool]:
-    """(selection_id, 生效的 refs, 是否复用了别人刚写的行)。并发写同一键时读回先写成功的那一行。"""
+    """(selection_id, 生效的 refs, 是否复用了别人刚写的行)。并发写同一键时读回先写成功的那一行。
+
+    新建与覆盖（书改过、重选）都在保存点里写（L4）：写失败只回滚保存点，调用方的事务照常可用——原来覆盖分支
+    在保存点外 flush、失败又被宽泛的 except 吞掉，下一次提交就是 ``PendingRollbackError``。调用方事务里别的未
+    flush 的改动先照常 flush（它们的错误不是这里的错，原样抛出）。"""
     payload = [ref.to_dict() for ref in refs]
+    session.flush()
     try:
-        if existing is not None:
-            existing.window_refs_json = payload
-            existing.params_json = dict(params)
-            existing.contract_hash = getattr(policy, "contract_hash", None)
-            session.flush()
-            return existing.selection_id, tuple(refs), False
-        row = StyleReferenceSceneWindows(
-            selection_id=f"srsel_{key[:24]}",
-            selection_key=key,
-            scene_id=request.scene_id,
-            bundle_id=request.bundle_id,
-            contract_hash=getattr(policy, "contract_hash", None),
-            window_refs_json=payload,
-            params_json=dict(params),
-            created_at=utcnow(),
-        )
         with session.begin_nested():
-            session.add(row)
+            if existing is not None:
+                existing.window_refs_json = payload
+                existing.params_json = dict(params)
+                existing.contract_hash = getattr(policy, "contract_hash", None)
+                row = existing
+            else:
+                row = StyleReferenceSceneWindows(
+                    selection_id=f"srsel_{key[:24]}",
+                    selection_key=key,
+                    scene_id=request.scene_id,
+                    bundle_id=request.bundle_id,
+                    contract_hash=getattr(policy, "contract_hash", None),
+                    window_refs_json=payload,
+                    params_json=dict(params),
+                    created_at=utcnow(),
+                )
+                session.add(row)
         return row.selection_id, tuple(refs), False
     except IntegrityError:
         winner = session.scalar(
@@ -708,9 +719,39 @@ def _store(
         if winner is not None:
             return winner.selection_id, _refs_from_row(winner) or tuple(refs), True
         return None, tuple(refs), False
-    except Exception:  # noqa: BLE001 — 冻结失败不阻断渲染（这一次按算出的窗走，下次确定性地再算出同一组）
+    except Exception:  # noqa: BLE001 — 冻结失败不阻断渲染（这一次按算出的窗走，下次确定性地再算出同一组）；保存点已回滚
         logger.warning("scene window selection could not be persisted", exc_info=True)
         return None, tuple(refs), False
+
+
+def current_bundle_selection(
+    session: Session,
+    policy: Any,
+    request: StyleRenderRequest,
+    *,
+    root: str | None,
+) -> tuple[StyleReferenceSceneWindows, tuple[WindowRef, ...]] | None:
+    """这一场当前 bundle（``SceneRunState.current_bundle_id``）冻结的选窗——只在那一行的契约哈希就是这份策略的
+    契约哈希、选窗时的索引根哈希就是现在的根哈希时才算数；否则 ``None``（调用方按 "live" 自己选窗）。只读。"""
+    contract_hash = str(getattr(policy, "contract_hash", "") or "")
+    if not contract_hash or not request.scene_id:
+        return None
+    try:
+        state = session.get(SceneRunState, str(request.scene_id))
+    except Exception:  # noqa: BLE001 — 读不到运行状态：按 live 选窗
+        logger.debug("scene run state unavailable for %s", request.scene_id, exc_info=True)
+        return None
+    bundle_id = str(getattr(state, "current_bundle_id", "") or "") if state is not None else ""
+    if not bundle_id:
+        return None
+    key = selection_key(policy, request, bundle_id=bundle_id)
+    row = session.scalar(select(StyleReferenceSceneWindows).where(StyleReferenceSceneWindows.selection_key == key))
+    if row is None or str(row.scene_id or "") != str(request.scene_id) or str(row.contract_hash or "") != contract_hash:
+        return None
+    refs = _refs_from_row(row)
+    if not refs or dict(row.params_json or {}).get("root") != root:
+        return None
+    return row, refs
 
 
 def resolve_scene_selection(
@@ -726,7 +767,8 @@ def resolve_scene_selection(
     """这一场的冻结选窗（按选窗顺序，k = 绑定的样例窗数）；有冻结行就读它，没有就算出来并冻结。
 
     ``persist=False``（预览）：只算不写。没有 ``scene_id`` 的调用（章级 / 项目级的写作台节点）不冻结——
-    种子取契约哈希，同一契约每次算出同一组窗。
+    种子取契约哈希，同一契约每次算出同一组窗。没有 bundle 的调用先看这一场当前 bundle 冻结的选窗（M4，
+    :func:`current_bundle_selection`）。
     """
     book_id = str(getattr(policy, "book_id", "") or "")
     k = int(getattr(policy, "sample_windows", 0) or 0)
@@ -735,6 +777,23 @@ def resolve_scene_selection(
     windows, root, notices = load_index(session, book_id, build=build_index, commit=commit_index)
     if not windows:
         return SceneSelection(book_id=book_id, root=root, notices=notices)
+    if request.bundle_id is None and request.scene_id:
+        shared = current_bundle_selection(session, policy, request, root=root)
+        if shared is not None:
+            row, refs = shared
+            return SceneSelection(
+                refs=refs,
+                selection_id=row.selection_id,
+                selection_key=row.selection_key,
+                persisted=True,
+                reused=True,
+                book_id=book_id,
+                root=root,
+                window_count=len(windows),
+                params=dict(row.params_json or {}),
+                notices=notices,
+                index=tuple(windows),
+            )
     key = selection_key(policy, request) if request.scene_id else None
     existing: StyleReferenceSceneWindows | None = None
     if key is not None and persist:
@@ -881,6 +940,7 @@ __all__ = [
     "WindowRef",
     "card_devices",
     "compute_selection",
+    "current_bundle_selection",
     "derive_situation_tags",
     "load_index",
     "position_matches",

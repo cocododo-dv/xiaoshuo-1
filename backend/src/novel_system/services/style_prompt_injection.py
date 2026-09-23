@@ -18,6 +18,12 @@ import 会形成依赖环（架构守卫 ``tests/test_service_architecture.py``�
 4. 返回的 prompt 字典与以前同形：``system_prompt`` 前缀、``STYLE_USER_TAIL_KEY`` 尾块、
    ``_style_reference_runtime_audit`` 审计。
 
+**云策略按接收提示的节点判（H1）**：调用方可以用 ``node_id=`` 说这份提示在哪个节点下派发；不说就按
+``prompt["template_name"]`` 推（``inject.routing``：``style_first_draft`` / ``style_targeted_revision`` → ``style_draft``，
+``style_draft`` 模板 → ``style_draft`` + ``style_patch`` 两个候选……）。「仅本机」的书遇云端节点（或说不出节点）
+时渲染抛 409 ``STYLE_REFERENCE_CLOUD_POLICY_BLOCKED``——**这个错误原样抛给调用方**，不走「渲染失败 → 基础
+prompt + degraded 审计」那条路：降级等于换一份提示照样调用同一个云端节点。
+
 ``context_text``（被润色的稿子）不再影响任何东西——选窗只看本场设计（J2 / J4），参数保留只为调用面不变。
 """
 
@@ -61,12 +67,14 @@ from novel_system.services.style_reference.inject.request import (
     infer_role,
 )
 from novel_system.services.style_reference.tags import normalize_situation_tags
+from novel_system.services.style_reference.inject.routing import prompt_node_ids
 from novel_system.services.style_reference.inject.selection import (
     derive_situation_tags,
     scene_chapter_position,
     scene_dialogue_heavy,
     scene_rendering_mode,
 )
+from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 from novel_system.services.style_reference.runtime_contract import (
     style_runtime_contract_status_from_bundle,
     validate_style_runtime_contract,
@@ -218,8 +226,11 @@ def style_render_request_for_scene(
     situation_tags: Sequence[str] | None = None,
     recent_gaps: Sequence[str] | None = None,
     revise_dimensions: Sequence[str] | None = None,
+    node_ids: Sequence[str] | str | None = None,
 ) -> StyleRenderRequest:
-    """场景（或作用域对象）→ 渲染请求：章内位置、场面标签、对白 / 概述倾向从场景设计推；首稿默认带近期偏差。"""
+    """场景（或作用域对象）→ 渲染请求：章内位置、场面标签、对白 / 概述倾向从场景设计推；首稿默认带近期偏差。
+
+    ``node_ids``：接收这份提示的模型节点（云策略按它们的实际路由判，H1）；不给 = 说不出，「仅本机」的书不送。"""
     if recent_gaps is None:
         recent_gaps = (
             recent_gaps_for_project(
@@ -230,6 +241,8 @@ def style_render_request_for_scene(
             if role == ROLE_DRAFT
             else ()
         )
+    if isinstance(node_ids, str):
+        node_ids = (node_ids,)
     return StyleRenderRequest(
         role=role,
         placement=placement,
@@ -242,6 +255,7 @@ def style_render_request_for_scene(
         rendering_mode=scene_rendering_mode(scene),
         revise_dimensions=tuple(revise_dimensions or ()),
         recent_gaps=tuple(recent_gaps or ()),
+        node_ids=tuple(node_ids or ()),
     )
 
 
@@ -306,6 +320,7 @@ def inject_style_reference_prefix(
     situation_tags: Sequence[str] | None = None,
     recent_gaps: Sequence[str] | None = None,
     revise_dimensions: Sequence[str] | None = None,
+    node_id: str | Sequence[str] | None = None,
 ) -> dict[str, Any] | None:
     """把风格参考渲染进提示：``system_prompt`` 前缀 + （起草 / 改稿）user 尾块 + 审计。
 
@@ -314,8 +329,12 @@ def inject_style_reference_prefix(
     ``token_budget.target_input_tokens`` 都在时贪心压预算（整窗 / 整句，红线不截）。
 
     v3 新参数（都可不传）：``role``（draft / revise / review / plan）、``situation_tags``（蓝图给的场面标签，
-    缺省从场景设计推）、``recent_gaps``（缺省：起草角色读作品最近的读数）、``revise_dimensions``（改稿要改的维）。
+    缺省从场景设计推）、``recent_gaps``（缺省：起草角色读作品最近的读数）、``revise_dimensions``（改稿要改的维）、
+    ``node_id``（这份提示在哪个节点下派发，一个或几个；缺省按 ``prompt["template_name"]`` 推）。
     ``context_text`` 保留签名但不再使用。
+
+    云策略不许把参考送给这个节点（「仅本机」的书遇云端 / 说不出的节点，未知策略的书遇云端节点）→ **原样抛出**
+    409 ``STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`` / ``…_INVALID``，不降级（H1）。
     """
     del context_text  # 选窗与渲染都不看草稿（J2 / J4）
     if prompt is None or scene is None:
@@ -347,6 +366,7 @@ def inject_style_reference_prefix(
             situation_tags=situation_tags,
             recent_gaps=recent_gaps,
             revise_dimensions=revise_dimensions,
+            node_ids=prompt_node_ids(prompt, node_id),
         )
         rendered = render_style(session, policy, request, scene=scene)
         budget_fit: dict[str, Any] | None = None
@@ -359,6 +379,9 @@ def inject_style_reference_prefix(
                 user_prompt=final_user_prompt,
                 target_input_tokens=int(target_input_tokens),
             )
+    except STYLE_REFERENCE_FAIL_CLOSED_ERRORS:
+        # H1：云策略不许把这本书派生的任何东西送给这个节点——整次调用失败（409），不降级成没有参考的提示
+        raise
     except Exception as exc:  # noqa: BLE001 — 风格参考是增强：渲染失败回退基础 prompt 并记审计
         _LOGGER.warning(
             "style_reference injection skipped for scene %s task %s: %s",

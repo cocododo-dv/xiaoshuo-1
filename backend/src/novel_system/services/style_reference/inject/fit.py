@@ -3,10 +3,13 @@
 旧实现在「正向 × 禁忌 × 声音」三层组合上暴力搜索（小上下文配置下一次 6.3 秒）。现在一条固定次序、每步只去一整
 个单元，够了就停：
 
-1. 样例窗整窗去掉，从选窗顺序的末尾（典型度补位的窗）开始，至少留一窗；
-2. 文风卡按辨识度从低到高逐句去掉（必须 / 钉住的句最后去，近期偏差次之，气质最后）；
+1. 样例窗整窗去掉，按保留次序从后往前（典型度补位的窗先去；改稿换进来示范要改那几维的窗最后去，L3），至少留一窗；
+2. 文风卡按 ``DimensionCardSource.drop_order`` 逐个单元去：保底之外的「作者不这么写」、每维多出来的句与它们的
+   例子 → 例子 → 每维的第一句（到这里整维才消失）→ 近期偏差 → 保底的「作者不这么写」；钉住 / 标「必须」的句
+   与气质不单独去（M2）；
 3. 去掉声音块；
-4. 一窗 + 空卡仍装不下：换一条路——不要样例窗，整张卡与声音放回来，再按 2、3 的次序去；
+4. 一窗 + 空卡仍装不下：换一条路——不要样例窗，整张卡与声音放回来，再按 2、3 的次序去（样例位置写明「本次
+   没有附原文样例」，M5）；
 5. 仍装不下 → 整份风格参考都不发（审计 ``style_payload_omitted``）。
 
 红线从不截断：只要还有任一块参考，红线原样随注。估算用各块 token 之和（``estimate_tokens`` 可加，拼接处
@@ -76,11 +79,12 @@ def fit_rendered(
     # ---- 各块的 token 估算（可加近似）----
     window_cost = {w.priority: estimate_tokens(w.line) + 1 for w in parts.windows}
     fixed = (
-        estimate_tokens(parts.samples_header)
-        + estimate_tokens(parts.red_line)
-        + estimate_tokens(parts.closing)
+        estimate_tokens(parts.red_line)
         + 24  # [STYLE_REFERENCE] 包装、指路句的差额、各块之间的换行
     )
+    # 有样例时：样例标题 + 收口；一窗都不剩时：样例位置那句「本次没有附原文样例」（M5）
+    samples_frame_cost = estimate_tokens(parts.samples_header) + estimate_tokens(parts.closing)
+    no_samples_note_cost = estimate_tokens(parts.no_samples_note())
     voice_cost = estimate_tokens(parts.voice)
     card_cache: dict[frozenset[str], int] = {}
 
@@ -103,7 +107,7 @@ def fit_rendered(
         return (
             base_tokens
             + fixed
-            + sum(window_cost[p] for p in keep)
+            + (samples_frame_cost + sum(window_cost[p] for p in keep) if keep else no_samples_note_cost)
             + _card_cost(excluded, include_card)
             + (voice_cost if include_voice else 0)
             + slack
@@ -190,6 +194,7 @@ def fit_rendered(
             "few_shot_window_refs": [dict(item) for item in refs],
             "blocks": {name: block_digest(str(blocks.get(name) or "")) for name in ("samples", "card", "voice", "red_line")},
             "budget_fit": audit_payload,
+            "no_samples_note": bool(blocks.get("no_samples_note")),
         }
     )
     fitted = replace(

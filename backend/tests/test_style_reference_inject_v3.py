@@ -335,10 +335,14 @@ def test_reference_modes_render_what_they_say(session) -> None:
 
     card_policy, _ = _policy(session, "modes_card", config={"reference_mode": "card_only"})
     card = render_style(session, card_policy, StyleRenderRequest(placement=PLACEMENT_USER_TAIL, scene_id="SC_M"))
-    assert card.user_tail == "" and card.stats["few_shot_windows"] == 0
+    # 不送窗口；样例原本的位置写明这一次没有原文样例（M5），收口仍是「篇幅 / 只返回 JSON」
+    assert card.stats["few_shot_windows"] == 0 and "\n- (第" not in card.user_tail
+    assert card.user_tail.lstrip().startswith("（本次没有附参考作者的原文样例") and "[风格样例]" not in card.user_tail
+    assert card.user_tail.rstrip().endswith(FEW_SHOT_CLOSING_MANDATE_FINAL)
     assert "[文风卡]" in card.system_prefix and "（例：「" in card.system_prefix
+    # 卡句的例子至多 11 个字（M3）：证据引文里最长的一个短分句
     example = card.system_prefix.split("（例：「", 1)[1].split("」）", 1)[0]
-    assert len(example) <= 60
+    assert example == "屋里的影子便大了一圈" and len(example) <= 11
 
     seg_policy, _ = _policy(session, "modes_seg", cloud_policy="segments_only")
     assert seg_policy.reference_mode == "card_only"
@@ -445,7 +449,9 @@ def test_red_line_carries_protected_terms_and_is_never_truncated(session) -> Non
     assert 1 <= fitted.stats["few_shot_windows"] < 12 and fitted.stats["positive_lines"] == rendered.stats["positive_lines"]
     # 一窗都放不下：不要样例窗，卡、声音、红线放回来
     no_windows, nw_audit = fit_rendered(rendered, base_system_prompt=base, user_prompt="用", target_input_tokens=base_tokens + abstract)
-    assert no_windows.stats["few_shot_windows"] == 0 and no_windows.user_tail == ""
+    assert no_windows.stats["few_shot_windows"] == 0 and "\n- (第" not in no_windows.user_tail
+    # 拟合去光了窗：样例位置写明这一次没有原文样例（M5）
+    assert "本次没有附参考作者的原文样例" in no_windows.user_tail and no_windows.audit["no_samples_note"] is True
     assert no_windows.system_prefix.endswith(red_line) and "[文风卡]" in no_windows.system_prefix
     assert nw_audit["policy"].endswith("no_windows_v3") or nw_audit["policy"] == "drop_sample_windows_v3"
     # 连红线都放不下：整份参考都不发（红线从不被截半）

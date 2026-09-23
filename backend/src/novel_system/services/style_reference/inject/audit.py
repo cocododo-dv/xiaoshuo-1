@@ -43,6 +43,9 @@ def build_audit(
     legacy_digit_lines_dropped: int = 0,
     card_examples: int = 0,
     samples_blocked: str | None = None,
+    reference_mode: str | None = None,
+    route: Mapping[str, Any] | None = None,
+    no_samples_note: bool = False,
 ) -> dict[str, Any]:
     rendered = system_prefix + user_tail
     layer = _layer(getattr(policy, "contract", None))
@@ -54,7 +57,12 @@ def build_audit(
         "outcome": "hit" if rendered else "miss",
         "role": getattr(request, "role", None),
         "placement": getattr(request, "placement", None),
-        "reference_mode": getattr(policy, "reference_mode", None),
+        # 这一次实际的参考方式（绑定的参考方式按书冻结时 / 现在的云策略压过之后）
+        "reference_mode": reference_mode if reference_mode is not None else getattr(policy, "reference_mode", None),
+        # 云策略按接收提示的节点判（节点、路由是否本机、送不送书 / 原文、原因；不含正文）
+        "route": dict(route or {}),
+        # 一窗样例都没带时，样例位置写了「本次没有附原文样例」（M5）
+        "no_samples_note": bool(no_samples_note),
         # 旧字段：绑定行上的旧策略值（v3 语义看 reference_mode）
         "strategy": str(binding.get("strategy") or "mixed"),
         "contract_hash": getattr(policy, "contract_hash", None),

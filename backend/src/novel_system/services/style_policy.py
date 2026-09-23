@@ -4,7 +4,9 @@
 style_first / 正在建的契约 / 实时重解析的契约 / 任一活动绑定 / 任一冻结契约），节点之间已经互相矛盾。
 v3 起所有节点只看 :class:`StylePolicy`：
 
-- :func:`style_policy_for_bundle`：场景管线（bundle 里冻结的契约），按契约哈希记忆，同一 bundle 只校验一次；
+- :func:`style_policy_for_bundle`：场景管线（bundle 里冻结的契约），按**契约载荷的内容指纹**（+ 冻结状态）记忆，
+  同一 bundle 只校验一次——不按载荷自报的 ``contract_hash`` 记（L2：改过内容、留着原哈希的载荷不能拿回校验过的
+  那份策略）；
 - :func:`style_policy_live`：写作台等没有 bundle 的节点（按当前活动绑定现解析，并记下契约哈希）。
 
 ``bound``：有一份可用的风格契约（冻结或现解析）且画像可用——渲染参考、抄袭门、读数都以它为准。
@@ -14,7 +16,6 @@ v3 起所有节点只看 :class:`StylePolicy`：
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from collections import OrderedDict
@@ -35,7 +36,10 @@ from novel_system.services.style_reference.binding_config import (
 )
 from novel_system.services.style_reference.runtime_contract import (
     contract_layer,
+    contract_payload_fingerprint,
+    inline_contract_payload,
     resolve_style_runtime_contract_state,
+    style_runtime_contract_status_from_bundle,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,31 +136,15 @@ def policy_from_contract(contract: Mapping[str, Any], *, mode: str) -> StylePoli
     )
 
 
-def _peek_contract_hash(bundle_or_snapshot: Mapping[str, Any] | None, task_type: str) -> str | None:
-    """不校验地读出 bundle 里契约自带的哈希，只用作记忆键（第一次仍完整校验）。"""
-    if not isinstance(bundle_or_snapshot, Mapping):
+def _policy_cache_key(bundle_or_snapshot: Mapping[str, Any] | None, task_type: str) -> str | None:
+    """记忆键：冻结状态标记 + 契约**原样载荷**的内容指纹（不校验、不信任载荷自报的 ``contract_hash``）。
+
+    状态也进键：同一份契约挂在「absent」标记下是冲突（degraded），不能拿回挂在「frozen」下校验过的策略。"""
+    fingerprint = contract_payload_fingerprint(inline_contract_payload(bundle_or_snapshot, task_type=task_type))
+    if fingerprint is None:
         return None
-    snapshot = bundle_or_snapshot.get("snapshot")
-    if not isinstance(snapshot, Mapping):
-        snapshot = bundle_or_snapshot
-    inline = snapshot.get("inline_digests")
-    if not isinstance(inline, Mapping):
-        return None
-    key = (
-        "_style_reference_runtime_contract"
-        if task_type == "scene_generation"
-        else f"_style_reference_runtime_contract_{task_type}"
-    )
-    raw = inline.get(key)
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except ValueError:
-            return None
-    if isinstance(raw, Mapping):
-        value = str(raw.get("contract_hash") or "")
-        return value or None
-    return None
+    status = style_runtime_contract_status_from_bundle(bundle_or_snapshot, task_type=task_type) or ""
+    return f"{task_type}:{status}:{fingerprint}"
 
 
 def style_policy_for_bundle(
@@ -164,9 +152,8 @@ def style_policy_for_bundle(
     *,
     task_type: str = "scene_generation",
 ) -> StylePolicy:
-    """场景管线的风格策略（冻结契约为准；同一契约只校验一次）。"""
-    peeked = _peek_contract_hash(bundle_or_snapshot, task_type)
-    cache_key = f"{task_type}:{peeked}" if peeked else None
+    """场景管线的风格策略（冻结契约为准；同一份契约载荷只校验一次）。"""
+    cache_key = _policy_cache_key(bundle_or_snapshot, task_type)
     if cache_key:
         with _CACHE_LOCK:
             cached = _CACHE.get(cache_key)

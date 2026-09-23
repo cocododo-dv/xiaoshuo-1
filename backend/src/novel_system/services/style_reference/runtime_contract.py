@@ -16,6 +16,9 @@ book into every bundle.
 - **书快照**：``book_id`` / ``text_checksum`` / ``cloud_policy`` / ``cloud_llm_allowed_at_freeze`` /
   ``paragraph_root_sha256`` / ``paragraph_count`` / ``window_index_version``；根哈希读 ``stats_json`` 里存好的值
   （``paragraph_root.ensure_paragraph_root``，缺失才用两列快速路径现算并写回），不再每次加载全部 ORM 段落（J1）。
+  ``cloud_llm_allowed_at_freeze`` 是与节点路由无关的策略口径（``policy.book_allows_cloud``：非本地策略 + 严格
+  发送权声明；「仅本机」恒 False）——冻结时看全局运行时模型说明不了哪个节点会收到提示，能不能送由每一次渲染按
+  接收提示的节点路由判（``policy.decide_reference_route``，H1）。
 - **绑定快照**存规范化后的 v3 配置（``binding_config.normalize_binding_config``：参考方式 / 样例窗数 / 维度状态 /
   起草方式）；顶层 ``draft_mode`` 不变。
 - v1 契约（旧 bundle 里冻结的）照旧能校验、能用（``style_policy.policy_from_contract`` 读最后一层）。
@@ -41,7 +44,7 @@ from novel_system.services.style_reference.binding_config import normalize_bindi
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.inject.bindings import most_specific_binding
 from novel_system.services.style_reference.paragraph_root import ensure_paragraph_root
-from novel_system.services.style_reference.policy import cloud_llm_allowed
+from novel_system.services.style_reference.policy import book_allows_cloud
 from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION
 
 logger = logging.getLogger(__name__)
@@ -308,7 +311,8 @@ def build_style_runtime_contract(
         "book_id": str(profile.book_id),
         "text_checksum": str(getattr(book, "text_checksum", "") or ""),
         "cloud_policy": str(getattr(book, "cloud_policy", "") or ""),
-        "cloud_llm_allowed_at_freeze": bool(book is not None and cloud_llm_allowed(book)),
+        # 策略口径（与节点路由无关）；按节点的判定在渲染时做（H1）
+        "cloud_llm_allowed_at_freeze": book_allows_cloud(book),
         # 渲染按这个版本的窗口索引选窗（常量——不看索引此刻建没建，契约哈希不随缓存状态变）
         "window_index_version": WINDOW_INDEX_VERSION,
     }
@@ -659,11 +663,12 @@ def _validate_v1(payload: Mapping[str, Any]) -> dict[str, Any]:
     return contract
 
 
-def style_runtime_contract_from_bundle(
+def inline_contract_payload(
     bundle_or_snapshot: Mapping[str, Any] | None,
     *,
     task_type: str = "scene_generation",
-) -> dict[str, Any] | None:
+) -> Any:
+    """bundle（或快照）里冻结的契约原样载荷（JSON 字符串或字典，未校验）；没有 → ``None``。"""
     if not isinstance(bundle_or_snapshot, Mapping):
         return None
     snapshot = bundle_or_snapshot.get("snapshot")
@@ -677,7 +682,27 @@ def style_runtime_contract_from_bundle(
         if task_type == "scene_generation"
         else f"_style_reference_runtime_contract_{task_type}"
     )
-    raw = inline.get(key)
+    return inline.get(key)
+
+
+def contract_payload_fingerprint(raw: Any) -> str | None:
+    """契约原样载荷的内容指纹（字符串按字符串本身、字典按规范 JSON）；算不出 → ``None``。
+
+    记忆键一律用它，不用载荷里**自报**的 ``contract_hash``：改过内容、却留着原哈希的载荷指纹不同，不会命中
+    校验过的那一份（L2）。"""
+    if isinstance(raw, str):
+        return "s:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    if isinstance(raw, Mapping):
+        return _fingerprint(raw)
+    return None
+
+
+def style_runtime_contract_from_bundle(
+    bundle_or_snapshot: Mapping[str, Any] | None,
+    *,
+    task_type: str = "scene_generation",
+) -> dict[str, Any] | None:
+    raw = inline_contract_payload(bundle_or_snapshot, task_type=task_type)
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -986,6 +1011,8 @@ __all__ = [
     "V3_PROFILE_JSON_KEYS",
     "compute_paragraph_root",
     "contract_layer",
+    "contract_payload_fingerprint",
+    "inline_contract_payload",
     "frozen_profile_json",
     "legacy_forbidden_findings",
     "reset_contract_memo",

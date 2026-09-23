@@ -508,9 +508,13 @@ def test_build_planning_style_reference_degrades_for_legacy_profiles() -> None:
     assert build_planning_style_reference({"contract_hash": "x" * 64, "layers": []}) is None
     legacy = {"contract_hash": "y" * 64, "layers": [{"profile": {"profile_id": "p", "profile_json": {"style_features": ["短句"]}}}]}
     assert build_planning_style_reference(legacy) is None
+    # 云策略按冻结的书快照判（没有会话时）：送云策略、冻结时允许送云 → 给参考块
+    book = {"book_id": "b", "cloud_policy": "allow_full_cloud", "cloud_llm_allowed_at_freeze": True}
     craft_only = {
         "contract_hash": "z" * 64,
-        "layers": [{"profile": {"profile_id": "p", "profile_json": {"planning_guidance": ["母题：灯与账本反复出现"]}}}],
+        "layers": [
+            {"profile": {"profile_id": "p", "profile_json": {"planning_guidance": ["母题：灯与账本反复出现"]}}, "book": book}
+        ],
     }
     reference = build_planning_style_reference(craft_only)
     assert reference is not None
@@ -520,6 +524,9 @@ def test_build_planning_style_reference_degrades_for_legacy_profiles() -> None:
         "style_narrative_guidance_line_count": 0,
         "style_planning_guidance_line_count": 1,
     }
+    # 说不清书的云策略（契约里没有书快照）→ 规划节点走云端时什么都不给（H1：fail closed）
+    no_lineage = {"contract_hash": "z" * 64, "layers": [{"profile": craft_only["layers"][0]["profile"]}]}
+    assert build_planning_style_reference(no_lineage) is None
 
 
 # ---------------------------------------------------------------------------

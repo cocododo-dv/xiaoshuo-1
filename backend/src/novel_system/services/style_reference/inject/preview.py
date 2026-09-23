@@ -6,7 +6,10 @@
 - 按画像 + 一份（未落盘的）v3 绑定配置造一份预览用的契约（不校验、不入库），得到同样形状的 ``StylePolicy``；
 - 给了 ``scene_id``：按这一场的设计（章内位置、场面标签、对白 / 概述倾向）与同一个种子算选窗——就是起草时会
   冻结的那组窗（蓝图另给了场面标签时以冻结行为准）；不写冻结行；
-- 块次序与起草提示一致：system 前缀（指路句 + 文风卡 + 声音 + 红线）+ user 尾块（样例 + 收口）。
+- 块次序与起草提示一致：system 前缀（指路句 + 文风卡 + 声音 + 红线）+ user 尾块（样例 + 收口）；
+- 云策略按起草节点（首稿 ``style_first_draft`` 在 ``style_draft`` 路由下派发，:data:`PREVIEW_NODE_IDS`）的实际路由
+  判，与起草同一个判定（H1）：「仅本机」的书遇云端起草路由 → 409 ``STYLE_REFERENCE_CLOUD_POLICY_BLOCKED``（界面把它
+  当错误说出来：这一场起草时什么参考都拿不到）。
 
 返回旧预览端点的形状（``fragments`` / ``prefix`` / ``stats`` / ``window_refs``，``stats`` 的键即
 ``InjectionPreviewStats``），外加 ``user_tail`` 与 ``reference_mode``。
@@ -35,13 +38,14 @@ from novel_system.services.style_reference.inject.request import (
     ROLE_DRAFT,
     StyleRenderRequest,
 )
+from novel_system.services.style_reference.inject.routing import nodes_for_template
 from novel_system.services.style_reference.inject.selection import (
     derive_situation_tags,
     scene_chapter_position,
     scene_dialogue_heavy,
     scene_rendering_mode,
 )
-from novel_system.services.style_reference.policy import cloud_llm_allowed
+from novel_system.services.style_reference.policy import book_allows_cloud
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     frozen_profile_json,
@@ -49,6 +53,8 @@ from novel_system.services.style_reference.runtime_contract import (
 )
 
 PREVIEW_MODE = "preview"
+# 预览的就是首稿（作者手笔直起的 style_first_draft 与先中性后润色的 style_draft 都在 style_draft 路由下派发）
+PREVIEW_NODE_IDS: tuple[str, ...] = nodes_for_template("style_first_draft")
 
 
 def preview_contract(
@@ -94,7 +100,8 @@ def preview_contract(
         "book": {
             "book_id": str(profile.book_id),
             "cloud_policy": str(getattr(book, "cloud_policy", "") or ""),
-            "cloud_llm_allowed_at_freeze": bool(book is not None and cloud_llm_allowed(book)),
+            # 与运行时契约同一口径：策略本身允不允许云端（与节点路由无关），节点在渲染时判
+            "cloud_llm_allowed_at_freeze": book_allows_cloud(book),
             "paragraph_root_sha256": stats.get("paragraph_root_sha256"),
         },
     }
@@ -150,6 +157,7 @@ def preview_render(
         dialogue_heavy=scene_dialogue_heavy(scene),
         rendering_mode=scene_rendering_mode(scene),
         recent_gaps=recent_gaps_for_project(session, project_id=project, profile_id=str(profile.profile_id)),
+        node_ids=PREVIEW_NODE_IDS,
     )
     rendered = render_style(
         session,
@@ -165,6 +173,8 @@ def preview_render(
     if parts is not None and not rendered.empty:
         _prefix, _tail, assembled = parts.assemble()
         blocks.update({name: str(assembled.get(name) or "") for name in blocks})
+    # 实际的参考方式：绑定的参考方式按书现在的云策略压过之后（渲染审计里记着）
+    reference_mode = str((rendered.audit or {}).get("reference_mode") or policy.reference_mode)
     fragments = {
         "positive_block": blocks["card"],
         "forbidden_block": "",
@@ -172,7 +182,7 @@ def preview_render(
         "voice_block": blocks["voice"],
         "few_shot_block": blocks["samples"],
         "anti_plagiarism_block": blocks["red_line"],
-        "strategy": _strategy_label(policy.reference_mode),
+        "strategy": _strategy_label(reference_mode),
     }
     return {
         "fragments": fragments,
@@ -180,10 +190,10 @@ def preview_render(
         "user_tail": rendered.user_tail,
         "stats": dict(rendered.stats) if rendered.stats else {},
         "window_refs": [dict(item) for item in rendered.window_refs],
-        "reference_mode": policy.reference_mode,
+        "reference_mode": reference_mode,
         "sample_windows": policy.sample_windows,
         "audit": dict(rendered.audit),
     }
 
 
-__all__ = ["PREVIEW_MODE", "preview_contract", "preview_render"]
+__all__ = ["PREVIEW_MODE", "PREVIEW_NODE_IDS", "preview_contract", "preview_render"]

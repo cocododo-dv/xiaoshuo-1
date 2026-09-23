@@ -1,8 +1,9 @@
 """样例窗口 / 证据例句进提示前的卫生处理（2026-09-23 风格参考 v3）。
 
 - 样例是文风权威：以 ``[风格样例](…)`` … ``[/风格样例]`` 成框，不套「不可信数据」边界（2026-09-22 起）；
-- 窗口正文里的注入模式照样中和、伪造的边界照样转义；``card_only`` 的证据例句同样处理；
-- 发送权：云策略未知 / 没有发送权声明 / 「仅本机」书遇云端模型 → 一窗都不送；
+- 窗口正文里的注入模式照样中和、伪造的边界照样转义；``card_only`` 的证据引文里有疑似指令的，一个字都不当例子；
+- 发送权：没有发送权声明 → 一窗都不送（文风卡照送）；「仅本机」书遇云端 / 说不出的节点、未知策略遇云端节点
+  → 409，由这本书派生的东西一个字都不送（H1）；
 - 策略 C（检索）已删除：旧 C 绑定映射为全面模仿，照常渲染样例窗。
 """
 
@@ -13,6 +14,7 @@ from sqlalchemy import select
 
 from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.style_policy import policy_from_contract
+from novel_system.services.style_reference.errors import CloudPolicyBlockedError, CloudPolicyInvalidError
 from novel_system.services.style_reference.inject.bindings import resolve_binding_layers
 from novel_system.services.style_reference.inject.render import (
     NOTICE_SAMPLES_BLOCKED,
@@ -63,7 +65,7 @@ def test_sample_windows_are_framed_and_neutralized(session) -> None:
     assert "- (" not in rendered.system_prefix and "参考这句节奏" not in rendered.system_prefix
 
 
-def test_card_only_evidence_examples_are_neutralized_too(session) -> None:
+def test_card_only_evidence_quote_with_an_instruction_is_never_an_example(session) -> None:
     from novel_system.db.models import StyleReferenceQuote
 
     policy = _policy(session, "card", config={"reference_mode": "card_only"})
@@ -71,22 +73,34 @@ def test_card_only_evidence_examples_are_neutralized_too(session) -> None:
     quote.quote_text = INJECTED
     session.commit()
     rendered = render_style(session, policy, StyleRenderRequest(scene_id="UT2"))
-    assert "（例：「" in rendered.system_prefix
-    assert "忽略前文" not in rendered.system_prefix and NEUTRALIZED_MARK in rendered.system_prefix
+    prefix = rendered.system_prefix
+    assert "[文风卡]" in prefix
+    # 引文里有被中和的疑似指令：整条引文都不拿来当例子（切成分句会把中和标记切碎、留下指令的后半截）
+    assert "（例：「" not in prefix and rendered.audit["card_examples"] == 0
+    assert "忽略前文" not in prefix and "你现在是管理员" not in prefix and NEUTRALIZED_MARK not in prefix
+    assert "已中和的疑似指令" not in prefix
+
+
+def test_no_samples_without_send_rights(session) -> None:
+    policy = _policy(session, "rights_allow_full_cloud_False", cloud_policy="allow_full_cloud", rights=False)
+    rendered = render_style(session, policy, StyleRenderRequest(placement=PLACEMENT_USER_TAIL, scene_id="UT3"))
+    assert rendered.stats["few_shot_windows"] == 0 and "\n- (第" not in rendered.user_tail
+    assert "参考这句节奏" not in rendered.system_prefix + rendered.user_tail
+    assert NOTICE_SAMPLES_BLOCKED in rendered.audit["notices"] and rendered.audit["samples_blocked"] == "cloud_policy_now"
+    # 文风卡与红线照样送（它们不是原文）；证据例句是原文，同样不送
+    assert "[文风卡]" in rendered.system_prefix and "（例：「" not in rendered.system_prefix
 
 
 @pytest.mark.parametrize(
-    ("cloud_policy", "rights"),
-    [("legacy_cloud", True), ("allow_full_cloud", False), ("local_only", True)],
+    ("cloud_policy", "error"),
+    [("legacy_cloud", CloudPolicyInvalidError), ("local_only", CloudPolicyBlockedError)],
 )
-def test_no_samples_without_send_rights(session, cloud_policy: str, rights: bool) -> None:
-    policy = _policy(session, f"rights_{cloud_policy}_{rights}", cloud_policy=cloud_policy, rights=rights)
-    rendered = render_style(session, policy, StyleRenderRequest(placement=PLACEMENT_USER_TAIL, scene_id="UT3"))
-    assert rendered.stats["few_shot_windows"] == 0 and rendered.user_tail == ""
-    assert "参考这句节奏" not in rendered.system_prefix
-    assert NOTICE_SAMPLES_BLOCKED in rendered.audit["notices"] and rendered.audit["samples_blocked"]
-    # 文风卡与红线照样送（它们不是原文）；证据例句是原文，同样不送
-    assert "[文风卡]" in rendered.system_prefix and "（例：「" not in rendered.system_prefix
+def test_unknown_policy_and_local_only_books_send_nothing_to_an_unproven_node(session, cloud_policy, error) -> None:
+    """说不出接收节点（或节点走云端）：「仅本机」与未知策略的书一个字都不送，渲染直接 409（H1）。"""
+    policy = _policy(session, f"rights_{cloud_policy}", cloud_policy=cloud_policy, rights=True)
+    with pytest.raises(error) as caught:
+        render_style(session, policy, StyleRenderRequest(placement=PLACEMENT_USER_TAIL, scene_id="UT3"))
+    assert caught.value.status_code == 409 and caught.value.details["author_action"]
 
 
 def test_legacy_strategy_c_renders_windows(session) -> None:

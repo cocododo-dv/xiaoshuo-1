@@ -124,15 +124,25 @@
 作业做三件事：确定性读数 → 参考评审（模板 `style_ref_check_judge`，走 `soft_qc` 节点路由；冻结选窗前 4 窗 + 文风卡 + 声音 + 红线；
 16 维各 0–10 分 + 总分）→ 抄袭门（只记计数），写一条 `source=manual_check` 的读数。评审失败作业就失败，不降级成只有读数。
 
+- 评审的参考块按 `soft_qc` 的**实际路由**判云策略（§11）：「仅本机」的书遇云端路由 → 作业以 409 `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`
+  失败，参考一个字都不发；并按评审模板的输入预算压（与 soft_qc 同一档，`NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET` 收紧时照收紧；待查文字
+  长到一窗参考都装不下 → 409 `…_CHECK_REFERENCE_EMPTY`，`details.reason = "input_budget"`）。
+- 所有权：每个进度写之后立刻提交（不带着写锁去建窗口索引、跑抄袭门）；评审回来先确认作业还是自己的（没被取消、没被清扫重排给别的
+  工人、书没被删）再记读数；进度写或「完成」写落空 → `JobLost`，读数随事务一起回滚。
+
 ## 5. 注入：参考怎样进每一个提示
 
 ### 5.1 StylePolicy 与运行时契约
 
 - `services/style_policy.py` 的 `StylePolicy` 是「有没有绑定、要不要让位、怎么送参考」的**唯一**判断：`style_policy_for_bundle`（场景管线，
-  按契约哈希记忆）、`style_policy_live`（写作台等没有 bundle 的节点）。`defers_house_taste()` = 有绑定且作者手笔直起。
+  按契约**载荷的内容指纹 + 冻结状态**记忆——不信载荷自报的 `contract_hash`，改过内容的载荷永远拿不回 frozen）、`style_policy_live`
+  （写作台等没有 bundle 的节点）。`defers_house_taste()` = 有绑定且作者手笔直起。
 - 运行时契约 v2（`runtime_contract.py`）在 bundle 构建时只冻结**最具体的一层**绑定（scene > POV 角色 > 其余角色 > project > global）：
   白名单内的画像键、规范化后的绑定配置、书快照（校验和、云策略、段落根哈希、窗口索引版本），不冻结原文。书被改过时按当前窗口索引
   渲染并记 `STYLE_REFERENCE_BOOK_CHANGED`；bundle 冻结了「没有绑定」时，后来的绑定不改变已建场景的重放。
+- 书快照的 `cloud_llm_allowed_at_freeze` 是**与节点路由无关**的策略口径（`policy.book_allows_cloud`：非本地策略 + 严格发送权声明；
+  「仅本机」恒 False）。能不能送、送什么在每一次渲染时按接收提示的节点判（§11）。渲染时参考方式还要按书**现在**的云策略压一次
+  （v1 契约的书快照没有云策略，`segments_only` 的书照样只送文风卡）。
 
 ### 5.2 每场冻结选窗（`inject/selection.py`）
 
@@ -141,17 +151,30 @@
 其余在全书按典型度加权抽样，一章至多一窗。结果冻结在 `style_reference_scene_windows`，同一场的首稿、修改、评审、补丁看同一组窗；
 评审节点取前 4 窗（`REVIEW_K`），规划节点前 3 窗（`PLAN_K`），改稿至多把 2 窗换成示范要改那几维的窗。呈现时按原书顺序。
 
+没有 bundle 的节点（对照检查的评审、写作台的深评 / 局部深评 / 局部补丁 / 建议）先看这一场 `SceneRunState.current_bundle_id` 冻结的
+那一行：契约哈希就是现在这份策略的契约哈希、索引根哈希也没变，就用那一组窗（不另写一行 "live"）；否则才自己选窗、冻结。覆盖过期的
+冻结行在保存点里写，写失败不弄坏调用方的事务。
+
 ### 5.3 渲染（`inject/render.py`；入口 `style_prompt_injection.inject_style_reference_prefix`）
 
-- 输入是 `inject/request.StyleRenderRequest`：`role`（`draft` / `revise` / `review` / `plan`）、落点、窗数上限、场景设计、改稿维、近期偏差。
-- **参考方式说到做到**：`full` = 文风卡 + 声音 + 样例窗 + 红线；`samples_only` = 样例窗 + 红线；`card_only` = 文风卡 + 声音 + 每句至多
-  一条 ≤60 字的证据例句 + 红线。
+- 输入是 `inject/request.StyleRenderRequest`：`role`（`draft` / `revise` / `review` / `plan`）、落点、窗数上限、场景设计、改稿维、近期偏差、
+  **接收这份提示的节点** `node_ids`（适配器的 `node_id=` 参数，不给就按 `prompt["template_name"]` 推，见 §11）。
+- **参考方式说到做到**：`full` = 文风卡 + 声音 + 样例窗 + 红线；`samples_only` = 样例窗 + 红线；`card_only` = 文风卡 + 声音 + 红线，卡句
+  后面至多挂一个 **≤11 字**的原话例子（取自这句证据引文里最长的一个短分句；含受保护专名 / 禁用词的不用，引文里有疑似指令的整条不用）。
 - **落点**：起草 / 改稿把样例放在 **user 消息末尾**、紧挨输出（收口指令；章首 / 章末场加开章 / 收章指令），调用方用 `apply_style_user_tail`
   接上；system 里是文风卡（气质与必须体现在前）、声音习惯、近期常见偏差（≤3 行）、红线。默认 12 窗时一场约带 4–4.7 万字原文。
   评审 / 规划的样例留在 system 里，标题用评审 / 规划的口径。
+- **这一次一窗样例都没带**（只用文风卡、原文不许送、还没有窗口、预算拟合去光了窗）：在样例原本的位置写一句「本次没有附参考作者的原文
+  样例……照文风卡与声音特征写」（起草 / 改稿在 user 尾部、仍以「篇幅 / 只返回 JSON」收尾；评审 / 规划在 system 前缀里），审计记
+  `no_samples_note`。这句话不用 `[风格样例]` 标签（带这个标签就是真附了原文样例）。
+- **文风卡的预算**（`card_budget_chars`，默认 2600 字）：气质与 ✓ 钉住 / 标「必须」的句先占、永不因预算去掉（要去只能整张卡不发）→
+  「作者不这么写」有 25% 的保底份额 → 近期常见偏差 → 每一维的第一句（先让每一维都在）→ 例子 → 每一维的第二、三句 → 保底之外的
+  「作者不这么写」。输出次序：气质 → 各维（重点维在前）→ `[作者不这么写]` → `[近期常见偏差]`（卡的末尾）。
+- **不学的维**：卡里整维不出现，声音块里这一维的习惯句、近期常见偏差里这一维的条目也不带。
 - **红线**：反抄袭模板（`anti_plagiarism_template.txt`）+ 画像禁用词（含受保护专名），带了任一块参考就随注，永不截断。
-- 预算：`inject/fit.py` 按整窗、整句贪心地去；风格通道模板输入下限 96000（`prompt_builder.STYLE_PASS_INPUT_TOKEN_BUDGET`），小上下文模型用
-  `NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET` 收紧。审计不含正文。
+- 预算：`inject/fit.py` 按整窗、整句贪心地去——样例窗从保留次序的末尾去（改稿换进来示范要改那几维的窗最后去），文风卡按它的保留次序
+  倒过来去（先去多出来的句与例子，最后才让整维消失；钉住 / 必须的句不单独去）；风格通道模板输入下限 96000
+  （`prompt_builder.STYLE_PASS_INPUT_TOKEN_BUDGET`），小上下文模型用 `NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET` 收紧。审计不含正文。
 
 ### 5.4 规划与结构跟随
 
@@ -250,6 +273,20 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
   --node <id> … --floor <n> --execute` 抬（分类 8192、抽取与合成 16384、`soft_qc` / `near_final_acceptance_review` 5000），分类节点另在系统配置里关推理。
 - **云策略**：`local_only` 的书只有这一步**实际调用的节点路由**是本机模型（`ollama` 或回环地址）时才放行，否则 409
   `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`；`segments_only` 的书可被云端模型读来分类 / 学习，起草只送文风卡。
+  - 参考进提示（起草、改稿、评审、规划、本场预览、对照检查）同样按**接收这份提示的节点**判，与全局运行时模型无关——全局是本机而起草节点
+    走云端 → 不送；全局是云端而起草节点走本机 → 照送（`policy.decide_reference_route`）。「仅本机」的书遇云端节点时**一个字都不送**
+    （没有样例、文风卡、声音、专名表），注入适配器原样抛 409，不降级成没有参考的提示去照样调用那个节点。起草管线（首稿、定向修改、
+    风格稿与补丁）因此停下并带 `author_action`；软 QC、准定稿评审、写作台深评 / 补丁 / 建议、场景蓝图的调用方目前自己接住这个错，
+    退回不带参考前缀的基础提示照常调用（参考前缀同样没有送出）。
+  - 节点从哪来：调用方给 `inject_style_reference_prefix(..., node_id=...)`；不给就按 `prompt["template_name"]` 推
+    （`inject/routing.TEMPLATE_NODE_IDS`：`style_first_draft` / `style_targeted_revision` → `style_draft`；`style_draft` 模板 → `style_draft`
+    + `style_patch`（软补丁、去模板、安全修复借这份提示在 `style_patch` 下派发）；`style_length_patch` / `style_salvage_patch` →
+    `style_patch`；`scene_literary_rewrite` → 它自己 + `style_patch`；`scene_blueprint_facts` → `scene_blueprint`；`style_ref_check_judge` →
+    `soft_qc`；`writer_passage_review` → `writer_deep_review`；其余模板名本身就是注册节点的用它）。有几个候选节点时每一个都要满足；
+    说不出节点 → 「仅本机」的书按不许送处理。
+  - 规划参考块（`planning_context`）不说节点时按全部消费节点判：项目级（雪花 09 / 10、起章名、章规划四节点）、场景级（场景蓝图、
+    章架构、人物压力）、起章名；「仅本机」的书有一个消费节点走云端就不给参考块（规划照常，不报错）。
+  - 未知 / 空策略：本机节点只送文风卡，云端节点 409 `STYLE_REFERENCE_CLOUD_POLICY_INVALID`。
 - **迁移**：停服、`python -m novel_system.tools.db_backup --backup <src.db> <dst.db>`，再 `alembic upgrade head`（0090、0091）。
 - **工具**（`backend/` 下，默认干跑、`--execute` 才写库，先备份）：`purge_style_reference_books --book ID`（可重复）和 / 或 `--id-prefix PREFIX`
   （至少 4 个字符；删书及全部派生数据，就是书库删除的 `cleanup.delete_reference_book`，绑定范围内的规划产物一并作废）；`refresh_style_reference_books --book ID | --all`（就绪的书剥副文本、重编号、保留场界、重算统计；段落变了
@@ -261,7 +298,8 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | 现象 / 错误码 | 原因与处理 |
 |---|---|
 | `STYLE_REFERENCE_LLM_REQUIRED`（409） | 没有可用模型；去系统配置 |
-| `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`（409） | 「仅本机」的书遇到云端节点路由；换本机模型，或换一档范围重新导入 |
+| `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`（409） | 「仅本机」的书遇到云端节点路由（分类、学习、对照检查，也包括起草 / 改稿 / 评审 / 本场预览时参考要进的那个节点；`details.node_id` 是哪个节点，`details.reason = "node_unknown"` 表示调用方没说清节点）；把那个节点换成本机模型，或换一档范围重新导入 |
+| `STYLE_REFERENCE_CLOUD_POLICY_INVALID`（409） | 书的云策略认不出来，参考不能进云端节点；重新导入并选一档 |
 | `…_SEND_RIGHTS_REQUIRED` / `…_DECLARATION_REQUIRED` | 非本机范围没有确认发送权；重新导入并勾选 |
 | `…_BOOK_DUPLICATE`（409）/ `…_BOOK_EMPTY`（400）/ `…_UPLOAD_TOO_LARGE` / `…_BOOK_FORMAT_UNSUPPORTED` | 同一份文本已在书库（`details.book_id`）/ 没有正文 / 超过 10 MB / 不是 txt、md |
 | `…_CLASSIFICATION_FAILED`（502） | 某批重试后仍失败；游标保留，「继续分类」 |
@@ -271,7 +309,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | `…_PROFILE_STALE`（409） | 画像的依据变过；重新学习再用于作品 |
 | `…_CHECK_NOT_BOUND` / `…_CHECK_TARGET_INVALID` / `…_CHECK_JUDGE_FAILED` | 对照检查没有可对照的参考 / `text` 与 `scene_id` 没有恰好给一个 / 评审调用失败 |
 | `SOURCE_SAFETY_BLOCKED`（409） | 唯一抄袭门拦下；按 `author_action` 给的位置改写 |
-| 提示 `STYLE_REFERENCE_BOOK_CHANGED` / `…_SAMPLES_BLOCKED` / `…_NO_WINDOWS` / `…_BOOK_MISSING` | 冻结后书被改过（按当前索引选窗）/ 样例被云策略挡下 / 还没有窗口 / 书已删除 |
+| 提示 `STYLE_REFERENCE_BOOK_CHANGED` / `…_SAMPLES_BLOCKED` / `…_NO_WINDOWS` / `…_BOOK_MISSING` | 冻结后书被改过（按当前索引选窗）/ 样例被云策略挡下（没有发送权声明、或冻结时不许送云）/ 还没有窗口 / 书已删除（冻结快照是送云策略时文风卡照送、原文不送；快照说不清策略时什么都不送） |
 | 作业「卡住」（`stalled`） | 心跳过期 60 s 后清扫线程放回队列；也可取消或继续 |
 
 ## 13. 测试
