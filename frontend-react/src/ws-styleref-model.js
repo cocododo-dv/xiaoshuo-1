@@ -1,113 +1,223 @@
 /* ==========================================================
-   风格参考 · 词汇与纯派生（2026-09-21 前端重构）
-   几个 stage 共用的说法（16 个子维度、段落类型、置信度、起草方式、作用域、指标名）
-   与判断（书库每本书「现在走到哪一步」、流水线五步的状态与落点、注入维度选项、
-   是否该重新合成、同作用域遮蔽、最新 run、合成失败文案、数字格式、界面偏好 ws_sr_ui_v1）。
-   不依赖 React，不 import 任何模块，不写 window，可单测；store 与各 stage 都从这里取。
+   风格参考 · 说法与纯派生（2026-09-23 v3 重建）
+   三步：参考书 → 学习文风 → 用于作品。这里放各页共用的说法与判断：
+   · 参考方式 / 起草方式 / 维度状态 / 导入时的三档原文范围——每个选项一句真话（它会怎样改变起草时带上的东西）；
+   · 一本书现在走到哪一步（书库徽标、页头、步骤条、落点）；
+   · 作者读得懂的出错说法与下一步（按错误码 + 后端的 author_action，不给作者看英文原话）；
+   · 估算、耗时、百分比的格式；活动条目的文案；界面偏好 ws_sr_ui_v1。
+   词表（16 维、段落类型、章内位置、场面 / 情绪标签、作业叫法）在 ws-labels.js，这里只引用。
+   不依赖 React，不写 window，可单测。
    ========================================================== */
+import {
+  STYLE_DIMENSIONS,
+  STYLE_LAYER_LABELS,
+  STYLE_LAYER_ORDER,
+  styleJobKindLabel,
+  styleLayerOf,
+} from "./ws-labels.js";
 
-/* ---- 4 层 × 4 子维 = 16 个子维度 ----
-   只保留 id / 展示名（与后端 dimensions.SubDimension 一一对应）。置信度、计数、
-   「语料不足」等全部来自后端 deep 数据（dimCounts / profile_json.sub_dimensions /
-   stats_json.input_assessment），这里不硬编码任何 conf / skip。 */
-export const SR_LAYERS = [
+/* ---------- 用于作品：绑定配置的四个旋钮 ---------- */
+
+export const SR_SAMPLE_WINDOWS_MIN = 0;
+export const SR_SAMPLE_WINDOWS_MAX = 16;
+export const SR_SAMPLE_WINDOWS_DEFAULT = 12;
+
+/* 参考方式（reference_mode）：三选一，每个一句真话 */
+export const SR_REFERENCE_MODES = [
   {
-    id: "language", name: "语言层", abbr: "语",
-    subs: [
-      { id: "sentence_structure", name: "句式结构" },
-      { id: "vocabulary",         name: "词汇选择" },
-      { id: "rhetoric",           name: "修辞手法" },
-      { id: "punctuation",        name: "标点节奏" },
-    ],
+    id: "full",
+    label: "全面模仿",
+    badge: "推荐",
+    detail: "起草时带上这本书的原文样例窗（按这一场挑）、文风卡和声音习惯。",
   },
   {
-    id: "narrative", name: "叙事层", abbr: "叙",
-    subs: [
-      { id: "perspective",         name: "叙事视角" },
-      { id: "pacing",              name: "节奏控制" },
-      { id: "time_handling",       name: "时间处理" },
-      { id: "information_density", name: "信息密度" },
-    ],
+    id: "samples_only",
+    label: "只用原文样例",
+    badge: "对照",
+    detail: "只带原文样例窗，不带文风卡和声音习惯——用来对照文风卡帮上了多少。",
   },
   {
-    id: "scene", name: "场景层", abbr: "景",
-    subs: [
-      { id: "environment",        name: "环境描写" },
-      { id: "character_portrayal",name: "人物刻画" },
-      { id: "dialogue",           name: "对话写法" },
-      { id: "sensory_priority",   name: "感官优先" },
-    ],
-  },
-  {
-    id: "theme", name: "主题层", abbr: "题",
-    subs: [
-      { id: "emotional_tone",      name: "情感基调" },
-      { id: "values",              name: "价值取向" },
-      { id: "motifs",              name: "母题意象" },
-      { id: "narrative_philosophy",name: "叙事哲学" },
-    ],
+    id: "card_only",
+    label: "只用文风卡",
+    badge: "不发原文",
+    detail: "只带文风卡和声音习惯，不发原文段落（卡上的例子至多 11 个字）。",
   },
 ];
 
-/* 子维度路径 language.sentence_structure → { abbr, layer, name }；认不出时 name 就是路径本身 */
-export function srDimMeta(path) {
-  for (const l of SR_LAYERS) for (const s of l.subs) if (`${l.id}.${s.id}` === path) return { abbr: l.abbr, layer: l.name, name: s.name };
-  return { abbr: "·", layer: "", name: path };
+/* 起草方式（draft_mode） */
+export const SR_DRAFT_MODES = [
+  { id: "style_first", label: "作者手笔直起", badge: "推荐", detail: "首稿直接照这位作者的写法起草。" },
+  { id: "neutral_first", label: "先中性后润色", badge: "对照", detail: "先写一版中性的首稿，再改成这位作者的写法——用来对照直起的效果。" },
+];
+
+/* 维度状态（dimension_states）：给当前作品设的，写在绑定上 */
+export const SR_DIMENSION_STATES = [
+  { id: "emphasize", label: "重点", detail: "排在文风卡最前、多带一句，挑样例时优先挑示范这一维手法的片段" },
+  { id: "normal", label: "正常", detail: "按辨识度带上" },
+  { id: "exclude", label: "不学", detail: "文风卡里不带这一维" },
+];
+
+export function srDefaultConfig() {
+  const states = {};
+  STYLE_DIMENSIONS.forEach((dim) => { states[dim] = "normal"; });
+  return { reference_mode: "full", sample_windows: SR_SAMPLE_WINDOWS_DEFAULT, dimension_states: states, draft_mode: "style_first" };
 }
 
-/* 段落类型（后端 8 类）的中文名：概览分布、示例预览、样例窗口共用 */
-export const SR_PARA_LABEL = {
-  narration: "叙述", dialogue: "对话", description_env: "环境", psychology: "心理",
-  action: "动作", description_char: "人物", transition: "转场", flashback: "闪回",
-};
-
-/* 观察的置信度：矩阵格子、证据抽屉、画像维度摘要共用 */
-export const SR_CONF_LABEL = { high: "高置信", medium: "中置信", low: "低置信", none: "暂无观察", skip: "语料不足" };
-export const SR_CONF_TONE = { high: "ok", medium: "warn", low: "info" };
-
-/* ---- 统计指标：总览、画像基线与回测共用同一组展示名与格式 ----
-   SR_METRIC_META 是后端所有指标键的展示名（回测的量化对齐逐项列出）；
-   SR_METRIC_DEFS 是总览 / 画像基线挑出来展示的 8 项，按这个顺序。 */
-export const SR_METRIC_META = {
-  avg_sentence_length: { name: "平均句长", unit: "字" },
-  sentence_length_std: { name: "句长波动", unit: "字" },
-  short_sentence_ratio: { name: "短句占比", pct: true },
-  long_sentence_ratio: { name: "长句占比", pct: true },
-  punctuation_density_per_1k: { name: "标点 / 千字", unit: "" },
-  dash_em_density_per_1k: { name: "破折号 / 千字", unit: "" },
-  ellipsis_density_per_1k: { name: "省略号 / 千字", unit: "" },
-  semicolon_density_per_1k: { name: "分号 / 千字", unit: "" },
-  question_density_per_1k: { name: "问号 / 千字", unit: "" },
-  classical_word_ratio: { name: "文言用法", pct: true },
-  colloquial_marker_ratio: { name: "口语标记占比", pct: true },
-  metaphor_density_per_1k: { name: "比喻 / 千字", unit: "" },
-  personification_density_per_1k: { name: "拟人 / 千字", unit: "" },
-  dialogue_ratio: { name: "对话占比", pct: true },
-  psychology_ratio: { name: "心理占比", pct: true },
-  description_env_ratio: { name: "环境占比", pct: true },
-  description_char_ratio: { name: "人物占比", pct: true },
-  action_ratio: { name: "动作占比", pct: true },
-  narration_ratio: { name: "叙述占比", pct: true },
-  transition_ratio: { name: "转场占比", pct: true },
-  flashback_ratio: { name: "闪回占比", pct: true },
-  sensory_visual_per_1k: { name: "视觉描写 / 千字", unit: "" },
-  sensory_auditory_per_1k: { name: "听觉描写 / 千字", unit: "" },
-  sensory_olfactory_per_1k: { name: "嗅觉描写 / 千字", unit: "" },
-  sensory_tactile_per_1k: { name: "触觉描写 / 千字", unit: "" },
-  sensory_gustatory_per_1k: { name: "味觉描写 / 千字", unit: "" },
-};
-
-export const SR_METRIC_DEFS = [
-  "avg_sentence_length", "sentence_length_std", "short_sentence_ratio", "dialogue_ratio",
-  "metaphor_density_per_1k", "classical_word_ratio", "sensory_visual_per_1k", "dash_em_density_per_1k",
-].map((key) => ({ key, ...SR_METRIC_META[key] }));
-
-/* 认不出的指标键原样显示，不猜单位 */
-export function srMetricMeta(key) {
-  return SR_METRIC_META[key] || { name: key, unit: "" };
+/* 任意（可能缺键）的配置 → 四键齐全的 v3 配置（与后端 normalize_binding_config 同一口径） */
+export function srNormalizeConfig(raw) {
+  const base = srDefaultConfig();
+  const config = raw && typeof raw === "object" ? raw : {};
+  const mode = SR_REFERENCE_MODES.some((m) => m.id === config.reference_mode) ? config.reference_mode : base.reference_mode;
+  let windows = Number(config.sample_windows);
+  if (config.sample_windows == null || !Number.isFinite(windows)) windows = base.sample_windows;
+  windows = Math.max(SR_SAMPLE_WINDOWS_MIN, Math.min(SR_SAMPLE_WINDOWS_MAX, Math.round(windows)));
+  const draft = SR_DRAFT_MODES.some((m) => m.id === config.draft_mode) ? config.draft_mode : base.draft_mode;
+  const states = { ...base.dimension_states };
+  const rawStates = config.dimension_states && typeof config.dimension_states === "object" ? config.dimension_states : {};
+  for (const [dim, state] of Object.entries(rawStates)) {
+    if (dim in states && SR_DIMENSION_STATES.some((s) => s.id === state)) states[dim] = state;
+  }
+  return { reference_mode: mode, sample_windows: windows, dimension_states: states, draft_mode: draft };
 }
 
-/* 百分数：小于 10% 保留一位小数（0.4% 不该写成 0%），否则取整。 */
+/* 只比三个顶层旋钮（用于作品页的表单；维度状态在文风画像页单独写） */
+export function srSettingsEqual(a, b) {
+  const x = srNormalizeConfig(a);
+  const y = srNormalizeConfig(b);
+  return x.reference_mode === y.reference_mode && x.sample_windows === y.sample_windows && x.draft_mode === y.draft_mode;
+}
+
+/* 维度状态的一句汇总：「2 维重点 · 1 维不学」；全是正常时「16 维都按正常学」 */
+export function srDimensionStatesSummary(states) {
+  const values = Object.values(srNormalizeConfig({ dimension_states: states }).dimension_states);
+  const emphasized = values.filter((s) => s === "emphasize").length;
+  const excluded = values.filter((s) => s === "exclude").length;
+  if (!emphasized && !excluded) return "16 维都按正常学";
+  return [emphasized ? `${emphasized} 维重点` : null, excluded ? `${excluded} 维不学` : null].filter(Boolean).join(" · ");
+}
+
+export function srReferenceModeMeta(id) {
+  return SR_REFERENCE_MODES.find((m) => m.id === id) || SR_REFERENCE_MODES[0];
+}
+
+export function srDraftModeMeta(id) {
+  return SR_DRAFT_MODES.find((m) => m.id === id) || SR_DRAFT_MODES[0];
+}
+
+/* 一条绑定的一句话：「全面模仿 · 12 窗 · 作者手笔直起」（只用文风卡时不说窗数） */
+export function srConfigSummary(config) {
+  const c = srNormalizeConfig(config);
+  const parts = [srReferenceModeMeta(c.reference_mode).label];
+  if (c.reference_mode !== "card_only") parts.push(`${c.sample_windows} 窗`);
+  parts.push(srDraftModeMeta(c.draft_mode).label);
+  return parts.join(" · ");
+}
+
+/* ---------- 导入：原文能发到哪里（书的 cloud_policy） ---------- */
+
+export const SR_CLOUD_POLICIES = [
+  {
+    id: "local_only",
+    label: "仅本机模型",
+    detail: "正文只交给本机模型（如 Ollama）：分类、学习、起草都要用本机模型，云端模型一律看不到。",
+  },
+  {
+    id: "segments_only",
+    label: "只发短句",
+    hint: "起草时只用文风卡，不发原文",
+    detail: "分类和学习时，云端模型会分批读正文；起草时只送文风卡（例子至多 11 个字），不送原文段落。",
+  },
+  {
+    id: "allow_full_cloud",
+    label: "可发送全文",
+    detail: "分类、学习和起草都可以把原文段落发给已配置的云端模型；起草时带原文样例窗，最像。",
+  },
+];
+
+export function srCloudPolicyMeta(id) {
+  return SR_CLOUD_POLICIES.find((p) => p.id === id) || null;
+}
+
+/* 导入权属声明（后端 ingest 的 rights_declaration）：分析权必勾；非「仅本机」还要发送权 */
+export const SR_RIGHTS_TERMS = {
+  analysis: "我确认拥有对这本书做文风分析的权利，只用来学习写法，不复刻原文、人物或桥段。",
+  send: "我确认有权把这本书的正文按所选范围发送给已配置的云端模型。",
+};
+
+export function srPolicyNeedsSendRights(cloudPolicy) {
+  return cloudPolicy !== "local_only";
+}
+
+export function srRightsReady(cloudPolicy, rights) {
+  if (!rights || rights.analysis_rights !== true) return false;
+  return !srPolicyNeedsSendRights(cloudPolicy) || rights.send_rights === true;
+}
+
+/* ---------- 出错：作者读得懂的一句话 + 下一步 ---------- */
+
+const SR_ERROR_TEXT = {
+  STYLE_REFERENCE_LLM_REQUIRED: "这一步要用模型，但还没有接入可用的模型。",
+  STYLE_REFERENCE_CLOUD_POLICY_BLOCKED: "这本书设为「仅本机模型」，但这一步用的是云端模型：换成本机模型，或用别的范围重新导入。",
+  STYLE_REFERENCE_CLOUD_POLICY_INVALID: "这本书的原文范围设置不对，不能交给模型：重新导入并选一档范围。",
+  STYLE_REFERENCE_SEND_RIGHTS_REQUIRED: "这本书没有确认发送权，不能发给云端模型：重新导入并勾选发送权。",
+  STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED: "发给云端模型之前要先确认发送权。",
+  STYLE_REFERENCE_BOOK_DUPLICATE: "书库里已经有同一份文本。",
+  STYLE_REFERENCE_BOOK_EMPTY: "这个文件里没有可以当参考的正文。",
+  STYLE_REFERENCE_UPLOAD_TOO_LARGE: "文件太大了（上限 10 MB）。",
+  STYLE_REFERENCE_BOOK_FORMAT_UNSUPPORTED: "只能导入纯文本（.txt）或 Markdown（.md）。",
+  STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID: "权属声明没有填对，请重新勾选后再导入。",
+  STYLE_REFERENCE_BOOK_NOT_FOUND: "这本书已经不在书库里了。",
+  STYLE_REFERENCE_BOOK_NOT_READY: "这本书的段落分类还没完成：等它完成（或「继续分类」）之后再学。",
+  STYLE_REFERENCE_BOOK_CLASSIFYING: "这本书正在重新分类段落：等它完成再学习文风。",
+  STYLE_REFERENCE_BOOK_LEARNING: "这本书正在学习文风：等学完再重新分类。",
+  STYLE_REFERENCE_LEARN_ALREADY_ACTIVE: "这本书已经在学习文风了。",
+  STYLE_REFERENCE_LEARN_NOTHING_TO_RESUME: "没有中断的学习可以继续，直接「学习文风」即可。",
+  STYLE_REFERENCE_LEARN_NOT_ACTIVE: "这本书现在没有在学习。",
+  STYLE_REFERENCE_LEARN_CONFIG_MISSING: "学习文风用到的模型节点还没配好（或提示词是旧版本）。",
+  STYLE_REFERENCE_INPUT_TOO_SMALL: "这本书的正文太少，学不出可靠的文风。",
+  STYLE_REFERENCE_CLASSIFICATION_ALREADY_ACTIVE: "这本书已经在分类段落了。",
+  STYLE_REFERENCE_CLASSIFICATION_NOT_ACTIVE: "这本书现在没有在分类。",
+  STYLE_REFERENCE_CLASSIFICATION_NOTHING_TO_RESUME: "没有中断的分类可以继续。",
+  STYLE_REFERENCE_PROFILE_NOT_FOUND: "这份文风画像已经不在了。",
+  STYLE_REFERENCE_PROFILE_HAS_NO_CARD: "这份画像还没有文风卡：先学习文风。",
+  STYLE_REFERENCE_PROFILE_STALE: "这份画像的依据变过了：先重新学习文风，再用于作品。",
+  STYLE_REFERENCE_PROFILE_ARCHIVED: "这份画像已经归档，不能再用于作品。",
+  STYLE_REFERENCE_CARD_LINE_NOT_FOUND: "这一句已经不在文风卡上了（可能刚重新学过）。",
+  STYLE_REFERENCE_APPLY_TARGET_NOT_FOUND: "要用这本书的作品已经不在了。",
+  STYLE_REFERENCE_BINDING_NOT_FOUND: "这条应用已经解除了。",
+  STYLE_REFERENCE_PROJECT_NOT_FOUND: "当前作品已经不在了。",
+  NETWORK_ERROR: "连不上后端：检查后端是否在运行后重试。",
+  REQUEST_TIMEOUT: "等太久了没有回音，稍后再试。",
+};
+
+const CJK = /[㐀-鿿]/;
+
+/* 出错 → { code, message, action }。message 优先按错误码给固定的中文；认不出的码用后端的中文原话，
+   英文原话一律不给作者看。action：{ type: "settings" | "open_book" | "learn", label, bookId? } 或 null。 */
+export function srErrorInfo(error, fallback = "操作没有完成，请稍后重试。") {
+  const code = (error && error.code) || "";
+  const details = (error && error.details) || {};
+  const serverMessage = String((error && error.message) || "");
+  let message = SR_ERROR_TEXT[code] || (CJK.test(serverMessage) ? serverMessage : fallback);
+  if (code === "STYLE_REFERENCE_BOOK_DUPLICATE" && details.title) {
+    message = `书库里已经有同一份文本：《${details.title}》。`;
+  }
+  const authorAction = details.author_action || null;
+  let action = null;
+  if (code === "STYLE_REFERENCE_BOOK_DUPLICATE" && details.book_id) {
+    action = { type: "open_book", label: "打开这本", bookId: String(details.book_id) };
+  } else if (authorAction && authorAction.view === "systemConfig") {
+    action = { type: "settings", label: "去设置模型" };
+  } else if (code === "STYLE_REFERENCE_LLM_REQUIRED" || code === "STYLE_REFERENCE_LEARN_CONFIG_MISSING") {
+    action = { type: "settings", label: "去设置模型" };
+  } else if (authorAction && authorAction.action === "learn_style") {
+    action = { type: "learn", label: "去学习文风", bookId: authorAction.book_id ? String(authorAction.book_id) : null };
+  }
+  return { code, message, action };
+}
+
+/* ---------- 估算与格式 ---------- */
+
 export function srFormatPct(value) {
   const n = Number(value) * 100;
   if (!Number.isFinite(n)) return "—";
@@ -116,216 +226,36 @@ export function srFormatPct(value) {
   return `${text}%`;
 }
 
-function srFormatNumber(value) {
+export function srFormatDuration(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/* 分钟：<1 说「不到 1 分钟」，≥60 说「约 N 小时 M 分钟」 */
+export function srFormatMinutes(minutes) {
+  const m = Number(minutes);
+  if (!Number.isFinite(m) || m < 1) return "不到 1 分钟";
+  if (m < 60) return `约 ${Math.round(m)} 分钟`;
+  const h = Math.floor(m / 60);
+  const rest = Math.round(m - h * 60);
+  return rest ? `约 ${h} 小时 ${rest} 分钟` : `约 ${h} 小时`;
+}
+
+/* token / 字数：≥1 万写「N 万」 */
+export function srFormatCount(value) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  return String(Math.round(n * 10) / 10);
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n >= 10000) return `${(n / 10000).toFixed(n >= 100000 ? 0 : 1).replace(/\.0$/, "")} 万`;
+  return n.toLocaleString("zh-CN");
 }
 
-/* 一项指标 → { key, name, value, unit, spread }；百分比指标的波动与均值同样换算成百分点。 */
-export function srFormatMetric(def, stat) {
-  if (!def || !stat || stat.mean == null || !Number.isFinite(Number(stat.mean))) return null;
-  const fmt = def.pct ? srFormatPct : srFormatNumber;
-  const std = Number(stat.std);
-  return {
-    key: def.key,
-    name: def.name,
-    value: fmt(stat.mean),
-    unit: def.pct ? "" : (def.unit || ""),
-    spread: Number.isFinite(std) ? `±${fmt(std)}` : null,
-  };
+/* 字数：「980 字」「4.4 万字」（万后面不再空一格） */
+export function srFormatChars(value) {
+  const text = srFormatCount(value);
+  if (text === "—") return text;
+  return text.endsWith("万") ? `${text}字` : `${text} 字`;
 }
 
-/* stats_json.metrics / profile_json.metrics_baseline → 按 SR_METRIC_DEFS 顺序的可显示行（缺项跳过）。 */
-export function srMetricRows(source) {
-  const m = source && typeof source === "object" ? source : {};
-  return SR_METRIC_DEFS.map((def) => srFormatMetric(def, m[def.key])).filter(Boolean);
-}
-
-/* 段落 id 形如 sr_para_<书>_<序号>（序号从 0 起）→「第 N 段」；认不出就返回 null，由调用方退回「引文」。 */
-export function srParagraphLabel(paragraphId) {
-  const m = /_(\d+)$/.exec(String(paragraphId || ""));
-  if (!m) return null;
-  return `第 ${(Number(m[1]) + 1).toLocaleString()} 段`;
-}
-
-/* ---- 注入策略：界面上的名称（A / B / C / A+B 是简写，留作徽标）---- */
-export const SR_STRATEGIES = [
-  { id: "mixed", code: "A+B", name: "规则 + 样例", desc: "规则写进提示，同时附上原书样例窗口；推荐", recommended: true },
-  { id: "A", code: "A", name: "只用规则", desc: "把观察与禁忌写成规则放进提示，不带原文样例" },
-  { id: "B", code: "B", name: "只用样例", desc: "整段摘取原书里的连续段落做示范" },
-  { id: "C", code: "C", name: "相近片段", desc: "按场景检索相近的句段；比样例窗口弱，留作对照" },
-];
-
-export function srStrategyCode(strategy) {
-  const hit = SR_STRATEGIES.find((s) => s.id === strategy);
-  return hit ? hit.code : String(strategy || "—");
-}
-
-export function srStrategyName(strategy) {
-  const hit = SR_STRATEGIES.find((s) => s.id === strategy);
-  return hit ? hit.name : String(strategy || "—");
-}
-
-/* ---- 起草方式（2026-09-12 风格直起，Step 2）：落 binding.config_json.draft_mode ----
-   style_first（缺省）= 首稿直接以参考作者手笔写；neutral_first = 现状流程（中性稿再上风格），作阅读对照。
-   缺省不落库时后端按 injection_budget.yaml 的 draft_mode_default（style_first）生效。 */
-export const SR_DRAFT_MODE_DEFAULT = "style_first";
-export const SR_DRAFT_MODES = [
-  { id: "style_first", label: "作者手笔直起", badge: "默认", detail: "首稿直接以参考作者手笔写；系统的房风质量门让位" },
-  { id: "neutral_first", label: "中性稿再上风格", badge: "", detail: "现状流程，用于阅读对照" },
-];
-
-/* 绑定行 / 叠层行的起草方式标签：config_json.draft_mode 缺省即后端默认 style_first */
-export function srDraftModeLabel(mode) {
-  const hit = SR_DRAFT_MODES.find((m) => m.id === mode);
-  return (hit || SR_DRAFT_MODES[0]).label;
-}
-
-/* ---- 绑定作用域：注入应用的表单、当前应用列表与叠加层共用 ---- */
-export const SR_SCOPE_NAME = { project: "项目", scene: "场景", character: "角色", global: "全部作品" };
-export const SR_SCOPE_TONE = { scene: "ok", character: "warn", project: "accent", global: "neutral" };
-export const SR_SCOPE_LABEL = { scene: "场景层", character: "角色层", project: "项目层", global: "全局底层" };
-
-/* 绑定是否生效（后端缺 status 视为 active） */
-export function srBindingActive(binding) {
-  return !!binding && (binding.status == null || binding.status === "active");
-}
-
-/* 同作用域遮蔽判定：所选 scope + scope_ref_id 上已有 active 绑定则返回该绑定 */
-export function findShadowedBinding(bindings, scope, scopeRefId) {
-  if (!Array.isArray(bindings) || !scope) return null;
-  const ref = scopeRefId == null ? null : String(scopeRefId);
-  return bindings.find((b) => b && b.scope === scope && srBindingActive(b)
-    && (ref == null ? b.scope_ref_id == null : String(b.scope_ref_id) === ref)) || null;
-}
-
-/* 注入维度选项：按画像 profile_json.sub_dimensions（键为 16 个 sub_dim 路径）动态生成；
-   画像缺失时回退 book.stats_json.input_assessment（layer 级 skip 才禁用整层）；
-   两者都没有则全部可选。返回 { layers:[{id,name,abbr,subs:[{id,path,name,available,conf,obs,fp,q}]}], available:[path] } */
-export function buildDimOptions(profile, book) {
-  const subDims = (profile && profile.profile_json && profile.profile_json.sub_dimensions) || null;
-  const hasSubDims = !!(subDims && typeof subDims === "object" && Object.keys(subDims).length > 0);
-  const inputAssessment = (book && book.stats_json && book.stats_json.input_assessment) || null;
-  const available = [];
-  const layers = SR_LAYERS.map((l) => {
-    const layerSkipped = !hasSubDims && !!(inputAssessment && inputAssessment[l.id] === "skip");
-    const subs = l.subs.map((s) => {
-      const path = `${l.id}.${s.id}`;
-      const d = hasSubDims ? subDims[path] : null;
-      const isAvailable = hasSubDims ? !!d : !layerSkipped;
-      if (isAvailable) available.push(path);
-      return {
-        id: s.id, path, name: s.name, available: isAvailable,
-        conf: (d && d.confidence) || null,
-        obs: (d && d.observation_count) || 0,
-        fp: (d && d.forbidden_pattern_count) || 0,
-        q: (d && d.quote_count) || 0,
-      };
-    });
-    return { id: l.id, name: l.name, abbr: l.abbr, subs, skipped: layerSkipped };
-  });
-  return { layers, available, source: hasSubDims ? "profile" : inputAssessment ? "input_assessment" : "none" };
-}
-
-/* 强度读数：只消费注入预览端点返回的 stats，缺失返回 null（调用方显示「预览中…」），
-   绝不用本地公式虚构。stats 形状：{positive_lines, forbidden_lines, metric_lines, voice_lines,
-   few_shot_windows, few_shot_chars, rag_snippets, total_prefix_chars, ...} */
-export function computeIntensityReadout(stats) {
-  if (!stats || typeof stats !== "object") return null;
-  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  const ruleLines = num(stats.positive_lines) + num(stats.forbidden_lines) + num(stats.metric_lines);
-  const voiceLines = num(stats.voice_lines);
-  const sampleWindows = num(stats.few_shot_windows) + num(stats.rag_snippets);
-  const totalChars = num(stats.total_prefix_chars);
-  return {
-    ruleLines, voiceLines, sampleWindows, totalChars,
-    text: `规则 ${ruleLines} 行 · 声音特征 ${voiceLines} 行 · 样例 ${sampleWindows} 段 · 共 ${totalChars} 字`,
-  };
-}
-
-/* 再合成判定：没有画像 → 可合成；有画像但 (a) 最新完成 run 与画像 run_id 不同、
-   (b) coverage_json.stale、(c) status !== "active" → 允许重新合成；否则只能查看。 */
-export function computeResynthState(deep) {
-  const profile = deep && deep.profile;
-  const runId = deep && deep.runId;
-  if (!profile) return { hasProfile: false, canResynth: true, reason: "no_profile" };
-  const cov = profile.coverage_json || {};
-  if (runId && profile.run_id && runId !== profile.run_id) return { hasProfile: true, canResynth: true, reason: "new_run" };
-  if (cov.stale === true) return { hasProfile: true, canResynth: true, reason: "stale" };
-  if (profile.status !== "active") return { hasProfile: true, canResynth: true, reason: "inactive" };
-  return { hasProfile: true, canResynth: false, reason: null };
-}
-
-export const SR_RESYNTH_REASON_LABEL = {
-  new_run: "有新的抽取结果",
-  stale: "画像已失效",
-  inactive: "画像未激活",
-};
-
-/* 合成失败的作者可读文案：模型未接入 / 云端策略阻断 / 已在合成 /
-   STYLE_REFERENCE_SYNTHESIZE_FAILED(409, details.reason_code) */
-export function srSynthErrorMessage(e) {
-  const code = (e && e.code) || "";
-  if (code === "STYLE_REFERENCE_LLM_REQUIRED" || code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED") {
-    return "合成风格画像需要先接入模型（设置 → 模型与接入）。";
-  }
-  if (code === "STYLE_REFERENCE_SYNTHESIS_ALREADY_ACTIVE") {
-    return `这本书的画像正在合成，等它完成后再试（${SR_ACTIVITY_WHERE}里可看进度）。`;
-  }
-  if (code === "STYLE_REFERENCE_SYNTHESIZE_FAILED") {
-    const reason = (e && e.details && e.details.reason_code) || "";
-    const map = {
-      budget_unfit: "观察太多，装不进合成预算：回维度矩阵驳回一部分后重试。",
-      empty_profile: "没有可用的观察（全部被驳回或语料不足）：先重跑抽取。",
-      source_overlap: "合成结果与原文重合太多，已被拦下：请重试合成。",
-      text_integrity: "合成结果没通过文本完整性检查：请重试合成。",
-      llm_failed: "模型调用失败：检查模型接入后重试。",
-    };
-    return "合成失败：" + (map[reason] || (e && e.message) || reason || "原因不明");
-  }
-  return "合成失败：" + ((e && e.message) || e);
-}
-
-/* 最新完成的 run：按 finished_at / started_at 降序取第一条 done；列表无时间戳时取末尾（插入序）。
-   没有 done 时退到最新一条（running / failed），供概览显示进展。 */
-export function srPickLatestRun(runs) {
-  const list = Array.isArray(runs) ? runs.filter(Boolean) : [];
-  if (!list.length) return null;
-  const ts = (r) => String(r.finished_at || r.started_at || "");
-  const done = list.filter((r) => r.status === "done");
-  if (done.length) {
-    const stamped = done.filter((r) => ts(r));
-    if (stamped.length === done.length) return [...done].sort((a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : 0))[0];
-    return done[done.length - 1];
-  }
-  return list[list.length - 1];
-}
-
-/* 旧的书库徽标键 / 文案（后端 book.status：ready / ingesting / cancelling / failed）。
-   界面现在一律用 srBookPipeline 的说法；这两个函数只留给导出契约的老调用方。 */
-export function srMapStatus(s) {
-  if (s === "ready") return "ready";
-  if (s === "ingesting") return "importing";
-  if (s === "cancelling") return "cancelling";
-  if (s === "failed") return "failed";
-  if (/extract|run/i.test(s || "")) return "extracting";
-  return "pending";
-}
-
-export function srRunLabel(status) {
-  if (status === "ready") return "已导入";
-  if (status === "ingesting") return "段落分类中";
-  if (status === "cancelling") return "正在取消分类";
-  if (status === "failed") return "分类未完成";
-  return status;
-}
-
-/* 「参考书活动」面板在哪：宽屏在左栏书库里，≤1280 在页头「参考书库」打开的书库里——
-   两种宽度下这句话都对，提示与说明文字一律这样说。 */
-export const SR_ACTIVITY_WHERE = "「参考书库」的「参考书活动」";
-
-/* ISO 时间 → 「9 月 20 日 14:05」（回测页的「上次回测」）；认不出返回 null */
 export function srFormatWhen(iso) {
   const d = iso ? new Date(iso) : null;
   if (!d || Number.isNaN(d.getTime())) return null;
@@ -334,132 +264,204 @@ export function srFormatWhen(iso) {
   return `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${hh}:${mm}`;
 }
 
-/* 秒 → m:ss（活动面板与回测进度共用） */
-export function srFormatDuration(seconds) {
-  const s = Math.max(0, Math.round(Number(seconds) || 0));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+/* 重新分类（就地重标类型）的费用：GET …/classification/estimate */
+export function srClassifyEstimateText(estimate) {
+  if (!estimate) return null;
+  const calls = Number(estimate.est_calls || estimate.batches || 0);
+  return `约 ${calls.toLocaleString("zh-CN")} 次模型调用，输入约 ${srFormatCount(estimate.est_input_tokens)} token、输出约 ${srFormatCount(estimate.est_output_tokens)} token，${srFormatMinutes(estimate.est_minutes)}（${estimate.parallel || 3} 路并行，重试不计在内）`;
 }
 
-/* ---- 每本书的流水线状态（书库条目、页头徽标共用）----
-   ctx: {
-     profiles: 该书的画像行 | null（未知），
-     applied: 是否用于当前作品 | null（未知），
-     deep: 已加载的深层数据 | null，
-     running: { classify, extract, synthesize } 各为 { percentText } | null
-   }
-   返回 { key, label, tone }，tone 取 ws-ui 的 accent|ok|warn|danger|info|neutral。 */
-export function srChooseProfile(profiles) {
-  const list = Array.isArray(profiles) ? profiles.filter(Boolean) : [];
-  if (!list.length) return null;
-  return list.find((p) => p.status === "active") || list[list.length - 1];
+/* 学一次的调用数：GET …/learn 的 estimate。每层读的原文是后端的上限（约 4.4 万字）；书没那么长时按全书字数说 */
+export function srLearnEstimateText(estimate, { bookChars = null } = {}) {
+  if (!estimate) return null;
+  const calls = estimate.calls || {};
+  const cap = estimate.est_input_chars && estimate.est_input_chars.extract_per_call;
+  const whole = Number(bookChars) > 0 ? Number(bookChars) : null;
+  const perCall = cap && whole ? Math.min(cap, whole) : cap;
+  const read = perCall ? `每层读约 ${srFormatChars(perCall)}原文` : null;
+  if (estimate.est_calls) {
+    return [
+      `约 ${estimate.est_calls} 次模型调用（分层读原文 ${calls.extract || 4} 次、写文风卡 1 次、识别本书专名 1 次、给全书片段打标签 ${calls.tags} 批）`,
+      read,
+      "重试不计在内",
+    ].filter(Boolean).join("，");
+  }
+  return [`至少 ${Number(calls.extract || 4) + 2} 次模型调用，另加给全书片段打标签（整理完窗口才知道要几批）`, read].filter(Boolean).join("，");
 }
 
-function srProfileStale(profile) {
-  return !!(profile && profile.coverage_json && profile.coverage_json.stale);
+/* 为什么建议重新学习 */
+export const SR_RELEARN_TEXT = {
+  legacy_profile: "这是旧版画像，还没有文风卡：学习文风后换成文风卡（就地更新，用在作品上的设置不变）。",
+  types_changed: "段落类型已更新，建议重新学习：挑样本、打标签都要看段落类型。",
+  text_changed: "这本书的正文变过了，建议重新学习。",
+};
+
+export function srRelearnText(reason) {
+  return SR_RELEARN_TEXT[reason] || null;
 }
 
-export function srBookPipeline(book, ctx = {}) {
-  const running = ctx.running || {};
-  const raw = book && book.rawStatus;
+/* 段落类型的来源：legacy_heuristic（旧版导入用启发式规则标的）要提醒并给「用模型重新分类」 */
+export function srProvenanceView(provenance) {
+  if (!provenance || typeof provenance !== "object") return { kind: "unknown", legacy: false, agreement: null };
+  const agreement = provenance.agreement != null && Number.isFinite(Number(provenance.agreement)) ? Number(provenance.agreement) : null;
+  if (provenance.source === "legacy_heuristic") {
+    return {
+      kind: "legacy_heuristic",
+      legacy: true,
+      agreement,
+      heuristicParagraphs: Number(provenance.heuristic_paragraphs || 0),
+      llmParagraphs: Number(provenance.llm_paragraphs || 0),
+    };
+  }
+  if (provenance.source === "offline_heuristic") return { kind: "offline_heuristic", legacy: true, agreement: null, heuristicParagraphs: Number(provenance.heuristic_paragraphs || 0), llmParagraphs: 0 };
+  return { kind: "llm", legacy: false, agreement, llmParagraphs: Number(provenance.llm_paragraphs || 0) };
+}
+
+/* ---------- 一本书现在走到哪一步 ---------- */
+
+/* 这本书是否用在了当前作品上（applied_projects 里有当前作品） */
+export function srAppliedToWork(book, workId) {
+  if (!book || !workId) return null;
+  return (book.appliedProjects || []).find((item) => item && item.project_id === workId) || null;
+}
+
+/* running: { classify, learn }（活动表里这本书正在跑的作业：{ percentText } 或 null） */
+export function srBookPipeline(book, { running = {}, workId = null } = {}) {
+  if (!book) return null;
+  const raw = book.rawStatus;
   if (running.classify) return { key: "classifying", label: `分类中 ${running.classify.percentText || ""}`.trim(), tone: "warn" };
-  if (raw === "cancelling") return { key: "cancelling", label: "取消中", tone: "neutral" };
   if (raw === "ingesting") return { key: "classifying", label: "分类中", tone: "warn" };
+  if (raw === "cancelling") return { key: "cancelling", label: "取消中", tone: "neutral" };
   if (raw === "failed") return { key: "classify_failed", label: "分类未完成", tone: "danger" };
-  if (running.extract) return { key: "extracting", label: `抽取中 ${running.extract.percentText || ""}`.trim(), tone: "warn" };
-  if (running.synthesize) return { key: "synthesizing", label: "合成画像中", tone: "warn" };
-
-  const deep = ctx.deep && ctx.deep.loaded ? ctx.deep : null;
-  const profile = deep ? deep.profile : srChooseProfile(ctx.profiles);
-  const stale = srProfileStale(profile);
-  if (ctx.applied) {
-    return stale
-      ? { key: "applied_stale", label: "当前作品在用 · 画像已失效", tone: "warn" }
+  if (running.learn) return { key: "learning", label: `学习中 ${running.learn.percentText || ""}`.trim(), tone: "warn" };
+  const profile = book.profile;
+  if (srAppliedToWork(book, workId)) {
+    return profile && profile.needs_relearn
+      ? { key: "applied_relearn", label: "当前作品在用 · 建议重学", tone: "warn" }
       : { key: "applied", label: "当前作品在用", tone: "ok" };
   }
   if (profile) {
-    if (stale) return { key: "profile_stale", label: "画像需重新合成", tone: "warn" };
-    if (profile.status === "active") return { key: "profile_active", label: "画像已启用", tone: "info" };
-    return { key: "profile_draft", label: "画像待应用", tone: "info" };
+    if (profile.needs_relearn) return { key: "relearn", label: profile.relearn_reason === "legacy_profile" ? "旧版画像" : "建议重新学习", tone: "warn" };
+    return { key: "learned", label: "已学好", tone: "info" };
   }
-  if (deep) {
-    const runStatus = deep.run ? deep.run.status : null;
-    if (runStatus === "done") return { key: "ready_to_synthesize", label: "待合成画像", tone: "info" };
-    if (runStatus === "running" || runStatus === "queued") return { key: "extracting", label: "抽取中", tone: "warn" };
-    if (runStatus === "failed" || runStatus === "cancelled") return { key: "extract_failed", label: "抽取未完成", tone: "danger" };
-    return { key: "ready_to_extract", label: "待抽取", tone: "neutral" };
+  if (book.learn && (book.learn.state === "failed" || book.learn.state === "cancelled")) {
+    return { key: "learn_failed", label: "学习未完成", tone: "danger" };
   }
-  if (Array.isArray(ctx.profiles)) return { key: "no_profile", label: "尚无画像", tone: "neutral" };
-  return { key: "imported", label: "已导入", tone: "neutral" };
+  return { key: "to_learn", label: "待学习", tone: "neutral" };
 }
 
-/* ---- 流水线五步的状态（步骤条）----
-   每步 done | running | attention | todo | blocked，全部来自真实数据，不再按作者点到哪步打勾。
-   回测是可选的一步：没有报告只算 todo，不挡后面的应用。
-   这本书的深层数据还没读到时，后四步是 unknown（不画状态、不念状态）：没读到不等于「未开始」，
-   否则一本全做完的书会先闪一下「维度矩阵 未开始 / 等前一步」，旁边页头却写着「当前作品在用」。 */
+/* 三步：book（参考书）/ learn（学习文风）/ apply（用于作品） */
+export const SR_STAGES = [
+  { id: "book", name: "参考书", icon: "BookOpen" },
+  { id: "learn", name: "学习文风", icon: "Sparkles" },
+  { id: "apply", name: "用于作品", icon: "Pen" },
+];
+
 export const SR_STAGE_STATE_LABEL = {
-  done: "已完成", running: "进行中", attention: "需处理", todo: "未开始", blocked: "等前一步", unknown: "",
+  done: "已完成", running: "进行中", attention: "需处理", todo: "未开始", blocked: "等前一步",
 };
 
-export function srStageStates(book, deep, running = {}) {
-  const raw = book && book.rawStatus;
-  const states = {};
-  if (running.classify || raw === "ingesting" || raw === "cancelling") states.overview = "running";
-  else if (raw === "failed") states.overview = "attention";
-  else states.overview = "done";
-
-  const d = deep && deep.loaded ? deep : null;
-  if (!d) {
-    // 分类没完成时矩阵确实在等前一步（这只看书本身的状态）；其余要等深层数据到了再说
-    states.matrix = states.overview !== "done" ? "blocked" : running.extract ? "running" : "unknown";
-    states.profile = running.synthesize ? "running" : "unknown";
-    states.validation = "unknown";
-    states.apply = "unknown";
-    return states;
-  }
-  const profile = d.profile;
-  const runStatus = d.run ? d.run.status : null;
-
-  if (states.overview !== "done") states.matrix = "blocked";
-  else if (running.extract || runStatus === "running" || runStatus === "queued") states.matrix = "running";
-  else if (runStatus === "done") states.matrix = "done";
-  else if (runStatus === "failed" || runStatus === "cancelled") states.matrix = "attention";
-  else states.matrix = "todo";
-
-  if (running.synthesize) states.profile = "running";
-  else if (profile) {
-    const newRun = !!(d.runId && profile.run_id && d.runId !== profile.run_id);
-    states.profile = srProfileStale(profile) || newRun ? "attention" : "done";
-  } else states.profile = states.matrix === "done" ? "todo" : "blocked";
-
-  const hasProfile = !!profile;
-  const reports = Array.isArray(d.reports) ? d.reports : [];
-  if (!hasProfile) states.validation = "blocked";
-  else if (reports.some((r) => r && (r.status === "running" || r.status === "pending"))) states.validation = "running";
-  else states.validation = reports.some((r) => r && r.verdict) ? "done" : "todo";
-
-  const bindings = Array.isArray(d.bindings) ? d.bindings : [];
-  if (!hasProfile) states.apply = "blocked";
-  else states.apply = bindings.some(srBindingActive) ? "done" : "todo";
+export function srStageStates(book, { running = {}, workId = null } = {}) {
+  const states = { book: "done", learn: "todo", apply: "todo" };
+  if (!book) return states;
+  const raw = book.rawStatus;
+  if (running.classify || raw === "ingesting" || raw === "cancelling") states.book = "running";
+  else if (raw === "failed") states.book = "attention";
+  else if (srProvenanceView(book.provenance).legacy) states.book = "attention";
+  const ready = raw === "ready" && !running.classify;
+  const profile = book.profile;
+  if (!ready) states.learn = "blocked";
+  else if (running.learn) states.learn = "running";
+  else if (profile && !profile.needs_relearn) states.learn = "done";
+  else if (profile || (book.learn && (book.learn.state === "failed" || book.learn.state === "cancelled"))) states.learn = "attention";
+  else states.learn = "todo";
+  if (!profile) states.apply = "blocked";
+  else if (srAppliedToWork(book, workId)) states.apply = "done";
+  else states.apply = "todo";
   return states;
 }
 
-/* 落点：已用于当前作品的书直接落在「注入应用」；否则落在第一个没做完的必经步骤
-   （回测可选，不作为落点）；全做完也落在「注入应用」。 */
+/* 落点：用在当前作品上的书落在「用于作品」；否则第一个没做完的步骤 */
 export function srLandingStage(states, { applied = false } = {}) {
   if (applied) return "apply";
-  for (const id of ["overview", "matrix", "profile", "apply"]) {
-    if (states && states[id] !== "done") return id;
+  for (const stage of SR_STAGES) {
+    if (states && states[stage.id] !== "done") return stage.id;
   }
   return "apply";
 }
 
-/* ---- 书库排序与筛选 ---- */
-export function srSortBooks(books, appliedBookIds) {
+/* ---------- 文风画像：按层分组 ---------- */
+
+/* profile.dimensions（后端按辨识度排） → [{ layer, label, dims }]，层按固定顺序，层内保持辨识度顺序 */
+export function srDimensionGroups(dimensions) {
+  const list = Array.isArray(dimensions) ? dimensions : [];
+  return STYLE_LAYER_ORDER.map((layer) => ({
+    layer,
+    label: STYLE_LAYER_LABELS[layer],
+    dims: list.filter((d) => d && styleLayerOf(d.dimension) === layer),
+  })).filter((group) => group.dims.length);
+}
+
+/* ---------- 参考书活动 ---------- */
+
+/* 条目的叫法：作业表条目按 kind（段落分类区分导入 / 重新分类 / 重标类型），其余用后端给的 kind_label */
+export function srActivityKindLabel(entry) {
+  if (!entry) return "";
+  if (entry.kind === "classify") {
+    if (entry.mode === "import") return "导入 · 段落分类";
+    if (entry.mode === "retype") return "用模型重新分类";
+    return "段落分类";
+  }
+  return styleJobKindLabel(entry.kind) || entry.kind_label || entry.kind || "";
+}
+
+export function srActivityActive(entry) {
+  return !!entry && (entry.status === "queued" || entry.status === "running");
+}
+
+function srStripKindPrefix(label, entry) {
+  const text = String(label || "");
+  const kind = styleJobKindLabel(entry.kind) || entry.kind_label || "";
+  return kind && text.startsWith(`${kind} · `) ? text.slice(kind.length + 3) : text;
+}
+
+/* 一条活动 → { percent, percentText, detail, active }（面板与各页的进度条共用） */
+export function srActivityView(entry, now = Date.now()) {
+  if (!entry) return { percent: 0, percentText: "0%", detail: "", active: false };
+  const active = srActivityActive(entry);
+  let percent = 0;
+  if (entry.status === "succeeded") percent = 100;
+  else if (entry.percent != null && Number.isFinite(Number(entry.percent))) percent = Math.max(0, Math.min(99, Math.round(Number(entry.percent))));
+  const elapsed = entry.elapsed_seconds != null
+    ? Number(entry.elapsed_seconds)
+    : Math.max(0, (now - (entry.startedAt || now)) / 1000);
+  const parts = [];
+  if (entry.status === "queued") parts.push("排队中");
+  else if (entry.status === "running") {
+    const label = srStripKindPrefix(entry.phase_label, entry) || "进行中";
+    const steps = entry.steps && Number(entry.steps.total) > 0 ? ` ${entry.steps.done}/${entry.steps.total}` : "";
+    parts.push(`${label}${steps}`);
+    if (entry.cancel_requested) parts.push("正在取消");
+    if (entry.stalled) parts.push("后台进程重启过，稍后自动接着跑");
+  } else if (entry.status === "succeeded") parts.push("完成");
+  else if (entry.status === "cancelled") parts.push("已取消");
+  else if (entry.status === "failed") {
+    const reason = entry.error ? srErrorInfo(entry.error, entry.error.message || "").message : "";
+    parts.push(`没有完成${reason ? `：${reason}` : ""}`);
+  }
+  if (Number.isFinite(elapsed) && elapsed > 0) parts.push(`${active ? "已用" : "用时"} ${srFormatDuration(elapsed)}`);
+  if (active && entry.eta_seconds != null) parts.push(`预计还需 ${srFormatDuration(entry.eta_seconds)}`);
+  if (Number(entry.llm_calls) > 0) parts.push(`模型调用 ${entry.llm_calls} 次`);
+  return { percent, percentText: `${percent}%`, detail: parts.join(" · "), active };
+}
+
+/* ---------- 书库排序、筛选、书脊色 ---------- */
+
+export function srSortBooks(books, workId) {
   const list = Array.isArray(books) ? books.slice() : [];
-  if (!appliedBookIds || !appliedBookIds.size) return list;
+  if (!workId) return list;
   return list
-    .map((b, i) => ({ b, i, pin: appliedBookIds.has(b.id) ? 0 : 1 }))
+    .map((b, i) => ({ b, i, pin: srAppliedToWork(b, workId) ? 0 : 1 }))
     .sort((x, y) => (x.pin - y.pin) || (x.i - y.i))
     .map((x) => x.b);
 }
@@ -470,7 +472,6 @@ export function srFilterBooks(books, query) {
   return books.filter((b) => `${b.title || ""} ${b.author || ""}`.toLowerCase().includes(q));
 }
 
-/* 书脊颜色按书 id 固定（以前按列表位置轮换，置顶一本后所有书都换色）。 */
 const SR_SPINE_COLORS = ["crimson", "gold", "slate", "sage"];
 export function srSpineColor(bookId) {
   let h = 0;
@@ -478,10 +479,15 @@ export function srSpineColor(bookId) {
   return SR_SPINE_COLORS[h % SR_SPINE_COLORS.length];
 }
 
-/* ---- 界面偏好 ws_sr_ui_v1（每位读者本机：上次打开的书与步骤）----
-   形状：{ last: { bookId, stage }, works: { [workId]: { bookId, stage } } }。
-   只是便利：读不到、写不进（隐私窗口、清过站点数据）都当没有。 */
+/* ---------- 界面偏好 ws_sr_ui_v1（上次打开的书与步骤；只是便利） ---------- */
 export const SR_UI_PREFS_KEY = "ws_sr_ui_v1";
+const SR_STAGE_IDS = new Set(SR_STAGES.map((s) => s.id));
+
+function srCleanPref(entry) {
+  return entry && typeof entry === "object" && entry.bookId
+    ? { bookId: String(entry.bookId), stage: SR_STAGE_IDS.has(entry.stage) ? entry.stage : null }
+    : null;
+}
 
 export function srReadUiPrefs(storage) {
   try {
@@ -489,10 +495,14 @@ export function srReadUiPrefs(storage) {
     const raw = store && store.getItem(SR_UI_PREFS_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     if (!parsed || typeof parsed !== "object") return { last: null, works: {} };
-    return {
-      last: parsed.last && typeof parsed.last === "object" ? parsed.last : null,
-      works: parsed.works && typeof parsed.works === "object" ? parsed.works : {},
-    };
+    const works = {};
+    if (parsed.works && typeof parsed.works === "object") {
+      for (const [key, value] of Object.entries(parsed.works)) {
+        const clean = srCleanPref(value);
+        if (clean) works[key] = clean;
+      }
+    }
+    return { last: srCleanPref(parsed.last), works };
   } catch (e) {
     return { last: null, works: {} };
   }
@@ -504,28 +514,22 @@ export function srRememberUi(workId, entry, storage) {
     const store = storage || globalThis.localStorage;
     if (!store) return;
     const prefs = srReadUiPrefs(store);
-    const value = { bookId: String(entry.bookId), stage: entry.stage || null };
+    const value = srCleanPref(entry);
     const works = { ...prefs.works };
     if (workId) works[workId] = value;
-    // 只留最近 20 部作品的记录，别让偏好无限长
     const keys = Object.keys(works);
     if (keys.length > 20) keys.slice(0, keys.length - 20).forEach((k) => { delete works[k]; });
     store.setItem(SR_UI_PREFS_KEY, JSON.stringify({ last: value, works }));
-  } catch (e) { /* 存不进就算了：偏好只是便利 */ }
+  } catch (e) { /* 存不进就算了 */ }
 }
 
-/* 进入页面时打开哪本书：
-   本次打开应用期间刚看过的那本（session：离开页面再回来接着看，不跨刷新）
-   → 当前作品在用的书 → 这部作品上次打开的书 → 上次打开的书 → 第一本。
-   本机记录（prefs）只在没有「在用」的书时才用：作者瞄过一眼别的书，下次进来仍回到给作品定调的那本。
-   还不知道「当前作品在用哪本」（metaSettled=false）又没有 session 时返回 null，等一等再定，不先落到别处再跳。 */
-export function srPickLandingBook(books, { prefs, workId, appliedBookIds, metaSettled = true, session = null } = {}) {
+/* 进入页面时打开哪本书：本次会话刚看的 → 当前作品在用的 → 这部作品上次打开的 → 上次打开的 → 第一本 */
+export function srPickLandingBook(books, { prefs, workId, session = null } = {}) {
   const list = Array.isArray(books) ? books : [];
   if (!list.length) return null;
   const has = (id) => !!id && list.some((b) => b.id === id);
   if (session && has(session.bookId)) return { bookId: session.bookId, stage: session.stage || null, source: "session" };
-  if (!metaSettled) return null;
-  const applied = appliedBookIds ? list.find((b) => appliedBookIds.has(b.id)) : null;
+  const applied = workId ? list.find((b) => srAppliedToWork(b, workId)) : null;
   if (applied) return { bookId: applied.id, stage: null, source: "applied" };
   const p = prefs || { last: null, works: {} };
   const own = workId && p.works ? p.works[workId] : null;
@@ -533,3 +537,6 @@ export function srPickLandingBook(books, { prefs, workId, appliedBookIds, metaSe
   if (p.last && has(p.last.bookId)) return { bookId: p.last.bookId, stage: p.last.stage || null, source: "last" };
   return { bookId: list[0].id, stage: null, source: "first" };
 }
+
+/* 「参考书活动」面板在哪：宽屏在左栏书库里，≤1280 在页头「参考书库」打开的书库里 */
+export const SR_ACTIVITY_WHERE = "「参考书库」的「参考书活动」";

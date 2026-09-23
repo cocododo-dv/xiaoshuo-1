@@ -108,7 +108,7 @@ describe("React 工具链独立性", () => {
       "icons.jsx", "tweaks-panel.jsx", "ws-ai-providers.jsx", "ws-chapter-plan.jsx",
       "ws-cost.jsx", "ws-deep.jsx", "ws-home.jsx", "ws-home-derive.js",
       "ws-palette.jsx", "ws-quality.jsx", "ws-settings.jsx", "ws-settings-ai.jsx",
-      "ws-settings-shared.jsx", "ws-styleref-val.jsx", "ws-styleref-model.js", "ws-styleref-store.js", "ws-styleref-ui.jsx", "ws-styleref-activity.jsx", "ws-styleref-library.jsx", "ws-styleref-overview.jsx", "ws-styleref-matrix.jsx", "ws-styleref-profile.jsx", "ws-styleref-apply.jsx", "ws-styleref-inject.jsx", "ws-scene-run.jsx",
+      "ws-settings-shared.jsx", "ws-styleref.jsx", "ws-styleref-model.js", "ws-styleref-store.js", "ws-styleref-ui.jsx", "ws-styleref-activity.jsx", "ws-styleref-library.jsx", "ws-styleref-overview.jsx", "ws-styleref-learn.jsx", "ws-styleref-portrait.jsx", "ws-styleref-apply.jsx", "ws-styleref-scene-preview.jsx", "ws-scene-run.jsx",
       "ws-author-data.jsx", "ws-author-doctor.jsx", "ws-author-derive.js", "ws-author-spine.jsx",
       "ws-author-pacing.jsx", "ws-author-ai.jsx", "ws-author-overview.jsx", "ws-author-detail.jsx",
       "ws-author-side.jsx", "ws-author-ui.jsx", "ws-author-hooks.js", "ws-library-derive.jsx",

@@ -155,8 +155,8 @@ def test_seeded_review_effects_target_the_editable_current_chapter(client, sessi
 
 
 def test_resolve_bind_style_profile_forwards_injection_config(client, session):
-    """风格参考 apply 决策卡(带 bind_style_profile effect + 注入配置)在收件箱批准后,
-    应真正创建携带 config 的 binding —— 前端 apply 按钮依赖的端到端契约。"""
+    """待办里还没处理的旧「应用画像」决策卡(bind_style_profile effect + 旧注入配置)在收件箱批准后,
+    走 v3 直接绑定:真正创建一条 binding,旧键映射成 v3 配置(界面已改为直接绑定,不再发卡)。"""
     from novel_system.services.style_reference.repository import StyleReferenceRepository
 
     project = _create_project(client)
@@ -201,9 +201,11 @@ def test_resolve_bind_style_profile_forwards_injection_config(client, session):
     assert b["scope"] == "project"
     assert b["scope_ref_id"] == pid          # 默认取卡片 project_id
     assert b["strategy"] == "mixed"
-    assert b["config_json"]["intensity"] == 40
-    assert b["config_json"]["sub_dimensions"] == ["language.rhetoric"]
-    assert b["config_json"]["include_metric"] is True
+    # 强度 40 → round(3 + 9·0.4) = 7 窗;mixed → 全面模仿;旧 sub_dimensions / include_* 不再落库
+    assert b["config"]["sample_windows"] == 7
+    assert b["config"]["reference_mode"] == "full"
+    assert b["config_json"] == b["config"]
+    assert "intensity" not in b["config_json"] and "sub_dimensions" not in b["config_json"]
 
 
 def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, session):

@@ -1,4 +1,4 @@
-"""注入只读辅助端点:/injection/task-defaults + /injection/layers(2026-09-23 风格参考 v3)。
+"""注入只读辅助端点:/injection/layers(2026-09-23 风格参考 v3;旧 /injection/task-defaults 已删,P6a)。
 
 v3:只有最具体的一层生效(``applied``),其余命中层被遮住(``deduplicated``);层查询只查列、不渲染(U10);
 旧策略列一律 ``mixed``。
@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
 from novel_system.db.session import SessionLocal
-from novel_system.services.style_reference.injection import default_injection_strategy
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 PREFIX = "/api/v2/style-reference"
@@ -62,18 +61,10 @@ def _bind(profile_id: str, *, binding_id: str, scope: str, scope_ref_id: str, st
         session.commit()
 
 
-def test_task_defaults_endpoint_lists_the_live_tasks() -> None:
+def test_task_defaults_endpoint_is_gone() -> None:
+    """旧任务默认策略表(四种策略 / 刷新周期)没有消费方了:端点删除(台账 U16)。"""
     with TestClient(create_app()) as client:
-        resp = client.get(f"{PREFIX}/injection/task-defaults")
-        assert resp.status_code == 200
-        tasks = {t["task_type"]: t for t in resp.json()["data"]["tasks"]}
-    # long_form_continuation 生产路径已下线:不再对 UI 列出
-    assert set(tasks) == {"project_init", "scene_generation", "fine_tuning", "key_chapter"}
-    # v3:旧策略列一律 mixed(怎么送参考看绑定的 reference_mode)
-    assert {t["default_strategy"] for t in tasks.values()} == {"mixed"}
-    assert all(t["refresh_every_chars"] == 0 for t in tasks.values())
-    # 持久层兼容:存量 binding 行的 task_type='long_form_continuation' 仍能解析默认策略
-    assert default_injection_strategy("long_form_continuation") is not None
+        assert client.get(f"{PREFIX}/injection/task-defaults").status_code == 404
 
 
 def test_layers_endpoint_empty_when_no_bindings() -> None:

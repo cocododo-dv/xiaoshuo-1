@@ -14,15 +14,13 @@ from novel_system.services.style_reference.inject.bindings import (
     resolve_active_binding,
     resolve_binding_layers,
 )
+from novel_system.services.style_reference import injection as injection_compat
 from novel_system.services.style_reference.injection import (
     InjectionService,
-    default_injection_strategy,
-    injection_task_defaults,
     scene_sampling_hints,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
-from novel_system.services.style_reference.schemas import InjectionStrategy
 
 
 def _seed(seed: str, bindings: list[dict], *, profile_status: str = "active") -> None:
@@ -164,9 +162,9 @@ def test_compat_shim_keeps_the_old_call_shapes(session) -> None:
     assert service.resolve_active_binding("P6", "scene_generation").binding_id == "bd_bind_shim_project"
     assert [b.binding_id for b in service.resolve_binding_layers("P6", "scene_generation")] == ["bd_bind_shim_project"]
     assert service.describe_binding_layers("P6", "scene_generation")["merged"]["binding_id"] == "bd_bind_shim_project"
-    assert default_injection_strategy("scene_generation") == InjectionStrategy.MIXED
-    assert {item["default_strategy"] for item in injection_task_defaults()} == {"mixed"}
-    assert "long_form_continuation" not in {item["task_type"] for item in injection_task_defaults()}
+    # 旧的「任务默认策略」两件已删(P6a):绑定一律经 binding_apply 写,strategy 列恒 mixed
+    assert not hasattr(injection_compat, "default_injection_strategy")
+    assert not hasattr(injection_compat, "injection_task_defaults")
 
     class _Scene:
         scene_seq = 1

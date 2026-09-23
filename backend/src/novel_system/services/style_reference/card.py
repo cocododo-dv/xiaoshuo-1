@@ -28,7 +28,7 @@ from novel_system.services.style_reference.binding_config import (
 DIMENSION_CARD_VERSION = "dimension_card_v1"
 PROFILE_VERSION_V3 = "style_profile_v3"
 
-# 与前端 ws-styleref-model.js 的 SR_LAYERS 同名（一张标签表，别处不再各写一份）
+# 与前端 ws-labels.js 的 STYLE_DIMENSION_LABELS 逐字相同（frontend-react/src/ws-labels.test.js 核对）
 DIMENSION_LABELS: dict[str, str] = {
     "language.sentence_structure": "句式结构",
     "language.vocabulary": "词汇选择",

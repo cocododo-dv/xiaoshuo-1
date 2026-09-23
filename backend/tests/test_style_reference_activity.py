@@ -15,12 +15,10 @@ import random
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-import novel_system.api.routes.style_reference as sr_routes
 from novel_system.db.models import StyleReferenceValidationReport, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.import_progress import (
@@ -38,7 +36,7 @@ from novel_system.services.style_reference.validation.plagiarism import (
     check_plagiarism,
 )
 from tests.style_reference_route_helpers import install_fake_classifier, wait_book_status
-from tests.test_style_reference_routes import _import_book, _seed_full_chain
+from tests.test_style_reference_routes import _import_book
 from tests.test_style_reference_validation_runner import _seed_profile, _wait_for_async
 
 PREFIX = "/api/v2/style-reference"
@@ -247,16 +245,15 @@ def test_reclassify_route_registers_progress(
     assert job_entry["kind"] == "classify" and job_entry["mode"] == "reclassify"
     wait_book_status(client, book_id)
     deadline = time.monotonic() + 15
-    snap = client.get(f"{PREFIX}/imports/sr-reclassify-1/progress").json()["data"]["progress"]
-    while snap["status"] == "running" and time.monotonic() < deadline:
+    done = job_entry
+    while done is not None and done["status"] in ("queued", "running") and time.monotonic() < deadline:
         time.sleep(0.02)
-        snap = client.get(f"{PREFIX}/imports/sr-reclassify-1/progress").json()["data"]["progress"]
-    assert snap["kind"] == "reclassify"
-    assert snap["status"] == "succeeded" and snap["phase"] == "done" and snap["percent"] == 100
-    assert snap["book_id"] == book_id and snap["title"] == "测试"
-    assert snap["classify"]["batches_total"] >= 1
-    assert snap["classify"]["batches_done"] == snap["classify"]["batches_total"]
-    assert snap["paragraphs_count"] == resp.json()["data"]["paragraphs_count"]
+        items = client.get(f"{PREFIX}/activity").json()["data"]["items"]
+        done = next((item for item in items if item["key"] == job_entry["key"]), None)
+    assert done is not None and done["status"] == "succeeded" and done["percent"] == 100.0
+    assert done["book_id"] == book_id and done["title"] == "测试" and done["mode"] == "reclassify"
+    assert done["steps"]["total"] >= 1 and done["steps"]["done"] == done["steps"]["total"]
+    assert job_entry["job_id"] == resp.json()["data"]["job_id"]
 
 
 # ---------------------------------------------------------------- validation
@@ -310,55 +307,3 @@ def test_async_validation_persists_local_results_before_the_semantic_pass(
     assert final["llm_calls"] == 2
 
 
-# ---------------------------------------------------------------- preview
-
-
-def test_preview_route_forwards_paragraph_types(client: TestClient, monkeypatch) -> None:
-    book_id = _import_book(client)
-    _, _, profile_id = _seed_full_chain(book_id)
-    captured: dict = {}
-
-    class _Stub:
-        def __init__(self, session, *, llm_client=None, llm_enabled=None) -> None:  # noqa: ANN001
-            pass
-
-        def generate(self, profile_id, *, target_types=None):  # noqa: ANN001
-            captured["types"] = target_types
-            types = target_types or ("dialogue", "description_env", "psychology")
-            return [
-                SimpleNamespace(
-                    model_dump=lambda t=t: {
-                        "paragraph_type": t,
-                        "sample_text": "x",
-                        "verdict": "pass",
-                        "error": None,
-                    }
-                )
-                for t in types
-            ]
-
-    monkeypatch.setattr(sr_routes, "PreviewService", _Stub)
-    resp = client.post(
-        f"{PREFIX}/profiles/{profile_id}/preview",
-        json={"paragraph_types": ["dialogue"]},
-        headers={"X-Idempotency-Key": "pv-1"},
-    )
-    assert resp.status_code == 200, resp.text
-    assert captured["types"] == ("dialogue",)
-    assert [s["paragraph_type"] for s in resp.json()["data"]["samples"]] == ["dialogue"]
-
-    resp2 = client.post(
-        f"{PREFIX}/profiles/{profile_id}/preview",
-        json={},
-        headers={"X-Idempotency-Key": "pv-2"},
-    )
-    assert resp2.status_code == 200, resp2.text
-    assert captured["types"] is None
-    assert len(resp2.json()["data"]["samples"]) == 3
-
-    bad = client.post(
-        f"{PREFIX}/profiles/{profile_id}/preview",
-        json={"paragraph_types": ["nope"]},
-        headers={"X-Idempotency-Key": "pv-3"},
-    )
-    assert bad.status_code in (400, 422), bad.text

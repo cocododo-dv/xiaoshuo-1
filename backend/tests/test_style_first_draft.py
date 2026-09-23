@@ -184,11 +184,17 @@ def test_validation_rejects_bad_draft_mode_and_old_contracts_default_to_neutral_
 
 
 def test_apply_request_carries_draft_mode_into_config_json() -> None:
-    req = ApplyProfileRequest(scope="project", scope_ref_id="p", draft_mode="neutral_first", intensity=80)
-    assert req.injection_config() == {"intensity": 80, "draft_mode": "neutral_first"}
-    assert "draft_mode" not in ApplyProfileRequest(scope="project", scope_ref_id="p").injection_config()
+    # v3 直接绑定(P6a):起草方式是绑定配置的一键,不给就不动这条绑定已有的值(新建时取默认 style_first)
+    req = ApplyProfileRequest.model_validate(
+        {"scope": "project", "scope_ref_id": "p", "config": {"draft_mode": "neutral_first", "sample_windows": 8}}
+    )
+    assert req.config.as_patch() == {"draft_mode": "neutral_first", "sample_windows": 8}
+    assert ApplyProfileRequest.model_validate({"scope": "project", "scope_ref_id": "p"}).config is None
     with pytest.raises(ValueError):
-        ApplyProfileRequest(scope="project", scope_ref_id="p", draft_mode="hybrid")
+        ApplyProfileRequest.model_validate({"scope": "project", "scope_ref_id": "p", "config": {"draft_mode": "hybrid"}})
+    # 旧参数(强度 / 策略)不再收
+    with pytest.raises(ValueError):
+        ApplyProfileRequest.model_validate({"scope": "project", "scope_ref_id": "p", "intensity": 80})
 
 
 # ---------------------------------------------------------------------------
@@ -619,15 +625,15 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
 
 
 def test_review_effect_apply_carries_draft_mode_like_the_route() -> None:
-    from novel_system.services.review_effects import _style_injection_config
+    """待办里还没处理的旧「应用画像」卡:卡上的起草方式与强度经 v3 直接绑定同一口径映射(P6a)。"""
+    from novel_system.services.review_effects import _legacy_binding_config
+    from novel_system.services.style_reference.binding_config import normalize_binding_config
 
-    assert _style_injection_config({"intensity": 90, "draft_mode": "neutral_first"}) == {
-        "intensity": 90,
-        "draft_mode": "neutral_first",
-    }
-    assert _style_injection_config({"draft_mode": " Style_First "}) == {"draft_mode": "style_first"}
-    assert "draft_mode" not in _style_injection_config({"draft_mode": "hybrid"})
-    assert "draft_mode" not in _style_injection_config({})
+    mapped = normalize_binding_config("mixed", _legacy_binding_config({"intensity": 90, "draft_mode": "neutral_first"}))
+    assert mapped["draft_mode"] == "neutral_first" and mapped["sample_windows"] == 11
+    assert normalize_binding_config("mixed", _legacy_binding_config({"draft_mode": " Style_First "}))["draft_mode"] == "style_first"
+    assert normalize_binding_config("mixed", _legacy_binding_config({"draft_mode": "hybrid"}))["draft_mode"] == "style_first"
+    assert _legacy_binding_config({}) == {}
 
 
 def test_run_job_view_reports_the_frozen_draft_mode(session) -> None:

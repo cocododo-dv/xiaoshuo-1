@@ -8,7 +8,7 @@
 
 本模块是叶子（只依赖 ORM）：把受影响场景 / 章的规划产物置为 ``superseded``，让下一次运行按当前
 设计与绑定重新规划。调用点：``ProjectRuntimeInvalidationService``（设计变了）、
-``MaterializationService.apply_profile`` 与绑定删除路由（参考变了）。作废只是状态翻转，不删行。
+``binding_apply``（用于作品 / 改绑定配置 / 解除）与删书（参考变了）。作废只是状态翻转，不删行。
 """
 
 from __future__ import annotations

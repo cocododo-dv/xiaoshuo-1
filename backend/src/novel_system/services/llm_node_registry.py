@@ -208,15 +208,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         reasoning_level="off",
     ),
     LLMNodeSpec(
-        "style_ref_preview_generate",
-        "Style Reference Preview 端点示例文本生成",
-        "style_reference",
-        template_name="style_ref_preview_generate",
-        model="gpt-5-mini",
-        temperature=0.7,
-        max_output_tokens=1500,
-    ),
-    LLMNodeSpec(
         "style_ref_validate_semantic",
         "Style Reference Validation - Semantic critic(强制 quote)",
         "style_reference",

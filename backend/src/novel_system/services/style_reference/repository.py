@@ -62,6 +62,7 @@ class StyleReferenceRepository:
         stmt = select(StyleReferenceBook)
         if status is not None:
             stmt = stmt.where(StyleReferenceBook.status == status)
+        stmt = stmt.order_by(StyleReferenceBook.created_at, StyleReferenceBook.book_id)
         return list(self.session.scalars(stmt).all())
 
     def delete_book(self, book_id: str) -> int:
@@ -122,6 +123,7 @@ class StyleReferenceRepository:
             stmt = stmt.where(StyleReferenceRun.book_id == book_id)
         if status is not None:
             stmt = stmt.where(StyleReferenceRun.status == status)
+        stmt = stmt.order_by(StyleReferenceRun.created_at, StyleReferenceRun.run_id)
         return list(self.session.scalars(stmt).all())
 
     def update_run(self, run_id: str, **updates: Any) -> StyleReferenceRun | None:
@@ -170,7 +172,11 @@ class StyleReferenceRepository:
         return self.session.get(StyleReferenceQuote, quote_id)
 
     def list_quotes(self, book_id: str) -> list[StyleReferenceQuote]:
-        stmt = select(StyleReferenceQuote).where(StyleReferenceQuote.book_id == book_id)
+        stmt = (
+            select(StyleReferenceQuote)
+            .where(StyleReferenceQuote.book_id == book_id)
+            .order_by(StyleReferenceQuote.created_at, StyleReferenceQuote.quote_id)
+        )
         return list(self.session.scalars(stmt).all())
 
     def list_quotes_by_ids(self, quote_ids: list[str]) -> list[StyleReferenceQuote]:
@@ -195,8 +201,10 @@ class StyleReferenceRepository:
         """批量 IN 查询(PR-23 evidence 读路径,避免逐条 get)。"""
         if not finding_ids:
             return []
-        stmt = select(StyleReferenceEvidence).where(
-            StyleReferenceEvidence.finding_id.in_(finding_ids)
+        stmt = (
+            select(StyleReferenceEvidence)
+            .where(StyleReferenceEvidence.finding_id.in_(finding_ids))
+            .order_by(StyleReferenceEvidence.created_at, StyleReferenceEvidence.evidence_id)
         )
         return list(self.session.scalars(stmt).all())
 
@@ -238,6 +246,7 @@ class StyleReferenceRepository:
             stmt = stmt.where(StyleReferenceFinding.finding_kind == finding_kind)
         if status is not None:
             stmt = stmt.where(StyleReferenceFinding.status == status)
+        stmt = stmt.order_by(StyleReferenceFinding.created_at, StyleReferenceFinding.finding_id)
         return list(self.session.scalars(stmt).all())
 
     def update_finding(self, finding_id: str, **updates: Any) -> StyleReferenceFinding | None:
@@ -270,6 +279,7 @@ class StyleReferenceRepository:
             stmt = stmt.where(StyleReferenceProfile.book_id == book_id)
         if status is not None:
             stmt = stmt.where(StyleReferenceProfile.status == status)
+        stmt = stmt.order_by(StyleReferenceProfile.created_at, StyleReferenceProfile.profile_id)
         return list(self.session.scalars(stmt).all())
 
     def update_profile(self, profile_id: str, **updates: Any) -> StyleReferenceProfile | None:
@@ -302,6 +312,7 @@ class StyleReferenceRepository:
             stmt = stmt.where(StyleReferenceInjectionBinding.profile_id == profile_id)
         if task_type is not None:
             stmt = stmt.where(StyleReferenceInjectionBinding.task_type == task_type)
+        stmt = stmt.order_by(StyleReferenceInjectionBinding.created_at, StyleReferenceInjectionBinding.binding_id)
         return list(self.session.scalars(stmt).all())
 
     def delete_binding(self, binding_id: str) -> int:
@@ -333,6 +344,7 @@ class StyleReferenceRepository:
             stmt = stmt.where(StyleReferenceValidationReport.profile_id == profile_id)
         if verdict is not None:
             stmt = stmt.where(StyleReferenceValidationReport.verdict == verdict)
+        stmt = stmt.order_by(StyleReferenceValidationReport.created_at, StyleReferenceValidationReport.report_id)
         return list(self.session.scalars(stmt).all())
 
     # ---------------------------------------------------------- banned terms
@@ -353,6 +365,7 @@ class StyleReferenceRepository:
         )
         if scope is not None:
             stmt = stmt.where(StyleReferenceBannedTerm.scope == scope)
+        stmt = stmt.order_by(StyleReferenceBannedTerm.created_at, StyleReferenceBannedTerm.term_id)
         return list(self.session.scalars(stmt).all())
 
     def get_banned_term(self, term_id: str) -> StyleReferenceBannedTerm | None:

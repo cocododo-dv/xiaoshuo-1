@@ -454,13 +454,11 @@ def _seed_reference(session, *, seed: str, profile_json: dict, project_id: str |
 
 
 def test_applying_a_profile_supersedes_the_projects_planning(session) -> None:
-    from novel_system.services.style_reference.materialization import MaterializationService
+    from novel_system.services.style_reference.binding_apply import apply_style_profile
 
     project_id, chapter_id, scene_id = _seed_scene(session, suffix="_apply")
     profile_id = _seed_reference(session, seed="apply", profile_json={"style_features": ["短句"]})
-    MaterializationService(session).apply_profile(
-        profile_id, scope="project", scope_ref_id=project_id
-    )
+    apply_style_profile(session, profile_id, scope="project", scope_ref_id=project_id)
     session.commit()
     assert _statuses(session, scene_id, chapter_id) == ("superseded", "superseded", "superseded")
 

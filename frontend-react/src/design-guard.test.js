@@ -66,7 +66,6 @@ const KNOWN_OFF_SCALE_BREAKPOINTS = [
   "ws-snow.css: max-width: 1279px",
   "ws-snow.css: max-width: 760px",
   "ws-snow.css: min-width: 1181px",
-  "ws-styleref.css: max-width: 1000px",
 ];
 // 颜料字压在同色 -wash 底上、但容器里只有 aria-hidden 图标的规则（"文件: 选择器"）。图形只需 3:1，
 // 颜料在自己的 wash 上够用；容器里一旦放字，就得换成 --*-ink 并从这里删掉。

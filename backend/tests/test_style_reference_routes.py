@@ -389,10 +389,10 @@ def test_reclassify_executes_and_purges_derived_data(
     assert data["classification"]["mode"] == "reclassify" and data["mode"] == "reclassify"
 
     # 派生数据全部消失
-    assert client.get(f"{PREFIX}/runs/{run_id}").status_code == 404
     assert client.get(f"{PREFIX}/profiles/{profile_id}").status_code == 404
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
+        assert repo.get_run(run_id) is None
         assert repo.list_findings(book_id=book_id) == []
         assert repo.get_finding(finding_id) is None
         # paragraphs 与 book 保留
@@ -411,18 +411,11 @@ def test_reclassify_executes_and_purges_derived_data(
 # ---------------------------------------------------------------------------
 
 
-def test_get_run_happy(client: TestClient) -> None:
+def test_run_detail_endpoint_is_gone(client: TestClient) -> None:
+    """``GET /runs/{id}`` 没有消费方(矩阵读发现走 ``/runs/{id}/findings``,文风画像页走 ``/profiles/{id}``):删除。"""
     book_id = _import_book(client)
     run_id, _, _ = _seed_full_chain(book_id)
-    resp = client.get(f"{PREFIX}/runs/{run_id}")
-    assert resp.status_code == 200
-    assert resp.json()["data"]["run"]["run_id"] == run_id
-
-
-def test_get_run_404(client: TestClient) -> None:
-    resp = client.get(f"{PREFIX}/runs/sr_run_nonexistent")
-    assert resp.status_code == 404
-    assert resp.json()["error"]["code"] == "STYLE_REFERENCE_RUN_NOT_FOUND"
+    assert client.get(f"{PREFIX}/runs/{run_id}").status_code in (404, 405)
 
 
 def test_list_run_findings(client: TestClient) -> None:
@@ -461,12 +454,28 @@ def test_list_run_findings_include_evidence(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _seed_project(project_id: str) -> str:
+    from novel_system.db.models import StoryProject
+
+    with SessionLocal() as session:
+        if session.get(StoryProject, project_id) is None:
+            session.add(StoryProject(project_id=project_id, title="合成作品", outline_text=""))
+            session.commit()
+    return project_id
+
+
 def test_list_profiles(client: TestClient) -> None:
     book_id = _import_book(client)
-    _seed_full_chain(book_id)
+    _, _, profile_id = _seed_full_chain(book_id)
     resp = client.get(f"{PREFIX}/profiles")
     assert resp.status_code == 200
-    assert len(resp.json()["data"]["profiles"]) >= 1
+    profiles = resp.json()["data"]["profiles"]
+    assert [p["profile_id"] for p in profiles] == [profile_id]
+    # 摘要不带 profile_json(台账 U10);旧版画像(没有文风卡)要重新学
+    summary = profiles[0]
+    assert "profile_json" not in summary
+    assert summary["needs_relearn"] is True and summary["relearn_reason"] == "legacy_profile"
+    assert summary["card_lines"] == 0 and summary["book_id"] == book_id
 
 
 def test_get_profile_happy(client: TestClient) -> None:
@@ -474,7 +483,10 @@ def test_get_profile_happy(client: TestClient) -> None:
     _, _, profile_id = _seed_full_chain(book_id)
     resp = client.get(f"{PREFIX}/profiles/{profile_id}")
     assert resp.status_code == 200
-    assert resp.json()["data"]["profile"]["profile_id"] == profile_id
+    profile = resp.json()["data"]["profile"]
+    assert profile["profile_id"] == profile_id and "profile_json" not in profile
+    assert profile["has_card"] is False and len(profile["dimensions"]) == 16
+    assert profile["legacy"] is not None
 
 
 def test_get_profile_404(client: TestClient) -> None:
@@ -485,46 +497,55 @@ def test_get_profile_404(client: TestClient) -> None:
 def test_apply_profile(client: TestClient) -> None:
     book_id = _import_book(client)
     _, _, profile_id = _seed_full_chain(book_id)
+    project_id = _seed_project("proj_x")
     resp = client.post(
         f"{PREFIX}/profiles/{profile_id}/apply",
-        json={"scope": "project", "scope_ref_id": "proj_x"},
+        json={"scope": "project", "scope_ref_id": project_id},
         headers={"X-Idempotency-Key": "apply_1"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    assert data["binding_id"]
-    # finding observation + language → style_rule_set;+ calibration_candidate(2 lines profile_json 含 1)
-    assert "item_type_counts" not in data and "review_ids" not in data  # 2026-09-14 减法
-    assert data["binding_id"]
+    binding = data["binding"]
+    assert binding["binding_id"] and data["created"] is True and data["replaced"] == []
+    assert binding["config"] == {
+        "reference_mode": "full",
+        "sample_windows": 12,
+        "dimension_states": binding["config"]["dimension_states"],
+        "draft_mode": "style_first",
+    }
+    # 「只发短句」的书起草时只送文风卡:生效的参考方式如实给出
+    assert binding["effective_reference_mode"] == "card_only"
     with SessionLocal() as session:
-        binding = StyleReferenceRepository(session).get_binding(data["binding_id"])
-        assert binding is not None
-        assert binding.strategy == "mixed"
+        row = StyleReferenceRepository(session).get_binding(binding["binding_id"])
+        assert row is not None and row.strategy == "mixed" and row.status == "active"
 
 
 def test_list_bindings(client: TestClient) -> None:
     book_id = _import_book(client)
     _, _, profile_id = _seed_full_chain(book_id)
+    project_id = _seed_project("proj_y")
     # 先 apply 才有 binding
     client.post(
         f"{PREFIX}/profiles/{profile_id}/apply",
-        json={"scope": "project", "scope_ref_id": "proj_y"},
+        json={"scope": "project", "scope_ref_id": project_id, "config": {"sample_windows": 4}},
         headers={"X-Idempotency-Key": "apply_2"},
     )
     resp = client.get(f"{PREFIX}/profiles/{profile_id}/bindings")
     assert resp.status_code == 200
-    assert len(resp.json()["data"]["bindings"]) >= 1
+    bindings = resp.json()["data"]["bindings"]
+    assert len(bindings) == 1 and bindings[0]["config"]["sample_windows"] == 4
 
 
 def test_delete_binding(client: TestClient) -> None:
     book_id = _import_book(client)
     _, _, profile_id = _seed_full_chain(book_id)
+    project_id = _seed_project("proj_z")
     apply_resp = client.post(
         f"{PREFIX}/profiles/{profile_id}/apply",
-        json={"scope": "scene", "scope_ref_id": "scene_99"},
+        json={"scope": "project", "scope_ref_id": project_id},
         headers={"X-Idempotency-Key": "apply_3"},
     )
-    binding_id = apply_resp.json()["data"]["binding_id"]
+    binding_id = apply_resp.json()["data"]["binding"]["binding_id"]
     resp = client.delete(
         f"{PREFIX}/bindings/{binding_id}",
         headers={"X-Idempotency-Key": "del_bind_1"},
@@ -542,29 +563,19 @@ def test_delete_binding_404(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Preview 需要 LLM client(本测试不启用 LLM,确认错误码语义即可)
+# 旧示例预览已删除(用的是早已不用的引擎,台账 U6):本场预览走 /injection-preview
 # ---------------------------------------------------------------------------
 
 
-def test_preview_llm_required_when_disabled(client: TestClient, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
+def test_legacy_sample_preview_endpoint_is_gone(client: TestClient) -> None:
     book_id = _import_book(client)
     _, _, profile_id = _seed_full_chain(book_id)
     resp = client.post(
         f"{PREFIX}/profiles/{profile_id}/preview",
-        headers={"X-Idempotency-Key": "preview_disabled"},
+        json={},
+        headers={"X-Idempotency-Key": "preview_gone"},
     )
-    # preview 委托 PreviewService → LLMRequiredError(409)。钉精确契约,
-    # 不用弱 >= 400(否则 409 退化成通用 500、丢 author_action 也照样绿)。
-    assert resp.status_code == 409
-    err = resp.json()["error"]
-    assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
-    assert err["details"]["author_action"]
-
-
-# ---------------------------------------------------------------------------
-# v2(风格模仿 v2 · W2):导入路由按运行时 LLM 配置 + cloud_policy 选分类器
-# ---------------------------------------------------------------------------
+    assert resp.status_code in (404, 405)
 
 
 def _book_calibration(client: TestClient, book_id: str) -> dict[str, Any]:

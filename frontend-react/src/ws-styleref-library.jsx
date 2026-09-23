@@ -1,65 +1,113 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
-import { Spinner, Tag } from "./ws-ui.jsx";
+import { wsConfirm } from "./ws-notify.jsx";
+import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { getOperatorRef } from "./lib/client.js";
-import { SR_ACTIVITY_WHERE, srBindingActive, srBookPipeline, srFilterBooks, srSortBooks } from "./ws-styleref-model.js";
 import {
-  srBookApplied, srBooks, srBooksState, srDeepFor, srMeta, srProfilesOf, srRunImport, srSyncBooks,
+  SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srAppliedToWork, srBookPipeline, srFilterBooks, srPolicyNeedsSendRights,
+  srRightsReady, srSortBooks,
+} from "./ws-styleref-model.js";
+import {
+  srBooks, srBooksState, srDeleteBooks, srLoadRuntime, srRunImport, srRuntime,
 } from "./ws-styleref-store.js";
 import { SrActivityPanel, srRunningFor } from "./ws-styleref-activity.jsx";
-import { srActiveWork, srNotify, useSrStore } from "./ws-styleref-ui.jsx";
+import { SrErrorLine, srActiveWork, srNotify, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 参考书库（左栏；≤1280 收进页头「参考书库」对话框）与导入
    · srPipelineFor：一本书现在走到哪一步（书库徽标、页头共用同一个说法）
-   · srLossSummary：删除 / 重新分类会丢掉什么（确认框正文）
-   · SrLibrary：书库标题 + 导入、参考书活动、筛选、书单
-   · SrImportDialog + srImportBook：导入单子（数据范围 + 权属声明 + 文件 + 书名作者）与发起导入
+   · srConfirmDeleteBooks：删书前的确认（列出书名、说清丢什么、哪部作品正在用）；单本删除也走它
+   · SrLibrary：书库标题 + 导入、参考书活动、筛选、书单（「选择」后可多选删除）
+   · SrImportDialog：导入对话框——原文能发到哪里（三档，默认跟着当前模型）、权属声明、文件、书名作者；
+     出错就地说清楚（同一份文本 →「打开这本」；没有模型 →「去设置模型」）
    ========================================================== */
 
-/* 一本书现在走到哪一步 */
 export function srPipelineFor(book) {
   if (!book) return null;
-  return srBookPipeline(book, {
-    profiles: srProfilesOf(book.id),
-    applied: srBookApplied(book.id),
-    deep: srDeepFor(book.id),
-    running: srRunningFor(book.id),
+  const work = srActiveWork();
+  return srBookPipeline(book, { running: srRunningFor(book.id), workId: work ? work.id : null });
+}
+
+/* 删书前确认：返回 true 才删。书名最多列 8 本；正在用于当前作品的书单独点出来。 */
+export async function srConfirmDeleteBooks(books) {
+  const list = (books || []).filter(Boolean);
+  if (!list.length) return false;
+  const work = srActiveWork();
+  const shown = list.slice(0, 8).map((b) => `《${b.title}》`).join("、");
+  const more = list.length > 8 ? ` 等 ${list.length} 本` : "";
+  const inUse = work ? list.filter((b) => srAppliedToWork(b, work.id)) : [];
+  const usage = inUse.length
+    ? `《${work.title || "当前作品"}》正在用${inUse.map((b) => `《${b.title}》`).join("、")}的文风，删除后起草时不再带它。`
+    : "";
+  return wsConfirm({
+    title: list.length === 1 ? `删除参考书《${list[0].title}》？` : `删除 ${list.length} 本参考书？`,
+    body: `${list.length > 1 ? `${shown}${more}。` : ""}每本书的原文、文风画像、学习记录、样例窗口与禁用词会一并删除。${usage}此操作无法恢复。`,
+    confirmLabel: list.length === 1 ? "删除这本书" : `删除 ${list.length} 本`,
+    tone: "danger",
   });
 }
 
-/* 「删除 / 重新分类会丢掉什么」：画像份数、正在用它的作品绑定、回测报告、禁用词。 */
-export function srLossSummary(book, lead) {
-  const deep = srDeepFor(book.id);
-  const profiles = srProfilesOf(book.id) || (deep && deep.profile ? [deep.profile] : []);
-  const bindings = (deep && Array.isArray(deep.bindings) ? deep.bindings : []).filter(srBindingActive);
-  const parts = ["抽取结果与证据引文"];
-  if (profiles.length) parts.push(`风格画像 ${profiles.length} 份`);
-  if (bindings.length) parts.push(`应用绑定 ${bindings.length} 个`);
-  parts.push("回测报告和禁用词");
-  const work = srActiveWork();
-  const tail = srBookApplied(book.id) && work
-    ? `《${work.title || "当前作品"}》正在用这本书的风格，删除后起草时不再带它。`
-    : "";
-  return `${lead}这本书的${parts.join("、")}。${tail}`;
-}
-
-/* 左栏（和窄屏下的书库对话框）：书库标题 + 导入、参考书活动、筛选、书单。 */
-export function SrLibrary({ bookId, onSelect, onImport, onDelete, delBusy }) {
-  useSrStore("books", "activity", "deep");
+/* 左栏（和窄屏下的书库对话框）：书库标题 + 导入、参考书活动、筛选、书单；「选择」后多选删除。 */
+export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
+  useSrStore("books", "activity");
   const [query, setQuery] = React.useState("");
+  const [selecting, setSelecting] = React.useState(false);
+  const [selected, setSelected] = React.useState(() => new Set());
+  const [busy, setBusy] = React.useState(false);
   const all = srBooks();
-  const sorted = srSortBooks(all, srMeta().appliedBookIds);
+  const work = srActiveWork();
+  const sorted = srSortBooks(all, work ? work.id : null);
   const showFilter = all.length > 8;
   const books = showFilter ? srFilterBooks(sorted, query) : sorted;
   const { phase, error, code } = srBooksState();
+
+  /* 书没了（删掉 / 别处删的）就从选择里拿掉 */
+  React.useEffect(() => {
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => all.some((b) => b.id === id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [all]);
+
+  const toggle = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const stopSelecting = () => { setSelecting(false); setSelected(new Set()); };
+  const allVisibleSelected = books.length > 0 && books.every((b) => selected.has(b.id));
+
+  const deleteSelected = async () => {
+    const chosen = all.filter((b) => selected.has(b.id));
+    if (!chosen.length || busy) return;
+    if (!(await srConfirmDeleteBooks(chosen))) return;
+    setBusy(true);
+    try {
+      const result = await srDeleteBooks(chosen.map((b) => b.id));
+      const failed = (result.results || []).filter((item) => !item.deleted && !(item.error && item.error.code === "STYLE_REFERENCE_BOOK_NOT_FOUND"));
+      const done = chosen.length - failed.length;
+      if (failed.length) srNotify(`删除了 ${done} 本，另有 ${failed.length} 本没删成：${failed.map((item) => (item.error && item.error.message) || item.book_id).join("；")}`);
+      else srNotify(`已删除 ${done} 本参考书`, "neutral");
+      stopSelecting();
+      if (onDeleted) onDeleted(chosen.map((b) => b.id));
+    } catch (e) {
+      srNotifyError(e, "删除没有完成，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="sr-lib">
       <header className="sr-books-head">
         <h2 className="sr-books-title text-serif">参考书库</h2>
-        {/* 书库一栏的「导入」是次要动作：实心主按钮留给右边这本书的下一步（空书库时由中间的「导入第一本参考书」担任） */}
-        <button type="button" className="btn btn-ghost btn-sm" onClick={onImport}><I.Plus size={13} /> 导入参考书</button>
+        <div className="sr-books-head-actions">
+          {all.length > 0 && !selecting && (
+            <button type="button" className="btn btn-quiet btn-sm" data-testid="sr-books-select" onClick={() => setSelecting(true)}>选择</button>
+          )}
+          <button type="button" className="btn btn-ghost btn-sm" data-testid="sr-books-import" onClick={onImport}><I.Plus size={13} /> 导入参考书</button>
+        </div>
       </header>
 
       <SrActivityPanel onOpenBook={onSelect} />
@@ -71,21 +119,46 @@ export function SrLibrary({ bookId, onSelect, onImport, onDelete, delBusy }) {
         </div>
       )}
 
+      {selecting && (
+        <div className="sr-select-bar" data-testid="sr-select-bar">
+          <label className="sr-select-all">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              aria-label="全选"
+              onChange={() => setSelected(allVisibleSelected ? new Set() : new Set(books.map((b) => b.id)))}
+            />
+            <span>已选 <b className="tab-num">{selected.size}</b> 本</span>
+          </label>
+          <button type="button" className="btn btn-danger btn-sm" data-testid="sr-books-delete-selected" disabled={!selected.size || busy} onClick={deleteSelected}>
+            {busy ? <><Spinner size={12} /> 删除中…</> : <><I.Trash size={13} /> 删除所选</>}
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={stopSelecting}>完成</button>
+        </div>
+      )}
+
       {phase === "loading" && !all.length ? (
         <ul className="sr-book-list" aria-busy="true" aria-label="正在读取参考书库">
           {[0, 1, 2].map((i) => <li key={i} className="sr-book-skel" aria-hidden="true"><span /><span /></li>)}
         </ul>
       ) : phase === "error" && !all.length ? (
-        /* 读书库失败只在中间那一处讲原因、给「重试」；左栏只标一行，不再并排两份同样的报错 */
         <p className="sr-lib-empty sr-lib-error" role="status" title={[error, code && `错误代码：${code}`].filter(Boolean).join("\n")}>
           <I.AlertTriangle size={13} aria-hidden="true" /> 读不到书库
         </p>
       ) : !all.length ? (
-        <p className="sr-lib-empty">还没有参考书。导入一本你想学习文风的书。</p>
+        <p className="sr-lib-empty">还没有参考书。导入一本你想学它文风的书。</p>
       ) : (
         <ul className="sr-book-list">
           {books.map((b) => (
-            <SrBookRow key={b.id} book={b} active={bookId === b.id} onSelect={onSelect} onDelete={onDelete} delBusy={delBusy} />
+            <SrBookRow
+              key={b.id}
+              book={b}
+              active={bookId === b.id}
+              selecting={selecting}
+              checked={selected.has(b.id)}
+              onSelect={onSelect}
+              onToggle={toggle}
+            />
           ))}
           {showFilter && books.length === 0 && <li className="sr-lib-empty">没有书名或作者含「{query}」的参考书。</li>}
         </ul>
@@ -94,17 +167,33 @@ export function SrLibrary({ bookId, onSelect, onImport, onDelete, delBusy }) {
   );
 }
 
-/* 书单一行：书脊色、书名、万字、流水线徽标；悬停 / 聚焦时露出删除按钮。 */
-function SrBookRow({ book: b, active, onSelect, onDelete, delBusy }) {
+/* 书单一行：书脊色、书名、万字、进度徽标；选择模式下前面有勾选框，点整行就是勾选。 */
+function SrBookRow({ book: b, active, selecting, checked, onSelect, onToggle }) {
   const p = srPipelineFor(b);
   const wan = (b.chars / 10000).toFixed(b.chars >= 100000 ? 0 : 1);
+  const label = `${b.title}${b.author ? ` · ${b.author}` : ""} · ${b.chars.toLocaleString()} 字`;
+  if (selecting) {
+    return (
+      <li className={`sr-book-item${checked ? " is-checked" : ""}`}>
+        <label className="sr-book sr-book-check" title={label}>
+          <input type="checkbox" checked={checked} data-sr-select={b.id} aria-label={`选择《${b.title}》`} onChange={() => onToggle(b.id)} />
+          <span className="sr-book-body">
+            <span className="sr-book-title text-serif">{b.title}</span>
+            <span className="sr-book-meta">{b.author ? `${b.author} · ` : ""}{wan} 万字</span>
+          </span>
+          {p && <Tag tone={p.tone} className="sr-book-chip">{p.label}</Tag>}
+        </label>
+      </li>
+    );
+  }
   return (
-    <li className={`sr-book-item${delBusy === b.id ? " is-deleting" : ""}`}>
+    <li className="sr-book-item">
       <button
         type="button"
         className={`sr-book ${active ? "is-active" : ""}`}
         aria-current={active ? "true" : undefined}
-        title={`${b.title}${b.author ? ` · ${b.author}` : ""} · ${b.chars.toLocaleString()} 字`}
+        data-sr-book={b.id}
+        title={label}
         onClick={() => onSelect(b.id)}
       >
         <span className={`sr-book-spine spine-${b.color}`} aria-hidden="true" />
@@ -114,17 +203,6 @@ function SrBookRow({ book: b, active, onSelect, onDelete, delBusy }) {
         </span>
         {p && <Tag tone={p.tone} className="sr-book-chip">{p.label}</Tag>}
       </button>
-      <button
-        type="button"
-        className={`sr-book-del${delBusy === b.id ? " is-busy" : ""}`}
-        data-sr-del={b.id}
-        title="删除这本参考书"
-        aria-label={`删除参考书《${b.title}》`}
-        disabled={!!delBusy}
-        onClick={() => onDelete(b)}
-      >
-        {delBusy === b.id ? <Spinner size={12} /> : <I.Trash size={13} />}
-      </button>
     </li>
   );
 }
@@ -132,123 +210,54 @@ function SrBookRow({ book: b, active, onSelect, onDelete, delBusy }) {
 /* ==========================================================
    导入
    ========================================================== */
-export const SR_CLOUD_POLICIES = [
-  {
-    id: "local_only",
-    label: "仅保存在本机",
-    badge: "默认 · 最私密",
-    detail: "原文不发送给云端模型。可以导入与本地分段，但云端风格抽取会保持关闭。",
-  },
-  {
-    id: "segments_only",
-    label: "只发送所需段落",
-    badge: "折中",
-    detail: "抽取时仅发送任务需要的分段，不上传整本；适合希望使用云端分析又控制出域范围的情况。",
-  },
-  {
-    id: "allow_full_cloud",
-    label: "允许全文上云",
-    badge: "能力完整",
-    detail: "服务可按任务发送更大范围乃至全文给已配置的模型供应商；只应在你确认拥有授权时使用。",
-  },
-];
 
-/* 导入权属声明（后端 ingest._normalize_rights_declaration §5.9）：
-   - analysis_rights：作者确认有权对这本书做风格分析（所有策略都要勾）
-   - send_rights：作者确认有权把段落送往云端模型；非 local_only 策略后端强制要求为 true，
-     否则 400 STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED。声明缺失绝不由前端默认补上。 */
-export const SR_RIGHTS_TERMS = {
-  analysis: "我确认拥有对这本书进行风格分析的权利，且只用于学习抽象技法，不复刻原文、人物或桥段。",
-  send: "我确认拥有这本书的发送权，并授权系统按所选策略把段落发送给已配置的云端模型供应商。",
-};
+/* 与后端 ingest 的后缀白名单一致：只接受纯文本 / Markdown。 */
+const SR_IMPORT_ACCEPT = ".txt,.md,.markdown";
+function srFileTitle(name) { return String(name || "").replace(/\.[^.]+$/, "").trim(); }
 
-function srPolicyNeedsSendRights(cloudPolicy) {
-  return cloudPolicy !== "local_only";
-}
-
-/* 声明是否满足所选策略：分析权必勾；云端策略额外要求发送权。 */
-export function srRightsReady(cloudPolicy, rights) {
-  if (!rights || rights.analysis_rights !== true) return false;
-  return !srPolicyNeedsSendRights(cloudPolicy) || rights.send_rights === true;
-}
-
-/* 把对话框收集的声明整理成后端 rights_declaration 的形状；未声明时返回 null（后端记 declared=false）。 */
-function srBuildRightsDeclaration(cloudPolicy, rights) {
-  if (!rights || rights.declared === false) return null;
+function srBuildRightsDeclaration(cloudPolicy, analysis, send) {
   return {
     declared: true,
-    analysis_rights: rights.analysis_rights === true,
-    send_rights: srPolicyNeedsSendRights(cloudPolicy) && rights.send_rights === true,
+    analysis_rights: analysis === true,
+    send_rights: srPolicyNeedsSendRights(cloudPolicy) && send === true,
     declared_by: getOperatorRef(),
   };
 }
 
-/* 与后端 ingest._REFERENCE_BOOK_SUFFIXES 一致：只接受纯文本 / Markdown。 */
-const SR_IMPORT_ACCEPT = ".txt,.md,.markdown";
-function srFileTitle(name) { return String(name || "").replace(/\.[^.]+$/, "").trim(); }
-
-/* 导入参考书：导入单子交来 { file, title, author } 时直接 srRunImport（multipart，带幂等键 + 权属声明 +
-   作者，进度在「参考书活动」）；没有第三个参数时退回旧流程（隐藏文件框 + 书名 prompt），给老调用方和测试。 */
-export function srImportBook(cloudPolicy = "local_only", rights = null, picked = null) {
-  if (!SR_CLOUD_POLICIES.some((item) => item.id === cloudPolicy)) {
-    throw new Error("未知的参考书数据策略");
+/* 为什么现在不能导入（有原因就锁住「导入」并把原因写在旁边） */
+function srImportBlocker({ runtime, policy, rightsReady, file, title }) {
+  if (runtime && runtime.llm_enabled === false) return "先接入模型：导入之后要用模型给每一段分类";
+  if (policy === "local_only" && runtime && runtime.llm_enabled && runtime.llm_is_local === false) {
+    return "现在给段落分类的是云端模型，「仅本机模型」的书导入不了";
   }
-  const rightsDeclaration = srBuildRightsDeclaration(cloudPolicy, rights);
-  // 与后端同一条红线：云端策略没有 send_rights=true 就不打开文件选择器，更不会发请求。
-  if (srPolicyNeedsSendRights(cloudPolicy) && !(rightsDeclaration && rightsDeclaration.send_rights)) {
-    throw new Error("云端策略需要作者先确认发送权声明；未获授权请改用「仅保存在本机」。");
-  }
-  const run = async (file, title, authorLabel) => {
-    try {
-      await srRunImport({ file, title, authorLabel, cloudPolicy, rightsDeclaration });
-    } catch (e) {
-      // 失败一律提示：「参考书活动」里也记着原因，但 ≤1280 时它收在「参考书库」抽屉里、
-      // 作者也可能已经切走——导入单子一关，页面上什么都没变，不提示就等于没发生。
-      srNotify(`导入失败：${(e && e.message) || e}。原因也记在${SR_ACTIVITY_WHERE}里。`);
-    }
-  };
-  if (picked && picked.file) {
-    run(picked.file, String(picked.title || "").trim() || srFileTitle(picked.file.name), picked.author || null);
-    return;
-  }
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = SR_IMPORT_ACCEPT;
-  input.onchange = async () => {
-    const f = input.files && input.files[0];
-    if (!f) return;
-    const title = (window.prompt("书名（用于书库显示）", srFileTitle(f.name)) || "").trim();
-    if (!title) return;
-    await run(f, title, null);
-  };
-  input.click();
+  if (!rightsReady) return "先确认权属声明";
+  if (!file) return "还没选文件";
+  if (!title.trim()) return "还没填书名";
+  return null;
 }
 
-/* 导入单子：原文能不能离开本机 + 权属声明、选文件、书名与作者。
-   提交时把文件、书名、作者一起交给 onChoose(policy, rights, { file, title, author })。 */
-export function SrImportDialog({ open, onClose, onChoose }) {
-  const [policy, setPolicy] = React.useState("local_only");
+export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSettings }) {
+  useSrStore("detail");
+  const runtimeState = srRuntime();
+  const runtime = runtimeState.phase === "ready" ? runtimeState.data : null;
+  const [policy, setPolicy] = React.useState(null);
   const [analysisRights, setAnalysisRights] = React.useState(false);
   const [sendRights, setSendRights] = React.useState(false);
   const [file, setFile] = React.useState(null);
   const [title, setTitle] = React.useState("");
-  /* 作者亲手改过书名（哪怕是在选文件之前）：之后换文件也不再用文件名覆盖 */
   const [titleTouched, setTitleTouched] = React.useState(false);
   const [author, setAuthor] = React.useState("");
   const [fileError, setFileError] = React.useState(null);
   const [dragOver, setDragOver] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState(null);
   const titleId = React.useId();
   const descId = React.useId();
   const fileInputId = React.useId();
-  const needsSend = srPolicyNeedsSendRights(policy);
-  // 发送权只在云端策略下有意义；切回 local_only 时声明里恒为 false，不带走多余授权。
-  const declaration = { declared: true, analysis_rights: analysisRights, send_rights: needsSend && sendRights };
-  const rightsReady = srRightsReady(policy, declaration);
-  const ready = rightsReady && !!file && !!title.trim();
 
   React.useEffect(() => {
     if (!open) return;
-    setPolicy("local_only");
+    setPolicy(null);
     setAnalysisRights(false);
     setSendRights(false);
     setFile(null);
@@ -257,7 +266,18 @@ export function SrImportDialog({ open, onClose, onChoose }) {
     setAuthor("");
     setFileError(null);
     setDragOver(false);
+    setBusy(false);
+    setError(null);
+    srLoadRuntime({ force: true });
   }, [open]);
+
+  /* 默认范围跟着当前模型走：分类走本机模型时「仅本机模型」，否则「可发送全文」（云端模型下默认仅本机必然导入失败）；
+     读不到运行时就先按最私密的一档，作者可以改。作者自己选过就不再覆盖。 */
+  const effectivePolicy = policy || (runtime && runtime.default_cloud_policy) || "local_only";
+  const needsSend = srPolicyNeedsSendRights(effectivePolicy);
+  const rights = { analysis_rights: analysisRights, send_rights: needsSend && sendRights };
+  const rightsReady = srRightsReady(effectivePolicy, rights);
+  const blocker = srImportBlocker({ runtime, policy: effectivePolicy, rightsReady, file, title });
 
   const takeFile = (f) => {
     if (!f) return;
@@ -266,50 +286,79 @@ export function SrImportDialog({ open, onClose, onChoose }) {
       return;
     }
     setFileError(null);
+    setError(null);
     setFile(f);
-    // 书名默认取文件名；作者亲手填过（且没清空）就不再覆盖
     if (!titleTouched || !title.trim()) setTitle(srFileTitle(f.name));
   };
 
-  const submit = () => {
-    if (!ready) return;
-    onChoose(policy, declaration, { file, title: title.trim(), author: author.trim() });
+  const submit = async () => {
+    if (blocker || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await srRunImport({
+        file,
+        title: title.trim(),
+        authorLabel: author.trim() || null,
+        cloudPolicy: effectivePolicy,
+        rightsDeclaration: srBuildRightsDeclaration(effectivePolicy, analysisRights, sendRights),
+      });
+      setBusy(false);
+      if (onImported) onImported(data);
+    } catch (e) {
+      setBusy(false);
+      setError(e);
+    }
+  };
+
+  const onErrorAction = (action) => {
+    if (action.type === "open_book" && onOpenBook) onOpenBook(action.bookId);
+    else if (action.type === "settings" && onOpenSettings) onOpenSettings();
   };
 
   return (
-    <WsDialog
-      open={open}
-      onClose={onClose}
-      labelledBy={titleId}
-      describedBy={descId}
-      size="lg"
-      className="sr-import-dialog"
-      portal={false}
-    >
+    <WsDialog open={open} onClose={onClose} labelledBy={titleId} describedBy={descId} size="lg" className="sr-import-dialog" portal={false}>
       <header className="ws-dialog-head">
         <div>
           <h2 id={titleId} className="ws-dialog-title text-serif">导入参考书</h2>
           <p id={descId} className="ws-dialog-desc">
-            先定这本书能不能离开本机，再选文件。选择会随书保存并约束之后的抽取；系统只学抽象技法，不复刻人物、桥段或原句。
+            先定这本书的原文能发到哪里，再选文件。这个选择随书保存，之后分类、学习、起草都按它来；系统只学写法，不复刻原文、人物或桥段。
           </p>
         </div>
         <button type="button" className="ws-dialog-x" aria-label="关闭导入" onClick={onClose}><I.X size={16} /></button>
       </header>
       <div className="ws-dialog-body sr-import-body">
-        <fieldset className="sr-policy-list">
-          <legend className="sr-policy-legend">原文数据使用范围</legend>
+        {runtime && runtime.llm_enabled === false && (
+          <Notice
+            tone="warn"
+            testId="sr-import-no-llm"
+            actions={onOpenSettings ? <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>去设置模型</button> : null}
+          >
+            还没有接入模型。导入之后要由模型给每一段分类（导入就会开始），没有模型就导入不了。
+          </Notice>
+        )}
+        <fieldset className="sr-policy-list" data-testid="sr-import-policy">
+          <legend className="sr-policy-legend">原文能发到哪里</legend>
           {SR_CLOUD_POLICIES.map((item) => (
-            <label key={item.id} className={`sr-policy ${policy === item.id ? "is-selected" : ""}`}>
-              <input type="radio" name="sr-cloud-policy" value={item.id} checked={policy === item.id} onChange={() => setPolicy(item.id)} />
+            <label key={item.id} className={`sr-policy ${effectivePolicy === item.id ? "is-selected" : ""}`}>
+              <input type="radio" name="sr-cloud-policy" value={item.id} checked={effectivePolicy === item.id} onChange={() => { setPolicy(item.id); setError(null); }} />
               <span className="sr-policy-mark" aria-hidden="true" />
               <span className="sr-policy-copy">
-                <span className="sr-policy-title">{item.label}<em>{item.badge}</em></span>
+                <span className="sr-policy-title">
+                  {item.label}
+                  {item.hint && <em>{item.hint}</em>}
+                  {runtime && runtime.llm_enabled && runtime.default_cloud_policy === item.id && <em className="is-default">按当前模型推荐</em>}
+                </span>
                 <span className="sr-policy-detail">{item.detail}</span>
               </span>
             </label>
           ))}
         </fieldset>
-        <p className="sr-import-notice"><I.ShieldCheck size={14} /><span>「仅保存在本机」不会悄悄改成上云；以后需要云端抽取，要用更开放的策略重新导入。</span></p>
+        {effectivePolicy === "local_only" && runtime && runtime.llm_enabled && runtime.llm_is_local === false && (
+          <Notice tone="warn" testId="sr-import-local-blocked" actions={onOpenSettings ? <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>去设置模型</button> : null}>
+            现在给段落分类的是云端模型，「仅本机模型」的书会被拒绝：先在设置里把段落分类换成本机模型，或选另外两档。
+          </Notice>
+        )}
         <fieldset className="sr-rights-list">
           <legend className="sr-policy-legend">权属声明</legend>
           <label className={`sr-rights ${analysisRights ? "is-checked" : ""}`}>
@@ -321,11 +370,6 @@ export function SrImportDialog({ open, onClose, onChoose }) {
               <input type="checkbox" data-testid="sr-rights-send" checked={sendRights} onChange={(event) => setSendRights(event.target.checked)} />
               <span>{SR_RIGHTS_TERMS.send}</span>
             </label>
-          )}
-          {!rightsReady && (
-            <p className="sr-rights-hint" data-testid="sr-rights-hint">
-              {needsSend ? "云端策略需要同时确认分析权与发送权，后端不接受未声明的上云导入；未获授权请改选「仅保存在本机」。" : "请先确认分析权，再导入。"}
-            </p>
           )}
         </fieldset>
 
@@ -361,20 +405,17 @@ export function SrImportDialog({ open, onClose, onChoose }) {
           </label>
           <label className="sr-import-field">
             <span className="label">作者 <em className="sr-optional">可不填</em></span>
-            <input className="input" data-testid="sr-import-author" value={author} maxLength={120} placeholder="书库和画像标题里显示" onChange={(e) => setAuthor(e.target.value)} />
+            <input className="input" data-testid="sr-import-author" value={author} maxLength={120} placeholder="书库里显示" onChange={(e) => setAuthor(e.target.value)} />
           </label>
         </div>
+        <SrErrorLine error={error} onAction={onErrorAction} testId="sr-import-error" />
       </div>
       <footer className="ws-dialog-foot sr-import-foot">
-        {!ready && <span className="sr-import-why">{!rightsReady ? "先确认权属声明" : !file ? "还没选文件" : "还没填书名"}</span>}
+        {blocker && <span className="sr-import-why" data-testid="sr-import-why">{blocker}</span>}
         <button type="button" className="btn btn-ghost" onClick={onClose}>取消</button>
-        <button
-          type="button"
-          className="btn btn-accent"
-          data-testid="sr-import-choose-file"
-          disabled={!ready}
-          onClick={submit}
-        ><I.FileInput size={14} /> 导入</button>
+        <button type="button" className="btn btn-accent" data-testid="sr-import-submit" disabled={!!blocker || busy} onClick={submit}>
+          {busy ? <><Spinner size={13} /> 导入中…</> : <><I.FileInput size={14} /> 导入</>}
+        </button>
       </footer>
     </WsDialog>
   );

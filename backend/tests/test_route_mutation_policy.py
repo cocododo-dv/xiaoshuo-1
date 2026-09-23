@@ -17,8 +17,17 @@ IDEMPOTENCY_BOUNDARIES = {
     "optional_idempotent_response",
 }
 READ_ONLY_POST_EXEMPTIONS = {
-    ("style_reference.py", "dryrun_injection_preview"),
+    ("style_reference/profiles.py", "dryrun_injection_preview"),
 }
+
+
+def _route_files() -> list[Path]:
+    """路由目录下全部模块,含按领域拆成包的子模块(style_reference/…)。"""
+    return sorted(ROUTES_DIR.rglob("*.py"))
+
+
+def _route_file_key(path: Path) -> str:
+    return path.relative_to(ROUTES_DIR).as_posix()
 
 
 def _route_methods(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
@@ -46,7 +55,7 @@ def test_every_http_mutation_has_an_idempotency_boundary_or_a_reviewed_read_only
     uncovered: list[str] = []
     observed_exemptions: set[tuple[str, str]] = set()
 
-    for path in sorted(ROUTES_DIR.glob("*.py")):
+    for path in _route_files():
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))
         for node in tree.body:
@@ -55,14 +64,14 @@ def test_every_http_mutation_has_an_idempotency_boundary_or_a_reviewed_read_only
             methods = _route_methods(node)
             if not methods.intersection(MUTATION_METHODS):
                 continue
-            route_key = (path.name, node.name)
+            route_key = (_route_file_key(path), node.name)
             if route_key in READ_ONLY_POST_EXEMPTIONS:
                 segment = ast.get_source_segment(source, node) or ""
                 assert "idempotency-exempt: deterministic read-only preview" in segment
                 observed_exemptions.add(route_key)
                 continue
             if not _called_names(node).intersection(IDEMPOTENCY_BOUNDARIES):
-                uncovered.append(f"{path.name}:{node.lineno}:{node.name}")
+                uncovered.append(f"{_route_file_key(path)}:{node.lineno}:{node.name}")
 
     assert observed_exemptions == READ_ONLY_POST_EXEMPTIONS
     assert uncovered == []
@@ -70,14 +79,14 @@ def test_every_http_mutation_has_an_idempotency_boundary_or_a_reviewed_read_only
 
 def test_route_handlers_never_own_transactions_directly() -> None:
     offenders: list[str] = []
-    for path in sorted(ROUTES_DIR.glob("*.py")):
+    for path in _route_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in tree.body:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _route_methods(node):
                 continue
             for child in ast.walk(node):
                 if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and child.func.attr == "commit":
-                    offenders.append(f"{path.name}:{node.lineno}:{node.name}")
+                    offenders.append(f"{_route_file_key(path)}:{node.lineno}:{node.name}")
                     break
 
     assert offenders == []

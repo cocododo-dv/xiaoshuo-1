@@ -20,11 +20,12 @@ from novel_system.services.style_reference.errors import (
 )
 from novel_system.services.style_reference.ingest import IngestResult, IngestService, assess_input_size
 from novel_system.services.style_reference.injection import InjectionService
-from novel_system.services.style_reference.materialization import (
-    MaterializationService,
-    MaterializeResult,
+from novel_system.services.style_reference.binding_apply import (
+    BindingChange,
+    apply_style_profile,
+    remove_binding,
+    update_binding_config,
 )
-from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.validation import (
     ValidationOrchestrator,
     check_forbidden_local,
@@ -68,8 +69,6 @@ from novel_system.services.style_reference.schemas import (
     PlagiarismReport,
     ForbiddenHit,
     ValidationReport,
-    PreviewGeneratedSample,
-    PreviewSampleResult,
     InjectionPreviewRequest,
     InjectionPreviewResponse,
     QuantitativeReportItem,
@@ -108,8 +107,6 @@ __all__ = [
     "PlagiarismReport",
     "ForbiddenHit",
     "ValidationReport",
-    "PreviewGeneratedSample",
-    "PreviewSampleResult",
     "InjectionPreviewRequest",
     "InjectionPreviewResponse",
     "QuantitativeReportItem",
@@ -121,9 +118,10 @@ __all__ = [
     "IngestResult",
     "assess_input_size",
     "InjectionService",
-    "MaterializationService",
-    "MaterializeResult",
-    "PreviewService",
+    "BindingChange",
+    "apply_style_profile",
+    "remove_binding",
+    "update_binding_config",
     "ValidationOrchestrator",
     "run_sync_validate",
     "check_plagiarism",

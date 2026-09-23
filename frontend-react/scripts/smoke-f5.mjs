@@ -1,4 +1,4 @@
-// FE-ALIGN F5 冒烟：参考书库接 style_reference v2。
+// FE-ALIGN F5 冒烟：参考书库接 style_reference（2026-09-23 v3 页面）。
 // 覆盖：multipart 导入 → 书库渲染真实书 → LLM 关启动抽取得到明确引导 → 删除。
 // 运行：cd frontend && node ../frontend-react/scripts/smoke-f5.mjs [BASE] [API]
 import path from "node:path";
@@ -58,12 +58,14 @@ await check("① 没有 LLM：导入直接 409（严格 LLM，2026-09-15：没�
 });
 
 await check("② 书库视图：没有书时给空态，不再有演示书", async () => {
-  await page.evaluate(async () => { await window.srSyncBooks(); });
+  // 风格参考页挂载时自己读书库（2026-09-23 v3：store 不再挂在 window 上）
   await page.evaluate(() => { location.hash = "#styleref"; });
+  await page.waitForSelector(".sr-page");
   await page.waitForTimeout(1500);
   const text = await page.evaluate(() => document.body.innerText);
   if (text.includes("呐喊 · 短篇集")) throw new Error("demo books still shown");
   if (!text.includes("参考书库")) throw new Error("style reference view not rendered");
+  if (!text.includes("参考书 → 学习文风 → 用于作品")) throw new Error("empty state does not explain the three steps");
 });
 
 await browser.close();

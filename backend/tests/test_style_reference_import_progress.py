@@ -1,10 +1,9 @@
-"""参考书操作进度:进程内登记簿(合成画像等尚未迁出的操作)+ 导入进度的兼容端点。
+"""参考书操作进度:进程内登记簿(尚未迁出的操作)+ 导入的进度(作业表上的分类作业)。
 
-2026-09-23 风格参考 v3 起,导入 / 重新分类的整本分类是作业表上的分类作业,进度在作业行上;
-``GET …/imports/{key}/progress`` 是兼容旧前端导入轮询的别名:按幂等键(作业的 ``op_key``)找作业、
-返回旧的快照形状。这些用例钉住:登记簿的百分比单调且在阶段边界处诚实、同键在途不被改写、终态可被
-最后一次轮询读到;兼容端点在作业跑的过程中与跑完之后都读得到,请求在建作业之前就失败时是 404
-(前端把 404 当「尚未登记」、以 POST 的结果为准)。
+2026-09-23 风格参考 v3 起,导入 / 重新分类的整本分类是作业表上的分类作业,进度在作业行上;导入响应带
+``job_id``,界面在 ``GET …/activity`` 里按 ``job:<id>`` 跟进度(P6a 起旧的 ``GET …/imports/{key}/progress``
+兼容轮询删除)。这些用例钉住:登记簿的百分比单调且在阶段边界处诚实、同键在途不被改写、终态可被最后一次
+轮询读到;作业条目在分类过程中与跑完之后都读得到,请求在建作业之前就失败时没有条目。
 """
 
 from __future__ import annotations
@@ -155,21 +154,24 @@ def test_registry_evicts_finished_entries_after_ttl(monkeypatch) -> None:
 # ---------------------------------------------------------------- route
 
 
-def _wait_progress_finished(client: TestClient, key: str, seconds: float = 20.0) -> dict[str, Any]:
+def _job_entry(client: TestClient, job_id: str) -> dict[str, Any] | None:
+    items = client.get(f"{PREFIX}/activity").json()["data"]["items"]
+    return next((item for item in items if item["key"] == f"job:{job_id}"), None)
+
+
+def _wait_job_finished(client: TestClient, job_id: str, seconds: float = 20.0) -> dict[str, Any]:
     deadline = time.monotonic() + seconds
-    snap: dict[str, Any] | None = None
+    entry: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        resp = client.get(f"{PREFIX}/imports/{key}/progress")
-        if resp.status_code == 200:
-            snap = resp.json()["data"]["progress"]
-            if snap["status"] != "running":
-                return snap
+        entry = _job_entry(client, job_id)
+        if entry is not None and entry["status"] not in ("queued", "running"):
+            return entry
         time.sleep(0.02)
-    raise AssertionError(f"progress {key} never finished: {snap}")
+    raise AssertionError(f"job {job_id} never finished: {entry}")
 
 
-def test_import_upload_progress_is_the_classify_job_found_by_its_key(client: TestClient) -> None:
-    """导入请求只做准备并建分类作业;兼容端点按幂等键找到作业,跑完读到终态。"""
+def test_import_upload_progress_is_the_classify_job_in_the_activity_list(client: TestClient) -> None:
+    """导入请求只做准备并建分类作业;响应带 job_id,活动清单里的 ``job:<id>`` 条目跑完读到终态。"""
     with fake_import_llm():
         resp = client.post(
             f"{PREFIX}/books/import-upload",
@@ -186,22 +188,16 @@ def test_import_upload_progress_is_the_classify_job_found_by_its_key(client: Tes
         book_id = data["book"]["book_id"]
         assert data["book"]["status"] == "ingesting"
         assert data["classification"]["state"] == "queued" and data["job_id"]
-        snap = _wait_progress_finished(client, "sr-import-progress-ok")
-    assert snap["status"] == "succeeded"
-    assert snap["percent"] == 100
-    assert snap["phase"] == "done"
-    assert snap["kind"] == "import"
-    assert snap["book_id"] == book_id
-    assert snap["title"] == "进度书"
-    assert snap["job_id"] == data["job_id"]
-    assert snap["paragraphs_count"] == data["paragraphs_count"]
-    assert snap["classify"]["mode"] == "llm"
-    assert snap["classify"]["batches_done"] == snap["classify"]["batches_total"] >= 1
+        entry = _wait_job_finished(client, data["job_id"])
+    assert entry["status"] == "succeeded" and entry["percent"] == 100.0
+    assert entry["kind"] == "classify" and entry["kind_label"] == "段落分类" and entry["mode"] == "import"
+    assert entry["book_id"] == book_id and entry["title"] == "进度书"
+    assert entry["steps"]["done"] == entry["steps"]["total"] >= 1
     book = wait_book_status(client, book_id)
     assert book["classification"]["state"] == "succeeded"
 
 
-def test_an_import_that_fails_before_the_job_exists_has_no_progress_entry(client: TestClient) -> None:
+def test_an_import_that_fails_before_the_job_exists_has_no_activity_entry(client: TestClient) -> None:
     with fake_import_llm():
         resp = client.post(
             f"{PREFIX}/books/import-upload",
@@ -215,17 +211,13 @@ def test_an_import_that_fails_before_the_job_exists_has_no_progress_entry(client
         )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "STYLE_REFERENCE_BOOK_FORMAT_UNSUPPORTED"
-    missing = client.get(f"{PREFIX}/imports/sr-import-progress-bad/progress")
-    assert missing.status_code == 404
+    items = client.get(f"{PREFIX}/activity").json()["data"]["items"]
+    assert not any(item.get("title") == "坏格式" for item in items)
 
 
-def test_unknown_or_malformed_import_key_is_404(client: TestClient) -> None:
-    missing = client.get(f"{PREFIX}/imports/sr-import-never/progress")
-    assert missing.status_code == 404
-    assert missing.json()["error"]["code"] == "STYLE_REFERENCE_IMPORT_PROGRESS_UNKNOWN"
-    malformed = client.get(f"{PREFIX}/imports/{'x' * 200}/progress")
-    assert malformed.status_code == 404
-    assert malformed.json()["error"]["code"] == "STYLE_REFERENCE_IMPORT_PROGRESS_UNKNOWN"
+def test_the_legacy_import_progress_poll_is_gone(client: TestClient) -> None:
+    """旧前端的导入轮询别名删除(P6a):导入进度一律看响应里的 job_id + 活动清单。"""
+    assert client.get(f"{PREFIX}/imports/sr-import-never/progress").status_code == 404
 
 
 def test_import_progress_is_live_while_the_job_classifies(
@@ -256,10 +248,10 @@ def test_import_progress_is_live_while_the_job_classifies(
         headers={"X-Idempotency-Key": "sr-import-progress-live"},
     )
     assert resp.status_code == 200, resp.text
-    final = _wait_progress_finished(client, "sr-import-progress-live")
+    final = _wait_job_finished(client, resp.json()["data"]["job_id"])
     assert observed, "分类器至少被调用一次"
     assert all(snap["status"] == "running" and snap["phase"] == "classify" for snap in observed)
     assert [snap["classify"]["batches_done"] for snap in observed] == list(range(len(observed)))
     assert final["status"] == "succeeded"
-    assert final["classify"]["batches_done"] == final["classify"]["batches_total"] == len(observed)
-    assert final["classify"]["llm_calls"] == len(observed)
+    assert final["steps"]["done"] == final["steps"]["total"] == len(observed)
+    assert final["llm_calls"] == len(observed)
