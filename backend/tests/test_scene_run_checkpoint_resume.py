@@ -5862,8 +5862,10 @@ def test_non_chapter_last_writes_fixed_archive_products_and_ordered_manifest(ses
     assert refs["archive_chapter_product"]["outcome"] == "not_applicable"
     assert refs["archive_volume_product"]["outcome"] == "not_applicable"
     assert refs["archive_chapter_evaluation_product"]["outcome"] == "not_applicable"
-    # 风格模仿 v2：漂移读数对每一场执行；该场景没有风格画像/契约 → no_op。
-    assert refs["archive_drift_product"]["outcome"] == "no_op"
+    # 风格参考 v3：sub 11（archive:style_drift:0）不再做漂移读数，改记「像不像」读数；
+    # 读数接上之前（P5b）槽位一律 not_applicable，检查点照常按原 kind / step_key 续跑。
+    assert refs["archive_drift_product"]["outcome"] == "not_applicable"
+    assert refs["archive_drift_product"]["reason"] == "fidelity_reading_not_recorded"
     assert [entry["sub_index"] for entry in refs["archive_manifest"]] == list(range(4, 12))
 
 
