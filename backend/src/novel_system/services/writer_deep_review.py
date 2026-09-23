@@ -37,6 +37,7 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.reference_copy_gate import (
     check_reference_copy_for_scope,
     copy_block_author_action,
+    introduced_copy,
 )
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.manuscript_html import manuscript_paragraphs
@@ -469,6 +470,11 @@ class WriterDeepReviewService:
             instruction=instruction,
             issue_note=issue_note,
         )
+        # 风格参考 v3（V1）：照抄参考书的改写选项不交给作者——写作台是在浏览器里把选中的改写插进正文的，
+        # 采纳端点（accept）拦不住；一个选项都不剩才报错。
+        patch_payload["replacement_options"] = self._copy_safe_options(
+            payload, list(patch_payload.get("replacement_options") or [])
+        )
         row = PassagePatchCandidate(
             patch_id=f"passage_patch_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,
@@ -514,6 +520,47 @@ class WriterDeepReviewService:
         self.session.flush()
         return {"candidate": self.serialize_patch_candidate(row)}
 
+    def _option_copy_check(self, scope: Any, text: str, source_excerpt: str | None):
+        """一个改写选项过唯一抄袭门；只算选项新带进来的命中（原句里本来就有的字不算，:func:`introduced_copy`）。"""
+        if not text.strip():
+            return None
+        check = check_reference_copy_for_scope(self.session, text, scope=scope)
+        check = introduced_copy(check, text, source_excerpt)
+        return check if check.blocked else None
+
+    def _copy_safe_options(self, payload: dict[str, Any], options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        object_type = _optional_text(payload, "object_type")
+        object_id = _optional_text(payload, "object_id")
+        scene_id = _optional_text(payload, "scene_id") or (object_id if object_type == "scene" else None)
+        chapter_id = _optional_text(payload, "chapter_id") or (object_id if object_type == "chapter" else None)
+        scope = resolve_style_scope(self.session, scene_id=scene_id, chapter_id=chapter_id)
+        source_excerpt = _optional_text(payload, "source_excerpt")
+        kept: list[dict[str, Any]] = []
+        first_block = None
+        for option in options:
+            text = str(option.get("replacement_text") or "") if isinstance(option, dict) else ""
+            check = self._option_copy_check(scope, text, source_excerpt)
+            if check is not None:
+                first_block = first_block or check
+                continue
+            kept.append(option)
+        if not kept and first_block is not None:
+            raise DomainError(
+                "SOURCE_SAFETY_BLOCKED",
+                "every generated rewrite copies the bound reference book and was discarded — ask again",
+                status_code=409,
+                details={
+                    "reference_copy": first_block.audit(),
+                    "author_action": copy_block_author_action(
+                        first_block,
+                        target_view="writer",
+                        target_ref=f"{object_type}:{object_id}",
+                        subject="这条改写",
+                    ),
+                },
+            )
+        return kept
+
     def _require_patch_copy_safe(self, row: PassagePatchCandidate, selected_option_id: str | None) -> None:
         """作者采纳局部改写之前过唯一抄袭门（风格参考 v3 V1）：采纳的那个选项（没点名就查全部选项）与绑定的参考书
         连续 ≥12 字相同、或含受保护专名 → 409，候选不改状态。位置是选项文字里的第几字，不印参考原文。"""
@@ -521,14 +568,16 @@ class WriterDeepReviewService:
         options = [option for option in row.replacement_options_json or [] if isinstance(option, dict)]
         if selected_option_id:
             options = [option for option in options if str(option.get("option_id")) == selected_option_id]
-        text = "\n".join(str(option.get("replacement_text") or "") for option in options).strip()
-        if not text:
-            return
         scene_id = row.scene_id or (row.object_id if row.object_type == "scene" else None)
         chapter_id = row.chapter_id or (row.object_id if row.object_type == "chapter" else None)
         scope = resolve_style_scope(self.session, scene_id=scene_id, chapter_id=chapter_id)
-        check = check_reference_copy_for_scope(self.session, text, scope=scope)
-        if not check.blocked:
+        # 每个选项单独查（拼在一起查，两个选项的交界处会被规范化拼出假的 12 字元）
+        check = None
+        for option in options:
+            check = self._option_copy_check(scope, str(option.get("replacement_text") or ""), row.source_excerpt)
+            if check is not None:
+                break
+        if check is None:
             return
         raise DomainError(
             "SOURCE_SAFETY_BLOCKED",

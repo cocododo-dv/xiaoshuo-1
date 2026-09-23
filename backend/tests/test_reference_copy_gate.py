@@ -277,3 +277,125 @@ def test_accepting_a_passage_rewrite_that_copies_the_reference_is_refused(sessio
 
     accepted = service.accept_patch_candidate("passage_patch_copy_gate", {"selected_option_id": "option_clean"})
     assert accepted["candidate"]["status"] == "accepted"
+
+
+def test_introduced_copy_keeps_only_what_the_new_text_brought_in(session) -> None:
+    """AI 建议 / 改写原样保留作者稿里已有的字不算它带进来的；把已有照抄扩写长了照样算。"""
+    from novel_system.services.reference_copy_gate import introduced_copy
+
+    scene = _seed_scene(session)
+    _bind(session, protected_terms=(PROTECTED_NAME,))
+    policy = style_policy_live(session, scene, freeze_contract=False)
+    baseline = f"作者自己粘进来的：{REFERENCE_PASSAGE[:20]}。{PROTECTED_NAME}没说话。"
+
+    kept = f"{REFERENCE_PASSAGE[:20]}。{PROTECTED_NAME}没说话，把伞收好。"
+    check = check_reference_copy(session, kept, policy=policy)
+    assert check.blocked is True
+    filtered = introduced_copy(check, kept, baseline)
+    assert filtered.blocked is False and filtered.hits == () and filtered.protected_hits == ()
+    assert filtered.audit()["preexisting_hit_count"] == 1
+    assert filtered.audit()["preexisting_protected_hit_count"] == 1
+
+    extended = f"{REFERENCE_PASSAGE[:40]}。她没回头。"
+    extended_check = introduced_copy(check_reference_copy(session, extended, policy=policy), extended, baseline)
+    assert extended_check.blocked is True and len(extended_check.hits) == 1
+    # 没有基准时原样返回
+    assert introduced_copy(check, kept, "") is check
+
+
+def test_generated_proposals_that_copy_the_reference_never_reach_the_author(session, monkeypatch) -> None:
+    """写作台在浏览器里把 AI 建议插进正文（采纳端点是事后记账），所以照抄的那一版在生成时就丢掉；一版都不剩 → 409。"""
+    from novel_system.services.author_drafts import AuthorDraftService
+
+    _seed_scene(session)
+    _bind(session)
+    session.add(
+        AuthorDraft(
+            draft_id="author_draft_gen_gate",
+            object_type="scene",
+            object_id=SCENE_ID,
+            source_text_ref="author_blank:scene",
+            content=f"<p>作者自己粘进来的：{REFERENCE_PASSAGE[:20]}。</p>",
+            revision_no=1,
+            status="current",
+        )
+    )
+    session.commit()
+    outputs: list[str] = []
+
+    def fake_generate(self, draft, **kwargs):  # noqa: ANN001, ANN003
+        return {"content": outputs.pop(0), "rationale": "合成", "source_llm_call_id": None}
+
+    monkeypatch.setattr(AuthorDraftService, "_generate_proposal_content", fake_generate)
+    service = AuthorDraftService(session)
+
+    # 三版里一版照抄：丢掉那一版，另两版照常交给作者（保留作者稿里原有照抄的那版不算 AI 带进来的）
+    outputs[:] = [
+        "结构笔记：先让她沉默。",
+        f"她抬头。{REFERENCE_PASSAGE[:40]}",
+        f"<p>作者自己粘进来的：{REFERENCE_PASSAGE[:20]}。她把伞收好。</p>",
+    ]
+    result = service.generate_proposal_set("author_draft_gen_gate", {"mode": "daily"})
+    assert len(result["proposals"]) == 2
+    assert result["reference_copy_blocked_count"] == 1
+    assert all(REFERENCE_PASSAGE[:40] not in item["content"] for item in result["proposals"])
+    session.commit()
+    stored = session.query(AuthorDraftProposal).filter_by(draft_id="author_draft_gen_gate").all()
+    assert len(stored) == 2
+
+    # 三版全照抄 → 409，一行都不落库，报的是建议里的位置、不印原文
+    outputs[:] = [f"第{index}版：{REFERENCE_PASSAGE[:30]}" for index in range(3)]
+    with pytest.raises(DomainError) as excinfo:
+        service.generate_proposal_set("author_draft_gen_gate", {"mode": "daily"})
+    assert excinfo.value.code == "SOURCE_SAFETY_BLOCKED"
+    assert excinfo.value.details["author_action"]["title"].startswith("这条 AI 建议")
+    assert REFERENCE_PASSAGE[:THRESHOLD_CHARS] not in str(excinfo.value.details)
+    session.rollback()
+    assert session.query(AuthorDraftProposal).filter_by(draft_id="author_draft_gen_gate").count() == 2
+
+    # 单条建议照抄 → 409，不落库
+    outputs[:] = [f"她抬头。{REFERENCE_PASSAGE[:40]}"]
+    with pytest.raises(DomainError) as single:
+        service.generate_proposal("author_draft_gen_gate", {"proposal_type": "whole_draft"})
+    assert single.value.code == "SOURCE_SAFETY_BLOCKED"
+    session.rollback()
+    assert session.query(AuthorDraftProposal).filter_by(draft_id="author_draft_gen_gate").count() == 2
+
+
+def test_generated_passage_rewrites_that_copy_the_reference_are_dropped(session, monkeypatch) -> None:
+    from novel_system.services.writer_deep_review import WriterDeepReviewService
+
+    _seed_scene(session)
+    _bind(session)
+    options: list[dict] = []
+
+    def fake_patch(self, payload, **kwargs):  # noqa: ANN001, ANN003
+        return {"replacement_options": list(options), "rationale": "合成", "generation_llm_call_id": None}
+
+    monkeypatch.setattr(WriterDeepReviewService, "_run_passage_patch", fake_patch)
+    service = WriterDeepReviewService(session)
+    excerpt = f"原句：{REFERENCE_PASSAGE[:16]}。"
+    payload = {
+        "object_type": "scene",
+        "object_id": SCENE_ID,
+        "chapter_id": CHAPTER_ID,
+        "scene_id": SCENE_ID,
+        "source_excerpt": excerpt,
+        "issue_dimension": "author_instruction",
+    }
+
+    options[:] = [
+        {"option_id": "clean", "tone": "shorter", "replacement_text": "她没说话，把伞收好。"},
+        {"option_id": "copy", "tone": "sharper", "replacement_text": REFERENCE_PASSAGE[:36]},
+        # 原句里本来就有的照抄被原样保留：不是这条改写带进来的
+        {"option_id": "keeps", "tone": "plain", "replacement_text": f"{REFERENCE_PASSAGE[:16]}，她说。"},
+    ]
+    candidate = service.create_patch_candidate(payload)["candidate"]
+    kept_ids = [option["option_id"] for option in candidate["replacement_options"]]
+    assert kept_ids == ["clean", "keeps"]
+
+    options[:] = [{"option_id": "copy", "tone": "sharper", "replacement_text": REFERENCE_PASSAGE[:36]}]
+    with pytest.raises(DomainError) as excinfo:
+        service.create_patch_candidate(payload)
+    assert excinfo.value.code == "SOURCE_SAFETY_BLOCKED"
+    assert excinfo.value.details["author_action"]["title"].startswith("这条改写")

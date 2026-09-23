@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import array
 import bisect
+import dataclasses
 import hashlib
 import threading
 from collections import OrderedDict
@@ -40,6 +41,7 @@ from novel_system.services.author_actions import author_action
 from novel_system.services.source_safety import (
     configured_protected_source_terms,
     find_protected_term_spans,
+    normalize_for_term_match,
 )
 from novel_system.services.style_reference.validation.plagiarism import (
     normalize_text_for_matching,
@@ -125,6 +127,7 @@ class CopyCheck:
             "hits": [hit.as_dict() for hit in self.hits[:MAX_REPORTED_HITS]],
             "protected_hit_count": len(self.protected_hits),
             "protected_hits": [hit.as_dict() for hit in self.protected_hits[:MAX_REPORTED_HITS]],
+            **dict(self.extra),
         }
 
 
@@ -389,6 +392,41 @@ def check_reference_copy(
     return result
 
 
+def introduced_copy(check: CopyCheck, text: str, baseline: str | None) -> CopyCheck:
+    """``check``（对 ``text`` 的检查结果）里只留 ``baseline`` 里本来没有的命中。
+
+    AI 建议 / 局部改写常常把作者稿里已有的字原样带回来（整稿建议、改写保留原句）：那些字——哪怕是作者自己粘进来的
+    参考原文——不是这条建议带进来的，由成稿门在定稿时对全文把关，这里不该以「这条 AI 建议照抄了参考书」拦下它。
+    命中区间规范化后是 ``baseline``（同样规范化）的子串即视为原有；把原有照抄扩写长了的命中不是子串，照样拦。
+    """
+    if not check.blocked or not str(baseline or "").strip():
+        return check
+    base_copy = normalize_text_for_matching(str(baseline))
+    base_terms = normalize_for_term_match(str(baseline))
+    hits = tuple(
+        hit for hit in check.hits if normalize_text_for_matching(text[hit.start : hit.end]) not in base_copy
+    )
+    protected = tuple(
+        hit
+        for hit in check.protected_hits
+        if normalize_for_term_match(text[hit.start : hit.end]) not in base_terms
+    )
+    if len(hits) == len(check.hits) and len(protected) == len(check.protected_hits):
+        return check
+    return dataclasses.replace(
+        check,
+        blocked=bool(hits or protected),
+        hits=hits,
+        protected_hits=protected,
+        extra={
+            **dict(check.extra),
+            "baseline_sha256": hashlib.sha256(str(baseline).encode("utf-8")).hexdigest(),
+            "preexisting_hit_count": len(check.hits) - len(hits),
+            "preexisting_protected_hit_count": len(check.protected_hits) - len(protected),
+        },
+    )
+
+
 def copy_gate_policies(
     session: Session,
     *,
@@ -495,5 +533,6 @@ __all__ = [
     "check_reference_copy_for_scope",
     "copy_block_author_action",
     "copy_gate_policies",
+    "introduced_copy",
     "reset_reference_copy_gate_cache",
 ]

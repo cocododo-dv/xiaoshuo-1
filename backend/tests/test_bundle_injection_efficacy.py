@@ -272,7 +272,8 @@ def test_bundle_freshness_budget_applies_exemptions_from_bound_reference(session
     assert "preserve_reference_repetition" not in norep
 
     # 2026-09-12 风格直起(style_first,缺省):两张房风词表与「以动作收尾」子句让位;
-    # 跨场景动作模板 / 意象场 / n-gram 复用检查保留;刻意复沓时全书禁用表达表也让位。
+    # 风格参考 v3(L8):构式层清单(动作模板 / 意象场 / 句形 / 语义复读 / 全书已用表达)一并让位,
+    # 只剩逐字层的近场重复 n-gram。
     seed_prior_final("P_W6_SFIRST")
     seed_binding(
         session,
@@ -284,7 +285,10 @@ def test_bundle_freshness_budget_applies_exemptions_from_bound_reference(session
     assert bound["house_taste_lists"] == "deferred_to_reference"
     assert "avoid_summary_endings" not in bound and "avoid_false_clarity" not in bound
     assert "hard action" not in bound["instruction"]
-    assert "repeating your own earlier scenes" in bound["instruction"]
+    assert "copying your own earlier scenes word for word only" in bound["instruction"]
+    assert bound["construction_lists"] == "deferred_to_reference"
+    for key in ("avoid_action_templates", "avoid_image_fields", "vary_syntax_shapes", "semantic_repetition_alert"):
+        assert key not in bound
     assert bound["avoid_recent_ngrams"] == ["他把杯子放回桌上"]
     assert bound["preserve_reference_repetition"] is True
     assert "lifetime_banned_expressions" not in bound

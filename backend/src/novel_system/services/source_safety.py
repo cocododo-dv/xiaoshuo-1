@@ -68,6 +68,11 @@ def _normalize_for_match_with_offsets(text: str) -> tuple[str, list[int]]:
     return "".join(chars), offsets
 
 
+def normalize_for_term_match(text: str) -> str:
+    """受保护专名比对用的规范化（与 :func:`find_protected_term_spans` 同一口径，不带下标）。"""
+    return _normalize_for_match_with_offsets(text)[0]
+
+
 def find_protected_term_spans(
     text: str, terms: Iterable[Any]
 ) -> list[tuple[str, int, int]]:

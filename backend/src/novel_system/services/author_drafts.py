@@ -44,6 +44,7 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.reference_copy_gate import (
     check_reference_copy_for_scope,
     copy_block_author_action,
+    introduced_copy,
 )
 from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
@@ -393,6 +394,12 @@ class AuthorDraftService:
             source_evaluation_id=source_evaluation_id,
             actor_ref=actor_ref,
         )
+        if not replacement_text:
+            # 模型写的建议照抄了参考书：不交给作者（写作台是在浏览器里把建议插进正文的，采纳端点拦不住）
+            copy = self._proposal_copy_check(draft, proposal)
+            if copy is not None:
+                self.session.expunge(proposal)
+                self._raise_proposal_copy_blocked(draft, copy, proposal_ids=[])
         self.session.flush()
         return {"proposal": self.serialize_proposal(proposal)}
 
@@ -434,8 +441,23 @@ class AuthorDraftService:
                 source_evaluation_id=source_evaluation_id,
                 actor_ref=actor_ref,
             ))
+        # 照抄参考书的那几版不交给作者；一版都不剩才报错（写作台在浏览器里插入建议，采纳端点拦不住）
+        blocked_checks = []
+        kept: list[AuthorDraftProposal] = []
+        for proposal in proposals:
+            copy = self._proposal_copy_check(draft, proposal)
+            if copy is None:
+                kept.append(proposal)
+            else:
+                blocked_checks.append(copy)
+                self.session.expunge(proposal)
+        if not kept and blocked_checks:
+            self._raise_proposal_copy_blocked(draft, blocked_checks[0], proposal_ids=[])
         self.session.flush()
-        return {"draft_id": draft.draft_id, "mode": mode, "proposals": [self.serialize_proposal(row) for row in proposals]}
+        response = {"draft_id": draft.draft_id, "mode": mode, "proposals": [self.serialize_proposal(row) for row in kept]}
+        if blocked_checks:
+            response["reference_copy_blocked_count"] = len(blocked_checks)
+        return response
 
     def proposal_diff(self, draft_id: str, proposal_id: str) -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -812,21 +834,54 @@ class AuthorDraftService:
             )
             return prompt
 
-    def _require_proposal_copy_safe(self, draft: AuthorDraft, proposal: AuthorDraftProposal) -> None:
-        """AI 建议写进作者稿之前过唯一抄袭门（风格参考 v3 V1）：建议带进来的文字与绑定的参考书连续 ≥12 字相同、
-        或含受保护专名 → 409，作者稿不动。只查建议带进来的那段（作者自己写的字不在这里拦，定稿时成稿门会查全文）；
-        位置是建议文字里的第几字，不印参考原文。"""
-
-        inserted = plain_manuscript_text(proposal.replacement_text or proposal.content or "")
-        if not inserted.strip():
-            return
-        scope = resolve_style_scope(
+    def _draft_copy_scope(self, draft: AuthorDraft):
+        return resolve_style_scope(
             self.session,
             scene_id=draft.object_id if draft.object_type == "scene" else None,
             chapter_id=draft.object_id if draft.object_type == "chapter" else None,
             project_id=draft.object_id if draft.object_type == "project" else None,
         )
-        check = check_reference_copy_for_scope(self.session, inserted, scope=scope)
+
+    def _proposal_copy_check(self, draft: AuthorDraft, proposal: AuthorDraftProposal):
+        """模型写的建议文字过唯一抄袭门；拦下 → 返回检查结果，干净 → None。
+
+        只算建议新带进来的命中（:func:`introduced_copy`）：整稿建议原样保留作者稿里已有的字不算。"""
+
+        text = plain_manuscript_text(proposal.content or "")
+        if not text.strip():
+            return None
+        check = check_reference_copy_for_scope(self.session, text, scope=self._draft_copy_scope(draft))
+        check = introduced_copy(check, text, plain_manuscript_text(draft.content or ""))
+        return check if check.blocked else None
+
+    def _raise_proposal_copy_blocked(self, draft: AuthorDraft, check, *, proposal_ids: list[str]) -> None:
+        raise DomainError(
+            "SOURCE_SAFETY_BLOCKED",
+            "the generated proposal copies the bound reference book and was discarded — generate again",
+            status_code=409,
+            details={
+                "draft_id": draft.draft_id,
+                "proposal_ids": proposal_ids,
+                "reference_copy": check.audit(),
+                "author_action": copy_block_author_action(
+                    check,
+                    target_view="writer",
+                    target_ref=f"{draft.object_type}:{draft.object_id}",
+                    subject="这条 AI 建议",
+                ),
+            },
+        )
+
+    def _require_proposal_copy_safe(self, draft: AuthorDraft, proposal: AuthorDraftProposal) -> None:
+        """AI 建议写进作者稿之前过唯一抄袭门（风格参考 v3 V1）：建议带进来的文字与绑定的参考书连续 ≥12 字相同、
+        或含受保护专名 → 409，作者稿不动。只查建议带进来的那段（作者稿里本来就有的字不在这里拦——
+        :func:`introduced_copy`——定稿时成稿门会查全文）；位置是建议文字里的第几字，不印参考原文。"""
+
+        inserted = plain_manuscript_text(proposal.replacement_text or proposal.content or "")
+        if not inserted.strip():
+            return
+        check = check_reference_copy_for_scope(self.session, inserted, scope=self._draft_copy_scope(draft))
+        check = introduced_copy(check, inserted, plain_manuscript_text(draft.content or ""))
         if not check.blocked:
             return
         raise DomainError(
