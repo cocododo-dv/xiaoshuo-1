@@ -186,31 +186,31 @@ def select_anchor_positions(
 ) -> list[int]:
     """锚定集:在全书上按位置分层抽样(升序的段落位置)。
 
-    书不超过锚定集时全书都是锚定段(没有余段,也就没有快模型对照)。否则跳过章题、书前的
-    书名页 / 简介块(第一个章题之前、不超过全书 5% 的块)、副文本与场分隔行,把剩下的段按位置
-    等分成 ``anchor_size`` 层,每层用书的种子确定性地挑一段——续跑时同一本书挑出同一组。
+    书不超过锚定集时全书都是锚定段(没有余段,也就没有快模型对照)。否则先跳过书前的书名页 / 简介块
+    (第一个章题之前、不超过全书 5% 的块),把剩下的位置等分成 ``anchor_size`` 层,每层按书的种子打乱后
+    取第一个「可当锚定段」的段(不是章题 / 副文本 / 场分隔行 / 空段;一层里一个都没有时取打乱后的第一段)
+    ——续跑时同一本书挑出同一组。只检查被试到的段,26,000 段的书也只看几百段。
     """
     size = ANCHOR_SIZE if anchor_size is None else int(anchor_size)
     total = len(texts)
     if total <= size:
         return list(range(total))
+    front_limit = max(3, int(total * _FRONT_MATTER_MAX_SHARE))
     first_title = next(
-        (pos for pos, text in enumerate(texts) if is_title_paragraph(str(text or "").strip())), None
+        (pos for pos in range(min(total, front_limit + 1)) if is_title_paragraph(str(texts[pos] or "").strip())),
+        None,
     )
-    skip_before = 0
-    if first_title is not None and 0 < first_title <= max(3, int(total * _FRONT_MATTER_MAX_SHARE)):
-        skip_before = first_title
-    candidates = [pos for pos in range(skip_before, total) if _anchor_candidate(texts[pos])]
-    if len(candidates) < size:
-        # 可选段太少(几乎全是章题 / 符号行的怪书):退回全书按位置分层,仍然覆盖全书。
-        candidates = list(range(total))
+    skip_before = first_title if first_title is not None and 0 < first_title <= front_limit else 0
+    span = total - skip_before
+    layers = min(size, span)
     rng = random.Random(f"style-reference-anchors:{seed}")
     picks: list[int] = []
-    for layer in range(size):
-        lo = (layer * len(candidates)) // size
-        hi = ((layer + 1) * len(candidates)) // size
-        chunk = candidates[lo:max(hi, lo + 1)]
-        picks.append(rng.choice(chunk))
+    for layer in range(layers):
+        lo = skip_before + (layer * span) // layers
+        hi = skip_before + ((layer + 1) * span) // layers
+        order = list(range(lo, max(hi, lo + 1)))
+        rng.shuffle(order)
+        picks.append(next((pos for pos in order if _anchor_candidate(texts[pos])), order[0]))
     return sorted(set(picks))
 
 
