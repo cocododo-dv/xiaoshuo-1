@@ -228,30 +228,6 @@ class ValidationReport(BaseModel):
     forbidden_hits_json: list[dict[str, Any]] = Field(default_factory=list)
 
 
-# --- Preview
-
-
-class PreviewGeneratedSample(BaseModel):
-    """`style_ref_preview_generate` LLM 节点返回结构。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    sample_text: str = Field(min_length=1)
-    paragraph_type: str | None = None
-
-
-class PreviewSampleResult(BaseModel):
-    """Preview endpoint 单条返回。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    paragraph_type: str
-    sample_text: str
-    report_id: str | None = None
-    verdict: str | None = None
-    error: str | None = None
-
-
 # ---------------------------------------------------------------------------
 # PR-7 契约:validate 完整三路 + 双路径
 # ---------------------------------------------------------------------------

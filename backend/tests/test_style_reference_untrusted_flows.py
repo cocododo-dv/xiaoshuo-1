@@ -16,7 +16,6 @@ from novel_system.services.style_reference.learn_llm import (
     LearnNodeRuntime,
     call_structured,
 )
-from novel_system.services.style_reference.preview import PREVIEW_NODE_ID, PreviewService
 from novel_system.services.style_reference.validation import forbidden_semantic, semantic
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
@@ -37,7 +36,6 @@ FORGED_BOUNDARIES = (
 LEARN_FLOW_NODES = (*EXTRACT_NODES.values(), NODE_SYNTHESIZE, NODE_PROTECTED_TERMS, NODE_TAG_WINDOWS)
 FLOW_NODES = (
     *LEARN_FLOW_NODES,
-    PREVIEW_NODE_ID,
     semantic.SEMANTIC_NODE_ID,
     forbidden_semantic.FORBIDDEN_SEMANTIC_NODE_ID,
 )
@@ -170,22 +168,6 @@ def test_learn_job_requests_are_bounded_and_retry_notes_stay_outside(_fake_nodes
         _assert_request_is_bounded(request, node_id=request.node_id, template=_fake_nodes[request.node_id])
         user_prompt = request.messages[1]["content"]
         assert user_prompt.index("【重试说明】") < user_prompt.index(f"[UNTRUSTED_REFERENCE_DATA:{request.node_id}]")
-
-
-def test_preview_request_is_bounded(_fake_nodes, session) -> None:
-    client = _CaptureClient()
-    service = PreviewService(session, llm_client=client, llm_enabled=True)
-
-    service._call_llm(
-        "profile-boundary", "narration", _malicious_payload("preview")
-    )
-
-    assert len(client.requests) == 1
-    _assert_request_is_bounded(
-        client.requests[0],
-        node_id=PREVIEW_NODE_ID,
-        template=_fake_nodes[PREVIEW_NODE_ID],
-    )
 
 
 def test_semantic_request_is_bounded(_fake_nodes, session) -> None:

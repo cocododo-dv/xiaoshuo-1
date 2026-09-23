@@ -980,34 +980,6 @@ templates:
                 items: {type: string}
               gist: {type: string, maxLength: 40}
 
-  style_ref_preview_generate:
-    version: "2026-07-04.v2"
-    input_token_budget: 1500
-    system_prompt: |
-      你是中文叙事写作示例生成助手。给定一份 StyleProfile 摘要与一个 paragraph_type
-      (dialogue / description_env / psychology 三选一),生成一段 ≤500 字的示例
-      中文文本,体现该 profile 的语言与叙事特征。
-      约束:
-      - 严禁照抄 seed_quote(只作为风格参考,不直接复用句子)
-      - 严禁使用空泛形容词("文笔优美""画面感强")
-      - 段落自包含,不依赖未给出的上下文
-    task_prompt: |
-      输入 payload 含 profile_summary / paragraph_type / seed_quote / style_features。
-      style_features 是整份 profile 的特征列表,不必也不应该在这一段里全部体现;
-      请从中挑 2-3 条与当前 paragraph_type 最贴合的重点呈现(如 dialogue 优先选对白/
-      节奏类特征,description_env 优先选环境/感官类特征,psychology 优先选内省/句法类特征),
-      让这一段样本把这几条特征"放大"到读者一眼能辨认,而不是均匀地蜻蜓点水带过全部特征。
-      请返回 sample_text(≤500 字中文)与 paragraph_type。
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required: [sample_text]
-      properties:
-        sample_text:
-          type: string
-        paragraph_type:
-          type: string
-
   style_ref_validate_semantic:
     version: "2026-07-04.v2"
     input_token_budget: 2000

@@ -969,9 +969,8 @@ def test_local_only_import_under_a_cloud_classify_route_is_refused_in_chinese(cl
 # ---------------------------------------------------------------- activity / compat progress
 
 
-def test_activity_lists_the_job_and_a_compat_alias_and_the_progress_alias_finds_it(
-    client: TestClient, monkeypatch
-) -> None:
+def test_activity_lists_the_job_and_a_compat_alias(client: TestClient, monkeypatch) -> None:
+    """活动清单:作业条目(新界面只认它)+ 带 ``compat_alias_of`` 的旧别名条目(P7 删);旧的导入进度轮询端点已删。"""
     gated = install_fake_classifier(monkeypatch, ScriptedClassifier(gate_call=2))
     monkeypatch.setattr(import_job, "PARALLEL_BATCHES", 1)
     book_id = import_book(client, key="act-key", text=LONG_TEXT, fake=gated, wait=False)
@@ -987,14 +986,12 @@ def test_activity_lists_the_job_and_a_compat_alias_and_the_progress_alias_finds_
     assert alias["compat_alias_of"] == canonical["key"]
     assert alias["kind"] == "import" and alias["status"] == "running" and alias["phase"] == "classify"
     assert alias["classify"]["batches_done"] == 1 and alias["classify"]["batches_total"] == 17
-    progress = client.get(f"{PREFIX}/imports/act-key/progress").json()["data"]["progress"]
-    assert progress["status"] == "running" and progress["job_id"] == canonical["job_id"]
+    assert client.get(f"{PREFIX}/imports/act-key/progress").status_code == 404
     gated.gate.set()
     wait_book_status(client, book_id)
-    done = client.get(f"{PREFIX}/imports/act-key/progress").json()["data"]["progress"]
-    assert done["status"] == "succeeded" and done["percent"] == 100 and done["paragraphs_count"] == 60
-    missing = client.get(f"{PREFIX}/imports/no-such-key/progress")
-    assert missing.status_code == 404
+    items = client.get(f"{PREFIX}/activity").json()["data"]["items"]
+    done = next(item for item in items if item["key"] == canonical["key"])
+    assert done["status"] == "succeeded" and done["percent"] == 100.0 and done["steps"] == {"done": 17, "total": 17}
 
 
 def test_startup_marks_books_left_by_the_old_cursor_state_machine_as_failed(session, monkeypatch) -> None:

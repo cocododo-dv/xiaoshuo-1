@@ -1,9 +1,13 @@
-"""参考书:导入(上传 / 服务器路径)、书库列表与详情、段落原文、删除、(重新)分类与取消、运行时默认值。"""
+"""参考书:导入(上传 / 服务器路径)、书库列表与详情、段落原文、删除(单本 / 批量)、(重新)分类与取消、运行时默认值。
+
+书的载荷都来自 ``summaries.book_summaries``:列表不带 ``stats_json``(详情才带),每本书带段落类型的来源、最近的
+分类 / 学习作业、这本书的画像摘要(要不要重新学)与用在了哪些作品上。
+"""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,11 +26,10 @@ from novel_system.api.routes.style_reference._common import (
     dispatch,
     llm_client_and_enabled,
     req_id,
-    serialize_book,
 )
-from novel_system.db.models import StyleReferenceJob, StyleReferenceParagraph
+from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.errors import DomainError
-from novel_system.services.style_reference.cleanup import purge_derived_data
+from novel_system.services.style_reference.cleanup import delete_reference_book
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.import_job import (
     cancel_classification,
@@ -38,11 +41,6 @@ from novel_system.services.style_reference.ingest import (
     MAX_REFERENCE_BOOK_BYTES,
     IngestService,
 )
-from novel_system.services.style_reference.jobs import (
-    JOB_KIND_CLASSIFY,
-    JOB_KIND_LEARN,
-    StyleJobService,
-)
 from novel_system.services.style_reference.policy import (
     default_cloud_policy,
     ensure_local_only_llm,
@@ -50,6 +48,7 @@ from novel_system.services.style_reference.policy import (
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.segmentation.llm import CLASSIFY_NODE_IDS
+from novel_system.services.style_reference.summaries import book_summaries
 from novel_system.services.system_config import require_admin_token
 
 router = APIRouter(tags=ROUTE_TAGS)
@@ -67,6 +66,13 @@ class ReclassifyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     resume: bool = False
     mode: Literal["reclassify", "retype"] = "reclassify"
+
+
+class BulkDeleteRequest(BaseModel):
+    """书库多选删除:一次最多 100 本;重复的 id 只删一次。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    book_ids: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(min_length=1, max_length=100)
 
 
 class ImportPathRequest(BaseModel):
@@ -106,7 +112,7 @@ def import_book_path(
             cloud_policy=body["cloud_policy"],
             rights_declaration=body.get("rights_declaration"),
         )
-        return _import_response(result)
+        return _import_response(session, result)
 
     return idempotent_response(
         request,
@@ -130,10 +136,16 @@ def _require_import_llm(cloud_policy: str):
     return client
 
 
-def _import_response(result) -> dict[str, Any]:
+def _book_payload(session: Session, book) -> dict[str, Any]:
+    """一本书的完整载荷(带 ``stats_json``);书不存在时 None。"""
+    rows = book_summaries(session, [book], include_stats=True) if book is not None else []
+    return rows[0] if rows else None
+
+
+def _import_response(session: Session, result) -> dict[str, Any]:
     job = result.job
     return {
-        "book": serialize_book(result.book, classification_job=job),
+        "book": _book_payload(session, result.book),
         "paragraphs_count": result.paragraphs_count,
         "safety": result.safety_payload,
         "classification": classification_payload(job),
@@ -196,7 +208,7 @@ async def import_book_upload(
         "rights_declaration": rights_obj,
     }
 
-    # 分类作业的 op_key = 客户端幂等键:活动清单与 GET …/imports/{key}/progress 按它找到这本书的作业。
+    # 分类作业的 op_key = 客户端幂等键;界面按响应里的 job_id 在活动清单(作业表)里跟进度。
     op_key = request.headers.get("X-Idempotency-Key")
     client = _require_import_llm(cloud_policy)
 
@@ -210,7 +222,7 @@ async def import_book_upload(
             cloud_policy=payload["cloud_policy"],
             rights_declaration=payload.get("rights_declaration"),
         )
-        return _import_response(result)
+        return _import_response(session, result)
 
     # 处理器因为要 await 读上传体而是 async def,准备工作(安全扫描、切段、批量落段落行)是同步的:
     # 放到线程池里执行,不堵事件循环;请求级 Session 只在这一个线程里用。
@@ -257,32 +269,10 @@ def list_books(
     status: str | None = None,
     session: Session = Depends(get_session),
 ):
-    repo = StyleReferenceRepository(session)
-    books = repo.list_books(status=status)
-    latest: dict[tuple[str, str], Any] = {}
-    if books:
-        for job in session.scalars(
-            select(StyleReferenceJob)
-            .where(
-                StyleReferenceJob.kind.in_((JOB_KIND_CLASSIFY, JOB_KIND_LEARN)),
-                StyleReferenceJob.book_id.in_([b.book_id for b in books]),
-            )
-            .order_by(StyleReferenceJob.created_at)
-        ):
-            latest[(job.kind, job.book_id)] = job  # 按创建时间升序:最后写入的就是最近一个
-    return ok(
-        {
-            "books": [
-                serialize_book(
-                    b,
-                    classification_job=latest.get((JOB_KIND_CLASSIFY, b.book_id)),
-                    learn_job=latest.get((JOB_KIND_LEARN, b.book_id)),
-                )
-                for b in books
-            ]
-        },
-        req_id=req_id(request),
-    )
+    """书库列表(按导入时间):每本书的状态、段落类型的来源与一致率、最近的分类 / 学习作业、画像摘要
+    (``needs_relearn`` / ``relearn_reason``)与 ``applied_projects``;不带 ``stats_json``。"""
+    books = StyleReferenceRepository(session).list_books(status=status)
+    return ok({"books": book_summaries(session, books)}, req_id=req_id(request))
 
 
 @router.get(f"{PATH_PREFIX}/books/{{book_id}}")
@@ -291,15 +281,15 @@ def get_book(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    repo = StyleReferenceRepository(session)
-    book = repo.get_book(book_id)
+    """一本书的完整载荷:列表的全部字段 + ``stats_json``(段落类型分布、语料评估、校准信息……)。"""
+    book = StyleReferenceRepository(session).get_book(book_id)
     if book is None:
         raise DomainError(
             "STYLE_REFERENCE_BOOK_NOT_FOUND",
             f"book {book_id!r} not found",
             status_code=404,
         )
-    return ok({"book": serialize_book(book)}, req_id=req_id(request))
+    return ok({"book": _book_payload(session, book)}, req_id=req_id(request))
 
 
 @router.get(f"{PATH_PREFIX}/books/{{book_id}}/classification/estimate")
@@ -389,24 +379,11 @@ def delete_book(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
+    """删一本参考书:活动作业收尾、它的绑定所在范围的规划产物作废、派生数据 / 段落 / 书一并删除(``cleanup``)。"""
+
     def _do() -> dict[str, Any]:
-        repo = StyleReferenceRepository(session)
-        book = repo.get_book(book_id)
-        if book is None:
-            raise DomainError(
-                "STYLE_REFERENCE_BOOK_NOT_FOUND",
-                f"book {book_id!r} not found",
-                status_code=404,
-            )
-        # 同一事务里先把这本书的活动作业收尾为 cancelled:旧工人的条件写全部落空、不再调模型
-        # (删书后同一份文本重新导入,旧线程也不会接着把正文发出去,v3 I2)。
-        StyleJobService(session).cancel_all_for_book(book_id)
-        # FK 反向 cascade(无 ON DELETE CASCADE):派生数据(含作业与窗口索引)走 purge_derived_data
-        # (与破坏式重新分类共用),再删 paragraphs → book
-        purge_derived_data(session, book_id)
-        repo.delete_paragraphs_for_book(book_id)
-        repo.delete_book(book_id)
-        return {"book_id": book_id, "deleted": True}
+        result = delete_reference_book(session, book_id)
+        return {"book_id": book_id, "deleted": True, "unbound": result["unbound"]}
 
     return idempotent_response(
         request,
@@ -414,6 +391,42 @@ def delete_book(
         method="DELETE",
         path_template=f"{PATH_PREFIX}/books/{{book_id}}",
         payload={"book_id": book_id},
+        action=_do,
+    )
+
+
+@router.post(f"{PATH_PREFIX}/books/bulk-delete")
+def bulk_delete_books(
+    payload: BulkDeleteRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """书库多选删除(台账 U4 / L6):每本书与单本删除走同一个函数,各在一个保存点里——一本失败(不存在)
+    不影响其余的;结果逐本给出 ``deleted`` / ``error``。"""
+    book_ids = list(dict.fromkeys(str(book_id) for book_id in payload.book_ids))
+
+    def _do() -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        for book_id in book_ids:
+            try:
+                with session.begin_nested():
+                    outcome = delete_reference_book(session, book_id)
+                results.append(
+                    {"book_id": book_id, "title": outcome["title"], "deleted": True, "unbound": outcome["unbound"]}
+                )
+            except DomainError as exc:
+                results.append(
+                    {"book_id": book_id, "deleted": False, "error": {"code": exc.code, "message": exc.message}}
+                )
+        deleted = sum(1 for item in results if item["deleted"])
+        return {"results": results, "deleted_count": deleted, "failed_count": len(results) - deleted}
+
+    return idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template=f"{PATH_PREFIX}/books/bulk-delete",
+        payload={"book_ids": book_ids},
         action=_do,
     )
 
@@ -448,7 +461,7 @@ def reclassify_book(
         job = service.resume(book_id) if resume else service.start_reclassify(book_id, mode=mode)
         book = StyleReferenceRepository(session).get_book(book_id)
         return {
-            "book": serialize_book(book, classification_job=job),
+            "book": _book_payload(session, book),
             "book_id": book_id,
             "status": "classifying",
             "mode": str((job.params_json or {}).get("mode") or mode),

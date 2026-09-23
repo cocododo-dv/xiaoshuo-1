@@ -1,4 +1,5 @@
-"""StyleReference 运行时 cleanup:删书 / 破坏式重新分类时清派生数据,遥测留存清理。"""
+"""StyleReference 运行时 cleanup:删书(单本 / 批量共用 ``delete_reference_book``)/ 破坏式重新分类时清派生数据,
+遥测留存清理。"""
 
 from __future__ import annotations
 
@@ -6,7 +7,7 @@ from datetime import UTC, datetime
 import logging
 from typing import Any
 
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -173,6 +174,73 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
             exc_info=True,
         )
     return counts
+
+
+def delete_reference_book(session: Session, book_id: str) -> dict[str, Any]:
+    """删一本参考书(单本删除与书库批量删除共用;flush 但不 commit)。
+
+    同一事务里依次:这本书的活动作业收尾为 cancelled(旧工人的条件写全部落空、不再调模型——删书后同一份
+    文本重新导入,旧线程也不会接着把正文发出去,v3 I2)→ 它的生效绑定所在范围内按这本参考做的规划产物作废
+    (与解除绑定同一口径)→ :func:`purge_derived_data` 清派生数据 → 段落 → 书。书不存在 404。
+    """
+    from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph
+    from novel_system.services.errors import DomainError
+    from novel_system.services.scene_planning_staleness import supersede_for_binding_scope
+    from novel_system.services.style_reference.jobs import StyleJobService
+
+    book = session.get(StyleReferenceBook, str(book_id))
+    if book is None:
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_NOT_FOUND",
+            f"book {book_id!r} not found",
+            status_code=404,
+        )
+    title = book.title
+    cancelled = StyleJobService(session).cancel_all_for_book(book_id)
+    profile_ids = [
+        str(pid)
+        for pid in session.scalars(
+            select(StyleReferenceProfile.profile_id).where(StyleReferenceProfile.book_id == book_id)
+        )
+    ]
+    unbound: list[dict[str, Any]] = []
+    if profile_ids:
+        for binding in session.scalars(
+            select(StyleReferenceInjectionBinding)
+            .where(
+                StyleReferenceInjectionBinding.profile_id.in_(profile_ids),
+                StyleReferenceInjectionBinding.status == "active",
+            )
+            .order_by(StyleReferenceInjectionBinding.created_at, StyleReferenceInjectionBinding.binding_id)
+        ):
+            supersede_for_binding_scope(
+                session,
+                scope=str(binding.scope),
+                scope_ref_id=binding.scope_ref_id,
+                reason=f"style_reference_book_deleted:{book_id}",
+            )
+            unbound.append(
+                {"binding_id": binding.binding_id, "scope": binding.scope, "scope_ref_id": binding.scope_ref_id}
+            )
+    counts = dict(purge_derived_data(session, book_id))
+    counts["paragraphs"] = int(
+        session.execute(
+            delete(StyleReferenceParagraph).where(StyleReferenceParagraph.book_id == book_id)
+        ).rowcount
+        or 0
+    )
+    counts["books"] = int(
+        session.execute(delete(StyleReferenceBook).where(StyleReferenceBook.book_id == book_id)).rowcount or 0
+    )
+    session.flush()
+    return {
+        "book_id": book_id,
+        "title": title,
+        "deleted": True,
+        "cancelled_jobs": list(cancelled),
+        "unbound": unbound,
+        "counts": counts,
+    }
 
 
 def cleanup_metric_events(

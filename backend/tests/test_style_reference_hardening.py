@@ -28,7 +28,6 @@ from novel_system.services.style_policy import style_policy_live
 from novel_system.services.style_reference.inject.fit import fit_rendered
 from novel_system.services.style_reference.inject.render import render_style
 from novel_system.services.style_reference.inject.request import StyleRenderRequest
-from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     ValidateRequest,
@@ -167,15 +166,6 @@ def test_reclassify_blocked_for_local_only_book():
                 service.start_reclassify(book_id, mode=mode)
         with pytest.raises(CloudPolicyBlockedError):
             service.resume(book_id)
-
-
-def test_preview_blocked_for_local_only_book():
-    book_id = _seed_book("prev_block", cloud_policy="local_only")
-    profile_id = _seed_profile_for_book("prev_block", book_id)
-    with SessionLocal() as session:
-        svc = PreviewService(session, llm_client=object(), llm_enabled=True)
-        with pytest.raises(CloudPolicyBlockedError):
-            svc.generate(profile_id)
 
 
 def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic(monkeypatch):
@@ -510,33 +500,6 @@ def test_llm_required_maps_to_409_with_author_action():
     assert err["details"]["author_action"]
 
 
-def test_orphan_pending_report_degrades_to_fail_on_poll():
-    book_id = _seed_book("orphan", cloud_policy="segments_only")
-    profile_id = _seed_profile_for_book("orphan", book_id)
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        row = repo.create_validation_report(
-            report_id="sr_rep_hd_orphan",
-            profile_id=profile_id,
-            target_kind="manual",
-            target_ref_id=None,
-            verdict="",
-            quantitative_json=[],
-            semantic_json=[],
-            plagiarism_json={},
-            forbidden_hits_json=[],
-            mode_executed="async_full",
-        )
-        row.created_at = "2020-01-01T00:00:00+00:00"
-        session.commit()
-    with _client() as client:
-        resp = client.get(f"{PREFIX}/reports/sr_rep_hd_orphan")
-    assert resp.status_code == 200
-    report = resp.json()["data"]["report"]
-    assert report["verdict"] == "fail"
-    assert report["status"] == "failed"
-
-
 # ---------------------------------------------------------------------------
 # 8. 后台 run + 进度 / apply 注入配置 / binding 唯一约束 / few-shot
 # ---------------------------------------------------------------------------
@@ -556,38 +519,52 @@ def _seed_ingested_book(seed: str) -> str:
         return result.book.book_id
 
 
+def _seed_project(project_id: str) -> str:
+    from novel_system.db.models import StoryProject
+
+    with SessionLocal() as session:
+        if session.get(StoryProject, project_id) is None:
+            session.add(StoryProject(project_id=project_id, title="合成作品", outline_text=""))
+            session.commit()
+    return project_id
+
+
 def test_apply_profile_persists_injection_config():
-    from novel_system.services.style_reference.materialization import MaterializationService
+    """v3 直接绑定:配置落成四键;同一画像再用于同一作品只改给出的键(维度状态按维合并),strategy 恒 mixed。"""
+    from novel_system.services.style_reference.binding_apply import apply_style_profile
 
     book_id = _seed_book("applycfg", cloud_policy="segments_only", with_paragraphs=False)
     profile_id = _seed_profile_for_book("applycfg", book_id)
-    config = {"intensity": 35, "sub_dimensions": ["language.rhetoric"], "include_metric": True}
+    project_id = _seed_project("proj_applycfg")
     with SessionLocal() as session:
-        svc = MaterializationService(session)
-        result = svc.apply_profile(
+        first = apply_style_profile(
+            session,
             profile_id,
             scope="project",
-            scope_ref_id="proj_applycfg",
-            strategy="mixed",
-            config_json=config,
+            scope_ref_id=project_id,
+            config={"sample_windows": 5, "dimension_states": {"language.rhetoric": "emphasize"}},
         )
         session.commit()
-        binding = StyleReferenceRepository(session).get_binding(result.binding_id)
-        assert binding.config_json == config
-        assert binding.strategy == "mixed"
-        # 重复 apply 调整配置 → 复用同一 binding 并更新 config
-        result2 = svc.apply_profile(
+        binding = StyleReferenceRepository(session).get_binding(first.binding.binding_id)
+        assert binding.strategy == "mixed" and first.created is True
+        assert binding.config_json["sample_windows"] == 5
+        assert binding.config_json["reference_mode"] == "full" and binding.config_json["draft_mode"] == "style_first"
+        assert binding.config_json["dimension_states"]["language.rhetoric"] == "emphasize"
+        # 重复用于同一作品:复用同一行,只改给出的键
+        second = apply_style_profile(
+            session,
             profile_id,
             scope="project",
-            scope_ref_id="proj_applycfg",
-            strategy="A",
-            config_json={"intensity": 90},
+            scope_ref_id=project_id,
+            config={"reference_mode": "card_only", "dimension_states": {"scene.dialogue": "exclude"}},
         )
         session.commit()
-        assert result2.binding_id == result.binding_id
-        binding = StyleReferenceRepository(session).get_binding(result.binding_id)
-        assert binding.config_json == {"intensity": 90}
-        assert binding.strategy == "A"
+        assert second.binding.binding_id == first.binding.binding_id and second.created is False
+        binding = StyleReferenceRepository(session).get_binding(first.binding.binding_id)
+        assert binding.config_json["reference_mode"] == "card_only"
+        assert binding.config_json["sample_windows"] == 5
+        assert binding.config_json["dimension_states"]["language.rhetoric"] == "emphasize"
+        assert binding.config_json["dimension_states"]["scene.dialogue"] == "exclude"
 
 
 def test_binding_unique_constraint_blocks_duplicates():
@@ -714,77 +691,23 @@ def test_failed_idempotent_action_does_not_half_commit():
         )
 
 
-def test_fresh_pending_report_stays_pending_on_poll():
-    book_id = _seed_book("orphan2", cloud_policy="segments_only")
-    profile_id = _seed_profile_for_book("orphan2", book_id)
-    with SessionLocal() as session:
-        StyleReferenceRepository(session).create_validation_report(
-            report_id="sr_rep_hd_fresh",
-            profile_id=profile_id,
-            target_kind="manual",
-            target_ref_id=None,
-            verdict="",
-            quantitative_json=[],
-            semantic_json=[],
-            plagiarism_json={},
-            forbidden_hits_json=[],
-            mode_executed="async_full",
-        )
-        session.commit()
-    with _client() as client:
-        resp = client.get(f"{PREFIX}/reports/sr_rep_hd_fresh")
-    report = resp.json()["data"]["report"]
-    assert report["verdict"] == ""
-    assert report["status"] == "pending"
-
-
-def test_old_explicitly_queued_report_is_not_reaped_by_polling():
-    """轮询端点不能把正常线程池背压误判为孤儿。"""
-
-    from novel_system.api.routes.style_reference.profiles import _reap_orphan_report
-    from novel_system.db.models import StyleReferenceValidationReport
-
-    book_id = _seed_book("queued_report", cloud_policy="segments_only")
-    profile_id = _seed_profile_for_book("queued_report", book_id)
-    with SessionLocal() as session:
-        report = StyleReferenceRepository(session).create_validation_report(
-            report_id="sr_rep_hd_queued_old",
-            profile_id=profile_id,
-            target_kind="manual",
-            target_ref_id=None,
-            verdict="",
-            quantitative_json=[],
-            semantic_json=[],
-            plagiarism_json={},
-            forbidden_hits_json=[],
-            mode_executed="async_full",
-            status="queued",
-            heartbeat_at="2020-01-01T00:00:00+00:00",
-        )
-        report.created_at = "2020-01-01T00:00:00+00:00"
-        session.commit()
-    with SessionLocal() as session:
-        report = session.get(StyleReferenceValidationReport, "sr_rep_hd_queued_old")
-        _reap_orphan_report(session, report)
-        assert report.verdict == ""
-        assert report.status == "queued"
-
-
 # ---------------------------------------------------------------------------
 # 9. bind_style_profile 决策卡 effect 转发注入配置(apply 决策卡 → 批准 → 真 bind)
 # ---------------------------------------------------------------------------
 
 
 def test_bind_style_profile_effect_forwards_injection_config():
-    """风格参考 apply 决策卡批准时,effect 应把 intensity/维度/include 落到 binding.config_json。"""
+    """待办里还没处理的旧「应用画像」卡:批准时走 v3 直接绑定,卡上的旧键映射成 v3 配置
+    (强度 35 → round(3 + 9·0.35) = 6 窗;mixed → 全面模仿;旧 sub_dimensions 不再有「只学几维」的语义)。"""
     from novel_system.services.review_effects import run_effect
 
     book_id = _seed_book("effectcfg", cloud_policy="segments_only", with_paragraphs=False)
     profile_id = _seed_profile_for_book("effectcfg", book_id)
+    project_id = _seed_project("proj_effectcfg")
     with SessionLocal() as session:
         result = run_effect(
             session,
-            "proj_effectcfg",
+            project_id,
             {
                 "type": "bind_style_profile",
                 "profile_id": profile_id,
@@ -798,26 +721,30 @@ def test_bind_style_profile_effect_forwards_injection_config():
         session.commit()
         binding = StyleReferenceRepository(session).get_binding(result["binding_id"])
         assert binding.scope == "project"
-        assert binding.scope_ref_id == "proj_effectcfg"
+        assert binding.scope_ref_id == project_id
         assert binding.strategy == "mixed"
-        assert binding.config_json.get("intensity") == 35
-        assert binding.config_json.get("sub_dimensions") == ["language.rhetoric", "scene.dialogue"]
-        assert binding.config_json.get("include_metric") is True
+        assert binding.config_json["sample_windows"] == 6
+        assert binding.config_json["reference_mode"] == "full"
+        assert set(binding.config_json["dimension_states"].values()) == {"normal"}
+        assert "intensity" not in binding.config_json and "sub_dimensions" not in binding.config_json
 
 
 def test_bind_style_profile_effect_scene_and_character_scope():
-    """立项 A — apply 决策卡 scope=scene/character + scope_ref_id 落成对应 scope 的真 binding,
-    且 resolve_active_binding(scene_id=...) 命中场景级绑定(scene > character > project 优先级)。"""
+    """立项 A — 旧决策卡 scope=scene/character + scope_ref_id 落成对应 scope 的真 binding,
+    且 resolve_active_binding(scene_id=...) 命中场景级绑定(scene > character > project 优先级);
+    旧卡上的策略 A 映射成「只用文风卡」。"""
     from novel_system.services.review_effects import run_effect
     from novel_system.services.style_reference.injection import InjectionService
+    from tests.style_reference_inject_helpers import seed_scene
 
     book_id = _seed_book("scoperef", cloud_policy="segments_only", with_paragraphs=False)
     profile_id = _seed_profile_for_book("scoperef", book_id)
     with SessionLocal() as session:
+        scene = seed_scene(session, "SCOPEREF_SC01", project_id="proj_scoperef", chapter_id="SCOPEREF_CH01")
         scene_res = run_effect(session, "proj_scoperef", {
             "type": "bind_style_profile", "profile_id": profile_id,
-            "scope": "scene", "scope_ref_id": "ch08s1",
-            "task_type": "scene_generation", "strategy": "C",
+            "scope": "scene", "scope_ref_id": scene.scene_id,
+            "task_type": "scene_generation", "strategy": "A",
         })
         char_res = run_effect(session, "proj_scoperef", {
             "type": "bind_style_profile", "profile_id": profile_id,
@@ -828,15 +755,17 @@ def test_bind_style_profile_effect_scene_and_character_scope():
         repo = StyleReferenceRepository(session)
         sb = repo.get_binding(scene_res["binding_id"])
         cb = repo.get_binding(char_res["binding_id"])
-        assert sb.scope == "scene" and sb.scope_ref_id == "ch08s1"
+        assert sb.scope == "scene" and sb.scope_ref_id == scene.scene_id
+        assert sb.config_json["reference_mode"] == "card_only" and sb.strategy == "mixed"
         assert cb.scope == "character" and cb.scope_ref_id == "scoperef_CHAR01"
+        assert cb.config_json["reference_mode"] == "full"
         # 注入选取:scene_id 命中场景级绑定(优先级最高)
         picked = InjectionService(session).resolve_active_binding(
             "proj_scoperef", "scene_generation",
-            character_ids=["scoperef_CHAR01"], scene_id="ch08s1",
+            character_ids=["scoperef_CHAR01"], scene_id=scene.scene_id,
         )
         assert picked is not None
-        assert picked.scope == "scene" and picked.scope_ref_id == "ch08s1"
+        assert picked.scope == "scene" and picked.scope_ref_id == scene.scene_id
         # 角色级单独命中:scene 不匹配时,character_ids 命中角色级绑定
         picked_char = InjectionService(session).resolve_active_binding(
             "proj_scoperef", "scene_generation",
@@ -860,23 +789,26 @@ def test_bind_style_profile_effect_scene_requires_scope_ref_id():
         assert exc.value.status_code == 400
 
 
-def test_bind_style_profile_effect_without_config_stays_empty():
-    """无 config 的简单 bind(synthesize 默认决策卡路径)config_json 保持空,零回归。"""
+def test_bind_style_profile_effect_without_config_gets_v3_defaults():
+    """无配置的旧卡:绑定落 v3 默认(全面模仿 · 12 窗 · 作者手笔直起 · 各维正常),目标默认取卡的作品。"""
     from novel_system.services.review_effects import run_effect
 
     book_id = _seed_book("effectplain", cloud_policy="segments_only", with_paragraphs=False)
     profile_id = _seed_profile_for_book("effectplain", book_id)
+    project_id = _seed_project("proj_effectplain")
     with SessionLocal() as session:
         result = run_effect(
             session,
-            "proj_effectplain",
+            project_id,
             {"type": "bind_style_profile", "profile_id": profile_id},
         )
         session.commit()
         binding = StyleReferenceRepository(session).get_binding(result["binding_id"])
-        assert binding.config_json == {}
+        assert binding.config_json["reference_mode"] == "full"
+        assert binding.config_json["sample_windows"] == 12
+        assert binding.config_json["draft_mode"] == "style_first"
         assert binding.strategy == "mixed"
-        assert binding.scope_ref_id == "proj_effectplain"
+        assert binding.scope_ref_id == project_id
 
 
 # ---------------------------------------------------------------------------

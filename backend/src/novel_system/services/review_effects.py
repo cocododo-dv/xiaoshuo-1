@@ -6,7 +6,7 @@ resolve 端点在同一事务里执行 effect 并把卡置 resolved；未知 typ
 首批 effect：
 - insert_scene       复用 CatalogService.create_scene（P3）
 - rename_chapter     复用 CatalogService.update_chapter
-- bind_style_profile 复用 style_reference MaterializationService.apply_profile
+- bind_style_profile 复用 style_reference binding_apply.apply_style_profile(旧卡照样能批准)
 - create_entity / add_timeline_event  P6 资料库接通时注册
 """
 
@@ -96,14 +96,10 @@ def _rename_chapter(
 def _bind_style_profile(
     session: Session, project_id: str, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    from novel_system.services.style_reference.materialization import (
-        MaterializationService,
-    )
-    from novel_system.services.style_reference.schemas import (
-        BindingScope,
-        InjectionStrategy,
-        TaskType,
-    )
+    """旧「应用画像」决策卡(风格参考 v3 起界面直接绑定,不再发卡):待办里还没处理的旧卡照样能批准——
+    走与 ``POST /profiles/{id}/apply`` 同一个 ``apply_style_profile``;卡上的旧键(strategy / intensity /
+    sub_dimensions / include_* / draft_mode)由 ``normalize_binding_config`` 一次映射成 v3 配置。"""
+    from novel_system.services.style_reference.binding_apply import apply_style_profile
 
     profile_id = str(payload.get("profile_id") or "").strip()
     if not profile_id:
@@ -122,42 +118,37 @@ def _bind_style_profile(
             f"bind_style_profile scope={scope_value} requires scope_ref_id",
             status_code=400,
         )
-    raw_strategy = payload.get("strategy")
-    strategy = InjectionStrategy(str(raw_strategy)) if raw_strategy else None
-    result = MaterializationService(session).apply_profile(
+    change = apply_style_profile(
+        session,
         profile_id,
-        scope=BindingScope(scope_value),
+        scope=scope_value,
         scope_ref_id=raw_scope_ref or project_id,
-        task_type=TaskType(str(payload.get("task_type") or "scene_generation")),
-        strategy=strategy,
-        config_json=_style_injection_config(payload) or None,
+        config=_legacy_binding_config(payload),
+        legacy_strategy=str(payload.get("strategy") or "mixed"),
     )
-    return {"profile_id": result.profile_id, "binding_id": result.binding_id}
+    return {
+        "profile_id": profile_id,
+        "binding_id": change.binding.binding_id,
+        "replaced": change.replaced,
+    }
 
 
-def _style_injection_config(payload: dict[str, Any]) -> dict[str, Any]:
-    """从决策卡 effect 载荷抽取注入配置(intensity / 维度 / include 开关)→
-    binding.config_json。与 routes.style_reference.ApplyProfileRequest.injection_config
-    同构,使「apply 决策卡批准」与「直接 /apply」落同样的 config。"""
-    config: dict[str, Any] = {}
-    intensity = payload.get("intensity")
-    if intensity is not None:
-        try:
-            config["intensity"] = max(0, min(100, int(intensity)))
-        except (TypeError, ValueError):
-            pass
-    sub_dimensions = payload.get("sub_dimensions")
-    if isinstance(sub_dimensions, list) and sub_dimensions:
-        config["sub_dimensions"] = [str(s) for s in sub_dimensions]
-    for key in ("include_positive", "include_forbidden", "include_metric"):
-        value = payload.get(key)
-        if value is not None:
-            config[key] = bool(value)
-    # 2026-09-12 风格直起:起草方式随决策卡 effect 落库(非法值忽略 → 走 yaml 缺省)。
-    draft_mode = str(payload.get("draft_mode") or "").strip().lower()
-    if draft_mode in {"style_first", "neutral_first"}:
-        config["draft_mode"] = draft_mode
-    return config
+_LEGACY_CONFIG_KEYS = (
+    "intensity",
+    "sub_dimensions",
+    "include_positive",
+    "include_forbidden",
+    "include_metric",
+    "draft_mode",
+    "reference_mode",
+    "sample_windows",
+    "dimension_states",
+)
+
+
+def _legacy_binding_config(payload: dict[str, Any]) -> dict[str, Any]:
+    """旧决策卡 effect 载荷里的绑定配置键(原样取出,交给 ``normalize_binding_config`` 映射)。"""
+    return {key: payload[key] for key in _LEGACY_CONFIG_KEYS if payload.get(key) is not None}
 
 
 def _create_entity(

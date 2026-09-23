@@ -46,7 +46,6 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.scene_rehome import rehome_scenes
-from novel_system.services.style_reference.materialization import MaterializationService
 from novel_system.services.style_reference.schemas import (
     BindingScope,
     TaskType,

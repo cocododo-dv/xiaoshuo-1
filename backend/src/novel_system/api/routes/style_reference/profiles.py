@@ -1,9 +1,18 @@
-"""画像:列表与详情、文风卡行 ✓ / ✗、禁用词、示例预览、回测、注入预览(dryrun)。"""
+"""画像:列表(摘要)与详情(文风画像页)、文风卡行 ✓ / ✗、禁用词、本场预览(注入预览 dryrun)。
+
+- ``GET /profiles``:摘要,**不带** ``profile_json``(台账 U10);
+- ``GET /profiles/{id}``:文风画像页要的全部数据(规范化的 16 维文风卡、每句的状态与依据引文、气质、声音、结构);
+- ``POST /profiles/{id}/card-lines/{line_id}``:一句 ✓(总带上)/ ✗(不用这句),不重新学习、不让画像失效(U3);
+- ``POST /profiles/{id}/injection-preview``:只读的本场预览——与起草同一套选窗、同一个块次序(U6 / J12)。
+
+删掉的:旧「示例预览」``POST /profiles/{id}/preview`` 与它的模型节点(用的是早已不用的引擎,U6);回测三件
+(``POST /profiles/{id}/validate``、``GET /reports/{id}``、``GET /profiles/{id}/reports``)——「对照检查」由作业表的
+check 作业与读数表接手。
+"""
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
@@ -17,53 +26,24 @@ from novel_system.api.response import ok
 from novel_system.api.routes.style_reference._common import (
     PATH_PREFIX,
     ROUTE_TAGS,
-    llm_client_and_enabled,
     req_id,
     serialize_banned_term,
-    serialize_profile,
 )
-from novel_system.db.models import utcnow
 from novel_system.services.errors import DomainError
+from novel_system.services.style_reference.binding_config import normalize_binding_config
 from novel_system.services.style_reference.card_states import set_card_line_state
 from novel_system.services.style_reference.inject.preview import preview_render
-from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.style_reference.scene_preview import scene_preview_payload
 from novel_system.services.style_reference.schemas import (
     InjectionPreviewRequest,
     InjectionPreviewResponse,
     InjectionPreviewStats,
     SystemPromptFragments,
-    ValidateRequest,
-    ValidationMode,
-    ValidationTargetKind,
 )
-from novel_system.services.style_reference.validation import (
-    ValidationOrchestrator,
-    start_style_reference_validation_worker,
-)
+from novel_system.services.style_reference.summaries import list_profile_summaries, profile_detail
 
 router = APIRouter(tags=ROUTE_TAGS)
-
-
-class PreviewRequest(BaseModel):
-    """示例预览(2026-09-15):前端按段型逐张请求,进度自然可见;不传 = 三种默认段型一次生成。"""
-
-    model_config = ConfigDict(extra="forbid")
-    paragraph_types: (
-        list[
-            Literal[
-                "dialogue",
-                "description_env",
-                "psychology",
-                "narration",
-                "action",
-                "description_char",
-                "transition",
-                "flashback",
-            ]
-        ]
-        | None
-    ) = Field(default=None, max_length=3)
 
 
 class CardLineStateRequest(BaseModel):
@@ -74,7 +54,7 @@ class CardLineStateRequest(BaseModel):
 
 
 class BannedTermCreateRequest(BaseModel):
-    """禁用词登记:generation=生成期红线段填充;extraction=抽取期段落过滤。"""
+    """禁用词登记:generation=起草时不许出现(进红线);extraction=学习时滤掉含这个词的段落。"""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     term: str = Field(min_length=1, max_length=512)
@@ -82,15 +62,15 @@ class BannedTermCreateRequest(BaseModel):
     scope: str = Field(default="generation", min_length=1, max_length=64)
 
 
-class ValidateGeneratedRequest(BaseModel):
-    """`POST /profiles/{id}/validate` body(profile_id 在 path,不在 body)。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    generated_text: str = Field(min_length=1, max_length=2_000_000)
-    target_kind: str = Field(default="manual", min_length=1, max_length=64)
-    target_ref_id: str | None = Field(default=None, max_length=255)
-    # The route translates invalid values to STYLE_REFERENCE_VALIDATE_PARAM_INVALID.
-    mode: str = Field(default="async_full", min_length=1, max_length=64)
+def _profile_or_404(session: Session, profile_id: str):
+    profile = StyleReferenceRepository(session).get_profile(profile_id)
+    if profile is None:
+        raise DomainError(
+            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+            f"profile {profile_id!r} not found",
+            status_code=404,
+        )
+    return profile
 
 
 @router.get(f"{PATH_PREFIX}/profiles")
@@ -100,10 +80,9 @@ def list_profiles(
     status: str | None = None,
     session: Session = Depends(get_session),
 ):
-    repo = StyleReferenceRepository(session)
-    profiles = repo.list_profiles(book_id=book_id, status=status)
+    """画像摘要(按创建时间):画像版本、学在何时、文风卡几句、要不要重新学;不带 ``profile_json``。"""
     return ok(
-        {"profiles": [serialize_profile(p) for p in profiles]},
+        {"profiles": list_profile_summaries(session, book_id=book_id, status=status)},
         req_id=req_id(request),
     )
 
@@ -114,15 +93,9 @@ def get_profile(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    repo = StyleReferenceRepository(session)
-    profile = repo.get_profile(profile_id)
-    if profile is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-            f"profile {profile_id!r} not found",
-            status_code=404,
-        )
-    return ok({"profile": serialize_profile(profile)}, req_id=req_id(request))
+    """文风画像页:气质、16 维文风卡(按辨识度)与每句的 ✓ / ✗ 状态和依据引文、声音习惯、结构、各维计数。"""
+    profile = _profile_or_404(session, profile_id)
+    return ok({"profile": profile_detail(session, profile)}, req_id=req_id(request))
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}")
@@ -154,38 +127,8 @@ def set_profile_card_line_state(
     )
 
 
-@router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/preview")
-def preview_profile(
-    profile_id: str,
-    request: Request,
-    payload: PreviewRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    paragraph_types = (
-        tuple(payload.paragraph_types) if payload is not None and payload.paragraph_types else None
-    )
-
-    def _do() -> dict[str, Any]:
-        client, enabled = llm_client_and_enabled()
-        svc = PreviewService(session, llm_client=client, llm_enabled=enabled)
-        results = svc.generate(profile_id, target_types=paragraph_types)
-        return {
-            "profile_id": profile_id,
-            "samples": [r.model_dump() for r in results],
-        }
-
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/preview",
-        payload={"profile_id": profile_id, "paragraph_types": list(paragraph_types or [])},
-        action=_do,
-    )
-
-
 # ---------------------------------------------------------------------------
-# Banned terms(禁用词:generation=注入红线段填充 / extraction=抽取段落过滤)
+# Banned terms(禁用词:generation=起草红线 / extraction=学习时滤段落;protected_auto=学习作业识别的本书专名)
 # ---------------------------------------------------------------------------
 
 
@@ -200,12 +143,7 @@ def list_banned_terms(
     session: Session = Depends(get_session),
 ):
     repo = StyleReferenceRepository(session)
-    if repo.get_profile(profile_id) is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-            f"profile {profile_id!r} not found",
-            status_code=404,
-        )
+    _profile_or_404(session, profile_id)
     terms = repo.list_banned_terms(profile_id, scope=scope)
     return ok(
         {"terms": [serialize_banned_term(t) for t in terms]},
@@ -237,12 +175,7 @@ def create_banned_term(
                 status_code=400,
             )
         repo = StyleReferenceRepository(session)
-        if repo.get_profile(profile_id) is None:
-            raise DomainError(
-                "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-                f"profile {profile_id!r} not found",
-                status_code=404,
-            )
+        _profile_or_404(session, profile_id)
         # (profile_id, term, scope) 唯一:重复创建返回既有行(幂等友好)
         existing = repo.find_banned_term(profile_id, term_text, scope)
         if existing is not None:
@@ -310,175 +243,12 @@ def delete_banned_term(
 
 
 # ---------------------------------------------------------------------------
-# PR-7 — Validation endpoints
-# ---------------------------------------------------------------------------
-
-
-def _serialize_validation_report(report) -> dict[str, Any]:
-    status = report.status
-    if not report.verdict and status == "completed":
-        # Compatibility for reports created before durable async status was
-        # introduced (or by a focused repository test without the new field).
-        status = "queued"
-    public_status = {
-        "queued": "pending",
-        "completed": "done",
-    }.get(status, status)
-    return {
-        "report_id": report.report_id,
-        "profile_id": report.profile_id,
-        "target_kind": report.target_kind,
-        "target_ref_id": report.target_ref_id,
-        "verdict": report.verdict,
-        "status": public_status,
-        "error_code": report.error_code,
-        "error_text": report.error_text,
-        "retryable": bool(report.retryable),
-        "started_at": report.started_at,
-        "heartbeat_at": report.heartbeat_at,
-        "finished_at": report.finished_at,
-        "quantitative_json": report.quantitative_json or [],
-        "semantic_json": report.semantic_json or [],
-        "plagiarism_json": report.plagiarism_json or {},
-        "forbidden_hits_json": report.forbidden_hits_json or [],
-        "mode_executed": report.mode_executed,
-        "created_at": report.created_at,
-    }
-
-
-# async_full 的 pending report(verdict 空)超过该时长视为后台 worker 孤儿
-# (进程重启 / 线程池丢失),轮询端点上惰性降级为 fail,避免前端永久轮询。
-REPORT_PENDING_TIMEOUT_MINUTES = 10
-
-
-def _reap_orphan_report(session: Session, report) -> None:
-    legacy_pending = not report.verdict and report.status == "completed"
-    if report.status == "queued":
-        # A queued report has not acquired a worker yet. Startup recovery owns
-        # detection of a lost queue because this endpoint cannot distinguish it
-        # from valid executor backpressure.
-        return
-    if report.status != "running" and not legacy_pending:
-        return
-
-    try:
-        last_seen = datetime.fromisoformat(
-            str(report.heartbeat_at or report.started_at or report.created_at).replace(
-                "Z", "+00:00"
-            )
-        )
-    except (TypeError, ValueError):
-        return
-    if last_seen.tzinfo is None:
-        last_seen = last_seen.replace(tzinfo=timezone.utc)
-    cutoff = datetime.now(timezone.utc) - timedelta(
-        minutes=REPORT_PENDING_TIMEOUT_MINUTES
-    )
-    if last_seen < cutoff:
-        report.verdict = "fail"
-        report.status = "failed"
-        report.error_code = "STYLE_REFERENCE_VALIDATION_INTERRUPTED"
-        report.error_text = (
-            "async validation was interrupted; submit the text again to retry"
-        )
-        report.retryable = True
-        report.heartbeat_at = utcnow()
-        report.finished_at = utcnow()
-        session.flush()
-
-
-@router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/validate")
-def validate_profile_generated(
-    profile_id: str,
-    payload: ValidateGeneratedRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """PR-7 §7 — sync_only / async_full 双路径 validation。"""
-    body = payload.model_dump(mode="json")
-    try:
-        target_kind = ValidationTargetKind(body.get("target_kind") or "manual")
-        mode = ValidationMode(body.get("mode") or "async_full")
-    except ValueError as exc:
-        raise DomainError(
-            "STYLE_REFERENCE_VALIDATE_PARAM_INVALID",
-            str(exc),
-            status_code=400,
-        ) from exc
-
-    req = ValidateRequest(
-        generated_text=body["generated_text"],
-        target_kind=target_kind,
-        target_ref_id=body.get("target_ref_id"),
-        mode=mode,
-    )
-    client, enabled = llm_client_and_enabled()
-    background = mode == ValidationMode.ASYNC_FULL
-
-    def _do() -> dict[str, Any]:
-        orch = ValidationOrchestrator(session, llm_client=client, llm_enabled=enabled)
-        result = orch.validate(profile_id, req, defer_dispatch=background)
-        return result.model_dump(mode="json")
-
-    def _dispatch(result: dict[str, Any]) -> None:
-        start_style_reference_validation_worker(
-            report_id=str(result["report_id"]),
-            profile_id=profile_id,
-            generated_text=req.generated_text,
-            llm_client=client,
-            llm_enabled=enabled,
-        )
-
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/validate",
-        payload={"profile_id": profile_id, **body},
-        action=_do,
-        after_commit=_dispatch if background else None,
-    )
-
-
-@router.get(f"{PATH_PREFIX}/reports/{{report_id}}")
-def get_validation_report(
-    report_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    repo = StyleReferenceRepository(session)
-    report = repo.get_validation_report(report_id)
-    if report is None:
-        raise DomainError(
-            "STYLE_REFERENCE_REPORT_NOT_FOUND",
-            f"validation report {report_id!r} not found",
-            status_code=404,
-        )
-    _reap_orphan_report(session, report)
-    return ok({"report": _serialize_validation_report(report)}, req_id=req_id(request))
-
-
-@router.get(f"{PATH_PREFIX}/profiles/{{profile_id}}/reports")
-def list_validation_reports(
-    profile_id: str,
-    request: Request,
-    verdict: str | None = None,
-    session: Session = Depends(get_session),
-):
-    repo = StyleReferenceRepository(session)
-    reports = repo.list_validation_reports(profile_id=profile_id, verdict=verdict)
-    return ok(
-        {"reports": [_serialize_validation_report(r) for r in reports]},
-        req_id=req_id(request),
-    )
-
-
-# ---------------------------------------------------------------------------
-# PR-9 — Injection preview endpoints
+# 本场预览(注入预览 dryrun)
 # ---------------------------------------------------------------------------
 
 
 def injection_preview_payload(result: dict[str, Any]) -> dict[str, Any]:
+    """旧预览端点的字段(``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` / ``window_refs``)。"""
     stats = result.get("stats") or {}
     return InjectionPreviewResponse(
         fragments=SystemPromptFragments(**result["fragments"]),
@@ -498,16 +268,12 @@ def dryrun_injection_preview(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """dryrun:不写盘,按入参的绑定配置渲染(v3:与起草同一套选窗、同一个块次序;给了 scene_id 就是这一场
-    起草时会拿到的窗)。"""
+    """本场预览(dryrun,不写绑定、不写选窗冻结行):按入参的 v3 配置渲染——与起草同一套选窗、同一个块次序;
+    给了 ``scene_id`` 就是这一场起草时会拿到的窗。返回旧字段 + ``windows``(章 / 位置 / 标签 / 梗概)、``blocks``、
+    ``sizes``、生效的 ``reference_mode`` 与 ``notices``(见 ``scene_preview``)。"""
     # idempotency-exempt: deterministic read-only preview; no binding / selection written (the
     # book's window index may be built once as a cache).
-    if StyleReferenceRepository(session).get_profile(profile_id) is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-            f"profile {profile_id!r} not found",
-            status_code=404,
-        )
+    _profile_or_404(session, profile_id)
     config: dict[str, Any] = {"intensity": payload.intensity}
     if payload.reference_mode is not None:
         config["reference_mode"] = payload.reference_mode
@@ -526,4 +292,14 @@ def dryrun_injection_preview(
         project_id=payload.project_id,
         strategy=strategy,
     )
-    return ok(injection_preview_payload(result), req_id=req_id(request))
+    data = injection_preview_payload(result)
+    data.update(
+        scene_preview_payload(
+            session,
+            profile_id,
+            result,
+            config=normalize_binding_config(strategy, config),
+            scene_id=payload.scene_id,
+        )
+    )
+    return ok(data, req_id=req_id(request))

@@ -1,4 +1,5 @@
-"""学习文风:建 / 续 / 取消学习作业(作业表 kind=learn)、作业摘要与估算;抽取 run 与发现(文风卡行的血缘)。"""
+"""学习文风:建 / 续 / 取消学习作业(作业表 kind=learn)、作业摘要与估算;抽取 run 与发现(文风卡行的血缘,
+只读——文风画像页的依据直接由 ``GET /profiles/{id}`` 给出)。"""
 
 from __future__ import annotations
 
@@ -186,23 +187,6 @@ def list_book_runs(
         {"runs": [serialize_run(r) for r in runs]},
         req_id=req_id(request),
     )
-
-
-@router.get(f"{PATH_PREFIX}/runs/{{run_id}}")
-def get_run(
-    run_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    repo = StyleReferenceRepository(session)
-    run = repo.get_run(run_id)
-    if run is None:
-        raise DomainError(
-            "STYLE_REFERENCE_RUN_NOT_FOUND",
-            f"run {run_id!r} not found",
-            status_code=404,
-        )
-    return ok({"run": serialize_run(run)}, req_id=req_id(request))
 
 
 @router.get(f"{PATH_PREFIX}/runs/{{run_id}}/findings")
