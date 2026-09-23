@@ -1,8 +1,7 @@
 """PR-10 §13 — 统一 metric event 写入入口。
 
-业务路径(InjectionService / qc gate / ValidationOrchestrator)在末尾调
-``MetricsRecorder.record(...)`` 落 1 行 ``style_reference_metric_events`` 审计事件;失败
-swallow + warn log,**绝不抛**,业务流程不被 metrics 阻塞。
+业务路径(现在只有 qc_engine 的风格稿门与 qc gate)在末尾调 ``MetricsRecorder.record(...)`` 落 1 行
+``style_reference_metric_events`` 审计事件;失败 swallow + warn log,**绝不抛**,业务流程不被 metrics 阻塞。
 
 写入包在 ``session.begin_nested()`` 保存点里(风格参考 v3 V9):遥测这一行 flush 失败只回滚
 保存点,外层事务照常可用——此前失败的 flush 会让整个会话进入 ``PendingRollbackError``,

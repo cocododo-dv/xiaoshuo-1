@@ -999,7 +999,7 @@ def _styled_gate_result(
     runtime_contract_hash: str | None,
     runtime_contract_mode: str | None,
 ) -> dict[str, Any]:
-    """把 ValidationReport 压成可入 AttemptTracker / notices 的诊断字典。
+    """把风格稿门的读数(:func:`_styled_gate_report` 的形状)压成可入 AttemptTracker / notices 的诊断字典。
 
     抄袭命中只记位置与长度（不落匹配原文——那正是参考作品的原文）；禁用词命中记词本身
     （短、已在 banned_terms 表里）；量化结果只记通过计数，永不变成 issue。

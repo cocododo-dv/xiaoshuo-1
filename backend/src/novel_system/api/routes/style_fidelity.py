@@ -8,7 +8,7 @@
 - ``GET /api/v2/style-reference/checks/{job_id}``：对照检查作业的进度与结果读数。
 
 读数入库只有 ``services.style_reference.readings.record_fidelity_reading`` 一个入口；这里的读接口都不写库。
-旧的「回测」接口（``/profiles/{id}/validate``、``/reports``）在 ``style_reference.py`` 里，调用即 410，由路由拆分包删除。
+旧的「回测」接口（``/profiles/{id}/validate``、``/reports``）与它的报告表都已删除（迁移 0091）。
 """
 
 from __future__ import annotations

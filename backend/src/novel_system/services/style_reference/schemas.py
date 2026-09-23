@@ -113,21 +113,6 @@ class TaskType(str, Enum):
     KEY_CHAPTER = "key_chapter"
 
 
-class ValidationMode(str, Enum):
-    """退役(2026-09-23 v3 P5b):旧回测的执行方式;只剩旧 ``/validate`` 路由(P6a / P7 删除)还构造请求体。"""
-
-    SYNC_ONLY = "sync_only"
-    ASYNC_FULL = "async_full"
-
-
-class ValidationTargetKind(str, Enum):
-    """退役(2026-09-23 v3 P5b):同 :class:`ValidationMode`。"""
-
-    SCENE = "scene"
-    CHAPTER = "chapter"
-    MANUAL = "manual"
-
-
 class BannedTermScope(str, Enum):
     """来源:§4.3 banned_terms.scope。"""
 
@@ -168,7 +153,7 @@ class ExtractionEvidenceInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 抄袭检测(validation/plagiarism.py 的返回;唯一抄袭门的口径) / preview
+# 抄袭检测(validation/plagiarism.py 的返回;唯一抄袭门的口径)
 # ---------------------------------------------------------------------------
 
 
@@ -189,24 +174,6 @@ class PlagiarismReport(BaseModel):
     threshold_chars: int = 12
 
 
-
-
-# ---------------------------------------------------------------------------
-# 退役(2026-09-23 v3 P5b):旧回测请求体——只剩 ``api/routes/style_reference.py`` 的旧 ``/validate`` 路由构造它
-# (调用即 410 ``STYLE_REFERENCE_VALIDATION_RETIRED``,由 P6a / P7 删路由时一并删除);新接口是对照检查
-# ``POST /api/v2/style-reference/checks``。
-# ---------------------------------------------------------------------------
-
-
-class ValidateRequest(BaseModel):
-    """`POST /profiles/{profile_id}/validate` body 形态(profile_id 在 path)。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    generated_text: str = Field(min_length=1, max_length=2_000_000)
-    target_kind: ValidationTargetKind = ValidationTargetKind.MANUAL
-    target_ref_id: str | None = Field(default=None, max_length=255)
-    mode: ValidationMode = ValidationMode.ASYNC_FULL
 
 
 # ---------------------------------------------------------------------------
