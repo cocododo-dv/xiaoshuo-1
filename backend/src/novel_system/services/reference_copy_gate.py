@@ -160,7 +160,8 @@ class _BookCopyIndex:
 
 
 def _book_fingerprint(session: Session, book_id: str) -> tuple[Any, ...] | None:
-    """段落表的廉价指纹：统计里记着的根哈希（有就用）+ 段数 / 总字数 / 最新段落时间。"""
+    """段落表的廉价指纹：统计里记着的根哈希（有就用）+ 段数 / 总字数 / 最新段落时间 + 书的校验和与建书时间
+    （同一个书号删了重导入也认得出来）。"""
     book = session.get(StyleReferenceBook, book_id)
     if book is None:
         return None
@@ -172,7 +173,14 @@ def _book_fingerprint(session: Session, book_id: str) -> tuple[Any, ...] | None:
             func.max(StyleReferenceParagraph.created_at),
         ).where(StyleReferenceParagraph.book_id == book_id)
     ).one()
-    return (str(stats.get("paragraph_root_sha256") or ""), int(count or 0), int(total or 0), str(latest or ""))
+    return (
+        str(stats.get("paragraph_root_sha256") or ""),
+        int(count or 0),
+        int(total or 0),
+        str(latest or ""),
+        str(book.text_checksum or ""),
+        str(book.created_at or ""),
+    )
 
 
 def _book_index(session: Session, book_id: str, fingerprint: tuple[Any, ...]) -> _BookCopyIndex:

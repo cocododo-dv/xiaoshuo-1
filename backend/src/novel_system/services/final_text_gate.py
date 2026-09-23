@@ -528,9 +528,7 @@ class FinalTextGateService:
             warn_dimensions = [
                 dimension
                 for dimension in risky_dimensions
-                if dimension in QUALITY_DIMENSIONS
-                and dimension not in ignored_dimensions
-                and dimension not in habitual
+                if dimension not in ignored_dimensions and dimension not in habitual
             ]
             if thresholds_mode == "deferred_to_reference":
                 warn_dimensions = []

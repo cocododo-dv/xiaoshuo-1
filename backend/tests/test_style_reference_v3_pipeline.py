@@ -199,6 +199,15 @@ def test_style_first_binding_gets_a_facts_only_blueprint_with_situation_tags(ses
     assert blueprint_situation_tags(blueprint) == ["对峙审问", "悬疑揭示", "计划商议"]
     assert "湿漉漉" not in str(blueprint) and "圆谎" not in str(blueprint)
 
+    # 场面标签随 bundle 冻结（同一场所有工序读同一份；以 _ 开头，不进 section）
+    import json
+
+    from novel_system.services.bundle_builder import SCENE_SITUATION_TAGS_KEY, BundleBuilder
+
+    snapshot = BundleBuilder(session).build(SCENE_ID)["snapshot"]
+    assert json.loads(snapshot["inline_digests"][SCENE_SITUATION_TAGS_KEY]) == ["对峙审问", "悬疑揭示", "计划商议"]
+    assert snapshot["source_version_refs"]["scene_situation_tags"] == ["对峙审问", "悬疑揭示", "计划商议"]
+
 
 def test_blueprint_mode_follows_the_policy_and_stale_versions_are_regenerated(session) -> None:
     from novel_system.services.scene_blueprint import SceneBlueprintService, is_facts_blueprint

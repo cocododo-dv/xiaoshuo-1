@@ -72,6 +72,7 @@ from novel_system.services.style_reference.structure import (
 from novel_system.services.style_reference.style_continuity import (
     contract_deliberate_repetition,
 )
+from novel_system.services.style_reference.tags import normalize_situation_tags
 from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
@@ -89,6 +90,8 @@ _LOGGER = logging.getLogger(__name__)
 # 2026-09 风格模仿 v2（W5，规格 §1.3）——前文声音锚 section 的登记名。风格参考 v3 删掉了漂移校准段
 # （``style_drift_calibration``）与漂移优先选窗（``_drift_ptype_priority``）：归档读数不再回灌进下一场。
 VOICE_ANCHOR_SECTION_KEY = "previous_scene_voice_anchor"
+# 风格参考 v3（N4）：本场场面标签（事实版蓝图给的，词表 tags.SITUATION_TAGS）冻结在这个 inline digest 里
+SCENE_SITUATION_TAGS_KEY = "_scene_situation_tags"
 # 「前文声音锚」取上一场最新的**已风格化**稿：style_draft 本体、反模板重写、软补丁、
 # 安全挽救稿都算；中性稿 / rejected 行不算（前者无目标文风，后者是被否决的文本）。
 STYLED_DRAFT_STAGES: tuple[str, ...] = (
@@ -763,6 +766,16 @@ class BundleBuilder:
                 ensure_ascii=False,
                 sort_keys=True,
             )
+            # 风格参考 v3（N4）：事实版蓝图给这一场标的场面标签随 bundle 冻结（以 _ 开头：不进 section），
+            # 选窗按它挑参考作者写同类场面的原文（同一场所有工序读同一份）。
+            situation_tags = normalize_situation_tags(
+                (scene_blueprint.blueprint_json or {}).get("situation_tags")
+                if isinstance(scene_blueprint.blueprint_json, dict)
+                else None
+            )
+            if situation_tags:
+                source_version_refs["scene_situation_tags"] = situation_tags
+                inline_digests[SCENE_SITUATION_TAGS_KEY] = json.dumps(situation_tags, ensure_ascii=False)
 
         character_pressure = self._latest_planning_artifact(
             artifact_type="character_pressure_blueprint",

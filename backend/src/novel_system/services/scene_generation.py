@@ -1244,26 +1244,20 @@ class SceneGenerationService:
             "selection_reason": "quality_order",
         }
         try:
+            from novel_system.services.reference_copy_gate import check_reference_copy
             from novel_system.services.style_reference.candidate_rerank import (
                 CandidateRerankPolicy,
                 assess_candidate_text,
                 build_style_target,
             )
-            from novel_system.services.style_reference.repository import (
-                StyleReferenceRepository,
-            )
             from novel_system.services.style_reference.runtime_contract import (
                 contract_profile_objects,
-            )
-            from novel_system.services.style_reference.validation.core import (
-                _load_plagiarism_corpus,
             )
 
             policy = style_policy_for_bundle(bundle)
             rerank["runtime_contract_mode"] = policy.mode
             contract = policy.contract
             target = None
-            corpus: list[str] = []
             if policy.mode == "absent" or contract is None:
                 rerank["reason"] = (
                     "bundle_has_no_style_profile"
@@ -1274,21 +1268,22 @@ class SceneGenerationService:
                 target = build_style_target(contract_profile_objects(contract))
                 if target is None:
                     rerank["reason"] = "profile_metrics_insufficient"
-                repo = StyleReferenceRepository(self.session)
-                for profile_id in contract.get("profile_ids") or []:
-                    profile = repo.get_profile(str(profile_id))
-                    if profile is not None:
-                        corpus.extend(
-                            _load_plagiarism_corpus(repo, str(getattr(profile, "book_id", "") or ""))
-                        )
             assessment = assess_candidate_text(
                 result.row_id,
                 result.content or "",
                 float(quality_score),
                 target,
                 CandidateRerankPolicy(),
-                plagiarism_corpus=corpus,
             )
+            if policy.bound and (result.content or ""):
+                # 风格参考 v3：候选的原文重合走唯一抄袭门（按书一次索引、同一稿不重复扫描）
+                copy = check_reference_copy(self.session, result.content or "", policy=policy)
+                assessment.plagiarism_checked = True
+                assessment.plagiarism_passed = not copy.hits
+                assessment.plagiarism_hit_count = len(copy.hits)
+                assessment.plagiarism_max_match_chars = max(
+                    (hit.matched_chars for hit in copy.hits), default=0
+                )
         except Exception as exc:  # noqa: BLE001 — 读数是可选增强,不阻断候选交付
             _LOGGER.warning(
                 "style candidate assessment degraded for scene %s", result.row_id, exc_info=True
