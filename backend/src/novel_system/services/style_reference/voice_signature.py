@@ -1,24 +1,20 @@
-"""Style Reference v2 确定性「声音签名」(W3)。
+"""风格参考「声音签名」——测量核之上的整书 / 单文本签名与习惯句。
 
-依据 docs/style-imitation-v2-plan-2026-09-05.md §1.1 / §2.W3。
+2026-09-23（风格参考 v3）：全部计数改由 ``measure.py`` 测量核一遍算出（唯一分段规则、汇总口径、唯一虚词表、
+唯一对白定义），本模块只做三件事：
 
-纯函数、无新依赖、只用闭类词与标点——不含任何名词 / 动词等实词,天然内容安全,
-产物可以直接渲染进生成提示而不泄露原文,也不会触碰反抄袭红线。
+- ``compute_voice_signature(texts)`` / ``compute_voice_signature_for_text(text)``：测量核特征（``FEATURE_NAMES``
+  = ``measure.FEATURE_NAMES``，旧的 52 个名字保留、另加 5 个）+ 各组高频词（``top_words``）+ 统计量，
+  形状与 v1 相同（``{"version", "features", "top_words", "deliberate_repetition", "stats"}``）；
+- ``render_voice_habits(signature)``：≤12 行**绝对、具体**的习惯句——作者自己的高频词与大致频率（「连接多用
+  就、也、还、可是」「句末常带吧、呢、啊（大约每十句一次）」「几乎不用分号」），**不再**拿 1920 年代的鲁迅 /
+  朱自清基线比「偏多 / 偏少」（v1 对真实网文说「连接词整体偏少」，而生成稿用得比作者还少得多）；不含阿拉伯数字；
+- 基线（``voice_baseline.yaml``）只剩两处用途：``deliberate_repetition``（叠词 / 短句连打 ≥ 基线字面 p85）与旧的
+  z 值接口（``feature_z_scores`` / ``distinctive_features``，样例窗口旧打分与漂移读数仍在用，P4 / P5 替换）。
+  「像不像作者」的读数不看基线，看作者自己的窗口分布（``fidelity.py``）。
 
-对外契约(W1 落库、W4 注入、W6 漂移共用):
-
-- ``compute_voice_signature(texts)`` → ``{"version", "features", "top_words",
-  "deliberate_repetition", "stats"}``;``features`` 全部为有限 float,键名见
-  ``FEATURE_NAMES``(稳定 snake_case);空文本返回全 0 且不抛异常。
-- ``compute_voice_signature_for_text(text)``:单文本版本(生成侧 / 漂移复用)。
-- ``render_voice_habits(features_or_signature, baseline)``:≤12 行中文习惯句,
-  只说方向与具体词,不含阿拉伯数字。
-- ``load_voice_baseline()``:读 ``config/style_reference/voice_baseline.yaml``
-  (缺文件时返回 ``{}``,所有依赖基线的判断优雅退化)。
-- ``distinctive_features`` / ``feature_z_scores``:供 W4 选段与 W6 漂移复用。
-
-基线由本模块的 ``__main__`` 子命令 ``build-baseline`` 用
-``backend/tests/golden/style_reference/corpus`` 全部文本按 1500 字块生成。
+基线由本模块的 ``__main__`` 子命令 ``build-baseline`` 用 ``backend/tests/golden/style_reference/corpus`` 全部文本
+按 1500 字块生成；测量口径变了（``measure.KERNEL_VERSION``）就要重跑。
 """
 
 from __future__ import annotations
@@ -27,248 +23,64 @@ import argparse
 import hashlib
 import json
 import math
-import re
 import statistics
 import sys
-from collections import Counter
-from dataclasses import dataclass
-from functools import lru_cache
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
-from novel_system.services.style_reference.config_loader import (
-    load_optional_yaml_config,
-    load_yaml_config,
+from novel_system.services.style_reference.config_loader import load_optional_yaml_config
+from novel_system.services.style_reference.measure import (
+    FEATURE_NAMES,
+    FUNCTION_WORD_GROUPS,
+    KERNEL_VERSION,
+    LEXICAL_MAX_WINDOWS,
+    LEXICAL_WINDOW_CHARS,
+    SHORT_SENTENCE_CHARS,
+    SPEECH_VERB_KEYS,
+    SPEECH_VERB_LABELS,
+    KernelLexicon,
+    TextMeasure,
+    clear_kernel_cache,
+    kernel_features,
+    load_kernel_lexicon,
+    measure_paragraphs,
+    measure_text,
 )
-from novel_system.services.style_reference.text_utils import (
-    normalize_text,
-    split_paragraphs,
-    split_sentences,
-)
+from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
 
-VOICE_SIGNATURE_VERSION = "voice_signature_v1"
-VOICE_BASELINE_VERSION = "voice_baseline_v1"
+# v2（2026-09-23）：测量核口径（段内换行即段界、引号不含 ‘’、人称只数叙述、追加 5 个特征）。
+VOICE_SIGNATURE_VERSION = "voice_signature_v2"
+VOICE_BASELINE_VERSION = "voice_baseline_v2"
 
-# 基线块尺寸(字符)。与 metrics._VARIANCE_CHUNK_CHARS 一致,≈ 一个场景的长度,
-# 因此块间 std 就是 W6 漂移读数所需的「场景级自然波动」尺度。
+# 基线块尺寸(字符)。≈ 一个场景的长度。
 BASELINE_BLOCK_CHARS = 1500
-# 字级 TTR / 二元组 hapax 的窗口。规格写 2k;这里与基线块同宽,否则块级基线
-# (1500 字)与整书读数(2000 字窗)会因 TTR 随长度衰减而系统性偏移。
-LEXICAL_WINDOW_CHARS = 1500
-LEXICAL_MAX_WINDOWS = 256
-SHORT_SENTENCE_CHARS = 8
 TOP_WORDS_PER_GROUP = 5
 MAX_HABIT_LINES = 12
-# 基线是块级(1500 字)分布;整书签名是 n 块的聚合均值,块间 std 对它过宽——
-# z 值与方向类习惯句按 1/sqrt(min(n, 16)) 收窄 std 与 p15/p85 带(n=1 即字面
-# p15/p85,场景级读数不变)。例外:REPETITION_FEATURES(叠词 / 短句连打)始终按字面
-# p85 判——规格 §2.W3 明文 deliberate_repetition「≥ p85」,旗标与「叠词多 / 短句连打」
-# 习惯句必须同口径;否则整书画像几乎都会被标成刻意重复,放松下游的新鲜度守卫。
+# 整书签名是 n 块的聚合,块间 std 对它过宽——旧 z 值接口按 1/sqrt(min(n, 16)) 收窄;
+# REPETITION_FEATURES(叠词 / 短句连打)始终按字面 p85 判(deliberate_repetition 的规格口径)。
 Z_MAX_AGGREGATION_BLOCKS = 16
 REPETITION_FEATURES: tuple[str, ...] = ("redup_total_per_1k", "sent_short_run_ratio")
 # 少于这些可见字符的文本不渲染习惯句(统计无意义)。
 MIN_RENDER_CHARS = 200
 _Z_CLIP = 8.0
 
-FUNCTION_WORD_GROUPS: tuple[str, ...] = (
-    "particle",
-    "aspect",
-    "connective",
-    "adverb",
-    "preposition",
-    "pronoun",
-    "modal",
-    "classical",
-)
-SPEECH_VERB_KEYS: tuple[str, ...] = ("shuodao", "shuo", "dao", "wen", "da", "other")
-_SPEECH_VERB_LABELS = {
-    "shuodao": "说道",
-    "shuo": "说",
-    "dao": "道",
-    "wen": "问",
-    "da": "答",
-    "other": "其他",
-}
-
-FEATURE_NAMES: tuple[str, ...] = (
-    *tuple(f"fw_{group}_per_1k" for group in FUNCTION_WORD_GROUPS),
-    "fw_total_per_1k",
-    "sentence_final_modal_ratio",
-    "sentence_final_classical_ratio",
-    "punct_comma_per_1k",
-    "punct_enumeration_per_1k",
-    "punct_period_per_1k",
-    "punct_colon_per_1k",
-    "punct_semicolon_per_1k",
-    "punct_exclamation_per_1k",
-    "punct_question_per_1k",
-    "punct_ellipsis_per_1k",
-    "punct_dash_per_1k",
-    "punct_quote_pair_per_1k",
-    "sent_len_mean",
-    "sent_len_std",
-    "sent_len_p10",
-    "sent_len_p90",
-    "sent_pauses_mean",
-    "clause_len_mean",
-    "sent_short_run_mean",
-    "sent_short_run_ratio",
-    "sent_len_lag1_autocorr",
-    "para_len_mean",
-    "para_single_sentence_ratio",
-    "para_dialogue_ratio",
-    "dialogue_guide_pre_share",
-    "dialogue_guide_post_share",
-    "dialogue_guide_none_share",
-    *tuple(f"speech_verb_{key}_share" for key in SPEECH_VERB_KEYS),
-    "four_char_segment_per_1k",
-    "redup_aa_per_1k",
-    "redup_aabb_per_1k",
-    "redup_abab_per_1k",
-    "redup_total_per_1k",
-    "person_first_share",
-    "person_second_share",
-    "person_third_share",
-    "lexical_char_ttr",
-    "lexical_bigram_hapax_ratio",
-)
-
 # top_words 的组:8 个虚词组 + 句末助词 + 引导动词。
 TOP_WORD_GROUPS: tuple[str, ...] = (*FUNCTION_WORD_GROUPS, "sentence_final", "speech_verb")
+_SPEECH_VERB_LABELS = SPEECH_VERB_LABELS
 
-_CJK = "㐀-鿿"
-_NON_VISIBLE_RE = re.compile(rf"[^A-Za-z0-9{_CJK}]+")
-_NON_CJK_RE = re.compile(rf"[^{_CJK}]+")
-_FOUR_CHAR_RE = re.compile(rf"(?<![{_CJK}])[{_CJK}]{{4}}(?![{_CJK}])")
-_AA_RE = re.compile(rf"([{_CJK}])\1")
-# 引号内的对白(中文弯引号 / 直角引号),用于人称统计前剥离;上限防未闭合引号吞掉整段
-_QUOTED_SPAN_RE = re.compile(r"[“「『‘][^”」』’]{0,400}[”」』’]")
-_AABB_RE = re.compile(rf"([{_CJK}])\1([{_CJK}])\2")
-_ABAB_RE = re.compile(rf"([{_CJK}])([{_CJK}])\1\2")
-_ELLIPSIS_RE = re.compile(r"……|…|\.{3,}")
-_DASH_RE = re.compile(r"——|—")
-_QUOTE_SPAN_RE = re.compile(
-    r"“([^“”\n]{1,600})”|‘([^‘’\n]{1,600})’|「([^「」\n]{1,600})」|『([^『』\n]{1,600})』|\"([^\"\n]{1,600})\""
-)
-_OPENING_QUOTES = ("“", "‘", "「", "『", '"')
-_PAUSE_CHARS = "，、；：,;:"
-_TRAILING_STRIP = "”’」』\"'）)】〕］ \t　。！？.!?…；;"
-_PRE_WINDOW_CUT = "。！？；!?;…”’」』\n"
-_POST_WINDOW_CUT = "。！？；!?;…“‘「『\"\n"
-_GUIDE_WINDOW_CHARS = 14
+# 旧名兼容:词表只有一张,编译在测量核里。
+VoiceLexicon = KernelLexicon
 
 
-# ---------------------------------------------------------------------------
-# 词表
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class VoiceLexicon:
-    """从 function_words.yaml 编译出的闭类词表(缓存,进程内只读)。"""
-
-    group_words: Mapping[str, tuple[str, ...]]
-    labels: Mapping[str, str]
-    words_by_length_desc: tuple[str, ...]
-    containers: Mapping[str, tuple[str, ...]]
-    sentence_final_modal: frozenset[str]
-    sentence_final_classical: frozenset[str]
-    person: Mapping[str, tuple[str, ...]]
-    speech_main: Mapping[str, tuple[str, ...]]
-    speech_other: tuple[str, ...]
-    speech_exclusions: tuple[str, ...]
-    speech_verb_regex: re.Pattern[str]
-
-
-def _as_str_list(value: Any) -> list[str]:
-    if not isinstance(value, (list, tuple)):
-        return []
-    result: list[str] = []
-    for item in value:
-        text = str(item or "").strip()
-        if text:
-            result.append(text)
-    return result
-
-
-def _build_lexicon(raw: Mapping[str, Any]) -> VoiceLexicon:
-    groups_raw = raw.get("groups") if isinstance(raw.get("groups"), Mapping) else {}
-    group_words: dict[str, tuple[str, ...]] = {}
-    labels: dict[str, str] = {}
-    seen: set[str] = set()
-    for group in FUNCTION_WORD_GROUPS:
-        entry = groups_raw.get(group) if isinstance(groups_raw, Mapping) else None
-        words: list[str] = []
-        label = group
-        if isinstance(entry, Mapping):
-            label = str(entry.get("label") or group)
-            candidates = _as_str_list(entry.get("words"))
-        else:
-            candidates = _as_str_list(entry)
-        for word in candidates:
-            if word in seen:
-                continue  # 一词只归一组:先出现的组胜出
-            seen.add(word)
-            words.append(word)
-        group_words[group] = tuple(words)
-        labels[group] = label
-
-    all_words = sorted(seen, key=lambda w: (-len(w), w))
-    containers: dict[str, tuple[str, ...]] = {}
-    for word in all_words:
-        containers[word] = tuple(
-            longer for longer in all_words if len(longer) > len(word) and word in longer
-        )
-
-    sentence_final = raw.get("sentence_final") if isinstance(raw.get("sentence_final"), Mapping) else {}
-    person_raw = raw.get("person") if isinstance(raw.get("person"), Mapping) else {}
-    person = {
-        key: tuple(word for word in _as_str_list(person_raw.get(key)) if word in seen)
-        for key in ("first", "second", "third")
-    }
-
-    speech_raw = raw.get("speech_verbs") if isinstance(raw.get("speech_verbs"), Mapping) else {}
-    main_raw = speech_raw.get("main") if isinstance(speech_raw.get("main"), Mapping) else {}
-    speech_main = {
-        key: tuple(_as_str_list(main_raw.get(key)))
-        for key in SPEECH_VERB_KEYS
-        if key != "other"
-    }
-    speech_other = tuple(_as_str_list(speech_raw.get("other")))
-    speech_exclusions = tuple(_as_str_list(speech_raw.get("exclusions")))
-    all_verbs = sorted(
-        {verb for verbs in speech_main.values() for verb in verbs} | set(speech_other),
-        key=lambda v: (-len(v), v),
-    )
-    verb_pattern = "|".join(re.escape(verb) for verb in all_verbs) or r"(?!x)x"
-    return VoiceLexicon(
-        group_words=group_words,
-        labels=labels,
-        words_by_length_desc=tuple(all_words),
-        containers=containers,
-        sentence_final_modal=frozenset(_as_str_list(sentence_final.get("modal"))),
-        sentence_final_classical=frozenset(_as_str_list(sentence_final.get("classical"))),
-        person=person,
-        speech_main=speech_main,
-        speech_other=speech_other,
-        speech_exclusions=speech_exclusions,
-        speech_verb_regex=re.compile(verb_pattern),
-    )
-
-
-@lru_cache(maxsize=1)
-def _lexicon() -> VoiceLexicon:
-    return _build_lexicon(load_yaml_config("function_words"))
-
-
-def load_voice_lexicon() -> VoiceLexicon:
-    """返回编译后的闭类词表(缓存)。"""
-    return _lexicon()
+def load_voice_lexicon() -> KernelLexicon:
+    """返回编译后的闭类词表(测量核里的唯一一张)。"""
+    return load_kernel_lexicon()
 
 
 def clear_voice_signature_cache() -> None:
     """清空词表缓存,供测试用(配合 config_loader.clear_config_cache)。"""
-    _lexicon.cache_clear()
+    clear_kernel_cache()
 
 
 def load_voice_baseline() -> dict[str, Any]:
@@ -285,7 +97,7 @@ def load_voice_baseline() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _finite(value: float) -> float:
+def _finite(value: Any) -> float:
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -297,10 +109,6 @@ def _finite(value: float) -> float:
 
 def _round(value: float) -> float:
     return round(_finite(value), 6)
-
-
-def _visible_length(text: str) -> int:
-    return len(_NON_VISIBLE_RE.sub("", text))
 
 
 def _quantile(values: Sequence[float], ratio: float) -> float:
@@ -316,38 +124,6 @@ def _quantile(values: Sequence[float], ratio: float) -> float:
     return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
 
 
-def _per_1k(count: float, chars: int) -> float:
-    if chars <= 0:
-        return 0.0
-    return count * 1000.0 / chars
-
-
-def _share(count: float, total: float) -> float:
-    if total <= 0:
-        return 0.0
-    return count / total
-
-
-def _visible_sentences(paragraph: str) -> list[str]:
-    """复用 text_utils.split_sentences,并丢弃无可见字符的残片(闭引号 / 纯标点)。"""
-    return [part for part in split_sentences(paragraph) if _NON_VISIBLE_RE.sub("", part)]
-
-
-def _exclusive_counts(text: str, lexicon: VoiceLexicon) -> dict[str, int]:
-    """词表独占计数:长词命中的位置不再记入其子串短词。
-
-    单遍 ``str.count``(C 速度),再按「长词优先」扣除嵌套命中;结果 ≥ 0。
-    """
-    raw = {word: text.count(word) for word in lexicon.words_by_length_desc}
-    exclusive: dict[str, int] = {}
-    for word in lexicon.words_by_length_desc:  # 长 → 短
-        count = raw[word]
-        for longer in lexicon.containers[word]:
-            count -= exclusive[longer] * longer.count(word)
-        exclusive[word] = max(0, count)
-    return exclusive
-
-
 def _top_words(counter: Mapping[str, int], limit: int = TOP_WORDS_PER_GROUP) -> list[list[Any]]:
     total = sum(count for count in counter.values() if count > 0)
     if total <= 0:
@@ -360,88 +136,14 @@ def _top_words(counter: Mapping[str, int], limit: int = TOP_WORDS_PER_GROUP) -> 
 
 
 # ---------------------------------------------------------------------------
-# 对白引导
-# ---------------------------------------------------------------------------
-
-
-def _classify_speech_verb(window: str, lexicon: VoiceLexicon) -> str | None:
-    clause = window
-    for excluded in lexicon.speech_exclusions:
-        if excluded in clause:
-            clause = clause.replace(excluded, "")
-    for key in ("shuodao", "dao", "shuo", "wen", "da"):
-        if any(verb in clause for verb in lexicon.speech_main.get(key, ())):
-            return key
-    if lexicon.speech_verb_regex.search(clause):
-        return "other"
-    return None
-
-
-def _cut_pre_window(paragraph: str, start: int) -> str:
-    window = paragraph[max(0, start - _GUIDE_WINDOW_CHARS) : start]
-    cut = max((window.rfind(char) for char in _PRE_WINDOW_CUT), default=-1)
-    if cut >= 0:
-        window = window[cut + 1 :]
-    return window.strip()
-
-
-def _cut_post_window(paragraph: str, end: int) -> str:
-    window = paragraph[end : end + _GUIDE_WINDOW_CHARS]
-    positions = [window.find(char) for char in _POST_WINDOW_CUT]
-    cuts = [position for position in positions if position >= 0]
-    if cuts:
-        window = window[: min(cuts)]
-    return window.strip()
-
-
-def _analyze_dialogue(
-    paragraph: str, lexicon: VoiceLexicon
-) -> tuple[list[tuple[int, int]], Counter[str], Counter[str]]:
-    """返回 (引号跨度, 引导位置计数 pre/post/none, 引导动词计数)。"""
-    spans: list[tuple[int, int]] = []
-    guides: Counter[str] = Counter()
-    verbs: Counter[str] = Counter()
-    for match in _QUOTE_SPAN_RE.finditer(paragraph):
-        start, end = match.span()
-        spans.append((start, end))
-        pre = _cut_pre_window(paragraph, start)
-        verb: str | None = None
-        placement = "none"
-        if pre.endswith(("：", ":")):
-            placement = "pre"
-            verb = _classify_speech_verb(pre, lexicon) or "other"
-        elif pre.endswith(("，", ",")):
-            verb = _classify_speech_verb(pre, lexicon)
-            if verb is not None:
-                placement = "pre"
-        if placement == "none":
-            post = _cut_post_window(paragraph, end)
-            verb = _classify_speech_verb(post, lexicon) if post else None
-            if verb is not None:
-                placement = "post"
-        guides[placement] += 1
-        if placement != "none" and verb is not None:
-            verbs[verb] += 1
-    return spans, guides, verbs
-
-
-def _looks_like_dialogue_paragraph(paragraph: str, spans: Sequence[tuple[int, int]], visible: int) -> bool:
-    if paragraph.lstrip().startswith(_OPENING_QUOTES):
-        return True
-    if not spans or visible <= 0:
-        return False
-    quoted = sum(_visible_length(paragraph[start:end]) for start, end in spans)
-    return quoted * 2 >= visible
-
-
-# ---------------------------------------------------------------------------
-# 主计算
+# 签名
 # ---------------------------------------------------------------------------
 
 
 def _empty_signature() -> dict[str, Any]:
     return {
         "version": VOICE_SIGNATURE_VERSION,
+        "kernel_version": KERNEL_VERSION,
         "features": {name: 0.0 for name in FEATURE_NAMES},
         "top_words": {group: [] for group in TOP_WORD_GROUPS},
         "deliberate_repetition": False,
@@ -449,81 +151,35 @@ def _empty_signature() -> dict[str, Any]:
     }
 
 
-def _lexical_windows(cjk_text: str) -> list[str]:
-    length = len(cjk_text)
-    if length == 0:
-        return []
-    if length <= LEXICAL_WINDOW_CHARS:
-        return [cjk_text]
-    total = length // LEXICAL_WINDOW_CHARS
-    if total <= LEXICAL_MAX_WINDOWS:
-        indices: Iterable[int] = range(total)
-    else:
-        step = total / LEXICAL_MAX_WINDOWS
-        indices = sorted({int(index * step) for index in range(LEXICAL_MAX_WINDOWS)})
-    return [
-        cjk_text[index * LEXICAL_WINDOW_CHARS : (index + 1) * LEXICAL_WINDOW_CHARS]
-        for index in indices
-    ]
-
-
-def _lexical_features(cjk_text: str) -> tuple[float, float]:
-    windows = _lexical_windows(cjk_text)
-    if not windows:
-        return 0.0, 0.0
-    ttr_values: list[float] = []
-    hapax_values: list[float] = []
-    for window in windows:
-        ttr_values.append(len(set(window)) / len(window))
-        if len(window) >= 2:
-            bigrams = Counter(zip(window, window[1:]))
-            hapax_values.append(sum(1 for count in bigrams.values() if count == 1) / len(bigrams))
-    return (
-        statistics.fmean(ttr_values),
-        statistics.fmean(hapax_values) if hapax_values else 0.0,
+def signature_from_measure(
+    measure: TextMeasure,
+    *,
+    baseline: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """测量结果 → 声音签名(``baseline`` 只用于 ``deliberate_repetition``,缺省读 yaml)。"""
+    if measure.char_count <= 0:
+        return _empty_signature()
+    lexicon = load_kernel_lexicon()
+    features = kernel_features(measure)
+    top_words = {group: _top_words(measure.group_counts(group, lexicon)) for group in FUNCTION_WORD_GROUPS}
+    top_words["sentence_final"] = _top_words(measure.sentence_final_counts)
+    top_words["speech_verb"] = _top_words(
+        {SPEECH_VERB_LABELS[key]: int(measure.speech_verb_counts.get(key, 0)) for key in SPEECH_VERB_KEYS}
     )
-
-
-def _sentence_sequence_features(lengths: Sequence[int]) -> dict[str, float]:
-    count = len(lengths)
-    if count == 0:
-        return {
-            "sent_len_mean": 0.0,
-            "sent_len_std": 0.0,
-            "sent_len_p10": 0.0,
-            "sent_len_p90": 0.0,
-            "sent_short_run_mean": 0.0,
-            "sent_short_run_ratio": 0.0,
-            "sent_len_lag1_autocorr": 0.0,
-        }
-    mean = statistics.fmean(lengths)
-    std = statistics.pstdev(lengths) if count > 1 else 0.0
-    runs: list[int] = []
-    run = 0
-    for length in lengths:
-        if length <= SHORT_SENTENCE_CHARS:
-            run += 1
-            continue
-        if run >= 2:
-            runs.append(run)
-        run = 0
-    if run >= 2:
-        runs.append(run)
-    autocorr = 0.0
-    if count >= 3 and std > 0:
-        variance = sum((length - mean) ** 2 for length in lengths)
-        covariance = sum(
-            (lengths[index] - mean) * (lengths[index + 1] - mean) for index in range(count - 1)
-        )
-        autocorr = covariance / variance if variance > 0 else 0.0
+    if baseline is None:
+        baseline = load_voice_baseline()
     return {
-        "sent_len_mean": mean,
-        "sent_len_std": std,
-        "sent_len_p10": _quantile(lengths, 0.10),
-        "sent_len_p90": _quantile(lengths, 0.90),
-        "sent_short_run_mean": statistics.fmean(runs) if runs else 0.0,
-        "sent_short_run_ratio": sum(runs) / count,
-        "sent_len_lag1_autocorr": autocorr,
+        "version": VOICE_SIGNATURE_VERSION,
+        "kernel_version": KERNEL_VERSION,
+        "features": features,
+        "top_words": {group: top_words.get(group, []) for group in TOP_WORD_GROUPS},
+        "deliberate_repetition": _deliberate_repetition(features, baseline),
+        "stats": {
+            "char_count": measure.char_count,
+            "sentence_count": measure.sentence_count,
+            "paragraph_count": measure.paragraph_count,
+            "quote_count": measure.quote_count,
+        },
     }
 
 
@@ -532,156 +188,12 @@ def compute_voice_signature(
     *,
     baseline: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """计算一组段落(通常是一部书的全部段落)的声音签名。
+    """一组段落(通常是一部书的全部段落)的声音签名。
 
-    ``texts`` 每项视为一个段落;``baseline`` 只用于 ``deliberate_repetition``
-    的 p85 判定,缺省读 ``voice_baseline.yaml``(缺文件时判 False)。
-    单遍扫描,复杂度 O(总字数 × 词表规模常数)。
+    每项按换行再切一次(测量核的唯一分段规则);``baseline`` 只用于 ``deliberate_repetition`` 的 p85 判定,
+    缺省读 ``voice_baseline.yaml``(缺文件时判 False)。
     """
-    lexicon = _lexicon()
-    paragraphs = [str(text).strip() for text in (texts or []) if str(text or "").strip()]
-    if not paragraphs:
-        return _empty_signature()
-    joined = "\n".join(paragraphs)
-    char_count = _visible_length(joined)
-    if char_count == 0:
-        return _empty_signature()
-
-    # --- 虚词(独占计数) --------------------------------------------------
-    exclusive = _exclusive_counts(joined, lexicon)
-    features: dict[str, float] = {}
-    top_words: dict[str, list[list[Any]]] = {}
-    fw_total = 0
-    for group in FUNCTION_WORD_GROUPS:
-        counts = {word: exclusive.get(word, 0) for word in lexicon.group_words[group]}
-        group_total = sum(counts.values())
-        fw_total += group_total
-        features[f"fw_{group}_per_1k"] = _per_1k(group_total, char_count)
-        top_words[group] = _top_words(counts)
-    features["fw_total_per_1k"] = _per_1k(fw_total, char_count)
-
-    # --- 人称 -------------------------------------------------------------
-    # 2026-09-14 保真修补:只看叙述——剥离引号内的对白再数人称。对白占六成的第三人称小说里
-    # 「我 / 你」几乎全是人物在说话,不剥离会把叙述人称判成「混用」,结构画像与声音习惯都跟着错。
-    narration_only = _QUOTED_SPAN_RE.sub("", joined)
-    narration_exclusive = (
-        _exclusive_counts(narration_only, lexicon) if narration_only.strip() else exclusive
-    )
-    person_counts = {
-        key: sum(narration_exclusive.get(word, 0) for word in words)
-        for key, words in lexicon.person.items()
-    }
-    person_total = sum(person_counts.values())
-    for key in ("first", "second", "third"):
-        features[f"person_{key}_share"] = _share(person_counts.get(key, 0), person_total)
-
-    # --- 标点 -------------------------------------------------------------
-    punct_counts = {
-        "comma": sum(joined.count(char) for char in "，,"),
-        "enumeration": joined.count("、"),
-        "period": joined.count("。"),
-        "colon": sum(joined.count(char) for char in "：:"),
-        "semicolon": sum(joined.count(char) for char in "；;"),
-        "exclamation": sum(joined.count(char) for char in "！!"),
-        "question": sum(joined.count(char) for char in "？?"),
-        "ellipsis": len(_ELLIPSIS_RE.findall(joined)),
-        "dash": len(_DASH_RE.findall(joined)),
-        "quote_pair": sum(joined.count(char) for char in "“‘「『") + joined.count('"') // 2,
-    }
-    for name, count in punct_counts.items():
-        features[f"punct_{name}_per_1k"] = _per_1k(count, char_count)
-    pause_total = sum(joined.count(char) for char in _PAUSE_CHARS)
-
-    # --- 四字格 / 叠词 -----------------------------------------------------
-    four_char = len(_FOUR_CHAR_RE.findall(joined))
-    aabb = sum(1 for match in _AABB_RE.finditer(joined) if match.group(1) != match.group(2))
-    abab = sum(1 for match in _ABAB_RE.finditer(joined) if match.group(1) != match.group(2))
-    aa = max(0, len(_AA_RE.findall(joined)) - 2 * aabb)
-    features["four_char_segment_per_1k"] = _per_1k(four_char, char_count)
-    features["redup_aa_per_1k"] = _per_1k(aa, char_count)
-    features["redup_aabb_per_1k"] = _per_1k(aabb, char_count)
-    features["redup_abab_per_1k"] = _per_1k(abab, char_count)
-    features["redup_total_per_1k"] = _per_1k(aa + aabb + abab, char_count)
-
-    # --- 句 / 段 / 对白(逐段单遍) -------------------------------------------
-    sentence_lengths: list[int] = []
-    final_modal = 0
-    final_classical = 0
-    final_counter: Counter[str] = Counter()
-    paragraph_lengths: list[int] = []
-    single_sentence_paragraphs = 0
-    dialogue_paragraphs = 0
-    guide_counter: Counter[str] = Counter()
-    verb_counter: Counter[str] = Counter()
-    quote_count = 0
-    for paragraph in paragraphs:
-        visible = _visible_length(paragraph)
-        if visible == 0:
-            continue
-        paragraph_lengths.append(visible)
-        sentences = _visible_sentences(paragraph)
-        if len(sentences) <= 1:
-            single_sentence_paragraphs += 1
-        for sentence in sentences:
-            sentence_lengths.append(_visible_length(sentence))
-            tail = sentence.rstrip(_TRAILING_STRIP)
-            last = tail[-1:] if tail else ""
-            if last in lexicon.sentence_final_modal:
-                final_modal += 1
-                final_counter[last] += 1
-            elif last in lexicon.sentence_final_classical:
-                final_classical += 1
-                final_counter[last] += 1
-        spans, guides, verbs = _analyze_dialogue(paragraph, lexicon)
-        quote_count += len(spans)
-        guide_counter.update(guides)
-        verb_counter.update(verbs)
-        if _looks_like_dialogue_paragraph(paragraph, spans, visible):
-            dialogue_paragraphs += 1
-
-    sentence_count = len(sentence_lengths)
-    features.update(_sentence_sequence_features(sentence_lengths))
-    features["sent_pauses_mean"] = _share(pause_total, sentence_count)
-    features["clause_len_mean"] = _share(char_count, sentence_count + pause_total)
-    features["sentence_final_modal_ratio"] = _share(final_modal, sentence_count)
-    features["sentence_final_classical_ratio"] = _share(final_classical, sentence_count)
-    top_words["sentence_final"] = _top_words(final_counter)
-
-    paragraph_count = len(paragraph_lengths)
-    features["para_len_mean"] = statistics.fmean(paragraph_lengths) if paragraph_lengths else 0.0
-    features["para_single_sentence_ratio"] = _share(single_sentence_paragraphs, paragraph_count)
-    features["para_dialogue_ratio"] = _share(dialogue_paragraphs, paragraph_count)
-
-    for placement in ("pre", "post", "none"):
-        features[f"dialogue_guide_{placement}_share"] = _share(guide_counter[placement], quote_count)
-    verb_total = sum(verb_counter.values())
-    for key in SPEECH_VERB_KEYS:
-        features[f"speech_verb_{key}_share"] = _share(verb_counter[key], verb_total)
-    top_words["speech_verb"] = _top_words(
-        {_SPEECH_VERB_LABELS[key]: verb_counter[key] for key in SPEECH_VERB_KEYS}
-    )
-
-    # --- 词汇 -------------------------------------------------------------
-    ttr, hapax = _lexical_features(_NON_CJK_RE.sub("", joined))
-    features["lexical_char_ttr"] = ttr
-    features["lexical_bigram_hapax_ratio"] = hapax
-
-    ordered = {name: _round(features.get(name, 0.0)) for name in FEATURE_NAMES}
-    if baseline is None:
-        baseline = load_voice_baseline()
-    stats = {
-        "char_count": char_count,
-        "sentence_count": sentence_count,
-        "paragraph_count": paragraph_count,
-        "quote_count": quote_count,
-    }
-    return {
-        "version": VOICE_SIGNATURE_VERSION,
-        "features": ordered,
-        "top_words": {group: top_words.get(group, []) for group in TOP_WORD_GROUPS},
-        "deliberate_repetition": _deliberate_repetition(ordered, baseline),
-        "stats": stats,
-    }
+    return signature_from_measure(measure_paragraphs(texts or []), baseline=baseline)
 
 
 def compute_voice_signature_for_text(
@@ -689,12 +201,8 @@ def compute_voice_signature_for_text(
     *,
     baseline: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """单文本版本:按空行(退化时按单换行)切段后计算,供生成侧 / 漂移读数复用。"""
-    normalized = normalize_text(str(text or ""))
-    if not normalized:
-        return _empty_signature()
-    paragraphs = [body for _start, _end, body in split_paragraphs(normalized)] or [normalized]
-    return compute_voice_signature(paragraphs, baseline=baseline)
+    """单文本版本(生成稿 / 作者稿 HTML / 窗口):按测量核规则分段后计算。"""
+    return signature_from_measure(measure_text(text), baseline=baseline)
 
 
 def _baseline_stat(baseline: Mapping[str, Any] | None, feature: str, key: str) -> float | None:
@@ -739,8 +247,8 @@ def _deliberate_repetition(
     """叠词密度或短句连打高于基线**字面** p85 → True;无基线时 False(fail-closed)。
 
     规格 §2.W3:「显著高于基线(≥p85)」。这里不套 1/sqrt(n) 聚合收窄——那只属于
-    z 值 / 漂移读数;整书签名与场景级读数都对照块级 p85 本身判定,与
-    :func:`render_voice_habits` 里「叠词多 / 短句连打」两句同口径。
+    z 值 / 漂移读数;整书签名与场景级读数都对照块级 p85 本身判定。旗标只放松下游的
+    新鲜度守卫(作者本就爱叠词 / 连打短句时,不把重复当毛病),不进习惯句。
     """
     return any(_level(features, baseline, name) == "high" for name in REPETITION_FEATURES)
 
@@ -866,8 +374,67 @@ def _level(
 
 
 # ---------------------------------------------------------------------------
-# 习惯句渲染
+# 习惯句渲染(绝对、具体:作者自己的高频词与大致频率,不与任何基线比)
 # ---------------------------------------------------------------------------
+
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def _cn_int(value: int) -> str:
+    """0–999 的中文读法(「两」用于量词前由调用方处理);超出按「上千」。"""
+    number = max(0, int(value))
+    if number < 10:
+        return _CN_DIGITS[number]
+    if number < 20:
+        return "十" + (_CN_DIGITS[number % 10] if number % 10 else "")
+    if number < 100:
+        tens, ones = divmod(number, 10)
+        return _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
+    if number < 1000:
+        hundreds, rest = divmod(number, 100)
+        head = _CN_DIGITS[hundreds] + "百"
+        if rest == 0:
+            return head
+        if rest < 10:
+            return head + "零" + _CN_DIGITS[rest]
+        tens, ones = divmod(rest, 10)
+        return head + _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
+    return "上千"
+
+
+def _cn_count(value: int) -> str:
+    """量词前的数:2 → 「两」,其余同 :func:`_cn_int`。"""
+    return "两" if int(value) == 2 else _cn_int(value)
+
+
+def _rate_phrase(rate: float, unit: str) -> str:
+    """每千字的频率 → 「每千字约三个」/「每两千字约一处」/ ""(几乎没有)。"""
+    value = _finite(rate)
+    if value >= 1.0:
+        return f"每千字约{_cn_count(round(value))}{unit}"
+    if value >= 0.2:
+        return f"每{_cn_count(round(1.0 / value))}千字约一{unit}"
+    return ""
+
+
+def _every_n_sentences(ratio: float) -> str:
+    value = _finite(ratio)
+    if value <= 0:
+        return ""
+    n = max(1, int(round(1.0 / value)))
+    if n <= 1:
+        return "几乎每句都有"
+    return f"大约每{_cn_count(n)}句一次"
+
+
+def _tenths_phrase(share: float) -> str:
+    """0–1 的比例 → 「约四成」/「不到一成」/「几乎全部」。"""
+    value = _finite(share)
+    if value >= 0.95:
+        return "几乎全部"
+    if value < 0.05:
+        return "不到一成"
+    return f"约{_cn_int(max(1, round(value * 10)))}成"
 
 
 def _join_words(words: Sequence[str]) -> str:
@@ -888,45 +455,16 @@ def _author_words(top_words: Mapping[str, Any], group: str, *, limit: int = 3, m
     return result
 
 
-def _underused_words(
-    top_words: Mapping[str, Any],
-    baseline: Mapping[str, Any] | None,
-    group: str,
-    *,
-    limit: int = 2,
-) -> list[str]:
-    """基线里显著、作者却少用的词:基线 top 词中作者份额不足其一半者。
-
-    作者侧只知道 top-N 词的份额;不在表内的词,其份额必 ≤ 表内最小份额,
-    因此只有当「表内最小份额 < 基线份额的一半」时才能可靠断言少用。
-    """
-    if not baseline:
-        return []
-    baseline_top = baseline.get("top_words") if isinstance(baseline, Mapping) else None
-    entries = baseline_top.get(group) if isinstance(baseline_top, Mapping) else None
-    if not entries:
-        return []
-    author_shares: dict[str, float] = {}
-    for entry in top_words.get(group) or []:
-        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-            author_shares[str(entry[0])] = _finite(entry[1])
-    if not author_shares:
-        return []
-    author_floor = min(author_shares.values())
-    author_top = set(_author_words(top_words, group))
-    result: list[str] = []
-    for entry in entries:
-        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
-            continue
-        word, share = str(entry[0]), _finite(entry[1])
-        if word in author_top or share < 0.04:
-            continue
-        author_share = author_shares.get(word, author_floor)
-        if author_share < share * 0.5:
-            result.append(word)
-        if len(result) >= limit:
-            break
-    return result
+# 标点「常用 / 很少用」的绝对门槛(每千字):低于 rare 算几乎不用,高于 frequent 算常用。
+_PUNCT_HABITS: tuple[tuple[str, str, float, float], ...] = (
+    ("punct_ellipsis_per_1k", "省略号", 0.2, 2.0),
+    ("punct_dash_per_1k", "破折号", 0.2, 1.5),
+    ("punct_semicolon_per_1k", "分号", 0.2, 1.0),
+    ("punct_exclamation_per_1k", "感叹号", 0.5, 4.0),
+    ("punct_question_per_1k", "问号", 0.5, 6.0),
+    ("punct_colon_per_1k", "冒号", 0.3, 4.0),
+    ("punct_enumeration_per_1k", "顿号", 0.3, 5.0),
+)
 
 
 def render_voice_habits(
@@ -935,10 +473,10 @@ def render_voice_habits(
 ) -> list[str]:
     """把声音签名渲染成 ≤12 行生成器可执行的中文习惯句。
 
-    ``features`` 可以是整份签名(利用 top_words 给出具体词)或仅 features。
-    对照 ``baseline`` 的 p15 / p85 判方向;无基线时只输出不需要方向的行。
-    输出不含阿拉伯数字。
+    只描述作者自己:高频词(``top_words``,整份签名时才有)与大致频率(中文数字),绝不说「比一般作家偏多 /
+    偏少」。``baseline`` 参数保留只为旧调用方的签名兼容,不再使用。输出不含阿拉伯数字。
     """
+    del baseline  # v2 起习惯句不与任何基线比较
     values, top_words = _unpack(features)
     if not values or not any(value != 0.0 for value in values.values()):
         return []
@@ -949,261 +487,140 @@ def render_voice_habits(
                 return []
         except (TypeError, ValueError):
             pass
-    if baseline is None:
-        baseline = load_voice_baseline()
-    baseline_features = baseline.get("features") if isinstance(baseline, Mapping) else {}
-    block_count = _block_count_of(features)
-    scale = _aggregation_scale(block_count)
-    scores = feature_z_scores(values, baseline_features or {}, block_count=block_count)
-    lexicon = _lexicon()
-    labels = lexicon.labels
 
-    def level(name: str) -> str | None:
-        # 重复族特征与 deliberate_repetition 同口径:字面 p15 / p85,不随块数收窄。
-        return _level(values, baseline, name, scale=1.0 if name in REPETITION_FEATURES else scale)
+    def value(name: str) -> float:
+        return _finite(values.get(name, 0.0))
 
-    def weight(*names: str, floor: float = 0.0) -> float:
-        return max([abs(scores.get(name, 0.0)) for name in names] + [floor])
+    lexicon = load_kernel_lexicon()
+    lines: list[str] = []  # 按重要性排列,超过 MAX_HABIT_LINES 从末尾截
 
-    candidates: list[tuple[int, float, str]] = []
+    # 1. 句长与起伏:平均几个字、短句与长句大约多长
+    mean = value("sent_len_mean")
+    if mean > 0:
+        line = f"句子平均约{_cn_int(round(mean))}字"
+        short, long_ = value("sent_len_p10"), value("sent_len_p90")
+        if long_ > short > 0:
+            line += f"，短的{_cn_int(round(short))}字上下、长的{_cn_int(round(long_))}字上下"
+        spread = value("sent_len_std") / mean
+        if spread >= 0.75:
+            line += "，长短交错明显"
+        elif 0 < spread <= 0.45:
+            line += "，长短比较均匀"
+        lines.append(line)
 
-    def add(order: int, priority: float, line: str) -> None:
-        if line:
-            candidates.append((order, priority, line))
+    # 2. 段落
+    para_mean = value("para_len_mean")
+    if para_mean > 0:
+        line = f"段落平均约{_cn_int(round(para_mean))}字"
+        single = value("para_single_sentence_ratio")
+        if single >= 0.05:
+            line += f"，{_tenths_phrase(single)}的段落只有一句"
+        lines.append(line)
 
-    # 1. 连接词
-    connective_words = _author_words(top_words, "connective")
-    connective_level = level("fw_connective_per_1k")
-    if connective_words or connective_level:
-        parts: list[str] = []
-        label = labels["connective"]
-        joined_words = _join_words(connective_words)
-        if connective_level == "high":
-            parts.append(f"{label}偏多，句间关系多靠{label}点明")
-            if connective_words:
-                parts.append(f"多用{joined_words}")
-        elif connective_level == "low":
-            parts.append(f"{label}整体偏少，句子多靠并置推进")
-            if connective_words:
-                parts.append(f"用到时多是{joined_words}")
-        elif connective_words:
-            parts.append(f"{label}多用{joined_words}")
-        if connective_words:
-            underused = _underused_words(top_words, baseline, "connective")
-            if underused:
-                parts.append(f"少用{_join_words(underused)}")
-        add(10, weight("fw_connective_per_1k", floor=0.9), "，".join(parts))
+    # 3. 对白比重与引导
+    if "dialogue_char_share" in values:
+        dialogue = value("dialogue_char_share")
+        if dialogue >= 0.95:
+            lines.append("几乎通篇是对白")
+        elif dialogue >= 0.05:
+            lines.append(f"对白约占全文字数的{_cn_int(max(1, round(dialogue * 10)))}成")
+        else:
+            lines.append("几乎没有对白，以叙述为主")
+    guide = {placement: value(f"dialogue_guide_{placement}_share") for placement in ("pre", "post", "none")}
+    if sum(guide.values()) > 0:
+        dominant = max(guide, key=lambda key: guide[key])
+        verbs = {key: value(f"speech_verb_{key}_share") for key in SPEECH_VERB_KEYS if key != "other"}
+        top_verb = max(verbs, key=lambda key: verbs[key]) if any(verbs.values()) else None
+        verb_note = (
+            f"，引导动词多用「{SPEECH_VERB_LABELS[top_verb]}」"
+            if top_verb is not None and verbs[top_verb] >= 0.4
+            else ""
+        )
+        if guide[dominant] >= 0.5 and dominant == "none":
+            lines.append("对白多不加「某某说」，靠上下文分辨是谁在说话")
+        elif guide[dominant] >= 0.5 and dominant == "pre":
+            lines.append("对白前常先点出谁说，再引出话" + verb_note)
+        elif guide[dominant] >= 0.5:
+            lines.append("对白后才补上是谁说的" + verb_note)
+        else:
+            lines.append("对白有的先点出说话人、有的不点，随语气变" + verb_note)
 
-    # 2. 结构助词 / 体标记
-    particle_level = level("fw_particle_per_1k")
-    if particle_level == "high":
-        add(20, weight("fw_particle_per_1k"), "结构助词密集，「的」字不避重，定语层层叠加")
-    elif particle_level == "low":
-        add(20, weight("fw_particle_per_1k"), "省用「的」等结构助词，定语短，名词直接相接")
-    aspect_level = level("fw_aspect_per_1k")
-    aspect_words = _author_words(top_words, "aspect", limit=2)
-    if aspect_level == "high":
-        detail = f"，尤其是{_join_words(aspect_words)}" if aspect_words else ""
-        add(21, weight("fw_aspect_per_1k"), f"体标记多{detail}，动作常带着状态尾巴")
-    elif aspect_level == "low":
-        add(21, weight("fw_aspect_per_1k"), "体标记偏少，动作多不带「了、着」，干净落地")
+    # 4. 句末语气词
+    if "sentence_final_modal_ratio" in values:
+        modal_ratio = value("sentence_final_modal_ratio")
+        final_words = [
+            word
+            for word in _author_words(top_words, "sentence_final", limit=5, min_share=0.05)
+            if word in lexicon.sentence_final_modal
+        ][:3]
+        if modal_ratio >= 0.02:
+            detail = _join_words(final_words) if final_words else "语气词"
+            lines.append(f"句末常带{detail}（{_every_n_sentences(modal_ratio)}）")
+        else:
+            lines.append("句末几乎不带语气词，话说完就停")
 
-    # 3. 副词
-    adverb_level = level("fw_adverb_per_1k")
-    adverb_words = _author_words(top_words, "adverb")
-    if adverb_level == "high":
-        detail = f"，偏好{_join_words(adverb_words)}" if adverb_words else ""
-        add(30, weight("fw_adverb_per_1k"), f"副词多{detail}，程度和转折都由副词点出")
-    elif adverb_level == "low":
-        add(30, weight("fw_adverb_per_1k"), "副词克制，少加程度修饰，让动作自己说话")
-    elif adverb_words:
-        add(30, 0.4, f"副词偏好{_join_words(adverb_words)}")
+    # 5. 连接词(作者自己的高频词 + 频率)
+    connective_words = _author_words(top_words, "connective", limit=4)
+    connective_rate = _rate_phrase(value("fw_connective_per_1k"), "个")
+    if connective_words:
+        lines.append(
+            f"连接多用{_join_words(connective_words)}" + (f"（连接词{connective_rate}）" if connective_rate else "")
+        )
+    elif connective_rate:
+        lines.append(f"连接词{connective_rate}")
 
-    # 4. 介词
-    preposition_level = level("fw_preposition_per_1k")
-    preposition_words = _author_words(top_words, "preposition")
-    if preposition_level == "high":
-        detail = f"，常用{_join_words(preposition_words)}" if preposition_words else ""
-        add(35, weight("fw_preposition_per_1k"), f"介词框架多{detail}，句内成分靠介词铺展")
-    elif preposition_level == "low":
-        add(35, weight("fw_preposition_per_1k"), "少用介词框架，方位和对象多直接并置")
+    # 6. 标点:常用的与几乎不用的
+    frequent = [label for name, label, _low, high in _PUNCT_HABITS if name in values and value(name) >= high]
+    rare = [label for name, label, low, _high in _PUNCT_HABITS if name in values and value(name) < low]
+    if frequent:
+        lines.append(f"常用{_join_words(frequent[:3])}")
+    if rare:
+        lines.append(f"几乎不用{_join_words(rare[:3])}")
 
-    # 5. 语气词 / 句末助词
-    modal_level = level("sentence_final_modal_ratio") or level("fw_modal_per_1k")
-    final_words = _author_words(top_words, "sentence_final", limit=3, min_share=0.08)
-    modal_words = [word for word in final_words if word in lexicon.sentence_final_modal] or _author_words(
-        top_words, "modal", limit=2
-    )
-    if modal_level == "high":
-        detail = f"，多用{_join_words(modal_words)}" if modal_words else ""
-        add(40, weight("sentence_final_modal_ratio", "fw_modal_per_1k"), f"句末常带语气词{detail}，口气松而近")
-    elif modal_level == "low":
-        add(40, weight("sentence_final_modal_ratio", "fw_modal_per_1k"), "句末几乎不带语气词，话说完就停")
-    classical_final_level = level("sentence_final_classical_ratio")
-    classical_final_words = [word for word in final_words if word in lexicon.sentence_final_classical]
-    if classical_final_level == "high":
-        detail = f"，如{_join_words(classical_final_words)}" if classical_final_words else ""
-        add(41, weight("sentence_final_classical_ratio"), f"偶用文言句末语气{detail}")
-
-    # 6. 文言词
-    classical_level = level("fw_classical_per_1k")
-    classical_words = _author_words(top_words, "classical")
-    if classical_level == "high":
-        detail = f"，如{_join_words(classical_words)}" if classical_words else ""
-        add(50, weight("fw_classical_per_1k"), f"夹用文言虚词{detail}，白话里带着旧句式的骨架")
-    elif classical_level == "low":
-        add(50, weight("fw_classical_per_1k"), "白话到底，不夹文言虚词")
-
-    # 7. 标点
-    comma_level = level("punct_comma_per_1k")
-    period_level = level("punct_period_per_1k")
-    if comma_level == "high" and period_level == "low":
-        add(60, weight("punct_comma_per_1k", "punct_period_per_1k"), "逗号密集、句号稀疏，一句常含多个停顿再落句号")
-    elif comma_level == "high":
-        add(60, weight("punct_comma_per_1k"), "逗号密集，句内停顿多")
-    elif comma_level == "low" and period_level == "high":
-        add(60, weight("punct_comma_per_1k", "punct_period_per_1k"), "句号多、逗号少，短句一个接一个落地")
-    elif comma_level == "low":
-        add(60, weight("punct_comma_per_1k"), "逗号稀疏，一句到底不多停")
-    elif period_level == "high":
-        add(60, weight("punct_period_per_1k"), "句号多，句子短促成串")
-    elif period_level == "low":
-        add(60, weight("punct_period_per_1k"), "句号稀疏，长句一路推到底")
-    punct_lines = {
-        "punct_semicolon_per_1k": ("常用分号把并列分句挂在一句里", "不用分号，并列分句直接断开"),
-        "punct_enumeration_per_1k": ("顿号多，喜排列并举", "几乎不用顿号排列"),
-        "punct_colon_per_1k": ("冒号多，常用它引出下文或对白", None),
-        "punct_ellipsis_per_1k": ("常用省略号留白、吞句", "不用省略号，话说尽即止"),
-        "punct_dash_per_1k": ("常用破折号插入补语或急转", "不用破折号"),
-        "punct_exclamation_per_1k": ("感叹号多，语气外露", "几乎不用感叹号，情绪压在句里"),
-        "punct_question_per_1k": ("多设问、反问，疑问句频繁", "少用问句"),
-    }
-    for index, (name, (high_line, low_line)) in enumerate(punct_lines.items()):
-        punct_level = level(name)
-        if punct_level == "high":
-            add(61 + index, weight(name), high_line)
-        elif punct_level == "low" and low_line:
-            add(61 + index, weight(name), low_line)
-
-    # 8. 句长与节奏
-    mean_level = level("sent_len_mean")
-    if mean_level == "high":
-        add(70, weight("sent_len_mean"), "句子偏长，多由几个短语连缀成句")
-    elif mean_level == "low":
-        add(70, weight("sent_len_mean"), "句子短，一句一个动作或画面")
-    std_level = level("sent_len_std")
-    if std_level == "high":
-        add(71, weight("sent_len_std"), "长短句交错明显，长句后常接极短句")
-    elif std_level == "low":
-        add(71, weight("sent_len_std"), "句长均匀，节奏平稳少起落")
-    if level("sent_short_run_ratio") == "high":
-        add(72, weight("sent_short_run_ratio", "sent_short_run_mean"), "短句连打，几个短句紧接着推进")
-    autocorr_level = level("sent_len_lag1_autocorr")
-    if autocorr_level == "high":
-        add(73, weight("sent_len_lag1_autocorr"), "句长成段地相近，短句成串、长句成串，不逐句交替")
-    elif autocorr_level == "low":
-        add(73, weight("sent_len_lag1_autocorr"), "长句之后接短句，节奏起落分明")
-    pauses_level = level("sent_pauses_mean")
-    clause_level = level("clause_len_mean")
-    if pauses_level == "high" and comma_level != "high":
-        add(74, weight("sent_pauses_mean"), "一句里停顿多，逗号把句子切成好几截")
-    if clause_level == "high":
-        add(75, weight("clause_len_mean"), "停顿之间的短语偏长，一口气说完一层意思")
-    elif clause_level == "low":
-        add(75, weight("clause_len_mean"), "停顿之间的短语很短，读来急促")
-
-    # 9. 段落
-    para_level = level("para_len_mean")
-    if para_level == "high":
-        add(80, weight("para_len_mean"), "段落长，一段承载多个动作或转折")
-    elif para_level == "low":
-        add(80, weight("para_len_mean"), "段落短，频繁换段")
-    if level("para_single_sentence_ratio") == "high":
-        add(81, weight("para_single_sentence_ratio"), "常一句成段，让单句独立站住")
-    dialogue_level = level("para_dialogue_ratio")
-    if dialogue_level == "high":
-        add(82, weight("para_dialogue_ratio"), "对白段多，叙述常让位给说话")
-    elif dialogue_level == "low":
-        add(82, weight("para_dialogue_ratio"), "对白段少，以叙述为主")
-
-    # 10. 对白引导
-    guide_shares = {
-        placement: values.get(f"dialogue_guide_{placement}_share", 0.0) for placement in ("pre", "post", "none")
-    }
-    if sum(guide_shares.values()) > 0:
-        dominant = max(guide_shares, key=lambda key: guide_shares[key])
-        guide_line = {
-            "none": "对白多无引导词，说话人靠上下文辨认",
-            "pre": "对白引导词置于引语前，先点出谁说，再引出话",
-            "post": "对白引导词多置于引语后，话说完再补上是谁说的",
-        }[dominant]
-        if guide_shares[dominant] >= 0.5:
-            add(90, weight(f"dialogue_guide_{dominant}_share", floor=0.9), guide_line)
-        elif guide_shares["none"] < 0.5:
-            add(
-                90,
-                weight("dialogue_guide_pre_share", "dialogue_guide_post_share", floor=0.9),
-                "对白引导词前置、后置都有，位置随语气变化",
-            )
-        verb_shares = {
-            key: values.get(f"speech_verb_{key}_share", 0.0) for key in SPEECH_VERB_KEYS if key != "other"
-        }
-        if sum(verb_shares.values()) > 0:
-            top_key = max(verb_shares, key=lambda key: verb_shares[key])
-            if verb_shares[top_key] >= 0.4:
-                line = f"引导动词偏好「{_SPEECH_VERB_LABELS[top_key]}」"
-                top_label = _SPEECH_VERB_LABELS[top_key]
-                underused_verbs = [
-                    verb
-                    for verb in _underused_words(top_words, baseline, "speech_verb", limit=2)
-                    if verb not in (top_label, "其他")
-                ]
-                if underused_verbs:
-                    line += f"，少用「{underused_verbs[0]}」"
-                add(91, weight(f"speech_verb_{top_key}_share", floor=0.8), line)
-
-    # 11. 四字格 / 叠词
-    four_level = level("four_char_segment_per_1k")
-    if four_level == "high":
-        add(100, weight("four_char_segment_per_1k"), "四字格偏多，好用成语和四字短语收束句子")
-    elif four_level == "low":
-        add(100, weight("four_char_segment_per_1k"), "四字格偏低，不堆成语")
-    redup_level = level("redup_total_per_1k")
-    if redup_level == "high":
-        add(110, weight("redup_total_per_1k"), "叠词多，双声叠字的形容与状语常见")
-    elif redup_level == "low":
-        add(110, weight("redup_total_per_1k"), "少用叠词")
-
-    # 12. 人称
-    first = values.get("person_first_share", 0.0)
-    third = values.get("person_third_share", 0.0)
-    second = values.get("person_second_share", 0.0)
+    # 7. 人称(只看叙述)
+    first = value("person_first_share")
+    second = value("person_second_share")
+    third = value("person_third_share")
     if first + second + third > 0:
         if first >= 0.55:
-            add(120, weight("person_first_share", floor=0.6), "第一人称叙述为主，「我」贯穿全篇")
+            lines.append("第一人称叙述，「我」贯穿全篇")
+        elif third >= 0.6 and first < 0.15:
+            lines.append("第三人称叙述，「我」「你」只在对白里出现")
         elif third >= 0.6:
-            pronoun_words = [
-                word
-                for word in _author_words(top_words, "pronoun", limit=5, min_share=0.03)
-                if word in lexicon.person.get("third", ())
-            ]
-            detail = f"，多用{_join_words(pronoun_words[:2])}" if pronoun_words else ""
-            add(120, weight("person_third_share", floor=0.6), f"第三人称叙述为主{detail}")
+            lines.append("以第三人称叙述为主")
         elif second >= 0.4:
-            add(120, weight("person_second_share", floor=0.6), "第二人称「你」的呼告频繁")
+            lines.append("叙述里常用第二人称「你」呼告")
+        else:
+            lines.append("叙述人称混用")
 
-    # 13. 词汇
-    ttr_level = level("lexical_char_ttr")
-    if ttr_level == "high":
-        add(130, weight("lexical_char_ttr"), "用字丰富，少重复同一批字词")
-    elif ttr_level == "low":
-        add(130, weight("lexical_char_ttr"), "用字克制，常重复同一批字词")
+    # 8. 具体数字、英文词(只在确实常见时说)
+    quantities = value("digit_run_per_1k") + value("numeral_unit_per_1k")
+    if quantities >= 1.0:
+        lines.append(f"常写具体数字与计量（{_rate_phrase(quantities, '处')}）")
+    latin = value("latin_word_per_1k")
+    if latin >= 0.5:
+        rate = _rate_phrase(latin, "个")
+        lines.append("叙述和对白里常夹英文词" + (f"（{rate}）" if rate else ""))
 
-    if not candidates:
-        return []
-    chosen = sorted(candidates, key=lambda item: (-item[1], item[0]))[:MAX_HABIT_LINES]
-    chosen.sort(key=lambda item: item[0])
-    return [line for _order, _priority, line in chosen]
+    # 9. 副词 / 体标记 / 短句连打 / 四字格 / 叠词
+    adverb_words = _author_words(top_words, "adverb", limit=4)
+    if adverb_words:
+        lines.append(f"常用副词：{_join_words(adverb_words)}")
+    if value("sent_short_run_ratio") >= 0.15:
+        lines.append("常把几个极短的句子连着用")
+    aspect_words = _author_words(top_words, "aspect", limit=2)
+    if aspect_words and value("fw_aspect_per_1k") >= 15:
+        lines.append(f"动作后常带{_join_words(aspect_words)}")
+    if value("four_char_segment_per_1k") >= 10:
+        lines.append("常用四字短语收束句子")
+    if value("redup_total_per_1k") >= 10:
+        lines.append("常用叠词")
+
+    deduped: list[str] = []
+    for line in lines:
+        if line and line not in deduped:
+            deduped.append(line)
+    return deduped[:MAX_HABIT_LINES]
 
 
 # ---------------------------------------------------------------------------
@@ -1275,6 +692,7 @@ def build_voice_baseline(
     return {
         "version": VOICE_BASELINE_VERSION,
         "signature_version": VOICE_SIGNATURE_VERSION,
+        "kernel_version": KERNEL_VERSION,
         "block_chars": int(block_chars),
         "block_count": len(block_features),
         "corpus": corpus_records,
@@ -1286,16 +704,18 @@ def build_voice_baseline(
 def render_voice_baseline_yaml(baseline: Mapping[str, Any], *, command: str, generated_at: str) -> str:
     """把基线写成带来源注释的 YAML(手工排版,保证稳定与可读)。"""
     lines = [
-        "# Style Reference v2 声音签名基线(voice_signature.py 消费,勿手改数值)。",
-        "# 「一般中文小说」基线:用 backend/tests/golden/style_reference/corpus 全部公版文本",
-        "# (鲁迅短篇 + 朱自清散文;luxun_kongyiji / zhuziqing_essays 与主集有重叠,按规格「全部文本」照收)",
+        "# 声音签名基线(voice_signature.py 消费,勿手改数值)。",
+        "# 用 backend/tests/golden/style_reference/corpus 全部公版文本(鲁迅短篇 + 朱自清散文;",
+        "# luxun_kongyiji / zhuziqing_essays 与主集有重叠,照收)按测量核口径计算:",
         f"# 按 {baseline['block_chars']} 字块切分,对每个特征取块间 mean / std / p15 / p50 / p85。",
-        "# render_voice_habits 以 p15 / p85 判「偏低 / 偏高」;feature_z_scores 用 mean / std。",
-        "# 再生成(backend 目录下):",
+        "# 用途只剩两处:deliberate_repetition(叠词 / 短句连打 ≥ 字面 p85)与旧 z 值接口;",
+        "# 习惯句不再与它比较,「像不像作者」看作者自己的窗口分布(fidelity.py)。",
+        "# 测量口径(measure.KERNEL_VERSION)变了就重新生成(backend 目录下):",
         f"#   {command}",
         f"# generated_at: {generated_at}",
         f"version: {baseline['version']}",
         f"signature_version: {baseline['signature_version']}",
+        f"kernel_version: {baseline.get('kernel_version', KERNEL_VERSION)}",
         f"block_chars: {baseline['block_chars']}",
         f"block_count: {baseline['block_count']}",
         "corpus:",
@@ -1373,6 +793,10 @@ def _main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "BASELINE_BLOCK_CHARS",
+    "KERNEL_VERSION",
+    "SHORT_SENTENCE_CHARS",
+    "LEXICAL_MAX_WINDOWS",
+    "TOP_WORDS_PER_GROUP",
     "FEATURE_NAMES",
     "FUNCTION_WORD_GROUPS",
     "LEXICAL_WINDOW_CHARS",
@@ -1395,6 +819,7 @@ __all__ = [
     "load_voice_lexicon",
     "render_voice_baseline_yaml",
     "render_voice_habits",
+    "signature_from_measure",
 ]
 
 

@@ -25,10 +25,10 @@ def test_load_input_thresholds_yaml() -> None:
     assert cfg["language"]["skip"] == 10000
 
 
-def test_load_sensory_lexicon_yaml() -> None:
-    cfg = load_yaml_config("sensory_lexicon")
-    assert set(cfg.keys()) >= {"visual", "auditory", "olfactory", "tactile", "gustatory"}
-    assert "看" in cfg["visual"]
+def test_sensory_lexicon_is_gone() -> None:
+    """2026-09-23:感官词表指标(子串匹配)随测量核删除,词表文件一并删除。"""
+    with pytest.raises(FileNotFoundError):
+        load_yaml_config("sensory_lexicon")
 
 
 def test_load_extraction_yaml() -> None:

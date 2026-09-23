@@ -87,7 +87,8 @@ def test_candidate_closer_to_profile_scores_higher_with_group_balancing() -> Non
 
     assert close.style_eligible is True
     assert far.style_eligible is True
-    assert close.metric_count == 23
+    # 13 项文本指标 + 5 项段落形状(2026-09-23 测量核删掉了 5 项感官词表指标)
+    assert close.metric_count == 18
     assert close.style_score == pytest.approx(1.0)
     assert close.style_score > far.style_score
     assert set(close.group_scores) == {
@@ -96,7 +97,6 @@ def test_candidate_closer_to_profile_scores_higher_with_group_balancing() -> Non
         "punctuation_rhythm",
         "register",
         "figurative_proxy",
-        "sensory_proxy",
     }
     audit = close.to_audit_dict()
     assert audit["scorer_version"] == "style_candidate_rerank_v2"

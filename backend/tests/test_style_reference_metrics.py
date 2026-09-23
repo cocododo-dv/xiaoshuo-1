@@ -1,6 +1,7 @@
-"""MetricsEngine 单测:26 项 MetricName 纯函数计算 + 方差 + 边界。
+"""MetricsEngine 单测:21 项 MetricName(测量核之上,汇总口径)+ 方差 + 边界。
 
-参见 plans/style-reference-v1-1-fancy-shannon.md §"测试策略"。
+2026-09-23:文本指标改由测量核按汇总口径计算(不再逐段平均),「每千字」与句长按可见字(不含标点),
+分段按唯一规则(换行即段界);五个感官词表指标删除。
 """
 
 from __future__ import annotations
@@ -20,7 +21,8 @@ def _engine() -> MetricsEngine:
 
 
 def test_metric_names_count() -> None:
-    assert len(METRIC_NAMES) == 26
+    assert len(METRIC_NAMES) == 21
+    assert not [name for name in METRIC_NAMES if name.startswith("sensory_")]
 
 
 def test_compute_all_returns_all_metrics() -> None:
@@ -43,7 +45,7 @@ def test_compute_with_variance_returns_tuples() -> None:
     assert all(isinstance(v, tuple) and len(v) == 2 for v in result.values())
 
 
-def test_prose_shape_metrics_are_separate_from_frozen_26_metric_contract() -> None:
+def test_prose_shape_metrics_are_separate_from_the_metric_contract() -> None:
     paragraphs = [
         ParagraphRecord(text="“走吧。”", paragraph_type="dialogue"),
         ParagraphRecord(text="天亮了。他没动。", paragraph_type="narration"),
@@ -53,20 +55,46 @@ def test_prose_shape_metrics_are_separate_from_frozen_26_metric_contract() -> No
 
     assert set(result) == set(PROSE_SHAPE_METRIC_NAMES)
     assert set(result).isdisjoint(METRIC_NAMES)
-    assert result["paragraph_mean_chars"] == pytest.approx(6.5)
-    assert result["paragraph_length_std_chars"] == pytest.approx(1.5)
-    assert result["paragraphs_per_1k"] == pytest.approx(2 * 1000 / 13)
+    # 可见字:「走吧」2 字、「天亮了他没动」6 字(标点不计)
+    assert result["paragraph_mean_chars"] == pytest.approx(4.0)
+    assert result["paragraph_length_std_chars"] == pytest.approx(2.0)
+    assert result["paragraphs_per_1k"] == pytest.approx(2 * 1000 / 8)
     assert result["single_sentence_paragraph_ratio"] == pytest.approx(0.5)
     assert result["quote_led_paragraph_ratio"] == pytest.approx(0.5)
 
 
-def test_prose_shape_from_text_uses_blank_lines_as_real_paragraph_boundaries() -> None:
-    result = compute_prose_shape_from_text(
-        "“先别开门。”\n这仍在同一段。\n\n他把手收了回来。"
-    )
+def test_prose_shape_from_text_uses_the_kernel_paragraph_rule() -> None:
+    """换行即段界:单换行与空行分段、作者稿 HTML 测得相同(V4:作者稿单换行分段曾被当成整场一段)。"""
+    lines = ["“先别开门。”", "这是第二段。", "他把手收了回来。"]
+    single = compute_prose_shape_from_text("\n".join(lines))
+    blank = compute_prose_shape_from_text("\n\n".join(lines))
+    mixed = compute_prose_shape_from_text("“先别开门。”\n这是第二段。\n\n他把手收了回来。")
+    html = compute_prose_shape_from_text("<p>“先别开门。”</p><p>这是第二段。</p><p>他把手收了回来。</p>")
+    assert single == blank == mixed == html
+    assert single["quote_led_paragraph_ratio"] == pytest.approx(1 / 3)
+    assert single["single_sentence_paragraph_ratio"] == pytest.approx(1.0)
 
-    assert result["paragraphs_per_1k"] > 0
-    assert result["quote_led_paragraph_ratio"] == pytest.approx(0.5)
+
+def test_text_metrics_are_pooled_not_per_paragraph_means() -> None:
+    """汇总口径:一句 30 字的段 + 十句 3 字的段,平均句长是 60 / 11,不是两段各自平均后的 16.5。"""
+    long_paragraph = "甲" * 30 + "。"
+    short_paragraph = "乙乙乙。" * 10
+    paragraphs = [
+        ParagraphRecord(text=long_paragraph, paragraph_type="narration"),
+        ParagraphRecord(text=short_paragraph, paragraph_type="narration"),
+    ]
+    result = _engine().compute_all(paragraphs)
+    assert result["avg_sentence_length"] == pytest.approx(60 / 11)
+    assert result["short_sentence_ratio"] == pytest.approx(10 / 11)
+    # 问号密度同理:全文问号数 ÷ 全文可见字
+    questions = [
+        ParagraphRecord(text="你去吗？", paragraph_type="dialogue"),
+        ParagraphRecord(text="他" * 97 + "。", paragraph_type="narration"),
+    ]
+    pooled = _engine().compute_all(questions)["question_density_per_1k"]
+    assert pooled == pytest.approx(1000 / 100)
+    per_paragraph_mean = (1000 / 3 + 0) / 2
+    assert pooled < per_paragraph_mean / 10
 
 
 def test_avg_sentence_length() -> None:
@@ -196,41 +224,6 @@ def test_all_paragraph_type_ratios_covered() -> None:
         assert result[metric] == 0.125, f"{metric} 期望 0.125,实际 {result[metric]}"
 
 
-def test_sensory_visual() -> None:
-    text = "他看见光,望着雪,瞧着影子。蓝的山,红的衣裳。"
-    paragraphs = [ParagraphRecord(text=text, paragraph_type="description_env")]
-    result = _engine().compute_all(paragraphs)
-    assert result["sensory_visual_per_1k"] > 0
-
-
-def test_sensory_auditory() -> None:
-    text = "他听见声音,闻到响动,嘈杂的喧嚣。"
-    paragraphs = [ParagraphRecord(text=text, paragraph_type="description_env")]
-    result = _engine().compute_all(paragraphs)
-    assert result["sensory_auditory_per_1k"] > 0
-
-
-def test_sensory_olfactory() -> None:
-    text = "屋里弥漫着香味,刺鼻的气味,馥郁的芬芳。"
-    paragraphs = [ParagraphRecord(text=text, paragraph_type="description_env")]
-    result = _engine().compute_all(paragraphs)
-    assert result["sensory_olfactory_per_1k"] > 0
-
-
-def test_sensory_tactile() -> None:
-    text = "他摸到冷,碰到热,抚着柔软的皮毛。"
-    paragraphs = [ParagraphRecord(text=text, paragraph_type="description_env")]
-    result = _engine().compute_all(paragraphs)
-    assert result["sensory_tactile_per_1k"] > 0
-
-
-def test_sensory_gustatory() -> None:
-    text = "她尝了尝,甜的咸的酸的,品着茶。"
-    paragraphs = [ParagraphRecord(text=text, paragraph_type="description_env")]
-    result = _engine().compute_all(paragraphs)
-    assert result["sensory_gustatory_per_1k"] > 0
-
-
 def test_question_density() -> None:
     text = "你是谁?为什么在这里?要去哪儿?"
     paragraphs = [ParagraphRecord(text=text, paragraph_type="dialogue")]
@@ -284,13 +277,10 @@ def test_compute_with_variance_single_chunk_std_zero() -> None:
     assert std == 0.0
 
 
-def test_explicit_sensory_lexicon_injected() -> None:
-    """允许测试注入自定义词表(便于隔离 yaml 文件依赖)。"""
-    engine = MetricsEngine(sensory_lexicon={"visual": ["蓝"], "auditory": [], "olfactory": [], "tactile": [], "gustatory": []})
-    paragraphs = [ParagraphRecord(text="蓝天蓝海蓝", paragraph_type="description_env")]
-    result = engine.compute_all(paragraphs)
-    assert result["sensory_visual_per_1k"] > 0
-    assert result["sensory_auditory_per_1k"] == 0
+def test_sensory_lexicon_metrics_are_gone() -> None:
+    """2026-09-23:感官词表指标(子串匹配会把人名里的「明」算成视觉词)随测量核删除。"""
+    result = _engine().compute_all([ParagraphRecord(text="他看见光，听见声音。", paragraph_type="narration")])
+    assert not [name for name in result if name.startswith("sensory_")]
 
 
 import pytest  # noqa: E402  (avoid circular if any)

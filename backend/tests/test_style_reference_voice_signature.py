@@ -1,11 +1,10 @@
-"""voice_signature(W3 声音签名)单测。
+"""voice_signature(声音签名)单测。
 
-依据 docs/style-imitation-v2-plan-2026-09-05.md §2.W3:
 - 黄金语料两位公版作者的签名在多个特征上可区分(含虚词组);
-- 渲染出的习惯句 ≤12 行且不含阿拉伯数字;
+- 习惯句(2026-09-23 起)只描述作者自己:高频词与大致频率,≤12 行、不含阿拉伯数字、不与任何基线比「偏多 / 偏少」;
 - 空文本 / 纯标点 / 极短文本安全;
-- 叠词密集文本 deliberate_repetition 为 True;
-- 基线 yaml 与生成器一致(改了分句 / 词表后必须重跑 build-baseline)。
+- 叠词密集文本 deliberate_repetition 为 True(基线字面 p85);
+- 基线 yaml 与生成器一致(测量核口径变了必须重跑 build-baseline)。
 """
 
 from __future__ import annotations
@@ -238,24 +237,44 @@ def test_render_habits_are_bounded_digit_free_and_author_specific(
             assert isinstance(line, str) and line.strip()
             assert not _DIGITS.search(line), line
             assert len(line) <= 60, line
+            # 只描述作者自己,不拿任何基线比方向(E1:1920 年代基线下的「偏少」对当代作者是反的)
+            assert "偏多" not in line and "偏少" not in line, line
     assert lines_lu != lines_zhu
-    # 各自习惯句里能看到方向相反的判断
-    assert any("连接词偏多" in line for line in lines_lu)
-    assert any("连接词整体偏少" in line for line in lines_zhu)
+    # 具体:作者自己的高频连接词与句末语气词,频率用中文数字说
+    connective_lu = [word for word, _share in luxun["top_words"]["connective"][:4]]
+    line = next(line for line in lines_lu if line.startswith("连接多用"))
+    assert all(word in line for word in connective_lu[:2]), (line, connective_lu)
+    assert "每千字约" in line
+    final = next(line for line in lines_lu if line.startswith("句末常带"))
+    assert luxun["top_words"]["sentence_final"][0][0] in final and "大约每" in final
+    assert any(line.startswith("段落平均约") for line in lines_zhu)
 
 
-def test_render_accepts_features_only_and_degrades_without_baseline(luxun: dict, baseline: dict) -> None:
+def test_render_habits_do_not_depend_on_any_baseline(luxun: dict, baseline: dict) -> None:
+    """习惯句是作者自己的绝对描述:给不给基线、给哪份基线,结果都一样。"""
+    with_baseline = vs.render_voice_habits(luxun, baseline)
+    assert vs.render_voice_habits(luxun, {}) == with_baseline
+    assert vs.render_voice_habits(luxun) == with_baseline
+
+
+def test_render_accepts_features_only(luxun: dict, baseline: dict) -> None:
     features_only = vs.render_voice_habits(luxun["features"], baseline)
-    assert isinstance(features_only, list)
+    assert features_only
     assert all(not _DIGITS.search(line) for line in features_only)
-    no_baseline = vs.render_voice_habits(luxun, {})
-    assert no_baseline
-    assert all(not _DIGITS.search(line) for line in no_baseline)
-    # 无基线只能给出「具体词」类的行,不能凭空判方向
-    assert any("连接词多用" in line for line in no_baseline)
-    assert not any("偏多" in line or "偏少" in line for line in no_baseline)
+    # 没有 top_words 就没有「多用某某词」的行,只剩频率与形状
+    assert not any(line.startswith("连接多用") or line.startswith("常用副词") for line in features_only)
+    assert any(line.startswith("连接词每千字约") for line in features_only)
     assert vs.render_voice_habits({}, baseline) == []
     assert vs.render_voice_habits({"features": {}}, baseline) == []
+
+
+def test_render_habit_frequencies_are_spelled_in_words() -> None:
+    assert vs._every_n_sentences(0.1) == "大约每十句一次"
+    assert vs._every_n_sentences(0.5) == "大约每两句一次"
+    assert vs._rate_phrase(28.7, "个") == "每千字约二十九个"
+    assert vs._rate_phrase(0.4, "处") == "每两千字约一处"
+    assert vs._rate_phrase(0.05, "处") == ""
+    assert vs._cn_int(61) == "六十一" and vs._cn_int(166) == "一百六十六" and vs._cn_int(105) == "一百零五"
 
 
 def test_load_voice_baseline_missing_file_degrades(monkeypatch: pytest.MonkeyPatch, luxun: dict) -> None:
@@ -310,16 +329,12 @@ _DENSE_REDUP_PARAGRAPHS = [
 ]
 
 
-def _repetition_lines(lines: list[str]) -> list[str]:
-    return [line for line in lines if "短句连打" in line or "叠词多" in line]
-
-
 def test_deliberate_repetition_uses_literal_p85_for_whole_book(luxun: dict, zhuziqing: dict, baseline: dict) -> None:
     """规格 §2.W3:≥ p85 才 True;整书签名(≥16 块)不套 1/sqrt(n) 的 p85 带收窄。
 
     黄金语料自身就是反例:鲁迅的短句连打、朱自清的叠词密度都落在 p50 与 p85 之间,
     收窄带(p50 + (p85 − p50) / 4)会把两部书都标成刻意重复,进而放松下游新鲜度守卫。
-    「短句连打 / 叠词多」习惯句与旗标同口径,同样不得出现。
+    (2026-09-23 起习惯句不再与基线挂钩,旗标只管新鲜度守卫。)
     """
     for signature, name in ((luxun, "sent_short_run_ratio"), (zhuziqing, "redup_total_per_1k")):
         assert vs._block_count_of(signature) >= vs.Z_MAX_AGGREGATION_BLOCKS
@@ -329,7 +344,6 @@ def test_deliberate_repetition_uses_literal_p85_for_whole_book(luxun: dict, zhuz
         for feature in vs.REPETITION_FEATURES:
             assert signature["features"][feature] < baseline["features"][feature]["p85"], feature
         assert signature["deliberate_repetition"] is False
-        assert _repetition_lines(vs.render_voice_habits(signature, baseline)) == []
 
 
 def test_deliberate_repetition_threshold_is_block_count_independent(baseline: dict) -> None:
@@ -342,14 +356,14 @@ def test_deliberate_repetition_threshold_is_block_count_independent(baseline: di
     assert redup["p50"] < below["features"]["redup_total_per_1k"] < redup["p85"]
     assert below["features"]["sent_short_run_ratio"] < short_run_p85
     assert below["deliberate_repetition"] is False
-    assert _repetition_lines(vs.render_voice_habits(below, baseline)) == []
     assert vs.compute_voice_signature(_MID_REDUP_PARAGRAPHS * 6, baseline=baseline)["deliberate_repetition"] is False
 
     above = vs.compute_voice_signature(_DENSE_REDUP_PARAGRAPHS * 300, baseline=baseline)
     assert vs._block_count_of(above) >= vs.Z_MAX_AGGREGATION_BLOCKS
     assert above["features"]["redup_total_per_1k"] >= redup["p85"]
     assert above["deliberate_repetition"] is True
-    assert any("叠词多" in line for line in vs.render_voice_habits(above, baseline))
+    # 习惯句按作者自己的绝对密度说「常用叠词」
+    assert "常用叠词" in vs.render_voice_habits(above, baseline)
     assert vs.compute_voice_signature(_DENSE_REDUP_PARAGRAPHS * 4, baseline=baseline)["deliberate_repetition"] is True
 
 

@@ -7,6 +7,10 @@ few-shot 样例过去只能以抽取证据引文为中心展开(每段型前 12 
 合成期写入 ``profile_json.exemplar_windows``(不冻结:契约冻结了整本书的段落根哈希,根哈希
 一致时段落表与合成时相同,索引可按需复算);渲染期(``injection._render_few_shot``)在
 整本书里按场景需要选窗,旧画像无索引时按同一算法惰性计算并缓存。
+
+2026-09-23(风格参考 v3):切章改用 ``structure.split_book_chapters``(结构画像与窗口共用唯一的切章器,
+章号一致、书名页 / 卷首页不入窗),切窗规则 ``book_windows`` 同时供持久化窗口表(``windows.py``,
+``exemplar_windows_v3``)使用。这里的 dict 索引(v2)只剩注入的旧选窗路径在用,P4 换成窗口表后删除。
 """
 
 from __future__ import annotations
@@ -15,11 +19,7 @@ import logging
 from collections import Counter
 from typing import Any, Iterable, Mapping, Protocol
 
-from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
-from novel_system.services.style_reference.text_utils import (
-    is_paratext_paragraph,
-    is_scene_break_paragraph,
-)
+from novel_system.services.style_reference.structure import split_book_chapters
 
 logger = logging.getLogger(__name__)
 
@@ -52,65 +52,16 @@ def _field(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
-def _ordered_rows(paragraphs: Iterable[Any]) -> list[dict[str, Any]]:
-    indexed: list[tuple[int, int, Any]] = []
-    for position, item in enumerate(paragraphs):
-        raw_index = _field(item, "paragraph_index")
-        index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else position
-        indexed.append((index, position, item))
-    indexed.sort(key=lambda entry: (entry[0], entry[1]))
-    rows: list[dict[str, Any]] = []
-    for index, _position, item in indexed:
-        text = str(_field(item, "text", "") or "").strip()
-        if not text:
-            continue
-        rows.append(
-            {
-                "index": int(index),
-                "paragraph_id": str(_field(item, "paragraph_id", "") or ""),
-                "ptype": str(_field(item, "paragraph_type", "") or "").strip() or "narration",
-                "text": text,
-                "chars": len(text),
-            }
-        )
-    return rows
-
-
-def _split_chapters(
-    rows: list[dict[str, Any]], scene_breaks: set[int] | None = None
-) -> list[list[dict[str, Any]]]:
-    """按章题切章;纯符号分隔行不入正文但在其前一段标 ``break_after``(空行型场界同样标)。"""
-    chapters: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
-    break_set = set(scene_breaks or ())
-    for row in rows:
-        text = row["text"]
-        if is_title_paragraph(text):
-            if current:
-                chapters.append(current)
-            current = []
-            continue
-        if is_paratext_paragraph(text):
-            continue
-        if is_scene_break_paragraph(text):
-            if current:
-                current[-1]["break_after"] = True
-            continue
-        row["break_after"] = row["index"] in break_set
-        current.append(row)
-    if current:
-        chapters.append(current)
-    return chapters
-
-
-def _chapter_windows(
+def cut_chapter_windows(
     chapter: list[dict[str, Any]],
     *,
-    window_paragraphs: int,
-    window_max_chars: int,
-    min_window_chars: int,
+    window_paragraphs: int = DEFAULT_WINDOW_PARAGRAPHS,
+    window_max_chars: int = DEFAULT_WINDOW_MAX_CHARS,
+    min_window_chars: int = DEFAULT_MIN_WINDOW_CHARS,
 ) -> list[list[dict[str, Any]]]:
-    """按段落顺序贪心切窗:字数或段数将超限时封窗;短尾窗并入前一窗(放宽 25%)或丢弃。"""
+    """一章正文 → 窗口:按段落顺序贪心切,字数或段数将超限时封窗,遇场界(``break_after``)封窗;
+    短尾窗并入前一窗(放宽 25%)或丢弃;最后短于 ``min_window_chars`` 的窗口不要(章只有一窗时也一样——
+    几百字的「章」多半是卷首语 / 内容简介 / 目录残片,不是作者的场景)。"""
     windows: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_chars = 0
@@ -138,7 +89,46 @@ def _chapter_windows(
             window_paragraphs * _TAIL_MERGE_SLACK
         ):
             previous.extend(tail)
-    return windows
+    return [win for win in windows if sum(r["chars"] for r in win) >= min_window_chars]
+
+
+def window_position(position_index: int, count: int) -> str:
+    """章内第 ``position_index`` 个窗口(共 ``count`` 个)的位置标签。"""
+    if count == 1:
+        return POSITION_WHOLE
+    if position_index == 0:
+        return POSITION_OPENING
+    if position_index == count - 1:
+        return POSITION_CLOSING
+    return POSITION_MIDDLE
+
+
+def book_windows(
+    paragraphs: Iterable[Any],
+    *,
+    scene_breaks: Iterable[int] | None = None,
+    window_paragraphs: int = DEFAULT_WINDOW_PARAGRAPHS,
+    window_max_chars: int = DEFAULT_WINDOW_MAX_CHARS,
+    min_window_chars: int = DEFAULT_MIN_WINDOW_CHARS,
+) -> tuple[list[tuple[int, str, list[dict[str, Any]]]], int, int]:
+    """整本书 → [(章号, 位置, 窗口正文行)] + (非空段数, 章数)。切章走 ``structure.split_book_chapters``。"""
+    items = list(paragraphs)
+    non_empty = sum(1 for item in items if str(_field(item, "text", "") or "").strip())
+    chapters, _markers = split_book_chapters(items, scene_breaks=scene_breaks)
+    window_paragraphs = max(1, int(window_paragraphs))
+    window_max_chars = max(200, int(window_max_chars))
+    min_window_chars = max(0, int(min_window_chars))
+    result: list[tuple[int, str, list[dict[str, Any]]]] = []
+    for chapter in chapters:
+        kept = cut_chapter_windows(
+            chapter.rows,
+            window_paragraphs=window_paragraphs,
+            window_max_chars=window_max_chars,
+            min_window_chars=min_window_chars,
+        )
+        for position_index, win in enumerate(kept):
+            result.append((chapter.chapter_no, window_position(position_index, len(kept)), win))
+    return result, non_empty, len(chapters)
 
 
 def build_exemplar_window_index(
@@ -157,62 +147,48 @@ def build_exemplar_window_index(
     "paragraph_id"}`` 映射。``scorer`` 是 ``injection._WindowAffinityScorer`` 一类的对象
     (窗口前 ``affinity_scan_chars`` 字的辨识度分;缺省 0)。返回纯 JSON 值。
     """
-    rows = _ordered_rows(paragraphs)
-    break_set = {int(i) for i in (scene_breaks or ()) if isinstance(i, int) and not isinstance(i, bool)}
-    chapters = _split_chapters(rows, break_set)
     window_paragraphs = max(1, int(window_paragraphs))
     window_max_chars = max(200, int(window_max_chars))
     min_window_chars = max(0, int(min_window_chars))
+    cut, paragraph_count, chapter_count = book_windows(
+        paragraphs,
+        scene_breaks=scene_breaks,
+        window_paragraphs=window_paragraphs,
+        window_max_chars=window_max_chars,
+        min_window_chars=min_window_chars,
+    )
     windows: list[dict[str, Any]] = []
-    for chapter_no, chapter in enumerate(chapters, start=1):
-        chapter_windows = _chapter_windows(
-            chapter,
-            window_paragraphs=window_paragraphs,
-            window_max_chars=window_max_chars,
-            min_window_chars=min_window_chars,
+    for chapter_no, position, win in cut:
+        types = Counter(r["ptype"] for r in win)
+        chars = sum(r["chars"] for r in win)
+        affinity = 0.0
+        if scorer is not None:
+            head = "\n".join(r["text"] for r in win)[: max(0, int(affinity_scan_chars))]
+            try:
+                affinity = float(scorer.score(head))
+            except Exception:  # noqa: BLE001 — 辨识度分只影响排序,算不出就按 0
+                logger.debug("exemplar window affinity degraded", exc_info=True)
+                affinity = 0.0
+        windows.append(
+            {
+                "start": win[0]["index"],
+                "end": win[-1]["index"],
+                "chars": chars,
+                "paragraphs": len(win),
+                "chapter": chapter_no,
+                "position": position,
+                "types": dict(types),
+                "dialogue_share": round(types.get("dialogue", 0) / len(win), 3),
+                "affinity": round(affinity, 4),
+            }
         )
-        # 短于 min_window_chars 的窗口不入索引——章只有一窗时也一样(几百字的「章」多半是
-        # 卷首语 / 内容简介 / 目录残片,不是作者的场景)。
-        kept = [win for win in chapter_windows if sum(r["chars"] for r in win) >= min_window_chars]
-        for position_index, win in enumerate(kept):
-            if len(kept) == 1:
-                position = POSITION_WHOLE
-            elif position_index == 0:
-                position = POSITION_OPENING
-            elif position_index == len(kept) - 1:
-                position = POSITION_CLOSING
-            else:
-                position = POSITION_MIDDLE
-            types = Counter(r["ptype"] for r in win)
-            chars = sum(r["chars"] for r in win)
-            affinity = 0.0
-            if scorer is not None:
-                head = "\n".join(r["text"] for r in win)[: max(0, int(affinity_scan_chars))]
-                try:
-                    affinity = float(scorer.score(head))
-                except Exception:  # noqa: BLE001 — 辨识度分只影响排序,算不出就按 0
-                    logger.debug("exemplar window affinity degraded", exc_info=True)
-                    affinity = 0.0
-            windows.append(
-                {
-                    "start": win[0]["index"],
-                    "end": win[-1]["index"],
-                    "chars": chars,
-                    "paragraphs": len(win),
-                    "chapter": chapter_no,
-                    "position": position,
-                    "types": dict(types),
-                    "dialogue_share": round(types.get("dialogue", 0) / len(win), 3),
-                    "affinity": round(affinity, 4),
-                }
-            )
     return {
         "version": EXEMPLAR_INDEX_VERSION,
         "window_paragraphs": window_paragraphs,
         "window_max_chars": window_max_chars,
         "min_window_chars": min_window_chars,
-        "paragraph_count": len(rows),
-        "chapter_count": len(chapters),
+        "paragraph_count": paragraph_count,
+        "chapter_count": chapter_count,
         "window_count": len(windows),
         "windows": windows,
     }

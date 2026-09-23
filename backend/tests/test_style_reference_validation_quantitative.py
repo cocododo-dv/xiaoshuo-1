@@ -93,7 +93,7 @@ def test_two_profiles_yield_different_tolerances() -> None:
 
 
 def test_dimension_routing() -> None:
-    """dimension 按 metric 归类:sensory_* → scene;其余 → language。
+    """dimension 按 metric 归类:文本指标 → language;感官词表指标已删除(旧画像里的键被忽略)。
 
     2026-07 勘误:paragraph_type 比例指标(dialogue_ratio 等)不再参与对照——
     生成文本在 quant 路径全部归 narration(无分类器),narration_ratio 恒 1、
@@ -110,13 +110,25 @@ def test_dimension_routing() -> None:
     reports = check_quantitative(text, profile)
     by_metric = {r.metric: r.dimension for r in reports}
     assert by_metric["avg_sentence_length"] == "language"
-    assert by_metric["sensory_visual_per_1k"] == "scene"
+    # 2026-09-23:感官词表指标随测量核删除,旧 baseline 里残留的键不再对照
+    assert "sensory_visual_per_1k" not in by_metric
     # 分类器标签依赖指标即使给了 baseline 也不得进入对照
     assert "dialogue_ratio" not in by_metric
 
 
+def test_single_newline_and_blank_line_paragraphs_measure_the_same() -> None:
+    """2026-09-23(V4):作者稿常用单换行分段;过去只按空行切,整场被当成一段。"""
+    paragraphs = ["“先别开门。”", "他把手收了回来，站在门外听了很久。", "屋里没有声音。"]
+    single = compute_generated_metrics("\n".join(paragraphs))
+    blank = compute_generated_metrics("\n\n".join(paragraphs))
+    html = compute_generated_metrics("".join(f"<p>{p}</p>" for p in paragraphs))
+    assert single == blank == html
+    assert single["single_sentence_paragraph_ratio"] == 1.0
+    assert single["quote_led_paragraph_ratio"] == 1 / 3
+
+
 def test_type_ratio_metrics_excluded_even_with_full_baseline() -> None:
-    """全 26 项 baseline 下,8 个段型比例指标一律不出现在量化对照里。
+    """全 21 项 baseline 下,8 个段型比例指标一律不出现在量化对照里。
 
     可证伪性:若排除逻辑被移除,生成文本(无分类器,全 narration)会让
     narration_ratio actual=1.0 / dialogue_ratio actual=0.0,两项必然 fail,
@@ -136,7 +148,7 @@ def test_type_ratio_metrics_excluded_even_with_full_baseline() -> None:
     assert not (got_metrics & TYPE_RATIO_METRICS), (
         f"段型比例指标漏进量化对照: {sorted(got_metrics & TYPE_RATIO_METRICS)}"
     )
-    # 对照面 = 26 - 8 = 18 项纯文本统计指标
+    # 对照面 = 21 - 8 = 13 项纯文本统计指标
     assert len(got_metrics) == len(METRIC_NAMES) - len(TYPE_RATIO_METRICS)
 
 

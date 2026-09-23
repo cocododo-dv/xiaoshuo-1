@@ -65,13 +65,7 @@ _METRIC_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "register": ("classical_word_ratio", "colloquial_marker_ratio"),
     "figurative_proxy": ("metaphor_density_per_1k", "personification_density_per_1k"),
-    "sensory_proxy": (
-        "sensory_visual_per_1k",
-        "sensory_auditory_per_1k",
-        "sensory_olfactory_per_1k",
-        "sensory_tactile_per_1k",
-        "sensory_gustatory_per_1k",
-    ),
+    # 2026-09-23:感官词表指标随测量核删除,sensory_proxy 组一并去掉
 }
 
 

@@ -814,7 +814,7 @@ def test_full_extraction_payload_fits_the_real_template_without_degradation() ->
     # 预算留有 ≥20% 余量(模板注释的测量依据)。
     assert audit["estimated_after"] * 1.2 <= template.input_token_budget
     assert audit["finding_count_after"] == audit["finding_count_before"] == 16 * 8
-    assert audit["metric_count_after"] == audit["metric_count_before"] == 31
+    assert audit["metric_count_after"] == audit["metric_count_before"] == len(METRIC_NAMES) + len(PROSE_SHAPE_METRIC_NAMES)
     assert audit["anchor_quote_count_after"] == audit["anchor_quote_count_before"] == 32
     assert audit["protected_finding_count"] == 32
     assert set(audit["covered_sub_dimensions"]) == set(_FULL_LOAD_DIMENSIONS)

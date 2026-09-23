@@ -33,8 +33,3 @@ action_ratio: 0.05
 narration_ratio: 0.05
 transition_ratio: 0.03
 flashback_ratio: 0.03
-sensory_visual_per_1k: 2.0
-sensory_auditory_per_1k: 1.0
-sensory_olfactory_per_1k: 0.5
-sensory_tactile_per_1k: 0.5
-sensory_gustatory_per_1k: 0.5
