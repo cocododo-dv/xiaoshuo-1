@@ -175,6 +175,19 @@ def render_style(session, policy, request) -> RenderedStyle   # .system_prefix /
 def check_reference_copy(session, text, *, policy=None, book_ids=None) -> CopyCheck  # .blocked / .hits(哈希+位置) / .protected_hits
 ```
 
+### 3.1 跨包约定（并行开发时的接缝）
+- `book.stats_json["paragraph_root_sha256"]` / `["paragraph_count"]`：改动段落**文本或行**的写入者（刷新工具、重新导入）
+  负责 `pop` 这两个键；`windows.ensure_window_index` 发现缺失时现算并写回；契约构建读它（缺失时现算）。
+- `book.stats_json["paragraph_types_revision"]`（int）：分类作业每次完成（导入、重分类、就地重分类）+1。
+  `stats_json["window_index"] = {version, root, types_revision}` 由 `windows.py` 在建索引时写；三者任一不符即重建
+  （类型变了只重算 type_mix / 对白比例，不动标签）。画像 `profile_json["learned_from"] = {types_revision, root, index_version}`
+  由学习作业写，界面据此提示「段落类型已更新，建议重新学习文风」。
+- 场面 / 情绪标签只有一张词表：`services/style_reference/tags.py`（学习作业打窗口标签、场景蓝图给 `situation_tags` 共用）。
+- 读数入库只有一个入口：`services/style_reference/readings.py::record_fidelity_reading(session, *, policy, text, source,
+  stage, scene_id=None, project_id=None, draft_ref=None, judge=None)`（P5b 实现；P1 提供 `fidelity.py`）。
+- 旧登记簿 `import_progress.py`：P2 把分类迁出、P3 把合成迁出、P5 把校验迁出，P7 删除模块与 `/imports/{key}/progress`。
+- 各包**不改本文**；完成情况写进最终报告，由主会话汇总到 §7。
+
 ## 4. 问题台账（本轮全部发现 → 处理 → 负责包）
 
 前缀：L = 主评估实测；I = 导入 / 分类 / 运维；E = 抽取 / 合成 / 表示；J = 注入 / 契约；V = 校验 / 下游；U = 接口 / 界面 / 测试 / 文档；
