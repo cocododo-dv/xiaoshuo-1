@@ -176,3 +176,33 @@ def test_refresh_keeps_recorded_breaks_renumbers_and_skips_unready_books(session
         indexes = [p.paragraph_index for p in refreshed.list_paragraphs(book_id)]
         assert indexes == list(range(len(indexes)))
         assert refreshed.get_book(book_id).stats_json["scene_breaks"] == [2]
+
+
+def test_refresh_skips_a_book_with_an_active_job_and_merges_stats_instead_of_overwriting(session, capsys) -> None:
+    """就地重标时书一直是 ready:得看作业表;写 stats_json 只合并本工具管的键,别的写者的键原样保留。"""
+    from novel_system.db.models import StyleReferenceBook
+    from novel_system.services.style_reference.jobs import StyleJobService
+
+    book_id = _seed_book_with_legacy_rows(session)
+    job = StyleJobService(session).create("classify", book_id=book_id, params={"mode": "retype"})
+    session.commit()
+    plan = plan_book_refresh(session, book_id)
+    assert plan["skipped"] and job.job_id in plan["skipped"]
+    assert main(["--book", book_id, "--execute"]) == 0
+    assert "跳过" in capsys.readouterr().out
+    with SessionLocal() as other:
+        assert "refresh" not in (other.get(StyleReferenceBook, book_id).stats_json or {})
+
+    StyleJobService(session).request_cancel(job.job_id)
+    session.commit()
+    # 另一个写者刚写进去的键(例:分类作业的类型修订号)不能被整列覆盖掉
+    with SessionLocal() as other:
+        book = other.get(StyleReferenceBook, book_id)
+        book.stats_json = {**(book.stats_json or {}), "paragraph_types_revision": 7}
+        other.commit()
+    assert main(["--book", book_id, "--execute"]) == 0
+    with SessionLocal() as other:
+        stats = other.get(StyleReferenceBook, book_id).stats_json or {}
+    assert stats["paragraph_types_revision"] == 7
+    assert stats["refresh"]["paragraphs_removed"] == 2
+    assert "paragraph_root_sha256" not in stats and "paragraph_count" not in stats

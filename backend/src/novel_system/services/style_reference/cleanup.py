@@ -144,6 +144,38 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     return counts
 
 
+def supersede_book_bindings(session: Session, book_id: str, *, reason: str) -> list[dict[str, Any]]:
+    """这本书的画像上生效的绑定所在范围内，按这本参考做的规划产物（场景蓝图 / 人物压力 / 章架构）作废——与解除
+    绑定同一口径。删书、破坏式重分类（清派生数据会连绑定一起删）、清理工具都在删绑定之前调它。返回涉及的绑定。"""
+    from novel_system.services.scene_planning_staleness import supersede_for_binding_scope
+
+    profile_ids = [
+        str(pid)
+        for pid in session.scalars(
+            select(StyleReferenceProfile.profile_id).where(StyleReferenceProfile.book_id == book_id)
+        )
+    ]
+    unbound: list[dict[str, Any]] = []
+    if not profile_ids:
+        return unbound
+    for binding in session.scalars(
+        select(StyleReferenceInjectionBinding)
+        .where(
+            StyleReferenceInjectionBinding.profile_id.in_(profile_ids),
+            StyleReferenceInjectionBinding.status == "active",
+        )
+        .order_by(StyleReferenceInjectionBinding.created_at, StyleReferenceInjectionBinding.binding_id)
+    ):
+        supersede_for_binding_scope(
+            session,
+            scope=str(binding.scope),
+            scope_ref_id=binding.scope_ref_id,
+            reason=reason,
+        )
+        unbound.append({"binding_id": binding.binding_id, "scope": binding.scope, "scope_ref_id": binding.scope_ref_id})
+    return unbound
+
+
 def delete_reference_book(session: Session, book_id: str) -> dict[str, Any]:
     """删一本参考书(单本删除与书库批量删除共用;flush 但不 commit)。
 
@@ -153,7 +185,6 @@ def delete_reference_book(session: Session, book_id: str) -> dict[str, Any]:
     """
     from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph
     from novel_system.services.errors import DomainError
-    from novel_system.services.scene_planning_staleness import supersede_for_binding_scope
     from novel_system.services.style_reference.jobs import StyleJobService
 
     book = session.get(StyleReferenceBook, str(book_id))
@@ -165,31 +196,7 @@ def delete_reference_book(session: Session, book_id: str) -> dict[str, Any]:
         )
     title = book.title
     cancelled = StyleJobService(session).cancel_all_for_book(book_id)
-    profile_ids = [
-        str(pid)
-        for pid in session.scalars(
-            select(StyleReferenceProfile.profile_id).where(StyleReferenceProfile.book_id == book_id)
-        )
-    ]
-    unbound: list[dict[str, Any]] = []
-    if profile_ids:
-        for binding in session.scalars(
-            select(StyleReferenceInjectionBinding)
-            .where(
-                StyleReferenceInjectionBinding.profile_id.in_(profile_ids),
-                StyleReferenceInjectionBinding.status == "active",
-            )
-            .order_by(StyleReferenceInjectionBinding.created_at, StyleReferenceInjectionBinding.binding_id)
-        ):
-            supersede_for_binding_scope(
-                session,
-                scope=str(binding.scope),
-                scope_ref_id=binding.scope_ref_id,
-                reason=f"style_reference_book_deleted:{book_id}",
-            )
-            unbound.append(
-                {"binding_id": binding.binding_id, "scope": binding.scope, "scope_ref_id": binding.scope_ref_id}
-            )
+    unbound = supersede_book_bindings(session, book_id, reason=f"style_reference_book_deleted:{book_id}")
     counts = dict(purge_derived_data(session, book_id))
     counts["paragraphs"] = int(
         session.execute(

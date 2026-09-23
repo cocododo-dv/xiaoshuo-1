@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -39,6 +40,16 @@ def test_engine_refuses_the_repository_database_under_pytest(monkeypatch, relati
         _restore(monkeypatch, original)
     # 拒绝发生在建引擎之前:不会顺手建出一个空的实库文件
     assert DEFAULT_DATABASE_PATH.exists() == existed_before
+
+
+def test_engine_refuses_another_checkouts_live_database(monkeypatch, tmp_path) -> None:
+    """git worktree 里跑测试、URL 指到主检出的实库(同名 novel_system.db、不在临时目录):同样拒绝。"""
+    elsewhere = Path.home() / "some-other-checkout" / "backend" / "novel_system.db"
+    with pytest.raises(RuntimeError, match="repository database"):
+        db_session.refuse_repository_database_under_pytest(f"sqlite:///{elsewhere.as_posix()}")
+    assert not elsewhere.exists()
+    # 临时目录里同名的库(测试自己建的)不拦
+    db_session.refuse_repository_database_under_pytest(f"sqlite:///{(tmp_path / 'novel_system.db').as_posix()}")
 
 
 def test_other_databases_are_fine_under_pytest(tmp_path) -> None:

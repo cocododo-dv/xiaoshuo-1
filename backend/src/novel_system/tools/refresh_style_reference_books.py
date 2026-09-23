@@ -13,8 +13,10 @@
    ``voice_signature`` / ``paratext_dropped``,写 ``refresh`` 审计;段落行有变化时 ``pop`` 掉
    ``paragraph_root_sha256`` / ``paragraph_count``(契约 §3.1:写段落表的人负责,窗口索引据此重建)。
 
-没有就绪的书(分类中 / 失败)一律跳过。必须用 ``--book ID``(可重复)或显式 ``--all`` 选书;默认干跑,
-``--execute`` 才写库。
+没有就绪的书(分类中 / 失败)与有排队 / 运行中作业(分类 / 就地重标 / 学习文风)的书一律跳过——就地重标时
+书一直是 ready,得看作业表。``--execute`` 时每本书一个事务:先拿写锁(``BEGIN IMMEDIATE``),在锁里重新
+核对作业、重新算计划、写库、提交——算计划与写库之间没有别的写者能插进来;``stats_json`` 只合并本工具管的键
+(``json_set`` / ``json_remove``),不整列覆盖。必须用 ``--book ID``(可重复)或显式 ``--all`` 选书;默认干跑。
 
 用法(backend 目录下):
     python -m novel_system.tools.refresh_style_reference_books --all                # 干跑,全部就绪的书
@@ -28,9 +30,12 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy import func, update
 
+from novel_system.db.models import StyleReferenceBook
 from novel_system.db.session import SessionLocal
+from novel_system.services.style_reference.jobs import BOOK_EXCLUSIVE_KINDS, StyleJobService
+from novel_system.services.style_reference.paragraph_root import COUNT_KEY, ROOT_KEY, patch_book_stats
 from novel_system.services.style_reference.metrics import (
     MetricsEngine,
     ParagraphRecord,
@@ -63,6 +68,15 @@ def plan_book_refresh(session, book_id: str) -> dict[str, Any] | None:
         return None
     if str(book.status or "") != "ready":
         return {"book": book, "title": book.title, "skipped": f"状态是 {book.status},不是 ready"}
+    busy = [
+        job for job in StyleJobService(session).active_for_book(book_id) if job.kind in BOOK_EXCLUSIVE_KINDS
+    ]
+    if busy:
+        return {
+            "book": book,
+            "title": book.title,
+            "skipped": f"有{busy[0].kind}作业在排队 / 运行({busy[0].job_id}):等它完成或取消后再刷新",
+        }
     paragraphs = repo.list_paragraphs(book_id)
     paratext = [p for p in paragraphs if is_paratext_paragraph(p.text or "")]
     removed_ids = {p.paragraph_id for p in paratext}
@@ -146,13 +160,8 @@ def apply_book_refresh(session, plan: dict[str, Any]) -> None:
     for paragraph, new_index in plan["renumber"]:
         paragraph.paragraph_index = new_index
     session.flush()
-    stats = dict(book.stats_json or {})
-    stats.update(plan["stats_update"])
-    if plan["rows_changed"]:
-        # 契约 §3.1:改动段落行的写入者负责作废根哈希;窗口索引发现缺失时现算并重建。
-        stats.pop("paragraph_root_sha256", None)
-        stats.pop("paragraph_count", None)
-    stats["refresh"] = {
+    values = dict(plan["stats_update"])
+    values["refresh"] = {
         "tool": TOOL_VERSION,
         "at": datetime.now(timezone.utc).isoformat(),
         "paragraphs_removed": len(plan["paratext"]),
@@ -160,9 +169,23 @@ def apply_book_refresh(session, plan: dict[str, Any]) -> None:
         "quotes_detached": len(plan["quotes_to_detach"]),
         "scene_breaks": len(plan["scene_breaks"]),
     }
-    book.stats_json = stats
-    flag_modified(book, "stats_json")
+    # 只合并本工具管的键(json_set),别的写者写进 stats_json 的键原样保留
+    patch_book_stats(session, book.book_id, values)
+    if plan["rows_changed"]:
+        # 契约 §3.1:改动段落行的写入者负责作废根哈希;窗口索引发现缺失时现算并重建。
+        session.execute(
+            update(StyleReferenceBook)
+            .where(StyleReferenceBook.book_id == book.book_id)
+            .values(stats_json=func.json_remove(StyleReferenceBook.stats_json, f"$.{ROOT_KEY}", f"$.{COUNT_KEY}"))
+            .execution_options(synchronize_session=False)
+        )
+        session.expire(book, ["stats_json"])
     session.flush()
+
+
+def _begin_immediate(session) -> None:
+    if session.get_bind().dialect.name == "sqlite":
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def _fmt(value: Any) -> str:
@@ -216,10 +239,21 @@ def main(argv: list[str] | None = None) -> int:
         if not args.execute:
             print(f"\n干跑：{len(plans)} 本书未写库；加 --execute 执行。")
             return 0
+        refreshed = 0
         for plan in plans:
-            apply_book_refresh(session, plan)
-        session.commit()
-        print(f"\n已刷新 {len(plans)} 本书。有画像的书请重新学习文风以更新文风卡与声音特征。")
+            book_id = plan["book"].book_id
+            # 每本书一个事务:先拿写锁,在锁里重新核对作业、重新算计划(干跑的计划可能已经过时),写库、提交
+            session.commit()
+            _begin_immediate(session)
+            locked = plan_book_refresh(session, book_id)
+            if locked is None or locked.get("skipped"):
+                session.rollback()
+                print(f"{book_id}: {(locked or {}).get('skipped') or '已不存在'},跳过")
+                continue
+            apply_book_refresh(session, locked)
+            session.commit()
+            refreshed += 1
+        print(f"\n已刷新 {refreshed} 本书。有画像的书请重新学习文风以更新文风卡与声音特征。")
     return 0
 
 

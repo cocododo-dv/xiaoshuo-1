@@ -80,16 +80,28 @@
 - queued → running → succeeded / failed / cancelled。认领时 `attempt` +1、换新 `owner_token`；之后的每一次写（心跳、进度、游标、结束）
   都以「owner_token 仍是我、state 仍是 running」为条件——被清扫重排、取消、删书的作业，旧工人的写全部落空，自然停下。
 - 心跳 15 s，超过 60 s 算过期。FastAPI lifespan 启动常驻清扫线程（`start_job_sweeper`：启动时一次，之后每 30 s），把过期的 running
-  放回 queued、派发所有 queued 到有界线程池（2 个工人）；重复派发无害。处理器在模块导入时注册（`import_job` / `learn_job` / `check_job`）。
-- 取消：排队中或心跳过期的作业在请求里直接收尾，运行中的在下一个检查点收尾。
+  放回 queued、派发所有 queued 到有界线程池（分类 / 学习 2 个工人；对照检查单独一条车道 2 个工人，不在长作业后面排队）；重复派发无害。
+  处理器在模块导入时注册（`import_job` / `learn_job` / `check_job`）。
+- **进程退出不算失败**：lifespan 结束（`--reload`、停服）时 `shutdown_job_workers` 把「工人代」+1，在跑的处理器在下一个检查点
+  （两秒内）抛 `JobInterrupted`，作业放回 queued（游标、attempt 保留），下次启动的清扫接着跑；Ctrl-C 同样放回队列。LLM 调用跑在守护线程里
+  （`DaemonCallPool`），退出时不等在飞的网络请求（结果丢弃，续跑时重发那一两批；记账预留按 TTL 回收）。被 SIGKILL 的进程什么也做不了：
+  作业留在 running，心跳过期后由清扫放回队列。
+- **互斥**：同一本书的分类与学习互斥，各自也只能有一个活动作业。建作业「先插入、再查」——INSERT 已拿到 SQLite 的写锁，几乎同时的两个请求
+  在这里串行化，后到的一定看得见先到的（`409 …_ALREADY_ACTIVE / …_BOOK_LEARNING / …_BOOK_CLASSIFYING`）；续跑放回队列之后同样复查；
+  破坏式重分类先写书行拿锁再查、再清派生数据。
+- 取消：排队中或心跳过期的作业在请求里直接收尾，运行中的在下一个检查点收尾；工人死前被要求取消的作业由清扫直接收尾。框架里收尾的取消都跑
+  这类作业登记的收尾钩子（分类：书的状态；学习：run 行）。放回队列是条件写：已经成功的作业不会被「继续」拉回 queued。
 - `GET /api/v2/style-reference/activity` 只列作业表条目（`job:<id>`，在跑的 + 十分钟内结束的）；各个建作业的响应都带 `job_id`。
 
 ### 4.2 段落分类（`import_job.py` + `segmentation/llm.py`，kind=classify）
 
 - 模式：`import`（书 `ingesting` → `ready` / `failed`）、`reclassify`（破坏式：先清派生数据）、`retype`（就地重标：正文、画像、绑定都保留，书全程 `ready`）。
 - 全书分层抽样的 200 段锚定集交强模型（`style_ref_paragraph_classify_anchor`）与快模型（`…_bulk`）对照，一致率 ≥0.85 余段交快模型，否则强模型。
-- 一批 ≤6,000 字且 ≤100 段，3 批并行，每批退避重试两次，仍失败作业才失败（`STYLE_REFERENCE_CLASSIFICATION_FAILED`，可「继续分类」）；
-  结果按段号对齐、类型按枚举校验。每批前重查所有权、取消、书是否还在、云策略是否允许**这个节点的实际路由**。
+- 一批 ≤6,000 字且 ≤100 段，3 批并行，每批至多 3 次调用（退避重试两次）。输出**按条收**：段号属于本批、类型在枚举内、只出现一次的条目
+  先收下，下一次只重发还没分出来的段（模型在长列表里漏一段时不再整批重发）；重试用尽仍有段没分出来，作业失败
+  （`STYLE_REFERENCE_CLASSIFICATION_FAILED`，`details.unresolved` / `first_unresolved_index`），这一批里已分出来的段照样落库，
+  「继续分类」只重发没分出来的段。一批失败时不再派发新批，已经在飞的批等它们回来、照常落库。每批前重查所有权、取消、书是否还在、
+  云策略是否允许**这个节点的实际路由**。
 
 ### 4.3 学习文风（`learn_job.py` + `learn_*.py` + `protected_terms.py`，kind=learn）
 
@@ -240,8 +252,9 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
   `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`；`segments_only` 的书可被云端模型读来分类 / 学习，起草只送文风卡。
 - **迁移**：停服、`python -m novel_system.tools.db_backup --backup <src.db> <dst.db>`，再 `alembic upgrade head`（0090、0091）。
 - **工具**（`backend/` 下，默认干跑、`--execute` 才写库，先备份）：`purge_style_reference_books --book ID`（可重复）和 / 或 `--id-prefix PREFIX`
-  （至少 4 个字符；删书及全部派生数据，与书库删除同一路径）；`refresh_style_reference_books --book ID | --all`（就绪的书剥副文本、重编号、保留场界、重算统计；段落变了
-  会 `pop` 根哈希、窗口随之重建；空行场界只有重新导入才能恢复）。
+  （至少 4 个字符；删书及全部派生数据，就是书库删除的 `cleanup.delete_reference_book`，绑定范围内的规划产物一并作废）；`refresh_style_reference_books --book ID | --all`（就绪的书剥副文本、重编号、保留场界、重算统计；段落变了
+  会 `pop` 根哈希、窗口随之重建；空行场界只有重新导入才能恢复；有排队 / 运行中的分类或学习作业的书跳过——就地重标时书一直是 ready；
+  `--execute` 时每本书先拿写锁、在锁里重新核对并重算计划，`stats_json` 只合并本工具管的键）。
 
 ## 12. 排障
 

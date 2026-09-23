@@ -476,3 +476,27 @@ def test_import_path_is_disabled_without_configured_roots(client: TestClient, tm
 def test_removed_endpoints_are_gone(client: TestClient, method: str, path: str) -> None:
     resp = client.request(method, f"{PREFIX}{path}", json={} if method == "post" else None, headers=_key("gone"))
     assert resp.status_code in (404, 405), (path, resp.status_code)
+
+
+def test_bulk_delete_is_one_transaction_with_its_idempotency_record(client: TestClient, monkeypatch) -> None:
+    """保存点只用来逐本收集「不存在」这类业务错误;整批删除与幂等记录一起提交或一起回滚——第二本删到一半
+    进程出错时,第一本不能已经悄悄提交(pysqlite 旧式事务下外层 SAVEPOINT 的 RELEASE 就是提交)。"""
+    from novel_system.api.routes.style_reference import books as books_routes
+
+    book_a, _profile_a = _v3_reference("atomic_a")
+    book_b, _profile_b = _v3_reference("atomic_b")
+    real = books_routes.delete_reference_book
+    calls: list[str] = []
+
+    def crash_on_second(session, book_id):
+        calls.append(book_id)
+        if len(calls) == 2:
+            raise RuntimeError("disk vanished")
+        return real(session, book_id)
+
+    monkeypatch.setattr(books_routes, "delete_reference_book", crash_on_second)
+    resp = client.post(f"{PREFIX}/books/bulk-delete", json={"book_ids": [book_a, book_b]}, headers=_key("atomic"))
+    assert resp.status_code == 500
+    with SessionLocal() as session:
+        assert session.get(StyleReferenceBook, book_a) is not None
+        assert session.get(StyleReferenceBook, book_b) is not None

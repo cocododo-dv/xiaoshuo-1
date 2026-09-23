@@ -37,7 +37,7 @@ from novel_system.db.models import StyleReferenceBook, StyleReferenceJob, StyleR
 from novel_system.services.errors import DomainError
 from novel_system.services.source_safety import scan_source_safety
 from novel_system.services.style_reference.classification_stats import compute_classification_stats
-from novel_system.services.style_reference.cleanup import purge_derived_data
+from novel_system.services.style_reference.cleanup import purge_derived_data, supersede_book_bindings
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.errors import (
     DuplicateBookError,
@@ -430,6 +430,10 @@ class IngestService:
         )
         if count_paragraphs(self.session, book_id) == 0:
             raise EmptyBookError("reclassify")
+        # 先写一下书行拿到 SQLite 的写锁（快照是最新的），再查学习 / 分类作业：查与清之间没有别的请求能插进来
+        # 建一个学习作业（破坏式重分类的清派生数据会连同它的作业行一起删掉）
+        book.updated_at = utcnow()
+        self.session.flush()
         # 学习文风在读这本书（破坏式重分类的清派生数据会连同它的作业行一起删掉）：先查、再清
         ensure_not_learning(self.session, book_id)
         active = active_classification_job(self.session, book_id)
@@ -453,6 +457,8 @@ class IngestService:
                 },
             )
         if mode == MODE_RECLASSIFY:
+            # 清派生数据会连画像与绑定一起删：先让绑定范围内按这本参考做的规划产物作废（与删书同一口径）
+            supersede_book_bindings(self.session, book_id, reason=f"style_reference_book_reclassified:{book_id}")
             purge_derived_data(self.session, book_id)
         job = create_classification_job(self.session, book, mode=mode, op_key=self._op_key)
         self.session.flush()

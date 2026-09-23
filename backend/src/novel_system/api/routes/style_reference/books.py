@@ -395,6 +395,18 @@ def delete_book(
     )
 
 
+def _open_outer_transaction(session: Session) -> None:
+    """pysqlite 旧式事务控制下,没有未决写时 ``SAVEPOINT`` 自己开事务、``RELEASE`` 就是提交——每本书各自提交,
+    与幂等记录不在一个事务里(中途进程死掉,重放时已删的书报 404)。先把外层事务开起来,保存点才是真的嵌套:
+    整批删除与幂等记录一起提交或一起回滚。"""
+    connection = session.connection()
+    if connection.dialect.name != "sqlite":
+        return
+    dbapi_connection = connection.connection.dbapi_connection
+    if not dbapi_connection.in_transaction:
+        connection.exec_driver_sql("BEGIN")
+
+
 @router.post(f"{PATH_PREFIX}/books/bulk-delete")
 def bulk_delete_books(
     payload: BulkDeleteRequest,
@@ -406,6 +418,7 @@ def bulk_delete_books(
     book_ids = list(dict.fromkeys(str(book_id) for book_id in payload.book_ids))
 
     def _do() -> dict[str, Any]:
+        _open_outer_transaction(session)
         results: list[dict[str, Any]] = []
         for book_id in book_ids:
             try:
