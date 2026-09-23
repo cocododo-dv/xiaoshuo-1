@@ -190,10 +190,10 @@ def test_archive_final_scene_records_the_fidelity_reading_on_every_path(session,
     """风格参考 v3：漂移驾驶已删；每条归档路径在同一个槽位记「像不像」读数（P5b 接 readings.py）。"""
     from novel_system.services import scene_archive_effects
 
-    seen: list[str] = []
+    seen: list[tuple[str, str]] = []
 
-    def fake_reading(self, scene):
-        seen.append(scene.scene_id)
+    def fake_reading(self, scene, *, source="pipeline"):
+        seen.append((scene.scene_id, source))
         return {"outcome": "observed", "reading_id": "reading_test"}
 
     monkeypatch.setattr(
@@ -204,7 +204,8 @@ def test_archive_final_scene_records_the_fidelity_reading_on_every_path(session,
     assert result["scene_status"] == "archived"
     assert result["fidelity_reading"] == {"outcome": "observed", "reading_id": "reading_test"}
     assert "style_drift" not in result
-    assert seen == ["scene_drift_1"]
+    # 读数的来源随归档路径走（成稿中心 / 默认 archive；起草台「采用」/ 重确认传 adopt）
+    assert seen == [("scene_drift_1", "archive")]
 
 
 def test_archive_final_scene_default_reading_slot_writes_no_drift_event(session) -> None:
@@ -225,7 +226,7 @@ def test_archive_final_scene_skips_the_reading_when_the_checkpoint_owns_it(sessi
     monkeypatch.setattr(
         scene_archive_effects.SceneArchiveEffects,
         "_record_archive_fidelity_reading",
-        lambda self, scene: (_ for _ in ()).throw(AssertionError("must not be called")),
+        lambda self, scene, **_kwargs: (_ for _ in ()).throw(AssertionError("must not be called")),
     )
     _seed_archivable_scene(session)
     result = Archiver(session).archive_final_scene(
@@ -237,7 +238,7 @@ def test_archive_final_scene_skips_the_reading_when_the_checkpoint_owns_it(sessi
 def test_archive_final_scene_never_fails_because_of_the_reading(session, monkeypatch) -> None:
     from novel_system.services import scene_archive_effects
 
-    def boom(self, scene):
+    def boom(self, scene, **_kwargs):
         raise RuntimeError("reading exploded")
 
     monkeypatch.setattr(scene_archive_effects.SceneArchiveEffects, "_record_archive_fidelity_reading", boom)
