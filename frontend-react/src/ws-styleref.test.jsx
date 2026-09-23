@@ -293,6 +293,8 @@ describe("导入对话框", () => {
     expect($('input[name="sr-cloud-policy"]:checked').value).toBe("local_only");
     expect(byTestId("sr-import-why").textContent).toContain("先接入模型");
     expect(byTestId("sr-rights-send")).toBeNull();
+    // 没有模型就谈不上「按当前模型推荐」
+    expect(byTestId("sr-import-policy").textContent).not.toContain("按当前模型推荐");
   });
 
   it("选文件自动填书名，导入发 FormData；同一份文本 → 说出书名并给「打开这本」", async () => {
@@ -356,6 +358,14 @@ describe("第一步 · 参考书", () => {
     expect(client.apiPost.mock.calls.some(([url]) => url.endsWith("/reclassify"))).toBe(false);
   });
 
+  it("没有模型：「用模型重新分类」锁住并说明", async () => {
+    state.runtime = { llm_enabled: false, llm_is_local: false, default_cloud_policy: "local_only" };
+    await mountView();
+    await openStage("book");
+    expect(byTestId("sr-overview-retype").disabled).toBe(true);
+    expect(byTestId("sr-overview-model-gate").textContent).toContain("还没有接入模型");
+  });
+
   it("分类没完成：给「继续分类」", async () => {
     state.books = [bookRow({ status: "failed", classification: { batches_done: 3, batches_total: 10, error: { code: "STYLE_REFERENCE_LLM_REQUIRED" } } })];
     await mountView();
@@ -397,6 +407,25 @@ describe("第二步 · 学习文风", () => {
     expect(byTestId("sr-learn-error").textContent).not.toContain("llm required");
     await click(byTestId("sr-learn-error-action"));
     expect(go).toHaveBeenCalledWith("settings", { type: "ws:settings-tab", detail: "ai" });
+  });
+
+  it("先看得到的拦路：没有模型时「学习文风」锁住并给「去设置模型」，不白发一次请求", async () => {
+    const go = vi.fn();
+    state.runtime = { llm_enabled: false, llm_is_local: false, default_cloud_policy: "local_only" };
+    await mountView(go);
+    expect(byTestId("sr-learn-no-llm").textContent).toContain("还没有接入模型");
+    expect(byTestId("sr-learn-start").disabled).toBe(true);
+    await click($('[data-testid="sr-learn-no-llm"] button'));
+    expect(go).toHaveBeenCalledWith("settings", { type: "ws:settings-tab", detail: "ai" });
+    expect(client.apiPost.mock.calls.some(([url]) => url.endsWith("/learn"))).toBe(false);
+  });
+
+  it("「仅本机模型」的书、学习节点在云端：说清楚并锁住", async () => {
+    state.books = [bookRow({ cloud_policy: "local_only" })];
+    state.learn = { ...state.learn, routes: [{ node_id: "style_ref_extract_language", local: false }, { node_id: "style_ref_tag_windows", local: true }] };
+    await mountView();
+    expect(byTestId("sr-learn-cloud-blocked").textContent).toContain("学习用的模型不在本机");
+    expect(byTestId("sr-learn-start").disabled).toBe(true);
   });
 
   it("段落类型更新过：建议重新学习；重新学习先确认", async () => {

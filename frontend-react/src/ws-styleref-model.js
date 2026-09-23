@@ -271,11 +271,13 @@ export function srClassifyEstimateText(estimate) {
   return `约 ${calls.toLocaleString("zh-CN")} 次模型调用，输入约 ${srFormatCount(estimate.est_input_tokens)} token、输出约 ${srFormatCount(estimate.est_output_tokens)} token，${srFormatMinutes(estimate.est_minutes)}（${estimate.parallel || 3} 路并行，重试不计在内）`;
 }
 
-/* 学一次的调用数：GET …/learn 的 estimate */
-export function srLearnEstimateText(estimate) {
+/* 学一次的调用数：GET …/learn 的 estimate。每层读的原文是后端的上限（约 4.4 万字）；书没那么长时按全书字数说 */
+export function srLearnEstimateText(estimate, { bookChars = null } = {}) {
   if (!estimate) return null;
   const calls = estimate.calls || {};
-  const perCall = estimate.est_input_chars && estimate.est_input_chars.extract_per_call;
+  const cap = estimate.est_input_chars && estimate.est_input_chars.extract_per_call;
+  const whole = Number(bookChars) > 0 ? Number(bookChars) : null;
+  const perCall = cap && whole ? Math.min(cap, whole) : cap;
   const read = perCall ? `每层读约 ${srFormatChars(perCall)}原文` : null;
   if (estimate.est_calls) {
     return [

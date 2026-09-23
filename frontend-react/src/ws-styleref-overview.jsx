@@ -7,7 +7,8 @@ import {
   srFormatWhen, srProvenanceView,
 } from "./ws-styleref-model.js";
 import {
-  srActivityFor, srBookDetail, srLoadBookDetail, srLoadClassifyEstimate, srResumeClassification, srRetype,
+  srActivityFor, srBookDetail, srLoadBookDetail, srLoadClassifyEstimate, srLoadRuntime, srResumeClassification, srRetype,
+  srRuntime,
 } from "./ws-styleref-store.js";
 import { SrErrorLine, SrProgressBar, useSrStore } from "./ws-styleref-ui.jsx";
 
@@ -55,6 +56,14 @@ function SrClassifyCard({ book, onAction }) {
   const incomplete = !!(book.rawStatus && book.rawStatus !== "ready" && !running);
   const provenance = srProvenanceView(book.provenance);
   const jobError = book.classification && book.classification.error;
+  React.useEffect(() => { srLoadRuntime(); }, []);
+  /* 分类要用模型（GET /runtime 说的是两个分类节点的实际路由）；「仅本机模型」的书还要求分类节点在本机 */
+  const runtime = srRuntime();
+  const rt = runtime.phase === "ready" ? runtime.data : null;
+  const modelGate = !rt ? null
+    : rt.llm_enabled === false ? "还没有接入模型：重新分类要由模型给每一段分类。"
+    : book.cloudPolicy === "local_only" && rt.llm_is_local === false ? "这本书设为「仅本机模型」，但分类用的模型不在本机：先在设置里把段落分类换成本机模型。"
+    : null;
 
   const resume = async () => {
     if (busy) return;
@@ -88,7 +97,8 @@ function SrClassifyCard({ book, onAction }) {
     : book.rawStatus === "cancelling" ? { tone: "neutral", label: "取消中" }
     : incomplete ? { tone: "danger", label: "未完成" }
     : provenance.legacy ? { tone: "warn", label: "旧版规则标的" }
-    : { tone: "ok", label: "模型已分好" };
+    : provenance.kind === "llm" ? { tone: "ok", label: "模型已分好" }
+    : { tone: "neutral", label: "已分好" };
 
   return (
     <div className="card" data-testid="sr-overview-classify">
@@ -115,7 +125,11 @@ function SrClassifyCard({ book, onAction }) {
               ? ` 已分好 ${book.classification.batches_done}/${book.classification.batches_total} 批，继续分类只补剩下的。`
               : ""}
           </p>
-          <button type="button" className="btn btn-accent btn-sm" data-testid="sr-overview-resume" disabled={!!busy} onClick={resume}>
+          {modelGate && <p className="sr-ov-hint" data-testid="sr-overview-model-gate">{modelGate}</p>}
+          {modelGate && onAction && (
+            <button type="button" className="btn btn-quiet btn-sm" onClick={() => onAction({ type: "settings" })}>去设置模型</button>
+          )}
+          <button type="button" className="btn btn-accent btn-sm" data-testid="sr-overview-resume" disabled={!!busy || !!modelGate} onClick={resume}>
             {busy === "resume" ? <><Spinner size={12} /> 启动中…</> : "继续分类"}
           </button>
         </div>
@@ -130,19 +144,27 @@ function SrClassifyCard({ book, onAction }) {
             </Notice>
           ) : (
             <dl className="sr-calib">
-              <div><dt>分类方式</dt><dd>模型逐批分类</dd></div>
+              {/* 没有来源记录（很早导入、导入信息缺失）时如实说没有记录，不冒充「模型分好的」 */}
+              <div><dt>分类方式</dt><dd>{provenance.kind === "llm" ? "模型逐批分类" : "没有记录"}</dd></div>
               <div><dt>模型分好的段数</dt><dd className="tab-num">{provenance.llmParagraphs ? provenance.llmParagraphs.toLocaleString() : "—"}</dd></div>
-              <div><dt>快慢模型一致率</dt><dd className="tab-num">{provenance.agreement != null ? srFormatPct(provenance.agreement) : "同一个模型，未对照"}</dd></div>
+              {provenance.kind === "llm" && (
+                <div><dt>快慢模型一致率</dt><dd className="tab-num">{provenance.agreement != null ? srFormatPct(provenance.agreement) : "同一个模型，未对照"}</dd></div>
+              )}
               <div><dt>类型版本</dt><dd className="tab-num">第 {book.typesRevision || 0} 版</dd></div>
             </dl>
           )}
           <div className="sr-ov-foot">
-            <span className="sr-ov-hint">重新分类不动正文，文风画像与用在作品上的设置都保留；会先告诉你大约要多少次模型调用。</span>
+            <span className="sr-ov-hint" data-testid={modelGate ? "sr-overview-model-gate" : undefined}>
+              {modelGate || "重新分类不动正文，文风画像与用在作品上的设置都保留；会先告诉你大约要多少次模型调用。"}
+            </span>
+            {modelGate && onAction && (
+              <button type="button" className="btn btn-quiet btn-sm" onClick={() => onAction({ type: "settings" })}>去设置模型</button>
+            )}
             <button
               type="button"
               className={`btn ${provenance.legacy ? "btn-accent" : "btn-ghost"} btn-sm`}
               data-testid="sr-overview-retype"
-              disabled={!!busy || book.rawStatus !== "ready" || !!srActivityFor(book.id, "learn")}
+              disabled={!!busy || !!modelGate || book.rawStatus !== "ready" || !!srActivityFor(book.id, "learn")}
               title={srActivityFor(book.id, "learn") ? "正在学习文风，学完再重新分类" : undefined}
               onClick={retype}
             >

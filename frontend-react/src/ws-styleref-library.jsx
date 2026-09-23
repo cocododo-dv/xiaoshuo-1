@@ -347,7 +347,7 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
                 <span className="sr-policy-title">
                   {item.label}
                   {item.hint && <em>{item.hint}</em>}
-                  {runtime && runtime.default_cloud_policy === item.id && <em className="is-default">按当前模型推荐</em>}
+                  {runtime && runtime.llm_enabled && runtime.default_cloud_policy === item.id && <em className="is-default">按当前模型推荐</em>}
                 </span>
                 <span className="sr-policy-detail">{item.detail}</span>
               </span>

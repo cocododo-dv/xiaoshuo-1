@@ -5,7 +5,9 @@ import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import {
   SR_ACTIVITY_WHERE, srActivityView, srErrorInfo, srFormatWhen, srLearnEstimateText, srRelearnText,
 } from "./ws-styleref-model.js";
-import { srActivityFor, srCancelLearn, srLearnInfo, srLoadLearn, srStartLearn } from "./ws-styleref-store.js";
+import {
+  srActivityFor, srCancelLearn, srLearnInfo, srLoadLearn, srLoadRuntime, srRuntime, srStartLearn,
+} from "./ws-styleref-store.js";
 import { SrErrorLine, SrProgressBar, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
 import { SrPortrait } from "./ws-styleref-portrait.jsx";
 
@@ -30,9 +32,19 @@ export function SrLearnCard({ book, go, onAction }) {
   useSrStore("detail", "activity", "books");
   const [busy, setBusy] = React.useState(null);
   const [error, setError] = React.useState(null);
-  React.useEffect(() => { srLoadLearn(book.id); }, [book.id]);
+  React.useEffect(() => { srLoadLearn(book.id); srLoadRuntime(); }, [book.id]);
   const info = srLearnInfo(book.id);
   const data = info && info.data;
+  /* 先看得到的拦路：没有模型；「仅本机模型」的书而学习节点不在本机。服务端仍是最后一道闸（拒了照样说清楚） */
+  const runtime = srRuntime();
+  const noLlm = runtime.phase === "ready" && !!runtime.data && runtime.data.llm_enabled === false;
+  const routes = (data && Array.isArray(data.routes)) ? data.routes : [];
+  const cloudBlocked = !noLlm && book.cloudPolicy === "local_only" && routes.some((r) => r && r.local === false);
+  const gate = noLlm
+    ? { testId: "sr-learn-no-llm", text: "还没有接入模型：学习文风要由模型分层读原文。" }
+    : cloudBlocked
+      ? { testId: "sr-learn-cloud-blocked", text: "这本书设为「仅本机模型」，但学习用的模型不在本机：在设置里把学习节点换成本机模型，或用别的范围重新导入。" }
+      : null;
   const lastJob = (data && data.learn) || book.learn || null;
   const running = srActivityFor(book.id, "learn");
   const view = running ? srActivityView(running) : null;
@@ -40,7 +52,7 @@ export function SrLearnCard({ book, go, onAction }) {
   const ready = book.rawStatus === "ready";
   const classifying = !!srActivityFor(book.id, "classify");
   const resumable = !running && lastJob && (lastJob.state === "failed" || lastJob.state === "cancelled" || lastJob.stalled) && lastJob.resumable;
-  const estimateText = data ? srLearnEstimateText(data.estimate) : null;
+  const estimateText = data ? srLearnEstimateText(data.estimate, { bookChars: book.chars }) : null;
 
   const start = async (resume = false) => {
     if (busy) return;
@@ -104,6 +116,15 @@ export function SrLearnCard({ book, go, onAction }) {
         </Notice>
       ) : (
         <>
+          {gate && (
+            <Notice
+              tone="warn"
+              testId={gate.testId}
+              actions={onAction ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onAction({ type: "settings" })}>去设置模型</button> : null}
+            >
+              {gate.text}
+            </Notice>
+          )}
           {profile && profile.needs_relearn && (
             <Notice tone="warn" testId="sr-learn-relearn">{srRelearnText(profile.relearn_reason)}</Notice>
           )}
@@ -119,7 +140,7 @@ export function SrLearnCard({ book, go, onAction }) {
           )}
           <div className="sr-learn-actions">
             {resumable && (
-              <button type="button" className="btn btn-accent btn-sm" data-testid="sr-learn-resume" disabled={!!busy || classifying} onClick={() => start(true)}>
+              <button type="button" className="btn btn-accent btn-sm" data-testid="sr-learn-resume" disabled={!!busy || classifying || !!gate} onClick={() => start(true)}>
                 {busy === "resume" ? <><Spinner size={12} /> 启动中…</> : "继续学习"}
               </button>
             )}
@@ -127,8 +148,8 @@ export function SrLearnCard({ book, go, onAction }) {
               type="button"
               className={`btn ${resumable || (profile && !profile.needs_relearn) ? "btn-ghost" : "btn-accent"} btn-sm`}
               data-testid="sr-learn-start"
-              disabled={!!busy || classifying}
-              title={classifying ? "正在重新分类段落，分完再学" : undefined}
+              disabled={!!busy || classifying || !!gate}
+              title={classifying ? "正在重新分类段落，分完再学" : gate ? gate.text : undefined}
               onClick={() => start(false)}
             >
               {busy === "start" ? <><Spinner size={12} /> 启动中…</> : <><I.Sparkles size={13} /> {profile ? "重新学习" : "学习文风"}</>}

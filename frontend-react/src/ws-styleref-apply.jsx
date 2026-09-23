@@ -208,7 +208,7 @@ export function SrApply({ book, go, onAction }) {
             {!sendsSamples ? "只用文风卡：起草时不发原文段落。"
               : !readout || readout.loading ? "正在按这本书的窗口算…"
               : readout.error ? "读不到预览，字数暂时算不出来。"
-              : `每一场起草时约带 ${readout.windows} 窗、${srFormatChars(readout.chars)}原文（按这一场挑，场与场不同）。`}
+              : `每一场起草时约带 ${readout.windows} 窗、${srFormatChars(readout.chars)}原文（每场按那一场挑，场与场不同）。`}
           </p>
         </div>
 

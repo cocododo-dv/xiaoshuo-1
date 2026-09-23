@@ -150,7 +150,7 @@
 .sr-stage-loading-inline { display: flex; align-items: center; gap: 8px; color: var(--ink-3); font-size: var(--fs-sm); }
 .sr-stage-empty { justify-content: flex-start; }
 .sr-stage-empty > .ws-empty { flex: 1 1 auto; justify-content: center; }
-.sr-stage-empty-card { padding: 8px; }
+.sr-stage-empty-card { padding: 8px; max-width: 1080px; }
 
 /* ---------- 参考书（概览） ---------- */
 .sr-overview, .sr-learn, .sr-apply, .sr-portrait { display: flex; flex-direction: column; gap: 16px; max-width: 1080px; }
@@ -180,6 +180,7 @@
 .sr-dist-val { font-size: var(--fs-xs); color: var(--ink-2); text-align: right; }
 
 /* ---------- 学习文风 ---------- */
+.sr-learn-card .ws-notice { margin-bottom: 12px; }
 .sr-learn-actions { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
 .sr-learn-estimate { flex: 1 1 260px; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
 

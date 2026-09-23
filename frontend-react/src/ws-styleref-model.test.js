@@ -149,6 +149,9 @@ describe("估算与格式", () => {
       .toBe("约 12 次模型调用（分层读原文 4 次、写文风卡 1 次、识别本书专名 1 次、给全书片段打标签 6 批），每层读约 4.4 万字原文，重试不计在内");
     expect(srLearnEstimateText({ est_calls: null, calls: { extract: 4, tags: null } }))
       .toBe("至少 6 次模型调用，另加给全书片段打标签（整理完窗口才知道要几批）");
+    // 书比每层的读取上限短：按全书字数说，不夸大
+    expect(srLearnEstimateText({ est_calls: 7, calls: { extract: 4, tags: 1 }, est_input_chars: { extract_per_call: 44000 } }, { bookChars: 5257 }))
+      .toContain("每层读约 5,257 字原文");
   });
 
   it("百分比、分钟、字数", () => {
