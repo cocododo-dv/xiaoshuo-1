@@ -72,6 +72,7 @@ from novel_system.services.style_reference.structure import (
 from novel_system.services.style_reference.style_continuity import (
     contract_deliberate_repetition,
 )
+from novel_system.services.style_prompt_injection import SCENE_SITUATION_TAGS_KEY
 from novel_system.services.style_reference.tags import normalize_situation_tags
 from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
@@ -90,8 +91,8 @@ _LOGGER = logging.getLogger(__name__)
 # 2026-09 风格模仿 v2（W5，规格 §1.3）——前文声音锚 section 的登记名。风格参考 v3 删掉了漂移校准段
 # （``style_drift_calibration``）与漂移优先选窗（``_drift_ptype_priority``）：归档读数不再回灌进下一场。
 VOICE_ANCHOR_SECTION_KEY = "previous_scene_voice_anchor"
-# 风格参考 v3（N4）：本场场面标签（事实版蓝图给的，词表 tags.SITUATION_TAGS）冻结在这个 inline digest 里
-SCENE_SITUATION_TAGS_KEY = "_scene_situation_tags"
+# 风格参考 v3（N4）：本场场面标签（事实版蓝图给的，词表 tags.SITUATION_TAGS）冻结在 inline digest
+# ``SCENE_SITUATION_TAGS_KEY`` 里；键只定义一次（style_prompt_injection，首稿按它挑窗）。
 # 「前文声音锚」取上一场最新的**已风格化**稿：style_draft 本体、反模板重写、软补丁、
 # 安全挽救稿都算；中性稿 / rejected 行不算（前者无目标文风，后者是被否决的文本）。
 STYLED_DRAFT_STAGES: tuple[str, ...] = (

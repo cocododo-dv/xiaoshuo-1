@@ -7,19 +7,17 @@
   1. 从 profile.profile_json.scene_samples_index 选 3 种 paragraph_type
      (dialogue / description_env / psychology)
   2. 各调 `style_ref_preview_generate` LLM 生成 1 段 ≤500 字示例
-  3. 跑 `validation.run_sync_validate`(plagiarism + 字面 banned_terms 双层)
-  4. 落 `style_reference_validation_reports` 行
-  5. 返回 list[PreviewSampleResult]
+  3. 过唯一抄袭门(``reference_copy_gate``:与这本书连续 ≥12 字相同或含受保护专名 → verdict ``plagiarism``,
+     否则 ``pass``)
+  4. 返回 list[PreviewSampleResult]
 
-LLM 调用失败时,该 sample 标 `error="llm_call_failed"`,verdict 留空,
-不阻塞其他 sample。
+2026-09-23 风格参考 v3(P5b / U5):旧校验层删除,预览不再写回测报告(「回测已完成」原来是预览顺手写的),
+``report_id`` 恒为空。LLM 调用失败时,该 sample 标 `error="llm_call_failed"`,verdict 留空,不阻塞其他 sample。
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import uuid
 from typing import Any
 
 from pydantic import ValidationError
@@ -39,10 +37,7 @@ from novel_system.services.style_reference.repository import StyleReferenceRepos
 from novel_system.services.style_reference.schemas import (
     PreviewGeneratedSample,
     PreviewSampleResult,
-    ValidationMode,
-    ValidationTargetKind,
 )
-from novel_system.services.style_reference.validation import run_sync_validate
 from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
 logger = logging.getLogger(__name__)
@@ -57,7 +52,7 @@ class PreviewError(StyleReferenceError):
 
 
 class PreviewService:
-    """3 段示例生成 + sync_only validate + 落 validation_reports。"""
+    """3 段示例生成 + 唯一抄袭门(不落任何报告)。"""
 
     def __init__(
         self,
@@ -98,7 +93,6 @@ class PreviewService:
         style_features = (profile_json.get("style_features") or [])[:5]
 
         target_types = target_types or DEFAULT_TARGET_TYPES
-        profile_quotes = [q.quote_text for q in self.repo.list_quotes(profile.book_id)]
 
         results: list[PreviewSampleResult] = []
         for ptype in target_types:
@@ -135,27 +129,20 @@ class PreviewService:
                 continue
 
             sample_text = sample.sample_text
-            report = run_sync_validate(
-                sample_text, profile, self.session, profile_quotes=profile_quotes
-            )
-            report_row = self.repo.create_validation_report(
-                report_id=f"sr_rep_{uuid.uuid4().hex[:12]}",
-                profile_id=profile_id,
-                target_kind=ValidationTargetKind.MANUAL.value,
-                target_ref_id=None,
-                verdict=report.verdict.value,
-                quantitative_json=report.quantitative_json,
-                semantic_json=[],
-                plagiarism_json=report.plagiarism_json,
-                forbidden_hits_json=report.forbidden_hits_json,
-                mode_executed=ValidationMode.SYNC_ONLY.value,
+            from novel_system.services.reference_copy_gate import check_reference_copy
+
+            copy = check_reference_copy(
+                self.session,
+                sample_text,
+                book_ids=[str(profile.book_id)],
+                profile_ids=[str(profile.profile_id)],
             )
             results.append(
                 PreviewSampleResult(
                     paragraph_type=ptype,
                     sample_text=sample_text,
-                    report_id=report_row.report_id,
-                    verdict=report.verdict.value,
+                    report_id=None,
+                    verdict="plagiarism" if copy.blocked else "pass",
                 )
             )
 

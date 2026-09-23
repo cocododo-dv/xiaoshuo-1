@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     SceneBlueprint,
     SceneCard,
+    SceneDraft,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import (
@@ -368,20 +369,79 @@ class SceneArchiveEffects:
 
 
     # 归档检查点 ``archive:style_drift:0``（sub 11，产品 kind ``style_drift``）这个槽位留着：已持久化的检查点
-    # 按它续跑，校验器仍接受 {"not_applicable", "no_op", "observed", "degraded"}。风格参考 v3 起槽位里记的是
-    # 「像不像」读数，而不再是漂移驾驶（旧写端对作者自己的书 95–98% 报警，还会改下一场的选窗、关轮换）。
+    # 按它续跑，校验器接受 {"recorded", "not_applicable", "no_op", "observed", "degraded"}。风格参考 v3 起槽位里记的是
+    # 「像不像」读数（``outcome="recorded"`` + ``reading_id``），而不再是漂移驾驶（旧写端对作者自己的书 95–98% 报警，
+    # 还会改下一场的选窗、关轮换）。
 
-    def _record_archive_fidelity_reading(self, scene: SceneCard) -> dict[str, Any]:
-        """归档终稿的「像不像」读数槽位（风格参考 v3）。
+    def _record_archive_fidelity_reading(
+        self,
+        scene: SceneCard,
+        *,
+        source: str = "pipeline",
+    ) -> dict[str, Any]:
+        """归档终稿的「像不像」读数（风格参考 v3 P5b；每一条归档路径都经这里）。
 
-        漂移驾驶（``observe_style_drift`` → ``style_drift_observed`` 事件 → 下一场 bundle 的
-        ``style_drift_calibration`` 段与漂移优先选窗）已删除。这里是归档路径记录读数的唯一位置：
+        终稿取场景当前的 ``FinalScene``；策略：终稿出自管线 bundle → 那份 bundle 冻结的策略（与这一场生成时同一把尺）；
+        否则（作者稿提升、采纳作者稿、旧 bundle 没冻结契约）→ 当前活动绑定轻量现解析（作者此刻对着的那本书）。
+        读数入库走唯一入口 ``readings.record_fidelity_reading``（stage=final，按场景键、不按章键，同一终稿行幂等）；
+        评审过这份终稿原文的软 QC 参考评审分一并记上。未绑定 / 书没有参照分布 → ``not_applicable``。
         """
-        # v3: record_fidelity_reading(self.session, policy=style_policy_for_bundle(<current bundle>),
-        #     text=<final text>, source="archive", stage="final", scene_id=scene.scene_id,
-        #     project_id=scene.project_id, draft_ref=<final_scene row id>)
-        # —— P5b 在 services/style_reference/readings.py 实现（P1 的 fidelity.py 落地之后）；读数不按章键。
-        return {"outcome": "not_applicable", "reason": "fidelity_reading_not_recorded"}
+        from novel_system.db.models import FinalScene, QcReport, SceneBundle, SceneRunState
+        from novel_system.services.style_policy import MODE_NONE, style_policy_for_bundle, style_policy_live
+        from novel_system.services.style_reference import readings
+
+        state = self.session.get(SceneRunState, scene.scene_id)
+        final_row_id = getattr(state, "current_final_scene_row_id", None) if state is not None else None
+        final = self.session.get(FinalScene, final_row_id) if final_row_id else None
+        if final is None or final.scene_id != scene.scene_id or not (final.content or "").strip():
+            return {"outcome": "not_applicable", "reason": "no_final_text"}
+        bundle = self.session.get(SceneBundle, final.source_bundle_id) if final.source_bundle_id else None
+        policy = None
+        if bundle is not None and bundle.scene_id == scene.scene_id:
+            policy = style_policy_for_bundle(bundle.frozen_snapshot_json)
+        if policy is None or policy.mode == MODE_NONE:
+            policy = style_policy_live(self.session, scene, freeze_contract=False)
+        if not policy.bound:
+            return {"outcome": "not_applicable", "reason": "unbound"}
+        judge = None
+        for report, content in self.session.execute(
+            select(QcReport, SceneDraft.content)
+            .join(SceneDraft, SceneDraft.row_id == QcReport.source_draft_row_id)
+            .where(QcReport.scene_id == scene.scene_id, QcReport.qc_type == "soft_qc")
+            .order_by(QcReport.created_at.desc(), QcReport.qc_report_id.desc())
+        ).all():
+            if (content or "") != (final.content or ""):
+                continue
+            judge = next(
+                (
+                    dict(entry)
+                    for entry in report.rewrite_brief_json or []
+                    if isinstance(entry, dict) and entry.get("kind") == "reference_judge"
+                ),
+                None,
+            )
+            break
+        row = readings.record_fidelity_reading(
+            self.session,
+            policy=policy,
+            text=final.content,
+            source=source,
+            stage=readings.STAGE_FINAL,
+            scene_id=scene.scene_id,
+            project_id=readings.scene_project_id(self.session, scene),
+            draft_ref=final.row_id,
+            judge=judge,
+        )
+        if row is None:
+            return {"outcome": "not_applicable", "reason": "no_reference_reading"}
+        return {
+            "outcome": "recorded",
+            "reading_id": row.reading_id,
+            "percentile": row.percentile,
+            "distance": row.distance,
+            "within_range": bool((row.reading_json or {}).get("within_range")),
+            "reading_source": source,
+        }
 
     @staticmethod
     def _index_scene_to_vector_store(

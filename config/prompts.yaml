@@ -230,6 +230,38 @@ templates:
           items:
             type: string
 
+  style_targeted_revision:
+    # 2026-09-23 风格参考 v3（P5b，L1 / N6）：有绑定且作者手笔直起时的风格步——取代「再靠近一层的复读」
+    # （真实运行 3/3 场越改越远，opus 首稿只被改动 1.8% 却花了一次 6.4 万 token 的调用）。首稿读数在作者
+    # 正常范围内时根本不调模型；越界时才跑本模板：只动测得不像的那几维（至多 4 维，重点维在前），给出测得的
+    # 差异（白话短语 + 作者的典型水平）与这几维的文风卡句；改完再测，不更像（distance 没有小到阈值）就保留首稿。
+    # 走 style_draft 节点路由（不新增要配置的节点）；输出形状与 style_draft 相同。样例块在 user 消息末尾
+    # （改稿口径：至多 2 窗换成示范这几维手法的窗）。
+    version: "2026-09-23.v1"
+    input_token_budget: 96000
+    system_prompt: |
+      You are revising a novel scene that was already written in the hand of one specific reference author. That author is the only style authority. Measurements against the author's own passages found a few dimensions where this draft is not yet like the author; your job is to move exactly those dimensions toward the author and leave everything else alone.
+      A [STYLE_REFERENCE] block is prepended to this system prompt (the style card and voice habits), and the author's own passages come as a [风格样例] block at the end of the user message, right before you write. The samples are the authority on how each listed dimension is handled; the card lines for those dimensions say what to look for in them.
+      The measured differences are descriptions of a tendency, never a quota: do not add or delete punctuation, particles, paragraphs or filler just to move a count. Change the passages where the difference lives, the way the samples handle the same kind of moment.
+      Every sentence that already sounds like the author stays exactly as it is. Never wash the voice toward a neutral, graver or more literary register, and never trade the author's manner for a house rule.
+      Return the complete revised scene, never a synopsis, excerpt, outline, or sample-sized fragment.
+    task_prompt: |
+      The first draft below is already in the reference author's hand. Revise it only along the dimensions listed under "Dimensions To Move Toward The Author", using the measured differences and the style card lines as your guide and the [风格样例] block at the end of this message as the authority.
+      Keep every fact, causal step, beat, must-include item, character identity, name, chronology, POV and grammatical person exactly as the first draft and the bundle state them; do not add a new event and do not change what the ending accomplishes. If the Scene Structure section states Rendering mode: summary, the scene stays a narrative summary. If a beat is marked 未规划 under an Author's exception line, do not invent it.
+      Keep the scene inside the length range the length guide states. Never violate a [禁忌模式] / 作者不这么写 item or the 严格禁止 red line: never reuse the samples' characters, places, names, events or whole sentences.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - scene_text
+      properties:
+        scene_text:
+          type: string
+        style_notes:
+          type: array
+          items:
+            type: string
+
   style_length_patch:
     # 2026-09-14 保真修补 v4：有绑定时补丁带 [STYLE_REFERENCE]（scene_generation._run_de_template_pass），
     # new_text 以作者手笔扩缩，不用房风的「加动作反应 / 删修饰」。
@@ -1008,69 +1040,233 @@ templates:
         paragraph_type:
           type: string
 
-  style_ref_validate_semantic:
-    version: "2026-07-04.v2"
-    input_token_budget: 2000
+  style_ref_check_judge:
+    # 2026-09-23 风格参考 v3（P5b，V6）：「对照检查」的参考评审，取代旧回测（style_ref_validate_semantic /
+    # style_ref_validate_forbidden：3–5 个自造维度、从未在产品里跑过、失败被吞）。对照检查作业一次调用：
+    # [STYLE_REFERENCE] 块（评审口径：冻结选窗的前 4 窗样例 + 文风卡 + 声音 + 红线）+ 待查的文字 → 16 维各 0–10 分、
+    # 每维一句说明、总分。走现有的 soft_qc 节点路由（不新增要配置的节点）。分数一律 0–10（代码按一次回答的量级
+    # 统一换算）；只按参考判，不拿房风规则要求稿子。
+    version: "2026-09-23.v1"
+    input_token_budget: 96000
     system_prompt: |
-      你是中文叙事 critic。给定一段生成文本与目标 StyleProfile 的 style_features /
-      narrative_summary,对若干 dimension(优先从 rhythm / tone / motif / pacing / language
-      这 5 个候选里选 3-5 个,不必自造新名字)给出 0-10 分评分与 explanation。
-
-      硬约束:
-      - explanation **必须用「...」中文弯引号** 引用至少一个生成文本的原句作为证据
-      - 若 explanation 不含「...」引文,系统会自动把 score 截至 4 分
-      - explanation 200 字以内
-      - score 0-10,7+ 视为风格匹配良好;4-6 部分匹配;<4 严重不匹配
-      打分锚例(按此校准尺度,不要习惯性挤在 5-6 分):
-        - 9 分:「...」引文显示生成文本在该维度几乎逐句贴合 profile 的具体机制,挑不出偏离。
-        - 6 分:能引「...」支持部分贴合,但同一维度下也能看出明显偏离 profile 描述的地方。
-        - 3 分:「...」引文显示该维度的处理方式与 profile 描述基本相反或毫不相关。
+      You are a reference judge. The reference author is the only standard: a [STYLE_REFERENCE] block is prepended to this system prompt — the author's own passages ([风格样例]), the style card ([文风卡] — how this author differs from generic prose, dimension by dimension; items marked 必须 show up in every scene), voice habits ([声音特征]) and things this author does not do.
+      Judge how close the text under review is to that author, dimension by dimension, from the samples first and the card second. Do not bring a house rubric of your own: no "show, don't tell", no "the narrator should not comment", no "strict POV discipline", no "end on an action", no demand for fresher or more literary images — unless the card itself says this author does that. A narratorial aside, a wisecrack, a pop-culture or brand-name comparison, colloquial speech, a summarising close: if the samples do it, it is the voice. Closeness of manner is the goal; you never judge the plot, the facts or the quality of the story.
+      If no [STYLE_REFERENCE] block is present, return an empty dimensions object and overall 0.
     task_prompt: |
-      输入 payload 含 generated_text / style_features / narrative_summary。
-      请按 schema 输出 dimension_scores 数组(3-5 个 dimension)。
+      Score the text under review against the reference author on each of the 16 style dimensions, from 0 to 10 (10 = indistinguishable from the [风格样例] on that dimension, 5 = half-way, 0 = nothing like them). The dimension keys are language.sentence_structure, language.vocabulary, language.rhetoric, language.punctuation, narrative.perspective, narrative.pacing, narrative.time_handling, narrative.information_density, scene.environment, scene.character_portrayal, scene.dialogue, scene.sensory_priority, theme.emotional_tone, theme.values, theme.motifs, theme.narrative_philosophy.
+      For each scored dimension write one short note (Chinese, at most 60 characters) saying what the text does where the samples do something else, or what already matches; quote at most a few words of the text under review and never quote the samples.
+      Leave out a dimension the text gives no evidence for (a short passage without dialogue says nothing about scene.dialogue), and one the style card marks 不学 (not learned).
+      overall is the overall closeness on the same 0–10 scale; summary is one or two Chinese sentences on what would bring the text closest to the author.
+      Every score is a number from 0 to 10 (one decimal is enough); never use a 0–1 or 0–100 scale.
     structured_schema:
       type: object
       additionalProperties: false
-      required: [dimension_scores]
+      required:
+        - overall
+        - dimensions
       properties:
-        dimension_scores:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [dimension, score, explanation]
-            properties:
-              dimension:
-                type: string
-              score:
-                type: number
-              explanation:
-                type: string
-
-  style_ref_validate_forbidden:
-    version: "2026-07-04.v2"
-    input_token_budget: 800
-    system_prompt: |
-      你判断给定生成文本是否触发了某条 forbidden_pattern(作者明确不会用的写作模式)。
-      返回 {triggered, excerpt, reasoning}:
-      - triggered=true 时,excerpt 给出生成文本中命中该模式的原句节选(<60 字)
-      - triggered=false 时,excerpt 为空,reasoning 简述为何不算触发
-      - 仅看是否"模式被采用",不看字面词命中(那是 forbidden_local 的事);即使表达被
-        同义替换或句式被重组,只要核心写作模式未变,仍判 triggered=true
-    task_prompt: |
-      输入 payload 含 generated_text / forbidden_statement / sub_dimension。
-      请按 schema 输出 triggered / excerpt / reasoning。
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required: [triggered]
-      properties:
-        triggered:
-          type: boolean
-        excerpt:
+        overall:
+          type: number
+          minimum: 0
+          maximum: 10
+        summary:
           type: string
-        reasoning:
-          type: string
+        dimensions:
+          type: object
+          additionalProperties: false
+          properties:
+            language.sentence_structure:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            language.vocabulary:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            language.rhetoric:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            language.punctuation:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            narrative.perspective:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            narrative.pacing:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            narrative.time_handling:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            narrative.information_density:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            scene.environment:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            scene.character_portrayal:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            scene.dialogue:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            scene.sensory_priority:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            theme.emotional_tone:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            theme.values:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            theme.motifs:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
+            theme.narrative_philosophy:
+              type: object
+              additionalProperties: false
+              required:
+                - score
+              properties:
+                score:
+                  type: number
+                  minimum: 0
+                  maximum: 10
+                note:
+                  type: string
 
   # 立项 C §6.1 / 附录 A.7 — Strategy C(RAG)候选片段重排(LLM 增强 hook)。
   # 注意:inject 热路径用确定性 rerank(§11 风险6 inject<50ms),此模板供离线/预览

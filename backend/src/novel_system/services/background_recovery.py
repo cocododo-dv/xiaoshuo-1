@@ -24,7 +24,6 @@ from novel_system.db.models import (
     ChapterGoal,
     ChapterRunJob,
     StyleReferenceRun,
-    StyleReferenceValidationReport,
     utcnow,
 )
 from novel_system.db.session import SessionLocal
@@ -33,7 +32,6 @@ from novel_system.services.errors import DomainError
 
 logger = logging.getLogger(__name__)
 
-VALIDATION_STARTUP_GRACE_SECONDS = 30
 STARTUP_RECOVERY_LEASE_SECONDS = 30
 
 SceneDispatch = Callable[[str], None]
@@ -120,62 +118,6 @@ def retire_legacy_style_reference_runs(session: Session) -> list[str]:
     return failed
 
 
-def recover_validation_reports(
-    session: Session,
-    *,
-    now: datetime | None = None,
-    grace_seconds: int = VALIDATION_STARTUP_GRACE_SECONDS,
-) -> list[str]:
-    """Fail orphaned async validations without retaining their input prose.
-
-    Validation text intentionally exists only in worker memory, so a process
-    restart cannot safely resume the job.  A short grace protects an active
-    peer process during multi-worker startup.
-    """
-
-    current = now or datetime.now(UTC)
-    cutoff = current - timedelta(seconds=max(0, grace_seconds))
-    rows = list(
-        session.scalars(
-            select(StyleReferenceValidationReport).where(
-                StyleReferenceValidationReport.status.in_(("queued", "running"))
-            )
-        )
-    )
-    failed: list[str] = []
-    for report in rows:
-        last_seen = _parse_iso(report.heartbeat_at or report.started_at or report.created_at)
-        if last_seen is not None and last_seen > cutoff:
-            continue
-        finished_at = utcnow()
-        changed = session.execute(
-            update(StyleReferenceValidationReport)
-            .where(
-                StyleReferenceValidationReport.report_id == report.report_id,
-                StyleReferenceValidationReport.status == report.status,
-                (
-                    StyleReferenceValidationReport.heartbeat_at.is_(None)
-                    if report.heartbeat_at is None
-                    else StyleReferenceValidationReport.heartbeat_at == report.heartbeat_at
-                ),
-            )
-            .values(
-                verdict="fail",
-                status="failed",
-                error_code="STYLE_REFERENCE_VALIDATION_INTERRUPTED",
-                error_text="async validation was interrupted; submit the text again to retry",
-                retryable=True,
-                heartbeat_at=finished_at,
-                finished_at=finished_at,
-            )
-            .execution_options(synchronize_session=False)
-        )
-        if changed.rowcount == 1:
-            failed.append(report.report_id)
-    session.commit()
-    return failed
-
-
 def run_startup_recovery() -> dict[str, Any]:
     """FastAPI lifespan entry point; failures are isolated by job family."""
 
@@ -245,12 +187,8 @@ def run_startup_recovery() -> dict[str, Any]:
         logger.exception("startup recovery failed while scanning orphaned style-reference classifications")
         summary["style_reference_orphaned_classifications"] = {"error": "scan_failed"}
 
-    try:
-        with SessionLocal() as session:
-            summary["validation_reports_failed"] = recover_validation_reports(session)
-    except Exception:  # pragma: no cover - startup boundary
-        logger.exception("startup recovery failed while scanning validation reports")
-        summary["validation_reports_failed"] = []
+    # 风格参考 v3（P5b）：旧回测（异步校验报告）随旧校验层删除，不再有要收拾的回测 worker；对照检查在作业表上，
+    # 由作业表的常驻清扫线程续跑。
     logger.info("startup background recovery summary=%s", summary)
     return summary
 

@@ -48,6 +48,7 @@ from novel_system.services.reference_copy_gate import (
     introduced_copy,
 )
 from novel_system.services.snowflake_steps import get_step_definition
+from novel_system.services.style_reference.readings import STAGE_REVISION, record_author_draft_reading
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.style_prompt_injection import (
     PLACEMENT_USER_TAIL,
@@ -547,6 +548,7 @@ class AuthorDraftService:
         self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref, decision_reason=decision_reason)
         self._snapshot_revision(draft, actor_ref=actor_ref, origin="proposal_applied")
         self.session.flush()
+        self._record_applied_proposal_reading(draft)
         return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
 
     def apply_proposal(
@@ -606,6 +608,7 @@ class AuthorDraftService:
         self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref, decision_reason=decision_reason)
         self._snapshot_revision(draft, actor_ref=actor_ref, origin="proposal_applied")
         self.session.flush()
+        self._record_applied_proposal_reading(draft)
         return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
 
     def reject_proposal(
@@ -897,6 +900,19 @@ class AuthorDraftService:
                     subject="这条 AI 建议",
                 ),
             },
+        )
+
+    def _record_applied_proposal_reading(self, draft: AuthorDraft) -> None:
+        """风格参考 v3（P5b）：写作台采纳 AI 建议之后记一条作者稿的「像不像」读数（source=author_draft，
+        stage=revision；只对场景稿；未绑定 / 读不出什么也不写，读数失败不影响采纳）。"""
+        if draft.object_type != "scene":
+            return
+        record_author_draft_reading(
+            self.session,
+            scene_id=draft.object_id,
+            text=draft.content or "",
+            stage=STAGE_REVISION,
+            draft_ref=f"author_draft:{draft.draft_id}:rev{int(draft.revision_no or 0)}",
         )
 
     # FE-ALIGN F2 修订历史：每次 revision_no 推进存完整内容快照，支撑成稿中心版本对比。

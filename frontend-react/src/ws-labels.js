@@ -228,8 +228,6 @@ export const LLM_NODE_LABELS = {
   style_ref_protected_terms: "参考书 · 识别本书专名",
   style_ref_tag_windows: "参考书 · 给片段打标签",
   style_ref_preview_generate: "参考书 · 示例预览",
-  style_ref_validate_semantic: "参考书 · 语义回测",
-  style_ref_validate_forbidden: "参考书 · 禁用模式回测",
   style_ref_rag_rerank: "参考书 · 检索重排",
   scene_blueprint: "场景蓝图",
   character_pressure_blueprint: "人物压力蓝图",

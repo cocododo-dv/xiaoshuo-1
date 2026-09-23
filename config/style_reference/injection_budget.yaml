@@ -27,6 +27,19 @@ style_first_length_slack: 0.5
 # 目标;这个键是推算值的上限(字),防止只有 1–2 场的章把一场推成万字。
 style_first_reference_scene_chars_max: 5000
 
+# 2026-09-23 风格参考 v3(P5b,L1 / N6 / V7):风格步与软补丁的「像不像」阈值(style_step.fidelity_thresholds 读)。
+# 全部是**临时值**——上线前用真实模型小规模 A/B 定(契约 docs/style-reference-v3-2026-09-23.md §6 第 5 步)。
+# style_step_max_percentile:首稿读数的百分位 ≤ 它、且「重点」维没有越界 → 风格步不调模型,首稿即风格稿
+#   (真实参考书上随机 30 段原文九成 ≤ 90);否则做定向修改。
+# revision_min_improvement:定向修改稿的 distance 至少比首稿小这么多才采用,否则保留首稿(永不越改越远)。
+# patch_max_distance_increase:软补丁后 distance 变大超过它、而参考评审的总分没有提高 → 退回补丁前的稿子。
+# judge_tolerance:参考评审总分(0–1)的波动容差——比补丁前低出它算变差(退回),高出它算提高。
+fidelity:
+  style_step_max_percentile: 90
+  revision_min_improvement: 0.03
+  patch_max_distance_increase: 0.05
+  judge_tolerance: 0.02
+
 # 跨场景一致性(W5 / W6 消费):上一场成稿尾部作 [前文声音锚] 的字数上限;
 # [漂移校准] 行数上限。
 continuity_anchor_max_chars: 900

@@ -28,7 +28,8 @@ from novel_system.db.models import (
     StoryProject,
     StyleReferenceInjectionBinding,
 )
-from novel_system.services.review_scores import REVIEW_FEW_SHOT_K_CAP, score_scale, to_unit
+from novel_system.services.review_scores import score_scale, to_unit
+from novel_system.services.style_reference.inject.request import ROLE_K_CAPS, ROLE_REVIEW
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
 from tests.reference_copy_fixtures import seed_bound_reference
@@ -321,7 +322,9 @@ def test_soft_qc_reference_judge_scores_are_validated_rescaled_and_persisted(ses
 
     # 0–10 的分以前在校验里就被 le=1 拒掉、整遍软 QC 作废；现在先换算再校验
     assert decision.branch == "continue"
-    assert captured and captured[0]["few_shot_k_cap"] == REVIEW_FEW_SHOT_K_CAP == 4
+    # 评审节点显式按评审口径渲染：窗数由角色决定（唯一定义 ROLE_K_CAPS），不再另传窗数上限
+    assert captured and captured[0]["role"] == ROLE_REVIEW and ROLE_K_CAPS[ROLE_REVIEW] == 4
+    assert "few_shot_k_cap" not in captured[0]
     report = session.execute(select(QcReport).where(QcReport.qc_type == "soft_qc")).scalars().one()
     judge = next(entry for entry in report.rewrite_brief_json if entry.get("kind") == "reference_judge")
     assert judge == {
@@ -406,7 +409,7 @@ def test_near_final_review_gets_four_sample_windows(session, monkeypatch) -> Non
         context_text="正文",
         final_user_prompt="U",
     )
-    assert captured[0]["few_shot_k_cap"] == REVIEW_FEW_SHOT_K_CAP
+    assert captured[0]["role"] == ROLE_REVIEW and "few_shot_k_cap" not in captured[0]
 
 
 # ---------------------------------------------------------------------------

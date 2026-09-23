@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import uuid
@@ -1227,54 +1228,42 @@ def scene_gate_style_policy(
 
 
 def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
-    """风格稿一道门的读数：原文重合（抄袭门，缓存）+ 冻结 / 现行的生成禁用词 + 量化（只作诊断）。
+    """风格稿一道门的读数：原文重合（抄袭门，缓存）+ 冻结 / 现行的生成禁用词。
 
     禁用词口径不变：冻结契约 → 契约里冻结的词（绑定后新增的不影响本 bundle 的裁决）；现解析 → 画像现行的词。
-    返回与 ``ValidationReport`` 同形的对象，交给 :func:`_styled_gate_result` 压成诊断字典。
+    风格参考 v3（P5b）：旧校验层的量化回测（只作诊断）随校验层删除，``quantitative`` 恒为空。
+    返回与旧校验报告同形的对象，交给 :func:`_styled_gate_result` 压成诊断字典。
     """
     from types import SimpleNamespace
 
     from novel_system.services.reference_copy_gate import check_reference_copy
-    from novel_system.services.style_reference.repository import StyleReferenceRepository
-    from novel_system.services.style_reference.runtime_contract import (
-        blend_profile_metric_baselines,
-        contract_profile_objects,
+    from novel_system.services.style_reference.banned_terms import (
+        banned_term_hits,
+        profile_banned_term_hits,
     )
-    from novel_system.services.style_reference.validation.forbidden_local import (
-        check_forbidden_local,
-        check_forbidden_terms,
-    )
-    from novel_system.services.style_reference.validation.quantitative import (
-        check_quantitative,
-        check_quantitative_against_baseline,
-    )
+    from novel_system.services.style_reference.runtime_contract import contract_profile_objects
 
     copy = check_reference_copy(session, text, policy=policy)
-    forbidden: list[Any] = []
+    forbidden: list[dict[str, str]] = []
     seen: set[str] = set()
-    quantitative: list[Any] = []
     if policy.contract is not None:
-        profiles = contract_profile_objects(policy.contract)
-        for profile in profiles:
+        for profile in contract_profile_objects(policy.contract):
             frozen_terms = getattr(profile, "runtime_contract_banned_terms", None)
             hits = (
-                check_forbidden_terms(text, list(frozen_terms))
+                banned_term_hits(text, list(frozen_terms))
                 if isinstance(frozen_terms, list)
-                else check_forbidden_local(text, str(getattr(profile, "profile_id", "") or ""), session)
+                else profile_banned_term_hits(text, str(getattr(profile, "profile_id", "") or ""), session)
             )
             for hit in hits:
-                key = str(hit.model_dump(mode="json"))
+                key = json.dumps(hit, ensure_ascii=False, sort_keys=True)
                 if key not in seen:
                     seen.add(key)
                     forbidden.append(hit)
-        quantitative = check_quantitative_against_baseline(text, blend_profile_metric_baselines(profiles))
     elif policy.profile_id:
-        forbidden = list(check_forbidden_local(text, policy.profile_id, session))
-        profile = StyleReferenceRepository(session).get_profile(policy.profile_id)
-        quantitative = check_quantitative(text, profile) if profile is not None else []
+        forbidden = profile_banned_term_hits(text, policy.profile_id, session)
     if copy.hits:
         verdict = "plagiarism"
-    elif any(getattr(hit, "severity", "error") == "error" for hit in forbidden):
+    elif any(str(hit.get("severity") or "error") == "error" for hit in forbidden):
         verdict = "fail"
     else:
         verdict = "pass"
@@ -1291,8 +1280,8 @@ def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
                 for hit in copy.hits
             ],
         },
-        forbidden_hits_json=[hit.model_dump(mode="json") for hit in forbidden],
-        quantitative_json=[item.model_dump(mode="json") for item in quantitative],
+        forbidden_hits_json=forbidden,
+        quantitative_json=[],
     )
 
 
@@ -2154,12 +2143,12 @@ class SoftQcEngine:
         """
         try:
             from novel_system.services.style_prompt_injection import (
+                ROLE_REVIEW,
                 inject_style_reference_prefix,
             )
 
-            from novel_system.services.review_scores import REVIEW_FEW_SHOT_K_CAP
-
-            # 风格参考 v3（L4）：评审节点只拿 4 窗样例（规划 3 窗，起草按绑定的窗数）
+            # 风格参考 v3（L4）：评审节点按评审口径渲染——冻结选窗的前 4 窗样例（窗数由角色决定，
+            # inject.request.ROLE_K_CAPS 是唯一定义），标题用评审口径
             return inject_style_reference_prefix(
                 self.session,
                 prompt,
@@ -2168,7 +2157,7 @@ class SoftQcEngine:
                 task_type="scene_generation",
                 context_text=context_text,
                 final_user_prompt=final_user_prompt,
-                few_shot_k_cap=REVIEW_FEW_SHOT_K_CAP,
+                role=ROLE_REVIEW,
             )
         except Exception:  # noqa: BLE001 — 可选增强，不阻断 soft_qc
             _LOGGER.warning(

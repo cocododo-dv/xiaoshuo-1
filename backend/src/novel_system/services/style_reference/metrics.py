@@ -324,7 +324,25 @@ def _chunk_by_chars(
     return chunks
 
 
+# 2026-09-23 风格参考 v3（P5b）：旧校验层删除时从 ``validation/quantitative.py`` 搬来——候选贴合读数与
+# neutral_first 的形状包络还在用这两样（生成稿的纯文本指标）。分类器标签依赖的 8 项比例指标对生成稿无意义
+#（生成稿没有段落类型，全部当叙述），不参与任何对照。
+DEFAULT_FLOOR = 0.1
+TYPE_RATIO_METRICS: frozenset[str] = frozenset(TYPE_METRIC_NAMES)
+
+
+def compute_generated_metrics(generated_text: str) -> dict[str, float]:
+    """生成稿（或作者稿 HTML）的全部可观测指标：按测量核的唯一分段规则切段、全部当叙述。"""
+    paragraphs = [ParagraphRecord(text=p, paragraph_type="narration") for p in kernel_paragraphs(generated_text)]
+    if not paragraphs:
+        return {}
+    metrics = MetricsEngine().compute_all(paragraphs)
+    metrics.update(compute_prose_shape_metrics(paragraphs))
+    return metrics
+
+
 __all__ = [
+    "DEFAULT_FLOOR",
     "LONG_SENTENCE_MIN_CHARS",
     "METRIC_NAMES",
     "MetricName",
@@ -334,6 +352,8 @@ __all__ = [
     "SHORT_SENTENCE_MAX_CHARS",
     "TEXT_METRIC_NAMES",
     "TYPE_METRIC_NAMES",
+    "TYPE_RATIO_METRICS",
+    "compute_generated_metrics",
     "compute_prose_shape_from_text",
     "compute_prose_shape_metrics",
     "compute_prose_shape_with_variance",

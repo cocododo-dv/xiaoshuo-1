@@ -16,6 +16,10 @@ _LOGGER = logging.getLogger(__name__)
 # 检查点 / near_completion 里，警告随 near_final payload 走。
 NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON = "rewrite_rejected_style_plagiarism"
 NEAR_FINAL_REWRITE_GATE_STAGE = "near_final_rewrite"
+# 风格参考 v3（P5b）：作者手笔直起时软补丁让稿子离作者更远 → 退回补丁前的稿子。软 QC 收尾记这个 skip_reason，
+# 收尾的决定由补丁前那一轮评审派生（branch=waive、stop_reason 如下），评审的改稿意见随稿留痕。
+STYLE_PATCH_REVERTED_SKIP_REASON = "style_patch_reverted"
+STYLE_PATCH_REVERTED_STOP_REASON = "style_patch_reverted"
 
 
 def _near_final_rewrite_gate_summary(
@@ -151,12 +155,23 @@ from novel_system.services.qc_engine import (
     SoftQcEngine,
 )
 from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.style_reference import readings as style_readings
+from novel_system.services.style_reference.style_step import (
+    PATCH_DECISION_REVERTED,
+    fidelity_thresholds,
+    patch_keep_decision,
+    reading_brief,
+)
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import (
+    LINEAGE_FIRST_DRAFT_ACCEPTED,
+    STYLE_NOTICE_PATCH_REVERTED,
+    STYLE_PATCH_KEEP_STEP,
     NeutralGenerationResult,
     SceneGenerationPostprocessError,
     SceneGenerationService,
     StyleGenerationResult,
+    style_notice,
     versioned_scene_artifact_id,
 )
 from novel_system.services.scene_run_checkpoint import (
@@ -836,22 +851,25 @@ class Orchestrator:
             rerank_audit = (
                 ranking.get("rerank") if isinstance(ranking.get("rerank"), dict) else {}
             )
-            candidate_summaries.append(
-                {
-                    "row_id": cand.row_id,
-                    "rank": idx,
-                    "adversarial_score": round(cand_score, 3),
-                    "style_score": ranking.get("style_score"),
-                    "style_confidence": ranking.get("style_confidence"),
-                    "style_rerank_mode": rerank_audit.get("applied_mode"),
-                    "plagiarism_passed": ranking.get("plagiarism_passed"),
-                    "selection_reason": ranking.get(
-                        "selection_reason", "quality_order"
-                    ),
-                    "content_preview": (cand.content or "")[:300],
-                    "selected": idx == 0,
-                }
-            )
+            summary = {
+                "row_id": cand.row_id,
+                "rank": idx,
+                "adversarial_score": round(cand_score, 3),
+                "style_score": ranking.get("style_score"),
+                "style_confidence": ranking.get("style_confidence"),
+                "style_rerank_mode": rerank_audit.get("applied_mode"),
+                "plagiarism_passed": ranking.get("plagiarism_passed"),
+                "selection_reason": ranking.get(
+                    "selection_reason", "quality_order"
+                ),
+                "content_preview": (cand.content or "")[:300],
+                "selected": idx == 0,
+            }
+            if "fidelity_distance" in ranking:
+                # 风格参考 v3（P5b）：作者手笔直起时候选按读数排序（distance 越小越像）
+                summary["fidelity_distance"] = ranking.get("fidelity_distance")
+                summary["fidelity_percentile"] = ranking.get("fidelity_percentile")
+            candidate_summaries.append(summary)
         if not self._checkpoint_reached("style_ready"):
             style_candidate_rankings = [
                 candidate.ranking_audit for candidate in candidates
@@ -1104,6 +1122,16 @@ class Orchestrator:
                     "kind": "soft_risk_acceptance",
                     "human_review_event_id": soft_risk_acceptance_event_id,
                     "qc_report_id": soft_qc.qc_report_id,
+                }
+            )
+        if getattr(soft_qc, "stop_reason", None) == STYLE_PATCH_REVERTED_STOP_REASON:
+            # 风格参考 v3（P5b）：补丁让稿子离作者更远被退回——评审的改稿意见随稿留痕（作者可自己改）
+            carry_notes_json.append(
+                {
+                    "kind": "style_patch_reverted",
+                    "qc_report_id": soft_qc.qc_report_id,
+                    "rewrite_brief": self._rewrite_brief_from_report(soft_qc.qc_report_id)[:8],
+                    "recommended_action": "author_review_optional_fix",
                 }
             )
         if not near_final.get("pass_flag"):
@@ -3714,7 +3742,7 @@ class Orchestrator:
                 "style artifact owner is missing",
                 status_code=409,
             )
-        return {
+        descriptor = {
             "phase": phase,
             "row_id": product.row_id,
             "content_hash": self._text_hash(product.content),
@@ -3727,6 +3755,10 @@ class Orchestrator:
             "execution_step_key": product.execution_step_key,
             "artifact_execution_id": owner,
         }
+        if product.lineage == LINEAGE_FIRST_DRAFT_ACCEPTED:
+            # 风格参考 v3（P5b）：首稿即风格稿——没有自己的模型调用，谱系沿用首稿那次调用
+            descriptor["lineage"] = LINEAGE_FIRST_DRAFT_ACCEPTED
+        return descriptor
 
     def _update_style_work_item(
         self,
@@ -3916,6 +3948,24 @@ class Orchestrator:
             execution_step_key=descriptor.get("execution_step_key"),
             execution_id=owner,
         )
+        accepted_lineage = descriptor.get("lineage") == LINEAGE_FIRST_DRAFT_ACCEPTED
+        if accepted_lineage:
+            # 风格参考 v3（P5b）：首稿即风格稿的产品没有自己的模型调用——它的调用就是首稿那次（步位键是首稿的），
+            # 正文必须与首稿逐字相同；其余身份照常校验。
+            neutral_row = self.session.get(SceneDraft, source_neutral_draft_row_id)
+            if (
+                expected_stage != "style_draft"
+                or neutral_row is None
+                or neutral_row.scene_id != scene_id
+                or neutral_row.generation_llm_call_id != descriptor.get("llm_call_id")
+                or self._text_hash(neutral_row.content) != descriptor.get("content_hash")
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "accepted first-draft style product is detached from its first draft",
+                    status_code=409,
+                )
+            expected_step_key = str(descriptor.get("execution_step_key") or "")
         if (
             descriptor.get("phase") != expected_phase
             or descriptor.get("stage") != expected_stage
@@ -3972,6 +4022,7 @@ class Orchestrator:
                 "style artifact attempt ledger is invalid",
                 status_code=409,
             )
+        attempt_details = matching_attempts[0].details_json or {}
         return StyleGenerationResult(
             row_id=row.row_id,
             content=row.content,
@@ -3980,6 +4031,12 @@ class Orchestrator:
             bundle_hash=bundle["bundle_snapshot_hash"],
             execution_step_key=expected_step_key,
             artifact_execution_id=owner,
+            lineage=LINEAGE_FIRST_DRAFT_ACCEPTED if accepted_lineage else None,
+            style_step=(
+                deepcopy(attempt_details["style_step"])
+                if isinstance(attempt_details.get("style_step"), dict)
+                else None
+            ),
         )
 
     def _validate_style_work_items(
@@ -4546,6 +4603,8 @@ class Orchestrator:
                         and isinstance(ranking_audits[index], dict)
                         else None
                     ),
+                    lineage=lineage_result.lineage,
+                    style_step=deepcopy(lineage_result.style_step),
                 )
             )
         return results
@@ -5062,6 +5121,37 @@ class Orchestrator:
                 source_draft_content=final_generation.content,
                 execution_step_key="soft_qc:1",
             )
+            # 风格参考 v3（P5b，N6 / V7）：作者手笔直起时补丁「不更像就不采用」——参考评审分变差、或确定性
+            # distance 明显变大而评审分没提高 → 退回补丁前的稿子（指针与当前 QC 报告随之指回，检查点记退回）。
+            patch_keep = self._style_patch_keep_decision(
+                scene=scene,
+                bundle=bundle,
+                before=style_generation,
+                after=final_generation,
+                qc0=soft_qc0,
+                qc1=soft_qc,
+            )
+            if patch_keep is not None and patch_keep.get("decision") == PATCH_DECISION_REVERTED:
+                reverted = self._reverted_patch_decision(soft_qc0)
+                state = self.session.get(SceneRunState, scene_id)
+                if state is not None:
+                    state.current_style_draft_row_id = style_generation.row_id
+                    state.latest_valid_draft_row_id = style_generation.row_id
+                    state.current_qc_report_id = soft_qc0.qc_report_id
+                    state.scene_status = "soft_qc_passed_with_notes"
+                    self.session.flush()
+                self._save_soft_qc_round_checkpoint(
+                    sub_index=3,
+                    round_index=1,
+                    decision=soft_qc,
+                    source_generation=final_generation,
+                    bundle=bundle,
+                    final_generation=style_generation,
+                    final_skip_reason=STYLE_PATCH_REVERTED_SKIP_REASON,
+                    completion_decision=reverted,
+                    completion_source_generation=style_generation,
+                )
+                return reverted, style_generation
             self._save_soft_qc_round_checkpoint(
                 sub_index=3,
                 round_index=1,
@@ -5089,6 +5179,150 @@ class Orchestrator:
             final_skip_reason=qc0_skip_reason,
         )
         return soft_qc0, style_generation
+
+    def _soft_round_owner(self, round_index: int) -> str | None:
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get("artifact_refs") or {}
+        owner = refs.get(f"soft_qc{round_index}_artifact_execution_id")
+        return str(owner) if isinstance(owner, str) and owner else self._execution_id
+
+    @staticmethod
+    def _reverted_patch_decision(qc0: SoftQcDecision) -> SoftQcDecision:
+        """补丁被退回时软 QC 阶段的收尾决定：补丁前那一轮评审，放行并留痕（waive）。"""
+        return SoftQcDecision(
+            branch="waive",
+            qc_report_id=qc0.qc_report_id,
+            human_review_event_id=None,
+            resolution_code=qc0.resolution_code,
+            next_action=qc0.next_action,
+            should_continue=True,
+            stop_reason=STYLE_PATCH_REVERTED_STOP_REASON,
+            llm_call_id=qc0.llm_call_id,
+            execution_step_key=qc0.execution_step_key,
+        )
+
+    def _report_judge(self, qc_report_id: str | None) -> dict[str, Any] | None:
+        """软 QC 报告里的参考评审分（10 分制的 ``reference_judge`` 条目）；没有 → None。"""
+        report = self.session.get(QcReport, qc_report_id) if qc_report_id else None
+        for entry in (report.rewrite_brief_json or []) if report is not None else []:
+            if isinstance(entry, dict) and entry.get("kind") == "reference_judge":
+                return dict(entry)
+        return None
+
+    @staticmethod
+    def _judge_unit(judge: dict[str, Any] | None) -> float | None:
+        if not isinstance(judge, dict):
+            return None
+        try:
+            value = float(judge.get("style_score"))
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, min(1.0, value / 10.0))
+
+    def _style_patch_keep_decision(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        before: StyleGenerationResult,
+        after: StyleGenerationResult,
+        qc0: SoftQcDecision,
+        qc1: SoftQcDecision,
+    ) -> dict[str, Any] | None:
+        """作者手笔直起时补丁的去留（风格参考 v3 N6 / V7）；不适用（未让位 / 补丁后要人工复核）→ None。
+
+        比较补丁前后参考评审的总分（软 QC 两轮）与确定性读数的 distance；记一条 ``patched`` 读数（带补丁后那轮的
+        评审分）与一条 ``style_patch_keep`` 尝试（决定、读数、评审分；退回时带 STYLE_PATCH_REVERTED 提示）。
+        """
+        from novel_system.services.style_policy import style_policy_for_bundle
+
+        policy = style_policy_for_bundle(bundle)
+        if not policy.style_first or qc1.branch == "human_review_required":
+            return None
+        thresholds = fidelity_thresholds()
+        judge_before = self._report_judge(qc0.qc_report_id)
+        judge_after = self._report_judge(qc1.qc_report_id)
+        try:
+            reading_before = style_readings.reading_for_text(self.session, policy, before.content)
+            reading_after = style_readings.reading_for_text(self.session, policy, after.content)
+        except Exception:  # noqa: BLE001 — 读数是观察：读不出只看评审分
+            _LOGGER.warning("patch fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
+            reading_before = reading_after = None
+        comparable = (
+            reading_before is not None
+            and reading_after is not None
+            and reading_before.reliable
+            and reading_after.reliable
+        )
+        decision, reason = patch_keep_decision(
+            before_judge=self._judge_unit(judge_before),
+            after_judge=self._judge_unit(judge_after),
+            before_distance=reading_before.distance if comparable else None,
+            after_distance=reading_after.distance if comparable else None,
+            thresholds=thresholds,
+        )
+        patched_row = style_readings.record_fidelity_reading(
+            self.session,
+            policy=policy,
+            text=after.content,
+            source=style_readings.SOURCE_PIPELINE,
+            stage=style_readings.STAGE_PATCHED,
+            scene_id=scene.scene_id,
+            project_id=style_readings.scene_project_id(self.session, scene),
+            draft_ref=after.row_id,
+            reading=reading_after,
+            judge=judge_after,
+            max_percentile=thresholds.style_step_max_percentile,
+        )
+        notices: list[dict[str, Any]] = []
+        if decision == PATCH_DECISION_REVERTED:
+            notices.append(
+                style_notice(
+                    STYLE_NOTICE_PATCH_REVERTED,
+                    (
+                        "软 QC 的补丁让稿子离参考作者更远（参考评审分下降）"
+                        if reason == "judge_worse"
+                        else "软 QC 的补丁让稿子离参考作者更远（读数变远、评审分没有提高）"
+                    )
+                    + "，已退回补丁前的稿子；评审的改稿意见随稿留痕。",
+                    severity="info",
+                    reason=reason,
+                    before_judge=(judge_before or {}).get("style_score"),
+                    after_judge=(judge_after or {}).get("style_score"),
+                    before_distance=reading_before.distance if reading_before is not None else None,
+                    after_distance=reading_after.distance if reading_after is not None else None,
+                    restored_row_id=before.row_id,
+                )
+            )
+        details = {
+            "version": "style_patch_keep_v1",
+            "decision": decision,
+            "reason": reason,
+            "source_draft_row_id": after.row_id,
+            "restored_row_id": before.row_id if decision == PATCH_DECISION_REVERTED else None,
+            "before_qc_report_id": qc0.qc_report_id,
+            "after_qc_report_id": qc1.qc_report_id,
+            "before_judge": judge_before,
+            "after_judge": judge_after,
+            "before_reading": reading_brief(reading_before),
+            "after_reading": reading_brief(
+                reading_after, reading_id=patched_row.reading_id if patched_row is not None else None
+            ),
+            "distance_compared": comparable,
+            "thresholds": thresholds.audit(),
+            "notices": notices,
+        }
+        self.session.add(
+            AttemptTracker(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                step=STYLE_PATCH_KEEP_STEP,
+                status="completed",
+                source_bundle_id=bundle["bundle_id"],
+                details_json=details,
+            )
+        )
+        self.session.flush()
+        return details
 
     def _soft_draft_refs(
         self,
@@ -5199,6 +5433,7 @@ class Orchestrator:
                 expected_provider_execution_mode=(
                     historical_execution_mode if prefix == "soft_input" else None
                 ),
+                draft=draft,
             )
             self._validate_settled_parent_ledger(generation_parent)
         except LLMAccountingError as exc:
@@ -5318,9 +5553,26 @@ class Orchestrator:
             execution_step_key=generation.execution_step_key,
             execution_id=owner,
             expected_provider_execution_mode=expected_provider_execution_mode,
+            draft=draft,
         )
         self._validate_settled_parent_ledger(parent)
         return parent
+
+    def _is_accepted_first_draft(self, draft: SceneDraft | None, parent: LlmCall) -> bool:
+        """风格参考 v3（P5b）：风格稿行是不是「首稿即风格稿」——它的父调用是首稿那次（style_draft 节点、
+        neutral_draft / neutral_draft_repair 步），且正文与那次调用写下的首稿行逐字相同。"""
+        if draft is None or draft.stage != "style_draft":
+            return False
+        if parent.node_id != "style_draft" or parent.step not in {"neutral_draft", "neutral_draft_repair"}:
+            return False
+        first = self.session.execute(
+            select(SceneDraft).where(
+                SceneDraft.scene_id == draft.scene_id,
+                SceneDraft.stage == "neutral_draft",
+                SceneDraft.generation_llm_call_id == parent.llm_call_id,
+            )
+        ).scalars().first()
+        return first is not None and (first.content or "") == (draft.content or "")
 
     def _validate_generation_parent_identity(
         self,
@@ -5331,6 +5583,7 @@ class Orchestrator:
         execution_step_key: str | None,
         execution_id: str | None,
         expected_provider_execution_mode: str | None = None,
+        draft: SceneDraft | None = None,
     ) -> None:
         scene = self.session.get(SceneCard, scene_id)
         chapter = (
@@ -5343,6 +5596,8 @@ class Orchestrator:
             "style_patch": ("style_patch", "soft_patch"),
             "de_template": ("style_patch", "de_template"),
         }.get(draft_stage)
+        if draft_stage == "style_draft" and self._is_accepted_first_draft(draft, parent):
+            stage_owner = ("style_draft", parent.step)
         if scene is None or stage_owner is None:
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
@@ -6211,7 +6466,14 @@ class Orchestrator:
         skip_reason: str | None = None,
         final_generation: StyleGenerationResult | None = None,
         final_skip_reason: str | None = None,
+        completion_decision: SoftQcDecision | None = None,
+        completion_source_generation: StyleGenerationResult | None = None,
     ) -> None:
+        """一轮软 QC 的检查点；带 ``final_generation`` 时同时记软 QC 阶段的收尾。
+
+        风格参考 v3（P5b）：补丁被退回时，这一轮（``soft_qc1_*``）照记补丁稿的评审，收尾（``soft_qc_*`` /
+        ``soft_completion``）记 ``completion_decision``（由补丁前那一轮评审派生）与补丁前的稿子——收尾的 QC 报告
+        永远评的是收尾的那份稿子。"""
         self.session.flush()
         report = self.session.get(QcReport, decision.qc_report_id)
         if report is None:
@@ -6239,35 +6501,44 @@ class Orchestrator:
             refs["soft_qc0_control"] = control
             hashes["soft_qc0_control"] = self._json_hash(control)
         if final_generation is not None:
+            final_decision = completion_decision or decision
+            final_source = completion_source_generation or source_generation
+            final_report = report
+            if completion_decision is not None:
+                final_report = self.session.get(QcReport, completion_decision.qc_report_id)
+                if final_report is None:
+                    self._raise_checkpoint_output_missing(row_id=completion_decision.qc_report_id)
             legacy_decision = self._soft_decision_snapshot(
-                decision, include_should_continue=False
+                final_decision, include_should_continue=False
             )
             completion = {
                 "final_qc_round": round_index,
                 "skip_reason": final_skip_reason,
-                "branch": decision.branch,
-                "qc_report_id": decision.qc_report_id,
+                "branch": final_decision.branch,
+                "qc_report_id": final_decision.qc_report_id,
                 "draft_row_id": final_generation.row_id,
             }
             refs.update(
                 {
-                    "soft_qc_report_id": decision.qc_report_id,
-                    "soft_qc_human_review_event_id": decision.human_review_event_id,
-                    "soft_qc_branch": decision.branch,
-                    "soft_qc_resolution_code": decision.resolution_code,
-                    "soft_qc_next_action": decision.next_action,
-                    "soft_qc_stop_reason": decision.stop_reason,
+                    "soft_qc_report_id": final_decision.qc_report_id,
+                    "soft_qc_human_review_event_id": final_decision.human_review_event_id,
+                    "soft_qc_branch": final_decision.branch,
+                    "soft_qc_resolution_code": final_decision.resolution_code,
+                    "soft_qc_next_action": final_decision.next_action,
+                    "soft_qc_stop_reason": final_decision.stop_reason,
                     "soft_final_draft_row_id": final_generation.row_id,
                     "soft_final_llm_call_id": final_generation.llm_call_id,
                     "soft_final_execution_step_key": final_generation.execution_step_key,
                     "soft_final_artifact_execution_id": (
                         final_generation.artifact_execution_id or self._execution_id
                     ),
-                    "soft_qc_source_draft_row_id": source_generation.row_id,
+                    "soft_qc_source_draft_row_id": final_source.row_id,
                     "soft_qc_bundle_id": bundle["bundle_id"],
-                    "soft_qc_llm_call_id": decision.llm_call_id,
-                    "soft_qc_execution_step_key": decision.execution_step_key,
-                    "soft_qc_artifact_execution_id": self._execution_id,
+                    "soft_qc_llm_call_id": final_decision.llm_call_id,
+                    "soft_qc_execution_step_key": final_decision.execution_step_key,
+                    "soft_qc_artifact_execution_id": (
+                        self._soft_round_owner(0) if completion_decision is not None else self._execution_id
+                    ),
                     "soft_final_qc_round": round_index,
                     "soft_completion_skip_reason": final_skip_reason,
                     "soft_completion": completion,
@@ -6277,7 +6548,7 @@ class Orchestrator:
                 {
                     "soft_final_draft": self._text_hash(final_generation.content),
                     "soft_qc_decision": self._json_hash(legacy_decision),
-                    "soft_qc_report": self._json_hash(self._qc_report_snapshot(report)),
+                    "soft_qc_report": self._json_hash(self._qc_report_snapshot(final_report)),
                     "soft_completion": self._json_hash(completion),
                 }
             )
@@ -6578,6 +6849,7 @@ class Orchestrator:
             )
             patch_allowed, skip_reason = self._load_soft_qc0_branch_control(qc0)
             final_qc_round = refs.get("soft_final_qc_round")
+            expected_skip_reason = skip_reason if final_qc_round == 0 else None
             if final_qc_round == 1:
                 if (
                     qc0.branch != "patch"
@@ -6602,6 +6874,12 @@ class Orchestrator:
                     source_generation=patch_generation,
                 )
                 expected_generation = patch_generation
+                if refs.get("soft_completion_skip_reason") == STYLE_PATCH_REVERTED_SKIP_REASON:
+                    # 风格参考 v3（P5b）：补丁被退回——补丁与补丁后那一轮评审照常校验，收尾是补丁前的稿子与
+                    # 由补丁前那一轮评审派生的决定。
+                    checkpoint_decision = self._reverted_patch_decision(qc0)
+                    expected_generation = soft_input
+                    expected_skip_reason = STYLE_PATCH_REVERTED_SKIP_REASON
             elif final_qc_round == 0:
                 if qc0.branch == "patch" and patch_allowed:
                     raise DomainError(
@@ -6629,8 +6907,7 @@ class Orchestrator:
                 completion != expected_completion
                 or self._json_hash(completion)
                 != self._checkpoint_hash("soft_completion")
-                or refs.get("soft_completion_skip_reason")
-                != (skip_reason if final_qc_round == 0 else None)
+                or refs.get("soft_completion_skip_reason") != expected_skip_reason
                 or self._soft_decision_snapshot(
                     checkpoint_decision, include_should_continue=False
                 )
@@ -6996,7 +7273,12 @@ class Orchestrator:
         )
 
     def _record_archive_fidelity_reading(self, scene: SceneCard) -> dict[str, Any]:
-        return self._archive_effects()._record_archive_fidelity_reading(scene)
+        """编排器归档检查点的读数槽位（source=pipeline）；读数是观察，失败只降级（带错误码），不阻断归档。"""
+        try:
+            return self._archive_effects()._record_archive_fidelity_reading(scene, source="pipeline")
+        except Exception as exc:  # noqa: BLE001 — 读数失败不影响归档
+            _LOGGER.warning("archive fidelity reading degraded for scene %s", scene.scene_id, exc_info=True)
+            return {"outcome": "degraded", "error_code": str(getattr(exc, "code", None) or type(exc).__name__)}
 
 
     def _best_of_n_count(self, contract, *, criticality=None) -> int:
@@ -7057,9 +7339,13 @@ class Orchestrator:
         from novel_system.services.source_safety import scan_source_safety
 
         valid_candidates: list[Any] = []
+        offered_texts: set[str] = set()
         for cand in candidates:
             content = (getattr(cand, "content", "") or "").strip()
             if not content:
+                continue
+            if content in offered_texts:
+                # 风格参考 v3（P5b）：作者手笔直起时没过门的修改槽位保留首稿原文——同样的正文只给作者看一次
                 continue
             if not scan_source_safety(content).get("safe", True):
                 continue
@@ -7069,6 +7355,7 @@ class Orchestrator:
                 and ranking.get("plagiarism_passed") is False
             ):
                 continue
+            offered_texts.add(content)
             valid_candidates.append(cand)
         valid_row_ids = [str(candidate.row_id) for candidate in valid_candidates]
         if not valid_row_ids:

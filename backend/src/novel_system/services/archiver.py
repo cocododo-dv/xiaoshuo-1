@@ -36,6 +36,7 @@ class Archiver:
         author_confirmed_final: bool = False,
         accepted_warning_codes: list[str] | None = None,
         record_fidelity_reading: bool = True,
+        fidelity_source: str = "archive",
     ) -> dict:
         final_scene = self.session.get(FinalScene, final_scene_row_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -210,11 +211,14 @@ class Archiver:
             self.session.add(archive_attempt)
         self.session.flush()
 
-        # 风格参考 v3:每一条归档路径(起草台「采用」、成稿中心、编排器)都在这里记归档终稿的「像不像」
-        # 读数(漂移驾驶已删)。编排器的归档检查点在自己的 archive:style_drift:0 槽位里记,传 False 免得记两遍。
+        # 风格参考 v3:每一条归档路径(起草台「采用」/ 重确认 source=adopt、成稿中心 source=archive、编排器)都在
+        # 这里记归档终稿的「像不像」读数(漂移驾驶已删)。编排器的归档检查点在自己的 archive:style_drift:0 槽位里
+        # 记(source=pipeline),传 False 免得记两遍。
         fidelity_reading: dict[str, Any] | None = None
         if record_fidelity_reading:
-            fidelity_reading = self._record_fidelity_reading(scene_id, execution_id=execution_id)
+            fidelity_reading = self._record_fidelity_reading(
+                scene_id, execution_id=execution_id, source=fidelity_source
+            )
 
         return {
             "fidelity_reading": fidelity_reading,
@@ -236,7 +240,7 @@ class Archiver:
 
 
     def _record_fidelity_reading(
-        self, scene_id: str, *, execution_id: str | None
+        self, scene_id: str, *, execution_id: str | None, source: str = "archive"
     ) -> dict[str, Any] | None:
         """归档终稿的「像不像」读数(见 SceneArchiveEffects._record_archive_fidelity_reading);
         任何异常吞掉记 warning,绝不阻断归档。"""
@@ -250,7 +254,7 @@ class Archiver:
             effects = SceneArchiveEffects(
                 self.session, None, execution_id=execution_id, run_job_id=None
             )
-            return effects._record_archive_fidelity_reading(scene)
+            return effects._record_archive_fidelity_reading(scene, source=source)
         except Exception as exc:  # noqa: BLE001 — 读数失败不影响归档
             _LOGGER.warning(
                 "fidelity reading skipped on archive for scene %s", scene_id, exc_info=True

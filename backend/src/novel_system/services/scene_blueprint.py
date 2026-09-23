@@ -28,7 +28,7 @@ from novel_system.services.scene_structure_brief import (
 )
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_prompt_injection import (
-    PLANNING_FEW_SHOT_K_CAP,
+    ROLE_PLAN,
     inject_style_reference_prefix,
 )
 from novel_system.services.style_reference.planning_context import (
@@ -355,7 +355,7 @@ class SceneBlueprintService:
         ending_action / information_release / image_anchor / anti_summary_rule 决定的是作者
         怎样收场、怎样放信息——只看叙事机制与结构画像的摘要而看不到原文，蓝图仍会按房风
         写「动作收尾」。前缀按来源快照登记的同一份契约渲染（``runtime_contract=``），样例
-        窗口封顶 :data:`PLANNING_FEW_SHOT_K_CAP`，``context_text=None``（规划期没有稿子），
+        按规划口径渲染（``role=plan``：冻结选窗的前 3 窗），``context_text=None``（规划期没有稿子），
         并按最终 user prompt 压进模板预算（装不下时按整窗口卸载）。无绑定 → 提示词逐字不变；
         注入失败 → 回退基础 prompt（可选增强，绝不阻断规划）。
         """
@@ -371,8 +371,8 @@ class SceneBlueprintService:
                 task_type="scene_generation",
                 context_text=None,
                 final_user_prompt=final_user_prompt,
-                few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP,
                 runtime_contract=contract,
+                role=ROLE_PLAN,
             )
             return injected if injected is not None else prompt
         except Exception:  # noqa: BLE001 — 可选增强：注入失败只记日志，不阻断规划

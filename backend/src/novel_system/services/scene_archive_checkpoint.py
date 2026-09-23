@@ -2040,6 +2040,7 @@ class SceneArchiveCheckpoint:
             kind="style_drift",
             step_key="archive:style_drift:0",
             outcomes={
+                "recorded",
                 "not_applicable",
                 "no_op",
                 "observed",
@@ -2061,6 +2062,14 @@ class SceneArchiveCheckpoint:
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "style drift degraded product has no error code",
+                status_code=409,
+            )
+        if product.get("outcome") == "recorded" and not isinstance(
+            product.get("reading_id"), str
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "fidelity reading product has no reading id",
                 status_code=409,
             )
         return product

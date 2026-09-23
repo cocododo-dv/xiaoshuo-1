@@ -4,7 +4,8 @@
   各自为政：软 QC 按单个值猜量级，准定稿验收直接夹到 [0, 1]——9.3 变成 1.0，实库 3/3 次 overall_score 饱和为 1.0。
   这里按**一次回答里的全部分数**定量级（最大值 > 10 → 0–100，> 1 → 0–10，否则 0–1），再统一换算到 0–1。
   同一次回答里用同一把尺：9.3 → 0.93，不是 1.0。
-* **评审节点的样例窗数**：评审只看 4 窗（规划节点 3 窗，起草按绑定的窗数），同一场的评审不必把 12 窗再读一遍。
+* 评审节点的样例窗数不在这里：评审只看 4 窗（规划 3 窗）由渲染请求的角色决定（``inject.request.ROLE_K_CAPS``，
+  唯一定义；调用方传 ``role="review"``）。
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from typing import Any
 
 from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
 
-REVIEW_FEW_SHOT_K_CAP = 4
 JUDGE_SCALE_MAX = 10.0
 
 
@@ -72,7 +72,6 @@ def unit_to_judge_scale(value: Any) -> float | None:
 
 __all__ = [
     "JUDGE_SCALE_MAX",
-    "REVIEW_FEW_SHOT_K_CAP",
     "judge_dimension_scores",
     "score_scale",
     "to_unit",

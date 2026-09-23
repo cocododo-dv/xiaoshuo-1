@@ -62,11 +62,17 @@ from novel_system.services.style_reference.runtime_contract import (
 )
 from novel_system.services.style_prompt_injection import (  # noqa: F401  (re-export for callers/tests)
     PLACEMENT_USER_TAIL,
+    ROLE_DRAFT,
+    ROLE_REVISE,
     STYLE_USER_TAIL_KEY,
     STYLED_GATE_UNAVAILABLE_VERDICT,
     apply_style_user_tail,
+    frozen_situation_tags,
     inject_style_reference_prefix,
 )
+from novel_system.services.style_reference import readings as style_readings
+from novel_system.services.style_reference import style_step
+from novel_system.services.style_reference.fidelity import within_author_range
 
 _LOGGER = logging.getLogger(__name__)
 _PRE_DISPATCH_ACCOUNTING_REJECTIONS = frozenset(
@@ -138,6 +144,11 @@ class StyleGenerationResult:
     # 生成侧 styled-draft gate 的诊断字典（qc_engine.run_styled_draft_style_gate 的返回；
     # 无绑定时 None）。orchestrator 据此对 near_final_rewrite 的抄袭裁决采取行动。
     styled_draft_gate: dict[str, Any] | None = None
+    # 风格参考 v3（P5b）：「首稿即风格稿」（读数在作者范围内，风格步不调模型）的产品沿用首稿的调用谱系——
+    # llm_call_id / execution_step_key 是首稿那次调用的；检查点校验据此认它（见 orchestrator）。
+    lineage: str | None = None
+    # 风格步的决定（读数、要改的维、采用 / 保留首稿的原因），同一份也写进 AttemptTracker.details_json.style_step。
+    style_step: dict[str, Any] | None = None
 
 
 JSON_SCHEMA_INSTRUCTION = "Return JSON that matches the structured schema exactly."
@@ -155,6 +166,23 @@ STYLE_NOTICE_BANNED_TERM_HIT = "STYLE_BANNED_TERM_HIT"
 # styled-draft gate 自身没跑成（校验异常 / 契约损坏 / 参考书已删）：抄袭 / 禁用词检查
 # 没有执行过，不能与「无绑定」混为一谈。
 STYLE_NOTICE_GATE_UNAVAILABLE = "STYLE_GATE_UNAVAILABLE"
+# 风格参考 v3（P5b）：风格步按读数决定——首稿在作者范围内不调模型（信息级）；定向修改不更像 / 没过抄袭门时保留首稿
+# （信息级）；软补丁让稿子离作者更远时退回补丁前的稿子（信息级，STYLE_PATCH_REVERTED 由编排器写）。
+STYLE_NOTICE_FIRST_DRAFT_ACCEPTED = "STYLE_FIRST_DRAFT_ACCEPTED"
+STYLE_NOTICE_REVISION_REJECTED = "STYLE_REVISION_REJECTED"
+STYLE_NOTICE_PATCH_REVERTED = "STYLE_PATCH_REVERTED"
+# 注入适配器审计里的提示（inject.render / inject.selection 的 notices）原样用它们的码翻成风格链路 notice：
+# 书在冻结后改过（按当前索引挑样例）/ 云策略不让发原文 / 书不在了 / 书还没有样例窗口。
+STYLE_NOTICE_REFERENCE_BOOK_CHANGED = "STYLE_REFERENCE_BOOK_CHANGED"
+STYLE_NOTICE_REFERENCE_SAMPLES_BLOCKED = "STYLE_REFERENCE_SAMPLES_BLOCKED"
+STYLE_NOTICE_REFERENCE_BOOK_MISSING = "STYLE_REFERENCE_BOOK_MISSING"
+STYLE_NOTICE_REFERENCE_NO_WINDOWS = "STYLE_REFERENCE_NO_WINDOWS"
+_RENDER_AUDIT_NOTICE_MESSAGES: dict[str, str] = {
+    STYLE_NOTICE_REFERENCE_BOOK_CHANGED: "参考书的段落在冻结之后改过，本场按当前的窗口索引挑了样例。",
+    STYLE_NOTICE_REFERENCE_SAMPLES_BLOCKED: "这本参考书的云端策略不允许把原文发给当前模型，本场只用了文风卡与声音特征，没有原文样例。",
+    STYLE_NOTICE_REFERENCE_BOOK_MISSING: "绑定的参考书已不在书库里，本场没有原文样例。",
+    STYLE_NOTICE_REFERENCE_NO_WINDOWS: "参考书还没有可用的样例窗口（段落分类未完成或正文太少），本场没有原文样例。",
+}
 STYLE_NOTICE_CODES: frozenset[str] = frozenset(
     {
         STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL,
@@ -164,6 +192,10 @@ STYLE_NOTICE_CODES: frozenset[str] = frozenset(
         STYLE_NOTICE_BANNED_TERM_HIT,
         STYLE_NOTICE_GATE_UNAVAILABLE,
         STYLE_NOTICE_FIRST_DRAFT,
+        STYLE_NOTICE_FIRST_DRAFT_ACCEPTED,
+        STYLE_NOTICE_REVISION_REJECTED,
+        STYLE_NOTICE_PATCH_REVERTED,
+        *_RENDER_AUDIT_NOTICE_MESSAGES,
     }
 )
 # 生成侧要跑 styled-draft gate 的阶段：落库内容是 provider 的风格化输出、且会成为终稿
@@ -175,9 +207,12 @@ _STYLED_GATE_GENERATION_STAGES: frozenset[str] = frozenset(
 # 一次 completed 尝试）：style_draft 与 near_final_rewrite（step=scene_literary_rewrite）。
 # 2026-09-12 风格直起:style_first 下中性步位的首稿也带 notices(首稿直起 / 注入未命中 /
 # 抄袭或禁用词命中);neutral_first 下该步没有 notices,合并时自然为空。
+# 风格参考 v3（P5b）：软补丁的去留（保留 / 退回）记在 step=style_patch_keep 的尝试上。
+STYLE_PATCH_KEEP_STEP = style_step.STYLE_PATCH_KEEP_STEP
 STYLE_NOTICE_ATTEMPT_STEPS: tuple[str, ...] = (
     "neutral_draft",
     "style_draft",
+    STYLE_PATCH_KEEP_STEP,
     "scene_literary_rewrite",
 )
 # style_first 下 style_draft 步位看到的来源稿标签(模板按标签切换「重组」与「复读」)。
@@ -186,6 +221,9 @@ NEUTRAL_DRAFT_SOURCE_LABEL = "Approved Neutral Draft"
 # AttemptTracker.details_json.content_source 标记:首稿直起 / 复读稿回退到首稿。
 STYLE_FIRST_DRAFT_CONTENT_SOURCE = "style_first_draft"
 FIRST_DRAFT_FALLBACK_CONTENT_SOURCE = "first_draft_fallback"
+# 风格参考 v3（P5b）：风格步「首稿即风格稿」产品的谱系标记（StyleGenerationResult.lineage / 检查点描述符）。
+LINEAGE_FIRST_DRAFT_ACCEPTED = "first_draft_accepted"
+STYLE_STEP_VERSION = "style_step_v1"
 _STYLE_NOTICE_SEVERITIES = ("info", "warning", "error", "blocking")
 
 
@@ -275,7 +313,30 @@ def style_injection_notices(prompt: Mapping[str, Any] | None) -> list[dict[str, 
                 budget_fit=deepcopy(audit.get("budget_fit")),
             )
         ]
-    return []
+    return render_audit_notices(audit)
+
+
+def render_audit_notices(audit: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """注入适配器审计里的 ``notices``（书改过 / 原文被云策略挡下 / 书不在 / 没有样例窗口）→ 风格链路 notices。"""
+    if not isinstance(audit, Mapping):
+        return []
+    notices: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for code in audit.get("notices") or []:
+        code = str(code or "")
+        message = _RENDER_AUDIT_NOTICE_MESSAGES.get(code)
+        if message is None or code in seen:
+            continue
+        seen.add(code)
+        notices.append(
+            style_notice(
+                code,
+                message,
+                severity="warning",
+                samples_blocked=audit.get("samples_blocked") if code == STYLE_NOTICE_REFERENCE_SAMPLES_BLOCKED else None,
+            )
+        )
+    return notices
 
 
 _STYLED_GATE_STAGE_LABEL = {
@@ -497,6 +558,21 @@ def versioned_scene_artifact_id(
     return f"{prefix}_{scene_id}_{suffix}"
 
 
+def _policy_card(policy: Any) -> tuple[Any, dict[str, str]]:
+    """策略冻结的画像里的文风卡与作者的 ✓ / ✗（旧画像没有卡 → ``(None, {})``）。"""
+    from novel_system.services.style_reference.card import (
+        card_from_profile_json,
+        line_states_from_profile_json,
+    )
+    from novel_system.services.style_reference.runtime_contract import contract_layer
+
+    contract = getattr(policy, "contract", None)
+    layer = contract_layer(contract if isinstance(contract, Mapping) else None)
+    profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
+    profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
+    return card_from_profile_json(profile_json), line_states_from_profile_json(profile_json)
+
+
 def author_note_instruction(author_note: str | None) -> str:
     """Backward-compatible renderer; bundle injection now carries it to every stage."""
     return render_author_note_instruction(author_note)
@@ -591,6 +667,8 @@ class SceneGenerationService:
             bundle, author_note
         )
         notices: list[dict[str, Any]] = []
+        # 风格参考 v3：首稿显式按起草口径渲染，场面标签用 bundle 冻结的（蓝图给的）——没有就从场景设计推
+        first_draft_tags = frozen_situation_tags(bundle)
         if style_first:
             user_prompt = base_user_prompt + _style_first_length_instruction(scene)
             prompt = self._inject_style_reference(
@@ -601,6 +679,8 @@ class SceneGenerationService:
                 context_text=None,
                 final_user_prompt=user_prompt,
                 placement=PLACEMENT_USER_TAIL,
+                role=ROLE_DRAFT,
+                situation_tags=first_draft_tags,
             )
             user_prompt = apply_style_user_tail(prompt, user_prompt)
             notices = style_injection_notices(prompt)
@@ -690,6 +770,8 @@ class SceneGenerationService:
                     context_text=None,
                     final_user_prompt=repair_prompt,
                     placement=PLACEMENT_USER_TAIL,
+                    role=ROLE_DRAFT,
+                    situation_tags=first_draft_tags,
                 )
                 if style_first
                 else prompt
@@ -903,6 +985,27 @@ class SceneGenerationService:
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        policy = style_policy_for_bundle(bundle)
+        if policy.style_first:
+            # 风格参考 v3（P5b）：作者手笔直起时风格步按读数决定（在范围内不调模型；越界定向修改；不更像保留首稿）。
+            # neutral_first（阅读对照组）与未绑定仍走下面原来的「重组 / 复读」，逐字不变。
+            return self._style_first_step(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                policy=policy,
+                first_row_id=neutral_draft_row_id,
+                first_content=neutral_content,
+                author_note=author_note,
+                row_id=versioned_scene_artifact_id("draft_style", scene_id, bundle),
+                slot_key="initial:0",
+                slot_order=0,
+                execution_step_key="style_draft:0",
+                resume_base=resume_base,
+                product_callback=product_callback,
+                step_reconciler=None,
+                attempt_details_extra={"source_neutral_draft_row_id": neutral_draft_row_id},
+            )
         return self._run_style_generation(
             scene=scene,
             state=state,
@@ -967,6 +1070,30 @@ class SceneGenerationService:
 
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        policy = style_policy_for_bundle(bundle)
+        if policy.style_first:
+            # 风格参考 v3（P5b）：作者手笔直起时候选 = 首稿 + (N−1) 个定向修改，按读数 distance 排序
+            #（取代旧的候选重排风格分）；关键场景的匿名终选门照旧。
+            durable_products = dict(resume_products or {})
+            if not durable_products:
+                durable_products.update(
+                    (f"initial:{index}", candidate)
+                    for index, candidate in enumerate(resume_candidates or [])
+                )
+            return self._style_first_candidates(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                policy=policy,
+                first_row_id=neutral_draft_row_id,
+                first_content=neutral_content,
+                author_note=author_note,
+                n_candidates=n_candidates,
+                step_reconciler=step_reconciler,
+                resume_bases=dict(resume_bases or {}),
+                resume_products=durable_products,
+                product_callback=product_callback,
+            )
 
         # §6 dynamic quality weights — project-level style profile can shift
         # which adversarial dimensions matter most for this particular work.
@@ -1300,6 +1427,824 @@ class SceneGenerationService:
         assessment.selection_reason = "quality_order"
         return {**assessment.to_audit_dict(), "rerank": rerank}
 
+    # ------------------------------------------------------------------
+    # 风格参考 v3（P5b，L1 / N6）：作者手笔直起时的风格步——按读数决定
+    # ------------------------------------------------------------------
+    # 旧的「再靠近一层的复读」真实运行里 3/3 场越改越远。现在：读首稿 → 在作者正常范围内（或读数不可信）→ 不调模型，
+    # 首稿即风格稿；越界 → 只改越界的维（定向修改，模板 style_targeted_revision，走 style_draft 节点路由）→ 改完再读，
+    # 不更像（或没过抄袭门 / 安全门）就保留首稿。检查点次序（neutral_ready → hard_qc_ready → style_ready）与步位不变。
+
+    def _style_first_step(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        bundle: dict[str, Any],
+        policy: Any,
+        first_row_id: str,
+        first_content: str,
+        author_note: str | None,
+        row_id: str,
+        slot_key: str,
+        slot_order: int,
+        execution_step_key: str,
+        resume_base: StyleGenerationResult | None = None,
+        product_callback: (
+            Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
+        ) = None,
+        step_reconciler: Callable[[str], None] | None = None,
+        first_reading: Any = None,
+        first_reading_id: str | None = None,
+        candidate_mode: bool = False,
+        force_accept: bool = False,
+        temperature_override: float | None = None,
+        attempt_details_extra: dict[str, Any] | None = None,
+    ) -> StyleGenerationResult:
+        with _length_band_slack_for(bundle, scene):
+            if resume_base is not None:
+                return self._finish_style_first_resume(
+                    scene=scene,
+                    bundle=bundle,
+                    resume_base=resume_base,
+                    first_row_id=first_row_id,
+                    slot_key=slot_key,
+                    slot_order=slot_order,
+                    execution_step_key=execution_step_key,
+                    product_callback=product_callback,
+                )
+            thresholds = style_step.fidelity_thresholds()
+            if first_reading is None and first_reading_id is None:
+                first_reading, first_reading_id = self._record_first_draft_reading(
+                    scene, policy, first_row_id, first_content, thresholds
+                )
+            revise, gate_reason = style_step.style_step_gate(first_reading, thresholds)
+            if candidate_mode and first_reading is not None and first_reading.reliable:
+                # Best-of-N 的修改槽位：首稿在不在范围内都改（候选按 distance 排序，首稿永远在候选里）
+                revise, gate_reason = True, style_step.REASON_CANDIDATE_SLOT
+            if force_accept:
+                revise = False
+            if not revise:
+                return self._accept_first_draft(
+                    scene=scene,
+                    state=state,
+                    bundle=bundle,
+                    first_row_id=first_row_id,
+                    first_content=first_content,
+                    first_reading=first_reading,
+                    first_reading_id=first_reading_id,
+                    reason=gate_reason,
+                    thresholds=thresholds,
+                    row_id=row_id,
+                    slot_key=slot_key,
+                    slot_order=slot_order,
+                    product_callback=product_callback,
+                    attempt_details_extra=attempt_details_extra,
+                )
+            if step_reconciler is not None:
+                step_reconciler(execution_step_key)
+            return self._run_targeted_revision(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                policy=policy,
+                first_row_id=first_row_id,
+                first_content=first_content,
+                first_reading=first_reading,
+                first_reading_id=first_reading_id,
+                gate_reason=gate_reason,
+                thresholds=thresholds,
+                author_note=author_note,
+                row_id=row_id,
+                slot_key=slot_key,
+                slot_order=slot_order,
+                execution_step_key=execution_step_key,
+                product_callback=product_callback,
+                candidate_mode=candidate_mode,
+                temperature_override=temperature_override,
+                attempt_details_extra=attempt_details_extra,
+            )
+
+    def _record_first_draft_reading(
+        self,
+        scene: SceneCard,
+        policy: Any,
+        first_row_id: str,
+        first_content: str,
+        thresholds: Any,
+    ) -> tuple[Any, str | None]:
+        """读首稿并记一条 first_draft 读数（同一稿行幂等）；读数失败只记日志，按「读不出」处理。"""
+        try:
+            reading = style_readings.reading_for_text(self.session, policy, first_content)
+        except Exception:  # noqa: BLE001 — 读数是观察：失败按读不出处理（保留首稿）
+            _LOGGER.warning("first-draft fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
+            return None, None
+        row = style_readings.record_fidelity_reading(
+            self.session,
+            policy=policy,
+            text=first_content,
+            source=style_readings.SOURCE_PIPELINE,
+            stage=style_readings.STAGE_FIRST_DRAFT,
+            scene_id=scene.scene_id,
+            project_id=style_readings.scene_project_id(self.session, scene),
+            draft_ref=first_row_id,
+            reading=reading,
+            max_percentile=thresholds.style_step_max_percentile,
+        )
+        return reading, (row.reading_id if row is not None else None)
+
+    def _first_draft_lineage(self, first_row_id: str) -> tuple[str | None, str, str | None]:
+        """首稿的 (llm_call_id, execution_step_key, execution_id)——「首稿即风格稿」的产品沿用首稿那次调用的谱系。"""
+        row = self.session.get(SceneDraft, first_row_id)
+        llm_call_id = str(getattr(row, "generation_llm_call_id", "") or "") or None if row is not None else None
+        call = self.session.get(LlmCall, llm_call_id) if llm_call_id else None
+        step_key = str(getattr(call, "execution_step_key", "") or "") or "neutral_draft"
+        execution_id = str(getattr(call, "execution_id", "") or "") or None if call is not None else None
+        return llm_call_id, step_key, execution_id
+
+    @staticmethod
+    def _style_first_gate_decision(decision: Mapping[str, Any]) -> dict[str, Any]:
+        """产品回调里的门裁决：作者手笔直起时风格步不跑房风门（让位），只记风格步的决定。"""
+        return {
+            "triggered": False,
+            "rewrite_pass": 0,
+            "house_taste_gate": "deferred_to_reference",
+            "style_step": {
+                key: decision.get(key)
+                for key in ("version", "decision", "reason", "llm_call", "dimensions")
+                if key in decision
+            },
+        }
+
+    def _emit_style_first_products(
+        self,
+        product: StyleGenerationResult,
+        *,
+        first_row_id: str,
+        slot_key: str,
+        slot_order: int,
+        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+        decision: Mapping[str, Any],
+        emit_base: bool = True,
+    ) -> None:
+        if product_callback is None:
+            return
+        if emit_base:
+            product_callback(
+                slot_key,
+                "base",
+                product,
+                {
+                    "slot_order": slot_order,
+                    "source_neutral_draft_row_id": first_row_id,
+                    "gate_decision": None,
+                    "source_base_row_id": None,
+                },
+            )
+        product_callback(
+            slot_key,
+            "final",
+            product,
+            {
+                "slot_order": slot_order,
+                "source_neutral_draft_row_id": first_row_id,
+                "gate_decision": self._style_first_gate_decision(decision),
+                "source_base_row_id": product.row_id,
+                "de_template_outcome": {"status": "not_required"},
+            },
+        )
+
+    def _finish_style_first_resume(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        resume_base: StyleGenerationResult,
+        first_row_id: str,
+        slot_key: str,
+        slot_order: int,
+        execution_step_key: str,
+        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+    ) -> StyleGenerationResult:
+        """检查点里只有基稿（进程在基稿与终稿回调之间停了）：风格步基稿即终稿，补一次终稿回调。"""
+        if resume_base.bundle_id != bundle["bundle_id"] or resume_base.bundle_hash != bundle["bundle_snapshot_hash"]:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "resumed style base does not match its locked work item",
+                status_code=409,
+            )
+        decision: dict[str, Any] = {}
+        for attempt in self.session.execute(
+            select(AttemptTracker).where(
+                AttemptTracker.scene_id == scene.scene_id,
+                AttemptTracker.step == "style_draft",
+                AttemptTracker.status == "completed",
+                AttemptTracker.source_bundle_id == bundle["bundle_id"],
+            )
+        ).scalars():
+            details = attempt.details_json or {}
+            if details.get("row_id") == resume_base.row_id and isinstance(details.get("style_step"), dict):
+                decision = dict(details["style_step"])
+                break
+        resume_base.style_step = decision or resume_base.style_step
+        if decision.get("decision") == style_step.DECISION_FIRST_DRAFT_ACCEPTED:
+            resume_base.lineage = LINEAGE_FIRST_DRAFT_ACCEPTED
+        self._emit_style_first_products(
+            resume_base,
+            first_row_id=first_row_id,
+            slot_key=slot_key,
+            slot_order=slot_order,
+            product_callback=product_callback,
+            decision=decision,
+            emit_base=False,
+        )
+        return resume_base
+
+    def _accept_first_draft(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        bundle: dict[str, Any],
+        first_row_id: str,
+        first_content: str,
+        first_reading: Any,
+        first_reading_id: str | None,
+        reason: str,
+        thresholds: Any,
+        row_id: str,
+        slot_key: str,
+        slot_order: int,
+        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+        attempt_details_extra: dict[str, Any] | None = None,
+        notice_severity: str = "info",
+    ) -> StyleGenerationResult:
+        """首稿即风格稿：不调模型，风格稿行就是首稿原文（谱系沿用首稿那次调用）。"""
+        llm_call_id, step_key, execution_id = self._first_draft_lineage(first_row_id)
+        decision = {
+            "version": STYLE_STEP_VERSION,
+            "decision": style_step.DECISION_FIRST_DRAFT_ACCEPTED,
+            "reason": reason,
+            "llm_call": False,
+            "dimensions": [],
+            "first_reading": style_step.reading_brief(first_reading, reading_id=first_reading_id),
+            "revision_reading": None,
+            "thresholds": thresholds.audit() if hasattr(thresholds, "audit") else None,
+            "slot_key": slot_key,
+        }
+        if reason == style_step.REASON_TEMPLATE_MISSING:
+            notice = style_notice(
+                STYLE_NOTICE_REVISION_REJECTED,
+                "首稿测得与作者有明显差距，但这台机器的提示词快照里还没有定向修改模板（请运行 sync_prompt_templates），"
+                "这一场保留首稿。",
+                severity="warning",
+                reason=reason,
+            )
+        else:
+            notice = style_notice(
+                STYLE_NOTICE_FIRST_DRAFT_ACCEPTED,
+                {
+                    style_step.REASON_WITHIN_RANGE: "首稿读数在参考作者的正常范围内，风格步没有再调模型，首稿即风格稿。",
+                    style_step.REASON_READING_UNRELIABLE: "首稿太短（或参考书的样例窗口太少），读数不可信；为免越改越远，首稿即风格稿。",
+                    style_step.REASON_READING_UNAVAILABLE: "参考书还没有可用的读数尺子，风格步没有再调模型，首稿即风格稿。",
+                    style_step.REASON_CANDIDATE_SLOT: "首稿作为候选之一参与按读数排序。",
+                }.get(reason, "风格步保留了首稿。"),
+                severity=notice_severity,
+                reason=reason,
+                percentile=getattr(first_reading, "percentile", None),
+                distance=getattr(first_reading, "distance", None),
+            )
+        notices = [notice]
+        self.session.add(
+            SceneDraft(
+                row_id=row_id,
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                stage="style_draft",
+                content=first_content,
+                source_bundle_id=bundle["bundle_id"],
+                source_bundle_hash=bundle["bundle_snapshot_hash"],
+                generation_llm_call_id=llm_call_id,
+            )
+        )
+        self.session.flush()
+        self.session.add(
+            AttemptTracker(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                step="style_draft",
+                status="completed",
+                source_bundle_id=bundle["bundle_id"],
+                details_json={
+                    "row_id": row_id,
+                    "llm_call_id": llm_call_id,
+                    "source_draft_row_id": first_row_id,
+                    "content_source": style_step.CONTENT_SOURCE_FIRST_DRAFT_ACCEPTED,
+                    "lineage": LINEAGE_FIRST_DRAFT_ACCEPTED,
+                    "draft_mode": DRAFT_MODE_STYLE_FIRST,
+                    "notices": deepcopy(notices),
+                    "style_step": deepcopy(decision),
+                    **(attempt_details_extra or {}),
+                },
+            )
+        )
+        self.session.flush()
+        state.current_style_draft_row_id = row_id
+        state.latest_valid_draft_row_id = row_id
+        state.current_bundle_id = bundle["bundle_id"]
+        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+        self.session.flush()
+        product = StyleGenerationResult(
+            row_id=row_id,
+            content=first_content,
+            llm_call_id=llm_call_id or "",
+            bundle_id=bundle["bundle_id"],
+            bundle_hash=bundle["bundle_snapshot_hash"],
+            execution_step_key=step_key,
+            artifact_execution_id=execution_id,
+            notices=deepcopy(notices),
+            lineage=LINEAGE_FIRST_DRAFT_ACCEPTED,
+            style_step=deepcopy(decision),
+        )
+        self._emit_style_first_products(
+            product,
+            first_row_id=first_row_id,
+            slot_key=slot_key,
+            slot_order=slot_order,
+            product_callback=product_callback,
+            decision=decision,
+        )
+        return product
+
+    def _run_targeted_revision(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        bundle: dict[str, Any],
+        policy: Any,
+        first_row_id: str,
+        first_content: str,
+        first_reading: Any,
+        first_reading_id: str | None,
+        gate_reason: str,
+        thresholds: Any,
+        author_note: str | None,
+        row_id: str,
+        slot_key: str,
+        slot_order: int,
+        execution_step_key: str,
+        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+        candidate_mode: bool = False,
+        temperature_override: float | None = None,
+        attempt_details_extra: dict[str, Any] | None = None,
+    ) -> StyleGenerationResult:
+        """定向修改：只改越界的维（至多 4 维，重点维在前），改完再读；不更像 / 没过抄袭门 / 没过安全门 → 保留首稿。
+
+        ``candidate_mode``（Best-of-N 的修改槽位）：过了抄袭门与安全门就作为候选留下（候选之间按 distance 排序，
+        首稿永远在候选里），没过的槽位保留首稿原文（选择门按正文去重）。
+        """
+        template_name = "style_targeted_revision"
+        if not self._prompt_builder().has_template(template_name):
+            return self._accept_first_draft(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                first_row_id=first_row_id,
+                first_content=first_content,
+                first_reading=first_reading,
+                first_reading_id=first_reading_id,
+                reason=style_step.REASON_TEMPLATE_MISSING,
+                thresholds=thresholds,
+                row_id=row_id,
+                slot_key=slot_key,
+                slot_order=slot_order,
+                product_callback=product_callback,
+                attempt_details_extra=attempt_details_extra,
+            )
+        card, line_states = _policy_card(policy)
+        dimensions = style_step.revision_dimensions(first_reading, getattr(policy, "dimension_states", None))
+        differences = style_step.revision_differences(first_reading, dimensions)
+        card_lines = style_step.card_lines_for(card, dimensions, line_states=line_states)
+        fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
+        started_at = time.perf_counter()
+        prompt: dict[str, Any] | None = None
+        try:
+            prompt = self._prompt_builder().build(bundle["snapshot"], template_name)
+        except Exception as exc:
+            self._persist_generation_failure(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                llm_call_id=fallback_llm_call_id,
+                step="style_draft",
+                execution_step_key=execution_step_key,
+                started_at=started_at,
+                task_config=None,
+                prompt=prompt,
+                request_summary={},
+                exc=exc,
+                source_draft_row_id=first_row_id,
+            )
+            raise
+        base_prompt = prompt
+        prompt_parts = [
+            base_prompt["user_prompt"] + _author_note_instruction_for_bundle(bundle, author_note),
+            "",
+            f"## {FIRST_DRAFT_SOURCE_LABEL}",
+            first_content,
+            "",
+            f"Source Draft Row ID: {first_row_id}",
+            "",
+            style_step.revision_brief_sections(
+                dimensions=dimensions, differences=differences, card_lines=card_lines
+            ),
+            _style_length_instruction(
+                scene, source_length=_visible_char_count(first_content), style_first=True
+            ).strip(),
+        ]
+        if JSON_SCHEMA_INSTRUCTION not in base_prompt["user_prompt"]:
+            prompt_parts.extend(["", JSON_SCHEMA_INSTRUCTION])
+        user_prompt = "\n".join(part for part in prompt_parts if part is not None).strip()
+        prompt = self._inject_style_reference(
+            base_prompt,
+            scene,
+            task_type="scene_generation",
+            bundle=bundle,
+            context_text=first_content,
+            final_user_prompt=user_prompt,
+            placement=PLACEMENT_USER_TAIL,
+            role=ROLE_REVISE,
+            revise_dimensions=dimensions,
+        )
+        user_prompt = apply_style_user_tail(prompt, user_prompt)
+        notices: list[dict[str, Any]] = style_injection_notices(prompt)
+        try:
+            node_result = self._llm_runner.run(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                bundle_id=bundle["bundle_id"],
+                bundle_hash=bundle["bundle_snapshot_hash"],
+                node_id="style_draft",
+                step="style_draft",
+                prompt=prompt,
+                user_prompt=user_prompt,
+                source_draft_row_id=first_row_id,
+                source_draft_content=first_content,
+                temperature_override=temperature_override,
+                execution_step_key=execution_step_key,
+            )
+            revision_content = _extract_scene_text(node_result.response)
+        except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
+            self._record_runner_failure_attempt(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                step="style_draft",
+                prompt=prompt,
+                exc=exc,
+                source_draft_row_id=first_row_id,
+            )
+            if isinstance(exc, LLMNodeExecutionError):
+                self._raise_original_runner_error(exc)
+            raise
+
+        base_safety = _assess_style_base_rewrite(
+            scene=scene, source_content=first_content, rewritten_content=revision_content
+        )
+        copy_check = None
+        copy_blocked = False
+        try:
+            from novel_system.services.reference_copy_gate import check_reference_copy
+
+            copy_check = check_reference_copy(self.session, revision_content, policy=policy)
+            copy_blocked = bool(copy_check.blocked)
+        except Exception:  # noqa: BLE001 — 抄袭门查不成：按拦下处理（fail-closed），保留首稿
+            _LOGGER.warning("copy gate failed on targeted revision for scene %s", scene.scene_id, exc_info=True)
+            copy_blocked = True
+        try:
+            revision_reading = style_readings.reading_for_text(self.session, policy, revision_content)
+        except Exception:  # noqa: BLE001 — 读不出：按「不更像」处理
+            _LOGGER.warning("revision fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
+            revision_reading = None
+        if candidate_mode:
+            keep = bool(base_safety["accepted"]) and not copy_blocked and revision_reading is not None
+            keep_reason = (
+                style_step.REASON_BASE_UNSAFE
+                if not base_safety["accepted"]
+                else style_step.REASON_COPY_BLOCKED
+                if copy_blocked
+                else style_step.REASON_REVISION_UNREADABLE
+                if revision_reading is None
+                else style_step.REASON_CANDIDATE_SLOT
+            )
+        else:
+            keep, keep_reason = style_step.revision_keep_decision(
+                first_reading,
+                revision_reading,
+                copy_blocked=copy_blocked,
+                base_safe=bool(base_safety["accepted"]),
+                thresholds=thresholds,
+            )
+        rejected_row_id: str | None = None
+        if keep:
+            content = revision_content
+            content_source = style_step.CONTENT_SOURCE_TARGETED_REVISION
+            revision_row_ref = row_id
+        else:
+            rejected_hash = hashlib.sha256(revision_content.encode("utf-8")).hexdigest()[:10]
+            rejected_row_id = f"{row_id}_rejected_{rejected_hash}"
+            self.session.add(
+                SceneDraft(
+                    row_id=rejected_row_id,
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    stage="style_rejected",
+                    status="rejected",
+                    content=revision_content,
+                    source_bundle_id=bundle["bundle_id"],
+                    source_bundle_hash=bundle["bundle_snapshot_hash"],
+                    generation_llm_call_id=node_result.llm_call_id,
+                )
+            )
+            content = first_content
+            content_source = style_step.CONTENT_SOURCE_REVISION_NOT_CLOSER
+            revision_row_ref = rejected_row_id
+            notices.append(
+                style_notice(
+                    STYLE_NOTICE_REVISION_REJECTED,
+                    {
+                        style_step.REASON_NOT_CLOSER: "定向修改没有让稿子更像参考作者（读数没有变近），保留了首稿。",
+                        style_step.REASON_COPY_BLOCKED: "定向修改稿与参考书原文连续相同或用了受保护专名，已丢弃，保留首稿。",
+                        style_step.REASON_BASE_UNSAFE: "定向修改稿没过确定性安全门（长度 / 必写项 / 禁写内容 / 文本完整性），保留首稿。",
+                        style_step.REASON_REVISION_UNREADABLE: "定向修改稿读不出读数，无法确认更像，保留首稿。",
+                    }.get(keep_reason, "定向修改没有采用，保留首稿。"),
+                    severity="info",
+                    reason=keep_reason,
+                    first_distance=getattr(first_reading, "distance", None),
+                    revision_distance=getattr(revision_reading, "distance", None),
+                    rejected_candidate_row_id=rejected_row_id,
+                )
+            )
+        self.session.add(
+            SceneDraft(
+                row_id=row_id,
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                stage="style_draft",
+                content=content,
+                source_bundle_id=bundle["bundle_id"],
+                source_bundle_hash=bundle["bundle_snapshot_hash"],
+                generation_llm_call_id=node_result.llm_call_id,
+            )
+        )
+        self.session.flush()
+        revision_reading_row = style_readings.record_fidelity_reading(
+            self.session,
+            policy=policy,
+            text=revision_content,
+            source=style_readings.SOURCE_PIPELINE,
+            stage=style_readings.STAGE_REVISION,
+            scene_id=scene.scene_id,
+            project_id=style_readings.scene_project_id(self.session, scene),
+            draft_ref=revision_row_ref,
+            reading=revision_reading,
+            copy_check=copy_check,
+            max_percentile=thresholds.style_step_max_percentile,
+        )
+        styled_draft_gate: dict[str, Any] | None = None
+        if keep:
+            styled_draft_gate = self._styled_draft_style_gate(
+                scene, content, bundle=bundle, stage="style_draft"
+            )
+            notices.extend(_styled_draft_gate_notices(styled_draft_gate))
+        decision = {
+            "version": STYLE_STEP_VERSION,
+            "decision": (
+                style_step.DECISION_REVISION_KEPT if keep else style_step.DECISION_REVISION_REJECTED
+            ),
+            "reason": keep_reason,
+            "gate_reason": gate_reason,
+            "llm_call": True,
+            "dimensions": list(dimensions),
+            "differences": [item.get("text") for item in differences],
+            "card_line_count": sum(len(lines) for lines in card_lines.values()),
+            "first_reading": style_step.reading_brief(first_reading, reading_id=first_reading_id),
+            "revision_reading": style_step.reading_brief(
+                revision_reading,
+                reading_id=revision_reading_row.reading_id if revision_reading_row is not None else None,
+            ),
+            "copy_check": style_readings.copy_check_summary(copy_check),
+            "base_safety_accepted": bool(base_safety["accepted"]),
+            "thresholds": thresholds.audit() if hasattr(thresholds, "audit") else None,
+            "candidate_mode": bool(candidate_mode),
+            "slot_key": slot_key,
+        }
+        runtime_audit = (
+            deepcopy(prompt["_style_reference_runtime_audit"])
+            if isinstance(prompt, Mapping) and isinstance(prompt.get("_style_reference_runtime_audit"), dict)
+            else None
+        )
+        if runtime_audit is not None:
+            runtime_audit["generation_outcome"] = content_source
+            runtime_audit["draft_mode"] = DRAFT_MODE_STYLE_FIRST
+            runtime_audit["notice_codes"] = [item["code"] for item in notices]
+        self.session.add(
+            AttemptTracker(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                step="style_draft",
+                status="completed",
+                source_bundle_id=bundle["bundle_id"],
+                details_json={
+                    "row_id": row_id,
+                    "llm_call_id": node_result.llm_call_id,
+                    "source_draft_row_id": first_row_id,
+                    "template_name": template_name,
+                    "base_safety": base_safety,
+                    "rejected_candidate_row_id": rejected_row_id,
+                    "content_source": content_source,
+                    "draft_mode": DRAFT_MODE_STYLE_FIRST,
+                    "notices": deepcopy(notices),
+                    "style_step": deepcopy(decision),
+                    **({"styled_draft_gate": deepcopy(styled_draft_gate)} if styled_draft_gate is not None else {}),
+                    **({"style_reference_runtime": runtime_audit} if runtime_audit is not None else {}),
+                    **(attempt_details_extra or {}),
+                },
+            )
+        )
+        self.session.flush()
+        state.current_style_draft_row_id = row_id
+        state.latest_valid_draft_row_id = row_id
+        state.current_bundle_id = bundle["bundle_id"]
+        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+        self.session.flush()
+        product = StyleGenerationResult(
+            row_id=row_id,
+            content=content,
+            llm_call_id=node_result.llm_call_id,
+            bundle_id=bundle["bundle_id"],
+            bundle_hash=bundle["bundle_snapshot_hash"],
+            execution_step_key=execution_step_key,
+            notices=deepcopy(notices),
+            styled_draft_gate=deepcopy(styled_draft_gate),
+            style_step=deepcopy(decision),
+        )
+        self._emit_style_first_products(
+            product,
+            first_row_id=first_row_id,
+            slot_key=slot_key,
+            slot_order=slot_order,
+            product_callback=product_callback,
+            decision=decision,
+        )
+        return product
+
+    def _style_first_candidates(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        bundle: dict[str, Any],
+        policy: Any,
+        first_row_id: str,
+        first_content: str,
+        author_note: str | None,
+        n_candidates: int,
+        step_reconciler: Callable[[str], None] | None,
+        resume_bases: dict[str, StyleGenerationResult],
+        resume_products: dict[str, StyleGenerationResult],
+        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+    ) -> list[StyleGenerationResult]:
+        """Best-of-N（作者手笔直起）：候选 = 首稿 + (N−1) 个定向修改，按读数 distance 排序（最像的在前）。
+
+        首稿永远是槽位 initial:0（不调模型）；读数不可信 / 读不出时只有首稿一个候选。修改槽位不做分散度补候选
+        （它们是按测得的差异定向改的，不是独立采样）。关键场景的匿名终选门不变（按正文去重后给作者选）。
+        """
+        with _length_band_slack_for(bundle, scene):
+            thresholds = style_step.fidelity_thresholds()
+            first_reading, first_reading_id = self._record_first_draft_reading(
+                scene, policy, first_row_id, first_content, thresholds
+            )
+            usable = first_reading is not None and first_reading.reliable
+            try:
+                base_temp = self._llm_runner.task_config("style_draft").temperature
+            except KeyError:
+                base_temp = 0.7
+            slot_count = max(1, int(n_candidates)) if usable else 1
+            results: list[tuple[StyleGenerationResult, int]] = []
+            for idx in range(slot_count):
+                slot_key = f"initial:{idx}"
+                if slot_key in resume_products:
+                    results.append((resume_products[slot_key], idx))
+                    continue
+                row_id = versioned_scene_artifact_id("draft_style_cand", scene.scene_id, bundle) + f"_{idx}"
+                temperature = round(min(2.0, max(0.0, float(base_temp) + 0.05 * idx)), 3)
+                result = self._style_first_step(
+                    scene=scene,
+                    state=state,
+                    bundle=bundle,
+                    policy=policy,
+                    first_row_id=first_row_id,
+                    first_content=first_content,
+                    author_note=author_note,
+                    row_id=row_id,
+                    slot_key=slot_key,
+                    slot_order=idx,
+                    execution_step_key=f"style_draft:{idx}",
+                    resume_base=resume_bases.get(slot_key),
+                    product_callback=product_callback,
+                    step_reconciler=step_reconciler,
+                    first_reading=first_reading,
+                    first_reading_id=first_reading_id,
+                    candidate_mode=idx > 0,
+                    force_accept=idx == 0,
+                    temperature_override=temperature if idx > 0 else None,
+                    attempt_details_extra={
+                        "source_neutral_draft_row_id": first_row_id,
+                        "candidate_index": idx,
+                        "n_candidates": n_candidates,
+                        **({"temperature_override": temperature} if idx > 0 else {}),
+                    },
+                )
+                results.append((result, idx))
+            ranked = self._rank_style_first_candidates(
+                results, policy=policy, first_reading=first_reading, first_row_id=first_row_id
+            )
+            best = ranked[0]
+            state.current_style_draft_row_id = best.row_id
+            state.latest_valid_draft_row_id = best.row_id
+            state.current_bundle_id = bundle["bundle_id"]
+            state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+            if len(ranked) >= 2:
+                state.candidate_dispersion_score = round(_candidate_dispersion([c.content for c in ranked]), 4)
+            self.session.flush()
+            return ranked
+
+    def _rank_style_first_candidates(
+        self,
+        results: list[tuple[StyleGenerationResult, int]],
+        *,
+        policy: Any,
+        first_reading: Any,
+        first_row_id: str,
+    ) -> list[StyleGenerationResult]:
+        """按读数 distance 升序排（读不出的排最后，平手时槽位靠前的在前——首稿赢平手）；写每个候选的排序审计。"""
+        from novel_system.services.literary_quality import adversarial_rank_score
+
+        scored: list[tuple[StyleGenerationResult, int, Any]] = []
+        for result, idx in results:
+            if (result.content or "") == "":
+                reading = None
+            elif result.lineage == LINEAGE_FIRST_DRAFT_ACCEPTED or idx == 0:
+                reading = first_reading
+            else:
+                try:
+                    reading = style_readings.reading_for_text(self.session, policy, result.content)
+                except Exception:  # noqa: BLE001 — 读不出排最后
+                    reading = None
+            scored.append((result, idx, reading))
+        scored.sort(
+            key=lambda item: (
+                item[2] is None,
+                float(item[2].distance) if item[2] is not None else 0.0,
+                item[1],
+            )
+        )
+        seen_texts: dict[str, str] = {}
+        ranked: list[StyleGenerationResult] = []
+        max_percentile = style_step.fidelity_thresholds().style_step_max_percentile
+        for rank, (result, idx, reading) in enumerate(scored):
+            normalized = (result.content or "").strip()
+            duplicate_of = seen_texts.get(normalized)
+            seen_texts.setdefault(normalized, result.row_id)
+            copy_passed: bool | None = None
+            try:
+                from novel_system.services.reference_copy_gate import check_reference_copy
+
+                copy_passed = not check_reference_copy(self.session, result.content or "", policy=policy).blocked
+            except Exception:  # noqa: BLE001 — 抄袭门查不成：候选按未过处理（终选门会剔除）
+                copy_passed = False
+            result.ranking_audit = {
+                "row_id": result.row_id,
+                "rank": rank,
+                "selected": rank == 0,
+                "selection_reason": "fidelity_distance",
+                "slot_index": idx,
+                "quality_score": round(float(adversarial_rank_score(result.content or "")), 6),
+                "style_score": None,
+                "fidelity_distance": getattr(reading, "distance", None),
+                "fidelity_percentile": getattr(reading, "percentile", None),
+                "within_range": (
+                    within_author_range(reading, max_percentile=max_percentile) if reading is not None else None
+                ),
+                "duplicate_of_row_id": duplicate_of,
+                "plagiarism_checked": True,
+                "plagiarism_passed": copy_passed,
+                "rerank": {"applied_mode": "fidelity_distance", "reason": None},
+            }
+            ranked.append(result)
+        return ranked
+
     def generate_style_patch(
         self,
         scene_id: str,
@@ -1346,6 +2291,8 @@ class SceneGenerationService:
                 "source_style_draft_row_id": source_style_draft_row_id,
                 "rewrite_brief": rewrite_brief,
             },
+            # 风格参考 v3（P5b）：作者手笔直起时软补丁按改稿口径渲染（「只改不像的地方，已经像的原样留下」）
+            render_role=ROLE_REVISE if style_first else None,
         )
         state.soft_patch_count += 1
         return result
@@ -1424,6 +2371,7 @@ class SceneGenerationService:
             Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
         ) = None,
         step_reconciler: Callable[[str], None] | None = None,
+        render_role: str | None = None,
     ) -> StyleGenerationResult:
         fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
@@ -1486,6 +2434,7 @@ class SceneGenerationService:
             context_text=neutral_content,
             final_user_prompt=user_prompt,
             placement=PLACEMENT_USER_TAIL,
+            role=render_role,
         )
         user_prompt = apply_style_user_tail(prompt, user_prompt)
         # v2（规格 §2.W5.6）：注入命中与否、回退中性稿、styled-draft gate 命中都进
@@ -2572,6 +3521,9 @@ class SceneGenerationService:
         context_text: str | None = None,
         final_user_prompt: str | None = None,
         placement: str = "system",
+        role: str | None = None,
+        situation_tags: Sequence[str] | None = None,
+        revise_dimensions: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
         """PR-8 §5.1 — 把 active StyleProfile 注入到 prompt["system_prompt"] 头部。
 
@@ -2579,7 +3531,16 @@ class SceneGenerationService:
         soft_qc 阶段复用同一前缀；本方法只做委派，契约不变。
         2026-09-22 风格参考优先:起草通道传 ``placement=PLACEMENT_USER_TAIL``——样例块落到
         user 消息末尾,调用方随后用 :func:`apply_style_user_tail` 接上。
+        风格参考 v3（P5b）：调用方显式给角色（首稿 ``draft`` + bundle 冻结的场面标签；定向修改 / 软补丁 ``revise``
+        + 要改的维）；不给时适配器按落点推断（与旧行为相同）。
         """
+        extra: dict[str, Any] = {}
+        if role is not None:
+            extra["role"] = role
+        if situation_tags is not None:
+            extra["situation_tags"] = situation_tags
+        if revise_dimensions:
+            extra["revise_dimensions"] = revise_dimensions
         return inject_style_reference_prefix(
             self.session,
             prompt,
@@ -2589,6 +3550,7 @@ class SceneGenerationService:
             context_text=context_text,
             final_user_prompt=final_user_prompt,
             placement=placement,
+            **extra,
         )
 
     def _styled_draft_style_gate(
@@ -3821,9 +4783,7 @@ def _assess_style_anchor_conformance(
         from novel_system.services.style_reference.candidate_rerank import (
             build_style_target,
         )
-        from novel_system.services.style_reference.validation.quantitative import (
-            compute_generated_metrics,
-        )
+        from novel_system.services.style_reference.metrics import compute_generated_metrics
 
         target = build_style_target(contract_profile_objects(policy.contract))
         actual = compute_generated_metrics(text)
