@@ -1,6 +1,17 @@
 // ws-labels：章 / 场的叫法与章节状态词表（纯函数）。
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  LLM_NODE_LABELS,
+  PARAGRAPH_TYPE_LABELS,
+  STYLE_DIMENSIONS,
+  STYLE_DIMENSION_LABELS,
+  STYLE_LAYER_ORDER,
+  STYLE_MOOD_TAGS,
+  STYLE_SITUATION_TAGS,
+  WINDOW_POSITION_LABELS,
   CHAPTER_STATE_META,
   CHAPTER_STATE_ORDER,
   SCENE_STATE_META,
@@ -20,6 +31,9 @@ import {
   sceneLabelById,
   sceneNoLabel,
   sceneStateMeta,
+  styleDimensionLabel,
+  styleJobKindLabel,
+  styleLayerOf,
 } from "./ws-labels.js";
 
 const BOOK = [
@@ -117,5 +131,67 @@ describe("其余中文名", () => {
     expect(accountingStatusMeta("weird").label).toBe("其他");
     expect(llmNodeLabel("style_draft")).toBe("风格稿");
     expect(llmNodeLabel("unknown_node")).toBe("");
+  });
+});
+
+/* 风格参考的词表只有一张：16 维的名字、段落类型、场面 / 情绪标签都与后端源码逐字相同（读后端文件比对，
+   任何一边改名而另一边没改，这里就红）。 */
+const BACKEND_STYLE_REF = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../backend/src/novel_system/services/style_reference",
+);
+const readBackend = (name) => fs.readFileSync(path.join(BACKEND_STYLE_REF, name), "utf8");
+/* 取一段 Python 字面量 / 类体：head 以 { 或 ( 结尾时取到配对的右括号，否则取到下一个顶层 class */
+const pyBlock = (source, head) => {
+  const start = source.indexOf(head);
+  expect(start, `后端源码里找不到 ${head}`).toBeGreaterThanOrEqual(0);
+  const body = start + head.length;
+  const last = head.trim().slice(-1);
+  if (last === "{" || last === "(") return source.slice(body, source.indexOf(last === "{" ? "}" : ")", body));
+  const next = source.indexOf("\nclass ", body);
+  return source.slice(body, next < 0 ? undefined : next);
+};
+
+describe("风格参考词表与后端一致", () => {
+  it("16 维的键、顺序与名字和 card.DIMENSION_LABELS 逐字相同", () => {
+    const block = pyBlock(readBackend("card.py"), "DIMENSION_LABELS: dict[str, str] = {");
+    const backend = [...block.matchAll(/"([a-z_]+\.[a-z_]+)":\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]);
+    expect(backend).toHaveLength(16);
+    expect(Object.entries(STYLE_DIMENSION_LABELS)).toEqual(backend);
+    expect(STYLE_DIMENSIONS).toEqual(backend.map(([key]) => key));
+  });
+
+  it("场面 / 情绪标签与 tags.py 的 SITUATION_TAGS / MOOD_TAGS 同一套词、同一顺序", () => {
+    const source = readBackend("tags.py");
+    const words = (head) => [...pyBlock(source, head).matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(STYLE_SITUATION_TAGS).toEqual(words("SITUATION_TAGS: tuple[str, ...] = ("));
+    expect(STYLE_MOOD_TAGS).toEqual(words("MOOD_TAGS: tuple[str, ...] = ("));
+  });
+
+  it("段落类型覆盖后端 ParagraphType 的 8 类（外加分类作业还没轮到的「未分类」）", () => {
+    const block = pyBlock(readBackend("schemas.py"), "class ParagraphType(str, Enum):");
+    const backend = [...block.matchAll(/=\s*"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(backend).toHaveLength(8);
+    expect(Object.keys(PARAGRAPH_TYPE_LABELS).sort()).toEqual([...backend, "unclassified"].sort());
+  });
+
+  it("层、维、位置、作业的叫法都给中文，认不出的不硬造", () => {
+    expect(STYLE_LAYER_ORDER.map((layer) => STYLE_DIMENSIONS.filter((d) => styleLayerOf(d) === layer).length)).toEqual([4, 4, 4, 4]);
+    expect(styleDimensionLabel("scene.dialogue")).toBe("对话写法");
+    expect(styleLayerOf("bogus.key")).toBe("");
+    expect(WINDOW_POSITION_LABELS.opening).toBe("章首");
+    expect(WINDOW_POSITION_LABELS.closing).toBe("章末");
+    expect(styleJobKindLabel("classify")).toBe("段落分类");
+    expect(styleJobKindLabel("learn")).toBe("学习文风");
+    expect(styleJobKindLabel("check")).toBe("对照检查");
+    expect(styleJobKindLabel("nope")).toBe("");
+  });
+
+  it("参考书的模型节点：新节点有名字，删掉的节点不留名字", () => {
+    expect(LLM_NODE_LABELS.style_ref_protected_terms).toBe("参考书 · 识别本书专名");
+    expect(LLM_NODE_LABELS.style_ref_tag_windows).toBe("参考书 · 给片段打标签");
+    for (const gone of ["style_ref_supplement_evidence", "style_ref_preview_generate", "style_ref_rag_rerank"]) {
+      expect(LLM_NODE_LABELS[gone], gone).toBeUndefined();
+    }
   });
 });

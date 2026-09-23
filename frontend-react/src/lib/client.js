@@ -405,23 +405,32 @@ export async function apiGet(path, { signal, timeoutMs } = {}) {
    method、body 有无（undefined 表示无 body：不带 Content-Type/请求体，且幂等
    签名的载荷为空串）、adminToken 真值时附加 X-Admin-Token（空令牌不加头，
    保持无令牌 loopback 后端契约）。 */
+function isFormData(body) {
+  return typeof FormData !== "undefined" && body instanceof FormData;
+}
+
 async function mutationRequest(method, path, body, { adminToken = "", signal, timeoutMs, idempotencyKey = "" } = {}) {
   const clientRequestId = buildClientRequestId();
-  // 调用方显式给键（2026-09-15：风格参考的合成 / 重新分类要用同一个键去轮询服务端进度）时
-  // 直接用它，不进签名表；否则按「方法+路径+载荷」签名持键。
+  // 调用方显式给键（例如风格参考的导入：同一次导入重试时让后端重放）时直接用它，不进签名表；
+  // multipart（FormData，参考书上传）的载荷没法按内容签名：没给键就每次新配一个；
+  // 其余按「方法+路径+载荷」签名持键。
+  const form = isFormData(body);
   const { key, signature } = idempotencyKey
     ? { key: String(idempotencyKey), signature: null }
-    : acquireIdempotencyKey(method, path, body);
+    : form
+      ? { key: `${path}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, signature: null }
+      : acquireIdempotencyKey(method, path, body);
   try {
+    // FormData 不设 Content-Type：浏览器按 multipart 自己带上 boundary
     const headers = withAccessToken({
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(body === undefined || form ? {} : { "Content-Type": "application/json" }),
       "X-Idempotency-Key": key,
       "X-Operator-Ref": getOperatorRef(),
       "X-Client-Request-Id": clientRequestId,
     });
     if (adminToken) headers["X-Admin-Token"] = adminToken;
     const init = { method, headers };
-    if (body !== undefined) init.body = JSON.stringify(body);
+    if (body !== undefined) init.body = form ? body : JSON.stringify(body);
     const data = await requestEnvelope(path, init, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
     if (signature) releaseIdempotencyKey(signature);
     return data;

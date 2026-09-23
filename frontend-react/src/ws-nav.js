@@ -15,7 +15,7 @@ const WS_NAV_GROUPS = [
       { id: "home",      label: "主页", icon: "Home",      desc: "今天从哪一场写起", kw: "home zhuye shouye" },
       { id: "snowflake", label: "构思", icon: "Snowflake", desc: "雪花十步",         kw: "snowflake gousi xuehua" },
       { id: "writer",    label: "写作", icon: "Pen",       desc: "写作房间",         kw: "writer xiezuo fangjian" },
-      { id: "styleref",  label: "风格", icon: "Beaker",    desc: "参考书与风格画像", kw: "styleref fengge cankaoshu" },
+      { id: "styleref",  label: "风格", icon: "Beaker",    desc: "参考书、学习文风、用于作品", kw: "styleref fengge cankaoshu" },
       { id: "review",    label: "待办", icon: "Inbox",     desc: "待办收件箱",       kw: "review daiban shoujianxiang", liveBadge: true },
       { id: "library",   label: "资料", icon: "Library",   desc: "人物、设定与大事记", kw: "library ziliao renwu sheding" },
     ],

@@ -566,7 +566,6 @@ button:focus:not(:focus-visible) { outline: none; }
 /* ==========================================================
    Utility
    ========================================================== */
-.flex-1 { flex: 1 1 auto; min-width: 0; }
 /* 仍是给人读的字，用 --ink-3（--ink-4 只留给占位 / 禁用，夜间对比度不到 3:1） */
 .text-muted { color: var(--ink-3); }
 .text-serif { font-family: var(--font-serif); }

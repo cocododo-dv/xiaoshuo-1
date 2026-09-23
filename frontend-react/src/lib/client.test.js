@@ -80,6 +80,25 @@ describe("remote access token transport", () => {
     expect(secondKey).toBe(firstKey);
   });
 
+  it("sends FormData as multipart (no JSON content type) and honours an explicit idempotency key", async () => {
+    const form = new FormData();
+    form.append("title", "合成参考");
+    form.append("file", new Blob(["片段"], { type: "text/plain" }), "a.txt");
+
+    await apiPost("/upload", form, { idempotencyKey: "import-key-1" });
+    await apiPost("/upload", form);
+    await apiPost("/upload", form);
+
+    const [first, second, third] = global.fetch.mock.calls.map(([, options]) => options);
+    expect(first.body).toBe(form);
+    expect(first.headers["Content-Type"]).toBeUndefined();
+    expect(first.headers["X-Idempotency-Key"]).toBe("import-key-1");
+    // 没给键的 multipart：每次新配一个（载荷没法按内容签名，不能拿上一次的键重放）
+    expect(second.body).toBe(form);
+    expect(second.headers["X-Idempotency-Key"]).toEqual(expect.any(String));
+    expect(second.headers["X-Idempotency-Key"]).not.toBe(third.headers["X-Idempotency-Key"]);
+  });
+
   it("canonicalizes object key order when retaining an uncertain mutation", async () => {
     global.fetch
       .mockRejectedValueOnce(new TypeError("Load failed"))

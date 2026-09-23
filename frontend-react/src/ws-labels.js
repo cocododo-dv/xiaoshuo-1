@@ -7,7 +7,9 @@
    · CHAPTER_STATE_META —— 目录状态 → 中文叫法 / 语气色（ws-ui 的 tone）；SCENE_STATE_META —— 场的三态；
    · manuscriptStage —— 成稿中心看的是稿子走到哪一步，不是目录上手打的标签；
    · chapterLabel / sceneLabel / *ById —— 后端 id → 「第 N 章 · 章名」「第 N 章 · 第 M 场」；
-   · 待办来源、写作偏好、模型记账状态、模型节点的中文名。
+   · 待办来源、写作偏好、模型记账状态、模型节点的中文名；
+   · 风格参考的一张词表：16 维（与后端 card.DIMENSION_LABELS 逐字相同）、段落类型、样例窗口在章里的位置、
+     场面 / 情绪标签（与后端 tags.py 同一套词）、参考书作业的叫法。
    纯函数：章节列表由调用方传入（通常是 WsCatalog.get()），不读 store、不写 window。
    ========================================================== */
 
@@ -223,14 +225,11 @@ export const LLM_NODE_LABELS = {
   style_ref_extract_narrative: "参考书 · 叙事层抽取",
   style_ref_extract_scene: "参考书 · 场景层抽取",
   style_ref_extract_theme: "参考书 · 主题层抽取",
-  style_ref_supplement_evidence: "参考书 · 补抽证据",
-  style_ref_synthesize_profile: "参考书 · 合成画像",
+  style_ref_synthesize_profile: "参考书 · 写文风卡",
   style_ref_protected_terms: "参考书 · 识别本书专名",
   style_ref_tag_windows: "参考书 · 给片段打标签",
-  style_ref_preview_generate: "参考书 · 示例预览",
-  style_ref_validate_semantic: "参考书 · 语义回测",
-  style_ref_validate_forbidden: "参考书 · 禁用模式回测",
-  style_ref_rag_rerank: "参考书 · 检索重排",
+  style_ref_validate_semantic: "参考书 · 对照检查（评审）",
+  style_ref_validate_forbidden: "参考书 · 对照检查（作者不这么写）",
   scene_blueprint: "场景蓝图",
   character_pressure_blueprint: "人物压力蓝图",
   chapter_story_architecture: "章节故事架构",
@@ -256,4 +255,96 @@ export const LLM_NODE_LABELS = {
 
 export function llmNodeLabel(nodeId) {
   return LLM_NODE_LABELS[nodeId] || "";
+}
+
+/* ---------- 风格参考（参考书）：一张词表 ----------
+   16 维的名字与后端 services/style_reference/card.py 的 DIMENSION_LABELS 逐字相同（ws-labels.test.js 读后端源码
+   比对）；场面 / 情绪标签与后端 tags.py 的 SITUATION_TAGS / MOOD_TAGS 同一套词。风格参考的各页、起草台与成稿中心
+   说到这些词都从这里取，不再各写一份。 */
+
+export const STYLE_LAYER_ORDER = ["language", "narrative", "scene", "theme"];
+
+export const STYLE_LAYER_LABELS = {
+  language: "语言",
+  narrative: "叙事",
+  scene: "场景",
+  theme: "主题",
+};
+
+export const STYLE_DIMENSION_LABELS = {
+  "language.sentence_structure": "句式结构",
+  "language.vocabulary": "词汇选择",
+  "language.rhetoric": "修辞手法",
+  "language.punctuation": "标点节奏",
+  "narrative.perspective": "叙事视角",
+  "narrative.pacing": "节奏控制",
+  "narrative.time_handling": "时间处理",
+  "narrative.information_density": "信息密度",
+  "scene.environment": "环境描写",
+  "scene.character_portrayal": "人物刻画",
+  "scene.dialogue": "对话写法",
+  "scene.sensory_priority": "感官优先",
+  "theme.emotional_tone": "情感基调",
+  "theme.values": "价值取向",
+  "theme.motifs": "母题意象",
+  "theme.narrative_philosophy": "叙事哲学",
+};
+
+/* 16 维的固定顺序（语言 → 叙事 → 场景 → 主题，每层 4 维；与后端 SubDimension 同序） */
+export const STYLE_DIMENSIONS = Object.keys(STYLE_DIMENSION_LABELS);
+
+export function styleDimensionLabel(dimension) {
+  return STYLE_DIMENSION_LABELS[dimension] || String(dimension || "");
+}
+
+export function styleLayerOf(dimension) {
+  const layer = String(dimension || "").split(".", 1)[0];
+  return STYLE_LAYER_LABELS[layer] ? layer : "";
+}
+
+/* 段落类型（分类作业给每一段标的类型）；unclassified 是分类作业还没轮到的段。 */
+export const PARAGRAPH_TYPE_LABELS = {
+  narration: "叙述",
+  dialogue: "对话",
+  description_env: "环境",
+  psychology: "心理",
+  action: "动作",
+  description_char: "人物",
+  transition: "转场",
+  flashback: "闪回",
+  unclassified: "未分类",
+};
+
+export function paragraphTypeLabel(type) {
+  return PARAGRAPH_TYPE_LABELS[type] || String(type || "");
+}
+
+/* 样例窗口 / 场景在章里的位置 */
+export const WINDOW_POSITION_LABELS = {
+  opening: "章首",
+  closing: "章末",
+  whole: "整章",
+  middle: "章中",
+};
+
+export function windowPositionLabel(position) {
+  return WINDOW_POSITION_LABELS[position] || "";
+}
+
+/* 场面 / 情绪标签（学习作业给全书窗口打的、场景蓝图给一场标的，同一套词） */
+export const STYLE_SITUATION_TAGS = [
+  "日常闲谈", "对峙审问", "争吵冲突", "打斗追逐", "危机应对", "独处内省", "回忆往事", "说明设定",
+  "群像场面", "情感交流", "喜剧桥段", "悬疑揭示", "赶路转场", "计划商议", "开章引入", "收章落点",
+];
+export const STYLE_MOOD_TAGS = ["紧张", "诙谐", "伤感", "温情", "压抑", "热血", "荒诞", "悬疑", "平静", "恐惧"];
+
+/* 参考书的耗时作业（作业表的 kind） */
+export const STYLE_JOB_KIND_LABELS = {
+  classify: "段落分类",
+  learn: "学习文风",
+  check: "对照检查",
+};
+
+export function styleJobKindLabel(kind) {
+  return STYLE_JOB_KIND_LABELS[kind] || "";
 }

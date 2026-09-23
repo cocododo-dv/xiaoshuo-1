@@ -1,18 +1,18 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks } from "./ws-works.jsx";
-import { wsConfirm, wsToast } from "./ws-notify.jsx";
+import { wsToast } from "./ws-notify.jsx";
 import { useStoreTick } from "./lib/store-utils.js";
 import { EmptyState } from "./ws-ui.jsx";
-import { srConfigureHost, srDeepFor, srLoadDeep, srSubscribe } from "./ws-styleref-store.js";
+import { srErrorInfo } from "./ws-styleref-model.js";
+import { srConfigureHost, srSubscribe } from "./ws-styleref-store.js";
 
 /* ==========================================================
-   风格参考 · 各 stage 共用的界面零件
-   · srNotify / srActiveWork / srWorkTitle —— 提示、当前作品、作品名；
-     模块加载时经 srConfigureHost 交给 store（store 自己不 import 界面模块）
-   · useSrStore / useSrDeep —— 订阅 store 的频道重渲（lib/store-utils 的 useStoreTick），
-     useSrDeep 顺带懒加载这本书的深层数据
-   · SrMenu（页头「更多」）、SrStageEmpty（缺产物时的空态卡）、SrProgressBar（活动与概览的进度条）
+   风格参考 · 各页共用的界面零件
+   · srNotify / srActiveWork —— 提示、当前作品；当前作品在模块加载时经 srConfigureHost 交给 store
+   · useSrStore —— 订阅 store 的频道重渲（lib/store-utils 的 useStoreTick）
+   · SrErrorLine —— 出错的一句话 + 下一步按钮（去设置模型 / 打开这本 / 去学习文风）
+   · SrMenu（页头「更多」）、SrStageEmpty（缺前一步时的空态卡）、SrProgressBar（进度条）
    不写 window。
    ========================================================== */
 
@@ -22,7 +22,12 @@ export function srNotify(message, tone = "danger") {
   try { window.alert(message); } catch (e) { /* 无头环境 */ }
 }
 
-/* 当前作品（「用于当前作品」的判断、项目级绑定的名字）。书架还在加载（__loading__）或为空时返回 null。 */
+/* 出错时的一句话提示（按错误码给中文，见 srErrorInfo） */
+export function srNotifyError(error, fallback) {
+  srNotify(srErrorInfo(error, fallback).message);
+}
+
+/* 当前作品：书架还在加载（__loading__）或为空时返回 null */
 export function srActiveWork() {
   try {
     const w = WsWorks && typeof WsWorks.active === "function" ? WsWorks.active() : null;
@@ -34,50 +39,45 @@ export function srActiveWork() {
   }
 }
 
-/* 作品 id → 书名（绑定行、叠层行不印 PRJ_… 原始 id）；认不出返回 null。 */
-export function srWorkTitle(workId) {
-  if (!workId) return null;
-  try {
-    const list = WsWorks && typeof WsWorks.list === "function" ? WsWorks.list() : [];
-    const hit = (list || []).find((w) => w && w.id === workId);
-    if (hit && hit.title) return hit.title;
-  } catch (e) { /* 忽略 */ }
-  const active = srActiveWork();
-  return active && active.id === workId && active.title ? active.title : null;
-}
-
 srConfigureHost({
   activeWorkId: () => { const w = srActiveWork(); return w ? w.id : null; },
-  notify: srNotify,
-  confirm: wsConfirm,
 });
 
-/* 订阅 store 的若干频道（books / deep / activity），有变化就重渲。频道由调用方写成字面量。 */
+/* 订阅 store 的若干频道（books / detail / activity），有变化就重渲 */
 export function useSrStore(...channels) {
   useStoreTick(srSubscribe(...channels));
 }
 
-/* 这本书的深层数据：读缓存，没有就懒加载；缺数据的地方由各 stage 显示空态，不回退任何示例数据。 */
-export function useSrDeep(book) {
-  useSrStore("deep");
-  const bookId = book ? book.id : null;
-  React.useEffect(() => { if (bookId) srLoadDeep(bookId); }, [bookId]);
-  return bookId ? srDeepFor(bookId) : null;
+/* 出错的一句话 + 下一步。onAction(action) 由页面决定怎么走（去设置、打开书、跳到学习文风）。 */
+export function SrErrorLine({ error, onAction, className, testId }) {
+  if (!error) return null;
+  const info = srErrorInfo(error);
+  return (
+    <p className={`sr-error-line${className ? ` ${className}` : ""}`} role="alert" data-testid={testId} title={info.code ? `错误代码：${info.code}` : undefined}>
+      <I.AlertTriangle size={13} aria-hidden="true" />
+      <span>{info.message}</span>
+      {info.action && onAction && (
+        <button type="button" className="btn btn-quiet btn-xs" data-testid={testId ? `${testId}-action` : undefined} onClick={() => onAction(info.action)}>
+          {info.action.label}
+        </button>
+      )}
+    </p>
+  );
 }
 
-/* 进度条（参考书活动、概览的分类 / 抽取进度共用）：percent 0–100 */
+/* 进度条：percent 0–100 */
 export function SrProgressBar({ percent, label }) {
   return (
-    <div className="sr-import-bar" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
-      <span className="sr-import-bar-fill" style={{ width: `${percent}%` }} />
+    <div className="sr-progress" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+      <span className="sr-progress-fill" style={{ width: `${percent}%` }} />
     </div>
   );
 }
 
-/* 缺产物时的空态卡（画像 / 回测 / 注入共用）：说现状，给下一步。 */
-export function SrStageEmpty({ icon = "Sparkles", title, children, actionLabel, onAction }) {
+/* 缺前一步时的空态卡：说现状，给下一步 */
+export function SrStageEmpty({ icon = "Sparkles", title, children, actionLabel, onAction, testId }) {
   return (
-    <div className="card sr-stage-empty-card">
+    <div className="card sr-stage-empty-card" data-testid={testId}>
       <EmptyState icon={icon} title={title} actions={actionLabel ? <button type="button" className="btn btn-accent btn-sm" onClick={onAction}>{actionLabel}</button> : null}>
         {children}
       </EmptyState>
@@ -142,8 +142,7 @@ export function SrMenu({ label, items }) {
                 disabled={it.disabled}
                 title={it.title}
                 onClick={() => {
-                  // 先把焦点还给「更多」按钮再执行：菜单项马上卸载，随后打开的确认框会把「打开前的焦点」
-                  // 记成 body，取消后焦点就落到页面顶端去了。
+                  // 先把焦点还给「更多」按钮再执行：菜单项马上卸载，随后打开的确认框要记住正确的「打开前焦点」
                   setOpen(false);
                   if (btnRef.current) btnRef.current.focus();
                   if (it.onSelect) it.onSelect();
