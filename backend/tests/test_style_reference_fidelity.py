@@ -210,6 +210,24 @@ def test_dimension_states_weight_the_reading(luxun, zhuziqing) -> None:
     assert math.isfinite(everything.distance)
 
 
+def test_within_author_range_needs_percentile_and_clean_emphasized_dimensions(luxun) -> None:
+    dist = F.build_reference_distribution([f for _c, _t, f in luxun])
+    own = luxun[4][1]
+    plain = F.read_fidelity(own, dist)
+    assert F.within_author_range(plain, max_percentile=100.0)
+    assert F.within_author_range(plain.to_json(), max_percentile=100.0)
+    assert not F.within_author_range(plain, max_percentile=plain.percentile - 0.1)
+    assert not F.within_author_range({"percentile": None})
+    # 重点维有越界特征 → 不算在范围内,哪怕百分位够低
+    payload = plain.to_json() | {
+        "emphasized_dimensions": ["scene.dialogue"],
+        "out_of_band": [{"feature": "dialogue_char_share", "dimension": "scene.dialogue", "z": -2.5}],
+    }
+    assert not F.within_author_range(payload, max_percentile=100.0)
+    payload["emphasized_dimensions"] = ["language.punctuation"]
+    assert F.within_author_range(payload, max_percentile=100.0)
+
+
 def test_low_evidence_share_features_stay_out_of_the_gap_list() -> None:
     """两句对白里的引导动词份额是噪声:照算进距离,不告诉作者。"""
     windows = []
@@ -233,6 +251,8 @@ def test_feature_tables_cover_the_kernel_and_speak_plainly() -> None:
     assert set(F.FEATURE_DIMENSIONS) <= set(FEATURE_NAMES)
     assert set(F.FEATURE_DIMENSIONS.values()) <= set(ALL_DIMENSIONS)
     assert set(F.MEASURABLE_DIMENSIONS) == set(F.FEATURE_DIMENSIONS.values())
+    assert set(F.DIMENSION_FEATURES) == set(F.MEASURABLE_DIMENSIONS)
+    assert sorted(name for names in F.DIMENSION_FEATURES.values() for name in names) == sorted(F.FEATURE_DIMENSIONS)
     jargon = re.compile(r"[zZ]\b|分位|标准差|均值|方差|密度|比率|per_1k|feature")
     for name, entry in F.FEATURE_PHRASES.items():
         assert set(entry) == {"high", "low"}, name

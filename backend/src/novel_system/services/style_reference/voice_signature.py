@@ -455,18 +455,6 @@ def _author_words(top_words: Mapping[str, Any], group: str, *, limit: int = 3, m
     return result
 
 
-def _sentence_length_phrase(mean: float) -> str:
-    if mean < 8:
-        return "句子很短，多在十字以内"
-    if mean < 14:
-        return "句子偏短，多在十字上下"
-    if mean < 22:
-        return "句子多在十几二十字"
-    if mean < 32:
-        return "句子多在二三十字"
-    return "句子长，常在三十字以上"
-
-
 # 标点「常用 / 很少用」的绝对门槛(每千字):低于 rare 算几乎不用,高于 frequent 算常用。
 _PUNCT_HABITS: tuple[tuple[str, str, float, float], ...] = (
     ("punct_ellipsis_per_1k", "省略号", 0.2, 2.0),
@@ -506,13 +494,16 @@ def render_voice_habits(
     lexicon = load_kernel_lexicon()
     lines: list[str] = []  # 按重要性排列,超过 MAX_HABIT_LINES 从末尾截
 
-    # 1. 句长与起伏
+    # 1. 句长与起伏:平均几个字、短句与长句大约多长
     mean = value("sent_len_mean")
     if mean > 0:
-        line = _sentence_length_phrase(mean)
+        line = f"句子平均约{_cn_int(round(mean))}字"
+        short, long_ = value("sent_len_p10"), value("sent_len_p90")
+        if long_ > short > 0:
+            line += f"，短的{_cn_int(round(short))}字上下、长的{_cn_int(round(long_))}字上下"
         spread = value("sent_len_std") / mean
-        if spread >= 0.9:
-            line += "，长短交错明显，长句后常跟极短的句子"
+        if spread >= 0.75:
+            line += "，长短交错明显"
         elif 0 < spread <= 0.45:
             line += "，长短比较均匀"
         lines.append(line)

@@ -64,6 +64,10 @@ def test_dialogue_share_is_quoted_visible_chars_over_visible_chars() -> None:
     assert nested.quote_count == 1
     single_quoted = m.measure_text("‘走罢。’他说。")
     assert single_quoted.quote_count == 1 and m.dialogue_char_share(single_quoted) == pytest.approx(0.5)
+    # 不做完整测量的快速版与特征表同一个数(结构画像用它)
+    assert m.quoted_char_share(_PARAGRAPHS) == m.kernel_features(m.measure_paragraphs(_PARAGRAPHS))["dialogue_char_share"]
+    assert m.quoted_char_share(["\n".join(_PARAGRAPHS)]) == m.quoted_char_share(_PARAGRAPHS)
+    assert m.quoted_char_share([]) == 0.0
 
 
 def test_person_counts_only_look_at_narration() -> None:
@@ -89,6 +93,13 @@ def test_feature_table_keeps_the_voice_names_and_is_finite() -> None:
     assert all(isinstance(value, float) and math.isfinite(value) for value in features.values())
     assert m.text_features("") == {name: 0.0 for name in m.FEATURE_NAMES}
     assert m.text_features("。。！！——……") == {name: 0.0 for name in m.FEATURE_NAMES}
+
+
+def test_sentence_final_mo_after_question_words_is_not_a_particle() -> None:
+    """「什么？」「怎么？」收尾的是疑问代词;「吃过了么？」「知道么？」的「么」才是句末语气词。"""
+    measure = m.measure_text("你说什么？\n吃过了么？\n怎么？\n你知道么？\n走吧。")
+    assert measure.sentence_final_counts == {"么": 2, "吧": 1}
+    assert m.kernel_features(measure)["sentence_final_modal_ratio"] == pytest.approx(3 / 5)
 
 
 def test_quantities_and_latin_words() -> None:

@@ -175,6 +175,10 @@ def test_ensure_builds_windows_with_kernel_features_and_marker(session) -> None:
     assert len({w.typicality for w in windows}) > 1
     batch = W.window_texts(session, windows)
     assert batch == {w.window_no: W.window_text(session, w) for w in windows}
+    # 隔得远的窗口各查各的范围,结果一样
+    sparse = [windows[0], windows[-1]]
+    assert windows[-1].start_index - windows[0].end_index > 200
+    assert W.window_texts(session, sparse) == {w.window_no: batch[w.window_no] for w in sparse}
     ref = W.window_ref(windows[0])
     assert ref["window_no"] == 1 and "text" not in ref
 
@@ -316,8 +320,15 @@ def test_front_matter_and_paratext_never_enter_windows(session) -> None:
     assert max(w.chapter_no for w in windows) == 2
 
 
-def test_missing_or_empty_books_have_no_windows(session) -> None:
+def test_missing_or_empty_books_have_no_windows(session, monkeypatch) -> None:
     assert W.ensure_window_index(session, "win_nobody") == []
     book_id = seed_book(session, "win_empty", [])
     assert W.ensure_window_index(session, book_id) == []
     assert W.load_windows(session, book_id) == []
+    # 切不出一窗(每章都不到 600 字)的小书:标记记下 0 窗,之后不再每次重切
+    tiny = seed_book(session, "win_tiny", synthetic_rows("tiny", chapters=2, per_chapter=3))
+    assert W.ensure_window_index(session, tiny) == []
+    session.commit()
+    assert _stats(tiny)["window_index"]["window_count"] == 0
+    monkeypatch.setattr(W, "_build", lambda *a, **k: pytest.fail("an empty index must not be rebuilt"))
+    assert W.ensure_window_index(session, tiny) == []

@@ -171,21 +171,33 @@ def window_text(session: Session, window: StyleReferenceWindow | Mapping[str, An
     return "\n".join(_body_texts(_paragraph_rows(session, str(book_id), start, end)))
 
 
+# 批量取窗口正文时,相邻窗口之间隔着不到这么多段就并成一次查询(学习作业取全书 → 一次;起草选 12 窗 → 各查各的)
+_MERGE_GAP_PARAGRAPHS = 200
+
+
 def window_texts(session: Session, windows: Sequence[StyleReferenceWindow]) -> dict[int, str]:
-    """一批窗口的正文（``{window_no: text}``；同一本书一次查询取完所需范围）。"""
+    """一批窗口的正文（``{window_no: text}``；挨得近的窗口合并成一次范围查询）。"""
     result: dict[int, str] = {}
     by_book: dict[str, list[StyleReferenceWindow]] = {}
     for window in windows:
         by_book.setdefault(str(window.book_id), []).append(window)
     for book_id, items in by_book.items():
-        low = min(int(w.start_index) for w in items)
-        high = max(int(w.end_index) for w in items)
-        rows = _paragraph_rows(session, book_id, low, high)
-        indices = [int(row["paragraph_index"]) for row in rows]
+        items = sorted(items, key=lambda w: int(w.start_index))
+        groups: list[list[StyleReferenceWindow]] = []
         for window in items:
-            first = bisect_left(indices, int(window.start_index))
-            last = bisect_right(indices, int(window.end_index))
-            result[int(window.window_no)] = "\n".join(_body_texts(rows[first:last]))
+            if groups and int(window.start_index) - max(int(w.end_index) for w in groups[-1]) <= _MERGE_GAP_PARAGRAPHS:
+                groups[-1].append(window)
+            else:
+                groups.append([window])
+        for group in groups:
+            low = min(int(w.start_index) for w in group)
+            high = max(int(w.end_index) for w in group)
+            rows = _paragraph_rows(session, book_id, low, high)
+            indices = [int(row["paragraph_index"]) for row in rows]
+            for window in group:
+                first = bisect_left(indices, int(window.start_index))
+                last = bisect_right(indices, int(window.end_index))
+                result[int(window.window_no)] = "\n".join(_body_texts(rows[first:last]))
     return result
 
 
@@ -362,12 +374,14 @@ def ensure_window_index(session: Session, book_id: str, *, commit: bool = False)
         marker = index_marker(stats) or {}
         existing = _rows_for(session, book_id)
         same_root_rows = [w for w in existing if w.root_sha256 == root]
+        # 行与标记对得上(一窗都切不出的小书:标记记着 0 窗,也算对得上,不必每次重切)
+        recorded_empty = marker.get("window_count") == 0
+        rows_match = len(same_root_rows) == len(existing) and (bool(same_root_rows) or recorded_empty)
         same_shape = (
             marker.get("version") == WINDOW_INDEX_VERSION
             and marker.get("root") == root
             and marker.get("kernel_version") == KERNEL_VERSION
-            and bool(same_root_rows)
-            and len(same_root_rows) == len(existing)
+            and rows_match
         )
         if same_shape and int(marker.get("types_revision") or 0) == types_revision:
             return same_root_rows

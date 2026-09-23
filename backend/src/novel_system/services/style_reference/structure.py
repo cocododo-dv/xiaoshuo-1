@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from novel_system.services.style_reference.measure import quoted_char_share
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.text_utils import (
     is_paratext_paragraph,
@@ -587,7 +588,6 @@ def compute_structure_card(
     total_chars = sum(len(text) for text, _ptype, _index in body_rows)
     paragraph_count = len(body_rows)
     type_counts = Counter(ptype for _text, ptype, _index in body_rows)
-    dialogue_chars = sum(len(text) for text, ptype, _index in body_rows if ptype == "dialogue")
     entries = [
         _chapter_entry(index + 1, chapter, breaks_per_chapter[index] if index < len(breaks_per_chapter) else 0)
         for index, chapter in enumerate(chapters)
@@ -622,7 +622,10 @@ def compute_structure_card(
             "chapter_chars": _spread([entry["char_count"] for entry in entries]),
             "paragraphs_per_chapter": _spread([entry["paragraph_count"] for entry in entries]),
             "dialogue_share": _share(type_counts.get("dialogue", 0), paragraph_count),
-            "dialogue_char_share": _share(dialogue_chars, total_chars),
+            # 2026-09-23:对白字数占比用测量核的唯一定义(引号内可见字 ÷ 可见字),不再按段型标签算
+            "dialogue_char_share": round(
+                quoted_char_share(row["text"] for chapter in book_chapters for row in chapter.rows), 3
+            ),
             "paragraph_type_shares": {
                 ptype: _share(type_counts.get(ptype, 0), paragraph_count)
                 for ptype in _PARAGRAPH_TYPE_ORDER

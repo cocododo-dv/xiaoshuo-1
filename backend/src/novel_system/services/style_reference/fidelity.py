@@ -162,6 +162,10 @@ FEATURE_DIMENSIONS: dict[str, str] = {
 MEASURABLE_DIMENSIONS: tuple[str, ...] = tuple(
     dim for dim in ALL_DIMENSIONS if dim in set(FEATURE_DIMENSIONS.values())
 )
+# 反查:可测维 → 它的测量核特征(文风卡 ``DimensionEntry.measurable_features`` / 定向修改用)
+DIMENSION_FEATURES: dict[str, tuple[str, ...]] = {
+    dim: tuple(name for name in FEATURE_NAMES if FEATURE_DIMENSIONS.get(name) == dim) for dim in MEASURABLE_DIMENSIONS
+}
 
 # 给作者看、也写进定向修改提示的白话短语：(比作者多时, 比作者少时)。不出现统计术语。
 FEATURE_PHRASES: dict[str, dict[str, str]] = {
@@ -573,6 +577,30 @@ def read_fidelity(
     )
 
 
+# 「在作者正常范围内」的百分位上限。临时默认值:真实参考书上随机 30 段原文九成 ≤ 90;
+# 上线前用真实模型小规模 A/B 定(契约 §6 第 5 步),风格步与界面都经 ``within_author_range`` 读这一处。
+DEFAULT_MAX_PERCENTILE = 90.0
+
+
+def within_author_range(
+    reading: FidelityReading | Mapping[str, Any],
+    *,
+    max_percentile: float = DEFAULT_MAX_PERCENTILE,
+) -> bool:
+    """读数是否在作者正常范围内:百分位 ≤ 上限,且「重点」维没有越界特征(接受读数对象或 ``to_json()``)。"""
+    payload = reading.to_json() if isinstance(reading, FidelityReading) else dict(reading or {})
+    try:
+        percentile = float(payload.get("percentile"))
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(percentile) or percentile > float(max_percentile):
+        return False
+    emphasized = set(payload.get("emphasized_dimensions") or ())
+    return not any(
+        isinstance(item, Mapping) and item.get("dimension") in emphasized for item in payload.get("out_of_band") or ()
+    )
+
+
 # ---------------------------------------------------------------------------
 # 按书的参照分布（缓存）
 # ---------------------------------------------------------------------------
@@ -685,6 +713,8 @@ def recent_gap_phrases(
 
 
 __all__ = [
+    "DEFAULT_MAX_PERCENTILE",
+    "DIMENSION_FEATURES",
     "DIMENSION_SCORE_SLOPE",
     "FEATURE_DIMENSIONS",
     "FEATURE_PHRASES",
@@ -705,4 +735,5 @@ __all__ = [
     "reading_from_features",
     "recent_gap_phrases",
     "reference_distribution_for_book",
+    "within_author_range",
 ]

@@ -144,6 +144,8 @@ _QUOTE_SPAN_RE = re.compile(
     r"|\"([^\"\n]{1,600})\""
 )
 _OPENING_QUOTES: tuple[str, ...] = ("“", "‘", "「", "『", '"')
+# 句末「么」前面是这些字时是疑问代词 / 副词(什么、怎么、那么、这么、多么、要么),不是语气词
+_MO_QUESTION_WORD_HEADS = frozenset("什怎那这多要")
 _PAUSE_CHARS = "，、；：,;:"
 _TRAILING_STRIP = "”’」』\"'）)】〕］ \t　。！？.!?…；;"
 _PRE_WINDOW_CUT = "。！？；!?;…”’」』\n"
@@ -473,18 +475,40 @@ def _cut_post_window(paragraph: str, end: int) -> str:
     return window.strip()
 
 
+def quote_spans(paragraph: str) -> list[tuple[int, int, int]]:
+    """段内引语跨度 [(start, end, 引号内可见字)]——全系统唯一的对白定义(嵌套引号归外层)。"""
+    spans: list[tuple[int, int, int]] = []
+    for match in _QUOTE_SPAN_RE.finditer(paragraph):
+        inner = next((group for group in match.groups() if group is not None), "")
+        spans.append((match.start(), match.end(), visible_length(inner)))
+    return spans
+
+
+def quoted_char_share(paragraphs: Iterable[str]) -> float:
+    """引号内可见字 ÷ 可见字:与 ``kernel_features`` 的 ``dialogue_char_share`` 同一定义、同一分段规则,
+    不做完整测量(结构画像这类只要这一个数的地方用)。"""
+    quoted = 0
+    total = 0
+    for item in paragraphs or ():
+        raw = str(item or "").replace("\r\n", "\n").replace("\r", "\n")
+        for line in raw.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            total += visible_length(line)
+            quoted += sum(inner for _start, _end, inner in quote_spans(line))
+    return _round(share(quoted, total))
+
+
 def _analyze_dialogue(
     paragraph: str,
     lexicon: KernelLexicon,
     guides: Counter[str],
     verbs: Counter[str],
 ) -> list[tuple[int, int, int]]:
-    """段内引语跨度 [(start, end, 引号内可见字)]；引导位置（pre / post / none）与引导动词记进传入的计数器。"""
-    spans: list[tuple[int, int, int]] = []
-    for match in _QUOTE_SPAN_RE.finditer(paragraph):
-        start, end = match.span()
-        inner = next((group for group in match.groups() if group is not None), "")
-        spans.append((start, end, visible_length(inner)))
+    """段内引语跨度(``quote_spans``);引导位置(pre / post / none)与引导动词记进传入的计数器。"""
+    spans = quote_spans(paragraph)
+    for start, end, _inner in spans:
         pre = _cut_pre_window(paragraph, start)
         verb: str | None = None
         placement = "none"
@@ -680,6 +704,8 @@ def _measure(paragraphs: Sequence[str], *, detailed: bool = True) -> TextMeasure
             sentence_chars.append(visible_length(sentence))
             tail = sentence.rstrip(_TRAILING_STRIP)
             last = tail[-1:] if tail else ""
+            if last == "么" and tail[-2:-1] in _MO_QUESTION_WORD_HEADS:
+                last = ""  # 「什么 / 怎么 / 那么」收尾的问句:疑问代词,不是句末语气词
             if last in lexicon.sentence_final_modal:
                 final_modal += 1
                 final_counter[last] += 1
@@ -1007,6 +1033,8 @@ __all__ = [
     "measure_text",
     "per_1k",
     "quantile",
+    "quote_spans",
+    "quoted_char_share",
     "robust_center_scale",
     "robust_scale",
     "share",
