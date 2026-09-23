@@ -91,6 +91,7 @@
   display: flex; flex-direction: column; gap: 2px; padding: 6px 9px; white-space: nowrap;
   border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--paper-0); box-shadow: var(--shadow-md);
 }
+.fid-tip.is-below { transform: translate(-50%, 6px); }
 .fid-tip-value { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-1); }
 .fid-tip-where, .fid-tip-when { font-size: 11px; color: var(--ink-3); }
 .fid-trend-axis-row { display: flex; justify-content: space-between; padding: 2px 20px 0 44px; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }

@@ -292,9 +292,12 @@ export function FidelityTrend({ trend, labelOf = null, maxPercentile = 90, testI
           </svg>
           {tip && (
             <div
-              className="fid-tip"
+              className={`fid-tip${yOf(current.rank) < 64 ? " is-below" : ""}`}
               role="status"
-              style={{ left: `${Math.min(Math.max(xOf(current.index), 90), width - 90)}px`, top: `${Math.max(0, yOf(current.rank) - 12)}px` }}
+              style={{
+                left: `${Math.min(Math.max(xOf(current.index), 90), width - 90)}px`,
+                top: `${yOf(current.rank) < 64 ? yOf(current.rank) + 12 : Math.max(0, yOf(current.rank) - 12)}px`,
+              }}
             >
               <b className="fid-tip-value">{tip.what}</b>
               <span className="fid-tip-where">{tip.where}</span>

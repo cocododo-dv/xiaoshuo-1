@@ -131,7 +131,7 @@ export function SrCheck({ book, go, onAction }) {
               className="textarea sr-check-textarea"
               rows={9}
               value={text}
-              maxLength={CHECK_MAX_CHARS}
+              aria-invalid={count > CHECK_MAX_CHARS ? "true" : undefined}
               placeholder="贴一段你写的文字……一整场（上千字）量得最准。"
               data-testid="sr-check-text"
               onChange={(e) => setText(e.target.value)}
