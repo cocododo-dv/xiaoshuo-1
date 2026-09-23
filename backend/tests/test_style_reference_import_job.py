@@ -966,26 +966,24 @@ def test_local_only_import_under_a_cloud_classify_route_is_refused_in_chinese(cl
     assert fake.calls == []
 
 
-# ---------------------------------------------------------------- activity / compat progress
+# ---------------------------------------------------------------- activity
 
 
-def test_activity_lists_the_job_and_a_compat_alias(client: TestClient, monkeypatch) -> None:
-    """活动清单:作业条目(新界面只认它)+ 带 ``compat_alias_of`` 的旧别名条目(P7 删);旧的导入进度轮询端点已删。"""
+def test_activity_lists_the_classification_job(client: TestClient, monkeypatch) -> None:
+    """活动清单:分类作业只有一条作业条目(``job:<id>``);没有给旧前端的别名条目,旧的导入进度轮询端点已删。"""
     gated = install_fake_classifier(monkeypatch, ScriptedClassifier(gate_call=2))
     monkeypatch.setattr(import_job, "PARALLEL_BATCHES", 1)
     book_id = import_book(client, key="act-key", text=LONG_TEXT, fake=gated, wait=False)
     assert gated.entered.wait(timeout=20)
     items = client.get(f"{PREFIX}/activity").json()["data"]["items"]
-    by_key = {item["key"]: item for item in items}
+    assert len([item for item in items if item["kind"] == "classify"]) == 1
     canonical = next(item for item in items if item["key"].startswith("job:"))
-    assert canonical["kind"] == "classify" and canonical["status"] == "running"
+    assert canonical["kind"] == "classify" and canonical["status"] == "running" and canonical["phase"] == "classify"
     assert canonical["book_id"] == book_id and canonical["title"] == "测试" and canonical["mode"] == "import"
+    assert canonical["op_key"] == "act-key"
     assert canonical["steps"] == {"done": 1, "total": 17}
     assert canonical["cancellable"] is True
-    alias = by_key["act-key"]
-    assert alias["compat_alias_of"] == canonical["key"]
-    assert alias["kind"] == "import" and alias["status"] == "running" and alias["phase"] == "classify"
-    assert alias["classify"]["batches_done"] == 1 and alias["classify"]["batches_total"] == 17
+    assert not any(item["key"] == "act-key" or "compat_alias_of" in item for item in items)
     assert client.get(f"{PREFIX}/imports/act-key/progress").status_code == 404
     gated.gate.set()
     wait_book_status(client, book_id)
