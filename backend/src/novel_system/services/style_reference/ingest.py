@@ -9,7 +9,7 @@
   4. ``source_safety`` 扫描、``assess_input_size``;
   5. 切段 → 剥副文本 → 场界(与切段同一口径,剥副文本时重映射,见 ``text_utils.scene_break_indexes``);
      清洗 / 切段后没有正文 → 400 ``STYLE_REFERENCE_BOOK_EMPTY``;
-  6. **批量**落书与段落行(26,616 段:逐行 add+flush 12 s → 一次 executemany);
+  6. **批量**落书与段落行(实测 26,616 段:逐行 add+flush 12–15 s → 一次 executemany ≈1.1 s);
   7. 产品模式(``llm_enabled=True``):段落行类型 ``unclassified``、书 ``ingesting``,建一个 ``classify``
      作业(``import_job``),调用方提交后派发;整本 LLM 分类、统计、声音签名、书置 ``ready`` 都在作业里。
 

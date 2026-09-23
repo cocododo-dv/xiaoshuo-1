@@ -551,6 +551,23 @@ def test_restart_leaves_a_stale_running_job_that_the_sweeper_requeues_and_a_new_
     assert len(fake.calls) == 17
 
 
+def test_app_startup_sweeps_and_finishes_a_job_left_by_a_dead_process(session, monkeypatch) -> None:
+    """lifespan 启动常驻清扫线程:进程重启后第一次清扫就把心跳过期的作业放回队列并派发,不需要人工介入。"""
+    from novel_system.api.app import create_app
+    from novel_system.services.style_reference import jobs
+
+    fake = _use(monkeypatch, ScriptedClassifier())
+    book_id, job_id = _ingest(session)
+    _claim_as_dead_worker(job_id)
+    with TestClient(create_app()) as client:
+        assert jobs._SWEEPER is not None and jobs._SWEEPER.is_alive()
+        assert jobs.registered_job_handler("classify") is import_job.run_classification_job
+        book = wait_book_status(client, book_id)
+    assert jobs._SWEEPER is None and jobs._SWEEPER_STOP.is_set()
+    assert book["classification"]["state"] == "succeeded" and book["classification"]["attempt"] == 2
+    assert len(fake.calls) == 17
+
+
 def test_cancel_of_a_stale_running_job_finishes_in_the_request(session, monkeypatch) -> None:
     _use(monkeypatch, ScriptedClassifier())
     book_id, job_id = _ingest(session)
@@ -978,3 +995,22 @@ def test_activity_lists_the_job_and_a_compat_alias_and_the_progress_alias_finds_
     assert done["status"] == "succeeded" and done["percent"] == 100 and done["paragraphs_count"] == 60
     missing = client.get(f"{PREFIX}/imports/no-such-key/progress")
     assert missing.status_code == 404
+
+
+def test_startup_marks_books_left_by_the_old_cursor_state_machine_as_failed(session, monkeypatch) -> None:
+    """升级前书上 JSON 游标的分类没有作业行可续:启动时标 failed(「继续分类」建新作业),有活动作业的书不动。"""
+    _use(monkeypatch, ScriptedClassifier())
+    live_book, _live_job = _ingest(session)  # ingesting + queued 作业:正常在分类
+    orphan_a, job_a = _ingest(session, text=LONG_TEXT + "甲".encode("utf-8"), op_key="k-a")
+    orphan_b, job_b = _ingest(session, text=LONG_TEXT + "乙".encode("utf-8"), op_key="k-b")
+    with SessionLocal() as other:
+        other.execute(delete(StyleReferenceJob).where(StyleReferenceJob.job_id.in_([job_a, job_b])))
+        other.execute(
+            update(StyleReferenceBook).where(StyleReferenceBook.book_id == orphan_b).values(status="cancelling")
+        )
+        other.commit()
+    with SessionLocal() as other:
+        fixed = import_job.fail_orphaned_classifications(other)
+    assert sorted(fixed) == sorted([orphan_a, orphan_b])
+    assert _book(orphan_a).status == _book(orphan_b).status == "failed"
+    assert _book(live_book).status == "ingesting"

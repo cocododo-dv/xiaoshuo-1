@@ -269,6 +269,22 @@ def cancel_classification(session: Session, book_id: str) -> StyleReferenceJob |
     return job
 
 
+def fail_orphaned_classifications(session: Session) -> list[str]:
+    """启动时收拾旧状态机留下的书:状态还是 ``ingesting`` / ``cancelling``、却没有排队或运行中的分类作业
+    (2026-09-23 之前书上 JSON 游标的分类,没有作业行可以续)——标 ``failed``,「继续分类」会给它建一个
+    新作业。有活动作业的书不动(书的状态与作业同一事务写,``ingesting`` 且有作业 = 正常在分类)。"""
+    fixed: list[str] = []
+    books = session.scalars(
+        select(StyleReferenceBook).where(StyleReferenceBook.status.in_(("ingesting", "cancelling")))
+    ).all()
+    for book in books:
+        if active_classification_job(session, book.book_id) is None:
+            book.status = "failed"
+            fixed.append(book.book_id)
+    session.commit()
+    return fixed
+
+
 def count_paragraphs(session: Session, book_id: str) -> int:
     return int(
         session.scalar(
@@ -1231,6 +1247,7 @@ __all__ = [
     "count_paragraphs",
     "create_classification_job",
     "estimate_classification",
+    "fail_orphaned_classifications",
     "find_job_by_op_key",
     "latest_classification_job",
     "legacy_progress_snapshot",

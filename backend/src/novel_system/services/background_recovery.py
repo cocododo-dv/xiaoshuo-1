@@ -288,6 +288,17 @@ def run_startup_recovery() -> dict[str, Any]:
         summary["style_reference_runs"] = {"error": "scan_failed"}
 
     try:
+        # 风格参考 v3:分类作业的续跑由作业表的常驻清扫线程负责(lifespan 里启动);这里只收拾
+        # 旧的书上 JSON 游标状态机留下、没有作业行可续的书(标 failed,作者「继续分类」建新作业)。
+        from novel_system.services.style_reference.import_job import fail_orphaned_classifications
+
+        with SessionLocal() as session:
+            summary["style_reference_orphaned_classifications"] = fail_orphaned_classifications(session)
+    except Exception:  # pragma: no cover - startup boundary
+        logger.exception("startup recovery failed while scanning orphaned style-reference classifications")
+        summary["style_reference_orphaned_classifications"] = {"error": "scan_failed"}
+
+    try:
         with SessionLocal() as session:
             summary["validation_reports_failed"] = recover_validation_reports(session)
     except Exception:  # pragma: no cover - startup boundary
