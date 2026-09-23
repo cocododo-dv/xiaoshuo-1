@@ -157,6 +157,8 @@ describe("对照检查作业与出错", () => {
   it("出错按错误码说中文并给下一步；英文原话不给作者看", () => {
     expect(fidErrorInfo({ code: "STYLE_REFERENCE_LLM_REQUIRED", message: "no llm" })).toMatchObject({ action: { type: "settings", label: "去设置模型" } });
     expect(fidErrorInfo({ code: "STYLE_REFERENCE_CHECK_NOT_BOUND" }).action.type).toBe("apply");
+    // 作业边界记下的异常串夹几个汉字也不给作者看（与风格参考同一个口径 lib/messages.js）
+    expect(fidErrorInfo({ code: "STYLE_REFERENCE_JOB_FAILED", message: "TypeError: 无法读取属性" }).message).toBe("对照检查没有完成，可以重新检查。");
     expect(fidErrorInfo({ code: "STYLE_REFERENCE_CHECK_REFERENCE_EMPTY" }).action.type).toBe("learn");
     const judge = fidErrorInfo({ code: "STYLE_REFERENCE_CHECK_JUDGE_FAILED", message: "judge failed" });
     expect(judge.message).toContain("模型的参考评审没有完成");

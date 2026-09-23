@@ -8,6 +8,7 @@
    词表（16 维、段落类型、章内位置、场面 / 情绪标签、作业叫法）在 ws-labels.js，这里只引用。
    不依赖 React，不写 window，可单测。
    ========================================================== */
+import { isChineseMessage } from "./lib/messages.js";
 import {
   STYLE_DIMENSIONS,
   STYLE_LAYER_LABELS,
@@ -252,19 +253,8 @@ const SR_ERROR_TEXT = {
   REQUEST_TIMEOUT: "等太久了没有回音，稍后再试。",
 };
 
-const CJK_ALL = /[㐀-鿿]/g;
-const LATIN_ALL = /[A-Za-z]/g;
-
-/* 后端的原话能不能直接给作者看：要是中文句子——有汉字、汉字不少于英文字母，也不是 Python 异常串
-   （作业边界记的是「TypeError: …」这种，夹几个汉字也不算中文说明）。 */
-export function srIsChineseMessage(text) {
-  const s = String(text || "").trim();
-  if (!s) return false;
-  if (/^[A-Za-z_.]*(Error|Exception)\b/.test(s)) return false;
-  const cjk = (s.match(CJK_ALL) || []).length;
-  if (!cjk) return false;
-  return cjk >= (s.match(LATIN_ALL) || []).length;
-}
+/* 后端的原话能不能直接给作者看：见 lib/messages.js（与对照检查同一个口径） */
+export const srIsChineseMessage = isChineseMessage;
 
 /* 出错 → { code, message, action }。message 优先按错误码给固定的中文；认不出的码用后端的中文原话，
    英文原话一律不给作者看（fallback 也只能给中文：调用方不要把 error.message 当 fallback 传进来）。

@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from collections import Counter
@@ -31,10 +32,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import StyleReferenceBannedTerm
+from novel_system.db.models import StyleReferenceBannedTerm, StyleReferenceProfile
 from novel_system.services.style_reference.measure import load_kernel_lexicon
 from novel_system.services.style_reference.text_utils import compact_ws
 
@@ -345,8 +346,52 @@ def contains_protected(text: str, terms: Iterable[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def replace_protected_terms(session: Session, profile_id: str, terms: Sequence[ProtectedTerm]) -> dict[str, int]:
-    """画像的 ``protected_auto`` 行整体替换；作者录入的行不动（同词已录过就跳过）。只 flush。"""
+DISMISSED_KEY = "protected_terms_dismissed"
+
+
+def dismissed_protected_terms(profile_json: Any) -> set[str]:
+    """作者在文风画像里删掉的自动专名（``profile_json["protected_terms_dismissed"]``）：重新学习不再把它们加回来。"""
+    raw = profile_json.get(DISMISSED_KEY) if isinstance(profile_json, dict) else None
+    if not isinstance(raw, list):
+        return set()
+    return {str(term).strip() for term in raw if str(term or "").strip()}
+
+
+def dismiss_protected_term(session: Session, profile_id: str, term: str) -> None:
+    """记下作者删掉了这个自动专名（只 flush）：``json_set`` 只改这一个键，不覆盖画像的其余部分。"""
+    term = str(term or "").strip()
+    if not term:
+        return
+    profile = session.get(StyleReferenceProfile, profile_id)
+    if profile is None:
+        return
+    current = dismissed_protected_terms(profile.profile_json)
+    if term in current:
+        return
+    column = func.coalesce(StyleReferenceProfile.profile_json, "{}")
+    session.execute(
+        update(StyleReferenceProfile)
+        .where(StyleReferenceProfile.profile_id == profile_id)
+        .values(
+            profile_json=func.json_set(
+                column, f"$.{DISMISSED_KEY}", func.json(json.dumps(sorted(current | {term}), ensure_ascii=False))
+            )
+        )
+        .execution_options(synchronize_session=False)
+    )
+    session.flush()
+    session.expire(profile, ["profile_json"])
+
+
+def replace_protected_terms(
+    session: Session,
+    profile_id: str,
+    terms: Sequence[ProtectedTerm],
+    *,
+    dismissed: Iterable[str] = (),
+) -> dict[str, int]:
+    """画像的 ``protected_auto`` 行整体替换；作者录入的行不动（同词已录过就跳过），作者删掉过的自动专名
+    （``dismissed``）不再加回来。只 flush。"""
     removed = session.execute(
         delete(StyleReferenceBannedTerm).where(
             StyleReferenceBannedTerm.profile_id == profile_id,
@@ -362,10 +407,11 @@ def replace_protected_terms(session: Session, profile_id: str, terms: Sequence[P
         )
     )
     created = 0
+    skip = set(existing) | {str(term).strip() for term in dismissed}
     for item in terms:
-        if item.term in existing:
+        if item.term in skip:
             continue
-        existing.add(item.term)
+        skip.add(item.term)
         session.add(
             StyleReferenceBannedTerm(
                 term_id=f"sr_term_{uuid.uuid4().hex[:12]}",
@@ -383,6 +429,7 @@ def replace_protected_terms(session: Session, profile_id: str, terms: Sequence[P
 
 __all__ = [
     "CANDIDATE_LIMIT",
+    "DISMISSED_KEY",
     "Candidate",
     "KIND_PLACEHOLDERS",
     "MAX_TERMS",
@@ -391,6 +438,8 @@ __all__ = [
     "PROTECTED_SOURCE",
     "ProtectedTerm",
     "TERM_KINDS",
+    "dismiss_protected_term",
+    "dismissed_protected_terms",
     "contains_protected",
     "is_everyday_word",
     "mask_protected",

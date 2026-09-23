@@ -42,6 +42,7 @@ from novel_system.services.style_reference.schemas import (
     SystemPromptFragments,
 )
 from novel_system.services.style_reference.summaries import list_profile_summaries, profile_detail
+from novel_system.services.style_reference.protected_terms import PROTECTED_SOURCE, dismiss_protected_term
 
 router = APIRouter(tags=ROUTE_TAGS)
 
@@ -229,6 +230,9 @@ def delete_banned_term(
                 "preset banned terms cannot be deleted",
                 status_code=400,
             )
+        if row.source == PROTECTED_SOURCE and row.profile_id:
+            # 作者删掉一个自动识别的专名（多半是误收的日常词）：记下来，重新学习不再把它加回来
+            dismiss_protected_term(session, str(row.profile_id), str(row.term))
         repo.delete_banned_term(term_id)
         return {"term_id": term_id, "deleted": True}
 

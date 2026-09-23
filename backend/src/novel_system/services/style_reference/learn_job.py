@@ -131,6 +131,8 @@ from novel_system.services.style_reference.profile_fields import REFERENCE_BASIS
 from novel_system.services.style_reference.protected_terms import (
     PROTECTED_SOURCE,
     ProtectedTerm,
+    DISMISSED_KEY,
+    dismissed_protected_terms,
     parse_protected_terms,
     proper_noun_candidates,
     protected_terms_version,
@@ -1189,7 +1191,11 @@ class _LearnRun:
             self._enter(PHASE_TAGS, detail=f"第 {len(done) + 1}/{len(batches)} 批")
             by_no = {int(w.window_no): w for w in rows}
             devices = [str(d) for d in tags_state.get("devices") or []]
-            protected = list((self.cursor.get("protected") or {}).get("terms") or [])
+            dismissed_tags = self._dismissed_terms(str(self.params.get("profile_id") or self.claimed.profile_id or "") or None)
+            protected = [
+                t for t in (self.cursor.get("protected") or {}).get("terms") or []
+                if str((t or {}).get("term") or "").strip() not in dismissed_tags
+            ]
 
             def submit(pool: DaemonCallPool, index: int, stop: threading.Event) -> Future:
                 self._pre_call_check([NODE_TAG_WINDOWS])
@@ -1370,6 +1376,15 @@ class _LearnRun:
             "by_phase": by_phase,
         }
 
+    def _dismissed_terms(self, profile_id: str | None) -> set[str]:
+        """作者在这份画像里删掉过的自动专名(画像还不存在 → 空)。"""
+        if not profile_id:
+            return set()
+        raw = self.session.execute(
+            select(StyleReferenceProfile.profile_json).where(StyleReferenceProfile.profile_id == profile_id)
+        ).scalar_one_or_none()
+        return dismissed_protected_terms(raw)
+
     def _phase_finalize(self) -> None:
         began = time.monotonic()
         self._enter(PHASE_FINALIZE)
@@ -1377,12 +1392,15 @@ class _LearnRun:
         book = self._book()
         texts = [t for t in self._body_texts() if non_body_kind(t) is None]
         overlap = CorpusOverlapIndex(texts, threshold_chars=12)
+        # 作者给这份画像录入的禁用词(任何域)同样不能进卡片:画像已存在时一并过滤
+        target_id = str(self.params.get("profile_id") or self.claimed.profile_id or "") or None
+        # 作者在画像里删掉过的自动专名(多半是误收的日常词):不再当专名、不再滤卡片、不再加回禁用词表
+        dismissed = self._dismissed_terms(target_id)
         protected = [
             ProtectedTerm(term=str(t["term"]), kind=str(t.get("kind") or "term"))
             for t in (self.cursor.get("protected") or {}).get("terms") or []
+            if str(t.get("term") or "").strip() not in dismissed
         ]
-        # 作者给这份画像录入的禁用词(任何域)同样不能进卡片:画像已存在时一并过滤
-        target_id = str(self.params.get("profile_id") or self.claimed.profile_id or "") or None
         author_terms = [
             str(term)
             for term in self.session.scalars(
@@ -1457,6 +1475,7 @@ class _LearnRun:
         )
         if card is not None:
             card = card.model_copy(update={"generated_at": utcnow()})
+        dismissed = dismissed | dismissed_protected_terms(previous_json)
         profile_json = _profile_json(
             book=book,
             card=card,
@@ -1493,6 +1512,8 @@ class _LearnRun:
             protected=protected,
             paragraph_count=len(texts),
         )
+        if dismissed:
+            profile_json[DISMISSED_KEY] = sorted(dismissed)
         card_lines = card.all_lines() if card is not None else []
         coverage = {
             "learn_job_id": self.claimed.job_id,
@@ -1525,7 +1546,7 @@ class _LearnRun:
             profile.source_finding_ids_json = [f.finding_id for f in findings]
             profile.version_tag = _bump_version(profile.version_tag)
         self.session.flush()
-        protected_rows = replace_protected_terms(self.session, profile.profile_id, protected)
+        protected_rows = replace_protected_terms(self.session, profile.profile_id, protected, dismissed=dismissed)
         run = self.session.get(StyleReferenceRun, run_id)
         if run is not None:
             run.status = "done"
