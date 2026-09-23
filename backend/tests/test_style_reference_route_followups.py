@@ -222,3 +222,64 @@ def test_planning_call_sites_name_the_receiving_nodes(session, monkeypatch) -> N
         ("chapter", chapter_planning_context.CHAPTER_PLANNING_REFERENCE_NODE_IDS),
         ("snowflake", ("snowflake_step_generate",)),
     ]
+
+
+# ---------------------------------------------------------------------------
+# 管线里的两个评审节点、起草的节点直传、深评分数的刻度
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "module, cls, returns_on_error",
+    [
+        ("novel_system.services.qc_engine", "SoftQcEngine", None),
+        ("novel_system.services.near_final", "NearFinalAcceptanceService", "prompt"),
+    ],
+)
+def test_review_wrappers_let_the_cloud_policy_refusal_through(session, monkeypatch, module, cls, returns_on_error) -> None:
+    import importlib
+
+    mod = importlib.import_module(module)
+    service = object.__new__(getattr(mod, cls))
+    service.session = session
+    prompt = {"template_name": "soft_qc", "system_prompt": "基础", "user_prompt": "正文"}
+    monkeypatch.setattr("novel_system.services.style_prompt_injection.inject_style_reference_prefix", _blocked)
+    with pytest.raises(CloudPolicyBlockedError):
+        service._inject_style_reference_prefix(prompt, SimpleNamespace(scene_id="S1"), {}, context_text="", final_user_prompt="正文")
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr("novel_system.services.style_prompt_injection.inject_style_reference_prefix", broken)
+    result = service._inject_style_reference_prefix(prompt, SimpleNamespace(scene_id="S1"), {}, context_text="", final_user_prompt="正文")
+    assert result == (prompt if returns_on_error == "prompt" else None)
+
+
+def test_scene_generation_passes_the_dispatching_node_to_the_adapter(session, monkeypatch) -> None:
+    from novel_system.services import scene_generation
+
+    seen: dict = {}
+
+    def capture(_session, prompt, _scene, _bundle, **kwargs):
+        seen.update(kwargs)
+        return prompt
+
+    monkeypatch.setattr(scene_generation, "inject_style_reference_prefix", capture)
+    service = object.__new__(scene_generation.SceneGenerationService)
+    service.session = session
+    service._inject_style_reference({"template_name": "style_length_patch"}, SimpleNamespace(scene_id="S1"), node_id="style_patch")
+    assert seen["node_id"] == "style_patch"
+    seen.clear()
+    service._inject_style_reference({"template_name": "style_draft"}, SimpleNamespace(scene_id="S1"))
+    assert "node_id" not in seen  # 不给就让适配器按模板推（从严）
+
+
+def test_deep_review_scores_follow_the_declared_zero_to_one_scale() -> None:
+    from novel_system.services.writer_deep_review import _optional_score
+
+    assert _optional_score(0.853) == 0.85
+    assert _optional_score(1) == 1.0
+    # 按 0–10 习惯答的分不夹成满分，丢掉
+    assert _optional_score(7.5) is None
+    assert _optional_score(-0.2) is None
+    assert _optional_score("高") is None

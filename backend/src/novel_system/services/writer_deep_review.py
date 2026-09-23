@@ -61,6 +61,7 @@ from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.style_reference.readings import STAGE_PATCHED, record_author_draft_reading
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
+from novel_system.services.review_scores import normalize_score
 from novel_system.services.style_prompt_injection import (
     inject_style_reference_prefix,
     resolve_style_scope,
@@ -1850,11 +1851,11 @@ def _normalize_scores(value: Any) -> dict[str, float]:
 
 
 def _optional_score(value: Any) -> float | None:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return None
-    return max(0.0, min(1.0, round(score, 2)))
+    """深评 / 局部深评模板声明 0–1 分（``structured_schema`` 的 minimum / maximum）：按声明的刻度收，越界的分丢掉
+    （不夹成 0 / 1——按 0–10 习惯答的 7.5 夹成满分会假装成一个极端的评分；与 ``review_scores.normalize_score``
+    同一口径）。"""
+    score = normalize_score(value, 1.0)
+    return None if score is None else round(score, 2)
 
 
 def _normalize_findings(value: Any) -> list[dict[str, Any]]:

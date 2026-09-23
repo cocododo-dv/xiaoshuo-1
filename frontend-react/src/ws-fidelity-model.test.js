@@ -62,7 +62,16 @@ describe("一条读数的说法", () => {
 
   it("照搬检查只说计数", () => {
     expect(fidCopyView({ blocked: false, hits: 0, protected_hits: 0 })).toEqual({ tone: "ok", text: "没有与参考书原文连续相同的地方，也没用它的专名。" });
-    expect(fidCopyView({ blocked: true, hits: 2, protected_hits: 1 }).text).toBe("有 2 处与参考书原文连续相同、1 处用了参考书里的专名（人名、地名等）——这样的文字不能进正文。");
+    expect(fidCopyView({ blocked: true, hits: 2, protected_hits: 1 })).toEqual({
+      tone: "danger",
+      text: "有 2 处与参考书原文连续相同——这样的文字不能进正文；另有 1 处用了参考书里的专名（人名、地名等）。",
+    });
+    // 只用了专名：提醒，不拦（后端的抄袭门只拦原文重合）
+    const protectedOnly = fidCopyView({ blocked: false, hits: 0, protected_hits: 3 });
+    expect(protectedOnly.tone).toBe("warn");
+    expect(protectedOnly.text).toContain("有 3 处用了参考书里的专名");
+    expect(protectedOnly.text).toContain("不拦");
+    expect(protectedOnly.text).not.toContain("不能进正文");
     expect(fidCopyView(null)).toBeNull();
   });
 });

@@ -105,16 +105,17 @@ export function fidGaps(reading) {
   return out;
 }
 
-/* 照搬检查一句话（只有计数，从不给参考原文） */
+/* 照搬检查一句话（只有计数，从不给参考原文）。只有与原文连续相同会拦；用了参考书的专名只提醒，不拦。 */
 export function fidCopyView(copy) {
   if (!copy) return null;
   const hits = num(copy.hits) || 0;
   const protectedHits = num(copy.protected_hits) || 0;
-  if (copy.blocked || hits || protectedHits) {
-    const parts = [];
-    if (hits) parts.push(`${hits} 处与参考书原文连续相同`);
-    if (protectedHits) parts.push(`${protectedHits} 处用了参考书里的专名（人名、地名等）`);
-    return { tone: "danger", text: `${parts.length ? `有 ${parts.join("、")}` : "有照搬参考书原文的地方"}——这样的文字不能进正文。` };
+  if (copy.blocked || hits) {
+    const also = protectedHits ? `；另有 ${protectedHits} 处用了参考书里的专名（人名、地名等）` : "";
+    return { tone: "danger", text: `${hits ? `有 ${hits} 处与参考书原文连续相同` : "有照搬参考书原文的地方"}——这样的文字不能进正文${also}。` };
+  }
+  if (protectedHits) {
+    return { tone: "warn", text: `有 ${protectedHits} 处用了参考书里的专名（人名、地名等）——不拦，是参考书的专名就换掉；日常词被误收，可以在文风画像的「本书专名」里删掉。` };
   }
   return { tone: "ok", text: "没有与参考书原文连续相同的地方，也没用它的专名。" };
 }
@@ -223,10 +224,11 @@ const STEP_TEXT = {
   reading_unavailable: { tone: "neutral", text: "参考书还没有量像不像的尺子，首稿没有再改" },
   best_of_n_candidate: { tone: "neutral", text: "首稿作为候选之一，和修改稿一起按像不像排序" },
   revision_template_missing: { tone: "warn", text: "首稿和作者差得明显，但「定向修改」的提示词模板还没同步，保留首稿" },
+  reading_failed: { tone: "warn", text: "量首稿时出了错（不是参考书的问题），为免越改越远，没有再改" },
 };
 
 const REJECT_TEXT = {
-  copy_gate_blocked: "改出来的那一版有与参考书原文连续相同的地方（或用了它的专名），已丢掉，保留首稿",
+  copy_gate_blocked: "改出来的那一版新添了与参考书原文连续相同的地方，已丢掉，保留首稿",
   base_safety_failed: "改出来的那一版丢了必写的内容或长度不对，保留首稿",
   revision_reading_unavailable: "改出来的那一版量不出像不像，保留首稿",
 };

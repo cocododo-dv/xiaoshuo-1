@@ -691,6 +691,7 @@ class SceneGenerationService:
                 final_user_prompt=user_prompt,
                 placement=PLACEMENT_USER_TAIL,
                 role=ROLE_DRAFT,
+                node_id=draft_node_id,
                 situation_tags=first_draft_tags,
             )
             user_prompt = apply_style_user_tail(prompt, user_prompt)
@@ -782,6 +783,7 @@ class SceneGenerationService:
                     final_user_prompt=repair_prompt,
                     placement=PLACEMENT_USER_TAIL,
                     role=ROLE_DRAFT,
+                    node_id=draft_node_id,
                     situation_tags=first_draft_tags,
                 )
                 if style_first
@@ -1918,6 +1920,7 @@ class SceneGenerationService:
             final_user_prompt=user_prompt,
             placement=PLACEMENT_USER_TAIL,
             role=ROLE_REVISE,
+            node_id="style_draft",
             revise_dimensions=dimensions,
         )
         user_prompt = apply_style_user_tail(prompt, user_prompt)
@@ -2496,6 +2499,7 @@ class SceneGenerationService:
             final_user_prompt=user_prompt,
             placement=PLACEMENT_USER_TAIL,
             role=render_role,
+            node_id=("style_patch" if llm_step == "soft_patch" else llm_step),
         )
         user_prompt = apply_style_user_tail(prompt, user_prompt)
         # v2（规格 §2.W5.6）：注入命中与否、回退中性稿、styled-draft gate 命中都进
@@ -3032,6 +3036,7 @@ class SceneGenerationService:
             final_user_prompt=user_prompt,
             placement=PLACEMENT_USER_TAIL,
             role=ROLE_REVISE,
+            node_id="style_patch",
         )
         user_prompt = apply_style_user_tail(prompt, user_prompt)
         salvage_audit: dict[str, Any]
@@ -3324,6 +3329,7 @@ class SceneGenerationService:
                     final_user_prompt=user_prompt,
                     placement=PLACEMENT_USER_TAIL,
                     role=ROLE_REVISE,
+                    node_id="style_patch",
                 )
         elif is_safety_repair:
             if style_first:
@@ -3337,6 +3343,7 @@ class SceneGenerationService:
                     final_user_prompt=user_prompt,
                     placement=PLACEMENT_USER_TAIL,
                     role=ROLE_REVISE,
+                    node_id="style_patch",
                 )
             else:
                 # 这一遍只负责把已生成的风格稿恢复到事实、长度与正文完整性硬约束内。
@@ -3354,6 +3361,7 @@ class SceneGenerationService:
                 final_user_prompt=user_prompt,
                 placement=PLACEMENT_USER_TAIL,
                 role=ROLE_REVISE,
+                node_id="style_patch",
             )
         user_prompt = apply_style_user_tail(prompt, user_prompt)
         try:
@@ -3590,6 +3598,7 @@ class SceneGenerationService:
         role: str | None = None,
         situation_tags: Sequence[str] | None = None,
         revise_dimensions: Sequence[str] | None = None,
+        node_id: str | None = None,
     ) -> dict[str, Any] | None:
         """PR-8 §5.1 — 把 active StyleProfile 注入到 prompt["system_prompt"] 头部。
 
@@ -3607,6 +3616,9 @@ class SceneGenerationService:
             extra["situation_tags"] = situation_tags
         if revise_dimensions:
             extra["revise_dimensions"] = revise_dimensions
+        if node_id:
+            # 云策略按这一遍实际派发的节点判（H1）：调用方知道是 style_draft 还是 style_patch，不让适配器按模板从严猜
+            extra["node_id"] = node_id
         return inject_style_reference_prefix(
             self.session,
             prompt,

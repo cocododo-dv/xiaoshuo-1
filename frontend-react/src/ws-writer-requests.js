@@ -14,7 +14,7 @@ import { wrAiLocalError, wrContinueCandidates, wrIsOfflinePlaceholder } from "./
    · wrRequestRewrite({ sceneId, text, instruction })：选区改写，接 passages/patch-candidates
      （writer_passage_patch 节点）。返回 { texts, patch }——patch 是这一次候选的裁决把手，
      采纳 / 放弃经 wrDecidePatch 回传（作者偏好画像的学习闭环）。
-   · 抄袭门（与绑定的参考书连续相同 / 用了它的专名）：生成时每一版都被拦下 → 409，wrAiError 说成 kind copy；
+   · 抄袭门（与绑定的参考书原文连续相同；用了它的专名只提醒、不拦）：生成时每一版都被拦下 → 409，wrAiError 说成 kind copy；
      续写只丢了几版 → 列表上说丢了几版；采纳时被拦下 → 提示第几字要改（ws-copy-gate.js）。
    场景 id 一律由调用方显式传入：过去这里读一个由 WriterRoom 镜像出来的模块级「当前场景」，
    另一个模块级变量在两次渲染之间捎带待裁决的候选。只有单测 / 旧调用不传场景时，
