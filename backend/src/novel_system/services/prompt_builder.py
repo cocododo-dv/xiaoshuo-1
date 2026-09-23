@@ -91,6 +91,8 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "style_length_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "style_salvage_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "soft_qc": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    # 风格参考 v3：对照检查的参考评审走 soft_qc 路由、拿 soft_qc 形状的参考，同一档
+    "style_ref_check_judge": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "near_final_acceptance_review": STYLE_PASS_INPUT_TOKEN_BUDGET,
     # 规划族 + 局部改写（载荷有界）+ 2026-09-14 WP6 的参考块余量
     "scene_blueprint": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
@@ -240,6 +242,11 @@ def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTem
         except yaml.YAMLError as exc:
             raise PromptConfigurationError("prompts config could not be parsed") from exc
     return parse_prompt_templates(raw_payload)
+
+
+def default_input_token_budget(template: PromptTemplate) -> int:
+    """一个模板的输入预算（PromptBuilder 与不经它装配提示的节点——对照检查的评审——共用同一口径）。"""
+    return _default_input_token_budget(template)
 
 
 def _default_input_token_budget(template: PromptTemplate) -> int:

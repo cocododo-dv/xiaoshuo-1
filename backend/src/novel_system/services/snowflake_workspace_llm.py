@@ -1028,7 +1028,10 @@ class SnowflakeWorkspaceLLMService:
     def _project_style_reference(self, project_id: str) -> dict[str, Any] | None:
         """参考作者结构画像的载荷成员（缓存于本次请求）；无绑定 / 旧画像 / 解析失败 → None。"""
         if project_id not in self._style_reference_cache:
-            reference = resolve_project_style_reference(self.session, project_id)
+            # 这份载荷只进雪花步骤生成（09 / 10 的场景表）：按 snowflake_step_generate 的实际路由判云策略（H1）
+            reference = resolve_project_style_reference(
+                self.session, project_id, node_ids=("snowflake_step_generate",)
+            )
             member: dict[str, Any] | None = None
             if reference:
                 member = {

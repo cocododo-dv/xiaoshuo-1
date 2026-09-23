@@ -82,6 +82,15 @@ class ChapterPlanningContext:
     scenes: list[SceneCard] = field(repr=False, default_factory=list)
 
 
+
+# 章规划的 style_reference 槽进哪些节点的提示（chapter_plan_llm 的四个节点）
+CHAPTER_PLANNING_REFERENCE_NODE_IDS: tuple[str, ...] = (
+    "chapter_story_architecture",
+    "chapter_scene_plan_candidates",
+    "chapter_scene_plan_fill",
+    "chapter_plan_review",
+)
+
 class ChapterPlanningContextBuilder:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -273,7 +282,10 @@ class ChapterPlanningContextBuilder:
             return []
 
     def _style_reference_slot(self, project_id: str, refs: dict[str, Any]) -> dict[str, Any] | None:
-        reference = resolve_project_style_reference(self.session, project_id)
+        # 这个槽只进章规划的四个节点的提示：按它们的实际路由判云策略（H1）
+        reference = resolve_project_style_reference(
+            self.session, project_id, node_ids=CHAPTER_PLANNING_REFERENCE_NODE_IDS
+        )
         if not reference:
             return None
         refs["style_reference_runtime_contract_hash"] = reference["contract_hash"]
