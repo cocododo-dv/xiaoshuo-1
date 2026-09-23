@@ -56,7 +56,7 @@
 .fid-judge-summary { min-width: 0; line-height: var(--lh-ui); color: var(--ink-2); overflow-wrap: anywhere; }
 .fid-copy { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--tone-ink); }
 .fid-copy svg { flex: 0 0 auto; margin-top: 3px; }
-.fid-copy-label { font-weight: 600; }
+.fid-copy-label { flex: 0 0 auto; font-weight: 600; white-space: nowrap; }
 
 /* ---------- 角标 ---------- */
 .fid-badge { white-space: nowrap; }
@@ -94,7 +94,7 @@
 .fid-tip.is-below { transform: translate(-50%, 6px); }
 .fid-tip-value { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-1); }
 .fid-tip-where, .fid-tip-when { font-size: 11px; color: var(--ink-3); }
-.fid-trend-axis-row { display: flex; justify-content: space-between; padding: 2px 20px 0 44px; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.fid-trend-axis-row { display: flex; justify-content: space-between; padding: 2px 20px 0 52px; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .fid-trend-table td, .fid-trend-table th { white-space: nowrap; }
 
 @media (max-width: 640px) {

@@ -169,7 +169,7 @@ export function FidelityBadge({ final, testId }) {
    ========================================================== */
 
 const TREND_H = 150;
-const PAD = { top: 12, right: 20, bottom: 12, left: 44 };
+const PAD = { top: 12, right: 20, bottom: 12, left: 52 };
 
 function useWidth(ref, fallback) {
   const [width, setWidth] = useState(fallback);
@@ -273,12 +273,12 @@ export function FidelityTrend({ trend, labelOf = null, maxPercentile = 90, testI
             {[1, 50, 100].map((rank) => (
               <g key={rank}>
                 <line className="fid-trend-grid" x1={PAD.left} x2={PAD.left + plotW} y1={yOf(rank)} y2={yOf(rank)} />
-                <text className="fid-trend-axis" x={PAD.left - 8} y={yOf(rank)} dy="0.32em" textAnchor="end">{`第${rank}位`}</text>
+                <text className="fid-trend-axis" x={PAD.left - 8} y={yOf(rank)} dy="0.32em" textAnchor="end">{`第 ${rank} 位`}</text>
               </g>
             ))}
             {current && <line className="fid-trend-cross" x1={xOf(current.index)} x2={xOf(current.index)} y1={PAD.top} y2={TREND_H - PAD.bottom} />}
             {drafts.map((p) => (
-              <circle key={p.readingId} className={`fid-trend-dot is-draft${p.reliable ? "" : " is-unreliable"}`} cx={xOf(p.index)} cy={yOf(p.rank)} r={4} />
+              <circle key={p.readingId} className={`fid-trend-dot is-draft${p.reliable ? "" : " is-unreliable"}${current && current.index === p.index ? " is-active" : ""}`} cx={xOf(p.index)} cy={yOf(p.rank)} r={4} />
             ))}
             {finals.length > 1 && <polyline className="fid-trend-line" points={line} />}
             {finals.map((p) => (

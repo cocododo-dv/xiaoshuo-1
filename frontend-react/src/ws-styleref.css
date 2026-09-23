@@ -260,7 +260,7 @@
 .sr-work-fid-stats { display: flex; flex-wrap: wrap; gap: 12px 32px; }
 .sr-work-gaps { padding-top: 10px; border-top: 1px solid var(--line-1); }
 .sr-work-fid .sr-ov-hint { margin: 0; }
-.sr-dim-fid { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; flex: 0 0 auto; }
+.sr-dim-fid { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .sr-dim-fid-item { display: inline-flex; align-items: center; gap: 6px; }
 .sr-dim-fid-label { font-size: var(--fs-xs); color: var(--ink-3); }
 .sr-dim-fid .fid-meter-track { flex-basis: 40px; }
