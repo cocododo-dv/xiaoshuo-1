@@ -204,9 +204,12 @@ def create_classification_job(
     job.progress_json = {"phase": "queued", "phase_label": "排队中", "mode": mode}
     if mode != MODE_RETYPE:
         book.status = "ingesting"
-    stats = dict(book.stats_json or {})
-    if "classification" in stats:
-        # 2026-09-15 的书上 JSON 游标状态机已退役,作业表是唯一的进度真源。
+    if "classification" in (book.stats_json or {}):
+        # 2026-09-15 的书上 JSON 游标状态机已退役,作业表是唯一的进度真源。作业行已经插入(本事务
+        # 持有写锁),重读 stats_json 再去掉旧键,不覆盖别人刚写进去的键。
+        session.flush()
+        session.refresh(book, ["stats_json"])
+        stats = dict(book.stats_json or {})
         stats.pop("classification", None)
         book.stats_json = stats
     session.flush()
@@ -851,21 +854,13 @@ class _ClassificationRun:
             "retries": int(cursor.get("retries") or 0),
         }
 
+        # 先做作业行的条件写(拿到 SQLite 的写锁),再在同一事务里重读书的 stats_json 合并写回:
+        # 这之间别的连接提交不了写,并发写 stats 的人(窗口索引等)的键不会被覆盖。
         self._fresh()
-        book = self.session.execute(
-            select(StyleReferenceBook)
-            .where(StyleReferenceBook.book_id == self.book_id)
-            .execution_options(populate_existing=True)
-        ).scalar_one_or_none()
-        if book is None:
-            raise JobLost(self.claimed.job_id)
-        stats = dict(book.stats_json or {})
-        revision = int(stats.get("paragraph_types_revision") or 0) + 1
         result = {
             "book_id": self.book_id,
             "mode": self.mode,
             "paragraphs": len(rows),
-            "paragraph_types_revision": revision,
             "batches": provenance["batches"],
             "llm_calls": provenance["llm_calls"],
             "retries": provenance["retries"],
@@ -875,6 +870,22 @@ class _ClassificationRun:
         if not self.service.succeed(self.claimed, result):
             self.session.rollback()
             raise JobLost(self.claimed.job_id)
+        book = self.session.execute(
+            select(StyleReferenceBook)
+            .where(StyleReferenceBook.book_id == self.book_id)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if book is None:
+            self.session.rollback()
+            raise JobLost(self.claimed.job_id)
+        stats = dict(book.stats_json or {})
+        revision = int(stats.get("paragraph_types_revision") or 0) + 1
+        self.session.execute(
+            update(StyleReferenceJob)
+            .where(StyleReferenceJob.job_id == self.claimed.job_id)
+            .values(result_json={**result, "paragraph_types_revision": revision})
+            .execution_options(synchronize_session=False)
+        )
         stats.update(stats_update)
         if voice_signature is not None:
             stats["voice_signature"] = voice_signature
