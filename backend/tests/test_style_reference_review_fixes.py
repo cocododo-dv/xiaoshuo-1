@@ -107,7 +107,7 @@ def test_fullwidth_question_and_semicolon_are_counted() -> None:
         ParagraphRecord,
     )
 
-    engine = MetricsEngine(sensory_lexicon={})
+    engine = MetricsEngine()
     paras = [ParagraphRecord(text="你要去哪里？我不知道；他也不知道。", paragraph_type="narration")]
     out = engine.compute_all(paras)
     assert out["question_density_per_1k"] > 0, "全角？未被统计"
@@ -115,15 +115,16 @@ def test_fullwidth_question_and_semicolon_are_counted() -> None:
 
 
 def test_ascii_question_not_double_counted() -> None:
-    """修复前 "??"(两个 ASCII ?)使每个 ASCII 问号被双计。4 字符含 1 个 ? → 250/1k。"""
+    """修复前 "??"(两个 ASCII ?)使每个 ASCII 问号被双计。3 个可见字含 1 个 ? → 1000/3 每千字
+    (2026-09-23 起「每千字」按可见字算,不含标点)。"""
     from novel_system.services.style_reference.metrics import (
         MetricsEngine,
         ParagraphRecord,
     )
 
-    engine = MetricsEngine(sensory_lexicon={})
+    engine = MetricsEngine()
     out = engine.compute_all([ParagraphRecord(text="abc?", paragraph_type="narration")])
-    assert out["question_density_per_1k"] == pytest.approx(250.0)
+    assert out["question_density_per_1k"] == pytest.approx(1000.0 / 3)
 
 
 def test_punct_chars_have_no_duplicates_and_include_fullwidth_colon() -> None:

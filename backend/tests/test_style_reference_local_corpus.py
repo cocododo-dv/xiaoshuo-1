@@ -58,7 +58,7 @@ def local_book():
 def test_local_corpus_ingests_with_full_stats(local_book):
     book_id, stats, paragraphs_count = local_book
     assert paragraphs_count > 0
-    assert len(stats["metrics"]) == 26
+    assert len(stats["metrics"]) == 21
     for m in stats["metrics"].values():
         assert "mean" in m and "std" in m
     assert set(stats["input_assessment"]) == {"language", "narrative", "scene", "theme"}

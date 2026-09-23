@@ -25,6 +25,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
@@ -73,6 +74,11 @@ _COLOPHON_MAX_CHARS = 20
 # 2026-09-14(WP5):章首 / 章尾样例只从「像一章」的章里取——短于此字数的「章」多半是卷首语 /
 # 内容简介 / 目录残片;含书名页标记(某某 著 / 简介)的前置章整章不入统计与样例。
 _SAMPLE_CHAPTER_MIN_CHARS = 1200
+# 合集里下一卷的卷首页(卷名 / 某某 著 / 题记)常粘在上一章末尾:离章末 ≤ 此行数、其后不到此字数时才当卷首页
+# 切掉;后面还跟着一整章正文的「某某 著」按正文处理(防误伤单篇小说的署名行)。
+FRONT_MATTER_TAIL_MAX_ROWS = 40
+FRONT_MATTER_TAIL_MAX_CHARS = 1500
+_VOLUME_TITLE_MAX_CHARS = 30
 _FRONT_MATTER_RE = re.compile(r"^(?:[\w\u4e00-\u9fff·]{1,20}\s*著|(?:内容)?简介\s*[：:]?|作者\s*[：:].{0,20})$")
 _PARAGRAPH_TYPE_ORDER: tuple[str, ...] = (
     "dialogue",
@@ -134,24 +140,6 @@ def _field(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
-def _ordered_rows(paragraphs: Iterable[Any]) -> list[tuple[str, str, int]]:
-    """(正文, 段型, 段索引) 序列：按 paragraph_index 稳定排序（缺索引时保持输入顺序），剥空段。"""
-    indexed: list[tuple[int, int, Any]] = []
-    for position, item in enumerate(paragraphs):
-        raw_index = _field(item, "paragraph_index")
-        index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else position
-        indexed.append((index, position, item))
-    indexed.sort(key=lambda entry: (entry[0], entry[1]))
-    rows: list[tuple[str, str, int]] = []
-    for index, _position, item in indexed:
-        text = " ".join(str(_field(item, "text", "") or "").split())
-        if not text:
-            continue
-        ptype = str(_field(item, "paragraph_type", "") or "").strip() or "narration"
-        rows.append((text, ptype, int(index)))
-    return rows
-
-
 def _marker_style(title: str) -> str:
     stripped = title.strip()
     head = stripped[:1]
@@ -177,63 +165,165 @@ def _is_colophon(text: str) -> bool:
     return len(text) <= _COLOPHON_MAX_CHARS and _COLOPHON_RE.match(text) is not None
 
 
-def _is_front_matter(rows: Sequence[tuple[str, str, int]]) -> bool:
-    """第一个章题之前的块是否为书名页 / 简介(含「某某 著」「内容简介：」「作者：」行)。"""
-    return any(_FRONT_MATTER_RE.match(text.strip()) is not None for text, _ptype, _index in rows)
+def _norm(text: Any) -> str:
+    return " ".join(str(text or "").split())
 
 
-def _split_chapters(
-    rows: Sequence[tuple[str, str, int]],
-    scene_breaks: set[int] | None = None,
-) -> tuple[list[list[tuple[str, str, int]]], Counter, list[int], list[str]]:
-    """按标题段切章。标题段本身不入章正文；连续标题（卷 → 章）不产生空章。
+def _is_front_matter_line(text: str) -> bool:
+    """书名页 / 简介行:「某某 著」「内容简介：」「作者：某某」(整段只有这一句)。"""
+    return _FRONT_MATTER_RE.match(_norm(text)) is not None
 
-    2026-09-14(WP5)：同时数每章的场界——纯符号分隔行（不入正文）与导入期记录的空行型场界
-    （``scene_breaks``：其后有场界的段索引）；章末的场界不计。
-    2026-09-22：同时记下开启每一章的章题（连续标题取最后一条，即最贴近正文的那条；第一个章题
-    之前的块记 ""）。返回 (章, 章题形态计数, 每章场界数, 每章章题)。
+
+def _looks_like_volume_title(text: str) -> bool:
+    """卷首页的书名行(「某某·卷名」):短、不带句末标点、不以引号起头。"""
+    norm = _norm(text)
+    return (
+        0 < len(norm) <= _VOLUME_TITLE_MAX_CHARS
+        and not any(mark in norm for mark in "。！？!?…")
+        and not norm.startswith(("“", "‘", "「", "『", '"'))
+    )
+
+
+def non_body_kind(text: Any) -> str | None:
+    """段落不是作者正文时返回种类(``title`` 章题 / ``scene_break`` 纯符号场分隔 / ``paratext`` 脚注与盗版站
+    声明 / ``colophon`` 落款日期与「完」);正文返回 ``None``。切章、样例窗口与窗口正文共用这一条判断。"""
+    norm = _norm(text)
+    if not norm:
+        return "empty"
+    if is_title_paragraph(norm):
+        return "title"
+    if is_scene_break_paragraph(norm):
+        return "scene_break"
+    if is_paratext_paragraph(norm):
+        return "paratext"
+    if _is_colophon(norm):
+        return "colophon"
+    return None
+
+
+@dataclass
+class BookChapter:
+    """切章结果里的一章:``chapter_no`` 从 1 起(书名页 / 简介块不占号),``rows`` 只有正文段。"""
+
+    chapter_no: int
+    title: str
+    rows: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def char_count(self) -> int:
+        return sum(int(row["chars"]) for row in self.rows)
+
+    @property
+    def scene_breaks(self) -> int:
+        """章内显式场界数(章末那个不算)。"""
+        return sum(1 for row in self.rows[:-1] if row.get("break_after"))
+
+
+def _candidate_rows(paragraphs: Iterable[Any]) -> list[dict[str, Any]]:
+    """按 paragraph_index 稳定排序(缺索引时保持输入顺序)、剥空段的原始行。"""
+    indexed: list[tuple[int, int, Any]] = []
+    for position, item in enumerate(paragraphs):
+        raw_index = _field(item, "paragraph_index")
+        index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else position
+        indexed.append((index, position, item))
+    indexed.sort(key=lambda entry: (entry[0], entry[1]))
+    rows: list[dict[str, Any]] = []
+    for index, _position, item in indexed:
+        text = str(_field(item, "text", "") or "").strip()
+        if not text:
+            continue
+        rows.append(
+            {
+                "index": int(index),
+                "paragraph_id": str(_field(item, "paragraph_id", "") or ""),
+                "ptype": str(_field(item, "paragraph_type", "") or "").strip() or "narration",
+                "text": text,
+                "chars": len(text),
+            }
+        )
+    return rows
+
+
+def _front_matter_tail_cut(raw: Sequence[dict[str, Any]]) -> int | None:
+    """章末粘着的下一卷卷首页(卷名 / 「某某 著」/ 题记……直到下一个章题)从哪一行起不是正文。
+
+    只认离章末 ≤ ``FRONT_MATTER_TAIL_MAX_ROWS`` 行、且其后总共不到 ``FRONT_MATTER_TAIL_MAX_CHARS`` 字的「某某 著」
+    类行(其后是题记,不是一整章正文);它前面紧挨的卷名行一并切掉。
     """
-    chapters: list[list[tuple[str, str, int]]] = []
-    breaks_per_chapter: list[int] = []
-    titles_per_chapter: list[str] = []
-    current: list[tuple[str, str, int]] = []
-    current_breaks = 0
-    pending_break = False
-    pending_title = ""
+    count = len(raw)
+    for position, row in enumerate(raw):
+        if not _is_front_matter_line(row["text"]):
+            continue
+        if count - 1 - position > FRONT_MATTER_TAIL_MAX_ROWS:
+            continue
+        if sum(int(item["chars"]) for item in raw[position + 1 :]) > FRONT_MATTER_TAIL_MAX_CHARS:
+            continue
+        if position > 0 and _looks_like_volume_title(raw[position - 1]["text"]):
+            return position - 1
+        return position
+    return None
+
+
+def split_book_chapters(
+    paragraphs: Iterable[Any],
+    *,
+    scene_breaks: Iterable[int] | None = None,
+) -> tuple[list[BookChapter], Counter]:
+    """全书唯一的切章器(结构画像、样例窗口索引、持久化窗口表共用),返回 (章, 章题形态计数)。
+
+    - 章题段(``is_title_paragraph``)开启新章,不入正文;连续章题只留最后一条(最贴近正文);
+    - 脚注 / 盗版站声明 / 落款日期不入正文;纯符号场分隔行不入正文,在其前一段标 ``break_after``;
+      导入期记录的空行型场界(``scene_breaks``:其后有场界的段索引)同样标 ``break_after``;
+    - 有章题的书,第一个章题之前的书名页 / 简介块(含「某某 著」「内容简介：」行)不是正文章,不占章号;
+    - 合集里粘在上一章末尾的下一卷卷首页(卷名、「某某 著」、题记)从正文里切掉;
+    - 没有正文段的块不成章。
+    行是 ``{"index", "paragraph_id", "ptype", "text", "chars", "break_after"}``(``text`` 为去首尾空白的原文)。
+    """
+    break_set = {int(item) for item in (scene_breaks or ()) if isinstance(item, int) and not isinstance(item, bool)}
+    blocks: list[tuple[str, list[dict[str, Any]], bool]] = []
     markers: Counter = Counter()
-    break_set = set(scene_breaks or ())
-
-    def _close() -> None:
-        nonlocal current, current_breaks, pending_break, pending_title
-        if current:
-            chapters.append(current)
-            breaks_per_chapter.append(current_breaks)
-            titles_per_chapter.append(pending_title)
-            pending_title = ""
-        current = []
-        current_breaks = 0
-        pending_break = False
-
-    for text, ptype, index in rows:
-        if is_title_paragraph(text):
-            markers[_marker_style(text)] += 1
-            _close()
-            pending_title = text.strip()[:STRUCTURE_TITLE_MAX_CHARS]
-            continue
-        if _is_colophon(text) or is_paratext_paragraph(text):
-            continue
-        if is_scene_break_paragraph(text):
+    current: list[dict[str, Any]] = []
+    title = ""
+    leading = True
+    for row in _candidate_rows(paragraphs):
+        if is_title_paragraph(_norm(row["text"])):
+            markers[_marker_style(row["text"])] += 1
             if current:
-                pending_break = True
+                blocks.append((title, current, leading))
+            current = []
+            title = _norm(row["text"])[:STRUCTURE_TITLE_MAX_CHARS]
+            leading = False
             continue
-        if pending_break:
-            current_breaks += 1
-            pending_break = False
-        current.append((text, ptype, index))
-        if index in break_set:
-            pending_break = True
-    _close()
-    return chapters, markers, breaks_per_chapter, titles_per_chapter
+        current.append(row)
+    if current:
+        blocks.append((title, current, leading))
+
+    bodies: list[tuple[str, list[dict[str, Any]], bool, bool]] = []
+    for block_title, raw, is_leading in blocks:
+        front_matter = any(_is_front_matter_line(row["text"]) for row in raw)
+        cut = _front_matter_tail_cut(raw)
+        if cut is not None:
+            raw = raw[:cut]
+        body: list[dict[str, Any]] = []
+        for row in raw:
+            kind = non_body_kind(row["text"])
+            if kind == "scene_break":
+                if body:
+                    body[-1]["break_after"] = True
+                continue
+            if kind is not None:
+                continue
+            body.append({**row, "break_after": row["index"] in break_set})
+        if body:
+            bodies.append((block_title, body, is_leading, front_matter))
+    if markers and len(bodies) > 1 and bodies[0][2] and bodies[0][3]:
+        # 有章题的书:第一个章题之前的书名页 / 简介块不是正文章
+        bodies = bodies[1:]
+    chapters = [
+        BookChapter(chapter_no=number, title=block_title, rows=body)
+        for number, (block_title, body, _leading, _front) in enumerate(bodies, start=1)
+    ]
+    return chapters, markers
 
 
 # 章题的「编号 / 分隔」部分:去掉它剩下的才是作者起的题名(「第一幕 卡塞尔之门 The Gate to Cassell」
@@ -456,14 +546,12 @@ def compute_structure_card(
     映射；``scene_breaks`` 是导入期记录的空行型场界（其后有场界的段索引）。返回值是纯 JSON 值
     （int / float / str / list / dict），可直接落 ``profile_json``。
     """
-    rows = _ordered_rows(paragraphs)
-    break_set = {int(item) for item in (scene_breaks or ()) if isinstance(item, int) and not isinstance(item, bool)}
-    chapters, markers, breaks_per_chapter, titles = _split_chapters(rows, break_set)
-    if markers and len(chapters) > 1 and _is_front_matter(chapters[0]):
-        # 有章题的书:第一个章题之前的书名页 / 简介块不是正文章
-        chapters = chapters[1:]
-        breaks_per_chapter = breaks_per_chapter[1:]
-        titles = titles[1:]
+    book_chapters, markers = split_book_chapters(paragraphs, scene_breaks=scene_breaks)
+    chapters = [
+        [(_norm(row["text"]), row["ptype"], row["index"]) for row in chapter.rows] for chapter in book_chapters
+    ]
+    breaks_per_chapter = [chapter.scene_breaks for chapter in book_chapters]
+    titles = [chapter.title for chapter in book_chapters]
     has_markers = bool(markers)
     card: dict[str, Any] = {
         "version": STRUCTURE_CARD_VERSION,
@@ -974,6 +1062,9 @@ def render_planning_guidance(profile_json: Mapping[str, Any] | None) -> str:
 
 
 __all__ = [
+    "BookChapter",
+    "FRONT_MATTER_TAIL_MAX_CHARS",
+    "FRONT_MATTER_TAIL_MAX_ROWS",
     "PLANNING_GUIDANCE_HEADER",
     "PLANNING_GUIDANCE_MAX_LINES",
     "STRUCTURE_CARD_HEADER",
@@ -988,4 +1079,6 @@ __all__ = [
     "render_planning_guidance",
     "render_structure_card",
     "render_structure_card_parts",
+    "non_body_kind",
+    "split_book_chapters",
 ]

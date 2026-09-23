@@ -4,9 +4,9 @@
 机制独立)。本模块用 `@lru_cache` 缓存解析结果,测试可用 `_load_yaml.cache_clear()`
 重置。
 
-支持的 name 与 §A 配置文件清单一致(input_thresholds / sensory_lexicon /
-extraction / banned_adjectives / tolerance_floors),v2 声音签名
-另加 function_words / voice_baseline。`anti_plagiarism_template.txt`
+支持的 name:input_thresholds / extraction / banned_adjectives / tolerance_floors,
+测量核与声音签名另加 function_words / voice_baseline(感官词表 sensory_lexicon 已随感官指标
+一起删除,2026-09-23)。`anti_plagiarism_template.txt`
 不是 YAML,用 `load_text_template` 加载。
 
 `load_optional_yaml_config` 用于「缺文件即优雅退化」的配置(如 voice_baseline.yaml):
@@ -37,7 +37,7 @@ def _load_yaml(name: str) -> Any:
     if not path.exists():
         raise FileNotFoundError(
             f"style_reference config not found: {path}"
-            f" (expected one of: input_thresholds / sensory_lexicon / extraction / "
+            f" (expected one of: input_thresholds / extraction / "
             f"banned_adjectives / tolerance_floors / "
             f"function_words / voice_baseline)"
         )

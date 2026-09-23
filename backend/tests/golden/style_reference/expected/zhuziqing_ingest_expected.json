@@ -12,24 +12,24 @@
       "std": 0.0
     },
     "avg_sentence_length": {
-      "mean": 21.200691848767015,
+      "mean": 21.119402985074625,
       "sample_count": 51,
-      "std": 2.2212312174447195
+      "std": 1.444869889021087
     },
     "classical_word_ratio": {
-      "mean": 0.053757077887051634,
+      "mean": 0.07164179104477612,
       "sample_count": 51,
-      "std": 0.04348509460923412
+      "std": 0.06987219253724178
     },
     "colloquial_marker_ratio": {
-      "mean": 0.05812395671172612,
+      "mean": 0.11343283582089553,
       "sample_count": 51,
-      "std": 0.03404475274171976
+      "std": 0.07326802891443929
     },
     "dash_em_density_per_1k": {
-      "mean": 1.9202410349938142,
+      "mean": 3.392226148409894,
       "sample_count": 51,
-      "std": 1.4663249218084033
+      "std": 2.372991994584182
     },
     "description_char_ratio": {
       "mean": 0.058823529411764705,
@@ -57,14 +57,14 @@
       "std": 0.11294046991650217
     },
     "long_sentence_ratio": {
-      "mean": 0.22987291178155841,
+      "mean": 0.2208955223880597,
       "sample_count": 51,
-      "std": 0.07220860228723695
+      "std": 0.06190533846805633
     },
     "metaphor_density_per_1k": {
-      "mean": 2.3450979320377088,
+      "mean": 4.80565371024735,
       "sample_count": 51,
-      "std": 2.4324239713668607
+      "std": 5.151434448358103
     },
     "narration_ratio": {
       "mean": 0.39215686274509803,
@@ -82,54 +82,29 @@
       "std": 0.08848824910331896
     },
     "punctuation_density_per_1k": {
-      "mean": 148.85798601340707,
+      "mean": 156.46643109540636,
       "sample_count": 51,
-      "std": 20.656770774469976
+      "std": 21.521500340519484
     },
     "question_density_per_1k": {
-      "mean": 3.387645151077939,
+      "mean": 3.5335689045936394,
       "sample_count": 51,
-      "std": 4.503730967628346
+      "std": 3.306187045322256
     },
     "semicolon_density_per_1k": {
-      "mean": 10.70545336157167,
+      "mean": 13.286219081272085,
       "sample_count": 51,
-      "std": 4.015209726173029
-    },
-    "sensory_auditory_per_1k": {
-      "mean": 2.317989040935094,
-      "sample_count": 51,
-      "std": 0.7616546151599739
-    },
-    "sensory_gustatory_per_1k": {
-      "mean": 0.3433251961597792,
-      "sample_count": 51,
-      "std": 0.2663048336341237
-    },
-    "sensory_olfactory_per_1k": {
-      "mean": 0.21938679611673512,
-      "sample_count": 51,
-      "std": 0.3442685108293382
-    },
-    "sensory_tactile_per_1k": {
-      "mean": 2.133702077693966,
-      "sample_count": 51,
-      "std": 0.8976824911070026
-    },
-    "sensory_visual_per_1k": {
-      "mean": 26.63190110897397,
-      "sample_count": 51,
-      "std": 17.096413643982743
+      "std": 3.9130508801507524
     },
     "sentence_length_std": {
-      "mean": 7.469034174142955,
+      "mean": 12.761091035632203,
       "sample_count": 51,
-      "std": 2.17569874375229
+      "std": 2.0473466121978627
     },
     "short_sentence_ratio": {
-      "mean": 0.27224423719665325,
+      "mean": 0.20597014925373133,
       "sample_count": 51,
-      "std": 0.09548281923248601
+      "std": 0.07016402576830097
     },
     "transition_ratio": {
       "mean": 0.0784313725490196,

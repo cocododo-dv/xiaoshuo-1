@@ -96,7 +96,7 @@ def test_ingest_upload_happy_path(ingest_service: IngestService) -> None:
         "paragraph_type_distribution",
         "safety",
     }
-    assert len(stats["metrics"]) == 26
+    assert len(stats["metrics"]) == 21
     assert len(stats["prose_shape_metrics"]) == 5
     # 离线 fallback 标记
     assert stats["classifier_calibration"]["fallback_to_heuristic"] is True
@@ -202,9 +202,9 @@ def test_ingest_luxun_placeholder(ingest_service: IngestService) -> None:
     assert "input_assessment" in stats
     assert "classifier_calibration" in stats
     assert "paragraph_type_distribution" in stats
-    # metrics 26 项
-    assert len(stats["metrics"]) == 26
-    # 段落形态另存，不改变冻结的 26 项 QC 分母
+    # metrics 21 项(2026-09-23 测量核:感官词表指标删除)
+    assert len(stats["metrics"]) == 21
+    # 段落形态另存，不改变冻结的 21 项 QC 分母
     assert len(stats["prose_shape_metrics"]) == 5
     assert "paragraph_mean_chars" in stats["prose_shape_metrics"]
     # 每个 metric 都含 mean / std / sample_count
@@ -216,7 +216,7 @@ def test_ingest_luxun_placeholder(ingest_service: IngestService) -> None:
         assert "std" in m
         assert "sample_count" in m
     # v2 W3:全书声音签名随 ingest 落库
-    assert stats["voice_signature"]["version"] == "voice_signature_v1"
+    assert stats["voice_signature"]["version"] == "voice_signature_v2"
     assert stats["voice_signature"]["stats"]["char_count"] > 0
 
 
@@ -299,7 +299,7 @@ def test_ingest_writes_voice_signature(ingest_service: IngestService) -> None:
         cloud_policy="local_only",
     )
     signature = result.book.stats_json["voice_signature"]
-    assert signature["version"] == VOICE_SIGNATURE_VERSION == "voice_signature_v1"
+    assert signature["version"] == VOICE_SIGNATURE_VERSION == "voice_signature_v2"
     assert tuple(signature["features"]) == FEATURE_NAMES
     assert all(isinstance(value, float) for value in signature["features"].values())
     assert signature["stats"]["paragraph_count"] == 5

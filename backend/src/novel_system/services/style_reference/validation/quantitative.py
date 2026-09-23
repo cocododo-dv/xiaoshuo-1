@@ -12,8 +12,8 @@ baseline 缺失或 generated_text 为空时返 []。
 2026-07 勘误:8 个 paragraph_type 比例指标(dialogue_ratio 等)**不参与对照**。
 它们度量的是分类器标签而非文本本身——生成文本在这里全部归 narration(无分类器),
 narration_ratio 恒 1、其余恒 0,对照 baseline 是系统性伪偏差:对话密集的参考书
-必然把 pass_rate 拖到 0.8 以下,QC gate 恒 PARTIAL/FAIL。对照只保留 18 个纯文本
-统计指标(句长/标点/词表/感官密度),与「quant 不依赖 paragraph_type 精确性」的
+必然把 pass_rate 拖到 0.8 以下,QC gate 恒 PARTIAL/FAIL。对照只保留 13 个纯文本
+统计指标(句长/标点/词表密度;感官词表指标 2026-09-23 已删除),与「quant 不依赖 paragraph_type 精确性」的
 既有约定一致;8 项仍保留在 metrics_baseline / 抽取锚点 / 前端展示。
 
 2026-08:``compute_generated_metrics`` 额外返回 5 个纯文本段落形态指标，供注入
@@ -23,10 +23,10 @@ narration_ratio 恒 1、其余恒 0,对照 baseline 是系统性伪偏差:对话
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any, Mapping
 
 from novel_system.services.style_reference.config_loader import load_yaml_config
+from novel_system.services.style_reference.measure import kernel_paragraphs
 from novel_system.services.style_reference.metrics import (
     METRIC_NAMES,
     MetricsEngine,
@@ -58,22 +58,15 @@ TYPE_RATIO_METRICS: frozenset[str] = frozenset(
 
 
 def _wrap_as_paragraphs(generated_text: str) -> list[ParagraphRecord]:
-    """把 generated_text 切成临时段(按双换行),全部归 narration。
+    """把 generated_text 按测量核的唯一分段规则切段(换行即段界、作者稿 HTML 先取段),全部归 narration。
 
-    quant 不依赖 paragraph_type 精确性;只关心句长/词频/感官词密度等纯文本统计。
+    2026-09-23:过去只按空行切,作者稿用单换行分段时整场被当成一段。quant 不依赖 paragraph_type 精确性,
+    只关心句长 / 标点等纯文本统计。
     """
-    if not generated_text:
-        return []
-    raw_parts = re.split(r"\n\s*\n", generated_text)
-    parts = [p.strip() for p in raw_parts if p.strip()]
-    if not parts:
-        parts = [generated_text.strip()]
-    return [ParagraphRecord(text=p, paragraph_type="narration") for p in parts]
+    return [ParagraphRecord(text=p, paragraph_type="narration") for p in kernel_paragraphs(generated_text)]
 
 
 def _dim_for_metric(metric: str) -> str:
-    if metric.startswith("sensory_"):
-        return "scene"
     if metric.startswith("paragraph_") or metric in {
         "single_sentence_paragraph_ratio",
         "quote_led_paragraph_ratio",
