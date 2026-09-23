@@ -468,6 +468,9 @@ def test_orchestrator_never_archives_a_near_final_rewrite_that_copies_the_refere
     重写稿要过 styled-draft gate（真实阶段 near_final_rewrite 落 MetricEvent），抄袭裁决
     让 orchestrator 丢弃重写稿、回退到重写前已过 soft_qc gate 的风格稿，skip_reason /
     Q2 警告 / notices 全部可见，且不再对被拒重写稿做第二轮 near-final 评审。
+
+    （2026-09-23 风格参考 v3 P5b：作者手笔直起时风格步先量首稿——这份首稿太短、读数不可信，按设计直接采用为
+    风格稿、不调模型；回退目标因此是「首稿即风格稿」那一行，沿用首稿的调用谱系。）
     """
     _seed_scene(session)
     _seed_style_binding(project_id=PROJECT_ID, seed="nf_plag", paragraphs=[REFERENCE_PARAGRAPH])
@@ -477,17 +480,14 @@ def test_orchestrator_never_archives_a_near_final_rewrite_that_copies_the_refere
     state.provider_attempt_budget = 20
     session.commit()
     planning_client = ScenePipelineOnlineFake()
-    clean_style = (
-        "林岑必须选择：公开证据，还是隐瞒真相保护阿砚；两者不能同时做到。她决定承担隐瞒的代价。林岑把录音带分成两份。"
-    )
+    clean_style = "林岑来到船坞，说明证据很重要。林岑把录音带分成两份。"
     rewrite_with_copy = (
         f"林岑按住录音带。{COPIED_SENTENCE}。公开它能证明篡改，也会暴露阿砚。"
         "许望问：\"你要真相，还是要活人？\"林岑把录音带分成两份。一份交给许望，一份藏进船坞石缝。"
     )
     scene_client = SequencedClient(
         [
-            {"scene_text": "林岑来到船坞，说明证据很重要。林岑把录音带分成两份。", "continuity_notes": []},
-            {"scene_text": clean_style, "style_notes": []},
+            {"scene_text": clean_style, "continuity_notes": []},
             {"scene_text": rewrite_with_copy, "style_notes": []},
         ]
     )
@@ -508,11 +508,11 @@ def test_orchestrator_never_archives_a_near_final_rewrite_that_copies_the_refere
     result = orchestrator.run_scene(SCENE_ID)
     session.commit()
 
-    assert len(scene_client.requests) == 3, "the near-final rewrite itself was produced"
+    assert len(scene_client.requests) == 2, "first draft (accepted as the style draft) + the near-final rewrite"
     assert len(near_final_client.requests) == 1
     rewrite_system_prompt = "\n".join(
         str(message.get("content") or "")
-        for message in scene_client.requests[2].messages
+        for message in scene_client.requests[1].messages
         if message.get("role") == "system"
     )
     assert "[STYLE_REFERENCE]" in rewrite_system_prompt
@@ -524,8 +524,8 @@ def test_orchestrator_never_archives_a_near_final_rewrite_that_copies_the_refere
     final_scene = session.execute(select(FinalScene)).scalars().one()
     assert result["scene_status"] == "archived"
     assert COPIED_SENTENCE not in final_scene.content
-    assert final_scene.content == clean_style
-    assert final_scene.generation_llm_call_id == drafts[1].generation_llm_call_id
+    assert final_scene.content == clean_style == drafts[1].content == drafts[0].content
+    assert final_scene.generation_llm_call_id == drafts[1].generation_llm_call_id == drafts[0].generation_llm_call_id
     assert result["near_final"]["rewrite_count"] == 0
     gate = result["near_final"]["rewrite_style_gate"]
     assert gate["rejected"] is True and gate["verdict"] == "plagiarism"
@@ -576,17 +576,15 @@ def test_strict_policy_stops_on_a_gate_rejected_near_final_rewrite_instead_of_ar
     state.attempt_budget = 20
     state.provider_attempt_budget = 20
     session.commit()
-    clean_style = (
-        "林岑必须选择:公开证据,还是隐瞒真相保护阿砚;两者不能同时做到。她决定承担隐瞒的代价。林岑把录音带分成两份。"
-    )
+    # 风格参考 v3（P5b）：首稿太短、读数不可信 → 首稿即风格稿（不调模型），重写的来源就是它
+    first_draft = "林岑来到船坞,说明证据很重要。林岑把录音带分成两份。"
     rewrite_with_copy = (
         f"林岑按住录音带。{COPIED_SENTENCE}。公开它能证明篡改,也会暴露阿砚。"
         "许望问:\"你要真相,还是要活人?\"林岑把录音带分成两份。一份交给许望,一份藏进船坞石缝。"
     )
     scene_client = SequencedClient(
         [
-            {"scene_text": "林岑来到船坞,说明证据很重要。林岑把录音带分成两份。", "continuity_notes": []},
-            {"scene_text": clean_style, "style_notes": []},
+            {"scene_text": first_draft, "continuity_notes": []},
             {"scene_text": rewrite_with_copy, "style_notes": []},
         ]
     )
@@ -620,6 +618,7 @@ def test_strict_policy_stops_on_a_gate_rejected_near_final_rewrite_instead_of_ar
     assert run_state.scene_status == "quality_warning_pending_acceptance"
     assert run_state.current_style_draft_row_id == drafts[1].row_id
     assert run_state.latest_valid_draft_row_id == drafts[1].row_id
+    assert drafts[1].content == first_draft and len(scene_client.requests) == 2
 
 
 def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:

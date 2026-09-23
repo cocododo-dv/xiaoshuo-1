@@ -28,10 +28,10 @@ from novel_system.services.style_fidelity_view import (
     project_style_fidelity,
     scene_style_fidelity,
 )
+from novel_system.services.style_reference import check_job as check_job_service
 from novel_system.services.style_reference.check_job import (
     CHECK_MAX_TEXT_CHARS,
     check_job_payload,
-    resolve_check_client,
     start_check_job,
 )
 from novel_system.services.style_reference.errors import LLMRequiredError
@@ -108,7 +108,8 @@ def create_style_check(
     """建一个对照检查作业（事务提交后派发）。没有模型 409 ``STYLE_REFERENCE_LLM_REQUIRED``；没有可对照的参考
     409 ``STYLE_REFERENCE_CHECK_NOT_BOUND``；参数不对 400 ``STYLE_REFERENCE_CHECK_TARGET_INVALID``。"""
     body = payload.model_dump(mode="json")
-    client, enabled = resolve_check_client()
+    # 按模块取（运行时与测试都只在 check_job 一处换客户端工厂）
+    client, enabled = check_job_service.resolve_check_client()
     if not enabled or client is None:
         raise LLMRequiredError(operation="style_check")
     op_key = request.headers.get("X-Idempotency-Key")

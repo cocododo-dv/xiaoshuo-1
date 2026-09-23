@@ -1,6 +1,8 @@
 """PreviewService 单测(PR-4)。
 
 参见 plans/style-reference-v1-1-fancy-shannon.md §"测试策略"。
+2026-09-23 风格参考 v3(P5b):示例不再写旧校验报告(``report_id`` 恒为空),verdict 来自唯一抄袭门——
+与这本书的段落连续 ≥12 字相同即 ``plagiarism``。
 """
 
 from __future__ import annotations
@@ -38,11 +40,23 @@ def _seed_profile(seed: str, scene_samples_text: str = "他低头看着路") -> 
             }},
         )
         repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
+        paragraph_id = f"sr_para_{seed}_dlg"
+        repo.create_paragraph(
+            paragraph_id=paragraph_id,
+            book_id=book_id,
+            paragraph_index=0,
+            paragraph_type="dialogue",
+            start_offset=0,
+            end_offset=len(scene_samples_text),
+            text=scene_samples_text,
+            char_count=len(scene_samples_text),
+            classifier_confidence=0.9,
+        )
         quote_id = f"sr_q_{seed}_dlg"
         repo.create_quote(
             quote_id=quote_id,
             book_id=book_id,
-            paragraph_id=None,
+            paragraph_id=paragraph_id,
             span_start=0,
             span_end=len(scene_samples_text),
             quote_text=scene_samples_text,
@@ -104,7 +118,7 @@ def test_preview_llm_required_when_disabled() -> None:
             svc.generate(profile_id)
 
 
-def test_preview_returns_3_samples_and_writes_reports() -> None:
+def test_preview_returns_3_samples_without_validation_reports() -> None:
     profile_id = _seed_profile("happy")
     client = _fake_preview_client()
     with SessionLocal() as session:
@@ -117,20 +131,20 @@ def test_preview_returns_3_samples_and_writes_reports() -> None:
     for r in results:
         assert r.error is None
         assert r.sample_text
-        assert r.report_id
+        assert r.report_id is None
         assert r.verdict == "pass"
 
-    # validation_reports 表写入 3 行
+    # 旧校验报告表不再写
     with SessionLocal() as session:
         count = session.scalar(
             select(func.count()).select_from(StyleReferenceValidationReport)
             .where(StyleReferenceValidationReport.profile_id == profile_id)
         )
-    assert count == 3
+    assert count == 0
 
 
 def test_preview_plagiarism_verdict_triggers_on_overlap() -> None:
-    """LLM 返回的 sample_text 与 profile quote 有 ≥12 字符连续重叠时 verdict=plagiarism。"""
+    """LLM 返回的 sample_text 与这本书的段落有 ≥12 字符连续重叠时 verdict=plagiarism(唯一抄袭门)。"""
     seed_text = "暮色四合,街口的雾气还没散尽,行人三三两两走过。"
     profile_id = _seed_profile("plag", scene_samples_text=seed_text)
     overlap_text = "今儿是个好天气。" + seed_text  # 与 profile quote 完全相同的子串
@@ -141,7 +155,8 @@ def test_preview_plagiarism_verdict_triggers_on_overlap() -> None:
         session.commit()
 
     plagiarism_results = [r for r in results if r.verdict == "plagiarism"]
-    assert plagiarism_results, "至少应有一个 sample 因 8-gram 重叠触发 plagiarism"
+    assert plagiarism_results, "至少应有一个 sample 因与原书段落连续重合触发 plagiarism"
+    assert all(r.report_id is None for r in results)
 
 
 def test_preview_llm_failure_per_sample_does_not_block_others() -> None:
@@ -181,5 +196,5 @@ def test_preview_llm_failure_per_sample_does_not_block_others() -> None:
     happy = [r for r in results if r.error is None]
     assert len(happy) == 2
     for r in happy:
-        assert r.report_id
+        assert r.report_id is None
         assert r.verdict

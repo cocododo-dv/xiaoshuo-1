@@ -2,9 +2,9 @@
 
 钉住:
 - 登记簿对每种 kind 的百分比单调、阶段文案、活跃守卫查询;
-- ``GET …/activity`` 合并作业表(学习文风作业的七步进度、分类作业)与登记簿条目 / 回测报告;旧抽取 run 不再单列;
+- ``GET …/activity`` 合并作业表(学习文风作业的七步进度、分类作业、对照检查作业)与登记簿条目;旧抽取 run 不再单列;
 - 重新分类按幂等键登记进度;
-- 回测 worker 先落本地三路再跑语义路,报告在 running 时已带部分结果;
+- 对照检查作业(2026-09-23 v3 P5b,取代旧回测)与其他作业同形列出;旧回测报告随旧校验层删除,不再列出;
 - 源文重合过滤的 n-gram 索引与逐行 ``check_plagiarism`` 判定完全一致。
 (合成画像 / 应用画像建 RAG 索引的进度随旧学习链路删除;学习作业见 test_style_reference_learn_job.py。)
 """
@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import random
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -31,15 +30,12 @@ from novel_system.services.style_reference.import_progress import (
     start_import_progress,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.schemas import ValidateRequest, ValidationMode
-from novel_system.services.style_reference.validation import ValidationOrchestrator
 from novel_system.services.style_reference.validation.plagiarism import (
     CorpusOverlapIndex,
     check_plagiarism,
 )
 from tests.style_reference_route_helpers import install_fake_classifier, wait_book_status
 from tests.test_style_reference_routes import _import_book, _seed_full_chain
-from tests.test_style_reference_validation_runner import _seed_profile, _wait_for_async
 
 PREFIX = "/api/v2/style-reference"
 
@@ -259,55 +255,46 @@ def test_reclassify_route_registers_progress(
     assert snap["paragraphs_count"] == resp.json()["data"]["paragraphs_count"]
 
 
-# ---------------------------------------------------------------- validation
+# ---------------------------------------------------------------- style check (取代旧回测)
 
 
-def test_async_validation_persists_local_results_before_the_semantic_pass(
-    fake_validation_llm,
-) -> None:
-    profile_id = _seed_profile("activity_val")
-    gate = threading.Event()
-    entered = threading.Event()
+def test_check_jobs_are_listed_like_every_other_job_and_old_reports_are_not(client: TestClient) -> None:
+    from novel_system.services.style_reference.jobs import JOB_KIND_CHECK, StyleJobService
 
-    class Gated(fake_validation_llm):
-        def generate(self, request):  # noqa: ANN001
-            if (getattr(request, "node_id", "") or "") == "style_ref_validate_semantic":
-                entered.set()
-                assert gate.wait(timeout=20)
-            return super().generate(request)
-
-    llm = Gated("with_quote")
+    book_id = _import_book(client)
+    _, _, profile_id = _seed_full_chain(book_id)
     with SessionLocal() as session:
-        orch = ValidationOrchestrator(session, llm_client=llm, llm_enabled=True)
-        resp = orch.validate(
-            profile_id,
-            ValidateRequest(generated_text="一段生成的中文文本测试", mode=ValidationMode.ASYNC_FULL),
+        service = StyleJobService(session)
+        job = service.create(JOB_KIND_CHECK, book_id=book_id, profile_id=profile_id, phase="queued", allow_parallel=True)
+        claimed = service.claim(job.job_id)
+        service.progress(claimed, phase="judge", phase_label="参考评审", done=1, total=3)
+        # 旧回测报告行(表留到 P7 的清理迁移):不再出现在活动清单里
+        StyleReferenceRepository(session).create_validation_report(
+            report_id="sr_rep_act_legacy",
+            profile_id=profile_id,
+            target_kind="manual",
+            target_ref_id=None,
+            verdict="",
+            quantitative_json=[],
+            semantic_json=[],
+            plagiarism_json={},
+            forbidden_hits_json=[],
+            mode_executed="async_full",
+            status="running",
         )
         session.commit()
-    report_id = resp.report_id
-    try:
-        assert entered.wait(timeout=20), "语义路应被调用"
-        with SessionLocal() as session:
-            row = session.get(StyleReferenceValidationReport, report_id)
-            assert row is not None
-            assert row.status == "running" and not row.verdict
-            assert isinstance(row.quantitative_json, list)
-            assert row.plagiarism_json.get("passed") is True
-        mid = get_import_progress(f"validate:{report_id}")
-        assert mid is not None
-        assert mid["kind"] == "validate" and mid["status"] == "running"
-        assert mid["phase"] == "semantic" and mid["target_id"] == report_id
-    finally:
-        gate.set()
-    assert _wait_for_async(report_id, max_seconds=15.0)
-    deadline = time.monotonic() + 10
-    final = get_import_progress(f"validate:{report_id}")
-    while final is not None and final["status"] == "running" and time.monotonic() < deadline:
-        time.sleep(0.05)
-        final = get_import_progress(f"validate:{report_id}")
-    assert final is not None and final["status"] == "succeeded", final
-    assert final["result"]["report_id"] == report_id
-    assert final["llm_calls"] == 2
+
+    resp = client.get(f"{PREFIX}/activity")
+    assert resp.status_code == 200, resp.text
+    by_key = {item["key"]: item for item in resp.json()["data"]["items"]}
+    checking = by_key[f"job:{job.job_id}"]
+    assert checking["kind"] == "check" and checking["kind_label"] == "对照检查"
+    assert checking["status"] == "running" and checking["phase_label"] == "参考评审"
+    assert checking["steps"] == {"done": 1, "total": 3} and checking["book_id"] == book_id
+    assert not any("sr_rep_act_legacy" in str(key) for key in by_key)
+    assert not any(item["kind"] == "validate" for item in by_key.values())
+    with SessionLocal() as session:
+        assert session.get(StyleReferenceValidationReport, "sr_rep_act_legacy") is not None
 
 
 # ---------------------------------------------------------------- preview

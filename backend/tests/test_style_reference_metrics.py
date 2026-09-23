@@ -283,4 +283,38 @@ def test_sensory_lexicon_metrics_are_gone() -> None:
     assert not [name for name in result if name.startswith("sensory_")]
 
 
+# 2026-09-23 风格参考 v3（P5b）：旧的量化回测（validation/quantitative.py）删除，生成稿指标 compute_generated_metrics
+# 搬到 metrics.py（候选排序与预览还用它）；下面两条从旧的量化回测单测里保留。
+
+
+def test_generated_metrics_single_newline_blank_line_and_html_paragraphs_measure_the_same() -> None:
+    """作者稿常用单换行分段；过去只按空行切，整场被当成一段。"""
+    from novel_system.services.style_reference.metrics import compute_generated_metrics
+
+    paragraphs = ["“先别开门。”", "他把手收了回来，站在门外听了很久。", "屋里没有声音。"]
+    single = compute_generated_metrics("\n".join(paragraphs))
+    blank = compute_generated_metrics("\n\n".join(paragraphs))
+    html = compute_generated_metrics("".join(f"<p>{p}</p>" for p in paragraphs))
+    assert single == blank == html
+    assert single["single_sentence_paragraph_ratio"] == 1.0
+    assert single["quote_led_paragraph_ratio"] == 1 / 3
+
+
+def test_generated_metrics_expose_paragraph_shape_and_every_metric() -> None:
+    from novel_system.services.style_reference.metrics import (
+        TYPE_RATIO_METRICS,
+        compute_generated_metrics,
+    )
+
+    text = "甲乙丙丁。\n\n这是明显更长的第二段，用来制造段落长度差。"
+    generated = compute_generated_metrics(text)
+    assert set(PROSE_SHAPE_METRIC_NAMES) <= generated.keys()
+    assert set(METRIC_NAMES) <= generated.keys()
+    assert generated["paragraphs_per_1k"] > 0
+    # 生成稿没有分类器：全部当叙述，段型比例只是占位（候选排序 / 预览都不拿它们对照）
+    assert generated["narration_ratio"] == 1.0
+    assert len(TYPE_RATIO_METRICS) == 8 and TYPE_RATIO_METRICS <= set(METRIC_NAMES)
+    assert compute_generated_metrics("") == {}
+
+
 import pytest  # noqa: E402  (avoid circular if any)

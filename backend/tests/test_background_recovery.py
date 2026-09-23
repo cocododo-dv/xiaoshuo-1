@@ -17,7 +17,6 @@ from novel_system.db.models import (
     StyleReferenceBook,
     StyleReferenceProfile,
     StyleReferenceRun,
-    StyleReferenceValidationReport,
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.background_recovery import (
@@ -25,7 +24,6 @@ from novel_system.services.background_recovery import (
     recover_run_job_dispatches,
     retire_legacy_style_reference_runs,
     run_startup_recovery,
-    recover_validation_reports,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import recover_stale_legacy_reservations
@@ -472,70 +470,3 @@ def test_legacy_style_reference_runs_are_retired_and_learn_runs_are_left_alone(s
     assert session.get(StyleReferenceRun, "run-learn").status == "running"
     assert session.get(StyleReferenceRun, "run-done").status == "done"
     assert retire_legacy_style_reference_runs(session) == []
-
-
-def test_validation_recovery_fails_only_orphans_and_keeps_no_prose_copy(session) -> None:
-    now = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
-    old = (now - timedelta(minutes=5)).isoformat()
-    recent = (now - timedelta(seconds=1)).isoformat()
-    session.add(
-        StyleReferenceBook(
-            book_id="book-validation-recovery",
-            title="Validation",
-            source_kind="upload",
-            cloud_policy="local_only",
-            text_checksum="validation-recovery-checksum",
-        )
-    )
-    session.add(
-        StyleReferenceRun(
-            run_id="run-validation-recovery",
-            book_id="book-validation-recovery",
-            status="done",
-            phase="done",
-        )
-    )
-    session.add(
-        StyleReferenceProfile(
-            profile_id="profile-validation-recovery",
-            book_id="book-validation-recovery",
-            run_id="run-validation-recovery",
-            title="Validation",
-        )
-    )
-    session.add_all(
-        [
-            StyleReferenceValidationReport(
-                report_id="report-orphan",
-                profile_id="profile-validation-recovery",
-                target_kind="manual",
-                verdict="",
-                status="running",
-                started_at=old,
-                heartbeat_at=old,
-            ),
-            StyleReferenceValidationReport(
-                report_id="report-active",
-                profile_id="profile-validation-recovery",
-                target_kind="manual",
-                verdict="",
-                status="running",
-                started_at=recent,
-                heartbeat_at=recent,
-            ),
-        ]
-    )
-    session.commit()
-
-    assert recover_validation_reports(session, now=now, grace_seconds=30) == ["report-orphan"]
-    session.expire_all()
-    orphan = session.get(StyleReferenceValidationReport, "report-orphan")
-    active = session.get(StyleReferenceValidationReport, "report-active")
-    assert orphan is not None
-    assert orphan.status == "failed"
-    assert orphan.retryable is True
-    assert orphan.error_code == "STYLE_REFERENCE_VALIDATION_INTERRUPTED"
-    assert orphan.quantitative_json == []
-    assert orphan.semantic_json == []
-    assert "generated_text" not in StyleReferenceValidationReport.__table__.columns
-    assert active is not None and active.status == "running"

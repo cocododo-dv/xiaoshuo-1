@@ -688,7 +688,7 @@ class SceneGenerationService:
                 notices.append(
                     style_notice(
                         STYLE_NOTICE_FIRST_DRAFT,
-                        "首稿已按参考作者的手笔直接起草（未经过中性稿）；风格稿阶段只做再靠近一层的复读。",
+                        "首稿已按参考作者的手笔直接起草（未经过中性稿）；风格步先量首稿：在作者常见范围内直接采用，越界才按读数做定向修改。",
                         severity="info",
                         draft_mode=draft_mode,
                     )

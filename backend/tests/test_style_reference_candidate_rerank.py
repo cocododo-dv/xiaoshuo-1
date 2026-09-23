@@ -12,9 +12,7 @@ from novel_system.services.style_reference.candidate_rerank import (
     assess_candidate_text,
     build_style_target,
 )
-from novel_system.services.style_reference.validation.quantitative import (
-    compute_generated_metrics,
-)
+from novel_system.services.style_reference.metrics import compute_generated_metrics
 
 
 REFERENCE_TEXT = (

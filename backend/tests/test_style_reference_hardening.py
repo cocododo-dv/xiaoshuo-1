@@ -5,7 +5,8 @@
 2. LLMRequiredError / CloudPolicyBlockedError 映射 DomainError 409
 3. 反抄袭红线段(anti_plagiarism_block)接线:渲染 / banned_terms 填充 / 免截断
 4. 抄袭检测:规范化匹配(防标点空格绕过)+ 全书段落语料
-5. sync 校验含 quantitative;semantic 路失败时 PASS 封顶 PARTIAL
+5. (2026-09-23 风格参考 v3 P5b:旧校验层的同步量化裁决 / semantic 降级封顶随校验层删除;
+   严格 LLM 与 cloud_policy 在「对照检查」作业的建作业处照样把关)
 6. 孤儿 pending report 回收 + 上传体积上限(旧抽取 run 的僵尸回收随 RunOrchestrator 删除;学习作业的续跑见 test_style_reference_learn_job)
 """
 
@@ -30,24 +31,19 @@ from novel_system.services.style_reference.inject.render import render_style
 from novel_system.services.style_reference.inject.request import StyleRenderRequest
 from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.schemas import (
-    ValidateRequest,
-    ValidationMode,
+from novel_system.services.reference_copy_gate import (
+    check_reference_copy,
+    reset_reference_copy_gate_cache,
 )
-from novel_system.services.style_reference.validation import (
-    ValidationOrchestrator,
-    _compute_full_verdict,
-    check_plagiarism,
-    clear_plagiarism_corpus_cache,
-    run_sync_validate,
-)
+from novel_system.services.style_reference.check_job import start_check_job
+from novel_system.services.style_reference.validation import check_plagiarism
 
 
 @pytest.fixture(autouse=True)
 def _clear_corpus_cache():
-    clear_plagiarism_corpus_cache()
+    reset_reference_copy_gate_cache()
     yield
-    clear_plagiarism_corpus_cache()
+    reset_reference_copy_gate_cache()
 
 
 class _SentinelLLM:
@@ -230,31 +226,36 @@ def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic(monkeypatch
         assert book.stats_json["classification_provenance"]["source"] == "llm"
 
 
-def test_async_full_for_local_only_book_is_refused_without_a_local_llm():
-    """2026-09-15 严格 LLM:local_only 不出云,全量三路也不再降成 partial——云端模型直接 409。"""
+def test_style_check_for_local_only_book_is_refused_without_a_local_llm():
+    """2026-09-15 严格 LLM:local_only 不出云——对照检查(取代旧回测的全量三路)用云端模型直接 409,
+    建作业时就拒绝,模型一次都不调。"""
     book_id = _seed_book("async_local", cloud_policy="local_only")
     profile_id = _seed_profile_for_book("async_local", book_id)
     sentinel = _SentinelLLM()
     with SessionLocal() as session:
-        orch = ValidationOrchestrator(session, llm_client=sentinel, llm_enabled=True)
         with pytest.raises(CloudPolicyBlockedError):
-            orch.validate(
-                profile_id,
-                ValidateRequest(generated_text="一段完全原创的全新文本表达", mode=ValidationMode.ASYNC_FULL),
+            start_check_job(
+                session,
+                text="一段完全原创的全新文本表达" * 20,
+                profile_id=profile_id,
+                llm_client=sentinel,
+                llm_enabled=True,
             )
     assert not sentinel.called
 
 
-def test_async_full_without_llm_is_refused():
-    """全量三路必须有 LLM:未启用 → 409 STYLE_REFERENCE_LLM_REQUIRED,不再静默降级。"""
+def test_style_check_without_llm_is_refused():
+    """对照检查必须有 LLM:未启用 → 409 STYLE_REFERENCE_LLM_REQUIRED,不静默降级成只有读数的检查。"""
     book_id = _seed_book("async_no_llm", cloud_policy="segments_only")
     profile_id = _seed_profile_for_book("async_no_llm", book_id)
     with SessionLocal() as session:
-        orch = ValidationOrchestrator(session, llm_client=None, llm_enabled=False)
         with pytest.raises(LLMRequiredError):
-            orch.validate(
-                profile_id,
-                ValidateRequest(generated_text="一段完全原创的全新文本表达", mode=ValidationMode.ASYNC_FULL),
+            start_check_job(
+                session,
+                text="一段完全原创的全新文本表达" * 20,
+                profile_id=profile_id,
+                llm_client=None,
+                llm_enabled=False,
             )
 
 
@@ -398,71 +399,14 @@ def test_plagiarism_short_common_phrases_pass():
     assert report.passed
 
 
-def test_sync_validate_uses_full_book_corpus_not_only_quotes():
-    """抄全书中未被引用为 quote 的段落,也必须检出 plagiarism。"""
+def test_copy_gate_uses_full_book_corpus_not_only_quotes():
+    """抄全书中未被引用为 quote 的段落,也必须被唯一抄袭门拦下(取代旧同步回测的同名用例)。"""
     book_id = _seed_book("fullcorpus", cloud_policy="segments_only")
     profile_id = _seed_profile_for_book("fullcorpus", book_id)
     copied = "雪花从天空缓缓飘落,落在他的肩头,他没有拂去。"  # 段落原文,但没有任何 quote 行
     with SessionLocal() as session:
-        profile = StyleReferenceRepository(session).get_profile(profile_id)
-        report = run_sync_validate(copied, profile, session)
-    assert report.verdict.value == "plagiarism"
-
-
-# ---------------------------------------------------------------------------
-# 5. sync 含 quantitative + semantic 降级语义
-# ---------------------------------------------------------------------------
-
-
-def test_sync_validate_includes_quantitative_check():
-    """与 baseline 偏差大的文本,sync 路径应产出量化报告并降级 verdict。"""
-    book_id = _seed_book("quant", cloud_policy="segments_only")
-    profile_id = _seed_profile_for_book(
-        "quant",
-        book_id,
-        profile_json={
-            "narrative_summary": "短句白描",
-            # 构造与超长句文本必然冲突的 baseline(均值 5 字 / 极小容差)
-            "metrics_baseline": {
-                "avg_sentence_length": {"mean": 5.0, "std": 0.01},
-            },
-        },
-    )
-    long_sentence_text = "这是一个被刻意写得非常非常非常非常非常非常非常非常非常长的句子它没有任何标点直到结束。"
-    with SessionLocal() as session:
-        profile = StyleReferenceRepository(session).get_profile(profile_id)
-        report = run_sync_validate(long_sentence_text, profile, session)
-    assert report.quantitative_json, "sync 路径必须产出量化对照"
-    assert report.verdict.value in ("partial", "fail")
-
-
-class _FakeItem:
-    def __init__(self, passed: bool = True, score: float = 8.0):
-        self.passed = passed
-        self.score = score
-
-
-class _FakePlag:
-    passed = True
-
-
-def test_semantic_degraded_caps_pass_to_partial():
-    verdict = _compute_full_verdict(
-        quant=[_FakeItem(passed=True)],
-        semantic=[],
-        plag=_FakePlag(),
-        forbid=[],
-        semantic_degraded=True,
-    )
-    assert verdict.value == "partial"
-    verdict_ok = _compute_full_verdict(
-        quant=[_FakeItem(passed=True)],
-        semantic=[],
-        plag=_FakePlag(),
-        forbid=[],
-        semantic_degraded=False,
-    )
-    assert verdict_ok.value == "pass"
+        check = check_reference_copy(session, copied, book_ids=[book_id], profile_ids=[profile_id])
+    assert check.blocked and check.hits
 
 
 # ---------------------------------------------------------------------------

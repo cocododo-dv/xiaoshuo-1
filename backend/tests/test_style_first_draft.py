@@ -119,6 +119,47 @@ def _seed_scene(session, *, project_id: str, scene_id: str, chapter_id: str, ban
     return scene
 
 
+def _force_readings(monkeypatch, *, first: str, first_distance: float = 1.5, other_distance: float = 1.0) -> None:
+    """风格参考 v3（P5b）：风格步按读数决定——测试里把读数定死：首稿可靠且越界（节奏维），其余文字各给一个 distance。"""
+    from novel_system.services.style_reference import readings
+    from novel_system.services.style_reference.fidelity import FidelityReading
+
+    def _reading(distance: float, percentile: float, out_of_band: list[dict]) -> FidelityReading:
+        return FidelityReading(
+            distance=distance,
+            percentile=percentile,
+            out_of_band=out_of_band,
+            dimension_scores={"narrative.pacing": 5.0},
+            feature_z={},
+            char_count=1200,
+            window_count=28,
+            reliable=True,
+            kernel_version="measure_v1",
+            reference_version="ref_test",
+        )
+
+    pacing = [
+        {
+            "feature": "para_len_mean",
+            "dimension": "narrative.pacing",
+            "z": 3.0,
+            "direction": "high",
+            "phrase": "段落比作者长，换段太少",
+            "value": 150.0,
+            "author_typical": 60.0,
+        }
+    ]
+
+    def fake(_session, policy, text):  # noqa: ANN001
+        if not getattr(policy, "bound", False) or not str(text or "").strip():
+            return None
+        if text == first:
+            return _reading(first_distance, 97.0, pacing)
+        return _reading(other_distance, 60.0, [])
+
+    monkeypatch.setattr(readings, "reading_for_text", fake)
+
+
 class _Runner:
     def __init__(self, outputs: dict[str, str], default: str) -> None:
         self.outputs = outputs
@@ -291,7 +332,8 @@ def test_style_first_repair_keeps_the_prefix_and_label(session) -> None:
     assert "keep the reference author's manner" in repair_call["user_prompt"]
 
 
-def test_style_draft_step_labels_the_source_as_first_draft_under_style_first(session) -> None:
+def test_style_draft_step_labels_the_source_as_first_draft_under_style_first(session, monkeypatch) -> None:
+    """风格参考 v3（P5b，L1）：作者手笔直起时风格步不再「复读」——首稿越界才做定向修改，来源稿仍标成首稿。"""
     _seed_binding("sfd_d4", project_id="proj_sfd_d4")
     scene = _seed_scene(session, project_id="proj_sfd_d4", scene_id="SFD_D4_SC01", chapter_id="SFD_D4")
     bundle = _frozen_bundle("proj_sfd_d4", scene.scene_id, scene.chapter_id)
@@ -299,21 +341,24 @@ def test_style_draft_step_labels_the_source_as_first_draft_under_style_first(ses
     service = SceneGenerationService(session, llm_runner=runner)
     first = service.generate_neutral_draft(scene.scene_id, bundle)
     session.commit()
+    # 修改稿与首稿同文：读数没变近 → 保留首稿
+    _force_readings(monkeypatch, first=_VOICED_TEXT, other_distance=1.5)
     refined = service.generate_style_draft(
         scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
     )
     session.commit()
     call = runner.calls[-1]
-    assert call["step"] == "style_draft" and call["prompt"]["template_name"] == "style_draft"
+    assert call["step"] == "style_draft" and call["prompt"]["template_name"] == "style_targeted_revision"
     assert f"## {sg.FIRST_DRAFT_SOURCE_LABEL}" in call["user_prompt"]
     assert "## Approved Neutral Draft" not in call["user_prompt"]
-    assert "one step closer to the reference samples" in call["user_prompt"]
+    assert "## Dimensions To Move Toward The Author" in call["user_prompt"]
     assert refined.content == _VOICED_TEXT
     attempt = session.execute(
         select(AttemptTracker).where(AttemptTracker.scene_id == scene.scene_id, AttemptTracker.step == "style_draft")
     ).scalars().one()
-    assert attempt.details_json["content_source"] == "provider_style_output"
+    assert attempt.details_json["content_source"] == "revision_not_closer"
     assert attempt.details_json["style_reference_runtime"]["draft_mode"] == DRAFT_MODE_STYLE_FIRST
+    assert attempt.details_json["style_reference_runtime"]["role"] == "revise"
 
 
 def test_style_draft_step_keeps_neutral_label_under_neutral_first(session) -> None:
@@ -330,7 +375,8 @@ def test_style_draft_step_keeps_neutral_label_under_neutral_first(session) -> No
     assert f"## {sg.FIRST_DRAFT_SOURCE_LABEL}" not in call["user_prompt"]
 
 
-def test_refine_fallback_returns_to_the_first_draft_and_the_first_draft_anchors_voice(session) -> None:
+def test_refine_fallback_returns_to_the_first_draft_and_the_first_draft_anchors_voice(session, monkeypatch) -> None:
+    """定向修改丢了必写项（没过确定性安全门）→ 保留首稿；首稿仍可作前文声音锚。"""
     _seed_binding("sfd_d6", project_id="proj_sfd_d6")
     scene = _seed_scene(session, project_id="proj_sfd_d6", scene_id="SFD_D6_SC01", chapter_id="SFD_D6")
     bundle = _frozen_bundle("proj_sfd_d6", scene.scene_id, scene.chapter_id)
@@ -339,21 +385,22 @@ def test_refine_fallback_returns_to_the_first_draft_and_the_first_draft_anchors_
     service = SceneGenerationService(session, llm_runner=runner)
     first = service.generate_neutral_draft(scene.scene_id, bundle)
     session.commit()
+    _force_readings(monkeypatch, first=_VOICED_TEXT, other_distance=0.5)
     refined = service.generate_style_draft(
         scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
     )
     session.commit()
     codes = [item["code"] for item in refined.notices]
-    assert sg.STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL in codes
-    fallback = next(item for item in refined.notices if item["code"] == sg.STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL)
-    assert "首稿" in fallback["message"] and fallback["draft_mode"] == DRAFT_MODE_STYLE_FIRST
+    assert sg.STYLE_NOTICE_REVISION_REJECTED in codes and sg.STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL not in codes
+    rejected = next(item for item in refined.notices if item["code"] == sg.STYLE_NOTICE_REVISION_REJECTED)
+    assert rejected["reason"] == "base_safety_failed" and "首稿" in rejected["message"]
     assert refined.content == _VOICED_TEXT
     attempt = session.execute(
         select(AttemptTracker).where(AttemptTracker.scene_id == scene.scene_id, AttemptTracker.step == "style_draft")
     ).scalars().one()
-    assert attempt.details_json["content_source"] == sg.FIRST_DRAFT_FALLBACK_CONTENT_SOURCE
-    assert attempt.details_json["style_reference_runtime"]["generation_outcome"] == sg.FIRST_DRAFT_FALLBACK_CONTENT_SOURCE
-    # 声音锚:回退稿的正文就是首稿(目标文风),不再按「与中性稿相同即回退」排除
+    assert attempt.details_json["content_source"] == "revision_not_closer"
+    assert attempt.details_json["style_reference_runtime"]["generation_outcome"] == "revision_not_closer"
+    # 声音锚:风格稿行的正文就是首稿(目标文风),不再按「与中性稿相同即回退」排除
     anchor = latest_styled_draft_for_scene(session, scene.scene_id)
     assert anchor is not None and anchor.content == _VOICED_TEXT
 
@@ -445,7 +492,7 @@ def test_styled_gate_accepts_the_first_draft_stage() -> None:
 _HOUSE_TASTE_TEXT = "脚步在门外停了；他将信封搁到桌上——也不说话，只等着。她终于没有去接。她知道这意味着一切都变了。"
 
 
-def test_house_taste_gate_is_recorded_but_never_rewrites_under_style_first(session) -> None:
+def test_house_taste_gate_is_recorded_but_never_rewrites_under_style_first(session, monkeypatch) -> None:
     gate = sg._anti_template_quality_gate(_HOUSE_TASTE_TEXT, scene_id="s", chapter_id="c")
     assert gate["triggered"] and "summary_ending" in gate["risk_dimensions"]
     deferred = sg._defer_house_taste_gate(gate)
@@ -462,6 +509,8 @@ def test_house_taste_gate_is_recorded_but_never_rewrites_under_style_first(sessi
     service = SceneGenerationService(session, llm_runner=runner)
     first = service.generate_neutral_draft(scene.scene_id, bundle)
     session.commit()
+    # 风格参考 v3：定向修改稿更像作者（读数变近）→ 采用；房风门照样让位、不触发去模板
+    _force_readings(monkeypatch, first=_VOICED_TEXT, other_distance=1.0)
     products: list[dict] = []
     refined = service.generate_style_draft(
         scene.scene_id,
@@ -474,11 +523,11 @@ def test_house_taste_gate_is_recorded_but_never_rewrites_under_style_first(sessi
     assert refined.content == _HOUSE_TASTE_TEXT
     steps = [str(call["step"]) for call in runner.calls]
     assert "de_template" not in steps, steps
-    # 门裁决随产品回调进检查点:房风维度只记录,不触发
+    # 门裁决随产品回调进检查点:风格步让位于参考,不跑房风门(v3:只记风格步的决定)
     gate_decision = products[-1]["gate_decision"]
     assert gate_decision["house_taste_gate"] == "deferred_to_reference"
     assert gate_decision["triggered"] is False
-    assert "summary_ending" in gate_decision["advisory_risk_dimensions"]
+    assert gate_decision["style_step"]["decision"] == "revision_kept"
     assert products[-1]["de_template_outcome"] == {"status": "not_required"}
 
 
