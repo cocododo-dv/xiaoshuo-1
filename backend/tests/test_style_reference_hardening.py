@@ -481,7 +481,7 @@ def _client():
 
 
 def test_upload_exceeding_size_limit_returns_413(monkeypatch: pytest.MonkeyPatch):
-    from novel_system.api.routes import style_reference as routes_mod
+    from novel_system.api.routes.style_reference import books as routes_mod
 
     monkeypatch.setattr(routes_mod, "MAX_UPLOAD_BYTES", 64)
     with _client() as client:
@@ -741,7 +741,7 @@ def test_fresh_pending_report_stays_pending_on_poll():
 def test_old_explicitly_queued_report_is_not_reaped_by_polling():
     """轮询端点不能把正常线程池背压误判为孤儿。"""
 
-    from novel_system.api.routes.style_reference import _reap_orphan_report
+    from novel_system.api.routes.style_reference.profiles import _reap_orphan_report
     from novel_system.db.models import StyleReferenceValidationReport
 
     book_id = _seed_book("queued_report", cloud_policy="segments_only")

@@ -337,7 +337,7 @@ def test_preview_route_forwards_paragraph_types(client: TestClient, monkeypatch)
                 for t in types
             ]
 
-    monkeypatch.setattr(sr_routes, "PreviewService", _Stub)
+    monkeypatch.setattr(sr_routes.profiles, "PreviewService", _Stub)
     resp = client.post(
         f"{PREFIX}/profiles/{profile_id}/preview",
         json={"paragraph_types": ["dialogue"]},

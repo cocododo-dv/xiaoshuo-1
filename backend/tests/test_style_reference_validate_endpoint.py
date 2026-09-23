@@ -114,7 +114,7 @@ def test_async_validation_dispatches_only_after_idempotency_commit(
             )
 
     monkeypatch.setattr(
-        sr_routes,
+        sr_routes.profiles,
         "start_style_reference_validation_worker",
         observe_dispatch,
     )

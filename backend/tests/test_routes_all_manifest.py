@@ -29,7 +29,8 @@ def _mounted_route_modules() -> set[str]:
     for endpoint in _iter_endpoints(app.routes):
         module = getattr(endpoint, "__module__", "")
         if module.startswith(_ROUTES_MODULE_PREFIX):
-            modules.add(module.removeprefix(_ROUTES_MODULE_PREFIX))
+            # 路由包(例如 style_reference/ 下按领域拆的子模块)按包名计:__all__ 里列的是 app.py 挂载的名字
+            modules.add(module.removeprefix(_ROUTES_MODULE_PREFIX).split(".", 1)[0])
     return modules
 
 
