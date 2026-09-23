@@ -34,6 +34,7 @@ from novel_system.services.style_reference.binding_config import (
     sends_samples,
 )
 from novel_system.services.style_reference.runtime_contract import (
+    contract_layer,
     resolve_style_runtime_contract_state,
 )
 
@@ -99,11 +100,11 @@ UNBOUND = StylePolicy()
 
 
 def policy_from_contract(contract: Mapping[str, Any], *, mode: str) -> StylePolicy:
-    """已校验的契约 → 策略。多层契约（v3 之前）取最具体的一层（最后一层）——v3 起只冻结一层。"""
-    layers = contract.get("layers") if isinstance(contract, Mapping) else None
-    if not isinstance(layers, list) or not layers or not isinstance(layers[-1], Mapping):
+    """已校验的契约 → 策略。v2 契约只有一层；v1 的多层契约取最具体的一层（``runtime_contract.contract_layer``：
+    scene > POV 角色 > 其余角色 > project > global——不是层序最后一层，J7）。"""
+    layer = contract_layer(contract)
+    if not layer:
         return StylePolicy(mode=MODE_DEGRADED, error_code="runtime_contract_invalid")
-    layer = layers[-1]
     binding = layer.get("binding") if isinstance(layer.get("binding"), Mapping) else {}
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     book = layer.get("book") if isinstance(layer.get("book"), Mapping) else {}

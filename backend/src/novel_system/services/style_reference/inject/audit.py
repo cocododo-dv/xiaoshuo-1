@@ -23,10 +23,9 @@ def block_digest(text: str) -> dict[str, Any]:
 
 
 def _layer(contract: Any) -> Mapping[str, Any]:
-    layers = contract.get("layers") if isinstance(contract, Mapping) else None
-    if isinstance(layers, list) and layers and isinstance(layers[-1], Mapping):
-        return layers[-1]
-    return {}
+    from novel_system.services.style_reference.runtime_contract import contract_layer
+
+    return contract_layer(contract if isinstance(contract, Mapping) else None)
 
 
 def build_audit(

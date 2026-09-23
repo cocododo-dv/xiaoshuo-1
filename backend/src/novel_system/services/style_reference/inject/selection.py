@@ -26,7 +26,7 @@ import random
 import statistics
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -52,6 +52,7 @@ from novel_system.services.style_reference.inject.request import (
     ROLE_REVISE,
     StyleRenderRequest,
 )
+from novel_system.services.style_reference.runtime_contract import contract_layer
 from novel_system.services.style_reference.tags import MAX_SITUATIONS, normalize_situation_tags
 from novel_system.services.style_reference.windows import (
     WINDOW_INDEX_VERSION,
@@ -385,11 +386,8 @@ def card_devices(card: DimensionCard | None, dimensions: Iterable[str]) -> list[
 
 
 def _policy_card(policy: Any) -> DimensionCard | None:
-    contract = getattr(policy, "contract", None)
-    layers = contract.get("layers") if isinstance(contract, Mapping) else None
-    if not isinstance(layers, list) or not layers or not isinstance(layers[-1], Mapping):
-        return None
-    profile = layers[-1].get("profile") if isinstance(layers[-1].get("profile"), Mapping) else {}
+    layer = contract_layer(getattr(policy, "contract", None))
+    profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     return card_from_profile_json(profile.get("profile_json") if isinstance(profile, Mapping) else None)
 
 
@@ -860,7 +858,7 @@ def role_windows(
         key=lambda i: (refs[i].slot not in (SLOT_TYPICAL, SLOT_TEXTURE), -i),
     )[: len(swaps)]
     for index, window in zip(slots_to_replace, swaps):
-        refs[index] = replace(WindowRef.from_index(window, SLOT_REVISE))
+        refs[index] = WindowRef.from_index(window, SLOT_REVISE)
     return refs
 
 

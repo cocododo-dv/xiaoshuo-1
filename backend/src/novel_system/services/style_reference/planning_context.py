@@ -45,7 +45,7 @@ from novel_system.services.style_reference.narrative_guidance import (
 )
 from novel_system.services.style_reference.policy import cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
+from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract, contract_layer
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.structure import (
     PLANNING_GUIDANCE_HEADER,
@@ -213,11 +213,8 @@ def render_planning_reference(
     """从冻结契约最具体的一层渲染规划层参考块；没有可渲染内容 → ``None``。"""
     if not isinstance(contract, Mapping):
         return None
-    layers = contract.get("layers")
-    if not isinstance(layers, list) or not layers:
-        return None
-    layer = layers[-1]
-    if not isinstance(layer, Mapping):
+    layer = contract_layer(contract)
+    if not layer:
         return None
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}

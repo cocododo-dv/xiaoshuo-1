@@ -185,6 +185,33 @@ def _paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:
         return "", 0
 
 
+_SCOPE_RANK = {"scene": 0, "character": 1, "project": 2, "global": 3}
+
+
+def contract_layer(contract: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """契约里生效的那一层（没有 → ``{}``）。
+
+    v2 契约只有一层。v1 契约（旧 bundle）按层序「由泛到具体」存了多层，但角色层是 POV 在前排的——最后一层
+    可能是最不重要的配角（J7）；这里按作用域取最具体的一层：scene > character（层序靠前的，即 POV）> project >
+    global。策略解析与渲染都经这里，保证读的是同一层。
+    """
+    layers = contract.get("layers") if isinstance(contract, Mapping) else None
+    if not isinstance(layers, list):
+        return {}
+    candidates = [layer for layer in layers if isinstance(layer, Mapping)]
+    if not candidates:
+        return {}
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def _key(item: tuple[int, Mapping[str, Any]]) -> tuple[int, int]:
+        index, layer = item
+        binding = layer.get("binding") if isinstance(layer.get("binding"), Mapping) else {}
+        return _SCOPE_RANK.get(str(binding.get("scope") or ""), 9), index
+
+    return min(enumerate(candidates), key=_key)[1]
+
+
 def frozen_profile_json(raw_profile_json: Mapping[str, Any] | None) -> dict[str, Any]:
     """画像 → 契约里冻结的那部分（白名单；结构画像去掉逐章列表；声音只留小键）。"""
     raw = raw_profile_json if isinstance(raw_profile_json, Mapping) else {}
@@ -958,6 +985,7 @@ __all__ = [
     "SUPPORTED_CONTRACT_VERSIONS",
     "V3_PROFILE_JSON_KEYS",
     "compute_paragraph_root",
+    "contract_layer",
     "frozen_profile_json",
     "legacy_forbidden_findings",
     "reset_contract_memo",

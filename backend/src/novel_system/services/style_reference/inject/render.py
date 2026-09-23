@@ -80,6 +80,7 @@ from novel_system.services.style_reference.inject.selection import (
 )
 from novel_system.services.style_reference.policy import cloud_llm_allowed
 from novel_system.services.style_reference.profile_fields import generation_safe_summary
+from novel_system.services.style_reference.runtime_contract import contract_layer
 from novel_system.services.style_reference.schemas import (
     FEW_SHOT_CLOSING_MANDATE,
     FEW_SHOT_CLOSING_MANDATE_FINAL,
@@ -209,9 +210,9 @@ def chapter_position_mandate(position: str | None, contract: Mapping[str, Any] |
     if position not in (POSITION_OPENING, POSITION_CLOSING, POSITION_WHOLE):
         return ""
     card = None
-    layers = contract.get("layers") if isinstance(contract, Mapping) else None
-    if isinstance(layers, list) and layers and isinstance(layers[-1], Mapping):
-        profile = layers[-1].get("profile") if isinstance(layers[-1].get("profile"), Mapping) else {}
+    layer = contract_layer(contract)
+    if layer:
+        profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
         profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
         card = profile_json.get("structure_card") if isinstance(profile_json.get("structure_card"), Mapping) else None
     habits = chapter_boundary_habits(card)
@@ -287,10 +288,7 @@ def _has_digit(text: str) -> bool:
 
 
 def _layer(contract: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    layers = contract.get("layers") if isinstance(contract, Mapping) else None
-    if isinstance(layers, list) and layers and isinstance(layers[-1], Mapping):
-        return layers[-1]
-    return {}
+    return contract_layer(contract)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

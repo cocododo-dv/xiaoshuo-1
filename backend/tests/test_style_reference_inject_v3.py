@@ -861,3 +861,26 @@ def test_near_final_review_injects_style_prefix_and_degrades_on_error(session, m
         {"system_prompt": "base", "user_prompt": "u"}, scene, {"bundle_id": "b"}, context_text="正文", final_user_prompt="u"
     )
     assert degraded == {"system_prompt": "base", "user_prompt": "u"}
+
+
+def test_v1_multi_layer_contracts_read_the_most_specific_layer() -> None:
+    """旧 bundle 的 v1 多层契约：层序是「由泛到具体」且角色层 POV 在前——生效层按作用域挑，不取最后一层（J7）。"""
+    from novel_system.services.style_reference.runtime_contract import contract_layer
+
+    def _layer(order: int, scope: str, binding_id: str) -> dict:
+        return {
+            "order": order,
+            "binding": {"binding_id": binding_id, "scope": scope, "strategy": "mixed", "config_json": {}},
+            "profile": {"profile_id": f"p_{binding_id}", "book_id": "b"},
+            "book": {"book_id": "b"},
+        }
+
+    contract = {
+        "layers": [_layer(0, "project", "proj"), _layer(1, "character", "pov"), _layer(2, "character", "other")],
+        "contract_hash": "h" * 64,
+    }
+    assert contract_layer(contract)["binding"]["binding_id"] == "pov"
+    assert policy_from_contract(contract, mode="frozen").binding_id == "pov"
+    contract["layers"].append(_layer(3, "scene", "scene"))
+    assert contract_layer(contract)["binding"]["binding_id"] == "scene"
+    assert contract_layer({"layers": []}) == {} and contract_layer(None) == {}
