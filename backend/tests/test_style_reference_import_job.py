@@ -1029,3 +1029,257 @@ def test_reclassify_and_retype_are_refused_while_a_learn_job_is_active(client: T
         session.commit()
     ok = client.post(f"{PREFIX}/books/{book_id}/reclassify", json={"mode": "retype"}, headers={"X-Idempotency-Key": "lg-after"})
     assert ok.status_code == 200, ok.text
+
+
+# ---------------------------------------------------------------- 2026-09-23 复核修正:按条收、排空、进程退出
+
+
+def _rest_batches(session, book_id: str) -> list[list[int]]:
+    texts = [
+        str(t)
+        for t in session.scalars(
+            select(StyleReferenceParagraph.text)
+            .where(StyleReferenceParagraph.book_id == book_id)
+            .order_by(StyleReferenceParagraph.paragraph_index)
+        )
+    ]
+    anchors = set(seg.select_anchor_positions(texts, seed=book_id))
+    rest = [pos for pos in range(len(texts)) if pos not in anchors]
+    return seg.plan_batches(rest, texts)
+
+
+def test_valid_items_are_kept_and_only_the_missing_paragraph_is_sent_again(session, monkeypatch) -> None:
+    """模型每次都漏掉整批里的最后一段:合格的 4 段照收,下一次只重发漏掉的那一段(不再整批重发)。"""
+
+    def drop_last_of_multi(_node, indexes, _call_no):
+        return "drop" if len(indexes) > 1 else None
+
+    fake = _use(monkeypatch, ScriptedClassifier(drop_last_of_multi))
+    book_id, job_id = _ingest(session)
+    run_job_inline(job_id)
+    job = _job(job_id)
+    assert job.state == "succeeded"
+    multi = [(node, tuple(indexes)) for node, indexes in fake.calls if len(indexes) > 1]
+    singles = [(node, indexes[0]) for node, indexes in fake.calls if len(indexes) == 1]
+    # 没有任何多段请求被原样重发(锚定集的同一批会发给强 / 快两个节点,按节点区分);
+    # 每个多段请求之后恰好跟一个只含它最后一段的补发,发给同一个节点
+    assert len(multi) == len(set(multi))
+    assert sorted(singles) == sorted((node, indexes[-1]) for node, indexes in multi)
+    assert "unclassified" not in _types(book_id)
+
+
+def test_an_unclassifiable_paragraph_fails_the_job_without_losing_the_rest_of_its_batch(session, monkeypatch) -> None:
+    monkeypatch.setattr(import_job, "PARALLEL_BATCHES", 1)
+    target: dict[str, int] = {}
+
+    def invalid_for_target(_node, indexes, _call_no):
+        return "invalid" if indexes and indexes[0] == target.get("index") else None
+
+    failing = _use(monkeypatch, ScriptedClassifier(invalid_for_target))
+    book_id, job_id = _ingest(session)
+    last_batch = _rest_batches(session, book_id)[-1]
+    target["index"] = last_batch[0]
+    run_job_inline(job_id)
+
+    job = _job(job_id)
+    assert job.state == "failed" and job.error_json["code"] == "STYLE_REFERENCE_CLASSIFICATION_FAILED"
+    details = job.error_json["details"]
+    assert details["unresolved"] == 1 and details["first_unresolved_index"] == target["index"]
+    assert details["attempts"] == import_job.BATCH_ATTEMPTS
+    # 同一批里其余的段已经收下、记在游标里;失败的那一批不算「完成一批」
+    done_rest = {pos for start, end in job.cursor_json["done"]["rest"] for pos in range(start, end + 1)}
+    assert set(last_batch[1:]) <= done_rest and target["index"] not in done_rest
+    assert [indexes for _node, indexes in failing.calls[-2:]] == [[target["index"]], [target["index"]]]
+
+    healthy = _use(monkeypatch, ScriptedClassifier())
+    with SessionLocal() as other:
+        import_job.resume_classification(other, other.get(StyleReferenceBook, book_id), op_key="k-resume-one")
+        other.commit()
+    run_job_inline(job_id)
+    assert _job(job_id).state == "succeeded"
+    assert [indexes for _node, indexes in healthy.calls] == [[target["index"]]]
+
+
+def test_in_flight_batches_are_drained_and_applied_when_another_batch_fails(session, monkeypatch) -> None:
+    """一批失败:不再派发新批,已经在飞的批(已花钱)等它们回来、照常落库。"""
+    target: dict[str, list[int]] = {}
+
+    def fail_first_rest_batch_slow_others(node, indexes, _call_no):
+        if node != seg.NODE_BULK:
+            return None
+        if indexes == target["failing"]:
+            return "fail"
+        time.sleep(0.4)  # 另外两批还在飞时,第一批已经三次失败
+        return None
+
+    fake = _use(monkeypatch, ScriptedClassifier(fail_first_rest_batch_slow_others))
+    book_id, job_id = _ingest(session)
+    batches = _rest_batches(session, book_id)
+    target["failing"] = batches[0]
+    run_job_inline(job_id)
+
+    job = _job(job_id)
+    assert job.state == "failed"
+    done_rest = {pos for start, end in job.cursor_json["done"]["rest"] for pos in range(start, end + 1)}
+    assert set(batches[1]) | set(batches[2]) <= done_rest
+    assert not (set(batches[0]) & done_rest)
+    rest_calls = [indexes for node, indexes in fake.calls if node == seg.NODE_BULK and indexes in batches]
+    # 失败之后没有派发第 4 批
+    assert all(indexes in batches[:3] for indexes in rest_calls)
+
+
+def test_worker_shutdown_mid_classification_requeues_and_the_next_run_does_not_rebill(session, monkeypatch) -> None:
+    from novel_system.services.style_reference import jobs as jobs_module
+
+    def shutdown_on_call(_node, _indexes, call_no):
+        if call_no == 12:
+            jobs_module.shutdown_job_workers()
+        return None
+
+    first = _use(monkeypatch, ScriptedClassifier(shutdown_on_call))
+    book_id, job_id = _ingest(session)
+    run_job_inline(job_id)
+    job = _job(job_id)
+    assert job.state == "queued" and job.error_json is None
+    done_before = job.cursor_json["batches_done"]
+    assert 0 < done_before < job.cursor_json["batches_total"]
+    assert _book(book_id).status == "ingesting"
+
+    second = _use(monkeypatch, ScriptedClassifier())
+    run_job_inline(job_id)
+    job = _job(job_id)
+    assert job.state == "succeeded" and job.attempt == 2
+    assert _book(book_id).status == "ready"
+    # 已落库的批次不再调模型:两次运行的调用数之和最多多出被丢下的在飞批次
+    assert len(first.calls) + len(second.calls) <= 17 + import_job.PARALLEL_BATCHES
+
+
+def test_parse_batch_items_keeps_valid_items_and_drops_duplicated_indexes() -> None:
+    structured = {
+        "classifications": [
+            {"paragraph_index": 1, "paragraph_type": "narration", "confidence": "high"},
+            {"paragraph_index": 2, "paragraph_type": "monologue", "confidence": "high"},
+            {"paragraph_index": 3, "paragraph_type": "dialogue", "confidence": "low"},
+            {"paragraph_index": 3, "paragraph_type": "narration", "confidence": "low"},
+            {"paragraph_index": 9, "paragraph_type": "dialogue", "confidence": "low"},
+        ]
+    }
+    results, problems, received = seg._parse_batch_items(structured, [1, 2, 3, 4])
+    assert results == {1: ("narration", results[1][1])} and received == 5
+    assert any("invalid paragraph_type" in p for p in problems)
+    assert any("more than once" in p for p in problems)
+    assert any("not in this batch" in p for p in problems)
+    assert any("missing" in p for p in problems)
+    with pytest.raises(seg.ClassificationBatchMismatch):
+        seg.parse_batch_output(structured, [1, 2, 3, 4])
+
+
+@pytest.mark.parametrize("mode, status_after", [("import", "failed"), ("retype", "ready")])
+def test_sweeping_a_dead_worker_that_was_asked_to_cancel_settles_the_book(session, monkeypatch, mode, status_after) -> None:
+    """工人死前被要求取消:清扫直接收尾(不放回队列再让认领去收),书的状态由收尾钩子一并落定。"""
+    _use(monkeypatch, ScriptedClassifier())
+    book_id, job_id = _ingest(session)
+    with SessionLocal() as other:
+        if mode == "retype":
+            other.execute(update(StyleReferenceJob).where(StyleReferenceJob.job_id == job_id).values(params_json={"mode": "retype"}))
+            other.execute(update(StyleReferenceBook).where(StyleReferenceBook.book_id == book_id).values(status="ready"))
+        service = StyleJobService(other)
+        service.claim(job_id)
+        service.request_cancel(job_id)  # 工人还活着:只置标记
+        old = (datetime.now(UTC) - timedelta(seconds=3600)).isoformat()
+        other.execute(update(StyleReferenceJob).where(StyleReferenceJob.job_id == job_id).values(heartbeat_at=old))
+        other.commit()
+    with SessionLocal() as other:
+        StyleJobService(other).sweep()
+        other.commit()
+    assert _job(job_id).state == "cancelled"
+    assert _book(book_id).status == status_after
+
+
+def test_a_learn_job_created_in_the_race_window_is_seen_after_the_insert(session, monkeypatch) -> None:
+    """先查后插的窗口里建起来的学习作业:插入分类作业之后(已拿写锁)再查一次,409 BOOK_LEARNING。"""
+    from novel_system.services.style_reference.jobs import JOB_KIND_LEARN
+
+    _use(monkeypatch, ScriptedClassifier())
+    book_id, job_id = _ingest(session)
+    run_job_inline(job_id)
+    with SessionLocal() as other:
+        learn = StyleJobService(other).create(JOB_KIND_LEARN, book_id=book_id)
+        other.commit()
+        learn_id = learn.job_id
+    real = StyleJobService.first_conflict
+    monkeypatch.setattr(import_job, "ensure_not_learning", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        StyleJobService,
+        "first_conflict",
+        lambda self, bid, *, kinds, excluding=None: None if excluding is None else real(self, bid, kinds=kinds, excluding=excluding),
+    )
+    with SessionLocal() as other:
+        with pytest.raises(import_job.DomainError) as excinfo:
+            import_job.create_classification_job(other, other.get(StyleReferenceBook, book_id), mode=import_job.MODE_RETYPE)
+        other.rollback()
+    assert excinfo.value.code == import_job.BOOK_LEARNING_CODE and excinfo.value.details["job_id"] == learn_id
+
+
+def test_destructive_reclassify_supersedes_planning_in_the_binding_scope(client: TestClient, monkeypatch) -> None:
+    """破坏式重分类清派生数据会连画像与绑定一起删:删之前,绑定范围内按这本参考做的规划产物作废。"""
+    from novel_system.api.routes import style_reference as sr_routes
+    from novel_system.db.models import StyleReferenceInjectionBinding
+    from novel_system.services import scene_planning_staleness
+
+    fake = install_fake_classifier(monkeypatch, ScriptedClassifier())
+    book_id = import_book(client, key="supersede-import", text=LONG_TEXT, fake=fake)
+    _run_id, _finding_id, profile_id = _seed_full_chain(book_id)
+    with SessionLocal() as session:
+        session.add(
+            StyleReferenceInjectionBinding(
+                binding_id="sr_bind_supersede",
+                profile_id=profile_id,
+                scope="project",
+                scope_ref_id="proj_supersede",
+                task_type="scene_generation",
+                strategy="mixed",
+                config_json={},
+                status="active",
+            )
+        )
+        session.commit()
+    calls: list[tuple[str, str, str]] = []
+
+    def record(session_, *, scope, scope_ref_id, reason="style_binding_changed"):
+        calls.append((scope, scope_ref_id, reason))
+        return {}
+
+    monkeypatch.setattr(scene_planning_staleness, "supersede_for_binding_scope", record)
+    monkeypatch.setattr(sr_routes, "dispatch_job", lambda _job_id: None)
+    resp = client.post(f"{PREFIX}/books/{book_id}/reclassify", json={}, headers={"X-Idempotency-Key": "supersede-reclassify"})
+    assert resp.status_code == 200, resp.text
+    assert calls == [("project", "proj_supersede", f"style_reference_book_reclassified:{book_id}")]
+
+
+def test_paragraph_rows_changed_under_an_owned_job_fail_it_with_a_clear_reason(session, monkeypatch) -> None:
+    """段落表在分类期间被别的写者改了(作业仍归我):作业失败并说清原因,而不是悄悄停下、心跳过期后整本重新计费。"""
+    monkeypatch.setattr(import_job, "PARALLEL_BATCHES", 1)
+    victim: dict[str, int] = {}
+
+    def delete_a_row_of_this_batch(node, indexes, _call_no):
+        if node == seg.NODE_BULK and victim.get("index") in indexes and not victim.get("done"):
+            victim["done"] = 1
+            with SessionLocal() as other:
+                other.execute(
+                    delete(StyleReferenceParagraph).where(
+                        StyleReferenceParagraph.book_id == victim["book"],
+                        StyleReferenceParagraph.paragraph_index == victim["index"],
+                    )
+                )
+                other.commit()
+        return None
+
+    _use(monkeypatch, ScriptedClassifier(delete_a_row_of_this_batch))
+    book_id, job_id = _ingest(session)
+    victim["book"] = book_id
+    victim["index"] = _rest_batches(session, book_id)[0][0]
+    run_job_inline(job_id)
+    job = _job(job_id)
+    assert job.state == "failed" and job.error_json["code"] == import_job.PARAGRAPHS_CHANGED_CODE
+    assert job.error_json["details"]["author_action"]["label"] == "继续分类"

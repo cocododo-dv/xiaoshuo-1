@@ -14,27 +14,38 @@
 **恢复**：常驻清扫线程每 ``SWEEP_INTERVAL_SECONDS`` 秒把心跳过期的 running 放回 queued 并把所有 queued
 派发出去；启动时先清扫一次。重复派发无害——认领是条件写，只有一个工人能拿到。
 
+**进程退出 ≠ 作业失败**：``shutdown_job_workers``（lifespan 结束：``--reload``、停服）把「工人代」+1；处理器在下一个
+检查点看到代变了就抛 ``JobInterrupted``，框架把作业**放回 queued**（``release``，游标保留），下次启动的清扫接着跑。
+Ctrl-C（``KeyboardInterrupt``）同样放回队列再往上抛。LLM 调用跑在守护线程里（``DaemonCallPool``），进程退出不等
+在飞的网络请求（它们的记账预留由记账层按 TTL 回收）。
+
 **取消**：``request_cancel`` 置 ``cancel_requested``；排队中或工人已死（心跳过期）的作业在请求里直接收尾为
-cancelled，运行中的由工人在下一个检查点（``check_continue``）看到后收尾。
+cancelled，运行中的由工人在下一个检查点（``check_continue``）看到后收尾；带着取消标记被清扫到的过期作业由清扫
+直接收尾。在请求 / 认领 / 清扫里收尾的取消都调用这类作业登记的 ``on_cancelled`` 钩子（书的状态、学习的 run 行）。
+
+**互斥**：同一本书的分类与学习互斥（各自也只能有一个活动作业）。建作业是「先插入、再查」：这条 INSERT 已拿到
+SQLite 的写锁，两个几乎同时的请求在这里串行化，后到的一定看得见先到的那一行（先查后插时两个都查不到）。
 
 处理器约定（``register_job_handler(kind, handler)``）：``handler(session, claimed, service)`` 在工人线程里
 运行，自己负责周期性调用 ``service.check_continue(claimed)``（取消 → ``JobCancelled``，丢了所有权 →
-``JobLost``）、``service.progress`` / ``service.save_cursor``，最后 ``service.succeed``；抛出的
-``DomainError`` 由框架记为失败（错误码原样保留），其余异常记为 ``STYLE_REFERENCE_JOB_FAILED``。
+``JobLost``，进程要退出 → ``JobInterrupted``）、``service.progress`` / ``service.save_cursor``，最后
+``service.succeed``；抛出的 ``DomainError`` 由框架记为失败（错误码原样保留），其余异常记为
+``STYLE_REFERENCE_JOB_FAILED``——进程退出期间冒出来的异常（代已变 / 线程池已关）一律按中断放回队列。
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import threading
 import uuid
-from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import StyleReferenceJob, utcnow
@@ -59,11 +70,16 @@ HEARTBEAT_INTERVAL_SECONDS = 15.0
 STALE_AFTER_SECONDS = 60.0
 SWEEP_INTERVAL_SECONDS = 30.0
 EXECUTOR_MAX_WORKERS = 2
+# 对照检查一次一个评审调用：单独一条车道，不在几十分钟的分类 / 学习后面排队
+CHECK_EXECUTOR_MAX_WORKERS = 2
+# 同一本书上互斥的作业种类（分类改段落类型、学习读段落类型）
+BOOK_EXCLUSIVE_KINDS = (JOB_KIND_CLASSIFY, JOB_KIND_LEARN)
 
 JOB_FAILED_CODE = "STYLE_REFERENCE_JOB_FAILED"
 JOB_CANCELLED_CODE = "STYLE_REFERENCE_JOB_CANCELLED"
 JOB_ALREADY_ACTIVE_CODE = "STYLE_REFERENCE_JOB_ALREADY_ACTIVE"
 JOB_NOT_FOUND_CODE = "STYLE_REFERENCE_JOB_NOT_FOUND"
+JOB_NOT_RESUMABLE_CODE = "STYLE_REFERENCE_JOB_NOT_RESUMABLE"
 
 
 class JobCancelled(Exception):
@@ -72,6 +88,10 @@ class JobCancelled(Exception):
 
 class JobLost(Exception):
     """处理器发现自己已不是这个作业的主人（被清扫重排 / 被删 / 被别的工人接手）。"""
+
+
+class JobInterrupted(Exception):
+    """工人所在的进程要退出（lifespan 结束 / ``--reload`` / Ctrl-C）：作业放回队列，游标保留，下次启动续跑。"""
 
 
 @dataclass(frozen=True)
@@ -86,6 +106,8 @@ class ClaimedJob:
     params: dict[str, Any] = field(default_factory=dict)
     cursor: dict[str, Any] = field(default_factory=dict)
     progress: dict[str, Any] = field(default_factory=dict)
+    # 认领它的工人所属的「工人代」（框架填；None = 测试 / 工具直接拿的认领，不受进程退出影响）
+    generation: int | None = None
 
 
 def _now() -> datetime:
@@ -104,6 +126,15 @@ def _parse(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def already_active_error(job: StyleReferenceJob) -> DomainError:
+    return DomainError(
+        JOB_ALREADY_ACTIVE_CODE,
+        "这本书已有同类作业在排队或运行，请等它完成或先取消",
+        status_code=409,
+        details={"job_id": job.job_id, "kind": job.kind, "book_id": job.book_id, "state": job.state},
+    )
 
 
 def heartbeat_is_stale(heartbeat_at: str | None, *, now: datetime | None = None) -> bool:
@@ -130,18 +161,19 @@ class StyleJobService:
         params: Mapping[str, Any] | None = None,
         phase: str | None = None,
         allow_parallel: bool = False,
+        exclusive_with: Sequence[str] = (),
+        conflict_error: Callable[[StyleReferenceJob], DomainError] | None = None,
     ) -> StyleReferenceJob:
+        """建一个 queued 作业。``book_id`` 且非 ``allow_parallel``：同一本书上同类（加 ``exclusive_with`` 里的种类）
+        已有活动作业 → ``conflict_error(那个作业)``（缺省 409 ``JOB_ALREADY_ACTIVE``）。插入之后再查一次（见模块文档
+        「互斥」）；抛错时本事务的插入由调用方回滚（路由的幂等包装在 DomainError 上整体回滚）。"""
         if kind not in JOB_KINDS:
             raise ValueError(f"unknown style job kind: {kind!r}")
+        conflict_kinds = (kind, *tuple(exclusive_with))
         if book_id and not allow_parallel:
-            active = self.active_for_book(book_id, kind=kind)
-            if active:
-                raise DomainError(
-                    JOB_ALREADY_ACTIVE_CODE,
-                    "这本书已有同类作业在排队或运行，请等它完成或先取消",
-                    status_code=409,
-                    details={"job_id": active[0].job_id, "kind": kind, "book_id": book_id},
-                )
+            conflict = self.first_conflict(book_id, kinds=conflict_kinds)
+            if conflict is not None:
+                raise (conflict_error or already_active_error)(conflict)
         now = utcnow()
         job = StyleReferenceJob(
             job_id=f"sr_job_{uuid.uuid4().hex[:12]}",
@@ -165,7 +197,20 @@ class StyleJobService:
         )
         self.session.add(job)
         self.session.flush()
+        if book_id and not allow_parallel:
+            conflict = self.first_conflict(book_id, kinds=conflict_kinds, excluding=job.job_id)
+            if conflict is not None:
+                raise (conflict_error or already_active_error)(conflict)
         return job
+
+    def first_conflict(
+        self, book_id: str, *, kinds: Sequence[str], excluding: str | None = None
+    ) -> StyleReferenceJob | None:
+        """这本书上第一个种类在 ``kinds`` 里的活动作业（排除 ``excluding``）；续跑放回队列之后也用它复查。"""
+        for other in self.active_for_book(book_id):
+            if other.job_id != excluding and other.kind in kinds:
+                return other
+        return None
 
     def get(self, job_id: str, *, fresh: bool = False) -> StyleReferenceJob | None:
         if fresh:
@@ -219,17 +264,20 @@ class StyleJobService:
             return None
         now = utcnow()
         if int(job.cancel_requested or 0):
-            self.session.execute(
+            result = self.session.execute(
                 update(StyleReferenceJob)
                 .where(StyleReferenceJob.job_id == job_id, StyleReferenceJob.state == STATE_QUEUED)
                 .values(
                     state=STATE_CANCELLED,
+                    owner_token=None,
                     finished_at=now,
                     updated_at=now,
                     error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled before start"},
                 )
             )
             self.session.flush()
+            if int(result.rowcount or 0) == 1:
+                run_cancel_hook(self.session, job_id)
             return None
         token = uuid.uuid4().hex
         result = self.session.execute(
@@ -288,7 +336,9 @@ class StyleJobService:
         return bool(job is not None and job.state == STATE_RUNNING and job.owner_token == claimed.owner_token)
 
     def check_continue(self, claimed: ClaimedJob) -> None:
-        """处理器的检查点：取消 → ``JobCancelled``；不再是主人 → ``JobLost``。"""
+        """处理器的检查点：进程要退出 → ``JobInterrupted``；取消 → ``JobCancelled``；不再是主人 → ``JobLost``。"""
+        if worker_generation_changed(claimed):
+            raise JobInterrupted(claimed.job_id)
         job = self.get(claimed.job_id, fresh=True)
         if job is None or job.state != STATE_RUNNING or job.owner_token != claimed.owner_token:
             raise JobLost(claimed.job_id)
@@ -372,6 +422,10 @@ class StyleJobService:
             owner_token=None,
         )
 
+    def release(self, claimed: ClaimedJob) -> bool:
+        """进程退出时把自己的 running 作业放回 queued（条件写；游标、进度、attempt 保留，下次启动的清扫派发）。"""
+        return self._owned_update(claimed, state=STATE_QUEUED, owner_token=None, heartbeat_at=None)
+
     def finish_cancelled(self, claimed: ClaimedJob) -> bool:
         now = utcnow()
         return self._owned_update(
@@ -401,12 +455,14 @@ class StyleJobService:
                 owner_token=None,
                 error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled"},
             )
-        self.session.execute(
+        result = self.session.execute(
             update(StyleReferenceJob)
             .where(StyleReferenceJob.job_id == job_id, StyleReferenceJob.state.in_(ACTIVE_STATES))
             .values(**values)
         )
         self.session.flush()
+        if finish_now and int(result.rowcount or 0) == 1:
+            run_cancel_hook(self.session, job_id)
         refreshed = self.get(job_id, fresh=True)
         assert refreshed is not None
         return refreshed
@@ -448,9 +504,21 @@ class StyleJobService:
         if params_update:
             params.update(dict(params_update))
         now = utcnow()
-        self.session.execute(
+        cutoff = _iso(_now() - timedelta(seconds=STALE_AFTER_SECONDS))
+        # 条件写：只有「失败 / 取消 / 排队中 / 心跳过期的 running」能放回队列——路由看见过期心跳的同一瞬间工人刚好
+        # 收尾成功时，不能把 succeeded 的作业又拉回 queued（再收尾一遍会把版本号、类型修订号各加一次）
+        result = self.session.execute(
             update(StyleReferenceJob)
-            .where(StyleReferenceJob.job_id == job_id)
+            .where(
+                StyleReferenceJob.job_id == job_id,
+                or_(
+                    StyleReferenceJob.state.in_((STATE_FAILED, STATE_CANCELLED, STATE_QUEUED)),
+                    and_(
+                        StyleReferenceJob.state == STATE_RUNNING,
+                        or_(StyleReferenceJob.heartbeat_at.is_(None), StyleReferenceJob.heartbeat_at < cutoff),
+                    ),
+                ),
+            )
             .values(
                 state=STATE_QUEUED,
                 cancel_requested=0,
@@ -465,6 +533,13 @@ class StyleJobService:
         self.session.flush()
         refreshed = self.get(job_id, fresh=True)
         assert refreshed is not None
+        if int(result.rowcount or 0) != 1:
+            raise DomainError(
+                JOB_ALREADY_ACTIVE_CODE if refreshed.state in ACTIVE_STATES else JOB_NOT_RESUMABLE_CODE,
+                "这个作业的状态刚刚变了（正在运行或已经完成），刷新后再试",
+                status_code=409,
+                details={"job_id": job_id, "state": refreshed.state},
+            )
         return refreshed
 
     def sweep(self, *, now: datetime | None = None) -> list[str]:
@@ -480,13 +555,34 @@ class StyleJobService:
             ).scalars()
         )
         for job_id in stale:
+            job = self.get(job_id, fresh=True)
+            if job is None:
+                continue
+            stale_where = and_(
+                StyleReferenceJob.job_id == job_id,
+                StyleReferenceJob.state == STATE_RUNNING,
+                (StyleReferenceJob.heartbeat_at.is_(None)) | (StyleReferenceJob.heartbeat_at < cutoff),
+            )
+            if int(job.cancel_requested or 0):
+                # 工人死前已被要求取消：直接收尾（不放回队列再让认领去收，那样会跳过这类作业的收尾钩子）
+                result = self.session.execute(
+                    update(StyleReferenceJob)
+                    .where(stale_where)
+                    .values(
+                        state=STATE_CANCELLED,
+                        owner_token=None,
+                        finished_at=_iso(current),
+                        updated_at=_iso(current),
+                        error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled"},
+                    )
+                )
+                self.session.flush()
+                if int(result.rowcount or 0) == 1:
+                    run_cancel_hook(self.session, job_id)
+                continue
             self.session.execute(
                 update(StyleReferenceJob)
-                .where(
-                    StyleReferenceJob.job_id == job_id,
-                    StyleReferenceJob.state == STATE_RUNNING,
-                    (StyleReferenceJob.heartbeat_at.is_(None)) | (StyleReferenceJob.heartbeat_at < cutoff),
-                )
+                .where(stale_where)
                 .values(state=STATE_QUEUED, owner_token=None, updated_at=_iso(current))
             )
         if stale:
@@ -553,22 +649,105 @@ def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -
 
 # ---------------------------------------------------------------------- 工人框架
 JobHandler = Callable[[Session, ClaimedJob, StyleJobService], None]
+CancelHook = Callable[[Session, StyleReferenceJob], None]
 _HANDLERS: dict[str, JobHandler] = {}
-_EXECUTOR: ThreadPoolExecutor | None = None
+_CANCEL_HOOKS: dict[str, CancelHook] = {}
+_EXECUTORS: dict[str, ThreadPoolExecutor] = {}
 _EXECUTOR_LOCK = threading.Lock()
 _DISPATCHED: set[str] = set()
 _SWEEPER: threading.Thread | None = None
 _SWEEPER_STOP = threading.Event()
+# 工人代：``shutdown_job_workers`` 每次 +1；认领时记下当时的代，检查点发现代变了 = 进程要退出
+_GENERATION = 0
+
+_LANE_LONG = "long"
+_LANE_CHECK = "check"
+_LANE_WORKERS = {_LANE_LONG: EXECUTOR_MAX_WORKERS, _LANE_CHECK: CHECK_EXECUTOR_MAX_WORKERS}
 
 
-def register_job_handler(kind: str, handler: JobHandler) -> None:
+def register_job_handler(kind: str, handler: JobHandler, *, on_cancelled: CancelHook | None = None) -> None:
+    """登记一类作业的处理器；``on_cancelled(session, job)`` 在请求 / 认领 / 清扫里直接收尾取消时调用（同一事务）。"""
     if kind not in JOB_KINDS:
         raise ValueError(f"unknown style job kind: {kind!r}")
     _HANDLERS[kind] = handler
+    if on_cancelled is not None:
+        _CANCEL_HOOKS[kind] = on_cancelled
 
 
 def registered_job_handler(kind: str) -> JobHandler | None:
     return _HANDLERS.get(kind)
+
+
+def run_cancel_hook(session: Session, job_id: str) -> None:
+    """一个刚在框架里被收尾为 cancelled 的作业：跑这类作业的收尾钩子（书的状态 / run 行）；钩子失败只记日志。"""
+    job = session.get(StyleReferenceJob, job_id)
+    if job is None:
+        return
+    hook = _CANCEL_HOOKS.get(str(job.kind))
+    if hook is None:
+        return
+    try:
+        with session.begin_nested():
+            hook(session, job)
+    except Exception:  # noqa: BLE001 — 收尾钩子是附带的状态整理，不让它拖垮取消本身
+        logger.exception("style job %s cancel hook failed", job_id)
+
+
+def current_worker_generation() -> int:
+    return _GENERATION
+
+
+def worker_generation_changed(claimed: ClaimedJob) -> bool:
+    return claimed.generation is not None and claimed.generation != _GENERATION
+
+
+def is_worker_interruption(exc: BaseException, claimed: ClaimedJob | None = None) -> bool:
+    """进程退出期间冒出来的异常：代已变，或线程池已关（``cannot schedule new futures after [interpreter] shutdown``）。"""
+    if claimed is not None and worker_generation_changed(claimed):
+        return True
+    return isinstance(exc, RuntimeError) and "after" in str(exc) and "shutdown" in str(exc)
+
+
+class DaemonCallPool:
+    """给处理器的 LLM 调用用的「线程池」：每个调用一条守护线程，并发上限由调用方控制（在飞数）。
+
+    ``concurrent.futures.ThreadPoolExecutor`` 的线程在解释器退出时会被逐个 join——``--reload`` / 停服要等在飞的
+    网络请求回来（最长到 LLM 超时）。这里的线程是守护线程：进程退出时直接丢下，作业由框架放回队列，下次续跑；
+    丢下的调用的记账预留由记账层按 TTL 回收。接口是处理器用到的那部分 ``Executor``（``submit`` / ``shutdown``）。
+    """
+
+    def __init__(self, max_workers: int | None = None, thread_name_prefix: str = "sr_call") -> None:
+        del max_workers  # 并发由调用方控制
+        self._prefix = thread_name_prefix
+        self._closed = False
+        self._lock = threading.Lock()
+        self._count = 0
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            self._count += 1
+            name = f"{self._prefix}_{self._count}"
+        future: Future = Future()
+
+        def runner() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                result = fn(*args, **kwargs)
+            except BaseException as exc:  # noqa: BLE001 — 原样交给 Future
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+        threading.Thread(target=runner, name=name, daemon=True).start()
+        return future
+
+    def shutdown(self, wait: bool = False, *, cancel_futures: bool = False) -> None:
+        del wait, cancel_futures  # 守护线程不等；已开始的调用无法撤回（结果被丢弃）
+        with self._lock:
+            self._closed = True
 
 
 def _session_factory():
@@ -577,16 +756,29 @@ def _session_factory():
     return SessionLocal()
 
 
-def dispatch_job(job_id: str) -> bool:
-    """把作业投到有界线程池（同一进程里同一作业只投一次）。认领是条件写，重复投递无害。"""
-    global _EXECUTOR
+def _lane_for(kind: str | None) -> str:
+    return _LANE_CHECK if kind == JOB_KIND_CHECK else _LANE_LONG
+
+
+def dispatch_job(job_id: str, *, kind: str | None = None) -> bool:
+    """把作业投到有界线程池（同一进程里同一作业只投一次）。认领是条件写，重复投递无害。
+
+    对照检查走自己的车道（``CHECK_EXECUTOR_MAX_WORKERS``），不在分类 / 学习后面排队。"""
+    lane = _lane_for(kind if kind is not None else _job_kind(job_id))
     with _EXECUTOR_LOCK:
         if job_id in _DISPATCHED:
             return False
-        if _EXECUTOR is None:
-            _EXECUTOR = ThreadPoolExecutor(max_workers=EXECUTOR_MAX_WORKERS, thread_name_prefix="sr_job")
+        executor = _EXECUTORS.get(lane)
+        if executor is None:
+            executor = ThreadPoolExecutor(max_workers=_LANE_WORKERS[lane], thread_name_prefix=f"sr_job_{lane}")
+            _EXECUTORS[lane] = executor
         _DISPATCHED.add(job_id)
-        _EXECUTOR.submit(_run_job, job_id)
+        try:
+            executor.submit(_run_job, job_id)
+        except RuntimeError:
+            # 线程池在关（进程在退出）：不派发，作业留在队列里等下次启动
+            _DISPATCHED.discard(job_id)
+            return False
     return True
 
 
@@ -597,9 +789,25 @@ def run_job_inline(job_id: str) -> None:
     _run_job(job_id)
 
 
+def _release_interrupted(session: Session, service: StyleJobService, claimed: ClaimedJob) -> None:
+    try:
+        session.rollback()
+        released = service.release(claimed)
+        session.commit()
+    except Exception:  # noqa: BLE001 — 放不回去就等清扫（心跳过期后重排）
+        logger.exception("style job %s could not be released on interruption", claimed.job_id)
+        return
+    logger.info(
+        "style job %s interrupted by worker shutdown; %s",
+        claimed.job_id,
+        "back in the queue (cursor kept)" if released else "no longer owned",
+    )
+
+
 def _run_job(job_id: str) -> None:
     from novel_system.services.style_reference.background_heartbeat import periodic_heartbeat
 
+    generation = current_worker_generation()
     try:
         with _session_factory() as session:
             service = StyleJobService(session)
@@ -607,6 +815,7 @@ def _run_job(job_id: str) -> None:
             session.commit()
             if claimed is None:
                 return
+            claimed = dataclasses.replace(claimed, generation=generation)
             handler = _HANDLERS.get(claimed.kind)
             if handler is None:
                 service.fail(claimed, code=JOB_FAILED_CODE, message=f"no handler for kind {claimed.kind!r}")
@@ -624,6 +833,8 @@ def _run_job(job_id: str) -> None:
                 try:
                     handler(session, claimed, service)
                     session.commit()
+                except JobInterrupted:
+                    _release_interrupted(session, service, claimed)
                 except JobCancelled:
                     session.rollback()
                     service.finish_cancelled(claimed)
@@ -632,6 +843,9 @@ def _run_job(job_id: str) -> None:
                     session.rollback()
                     logger.info("style job %s lost ownership; worker stops", job_id)
                 except DomainError as exc:
+                    if is_worker_interruption(exc, claimed):
+                        _release_interrupted(session, service, claimed)
+                        return
                     session.rollback()
                     service.fail(
                         claimed,
@@ -642,6 +856,9 @@ def _run_job(job_id: str) -> None:
                     )
                     session.commit()
                 except Exception as exc:  # noqa: BLE001 — 作业边界：记失败，不让线程静默死
+                    if is_worker_interruption(exc, claimed):
+                        _release_interrupted(session, service, claimed)
+                        return
                     session.rollback()
                     logger.exception("style job %s failed", job_id)
                     service.fail(
@@ -651,6 +868,11 @@ def _run_job(job_id: str) -> None:
                         retryable=True,
                     )
                     session.commit()
+                except (KeyboardInterrupt, SystemExit):
+                    # Ctrl-C / 正常退出：进程要走了——作业放回队列（游标保留），再往上抛。被 SIGKILL 的进程什么也
+                    # 做不了：作业留在 running，心跳过期后由清扫放回队列
+                    _release_interrupted(session, service, claimed)
+                    raise
     except Exception:  # noqa: BLE001 — 最外层边界（连库失败等）
         logger.exception("style job %s crashed before it could record a result", job_id)
     finally:
@@ -667,7 +889,11 @@ def sweep_and_dispatch() -> list[str]:
     except Exception:  # noqa: BLE001 — 清扫失败留给下一轮
         logger.exception("style job sweep failed")
         return []
-    dispatched = [job_id for job_id in ids if _HANDLERS.get(_job_kind(job_id) or "") and dispatch_job(job_id)]
+    dispatched: list[str] = []
+    for job_id in ids:
+        kind = _job_kind(job_id)
+        if kind and _HANDLERS.get(kind) and dispatch_job(job_id, kind=kind):
+            dispatched.append(job_id)
     return dispatched
 
 
@@ -698,20 +924,26 @@ def start_job_sweeper(*, interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> No
 
 
 def shutdown_job_workers(*, wait: bool = False) -> None:
-    global _EXECUTOR, _SWEEPER
+    """lifespan 结束：停清扫、工人代 +1（在跑的处理器在下一个检查点把作业放回队列）、关线程池。
+
+    ``wait=True`` 等在跑的处理器放回作业再返回（测试用）；缺省不等——它们在几秒内自己放回。"""
+    global _SWEEPER, _GENERATION
     _SWEEPER_STOP.set()
     with _EXECUTOR_LOCK:
-        executor = _EXECUTOR
-        _EXECUTOR = None
+        _GENERATION += 1
+        executors = list(_EXECUTORS.values())
+        _EXECUTORS.clear()
         _SWEEPER = None
         _DISPATCHED.clear()
-    if executor is not None:
-        executor.shutdown(wait=wait, cancel_futures=not wait)
+    for executor in executors:
+        executor.shutdown(wait=wait, cancel_futures=True)
 
 
 __all__ = [
     "ACTIVE_STATES",
+    "BOOK_EXCLUSIVE_KINDS",
     "ClaimedJob",
+    "DaemonCallPool",
     "JOB_ALREADY_ACTIVE_CODE",
     "JOB_CANCELLED_CODE",
     "JOB_FAILED_CODE",
@@ -720,7 +952,9 @@ __all__ = [
     "JOB_KIND_CLASSIFY",
     "JOB_KIND_LEARN",
     "JOB_NOT_FOUND_CODE",
+    "JOB_NOT_RESUMABLE_CODE",
     "JobCancelled",
+    "JobInterrupted",
     "JobLost",
     "STALE_AFTER_SECONDS",
     "STATE_CANCELLED",
@@ -730,13 +964,18 @@ __all__ = [
     "STATE_SUCCEEDED",
     "StyleJobService",
     "TERMINAL_STATES",
+    "already_active_error",
+    "current_worker_generation",
     "dispatch_job",
     "heartbeat_is_stale",
+    "is_worker_interruption",
     "job_activity_entry",
     "register_job_handler",
     "registered_job_handler",
+    "run_cancel_hook",
     "run_job_inline",
     "shutdown_job_workers",
     "start_job_sweeper",
     "sweep_and_dispatch",
+    "worker_generation_changed",
 ]

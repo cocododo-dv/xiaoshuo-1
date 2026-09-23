@@ -1004,3 +1004,30 @@ def test_evidence_counts_are_consistent_with_the_rows(session, monkeypatch) -> N
     pj = _profile(job.result_json["profile_id"]).profile_json
     evidences = session.scalars(select(StyleReferenceEvidence)).all()
     assert sum(v["quote_count"] for v in pj["sub_dimensions"].values()) == len(evidences)
+
+
+def test_worker_shutdown_mid_learning_requeues_instead_of_failing(session, monkeypatch) -> None:
+    """--reload / 停服时正在学习:作业回到 queued(不是 failed),下次启动接着学,做完的阶段不再调模型。"""
+    from novel_system.services.style_reference import jobs as jobs_module
+
+    seed_book(session)
+    shut = {"done": False}
+
+    def script(called, _payload, _call_no):
+        if called == NODE_SYNTH and not shut["done"]:
+            shut["done"] = True
+            jobs_module.shutdown_job_workers()
+        return None
+
+    fake = _use(monkeypatch, _fake(script=script))
+    job_id = _start("learn_book")
+    run_job_inline(job_id)
+    paused = _job(job_id)
+    assert paused.state == "queued" and paused.error_json is None and paused.owner_token is None
+    assert "extract" in set(paused.cursor_json.get("phases_done") or [])
+    before = list(fake.calls)
+    run_job_inline(job_id)
+    job = _job(job_id)
+    assert job.state == "succeeded", job.error_json
+    assert job.attempt == 2
+    assert not any(call.startswith("style_ref_extract_") for call in fake.calls[len(before):])

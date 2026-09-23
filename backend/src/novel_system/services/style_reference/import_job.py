@@ -43,7 +43,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from typing import Any
 
@@ -74,10 +74,13 @@ from novel_system.services.style_reference.jobs import (
     STATE_RUNNING,
     STATE_SUCCEEDED,
     ClaimedJob,
+    DaemonCallPool,
     JobCancelled,
+    JobInterrupted,
     JobLost,
     StyleJobService,
     heartbeat_is_stale,
+    is_worker_interruption,
     job_activity_entry,
     register_job_handler,
 )
@@ -182,6 +185,28 @@ def _raise_already_active(job: StyleReferenceJob, book_id: str) -> None:
 
 
 BOOK_LEARNING_CODE = "STYLE_REFERENCE_BOOK_LEARNING"
+PARAGRAPHS_CHANGED_CODE = "STYLE_REFERENCE_PARAGRAPHS_CHANGED"
+
+
+def _learning_error(job: StyleReferenceJob, book_id: str) -> DomainError:
+    return DomainError(
+        BOOK_LEARNING_CODE,
+        "这本书正在学习文风：等它完成，或先取消，再重新分类。",
+        status_code=409,
+        details={"book_id": book_id, "job_id": job.job_id, "state": job.state},
+    )
+
+
+def _conflict_error(other: StyleReferenceJob, book_id: str) -> DomainError:
+    """建 / 续分类作业时撞上的活动作业 → 对应的 409(学习在跑 / 已有分类)。"""
+    if other.kind == JOB_KIND_LEARN:
+        return _learning_error(other, book_id)
+    return DomainError(
+        CLASSIFICATION_ALREADY_ACTIVE_CODE,
+        "这本书正在分类:等它完成,或先取消。",
+        status_code=409,
+        details={"book_id": book_id, "job_id": other.job_id, "op_key": other.op_key, "state": other.state},
+    )
 
 
 def ensure_not_learning(session: Session, book_id: str) -> None:
@@ -189,12 +214,7 @@ def ensure_not_learning(session: Session, book_id: str) -> None:
     否则学到一半的画像建立在两套类型上。"""
     active = StyleJobService(session).active_for_book(book_id, kind=JOB_KIND_LEARN)
     if active:
-        raise DomainError(
-            BOOK_LEARNING_CODE,
-            "这本书正在学习文风：等它完成，或先取消，再重新分类。",
-            status_code=409,
-            details={"book_id": book_id, "job_id": active[0].job_id, "state": active[0].state},
-        )
+        raise _learning_error(active[0], book_id)
 
 
 def create_classification_job(
@@ -217,6 +237,8 @@ def create_classification_job(
         op_key=op_key or None,
         params={"mode": mode},
         phase="queued",
+        exclusive_with=(JOB_KIND_LEARN,),
+        conflict_error=lambda other: _conflict_error(other, book.book_id),
     )
     job.progress_json = {"phase": "queued", "phase_label": "排队中", "mode": mode}
     if mode != MODE_RETYPE:
@@ -264,6 +286,10 @@ def resume_classification(
         job = latest  # 已经在排队:再派发一次即可
     else:
         job = service.requeue(latest.job_id)
+        # 放回队列这条 UPDATE 已拿到写锁:再查一次学习作业(与建作业同一个「先写后查」,见 jobs 模块文档)
+        conflict = service.first_conflict(book.book_id, kinds=(JOB_KIND_LEARN,), excluding=job.job_id)
+        if conflict is not None:
+            raise _learning_error(conflict, book.book_id)
     if op_key:
         job.op_key = op_key
     progress = dict(job.progress_json or {})
@@ -281,13 +307,8 @@ def cancel_classification(session: Session, book_id: str) -> StyleReferenceJob |
     job = active_classification_job(session, book_id)
     if job is None:
         return None
-    job = StyleJobService(session).request_cancel(job.job_id)
-    if job.state == STATE_CANCELLED:
-        book = session.get(StyleReferenceBook, book_id)
-        if book is not None:
-            book.status = _status_after_failure(_job_mode(job))
-        session.flush()
-    return job
+    # 排队中 / 工人已死的作业在请求里直接收尾;书的状态由登记的收尾钩子(_on_classification_cancelled)一并落定
+    return StyleJobService(session).request_cancel(job.job_id)
 
 
 def fail_orphaned_classifications(session: Session) -> list[str]:
@@ -369,6 +390,10 @@ class _BatchOutcome:
     results: dict[int, tuple[str, float]]
     seconds: float
     attempts: int
+    # 重试用尽仍没分出来的段(位置);非空时 ``failure`` 是这一批的失败——合格的部分照样落库,
+    # 游标只记分出来的段,「继续分类」只重发没分出来的段
+    unresolved: tuple[int, ...] = ()
+    failure: Exception | None = None
 
 
 class _Stopped(Exception):
@@ -397,12 +422,15 @@ class _ClassificationRun:
     def run(self) -> None:
         try:
             self._run()
-        except JobLost:
+        except (JobLost, JobInterrupted):
             self.session.rollback()
             raise
         except JobCancelled:
             self._finish_cancelled()
         except DomainError as exc:
+            if is_worker_interruption(exc, self.claimed):
+                self.session.rollback()
+                raise JobInterrupted(self.claimed.job_id) from exc
             self._finish_failed(
                 code=exc.code,
                 message=str(exc.message),
@@ -410,6 +438,9 @@ class _ClassificationRun:
                 details=exc.details if isinstance(exc.details, Mapping) else None,
             )
         except Exception as exc:  # noqa: BLE001 — 作业边界:记失败,书的状态一并落定
+            if is_worker_interruption(exc, self.claimed):
+                self.session.rollback()
+                raise JobInterrupted(self.claimed.job_id) from exc
             logger.exception("classification job %s failed", self.claimed.job_id)
             self._finish_failed(
                 code=str(getattr(exc, "code", None) or JOB_FAILED_CODE),
@@ -627,35 +658,49 @@ class _ClassificationRun:
 
     # ---- batches --------------------------------------------------------
     def _run_batches(self, phase: str, runtime: seg.NodeRuntime, batches: list[list[int]]) -> None:
+        """最多 ``PARALLEL_BATCHES`` 批同时在飞;每批的合格结果一回来就落库(作业线程)。
+
+        某一批失败:不再派发新批,已经在飞的批(已经花了钱)等它们回来、合格的照常落库,然后作业失败——
+        游标里已分出来的段保留,「继续分类」只重发没分出来的段。取消 / 丢了所有权 / 进程退出:立即停,
+        在飞的调用在守护线程里自生自灭(结果丢弃)。"""
         if not batches:
             return
         pending: deque[list[int]] = deque(batches)
         in_flight: dict[Future, list[int]] = {}
         stop = threading.Event()
-        pool = ThreadPoolExecutor(
+        failure: Exception | None = None
+        pool = DaemonCallPool(
             max_workers=PARALLEL_BATCHES, thread_name_prefix=f"sr_classify_{self.claimed.job_id[-6:]}"
         )
         try:
             while pending or in_flight:
-                while pending and len(in_flight) < PARALLEL_BATCHES:
+                while pending and failure is None and len(in_flight) < PARALLEL_BATCHES:
                     positions = pending.popleft()
                     self._pre_call_check(runtime)
                     future = pool.submit(self._call_with_retries, phase, runtime, positions, stop)
                     in_flight[future] = positions
+                if not in_flight:
+                    break
                 done, _ = wait(list(in_flight), timeout=WAIT_POLL_SECONDS, return_when=FIRST_COMPLETED)
                 if not done:
                     self._check_continue()
                     continue
-                failure: BaseException | None = None
                 for future in sorted(done, key=lambda item: in_flight[item][0]):
                     positions = in_flight.pop(future)
                     error = future.exception()
                     if error is not None:
+                        if not isinstance(error, Exception) or isinstance(error, (JobLost, JobCancelled, JobInterrupted)):
+                            raise error
                         failure = failure or error
                         continue
-                    self._apply(phase, positions, future.result())
+                    outcome = future.result()
+                    self._apply(phase, positions, outcome)
+                    if outcome.failure is not None:
+                        failure = failure or outcome.failure
                 if failure is not None:
-                    raise failure
+                    pending.clear()
+            if failure is not None:
+                raise failure
         finally:
             stop.set()
             pool.shutdown(wait=False, cancel_futures=True)
@@ -667,12 +712,21 @@ class _ClassificationRun:
         positions: list[int],
         stop: threading.Event,
     ) -> _BatchOutcome:
-        """工人线程:一批最多 ``BATCH_ATTEMPTS`` 次(退避重试);记账用自己的会话。"""
+        """工人线程:一批最多 ``BATCH_ATTEMPTS`` 次调用(退避重试);记账用自己的会话。
+
+        输出按条收(``seg.classify_batch_partial``):合格的段先收下,下一次只重发还没分出来的段。重试用尽
+        仍有段没分出来 → 返回带 ``unresolved`` / ``failure`` 的结果(合格部分照样落库);调用本身全失败同理。"""
         from novel_system.db.session import SessionLocal
 
         problems: list[str] = []
-        last: seg.SegmentationLLMError | None = None
+        last_code = "STYLE_REFERENCE_CLASSIFY_OUTPUT_MISMATCH"
+        last_message = ""
+        last_details: dict[str, Any] = {}
         first_index = self.indexes[positions[0]]
+        remaining = list(positions)
+        results: dict[int, tuple[str, float]] = {}
+        calls = 0
+        began = time.monotonic()
         for attempt in range(BATCH_ATTEMPTS):
             if stop.is_set():
                 raise _Stopped()
@@ -680,27 +734,22 @@ class _ClassificationRun:
                 delay = BATCH_RETRY_BACKOFF_SECONDS[min(attempt - 1, len(BATCH_RETRY_BACKOFF_SECONDS) - 1)]
                 if stop.wait(max(0.0, float(delay))):
                     raise _Stopped()
-            began = time.monotonic()
+            calls += 1
             try:
                 with SessionLocal() as ledger_session:
-                    results = seg.classify_batch(
+                    got, batch_problems = seg.classify_batch_partial(
                         runtime,
-                        positions,
+                        remaining,
                         self.texts,
                         self.indexes,
                         self.client,
                         session=ledger_session,
                         scope_id=self.book_id,
-                        step=f"paragraph_classification:{phase}:{first_index}:{len(positions)}",
+                        step=f"paragraph_classification:{phase}:{self.indexes[remaining[0]]}:{len(remaining)}",
                     )
-                return _BatchOutcome(
-                    results=results, seconds=round(time.monotonic() - began, 2), attempts=attempt + 1
-                )
             except seg.SegmentationLLMError as exc:
-                last = exc
+                last_code, last_message, last_details = exc.code, exc.message, dict(exc.details)
                 problems.append(f"attempt {attempt + 1}: {exc.code}: {exc.message[:300]}")
-                if exc.code not in _RETRYABLE_BATCH_CODES:
-                    break
                 logger.warning(
                     "classification batch %s:%s (node %s) attempt %d failed: %s",
                     phase,
@@ -709,29 +758,70 @@ class _ClassificationRun:
                     attempt + 1,
                     exc.code,
                 )
-        assert last is not None
-        raise ClassificationFailedError(
-            code=last.code,
-            message=last.message,
+                if exc.code not in _RETRYABLE_BATCH_CODES:
+                    break
+                continue
+            results.update(got)
+            remaining = [pos for pos in remaining if self.indexes[pos] not in results]
+            if not remaining:
+                return _BatchOutcome(
+                    results=results, seconds=round(time.monotonic() - began, 2), attempts=calls
+                )
+            last_code = "STYLE_REFERENCE_CLASSIFY_OUTPUT_MISMATCH"
+            last_message = (
+                f"classification output does not match the batch ({len(batch_problems)} problem(s)): "
+                + "; ".join(batch_problems[:8])
+            )
+            last_details = {"problem_count": len(batch_problems), "expected": len(positions), "received": len(got)}
+            problems.append(
+                f"attempt {attempt + 1}: accepted {len(got)}, still missing {len(remaining)}: "
+                + "; ".join(batch_problems[:3])
+            )
+            logger.warning(
+                "classification batch %s:%s (node %s) attempt %d left %d paragraph(s) unclassified",
+                phase,
+                first_index,
+                runtime.node_id,
+                attempt + 1,
+                len(remaining),
+            )
+        failure = ClassificationFailedError(
+            code=last_code,
+            message=last_message or "classification batch failed",
             book_id=self.book_id,
             details={
                 "phase": phase,
                 "node_id": runtime.node_id,
                 "first_paragraph_index": first_index,
                 "paragraphs": len(positions),
-                "attempts": len(problems),
+                "unresolved": len(remaining),
+                "first_unresolved_index": self.indexes[remaining[0]] if remaining else None,
+                "attempts": calls,
                 "problems": problems,
-                **{k: v for k, v in last.details.items() if k in ("problem_count", "expected", "received")},
+                **{k: v for k, v in last_details.items() if k in ("problem_count", "expected", "received")},
             },
+        )
+        return _BatchOutcome(
+            results=results,
+            seconds=round(time.monotonic() - began, 2),
+            attempts=calls,
+            unresolved=tuple(remaining),
+            failure=failure,
         )
 
     def _apply(self, phase: str, positions: list[int], outcome: _BatchOutcome) -> None:
-        """作业线程:游标(条件写,本事务第一条写)→ 段落类型 → 进度,一次提交。"""
+        """作业线程:游标(条件写,本事务第一条写)→ 段落类型 → 进度,一次提交。
+
+        只有分出来的段记为完成;整批都分出来才算「完成一批」(没分出来的段续跑时重新成批)。"""
         cursor = self.cursor
+        classified = [pos for pos in positions if self.indexes[pos] in outcome.results]
+        if not classified and outcome.failure is not None:
+            return
         done = dict(cursor.get("done") or {})
-        done[phase] = _add_ranges(done.get(phase) or [], positions)
+        done[phase] = _add_ranges(done.get(phase) or [], classified)
         cursor["done"] = done
-        cursor["batches_done"] = int(cursor.get("batches_done") or 0) + 1
+        if not outcome.unresolved:
+            cursor["batches_done"] = int(cursor.get("batches_done") or 0) + 1
         cursor["llm_calls"] = int(cursor.get("llm_calls") or 0) + outcome.attempts
         cursor["retries"] = int(cursor.get("retries") or 0) + max(0, outcome.attempts - 1)
         cursor["batch_seconds"] = (list(cursor.get("batch_seconds") or []) + [outcome.seconds])[
@@ -746,7 +836,7 @@ class _ClassificationRun:
             self.session.rollback()
             raise JobLost(self.claimed.job_id)
         if phase != PHASE_ANCHOR_FAST:
-            by_index = {self.indexes[pos]: pos for pos in positions}
+            by_index = {self.indexes[pos]: pos for pos in classified}
             try:
                 self.session.execute(
                     update(StyleReferenceParagraph),
@@ -760,9 +850,29 @@ class _ClassificationRun:
                     ],
                 )
             except StaleDataError as exc:
-                # 段落行没了 = 书在这一批期间被删(删书同事务里也取消了作业,正常情况下走不到这里)
+                # 段落行没了:书在这一批期间被删(删书同事务里也取消了作业 → 丢了所有权),或段落表被别的写者改了
+                # (作业还归我)。后者直接让作业失败、说清原因——悄悄停下会在心跳过期后被清扫重排,段数变了游标
+                # 作废、整本重新计费
                 self.session.rollback()
-                raise JobLost(self.claimed.job_id) from exc
+                if not self.service.still_owner(self.claimed):
+                    raise JobLost(self.claimed.job_id) from exc
+                raise DomainError(
+                    PARAGRAPHS_CHANGED_CODE,
+                    "段落表在分类期间被改动了(段落行被删或重编号):等改动的操作结束后再「继续分类」。",
+                    status_code=409,
+                    details={
+                        "book_id": self.book_id,
+                        "phase": phase,
+                        "first_paragraph_index": self.indexes[classified[0]],
+                        "retryable": True,
+                        "author_action": {
+                            "action": "resume_classification",
+                            "view": "styleref",
+                            "book_id": self.book_id,
+                            "label": "继续分类",
+                        },
+                    },
+                ) from exc
         seconds = [float(s) for s in cursor["batch_seconds"]]
         self.service.progress(
             self.claimed,
@@ -921,7 +1031,19 @@ def run_classification_job(session: Session, claimed: ClaimedJob, service: Style
     _ClassificationRun(session, claimed, service).run()
 
 
-register_job_handler(JOB_KIND_CLASSIFY, run_classification_job)
+def _on_classification_cancelled(session: Session, job: StyleReferenceJob) -> None:
+    """请求 / 认领 / 清扫里直接收尾的取消:书的状态一并落定(就地重标回 ready,其余 failed)。"""
+    if not job.book_id:
+        return
+    session.execute(
+        update(StyleReferenceBook)
+        .where(StyleReferenceBook.book_id == job.book_id)
+        .values(status=_status_after_failure(_job_mode(job)), updated_at=utcnow())
+        .execution_options(synchronize_session="fetch")
+    )
+
+
+register_job_handler(JOB_KIND_CLASSIFY, run_classification_job, on_cancelled=_on_classification_cancelled)
 
 
 # ---------------------------------------------------------------- read models

@@ -137,3 +137,20 @@ def test_cli_refuses_an_implicit_or_too_broad_selection(argv, capsys) -> None:
     with pytest.raises(SystemExit) as caught:
         main(argv)
     assert caught.value.code == 2
+
+
+def test_purge_book_supersedes_planning_in_the_scope_of_its_active_binding(session, monkeypatch) -> None:
+    """与书库「删除」同一个函数:删绑定之前,绑定范围内按这本参考做的规划产物作废。"""
+    from novel_system.services import scene_planning_staleness
+
+    calls: list[tuple[str, str, str]] = []
+
+    def record(session_, *, scope, scope_ref_id, reason="style_binding_changed"):
+        calls.append((scope, scope_ref_id, reason))
+        return {}
+
+    monkeypatch.setattr(scene_planning_staleness, "supersede_for_binding_scope", record)
+    book_id = _seed_book(session, "作废")
+    purge_book(session, book_id)
+    session.commit()
+    assert calls == [("project", "proj_作废", f"style_reference_book_deleted:{book_id}")]

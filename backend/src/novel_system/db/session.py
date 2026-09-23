@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from collections.abc import Generator
 from pathlib import Path
 
@@ -54,11 +55,21 @@ def refuse_repository_database_under_pytest(database_url: str) -> None:
         live = DEFAULT_DATABASE_PATH.resolve()
     except OSError:
         return
-    if target == live:
+    # 本检出的实库;或别的检出的实库(同名 novel_system.db,不在临时目录里)——在 git worktree 里跑测试时
+    # 把 NOVEL_SYSTEM_DATABASE_URL 指到主检出的实库,比较「本检出的路径」拦不住
+    if target == live or (target.name == live.name and not _inside_temp_dir(target)):
         raise RuntimeError(
             "refusing to open the repository database backend/novel_system.db from a pytest run; "
             "tests must use the per-test temporary database (tests/conftest.py isolated_database)"
         )
+
+
+def _inside_temp_dir(path: Path) -> bool:
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except OSError:
+        return False
+    return path == temp_root or temp_root in path.parents
 
 
 def engine():

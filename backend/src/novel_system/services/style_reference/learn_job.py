@@ -30,7 +30,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,10 +67,13 @@ from novel_system.services.style_reference.jobs import (
     STATE_RUNNING,
     STATE_SUCCEEDED,
     ClaimedJob,
+    DaemonCallPool,
     JobCancelled,
+    JobInterrupted,
     JobLost,
     StyleJobService,
     heartbeat_is_stale,
+    is_worker_interruption,
     job_activity_entry,
     register_job_handler,
 )
@@ -345,12 +348,7 @@ def start_learn_job(
     classifying = StyleJobService(session).active_for_book(book_id, kind=JOB_KIND_CLASSIFY)
     if classifying:
         # 就地重标段落类型时书一直是 ready——得看作业表
-        raise DomainError(
-            BOOK_CLASSIFYING_CODE,
-            "这本书正在重标段落类型:等它完成再学习文风(段落类型决定挑样本与窗口的构成)。",
-            status_code=409,
-            details={"book_id": book_id, "job_id": classifying[0].job_id},
-        )
+        raise _classifying_error(classifying[0], book_id)
     active = active_learn_job(session, book_id)
     if active is not None and not (
         active.state == STATE_RUNNING and heartbeat_is_stale(active.heartbeat_at) and resume
@@ -383,6 +381,10 @@ def start_learn_job(
                 details={"book_id": book_id},
             )
         job = service.requeue(latest.job_id)
+        # 放回队列这条 UPDATE 已拿到写锁:再查一次分类作业(与建作业同一个「先写后查」,见 jobs 模块文档)
+        conflict = service.first_conflict(book_id, kinds=(JOB_KIND_CLASSIFY,), excluding=job.job_id)
+        if conflict is not None:
+            raise _classifying_error(conflict, book_id)
         if op_key:
             job.op_key = op_key
         progress = dict(job.progress_json or {})
@@ -402,10 +404,33 @@ def start_learn_job(
             "skipped_layers": skipped,
         },
         phase="queued",
+        exclusive_with=(JOB_KIND_CLASSIFY,),
+        conflict_error=lambda other: _conflict_error(other, book_id),
     )
     job.progress_json = {"phase": "queued", "phase_label": "排队中"}
     session.flush()
     return job
+
+
+def _classifying_error(job: StyleReferenceJob, book_id: str) -> DomainError:
+    return DomainError(
+        BOOK_CLASSIFYING_CODE,
+        "这本书正在重标段落类型:等它完成再学习文风(段落类型决定挑样本与窗口的构成)。",
+        status_code=409,
+        details={"book_id": book_id, "job_id": job.job_id},
+    )
+
+
+def _conflict_error(other: StyleReferenceJob, book_id: str) -> DomainError:
+    """建学习作业时撞上的活动作业 → 对应的 409(分类在跑 / 已有学习)。"""
+    if other.kind == JOB_KIND_CLASSIFY:
+        return _classifying_error(other, book_id)
+    return DomainError(
+        LEARN_ALREADY_ACTIVE_CODE,
+        "这本书正在学习文风:等它完成,或先取消。",
+        status_code=409,
+        details={"book_id": book_id, "job_id": other.job_id, "state": other.state},
+    )
 
 
 def cancel_learn(session: Session, book_id: str) -> StyleReferenceJob | None:
@@ -413,11 +438,8 @@ def cancel_learn(session: Session, book_id: str) -> StyleReferenceJob | None:
     job = active_learn_job(session, book_id)
     if job is None:
         return None
-    job = StyleJobService(session).request_cancel(job.job_id)
-    if job.state == STATE_CANCELLED:
-        _set_run_status(session, dict(job.cursor_json or {}).get("run_id"), "cancelled")
-        session.flush()
-    return job
+    # 排队中 / 工人已死的作业在请求里直接收尾;学习的 run 行由登记的收尾钩子(_on_learn_cancelled)一并落定
+    return StyleJobService(session).request_cancel(job.job_id)
 
 
 def learn_payload(job: StyleReferenceJob | None) -> dict[str, Any] | None:
@@ -526,12 +548,15 @@ class _LearnRun:
     def run(self) -> None:
         try:
             self._run()
-        except JobLost:
+        except (JobLost, JobInterrupted):
             self.session.rollback()
             raise
         except JobCancelled:
             self._finish(cancelled=True)
         except DomainError as exc:
+            if is_worker_interruption(exc, self.claimed):
+                self.session.rollback()
+                raise JobInterrupted(self.claimed.job_id) from exc
             self._finish(
                 code=exc.code,
                 message=str(exc.message),
@@ -539,6 +564,9 @@ class _LearnRun:
                 details=exc.details if isinstance(exc.details, Mapping) else None,
             )
         except Exception as exc:  # noqa: BLE001 — 作业边界:记失败(可续跑),游标保留
+            if is_worker_interruption(exc, self.claimed):
+                self.session.rollback()
+                raise JobInterrupted(self.claimed.job_id) from exc
             logger.exception("learn job %s failed", self.claimed.job_id)
             self._finish(code=str(getattr(exc, "code", None) or JOB_FAILED_CODE), message=f"{type(exc).__name__}: {exc}", retryable=True)
 
@@ -825,7 +853,7 @@ class _LearnRun:
             if not ext_set.paragraphs:
                 raise LearnFailedError(REASON_INPUT_TOO_SMALL, "挑出的窗口里没有正文段。", retryable=False)
 
-            def submit(pool: ThreadPoolExecutor, layer: str, stop: threading.Event) -> Future:
+            def submit(pool: DaemonCallPool, layer: str, stop: threading.Event) -> Future:
                 self._pre_call_check([EXTRACT_NODES[layer]])
                 return pool.submit(self._extract_layer, layer, ext_set, stop)
 
@@ -1163,7 +1191,7 @@ class _LearnRun:
             devices = [str(d) for d in tags_state.get("devices") or []]
             protected = list((self.cursor.get("protected") or {}).get("terms") or [])
 
-            def submit(pool: ThreadPoolExecutor, index: int, stop: threading.Event) -> Future:
+            def submit(pool: DaemonCallPool, index: int, stop: threading.Event) -> Future:
                 self._pre_call_check([NODE_TAG_WINDOWS])
                 batch_rows = [by_no[no] for no in batches[index] if no in by_no]
                 texts = window_texts(self.session, batch_rows)
@@ -1261,7 +1289,7 @@ class _LearnRun:
     def _run_parallel(
         self,
         items: Sequence[Any],
-        submit: Callable[[ThreadPoolExecutor, Any, threading.Event], Future],
+        submit: Callable[[DaemonCallPool, Any, threading.Event], Future],
         apply: Callable[[Any, Any], None],
         *,
         thread_prefix: str,
@@ -1276,7 +1304,8 @@ class _LearnRun:
         in_flight: dict[Future, Any] = {}
         stop = threading.Event()
         failure: Exception | None = None
-        pool = ThreadPoolExecutor(max_workers=PARALLEL_CALLS, thread_name_prefix=f"{thread_prefix}_{self.claimed.job_id[-6:]}")
+        # 调用跑在守护线程里:进程退出(--reload / 停服)不等在飞的网络请求,作业由框架放回队列
+        pool = DaemonCallPool(max_workers=PARALLEL_CALLS, thread_name_prefix=f"{thread_prefix}_{self.claimed.job_id[-6:]}")
         try:
             while pending or in_flight:
                 while pending and failure is None and len(in_flight) < PARALLEL_CALLS and not (stop_when and stop_when()):
@@ -1293,7 +1322,7 @@ class _LearnRun:
                     error = future.exception()
                     if error is None:
                         apply(item, future.result())
-                    elif isinstance(error, Exception) and not isinstance(error, (JobLost, JobCancelled)):
+                    elif isinstance(error, Exception) and not isinstance(error, (JobLost, JobCancelled, JobInterrupted)):
                         failure = failure or error
                     else:
                         raise error
@@ -1307,7 +1336,7 @@ class _LearnRun:
 
     def _call_in_worker(self, fn: Callable[[], Any]) -> Any:
         """单个调用放到工人线程里,等待时照样查取消 / 所有权(取消在两秒内生效,在飞的结果丢弃)。"""
-        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"sr_learn_call_{self.claimed.job_id[-6:]}")
+        pool = DaemonCallPool(max_workers=1, thread_name_prefix=f"sr_learn_call_{self.claimed.job_id[-6:]}")
         try:
             future = pool.submit(fn)
             while True:
@@ -1638,7 +1667,12 @@ def run_learn_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
     _LearnRun(session, claimed, service).run()
 
 
-register_job_handler(JOB_KIND_LEARN, run_learn_job)
+def _on_learn_cancelled(session: Session, job: StyleReferenceJob) -> None:
+    """请求 / 认领 / 清扫里直接收尾的取消:这次学习的 run 行一并标 cancelled。"""
+    _set_run_status(session, dict(job.cursor_json or {}).get("run_id"), "cancelled")
+
+
+register_job_handler(JOB_KIND_LEARN, run_learn_job, on_cancelled=_on_learn_cancelled)
 
 
 __all__ = [

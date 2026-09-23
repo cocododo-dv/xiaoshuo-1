@@ -1,8 +1,8 @@
 """删除参考书及其一切派生数据(2026-09-23 风格参考 v3,台账 L6:实库里 22 本测试写进去的「匿名参考」书)。
 
-每本书:把它的活动作业收尾为 cancelled(旧工人的条件写落空),``cleanup.purge_derived_data`` 清掉
-全部派生数据(抽取 run / 发现 / 引文 / 证据 / 画像 / 绑定 / 禁用词 / 作业 / 窗口索引 / 相关待办行),
-再删段落行与书本身——与书库「删除」同一条路径,一本一个事务。
+每本书走书库「删除」的同一个函数(``cleanup.delete_reference_book``):活动作业收尾为 cancelled(旧工人的
+条件写落空),生效绑定范围内按这本参考做的规划产物作废,``purge_derived_data`` 清掉全部派生数据(抽取 run /
+发现 / 引文 / 证据 / 画像 / 绑定 / 禁用词 / 作业 / 窗口索引 / 相关待办行),再删段落行与书本身,一本一个事务。
 
 选书必须显式:``--book ID``(可重复)或 ``--id-prefix PREFIX``(可重复,至少 4 个字符,例如
 ``v2_book_``);两者可以同时给。默认干跑,只列出将删的书与各表行数(有生效绑定的书会特别标出);
@@ -32,9 +32,7 @@ from novel_system.db.models import (
     StyleReferenceWindow,
 )
 from novel_system.db.session import SessionLocal
-from novel_system.services.style_reference.cleanup import purge_derived_data
-from novel_system.services.style_reference.jobs import StyleJobService
-from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.style_reference.cleanup import delete_reference_book
 
 MIN_PREFIX_CHARS = 4
 
@@ -94,14 +92,9 @@ def describe_book(session: Session, book: StyleReferenceBook) -> dict[str, Any]:
 
 
 def purge_book(session: Session, book_id: str) -> dict[str, int]:
-    """删一本书及其全部派生数据(flush 不 commit;与 ``DELETE /books/{id}`` 同一顺序)。"""
-    StyleJobService(session).cancel_all_for_book(book_id)
-    counts = dict(purge_derived_data(session, book_id))
-    repo = StyleReferenceRepository(session)
-    counts["paragraphs"] = repo.delete_paragraphs_for_book(book_id)
-    counts["books"] = repo.delete_book(book_id)
-    session.flush()
-    return counts
+    """删一本书及其全部派生数据(flush 不 commit)——就是 ``DELETE /books/{id}`` 的
+    ``cleanup.delete_reference_book``:活动作业收尾、生效绑定范围内的规划产物作废、清派生数据、段落、书。"""
+    return dict(delete_reference_book(session, book_id)["counts"])
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
