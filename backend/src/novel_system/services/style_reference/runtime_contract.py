@@ -42,6 +42,7 @@ from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.inject.bindings import most_specific_binding
 from novel_system.services.style_reference.paragraph_root import ensure_paragraph_root
 from novel_system.services.style_reference.policy import cloud_llm_allowed
+from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ V3_PROFILE_JSON_KEYS = frozenset(
 # v2：学习作业跑之前的旧画像还要用到的键（卡替身的正向 / 禁忌行、量化基线的旧读者）
 LEGACY_PROFILE_JSON_KEYS = frozenset(
     {
+        "narrative_summary",
         "style_features",
         "narrative_patterns",
         "calibration_guidance",
@@ -275,14 +277,13 @@ def build_style_runtime_contract(
     )
     book = repo.get_book(str(profile.book_id))
     paragraph_root, paragraph_count = _paragraph_root(repo, str(profile.book_id))
-    stats = getattr(book, "stats_json", None) if book is not None else None
-    marker = stats.get("window_index") if isinstance(stats, Mapping) else None
     book_snapshot: dict[str, Any] = {
         "book_id": str(profile.book_id),
         "text_checksum": str(getattr(book, "text_checksum", "") or ""),
         "cloud_policy": str(getattr(book, "cloud_policy", "") or ""),
         "cloud_llm_allowed_at_freeze": bool(book is not None and cloud_llm_allowed(book)),
-        "window_index_version": str(marker.get("version") or "") or None if isinstance(marker, Mapping) else None,
+        # 渲染按这个版本的窗口索引选窗（常量——不看索引此刻建没建，契约哈希不随缓存状态变）
+        "window_index_version": WINDOW_INDEX_VERSION,
     }
     if paragraph_root:
         book_snapshot["paragraph_root_sha256"] = paragraph_root
@@ -470,7 +471,8 @@ def _validate_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
         or int(book.get("paragraph_count")) < 0
     ):
         raise ValueError("style runtime contract book paragraph root is malformed")
-    if contract.get("draft_mode") not in _ALLOWED_DRAFT_MODES:
+    # 构建时总会写 draft_mode；缺键（手工 / 迁移造的契约）按先中性处理，写了就必须合法
+    if "draft_mode" in contract and contract.get("draft_mode") not in _ALLOWED_DRAFT_MODES:
         raise ValueError("style runtime contract draft mode is invalid")
     if contract.get("profile_ids") != [profile_id]:
         raise ValueError("style runtime contract profile ids mismatch")

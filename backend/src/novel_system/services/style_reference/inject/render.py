@@ -79,6 +79,7 @@ from novel_system.services.style_reference.inject.selection import (
     role_windows,
 )
 from novel_system.services.style_reference.policy import cloud_llm_allowed
+from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.schemas import (
     FEW_SHOT_CLOSING_MANDATE,
     FEW_SHOT_CLOSING_MANDATE_FINAL,
@@ -401,8 +402,10 @@ class LegacyCardSource(CardSource):
         dimension_states: Mapping[str, str],
         role: str,
         recent_gaps: Sequence[str],
+        budget_chars: int = DEFAULT_CARD_BUDGET_CHARS,
     ) -> None:
         self.role = role
+        self.budget_chars = max(0, int(budget_chars))
         self.dropped_digit_lines = 0
 
         def _clean(values: Any) -> list[str]:
@@ -418,7 +421,8 @@ class LegacyCardSource(CardSource):
                     out.append(text)
             return out
 
-        summary = " ".join(str(profile_json.get("qualitative_summary") or "").split())
+        # 概述：定性概述优先，没有时用不是量化基线的叙事概述（与旧「概述」行同一口径）
+        summary = " ".join(generation_safe_summary(profile_json).split())
         if summary and _has_digit(summary):
             self.dropped_digit_lines += 1
             summary = ""
@@ -463,6 +467,21 @@ class LegacyCardSource(CardSource):
         return not (self.summary or self.positive or self.forbidden)
 
     def render(self, excluded: frozenset[str] = frozenset()) -> str:
+        """整张替身与文风卡同一个总预算：超了就按去掉顺序整行去（永不截半句）。"""
+        block = self._render(excluded)
+        if not self.budget_chars or len(block) <= self.budget_chars:
+            return block
+        dropped = set(excluded)
+        for unit in self.drop_order:
+            if unit in dropped:
+                continue
+            dropped.add(unit)
+            block = self._render(frozenset(dropped))
+            if len(block) <= self.budget_chars:
+                break
+        return block
+
+    def _render(self, excluded: frozenset[str]) -> str:
         sections: list[str] = []
         positive = [line for uid, line in self.positive if uid not in excluded]
         summary = self.summary if self.summary and "summary" not in excluded else ""
@@ -809,6 +828,7 @@ def build_card_source(
         dimension_states=states,
         role=request.role,
         recent_gaps=request.recent_gaps,
+        budget_chars=_budget_int("card_budget_chars", DEFAULT_CARD_BUDGET_CHARS),
     )
     return None if legacy.is_empty else legacy
 

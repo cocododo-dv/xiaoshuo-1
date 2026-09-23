@@ -23,6 +23,7 @@ import 会形成依赖环（架构守卫 ``tests/test_service_architecture.py``�
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 from collections.abc import Mapping, Sequence
@@ -356,8 +357,9 @@ def inject_style_reference_prefix(
     if user_tail:
         injected[STYLE_USER_TAIL_KEY] = user_tail
     rendered_text = prefix + user_tail
+    # 渲染结果是进程内缓存的共享对象：审计给调用方一份深拷贝（下游会往里补字段再落库）
     audit = {
-        **dict(rendered.audit),
+        **copy.deepcopy(dict(rendered.audit)),
         "task_type": task_type,
         "runtime_contract_status": status,
         "runtime_contract_mode": mode,

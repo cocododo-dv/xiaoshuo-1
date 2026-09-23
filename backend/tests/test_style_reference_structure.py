@@ -550,7 +550,7 @@ def test_resolve_project_style_reference_degrades_and_renders(session, monkeypat
     def _boom(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
         raise RuntimeError("resolver exploded")
 
-    monkeypatch.setattr(module.InjectionService, "resolve_binding_layers", _boom)
+    monkeypatch.setattr(module, "resolve_binding_layers", _boom)
     assert module.resolve_project_style_reference(session, PROJECT_ID) is None
 
 

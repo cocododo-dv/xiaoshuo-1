@@ -142,11 +142,14 @@ def test_injection_noop_when_no_active_binding(session) -> None:
 
 
 def test_injection_failure_is_swallowed(session) -> None:
+    # v3：没有绑定时根本不渲染（严格 no-op），所以这里要有一条绑定，渲染才会被调用并抛错
+    _seed_style_reference_binding(project_id="proj_explode", seed="explode")
     service = SceneGenerationService(session, llm_client=object())
     scene = _make_scene("proj_explode")
     base = {"system_prompt": "BASE", "user_prompt": "u"}
+    # v3：渲染在 inject.render.render_style（适配器 style_prompt_injection 调它）
     with patch(
-        "novel_system.services.scene_generation.InjectionService.fragments_for",
+        "novel_system.services.style_prompt_injection.render_style",
         side_effect=RuntimeError("style_reference unreachable"),
     ):
         out = service._inject_style_reference(base, scene)

@@ -104,6 +104,99 @@ LEGACY_PROFILE_JSON = {
 }
 
 
+# 旧画像（学习作业跑之前的形状）：v2 合成期的正向 / 叙事 / 校准 / 禁忌列表 + 声音习惯 + 叙事机制 + 量化基线。
+# 句子都是泛化的写法描述（无真实作者原文）。取代原 test_style_reference_injection_v2._profile_json。
+LEGACY_NARRATIVE_PATTERNS = [
+    "关键信息放段首一次给出，之后不回头解释",
+    "对白之间用一两句动作把停顿落到实物上",
+    "情绪只在动作里泄露，不直接命名",
+    "场景收束落在一个具体物件或声音上",
+    "回忆只以一句嵌进当下动作，不另起段",
+    "人物的判断后置，先给可见线索",
+]
+LEGACY_STYLE_FEATURES = [
+    "用「便」「却」承接，少用「然而」「于是」",
+    "对白多无引导词，有引导词时置于引语后",
+    "短句主导，连续短句切断长句的地方多在转折处",
+    "逗号密集、句号稀疏，一句常含三到四个停顿",
+    "四字格偏低，不堆成语",
+    "名词具体到器物层面，形容词克制",
+]
+LEGACY_CALIBRATION = ["若解释过多就改回动作", "若比喻密集就删到只剩一个"]
+LEGACY_BANNED_RULES = ["禁复用参考书的专名与独特意象", "禁堆砌华丽形容词", "禁在段末点题"]
+
+
+def legacy_profile_json(*, with_voice: bool = True) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "narrative_summary": "克制观察，动作先于解释；对白短促，停顿落在器物上。",
+        "qualitative_summary": "克制观察，动作先于解释；对白短促，停顿落在器物上。",
+        "style_features": list(LEGACY_STYLE_FEATURES),
+        "narrative_patterns": list(LEGACY_NARRATIVE_PATTERNS),
+        "calibration_guidance": list(LEGACY_CALIBRATION),
+        "banned_replication_rules": list(LEGACY_BANNED_RULES),
+        "narrative_guidance": list(LEGACY_NARRATIVE_PATTERNS[:5]),
+        "metrics_baseline": {
+            "avg_sentence_length": {"mean": 11.0, "std": 3.0},
+            "short_sentence_ratio": {"mean": 0.45, "std": 0.08},
+            "paragraph_mean_chars": {"mean": 62.0, "std": 20.0},
+        },
+    }
+    if with_voice:
+        payload["voice_signature"] = {
+            "version": "voice_signature_v1",
+            "features": {"sent_len_mean": 11.0},
+            "habits": list(VOICE_HABITS),
+            "deliberate_repetition": False,
+        }
+    return payload
+
+
+def seed_full(
+    seed: str,
+    *,
+    with_voice: bool = True,
+    cloud_policy: str = "allow_full_cloud",
+    chapters: int = 14,
+    per_chapter: int = 100,
+) -> tuple[str, str]:
+    """合成书（每章约两窗）+ 旧画像；返回 (book_id, profile_id)。自开会话并提交。"""
+    from novel_system.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        return seed_reference(
+            session,
+            seed,
+            chapters=chapters,
+            per_chapter=per_chapter,
+            card=False,
+            cloud_policy=cloud_policy,
+            profile_json=legacy_profile_json(with_voice=with_voice),
+        )
+
+
+def bind_profile(
+    repo: StyleReferenceRepository,
+    *,
+    binding_id: str,
+    profile_id: str,
+    scope: str,
+    scope_ref_id: str,
+    strategy: str = "mixed",
+    config_json: dict[str, Any] | None = None,
+):
+    """与原 ``test_style_reference_injection_v2._bind`` 同形（调用方自己提交）。"""
+    return repo.create_binding(
+        binding_id=binding_id,
+        profile_id=profile_id,
+        scope=scope,
+        scope_ref_id=scope_ref_id,
+        task_type="scene_generation",
+        strategy=strategy,
+        config_json=config_json or {},
+        status="active",
+    )
+
+
 def seed_synthetic_book(
     session: Session,
     book_id: str,
@@ -331,6 +424,11 @@ def window_numbers(session: Session, book_id: str) -> list[int]:
 
 __all__ = [
     "DEVICES",
+    "LEGACY_NARRATIVE_PATTERNS",
+    "LEGACY_STYLE_FEATURES",
+    "bind_profile",
+    "legacy_profile_json",
+    "seed_full",
     "LEGACY_PROFILE_JSON",
     "PROJECT_ID",
     "RIGHTS",

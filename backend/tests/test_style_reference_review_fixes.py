@@ -526,25 +526,13 @@ def test_extraction_output_caps_enforced() -> None:
 
 
 def test_ts_to_int_distinguishes_microseconds() -> None:
-    from novel_system.services.style_reference.injection import _ts_to_int
+    from novel_system.services.style_reference.inject.bindings import ts_to_int as _ts_to_int
 
     older = _ts_to_int("2026-07-06T01:02:03.000001+00:00")
     newer = _ts_to_int("2026-07-06T01:02:03.000002+00:00")
     assert newer > older, "同秒不同微秒的时间戳必须可区分(修复前截到秒退化为插入序)"
     # 无微秒的时间串仍可比较且不大于同秒任何带微秒值以外的次序错乱
     assert _ts_to_int("2026-07-06T01:02:04") > newer
-
-
-def test_merged_positive_block_keeps_single_header() -> None:
-    """多层叠加的 positive 块只保留一个 [正向风格特征] 标题(块头重复干扰 LLM 解析)。"""
-    from novel_system.services.style_reference.injection import _merge_fragments
-    from novel_system.services.style_reference.schemas import SystemPromptFragments
-
-    base = SystemPromptFragments(positive_block="[正向风格特征]\n概述:基底层\n- 短句")
-    scene = SystemPromptFragments(positive_block="[正向风格特征]\n概述:场景层\n- 白描")
-    merged = _merge_fragments([base, scene])
-    assert merged.positive_block.count("[正向风格特征]") == 1
-    assert "基底层" in merged.positive_block and "白描" in merged.positive_block
 
 
 # ---------------------------------------------------------------------------
@@ -685,15 +673,19 @@ def _fake_synth_client():
     return _Client()
 
 
-def test_end_to_end_few_shot_spans_multiple_paragraph_types(fake_extractor_llm) -> None:
-    """D1 端到端收口:抽取(真实段落引文)→ 合成(段型分桶)→ 应用 → Strategy B
-    few-shot 注入 **多种段型** 的样例。
+def test_end_to_end_quotes_bucket_by_real_type_and_the_render_carries_the_red_line(fake_extractor_llm) -> None:
+    """D1 端到端收口:抽取(真实段落引文)→ 合成(段型分桶)→ 应用 → 渲染。
 
-    修复前:所有 quote 落 "narration" 桶 → few-shot 永远只注 1 条 narration 样例,
-    「每段型取 1、k=3」的契约名存实亡;本用例断言样例块覆盖 ≥2 种段型即可证伪回归。
+    合成期的段型索引覆盖 ≥2 种真实段型(修复前所有引文落 narration 桶)。2026-09-23 风格参考 v3:样例不再
+    从引文里挑(改由全书窗口索引按本场设计挑),旧策略 B 映射为全面模仿;这本小书切不出 600 字以上的窗,
+    所以只有卡替身 + 红线——提示里不出现英文段型标签。
     """
+    from types import SimpleNamespace
+
+    from novel_system.services.style_policy import style_policy_live
     from novel_system.services.style_reference.extractors import LanguageExtractor
-    from novel_system.services.style_reference.injection import InjectionService
+    from novel_system.services.style_reference.inject.render import render_style
+    from novel_system.services.style_reference.inject.request import StyleRenderRequest
     from novel_system.services.style_reference.materialization import (
         MaterializationService,
     )
@@ -706,7 +698,7 @@ def test_end_to_end_few_shot_spans_multiple_paragraph_types(fake_extractor_llm) 
         TaskType,
     )
 
-    book_id = _ingest("e2e_fs")
+    book_id = _ingest("e2e_fs", cloud_policy="allow_full_cloud")
     run_id = "sr_run_e2e_fs"
     with SessionLocal() as session:
         StyleReferenceRepository(session).create_run(
@@ -740,21 +732,13 @@ def test_end_to_end_few_shot_spans_multiple_paragraph_types(fake_extractor_llm) 
         session.commit()
 
     with SessionLocal() as session:
-        fragments = InjectionService(session).fragments_for(
-            "proj_e2e_fs", "scene_generation"
-        )
-    assert fragments.few_shot_block, "B 策略应注入 few-shot 样例块"
-    ptypes_in_block = {
-        pt
-        for pt in ("dialogue", "psychology", "narration", "description_env", "flashback", "transition")
-        if f"({pt}" in fragments.few_shot_block
-    }
-    assert len(ptypes_in_block) >= 2, (
-        f"few-shot 应覆盖 ≥2 种段型(修复前恒 1 条 narration),实际 {ptypes_in_block};"
-        f"block={fragments.few_shot_block!r}"
-    )
-    # 引用原文的样例在场 → 反抄袭红线段必随注
-    assert fragments.anti_plagiarism_block.strip()
+        scope = SimpleNamespace(project_id="proj_e2e_fs", scene_id=None, pov_character_id=None, onstage_chars_json=[])
+        policy = style_policy_live(session, scope)
+        rendered = render_style(session, policy, StyleRenderRequest(), use_cache=False)
+    assert policy.bound and policy.reference_mode == "full"
+    assert rendered.system_prefix.startswith("[STYLE_REFERENCE]")
+    assert "严格禁止" in rendered.system_prefix
+    assert not any(f"({pt}" in rendered.system_prefix for pt in ("dialogue", "psychology", "narration", "flashback"))
 
 
 def test_synthesize_quotes_are_run_scoped() -> None:

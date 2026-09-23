@@ -1,97 +1,53 @@
-"""pass3 R2/R4：Style Reference 红线对抗式测试（先红后绿）。
+"""pass3 R2：Style Reference 红线对抗式测试（2026-09-23 风格参考 v3 口径）。
 
-- SR-G1: Strategy B few-shot 注入缺 cloud_policy=local_only 守卫（RAG 有），
-  把源引文逐字灌进可能上云的生成 prompt，违反 local_only 数据安全契约。
-- SR-G3: 删书级联漏清 5 张物化提升表（style_observations/style_rules/...），
-  删书后 approved 风格行变孤儿、仍 runtime-active 注入下游成稿。
-（SR-G2 反抄袭引擎缺 NFKC+繁简归一化 → 降为文档化观察，正确修需 opencc 级繁简表。）
+SR-G1：原文样例只在书允许送云时进提示——「仅本机」的书遇云端模型一窗都不送；``segments_only`` 的书按 v3
+「参考方式」一律只送文风卡（``effective_reference_mode`` → ``card_only``），同样不送窗口。
 """
 
 from __future__ import annotations
 
 import pytest
 
-from novel_system.db.session import SessionLocal
-from novel_system.services.style_reference.cleanup import purge_derived_data
-from novel_system.services.style_reference.config_loader import clear_config_cache
-from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_policy import policy_from_contract
+from novel_system.services.style_reference.inject.bindings import resolve_binding_layers
+from novel_system.services.style_reference.inject.render import render_style, reset_render_cache
+from novel_system.services.style_reference.inject.request import PLACEMENT_USER_TAIL, StyleRenderRequest
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
+from tests.style_reference_inject_helpers import PROJECT_ID, bind, seed_reference
 
 
 @pytest.fixture(autouse=True)
-def _reset_yaml_cache():
-    clear_config_cache()
+def _fresh():
+    reset_render_cache()
     yield
-    clear_config_cache()
+    reset_render_cache()
 
 
-def _seed_fewshot_binding(*, seed: str, cloud_policy: str, project_id: str) -> None:
-    """建 book(指定 cloud_policy)+run+quote+profile(scene_samples_index)+binding(B)。"""
-    book_id = f"sr_book_{seed}"
-    run_id = f"sr_run_{seed}"
-    profile_id = f"sr_profile_{seed}"
-    quote_id = f"sr_q_{seed}"
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_book(
-            book_id=book_id, title="t", source_kind="upload", cloud_policy=cloud_policy,
-            text_checksum=f"chk_{seed}", total_chars=10, status="ready",
-            stats_json=(
-                {"rights_declaration": {
-                    "declared": True, "analysis_rights": True, "send_rights": True,
-                }}
-                if cloud_policy != "local_only"
-                else {}
-            ),
-        )
-        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
-        repo.create_quote(
-            quote_id=quote_id, book_id=book_id, paragraph_id=None,
-            span_start=0, span_end=14, quote_text="他低头看着脚下的路,一言不发。",
-            illustrates_dims=[], extracted_features={},
-        )
-        repo.create_profile(
-            profile_id=profile_id, book_id=book_id, run_id=run_id, title="t",
-            status="active",
-            profile_json={
-                "narrative_summary": "短句白描",
-                "style_features": ["短句"],
-                "scene_samples_index": {"dialogue": [quote_id]},
-            },
-            coverage_json={},
-            source_finding_ids_json=[],
-        )
-        repo.create_binding(
-            binding_id=f"sr_bind_{seed}", profile_id=profile_id,
-            scope="project", scope_ref_id=project_id,
-            task_type="scene_generation", strategy="B",
-            config_json={}, status="active",
-        )
-        session.commit()
+def _render(session, key: str, cloud_policy: str):
+    _book_id, profile_id = seed_reference(session, key, chapters=2, per_chapter=80, cloud_policy=cloud_policy)
+    bind(session, profile_id, binding_id=f"g1_bind_{key}")
+    layers = resolve_binding_layers(session, PROJECT_ID, "scene_generation")
+    contract = build_style_runtime_contract(StyleReferenceRepository(session), layers, task_type="scene_generation")
+    policy = policy_from_contract(contract, mode="frozen")
+    return policy, render_style(session, policy, StyleRenderRequest(placement=PLACEMENT_USER_TAIL, scene_id=f"G1_{key}"))
 
 
-# ---------------------------------------------------------------------------
-# SR-G1: few-shot 必须对 local_only 书跳过（不把源引文送云端生成 prompt）
-# ---------------------------------------------------------------------------
-def test_few_shot_skips_source_quote_for_local_only_book():
-    """local_only 书：few-shot 不得注入源引文（修前红：引文在场=泄漏；修后绿：空）。"""
-    _seed_fewshot_binding(seed="g1local", cloud_policy="local_only", project_id="proj_g1local")
-    with SessionLocal() as session:
-        fragments = InjectionService(session).fragments_for("proj_g1local", "scene_generation")
-    assert "他低头看着脚下的路" not in fragments.few_shot_block, (
-        "local_only 书的源引文逐字进了 few-shot block → 送云端生成 prompt = 违反数据安全契约"
-    )
-    assert "他低头看着脚下的路" not in fragments.to_system_prompt_prefix()
+def test_local_only_book_never_sends_windows_to_a_cloud_model(session) -> None:
+    policy, rendered = _render(session, "g1local", "local_only")
+    assert policy.reference_mode == "full"  # 绑定说全面模仿，但书不许送云
+    assert rendered.stats["few_shot_windows"] == 0 and rendered.user_tail == ""
+    assert rendered.audit["samples_blocked"] in ("cloud_policy_at_freeze", "cloud_policy_now")
+    assert "[文风卡]" in rendered.system_prefix and "严格禁止" in rendered.system_prefix
 
 
-def test_few_shot_still_renders_for_segments_only_book():
-    """对照：segments_only 允许段级送云 → few-shot 仍应渲染源引文（守卫不可过宽）。"""
-    _seed_fewshot_binding(seed="g1seg", cloud_policy="segments_only", project_id="proj_g1seg")
-    with SessionLocal() as session:
-        fragments = InjectionService(session).fragments_for("proj_g1seg", "scene_generation")
-    assert "他低头看着脚下的路" in fragments.few_shot_block
+def test_segments_only_book_sends_the_card_but_no_windows(session) -> None:
+    policy, rendered = _render(session, "g1seg", "segments_only")
+    assert policy.reference_mode == "card_only"
+    assert rendered.stats["few_shot_windows"] == 0 and rendered.user_tail == ""
+    assert "[文风卡]" in rendered.system_prefix and "[声音特征]" in rendered.system_prefix
 
 
-# ---------------------------------------------------------------------------
-# SR-G3: 删书级联必须清掉物化提升的运行时风格行（否则孤儿仍注入下游成稿）
-# ---------------------------------------------------------------------------
+def test_allow_full_cloud_book_sends_windows(session) -> None:
+    policy, rendered = _render(session, "g1full", "allow_full_cloud")
+    assert policy.reference_mode == "full" and rendered.stats["few_shot_windows"] >= 2

@@ -36,7 +36,7 @@ from novel_system.services.style_reference.runtime_contract import (
     validate_style_runtime_contract,
 )
 from tests.real_llm_fakes import install_online_pipeline
-from tests.test_style_reference_injection_v2 import _bind, _seed_full
+from tests.style_reference_inject_helpers import bind_profile as _bind, seed_full as _seed_full
 
 
 @pytest.fixture(autouse=True)

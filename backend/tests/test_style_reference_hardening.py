@@ -24,6 +24,10 @@ from novel_system.services.style_reference.errors import (
 )
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_policy import style_policy_live
+from novel_system.services.style_reference.inject.fit import fit_rendered
+from novel_system.services.style_reference.inject.render import render_style
+from novel_system.services.style_reference.inject.request import StyleRenderRequest
 from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
 from novel_system.services.style_reference.repository import StyleReferenceRepository
@@ -304,42 +308,49 @@ def _seed_injection(seed: str, *, banned_terms: list[str] | None = None) -> str:
     return project_id
 
 
+def _render_live(session, project_id: str):
+    """v3:按项目的活动绑定现解析契约并渲染(旧 fragments_for 的替代)。"""
+    from types import SimpleNamespace
+
+    scope = SimpleNamespace(project_id=project_id, scene_id=None, pov_character_id=None, onstage_chars_json=[])
+    return render_style(session, style_policy_live(session, scope), StyleRenderRequest(scene_id="hd_scene"), use_cache=False)
+
+
 def test_anti_plagiarism_block_present_and_in_prefix():
     project_id = _seed_injection("antiplag")
     with SessionLocal() as session:
-        fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
-    assert "严格禁止" in fragments.anti_plagiarism_block
-    prefix = fragments.to_system_prompt_prefix()
+        rendered = _render_live(session, project_id)
+    prefix = rendered.system_prefix
     assert "严格禁止" in prefix
     # 红线段排最后(在 [/STYLE_REFERENCE] 之前)
-    assert prefix.rindex("严格禁止") > prefix.rindex(fragments.positive_block.strip()[:8])
+    assert prefix.rindex("严格禁止") > prefix.rindex("白描")
+    assert prefix.rstrip().endswith("[/STYLE_REFERENCE]")
 
 
 def test_anti_plagiarism_block_includes_generation_banned_terms():
     project_id = _seed_injection("antiterm", banned_terms=["龙傲天", "玛丽苏镇"])
     with SessionLocal() as session:
-        fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
-    assert "- 龙傲天" in fragments.anti_plagiarism_block
-    assert "- 玛丽苏镇" in fragments.anti_plagiarism_block
+        prefix = _render_live(session, project_id).system_prefix
+    assert "- 龙傲天" in prefix
+    assert "- 玛丽苏镇" in prefix
 
 
 def test_anti_plagiarism_block_absent_when_fragments_empty():
     with SessionLocal() as session:
-        fragments = InjectionService(session).fragments_for("proj_nonexistent", "scene_generation")
-    assert fragments.anti_plagiarism_block == ""
-    assert fragments.to_system_prompt_prefix() == ""
+        rendered = _render_live(session, "proj_nonexistent")
+    assert rendered.system_prefix == "" and rendered.user_tail == ""
 
 
 def test_anti_plagiarism_block_survives_budget_truncation():
-    """strategy B 预算截断不得动红线段。"""
-    project_id = f"proj_hd_budget"
+    """预算压缩(贪心去卡句 / 声音)不得动红线段。"""
+    project_id = "proj_hd_budget"
     book_id = _seed_book("budget", cloud_policy="segments_only", with_paragraphs=False)
     profile_id = _seed_profile_for_book(
         "budget",
         book_id,
         profile_json={
-            "narrative_summary": "概述" * 500,
-            "style_features": ["要点" * 200],
+            "qualitative_summary": "概述" * 50,
+            "style_features": [f"要点{'甲乙丙丁戊己庚辛壬癸'[i % 10]}{'子丑寅卯'[i // 10]}" * 12 for i in range(30)],
         },
     )
     with SessionLocal() as session:
@@ -355,11 +366,14 @@ def test_anti_plagiarism_block_survives_budget_truncation():
             status="active",
         )
         session.commit()
-        fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
-    # positive 被预算截断,红线段完整保留
-    assert len(fragments.positive_block) < 1000
-    assert "严格禁止" in fragments.anti_plagiarism_block
-    assert "抄的是句子" in fragments.anti_plagiarism_block
+        rendered = _render_live(session, project_id)
+    red_line = rendered.system_prefix[rendered.system_prefix.index("## 严格禁止") :]
+    fitted, audit = fit_rendered(rendered, base_system_prompt="", user_prompt="u", target_input_tokens=len(red_line) + 300)
+    # 整张卡替身有总预算(整行截断);再压预算时按整行去,红线段完整保留
+    assert len(rendered.system_prefix) < 2600 + len(red_line) + 400
+    assert audit["compacted"] and audit["dropped_card_units"] >= 1
+    assert len(fitted.system_prefix) < len(rendered.system_prefix)
+    assert fitted.system_prefix.endswith(red_line) and "抄的是句子" in fitted.system_prefix
 
 
 # ---------------------------------------------------------------------------
@@ -714,102 +728,62 @@ def test_binding_unique_constraint_blocks_duplicates():
         session.rollback()
 
 
-def test_strategy_b_renders_few_shot_from_samples_index():
-    book_id = _seed_book("fewshot", cloud_policy="segments_only", with_paragraphs=False)
+def _seed_windowed_binding(seed: str, *, strategy: str, cloud_policy: str = "allow_full_cloud") -> str:
+    """一本够切窗的书(一章约 3,000 字)+ 旧画像 + project 绑定。返回 project_id。"""
+    book_id = _seed_book(seed, cloud_policy=cloud_policy, with_paragraphs=False)
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
-        repo.create_quote(
-            quote_id="sr_q_hd_fs_1",
-            book_id=book_id,
-            paragraph_id=None,
-            span_start=0,
-            span_end=10,
-            quote_text="他低头看着脚下的路,一言不发。",
-            illustrates_dims=[],
-            extracted_features={},
-        )
+        for idx in range(40):
+            body = f"第{idx}段：他把伞收了，站在檐下看雨，院子里的水一直漫到台阶下面。"
+            repo.create_paragraph(
+                paragraph_id=f"sr_para_hd_{seed}_{idx:02d}",
+                book_id=book_id,
+                paragraph_index=idx,
+                paragraph_type="narration",
+                start_offset=0,
+                end_offset=len(body),
+                text=body,
+                char_count=len(body),
+                classifier_confidence=0.9,
+            )
         session.commit()
-    profile_id = _seed_profile_for_book(
-        "fewshot",
-        book_id,
-        profile_json={
-            "narrative_summary": "短句白描",
-            "style_features": ["短句"],
-            "scene_samples_index": {"dialogue": ["sr_q_hd_fs_1"]},
-        },
-    )
+    profile_id = _seed_profile_for_book(seed, book_id, profile_json={"qualitative_summary": "短句白描", "style_features": ["短句"]})
+    project_id = f"proj_{seed}"
     with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_binding(
-            binding_id="sr_bind_hd_fs",
+        StyleReferenceRepository(session).create_binding(
+            binding_id=f"sr_bind_hd_{seed}",
             profile_id=profile_id,
             scope="project",
-            scope_ref_id="proj_fewshot",
+            scope_ref_id=project_id,
             task_type="scene_generation",
-            strategy="B",
+            strategy=strategy,
             config_json={},
             status="active",
         )
         session.commit()
-        fragments = InjectionService(session).fragments_for("proj_fewshot", "scene_generation")
-    assert "风格样例" in fragments.few_shot_block
-    assert "他低头看着脚下的路" in fragments.few_shot_block
-    # few-shot 引用原文 → 红线段必须在场,且进入最终 prefix
-    assert "严格禁止" in fragments.anti_plagiarism_block
-    assert "风格样例" in fragments.to_system_prompt_prefix()
+    return project_id
 
 
-def test_strategy_a_has_no_few_shot_block():
-    project_id = _seed_injection("nofs")
+def test_legacy_strategy_b_renders_windows_from_the_book_index():
+    """v3:样例只来自全书窗口索引(旧的证据引文路径已删);旧策略 B / mixed 映射为全面模仿。"""
+    for strategy in ("B", "mixed"):
+        project_id = _seed_windowed_binding(f"fewshot_{strategy}", strategy=strategy)
+        with SessionLocal() as session:
+            rendered = _render_live(session, project_id)
+        assert rendered.stats["few_shot_windows"] == 1
+        assert "[风格样例]" in rendered.system_prefix and "他把伞收了" in rendered.system_prefix
+        # 样例引用原文 → 红线段必须在场,且在前缀里
+        assert "严格禁止" in rendered.system_prefix
+
+
+def test_legacy_strategy_a_and_segments_only_books_send_no_windows():
+    project_id = _seed_windowed_binding("nofs", strategy="A")
+    segments = _seed_windowed_binding("nofs_seg", strategy="mixed", cloud_policy="segments_only")
     with SessionLocal() as session:
-        fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
-    assert fragments.few_shot_block == ""
-
-
-def test_strategy_mixed_renders_few_shot_from_samples_index():
-    """mixed = A + B:few-shot 样例块必须随混合策略注入(场景生成默认即 mixed)。"""
-    book_id = _seed_book("fewshotmx", cloud_policy="segments_only", with_paragraphs=False)
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_quote(
-            quote_id="sr_q_hd_fsmx_1",
-            book_id=book_id,
-            paragraph_id=None,
-            span_start=0,
-            span_end=10,
-            quote_text="他把伞收了,站在檐下看雨。",
-            illustrates_dims=[],
-            extracted_features={},
-        )
-        session.commit()
-    profile_id = _seed_profile_for_book(
-        "fewshotmx",
-        book_id,
-        profile_json={
-            "narrative_summary": "短句白描",
-            "style_features": ["短句"],
-            "scene_samples_index": {"dialogue": ["sr_q_hd_fsmx_1"]},
-        },
-    )
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_binding(
-            binding_id="sr_bind_hd_fsmx",
-            profile_id=profile_id,
-            scope="project",
-            scope_ref_id="proj_fewshotmx",
-            task_type="scene_generation",
-            strategy="mixed",
-            config_json={"intensity": 80},
-            status="active",
-        )
-        session.commit()
-        fragments = InjectionService(session).fragments_for("proj_fewshotmx", "scene_generation")
-    assert "风格样例" in fragments.few_shot_block
-    assert "他把伞收了" in fragments.few_shot_block
-    # few-shot 引用原文 → 红线段必须在场
-    assert "严格禁止" in fragments.anti_plagiarism_block
-    assert "风格样例" in fragments.to_system_prompt_prefix()
+        for pid in (project_id, segments):
+            rendered = _render_live(session, pid)
+            assert rendered.stats["few_shot_windows"] == 0 and "[风格样例]" not in rendered.system_prefix
+            assert "短句" in rendered.system_prefix and "严格禁止" in rendered.system_prefix
 
 
 def test_failed_idempotent_action_does_not_half_commit():

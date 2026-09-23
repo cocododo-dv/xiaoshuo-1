@@ -798,3 +798,66 @@ def test_describe_binding_layers_is_cheap_and_marks_the_applied_layer(session, m
     assert [layer["applied"] for layer in data["layers"]] == [False, True]
     assert data["merged"]["binding_id"] == "layers_scene" and data["merged"]["sample_windows"] == 8
     assert [item["binding_id"] for item in data["deduplicated"]] == ["layers_project"]
+
+
+# ---------------------------------------------------------------------------
+# 规划层（L5）与适配器的调用方
+# ---------------------------------------------------------------------------
+
+
+def test_planning_context_gives_card_scene_and_theme_lines_with_temperament(session) -> None:
+    from novel_system.services.style_reference.planning_context import (
+        render_card_planning_guidance,
+        resolve_project_style_reference,
+    )
+
+    _book_id, profile_id = seed_reference(session, "planning")
+    bind(session, profile_id, binding_id="inj_bind_planning", config_json={"dimension_states": {"theme.emotional_tone": "emphasize"}})
+    reference = resolve_project_style_reference(session, PROJECT_ID)
+    guidance = reference["planning_guidance"]
+    assert guidance.startswith("[场景手法]")
+    lines = guidance.splitlines()[1:]
+    assert lines[0] == "- 气质（必须）：危急关头用自嘲冲淡紧张"
+    assert lines[1].startswith("- 【重点】情感基调：") and "惊险里夹着吐槽" in guidance
+    assert "对话写法：对白你来我往地抢话" in guidance
+    # 语言层 / 叙事层的句子不进规划（它们是起草的事）
+    assert "紧张处拿日常小物件" not in guidance and "倒计时" not in guidance
+    # 没有文风卡的旧画像照旧用 [场景手法] 观察陈述（这里没有 → 空）
+    assert render_card_planning_guidance({"planning_guidance": ["场景：旧陈述"]}) == ""
+    excluded = render_card_planning_guidance(
+        StyleReferenceRepository(session).get_profile(profile_id).profile_json,
+        {"theme.emotional_tone": "exclude", "scene.dialogue": "exclude"},
+    )
+    assert "情感基调" not in excluded and "对话写法" not in excluded and "气质" in excluded
+
+
+def test_near_final_review_injects_style_prefix_and_degrades_on_error(session, monkeypatch) -> None:
+    """准定稿评审复用模块级注入器；注入器抛错时回退基础提示（可选增强，不阻断评审）。"""
+    from types import SimpleNamespace
+
+    from novel_system.services import near_final as near_final_module
+    from novel_system.services import style_prompt_injection as spi
+
+    service = near_final_module.NearFinalAcceptanceService(session)
+    scene = SimpleNamespace(scene_id="SC1", project_id="P1", pov_character_id=None, onstage_chars_json=[])
+    calls: list[dict] = []
+
+    def _fake_inject(sess, prompt, scene_arg, bundle, *, task_type, context_text, final_user_prompt, **_kwargs):
+        calls.append({"task_type": task_type, "user": final_user_prompt})
+        return {**prompt, "system_prompt": "[STYLE_REFERENCE]\nX\n[/STYLE_REFERENCE]\n\n" + prompt["system_prompt"]}
+
+    monkeypatch.setattr(spi, "inject_style_reference_prefix", _fake_inject)
+    injected = service._inject_style_reference_prefix(
+        {"system_prompt": "base", "user_prompt": "u"}, scene, {"bundle_id": "b"}, context_text="正文", final_user_prompt="u + 正文"
+    )
+    assert injected["system_prompt"].startswith("[STYLE_REFERENCE]")
+    assert calls == [{"task_type": "scene_generation", "user": "u + 正文"}]
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("injector down")
+
+    monkeypatch.setattr(spi, "inject_style_reference_prefix", _boom)
+    degraded = service._inject_style_reference_prefix(
+        {"system_prompt": "base", "user_prompt": "u"}, scene, {"bundle_id": "b"}, context_text="正文", final_user_prompt="u"
+    )
+    assert degraded == {"system_prompt": "base", "user_prompt": "u"}

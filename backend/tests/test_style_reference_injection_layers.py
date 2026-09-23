@@ -1,7 +1,7 @@
-"""注入只读辅助端点:/injection/task-defaults + /injection/layers。
+"""注入只读辅助端点:/injection/task-defaults + /injection/layers(2026-09-23 风格参考 v3)。
 
-闭合前端「注入应用」页两处示意数据:任务卡片的默认策略/刷新周期、
-「叠加注入层」卡片(此前为写死的 SR_LAYER_STACK)。
+v3:只有最具体的一层生效(``applied``),其余命中层被遮住(``deduplicated``);层查询只查列、不渲染(U10);
+旧策略列一律 ``mixed``。
 """
 
 from __future__ import annotations
@@ -10,16 +10,13 @@ from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
 from novel_system.db.session import SessionLocal
-from novel_system.services.style_reference.injection import (
-    InjectionService,
-    default_injection_strategy,
-)
+from novel_system.services.style_reference.injection import default_injection_strategy
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 PREFIX = "/api/v2/style-reference"
 
 
-def _seed_profile(seed: str) -> str:
+def _seed_profile(seed: str, *, cloud_policy: str = "allow_full_cloud") -> str:
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         book_id = f"sr_book_il_{seed}"
@@ -27,13 +24,11 @@ def _seed_profile(seed: str) -> str:
             book_id=book_id,
             title="t",
             source_kind="upload",
-            cloud_policy="segments_only",
+            cloud_policy=cloud_policy,
             text_checksum=f"chk_il_{seed}",
             total_chars=1000,
             status="ready",
-            stats_json={"rights_declaration": {
-                "declared": True, "analysis_rights": True, "send_rights": True,
-            }},
+            stats_json={"rights_declaration": {"declared": True, "analysis_rights": True, "send_rights": True}},
         )
         run_id = f"sr_run_il_{seed}"
         profile_id = f"sr_profile_il_{seed}"
@@ -44,11 +39,7 @@ def _seed_profile(seed: str) -> str:
             run_id=run_id,
             title=f"画像{seed}",
             status="active",
-            profile_json={
-                "narrative_summary": "短句白描,逗号顿连。",
-                "style_features": ["短句为主", "喻体即收"],
-                "banned_replication_rules": ["禁止排比抒情"],
-            },
+            profile_json={"style_features": ["短句为主", "喻体即收"], "banned_replication_rules": ["禁止排比抒情"]},
             coverage_json={},
             source_finding_ids_json=[],
         )
@@ -56,7 +47,7 @@ def _seed_profile(seed: str) -> str:
     return profile_id
 
 
-def _bind(profile_id: str, *, binding_id: str, scope: str, scope_ref_id: str, strategy: str = "A") -> None:
+def _bind(profile_id: str, *, binding_id: str, scope: str, scope_ref_id: str, strategy: str = "mixed", config_json: dict | None = None) -> None:
     with SessionLocal() as session:
         StyleReferenceRepository(session).create_binding(
             binding_id=binding_id,
@@ -65,37 +56,24 @@ def _bind(profile_id: str, *, binding_id: str, scope: str, scope_ref_id: str, st
             scope_ref_id=scope_ref_id,
             task_type="scene_generation",
             strategy=strategy,
-            config_json={},
+            config_json=config_json or {},
             status="active",
         )
         session.commit()
 
 
-# ---------------------------------------------------------------------------
-# task-defaults
-# ---------------------------------------------------------------------------
-
-
-def test_task_defaults_endpoint_matches_node_registry() -> None:
+def test_task_defaults_endpoint_lists_the_live_tasks() -> None:
     with TestClient(create_app()) as client:
         resp = client.get(f"{PREFIX}/injection/task-defaults")
         assert resp.status_code == 200
         tasks = {t["task_type"]: t for t in resp.json()["data"]["tasks"]}
     # long_form_continuation 生产路径已下线:不再对 UI 列出
-    assert set(tasks) == {
-        "project_init", "scene_generation", "fine_tuning", "key_chapter",
-    }
-    assert tasks["scene_generation"]["default_strategy"] == "mixed"
-    assert tasks["key_chapter"]["default_strategy"] == "C"
+    assert set(tasks) == {"project_init", "scene_generation", "fine_tuning", "key_chapter"}
+    # v3:旧策略列一律 mixed(怎么送参考看绑定的 reference_mode)
+    assert {t["default_strategy"] for t in tasks.values()} == {"mixed"}
     assert all(t["refresh_every_chars"] == 0 for t in tasks.values())
-    # 持久层兼容:存量 binding 行的 task_type='long_form_continuation'
-    # 仍必须能解析默认策略(枚举值保留,仅 UI 下线)
+    # 持久层兼容:存量 binding 行的 task_type='long_form_continuation' 仍能解析默认策略
     assert default_injection_strategy("long_form_continuation") is not None
-
-
-# ---------------------------------------------------------------------------
-# layers
-# ---------------------------------------------------------------------------
 
 
 def test_layers_endpoint_empty_when_no_bindings() -> None:
@@ -103,91 +81,59 @@ def test_layers_endpoint_empty_when_no_bindings() -> None:
         resp = client.get(f"{PREFIX}/injection/layers", params={"project_id": "proj_il_none"})
         assert resp.status_code == 200
         data = resp.json()["data"]
-    assert data["layers"] == []
-    assert data["merged"] is None
-    assert data["budget_total"] > 0
+    assert data["layers"] == [] and data["merged"] is None and data["deduplicated"] == []
 
 
-def test_layers_single_binding_gets_full_budget() -> None:
+def test_layers_single_binding_is_applied_with_its_v3_config() -> None:
     profile_id = _seed_profile("single")
-    _bind(profile_id, binding_id="sr_bind_il_single", scope="project", scope_ref_id="proj_il_s")
+    _bind(profile_id, binding_id="sr_bind_il_single", scope="project", scope_ref_id="proj_il_s", config_json={"intensity": 50})
     with TestClient(create_app()) as client:
-        resp = client.get(f"{PREFIX}/injection/layers", params={"project_id": "proj_il_s"})
-        data = resp.json()["data"]
+        data = client.get(f"{PREFIX}/injection/layers", params={"project_id": "proj_il_s"}).json()["data"]
     assert len(data["layers"]) == 1
     layer = data["layers"][0]
-    assert layer["scope"] == "project"
-    assert layer["weight"] == 1
-    assert layer["budget_chars"] == data["budget_total"]
-    assert layer["profile_title"] == "画像single"
-    assert data["merged"]["layer_count"] == 1
-    assert data["merged"]["prefix_chars"] > 0
+    assert layer["scope"] == "project" and layer["applied"] is True and layer["weight"] == 1
+    assert layer["profile_title"] == "画像single" and layer["profile_status"] == "active"
+    # 旧强度 50 → 8 窗(与旧 k(i) 同一公式)
+    assert layer["sample_windows"] == 8 and layer["reference_mode"] == "full"
+    assert data["merged"]["layer_count"] == 1 and data["merged"]["binding_id"] == "sr_bind_il_single"
 
 
-def test_layers_stacked_weights_and_order() -> None:
-    """project + scene 双层(两个不同画像):由泛到具体,scene 层权重/预算更大,合并概要一致。"""
+def test_only_the_most_specific_layer_is_applied() -> None:
     base_profile = _seed_profile("stack")
-    scene_profile = _seed_profile("stack_scene")
+    scene_profile = _seed_profile("stack_scene", cloud_policy="segments_only")
     _bind(base_profile, binding_id="sr_bind_il_p", scope="project", scope_ref_id="proj_il_x")
-    _bind(scene_profile, binding_id="sr_bind_il_sc", scope="scene", scope_ref_id="scene_il_1", strategy="mixed")
+    _bind(scene_profile, binding_id="sr_bind_il_sc", scope="scene", scope_ref_id="scene_il_1", config_json={"sample_windows": 6})
     with TestClient(create_app()) as client:
-        resp = client.get(
-            f"{PREFIX}/injection/layers",
-            params={"project_id": "proj_il_x", "scene_id": "scene_il_1"},
-        )
-        data = resp.json()["data"]
-    assert [l["scope"] for l in data["layers"]] == ["project", "scene"]
-    weights = [l["weight"] for l in data["layers"]]
-    assert weights == [1, 2]
-    total = data["budget_total"]
-    # v2 §1.4:两层总额 = total(缺省 intensity)× (1 + 0.35);2026-09-12 起缺省强度 100 → 2400 × 1.35 = 3240
-    assert total == 3240
-    assert data["layers"][0]["budget_chars"] == total * 1 // 3
-    assert data["layers"][1]["budget_chars"] == total * 2 // 3
+        data = client.get(
+            f"{PREFIX}/injection/layers", params={"project_id": "proj_il_x", "scene_id": "scene_il_1"}
+        ).json()["data"]
+    assert [layer["scope"] for layer in data["layers"]] == ["project", "scene"]
+    assert [layer["applied"] for layer in data["layers"]] == [False, True]
     assert data["layers"][1]["rank"] < data["layers"][0]["rank"]  # scene 更具体
-    assert data["merged"]["layer_count"] == 2
-    assert data["deduplicated"] == []
-    # 合并 strategy 取最具体层
-    assert data["merged"]["strategy"] == "mixed"
-    assert all(l["fragment_count"] >= 1 for l in data["layers"])
-    assert all("voice_block" in l["block_chars"] for l in data["layers"])
-
-
-def test_layers_same_profile_across_scopes_is_deduplicated() -> None:
-    """v2:同一画像绑到 project 与 scene 时只渲染一次(保留最具体层),被去重的 binding 列出。"""
-    profile_id = _seed_profile("dedupe")
-    _bind(profile_id, binding_id="sr_bind_il_dd_p", scope="project", scope_ref_id="proj_il_dd")
-    _bind(profile_id, binding_id="sr_bind_il_dd_sc", scope="scene", scope_ref_id="scene_il_dd", strategy="mixed")
-    with TestClient(create_app()) as client:
-        resp = client.get(
-            f"{PREFIX}/injection/layers",
-            params={"project_id": "proj_il_dd", "scene_id": "scene_il_dd"},
-        )
-        data = resp.json()["data"]
-    assert [l["scope"] for l in data["layers"]] == ["scene"]
-    assert data["layers"][0]["weight"] == 1
-    # 2026-09-12 最大化模仿:缺省强度 100 → 单层总额 2400
-    assert data["layers"][0]["budget_chars"] == data["budget_total"] == 2400
-    assert [d["binding_id"] for d in data["deduplicated"]] == ["sr_bind_il_dd_p"]
-    assert data["merged"]["layer_count"] == 1
-    assert data["merged"]["strategy"] == "mixed"
-    with SessionLocal() as session:
-        fragments = InjectionService(session).fragments_for(
-            "proj_il_dd", "scene_generation", scene_id="scene_il_dd"
-        )
-    # 单次渲染:正向块标题唯一、同一条特征只出现一次
-    assert fragments.positive_block.count("[正向风格特征]") == 1
-    assert fragments.positive_block.count("短句为主") == 1
+    assert [d["binding_id"] for d in data["deduplicated"]] == ["sr_bind_il_p"]
+    merged = data["merged"]
+    # segments_only 的书只送文风卡(不送窗口)——生效层的参考方式说到做到
+    assert merged["binding_id"] == "sr_bind_il_sc" and merged["reference_mode"] == "card_only"
+    assert merged["sample_windows"] == 6 and merged["prefix_chars"] == 0
 
 
 def test_describe_layers_is_read_only() -> None:
-    """describe 不写 metric 事件(可随 UI 反复调用)。"""
+    """describe 不写任何行(可随 UI 反复调用)。"""
     profile_id = _seed_profile("ro")
     _bind(profile_id, binding_id="sr_bind_il_ro", scope="project", scope_ref_id="proj_il_ro")
     with SessionLocal() as session:
-        from novel_system.db.models import StyleReferenceMetricEvent
+        from novel_system.db.models import StyleReferenceMetricEvent, StyleReferenceSceneWindows, StyleReferenceWindow
+        from novel_system.services.style_reference.inject.bindings import describe_binding_layers
 
-        before = session.query(StyleReferenceMetricEvent).count()
-        InjectionService(session).describe_binding_layers("proj_il_ro", "scene_generation")
-        after = session.query(StyleReferenceMetricEvent).count()
+        before = (
+            session.query(StyleReferenceMetricEvent).count(),
+            session.query(StyleReferenceSceneWindows).count(),
+            session.query(StyleReferenceWindow).count(),
+        )
+        describe_binding_layers(session, "proj_il_ro", "scene_generation")
+        after = (
+            session.query(StyleReferenceMetricEvent).count(),
+            session.query(StyleReferenceSceneWindows).count(),
+            session.query(StyleReferenceWindow).count(),
+        )
     assert after == before

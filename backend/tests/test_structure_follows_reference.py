@@ -37,7 +37,8 @@ from novel_system.services.scene_planning_staleness import (
 from novel_system.services.scene_structure_brief import _chapter_position_line, render_scene_structure_brief
 from novel_system.services.style_prompt_injection import attach_chapter_position_mandate, chapter_position_mandate
 from novel_system.services.style_reference.schemas import FEW_SHOT_CLOSING_MANDATE, FEW_SHOT_CLOSING_MANDATE_FINAL
-from novel_system.services.style_reference.injection import _window_position_tag
+from novel_system.services.style_reference.inject.render import window_position_tag
+from novel_system.services.style_reference.inject.selection import WindowRef
 from novel_system.services.style_reference.planning_context import (
     STRUCTURE_REFERENCE_HOW_TO_USE,
     chapter_titles_for_book,
@@ -263,12 +264,17 @@ def test_chapter_position_line_names_first_last_only_and_middle_scenes() -> None
     assert lines[0].startswith("Scene form:") and lines[1] == "Chapter position: first scene of the chapter — it opens the chapter"
 
 
+def _ref(position: str, chapter: int) -> WindowRef:
+    return WindowRef(window_no=1, start=0, end=10, chapter=chapter, position=position, chars=100, paragraphs=5)
+
+
 def test_window_position_tag_marks_opening_closing_and_whole_windows() -> None:
-    assert _window_position_tag({"position": "opening", "chapter": 12}) == "第12章·章首；"
-    assert _window_position_tag({"position": "closing", "chapter": 3}) == "第3章·章末；"
-    assert _window_position_tag({"position": "whole", "chapter": 0}) == "整章；"
-    assert _window_position_tag({"position": "middle", "chapter": 5}) == ""
-    assert _window_position_tag({}) == ""
+    # 2026-09-23 风格参考 v3：样例行只带中文位置标签（不再有英文段型 / 段数 / 字数）；中间窗口只标章号
+    assert window_position_tag(_ref("opening", 12)) == "第12章·章首"
+    assert window_position_tag(_ref("closing", 3)) == "第3章·章末"
+    assert window_position_tag(_ref("whole", 0)) == "整章"
+    assert window_position_tag(_ref("middle", 5)) == "第5章"
+    assert window_position_tag(_ref("middle", 0)) == "样例"
 
 
 def test_chapter_position_mandate_follows_the_marked_windows_and_the_authors_habits() -> None:

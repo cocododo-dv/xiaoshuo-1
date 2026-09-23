@@ -48,7 +48,9 @@ from novel_system.services.style_prompt_injection import (
     inject_style_reference_prefix,
     resolve_style_scope,
 )
-from novel_system.services.style_reference.injection import InjectionService, _few_shot_k
+from novel_system.services.style_policy import policy_from_contract
+from novel_system.services.style_reference.inject.render import render_style
+from novel_system.services.style_reference.inject.request import StyleRenderRequest
 from novel_system.services.style_reference.planning_context import (
     STYLE_PLANNING_GUIDANCE_KEY,
     STYLE_REFERENCE_DIGEST_KEYS,
@@ -57,9 +59,8 @@ from novel_system.services.style_reference.planning_context import (
     snapshot_has_style_reference,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.schemas import InjectionStrategy
 from novel_system.services.writer_deep_review import WriterDeepReviewService
-from tests.test_style_reference_injection_v2 import _bind, _seed_full
+from tests.style_reference_inject_helpers import bind_profile as _bind, seed_full as _seed_full
 from tests.test_style_reference_structure import _profile_json_with_structure, _seed_style_binding
 
 PROJECT_ID = "P_WP6"
@@ -277,32 +278,32 @@ class _BlueprintRunner:
 # ---------------------------------------------------------------------------
 
 
-def test_injection_service_honours_few_shot_k_cap() -> None:
-    _book_id, profile_id = _seed_full("wp6_kcap")
-    with SessionLocal() as session:
-        profile = StyleReferenceRepository(session).get_profile(profile_id)
-        svc = InjectionService(session)
-        _fragments, uncapped = svc.render_preview(profile, InjectionStrategy.MIXED, {"intensity": 100})
-        assert uncapped["few_shot_k"] == _few_shot_k(100) > PLANNING_FEW_SHOT_K_CAP
-        assert uncapped["few_shot_windows"] > PLANNING_FEW_SHOT_K_CAP
+def test_render_honours_the_k_cap(session) -> None:
+    """v3：窗数上限是渲染请求的一个字段（``StyleRenderRequest.k_cap``），不再改服务对象的属性。"""
+    _seed_scene(session)
+    _bind_project("wp6_kcap")
+    scene = session.get(SceneCard, SCENE_ID)
+    policy = policy_from_contract(resolve_scene_style_runtime_contract(session, scene), mode="resolved")
 
-        svc.few_shot_k_cap = PLANNING_FEW_SHOT_K_CAP
-        fragments, capped = svc.render_preview(profile, InjectionStrategy.MIXED, {"intensity": 100})
-        assert capped["few_shot_k"] == PLANNING_FEW_SHOT_K_CAP
-        assert 1 <= capped["few_shot_windows"] <= PLANNING_FEW_SHOT_K_CAP
-        assert len(_few_shot_entries(fragments.few_shot_block)) == capped["few_shot_windows"]
-        # 抽象块不受上限影响；红线段仍随注
-        assert capped["positive_lines"] == uncapped["positive_lines"]
-        assert fragments.anti_plagiarism_block
+    def _render(k_cap):
+        return render_style(session, policy, StyleRenderRequest(scene_id=SCENE_ID, k_cap=k_cap))
 
-        # 上限大于 k(intensity) 时不起作用；0 关掉样例块
-        svc.few_shot_k_cap = 50
-        _fragments, loose = svc.render_preview(profile, InjectionStrategy.MIXED, {"intensity": 100})
-        assert loose["few_shot_k"] == uncapped["few_shot_k"]
-        svc.few_shot_k_cap = 0
-        none_fragments, none_stats = svc.render_preview(profile, InjectionStrategy.MIXED, {"intensity": 100})
-        assert none_stats["few_shot_k"] == 0 and none_stats["few_shot_windows"] == 0
-        assert none_fragments.few_shot_block == ""
+    uncapped = _render(None)
+    assert uncapped.stats["few_shot_k"] == 12 > PLANNING_FEW_SHOT_K_CAP
+    assert uncapped.stats["few_shot_windows"] == 12
+    capped = _render(PLANNING_FEW_SHOT_K_CAP)
+    assert capped.stats["few_shot_k"] == PLANNING_FEW_SHOT_K_CAP == capped.stats["few_shot_windows"]
+    assert len(_few_shot_entries(_few_shot_block(capped.system_prefix))) == PLANNING_FEW_SHOT_K_CAP
+    # 卡（旧画像的卡替身）不受上限影响；红线仍随注；上限窗是冻结选窗的前缀
+    assert capped.stats["positive_lines"] == uncapped.stats["positive_lines"]
+    assert "严格禁止" in capped.system_prefix
+    assert [r["window_no"] for r in capped.window_refs] and {r["window_no"] for r in capped.window_refs} <= {
+        r["window_no"] for r in uncapped.window_refs
+    }
+    # 上限大于绑定的窗数时不起作用；0 关掉样例块
+    assert _render(50).stats["few_shot_k"] == uncapped.stats["few_shot_k"]
+    none = _render(0)
+    assert none.stats["few_shot_k"] == 0 and none.stats["few_shot_windows"] == 0 and "[风格样例]" not in none.system_prefix
 
 
 def test_inject_style_reference_prefix_caps_windows_and_labels_resolved_contracts(session) -> None:
@@ -323,8 +324,9 @@ def test_inject_style_reference_prefix_caps_windows_and_labels_resolved_contract
     assert 1 <= capped_windows <= PLANNING_FEW_SHOT_K_CAP < full_windows
     assert capped["_style_reference_runtime_audit"]["render_stats"]["few_shot_k"] == PLANNING_FEW_SHOT_K_CAP
     assert len(_few_shot_entries(_few_shot_block(capped["system_prompt"]))) == capped_windows
-    # 无 bundle → 实时绑定路径
-    assert capped["_style_reference_runtime_audit"]["runtime_contract_mode"] == "legacy_live"
+    # 无 bundle → 显式的实时契约路径（记契约哈希，J15）
+    assert capped["_style_reference_runtime_audit"]["runtime_contract_mode"] == "live"
+    assert len(capped["_style_reference_runtime_audit"]["contract_hash"]) == 64
 
     # 调用方给出自己解析的契约：审计标 resolved_live，契约哈希与给出的契约一致
     contract = resolve_scene_style_runtime_contract(session, scene)

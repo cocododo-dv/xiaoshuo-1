@@ -7,7 +7,7 @@ import pytest
 
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.config_loader import clear_config_cache
-from novel_system.services.style_reference.exemplar_index import build_exemplar_window_index
+from novel_system.services.style_reference.exemplar_index import book_windows
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.structure import compute_structure_card, render_structure_card
 from novel_system.services.style_reference.text_utils import (
@@ -129,17 +129,17 @@ def test_exemplar_windows_never_cross_a_scene_break() -> None:
         add(f"第{i}段：" + prose * 3)  # 约 150 字
         if i == 9:
             add("***")
-    index = build_exemplar_window_index(rows, window_paragraphs=60, window_max_chars=4000, min_window_chars=600)
-    starts = [(w["start"], w["end"]) for w in index["windows"]]
+    cut, _count, _chapters = book_windows(rows, window_paragraphs=60, window_max_chars=4000, min_window_chars=600)
+    starts = [(win[0]["index"], win[-1]["index"]) for _chapter, _position, win in cut]
     # 第一窗在 *** 前封窗(索引 1–10),第二窗从 *** 之后开始(索引 12 起)
     assert starts[0] == (1, 10)
     assert starts[1][0] == 12
     assert all(not (start <= 11 <= end) for start, end in starts)
     # 空行型场界同样封窗
-    index2 = build_exemplar_window_index(
+    cut2, _count2, _chapters2 = book_windows(
         [row for row in rows if row["text"] != "***"], scene_breaks=[20], window_max_chars=4000, min_window_chars=600
     )
-    assert any(end == 20 for _start, end in ((w["start"], w["end"]) for w in index2["windows"]))
+    assert any(win[-1]["index"] == 20 for _chapter, _position, win in cut2)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ def test_exemplar_windows_never_cross_a_scene_break() -> None:
 
 def test_chaptering_uses_the_reference_chapter_scale_when_the_author_set_nothing(session) -> None:
     from tests.test_snowflake_chapters_after_scenes import PROJECT_ID, _chapters, _seed
-    from tests.test_style_reference_injection_v2 import _bind, _seed_full
+    from tests.style_reference_inject_helpers import bind_profile as _bind, seed_full as _seed_full
 
     from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
 

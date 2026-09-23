@@ -863,6 +863,7 @@ class WriterDeepReviewService:
             scene_id=_optional_text(payload, "scene_id"),
             context_text=(source_draft.content if source_draft is not None else source_excerpt) or None,
             final_user_prompt=user_prompt,
+            role="revise",
         )
         execution_step_key = f"writer_passage_patch:{object_type}:{object_id}"
         context = self._llm_context(
@@ -924,8 +925,12 @@ class WriterDeepReviewService:
         scene_id: str | None,
         context_text: str | None,
         final_user_prompt: str,
+        role: str = "review",
     ) -> dict[str, Any]:
         """2026-09-14 保真修补（WP6.3）：深评 / 局部补丁按项目 / 场景的 active 绑定拿到 ``[STYLE_REFERENCE]``。
+
+        2026-09-23 风格参考 v3：显式角色（深评 / 局部深评 ``review``、局部补丁 ``revise``），样例与文风卡按
+        评审 / 改稿的口径渲染，不再拿起草口径的标题（J16）；窗数上限不变。
 
         场景对象按场景作用域（窗口按场景轮换），章对象按 project + global 作用域；样例窗口封顶
         :data:`PLANNING_FEW_SHOT_K_CAP`（评审与补丁只需少量样例定标准），被评 / 被改的文本作
@@ -949,6 +954,7 @@ class WriterDeepReviewService:
                 context_text=context_text,
                 final_user_prompt=final_user_prompt,
                 few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP,
+                role=role,
             )
             return injected if injected is not None else prompt
         except Exception:  # noqa: BLE001 — 可选增强：注入失败只记日志，不阻断评审 / 补丁
