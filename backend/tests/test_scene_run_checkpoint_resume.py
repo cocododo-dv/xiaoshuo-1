@@ -1724,6 +1724,48 @@ def test_committed_neutral_and_style_checkpoint_resume_without_new_call_or_charg
     assert len(generation_client.requests) == 2
 
 
+class _RepairedFirstDraftClient(_CountingGenerationClient):
+    """第一次起草给一份不合格的稿（太短），单次确定性修复给出合格稿；之后照常。"""
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        text = "短。" if len(self.requests) == 1 else _durable_scene_text(len(self.requests))
+        return _response({"scene_text": text}, f"generation-{len(self.requests)}")
+
+
+def test_neutral_checkpoint_after_an_accepted_repair_resumes_without_corruption(session) -> None:
+    """首稿不合格、修复稿被采用时，中性步位的检查点记的是**修复那次调用**的步键（neutral_draft_repair）——
+    以前记成 neutral_draft，而调用 id 是修复那次的，续跑的账本校验（调用的 execution_step_key 对不上）报
+    RUN_CHECKPOINT_CORRUPT。"""
+    _seed_resume_scene(session)
+    generation_client = _RepairedFirstDraftClient()
+    late_failure = _FailAfterStyle()
+
+    def orchestrator() -> Orchestrator:
+        return Orchestrator(
+            session,
+            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
+            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+            soft_qc_engine=late_failure,
+        )
+
+    with pytest.raises(RuntimeError, match="fail after style checkpoint"):
+        orchestrator().run_scene("CH_RESUME_SC01", execution_id="idempotency:resume-repaired")
+
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    refs = state.run_checkpoint_json["artifact_refs"]
+    assert refs["neutral_execution_step_key"] == "neutral_draft_repair"
+    repair_call = session.get(LlmCall, refs["neutral_llm_call_id"])
+    assert repair_call.execution_step_key == "neutral_draft_repair"
+    assert len(generation_client.requests) == 3, "首稿 + 修复 + 风格稿"
+
+    with pytest.raises(RuntimeError, match="fail after style checkpoint"):
+        orchestrator().run_scene("CH_RESUME_SC01", execution_id="idempotency:resume-repaired")
+
+    assert len(generation_client.requests) == 3, "续跑不重放首稿、修复与风格稿"
+    assert late_failure.calls == 2
+
+
 @pytest.mark.parametrize(
     ("fail_before_step", "first_sub_index"),
     [

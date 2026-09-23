@@ -186,20 +186,22 @@ def _soft_pass() -> dict:
     }
 
 
+# 评审模板（near_final_acceptance_review / chapter_near_final_review）声明分数是 0–10（schema maximum 10），
+# 分数按声明的刻度换算到 0–1（review_scores）：替身回答也按模板的刻度给分。
 def _near_final_pass() -> dict:
     return {
         "near_final_status": "near_final_ready",
         "pass_flag": True,
-        "overall_score": 0.86,
+        "overall_score": 8.6,
         "scores": {
-            "story_necessity": 0.88,
-            "character_pressure": 0.86,
-            "dialogue_edge": 0.8,
-            "information_release": 0.84,
-            "prose_freshness": 0.82,
-            "ending_drive": 0.9,
-            "continuity": 0.92,
-            "reference_safety": 1.0,
+            "story_necessity": 8.8,
+            "character_pressure": 8.6,
+            "dialogue_edge": 8.0,
+            "information_release": 8.4,
+            "prose_freshness": 8.2,
+            "ending_drive": 9.0,
+            "continuity": 9.2,
+            "reference_safety": 10.0,
         },
         "findings": [],
         "revision_brief": [],
@@ -212,16 +214,16 @@ def _near_final_fail(*, failure_class: str = "prose_model_voice") -> dict:
     return {
         "near_final_status": "revision_required",
         "pass_flag": False,
-        "overall_score": 0.58,
+        "overall_score": 5.8,
         "scores": {
-            "story_necessity": 0.7,
-            "character_pressure": 0.52,
-            "dialogue_edge": 0.48,
-            "information_release": 0.72,
-            "prose_freshness": 0.42,
-            "ending_drive": 0.5,
-            "continuity": 0.9,
-            "reference_safety": 1.0,
+            "story_necessity": 7.0,
+            "character_pressure": 5.2,
+            "dialogue_edge": 4.8,
+            "information_release": 7.2,
+            "prose_freshness": 4.2,
+            "ending_drive": 5.0,
+            "continuity": 9.0,
+            "reference_safety": 10.0,
         },
         "findings": [
             {
@@ -640,14 +642,14 @@ def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
             {
                 "near_final_status": "revision_required",
                 "pass_flag": False,
-                "overall_score": 0.6,
+                "overall_score": 6.0,
                 "scores": {
-                    "chapter_promise": 0.52,
-                    "escalation": 0.65,
-                    "payoff_integrity": 0.4,
-                    "character_shift": 0.62,
-                    "ending_drive": 0.55,
-                    "continuity": 0.9,
+                    "chapter_promise": 5.2,
+                    "escalation": 6.5,
+                    "payoff_integrity": 4.0,
+                    "character_shift": 6.2,
+                    "ending_drive": 5.5,
+                    "continuity": 9.0,
                 },
                 "findings": [
                     {

@@ -444,9 +444,14 @@ def test_level_words_speak_in_words_not_numbers() -> None:
 
 def test_patch_keep_decision_reverts_only_when_the_patch_moved_away() -> None:
     t = S.DEFAULT_THRESHOLDS
-    assert S.patch_keep_decision(before_judge=0.70, after_judge=0.60, before_distance=1.0, after_distance=0.9, thresholds=t) == (
+    assert S.patch_keep_decision(before_judge=0.70, after_judge=0.55, before_distance=1.0, after_distance=0.9, thresholds=t) == (
         S.PATCH_DECISION_REVERTED,
         S.PATCH_REASON_JUDGE_WORSE,
+    )
+    # M3：两次独立评审差不到一分（10 分制上 7.0 → 6.2）是评审自己的噪声，不算变差——容差 0.1（= 1 分），不是 0.02
+    assert S.patch_keep_decision(before_judge=0.70, after_judge=0.62, before_distance=1.0, after_distance=1.0, thresholds=t) == (
+        S.PATCH_DECISION_KEPT,
+        S.PATCH_REASON_NOT_WORSE,
     )
     assert S.patch_keep_decision(before_judge=0.70, after_judge=0.70, before_distance=1.0, after_distance=1.2, thresholds=t) == (
         S.PATCH_DECISION_REVERTED,
@@ -472,8 +477,9 @@ def test_fidelity_thresholds_come_from_the_budget_file() -> None:
         "style_step_max_percentile": 90.0,
         "revision_min_improvement": 0.03,
         "patch_max_distance_increase": 0.05,
-        "judge_tolerance": 0.02,
+        "judge_tolerance": 0.1,
     }
+    assert S.DEFAULT_THRESHOLDS.judge_tolerance == 0.1, "默认值与预算文件一致"
 
 
 def test_render_audit_notices_become_style_notices() -> None:
@@ -563,6 +569,200 @@ def test_best_of_n_duplicate_first_draft_is_offered_once(session, monkeypatch) -
     assert len(offered) == 2 and duplicate.row_id not in offered
 
 
+def _book_source_sentence(session, book_id: str) -> str:
+    from novel_system.db.models import StyleReferenceParagraph
+
+    return next(
+        p.text
+        for p in session.scalars(
+            select(StyleReferenceParagraph)
+            .where(StyleReferenceParagraph.book_id == book_id)
+            .order_by(StyleReferenceParagraph.paragraph_index)
+        )
+        if len(p.text) >= 24 and "第" not in p.text[:2]
+    )
+
+
+def test_targeted_revision_is_not_blamed_for_a_copy_the_first_draft_already_had(session, monkeypatch) -> None:
+    """M2：首稿里本来就有一段与参考书相同的字，修改稿照旧留着、别的地方改得更像了——这不是修改带进来的照抄，
+    不能因此丢掉修改稿（白花一次调用，还把「照抄」记到修改头上）；首稿自己的重合由硬 QC / 成稿门对全文把关。"""
+    scene, bundle, book_id, _profile = _bound_scene(session, "fid_precopy")
+    source = _book_source_sentence(session, book_id)
+    runner = _Runner(outputs={"style_draft": REVISED + source}, default=LONG_FIRST + source)
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {"窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT), "雨下了一夜": _reading(1.20, 71.0)},
+    )
+
+    result = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+
+    assert result.content == REVISED + source, "修改稿更像、没有新带进重合：采用"
+    step = _style_attempt(session, scene.scene_id).details_json["style_step"]
+    assert step["decision"] == S.DECISION_REVISION_KEPT and step["reason"] == S.REASON_CLOSER
+    assert step["copy_check"]["blocked"] is True, "全文仍记着原有的重合"
+    assert step["copy_check_introduced"]["blocked"] is False and step["copy_check_introduced"]["hits"] == 0
+
+
+def test_best_of_n_ranks_copy_blocked_candidates_last(session, monkeypatch) -> None:
+    """M2：一份与参考书原文连续相同的首稿不能凭 distance 更小赢过干净的修改稿、成为风格稿——被抄袭门拦的候选排最后。"""
+    scene, bundle, book_id, _profile = _bound_scene(session, "fid_boncopy")
+    source = _book_source_sentence(session, book_id)
+    runner = _SeqRunner([LONG_FIRST + source, OTHER_REVISED, REVISED])
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {
+            "窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT),
+            "那一夜的雨": _reading(1.45, 97.5),
+            "雨下了一夜": _reading(1.50, 98.0),
+        },
+    )
+    candidates = service.generate_style_draft_candidates(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content, n_candidates=3
+    )
+    session.commit()
+
+    assert [c.content for c in candidates] == [OTHER_REVISED, REVISED, LONG_FIRST + source]
+    assert [c.ranking_audit["plagiarism_passed"] for c in candidates] == [True, True, False]
+    assert session.get(SceneRunState, scene.scene_id).current_style_draft_row_id == candidates[0].row_id
+
+
+def test_best_of_n_resume_keeps_every_already_produced_slot(session, monkeypatch) -> None:
+    """L1：续跑时首稿读数变了（这次读不出 / 不可信），槽位数不能缩回 1——已经落下检查点的槽位一个都不能丢，
+    否则检查点里的工作项对不上（RUN_CHECKPOINT_CORRUPT）；也不能为它们重新调模型。"""
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_bonresume")
+    runner = _SeqRunner([LONG_FIRST, OTHER_REVISED, REVISED])
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {
+            "窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT),
+            "那一夜的雨": _reading(1.30, 90.5),
+            "雨下了一夜": _reading(1.10, 60.0),
+        },
+    )
+    produced: dict[str, sg.StyleGenerationResult] = {}
+
+    def keep_final(slot, phase, result, _meta):  # noqa: ANN001
+        if phase == "final":
+            produced[slot] = result
+
+    service.generate_style_draft_candidates(
+        scene.scene_id,
+        bundle,
+        neutral_draft_row_id=first.row_id,
+        neutral_content=first.content,
+        n_candidates=3,
+        product_callback=keep_final,
+    )
+    session.commit()
+    assert sorted(produced) == ["initial:0", "initial:1", "initial:2"]
+    calls_before = len(runner.calls)
+
+    # 续跑：这一次首稿读不出（书改过 / 读数出错）——槽位数按已落下的槽位算
+    _install_readings(monkeypatch, {})
+    resumed = service.generate_style_draft_candidates(
+        scene.scene_id,
+        bundle,
+        neutral_draft_row_id=first.row_id,
+        neutral_content=first.content,
+        n_candidates=3,
+        resume_products=dict(produced),
+    )
+    session.commit()
+
+    assert len(resumed) == 3 and sorted(c.row_id for c in resumed) == sorted(r.row_id for r in produced.values())
+    assert len(runner.calls) == calls_before, "续跑不重新调模型"
+
+
+def test_run_display_follows_the_selected_candidate_not_the_last_slot(session, monkeypatch) -> None:
+    """L7：Best-of-N 的一次运行有好几份风格稿尝试；工作台的「像不像」与风格链路提示要跟着**选中**的那一份候选
+    （排第一的），不是最后一个槽位的。"""
+    from novel_system.services.style_fidelity_view import current_run_style_fidelity, scene_decisions
+
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_bonsel")
+    lost = REVISED.replace("信封", "东西")
+    runner = _SeqRunner([LONG_FIRST, REVISED, lost])
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {"窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT), "雨下了一夜": _reading(1.10, 60.0)},
+    )
+    candidates = service.generate_style_draft_candidates(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content, n_candidates=3
+    )
+    session.commit()
+    selected = candidates[0]
+    assert selected.content == REVISED and selected.row_id.endswith("_1"), "选中的是槽位 1，不是最后一个槽位"
+    last_slot = session.execute(
+        select(AttemptTracker)
+        .where(AttemptTracker.scene_id == scene.scene_id, AttemptTracker.step == "style_draft")
+        .order_by(AttemptTracker.attempt_id.desc())
+    ).scalars().first()
+    assert last_slot.details_json["row_id"].endswith("_2")
+    assert sg.STYLE_NOTICE_REVISION_REJECTED in [item["code"] for item in last_slot.details_json["notices"]]
+
+    summary = current_run_style_fidelity(session, scene.scene_id, bundle["bundle_id"])
+    assert summary["style_step"]["row_id"] == selected.row_id
+    assert summary["style_step"]["decision"] == S.DECISION_REVISION_KEPT
+    codes = [item["code"] for item in sg.latest_style_notices(session, scene.scene_id, bundle_id=bundle["bundle_id"])]
+    assert sg.STYLE_NOTICE_REVISION_REJECTED not in codes, "最后一个槽位的「修改没采用」不是这次运行选中稿的提示"
+    steps = [item for item in scene_decisions(session, scene.scene_id) if item["kind"] == "style_step"]
+    assert [item["row_id"] for item in steps] == [selected.row_id], "一次运行只列选中那份候选的风格步"
+
+
+@pytest.mark.filterwarnings("ignore::sqlalchemy.exc.SAWarning")
+def test_a_failed_first_draft_reading_is_not_reported_as_a_missing_yardstick(session, monkeypatch) -> None:
+    """L8 + L3：读数本身出错（这里：读数时建索引写库撞了主键）与「参考书没有可用的尺子」是两回事——决定原因是
+    ``reading_failed``、提示说实话；读数在保存点里读，出错只回滚保存点，会话照样能落库（风格稿行、尝试行都写得下）。"""
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_readfail")
+    runner = _Runner(outputs={}, default=LONG_FIRST)
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    first_row = session.get(SceneDraft, first.row_id)
+
+    def broken_reading(session_arg, policy, text):  # noqa: ANN001
+        # 模拟读数途中写库失败：与已有的首稿行撞主键
+        session_arg.add(
+            SceneDraft(
+                row_id=first_row.row_id,
+                scene_id=first_row.scene_id,
+                chapter_id=first_row.chapter_id,
+                stage="neutral_draft",
+                content="x",
+                source_bundle_id=first_row.source_bundle_id,
+                source_bundle_hash=first_row.source_bundle_hash,
+            )
+        )
+        session_arg.flush()
+
+    monkeypatch.setattr(R, "reading_for_text", broken_reading)
+    result = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+
+    assert len(runner.calls) == 1 and result.content == first.content
+    details = _style_attempt(session, scene.scene_id).details_json
+    assert details["style_step"]["reason"] == S.REASON_READING_FAILED
+    notice = next(item for item in details["notices"] if item["code"] == sg.STYLE_NOTICE_FIRST_DRAFT_ACCEPTED)
+    assert notice["severity"] == "warning" and "读数出了错" in notice["message"] and "没有可用的读数尺子" not in notice["message"]
+    assert session.get(SceneDraft, result.row_id).content == first.content
+
+
 # ---------------------------------------------------------------------------
 # N7 · 近期常见偏差进下一场首稿的文风卡
 # ---------------------------------------------------------------------------
@@ -624,6 +824,57 @@ def test_first_draft_uses_the_blueprint_situation_tags_frozen_in_the_bundle(sess
     assert captured[0]["role"] == "draft" and list(captured[0]["situation_tags"]) == ["对峙审问"]
 
 
+@pytest.mark.parametrize("pass_kind", ["salvage", "de_template", "safety_repair", "length_patch"])
+def test_patch_and_repair_passes_render_the_reference_as_a_revision(session, monkeypatch, pass_kind) -> None:
+    """注入口径：救稿 / 去模板 / 安全修复 / 长度补丁都只是改稿，按改稿角色渲染（不是「写这一场」的起草口径，
+    也不带近期常见偏差）。以前这四处不传角色，适配器按落点推成起草。"""
+    captured: list[dict] = []
+    real = sg.inject_style_reference_prefix
+
+    def spy(*args, **kwargs):  # noqa: ANN002, ANN003
+        captured.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sg, "inject_style_reference_prefix", spy)
+    draft_mode = "style_first" if pass_kind in {"safety_repair", "length_patch"} else "neutral_first"
+    band = "200-400" if pass_kind == "length_patch" else "short"
+    scene, bundle, _book, _profile = _bound_scene(session, f"fid_role_{pass_kind}", draft_mode=draft_mode, band=band)
+    service = SceneGenerationService(session, llm_runner=_Runner(outputs={}, default=LONG_FIRST))
+    state = session.get(SceneRunState, scene.scene_id)
+    common = dict(scene=scene, state=state, bundle=bundle, execution_step_key=None)
+    if pass_kind == "salvage":
+        service._run_style_salvage_pass(
+            **common,
+            checkpoint_base_row_id="row_base",
+            rejected_style_row_id="row_rejected",
+            rejected_style_content=REVISED,
+            neutral_row_id="row_neutral",
+            neutral_content=LONG_FIRST,
+            quality_gate={"base_safety": {"accepted": False, "reasons": ["required_facts_missing"]}},
+        )
+    else:
+        reasons = ["target_length_not_met"] if pass_kind == "length_patch" else ["required_facts_missing"]
+        service._run_de_template_pass(
+            **common,
+            base_prompt=service._prompt_builder().build(bundle["snapshot"], "style_draft"),
+            checkpoint_base_row_id="row_base",
+            source_row_id="row_source",
+            source_content=REVISED,
+            authoritative_row_id=None if pass_kind == "de_template" else "row_neutral",
+            authoritative_content=None if pass_kind == "de_template" else LONG_FIRST,
+            quality_gate={
+                "base_safety": {"accepted": pass_kind == "de_template", "reasons": [] if pass_kind == "de_template" else reasons},
+                "findings": [],
+                "risk_dimensions": [],
+            },
+        )
+    assert captured, "这一处带了参考"
+    assert captured[-1]["role"] == "revise"
+
+
+# ---------------------------------------------------------------------------
+# 读数入库（唯一入口）：幂等、未绑定不写、只记计数
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # 读数入库（唯一入口）：幂等、未绑定不写、只记计数
 # ---------------------------------------------------------------------------
@@ -765,6 +1016,46 @@ def test_adopt_route_records_an_adopt_reading(client, session) -> None:
     rows = _readings(session, "scene_fid_adopt")
     assert [(r.source, r.stage) for r in rows] == [("adopt", "final")]
     assert rows[0].profile_id == profile_id
+
+    # L7：已归档之后作者在起草台再确认（同一终稿行、同一段文字）——不再多记一条终稿读数（走势图不出重复点）
+    again = client.post(
+        "/api/v1/scenes/scene_fid_adopt/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "fid-adopt-2"},
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["data"]["already_archived"] is True
+    session.expire_all()
+    assert [(r.source, r.stage) for r in _readings(session, "scene_fid_adopt")] == [("adopt", "final")]
+
+
+def test_reconfirming_a_pipeline_archived_scene_adds_no_second_final_point(client, session) -> None:
+    """L7：管线归档记过一条终稿读数（source=pipeline）；作者之后在起草台再确认同一份终稿（source=adopt）——终稿读数
+    跨来源幂等，还是那一条，作品走势里这一场只有一个终稿点。"""
+    from novel_system.services.scene_archive_effects import SceneArchiveEffects
+    from novel_system.services.style_fidelity_view import project_style_fidelity
+
+    scene, _bundle, _book, _profile = _bound_scene(session, "fid_reconfirm")
+    final = _final(session, scene, "他把灯芯拨小了些，屋里的影子便大了一圈，信封压在灯座下。" * 30, row_id="final_fid_reconfirm")
+    state = session.get(SceneRunState, scene.scene_id)
+    state.scene_status = "archived"
+    session.commit()
+    recorded = SceneArchiveEffects(session, None, execution_id=None, run_job_id=None)._record_archive_fidelity_reading(scene)
+    session.commit()
+    assert recorded["outcome"] == "recorded"
+
+    response = client.post(
+        f"/api/v1/scenes/{scene.scene_id}/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "fid-reconfirm"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["already_archived"] is True
+    session.expire_all()
+    rows = _readings(session, scene.scene_id)
+    assert [(r.source, r.stage, r.draft_ref) for r in rows] == [("pipeline", "final", final.row_id)]
+    trend = project_style_fidelity(session, scene.project_id)["trend"]
+    assert [point["stage"] for point in trend] == ["final"]
 
 
 def test_author_draft_adoption_records_author_draft_readings(session) -> None:

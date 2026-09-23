@@ -116,7 +116,8 @@ describe("抄袭门的说法（纯函数）", () => {
     expect(info.kind).toBe("copy");
     expect(info.actionLabel).toBe("再试一次");
     expect(info.offersSettings).toBeFalsy();
-    expect(info.message).toBe("AI 给的几版都照搬了参考书原文（其中一版的第 3–15 字、第 31–44 字与参考书原文连续相同；第 51–52 字用了参考书里的专名（人名、地名等）），已经丢掉，正文没有改动。换个说法再试一次，或者自己写这一段。");
+    // 专名从不拦（只有原文重合会拦）：被拦下的原因里不再把专名算进去
+    expect(info.message).toBe("AI 给的几版都照搬了参考书原文（其中一版的第 3–15 字、第 31–44 字与参考书原文连续相同），已经丢掉，正文没有改动。换个说法再试一次，或者自己写这一段。");
     expect(info.message).not.toContain("raw english");
     // 还是没配模型的 author_action 照旧去系统设置
     expect(wrAiError(Object.assign(new Error("x"), { code: "X", details: { author_action: { view: "settings" } } })).kind).toBe("config");
@@ -126,6 +127,39 @@ describe("抄袭门的说法（纯函数）", () => {
     const { copyGatePlaces } = await import("./ws-copy-gate.js");
     const hits = [0, 20, 40, 60].map((start) => ({ start, end: start + 12 }));
     expect(copyGatePlaces(copyBlocked({ hits, hitCount: 9 }))).toEqual(["第 1–12 字、第 21–32 字、第 41–52 字等 9 处与参考书原文连续相同"]);
+  });
+
+  it("提升为权威正文被抄袭门拦下：说第几字、草稿没动，专名只顺带一句「不拦」；不给英文原话", async () => {
+    const { canonicalPromotionErrorMessage } = await import("./ws-writer-doc.js");
+    const error = copyBlocked({ hits: [{ start: 9, end: 49 }], protectedHits: [{ start: 0, end: 5, term_sha256: "y", source: "protected_auto" }] });
+    const message = canonicalPromotionErrorMessage(error);
+    expect(message).toBe("正文：第 10–49 字与参考书原文连续相同，不能提升为权威正文。把这几处改写成你自己的句子后再提升；草稿已安全保留，没有改动。另有 1 处用了参考书里的专名——这一项不拦，定稿前可以换成自己的。");
+    expect(message).not.toContain("raw english");
+    // 不是抄袭门的 409 照旧是通用的一句
+    expect(canonicalPromotionErrorMessage(Object.assign(new Error("x"), { code: "SOURCE_SAFETY_BLOCKED", details: {} })))
+      .toBe("权威正文提升失败，草稿仍安全保留。请稍后重试。");
+  });
+
+  it("成稿门的不拦警告说成中文：专名带词与次数、说怎么删误收的词；检查没做成也说一声；别的警告不管", async () => {
+    const { finalGateNotes, finalGateWarningText } = await import("./ws-copy-gate.js");
+    const gate = {
+      warnings: [
+        { issue_key: "source_safety:protected_term", blocking: false, terms: ["灰港学会", "欧文·灰港"], hit_count: 3 },
+        { issue_key: "source_safety:unavailable", blocking: false, missing_books: ["sr_book_x"] },
+        { issue_key: "literary:ending_drive", blocking: false, message: "The final beat does not push" },
+      ],
+    };
+    const notes = finalGateNotes({ validation: { final_text_gate: gate } });
+    expect(notes).toEqual([
+      "正文用了参考书里的专名「灰港学会」「欧文·灰港」（共 3 处）。这一项不拦归档；是参考书里的人名、地名或设定名的话，建议换成你自己的——只是日常用词被误收进专名表的，可以到文风画像的禁用词里删掉它。",
+      "绑定的参考书已不在书库里，这一次没能做原文重合检查；正文照常归档。",
+    ]);
+    expect(finalGateNotes(gate)).toEqual(notes);
+    expect(finalGateNotes(null)).toEqual([]);
+    expect(finalGateWarningText({ issue_key: "source_safety:unavailable", reasons: ["runtime_contract_invalid"] }))
+      .toBe("这一场的参考书绑定没能解析，这一次没能做原文重合检查；正文照常归档。");
+    const many = finalGateWarningText({ issue_key: "source_safety:protected_term", terms: ["甲一", "乙二", "丙三", "丁四", "戊五", "己六", "庚七"] });
+    expect(many).toContain("「甲一」「乙二」「丙三」「丁四」「戊五」「己六」等 7 个词");
   });
 });
 

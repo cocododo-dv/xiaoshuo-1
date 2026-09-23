@@ -225,8 +225,8 @@ def test_chapter_manuscript_detail_scans_current_manuscript_for_protected_source
 
     assert response.status_code == 200
     scan = response.json()["data"]["source_safety_scan"]
-    # 风格参考 v3：全局受保护词也过唯一抄袭门，只报位置、来源与哈希
-    assert scan["safe"] is False
+    # 风格参考 v3：全局受保护词也过唯一抄袭门，只报位置、来源与哈希；专名只提示、不拦（safe 只看原文重合）
+    assert scan["safe"] is True and scan["blocked"] is False
     assert scan["protected_hit_count"] == 2
     assert {item["source"] for item in scan["protected_hits"]} == {"environment"}
     assert scan["checked_books"] == []
@@ -250,7 +250,8 @@ def test_chapter_manuscript_scans_the_chapter_against_the_bound_reference(client
 
     scan = client.get("/api/v1/chapter-manuscripts/CHM251").json()["data"]["source_safety_scan"]
 
-    assert scan["safe"] is False
+    # 只有专名、没有原文重合：照报不拦
+    assert scan["safe"] is True and scan["blocked"] is False
     assert scan["checked_books"] == [refs["book_id"]]
     assert scan["profile_ids"] == [refs["profile_id"]]
     assert scan["protected_hit_count"] >= 1

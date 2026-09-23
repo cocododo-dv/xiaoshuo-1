@@ -26,6 +26,8 @@ from novel_system.services.qc_constraints import contains_forbidden_term, source
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     copy_block_author_action,
+    protected_term_warning,
+    unavailable_warning,
 )
 from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.style_policy import StylePolicy, style_policy_for_scene, style_policy_live
@@ -89,7 +91,7 @@ class FinalTextGateService:
         snapshot = bundle.frozen_snapshot_json if bundle is not None else None
         # 风格参考 v3：一次评估一份策略（bundle 冻结的契约；旧 bundle / 没有 bundle 时按当前活动绑定轻量现解析）
         policy = self._style_policy(scene, snapshot)
-        source_safety, source_blockers = self._source_safety(
+        source_safety, source_blockers, source_warnings = self._source_safety(
             actual_content, scene=scene, scene_id=scene_id, policy=policy
         )
         content_safety = ContentSafetyService.assess(
@@ -122,6 +124,7 @@ class FinalTextGateService:
         promotion_blockers = list(dict.fromkeys(promotion_blockers))
 
         warnings = [
+            *source_warnings,
             *content_safety["warnings"],
             *continuity["warnings"],
             *literary["warnings"],
@@ -188,9 +191,16 @@ class FinalTextGateService:
         if any(str(item).startswith("source_safety") for item in blockers):
             unavailable = "source_safety_unavailable" in blockers
             details: dict[str, Any] = {"scene_id": scene_id, "final_text_gate": result}
-            action = (result.get("source_safety") or {}).get("author_action")
+            source_safety = result.get("source_safety") or {}
+            action = source_safety.get("author_action")
             if action:
                 details["author_action"] = action
+            if "source_safety:reference_copy" in blockers:
+                # 前端（ws-copy-gate.js）认 details.reference_copy：抄袭门的检查记录（只有位置、计数与哈希，没有参考原文），
+                # 与起草台采用、写作台采纳的 409 同一形状——每条走成稿门的路径（精确作者稿采用、成稿中心提升、归档）都带上
+                details["reference_copy"] = {
+                    key: value for key, value in dict(source_safety).items() if key != "author_action"
+                }
             raise DomainError(
                 "SOURCE_SAFETY_UNAVAILABLE" if unavailable else "SOURCE_SAFETY_BLOCKED",
                 (
@@ -241,23 +251,28 @@ class FinalTextGateService:
         scene: SceneCard | None,
         scene_id: str,
         policy: StylePolicy,
-    ) -> tuple[dict[str, Any], list[str]]:
-        """Q0：唯一抄袭门（风格参考 v3 V1）——与绑定的参考书连续 ≥12 字相同、或含受保护专名即拦。
+    ) -> tuple[dict[str, Any], list[str], list[dict[str, Any]]]:
+        """唯一抄袭门（风格参考 v3 V1）→ (检查记录, 拦归档的码, 不拦的警告)。
 
-        比对 bundle 冻结的绑定与这一场当前的活动绑定两边的书（正文可能在冻结之后才粘进参考原文）；
-        检查失败 fail-closed（``source_safety_unavailable``）。命中只记哈希与位置，拦下时带 ``author_action``
-        说清是第几字到第几字。
+        * 与绑定的参考书连续 ≥12 字相同 → Q0 ``source_safety:reference_copy``，每条归档路径都拦，没有豁免；
+        * 受保护专名 → **不拦**，报成 Q2 警告 ``source_safety:protected_term``（带命中的词，不带参考原文）——专名表是
+          模型认的，难免收进日常词，不能让它把正当的正文挡在归档之外；
+        * 这一边没查成（绑定的书已删、风格策略解析降级）→ 不拦的警告 ``source_safety:unavailable``；
+        * 检查本身出错（库读不出等）→ fail-closed ``source_safety_unavailable``。
+
+        比对 bundle 冻结的绑定与这一场当前的活动绑定两边的书（正文可能在冻结之后才粘进参考原文）；专名一律读现行
+        的禁用词表。命中只记哈希与位置，拦下时带 ``author_action`` 说清是第几字到第几字。
         """
         try:
             extra: list[StylePolicy] = []
             if scene is not None and policy.mode != "live":
                 live = style_policy_live(self.session, scene, freeze_contract=False)
-                if live.bound:
+                if live.bound or live.mode == "degraded":
                     extra.append(live)
             check = check_reference_copy(
                 self.session,
                 content,
-                policy=policy if policy.bound else None,
+                policy=policy if (policy.bound or policy.mode == "degraded") else None,
                 extra_policies=extra,
             )
         except Exception as exc:  # noqa: BLE001 - a safety assertion must fail closed
@@ -268,18 +283,22 @@ class FinalTextGateService:
                     "error_type": type(exc).__name__,
                 },
                 ["source_safety_unavailable"],
+                [],
             )
         payload = check.audit()
         blockers: list[str] = []
+        warnings: list[dict[str, Any]] = []
         if check.hits:
             blockers.append("source_safety:reference_copy")
-        if check.protected_hits:
-            blockers.append("source_safety:protected_term")
-        if blockers:
             payload["author_action"] = copy_block_author_action(
                 check, target_view="writer", target_ref=f"scene:{scene_id}"
             )
-        return payload, blockers
+        protected = protected_term_warning(check)
+        if protected is not None:
+            warnings.append(protected)
+        if check.unavailable:
+            warnings.append(unavailable_warning(check))
+        return payload, blockers, warnings
 
     def _continuity(
         self,

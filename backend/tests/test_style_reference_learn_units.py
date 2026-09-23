@@ -517,7 +517,42 @@ def test_parse_protected_terms_keeps_only_terms_that_occur_verbatim() -> None:
     assert mask_protected("韩小暖和苏半夏在铁灰城", [t.as_dict() for t in terms]) == "某人和某设定在某地"
 
 
-# ---------------------------------------------------------------- 窗口标签
+def test_parse_protected_terms_filters_everyday_words_single_characters_and_rare_strings() -> None:
+    """H1：模型确认的专名再过一道确定性筛子——单字、全书出现不到 3 次的、现代汉语的日常词 / 通用范畴词都不收；
+    这些词进了禁用词表会被抄袭门、软 QC、成稿门逐字比对，处处误报。"""
+    texts = _book_texts()
+    texts.append("学院的钟响了三下，韩小暖说灰塔茶社只开到今晚。")
+    texts.extend(["他们都说学院里的能力测验不公平，等级表贴在走廊尽头。"] * 5)
+    corpus = "\n".join(texts)
+    assert corpus.count("灰塔茶社") == 1 and corpus.count("学院") >= 6 and corpus.count("能力") >= 5
+    structured = {
+        "terms": [
+            {"term": "韩小暖", "kind": "person"},
+            {"term": "学院", "kind": "organization"},  # 日常词：某某学院才算名字
+            {"term": "能力", "kind": "term"},
+            {"term": "等级", "kind": "term"},
+            {"term": "雾", "kind": "place"},  # 单字
+            {"term": "灰塔茶社", "kind": "place"},  # 只出现一次
+            {"term": "铁灰城", "kind": "place"},
+        ]
+    }
+    terms = parse_protected_terms(structured, corpus)
+    assert [(t.term, t.kind) for t in terms] == [("韩小暖", "person"), ("铁灰城", "place")]
+    # 门槛可调：放宽到 1 次时「灰塔茶社」回来，日常词照样不收
+    relaxed = parse_protected_terms(structured, corpus, min_occurrences=1)
+    assert [t.term for t in relaxed] == ["韩小暖", "灰塔茶社", "铁灰城"]
+
+
+def test_protected_term_candidates_skip_everyday_words() -> None:
+    """日常词不送去给模型确认（也不把「某某学院」当成「某某」+「学院」拼出来的串丢掉）。"""
+    texts = _book_texts()
+    texts.extend([f"第{i}天，学院的钟又响了，雾港学院的学生排队进场。" for i in range(40)])
+    terms = [c.term for c in proper_noun_candidates(texts, limit=80)]
+    assert "学院" not in terms and "学生" not in terms
+    assert "雾港学院" in terms
+
+
+# ---------------------------------------------------------------- 窗口标签# ---------------------------------------------------------------- 窗口标签
 
 
 def test_tag_batches_respect_window_and_char_limits() -> None:

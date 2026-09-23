@@ -69,6 +69,8 @@ CONTENT_SOURCE_REVISION_NOT_CLOSER = "revision_not_closer"
 # 首稿不改的原因
 REASON_WITHIN_RANGE = "within_author_range"
 REASON_READING_UNAVAILABLE = "reading_unavailable"
+# 读数本身出错（异常）——与「参考书没有可用的尺子」（reading_unavailable）分开说（L8）
+REASON_READING_FAILED = "reading_failed"
 REASON_READING_UNRELIABLE = "reading_unreliable"
 REASON_OUT_OF_RANGE = "out_of_author_range"
 REASON_CANDIDATE_SLOT = "best_of_n_candidate"
@@ -93,7 +95,9 @@ class FidelityThresholds:
     style_step_max_percentile: float = DEFAULT_MAX_PERCENTILE
     revision_min_improvement: float = 0.03
     patch_max_distance_increase: float = 0.05
-    judge_tolerance: float = 0.02
+    # 参考评审总分（0–1）的波动容差：0.1 = 评审 10 分制上的 1 分。评审按整数 / 半分给分，两次独立评审的噪声常有
+    # 半分到一分；0.02（0.2 分）比评审的粒度还细，会把没变差的补丁当成变差退回（M3）
+    judge_tolerance: float = 0.1
 
     def audit(self) -> dict[str, float]:
         return {key: float(value) for key, value in asdict(self).items()}
@@ -426,6 +430,7 @@ __all__ = [
     "REASON_COPY_BLOCKED",
     "REASON_NOT_CLOSER",
     "REASON_OUT_OF_RANGE",
+    "REASON_READING_FAILED",
     "REASON_READING_UNAVAILABLE",
     "REASON_READING_UNRELIABLE",
     "REASON_REVISION_UNREADABLE",

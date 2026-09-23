@@ -3,6 +3,7 @@ import { storeAlert } from "./lib/store-utils.js";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
 import { contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
+import { copyGatePromoteMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { WR_EMPTY_DOC, wrCountText, wrPrepareLoadedHTML, wrSerializeManuscript } from "./ws-writer-manuscript.js";
 import { wrSceneIsApproved } from "./ws-writer-catalog.js";
@@ -191,7 +192,15 @@ export function canonicalPromotionErrorMessage(error) {
   if (code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
     return "服务端要求内容风险复核，但没有返回可逐项确认的项目。系统已停止提升，请刷新后重试。";
   }
+  // 唯一抄袭门拦下（与参考书原文连续相同）：说是第几字、草稿没动；不把后端的英文原话甩给作者
+  if (isCopyGateError(error)) return copyGatePromoteMessage(error);
   return "权威正文提升失败，草稿仍安全保留。请稍后重试。";
+}
+
+/* 提升成功的回执：成稿门的不拦警告（用了参考书的专名等）接在后面说一句 */
+function promotedMessage(base, data) {
+  const notes = finalGateNotes(data);
+  return notes.length ? `${base}${notes.join("")}` : base;
 }
 
 /* doc：useDocBinding 的返回；notify(message)：成功回执 */
@@ -227,9 +236,9 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
 
     setCanonicalStatus("promoting");
     try {
-      await WrDocs.promote(activeScene, { narrativeEffect: "facts_unchanged" });
+      const data = await WrDocs.promote(activeScene, { narrativeEffect: "facts_unchanged" });
       setCanonicalStatus("current");
-      notify("草稿已提升为权威正文，场景记忆与章节汇总已随之重建。");
+      notify(promotedMessage("草稿已提升为权威正文，场景记忆与章节汇总已随之重建。", data));
     } catch (e) {
       const code = e && e.code;
       if (code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
@@ -266,13 +275,13 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
     setCanonicalStatus("promoting");
     const acceptedForRetry = [...new Set([...(review.acceptedCodes || []), ...exactCodes])];
     try {
-      await WrDocs.promote(review.sid, {
+      const data = await WrDocs.promote(review.sid, {
         narrativeEffect: "facts_unchanged",
         acceptedWarningCodes: acceptedForRetry,
       });
       setReview(null);
       setCanonicalStatus("current");
-      notify("已按你的逐项确认重新校验，草稿已提升为权威正文。");
+      notify(promotedMessage("已按你的逐项确认重新校验，草稿已提升为权威正文。", data));
     } catch (e) {
       if (e && e.code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
         const next = contentSafetyReviewFromError(e);

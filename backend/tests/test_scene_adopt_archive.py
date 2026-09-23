@@ -192,15 +192,17 @@ def test_adopt_idempotent_replay_and_already_archived(client, session):
     assert len(finals) == 1
 
 
-def test_adopt_source_safety_blocked_keeps_draft(client, session, monkeypatch):
-    """设计红线 8：来源安全未通过时草稿可保存，但不能标记为已安全归档。"""
-    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
+def test_adopt_source_safety_blocked_keeps_draft(client, session):
+    """设计红线 8：来源安全未通过（与绑定的参考书原文连续相同）时草稿可保存，但不能标记为已安全归档。"""
+    from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
+
     _create_chapter(client, "chapter_adopt_4")
     _create_scene(client, "scene_adopt_4", chapter_id="chapter_adopt_4", scene_seq=1)
     draft_row_id = _seed_style_draft(
         session, "scene_adopt_4", "chapter_adopt_4",
-        content="他抬起头，看见路明非站在门口。",  # PROTECTED_SOURCE_TERMS 保护词
+        content=f"他抬起头。{REFERENCE_PASSAGE[:30]}",  # 与参考书原文连续 30 字相同
     )
+    seed_bound_reference(session, seed="adopt_4", scope="scene", scope_ref_id="scene_adopt_4")
 
     response = client.post(
         "/api/v1/scenes/scene_adopt_4/adopt-current",
@@ -295,18 +297,22 @@ def test_adopt_rejects_unbounded_or_unknown_request_fields(client):
     assert oversized.json()["error"]["code"] == "REQUEST_VALIDATION_FAILED"
 
 
-def test_adopt_blocks_protected_name_of_the_bound_reference(client, session):
-    """风格参考 v3：画像的受保护专名（生成期禁用词，含 protected_auto）经唯一抄袭门拦下采纳，带作者动作。"""
-    from tests.reference_copy_fixtures import PROTECTED_NAME, seed_bound_reference
+def _protected_warning(gate: dict) -> dict:
+    return next(item for item in gate["warnings"] if item["issue_key"] == "source_safety:protected_term")
 
+
+def test_a_protected_name_never_blocks_adopt_reconfirm_or_promote(client, session, monkeypatch):
+    """风格参考 v3（H1）：受保护专名（画像的生成期禁用词，含 protected_auto；环境变量的全局词）从不拦下归档——
+    采纳（兼容路径与浏览器精确稿路径）、已归档后的再确认、成稿中心提升都照常归档；成稿门把它报成不拦的警告，
+    带命中的词（作者自己正文里的字，也在禁用词表里），不带参考原文。"""
+    from novel_system.services.final_text_gate import FinalTextGateService
+    from tests.reference_copy_fixtures import PROTECTED_NAME, REFERENCE_PASSAGE, seed_bound_reference
+
+    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["灰港学会"]')
     _create_chapter(client, "chapter_adopt_dynamic")
     _create_scene(client, "scene_adopt_dynamic", chapter_id="chapter_adopt_dynamic", scene_seq=1)
-    draft_row_id = _seed_style_draft(
-        session,
-        "scene_adopt_dynamic",
-        "chapter_adopt_dynamic",
-        content=f"{PROTECTED_NAME}推门进来，手里拎着一只不相干的铁皮箱。",
-    )
+    content = f"{PROTECTED_NAME}推门进来，说灰港学会的人不会来了，手里拎着一只不相干的铁皮箱。"
+    _seed_style_draft(session, "scene_adopt_dynamic", "chapter_adopt_dynamic", content=content)
     seed_bound_reference(
         session,
         seed="adopt_dynamic",
@@ -315,18 +321,127 @@ def test_adopt_blocks_protected_name_of_the_bound_reference(client, session):
         protected_terms=(PROTECTED_NAME,),
     )
 
+    # 1) 兼容采纳路径：照常归档
     response = client.post(
         "/api/v1/scenes/scene_adopt_dynamic/adopt-current",
         json={},
         headers={"X-Idempotency-Key": "adopt-dynamic"},
     )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["scene_status"] == "archived" and data["safe_to_archive"] is True
+    assert data["source_safety_scan"]["blocked"] is False and data["source_safety_scan"]["protected_hit_count"] == 2
 
-    assert response.status_code == 409
+    # 成稿门：不拦的警告，带词、不带原文
+    gate = FinalTextGateService(session).evaluate(scene_id="scene_adopt_dynamic", content=content)
+    assert gate["archive_blockers"] == [] and gate["safe_to_archive"] is True
+    warning = _protected_warning(gate)
+    assert warning["blocking"] is False and warning["quality_level"] == "Q2"
+    assert warning["terms"] == [PROTECTED_NAME, "灰港学会"] and warning["hit_count"] == 2
+    assert "source_safety:protected_term" in gate["warning_codes"]
+    assert PROTECTED_NAME in warning["message"] and REFERENCE_PASSAGE[:12] not in str(gate)
+
+    # 2) 已归档后再确认（兼容路径）：照常返回，不因专名被拦
+    again = client.post(
+        "/api/v1/scenes/scene_adopt_dynamic/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-dynamic-again"},
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["data"]["already_archived"] is True
+
+    # 3) 浏览器精确稿路径（起草台「采用」）与 4) 成稿中心提升：照常提升，回包里的成稿门带着那条警告
+    ensured = client.post(
+        "/api/v1/author-drafts/scene/scene_adopt_dynamic/ensure",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-dynamic-ensure"},
+    )
+    assert ensured.status_code == 200, ensured.text
+    draft = ensured.json()["data"]["draft"]
+    state = session.get(SceneRunState, "scene_adopt_dynamic")
+    exact = client.post(
+        "/api/v1/scenes/scene_adopt_dynamic/adopt-current",
+        json={
+            "accepted_warning_codes": [],
+            "exact_author_draft": {
+                "draft_id": draft["draft_id"],
+                "base_revision_no": draft["revision_no"],
+                "expected_current_final_scene_row_id": state.current_final_scene_row_id,
+                "content": f"<p>{PROTECTED_NAME}又推门进来，这一次什么也没带。</p>",
+            },
+        },
+        headers={"X-Idempotency-Key": "adopt-dynamic-exact"},
+    )
+    assert exact.status_code == 200, exact.text
+    exact_data = exact.json()["data"]
+    assert _protected_warning(exact_data["validation"]["final_text_gate"])["terms"] == [PROTECTED_NAME]
+
+    patched = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={
+            "content": f"<p>{PROTECTED_NAME}第三次推门，灰港学会的信压在门缝里。</p>",
+            "base_revision_no": exact_data["author_draft"]["revision_no"],
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    promoted = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/promote-canonical",
+        json={
+            "base_revision_no": patched.json()["data"]["draft"]["revision_no"],
+            "expected_current_final_scene_row_id": exact_data["final_scene_row_id"],
+            "narrative_effect": "requires_reconcile",
+        },
+        headers={"X-Idempotency-Key": "adopt-dynamic-promote"},
+    )
+    assert promoted.status_code == 200, promoted.text
+    promoted_gate = promoted.json()["data"]["validation"]["final_text_gate"]
+    assert promoted_gate["archive_blockers"] == []
+    assert _protected_warning(promoted_gate)["terms"] == [PROTECTED_NAME, "灰港学会"]
+
+
+def test_exact_draft_adopt_copy_block_carries_the_reference_copy_record(client, session):
+    """M1：前端一律走浏览器精确稿路径（adopt-current + exact_author_draft → promote_author_draft → 成稿门）。
+    成稿门拦下原文重合时，409 的 details 也要带 ``reference_copy``（位置 / 计数 / 哈希，没有原文）——前端
+    ws-copy-gate.js 认它说人话；以前只有 {scene_id, final_text_gate, author_action}，作者看到的是英文原话。"""
+    from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
+
+    _create_chapter(client, "chapter_adopt_exact_copy")
+    _create_scene(client, "scene_adopt_exact_copy", chapter_id="chapter_adopt_exact_copy", scene_seq=1)
+    seed_bound_reference(session, seed="adopt_exact_copy", scope="scene", scope_ref_id="scene_adopt_exact_copy")
+    ensured = client.post(
+        "/api/v1/author-drafts/scene/scene_adopt_exact_copy/ensure",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-exact-copy-ensure"},
+    )
+    assert ensured.status_code == 200, ensured.text
+    draft = ensured.json()["data"]["draft"]
+    prefix = "她把雨伞靠在门边。"
+
+    response = client.post(
+        "/api/v1/scenes/scene_adopt_exact_copy/adopt-current",
+        json={
+            "accepted_warning_codes": [],
+            "exact_author_draft": {
+                "draft_id": draft["draft_id"],
+                "base_revision_no": draft["revision_no"],
+                "expected_current_final_scene_row_id": None,
+                "content": f"<p>{prefix}{REFERENCE_PASSAGE[:40]}</p>",
+            },
+        },
+        headers={"X-Idempotency-Key": "adopt-exact-copy"},
+    )
+
+    assert response.status_code == 409, response.text
     error = response.json()["error"]
     assert error["code"] == "SOURCE_SAFETY_BLOCKED"
+    record = error["details"]["reference_copy"]
+    assert record["blocked"] is True and record["hit_count"] == 1
+    assert (record["hits"][0]["start"], record["hits"][0]["end"]) == (len(prefix), len(prefix) + 40)
+    assert "author_action" not in record and error["details"]["author_action"]["title"]
+    # 检查记录与作者动作都只有位置 / 计数 / 哈希（成稿门的文学警告会引作者自己的正文，那是另一回事）
+    assert REFERENCE_PASSAGE[:12] not in str(record) and REFERENCE_PASSAGE[:12] not in str(error["details"]["author_action"])
     session.expire_all()
-    assert session.get(SceneDraft, draft_row_id) is not None
-    assert session.get(SceneRunState, "scene_adopt_dynamic").scene_status != "archived"
+    assert session.get(SceneRunState, "scene_adopt_exact_copy").scene_status != "archived"
 
 
 def test_adopt_blocks_verbatim_reference_copy_without_leaking_the_source(client, session):
@@ -465,8 +580,10 @@ def test_archiver_marks_final_scene_archived(session):
     assert session.get(FinalScene, "final_unit_1").status == "archived"
 
 
-def test_archiver_blocks_unsafe_actual_final_text(client, session, monkeypatch):
-    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
+def test_archiver_blocks_unsafe_actual_final_text(client, session):
+    """归档路径逐字查终稿：与绑定的参考书原文连续相同 → 拦下（Q0，没有豁免），409 带位置记录。"""
+    from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
+
     _create_chapter(client, "chapter_archive_gate_source")
     _create_scene(
         client,
@@ -474,11 +591,14 @@ def test_archiver_blocks_unsafe_actual_final_text(client, session, monkeypatch):
         chapter_id="chapter_archive_gate_source",
         scene_seq=1,
     )
+    seed_bound_reference(
+        session, seed="archive_gate_source", scope="scene", scope_ref_id="scene_archive_gate_source"
+    )
     final = FinalScene(
         row_id="final_archive_gate_source_v1",
         scene_id="scene_archive_gate_source",
         chapter_id="chapter_archive_gate_source",
-        content="他抬头看见路明非站在门口。",
+        content=f"他抬头看了一眼。{REFERENCE_PASSAGE[:24]}",
         status="near_final_ready",
         source_bundle_id="bundle_archive_gate_source",
         source_bundle_hash="hash_archive_gate_source",
@@ -490,12 +610,59 @@ def test_archiver_blocks_unsafe_actual_final_text(client, session, monkeypatch):
         Archiver(session).archive_final_scene(final.scene_id, final.row_id)
 
     assert exc_info.value.code == "SOURCE_SAFETY_BLOCKED"
+    assert exc_info.value.details["reference_copy"]["hit_count"] == 1
     assert final.status == "near_final_ready"
     assert session.query(SceneMemory).filter(SceneMemory.scene_id == final.scene_id).count() == 0
     assert session.query(AttemptTracker).filter(
         AttemptTracker.scene_id == final.scene_id,
         AttemptTracker.step == "archive",
     ).count() == 0
+
+
+@pytest.mark.parametrize("case", ["deleted_book", "degraded_policy"])
+def test_final_gate_reports_an_unchecked_reference_as_a_warning_not_a_pass(client, session, monkeypatch, case):
+    """风格参考 v3（L4）：绑定的书已删（冻结契约还指着它）、或风格策略解析降级——抄袭门对那一边什么也没比对。
+    成稿门不能把它当成「查过、没重合」悄悄放过，也不因此拦下归档：报一条不拦的 ``source_safety:unavailable``。"""
+    from novel_system.services.final_text_gate import FinalTextGateService
+    from novel_system.services.style_policy import StylePolicy
+    from novel_system.services.style_reference.cleanup import delete_reference_book
+    from tests.reference_copy_fixtures import seed_bound_reference
+
+    _create_chapter(client, "chapter_gate_unchecked")
+    _create_scene(client, "scene_gate_unchecked", chapter_id="chapter_gate_unchecked", scene_seq=1)
+    refs = seed_bound_reference(session, seed="gate_unchecked", scope="scene", scope_ref_id="scene_gate_unchecked")
+    frozen = StylePolicy(bound=True, mode="frozen", profile_id=refs["profile_id"], book_id=refs["book_id"])
+    if case == "deleted_book":
+        delete_reference_book(session, refs["book_id"])
+        session.commit()
+        policy = frozen
+    else:
+        policy = StylePolicy(mode="degraded", error_code="runtime_contract_invalid")
+    monkeypatch.setattr(FinalTextGateService, "_style_policy", lambda self, scene, snapshot: policy)
+    final = FinalScene(
+        row_id="final_gate_unchecked_v1",
+        scene_id="scene_gate_unchecked",
+        chapter_id="chapter_gate_unchecked",
+        content="她在雨里收起信封，转身走向码头。",
+        status="near_final_ready",
+        source_bundle_id="bundle_gate_unchecked",
+        source_bundle_hash="hash_gate_unchecked",
+    )
+    session.add(final)
+    session.flush()
+
+    gate = FinalTextGateService(session).evaluate(scene_id=final.scene_id, content=final.content)
+
+    assert gate["archive_blockers"] == []
+    warning = next(item for item in gate["warnings"] if item["issue_key"] == "source_safety:unavailable")
+    assert warning["blocking"] is False and warning["quality_level"] == "Q2"
+    assert gate["source_safety"]["unavailable"] is True
+    if case == "deleted_book":
+        assert warning["missing_books"] == [refs["book_id"]]
+    else:
+        assert warning["reasons"] == ["runtime_contract_invalid"]
+    result = Archiver(session).archive_final_scene(final.scene_id, final.row_id)
+    assert result["scene_status"] == "archived"
 
 
 def test_archiver_fails_closed_when_source_safety_is_unavailable(client, session, monkeypatch):

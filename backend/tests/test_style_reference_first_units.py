@@ -117,13 +117,17 @@ def test_reference_first_memory_digest_keeps_only_the_tail_with_a_facts_only_not
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [(9.3, 0.93), (93, 0.93), (0.7, 0.7), (1.0, 1.0), (250, 1.0), (-2, 0.0), ("abc", "abc"), (None, None)],
+    [(9.3, 0.93), (93, 0.93), (0.7, 0.7), (1.0, 1.0), (250, None), (-2, None), ("abc", None), (None, None)],
 )
 def test_soft_qc_scores_are_normalized_by_scale(raw, expected) -> None:
+    """模板没声明刻度时按回答推断量级（兜底）；越界 / 非数值的分丢掉（不夹成 0 或 1——那会冒充一个极端评分）。"""
     payload = {"resolution_code": "soft_pass", "style_score": raw, "style_dimensions": [{"name": "diction", "score": raw, "evidence": "e"}]}
     out = _normalize_soft_qc_scores(payload)
     assert out["style_score"] == expected
-    assert out["style_dimensions"][0]["score"] == expected
+    if expected is None:
+        assert out["style_dimensions"] == []
+    else:
+        assert out["style_dimensions"][0]["score"] == expected
     assert payload["style_score"] == raw  # 不改原 payload
 
 

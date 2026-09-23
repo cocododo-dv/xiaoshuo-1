@@ -11,9 +11,14 @@
    190 万字的书：前 220 个候选里约四成是常用词，220–400 名里仍有几十个真名字，所以送 360 个）；
 2. **模型确认**（节点 ``style_ref_protected_terms``）：候选 + 文风分析里提到本书特有设定的「作者不这么写」陈述
    → 这本书世界特有的名字 / 名词（人物、地点、组织、物件、设定词），真实世界的常见地名、品牌、流行文化名不算；
-3. **核对**（``parse_protected_terms``）：每个词必须在原书里原样出现，2–12 字，去重；
+3. **核对**（``parse_protected_terms``）：每个词必须在原书里原样出现，2–12 字，去重；再过一道**确定性筛子**
+   （风格参考 v3 H1）：单字词不要（「龙」「剑」这类单字永远是日常字）；全书出现不到 ``PROTECTED_MIN_OCCURRENCES``
+   次的不要（真正的专名在书里反复出现，只出现一两次的多半是模型顺手补的）；现代汉语的日常词与通用范畴词不要
+   （``_EVERYDAY_WORDS``：「学院」「能力」「等级」「血统」这类——旧提示词让模型找「能力、种族、等级……的名字」，
+   模型把这些范畴词本身收进来了；这些词会被抄袭门、软 QC、成稿门逐字比对，收进来就处处误报）；
 4. **落库**（``replace_protected_terms``）：画像的生成域禁用词里 ``source="protected_auto"`` 的行整体替换；
-   作者自己录入的行（``user`` 等）一概不动，同一个词作者已经录过就不再重复。抄袭门（P5）与红线列表读这些行。
+   作者自己录入的行（``user`` 等）一概不动（筛子只筛模型给的词），同一个词作者已经录过就不再重复。抄袭门（P5）与
+   红线列表读这些行——专名命中只提示、从不拦下归档（见 ``reference_copy_gate``）。
 """
 
 from __future__ import annotations
@@ -56,6 +61,25 @@ MAX_TERMS = 300
 CANDIDATE_LIMIT = 360
 CONTEXT_CHARS = 8
 _MAX_GROW_CHARS = 8
+# 模型确认的专名在全书至少要出现这么多次（H1：只出现一两次的多半不是这本书的专名，误收一个就处处误报）
+PROTECTED_MIN_OCCURRENCES = 3
+# 现代汉语的日常词与设定类通用范畴词：它们不是任何一本书专有的名字（一本书的学院叫「某某学院」，「学院」本身不是）。
+# 只筛模型给的词，作者自己录入的禁用词不经过这里。
+_EVERYDAY_WORDS = frozenset(
+    {
+        # 设定范畴词（旧提示词让模型找「能力、种族、等级、仪式、技术的名字」，模型把范畴词本身收进来了）
+        "能力", "等级", "种族", "仪式", "技术", "血统", "血脉", "魔法", "法术", "咒语", "异能", "超能力",
+        "力量", "精神", "灵魂", "命运", "世界", "神明", "神话", "传说", "历史", "秘密", "战争", "怪物",
+        "恶魔", "天使", "妖怪", "武器", "兵器", "装备", "元素", "契约", "封印", "诅咒", "预言", "天赋",
+        # 机构与地方的通名
+        "学院", "学校", "大学", "中学", "小学", "教室", "宿舍", "图书馆", "食堂", "医院", "公司", "部门",
+        "组织", "机构", "协会", "家族", "王国", "帝国", "国家", "城市", "军队", "警察", "政府", "总部",
+        # 人的通称与称谓
+        "学生", "老师", "教授", "校长", "同学", "师兄", "师姐", "师父", "老大", "兄弟", "姐姐", "哥哥",
+        "妹妹", "弟弟", "父亲", "母亲", "爸爸", "妈妈", "先生", "小姐", "女士", "夫人", "大人", "殿下",
+        "陛下", "王子", "公主", "国王", "皇帝", "将军", "士兵", "骑士", "英雄", "主角", "少年", "少女",
+    }
+)
 
 _CJK_RUN_RE = re.compile(r"[一-鿿]+")
 # 两头出现这些字的串基本不是专名(虚词、代词、量词、最常见的动词);方位 / 时间字(上、中、前、时……)可能是姓氏或
@@ -218,6 +242,9 @@ def proper_noun_candidates(
         term = _grow(gram, corpus)
         if term in seen or not _clean_edges(term) or _function_word_edge(term, function_words, multi_char_words):
             continue
+        if is_everyday_word(term):
+            # 日常词不送去给模型确认（也不参与「两个候选拼成」的判断——「某某学院」不因「学院」常见而被当成拼接）
+            continue
         seen.add(term)
         grown.append((score, term, corpus.count(term)))
     counts_by_term = {term: count for _score, term, count in grown}
@@ -245,14 +272,28 @@ class ProtectedTerm:
         return {"term": self.term, "kind": self.kind}
 
 
-def parse_protected_terms(structured: Any, corpus: str, *, limit: int = MAX_TERMS) -> list[ProtectedTerm]:
+def is_everyday_word(term: str) -> bool:
+    """日常词 / 通用范畴词（见 ``_EVERYDAY_WORDS``）——不是任何一本书专有的名字。"""
+    return str(term or "").strip() in _EVERYDAY_WORDS
+
+
+def parse_protected_terms(
+    structured: Any,
+    corpus: str,
+    *,
+    limit: int = MAX_TERMS,
+    min_occurrences: int = PROTECTED_MIN_OCCURRENCES,
+) -> list[ProtectedTerm]:
     """模型给的专名 → 只留原书里原样出现、2–12 字、不是虚词的，去重（保持模型给的顺序）；类别不合法的记 term。
 
-    虚词（闭类词表）不可能是专名：模型把它当专名确认了，文风卡里含它的句子与标签概括都会被误伤，所以挡掉。"""
+    虚词（闭类词表）不可能是专名：模型把它当专名确认了，文风卡里含它的句子与标签概括都会被误伤，所以挡掉。
+    确定性筛子（H1）：单字词不要（``TERM_MIN_CHARS``），全书出现不到 ``min_occurrences`` 次的不要，日常词 / 通用
+    范畴词不要（:func:`is_everyday_word`）——这些词进了禁用词表会被每一道检查逐字比对、处处误报。"""
     items = structured.get("terms") if isinstance(structured, Mapping) else None
     out: list[ProtectedTerm] = []
     seen: set[str] = set()
     function_words = frozenset(load_kernel_lexicon().words_by_length_desc)
+    minimum = max(1, int(min_occurrences))
     for item in items if isinstance(items, list) else []:
         if isinstance(item, Mapping):
             term = compact_ws(item.get("term")).strip("「」“”\"'《》()（）[]【】")
@@ -263,7 +304,9 @@ def parse_protected_terms(structured: Any, corpus: str, *, limit: int = MAX_TERM
             kind = "term"
         if not (TERM_MIN_CHARS <= len(term) <= TERM_MAX_CHARS) or term in seen or term in function_words:
             continue
-        if term not in corpus:
+        if is_everyday_word(term):
+            continue
+        if term not in corpus or corpus.count(term) < minimum:
             continue
         seen.add(term)
         out.append(ProtectedTerm(term=term, kind=kind))
@@ -343,11 +386,13 @@ __all__ = [
     "Candidate",
     "KIND_PLACEHOLDERS",
     "MAX_TERMS",
+    "PROTECTED_MIN_OCCURRENCES",
     "PROTECTED_SCOPE",
     "PROTECTED_SOURCE",
     "ProtectedTerm",
     "TERM_KINDS",
     "contains_protected",
+    "is_everyday_word",
     "mask_protected",
     "parse_protected_terms",
     "proper_noun_candidates",
