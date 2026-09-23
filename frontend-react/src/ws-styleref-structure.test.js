@@ -20,9 +20,10 @@ describe("风格参考前端的模块边界", () => {
     ]);
   });
 
-  it("store 只 import lib/client.js 与纯派生的 model；model 只 import 词表", () => {
+  it("store 只 import lib/client.js 与纯派生的 model；model 只 import 词表与纯文字工具", () => {
     expect(imports(read("ws-styleref-store.js")).sort()).toEqual(["./lib/client.js", "./ws-styleref-model.js"]);
-    expect(imports(read("ws-styleref-model.js"))).toEqual(["./ws-labels.js"]);
+    // lib/messages.js：「后端原话能不能给作者看」的纯函数（对照检查的 model 也用它），无状态、无副作用
+    expect(imports(read("ws-styleref-model.js")).sort()).toEqual(["./lib/messages.js", "./ws-labels.js"]);
   });
 
   it("不写 window：没有 Object.assign(window…) 与 window.x = …；旧的全局名一个都不剩", () => {
