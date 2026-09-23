@@ -17,7 +17,7 @@
 
 ### 1.1 16 维度——保留，并变成核心
 
-证据（实库『龙族』画像 `sr_profile_c18ab0b2086a`，67 条维度发现逐条读过）：
+证据（实库『龙族』画像，67 条维度发现逐条读过）：
 - 最能代表江南的特征都在维度里：`language.rhetoric`「俗世物件降维夸张的黑色幽默」「影视 / 游戏 / 亚文化喻体」；
   `language.vocabulary`「市井口语与青年亚文化词汇」「当代消费品、数码产品」；`theme.emotional_tone`「危急关头的自嘲吐槽」；
   `narrative.information_density`「量化指标与阶梯式数值」；`narrative.pacing`「倒计时与极短物理时间刻度」；
