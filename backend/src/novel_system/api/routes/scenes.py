@@ -1871,7 +1871,37 @@ def _style_window_ref(item: Any) -> dict | None:
         ref[key] = value if isinstance(value, int) and not isinstance(value, bool) else 0
     if ref["paragraphs"] <= 0:
         ref["paragraphs"] = end - start + 1
+    # 风格参考 v3：冻结选窗的引用带窗号（持久化窗口索引里的一窗）与按哪条配额选进来的；旧审计没有窗号，形状不变
+    window_no = item.get("window_no")
+    if isinstance(window_no, int) and not isinstance(window_no, bool):
+        ref["window_no"] = window_no
+        ref["slot"] = str(item.get("slot") or "")
+        ref["situations"] = _style_window_tags(item.get("situations"))
+        ref["devices"] = _style_window_tags(item.get("devices"))
     return ref
+
+
+def _style_window_tags(value: Any) -> list[str]:
+    return [str(tag) for tag in value if str(tag or "").strip()] if isinstance(value, (list, tuple)) else []
+
+
+def _attach_style_window_tags(session: Session, book_id: str | None, windows: list[dict]) -> None:
+    """带窗号的窗补上学习作业给它打的标签与一句话梗概（与本场预览同一份窗口索引；索引换过 / 书不在就不补）。"""
+    numbered = [window for window in windows if "window_no" in window]
+    if not book_id or not numbered:
+        return
+    from novel_system.services.style_reference.scene_preview import window_tag_rows
+
+    try:
+        rows = window_tag_rows(session, book_id, [int(window["window_no"]) for window in numbered])
+    except Exception:  # noqa: BLE001 — 只读展示：标签取不到就只给区间
+        return
+    for window in numbered:
+        tags = (rows.get(int(window["window_no"])) or {}).get("tags") or {}
+        window["situations"] = _style_window_tags(tags.get("situations")) or window.get("situations") or []
+        window["moods"] = _style_window_tags(tags.get("moods"))
+        window["devices"] = _style_window_tags(tags.get("devices")) or window.get("devices") or []
+        window["gist"] = str(tags.get("gist") or "")
 
 
 def _style_window_source(
@@ -1926,6 +1956,7 @@ def _current_run_style_windows(
         if not windows:
             continue
         profile_id, book_id = _style_window_source(session, runtime_audit)
+        _attach_style_window_tags(session, book_id, windows)
         return {
             "step": step,
             "profile_id": profile_id,

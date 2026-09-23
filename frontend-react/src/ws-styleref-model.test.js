@@ -199,12 +199,15 @@ describe("一本书走到哪一步", () => {
     expect(srBookPipeline(book({ learn: { state: "failed" } })).label).toBe("学习未完成");
   });
 
-  it("步骤条：分类没完成时学习等前一步；没画像时用于作品等前一步；落点是第一个没做完的步", () => {
-    expect(srStageStates(book({ rawStatus: "ingesting" }))).toEqual({ book: "running", learn: "blocked", apply: "blocked" });
+  it("步骤条：分类没完成时学习等前一步；没画像时用于作品、对照检查等前一步；落点是第一个没做完的步", () => {
+    expect(srStageStates(book({ rawStatus: "ingesting" }))).toEqual({ book: "running", learn: "blocked", apply: "blocked", check: "blocked" });
     expect(srStageStates(book({ provenance: { source: "legacy_heuristic" } })).book).toBe("attention");
     const learned = srStageStates(book({ profile: profile() }), { workId: "w1" });
-    expect(learned).toEqual({ book: "done", learn: "done", apply: "todo" });
+    expect(learned).toEqual({ book: "done", learn: "done", apply: "todo", check: "open" });
+    expect(srStageStates(book({ profile: profile() }), { running: { check: { percentText: "33%" } } }).check).toBe("running");
     expect(srLandingStage(learned)).toBe("apply");
+    // 对照检查不是要做完的一步：前三步都做完了也不落在它上面
+    expect(srLandingStage({ book: "done", learn: "done", apply: "done", check: "open" })).toBe("apply");
     expect(srLandingStage(srStageStates(book()))).toBe("learn");
     expect(srLandingStage(learned, { applied: true })).toBe("apply");
     const stale = srStageStates(book({ profile: profile({ needs_relearn: true }) }));

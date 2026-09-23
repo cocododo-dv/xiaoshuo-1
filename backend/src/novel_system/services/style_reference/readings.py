@@ -29,8 +29,11 @@ from novel_system.db.models import StyleFidelityReading, utcnow
 from novel_system.services.style_reference.card import DIMENSION_LABELS
 from novel_system.services.style_reference.fidelity import (
     DEFAULT_MAX_PERCENTILE,
+    MIN_REFERENCE_WINDOWS,
+    MIN_RELIABLE_CHARS,
     FidelityReading,
     read_fidelity,
+    recent_gap_entries,
     recent_gap_phrases,
     reference_distribution_for_book,
     within_author_range,
@@ -457,10 +460,16 @@ def reading_payload(row: StyleFidelityReading | None) -> dict[str, Any] | None:
                 "z": item.get("z"),
             }
         )
+    threshold = _finite(data.get("max_percentile"))
+    if threshold is None:
+        threshold = _default_max_percentile()
     within = data.get("within_range")
     if not isinstance(within, bool):
-        within = within_author_range(data, max_percentile=_default_max_percentile())
+        within = within_author_range(data, max_percentile=threshold)
     copy = dict(row.copy_check_json) if isinstance(row.copy_check_json, Mapping) else None
+    reliable = bool(data.get("reliable", False))
+    char_count = int(row.char_count or 0)
+    window_count = int(_finite(data.get("window_count")) or 0)
     return {
         "reading_id": row.reading_id,
         "scene_id": row.scene_id,
@@ -472,8 +481,19 @@ def reading_payload(row: StyleFidelityReading | None) -> dict[str, Any] | None:
         "percentile": row.percentile,
         "distance": row.distance,
         "within_range": bool(within),
-        "reliable": bool(data.get("reliable", False)),
-        "char_count": int(row.char_count or 0),
+        # 「正常范围」的百分位上限（入库时的阈值）与重点维：界面据此说清「前 N 位算正常」「重点维越界不算正常」
+        "max_percentile": threshold,
+        "emphasized_dimensions": [str(dim) for dim in data.get("emphasized_dimensions") or []],
+        "excluded_dimensions": [str(dim) for dim in data.get("excluded_dimensions") or []],
+        "reliable": reliable,
+        # 读数为什么只能参考：文字太短（too_short）/ 参考书的窗口太少（few_windows）；可靠时为 None
+        "unreliable_reason": (
+            None if reliable else ("too_short" if char_count < MIN_RELIABLE_CHARS else "few_windows")
+        ),
+        "window_count": window_count,
+        "min_reliable_chars": MIN_RELIABLE_CHARS,
+        "min_reference_windows": MIN_REFERENCE_WINDOWS,
+        "char_count": char_count,
         "out_of_band": out_of_band,
         "dimension_scores": {
             str(dim): score for dim, score in dict(data.get("dimension_scores") or {}).items()
@@ -554,6 +574,38 @@ def recent_gaps(
     return recent_gap_phrases(rows, min_hits=RECENT_GAP_MIN_HITS, window=RECENT_READINGS_WINDOW, limit=limit)
 
 
+def recent_gap_details(
+    session: Session,
+    *,
+    project_id: str | None,
+    profile_id: str | None,
+    limit: int | None = 3,
+) -> list[dict[str, Any]]:
+    """同一份近期常见偏差的结构化形状（界面按维标出）：``{phrase, feature, direction, dimension, dimension_label,
+    hits, window}``——短语与 :func:`recent_gaps` 逐条相同、同序（首稿补充强调的正是这几条）。"""
+    rows = recent_gap_readings(session, project_id=project_id, profile_id=profile_id)
+    if not rows:
+        return []
+    return [
+        {**entry, "dimension_label": DIMENSION_LABELS.get(str(entry.get("dimension") or ""), "") or None}
+        for entry in recent_gap_entries(
+            rows, min_hits=RECENT_GAP_MIN_HITS, window=RECENT_READINGS_WINDOW, limit=limit
+        )
+    ]
+
+
+def _scene_final_brief(row: StyleFidelityReading) -> dict[str, Any]:
+    data = row.reading_json if isinstance(row.reading_json, Mapping) else {}
+    return {
+        "reading_id": row.reading_id,
+        "source": row.source,
+        "percentile": row.percentile,
+        "within_range": bool(data.get("within_range")),
+        "reliable": bool(data.get("reliable", False)),
+        "created_at": row.created_at,
+    }
+
+
 def _average(values: Sequence[float]) -> float | None:
     return round(sum(values) / len(values), 2) if values else None
 
@@ -586,6 +638,7 @@ def project_fidelity_summary(
             "percentile": row.percentile,
             "distance": row.distance,
             "within_range": bool((row.reading_json or {}).get("within_range")),
+            "reliable": bool((row.reading_json or {}).get("reliable", False)),
             "created_at": row.created_at,
         }
         for row in trend_rows[-max(0, int(trend_limit)) :]
@@ -617,9 +670,13 @@ def project_fidelity_summary(
             if number is not None:
                 judged.setdefault(str(dim), []).append(number)
     dims = sorted(set(deterministic) | set(judged), key=lambda dim: list(DIMENSION_LABELS).index(dim) if dim in DIMENSION_LABELS else 99)
+    gap_details = recent_gap_details(session, project_id=project_id, profile_id=profile_id)
     return {
         "trend": trend,
-        "recent_gaps": recent_gaps(session, project_id=project_id, profile_id=profile_id),
+        "recent_gaps": [entry["phrase"] for entry in gap_details],
+        "recent_gap_details": gap_details,
+        # 每一场最新的终稿读数（成稿中心按场的「像不像」角标）
+        "scene_finals": {scene_id: _scene_final_brief(row) for scene_id, row in latest_final.items()},
         "dimension_averages": {
             dim: {
                 "label": DIMENSION_LABELS.get(dim, dim),
@@ -660,6 +717,7 @@ __all__ = [
     "reading_for_text",
     "record_author_draft_reading",
     "reading_payload",
+    "recent_gap_details",
     "recent_gap_readings",
     "recent_gaps",
     "record_fidelity_reading",

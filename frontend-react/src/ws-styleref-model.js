@@ -350,19 +350,22 @@ export function srBookPipeline(book, { running = {}, workId = null } = {}) {
   return { key: "to_learn", label: "待学习", tone: "neutral" };
 }
 
-/* 三步：book（参考书）/ learn（学习文风）/ apply（用于作品） */
+/* 三步：book（参考书）/ learn（学习文风）/ apply（用于作品）；之后是随时可用的 check（对照检查：像不像）。
+   tool = 不是要「做完」的一步：不参与落点，状态只有「等前一步 / 进行中 / 随时可查」。 */
 export const SR_STAGES = [
   { id: "book", name: "参考书", icon: "BookOpen" },
   { id: "learn", name: "学习文风", icon: "Sparkles" },
   { id: "apply", name: "用于作品", icon: "Pen" },
+  { id: "check", name: "对照检查", icon: "Target", tool: true },
 ];
 
 export const SR_STAGE_STATE_LABEL = {
-  done: "已完成", running: "进行中", attention: "需处理", todo: "未开始", blocked: "等前一步",
+  done: "已完成", running: "进行中", attention: "需处理", todo: "未开始", blocked: "等前一步", open: "随时可查",
 };
 
+/* running：{ classify, learn, check }（活动表里这本书正在跑的作业） */
 export function srStageStates(book, { running = {}, workId = null } = {}) {
-  const states = { book: "done", learn: "todo", apply: "todo" };
+  const states = { book: "done", learn: "todo", apply: "todo", check: "blocked" };
   if (!book) return states;
   const raw = book.rawStatus;
   if (running.classify || raw === "ingesting" || raw === "cancelling") states.book = "running";
@@ -378,13 +381,17 @@ export function srStageStates(book, { running = {}, workId = null } = {}) {
   if (!profile) states.apply = "blocked";
   else if (srAppliedToWork(book, workId)) states.apply = "done";
   else states.apply = "todo";
+  if (!profile) states.check = "blocked";
+  else if (running.check) states.check = "running";
+  else states.check = "open";
   return states;
 }
 
-/* 落点：用在当前作品上的书落在「用于作品」；否则第一个没做完的步骤 */
+/* 落点：用在当前作品上的书落在「用于作品」；否则第一个没做完的步骤（对照检查不是要做完的一步，不当落点） */
 export function srLandingStage(states, { applied = false } = {}) {
   if (applied) return "apply";
   for (const stage of SR_STAGES) {
+    if (stage.tool) continue;
     if (states && states[stage.id] !== "done") return stage.id;
   }
   return "apply";
@@ -540,3 +547,25 @@ export function srPickLandingBook(books, { prefs, workId, session = null } = {})
 
 /* 「参考书活动」面板在哪：宽屏在左栏书库里，≤1280 在页头「参考书库」打开的书库里 */
 export const SR_ACTIVITY_WHERE = "「参考书库」的「参考书活动」";
+
+/* ---------- 当前作品的场（本场预览、对照检查选一场） ---------- */
+
+/* srLoadWorkScenes 的章节 → 下拉框分组 [{ label, scenes: [{ value, label }] }]（没有场的章不列） */
+export function srSceneOptions(chapters) {
+  return (chapters || []).map((chapter) => ({
+    label: `第 ${chapter.no} 章${chapter.title ? ` · ${chapter.title}` : ""}`,
+    scenes: (chapter.scenes || []).map((scene, index) => ({
+      value: scene.sceneId,
+      label: `第 ${chapter.no} 章 · 第 ${index + 1} 场${scene.title ? `「${scene.title}」` : ""}`,
+    })),
+  })).filter((group) => group.scenes.length);
+}
+
+/* 场景 id → 「第 3 章 · 第 2 场「码头」」（找不到给空串） */
+export function srSceneLabel(chapters, sceneId) {
+  for (const group of srSceneOptions(chapters)) {
+    const hit = group.scenes.find((scene) => scene.value === sceneId);
+    if (hit) return hit.label;
+  }
+  return "";
+}

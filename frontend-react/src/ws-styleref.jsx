@@ -16,11 +16,12 @@ import { SrImportDialog, SrLibrary, srConfirmDeleteBooks, srPipelineFor } from "
 import { SrOverview } from "./ws-styleref-overview.jsx";
 import { SrLearn } from "./ws-styleref-learn.jsx";
 import { SrApply } from "./ws-styleref-apply.jsx";
+import { SrCheck } from "./ws-styleref-check.jsx";
 
 /* ==========================================================
-   风格参考 —— 参考书 → 学习文风 → 用于作品
+   风格参考 —— 参考书 → 学习文风 → 用于作品 → 对照检查
    这个文件只是页面外壳：左栏书库（≤1280 收进页头「参考书库」对话框）、页头（书名、进度徽标、更多）、
-   三步的步骤条与切换、导入对话框。各步在 ws-styleref-*.jsx，请求与缓存在 ws-styleref-store.js，说法与判断在
+   三步（外加随时可用的「对照检查」）的步骤条与切换、导入对话框。各步在 ws-styleref-*.jsx，请求与缓存在 ws-styleref-store.js，说法与判断在
    ws-styleref-model.js。纯 ESM，不写 window。
    ========================================================== */
 
@@ -101,7 +102,7 @@ export function WsStyleRef({ go }) {
   };
 
   const openSettings = () => { if (go) go("settings", { type: "ws:settings-tab", detail: "ai" }); };
-  /* 出错时的下一步（SrErrorLine 的按钮）：去设置模型 / 打开书库里的那本 / 去学习文风 */
+  /* 出错时的下一步（SrErrorLine 的按钮）：去设置模型 / 打开书库里的那本 / 去学习文风 / 去用于作品 */
   const onAction = (action) => {
     if (!action) return;
     if (action.type === "settings") openSettings();
@@ -109,7 +110,7 @@ export function WsStyleRef({ go }) {
     else if (action.type === "learn") {
       if (action.bookId && action.bookId !== bookId) selectBook(action.bookId);
       selectStage("learn");
-    }
+    } else if (action.type === "apply") selectStage("apply");
   };
 
   const onDeleteBook = async (target) => {
@@ -160,6 +161,7 @@ export function WsStyleRef({ go }) {
               {stage === "book" && <SrOverview book={book} onAction={onAction} />}
               {stage === "learn" && <SrLearn book={book} go={selectStage} onAction={onAction} />}
               {stage === "apply" && <SrApply key={`${book.id}|${workId}`} book={book} go={selectStage} onAction={onAction} />}
+              {stage === "check" && <SrCheck key={`${book.id}|${workId}`} book={book} go={selectStage} onAction={onAction} />}
             </div>
           </section>
         ) : (
@@ -249,10 +251,10 @@ function SrStageHeader({ book, librarySwitch, onDelete }) {
   );
 }
 
-/* 步骤条：参考书 → 学习文风 → 用于作品；每步的状态来自真实数据 */
+/* 步骤条：参考书 → 学习文风 → 用于作品 → 对照检查；每步的状态来自真实数据 */
 function SrStepper({ stage, states, onSelect }) {
   return (
-    <nav className="sr-stepper" aria-label="参考书 → 学习文风 → 用于作品">
+    <nav className="sr-stepper" aria-label="参考书 → 学习文风 → 用于作品 → 对照检查">
       {SR_STAGES.map((s, i) => {
         const Ic = I[s.icon] || I.Dot;
         const active = stage === s.id;

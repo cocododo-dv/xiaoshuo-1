@@ -1,8 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
-import { paragraphTypeLabel, windowPositionLabel } from "./ws-labels.js";
-import { srFormatChars, srReferenceModeMeta } from "./ws-styleref-model.js";
+import { paragraphTypeLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
+import { srFormatChars, srReferenceModeMeta, srSceneOptions } from "./ws-styleref-model.js";
 import { srLoadParagraphs, srLoadWorkScenes, srScenePreview } from "./ws-styleref-store.js";
 import { SrErrorLine } from "./ws-styleref-ui.jsx";
 
@@ -14,15 +14,6 @@ import { SrErrorLine } from "./ws-styleref-ui.jsx";
    · 各块多少字；书的原文范围压过设置时（只发短句）如实说实际带的是什么。
    用的是「用于作品」页上正在编辑的设置（还没保存也能先看）。
    ========================================================== */
-
-const SR_SLOT_LABEL = {
-  position: "按章内位置挑",
-  situation: "按场面挑",
-  device: "示范重点手法",
-  texture: "按对白 / 叙述的质地挑",
-  typical: "全书典型片段",
-  revise_device: "示范要改的手法",
-};
 
 const SR_NOTICE_TEXT = {
   STYLE_REFERENCE_SAMPLES_BLOCKED: "这本书的原文不能发给当前模型：这一场只带文风卡。",
@@ -38,16 +29,6 @@ const SR_SCENE_WHERE = {
   whole: "独占一章",
   middle: "章中的一场",
 };
-
-function srSceneOptions(chapters) {
-  return (chapters || []).map((chapter) => ({
-    label: `第 ${chapter.no} 章${chapter.title ? ` · ${chapter.title}` : ""}`,
-    scenes: chapter.scenes.map((scene, index) => ({
-      value: scene.sceneId,
-      label: `第 ${chapter.no} 章 · 第 ${index + 1} 场${scene.title ? `「${scene.title}」` : ""}`,
-    })),
-  })).filter((group) => group.scenes.length);
-}
 
 export function SrScenePreview({ book, profileId, config, workId, workTitle }) {
   const [chapters, setChapters] = React.useState(null);
@@ -184,7 +165,7 @@ function SrWindowItem({ book, window: w }) {
         <span className="sr-window-size tab-num">{w.paragraphs ? `${w.paragraphs} 段 · ` : ""}{Number(w.chars || 0).toLocaleString()} 字</span>
         {w.gist && <span className="sr-window-gist text-serif">{w.gist}</span>}
         <span className="sr-window-tags">
-          {w.slot && SR_SLOT_LABEL[w.slot] && <Tag outline>{SR_SLOT_LABEL[w.slot]}</Tag>}
+          {styleWindowSlotLabel(w.slot) && <Tag outline>{styleWindowSlotLabel(w.slot)}</Tag>}
           {tags.map((t) => <Tag key={t}>{t}</Tag>)}
           {(w.devices || []).map((d) => <Tag key={`d-${d}`} tone="accent" outline>{d}</Tag>)}
           {w.paragraph_type && <Tag outline>{paragraphTypeLabel(w.paragraph_type)}为主</Tag>}

@@ -1,7 +1,7 @@
 /* 风格参考页样式（2026-09-23 v3 重建）。类名以 sr- 前缀隔离；各段对应的模块：
    页面外壳与步骤条 ws-styleref.jsx · 书库、多选删除与导入对话框 -library · 参考书活动 -activity ·
    参考书（段落分类 / 分布 / 语料）-overview · 学习文风 -learn · 文风画像 -portrait · 用于作品 -apply ·
-   本场预览 -scene-preview · 「更多」菜单、进度条、出错行 -ui。
+   本场预览 -scene-preview · 对照检查 -check · 「更多」菜单、进度条、出错行 -ui。「像不像」的共用件在 ws-fidelity.css。
    颜色全部走令牌；两栏占满视口高度（外壳没有顶栏），.sr-stage-body 是唯一的滚动容器；左栏在 ≤1280 收进页头的
    「参考书库」对话框。 */
 .sr-page { padding: 0; }
@@ -153,7 +153,7 @@
 .sr-stage-empty-card { padding: 8px; max-width: 1080px; }
 
 /* ---------- 参考书（概览） ---------- */
-.sr-overview, .sr-learn, .sr-apply, .sr-portrait { display: flex; flex-direction: column; gap: 16px; max-width: 1080px; }
+.sr-overview, .sr-learn, .sr-apply, .sr-portrait, .sr-check { display: flex; flex-direction: column; gap: 16px; max-width: 1080px; }
 .sr-ov-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .sr-ov-live { padding: 2px 0 0; }
 .sr-ov-text { margin: 0 0 10px; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-2); }
@@ -313,6 +313,21 @@
 .sr-block-name { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
 .sr-block-chars { margin-left: auto; font-size: var(--fs-xs); color: var(--ink-3); }
 .sr-block-text { margin: 0; padding: 8px 12px 12px; max-height: 320px; overflow: auto; font-family: var(--font-sans); font-size: var(--fs-xs); line-height: 1.7; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---------- 对照检查 ---------- */
+.sr-check-form { display: flex; flex-direction: column; gap: 14px; }
+.sr-check-form .card-head { margin-bottom: 0; }
+.sr-check-mode { align-self: flex-start; }
+.sr-check-input { display: flex; flex-direction: column; gap: 6px; }
+.sr-check-textarea { min-height: 180px; resize: vertical; font-family: var(--font-serif); font-size: var(--fs-md); line-height: 1.8; }
+.sr-check-count { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-xs); color: var(--ink-3); }
+.sr-check-count .is-over { color: var(--danger-ink); }
+.sr-check-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; padding-top: 12px; border-top: 1px solid var(--line-1); }
+.sr-check-hint { flex: 1 1 240px; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
+.sr-check-running-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-md); font-weight: 600; color: var(--ink-1); }
+.sr-check-running .sr-progress-fill { background: var(--warn); }
+.sr-check-result { display: flex; flex-direction: column; gap: 16px; }
+.sr-check-lines { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-1); }
 
 /* ---------- 「更多」菜单 ---------- */
 .sr-menu { position: relative; }
