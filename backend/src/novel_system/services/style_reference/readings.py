@@ -639,6 +639,7 @@ def project_fidelity_summary(
             "distance": row.distance,
             "within_range": bool((row.reading_json or {}).get("within_range")),
             "reliable": bool((row.reading_json or {}).get("reliable", False)),
+            "max_percentile": _finite((row.reading_json or {}).get("max_percentile")),
             "created_at": row.created_at,
         }
         for row in trend_rows[-max(0, int(trend_limit)) :]

@@ -121,8 +121,9 @@ def test_project_summary_gives_structured_gaps_and_the_latest_final_per_scene(se
     gap = [_gap("fw_modal_per_1k", "language.vocabulary")]
     session.add_all(
         [
-            # 四次首稿读数里三次同一处越界 → 近期常见偏差
+            # 最近五次首稿读数里三次同一处越界 → 近期常见偏差
             _row("fd1", scene_id="SC_A", stage=R.STAGE_FIRST_DRAFT, created_at="2026-09-23T01:00:00", out_of_band=gap),
+            _row("fd0", scene_id="SC_Z", stage=R.STAGE_FIRST_DRAFT, created_at="2026-09-22T23:00:00", max_percentile=85.0),
             _row("fd2", scene_id="SC_B", stage=R.STAGE_FIRST_DRAFT, created_at="2026-09-23T02:00:00", out_of_band=gap),
             _row("fd3", scene_id="SC_C", stage=R.STAGE_FIRST_DRAFT, created_at="2026-09-23T03:00:00", out_of_band=gap),
             _row("fd4", scene_id="SC_C", stage=R.STAGE_FIRST_DRAFT, created_at="2026-09-23T04:00:00"),
@@ -146,11 +147,11 @@ def test_project_summary_gives_structured_gaps_and_the_latest_final_per_scene(se
             "dimension_label": "词汇选择",
             "phrase": "fw_modal_per_1k·low",
             "hits": 3,
-            "window": 4,
+            "window": 5,
         }
     ]
     finals = summary["scene_finals"]
-    assert set(finals) == {"SC_A", "SC_B"}
+    assert set(finals) == {"SC_A", "SC_B"}  # SC_Z 只有首稿
     assert finals["SC_A"] == {
         "reading_id": "fa_new",
         "source": R.SOURCE_ADOPT,
@@ -161,8 +162,10 @@ def test_project_summary_gives_structured_gaps_and_the_latest_final_per_scene(se
     }
     assert finals["SC_B"]["reliable"] is False and finals["SC_B"]["percentile"] == 60.0
     assert summary["final_scene_count"] == 2
-    # 走势行带可靠与否（图上把量不准的点画成空心）
+    # 走势行带可靠与否（图上把量不准的点画成空心）与入库时的正常范围上限（图上的范围带）
     assert {row["reading_id"]: row["reliable"] for row in summary["trend"]}["fb"] is False
+    trend_limits = {row["reading_id"]: row["max_percentile"] for row in summary["trend"]}
+    assert trend_limits["fd0"] == 85.0 and trend_limits["fd1"] is None
 
 
 def test_workbench_windows_carry_the_learned_gist_and_tags_for_v3_refs(session: Session) -> None:

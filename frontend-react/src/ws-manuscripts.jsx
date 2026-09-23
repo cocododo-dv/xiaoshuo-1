@@ -14,6 +14,7 @@ import { ManuHero } from "./ws-manuscripts-hero.jsx";
 import { ManuFootNote, ManuRead, ManuState, ManuStructure } from "./ws-manuscripts-reader.jsx";
 import { ManuCanon } from "./ws-manuscripts-canon.jsx";
 import { ManuDiagnosis } from "./ws-manuscripts-diagnosis.jsx";
+import { useManuFidelity } from "./ws-manuscripts-fidelity.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { ManuDiff } from "./ws-manuscripts-diff.jsx";
 import { ManuApprovalDialog, ManuReopenDialog, ManuReturnDialog } from "./ws-manuscripts-dialogs.jsx";
@@ -56,6 +57,8 @@ function WsManuscripts({ go }) {
   const [chosenView, setView] = useState("read");
   /* 每场 / 每章开着的诊断发现数（与写作台深改面板同一份，忽略过的不算）：左栏、场景拼接、诊断页签都读它 */
   const diag = useDiagnosisSummary();
+  /* 每一场最新的终稿像不像这位参考作者（作品用着参考书的文风时才有）：结构页签的场景行、正文的场头、页头一句 */
+  const fidelity = useManuFidelity();
   const { snapshot: canonical, bump } = useManuCanonical(catPicked);
   const flow = useManuWorkflow({ picked, chapter: catPicked, canonical, bump, book, chapters: catChs, go });
 
@@ -96,7 +99,7 @@ function WsManuscripts({ go }) {
     <div className="ms-page" data-screen-label="manuscripts">
       <ManuHero
         book={book} cells={manuProgressCells(catChs, book.planChapters)} activeId={activeId} stats={stats}
-        exportCtx={{ catChs, book, chs, pickedId: activeId }}
+        exportCtx={{ catChs, book, chs, pickedId: activeId }} fidelity={fidelity.summary}
       />
 
       <div className="ms-cols">
@@ -140,8 +143,8 @@ function WsManuscripts({ go }) {
           {view === "canon" && (
             <ManuCanon projectId={WsWorks.activeId()} chapterId={catPicked && catPicked.backendId} canonical={canonical} onChanged={bump} />
           )}
-          {view === "read" && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={flow.retryCanonical} />}
-          {view === "structure" && <ManuStructure body={body} chapter={catPicked} canonical={canonical} go={go} diag={diag} />}
+          {view === "read" && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={flow.retryCanonical} fidelity={fidelity.finals} />}
+          {view === "structure" && <ManuStructure body={body} chapter={catPicked} canonical={canonical} go={go} diag={diag} fidelity={fidelity.finals} />}
           {view === "diagnosis" && <ManuDiagnosis chapter={catPicked} go={go} />}
           {view === "diff" && <ManuDiff picked={picked} chapter={catPicked} />}
 

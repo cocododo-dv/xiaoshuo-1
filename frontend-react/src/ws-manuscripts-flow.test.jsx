@@ -54,6 +54,13 @@ vi.mock("./ws-manuscripts-diagnosis.jsx", async () => {
   const React = await import("react");
   return { ManuDiagnosis: ({ chapter }) => React.createElement("div", { "data-testid": "manuscript-diagnosis-stub" }, chapter ? chapter.backendId : "") };
 });
+/* 像不像（作品汇总的 scene_finals）：只验成稿中心把角标挂在哪儿；读数本身在 ws-fidelity-*.test */
+const fidFx = vi.hoisted(() => ({ project: null, load: vi.fn() }));
+vi.mock("./ws-fidelity-store.js", () => ({
+  useFidelityStore: () => {},
+  fidLoadProject: (...args) => fidFx.load(...args),
+  fidProject: () => (fidFx.project ? { phase: "ready", data: fidFx.project, error: null } : null),
+}));
 vi.mock("./ws-manuscripts-store.jsx", () => ({
   WsManuStore: flow,
   manuscriptChapterEligible: () => true,
@@ -144,6 +151,7 @@ beforeEach(() => {
   catalogRefresh.mockResolvedValue({});
   worksRefresh.mockResolvedValue({});
   delete window.WrDocVersions;
+  fidFx.project = null;
 });
 
 afterEach(async () => {
@@ -762,5 +770,39 @@ describe("成稿中心 · 诊断计数与诊断页签", () => {
     expect(host.querySelector('[data-testid="manuscript-diagnosis-stub"]').textContent).toBe("c1");
     diagFx.chapters = {};
     diagFx.scenes = {};
+  });
+});
+
+describe("成稿中心 · 像不像", () => {
+  it("正文的场头与结构页签的场景行挂这一场最新的终稿角标；页头一句几场在作者范围内", async () => {
+    fidFx.project = {
+      bound: true,
+      scene_finals: { s1: { reading_id: "r1", percentile: 41.6, within_range: true, reliable: true, created_at: "2026-09-23T10:00:00" } },
+    };
+    const host = await renderPage("review");
+    expect(fidFx.load).toHaveBeenCalledWith("p1", { force: true });
+    expect(host.querySelector('[data-testid="manuscripts-fidelity-summary"]').textContent).toBe("像不像：1 场终稿里 1 场在作者范围内");
+    const headBadge = host.querySelector('.ms-scene-head [data-testid="ms-scene-fidelity"]');
+    expect(headBadge.textContent).toBe("作者范围内 · 第 42 位");
+    expect(headBadge.getAttribute("title")).toContain("前 90 位");
+
+    const structure = [...host.querySelectorAll('[role="radio"]')].find((node) => node.textContent === "结构");
+    await click(structure);
+    const row = host.querySelector('.ms-struct-scenes li');
+    expect(row.querySelector('[data-testid="ms-scene-fidelity"]').textContent).toBe("作者范围内 · 第 42 位");
+    // 小标都在同一格里：行里的直接子元素个数不随有没有角标而变
+    expect(row.children.length).toBe(5);
+  });
+
+  it("超出范围 / 量不准各有说法；作品没用参考书的文风时什么也不挂", async () => {
+    fidFx.project = { bound: true, scene_finals: { s1: { percentile: 96, within_range: false, reliable: true } } };
+    let host = await renderPage("review");
+    expect(host.querySelector('[data-testid="ms-scene-fidelity"]').textContent).toBe("超出范围 · 第 96 位");
+    expect(host.querySelector('[data-testid="manuscripts-fidelity-summary"]').textContent).toBe("像不像：1 场终稿里 0 场在作者范围内");
+
+    fidFx.project = { bound: false, scene_finals: { s1: { percentile: 30, within_range: true, reliable: true } } };
+    host = await renderPage("review");
+    expect(host.querySelector('[data-testid="ms-scene-fidelity"]')).toBeNull();
+    expect(host.querySelector('[data-testid="manuscripts-fidelity-summary"]')).toBeNull();
   });
 });

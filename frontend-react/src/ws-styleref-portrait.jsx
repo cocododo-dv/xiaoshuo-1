@@ -9,6 +9,7 @@ import {
   srRemoveBannedTerm, srSetCardLineState, srSetDimensionState,
 } from "./ws-styleref-store.js";
 import { SrErrorLine, srActiveWork, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
+import { SrDimensionFidelityBody, SrDimensionFidelityChip, SrWorkFidelityCard, useSrWorkFidelity } from "./ws-styleref-fidelity.jsx";
 
 /* ==========================================================
    风格参考 · 文风画像（学习文风的产物；取代旧的维度矩阵 / 风格画像页）
@@ -16,6 +17,8 @@ import { SrErrorLine, srActiveWork, srNotifyError, useSrStore } from "./ws-style
    · 16 维按层分组，每维：名字、一句概括、「通用写法」对「这位作者」、这位作者的写法与「作者不这么写」，
      每句都能 ✓（总带上）/ ✗（不用这句）——改了立即生效，不重新学习、画像不失效；展开看原话（依据）与手法；
    · 每维一个「重点 / 正常 / 不学」：给当前作品设的，写在它的应用上（这本书还没用于当前作品时锁住并说明）；
+   · 这本书正用于当前作品时：顶上一张「像不像」卡（终稿几场在作者范围内、近期常见偏差、走势），每一维右边是作品在
+     这一维的平均分（测得 / 评审）与「近期常见偏差」（ws-styleref-fidelity.jsx）；
    · 声音习惯、章与场的尺度、本书专名与禁用词。
    ========================================================== */
 
@@ -36,6 +39,7 @@ export function SrPortrait({ book, go, onAction }) {
   const bindingEntry = workId ? srProjectBinding(workId) : null;
   const binding = bindingEntry && bindingEntry.data && bindingEntry.data.binding;
   const appliedBinding = binding && binding.profile_id === profileId && binding.binding_id ? binding : null;
+  const workFid = useSrWorkFidelity(appliedBinding ? workId : null, profileId);
 
   if (!profileId) {
     return (
@@ -104,6 +108,10 @@ export function SrPortrait({ book, go, onAction }) {
             </div>
           )}
 
+          {appliedBinding && workFid.data && (
+            <SrWorkFidelityCard data={workFid.data} workId={workId} workTitle={work.title || "当前作品"} go={go} />
+          )}
+
           {appliedBinding ? (
             <p className="sr-portrait-states-hint" data-testid="sr-states-hint">
               每一维右边的「重点 / 正常 / 不学」是给《{work.title || "当前作品"}》设的，写在它的应用上。
@@ -129,6 +137,9 @@ export function SrPortrait({ book, go, onAction }) {
                     state={states ? states[dim.dimension] || "normal" : null}
                     onSetState={states ? (state) => setDimension(dim.dimension, state) : null}
                     onLineState={setLine}
+                    fidelity={workFid.averages[dim.dimension] || null}
+                    gaps={workFid.gapsByDim[dim.dimension] || null}
+                    workTitle={(work && work.title) || "当前作品"}
                   />
                 ))}
               </ul>
@@ -143,8 +154,8 @@ export function SrPortrait({ book, go, onAction }) {
   );
 }
 
-/* 一维：标题行（名字、概括、计数、状态选择、展开）+ 展开后的对照、各句、手法 */
-function SrDimensionRow({ dim, state, onSetState, onLineState }) {
+/* 一维：标题行（名字、概括、计数、作品在这一维的平均分、状态选择、展开）+ 展开后的对照、各句、手法、作品在这一维 */
+function SrDimensionRow({ dim, state, onSetState, onLineState, fidelity = null, gaps = null, workTitle = "当前作品" }) {
   const [open, setOpen] = React.useState(false);
   const bodyId = React.useId();
   const doLines = (dim.lines || []).filter((l) => l.kind !== "avoid");
@@ -164,6 +175,7 @@ function SrDimensionRow({ dim, state, onSetState, onLineState }) {
             {empty ? "—" : `${doLines.length} 句${avoidLines.length ? ` · ${avoidLines.length} 句不这么写` : ""}${quotes ? ` · 原话 ${quotes}` : ""}`}
           </span>
         </button>
+        <SrDimensionFidelityChip fidelity={fidelity} gaps={gaps} />
         {onSetState && (
           <Segmented
             label={`${name}：给当前作品设`}
@@ -204,6 +216,7 @@ function SrDimensionRow({ dim, state, onSetState, onLineState }) {
               )}
             </>
           )}
+          <SrDimensionFidelityBody fidelity={fidelity} gaps={gaps} workTitle={workTitle} />
         </div>
       )}
     </li>

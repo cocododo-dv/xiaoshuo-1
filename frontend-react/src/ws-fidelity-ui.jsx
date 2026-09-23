@@ -214,7 +214,9 @@ export function FidelityTrend({ trend, labelOf = null, maxPercentile = 90, testI
   const finals = points.filter((p) => p.stage === "final");
   const drafts = points.filter((p) => p.stage !== "final");
   const lastFinal = finals.length ? finals[finals.length - 1] : null;
-  const threshold = Math.max(1, Math.min(100, Math.round(Number(maxPercentile) || 90)));
+  // 正常范围的上限：最近一条读数入库时记下的（阈值改过的话以最近的为准），没有就用调用方给的
+  const recorded = [...points].reverse().find((p) => p.maxPercentile != null);
+  const threshold = Math.max(1, Math.min(100, Math.round(Number(recorded ? recorded.maxPercentile : maxPercentile) || 90)));
   const finalsWithin = finals.filter((p) => p.reliable && p.within).length;
   const summary = `最近 ${points.length} 次读数：终稿 ${finals.length} 次，其中 ${finalsWithin} 次在作者的正常范围内`
     + (lastFinal ? `；最近一次终稿第 ${lastFinal.rank} 位` : "");

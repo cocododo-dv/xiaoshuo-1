@@ -313,7 +313,7 @@ export function fidGapsByDimension(details) {
   return out;
 }
 
-/* 走势：trend 行 → [{ index, readingId, sceneId, stage, rank, within, reliable, at }]（时间顺序） */
+/* 走势：trend 行 → [{ index, readingId, sceneId, stage, rank, within, reliable, maxPercentile, at }]（时间顺序） */
 export function fidTrendPoints(trend) {
   return (Array.isArray(trend) ? trend : [])
     .filter((row) => row && fidRank(row.percentile) != null)
@@ -325,6 +325,7 @@ export function fidTrendPoints(trend) {
       rank: fidRank(row.percentile),
       within: !!row.within_range,
       reliable: row.reliable !== false,
+      maxPercentile: num(row.max_percentile),
       at: row.created_at || null,
     }));
 }

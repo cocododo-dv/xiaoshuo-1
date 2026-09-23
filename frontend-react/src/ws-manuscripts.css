@@ -309,6 +309,9 @@
   border-radius: 9px;
 }
 .ms-struct-scenes li.is-ghost { background: transparent; border-style: dashed; }
+/* 场景行的小标（场景三问 / 诊断数 / 像不像）放在同一格：哪个没有都不占位，网格的列数不变 */
+.ms-struct-flags { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.ms-scene-head .fid-badge { margin-left: auto; align-self: center; }
 .ms-struct-title { min-width: 0; font-size: var(--fs-md); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ms-struct-title.is-done { font-family: var(--font-serif); font-weight: 600; color: var(--ink-1); }
 .ms-struct-scenes .text-sm { white-space: nowrap; font-variant-numeric: tabular-nums; }

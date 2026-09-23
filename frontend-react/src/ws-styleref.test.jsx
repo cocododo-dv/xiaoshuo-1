@@ -106,6 +106,7 @@ function resetState() {
     learn: { learn: null, estimate: { est_calls: 12, calls: { extract: 4, tags: 6 }, est_input_chars: { extract_per_call: 44000 } } },
     estimate: { est_calls: 120, est_input_tokens: 350000, est_output_tokens: 9000, est_minutes: 75, parallel: 3 },
     profile: JSON.parse(JSON.stringify(PROFILE_DETAIL)),
+    projectFidelity: {},
   };
 }
 
@@ -128,6 +129,7 @@ function installRoutes() {
     if (path === `${API}/profiles/pf-a/banned-terms`) return Promise.resolve({ terms: [{ term_id: "t1", term: "某地", source: "protected_auto", scope: "generation" }] });
     if (path === `${API}/projects/w1/style-binding`) return Promise.resolve(state.projectBinding);
     if (path === "/api/v2/projects/w1/catalog") return Promise.resolve(CATALOG);
+    if (path === "/api/v1/projects/w1/style-fidelity") return Promise.resolve(state.projectFidelity);
     return Promise.resolve({});
   });
   client.apiPost.mockImplementation((url) => {
@@ -513,6 +515,81 @@ describe("文风画像", () => {
     const legacy = byTestId("sr-portrait-legacy");
     expect(legacy.textContent).toContain("这是旧版画像");
     expect(legacy.textContent).toContain("起草时不带");
+  });
+});
+
+describe("文风画像 · 当前作品像不像", () => {
+  const WORK_FIDELITY = {
+    project_id: "w1", bound: true, profile_id: "pf-a", reading_count: 5, final_scene_count: 2,
+    trend: [
+      { reading_id: "t1", scene_id: "sc-1", stage: "first_draft", percentile: 93, within_range: false, reliable: true, max_percentile: 90, created_at: "2026-09-22T08:00:00" },
+      { reading_id: "t2", scene_id: "sc-1", stage: "final", percentile: 55, within_range: true, reliable: true, max_percentile: 90, created_at: "2026-09-22T09:00:00" },
+      { reading_id: "t3", scene_id: "sc-2", stage: "final", percentile: 96, within_range: false, reliable: true, max_percentile: 90, created_at: "2026-09-23T09:00:00" },
+    ],
+    recent_gaps: ["对白比作者少"],
+    recent_gap_details: [{ feature: "dialogue_char_share", direction: "low", dimension: "scene.dialogue", dimension_label: "对话写法", phrase: "对白比作者少", hits: 3, window: 4 }],
+    dimension_averages: {
+      "scene.dialogue": { label: "对话写法", deterministic: 6.2, judge: 6.5, scenes: 2, judged: 2 },
+      "language.sentence_structure": { label: "句式结构", deterministic: 8.1, judge: null, scenes: 2, judged: 0 },
+    },
+    scene_finals: {
+      "sc-1": { reading_id: "t2", percentile: 55, within_range: true, reliable: true },
+      "sc-2": { reading_id: "t3", percentile: 96, within_range: false, reliable: true },
+    },
+  };
+
+  async function openPortrait({ applied = true } = {}) {
+    state.books = [bookRow({ profile: PROFILE_SUMMARY, applied_projects: applied ? [{ project_id: "w1", binding_id: "bd-1", config: OWN_BINDING.config }] : [] })];
+    if (applied) state.projectBinding = { project_id: "w1", binding: OWN_BINDING, profile: PROFILE_SUMMARY, book: { book_id: "bk-a", title: "甲书" } };
+    state.projectFidelity = WORK_FIDELITY;
+    await mountView();
+    await openStage("learn");
+    await settle();
+    await settle();
+  }
+  const dimRow = (dim) => $(`.sr-dim[data-dimension="${dim}"]`);
+
+  it("用于当前作品时：顶上一张卡——终稿几场在作者范围内、近期常见偏差、走势（可切表格，场名来自目录）", async () => {
+    await openPortrait();
+    const card = byTestId("sr-work-fidelity");
+    expect(card.textContent).toContain("《北岸手记》像不像");
+    expect(byTestId("sr-work-fid-finals").textContent).toContain("1 / 2");
+    expect(byTestId("sr-work-fid-gaps").textContent).toContain("1");
+    expect(card.textContent).toContain("对话写法对白比作者少（3 次）");
+    const trend = byTestId("sr-work-trend");
+    expect($(".fid-trend-plot > svg", trend).getAttribute("aria-label")).toBe("最近 3 次读数：终稿 2 次，其中 1 次在作者的正常范围内；最近一次终稿第 96 位");
+    expect(trend.textContent).toContain("作者的正常范围（前 90 位）");
+    await click(byTestId("sr-work-trend-table-toggle"));
+    const rows = $$("tbody tr", byTestId("sr-work-trend-table"));
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toContain("第 1 章 · 第 2 场「夜渡」");
+    expect(rows[0].textContent).toContain("第 96 位");
+    expect(rows[0].textContent).toContain("超出范围");
+    expect(rows[2].textContent).toContain("首稿");
+  });
+
+  it("每一维右边是作品在这一维的平均分；近期常见偏差标出来，展开说是哪一句、几次", async () => {
+    await openPortrait();
+    const dialogue = dimRow("scene.dialogue");
+    const chip = $('[data-testid="sr-dim-fid"]', dialogue);
+    expect(chip.textContent).toContain("测得6.2");
+    expect(chip.textContent).toContain("评审6.5");
+    expect(chip.textContent).toContain("近期常见偏差");
+    const sentence = $('[data-testid="sr-dim-fid"]', dimRow("language.sentence_structure"));
+    expect(sentence.textContent).toContain("测得8.1");
+    expect(sentence.textContent).not.toContain("评审");
+    await click($(".sr-dim-toggle", dialogue));
+    const body = $('[data-testid="sr-dim-fid-body"]', dialogue);
+    expect(body.textContent).toContain("《北岸手记》在这一维");
+    expect(body.textContent).toContain("测得平均 6.2 / 10（2 场终稿）");
+    expect(body.textContent).toContain("近期常见偏差：对白比作者少（最近 4 次首稿里 3 次）");
+  });
+
+  it("这本书没用于当前作品：不挂卡、不挂分数（读数是对着作品现在用的那份画像量的）", async () => {
+    await openPortrait({ applied: false });
+    expect(byTestId("sr-work-fidelity")).toBeNull();
+    expect($('[data-testid="sr-dim-fid"]')).toBeNull();
+    expect(client.apiGet.mock.calls.some(([url]) => url === "/api/v1/projects/w1/style-fidelity")).toBe(false);
   });
 });
 

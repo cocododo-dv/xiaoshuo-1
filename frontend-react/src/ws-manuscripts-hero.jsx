@@ -14,7 +14,7 @@ import { manuDownload, manuRefreshChapters, manuSnapshotOf } from "./ws-manuscri
 
 const { useEffect, useRef, useState } = React;
 
-function ManuHero({ book, cells, activeId, stats, exportCtx }) {
+function ManuHero({ book, cells, activeId, stats, exportCtx, fidelity = null }) {
   const counts = {};
   cells.forEach((c) => { counts[c.stage] = (counts[c.stage] || 0) + 1; });
   const legend = CHAPTER_STATE_ORDER.filter((stage) => counts[stage]).map((stage) => ({ stage, n: counts[stage], meta: CHAPTER_STATE_META[stage] }));
@@ -33,6 +33,16 @@ function ManuHero({ book, cells, activeId, stats, exportCtx }) {
           <span>已定稿 <b>{stats.approvedCount}</b>/{cells.length} 章</span>
           <span>定稿字数 <b>{stats.approvedWords.toLocaleString()}</b>{goal ? ` / ${goal.toLocaleString()}` : ""}</span>
           {stats.reviewCount > 0 && <Tag tone="warn" className="ms-hero-flag">{stats.reviewCount} 章等你批准</Tag>}
+          {fidelity && (
+            <Tag
+              tone={fidelity.within === fidelity.total ? "ok" : "neutral"}
+              className="ms-hero-flag"
+              testId="manuscripts-fidelity-summary"
+              title="每一场最新的终稿对照参考作者：把作者自己书里的段落按像不像作者本人排成 100 位，落在作者的正常范围里算像。每一场的位次在「结构」页签。"
+            >
+              像不像：{fidelity.text}
+            </Tag>
+          )}
         </>
       )}
       actions={(
