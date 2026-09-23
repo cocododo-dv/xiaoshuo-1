@@ -60,6 +60,7 @@ from novel_system.services.scene_diagnosis import (
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.style_reference.readings import STAGE_PATCHED, record_author_draft_reading
+from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 from novel_system.services.style_prompt_injection import (
     inject_style_reference_prefix,
     resolve_style_scope,
@@ -1087,6 +1088,9 @@ class WriterDeepReviewService:
                 role=role,
             )
             return injected if injected is not None else prompt
+        except STYLE_REFERENCE_FAIL_CLOSED_ERRORS:
+            # 云策略不许把这本书派生的任何东西送给这个节点：整次调用 409（带 author_action），不降级成没有参考的提示
+            raise
         except Exception:  # noqa: BLE001 — 可选增强：注入失败只记日志，不阻断评审 / 补丁
             _LOGGER.warning(
                 "writer style reference prefix skipped for %s %s",

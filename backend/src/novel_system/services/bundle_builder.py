@@ -27,6 +27,7 @@ from novel_system.db.models import (
     StoryProject,
     StoryCharacter,
     VolumeSummary,
+    StyleReferenceBook,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
@@ -61,9 +62,11 @@ from novel_system.services.style_policy import (
     StylePolicy,
     policy_from_contract,
 )
+from novel_system.services.style_reference.policy import decide_reference_route
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
     build_style_runtime_contract,
+    contract_layer,
 )
 from novel_system.services.style_reference.structure import (
     REFERENCE_SCENE_CHARS_CEILING,
@@ -476,6 +479,18 @@ def previous_scene_voice_anchor(
     return None
 
 
+# 读 bundle 段的节点（起草 / 事实 QC / 参考评审 / 补丁 / 准定稿评审与改写）：bundle 里由参考书派生的段要对它们全都放行
+BUNDLE_REFERENCE_NODE_IDS: tuple[str, ...] = (
+    "neutral_draft",
+    "style_draft",
+    "style_patch",
+    "hard_qc",
+    "soft_qc",
+    "near_final_acceptance_review",
+    "scene_literary_rewrite",
+)
+
+
 class BundleBuilder:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -650,10 +665,19 @@ class BundleBuilder:
                     source_version_refs["style_reference_runtime_contract_hash"] = (
                         style_runtime_contract["contract_hash"]
                     )
+                    # 风格参考 v3 复核（H1）：bundle 里由这本书派生的段（叙事机制指引、参考尺度）会进读 bundle
+                    # 的每一个节点的提示——「仅本机」的书只要其中有一个节点走云端路由，这些段一概不进 bundle
+                    # （起草 / 评审节点渲染参考时会按自己的路由 409，作者看得到原因）。
+                    bundle_route = self._bundle_reference_route(style_runtime_contract)
+                    book_sections_allowed = bundle_route is None or bundle_route.send_book
+                    if not book_sections_allowed:
+                        source_version_refs["style_reference_bundle_sections"] = (
+                            f"withheld:{bundle_route.reason or 'cloud_policy'}"
+                        )
                     # 2026-09-22 结构跟随参考书:style_first 下按参考作者的章长与本章的场数推算
                     # 「这位作者的一场多长」,起草通道据此把硬范围上限抬到参考尺度(见
                     # scene_generation._parse_numeric_length_band)。以 _ 开头:不进 section。
-                    if reference_first:
+                    if reference_first and book_sections_allowed:
                         scene_scale = self._reference_scene_scale(scene, style_runtime_contract)
                         if scene_scale:
                             source_version_refs["style_reference_scene_scale"] = int(
@@ -672,7 +696,9 @@ class BundleBuilder:
                         separators=(",", ":"),
                     )
                     # v2（规格 §1.3）：叙事机制指引——neutral_draft 与 style_draft 都可见。
-                    narrative_lines = collect_narrative_guidance(style_runtime_contract)
+                    narrative_lines = (
+                        collect_narrative_guidance(style_runtime_contract) if book_sections_allowed else []
+                    )
                     narrative_text = render_narrative_section(narrative_lines)
                     if narrative_text:
                         source_version_refs["style_narrative_guidance_contract_hash"] = (
@@ -1088,6 +1114,24 @@ class BundleBuilder:
             "bundle_snapshot_hash": bundle_hash,
             "snapshot": snapshot,
         }
+
+    def _bundle_reference_route(self, contract: Mapping[str, Any]):
+        """bundle 里由参考书派生的段能不能进读 bundle 的节点：按这些节点的实际路由判（``decide_reference_route``）。
+
+        送云策略的书与节点无关（直接放行，不去解析路由）；「仅本机」/ 未知策略的书要求每一个读 bundle 的节点都走本机
+        模型。返回 ``None`` = 契约里没有书（没有可判的东西）。"""
+        layer = contract_layer(contract)
+        book_snapshot = layer.get("book") if isinstance(layer.get("book"), Mapping) else {}
+        book_id = str(book_snapshot.get("book_id") or "")
+        if not book_id:
+            return None
+        book = self.session.get(StyleReferenceBook, book_id)
+        return decide_reference_route(
+            book,
+            node_ids=BUNDLE_REFERENCE_NODE_IDS,
+            frozen_book=book_snapshot,
+            operation="style_reference_bundle",
+        )
 
     def _reference_scene_scale(
         self, scene: SceneCard, contract: Mapping[str, Any]

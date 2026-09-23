@@ -421,23 +421,12 @@ def _judge_messages(system_prefix: str, template: Any, text: str) -> list[dict[s
 
 
 def judge_input_budget(template: Any) -> int:
-    """评审提示的输入预算（L7），与管线同一口径：``NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET`` 设了正数就用它（小上下文
-    的本机模型收紧），否则取模板值与风格通道下限的较大者——评审走 soft_qc 路由、拿的也是 soft_qc 形状的参考，
-    与 soft_qc 同一档（``prompt_builder.RUNTIME_MIN_INPUT_BUDGETS``）。"""
+    """评审提示的输入预算（L7），与管线同一口径（``prompt_builder.default_input_token_budget``）：
+    ``NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET`` 设了正数就用它（小上下文的本机模型收紧），否则取模板值与
+    ``RUNTIME_MIN_INPUT_BUDGETS`` 里这个模板的下限（与 soft_qc 同一档）的较大者。"""
     from novel_system.services import prompt_builder
 
-    override = prompt_builder._scene_input_token_budget_override()
-    if override > 0:
-        return override
-    floor = prompt_builder.RUNTIME_MIN_INPUT_BUDGETS.get(
-        CHECK_TEMPLATE,
-        prompt_builder.RUNTIME_MIN_INPUT_BUDGETS.get(CHECK_NODE_ID, prompt_builder.STYLE_PASS_INPUT_TOKEN_BUDGET),
-    )
-    try:
-        declared = int(getattr(template, "input_token_budget", 0) or 0)
-    except (TypeError, ValueError):
-        declared = 0
-    return max(declared, int(floor))
+    return prompt_builder.default_input_token_budget(template)
 
 
 def run_reference_judge(

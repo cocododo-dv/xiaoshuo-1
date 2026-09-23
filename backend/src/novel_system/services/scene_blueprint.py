@@ -27,6 +27,7 @@ from novel_system.services.scene_structure_brief import (
     render_scene_structure_brief,
 )
 from novel_system.services.style_policy import StylePolicy, style_policy_live
+from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 from novel_system.services.style_prompt_injection import (
     ROLE_PLAN,
     inject_style_reference_prefix,
@@ -323,7 +324,8 @@ class SceneBlueprintService:
         # 2026-09-14（WP6.1）：三块的生成与登记与近终稿规划共用 planning_context 的助手。
         contract = dict(policy.contract) if policy.bound and policy.contract is not None else None
         if contract is not None:
-            reference = build_planning_style_reference(contract, session=self.session)
+            # 来源快照只进场景蓝图节点（事实版蓝图同一路由）：按 scene_blueprint 的实际路由判云策略（H1）
+            reference = build_planning_style_reference(contract, session=self.session, node_ids=("scene_blueprint",))
             if reference is not None:
                 register_planning_style_reference(snapshot, reference)
         source_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
@@ -375,6 +377,9 @@ class SceneBlueprintService:
                 role=ROLE_PLAN,
             )
             return injected if injected is not None else prompt
+        except STYLE_REFERENCE_FAIL_CLOSED_ERRORS:
+            # 云策略不许把这本书派生的任何东西送给这个节点：整次调用 409（带 author_action），不降级成没有参考的提示
+            raise
         except Exception:  # noqa: BLE001 — 可选增强：注入失败只记日志，不阻断规划
             _LOGGER.warning(
                 "scene_blueprint style reference prefix skipped for scene %s",
