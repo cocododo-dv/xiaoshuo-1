@@ -11,7 +11,6 @@ import pytest
 
 from novel_system.services.style_reference import rag
 from novel_system.services.style_reference.cleanup import purge_derived_data
-from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.rag_evaluation import (
     load_rag_ab_manifest,
     run_rag_content_independence_ab,
@@ -213,107 +212,9 @@ def test_delete_rag_index_removes_collections(session):
     )
 
 
-# --------------------------------------------------------------------------- C 策略注入(env memory 后端)
-
-
-def _bind_c_strategy(session, profile, *, project_id):
-    repo = StyleReferenceRepository(session)
-    repo.create_binding(
-        binding_id=f"bind_{profile.profile_id}",
-        profile_id=profile.profile_id,
-        scope="project",
-        scope_ref_id=project_id,
-        task_type="scene_generation",
-        strategy="C",
-        config_json={},
-        status="active",
-    )
-    session.flush()
-
-
-def test_c_strategy_injects_rag_block_with_red_line(session):
-    # 用 env memory 后端(conftest 设 NOVEL_SYSTEM_VECTOR_BACKEND=memory),
-    # 与 InjectionService._render_rag 内部 get_vector_store() 一致。
-    profile = _seed_book_with_paragraphs(session, seed="cinj")
-    rag.build_rag_index(session, profile)  # 不传 store → 写入 env 后端
-    _bind_c_strategy(session, profile, project_id="proj_cinj")
-    svc = InjectionService(session)
-    svc.context_text = "她推开门冲进漆黑的走廊，脚步声急促"
-    frags = svc.fragments_for("proj_cinj", "scene_generation")
-    assert frags.rag_block  # C 真召回非空
-    prefix = frags.to_system_prompt_prefix()
-    assert "风格检索样例" in prefix
-    assert "严格禁止" in prefix or "严禁" in prefix  # 红线段随注
-
-
-def test_c_strategy_drift_changes_snippets_with_styled_context(session):
-    """v2:只有调用方显式标记 styled_context(前文已风格化)时,RAG query 才用前文签名。"""
-    profile = _seed_book_with_paragraphs(session, seed="cdrift")
-    rag.build_rag_index(session, profile)
-    _bind_c_strategy(session, profile, project_id="proj_cdrift")
-    svc = InjectionService(session)
-    svc.styled_context = True
-    svc.context_text = "窗外的雨下个不停，青灰色的瓦檐"  # 偏 description_env
-    block_env = svc.fragments_for("proj_cdrift", "scene_generation").rag_block
-    svc2 = InjectionService(session)
-    svc2.styled_context = True
-    svc2.context_text = "她猛地推开门，冲进漆黑的走廊"  # 偏 action
-    block_act = svc2.fragments_for("proj_cdrift", "scene_generation").rag_block
-    assert block_env and block_act
-    assert block_env != block_act  # 召回随(已风格化的)上下文变化
-
-
-def test_c_strategy_default_query_is_profile_signature_not_context(session):
-    """v2 默认(中性稿不代表目标风格):query = 画像代表签名,召回不随 context 变;审计 rag_outcome=hit。"""
-    profile = _seed_book_with_paragraphs(session, seed="csig")
-    rag.build_rag_index(session, profile)
-    _bind_c_strategy(session, profile, project_id="proj_csig")
-    svc = InjectionService(session)
-    svc.context_text = "窗外的雨下个不停，青灰色的瓦檐"
-    block_env = svc.fragments_for("proj_csig", "scene_generation").rag_block
-    assert svc.last_runtime_audit["rag_outcome"] == "hit"
-    svc2 = InjectionService(session)
-    svc2.context_text = "她猛地推开门，冲进漆黑的走廊"
-    block_act = svc2.fragments_for("proj_csig", "scene_generation").rag_block
-    assert block_env and block_act
-    assert block_env == block_act
-
-
-def test_c_strategy_ensures_index_when_missing(session, monkeypatch):
-    """v2:未建索引 → _render_rag 前调用幂等 ensure_rag_index(memory 后端重建),C 仍有召回。"""
-    profile = _seed_book_with_paragraphs(session, seed="cdeg")
-    _bind_c_strategy(session, profile, project_id="proj_cdeg")
-    calls: list[str] = []
-    real_ensure = rag.ensure_rag_index
-
-    def _spy(sess, prof, **kwargs):
-        calls.append(str(prof.profile_id))
-        return real_ensure(sess, prof, **kwargs)
-
-    monkeypatch.setattr(rag, "ensure_rag_index", _spy)
-    svc = InjectionService(session)
-    svc.context_text = "任意上下文"
-    frags = svc.fragments_for("proj_cdeg", "scene_generation")
-    assert calls == [profile.profile_id]
-    assert frags.rag_block  # 重建后真召回
-    assert frags.positive_block
-    assert svc.last_runtime_audit["rag_outcome"] == "hit"
-    # 第二次:索引已就绪,ensure 幂等(ready,不重建)
-    assert real_ensure(session, profile)["status"] == "ready"
-
-
-def test_c_strategy_empty_recall_writes_rag_outcome_unavailable(session, monkeypatch):
-    """空召回(向量后端不可用)→ rag_block 空、last_runtime_audit.rag_outcome == "unavailable"。"""
-    profile = _seed_book_with_paragraphs(session, seed="cunav2")
-    _bind_c_strategy(session, profile, project_id="proj_cunav2")
-    monkeypatch.setattr(rag, "_resolve_store", lambda vs: None)
-    svc = InjectionService(session)
-    svc.context_text = "她推开门冲进漆黑的走廊"
-    frags = svc.fragments_for("proj_cunav2", "scene_generation")
-    assert frags.rag_block == ""
-    assert frags.positive_block
-    assert svc.last_runtime_audit["rag_outcome"] == "unavailable"
-    assert svc.last_runtime_audit["outcome"] == "hit"  # 抽象块仍命中
+# --------------------------------------------------------------------------- 检索签名
+# (2026-09-23 风格参考 v3:渲染不再调用检索——旧策略 C 映射为全面模仿;C 注入用例随之删除,
+#  rag.py 本身由收尾包删除。)
 
 
 def test_build_query_signatures_mean_drives_retriever_without_text(session):
@@ -392,106 +293,6 @@ def test_purge_derived_data_deletes_rag_index(session):
 
 
 # --------------------------------------------------------------------------- 审查补强:退化路径 / 红线契约 / 隐私
-
-
-def test_c_strategy_local_only_skips_rag(session):
-    # 附录 B — local_only 的书:RAG 原文片段不得送往云端 LLM,C 跳过 RAG;
-    # 但抽象正向特征(positive)仍注入。
-    profile = _seed_book_with_paragraphs(
-        session, seed="clocal", cloud_policy="local_only"
-    )
-    rag.build_rag_index(session, profile)
-    _bind_c_strategy(session, profile, project_id="proj_clocal")
-    svc = InjectionService(session)
-    svc.context_text = "她推开门冲进漆黑的走廊"
-    frags = svc.fragments_for("proj_clocal", "scene_generation")
-    assert frags.rag_block == ""  # local_only:原文不注入
-    assert frags.positive_block  # 抽象特征仍注入
-
-
-def test_c_strategy_inactive_profile_no_injection(session):
-    # profile 非 active(draft)→ binding 解析返回空 fragments(退化路径)
-    profile = _seed_book_with_paragraphs(session, seed="cinact", status="draft")
-    rag.build_rag_index(session, profile)
-    _bind_c_strategy(session, profile, project_id="proj_cinact")
-    svc = InjectionService(session)
-    svc.context_text = "她推开门"
-    frags = svc.fragments_for("proj_cinact", "scene_generation")
-    assert frags.rag_block == "" and frags.positive_block == ""
-    assert frags.to_system_prompt_prefix() == ""
-
-
-def test_c_strategy_degrades_when_vector_store_unavailable(session, monkeypatch):
-    # 向量后端不可用(_resolve_store 返 None,如 Windows 原生 chroma)→ rag_block 空,
-    # 但 positive 仍注入,不报错。
-    profile = _seed_book_with_paragraphs(session, seed="cunavail")
-    rag.build_rag_index(session, profile)
-    _bind_c_strategy(session, profile, project_id="proj_cunavail")
-    monkeypatch.setattr(rag, "_resolve_store", lambda vs: None)
-    svc = InjectionService(session)
-    svc.context_text = "她推开门冲进漆黑的走廊"
-    frags = svc.fragments_for("proj_cunavail", "scene_generation")
-    assert frags.rag_block == ""
-    assert frags.positive_block
-
-
-def test_anti_plagiarism_attached_when_rag_present(session):
-    # 红线契约:rag_block 非空 ⟹ anti_plagiarism_block 非空(直接断言字段,非仅 prefix 子串)
-    profile = _seed_book_with_paragraphs(session, seed="credline")
-    rag.build_rag_index(session, profile)
-    _bind_c_strategy(session, profile, project_id="proj_credline")
-    svc = InjectionService(session)
-    svc.context_text = "她推开门冲进漆黑的走廊"
-    frags = svc.fragments_for("proj_credline", "scene_generation")
-    assert frags.rag_block
-    assert frags.anti_plagiarism_block
-    # 拼装顺序:红线段在所有风格块之后(prefix 尾部)
-    prefix = frags.to_system_prompt_prefix()
-    assert prefix.index("风格检索样例") < prefix.index("严格禁止")
-
-
-def test_anti_plagiarism_omitted_when_all_blocks_empty(session):
-    # 所有风格块全空 ⟹ 红线段不输出,整体 no-op
-    repo = StyleReferenceRepository(session)
-    repo.create_book(
-        book_id="sr_book_empty",
-        title="t",
-        source_kind="upload",
-        cloud_policy="allow_full_cloud",
-        text_checksum="chk_empty",
-        total_chars=0,
-        status="ready",
-        stats_json={
-            "rights_declaration": {
-                "declared": True,
-                "analysis_rights": True,
-                "send_rights": True,
-            }
-        },
-    )
-    repo.create_run(
-        run_id="sr_run_empty", book_id="sr_book_empty", status="done", phase="done"
-    )
-    profile = repo.create_profile(
-        profile_id="sr_profile_empty",
-        book_id="sr_book_empty",
-        run_id="sr_run_empty",
-        title="t",
-        status="active",
-        profile_json={},
-        coverage_json={},
-        source_finding_ids_json=[],
-    )
-    session.flush()
-    _bind_c_strategy(session, profile, project_id="proj_empty")
-    svc = InjectionService(session)
-    frags = svc.fragments_for("proj_empty", "scene_generation")
-    assert (
-        frags.rag_block == ""
-        and frags.positive_block == ""
-        and frags.anti_plagiarism_block == ""
-    )
-    assert frags.to_system_prompt_prefix() == ""
 
 
 def test_drift_retrieve_snippet_sets_differ_by_context(session):

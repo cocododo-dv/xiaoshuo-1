@@ -77,11 +77,9 @@ from novel_system.services.style_reference.run_orchestrator import (
     RunOrchestrator,
     start_style_reference_run_worker,
 )
-from novel_system.services.style_reference.injection import (
-    InjectionService,
-    default_injection_strategy,
-    injection_task_defaults,
-)
+from novel_system.services.style_reference.inject.bindings import describe_binding_layers
+from novel_system.services.style_reference.inject.preview import preview_render
+from novel_system.services.style_reference.injection import injection_task_defaults
 from novel_system.services.style_reference.schemas import (
     BindingScope,
     InjectionPreviewRequest,
@@ -89,6 +87,7 @@ from novel_system.services.style_reference.schemas import (
     InjectionPreviewStats,
     InjectionStrategy,
     RunStatus,
+    SystemPromptFragments,
     TaskType,
     ValidateRequest,
     ValidationMode,
@@ -1837,7 +1836,7 @@ def get_binding_injection_preview(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """PR-9 §5.1 — 读已落盘 binding 渲染 fragments + prefix。"""
+    """读已落盘 binding,按起草时同一套选窗与块次序渲染(v3:``inject.preview``)。"""
     repo = StyleReferenceRepository(session)
     binding = repo.get_binding(binding_id)
     if binding is None:
@@ -1846,28 +1845,33 @@ def get_binding_injection_preview(
             f"binding {binding_id!r} not found",
             status_code=404,
         )
-    profile = repo.get_profile(binding.profile_id)
-    if profile is None:
+    if repo.get_profile(binding.profile_id) is None:
         raise DomainError(
             "STYLE_REFERENCE_PROFILE_NOT_FOUND",
             f"profile {binding.profile_id!r} not found",
             status_code=404,
         )
-    try:
-        strategy = InjectionStrategy(binding.strategy)
-    except ValueError:
-        strategy = InjectionStrategy.A
-    fragments, stats = InjectionService(session).render_preview(
-        profile, strategy, binding.config_json or {}
+    result = preview_render(
+        session,
+        binding.profile_id,
+        binding.config_json or {},
+        strategy=binding.strategy,
+        project_id=binding.scope_ref_id if binding.scope == "project" else None,
     )
-    return ok(
-        InjectionPreviewResponse(
-            fragments=fragments,
-            prefix=fragments.to_system_prompt_prefix(),
-            stats=InjectionPreviewStats(**stats),
-        ).model_dump(),
-        req_id=_req_id(request),
-    )
+    return ok(_injection_preview_payload(result), req_id=_req_id(request))
+
+
+def _injection_preview_payload(result: dict[str, Any]) -> dict[str, Any]:
+    stats = result.get("stats") or {}
+    return InjectionPreviewResponse(
+        fragments=SystemPromptFragments(**result["fragments"]),
+        prefix=str(result.get("prefix") or ""),
+        user_tail=str(result.get("user_tail") or ""),
+        stats=InjectionPreviewStats(**stats) if stats else None,
+        window_refs=[dict(item) for item in result.get("window_refs") or []],
+        reference_mode=result.get("reference_mode"),
+        sample_windows=result.get("sample_windows"),
+    ).model_dump()
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/injection-preview")
@@ -1877,46 +1881,35 @@ def dryrun_injection_preview(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """PR-9 §5.1 — dryrun:不写盘,直接按入参 strategy/intensity/sub_dimensions 渲染。"""
-    # idempotency-exempt: deterministic read-only preview; no DB/file/provider side effect.
-    repo = StyleReferenceRepository(session)
-    profile = repo.get_profile(profile_id)
-    if profile is None:
+    """dryrun:不写盘,按入参的绑定配置渲染(v3:与起草同一套选窗、同一个块次序;给了 scene_id 就是这一场
+    起草时会拿到的窗)。"""
+    # idempotency-exempt: deterministic read-only preview; no binding / selection written (the
+    # book's window index may be built once as a cache).
+    if StyleReferenceRepository(session).get_profile(profile_id) is None:
         raise DomainError(
             "STYLE_REFERENCE_PROFILE_NOT_FOUND",
             f"profile {profile_id!r} not found",
             status_code=404,
         )
-    config: dict[str, Any] = {
-        "intensity": payload.intensity,
-        "sub_dimensions": payload.sub_dimensions,
-        "include_positive": payload.include_positive,
-        "include_forbidden": payload.include_forbidden,
-    }
-    if payload.include_metric is not None:
-        config["include_metric"] = payload.include_metric
-    strategy = payload.strategy or default_injection_strategy(payload.task_type)
-    svc = InjectionService(session)
-    if payload.scene_id:
-        # 2026-09-14 保真修补(WP4.3):按场景预览——与注入器同一轮换种子与位置提示,
-        # 作者看到的就是这一场实际会拿到的窗口(场景不存在时只按种子轮换)。
-        from novel_system.db.models import SceneCard
-        from novel_system.services.style_reference.injection import scene_sampling_hints
-
-        svc.few_shot_seed = str(payload.scene_id)
-        svc.scene_position, svc.scene_hint_types = scene_sampling_hints(
-            session.get(SceneCard, payload.scene_id)
-        )
-    fragments, stats = svc.render_preview(profile, strategy, config)
-    return ok(
-        InjectionPreviewResponse(
-            fragments=fragments,
-            prefix=fragments.to_system_prompt_prefix(),
-            stats=InjectionPreviewStats(**stats),
-            window_refs=[dict(item) for item in svc.last_few_shot_window_refs],
-        ).model_dump(),
-        req_id=_req_id(request),
+    config: dict[str, Any] = {"intensity": payload.intensity}
+    if payload.reference_mode is not None:
+        config["reference_mode"] = payload.reference_mode
+    if payload.sample_windows is not None:
+        config["sample_windows"] = payload.sample_windows
+    if payload.dimension_states:
+        config["dimension_states"] = dict(payload.dimension_states)
+    if payload.draft_mode is not None:
+        config["draft_mode"] = payload.draft_mode
+    strategy = payload.strategy.value if payload.strategy is not None else None
+    result = preview_render(
+        session,
+        profile_id,
+        config,
+        scene_id=payload.scene_id,
+        project_id=payload.project_id,
+        strategy=strategy,
     )
+    return ok(_injection_preview_payload(result), req_id=_req_id(request))
 
 
 # ---------------------------------------------------------------------------
@@ -1944,7 +1937,9 @@ def get_injection_layers(
     character_ids 逗号分隔(onstage 多角色)。无命中层时 layers=[]、merged=null。
     """
     chars = [c.strip() for c in (character_ids or "").split(",") if c.strip()] or None
-    data = InjectionService(session).describe_binding_layers(
+    # v3:只查列、不渲染(U10);只有最具体的一层生效(applied)
+    data = describe_binding_layers(
+        session,
         project_id,
         task_type,
         character_ids=chars,

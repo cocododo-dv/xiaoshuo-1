@@ -50,7 +50,6 @@ from novel_system.services.qc_constraints import (
 )
 from novel_system.services.style_reference.injection import (
     InjectionService,
-    fit_fragments_to_input_budget,
     ordered_character_ids,
 )
 from novel_system.services.style_reference.config_loader import load_yaml_config

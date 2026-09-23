@@ -1,37 +1,74 @@
-"""Shared ``[STYLE_REFERENCE]`` prefix injection for scene generation and QC.
+"""Shared ``[STYLE_REFERENCE]`` injection for every node that writes, revises, reviews or plans.
 
 风格模仿 v2：``inject_style_reference_prefix`` 原是 ``scene_generation`` 的模块级函数，
 ``qc_engine.SoftQcEngine`` 也要用它给 soft_qc 注入同一冻结契约前缀。两个模块互相
 import 会形成依赖环（架构守卫 ``tests/test_service_architecture.py``），因此抽到这个
 不依赖二者的中立模块；``scene_generation`` 再导出同名符号以保持既有调用面。
+
+风格参考 v3（2026-09-23）：本模块只是一层薄适配——
+
+1. 解析**一份**风格策略（``StylePolicy``）：调用方给了契约 → 那份契约（``resolved``）；给了 bundle → bundle 里
+   冻结的契约（``style_policy_for_bundle``，按契约哈希记忆）；没有 bundle（写作台、章级评审）或旧 bundle 没冻结
+   契约 → 按当前活动绑定现解析（``style_policy_live``，审计 ``mode=live`` 并记契约哈希——原来那条不记哈希的
+   ``legacy_live`` 路径没有了，J15）；
+2. 按调用参数造一个 ``StyleRenderRequest``（新参数 ``role``；不给时按旧参数推断：样例进 user 尾部 → 起草，
+   窗数上限 ≤3 → 规划，=4 → 评审，其余 → 起草）；场景的章内位置、场面标签、对白 / 概述倾向从场景设计推，
+   首稿自动带上近期常见偏差；
+3. ``render_style`` 渲染（每场冻结选窗、进程内缓存），``fit_rendered`` 贪心压进预算；
+4. 返回的 prompt 字典与以前同形：``system_prompt`` 前缀、``STYLE_USER_TAIL_KEY`` 尾块、
+   ``_style_reference_runtime_audit`` 审计。
+
+``context_text``（被润色的稿子）不再影响任何东西——选窗只看本场设计（J2 / J4），参数保留只为调用面不变。
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
-import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, SceneCard
-from novel_system.services.style_reference.injection import (
+from novel_system.services.style_policy import (
+    MODE_ABSENT,
+    MODE_DEGRADED,
+    MODE_LIVE,
+    MODE_NONE,
+    StylePolicy,
+    policy_from_contract,
+    style_policy_for_bundle,
+    style_policy_live,
+)
+from novel_system.services.style_reference.inject.fit import fit_rendered
+from novel_system.services.style_reference.inject.gaps import recent_gaps_for_project
+from novel_system.services.style_reference.inject.render import (
+    attach_chapter_position_mandate,
+    chapter_position_mandate,
+    render_style,
+)
+from novel_system.services.style_reference.inject.request import (
+    PLACEMENT_SYSTEM,
+    PLACEMENT_USER_TAIL,
+    PLAN_K,
+    REVIEW_K,
+    ROLE_DRAFT,
+    StyleRenderRequest,
+    infer_role,
+)
+from novel_system.services.style_reference.inject.selection import (
+    derive_situation_tags,
+    scene_chapter_position,
     scene_dialogue_heavy,
-    scene_sampling_hints,
-    InjectionService,
-    fit_fragments_to_input_budget,
-    ordered_character_ids,
+    scene_rendering_mode,
 )
 from novel_system.services.style_reference.runtime_contract import (
-    StyleRuntimeContractState,
-    extract_style_generation_context,
-    resolve_style_runtime_contract_state,
+    style_runtime_contract_status_from_bundle,
+    validate_style_runtime_contract,
 )
-from novel_system.services.style_reference.schemas import FEW_SHOT_CLOSING_MANDATE_FINAL
-from novel_system.services.style_reference.structure import chapter_boundary_habits
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,74 +76,38 @@ _LOGGER = logging.getLogger(__name__)
 # （翻译成 STYLE_GATE_UNAVAILABLE notice）都要认它；两者不能互相 import，所以放在这里。
 STYLED_GATE_UNAVAILABLE_VERDICT = "unavailable"
 
-# 2026-09-14 保真修补(WP6):规划(scene_blueprint)与评审 / 局部补丁(writer_deep_review /
-# writer_passage_patch)节点只要少量样例窗口;起草类调用不传上限,行为逐字不变。
-PLANNING_FEW_SHOT_K_CAP = 3
+# 规划节点（scene_blueprint、写作台的章级 / 局部节点）只要冻结选窗的前 3 窗，评审节点前 4 窗（L4）。
+PLANNING_FEW_SHOT_K_CAP = PLAN_K
+REVIEW_FEW_SHOT_K_CAP = REVIEW_K
 # 调用方显式给出契约(而非 bundle)时的审计标签:契约是本次调用按当前 active 绑定解析的,
 # 与冻结进 SceneBundle 的契约区分开。
 RESOLVED_CONTRACT_STATUS = "resolved_live"
 RESOLVED_CONTRACT_MODE = "resolved"
-# 2026-09-22 风格参考优先:样例块的落点。``system`` = 整个 [STYLE_REFERENCE](含样例)prepend 到
-# system 提示(规划 / 评审节点、旧行为);``user_tail`` = 抽象块与红线留在 system,样例块作为
-# user 消息的末尾紧挨输出(起草通道:首稿 / 修复 / 风格稿 / 近终稿改写 / 各类补丁 / 写手建议)。
-PLACEMENT_SYSTEM = "system"
-PLACEMENT_USER_TAIL = "user_tail"
+# 没有 bundle（或旧 bundle 没冻结契约）时按当前活动绑定现解析的审计标签（J15：记契约哈希）。
+LIVE_CONTRACT_STATUS = "live"
 # 注入器把样例尾巴放在 prompt dict 的这个键下;调用方用 :func:`apply_style_user_tail` 接到最终
 # user prompt 上(runner 的 user_prompt 是单独传的,注入器改不到)。
 STYLE_USER_TAIL_KEY = "_style_reference_user_tail"
+STYLE_RUNTIME_AUDIT_KEY = "_style_reference_runtime_audit"
 
 __all__ = [
+    "LIVE_CONTRACT_STATUS",
     "PLACEMENT_SYSTEM",
     "PLACEMENT_USER_TAIL",
     "PLANNING_FEW_SHOT_K_CAP",
     "RESOLVED_CONTRACT_MODE",
     "RESOLVED_CONTRACT_STATUS",
+    "REVIEW_FEW_SHOT_K_CAP",
     "STYLED_GATE_UNAVAILABLE_VERDICT",
+    "STYLE_RUNTIME_AUDIT_KEY",
     "STYLE_USER_TAIL_KEY",
     "apply_style_user_tail",
     "attach_chapter_position_mandate",
     "chapter_position_mandate",
     "inject_style_reference_prefix",
     "resolve_style_scope",
+    "style_render_request_for_scene",
 ]
-
-
-def chapter_position_mandate(position: str | None, contract: Mapping[str, Any] | None) -> str:
-    """2026-09-22 结构跟随参考书:章首 / 章末场的收口补充——开章 / 收章照样例里标着「章首」「章末」的
-    窗口,以及参考作者开章 / 收章最常用的段型(结构画像);中间场返回空串。"""
-    if position not in ("opening", "closing", "whole"):
-        return ""
-    card = None
-    layers = contract.get("layers") if isinstance(contract, Mapping) else None
-    if isinstance(layers, list) and layers and isinstance(layers[-1], Mapping):
-        profile = layers[-1].get("profile") if isinstance(layers[-1].get("profile"), Mapping) else {}
-        profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
-        card = profile_json.get("structure_card") if isinstance(profile_json.get("structure_card"), Mapping) else None
-    habits = chapter_boundary_habits(card)
-    parts: list[str] = []
-    if position in ("opening", "whole"):
-        habit = f"（这位作者的章多以{habits['opening']}起手）" if habits.get("opening") else ""
-        parts.append(
-            "本场是本章的第一场：怎样开章，照样例里标着「章首」的窗口来"
-            f"{habit}，用这位作者开章的方式起手，不用总结式或交代式的开头。"
-        )
-    if position in ("closing", "whole"):
-        habit = f"（这位作者的章多以{habits['closing']}收束）" if habits.get("closing") else ""
-        parts.append(
-            "本场是本章的最后一场：怎样收章，照样例里标着「章末」的窗口来"
-            f"{habit}，收在场景结构定下的那一拍上，用这位作者收章的方式收束。"
-        )
-    return "".join(parts)
-
-
-def attach_chapter_position_mandate(user_tail: str, mandate: str) -> str:
-    """把开章 / 收章补充插在收口指令最后一句（篇幅 / 只返回 JSON）之前；没有那一句就接在尾巴末尾。"""
-    if not mandate or not user_tail:
-        return user_tail
-    if FEW_SHOT_CLOSING_MANDATE_FINAL in user_tail:
-        head, _sep, rest = user_tail.rpartition(FEW_SHOT_CLOSING_MANDATE_FINAL)
-        return head + mandate + FEW_SHOT_CLOSING_MANDATE_FINAL + rest
-    return user_tail.rstrip("\n") + "\n" + mandate + "\n"
 
 
 def apply_style_user_tail(prompt: Mapping[str, Any] | None, user_prompt: str) -> str:
@@ -132,7 +133,7 @@ def resolve_style_scope(
     - 有场景行 → 直接用 ``SceneCard``(scene > character > project > global 全部作用域;
       旧场景行没有 ``project_id`` 时补上其章的 ``project_id``,否则 project 层绑定看不见);
     - 只有章 / 项目(整章稿、项目稿、章级评审) → 一个只带 ``project_id`` 的作用域对象
-      (project + global 层;无场景种子,窗口取确定性前 k);
+      (project + global 层;无场景种子,窗口按契约确定);
     - 连项目都定不出 → ``None``(调用方跳过注入)。
     """
     scene = session.get(SceneCard, str(scene_id)) if scene_id else None
@@ -155,6 +156,9 @@ def resolve_style_scope(
             scene_seq=getattr(scene, "scene_seq", 0),
             is_chapter_last=getattr(scene, "is_chapter_last", 0),
             writer_brief_json=dict(getattr(scene, "writer_brief_json", None) or {}),
+            scene_goal=getattr(scene, "scene_goal", None),
+            beats_json=list(getattr(scene, "beats_json", None) or []),
+            scene_type=getattr(scene, "scene_type", None),
         )
     return SimpleNamespace(
         project_id=str(resolved_project),
@@ -166,6 +170,97 @@ def resolve_style_scope(
         is_chapter_last=0,
         writer_brief_json={},
     )
+
+
+def _bundle_id(bundle: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(bundle, Mapping):
+        return None
+    value = str(bundle.get("bundle_id") or "").strip()
+    return value or None
+
+
+def style_render_request_for_scene(
+    session: Session,
+    scene: Any,
+    policy: StylePolicy,
+    *,
+    role: str,
+    placement: str,
+    k_cap: int | None = None,
+    bundle_id: str | None = None,
+    situation_tags: Sequence[str] | None = None,
+    recent_gaps: Sequence[str] | None = None,
+    revise_dimensions: Sequence[str] | None = None,
+) -> StyleRenderRequest:
+    """场景（或作用域对象）→ 渲染请求：章内位置、场面标签、对白 / 概述倾向从场景设计推；首稿默认带近期偏差。"""
+    if recent_gaps is None:
+        recent_gaps = (
+            recent_gaps_for_project(
+                session,
+                project_id=getattr(scene, "project_id", None),
+                profile_id=policy.profile_id,
+            )
+            if role == ROLE_DRAFT
+            else ()
+        )
+    return StyleRenderRequest(
+        role=role,
+        placement=placement,
+        k_cap=k_cap,
+        scene_id=getattr(scene, "scene_id", None),
+        bundle_id=bundle_id,
+        position=scene_chapter_position(scene),
+        situation_tags=tuple(situation_tags) if situation_tags is not None else derive_situation_tags(scene),
+        dialogue_heavy=scene_dialogue_heavy(scene),
+        rendering_mode=scene_rendering_mode(scene),
+        revise_dimensions=tuple(revise_dimensions or ()),
+        recent_gaps=tuple(recent_gaps or ()),
+    )
+
+
+def _resolve_policy(
+    session: Session,
+    scene: Any,
+    bundle: Mapping[str, Any] | None,
+    runtime_contract: Mapping[str, Any] | None,
+    *,
+    task_type: str,
+) -> tuple[StylePolicy, str | None, str]:
+    """(策略, runtime_contract_status, runtime_contract_mode)。"""
+    if runtime_contract is not None:
+        contract = validate_style_runtime_contract(runtime_contract)
+        return (
+            policy_from_contract(contract, mode=RESOLVED_CONTRACT_MODE),
+            RESOLVED_CONTRACT_STATUS,
+            RESOLVED_CONTRACT_MODE,
+        )
+    if bundle is not None:
+        policy = style_policy_for_bundle(bundle, task_type=task_type)
+        if policy.mode != MODE_NONE:
+            status = style_runtime_contract_status_from_bundle(bundle, task_type=task_type)
+            return policy, status, policy.mode
+    # 没有 bundle / 旧 bundle 没冻结任何契约记录：按当前活动绑定现解析（记契约哈希）
+    policy = style_policy_live(session, scene, task_type=task_type)
+    return policy, LIVE_CONTRACT_STATUS, policy.mode if policy.mode != MODE_NONE else MODE_LIVE
+
+
+def _degraded(
+    prompt: dict[str, Any],
+    *,
+    task_type: str,
+    status: str | None,
+    mode: str | None,
+    error_code: str | None,
+) -> dict[str, Any]:
+    degraded = dict(prompt)
+    degraded[STYLE_RUNTIME_AUDIT_KEY] = {
+        "outcome": "degraded",
+        "task_type": task_type,
+        "runtime_contract_status": status,
+        "runtime_contract_mode": mode,
+        "error_code": error_code,
+    }
+    return degraded
 
 
 def inject_style_reference_prefix(
@@ -180,206 +275,101 @@ def inject_style_reference_prefix(
     few_shot_k_cap: int | None = None,
     runtime_contract: Mapping[str, Any] | None = None,
     placement: str = PLACEMENT_SYSTEM,
+    role: str | None = None,
+    situation_tags: Sequence[str] | None = None,
+    recent_gaps: Sequence[str] | None = None,
+    revise_dimensions: Sequence[str] | None = None,
 ) -> dict[str, Any] | None:
-    """PR-8 §5.1 — 把冻结契约渲染成 ``[STYLE_REFERENCE]`` 前缀，prepend 到 system_prompt。
+    """把风格参考渲染进提示：``system_prompt`` 前缀 + （起草 / 改稿）user 尾块 + 审计。
 
-    无 binding / project_id / profile 时 no-op（返回原对象）；有候选 binding 但召回 /
-    渲染失败时吞掉异常、回退基础 prompt 并在 ``_style_reference_runtime_audit`` 记
-    ``outcome="degraded"``（风格注入是可选增强，不阻断 LLM 生成流程）。
+    无绑定 / 无作用域 → 原样返回；bundle 明确冻结了「没有绑定」→ 原样返回；契约损坏 / 渲染失败 → 基础
+    prompt + ``outcome="degraded"`` 审计（风格参考是增强，不阻断生成）。``final_user_prompt`` 与模板的
+    ``token_budget.target_input_tokens`` 都在时贪心压预算（整窗 / 整句，红线不截）。
 
-    2026-09 v2（W5）：抽成模块级函数，``SceneGenerationService._inject_style_reference``
-    与 ``qc_engine.SoftQcEngine``（soft_qc 阶段注入同一前缀）共用；反抄袭红线段随任一
-    风格块非空必附、原文样例经 secure_reference_block 封装、cloud_llm_allowed 守卫都在
-    InjectionService 内，本函数不触碰。
-
-    立项 C §12 — ``context_text``（续写最新正文）透传给 Strategy C（RAG）作为三粒度检索
-    query；其余策略忽略此参数。
-
-    2026-09-14 保真修补(WP6):``few_shot_k_cap`` 把样例窗口数压到 ``min(k(intensity), cap)``
-    (规划 / 评审 / 局部补丁节点用 :data:`PLANNING_FEW_SHOT_K_CAP`;不传 = 起草通道逐字不变)。
-    ``runtime_contract`` 让调用方直接给出**本次调用已解析**的契约(scene_blueprint 的来源快照
-    按当前 active 绑定解析契约并登记其哈希,前缀必须与那份契约同源),此时不看 ``bundle``;审计
-    记 ``runtime_contract_status=resolved_live`` / ``mode=resolved``。
+    v3 新参数（都可不传）：``role``（draft / revise / review / plan）、``situation_tags``（蓝图给的场面标签，
+    缺省从场景设计推）、``recent_gaps``（缺省：起草角色读作品最近的读数）、``revise_dimensions``（改稿要改的维）。
+    ``context_text`` 保留签名但不再使用。
     """
+    del context_text  # 选窗与渲染都不看草稿（J2 / J4）
     if prompt is None or scene is None:
         return prompt
     project_id = getattr(scene, "project_id", None)
-    # PR-14/18 — character scope 用 pov ∪ onstage 匹配集(pov 优先)
-    character_ids = ordered_character_ids(
-        getattr(scene, "pov_character_id", None),
-        getattr(scene, "onstage_chars_json", None),
-    )
-    # PR-15 — scene scope 用 scene_id 匹配(优先级最高)
     scene_id = getattr(scene, "scene_id", None)
-    if not project_id and not character_ids and not scene_id:
+    has_characters = bool(getattr(scene, "pov_character_id", None) or getattr(scene, "onstage_chars_json", None))
+    if not project_id and not scene_id and not has_characters and runtime_contract is None and bundle is None:
         return prompt
-    svc = InjectionService(session)
-    svc.few_shot_k_cap = int(few_shot_k_cap) if few_shot_k_cap is not None else None
-    # 2026-09-09 样例优先:few-shot 窗口按场景轮换——同一场景的 style_draft / soft_qc /
-    # 近终稿改写 / 验收评审看到同一组窗口,不同场景看到不同窗口。
-    svc.few_shot_seed = str(scene_id) if scene_id else None
-    # 2026-09-14 保真修补(WP3.4):章首 / 章末场偏好参考书的开章 / 收章窗口,概述场偏好叙述窗口——
-    # 第一稿没有可分析的正文时这是选窗唯一的场景信号。
-    # 2026-09-22:段型提示与对白配额也从场景形态 / 台上人物推出(首稿没有正文可分类)。
-    svc.scene_position, svc.scene_hint_types = scene_sampling_hints(scene)
-    svc.scene_dialogue_heavy = scene_dialogue_heavy(scene)
-    # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
-    # when drift guidance includes structured dimension data) so the few-shot
-    # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
-    snapshot = (
-        bundle.get("snapshot")
-        if bundle
-        and isinstance(bundle, dict)
-        and isinstance(bundle.get("snapshot"), dict)
-        else bundle
-    )
-    if isinstance(snapshot, dict):
-        drift_priority = (snapshot.get("inline_digests") or {}).get(
-            "_drift_ptype_priority"
-        )
-        # bundle inline_digests 只能存 str（哈希投影约束），W6 以 JSON 字符串写入；
-        # 旧的 list 形式也继续接受。
-        if isinstance(drift_priority, str) and drift_priority.strip():
-            try:
-                drift_priority = json.loads(drift_priority)
-            except ValueError:
-                drift_priority = None
-        if drift_priority and isinstance(drift_priority, list):
-            svc.drift_ptype_priority = [str(p) for p in drift_priority if str(p).strip()]
-    # All callers now share one bounded prose-context extractor. The initial
-    # style pass supplies the neutral draft; continuation calls supply the
-    # latest accumulated prose.
-    from novel_system.services.style_reference.rag import load_rag_config
-
-    context = extract_style_generation_context(
-        context_text,
-        source_kind="generation_source" if context_text else "profile_fallback",
-        max_chars=int(load_rag_config().get("rag_context_query_max_chars", 2000)),
-    )
-    # 调用方显式给出的契约与下面按 bundle 解析出的 ``runtime_contract`` 局部变量分开持有
-    caller_contract = dict(runtime_contract) if runtime_contract is not None else None
-    runtime_contract = None
-    contract_state = None
+    status: str | None = None
+    mode: str | None = None
     try:
-        if caller_contract is not None:
-            contract_state = StyleRuntimeContractState(
-                status=RESOLVED_CONTRACT_STATUS,
-                mode=RESOLVED_CONTRACT_MODE,
-                contract=caller_contract,
-            )
-        else:
-            contract_state = resolve_style_runtime_contract_state(
-                bundle,
-                task_type=task_type,
-            )
-        runtime_contract = contract_state.contract
-        if contract_state.error_code is not None:
-            raise ValueError(contract_state.error_code)
-        if runtime_contract is not None:
-            fragments = svc.fragments_for_contract(
-                runtime_contract,
-                project_id=project_id,
-                context=context,
-                drift_ptype_priority=svc.drift_ptype_priority,
-            )
-        elif contract_state.mode == "absent":
-            # This new bundle explicitly froze "no style binding". A binding
-            # added later must not alter replay of the already-built scene.
+        policy, status, mode = _resolve_policy(session, scene, bundle, runtime_contract, task_type=task_type)
+        if policy.mode == MODE_ABSENT:
+            # 这份 bundle 明确冻结了「没有绑定」：后来加的绑定不能改变已建场景的重放
             return prompt
-        else:
-            # Backward compatibility for old bundles created before the frozen
-            # runtime contract. New bundles never re-resolve live bindings here.
-            svc.context_text = context.query_text
-            fragments = svc.fragments_for(
-                project_id,
-                task_type,
-                character_ids=character_ids,
-                scene_id=scene_id,
-            )
-        budget_fit_audit = None
+        if policy.mode == MODE_DEGRADED:
+            return _degraded(prompt, task_type=task_type, status=status, mode=mode, error_code=policy.error_code)
+        if not policy.bound:
+            return prompt
+        request = style_render_request_for_scene(
+            session,
+            scene,
+            policy,
+            role=role or infer_role(placement, few_shot_k_cap),
+            placement=placement,
+            k_cap=few_shot_k_cap,
+            bundle_id=_bundle_id(bundle),
+            situation_tags=situation_tags,
+            recent_gaps=recent_gaps,
+            revise_dimensions=revise_dimensions,
+        )
+        rendered = render_style(session, policy, request, scene=scene)
+        budget_fit: dict[str, Any] | None = None
         token_budget = prompt.get("token_budget") or {}
-        target_input_tokens = token_budget.get("target_input_tokens")
-        if final_user_prompt is not None and target_input_tokens is not None:
-            fragments, budget_fit_audit = fit_fragments_to_input_budget(
-                fragments,
+        target_input_tokens = token_budget.get("target_input_tokens") if isinstance(token_budget, Mapping) else None
+        if final_user_prompt is not None and target_input_tokens is not None and not rendered.empty:
+            rendered, budget_fit = fit_rendered(
+                rendered,
                 base_system_prompt=str(prompt.get("system_prompt") or ""),
                 user_prompt=final_user_prompt,
                 target_input_tokens=int(target_input_tokens),
             )
-        if placement == PLACEMENT_USER_TAIL:
-            prefix = fragments.to_system_prompt_prefix(include_few_shot=False)
-            user_tail = fragments.to_user_prompt_tail()
-            mandate = chapter_position_mandate(svc.scene_position, runtime_contract) if user_tail else ""
-            user_tail = attach_chapter_position_mandate(user_tail, mandate)
-        else:
-            prefix = fragments.to_system_prompt_prefix()
-            user_tail = ""
-    except Exception as exc:  # noqa: BLE001
-        # 风格注入是可选增强：召回/渲染失败时吞掉并回退到基础 prompt，不阻断 LLM 生成
-        # 流程（顾问型降级，与离线退役无关）。
+    except Exception as exc:  # noqa: BLE001 — 风格参考是增强：渲染失败回退基础 prompt 并记审计
         _LOGGER.warning(
             "style_reference injection skipped for scene %s task %s: %s",
             getattr(scene, "scene_id", None),
             task_type,
             exc,
         )
-        degraded = dict(prompt)
-        degraded["_style_reference_runtime_audit"] = {
-            "outcome": "degraded",
-            "task_type": task_type,
-            "context": context.audit_dict(),
-            "runtime_contract_status": (
-                contract_state.status if contract_state is not None else None
-            ),
-            "runtime_contract_mode": (
-                contract_state.mode if contract_state is not None else None
-            ),
-            "error_code": (
-                contract_state.error_code
-                if contract_state is not None
-                and contract_state.error_code is not None
-                else getattr(exc, "code", exc.__class__.__name__)
-            ),
-        }
-        return degraded
-    if (
-        not prefix
-        and not user_tail
-        and runtime_contract is None
-        and not (budget_fit_audit or {}).get("compacted")
-    ):
-        # Preserve the established strict no-op contract for legacy scenes
-        # with no applicable binding. The miss is already recorded by the
-        # injection metric; there is no frozen lineage to attach to the LLM
-        # request or attempt record.
+        return _degraded(
+            prompt,
+            task_type=task_type,
+            status=status,
+            mode=mode,
+            error_code=getattr(exc, "code", exc.__class__.__name__),
+        )
+    prefix = rendered.system_prefix
+    user_tail = rendered.user_tail
+    if not prefix and not user_tail and policy.mode == MODE_LIVE and not (budget_fit or {}).get("compacted"):
+        # 现解析路径渲染不出任何东西（画像空）：保持严格 no-op，没有冻结谱系可记
         return prompt
     injected = dict(prompt)
     if prefix:
         injected["system_prompt"] = prefix + (prompt.get("system_prompt") or "")
     if user_tail:
         injected[STYLE_USER_TAIL_KEY] = user_tail
-    if svc.last_runtime_audit is not None:
-        assert contract_state is not None
-        injected["_style_reference_runtime_audit"] = {
-            **svc.last_runtime_audit,
-            "runtime_contract_status": contract_state.status,
-            "runtime_contract_mode": contract_state.mode,
-            "placement": placement,
-        }
-        if budget_fit_audit is not None:
-            rendered = prefix + user_tail
-            injected["_style_reference_runtime_audit"].update(
-                {
-                    "outcome": (
-                        "hit"
-                        if rendered
-                        else "degraded_budget"
-                    ),
-                    "prefix_chars": len(rendered),
-                    "prefix_sha256": hashlib.sha256(
-                        rendered.encode("utf-8")
-                    ).hexdigest(),
-                    "budget_fit": budget_fit_audit,
-                }
-            )
+    rendered_text = prefix + user_tail
+    # 渲染结果是进程内缓存的共享对象：审计给调用方一份深拷贝（下游会往里补字段再落库）
+    audit = {
+        **copy.deepcopy(dict(rendered.audit)),
+        "task_type": task_type,
+        "runtime_contract_status": status,
+        "runtime_contract_mode": mode,
+        "placement": request.placement,
+        "prefix_chars": len(rendered_text),
+        "prefix_sha256": hashlib.sha256(rendered_text.encode("utf-8")).hexdigest(),
+    }
+    if budget_fit is not None:
+        audit["budget_fit"] = budget_fit
+        if not rendered_text and budget_fit.get("style_payload_omitted"):
+            audit["outcome"] = "degraded_budget"
+    injected[STYLE_RUNTIME_AUDIT_KEY] = audit
     return injected

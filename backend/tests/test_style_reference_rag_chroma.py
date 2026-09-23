@@ -17,7 +17,6 @@ from __future__ import annotations
 import pytest
 
 from novel_system.services.style_reference import rag
-from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.rag_evaluation import load_rag_ab_manifest
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.vector_store import get_vector_store
@@ -185,31 +184,6 @@ def test_chroma_sentence_and_scene_recall_nonempty(session):
     # 合并去重截断后仍有结果
     merged = retriever.retrieve(profile.profile_id, query, inject_max=5)
     assert 0 < len(merged) <= 5
-
-
-def test_chroma_c_strategy_injection_with_red_line(session):
-    """C 策略在真实 chroma 上真召回 → rag_block 非空 + 红线随注。"""
-    profile = _seed(session)
-    rag.build_rag_index(session, profile)
-    repo = StyleReferenceRepository(session)
-    repo.create_binding(
-        binding_id="bind_chroma",
-        profile_id=profile.profile_id,
-        scope="project",
-        scope_ref_id="proj_chroma",
-        task_type="scene_generation",
-        strategy="C",
-        config_json={},
-        status="active",
-    )
-    session.flush()
-    svc = InjectionService(session)
-    svc.context_text = "他翻身越过断墙，冲上铁梯直扑顶楼"
-    frags = svc.fragments_for("proj_chroma", "scene_generation")
-    assert frags.rag_block
-    prefix = frags.to_system_prompt_prefix()
-    assert "风格检索样例" in prefix
-    assert "严格禁止" in prefix or "严禁" in prefix
 
 
 def test_chroma_delete_rag_index_removes_collections(session):

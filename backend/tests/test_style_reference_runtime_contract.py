@@ -17,7 +17,9 @@ from novel_system.db.models import (
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
-from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_policy import policy_from_contract, style_policy_live
+from novel_system.services.style_reference.inject.render import render_style, reset_render_cache
+from novel_system.services.style_reference.inject.request import StyleRenderRequest
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
@@ -151,15 +153,11 @@ def test_contract_is_hashed_tamper_evident_and_contains_no_raw_quote(session) ->
     assert contract["layers"][0]["profile"]["profile_json"][
         "qualitative_summary"
     ] == "克制观察，动作先于解释。"
-    assert contract["layers"][0]["sample_quote_refs"] == [
-        {
-            "quote_id": seeded.quote_id,
-            "quote_sha256": hashlib.sha256(
-                seeded.quote_text.encode("utf-8")
-            ).hexdigest(),
-        }
-    ]
-    assert contract["layers"][0]["sample_paragraph_refs"] == []
+    # v2（J6 / E9）：不再冻结样例引文 / 段落引用（它们只服务已删的兜底路径）
+    assert "sample_quote_refs" not in contract["layers"][0]
+    assert "sample_paragraph_refs" not in contract["layers"][0]
+    assert contract["schema_version"] == 2 and contract["layer_count"] == 1
+    assert "scene_samples_index" not in contract["layers"][0]["profile"]["profile_json"]
 
     tampered = copy.deepcopy(contract)
     tampered["layers"][0]["profile"]["profile_json"]["style_features"] = [
@@ -207,6 +205,7 @@ def test_contract_freezes_only_generation_safe_forbidden_findings(session) -> No
 def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
     session,
 ) -> None:
+    reset_render_cache()
     seeded = _seed_reference(session, seed="frozen", strategy="A")
     contract = build_style_runtime_contract(
         seeded.repo,
@@ -214,17 +213,9 @@ def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
         task_type="scene_generation",
     )
     assert contract is not None
-    context = extract_style_generation_context(
-        "中性草稿：她推开窗，确认街上已经没有人。",
-        source_kind="generation_source",
-        max_chars=2_000,
-    )
-    first_service = InjectionService(session)
-    frozen_before = first_service.fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    ).to_system_prompt_prefix()
+    frozen_policy = policy_from_contract(contract, mode="frozen")
+    request = StyleRenderRequest(scene_id="contract_scene_frozen")
+    frozen_before = render_style(session, frozen_policy, request, use_cache=False).system_prefix
 
     profile = seeded.repo.get_profile(seeded.profile_id)
     profile.profile_json = {
@@ -235,191 +226,53 @@ def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
     seeded.binding.config_json = {"intensity": 5}
     session.flush()
 
-    second_service = InjectionService(session)
-    frozen_after = second_service.fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    ).to_system_prompt_prefix()
-    live_after = (
-        InjectionService(session)
-        .fragments_for(
-            seeded.project_id,
-            "scene_generation",
-        )
-        .to_system_prompt_prefix()
+    frozen_after = render_style(session, frozen_policy, request, use_cache=False)
+    live_policy = style_policy_live(
+        session, SimpleNamespace(project_id=seeded.project_id, scene_id=None, pov_character_id=None, onstage_chars_json=[])
     )
+    live_after = render_style(session, live_policy, request, use_cache=False).system_prefix
 
-    assert frozen_after == frozen_before
-    assert "句式舒展，收束克制" in frozen_after
-    assert "后来被修改的实时风格" not in frozen_after
+    assert frozen_after.system_prefix == frozen_before
+    assert "句式舒展，收束克制" in frozen_after.system_prefix
+    assert "后来被修改的实时风格" not in frozen_after.system_prefix
     assert "后来被修改的实时风格" in live_after
-    assert (
-        second_service.last_runtime_audit["contract_hash"] == contract["contract_hash"]
-    )
-    assert second_service.last_runtime_audit["context"] == context.audit_dict()
-    assert context.query_text not in json.dumps(
-        second_service.last_runtime_audit,
-        ensure_ascii=False,
-    )
+    assert live_policy.contract_hash != contract["contract_hash"]
+    assert frozen_after.audit["contract_hash"] == contract["contract_hash"]
+    # 冻结的是 v3 规范化配置：旧策略 A → 只用文风卡（旧画像的卡替身），不送窗口
+    assert frozen_policy.reference_mode == "card_only" and frozen_after.stats["few_shot_windows"] == 0
 
 
-def test_frozen_few_shot_requires_unchanged_quote_and_current_send_rights(
-    session,
-) -> None:
-    seeded = _seed_reference(session, seed="quote", strategy="B")
-    contract = build_style_runtime_contract(
-        seeded.repo,
-        [seeded.binding],
-        task_type="scene_generation",
-    )
-    assert contract is not None
-    context = extract_style_generation_context(
-        "她在门外停步。",
-        source_kind="generation_source",
-    )
-
-    original = InjectionService(session).fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    )
-    assert seeded.quote_text in original.few_shot_block
-
-    quote = seeded.repo.get_quote(seeded.quote_id)
-    quote.quote_text = "被修改后的参考原句不应进入提示词。"
-    session.flush()
-    changed = InjectionService(session).fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    )
-    assert changed.few_shot_block == ""
-
-    quote.quote_text = seeded.quote_text
+def test_frozen_contract_samples_require_current_send_rights(session) -> None:
+    """样例窗口在渲染时再查一次发送权：冻结后作者撤回了发送权 → 一窗都不送（卡与红线照送）。"""
+    reset_render_cache()
+    seeded = _seed_reference(session, seed="rights", strategy="B")
     book = seeded.repo.get_book(seeded.book_id)
+    book.cloud_policy = "allow_full_cloud"
+    for index in range(80):
+        text = f"第{index}段：他把湿伞靠在墙角，没有立刻进屋，只听院门外那阵水声慢慢过去，才抬手去拨灯芯。"
+        seeded.repo.create_paragraph(
+            paragraph_id=f"contract_rights_p{index:03d}",
+            book_id=seeded.book_id,
+            paragraph_index=index,
+            paragraph_type="narration",
+            start_offset=0,
+            end_offset=len(text),
+            text=text,
+            char_count=len(text),
+            classifier_confidence=0.9,
+        )
+    session.flush()
+    contract = build_style_runtime_contract(seeded.repo, [seeded.binding], task_type="scene_generation")
+    policy = policy_from_contract(contract, mode="frozen")
+    request = StyleRenderRequest(scene_id="contract_scene_rights")
+    original = render_style(session, policy, request, use_cache=False)
+    assert original.stats["few_shot_windows"] >= 1 and "他把湿伞靠在墙角" in original.system_prefix
+
     book.stats_json = {"rights_declaration": {"declared": True, "send_rights": False}}
     session.flush()
-    revoked = InjectionService(session).fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    )
-    assert revoked.few_shot_block == ""
-
-
-def test_frozen_few_shot_prefers_hashed_complete_parent_paragraph(session) -> None:
-    seeded = _seed_reference(session, seed="paragraph", strategy="B")
-    paragraph_id = "contract_paragraph_parent"
-    paragraph_text = (
-        "檐下的人没有立即进屋，只把湿伞靠在墙角。"
-        + seeded.quote_text
-        + "院门外又响了一阵水声，他等那声音过去，才慢慢抬手拨亮灯芯。"
-    )
-    seeded.repo.create_paragraph(
-        paragraph_id=paragraph_id,
-        book_id=seeded.book_id,
-        paragraph_index=0,
-        paragraph_type="narration",
-        start_offset=0,
-        end_offset=len(paragraph_text),
-        text=paragraph_text,
-        char_count=len(paragraph_text),
-        classifier_confidence=0.9,
-    )
-    quote = seeded.repo.get_quote(seeded.quote_id)
-    quote.paragraph_id = paragraph_id
-    session.flush()
-
-    contract = build_style_runtime_contract(
-        seeded.repo,
-        [seeded.binding],
-        task_type="scene_generation",
-    )
-
-    assert contract is not None
-    layer = contract["layers"][0]
-    assert layer["sample_quote_refs"][0]["paragraph_id"] == paragraph_id
-    assert layer["sample_paragraph_refs"] == [
-        {
-            "paragraph_id": paragraph_id,
-            "paragraph_sha256": hashlib.sha256(
-                paragraph_text.encode("utf-8")
-            ).hexdigest(),
-        }
-    ]
-    assert paragraph_text not in json.dumps(contract, ensure_ascii=False)
-
-    context = extract_style_generation_context(
-        "她在门外停步。", source_kind="generation_source"
-    )
-    original = InjectionService(session).fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    )
-    assert "完整参考段落" in original.few_shot_block
-    assert "院门外又响了一阵水声" in original.few_shot_block
-
-    paragraph = seeded.repo.get_paragraph(paragraph_id)
-    paragraph.text = seeded.quote_text + "这段父段落后来被改过。"
-    session.flush()
-    changed = InjectionService(session).fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    )
-    assert "院门外又响了一阵水声" not in changed.few_shot_block
-    assert seeded.quote_text in changed.few_shot_block
-
-
-def test_frozen_rag_requires_unchanged_reference_book_checksum(
-    session,
-    monkeypatch,
-) -> None:
-    from novel_system.services.style_reference.rag import RagRetriever, RagSnippet
-
-    seeded = _seed_reference(session, seed="rag_checksum", strategy="C")
-    contract = build_style_runtime_contract(
-        seeded.repo,
-        [seeded.binding],
-        task_type="scene_generation",
-    )
-    assert contract is not None
-    monkeypatch.setattr(
-        RagRetriever,
-        "retrieve",
-        lambda self, profile_id, query: [
-            RagSnippet(
-                snippet_id="frozen_rag_sample",
-                text="一段只用于校验冻结来源版本的检索样例。",
-                granularity="paragraph",
-                paragraph_type="narration",
-                score=0.9,
-            )
-        ],
-    )
-    context = extract_style_generation_context(
-        "她在门外停步。",
-        source_kind="generation_source",
-    )
-
-    original = InjectionService(session).fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    )
-    assert "冻结来源版本" in original.rag_block
-
-    book = seeded.repo.get_book(seeded.book_id)
-    book.text_checksum = "changed-after-bundle-freeze"
-    session.flush()
-    changed = InjectionService(session).fragments_for_contract(
-        contract,
-        project_id=seeded.project_id,
-        context=context,
-    )
-    assert changed.rag_block == ""
+    revoked = render_style(session, policy, request, use_cache=False)
+    assert revoked.stats["few_shot_windows"] == 0 and "他把湿伞靠在墙角" not in revoked.system_prefix
+    assert revoked.audit["samples_blocked"] == "cloud_policy_now"
 
 
 def test_frozen_validation_uses_frozen_terms_and_rejects_changed_source(
@@ -534,10 +387,8 @@ def test_task_specific_bundle_contract_and_scene_injection_context_are_auditable
     )
     audit = injected["_style_reference_runtime_audit"]
     assert audit["contract_hash"] == scene_contract["contract_hash"]
-    assert (
-        audit["context"]["query_sha256"]
-        == hashlib.sha256(neutral.encode("utf-8")).hexdigest()
-    )
+    # v3：选窗与渲染都不看被润色的稿子（J2 / J4），审计里也没有它
+    assert "context" not in audit
     assert neutral not in json.dumps(audit, ensure_ascii=False)
 
 
@@ -791,61 +642,3 @@ def test_contract_freezes_voice_signature_and_narrative_guidance_but_not_raw_fie
     assert "voice_signature" not in legacy_profile
     assert "narrative_guidance" not in legacy_profile
     assert validate_style_runtime_contract(legacy_contract) == legacy_contract
-
-
-def test_contract_freezes_contiguous_neighbour_hashes_and_stops_at_gaps(session) -> None:
-    """v2(W4.5):契约冻结 quote 父段两侧连续相邻段的哈希(每侧 few_shot_window_paragraphs − 1 段),
-    遇 paragraph_index 缺口 / 空段即停;只冻哈希,不冻原文。"""
-    seeded = _seed_reference(session, seed="neighbours", strategy="B")
-    parent_text = "檐下的人没有立即进屋。" + seeded.quote_text + "他等那声音过去，才慢慢抬手拨亮灯芯。"
-    texts = {
-        0: "   ",  # 空段:左侧展开到此为止
-        1: "“你来了。”她说，声音很轻，像是怕惊动屋里的什么。",
-        2: parent_text,
-        3: "他没有回答，先把袖口的水拧了拧。桌上摆着两只碗，一只是干的。",
-        # index 4 缺失:右侧展开在缺口处停止
-        5: "灯芯亮起来，屋子却显得更小了。墙上挂着的旧衣裳在光里晃了晃。",
-    }
-    for index, text in texts.items():
-        seeded.repo.create_paragraph(
-            paragraph_id=f"contract_paragraph_nb_{index}",
-            book_id=seeded.book_id,
-            paragraph_index=index,
-            paragraph_type="dialogue" if index == 1 else "narration",
-            start_offset=0,
-            end_offset=len(text),
-            text=text,
-            char_count=len(text.strip()),
-            classifier_confidence=0.9,
-        )
-    quote = seeded.repo.get_quote(seeded.quote_id)
-    quote.paragraph_id = "contract_paragraph_nb_2"
-    session.flush()
-
-    contract = build_style_runtime_contract(seeded.repo, [seeded.binding], task_type="scene_generation")
-    assert contract is not None
-    layer = contract["layers"][0]
-    refs = layer["sample_paragraph_refs"]
-    assert refs[0]["paragraph_id"] == "contract_paragraph_nb_2"
-    assert {ref["paragraph_id"] for ref in refs} == {
-        "contract_paragraph_nb_1",
-        "contract_paragraph_nb_2",
-        "contract_paragraph_nb_3",
-    }
-    for ref in refs:
-        index = int(ref["paragraph_id"].rsplit("_", 1)[1])
-        assert ref["paragraph_sha256"] == hashlib.sha256(texts[index].encode("utf-8")).hexdigest()
-    dumped = json.dumps(contract, ensure_ascii=False)
-    for text in texts.values():
-        if text.strip():
-            assert text not in dumped
-    # 同一契约再验证一次仍通过(相邻引用只是普通 paragraph_ref)
-    assert validate_style_runtime_contract(contract)["contract_hash"] == contract["contract_hash"]
-
-    context = extract_style_generation_context("她在门外停步。", source_kind="generation_source")
-    rendered = InjectionService(session).fragments_for_contract(
-        contract, project_id=seeded.project_id, context=context
-    )
-    assert "连续3段窗口" in rendered.few_shot_block
-    assert texts[1][:8] in rendered.few_shot_block and texts[3][:8] in rendered.few_shot_block
-    assert texts[5][:8] not in rendered.few_shot_block

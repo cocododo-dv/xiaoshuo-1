@@ -26,7 +26,18 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import StyleReferenceParagraph
-from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.binding_config import (
+    DIMENSION_EMPHASIZE,
+    DIMENSION_EXCLUDE,
+    normalize_binding_config,
+)
+from novel_system.services.style_reference.card import (
+    LINE_STATE_EXCLUDED,
+    LINE_STATE_PINNED,
+    card_from_profile_json,
+    line_states_from_profile_json,
+)
+from novel_system.services.style_reference.inject.bindings import resolve_binding_layers
 from novel_system.services.style_reference.narrative_guidance import (
     NARRATIVE_GUIDANCE_SECTION_KEY,
     collect_narrative_guidance,
@@ -34,9 +45,11 @@ from novel_system.services.style_reference.narrative_guidance import (
 )
 from novel_system.services.style_reference.policy import cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
+from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract, contract_layer
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.structure import (
+    PLANNING_GUIDANCE_HEADER,
+    PLANNING_GUIDANCE_MAX_LINES,
     STRUCTURE_TITLE_MAX_CHARS,
     chapter_titles_summary,
     render_planning_guidance,
@@ -135,6 +148,63 @@ def _samples_allowed(layer: Mapping[str, Any], session: Session | None) -> bool:
     return row is not None and cloud_llm_allowed(row)
 
 
+CARD_PLANNING_PREFIXES = ("scene.", "theme.")
+CARD_PLANNING_HEADER = (
+    f"{PLANNING_GUIDANCE_HEADER}（参考作者在场景与主题层面的写法与气质；规划时按这位作者的方式设想每一场的场面、"
+    "读者情绪、钩子与收场，设计文字的调性不改变这里的写法；不复用其内容）"
+)
+
+
+def render_card_planning_guidance(
+    profile_json: Mapping[str, Any] | None,
+    dimension_states: Mapping[str, str] | None = None,
+) -> str:
+    """文风卡 → 规划层的 ``[场景手法]``：气质（必须）+ 场景层 / 主题层各维的句子（重点维在前、多一条；
+    不学的维与作者划掉的句不出现；钉住的句永远带上）；≤ ``PLANNING_GUIDANCE_MAX_LINES`` 行。没有卡 → ``""``。"""
+    card = card_from_profile_json(profile_json)
+    if card is None:
+        return ""
+    states = dict(dimension_states or {})
+    line_states = line_states_from_profile_json(profile_json)
+    lines: list[str] = []
+    if card.temperament:
+        lines.append("- 气质（必须）：" + "；".join(card.temperament))
+    entries = sorted(
+        (
+            entry
+            for entry in card.dimensions
+            if entry.dimension.startswith(CARD_PLANNING_PREFIXES) and states.get(entry.dimension) != DIMENSION_EXCLUDE
+        ),
+        key=lambda entry: (states.get(entry.dimension) != DIMENSION_EMPHASIZE, -entry.distinctiveness),
+    )
+    for entry in entries:
+        if len(lines) >= PLANNING_GUIDANCE_MAX_LINES:
+            break
+        usable = [
+            line
+            for line in entry.lines
+            if line.kind == "do" and line_states.get(line.line_id) != LINE_STATE_EXCLUDED
+        ]
+        usable.sort(
+            key=lambda line: (
+                line_states.get(line.line_id) != LINE_STATE_PINNED,
+                not line.mandatory,
+                -line.distinctiveness,
+            )
+        )
+        pinned = sum(1 for line in usable if line_states.get(line.line_id) == LINE_STATE_PINNED)
+        limit = max(3 if states.get(entry.dimension) == DIMENSION_EMPHASIZE else 2, pinned)
+        chosen = usable[:limit]
+        if not chosen:
+            continue
+        mark = "【重点】" if states.get(entry.dimension) == DIMENSION_EMPHASIZE else ""
+        body = "；".join(("（必须）" if line.mandatory else "") + line.text for line in chosen)
+        lines.append(f"- {mark}{entry.label}：{body}")
+    if not lines:
+        return ""
+    return "\n".join([CARD_PLANNING_HEADER, *lines])
+
+
 def render_planning_reference(
     contract: Mapping[str, Any] | None,
     *,
@@ -143,11 +213,8 @@ def render_planning_reference(
     """从冻结契约最具体的一层渲染规划层参考块；没有可渲染内容 → ``None``。"""
     if not isinstance(contract, Mapping):
         return None
-    layers = contract.get("layers")
-    if not isinstance(layers, list) or not layers:
-        return None
-    layer = layers[-1]
-    if not isinstance(layer, Mapping):
+    layer = contract_layer(contract)
+    if not layer:
         return None
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
@@ -162,7 +229,16 @@ def render_planning_reference(
         include_samples=_samples_allowed(layer, session),
         chapter_titles=chapter_titles if isinstance(chapter_titles, Mapping) else None,
     )
-    planning_guidance = render_planning_guidance(profile_json)
+    binding = layer.get("binding") if isinstance(layer.get("binding"), Mapping) else {}
+    dimension_states = normalize_binding_config(
+        str(binding.get("strategy") or "mixed"),
+        binding.get("config_json") if isinstance(binding.get("config_json"), Mapping) else {},
+    )["dimension_states"]
+    # 2026-09-23 风格参考 v3（L5，全学）：有文风卡的画像给规划节点卡里场景层 / 主题层的句子与气质，
+    # 不再给旧的 [场景手法] 观察陈述；旧画像照旧。
+    planning_guidance = render_card_planning_guidance(profile_json, dimension_states) or render_planning_guidance(
+        profile_json
+    )
     if not structure_card and not planning_guidance:
         return None
     return {
@@ -228,16 +304,10 @@ def resolve_project_style_reference(
     if not project_id:
         return None
     try:
-        service = InjectionService(session)
-        layers = service.resolve_binding_layers(
-            str(project_id),
-            task_type,
-            character_ids=[],
-            scene_id=None,
-        )
+        layers = resolve_binding_layers(session, str(project_id), task_type, character_ids=[], scene_id=None)
         if not layers:
             return None
-        contract = build_style_runtime_contract(service.repo, layers, task_type=task_type)
+        contract = build_style_runtime_contract(StyleReferenceRepository(session), layers, task_type=task_type)
         if not contract:
             return None
         return render_planning_reference(contract, session=session)
@@ -350,6 +420,8 @@ def style_reference_prompt_blocks(source: Mapping[str, Any] | None) -> list[str]
 
 
 __all__ = [
+    "CARD_PLANNING_HEADER",
+    "CARD_PLANNING_PREFIXES",
     "PLANNING_GUIDANCE_PROMPT_HEADING",
     "PLANNING_REFERENCE_TASK_TYPE",
     "PlanningStyleReference",
@@ -363,6 +435,7 @@ __all__ = [
     "STYLE_STRUCTURE_CARD_KEY",
     "build_planning_style_reference",
     "register_planning_style_reference",
+    "render_card_planning_guidance",
     "render_planning_reference",
     "resolve_project_style_reference",
     "snapshot_has_style_reference",

@@ -25,9 +25,6 @@ from novel_system.services.style_prompt_injection import (
 )
 from novel_system.services.style_reference import untrusted_data as ud
 from novel_system.services.style_reference.injection import (
-    _few_shot_block_variants,
-    _split_few_shot_block,
-    _WindowAffinityScorer,
     scene_dialogue_heavy,
     scene_sampling_hints,
 )
@@ -80,16 +77,6 @@ def test_neutralizer_leaves_ordinary_dialogue_alone(sentence: str) -> None:
 )
 def test_neutralizer_still_catches_real_role_changes(sentence: str) -> None:
     assert ud.NEUTRALIZED_MARK in ud.neutralize_instructions(sentence)
-
-
-def test_split_and_shed_recognise_the_new_frame() -> None:
-    block = _framed(["第一段。\n第二段。", "第三段。", "第四段。"])
-    head, items, tail = _split_few_shot_block(block)
-    assert head == ["[风格样例](测试标题)"] and tail == ["[/风格样例]"]
-    assert len(items) == 3 and "\n第二段。」" in items[0]
-    variants = _few_shot_block_variants(block)
-    assert len(variants) == 4 and variants[-1] == ""
-    assert variants[2].endswith("[/风格样例]") and "第三段" not in variants[2] and "第一段" in variants[2]
 
 
 # ---------------------------------------------------------------------------
@@ -147,22 +134,9 @@ def test_scene_dialogue_heavy_follows_the_cast_and_the_form() -> None:
     summary = SimpleNamespace(writer_brief_json={"rendering_mode": "summary"}, onstage_chars_json=["c2"], pov_character_id="c1")
     assert scene_dialogue_heavy(proactive) and scene_dialogue_heavy(reactive_with_other)
     assert not scene_dialogue_heavy(reactive_alone) and not scene_dialogue_heavy(summary) and not scene_dialogue_heavy(None)
-    _pos, hints = scene_sampling_hints(SimpleNamespace(scene_seq=2, is_chapter_last=False, writer_brief_json={"reaction": "怕", "dilemma": "走或留", "decision": "留"}))
-    assert hints == {"psychology", "narration", "dialogue"}
-
-
-def test_window_affinity_prefers_the_authors_typical_passage() -> None:
-    from novel_system.services.style_reference.voice_signature import compute_voice_signature_for_text
-
-    lively = "\n".join(
-        ["他说：“行吧。”她没接。", "“那你呢？”“我不知道。”", "他把杯子放下，笑了一下，没说话。", "她说：“走吧。”"] * 12
-    )
-    stiff = "\n".join(["在漫长的、几乎令人窒息的等待之中，那些被反复提及的、关于命运与抉择的沉重命题，始终盘旋于他的脑海。"] * 12)
-    signature = compute_voice_signature_for_text(lively)
-    scorer = _WindowAffinityScorer(signature, {})
-    if scorer.mode != "voice":
-        pytest.skip("voice baseline unavailable in this environment")
-    assert scorer.score(lively) > scorer.score(stiff)
+    # 2026-09-23 风格参考 v3：选窗不再看启发式段型（J4）——兼容层只剩章内位置
+    position, hints = scene_sampling_hints(SimpleNamespace(scene_seq=2, is_chapter_last=False, writer_brief_json={"reaction": "怕", "dilemma": "走或留", "decision": "留"}))
+    assert position is None and hints == set()
 
 
 # ---------------------------------------------------------------------------

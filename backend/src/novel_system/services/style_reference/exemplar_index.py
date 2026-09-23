@@ -1,49 +1,30 @@
-"""全书样例窗口索引(2026-09-14 风格保真修补 WP3)。
+"""全书样例窗口的切窗规则(2026-09-14 风格保真修补 WP3;2026-09-23 风格参考 v3 起只剩切窗)。
 
-few-shot 样例过去只能以抽取证据引文为中心展开(每段型前 12 条、轮换池 30 个),一个项目
-最多看到全书约 6%、一场约 2%,而且哪些段落能进提示由语言层抽取碰巧引用了什么决定。
-本模块把整本书**确定性**地切成连续窗口(≤ ``window_paragraphs`` 段 / ≤ ``window_max_chars``
-字,不跨章题、不含副文本),每窗记起止段、字数、段型构成、对白占比、章内位置与辨识度分。
-合成期写入 ``profile_json.exemplar_windows``(不冻结:契约冻结了整本书的段落根哈希,根哈希
-一致时段落表与合成时相同,索引可按需复算);渲染期(``injection._render_few_shot``)在
-整本书里按场景需要选窗,旧画像无索引时按同一算法惰性计算并缓存。
+把整本书**确定性**地切成连续窗口(≤ ``window_paragraphs`` 段 / ≤ ``window_max_chars`` 字,不跨章题、
+不跨场界、不含副文本,<600 字的窗不要),每窗带章号与章内位置(opening / closing / middle / whole)。
+切章走 ``structure.split_book_chapters``(结构画像与窗口共用唯一的切章器)。
 
-2026-09-23(风格参考 v3):切章改用 ``structure.split_book_chapters``(结构画像与窗口共用唯一的切章器,
-章号一致、书名页 / 卷首页不入窗),切窗规则 ``book_windows`` 同时供持久化窗口表(``windows.py``,
-``exemplar_windows_v3``)使用。这里的 dict 索引(v2)只剩注入的旧选窗路径在用,P4 换成窗口表后删除。
+持久化的窗口索引(特征、典型度、标签)在 ``windows.py``(``exemplar_windows_v3``);选窗在
+``inject/selection.py``。原来存在 ``profile_json.exemplar_windows`` 里的 dict 索引(v2)与它的辨识度打分已随
+注入 v3 删除。
 """
 
 from __future__ import annotations
 
-import logging
-from collections import Counter
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Iterable, Mapping
 
 from novel_system.services.style_reference.structure import split_book_chapters
 
-logger = logging.getLogger(__name__)
-
-# 2026-09-22 风格参考优先 v2:affinity 从「相对通用基线最偏离」改为「最像这位作者的典型手笔」
-# (窗口声音签名到画像签名的距离,见 injection._WindowAffinityScorer);旧画像里存的 v1 索引按
-# 版本号失效、惰性复算。
-EXEMPLAR_INDEX_VERSION = "exemplar_windows_v2"
 DEFAULT_WINDOW_PARAGRAPHS = 60
 DEFAULT_WINDOW_MAX_CHARS = 4000
 DEFAULT_MIN_WINDOW_CHARS = 600
-DEFAULT_AFFINITY_SCAN_CHARS = 1200
 # 短尾窗并入前一窗时允许超出单窗上限的比例(否则丢弃短尾窗)
 _TAIL_MERGE_SLACK = 1.25
-# 窗口的「主导段型」:占比 ≥ 此值的段型都算(与 injection._SCENE_DOMINANT_TYPE_SHARE 同口径)
-DOMINANT_TYPE_SHARE = 0.25
 # 位置标签
 POSITION_OPENING = "opening"
 POSITION_CLOSING = "closing"
 POSITION_MIDDLE = "middle"
 POSITION_WHOLE = "whole"
-
-
-class WindowScorer(Protocol):
-    def score(self, text: str) -> float: ...
 
 
 def _field(item: Any, name: str, default: Any = None) -> Any:
@@ -131,83 +112,15 @@ def book_windows(
     return result, non_empty, len(chapters)
 
 
-def build_exemplar_window_index(
-    paragraphs: Iterable[Any],
-    *,
-    scorer: WindowScorer | None = None,
-    scene_breaks: Iterable[int] | None = None,
-    window_paragraphs: int = DEFAULT_WINDOW_PARAGRAPHS,
-    window_max_chars: int = DEFAULT_WINDOW_MAX_CHARS,
-    min_window_chars: int = DEFAULT_MIN_WINDOW_CHARS,
-    affinity_scan_chars: int = DEFAULT_AFFINITY_SCAN_CHARS,
-) -> dict[str, Any]:
-    """从段落表确定性算出全书窗口索引(无 LLM)。
-
-    ``paragraphs`` 元素可以是 ORM 段落行或 ``{"text", "paragraph_type", "paragraph_index",
-    "paragraph_id"}`` 映射。``scorer`` 是 ``injection._WindowAffinityScorer`` 一类的对象
-    (窗口前 ``affinity_scan_chars`` 字的辨识度分;缺省 0)。返回纯 JSON 值。
-    """
-    window_paragraphs = max(1, int(window_paragraphs))
-    window_max_chars = max(200, int(window_max_chars))
-    min_window_chars = max(0, int(min_window_chars))
-    cut, paragraph_count, chapter_count = book_windows(
-        paragraphs,
-        scene_breaks=scene_breaks,
-        window_paragraphs=window_paragraphs,
-        window_max_chars=window_max_chars,
-        min_window_chars=min_window_chars,
-    )
-    windows: list[dict[str, Any]] = []
-    for chapter_no, position, win in cut:
-        types = Counter(r["ptype"] for r in win)
-        chars = sum(r["chars"] for r in win)
-        affinity = 0.0
-        if scorer is not None:
-            head = "\n".join(r["text"] for r in win)[: max(0, int(affinity_scan_chars))]
-            try:
-                affinity = float(scorer.score(head))
-            except Exception:  # noqa: BLE001 — 辨识度分只影响排序,算不出就按 0
-                logger.debug("exemplar window affinity degraded", exc_info=True)
-                affinity = 0.0
-        windows.append(
-            {
-                "start": win[0]["index"],
-                "end": win[-1]["index"],
-                "chars": chars,
-                "paragraphs": len(win),
-                "chapter": chapter_no,
-                "position": position,
-                "types": dict(types),
-                "dialogue_share": round(types.get("dialogue", 0) / len(win), 3),
-                "affinity": round(affinity, 4),
-            }
-        )
-    return {
-        "version": EXEMPLAR_INDEX_VERSION,
-        "window_paragraphs": window_paragraphs,
-        "window_max_chars": window_max_chars,
-        "min_window_chars": min_window_chars,
-        "paragraph_count": paragraph_count,
-        "chapter_count": chapter_count,
-        "window_count": len(windows),
-        "windows": windows,
-    }
-
-
-def dominant_types(window: Mapping[str, Any]) -> set[str]:
-    """窗口的主导段型集合(占比 ≥ DOMINANT_TYPE_SHARE;都不够时取最多的一种)。"""
-    types = window.get("types") or {}
-    if not isinstance(types, Mapping) or not types:
-        return set()
-    total = max(1, int(window.get("paragraphs") or sum(int(v) for v in types.values()) or 1))
-    dominant = {str(t) for t, c in types.items() if int(c) / total >= DOMINANT_TYPE_SHARE}
-    if not dominant:
-        dominant = {str(max(types, key=lambda t: int(types[t])))}
-    return dominant
-
-
-def primary_type(window: Mapping[str, Any]) -> str:
-    types = window.get("types") or {}
-    if not isinstance(types, Mapping) or not types:
-        return "narration"
-    return str(max(types, key=lambda t: int(types[t])))
+__all__ = [
+    "DEFAULT_MIN_WINDOW_CHARS",
+    "DEFAULT_WINDOW_MAX_CHARS",
+    "DEFAULT_WINDOW_PARAGRAPHS",
+    "POSITION_CLOSING",
+    "POSITION_MIDDLE",
+    "POSITION_OPENING",
+    "POSITION_WHOLE",
+    "book_windows",
+    "cut_chapter_windows",
+    "window_position",
+]
