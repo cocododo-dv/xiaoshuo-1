@@ -5,8 +5,10 @@
 
 1. **候选**（``proper_noun_candidates``，确定性统计，纯函数）：全书正文的 2–4 字汉字串里，出现得多、内部凝聚
    （串的次数 ≈ 它的前后缀的次数，说明它总是整体出现）、两头不是虚词、不是更长的串的一部分的那些；再按出现处的
-   前后字把稳定跟着的字接上（「某某学」→「某某学院」，至多 8 字）。每个候选带出现次数与一小段上下文。
-   这一步追求**召回**，真正的判断交给模型；
+   前后字把稳定跟着的字接上（「某某学」→「某某学院」，至多 8 字）。去掉虚词本身与「名字 + 虚词」（「某某忽然」
+   「觉得自己」，闭类词表 ``function_words.yaml``）、两个更常见候选拼成的串（「某甲和某乙」「某某教授」——保护了
+   短的就保护了长的）。每个候选带出现次数与一小段上下文。这一步追求**召回**，真正的判断交给模型（实测一本
+   190 万字的书：前 220 个候选里约四成是常用词，220–400 名里仍有几十个真名字，所以送 360 个）；
 2. **模型确认**（节点 ``style_ref_protected_terms``）：候选 + 文风分析里提到本书特有设定的「作者不这么写」陈述
    → 这本书世界特有的名字 / 名词（人物、地点、组织、物件、设定词），真实世界的常见地名、品牌、流行文化名不算；
 3. **核对**（``parse_protected_terms``）：每个词必须在原书里原样出现，2–12 字，去重；
@@ -28,6 +30,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import StyleReferenceBannedTerm
+from novel_system.services.style_reference.measure import load_kernel_lexicon
 from novel_system.services.style_reference.text_utils import compact_ws
 
 PROTECTED_SOURCE = "protected_auto"
@@ -50,7 +53,7 @@ KIND_PLACEHOLDERS: dict[str, str] = {
 TERM_MIN_CHARS = 2
 TERM_MAX_CHARS = 12
 MAX_TERMS = 300
-CANDIDATE_LIMIT = 220
+CANDIDATE_LIMIT = 360
 CONTEXT_CHARS = 8
 _MAX_GROW_CHARS = 8
 
@@ -131,6 +134,29 @@ def _grow(term: str, corpus: str) -> str:
     return current
 
 
+def _function_word_edge(term: str, words: frozenset[str], multi: Sequence[str]) -> bool:
+    """虚词本身，或一头是多字虚词、去掉它还剩 ≥2 字（「某某忽然」「觉得自己」）。去掉后只剩一个字的留着
+    （「大家长」这类称号以虚词开头，却是一个整词）。"""
+    if term in words:
+        return True
+    return any(
+        len(term) - len(word) >= TERM_MIN_CHARS and (term.startswith(word) or term.endswith(word)) for word in multi
+    )
+
+
+def _redundant_compound(term: str, count: int, counts: Mapping[str, int]) -> bool:
+    """两个更常见的候选拼成（中间可以夹一个单字虚词）：「某甲和某乙」「某某教授」。保护了短的就保护了长的。"""
+    for cut in range(TERM_MIN_CHARS, len(term) - 1):
+        head, tail = term[:cut], term[cut:]
+        if counts.get(head, 0) < 2 * count:
+            continue
+        if counts.get(tail, 0) >= 2 * count:
+            return True
+        if len(tail) > TERM_MIN_CHARS and counts.get(tail[1:], 0) >= 2 * count and tail[0] in _EDGE_STOP_CHARS:
+            return True
+    return False
+
+
 def _context(term: str, corpus: str) -> str:
     index = corpus.find(term)
     if index < 0:
@@ -183,14 +209,23 @@ def proper_noun_candidates(
                 continue  # 几乎总是更长的名字的一部分
             scored.append((count * cohesion, gram))
     scored.sort(key=lambda item: (-item[0], item[1]))
-    result: list[Candidate] = []
+    lexicon = load_kernel_lexicon()
+    function_words = frozenset(lexicon.words_by_length_desc)
+    multi_char_words = tuple(word for word in lexicon.words_by_length_desc if len(word) >= TERM_MIN_CHARS)
+    grown: list[tuple[float, str, int]] = []
     seen: set[str] = set()
     for score, gram in scored[: limit * 2]:
         term = _grow(gram, corpus)
-        if term in seen:
+        if term in seen or not _clean_edges(term) or _function_word_edge(term, function_words, multi_char_words):
             continue
         seen.add(term)
-        result.append(Candidate(term=term, count=corpus.count(term), score=round(score, 3), context=_context(term, corpus)))
+        grown.append((score, term, corpus.count(term)))
+    counts_by_term = {term: count for _score, term, count in grown}
+    result: list[Candidate] = []
+    for score, term, count in grown:
+        if _redundant_compound(term, count, counts_by_term):
+            continue
+        result.append(Candidate(term=term, count=count, score=round(score, 3), context=_context(term, corpus)))
         if len(result) >= limit:
             break
     return result
@@ -211,10 +246,13 @@ class ProtectedTerm:
 
 
 def parse_protected_terms(structured: Any, corpus: str, *, limit: int = MAX_TERMS) -> list[ProtectedTerm]:
-    """模型给的专名 → 只留原书里原样出现、2–12 字、类别合法的，去重（保持模型给的顺序）。"""
+    """模型给的专名 → 只留原书里原样出现、2–12 字、不是虚词的，去重（保持模型给的顺序）；类别不合法的记 term。
+
+    虚词（闭类词表）不可能是专名：模型把它当专名确认了，文风卡里含它的句子与标签概括都会被误伤，所以挡掉。"""
     items = structured.get("terms") if isinstance(structured, Mapping) else None
     out: list[ProtectedTerm] = []
     seen: set[str] = set()
+    function_words = frozenset(load_kernel_lexicon().words_by_length_desc)
     for item in items if isinstance(items, list) else []:
         if isinstance(item, Mapping):
             term = compact_ws(item.get("term")).strip("「」“”\"'《》()（）[]【】")
@@ -223,7 +261,7 @@ def parse_protected_terms(structured: Any, corpus: str, *, limit: int = MAX_TERM
             term, kind = compact_ws(item).strip("「」“”\"'《》()（）[]【】"), "term"
         if kind not in TERM_KINDS:
             kind = "term"
-        if not (TERM_MIN_CHARS <= len(term) <= TERM_MAX_CHARS) or term in seen:
+        if not (TERM_MIN_CHARS <= len(term) <= TERM_MAX_CHARS) or term in seen or term in function_words:
             continue
         if term not in corpus:
             continue

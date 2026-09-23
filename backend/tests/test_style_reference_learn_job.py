@@ -217,7 +217,10 @@ def test_learn_job_runs_every_phase_and_writes_a_v3_profile(session, monkeypatch
     assert all(v["quote_count"] > 0 for v in pj["sub_dimensions"].values())
     assert set(pj["sub_dimensions"]) == {entry.dimension for entry in card.dimensions}
     # 声音:绝对习惯句 + 作者自身分布;结构画像去掉 chapters
-    assert pj["voice_signature"]["habits"] and pj["voice_signature"]["distribution"]["window_count"] == len(windows)
+    assert pj["voice"]["habits"] and pj["voice"]["distribution"]["window_count"] == len(windows)
+    # 过渡别名:旧读者(注入的声音习惯行、漂移、诊断)读 voice_signature,同源、不带分布
+    assert pj["voice_signature"]["features"] == pj["voice"]["features"]
+    assert pj["voice_signature"]["habits"] == pj["voice"]["habits"] and "distribution" not in pj["voice_signature"]
     assert "chapters" not in pj["structure_card"] and pj["structure_card"]["chapter_count"] == 6
     assert pj["planning_guidance"] == ["开场：先抛一句闲话再进正事", "收场：落在一个具体的小动作上"]
     assert pj["narrative_guidance"] and all("避免：" in l or not l.startswith("不") for l in pj["narrative_guidance"])

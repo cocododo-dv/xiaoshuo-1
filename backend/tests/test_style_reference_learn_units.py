@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import pytest
@@ -471,6 +472,25 @@ def test_proper_noun_candidates_find_names_and_prefer_the_longest_unit() -> None
     assert proper_noun_candidates([]) == []
 
 
+def test_candidates_skip_function_words_and_redundant_compounds() -> None:
+    """「名字 + 虚词」「觉得自己」、虚词本身、两个更常见的名字拼成的串不占候选名额;以虚词开头的称号(去掉只剩一个字)留着。"""
+    rng = random.Random("candidates")
+    verbs = ("停下", "回头", "抬手", "笑了", "转身", "开口", "愣住", "皱眉")
+    tails = ("站在门口", "坐在车里", "走进屋子", "看着远处", "等在桥头", "蹲在墙角")
+    texts = []
+    for i in range(90):
+        texts.append(f"韩小暖忽然{rng.choice(verbs)}，第{i}次回头看。")
+        texts.append(f"程铁和苏半夏{rng.choice(tails)}，谁也没动。")
+        texts.append(f"大家长{rng.choice(verbs)}之前，谁都觉得自己{rng.choice(verbs)}得太早。")
+        texts.append(f"苏半夏说程铁越来越像他爹，韩小暖{rng.choice(verbs)}。")
+        texts.append(f"那天程铁一个人去了码头，苏半夏在屋里{rng.choice(verbs)}。")
+    terms = [c.term for c in proper_noun_candidates(texts, limit=60)]
+    for name in ("韩小暖", "程铁", "苏半夏", "大家长"):
+        assert name in terms, (name, terms)
+    for noise in ("韩小暖忽然", "程铁和苏半夏", "觉得自己", "越来越", "自己", "忽然"):
+        assert noise not in terms, (noise, terms)
+
+
 def test_parse_protected_terms_keeps_only_terms_that_occur_verbatim() -> None:
     corpus = "\n".join(_book_texts())
     structured = {
@@ -481,6 +501,7 @@ def test_parse_protected_terms_keeps_only_terms_that_occur_verbatim() -> None:
             {"term": "不存在的名字", "kind": "person"},
             {"term": "韩小暖", "kind": "person"},
             {"term": "韩", "kind": "person"},
+            {"term": "越来越", "kind": "term"},  # 虚词不可能是专名(原书里有也不要)
             "苏半夏",
         ]
     }

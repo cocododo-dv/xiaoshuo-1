@@ -584,7 +584,8 @@ templates:
   # 2026-09-23 风格参考 v3 学习作业(learn_job):四层各一次调用,读同一组约 12 窗 / 4 万字的连续原文
   # (learn_select 挑的抽取窗口集,每段前标【p】)。input_token_budget 是真执行的上限:learn_llm.payload_fits
   # 按与发送时同一种渲染估计(CJK 一字一 token 的上界 ×1.1 + schema),装不下时按窗整窗卸载(至少留 3 窗)。
-  # 实测(合成书与真实参考书的抽取集):4.2 万字的窗口集 + 段号 + JSON + 提示 ≈ 5.2 万 token → 预算 64000。
+  # 实测(2026-09-23,一本 190 万字的真实参考书):抽取集 11 窗 / 41,000 字,渲染后用户消息 ≈4.73 万字符,
+  # 按上面的口径估 4.84 万 token → 预算 64000,留约四分之一余量(整窗卸载只在更长的窗口 / 更大的书上才会发生)。
   style_ref_extract_language:
     version: "2026-09-23.v6"
     input_token_budget: 64000
@@ -726,7 +727,8 @@ templates:
     structured_schema: *learn_extract_schema
 
   # 文风卡合成(learn_job 第 4 步)。载荷:16 维的发现(每条带 ref 编号与两处 ≤40 字原文短引)、测量核给的绝对声音
-  # 习惯、结构事实。满载(16 维 × 5 观察 + 2 避免 × 160 字陈述 + 引文)≈ 3.4 万字 → 预算 48000;装不下时
+  # 习惯、结构事实。实测(190 万字的真实参考书):满载(16 维 × (5 观察 + 2 避免) = 112 条、150 字陈述、每条两处
+  # 40 字引文)用户消息 ≈4.6 万字符、估 3.14 万 token;典型(每维 2 + 1 条)估 0.76 万 token → 预算 48000;装不下时
   # learn_card.fit_synthesis_payload 先减引文(2 → 1 → 0)、再减每维每类的发现条数(→ 3 → 2 → 1)。
   style_ref_synthesize_profile:
     version: "2026-09-23.v9"
@@ -821,8 +823,9 @@ templates:
           maxItems: 10
           items: {type: string, maxLength: 90}
 
-  # 受保护专名(learn_job 第 5 步,台账 E7)。载荷:≤220 个统计候选(词 / 次数 / 一小段上下文)+ 主题层的「作者不这么
-  # 写」陈述。满载 ≈ 1.6 万字 → 预算 24000(装不下时从候选尾部截)。
+  # 受保护专名(learn_job 第 5 步,台账 E7)。载荷:≤360 个统计候选(词 / 次数 / 一小段上下文)+ 主题层的「作者不这么
+  # 写」陈述。实测(190 万字的真实参考书):360 个候选用户消息 ≈3.4 万字符(JSON 里 ASCII 多)、估 1.6–1.7 万 token
+  # → 预算 24000(装不下时从候选尾部截)。
   style_ref_protected_terms:
     version: "2026-09-23.v1"
     input_token_budget: 24000
@@ -860,8 +863,9 @@ templates:
               kind: {type: string, enum: [person, place, organization, item, term]}
 
   # 窗口标签(learn_job 第 6 步,台账 N3):给全书每一个样例窗口打场面 / 情绪 / 手法标签,起草时按本场设计挑同类场面的
-  # 原文。每批 ≤8 窗、≤26,000 字(一窗送前 2,200 字 + 后 800 字)→ 预算 36000。场面 / 情绪的枚举与
-  # services/style_reference/tags.py 的词表逐项相同(有测试钉住)。
+  # 原文。每批 ≤8 窗、≤26,000 字(一窗送前 2,200 字 + 后 800 字)→ 预算 36000。实测(190 万字的真实参考书,
+  # 520 窗):65 批,每批估 2.1–2.7 万 token(中位 2.56 万);全书合计估 ≈165 万 token,约占学习一次输入的九成——
+  # 所以这个节点默认用小模型、不开推理。场面 / 情绪的枚举与 services/style_reference/tags.py 的词表逐项相同(有测试钉住)。
   style_ref_tag_windows:
     version: "2026-09-23.v1"
     input_token_budget: 36000

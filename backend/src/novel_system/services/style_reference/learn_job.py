@@ -1577,7 +1577,8 @@ def _profile_json(
     protected: Sequence[ProtectedTerm],
     paragraph_count: int,
 ) -> dict[str, Any]:
-    """v3 画像（契约 §2.2）。不写 ``exemplar_windows``（窗口在窗口表）、``scene_samples_index`` 与旧的
+    """v3 画像（契约 §2.2）。``voice`` = 测量核声音特征 + 具体习惯句 + 作者自身的参照分布；另写一份不带分布的
+    ``voice_signature`` 过渡别名。不写 ``exemplar_windows``（窗口在窗口表）、``scene_samples_index`` 与旧的
     ``style_features`` / ``narrative_patterns`` / ``banned_replication_rules`` / ``calibration_guidance``。"""
     card_json = card.model_dump(mode="json") if card is not None else None
     if card_json is not None:
@@ -1590,7 +1591,10 @@ def _profile_json(
         "profile_version": PROFILE_VERSION_V3,
         "dimension_card": card_json,
         "card_line_states": dict(states),
-        "voice_signature": voice_block,
+        "voice": voice_block,
+        # 过渡别名(不带 distribution):v3 注入落地之前的读者——注入的声音习惯行、跨场漂移、诊断的
+        # deliberate_repetition——读的是这个键;同一次写入、内容同源,旧读者都换到 ``voice`` 之后删掉
+        "voice_signature": dict(voice),
         "structure_card": dict(structure) if structure else None,
         "planning_guidance": list(planning),
         "narrative_guidance": list(narrative),
