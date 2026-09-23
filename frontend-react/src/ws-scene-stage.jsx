@@ -4,15 +4,15 @@ import { SceneDesignCard } from "./ws-scene-design.jsx";
 import { EmptyState, Notice, Spinner, Tabs, Tag } from "./ws-ui.jsx";
 import { scnCandidates, scnResumeAfterSelection, scnSelectCandidate } from "./ws-scene-api.js";
 import {
-  RUN_STAGES, STYLE_NOTICE_LABELS, runJobStepLabel, scnFindingIsPlainLanguage, scnParaText, scnRunStageIndex,
-  scnStyleNoticeLabel, scnStyleNoticeSeverity, stateLabelOf, stateToneOf,
+  RUN_STAGES, runJobStepLabel, scnFindingIsPlainLanguage, scnParaText, scnRunStageIndex,
+  scnStyleNoticeSeverity, scnStyleNoticeView, stateLabelOf, stateToneOf,
 } from "./ws-scene-derive.js";
 
 const { useEffect, useRef, useState } = React;
 
 /* ==========================================================
    AI 起草台 — 台面（中间一栏）
-   场景头 · 七步管线 · 风格链路提示条，下面按这一场的状态换内容：
+   场景头 · 七步管线 · 风格提示条，下面按这一场的状态换内容：
    待起草 → 预检（设计卡）；运行中 → 起草说明；待复核 → 正文或候选终选；已归档 → 定稿。
    ========================================================== */
 
@@ -103,18 +103,18 @@ function Pipeline({ scene, state, job }) {
   );
 }
 
-/* ============================ 风格链路提示条 ============================ */
+/* ============================ 风格提示条 ============================ */
 
-/* 每条一行：中文标签（词表外的 code 原样回显，后面接「: message」），按严重度着色；blocking 另带 is-blocking。 */
+/* 每条一行：标题 + 一句白话（按 code / reason / 稿子的阶段说，见 scnStyleNoticeView），按严重度着色；blocking 另带
+   is-blocking。词表外的 code 原样回显，后面接「: 后端原话」——新提示绝不吞掉。 */
 function SceneStyleNoticeStrip({ notices }) {
   const items = Array.isArray(notices) ? notices.filter((n) => n && n.code) : [];
   if (!items.length) return null;
   return (
-    <ul className="scn2-style-notices" data-testid="scene-style-notices" aria-label="风格链路提示">
+    <ul className="scn2-style-notices" data-testid="scene-style-notices" aria-label="风格提示">
       {items.map((n, i) => {
         const severity = scnStyleNoticeSeverity(n.severity);
-        const known = Boolean(STYLE_NOTICE_LABELS[n.code]);
-        const message = typeof n.message === "string" ? n.message : "";
+        const view = scnStyleNoticeView(n);
         return (
           <li
             key={`${n.code}-${i}`}
@@ -124,9 +124,9 @@ function SceneStyleNoticeStrip({ notices }) {
           >
             {severity === "info" ? <I.Info size={13} /> : <I.AlertTriangle size={13} />}
             <span className="scn2-style-notice-body">
-              <strong className="scn2-style-notice-label">{known ? scnStyleNoticeLabel(n) : n.code}</strong>
-              {message && <span className="scn2-style-notice-msg">{known ? ` — ${message}` : `: ${message}`}</span>}
-              {n.hitCount != null && <span className="scn2-style-notice-msg">（命中 {n.hitCount} 处）</span>}
+              <strong className="scn2-style-notice-label">{view.label}</strong>
+              {view.detail && <span className="scn2-style-notice-msg">{view.known ? ` — ${view.detail}` : `: ${view.detail}`}</span>}
+              {n.hitCount != null && <span className="scn2-style-notice-msg">（共 {n.hitCount} 处）</span>}
             </span>
           </li>
         );

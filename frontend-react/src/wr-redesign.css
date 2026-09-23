@@ -469,6 +469,8 @@
 .wr-cand-act { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .wr-cand-stack { margin-bottom: 10px; animation: none; opacity: 1; transform: none; }
 .wr-cands > .wr-ai-error { grid-column: 1 / -1; }
+/* 服务端丢掉了照搬参考书的几版（抄袭门）：候选上方一行说明 */
+.wr-cand-copy-note { grid-column: 1 / -1; margin: 0 0 2px; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--warn-ink); }
 
 .wr-skel { pointer-events: none; animation: none; opacity: 1; transform: none; }
 .wr-skel .sk { height: 13px; border-radius: 6px; background: linear-gradient(90deg, var(--paper-2), var(--paper-3), var(--paper-2)); background-size: 200% 100%; animation: wrShimmer 1.2s infinite; margin-bottom: 9px; }

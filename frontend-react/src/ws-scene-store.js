@@ -9,7 +9,7 @@ import { wsKey } from "./ws-works.jsx";
    这些都是后端管线真相的读缓存：刷新不丢、换浏览器再从 /scene-run-states + workbench 取回。
    ========================================================== */
 
-const SCN_RUN_FIELDS = ["state", "draft", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock", "authorNote", "rewriteBrief", "draftMode", "styleNotices", "styleWindows", "pipeState", "cost"];
+const SCN_RUN_FIELDS = ["state", "draft", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock", "authorNote", "rewriteBrief", "draftMode", "styleNotices", "styleWindows", "styleFidelity", "pipeState", "cost"];
 const scnRunKey = (sid) => wsKey("scn-run:" + sid);
 const scnQueueKey = () => wsKey("scn-queue:v1");
 const scnDismissKey = () => wsKey("scn-queue-dismissed:v1");

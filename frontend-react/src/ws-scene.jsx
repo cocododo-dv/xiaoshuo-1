@@ -21,7 +21,7 @@ const { useState, useEffect, useMemo, useRef } = React;
    AI 起草台 — 一场一裁
    ┌──────────┬─────────────────────────────────┬──────────┐
    │ 全书书脊  │  场景头 · 管线进度（只认后端）    │ 证据      │
-   │ 章 → 场   │  设计卡 / 起草中 / 正文 / 终选    │ 裁决 · 窗口│
+   │ 章 → 场   │  设计卡 / 起草中 / 正文 / 终选    │ 裁决 · 像不像 · 窗口│
    │          │  裁决条（开始 / 采纳 / 退回）     │ 尝试 · 记录│
    └──────────┴─────────────────────────────────┴──────────┘
    中间按这一场的状态换内容：待起草 → 设计卡；运行中 → 起草说明；待复核 → 正文与裁决；已归档 → 定稿。
@@ -171,6 +171,7 @@ function WsSceneBoard({ go, t }) {
   );
   const hasEvidence = renderState === "ready" || renderState === "archived"
     || !!(scene.styleWindows && Array.isArray(scene.styleWindows.windows) && scene.styleWindows.windows.length)
+    || !!scene.styleFidelity
     || !!(scene.attempts && scene.attempts.length)
     || !!(scene.log && scene.log.length)
     || !!(scene.cost && scene.cost.length);
@@ -224,7 +225,7 @@ function WsSceneBoard({ go, t }) {
       </section>
 
       {hasEvidence && (
-        <Evidence scene={scene} state={renderState} open={evidenceOpen} onClose={() => setEvidenceOpen(false)}
+        <Evidence scene={scene} sceneId={run.activeBackendSceneId || null} go={go} state={renderState} open={evidenceOpen} onClose={() => setEvidenceOpen(false)}
           logOpen={logOpen} setLogOpen={setLogOpen} onView={setCompare} />
       )}
       <UndoToast toast={toast} onClose={clearNotice} />

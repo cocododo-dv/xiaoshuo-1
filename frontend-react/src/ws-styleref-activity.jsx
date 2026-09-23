@@ -12,7 +12,7 @@ import { SrProgressBar, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
    风格参考 · 参考书活动（左栏面板，窄屏在书库对话框里）
    只显示作业表条目：段落分类（导入 / 用模型重新分类）、学习文风、对照检查。每条一根进度条；在跑的可取消，
    失败 / 取消的分类与学习可以「继续」（从断点续上）；终态给「打开 / 关闭」。
-   · srRunningFor：某本书正在跑的分类 / 学习（书库徽标、步骤条用）
+   · srRunningFor：某本书正在跑的分类 / 学习 / 对照检查（书库徽标、步骤条用）
    活动表本身与 /activity 轮询在 ws-styleref-store.js。
    ========================================================== */
 
@@ -21,6 +21,7 @@ export function srRunningFor(bookId) {
   return {
     classify: view(srActivityFor(bookId, "classify")),
     learn: view(srActivityFor(bookId, "learn")),
+    check: view(srActivityFor(bookId, "check")),
   };
 }
 
@@ -97,7 +98,7 @@ export function SrActivityPanel({ onOpenBook }) {
               </button>
             )}
             {e.status === "succeeded" && e.book_id && onOpenBook && (
-              <button type="button" className="btn btn-quiet btn-sm" onClick={() => { onOpenBook(e.book_id); srActivityDismiss(e.key); }}>打开</button>
+              <button type="button" className="btn btn-quiet btn-sm" onClick={() => { onOpenBook(e.book_id, e.kind === "check" ? "check" : null); srActivityDismiss(e.key); }}>打开</button>
             )}
             {!srActivityActive(e) && (
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => srActivityDismiss(e.key)}>关闭</button>

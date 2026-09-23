@@ -673,14 +673,16 @@ def _reading_payload(item: Any) -> tuple[Any, Mapping[str, Any]]:
     return getattr(item, "created_at", None), payload if isinstance(payload, Mapping) else {}
 
 
-def recent_gap_phrases(
+def recent_gap_entries(
     readings: Sequence[Any],
     *,
     min_hits: int = 3,
     window: int = 5,
     limit: int | None = None,
-) -> list[str]:
-    """最近 ``window`` 次读数里越界 ≥ ``min_hits`` 次的特征 → 白话短语（按次数、再按平均 |z| 排）。
+) -> list[dict[str, Any]]:
+    """最近 ``window`` 次读数里越界 ≥ ``min_hits`` 次的特征（按次数、再按平均 |z| 排），每条
+    ``{feature, direction, dimension, phrase, hits, window}``。``recent_gap_phrases``（首稿补充强调）与界面
+    （文风画像按维标「近期常见偏差」）共用这一份挑选。
 
     ``readings`` 是同一作品的读数（入库行 dict / ORM 行，或 ``reading_json``）：带 ``created_at`` 时按它取最新的
     ``window`` 条，否则认为列表已是新 → 旧。同一特征两个方向分开计数（「比作者多」与「比作者少」不相抵）。
@@ -691,6 +693,7 @@ def recent_gap_phrases(
     recent = [payload for _created, payload in items[: max(0, int(window))]]
     hits: dict[tuple[str, str], list[float]] = {}
     phrases: dict[tuple[str, str], str] = {}
+    dimensions: dict[tuple[str, str], str | None] = {}
     for payload in recent:
         seen: set[tuple[str, str]] = set()
         for entry in payload.get("out_of_band") or []:
@@ -704,12 +707,34 @@ def recent_gap_phrases(
             seen.add(key)
             hits.setdefault(key, []).append(abs(_finite(entry.get("z"))))
             phrases.setdefault(key, str(entry.get("phrase") or "") or feature_phrase(feature, direction))
+            dimensions.setdefault(key, str(entry.get("dimension") or "") or FEATURE_DIMENSIONS.get(feature))
     ranked = sorted(
         (key for key, values in hits.items() if len(values) >= int(min_hits)),
         key=lambda key: (-len(hits[key]), -sum(hits[key]) / len(hits[key]), key),
     )
-    result = [phrases[key] for key in ranked]
+    result = [
+        {
+            "feature": key[0],
+            "direction": key[1],
+            "dimension": dimensions.get(key),
+            "phrase": phrases[key],
+            "hits": len(hits[key]),
+            "window": len(recent),
+        }
+        for key in ranked
+    ]
     return result[:limit] if limit is not None else result
+
+
+def recent_gap_phrases(
+    readings: Sequence[Any],
+    *,
+    min_hits: int = 3,
+    window: int = 5,
+    limit: int | None = None,
+) -> list[str]:
+    """最近 ``window`` 次读数里越界 ≥ ``min_hits`` 次的特征 → 白话短语（同一份挑选见 ``recent_gap_entries``）。"""
+    return [entry["phrase"] for entry in recent_gap_entries(readings, min_hits=min_hits, window=window, limit=limit)]
 
 
 __all__ = [
@@ -733,6 +758,7 @@ __all__ = [
     "measure_evidence",
     "read_fidelity",
     "reading_from_features",
+    "recent_gap_entries",
     "recent_gap_phrases",
     "reference_distribution_for_book",
     "within_author_range",

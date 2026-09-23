@@ -43,8 +43,11 @@ def _dominant_type(type_mix: Any) -> str:
     return best
 
 
-def _window_rows(session: Session, book_id: str | None, window_nos: Sequence[int]) -> dict[int, dict[str, Any]]:
-    """当前窗口索引里这些窗的标签与主段落类型(按书的索引标记限定 root,旧索引的行不认)。"""
+def window_tag_rows(session: Session, book_id: str | None, window_nos: Sequence[int]) -> dict[int, dict[str, Any]]:
+    """当前窗口索引里这些窗的标签与主段落类型(按书的索引标记限定 root,旧索引的行不认)。
+
+    本场预览与起草台的「本场参考窗口」(工作台 ``style_windows``)共用:``{window_no: {tags, paragraph_type}}``,
+    ``tags`` 是学习作业打的 ``{situations, moods, devices, gist}``。"""
     if not book_id or not window_nos:
         return {}
     book = session.get(StyleReferenceBook, str(book_id))
@@ -82,7 +85,7 @@ def scene_preview_payload(
     fragments = dict(result.get("fragments") or {})
     stats = dict(result.get("stats") or {})
     refs = [dict(item) for item in result.get("window_refs") or []]
-    rows = _window_rows(session, book_id, [int(ref.get("window_no") or 0) for ref in refs])
+    rows = window_tag_rows(session, book_id, [int(ref.get("window_no") or 0) for ref in refs])
     windows = []
     for ref in refs:
         row = rows.get(int(ref.get("window_no") or 0), {})
@@ -151,4 +154,4 @@ def scene_preview_payload(
     }
 
 
-__all__ = ["scene_preview_payload"]
+__all__ = ["scene_preview_payload", "window_tag_rows"]

@@ -16,6 +16,7 @@ import "./ws-quality.css";
 import "./ws-deep.css";
 import "./ws-scene-design.css";
 import "./ws-styleref.css";
+import "./ws-fidelity.css";
 import "./ws-snow.css";
 
 import { App } from "./ws-app.jsx";

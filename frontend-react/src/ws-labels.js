@@ -329,6 +329,20 @@ export function windowPositionLabel(position) {
   return WINDOW_POSITION_LABELS[position] || "";
 }
 
+/* 一场的样例窗是按哪条配额选进来的（后端 inject/selection 的 slot；本场预览与起草台「本场参考窗口」共用） */
+export const STYLE_WINDOW_SLOT_LABELS = {
+  position: "按章内位置挑",
+  situation: "按场面挑",
+  device: "示范重点手法",
+  texture: "按对白 / 叙述的质地挑",
+  typical: "全书典型片段",
+  revise_device: "示范要改的手法",
+};
+
+export function styleWindowSlotLabel(slot) {
+  return STYLE_WINDOW_SLOT_LABELS[slot] || "";
+}
+
 /* 场面 / 情绪标签（学习作业给全书窗口打的、场景蓝图给一场标的，同一套词） */
 export const STYLE_SITUATION_TAGS = [
   "日常闲谈", "对峙审问", "争吵冲突", "打斗追逐", "危机应对", "独处内省", "回忆往事", "说明设定",

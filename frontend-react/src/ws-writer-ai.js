@@ -12,15 +12,20 @@
    · WR_RW_ACTIONS / wrToneInstr：选区工具条的改写指令。
    纯函数模块，不读 store、不写 window；真正发请求的在 ws-writer-requests.js。
    ========================================================== */
+import { copyGateGenerationMessage, isCopyGateError } from "./ws-copy-gate.js";
 
-/* kind: config（去系统设置）| not-ready（场景还没同步好）| empty（模型没给出可用结果）
-        | unclear（服务器没说清原因：重试，也给去系统设置）| retry
-   offersSettings：提示里要不要同时给「去系统设置」（config 与 unclear 为 true）。 */
+/* kind: copy（AI 写出来的每一版都照搬了参考书，被抄袭门拦下丢掉）| config（去系统设置）| not-ready（场景还没同步好）
+        | empty（模型没给出可用结果）| unclear（服务器没说清原因：重试，也给去系统设置）| retry
+   offersSettings：提示里要不要同时给「去系统设置」（config 与 unclear 为 true）。
+   抄袭门的拒绝也带 author_action（「去改写这些位置」），所以要先认它：过去它被当成「没有可用的模型」。 */
 export function wrAiError(error) {
   const code = String((error && error.code) || "");
   const details = (error && error.details) || {};
   const status = Number(error && error.status) || 0;
   const nextAction = String(details.next_action || "");
+  if (isCopyGateError(error)) {
+    return { kind: "copy", message: copyGateGenerationMessage(error), actionLabel: "再试一次" };
+  }
   if (
     /_LLM_NOT_CONFIGURED$|^LLM_(NOT_CONFIGURED|DISABLED|REQUIRED)/.test(code)
     || details.author_action

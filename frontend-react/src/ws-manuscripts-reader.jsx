@@ -7,10 +7,12 @@ import { SCENE_STATE_META, chapterLabel, chapterStateMeta, chapterOwnTitle } fro
 
 const SCENE_DONE = SCENE_STATE_META.done.label;
 import { manuArchivedParas, manuDramaOf } from "./ws-manuscripts-compile.js";
+import { ManuFidelityBadge } from "./ws-manuscripts-fidelity.jsx";
 
 /* ==========================================================
    成稿中心阅读器的内容：正文、结构（戏剧卡 + 场景拼接 + 场景三问）、
    页脚那句「卡在哪、下一步是什么」，以及章节阶段标签。
+   正文的场头与结构页签的场景行都挂「像不像」角标（这一场最新的终稿读数，ws-manuscripts-fidelity.jsx）。
    ========================================================== */
 
 /* 章节阶段标签（已定稿 / 审阅中 / 草稿 / 写作中 …，与主页同一套词） */
@@ -41,7 +43,7 @@ function ManuFootNote({ picked, canonical, canonicalComplete, blockReason, scene
   return <div className="ms-foot-note">{text}</div>;
 }
 
-function ManuRead({ picked, body, loadState, onRetry }) {
+function ManuRead({ picked, body, loadState, onRetry, fidelity = null }) {
   if (loadState && loadState.status === "error") {
     return (
       <div className="ms-empty" role="alert">
@@ -72,6 +74,7 @@ function ManuRead({ picked, body, loadState, onRetry }) {
           <header className="ms-scene-head">
             <span className="ms-scene-idx">第 {Number(s.idx)} 场</span>
             <span className="ms-scene-title">{s.title}</span>
+            {!s.missing && <ManuFidelityBadge finals={fidelity} sceneId={s.sceneId} />}
           </header>
           {s.missing
             ? <div className="ms-scene-missing"><I.Clock size={14} /> 这一场尚无服务端归档正文</div>
@@ -148,7 +151,7 @@ function structureRows(chapter, body, canonical) {
   })) : [];
 }
 
-function ManuStructure({ body, chapter, canonical, go, diag = null }) {
+function ManuStructure({ body, chapter, canonical, go, diag = null, fidelity = null }) {
   const drama = (body && body.drama) || manuDramaOf(chapter);
   const rows = structureRows(chapter, body, canonical);
   const openDeep = (sid) => { if (go && sid) go("writer", [{ type: "ws:writer-scene", detail: sid }, { type: "ws:writer-posture", detail: "deep" }]); };
@@ -172,18 +175,22 @@ function ManuStructure({ body, chapter, canonical, go, diag = null }) {
             <li key={s.key} className={s.done ? "" : "is-ghost"}>
               <span className="ms-scene-idx">第 {s.idx} 场</span>
               <span className={s.done ? "ms-struct-title is-done" : "ms-struct-title"}>{s.title}</span>
-              <ManuStoryCheck check={s.check} sceneId={s.sceneId} sid={s.sid} go={go} />
-              {(() => {
-                const counts = diag && s.sceneId ? diag.sceneCounts(s.sceneId) : null;
-                if (!counts || !counts.open) return null;
-                /* 深改面板里还开着的发现数（忽略过的不算）；点了带着深改姿态进写作台 */
-                return (
-                  <button type="button" className="ms-diag-chip ms-diag-chip-btn" data-testid="ms-scene-diag" onClick={() => openDeep(s.sid)}
-                    title={`写作台深改面板里还开着 ${counts.open} 条诊断${counts.blocking ? `，其中阻断 ${counts.blocking}` : ""}`}>
-                    诊断 {counts.open}
-                  </button>
-                );
-              })()}
+              {/* 一格放这一场的几个小标：场景三问、诊断数、像不像（终稿）——哪个没有都不占位，列数不跟着变 */}
+              <span className="ms-struct-flags">
+                <ManuStoryCheck check={s.check} sceneId={s.sceneId} sid={s.sid} go={go} />
+                {(() => {
+                  const counts = diag && s.sceneId ? diag.sceneCounts(s.sceneId) : null;
+                  if (!counts || !counts.open) return null;
+                  /* 深改面板里还开着的发现数（忽略过的不算）；点了带着深改姿态进写作台 */
+                  return (
+                    <button type="button" className="ms-diag-chip ms-diag-chip-btn" data-testid="ms-scene-diag" onClick={() => openDeep(s.sid)}
+                      title={`写作台深改面板里还开着 ${counts.open} 条诊断${counts.blocking ? `，其中阻断 ${counts.blocking}` : ""}`}>
+                      诊断 {counts.open}
+                    </button>
+                  );
+                })()}
+                <ManuFidelityBadge finals={fidelity} sceneId={s.sceneId} />
+              </span>
               <span className="text-muted text-sm">{s.meta}</span>
               {s.done ? <I.Check size={13} className="ms-struct-done" aria-label={SCENE_DONE} /> : <I.Dot size={13} aria-hidden="true" />}
             </li>

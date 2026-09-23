@@ -10,11 +10,13 @@
    · ws-scene-job.jsx     任务控制条（唯一的轮询者）
    · ws-scene-stage.jsx   风格链路提示条（与台面其它部分）
    · ws-scene-evidence.jsx 本场参考窗口（与证据栏其它部分）
+   · ws-scene-fidelity.jsx 证据栏的「像不像」（这次运行的位次与决定、对照检查）
    ========================================================== */
 
 export {
   STYLE_NOTICE_LABELS, RUN_STAGES, runJobStepLabel, scnRunStageIndex, scnDraftModeFrom,
-  scnStyleNoticesFrom, scnStyleWindowsFrom, scnStyleNoticeLabel, scnStyleWindowLabel,
+  scnStyleNoticesFrom, scnStyleWindowsFrom, scnStyleNoticeLabel, scnStyleNoticeView, scnStyleWindowLabel,
+  scnStyleWindowTags, scnStyleFidelityFrom,
   scnTerminalJobMessage, scnQC, scnReQC, scnFindingText, scnFindingIsPlainLanguage,
   scnGateFrom, scnRewriteBriefFrom, scnRunRecordFromWorkbench,
 } from "./ws-scene-derive.js";
@@ -29,3 +31,4 @@ export {
 export { SceneRunJobControl } from "./ws-scene-job.jsx";
 export { SceneStyleNoticeStrip } from "./ws-scene-stage.jsx";
 export { SceneStyleWindowsPanel } from "./ws-scene-evidence.jsx";
+export { SceneFidelityPanel } from "./ws-scene-fidelity.jsx";
