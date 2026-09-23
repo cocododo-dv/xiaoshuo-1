@@ -6,8 +6,8 @@ import { fidCheck, fidResumeCheck, fidStartCheck, useFidelityStore } from "./ws-
 import {
   FidelityCopyLine, FidelityDimensionTable, FidelityErrorLine, FidelityGaps, FidelityHeadline, FidelityJudgeLine,
 } from "./ws-fidelity-ui.jsx";
-import { srAppliedToWork, srFormatDuration, srFormatWhen, srSceneLabel, srSceneOptions } from "./ws-styleref-model.js";
-import { srActivityTrack, srLoadRuntime, srLoadWorkScenes, srRuntime } from "./ws-styleref-store.js";
+import { srAppliedToWork, srFormatDuration, srFormatWhen, srIsLegacyGlobalBinding, srSceneLabel, srSceneOptions } from "./ws-styleref-model.js";
+import { srActivityTrack, srLoadProjectBinding, srLoadRuntime, srLoadWorkScenes, srProjectBinding, srRuntime } from "./ws-styleref-store.js";
 import { SrProgressBar, SrStageEmpty, srActiveWork, useSrStore } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
@@ -45,6 +45,7 @@ export function SrCheck({ book, go, onAction }) {
   const [chapters, setChapters] = React.useState(null);
 
   React.useEffect(() => { srLoadRuntime(); }, []);
+  React.useEffect(() => { if (workId) srLoadProjectBinding(workId); }, [workId]);
   React.useEffect(() => { fidResumeCheck(key); }, [key]);
   React.useEffect(() => {
     let alive = true;
@@ -72,7 +73,11 @@ export function SrCheck({ book, go, onAction }) {
   const runtime = srRuntime();
   const noLlm = runtime.phase === "ready" && !!runtime.data && runtime.data.llm_enabled === false;
   const busy = !!entry && (entry.phase === "starting" || entry.phase === "running");
-  const applied = srAppliedToWork(book, workId);
+  /* 作品在用这本书：作品层的应用，或旧版全局应用（这部作品自己没有应用时它生效）——都按作品现在的设置（重点 / 不学）
+     查（传 project_id，后端按作品现解析的策略来）；只传 profile_id 会按默认维度状态查 */
+  const workBinding = workId ? (srProjectBinding(workId) || {}).data : null;
+  const legacyGlobalHere = !!(workBinding && srIsLegacyGlobalBinding(workBinding.binding) && workBinding.binding.profile_id === profileId);
+  const applied = srAppliedToWork(book, workId) || legacyGlobalHere;
   const groups = srSceneOptions(chapters);
   const count = Array.from(text.trim()).length;
   const ready = mode === "text" ? count > 0 && count <= CHECK_MAX_CHARS : sceneKnown;

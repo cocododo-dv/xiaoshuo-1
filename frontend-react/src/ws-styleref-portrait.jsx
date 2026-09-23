@@ -339,7 +339,7 @@ function SrVoiceAndStructure({ profile }) {
 }
 
 /* 本书专名（学习时识别，起草时不许照搬）与作者自己加的禁用词。
-   本书专名可以逐个去掉（识别错了的普通词）：先说清去掉之后它不再受保护；重新学习会整组重新识别，学完就重读。 */
+   本书专名可以逐个去掉（识别错了的普通词）：先说清去掉之后它不再受保护；后端记下去掉的词，重新学习不再加回来；学完就重读。 */
 function SrBannedTerms({ profile }) {
   const [terms, setTerms] = React.useState(null);
   const [input, setInput] = React.useState("");
@@ -384,7 +384,7 @@ function SrBannedTerms({ profile }) {
     if (busy) return;
     const ok = await wsConfirm({
       title: `不再保护「${t.term}」？`,
-      body: `「${t.term}」是学习时从这本书里识别出的本书专名。去掉之后它不再受保护：起草时不再拦它，正文里可以出现这个词，照搬检查也不再把它当本书专名；重新学习文风时它可能会再被识别出来。`,
+      body: `「${t.term}」是学习时从这本书里识别出的本书专名。去掉之后它不再受保护：起草时不再提醒避开它，正文里用到也不再提示；以后重新学习文风也不会再把它加回来。`,
       confirmLabel: "不再保护",
       tone: "danger",
     });

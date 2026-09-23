@@ -243,18 +243,30 @@ class StyleJobService:
         ).scalar_one_or_none()
 
     def list_recent(self, *, finished_within_seconds: float = 600.0, limit: int = 100) -> list[StyleReferenceJob]:
-        """活动面板：所有活动作业 + 最近结束的作业（默认 10 分钟内）。"""
+        """活动面板：**全部**活动作业 + 最近结束的作业（默认 10 分钟内，至多 ``limit`` 条）。
+
+        活动作业不受 ``limit`` 限制：界面把 ``/activity`` 当完整清单，清单里不再有的在跑条目会被收掉——十分钟里结束的
+        作业再多，也不能把一个还在跑的老作业挤出清单。"""
         cutoff = _iso(_now() - timedelta(seconds=finished_within_seconds))
-        stmt = (
-            select(StyleReferenceJob)
-            .where(
-                (StyleReferenceJob.state.in_(ACTIVE_STATES))
-                | (StyleReferenceJob.finished_at >= cutoff)
-            )
-            .order_by(StyleReferenceJob.created_at.desc())
-            .limit(limit)
+        active = list(
+            self.session.execute(
+                select(StyleReferenceJob)
+                .where(StyleReferenceJob.state.in_(ACTIVE_STATES))
+                .order_by(StyleReferenceJob.created_at.desc())
+            ).scalars()
         )
-        return list(self.session.execute(stmt).scalars())
+        finished = list(
+            self.session.execute(
+                select(StyleReferenceJob)
+                .where(
+                    StyleReferenceJob.state.in_(TERMINAL_STATES),
+                    StyleReferenceJob.finished_at >= cutoff,
+                )
+                .order_by(StyleReferenceJob.created_at.desc())
+                .limit(limit)
+            ).scalars()
+        )
+        return sorted(active + finished, key=lambda job: str(job.created_at or ""), reverse=True)
 
     # ------------------------------------------------------------------ 认领 / 所有权
     def claim(self, job_id: str) -> ClaimedJob | None:

@@ -668,7 +668,7 @@ describe("文风画像", () => {
     await click($('[data-testid="sr-protected-remove"]', chip));
     await settle();
     expect(confirm.mock.calls[0][0]).toContain("不再保护「某地」？");
-    expect(confirm.mock.calls[0][0]).toContain("起草时不再拦它");
+    expect(confirm.mock.calls[0][0]).toContain("以后重新学习文风也不会再把它加回来");
     expect(client.apiDelete).not.toHaveBeenCalled();
     confirm.mockReturnValueOnce(true);
     state.bannedTerms = [];
@@ -1106,6 +1106,22 @@ describe("第四步 · 对照检查", () => {
     expect(byTestId("sr-check-running").textContent).toContain("第 1 章 · 第 2 场「夜渡」");
   });
 
+  it("选一场而作品用的是这本书的旧版全局应用：同样按作品现在的设置查（不带画像）", async () => {
+    let posted = null;
+    state.projectBinding = {
+      project_id: "w1",
+      binding: { ...OWN_BINDING, binding_id: "bd-g", scope: "global", scope_ref_id: null },
+      profile: PROFILE_SUMMARY,
+      book: { book_id: "bk-a", title: "甲书" },
+    };
+    await openCheck();
+    routeCheck({ post: (body) => { posted = body; return Promise.resolve({ job_id: "job-c", job: JOB("running") }); }, get: () => Promise.resolve({ job: JOB("running") }) });
+    await pickScene("sc-2");
+    expect(byTestId("sr-check-form").textContent).toContain("按《北岸手记》现在用这本书的设置");
+    await click(byTestId("sr-check-start"));
+    await settle();
+    expect(posted).toEqual({ scene_id: "sc-2", project_id: "w1" });
+  });
   it("选一场而作品没用这本书：带上这份画像", async () => {
     let posted = null;
     await openCheck();

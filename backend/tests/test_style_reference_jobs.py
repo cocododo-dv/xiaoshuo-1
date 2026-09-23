@@ -424,3 +424,17 @@ def test_check_jobs_have_their_own_lane(monkeypatch) -> None:
     finally:
         jobs_module.shutdown_job_workers(wait=True)
     assert sorted(started) == ["sr_job_a", "sr_job_b"]
+
+
+def test_activity_lists_every_active_job_however_many_finished_recently(session) -> None:
+    """界面把 /activity 当完整清单：十分钟里结束的作业再多，也不能把一个还在跑的老作业挤出去。"""
+    book_id = _book(session)
+    service = StyleJobService(session)
+    old_active = service.create(JOB_KIND_CLASSIFY, book_id=book_id)
+    service.claim(old_active.job_id)
+    for index in range(5):
+        job = service.create(JOB_KIND_LEARN, book_id=_book(session, f"sr_book_jobs_done_{index}"))
+        service.succeed(service.claim(job.job_id), {"ok": True})
+    listed = [job.job_id for job in service.list_recent(limit=3)]
+    assert old_active.job_id in listed
+    assert len(listed) == 4  # 1 条在跑 + 至多 3 条刚结束

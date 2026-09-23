@@ -1031,3 +1031,32 @@ def test_worker_shutdown_mid_learning_requeues_instead_of_failing(session, monke
     assert job.state == "succeeded", job.error_json
     assert job.attempt == 2
     assert not any(call.startswith("style_ref_extract_") for call in fake.calls[len(before):])
+
+
+def test_a_protected_name_the_author_removed_is_not_brought_back_by_relearning(client, session, monkeypatch) -> None:
+    """作者在画像里删掉一个自动识别的专名（多半是误收的日常词）：记在画像上，重新学习不再把它加回来。"""
+    from novel_system.services.style_reference.protected_terms import DISMISSED_KEY
+
+    seed_book(session)
+    _use(monkeypatch, _fake(protected=("程铁", ORG)))
+    first_id = _start("learn_book")
+    run_job_inline(first_id)
+    profile_id = _job(first_id).result_json["profile_id"]
+    term_id = session.scalars(
+        select(StyleReferenceBannedTerm.term_id).where(
+            StyleReferenceBannedTerm.profile_id == profile_id, StyleReferenceBannedTerm.term == "程铁"
+        )
+    ).one()
+    resp = client.delete(f"/api/v2/style-reference/banned-terms/{term_id}", headers={"X-Idempotency-Key": "dismiss-1"})
+    assert resp.status_code == 200, resp.text
+    session.expire_all()
+    assert session.get(StyleReferenceProfile, profile_id).profile_json[DISMISSED_KEY] == ["程铁"]
+
+    _use(monkeypatch, _fake(protected=("程铁", ORG)))
+    second_id = _start("learn_book")
+    run_job_inline(second_id)
+    assert _job(second_id).state == "succeeded"
+    session.expire_all()
+    rows = {(t.term, t.source) for t in session.scalars(select(StyleReferenceBannedTerm).where(StyleReferenceBannedTerm.profile_id == profile_id))}
+    assert rows == {(ORG, "protected_auto")}
+    assert session.get(StyleReferenceProfile, profile_id).profile_json[DISMISSED_KEY] == ["程铁"]

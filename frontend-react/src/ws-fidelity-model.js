@@ -9,6 +9,7 @@
    · 维度名与层名从 ws-labels.js 取（一张词表）。
    不依赖 React，不读 store，不写 window，可单测。
    ========================================================== */
+import { isChineseMessage } from "./lib/messages.js";
 import { STYLE_DIMENSIONS, STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, styleDimensionLabel, styleLayerOf } from "./ws-labels.js";
 
 const DEFAULT_MAX_PERCENTILE = 90;
@@ -377,14 +378,12 @@ const RETRYABLE = new Set([
   "NETWORK_ERROR", "REQUEST_TIMEOUT",
 ]);
 
-const CJK = /[㐀-鿿]/;
-
 /* 出错 → { code, message, action }；action：{ type: "settings" | "learn" | "apply" | "retry", label } 或 null */
 export function fidErrorInfo(error, fallback = "对照检查没有完成，可以重新检查。") {
   const code = String((error && error.code) || "");
   const details = (error && error.details) || {};
   const serverMessage = String((error && error.message) || "");
-  const message = ERROR_TEXT[code] || (CJK.test(serverMessage) ? serverMessage : fallback);
+  const message = ERROR_TEXT[code] || (isChineseMessage(serverMessage) ? serverMessage : fallback);
   let action = null;
   if (code === "STYLE_REFERENCE_LLM_REQUIRED" || code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED") action = { type: "settings", label: "去设置模型" };
   else if (code === "STYLE_REFERENCE_CHECK_NOT_BOUND") action = { type: "apply", label: "去用于作品" };
