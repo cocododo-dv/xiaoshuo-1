@@ -157,7 +157,7 @@ class _FactsRunner:
             "situation_tags": ["对峙审问", "不存在的标签", "对峙审问", "悬疑揭示", "计划商议", "独处内省"],
             # 模型多给的写法字段：事实版一律不收
             "image_anchor": "湿漉漉的石阶上映着灯",
-            "ending_action": "「你在替他圆谎？」",
+            "ending_action": "「钥匙是谁先拿走的？」",
             "anti_summary_rule": "不许总结式收尾",
         }
         if kwargs["prompt"].get("template_name") != "scene_blueprint_facts":
@@ -197,7 +197,7 @@ def test_style_first_binding_gets_a_facts_only_blueprint_with_situation_tags(ses
     assert set(blueprint) == {*SCENE_BLUEPRINT_FACT_FIELDS, "situation_tags"}
     assert is_facts_blueprint(blueprint)
     assert blueprint_situation_tags(blueprint) == ["对峙审问", "悬疑揭示", "计划商议"]
-    assert "湿漉漉" not in str(blueprint) and "圆谎" not in str(blueprint)
+    assert "湿漉漉" not in str(blueprint) and "先拿走的？" not in str(blueprint)
 
     # 场面标签随 bundle 冻结（同一场所有工序读同一份；以 _ 开头，不进 section）
     import json
@@ -219,7 +219,7 @@ def test_blueprint_mode_follows_the_policy_and_stale_versions_are_regenerated(se
             row_id="scene_blueprint_v3_legacy",
             scene_id=SCENE_ID,
             chapter_id=CHAPTER_ID,
-            blueprint_json={"visible_desire": "旧", "ending_action": "「你在替他圆谎？」", "image_anchor": "灯"},
+            blueprint_json={"visible_desire": "旧", "ending_action": "「钥匙是谁先拿走的？」", "image_anchor": "灯"},
             status="accepted",
         )
     )
@@ -245,7 +245,7 @@ def test_blueprint_mode_follows_the_policy_and_stale_versions_are_regenerated(se
     regenerated = service.ensure_for_scene(SCENE_ID)
     assert runner.calls[-1]["prompt"]["template_name"] == "scene_blueprint"
     assert not is_facts_blueprint(regenerated.blueprint_json)
-    assert regenerated.blueprint_json["ending_action"] == "「你在替他圆谎？」"
+    assert regenerated.blueprint_json["ending_action"] == "「钥匙是谁先拿走的？」"
 
 
 def test_facts_blueprint_validation() -> None:
@@ -444,14 +444,14 @@ def test_freshness_budget_keeps_only_verbatim_lists_when_the_policy_defers(sessi
     monkeypatch.setattr(
         self_repetition.LifetimeExpressionRegistry,
         "get_lifetime_avoidance_guidance",
-        lambda self, project_id: "【全书已用表达禁用清单】劣质的迷彩布",
+        lambda self, project_id: "【全书已用表达禁用清单】廉价的塑料伞",
     )
     monkeypatch.setattr(
         self_repetition,
         "check_semantic_repetition",
         lambda *args, **kwargs: [
             self_repetition.SemanticRepetitionHit(
-                pattern_type="metaphor", current_text="劣质的帆布", previous_text="劣质的迷彩布", source_scene_id="x"
+                pattern_type="metaphor", current_text="廉价的塑料袋", previous_text="廉价的塑料伞", source_scene_id="x"
             )
         ],
     )
