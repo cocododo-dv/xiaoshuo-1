@@ -95,7 +95,7 @@ function SrClassifyCard({ book, stats, onReclassify, reclassifyLock }) {
       ) : incomplete ? (
         <div className="sr-ov-live">
           <p className="sr-ov-text">
-            {(error && error.code === "STYLE_REFERENCE_IMPORT_CANCELLED")
+            {(error && (error.code === "STYLE_REFERENCE_JOB_CANCELLED" || error.code === "STYLE_REFERENCE_IMPORT_CANCELLED"))
               ? "分类被取消。"
               : `分类没有完成${error && error.message ? `：${error.message}` : "。"}`}
             {book.classification && book.classification.batches_total ? ` 已完成 ${book.classification.batches_done}/${book.classification.batches_total} 批，继续分类只补剩下的。` : ""}

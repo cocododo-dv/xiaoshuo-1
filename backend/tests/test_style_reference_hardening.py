@@ -1,7 +1,7 @@
 """风格参考模块加固回归(2026-06 审查修复)。
 
 覆盖六组新行为:
-1. cloud_policy 强制执行(local_only 拒绝云端 LLM 操作 / ingest 降级启发式)
+1. cloud_policy 强制执行(local_only 拒绝云端 LLM 操作;严格 LLM 后没有启发式兜底,分类节点须走本机模型)
 2. LLMRequiredError / CloudPolicyBlockedError 映射 DomainError 409
 3. 反抄袭红线段(anti_plagiarism_block)接线:渲染 / banned_terms 填充 / 免截断
 4. 抄袭检测:规范化匹配(防标点空格绕过)+ 全书段落语料
@@ -168,8 +168,11 @@ def test_reclassify_blocked_for_local_only_book():
     book_id = _seed_book("reclass_block", cloud_policy="local_only")
     with SessionLocal() as session:
         service = IngestService(session, llm_client=object(), llm_enabled=True)
+        for mode in ("reclassify", "retype"):
+            with pytest.raises(CloudPolicyBlockedError):
+                service.start_reclassify(book_id, mode=mode)
         with pytest.raises(CloudPolicyBlockedError):
-            service.reclassify(book_id)
+            service.resume(book_id)
 
 
 def test_synthesize_blocked_for_local_only_book():
@@ -192,10 +195,12 @@ def test_preview_blocked_for_local_only_book():
             svc.generate(profile_id)
 
 
-def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic():
-    """2026-09-15 严格 LLM:local_only 的段落不送云,也没有启发式兜底——云端模型直接拒绝,
-    LLM client 一次都不许被调用;本地模型(打桩 runtime_llm_is_local)才分类。"""
+def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic(monkeypatch):
+    """2026-09-15 严格 LLM:local_only 的段落不送云,也没有启发式兜底——分类节点走云端接入时直接拒绝,
+    LLM client 一次都不许被调用;分类节点走本机模型(打桩 node_route_is_local)才建分类作业、由模型分类。"""
+    from novel_system.services.style_reference import import_job
     from novel_system.services.style_reference import policy as policy_module
+    from novel_system.services.style_reference.jobs import run_job_inline
 
     sentinel = _SentinelLLM()
     with SessionLocal() as session:
@@ -209,29 +214,37 @@ def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic():
                 cloud_policy="local_only",
             )
     assert caught.value.details["author_action"]["view"] == "systemConfig"
+    assert caught.value.details["node_id"] in (
+        "style_ref_paragraph_classify_anchor",
+        "style_ref_paragraph_classify_bulk",
+    )
+    assert "仅本机" in caught.value.message
     assert not sentinel.called
 
-    original = policy_module.runtime_llm_is_local
-    policy_module.runtime_llm_is_local = lambda settings=None: True
-    try:
-        from tests.conftest import build_fake_paragraph_classifier
+    from tests.conftest import build_fake_paragraph_classifier
 
-        fake = build_fake_paragraph_classifier()(rule="default")
-        with SessionLocal() as session:
-            service = IngestService(session, llm_client=fake, llm_enabled=True)
-            result = service.ingest_upload(
-                raw_bytes=SAMPLE_TEXT.encode("utf-8"),
-                file_name="local_only_book_local_llm.txt",
-                title="本地书",
-                author_label=None,
-                cloud_policy="local_only",
-            )
-            session.commit()
-    finally:
-        policy_module.runtime_llm_is_local = original
+    fake = build_fake_paragraph_classifier()(rule="default")
+    monkeypatch.setattr(policy_module, "node_route_is_local", lambda *_a, **_k: True)
+    monkeypatch.setattr(import_job, "resolve_classification_client", lambda: (fake, True))
+    with SessionLocal() as session:
+        service = IngestService(session, llm_client=fake, llm_enabled=True)
+        result = service.ingest_upload(
+            raw_bytes=SAMPLE_TEXT.encode("utf-8"),
+            file_name="local_only_book_local_llm.txt",
+            title="本地书",
+            author_label=None,
+            cloud_policy="local_only",
+        )
+        session.commit()
+        book_id, job_id = result.book.book_id, result.job.job_id
+    run_job_inline(job_id)
     assert result.paragraphs_count > 0
     assert fake.call_count >= 1
-    assert result.book.stats_json["classifier_calibration"]["fallback_to_heuristic"] is False
+    with SessionLocal() as session:
+        book = StyleReferenceRepository(session).get_book(book_id)
+        assert book.status == "ready"
+        assert book.stats_json["classifier_calibration"]["fallback_to_heuristic"] is False
+        assert book.stats_json["classification_provenance"]["source"] == "llm"
 
 
 def test_async_full_for_local_only_book_is_refused_without_a_local_llm():

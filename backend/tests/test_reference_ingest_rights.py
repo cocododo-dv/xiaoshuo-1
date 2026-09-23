@@ -48,8 +48,11 @@ def test_no_send_rights_but_cloud_policy_rejected():
     with pytest.raises(DomainError) as exc:
         _ingest("r3", cloud_policy="allow_full_cloud",
                 rights={"analysis_rights": True, "send_rights": False})
-    assert exc.value.code == "STYLE_REFERENCE_SEND_RIGHTS_REQUIRED"
+    # 请求本身不合法:与「未声明」同一个 400 码;STYLE_REFERENCE_SEND_RIGHTS_REQUIRED 只表示
+    # 已有的书缺发送权(一律 409,见 policy / test_style_reference_policy)
+    assert exc.value.code == "STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED"
     assert exc.value.status_code == 400
+    assert exc.value.details["reason"] == "send_rights_false"
 
 
 @pytest.mark.parametrize("cloud_policy", ["segments_only", "allow_full_cloud"])

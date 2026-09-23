@@ -26,6 +26,10 @@ from novel_system.services.style_reference.validation import semantic as validat
 from novel_system.services.style_reference import policy
 
 
+def _anchor_runtime() -> segmentation_llm.NodeRuntime:
+    return segmentation_llm.load_classification_runtimes()[segmentation_llm.NODE_ANCHOR]
+
+
 def test_segmentation_accounted_execution_preserves_control_plane_exception(
     session,
     monkeypatch: pytest.MonkeyPatch,
@@ -41,12 +45,15 @@ def test_segmentation_accounted_execution_preserves_control_plane_exception(
     monkeypatch.setattr(segmentation_llm, "execute_accounted_call", raise_error)
 
     with pytest.raises(LLMAccountingError) as exc_info:
-        segmentation_llm._classify_via_node(
-            [(0, 4, "text")],
-            segmentation_llm.NODE_ANCHOR,
+        segmentation_llm.classify_batch(
+            _anchor_runtime(),
+            [0],
+            ["text"],
+            [0],
             object(),
             session=session,
             scope_id="sr_book_control_plane",
+            step="paragraph_classification:anchor_strong:0:1",
         )
 
     assert exc_info.value is error
@@ -64,13 +71,14 @@ def test_segmentation_accounted_execution_preserves_control_plane_exception(
             "logical call already exists",
         ),
     ],
-    ids=("segmentation-error-catch", "generic-error-catch"),
+    ids=("segmentation-error", "accounting-error"),
 )
-def test_segmentation_dispatcher_never_uses_heuristic_for_control_plane_failure(
+def test_segmentation_never_uses_heuristic_for_control_plane_failure(
     session,
     monkeypatch: pytest.MonkeyPatch,
     error: Exception,
 ) -> None:
+    """2026-09-15 严格 LLM:控制面失败原样上抛(作业记失败),绝不落到启发式。"""
     heuristic_calls = 0
 
     def raise_error(*_args: Any, **_kwargs: Any) -> None:
@@ -79,20 +87,24 @@ def test_segmentation_dispatcher_never_uses_heuristic_for_control_plane_failure(
     def forbidden_heuristic(*_args: Any, **_kwargs: Any) -> None:
         nonlocal heuristic_calls
         heuristic_calls += 1
-        raise AssertionError("control-plane failure must not use heuristic fallback")
+        raise AssertionError("LLM failures must not use the heuristic fallback")
 
-    monkeypatch.setattr(segmentation, "classify_with_llm", raise_error)
+    monkeypatch.setattr(segmentation_llm, "execute_accounted_call", raise_error)
     monkeypatch.setattr(segmentation, "classify_heuristic", forbidden_heuristic)
 
     with pytest.raises(type(error)) as exc_info:
-        segmentation.classify_paragraphs(
-            [(0, 4, "text")],
-            llm_enabled=True,
-            llm_client=object(),
+        segmentation_llm.classify_batch(
+            _anchor_runtime(),
+            [0],
+            ["text"],
+            [0],
+            object(),
             session=session,
             scope_id="sr_book_control_plane",
+            step="paragraph_classification:anchor_strong:0:1",
         )
 
+    # 两者都是控制面失败(用量越过预留 / 逻辑调用已存在):原样上抛,不包装、不重试、不降级
     assert exc_info.value is error
     assert heuristic_calls == 0
 
@@ -375,7 +387,8 @@ def test_segmentation_delivers_reasoning_inflated_usage_when_no_fence_is_armed(s
                     {"paragraph_index": 1, "paragraph_type": "narration", "confidence": "medium"},
                 ]
             }
-            usage = {"prompt_tokens": 2244, "completion_tokens": 11776, "total_tokens": 14020}
+            # 预留额 = 请求 UTF-8 上界 + 8192 输出预算;中转回报的完成 token 远超于此
+            usage = {"prompt_tokens": 2244, "completion_tokens": 31776, "total_tokens": 34020}
             response = LLMResponse(
                 request_id="thinking-relay",
                 provider="openai",
@@ -393,20 +406,26 @@ def test_segmentation_delivers_reasoning_inflated_usage_when_no_fence_is_armed(s
             return response
 
     client = ThinkingRelayClient()
-    result = segmentation_llm._classify_via_node(
-        [(0, 6, "「你来了。」"), (6, 20, "他没有回答，只是把门关上。")],
-        segmentation_llm.NODE_BULK,
+    runtime = segmentation_llm.load_classification_runtimes()[segmentation_llm.NODE_BULK]
+    result = segmentation_llm.classify_batch(
+        runtime,
+        [0, 1],
+        ["「你来了。」", "他没有回答，只是把门关上。"],
+        [0, 1],
         client,
         session=session,
         scope_id="sr_book_thinking_relay",
+        step="paragraph_classification:rest:0:2",
     )
 
-    assert result == [("dialogue", 0.9), ("narration", 0.6)]
-    assert client.requests[0].max_output_tokens == 2000
+    assert result == {0: ("dialogue", 0.9), 1: ("narration", 0.6)}
+    # 2026-09-23 v3:分类节点默认关推理、输出预算按 ≤100 段一批给到 8192
+    assert client.requests[0].max_output_tokens == 8192
+    assert client.requests[0].reasoning_level == "off"
     parent = session.query(LlmCall).one()
     attempt = session.query(LlmCallAttempt).one()
     assert parent.accounting_status == attempt.accounting_status == "settled"
-    assert parent.total_tokens == 14020
+    assert parent.total_tokens == 34020
     assert attempt.total_tokens > attempt.reserved_tokens
     assert parent.response_payload_summary["usage_overage_tokens"] == (
         attempt.total_tokens - attempt.reserved_tokens
