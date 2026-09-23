@@ -380,7 +380,7 @@ def test_supersede_scene_planning_artifacts_flips_all_three_and_is_idempotent(se
 @pytest.mark.parametrize("scope", ["project", "scene", "character"])
 def test_supersede_for_binding_scope_covers_project_scene_and_character_scopes(session, scope: str) -> None:
     project_id, chapter_id, scene_id = _seed_scene(session, suffix=f"_{scope}")
-    session.add(StoryCharacter(character_id=f"c_{scope}", project_id=project_id, display_name="林山"))
+    session.add(StoryCharacter(character_id=f"c_{scope}", project_id=project_id, display_name="林昭"))
     session.commit()
     ref = {"project": project_id, "scene": scene_id, "character": f"c_{scope}"}[scope]
     counts = supersede_for_binding_scope(session, scope=scope, scope_ref_id=ref)
