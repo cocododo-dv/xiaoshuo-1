@@ -103,8 +103,15 @@ def _seed_profile_with_findings(seed: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_apply_builds_rag_index_and_writes_no_review_items() -> None:
-    """2026-09-14 减法:apply 只落 binding + 激活 + RAG 索引,不再物化 ReviewItem。"""
+def test_apply_builds_no_rag_index_and_writes_no_review_items(monkeypatch) -> None:
+    """2026-09-14 减法:apply 只落 binding + 激活,不物化 ReviewItem;2026-09-23 v3:也不再建 RAG 索引。"""
+    from novel_system.services.style_reference import rag
+
+    def _no_rag(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("apply_profile must not build a RAG index")
+
+    monkeypatch.setattr(rag, "ensure_rag_index", _no_rag)
+    monkeypatch.setattr(rag, "build_rag_index", _no_rag)
     profile_id = _seed_profile_with_findings("dispatch")
     with SessionLocal() as session:
         svc = MaterializationService(session)
@@ -113,10 +120,7 @@ def test_apply_builds_rag_index_and_writes_no_review_items() -> None:
         )
         session.commit()
 
-    assert result.rag_index["signature_version"].startswith(
-        "zh_content_restrained_style_signature_"
-    )
-    assert result.rag_index["status"] in {"ready", "rebuilt"}
+    assert result.binding_id and not hasattr(result, "rag_index")
     assert not hasattr(result, "review_ids")
     with SessionLocal() as session:
         reviews = list(

@@ -1,9 +1,6 @@
-"""统一 LLM 调用入口(PR-7 抽出)。
+"""风格参考的单次 LLM 节点调用(预览 / 回测等仍在请求或回测 worker 里调用的节点用)。
 
-PR-3 BaseExtractor / PR-4 ProfileSynthesizer / PR-4 PreviewService 各自实现了
-相同形态的 _call_llm 方法。本 helper 把这块复用代码抽出。PR-7 新代码
-(validation/semantic.py / validation/forbidden_semantic.py)直接调本 helper;
-旧 3 处实现 PR-7 内**不强制迁移**(避免范围爆炸),PR-8 之后可逐步替换。
+学习文风作业不走这里:它每个作业载一次路由与模板、记账用自己的会话(``learn_llm``)。
 """
 
 from __future__ import annotations

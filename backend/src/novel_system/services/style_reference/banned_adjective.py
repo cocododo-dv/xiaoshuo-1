@@ -1,14 +1,11 @@
-"""禁用空泛形容词校验装饰器。
+"""空泛形容词词表(``config/style_reference/banned_adjectives.yaml``)。
 
-§6.7:任一 finding.statement 命中 banned_adjectives.yaml 词表 → raise
-BannedAdjectiveError。BaseExtractor 在解析 LLM 响应时调用此函数,触发后
-直接进入 fail 路径(下层重试不再补)。
+学习作业核对抽取结果时,陈述里出现「文笔优美」「画面感强」这类空泛评价的发现直接丢掉(``learn_extract``)。
 """
 
 from __future__ import annotations
 
 from novel_system.services.style_reference.config_loader import load_yaml_config
-from novel_system.services.style_reference.errors import BannedAdjectiveError
 
 
 def _banned_terms() -> list[str]:
@@ -25,10 +22,3 @@ def check_banned_adjectives(statement: str) -> list[str]:
         if term and term in statement:
             matched.append(term)
     return matched
-
-
-def assert_no_banned_adjective(statement: str) -> None:
-    """命中即 raise BannedAdjectiveError;否则返回 None。"""
-    matched = check_banned_adjectives(statement)
-    if matched:
-        raise BannedAdjectiveError(statement=statement, matched=matched)

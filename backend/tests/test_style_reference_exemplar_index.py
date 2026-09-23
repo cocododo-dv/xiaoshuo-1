@@ -361,44 +361,8 @@ def test_frozen_contract_uses_the_index_only_while_the_root_matches() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 合成期写入 + 预览端点
+# 预览端点(v3:窗口索引在窗口表里,画像不再带 exemplar_windows,见学习作业测试)
 # ---------------------------------------------------------------------------
-
-
-def test_synthesis_writes_the_exemplar_window_index(session) -> None:
-    from novel_system.services.style_reference.ingest import IngestService
-    from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
-    from tests.test_style_reference_structure import _synthesis_fake
-
-    text = "\n\n".join(row["text"] for row in _synthetic_rows())
-    result = IngestService(session, llm_enabled=False).ingest_upload(
-        raw_bytes=text.encode("utf-8"),
-        file_name="ei_synth.txt",
-        title="合成十二章",
-        author_label="作者",
-        cloud_policy="segments_only",
-        rights_declaration={"analysis_rights": True, "send_rights": True},
-    )
-    book_id = result.book.book_id
-    repo = StyleReferenceRepository(session)
-    run_id = "ei_syn_run"
-    repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
-    repo.create_extraction(
-        extraction_id="ei_syn_ext", book_id=book_id, run_id=run_id, layer="scene", sub_dimension="scene.dialogue",
-        raw_payload_json={}, status="done", validation_errors_json=[], purpose="extract",
-    )
-    repo.create_finding(
-        finding_id="ei_syn_find", book_id=book_id, run_id=run_id, extraction_id="ei_syn_ext",
-        sub_dimension="scene.dialogue", finding_kind="observation", statement="对白短促，常以反问收束",
-        confidence="high", status="approved",
-    )
-    session.commit()
-    profile = ProfileSynthesizer(session, llm_client=_synthesis_fake(), llm_enabled=True).synthesize(book_id, run_id)
-    session.commit()
-    index = profile.profile_json["exemplar_windows"]
-    assert index["version"] == "exemplar_windows_v2"
-    assert index["chapter_count"] == 12 and index["window_count"] >= 12
-    assert index["paragraph_count"] == len(repo.list_paragraphs(book_id))
 
 
 def test_preview_endpoint_accepts_scene_id_and_returns_window_refs(client) -> None:

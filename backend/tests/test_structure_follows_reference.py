@@ -453,7 +453,7 @@ def test_applying_a_profile_supersedes_the_projects_planning(session) -> None:
     project_id, chapter_id, scene_id = _seed_scene(session, suffix="_apply")
     profile_id = _seed_reference(session, seed="apply", profile_json={"style_features": ["短句"]})
     MaterializationService(session).apply_profile(
-        profile_id, scope="project", scope_ref_id=project_id, build_rag_index=False
+        profile_id, scope="project", scope_ref_id=project_id
     )
     session.commit()
     assert _statuses(session, scene_id, chapter_id) == ("superseded", "superseded", "superseded")

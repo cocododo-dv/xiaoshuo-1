@@ -8,7 +8,6 @@ import hashlib
 from typing import Any
 
 from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 
@@ -26,7 +25,6 @@ from novel_system.db.models import (
     StyleReferenceEvidence,
     StyleReferenceExtraction,
     StyleReferenceFinding,
-    StyleReferenceFindingFeedback,
     StyleReferenceInjectionBinding,
     StyleReferenceMetricEvent,
     StyleReferenceParagraph,
@@ -250,80 +248,6 @@ class StyleReferenceRepository:
             setattr(row, key, value)
         self.session.flush()
         return row
-
-    # ------------------------------------------------- finding feedback(立项 B)
-    def upsert_finding_feedback(
-        self, finding_id: str, operator_ref: str, vote: str
-    ) -> StyleReferenceFindingFeedback:
-        """一人一票:同 (finding_id, operator_ref) 存在则更新 vote(改向),否则新建。
-
-        feedback_id 由 (finding_id, operator_ref) 确定性派生(SHA256[:16]),幂等可重入。
-        """
-        existing = self.session.scalars(
-            select(StyleReferenceFindingFeedback).where(
-                StyleReferenceFindingFeedback.finding_id == finding_id,
-                StyleReferenceFindingFeedback.operator_ref == operator_ref,
-            )
-        ).first()
-        if existing is not None:
-            existing.vote = vote
-            self.session.flush()
-            return existing
-        fid = "srfb_" + hashlib.sha256(
-            f"{finding_id}::{operator_ref}".encode("utf-8")
-        ).hexdigest()[:16]
-        row = StyleReferenceFindingFeedback(
-            feedback_id=fid, finding_id=finding_id, operator_ref=operator_ref, vote=vote
-        )
-        # SAVEPOINT 兜底并发竞态:select 落空后两请求同时 insert 同 (finding,operator)
-        # → 第二个命中 uq/PK,回退该 savepoint(外层事务不受损)→ 退化为更新既有行。
-        try:
-            with self.session.begin_nested():
-                self.session.add(row)
-            return row
-        except IntegrityError:
-            existing = self.session.scalars(
-                select(StyleReferenceFindingFeedback).where(
-                    StyleReferenceFindingFeedback.finding_id == finding_id,
-                    StyleReferenceFindingFeedback.operator_ref == operator_ref,
-                )
-            ).first()
-            if existing is not None:
-                existing.vote = vote
-                self.session.flush()
-                return existing
-            raise
-
-    def list_finding_feedback(self, finding_id: str) -> list[StyleReferenceFindingFeedback]:
-        return list(
-            self.session.scalars(
-                select(StyleReferenceFindingFeedback).where(
-                    StyleReferenceFindingFeedback.finding_id == finding_id
-                )
-            ).all()
-        )
-
-    def aggregate_finding_feedback(self, finding_id: str) -> dict[str, int]:
-        """聚合 net = #up − #down(每行已是去重用户的最新一票,由 uq 约束保证)。"""
-        rows = self.list_finding_feedback(finding_id)
-        up = sum(1 for r in rows if r.vote == "up")
-        down = sum(1 for r in rows if r.vote == "down")
-        return {"net": up - down, "up": up, "down": down}
-
-    def operator_votes_for_findings(
-        self, finding_ids: list[str], operator_ref: str
-    ) -> dict[str, str]:
-        """批量取某 operator 对一组 finding 的当前票 → {finding_id: vote}(单查询)。
-        供深层 findings 序列化回显「该用户已投的票」,使投票高亮跨刷新持久。"""
-        if not finding_ids:
-            return {}
-        rows = self.session.scalars(
-            select(StyleReferenceFindingFeedback).where(
-                StyleReferenceFindingFeedback.finding_id.in_(finding_ids),
-                StyleReferenceFindingFeedback.operator_ref == operator_ref,
-            )
-        ).all()
-        return {r.finding_id: r.vote for r in rows}
 
     # ------------------------------------------------------------- profiles
     def create_profile(self, **kwargs: Any) -> StyleReferenceProfile:

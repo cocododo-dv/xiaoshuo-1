@@ -6,7 +6,7 @@
 3. 反抄袭红线段(anti_plagiarism_block)接线:渲染 / banned_terms 填充 / 免截断
 4. 抄袭检测:规范化匹配(防标点空格绕过)+ 全书段落语料
 5. sync 校验含 quantitative;semantic 路失败时 PASS 封顶 PARTIAL
-6. 僵尸 run 回收 + 孤儿 pending report 回收 + 上传体积上限
+6. 孤儿 pending report 回收 + 上传体积上限(旧抽取 run 的僵尸回收随 RunOrchestrator 删除;学习作业的续跑见 test_style_reference_learn_job)
 """
 
 from __future__ import annotations
@@ -25,9 +25,7 @@ from novel_system.services.style_reference.errors import (
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.preview import PreviewService
-from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.run_orchestrator import RunOrchestrator
 from novel_system.services.style_reference.schemas import (
     ValidateRequest,
     ValidationMode,
@@ -156,14 +154,6 @@ def test_llm_required_error_is_domain_error_409():
     assert err.details["author_action"]
 
 
-def test_start_extract_run_blocked_for_local_only_book():
-    book_id = _seed_book("run_block", cloud_policy="local_only")
-    with SessionLocal() as session:
-        orch = RunOrchestrator(session, llm_client=object(), llm_enabled=True)
-        with pytest.raises(CloudPolicyBlockedError):
-            orch.start_extract_run(book_id)
-
-
 def test_reclassify_blocked_for_local_only_book():
     book_id = _seed_book("reclass_block", cloud_policy="local_only")
     with SessionLocal() as session:
@@ -173,17 +163,6 @@ def test_reclassify_blocked_for_local_only_book():
                 service.start_reclassify(book_id, mode=mode)
         with pytest.raises(CloudPolicyBlockedError):
             service.resume(book_id)
-
-
-def test_synthesize_blocked_for_local_only_book():
-    book_id = _seed_book("synth_block", cloud_policy="local_only")
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_run(run_id="sr_run_hd_sb", book_id=book_id, status="done", phase="done")
-        session.commit()
-        synth = ProfileSynthesizer(session, llm_client=object(), llm_enabled=True)
-        with pytest.raises(CloudPolicyBlockedError):
-            synth.synthesize(book_id, "sr_run_hd_sb")
 
 
 def test_preview_blocked_for_local_only_book():
@@ -473,76 +452,6 @@ def test_semantic_degraded_caps_pass_to_partial():
 
 
 # ---------------------------------------------------------------------------
-# 6. 僵尸 run 回收
-# ---------------------------------------------------------------------------
-
-
-def test_stale_running_run_reaped_on_next_start():
-    book_id = _seed_book("reaper", cloud_policy="segments_only")
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_run(
-            run_id="sr_run_hd_stale",
-            book_id=book_id,
-            status="running",
-            phase="extract",
-            started_at="2020-01-01T00:00:00+00:00",
-        )
-        session.commit()
-        orch = RunOrchestrator(session, llm_client=object(), llm_enabled=True)
-        reaped = orch._reap_stale_runs(book_id)
-        session.commit()
-    assert reaped == 1
-    with SessionLocal() as session:
-        run = StyleReferenceRepository(session).get_run("sr_run_hd_stale")
-        assert run.status == "failed"
-        assert run.coverage_json.get("failure_reason") == "stale_running_reaped"
-
-
-def test_recent_running_run_not_reaped():
-    from novel_system.db.models import utcnow
-
-    book_id = _seed_book("reaper2", cloud_policy="segments_only")
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_run(
-            run_id="sr_run_hd_fresh",
-            book_id=book_id,
-            status="running",
-            phase="extract",
-            started_at=utcnow(),
-        )
-        session.commit()
-        orch = RunOrchestrator(session, llm_client=object(), llm_enabled=True)
-        assert orch._reap_stale_runs(book_id) == 0
-
-
-def test_stale_queued_run_is_not_reaped_before_worker_claims_it():
-    """队列背压不是 worker 中断，queued 即使等待很久也必须保留。"""
-
-    book_id = _seed_book("reaper_queued", cloud_policy="segments_only")
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_run(
-            run_id="sr_run_hd_stale_queued",
-            book_id=book_id,
-            status="running",
-            phase="extract",
-            dispatch_state="queued",
-            heartbeat_at="2020-01-01T00:00:00+00:00",
-            started_at="2020-01-01T00:00:00+00:00",
-        )
-        session.commit()
-        orch = RunOrchestrator(session, llm_client=object(), llm_enabled=True)
-        assert orch._reap_stale_runs(book_id) == 0
-        session.expire_all()
-        run = repo.get_run("sr_run_hd_stale_queued")
-        assert run is not None
-        assert run.status == "running"
-        assert run.dispatch_state == "queued"
-
-
-# ---------------------------------------------------------------------------
 # 7. 路由层:上传上限 / 孤儿报告回收 / LLMRequired 409
 # ---------------------------------------------------------------------------
 
@@ -631,34 +540,6 @@ def _seed_ingested_book(seed: str) -> str:
         )
         session.commit()
         return result.book.book_id
-
-
-def test_background_run_returns_immediately_and_completes(fake_extractor_llm):
-    book_id = _seed_ingested_book("bg")
-    with SessionLocal() as session:
-        orch = RunOrchestrator(
-            session, llm_client=fake_extractor_llm("default"), llm_enabled=True
-        )
-        # 测试书 <1 万字(assessment 全 skip),force 绕过输入量门槛
-        result = orch.start_extract_run(book_id, background=True, force=True)
-    assert result.status == "running"
-    assert result.sub_dim_results == []
-
-    deadline = time.monotonic() + 15.0
-    final = None
-    while time.monotonic() < deadline:
-        with SessionLocal() as session:
-            run = StyleReferenceRepository(session).get_run(result.run_id)
-            if run is not None and run.status in ("done", "failed", "cancelled"):
-                final = (run.status, dict(run.coverage_json or {}))
-                break
-        time.sleep(0.1)
-    assert final is not None, "后台 run 应在 15s 内完成"
-    status, coverage = final
-    assert status == "done"
-    progress = coverage.get("progress") or {}
-    assert progress.get("layers_done") == progress.get("layers_total")
-    assert coverage.get("sub_dimensions"), "完成后应有 sub_dimensions 覆盖统计"
 
 
 def test_apply_profile_persists_injection_config():

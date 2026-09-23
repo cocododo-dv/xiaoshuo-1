@@ -581,333 +581,332 @@ templates:
       输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
     structured_schema: *paragraph_classify_schema
 
+  # 2026-09-23 风格参考 v3 学习作业(learn_job):四层各一次调用,读同一组约 12 窗 / 4 万字的连续原文
+  # (learn_select 挑的抽取窗口集,每段前标【p】)。input_token_budget 是真执行的上限:learn_llm.payload_fits
+  # 按与发送时同一种渲染估计(CJK 一字一 token 的上界 ×1.1 + schema),装不下时按窗整窗卸载(至少留 3 窗)。
+  # 实测(合成书与真实参考书的抽取集):4.2 万字的窗口集 + 段号 + JSON + 提示 ≈ 5.2 万 token → 预算 64000。
   style_ref_extract_language:
-    version: "2026-08-19.v5"
-    input_token_budget: 3000
-    system_prompt: |
-      你是中文叙事风格抽取专家。给定一个 sub_dimension(如 language.rhetoric)
-      与一批段落,产出该 sub_dimension 下的:
-        - observations(正向特征,通常 3-6 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
-        - forbidden_patterns(反向禁忌,0-2 条,允许为空)
-      下列硬指标已对全文计算完毕,你提取的 observation 必须与之一致;
-      若你的描述与硬指标矛盾,以硬指标为准重新组织语言。
-      约束:
-      - 每条 observation / forbidden_pattern 必须 ≥ 2 evidence;每条 evidence 引用
-        paragraph_id + span + 原文 quote(quote 必须是段落原句,不允许改写)
-      - 每条 evidence.quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的
-        子串,paragraph_id 必须原样复制该段 ID。严禁拼接不相邻短语、摘要式删节或自行增删
-        标点;原文没有省略号时,quote 中也不得添加“……”或"..."。若填写 span,它必须是
-        给定 text 上从 0 开始、左闭右开的 [start,end),且 text[start:end] 必须等于 quote
-      - 严禁使用空泛形容词(如"文笔优美""画面感强""叙事流畅"等),要用具体、可
-        被验证的写作机制描述
-      - statement 只写可迁移的抽象机制,不得引用、复述或举例展示参考原文;
-        任何原文字词只允许出现在 evidence.quote
-      - 每条 quote 只截取足以证明机制的一小段连续原文,建议 15-80 字、绝不超过 160 字;
-        statement 不超过 120 字。不要输出 note,illustrates_dims 等非必需可选字段
-      - forbidden_pattern 描述作者明确不会用的写作模式(反向写作习惯);evidence 可以是
-        paragraph_quote / author_avoidance(统计反推)/ counter_example(LLM 合成反例)
+    version: "2026-09-23.v6"
+    input_token_budget: 64000
+    system_prompt: &learn_extract_system |
+      你是中文小说文风研究者。下面是一位作者的原文样本:从全书各处挑出的一组连续片段(章首、章末、对白多的、叙述多的、
+      写心理的、写动作的都有)。你的任务是把这位作者**和通用大模型写法不一样的地方**逐维写清楚——之后系统会据此让写作
+      模型**全面模仿**这位作者的手笔写新故事,所以越具体越好:作者自己的用词、口头禅、句末语气词、比喻从哪里取材、
+      句子怎么断、幽默从哪里来、紧张时怎么写,都要抓。
+
+      每一维要给:
+        - model_default:一句话(≤60 字),通用大模型写这一维时的默认做法。例如「比喻多取自然景物,爱用仿佛、宛如」
+          「对白规整,一问一答,不带口头禅」「紧张时堆形容词,很少给具体数字」。写准它,写作者才知道要「代替」什么。
+        - observations:≤5 条,这位作者在这一维的具体做法,按辨识度从高到低。每条写成可以照着做、能在原文里指认的
+          做法(不是鉴赏);可以用「」引作者的原词作例子,每处 ≤10 字,但不要整句照抄。
+        - avoid:≤2 条,这位作者明显**不这么写**的地方,写成「不……,而是……」的对照;证据是作者**实际怎么写**的原文。
+        - devices:≤3 个手法名,每个 ≤8 字,给这位作者的招牌手法起个短名(例如「降维比喻」「心里吐槽」「数字倒计时」
+          「亚文化梗」),之后用来给全书片段打标签。
+        - distinctiveness:0 到 1,这一维上作者和通用写法差得有多远(越独特越高)。
+
+      证据规则(最重要,系统会逐字核对,对不上的整条丢弃):
+        - 每条 observation / avoid 给 2 到 4 条 evidence;每条 evidence 是 {p: 段号, quote: 引文}。
+        - p 是样本里【p】标出的数字;quote 必须是**那一段**里连续、逐字一致的一小段(4 到 60 字):不改字、不增删标点、
+          不拼接两处、不加省略号。
+        - 两条 evidence 尽量来自不同片段。
+
+      不要写:
+        - 空泛评价(文笔优美、画面感强、节奏流畅、情感真挚之类);
+        - 统计数字(平均句长多少字、占百分之几)——可测的量由系统另外精确计算;
+        - 本书的人名、地名、组织、专有物件与设定名——那些归「本书专名」,陈述里用「主角」「同伴」「某组织」「古老兵器」
+          这类代称;
+        - 情节复述。
+      只输出 schema 规定的 JSON。
     task_prompt: |
-      输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
-      请按 schema 输出 observations 与 forbidden_patterns。
-      句法节奏、词汇质感、修辞、对白语言这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
-      若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果,那通常说明分析还不够仔细。
-      不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
-    structured_schema: &extract_output_schema
+      本次分析「语言层」的 4 个维度(dimension 用英文键):
+        - language.sentence_structure 句式结构:长句怎么铺、短句落在哪里、分句怎么连、句子怎么起头收尾、有没有独句成段、
+          叙述里夹不夹问句;
+        - language.vocabulary 词汇选择:口语、俚语、网络与圈子用语、流行文化 / 游戏 / 影视 / 消费品名、专业术语、文白比例,
+          作者自己的口头禅与句末语气词(吧、呢、啊、嘛……);
+        - language.rhetoric 修辞手法:比喻的喻体从哪里取(日常物件、影视游戏、动物、机器……)、夸张与「降格」(把宏大的
+          比作琐碎的)、反差造成的幽默、排比、设问与反问;
+        - language.punctuation 标点节奏:问号、叹号、省略号、破折号用在什么场合,逗号把句子切得多碎。
+      样本见数据块:windows 里每个片段带 window(片段号)、chapter(第几章)、position(章首 / 章末 / 章中 / 整章)、
+      text(每段以【p】开头)。4 个维度都要输出;某维确实找不到可靠证据时 observations 给空数组、distinctiveness 设低。
+    structured_schema: &learn_extract_schema
       type: object
       additionalProperties: false
-      required:
-        - observations
-        - forbidden_patterns
+      required: [dimensions]
       properties:
-        observations:
+        dimensions:
           type: array
-          maxItems: 6
+          maxItems: 4
           items:
             type: object
             additionalProperties: false
-            required: [statement, finding_kind, evidence, sub_dimension]
+            required: [dimension, model_default, devices, distinctiveness, observations, avoid]
             properties:
-              statement:
-                type: string
-                maxLength: 180
-              confidence:
-                type: string
-                enum: [high, medium, low]
-              finding_kind:
-                type: string
-                enum: [observation]
-              sub_dimension:
-                type: string
-              evidence:
+              dimension: {type: string}
+              model_default: {type: string, maxLength: 80}
+              devices:
                 type: array
-                minItems: 2
-                items: &extract_evidence_schema
+                maxItems: 3
+                items: {type: string, maxLength: 8}
+              distinctiveness: {type: number}
+              observations:
+                type: array
+                maxItems: 5
+                items: &learn_finding_item
                   type: object
                   additionalProperties: false
-                  required: [quote]
+                  required: [statement, confidence, distinctiveness, evidence]
                   properties:
-                    paragraph_id:
-                      type: string
-                    span:
+                    statement: {type: string, maxLength: 120}
+                    confidence: {type: string, enum: [high, medium, low]}
+                    distinctiveness: {type: number}
+                    evidence:
                       type: array
-                      items: {type: integer}
                       minItems: 2
-                      maxItems: 2
-                    quote:
-                      type: string
-                      maxLength: 160
-                    illustrates_dims:
-                      type: array
-                      items: {type: string}
-                    anchor_kind:
-                      type: string
-                      enum: [paragraph_quote, author_avoidance, counter_example]
-                    note:
-                      type: string
-                    is_synthetic:
-                      type: integer
-        forbidden_patterns:
+                      maxItems: 4
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required: [p, quote]
+                        properties:
+                          p: {type: integer}
+                          quote: {type: string, maxLength: 80}
+              avoid:
+                type: array
+                maxItems: 2
+                items: *learn_finding_item
+
+  style_ref_extract_narrative:
+    version: "2026-09-23.v6"
+    input_token_budget: 64000
+    system_prompt: *learn_extract_system
+    task_prompt: |
+      本次分析「叙事层」的 4 个维度(dimension 用英文键):
+        - narrative.perspective 叙事视角:人称;视点贴着谁;叙述里夹不夹视点人物的内心吐槽、自问自答、插话式旁白;
+          叙述者的口吻(冷静 / 调侃 / 抒情)怎么和人物的声音混在一起;
+        - narrative.pacing 节奏控制:快慢怎么切换;紧张时怎么加速(短句、倒计时、连串的短对白、动作切碎);松弛时写什么、
+          停在哪里;
+        - narrative.time_handling 时间处理:插叙、回忆、时间跳跃怎么接进来、怎么交代时间;
+        - narrative.information_density 信息密度:设定与背景怎么交代(对话里带出 / 旁白解说 / 边行动边解释);爱不爱给具体
+          数字、计量、时刻;信息什么时候放出来。
+      样本见数据块:windows 里每个片段带 window、chapter、position、text(每段以【p】开头)。4 个维度都要输出。
+    structured_schema: *learn_extract_schema
+
+  style_ref_extract_scene:
+    version: "2026-09-23.v6"
+    input_token_budget: 64000
+    system_prompt: *learn_extract_system
+    task_prompt: |
+      本次分析「场景层」的 4 个维度(dimension 用英文键):
+        - scene.environment 环境描写:写环境的多少与时机;挑什么细节(光、声音、物件、天气);环境怎么跟人物的动作与
+          心情缠在一起;用不用比喻写景;
+        - scene.character_portrayal 人物刻画:外貌、动作、小习惯怎么写;从谁的眼里看;用什么比喻、什么参照物形容人;
+          人物出场怎么亮相;
+        - scene.dialogue 对话写法:对白长短与轮次;人物的口吻、口头禅、插科打诨、说着说着夹进去的私货与抱怨;说话人
+          怎么标(「某某说」放前 / 放后 / 不标);对白里的停顿与打断;
+        - scene.sensory_priority 感官优先:先写哪种感官;声音、光、触感、气味的写法;感官描写多还是少。
+      样本见数据块:windows 里每个片段带 window、chapter、position、text(每段以【p】开头)。4 个维度都要输出。
+    structured_schema: *learn_extract_schema
+
+  style_ref_extract_theme:
+    version: "2026-09-23.v6"
+    input_token_budget: 64000
+    system_prompt: *learn_extract_system
+    task_prompt: |
+      本次分析「主题层」的 4 个维度(dimension 用英文键):
+        - theme.emotional_tone 情感基调:幽默、反讽、伤感、热血、紧张、温情怎么并存、在什么时候切换(例如越危险越要
+          开玩笑、玩笑底下压着孤独);情绪是直说还是藏着;
+        - theme.values 价值取向:叙述对人物与事情的态度——同情谁、嘲弄谁、珍视什么、对「宏大」与「平凡」各持什么态度;
+        - theme.motifs 母题意象:反复出现的意象、题材与场面类型——写成可以迁移的类别(如「深夜的便利店」「旧游戏」),
+          不写本书专有物件、组织、设定的名字;
+        - theme.narrative_philosophy 叙事哲学:对命运、成长、孤独、力量等的整体看法怎样渗进叙述。
+      本书特有的世界观专名、组织、物件、设定不要写进陈述;作者的主题离不开它们时,用类别说法。如果你发现这本书有
+      一套自己的专有设定(特有的能力、种族、组织、兵器……),可以在 avoid 里写一条「不照搬本书的专有设定体系,
+      而是……」,把相关的设定名写进这一条的陈述里——系统会把它们交给「本书专名」步骤处理,不会进文风卡。
+      样本见数据块:windows 里每个片段带 window、chapter、position、text(每段以【p】开头)。4 个维度都要输出。
+    structured_schema: *learn_extract_schema
+
+  # 文风卡合成(learn_job 第 4 步)。载荷:16 维的发现(每条带 ref 编号与两处 ≤40 字原文短引)、测量核给的绝对声音
+  # 习惯、结构事实。满载(16 维 × 5 观察 + 2 避免 × 160 字陈述 + 引文)≈ 3.4 万字 → 预算 48000;装不下时
+  # learn_card.fit_synthesis_payload 先减引文(2 → 1 → 0)、再减每维每类的发现条数(→ 3 → 2 → 1)。
+  style_ref_synthesize_profile:
+    version: "2026-09-23.v9"
+    input_token_budget: 48000
+    system_prompt: |
+      你是中文小说文风编辑。输入是对一位作者 16 个维度的逐维发现(每条带编号 ref 与原文短引)、系统用全书统计测出的
+      这位作者的声音习惯(voice_habits,绝对、具体:高频词与大致频率)与结构事实(structure_facts)。请把它们写成一张
+      「文风卡」:之后每写一场,系统都会把这张卡连同原文样例交给写作模型,让它**代替通用写法、照这位作者的方式写**。
+      目标是全面模仿——作者的用词、口头禅、比喻取材、幽默、节奏、对白、价值姿态都要能照着做。
+
+      输出:
+        - profile_title:≤20 字,概括这位作者的写法(不写书名、人名)。
+        - qualitative_summary:80–200 字,这位作者整体怎么写、是什么气质。
+        - temperament:≤4 行,这位作者的气质与情绪调性——幽默、反讽、伤感、紧张等怎么共存、什么时候切换
+          (例如「越危险越要开玩笑,玩笑底下压着孤独」)。气质是每场都必须体现的,写得具体。
+        - dimensions:16 维各一项(dimension 用输入里的英文键):
+            summary:≤40 字,一句话概括这一维;
+            model_default:≤60 字,通用模型在这一维的默认写法(可沿用输入的 model_default,改得更准);
+            do:1–3 条写给写作者的指令,句式是「代替〔模型默认〕,〔怎么写〕」或直接「〔怎么写〕」;每条 ≤60 字,可以
+              带作者的原词作例子(用「」括起,每处 ≤10 字);refs 列出它依据的发现编号(如 f3、f7,至少一个);
+              mandatory 只标这位作者**最有辨识度、每场都该体现**的几条(全卡 2–4 条);distinctiveness 0–1;
+            avoid:0–2 条「这位作者不这么写」,写成「不……(而是……)」,refs 同上,mandatory 一律 false;
+            devices:≤3 个招牌手法名(≤8 字),沿用发现里的手法名,同义的合并;
+            distinctiveness:0–1。
+        - planning_guidance:≤10 行,规划一场戏时用得上的手法,格式「标签：陈述」(标签如 开场 / 收场 / 对白 / 冲突 /
+          节奏 / 情绪基调 / 场面),写这位作者怎么安排一场戏。
+
+      对账(必须做):
+        - 互相矛盾的说法只留一个:保留证据更多、更具体的那条(例如一处说逗号用得密、另一处说逗号稀疏,看哪边的发现
+          证据多、与 voice_habits 是否一致);**绝不**输出两条互相矛盾的指令。
+        - 和 voice_habits 矛盾的说法以 voice_habits 为准(那是全书统计);但卡里不要重复 voice_habits 已经写了的内容
+          (声音习惯会单独给写作模型)——卡片写声音习惯说不出来的东西:取材、口吻、幽默、手法、态度。
+        - 不写阿拉伯数字、百分比、平均值;频率只用「大约每十句一次」「常」「偶尔」这类说法。
+        - 不写本书的人名、地名、组织、专有物件与设定名。
+        - 不整句照抄原文;引作者原词每处 ≤10 字。
+        - 没有发现支撑的维度,do 给空数组,不要编造。
+      只输出 schema 规定的 JSON。
+    task_prompt: |
+      输入见数据块:book_title、dimensions(16 维;每维 label、model_default、devices、distinctiveness、observations 与
+      avoid,每条发现带 ref / statement / confidence / quotes)、voice_habits、structure_facts。
+      16 维全部读完再下笔。每条 do / avoid 必须在 refs 里写它依据的发现编号,系统据此把卡片连到原文证据;没有依据的句子
+      会被丢弃。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [profile_title, qualitative_summary, temperament, dimensions, planning_guidance]
+      properties:
+        profile_title: {type: string, maxLength: 20}
+        qualitative_summary: {type: string, maxLength: 240}
+        temperament:
           type: array
-          maxItems: 2
+          maxItems: 4
+          items: {type: string, maxLength: 90}
+        dimensions:
+          type: array
+          maxItems: 16
           items:
             type: object
             additionalProperties: false
-            required: [statement, finding_kind, evidence, sub_dimension]
+            required: [dimension, summary, model_default, distinctiveness, devices, do, avoid]
             properties:
-              statement: {type: string, maxLength: 180}
-              confidence:
-                type: string
-                enum: [high, medium, low]
-              finding_kind:
-                type: string
-                enum: [forbidden_pattern]
-              sub_dimension: {type: string}
-              evidence:
+              dimension: {type: string}
+              summary: {type: string, maxLength: 60}
+              model_default: {type: string, maxLength: 90}
+              distinctiveness: {type: number}
+              devices:
                 type: array
-                minItems: 2
-                items: *extract_evidence_schema
+                maxItems: 3
+                items: {type: string, maxLength: 8}
+              do:
+                type: array
+                maxItems: 3
+                items: &learn_card_line
+                  type: object
+                  additionalProperties: false
+                  required: [text, refs, mandatory, distinctiveness]
+                  properties:
+                    text: {type: string, maxLength: 90}
+                    refs:
+                      type: array
+                      minItems: 1
+                      maxItems: 4
+                      items: {type: string}
+                    mandatory: {type: boolean}
+                    distinctiveness: {type: number}
+              avoid:
+                type: array
+                maxItems: 2
+                items: *learn_card_line
+        planning_guidance:
+          type: array
+          maxItems: 10
+          items: {type: string, maxLength: 90}
 
-  style_ref_extract_narrative:
-    version: "2026-08-19.v5"
-    input_token_budget: 3000
+  # 受保护专名(learn_job 第 5 步,台账 E7)。载荷:≤220 个统计候选(词 / 次数 / 一小段上下文)+ 主题层的「作者不这么
+  # 写」陈述。满载 ≈ 1.6 万字 → 预算 24000(装不下时从候选尾部截)。
+  style_ref_protected_terms:
+    version: "2026-09-23.v1"
+    input_token_budget: 24000
     system_prompt: |
-      你是中文叙事风格抽取专家(叙事层)。给定一个 sub_dimension(如
-      narrative.pacing)与一批段落,产出该 sub_dimension 下的
-      observations(正向特征,通常 3-6 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
-      与 forbidden_patterns(反向禁忌,0-2 条,允许为空)。
-      约束与 style_ref_extract_language 一致;尤其注意叙事层关心视角(perspective)、
-      节奏(pacing)、时间处理(time_handling)、信息密度(information_density)。
-      叙事层容易写成"张弛有度"式的空泛结论——每条 observation 必须绑定一个具体、可指认的
-      叙事决策点(如在哪一类节点切换视点、在哪种场景压缩或拉长时间、信息在何时释放给读者),
-      而不是笼统描述整体印象。
-      每条 evidence.quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的子串,
-      paragraph_id 原样复制该段 ID;严禁拼接不相邻短语或添加原文没有的省略号。若填写 span,
-      使用给定 text 上从 0 开始、左闭右开的 [start,end),并保证 text[start:end] == quote。
-      statement 只写可迁移的抽象机制,不得引用、复述或举例展示参考原文;
-      任何原文字词只允许出现在 evidence.quote。
-      每条 quote 建议 15-80 字、绝不超过 160 字,statement 不超过 120 字;
-      不要输出 note,illustrates_dims 等非必需可选字段。
-    task_prompt: |
-      输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
-      请按 schema 输出 observations 与 forbidden_patterns。
-      视角、节奏、时间处理、信息密度这类特征在给定的段落量下几乎总能找到具体决策点,请逐段认真比对后再判断是否"找不到"。
-      若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
-      不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
-    structured_schema: *extract_output_schema
+      你负责找出一本小说**这个故事世界特有**的名字与名词:人物名(含绰号、代号、简称)、虚构的地名与只属于这部书的
+      场所、组织 / 机构 / 家族 / 阵营、特有的物件 / 兵器 / 道具 / 载具、特有的术语与设定名(能力、种族、等级、仪式、
+      技术的名字)。别人写新故事时不能用这些词。
 
-  style_ref_extract_scene:
-    version: "2026-08-19.v5"
-    input_token_budget: 3000
-    system_prompt: |
-      你是中文叙事场景层风格抽取专家(scene)。给定一个 sub_dimension
-      (如 scene.dialogue)与一批段落,产出该 sub_dimension 下的
-      observations(正向特征,通常 3-6 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
-      与 forbidden_patterns(反向禁忌,0-2 条,允许为空)。
-      场景层重点:
-      - environment:场所、天气、自然物的呈现机制(空间布局 / 视点切换 / 光影)
-      - character_portrayal:人物外貌、衣着、神态、行为的展示手法
-      - dialogue:对话的密度、长短、轮次、隐喻性、副语言
-      - sensory_priority:五感(视/听/嗅/触/味)的优先级与并置方式
-      注意:句长、感官词频率等量化指标已由 metrics_anchor 硬算给出,你的 observation
-      不要重复报告这些数字本身,而要描述作者如何布置/调度这些元素的策略与手法。
-      约束与 language / narrative 层一致:每条 finding ≥2 evidence;严禁空泛
-      形容词("画面感强""感官丰富"等);forbidden_pattern 描述模式而非引用。
-      每条 evidence.quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的子串,
-      paragraph_id 原样复制该段 ID;严禁拼接不相邻短语或添加原文没有的省略号。若填写 span,
-      使用给定 text 上从 0 开始、左闭右开的 [start,end),并保证 text[start:end] == quote。
-      statement 只写可迁移的抽象机制,不得引用、复述或举例展示参考原文;
-      任何原文字词只允许出现在 evidence.quote。
-      每条 quote 建议 15-80 字、绝不超过 160 字,statement 不超过 120 字;
-      不要输出 note,illustrates_dims 等非必需可选字段。
+      规则:
+        - 只保留真正属于这本书世界的专名与设定词。通用词、日常词、真实世界的常见地名(城市、国家)、真实的品牌、
+          游戏 / 电影 / 明星等流行文化名都**不要**——那些是作者的文风素材,不是本书专属。
+        - 候选之外,如果 avoid_statements 或候选的上下文里明显还有这本书特有的专名,也可以补上,但必须是原书里原样出现
+          的写法。
+        - 同一人物的不同叫法分别列出。
+        - kind 取 person / place / organization / item / term。
+      只输出 schema 规定的 JSON。
     task_prompt: |
-      输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
-      请按 schema 输出 observations 与 forbidden_patterns。
-      场所布局、人物展示、对话编排、五感并置这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
-      若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
-      不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
-    structured_schema: *extract_output_schema
-
-  style_ref_extract_theme:
-    version: "2026-08-19.v5"
-    input_token_budget: 3000
-    system_prompt: |
-      你是中文叙事主题层风格抽取专家(theme)。给定一个 sub_dimension
-      (如 theme.emotional_tone)与一批段落,产出该 sub_dimension 下的
-      observations(正向特征,通常 3-6 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
-      与 forbidden_patterns(反向禁忌,0-2 条,允许为空)。
-      主题层重点:
-      - emotional_tone:情绪基调与节奏(克制 / 沸腾 / 灰冷 / 高亢)
-      - values:作品潜在的价值观倾向(集体 vs 个体 / 出世 vs 入世)
-      - motifs:反复出现的意象与母题(雪 / 雾 / 镜 / 牲口 / 钱财)
-      - narrative_philosophy:对人/历史/命运的态度(悲悯 / 嘲讽 / 反讽 / 史诗)
-      约束:theme 层抽象,observation 必须给出"作品如何通过 X 表达 Y"的具体
-      机制,不要泛泛说"作者关心 X";每条 finding ≥2 evidence;严禁空泛
-      形容词("思想深刻""主题宏大"等);forbidden_pattern 描述模式而非引用。
-      本层是反抄袭关键层:书中具体的招牌意象、专属符号系统本身只能作为 forbidden_pattern
-      登记"不可复用",绝不能包装成 observation 里"可迁移的写作素材"——observation 只能
-      描述抽象的运用手法(如"擅长用自然物象承载情绪转折"),不能点名可直接套用的具体意象。
-      每条 evidence.quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的子串,
-      paragraph_id 原样复制该段 ID;严禁拼接不相邻短语或添加原文没有的省略号。若填写 span,
-      使用给定 text 上从 0 开始、左闭右开的 [start,end),并保证 text[start:end] == quote。
-      statement 只写可迁移的抽象机制,不得引用、复述或举例展示参考原文;
-      任何原文字词只允许出现在 evidence.quote。
-      每条 quote 建议 15-80 字、绝不超过 160 字,statement 不超过 120 字;
-      不要输出 note,illustrates_dims 等非必需可选字段。
-    task_prompt: |
-      输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
-      请按 schema 输出 observations 与 forbidden_patterns。
-      情绪基调、价值倾向、母题、叙事哲学这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
-      若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
-      不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准;书中具体的招牌意象只登记进 forbidden_patterns,不要写进 observations。
-    structured_schema: *extract_output_schema
-
-  style_ref_supplement_evidence:
-    version: "2026-08-19.v3"
-    input_token_budget: 2000
-    system_prompt: |
-      你是中文段落证据补抽专家。某条已抽出的 observation 当前 evidence 不足(<2)。
-      在给定的段落池中找出能支撑该 observation 的额外 evidence——quote 必须逐字取自
-      给定段落原文,不允许改写、缩写或臆造。
-      每条 quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的子串,
-      paragraph_id 原样复制该段 ID;严禁拼接不相邻短语或添加原文没有的省略号。若填写 span,
-      使用给定 text 上从 0 开始、左闭右开的 [start,end),并保证 text[start:end] == quote。
-    task_prompt: |
-      输入 payload 含 finding_statement / finding_kind / sub_dimension /
-      existing_evidence_count / paragraphs。
-      请返回 additional_evidence 列表(≥1 条);若段落池中确实无合适证据,返回空数组,不要为了凑数而编造 quote。
+      输入见数据块:book_title、candidates(从全书统计出的高频候选词,每个带 count 出现次数与 context 一小段上下文)、
+      avoid_statements(文风分析里提到本书特有设定的句子)。
+      逐个判断候选;按 schema 输出 terms。
     structured_schema:
       type: object
       additionalProperties: false
-      required: [additional_evidence]
+      required: [terms]
       properties:
-        additional_evidence:
+        terms:
           type: array
-          items: *extract_evidence_schema
+          maxItems: 300
+          items:
+            type: object
+            additionalProperties: false
+            required: [term, kind]
+            properties:
+              term: {type: string, maxLength: 16}
+              kind: {type: string, enum: [person, place, organization, item, term]}
 
-  style_ref_synthesize_profile:
-    version: "2026-09-05.v8"
-    # input_token_budget 测量依据(2026-09-05,按 profile_synthesizer._estimate_synthesis_input_tokens
-    # 口径:CJK 一字一 token、×1.25 tokenizer 余量、+128 schema 余量,payload 以 indent=2 JSON 渲染进
-    # 不可信数据边界)。满载 payload = 16 子维 × (6 observation + 2 forbidden_pattern) × 120 字
-    # statement(含 confidence/status/evidence_count)+ 26 项 metrics + 5 项 prose_shape metrics
-    # (mean/std)+ anchor_quotes 16×2×60 字 + voice_habits 12 行×40 字 + validation_retry 块:
-    #   固定部分(system+task+schema) ≈ 3.2k;finding_summaries ≈ 23.8k;metrics ≈ 0.8k;
-    #   anchor_quotes ≈ 3.1k;voice_habits ≈ 0.6k;validation_retry ≈ 0.2k;满载合计 ≈ 31.8k。
-    # 预算 = 满载估算 × 1.2 向上取整到千位 → 39000,即满载抽取结果不触发任何降级;超出时由
-    # _fit_synthesis_payload_to_budget 分级降级(去非必需指标 → statement 压到 80/56 字 →
-    # 锚引文 2→1→0 → 轮转丢弃多余 finding,每子维保留 ≥1 obs + ≥1 fp),仍装不下才 409 budget_unfit。
-    input_token_budget: 39000
+  # 窗口标签(learn_job 第 6 步,台账 N3):给全书每一个样例窗口打场面 / 情绪 / 手法标签,起草时按本场设计挑同类场面的
+  # 原文。每批 ≤8 窗、≤26,000 字(一窗送前 2,200 字 + 后 800 字)→ 预算 36000。场面 / 情绪的枚举与
+  # services/style_reference/tags.py 的词表逐项相同(有测试钉住)。
+  style_ref_tag_windows:
+    version: "2026-09-23.v1"
+    input_token_budget: 36000
     system_prompt: |
-      你是中文叙事风格 Profile 聚合专家。给定一本书 16 个 sub_dim(语言/叙事/场景/主题
-      四层 × 各 4 维度)的已验证 findings 摘要(observations + forbidden_patterns)、硬指标
-      baseline、确定性统计得出的语言习惯行(voice_habits)与少量机制锚引文(anchor_quotes),
-      聚合为一份 StyleProfile,包含:
-        - profile_title:简短(<20 字)的机制型画像标题,必须从本次 payload 独立归纳;
-          不得套用固定的气质标签或沿用提示中的示例措辞
-        - narrative_summary:80-200 字的整体风格简述,综合语言/叙事/场景/主题四层特征
-        - style_features:可迁移的语言层/节奏层写作机制,每条写成"做什么/不做什么"的可执行
-          指令句,例如"对话前少用提示动词,以动作代替说话方式"——不是鉴赏式描述
-        - narrative_patterns:可迁移的叙事/场景层模式,同样写成可执行指令句,
-          例如"关键转折前插入一段环境描写缓冲节奏,不直接切对话";这些条目会被抽出作为
-          叙事机制指引进入规划与初稿阶段,因此要写清信息释放次序、停顿位置、取舍原则
-        - banned_replication_rules:禁止复制的具体表达/模式,基于 forbidden_patterns 聚合,
-          描述"模式"本身(如"不使用连续三个以上的排比短句渲染情绪"),绝不引用或改写原句
-        - calibration_guidance:校准提示句,每条针对一个常见漂移方向给出"发现这样写时如何
-          拉回"的提示,例如"若发现对话变得书面化,提醒转回口语化短句";这个字段不能省略,
-          16 个 sub_dim 里通常能找出几条有代表性的漂移
-      约束:
-      - 输出字段全部为短句陈述(<120 字),不要复述 evidence
-      - 严禁空泛形容词("文笔优美""画面感强")
-      - 严禁照抄原文(banned_replication_rules 描述模式而非引用)
-      - finding_summaries 已由逐字证据验证,你只需聚合其中的抽象 statement;不得反推、杜撰
-        或索要参考原文,只保留脱离原文后仍可执行的抽象机制
-      - anchor_quotes 是每个子维度最多两条、六十字以内的原文锚点,只用来帮助你判断某条
-        statement 具体指向什么机制;严禁把锚引文的任何字词、句式片段复述、改写或拼接进
-        任何输出字段——输出会做原文重合过滤,重合的条目会被整条删除
-      - voice_habits 是对全书做确定性统计得出的语言习惯(连接词/虚词偏好、标点节律、
-        引导句、四字格、叠词、人称),不是主观印象;style_features 中凡涉及这些方面的指令
-        必须与之一致、不得相反,也不得逐字抄写这些行——用机制句转述即可;voice_habits 为空时忽略
-      - profile_title 与 narrative_summary 中的情绪、地域、阶层、哲思、讽刺等高层标签,
-        只有在 finding_summaries 中存在直接对应的 theme finding 时才能使用;缺失 theme 层时
-        只概括实际出现的语言、句段、标点、叙事与场景机制,不得凭印象补齐
-      - metrics_baseline 是最高优先级的结构事实。narrative_summary、style_features、
-        narrative_patterns、calibration_guidance 中凡涉及句长、长短句比例、段落组织、
-        标点频率、语域或修辞代理频率的描述,都必须服从对应数字;不得只在概述里遵守、
-        却在后续数组中写出相反指令
-      - finding_summaries 的 confidence / status / evidence_count 表示证据强度。approved、
-        high 且跨多条证据的机制优先;pending、low 或仅 2 条局部证据只能写成有条件的
-        可选机制,不得扩张成“大量、密集、高频、总是、连续”等全书频率结论。若定性
-        statement 与 metrics_baseline 冲突,舍弃该频率判断,保留不冲突的叙事机制
+      你给一位作者全书的连续片段逐个打标签。之后写新场景时,系统会按这些标签挑出这位作者写同类场面的原文作样例,
+      所以标签要准,反映片段**主要**在写什么。
+      每个片段输出:
+        - situations:1–3 个场面标签,只能从 situation_vocabulary 里选;
+        - moods:1–2 个情绪标签,只能从 mood_vocabulary 里选;
+        - devices:片段里**明显用到**的作者招牌手法,只能从 device_vocabulary 里选;没有就给空数组;
+        - gist:≤40 字,这一段写了什么;用「主角」「一个女孩」「同伴」这类代称,不写人名、地名、专有设定名。
+      每个输入片段都必须输出恰好一项,window 原样照抄,不多不少。只输出 schema 规定的 JSON。
     task_prompt: |
-      输入 payload 含 book_title / sub_dimensions / metrics_baseline / voice_habits /
-      anchor_quotes / finding_summaries;finding_summaries 已按子维度分组、组内强证据在前,
-      并已压入预算,不要把未出现的 finding 当作反例。
-      只聚合 payload 实际存在的子维度;不要为了看起来完整而推断缺失层。
-      anchor_quotes 只作机制锚点,不得复述进任何输出字段。
-      voice_habits 是确定性统计得出的语言习惯,style_features 应与之一致、不得抄写。
-      请按 schema 输出 profile;style_features / narrative_patterns / banned_replication_rules
-      每个数组 4-10 条,calibration_guidance 同样需要 4-10 条、不得返回空数组。
-      若某个数组暂时不足 4 条,回头再检视 16 个 sub_dim 的 findings 摘要,通常能补齐;
-      16 个子维度信息全部读完再下笔,不要只看前几个 sub_dim 就收尾。
-      若 payload 含 validation_retry,说明上一次结果为空、无效或与原文字词重合;本次必须
-      按其中 violations 修正,但不要复述 validation_retry 文本。
+      输入见数据块:situation_vocabulary、mood_vocabulary、device_vocabulary、windows(每个片段带 window 片段号、
+      chapter、position、text;长片段中间用「……(中略)……」省去了一段)。按 schema 输出 windows。
     structured_schema:
       type: object
       additionalProperties: false
-      required:
-        - profile_title
-        - narrative_summary
-        - style_features
-        - narrative_patterns
-        - banned_replication_rules
-        - calibration_guidance
+      required: [windows]
       properties:
-        profile_title:
-          type: string
-          minLength: 1
-          maxLength: 20
-        narrative_summary:
-          type: string
-          minLength: 1
-          maxLength: 200
-        style_features:
+        windows:
           type: array
-          minItems: 1
-          maxItems: 10
-          items: {type: string, minLength: 1, maxLength: 120}
-        narrative_patterns:
-          type: array
-          minItems: 1
-          maxItems: 10
-          items: {type: string, minLength: 1, maxLength: 120}
-        banned_replication_rules:
-          type: array
-          maxItems: 10
-          items: {type: string, minLength: 1, maxLength: 120}
-        calibration_guidance:
-          type: array
-          maxItems: 10
-          items: {type: string, minLength: 1, maxLength: 120}
+          items:
+            type: object
+            additionalProperties: false
+            required: [window, situations, moods, devices, gist]
+            properties:
+              window: {type: integer}
+              situations:
+                type: array
+                maxItems: 3
+                items:
+                  type: string
+                  enum: [日常闲谈, 对峙审问, 争吵冲突, 打斗追逐, 危机应对, 独处内省, 回忆往事, 说明设定, 群像场面, 情感交流, 喜剧桥段, 悬疑揭示, 赶路转场, 计划商议, 开章引入, 收章落点]
+              moods:
+                type: array
+                maxItems: 2
+                items:
+                  type: string
+                  enum: [紧张, 诙谐, 伤感, 温情, 压抑, 热血, 荒诞, 悬疑, 平静, 恐惧]
+              devices:
+                type: array
+                maxItems: 5
+                items: {type: string}
+              gist: {type: string, maxLength: 40}
 
   style_ref_preview_generate:
     version: "2026-07-04.v2"

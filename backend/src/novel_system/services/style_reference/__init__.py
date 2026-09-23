@@ -1,10 +1,8 @@
 """Style Reference (style_reference) service package.
 
-PR-1 scope: schema 落地 only. 仅导出枚举 / 错误体系 / 仓储 / cleanup。
-业务编排(extract / inject / validate)在后续 PR 中分别落地。
-
-参见 plans/style-reference-v1-1-fancy-shannon.md 与
-《风格参考模块重构执行手册 v1.1》§4 / §14。
+风格参考 v3（2026-09-23）的现行契约见 ``docs/style-reference-v3-2026-09-23.md``。学习链路是一个持久作业
+（``learn_job``：窗口 → 选窗 → 分层抽取 → 文风卡 → 受保护专名 → 窗口标签 → 画像），处理器在模块导入时注册
+（``register_job_handler("learn", ...)``），这里不导入它，免得包导入就拉起整条学习链路。
 """
 
 from __future__ import annotations
@@ -15,22 +13,10 @@ from novel_system.services.style_reference.dimensions import (
     SubDimension,
 )
 from novel_system.services.style_reference.errors import (
-    BannedAdjectiveError,
     DuplicateBookError,
     EmptyBookError,
-    EvidenceShortError,
-    EvidenceSpanError,
     LLMRequiredError,
     StyleReferenceError,
-)
-from novel_system.services.style_reference.extractors import (
-    BaseExtractor,
-    ExtractionRetryPolicy,
-    ExtractionRunResult,
-    LanguageExtractor,
-    NarrativeExtractor,
-    SceneExtractor,
-    ThemeExtractor,
 )
 from novel_system.services.style_reference.ingest import IngestResult, IngestService, assess_input_size
 from novel_system.services.style_reference.injection import InjectionService
@@ -39,8 +25,6 @@ from novel_system.services.style_reference.materialization import (
     MaterializeResult,
 )
 from novel_system.services.style_reference.preview import PreviewService
-from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
-from novel_system.services.style_reference.run_orchestrator import RunOrchestrator, RunResult
 from novel_system.services.style_reference.validation import (
     ValidationOrchestrator,
     check_forbidden_local,
@@ -67,39 +51,19 @@ from novel_system.services.style_reference.schemas import (
     BannedTermScope,
     BindingScope,
     BindingStatus,
-    BookStatus,
     CloudPolicy,
     ExtractionEvidenceInput,
-    ExtractionFindingInput,
-    ExtractionOutput,
     ExtractionPurpose,
-    ExtractionStatus,
     FindingKind,
-    FindingStatus,
     InjectionStrategy,
-    InputAssessmentLevel,
     ParagraphType,
     ProfileStatus,
     RunPhase,
     RunStatus,
-    StyleReferenceBannedTermRow,
-    StyleReferenceBookRow,
-    StyleReferenceEvidenceRow,
-    StyleReferenceExtractionRow,
-    StyleReferenceFindingRow,
-    StyleReferenceInjectionBindingRow,
-    StyleReferenceParagraphRow,
-    StyleReferenceProfileRow,
-    StyleReferenceQuoteRow,
-    StyleReferenceRunRow,
-    StyleReferenceValidationReportRow,
-    SupplementEvidenceOutput,
     TaskType,
     ValidationMode,
     ValidationTargetKind,
     ValidationVerdict,
-    ProfileSubDimensionSummary,
-    SynthesizedProfile,
     PlagiarismHit,
     PlagiarismReport,
     ForbiddenHit,
@@ -122,10 +86,7 @@ __all__ = [
     "ParagraphType",
     "FindingKind",
     "AnchorKind",
-    "BookStatus",
-    "ExtractionStatus",
     "ExtractionPurpose",
-    "FindingStatus",
     "RunStatus",
     "RunPhase",
     "ProfileStatus",
@@ -137,21 +98,12 @@ __all__ = [
     "ValidationMode",
     "ValidationTargetKind",
     "BannedTermScope",
-    "InputAssessmentLevel",
     "CloudPolicy",
     "StyleReferenceError",
-    "BannedAdjectiveError",
-    "EvidenceShortError",
-    "EvidenceSpanError",
     "DuplicateBookError",
     "EmptyBookError",
     "LLMRequiredError",
     "ExtractionEvidenceInput",
-    "ExtractionFindingInput",
-    "ExtractionOutput",
-    "SupplementEvidenceOutput",
-    "ProfileSubDimensionSummary",
-    "SynthesizedProfile",
     "PlagiarismHit",
     "PlagiarismReport",
     "ForbiddenHit",
@@ -169,16 +121,6 @@ __all__ = [
     "IngestResult",
     "assess_input_size",
     "InjectionService",
-    "BaseExtractor",
-    "LanguageExtractor",
-    "NarrativeExtractor",
-    "SceneExtractor",
-    "ThemeExtractor",
-    "ExtractionRetryPolicy",
-    "ExtractionRunResult",
-    "RunOrchestrator",
-    "RunResult",
-    "ProfileSynthesizer",
     "MaterializationService",
     "MaterializeResult",
     "PreviewService",
@@ -197,15 +139,4 @@ __all__ = [
     "ParagraphClassification",
     "SegmentationResult",
     "SegmentationLLMError",
-    "StyleReferenceBookRow",
-    "StyleReferenceParagraphRow",
-    "StyleReferenceExtractionRow",
-    "StyleReferenceQuoteRow",
-    "StyleReferenceEvidenceRow",
-    "StyleReferenceFindingRow",
-    "StyleReferenceRunRow",
-    "StyleReferenceProfileRow",
-    "StyleReferenceInjectionBindingRow",
-    "StyleReferenceValidationReportRow",
-    "StyleReferenceBannedTermRow",
 ]

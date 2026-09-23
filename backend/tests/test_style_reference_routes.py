@@ -256,7 +256,7 @@ def test_delete_book_purges_entire_derived_chain(client: TestClient) -> None:
     """删书路由必须级联清除「全部」派生数据,不留孤儿。
 
     `_seed_full_chain` 覆盖 run/extraction/finding/2 quotes/2 evidences/profile;
-    本测试再补 binding / validation_report / banned_term / finding_feedback 四条
+    本测试再补 binding / validation_report / banned_term / (遗留的)finding_feedback 四条
     `purge_derived_data` 分支,删后逐表断言对该 book/profile/finding 零残留。
     防止某条 delete 分支被悄悄删掉而 `test_delete_book`(无派生数据)仍通过。
     """
@@ -268,12 +268,10 @@ def test_delete_book_purges_entire_derived_chain(client: TestClient) -> None:
         StyleReferenceFindingFeedback,
         StyleReferenceInjectionBinding,
         StyleReferenceParagraph,
-        StyleReferenceProfile,
         StyleReferenceQuote,
         StyleReferenceRun,
         StyleReferenceValidationReport,
     )
-    from novel_system.services.style_reference.finding_feedback import apply_feedback
 
     book_id = _import_book(client)
     run_id, finding_id, profile_id = _seed_full_chain(book_id)
@@ -312,13 +310,18 @@ def test_delete_book_purges_entire_derived_chain(client: TestClient) -> None:
             source="user",
             scope="generation",
         )
-        apply_feedback(session, finding_id, operator_ref="u1", vote="up")
+        # 👍/👎 服务已删除(2026-09-23 v3),表在 P7 的清理迁移前还在:旧库里的反馈行照样随删书清掉
+        session.add(
+            StyleReferenceFindingFeedback(
+                feedback_id=f"srfb_del_{suffix}", finding_id=finding_id, operator_ref="u1", vote="up"
+            )
+        )
         session.commit()
 
     # 删前确认四类派生确有数据(否则后面的「零残留」断言会失去意义)
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
-        assert repo.list_finding_feedback(finding_id)
+        assert session.query(StyleReferenceFindingFeedback).filter_by(finding_id=finding_id).count() == 1
         assert repo.list_bindings(profile_id=profile_id)
         assert repo.list_validation_reports(profile_id=profile_id)
         assert repo.list_banned_terms(profile_id)
@@ -408,24 +411,6 @@ def test_reclassify_executes_and_purges_derived_data(
 # ---------------------------------------------------------------------------
 
 
-def test_start_run_llm_required_when_disabled(client: TestClient, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
-    book_id = _import_book(client)
-    resp = client.post(
-        f"{PREFIX}/books/{book_id}/runs",
-        json={},
-        headers={"X-Idempotency-Key": "run_disabled"},
-    )
-    # LLM 未启用 → LLMRequiredError(DomainError, status_code=409)→ 精确契约:
-    # 409 + 错误码 + author_action(镜像 test_style_reference_hardening::
-    # test_llm_required_maps_to_409_with_author_action)。弱断言 >= 400 会放过
-    # 「丢掉 DomainError 基类 → 退回通用 500、丢失 author_action 导航」的回归。
-    assert resp.status_code == 409
-    err = resp.json()["error"]
-    assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
-    assert err["details"]["author_action"]
-
-
 def test_get_run_happy(client: TestClient) -> None:
     book_id = _import_book(client)
     run_id, _, _ = _seed_full_chain(book_id)
@@ -440,31 +425,6 @@ def test_get_run_404(client: TestClient) -> None:
     assert resp.json()["error"]["code"] == "STYLE_REFERENCE_RUN_NOT_FOUND"
 
 
-def test_cancel_run(client: TestClient) -> None:
-    """只有 pending/running 的 run 能取消；已完成（done/failed）的 run 是终态，取消要 409。"""
-    book_id = _import_book(client)
-    done_run_id, _, _ = _seed_full_chain(book_id)
-    resp = client.post(
-        f"{PREFIX}/runs/{done_run_id}/cancel", headers={"X-Idempotency-Key": "cancel_done_1"}
-    )
-    assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "STYLE_REFERENCE_RUN_CANCEL_CONFLICT"
-    with SessionLocal() as session:
-        assert StyleReferenceRepository(session).get_run(done_run_id).status == "done"
-
-    pending_run_id = f"sr_run_pending_{book_id[-6:]}"
-    with SessionLocal() as session:
-        StyleReferenceRepository(session).create_run(
-            run_id=pending_run_id, book_id=book_id, status="pending", phase="extract"
-        )
-        session.commit()
-    resp = client.post(
-        f"{PREFIX}/runs/{pending_run_id}/cancel", headers={"X-Idempotency-Key": "cancel_pending_1"}
-    )
-    assert resp.status_code == 200
-    assert resp.json()["data"]["status"] == "cancelled"
-
-
 def test_list_run_findings(client: TestClient) -> None:
     book_id = _import_book(client)
     run_id, _, _ = _seed_full_chain(book_id)
@@ -474,66 +434,6 @@ def test_list_run_findings(client: TestClient) -> None:
     assert len(findings) == 1
     # PR-23 — 不带 include 时响应里没有 evidence 键(零回归)
     assert "evidence" not in findings[0]
-
-
-def test_start_run_defaults_to_all_four_layers(
-    client: TestClient, monkeypatch, fake_extractor_llm
-) -> None:
-    """PR-23 — POST runs 不带 layers → 全 4 层 + 16 sub_dim_results。"""
-    import novel_system.api.routes.style_reference as sr_routes
-
-    fake = fake_extractor_llm("default")
-    monkeypatch.setattr(
-        sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True)
-    )
-    book_id = _import_book(client)
-    resp = client.post(
-        f"{PREFIX}/books/{book_id}/runs",
-        # 测试书仅几十字(input_assessment 全 skip),force 绕过 §6.4 输入量门槛,
-        # 本用例只锁定「不带 layers → 默认全 4 层」的契约
-        json={"force": True},
-        headers={"X-Idempotency-Key": "run_default_layers"},
-    )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()["data"]
-    assert data["layers"] == ["language", "narrative", "scene", "theme"]
-    assert len(data["sub_dim_results"]) == 16
-
-
-def test_background_run_dispatches_only_after_idempotency_commit(
-    client: TestClient, monkeypatch, fake_extractor_llm
-) -> None:
-    from novel_system.db.models import IdempotencyKey, StyleReferenceRun
-    import novel_system.api.routes.style_reference as sr_routes
-
-    fake = fake_extractor_llm("default")
-    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
-    observations: list[tuple[str | None, str | None]] = []
-
-    def observe_dispatch(**kwargs) -> None:  # noqa: ANN003
-        with SessionLocal() as observer:
-            idem = observer.get(IdempotencyKey, "run_after_commit")
-            run = observer.get(StyleReferenceRun, kwargs["run_id"])
-            observations.append(
-                (
-                    idem.status if idem is not None else None,
-                    run.dispatch_state if run is not None else None,
-                )
-            )
-
-    monkeypatch.setattr(sr_routes, "start_style_reference_run_worker", observe_dispatch)
-    book_id = _import_book(client)
-    request_kwargs = {
-        "json": {"background": True, "force": True},
-        "headers": {"X-Idempotency-Key": "run_after_commit"},
-    }
-    first = client.post(f"{PREFIX}/books/{book_id}/runs", **request_kwargs)
-    replay = client.post(f"{PREFIX}/books/{book_id}/runs", **request_kwargs)
-
-    assert first.status_code == 200, first.text
-    assert replay.status_code == 200, replay.text
-    assert replay.headers["X-Idempotency-Status"] == "replayed"
-    assert observations == [("succeeded", "queued"), ("succeeded", "queued")]
 
 
 def test_list_run_findings_include_evidence(client: TestClient) -> None:
@@ -549,66 +449,11 @@ def test_list_run_findings_include_evidence(client: TestClient) -> None:
     assert all(e["quote_text"] for e in evidence)
     assert {e["anchor_kind"] for e in evidence} == {"paragraph_quote", "counter_example"}
     synthetic = next(e for e in evidence if e["anchor_kind"] == "counter_example")
-    assert synthetic["is_synthetic"] == 1
-    assert synthetic["paragraph_id"] is None
+    assert "is_synthetic" not in synthetic  # v3:学习作业只产出逐字原文引文,is_synthetic 不再输出
+    assert synthetic["paragraph_id"] is None and synthetic["quote_id"]
     real = next(e for e in evidence if e["anchor_kind"] == "paragraph_quote")
     assert real["paragraph_id"]
     assert real["span"] == [0, 10]
-
-
-# ---------------------------------------------------------------------------
-# Findings review
-# ---------------------------------------------------------------------------
-
-
-def test_finding_review_happy(client: TestClient) -> None:
-    book_id = _import_book(client)
-    _, finding_id, _ = _seed_full_chain(book_id)
-    resp = client.post(
-        f"{PREFIX}/findings/{finding_id}/review",
-        json={"decision": "approved", "comment": "looks good"},
-        headers={"X-Idempotency-Key": "rev_1"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["data"]["decision"] == "approved"
-    assert resp.json()["data"]["review_id"].startswith("review_style_ref_finding_")
-
-
-def test_rejecting_finding_invalidates_profiles_derived_from_same_run(
-    client: TestClient,
-) -> None:
-    book_id = _import_book(client)
-    _, finding_id, profile_id = _seed_full_chain(book_id)
-    with SessionLocal() as session:
-        profile = session.get(StyleReferenceProfile, profile_id)
-        profile.status = "active"
-        session.commit()
-
-    resp = client.post(
-        f"{PREFIX}/findings/{finding_id}/review",
-        json={"decision": "rejected", "comment": "evidence does not support it"},
-        headers={"X-Idempotency-Key": "rev_invalidates_profile"},
-    )
-
-    assert resp.status_code == 200
-    assert profile_id in resp.json()["data"]["invalidated_profile_ids"]
-    with SessionLocal() as session:
-        profile = session.get(StyleReferenceProfile, profile_id)
-        assert profile.status == "draft"
-        assert profile.coverage_json["stale"] is True
-        assert profile.coverage_json["stale_finding_id"] == finding_id
-
-
-def test_finding_review_invalid_decision(client: TestClient) -> None:
-    book_id = _import_book(client)
-    _, finding_id, _ = _seed_full_chain(book_id)
-    resp = client.post(
-        f"{PREFIX}/findings/{finding_id}/review",
-        json={"decision": "yolo"},
-        headers={"X-Idempotency-Key": "rev_invalid"},
-    )
-    assert resp.status_code == 400
-    assert resp.json()["error"]["code"] == "STYLE_REFERENCE_REVIEW_DECISION_INVALID"
 
 
 # ---------------------------------------------------------------------------
@@ -697,24 +542,8 @@ def test_delete_binding_404(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Preview / Synthesize 需要 LLM client(本测试不启用 LLM,确认错误码语义即可)
+# Preview 需要 LLM client(本测试不启用 LLM,确认错误码语义即可)
 # ---------------------------------------------------------------------------
-
-
-def test_synthesize_llm_required_when_disabled(client: TestClient, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
-    book_id = _import_book(client)
-    run_id, _, _ = _seed_full_chain(book_id)
-    resp = client.post(
-        f"{PREFIX}/runs/{run_id}/synthesize",
-        headers={"X-Idempotency-Key": "synth_disabled"},
-    )
-    # synthesize 委托 ProfileSynthesizer → LLMRequiredError(409)。钉精确契约,
-    # 不用弱 >= 400(否则 409 退化成通用 500、丢 author_action 也照样绿)。
-    assert resp.status_code == 409
-    err = resp.json()["error"]
-    assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
-    assert err["details"]["author_action"]
 
 
 def test_preview_llm_required_when_disabled(client: TestClient, monkeypatch) -> None:
@@ -731,41 +560,6 @@ def test_preview_llm_required_when_disabled(client: TestClient, monkeypatch) -> 
     err = resp.json()["error"]
     assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
     assert err["details"]["author_action"]
-
-
-def test_synthesize_failure_maps_to_409_with_reason_code_and_author_action(
-    client: TestClient, monkeypatch
-) -> None:
-    """2026-09 v2 · W1:SynthesizeError 同时是 DomainError,路由零改动即透传为 409。"""
-    from novel_system.services.style_reference.profile_synthesizer import (
-        ProfileSynthesizer,
-        SynthesizeError,
-    )
-
-    def _boom(self, book_id, run_id):  # noqa: ANN001
-        raise SynthesizeError(
-            "style profile synthesis input cannot fit input_token_budget",
-            reason_code="budget_unfit",
-            details={"target_input_tokens": 39000, "estimated_floor": 40123},
-        )
-
-    monkeypatch.setattr(ProfileSynthesizer, "synthesize", _boom)
-    book_id = _import_book(client)
-    run_id, _, _ = _seed_full_chain(book_id)
-    resp = client.post(
-        f"{PREFIX}/runs/{run_id}/synthesize",
-        headers={"X-Idempotency-Key": "synth_budget_unfit"},
-    )
-
-    assert resp.status_code == 409
-    body = resp.json()
-    assert body["ok"] is False
-    err = body["error"]
-    assert err["code"] == "STYLE_REFERENCE_SYNTHESIZE_FAILED"
-    assert err["details"]["reason_code"] == "budget_unfit"
-    assert err["details"]["target_input_tokens"] == 39000
-    assert err["details"]["author_action"]["view"] == "styleref"
-    assert err["details"]["author_action"]["action"] == "review_dimension_matrix_then_synthesize"
 
 
 # ---------------------------------------------------------------------------

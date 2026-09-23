@@ -167,8 +167,9 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
         "/api/v2/style-reference/books/UNKNOWN/reclassify",
         "/api/v2/style-reference/books/UNKNOWN/safety-profile/extract",
         "/api/v2/style-reference/profiles/UNKNOWN/preview",
-        "/api/v2/style-reference/runs/UNKNOWN/cancel",
-        "/api/v2/style-reference/runs/UNKNOWN/synthesize",
+        "/api/v2/style-reference/books/UNKNOWN/learn",
+        "/api/v2/style-reference/books/UNKNOWN/learn/cancel",
+        "/api/v2/style-reference/profiles/UNKNOWN/card-lines/cl_000000000000",
         "/api/v2/trash/UNKNOWN/restore",
     ],
 )

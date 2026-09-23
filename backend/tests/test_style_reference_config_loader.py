@@ -31,11 +31,11 @@ def test_sensory_lexicon_is_gone() -> None:
         load_yaml_config("sensory_lexicon")
 
 
-def test_load_extraction_yaml() -> None:
-    cfg = load_yaml_config("extraction")
-    assert "metrics" in cfg
-    assert "observations" in cfg
-    assert cfg["metrics"]["use_all_paragraphs"] is True
+def test_dead_learning_configs_are_gone() -> None:
+    """2026-09-23 v3:旧抽取器的采样 / 重试配置(extraction.yaml)与 👍/👎 调档阈值(feedback.yaml)随代码删除。"""
+    for name in ("extraction", "feedback"):
+        with pytest.raises(FileNotFoundError):
+            load_yaml_config(name)
 
 
 def test_load_banned_adjectives_yaml_returns_items_key() -> None:

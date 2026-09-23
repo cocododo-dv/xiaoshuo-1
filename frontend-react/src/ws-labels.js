@@ -225,6 +225,8 @@ export const LLM_NODE_LABELS = {
   style_ref_extract_theme: "参考书 · 主题层抽取",
   style_ref_supplement_evidence: "参考书 · 补抽证据",
   style_ref_synthesize_profile: "参考书 · 合成画像",
+  style_ref_protected_terms: "参考书 · 识别本书专名",
+  style_ref_tag_windows: "参考书 · 给片段打标签",
   style_ref_preview_generate: "参考书 · 示例预览",
   style_ref_validate_semantic: "参考书 · 语义回测",
   style_ref_validate_forbidden: "参考书 · 禁用模式回测",

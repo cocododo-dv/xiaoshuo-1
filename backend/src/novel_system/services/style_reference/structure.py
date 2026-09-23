@@ -115,7 +115,7 @@ _PLANNING_SUB_DIMENSIONS: tuple[tuple[str, str], ...] = (
 _PLANNING_PREFIXES = ("scene.", "theme.")
 _CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0}
 _STATUS_RANK = {"approved": 1, "pending": 0}
-# 与 profile_synthesizer._contains_source_overlap 同口径（6-gram / 8 字）。
+# 原文重合过滤口径（6-gram / 8 字；文风卡行在学习作业里另按 12 字连续重合过滤）。
 _OVERLAP_NGRAM = 6
 _OVERLAP_THRESHOLD_CHARS = 8
 # 人称判定阈值与 voice_signature.render_voice_habits §12 一致。
