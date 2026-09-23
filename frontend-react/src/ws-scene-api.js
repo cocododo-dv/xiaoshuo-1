@@ -163,7 +163,7 @@ async function scnRun(item, note, _prevText, lifecycle = {}) {
   record.state = pipeState === "archived" ? "archived" : "ready";
   record.log = [
     { t: tm(0), who: "system", text: "已提交后端起草任务（预检 → 蓝图 → 首稿 → 硬质检 → 风格稿 → 软质检 → 近终稿）" },
-    authorNote ? { t: tm(0), who: "system", text: "改写指令已随任务下发（注入风格生成阶段，优先级最高）" } : null,
+    authorNote ? { t: tm(0), who: "system", text: "改写指令已随任务下发（带入风格起草，优先级最高）" } : null,
     { t: tm(secs), who: "pipeline", text: `管线结束：${RUN_JOB_STATUS_LABELS[last.status] || "已结束"}${stepName ? `，停在「${stepName}」` : ""}${record.draftMode ? `，首稿 ${record.draftMode === "style_first" ? "作者手笔" : "中性"}` : ""}，${record.words} 字，用时 ${secs} 秒` },
     budgetBlock
       ? { t: tm(secs), who: "pipeline", text: `${budgetBlock.label}；已有正文与恢复点均已保留，需作者显式追加预算后续跑` }
