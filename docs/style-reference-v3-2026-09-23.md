@@ -353,3 +353,22 @@ StylePolicy 贯穿（架构守卫：只有 style_policy / runtime_contract 能�
 `scene_blueprint_facts` v1（带场面标签，随 bundle 冻结；无绑定的蓝图逐字不变）；软 QC v10 参考评审按 16 维打 0–10 分并入库；
 准定稿评审 v10 分数带范围（9.3 → 0.93，不再夹成 1.0）；首稿 v9「设计只是框架」；新鲜度预算在让位时只留逐字 n-gram；
 成稿门按绑定书的规则校准；遥测写入进保存点。
+
+### P5b 管线 · 第二部分
+读数唯一入口 `readings.record_fidelity_reading`（按场景键、同一稿行幂等、失败不阻断管线）：首稿、定向修改、补丁、归档、采用 / 再确认、
+成稿中心、写作台采纳都记。作者手笔直起时风格步按读数决定：首稿在作者范围内（或读数不可信）不调模型、首稿即风格稿；越界才跑定向修改
+（新模板 `style_targeted_revision` v1，走 `style_draft` 节点路由，只改越界的维，≤4 维），改完再读，不更像 / 没过抄袭门就保留首稿；
+软补丁后评审分变差或读数变远就退回；Best-of-N = 首稿 + (N−1) 个定向修改、按距离排序。旧回测层删除，改为「对照检查」作业
+（`check_job`，新模板 `style_ref_check_judge` v1 走 `soft_qc` 节点路由：确定性读数 + 16 维参考评审 + 抄袭门）。读数接口：
+`GET /api/v1/scenes/{id}/style-fidelity`、`GET /api/v1/projects/{id}/style-fidelity`、`GET /api/v2/style-reference/readings/{id}`、
+`POST/GET /api/v2/style-reference/checks`；工作台摘要带 `style_fidelity`。阈值（`injection_budget.yaml` 的 `fidelity:` 段，暂定）：
+风格步百分位上限 90、修改至少近 0.03、补丁距离最多远 0.05、评审容差 0.02。
+
+### P6a 接口与界面 · 第一部分
+路由拆成包（books / learn / profiles / bindings / activity）；书与画像列表只给摘要（画像列表不再带整份 profile_json）；直接绑定
+（`POST /profiles/{id}/apply`，一个目标只有一个活动绑定，旧的停用并告知；`PATCH /bindings/{id}`；`GET /projects/{id}/style-binding`）；
+`POST /books/bulk-delete`；删死接口（`GET /runs/{id}`、绑定预览、任务默认表、`/imports/{key}/progress`、示例预览与其节点、三个旧回测接口）；
+列表按创建时间排序。界面：参考书库多选删除、导入默认值按当前模型、三档如实说明、中文错误；总览提示旧的启发式段落类型（带一致率）与
+「用模型重新分类（保留画像）」（先给估算）；学习文风卡（估算、进度、取消 / 续跑、需重新学习提示）；文风画像（气质、16 维按层、
+通用写法 vs 这位作者、作者不这么写、证据、✓ / ✗、每维 重点 / 正常 / 不学）；用于作品（参考方式三选一、样例窗数、起草方式、直接应用 / 解除）；
+本场预览；唯一标签表（与后端 `card.py` / `tags.py` / 段型枚举对齐，有测试）。store 不再往 window 上挂全局。
