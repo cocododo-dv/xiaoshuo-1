@@ -1,9 +1,8 @@
-"""Style Reference v1.1 — Phase 1 路由清单(PR-4)+ PR-7 validate / reports。
+"""Style Reference 路由(prefix: /api/v2/style-reference)。
 
-参见 plans/style-reference-v1-1-fancy-shannon.md §"路由清单"。
-prefix: /api/v2/style-reference。
-在既有导入、抽取、画像、校验和注入预览端点上，增加候选盲选反馈聚合读接口。
-不含公开 inject 写接口(PR-8)。
+导入 / 分类(作业表 kind=classify)、学习文风(作业表 kind=learn:``POST /books/{id}/learn`` 一个按钮一个作业,
+取代旧的「抽取 run + 同步合成」)、画像与文风卡行状态、绑定、禁用词、回测与注入预览。不含公开 inject 写接口。
+P6 会按领域拆分这个文件。
 """
 
 from __future__ import annotations
@@ -28,18 +27,15 @@ from novel_system.api.deps import get_session
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
-from novel_system.db.models import ReviewItem, StyleReferenceJob, StyleReferenceParagraph, utcnow
+from novel_system.db.models import StyleReferenceJob, StyleReferenceParagraph, utcnow
 
 logger = logging.getLogger(__name__)
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.cleanup import purge_derived_data
-from novel_system.services.style_reference.dimensions import Layer
 from novel_system.services.style_reference.activity import list_activity
 from novel_system.services.style_reference.import_progress import (
     IMPORT_KEY_MAX_LENGTH,
-    find_running_operation,
     get_import_progress,
-    start_import_progress,
 )
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.import_job import (
@@ -58,9 +54,20 @@ from novel_system.services.style_reference.ingest import (
 )
 from novel_system.services.style_reference.jobs import (
     JOB_KIND_CLASSIFY,
+    JOB_KIND_LEARN,
     StyleJobService,
     dispatch_job,
 )
+from novel_system.services.style_reference.card_states import set_card_line_state
+from novel_system.services.style_reference.learn_job import (
+    LEARN_NOT_ACTIVE_CODE,
+    cancel_learn,
+    estimate_learning,
+    latest_learn_job,
+    learn_payload,
+    start_learn_job,
+)
+from novel_system.services.style_reference.learn_llm import LEARN_NODE_IDS
 from novel_system.services.style_reference.policy import (
     default_cloud_policy,
     ensure_local_only_llm,
@@ -69,14 +76,7 @@ from novel_system.services.style_reference.policy import (
 from novel_system.services.style_reference.segmentation.llm import CLASSIFY_NODE_IDS
 from novel_system.services.style_reference.materialization import MaterializationService
 from novel_system.services.style_reference.preview import PreviewService
-from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
-from novel_system.services.style_reference.rag import start_style_reference_rag_index_worker
-from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.run_orchestrator import (
-    RunOrchestrator,
-    start_style_reference_run_worker,
-)
 from novel_system.services.style_reference.inject.bindings import describe_binding_layers
 from novel_system.services.style_reference.inject.preview import preview_render
 from novel_system.services.style_reference.injection import injection_task_defaults
@@ -86,7 +86,6 @@ from novel_system.services.style_reference.schemas import (
     InjectionPreviewResponse,
     InjectionPreviewStats,
     InjectionStrategy,
-    RunStatus,
     SystemPromptFragments,
     TaskType,
     ValidateRequest,
@@ -155,16 +154,24 @@ class ImportPathRequest(BaseModel):
     rights_declaration: BoundedJsonObject | None = None
 
 
-class StartRunRequest(BaseModel):
+class LearnRequest(BaseModel):
+    """「学习文风」:建一个学习作业(或 ``resume`` 续上最近一次失败 / 取消 / 中断的)。
+
+    ``profile_id``:要就地更新的画像(缺省:这本书有绑定的 / active 的 / 最近更新的那份;没有画像就新建);
+    ``force``:正文少到四层都被评估为 skip 时仍要学。
+    """
+
     model_config = ConfigDict(extra="forbid", strict=True)
-    layers: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = Field(
-        default=None, max_length=4
-    )
-    # True 时立即返回 RUNNING + run_id,抽取在后台线程执行;
-    # 调用方轮询 GET /runs/{run_id} 读 coverage_json.progress
-    background: bool = False
-    # True 时无视 §6.4 输入量门槛(skip 层剔除),强制抽取所请求层
+    profile_id: str | None = Field(default=None, max_length=128)
+    resume: bool = False
     force: bool = False
+
+
+class CardLineStateRequest(BaseModel):
+    """文风卡一句的状态:``pinned`` 永远带上 / ``excluded`` 不再用 / ``null`` 清掉。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    state: Literal["pinned", "excluded"] | None = None
 
 
 class ApplyConfigMixin(BaseModel):
@@ -181,20 +188,6 @@ class ApplyConfigMixin(BaseModel):
     # 2026-09-12 风格直起(Step 2):起草方式——style_first(作者手笔直起,缺省)/
     # neutral_first(中性稿再上风格,对照组)。缺省不落库,由 injection_budget.yaml 决定。
     draft_mode: Literal["style_first", "neutral_first"] | None = None
-
-
-class FindingReviewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    # Domain validation owns the stable STYLE_REFERENCE_REVIEW_DECISION_INVALID.
-    decision: str = Field(min_length=1, max_length=64)
-    comment: str | None = Field(default=None, max_length=4_000)
-
-
-class FindingFeedbackRequest(BaseModel):
-    """立项 B — finding 用户反馈(👍/👎)。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    vote: str = Field(min_length=1, max_length=64)
 
 
 class BannedTermCreateRequest(BaseModel):
@@ -247,15 +240,18 @@ class ValidateGeneratedRequest(BaseModel):
 _NO_JOB = object()
 
 
-def _serialize_book(book, *, classification_job: Any = _NO_JOB) -> dict[str, Any]:
+def _serialize_book(book, *, classification_job: Any = _NO_JOB, learn_job: Any = _NO_JOB) -> dict[str, Any]:
     """书的载荷。``classification`` = 最近一个分类作业的摘要;``classification_provenance`` = 段落类型
-    的来源(新作业写的,老书按校准信息推出来),带一致率。``classification_job`` 由列表端点批量传入。"""
+    的来源(新作业写的,老书按校准信息推出来),带一致率;``learn`` = 最近一个学习文风作业的摘要。
+    两个作业由列表端点批量传入。"""
     stats = book.stats_json or {}
+    session = Session.object_session(book)
     if classification_job is _NO_JOB:
-        session = Session.object_session(book)
         classification_job = (
             latest_classification_job(session, book.book_id) if session is not None else None
         )
+    if learn_job is _NO_JOB:
+        learn_job = latest_learn_job(session, book.book_id) if session is not None else None
     return {
         "book_id": book.book_id,
         "title": book.title,
@@ -270,6 +266,7 @@ def _serialize_book(book, *, classification_job: Any = _NO_JOB) -> dict[str, Any
         "classification": classification_payload(classification_job),
         "classification_provenance": classification_provenance(stats),
         "paragraph_types_revision": int(stats.get("paragraph_types_revision") or 0),
+        "learn": learn_payload(learn_job),
         "created_at": book.created_at,
         "updated_at": book.updated_at,
     }
@@ -295,9 +292,9 @@ def _serialize_run(run) -> dict[str, Any]:
     }
 
 
-def _serialize_finding(
-    finding, *, evidence: list | None = None, user_vote: str | None = None
-) -> dict[str, Any]:
+def _serialize_finding(finding, *, evidence: list | None = None) -> dict[str, Any]:
+    """一条抽取发现(文风卡行的依据;``?include=evidence`` 时带证据引文)。v3 起发现不再单独审核 / 投票:
+    作者在文风卡上逐句 ✓ / ✗(``POST /profiles/{id}/card-lines/{line_id}``)。"""
     payload = {
         "finding_id": finding.finding_id,
         "book_id": finding.book_id,
@@ -307,17 +304,9 @@ def _serialize_finding(
         "finding_kind": finding.finding_kind,
         "statement": finding.statement,
         "confidence": finding.confidence,
-        # 立项 B — 合成基线(NULL=未经反馈调整);前端可据此展示 confidence 漂移。
-        "base_confidence": finding.base_confidence,
-        "status": finding.status,
-        "review_id": finding.review_id,
     }
-    # PR-23 — 仅 ?include=evidence 时输出;不带 include 的调用方零回归
     if evidence is not None:
         payload["evidence"] = evidence
-    # 立项 B — 当前请求 operator 对该 finding 的票(None=未投);供前端回显投票高亮(跨刷新)
-    if user_vote is not None:
-        payload["user_vote"] = user_vote
     return payload
 
 
@@ -335,41 +324,6 @@ def _serialize_profile(profile) -> dict[str, Any]:
     }
 
 
-def _invalidate_profiles_after_finding_membership_change(
-    repo: StyleReferenceRepository,
-    finding,
-    *,
-    previous_status: str,
-    next_status: str,
-) -> list[str]:
-    """finding 进入/退出 rejected 集合时，使同 run 的派生画像失效。
-
-    synthesize 的输入集合是“全部非 rejected finding”。因此 pending 与 approved
-    互换不改变画像输入；任一状态与 rejected 互换则会改变输入集合。旧画像中的
-    summary/features 无法安全地局部删改，必须停止注入并要求重新合成。
-    """
-    if (previous_status == "rejected") == (next_status == "rejected"):
-        return []
-
-    invalidated: list[str] = []
-    for profile in repo.list_profiles(book_id=finding.book_id):
-        if profile.run_id != finding.run_id or profile.status == "archived":
-            continue
-        coverage = dict(profile.coverage_json or {})
-        coverage.update(
-            {
-                "stale": True,
-                "stale_reason": "source_finding_membership_changed",
-                "stale_finding_id": finding.finding_id,
-            }
-        )
-        profile.coverage_json = coverage
-        profile.status = "draft"
-        invalidated.append(profile.profile_id)
-    repo.session.flush()
-    return invalidated
-
-
 def _serialize_binding(binding) -> dict[str, Any]:
     return {
         "binding_id": binding.binding_id,
@@ -381,10 +335,6 @@ def _serialize_binding(binding) -> dict[str, Any]:
         "status": binding.status,
         "config_json": binding.config_json or {},
     }
-
-
-def _actor(request: Request) -> str:
-    return getattr(request.state, "operator_ref", None) or "operator"
 
 
 def _req_id(request: Request) -> str | None:
@@ -446,10 +396,6 @@ def import_book_path(
         action=_do,
         after_commit=_dispatch_classification,
     )
-
-
-def _error_code_of(exc: BaseException) -> str:
-    return str(getattr(exc, "code", None) or exc.__class__.__name__)
 
 
 def _require_import_llm(cloud_policy: str):
@@ -639,19 +585,28 @@ def list_books(
 ):
     repo = StyleReferenceRepository(session)
     books = repo.list_books(status=status)
-    latest: dict[str, Any] = {}
+    latest: dict[tuple[str, str], Any] = {}
     if books:
         for job in session.scalars(
             select(StyleReferenceJob)
             .where(
-                StyleReferenceJob.kind == JOB_KIND_CLASSIFY,
+                StyleReferenceJob.kind.in_((JOB_KIND_CLASSIFY, JOB_KIND_LEARN)),
                 StyleReferenceJob.book_id.in_([b.book_id for b in books]),
             )
             .order_by(StyleReferenceJob.created_at)
         ):
-            latest[job.book_id] = job  # 按创建时间升序:最后写入的就是最近一个
+            latest[(job.kind, job.book_id)] = job  # 按创建时间升序:最后写入的就是最近一个
     return ok(
-        {"books": [_serialize_book(b, classification_job=latest.get(b.book_id)) for b in books]},
+        {
+            "books": [
+                _serialize_book(
+                    b,
+                    classification_job=latest.get((JOB_KIND_CLASSIFY, b.book_id)),
+                    learn_job=latest.get((JOB_KIND_LEARN, b.book_id)),
+                )
+                for b in books
+            ]
+        },
         req_id=_req_id(request),
     )
 
@@ -888,75 +843,122 @@ def cancel_book_classification(
 # ---------------------------------------------------------------------------
 
 
-@router.post(f"{PATH_PREFIX}/books/{{book_id}}/runs")
-def start_run(
+@router.post(f"{PATH_PREFIX}/books/{{book_id}}/learn")
+def learn_book_style(
     book_id: str,
-    payload: StartRunRequest,
     request: Request,
+    payload: LearnRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload.model_dump(mode="json")
+    """「学习文风」:建一个学习作业(作业表 kind=learn;事务提交后派发)。
+
+    七步:整理窗口 → 挑学习样本 → 四层抽取 → 写文风卡 → 识别本书专名 → 给全书片段打标签 → 写入画像;每步之后
+    记游标,重启 / 取消后可续。已有画像就地更新(同一个 profile_id,绑定照常生效)。
+    书没分类完 409 ``STYLE_REFERENCE_BOOK_NOT_READY``;正在重标段落类型 409 ``STYLE_REFERENCE_BOOK_CLASSIFYING``;
+    已在学习 409 ``STYLE_REFERENCE_LEARN_ALREADY_ACTIVE``;没有模型 409 ``STYLE_REFERENCE_LLM_REQUIRED``;
+    书的云策略不允许学习节点的实际路由 409 ``STYLE_REFERENCE_CLOUD_POLICY_*``。
+    """
+    body = payload.model_dump(mode="json") if payload is not None else LearnRequest().model_dump(mode="json")
+    op_key = request.headers.get("X-Idempotency-Key")
     client, enabled = _get_llm_client_and_enabled()
-    background = bool(body.get("background"))
+    if not enabled or client is None:
+        raise LLMRequiredError(operation="learn_style")
 
     def _do() -> dict[str, Any]:
-        # PR-23 — 默认值单点:不带 layers 时全 4 层抽取(语 + 叙 + 景 + 题)
-        layers_raw = body.get("layers") or ["language", "narrative", "scene", "theme"]
-        try:
-            layers = [Layer(layer) for layer in layers_raw]
-        except ValueError as exc:
-            raise DomainError(
-                "STYLE_REFERENCE_LAYER_INVALID",
-                f"invalid layer: {exc}",
-                status_code=400,
-            ) from exc
-        orch = RunOrchestrator(session, llm_client=client, llm_enabled=enabled)
-        result = orch.start_extract_run(
+        job = start_learn_job(
+            session,
             book_id,
-            layers=layers,
-            background=background,
+            profile_id=body.get("profile_id"),
             force=bool(body.get("force")),
-            defer_dispatch=background,
-        )
-        return {
-            "run_id": result.run_id,
-            "book_id": result.book_id,
-            "status": result.status,
-            "layers": result.layers,
-            "sub_dim_results": [
-                {
-                    "sub_dimension": r.sub_dimension.value,
-                    "findings_count": len(r.findings),
-                    "extractions_created": r.extractions_created,
-                }
-                for r in result.sub_dim_results
-            ],
-        }
-
-    def _dispatch(result: dict[str, Any]) -> None:
-        if not enabled or client is None:
-            # A successful replay can happen after an operator disables the
-            # provider. Leave the durable run queued for normal recovery.
-            logger.warning(
-                "style-reference run %s remains queued because LLM is disabled",
-                result.get("run_id"),
-            )
-            return
-        start_style_reference_run_worker(
-            run_id=str(result["run_id"]),
-            book_id=str(result["book_id"]),
-            layer_values=[str(layer) for layer in result.get("layers") or []],
+            resume=bool(body.get("resume")),
+            op_key=op_key,
             llm_client=client,
         )
+        return {"book_id": book_id, "job_id": job.job_id, "state": job.state, "learn": learn_payload(job)}
 
     return idempotent_response(
         request,
         session,
         method="POST",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}/runs",
+        path_template=f"{PATH_PREFIX}/books/{{book_id}}/learn",
         payload={"book_id": book_id, **body},
         action=_do,
-        after_commit=_dispatch if background else None,
+        after_commit=_dispatch_learn,
+    )
+
+
+def _dispatch_learn(result: dict[str, Any]) -> None:
+    """事务提交后把学习作业投给工人(认领是条件写,重复投递无害;漏投的由清扫线程补派)。"""
+    job_id = str((result or {}).get("job_id") or "")
+    if job_id:
+        dispatch_job(job_id)
+
+
+@router.get(f"{PATH_PREFIX}/books/{{book_id}}/learn")
+def get_book_learning(
+    book_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """只读:这本书最近一次学习文风作业的摘要 + 学一次的调用数估计(学习节点的路由摘要)。"""
+    book = StyleReferenceRepository(session).get_book(book_id)
+    if book is None:
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_NOT_FOUND",
+            f"book {book_id!r} not found",
+            status_code=404,
+        )
+    client, _enabled = _get_llm_client_and_enabled()
+    return ok(
+        {
+            "learn": learn_payload(latest_learn_job(session, book_id)),
+            "estimate": estimate_learning(session, book),
+            "routes": [resolve_node_endpoint(node_id, llm_client=client).as_dict() for node_id in LEARN_NODE_IDS],
+        },
+        req_id=_req_id(request),
+    )
+
+
+@router.post(f"{PATH_PREFIX}/books/{{book_id}}/learn/cancel")
+def cancel_book_learning(
+    book_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    """取消这本书排队 / 运行中的学习作业(排队中或工人已死的在这个请求里收尾;运行中的在下一个检查点收尾)。
+    之后可以「继续学习」(``POST …/learn {"resume": true}``)从游标续上。"""
+
+    def _do() -> dict[str, Any]:
+        if StyleReferenceRepository(session).get_book(book_id) is None:
+            raise DomainError(
+                "STYLE_REFERENCE_BOOK_NOT_FOUND",
+                f"book {book_id!r} not found",
+                status_code=404,
+            )
+        job = cancel_learn(session, book_id)
+        if job is None:
+            raise DomainError(
+                LEARN_NOT_ACTIVE_CODE,
+                "这本书没有正在排队或运行的学习。",
+                status_code=409,
+                details={"book_id": book_id},
+            )
+        return {
+            "book_id": book_id,
+            "job_id": job.job_id,
+            "state": job.state,
+            "cancel_requested": True,
+            "finished": job.state == "cancelled",
+        }
+
+    return idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template=f"{PATH_PREFIX}/books/{{book_id}}/learn/cancel",
+        payload={"book_id": book_id},
+        action=_do,
     )
 
 
@@ -967,8 +969,8 @@ def list_book_runs(
     status: str | None = None,
     session: Session = Depends(get_session),
 ):
-    """列出某书的抽取 run(最新在前)。前端维度矩阵据此在合成画像前定位最新 run
-    及其 findings(无 list-runs 时只能从 profile.run_id 反推,合成前拿不到)。"""
+    """列出某书的抽取 run(最新在前)。v3 起 run 行只作学习作业的血缘(``dispatch_state="learn_job"``),
+    矩阵据此找到文风卡行依据的发现与证据;进度在作业行上(``GET …/learn`` / 活动清单)。"""
     repo = StyleReferenceRepository(session)
     runs = repo.list_runs(book_id=book_id, status=status)
     runs = sorted(runs, key=lambda r: (r.created_at or "", r.run_id), reverse=True)
@@ -993,61 +995,6 @@ def get_run(
             status_code=404,
         )
     return ok({"run": _serialize_run(run)}, req_id=_req_id(request))
-
-
-@router.post(f"{PATH_PREFIX}/runs/{{run_id}}/cancel")
-def cancel_run(
-    run_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    def _do() -> dict[str, Any]:
-        repo = StyleReferenceRepository(session)
-        run = repo.get_run(run_id)
-        if run is None:
-            raise DomainError(
-                "STYLE_REFERENCE_RUN_NOT_FOUND",
-                f"run {run_id!r} not found",
-                status_code=404,
-            )
-        # 取消只对 pending/running 有意义。已取消的重复取消是幂等 no-op(不重写 finished_at);
-        # done/failed 是终态:改写成 cancelled 会让已合成的 profile 挂在「被取消」的 run 上,
-        # 也抹掉 failed 的 error_code/retryable——按场景 run-job 的 RUN_JOB_CANCEL_CONFLICT 契约回 409。
-        if run.status == RunStatus.CANCELLED.value:
-            return {"run_id": run_id, "status": run.status}
-        if run.status not in {RunStatus.PENDING.value, RunStatus.RUNNING.value}:
-            raise DomainError(
-                "STYLE_REFERENCE_RUN_CANCEL_CONFLICT",
-                f"run {run_id!r} already finished with status {run.status!r} and cannot be cancelled",
-                status_code=409,
-                details={"run_id": run_id, "status": run.status},
-            )
-        updated = repo.update_run(
-            run_id,
-            status=RunStatus.CANCELLED.value,
-            dispatch_state="cancelled",
-            heartbeat_at=utcnow(),
-            finished_at=utcnow(),
-            retryable=False,
-        )
-        if updated is None:  # get_run 刚命中同一行；只有并发删除才会走到这里
-            raise DomainError(
-                "STYLE_REFERENCE_RUN_NOT_FOUND",
-                f"run {run_id!r} disappeared while being cancelled",
-                status_code=404,
-                details={"run_id": run_id},
-            )
-        return {"run_id": run_id, "status": updated.status}
-
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/runs/{{run_id}}/cancel",
-        payload={"run_id": run_id},
-        action=_do,
-    )
 
 
 @router.get(f"{PATH_PREFIX}/runs/{{run_id}}/findings")
@@ -1081,266 +1028,25 @@ def list_run_findings(
             evidence_map.setdefault(e.finding_id, []).append(
                 {
                     "evidence_id": e.evidence_id,
+                    "quote_id": e.quote_id,
                     "anchor_kind": e.anchor_kind,
-                    "is_synthetic": e.is_synthetic,
                     "quote_text": quote.quote_text if quote else "",
                     "paragraph_id": quote.paragraph_id if quote else None,
                     "span": [quote.span_start, quote.span_end] if quote else None,
                 }
             )
-    # 立项 B — 批量取当前 operator 的票,回显投票高亮(跨刷新持久)
-    vote_map = repo.operator_votes_for_findings(
-        [f.finding_id for f in findings], _actor(request)
-    )
     return ok(
         {
             "findings": [
                 _serialize_finding(
                     f,
-                    evidence=(
-                        evidence_map.get(f.finding_id, [])
-                        if evidence_map is not None
-                        else None
-                    ),
-                    user_vote=vote_map.get(f.finding_id),
+                    evidence=(evidence_map.get(f.finding_id, []) if evidence_map is not None else None),
                 )
                 for f in findings
             ]
         },
         req_id=_req_id(request),
     )
-
-
-# ---------------------------------------------------------------------------
-# Findings review
-# ---------------------------------------------------------------------------
-
-
-@router.post(f"{PATH_PREFIX}/findings/{{finding_id}}/review")
-def review_finding(
-    finding_id: str,
-    payload: FindingReviewRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json")
-
-    def _do() -> dict[str, Any]:
-        repo = StyleReferenceRepository(session)
-        finding = repo.get_finding(finding_id)
-        if finding is None:
-            raise DomainError(
-                "STYLE_REFERENCE_FINDING_NOT_FOUND",
-                f"finding {finding_id!r} not found",
-                status_code=404,
-            )
-        decision = body["decision"]
-        if decision not in ("approved", "rejected", "pending"):
-            raise DomainError(
-                "STYLE_REFERENCE_REVIEW_DECISION_INVALID",
-                f"decision {decision!r} not allowed",
-                status_code=400,
-            )
-        previous_status = finding.status
-        # 创建或 update ReviewItem(prefix `review_style_ref_finding_`)
-        review_id = f"review_style_ref_finding_{finding_id[-12:]}"
-        existing = session.get(ReviewItem, review_id)
-        if existing is None:
-            review = ReviewItem(
-                review_id=review_id,
-                item_type=(
-                    "banned_rule_cluster"
-                    if finding.finding_kind == "forbidden_pattern"
-                    else "style_observation"
-                ),
-                status=decision,
-                candidate_text=finding.statement,
-                candidate_payload_json={
-                    "source": "style_reference_finding_review",
-                    "finding_id": finding_id,
-                    "sub_dimension": finding.sub_dimension,
-                    "finding_kind": finding.finding_kind,
-                    "comment": body.get("comment"),
-                },
-                active_on_approve=0,
-            )
-            session.add(review)
-        else:
-            existing.status = decision
-            existing.candidate_payload_json = {
-                **(existing.candidate_payload_json or {}),
-                "comment": body.get("comment"),
-            }
-        # 反向更新 finding.review_id + status
-        repo.update_finding(finding_id, review_id=review_id, status=decision)
-        invalidated_profile_ids = _invalidate_profiles_after_finding_membership_change(
-            repo,
-            finding,
-            previous_status=previous_status,
-            next_status=decision,
-        )
-        session.flush()
-        return {
-            "finding_id": finding_id,
-            "review_id": review_id,
-            "decision": decision,
-            "invalidated_profile_ids": invalidated_profile_ids,
-        }
-
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/findings/{{finding_id}}/review",
-        payload={"finding_id": finding_id, **body},
-        action=_do,
-    )
-
-
-@router.post(f"{PATH_PREFIX}/findings/{{finding_id}}/user-feedback")
-def user_feedback_finding(
-    finding_id: str,
-    payload: FindingFeedbackRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """立项 B — finding 用户反馈(👍/👎)聚合 → 调档 confidence。一人一票(幂等)。"""
-    body = payload.model_dump(mode="json")
-
-    def _do() -> dict[str, Any]:
-        from novel_system.services.style_reference.finding_feedback import (
-            apply_feedback,
-        )
-
-        return apply_feedback(
-            session, finding_id, operator_ref=_actor(request), vote=body["vote"]
-        )
-
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/findings/{{finding_id}}/user-feedback",
-        # operator_ref 入幂等 payload:幂等记录按 (finding, operator) 分区,
-        # 避免不同用户相同 finding+vote 共享幂等键导致误归因重放。
-        payload={"finding_id": finding_id, "operator_ref": _actor(request), **body},
-        action=_do,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Synthesize
-# ---------------------------------------------------------------------------
-
-
-@router.post(f"{PATH_PREFIX}/runs/{{run_id}}/synthesize")
-def synthesize_profile(
-    run_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    # 进度 + 活跃守卫(2026-09-15):合成是几分钟的同步请求,按幂等键登记阶段;同书已有一份
-    # 在合成时拒绝再起(刷新页面后再点一次曾会并发跑第二份,各写一份画像)。
-    op_key = request.headers.get("X-Idempotency-Key")
-    existing_run = StyleReferenceRepository(session).get_run(run_id)
-    progress = start_import_progress(None)
-    if existing_run is not None:
-        active = find_running_operation(kind="synthesize", book_id=existing_run.book_id)
-        if active is not None and active.get("op_key") != (op_key or ""):
-            raise DomainError(
-                "STYLE_REFERENCE_SYNTHESIS_ALREADY_ACTIVE",
-                "这本书已有正在进行的画像合成,请等它完成后再合成",
-                status_code=409,
-                details={
-                    "op_key": active.get("op_key"),
-                    "run_id": active.get("target_id"),
-                    "book_id": existing_run.book_id,
-                },
-            )
-        existing_book = StyleReferenceRepository(session).get_book(existing_run.book_id)
-        progress = start_import_progress(
-            op_key,
-            kind="synthesize",
-            title=existing_book.title if existing_book is not None else None,
-            source="synthesize",
-            book_id=existing_run.book_id,
-            target_id=run_id,
-        )
-    outcome: dict[str, Any] = {}
-
-    def _do() -> dict[str, Any]:
-        repo = StyleReferenceRepository(session)
-        run = repo.get_run(run_id)
-        if run is None:
-            raise DomainError(
-                "STYLE_REFERENCE_RUN_NOT_FOUND",
-                f"run {run_id!r} not found",
-                status_code=404,
-            )
-        client, enabled = _get_llm_client_and_enabled()
-        synth = ProfileSynthesizer(
-            session, llm_client=client, llm_enabled=enabled, progress=progress
-        )
-        profile = synth.synthesize(run.book_id, run_id)
-        outcome["profile_id"] = profile.profile_id
-        # FE-ALIGN P5：风格学习完成 → 全局 decision 卡（任一作品的收件箱可见；
-        # 「应用到本项目」effect 在 resolve 时以当前作品为 scope 执行绑定）
-        try:
-            from novel_system.services.review_cards import ReviewCardService
-
-            profile_json = profile.profile_json or {}
-            summary = generation_safe_summary(profile_json)
-            ReviewCardService(session).create_card(
-                {
-                    "project_id": None,
-                    "kind": "decision",
-                    "priority": 1,
-                    "title": f"参考画像「{profile.title}」是否应用到本项目",
-                    "source": "风格参考",
-                    "where": "风格参考 · 刚学完",
-                    "detail": (summary[:200] + ("…" if len(summary) > 200 else ""))
-                    or "画像已合成，可应用为写作润色基线，可随时关闭。",
-                    "dedupe_key": f"style-profile:{profile.profile_id}",
-                    "actions": [
-                        {
-                            "label": "应用到本项目",
-                            "intent": "primary",
-                            "op": "resolve",
-                            "effect": {
-                                "type": "bind_style_profile",
-                                "profile_id": profile.profile_id,
-                            },
-                        },
-                        {
-                            "label": "先去看画像",
-                            "intent": "ghost",
-                            "op": "nav",
-                            "nav_to": "styleref",
-                        },
-                        {"label": "丢弃", "intent": "quiet", "op": "resolve"},
-                    ],
-                },
-                actor_ref="style_reference",
-            )
-        except Exception:  # 卡片失败不阻塞画像合成
-            logger.exception("style profile decision card creation failed")
-        return {"profile": _serialize_profile(profile)}
-
-    try:
-        response = idempotent_response(
-            request,
-            session,
-            method="POST",
-            path_template=f"{PATH_PREFIX}/runs/{{run_id}}/synthesize",
-            payload={"run_id": run_id},
-            action=_do,
-        )
-    except BaseException as exc:
-        progress.fail(code=_error_code_of(exc), message=str(exc))
-        raise
-    progress.succeed(profile_id=outcome.get("profile_id"))
-    return response
 
 
 # ---------------------------------------------------------------------------
@@ -1378,6 +1084,35 @@ def get_profile(
             status_code=404,
         )
     return ok({"profile": _serialize_profile(profile)}, req_id=_req_id(request))
+
+
+@router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}")
+def set_profile_card_line_state(
+    profile_id: str,
+    line_id: str,
+    payload: CardLineStateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """文风卡一句的 ✓ / ✗:``{"state": "pinned"|"excluded"|null}``(台账 U3)。
+
+    原子地改 ``profile_json.card_line_states`` 里这一句的状态,不重新合成、不改画像状态(以前 ✗ 一条发现会把整份
+    画像打回 draft,绑定它的作品随即没了风格参考)。画像没有文风卡 409 ``STYLE_REFERENCE_PROFILE_HAS_NO_CARD``;
+    句子不在卡上 404 ``STYLE_REFERENCE_CARD_LINE_NOT_FOUND``。
+    """
+    state = payload.state
+
+    def _do() -> dict[str, Any]:
+        return set_card_line_state(session, profile_id, line_id, state)
+
+    return idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}",
+        payload={"profile_id": profile_id, "line_id": line_id, "state": state},
+        action=_do,
+    )
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/preview")
@@ -1439,21 +1174,8 @@ def apply_profile(
             task_type=task_type,
             strategy=strategy,
             config_json=payload.injection_config() or None,
-            # 2026-09-15:索引在提交后由后台 worker 建(见 _dispatch),不占请求与写锁
-            build_rag_index=False,
         )
-        return {
-            "profile_id": result.profile_id,
-            "binding_id": result.binding_id,
-            "rag_index": result.rag_index,
-        }
-
-    def _dispatch(result: dict[str, Any]) -> None:
-        rag_index = dict(result.get("rag_index") or {})
-        start_style_reference_rag_index_worker(
-            profile_id=str(result.get("profile_id") or profile_id),
-            book_id=rag_index.get("book_id") or None,
-        )
+        return {"profile_id": result.profile_id, "binding_id": result.binding_id}
 
     return idempotent_response(
         request,
@@ -1462,7 +1184,6 @@ def apply_profile(
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/apply",
         payload={"profile_id": profile_id, **body},
         action=_do,
-        after_commit=_dispatch,
     )
 
 

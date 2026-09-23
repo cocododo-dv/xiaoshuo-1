@@ -1,10 +1,9 @@
-"""PR-1 范围:全枚举 + 11 张新表 row-shape Pydantic 契约。
+"""风格参考的枚举与请求 / 响应契约（Pydantic）。
 
-仅落地与 ORM 列 1:1 的 Row 模型 + 所有枚举(后续 PR 命名约束基线)。
-高阶契约 InjectionRequest / InjectionBundle / SystemPromptFragments /
-ValidateRequest / ValidationReport / SemanticReport 等推迟到对应 PR。
-
-依据《风格参考模块重构执行手册 v1.1》§4 / §5.1 / §5.2 / §6.5 / §7。
+2026-09-23（v3 P3）：删掉从未被使用的 11 个 Row 模型、未用的枚举（FeedbackVote / BookStatus / ExtractionStatus /
+FindingStatus / InputAssessmentLevel）与旧学习链路的契约（ExtractionFindingInput / ExtractionOutput /
+SupplementEvidenceOutput / SynthesizedProfile / ProfileSubDimensionSummary）；学习作业的输出校验在
+``learn_extract`` / ``learn_card`` 里。
 """
 
 from __future__ import annotations
@@ -16,9 +15,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from novel_system.services.style_reference.errors import EvidenceShortError
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -54,46 +51,12 @@ class AnchorKind(str, Enum):
     COUNTER_EXAMPLE = "counter_example"
 
 
-class ConfidenceLevel(str, Enum):
-    """finding / sub_dimension 置信度。来源:§4.3 profile_json.sub_dimensions。"""
-
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-
-
-class BookStatus(str, Enum):
-    PENDING = "pending"
-    INGESTING = "ingesting"
-    READY = "ready"
-    FAILED = "failed"
-
-
-class ExtractionStatus(str, Enum):
-    PENDING = "pending"
-    DONE = "done"
-    FAILED = "failed"
-
-
 class ExtractionPurpose(str, Enum):
     """两级重试链路追溯。来源:§4.3 extractions.purpose / §6.6。"""
 
     EXTRACT = "extract"
     SUPPLEMENT_EVIDENCE = "supplement_evidence"
     FULL_RETRY = "full_retry"
-
-
-class FindingStatus(str, Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-
-
-class FeedbackVote(str, Enum):
-    """立项 B — finding 用户反馈票向。来源:style_reference_finding_feedback.vote。"""
-
-    UP = "up"
-    DOWN = "down"
 
 
 class RunStatus(str, Enum):
@@ -184,15 +147,6 @@ class BannedTermScope(str, Enum):
     EXTRACTION = "extraction"
 
 
-class InputAssessmentLevel(str, Enum):
-    """来源:§6.4 assess_input_size。"""
-
-    SKIP = "skip"
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-
-
 class CloudPolicy(str, Enum):
     """沿用 services/reference_learning.py:36 SUPPORTED_CLOUD_POLICIES 的三档,
     与旧路由、旧前端、跨模块 mock 测试字面值一致。
@@ -207,183 +161,12 @@ class CloudPolicy(str, Enum):
 
 
 # ---------------------------------------------------------------------------
-# 11 张新表 row-shape Pydantic(字段与 ORM 列 1:1)
-# ---------------------------------------------------------------------------
-
-
-class _StyleReferenceRowBase(BaseModel):
-    """所有 row 模型基类:允许从 ORM 实例直接 model_validate。"""
-
-    model_config = ConfigDict(from_attributes=True, use_enum_values=True, extra="forbid")
-
-
-class StyleReferenceBookRow(_StyleReferenceRowBase):
-    book_id: str
-    title: str
-    author_label: str | None = None
-    source_kind: str
-    source_path: str | None = None
-    cloud_policy: CloudPolicy
-    text_checksum: str
-    total_chars: int = 0
-    status: BookStatus = BookStatus.PENDING
-    stats_json: dict[str, Any] = Field(default_factory=dict)
-    created_at: str
-    updated_at: str
-
-
-class StyleReferenceParagraphRow(_StyleReferenceRowBase):
-    paragraph_id: str
-    book_id: str
-    paragraph_index: int
-    paragraph_type: ParagraphType
-    start_offset: int
-    end_offset: int
-    text: str
-    char_count: int
-    classifier_confidence: float
-    created_at: str
-
-
-class StyleReferenceExtractionRow(_StyleReferenceRowBase):
-    extraction_id: str
-    book_id: str
-    run_id: str
-    layer: str
-    sub_dimension: str
-    llm_call_id: str | None = None
-    raw_payload_json: dict[str, Any] = Field(default_factory=dict)
-    status: ExtractionStatus = ExtractionStatus.PENDING
-    validation_errors_json: list[dict[str, Any]] = Field(default_factory=list)
-    purpose: ExtractionPurpose = ExtractionPurpose.EXTRACT
-    created_at: str
-    updated_at: str
-
-
-class StyleReferenceQuoteRow(_StyleReferenceRowBase):
-    quote_id: str
-    book_id: str
-    paragraph_id: str | None = None
-    span_start: int
-    span_end: int
-    quote_text: str
-    illustrates_dims: list[str] = Field(default_factory=list)
-    extracted_features: dict[str, Any] = Field(default_factory=dict)
-    created_at: str
-
-
-class StyleReferenceEvidenceRow(_StyleReferenceRowBase):
-    evidence_id: str
-    finding_id: str
-    quote_id: str
-    anchor_kind: AnchorKind
-    is_synthetic: int = 0
-    created_at: str
-
-
-class StyleReferenceFindingRow(_StyleReferenceRowBase):
-    finding_id: str
-    book_id: str
-    run_id: str
-    extraction_id: str
-    sub_dimension: str
-    finding_kind: FindingKind
-    statement: str
-    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
-    status: FindingStatus = FindingStatus.PENDING
-    review_id: str | None = None
-    created_at: str
-    updated_at: str
-
-
-class StyleReferenceRunRow(_StyleReferenceRowBase):
-    run_id: str
-    book_id: str
-    status: RunStatus = RunStatus.PENDING
-    phase: RunPhase = RunPhase.INGEST
-    dispatch_state: str = "completed"
-    requested_layers_json: list[str] = Field(default_factory=list)
-    coverage_json: dict[str, Any] = Field(default_factory=dict)
-    heartbeat_at: str | None = None
-    error_code: str | None = None
-    error_text: str | None = None
-    retryable: bool = False
-    started_at: str | None = None
-    finished_at: str | None = None
-    created_at: str
-    updated_at: str
-
-
-class StyleReferenceProfileRow(_StyleReferenceRowBase):
-    profile_id: str
-    book_id: str
-    run_id: str
-    title: str
-    status: ProfileStatus = ProfileStatus.DRAFT
-    profile_json: dict[str, Any] = Field(default_factory=dict)
-    coverage_json: dict[str, Any] = Field(default_factory=dict)
-    source_finding_ids_json: list[str] = Field(default_factory=list)
-    version_tag: str | None = None
-    created_at: str
-    updated_at: str
-
-
-class StyleReferenceInjectionBindingRow(_StyleReferenceRowBase):
-    binding_id: str
-    profile_id: str
-    scope: BindingScope
-    scope_ref_id: str | None = None
-    task_type: TaskType
-    strategy: InjectionStrategy
-    config_json: dict[str, Any] = Field(default_factory=dict)
-    status: BindingStatus = BindingStatus.ACTIVE
-    created_at: str
-    updated_at: str
-
-
-class StyleReferenceValidationReportRow(_StyleReferenceRowBase):
-    report_id: str
-    profile_id: str
-    target_kind: ValidationTargetKind
-    target_ref_id: str | None = None
-    verdict: ValidationVerdict
-    status: str = "completed"
-    error_code: str | None = None
-    error_text: str | None = None
-    retryable: bool = False
-    started_at: str | None = None
-    heartbeat_at: str | None = None
-    finished_at: str | None = None
-    quantitative_json: list[dict[str, Any]] = Field(default_factory=list)
-    semantic_json: list[dict[str, Any]] = Field(default_factory=list)
-    plagiarism_json: dict[str, Any] = Field(default_factory=dict)
-    forbidden_hits_json: list[dict[str, Any]] = Field(default_factory=list)
-    mode_executed: ValidationMode = ValidationMode.ASYNC_FULL
-    created_at: str
-
-
-class StyleReferenceBannedTermRow(_StyleReferenceRowBase):
-    term_id: str
-    profile_id: str
-    term: str
-    replacement_hint: str | None = None
-    source: str
-    scope: BannedTermScope = BannedTermScope.GENERATION
-    created_at: str
-    updated_at: str
-
-
-# ---------------------------------------------------------------------------
-# PR-3 抽取契约(LLM 响应解析与重试链路使用)
+# 证据引文(学习作业的逐字核对:``evidence.align_*`` 的输入输出)
 # ---------------------------------------------------------------------------
 
 
 class ExtractionEvidenceInput(BaseModel):
-    """单条 evidence,LLM 响应中 observations[i].evidence[j] 的解析目标。
-
-    PR-3 §6.5:每条 finding ≥ 2 evidence(在 ExtractionFindingInput 处校验)。
-    `anchor_kind=counter_example` 的合成 evidence 允许 `paragraph_id=None`。
-    """
+    """一条证据引文:段落 id + 原文坐标 + 逐字引文(学习作业只产出 ``paragraph_quote``)。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -396,93 +179,9 @@ class ExtractionEvidenceInput(BaseModel):
     is_synthetic: int = 0
 
 
-class ExtractionFindingInput(BaseModel):
-    """单条 finding(observation 或 forbidden_pattern)。
-
-    `@model_validator(mode="after")` 强制 evidence ≥ 2;失败 raise
-    `EvidenceShortError`(StyleReferenceError 子类),由 BaseExtractor 捕获并进入
-    两级重试链路(详见 §6.6)。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    statement: str = Field(min_length=1)
-    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
-    finding_kind: FindingKind
-    evidence: list[ExtractionEvidenceInput] = Field(default_factory=list)
-    sub_dimension: str  # SubDimension.value;在 base.py 注入
-
-    @model_validator(mode="after")
-    def _check_evidence_count(self) -> "ExtractionFindingInput":
-        if len(self.evidence) < 2:
-            raise EvidenceShortError(
-                finding_ref=f"{self.sub_dimension}::{self.statement[:24]}",
-                evidence_count=len(self.evidence),
-            )
-        return self
-
-
-class ExtractionOutput(BaseModel):
-    """LLM 抽取响应 structured_output 的顶层结构。
-
-    校准契约:observations 0-6 条,forbidden_patterns 0-2 条。BaseExtractor 解析
-    LLM 响应时把 structured_output 通过 `ExtractionOutput.model_validate(...)`
-    转入;Pydantic 错误由 BaseExtractor 捕获并按重试链路处理。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    observations: list[ExtractionFindingInput] = Field(default_factory=list, max_length=6)
-    forbidden_patterns: list[ExtractionFindingInput] = Field(default_factory=list, max_length=2)
-
-
-class SupplementEvidenceOutput(BaseModel):
-    """`style_ref_supplement_evidence` LLM 节点返回结构。
-
-    第一级重试调用:为某条 finding 定向补抽 ≥1 条新 evidence。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    additional_evidence: list[ExtractionEvidenceInput] = Field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
-# PR-4 契约:synthesize / validation 简化版 / preview
+# PR-4 契约:validation 简化版 / preview
 # ---------------------------------------------------------------------------
-
-
-class ProfileSubDimensionSummary(BaseModel):
-    """profile.profile_json.sub_dimensions[sub_dim_path] 的结构。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
-    observation_count: int = 0
-    forbidden_pattern_count: int = 0
-    quote_count: int = 0
-
-
-class SynthesizedProfile(BaseModel):
-    """`style_ref_synthesize_profile` LLM 节点返回结构。
-
-    与 PR-1 落地的 StyleReferenceProfile.profile_json 字段对齐;PR-4
-    profile_synthesizer 在外层补充 metrics_baseline / scene_samples_index /
-    sub_dimensions(从 findings + stats_json 聚合,非 LLM 产出)。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    profile_title: str = Field(min_length=1)
-    narrative_summary: str = Field(min_length=1)
-    # style_features / narrative_patterns 是注入文本的直接素材:为空的 Profile
-    # 是废品,宁可 SynthesizeError 硬失败让作者重跑,不让空画像进 ready 状态。
-    # banned_replication_rules / calibration_guidance 保持宽松:全书
-    # forbidden_patterns 合法可为 0,不逼模型编造禁令。
-    style_features: list[str] = Field(min_length=1)
-    narrative_patterns: list[str] = Field(min_length=1)
-    banned_replication_rules: list[str] = Field(default_factory=list)
-    calibration_guidance: list[str] = Field(default_factory=list)
 
 
 # --- Validation 简化版(PR-4 范围;PR-7 加完整 quantitative / semantic)

@@ -6,12 +6,8 @@ from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.evidence import (
     align_evidence_to_paragraph_lookup,
     align_paragraph_evidence,
-    validate_evidence_spans,
 )
-from novel_system.services.style_reference.schemas import (
-    ExtractionEvidenceInput,
-    ExtractionFindingInput,
-)
+from novel_system.services.style_reference.schemas import ExtractionEvidenceInput
 from novel_system.services.style_reference.text_utils import compact_ws
 
 
@@ -66,26 +62,18 @@ def test_ambiguous_short_quote_requires_a_matching_span() -> None:
     assert aligned.span == (second, second + len("点头"))
 
 
-def test_finding_validation_persists_canonical_raw_quotes_and_spans() -> None:
-    raw = "  一盏灯\n慢慢地亮。另一扇门\t悄悄合上。"
-    finding = ExtractionFindingInput(
-        statement="空白被压缩后仍可引用",
-        finding_kind="observation",
-        sub_dimension="language.sentence_structure",
-        evidence=[
-            _evidence("一盏灯 慢慢地亮", (0, 0)),
-            _evidence("另一扇门 悄悄合上", (0, 0)),
-        ],
-    )
-
-    validate_evidence_spans(finding, {"p1": raw})
-
-    assert all(item.span is not None for item in finding.evidence)
-    assert all(raw[slice(*item.span)] == item.quote for item in finding.evidence if item.span)
-    assert [compact_ws(item.quote) for item in finding.evidence] == [
-        "一盏灯 慢慢地亮",
-        "另一扇门 悄悄合上",
-    ]
+def test_aligned_quotes_are_canonical_raw_slices_even_past_the_old_600_char_view() -> None:
+    """学习作业送整段:对齐器按调用方给的可见长度核对,引文坐标是库里原文的坐标。"""
+    raw = "  一盏灯\n慢慢地亮。" + "雨下个不停。" * 120 + "另一扇门\t悄悄合上。"
+    lookup = {"p1": raw}
+    first = align_evidence_to_paragraph_lookup(_evidence("一盏灯 慢慢地亮", (0, 0)), lookup, prompt_char_limit=100_000)
+    late = align_evidence_to_paragraph_lookup(_evidence("另一扇门 悄悄合上", (0, 0)), lookup, prompt_char_limit=100_000)
+    assert first is not None and late is not None
+    for item in (first, late):
+        assert item.span is not None and raw[slice(*item.span)] == item.quote
+    assert compact_ws(late.quote) == "另一扇门 悄悄合上"
+    # 旧的 600 字可见窗口外的引文对不上(模型没看到那一段)
+    assert align_evidence_to_paragraph_lookup(_evidence("另一扇门 悄悄合上", (0, 0)), lookup) is None
 
 
 def test_missing_paragraph_id_is_recovered_only_from_a_unique_paragraph() -> None:
@@ -150,9 +138,8 @@ def test_all_extraction_prompts_require_contiguous_verbatim_evidence() -> None:
         "style_ref_extract_narrative",
         "style_ref_extract_scene",
         "style_ref_extract_theme",
-        "style_ref_supplement_evidence",
     ):
         prompt = templates[name].system_prompt
-        assert "单段、连续、逐字一致" in prompt
-        assert "paragraph_id" in prompt and "原样复制" in prompt
-        assert "text[start:end]" in prompt and "quote" in prompt
+        assert "连续、逐字一致" in prompt
+        assert "【p】" in prompt and "不拼接" in prompt and "不加省略号" in prompt
+    assert "style_ref_supplement_evidence" not in templates

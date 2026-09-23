@@ -64,6 +64,7 @@ async def _lifespan(_app: FastAPI):
     # 先清扫一次(心跳过期的 running → queued)并派发全部排队作业,之后每 30 s 一次——重启 /
     # --reload 留下的作业不需要人工介入。
     from novel_system.services.style_reference import import_job  # noqa: F401 — 注册 classify 处理器
+    from novel_system.services.style_reference import learn_job  # noqa: F401 — 注册 learn 处理器
     from novel_system.services.style_reference.jobs import (
         shutdown_job_workers,
         start_job_sweeper,
@@ -73,9 +74,6 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        from novel_system.services.style_reference.run_orchestrator import (
-            shutdown_style_reference_run_executor,
-        )
         from novel_system.services.style_reference.validation.runner import (
             shutdown_style_reference_validation_executor,
         )
@@ -85,7 +83,6 @@ async def _lifespan(_app: FastAPI):
         )
 
         shutdown_job_workers(wait=False)
-        shutdown_style_reference_run_executor(wait=False)
         shutdown_style_reference_validation_executor(wait=False)
         shutdown_style_reference_rag_index_executor(wait=False)
 

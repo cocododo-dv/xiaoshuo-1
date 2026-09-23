@@ -1014,3 +1014,25 @@ def test_startup_marks_books_left_by_the_old_cursor_state_machine_as_failed(sess
     assert sorted(fixed) == sorted([orphan_a, orphan_b])
     assert _book(orphan_a).status == _book(orphan_b).status == "failed"
     assert _book(live_book).status == "ingesting"
+
+
+def test_reclassify_and_retype_are_refused_while_a_learn_job_is_active(client: TestClient, monkeypatch) -> None:
+    """学习文风作业在读这本书的段落类型：它排队或运行时，重分类 / 就地重标 / 继续分类一律 409。"""
+    from novel_system.services.style_reference.jobs import JOB_KIND_LEARN, StyleJobService
+
+    fake = install_fake_classifier(monkeypatch, ScriptedClassifier())
+    book_id = import_book(client, key="learn-guard-import", text=LONG_TEXT, fake=fake)
+    with SessionLocal() as session:
+        learn = StyleJobService(session).create(JOB_KIND_LEARN, book_id=book_id)
+        session.commit()
+        learn_id = learn.job_id
+    for key, body in (("lg-retype", {"mode": "retype"}), ("lg-destructive", {}), ("lg-resume", {"resume": True})):
+        resp = client.post(f"{PREFIX}/books/{book_id}/reclassify", json=body, headers={"X-Idempotency-Key": key})
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["error"]["code"] == "STYLE_REFERENCE_BOOK_LEARNING"
+        assert resp.json()["error"]["details"]["job_id"] == learn_id
+    with SessionLocal() as session:
+        StyleJobService(session).request_cancel(learn_id)
+        session.commit()
+    ok = client.post(f"{PREFIX}/books/{book_id}/reclassify", json={"mode": "retype"}, headers={"X-Idempotency-Key": "lg-after"})
+    assert ok.status_code == 200, ok.text

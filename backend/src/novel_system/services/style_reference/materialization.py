@@ -1,22 +1,20 @@
 """MaterializationService — profile → binding 行编排(apply)。
 
-apply_profile 只做三件事:校验画像可用(存在 / 未失效 / 未归档)、按 scope 幂等落 binding、
-激活画像并幂等建 Strategy C 的 RAG 索引。生成期读的是 profile_json 与冻结进 bundle 的运行时契约,
-不再经过 ReviewItem(2026-09-14 减法:review_style_ref_apply_* / review_style_ref_calib_* 的
-物化与其早已删除的消费方 services/versioning/review_materialization 一起退役;cleanup 仍清理旧行)。
+apply_profile 只做两件事:校验画像可用(存在 / 未失效 / 未归档)、按 scope 幂等落 binding 并激活画像。
+生成期读的是 profile_json 与冻结进 bundle 的运行时契约,不经过 ReviewItem(2026-09-14 减法)。
+2026-09-23(v3 P3):应用画像不再建 Strategy C 的 RAG 索引(策略 C 由 P4 / P7 删除;注入路径上的惰性
+``ensure_rag_index`` 在删除之前照旧兜着)。绑定的创建方式由 P6(直接绑定)重做。
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ReviewItem
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.scene_planning_staleness import supersede_for_binding_scope
@@ -41,11 +39,10 @@ class MaterializeResult:
 
     profile_id: str
     binding_id: str
-    rag_index: dict[str, Any] = field(default_factory=dict)
 
 
 class MaterializationService:
-    """Profile → binding 行编排(激活画像 + 幂等建 RAG 索引)。"""
+    """Profile → binding 行编排(激活画像)。"""
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -60,7 +57,6 @@ class MaterializationService:
         task_type: TaskType | str = TaskType.SCENE_GENERATION,
         strategy: InjectionStrategy | str | None = None,
         config_json: dict[str, Any] | None = None,
-        build_rag_index: bool = True,
     ) -> MaterializeResult:
         """``config_json`` 落入 binding(intensity / sub_dimensions / include 开关),
         由 InjectionService._render 在注入时消费——前端强度滑块的端到端落点。"""
@@ -129,44 +125,7 @@ class MaterializationService:
         profile.status = ProfileStatus.ACTIVE.value
         self.session.flush()
 
-        # 5. v2 内容克制 RAG 索引就绪检查。新画像在 synthesize 时通常已建好；
-        #    老画像或曾中断的部分索引在 apply/re-apply 时自动、幂等升级。向量后端
-        #    属于增强能力，失败不得撤销已经合法完成的绑定与 ReviewItem 写入。
-        # 2026-09-15:``build_rag_index=False``(HTTP apply 与收件箱「批准应用」走这条)时,
-        # 绑定与激活照常落库,RAG 索引留给调用方在事务提交后交给后台 worker
-        # (``rag.start_style_reference_rag_index_worker``)——190 万字的书建索引要 35 秒,
-        # 不该占着 SQLite 写锁,也该在「参考书活动」面板里看得见。
-        if not build_rag_index:
-            return MaterializeResult(
-                profile_id=profile_id,
-                binding_id=binding_id,
-                rag_index={
-                    "status": "scheduled",
-                    "profile_id": profile.profile_id,
-                    "book_id": profile.book_id,
-                },
-            )
-        try:
-            from novel_system.services.style_reference.rag import ensure_rag_index
-
-            rag_index = ensure_rag_index(
-                self.session,
-                profile,
-                book_id=profile.book_id,
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "rag index ensure failed for profile %s",
-                profile.profile_id,
-                exc_info=True,
-            )
-            rag_index = {"skipped": "build_failed"}
-
-        return MaterializeResult(
-            profile_id=profile_id,
-            binding_id=binding_id,
-            rag_index=rag_index,
-        )
+        return MaterializeResult(profile_id=profile_id, binding_id=binding_id)
 
     # ------------------------------------------------------------- internals
 
@@ -206,14 +165,6 @@ class MaterializationService:
             status=BindingStatus.ACTIVE.value,
         )
         return binding.binding_id
-
-
-# ---------------------------------------------------------------------------
-# 辅助:finding → item_type 分发规则
-# ---------------------------------------------------------------------------
-
-
-
 
 
 def _enum_value(value: Any) -> str:

@@ -86,14 +86,17 @@ def test_style_analysis_defaults_are_stable_and_have_verified_output_headroom():
     """仓库 YAML 与系统设置的节点默认值必须同时保持确定性，避免同步后静默回退。"""
     root = Path(__file__).resolve().parents[2]
     routing = load_model_routing_config(root / "config" / "models.yaml")
+    # 2026-09-23 v3 学习文风作业:四层各一次读同一组 4 万字窗口、整张文风卡一次写完 → 16384;
+    # 专名 8192、窗口标签每批 8 窗 4096(关推理)
     expected = {
         "style_ref_paragraph_classify_bulk": 8192,
-        "style_ref_extract_language": 6400,
-        "style_ref_extract_narrative": 6400,
-        "style_ref_extract_scene": 6400,
-        "style_ref_extract_theme": 6400,
-        "style_ref_supplement_evidence": 3000,
-        "style_ref_synthesize_profile": 3500,
+        "style_ref_extract_language": 16384,
+        "style_ref_extract_narrative": 16384,
+        "style_ref_extract_scene": 16384,
+        "style_ref_extract_theme": 16384,
+        "style_ref_synthesize_profile": 16384,
+        "style_ref_protected_terms": 8192,
+        "style_ref_tag_windows": 4096,
     }
 
     for node_id, max_output_tokens in expected.items():

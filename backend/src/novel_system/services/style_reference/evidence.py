@@ -1,8 +1,7 @@
-"""Evidence span / quote 校验。
+"""Evidence span / quote 对齐：模型给的引文必须是原文里连续、逐字一致的一小段。
 
-§6.7 校验装饰器:任一 evidence.quote 不在段落 paragraph_id 对应文本中
-→ raise EvidenceSpanError。`anchor_kind=counter_example` 的合成 evidence
-允许 paragraph_id=None,跳过校验。
+学习作业（``learn_extract``）把模型给的「段号 + 引文」映射回原文坐标：先按给定的段对齐，失败时只允许在
+整个样本集里**唯一**反查；伪造、拼接、加省略号的引文一律对不上（返回 None）。
 """
 
 from __future__ import annotations
@@ -10,15 +9,10 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from novel_system.services.style_reference.errors import EvidenceSpanError
-from novel_system.services.style_reference.schemas import AnchorKind
 from novel_system.services.style_reference.text_utils import compact_ws
 
 if TYPE_CHECKING:
-    from novel_system.services.style_reference.schemas import (
-        ExtractionEvidenceInput,
-        ExtractionFindingInput,
-    )
+    from novel_system.services.style_reference.schemas import ExtractionEvidenceInput
 
 
 _MODEL_PARAGRAPH_CHAR_LIMIT = 600
@@ -114,12 +108,17 @@ def align_paragraph_evidence(
 def align_evidence_to_paragraph_lookup(
     evidence: ExtractionEvidenceInput,
     paragraph_lookup: dict[str, str],
+    *,
+    prompt_char_limit: int = _MODEL_PARAGRAPH_CHAR_LIMIT,
 ) -> ExtractionEvidenceInput | None:
-    """优先按显式 paragraph_id 对齐；失败时只允许跨段落唯一反查。"""
+    """优先按显式 paragraph_id 对齐；失败时只允许跨段落唯一反查。
+
+    ``prompt_char_limit`` 是模型实际看到的每段前多少字（学习作业送整段，传一个足够大的值）。
+    """
     if evidence.paragraph_id is not None:
         text = paragraph_lookup.get(evidence.paragraph_id)
         if text is not None:
-            direct = align_paragraph_evidence(evidence, text)
+            direct = align_paragraph_evidence(evidence, text, prompt_char_limit=prompt_char_limit)
             if direct is not None:
                 return direct
 
@@ -128,6 +127,7 @@ def align_evidence_to_paragraph_lookup(
         candidate = align_paragraph_evidence(
             evidence.model_copy(update={"paragraph_id": paragraph_id}),
             text,
+            prompt_char_limit=prompt_char_limit,
         )
         if candidate is not None:
             candidates.append(candidate)
@@ -170,31 +170,3 @@ def _all_occurrences(text: str, quote: str) -> list[tuple[int, int]]:
             return matches
         matches.append((index, index + len(quote)))
         start = index + 1
-
-
-def validate_evidence_spans(
-    finding: ExtractionFindingInput,
-    paragraph_lookup: dict[str, str],
-) -> None:
-    """对 finding 内每条 evidence 校验 quote 是否包含在对应段落文本内。
-
-    `paragraph_lookup`: {paragraph_id: paragraph_text}。
-    校验失败抛 `EvidenceSpanError`(StyleReferenceError 子类)。
-    """
-    aligned_evidence: list[ExtractionEvidenceInput] = []
-    for evidence in finding.evidence:
-        if evidence.anchor_kind in (
-            AnchorKind.COUNTER_EXAMPLE,
-            AnchorKind.AUTHOR_AVOIDANCE,
-        ):
-            aligned_evidence.append(evidence)
-            continue
-        aligned = align_evidence_to_paragraph_lookup(evidence, paragraph_lookup)
-        if aligned is None:
-            raise EvidenceSpanError(
-                paragraph_id=evidence.paragraph_id or "<missing>",
-                span=evidence.span or (0, 0),
-                quote_excerpt=evidence.quote,
-            )
-        aligned_evidence.append(aligned)
-    finding.evidence = aligned_evidence

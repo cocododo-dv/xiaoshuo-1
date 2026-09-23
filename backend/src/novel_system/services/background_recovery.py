@@ -33,13 +33,11 @@ from novel_system.services.errors import DomainError
 
 logger = logging.getLogger(__name__)
 
-STYLE_REFERENCE_RUN_STALE_MINUTES = 60
 VALIDATION_STARTUP_GRACE_SECONDS = 30
 STARTUP_RECOVERY_LEASE_SECONDS = 30
 
 SceneDispatch = Callable[[str], None]
 ChapterDispatch = Callable[[str, str, str | None], None]
-StyleDispatch = Callable[[str, str, list[str], Any], None]
 
 
 def recover_run_job_dispatches(
@@ -94,18 +92,13 @@ def recover_run_job_dispatches(
     }
 
 
-def recover_style_reference_dispatches(
-    session: Session,
-    *,
-    llm_client: Any | None,
-    llm_enabled: bool,
-    style_dispatch: StyleDispatch,
-    now: datetime | None = None,
-) -> dict[str, list[str]]:
-    """Re-dispatch never-started extraction runs; fail unsafe partial runs."""
+def retire_legacy_style_reference_runs(session: Session) -> list[str]:
+    """旧抽取流程(``RunOrchestrator``,2026-09-23 v3 P3 删除)留下的「运行中」run 标 failed。
 
-    current = now or datetime.now(UTC)
-    stale_before = current - timedelta(minutes=STYLE_REFERENCE_RUN_STALE_MINUTES)
+    学习文风作业的血缘 run(``dispatch_state="learn_job"``)不动:它们的状态由作业写。旧 run 不能续跑,
+    作者对这本书「学习文风」即可。
+    """
+
     rows = list(
         session.scalars(
             select(StyleReferenceRun).where(
@@ -114,57 +107,17 @@ def recover_style_reference_dispatches(
             )
         )
     )
-    queued: list[tuple[str, str, list[str]]] = []
     failed: list[str] = []
-    skipped_active: list[str] = []
     for run in rows:
-        if run.dispatch_state == "queued":
-            layers = [str(value) for value in (run.requested_layers_json or []) if str(value)]
-            if not layers:
-                changed = _fail_style_run(
-                    session,
-                    run,
-                    code="STYLE_REFERENCE_RUN_RECOVERY_METADATA_MISSING",
-                    message="queued extraction is missing requested layers; start a new run",
-                )
-                if changed:
-                    failed.append(run.run_id)
-            elif not llm_enabled or llm_client is None:
-                changed = _fail_style_run(
-                    session,
-                    run,
-                    code="STYLE_REFERENCE_LLM_REQUIRED_AFTER_RESTART",
-                    message="queued extraction could not restart because no LLM is configured",
-                )
-                if changed:
-                    failed.append(run.run_id)
-            else:
-                queued.append((run.run_id, run.book_id, layers))
-            continue
-
-        heartbeat = _parse_iso(run.heartbeat_at)
-        if heartbeat is not None and heartbeat > stale_before:
-            skipped_active.append(run.run_id)
-            continue
-        changed = _fail_style_run(
+        if _fail_style_run(
             session,
             run,
-            code="STYLE_REFERENCE_RUN_INTERRUPTED",
-            message="background extraction was interrupted; start a new run to retry",
-        )
-        if changed:
+            code="STYLE_REFERENCE_RUN_RETIRED",
+            message="旧的抽取流程已下线:请对这本书「学习文风」",
+        ):
             failed.append(run.run_id)
     session.commit()
-
-    dispatched: list[str] = []
-    for run_id, book_id, layers in queued:
-        style_dispatch(run_id, book_id, layers, llm_client)
-        dispatched.append(run_id)
-    return {
-        "queued_dispatched": dispatched,
-        "interrupted_failed": failed,
-        "active_heartbeat_skipped": skipped_active,
-    }
+    return failed
 
 
 def recover_validation_reports(
@@ -274,18 +227,12 @@ def run_startup_recovery() -> dict[str, Any]:
         logger.exception("startup recovery failed while sweeping expired cancel requests")
         summary["runtime_sweep"] = {"error": "scan_failed"}
 
-    llm_client, llm_enabled = _build_style_reference_llm_client()
     try:
         with SessionLocal() as session:
-            summary["style_reference_runs"] = recover_style_reference_dispatches(
-                session,
-                llm_client=llm_client,
-                llm_enabled=llm_enabled,
-                style_dispatch=_dispatch_style_reference,
-            )
+            summary["style_reference_legacy_runs_retired"] = retire_legacy_style_reference_runs(session)
     except Exception:  # pragma: no cover - startup boundary
-        logger.exception("startup recovery failed while scanning style-reference runs")
-        summary["style_reference_runs"] = {"error": "scan_failed"}
+        logger.exception("startup recovery failed while retiring legacy style-reference runs")
+        summary["style_reference_legacy_runs_retired"] = {"error": "scan_failed"}
 
     try:
         # 风格参考 v3:分类作业的续跑由作业表的常驻清扫线程负责(lifespan 里启动);这里只收拾
@@ -397,40 +344,6 @@ def _run_unscoped_chapter_job(job_id: str, chapter_id: str) -> None:
             logger.exception("recovered chapter job %s failed: %s", job_id, exc.code)
     except Exception:  # pragma: no cover - worker boundary
         logger.exception("recovered chapter job %s failed", job_id)
-
-
-def _dispatch_style_reference(
-    run_id: str,
-    book_id: str,
-    layers: list[str],
-    llm_client: Any,
-) -> None:
-    from novel_system.services.style_reference.run_orchestrator import (
-        start_style_reference_run_worker,
-    )
-
-    start_style_reference_run_worker(
-        run_id=run_id,
-        book_id=book_id,
-        layer_values=layers,
-        llm_client=llm_client,
-    )
-
-
-def _build_style_reference_llm_client() -> tuple[Any | None, bool]:
-    from novel_system.settings import get_settings
-
-    # get_settings 留在 try 外:settings 读取失败必须向上抛,只有构造失败才降级。
-    settings = get_settings()
-    if not settings.llm_enabled:
-        return None, False
-    try:
-        from novel_system.services.system_config import build_runtime_llm_client
-
-        return build_runtime_llm_client(settings=settings)
-    except Exception:  # pragma: no cover - invalid runtime configuration
-        logger.exception("style-reference recovery could not build its LLM client")
-        return None, False
 
 
 def _fail_style_run(

@@ -415,6 +415,7 @@ class IngestService:
             active_classification_job,
             count_paragraphs,
             create_classification_job,
+            ensure_not_learning,
         )
 
         if mode not in (MODE_RECLASSIFY, MODE_RETYPE):
@@ -429,6 +430,8 @@ class IngestService:
         )
         if count_paragraphs(self.session, book_id) == 0:
             raise EmptyBookError("reclassify")
+        # 学习文风在读这本书（破坏式重分类的清派生数据会连同它的作业行一起删掉）：先查、再清
+        ensure_not_learning(self.session, book_id)
         active = active_classification_job(self.session, book_id)
         if active is not None:
             # 先查再清:破坏式重分类不能把正在跑的分类作业连同派生数据一起删掉

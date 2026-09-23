@@ -1,19 +1,17 @@
-"""禁用词端到端契约:REST CRUD + extraction 域抽取过滤。
+"""禁用词端到端契约:REST CRUD + 生成域禁用词进红线段。
 
 补链路:此前 create_banned_term 无任何生产调用方——注入红线段的
 {banned_terms_list} 永远为空,前端禁用词编辑器只有本地 state。
+(2026-09-23 v3:抽取不再按禁用词过滤样本段——学习文风定稿时,作者录入的禁用词与受保护专名一起把文风卡里含这些词的
+句子滤掉,见 test_style_reference_learn_job.py。)
 """
 
 from __future__ import annotations
-
-import random
 
 from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
 from novel_system.db.session import SessionLocal
-from novel_system.services.style_reference.dimensions import SubDimension
-from novel_system.services.style_reference.extractors.language import LanguageExtractor
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 PREFIX = "/api/v2/style-reference"
@@ -206,58 +204,3 @@ def test_generation_banned_term_reaches_injection_redline() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_extraction_banned_term_filters_sample_paragraphs() -> None:
-    tainted = [f"潮汐之子站在第{i}块礁石上,望着退去的海水。" for i in range(5)]
-    clean = [f"他把第{i}枚铜板放回木匣,吹熄了油灯。" for i in range(5)]
-    book_id, profile_id = _seed_book_with_profile("filter", paragraphs=tainted + clean)
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_banned_term(
-            term_id="sr_term_bt_filter",
-            profile_id=profile_id,
-            term="潮汐之子",
-            replacement_hint=None,
-            source="user",
-            scope="extraction",
-        )
-        repo.create_run(run_id="sr_run_bt_filter_x", book_id=book_id, status="running", phase="extract")
-        session.commit()
-
-        extractor = LanguageExtractor(
-            session,
-            llm_client=None,
-            run_id="sr_run_bt_filter_x",
-            book_id=book_id,
-            rng=random.Random(7),
-        )
-        sampled = extractor._sample_paragraphs(SubDimension.LANGUAGE_SENTENCE_STRUCTURE)
-    assert sampled, "过滤后仍应有干净段落可采样"
-    assert all("潮汐之子" not in p.text for p in sampled)
-
-
-def test_generation_banned_term_does_not_filter_sampling() -> None:
-    """generation 域只影响生成期红线,不应影响抽取采样。"""
-    paragraphs = [f"潮汐之子第{i}次穿过盐场,没有回头。" for i in range(6)]
-    book_id, profile_id = _seed_book_with_profile("nofilter", paragraphs=paragraphs)
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_banned_term(
-            term_id="sr_term_bt_nofilter",
-            profile_id=profile_id,
-            term="潮汐之子",
-            replacement_hint=None,
-            source="user",
-            scope="generation",
-        )
-        repo.create_run(run_id="sr_run_bt_nofilter_x", book_id=book_id, status="running", phase="extract")
-        session.commit()
-
-        extractor = LanguageExtractor(
-            session,
-            llm_client=None,
-            run_id="sr_run_bt_nofilter_x",
-            book_id=book_id,
-            rng=random.Random(7),
-        )
-        sampled = extractor._sample_paragraphs(SubDimension.LANGUAGE_SENTENCE_STRUCTURE)
-    assert sampled

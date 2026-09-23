@@ -3,7 +3,7 @@
 `check_quantitative(generated_text, profile)`:
 1. 把 generated_text 包装成临时 paragraphs 列表(全部归 narration)
 2. MetricsEngine.compute_all → 逐项 metric
-3. 对照 profile.profile_json["metrics_baseline"](PR-4 ProfileSynthesizer 落)
+3. 对照 profile.profile_json["metrics_baseline"](学习文风作业落)
 4. tolerance = max(baseline_std × 1.25, ABSOLUTE_FLOORS[metric])
 5. 返 list[QuantitativeReportItem]
 

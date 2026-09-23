@@ -64,6 +64,8 @@ class CardLine(BaseModel):
     kind: Literal["do", "avoid"] = "do"
     source: str = "synthesis"
     evidence_quote_ids: list[str] = Field(default_factory=list)
+    # 这一句依据的抽取发现（矩阵据此把卡片行连到发现与证据；P3 学习作业写）
+    finding_ids: list[str] = Field(default_factory=list)
     distinctiveness: float = 0.5
     mandatory: bool = False
 

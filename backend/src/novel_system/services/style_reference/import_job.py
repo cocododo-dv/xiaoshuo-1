@@ -68,6 +68,7 @@ from novel_system.services.style_reference.jobs import (
     ACTIVE_STATES,
     JOB_FAILED_CODE,
     JOB_KIND_CLASSIFY,
+    JOB_KIND_LEARN,
     STATE_CANCELLED,
     STATE_FAILED,
     STATE_QUEUED,
@@ -181,6 +182,22 @@ def _raise_already_active(job: StyleReferenceJob, book_id: str) -> None:
     )
 
 
+BOOK_LEARNING_CODE = "STYLE_REFERENCE_BOOK_LEARNING"
+
+
+def ensure_not_learning(session: Session, book_id: str) -> None:
+    """学习文风作业在读这本书的段落类型（选样本、窗口段型构成、标签）：它在跑时不许重分类 / 就地重标，
+    否则学到一半的画像建立在两套类型上。"""
+    active = StyleJobService(session).active_for_book(book_id, kind=JOB_KIND_LEARN)
+    if active:
+        raise DomainError(
+            BOOK_LEARNING_CODE,
+            "这本书正在学习文风：等它完成，或先取消，再重新分类。",
+            status_code=409,
+            details={"book_id": book_id, "job_id": active[0].job_id, "state": active[0].state},
+        )
+
+
 def create_classification_job(
     session: Session,
     book: StyleReferenceBook,
@@ -188,9 +205,10 @@ def create_classification_job(
     mode: str,
     op_key: str | None = None,
 ) -> StyleReferenceJob:
-    """给一本书建分类作业(queued)。已有排队 / 运行中的分类作业 → 409。调用方提交后派发。"""
+    """给一本书建分类作业(queued)。已有排队 / 运行中的分类作业、或学习文风作业在跑 → 409。调用方提交后派发。"""
     if mode not in CLASSIFY_MODES:
         raise ValueError(f"unknown classification mode {mode!r}")
+    ensure_not_learning(session, book.book_id)
     existing = active_classification_job(session, book.book_id)
     if existing is not None:
         _raise_already_active(existing, book.book_id)
@@ -228,6 +246,7 @@ def resume_classification(
     failed / ingesting / cancelling)会新建一个从头分类的作业(不清派生数据——那些书也没有派生数据)。
     """
     service = StyleJobService(session)
+    ensure_not_learning(session, book.book_id)
     latest = service.latest_for_book(book.book_id, kind=JOB_KIND_CLASSIFY)
     if latest is None or latest.state == STATE_SUCCEEDED:
         if str(book.status or "") == "ready":
@@ -1242,6 +1261,8 @@ def estimate_classification(session: Session, book: StyleReferenceBook) -> dict[
 __all__ = [
     "BATCH_ATTEMPTS",
     "BATCH_RETRY_BACKOFF_SECONDS",
+    "BOOK_LEARNING_CODE",
+    "ensure_not_learning",
     "CLASSIFICATION_ALREADY_ACTIVE_CODE",
     "CLASSIFY_MODES",
     "MODE_IMPORT",

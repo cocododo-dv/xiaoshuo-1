@@ -131,45 +131,8 @@ def _bind_style_profile(
         task_type=TaskType(str(payload.get("task_type") or "scene_generation")),
         strategy=strategy,
         config_json=_style_injection_config(payload) or None,
-        # 2026-09-15:索引在 resolve 事务提交后由后台 worker 建(见 run_deferred_dispatches),
-        # 不再占着收件箱 resolve 的写锁 35 秒。
-        build_rag_index=False,
     )
-    rag_index = dict(result.rag_index or {})
-    return {
-        "profile_id": result.profile_id,
-        "binding_id": result.binding_id,
-        "rag_index": rag_index,
-        "deferred_dispatches": [
-            {
-                "type": "style_reference_rag_index",
-                "profile_id": result.profile_id,
-                "book_id": rag_index.get("book_id"),
-            }
-        ],
-    }
-
-
-def run_deferred_dispatches(effect_result: dict[str, Any] | None) -> None:
-    """事务提交后执行 effect 结果里登记的后台派发(JSON 可序列化,可随幂等重放再跑一次;
-    每种派发都必须幂等)。"""
-    if not isinstance(effect_result, dict):
-        return
-    for item in effect_result.get("deferred_dispatches") or []:
-        if not isinstance(item, dict):
-            continue
-        kind = str(item.get("type") or "")
-        if kind == "style_reference_rag_index":
-            from novel_system.services.style_reference.rag import (
-                start_style_reference_rag_index_worker,
-            )
-
-            profile_id = str(item.get("profile_id") or "").strip()
-            if profile_id:
-                start_style_reference_rag_index_worker(
-                    profile_id=profile_id,
-                    book_id=item.get("book_id") or None,
-                )
+    return {"profile_id": result.profile_id, "binding_id": result.binding_id}
 
 
 def _style_injection_config(payload: dict[str, Any]) -> dict[str, Any]:

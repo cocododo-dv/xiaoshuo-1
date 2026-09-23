@@ -23,18 +23,13 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.background_recovery import (
     acquire_startup_recovery_lease,
     recover_run_job_dispatches,
+    retire_legacy_style_reference_runs,
     run_startup_recovery,
-    recover_style_reference_dispatches,
     recover_validation_reports,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import recover_stale_legacy_reservations
 from novel_system.services.scene_run_jobs import SceneRunJobService
-from novel_system.services.style_reference.extractors import ExtractionRetryPolicy
-from novel_system.services.style_reference.run_orchestrator import (
-    RunOrchestrator,
-    _background_run_worker,
-)
 
 
 def _seed_run_job_parents(
@@ -422,10 +417,8 @@ def test_startup_recovery_uses_configured_ttl_for_legacy_llm_reservations(
     assert session.get(LlmCall, "legacy-startup-recovery").accounting_status == "released"
 
 
-def test_style_reference_recovery_redispatches_queued_fails_stale_and_preserves_active(session) -> None:
-    now = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
-    old = (now - timedelta(hours=2)).isoformat()
-    recent = (now - timedelta(minutes=1)).isoformat()
+def test_legacy_style_reference_runs_are_retired_and_learn_runs_are_left_alone(session) -> None:
+    """旧抽取流程(RunOrchestrator,2026-09-23 删除)留下的「运行中」run 标 failed;学习作业的血缘 run 不动。"""
     session.add(
         StyleReferenceBook(
             book_id="book-recovery",
@@ -444,99 +437,41 @@ def test_style_reference_recovery_redispatches_queued_fails_stale_and_preserves_
                 phase="extract",
                 dispatch_state="queued",
                 requested_layers_json=["language", "scene"],
-                heartbeat_at=recent,
             ),
             StyleReferenceRun(
-                run_id="run-stale",
+                run_id="run-running",
                 book_id="book-recovery",
                 status="running",
                 phase="extract",
                 dispatch_state="running",
                 requested_layers_json=["language"],
-                heartbeat_at=old,
             ),
             StyleReferenceRun(
-                run_id="run-active",
+                run_id="run-learn",
                 book_id="book-recovery",
                 status="running",
                 phase="extract",
-                dispatch_state="running",
-                requested_layers_json=["theme"],
-                heartbeat_at=recent,
+                dispatch_state="learn_job",
+            ),
+            StyleReferenceRun(
+                run_id="run-done",
+                book_id="book-recovery",
+                status="done",
+                phase="done",
+                dispatch_state="completed",
             ),
         ]
     )
     session.commit()
-    dispatched: list[tuple[str, str, list[str], object]] = []
-    client = object()
 
-    result = recover_style_reference_dispatches(
-        session,
-        now=now,
-        llm_client=client,
-        llm_enabled=True,
-        style_dispatch=lambda run_id, book_id, layers, llm: dispatched.append(
-            (run_id, book_id, layers, llm)
-        ),
-    )
-
-    assert dispatched == [("run-queued", "book-recovery", ["language", "scene"], client)]
-    assert result["interrupted_failed"] == ["run-stale"]
-    assert result["active_heartbeat_skipped"] == ["run-active"]
+    assert sorted(retire_legacy_style_reference_runs(session)) == ["run-queued", "run-running"]
     session.expire_all()
-    stale = session.get(StyleReferenceRun, "run-stale")
-    active = session.get(StyleReferenceRun, "run-active")
-    assert stale is not None and stale.status == "failed" and stale.retryable is True
-    assert stale.error_code == "STYLE_REFERENCE_RUN_INTERRUPTED"
-    assert active is not None and active.status == "running"
-
-
-def test_duplicate_style_dispatch_executes_only_after_one_queued_cas(session, monkeypatch) -> None:
-    session.add(
-        StyleReferenceBook(
-            book_id="book-dispatch-cas",
-            title="CAS",
-            source_kind="upload",
-            cloud_policy="segments_only",
-            text_checksum="book-dispatch-cas-checksum",
-            stats_json={
-                "rights_declaration": {
-                    "declared": True,
-                    "analysis_rights": True,
-                    "send_rights": True,
-                }
-            },
-        )
-    )
-    session.add(
-        StyleReferenceRun(
-            run_id="run-dispatch-cas",
-            book_id="book-dispatch-cas",
-            status="running",
-            phase="extract",
-            dispatch_state="queued",
-            requested_layers_json=["language"],
-        )
-    )
-    session.commit()
-    calls: list[str] = []
-
-    def fake_execute(self, run_id, _book_id, _layers, *, progress_commits):  # noqa: ANN001
-        assert progress_commits is True
-        calls.append(run_id)
-
-    monkeypatch.setattr(RunOrchestrator, "_execute", fake_execute)
-    kwargs = {
-        "run_id": "run-dispatch-cas",
-        "book_id": "book-dispatch-cas",
-        "layer_values": ["language"],
-        "llm_client": object(),
-        "retry_policy": ExtractionRetryPolicy(),
-    }
-    _background_run_worker(**kwargs)
-    _background_run_worker(**kwargs)
-
-    assert calls == ["run-dispatch-cas"]
+    for run_id in ("run-queued", "run-running"):
+        run = session.get(StyleReferenceRun, run_id)
+        assert run.status == "failed" and run.error_code == "STYLE_REFERENCE_RUN_RETIRED"
+    assert session.get(StyleReferenceRun, "run-learn").status == "running"
+    assert session.get(StyleReferenceRun, "run-done").status == "done"
+    assert retire_legacy_style_reference_runs(session) == []
 
 
 def test_validation_recovery_fails_only_orphans_and_keeps_no_prose_copy(session) -> None:
