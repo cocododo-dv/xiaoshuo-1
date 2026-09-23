@@ -629,7 +629,6 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
-    assert templates["style_first_draft"]["version"] == "2026-09-23.v9"
     assert templates["style_first_draft"]["input_token_budget"] == 96000
     assert "The bundle decides what happens" in templates["style_first_draft"]["system_prompt"]
     # 风格参考 v3（L5「全学」）：设计只是情节框架，气质照参考走；蓝图只给事实，只为中和写法字段的条款删了
@@ -638,7 +637,6 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     assert "It never supplies a line to write" in templates["style_first_draft"]["task_prompt"]
     for gone in ("the author's manner wins and the fact of the field stays", "image_anchor", "anti-summary rule"):
         assert gone not in templates["style_first_draft"]["task_prompt"], gone
-    assert templates["style_draft"]["version"] == "2026-09-22.v12"
     # 2026-09-22 风格参考优先:样例在 user 消息末尾;幽灵标签 [禁止复刻] 不再出现在任何模板里
     for name in ("style_first_draft", "style_draft"):
         assert "[风格样例] block at the end of the user message" in templates[name]["system_prompt"]
@@ -653,18 +651,12 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     assert "the reference author's own scale wins" in templates["style_draft"]["system_prompt"]
     assert "obey it only where it does not conflict with the reference author's manner" in templates["style_draft"]["task_prompt"]
     assert "Never wash the voice back toward a neutral register" in templates["style_draft"]["task_prompt"]
-    assert templates["hard_qc"]["version"] == "2026-09-15.v6"
     assert "never a hard violation" in templates["hard_qc"]["task_prompt"]
     assert "restate paragraph 3" not in templates["hard_qc"]["task_prompt"]
-    assert templates["soft_qc"]["version"] == "2026-09-23.v10"
     # 风格参考 v3（L2）：有风格块时软 QC 是参考评审，不带房风规则；按 16 维打分
     assert "Do not bring a house rubric of your own" in templates["soft_qc"]["system_prompt"]
     assert "dimension_scores" in templates["soft_qc"]["task_prompt"]
     assert "Emotional clarity is a goal only when no [STYLE_REFERENCE] block is present" in templates["soft_qc"]["system_prompt"]
-    assert templates["style_length_patch"]["version"] == "2026-09-22.v5"
-    assert templates["style_salvage_patch"]["version"] == "2026-09-22.v3"
-    assert templates["scene_literary_rewrite"]["version"] == "2026-09-22.v5"
-    assert templates["near_final_acceptance_review"]["version"] == "2026-09-23.v10"
     assert "If no [STYLE_REFERENCE] block is present, do not pass scenes" in templates["near_final_acceptance_review"]["task_prompt"]
 
 

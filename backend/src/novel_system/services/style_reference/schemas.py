@@ -77,7 +77,8 @@ class ProfileStatus(str, Enum):
 
 
 class BindingScope(str, Enum):
-    """注入绑定的目标范围。来源:§4.2 injection_bindings.scope / §8.1 ProfileApplyDialog。"""
+    """注入绑定的目标范围(``style_reference_injection_bindings.scope``)。v3 只写 project / scene / character;
+    旧 global 行只读兼容。"""
 
     PROJECT = "project"
     SCENE = "scene"
@@ -225,10 +226,11 @@ class SystemPromptFragments(BaseModel):
 
 
 class InjectionPreviewRequest(BaseModel):
-    """`POST /profiles/{id}/injection-preview` body — dryrun 模式入参。
+    """「本场预览」``POST /profiles/{id}/injection-preview`` 的请求体——只读,**不写**绑定、不冻结选窗。
 
-    用户在 ApplyDialog 内调整 strategy / intensity / sub_dimensions 时,
-    前端 debounce 拉这个端点,**不写盘** binding。
+    v3 的旋钮是下面四个绑定配置键(不传时由旧 ``strategy`` / ``intensity`` 映射,见 ``binding_config``);
+    ``scene_id`` 给了就按那一场的设计挑窗(与起草同一套选窗),``project_id`` 给了就带上这部作品的近期常见偏差。
+    旧的 ``sub_dimensions`` / ``include_*`` 只为兼容旧请求体保留,不再改变渲染。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -253,11 +255,11 @@ class InjectionPreviewRequest(BaseModel):
 
 
 class InjectionPreviewStats(BaseModel):
-    """preview 端点的真实读数(v2 §2.W4.8;前端强度滑块读数只消费这里,不再算虚构公式)。
+    """本场预览的读数(``inject.render.render_stats`` 给出,与起草同一次渲染)。
 
-    行数 = 各块中以 `- ` 起头的条目行;`few_shot_windows` 是注入的连续段落窗口数,
-    `few_shot_chars` 是窗口原文总字数(封装边界前);`intensity_effective_total_chars`
-    是本次 intensity 对应的抽象四块总额;`few_shot_k` 是 k(i)。
+    行数 = 各块中以 `- ` 起头的条目行;`few_shot_windows` 是这一场拿到的样例窗数,`few_shot_chars` 是这些窗的
+    原文总字数;`total_prefix_chars` 是 system 前缀与 user 尾块的总字数;`few_shot_k` 是窗数上限。旧名沿用:
+    `intensity_effective_total_chars` 现在是文风卡块的字数,`metric_lines` 恒为 0(量化指导块已删)。
     """
 
     model_config = ConfigDict(extra="forbid")

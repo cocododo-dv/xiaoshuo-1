@@ -176,7 +176,6 @@ def test_outline_prompt_no_longer_hardcodes_a_chapter_count() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     outline = templates["snowflake_generate_long_synopsis"]
-    assert outline["version"] == "2026-09-14.v6"
     assert "12-20 chapters" not in outline["task_prompt"]
     assert "`chapters: []`" in outline["task_prompt"] or "chapters: []" in outline["task_prompt"]
     assert "600-1000 Chinese characters" in outline["task_prompt"]

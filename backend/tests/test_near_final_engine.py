@@ -739,3 +739,23 @@ def test_scene_story_check_is_normalized_recorded_and_surfaced(session) -> None:
     tree = catalog.catalog(PROJECT_ID)
     scene_row = next(s for c in tree["chapters"] for s in c["scenes"] if s["scene_id"] == SCENE_ID)
     assert scene_row["story_check"]["shape_landed"] is True
+
+
+def test_near_final_rewrite_brief_reads_the_reviewers_fix_directions() -> None:
+    """验收评审（场景 / 章级）的提示词让简报给 target / issue / fix_direction；重写简报必须用上它们，
+    不能因为没有 action 键就落到房风默认简报（有绑定时正是 _apply_style_bound_rewrite_policy 要防的）。"""
+    brief = Orchestrator._near_final_rewrite_brief(
+        {
+            "revision_brief": [
+                {"target": "第三段", "issue": "挫折被一句总结带过", "fix_direction": "让最后一次尝试落空、写短"},
+                {"action": "删掉结尾的解释句"},
+                {"target": "", "issue": "", "fix_direction": ""},
+                "对白里补一句反问",
+            ]
+        }
+    )
+    assert brief == ["第三段；挫折被一句总结带过；让最后一次尝试落空、写短", "删掉结尾的解释句", "对白里补一句反问"]
+    # 评审一条可用的简报都没给：才用默认简报
+    assert Orchestrator._near_final_rewrite_brief({"revision_brief": [{"target": ""}]}) == [
+        "Rewrite the full scene so forced choice, paid cost, relationship turn, and ending action are visible."
+    ]

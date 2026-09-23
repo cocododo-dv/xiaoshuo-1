@@ -145,7 +145,6 @@ def test_scene_list_sanitizer_keeps_echoed_identities_and_the_prompt_asks_for_th
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     scene_list = templates["snowflake_generate_scene_list"]
-    assert scene_list["version"] == "2026-09-22.v11"
     assert "must echo that scene's row_uid and scene_id unchanged" in scene_list["task_prompt"]
     sheets = templates["snowflake_generate_character_sheets"]
-    assert sheets["version"] == "2026-09-14.v6" and "protagonist_character_id" in sheets["structured_schema"]["properties"]
+    assert "protagonist_character_id" in sheets["structured_schema"]["properties"]

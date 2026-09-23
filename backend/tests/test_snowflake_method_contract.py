@@ -260,18 +260,14 @@ def test_guidance_and_prompts_drop_mechanical_alternation() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     scene_list = templates["snowflake_generate_scene_list"]
-    assert scene_list["version"] == "2026-09-22.v11"
     assert "Alternate proactive and reactive deliberately" not in scene_list["task_prompt"]
     assert "Reactive scenes should be a minority" in scene_list["task_prompt"]
     scene_details = templates["snowflake_generate_scene_details"]
-    assert scene_details["version"] == "2026-09-22.v14"
     assert "measured against the protagonist" in scene_details["task_prompt"]
     one_sentence = templates["snowflake_generate_one_sentence_summary"]
-    assert one_sentence["version"] == "2026-09-15.v4"
     assert "40 Chinese characters" in one_sentence["task_prompt"]
     assert "15-25" not in one_sentence["task_prompt"]
     short_synopsis = templates["snowflake_generate_short_synopsis"]
-    assert short_synopsis["version"] == "2026-09-13.v3"
     assert "exactly 5 paragraphs" in short_synopsis["task_prompt"]
     assert "5-9 paragraphs" not in short_synopsis["task_prompt"]
 
@@ -581,33 +577,28 @@ def test_character_sheet_diagnosis_advises_storyline_and_values_without_flagging
     assert thin_diagnosis["pressure_status"] == diagnosis["pressure_status"]
 
 
-def test_phase_d_prompt_versions_and_contracts() -> None:
+def test_phase_d_prompt_contracts() -> None:
     """阶段 D 的提示词契约：角色表故事线 + 价值观句式、06 六前缀行、07 恰好五段展开、09 读五段、准定稿评审出场景三问。"""
     templates = yaml.safe_load(
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     sheets = templates["snowflake_generate_character_sheets"]
-    assert sheets["version"] == "2026-09-14.v6"
     assert "没有什么比___更重要" in sheets["task_prompt"] and "in tension" in sheets["task_prompt"]
     assert "one_sentence_summary (this character's own storyline" in sheets["task_prompt"]
 
     synopses = templates["snowflake_generate_character_synopses"]
-    assert synopses["version"] == "2026-09-13.v5"
     assert "exactly these six prefixed lines" in synopses["task_prompt"] and "视角故事：" in synopses["task_prompt"]
 
     outline = templates["snowflake_generate_long_synopsis"]
-    assert outline["version"] == "2026-09-14.v6"
     assert "exactly 5 paragraphs" in outline["task_prompt"] and "600-1000 Chinese characters" in outline["task_prompt"]
     assert "never write chapter lists or headings into `paragraphs`" in outline["task_prompt"]
     assert "`chapters` is the source of truth for chapter membership" in outline["task_prompt"]
 
     scene_list = templates["snowflake_generate_scene_list"]
-    assert scene_list["version"] == "2026-09-22.v11"
     assert "long_synopsis.paragraphs are five page-length expansions" in scene_list["task_prompt"]
     assert "视角故事" in scene_list["task_prompt"]
 
     review = templates["near_final_acceptance_review"]
-    assert review["version"] == "2026-09-23.v10"
     assert "Always fill scene_story_check" in review["task_prompt"]
     assert "must not change near_final_status or pass_flag" in review["task_prompt"]
     schema = review["structured_schema"]

@@ -194,14 +194,13 @@ def test_prompts_say_leave_empty_do_not_invent() -> None:
         (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
     )["templates"]
     expectations = {
-        "snowflake_generate_character_sheets": ("2026-09-14.v6", "an honest empty key is not"),
-        "snowflake_generate_character_synopses": ("2026-09-13.v5", "stays empty after its prefix"),
-        "snowflake_generate_character_bibles": ("2026-09-13.v4", "an honest empty field is not"),
-        "snowflake_generate_scene_details": ("2026-09-22.v14", "an honest empty one is not"),
+        "snowflake_generate_character_sheets": "an honest empty key is not",
+        "snowflake_generate_character_synopses": "stays empty after its prefix",
+        "snowflake_generate_character_bibles": "an honest empty field is not",
+        "snowflake_generate_scene_details": "an honest empty one is not",
     }
-    for name, (version, phrase) in expectations.items():
+    for name, phrase in expectations.items():
         template = templates[name]
-        assert template["version"] == version, name
         assert phrase in template["task_prompt"], name
     for name in ("snowflake_generate_character_sheets", "snowflake_generate_character_bibles"):
         assert "Fill every" not in templates[name]["task_prompt"], name

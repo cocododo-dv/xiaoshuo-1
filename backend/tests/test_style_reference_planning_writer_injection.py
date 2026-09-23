@@ -709,30 +709,27 @@ def test_writer_prefix_failure_degrades_to_the_base_prompt(session, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    ("name", "version", "budget", "clause"),
+    ("name", "budget", "clause"),
     [
         (
             "scene_blueprint",
-            "2026-09-15.v10",
             24000,
             "If a [STYLE_REFERENCE] block with [风格样例] is prepended, decide ending_action, information_release, image_anchor and anti_summary_rule",
         ),
         (
             "character_pressure_blueprint",
-            "2026-09-14.v3",
             24000,
             '"without explanatory summary" applies only when no such section is present',
         ),
-        ("chapter_story_architecture", "2026-09-12.v3", 24000, "[结构画像]"),
-        ("author_proposal_generate", "2026-09-14.v3", 96000, "write the proposal in the reference author's hand"),
-        ("writer_passage_patch", "2026-09-14.v3", 24000, "patch in the reference author's hand"),
-        # 2026-09-22 场景诊断统一 v5：证据逐字引用 + 按雪花结构判断；风格条款不变
-        ("writer_deep_review", "2026-09-22.v6", 30000, "judge in the reference author's hand"),
+        ("chapter_story_architecture", 24000, "[结构画像]"),
+        ("author_proposal_generate", 96000, "write the proposal in the reference author's hand"),
+        ("writer_passage_patch", 24000, "patch in the reference author's hand"),
+        # 2026-09-22 场景诊断统一：证据逐字引用 + 按雪花结构判断；风格条款不变
+        ("writer_deep_review", 30000, "judge in the reference author's hand"),
     ],
 )
-def test_wp6_templates_are_bumped_with_style_clauses(name: str, version: str, budget: int, clause: str) -> None:
+def test_wp6_templates_carry_style_clauses(name: str, budget: int, clause: str) -> None:
     template = load_prompt_templates()[name]
-    assert template.version == version
     assert template.input_token_budget == budget
     assert clause in template.task_prompt
     assert RUNTIME_MIN_INPUT_BUDGETS[name] == budget

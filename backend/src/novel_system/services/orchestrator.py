@@ -7068,6 +7068,15 @@ class Orchestrator:
                     or entry.get("instruction")
                     or entry.get("recommendation")
                 )
+                if not (isinstance(action, str) and action.strip()):
+                    # 验收评审（场景 / 章级）的提示词让每条简报给 target / issue / fix_direction 三个键；只认
+                    # action 类键时评审给的具体改法被整条丢掉，重写落到下面的房风默认简报上（有绑定时正是
+                    # near_final._apply_style_bound_rewrite_policy 要防的那句）。
+                    action = "；".join(
+                        text
+                        for text in (str(entry.get(key) or "").strip() for key in ("target", "issue", "fix_direction"))
+                        if text
+                    )
                 if isinstance(action, str) and action.strip():
                     rewrite_brief.append(action.strip())
             elif isinstance(entry, str) and entry.strip():
