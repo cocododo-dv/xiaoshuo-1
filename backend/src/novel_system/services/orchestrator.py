@@ -6996,8 +6996,8 @@ class Orchestrator:
             scene, content, project_id=project_id
         )
 
-    def _detect_and_store_style_drift(self, scene: SceneCard) -> dict[str, Any]:
-        return self._archive_effects()._detect_and_store_style_drift(scene)
+    def _record_archive_fidelity_reading(self, scene: SceneCard) -> dict[str, Any]:
+        return self._archive_effects()._record_archive_fidelity_reading(scene)
 
 
     def _best_of_n_count(self, contract, *, criticality=None) -> int:

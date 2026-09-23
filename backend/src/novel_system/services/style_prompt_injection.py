@@ -9,7 +9,6 @@ import 会形成依赖环（架构守卫 ``tests/test_service_architecture.py``�
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -223,29 +222,8 @@ def inject_style_reference_prefix(
     # 2026-09-22:段型提示与对白配额也从场景形态 / 台上人物推出(首稿没有正文可分类)。
     svc.scene_position, svc.scene_hint_types = scene_sampling_hints(scene)
     svc.scene_dialogue_heavy = scene_dialogue_heavy(scene)
-    # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
-    # when drift guidance includes structured dimension data) so the few-shot
-    # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
-    snapshot = (
-        bundle.get("snapshot")
-        if bundle
-        and isinstance(bundle, dict)
-        and isinstance(bundle.get("snapshot"), dict)
-        else bundle
-    )
-    if isinstance(snapshot, dict):
-        drift_priority = (snapshot.get("inline_digests") or {}).get(
-            "_drift_ptype_priority"
-        )
-        # bundle inline_digests 只能存 str（哈希投影约束），W6 以 JSON 字符串写入；
-        # 旧的 list 形式也继续接受。
-        if isinstance(drift_priority, str) and drift_priority.strip():
-            try:
-                drift_priority = json.loads(drift_priority)
-            except ValueError:
-                drift_priority = None
-        if drift_priority and isinstance(drift_priority, list):
-            svc.drift_ptype_priority = [str(p) for p in drift_priority if str(p).strip()]
+    # 风格参考 v3：漂移优先选窗已删——bundle 不再写 ``_drift_ptype_priority``，这里也不再读
+    # （旧 bundle 里残留的键被忽略）；选窗不因上一场的读数改变、也不再关轮换。
     # All callers now share one bounded prose-context extractor. The initial
     # style pass supplies the neutral draft; continuation calls supply the
     # latest accumulated prose.
@@ -280,7 +258,6 @@ def inject_style_reference_prefix(
                 runtime_contract,
                 project_id=project_id,
                 context=context,
-                drift_ptype_priority=svc.drift_ptype_priority,
             )
         elif contract_state.mode == "absent":
             # This new bundle explicitly froze "no style binding". A binding

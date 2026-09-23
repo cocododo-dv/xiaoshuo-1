@@ -1,8 +1,8 @@
 """2026-09-22 风格参考优先——单元级契约。
 
 样例块成为 user 消息末尾的文风权威(system 只留抽象块与一句指路),不再套「不可信数据」边界;
-指令中和收窄到真正的角色改写;软 QC 分数按量级归一;归档路径都做漂移读数;首稿选窗按场景
-形态给段型与对白配额;样例窗口按「最像这位作者的典型手笔」排序。
+指令中和收窄到真正的角色改写;软 QC 分数按量级归一;归档路径都在同一个槽位记读数(风格参考 v3
+删掉了漂移驾驶);首稿选窗按场景形态给段型与对白配额;样例窗口按「最像这位作者的典型手笔」排序。
 """
 
 from __future__ import annotations
@@ -212,21 +212,37 @@ def _seed_archivable_scene(session) -> None:
     session.flush()
 
 
-def test_archive_final_scene_observes_style_drift_on_every_path(session, monkeypatch) -> None:
+def test_archive_final_scene_records_the_fidelity_reading_on_every_path(session, monkeypatch) -> None:
+    """风格参考 v3：漂移驾驶已删；每条归档路径在同一个槽位记「像不像」读数（P5b 接 readings.py）。"""
     from novel_system.services import scene_archive_effects
 
     seen: list[str] = []
 
-    def fake_detect(self, scene):
+    def fake_reading(self, scene):
         seen.append(scene.scene_id)
-        return {"outcome": "observed", "event_id": "sr_metric_test"}
+        return {"outcome": "observed", "reading_id": "reading_test"}
 
-    monkeypatch.setattr(scene_archive_effects.SceneArchiveEffects, "_detect_and_store_style_drift", fake_detect)
+    monkeypatch.setattr(
+        scene_archive_effects.SceneArchiveEffects, "_record_archive_fidelity_reading", fake_reading
+    )
     _seed_archivable_scene(session)
     result = Archiver(session).archive_final_scene("scene_drift_1", "final_drift_1")
     assert result["scene_status"] == "archived"
-    assert result["style_drift"] == {"outcome": "observed", "event_id": "sr_metric_test"}
+    assert result["fidelity_reading"] == {"outcome": "observed", "reading_id": "reading_test"}
+    assert "style_drift" not in result
     assert seen == ["scene_drift_1"]
+
+
+def test_archive_final_scene_default_reading_slot_writes_no_drift_event(session) -> None:
+    from sqlalchemy import select
+
+    from novel_system.db.models import StyleReferenceMetricEvent
+
+    _seed_archivable_scene(session)
+    result = Archiver(session).archive_final_scene("scene_drift_1", "final_drift_1")
+    assert result["fidelity_reading"]["outcome"] == "not_applicable"
+    kinds = set(session.scalars(select(StyleReferenceMetricEvent.event_kind)).all())
+    assert "style_drift_observed" not in kinds
 
 
 def test_archive_final_scene_skips_the_reading_when_the_checkpoint_owns_it(session, monkeypatch) -> None:
@@ -234,25 +250,27 @@ def test_archive_final_scene_skips_the_reading_when_the_checkpoint_owns_it(sessi
 
     monkeypatch.setattr(
         scene_archive_effects.SceneArchiveEffects,
-        "_detect_and_store_style_drift",
+        "_record_archive_fidelity_reading",
         lambda self, scene: (_ for _ in ()).throw(AssertionError("must not be called")),
     )
     _seed_archivable_scene(session)
-    result = Archiver(session).archive_final_scene("scene_drift_1", "final_drift_1", observe_style_drift=False)
-    assert result["style_drift"] is None
+    result = Archiver(session).archive_final_scene(
+        "scene_drift_1", "final_drift_1", record_fidelity_reading=False
+    )
+    assert result["fidelity_reading"] is None
 
 
-def test_archive_final_scene_never_fails_because_of_the_drift_reading(session, monkeypatch) -> None:
+def test_archive_final_scene_never_fails_because_of_the_reading(session, monkeypatch) -> None:
     from novel_system.services import scene_archive_effects
 
     def boom(self, scene):
-        raise RuntimeError("drift exploded")
+        raise RuntimeError("reading exploded")
 
-    monkeypatch.setattr(scene_archive_effects.SceneArchiveEffects, "_detect_and_store_style_drift", boom)
+    monkeypatch.setattr(scene_archive_effects.SceneArchiveEffects, "_record_archive_fidelity_reading", boom)
     _seed_archivable_scene(session)
     result = Archiver(session).archive_final_scene("scene_drift_1", "final_drift_1")
     assert result["scene_status"] == "archived"
-    assert result["style_drift"]["outcome"] == "degraded"
+    assert result["fidelity_reading"]["outcome"] == "degraded"
 
 
 # ---------------------------------------------------------------------------

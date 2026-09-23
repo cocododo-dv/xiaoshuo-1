@@ -108,8 +108,8 @@ class SceneArchiveCheckpoint:
                 carry_notes_json=carry_notes,
                 execution_id=self._orch._execution_id,
                 finalize_scene_status=False,
-                # 检查点在 progress < 11 时自己做漂移读数(archive:style_drift:0 产物)
-                observe_style_drift=False,
+                # 检查点在 progress < 11 时自己在 archive:style_drift:0 槽位里记读数
+                record_fidelity_reading=False,
             )
             archive_core_product = self._orch._archive_product(
                 scene=scene,
@@ -470,9 +470,9 @@ class SceneArchiveCheckpoint:
 
         if progress < 11:
             drift_result = (
-                # 风格模仿 v2：每一场归档都做确定性漂移读数，下一场 bundle 才能拿到
-                # 同章校准（此前只在章末场景读数）。无画像/无契约时读数自身返回 no_op。
-                self._orch._detect_and_store_style_drift(scene)
+                # 风格参考 v3：漂移驾驶已删；这个槽位（kind / step_key / 哈希键保持原名，已持久化的
+                # 检查点照常续跑）记归档终稿的「像不像」读数。
+                self._orch._record_archive_fidelity_reading(scene)
             )
             drift_product = self._orch._archive_product(
                 scene=scene,
@@ -2054,8 +2054,7 @@ class SceneArchiveCheckpoint:
                 "style drift product hash mismatch",
                 status_code=409,
             )
-        # 风格模仿 v2：漂移读数对每一场都执行（不再限于章末），因此不再要求
-        # 非章末场景的产品必须是 not_applicable。
+        # 风格参考 v3：这个槽位记归档读数（漂移驾驶已删）；旧检查点里的 observed / no_op 产品照常通过。
         if product.get("outcome") == "degraded" and not isinstance(
             product.get("error_code"), str
         ):

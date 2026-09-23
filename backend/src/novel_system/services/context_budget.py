@@ -55,8 +55,8 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("pov_voice", "POV Voice", ("voice_card",)),
     ("author_preference_profile", "Author Preference Profile", ("author_preference_profile",)),
     ("literary_freshness_budget", "Literary Freshness Budget", ("literary_freshness_budget",)),
-    # 2026-09 风格模仿 v2（W5，规格 §1.3）：三个新 section。叙事机制块是 neutral_draft
-    # 唯一可见的风格参考块；前文声音锚 / 漂移校准只对 style_draft 可见。
+    # 2026-09 风格模仿 v2（W5，规格 §1.3）：叙事机制块是 neutral_draft 唯一可见的风格参考块；
+    # 前文声音锚只对 style_draft 可见。（风格参考 v3 删掉了漂移校准段 style_drift_calibration。）
     ("style_narrative_guidance", "Style Reference — Narrative Mechanisms", ("style_narrative_guidance",)),
     ("chapter_transition_buffer", "Chapter Transition Buffer", ("chapter_transition_buffer",)),
     (
@@ -64,7 +64,6 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "Previous Scene Voice Anchor (own prose; keep the same voice)",
         ("previous_scene_voice_anchor",),
     ),
-    ("style_drift_calibration", "Style Drift Calibration", ("style_drift_calibration",)),
     ("similar_scene_context", "Similar Scene Context", ("similar_scene", "similar_scene_context")),
     ("relation_digest", "Relation Digest", ("relation_card", "relation_digest")),
     ("scene_memory_digest", "Previous Scene Memory", ("scene_memory", "scene_memory_digest")),
@@ -92,10 +91,9 @@ NEUTRAL_DRAFT_STYLE_SECTIONS: tuple[str, ...] = (
     "style_observations",
     "narrative_patterns",
     "calibration_lines",
-    # v2（规格 §1.3）：前文声音锚与漂移校准都是目标文风的延续信号，中性稿不看；
+    # v2（规格 §1.3）：前文声音锚是目标文风的延续信号，中性稿不看；
     # style_narrative_guidance 刻意不在此列——叙事取舍机制正是中性稿要吸收的。
     "previous_scene_voice_anchor",
-    "style_drift_calibration",
 )
 
 CONTINUITY_POLICY: list[str] = [
@@ -274,9 +272,9 @@ def apply_context_budget(
             if section is not None:
                 _apply_compressed_text(section, _compress_continuity_digest(section.text))
 
-        # v2：连续性摘要都压过仍超预算 → 整段省略声音锚 / 漂移校准（软性延续信号），
+        # v2：连续性摘要都压过仍超预算 → 整段省略声音锚（软性延续信号）与设计背景，
         # 再走拆场建议；scene_card 等事实 section 从不被动。
-        for section_name in ("previous_scene_voice_anchor", "style_drift_calibration", "scene_design_context"):
+        for section_name in ("previous_scene_voice_anchor", "scene_design_context"):
             if _rendered_prompt_tokens(
                 system_prompt=system_prompt,
                 task_prompt=task_prompt,

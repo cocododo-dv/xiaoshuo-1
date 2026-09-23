@@ -65,8 +65,6 @@ from novel_system.services.style_reference.structure import (
 )
 from novel_system.services.style_reference.style_continuity import (
     contract_deliberate_repetition,
-    latest_drift_calibration,
-    latest_drift_event,
 )
 from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
@@ -82,9 +80,9 @@ from novel_system.services.author_instructions import normalize_author_note
 
 _LOGGER = logging.getLogger(__name__)
 
-# 2026-09 风格模仿 v2（W5，规格 §1.3）——三个新 section 的登记名。
+# 2026-09 风格模仿 v2（W5，规格 §1.3）——前文声音锚 section 的登记名。风格参考 v3 删掉了漂移校准段
+# （``style_drift_calibration``）与漂移优先选窗（``_drift_ptype_priority``）：归档读数不再回灌进下一场。
 VOICE_ANCHOR_SECTION_KEY = "previous_scene_voice_anchor"
-DRIFT_CALIBRATION_SECTION_KEY = "style_drift_calibration"
 # 「前文声音锚」取上一场最新的**已风格化**稿：style_draft 本体、反模板重写、软补丁、
 # 安全挽救稿都算；中性稿 / rejected 行不算（前者无目标文风，后者是被否决的文本）。
 STYLED_DRAFT_STAGES: tuple[str, ...] = (
@@ -95,16 +93,13 @@ STYLED_DRAFT_STAGES: tuple[str, ...] = (
 )
 _CONTINUITY_BUDGET_DEFAULTS: dict[str, int] = {
     "continuity_anchor_max_chars": 900,
-    "drift_calibration_max_lines": 3,
 }
 _SENTENCE_END_RE = re.compile(r"[。！？!?…]+[”’」』）)]*")
 
 
 def load_continuity_budget() -> dict[str, int]:
-    """读 ``config/style_reference/injection_budget.yaml`` 的跨场景连续性预算键。
-
-    W4 负责把 ``continuity_anchor_max_chars`` / ``drift_calibration_max_lines`` 写进
-    yaml；文件或键缺失时回到规格 §1.4 的默认值（900 字 / 3 行）。
+    """读 ``config/style_reference/injection_budget.yaml`` 的跨场景连续性预算键
+    （``continuity_anchor_max_chars``）；文件或键缺失时回到规格 §1.4 的默认值（900 字）。
     """
     budget = dict(_CONTINUITY_BUDGET_DEFAULTS)
     try:
@@ -891,7 +886,7 @@ class BundleBuilder:
         if chapter_transition:
             inline_digests["chapter_transition_buffer"] = chapter_transition
 
-        # v2（规格 §1.3）：前文声音锚 / 漂移校准——只对 style_draft 可见
+        # v2（规格 §1.3）：前文声音锚——只对 style_draft 可见
         # （context_budget.NEUTRAL_DRAFT_STYLE_SECTIONS 让中性稿看不到）。
         voice_anchor = None if reference_first else self._previous_scene_voice_anchor(scene)
         if reference_first:
@@ -914,27 +909,6 @@ class BundleBuilder:
                 }
             )
             inline_digests[VOICE_ANCHOR_SECTION_KEY] = voice_anchor["text"]
-
-        drift_lines = self._style_drift_calibration(
-            scene,
-            source_version_refs=source_version_refs,
-            inline_digests=inline_digests,
-        )
-        if drift_lines:
-            source_version_refs["style_drift_calibration_line_count"] = len(drift_lines)
-            source_version_refs["style_drift_calibration_before_scene_seq"] = (
-                scene.scene_seq
-            )
-            ordered_injections.append(
-                {
-                    "slot": DRIFT_CALIBRATION_SECTION_KEY,
-                    "ref_id": f"{scene.chapter_id}:before_seq_{scene.scene_seq}",
-                    "digest_key": DRIFT_CALIBRATION_SECTION_KEY,
-                }
-            )
-            inline_digests[DRIFT_CALIBRATION_SECTION_KEY] = "\n".join(
-                f"- {line}" for line in drift_lines
-            )
 
         similar_scenes = None if reference_first else self._similar_scene_context(scene)
         if similar_scenes:
@@ -1155,82 +1129,6 @@ class BundleBuilder:
         except Exception:  # noqa: BLE001 — optional continuity aid degrades visibly
             self._slot_degraded(VOICE_ANCHOR_SECTION_KEY, scene)
             return None
-
-    def _style_drift_calibration(
-        self,
-        scene: SceneCard,
-        *,
-        source_version_refs: dict[str, Any] | None = None,
-        inline_digests: dict[str, str] | None = None,
-    ) -> list[str]:
-        """规格 §1.3「漂移校准」：读 W6 的 ``style_drift_observed`` 事件。
-
-        主路径 ``latest_drift_event``（本章更早场景最近一次；同章没有退到上一章）——拿到
-        校准行、``event_id`` 与 few-shot 段型优先级；事件缺失时退到 W5 约定的
-        ``latest_drift_calibration``（list[str] 读取端，供外部替换 / 测试注入）。有行时把
-        ``style_drift_calibration_event_id`` / ``…_source_scene_id`` / ``…_source_scope`` /
-        ``…_ptype_priority`` 记进 ``source_version_refs``，并把段型优先级以 JSON 字符串写进
-        ``inline_digests["_drift_ptype_priority"]``（bundle hash 投影要求 digest 值为 str，
-        scene_generation 消费该键）。返回的行已去重并按 ``drift_calibration_max_lines`` 截断。
-        """
-        event: dict[str, Any] | None = None
-        try:
-            event = latest_drift_event(self.session, scene.chapter_id, scene.scene_seq)
-            if isinstance(event, dict):
-                raw_lines = event.get("calibration_lines")
-            else:
-                event = None
-                raw_lines = latest_drift_calibration(
-                    self.session, scene.chapter_id, scene.scene_seq
-                )
-        except Exception:  # noqa: BLE001 — optional continuity aid degrades visibly
-            self._slot_degraded(DRIFT_CALIBRATION_SECTION_KEY, scene)
-            return []
-        if not isinstance(raw_lines, (list, tuple)):
-            return []
-        max_lines = load_continuity_budget()["drift_calibration_max_lines"]
-        lines: list[str] = []
-        for item in raw_lines:
-            text = " ".join(str(item or "").split())
-            if text and text not in lines:
-                lines.append(text)
-            if len(lines) >= max_lines:
-                break
-        if lines and event is not None:
-            self._record_drift_event_refs(
-                event,
-                source_version_refs=source_version_refs,
-                inline_digests=inline_digests,
-            )
-        return lines
-
-    @staticmethod
-    def _record_drift_event_refs(
-        event: dict[str, Any],
-        *,
-        source_version_refs: dict[str, Any] | None,
-        inline_digests: dict[str, str] | None,
-    ) -> None:
-        """把漂移事件的审计引用与段型优先级写进快照（``_style_drift_calibration`` 的直接 helper）。"""
-        event_id = str(event.get("event_id") or "")
-        priority = [
-            str(ptype)
-            for ptype in (event.get("drift_ptype_priority") or [])
-            if str(ptype or "").strip()
-        ]
-        if source_version_refs is not None:
-            if event_id:
-                source_version_refs["style_drift_calibration_event_id"] = event_id
-            source_scene_id = event.get("scene_id")
-            if source_scene_id:
-                source_version_refs["style_drift_calibration_source_scene_id"] = str(source_scene_id)
-            source_scope = event.get("source_scope")
-            if source_scope:
-                source_version_refs["style_drift_calibration_source_scope"] = str(source_scope)
-            if priority:
-                source_version_refs["style_drift_calibration_ptype_priority"] = list(priority)
-        if inline_digests is not None and priority:
-            inline_digests["_drift_ptype_priority"] = json.dumps(priority, ensure_ascii=False)
 
     def _narrative_state_digest(self, scene: SceneCard) -> str | None:
         """Inject authoritative character state from event log into the prompt."""
