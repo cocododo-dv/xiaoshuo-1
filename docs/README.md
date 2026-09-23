@@ -1,6 +1,6 @@
 # 文档导航
 
-本文档是仓库文档的统一入口，最后核查日期为 2026-09-22。若日期化计划、旧证据与现行代码冲突，以根目录 `README.md`、本页列出的运行时契约和当前代码为准。
+本文档是仓库文档的统一入口，最后核查日期为 2026-09-23。若日期化计划、旧证据与现行代码冲突，以根目录 `README.md`、本页列出的运行时契约和当前代码为准。
 
 ## 日常使用
 
@@ -11,6 +11,7 @@
 - [一条书脊：构思 → 目录 → 三张台子](book-spine-catalog-contract.md)：雪花整理出来的章与场怎样真的长在目录里（幕的口径、空白占位章、书签）、场景身份为什么是 `scene_id`、目录载荷里的设计卡与工作状态、「现在该写哪一场」的唯一规则、确认即同步与四种留给作者看差异的卡、章必须是故事序上连续的一段；2026-09-19 阶段 X 的现行契约。
 - [雪花构思 · 教练、要点、方向与生成](snowflake-coach-and-directions.md)：构思视图里 AI 的四个概念（要点 / 方向 / 改写 / 生成）怎么分工、每个入口做什么、`fe-candidates` / `generate` / `assistant` 的契约与迁移 0088；2026-09-17 阶段 U 把「候选」页签并进教练之后的现行契约。
 - [场景诊断：一份记录、一处展示](scene-diagnosis-2026-09-22.md)：文学质量的 21 维规则、写作台的节奏检查、起草台的准定稿评审与 AI 深评合成同一种发现（稳定 signal id、中文、钉到段落），写作台深改面板是唯一的展示处；忽略按 id 记并反向作用到文学质量与成稿门；改写请求带着发现；深评拒绝式；第二轮（§7）：节奏检查按参考作者校准、「AI 看这一处」局部深评、成稿中心「AI 通读本章」与诊断页签、全书每场 / 每章的计数；2026-09-22 的现行契约。
+- [风格参考（现行说明）](style-reference.md)：参考书 → 学习文风 → 用于作品三步；分类 / 学习文风 / 对照检查三种持久作业、文风卡与维度状态、每场冻结的样例窗、参考方式三选一、按「像不像」读数决定的风格步与定向修改、唯一抄袭门与受保护专名、接口、配置、部署与排障。
 - [Ingermanson 雪花方法核心思想提取](ingermanson-snowflake-ideas.md)：两本原著（长篇篇第 19–20 章、场景篇全书）的方法要点——故事与坩埚、主动 / 反应场景的三拍标准、写后分诊、十步与时间盒；雪花方法契约所对照的方法依据。
 
 ## 开发与发布
@@ -21,15 +22,9 @@
 
 - [章节编排 LLM 接入设计（2026-07-16，已实现）](chapter-arrangement-llm-design-2026-07-16.md)：章节蓝图一等公民 + 上下文底座 + 候选/补全/体检三通道与只填空补丁纪律。
 - [雪花「整理成章节结构」重新设计（2026-07-25，已实施）](snowflake-chaptering-design-2026-07-25.md)：构思侧章表一等公民 + 可预览分章 + scene_id 撞号与幽灵场两个数据缺陷的修复方案；现行契约见上面的雪花方法契约。
-- [风格参考设计](style_reference_module_design_v1.1.md)、[实施账本](style-reference-progress.md)与[Phase 3 完成记录](style-reference-phase3-backlog.md)：后两者是历史实施依据，Phase 3 A/B/C 已全部完成。
-- [风格参考动态模仿 v2](style-reference-dynamic-imitation-v2-2026-08-20.md)：任意参考语料契约、软分布提示、自然度门控、独立评测和开源融合决策。
-- [风格参考 RAG v2：内容克制检索](style-reference-rag-content-independence.md)：结构化风格签名、旧索引迁移、合成 A/B 及证据边界。
-- [风格参考运行时契约与反馈闭环](style-reference-runtime-contract.md)：冻结风格血缘、统一上下文/基线、降级规则和盲选终选（2026-09-14 起风格反馈层已删除，盲选门由 `NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED` 打开）。文末「v2 附记」记录 2026-09 新增的冻结键、Bundle section、notices 与 styled-draft gate。
-- [风格参考 · 样例优先（2026-09-09，Step 1）](style-exemplar-first-2026-09-09.md)：v2 之后的三步计划第一步——原文样例成为主信号（默认约 2 万字、满强度约 2.4 万字原文进系统提示、按场景轮换、契约冻结整本书段落根哈希、预算按整窗口卸载）、四个风格通道提示词改写、解码惩罚归零；含改前改后的阅读方法与部署注意。
-- [风格参考 · 风格直起与结构跟随（2026-09-12，Step 2 计划，最大化版）](style-first-draft-plan-2026-09-12.md)：三步计划第二步——有绑定时首稿直接以参考作者手笔从 bundle 写、`style_draft` 改为再靠近一层的复读、去模板门 / 自动批评 / 近终稿确定性门 / 成稿门 / 新鲜度词表在有绑定时整体让位、参考的结构画像进入雪花场景规划 / 章架构 / 章内规划 / 蓝图 / 章级评审；`binding.config_json.draft_mode` 冻结进运行时契约，`neutral_first` 即现状对照组。
-- [风格参考 · 保真修补（2026-09-14）](style-fidelity-fixes-2026-09-14.md)：第三次评估后的修复方案——修复 / 补丁带风格、形状归一化让位、近终稿自动重写收紧、soft_qc 换强模型、新鲜度预算只留内容级、导入层按真实书修（章题、副文本、人称、文言标记）、全书窗口索引选窗、作者可见的通知与窗口、规划与写手侧注入；§8 为完成记录。
-- [风格参考 · 风格参考优先（2026-09-22）](style-reference-first-2026-09-22.md)：起草台真实运行的诊断（样例被包成不可信数据、禁抄排在样例之上、本系统自己的前文被当作声音、软 QC 分数尺度作废、归档漂移读数不跑）；改动——样例块落到 user 消息末尾紧挨输出、样例即文风权威、模板优先级改写、前文只留衔接事实、选窗按典型性与场景形态、软 QC 分数归一、每条归档路径都读漂移、客户端截断与思考 + 强制工具的降级；同一场景四组 A/B 读数与部署决定；第二轮（§6）：参考章长推场尺度、章内位置进起草与评审、章题样例进 AI 起章名、规划产物随设计 / 绑定作废、规划与评审两端的气质让位。
-- [风格模仿 v2 执行方案（2026-09-05，实施中）](style-imitation-v2-plan-2026-09-05.md)：声音级模仿 / 叙事层迁移 / 跨场景一致性三项的根因、共享契约（`profile_json` 新键、Bundle 新 section、`injection_budget.yaml` 键、intensity 语义、`style_drift_observed` 事件）、W1–W8 工作包与验收；§5 为完成记录，与代码冲突时以该文为准并回写。
+- [风格参考 v3 变更记录（2026-09-23）](style-reference-v3-2026-09-23.md)：以参考为标准的一次性重构——作者的决定、16 维度与策略选择器的评估结论、目标架构与接口、全部问题台账与各工作包的完成日志；现行说明见上面的「风格参考」。
+- 风格参考的历史文档（只描述当时的实现，现行说明见 [风格参考](style-reference.md)），归档在 `docs/history/style/`：
+  [v1.1 设计](history/style/style_reference_module_design_v1.1.md)、[实施账本](history/style/style-reference-progress.md)、[Phase 3 完成记录](history/style/style-reference-phase3-backlog.md)、[RAG v2 内容克制检索](history/style/style-reference-rag-content-independence.md)、[运行时契约与反馈闭环](history/style/style-reference-runtime-contract.md)、[动态模仿 v2（2026-08-20）](history/style/style-reference-dynamic-imitation-v2-2026-08-20.md)、[风格模仿 v2 执行方案（2026-09-05）](history/style/style-imitation-v2-plan-2026-09-05.md)、[样例优先（2026-09-09）](history/style/style-exemplar-first-2026-09-09.md)、[风格直起与结构跟随（2026-09-12）](history/style/style-first-draft-plan-2026-09-12.md)、[保真修补（2026-09-14）](history/style/style-fidelity-fixes-2026-09-14.md)、[风格参考优先（2026-09-22）](history/style/style-reference-first-2026-09-22.md)。
 
 ## 文档维护规则
 
@@ -38,3 +33,4 @@
 3. `output/`、测试截图、PID、日志、IDE 配置和测试缓存不得提交。需要长期引用的运行结论应归档为小型、可复算的摘要或 manifest。
 4. 一次性审计、已完成迁移包和过期实施计划不在主线长期保留；Git 历史承担追溯职责。
 5. 日期化证据不得被改写成“当前状态”；当前 Alembic head、命令和能力边界必须重新从代码或根 README 核对。
+6. 被新的现行说明取代的专项文档移到 `docs/history/<领域>/`，顶部加一行「历史文档」横幅指向现行说明；正文保持原样。

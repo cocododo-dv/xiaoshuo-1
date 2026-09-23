@@ -1,3 +1,5 @@
+> 历史文档：描述当时的实现，现行说明见 [docs/style-reference.md](../../style-reference.md)
+
 # 风格参考运行时契约与反馈闭环
 
 ## 目的
