@@ -8,10 +8,6 @@ SupplementEvidenceOutput / SynthesizedProfile / ProfileSubDimensionSummary）；
 
 from __future__ import annotations
 
-# Runtime truth: `SystemPromptFragments` is the public injection payload.
-# `InjectionBundle` survives only as a historical design term in docs; the
-# current HTTP contract is the `injection-preview` response below.
-
 from enum import Enum
 from typing import Any, Literal
 
@@ -94,7 +90,8 @@ class BindingStatus(str, Enum):
 
 
 class InjectionStrategy(str, Enum):
-    """A=System Prompt / B=Few-shot / C=RAG / mixed。来源:§5.1 / §6 注入策略。"""
+    """绑定行的旧 ``strategy`` 列(A / B / C / mixed)。v3 起一律写 ``mixed``;怎么送参考看绑定配置的
+    ``reference_mode``(``binding_config``:旧 A → card_only,B / C / mixed → full)。"""
 
     A = "A"
     B = "B"
@@ -237,15 +234,12 @@ FEW_SHOT_CLOSING_MANDATE = (
 
 
 class SystemPromptFragments(BaseModel):
-    """注入到 LLM system_prompt 头部的 4 块文本 + strategy 回填(PR-8 §5.1)。
+    """本场预览(``POST /profiles/{id}/injection-preview``)返回的分块文本 + 旧 ``strategy`` 回填。
 
-    InjectionService.fragments_for() 返回此结构;scene_generation 调
-    `to_system_prompt_prefix()` 拿到最终拼接字符串后 prepend 到
-    messages[0]["content"]。风格 block 默认 empty,允许任一为空。
-
-    ``anti_plagiarism_block`` 是 §A.5 抄袭事前预防红线段(设计 §11 风险 11):
-    只要任一风格 block 非空(即确实在注入参考风格),红线段**必须**一并注入,
-    且**永不参与预算截断**。三个风格 block 全空时整体 no-op,红线段也不输出。
+    起草 / 评审节点的提示由 ``inject.render.render_style`` 直接拼(system 前缀 + user 尾块),不经过这个模型;
+    这里只是预览接口的响应形状:``positive_block`` = 文风卡,``voice_block`` = 声音习惯,``few_shot_block`` =
+    样例窗(起草时在 user 消息末尾),``anti_plagiarism_block`` = 红线(永不截断)。``forbidden_block`` /
+    ``metric_anchor_block`` 是旧画像时代的块名,v3 恒为空串。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -253,51 +247,10 @@ class SystemPromptFragments(BaseModel):
     positive_block: str = ""
     forbidden_block: str = ""
     metric_anchor_block: str = ""
-    # 2026-09 风格模仿 v2(W4):确定性声音签名渲染的 `[声音特征]` 块
-    # (来源 profile_json.voice_signature.habits;旧画像缺该键时恒为空串)。
     voice_block: str = ""
     few_shot_block: str = ""
-    # 立项 C — Strategy C(RAG)按当前上下文检索的参考风格片段块;与 few_shot_block
-    # 同性质(引用原文),非空时调用方保证红线段必随注。
-    rag_block: str = ""
     anti_plagiarism_block: str = ""
     strategy: InjectionStrategy = InjectionStrategy.A
-
-    def to_system_prompt_prefix(self, *, include_few_shot: bool = True) -> str:
-        # 顺序(2026-09-09 样例优先):few_shot → rag → voice → positive → forbidden →
-        # metric → anti_plagiarism。原文样例是主信号,排最前;抽象块作校核;量化分布最末;
-        # 红线段永远最后、永不截断。(v2 §1.2 的旧顺序把样例排在抽象块之后。)
-        # 2026-09-22 风格参考优先:起草通道把样例块放到 user 消息末尾(:meth:`to_user_prompt_tail`),
-        # 此时 ``include_few_shot=False``——system 前缀只剩抽象块与红线,并留一句指路。
-        blocks = [
-            block
-            for block in (
-                self.few_shot_block if include_few_shot else "",
-                self.rag_block,
-                self.voice_block,
-                self.positive_block,
-                self.forbidden_block,
-                self.metric_anchor_block,
-            )
-            if block.strip()
-        ]
-        if not include_few_shot and self.few_shot_block.strip():
-            blocks.insert(0, FEW_SHOT_IN_USER_MESSAGE_NOTE)
-        if not blocks:
-            return ""
-        if self.anti_plagiarism_block.strip():
-            blocks.append(self.anti_plagiarism_block)
-        return "[STYLE_REFERENCE]\n" + "\n\n".join(blocks) + "\n[/STYLE_REFERENCE]\n\n"
-
-    def to_user_prompt_tail(self) -> str:
-        """2026-09-22 风格参考优先:样例块作为 user 消息的**末尾**——离输出最近的位置。
-
-        样例之后紧跟一段收口指令(``FEW_SHOT_CLOSING_MANDATE``):以样例手笔写前文定下的这一场、
-        人物地名事件用本书的、不整句照搬、篇幅与 JSON 仍按前文。样例为空时返回空串。
-        """
-        if not self.few_shot_block.strip():
-            return ""
-        return "\n\n" + self.few_shot_block.rstrip() + "\n\n" + FEW_SHOT_CLOSING_MANDATE + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +302,6 @@ class InjectionPreviewStats(BaseModel):
     voice_lines: int = 0
     few_shot_windows: int = 0
     few_shot_chars: int = 0
-    rag_snippets: int = 0
     total_prefix_chars: int = 0
     intensity_effective_total_chars: int = 0
     few_shot_k: int = 0

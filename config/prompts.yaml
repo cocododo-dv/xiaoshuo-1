@@ -1240,37 +1240,6 @@ templates:
                 note:
                   type: string
 
-  # 立项 C §6.1 / 附录 A.7 — Strategy C(RAG)候选片段重排(LLM 增强 hook)。
-  # 注意:inject 热路径用确定性 rerank(§11 风险6 inject<50ms),此模板供离线/预览
-  # 增强或后续把 LLM rerank 接入非实时路径时使用,默认不在场景生成热路径调用。
-  style_ref_rag_rerank:
-    version: "2026-06-18.v1"
-    input_token_budget: 800
-    system_prompt: |
-      你是风格检索重排器。给定"当前生成上下文"与若干"参考风格候选片段",
-      按候选片段对当前上下文在句式、节奏、语气上的风格借鉴价值从高到低重排。
-      只评估风格可借鉴性(句式/节奏/肌理),不评估情节相关性;
-      严禁输出任何候选原文的改写、续写或翻译,只输出重排结果。
-    task_prompt: |
-      输入 payload 含 context_text 与 candidates(每条 {id, granularity, text})。
-      请按 schema 输出 ranked:候选 id 按风格借鉴价值降序排列,各附 0-1 的 score。
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required: [ranked]
-      properties:
-        ranked:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [id, score]
-            properties:
-              id:
-                type: string
-              score:
-                type: number
-
   scene_blueprint:
     # 2026-09-13 阶段 A v5：有 Scene Structure (Snowflake) 段时蓝图从作者的三拍推导，不另起炉灶。
     # 阶段 C v6：Rendering mode: summary 的反应场，蓝图按两三段概述的体量给。

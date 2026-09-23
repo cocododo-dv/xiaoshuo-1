@@ -171,7 +171,6 @@ def preview_render(
         "metric_anchor_block": "",
         "voice_block": blocks["voice"],
         "few_shot_block": blocks["samples"],
-        "rag_block": "",
         "anti_plagiarism_block": blocks["red_line"],
         "strategy": _strategy_label(policy.reference_mode),
     }

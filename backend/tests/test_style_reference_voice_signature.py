@@ -19,7 +19,6 @@ import yaml
 
 from novel_system.services.style_reference import voice_signature as vs
 from novel_system.services.style_reference.config_loader import load_yaml_config
-from novel_system.services.style_reference.style_signature import query_view_for_granularity
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
 
 CORPUS = Path(__file__).resolve().parent / "golden" / "style_reference" / "corpus"
@@ -445,16 +444,3 @@ def test_signature_is_deterministic_and_fast_on_golden_corpus(baseline: dict) ->
     assert first == second
     # ~12 万字应远低于 3 秒(300 万字要求数秒内,单遍扫描)
     assert elapsed < 3.0, elapsed
-
-
-# ---------------------------------------------------------------------------
-# style_signature 分句复用
-# ---------------------------------------------------------------------------
-
-
-def test_query_view_sentence_keeps_terminal_punctuation_and_closing_quote() -> None:
-    assert query_view_for_granularity("第一句。第二句！\n\n最后一段很短。", "sentence") == "最后一段很短。"
-    # 闭引号紧随句末标点时,最后一句是整个引语而不是孤立的「”」
-    assert query_view_for_granularity("他抬头看了看。她说：“走吧。”", "sentence") == "她说：“走吧。”"
-    assert query_view_for_granularity("没有句末标点的尾句", "sentence") == "没有句末标点的尾句"
-    assert query_view_for_granularity("……", "sentence") == "……"
