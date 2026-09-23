@@ -61,7 +61,8 @@ def test_normalize_deep_review_output_validates_model_lens_evaluations() -> None
     by_lens = {entry["lens"]: entry for entry in normalized["lens_evaluations"]}
     # 非法镜头名整条丢弃，大小写/空白容错，重复镜头合并，漏掉的镜头从顶层 findings 重建
     assert set(by_lens) == {"story", "reader"}
-    assert by_lens["story"]["overall_score"] == 1.0
+    # 模板声明 0–1 分：越界的 1.7 丢掉，不夹成满分（与 review_scores.normalize_score 同一口径）
+    assert by_lens["story"]["overall_score"] is None
     assert "bogus_dim" not in by_lens["story"]["scores"]
     merged = by_lens["story"]["findings"]
     assert [item["issue"] for item in merged] == ["a", "b"]
