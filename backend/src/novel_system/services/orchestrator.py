@@ -479,7 +479,8 @@ class Orchestrator:
                         )
                     )
             else:
-                existing_blueprint = self.scene_blueprint_service.latest(scene_id)
+                # 风格参考 v3：蓝图版式要与这一场现在的风格策略相符（让位 → 事实版），否则重生成
+                existing_blueprint = self.scene_blueprint_service.reusable(scene_id)
                 blueprint_reused = existing_blueprint is not None
                 if existing_blueprint is None:
                     self._reconcile_execution_step("scene_blueprint")
@@ -4745,11 +4746,9 @@ class Orchestrator:
             skip_critique = bool(getattr(criticality, "skip_critique", False))
             # 2026-09-12 风格直起:style_first 下规则版自动批评让位——它的指令(删感知词、
             # 句式要多样、意象要有意义)是房风,不再据此发风格补丁;参考是唯一的风格权威。
-            from novel_system.services.style_reference.runtime_contract import (
-                is_style_bound as _is_style_bound,
-            )
+            from novel_system.services.style_policy import style_policy_for_bundle
 
-            if _is_style_bound(bundle):
+            if style_policy_for_bundle(bundle).defers_house_taste():
                 skip_critique = True
             from novel_system.services.auto_critique import auto_critique
 

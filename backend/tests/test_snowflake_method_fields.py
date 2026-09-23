@@ -112,8 +112,8 @@ def test_prompts_and_templates_carry_the_method_fields() -> None:
     assert brief["version"] == "2026-09-14.v3"
     assert "narrative_stance" in brief["task_prompt"] and "narrative_stance" in brief["structured_schema"]["properties"]
     review = templates["near_final_acceptance_review"]
-    assert review["version"] == "2026-09-22.v9" and "Reader should feel" in review["task_prompt"]
-    for name, version in (("neutral_draft", "2026-09-15.v12"), ("style_first_draft", "2026-09-22.v8")):
+    assert review["version"] == "2026-09-23.v10" and "Reader should feel" in review["task_prompt"]
+    for name, version in (("neutral_draft", "2026-09-15.v12"), ("style_first_draft", "2026-09-23.v9")):
         assert templates[name]["version"] == version, name
         assert "Narrative stance" in templates[name]["task_prompt"] and "Reader should feel" in templates[name]["task_prompt"], name
 

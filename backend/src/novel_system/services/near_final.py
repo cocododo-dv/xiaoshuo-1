@@ -22,7 +22,6 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.author_actions import author_action
-from novel_system.services.bundle_builder import resolve_scene_style_runtime_contract
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
@@ -34,6 +33,7 @@ from novel_system.services.llm_task_runner import (
     current_llm_run_job_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.review_scores import REVIEW_FEW_SHOT_K_CAP, score_scale, to_unit
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import (
     SCENE_STRUCTURE_SECTION_KEY,
@@ -463,18 +463,12 @@ class NearFinalPlanningService:
         }
 
     def _style_reference_contract(self, scene: SceneCard) -> dict[str, Any] | None:
-        """场景作用域按当前 active 绑定解析出的契约；无绑定 → None，解析失败 → None（只记日志）。"""
-        try:
-            return resolve_scene_style_runtime_contract(self.session, scene)
-        except Exception:  # noqa: BLE001 — 可选增强：解析失败只记日志，不阻断规划
-            import logging
+        """规划快照用的契约：这一场的 StylePolicy（没有 bundle，按当前活动绑定现解析，与场景蓝图同一条路径）；
+        无绑定 / 解析失败 → None（style_policy_live 记错误码，不阻断规划）。"""
+        from novel_system.services.style_policy import style_policy_live
 
-            logging.getLogger(__name__).warning(
-                "near-final planning style reference skipped for scene %s",
-                scene.scene_id,
-                exc_info=True,
-            )
-            return None
+        policy = style_policy_live(self.session, scene)
+        return dict(policy.contract) if policy.bound and policy.contract is not None else None
 
     def _chapter_scene_digest(self, chapter_id: str) -> list[dict[str, Any]]:
         rows = self.session.execute(
@@ -540,6 +534,7 @@ class NearFinalAcceptanceService:
                 inject_style_reference_prefix,
             )
 
+            # 风格参考 v3（L4）：评审节点只拿 4 窗样例（规划 3 窗，起草按绑定的窗数）
             injected = inject_style_reference_prefix(
                 self.session,
                 prompt,
@@ -548,6 +543,7 @@ class NearFinalAcceptanceService:
                 task_type="scene_generation",
                 context_text=context_text,
                 final_user_prompt=final_user_prompt,
+                few_shot_k_cap=REVIEW_FEW_SHOT_K_CAP,
             )
             return injected if injected is not None else prompt
         except Exception:  # noqa: BLE001 — 可选增强,不阻断验收评审
@@ -1143,7 +1139,13 @@ def _normalize_scene_story_check(value: Any) -> dict[str, Any] | None:
 def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _execution_failure_payload("near-final reviewer returned an invalid payload")
-    scores = {str(key): _score(value) for key, value in (payload.get("scores") or {}).items() if _score(value) is not None} if isinstance(payload.get("scores"), dict) else {}
+    # 风格参考 v3（V7）：分数按这一次回答里的全部分数定量级（0–1 / 0–10 / 0–100）再换算到 0–1——
+    # 此前直接夹到 [0, 1]，0–10 的回答全部饱和成 1.0（实库 3/3 次 overall_score = 1.0）。
+    raw_scores = payload.get("scores") if isinstance(payload.get("scores"), dict) else {}
+    scale = score_scale([payload.get("overall_score"), *raw_scores.values()])
+    scores = {
+        str(key): _score(value, scale) for key, value in raw_scores.items() if _score(value, scale) is not None
+    }
     findings = [item for item in payload.get("findings", []) if isinstance(item, dict)] if isinstance(payload.get("findings"), list) else []
     revision_brief = _revision_brief_list(payload.get("revision_brief"))
     requires_human_review = bool(payload.get("requires_human_review"))
@@ -1163,7 +1165,7 @@ def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:
         # 强转记下来——有绑定时它不再授权一次房风整场重写(见 _apply_style_bound_rewrite_policy)。
         failure_class_coerced = True
         failure_class = "prose_model_voice"
-    overall_score = _score(payload.get("overall_score"))
+    overall_score = _score(payload.get("overall_score"), scale)
     return {
         "near_final_status": status,
         "pass_flag": pass_flag and status == "near_final_ready",
@@ -1199,10 +1201,11 @@ def _apply_style_bound_rewrite_policy(payload: dict[str, Any]) -> dict[str, Any]
 
 
 def _bundle_style_bound(bundle: Any) -> bool:
+    """房风门(词表门、收尾动作启发式、默认整场重写简报)是否让位给参考:只看 bundle 的 StylePolicy。"""
     try:
-        from novel_system.services.style_reference.runtime_contract import is_style_bound
+        from novel_system.services.style_policy import style_policy_for_bundle
 
-        return bool(is_style_bound(bundle))
+        return style_policy_for_bundle(bundle).defers_house_taste()
     except Exception:  # noqa: BLE001 — 让位判定失败按无绑定处理(现状行为)
         return False
 
@@ -1434,10 +1437,12 @@ def _revision_brief_list(value: Any) -> list[dict[str, Any]]:
     return items
 
 
-def _score(value: Any) -> float | None:
+def _score(value: Any, scale: float = 1.0) -> float | None:
+    """一个分数按量级换算到 0–1（见 ``review_scores``）；非数值 / NaN → None。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return max(0.0, min(1.0, float(value)))
+    unit = to_unit(value, scale)
+    return unit if isinstance(unit, float) else None
 
 
 def _scalar_text(value: Any) -> str:

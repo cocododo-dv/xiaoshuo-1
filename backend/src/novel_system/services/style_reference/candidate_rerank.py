@@ -13,27 +13,16 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.style_reference.config_loader import load_yaml_config
-from novel_system.services.style_reference.injection import (
-    InjectionService,
-    ordered_character_ids,
-)
 from novel_system.services.style_reference.metrics import (
     METRIC_NAMES,
     PROSE_SHAPE_METRIC_NAMES,
 )
-from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     blend_profile_metric_baselines,
-    build_style_runtime_contract,
-    contract_profile_objects,
-    resolve_style_runtime_contract_state,
-)
-from novel_system.services.style_reference.validation.core import (
-    _load_plagiarism_corpus,
 )
 from novel_system.services.style_reference.validation.plagiarism import check_plagiarism
 from novel_system.services.style_reference.validation.quantitative import (

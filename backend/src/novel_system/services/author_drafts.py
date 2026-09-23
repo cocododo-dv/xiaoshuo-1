@@ -39,8 +39,12 @@ from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
     current_llm_execution_id,
 )
-from novel_system.services.manuscript_html import sanitize_manuscript_html
+from novel_system.services.manuscript_html import plain_manuscript_text, sanitize_manuscript_html
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.reference_copy_gate import (
+    check_reference_copy_for_scope,
+    copy_block_author_action,
+)
 from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.style_prompt_injection import (
@@ -491,6 +495,7 @@ class AuthorDraftService:
         apply_mode = _normalize_apply_mode(_optional_text(request_payload, "apply_mode"), proposal)
         if apply_mode not in AUTHOR_PROPOSAL_APPLY_MODES:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_APPLY_MODE_INVALID", "unsupported proposal apply_mode", status_code=400)
+        self._require_proposal_copy_safe(draft, proposal)
         next_content = sanitize_manuscript_html(_apply_proposal_to_content(current, proposal, apply_mode))
         require_author_target_mutation_allowed(
             self.session,
@@ -550,6 +555,7 @@ class AuthorDraftService:
         decision_reason = _optional_text(request_payload, "decision_reason")
         affected_excerpt = _optional_text(request_payload, "affected_excerpt")
 
+        self._require_proposal_copy_safe(draft, proposal)
         current_content = draft.content or ""
         next_content = sanitize_manuscript_html(_apply_proposal_to_content(current_content, proposal, apply_mode))
         require_author_target_mutation_allowed(
@@ -805,6 +811,40 @@ class AuthorDraftService:
                 exc_info=True,
             )
             return prompt
+
+    def _require_proposal_copy_safe(self, draft: AuthorDraft, proposal: AuthorDraftProposal) -> None:
+        """AI 建议写进作者稿之前过唯一抄袭门（风格参考 v3 V1）：建议带进来的文字与绑定的参考书连续 ≥12 字相同、
+        或含受保护专名 → 409，作者稿不动。只查建议带进来的那段（作者自己写的字不在这里拦，定稿时成稿门会查全文）；
+        位置是建议文字里的第几字，不印参考原文。"""
+
+        inserted = plain_manuscript_text(proposal.replacement_text or proposal.content or "")
+        if not inserted.strip():
+            return
+        scope = resolve_style_scope(
+            self.session,
+            scene_id=draft.object_id if draft.object_type == "scene" else None,
+            chapter_id=draft.object_id if draft.object_type == "chapter" else None,
+            project_id=draft.object_id if draft.object_type == "project" else None,
+        )
+        check = check_reference_copy_for_scope(self.session, inserted, scope=scope)
+        if not check.blocked:
+            return
+        raise DomainError(
+            "SOURCE_SAFETY_BLOCKED",
+            "reference copy gate blocked applying this AI proposal — the author draft is unchanged",
+            status_code=409,
+            details={
+                "draft_id": draft.draft_id,
+                "proposal_id": proposal.proposal_id,
+                "reference_copy": check.audit(),
+                "author_action": copy_block_author_action(
+                    check,
+                    target_view="writer",
+                    target_ref=f"{draft.object_type}:{draft.object_id}",
+                    subject="这条 AI 建议",
+                ),
+            },
+        )
 
     # FE-ALIGN F2 修订历史：每次 revision_no 推进存完整内容快照，支撑成稿中心版本对比。
     def _snapshot_revision(self, draft: AuthorDraft, *, actor_ref: str, origin: str) -> None:

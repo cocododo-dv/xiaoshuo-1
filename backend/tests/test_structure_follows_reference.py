@@ -222,12 +222,12 @@ def test_reference_scale_sentence_for_explicit_scene_breaks() -> None:
 
 def test_length_band_context_reads_the_scale_from_the_bundle_only_when_slack_applies(monkeypatch) -> None:
     bundle = {"inline_digests": {"_style_reference_scene_scale": json.dumps(_scale_payload())}}
-    monkeypatch.setattr(sg, "_style_first_length_slack", lambda _bundle: 0.5)
+    monkeypatch.setattr(sg, "_style_first_length_slack", lambda _bundle, _scene=None: 0.5)
     with sg._length_band_slack_for(bundle):
         assert sg._REFERENCE_SCENE_SCALE.get()["derived_scene_chars"] == 3590
         assert sg._parse_numeric_length_band("1200-1500") == (600, 5000)
     assert sg._REFERENCE_SCENE_SCALE.get() is None
-    monkeypatch.setattr(sg, "_style_first_length_slack", lambda _bundle: 0.0)
+    monkeypatch.setattr(sg, "_style_first_length_slack", lambda _bundle, _scene=None: 0.0)
     with sg._length_band_slack_for(bundle):
         assert sg._REFERENCE_SCENE_SCALE.get() is None
         assert sg._parse_numeric_length_band("1200-1500") == (1200, 1500)
@@ -622,7 +622,7 @@ def test_project_reference_scale_uses_the_median_scenes_per_chapter(session) -> 
 def test_templates_are_bumped_and_say_how_structure_and_temperament_follow_the_reference() -> None:
     templates = load_prompt_templates(PROMPTS)
     review = templates["near_final_acceptance_review"]
-    assert review.version == "2026-09-22.v9"
+    assert review.version == "2026-09-23.v10"
     assert "the Reader should feel line names the effect, not the register" in review.task_prompt
     assert "opens or closes its chapter" in review.task_prompt and "章首 / 章末" in review.task_prompt
     chapter_review = templates["chapter_near_final_review"]
@@ -644,7 +644,16 @@ def test_bundle_wrapper_shape_is_read_for_the_scale_and_the_summary_exemption(mo
     wrapper = {"snapshot": {"inline_digests": {"_style_reference_scene_scale": json.dumps(_scale_payload())}}}
     assert sg._reference_scene_scale_from_bundle(wrapper)["derived_scene_chars"] == 3590
     assert sg._reference_scene_scale_from_bundle({"snapshot": {}}) is None and sg._reference_scene_scale_from_bundle(None) is None
-    monkeypatch.setattr(sg, "is_style_bound", lambda _bundle: True)
-    summary_wrapper = {"snapshot": {"inline_digests": {"scene_structure_brief": "Scene form: x\nRendering mode: summary (概述两段)"}}}
-    assert sg._style_first_length_slack(summary_wrapper) == 0.0
-    assert sg._style_first_length_slack({"snapshot": {"inline_digests": {"scene_structure_brief": "Scene form: x"}}}) > 0.0
+    from types import SimpleNamespace
+
+    from novel_system.services.style_policy import StylePolicy
+
+    monkeypatch.setattr(
+        sg,
+        "style_policy_for_bundle",
+        lambda _bundle, **_kwargs: StylePolicy(bound=True, style_first=True, mode="frozen"),
+    )
+    # 风格参考 v3：概述场豁免读场景卡上结构化的 rendering_mode（外壳形状的 bundle 照样判得出让位）
+    summary_scene = SimpleNamespace(writer_brief_json={"rendering_mode": "summary"})
+    assert sg._style_first_length_slack(wrapper, summary_scene) == 0.0
+    assert sg._style_first_length_slack(wrapper, SimpleNamespace(writer_brief_json={})) > 0.0

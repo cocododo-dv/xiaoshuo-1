@@ -601,15 +601,16 @@ def test_qc_gate_validates_the_frozen_contract_profiles(session, monkeypatch) ->
 
     captured: dict[str, object] = {}
 
-    def fake_validate(text, profiles, current_session):
+    def fake_copy_check(current_session, text, *, policy=None, book_ids=None, extra_policies=()):
         captured["text"] = text
-        captured["profiles"] = profiles
+        captured["policy"] = policy
         captured["session"] = current_session
-        return SimpleNamespace(verdict=SimpleNamespace(value="pass"))
+        return SimpleNamespace(hits=(), protected_hits=(), blocked=False)
 
+    # 风格参考 v3：中性步位的门走唯一抄袭门，策略来自场景当前 bundle 冻结的契约
     monkeypatch.setattr(
-        "novel_system.services.style_reference.validation.run_sync_validate_profiles",
-        fake_validate,
+        "novel_system.services.reference_copy_gate.check_reference_copy",
+        fake_copy_check,
     )
 
     verdict = HardQcEngine(session)._apply_style_validation_gate(
@@ -619,8 +620,10 @@ def test_qc_gate_validates_the_frozen_contract_profiles(session, monkeypatch) ->
 
     assert verdict == "pass"
     assert captured["session"] is session
-    frozen_profile = captured["profiles"][0]
-    assert frozen_profile.profile_json["style_features"] == ["句式舒展，收束克制"]
+    policy = captured["policy"]
+    assert policy.bound and policy.contract_hash == contract["contract_hash"]
+    frozen_profile = policy.contract["layers"][-1]["profile"]
+    assert frozen_profile["profile_json"]["style_features"] == ["句式舒展，收束克制"]
 
 
 def test_layered_baseline_blends_mean_total_variance_and_validation_target(

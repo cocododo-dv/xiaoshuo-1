@@ -712,7 +712,7 @@ def test_styled_draft_gate_unavailable_is_never_silent(session) -> None:
     runner = _StepRunner(outputs={}, default=styled)
     service = SceneGenerationService(session, llm_runner=runner)
     with patch(
-        "novel_system.services.style_reference.validation.run_sync_validate",
+        "novel_system.services.reference_copy_gate.check_reference_copy",
         side_effect=RuntimeError("corpus unavailable"),
     ):
         result = service.generate_style_draft(

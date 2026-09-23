@@ -62,11 +62,16 @@ templates:
     # 阶段 J v6：设计上下文的 Narrative stance 行（人称与时态）有约束力；Story time 与 Reader should feel 是这一场的目标。
     # 2026-09-15 阶段 P v7：场景篇的比例作为「发生什么」的一部分——挫折是最后一次尝试、决定即结束、两难占大头、只解释本场的坩埚——
     # 怎么落纸仍由参考作者决定；Author's exception 行下的「未规划」是故意的；summary 对两种形态都合法。
-    version: "2026-09-22.v8"
+    # 2026-09-23 风格参考 v3 v9（L5「全学」）：雪花设计只是情节框架（发生什么、谁、因果与先后、POV 与人称）；参考作者的气质
+    # 在设计文字写得更沉重的地方照样适用——吐槽、旁白插话、流行文化 / 日用品比喻、口语，只要这位作者这样写；文风卡标「必须」
+    # 的每一场都要体现。蓝图在有绑定时只写事实（场景蓝图事实版），删掉只为中和蓝图「写法字段」存在的条款；事实契约不变
+    #（必写项、禁写内容、POV、三拍、呈现方式、例外理由、方法的比例作为设计意图）。
+    version: "2026-09-23.v9"
     input_token_budget: 96000
     system_prompt: |
-      You are writing a novel scene in the hand of one specific reference author. That author is the only style authority for this scene: their diction and pet phrases, the images and comparisons they reach for, their sentence shapes and pauses, their narratorial stance and asides, how they place and tag dialogue, how they shape paragraphs, how they open and close a scene.
-      The bundle decides what happens: facts, chronology, must-include items, POV character, character identities, and what the ending accomplishes. The reference author decides how it is told. Wherever the bundle, a blueprint field, or any rule below prescribes a manner — a register, a pace, a proportion, an ending style, an anti-summary rule, a house taste — that this author would not use, the author's manner wins and the fact stays.
+      You are writing a novel scene in the hand of one specific reference author. That author is the only style authority for this scene: their diction and pet phrases, the images and comparisons they reach for, their sentence shapes and pauses, their narratorial stance and asides, their humour, how they place and tag dialogue, how they shape paragraphs, how they open and close a scene.
+      The bundle decides what happens: facts, chronology, must-include items, POV character, character identities, and what the ending accomplishes. The book's design (the snowflake plan) is the plot framework only — what happens, who, in what cause and order, whose eyes and which grammatical person. How it is told and in what temperament — narrative voice, humour, the kinds of comparisons, rhythm, dialogue, the stance toward what happens — is the reference author's, even where the design's wording sounds darker, graver or more restrained: a design word like 严肃, 窒息 or 沉重 says what the characters go through, not the register of the prose. If this author jokes, digresses, makes pop-culture or everyday-goods comparisons, or talks colloquially at such moments, so does this scene. Wherever the bundle or any rule below seems to prescribe a manner — a register, a pace, an ending style, a house taste — the author's manner wins and the fact stays.
+      Every item the style card marks 必须 (must) shows up in this scene.
       A [STYLE_REFERENCE] block may be prepended to this system prompt, and the author's own passages come as a [风格样例] block at the end of the user message, right before you write. Read them in this priority order, higher first:
       1. [风格样例] — the reference author's own passages, the primary signal. Write this scene the way that author would write it, and be bold about it: use the kinds of words, images, comparisons, asides and dialogue moves the samples show, even where a plainer choice exists. The book's own characters, places, names and events replace the samples'; never copy a sample sentence.
       2. [声音特征] and [正向风格特征] — voice habits and craft mechanisms distilled from the whole book; use them to check that your prose sounds like the samples.
@@ -78,16 +83,16 @@ templates:
     task_prompt: |
       Write the scene from the supplied bundle snapshot in the reference author's hand; the author's passages are in the [风格样例] block at the end of this message.
       Cover every must-include constraint explicitly; never include forbidden content; keep names, chronology, required objects, POV, and causal steps exactly as the bundle states them. Do not invent a new plot event and do not change what the ending accomplishes.
-      The Scene Literary Blueprint v2 fields (visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull) describe what must happen. How each reaches the page — action, dialogue, narratorial summary, irony, reflection, silence — is the reference author's call; where a field prescribes a manner (an "ending action", a "fresh image", "release through action rather than narration", an "anti-summary rule") that this author would not use, the author's manner wins and the fact of the field stays.
+      If a Scene Literary Blueprint section is present, its fields (visible_desire, forced_choice, price_paid, information_release, relationship_turn, ending_function, next_scene_pull, situation_tags) are facts: what the POV character wants, the choice and its price, what the reader learns, how the relationship turns, what the ending accomplishes, what pulls into the next scene. It never supplies a line to write; how each fact reaches the page — action, dialogue, narratorial summary, irony, an aside, reflection, silence — is the reference author's call.
       If a Scene Structure (Snowflake) section is present, it fixes what happens: the Goal, Conflict and Setback of a proactive scene, or the Reaction, Dilemma and Decision of a reactive scene, the POV character, the Cost paid, and what Must withhold names. The scene may not end on a clean win where the section designed a Setback, may not skip the Decision, and may not release what Must withhold names. The method's proportions are the design's intent — the Setback is the last attempt, the Dilemma carries a reactive scene and the Decision ends it, the reader learns only what this scene's crucible needs — but how each beat lands on the page, at what length, in how many words of narration or dialogue, is the reference author's manner. When that section lists Follow-up beats, they happen after the primary trio in the order listed and the scene ends on the last of them (the Scene ends on line), told in this author's manner. When it states Rendering mode: summary, the beat — proactive or reactive — is told as narrative summary inside the Scene Card target length band, in this author's own manner of summarising — no dramatised scene, no dialogue expansion. When it carries an Author's exception line, the beats marked 未规划 are deliberately absent: write what the reason describes and invent no conflict or setback the design does not have.
       If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background: use it for why the POV character acts as they do and how this scene follows the previous one; it never adds an event, never overrides the Scene Structure section or the Scene Card, and is never restated in the prose. Its Narrative stance line fixes whose eyes the scene is seen through and the grammatical person the book is narrated in; narrative distance, how much the narrator comments or jokes, how feeling is shown or named, and the register all follow the reference author. When the Scene Structure section states Story time, keep the scene's clock consistent with it; when it states Reader should feel, that feeling is what the scene must leave behind, delivered the way this author delivers such moments — including humour, irony or an aside, if that is how the author does it.
       If a Style Reference — Narrative Mechanisms section is present, let it decide what is revealed first, where the scene pauses, how much is disclosed, and how time moves inside the scene.
       If Character Pressure Blueprint is present, keep its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as pressure, rendered the way this author renders pressure.
       If an Author Preference Profile section is present, obey it only where it does not conflict with the reference author's manner.
       If a Previous Scene Memory section is present, take facts, positions, objects and unfinished threads from it; it is not a voice to continue — the voice is the reference author's.
-      If the Literary Freshness Budget marks preserve_reference_repetition, keep the deliberate cadence of the reference: repeated function words, short-sentence runs, and reduplicated forms the reference uses on purpose are style, not accidents. Its avoid-lists guard against repeating your own earlier scenes, never against the reference author's habits.
+      If the Literary Freshness Budget marks preserve_reference_repetition, keep the deliberate cadence of the reference: repeated function words, short-sentence runs, and reduplicated forms the reference uses on purpose are style, not accidents. Its lists only guard against copying your own earlier scenes word for word, never against the reference author's habits or devices.
       The Scene Card target length band is the working range; fill or compress it with this author's own means — summary, digression, dialogue, description, reflection — not only with action-reaction beats.
-      Never violate a [禁忌模式] or 严格禁止 item.
+      Every item the style card marks 必须 (must) shows up in this scene, in this author's manner. Never violate a [禁忌模式] or 严格禁止 item.
     structured_schema:
       type: object
       additionalProperties: false
@@ -332,26 +337,35 @@ templates:
     # 解释故事坩埚的背景倾泻、决定围着计划跳舞；Author's exception 行下的「未规划」不是缺口。
     # 2026-09-22 风格参考优先 v9：写明 style_score / style_dimensions.score 是 0–1 的小数（模型给过 9.3 与 93，
     # 整遍软 QC 因此作废）；[禁止复刻] 是模板里从未渲染过的幽灵标签，实际块叫 [禁忌模式]。
-    version: "2026-09-22.v9"
+    # 2026-09-23 风格参考 v3 v10（L2 / V7）：有 [STYLE_REFERENCE] 块时软 QC 是**参考评审**——只对照样例与文风卡 / 抽象行，
+    # 按 16 维打 0–10 的「像不像」分（dimension_scores，schema 声明范围与键），每条问题落在一个维度上并给出以样例手法为据的
+    # 改法；不用任何房风规则（「展示别讲述」「叙述别总结」「严守视点」「别用总结式收尾」……，除非文风卡自己这么说）——真实
+    # 案例：软 QC 要删掉旁白吐槽、把像参考作者的「劣质迷彩布」比喻换掉。场景形态检查只在没有风格块时做（事实归硬 QC）。
+    # 分数一律 0–10（style_score 也是），代码按一次回答的量级统一换算后落库。评审只拿 4 窗样例。
+    version: "2026-09-23.v10"
     input_token_budget: 96000
     system_prompt: |
-      You are a soft quality-control reviewer for prose polish and style-reference adherence.
-      If a [STYLE_REFERENCE] block is present above this instruction, judge the draft first against its [风格样例] passages (the reference author's own prose: diction, imagery, sentence shapes, pauses, dialogue handling) and then against its [声音特征] (voice habits) and [正向风格特征] (positive craft mechanisms) sub-blocks, and report concrete deviations, not scores. Closeness of manner is the goal; only verbatim reuse of the samples' sentences, names, or events is a violation. If no [STYLE_REFERENCE] block is present, skip style-adherence judgement and review polish only.
-      Focus on readability, cadence, and whether the draft needs one controlled patch. Emotional clarity is a goal only when no [STYLE_REFERENCE] block is present: a reference author who leaves feeling implicit is not unclear, and a patch must never ask for feelings to be spelled out that the reference would leave unsaid.
+      You are a soft quality-control reviewer. How you review depends on whether a [STYLE_REFERENCE] block is present (it is prepended to this system prompt; the reference author's passages are its [风格样例] block).
+      Reference judge mode — a [STYLE_REFERENCE] block is present. The reference author is the only standard. Judge the draft only against the [风格样例] passages and the block's own card and abstract lines ([声音特征] voice habits, [正向风格特征] craft mechanisms, the style card, [禁忌模式]). Do not bring a house rubric of your own: no "show, don't tell", no "the narrator should not summarise or comment", no "keep strict POV discipline", no "end on an action instead of a summary", no "name fewer emotions", no demand for fresher or more literary images, no "vary the sentences" — unless the card itself says this author does that. A narratorial aside, a wisecrack, a pop-culture or brand-name comparison, a cheap-material simile, colloquial speech, a summarising close, a returning device: if the samples do it, it is the voice, and asking to remove it or tone it down is a wrong finding. Closeness of manner is the goal; only verbatim reuse of the samples' sentences, names, or events is a violation.
+      Polish mode — no [STYLE_REFERENCE] block. Review readability, cadence, and whether the draft needs one controlled patch; do not invent a target author or imitate any known writer. Emotional clarity is a goal only when no [STYLE_REFERENCE] block is present.
     task_prompt: |
-      Review the draft for polish opportunities and return only structured soft QC guidance.
-      If a [STYLE_REFERENCE] block is present, compare the draft with its [风格样例] first, then with [声音特征] and [正向风格特征]: name concrete deviations in style_deviations — diction and register, image choice, sentence shapes, function-word habits, punctuation rhythm, dialogue-lead placement, sentence-length cadence, paragraphing, information release. Never penalize the draft for sounding like the reference; flag only verbatim reuse of reference sentences, names, or events, and never request a change that would violate a [禁忌模式] or 严格禁止 item or push the prose toward a more neutral register than the reference uses.
-      Also flag literary risks without blocking finalization: model_voice, image_homogeneity, expository_dialogue, no_choice_scene, summary_ending, weak choice_pressure, and weak ending_drive.
-      If a Scene Structure (Snowflake) section is present, also report scene-shape gaps as issues with issue_key "scene_shape": a Goal not established early in a proactive scene, Conflict without escalating attempts, a Setback or Decision that does not land with its designed weight, a Setback dragged over pages instead of landing as the last attempt, a Reaction analysed before it is felt, an emotion named ("她很害怕") where the body and behaviour should show it (only when no [STYLE_REFERENCE] block is present — a reference author who names feelings is not a gap), a Dilemma with only one real option, a Decision the character hedges or dances around instead of committing, story-crucible exposition — backstory or world explanation beyond what this scene needs — or POV drift away from the stated POV character. Beats the section marks 未规划 under an Author's exception line are deliberate and never a gap. These are patch guidance, never blockers, and when a [STYLE_REFERENCE] block is present judge them in the reference author's manner.
-      When a [STYLE_REFERENCE] block is present, flag model_voice, image_homogeneity, summary_ending, and weak ending_drive only where the reference author demonstrably does not do these things: a summary or reflective ending, a returning image, narratorial explanation, or an even pace that matches the [风格样例] is the reference voice, not a risk.
-      If style drift is patchable, put precise instructions in rewrite_brief and style_deviations.patch_brief.
+      Review the draft and return only structured soft QC guidance.
+      If a [STYLE_REFERENCE] block is present (reference judge mode):
+      - Score how close the draft is to the reference author on each of the 16 style dimensions in dimension_scores, from 0 to 10 (10 = indistinguishable from the [风格样例] on that dimension, 5 = half-way, 0 = nothing like them). The keys are language.sentence_structure, language.vocabulary, language.rhetoric, language.punctuation, narrative.perspective, narrative.pacing, narrative.time_handling, narrative.information_density, scene.environment, scene.character_portrayal, scene.dialogue, scene.sensory_priority, theme.emotional_tone, theme.values, theme.motifs, theme.narrative_philosophy. Leave out a dimension this scene gives no evidence for, and one the style card marks 不学 (not learned). Judge each dimension by the samples first, then by [声音特征] and [正向风格特征]. style_score is the overall closeness on the same 0–10 scale.
+      - Every issue names its dimension: issue_key is "style_reference." followed by the dimension key (for example "style_reference.language.rhetoric"), and the message says what the draft does where the samples do something else, quoting at most a short excerpt of the draft. Never quote the samples.
+      - For each dimension that is clearly off, add one style_deviations entry: dimension = the dimension key; severity = high, medium, or low; patch_brief = which paragraph or sentence of the draft, and the concrete change that brings it closer to how the samples handle the same kind of moment — name the samples' technique (for example "after the danger lands, a colloquial self-mocking aside in the POV character's head, the way the samples undercut tension") rather than a general instruction; evidence = the draft excerpt.
+      - Outcome: soft_pass when every scored dimension is 7 or above; soft_patch when one or more dimensions are clearly off and a local rewrite can bring them closer — then rewrite_brief holds one instruction per off dimension, each starting with its dimension key; soft_waive with a carry note when the gap is real but not locally patchable. Never use soft_block_human for manner alone. Never request a change that would violate a [禁忌模式] or 严格禁止 item, push the prose toward a more neutral, graver, or more literary register than the samples use, or change a fact, name, event, POV, or must-include item.
+      If no [STYLE_REFERENCE] block is present (polish mode):
+      - Flag literary risks without blocking finalization: model_voice, image_homogeneity, expository_dialogue, no_choice_scene, summary_ending, weak choice_pressure, and weak ending_drive.
+      - If a Scene Structure (Snowflake) section is present, also report scene-shape gaps as issues with issue_key "scene_shape": a Goal not established early in a proactive scene, Conflict without escalating attempts, a Setback or Decision that does not land with its designed weight, a Setback dragged over pages instead of landing as the last attempt, a Reaction analysed before it is felt, an emotion named ("她很害怕") where the body and behaviour should show it, a Dilemma with only one real option, a Decision the character hedges or dances around instead of committing, story-crucible exposition — backstory or world explanation beyond what this scene needs — or POV drift away from the stated POV character. Beats the section marks 未规划 under an Author's exception line are deliberate and never a gap. These are patch guidance, never blockers.
+      - If the draft is patchable, put precise instructions in rewrite_brief and style_deviations.patch_brief: each patch_brief names the location (which paragraph or line), which risk or scene-shape gap it corresponds to, and a concrete rewrite direction — not a vague instruction like "improve rhythm here".
+      - Leave dimension_scores out.
       Use one legal outcome tuple only:
       soft_pass / true / pass,
       soft_patch / false / patch,
       soft_waive / true / pass_with_notes,
       soft_block_human / false / human_review_required.
-      Each style_deviations entry's patch_brief must name the location (which paragraph or line), which voice habit, positive mechanism, or literary risk above it corresponds to, and a concrete rewrite direction — not a vague instruction like "improve rhythm here".
-      style_score and every style_dimensions[].score are decimals between 0 and 1 (1.0 = indistinguishable from the reference author, 0.5 = half-way); never use a 0–10 or 0–100 scale.
+      style_score and every dimension_scores value are numbers from 0 to 10 (one decimal is enough); never use a 0–1 or 0–100 scale.
     structured_schema:
       type: object
       additionalProperties: false
@@ -403,22 +417,76 @@ templates:
           type: string
         style_score:
           type: number
-        style_dimensions:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required:
-              - name
-              - score
-              - evidence
-            properties:
-              name:
-                type: string
-              score:
-                type: number
-              evidence:
-                type: string
+          minimum: 0
+          maximum: 10
+        dimension_scores:
+          type: object
+          additionalProperties: false
+          properties:
+            language.sentence_structure:
+              type: number
+              minimum: 0
+              maximum: 10
+            language.vocabulary:
+              type: number
+              minimum: 0
+              maximum: 10
+            language.rhetoric:
+              type: number
+              minimum: 0
+              maximum: 10
+            language.punctuation:
+              type: number
+              minimum: 0
+              maximum: 10
+            narrative.perspective:
+              type: number
+              minimum: 0
+              maximum: 10
+            narrative.pacing:
+              type: number
+              minimum: 0
+              maximum: 10
+            narrative.time_handling:
+              type: number
+              minimum: 0
+              maximum: 10
+            narrative.information_density:
+              type: number
+              minimum: 0
+              maximum: 10
+            scene.environment:
+              type: number
+              minimum: 0
+              maximum: 10
+            scene.character_portrayal:
+              type: number
+              minimum: 0
+              maximum: 10
+            scene.dialogue:
+              type: number
+              minimum: 0
+              maximum: 10
+            scene.sensory_priority:
+              type: number
+              minimum: 0
+              maximum: 10
+            theme.emotional_tone:
+              type: number
+              minimum: 0
+              maximum: 10
+            theme.values:
+              type: number
+              minimum: 0
+              maximum: 10
+            theme.motifs:
+              type: number
+              minimum: 0
+              maximum: 10
+            theme.narrative_philosophy:
+              type: number
+              minimum: 0
+              maximum: 10
         style_deviations:
           type: array
           items:
@@ -1081,6 +1149,83 @@ templates:
         anti_summary_rule:
           type: string
 
+  scene_blueprint_facts:
+    # 2026-09-23 风格参考 v3 v1（L3 / N4）：有风格绑定且作者手笔直起时，场景蓝图改跑本模板（仍走 scene_blueprint 节点路由，
+    # 预算同一档）——只写事实：欲望、两难、代价、这一场放出的信息、关系转折、结尾完成什么、下一场的牵引，外加 1–3 个场面标签
+    #（services/style_reference/tags.py 的 SITUATION_TAGS，选窗按它挑作者写同类场面的原文）。不预写台词或正文、不指定意象、
+    # 不定收尾方式与「反总结」规则、不定「通过…而非…」的放信息方式——怎么写归参考作者。真实案例：蓝图预写了结尾台词、
+    # 指定了意象锚和「不许总结式收尾」，首稿几乎照抄了那句结尾。无绑定 / 先中性后润色仍跑 scene_blueprint（逐字不变）。
+    version: "2026-09-23.v1"
+    input_token_budget: 24000
+    system_prompt: |
+      You are a fiction planning editor. You prepare the facts of one scene for a writer who will write it in a specific reference author's hand.
+      State facts only: who wants what in this scene, the choice that is forced and what it costs, what the reader learns, how a relationship turns, what the ending accomplishes in the story, and what pulls into the next scene.
+      Never write prose or dialogue, never prescribe an image, a closing move or line, a register, or the means by which information reaches the page — those belong to the reference author and the writer.
+    task_prompt: |
+      Build this scene's fact sheet from the supplied chapter goal, scene card, and writer brief.
+      If a Scene Structure (Snowflake) section is present, derive the facts from it instead of re-inventing the scene: visible_desire restates the Goal (for a reactive scene, the want behind the Decision); forced_choice is the Dilemma of a reactive scene, or the hardest choice inside the Conflict of a proactive scene; price_paid is the Cost paid; ending_function is what the Setback or the Decision does to the story — or, when the section lists Follow-up beats, what the beat on its Scene ends on line does; next_scene_pull is the Next-scene pull. Never contradict that section: ending the scene on a win where the section designed a Setback, or releasing what Must withhold names, is invalid. When that section states Rendering mode: summary, keep the facts proportionate to a two-or-three-paragraph summary beat. When it carries an Author's exception line, the beats marked 未规划 are deliberately absent: 「无」 is the honest value for forced_choice, price_paid or relationship_turn when the scene genuinely lacks one.
+      If a Scene Design Context (Snowflake) section is present, ground the facts in it: visible_desire and forced_choice follow from the POV character's goal, values and conflict; ending_function and next_scene_pull respect the chapter's act and disaster mark and the neighbouring scenes. It is background only — never add an event from it.
+      If a Style Reference block ([STYLE_REFERENCE], Structure Card, Scene Craft or Narrative Mechanisms) is present, use it only to choose situation_tags and to keep the facts at this author's scale; never turn it into instructions about wording, images, or how the scene closes.
+      Fields, all facts in plain sentences:
+      - visible_desire: what the POV character wants in this scene.
+      - forced_choice: the two options the character must choose between, each genuinely costly to give up.
+      - price_paid: what the choice costs — something that stays paid.
+      - information_release: what the reader learns in this scene, as facts only; never how it is revealed (no "through X rather than Y", no "via dialogue", no "without narration").
+      - relationship_turn: how a relationship shifts.
+      - ending_function: what the ending accomplishes in the story (for example "the setback lands: the key is lost and the escape plan is dead"), stated as a fact — never a line of prose or dialogue, an image, or a way of closing.
+      - next_scene_pull: the unresolved question or commitment that pulls into the next scene.
+      - situation_tags: 1 to 3 kinds of situation this scene is, chosen only from: 日常闲谈、对峙审问、争吵冲突、打斗追逐、危机应对、独处内省、回忆往事、说明设定、群像场面、情感交流、喜剧桥段、悬疑揭示、赶路转场、计划商议、开章引入、收章落点. They pick the reference author's passages that show the same kind of scene.
+      Write string fields in Chinese when the source context is Chinese, keeping the English schema keys. Never quote or invent dialogue, never write a sentence the prose should contain, never name an image the prose should use.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - visible_desire
+        - forced_choice
+        - price_paid
+        - information_release
+        - relationship_turn
+        - ending_function
+        - next_scene_pull
+        - situation_tags
+      properties:
+        visible_desire:
+          type: string
+        forced_choice:
+          type: string
+        price_paid:
+          type: string
+        information_release:
+          type: string
+        relationship_turn:
+          type: string
+        ending_function:
+          type: string
+        next_scene_pull:
+          type: string
+        situation_tags:
+          type: array
+          maxItems: 3
+          items:
+            type: string
+            enum:
+              - 日常闲谈
+              - 对峙审问
+              - 争吵冲突
+              - 打斗追逐
+              - 危机应对
+              - 独处内省
+              - 回忆往事
+              - 说明设定
+              - 群像场面
+              - 情感交流
+              - 喜剧桥段
+              - 悬疑揭示
+              - 赶路转场
+              - 计划商议
+              - 开章引入
+              - 收章落点
+
   chapter_story_architecture:
     # 2026-09-14 WP6.1：规划快照现在真的带 [结构画像] / [场景手法] / 叙事机制（条款早已存在）；预算与 scene_blueprint 同档 24000。
     version: "2026-09-12.v3"
@@ -1205,7 +1350,10 @@ templates:
     # 阶段 D v6：另出一份 scene_story_check（坩埚可辨 / 三拍落地 / Yes-No-Maybe 分诊 + 一句话）——给作者的分诊提示，不是闸门。
     # 阶段 J v7：结构简报写了 Reader should feel 时，note 里说一句读者的情绪落地没有。
     # 2026-09-15 阶段 P v8：Author's exception 行下的场按理由判（原著：不过关也可放行，但要知道理由）——三问的 shape_landed 看作者描述的形态。
-    version: "2026-09-22.v9"
+    # 2026-09-23 风格参考 v3 v10（V7）：分数带范围——scores 声明 11 个维度键、overall_score 与各维都是 0–10（schema 写明
+    # minimum / maximum，代码按一次回答的量级统一换算到 0–1；此前没写范围，0–10 的回答被夹成 1.0，实库 3/3 次饱和、
+    # 2/3 次 scores 为空）；有风格块时所有「怎么写」的判断以参考作者为准，不按房风扣分。评审只拿 4 窗样例。
+    version: "2026-09-23.v10"
     input_token_budget: 96000
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
@@ -1224,6 +1372,8 @@ templates:
       If the scene is ready, near_final_status must be near_final_ready and pass_flag true. Otherwise near_final_status must be revision_required and pass_flag false.
       This review checks whether the scene's contractual promises are fulfilled, not hard factual correctness — that is hard_qc's job. Go clause by clause against the execution contract and architecture artifacts rather than re-checking facts from scratch.
       Give every findings entry the same key set: dimension (which readiness dimension from above it concerns), evidence (the specific passage or absence supporting the finding), severity. Give every revision_brief entry: target (what to change), issue (what is wrong), fix_direction (how to fix it).
+      Fill every scores key — story_necessity, character_pressure, forced_choice_pressure, dialogue_edge, information_release, prose_freshness, ending_drive, continuity, author_voice_match, model_voice_risk, reference_safety — with a number from 0 to 10 (10 = fully ready on that dimension; for model_voice_risk 10 means no model voice at all), and overall_score with your overall readiness on the same 0–10 scale; one decimal is enough, and never use a 0–1 or 0–100 scale. overall_score is a judgement of the whole scene, not the highest dimension.
+      When a [STYLE_REFERENCE] block is present, the reference author is the standard for every judgement of manner: author_voice_match, prose_freshness and model_voice_risk measure how close the prose is to the [风格样例], a device the samples use again and again is the voice rather than staleness, and narratorial comment, humour, asides, pop-culture or everyday comparisons, colloquial speech, or a summarising close that the samples also use never lower a score.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1248,8 +1398,68 @@ templates:
           type: boolean
         overall_score:
           type: number
+          minimum: 0
+          maximum: 10
         scores:
           type: object
+          additionalProperties: false
+          required:
+            - story_necessity
+            - character_pressure
+            - forced_choice_pressure
+            - dialogue_edge
+            - information_release
+            - prose_freshness
+            - ending_drive
+            - continuity
+            - author_voice_match
+            - model_voice_risk
+            - reference_safety
+          properties:
+            story_necessity:
+              type: number
+              minimum: 0
+              maximum: 10
+            character_pressure:
+              type: number
+              minimum: 0
+              maximum: 10
+            forced_choice_pressure:
+              type: number
+              minimum: 0
+              maximum: 10
+            dialogue_edge:
+              type: number
+              minimum: 0
+              maximum: 10
+            information_release:
+              type: number
+              minimum: 0
+              maximum: 10
+            prose_freshness:
+              type: number
+              minimum: 0
+              maximum: 10
+            ending_drive:
+              type: number
+              minimum: 0
+              maximum: 10
+            continuity:
+              type: number
+              minimum: 0
+              maximum: 10
+            author_voice_match:
+              type: number
+              minimum: 0
+              maximum: 10
+            model_voice_risk:
+              type: number
+              minimum: 0
+              maximum: 10
+            reference_safety:
+              type: number
+              minimum: 0
+              maximum: 10
         findings:
           type: array
           items:

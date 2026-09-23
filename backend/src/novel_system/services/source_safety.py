@@ -52,35 +52,69 @@ def _normalize_for_match(text: str) -> str:
     return "".join(cleaned)
 
 
+def _normalize_for_match_with_offsets(text: str) -> tuple[str, list[int]]:
+    """与 :func:`_normalize_for_match` 同一规则（NFKC、繁→简、去分隔 / 标点 / 格式字符）再 casefold，
+    逐字进行并返回每个规范化字符在原文里的下标——命中位置要能映射回作者自己的正文。"""
+    chars: list[str] = []
+    offsets: list[int] = []
+    for index, raw in enumerate(str(text or "")):
+        for ch in unicodedata.normalize("NFKC", raw).translate(_TRAD_SIMP_TABLE):
+            category = unicodedata.category(ch)
+            if category[0] in ("Z", "P") or category in ("Cf", "Cc"):
+                continue
+            for folded in ch.casefold():
+                chars.append(folded)
+                offsets.append(index)
+    return "".join(chars), offsets
+
+
+def find_protected_term_spans(
+    text: str, terms: Iterable[Any]
+) -> list[tuple[str, int, int]]:
+    """``terms`` 在 ``text`` 里的每一处出现 ``(term, start, end)``（原文下标，end 不含）。
+
+    匹配口径与 :func:`scan_source_safety` 相同（挡得住插空格 / 换标点 / 繁体的规避）；风格参考 v3 的
+    抄袭门用它报位置——位置指向作者自己的正文，报告里不必再写出这个词。
+    """
+    normalized, offsets = _normalize_for_match_with_offsets(text)
+    if not normalized:
+        return []
+    spans: list[tuple[str, int, int]] = []
+    for term in _unique_strings(terms):
+        needle = _normalize_for_match(term).casefold()
+        if not needle:
+            continue
+        position = normalized.find(needle)
+        while position >= 0:
+            spans.append((term, offsets[position], offsets[position + len(needle) - 1] + 1))
+            position = normalized.find(needle, position + len(needle))
+    spans.sort(key=lambda item: (item[1], item[2]))
+    return spans
+
+
 # No named work or author belongs in a process-wide default.  Keeping a
 # source-specific list here used to flag ordinary fantasy terms (for example
 # "龙王" and "血统") in projects that had never referenced that source.
 #
 # Backwards-compatible import alias: callers may still import the symbol, but
 # the default is intentionally empty.  Configure project-independent terms via
-# NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON or, preferably, pass the active
-# reference profile's ``protected_terms`` to the scanner.
+# NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON; the bound reference profile's
+# protected names (generation-scope banned terms) are checked by the v3
+# reference copy gate (services/reference_copy_gate.py).
 PROTECTED_SOURCE_TERMS: tuple[str, ...] = ()
 PROTECTED_SOURCE_TERMS_ENV = "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON"
-
-SOURCE_PROFILE_REF_KEY_HINTS = (
-    "profile",
-    "style",
-    "banned",
-    "narrative",
-    "calibration",
-    "voice",
-    "relation",
-)
-
 
 def scan_source_safety(
     texts: str | Iterable[str | None],
     *,
     source_profile_ids: Iterable[Any] | None = None,
-    reference_safety_profiles: Iterable[dict[str, Any] | None] | None = None,
     protected_terms: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
+    """全局受保护词（环境变量 / 显式传入）的逐词扫描——候选淘汰、导入与分类器复核用。
+
+    绑定的参考书原文与画像的受保护专名由风格参考 v3 的唯一抄袭门查（``reference_copy_gate``）；
+    这里原先还读 ``profile_json.source_safety`` 的特征句 / 场景桥，那个键从没有画像写过，已删。
+    """
     content = _coerce_text(texts)
     normalized_content = _normalize_for_match(content)
     normalized_content_folded = normalized_content.casefold()
@@ -98,10 +132,8 @@ def scan_source_safety(
         if term and _normalize_for_match(term).casefold() in normalized_content_folded
     ]
     refs = _unique_strings(source_profile_ids or [])
-    safety_profiles = list(reference_safety_profiles or [])
-    risks = _reference_safety_risks(content, safety_profiles)
     payload = {
-        "safe": not blocked_terms and not risks,
+        "safe": not blocked_terms,
         "blocked_terms": blocked_terms,
         "source_profile_ids": refs,
         "protected_terms_source": (
@@ -109,8 +141,6 @@ def scan_source_safety(
         ),
         "coverage": {
             "configured_exact_terms": True,
-            "profile_exact_terms_and_phrases": bool(safety_profiles),
-            "profile_scene_bridges": bool(safety_profiles),
             "semantic_paraphrase": {
                 "status": "not_evaluated",
                 "blocking": False,
@@ -122,9 +152,6 @@ def scan_source_safety(
         },
         "checked_at": now_iso(),
     }
-    if safety_profiles or risks:
-        payload["risks"] = risks
-        payload["risk_count"] = len(risks)
     return payload
 
 
@@ -147,48 +174,10 @@ def configured_protected_source_terms() -> list[str]:
     return _unique_strings(payload)
 
 
-def source_profile_ids_from_snapshot(snapshot: dict[str, Any] | None) -> list[str]:
-    if not isinstance(snapshot, dict):
-        return []
-    refs = snapshot.get("source_version_refs")
-    if not isinstance(refs, dict):
-        return []
-
-    values: list[Any] = []
-    for key, value in refs.items():
-        normalized_key = str(key or "").lower()
-        if normalized_key.endswith("_row_id") or normalized_key.endswith("_version"):
-            continue
-        if normalized_key.endswith("_contract"):
-            continue
-        if not (
-            normalized_key.endswith("_id")
-            or normalized_key.endswith("_ids")
-            or any(hint in normalized_key for hint in SOURCE_PROFILE_REF_KEY_HINTS)
-        ):
-            continue
-        values.extend(_flatten(value))
-    return _unique_strings(values)
-
-
 def _coerce_text(texts: str | Iterable[str | None]) -> str:
     if isinstance(texts, str):
         return texts
     return "\n".join(str(item or "") for item in texts)
-
-
-def _flatten(value: Any) -> list[Any]:
-    if isinstance(value, dict):
-        values: list[Any] = []
-        for item in value.values():
-            values.extend(_flatten(item))
-        return values
-    if isinstance(value, (list, tuple, set)):
-        values = []
-        for item in value:
-            values.extend(_flatten(item))
-        return values
-    return [value]
 
 
 def _unique_strings(values: Iterable[Any]) -> list[str]:
@@ -203,58 +192,3 @@ def _unique_strings(values: Iterable[Any]) -> list[str]:
         seen.add(text)
         result.append(text)
     return result
-
-
-def _reference_safety_risks(content: str, profiles: Iterable[dict[str, Any] | None]) -> list[dict[str, Any]]:
-    risks: list[dict[str, Any]] = []
-    # Same hardening as the fixed term list: normalize away cosmetic variants,
-    # then casefold. This is a strict superset of the old `term.lower() in
-    # content.lower()` — separators are stripped from both needle and haystack,
-    # so anything that matched before still matches.
-    lowered = _normalize_for_match(content).lower()
-    for profile in profiles:
-        if not isinstance(profile, dict):
-            continue
-        profile_id = str(profile.get("profile_id") or "").strip()
-        for term in _unique_strings(profile.get("protected_terms") or []):
-            if _normalize_for_match(term).lower() in lowered:
-                risks.append(
-                    {
-                        "risk_type": "exact_term",
-                        "profile_id": profile_id,
-                        "matched": term,
-                        "severity": "high",
-                        "recommendation": "Replace the protected term with an original name, object, or setting.",
-                    }
-                )
-        for phrase in _unique_strings(profile.get("distinctive_phrases") or []):
-            if _normalize_for_match(phrase).lower() in lowered and not any(
-                risk.get("matched") == phrase for risk in risks
-            ):
-                risks.append(
-                    {
-                        "risk_type": "distinctive_phrase",
-                        "profile_id": profile_id,
-                        "matched": phrase,
-                        "severity": "medium",
-                        "recommendation": "Keep the craft function but change the phrase, object field, and scene context.",
-                    }
-                )
-        for bridge in profile.get("scene_bridges") or []:
-            if not isinstance(bridge, dict):
-                continue
-            tokens = _unique_strings(bridge.get("tokens") or [])
-            matched = [token for token in tokens if _normalize_for_match(token).lower() in lowered]
-            if len(matched) >= 2:
-                risks.append(
-                    {
-                        "risk_type": "fuzzy_bridge",
-                        "profile_id": profile_id,
-                        "bridge_id": bridge.get("bridge_id"),
-                        "matched": matched[:6],
-                        "severity": "high" if len(matched) >= 3 else "medium",
-                        "evidence_preview": bridge.get("evidence_preview") or "",
-                        "recommendation": "Break the recognizable bridge: change at least two of entity, object, setting, action, and payoff.",
-                    }
-                )
-    return risks

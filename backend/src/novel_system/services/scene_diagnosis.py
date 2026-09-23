@@ -58,7 +58,6 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
     StyleReferenceBook,
-    StyleReferenceInjectionBinding,
     StyleReferenceParagraph,
     StyleReferenceProfile,
     WriterEvaluation,
@@ -78,6 +77,7 @@ from novel_system.services.literary_quality import (
     unify_rule_finding,
 )
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.text_utils import is_scene_break_paragraph
 
@@ -1107,8 +1107,8 @@ def serialize_passage_review(row: WriterEvaluation, status: str) -> dict[str, An
 class SceneDiagnosisService:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self._bindings: list[Any] | None = None          # 这一次请求里 active 的绑定（画像也 active）
-        self._binding_memo: dict[str, tuple[bool, BoundProfile | None]] = {}
+        # 风格参考 v3：每场一份 StylePolicy（轻量现解析，不冻结契约），一次请求内记住
+        self._policy_memo: dict[str, StylePolicy] = {}
 
     # -- 正文 --------------------------------------------------------------
 
@@ -1306,35 +1306,6 @@ class SceneDiagnosisService:
 
     # -- 风格绑定与校准 ----------------------------------------------------
 
-    def _active_bindings(self) -> list[Any]:
-        """场景生成任务上 active 的绑定，且画像也 active（与 InjectionService._active_bindings 同一条规则，
-        但不加载画像的 profile_json——真实安装上那一列带着整本书的窗口索引，加载一次要半秒多）。"""
-
-        if self._bindings is not None:
-            return self._bindings
-        rows = list(
-            self.session.execute(
-                select(StyleReferenceInjectionBinding).where(
-                    StyleReferenceInjectionBinding.task_type == STYLE_TASK_TYPE,
-                    StyleReferenceInjectionBinding.status == "active",
-                )
-            ).scalars().all()
-        )
-        profile_ids = {row.profile_id for row in rows}
-        active_profiles: set[str] = set()
-        if profile_ids:
-            active_profiles = {
-                profile_id
-                for profile_id, status in self.session.execute(
-                    select(StyleReferenceProfile.profile_id, StyleReferenceProfile.status).where(
-                        StyleReferenceProfile.profile_id.in_(profile_ids)
-                    )
-                ).all()
-                if status == "active"
-            }
-        self._bindings = [row for row in rows if row.profile_id in active_profiles]
-        return self._bindings
-
     def _bound_profile(self, profile_id: str) -> BoundProfile:
         try:
             row = self.session.execute(
@@ -1357,44 +1328,40 @@ class SceneDiagnosisService:
             deliberate_repetition=bool(voice.get("deliberate_repetition")) if isinstance(voice, dict) else False,
         )
 
-    def binding_profile(self, scene: SceneCard) -> tuple[bool, BoundProfile | None]:
-        """这一场有没有风格绑定，以及最具体那一层的画像（scene > character > project > global，
-        同层取最新——与 style_reference.injection._binding_rank 同一条规则）。"""
+    def style_policy(self, scene: SceneCard) -> StylePolicy:
+        """这一场的风格策略（风格参考 v3）：诊断没有 bundle，按当前活动绑定轻量现解析（scene > character >
+        project > global，同层取最新；画像不 active 的绑定不算），不冻结契约、不加载 profile_json。
 
-        project_id = getattr(scene, "project_id", None)
-        if not project_id:
-            return False, None
-        memo = self._binding_memo.get(scene.scene_id)
-        if memo is not None:
-            return memo
-        try:
-            character_ids = [str(item) for item in (getattr(scene, "onstage_chars_json", None) or []) if str(item)]
-            pov = getattr(scene, "pov_character_id", None)
-            if pov:
-                character_ids.append(str(pov))
-            best: Any = None
-            best_rank = 99
-            for binding in self._active_bindings():
-                if binding.scope == "scene" and binding.scope_ref_id == scene.scene_id:
-                    rank = 0
-                elif binding.scope == "character" and binding.scope_ref_id in character_ids:
-                    rank = 1
-                elif binding.scope == "project" and binding.scope_ref_id == str(project_id):
-                    rank = 2
-                elif binding.scope == "global":
-                    rank = 3
-                else:
-                    continue
-                if rank < best_rank or (rank == best_rank and str(binding.created_at or "") > str(getattr(best, "created_at", "") or "")):
-                    best, best_rank = binding, rank
-            result: tuple[bool, BoundProfile | None] = (True, self._bound_profile(best.profile_id)) if best is not None else (False, None)
-        except Exception:  # noqa: BLE001 — 绑定解析失败按无绑定处理（房风规则照常给）
-            result = (False, None)
-        self._binding_memo[scene.scene_id] = result
-        return result
+        ``bound``：按参考书校准节奏检查与 21 维规则；``defers_house_taste()``（绑定且作者手笔直起）：规则 /
+        节奏发现标 ``house_taste``——与成稿门、起草管线同一个判定（此前这里把 neutral_first 的绑定也当让位）。
+        """
+
+        memo = self._policy_memo.get(scene.scene_id)
+        if memo is None:
+            memo = style_policy_live(self.session, scene, task_type=STYLE_TASK_TYPE, freeze_contract=False)
+            self._policy_memo[scene.scene_id] = memo
+        return memo
+
+    def bound_profile_for_policy(self, policy: StylePolicy) -> BoundProfile | None:
+        """策略绑定的画像（校准要用的三样）；未绑定 → None。书以策略为准（冻结契约记下的那本）。"""
+
+        if not policy.bound or not policy.profile_id:
+            return None
+        profile = self._bound_profile(policy.profile_id)
+        return BoundProfile(
+            profile_id=profile.profile_id,
+            book_id=policy.book_id or profile.book_id,
+            deliberate_repetition=profile.deliberate_repetition,
+        )
+
+    def binding_profile(self, scene: SceneCard) -> tuple[bool, BoundProfile | None]:
+        """这一场有没有风格绑定，以及最具体那一层的画像（见 :meth:`style_policy`）。"""
+
+        profile = self.bound_profile_for_policy(self.style_policy(scene))
+        return (True, profile) if profile is not None else (False, None)
 
     def style_bound(self, scene: SceneCard) -> bool:
-        return self.binding_profile(scene)[0]
+        return self.style_policy(scene).bound
 
     def scene_calibration(self, scene: SceneCard) -> tuple[bool, CraftCalibration]:
         """这一场的（绑定与否，校准）：有绑定按参考书，没有就是房风默认。"""
@@ -1407,6 +1374,15 @@ class SceneDiagnosisService:
 
         style_bound, calibration = self.scene_calibration(scene)
         return calibration.rules if style_bound and calibration.rules.active else None
+
+    def rule_calibration_for_policy(self, policy: StylePolicy) -> RuleCalibration | None:
+        """成稿门用的解析器（风格参考 v3 V11）：按策略绑定的书校准的 21 维规则；未绑定 / 校准不可用 → None。"""
+
+        profile = self.bound_profile_for_policy(policy)
+        if profile is None:
+            return None
+        rules = self.craft_calibration(profile).rules
+        return rules if rules.active else None
 
     def craft_calibration(self, profile: BoundProfile | None) -> CraftCalibration:
         """按绑定画像的参考书校准节奏检查与 21 维规则；读数按（书、段落数、最新段落时间）缓存在进程里
@@ -1466,12 +1442,14 @@ class SceneDiagnosisService:
     ) -> dict[str, Any]:
         text = text if text is not None else self.text_for_scene(scene)
         style_bound, calibration = self.scene_calibration(scene)
+        # 规则 / 节奏发现是否标房风：只在「让位」时（绑定且作者手笔直起）——与成稿门同一个判定
+        house_taste = self.style_policy(scene).defers_house_taste()
         ignored = {str(key) for key in (scene.deep_review_ignored_keys_json or []) if str(key)}
 
         findings: list[dict[str, Any]] = []
         waived: list[dict[str, Any]] = []
         if text.layer != "none":
-            text_findings, waived = cached_text_findings(scene.scene_id, text, calibration=calibration, house_taste=style_bound)
+            text_findings, waived = cached_text_findings(scene.scene_id, text, calibration=calibration, house_taste=house_taste)
             findings.extend(text_findings)
 
         review_row = self.latest_evaluation(scene.scene_id, NEAR_FINAL_RUBRIC_ID)
@@ -1539,6 +1517,7 @@ class SceneDiagnosisService:
                 "chars": text.chars,
             },
             "style_bound": style_bound,
+            "house_taste_deferred": house_taste,
             # 这一稿里按参考作者的密度放过的词表词（词、次数、作者每万字次数、一场的量里的期望、这个次数的概率）
             "craft_calibration": {**calibration.as_dict(), "waived_in_scene": waived},
             "findings": deduped,

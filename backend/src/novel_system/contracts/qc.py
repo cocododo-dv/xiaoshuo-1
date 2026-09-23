@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class QCIssue(BaseModel):
@@ -51,3 +51,13 @@ class SoftQCOutput(BaseModel):
     style_score: float | None = Field(default=None, ge=0, le=1)
     style_dimensions: list[StyleDimensionScore] = Field(default_factory=list)
     style_deviations: list[StyleDeviation] = Field(default_factory=list)
+    # 风格参考 v3（V7）：参考评审按 16 维打的「像不像」分（换算到 0–1；落库时再换回 10 分制）
+    dimension_scores: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("dimension_scores")
+    @classmethod
+    def _unit_dimension_scores(cls, value: dict[str, float]) -> dict[str, float]:
+        for key, score in value.items():
+            if not 0.0 <= float(score) <= 1.0:
+                raise ValueError(f"dimension score out of range: {key}")
+        return value

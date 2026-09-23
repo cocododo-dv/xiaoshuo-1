@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.mutations import optional_idempotent_response
-from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.reference_safety import ReferenceSafetyService
 
@@ -30,23 +29,6 @@ def get_reference_safety_overview(request: Request, session: Session = Depends(g
     return ok(
         ReferenceSafetyService(session).overview(),
         req_id=getattr(request.state, "request_id", None),
-    )
-
-
-@router.post("/api/v2/style-reference/books/{book_id}/safety-profile/extract")
-def extract_reference_safety_profile(
-    book_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v2/style-reference/books/{book_id}/safety-profile/extract",
-        payload={"book_id": book_id},
-        action=lambda: ReferenceSafetyService(session).extract_profile(book_id),
     )
 
 

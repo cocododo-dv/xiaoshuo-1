@@ -93,10 +93,7 @@ def test_final_text_gate_blocks_unattended_archive_and_accepts_exact_risk_code(
         )
     )
     session.commit()
-    monkeypatch.setattr(
-        "novel_system.services.final_text_gate.ReferenceSafetyService.scan_runtime_text",
-        lambda *args, **kwargs: {"safe": True, "matches": []},
-    )
+    # 风格参考 v3：没有绑定、没有全局受保护词时抄袭门本来就放行，不必再打桩
     text = "角色只有16岁，段落明确描写两人的性行为。"
     gate = FinalTextGateService(session)
 

@@ -7,11 +7,7 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     RevisionCandidate,
-    SceneBundle,
     SceneRunState,
-    StyleReferenceBook,
-    StyleReferenceProfile,
-    StyleReferenceRun,
     WriterEvaluation,
 )
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
@@ -217,84 +213,48 @@ def test_chapter_manuscript_detail_scans_current_manuscript_for_protected_source
 ) -> None:
     monkeypatch.setenv(
         "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON",
-        '["龙族", "楚子航"]',
+        '["盐湾学院", "欧文·灰港"]',
     )
     _create_chapter(client, "CHM250", goal="Scan protected terms")
     _create_scene(client, "CHM250_SC01", chapter_id="CHM250", scene_seq=1)
     _create_scene(client, "CHM250_SC02", chapter_id="CHM250", scene_seq=2, is_chapter_last=1)
     _finalize_scene(session, "CHM250_SC01", "CHM250", "第一场是干净的原创线索。")
-    _finalize_scene(session, "CHM250_SC02", "CHM250", "第二场错误出现了龙族与楚子航。")
+    _finalize_scene(session, "CHM250_SC02", "CHM250", "第二场错误出现了盐湾学院与欧文·灰港。")
 
     response = client.get("/api/v1/chapter-manuscripts/CHM250")
 
     assert response.status_code == 200
     scan = response.json()["data"]["source_safety_scan"]
+    # 风格参考 v3：全局受保护词也过唯一抄袭门，只报位置、来源与哈希
     assert scan["safe"] is False
-    assert scan["blocked_terms"] == ["龙族", "楚子航"]
-    assert scan["source_profile_ids"] == []
-    assert scan["checked_at"]
+    assert scan["protected_hit_count"] == 2
+    assert {item["source"] for item in scan["protected_hits"]} == {"environment"}
+    assert scan["checked_books"] == []
+    assert "盐湾" not in str(scan)
 
 
-def test_chapter_manuscript_scans_dynamic_terms_from_scene_reference_profile(client, session) -> None:
-    _create_chapter(client, "CHM251", goal="Scan dynamic reference terms")
+def test_chapter_manuscript_scans_the_chapter_against_the_bound_reference(client, session) -> None:
+    """风格参考 v3：成稿中心的整章读数走唯一抄袭门——每场绑定的书 + 画像的受保护专名，只报位置与哈希。"""
+    from tests.reference_copy_fixtures import PROTECTED_NAME, seed_bound_reference
+
+    _create_chapter(client, "CHM251")
     _create_scene(client, "CHM251_SC01", chapter_id="CHM251", scene_seq=1, is_chapter_last=1)
-    row_id = _finalize_scene(session, "CHM251_SC01", "CHM251", "Professor Meridian opened the archive.")
-    session.add(
-        StyleReferenceBook(
-            book_id="refbook_dynamic_chapter",
-            title="Public source",
-            source_kind="path",
-            cloud_policy="local_only",
-            text_checksum="dynamic-chapter-checksum",
-        )
+    _finalize_scene(session, "CHM251_SC01", "CHM251", f"{PROTECTED_NAME}打开了档案柜。")
+    refs = seed_bound_reference(
+        session,
+        seed="chapter_manuscript",
+        scope="scene",
+        scope_ref_id="CHM251_SC01",
+        protected_terms=(PROTECTED_NAME,),
     )
-    session.flush()
-    session.add(
-        StyleReferenceRun(
-            run_id="run_dynamic_chapter",
-            book_id="refbook_dynamic_chapter",
-            status="done",
-            phase="done",
-        )
-    )
-    session.flush()
-    session.add(
-        StyleReferenceProfile(
-            profile_id="refprofile_dynamic_chapter",
-            book_id="refbook_dynamic_chapter",
-            run_id="run_dynamic_chapter",
-            title="Dynamic safety",
-            status="active",
-            profile_json={
-                "source_safety": {
-                    "ready": True,
-                    "profile_id": "refprofile_dynamic_chapter",
-                    "protected_terms": ["Professor Meridian"],
-                    "distinctive_phrases": [],
-                    "scene_bridges": [],
-                }
-            },
-        )
-    )
-    bundle = SceneBundle(
-        bundle_id="bundle_CHM251_SC01",
-        scene_id="CHM251_SC01",
-        chapter_id="CHM251",
-        bundle_snapshot_hash="hash_CHM251_SC01",
-        frozen_snapshot_json={
-            "source_version_refs": {"reference_profile_ids": ["refprofile_dynamic_chapter"]},
-        },
-    )
-    session.get(FinalScene, row_id).source_bundle_id = bundle.bundle_id
-    session.get(FinalScene, row_id).source_bundle_hash = bundle.bundle_snapshot_hash
-    session.add(bundle)
-    session.commit()
 
     scan = client.get("/api/v1/chapter-manuscripts/CHM251").json()["data"]["source_safety_scan"]
 
     assert scan["safe"] is False
-    assert scan["source_profile_ids"] == ["refprofile_dynamic_chapter"]
-    assert any(risk["risk_type"] == "exact_term" for risk in scan["risks"])
+    assert scan["checked_books"] == [refs["book_id"]]
+    assert scan["profile_ids"] == [refs["profile_id"]]
+    assert scan["protected_hit_count"] >= 1
+    assert PROTECTED_NAME not in str(scan)
 
 
 def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(client, session) -> None:

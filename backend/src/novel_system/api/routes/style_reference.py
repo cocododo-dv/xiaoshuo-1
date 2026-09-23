@@ -217,7 +217,6 @@ class ValidateGeneratedRequest(BaseModel):
     target_ref_id: str | None = Field(default=None, max_length=255)
     # The route translates invalid values to STYLE_REFERENCE_VALIDATE_PARAM_INVALID.
     mode: str = Field(default="async_full", min_length=1, max_length=64)
-    task_context: BoundedJsonObject | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1719,7 +1718,6 @@ def validate_profile_generated(
         target_kind=target_kind,
         target_ref_id=body.get("target_ref_id"),
         mode=mode,
-        task_context=body.get("task_context"),
     )
     client, enabled = _get_llm_client_and_enabled()
     background = mode == ValidationMode.ASYNC_FULL

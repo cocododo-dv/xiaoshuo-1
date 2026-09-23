@@ -54,14 +54,12 @@ from novel_system.services.style_reference.injection import (
     ordered_character_ids,
 )
 from novel_system.services.style_reference.config_loader import load_yaml_config
+from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.services.style_reference.runtime_contract import (
     DRAFT_MODE_NEUTRAL_FIRST,
     DRAFT_MODE_STYLE_FIRST,
     contract_profile_objects,
-    effective_draft_mode,
     extract_style_generation_context,
-    is_style_bound,
-    resolve_style_runtime_contract_state,
 )
 from novel_system.services.style_prompt_injection import (  # noqa: F401  (re-export for callers/tests)
     PLACEMENT_USER_TAIL,
@@ -194,11 +192,11 @@ _STYLE_NOTICE_SEVERITIES = ("info", "warning", "error", "blocking")
 
 def _source_draft_label(bundle: Mapping[str, Any] | None) -> str:
     """style_draft 步位看到的来源稿标签:style_first → 首稿(复读);否则中性稿(重组)。"""
-    return FIRST_DRAFT_SOURCE_LABEL if is_style_bound(bundle) else NEUTRAL_DRAFT_SOURCE_LABEL
+    return FIRST_DRAFT_SOURCE_LABEL if style_policy_for_bundle(bundle).style_first else NEUTRAL_DRAFT_SOURCE_LABEL
 
 
 def _source_draft_instruction(bundle: Mapping[str, Any] | None) -> str:
-    if is_style_bound(bundle):
+    if style_policy_for_bundle(bundle).style_first:
         return (
             "Revise the first draft one step closer to the reference samples without changing the approved facts; "
             "keep every passage that already sounds like the author."
@@ -545,7 +543,7 @@ class SceneGenerationService:
         bundle 写首稿(``style_first_draft`` 模板 + ``[STYLE_REFERENCE]`` 前缀,走 style_draft
         节点路由)。步位、``stage="neutral_draft"`` 行、attempt step、指针、账本字段全部不变。
         """
-        with _length_band_slack_for(bundle):
+        with _length_band_slack_for(bundle, self.session.get(SceneCard, scene_id)):
             return self._generate_first_draft(scene_id, bundle, author_note=author_note)
 
     def _generate_first_draft(
@@ -560,8 +558,10 @@ class SceneGenerationService:
         fallback_llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
-        draft_mode = effective_draft_mode(bundle)
-        style_first = draft_mode == DRAFT_MODE_STYLE_FIRST
+        # 风格参考 v3:起草方式只看这份 bundle 的 StylePolicy(未绑定 / 旧契约缺键 → neutral_first)
+        policy = style_policy_for_bundle(bundle)
+        draft_mode = policy.draft_mode
+        style_first = policy.style_first
         template_name = "style_first_draft" if style_first else "neutral_draft"
         draft_node_id = "style_draft" if style_first else "neutral_draft"
 
@@ -1259,16 +1259,16 @@ class SceneGenerationService:
                 _load_plagiarism_corpus,
             )
 
-            contract_state = resolve_style_runtime_contract_state(bundle)
-            rerank["runtime_contract_status"] = contract_state.status
-            contract = contract_state.contract
+            policy = style_policy_for_bundle(bundle)
+            rerank["runtime_contract_mode"] = policy.mode
+            contract = policy.contract
             target = None
             corpus: list[str] = []
-            if contract_state.mode == "absent" or contract is None:
+            if policy.mode == "absent" or contract is None:
                 rerank["reason"] = (
                     "bundle_has_no_style_profile"
-                    if contract_state.mode == "absent"
-                    else (contract_state.error_code or "frozen_runtime_contract_unavailable")
+                    if policy.mode == "absent"
+                    else (policy.error_code or "frozen_runtime_contract_unavailable")
                 )
             else:
                 target = build_style_target(contract_profile_objects(contract))
@@ -1321,7 +1321,7 @@ class SceneGenerationService:
         state = self.session.get(SceneRunState, scene_id)
         # 2026-09-14 风格保真修补:有绑定时软补丁低温、未点名的句子逐字保留——补丁的 schema 仍要求
         # 返回整篇 scene_text,温度 0.8 会把整场措辞重掷一遍。neutral_first 不变。
-        style_first = is_style_bound(bundle)
+        style_first = style_policy_for_bundle(bundle).defers_house_taste()
         result = self._run_style_generation(
             scene=scene,
             state=state,
@@ -1398,8 +1398,8 @@ class SceneGenerationService:
         )
 
     def _run_style_generation(self, **kwargs: Any) -> StyleGenerationResult:
-        """风格通道公共入口:按 bundle 是否 style_bound 设长度带放宽,再进真正的实现。"""
-        with _length_band_slack_for(kwargs.get("bundle")):
+        """风格通道公共入口:按 bundle 的 StylePolicy(与场景的呈现方式)设长度带放宽,再进真正的实现。"""
+        with _length_band_slack_for(kwargs.get("bundle"), kwargs.get("scene")):
             return self._run_style_generation_inner(**kwargs)
 
     def _run_style_generation_inner(
@@ -1467,7 +1467,7 @@ class SceneGenerationService:
             )
             prompt = injected
         base_prompt = prompt
-        style_first = is_style_bound(bundle)
+        style_first = style_policy_for_bundle(bundle).style_first
 
         if stage == "style_draft":
             extra_instruction += _style_length_instruction(
@@ -2008,7 +2008,7 @@ class SceneGenerationService:
             neutral_content=annotated_source,
             source_label=(
                 "Segment-addressed First Draft (already in the reference author's hand) for Style Salvage"
-                if is_style_bound(bundle)
+                if style_policy_for_bundle(bundle).style_first
                 else "Segment-addressed Approved Neutral Draft for Style Salvage"
             ),
             source_row_id=neutral_row_id,
@@ -2087,7 +2087,7 @@ class SceneGenerationService:
             rewritten_content=rewritten_content,
         )
         acceptance = _assess_de_template_rewrite(
-            house_taste_deferred=is_style_bound(bundle),
+            house_taste_deferred=style_policy_for_bundle(bundle).defers_house_taste(),
             scene=scene,
             source_content=neutral_content,
             authoritative_content=neutral_content,
@@ -2221,7 +2221,7 @@ class SceneGenerationService:
         length_patch_audit: dict[str, Any] | None = None
         # 2026-09-14 风格保真修补:有绑定时修复 / 补丁也在作者的原文面前进行(见下方注入分支),
         # 且扩缩指令改用作者自己的手段;neutral_first 逐字不变。
-        style_first = is_style_bound(bundle)
+        style_first = style_policy_for_bundle(bundle).defers_house_taste()
         if is_length_patch:
             # 整篇“修长度”在真实模型上会稳定退化成摘要。程序先给原文分段编号，
             # 模型只提交 segment_id + new_text；原文定位和套用不依赖模型复制精度。
@@ -2425,7 +2425,7 @@ class SceneGenerationService:
             }
 
         acceptance = _assess_de_template_rewrite(
-            house_taste_deferred=is_style_bound(bundle),
+            house_taste_deferred=style_policy_for_bundle(bundle).defers_house_taste(),
             scene=scene,
             source_content=source_content,
             authoritative_content=authoritative_content,
@@ -3544,19 +3544,14 @@ def _assess_style_rewrite_conformance(
         "regression_tolerance": _STYLE_REWRITE_REGRESSION_TOLERANCE,
     }
     try:
-        contract_state = resolve_style_runtime_contract_state(bundle)
-        base_audit.update(
-            {
-                "runtime_contract_status": contract_state.status,
-                "runtime_contract_mode": contract_state.mode,
-            }
-        )
-        if contract_state.error_code is not None:
+        policy = style_policy_for_bundle(bundle)
+        base_audit["runtime_contract_mode"] = policy.mode
+        if policy.error_code is not None:
             return {
                 **base_audit,
-                "unavailable_reason": contract_state.error_code,
+                "unavailable_reason": policy.error_code,
             }
-        if contract_state.contract is None:
+        if policy.contract is None:
             return {
                 **base_audit,
                 "unavailable_reason": "frozen_runtime_contract_unavailable",
@@ -3570,7 +3565,7 @@ def _assess_style_rewrite_conformance(
             build_style_target,
         )
 
-        profiles = contract_profile_objects(contract_state.contract)
+        profiles = contract_profile_objects(policy.contract)
         target = build_style_target(profiles)
         if target is None:
             return {
@@ -3701,21 +3696,16 @@ def _normalize_style_paragraph_shape(
         "operation": "merge_adjacent_only",
     }
     try:
-        contract_state = resolve_style_runtime_contract_state(bundle)
-        audit.update(
-            {
-                "runtime_contract_status": contract_state.status,
-                "runtime_contract_mode": contract_state.mode,
-            }
-        )
-        if contract_state.error_code is not None:
-            return text, {**audit, "reason": contract_state.error_code}
-        if contract_state.contract is None:
+        policy = style_policy_for_bundle(bundle)
+        audit["runtime_contract_mode"] = policy.mode
+        if policy.error_code is not None:
+            return text, {**audit, "reason": policy.error_code}
+        if policy.contract is None:
             return text, {
                 **audit,
                 "reason": "frozen_runtime_contract_unavailable",
             }
-        if is_style_bound(bundle):
+        if policy.defers_house_taste():
             # 2026-09-14 风格保真修补:有绑定时不再按全书平均段密度机械合并段落——合并规则按累计
             # 字数硬拼、不认对白行,对白密的场会被黏成一段;样例本身已示范作者怎么分段。
             return text, {**audit, "reason": "deferred_to_reference"}
@@ -3724,7 +3714,7 @@ def _normalize_style_paragraph_shape(
             build_style_target,
         )
 
-        target = build_style_target(contract_profile_objects(contract_state.contract))
+        target = build_style_target(contract_profile_objects(policy.contract))
         if target is None:
             return text, {**audit, "reason": "style_target_unavailable"}
         paragraph_target = target.metrics.get("paragraphs_per_1k")
@@ -3820,21 +3810,16 @@ def _assess_style_anchor_conformance(
         "repair_directions": [],
     }
     try:
-        contract_state = resolve_style_runtime_contract_state(bundle)
-        audit.update(
-            {
-                "runtime_contract_status": contract_state.status,
-                "runtime_contract_mode": contract_state.mode,
-            }
-        )
-        if contract_state.error_code is not None:
-            return {**audit, "unavailable_reason": contract_state.error_code}
-        if contract_state.contract is None:
+        policy = style_policy_for_bundle(bundle)
+        audit["runtime_contract_mode"] = policy.mode
+        if policy.error_code is not None:
+            return {**audit, "unavailable_reason": policy.error_code}
+        if policy.contract is None:
             return {
                 **audit,
                 "unavailable_reason": "frozen_runtime_contract_unavailable",
             }
-        if is_style_bound(bundle):
+        if policy.defers_house_taste():
             # 2026-09-14 风格保真修补:段密度 / 分号包络是全书均值,一场的形态偏离均值不是错误;
             # 有绑定时不再据此触发去模板改写(只记录),风格稿的形状由样例决定。
             return {**audit, "unavailable_reason": "deferred_to_reference", "deferred": True}
@@ -3846,7 +3831,7 @@ def _assess_style_anchor_conformance(
             compute_generated_metrics,
         )
 
-        target = build_style_target(contract_profile_objects(contract_state.contract))
+        target = build_style_target(contract_profile_objects(policy.contract))
         actual = compute_generated_metrics(text)
         visible_chars = _visible_char_count(text)
         if target is None or visible_chars < 300 or not actual:
@@ -4116,14 +4101,19 @@ def _reference_scale_sentence(scale: Mapping[str, Any] | None) -> str:
     )
 
 
-def _style_first_length_slack(bundle: Mapping[str, Any] | None) -> float:
-    if not is_style_bound(bundle):
+def _scene_rendering_mode(scene: Any) -> str:
+    """场景卡上结构化的呈现方式(``writer_brief_json.rendering_mode``:full / summary / skip),缺省 full。"""
+    brief = getattr(scene, "writer_brief_json", None) if scene is not None else None
+    value = str(brief.get("rendering_mode") or "") if isinstance(brief, Mapping) else ""
+    return value.strip().lower() or "full"
+
+
+def _style_first_length_slack(bundle: Mapping[str, Any] | None, scene: Any = None) -> float:
+    if not style_policy_for_bundle(bundle).defers_house_taste():
         return 0.0
-    # 阶段 L：「概述两段」的反应场是作者的呈现决定（200–500 字），风格直起也不把它放宽成整场。
-    # 2026-09-22：bundle 在真实管线里是 ``{"snapshot": {...}}`` 外壳——此前只看顶层 inline_digests，
-    # 概述场的豁免在真实运行里从未生效。
-    structure = str(_bundle_inline_digests(bundle).get("scene_structure_brief") or "")
-    if "Rendering mode: summary" in structure:
+    # 阶段 L：「概述两段」的场是作者的呈现决定（200–500 字），风格直起也不把它放宽成整场。
+    # 风格参考 v3：读场景卡上结构化的 rendering_mode，不再在结构简报的渲染文本里找「Rendering mode: summary」。
+    if _scene_rendering_mode(scene) == "summary":
         return 0.0
     try:
         budget = load_yaml_config("injection_budget")
@@ -4137,8 +4127,8 @@ def _style_first_length_slack(bundle: Mapping[str, Any] | None) -> float:
 
 
 @contextlib.contextmanager
-def _length_band_slack_for(bundle: Mapping[str, Any] | None):
-    slack = _style_first_length_slack(bundle)
+def _length_band_slack_for(bundle: Mapping[str, Any] | None, scene: Any = None):
+    slack = _style_first_length_slack(bundle, scene)
     token = _LENGTH_BAND_SLACK.set(slack)
     # 参考尺度只在放宽生效(style_first 且非概述场)时随行;否则 None = 现状。
     scale_token = _REFERENCE_SCENE_SCALE.set(_reference_scene_scale_from_bundle(bundle) if slack > 0 else None)

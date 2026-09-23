@@ -607,7 +607,7 @@ def test_phase_d_prompt_versions_and_contracts() -> None:
     assert "视角故事" in scene_list["task_prompt"]
 
     review = templates["near_final_acceptance_review"]
-    assert review["version"] == "2026-09-22.v9"
+    assert review["version"] == "2026-09-23.v10"
     assert "Always fill scene_story_check" in review["task_prompt"]
     assert "must not change near_final_status or pass_flag" in review["task_prompt"]
     schema = review["structured_schema"]

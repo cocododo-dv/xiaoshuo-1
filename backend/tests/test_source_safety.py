@@ -109,22 +109,16 @@ def test_global_terms_require_explicit_json_configuration(monkeypatch) -> None:
     assert result["protected_terms_source"] == "environment"
 
 
-def test_reference_profile_term_variant_is_flagged() -> None:
-    """Second layer (profile-derived protected terms) is hardened too: a
-    traditional + spaced variant of a CJK profile term still raises a risk."""
-    profiles = [
-        {
-            "profile_id": "refprofile_x",
-            "protected_terms": ["青铜与火"],
-            "distinctive_phrases": [],
-            "scene_bridges": [],
-        }
+def test_protected_term_spans_survive_variants_and_point_into_the_text() -> None:
+    """风格参考 v3：画像的受保护专名由抄袭门按位置报——繁体 + 插空格的变体照样命中，位置指回原文。"""
+    from novel_system.services.source_safety import find_protected_term_spans
+
+    text = "他举起了青 銅與熱泉的旗帜。后来青铜与热泉又出现了。"
+    spans = find_protected_term_spans(text, ["青铜与热泉"])
+    assert [(term, start, end) for term, start, end in spans] == [
+        ("青铜与热泉", 4, 10),
+        ("青铜与热泉", 16, 21),
     ]
-    # traditional 青銅與火 with an inserted space — must still be caught
-    result = scan_source_safety(
-        "他举起了青 銅與火的旗帜。",
-        reference_safety_profiles=profiles,
-    )
-    assert result["safe"] is False
-    assert result["risk_count"] >= 1
-    assert any(risk.get("matched") == "青铜与火" or risk.get("risk_type") == "exact_term" for risk in result["risks"])
+    assert text[4:10] == "青 銅與熱泉" and text[16:21] == "青铜与热泉"
+    assert find_protected_term_spans(text, ["不相干"]) == []
+

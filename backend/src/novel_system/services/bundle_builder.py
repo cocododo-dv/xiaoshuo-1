@@ -55,6 +55,12 @@ from novel_system.services.style_reference.narrative_guidance import (
     collect_narrative_guidance,
     render_narrative_section,
 )
+from novel_system.services.style_policy import (
+    MODE_FROZEN,
+    UNBOUND,
+    StylePolicy,
+    policy_from_contract,
+)
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
     build_style_runtime_contract,
@@ -616,6 +622,8 @@ class BundleBuilder:
             inline_digests[SCENE_DESIGN_SECTION_KEY] = design_context.text
         # 2026-09-22 风格参考优先:契约写了 style_first 时,本系统自己的前文不再作为「声音」进入提示
         # (前文声音锚 / 相似场景 / 整篇上一场正文)——第 1 场若跑偏,后面每一场都被要求接着那个腔写。
+        # 风格参考 v3:契约每个 bundle 只建一次,这一次的 StylePolicy 管本 bundle 里所有让位判定(含新鲜度预算)。
+        bundle_policy: StylePolicy = UNBOUND
         reference_first = False
         source_version_refs["style_reference_runtime_contract_version"] = (
             STYLE_RUNTIME_CONTRACT_VERSION
@@ -633,9 +641,8 @@ class BundleBuilder:
                     task_type="scene_generation",
                 )
                 if style_runtime_contract is not None:
-                    reference_first = (
-                        str(style_runtime_contract.get("draft_mode") or "") == "style_first"
-                    )
+                    bundle_policy = policy_from_contract(style_runtime_contract, mode=MODE_FROZEN)
+                    reference_first = bundle_policy.defers_house_taste()
                     source_version_refs["style_reference_runtime_contract_hash"] = (
                         style_runtime_contract["contract_hash"]
                     )
@@ -929,7 +936,7 @@ class BundleBuilder:
                 else previous_memory.content
             )
 
-        freshness_budget = self._literary_freshness_budget(scene)
+        freshness_budget = self._literary_freshness_budget(scene, bundle_policy)
         if freshness_budget is not None:
             source_version_refs["literary_freshness_source_final_scene_ids"] = (
                 freshness_budget["source_final_scene_ids"]
@@ -1160,7 +1167,16 @@ class BundleBuilder:
             self._slot_degraded("narrative_state", scene)
             return None
 
-    def _literary_freshness_budget(self, scene: SceneCard) -> dict[str, Any] | None:
+    def _literary_freshness_budget(
+        self, scene: SceneCard, policy: StylePolicy = UNBOUND
+    ) -> dict[str, Any] | None:
+        """新鲜度预算：防本系统复读自己已写成的前几场。
+
+        风格参考 v3（L8）：让位（``policy.defers_house_taste()``）时只保留逐字层的防复读（近场重复 n-gram）；
+        构式 / 语义层清单（动作模板、意象场、句形、语义复读、全书已用表达）一律不发——这些手法反复出现
+        正是参考作者的风格（真实案例：「劣质 + 材质名词」这类像参考作者的比喻被当成「章内已禁用」）。
+        策略由 bundle 构建时建好的那份契约给出，不再为新鲜度预算另建一次契约。
+        """
         rows = (
             self.session.execute(
                 select(FinalScene)
@@ -1202,31 +1218,26 @@ class BundleBuilder:
             for row in fingerprint.get("syntax_shapes", [])
             if int(row.get("count") or 0) >= 3
         ]
-        # 2026-09-12 风格直起:契约先解析——style_first 下写死的两张房风词表与「以动作而非
-        # 解释收尾」子句整体让位;跨场景动作模板 / 意象场 / 句形复用(防系统自我复读)保留。
-        try:
-            contract = resolve_scene_style_runtime_contract(self.session, scene)
-        except Exception:  # noqa: BLE001 — 豁免标记是可选增强，解析失败按无契约处理
-            _LOGGER.debug("freshness budget contract lookup degraded", exc_info=True)
-            contract = None
-        style_bound = (
-            contract is not None and str(contract.get("draft_mode") or "") == "style_first"
+        style_bound = policy.defers_house_taste()
+        preserve_repetition = bool(
+            policy.bound and policy.contract is not None and contract_deliberate_repetition(policy.contract)
         )
-        preserve_repetition = contract is not None and contract_deliberate_repetition(contract)
         budget: dict[str, Any] = {
             "schema_version": "literary_freshness_budget_v1",
             "source_scene_ids": [row.scene_id for row in source_rows],
         }
         if style_bound:
             # 2026-09-14 风格保真修补:动作模板 / 意象场 / 句形三张表是从本系统自己已按作者手笔写成的
-            # 前几场里挖出来的——有绑定时它们就是作者的声音,不再当作要避开的东西发给起草;只保留
-            # 内容级复读检查(近场 n-gram、语义复读、全书禁用表达)。
+            # 前几场里挖出来的——有绑定时它们就是作者的声音,不再当作要避开的东西发给起草。
+            # 风格参考 v3(L8):语义复读与全书已用表达(比喻 / 意象 / 开头方式 / 动作口癖 / 情绪惯用语)
+            # 也是构式层清单,同样让位;只剩逐字层的近场重复 n-gram。
             budget["house_taste_lists"] = "deferred_to_reference"
             budget["voice_lists"] = "deferred_to_reference"
+            budget["construction_lists"] = "deferred_to_reference"
             budget["instruction"] = (
-                "Use this as a freshness budget against repeating your own earlier scenes' content only: "
-                "do not reuse the recent n-grams or the semantic beats listed here. The reference "
-                "author's habits, cadence, syntax shapes, image fields, and closing moves are never repetition to avoid."
+                "Use this as a freshness budget against copying your own earlier scenes word for word only: "
+                "do not reuse the recent n-grams listed here verbatim. The reference author's habits, devices, "
+                "comparisons, cadence, syntax shapes, image fields, and closing moves are never repetition to avoid."
             )
         else:
             budget["avoid_action_templates"] = action_templates
@@ -1255,8 +1266,10 @@ class BundleBuilder:
             )
             if repeated_ngrams:
                 budget["avoid_recent_ngrams"] = repeated_ngrams
-            corpus_texts, corpus_ids = detector._load_corpus(
-                scene.scene_id, scene.chapter_id, lookback_scenes=6
+            corpus_texts, corpus_ids = (
+                ([], [])
+                if style_bound
+                else detector._load_corpus(scene.scene_id, scene.chapter_id, lookback_scenes=6)
             )
             if corpus_texts:
                 from novel_system.services.self_repetition import (
@@ -1273,15 +1286,16 @@ class BundleBuilder:
                         format_semantic_repetition_guidance(sem_hits)
                     )
             # §9 blueprint: whole-book banned expression list (LifetimeExpressionRegistry)
-            from novel_system.services.self_repetition import LifetimeExpressionRegistry
+            # 风格参考 v3(L8):让位时整张表不发(它把作者反复用的比喻 / 口头禅当成滥用)。
+            if not style_bound:
+                from novel_system.services.self_repetition import LifetimeExpressionRegistry
 
-            lifetime_reg = LifetimeExpressionRegistry(self.session)
-            lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(
-                scene.project_id
-            )
-            # style_first 且参考刻意复沓时,全书禁用表达表也让位(它会把作者的口头禅当成滥用)。
-            if lifetime_guidance and not (style_bound and preserve_repetition):
-                budget["lifetime_banned_expressions"] = lifetime_guidance
+                lifetime_reg = LifetimeExpressionRegistry(self.session)
+                lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(
+                    scene.project_id
+                )
+                if lifetime_guidance:
+                    budget["lifetime_banned_expressions"] = lifetime_guidance
         except Exception:
             self._slot_degraded("literary_freshness_enrichment", scene)
         # v2（规格 §2.W6.3）新鲜度豁免：

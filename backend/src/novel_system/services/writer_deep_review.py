@@ -34,6 +34,10 @@ from novel_system.services.llm_task_runner import (
     current_llm_execution_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.reference_copy_gate import (
+    check_reference_copy_for_scope,
+    copy_block_author_action,
+)
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.scene_diagnosis import (
@@ -500,6 +504,7 @@ class WriterDeepReviewService:
         option_ids = {str(option.get("option_id")) for option in row.replacement_options_json or []}
         if selected_option_id and selected_option_id not in option_ids:
             raise DomainError("PASSAGE_PATCH_OPTION_NOT_FOUND", "selected replacement option not found", status_code=404)
+        self._require_patch_copy_safe(row, selected_option_id)
         row.status = "accepted"
         row.author_decision = "accepted"
         row.selected_option_id = selected_option_id
@@ -508,6 +513,39 @@ class WriterDeepReviewService:
         self._refresh_author_preference_profile(actor_ref=actor_ref)
         self.session.flush()
         return {"candidate": self.serialize_patch_candidate(row)}
+
+    def _require_patch_copy_safe(self, row: PassagePatchCandidate, selected_option_id: str | None) -> None:
+        """作者采纳局部改写之前过唯一抄袭门（风格参考 v3 V1）：采纳的那个选项（没点名就查全部选项）与绑定的参考书
+        连续 ≥12 字相同、或含受保护专名 → 409，候选不改状态。位置是选项文字里的第几字，不印参考原文。"""
+
+        options = [option for option in row.replacement_options_json or [] if isinstance(option, dict)]
+        if selected_option_id:
+            options = [option for option in options if str(option.get("option_id")) == selected_option_id]
+        text = "\n".join(str(option.get("replacement_text") or "") for option in options).strip()
+        if not text:
+            return
+        scene_id = row.scene_id or (row.object_id if row.object_type == "scene" else None)
+        chapter_id = row.chapter_id or (row.object_id if row.object_type == "chapter" else None)
+        scope = resolve_style_scope(self.session, scene_id=scene_id, chapter_id=chapter_id)
+        check = check_reference_copy_for_scope(self.session, text, scope=scope)
+        if not check.blocked:
+            return
+        raise DomainError(
+            "SOURCE_SAFETY_BLOCKED",
+            "reference copy gate blocked adopting this passage rewrite — the author draft is unchanged",
+            status_code=409,
+            details={
+                "patch_id": row.patch_id,
+                "selected_option_id": selected_option_id,
+                "reference_copy": check.audit(),
+                "author_action": copy_block_author_action(
+                    check,
+                    target_view="writer",
+                    target_ref=f"{row.object_type}:{row.object_id}",
+                    subject="这条改写",
+                ),
+            },
+        )
 
     def reject_patch_candidate(self, patch_id: str, payload: dict[str, Any], actor_ref: str = "operator") -> dict[str, Any]:
         row = self._require_patch_candidate(patch_id)

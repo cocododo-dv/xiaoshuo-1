@@ -18,12 +18,8 @@ from novel_system.db.models import (
     FinalScene,
     SceneCard,
     SceneMemory,
-    SceneBundle,
     SceneDraft,
     SceneRunState,
-    StyleReferenceBook,
-    StyleReferenceProfile,
-    StyleReferenceRun,
 )
 from novel_system.services.archiver import Archiver
 from novel_system.services.errors import DomainError
@@ -241,10 +237,7 @@ def test_adopt_content_safety_requires_exact_acknowledgement_and_audits_it(
         "chapter_adopt_content_safety",
         content="角色只有16岁，段落明确描写两人的性行为。",
     )
-    monkeypatch.setattr(
-        "novel_system.services.final_text_gate.ReferenceSafetyService.scan_runtime_text",
-        lambda *args, **kwargs: {"safe": True, "matches": []},
-    )
+    # 风格参考 v3：没有绑定、没有全局受保护词时抄袭门本来就放行，不必再打桩
 
     blocked = client.post(
         "/api/v1/scenes/scene_adopt_content_safety/adopt-current",
@@ -302,66 +295,25 @@ def test_adopt_rejects_unbounded_or_unknown_request_fields(client):
     assert oversized.json()["error"]["code"] == "REQUEST_VALIDATION_FAILED"
 
 
-def test_adopt_blocks_dynamic_term_from_bound_reference_profile(client, session):
+def test_adopt_blocks_protected_name_of_the_bound_reference(client, session):
+    """风格参考 v3：画像的受保护专名（生成期禁用词，含 protected_auto）经唯一抄袭门拦下采纳，带作者动作。"""
+    from tests.reference_copy_fixtures import PROTECTED_NAME, seed_bound_reference
+
     _create_chapter(client, "chapter_adopt_dynamic")
     _create_scene(client, "scene_adopt_dynamic", chapter_id="chapter_adopt_dynamic", scene_seq=1)
     draft_row_id = _seed_style_draft(
         session,
         "scene_adopt_dynamic",
         "chapter_adopt_dynamic",
-        content="Professor Meridian arrived with a different archive key.",
+        content=f"{PROTECTED_NAME}推门进来，手里拎着一只不相干的铁皮箱。",
     )
-    session.add(
-        StyleReferenceBook(
-            book_id="refbook_dynamic_adopt",
-            title="Public source",
-            source_kind="path",
-            cloud_policy="local_only",
-            text_checksum="dynamic-adopt-checksum",
-        )
+    seed_bound_reference(
+        session,
+        seed="adopt_dynamic",
+        scope="scene",
+        scope_ref_id="scene_adopt_dynamic",
+        protected_terms=(PROTECTED_NAME,),
     )
-    session.flush()
-    session.add(
-        StyleReferenceRun(
-            run_id="run_dynamic_adopt",
-            book_id="refbook_dynamic_adopt",
-            status="done",
-            phase="done",
-        )
-    )
-    session.flush()
-    session.add(
-        StyleReferenceProfile(
-            profile_id="refprofile_dynamic_adopt",
-            book_id="refbook_dynamic_adopt",
-            run_id="run_dynamic_adopt",
-            title="Dynamic safety",
-            status="active",
-            profile_json={
-                "source_safety": {
-                    "ready": True,
-                    "profile_id": "refprofile_dynamic_adopt",
-                    "protected_terms": ["Professor Meridian"],
-                    "distinctive_phrases": [],
-                    "scene_bridges": [],
-                }
-            },
-        )
-    )
-    bundle = SceneBundle(
-        bundle_id="bundle_scene_adopt_dynamic",
-        scene_id="scene_adopt_dynamic",
-        chapter_id="chapter_adopt_dynamic",
-        bundle_snapshot_hash="hash_scene_adopt_dynamic",
-        frozen_snapshot_json={
-            "source_version_refs": {"reference_profile_ids": ["refprofile_dynamic_adopt"]},
-        },
-    )
-    state = session.get(SceneRunState, "scene_adopt_dynamic")
-    state.current_bundle_id = bundle.bundle_id
-    state.current_bundle_hash = bundle.bundle_snapshot_hash
-    session.add(bundle)
-    session.commit()
 
     response = client.post(
         "/api/v1/scenes/scene_adopt_dynamic/adopt-current",
@@ -370,10 +322,50 @@ def test_adopt_blocks_dynamic_term_from_bound_reference_profile(client, session)
     )
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "SOURCE_SAFETY_BLOCKED"
+    error = response.json()["error"]
+    assert error["code"] == "SOURCE_SAFETY_BLOCKED"
     session.expire_all()
     assert session.get(SceneDraft, draft_row_id) is not None
     assert session.get(SceneRunState, "scene_adopt_dynamic").scene_status != "archived"
+
+
+def test_adopt_blocks_verbatim_reference_copy_without_leaking_the_source(client, session):
+    """评审探针：参考书连续 60 字照抄过去判「安全」——v3 唯一抄袭门对绑定的书比对，拦下并只报位置与哈希。"""
+    from novel_system.services.final_text_gate import FinalTextGateService
+    from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
+
+    _create_chapter(client, "chapter_adopt_copy")
+    _create_scene(client, "scene_adopt_copy", chapter_id="chapter_adopt_copy", scene_seq=1)
+    copied = REFERENCE_PASSAGE[:60]
+    prefix = "她把雨伞靠在门边。"
+    content = f"{prefix}{copied}然后她什么也没说。"
+    _seed_style_draft(session, "scene_adopt_copy", "chapter_adopt_copy", content=content)
+    seed_bound_reference(session, seed="adopt_copy", scope="scene", scope_ref_id="scene_adopt_copy")
+
+    response = client.post(
+        "/api/v1/scenes/scene_adopt_copy/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-copy"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "SOURCE_SAFETY_BLOCKED"
+    assert REFERENCE_PASSAGE[:12] not in response.text
+    session.expire_all()
+    assert session.get(SceneRunState, "scene_adopt_copy").scene_status != "archived"
+
+    # 成稿门对同一稿给出同样的裁决：位置指回作者自己的正文，作者动作说清第几字到第几字，不印原文
+    gate = FinalTextGateService(session).evaluate(scene_id="scene_adopt_copy", content=content)
+    assert "source_safety:reference_copy" in gate["archive_blockers"]
+    (hit,) = gate["source_safety"]["hits"]
+    assert (hit["start"], hit["end"]) == (len(prefix), len(prefix) + len(copied))
+    action = gate["source_safety"]["author_action"]
+    assert f"第 {len(prefix) + 1}–{len(prefix) + len(copied)} 字" in action["message"]
+    assert REFERENCE_PASSAGE[:12] not in str(gate["source_safety"])
+    with pytest.raises(DomainError) as exc_info:
+        FinalTextGateService.raise_if_not_archivable(gate, scene_id="scene_adopt_copy")
+    assert exc_info.value.code == "SOURCE_SAFETY_BLOCKED"
+    assert exc_info.value.details["author_action"] == action
 
 
 def test_adopt_promotes_existing_unarchived_final_scene(client, session):
@@ -530,7 +522,7 @@ def test_archiver_fails_closed_when_source_safety_is_unavailable(client, session
         raise RuntimeError("scanner offline")
 
     monkeypatch.setattr(
-        "novel_system.services.final_text_gate.ReferenceSafetyService.scan_runtime_text",
+        "novel_system.services.final_text_gate.check_reference_copy",
         unavailable,
     )
 

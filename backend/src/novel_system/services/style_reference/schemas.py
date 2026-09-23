@@ -154,7 +154,7 @@ class TaskType(str, Enum):
 
 
 class ValidationVerdict(str, Enum):
-    """来源:§7.5 _compute_verdict。"""
+    """来源:§7.5 _compute_full_verdict。"""
 
     PASS = "pass"
     PARTIAL = "partial"
@@ -593,7 +593,6 @@ class ValidateRequest(BaseModel):
     target_kind: ValidationTargetKind = ValidationTargetKind.MANUAL
     target_ref_id: str | None = Field(default=None, max_length=255)
     mode: ValidationMode = ValidationMode.ASYNC_FULL
-    task_context: dict[str, Any] | None = None
 
 
 class ValidateResponse(BaseModel):
