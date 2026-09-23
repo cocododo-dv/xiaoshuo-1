@@ -129,6 +129,7 @@ const STYLE_NOTICE_REASON_LABELS = {
     reading_unreliable: "首稿量不准，没有再改",
     reading_unavailable: "没有尺子可量，首稿没有再改",
     best_of_n_candidate: "首稿进了候选",
+    reading_failed: "量首稿时出错，没有再改",
   },
   STYLE_REVISION_REJECTED: {
     not_closer: "改了一版没有更像，保留首稿",
@@ -144,10 +145,11 @@ const STYLE_NOTICE_REASON_DETAILS = {
     reading_unreliable: "首稿太短（或参考书能拿来比的片段太少），量不准；为免越改越远，没有改它。",
     reading_unavailable: "参考书还没有量像不像的尺子（还没有样例片段），没有改它。",
     best_of_n_candidate: "首稿作为候选之一，和修改稿一起按像不像排序。",
+    reading_failed: "量首稿时出了错（记录里有原因，不是参考书缺尺子）；为免越改越远，没有改它。",
   },
   STYLE_REVISION_REJECTED: {
     not_closer: "按量出来的差距改了一版，但量下来没有更像这位作者，保留了首稿。",
-    copy_gate_blocked: "改出来的那一版有与参考书原文连续相同的地方（或用了它的专名），已丢掉，保留首稿。",
+    copy_gate_blocked: "改出来的那一版新添了与参考书原文连续相同的地方，已丢掉，保留首稿。",
     base_safety_failed: "改出来的那一版丢了必写的内容、长度不对或文本不完整，保留首稿。",
     revision_reading_unavailable: "改出来的那一版量不出像不像，没法确认更像，保留首稿。",
     revision_template_missing: "首稿和作者差得明显，但这台机器还没有「定向修改」的提示词模板（同步提示词模板之后就有），这一场保留首稿。",

@@ -236,7 +236,7 @@ describe("写作台 · 续写", () => {
     const host = await render(<WrContinuePanel sceneId="ch01s1" design={null} onAdopt={() => {}} onMerge={() => {}} onAdoptText={() => {}} />);
     await click(startsWith(host, "生成三条续写"));
     await vi.waitFor(() => expect(host.querySelector('[data-testid="wr-cand-copy-note"]')).not.toBeNull(), T);
-    expect(host.querySelector('[data-testid="wr-cand-copy-note"]').textContent).toBe("另有 1 版与参考书原文连续相同（或用了它的专名），已经丢掉。");
+    expect(host.querySelector('[data-testid="wr-cand-copy-note"]').textContent).toBe("另有 1 版与参考书原文连续相同，已经丢掉。");
     expect(host.querySelectorAll(".wr-cand").length).toBe(2);
   });
 

@@ -125,7 +125,7 @@ export function WrCandidateList({ state, stacked = false, selected = -1, onSelec
   /* 服务端丢掉了照搬参考书的那几版：说一句，免得作者纳闷为什么不是三条 */
   return [
     <p key="copy-note" className="wr-cand-copy-note" role="note" data-testid="wr-cand-copy-note">
-      另有 {state.copyBlocked} 版与参考书原文连续相同（或用了它的专名），已经丢掉。
+      另有 {state.copyBlocked} 版与参考书原文连续相同，已经丢掉。
     </p>,
     ...cards,
   ];

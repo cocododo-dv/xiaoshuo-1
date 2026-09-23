@@ -50,6 +50,7 @@ from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.style_prompt_injection import (
     STYLED_GATE_UNAVAILABLE_VERDICT,
 )
+from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -2215,6 +2216,9 @@ class SoftQcEngine:
                 final_user_prompt=final_user_prompt,
                 role=ROLE_REVIEW,
             )
+        except STYLE_REFERENCE_FAIL_CLOSED_ERRORS:
+            # 云策略不许把这本书派生的任何东西送给软 QC 的节点：整遍软 QC 409（带 author_action），不降级成没有参考的提示
+            raise
         except Exception:  # noqa: BLE001 — 可选增强，不阻断 soft_qc
             _LOGGER.warning(
                 "soft_qc style reference prefix skipped for scene %s",

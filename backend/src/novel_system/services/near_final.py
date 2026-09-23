@@ -45,6 +45,7 @@ from novel_system.services.style_reference.planning_context import (
     style_reference_prompt_blocks,
 )
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
+from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 
 
 NEAR_FINAL_RUBRIC_ID = "near_final_acceptance_v1"
@@ -452,7 +453,12 @@ class NearFinalPlanningService:
         # summary」只在没有这些块时成立。无绑定 / 旧画像 / 解析失败 → 快照逐字不变。
         contract = self._style_reference_contract(scene)
         if contract is not None:
-            reference = build_planning_style_reference(contract, session=self.session)
+            # 这份规划快照进章架构与人物压力两个节点：按它们的实际路由判云策略（H1）
+            reference = build_planning_style_reference(
+                contract,
+                session=self.session,
+                node_ids=(CHAPTER_ARCHITECTURE_ARTIFACT, CHARACTER_PRESSURE_ARTIFACT),
+            )
             if reference is not None:
                 register_planning_style_reference(snapshot, reference)
         source_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
@@ -548,6 +554,9 @@ class NearFinalAcceptanceService:
                 role=ROLE_REVIEW,
             )
             return injected if injected is not None else prompt
+        except STYLE_REFERENCE_FAIL_CLOSED_ERRORS:
+            # 云策略不许把这本书派生的任何东西送给这个节点:整次评审 409(带 author_action),不降级成没有参考的提示
+            raise
         except Exception:  # noqa: BLE001 — 可选增强,不阻断验收评审
             import logging
 
