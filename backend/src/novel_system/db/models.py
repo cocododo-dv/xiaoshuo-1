@@ -2252,6 +2252,141 @@ class StyleReferenceFindingFeedback(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
+class StyleReferenceJob(Base):
+    """风格参考 v3（2026-09-23）— 统一的持久作业表（迁移 0090）。
+
+    ``kind`` ∈ classify / learn / check。一个作业一行；工人认领时 ``attempt`` +1 并换一枚新的
+    ``owner_token``，此后的每一次写（心跳 / 进度 / 游标 / 结束）都以「owner_token 仍是自己」为条件——
+    被清扫重排、被取消、被删书的作业，旧工人的写全部落空，自然停下。心跳过期的 running 作业由常驻
+    清扫线程放回 queued，重启或 ``--reload`` 之后不需要人工介入。
+    """
+
+    __tablename__ = "style_reference_jobs"
+    __table_args__ = (
+        Index("ix_style_reference_jobs_book_kind_state", "book_id", "kind", "state"),
+        Index("ix_style_reference_jobs_state_heartbeat", "state", "heartbeat_at"),
+    )
+
+    job_id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String)
+    book_id: Mapped[str | None] = mapped_column(
+        ForeignKey("style_reference_books.book_id"), nullable=True
+    )
+    profile_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    op_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str] = mapped_column(String, default="queued")
+    phase: Mapped[str | None] = mapped_column(String, nullable=True)
+    cancel_requested: Mapped[int] = mapped_column(Integer, default=0)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    owner_token: Mapped[str | None] = mapped_column(String, nullable=True)
+    heartbeat_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    params_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    cursor_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    progress_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class StyleReferenceWindow(Base):
+    """风格参考 v3 — 持久化的全书样例窗口索引（迁移 0090）。
+
+    一本书在一个索引版本 + 一个段落根哈希下的一组连续窗口；``features_json`` 是测量核在这一窗上的
+    特征（「像不像」读数的参照分布就是作者自己这些窗口的分布），``tags_json`` 是学习作业里模型打的
+    场面 / 情绪 / 手法标签（按本场挑样例用）。段落表变了（根哈希变了）就整组重建。
+    """
+
+    __tablename__ = "style_reference_windows"
+    __table_args__ = (
+        UniqueConstraint(
+            "book_id",
+            "index_version",
+            "window_no",
+            name="uq_style_reference_windows_book_version_no",
+        ),
+        Index("ix_style_reference_windows_book_version_chapter", "book_id", "index_version", "chapter_no"),
+    )
+
+    window_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("style_reference_books.book_id"))
+    index_version: Mapped[str] = mapped_column(String)
+    root_sha256: Mapped[str] = mapped_column(String)
+    window_no: Mapped[int] = mapped_column(Integer)
+    start_index: Mapped[int] = mapped_column(Integer)
+    end_index: Mapped[int] = mapped_column(Integer)
+    chapter_no: Mapped[int] = mapped_column(Integer, default=0)
+    position: Mapped[str] = mapped_column(String, default="middle")
+    chars: Mapped[int] = mapped_column(Integer, default=0)
+    paragraph_count: Mapped[int] = mapped_column(Integer, default=0)
+    type_mix_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    dialogue_share: Mapped[float] = mapped_column(Float, default=0.0)
+    typicality: Mapped[float] = mapped_column(Float, default=0.0)
+    features_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    tags_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    tags_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleFidelityReading(Base):
+    """风格参考 v3 — 一份文字「像不像参考」的读数（迁移 0090）。
+
+    ``percentile`` / ``distance`` 是对作者自己窗口分布的确定性读数；``reading_json`` 带越界特征
+    （特征 → 维度 → 白话短语）与按维确定性分；``judge_json`` 是参考评审（软 QC / 对照检查）按 16 维
+    给的分。刻意不存 chapter_id：场景改章时读数不必跟着搬（场景 → 章从 SceneCard 现查）。
+    """
+
+    __tablename__ = "style_fidelity_readings"
+    __table_args__ = (
+        Index("ix_style_fidelity_readings_scene_created", "scene_id", "created_at"),
+        Index("ix_style_fidelity_readings_project_created", "project_id", "created_at"),
+        Index("ix_style_fidelity_readings_profile_created", "profile_id", "created_at"),
+    )
+
+    reading_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    profile_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    binding_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str] = mapped_column(String)
+    stage: Mapped[str] = mapped_column(String)
+    draft_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    text_sha256: Mapped[str] = mapped_column(String)
+    char_count: Mapped[int] = mapped_column(Integer, default=0)
+    percentile: Mapped[float | None] = mapped_column(Float, nullable=True)
+    distance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reading_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    judge_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    copy_check_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class StyleReferenceSceneWindows(Base):
+    """风格参考 v3 — 一场冻结的选窗（迁移 0090）。
+
+    ``selection_key`` = sha256(bundle_id | 契约哈希 | scene_id | 选窗参数版本)；同一场的首稿、修改、
+    评审、补丁读同一行，所以同一场的所有工序看到同一组窗（评审 / 规划节点取其中前几窗）。
+    """
+
+    __tablename__ = "style_reference_scene_windows"
+    __table_args__ = (
+        UniqueConstraint("selection_key", name="uq_style_reference_scene_windows_key"),
+        Index("ix_style_reference_scene_windows_scene", "scene_id", "created_at"),
+    )
+
+    selection_id: Mapped[str] = mapped_column(String, primary_key=True)
+    selection_key: Mapped[str] = mapped_column(String)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    contract_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    window_refs_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    params_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
 # Keep ``Base.metadata.create_all`` test databases aligned with Alembic 0081.
 # Every declared foreign key used for parent lookup/deletion must have an index
 # whose first column is that foreign-key column.  Existing composite indexes are

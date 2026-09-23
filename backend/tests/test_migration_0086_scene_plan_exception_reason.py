@@ -10,7 +10,9 @@ from alembic import command
 from alembic.config import Config
 
 PREVIOUS_HEAD = "20260914_0085"
-CURRENT_HEAD = "20260920_0089"
+# 升到 head 后断言的版本号跟着 schema_contract 走（test_schema_contract_revision 把它钉在 Alembic 唯一 head 上），
+# 以后再加迁移不必回来改这个文件。
+from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION as CURRENT_HEAD  # noqa: E402
 
 
 def _config() -> Config:
