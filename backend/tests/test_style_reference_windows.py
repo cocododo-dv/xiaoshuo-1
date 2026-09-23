@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import random
 
 import pytest
@@ -21,6 +20,7 @@ from novel_system.services.style_reference.paragraph_root import (
     patch_book_stats,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.style_reference_factories import make_book
 from novel_system.services.style_reference.runtime_contract import compute_paragraph_root
 from novel_system.services.style_reference.structure import compute_structure_card, split_book_chapters
 
@@ -67,29 +67,7 @@ def synthetic_rows(seed: str = "a", chapters: int = 8, per_chapter: int = 70) ->
 
 
 def seed_book(session, book_id: str, rows: list[dict], *, stats: dict | None = None) -> str:
-    repo = StyleReferenceRepository(session)
-    repo.create_book(
-        book_id=book_id,
-        title="合成书",
-        source_kind="upload",
-        cloud_policy="allow_full_cloud",
-        text_checksum=hashlib.sha256(book_id.encode("utf-8")).hexdigest(),
-        total_chars=sum(len(r["text"]) for r in rows),
-        status="ready",
-        stats_json=dict(stats or {}),
-    )
-    for row in rows:
-        repo.create_paragraph(
-            paragraph_id=f"{book_id}_p{row['paragraph_index']:05d}",
-            book_id=book_id,
-            paragraph_index=row["paragraph_index"],
-            paragraph_type=row["paragraph_type"],
-            start_offset=0,
-            end_offset=len(row["text"]),
-            text=row["text"],
-            char_count=len(row["text"]),
-            classifier_confidence=0.9,
-        )
+    make_book(session, book_id, title="合成书", paragraphs=rows, stats=stats)
     session.commit()
     return book_id
 

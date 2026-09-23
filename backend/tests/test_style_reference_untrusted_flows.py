@@ -1,4 +1,4 @@
-"""共享 LLM helper 各生产入口的不可信 payload 边界回归。"""
+"""风格参考各 LLM 入口(学习作业七个节点、对照检查的参考评审)的不可信 payload 边界回归。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from novel_system.services.style_reference import _llm_helper
 from novel_system.services.style_reference.learn_llm import (
     EXTRACT_NODES,
     NODE_PROTECTED_TERMS,
@@ -57,7 +56,7 @@ def _cfg() -> SimpleNamespace:
 
 
 @pytest.fixture(autouse=True)
-def _fake_nodes(monkeypatch):
+def _fake_nodes():
     templates = {
         node_id: SimpleNamespace(
             system_prompt=f"SYSTEM {node_id}",
@@ -66,12 +65,6 @@ def _fake_nodes(monkeypatch):
         )
         for node_id in FLOW_NODES
     }
-    routing = SimpleNamespace(
-        task_routing={node_id: _cfg() for node_id in FLOW_NODES},
-        node_routing={},
-    )
-    monkeypatch.setattr(_llm_helper, "load_prompt_templates", lambda: templates)
-    monkeypatch.setattr(_llm_helper, "load_model_routing_config", lambda: routing)
     return templates
 
 

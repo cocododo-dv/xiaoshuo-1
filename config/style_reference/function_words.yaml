@@ -1,5 +1,5 @@
 # Style Reference v2 声音签名——闭类词表(voice_signature.py 消费)。
-# 依据 docs/style-imitation-v2-plan-2026-09-05.md §2.W3:声音签名只用闭类词与标点,
+# 依据 docs/history/style/style-imitation-v2-plan-2026-09-05.md §2.W3:声音签名只用闭类词与标点,
 # 不含名词 / 动词等实词,天然内容安全,可以直接渲染进生成提示而不泄露原文。
 #
 # 约束:

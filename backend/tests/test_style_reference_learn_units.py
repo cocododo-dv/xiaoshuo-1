@@ -579,11 +579,9 @@ def test_learn_prompts_and_node_routes_are_aligned() -> None:
         assert template_meets_contract(node_id, templates[node_id])
     for layer in ("language", "narrative", "scene", "theme"):
         template = templates[f"style_ref_extract_{layer}"]
-        assert template.version == "2026-09-23.v6"
         assert "model_default" in template.system_prompt and "devices" in template.system_prompt
         assert "全面模仿" in template.system_prompt and "不得引用、复述" not in template.system_prompt
     synth = templates["style_ref_synthesize_profile"]
-    assert synth.version == "2026-09-23.v9"
     assert "对账" in synth.system_prompt and "voice_habits" in synth.system_prompt
     assert "不得逐字抄写这些行" not in synth.system_prompt  # 不再要求卡片重述声音(台账 E1)
     tag_schema = templates["style_ref_tag_windows"].structured_schema

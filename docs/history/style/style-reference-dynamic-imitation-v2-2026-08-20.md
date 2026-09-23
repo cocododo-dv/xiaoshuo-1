@@ -1,3 +1,5 @@
+> 历史文档：描述当时的实现，现行说明见 [docs/style-reference.md](../../style-reference.md)
+
 # 风格参考动态模仿 v2 设计与实施记录
 
 日期：2026-08-20

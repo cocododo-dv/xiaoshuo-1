@@ -666,7 +666,7 @@ def render_stats(
     blocks: Mapping[str, Any],
     k: int,
 ) -> dict[str, int]:
-    """读数（``InjectionPreviewStats`` 的字段；抽象块只有卡 / 声音，量化指标与检索片段恒为 0）。"""
+    """读数（``InjectionPreviewStats`` 的字段；抽象块只有卡 / 声音，量化指标行恒为 0）。"""
     positive, forbidden = count_card_lines(str(blocks.get("card") or ""))
     windows = list(blocks.get("windows") or [])
     return {
@@ -676,7 +676,6 @@ def render_stats(
         "voice_lines": sum(1 for line in str(blocks.get("voice") or "").splitlines() if line.startswith("- ")),
         "few_shot_windows": len(windows),
         "few_shot_chars": sum(int(w.chars) for w in windows),
-        "rag_snippets": 0,
         "total_prefix_chars": len(system_prefix) + len(user_tail),
         "intensity_effective_total_chars": len(str(blocks.get("card") or "")),
         "few_shot_k": int(k),

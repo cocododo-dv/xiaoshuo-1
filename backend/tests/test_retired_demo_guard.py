@@ -4,8 +4,6 @@
 的专有名词、被删的假生成客户端与演示种子模块、以及被下线的演示视图资产。
 
 刻意不覆盖：
-- `config/evals/`、`config/qa/` —— 文学评分 / source-safety 的 eval/测试数据集，
-  不是产品里展示给用户的演示数据；
 - 测试文件（`*.test.jsx` / `*_test.py` / `tests/`）—— 夹具用中性名，允许出现；
 - 记账边界的 `offline_deterministic` 执行模式常量与 `OfflineDeterministicExecution`
   ABC —— 休眠的基础设施，不是演示数据。

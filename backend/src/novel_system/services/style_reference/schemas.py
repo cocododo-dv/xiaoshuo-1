@@ -8,10 +8,6 @@ SupplementEvidenceOutput / SynthesizedProfile / ProfileSubDimensionSummary）；
 
 from __future__ import annotations
 
-# Runtime truth: `SystemPromptFragments` is the public injection payload.
-# `InjectionBundle` survives only as a historical design term in docs; the
-# current HTTP contract is the `injection-preview` response below.
-
 from enum import Enum
 from typing import Any, Literal
 
@@ -81,7 +77,8 @@ class ProfileStatus(str, Enum):
 
 
 class BindingScope(str, Enum):
-    """注入绑定的目标范围。来源:§4.2 injection_bindings.scope / §8.1 ProfileApplyDialog。"""
+    """注入绑定的目标范围(``style_reference_injection_bindings.scope``)。v3 只写 project / scene / character;
+    旧 global 行只读兼容。"""
 
     PROJECT = "project"
     SCENE = "scene"
@@ -94,7 +91,8 @@ class BindingStatus(str, Enum):
 
 
 class InjectionStrategy(str, Enum):
-    """A=System Prompt / B=Few-shot / C=RAG / mixed。来源:§5.1 / §6 注入策略。"""
+    """绑定行的旧 ``strategy`` 列(A / B / C / mixed)。v3 起一律写 ``mixed``;怎么送参考看绑定配置的
+    ``reference_mode``(``binding_config``:旧 A → card_only,B / C / mixed → full)。"""
 
     A = "A"
     B = "B"
@@ -114,21 +112,6 @@ class TaskType(str, Enum):
     # 收窄枚举会让存量行直接炸掉。仅从 UI 选项与任务卡片列表中移除。
     LONG_FORM_CONTINUATION = "long_form_continuation"
     KEY_CHAPTER = "key_chapter"
-
-
-class ValidationMode(str, Enum):
-    """退役(2026-09-23 v3 P5b):旧回测的执行方式;只剩旧 ``/validate`` 路由(P6a / P7 删除)还构造请求体。"""
-
-    SYNC_ONLY = "sync_only"
-    ASYNC_FULL = "async_full"
-
-
-class ValidationTargetKind(str, Enum):
-    """退役(2026-09-23 v3 P5b):同 :class:`ValidationMode`。"""
-
-    SCENE = "scene"
-    CHAPTER = "chapter"
-    MANUAL = "manual"
 
 
 class BannedTermScope(str, Enum):
@@ -167,11 +150,10 @@ class ExtractionEvidenceInput(BaseModel):
     illustrates_dims: list[str] = Field(default_factory=list)
     anchor_kind: AnchorKind = AnchorKind.PARAGRAPH_QUOTE
     note: str | None = None
-    is_synthetic: int = 0
 
 
 # ---------------------------------------------------------------------------
-# 抄袭检测(validation/plagiarism.py 的返回;唯一抄袭门的口径) / preview
+# 抄袭检测(validation/plagiarism.py 的返回;唯一抄袭门的口径)
 # ---------------------------------------------------------------------------
 
 
@@ -192,24 +174,6 @@ class PlagiarismReport(BaseModel):
     threshold_chars: int = 12
 
 
-
-
-# ---------------------------------------------------------------------------
-# 退役(2026-09-23 v3 P5b):旧回测请求体——只剩 ``api/routes/style_reference.py`` 的旧 ``/validate`` 路由构造它
-# (调用即 410 ``STYLE_REFERENCE_VALIDATION_RETIRED``,由 P6a / P7 删路由时一并删除);新接口是对照检查
-# ``POST /api/v2/style-reference/checks``。
-# ---------------------------------------------------------------------------
-
-
-class ValidateRequest(BaseModel):
-    """`POST /profiles/{profile_id}/validate` body 形态(profile_id 在 path)。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    generated_text: str = Field(min_length=1, max_length=2_000_000)
-    target_kind: ValidationTargetKind = ValidationTargetKind.MANUAL
-    target_ref_id: str | None = Field(default=None, max_length=255)
-    mode: ValidationMode = ValidationMode.ASYNC_FULL
 
 
 # ---------------------------------------------------------------------------
@@ -237,15 +201,12 @@ FEW_SHOT_CLOSING_MANDATE = (
 
 
 class SystemPromptFragments(BaseModel):
-    """注入到 LLM system_prompt 头部的 4 块文本 + strategy 回填(PR-8 §5.1)。
+    """本场预览(``POST /profiles/{id}/injection-preview``)返回的分块文本 + 旧 ``strategy`` 回填。
 
-    InjectionService.fragments_for() 返回此结构;scene_generation 调
-    `to_system_prompt_prefix()` 拿到最终拼接字符串后 prepend 到
-    messages[0]["content"]。风格 block 默认 empty,允许任一为空。
-
-    ``anti_plagiarism_block`` 是 §A.5 抄袭事前预防红线段(设计 §11 风险 11):
-    只要任一风格 block 非空(即确实在注入参考风格),红线段**必须**一并注入,
-    且**永不参与预算截断**。三个风格 block 全空时整体 no-op,红线段也不输出。
+    起草 / 评审节点的提示由 ``inject.render.render_style`` 直接拼(system 前缀 + user 尾块),不经过这个模型;
+    这里只是预览接口的响应形状:``positive_block`` = 文风卡,``voice_block`` = 声音习惯,``few_shot_block`` =
+    样例窗(起草时在 user 消息末尾),``anti_plagiarism_block`` = 红线(永不截断)。``forbidden_block`` /
+    ``metric_anchor_block`` 是旧画像时代的块名,v3 恒为空串。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -253,51 +214,10 @@ class SystemPromptFragments(BaseModel):
     positive_block: str = ""
     forbidden_block: str = ""
     metric_anchor_block: str = ""
-    # 2026-09 风格模仿 v2(W4):确定性声音签名渲染的 `[声音特征]` 块
-    # (来源 profile_json.voice_signature.habits;旧画像缺该键时恒为空串)。
     voice_block: str = ""
     few_shot_block: str = ""
-    # 立项 C — Strategy C(RAG)按当前上下文检索的参考风格片段块;与 few_shot_block
-    # 同性质(引用原文),非空时调用方保证红线段必随注。
-    rag_block: str = ""
     anti_plagiarism_block: str = ""
     strategy: InjectionStrategy = InjectionStrategy.A
-
-    def to_system_prompt_prefix(self, *, include_few_shot: bool = True) -> str:
-        # 顺序(2026-09-09 样例优先):few_shot → rag → voice → positive → forbidden →
-        # metric → anti_plagiarism。原文样例是主信号,排最前;抽象块作校核;量化分布最末;
-        # 红线段永远最后、永不截断。(v2 §1.2 的旧顺序把样例排在抽象块之后。)
-        # 2026-09-22 风格参考优先:起草通道把样例块放到 user 消息末尾(:meth:`to_user_prompt_tail`),
-        # 此时 ``include_few_shot=False``——system 前缀只剩抽象块与红线,并留一句指路。
-        blocks = [
-            block
-            for block in (
-                self.few_shot_block if include_few_shot else "",
-                self.rag_block,
-                self.voice_block,
-                self.positive_block,
-                self.forbidden_block,
-                self.metric_anchor_block,
-            )
-            if block.strip()
-        ]
-        if not include_few_shot and self.few_shot_block.strip():
-            blocks.insert(0, FEW_SHOT_IN_USER_MESSAGE_NOTE)
-        if not blocks:
-            return ""
-        if self.anti_plagiarism_block.strip():
-            blocks.append(self.anti_plagiarism_block)
-        return "[STYLE_REFERENCE]\n" + "\n\n".join(blocks) + "\n[/STYLE_REFERENCE]\n\n"
-
-    def to_user_prompt_tail(self) -> str:
-        """2026-09-22 风格参考优先:样例块作为 user 消息的**末尾**——离输出最近的位置。
-
-        样例之后紧跟一段收口指令(``FEW_SHOT_CLOSING_MANDATE``):以样例手笔写前文定下的这一场、
-        人物地名事件用本书的、不整句照搬、篇幅与 JSON 仍按前文。样例为空时返回空串。
-        """
-        if not self.few_shot_block.strip():
-            return ""
-        return "\n\n" + self.few_shot_block.rstrip() + "\n\n" + FEW_SHOT_CLOSING_MANDATE + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -306,10 +226,11 @@ class SystemPromptFragments(BaseModel):
 
 
 class InjectionPreviewRequest(BaseModel):
-    """`POST /profiles/{id}/injection-preview` body — dryrun 模式入参。
+    """「本场预览」``POST /profiles/{id}/injection-preview`` 的请求体——只读,**不写**绑定、不冻结选窗。
 
-    用户在 ApplyDialog 内调整 strategy / intensity / sub_dimensions 时,
-    前端 debounce 拉这个端点,**不写盘** binding。
+    v3 的旋钮是下面四个绑定配置键(不传时由旧 ``strategy`` / ``intensity`` 映射,见 ``binding_config``);
+    ``scene_id`` 给了就按那一场的设计挑窗(与起草同一套选窗),``project_id`` 给了就带上这部作品的近期常见偏差。
+    旧的 ``sub_dimensions`` / ``include_*`` 只为兼容旧请求体保留,不再改变渲染。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -334,11 +255,11 @@ class InjectionPreviewRequest(BaseModel):
 
 
 class InjectionPreviewStats(BaseModel):
-    """preview 端点的真实读数(v2 §2.W4.8;前端强度滑块读数只消费这里,不再算虚构公式)。
+    """本场预览的读数(``inject.render.render_stats`` 给出,与起草同一次渲染)。
 
-    行数 = 各块中以 `- ` 起头的条目行;`few_shot_windows` 是注入的连续段落窗口数,
-    `few_shot_chars` 是窗口原文总字数(封装边界前);`intensity_effective_total_chars`
-    是本次 intensity 对应的抽象四块总额;`few_shot_k` 是 k(i)。
+    行数 = 各块中以 `- ` 起头的条目行;`few_shot_windows` 是这一场拿到的样例窗数,`few_shot_chars` 是这些窗的
+    原文总字数;`total_prefix_chars` 是 system 前缀与 user 尾块的总字数;`few_shot_k` 是窗数上限。旧名沿用:
+    `intensity_effective_total_chars` 现在是文风卡块的字数,`metric_lines` 恒为 0(量化指导块已删)。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -349,7 +270,6 @@ class InjectionPreviewStats(BaseModel):
     voice_lines: int = 0
     few_shot_windows: int = 0
     few_shot_chars: int = 0
-    rag_snippets: int = 0
     total_prefix_chars: int = 0
     intensity_effective_total_chars: int = 0
     few_shot_k: int = 0

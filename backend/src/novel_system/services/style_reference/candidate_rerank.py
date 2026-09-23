@@ -1,10 +1,12 @@
-"""Style target + candidate assessment (frozen-profile metric envelope, plagiarism guard).
+"""Style target + candidate assessment (frozen-profile metric envelope).
 
 2026-09-14 减法:候选重排层(shadow / active 模式、`candidate_rerank.yaml`、基准报告哈希授权、
-`StyleCandidateReranker`、`rerank_candidate_pairs`)已删除——生产只出 1 个候选,重排从未改变过
-候选顺序。留下的是纯函数评分核:``build_style_target``(冻结画像的量化基线 → 目标包络)与
-``assess_candidate_text``(候选文本对目标的贴合读数 + 12 字 n-gram 抄袭守卫),供
-scene_generation 的候选读数、风格修复的不退步检查、以及 neutral_first 下的形状包络使用。
+`StyleCandidateReranker`、`rerank_candidate_pairs`)已删除。2026-09-23 风格参考 v3 起 Best-of-N 候选按
+「像不像」读数(``fidelity`` 的 distance)排序,原文重合走唯一抄袭门(``reference_copy_gate``);这里的
+内置抄袭守卫(``plagiarism_corpus``)与从未被赋值的 ``combined_score`` 随之删除。留下的是纯函数评分核:
+``build_style_target``(冻结画像的量化基线 → 目标包络)与 ``assess_candidate_text``(候选文本对目标的
+贴合读数),供 scene_generation 的候选审计读数、风格修复的不退步检查、以及 neutral_first 下的形状包络使用。
+候选的 ``plagiarism_*`` 字段由调用方按抄袭门的结果填写。
 """
 
 from __future__ import annotations
@@ -27,7 +29,6 @@ from novel_system.services.style_reference.metrics import (
 from novel_system.services.style_reference.runtime_contract import (
     blend_profile_metric_baselines,
 )
-from novel_system.services.style_reference.validation.plagiarism import check_plagiarism
 
 
 SCORER_VERSION = "style_candidate_rerank_v2"
@@ -71,16 +72,12 @@ class CandidateRerankPolicy:
     """评分核的阈值(不再从 yaml 读取,也没有 shadow / active 模式)。
 
     ``style_eligible`` 要求候选至少 ``min_substantive_chars`` 个可见字、``min_metric_count``
-    个可比指标、置信度 ≥ ``min_confidence``;抄袭守卫按 8-gram / 12 字与 styled-draft gate 同口径,
-    且不可关闭(源文本安全不是可调参数)。
+    个可比指标、置信度 ≥ ``min_confidence``。
     """
 
     min_substantive_chars: int = 300
     min_metric_count: int = 12
     min_confidence: float = 0.65
-    plagiarism_guard: bool = True
-    plagiarism_ngram_size: int = 8
-    plagiarism_threshold_chars: int = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +111,6 @@ class CandidateAssessment:
     plagiarism_hit_count: int = 0
     plagiarism_max_match_chars: int = 0
     style_eligible: bool = False
-    combined_score: float | None = None
     rank: int | None = None
     selected: bool = False
     selection_reason: str = "quality_order"
@@ -138,9 +134,6 @@ class CandidateAssessment:
             "plagiarism_hit_count": self.plagiarism_hit_count,
             "plagiarism_max_match_chars": self.plagiarism_max_match_chars,
             "style_eligible": self.style_eligible,
-            "combined_score": (
-                None if self.combined_score is None else round(self.combined_score, 6)
-            ),
             "rank": self.rank,
             "selected": self.selected,
             "selection_reason": self.selection_reason,
@@ -220,8 +213,6 @@ def assess_candidate_text(
     quality_score: float,
     target: StyleTarget | None,
     policy: CandidateRerankPolicy,
-    *,
-    plagiarism_corpus: Sequence[str] = (),
 ) -> CandidateAssessment:
     assessment = CandidateAssessment(row_id=row_id, quality_score=float(quality_score))
     assessment.substantive_chars = len(
@@ -276,20 +267,4 @@ def assess_candidate_text(
                 deviations, key=lambda item: (-item[0], item[1])
             )[:5]
         ]
-
-    corpus = [item for item in plagiarism_corpus if item]
-    if corpus and text:
-        report = check_plagiarism(
-            text,
-            corpus,
-            ngram_size=policy.plagiarism_ngram_size,
-            threshold_chars=policy.plagiarism_threshold_chars,
-        )
-        assessment.plagiarism_checked = True
-        assessment.plagiarism_passed = bool(report.passed)
-        assessment.plagiarism_hit_count = len(report.hits)
-        assessment.plagiarism_max_match_chars = max(
-            (int(hit.matched_length) for hit in report.hits),
-            default=0,
-        )
     return assessment

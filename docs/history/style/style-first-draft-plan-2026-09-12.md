@@ -1,3 +1,5 @@
+> 历史文档：描述当时的实现，现行说明见 [docs/style-reference.md](../../style-reference.md)
+
 # 风格参考 · 风格直起与结构跟随（2026-09-12，Step 2 计划，最大化版）
 
 > 承接 `docs/style-exemplar-first-2026-09-09.md`（Step 1 样例优先，已落工作区、未提交）。

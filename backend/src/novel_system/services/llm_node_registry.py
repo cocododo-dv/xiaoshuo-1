@@ -208,18 +208,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         reasoning_level="off",
     ),
     LLMNodeSpec(
-        "style_ref_rag_rerank",
-        "Style Reference Strategy C(RAG)候选重排(离线/预览增强 hook,inject 热路径用确定性 rerank)",
-        "style_reference",
-        template_name="style_ref_rag_rerank",
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=800,
-        # 非热路径预留 hook(同其他 reserved 节点):不纳入 active 节点路由同步,
-        # inject 热路径用确定性 rerank(§11 风险6 inject<50ms 无 LLM)。
-        status="reserved",
-    ),
-    LLMNodeSpec(
         "snowflake_step_generate",
         "Snowflake step generate",
         "snowflake",

@@ -525,19 +525,14 @@ def test_fidelity_endpoints_404_for_unknown_targets(client) -> None:
     assert client.get("/api/v2/style-reference/checks/NOPE").status_code == 404
 
 
-def test_old_validation_endpoint_is_retired(client, session) -> None:
-    from novel_system.services.style_reference.validation import ValidationOrchestrator
-
+def test_old_validation_endpoints_are_gone(client, session) -> None:
+    """旧「回测」的三个端点与它的报告表都已删除（迁移 0091）：像不像一律走对照检查。"""
     _book, profile_id = _check_profile(session)
     response = client.post(
         f"/api/v2/style-reference/profiles/{profile_id}/validate",
         json={"generated_text": "一段文字", "mode": "sync_only"},
         headers={"X-Idempotency-Key": "fid-validate-retired"},
     )
-    assert response.status_code == 410
-    error = response.json()["error"]
-    assert error["code"] == "STYLE_REFERENCE_VALIDATION_RETIRED"
-    assert error["details"]["replacement"] == "/api/v2/style-reference/checks"
-    with pytest.raises(Exception) as retired:
-        ValidationOrchestrator(session).validate(profile_id, None)
-    assert getattr(retired.value, "status_code", None) == 410
+    assert response.status_code in (404, 405)
+    assert client.get(f"/api/v2/style-reference/profiles/{profile_id}/reports").status_code in (404, 405)
+    assert client.get("/api/v2/style-reference/reports/sr_rep_x").status_code in (404, 405)

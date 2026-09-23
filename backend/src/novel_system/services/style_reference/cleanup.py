@@ -16,13 +16,11 @@ from novel_system.db.models import (
     StyleReferenceEvidence,
     StyleReferenceExtraction,
     StyleReferenceFinding,
-    StyleReferenceFindingFeedback,
     StyleReferenceInjectionBinding,
     StyleReferenceJob,
     StyleReferenceProfile,
     StyleReferenceQuote,
     StyleReferenceRun,
-    StyleReferenceValidationReport,
     StyleReferenceWindow,
 )
 
@@ -33,12 +31,11 @@ _LOGGER = logging.getLogger(__name__)
 def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     """删除一本书的全部派生数据,保留段落表与书本身(``delete_book`` 与破坏式重新分类共用)。
 
-    按 FK 反向顺序清 12 张派生表:回测报告 → 绑定 → 禁用词(每个画像)→ 画像 → 发现反馈 →
-    证据 → 发现 → 抽取 → 引文 → 抽取 run → 作业(``style_reference_jobs``,该书的分类 / 学习 /
-    检查作业;还在跑的工人的条件写随之落空)→ 窗口索引(``style_reference_windows``);外加
+    按 FK 反向顺序清 10 张派生表:绑定 → 禁用词(每个画像)→ 画像 → 证据 → 发现 → 抽取 → 引文 →
+    抽取 run → 作业(``style_reference_jobs``,该书的分类 / 学习 / 检查作业;还在跑的工人的条件写随之
+    落空)→ 窗口索引(``style_reference_windows``);外加
     相关 ReviewItem(``review_style_ref_finding_*`` 按发现、``review_style_ref_apply_*`` /
-    ``review_style_ref_calib_*`` 按画像的遗留待办行)与每个画像的 RAG 向量索引(向量后端,独立于
-    DB 事务,失败只记警告)。
+    ``review_style_ref_calib_*`` 按画像的遗留待办行)。
 
     刻意不删:``style_reference_metric_events``(纯运营遥测,无 book 列,由 ``cleanup_metric_events``
     的 90 天留存独立清理);``style_reference_scene_windows`` / ``style_fidelity_readings``(按场景 /
@@ -55,28 +52,14 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     findings = repo.list_findings(book_id=book_id)
     finding_ids = [f.finding_id for f in findings]
 
-    # 立项 C — 删除每个 profile 的三粒度 RAG 向量索引(向量后端,独立于 DB 事务)。
-    # delete_rag_index 内部已容错;此处再兜底 import 失败,清理不阻断派生数据删除。
-    try:
-        from novel_system.services.style_reference.rag import delete_rag_index
-
-        for _pid in profile_ids:
-            delete_rag_index(_pid)
-    except Exception:  # noqa: BLE001
-        _LOGGER.warning(
-            "Style-reference RAG cleanup degraded book_id=%s",
-            book_id,
-            exc_info=True,
-        )
-
     counts: dict[str, int] = {}
 
     def _exec(stmt, key: str) -> None:
         result = session.execute(stmt)
         counts[key] = counts.get(key, 0) + int(result.rowcount or 0)
 
-    # 相关 ReviewItem:finding review id 是确定性的(finding_id 后 12 位),
-    # apply / calib 按 profile_id 后 12 位做前缀匹配(见 materialization.py)。
+    # 相关 ReviewItem(旧版本写下的待办行):finding review id 是确定性的(finding_id 后 12 位),
+    # apply / calib 按 profile_id 后 12 位做前缀匹配(写它们的物化 / 校准模块早已删除,只剩清理)。
     review_ids = {f"review_style_ref_finding_{fid[-12:]}" for fid in finding_ids}
     review_ids.update(f.review_id for f in findings if f.review_id)
     if review_ids:
@@ -97,12 +80,6 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
 
     for pid in profile_ids:
         _exec(
-            delete(StyleReferenceValidationReport).where(
-                StyleReferenceValidationReport.profile_id == pid
-            ),
-            "validation_reports",
-        )
-        _exec(
             delete(StyleReferenceInjectionBinding).where(
                 StyleReferenceInjectionBinding.profile_id == pid
             ),
@@ -119,13 +96,6 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
         "profiles",
     )
     if finding_ids:
-        # 立项 B — 删 finding 前先删其用户反馈(FK 未在 SQLite 强制,需显式清理防孤儿)
-        _exec(
-            delete(StyleReferenceFindingFeedback).where(
-                StyleReferenceFindingFeedback.finding_id.in_(finding_ids)
-            ),
-            "finding_feedback",
-        )
         _exec(
             delete(StyleReferenceEvidence).where(
                 StyleReferenceEvidence.finding_id.in_(finding_ids)

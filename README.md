@@ -11,7 +11,7 @@
 - `主页`：查看当前作品、全书各章所在阶段和下一步（原「流程」页已并入主页）。
 - `构思`：真实项目创建、雪花十步、场景急救、结构物化与回流。
 - `写作`：人工编辑、AI 候选、草稿保存、内容安全复核和权威正文提升。
-- `风格`：上传参考书并学习抽象风格画像。
+- `风格`：参考书 → 学习文风 → 用于作品——导入一本想学它文风的书，由模型学出文风卡，再用于当前作品；起草时每场带上按这一场挑的原文样例窗（默认 12 窗、约 4–4.7 万字，放在 user 消息末尾、紧挨输出；system 里是文风卡、声音习惯与防照搬红线）。详见 [风格参考](docs/style-reference.md)。
 - `待办`、`资料`：处理人工决策与故事资料。
 
 切到高级模式后会显示 `章节编排`、`AI 起草台`、`成稿中心`、`文学质量` 和 `成本看板`。
@@ -83,7 +83,7 @@ uv export --locked --extra dev --extra chroma --no-emit-project --format require
 
 ## 数据库与迁移
 
-当前代码要求唯一 Alembic head `20260904_0083`（该版本删除已退役功能的数据表，不可回退，升级前请先备份）。`20260802_0077` 合并了曾发布的
+当前代码要求唯一 Alembic head `20260923_0091`（以 `backend/src/novel_system/db/schema_contract.py` 的 `CURRENT_SCHEMA_REVISION` 为准）。`20260904_0083` 删除已退役功能的数据表、不可回退；`20260923_0090` 新建风格参考 v3 的作业 / 窗口索引 / 读数 / 每场选窗四张表；`20260923_0091` 删掉已退役的风格反馈与回测表（降级只恢复表结构、不恢复数据）。升级前请先停服备份。`20260802_0077` 合并了曾发布的
 `20260717_0074 -> 20260717_0075` real-only 分支与
 `20260722_0074 -> 20260725_0076` 雪花分章分支；旧分支数据库可直接执行
 `alembic upgrade head`，不要手工修改 `alembic_version`。
@@ -119,7 +119,7 @@ $env:NOVEL_SYSTEM_CORS_ORIGINS = "https://你的前端域名"
 
 ## 恢复与数据重置
 
-服务启动时会尝试恢复可安全重放的场景、章节、风格学习和验证后台任务；持久化租约用于避免重复接管。写作界面的 `同步与恢复中心` 会收集浏览器本地冲突稿、离线稿和配额失败稿，可比较、导出、重试或恢复。
+服务启动时会尝试恢复可安全重放的场景与章节任务，持久化租约用于避免重复接管；风格参考的段落分类、学习文风与对照检查是作业表上的持久作业，常驻清扫线程把心跳过期的作业放回队列接着跑。写作界面的 `同步与恢复中心` 会收集浏览器本地冲突稿、离线稿和配额失败稿，可比较、导出、重试或恢复。
 
 浏览器恢复记录不是服务端备份，清理站点数据、换浏览器/设备、无痕模式或存储配额耗尽都可能令其不可用。
 
@@ -168,4 +168,4 @@ Linux/CI 使用等价入口：`bash scripts/verify_react_e2e.sh`。GitHub Action
 - API 客户端：`frontend-react/src/lib/client.js`
 - 后端应用与健康检查：`backend/src/novel_system/api/app.py`
 - 场景执行与归档：`backend/src/novel_system/api/routes/scenes.py`
-- 长篇契约：`backend/src/novel_system/services/longform_tower.py`
+- 风格参考：`backend/src/novel_system/services/style_reference/`、`backend/src/novel_system/services/style_policy.py`、`backend/src/novel_system/services/reference_copy_gate.py`（说明见 [风格参考](docs/style-reference.md)）

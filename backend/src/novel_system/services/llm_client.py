@@ -401,10 +401,11 @@ def resolve_node_route(routing: Any, node_id: str) -> Any:
     """解析一个 LLM 节点的路由配置:DB node_routing 优先,yaml task_routing 兜底。
 
     优先级教训(不要改动顺序):``parse_model_routing_config`` 的合并是
-    setdefault——yaml task 条目赢。历史上 style_reference/_llm_helper 只读
+    setdefault——yaml task 条目赢。历史上风格参考的单次节点调用只读
     task_routing,导致用户在系统设置「模型与接入」角色槽配好的
     provider/model/api_mode 被 yaml 占位(gpt-5/responses)遮蔽,风格抽取对
-    chat-only 中转直接 404(真实回归,见 tests/test_style_reference_llm_routing.py)。
+    chat-only 中转直接 404(真实回归;那个调用层已随旧学习链路删除,现在风格参考的
+    分类 / 学习 / 对照检查节点都直接调这里)。
     因此所有调用点必须先查 node_routing(系统设置同步的 DB 节点路由),
     再退回 task_routing(config/models.yaml 的 task 默认);两处皆缺 →
     ``KeyError(node_id)``,由调用方翻译成各自的引导错误。

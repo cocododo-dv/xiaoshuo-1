@@ -31,12 +31,13 @@ from novel_system.db.models import (
     StyleReferenceProfile,
     StyleReferenceQuote,
     StyleReferenceRun,
-    StyleReferenceValidationReport,
 )
 
 
 class StyleReferenceRepository:
-    """11 张 style_reference_* 表的统一仓储。
+    """风格参考 v1 那一族表(书 / 段落 / run / 抽取 / 引文 / 发现 / 证据 / 画像 / 绑定 / 禁用词 / 遥测)的统一仓储。
+
+    v3 的作业 / 窗口 / 读数 / 冻结选窗各有自己的服务(``jobs`` / ``windows`` / ``readings`` / ``inject.selection``)。
 
     用法::
 
@@ -322,30 +323,6 @@ class StyleReferenceRepository:
             )
         )
         return int(result.rowcount or 0)
-
-    # -------------------------------------------------- validation reports
-    def create_validation_report(self, **kwargs: Any) -> StyleReferenceValidationReport:
-        row = StyleReferenceValidationReport(**kwargs)
-        self.session.add(row)
-        self.session.flush()
-        return row
-
-    def get_validation_report(self, report_id: str) -> StyleReferenceValidationReport | None:
-        return self.session.get(StyleReferenceValidationReport, report_id)
-
-    def list_validation_reports(
-        self,
-        *,
-        profile_id: str | None = None,
-        verdict: str | None = None,
-    ) -> list[StyleReferenceValidationReport]:
-        stmt = select(StyleReferenceValidationReport)
-        if profile_id is not None:
-            stmt = stmt.where(StyleReferenceValidationReport.profile_id == profile_id)
-        if verdict is not None:
-            stmt = stmt.where(StyleReferenceValidationReport.verdict == verdict)
-        stmt = stmt.order_by(StyleReferenceValidationReport.created_at, StyleReferenceValidationReport.report_id)
-        return list(self.session.scalars(stmt).all())
 
     # ---------------------------------------------------------- banned terms
     def create_banned_term(self, **kwargs: Any) -> StyleReferenceBannedTerm:

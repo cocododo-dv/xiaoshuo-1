@@ -3,8 +3,9 @@
 过去窗口索引是 ``profile_json.exemplar_windows`` 里的一坨 JSON（画像 68% 的体积，段落表一变就过期），或者每个进程
 惰性重算一遍、不落库。现在一本书一组行：
 
-- **切窗**：``structure.split_book_chapters``（唯一切章器）+ ``exemplar_index.cut_chapter_windows``（≤60 段 /
-  ≤4,000 字、不跨章题与场界、<600 字不要），章号 / 位置（opening / closing / middle / whole）与结构画像一致；
+- **切窗**：``structure.split_book_chapters``（唯一切章器）+ 本模块的 :func:`cut_chapter_windows`（≤60 段 /
+  ≤4,000 字、不跨章题与场界、<600 字不要），章号 / 位置（opening / closing / middle / whole）与结构画像一致
+  （切窗规则原在 ``exemplar_index.py``，P7 并入这里）；
 - **特征**：每窗 ``features_json`` = 测量核在这一窗正文上的全部特征——「像不像」读数的参照分布就是作者自己
   这些窗口的分布（``fidelity.py``）；``dialogue_share`` 取测量核的唯一对白占比；``type_mix_json`` 是段型构成；
 - **典型度**：这一窗在本书自己的窗口分布里有多典型（各特征稳健 z 的 |z| 均值取负，越大越典型）——不是离
@@ -35,7 +36,6 @@ from novel_system.db.models import (
     StyleReferenceWindow,
     utcnow,
 )
-from novel_system.services.style_reference.exemplar_index import book_windows
 from novel_system.services.style_reference.measure import (
     FEATURE_NAMES,
     KERNEL_VERSION,
@@ -50,7 +50,7 @@ from novel_system.services.style_reference.paragraph_root import (
     patch_book_stats,
     stored_paragraph_root,
 )
-from novel_system.services.style_reference.structure import non_body_kind
+from novel_system.services.style_reference.structure import non_body_kind, split_book_chapters
 from novel_system.services.style_reference.tags import normalize_window_tags
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,101 @@ def marker_is_current(stats_json: Any) -> bool:
         and int(marker.get("types_revision") or 0) == _types_revision(stats_json)
         and marker.get("kernel_version") == KERNEL_VERSION
     )
+
+
+# ---------------------------------------------------------------------------
+# 切窗（确定性：同一张段落表永远切出同一组窗）
+# ---------------------------------------------------------------------------
+
+DEFAULT_WINDOW_PARAGRAPHS = 60
+DEFAULT_WINDOW_MAX_CHARS = 4000
+DEFAULT_MIN_WINDOW_CHARS = 600
+# 短尾窗并入前一窗时允许超出单窗上限的比例(否则丢弃短尾窗)
+_TAIL_MERGE_SLACK = 1.25
+# 位置标签
+POSITION_OPENING = "opening"
+POSITION_CLOSING = "closing"
+POSITION_MIDDLE = "middle"
+POSITION_WHOLE = "whole"
+
+
+def cut_chapter_windows(
+    chapter: list[dict[str, Any]],
+    *,
+    window_paragraphs: int = DEFAULT_WINDOW_PARAGRAPHS,
+    window_max_chars: int = DEFAULT_WINDOW_MAX_CHARS,
+    min_window_chars: int = DEFAULT_MIN_WINDOW_CHARS,
+) -> list[list[dict[str, Any]]]:
+    """一章正文 → 窗口:按段落顺序贪心切,字数或段数将超限时封窗,遇场界(``break_after``)封窗;
+    短尾窗并入前一窗(放宽 25%)或丢弃;最后短于 ``min_window_chars`` 的窗口不要(章只有一窗时也一样——
+    几百字的「章」多半是卷首语 / 内容简介 / 目录残片,不是作者的场景)。"""
+    windows: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_chars = 0
+    for row in chapter:
+        if current and (
+            current_chars + row["chars"] > window_max_chars or len(current) >= window_paragraphs
+        ):
+            windows.append(current)
+            current = []
+            current_chars = 0
+        current.append(row)
+        current_chars += row["chars"]
+        if row.get("break_after"):
+            # 场界:窗口不跨场(下一段另起一窗)
+            windows.append(current)
+            current = []
+            current_chars = 0
+    if current:
+        windows.append(current)
+    if len(windows) >= 2 and sum(r["chars"] for r in windows[-1]) < min_window_chars:
+        tail = windows.pop()
+        previous = windows[-1]
+        merged_chars = sum(r["chars"] for r in previous) + sum(r["chars"] for r in tail)
+        if merged_chars <= int(window_max_chars * _TAIL_MERGE_SLACK) and len(previous) + len(tail) <= int(
+            window_paragraphs * _TAIL_MERGE_SLACK
+        ):
+            previous.extend(tail)
+    return [win for win in windows if sum(r["chars"] for r in win) >= min_window_chars]
+
+
+def window_position(position_index: int, count: int) -> str:
+    """章内第 ``position_index`` 个窗口(共 ``count`` 个)的位置标签。"""
+    if count == 1:
+        return POSITION_WHOLE
+    if position_index == 0:
+        return POSITION_OPENING
+    if position_index == count - 1:
+        return POSITION_CLOSING
+    return POSITION_MIDDLE
+
+
+def book_windows(
+    paragraphs: Iterable[Any],
+    *,
+    scene_breaks: Iterable[int] | None = None,
+    window_paragraphs: int = DEFAULT_WINDOW_PARAGRAPHS,
+    window_max_chars: int = DEFAULT_WINDOW_MAX_CHARS,
+    min_window_chars: int = DEFAULT_MIN_WINDOW_CHARS,
+) -> tuple[list[tuple[int, str, list[dict[str, Any]]]], int, int]:
+    """整本书 → [(章号, 位置, 窗口正文行)] + (非空段数, 章数)。切章走 ``structure.split_book_chapters``。"""
+    items = list(paragraphs)
+    non_empty = sum(1 for item in items if str(_attr(item, "text") or "").strip())
+    chapters, _markers = split_book_chapters(items, scene_breaks=scene_breaks)
+    window_paragraphs = max(1, int(window_paragraphs))
+    window_max_chars = max(200, int(window_max_chars))
+    min_window_chars = max(0, int(min_window_chars))
+    result: list[tuple[int, str, list[dict[str, Any]]]] = []
+    for chapter in chapters:
+        kept = cut_chapter_windows(
+            chapter.rows,
+            window_paragraphs=window_paragraphs,
+            window_max_chars=window_max_chars,
+            min_window_chars=min_window_chars,
+        )
+        for position_index, win in enumerate(kept):
+            result.append((chapter.chapter_no, window_position(position_index, len(kept)), win))
+    return result, non_empty, len(chapters)
 
 
 # ---------------------------------------------------------------------------
@@ -427,9 +522,18 @@ def set_window_tags(
 
 
 __all__ = [
+    "DEFAULT_MIN_WINDOW_CHARS",
+    "DEFAULT_WINDOW_MAX_CHARS",
+    "DEFAULT_WINDOW_PARAGRAPHS",
     "INDEX_MARKER_KEY",
+    "POSITION_CLOSING",
+    "POSITION_MIDDLE",
+    "POSITION_OPENING",
+    "POSITION_WHOLE",
     "TYPES_REVISION_KEY",
     "WINDOW_INDEX_VERSION",
+    "book_windows",
+    "cut_chapter_windows",
     "ensure_window_index",
     "index_marker",
     "load_windows",
@@ -438,5 +542,6 @@ __all__ = [
     "window_ref",
     "window_text",
     "window_texts",
+    "window_position",
     "window_typicality",
 ]

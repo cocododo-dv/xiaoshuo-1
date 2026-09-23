@@ -1,3 +1,5 @@
+> 历史文档：描述当时的实现，现行说明见 [docs/style-reference.md](../../style-reference.md)
+
 # 风格参考模块（style_reference）重构执行手册 v1.1
 
 > 状态复核（2026-07-16）：本文是已完成重构的设计基线，不是待执行任务书。Phase 3 A/B/C 均已落地；文中的历史文件行数、迁移编号和“待删除/待新增”措辞保留原始决策语境。当前运行事实以代码、`docs/runtime-safety.md` 和 `docs/style-reference-progress.md` 为准。

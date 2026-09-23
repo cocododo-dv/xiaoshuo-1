@@ -232,7 +232,7 @@ class ChromaVectorStore:
         payload = collection.query(
             query_texts=[query_text],
             # Some Chroma releases reject n_results larger than the collection.
-            # RAG deliberately asks for a wide shortlist, including on tiny books.
+            # Callers may ask for a wide shortlist, including on tiny collections.
             n_results=max(1, min(int(top_k), collection_size)),
             include=["documents", "metadatas"],
         )

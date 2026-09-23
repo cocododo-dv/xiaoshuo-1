@@ -1,6 +1,6 @@
 """Style Reference (style_reference) service package.
 
-风格参考 v3（2026-09-23）的现行契约见 ``docs/style-reference-v3-2026-09-23.md``。学习链路是一个持久作业
+现行说明见 ``docs/style-reference.md``（v3 重构的设计与台账见 ``docs/style-reference-v3-2026-09-23.md``）。学习链路是一个持久作业
 （``learn_job``：窗口 → 选窗 → 分层抽取 → 文风卡 → 受保护专名 → 窗口标签 → 画像），处理器在模块导入时注册
 （``register_job_handler("learn", ...)``），这里不导入它，免得包导入就拉起整条学习链路。
 """

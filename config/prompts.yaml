@@ -50,7 +50,7 @@ templates:
             type: string
 
   style_first_draft:
-    # 2026-09-12 风格直起（Step 2，docs/style-first-draft-plan-2026-09-12.md）：有绑定且
+    # 2026-09-12 风格直起（Step 2，docs/history/style/style-first-draft-plan-2026-09-12.md）：有绑定且
     # draft_mode=style_first 时，中性步位改跑本模板——第一稿直接以参考作者的手笔从 bundle 写，
     # 不经过中性稿；bundle 定「发生什么」，参考定「怎么讲」；蓝图八要素是要发生的事，怎么落纸
     # 由作者手法决定。走 style_draft 节点路由（模型 / 温度 / 惩罚 0）；预算与风格通道一致。
@@ -1240,37 +1240,6 @@ templates:
                 note:
                   type: string
 
-  # 立项 C §6.1 / 附录 A.7 — Strategy C(RAG)候选片段重排(LLM 增强 hook)。
-  # 注意:inject 热路径用确定性 rerank(§11 风险6 inject<50ms),此模板供离线/预览
-  # 增强或后续把 LLM rerank 接入非实时路径时使用,默认不在场景生成热路径调用。
-  style_ref_rag_rerank:
-    version: "2026-06-18.v1"
-    input_token_budget: 800
-    system_prompt: |
-      你是风格检索重排器。给定"当前生成上下文"与若干"参考风格候选片段",
-      按候选片段对当前上下文在句式、节奏、语气上的风格借鉴价值从高到低重排。
-      只评估风格可借鉴性(句式/节奏/肌理),不评估情节相关性;
-      严禁输出任何候选原文的改写、续写或翻译,只输出重排结果。
-    task_prompt: |
-      输入 payload 含 context_text 与 candidates(每条 {id, granularity, text})。
-      请按 schema 输出 ranked:候选 id 按风格借鉴价值降序排列,各附 0-1 的 score。
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required: [ranked]
-      properties:
-        ranked:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [id, score]
-            properties:
-              id:
-                type: string
-              score:
-                type: number
-
   scene_blueprint:
     # 2026-09-13 阶段 A v5：有 Scene Structure (Snowflake) 段时蓝图从作者的三拍推导，不另起炉灶。
     # 阶段 C v6：Rendering mode: summary 的反应场，蓝图按两三段概述的体量给。
@@ -1539,7 +1508,9 @@ templates:
     # 2026-09-23 风格参考 v3 v10（V7）：分数带范围——scores 声明 11 个维度键、overall_score 与各维都是 0–10（schema 写明
     # minimum / maximum，代码按一次回答的量级统一换算到 0–1；此前没写范围，0–10 的回答被夹成 1.0，实库 3/3 次饱和、
     # 2/3 次 scores 为空）；有风格块时所有「怎么写」的判断以参考作者为准，不按房风扣分。评审只拿 4 窗样例。
-    version: "2026-09-23.v10"
+    # 2026-09-23 风格参考 v3 收尾 v11：findings / revision_brief 的成员声明 properties（就是提示词里说的那几个键）——
+    # 按 schema 约束解码的中转对没声明 properties 的成员只解出 {}（真实安装上本模板出过 findings = [{}]）。
+    version: "2026-09-23.v11"
     input_token_budget: 96000
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
@@ -1650,10 +1621,26 @@ templates:
           type: array
           items:
             type: object
+            additionalProperties: true
+            properties:
+              dimension:
+                type: string
+              evidence:
+                type: string
+              severity:
+                type: string
         revision_brief:
           type: array
           items:
             type: object
+            additionalProperties: true
+            properties:
+              target:
+                type: string
+              issue:
+                type: string
+              fix_direction:
+                type: string
         failure_class:
           type: string
         requires_human_review:
@@ -1681,7 +1668,10 @@ templates:
               type: string
 
   chapter_near_final_review:
-    version: "2026-09-22.v3"
+    # 2026-09-23 风格参考 v3 收尾 v4：overall_score 声明 0–10、提示词写明各维同一刻度（代码按一次回答的量级统一
+    # 换算到 0–1，与场景级验收评审同一口径；scores 的维度键由评审自定，schema 只能写开放对象），findings /
+    # revision_brief 的成员声明 properties（按 schema 约束解码的中转对没声明 properties 的成员只解出 {}）。
+    version: "2026-09-23.v4"
     input_token_budget: 30000
     system_prompt: |
       You are a near-final acceptance editor for chapter-level long-form fiction.
@@ -1695,6 +1685,7 @@ templates:
       Ground promise, escalation, payoff, and ending drive in specifics: name which scene carries the promise, where escalation stalls or repeats if it does, and whether the ending scene answers the chapter's opening question.
       When a [STYLE_REFERENCE] block is present, prose_model_voice and ending_weakness are judged against the [风格样例] only: a device the reference author uses on purpose is that author's craft, not a failure; the chapter's length and scene count follow the reference author's scale and are never a finding by themselves.
       Give every findings entry the same key set: dimension, evidence, severity. Give every revision_brief entry: target, issue, fix_direction.
+      Score each chapter-level dimension you judge in scores, and overall_score, with a number from 0 to 10 (10 = fully ready); one decimal is enough, and never use a 0–1 or 0–100 scale.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1718,16 +1709,34 @@ templates:
           type: boolean
         overall_score:
           type: number
+          minimum: 0
+          maximum: 10
         scores:
           type: object
         findings:
           type: array
           items:
             type: object
+            additionalProperties: true
+            properties:
+              dimension:
+                type: string
+              evidence:
+                type: string
+              severity:
+                type: string
         revision_brief:
           type: array
           items:
             type: object
+            additionalProperties: true
+            properties:
+              target:
+                type: string
+              issue:
+                type: string
+              fix_direction:
+                type: string
         failure_class:
           type: string
         requires_human_review:
@@ -1836,7 +1845,10 @@ templates:
     # 2026-09-22 第三轮 v6：章级通读可以只通读改过的场（用户消息尾部的 "Read-Through Scope"：全文的场 / 摘要的场 /
     # 上次的章级发现）；findings 成员的 properties 写明（schema-enforcing 中转对没声明 properties 的成员只会解码成 {}，
     # 真实安装上的准定稿评审已经出过 [{}]）。
-    version: "2026-09-22.v6"
+    # 2026-09-23 风格参考 v3 收尾 v7：分数写明 0–1（代码把深评分数夹在 [0, 1]，没写范围时 0–10 的回答全被夹成 1.0），
+    # scores 声明十个诊断维度（writer_deep_review.LITERARY_REVISION_DIMENSIONS，代码只认这十个键），revision_brief
+    # 与 lens_evaluations 的成员也声明 properties（同上，防 {}）。
+    version: "2026-09-23.v7"
     input_token_budget: 30000
     system_prompt: |
       You are a severe Chinese fiction revision editor for a working author.
@@ -1855,6 +1867,7 @@ templates:
       Focus on character contradiction, choice pressure, relationship tension, dialogue subtext, information rhythm,
       voice distinction, image necessity, repetitive expression, ending drive, and theme pressure.
       Cover all 5 lenses at least once: if a lens genuinely has no issue, still add one finding tagged with that lens, classified as "taste", noting what already works — do not omit the lens entirely.
+      Every score — overall_score, each scores entry, and each lens's overall_score and scores — is a number from 0 to 1 (1 = fully realised); never use a 0–10 or 0–100 scale. Give every revision_brief entry: dimension, classification (blocking, revision, or taste), action (one concrete move), priority (high, medium, or low), evidence_excerpt.
       Also return a top-level lens_evaluations array with exactly one entry per lens, each an object with keys lens, overall_score, scores, findings, revision_brief. Its findings are the same finding objects from the flat findings list, grouped under their lens — do not invent new findings here and do not leave any tagged finding ungrouped. Its scores holds only the dimensions that lens is responsible for, and its overall_score judges that lens alone — do not paste the aggregate overall_score into all five entries.
     structured_schema:
       type: object
@@ -1868,8 +1881,52 @@ templates:
       properties:
         overall_score:
           type: number
+          minimum: 0
+          maximum: 1
         scores:
           type: object
+          additionalProperties: false
+          properties:
+            character_contradiction:
+              type: number
+              minimum: 0
+              maximum: 1
+            choice_pressure:
+              type: number
+              minimum: 0
+              maximum: 1
+            relationship_tension:
+              type: number
+              minimum: 0
+              maximum: 1
+            dialogue_subtext:
+              type: number
+              minimum: 0
+              maximum: 1
+            information_rhythm:
+              type: number
+              minimum: 0
+              maximum: 1
+            voice_distinction:
+              type: number
+              minimum: 0
+              maximum: 1
+            image_necessity:
+              type: number
+              minimum: 0
+              maximum: 1
+            repetitive_expression:
+              type: number
+              minimum: 0
+              maximum: 1
+            ending_drive:
+              type: number
+              minimum: 0
+              maximum: 1
+            theme_pressure:
+              type: number
+              minimum: 0
+              maximum: 1
         findings:
           type: array
           items:
@@ -1894,12 +1951,112 @@ templates:
           type: array
           items:
             type: object
+            additionalProperties: true
+            properties:
+              dimension:
+                type: string
+              classification:
+                type: string
+              action:
+                type: string
+              priority:
+                type: string
+              evidence_excerpt:
+                type: string
         requires_human_review:
           type: boolean
         lens_evaluations:
           type: array
           items:
             type: object
+            additionalProperties: true
+            properties:
+              lens:
+                type: string
+              overall_score:
+                type: number
+                minimum: 0
+                maximum: 1
+              scores:
+                type: object
+                additionalProperties: false
+                properties:
+                  character_contradiction:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  choice_pressure:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  relationship_tension:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  dialogue_subtext:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  information_rhythm:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  voice_distinction:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  image_necessity:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  repetitive_expression:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  ending_drive:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                  theme_pressure:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+              findings:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                  properties:
+                    dimension:
+                      type: string
+                    lens:
+                      type: string
+                    severity:
+                      type: string
+                    issue:
+                      type: string
+                    recommendation:
+                      type: string
+                    evidence_excerpt:
+                      type: string
+                    why_it_matters:
+                      type: string
+              revision_brief:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                  properties:
+                    dimension:
+                      type: string
+                    classification:
+                      type: string
+                    action:
+                      type: string
+                    priority:
+                      type: string
+                    evidence_excerpt:
+                      type: string
 
   writer_passage_review:
     # 2026-09-22 场景诊断：「AI 看这一处」——复核一条发现（成立 / 部分成立 / 不成立）并给这一处的改法；独立看一段时

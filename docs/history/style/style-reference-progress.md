@@ -1,3 +1,5 @@
+> 历史文档：描述当时的实现，现行说明见 [docs/style-reference.md](../../style-reference.md)
+
 # Style Reference 模块重构 — 进度总览
 
 > 依据《风格参考模块重构执行手册 v1.1》。本文件随 PR 推进滚动更新。

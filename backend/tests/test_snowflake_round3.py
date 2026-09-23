@@ -327,21 +327,18 @@ def test_v1_planner_detail_fallback_is_proactive_not_parity() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_round3_prompt_versions_and_contracts() -> None:
+def test_round3_prompt_contracts() -> None:
     templates = _templates()
     triage = templates["snowflake_scene_triage_suggest"]
-    assert triage["version"] == "2026-09-15.v3"
     for phrase in ("you can name the scene crucible", "exception_reason", '"summary"', '"skip"', "mixed victory", "never suggest cutting", "cost_requirement is advisory"):
         assert phrase in triage["task_prompt"], phrase
     paragraph = templates["snowflake_generate_one_paragraph_summary"]
-    assert paragraph["version"] == "2026-09-15.v3"
     assert "bittersweet" in paragraph["task_prompt"] and "false belief" in paragraph["task_prompt"]
     sentence = templates["snowflake_generate_one_sentence_summary"]
-    assert sentence["version"] == "2026-09-15.v4" and "do not reveal the ending" in sentence["task_prompt"]
+    assert "do not reveal the ending" in sentence["task_prompt"]
     scene_list = templates["snowflake_generate_scene_list"]
-    assert scene_list["version"] == "2026-09-22.v11" and "most to lose" in scene_list["task_prompt"] and "fresh scene crucible" in scene_list["task_prompt"]
+    assert "most to lose" in scene_list["task_prompt"] and "fresh scene crucible" in scene_list["task_prompt"]
     details = templates["snowflake_generate_scene_details"]
-    assert details["version"] == "2026-09-22.v14"
     for phrase in ("five tests", "no upper limit", "the last attempt, told briefly", "own fault line", "committing all the way",
                    'rendering_mode: "full" / "summary" for either form', "exception_reason", "cost_requirement is advisory", "never make every scene medium by default"):
         assert phrase in details["task_prompt"], phrase
@@ -349,19 +346,17 @@ def test_round3_prompt_versions_and_contracts() -> None:
     for name in ("snowflake_workspace_assistant", "snowflake_step_candidates"):
         # 阶段 T（2026-09-16）v5：教练有记忆并重述作者意图要点；候选在要点范围内分岔。留白规则不变。
         # 阶段 U（2026-09-17）v6：方向回合进教练日志（recent_turns kind=candidates / author_ask / focus_scene）。
-        assert templates[name]["version"] == "2026-09-17.v6", name
         prompt = templates[name]["task_prompt"] if name == "snowflake_workspace_assistant" else templates[name]["system_prompt"]
         assert "deliberate blanks" in prompt, name
         assert "Treat all of them as this book's established facts" not in prompt, name
     drafting = {
-        "neutral_draft": ("2026-09-15.v12", ("never the story crucible", "Author's exception", "the last attempt", "dance around the plan", "rather than named")),
-        "style_first_draft": ("2026-09-23.v9", ("Author's exception", "the Setback is the last attempt", "proactive or reactive — is told as narrative summary")),
-        "hard_qc": ("2026-09-15.v6", ("Author's exception", "is not a violation")),
-        "soft_qc": ("2026-09-23.v10", ("story-crucible exposition", "an emotion named", "dragged over pages", "never a gap")),
-        "near_final_acceptance_review": ("2026-09-23.v10", ("Author's exception", "whether that reason holds")),
-        "scene_blueprint": ("2026-09-15.v10", ("Author's exception", "the Setback itself (for a proactive scene)")),
+        "neutral_draft": ("never the story crucible", "Author's exception", "the last attempt", "dance around the plan", "rather than named"),
+        "style_first_draft": ("Author's exception", "the Setback is the last attempt", "proactive or reactive — is told as narrative summary"),
+        "hard_qc": ("Author's exception", "is not a violation"),
+        "soft_qc": ("story-crucible exposition", "an emotion named", "dragged over pages", "never a gap"),
+        "near_final_acceptance_review": ("Author's exception", "whether that reason holds"),
+        "scene_blueprint": ("Author's exception", "the Setback itself (for a proactive scene)"),
     }
-    for name, (version, phrases) in drafting.items():
-        assert templates[name]["version"] == version, name
+    for name, phrases in drafting.items():
         for phrase in phrases:
             assert phrase in templates[name]["task_prompt"], (name, phrase)

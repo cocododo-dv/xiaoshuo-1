@@ -71,7 +71,6 @@ from novel_system.services.style_reference.jobs import (
     JOB_KIND_LEARN,
     STATE_CANCELLED,
     STATE_FAILED,
-    STATE_QUEUED,
     STATE_RUNNING,
     STATE_SUCCEEDED,
     ClaimedJob,
@@ -1008,28 +1007,17 @@ def classification_payload(job: StyleReferenceJob | None) -> dict[str, Any] | No
 
 
 def _legacy_kind(job: StyleReferenceJob) -> str:
-    """旧活动面板的 kind(导入 / 重新分类);就地重分类也算「重新分类」。"""
+    """书的 ``classification.kind``(导入 / 重新分类,早于 ``mode`` 的粗分类):就地重分类也算「重新分类」。"""
     return "import" if _job_mode(job) == MODE_IMPORT else "reclassify"
 
 
-_LEGACY_STATUS = {
-    STATE_QUEUED: "running",
-    STATE_RUNNING: "running",
-    STATE_SUCCEEDED: "succeeded",
-    STATE_FAILED: "failed",
-    STATE_CANCELLED: "cancelled",
-}
-
-
-def classification_activity_entries(
+def classification_activity_entry(
     job: StyleReferenceJob,
     *,
     title: str | None,
     total_chars: int | None,
-) -> list[dict[str, Any]]:
-    """一个分类作业的活动条目:作业表的统一条目(``job:<id>``),外加一条兼容旧前端的别名条目
-    (键 = 请求的幂等键、kind = import / reclassify、带旧的 ``classify`` 批次块),别名带
-    ``compat_alias_of``——新界面应只认 ``job:`` 条目;P7 随 ``/imports/{key}/progress`` 一起删别名。"""
+) -> dict[str, Any]:
+    """一个分类作业的活动条目:作业表的统一条目(``job:<id>``),加上书名、分类方式与段数 / 字数。"""
     entry = job_activity_entry(job)
     mode = _job_mode(job)
     cursor = dict(job.cursor_json or {})
@@ -1045,96 +1033,7 @@ def classification_activity_entries(
             "chars_total": total_chars,
         }
     )
-    entries = [entry]
-    if job.op_key:
-        entries.append(_legacy_alias(job, entry, title=title, total_chars=total_chars))
-    return entries
-
-
-def _legacy_alias(
-    job: StyleReferenceJob,
-    entry: Mapping[str, Any],
-    *,
-    title: str | None,
-    total_chars: int | None,
-) -> dict[str, Any]:
-    status = _LEGACY_STATUS.get(job.state, job.state)
-    cursor = dict(job.cursor_json or {})
-    done = int(cursor.get("batches_done") or 0)
-    total = int(cursor.get("batches_total") or 0)
-    percent = entry.get("percent")
-    if status == "succeeded":
-        percent = 100
-    elif percent is None:
-        percent = 0
-    else:
-        percent = min(99, int(percent))
-    paragraphs = cursor.get("paragraphs_total")
-    kind = _legacy_kind(job)
-    return {
-        "key": job.op_key,
-        "compat_alias_of": entry.get("key"),
-        "job_id": job.job_id,
-        "kind": kind,
-        "kind_label": "导入" if kind == "import" else "重新分类",
-        "source": "job",
-        "title": title,
-        "book_id": job.book_id,
-        "target_id": job.book_id,
-        "status": status,
-        "phase": "classify" if status == "running" else ("done" if status == "succeeded" else status),
-        "phase_label": (
-            entry.get("phase_label") if status == "running" else {"succeeded": "完成", "failed": "失败", "cancelled": "已取消"}.get(status, status)
-        ),
-        "percent": percent,
-        "steps": {"done": done, "total": total, "label": "批"} if total else None,
-        "classify": {
-            "mode": "llm",
-            "batches_done": done,
-            "batches_total": total,
-            "llm_calls": int(cursor.get("llm_calls") or 0),
-            "node_id": cursor.get("rest_node") if cursor.get("phase") == PHASE_REST else seg.NODE_ANCHOR,
-        },
-        "llm_calls": int(cursor.get("llm_calls") or 0),
-        "started_at": job.started_at or job.created_at,
-        "updated_at": job.updated_at,
-        "elapsed_seconds": entry.get("elapsed_seconds"),
-        "eta_seconds": entry.get("eta_seconds"),
-        "error": dict(job.error_json) if job.error_json else None,
-        "result": (
-            {"book_id": job.book_id, "paragraphs_count": paragraphs} if status == "succeeded" else None
-        ),
-        "cancel_requested": bool(job.cancel_requested),
-        "cancellable": status == "running" and not bool(job.cancel_requested),
-        "retryable": status in ("failed", "cancelled"),
-        "resumable": status in ("failed", "cancelled") or bool(entry.get("stalled")),
-        "chars_total": total_chars,
-        "paragraphs_total": paragraphs,
-        "paragraphs_count": paragraphs if status == "succeeded" else None,
-    }
-
-
-def find_job_by_op_key(session: Session, op_key: str) -> StyleReferenceJob | None:
-    return session.execute(
-        select(StyleReferenceJob)
-        .where(StyleReferenceJob.op_key == op_key)
-        .order_by(StyleReferenceJob.created_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-
-
-def legacy_progress_snapshot(
-    job: StyleReferenceJob,
-    *,
-    title: str | None,
-    total_chars: int | None,
-) -> dict[str, Any]:
-    """``GET /imports/{key}/progress`` 的兼容快照(旧前端导入轮询读的形状)。"""
-    entry = job_activity_entry(job)
-    alias = _legacy_alias(job, entry, title=title, total_chars=total_chars)
-    alias["import_key"] = job.op_key
-    alias["op_key"] = job.op_key
-    return alias
+    return entry
 
 
 # ---------------------------------------------------------------- estimate
@@ -1273,16 +1172,14 @@ __all__ = [
     "UNCLASSIFIED_PARAGRAPH_TYPE",
     "active_classification_job",
     "cancel_classification",
-    "classification_activity_entries",
+    "classification_activity_entry",
     "classification_payload",
     "classification_provenance",
     "count_paragraphs",
     "create_classification_job",
     "estimate_classification",
     "fail_orphaned_classifications",
-    "find_job_by_op_key",
     "latest_classification_job",
-    "legacy_progress_snapshot",
     "resolve_classification_client",
     "resume_classification",
     "run_classification_job",

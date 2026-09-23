@@ -1,19 +1,9 @@
-"""风格参考 — 兼容层（2026-09-23 v3）。
+"""风格参考 — 兼容层：:class:`InjectionService`（绑定解析的旧调用形状）。
 
-注入已经搬进 ``services/style_reference/inject/`` 包（渲染、选窗、预算、预览、绑定解析）；这里只留其它模块还在
-import 的几个名字：
-
-- :class:`InjectionService`：只剩绑定解析（``resolve_active_binding`` / ``resolve_binding_layers`` /
-  ``describe_binding_layers``）与 ``repo``——qc_engine、bundle_builder、snowflake_chaptering、candidate_rerank
-  仍按这个形状调用；
-- ``ordered_character_ids`` / ``scene_dialogue_heavy``（原样）；``scene_sampling_hints`` 只剩章内位置（v3 选窗
-  不再看启发式段型，J4）；
-- 旧策略列的默认值 / 任务默认策略表已删（P6a）：绑定一律经 ``binding_apply`` 写，``strategy`` 列恒为 ``mixed``，
-  怎么送参考看绑定配置的 ``reference_mode``（``binding_config``）。
-
-删掉的：A / B / C / MIXED 四种渲染与 RAG 注入（J9）、强度公式与各块上限（J10）、量化软化与「风格分布指导」块
-（J11）、``_WindowAffinityScorer``（窗口典型度在持久化窗口表里）、证据引文兜底选窗（J6 / J13）、多层合并（J7）、
-漂移选窗参数、暴力搜索的预算拟合（J14）。
+注入在 ``services/style_reference/inject/`` 包里（请求 / 绑定解析 / 选窗 / 渲染 / 预算 / 审计 / 预览）。这里只留
+bundle_builder、snowflake_chaptering 与包导出还在用的一个名字：``InjectionService(session)`` 的
+``resolve_active_binding`` / ``resolve_binding_layers`` / ``describe_binding_layers`` 与 ``repo``，都转给
+``inject.bindings`` 的同名函数（scene > POV 角色 > 其余角色 > project，只有最具体的一层生效）。
 """
 
 from __future__ import annotations
@@ -27,23 +17,12 @@ from novel_system.services.style_reference.inject.bindings import (
     describe_binding_layers as _describe_binding_layers,
 )
 from novel_system.services.style_reference.inject.bindings import (
-    ordered_character_ids,
-)
-from novel_system.services.style_reference.inject.bindings import (
     resolve_active_binding as _resolve_active_binding,
 )
 from novel_system.services.style_reference.inject.bindings import (
     resolve_binding_layers as _resolve_binding_layers,
 )
-from novel_system.services.style_reference.inject.selection import (
-    scene_chapter_position,
-    scene_dialogue_heavy,
-)
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-
-def scene_sampling_hints(scene: Any) -> tuple[str | None, set[str]]:
-    """兼容：(章内位置, 段型提示)。v3 选窗不看启发式段型，段型提示恒为空集。"""
-    return scene_chapter_position(scene), set()
 
 
 class InjectionService:
@@ -90,9 +69,4 @@ class InjectionService:
         )
 
 
-__all__ = [
-    "InjectionService",
-    "ordered_character_ids",
-    "scene_dialogue_heavy",
-    "scene_sampling_hints",
-]
+__all__ = ["InjectionService"]

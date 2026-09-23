@@ -10,37 +10,21 @@ from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
 from novel_system.db.session import SessionLocal
-from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.style_reference_factories import RIGHTS_STATS, make_binding, make_book, make_profile
 
 PREFIX = "/api/v2/style-reference"
 
 
 def _seed_profile(seed: str, *, cloud_policy: str = "allow_full_cloud") -> str:
     with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        book_id = f"sr_book_il_{seed}"
-        repo.create_book(
-            book_id=book_id,
-            title="t",
-            source_kind="upload",
-            cloud_policy=cloud_policy,
-            text_checksum=f"chk_il_{seed}",
-            total_chars=1000,
-            status="ready",
-            stats_json={"rights_declaration": {"declared": True, "analysis_rights": True, "send_rights": True}},
-        )
-        run_id = f"sr_run_il_{seed}"
-        profile_id = f"sr_profile_il_{seed}"
-        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
-        repo.create_profile(
-            profile_id=profile_id,
-            book_id=book_id,
-            run_id=run_id,
+        book_id = make_book(session, f"sr_book_il_{seed}", cloud_policy=cloud_policy, stats=RIGHTS_STATS, total_chars=1000)
+        profile_id = make_profile(
+            session,
+            book_id,
+            profile_id=f"sr_profile_il_{seed}",
+            run_id=f"sr_run_il_{seed}",
             title=f"画像{seed}",
-            status="active",
             profile_json={"style_features": ["短句为主", "喻体即收"], "banned_replication_rules": ["禁止排比抒情"]},
-            coverage_json={},
-            source_finding_ids_json=[],
         )
         session.commit()
     return profile_id
@@ -48,15 +32,14 @@ def _seed_profile(seed: str, *, cloud_policy: str = "allow_full_cloud") -> str:
 
 def _bind(profile_id: str, *, binding_id: str, scope: str, scope_ref_id: str, strategy: str = "mixed", config_json: dict | None = None) -> None:
     with SessionLocal() as session:
-        StyleReferenceRepository(session).create_binding(
+        make_binding(
+            session,
+            profile_id,
             binding_id=binding_id,
-            profile_id=profile_id,
             scope=scope,
             scope_ref_id=scope_ref_id,
-            task_type="scene_generation",
             strategy=strategy,
-            config_json=config_json or {},
-            status="active",
+            config_json=config_json,
         )
         session.commit()
 

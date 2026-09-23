@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import random
 import threading
 import uuid
@@ -56,7 +55,7 @@ from novel_system.services.style_reference.jobs import (
     register_job_handler,
     run_job_inline,
 )
-from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.style_reference_factories import make_book
 from novel_system.services.style_reference.tags import MOOD_TAGS, SITUATION_TAGS, TAGS_VERSION
 from tests.learn_fakes import (
     NODE_PROTECTED,
@@ -106,30 +105,14 @@ def learn_rows(chapters: int = 6, per_chapter: int = 40, seed: str = "learn") ->
 
 
 def seed_book(session, book_id: str = "learn_book", *, rows: list[dict] | None = None, cloud_policy: str = "allow_full_cloud") -> str:
-    repo = StyleReferenceRepository(session)
-    rows = rows if rows is not None else learn_rows()
-    repo.create_book(
-        book_id=book_id,
+    make_book(
+        session,
+        book_id,
         title="雨夜集",
-        source_kind="upload",
+        paragraphs=rows if rows is not None else learn_rows(),
         cloud_policy=cloud_policy,
-        text_checksum=hashlib.sha256(book_id.encode("utf-8")).hexdigest(),
-        total_chars=sum(len(r["text"]) for r in rows),
-        status="ready",
-        stats_json=dict(RIGHTS) if cloud_policy != "local_only" else {},
+        stats=dict(RIGHTS) if cloud_policy != "local_only" else {},
     )
-    for row in rows:
-        repo.create_paragraph(
-            paragraph_id=f"{book_id}_p{row['paragraph_index']:05d}",
-            book_id=book_id,
-            paragraph_index=row["paragraph_index"],
-            paragraph_type=row["paragraph_type"],
-            start_offset=0,
-            end_offset=len(row["text"]),
-            text=row["text"],
-            char_count=len(row["text"]),
-            classifier_confidence=0.9,
-        )
     session.commit()
     return book_id
 

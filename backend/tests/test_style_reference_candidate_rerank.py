@@ -1,5 +1,6 @@
 """风格评分核(2026-09-14 减法后 candidate_rerank 只剩这部分):冻结画像 → 目标包络,
-候选文本 → 贴合读数 + 抄袭守卫。重排层(shadow / active / 基准授权)已删除。"""
+候选文本 → 贴合读数。重排层(shadow / active / 基准授权)已删除;候选的原文重合由唯一抄袭门查
+(``reference_copy_gate``,见 test_reference_copy_gate.py),评分核里不再带抄袭守卫。"""
 
 from __future__ import annotations
 
@@ -50,8 +51,6 @@ def test_policy_is_a_plain_threshold_bundle_without_modes() -> None:
     assert policy.min_substantive_chars == 300
     assert policy.min_metric_count == 12
     assert policy.min_confidence == pytest.approx(0.65)
-    assert policy.plagiarism_guard is True
-    assert (policy.plagiarism_ngram_size, policy.plagiarism_threshold_chars) == (8, 12)
     assert not hasattr(policy, "effective_mode")
     assert not hasattr(policy, "from_mapping")
 
@@ -101,19 +100,10 @@ def test_candidate_closer_to_profile_scores_higher_with_group_balancing() -> Non
     assert audit["selection_reason"] == "quality_order"
 
 
-def test_plagiarism_guard_reports_hits_without_leaking_source_text() -> None:
-    policy = CandidateRerankPolicy()
-    copied = assess_candidate_text(
-        "copied", REFERENCE_TEXT, 0.9, None, policy, plagiarism_corpus=[REFERENCE_TEXT]
-    )
-    safe = assess_candidate_text(
-        "safe", SAFE_TEXT, 0.7, None, policy, plagiarism_corpus=[REFERENCE_TEXT]
-    )
-    assert copied.plagiarism_checked is True and copied.plagiarism_passed is False
-    assert copied.plagiarism_hit_count >= 1 and copied.plagiarism_max_match_chars >= 12
-    assert safe.plagiarism_checked is True and safe.plagiarism_passed is True
-    # 审计只存计数 / 长度,不存命中的原文片段
-    assert REFERENCE_TEXT[:40] not in str(copied.to_audit_dict())
-    # 没有语料时不做守卫
-    unchecked = assess_candidate_text("none", SAFE_TEXT, 0.5, None, policy)
-    assert unchecked.plagiarism_checked is False and unchecked.plagiarism_passed is None
+def test_assessment_leaves_the_copy_check_to_the_caller() -> None:
+    # 抄袭检查不在评分核里:读数的 plagiarism_* 由调用方按唯一抄袭门的结果填写
+    target = build_style_target([_profile("profile", REFERENCE_TEXT)])
+    assessment = assess_candidate_text("any", SAFE_TEXT, 0.5, target, CandidateRerankPolicy())
+    assert assessment.plagiarism_checked is False and assessment.plagiarism_passed is None
+    audit = assessment.to_audit_dict()
+    assert "combined_score" not in audit and audit["plagiarism_hit_count"] == 0

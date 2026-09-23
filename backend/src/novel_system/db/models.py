@@ -1882,9 +1882,9 @@ class SystemSecret(Base):
 
 
 # ---------------------------------------------------------------------------
-# Style Reference (v1.1) — 11 张表
-# 参见 plans/style-reference-v1-1-fancy-shannon.md 与
-# 《风格参考模块重构执行手册 v1.1》§4。
+# Style Reference — 书 / 段落 / 学习血缘(run · 抽取 · 引文 · 发现 · 证据)/ 画像 / 绑定 / 禁用词 /
+# 遥测,以及 v3(迁移 0090)的作业 / 窗口索引 / 读数 / 每场冻结选窗。现行说明见 docs/style-reference.md;
+# 旧回测报告表、发现反馈表与 base_confidence 列由迁移 0091 删除。
 # ---------------------------------------------------------------------------
 
 
@@ -2048,9 +2048,6 @@ class StyleReferenceFinding(Base):
     # 在 create_finding 时自动填充
     statement_hash: Mapped[str] = mapped_column(String)
     confidence: Mapped[str] = mapped_column(String, default="medium")
-    # 立项 B — 合成时的基线置信度。NULL = 尚无用户反馈(confidence 即基线);
-    # 首次反馈时由应用层回填为当时的 confidence,使反馈调档可重算/可逆。
-    base_confidence: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="pending")
     review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
@@ -2135,44 +2132,6 @@ class StyleReferenceInjectionBinding(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
-class StyleReferenceValidationReport(Base):
-    __tablename__ = "style_reference_validation_reports"
-    __table_args__ = (
-        Index(
-            "ix_style_reference_validation_reports_profile_target",
-            "profile_id",
-            "target_ref_id",
-        ),
-        Index(
-            "ix_style_reference_validation_reports_verdict",
-            "verdict",
-        ),
-        Index(
-            "ix_style_reference_validation_reports_status",
-            "status",
-        ),
-    )
-
-    report_id: Mapped[str] = mapped_column(String, primary_key=True)
-    profile_id: Mapped[str] = mapped_column(ForeignKey("style_reference_profiles.profile_id"))
-    target_kind: Mapped[str] = mapped_column(String)
-    target_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    verdict: Mapped[str] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String, default="completed")
-    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
-    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    retryable: Mapped[bool] = mapped_column(Boolean, default=False)
-    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    heartbeat_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    quantitative_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    semantic_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    plagiarism_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    forbidden_hits_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    mode_executed: Mapped[str] = mapped_column(String, default="async_full")
-    created_at: Mapped[str] = mapped_column(String, default=utcnow)
-
-
 class StyleReferenceBannedTerm(Base):
     __tablename__ = "style_reference_banned_terms"
     __table_args__ = (
@@ -2195,13 +2154,12 @@ class StyleReferenceBannedTerm(Base):
 
 
 class StyleReferenceMetricEvent(Base):
-    """PR-10 §13 — 可观测性事件流(append-only,无 FK)。
+    """风格参考的审计事件流(append-only,无 FK;写入口 ``metrics_recorder.MetricsRecorder``)。
 
-    InjectionService / qc gate / ValidationOrchestrator 各调用点写 1 行,只作审计(2026-09-14 起无
-    聚合端点;风格参考 v3 删掉了 style_drift_observed 的写端与读端,库里残留的旧行不再被读)。
-    event_kind 5 个允许值(由文档约束,**不**是 Python Enum):
-    injection_invoked / qc_gate_decided / validation_executed /
-    auto_rewrite_triggered / auto_rewrite_completed
+    现在只有 qc_engine 的两道门在写:``styled_draft_gate_decided``(风格稿门:抄袭门 + 生成禁用词)与
+    ``qc_gate_decided``(中性步位稿的原文重合门)。没有聚合端点,这些行只作审计,由
+    ``cleanup.cleanup_metric_events`` 按 90 天留存清理;旧库里残留的 ``injection_invoked`` /
+    ``validation_executed`` / ``style_drift_observed`` 等旧种类不再被写,也不再被读。
     """
 
     __tablename__ = "style_reference_metric_events"
@@ -2220,36 +2178,6 @@ class StyleReferenceMetricEvent(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
-
-
-class StyleReferenceFindingFeedback(Base):
-    """立项 B — finding 的用户反馈(👍/👎)持续校准回路。
-
-    一人(operator_ref)对一条 finding 仅一票(uq 约束);改向投票 = 更新该行 vote。
-    聚合 net = #up − #down(去重用户),按 config/style_reference/feedback.yaml 阈值
-    在 finding.base_confidence 基础上 ±1 档写回 finding.confidence。
-    """
-
-    __tablename__ = "style_reference_finding_feedback"
-    __table_args__ = (
-        UniqueConstraint(
-            "finding_id",
-            "operator_ref",
-            name="uq_style_reference_finding_feedback_finding_operator",
-        ),
-        Index("ix_sr_finding_feedback_finding", "finding_id"),
-    )
-
-    feedback_id: Mapped[str] = mapped_column(String, primary_key=True)
-    # ondelete CASCADE：运行连接默认强制 FK；purge_derived_data 仍显式删除，
-    # 作为维护期开关关闭时的兜底并保留清晰的删除审计顺序。
-    finding_id: Mapped[str] = mapped_column(
-        ForeignKey("style_reference_findings.finding_id", ondelete="CASCADE")
-    )
-    operator_ref: Mapped[str] = mapped_column(String)
-    vote: Mapped[str] = mapped_column(String)  # "up" | "down"
-    created_at: Mapped[str] = mapped_column(String, default=utcnow)
-    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
 class StyleReferenceJob(Base):

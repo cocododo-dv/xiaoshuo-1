@@ -1,4 +1,4 @@
-"""2026-09-22 结构跟随参考书 / 简报气质让位——评估后的实现（契约文档 docs/style-reference-first-2026-09-22.md §6）。
+"""2026-09-22 结构跟随参考书 / 简报气质让位——评估后的实现（契约文档 docs/history/style/style-reference-first-2026-09-22.md §6）。
 
 覆盖：结构画像 v2 的章题（计算 / 渲染 / 旧画像惰性补算 / AI 起章名载荷）、参考作者的场尺度
 （章长中位 ÷ 本章场数 → 起草硬范围上限与长度指引）、章内位置（结构简报事实行、样例窗口标签、
@@ -623,21 +623,18 @@ def test_project_reference_scale_uses_the_median_scenes_per_chapter(session) -> 
 # ---------------------------------------------------------------------------
 
 
-def test_templates_are_bumped_and_say_how_structure_and_temperament_follow_the_reference() -> None:
+def test_templates_say_how_structure_and_temperament_follow_the_reference() -> None:
     templates = load_prompt_templates(PROMPTS)
     review = templates["near_final_acceptance_review"]
-    assert review.version == "2026-09-23.v10"
     assert "the Reader should feel line names the effect, not the register" in review.task_prompt
     assert "opens or closes its chapter" in review.task_prompt and "章首 / 章末" in review.task_prompt
     chapter_review = templates["chapter_near_final_review"]
-    assert chapter_review.version == "2026-09-22.v3"
     assert "[STYLE_REFERENCE]" in chapter_review.system_prompt and "[风格样例]" in chapter_review.task_prompt
     titles = templates["snowflake_chapter_titles_suggest"]
-    assert titles.version == "2026-09-22.v2" and "`reference_titles`" in titles.task_prompt
+    assert "`reference_titles`" in titles.task_prompt
     assert "Never return one of those sample titles" in titles.task_prompt
-    for name, version in (("snowflake_generate_scene_list", "2026-09-22.v11"), ("snowflake_generate_scene_details", "2026-09-22.v14")):
+    for name in ("snowflake_generate_scene_list", "snowflake_generate_scene_details"):
         template = templates[name]
-        assert template.version == version, name
         assert "project_scale" in template.task_prompt and "情绪基调" in template.task_prompt, name
         assert "graver literary register the book brief may describe" in template.task_prompt, name
     assert "project_scale" in STRUCTURE_REFERENCE_HOW_TO_USE and "情绪基调" in STRUCTURE_REFERENCE_HOW_TO_USE

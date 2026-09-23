@@ -230,7 +230,7 @@ def test_evidence_unique_finding_quote(repo: StyleReferenceRepository) -> None:
             )
 
 
-def test_profile_binding_validation_report_banned_terms(
+def test_profile_binding_banned_terms(
     repo: StyleReferenceRepository,
 ) -> None:
     _make_book(repo)
@@ -261,21 +261,6 @@ def test_profile_binding_validation_report_banned_terms(
     )
     bindings = repo.list_bindings(profile_id="sr_profile_1", task_type="scene_generation")
     assert len(bindings) == 1
-
-    repo.create_validation_report(
-        report_id="sr_rep_1",
-        profile_id="sr_profile_1",
-        target_kind="scene",
-        target_ref_id="scene_1",
-        verdict="pass",
-        quantitative_json=[],
-        semantic_json=[],
-        plagiarism_json={"passed": True},
-        forbidden_hits_json=[],
-        mode_executed="async_full",
-    )
-    reports = repo.list_validation_reports(profile_id="sr_profile_1", verdict="pass")
-    assert len(reports) == 1
 
     repo.create_banned_term(
         term_id="sr_term_1",

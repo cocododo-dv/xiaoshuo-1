@@ -3,7 +3,7 @@
 - 样例是文风权威：以 ``[风格样例](…)`` … ``[/风格样例]`` 成框，不套「不可信数据」边界（2026-09-22 起）；
 - 窗口正文里的注入模式照样中和、伪造的边界照样转义；``card_only`` 的证据例句同样处理；
 - 发送权：云策略未知 / 没有发送权声明 / 「仅本机」书遇云端模型 → 一窗都不送；
-- 策略 C（RAG）不再渲染：旧 C 绑定映射为全面模仿，渲染时从不调用检索。
+- 策略 C（检索）已删除：旧 C 绑定映射为全面模仿，照常渲染样例窗。
 """
 
 from __future__ import annotations
@@ -89,15 +89,10 @@ def test_no_samples_without_send_rights(session, cloud_policy: str, rights: bool
     assert "[文风卡]" in rendered.system_prefix and "（例：「" not in rendered.system_prefix
 
 
-def test_legacy_strategy_c_renders_windows_and_never_retrieves(session, monkeypatch) -> None:
-    from novel_system.services.style_reference import rag
-
-    def _boom(*_args, **_kwargs):
-        raise AssertionError("v3 rendering must not call the RAG retriever")
-
-    monkeypatch.setattr(rag.RagRetriever, "retrieve", _boom)
+def test_legacy_strategy_c_renders_windows(session) -> None:
+    # 策略 C（检索）与它的模块已删除：旧 C 绑定映射为全面模仿，照常渲染样例窗，没有检索片段块
     policy = _policy(session, "strategy_c", strategy="C")
     assert policy.reference_mode == "full"
     rendered = render_style(session, policy, StyleRenderRequest(placement=PLACEMENT_USER_TAIL, scene_id="UT4"))
-    assert rendered.stats["few_shot_windows"] == 1 and rendered.stats["rag_snippets"] == 0
+    assert rendered.stats["few_shot_windows"] == 1 and "rag_snippets" not in rendered.stats
     assert "[风格检索样例]" not in rendered.system_prefix + rendered.user_tail

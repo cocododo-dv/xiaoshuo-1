@@ -24,28 +24,16 @@ from novel_system.services.style_prompt_injection import (
     apply_style_user_tail,
 )
 from novel_system.services.style_reference import untrusted_data as ud
-from novel_system.services.style_reference.injection import (
-    scene_dialogue_heavy,
-    scene_sampling_hints,
-)
+from novel_system.services.style_reference.inject.selection import scene_dialogue_heavy
 from novel_system.services.style_reference.schemas import (
     FEW_SHOT_CLOSING_MANDATE,
     FEW_SHOT_IN_USER_MESSAGE_NOTE,
-    InjectionStrategy,
-    SystemPromptFragments,
 )
 
 
 # ---------------------------------------------------------------------------
 # 样例块的框:文风权威,不是「不可信数据」
 # ---------------------------------------------------------------------------
-
-
-def _framed(windows: list[str]) -> str:
-    body = "[风格样例](测试标题)\n" + "\n".join(
-        f"- (narration；连续2段窗口；{len(text)}字)「{text}」" for text in windows
-    )
-    return ud.frame_reference_samples(body)
 
 
 def test_frame_reference_samples_keeps_neutralization_and_escaping_but_drops_the_untrusted_wording() -> None:
@@ -84,34 +72,10 @@ def test_neutralizer_still_catches_real_role_changes(sentence: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fragments() -> SystemPromptFragments:
-    return SystemPromptFragments(
-        positive_block="[正向风格特征]\n- 动作先于解释",
-        forbidden_block="[禁忌模式]\n- 禁堆砌形容词",
-        voice_block="[声音特征]\n- 逗号稀疏",
-        metric_anchor_block="[风格分布指导]\n- 句子偏短",
-        few_shot_block=_framed(["窗口甲。" * 20, "窗口乙。" * 20]),
-        anti_plagiarism_block="## 严格禁止\n- 不得整句照搬",
-        strategy=InjectionStrategy.MIXED,
-    )
-
-
-def test_user_tail_carries_the_samples_and_the_closing_mandate() -> None:
-    fragments = _fragments()
-    system_only = fragments.to_system_prompt_prefix(include_few_shot=False)
-    tail = fragments.to_user_prompt_tail()
-    assert system_only.startswith("[STYLE_REFERENCE]\n" + FEW_SHOT_IN_USER_MESSAGE_NOTE)
-    assert "窗口甲" not in system_only and "[声音特征]" in system_only and "## 严格禁止" in system_only
-    assert tail.startswith("\n\n[风格样例](") and "窗口甲" in tail and "窗口乙" in tail
-    assert tail.rstrip().endswith(FEW_SHOT_CLOSING_MANDATE)
+def test_closing_mandate_names_the_samples_as_the_only_style_authority() -> None:
+    # 起草通道的样例尾块由 inject.render 拼（收口指令紧跟样例、离输出最近）；这里只钉指令本身的行为口径
     assert "唯一的文风权威" in FEW_SHOT_CLOSING_MANDATE and "不整句照搬" in FEW_SHOT_CLOSING_MANDATE
-    # 默认(规划 / 评审节点)仍把样例放在 system 前缀里,顺序不变
-    full = fragments.to_system_prompt_prefix()
-    assert full.index("[风格样例]") < full.index("[声音特征]") and "窗口甲" in full
-    # 没有样例时没有尾巴,也没有指路句
-    bare = fragments.model_copy(update={"few_shot_block": ""})
-    assert bare.to_user_prompt_tail() == ""
-    assert FEW_SHOT_IN_USER_MESSAGE_NOTE not in bare.to_system_prompt_prefix(include_few_shot=False)
+    assert "user 消息的末尾" in FEW_SHOT_IN_USER_MESSAGE_NOTE
 
 
 def test_apply_style_user_tail_appends_only_when_the_injector_left_a_tail() -> None:
@@ -134,9 +98,6 @@ def test_scene_dialogue_heavy_follows_the_cast_and_the_form() -> None:
     summary = SimpleNamespace(writer_brief_json={"rendering_mode": "summary"}, onstage_chars_json=["c2"], pov_character_id="c1")
     assert scene_dialogue_heavy(proactive) and scene_dialogue_heavy(reactive_with_other)
     assert not scene_dialogue_heavy(reactive_alone) and not scene_dialogue_heavy(summary) and not scene_dialogue_heavy(None)
-    # 2026-09-23 风格参考 v3：选窗不再看启发式段型（J4）——兼容层只剩章内位置
-    position, hints = scene_sampling_hints(SimpleNamespace(scene_seq=2, is_chapter_last=False, writer_brief_json={"reaction": "怕", "dilemma": "走或留", "decision": "留"}))
-    assert position is None and hints == set()
 
 
 # ---------------------------------------------------------------------------

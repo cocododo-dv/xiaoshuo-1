@@ -37,6 +37,9 @@ NEW_TABLES = [
     "style_reference_validation_reports",
     "style_reference_banned_terms",
 ]
+# 0037 建的表里,回测报告表已由 20260923_0091(风格参考 v3 清理迁移)删除:head 上只剩其余十张
+DROPPED_AT_HEAD = {"style_reference_validation_reports"}
+HEAD_TABLES = [tbl for tbl in NEW_TABLES if tbl not in DROPPED_AT_HEAD]
 
 LEGACY_TABLES = [
     "reference_books",
@@ -128,7 +131,7 @@ def _list_unique_constraints(db_url: str, table_name: str) -> list[dict]:
         engine.dispose()
 
 
-def test_upgrade_creates_eleven_new_tables(
+def test_upgrade_creates_the_style_reference_tables(
     isolated_database: Path,
     fake_backup: Path,
 ) -> None:
@@ -137,8 +140,10 @@ def test_upgrade_creates_eleven_new_tables(
     command.upgrade(cfg, "head")
 
     tables = _existing_tables(db_url)
-    for tbl in NEW_TABLES:
+    for tbl in HEAD_TABLES:
         assert tbl in tables, f"{tbl} 未创建"
+    for tbl in DROPPED_AT_HEAD:
+        assert tbl not in tables, f"{tbl} 应已被 0091 删除"
     # 旧表已被 0036 drop
     for tbl in LEGACY_TABLES:
         assert tbl not in tables, f"{tbl} 应已被 0036 drop"
@@ -251,7 +256,7 @@ def test_downgrade_drops_new_tables_then_recreates_legacy(
     # 再次升至 head 应成功
     command.upgrade(cfg, "head")
     tables_after_up = _existing_tables(db_url)
-    for tbl in NEW_TABLES:
+    for tbl in HEAD_TABLES:
         assert tbl in tables_after_up
 
 

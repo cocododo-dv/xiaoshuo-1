@@ -1,5 +1,7 @@
 """风格参考 v3 注入测试的共享夹具（合成书、文风卡画像、旧画像、绑定、场景、冻结了契约的 bundle）。
 
+通用的造数（书 + 段落、画像、绑定、窗口、合成文风卡）在 ``tests/style_reference_factories.py``；这里是注入测试专用的组合。
+
 全部是合成内容（无真实作者原文 / 作品人物）：段落由 ``test_style_reference_windows.synthetic_rows`` 按种子生成，
 文风卡的句子是泛化的写法描述。
 """
@@ -17,8 +19,6 @@ from novel_system.db.models import (
     ChapterGoal,
     SceneCard,
     StoryProject,
-    StyleReferenceBook,
-    StyleReferenceParagraph,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
@@ -26,64 +26,11 @@ from novel_system.services.style_reference.runtime_contract import (
     build_style_runtime_contract,
 )
 from novel_system.services.style_reference.windows import ensure_window_index, load_windows, set_window_tags
+from tests.style_reference_factories import DEVICES, VOICE_HABITS, card_payload, make_binding, make_book
 from tests.test_style_reference_windows import synthetic_rows
 
 RIGHTS = {"rights_declaration": {"declared": True, "analysis_rights": True, "send_rights": True}}
 PROJECT_ID = "PRJ_INJ3"
-
-VOICE_HABITS = [
-    "句子多靠「就」「也」「还」并置推进，少用「然而」「于是」",
-    "对白常不加引导词，加的时候放在话后面",
-    "逗号多、句号少，一口气说到底再断",
-]
-DEVICES = {
-    "language.rhetoric": ["俗物比喻", "游戏梗"],
-    "narrative.pacing": ["倒计时"],
-    "scene.dialogue": ["抢话"],
-}
-
-
-def card_payload(*, with_evidence: bool = False, quote_id: str | None = None) -> dict[str, Any]:
-    """一张合成文风卡（四维有句子，其余维由 ``normalize_card`` 补空）。"""
-    evidence = [quote_id] if (with_evidence and quote_id) else []
-    return {
-        "version": "dimension_card_v1",
-        "temperament": ["危急关头用自嘲冲淡紧张"],
-        "dimensions": [
-            {
-                "dimension": "language.rhetoric",
-                "distinctiveness": 0.95,
-                "devices": DEVICES["language.rhetoric"],
-                "lines": [
-                    {"text": "紧张处拿日常小物件打夸张的比方", "mandatory": True, "distinctiveness": 0.9, "evidence_quote_ids": evidence},
-                    {"text": "借游戏与电影的套路打比方", "distinctiveness": 0.7},
-                    {"text": "一段里常叠两三个比方", "distinctiveness": 0.2},
-                    {"text": "不让天气替人伤心", "kind": "avoid", "distinctiveness": 0.6},
-                ],
-            },
-            {
-                "dimension": "narrative.pacing",
-                "distinctiveness": 0.8,
-                "devices": DEVICES["narrative.pacing"],
-                "lines": [
-                    {"text": "危急时把时间切成倒计时推着走", "distinctiveness": 0.8},
-                    {"text": "长句后面接极短的一句收住", "distinctiveness": 0.5},
-                ],
-            },
-            {
-                "dimension": "scene.dialogue",
-                "distinctiveness": 0.6,
-                "devices": DEVICES["scene.dialogue"],
-                "lines": [{"text": "对白你来我往地抢话，少用长篇解释", "distinctiveness": 0.6}],
-            },
-            {
-                "dimension": "theme.emotional_tone",
-                "distinctiveness": 0.7,
-                "lines": [{"text": "惊险里夹着吐槽，悲伤说得很轻", "distinctiveness": 0.7}],
-            },
-        ],
-    }
-
 
 LEGACY_PROFILE_JSON = {
     "qualitative_summary": "克制观察，动作先于解释；对白短促。",
@@ -185,15 +132,14 @@ def bind_profile(
     config_json: dict[str, Any] | None = None,
 ):
     """与原 ``test_style_reference_injection_v2._bind`` 同形（调用方自己提交）。"""
-    return repo.create_binding(
+    return make_binding(
+        repo.session,
+        profile_id,
         binding_id=binding_id,
-        profile_id=profile_id,
         scope=scope,
         scope_ref_id=scope_ref_id,
-        task_type="scene_generation",
         strategy=strategy,
-        config_json=config_json or {},
-        status="active",
+        config_json=config_json,
     )
 
 
@@ -206,35 +152,7 @@ def seed_synthetic_book(
     cloud_policy: str = "allow_full_cloud",
 ) -> str:
     """合成书 + 段落（一次批量写入；每章约 6,000 字 → 章首 / 章末两窗）。"""
-    import hashlib
-
-    session.add(
-        StyleReferenceBook(
-            book_id=book_id,
-            title="合成书",
-            source_kind="upload",
-            cloud_policy=cloud_policy,
-            text_checksum=hashlib.sha256(book_id.encode("utf-8")).hexdigest(),
-            total_chars=sum(len(r["text"]) for r in rows),
-            status="ready",
-            stats_json=dict(stats or {}),
-        )
-    )
-    session.flush()
-    session.add_all(
-        StyleReferenceParagraph(
-            paragraph_id=f"{book_id}_p{row['paragraph_index']:05d}",
-            book_id=book_id,
-            paragraph_index=row["paragraph_index"],
-            paragraph_type=row["paragraph_type"],
-            start_offset=0,
-            end_offset=len(row["text"]),
-            text=row["text"],
-            char_count=len(row["text"]),
-            classifier_confidence=0.9,
-        )
-        for row in rows
-    )
+    make_book(session, book_id, title="合成书", paragraphs=rows, stats=stats, cloud_policy=cloud_policy)
     session.commit()
     return book_id
 
@@ -314,15 +232,14 @@ def bind(
     strategy: str = "mixed",
     config_json: dict[str, Any] | None = None,
 ):
-    binding = StyleReferenceRepository(session).create_binding(
+    binding = make_binding(
+        session,
+        profile_id,
         binding_id=binding_id,
-        profile_id=profile_id,
         scope=scope,
         scope_ref_id=scope_ref_id,
-        task_type="scene_generation",
         strategy=strategy,
-        config_json=dict(config_json or {}),
-        status="active",
+        config_json=config_json,
     )
     session.commit()
     return binding

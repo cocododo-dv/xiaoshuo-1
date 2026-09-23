@@ -76,12 +76,7 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        from novel_system.services.style_reference.rag import (
-            shutdown_style_reference_rag_index_executor,
-        )
-
         shutdown_job_workers(wait=False)
-        shutdown_style_reference_rag_index_executor(wait=False)
 
 
 def _is_loopback_host(host: str | None) -> bool:
