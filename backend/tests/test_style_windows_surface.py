@@ -23,51 +23,29 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.db.session import SessionLocal
-from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.style_reference_factories import make_book, make_profile
 
 PREFIX = "/api/v2/style-reference"
 
 
 def _seed_book(session: Session, book_id: str, *, paragraphs: int = 100) -> None:
-    repo = StyleReferenceRepository(session)
-    repo.create_book(
-        book_id=book_id,
+    make_book(
+        session,
+        book_id,
         title=f"参考书 {book_id}",
-        source_kind="upload",
         cloud_policy="local_only",
         text_checksum=f"sha_{book_id}",
         total_chars=paragraphs * 10,
-        status="ready",
-        stats_json={},
+        paragraph_id="{book_id}_p{index:04d}",
+        paragraphs=[
+            {"text": f"{book_id} 第 {index} 段的原文。", "paragraph_type": "dialogue" if index % 3 == 0 else "narration"}
+            for index in range(paragraphs)
+        ],
     )
-    for index in range(paragraphs):
-        text = f"{book_id} 第 {index} 段的原文。"
-        repo.create_paragraph(
-            paragraph_id=f"{book_id}_p{index:04d}",
-            book_id=book_id,
-            paragraph_index=index,
-            paragraph_type="dialogue" if index % 3 == 0 else "narration",
-            start_offset=index * 10,
-            end_offset=index * 10 + len(text),
-            text=text,
-            char_count=len(text),
-            classifier_confidence=0.9,
-        )
 
 
 def _seed_profile(session: Session, *, book_id: str, profile_id: str) -> None:
-    repo = StyleReferenceRepository(session)
-    repo.create_run(run_id=f"run_{profile_id}", book_id=book_id, status="done", phase="done")
-    repo.create_profile(
-        profile_id=profile_id,
-        book_id=book_id,
-        run_id=f"run_{profile_id}",
-        title=f"画像 {profile_id}",
-        status="active",
-        profile_json={},
-        coverage_json={},
-        source_finding_ids_json=[],
-    )
+    make_profile(session, book_id, profile_id=profile_id, title=f"画像 {profile_id}")
 
 
 # ---------------------------------------------------------------------------

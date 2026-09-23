@@ -12,48 +12,15 @@ from novel_system.services.style_reference.banned_terms import (
     profile_banned_term_hits,
     profile_generation_banned_terms,
 )
-from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.style_reference_factories import make_banned_terms, make_book, make_profile
 
 
 def _seed_profile_and_terms(profile_id: str, terms: list[tuple[str, str]]) -> None:
     """terms = [(term_text, scope), ...]"""
     with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_book(
-            book_id=f"sr_book_{profile_id[-6:]}",
-            title="x",
-            source_kind="upload",
-            cloud_policy="local_only",
-            text_checksum=f"chk_{profile_id}",
-            total_chars=10,
-            status="ready",
-            stats_json={},
-        )
-        repo.create_run(
-            run_id=f"sr_run_{profile_id[-6:]}",
-            book_id=f"sr_book_{profile_id[-6:]}",
-            status="done",
-            phase="done",
-        )
-        repo.create_profile(
-            profile_id=profile_id,
-            book_id=f"sr_book_{profile_id[-6:]}",
-            run_id=f"sr_run_{profile_id[-6:]}",
-            title="t",
-            status="active",
-            profile_json={},
-            coverage_json={},
-            source_finding_ids_json=[],
-        )
-        for i, (term, scope) in enumerate(terms):
-            repo.create_banned_term(
-                term_id=f"sr_term_{profile_id[-6:]}_{i}",
-                profile_id=profile_id,
-                term=term,
-                replacement_hint=None,
-                source="user",
-                scope=scope,
-            )
+        book_id = make_book(session, f"sr_book_{profile_id[-6:]}", title="x", cloud_policy="local_only", total_chars=10)
+        make_profile(session, book_id, profile_id=profile_id, run_id=f"sr_run_{profile_id[-6:]}")
+        make_banned_terms(session, profile_id, terms, key=profile_id[-6:])
         session.commit()
 
 

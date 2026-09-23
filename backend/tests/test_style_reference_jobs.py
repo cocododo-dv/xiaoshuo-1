@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import update
 
-from novel_system.db.models import StyleReferenceBook, StyleReferenceJob
+from novel_system.db.models import StyleReferenceJob
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference import jobs as jobs_module
@@ -29,23 +29,11 @@ from novel_system.services.style_reference.jobs import (
     register_job_handler,
     run_job_inline,
 )
+from tests.style_reference_factories import make_book
 
 
 def _book(session, book_id: str = "sr_book_jobs") -> str:
-    session.add(
-        StyleReferenceBook(
-            book_id=book_id,
-            title="作业测试书",
-            source_kind="upload",
-            cloud_policy="allow_full_cloud",
-            text_checksum=f"sum-{book_id}",
-            total_chars=100,
-            status="ready",
-            stats_json={},
-        )
-    )
-    session.flush()
-    return book_id
+    return make_book(session, book_id, title="作业测试书", text_checksum=f"sum-{book_id}", total_chars=100)
 
 
 @pytest.fixture(autouse=True)

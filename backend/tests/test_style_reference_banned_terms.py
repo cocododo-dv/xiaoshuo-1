@@ -13,50 +13,28 @@ from fastapi.testclient import TestClient
 from novel_system.api.app import create_app
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.style_reference_factories import RIGHTS_STATS, make_book, make_profile
 
 PREFIX = "/api/v2/style-reference"
 
 
 def _seed_book_with_profile(seed: str, *, paragraphs: list[str] | None = None) -> tuple[str, str]:
     with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        book_id = f"sr_book_bt_{seed}"
-        repo.create_book(
-            book_id=book_id,
-            title="t",
-            source_kind="upload",
+        book_id = make_book(
+            session,
+            f"sr_book_bt_{seed}",
+            paragraphs=paragraphs or [],
             cloud_policy="segments_only",
-            text_checksum=f"chk_bt_{seed}",
+            stats=RIGHTS_STATS,
+            paragraph_id="sr_para_bt_" + seed + "_{index:02d}",
             total_chars=1000,
-            status="ready",
-            stats_json={"rights_declaration": {
-                "declared": True, "analysis_rights": True, "send_rights": True,
-            }},
         )
-        for idx, body in enumerate(paragraphs or []):
-            repo.create_paragraph(
-                paragraph_id=f"sr_para_bt_{seed}_{idx:02d}",
-                book_id=book_id,
-                paragraph_index=idx,
-                paragraph_type="narration",
-                start_offset=0,
-                end_offset=len(body),
-                text=body,
-                char_count=len(body),
-                classifier_confidence=0.9,
-            )
-        run_id = f"sr_run_bt_{seed}"
-        profile_id = f"sr_profile_bt_{seed}"
-        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
-        repo.create_profile(
-            profile_id=profile_id,
-            book_id=book_id,
-            run_id=run_id,
-            title="t",
-            status="active",
+        profile_id = make_profile(
+            session,
+            book_id,
+            profile_id=f"sr_profile_bt_{seed}",
+            run_id=f"sr_run_bt_{seed}",
             profile_json={"narrative_summary": "短句"},
-            coverage_json={},
-            source_finding_ids_json=[],
         )
         session.commit()
     return book_id, profile_id

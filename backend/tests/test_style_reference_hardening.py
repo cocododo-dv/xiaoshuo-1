@@ -30,6 +30,7 @@ from novel_system.services.style_reference.inject.fit import fit_rendered
 from novel_system.services.style_reference.inject.render import render_style
 from novel_system.services.style_reference.inject.request import StyleRenderRequest
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.style_reference_factories import RIGHTS_STATS, make_book, make_profile
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     reset_reference_copy_gate_cache,
@@ -76,57 +77,28 @@ def _seed_book(
     with_paragraphs: bool = True,
 ) -> str:
     with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        book_id = f"sr_book_hd_{seed}"
-        repo.create_book(
-            book_id=book_id,
-            title="t",
-            source_kind="upload",
+        book_id = make_book(
+            session,
+            f"sr_book_hd_{seed}",
             cloud_policy=cloud_policy,
             text_checksum=f"chk_hd_{seed}",
             total_chars=len(SAMPLE_TEXT),
-            status="ready",
-            stats_json=(
-                {"rights_declaration": {
-                    "declared": True, "analysis_rights": True, "send_rights": True,
-                }}
-                if cloud_policy != "local_only"
-                else {}
-            ),
+            stats=RIGHTS_STATS if cloud_policy != "local_only" else {},
+            paragraphs=[p.strip() for p in SAMPLE_TEXT.split("\n\n") if p.strip()] if with_paragraphs else [],
+            paragraph_id="sr_para_hd_" + seed + "_{index:02d}",
         )
-        if with_paragraphs:
-            paragraphs = [p.strip() for p in SAMPLE_TEXT.split("\n\n") if p.strip()]
-            for idx, body in enumerate(paragraphs):
-                repo.create_paragraph(
-                    paragraph_id=f"sr_para_hd_{seed}_{idx:02d}",
-                    book_id=book_id,
-                    paragraph_index=idx,
-                    paragraph_type="narration",
-                    start_offset=0,
-                    end_offset=len(body),
-                    text=body,
-                    char_count=len(body),
-                    classifier_confidence=0.9,
-                )
         session.commit()
     return book_id
 
 
 def _seed_profile_for_book(seed: str, book_id: str, *, profile_json: dict | None = None) -> str:
     with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        run_id = f"sr_run_hd_{seed}"
-        profile_id = f"sr_profile_hd_{seed}"
-        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
-        repo.create_profile(
-            profile_id=profile_id,
-            book_id=book_id,
-            run_id=run_id,
-            title="t",
-            status="active",
+        profile_id = make_profile(
+            session,
+            book_id,
+            profile_id=f"sr_profile_hd_{seed}",
+            run_id=f"sr_run_hd_{seed}",
             profile_json=profile_json or {"narrative_summary": "短句白描"},
-            coverage_json={},
-            source_finding_ids_json=[],
         )
         session.commit()
     return profile_id
