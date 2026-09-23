@@ -554,6 +554,17 @@ def test_contract_v2_rejects_sample_refs_and_tampering(session) -> None:
     with_refs["contract_hash"] = _json_hash(body)
     with pytest.raises(ValueError, match="sample references"):
         validate_style_runtime_contract(with_refs)
+    # 书快照的段落根哈希必须是 64 位十六进制（哈希重算过，只有格式不对）
+    bad_root = json.loads(json.dumps(contract))
+    bad_root["layers"][0]["book"]["paragraph_root_sha256"] = "not-a-sha"
+    layer = dict(bad_root["layers"][0])
+    layer.pop("layer_hash")
+    bad_root["layers"][0]["layer_hash"] = _json_hash(layer)
+    body = dict(bad_root)
+    body.pop("contract_hash")
+    bad_root["contract_hash"] = _json_hash(body)
+    with pytest.raises(ValueError, match="paragraph root is malformed"):
+        validate_style_runtime_contract(bad_root)
 
 
 def test_v1_contracts_in_old_bundles_still_validate_and_render(session) -> None:
