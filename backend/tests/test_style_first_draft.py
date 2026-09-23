@@ -1,6 +1,6 @@
 """2026-09-12 风格直起（Step 2）：draft_mode 契约、首稿直起、定稿式复读、长度带放宽。
 
-规格：docs/style-first-draft-plan-2026-09-12.md。fake LLM；无真实模型。
+规格：docs/history/style/style-first-draft-plan-2026-09-12.md。fake LLM；无真实模型。
 """
 
 from __future__ import annotations

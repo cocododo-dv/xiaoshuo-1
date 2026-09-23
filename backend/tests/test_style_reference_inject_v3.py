@@ -17,8 +17,6 @@ from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.style_policy import policy_from_contract, reset_style_policy_cache
 from novel_system.services.style_prompt_injection import (
     PLACEMENT_USER_TAIL,
-    PLANNING_FEW_SHOT_K_CAP,
-    REVIEW_FEW_SHOT_K_CAP,
     STYLE_USER_TAIL_KEY,
     apply_style_user_tail,
     inject_style_reference_prefix,
@@ -38,6 +36,8 @@ from novel_system.services.style_reference.inject.render import (
     reset_render_cache,
 )
 from novel_system.services.style_reference.inject.request import (
+    PLAN_K,
+    REVIEW_K,
     ROLE_DRAFT,
     ROLE_PLAN,
     ROLE_REVIEW,
@@ -122,7 +122,7 @@ def test_every_node_of_one_scene_sees_the_same_frozen_windows(session) -> None:
     session.commit()
     revise = inject_style_reference_prefix(session, dict(base), scene, bundle, placement=PLACEMENT_USER_TAIL, role="revise")
     review = inject_style_reference_prefix(session, dict(base), scene, bundle, role="review")
-    patch = inject_style_reference_prefix(session, dict(base), scene, bundle, few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP)
+    patch = inject_style_reference_prefix(session, dict(base), scene, bundle, few_shot_k_cap=PLAN_K)
     session.commit()
 
     selected = [
@@ -134,8 +134,8 @@ def test_every_node_of_one_scene_sees_the_same_frozen_windows(session) -> None:
     assert len(draft_windows) == 12 and set(draft_windows) == set(selected)
     assert set(_refs(revise["_style_reference_runtime_audit"])) == set(selected)
     # 评审取冻结选窗的前 4 窗、补丁（旧参数 k≤3 → 规划口径）前 3 窗——都是同一组窗的前缀
-    assert set(_refs(review["_style_reference_runtime_audit"])) == set(selected[:REVIEW_FEW_SHOT_K_CAP])
-    assert set(_refs(patch["_style_reference_runtime_audit"])) == set(selected[:PLANNING_FEW_SHOT_K_CAP])
+    assert set(_refs(review["_style_reference_runtime_audit"])) == set(selected[:REVIEW_K])
+    assert set(_refs(patch["_style_reference_runtime_audit"])) == set(selected[:PLAN_K])
     assert draft["_style_reference_runtime_audit"]["selection"]["persisted"] is True
     assert review["_style_reference_runtime_audit"]["role"] == "review"
 
@@ -702,7 +702,7 @@ def test_adapter_live_path_records_the_contract_hash(session) -> None:
     _book_id, profile_id = seed_reference(session, "live")
     bind(session, profile_id, binding_id="inj_bind_live")
     scene = seed_scene(session, "INJ_SC_LIVE")
-    injected = inject_style_reference_prefix(session, {"system_prompt": ""}, scene, None, few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP)
+    injected = inject_style_reference_prefix(session, {"system_prompt": ""}, scene, None, few_shot_k_cap=PLAN_K)
     audit = injected["_style_reference_runtime_audit"]
     assert audit["runtime_contract_mode"] == "live" and audit["runtime_contract_status"] == "live"
     assert len(audit["contract_hash"]) == 64 and audit["role"] == "plan"

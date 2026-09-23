@@ -42,7 +42,6 @@ from novel_system.services.prompt_builder import (
 )
 from novel_system.services.scene_blueprint import SCENE_BLUEPRINT_FIELDS, SceneBlueprintService
 from novel_system.services.style_prompt_injection import (
-    PLANNING_FEW_SHOT_K_CAP,
     RESOLVED_CONTRACT_MODE,
     RESOLVED_CONTRACT_STATUS,
     inject_style_reference_prefix,
@@ -50,7 +49,7 @@ from novel_system.services.style_prompt_injection import (
 )
 from novel_system.services.style_policy import policy_from_contract
 from novel_system.services.style_reference.inject.render import render_style
-from novel_system.services.style_reference.inject.request import StyleRenderRequest
+from novel_system.services.style_reference.inject.request import PLAN_K, StyleRenderRequest
 from novel_system.services.style_reference.planning_context import (
     STYLE_PLANNING_GUIDANCE_KEY,
     STYLE_REFERENCE_DIGEST_KEYS,
@@ -296,11 +295,11 @@ def test_render_honours_the_k_cap(session) -> None:
         return render_style(session, policy, StyleRenderRequest(scene_id=SCENE_ID, k_cap=k_cap))
 
     uncapped = _render(None)
-    assert uncapped.stats["few_shot_k"] == 12 > PLANNING_FEW_SHOT_K_CAP
+    assert uncapped.stats["few_shot_k"] == 12 > PLAN_K
     assert uncapped.stats["few_shot_windows"] == 12
-    capped = _render(PLANNING_FEW_SHOT_K_CAP)
-    assert capped.stats["few_shot_k"] == PLANNING_FEW_SHOT_K_CAP == capped.stats["few_shot_windows"]
-    assert len(_few_shot_entries(_few_shot_block(capped.system_prefix))) == PLANNING_FEW_SHOT_K_CAP
+    capped = _render(PLAN_K)
+    assert capped.stats["few_shot_k"] == PLAN_K == capped.stats["few_shot_windows"]
+    assert len(_few_shot_entries(_few_shot_block(capped.system_prefix))) == PLAN_K
     # 卡（旧画像的卡替身）不受上限影响；红线仍随注；上限窗是冻结选窗的前缀
     assert capped.stats["positive_lines"] == uncapped.stats["positive_lines"]
     assert "严格禁止" in capped.system_prefix
@@ -320,7 +319,7 @@ def test_inject_style_reference_prefix_caps_windows_and_labels_resolved_contract
 
     full = inject_style_reference_prefix(session, _base_prompt(), scene, None, final_user_prompt="BASE USER")
     capped = inject_style_reference_prefix(
-        session, _base_prompt(), scene, None, final_user_prompt="BASE USER", few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP
+        session, _base_prompt(), scene, None, final_user_prompt="BASE USER", few_shot_k_cap=PLAN_K
     )
     for injected in (full, capped):
         assert injected["system_prompt"].startswith("[STYLE_REFERENCE]")
@@ -328,8 +327,8 @@ def test_inject_style_reference_prefix_caps_windows_and_labels_resolved_contract
         assert "[风格样例]" in injected["system_prompt"]
     full_windows = full["_style_reference_runtime_audit"]["render_stats"]["few_shot_windows"]
     capped_windows = capped["_style_reference_runtime_audit"]["render_stats"]["few_shot_windows"]
-    assert 1 <= capped_windows <= PLANNING_FEW_SHOT_K_CAP < full_windows
-    assert capped["_style_reference_runtime_audit"]["render_stats"]["few_shot_k"] == PLANNING_FEW_SHOT_K_CAP
+    assert 1 <= capped_windows <= PLAN_K < full_windows
+    assert capped["_style_reference_runtime_audit"]["render_stats"]["few_shot_k"] == PLAN_K
     assert len(_few_shot_entries(_few_shot_block(capped["system_prompt"]))) == capped_windows
     # 无 bundle → 显式的实时契约路径（记契约哈希，J15）
     assert capped["_style_reference_runtime_audit"]["runtime_contract_mode"] == "live"
@@ -344,20 +343,20 @@ def test_inject_style_reference_prefix_caps_windows_and_labels_resolved_contract
         scene,
         None,
         final_user_prompt="BASE USER",
-        few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP,
+        few_shot_k_cap=PLAN_K,
         runtime_contract=contract,
     )
     audit = resolved["_style_reference_runtime_audit"]
     assert audit["runtime_contract_status"] == RESOLVED_CONTRACT_STATUS == "resolved_live"
     assert audit["runtime_contract_mode"] == RESOLVED_CONTRACT_MODE == "resolved"
     assert audit["contract_hash"] == contract["contract_hash"]
-    assert audit["outcome"] == "hit" and audit["render_stats"]["few_shot_k"] == PLANNING_FEW_SHOT_K_CAP
+    assert audit["outcome"] == "hit" and audit["render_stats"]["few_shot_k"] == PLAN_K
     assert resolved["system_prompt"].startswith("[STYLE_REFERENCE]")
 
     # 无绑定：逐字不变（连审计键都不加）
     _unbind_all(session)
     untouched = inject_style_reference_prefix(
-        session, _base_prompt(), scene, None, final_user_prompt="BASE USER", few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP
+        session, _base_prompt(), scene, None, final_user_prompt="BASE USER", few_shot_k_cap=PLAN_K
     )
     assert untouched == _base_prompt()
 
@@ -391,8 +390,8 @@ def test_scene_blueprint_gets_the_style_prefix_only_when_bound(session) -> None:
     assert "[风格样例]" in bound["system_prompt"]
     audit = bound["_style_reference_runtime_audit"]
     assert audit["runtime_contract_status"] == RESOLVED_CONTRACT_STATUS
-    assert audit["render_stats"]["few_shot_k"] == PLANNING_FEW_SHOT_K_CAP
-    assert 1 <= audit["render_stats"]["few_shot_windows"] <= PLANNING_FEW_SHOT_K_CAP
+    assert audit["render_stats"]["few_shot_k"] == PLAN_K
+    assert 1 <= audit["render_stats"]["few_shot_windows"] <= PLAN_K
     # 前缀与来源快照登记的契约同源
     scene = session.get(SceneCard, SCENE_ID)
     chapter = session.get(ChapterGoal, CHAPTER_ID)
@@ -595,7 +594,7 @@ def test_author_proposal_prompt_carries_the_style_prefix_for_prose_types(session
         assert "[/风格样例]" in user and user.rstrip().endswith("输出仍只返回前文要求的 JSON。"), proposal_type
         assert "保持作者手笔。" in user
     # 建议是要写正文的节点：完整 k，不封顶
-    assert len(_few_shot_entries(_few_shot_block(captured[-1].messages[1]["content"]))) > PLANNING_FEW_SHOT_K_CAP
+    assert len(_few_shot_entries(_few_shot_block(captured[-1].messages[1]["content"]))) > PLAN_K
 
     # 结构候选是修订笔记，不是正文 → 不注入
     service.generate_proposal(draft["draft_id"], {"proposal_type": "structure_candidate"})
@@ -638,7 +637,7 @@ def test_passage_patch_prompt_carries_the_style_prefix_with_capped_windows(sessi
     system = client.requests[-1].messages[0]["content"]
     assert system.startswith("[STYLE_REFERENCE]") and system.endswith(template.system_prompt)
     assert "[风格样例]" in system
-    assert 1 <= len(_few_shot_entries(_few_shot_block(system))) <= PLANNING_FEW_SHOT_K_CAP
+    assert 1 <= len(_few_shot_entries(_few_shot_block(system))) <= PLAN_K
     assert EXCERPT in client.requests[-1].messages[1]["content"]
     assert result["candidate"]["generation_llm_call_id"]
 
@@ -668,7 +667,7 @@ def test_deep_review_prompt_carries_the_style_prefix_with_capped_windows(session
     system = client.requests[-1].messages[0]["content"]
     assert system.startswith("[STYLE_REFERENCE]") and system.endswith(template.system_prompt)
     assert "[风格样例]" in system
-    assert 1 <= len(_few_shot_entries(_few_shot_block(system))) <= PLANNING_FEW_SHOT_K_CAP
+    assert 1 <= len(_few_shot_entries(_few_shot_block(system))) <= PLAN_K
     assert result["latest_evaluation"]["findings"][0]["dimension"] == "repetitive_expression"
 
     # 章级深评：project + global 作用域

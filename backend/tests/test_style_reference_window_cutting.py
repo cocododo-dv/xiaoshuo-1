@@ -1,4 +1,4 @@
-"""全书样例窗口的切窗规则(``exemplar_index.book_windows``;2026-09-23 风格参考 v3 起只剩切窗)。
+"""全书样例窗口的切窗规则(``windows.book_windows``;原 ``exemplar_index.py``,风格参考 v3 P7 并入 ``windows.py``)。
 
 原来的 dict 索引(``profile_json.exemplar_windows``)与辨识度打分、按段型选窗、证据引文兜底都已删除——持久化的窗口
 索引在 ``windows.py``(测试 ``test_style_reference_windows.py``),按本场挑样例在 ``inject/selection.py``(测试
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from novel_system.services.style_reference.exemplar_index import book_windows
+from novel_system.services.style_reference.windows import book_windows
 from novel_system.services.style_reference.segmentation.heuristic import classify_heuristic_sequence
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
 

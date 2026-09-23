@@ -48,10 +48,6 @@ from novel_system.services.qc_constraints import (
     contains_forbidden_term,
     source_field_satisfied,
 )
-from novel_system.services.style_reference.injection import (
-    InjectionService,
-    ordered_character_ids,
-)
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.services.style_reference.runtime_contract import (

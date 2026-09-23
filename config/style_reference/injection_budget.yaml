@@ -11,7 +11,7 @@
 sample_window_max_chars: 5000
 card_budget_chars: 2600
 
-# 2026-09-12 风格直起(Step 2,docs/style-first-draft-plan-2026-09-12.md):
+# 2026-09-12 风格直起(Step 2,docs/history/style/style-first-draft-plan-2026-09-12.md):
 # draft_mode_default:绑定 config_json 未写 draft_mode 时的起草方式——
 #   style_first  = 有绑定时第一稿直接以参考作者手笔从 bundle 写(中性步位换内容,步位不变),
 #                  style_draft 改为再靠近一层的复读;下游房风门(去模板 / 自动批评 / 近终稿

@@ -20,7 +20,7 @@ import pytest
 from novel_system.db.models import StyleReferenceBook
 from novel_system.services.style_reference import fidelity as F
 from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
-from novel_system.services.style_reference.exemplar_index import book_windows
+from novel_system.services.style_reference.windows import book_windows
 from novel_system.services.style_reference.measure import (
     FEATURE_NAMES,
     kernel_features,

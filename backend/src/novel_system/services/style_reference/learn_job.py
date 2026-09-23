@@ -1606,8 +1606,10 @@ def _profile_json(
         "dimension_card": card_json,
         "card_line_states": dict(states),
         "voice": voice_block,
-        # 过渡别名(不带 distribution):v3 注入落地之前的读者——注入的声音习惯行、跨场漂移、诊断的
-        # deliberate_repetition——读的是这个键;同一次写入、内容同源,旧读者都换到 ``voice`` 之后删掉
+        # 别名(同一次写入、内容同源,不带 distribution)。还在读它的:运行时契约的冻结白名单
+        # (runtime_contract.FROZEN_PROFILE_JSON_KEYS——契约里冻结的是这个键)、style_continuity 的契约声音参照与
+        # 刻意复沓判定(新鲜度预算)、scene_diagnosis 的刻意复沓校准;渲染器 / 摘要先读 ``voice`` 再退回它。
+        # 这些读者都改读 ``voice`` 之前不能删。
         "voice_signature": dict(voice),
         "structure_card": dict(structure) if structure else None,
         "planning_guidance": list(planning),

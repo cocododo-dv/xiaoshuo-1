@@ -9,9 +9,9 @@
 - ``render_voice_habits(signature)``：≤12 行**绝对、具体**的习惯句——作者自己的高频词与大致频率（「连接多用
   就、也、还、可是」「句末常带吧、呢、啊（大约每十句一次）」「几乎不用分号」），**不再**拿 1920 年代的鲁迅 /
   朱自清基线比「偏多 / 偏少」（v1 对真实网文说「连接词整体偏少」，而生成稿用得比作者还少得多）；不含阿拉伯数字；
-- 基线（``voice_baseline.yaml``）只剩两处用途：``deliberate_repetition``（叠词 / 短句连打 ≥ 基线字面 p85）与旧的
-  z 值接口（``feature_z_scores`` / ``distinctive_features``，样例窗口旧打分与漂移读数仍在用，P4 / P5 替换）。
-  「像不像作者」的读数不看基线，看作者自己的窗口分布（``fidelity.py``）。
+- 基线（``voice_baseline.yaml``）在管线里只剩一处用途：``deliberate_repetition``（叠词 / 短句连打 ≥ 基线字面 p85）。
+  z 值接口（``feature_z_scores`` / ``distinctive_features``）已没有管线调用方——样例窗口的典型度在 ``windows.py``、
+  「像不像作者」的读数看作者自己的窗口分布（``fidelity.py``）——只留作检验基线本身的工具（黄金语料测试用）。
 
 基线由本模块的 ``__main__`` 子命令 ``build-baseline`` 用 ``backend/tests/golden/style_reference/corpus`` 全部文本
 按 1500 字块生成；测量口径变了（``measure.KERNEL_VERSION``）就要重跑。
@@ -247,8 +247,8 @@ def _deliberate_repetition(
     """叠词密度或短句连打高于基线**字面** p85 → True;无基线时 False(fail-closed)。
 
     规格 §2.W3:「显著高于基线(≥p85)」。这里不套 1/sqrt(n) 聚合收窄——那只属于
-    z 值 / 漂移读数;整书签名与场景级读数都对照块级 p85 本身判定。旗标只放松下游的
-    新鲜度守卫(作者本就爱叠词 / 连打短句时,不把重复当毛病),不进习惯句。
+    z 值接口;整书签名对照块级 p85 本身判定。旗标只放松下游的新鲜度守卫(作者本就爱叠词 /
+    连打短句时,不把重复当毛病),不进习惯句。
     """
     return any(_level(features, baseline, name) == "high" for name in REPETITION_FEATURES)
 
@@ -288,7 +288,7 @@ def feature_z_scores(
 
     基线 std 是块级(1500 字)波动。``features`` 传整份签名时按 ``stats.char_count``
     推出它聚合的块数 n,std 按 1/sqrt(min(n, 16)) 收窄;显式 ``block_count`` 覆盖
-    (场景级漂移读数传 1 即得字面块级 z)。仅传 features 时 n=1。
+    (传 1 即得字面块级 z)。仅传 features 时 n=1。
     """
     values, _ = _unpack(features)
     result: dict[str, float] = {}

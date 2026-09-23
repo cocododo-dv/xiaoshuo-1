@@ -15,10 +15,7 @@ from novel_system.services.style_reference.inject.bindings import (
     resolve_binding_layers,
 )
 from novel_system.services.style_reference import injection as injection_compat
-from novel_system.services.style_reference.injection import (
-    InjectionService,
-    scene_sampling_hints,
-)
+from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
 
@@ -165,10 +162,6 @@ def test_compat_shim_keeps_the_old_call_shapes(session) -> None:
     # 旧的「任务默认策略」两件已删(P6a):绑定一律经 binding_apply 写,strategy 列恒 mixed
     assert not hasattr(injection_compat, "default_injection_strategy")
     assert not hasattr(injection_compat, "injection_task_defaults")
-
-    class _Scene:
-        scene_seq = 1
-        is_chapter_last = 1
-        writer_brief_json = {"rendering_mode": "summary"}
-
-    assert scene_sampling_hints(_Scene()) == ("whole", set())
+    # P7:兼容层只剩 InjectionService(章内位置 / 对白配额在 inject.selection)
+    assert injection_compat.__all__ == ["InjectionService"]
+    assert not hasattr(injection_compat, "scene_sampling_hints")

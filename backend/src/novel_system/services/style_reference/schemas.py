@@ -149,7 +149,6 @@ class ExtractionEvidenceInput(BaseModel):
     illustrates_dims: list[str] = Field(default_factory=list)
     anchor_kind: AnchorKind = AnchorKind.PARAGRAPH_QUOTE
     note: str | None = None
-    is_synthetic: int = 0
 
 
 # ---------------------------------------------------------------------------

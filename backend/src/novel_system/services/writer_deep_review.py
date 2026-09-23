@@ -61,10 +61,10 @@ from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.style_reference.readings import STAGE_PATCHED, record_author_draft_reading
 from novel_system.services.style_prompt_injection import (
-    PLANNING_FEW_SHOT_K_CAP,
     inject_style_reference_prefix,
     resolve_style_scope,
 )
+from novel_system.services.style_reference.inject.request import PLAN_K
 from novel_system.settings import get_settings
 
 
@@ -1063,7 +1063,7 @@ class WriterDeepReviewService:
         评审 / 改稿的口径渲染，不再拿起草口径的标题（J16）；窗数上限不变。
 
         场景对象按场景作用域（窗口按场景轮换），章对象按 project + global 作用域；样例窗口封顶
-        :data:`PLANNING_FEW_SHOT_K_CAP`（评审与补丁只需少量样例定标准），被评 / 被改的文本作
+        :data:`~novel_system.services.style_reference.inject.request.PLAN_K`（评审与补丁只需少量样例定标准），被评 / 被改的文本作
         选窗上下文，并按最终 user prompt 压进模板预算。无绑定 → 提示词逐字不变；解析 / 注入
         失败 → 回退基础 prompt（可选增强，绝不阻断评审或补丁）。
         """
@@ -1083,7 +1083,7 @@ class WriterDeepReviewService:
                 task_type="scene_generation",
                 context_text=context_text,
                 final_user_prompt=final_user_prompt,
-                few_shot_k_cap=PLANNING_FEW_SHOT_K_CAP,
+                few_shot_k_cap=PLAN_K,
                 role=role,
             )
             return injected if injected is not None else prompt

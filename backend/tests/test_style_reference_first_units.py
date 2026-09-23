@@ -24,10 +24,7 @@ from novel_system.services.style_prompt_injection import (
     apply_style_user_tail,
 )
 from novel_system.services.style_reference import untrusted_data as ud
-from novel_system.services.style_reference.injection import (
-    scene_dialogue_heavy,
-    scene_sampling_hints,
-)
+from novel_system.services.style_reference.inject.selection import scene_dialogue_heavy
 from novel_system.services.style_reference.schemas import (
     FEW_SHOT_CLOSING_MANDATE,
     FEW_SHOT_IN_USER_MESSAGE_NOTE,
@@ -101,9 +98,6 @@ def test_scene_dialogue_heavy_follows_the_cast_and_the_form() -> None:
     summary = SimpleNamespace(writer_brief_json={"rendering_mode": "summary"}, onstage_chars_json=["c2"], pov_character_id="c1")
     assert scene_dialogue_heavy(proactive) and scene_dialogue_heavy(reactive_with_other)
     assert not scene_dialogue_heavy(reactive_alone) and not scene_dialogue_heavy(summary) and not scene_dialogue_heavy(None)
-    # 2026-09-23 风格参考 v3：选窗不再看启发式段型（J4）——兼容层只剩章内位置
-    position, hints = scene_sampling_hints(SimpleNamespace(scene_seq=2, is_chapter_last=False, writer_brief_json={"reaction": "怕", "dilemma": "走或留", "decision": "留"}))
-    assert position is None and hints == set()
 
 
 # ---------------------------------------------------------------------------

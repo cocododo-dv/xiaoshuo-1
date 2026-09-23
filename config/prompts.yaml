@@ -50,7 +50,7 @@ templates:
             type: string
 
   style_first_draft:
-    # 2026-09-12 风格直起（Step 2，docs/style-first-draft-plan-2026-09-12.md）：有绑定且
+    # 2026-09-12 风格直起（Step 2，docs/history/style/style-first-draft-plan-2026-09-12.md）：有绑定且
     # draft_mode=style_first 时，中性步位改跑本模板——第一稿直接以参考作者的手笔从 bundle 写，
     # 不经过中性稿；bundle 定「发生什么」，参考定「怎么讲」；蓝图八要素是要发生的事，怎么落纸
     # 由作者手法决定。走 style_draft 节点路由（模型 / 温度 / 惩罚 0）；预算与风格通道一致。

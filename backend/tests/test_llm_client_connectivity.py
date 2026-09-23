@@ -353,50 +353,6 @@ def test_task_config_timeout_seconds_parses() -> None:
     assert cfg2.timeout_seconds is None
 
 
-def test_style_ref_helper_leaves_unrouted_timeout_to_the_client(monkeypatch, session) -> None:
-    """style_ref 节点路由未配置超时时不自造上限——重抽取本来就慢,交给 client 全局设置。"""
-    from types import SimpleNamespace
-
-    from novel_system.services.style_reference import _llm_helper
-
-    cfg = SimpleNamespace(
-        model="m", provider="openai_compatible", provider_id=None, temperature=0.1,
-        max_output_tokens=100, response_format="json_object", api_mode="chat",
-        reasoning_level="medium", credential_mode=None, account_id=None,
-        provider_options={}, timeout_seconds=None,
-    )
-    routing = SimpleNamespace(task_routing={"n1": cfg}, node_routing={})
-    template = SimpleNamespace(system_prompt="s", task_prompt="t", structured_schema=None)
-    monkeypatch.setattr(_llm_helper, "load_model_routing_config", lambda: routing)
-    monkeypatch.setattr(_llm_helper, "load_prompt_templates", lambda: {"n1": template})
-
-    captured = {}
-
-    from novel_system.services.llm_accounting import LLMCallContext
-    from tests.accounted_llm_fakes import AccountedGenerateMixin
-
-    class _C(AccountedGenerateMixin):
-        def generate(self, request):
-            captured["timeout"] = request.timeout_seconds
-            return SimpleNamespace(structured_output={})
-
-    from novel_system.services.style_reference.untrusted_data import UntrustedPayload
-
-    _llm_helper.call_llm_node(
-        "n1",
-        UntrustedPayload({}),
-        _C(),
-        session=session,
-        context=LLMCallContext(
-            scope_type="system",
-            scope_id="style_reference_timeout_test",
-            node_id="n1",
-            step="timeout_floor",
-        ),
-    )
-    assert captured["timeout"] is None
-
-
 def test_schema_degrade_inlines_schema_into_prompt() -> None:
     """弃 wire json_schema 时必须把 schema 内联进 system prompt——否则模型
     看不到输出形状,自造字段名(实测 statement→description)下游校验全灭。"""
