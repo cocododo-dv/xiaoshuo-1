@@ -8,6 +8,7 @@
      2026-09-21 删掉了前端自己的「质检」（短句率 / 句式重复 / 超长句的红绿判词与划线）
      和永远对不上的「戏剧卡对齐」——它们和后端按参考作者放宽的门互相矛盾。
    ========================================================== */
+import { paragraphTypeLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
 
 /* ---- 场景在台面上的状态词：本地「从没提交过」的场叫「待起草」；「排队中」只留给后端真的排上了队的任务
    （job.status=queued）。过去两者都叫「排队」，同一场在头部写「排队」、在书脊上写「待起草」。 ---- */
@@ -98,20 +99,79 @@ function scnDraftModeFrom(wb) {
   return mode === "style_first" || mode === "neutral_first" ? mode : null;
 }
 
-/* ---- 2026-09-14 风格保真修补（WP4.2「作者看得见」）：风格链路提示 + 本场参考窗口 ----
-   后端每次运行都算出 STYLE_* notices（generation_summary.notices）和这一场提示里实际放入的
-   参考书样例窗口（generation_summary.style_windows：{book_id, profile_id, step, windows[]}，窗口
-   只有段落序号闭区间与读数，不含原文）。这里把两者规整后记进运行记录（随 scnRunSave 持久化）；
-   提示条按严重度着色，窗口面板展开时才按区间取原文。词表外的 code 回退为「code: message」，
-   绝不吞掉后端的新提示。 */
+/* ---- 风格提示 + 本场参考窗口 + 像不像（2026-09-14 WP4.2；2026-09-23 风格参考 v3 · P6b 改白话）----
+   后端每次运行都算出 STYLE_* notices（generation_summary.notices）、这一场提示里实际放入的参考书样例窗口
+   （generation_summary.style_windows：{book_id, profile_id, step, windows[]}；窗口只有段落序号闭区间与读数，
+   v3 的窗还带窗号、按哪条配额选进来的、学习作业打的场面 / 情绪 / 手法标签与一句话梗概，不含原文）和这次运行的
+   「像不像」（generation_summary.style_fidelity：首稿读数、风格步的决定、修改稿读数、补丁的去留、终稿读数、评审）。
+   这里把三者规整后记进运行记录（随 scnRunSave 持久化）。
+   提示条的话由前端按 code + reason / stage 说（「注入」一律说「带入起草」；后端原话里夹着 soft_qc、n-gram、
+   风格步这类术语，不照抄）；词表外的 code 回退为「code: message」，绝不吞掉后端的新提示。 */
 const STYLE_NOTICE_LABELS = {
-  STYLE_FIRST_DRAFT: "首稿已按参考作者手笔直起",
-  STYLE_DRAFT_FALLBACK_NEUTRAL: "风格稿未通过，已回退为中性稿",
-  STYLE_INJECTION_MISS: "参考已绑定，但本次没有注入任何风格块",
-  STYLE_INJECTION_DEGRADED: "风格注入失败或被输入预算裁掉",
-  STYLE_PLAGIARISM_HIT: "与参考原文重叠（抄袭红线命中）",
-  STYLE_BANNED_TERM_HIT: "命中参考画像的禁用词",
-  STYLE_GATE_UNAVAILABLE: "参考来源安全检查未能执行",
+  STYLE_FIRST_DRAFT: "首稿直接照参考作者的写法起草",
+  STYLE_FIRST_DRAFT_ACCEPTED: "首稿已在作者范围内，没有再改",
+  STYLE_REVISION_REJECTED: "修改没有采用，保留首稿",
+  STYLE_PATCH_REVERTED: "补丁没有更像，已退回",
+  STYLE_DRAFT_FALLBACK_NEUTRAL: "风格稿没过检查，用回了中性稿",
+  STYLE_INJECTION_MISS: "绑定了参考书，但这次没把文风带入起草",
+  STYLE_INJECTION_DEGRADED: "参考书的文风没能带入起草",
+  STYLE_PLAGIARISM_HIT: "稿子里有与参考书原文连续相同的地方",
+  STYLE_BANNED_TERM_HIT: "用到了参考书的禁用词",
+  STYLE_GATE_UNAVAILABLE: "照搬检查没能执行",
+  STYLE_REFERENCE_BOOK_CHANGED: "参考书学完后改过",
+  STYLE_REFERENCE_SAMPLES_BLOCKED: "这本书的原文不能发给当前模型",
+  STYLE_REFERENCE_BOOK_MISSING: "参考书已不在书库里",
+  STYLE_REFERENCE_NO_WINDOWS: "参考书还没有样例片段",
+};
+/* 按 reason 换标题的几条（风格步 / 修改的去留） */
+const STYLE_NOTICE_REASON_LABELS = {
+  STYLE_FIRST_DRAFT_ACCEPTED: {
+    reading_unreliable: "首稿量不准，没有再改",
+    reading_unavailable: "没有尺子可量，首稿没有再改",
+    best_of_n_candidate: "首稿进了候选",
+  },
+  STYLE_REVISION_REJECTED: {
+    not_closer: "改了一版没有更像，保留首稿",
+    copy_gate_blocked: "修改稿照搬了参考书，已丢掉",
+    base_safety_failed: "修改稿没过安全检查，保留首稿",
+    revision_reading_unavailable: "修改稿量不出像不像，保留首稿",
+    revision_template_missing: "缺「定向修改」模板，保留首稿",
+  },
+};
+const STYLE_NOTICE_REASON_DETAILS = {
+  STYLE_FIRST_DRAFT_ACCEPTED: {
+    within_author_range: "量下来首稿已经像这位作者，没有再调模型改它。",
+    reading_unreliable: "首稿太短（或参考书能拿来比的片段太少），量不准；为免越改越远，没有改它。",
+    reading_unavailable: "参考书还没有量像不像的尺子（还没有样例片段），没有改它。",
+    best_of_n_candidate: "首稿作为候选之一，和修改稿一起按像不像排序。",
+  },
+  STYLE_REVISION_REJECTED: {
+    not_closer: "按量出来的差距改了一版，但量下来没有更像这位作者，保留了首稿。",
+    copy_gate_blocked: "改出来的那一版有与参考书原文连续相同的地方（或用了它的专名），已丢掉，保留首稿。",
+    base_safety_failed: "改出来的那一版丢了必写的内容、长度不对或文本不完整，保留首稿。",
+    revision_reading_unavailable: "改出来的那一版量不出像不像，没法确认更像，保留首稿。",
+    revision_template_missing: "首稿和作者差得明显，但这台机器还没有「定向修改」的提示词模板（同步提示词模板之后就有），这一场保留首稿。",
+  },
+  STYLE_PATCH_REVERTED: {
+    judge_worse: "软质检的补丁让参考评审分降了，已退回补丁前的稿子；评审的改稿意见留在记录里。",
+    distance_worse_without_judge_gain: "软质检的补丁让稿子离作者更远、评审分也没提高，已退回补丁前的稿子；评审的改稿意见留在记录里。",
+  },
+};
+const STYLE_NOTICE_DETAILS = {
+  STYLE_FIRST_DRAFT: "没有先写中性稿；写完先量像不像：在作者范围内就直接用，不像才按量出来的差距改。",
+  STYLE_PATCH_REVERTED: "软质检的补丁让稿子离作者更远，已退回补丁前的稿子；评审的改稿意见留在记录里。",
+  STYLE_INJECTION_MISS: "这一稿没有受到参考书文风的影响。",
+  STYLE_BANNED_TERM_HIT: "用到了参考书里不许出现的词：软质检时会交给你看。",
+  STYLE_GATE_UNAVAILABLE: "这一稿还没核对是否照搬了参考书，软质检时会要求你看过。",
+  STYLE_REFERENCE_BOOK_CHANGED: "样例是按参考书现在的正文挑的；建议在风格参考里重新学习文风。",
+  STYLE_REFERENCE_SAMPLES_BLOCKED: "这一场只带了文风卡和声音习惯，没有原文样例。",
+  STYLE_REFERENCE_BOOK_MISSING: "这一场没有原文样例。",
+  STYLE_REFERENCE_NO_WINDOWS: "段落分类没做完或正文太少：这一场没有原文样例。",
+};
+const STYLE_COPY_STAGE_DETAILS = {
+  neutral_draft: "首稿里有与参考书原文连续相同的地方：硬质检时会交给你看。",
+  style_draft: "风格稿里有与参考书原文连续相同的地方：这一稿不能直接成稿，软质检时会交给你看。",
+  near_final_rewrite: "准定稿改写稿里有与参考书原文连续相同的地方：已丢掉，终稿用改写前的那一版。",
 };
 /* 后端严重度 info / warning / error / blocking → 三档着色（blocking 与 error 同色，另带 is-blocking） */
 function scnStyleNoticeSeverity(value) {
@@ -120,11 +180,35 @@ function scnStyleNoticeSeverity(value) {
   if (key === "warning") return "warning";
   return "info";
 }
-function scnStyleNoticeLabel(notice) {
+/* 一条提示给作者的话：{ known, label, detail }。认得的 code 按 reason / stage / 起草方式说；认不得的原样交回 */
+function scnStyleNoticeView(notice) {
   const code = String((notice && notice.code) || "");
-  return STYLE_NOTICE_LABELS[code] || code;
+  const reason = String((notice && notice.reason) || "");
+  if (!STYLE_NOTICE_LABELS[code]) return { known: false, label: code, detail: typeof (notice && notice.message) === "string" ? notice.message : "" };
+  const label = (STYLE_NOTICE_REASON_LABELS[code] && STYLE_NOTICE_REASON_LABELS[code][reason]) || STYLE_NOTICE_LABELS[code];
+  let detail = (STYLE_NOTICE_REASON_DETAILS[code] && STYLE_NOTICE_REASON_DETAILS[code][reason]) || STYLE_NOTICE_DETAILS[code] || "";
+  if (code === "STYLE_DRAFT_FALLBACK_NEUTRAL") {
+    const styleFirst = notice.draftMode === "style_first";
+    return {
+      known: true,
+      label: styleFirst ? "风格稿没过检查，用回了首稿" : label,
+      detail: styleFirst
+        ? "改出来的风格稿丢了必写的内容、长度不对或文本不完整，这一场先用首稿（首稿本身就是照作者写法起草的），之后会再试一次安全修复。"
+        : "风格稿丢了必写的内容、长度不对或文本不完整，这一场先用中性稿，之后会再试一次带文风的安全修复。",
+    };
+  }
+  if (code === "STYLE_INJECTION_DEGRADED") {
+    detail = notice.severity === "warning"
+      ? "这一场的提示太长，文风被整块挤掉了；这一稿没有受到参考书文风的影响。"
+      : "带入时出了错；这一稿没有受到参考书文风的影响。";
+  }
+  if (code === "STYLE_PLAGIARISM_HIT") detail = STYLE_COPY_STAGE_DETAILS[notice.stage] || STYLE_COPY_STAGE_DETAILS.style_draft;
+  return { known: true, label, detail };
 }
-/* workbench / run 结果里的 generation_summary.notices → [{code, severity, message, blocking, hitCount?, stage?}] */
+function scnStyleNoticeLabel(notice) {
+  return scnStyleNoticeView(notice).label;
+}
+/* workbench / run 结果里的 generation_summary.notices → [{code, severity, message, blocking, hitCount?, stage?, reason?, draftMode?}] */
 function scnStyleNoticesFrom(wb) {
   const summary = wb && wb.generation_summary;
   const raw = summary && typeof summary === "object" ? summary.notices : null;
@@ -140,25 +224,41 @@ function scnStyleNoticesFrom(wb) {
       };
       if (Number.isFinite(Number(n.hit_count)) && n.hit_count != null) item.hitCount = Number(n.hit_count);
       if (n.stage) item.stage = String(n.stage);
+      if (n.reason) item.reason = String(n.reason);
+      if (n.draft_mode) item.draftMode = String(n.draft_mode);
       return item;
     });
 }
-/* generation_summary.style_windows → {bookId, profileId, step, windows: [{start, end, chapter, position, paragraphType, paragraphs, chars}]} | null */
+function scnWindowTags(value) {
+  return Array.isArray(value) ? value.map((tag) => String(tag || "").trim()).filter(Boolean) : [];
+}
+/* generation_summary.style_windows → {bookId, profileId, step, windows: [{start, end, chapter, position, paragraphType,
+   paragraphs, chars, windowNo?, slot?, gist?, situations?, moods?, devices?}]} | null（v3 的窗才有后几项） */
 function scnStyleWindowsFrom(wb) {
   const summary = wb && wb.generation_summary;
   const raw = summary && typeof summary === "object" ? summary.style_windows : null;
   if (!raw || typeof raw !== "object" || !Array.isArray(raw.windows)) return null;
   const windows = raw.windows
     .filter((w) => w && typeof w === "object" && Number.isInteger(w.start) && Number.isInteger(w.end) && w.start >= 0 && w.end >= w.start)
-    .map((w) => ({
-      start: w.start,
-      end: w.end,
-      chapter: Number.isInteger(w.chapter) ? w.chapter : 0,
-      position: String(w.position || ""),
-      paragraphType: String(w.paragraph_type || ""),
-      paragraphs: Number.isInteger(w.paragraphs) && w.paragraphs > 0 ? w.paragraphs : (w.end - w.start + 1),
-      chars: Number.isInteger(w.chars) ? w.chars : 0,
-    }));
+    .map((w) => {
+      const item = {
+        start: w.start,
+        end: w.end,
+        chapter: Number.isInteger(w.chapter) ? w.chapter : 0,
+        position: String(w.position || ""),
+        paragraphType: String(w.paragraph_type || ""),
+        paragraphs: Number.isInteger(w.paragraphs) && w.paragraphs > 0 ? w.paragraphs : (w.end - w.start + 1),
+        chars: Number.isInteger(w.chars) ? w.chars : 0,
+      };
+      if (Number.isInteger(w.window_no)) item.windowNo = w.window_no;
+      if (w.slot) item.slot = String(w.slot);
+      if (typeof w.gist === "string" && w.gist.trim()) item.gist = w.gist.trim();
+      ["situations", "moods", "devices"].forEach((key) => {
+        const tags = scnWindowTags(w[key]);
+        if (tags.length) item[key] = tags;
+      });
+      return item;
+    });
   if (!windows.length) return null;
   return {
     bookId: raw.book_id ? String(raw.book_id) : null,
@@ -167,24 +267,32 @@ function scnStyleWindowsFrom(wb) {
     windows,
   };
 }
-const STYLE_WINDOW_POSITION_LABELS = { opening: "章首", middle: "章中", closing: "章尾", whole: "整章" };
-const STYLE_PARAGRAPH_TYPE_LABELS = {
-  dialogue: "对白", narration: "叙述", psychology: "心理", description_env: "环境描写",
-  description_char: "人物描写", action: "动作", transition: "过渡", flashback: "回忆",
-};
-const STYLE_WINDOW_STEP_LABELS = { style_draft: "风格稿", neutral_draft: "首稿", scene_literary_rewrite: "近终稿重写稿" };
-/* 一行窗口标签：第{章}章 · 位置 · 段型 · 第{起}–{止}段 · {字}字。后端段落序号从 0 起，作者看到的是从 1 起的段号。 */
-/* 「在哪 · 多长」两件事：第 1 章章首的叙述 · 第 1–60 段（3800 字）。
-   词表外的位置 / 段落类型（后端新加的英文键）不念给作者，只留章号和段号。 */
+const STYLE_WINDOW_STEP_LABELS = { style_draft: "风格稿", neutral_draft: "首稿", scene_literary_rewrite: "准定稿改写稿" };
+/* 一行窗口标签：「在哪 · 多长」——第 1 章 · 章首 · 第 1–60 段（3,800 字）。后端段落序号从 0 起，作者看到的是从 1 起的段号。
+   位置的叫法与风格参考同一张词表（ws-labels）；词表外的位置（后端新加的英文键）不念给作者，只留章号和段号。 */
 function scnStyleWindowLabel(w) {
-  const chapter = w.chapter > 0 ? `第${w.chapter}章` : "";
-  const position = STYLE_WINDOW_POSITION_LABELS[w.position] || "";
-  const ptype = STYLE_PARAGRAPH_TYPE_LABELS[w.paragraphType] || "";
-  const where = `${chapter}${position}${ptype ? `${chapter || position ? "的" : ""}${ptype}` : ""}`;
-  const range = `第${w.start + 1}–${w.end + 1}段（${w.chars}字）`;
+  const where = [w.chapter > 0 ? `第 ${w.chapter} 章` : "", windowPositionLabel(w.position)].filter(Boolean).join(" · ");
+  const range = `第 ${w.start + 1}–${w.end + 1} 段（${Number(w.chars || 0).toLocaleString("zh-CN")} 字）`;
   return where ? `${where} · ${range}` : range;
 }
+/* 窗口的标签行：按哪条配额选进来的、场面 / 情绪、手法、以哪种段落为主（都用风格参考的词） */
+function scnStyleWindowTags(w) {
+  return {
+    slot: styleWindowSlotLabel(w.slot),
+    tags: [...(w.situations || []), ...(w.moods || [])],
+    devices: w.devices || [],
+    paragraphType: paragraphTypeLabel(w.paragraphType) && PARAGRAPH_TYPES_SHOWN.has(w.paragraphType) ? `${paragraphTypeLabel(w.paragraphType)}为主` : "",
+  };
+}
+const PARAGRAPH_TYPES_SHOWN = new Set(["narration", "dialogue", "description_env", "psychology", "action", "description_char", "transition", "flashback"]);
 function scnStyleWindowKey(bookId, w) { return `${bookId || ""}:${w.start}:${w.end}`; }
+
+/* generation_summary.style_fidelity（这次运行的像不像）→ 原样的对象或 null */
+function scnStyleFidelityFrom(wb) {
+  const summary = wb && wb.generation_summary;
+  const raw = summary && typeof summary === "object" ? summary.style_fidelity : null;
+  return raw && typeof raw === "object" ? raw : null;
+}
 
 /* ---- 起草稿 → 台面用的段落结构与字数（只有读数，没有判词）----
    函数名 scnQC 保留：测试夹具用它造运行记录。段落结构 {id, parts:[{text}]} 是持久化在 scn-run:<sid>
@@ -368,7 +476,7 @@ function scnWorkbenchContent(wb) {
 function scnSplitParas(content) {
   return String(content || "").split(/\n{2,}|\n/).map((x, i) => ({ id: "p" + (i + 1), text: x.trim() })).filter(p => p.text);
 }
-/* 起草与恢复共用的那部分运行记录：正文段落与字数、后端裁决、改写指令、起草方式、风格提示与窗口、预算断点。
+/* 起草与恢复共用的那部分运行记录：正文段落与字数、后端裁决、改写指令、起草方式、风格提示与窗口、像不像、预算断点。
    job：终态任务（预算断点从它的 error_code 认）；pipeState 缺省时读 workbench 的 scene_status。
    预算断点一律不可归档（blockReason=lifecycle_budget），不管后端投影怎么说。
    各自的 state / attempt / 日志 / 本次运行读数由调用方补上。 */
@@ -388,6 +496,7 @@ function scnRunRecordFromWorkbench(wb, { job = null, authorNote = "", pipeState 
   record.draftMode = scnDraftModeFrom(wb);
   record.styleNotices = scnStyleNoticesFrom(wb);
   record.styleWindows = scnStyleWindowsFrom(wb);
+  record.styleFidelity = scnStyleFidelityFrom(wb);
   record.budgetBlock = budgetBlock;
   return record;
 }
@@ -396,8 +505,8 @@ export {
   stateLabelOf, stateToneOf,
   RUN_JOB_POLLING_STATUSES, RUN_JOB_CANCELABLE_STATUSES, RUN_JOB_TERMINAL_STATUSES, RUN_JOB_STATUS_LABELS,
   runJobStepLabel, RUN_STAGES, scnRunStageIndex, scnPipeStepName, scnDraftModeFrom,
-  STYLE_NOTICE_LABELS, scnStyleNoticeSeverity, scnStyleNoticeLabel, scnStyleNoticesFrom, scnStyleWindowsFrom,
-  STYLE_WINDOW_STEP_LABELS, scnStyleWindowLabel, scnStyleWindowKey,
+  STYLE_NOTICE_LABELS, scnStyleNoticeSeverity, scnStyleNoticeLabel, scnStyleNoticeView, scnStyleNoticesFrom, scnStyleWindowsFrom,
+  STYLE_WINDOW_STEP_LABELS, scnStyleWindowLabel, scnStyleWindowTags, scnStyleWindowKey, scnStyleFidelityFrom,
   scnParaText, scnQC, scnReQC, scnFindingText, scnFindingIsPlainLanguage, scnGateFrom, scnGateLog,
   scnFriendly, scnTerminalJobMessage, SCN_RUN_UI_ABORTED, scnRunUiAbortError,
   scnRewriteBriefFrom, scnRunRecordFromWorkbench,

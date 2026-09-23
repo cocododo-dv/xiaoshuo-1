@@ -4,6 +4,8 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
 import { hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
+import { copyGateAdoptMessage, isCopyGateError } from "./ws-copy-gate.js";
+import { fidPatchView, fidRankText, fidStyleStepView, fidVerdict } from "./ws-fidelity-model.js";
 import {
   RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES, scnPipeStepName, scnParaText,
   scnGateLog, scnFriendly, scnRunUiAbortError, scnStyleNoticeLabel, scnRunRecordFromWorkbench,
@@ -55,6 +57,26 @@ function scnPollDelay(delayMs, signal) {
    这里就不再自己每 2 秒去问 run-jobs/{id}——过去同一个任务被两个轮询者同时问。
    没传（冒烟脚本、单测直接调用）时退回自己轮询。没有客户端时限：一次 LLM 调用本来就可能要 15 分钟，
    过去 5 分钟一到就把还在跑的任务报成「超时」。 */
+/* 运行记录里「像不像」的一行：首稿第几位（在不在范围）→ 风格步做了什么 → 补丁留没留 → 终稿第几位 */
+function scnFidelityLogText(fidelity) {
+  if (!fidelity) return "";
+  const reading = (label, r) => {
+    if (!r) return "";
+    const verdict = fidVerdict(r);
+    return `${label}${fidRankText(r.percentile)}${verdict ? `（${verdict.label}）` : ""}`;
+  };
+  const step = fidStyleStepView(fidelity.style_step);
+  const patch = fidPatchView(fidelity.patch);
+  const parts = [
+    reading("首稿", fidelity.first_draft),
+    step ? step.text : "",
+    reading("修改稿", fidelity.revision),
+    patch ? patch.text : "",
+    reading("终稿", fidelity.final),
+  ].filter(Boolean);
+  return parts.length ? `像不像：${parts.join("；")}` : "";
+}
+
 async function scnWaitForTerminalJob(job, sceneId, lifecycle, trackedGet, signal) {
   if (RUN_JOB_TERMINAL_STATUSES.has(job.status)) return job;
   if (lifecycle && typeof lifecycle.waitForTerminal === "function") {
@@ -147,7 +169,10 @@ async function scnRun(item, note, _prevText, lifecycle = {}) {
       ? { t: tm(secs), who: "pipeline", text: `${budgetBlock.label}；已有正文与恢复点均已保留，需作者显式追加预算后续跑` }
       : scnGateLog(record.gate, tm(secs)),
     record.styleNotices.length
-      ? { t: tm(secs), who: "pipeline", text: `风格链路提示 ${record.styleNotices.length} 条：${record.styleNotices.map(scnStyleNoticeLabel).join("；")}` }
+      ? { t: tm(secs), who: "pipeline", text: `风格提示 ${record.styleNotices.length} 条：${record.styleNotices.map(scnStyleNoticeLabel).join("；")}` }
+      : null,
+    scnFidelityLogText(record.styleFidelity)
+      ? { t: tm(secs), who: "pipeline", text: `${scnFidelityLogText(record.styleFidelity)}（证据栏「像不像」）` }
       : null,
     record.styleWindows
       ? { t: tm(secs), who: "pipeline", text: `本场提示放入参考书原文窗口 ${record.styleWindows.windows.length} 个（${record.styleWindows.windows.reduce((sum, w) => sum + (w.chars || 0), 0)} 字），见证据栏「本场参考窗口」` }
@@ -399,6 +424,8 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       },
     });
   } catch (e) {
+    // 抄袭门拦下（与参考书原文连续相同 / 用了它的专名）：说成作者读得懂的话，只给处数，不给参考原文
+    if (isCopyGateError(e)) return { ok: false, reason: copyGateAdoptMessage(e), error: e, authorBackup, copyBlocked: true };
     const code = (e && e.code) || "";
     const msg = (e && e.message) || String(e || "");
     return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };

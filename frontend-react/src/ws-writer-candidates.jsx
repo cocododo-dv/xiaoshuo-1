@@ -15,7 +15,8 @@ import { wrContinueMulti } from "./ws-writer-requests.js";
 
 const { useEffect, useRef, useState } = React;
 
-/* AI 面里的失败提示：一句作者能照做的话 + 动作（去系统设置 / 重试；说不清原因时两个都给） */
+/* AI 面里的失败提示：一句作者能照做的话 + 动作（去系统设置 / 重试；说不清原因时两个都给）。
+   抄袭门拦下（kind copy）说的是「哪一版的第几字与参考书原文相同，已丢掉」，不给参考原文。 */
 export function WrAiErrorBlock({ error, onRetry, onOpenSettings }) {
   if (!error) return null;
   const info = wrAiError(error);
@@ -25,7 +26,8 @@ export function WrAiErrorBlock({ error, onRetry, onOpenSettings }) {
   const settings = info.offersSettings && onOpenSettings
     ? <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>去系统设置</button> : null;
   return (
-    <Notice tone={configOnly ? "warn" : "danger"} className="wr-ai-error"
+    <Notice tone={configOnly ? "warn" : "danger"} className="wr-ai-error" testId={`wr-ai-error-${info.kind}`}
+      title={info.kind === "copy" ? "照搬了参考书，已丢掉" : undefined}
       actions={retry || settings ? <>{retry}{settings}</> : null}>
       {info.message}
     </Notice>
@@ -41,25 +43,26 @@ export function useWrContinuation(sceneId) {
   const [cands, setCands] = useState([]);
   const [error, setError] = useState(null);
   const [picks, setPicks] = useState({});
+  const [copyBlocked, setCopyBlocked] = useState(0);
   const reqRef = useRef(0);
   const run = (instruction) => {
     const id = ++reqRef.current;
     const text = String(instruction == null ? prompt : instruction).trim() || WR_CONTINUE_DEFAULT;
-    setPhase("loading"); setPicks({}); setError(null);
+    setPhase("loading"); setPicks({}); setError(null); setCopyBlocked(0);
     wrContinueMulti(text, sceneId)
-      .then((list) => { if (reqRef.current === id) { setCands(list); setPhase("result"); } })
+      .then((list) => { if (reqRef.current === id) { setCands(list); setCopyBlocked(Number(list && list.copyBlocked) || 0); setPhase("result"); } })
       .catch((e) => { if (reqRef.current === id) { setCands([]); setError(e); setPhase("error"); } });
   };
   /* 换了一场，上一场的候选就不该还挂着（采纳会插进这一场的正文）；晚到的旧结果也不再落下来 */
   useEffect(() => {
     reqRef.current += 1;
-    setPhase("ready"); setCands([]); setError(null); setPicks({});
+    setPhase("ready"); setCands([]); setError(null); setPicks({}); setCopyBlocked(0);
   }, [sceneId]);
   const toggle = (id, index) => setPicks((prev) => {
     const cur = prev[id] || [];
     return { ...prev, [id]: cur.includes(index) ? cur.filter((x) => x !== index) : [...cur, index] };
   });
-  return { prompt, setPrompt, phase, cands, error, picks, run, toggle };
+  return { prompt, setPrompt, phase, cands, error, picks, copyBlocked, run, toggle };
 }
 
 /* 候选按句拆开，点句子只挑那几句 */
@@ -111,13 +114,21 @@ export function WrCandidateList({ state, stacked = false, selected = -1, onSelec
     ));
   }
   if (state.phase !== "result") return null;
-  return state.cands.map((cand, i) => (
+  const cards = state.cands.map((cand, i) => (
     <WrCandCard key={cand.id} cand={cand} index={i} picked={state.picks[cand.id] || []}
       selected={selected === i} onSelect={onSelect ? () => onSelect(i) : undefined}
       onToggle={(si) => state.toggle(cand.id, si)}
       onAdopt={onAdopt} onAdoptText={onAdoptText} onMerge={onMerge}
       style={{ animationDelay: i * 70 + "ms" }} />
   ));
+  if (!state.copyBlocked) return cards;
+  /* 服务端丢掉了照搬参考书的那几版：说一句，免得作者纳闷为什么不是三条 */
+  return [
+    <p key="copy-note" className="wr-cand-copy-note" role="note" data-testid="wr-cand-copy-note">
+      另有 {state.copyBlocked} 版与参考书原文连续相同（或用了它的专名），已经丢掉。
+    </p>,
+    ...cards,
+  ];
 }
 
 /* 续写提示的快捷词：只设置提示，不直接生成 */

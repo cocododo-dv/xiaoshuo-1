@@ -5,13 +5,15 @@ import { CloseButton, Tag } from "./ws-ui.jsx";
 import { scnFetchStyleWindowText } from "./ws-scene-api.js";
 import {
   STYLE_WINDOW_STEP_LABELS, scnFindingIsPlainLanguage, scnFindingText, scnStyleWindowKey, scnStyleWindowLabel,
+  scnStyleWindowTags,
 } from "./ws-scene-derive.js";
+import { SceneFidelityPanel } from "./ws-scene-fidelity.jsx";
 
 const { useEffect, useRef, useState } = React;
 
 /* ==========================================================
    AI 起草台 — 证据栏（右栏；≤1120px 变成从右侧拉出的抽屉）
-   后端裁决 · 本场参考窗口 · 尝试历史（可开复盘）· 运行记录 · 本次运行。
+   后端裁决 · 像不像 · 本场参考窗口 · 尝试历史（可开复盘）· 运行记录 · 本次运行。
    没东西可看时整栏收起（页面按 hasEvidence 决定挂不挂）。
    ========================================================== */
 
@@ -55,7 +57,8 @@ function GateBlock({ gate, budgetBlock }) {
   );
 }
 
-/* 本场参考窗口：这一场提示里实际放入的参考书原文窗口。默认收起，展开时才按区间取原文并在组件内缓存；
+/* 本场参考窗口：这一场提示里实际放入的参考书原文窗口——在哪一章、章首还是章末、多长，学习文风时给它打的一句话梗概
+   与场面 / 情绪 / 手法标签、按哪条配额选进来的（v3 的窗才有后几样）。默认收起，展开时才按区间取原文并在组件内缓存；
    参考书已不可用（没有 bookId）时整行不可展开。 */
 function SceneStyleWindowsPanel({ styleWindows, fetchText = scnFetchStyleWindowText }) {
   const [open, setOpen] = useState({});
@@ -102,6 +105,8 @@ function SceneStyleWindowsPanel({ styleWindows, fetchText = scnFetchStyleWindowT
           const entry = texts[key];
           const busy = Boolean(loading[key]);
           const panelId = `scn2-style-window-${i}`;
+          const labels = scnStyleWindowTags(w);
+          const hasTags = !!(labels.slot || labels.tags.length || labels.devices.length || labels.paragraphType);
           return (
             <li key={key} className={`scn2-style-window${isOpen ? " is-open" : ""}`} data-testid="scene-style-window-row">
               <button
@@ -113,7 +118,18 @@ function SceneStyleWindowsPanel({ styleWindows, fetchText = scnFetchStyleWindowT
                 onClick={() => toggle(w)}
               >
                 {isOpen ? <I.ChevronDown size={12} /> : <I.ChevronRight size={12} />}
-                <span className="scn2-style-window-label">{scnStyleWindowLabel(w)}</span>
+                <span className="scn2-style-window-main">
+                  <span className="scn2-style-window-label">{scnStyleWindowLabel(w)}</span>
+                  {w.gist && <span className="scn2-style-window-gist text-serif" data-testid="scene-style-window-gist">{w.gist}</span>}
+                  {hasTags && (
+                    <span className="scn2-style-window-tags">
+                      {labels.slot && <Tag outline>{labels.slot}</Tag>}
+                      {labels.tags.map((tag) => <Tag key={`t-${tag}`}>{tag}</Tag>)}
+                      {labels.devices.map((device) => <Tag key={`d-${device}`} tone="accent" outline>{device}</Tag>)}
+                      {labels.paragraphType && <Tag outline>{labels.paragraphType}</Tag>}
+                    </span>
+                  )}
+                </span>
               </button>
               {isOpen && (
                 <div id={panelId} className="scn2-style-window-text" data-testid="scene-style-window-text">
@@ -141,7 +157,7 @@ function SceneStyleWindowsPanel({ styleWindows, fetchText = scnFetchStyleWindowT
 const ATTEMPT_TONE = { gold: "warn", sage: "ok", rose: "danger", crimson: "accent", slate: "info" };
 const attemptResultLabel = (attempt) => (attempt.result === "running" ? "进行中" : attempt.result);
 
-function Evidence({ scene, state, open, onClose, logOpen, setLogOpen, onView }) {
+function Evidence({ scene, sceneId = null, go = null, state, open, onClose, logOpen, setLogOpen, onView }) {
   const log = scene.log || [];
   const cost = scene.cost || [];
   return (
@@ -152,6 +168,8 @@ function Evidence({ scene, state, open, onClose, logOpen, setLogOpen, onView }) 
       </div>
 
       {(state === "ready" || state === "archived") && scene.gate && <GateBlock gate={scene.gate} budgetBlock={scene.budgetBlock} />}
+
+      <SceneFidelityPanel sceneId={sceneId} runFidelity={scene.styleFidelity || null} go={go} />
 
       <SceneStyleWindowsPanel styleWindows={scene.styleWindows} />
 

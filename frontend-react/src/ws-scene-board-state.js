@@ -430,7 +430,7 @@ function useSceneRuns({ items, runs, setRuns, pickedId, pinItem }) {
     }
     const attempt = ((runs[id] && runs[id].attempt) || 0) + 1;
     const t0 = new Date().toTimeString().slice(0, 8);
-    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", attempt, authorNote: normalizedNote, error: null, budgetBlock: null, styleNotices: [], styleWindows: null, pipeState: "", cost: [],
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", attempt, authorNote: normalizedNote, error: null, budgetBlock: null, styleNotices: [], styleWindows: null, styleFidelity: null, pipeState: "", cost: [],
       log: [{ t: t0, who: "system", text: `已提交第 ${attempt} 次起草${normalizedNote ? "，附改写指令" : ""}` }] } }));
     try {
       const res = await scnRun(sc, normalizedNote, "", {

@@ -286,7 +286,7 @@
 .scn2-try-view { flex-shrink: 0; align-self: center; padding: 3px 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--ink-3); font-size: var(--fs-xs); cursor: pointer; }
 .scn2-try-view:hover { background: var(--paper-2); color: var(--ink-1); }
 
-/* 风格链路提示条（管线条之下）+ 本场参考窗口（证据栏），2026-09-14 WP4「作者看得见」 */
+/* 风格提示条（管线条之下）+ 本场参考窗口（证据栏），2026-09-14 WP4「作者看得见」 */
 .scn2-style-notices { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; margin: 0; padding: var(--s2) var(--s8) 0; list-style: none; }
 .scn2-style-notice { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 7px 11px; border-radius: var(--r-sm); background: var(--info-wash); color: var(--info-ink); font-size: var(--fs-xs); line-height: var(--lh-ui); }
 .scn2-style-notice svg { flex-shrink: 0; margin-top: 2px; }
@@ -299,20 +299,49 @@
 .scn2-style-windows-hint { margin: 0; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
 .scn2-style-window-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .scn2-style-window-row {
-  display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 9px;
+  display: flex; align-items: flex-start; gap: 6px; width: 100%; padding: 6px 9px;
   border: 1px solid var(--line-2); border-radius: var(--r-sm);
   background: var(--paper-0); color: var(--ink-1); font: inherit; font-size: var(--fs-xs); line-height: var(--lh-ui); text-align: left; cursor: pointer;
   transition: border-color var(--t-fast);
 }
 .scn2-style-window-row:hover:not(:disabled) { border-color: var(--line-3); }
 .scn2-style-window-row:disabled { cursor: default; color: var(--ink-3); }
-.scn2-style-window-row svg { flex-shrink: 0; color: var(--ink-3); }
+.scn2-style-window-row svg { flex-shrink: 0; margin-top: 3px; color: var(--ink-3); }
+.scn2-style-window-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .scn2-style-window-label { min-width: 0; overflow-wrap: anywhere; }
+.scn2-style-window-gist { font-size: var(--fs-sm); line-height: 1.55; color: var(--ink-2); overflow-wrap: anywhere; }
+.scn2-style-window-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .scn2-style-window-text { max-height: 320px; overflow-y: auto; margin: 4px 0 2px; padding: 8px 10px; border-left: 2px solid var(--line-3); border-radius: 0 var(--r-sm) var(--r-sm) 0; background: var(--paper-0); color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.8; }
 .scn2-style-window-text p { margin: 0 0 6px; overflow-wrap: anywhere; }
 .scn2-style-window-idx { margin-right: 6px; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .scn2-style-window-status { display: block; font-size: var(--fs-xs); color: var(--ink-3); }
 .scn2-style-window-status.is-error { color: var(--danger-ink); }
+
+/* 像不像（证据栏，2026-09-23 风格参考 v3 · P6b）：这次运行一步步量出来的位次与决定、评审最弱的几维、对照检查。
+   共用的位次 / 分数条 / 越界 / 按维表在 ws-fidelity.css，这里只把它们压进窄栏。 */
+.scn2-fid-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.scn2-fid-row { display: grid; grid-template-columns: 3.6em minmax(0, 1fr); align-items: baseline; gap: 8px; margin: 0; }
+.scn2-fid-row dt { font-size: var(--fs-xs); color: var(--ink-3); }
+.scn2-fid-row dd { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; margin: 0; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-1); }
+.scn2-fid-rank { font-weight: 600; }
+.scn2-fid-decision { color: var(--tone-ink); overflow-wrap: anywhere; }
+.scn2-fid-judge { display: flex; flex-direction: column; gap: 6px; }
+.scn2-fid-weak { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 0 0 calc(3.6em + 8px); list-style: none; }
+.scn2-fid-weak li { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: var(--fs-xs); }
+.scn2-fid-weak-name { font-weight: 600; color: var(--ink-2); }
+.scn2-fid-weak-note { flex-basis: 100%; line-height: var(--lh-ui); color: var(--ink-3); }
+.scn2-fid-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.scn2-fid-note { margin: 0; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
+.scn2-fid-check { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line-1); }
+.scn2-fid-check-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.scn2-fid-manual { display: flex; flex-direction: column; gap: 4px; }
+.scn2-fid-dims summary { font-size: var(--fs-xs); color: var(--ink-2); cursor: pointer; }
+.scn2-fid-dims summary:hover { color: var(--ink-1); }
+.scn2-fid-dims[open] summary { margin-bottom: 6px; }
+.scn2-fid .fid-sub { margin-bottom: 4px; }
+.scn2-fid .fid-gap { font-size: var(--fs-xs); }
+.scn2-fid .fid-meter-track { flex-basis: 44px; }
+.scn2-fid .fid-meter-num { font-size: var(--fs-xs); }
 
 /* ---------- Dialogs（WsDialog 面板） ---------- */
 /* 尝试复盘 */
