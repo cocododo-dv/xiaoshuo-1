@@ -299,8 +299,10 @@ def test_near_final_review_injects_style_prefix_and_degrades_on_error(monkeypatc
         scene = SimpleNamespace(scene_id="SC1", project_id="P1", pov_character_id=None, onstage_chars_json=[])
         calls: list[dict] = []
 
-        def _fake_inject(sess, prompt, scene_arg, bundle, *, task_type, context_text, final_user_prompt):
-            calls.append({"task_type": task_type, "context_text": context_text, "user": final_user_prompt})
+        def _fake_inject(sess, prompt, scene_arg, bundle, *, task_type, context_text, final_user_prompt, few_shot_k_cap=None):
+            calls.append(
+                {"task_type": task_type, "context_text": context_text, "user": final_user_prompt, "k_cap": few_shot_k_cap}
+            )
             return {**prompt, "system_prompt": "[STYLE_REFERENCE]\nX\n[/STYLE_REFERENCE]\n\n" + prompt["system_prompt"]}
 
         monkeypatch.setattr(spi, "inject_style_reference_prefix", _fake_inject)
@@ -309,7 +311,8 @@ def test_near_final_review_injects_style_prefix_and_degrades_on_error(monkeypatc
             context_text="正文", final_user_prompt="u + 正文",
         )
         assert injected["system_prompt"].startswith("[STYLE_REFERENCE]")
-        assert calls == [{"task_type": "scene_generation", "context_text": "正文", "user": "u + 正文"}]
+        # 风格参考 v3（L4）：准定稿验收是评审节点，样例窗数封顶 4（规划节点 3，起草按绑定）
+        assert calls == [{"task_type": "scene_generation", "context_text": "正文", "user": "u + 正文", "k_cap": 4}]
 
         def _boom(*_args, **_kwargs):
             raise RuntimeError("injector down")
