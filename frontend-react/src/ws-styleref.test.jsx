@@ -872,6 +872,24 @@ describe("第四步 · 对照检查", () => {
 });
 
 describe("参考书活动", () => {
+  it("对照检查的条目：叫「对照检查」，做完「打开」落在这本书的「对照检查」", async () => {
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.activity = [{ key: "job:jc", job_id: "jc", kind: "check", status: "succeeded", book_id: "bk-a", title: "甲书", percent: 100 }];
+    await mountView();
+    await settle(20);
+    // 打开页面之前就已结束的条目收在「更早结束的」里
+    await click($(".sr-activity-older-toggle"));
+    const item = $('[data-activity-key="job:jc"]');
+    expect(item.textContent).toContain("对照检查");
+    expect($("[data-testid=\"sr-activity-cancel\"]", item)).toBeNull();
+    expect($("[data-testid=\"sr-activity-resume\"]", item)).toBeNull();
+    const open = [...item.querySelectorAll("button")].find((b) => b.textContent === "打开");
+    await click(open);
+    await settle();
+    expect($(".sr-step.is-active").dataset.stage).toBe("check");
+    expect(byTestId("sr-check-form")).toBeTruthy();
+  });
+
   it("只列作业表条目，叫法是「段落分类 / 学习文风」；失败的给「继续学习」", async () => {
     state.activity = [
       { key: "job:j1", job_id: "j1", kind: "learn", status: "failed", book_id: "bk-a", title: "甲书", resumable: true, error: { code: "STYLE_REFERENCE_LLM_REQUIRED" } },

@@ -98,7 +98,7 @@ export function SrActivityPanel({ onOpenBook }) {
               </button>
             )}
             {e.status === "succeeded" && e.book_id && onOpenBook && (
-              <button type="button" className="btn btn-quiet btn-sm" onClick={() => { onOpenBook(e.book_id); srActivityDismiss(e.key); }}>打开</button>
+              <button type="button" className="btn btn-quiet btn-sm" onClick={() => { onOpenBook(e.book_id, e.kind === "check" ? "check" : null); srActivityDismiss(e.key); }}>打开</button>
             )}
             {!srActivityActive(e) && (
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => srActivityDismiss(e.key)}>关闭</button>

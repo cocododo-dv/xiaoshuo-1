@@ -85,14 +85,15 @@ export function WsStyleRef({ go }) {
   }, [book && book.id, stage, workTick]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = 0; }, [stage, bookId]);
 
-  const selectBook = (id) => {
+  /* targetStage：从活动面板「打开」一次对照检查时直接落在「对照检查」；其余照旧按这本书的进度自动落点 */
+  const selectBook = (id, targetStage = null) => {
     setSwitcherOpen(false);
     setImportOpen(false);
-    if (id === bookId) return;
+    if (id === bookId) { if (targetStage) setStage(targetStage); return; }
     setBookId(id);
-    setStage(null);
-    srRememberUi(workId, { bookId: id, stage: null });
-    srRememberSession(workId, { bookId: id, stage: null });
+    setStage(targetStage);
+    srRememberUi(workId, { bookId: id, stage: targetStage });
+    srRememberSession(workId, { bookId: id, stage: targetStage });
   };
   const selectStage = (id) => {
     setStage(id);
