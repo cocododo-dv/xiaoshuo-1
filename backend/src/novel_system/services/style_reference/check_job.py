@@ -12,6 +12,14 @@
 
 严格 LLM：没有可用模型 → 建作业时就 409 ``STYLE_REFERENCE_LLM_REQUIRED``；评审调用失败 / 没给出分数 → 作业失败
 （错误码原样），不静默降级成只有读数的检查。
+
+评审的参考块按 ``soft_qc`` 节点的实际路由判云策略（H1，渲染请求带 ``node_ids``：「仅本机」的书遇云端的 soft_qc
+路由 → 作业以 409 ``STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`` 失败，参考一个字都不发），并按评审模板的输入预算压
+（L7，与管线同一口径：``NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET`` 收紧时照收紧）。
+
+**作业所有权**：每个进度写之后立刻提交（不带着 SQLite 的写锁去建窗口索引、跑抄袭门、调模型）；进度写 / 结束写
+落空（被取消、被清扫重排、书被删）→ ``JobLost``，框架回滚——评审回来之后先 ``check_continue`` 再记读数，
+``succeed`` 落空就连读数一起回滚，旧工人不会在别人的作业上留下一条读数。
 """
 
 from __future__ import annotations
@@ -55,6 +63,7 @@ from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.jobs import (
     JOB_KIND_CHECK,
     ClaimedJob,
+    JobLost,
     StyleJobService,
     job_activity_entry,
     register_job_handler,
@@ -382,11 +391,9 @@ CHECK_TEXT_PREAMBLE = (
 )
 
 
-def _judge_messages(system_prefix: str, template: Any, text: str) -> list[dict[str, str]]:
-    """评审消息：system = 评审口径的 ``[STYLE_REFERENCE]`` 块 + 模板 + 不可信数据约束；user = 任务 + 边界封装、中和过
-    疑似指令的待查文字（任何人贴进来的文字都按数据对待，与其他风格参考节点同一条边界）。"""
+def _judge_user_message(template: Any, text: str) -> str:
     body = secure_reference_block(str(text or "").strip(), kind=CHECK_TEXT_KIND, preamble=CHECK_TEXT_PREAMBLE)
-    user = "\n".join(
+    return "\n".join(
         [
             str(template.task_prompt or "").strip(),
             "",
@@ -397,11 +404,40 @@ def _judge_messages(system_prefix: str, template: Any, text: str) -> list[dict[s
             "Return only valid JSON. Do not wrap it in markdown fences.",
         ]
     )
+
+
+def _judge_base_system(template: Any) -> str:
+    return str(template.system_prompt or "").rstrip() + "\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION
+
+
+def _judge_messages(system_prefix: str, template: Any, text: str) -> list[dict[str, str]]:
+    """评审消息：system = 评审口径的 ``[STYLE_REFERENCE]`` 块 + 模板 + 不可信数据约束；user = 任务 + 边界封装、中和过
+    疑似指令的待查文字（任何人贴进来的文字都按数据对待，与其他风格参考节点同一条边界）。"""
     system = system_prefix + str(template.system_prompt or "")
     return [
         {"role": "system", "content": system.rstrip() + "\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION},
-        {"role": "user", "content": user},
+        {"role": "user", "content": _judge_user_message(template, text)},
     ]
+
+
+def judge_input_budget(template: Any) -> int:
+    """评审提示的输入预算（L7），与管线同一口径：``NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET`` 设了正数就用它（小上下文
+    的本机模型收紧），否则取模板值与风格通道下限的较大者——评审走 soft_qc 路由、拿的也是 soft_qc 形状的参考，
+    与 soft_qc 同一档（``prompt_builder.RUNTIME_MIN_INPUT_BUDGETS``）。"""
+    from novel_system.services import prompt_builder
+
+    override = prompt_builder._scene_input_token_budget_override()
+    if override > 0:
+        return override
+    floor = prompt_builder.RUNTIME_MIN_INPUT_BUDGETS.get(
+        CHECK_TEMPLATE,
+        prompt_builder.RUNTIME_MIN_INPUT_BUDGETS.get(CHECK_NODE_ID, prompt_builder.STYLE_PASS_INPUT_TOKEN_BUDGET),
+    )
+    try:
+        declared = int(getattr(template, "input_token_budget", 0) or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    return max(declared, int(floor))
 
 
 def run_reference_judge(
@@ -423,10 +459,17 @@ def run_reference_judge(
         ROLE_REVIEW,
         style_render_request_for_scene,
     )
+    from novel_system.services.style_reference.inject.fit import fit_rendered
     from novel_system.services.style_reference.inject.render import render_style
 
+    templates = load_prompt_templates()
+    template = templates.get(CHECK_TEMPLATE)
+    if template is None:
+        _ensure_config()
+        template = load_prompt_templates().get(CHECK_TEMPLATE)
+    # 参考块按 soft_qc 的实际路由判云策略（H1）：「仅本机」的书遇云端路由 → 409，参考一个字都不渲染
     request = style_render_request_for_scene(
-        session, scope, policy, role=ROLE_REVIEW, placement=PLACEMENT_SYSTEM
+        session, scope, policy, role=ROLE_REVIEW, placement=PLACEMENT_SYSTEM, node_ids=(CHECK_NODE_ID,)
     )
     rendered = render_style(session, policy, request, scene=scope if getattr(scope, "scene_id", None) else None)
     # 选窗 / 窗口索引可能刚写了库：记账用自己的会话，发调用之前先把这边的写提交掉（SQLite 一次只有一个写者）
@@ -438,10 +481,24 @@ def run_reference_judge(
             status_code=409,
             details={"profile_id": getattr(policy, "profile_id", None)},
         )
-    templates = load_prompt_templates()
-    template = templates.get(CHECK_TEMPLATE)
-    if template is None:
-        _ensure_config()
+    # L7：评审提示也按模板的输入预算压（整窗 / 整句地去，红线不截；与管线同一口径）
+    rendered, budget_fit = fit_rendered(
+        rendered,
+        base_system_prompt=_judge_base_system(template),
+        user_prompt=_judge_user_message(template, text),
+        target_input_tokens=judge_input_budget(template),
+    )
+    if rendered.empty or not rendered.system_prefix:
+        raise DomainError(
+            CHECK_REFERENCE_EMPTY_CODE,
+            "待查的文字太长，装不下任何参考：把文字分段再检查，或放宽评审节点的输入预算。",
+            status_code=409,
+            details={
+                "profile_id": getattr(policy, "profile_id", None),
+                "reason": "input_budget",
+                "target_input_tokens": budget_fit.get("target_input_tokens"),
+            },
+        )
     route = resolve_node_route(load_model_routing_config(), CHECK_NODE_ID)
     llm_request = build_llm_request(
         route,
@@ -490,10 +547,26 @@ def run_reference_judge(
 # ---------------------------------------------------------------------------
 
 
+def _checkpoint(
+    session: Session,
+    service: StyleJobService,
+    claimed: ClaimedJob,
+    *,
+    commit: bool = True,
+    **progress: Any,
+) -> None:
+    """一个进度写：落空（被取消收尾、被清扫重排、书被删——已不是这个作业的主人）→ ``JobLost``（框架回滚）；
+    写成了就立刻提交，不带着 SQLite 的写锁去建窗口索引、跑抄袭门、等模型。"""
+    if not service.progress(claimed, **progress):
+        raise JobLost(claimed.job_id)
+    if commit:
+        session.commit()
+
+
 def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobService) -> None:
     params = dict(claimed.params or {})
     service.check_continue(claimed)
-    service.progress(claimed, phase="measure", phase_label="读数", done=0, total=3)
+    _checkpoint(session, service, claimed, phase="measure", phase_label="读数", done=0, total=3)
     policy, scope = _full_policy(session, params)
     if not getattr(policy, "bound", False):
         raise _not_bound_error(params)
@@ -518,7 +591,7 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
 
     copy_check = check_reference_copy(session, visible_text, policy=policy)
     service.check_continue(claimed)
-    service.progress(claimed, phase="judge", phase_label="参考评审", done=1, total=3)
+    _checkpoint(session, service, claimed, phase="judge", phase_label="参考评审", done=1, total=3)
     llm_client, llm_enabled = resolve_check_client()
     if not llm_enabled or llm_client is None:
         raise LLMRequiredError(operation="style_check")
@@ -531,7 +604,9 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
         context_scope_id=claimed.job_id,
         project_id=params.get("project_id"),
     )
-    service.progress(claimed, phase="record", phase_label="记录读数", done=2, total=3, llm_calls_delta=1)
+    # 评审可能走了很久：期间作业被取消 / 被清扫重排给别的工人 / 书被删了——先确认还是自己的，再记读数
+    service.check_continue(claimed)
+    _checkpoint(session, service, claimed, phase="record", phase_label="记录读数", done=2, total=3, llm_calls_delta=1)
     row = readings.record_fidelity_reading(
         session,
         policy=policy,
@@ -548,8 +623,9 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
     )
     if row is None:  # pragma: no cover — 上面已确认绑定且读得出
         raise DomainError(CHECK_NO_REFERENCE_CODE, "读数没有记下来。", status_code=409)
-    service.progress(claimed, phase="done", phase_label="完成", done=3, total=3)
-    service.succeed(
+    # 读数与「完成」同一个事务：结束写落空就连读数一起回滚（JobLost → 框架 rollback）
+    _checkpoint(session, service, claimed, commit=False, phase="done", phase_label="完成", done=3, total=3)
+    succeeded = service.succeed(
         claimed,
         {
             "reading_id": row.reading_id,
@@ -560,6 +636,8 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
             "copy_blocked": bool(getattr(copy_check, "blocked", False)),
         },
     )
+    if not succeeded:
+        raise JobLost(claimed.job_id)
 
 
 def check_job_payload(session: Session, job: StyleReferenceJob) -> dict[str, Any]:
