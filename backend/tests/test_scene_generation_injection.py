@@ -17,6 +17,11 @@ import pytest as _pytest_ap
 from tests.real_llm_fakes import install_online_pipeline as _install_online_pipeline
 
 
+# 风格参考 v3（H1）：云策略按接收提示的节点判——「仅本机」的书遇上说不出接收节点的裸提示（这里的基础 prompt 没有
+# template_name）一个字都不送。这些用例测的是注入本身，参考书用可送云的策略 + 严格发送权声明。
+_SEND_RIGHTS = {"rights_declaration": {"declared": True, "analysis_rights": True, "send_rights": True}}
+
+
 @_pytest_ap.fixture(autouse=True)
 def _auto_online_pipeline(monkeypatch):
     """假生成已退役：给场景管线未显式注入的子服务兜底在线记账替身。"""
@@ -42,11 +47,11 @@ def _seed_style_reference_binding(
             book_id=book_id,
             title="t",
             source_kind="upload",
-            cloud_policy="local_only",
+            cloud_policy="allow_full_cloud",
             text_checksum=f"chk_{seed}",
             total_chars=10,
             status="ready",
-            stats_json={},
+            stats_json=dict(_SEND_RIGHTS),
         )
         repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
         repo.create_profile(
@@ -227,11 +232,11 @@ def _seed_character_binding(*, seed: str, character_id: str, feature: str) -> No
             book_id=f"sr_book_{seed}",
             title="t",
             source_kind="upload",
-            cloud_policy="local_only",
+            cloud_policy="allow_full_cloud",
             text_checksum=f"chk_{seed}",
             total_chars=10,
             status="ready",
-            stats_json={},
+            stats_json=dict(_SEND_RIGHTS),
         )
         repo.create_run(
             run_id=f"sr_run_{seed}",
@@ -285,11 +290,11 @@ def _seed_scene_binding(*, seed: str, scene_id: str, feature: str) -> None:
             book_id=f"sr_book_{seed}",
             title="t",
             source_kind="upload",
-            cloud_policy="local_only",
+            cloud_policy="allow_full_cloud",
             text_checksum=f"chk_{seed}",
             total_chars=10,
             status="ready",
-            stats_json={},
+            stats_json=dict(_SEND_RIGHTS),
         )
         repo.create_run(
             run_id=f"sr_run_{seed}",

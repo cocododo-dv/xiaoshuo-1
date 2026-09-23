@@ -59,7 +59,9 @@ def test_dryrun_preview_reports_the_effective_mode_for_segments_only_books(clien
     _, profile_id = _seed("segonly", cloud_policy="segments_only")
     data = client.post(f"{PREFIX}/profiles/{profile_id}/injection-preview", json={"reference_mode": "full"}).json()["data"]
     assert data["requested_reference_mode"] == "full" and data["reference_mode"] == "card_only"
-    assert data["windows"] == [] and data["sizes"]["sample_windows"] == 0 and data["user_tail"] == ""
+    assert data["windows"] == [] and data["sizes"]["sample_windows"] == 0
+    # 样例位置只有一句「本次没有附原文样例」（M5），没有原文
+    assert "\n- (第" not in data["user_tail"] and "本次没有附参考作者的原文样例" in data["user_tail"]
 
 
 def test_dryrun_preview_404_profile(client: TestClient) -> None:
@@ -85,7 +87,8 @@ def test_dryrun_reference_modes_and_sample_windows(client: TestClient) -> None:
     legacy = client.post(url, json={"strategy": "mixed", "intensity": 0}).json()["data"]
     assert legacy["stats"]["few_shot_windows"] == 3
     card = client.post(url, json={"reference_mode": "card_only"}).json()["data"]
-    assert card["stats"]["few_shot_windows"] == 0 and card["user_tail"] == "" and card["fragments"]["strategy"] == "A"
+    assert card["stats"]["few_shot_windows"] == 0 and card["fragments"]["strategy"] == "A"
+    assert "\n- (第" not in card["user_tail"] and "本次没有附参考作者的原文样例" in card["user_tail"]
     samples = client.post(url, json={"reference_mode": "samples_only"}).json()["data"]
     assert samples["fragments"]["positive_block"] == "" and samples["fragments"]["voice_block"] == ""
     assert samples["stats"]["few_shot_windows"] == 12 and samples["fragments"]["anti_plagiarism_block"]

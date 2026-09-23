@@ -27,6 +27,7 @@ FIRST_IMPORTS = (
     "novel_system.services.style_reference.inject.render",
     "novel_system.services.style_reference.inject.preview",
     "novel_system.services.style_reference.inject.selection",
+    "novel_system.services.style_reference.inject.routing",
     "novel_system.services.style_reference.binding_apply",
     "novel_system.services.style_reference.binding_config",
     "novel_system.services.style_reference.runtime_contract",

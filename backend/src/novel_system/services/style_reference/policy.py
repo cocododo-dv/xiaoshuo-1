@@ -20,12 +20,27 @@ model),全局 provider 是本机不代表某个节点走本机。调用方传 ``
 例如分类作业在开始时载入的那一份)时按这些节点的实际路由判断;不传时退回全局运行时模型(尚未迁移
 的旧调用点)。需要错误反馈的调用方用 ``ensure_cloud_llm_allowed(book, operation=..., node_ids=...)``,
 只需分支判定的用 ``cloud_llm_allowed(book, node_ids=...)``。
+
+**参考进提示(起草 / 改稿 / 评审 / 规划)同样按接收提示的节点判断**::func:`decide_reference_route` 是
+注入渲染、规划参考块与本场预览共用的唯一判定——
+
+- ``local_only``:接收提示的节点(可能是几个候选节点,要全部)都走本机模型 → 样例、文风卡、声音、红线照送;
+  任一节点走云端、或说不出是哪个节点 → **一个字都不送**(没有样例、没有文风卡、没有声音、没有专名表),
+  判定带 409 ``STYLE_REFERENCE_CLOUD_POLICY_BLOCKED``(注入适配器原样抛出,不降级成无参考的提示);
+- ``segments_only`` / ``allow_full_cloud``:与节点无关;有严格发送权声明(且冻结时也允许云端)才送原文样例,
+  否则只送文风卡与红线(``segments_only`` 由 ``binding_config.effective_reference_mode`` 压成只用文风卡);
+- 未知 / 空策略:本机节点只送文风卡,云端节点 409 ``STYLE_REFERENCE_CLOUD_POLICY_INVALID``;
+- 书已删除:不送原文;冻结快照里的策略决定文风卡还能不能送(说不清策略时什么都不送)。
+
+契约冻结的 ``cloud_llm_allowed_at_freeze`` 是**与路由无关**的策略口径(:func:`book_allows_cloud`:非本地策略 +
+严格发送权声明)。「仅本机」的书恒为 False,这个闩对它不起作用(本机节点照样能用它);对送云策略的书它是闩:
+冻结时不许送云,这份契约之后也不送原文。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
@@ -194,6 +209,16 @@ def _local_nodes_ok(
     return True, None
 
 
+def _rights_declared(book: Any) -> bool:
+    stats = getattr(book, "stats_json", None)
+    rights = stats.get("rights_declaration") if isinstance(stats, Mapping) else None
+    return (
+        isinstance(rights, Mapping)
+        and rights.get("declared") is True
+        and rights.get("send_rights") is True
+    )
+
+
 def cloud_llm_allowed(
     book: Any,
     *,
@@ -209,13 +234,19 @@ def cloud_llm_allowed(
         return _local_nodes_ok(node_ids, routes, llm_client)[0]
     if policy not in _CLOUD_POLICIES:
         return False
-    stats = getattr(book, "stats_json", None)
-    rights = stats.get("rights_declaration") if isinstance(stats, dict) else None
-    return (
-        isinstance(rights, dict)
-        and rights.get("declared") is True
-        and rights.get("send_rights") is True
-    )
+    return _rights_declared(book)
+
+
+def book_allows_cloud(book: Any) -> bool:
+    """与节点路由无关的策略口径:这本书的策略本身允许云端模型读它(非本地策略 + 严格发送权声明)。
+
+    「仅本机」、未知策略、没有书 → False。运行时契约冻结的 ``cloud_llm_allowed_at_freeze`` 用它——
+    冻结时不看全局运行时模型(它说明不了哪个节点会收到提示),节点路由在每一次渲染时再判。
+    """
+    if book is None:
+        return False
+    policy = getattr(book, "cloud_policy", None) or ""
+    return policy in _CLOUD_POLICIES and _rights_declared(book)
 
 
 def ensure_cloud_llm_allowed(
@@ -284,13 +315,219 @@ def ensure_local_only_llm(
     )
 
 
+# ---------------------------------------------------------------------------
+# 参考进提示:按接收提示的节点判(注入渲染 / 规划参考块 / 本场预览共用)
+# ---------------------------------------------------------------------------
+
+REASON_BOOK_MISSING = "book_missing"
+REASON_CLOUD_POLICY_NOW = "cloud_policy_now"
+REASON_CLOUD_POLICY_AT_FREEZE = "cloud_policy_at_freeze"
+REASON_CLOUD_POLICY_INVALID = "cloud_policy_invalid"
+REASON_LOCAL_ONLY_ROUTE = "local_only_route_not_local"
+REASON_NODE_UNKNOWN = "node_unknown"
+
+# 参考渲染里「判定为不许送、整份参考都不发」的错误:注入适配器必须原样抛出,不能降级成一份没有参考的提示
+# (那等于悄悄换了一份提示去调用同一个云端节点,还让人以为参考只是「渲染失败」)。
+STYLE_REFERENCE_FAIL_CLOSED_ERRORS: tuple[type[Exception], ...] = (
+    CloudPolicyBlockedError,
+    CloudPolicyInvalidError,
+)
+
+
+def normalize_node_ids(node_ids: Sequence[str] | str | None) -> tuple[str, ...]:
+    """节点 id 规范化:去空白、去重、保序;单个字符串当一个节点。"""
+    if node_ids is None:
+        return ()
+    items = [node_ids] if isinstance(node_ids, str) else list(node_ids)
+    out: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return tuple(out)
+
+
+@dataclass(frozen=True)
+class ReferenceRouteDecision:
+    """一次「参考能不能进这份提示」的判定(不含正文)。
+
+    - ``send_book``:能不能送任何由这本书派生的东西(文风卡、声音、禁用词 / 专名表、结构画像……);
+    - ``send_samples``:能不能送原文(样例窗、章首章尾样例、卡句例子、章题样例);
+    - ``error``:判定为不许送、而且要让调用方失败时带的 409(``local_only`` 遇云端 / 说不清的节点,未知策略遇云端)。
+    """
+
+    node_ids: tuple[str, ...]
+    # 接收提示的节点是否全走本机模型;``None`` = 没有判(送云策略的书与节点无关,不去解析路由)
+    route_local: bool | None
+    cloud_policy: str
+    send_book: bool
+    send_samples: bool
+    reason: str | None = None
+    error: Exception | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def blocked(self) -> bool:
+        return self.error is not None
+
+    def raise_if_blocked(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+    @property
+    def cache_token(self) -> str:
+        """渲染缓存键的一段:接收提示的节点、路由是否本机、送什么。同一场换了节点路由不会拿到旧渲染。"""
+        locality = "n/a" if self.route_local is None else ("local" if self.route_local else "remote")
+        return "|".join(
+            [
+                ",".join(self.node_ids),
+                locality,
+                self.cloud_policy,
+                "book" if self.send_book else "nobook",
+                "samples" if self.send_samples else "nosamples",
+            ]
+        )
+
+    def audit(self) -> dict[str, Any]:
+        return {
+            "node_ids": list(self.node_ids),
+            "route_local": self.route_local,
+            "cloud_policy": self.cloud_policy,
+            "send_book": self.send_book,
+            "send_samples": self.send_samples,
+            "reason": self.reason,
+            "error_code": getattr(self.error, "code", None),
+        }
+
+
+def _route_locality(nodes: Sequence[str], llm_client: Any | None) -> tuple[bool, NodeEndpoint | None]:
+    """(全部节点都走本机?, 第一个云端节点的端点)。说不出节点 → (False, None)——不能证明是本机。"""
+    if not nodes:
+        return False, None
+    for node_id in nodes:
+        if node_route_is_local(node_id, llm_client=llm_client):
+            continue
+        try:
+            endpoint = resolve_node_endpoint(node_id, llm_client=llm_client)
+        except Exception:  # noqa: BLE001 — 端点细节只用来写错误信息
+            endpoint = NodeEndpoint(node_id=node_id, provider_id=None, provider_type="", base_url="", model="")
+        return False, endpoint
+    return True, None
+
+
+def _local_only_route_error(
+    *,
+    book_id: str,
+    operation: str,
+    nodes: Sequence[str],
+    endpoint: NodeEndpoint | None,
+) -> CloudPolicyBlockedError:
+    if endpoint is not None:
+        error = CloudPolicyBlockedError(
+            book_id=book_id,
+            operation=operation,
+            provider=endpoint.provider_type or None,
+            base_url=endpoint.base_url or None,
+            node_id=endpoint.node_id,
+            model=endpoint.model or None,
+        )
+        error.details["reason"] = REASON_LOCAL_ONLY_ROUTE
+        error.details["node_ids"] = list(nodes)
+        return error
+    error = CloudPolicyBlockedError(book_id=book_id, operation=operation)
+    message = (
+        "这本参考书设为「仅本机」:只有本机模型能读它的正文,但这一步说不出由哪个模型节点接收提示,"
+        "无法确认是本机模型,参考一个字都没有送。请在「设置 → 模型与接入」确认相关节点走本机模型(如 Ollama),"
+        "或改用送云策略重新导入。"
+    )
+    error.message = message
+    error.args = (message,)
+    error.details["reason"] = REASON_NODE_UNKNOWN
+    error.details["node_ids"] = []
+    return error
+
+
+def decide_reference_route(
+    book: Any,
+    *,
+    node_ids: Sequence[str] | str | None,
+    frozen_book: Mapping[str, Any] | None = None,
+    book_missing: bool | None = None,
+    operation: str = "style_reference_injection",
+    llm_client: Any | None = None,
+) -> ReferenceRouteDecision:
+    """参考(样例 / 文风卡 / 声音 / 红线 / 结构画像)能不能进**这些节点**要收的提示。
+
+    ``book``:参考书的当前行(``None`` = 书已删除,或调用方手里没有会话——后者传 ``book_missing=False``,
+    只按冻结快照判);``frozen_book``:契约冻结的书快照(``cloud_policy`` / ``cloud_llm_allowed_at_freeze``);
+    ``node_ids``:接收这份提示的节点(模板可能按几个节点的路由派发时全部列上,要求每一个都满足)。
+    """
+    nodes = normalize_node_ids(node_ids)
+    frozen = frozen_book if isinstance(frozen_book, Mapping) else {}
+    live = book is not None
+    missing = (not live) if book_missing is None else bool(book_missing)
+    policy = str((getattr(book, "cloud_policy", None) if live else frozen.get("cloud_policy")) or "")
+    book_id = str((getattr(book, "book_id", None) if live else None) or frozen.get("book_id") or "unknown")
+    # 路由只在它决定结果时才解析(「仅本机」与未知策略);送云策略的书与节点无关,不为每次渲染去读路由与供应商配置
+    route_local: bool | None = None
+    endpoint: NodeEndpoint | None = None
+    if policy not in _CLOUD_POLICIES:
+        route_local, endpoint = _route_locality(nodes, llm_client)
+
+    def _decision(send_book: bool, send_samples: bool, reason: str | None, error: Exception | None = None):
+        return ReferenceRouteDecision(
+            node_ids=nodes,
+            route_local=route_local,
+            cloud_policy=policy,
+            send_book=send_book,
+            send_samples=send_samples,
+            reason=reason,
+            error=error,
+        )
+
+    if policy == CloudPolicy.LOCAL_ONLY.value:
+        if route_local:
+            return _decision(True, not missing, REASON_BOOK_MISSING if missing else None)
+        error = _local_only_route_error(book_id=book_id, operation=operation, nodes=nodes, endpoint=endpoint)
+        return _decision(False, False, REASON_LOCAL_ONLY_ROUTE if nodes else REASON_NODE_UNKNOWN, error)
+    if policy in _CLOUD_POLICIES:
+        if missing:
+            return _decision(True, False, REASON_BOOK_MISSING)
+        if live and not _rights_declared(book):
+            return _decision(True, False, REASON_CLOUD_POLICY_NOW)
+        if frozen.get("cloud_llm_allowed_at_freeze") is False:
+            return _decision(True, False, REASON_CLOUD_POLICY_AT_FREEZE)
+        return _decision(True, True, None)
+    # 未知 / 空策略:fail-closed。书都不在了(旧契约的快照里又没有策略)→ 什么都不送,也不报错(书是作者删的)
+    if missing:
+        return _decision(False, False, REASON_BOOK_MISSING)
+    if route_local:
+        return _decision(True, False, REASON_CLOUD_POLICY_INVALID)
+    return _decision(
+        False,
+        False,
+        REASON_CLOUD_POLICY_INVALID,
+        CloudPolicyInvalidError(book_id=book_id, operation=operation, cloud_policy=policy),
+    )
+
+
 __all__ = [
     "NodeEndpoint",
+    "REASON_BOOK_MISSING",
+    "REASON_CLOUD_POLICY_AT_FREEZE",
+    "REASON_CLOUD_POLICY_INVALID",
+    "REASON_CLOUD_POLICY_NOW",
+    "REASON_LOCAL_ONLY_ROUTE",
+    "REASON_NODE_UNKNOWN",
+    "ReferenceRouteDecision",
+    "STYLE_REFERENCE_FAIL_CLOSED_ERRORS",
+    "book_allows_cloud",
     "cloud_llm_allowed",
+    "decide_reference_route",
     "default_cloud_policy",
     "ensure_cloud_llm_allowed",
     "ensure_local_only_llm",
     "node_route_is_local",
+    "normalize_node_ids",
     "resolve_node_endpoint",
     "runtime_llm_is_local",
 ]
