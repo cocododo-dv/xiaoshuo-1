@@ -1,6 +1,4 @@
-"""11 张 style_reference_* 表的 ORM CRUD。
-
-PR-1 提供最小可用 CRUD,后续 PR 在此基础上扩展查询。
+"""style_reference_* 表的 ORM CRUD(只留有调用方的方法;2026-09-23 v3 清掉了无人调用的删改方法)。
 所有方法操作 session 但不 commit;由调用方在 service / route 层统一提交。
 """
 
@@ -137,21 +135,12 @@ class StyleReferenceRepository:
         self.session.flush()
         return run
 
-    def delete_run(self, run_id: str) -> int:
-        result = self.session.execute(
-            delete(StyleReferenceRun).where(StyleReferenceRun.run_id == run_id)
-        )
-        return int(result.rowcount or 0)
-
     # ----------------------------------------------------------- extractions
     def create_extraction(self, **kwargs: Any) -> StyleReferenceExtraction:
         row = StyleReferenceExtraction(**kwargs)
         self.session.add(row)
         self.session.flush()
         return row
-
-    def get_extraction(self, extraction_id: str) -> StyleReferenceExtraction | None:
-        return self.session.get(StyleReferenceExtraction, extraction_id)
 
     def list_extractions(
         self,
@@ -171,23 +160,6 @@ class StyleReferenceRepository:
         if sub_dimension is not None:
             stmt = stmt.where(StyleReferenceExtraction.sub_dimension == sub_dimension)
         return list(self.session.scalars(stmt).all())
-
-    def update_extraction(self, extraction_id: str, **updates: Any) -> StyleReferenceExtraction | None:
-        row = self.get_extraction(extraction_id)
-        if row is None:
-            return None
-        for key, value in updates.items():
-            setattr(row, key, value)
-        self.session.flush()
-        return row
-
-    def delete_extraction(self, extraction_id: str) -> int:
-        result = self.session.execute(
-            delete(StyleReferenceExtraction).where(
-                StyleReferenceExtraction.extraction_id == extraction_id
-            )
-        )
-        return int(result.rowcount or 0)
 
     # --------------------------------------------------------------- quotes
     def create_quote(self, **kwargs: Any) -> StyleReferenceQuote:
@@ -212,24 +184,12 @@ class StyleReferenceRepository:
         )
         return list(self.session.scalars(stmt).all())
 
-    def delete_quote(self, quote_id: str) -> int:
-        result = self.session.execute(
-            delete(StyleReferenceQuote).where(StyleReferenceQuote.quote_id == quote_id)
-        )
-        return int(result.rowcount or 0)
-
     # ------------------------------------------------------------ evidences
     def create_evidence(self, **kwargs: Any) -> StyleReferenceEvidence:
         row = StyleReferenceEvidence(**kwargs)
         self.session.add(row)
         self.session.flush()
         return row
-
-    def list_evidences(self, finding_id: str) -> list[StyleReferenceEvidence]:
-        stmt = select(StyleReferenceEvidence).where(
-            StyleReferenceEvidence.finding_id == finding_id
-        )
-        return list(self.session.scalars(stmt).all())
 
     def list_evidences_for_findings(
         self, finding_ids: list[str]
@@ -241,14 +201,6 @@ class StyleReferenceRepository:
             StyleReferenceEvidence.finding_id.in_(finding_ids)
         )
         return list(self.session.scalars(stmt).all())
-
-    def delete_evidence(self, evidence_id: str) -> int:
-        result = self.session.execute(
-            delete(StyleReferenceEvidence).where(
-                StyleReferenceEvidence.evidence_id == evidence_id
-            )
-        )
-        return int(result.rowcount or 0)
 
     # ------------------------------------------------------------- findings
     def create_finding(self, **kwargs: Any) -> StyleReferenceFinding:
@@ -298,12 +250,6 @@ class StyleReferenceRepository:
             setattr(row, key, value)
         self.session.flush()
         return row
-
-    def delete_finding(self, finding_id: str) -> int:
-        result = self.session.execute(
-            delete(StyleReferenceFinding).where(StyleReferenceFinding.finding_id == finding_id)
-        )
-        return int(result.rowcount or 0)
 
     # ------------------------------------------------- finding feedback(立项 B)
     def upsert_finding_feedback(
@@ -411,12 +357,6 @@ class StyleReferenceRepository:
         self.session.flush()
         return row
 
-    def delete_profile(self, profile_id: str) -> int:
-        result = self.session.execute(
-            delete(StyleReferenceProfile).where(StyleReferenceProfile.profile_id == profile_id)
-        )
-        return int(result.rowcount or 0)
-
     # ---------------------------------------------------- injection bindings
     def create_binding(self, **kwargs: Any) -> StyleReferenceInjectionBinding:
         row = StyleReferenceInjectionBinding(**kwargs)
@@ -470,14 +410,6 @@ class StyleReferenceRepository:
         if verdict is not None:
             stmt = stmt.where(StyleReferenceValidationReport.verdict == verdict)
         return list(self.session.scalars(stmt).all())
-
-    def delete_validation_report(self, report_id: str) -> int:
-        result = self.session.execute(
-            delete(StyleReferenceValidationReport).where(
-                StyleReferenceValidationReport.report_id == report_id
-            )
-        )
-        return int(result.rowcount or 0)
 
     # ---------------------------------------------------------- banned terms
     def create_banned_term(self, **kwargs: Any) -> StyleReferenceBannedTerm:

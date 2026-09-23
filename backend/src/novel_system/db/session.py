@@ -1,20 +1,71 @@
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Generator
+from pathlib import Path
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
-from novel_system.database_runtime import load_database_runtime
+from novel_system.database_runtime import DEFAULT_DATABASE_PATH, load_database_runtime
 
 _ENGINE = None
 _SESSION_FACTORY = None
+
+
+def _running_under_pytest() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
+def _sqlite_file(database_url: str) -> Path | None:
+    """SQLite URL 指向的文件(解析相对路径);内存库 / 非 SQLite / 解析不了时返回 None。"""
+    if not database_url.startswith("sqlite"):
+        return None
+    try:
+        database = make_url(database_url).database
+    except Exception:  # noqa: BLE001 — URL 解析失败交给 create_engine 报
+        return None
+    if not database or database == ":memory:" or database.startswith("file:"):
+        return None
+    path = Path(database)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def refuse_repository_database_under_pytest(database_url: str) -> None:
+    """测试进程里拒绝连仓库自己的 ``backend/novel_system.db``(作者的实库)。
+
+    2026-09-06 一次测试运行在环境变量还没指向临时库时就建了引擎,把 22 本夹具参考书写进了实库。
+    测试夹具(``tests/conftest.py``)给每个用例一个 ``tmp_path`` 下的临时库;任何在那之前或绕过它
+    建引擎的代码在这里直接失败,而不是悄悄写实库。
+    """
+    if not _running_under_pytest():
+        return
+    target = _sqlite_file(database_url)
+    if target is None:
+        return
+    try:
+        live = DEFAULT_DATABASE_PATH.resolve()
+    except OSError:
+        return
+    if target == live:
+        raise RuntimeError(
+            "refusing to open the repository database backend/novel_system.db from a pytest run; "
+            "tests must use the per-test temporary database (tests/conftest.py isolated_database)"
+        )
 
 
 def engine():
     global _ENGINE
     if _ENGINE is None:
         database_runtime = load_database_runtime()
+        refuse_repository_database_under_pytest(database_runtime.database_url)
         is_sqlite = database_runtime.database_url.startswith("sqlite")
         connect_args = {"check_same_thread": False, "timeout": 30} if is_sqlite else {}
         _ENGINE = create_engine(

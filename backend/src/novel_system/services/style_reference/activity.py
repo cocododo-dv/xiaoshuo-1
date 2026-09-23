@@ -1,11 +1,14 @@
-"""参考书活动清单(2026-09-15):风格参考模块所有在跑 / 刚结束的耗时操作,一份统一形状。
+"""参考书活动清单:风格参考模块所有在跑 / 刚结束的耗时操作,一份统一形状。
 
-两类来源合成一份:
-- 进程内登记簿(``import_progress``):导入、重新分类、合成画像、应用画像的 RAG 索引、
-  回测 worker 的阶段进度——进程没了就没了;
+三类来源合成一份:
+- **作业表**(``style_reference_jobs``,2026-09-23 v3):分类作业(导入 / 重新分类 / 就地重标类型)
+  以及之后迁过来的学习 / 检查作业,条目由 ``jobs.job_activity_entry`` 给出(键 ``job:<id>``);
+  分类作业另带一条兼容旧前端的别名条目(键 = 请求的幂等键,kind = import / reclassify,
+  ``compat_alias_of`` 指回 ``job:`` 条目),P7 随 ``/imports/{key}/progress`` 一起删;
+- 进程内登记簿(``import_progress``):合成画像、应用画像的 RAG 索引、回测 worker 的阶段进度
+  (P3 / P5 把它们迁到作业表之前)——进程没了就没了;
 - 库里的 durable 行:抽取 run(``style_reference_runs``,子维粒度进度写在
-  ``coverage_json["progress"]``)与回测报告(``style_reference_validation_reports``)——
-  重启后仍在,启动恢复会续跑或标失败。
+  ``coverage_json["progress"]``)与回测报告(``style_reference_validation_reports``)。
 
 同一操作在两边都有时(回测:worker 登记阶段,报告行给终态),以 durable 行的状态为准、
 登记簿的阶段 / 百分比为辅。终态条目只保留最近 ``RECENT_FINISHED_SECONDS``,让前端的
@@ -20,15 +23,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import StyleReferenceBook, StyleReferenceRun, StyleReferenceValidationReport
-from novel_system.services.style_reference.import_job import (
-    classification_op_key,
-    classification_state,
-)
+from novel_system.db.models import StyleReferenceRun, StyleReferenceValidationReport
+from novel_system.services.style_reference.import_job import classification_activity_entries
 from novel_system.services.style_reference.import_progress import (
     KIND_LABELS,
-    KIND_PHASES,
     list_operation_progress,
+)
+from novel_system.services.style_reference.jobs import (
+    ACTIVE_STATES,
+    JOB_KIND_CLASSIFY,
+    StyleJobService,
+    job_activity_entry,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
@@ -263,102 +268,6 @@ def report_activity_entry(
     return base
 
 
-_CLASSIFICATION_STATUS: dict[str, str] = {
-    "queued": "running",
-    "running": "running",
-    "done": "succeeded",
-    "failed": "failed",
-    "cancelled": "cancelled",
-}
-
-
-def _kind_phase_base(kind: str, phase: str) -> tuple[float, float]:
-    """某 kind 的阶段表里,``phase`` 之前的权重之和与 ``phase`` 自身的权重。"""
-    done = 0.0
-    for name, weight in KIND_PHASES.get(kind, ()):
-        if name == phase:
-            return done, weight
-        done += weight
-    return done, 0.0
-
-
-def classification_activity_entry(
-    book: StyleReferenceBook,
-    *,
-    registry_entry: dict[str, Any] | None,
-    now: datetime,
-) -> dict[str, Any] | None:
-    """导入 / 重新分类的 durable 分类任务(2026-09-15)→ 活动条目;登记簿有同键条目时以它为底。"""
-    state = classification_state(book)
-    if state is None:
-        return None
-    kind = str(state.get("kind") or "import")
-    status = _CLASSIFICATION_STATUS.get(str(state.get("state") or ""), "running")
-    cancelling = str(book.status or "") == "cancelling" and status == "running"
-    done = int(state.get("batches_done") or 0)
-    total = int(state.get("batches_total") or 0)
-    base, weight = _kind_phase_base(kind, "classify")
-    fraction = (done / total) if total else 0.0
-    percent = min(99, int(round((base + weight * fraction) * 100)))
-    if status == "succeeded":
-        percent = 100
-    seconds = [float(x) for x in (state.get("batch_seconds") or []) if isinstance(x, (int, float))]
-    eta = None
-    if status == "running" and seconds and total:
-        eta = round(sum(seconds) / len(seconds) * max(0, total - done), 1)
-    started_at = state.get("started_at") or state.get("created_at") or book.created_at
-    finished = _parse_iso(state.get("finished_at"))
-    end = finished if (status != "running" and finished is not None) else now
-    error = state.get("error") if isinstance(state.get("error"), dict) else None
-    entry = dict(registry_entry) if registry_entry else {}
-    entry.update(
-        {
-            "key": str(state.get("op_key") or classification_op_key(book.book_id)),
-            "kind": kind,
-            "kind_label": KIND_LABELS.get(kind, kind),
-            "source": "durable",
-            "title": book.title,
-            "book_id": book.book_id,
-            "target_id": book.book_id,
-            "status": status,
-            "phase": "classify" if status == "running" else ("done" if status == "succeeded" else status),
-            "phase_label": (
-                ("取消中" if cancelling else ("排队中" if state.get("state") == "queued" else "段落分类"))
-                if status == "running"
-                else {"succeeded": "完成", "failed": "失败", "cancelled": "已取消"}.get(status, status)
-            ),
-            "cancel_requested": cancelling,
-            "percent": percent,
-            "steps": {"done": done, "total": total, "label": "批"} if total else None,
-            "classify": {
-                "mode": "llm",
-                "batches_done": done,
-                "batches_total": total,
-                "llm_calls": int(state.get("llm_calls") or 0),
-                "node_id": (registry_entry or {}).get("classify", {}).get("node_id") if registry_entry else None,
-            },
-            "llm_calls": int(state.get("llm_calls") or 0),
-            "started_at": started_at,
-            "updated_at": state.get("heartbeat_at") or book.updated_at,
-            "elapsed_seconds": _seconds_between(started_at, end),
-            "eta_seconds": eta,
-            "error": error,
-            "result": (
-                {"book_id": book.book_id, "paragraphs_count": int(state.get("total_paragraphs") or 0)}
-                if status == "succeeded"
-                else None
-            ),
-            "cancellable": status == "running" and not cancelling,
-            "retryable": status in ("failed", "cancelled"),
-            "resumable": status in ("failed", "cancelled"),
-            "chars_total": int(book.total_chars or 0) or None,
-            "paragraphs_total": int(state.get("total_paragraphs") or 0) or None,
-            "paragraphs_count": int(state.get("total_paragraphs") or 0) if status == "succeeded" else None,
-        }
-    )
-    return entry
-
-
 def list_activity(session: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
     current = now or datetime.now(timezone.utc)
     recent_cutoff = (current - timedelta(seconds=RECENT_FINISHED_SECONDS)).isoformat()
@@ -378,21 +287,19 @@ def list_activity(session: Session, *, now: datetime | None = None) -> list[dict
             title_cache[book_id] = book.title if book is not None else None
         return title_cache[book_id]
 
-    # 分类任务(导入 / 重新分类):ingesting 的书 + 十分钟内失败 / 取消的书
-    books = session.scalars(
-        select(StyleReferenceBook).where(
-            StyleReferenceBook.status.in_(("ingesting", "cancelling"))
-            | ((StyleReferenceBook.status == "failed") & (StyleReferenceBook.updated_at >= recent_cutoff))
-        )
-    ).all()
-    for book in books:
-        state = classification_state(book)
-        if state is None:
+    # 作业表:活动作业 + 十分钟内结束的作业(分类作业另带兼容旧前端的别名条目)
+    for job in StyleJobService(session).list_recent(finished_within_seconds=RECENT_FINISHED_SECONDS):
+        book = repo.get_book(job.book_id) if job.book_id else None
+        title = book.title if book is not None else None
+        if job.kind == JOB_KIND_CLASSIFY:
+            for entry in classification_activity_entries(
+                job, title=title, total_chars=int(book.total_chars or 0) if book is not None else None
+            ):
+                items[str(entry["key"])] = entry
             continue
-        key = str(state.get("op_key") or classification_op_key(book.book_id))
-        entry = classification_activity_entry(book, registry_entry=items.get(key), now=current)
-        if entry is not None:
-            items[key] = entry
+        entry = job_activity_entry(job, now=current)
+        entry["title"] = title
+        items[str(entry["key"])] = entry
 
     runs = session.scalars(
         select(StyleReferenceRun).where(
@@ -426,21 +333,19 @@ def list_activity(session: Session, *, now: datetime | None = None) -> list[dict
         entry["book_id"] = book_id
         items[key] = entry
 
-    def _sort_key(entry: dict[str, Any]) -> tuple[int, str]:
-        running = 0 if entry.get("status") == "running" else 1
-        stamp = str(entry.get("updated_at") or entry.get("started_at") or "")
-        return (running, stamp)
+    def _active(entry: dict[str, Any]) -> bool:
+        return entry.get("status") == "running" or entry.get("status") in ACTIVE_STATES
 
-    ordered = sorted(items.values(), key=_sort_key)
-    # 在跑的按开始时间倒序排前面,终态按更新时间倒序跟在后面
+    ordered = list(items.values())
+    # 在跑(含排队)的按开始时间倒序排前面,终态按更新时间倒序跟在后面
     running = sorted(
-        (e for e in ordered if e.get("status") == "running"),
-        key=lambda e: str(e.get("started_at") or ""),
+        (e for e in ordered if _active(e)),
+        key=lambda e: str(e.get("started_at") or e.get("created_at") or ""),
         reverse=True,
     )
     finished = sorted(
-        (e for e in ordered if e.get("status") != "running"),
-        key=lambda e: str(e.get("updated_at") or e.get("started_at") or ""),
+        (e for e in ordered if not _active(e)),
+        key=lambda e: str(e.get("updated_at") or e.get("finished_at") or e.get("started_at") or ""),
         reverse=True,
     )
     return (running + finished)[:MAX_ITEMS]
@@ -448,7 +353,6 @@ def list_activity(session: Session, *, now: datetime | None = None) -> list[dict
 
 __all__ = [
     "LAYER_LABELS",
-    "classification_activity_entry",
     "MAX_ITEMS",
     "RECENT_FINISHED_SECONDS",
     "SUB_DIM_LABELS",

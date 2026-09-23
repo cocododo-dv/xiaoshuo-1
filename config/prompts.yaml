@@ -485,29 +485,35 @@ templates:
           type: boolean
 
   style_ref_paragraph_classify_anchor:
-    version: "2026-07-04.v2"
-    input_token_budget: 2400
+    version: "2026-09-23.v3"
+    input_token_budget: 6000
     system_prompt: |
-      你是中文叙事段落分类专家。给定一批段落,逐段判断其类型,从 8 类中严格选择一个:
+      你是中文叙事段落分类专家。给定一批按原书顺序排列的段落,逐段判断其类型,从 8 类中严格选择一个:
       dialogue / narration / psychology / description_env / description_char / action / transition / flashback。
-      判断原则见 task_prompt。本任务是锚定集的强模型分类,作为后续快模型校准的基准。
+      判断原则见 task_prompt。本任务是锚定集(从全书各处均匀抽出的段落)的分类,作为全书分类的基准。
     task_prompt: |
-      8 类定义:
-        1. dialogue          含明确引号或"……说""……道"
-        2. narration         全知视角推进剧情的散文体段落
-        3. psychology        内心活动、回忆、内省(典型词:想着/觉得/暗忖/恍惚)
-        4. description_env   刻画场所、天气、自然或物件
-        5. description_char  刻画外貌、衣着、神态
-        6. action            连续动作动词
-        7. transition        场景切换/时间跳跃句(通常短)
-        8. flashback         对过去事件的追述(典型词:记得/那年/从前)
-      规则:一段只归一类,多种特征以主导(>50%)为准;含直接引语优先 dialogue;短段(<30 字)且无对话/心理标识默认 transition。
-      边界判例(常见混淆,按此裁决):
-        - 对白夹叙述:看该段主要在推进什么——核心是动作/场景变化判 narration 或 action,核心是人物开口说话判 dialogue。
-        - 诗句/歌谣等韵文插入:用于渲染环境氛围判 description_env,是人物内心吟诵/回忆的一部分判 psychology,不要另立新类别。
-        - 书信体/日记体段落:第一人称自述背景或情感判 psychology,只是转述信件里的事件经过判 narration。
-      仅看当前段本身,不考虑上下文。
-      完整性要求:输入给你的每一个 paragraph_index 都必须在 classifications 里出现恰好一次,不得跳过、不得合并、不得新增不存在的 index。
+      8 类定义(每段只归一类,多种特征并存时按占主导(>50%)的那一种判):
+        1. dialogue          人物直接说出口的话是这段的主体(引号里的对白,或以「说 / 道 / 问」引出的直接引语)
+        2. narration         叙述者交代事件、推进情节、概述经过的段落
+        3. psychology        人物的内心活动:想法、感受、判断、犹豫、内省(想着 / 觉得 / 心里 / 暗忖 …)
+        4. description_env   刻画场所、天气、自然景物、物件
+        5. description_char  刻画人物的外貌、衣着、神态、姿态
+        6. action            以连续的具体动作推进的段落
+        7. transition        场景切换、时间跳跃、章节标题、分隔标记
+        8. flashback         对过去事件的追述(记得 / 那年 / 从前 …)
+      判断规则:
+        - 段落长短不决定类型:短段也按内容判——一句短的动作判 action,一句短的心里话判 psychology,
+          一句短的交代判 narration,一句短的对白判 dialogue;只有真正在切换场景 / 时间 / 章节的段才判 transition。
+        - 含直接引语、且对白是这段的主体时判 dialogue;引号只是引用一个词、称呼、书名或念头时不算对白。
+        - 对白夹叙述:看这段主要在推进什么——核心是动作 / 场景变化判 action 或 narration,核心是人物开口判 dialogue。
+        - 诗句 / 歌谣等韵文插入:渲染环境判 description_env,是人物内心吟诵 / 回忆的一部分判 psychology。
+        - 书信体 / 日记体:第一人称自述心境判 psychology,转述事件经过判 narration。
+      上下文(只读,帮助理解,不要分类):
+        - paragraphs 按原书顺序给出;相邻的 paragraph_index 在原书里也相邻。
+        - context_before / context_after 是这一段在原书里的前一段 / 后一段(只在它们不在本批里时给出),
+          用来判断这段在前后文里起什么作用;不要为它们输出分类。
+      完整性要求:输入给你的每一个 paragraph_index 都必须在 classifications 里出现恰好一次,原样照抄,
+      不得跳过、不得合并、不得新增不存在的 index;paragraph_type 只能是上面 8 个英文值之一。
       输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
     structured_schema: &paragraph_classify_schema
       type: object
@@ -543,26 +549,35 @@ templates:
                 enum: [high, medium, low]
 
   style_ref_paragraph_classify_bulk:
-    version: "2026-07-04.v2"
-    input_token_budget: 2400
+    version: "2026-09-23.v3"
+    input_token_budget: 6000
     system_prompt: |
-      你是中文叙事段落分类专家。给定一批段落,逐段判断其类型,从 8 类中严格选择一个:
+      你是中文叙事段落分类专家。给定一批按原书顺序排列的段落,逐段判断其类型,从 8 类中严格选择一个:
       dialogue / narration / psychology / description_env / description_char / action / transition / flashback。
-      本任务是 bulk 路径的快模型分类,在锚定集 agreement ≥ 0.85 时启用。
+      判断原则见 task_prompt。本任务是全书余下段落的分类。
     task_prompt: |
-      8 类定义:
-        1. dialogue          含明确引号或"……说""……道"
-        2. narration         全知视角推进剧情的散文体段落
-        3. psychology        内心活动、回忆、内省(典型词:想着/觉得/暗忖/恍惚)
-        4. description_env   刻画场所、天气、自然或物件
-        5. description_char  刻画外貌、衣着、神态
-        6. action            连续动作动词
-        7. transition        场景切换/时间跳跃句(通常短)
-        8. flashback         对过去事件的追述(典型词:记得/那年/从前)
-      规则:一段只归一类,多种特征以主导(>50%)为准;含直接引语优先 dialogue;短段(<30 字)且无对话/心理标识默认 transition。
-      边界判例:对白夹叙述看"主要推进什么"(动作/场景变化判 narration 或 action,人物开口判 dialogue);诗句渲染环境判 description_env、人物内心吟诵判 psychology;书信体自述背景判 psychology、转述事件判 narration。
-      仅看当前段本身,不考虑上下文。
-      完整性要求:输入给你的每一个 paragraph_index 都必须在 classifications 里出现恰好一次,不得跳过、不得合并、不得新增不存在的 index。
+      8 类定义(每段只归一类,多种特征并存时按占主导(>50%)的那一种判):
+        1. dialogue          人物直接说出口的话是这段的主体(引号里的对白,或以「说 / 道 / 问」引出的直接引语)
+        2. narration         叙述者交代事件、推进情节、概述经过的段落
+        3. psychology        人物的内心活动:想法、感受、判断、犹豫、内省(想着 / 觉得 / 心里 / 暗忖 …)
+        4. description_env   刻画场所、天气、自然景物、物件
+        5. description_char  刻画人物的外貌、衣着、神态、姿态
+        6. action            以连续的具体动作推进的段落
+        7. transition        场景切换、时间跳跃、章节标题、分隔标记
+        8. flashback         对过去事件的追述(记得 / 那年 / 从前 …)
+      判断规则:
+        - 段落长短不决定类型:短段也按内容判——一句短的动作判 action,一句短的心里话判 psychology,
+          一句短的交代判 narration,一句短的对白判 dialogue;只有真正在切换场景 / 时间 / 章节的段才判 transition。
+        - 含直接引语、且对白是这段的主体时判 dialogue;引号只是引用一个词、称呼、书名或念头时不算对白。
+        - 对白夹叙述:看这段主要在推进什么——核心是动作 / 场景变化判 action 或 narration,核心是人物开口判 dialogue。
+        - 诗句 / 歌谣等韵文插入:渲染环境判 description_env,是人物内心吟诵 / 回忆的一部分判 psychology。
+        - 书信体 / 日记体:第一人称自述心境判 psychology,转述事件经过判 narration。
+      上下文(只读,帮助理解,不要分类):
+        - paragraphs 按原书顺序给出;相邻的 paragraph_index 在原书里也相邻。
+        - context_before / context_after 是这一段在原书里的前一段 / 后一段(只在它们不在本批里时给出),
+          用来判断这段在前后文里起什么作用;不要为它们输出分类。
+      完整性要求:输入给你的每一个 paragraph_index 都必须在 classifications 里出现恰好一次,原样照抄,
+      不得跳过、不得合并、不得新增不存在的 index;paragraph_type 只能是上面 8 个英文值之一。
       输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
     structured_schema: *paragraph_classify_schema
 

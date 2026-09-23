@@ -63,7 +63,9 @@ PRESERVED_DOMAINS = [
     "config/models.yaml and config/prompts.yaml",
 ]
 PRESERVED_REVIEW_SOURCES = {"reference_book_learning", "reference_profile_apply"}
-PRESERVED_LLM_NODE_PREFIXES = ("reference_",)
+# 参考书不随作者状态重置(书、画像、绑定都保留),它们的 LLM 账本行也保留:现役风格参考节点全是
+# ``style_ref_*``(分类 / 抽取 / 合成 / 评审…);``reference_`` 是已下线的旧 reference_* 节点族留下的审计行。
+PRESERVED_LLM_NODE_PREFIXES = ("style_ref_", "reference_")
 
 
 @dataclass(frozen=True)

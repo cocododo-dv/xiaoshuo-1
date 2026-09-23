@@ -1,37 +1,39 @@
-"""Style Reference v1.1 导入服务。
+"""Style Reference 导入服务(2026-09-23 风格参考 v3)。
 
-依据《风格参考模块重构执行手册 v1.1》§6.2 / §6.4。
+依据《风格参考模块重构执行手册 v1.1》§6.2 / §6.4;严格 LLM(2026-09-15);作业表(v3)。
 
-流程:
-  1. 解码 + 清洗 → normalized text
-  2. SHA256 checksum 计算 → book_id = "sr_book_{checksum[:12]}"
-  3. 去重检测(同 checksum 已存在则 raise DuplicateBookError)
-  4. cloud_policy 校验(Pydantic CloudPolicy)
-  5. source_safety.scan_source_safety(text) 扫描(blocked_terms / risks)
-  6. assess_input_size(total_chars) → stats_json.input_assessment
-  7. split_paragraphs(text) → list of (start, end, body)
-  8. segmentation.classify_paragraphs(...) → SegmentationResult
-  9. MetricsEngine.compute_with_variance(records) → stats_json.metrics
-     voice_signature.compute_voice_signature(paragraphs) → stats_json.voice_signature
- 10. 落 style_reference_books + style_reference_paragraphs 表
- 11. book.status = "ready"
+导入的准备工作(一次请求内,几秒):
+  1. 解码 + 清洗 → normalized text;SHA256 → ``book_id = "sr_book_{checksum[:12]}"``;
+  2. 去重:同一份文本已在书库 → 409 ``STYLE_REFERENCE_BOOK_DUPLICATE``(带已有书的 id / 标题 / 状态);
+  3. cloud_policy 校验 + 权属声明(不得默认拥有云端发送权);「仅本机」要求分类节点的实际路由是本机模型;
+  4. ``source_safety`` 扫描、``assess_input_size``;
+  5. 切段 → 剥副文本 → 场界(与切段同一口径,剥副文本时重映射,见 ``text_utils.scene_break_indexes``);
+     清洗 / 切段后没有正文 → 400 ``STYLE_REFERENCE_BOOK_EMPTY``;
+  6. **批量**落书与段落行(26,616 段:逐行 add+flush 12 s → 一次 executemany);
+  7. 产品模式(``llm_enabled=True``):段落行类型 ``unclassified``、书 ``ingesting``,建一个 ``classify``
+     作业(``import_job``),调用方提交后派发;整本 LLM 分类、统计、声音签名、书置 ``ready`` 都在作业里。
 
-`idempotency_key` 参数预留;PR-4 加 route 时由路由层包装
-`execute_with_idempotency` 实际接入。本 service 不直接调用幂等机制。
+**离线夹具模式**(``llm_enabled=False``,只供测试与本地语料工具):启发式同步分类、书直接 ``ready``。
+产品路由没有 LLM 时已经 409 ``STYLE_REFERENCE_LLM_REQUIRED``,永远不会走到这条路。
+
+重新分类:``start_reclassify(book_id, mode="reclassify")`` 是**破坏式**的(先清掉这本书的全部派生数据——
+抽取 run / 发现 / 引文 / 画像 / 绑定 / 禁用词 / 回测报告 / 作业 / 窗口索引——再从头分类,书 ``ingesting``);
+``mode="retype"`` 是**就地重标段落类型**(正文不变,派生数据与绑定全部保留,书保持 ``ready``);
+``resume(book_id)`` 从上次的游标继续(失败 / 取消 / 进程重启之后)。
 """
 
 from __future__ import annotations
 
 import os
 import stat
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import insert
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph
+from novel_system.db.models import StyleReferenceBook, StyleReferenceJob, StyleReferenceParagraph, utcnow
 from novel_system.services.errors import DomainError
 from novel_system.services.source_safety import scan_source_safety
 from novel_system.services.style_reference.classification_stats import compute_classification_stats
@@ -42,29 +44,22 @@ from novel_system.services.style_reference.errors import (
     EmptyBookError,
     LLMRequiredError,
 )
-from novel_system.services.style_reference.metrics import (
-    MetricsEngine,
-    ParagraphRecord,
-    compute_prose_shape_with_variance,
-)
+from novel_system.services.style_reference.metrics import MetricsEngine
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed, ensure_local_only_llm
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import CloudPolicy
-from novel_system.services.style_reference.import_progress import (
-    ImportProgressReporter,
-    NullImportProgress,
-)
 from novel_system.services.style_reference.segmentation import (
     SegmentationResult,
     classify_paragraphs,
 )
+from novel_system.services.style_reference.segmentation.llm import CLASSIFY_NODE_IDS
 from novel_system.services.style_reference.text_utils import (
     compute_text_checksum,
     decode_text,
-    explicit_scene_breaks,
+    gap_preserving_text,
     is_paratext_paragraph,
-    is_scene_break_paragraph,
     normalize_text,
+    scene_break_indexes,
     split_paragraphs,
 )
 from novel_system.services.style_reference.voice_signature import compute_voice_signature
@@ -180,7 +175,9 @@ def _normalize_rights_declaration(
 
     local_only 未声明 → 记 ``{declared: False}``；非本地策略未显式声明 → 拒绝。
     声明 ``send_rights=False`` 却选了会送云端的策略（非 local_only）→ 矛盾拒绝：
-    不得默认拥有云端发送权。
+    不得默认拥有云端发送权。两种拒绝都是请求本身不合法:同一个 400
+    ``STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED``(2026-09-23 v3 I15:
+    ``STYLE_REFERENCE_SEND_RIGHTS_REQUIRED`` 只表示「已有的书缺发送权」,一律 409)。
     """
     import datetime
 
@@ -211,9 +208,10 @@ def _normalize_rights_declaration(
     send = declaration.get("send_rights", False)
     if policy != CloudPolicy.LOCAL_ONLY and not send:
         raise DomainError(
-            "STYLE_REFERENCE_SEND_RIGHTS_REQUIRED",
+            "STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED",
             "云端策略需要用户声明发送权（send_rights=true）；未授权发送请改用 local_only。",
             status_code=400,
+            details={"reason": "send_rights_false"},
         )
     return {
         "declared": True,
@@ -231,8 +229,9 @@ class IngestResult:
     book: StyleReferenceBook
     paragraphs_count: int
     safety_payload: dict[str, Any]
-    # 2026-09-15:job 模式下书已落库但分类还在后台任务里(status=ingesting)
+    # 产品模式:书已落库、分类作业已建(status=ingesting),调用方提交后派发 ``job``
     classification_pending: bool = False
+    job: StyleReferenceJob | None = None
 
 
 def assess_input_size(total_chars: int) -> dict[str, str]:
@@ -259,25 +258,42 @@ def assess_input_size(total_chars: int) -> dict[str, str]:
     return result
 
 
-def _scene_break_indexes(
-    decoded: str,
-    paragraph_spans: list[tuple[int, int, str]],
-    raw_span_count: int,
-) -> list[int]:
-    """场界所在的段落索引(「其后有场界」),按剥离副文本后的 ``paragraph_spans`` 编号。
+def _book_not_found(book_id: str) -> DomainError:
+    return DomainError(
+        "STYLE_REFERENCE_BOOK_NOT_FOUND",
+        f"book {book_id!r} not found",
+        status_code=404,
+    )
 
-    空行型场界只在书按空行切段、且副文本剥离前后段数一致时可靠映射(否则只用符号行)。
-    """
-    breaks: set[int] = set()
-    pre_collapse = decoded.replace("\r\n", "\n").replace("\r", "\n")
-    if len(paragraph_spans) == raw_span_count:
-        blank_line_breaks = explicit_scene_breaks(pre_collapse)
-        if blank_line_breaks and max(blank_line_breaks) < len(paragraph_spans):
-            breaks.update(blank_line_breaks)
-    for index, (_start, _end, body) in enumerate(paragraph_spans):
-        if is_scene_break_paragraph(body):
-            breaks.add(index)
-    return sorted(breaks)
+
+def bulk_insert_paragraphs(
+    session: Session,
+    *,
+    book_id: str,
+    checksum: str,
+    spans: list[tuple[int, int, str]],
+    types: list[tuple[str, float]],
+) -> int:
+    """一次 executemany 落全部段落行(v3 I13:逐行 add+flush 在 26,616 段上要 12 s)。"""
+    now = utcnow()
+    rows = [
+        {
+            "paragraph_id": f"sr_para_{checksum[:8]}_{idx:04d}",
+            "book_id": book_id,
+            "paragraph_index": idx,
+            "paragraph_type": ptype,
+            "start_offset": start,
+            "end_offset": end,
+            "text": body,
+            "char_count": len(body),
+            "classifier_confidence": float(conf),
+            "created_at": now,
+        }
+        for idx, ((start, end, body), (ptype, conf)) in enumerate(zip(spans, types, strict=True))
+    ]
+    if rows:
+        session.execute(insert(StyleReferenceParagraph), rows)
+    return len(rows)
 
 
 class IngestService:
@@ -287,32 +303,21 @@ class IngestService:
         self,
         session: Session,
         *,
-        llm_client: Any | None = None,
         llm_enabled: bool | None = None,
-        progress: ImportProgressReporter | NullImportProgress | None = None,
-        classification_mode: str = "inline",
         op_key: str | None = None,
+        llm_client: Any | None = None,
     ) -> None:
-        # 导入进度(阶段 / 分类批次),见 import_progress;无消费者时用空实现。
-        self._progress = progress if progress is not None else NullImportProgress()
         self.session = session
         self.repo = StyleReferenceRepository(session)
-        self._llm_client = llm_client
         if llm_enabled is None:
             from novel_system.settings import get_settings
 
             llm_enabled = bool(get_settings().llm_enabled)
-        self._llm_enabled = llm_enabled
-        # 2026-09-15 严格 LLM:产品路由用 ``classification_mode="job"``——导入只做准备工作
-        # (解码 / 切段 / 安全扫描 / 落书与段落行,书状态 ingesting),整本 LLM 分类交给
-        # ``import_job`` 的后台任务逐批执行、可续跑;``"inline"`` 在本次调用里同步分类
-        # (LLM 未启用时是启发式的离线夹具模式,只供测试与本地语料工具)。
-        if classification_mode not in {"inline", "job"}:
-            raise ValueError(f"unknown classification_mode {classification_mode!r}")
-        if classification_mode == "job" and (not llm_enabled or llm_client is None):
-            raise LLMRequiredError(operation="import_book")
-        self._classification_mode = classification_mode
+        # True = 产品模式(建分类作业);False = 离线夹具模式(启发式,测试 / 本地语料工具)
+        self._llm_enabled = bool(llm_enabled)
         self._op_key = op_key
+        # 只用来解析分类节点的实际路由(「仅本机」检查);分类本身在作业里按当时的配置取客户端。
+        self._llm_client = llm_client
         self._metrics_engine: MetricsEngine | None = None
 
     # ------------------------------------------------------------------ public
@@ -325,7 +330,6 @@ class IngestService:
         author_label: str | None,
         cloud_policy: str | CloudPolicy,
         rights_declaration: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,  # noqa: ARG002 (预留 PR-4 用)
     ) -> IngestResult:
         path = _resolve_allowed_import_path(file_path)
         # 服务端路径导入只允许纯文本参考书后缀。这个端点按任意路径读服务器文件,
@@ -372,7 +376,6 @@ class IngestService:
         author_label: str | None,
         cloud_policy: str | CloudPolicy,
         rights_declaration: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,  # noqa: ARG002 (预留 PR-4 用)
     ) -> IngestResult:
         if file_name:
             suffix = Path(file_name).suffix.lower()
@@ -393,65 +396,80 @@ class IngestService:
             rights_declaration=rights_declaration,
         )
 
-    def reclassify(self, book_id: str) -> int:
-        """重跑段落分类器(与首次导入共用 ``classify_paragraphs`` 管线)。
+    def start_reclassify(self, book_id: str, *, mode: str = "reclassify") -> StyleReferenceJob:
+        """重新分类(后台作业,调用方提交后派发)。
 
-        - 更新全部 paragraphs 的 ``paragraph_type`` / ``classifier_confidence``;
-        - 回写 ``book.stats_json`` 的 metrics / classifier_calibration /
-          paragraph_type_distribution(与 ingest 同一计算路径);
-        - 级联清空派生数据(runs / findings / profiles / bindings 等;
-          paragraphs 与 book 本身保留)。
+        - ``mode="reclassify"``(**破坏式**,旧语义):先清掉这本书的全部派生数据(抽取 run / 发现 /
+          引文 / 画像 / 绑定 / 禁用词 / 回测报告 / 作业 / 窗口索引;段落与书保留),书置 ``ingesting``,
+          再从头分类;
+        - ``mode="retype"``(**就地重标段落类型**,v3):正文不变,只重标类型;抽取、画像、绑定全部保留,
+          书保持 ``ready``。完成后 ``paragraph_types_revision`` +1(窗口索引据此重算类型分布,画像
+          据此提示「段落类型已更新,建议重新学习文风」)。
 
-        分类需要 LLM;不可用时抛 :class:`LLMRequiredError`。
-        返回重分类的段落数。
+        LLM 未启用 → 409 ``STYLE_REFERENCE_LLM_REQUIRED``;「仅本机」的书要求分类节点走本机模型;
+        已有排队 / 运行中的分类作业 → 409 ``STYLE_REFERENCE_CLASSIFICATION_ALREADY_ACTIVE``。
         """
+        from novel_system.services.style_reference.import_job import (
+            MODE_RECLASSIFY,
+            MODE_RETYPE,
+            active_classification_job,
+            count_paragraphs,
+            create_classification_job,
+        )
+
+        if mode not in (MODE_RECLASSIFY, MODE_RETYPE):
+            raise ValueError(f"unknown reclassify mode {mode!r}")
         book = self.repo.get_book(book_id)
         if book is None:
-            raise DomainError(
-                "STYLE_REFERENCE_BOOK_NOT_FOUND",
-                f"book {book_id!r} not found",
-                status_code=404,
-            )
-        if not self._llm_enabled or self._llm_client is None:
+            raise _book_not_found(book_id)
+        if not self._llm_enabled:
             raise LLMRequiredError(operation="reclassify_book")
-        # 附录 B — local_only 的书禁止把段落送往云端 LLM 分类器
-        ensure_cloud_llm_allowed(book, operation="reclassify_book")
-
-        paragraphs = self.repo.list_paragraphs(book_id)
-        if not paragraphs:
+        ensure_cloud_llm_allowed(
+            book, operation="reclassify_book", node_ids=CLASSIFY_NODE_IDS, llm_client=self._llm_client
+        )
+        if count_paragraphs(self.session, book_id) == 0:
             raise EmptyBookError("reclassify")
-
-        # 进度(2026-09-15):与导入同一登记簿,kind=reclassify;inline 模式(离线夹具 / 显式同步调用)
-        # 在本次调用里同步分类,阶段 classify → metrics → purge。
-        self._progress.set_totals(
-            chars_total=int(book.total_chars or 0) or None,
-            paragraphs_total=len(paragraphs),
-            title=book.title,
-        )
-        self._progress.phase("classify")
-        spans = [(p.start_offset, p.end_offset, p.text) for p in paragraphs]
-        seg_result = classify_paragraphs(
-            spans,
-            llm_enabled=True,
-            llm_client=self._llm_client,
-            session=self.session,
-            scope_id=book_id,
-            progress=self._progress,
-        )
-        for paragraph, c in zip(paragraphs, seg_result.classifications):
-            paragraph.paragraph_type = c.paragraph_type
-            paragraph.classifier_confidence = float(c.confidence)
-
-        self._progress.phase("metrics")
-        book.stats_json = {
-            **(book.stats_json or {}),
-            **self._classification_stats(spans, seg_result),
-        }
-
-        self._progress.phase("persist")
-        purge_derived_data(self.session, book_id)
+        active = active_classification_job(self.session, book_id)
+        if active is not None:
+            # 先查再清:破坏式重分类不能把正在跑的分类作业连同派生数据一起删掉
+            create_classification_job(self.session, book, mode=mode, op_key=self._op_key)
+        if mode == MODE_RETYPE and str(book.status or "") != "ready":
+            raise DomainError(
+                "STYLE_REFERENCE_BOOK_NOT_READY",
+                "这本书的段落分类还没完成:先「继续分类」,完成后才能就地重标段落类型。",
+                status_code=409,
+                details={
+                    "book_id": book_id,
+                    "status": book.status,
+                    "author_action": {
+                        "action": "resume_classification",
+                        "view": "styleref",
+                        "book_id": book_id,
+                        "label": "继续分类",
+                    },
+                },
+            )
+        if mode == MODE_RECLASSIFY:
+            purge_derived_data(self.session, book_id)
+        job = create_classification_job(self.session, book, mode=mode, op_key=self._op_key)
         self.session.flush()
-        return len(paragraphs)
+        return job
+
+    def resume(self, book_id: str) -> StyleReferenceJob:
+        """「继续分类」:从上次失败 / 取消 / 中断的游标续跑(进程重启之后也行)。"""
+        from novel_system.services.style_reference.import_job import resume_classification
+
+        book = self.repo.get_book(book_id)
+        if book is None:
+            raise _book_not_found(book_id)
+        if not self._llm_enabled:
+            raise LLMRequiredError(operation="resume_classification")
+        ensure_cloud_llm_allowed(
+            book, operation="resume_classification", node_ids=CLASSIFY_NODE_IDS, llm_client=self._llm_client
+        )
+        job = resume_classification(self.session, book, op_key=self._op_key)
+        self.session.flush()
+        return job
 
     # ----------------------------------------------------------------- private
 
@@ -466,12 +484,10 @@ class IngestService:
         cloud_policy: str | CloudPolicy,
         rights_declaration: dict[str, Any] | None = None,
     ) -> IngestResult:
-        self._progress.phase("prepare")
         decoded = decode_text(raw_bytes)
         normalized = normalize_text(decoded)
         if not normalized:
             raise EmptyBookError("normalize")
-        self._progress.set_totals(chars_total=len(normalized), title=title)
 
         # cloud_policy Pydantic 校验
         policy = CloudPolicy(cloud_policy) if isinstance(cloud_policy, str) else cloud_policy
@@ -484,76 +500,98 @@ class IngestService:
 
         existing = self.repo.get_book(book_id)
         if existing is not None:
-            raise DuplicateBookError(book_id=book_id, checksum=checksum)
+            raise DuplicateBookError(
+                book_id=book_id, checksum=checksum, title=existing.title, status=existing.status
+            )
+
+        if self._llm_enabled and policy == CloudPolicy.LOCAL_ONLY:
+            # 「仅本机」:分类节点的实际路由必须是本机模型(严格 LLM:没有启发式兜底)
+            ensure_local_only_llm(
+                operation="import_book",
+                book_id=book_id,
+                node_ids=CLASSIFY_NODE_IDS,
+                llm_client=self._llm_client,
+            )
 
         # Safety 扫描(通用 source_safety,与 reference_safety 解耦)
         safety_payload = scan_source_safety(normalized)
 
-        # 段落切分
-        paragraph_spans = split_paragraphs(normalized)
-        # 2026-09-14 保真修补:副文本(站点声明 / 脚注 / 网址)不是作者的文字,不入段落表——
+        # 段落切分;2026-09-14 保真修补:副文本(站点声明 / 脚注 / 网址)不是作者的文字,不入段落表——
         # 否则它们会进指标、声音签名、样例窗口与结构画像的章首 / 章尾样例。
-        raw_span_count = len(paragraph_spans)
-        paragraph_spans = [
-            span for span in paragraph_spans if not is_paratext_paragraph(span[2])
-        ]
-        paratext_dropped = raw_span_count - len(paragraph_spans)
+        raw_spans = split_paragraphs(normalized)
+        kept = [not is_paratext_paragraph(body) for _start, _end, body in raw_spans]
+        paragraph_spans = [span for span, keep in zip(raw_spans, kept) if keep]
+        paratext_dropped = len(raw_spans) - len(paragraph_spans)
         if not paragraph_spans:
             raise EmptyBookError("segmentation")
-        # 2026-09-14 保真修补(WP5):场分隔——原文 3 个以上连续换行(合并前算)与纯符号行,
-        # 记为「其后有场界」的段落索引(按剥离副文本后的编号);结构画像与样例窗口消费。
-        scene_breaks = _scene_break_indexes(decoded, paragraph_spans, raw_span_count)
-
-        self._progress.set_totals(paragraphs_total=len(paragraph_spans))
-        if self._classification_mode == "job":
-            # 严格 LLM:「仅本机」的书也必须由(本地)模型分类,路由层已按运行时模型把关。
-            return self._persist_pending_classification(
-                book_id=book_id,
-                checksum=checksum,
-                title=title,
-                author_label=author_label,
-                source_kind=source_kind,
-                source_path=source_path,
-                policy=policy,
-                normalized_chars=len(normalized),
-                paragraph_spans=paragraph_spans,
-                paratext_dropped=paratext_dropped,
-                scene_breaks=scene_breaks,
-                safety_payload=safety_payload,
-                rights=rights,
-            )
-
-        # inline 模式:LLM 可用时整本同步走 LLM(小书 / 显式调用),否则是离线夹具的启发式。
-        use_llm = self._llm_enabled and self._llm_client is not None
-        if use_llm and policy == CloudPolicy.LOCAL_ONLY:
-            # 严格 LLM:「仅本机」的书只能交给本地模型,云端接入直接拒绝(没有启发式兜底)
-            ensure_local_only_llm(operation="import_book", book_id=book_id)
-        self._progress.phase("classify")
-        seg_result = classify_paragraphs(
-            paragraph_spans,
-            llm_enabled=use_llm,
-            llm_client=self._llm_client if use_llm else None,
-            session=self.session if use_llm else None,
-            scope_id=book_id if use_llm else None,
-            progress=self._progress,
+        # 场界(「其后有场界」的段落索引,按剥离副文本后的编号):与切段同一口径的空行型场界
+        # (剥副文本时挪到前一个保留段上)+ 纯符号分隔行(省略号行不算)。
+        scene_breaks = scene_break_indexes(
+            gap_preserving_text(decoded),
+            [body for _start, _end, body in raw_spans],
+            kept,
         )
 
-        self._progress.phase("metrics")
-        stats_json = {
-            **self._classification_stats(paragraph_spans, seg_result),
+        stats_json: dict[str, Any] = {
             "input_assessment": assess_input_size(len(normalized)),
             "paratext_dropped": paratext_dropped,
             "scene_breaks": scene_breaks,
             "safety": safety_payload,
             "rights_declaration": rights,
-            # v2 W3:全书确定性声音签名(闭类词 / 标点 / 引导句 / 节奏),内容安全,
-            # 不依赖段型分类器;合成期(W1)由此写入 profile_json.voice_signature。
-            "voice_signature": compute_voice_signature(
-                [body for _start, _end, body in paragraph_spans]
-            ),
         }
 
-        self._progress.phase("persist")
+        if self._llm_enabled:
+            from novel_system.services.style_reference.import_job import (
+                MODE_IMPORT,
+                UNCLASSIFIED_PARAGRAPH_TYPE,
+                create_classification_job,
+            )
+
+            book = self.repo.create_book(
+                book_id=book_id,
+                title=title,
+                author_label=author_label,
+                source_kind=source_kind,
+                source_path=source_path,
+                cloud_policy=policy.value,
+                text_checksum=checksum,
+                total_chars=len(normalized),
+                status="ingesting",
+                stats_json=stats_json,
+            )
+            bulk_insert_paragraphs(
+                self.session,
+                book_id=book_id,
+                checksum=checksum,
+                spans=paragraph_spans,
+                types=[(UNCLASSIFIED_PARAGRAPH_TYPE, 0.0)] * len(paragraph_spans),
+            )
+            job = create_classification_job(self.session, book, mode=MODE_IMPORT, op_key=self._op_key)
+            self.session.flush()
+            return IngestResult(
+                book=book,
+                paragraphs_count=len(paragraph_spans),
+                safety_payload=safety_payload,
+                classification_pending=True,
+                job=job,
+            )
+
+        # 离线夹具模式:启发式同步分类(只供测试与本地语料工具)
+        seg_result = classify_paragraphs(paragraph_spans)
+        stats_json.update(self._classification_stats(paragraph_spans, seg_result))
+        # v2 W3:全书确定性声音签名(闭类词 / 标点 / 引导句 / 节奏),内容安全,不依赖段型分类器。
+        stats_json["voice_signature"] = compute_voice_signature(
+            [body for _start, _end, body in paragraph_spans]
+        )
+        stats_json["paragraph_types_revision"] = 1
+        stats_json["classification_provenance"] = {
+            "source": "offline_heuristic",
+            "llm_paragraphs": 0,
+            "heuristic_paragraphs": len(paragraph_spans),
+            "prompt_version": None,
+            "classified_at": utcnow(),
+            "mode": "import",
+        }
         book = self.repo.create_book(
             book_id=book_id,
             title=title,
@@ -566,135 +604,26 @@ class IngestService:
             status="ready",
             stats_json=stats_json,
         )
-
-        # 落段落表
-        for idx, ((start, end, body), c) in enumerate(zip(paragraph_spans, seg_result.classifications)):
-            self.repo.create_paragraph(
-                paragraph_id=f"sr_para_{checksum[:8]}_{idx:04d}",
-                book_id=book_id,
-                paragraph_index=idx,
-                paragraph_type=c.paragraph_type,
-                start_offset=start,
-                end_offset=end,
-                text=body,
-                char_count=len(body),
-                classifier_confidence=float(c.confidence),
-            )
-
-        return IngestResult(
-            book=book,
-            paragraphs_count=len(paragraph_spans),
-            safety_payload=safety_payload,
-        )
-
-    def _persist_pending_classification(
-        self,
-        *,
-        book_id: str,
-        checksum: str,
-        title: str,
-        author_label: str | None,
-        source_kind: str,
-        source_path: str | None,
-        policy: CloudPolicy,
-        normalized_chars: int,
-        paragraph_spans: list[tuple[int, int, str]],
-        paratext_dropped: int,
-        scene_breaks: list[int],
-        safety_payload: dict[str, Any],
-        rights: dict[str, Any],
-    ) -> IngestResult:
-        """job 模式:落书(ingesting)与未分类的段落行,分类游标排队;统计在任务末尾算。"""
-        from novel_system.services.style_reference.import_job import (
-            UNCLASSIFIED_PARAGRAPH_TYPE,
-            build_classification_state,
-        )
-
-        self._progress.phase("persist")
-        stats_json = {
-            "input_assessment": assess_input_size(normalized_chars),
-            "paratext_dropped": paratext_dropped,
-            "scene_breaks": scene_breaks,
-            "safety": safety_payload,
-            "rights_declaration": rights,
-            "classification": build_classification_state(
-                kind="import", op_key=self._op_key, total_paragraphs=len(paragraph_spans)
-            ),
-        }
-        book = self.repo.create_book(
+        bulk_insert_paragraphs(
+            self.session,
             book_id=book_id,
-            title=title,
-            author_label=author_label,
-            source_kind=source_kind,
-            source_path=source_path,
-            cloud_policy=policy.value,
-            text_checksum=checksum,
-            total_chars=normalized_chars,
-            status="ingesting",
-            stats_json=stats_json,
+            checksum=checksum,
+            spans=paragraph_spans,
+            types=[(c.paragraph_type, float(c.confidence)) for c in seg_result.classifications],
         )
-        for idx, (start, end, body) in enumerate(paragraph_spans):
-            self.repo.create_paragraph(
-                paragraph_id=f"sr_para_{checksum[:8]}_{idx:04d}",
-                book_id=book_id,
-                paragraph_index=idx,
-                paragraph_type=UNCLASSIFIED_PARAGRAPH_TYPE,
-                start_offset=start,
-                end_offset=end,
-                text=body,
-                char_count=len(body),
-                classifier_confidence=0.0,
-            )
-        # 分类阶段留给后台任务续写同一条进度(见 import_job.attach_import_progress)。
-        self._progress.phase("classify")
+        self.session.flush()
         return IngestResult(
             book=book,
             paragraphs_count=len(paragraph_spans),
             safety_payload=safety_payload,
-            classification_pending=True,
         )
-
-    def start_reclassify_job(self, book_id: str, *, resume: bool = False) -> dict[str, Any]:
-        """job 模式的重新分类:清派生数据(非续跑)→ 书置 ingesting + 游标排队;调用方在事务
-        提交后派发 worker。``resume=True`` 保留上次的游标(失败 / 取消 / 中断后继续)。"""
-        from novel_system.services.style_reference.import_job import requeue_classification
-
-        book = self.repo.get_book(book_id)
-        if book is None:
-            raise DomainError(
-                "STYLE_REFERENCE_BOOK_NOT_FOUND",
-                f"book {book_id!r} not found",
-                status_code=404,
-            )
-        if not self._llm_enabled or self._llm_client is None:
-            raise LLMRequiredError(operation="reclassify_book")
-        # 附录 B — local_only 的书只能交给本地模型(严格 LLM:没有启发式兜底)
-        ensure_cloud_llm_allowed(book, operation="reclassify_book")
-        paragraphs = self.repo.list_paragraphs(book_id)
-        if not paragraphs:
-            raise EmptyBookError("reclassify")
-        if not resume:
-            self._progress.phase("purge")
-            purge_derived_data(self.session, book_id)
-        state = requeue_classification(
-            self.session, book_id, kind="reclassify", op_key=self._op_key, resume=resume
-        )
-        self._progress.set_totals(
-            chars_total=int(book.total_chars or 0) or None,
-            paragraphs_total=len(paragraphs),
-            title=book.title,
-        )
-        self._progress.phase("classify")
-        self.session.flush()
-        return state
 
     def _classification_stats(
         self,
         paragraph_spans: list[tuple[int, int, str]],
         seg_result: SegmentationResult,
     ) -> dict[str, Any]:
-        """stats_json 中跟段落分类绑定的键(ingest 与 reclassify 共用;实现见叶子模块
-        ``classification_stats``,后台分类任务也用它)。"""
+        """stats_json 中跟段落分类绑定的键(实现见叶子模块 ``classification_stats``,分类作业也用它)。"""
         return compute_classification_stats(
             paragraph_spans, seg_result, metrics_engine=self._get_metrics_engine()
         )

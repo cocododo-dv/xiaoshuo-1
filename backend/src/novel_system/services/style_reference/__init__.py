@@ -20,7 +20,6 @@ from novel_system.services.style_reference.errors import (
     EmptyBookError,
     EvidenceShortError,
     EvidenceSpanError,
-    LegacyBackupMissingError,
     LLMRequiredError,
     StyleReferenceError,
 )
@@ -144,7 +143,6 @@ __all__ = [
     "BannedAdjectiveError",
     "EvidenceShortError",
     "EvidenceSpanError",
-    "LegacyBackupMissingError",
     "DuplicateBookError",
     "EmptyBookError",
     "LLMRequiredError",
