@@ -6,6 +6,7 @@ import difflib
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select, update
@@ -394,12 +395,9 @@ class AuthorDraftService:
             source_evaluation_id=source_evaluation_id,
             actor_ref=actor_ref,
         )
-        if not replacement_text:
+        if isinstance(proposal, _CopyBlockedProposal):
             # 模型写的建议照抄了参考书：不交给作者（写作台是在浏览器里把建议插进正文的，采纳端点拦不住）
-            copy = self._proposal_copy_check(draft, proposal)
-            if copy is not None:
-                self.session.expunge(proposal)
-                self._raise_proposal_copy_blocked(draft, copy, proposal_ids=[])
+            self._raise_proposal_copy_blocked(draft, proposal.check, proposal_ids=[])
         self.session.flush()
         return {"proposal": self.serialize_proposal(proposal)}
 
@@ -419,7 +417,7 @@ class AuthorDraftService:
         target_range = request_payload.get("target_range") if isinstance(request_payload.get("target_range"), dict) else None
         source_evaluation_id = _optional_text(request_payload, "source_evaluation_id")
         target = self._target_payload(draft.object_type, draft.object_id)
-        proposals: list[AuthorDraftProposal] = []
+        proposals: list[AuthorDraftProposal | _CopyBlockedProposal] = []
         for index, (proposal_type, proposal_kind) in enumerate(_proposal_mode_triads(mode)):
             effective_source = proposal_source
             effective_instruction = instruction
@@ -441,16 +439,10 @@ class AuthorDraftService:
                 source_evaluation_id=source_evaluation_id,
                 actor_ref=actor_ref,
             ))
-        # 照抄参考书的那几版不交给作者；一版都不剩才报错（写作台在浏览器里插入建议，采纳端点拦不住）
-        blocked_checks = []
-        kept: list[AuthorDraftProposal] = []
-        for proposal in proposals:
-            copy = self._proposal_copy_check(draft, proposal)
-            if copy is None:
-                kept.append(proposal)
-            else:
-                blocked_checks.append(copy)
-                self.session.expunge(proposal)
+        # 照抄参考书的那几版不交给作者（生成时就筛掉、从不落库）；一版都不剩才报错
+        # （写作台在浏览器里插入建议，采纳端点拦不住）
+        blocked_checks = [item.check for item in proposals if isinstance(item, _CopyBlockedProposal)]
+        kept = [item for item in proposals if not isinstance(item, _CopyBlockedProposal)]
         if not kept and blocked_checks:
             self._raise_proposal_copy_blocked(draft, blocked_checks[0], proposal_ids=[])
         self.session.flush()
@@ -670,7 +662,9 @@ class AuthorDraftService:
         replacement_text: str | None,
         source_evaluation_id: str | None,
         actor_ref: str,
-    ) -> AuthorDraftProposal:
+    ) -> "AuthorDraftProposal | _CopyBlockedProposal":
+        """建一条建议。模型写的建议先过唯一抄袭门：照抄参考书 → 返回 :class:`_CopyBlockedProposal`，不加进会话
+        （LLM 记账会在调用之间提交调用方的会话，加进去再 expunge 撤不回已提交的行）。"""
         source_llm_call_id = None
         generated_rationale: str | None = None
         if replacement_text:
@@ -706,6 +700,10 @@ class AuthorDraftService:
             status="candidate",
             created_by=actor_ref or "author_draft_proposal",
         )
+        if not replacement_text:
+            copy = self._proposal_copy_check(draft, proposal)
+            if copy is not None:
+                return _CopyBlockedProposal(copy)
         self.session.add(proposal)
         return proposal
 
@@ -1629,6 +1627,13 @@ def _normalize_apply_mode(requested: str | None, proposal: AuthorDraftProposal) 
     if value in AUTHOR_PROPOSAL_APPLY_MODES:
         return value
     return AUTHOR_PROPOSAL_KIND_APPLY_MODES.get(value, _apply_mode_for_proposal(proposal))
+
+
+@dataclass(frozen=True)
+class _CopyBlockedProposal:
+    """生成时被唯一抄袭门拦下的建议（没落库，只带检查结果）。"""
+
+    check: Any
 
 
 def _proposal_generation_mode(mode: str | None) -> str:

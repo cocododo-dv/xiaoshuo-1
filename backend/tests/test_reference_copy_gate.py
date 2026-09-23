@@ -324,15 +324,18 @@ def test_generated_proposals_that_copy_the_reference_never_reach_the_author(sess
     outputs: list[str] = []
 
     def fake_generate(self, draft, **kwargs):  # noqa: ANN001, ANN003
+        # LLM 记账在每次调用的预留 / 结算处提交调用方的会话：前一版建议若已加进会话，此时就落库了
+        self.session.commit()
         return {"content": outputs.pop(0), "rationale": "合成", "source_llm_call_id": None}
 
     monkeypatch.setattr(AuthorDraftService, "_generate_proposal_content", fake_generate)
     service = AuthorDraftService(session)
 
-    # 三版里一版照抄：丢掉那一版，另两版照常交给作者（保留作者稿里原有照抄的那版不算 AI 带进来的）
+    # 三版里一版照抄：丢掉那一版，另两版照常交给作者（保留作者稿里原有照抄的那版不算 AI 带进来的）；
+    # 照抄的放在第一版——后两版生成时会提交会话，它若已加进会话就撤不回了
     outputs[:] = [
-        "结构笔记：先让她沉默。",
         f"她抬头。{REFERENCE_PASSAGE[:40]}",
+        "结构笔记：先让她沉默。",
         f"<p>作者自己粘进来的：{REFERENCE_PASSAGE[:20]}。她把伞收好。</p>",
     ]
     result = service.generate_proposal_set("author_draft_gen_gate", {"mode": "daily"})
