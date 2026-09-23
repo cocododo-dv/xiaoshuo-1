@@ -566,7 +566,8 @@ def project_fidelity_summary(
 ) -> dict[str, Any]:
     """一部作品的读数走势：终稿 / 首稿读数的趋势、近期常见偏差、按维平均（确定性分与评审分分开）。
 
-    按维平均只数每一场最新的一条终稿读数（每场一票）；评审分数所有带评审分的读数（对照检查、软 QC 参考评审）。
+    按维平均：确定性分只数每一场最新的一条终稿读数（每场一票）；评审分每一场取最新一条带评审分的读数（对照检查 /
+    软 QC 参考评审，每场一票——同一份评审挂在补丁与终稿两条读数上不重复计票），不在场景上的文字检查各算一票。
     """
     stmt = select(StyleFidelityReading).where(StyleFidelityReading.project_id == str(project_id))
     if profile_id:
@@ -598,8 +599,17 @@ def project_fidelity_summary(
             number = _finite(score)
             if number is not None:
                 deterministic.setdefault(str(dim), []).append(number)
-    judged: dict[str, list[float]] = {}
+    latest_judged: dict[str, StyleFidelityReading] = {}
+    unscoped_judged: list[StyleFidelityReading] = []
     for row in rows:
+        if not isinstance(row.judge_json, Mapping):
+            continue
+        if row.scene_id:
+            latest_judged[str(row.scene_id)] = row
+        else:
+            unscoped_judged.append(row)
+    judged: dict[str, list[float]] = {}
+    for row in [*latest_judged.values(), *unscoped_judged]:
         judge = row.judge_json if isinstance(row.judge_json, Mapping) else None
         for dim, entry in dict((judge or {}).get("dimensions") or {}).items():
             number = _finite(entry.get("score") if isinstance(entry, Mapping) else entry)

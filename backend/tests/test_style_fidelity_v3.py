@@ -665,6 +665,37 @@ def test_record_fidelity_reading_is_idempotent_per_draft_and_noop_when_unbound(s
     assert "chapter_id" not in payload, "读数按场景键，不按章键"
 
 
+def test_project_summary_counts_one_judge_vote_per_scene(session) -> None:
+    """同一份软 QC 评审挂在补丁与终稿两条读数上时，按维平均的评审分每场只算一票（取最新）；不在场景上的
+    文字检查各算一票；确定性分只数每场最新的终稿读数。"""
+    from novel_system.services.style_policy import style_policy_for_bundle
+
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_sum")
+    policy = style_policy_for_bundle(bundle)
+    text = "他把灯芯拨小了些，屋里的影子便大了一圈。" * 40
+    old_judge = {"overall": 4.0, "dimensions": {"scene.dialogue": {"score": 4.0}}}
+    new_judge = {"overall": 8.0, "dimensions": {"scene.dialogue": {"score": 8.0}}}
+    kwargs = dict(policy=policy, text=text, source="pipeline", scene_id=scene.scene_id, project_id=scene.project_id)
+    assert R.record_fidelity_reading(session, stage="patched", draft_ref="patch_1", judge=old_judge, **kwargs)
+    assert R.record_fidelity_reading(session, stage="final", draft_ref="final_1", judge=new_judge, **kwargs)
+    assert R.record_fidelity_reading(session, stage="patched", draft_ref="patch_2", judge=new_judge, **kwargs)
+    assert R.record_fidelity_reading(
+        session,
+        policy=policy,
+        text=text + "。",
+        source="manual_check",
+        stage="manual",
+        project_id=scene.project_id,
+        judge={"overall": 2.0, "dimensions": {"scene.dialogue": {"score": 2.0}}},
+    )
+    session.commit()
+    summary = R.project_fidelity_summary(session, scene.project_id, profile_id=policy.profile_id)
+    dialogue = summary["dimension_averages"]["scene.dialogue"]
+    assert dialogue["judged"] == 2 and dialogue["judge"] == 5.0  # 这一场最新的 8.0 + 文字检查的 2.0
+    assert summary["final_scene_count"] == 1 and summary["reading_count"] == 4
+    assert all(item["scenes"] <= 1 for item in summary["dimension_averages"].values())
+
+
 # ---------------------------------------------------------------------------
 # 归档 / 采纳 / 写作台采纳的读数
 # ---------------------------------------------------------------------------
