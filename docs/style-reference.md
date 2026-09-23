@@ -99,7 +99,9 @@
 2. `select` 挑约 12 窗 / 4 万字（章首、章末、对白、叙述、心理、动作、描写分层配额，一章至多一窗，按书的校验和定种）；
 3. `extract` 四层（`style_ref_extract_<layer>`）各一次调用读**同一组**原文，引文逐字核对，失败重试一次并合并有效项；语料不足的层跳过；
 4. `synthesize` 一次调用写文风卡（`style_ref_synthesize_profile`）：无依据或带统计数字的行丢掉，按实测声音对账去矛盾；
-5. `protected` 受保护专名：统计候选 → 模型确认（`style_ref_protected_terms`）→ 必须在原书里原样出现 → 写成 `protected_auto` 禁用词；
+5. `protected` 受保护专名：统计候选（日常词不送）→ 模型确认（`style_ref_protected_terms` v2：只要专有名称与作者自造的词，
+   日常词、通用范畴词、单字一律不要）→ 确定性筛子（必须在原书里原样出现、2–12 字、不是单字、全书至少出现 3 次、不在
+   日常词 / 范畴词表里，`protected_terms.parse_protected_terms`）→ 写成 `protected_auto` 禁用词（作者录入的行不动）；
 6. `tags` 给全书每个窗口打场面 / 情绪 / 手法标签（`style_ref_tag_windows`，每批 ≤8 窗；词表 `tags.py`）；
 7. `finalize` 专名与原文重合过滤卡片、沿用 ✓ / ✗、写画像，一个事务；卡片被滤空则作业失败，在用的画像不动。
 
@@ -157,7 +159,9 @@
 4. **读数 → 风格步**（`style_reference/style_step.py`）：首稿百分位 ≤ `style_step_max_percentile` 且重点维没越界 → **不调模型**，首稿即风格稿；
    读不出或不可信（不到 600 可见字、参照窗口不到 8 个）同样保留首稿。否则**定向修改** `style_targeted_revision`（走 `style_draft` 路由）：
    只改越界特征所在的维（至多 4 维，重点维在前），带测得的差异与这几维的卡句；改完再读，`distance` 至少小 `revision_min_improvement`
-   且过了抄袭门与安全门才采用，否则保留首稿。
+   且过了抄袭门与安全门才采用，否则保留首稿。抄袭门只算修改稿**新带进来**的重合（`introduced_copy`）——首稿里本来就有、
+   修改稿照旧留着的不算这次修改的错（首稿自己的重合由硬 QC / 成稿门对全文把关）。读数出错（不是「书没有尺子」）另记原因
+   `reading_failed`、提示说实话；读数在保存点里读，出错不弄坏会话、不耽误检查点。
 5. 软 QC = **参考评审**（样例 4 窗 + 文风卡，16 维各 0–10 分）→ 有不像的维才补丁；补丁后评分变差、或 `distance` 变大而评分没提高 →
    退回补丁前的稿子（`STYLE_PATCH_REVERTED`）。
 6. 准定稿评审（按参考判，分数带范围）。
@@ -165,7 +169,8 @@
 
 房风规则只在 `policy.defers_house_taste()` 时让位（反模板门只提示、自动批评不出补丁、成稿门的文学阈值按绑定书校准、新鲜度只留逐字
 n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这些硬门从不让位。`neutral_first` 是对照组：中性首稿再由 `style_draft` 改成作者手笔。
-`NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED` 打开时候选 = 首稿 + (N−1) 个定向修改，按 `distance` 排序（首稿赢平手）。风格链路的 `STYLE_*`
+`NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED` 打开时候选 = 首稿 + (N−1) 个定向修改，先把被抄袭门拦的候选排到最后，再按 `distance` 排序
+（首稿赢平手）；续跑时槽位数不少于已经落下检查点的槽位；按正文去重后不到两份就不开关键场景的终选门。风格链路的 `STYLE_*`
 提示码挂在尝试记录上，起草台工作台按本次运行读出，连同 `style_fidelity`（各阶段读数与决定）。
 
 ## 7. 读数：像不像
@@ -176,21 +181,35 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 - 测量核 `measure.py`（`KERNEL_VERSION`）是唯一的测量入口：分段规则与编辑器同口径、以可见字为单位、全文汇总、唯一虚词表与对白定义。
   改了任何口径都要升版本（窗口特征与读数随之重算）。
 - 入库只有 `readings.record_fidelity_reading`：`source` ∈ pipeline / adopt / archive / manual_check / author_draft，`stage` ∈ first_draft /
-  revision / patched / final / manual；同一稿行幂等；抄袭门只记计数；失败不阻断管线。
+  revision / patched / final / manual；同一稿行幂等（终稿不分来源：管线归档之后再确认 / 重新归档同一终稿行同一段文字，还是那一条，
+  走势不出重复点）；抄袭门只记计数；失败不阻断管线。
+- 展示跟着**选中**的稿子：Best-of-N 时工作台的风格步决定与风格链路提示取选中的那一份候选（终选门选的 → 进软 QC 的 →
+  运行态指针），不是最后一个槽位；补丁被退回时评审分给补丁前那一轮；没绑定的场景不给「参考评审总分」（润色口径的软 QC
+  顺手给的分不记成参考评审，界面也不画）。
 - **近期常见偏差**：同一作品最近 5 次首稿读数里越界 ≥3 次的特征，进下一场首稿文风卡的末尾（≤3 行），选窗也多挑示范这些维的窗。
 - 接口：`GET /api/v1/scenes/{id}/style-fidelity`（各阶段最新读数、风格步与补丁的决定、评审分）、`GET /api/v1/projects/{id}/style-fidelity`
   （走势、近期偏差、按维平均，每场一票）、`GET /api/v2/style-reference/readings/{id}`、起草台工作台的 `style_fidelity`。
 
-## 8. 唯一抄袭门与受保护专名
+## 8. 唯一抄袭门与受保护专名（只有原文重合会拦）
 
 `services/reference_copy_gate.py` 是**唯一**的抄袭门，凡是进正文的文字都过它：成稿门（归档）、起草台「采用」/ 再确认、成稿中心、写作台
 采纳 AI 建议与局部改写（生成时就筛、采用时再拦，只算建议新带进来的命中），以及定向修改与候选的去留。
 
 1. **原文重合**：规范化（去空白、标点、符号，小写）后与绑定参考书连续 ≥12 字相同即命中（与 `validation/plagiarism.check_plagiarism`
    同口径）；每本书在进程里建一次 12 字元哈希索引，命中再逐字复核，同一段文字只扫一次。
-2. **受保护专名**：画像的生成期禁用词（含 `protected_auto`）+ 环境变量 `NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON` 的全局词。
+2. **受保护专名**：画像**现行**的生成期禁用词（含 `protected_auto`）+ 环境变量 `NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON` 的全局词。
+   **从不拦**归档 / 采纳 / 提升（专名表是模型认的，难免收进日常词）：成稿门报一条不拦的警告 `source_safety:protected_term`（带命中的词
+   与次数，不带参考原文；起草台采用、写作台提升之后说一句中文）；管线在软 QC 里请作者复核（Q2 `reference_banned_term_replicated`，
+   作者可以接受）。每道门（抄袭门、软 QC、成稿门）只比对现行的表：作者删掉误收的词立刻不再命中；冻结契约里记下的禁用词只用来
+   渲染提示词的红线，不参与判定。
 
-只记哈希与位置，不印参考原文。拦下时正文不动：409 `SOURCE_SAFETY_BLOCKED` + `author_action`（「第 N–M 字与参考书原文连续 12 字以上相同……」）。
+原文重合是唯一的硬门（Q0，每条路径都拦、没有豁免）。只记哈希与位置，不印参考原文。拦下时正文不动：409 `SOURCE_SAFETY_BLOCKED`
++ `author_action`（「第 N–M 字与参考书原文连续 12 字以上相同……」）+ `details.reference_copy`（检查记录：位置 / 计数 / 哈希；每条走
+成稿门的路径都带，前端据此说人话）。
+
+绑定的书已不在书库、或风格策略解析降级：那一边**没有查成**（`unavailable`），不能当成「查过、没重合」——风格稿门报
+`unavailable`（软 QC 挂 Q2 复核、起草链路发 `STYLE_GATE_UNAVAILABLE`），成稿门报不拦的警告 `source_safety:unavailable`。
+检查本身出错（库读不出）才 fail-closed `SOURCE_SAFETY_UNAVAILABLE`。
 
 ## 9. 接口
 
@@ -223,7 +242,9 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | `anti_plagiarism_template.txt` | 红线段 |
 
 `fidelity:` 阈值（`style_step.fidelity_thresholds`）都是**临时值**，上线前用真实模型小规模 A/B 定：`style_step_max_percentile` 90、
-`revision_min_improvement` 0.03、`patch_max_distance_increase` 0.05、`judge_tolerance` 0.02（评审总分 0–1 尺度）。
+`revision_min_improvement` 0.03、`patch_max_distance_increase` 0.05、`judge_tolerance` 0.1（评审总分 0–1 尺度，= 10 分制上的 1 分：
+两次独立评审的噪声常有半分到一分，更细的容差会把好补丁当成变差退回）。评审节点的分数按模板 `structured_schema` 声明的刻度
+（`maximum`）逐个换算，越界的分丢掉（`review_scores`）；模板没声明刻度（旧提示词快照）时才按一次回答推断量级。
 
 模型节点（`llm_node_registry.py` 与 `config/models.yaml` 同名 task 必须一致）：分类两节点关推理、输出 8192；四个抽取节点与文风卡合成 16384；
 `style_ref_protected_terms` 8192；`style_ref_tag_windows` 4096、关推理。起草与评审复用现有路由：`style_first_draft` / `style_targeted_revision`
@@ -257,7 +278,9 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | `…_INPUT_TOO_SMALL` / 学习失败 `card_filtered_empty` | 正文太少 / 卡句全被专名、禁用词或原文重合滤掉（在用的画像不受影响） |
 | `…_PROFILE_STALE`（409） | 画像的依据变过；重新学习再用于作品 |
 | `…_CHECK_NOT_BOUND` / `…_CHECK_TARGET_INVALID` / `…_CHECK_JUDGE_FAILED` | 对照检查没有可对照的参考 / `text` 与 `scene_id` 没有恰好给一个 / 评审调用失败 |
-| `SOURCE_SAFETY_BLOCKED`（409） | 唯一抄袭门拦下；按 `author_action` 给的位置改写 |
+| `SOURCE_SAFETY_BLOCKED`（409） | 与参考书原文连续 12 字以上相同（唯一的硬门）；按 `author_action` / `details.reference_copy` 给的位置改写 |
+| 成稿门警告 `source_safety:protected_term` | 正文用了画像禁用词表里的专名——不拦；是参考书的专名就换掉，日常词被误收就到文风画像的禁用词里删掉 |
+| 成稿门警告 `source_safety:unavailable` / 风格稿门 `unavailable` | 绑定的书已删或绑定解析失败，那一边没做原文重合检查；恢复绑定后可再做对照检查 |
 | 提示 `STYLE_REFERENCE_BOOK_CHANGED` / `…_SAMPLES_BLOCKED` / `…_NO_WINDOWS` / `…_BOOK_MISSING` | 冻结后书被改过（按当前索引选窗）/ 样例被云策略挡下 / 还没有窗口 / 书已删除 |
 | 作业「卡住」（`stalled`） | 心跳过期 60 s 后清扫线程放回队列；也可取消或继续 |
 
