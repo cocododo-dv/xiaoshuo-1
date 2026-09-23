@@ -824,6 +824,57 @@ def test_first_draft_uses_the_blueprint_situation_tags_frozen_in_the_bundle(sess
     assert captured[0]["role"] == "draft" and list(captured[0]["situation_tags"]) == ["对峙审问"]
 
 
+@pytest.mark.parametrize("pass_kind", ["salvage", "de_template", "safety_repair", "length_patch"])
+def test_patch_and_repair_passes_render_the_reference_as_a_revision(session, monkeypatch, pass_kind) -> None:
+    """注入口径：救稿 / 去模板 / 安全修复 / 长度补丁都只是改稿，按改稿角色渲染（不是「写这一场」的起草口径，
+    也不带近期常见偏差）。以前这四处不传角色，适配器按落点推成起草。"""
+    captured: list[dict] = []
+    real = sg.inject_style_reference_prefix
+
+    def spy(*args, **kwargs):  # noqa: ANN002, ANN003
+        captured.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sg, "inject_style_reference_prefix", spy)
+    draft_mode = "style_first" if pass_kind in {"safety_repair", "length_patch"} else "neutral_first"
+    band = "200-400" if pass_kind == "length_patch" else "short"
+    scene, bundle, _book, _profile = _bound_scene(session, f"fid_role_{pass_kind}", draft_mode=draft_mode, band=band)
+    service = SceneGenerationService(session, llm_runner=_Runner(outputs={}, default=LONG_FIRST))
+    state = session.get(SceneRunState, scene.scene_id)
+    common = dict(scene=scene, state=state, bundle=bundle, execution_step_key=None)
+    if pass_kind == "salvage":
+        service._run_style_salvage_pass(
+            **common,
+            checkpoint_base_row_id="row_base",
+            rejected_style_row_id="row_rejected",
+            rejected_style_content=REVISED,
+            neutral_row_id="row_neutral",
+            neutral_content=LONG_FIRST,
+            quality_gate={"base_safety": {"accepted": False, "reasons": ["required_facts_missing"]}},
+        )
+    else:
+        reasons = ["target_length_not_met"] if pass_kind == "length_patch" else ["required_facts_missing"]
+        service._run_de_template_pass(
+            **common,
+            base_prompt=service._prompt_builder().build(bundle["snapshot"], "style_draft"),
+            checkpoint_base_row_id="row_base",
+            source_row_id="row_source",
+            source_content=REVISED,
+            authoritative_row_id=None if pass_kind == "de_template" else "row_neutral",
+            authoritative_content=None if pass_kind == "de_template" else LONG_FIRST,
+            quality_gate={
+                "base_safety": {"accepted": pass_kind == "de_template", "reasons": [] if pass_kind == "de_template" else reasons},
+                "findings": [],
+                "risk_dimensions": [],
+            },
+        )
+    assert captured, "这一处带了参考"
+    assert captured[-1]["role"] == "revise"
+
+
+# ---------------------------------------------------------------------------
+# 读数入库（唯一入口）：幂等、未绑定不写、只记计数
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # 读数入库（唯一入口）：幂等、未绑定不写、只记计数
 # ---------------------------------------------------------------------------
