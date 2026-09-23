@@ -14,7 +14,7 @@ from __future__ import annotations
 # current HTTP contract is the `injection-preview` response below.
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -723,6 +723,13 @@ class InjectionPreviewRequest(BaseModel):
     # 2026-09-14 保真修补(WP4.3):按场景预览——同一轮换种子与场景位置提示,作者看到的就是
     # 这一场实际拿到的窗口;不传则为无种子的通用预览。
     scene_id: str | None = Field(default=None, max_length=128)
+    # 2026-09-23 风格参考 v3:绑定的四个旋钮(不传时由旧 strategy / intensity 映射,见 binding_config);
+    # project_id 给了就带上这部作品的近期常见偏差。旧 sub_dimensions / include_* 不再改变渲染。
+    reference_mode: Literal["full", "samples_only", "card_only"] | None = None
+    sample_windows: int | None = Field(default=None, ge=0, le=16)
+    dimension_states: dict[str, Literal["emphasize", "normal", "exclude"]] | None = None
+    draft_mode: Literal["style_first", "neutral_first"] | None = None
+    project_id: str | None = Field(default=None, max_length=128)
 
 
 class InjectionPreviewStats(BaseModel):
@@ -755,6 +762,10 @@ class InjectionPreviewResponse(BaseModel):
     fragments: SystemPromptFragments
     prefix: str
     stats: InjectionPreviewStats | None = None
-    # 2026-09-14 保真修补(WP4.1):本次渲染实际选中的样例窗口(起止段 / 章 / 位置 / 段型 / 字数),
-    # 只有索引选窗路径填写;证据引文兜底路径为空列表。
+    # 2026-09-14 保真修补(WP4.1):本次渲染实际选中的样例窗口(起止段 / 章 / 位置 / 字数 / 选窗配额),
+    # 按原书顺序;不含原文(原文在 fragments.few_shot_block)。
     window_refs: list[dict[str, Any]] = Field(default_factory=list)
+    # 2026-09-23 风格参考 v3:与起草提示同序——prefix 是 system 前缀,样例与收口在 user 尾块
+    user_tail: str = ""
+    reference_mode: str | None = None
+    sample_windows: int | None = None

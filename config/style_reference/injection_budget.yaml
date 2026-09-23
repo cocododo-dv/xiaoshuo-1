@@ -1,67 +1,15 @@
-# Style Reference 注入预算(injection.py 消费;单位一律是**字符数**,键名沿用
-# *_max_tokens 仅为配置兼容:汉字 ~1 字 = 1 token 的粗估)。
+# Style Reference 注入预算(单位一律是**字符数**)。
 #
-# 2026-09 风格模仿 v2(W4,规格 §1.4 / §1.5):四种策略(A / B / C / MIXED)共用一套
-# intensity 语义——intensity∈[0,100] 同时控制
-#   ① 抽象四块(metric + voice + positive + forbidden)的总额
-#      total(i) = intensity_min_total_chars + (system_prompt_max_tokens - intensity_min_total_chars) × i / 100
-#   ② few-shot 样例窗口数 k(i) = round(few_shot_k_min + (few_shot_k - few_shot_k_min) × i / 100)
-# 总额再按下面四个 ratio 切给四块;截断只在整行边界(_truncate_lines),预算不够时
-# 宁可少一整行,不发半句。A 策略不含样例但同样按 total 截断;C 不带 few-shot(与 RAG 互斥)。
-system_prompt_max_tokens: 2400        # intensity=100 时抽象四块总额
-intensity_min_total_chars: 900        # intensity=0 时抽象四块总额;中间线性
-# 2026-08 风格分布校准:量化画像只提供粗粒度倾向与相对调整方向,禁止把精确计数
-# 暴露给生成器;精确数字仅供隐藏评测 / 候选审计 / 验证。四项严格合计 1.0。
-positive_block_ratio: 0.45
-forbidden_block_ratio: 0.20
-metric_anchor_block_ratio: 0.15
-voice_block_ratio: 0.20               # [声音特征](profile_json.voice_signature.habits)
-metric_guidance_mode: soft_distribution
-metric_guidance_max_items: 6
-
-# few-shot 样例(B / MIXED):以 quote 所在段为中心的**连续段落窗口**,按 (场景段型匹配,
-# 辨识度, 窗口完整度, 稳定次序) 选段,同一段型可多条。
-#
-# 2026-09-09「样例优先」:原文样例是主信号,不再是点缀。默认强度(50)约 2 万字、满强度
-# 约 3 万字原文进入 style_draft / soft_qc / 近终稿改写的系统提示;窗口是 2–4 千字的连续段
-# (整场规模),按场景轮换,让模型读整段原文而不是 900 字碎片。小上下文模型用
-# NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET 收紧,装不下时按整窗口从末尾逐个卸载
-# (injection.fit_fragments_to_input_budget),先卸样例窗口、后卸抽象行,永不发半窗。
-#
-# few_shot_k / few_shot_k_min:intensity=100 / 0 时的窗口数,中间线性取整
-# few_shot_window_paragraphs:单个窗口最多几段(相邻、paragraph_index 连续,不跨缺口)
-# few_shot_window_max_chars:单窗口原文上限;few_shot_paragraph_max_chars:单段上限
-#   (超长段在句边界截断并加省略号)
-# few_shot_block_max_chars:整个 [风格样例] 块上限(按整窗口装入,装不下的窗口整只丢弃;
-#   该块在四块 ratio 之外,随样例必附反抄袭红线段)
-# few_shot_quote_max_chars / few_shot_paragraph_min_chars / few_shot_candidate_scan_per_type:
-#   旧键保留——无父段落的旧数据退化为短引文;每种段型最多扫描的候选 quote 数
-# few_shot_contract_neighbour_span:运行时契约里每个引文父段两侧要冻结哈希的相邻段数
-#   (兜底路径:整本书的段落根哈希失配时,窗口只能在这些已冻结的段落内展开)
-# few_shot_rotate_per_scene:同一绑定下按 scene_id 在前 k×few_shot_rotation_pool_multiplier
-#   个候选里确定性轮换,不同场景看到不同窗口(同一场景的生成与质检看到相同窗口);
-#   漂移修正激活时不轮换
-# few_shot_affinity_scan_chars:计算窗口辨识度时只看窗口前 N 字(控制大窗口的计算开销)
-# 2026-09-12 最大化模仿(Step 2):k 8→10、单窗 3500→4000、整块 30000→40000。满强度约 3 万字原文。
-# 2026-09-14 保真修补(WP3):k 10→12、整块 40000→60000、轮换池倍数 3→6;样例改由全书窗口索引
-#   (profile_json.exemplar_windows / exemplar_index.py)选取——根哈希一致时整本书任何一窗都可进提示,
-#   按场景段型、章内位置(开章 / 收章)、辨识度排序,同一章不重复选,再按场景轮换。旧画像无索引时
-#   惰性复算;根哈希失配时退回证据引文路径。风格通道输入预算随之 64000→96000(prompt_builder)。
-few_shot_k: 12
-few_shot_k_min: 3
-few_shot_block_max_chars: 60000
-few_shot_window_paragraphs: 60
-few_shot_window_max_chars: 4000
-few_shot_paragraph_max_chars: 1500
-few_shot_paragraph_min_chars: 40
-few_shot_quote_max_chars: 120
-few_shot_candidate_scan_per_type: 12
-few_shot_contract_neighbour_span: 2
-few_shot_rotate_per_scene: true
-few_shot_rotation_pool_multiplier: 6
-few_shot_affinity_scan_chars: 1200
-# exemplar_index_min_window_chars:全书窗口索引里短于此的窗口并入前一窗或丢弃(章只有一窗时保留)
-exemplar_index_min_window_chars: 600
+# 2026-09-23 风格参考 v3(docs/style-reference-v3-2026-09-23.md,J10):强度滑块、四块比例、样例块总上限、
+# 多层放大、量化指导等 30 个键随旧渲染一起删掉。现在:
+# - 样例窗数是绑定配置的 sample_windows(默认 12;评审节点 4、规划节点 3),窗口本身由持久化窗口表切好
+#   (≤60 段 / ≤4,000 字,不跨章题与场界);
+# - 文风卡整张一个预算(整行截断,永不截半句);
+# - 小上下文模型装不下时按整窗、整句贪心地去(inject/fit.py),红线从不截断。
+# sample_window_max_chars:单窗正文上限(短尾窗并入时可放宽 25%;超长的单段窗在句边界截断)
+# card_budget_chars:文风卡(或旧画像的卡替身)的总预算
+sample_window_max_chars: 5000
+card_budget_chars: 2600
 
 # 2026-09-12 风格直起(Step 2,docs/style-first-draft-plan-2026-09-12.md):
 # draft_mode_default:绑定 config_json 未写 draft_mode 时的起草方式——
@@ -78,12 +26,6 @@ style_first_length_slack: 0.5
 # 多长」(有显式场界的书直接用场长中位),硬范围上限至少抬到它 × (1 + slack),长度指引把它说成写作
 # 目标;这个键是推算值的上限(字),防止只有 1–2 场的章把一场推成万字。
 style_first_reference_scene_chars_max: 5000
-
-# 多层叠加(scene > character > project > global):抽象总额 ×(1 + layered_total_scale_per_layer
-# × (层数 - 1)),上限 × layered_total_scale_max;按权重 [1..n] 切给各层(越具体越多)。
-# few-shot / RAG 样例只取最具体层,不再丢弃;同一 profile 跨作用域只渲染一次。
-layered_total_scale_per_layer: 0.35
-layered_total_scale_max: 1.7
 
 # 跨场景一致性(W5 / W6 消费):上一场成稿尾部作 [前文声音锚] 的字数上限;
 # [漂移校准] 行数上限。

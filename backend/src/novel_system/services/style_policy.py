@@ -197,15 +197,15 @@ def style_policy_live(session: Any, scope: Any, *, task_type: str = "scene_gener
     if scope is None:
         return UNBOUND
     try:
-        from novel_system.services.style_reference.injection import (
-            InjectionService,
+        from novel_system.services.style_reference.inject.bindings import (
             ordered_character_ids,
+            resolve_binding_layers,
         )
         from novel_system.services.style_reference.repository import StyleReferenceRepository
         from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
 
-        service = InjectionService(session)
-        layers = service.resolve_binding_layers(
+        layers = resolve_binding_layers(
+            session,
             getattr(scope, "project_id", None),
             task_type,
             character_ids=ordered_character_ids(
@@ -215,9 +215,9 @@ def style_policy_live(session: Any, scope: Any, *, task_type: str = "scene_gener
         )
         if not layers:
             return UNBOUND
-        contract = build_style_runtime_contract(
-            StyleReferenceRepository(session), [layers[-1]], task_type=task_type
-        )
+        # 契约构建从整组命中层里挑最具体的一层（scene > POV 角色 > 其余角色 > project > global）——
+        # 不能取 layers[-1]：角色层是 POV 优先排的，最后一层是最不重要的配角（J7）
+        contract = build_style_runtime_contract(StyleReferenceRepository(session), layers, task_type=task_type)
     except Exception as exc:  # noqa: BLE001 — 实时解析失败：未绑定 + 错误码（不阻断写作台）
         logger.warning("live style policy resolution failed: %s", exc)
         return StylePolicy(mode=MODE_DEGRADED, error_code=getattr(exc, "code", type(exc).__name__))

@@ -2,8 +2,24 @@
 
 The contract stores abstract profile inputs and hashes of any referenced prose;
 raw reference quotes stay in the StyleReference repository.  This lets a scene
-bundle freeze exactly which layers/configuration were selected without copying a
+bundle freeze exactly which binding/configuration was selected without copying a
 book into every bundle.
+
+风格参考 v3（2026-09-23）— 契约 v2（``style_reference_runtime_contract_v2``）：
+
+- **只冻结一层**：最具体的活动绑定（scene > character（POV 在前）> project > global）。旧契约按层序多层合并，
+  样例与声音取「最后一层」，而角色层是 POV 优先排的——最后一层恰恰是最不重要的配角（J7）。调用方仍可传入整组
+  命中层（``bundle_builder`` / ``scene_blueprint`` / 写作台），这里挑出最具体的一层冻结。
+- **瘦身**：画像键按 :data:`FROZEN_PROFILE_JSON_KEYS` 白名单（v3 键 + 旧画像的兼容键；结构画像去掉逐章列表）；
+  **不再冻结** ``sample_quote_refs`` / ``sample_paragraph_refs``（约 9.1 万字，只服务「根哈希失配时退回证据引文」
+  的兜底路径，那条路径已删——失配时按当前窗口索引渲染并在审计里记 ``STYLE_REFERENCE_BOOK_CHANGED``，J6）。
+- **书快照**：``book_id`` / ``text_checksum`` / ``cloud_policy`` / ``cloud_llm_allowed_at_freeze`` /
+  ``paragraph_root_sha256`` / ``paragraph_count`` / ``window_index_version``；根哈希读 ``stats_json`` 里存好的值
+  （``paragraph_root.ensure_paragraph_root``，缺失才用两列快速路径现算并写回），不再每次加载全部 ORM 段落（J1）。
+- **绑定快照**存规范化后的 v3 配置（``binding_config.normalize_binding_config``：参考方式 / 样例窗数 / 维度状态 /
+  起草方式）；顶层 ``draft_mode`` 不变。
+- v1 契约（旧 bundle 里冻结的）照旧能校验、能用（``style_policy.policy_from_contract`` 读最后一层）。
+- 校验按内容指纹记忆（J1：一场里 40 多次深拷贝校验），每次返回新的对象（调用方改了也不污染缓存）。
 """
 
 from __future__ import annotations
@@ -14,23 +30,29 @@ import json
 import logging
 import math
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import select
-
-from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.hash_engine import canonical_json
+from novel_system.services.style_reference.binding_config import normalize_binding_config
 from novel_system.services.style_reference.config_loader import load_yaml_config
+from novel_system.services.style_reference.inject.bindings import most_specific_binding
+from novel_system.services.style_reference.paragraph_root import ensure_paragraph_root
 from novel_system.services.style_reference.policy import cloud_llm_allowed
 
 logger = logging.getLogger(__name__)
 
 
-STYLE_RUNTIME_CONTRACT_VERSION = "style_reference_runtime_contract_v1"
+STYLE_RUNTIME_CONTRACT_VERSION_V1 = "style_reference_runtime_contract_v1"
+STYLE_RUNTIME_CONTRACT_VERSION_V2 = "style_reference_runtime_contract_v2"
+STYLE_RUNTIME_CONTRACT_VERSION = STYLE_RUNTIME_CONTRACT_VERSION_V2
+SUPPORTED_CONTRACT_VERSIONS = frozenset({STYLE_RUNTIME_CONTRACT_VERSION_V1, STYLE_RUNTIME_CONTRACT_VERSION_V2})
 STYLE_CONTEXT_VERSION = "style_reference_generation_context_v1"
-_FROZEN_PROFILE_JSON_KEYS = frozenset(
+# v1 契约的画像白名单（只用于校验旧 bundle 里冻结的 v1 契约）
+_FROZEN_PROFILE_JSON_KEYS_V1 = frozenset(
     {
         "reference_basis",
         "narrative_summary",
@@ -44,16 +66,46 @@ _FROZEN_PROFILE_JSON_KEYS = frozenset(
         "calibration_guidance",
         "generation_safe_forbidden_findings",
         "source_overlap_filter",
-        # 2026-09 风格模仿 v2(W1 合成期写入):确定性声音签名 + habits、叙事机制指引。
-        # 旧画像没有这些键时,下游一律不渲染对应块(优雅退化)。
         "voice_signature",
         "narrative_guidance",
-        # 2026-09-12 结构跟随(Step 2 Track B):结构画像(章 / 场尺度、开合方式、段型比重、
-        # 章首章尾样例)与规划层指引(scene.* / theme.* 观察陈述)。旧画像没有时不渲染。
         "structure_card",
         "planning_guidance",
     }
 )
+# v2：v3 画像键（文风卡、行状态、声音、结构画像、规划手法、叙事机制、概述、来源、学习标记、版本）
+V3_PROFILE_JSON_KEYS = frozenset(
+    {
+        "dimension_card",
+        "card_line_states",
+        "voice",
+        "voice_signature",
+        "structure_card",
+        "planning_guidance",
+        "narrative_guidance",
+        "qualitative_summary",
+        "reference_basis",
+        "learned_from",
+        "profile_version",
+        "protected_terms_version",
+    }
+)
+# v2：学习作业跑之前的旧画像还要用到的键（卡替身的正向 / 禁忌行、量化基线的旧读者）
+LEGACY_PROFILE_JSON_KEYS = frozenset(
+    {
+        "style_features",
+        "narrative_patterns",
+        "calibration_guidance",
+        "banned_replication_rules",
+        "metrics_baseline",
+    }
+)
+FROZEN_PROFILE_JSON_KEYS = V3_PROFILE_JSON_KEYS | LEGACY_PROFILE_JSON_KEYS
+_FROZEN_PROFILE_JSON_KEYS = FROZEN_PROFILE_JSON_KEYS
+# 声音块只冻结渲染与旧读者要用的小键（v3 的 ``voice`` 可能带作者自身分布，不进契约）
+_VOICE_SIGNATURE_KEYS = ("version", "habits", "deliberate_repetition", "features", "top_words", "stats")
+_VOICE_KEYS = ("version", "habits", "deliberate_repetition", "features")
+_STRUCTURE_CARD_DROPPED_KEYS = frozenset({"chapters"})
+_V2_FORBIDDEN_LAYER_KEYS = ("sample_quote_refs", "sample_paragraph_refs")
 _ALLOWED_STRATEGIES = frozenset({"A", "B", "C", "mixed"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -70,20 +122,6 @@ def _profile_value(profile: Any, name: str, default: Any = None) -> Any:
     if isinstance(profile, Mapping):
         return profile.get(name, default)
     return getattr(profile, name, default)
-
-
-def _quote_ids(profile_json: Mapping[str, Any]) -> list[str]:
-    index = profile_json.get("scene_samples_index")
-    if not isinstance(index, Mapping):
-        return []
-    values: list[str] = []
-    for raw_ids in index.values():
-        if isinstance(raw_ids, str):
-            raw_ids = [raw_ids]
-        if not isinstance(raw_ids, Sequence):
-            continue
-        values.extend(str(value).strip() for value in raw_ids if str(value).strip())
-    return list(dict.fromkeys(values))
 
 
 DRAFT_MODE_STYLE_FIRST = "style_first"
@@ -109,29 +147,12 @@ def resolve_draft_mode(config_json: Mapping[str, Any] | None) -> str:
     return raw if raw in _ALLOWED_DRAFT_MODES else _default_draft_mode()
 
 
-def _few_shot_window_span() -> int:
-    """每侧要冻结哈希的相邻段数(``few_shot_contract_neighbour_span``,默认 2)。
-
-    2026-09-09 样例优先:窗口可达数十段,不再逐段冻结相邻段——契约改冻整本书的段落根哈希
-    (``book.paragraph_root_sha256``,:func:`compute_paragraph_root`),根哈希一致时全书段落
-    都可进窗口;这里冻结的少量相邻段只是根哈希失配时的兜底路径(窗口退化到这些段落之内)。
-    """
-    try:
-        budget = load_yaml_config("injection_budget")
-    except FileNotFoundError:
-        budget = {}
-    try:
-        span = int(budget.get("few_shot_contract_neighbour_span", 2))
-    except (TypeError, ValueError):
-        span = 2
-    return max(0, span)
-
-
 def compute_paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:
     """整本书段落的根哈希与段落数(按 paragraph_index 升序;只含哈希,不含原文)。
 
     root = sha256(Σ ``f"{index}\\x1f" + sha256(text) + "\\x1e"``)。段落被改动 / 增删 / 换序都会
-    改变根哈希;书没有段落时返回 ("", 0)。
+    改变根哈希;书没有段落时返回 ("", 0)。v3 起契约构建走 ``paragraph_root.ensure_paragraph_root``
+    (存在 stats_json、两列快速路径,逐位相同);这里只留给没有会话的仓储与口径对照测试。
     """
     paragraphs = repo.list_paragraphs(str(book_id))
     digest = hashlib.sha256()
@@ -151,57 +172,69 @@ def compute_paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:
     return digest.hexdigest(), count
 
 
-def _contiguous_neighbours(repo: Any, paragraph: Any, span: int) -> list[Any]:
-    """``paragraph`` 同书、paragraph_index 连续(遇缺口 / 空段即停)的 ±``span`` 相邻段。
-
-    与 ``injection._build_sample_window`` 的展开规则一致(不含中心段,按 index 升序);
-    读取失败退化为不冻结相邻段(窗口随之退化为单段,与旧契约行为相同)。
-    """
-    if span <= 0:
-        return []
+def _paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:
     session = getattr(repo, "session", None)
-    book_id = str(getattr(paragraph, "book_id", "") or "")
     try:
-        center = int(getattr(paragraph, "paragraph_index", 0) or 0)
-    except (TypeError, ValueError):
-        return []
-    if session is None or not book_id:
-        return []
-    stmt = (
-        select(StyleReferenceParagraph)
-        .where(
-            StyleReferenceParagraph.book_id == book_id,
-            StyleReferenceParagraph.paragraph_index >= center - span,
-            StyleReferenceParagraph.paragraph_index <= center + span,
-        )
-        .order_by(StyleReferenceParagraph.paragraph_index)
-    )
-    try:
-        rows = list(session.scalars(stmt).all())
-    except Exception:  # noqa: BLE001 — 相邻段读取失败退化为只冻结父段
-        logger.warning("style contract neighbour paragraph lookup failed", exc_info=True)
-        return []
-    by_index: dict[int, Any] = {}
-    for row in rows:
-        try:
-            by_index[int(row.paragraph_index)] = row
-        except (TypeError, ValueError):
+        if session is not None:
+            return ensure_paragraph_root(session, str(book_id))
+        return compute_paragraph_root(repo, str(book_id))
+    except Exception:  # noqa: BLE001 — 算不出根哈希:契约照建,渲染期按当前索引走
+        logger.warning("style contract paragraph root unavailable", exc_info=True)
+        return "", 0
+
+
+def frozen_profile_json(raw_profile_json: Mapping[str, Any] | None) -> dict[str, Any]:
+    """画像 → 契约里冻结的那部分（白名单；结构画像去掉逐章列表；声音只留小键）。"""
+    raw = raw_profile_json if isinstance(raw_profile_json, Mapping) else {}
+    frozen: dict[str, Any] = {}
+    for key in sorted(FROZEN_PROFILE_JSON_KEYS):
+        if key not in raw:
             continue
+        value = copy.deepcopy(raw[key])
+        if key == "structure_card" and isinstance(value, Mapping):
+            value = {k: v for k, v in value.items() if k not in _STRUCTURE_CARD_DROPPED_KEYS}
+        elif key == "voice_signature" and isinstance(value, Mapping):
+            value = {k: value[k] for k in _VOICE_SIGNATURE_KEYS if k in value}
+        elif key == "voice" and isinstance(value, Mapping):
+            value = {k: value[k] for k in _VOICE_KEYS if k in value}
+        frozen[key] = value
+    return frozen
 
-    def _usable(row: Any) -> bool:
-        return bool(str(getattr(row, "text", "") or "").strip())
 
-    left: list[Any] = []
-    index = center - 1
-    while len(left) < span and index in by_index and _usable(by_index[index]):
-        left.insert(0, by_index[index])
-        index -= 1
-    right: list[Any] = []
-    index = center + 1
-    while len(right) < span and index in by_index and _usable(by_index[index]):
-        right.append(by_index[index])
-        index += 1
-    return [*left, *right]
+def legacy_forbidden_findings(repo: Any, profile: Any, raw_profile_json: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """旧画像（没有文风卡）的禁忌陈述：合成期的 ``generation_safe_forbidden_findings``，更旧的画像回退查 finding 表。
+
+    有文风卡的 v3 画像返回 ``[]``——「作者不这么写」已经在卡里。
+    """
+    raw = raw_profile_json if isinstance(raw_profile_json, Mapping) else {}
+    if isinstance(raw.get("dimension_card"), Mapping):
+        return []
+    safe_forbidden = raw.get("generation_safe_forbidden_findings")
+    if isinstance(safe_forbidden, list):
+        return [
+            {
+                "finding_id": str(item.get("finding_id") or ""),
+                "sub_dimension": str(item.get("sub_dimension") or ""),
+                "statement": str(item.get("statement") or ""),
+                "status": str(item.get("status") or ""),
+            }
+            for item in copy.deepcopy(safe_forbidden)
+            if isinstance(item, Mapping) and str(item.get("finding_id") or "") and isinstance(item.get("statement"), str)
+        ]
+    findings: list[dict[str, Any]] = []
+    for finding_id in list(_profile_value(profile, "source_finding_ids_json", None) or []):
+        finding = repo.get_finding(str(finding_id))
+        if finding is None or getattr(finding, "finding_kind", None) != "forbidden_pattern":
+            continue
+        findings.append(
+            {
+                "finding_id": str(finding.finding_id),
+                "sub_dimension": str(finding.sub_dimension or ""),
+                "statement": str(finding.statement or ""),
+                "status": str(finding.status or ""),
+            }
+        )
+    return findings
 
 
 def build_style_runtime_contract(
@@ -210,145 +243,59 @@ def build_style_runtime_contract(
     *,
     task_type: str,
 ) -> dict[str, Any] | None:
-    """Freeze ordered binding layers and every abstract input used for rendering."""
+    """冻结一份 v2 契约：从命中层里挑最具体的一层（``inject.bindings.most_specific_binding``）。
+
+    ``layers`` 可以是整组命中层（由泛到具体，角色层 POV 在前）或只有一层；无层 → ``None``。
+    """
     if not layers:
         return None
-    window_span = _few_shot_window_span()
-    frozen_layers: list[dict[str, Any]] = []
-    for order, binding in enumerate(layers):
-        if (
-            getattr(binding, "status", None) != "active"
-            or str(getattr(binding, "task_type", "") or "") != str(task_type)
-        ):
-            raise ValueError("style binding is not active for the requested task")
-        profile = repo.get_profile(str(binding.profile_id))
-        if profile is None or getattr(profile, "status", None) != "active":
-            raise ValueError(f"active style profile missing: {binding.profile_id}")
-        raw_profile_json = getattr(profile, "profile_json", None) or {}
-        if not isinstance(raw_profile_json, Mapping):
-            raise ValueError("style profile payload must be an object")
-        # Keep this an explicit allow-list.  A future profile schema may gain
-        # raw excerpts or private annotations; those must not silently become
-        # part of every immutable SceneBundle.
-        profile_json = {
-            key: copy.deepcopy(raw_profile_json[key])
-            for key in _FROZEN_PROFILE_JSON_KEYS
-            if key in raw_profile_json
+    binding = most_specific_binding(list(layers))
+    if binding is None:
+        return None
+    if (
+        getattr(binding, "status", None) != "active"
+        or str(getattr(binding, "task_type", "") or "") != str(task_type)
+    ):
+        raise ValueError("style binding is not active for the requested task")
+    profile = repo.get_profile(str(binding.profile_id))
+    if profile is None or getattr(profile, "status", None) != "active":
+        raise ValueError(f"active style profile missing: {binding.profile_id}")
+    raw_profile_json = getattr(profile, "profile_json", None) or {}
+    if not isinstance(raw_profile_json, Mapping):
+        raise ValueError("style profile payload must be an object")
+    raw_finding_ids = getattr(profile, "source_finding_ids_json", None) or []
+    if not isinstance(raw_finding_ids, Sequence) or isinstance(raw_finding_ids, (str, bytes, bytearray)):
+        raise ValueError("style profile finding ids must be a list")
+    banned_terms = sorted(
+        {
+            str(getattr(term, "term", "") or "").strip()
+            for term in repo.list_banned_terms(str(profile.profile_id), scope="generation")
+            if str(getattr(term, "term", "") or "").strip()
         }
-        raw_finding_ids = getattr(profile, "source_finding_ids_json", None) or []
-        if not isinstance(raw_finding_ids, Sequence) or isinstance(
-            raw_finding_ids, (str, bytes, bytearray)
-        ):
-            raise ValueError("style profile finding ids must be a list")
-        source_finding_ids = list(copy.deepcopy(raw_finding_ids))
-        safe_forbidden = raw_profile_json.get(
-            "generation_safe_forbidden_findings"
-        )
-        if isinstance(safe_forbidden, list):
-            forbidden_findings = copy.deepcopy(safe_forbidden)
-        else:
-            # 旧 Profile 没有确定性原文重合过滤审计时保留兼容路径；新 Profile
-            # 一律冻结合成阶段产出的 generation_safe 列表。
-            forbidden_findings: list[dict[str, Any]] = []
-            for finding_id in source_finding_ids:
-                finding = repo.get_finding(str(finding_id))
-                if (
-                    finding is None
-                    or getattr(finding, "finding_kind", None)
-                    != "forbidden_pattern"
-                ):
-                    continue
-                forbidden_findings.append(
-                    {
-                        "finding_id": str(finding.finding_id),
-                        "sub_dimension": str(finding.sub_dimension or ""),
-                        "statement": str(finding.statement or ""),
-                        "status": str(finding.status or ""),
-                    }
-                )
-
-        quote_refs: list[dict[str, str]] = []
-        paragraph_refs: dict[str, dict[str, str]] = {}
-        for quote_id in _quote_ids(profile_json):
-            quote = repo.get_quote(quote_id)
-            quote_text = str(getattr(quote, "quote_text", "") or "")
-            if quote_text:
-                quote_ref = {
-                    "quote_id": quote_id,
-                    "quote_sha256": _text_hash(quote_text),
-                }
-                paragraph_id = str(getattr(quote, "paragraph_id", "") or "")
-                paragraph = repo.get_paragraph(paragraph_id) if paragraph_id else None
-                paragraph_text = str(getattr(paragraph, "text", "") or "")
-                if paragraph_id and paragraph_text:
-                    quote_ref["paragraph_id"] = paragraph_id
-                    paragraph_refs.setdefault(
-                        paragraph_id,
-                        {
-                            "paragraph_id": paragraph_id,
-                            "paragraph_sha256": _text_hash(paragraph_text),
-                        },
-                    )
-                    # v2(W4.5):few-shot 是以 quote 父段为中心的连续 1–3 段窗口,冻结
-                    # 路径只允许契约里有 sha256 的段落——所以把父段两侧连续的相邻段一并
-                    # 冻结(只冻哈希,不冻原文),否则生产场景运行的窗口全部退化为单段。
-                    # 相邻段事后被改动仍会 sha256 失配 → 该侧退化,回放不可变性不变。
-                    for neighbour in _contiguous_neighbours(repo, paragraph, window_span):
-                        neighbour_id = str(getattr(neighbour, "paragraph_id", "") or "")
-                        neighbour_text = str(getattr(neighbour, "text", "") or "")
-                        if not neighbour_id or not neighbour_text:
-                            continue
-                        paragraph_refs.setdefault(
-                            neighbour_id,
-                            {
-                                "paragraph_id": neighbour_id,
-                                "paragraph_sha256": _text_hash(neighbour_text),
-                            },
-                        )
-                quote_refs.append(quote_ref)
-
-        banned_terms = sorted(
-            {
-                str(getattr(term, "term", "") or "").strip()
-                for term in repo.list_banned_terms(
-                    str(profile.profile_id), scope="generation"
-                )
-                if str(getattr(term, "term", "") or "").strip()
-            }
-        )
-        book = repo.get_book(str(profile.book_id))
-        try:
-            paragraph_root, paragraph_count = compute_paragraph_root(
-                repo, str(profile.book_id)
-            )
-        except Exception:  # noqa: BLE001 — 算不出根哈希时契约退回逐段哈希兜底路径
-            logger.warning("style contract paragraph root unavailable", exc_info=True)
-            paragraph_root, paragraph_count = "", 0
-        book_snapshot: dict[str, Any] = {
-            "book_id": str(profile.book_id),
-            "text_checksum": str(getattr(book, "text_checksum", "") or ""),
-            "cloud_llm_allowed_at_freeze": bool(
-                book is not None and cloud_llm_allowed(book)
-            ),
-        }
-        if paragraph_root:
-            # 2026-09-09 样例优先:冻结整本书段落根哈希(不冻原文),渲染期根哈希一致 → 全书
-            # 段落都可进 few-shot 窗口;失配 → 只用下面逐段冻结的相邻段(兜底)。
-            book_snapshot["paragraph_root_sha256"] = paragraph_root
-            book_snapshot["paragraph_count"] = int(paragraph_count)
-        profile_snapshot = {
-            "profile_id": str(profile.profile_id),
-            "book_id": str(profile.book_id),
-            "run_id": str(profile.run_id),
-            "version_tag": str(getattr(profile, "version_tag", "") or ""),
-            "status": str(profile.status),
-            "profile_json": profile_json,
-            "source_finding_ids_json": source_finding_ids,
-        }
-        raw_config = getattr(binding, "config_json", None) or {}
-        if not isinstance(raw_config, Mapping):
-            raise ValueError("style binding config must be an object")
-        binding_snapshot = {
+    )
+    book = repo.get_book(str(profile.book_id))
+    paragraph_root, paragraph_count = _paragraph_root(repo, str(profile.book_id))
+    stats = getattr(book, "stats_json", None) if book is not None else None
+    marker = stats.get("window_index") if isinstance(stats, Mapping) else None
+    book_snapshot: dict[str, Any] = {
+        "book_id": str(profile.book_id),
+        "text_checksum": str(getattr(book, "text_checksum", "") or ""),
+        "cloud_policy": str(getattr(book, "cloud_policy", "") or ""),
+        "cloud_llm_allowed_at_freeze": bool(book is not None and cloud_llm_allowed(book)),
+        "window_index_version": str(marker.get("version") or "") or None if isinstance(marker, Mapping) else None,
+    }
+    if paragraph_root:
+        book_snapshot["paragraph_root_sha256"] = paragraph_root
+        book_snapshot["paragraph_count"] = int(paragraph_count)
+    raw_config = getattr(binding, "config_json", None) or {}
+    if not isinstance(raw_config, Mapping):
+        raise ValueError("style binding config must be an object")
+    draft_mode = resolve_draft_mode(raw_config)
+    config = normalize_binding_config(str(binding.strategy or "mixed"), raw_config)
+    config["draft_mode"] = draft_mode
+    layer: dict[str, Any] = {
+        "order": 0,
+        "binding": {
             "binding_id": str(binding.binding_id),
             "profile_id": str(binding.profile_id),
             "scope": str(binding.scope),
@@ -356,47 +303,194 @@ def build_style_runtime_contract(
             "task_type": str(binding.task_type),
             "strategy": str(binding.strategy),
             "status": str(binding.status),
-            "config_json": copy.deepcopy(dict(raw_config)),
-        }
-        layer = {
-            "order": order,
-            "binding": binding_snapshot,
-            "profile": profile_snapshot,
-            "forbidden_findings": forbidden_findings,
-            "banned_terms": banned_terms,
-            "sample_quote_refs": quote_refs,
-            "sample_paragraph_refs": list(paragraph_refs.values()),
-            "book": book_snapshot,
-        }
-        layer["layer_hash"] = _json_hash(layer)
-        frozen_layers.append(layer)
-
-    profile_ids = list(
-        dict.fromkeys(layer["profile"]["profile_id"] for layer in frozen_layers)
-    )
+            "config_json": config,
+        },
+        "profile": {
+            "profile_id": str(profile.profile_id),
+            "book_id": str(profile.book_id),
+            "run_id": str(getattr(profile, "run_id", "") or ""),
+            "version_tag": str(getattr(profile, "version_tag", "") or ""),
+            "status": str(profile.status),
+            "profile_json": frozen_profile_json(raw_profile_json),
+            "source_finding_ids_json": [str(item) for item in raw_finding_ids if str(item or "")],
+        },
+        "forbidden_findings": legacy_forbidden_findings(repo, profile, raw_profile_json),
+        "banned_terms": banned_terms,
+        "book": book_snapshot,
+    }
+    layer["layer_hash"] = _json_hash(layer)
     contract: dict[str, Any] = {
-        "schema_version": 1,
-        "contract_version": STYLE_RUNTIME_CONTRACT_VERSION,
+        "schema_version": 2,
+        "contract_version": STYLE_RUNTIME_CONTRACT_VERSION_V2,
         "task_type": str(task_type),
-        "profile_ids": profile_ids,
-        "binding_ids": [layer["binding"]["binding_id"] for layer in frozen_layers],
-        "layer_count": len(frozen_layers),
-        "layers": frozen_layers,
-        # 2026-09-12 风格直起(Step 2):起草方式随契约冻结——最具体的绑定层说了算,缺省
-        # 取 yaml;重放旧 bundle 时不再看今天的配置。旧契约没有这个键 → neutral_first。
-        "draft_mode": resolve_draft_mode(frozen_layers[-1]["binding"]["config_json"]),
+        "profile_ids": [layer["profile"]["profile_id"]],
+        "binding_ids": [layer["binding"]["binding_id"]],
+        "layer_count": 1,
+        "layers": [layer],
+        # 起草方式随契约冻结(生效层说了算,缺省取 yaml);重放旧 bundle 时不再看今天的配置。
+        "draft_mode": draft_mode,
     }
     contract["contract_hash"] = _json_hash(contract)
     return validate_style_runtime_contract(contract)
 
 
+# ---------------------------------------------------------------------------
+# 校验（按内容指纹记忆；每次返回新对象）
+# ---------------------------------------------------------------------------
+
+_VALIDATED_MAX = 128
+_VALIDATED: "OrderedDict[str, str]" = OrderedDict()
+_VALIDATED_LOCK = threading.Lock()
+
+
+def reset_contract_memo() -> None:
+    with _VALIDATED_LOCK:
+        _VALIDATED.clear()
+
+
+def _memo_get(key: str) -> dict[str, Any] | None:
+    with _VALIDATED_LOCK:
+        cached = _VALIDATED.get(key)
+        if cached is None:
+            return None
+        _VALIDATED.move_to_end(key)
+    return json.loads(cached)
+
+
+def _memo_put(key: str, contract: Mapping[str, Any]) -> None:
+    encoded = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with _VALIDATED_LOCK:
+        _VALIDATED[key] = encoded
+        while len(_VALIDATED) > _VALIDATED_MAX:
+            _VALIDATED.popitem(last=False)
+
+
+def _fingerprint(payload: Mapping[str, Any]) -> str | None:
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+    return "p:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def validate_style_runtime_contract(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """校验 v1 / v2 契约并返回一份新的副本；同一内容只真正校验一次（进程内按内容指纹记忆）。"""
+    if not isinstance(payload, Mapping):
+        raise ValueError("style runtime contract must be an object")
+    key = _fingerprint(payload)
+    if key is not None:
+        cached = _memo_get(key)
+        if cached is not None:
+            return cached
+    version = payload.get("contract_version")
+    if version == STYLE_RUNTIME_CONTRACT_VERSION_V2:
+        contract = _validate_v2(payload)
+    elif version == STYLE_RUNTIME_CONTRACT_VERSION_V1:
+        contract = _validate_v1(payload)
+    else:
+        raise ValueError("unsupported style runtime contract")
+    if key is not None:
+        _memo_put(key, contract)
+        return json.loads(json.dumps(contract, ensure_ascii=False))
+    return contract
+
+
+def _validate_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
+    contract = copy.deepcopy(dict(payload))
+    supplied_hash = str(contract.pop("contract_hash", "") or "")
+    if (
+        type(contract.get("schema_version")) is not int
+        or contract.get("schema_version") != 2
+        or contract.get("contract_version") != STYLE_RUNTIME_CONTRACT_VERSION_V2
+    ):
+        raise ValueError("unsupported style runtime contract")
+    layers = contract.get("layers")
+    if not isinstance(layers, list) or len(layers) != 1:
+        raise ValueError("style runtime contract v2 must freeze exactly one layer")
+    if type(contract.get("layer_count")) is not int or contract.get("layer_count") != 1:
+        raise ValueError("style runtime contract layer count mismatch")
+    task_type = str(contract.get("task_type") or "")
+    if not task_type:
+        raise ValueError("style runtime contract task type is missing")
+    layer = layers[0]
+    if not isinstance(layer, Mapping) or type(layer.get("order")) is not int or layer.get("order") != 0:
+        raise ValueError("style runtime contract layer order is invalid")
+    if any(key in layer for key in _V2_FORBIDDEN_LAYER_KEYS):
+        raise ValueError("style runtime contract v2 must not carry sample references")
+    layer_copy = copy.deepcopy(dict(layer))
+    layer_hash = str(layer_copy.pop("layer_hash", "") or "")
+    if not layer_hash or _json_hash(layer_copy) != layer_hash:
+        raise ValueError("style runtime contract layer hash mismatch")
+    binding = layer.get("binding")
+    profile = layer.get("profile")
+    book = layer.get("book")
+    if not isinstance(binding, Mapping) or not isinstance(profile, Mapping) or not isinstance(book, Mapping):
+        raise ValueError("style runtime contract layer snapshot is invalid")
+    if not isinstance(binding.get("config_json"), Mapping) or not isinstance(profile.get("profile_json"), Mapping):
+        raise ValueError("style runtime contract payload shape is invalid")
+    if not set(profile["profile_json"]).issubset(FROZEN_PROFILE_JSON_KEYS):
+        raise ValueError("style runtime contract profile payload is not allow-listed")
+    finding_ids = profile.get("source_finding_ids_json", [])
+    if not isinstance(finding_ids, list) or any(not isinstance(item, str) or not item for item in finding_ids):
+        raise ValueError("style runtime contract finding ids are malformed")
+    if not isinstance(layer.get("forbidden_findings"), list) or not isinstance(layer.get("banned_terms"), list):
+        raise ValueError("style runtime contract safety inputs are invalid")
+    if any(
+        not isinstance(item, Mapping)
+        or not str(item.get("finding_id") or "")
+        or not isinstance(item.get("statement"), str)
+        for item in layer["forbidden_findings"]
+    ):
+        raise ValueError("style runtime contract forbidden findings are malformed")
+    if any(not isinstance(term, str) or not term for term in layer["banned_terms"]):
+        raise ValueError("style runtime contract banned terms are malformed")
+    profile_id = str(profile.get("profile_id") or "")
+    binding_id = str(binding.get("binding_id") or "")
+    book_id = str(profile.get("book_id") or "")
+    if (
+        not profile_id
+        or not binding_id
+        or not book_id
+        or str(binding.get("profile_id") or "") != profile_id
+        or str(binding.get("task_type") or "") != task_type
+        or str(binding.get("status") or "") != "active"
+        or str(binding.get("strategy") or "") not in _ALLOWED_STRATEGIES
+        or not str(binding.get("scope") or "")
+        or str(profile.get("status") or "") != "active"
+        or str(book.get("book_id") or "") != book_id
+        or type(book.get("cloud_llm_allowed_at_freeze")) is not bool
+        or not isinstance(book.get("cloud_policy", ""), str)
+    ):
+        raise ValueError("style runtime contract layer lineage is invalid")
+    paragraph_root = book.get("paragraph_root_sha256")
+    if paragraph_root is not None and (
+        not isinstance(paragraph_root, str)
+        or _SHA256_RE.fullmatch(paragraph_root) is None
+        or type(book.get("paragraph_count")) is not int
+        or int(book.get("paragraph_count")) < 0
+    ):
+        raise ValueError("style runtime contract book paragraph root is malformed")
+    if contract.get("draft_mode") not in _ALLOWED_DRAFT_MODES:
+        raise ValueError("style runtime contract draft mode is invalid")
+    if contract.get("profile_ids") != [profile_id]:
+        raise ValueError("style runtime contract profile ids mismatch")
+    if contract.get("binding_ids") != [binding_id]:
+        raise ValueError("style runtime contract binding ids mismatch")
+    computed_hash = _json_hash(contract)
+    if not supplied_hash or supplied_hash != computed_hash:
+        raise ValueError("style runtime contract hash mismatch")
+    contract["contract_hash"] = supplied_hash
+    return contract
+
+
+def _validate_v1(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """v1 契约（v3 之前冻结进旧 bundle 的多层契约）的原校验，逐字保留。"""
     contract = copy.deepcopy(dict(payload))
     supplied_hash = str(contract.pop("contract_hash", "") or "")
     if (
         type(contract.get("schema_version")) is not int
         or contract.get("schema_version") != 1
-        or contract.get("contract_version") != STYLE_RUNTIME_CONTRACT_VERSION
+        or contract.get("contract_version") != STYLE_RUNTIME_CONTRACT_VERSION_V1
     ):
         raise ValueError("unsupported style runtime contract")
     layers = contract.get("layers")
@@ -431,7 +525,7 @@ def validate_style_runtime_contract(payload: Mapping[str, Any]) -> dict[str, Any
             profile.get("profile_json"), Mapping
         ):
             raise ValueError("style runtime contract payload shape is invalid")
-        if not set(profile["profile_json"]).issubset(_FROZEN_PROFILE_JSON_KEYS):
+        if not set(profile["profile_json"]).issubset(_FROZEN_PROFILE_JSON_KEYS_V1):
             raise ValueError("style runtime contract profile payload is not allow-listed")
         if not isinstance(profile.get("source_finding_ids_json"), list):
             raise ValueError("style runtime contract finding ids are invalid")
@@ -558,10 +652,20 @@ def style_runtime_contract_from_bundle(
     if raw is None:
         return None
     if isinstance(raw, str):
+        # bundle 里冻结的是 JSON 字符串:按字符串本身记忆,命中时连解析都省了
+        raw_key = "s:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        cached = _memo_get(raw_key)
+        if cached is not None:
+            return cached
         try:
-            raw = json.loads(raw)
+            parsed = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ValueError("style runtime contract JSON is invalid") from exc
+        if not isinstance(parsed, Mapping):
+            raise ValueError("style runtime contract must be an object")
+        contract = validate_style_runtime_contract(parsed)
+        _memo_put(raw_key, contract)
+        return contract
     if not isinstance(raw, Mapping):
         raise ValueError("style runtime contract must be an object")
     return validate_style_runtime_contract(raw)
@@ -591,7 +695,7 @@ def style_runtime_contract_status_from_bundle(
     # Transitional bundles may carry the version/hash but predate the explicit
     # status field. Treat them as contract-aware so they cannot fall through to
     # live binding resolution if their embedded contract goes missing.
-    if refs.get(version_key) == STYLE_RUNTIME_CONTRACT_VERSION:
+    if refs.get(version_key) in SUPPORTED_CONTRACT_VERSIONS:
         return "expected"
     return None
 
@@ -841,10 +945,20 @@ def extract_style_generation_context(
 
 
 __all__ = [
+    "FROZEN_PROFILE_JSON_KEYS",
+    "LEGACY_PROFILE_JSON_KEYS",
     "STYLE_CONTEXT_VERSION",
     "DRAFT_MODE_NEUTRAL_FIRST",
     "DRAFT_MODE_STYLE_FIRST",
     "STYLE_RUNTIME_CONTRACT_VERSION",
+    "STYLE_RUNTIME_CONTRACT_VERSION_V1",
+    "STYLE_RUNTIME_CONTRACT_VERSION_V2",
+    "SUPPORTED_CONTRACT_VERSIONS",
+    "V3_PROFILE_JSON_KEYS",
+    "compute_paragraph_root",
+    "frozen_profile_json",
+    "legacy_forbidden_findings",
+    "reset_contract_memo",
     "StyleGenerationContext",
     "StyleRuntimeContractState",
     "blend_profile_metric_baselines",
