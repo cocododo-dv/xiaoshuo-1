@@ -288,18 +288,15 @@ def run_startup_recovery() -> dict[str, Any]:
         summary["style_reference_runs"] = {"error": "scan_failed"}
 
     try:
-        from novel_system.services.style_reference.import_job import recover_classification_jobs
+        # 风格参考 v3:分类作业的续跑由作业表的常驻清扫线程负责(lifespan 里启动);这里只收拾
+        # 旧的书上 JSON 游标状态机留下、没有作业行可续的书(标 failed,作者「继续分类」建新作业)。
+        from novel_system.services.style_reference.import_job import fail_orphaned_classifications
 
         with SessionLocal() as session:
-            summary["style_reference_classification"] = recover_classification_jobs(
-                session,
-                llm_client=llm_client,
-                llm_enabled=llm_enabled,
-                dispatch=_dispatch_style_reference_classification,
-            )
+            summary["style_reference_orphaned_classifications"] = fail_orphaned_classifications(session)
     except Exception:  # pragma: no cover - startup boundary
-        logger.exception("startup recovery failed while scanning style-reference classification jobs")
-        summary["style_reference_classification"] = {"error": "scan_failed"}
+        logger.exception("startup recovery failed while scanning orphaned style-reference classifications")
+        summary["style_reference_orphaned_classifications"] = {"error": "scan_failed"}
 
     try:
         with SessionLocal() as session:
@@ -418,14 +415,6 @@ def _dispatch_style_reference(
         layer_values=layers,
         llm_client=llm_client,
     )
-
-
-def _dispatch_style_reference_classification(book_id: str, llm_client: Any, op_key: str | None) -> None:
-    from novel_system.services.style_reference.import_job import (
-        start_style_reference_classification_worker,
-    )
-
-    start_style_reference_classification_worker(book_id=book_id, llm_client=llm_client, op_key=op_key)
 
 
 def _build_style_reference_llm_client() -> tuple[Any | None, bool]:

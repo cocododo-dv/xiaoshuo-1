@@ -1,6 +1,7 @@
-"""启发式段落分类(无 LLM)。
+"""启发式段落分类(无 LLM)——只作离线夹具模式(测试与本地语料工具)。
 
-NOVEL_SYSTEM_LLM_ENABLED=false 默认下的 fallback 路径。8 类 ParagraphType:
+严格 LLM(2026-09-15)之后产品路径不再用它兜底:整本分类是 LLM 分类作业(``import_job``)。
+``is_title_paragraph`` 仍被结构画像 / 锚定集抽样共用。8 类 ParagraphType:
 - dialogue / narration / psychology / description_env / description_char
 - action / transition / flashback
 

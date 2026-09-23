@@ -118,6 +118,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         # （node_routing 以这里为准且优先于 task_routing）；已存过 models 快照的安装用 raise_llm_output_budget 抬。
         max_output_tokens=4096,
     ),
+    # 2026-09-23 风格参考 v3:按字数分批(≤6,000 字 / ≤100 段)的一批结果 ≤~4k token;分类不需要思考
+    # token,推理默认关;8192 给不肯关思考的中转留余量。与 models.yaml 同名 task 必须一致。
     LLMNodeSpec(
         "style_ref_paragraph_classify_anchor",
         "Style Reference 段落分类(锚定集,quality_strong)",
@@ -125,7 +127,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="style_ref_paragraph_classify_anchor",
         model="gpt-5",
         temperature=0.1,
-        max_output_tokens=2000,
+        max_output_tokens=8192,
+        reasoning_level="off",
     ),
     LLMNodeSpec(
         "style_ref_paragraph_classify_bulk",
@@ -135,7 +138,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         model="gpt-5-mini",
         # 分析节点必须可复算；创作随机性只留给生成节点。
         temperature=0.0,
-        max_output_tokens=2000,
+        max_output_tokens=8192,
+        reasoning_level="off",
     ),
     LLMNodeSpec(
         "style_ref_extract_language",

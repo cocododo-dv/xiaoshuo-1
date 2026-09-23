@@ -1,19 +1,23 @@
-"""刷新已导入参考书的派生统计（2026-09-14 风格保真修补之后的一次性数据维护）。
+"""刷新已导入参考书的派生统计(2026-09-14 风格保真修补之后的数据维护;2026-09-23 v3 修正)。
 
-不删书、不动画像与绑定。对每本书：
+不删书、不动画像与绑定。对每本**已就绪**(``status == ready``)的书:
 
-1. 剥离副文本段（脚注 / 站点声明 / 网址短行，``text_utils.is_paratext_paragraph``）——它们此前进过
-   指标、声音签名、样例窗口与结构画像的章首 / 章尾样例；引用被剥段落的引文只解除父段关联；
-2. 重算 ``stats_json`` 的 ``metrics`` / ``prose_shape_metrics`` / ``paragraph_type_distribution``（文言比例
-   只认文言用法）、``voice_signature``（人称只数叙述）、``scene_breaks``（纯符号分隔行；空行型场界只有
-   重新导入原文才能恢复）、``paratext_dropped``，并写 ``refresh`` 审计。
+1. 剥离副文本段(脚注 / 站点声明 / 网址短行,``text_utils.is_paratext_paragraph``)——它们此前进过
+   指标、声音签名、样例窗口与结构画像的章首 / 章尾样例;引用被剥段落的引文只解除父段关联
+   (引文按 paragraph_id 引段,重编号不影响其余引文与证据);
+2. 剥离后把 ``paragraph_index`` **重编号**为连续的 0..n-1(窗口、相邻段展开都按「遇缺口即停」读段落表,
+   留洞会把样例窗切碎);
+3. **保留**导入期记下的场界(含只有重新导入才能恢复的空行型场界):按新编号搬运,落在被剥段之后的
+   挪到前一个保留段;单独一行的省略号(「……」)不再算场界;再并上纯符号分隔行;
+4. 重算 ``stats_json`` 的 ``metrics`` / ``prose_shape_metrics`` / ``paragraph_type_distribution`` /
+   ``voice_signature`` / ``paratext_dropped``,写 ``refresh`` 审计;段落行有变化时 ``pop`` 掉
+   ``paragraph_root_sha256`` / ``paragraph_count``(契约 §3.1:写段落表的人负责,窗口索引据此重建)。
 
-段落被剥离后整本书的段落根哈希改变：已冻结进 bundle 的契约退回引文兜底路径（设计如此）；
-画像里的 ``structure_card`` / ``voice_signature`` / ``exemplar_windows`` 要重新合成才会更新
-（渲染期的窗口索引会按新段落表惰性复算）。默认干跑，``--execute`` 才写库。
+没有就绪的书(分类中 / 失败)一律跳过。必须用 ``--book ID``(可重复)或显式 ``--all`` 选书;默认干跑,
+``--execute`` 才写库。
 
-用法（backend 目录下）:
-    python -m novel_system.tools.refresh_style_reference_books            # 干跑，全部书
+用法(backend 目录下):
+    python -m novel_system.tools.refresh_style_reference_books --all                # 干跑,全部就绪的书
     python -m novel_system.tools.refresh_style_reference_books --book sr_book_xxx --execute
 """
 
@@ -26,7 +30,6 @@ from typing import Any
 
 from sqlalchemy.orm.attributes import flag_modified
 
-from novel_system.db.models import StyleReferenceQuote
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.metrics import (
     MetricsEngine,
@@ -37,22 +40,35 @@ from novel_system.services.style_reference.repository import StyleReferenceRepos
 from novel_system.services.style_reference.text_utils import (
     is_paratext_paragraph,
     is_scene_break_paragraph,
+    remap_scene_breaks,
 )
 from novel_system.services.style_reference.voice_signature import compute_voice_signature
 
-TOOL_VERSION = "refresh_style_reference_books_v1"
+TOOL_VERSION = "refresh_style_reference_books_v2"
+
+_ELLIPSIS_ONLY = frozenset("…⋯.。 \t")
+
+
+def _is_ellipsis_line(text: str) -> bool:
+    stripped = str(text or "").strip()
+    return bool(stripped) and all(ch in _ELLIPSIS_ONLY for ch in stripped)
 
 
 def plan_book_refresh(session, book_id: str) -> dict[str, Any] | None:
-    """算出一本书的刷新计划与新统计（纯读；``apply_book_refresh`` 才写）。"""
+    """算出一本书的刷新计划与新统计(纯读;``apply_book_refresh`` 才写)。书不存在返回 None;
+    书没有就绪时返回带 ``skipped`` 原因的计划(``apply_book_refresh`` 对它什么都不做)。"""
     repo = StyleReferenceRepository(session)
     book = repo.get_book(book_id)
     if book is None:
         return None
+    if str(book.status or "") != "ready":
+        return {"book": book, "title": book.title, "skipped": f"状态是 {book.status},不是 ready"}
     paragraphs = repo.list_paragraphs(book_id)
     paratext = [p for p in paragraphs if is_paratext_paragraph(p.text or "")]
     removed_ids = {p.paragraph_id for p in paratext}
     kept = [p for p in paragraphs if p.paragraph_id not in removed_ids]
+    old_to_new = {int(p.paragraph_index): new for new, p in enumerate(kept)}
+    renumber = [(p, new) for new, p in enumerate(kept) if int(p.paragraph_index) != new]
     kept_texts = [str(p.text or "") for p in kept if str(p.text or "").strip()]
     records = [ParagraphRecord(text=str(p.text or ""), paragraph_type=p.paragraph_type) for p in kept]
     sample_count = len(records)
@@ -70,23 +86,34 @@ def plan_book_refresh(session, book_id: str) -> dict[str, Any] | None:
         if sample_count
         else {}
     )
-    scene_breaks = sorted(
-        int(p.paragraph_index) for p in kept if is_scene_break_paragraph(str(p.text or ""))
-    )
+    old_stats = dict(book.stats_json or {})
+    text_by_old_index = {int(p.paragraph_index): str(p.text or "") for p in paragraphs}
+    # 导入期记下的场界:按新编号搬运;旧规则把单独一行的「……」也记成了场界(记在那一行自己的编号上),去掉
+    recorded = [
+        int(index)
+        for index in (old_stats.get("scene_breaks") or [])
+        if isinstance(index, int) and not _is_ellipsis_line(text_by_old_index.get(int(index), ""))
+    ]
+    kept_breaks = remap_scene_breaks(recorded, old_to_new)
+    symbol_breaks = [new for new, p in enumerate(kept) if is_scene_break_paragraph(str(p.text or ""))]
+    scene_breaks = sorted(set(kept_breaks) | set(symbol_breaks))
     voice_signature = compute_voice_signature(kept_texts)
     quotes_to_detach = [
         q for q in repo.list_quotes(book_id) if q.paragraph_id and q.paragraph_id in removed_ids
     ]
-    old_stats = dict(book.stats_json or {})
     old_voice = (old_stats.get("voice_signature") or {}).get("features") or {}
     return {
         "book": book,
         "title": book.title,
+        "skipped": None,
         "paragraph_count": len(paragraphs),
         "paratext": paratext,
         "kept_count": len(kept),
+        "renumber": renumber,
+        "rows_changed": bool(paratext or renumber),
         "quotes_to_detach": quotes_to_detach,
         "scene_breaks": scene_breaks,
+        "scene_breaks_before": len(old_stats.get("scene_breaks") or []),
         "stats_update": {
             "metrics": metrics_block,
             "prose_shape_metrics": prose_shape_block,
@@ -107,20 +134,31 @@ def plan_book_refresh(session, book_id: str) -> dict[str, Any] | None:
 
 
 def apply_book_refresh(session, plan: dict[str, Any]) -> None:
-    """按计划写库：解除引文父段、删副文本段、更新 stats_json（调用方 commit）。"""
+    """按计划写库:解除引文父段、删副文本段、重编号、更新 stats_json(调用方 commit)。"""
+    if plan.get("skipped"):
+        return
     book = plan["book"]
     for quote in plan["quotes_to_detach"]:
         quote.paragraph_id = None
     for paragraph in plan["paratext"]:
         session.delete(paragraph)
     session.flush()
+    for paragraph, new_index in plan["renumber"]:
+        paragraph.paragraph_index = new_index
+    session.flush()
     stats = dict(book.stats_json or {})
     stats.update(plan["stats_update"])
+    if plan["rows_changed"]:
+        # 契约 §3.1:改动段落行的写入者负责作废根哈希;窗口索引发现缺失时现算并重建。
+        stats.pop("paragraph_root_sha256", None)
+        stats.pop("paragraph_count", None)
     stats["refresh"] = {
         "tool": TOOL_VERSION,
         "at": datetime.now(timezone.utc).isoformat(),
         "paragraphs_removed": len(plan["paratext"]),
+        "paragraphs_renumbered": len(plan["renumber"]),
         "quotes_detached": len(plan["quotes_to_detach"]),
+        "scene_breaks": len(plan["scene_breaks"]),
     }
     book.stats_json = stats
     flag_modified(book, "stats_json")
@@ -132,10 +170,12 @@ def _fmt(value: Any) -> str:
 
 
 def _describe(plan: dict[str, Any]) -> str:
+    if plan.get("skipped"):
+        return f"{plan['book'].book_id}  《{plan['title']}》  {plan['skipped']},跳过"
     lines = [
         f"{plan['book'].book_id}  《{plan['title']}》  段落 {plan['paragraph_count']} → {plan['kept_count']}"
-        f"（副文本 {len(plan['paratext'])} 段，解除引文 {len(plan['quotes_to_detach'])} 条，"
-        f"符号场界 {len(plan['scene_breaks'])} 处）",
+        f"（副文本 {len(plan['paratext'])} 段，重编号 {len(plan['renumber'])} 段，"
+        f"解除引文 {len(plan['quotes_to_detach'])} 条，场界 {plan['scene_breaks_before']} → {len(plan['scene_breaks'])} 处）",
         f"  人称·第三人称占比 {_fmt(plan['before']['person_third_share'])} → {_fmt(plan['after']['person_third_share'])}；"
         f"文言比例 {_fmt(plan['before']['classical_word_ratio'])} → {_fmt(plan['after']['classical_word_ratio'])}",
     ]
@@ -146,8 +186,10 @@ def _describe(plan: dict[str, Any]) -> str:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--book", action="append", default=None, help="只刷新这本书（可重复；默认全部）")
-    parser.add_argument("--execute", action="store_true", help="真正写库（默认只干跑）")
+    selector = parser.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--book", action="append", default=None, help="刷新这本书(可重复)")
+    selector.add_argument("--all", action="store_true", help="刷新全部就绪的书(必须显式给出)")
+    parser.add_argument("--execute", action="store_true", help="真正写库(默认只干跑)")
     return parser.parse_args(argv)
 
 
@@ -168,15 +210,16 @@ def main(argv: list[str] | None = None) -> int:
             if plan is None:
                 print(f"{book_id}: 不存在，跳过")
                 continue
-            plans.append(plan)
             print(_describe(plan))
+            if not plan.get("skipped"):
+                plans.append(plan)
         if not args.execute:
             print(f"\n干跑：{len(plans)} 本书未写库；加 --execute 执行。")
             return 0
         for plan in plans:
             apply_book_refresh(session, plan)
         session.commit()
-        print(f"\n已刷新 {len(plans)} 本书。有画像的书请重新合成以更新 structure_card / voice_signature / exemplar_windows。")
+        print(f"\n已刷新 {len(plans)} 本书。有画像的书请重新学习文风以更新文风卡与声音特征。")
     return 0
 
 

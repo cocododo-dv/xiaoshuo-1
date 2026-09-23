@@ -31,17 +31,24 @@ task_routing:
     temperature: 0.1
     max_output_tokens: 1200
     response_format: json_object
+  # 2026-09-23 风格参考 v3:段落分类按字数分批(≤6,000 字 / ≤100 段),一批的结果 ≤~4k token;
+  # 关推理(分类不需要思考 token——旧的 medium 让一批 25 段的调用平均吐 2,500–5,500 完成 token),
+  # 8192 给不肯关思考的中转留余量。与 llm_node_registry 的同名 spec 保持一致;已存过 models 快照的安装
+  # 改这里无效:在系统配置里把两个分类节点的推理关掉,再
+  # `python -m novel_system.tools.raise_llm_output_budget --node style_ref_paragraph_classify_anchor --node style_ref_paragraph_classify_bulk --floor 8192 --execute`。
   style_ref_paragraph_classify_anchor:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.1
-    max_output_tokens: 2000
+    max_output_tokens: 8192
+    reasoning_level: "off"
     response_format: json_object
   style_ref_paragraph_classify_bulk:
     provider: openai_compatible
     model: gpt-5-mini
     temperature: 0.0
-    max_output_tokens: 2000
+    max_output_tokens: 8192
+    reasoning_level: "off"
     response_format: json_object
   style_ref_extract_language:
     provider: openai_compatible

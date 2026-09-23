@@ -858,3 +858,45 @@ def test_reset_allows_creating_a_new_snowflake_workspace_after_cleanup(session, 
     workspace = workspace_response.json()["data"]
     assert workspace["project"]["project_id"] == project["project_id"]
     assert workspace["current_step_key"] == "book_brief"
+
+
+def test_reset_preserves_the_ledger_of_current_style_reference_nodes(session) -> None:
+    """参考书不随作者状态重置,它们的 LLM 账本行也保留:现役风格参考节点都是 ``style_ref_*``
+    (旧的 ``reference_`` 前缀一个现役节点也匹配不上,2026-09-23 v3 I14)。"""
+    from novel_system.services.llm_node_registry import llm_node_specs
+    from novel_system.tools.reset_author_state import PRESERVED_LLM_NODE_PREFIXES
+
+    style_nodes = [spec.node_id for spec in llm_node_specs() if spec.group == "style_reference"]
+    assert style_nodes and all(
+        any(node.startswith(prefix) for prefix in PRESERVED_LLM_NODE_PREFIXES) for node in style_nodes
+    )
+    session.add_all(
+        [
+            LlmCall(
+                llm_call_id="llm_call_style_classify",
+                scope_type="style_reference_book",
+                scope_id="sr_book_kept",
+                provider="mock",
+                model="mock",
+                node_id="style_ref_paragraph_classify_bulk",
+                step="paragraph_classification:rest:0:5",
+            ),
+            LlmCall(
+                llm_call_id="llm_call_scene_draft",
+                scope_type="scene",
+                scope_id="SCENE_X",
+                provider="mock",
+                model="mock",
+                node_id="style_first_draft",
+                step="draft",
+            ),
+        ]
+    )
+    session.commit()
+
+    summary = execute_reset(session)
+    session.commit()
+
+    assert summary["deleted_counts"]["llm_calls"] == 1
+    assert session.get(LlmCall, "llm_call_style_classify") is not None
+    assert session.get(LlmCall, "llm_call_scene_draft") is None

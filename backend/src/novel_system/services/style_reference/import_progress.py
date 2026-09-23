@@ -1,18 +1,16 @@
-"""参考书操作进度(进程内、线程安全的内存登记簿)。
+"""参考书操作进度(进程内、线程安全的内存登记簿)——风格参考 v3 迁出中,P7 删除。
 
-2026-09-15 起从「导入进度」泛化成风格参考模块所有耗时操作共用的登记簿:导入、重新分类、
-合成画像、应用画像的 RAG 索引、回测的后台 worker 都按各自的 ``kind`` 登记阶段 / 步骤 /
-百分比;``GET …/imports/{key}/progress`` 按键轮询一条,``GET …/activity``(``activity.py``)
-把登记簿里的条目与库里的 durable 行(抽取 run、回测报告)合成一份「参考书活动」清单,
-前端一个轮询画所有进度条。
+2026-09-23 起**段落分类不再用它**:导入 / 重新分类 / 就地重标类型都是作业表上的分类作业
+(``import_job``),进度在作业行上,``GET …/imports/{key}/progress`` 按幂等键找作业(兼容别名)。
+这里只剩还没迁到作业表的操作:合成画像、应用画像的 RAG 索引、回测 worker 的阶段进度(P3 / P5 迁出);
+``GET …/activity``(``activity.py``)把它们与作业表、库里的 durable 行合成一份活动清单。
 
 刻意不落库:进度只描述**本进程内正在执行**的那条操作——进程没了操作也没了;终态条目保留
-``FINISHED_TTL_SECONDS`` 供最后几次轮询读到结果。多 worker 部署下另一个 worker 读不到
-(404),前端把 404 当「尚未登记」继续等 POST 的结果,不当失败。
+``FINISHED_TTL_SECONDS`` 供最后几次轮询读到结果。
 
 每种 kind 有自己的阶段表与权重(百分比 = 已完成阶段权重之和 + 当前阶段权重 × 阶段内进度);
 只有申报了步骤计划的阶段能报阶段内进度,其余阶段在边界处跳变——进度条不必与时间成正比,
-但必须单调、诚实。导入的阶段表(``prepare → classify → metrics → persist``)与旧契约一致。
+但必须单调、诚实。``import`` / ``reclassify`` 两个阶段表只剩登记簿自身的单测在用,随模块一起删。
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any
 
 # ---- 各 kind 的阶段表(顺序 + 权重)与文案 ---------------------------------------------
 KIND_PHASES: dict[str, tuple[tuple[str, float], ...]] = {
@@ -97,14 +95,6 @@ IMPORT_KEY_MAX_LENGTH = 128
 OPERATION_KEY_MAX_LENGTH = IMPORT_KEY_MAX_LENGTH
 
 
-class ClassificationProgress(Protocol):
-    """段落分类器向进度登记簿汇报的最小接口(分类模块不依赖登记簿本身)。"""
-
-    def classify_plan(self, total_batches: int, mode: str) -> None: ...
-
-    def classify_batch_done(self, node_id: str) -> None: ...
-
-
 class NullImportProgress:
     """没有进度消费者时的空实现,让 ingest / 分类器 / 合成器不必处处判 None。"""
 
@@ -145,8 +135,6 @@ class NullImportProgress:
     def fail(self, *, code: str, message: str) -> None:  # noqa: ARG002
         return None
 
-
-NullOperationProgress = NullImportProgress
 
 
 def _now_iso() -> str:
@@ -436,8 +424,6 @@ class ImportProgressReporter:
         self._update(mutate)
 
 
-OperationProgressReporter = ImportProgressReporter
-
 
 class ImportProgressRegistry:
     def __init__(
@@ -483,39 +469,6 @@ class ImportProgressRegistry:
                 target_id=target_id,
             )
         return ImportProgressReporter(self, key)
-
-    def attach(
-        self,
-        import_key: str,
-        *,
-        kind: str = "import",
-        title: str | None = None,
-        source: str = "job",
-        book_id: str | None = None,
-        target_id: str | None = None,
-    ) -> ImportProgressReporter | NullImportProgress:
-        """接着同一个键上仍在跑的条目汇报(后台任务续写请求登记的那条);没有就新登记。"""
-        key = str(import_key or "").strip()
-        if not key or len(key) > OPERATION_KEY_MAX_LENGTH:
-            return NullImportProgress()
-        if kind not in KIND_PHASES:
-            raise ValueError(f"unknown operation kind {kind!r}")
-        with self._lock:
-            self._evict_locked()
-            existing = self._entries.get(key)
-            if existing is not None and existing.status == "running":
-                existing.kind = kind
-                if title is not None:
-                    existing.title = title
-                if book_id is not None:
-                    existing.book_id = book_id
-                if target_id is not None:
-                    existing.target_id = target_id
-                existing.updated_at = _now_iso()
-                return ImportProgressReporter(self, key)
-        return self.start(
-            key, title=title, source=source, kind=kind, book_id=book_id, target_id=target_id
-        )
 
     def get(self, import_key: str) -> dict[str, Any] | None:
         key = str(import_key or "").strip()
@@ -587,8 +540,6 @@ class ImportProgressRegistry:
             del self._entries[entry.import_key]
 
 
-OperationProgressRegistry = ImportProgressRegistry
-
 _REGISTRY = ImportProgressRegistry()
 
 
@@ -613,30 +564,10 @@ def start_import_progress(
     )
 
 
-start_operation_progress = start_import_progress
-
-
-def attach_import_progress(
-    import_key: str | None,
-    *,
-    kind: str = "import",
-    title: str | None = None,
-    source: str = "job",
-    book_id: str | None = None,
-    target_id: str | None = None,
-) -> ImportProgressReporter | NullImportProgress:
-    if not import_key:
-        return NullImportProgress()
-    return _REGISTRY.attach(
-        import_key, kind=kind, title=title, source=source, book_id=book_id, target_id=target_id
-    )
-
 
 def get_import_progress(import_key: str) -> dict[str, Any] | None:
     return _REGISTRY.get(import_key)
 
-
-get_operation_progress = get_import_progress
 
 
 def list_operation_progress() -> list[dict[str, Any]]:
@@ -658,7 +589,6 @@ def reset_import_progress_registry() -> None:
 
 
 __all__ = [
-    "ClassificationProgress",
     "FINISHED_TTL_SECONDS",
     "IMPORT_KEY_MAX_LENGTH",
     "ImportProgressRegistry",
@@ -666,20 +596,14 @@ __all__ = [
     "KIND_LABELS",
     "KIND_PHASES",
     "NullImportProgress",
-    "NullOperationProgress",
     "OPERATION_KEY_MAX_LENGTH",
-    "OperationProgressRegistry",
-    "OperationProgressReporter",
     "PHASE_LABELS",
     "PHASE_LABELS_BY_KIND",
     "PHASE_WEIGHTS",
     "PHASES",
-    "attach_import_progress",
     "find_running_operation",
     "get_import_progress",
-    "get_operation_progress",
     "list_operation_progress",
     "reset_import_progress_registry",
     "start_import_progress",
-    "start_operation_progress",
 ]

@@ -34,6 +34,7 @@ PREFIX = "/api/v2/style-reference"
 from tests.style_reference_route_helpers import (  # noqa: E402
     fake_import_llm,
     import_book,
+    install_fake_classifier,
     wait_book_status,
 )
 
@@ -207,12 +208,17 @@ def test_import_upload_idempotency_replay(client: TestClient) -> None:
         r2 = client.post(
             f"{PREFIX}/books/import-upload", files=files2, data=data, headers=headers
         )
+        # 重放不会再建一个分类作业(同一个作业;重复派发由认领的条件写挡住),书最终 ready
+        wait_book_status(client, r1.json()["data"]["book"]["book_id"])
     assert r1.status_code == 200
     assert r2.status_code == 200
     # idempotency replay 应返回 X-Idempotency-Status="replayed"(或 "stored" 首次)
     assert "X-Idempotency-Status" in r2.headers
-    # 重放不会再派一份分类任务(worker 认领时已在跑 / 已完成),书最终 ready
-    wait_book_status(client, r1.json()["data"]["book"]["book_id"])
+    assert r2.json()["data"]["job_id"] == r1.json()["data"]["job_id"]
+    with SessionLocal() as session:
+        from novel_system.db.models import StyleReferenceJob
+
+        assert session.query(StyleReferenceJob).count() == 1
 
 
 def test_list_books(client: TestClient) -> None:
@@ -362,16 +368,11 @@ def test_reclassify_executes_and_purges_derived_data(
 ) -> None:
     """PR-23 — reclassify 真实执行:旧 run/finding/profile 消失,paragraphs 仍在,
     stats_json 回写 paragraph_type_distribution / classifier_calibration。"""
-    import novel_system.api.routes.style_reference as sr_routes
-
-    fake = fake_paragraph_classifier(rule="default")
-    monkeypatch.setattr(
-        sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True)
-    )
+    fake = install_fake_classifier(monkeypatch, fake_paragraph_classifier(rule="default"))
     book_id = _import_book(client, fake)
     run_id, finding_id, profile_id = _seed_full_chain(book_id)
 
-    # 2026-09-15 严格 LLM:重新分类是后台任务——请求里清派生数据、书置 ingesting,worker 逐批分类
+    # 破坏式重新分类:请求里清派生数据、书置 ingesting,分类作业逐批分类
     resp = client.post(
         f"{PREFIX}/books/{book_id}/reclassify",
         headers={"X-Idempotency-Key": "rec_real"},
@@ -382,6 +383,7 @@ def test_reclassify_executes_and_purges_derived_data(
     assert data["book"]["status"] == "ingesting"
     assert data["paragraphs_count"] >= 1
     assert data["classification"]["kind"] == "reclassify"
+    assert data["classification"]["mode"] == "reclassify" and data["mode"] == "reclassify"
 
     # 派生数据全部消失
     assert client.get(f"{PREFIX}/runs/{run_id}").status_code == 404
@@ -396,8 +398,9 @@ def test_reclassify_executes_and_purges_derived_data(
     book = wait_book_status(client, book_id)
     assert book["stats_json"]["paragraph_type_distribution"]
     assert book["stats_json"]["classifier_calibration"]["fallback_to_heuristic"] is False
-    assert book["classification"]["state"] == "done"
+    assert book["classification"]["state"] == "succeeded"
     assert book["classification"]["batches_done"] == book["classification"]["batches_total"] >= 1
+    assert book["paragraph_types_revision"] == 2  # 导入一次 + 重新分类一次
 
 
 # ---------------------------------------------------------------------------
@@ -794,13 +797,12 @@ def test_import_upload_uses_runtime_llm_classifier_when_enabled(
 def test_import_upload_local_only_book_needs_a_local_llm(
     client: TestClient, monkeypatch, fake_paragraph_classifier
 ) -> None:
-    """2026-09-15 严格 LLM:「仅本机」没有启发式兜底——云端模型 409,本地模型才分类。"""
-    import novel_system.api.routes.style_reference as sr_routes
+    """2026-09-15 严格 LLM:「仅本机」没有启发式兜底——分类节点走云端接入 409,走本机模型才分类
+    (2026-09-23 v3:按分类节点的实际路由判断,不看全局 provider)。"""
     from novel_system.services.style_reference import policy as policy_module
 
-    fake = fake_paragraph_classifier(rule="default")
-    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
-    monkeypatch.setattr(policy_module, "runtime_llm_is_local", lambda settings=None: False)
+    fake = install_fake_classifier(monkeypatch, fake_paragraph_classifier(rule="default"))
+    monkeypatch.setattr(policy_module, "node_route_is_local", lambda *_a, **_k: False)
     resp = client.post(
         f"{PREFIX}/books/import-upload",
         files={"file": ("local.txt", io.BytesIO(SAMPLE_TXT), "text/plain")},
@@ -813,7 +815,7 @@ def test_import_upload_local_only_book_needs_a_local_llm(
     assert err["details"]["author_action"]["view"] == "systemConfig"
     assert fake.call_count == 0, "云端模型不得碰「仅本机」的段落"
 
-    monkeypatch.setattr(policy_module, "runtime_llm_is_local", lambda settings=None: True)
+    monkeypatch.setattr(policy_module, "node_route_is_local", lambda *_a, **_k: True)
     resp = client.post(
         f"{PREFIX}/books/import-upload",
         files={"file": ("local.txt", io.BytesIO(SAMPLE_TXT), "text/plain")},

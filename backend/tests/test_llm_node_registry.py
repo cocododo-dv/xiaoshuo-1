@@ -87,7 +87,7 @@ def test_style_analysis_defaults_are_stable_and_have_verified_output_headroom():
     root = Path(__file__).resolve().parents[2]
     routing = load_model_routing_config(root / "config" / "models.yaml")
     expected = {
-        "style_ref_paragraph_classify_bulk": 2000,
+        "style_ref_paragraph_classify_bulk": 8192,
         "style_ref_extract_language": 6400,
         "style_ref_extract_narrative": 6400,
         "style_ref_extract_scene": 6400,

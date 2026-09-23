@@ -1,8 +1,10 @@
-"""参考书导入进度(2026-09-15):进程内登记簿 → 分类批次 / 导入阶段汇报 → 轮询端点。
+"""参考书操作进度:进程内登记簿(合成画像等尚未迁出的操作)+ 导入进度的兼容端点。
 
-导入是一条同步请求,浏览器在几十秒到几分钟里只有一条挂起的 fetch;进度按客户端幂等键登记,
-``GET …/imports/{key}/progress`` 读出。这些用例钉住:百分比单调且在阶段边界处诚实、分类批次
-总量按三步(或余段超上限时只有锚定集)申报、同键在途不被改写、终态可被最后一次轮询读到。
+2026-09-23 风格参考 v3 起,导入 / 重新分类的整本分类是作业表上的分类作业,进度在作业行上;
+``GET …/imports/{key}/progress`` 是兼容旧前端导入轮询的别名:按幂等键(作业的 ``op_key``)找作业、
+返回旧的快照形状。这些用例钉住:登记簿的百分比单调且在阶段边界处诚实、同键在途不被改写、终态可被
+最后一次轮询读到;兼容端点在作业跑的过程中与跑完之后都读得到,请求在建作业之前就失败时是 404
+(前端把 404 当「尚未登记」、以 POST 的结果为准)。
 """
 
 from __future__ import annotations
@@ -15,17 +17,15 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference import import_progress
+from novel_system.services.style_reference.import_job import find_job_by_op_key, legacy_progress_snapshot
 from novel_system.services.style_reference.import_progress import (
     ImportProgressRegistry,
     NullImportProgress,
-    get_import_progress,
     reset_import_progress_registry,
 )
-from novel_system.services.style_reference.ingest import IngestService
-from novel_system.services.style_reference.segmentation import classify_paragraphs
-from novel_system.services.style_reference.segmentation import llm as segmentation_llm
-from tests.style_reference_route_helpers import fake_import_llm, wait_book_status
+from tests.style_reference_route_helpers import fake_import_llm, install_fake_classifier, wait_book_status
 
 PREFIX = "/api/v2/style-reference"
 
@@ -152,110 +152,6 @@ def test_registry_evicts_finished_entries_after_ttl(monkeypatch) -> None:
     running.succeed(book_id=None, paragraphs_count=None)
 
 
-# ---------------------------------------------------------------- classifier
-
-
-class _RecordingProgress:
-    def __init__(self) -> None:
-        self.plan: tuple[int, str] | None = None
-        self.batches: list[str] = []
-
-    def classify_plan(self, total_batches: int, mode: str) -> None:
-        self.plan = (total_batches, mode)
-
-    def classify_batch_done(self, node_id: str) -> None:
-        self.batches.append(node_id)
-
-
-def _paragraphs(count: int) -> list[tuple[int, int, str]]:
-    bodies = ["他把灯拧暗了一点,窗外的雨声就显得更近。", "「你来了。」她说。", "几日后。"]
-    return [(i * 40, i * 40 + 30, bodies[i % len(bodies)]) for i in range(count)]
-
-
-def test_classifier_reports_three_step_plan_and_every_batch(
-    fake_paragraph_classifier, monkeypatch, session
-) -> None:
-    monkeypatch.setattr(segmentation_llm, "ANCHOR_SIZE", 25)
-    progress = _RecordingProgress()
-    classify_paragraphs(
-        _paragraphs(25 + 30),
-        llm_enabled=True,
-        llm_client=fake_paragraph_classifier(),
-        session=session,
-        scope_id="sr_book_progress_llm",
-        progress=progress,
-    )
-    # 锚定集 1 批 × 强模型 + 1 批 × 快模型 + 余段 30 段 = 2 批
-    assert progress.plan == (4, "llm")
-    assert progress.batches == [
-        segmentation_llm.NODE_ANCHOR,
-        segmentation_llm.NODE_BULK,
-        segmentation_llm.NODE_BULK,
-        segmentation_llm.NODE_BULK,
-    ]
-
-
-def test_classifier_plan_has_no_fast_pass_when_the_book_fits_the_anchor_set(
-    fake_paragraph_classifier, monkeypatch, session
-) -> None:
-    """2026-09-15 严格 LLM:没有余段上限;书不超过锚定集时只有强模型一遍(没有余段就不做对照)。"""
-    monkeypatch.setattr(segmentation_llm, "ANCHOR_SIZE", 25)
-    progress = _RecordingProgress()
-    classify_paragraphs(
-        _paragraphs(20),
-        llm_enabled=True,
-        llm_client=fake_paragraph_classifier(),
-        session=session,
-        scope_id="sr_book_progress_small",
-        progress=progress,
-    )
-    assert progress.plan == (1, "llm")
-    assert progress.batches == [segmentation_llm.NODE_ANCHOR]
-
-
-def test_classifier_heuristic_path_reports_zero_batches() -> None:
-    """离线夹具模式(llm_enabled=False,只有测试与本地语料工具会这样调):申报 0 批。"""
-    progress = _RecordingProgress()
-    classify_paragraphs(_paragraphs(3), llm_enabled=False, progress=progress)
-    assert progress.plan == (0, "heuristic")
-    assert progress.batches == []
-
-
-# ---------------------------------------------------------------- ingest phases
-
-
-def test_ingest_walks_the_phases_in_order(session) -> None:
-    class PhaseRecorder(NullImportProgress):
-        def __init__(self) -> None:
-            self.events: list[Any] = []
-
-        def phase(self, name: str) -> None:
-            self.events.append(("phase", name))
-
-        def set_totals(self, **fields: Any) -> None:
-            self.events.append(("totals", fields))
-
-        def classify_plan(self, total_batches: int, mode: str) -> None:
-            self.events.append(("plan", total_batches, mode))
-
-    recorder = PhaseRecorder()
-    service = IngestService(session, llm_enabled=False, progress=recorder)
-    result = service.ingest_upload(
-        raw_bytes=SAMPLE_TXT,
-        file_name="sample.txt",
-        title="进度",
-        author_label=None,
-        cloud_policy="local_only",
-    )
-    phases = [event[1] for event in recorder.events if event[0] == "phase"]
-    assert phases == ["prepare", "classify", "metrics", "persist"]
-    totals = {k: v for event in recorder.events if event[0] == "totals" for k, v in event[1].items()}
-    assert totals["chars_total"] == result.book.total_chars
-    assert totals["paragraphs_total"] == result.paragraphs_count
-    assert totals["title"] == "进度"
-    assert ("plan", 0, "heuristic") in recorder.events
-
-
 # ---------------------------------------------------------------- route
 
 
@@ -272,8 +168,8 @@ def _wait_progress_finished(client: TestClient, key: str, seconds: float = 20.0)
     raise AssertionError(f"progress {key} never finished: {snap}")
 
 
-def test_import_upload_records_progress_readable_after_completion(client: TestClient) -> None:
-    """2026-09-15 严格 LLM:导入请求只做准备,分类任务接着同一个键继续汇报到完成。"""
+def test_import_upload_progress_is_the_classify_job_found_by_its_key(client: TestClient) -> None:
+    """导入请求只做准备并建分类作业;兼容端点按幂等键找到作业,跑完读到终态。"""
     with fake_import_llm():
         resp = client.post(
             f"{PREFIX}/books/import-upload",
@@ -285,26 +181,27 @@ def test_import_upload_records_progress_readable_after_completion(client: TestCl
             },
             headers={"X-Idempotency-Key": "sr-import-progress-ok"},
         )
-    assert resp.status_code == 200, resp.text
-    book_id = resp.json()["data"]["book"]["book_id"]
-    assert resp.json()["data"]["book"]["status"] == "ingesting"
-    assert resp.json()["data"]["classification"]["state"] == "queued"
-
-    snap = _wait_progress_finished(client, "sr-import-progress-ok")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        book_id = data["book"]["book_id"]
+        assert data["book"]["status"] == "ingesting"
+        assert data["classification"]["state"] == "queued" and data["job_id"]
+        snap = _wait_progress_finished(client, "sr-import-progress-ok")
     assert snap["status"] == "succeeded"
     assert snap["percent"] == 100
     assert snap["phase"] == "done"
+    assert snap["kind"] == "import"
     assert snap["book_id"] == book_id
     assert snap["title"] == "进度书"
-    assert snap["source"] == "upload"
-    assert snap["paragraphs_count"] == resp.json()["data"]["paragraphs_count"]
+    assert snap["job_id"] == data["job_id"]
+    assert snap["paragraphs_count"] == data["paragraphs_count"]
     assert snap["classify"]["mode"] == "llm"
     assert snap["classify"]["batches_done"] == snap["classify"]["batches_total"] >= 1
     book = wait_book_status(client, book_id)
-    assert book["classification"]["state"] == "done"
+    assert book["classification"]["state"] == "succeeded"
 
 
-def test_import_upload_failure_is_visible_in_progress(client: TestClient) -> None:
+def test_an_import_that_fails_before_the_job_exists_has_no_progress_entry(client: TestClient) -> None:
     with fake_import_llm():
         resp = client.post(
             f"{PREFIX}/books/import-upload",
@@ -317,10 +214,9 @@ def test_import_upload_failure_is_visible_in_progress(client: TestClient) -> Non
             headers={"X-Idempotency-Key": "sr-import-progress-bad"},
         )
     assert resp.status_code == 400
-    snap = client.get(f"{PREFIX}/imports/sr-import-progress-bad/progress").json()["data"]["progress"]
-    assert snap["status"] == "failed"
-    assert snap["error"]["code"] == "STYLE_REFERENCE_BOOK_FORMAT_UNSUPPORTED"
-    assert snap["book_id"] is None
+    assert resp.json()["error"]["code"] == "STYLE_REFERENCE_BOOK_FORMAT_UNSUPPORTED"
+    missing = client.get(f"{PREFIX}/imports/sr-import-progress-bad/progress")
+    assert missing.status_code == 404
 
 
 def test_unknown_or_malformed_import_key_is_404(client: TestClient) -> None:
@@ -332,23 +228,23 @@ def test_unknown_or_malformed_import_key_is_404(client: TestClient) -> None:
     assert malformed.json()["error"]["code"] == "STYLE_REFERENCE_IMPORT_PROGRESS_UNKNOWN"
 
 
-def test_import_progress_is_polled_live_while_the_upload_runs(
+def test_import_progress_is_live_while_the_job_classifies(
     client: TestClient, monkeypatch, fake_paragraph_classifier
 ) -> None:
-    """在途轮询:分类器每批完成时从另一条请求读进度,批次数单调增加。"""
-    import novel_system.api.routes.style_reference as sr_routes
+    """在途轮询:分类器每次被调用时,作业行上的进度都在 running / classify,批数单调增加。"""
+    from novel_system.services.style_reference import import_job
 
+    monkeypatch.setattr(import_job, "PARALLEL_BATCHES", 1)
     observed: list[dict[str, Any]] = []
 
     class ObservingClient(fake_paragraph_classifier):
         def generate(self, request):  # noqa: ANN001
-            response = super().generate(request)
-            # 分类批次完成前,登记簿里已经有在跑的条目(prepare → classify)。
-            snap = get_import_progress("sr-import-progress-live")
-            observed.append(snap)
-            return response
+            with SessionLocal() as session:
+                job = find_job_by_op_key(session, "sr-import-progress-live")
+                observed.append(legacy_progress_snapshot(job, title=None, total_chars=None))
+            return super().generate(request)
 
-    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (ObservingClient(), True))
+    install_fake_classifier(monkeypatch, ObservingClient())
     resp = client.post(
         f"{PREFIX}/books/import-upload",
         files={"file": ("sample.txt", io.BytesIO(SAMPLE_TXT), "text/plain")},
@@ -360,13 +256,10 @@ def test_import_progress_is_polled_live_while_the_upload_runs(
         headers={"X-Idempotency-Key": "sr-import-progress-live"},
     )
     assert resp.status_code == 200, resp.text
-    # 分类在后台任务里跑(接着请求登记的同一条进度),等它结束再看观察记录
     final = _wait_progress_finished(client, "sr-import-progress-live")
     assert observed, "分类器至少被调用一次"
-    assert all(snap is not None and snap["status"] == "running" for snap in observed)
-    assert all(snap["phase"] == "classify" for snap in observed)
+    assert all(snap["status"] == "running" and snap["phase"] == "classify" for snap in observed)
     assert [snap["classify"]["batches_done"] for snap in observed] == list(range(len(observed)))
-    assert observed[0]["classify"]["batches_total"] == len(observed)
     assert final["status"] == "succeeded"
     assert final["classify"]["batches_done"] == final["classify"]["batches_total"] == len(observed)
     assert final["classify"]["llm_calls"] == len(observed)

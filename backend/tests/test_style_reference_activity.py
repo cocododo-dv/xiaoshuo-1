@@ -48,7 +48,7 @@ from novel_system.services.style_reference.validation.plagiarism import (
 )
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.test_review_cards import _card, _create_project, _post
-from tests.style_reference_route_helpers import wait_book_status
+from tests.style_reference_route_helpers import install_fake_classifier, wait_book_status
 from tests.test_style_reference_routes import _import_book, _seed_full_chain
 from tests.test_style_reference_run_orchestrator import _ingest as _ingest_book
 from tests.test_style_reference_synthesizer import _ingest_with_finding
@@ -380,8 +380,7 @@ def test_activity_endpoint_merges_registry_and_durable_rows(client: TestClient) 
 def test_reclassify_route_registers_progress(
     client: TestClient, monkeypatch, fake_paragraph_classifier
 ) -> None:
-    fake = fake_paragraph_classifier(rule="default")
-    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
+    fake = install_fake_classifier(monkeypatch, fake_paragraph_classifier(rule="default"))
     book_id = _import_book(client, fake)
     resp = client.post(
         f"{PREFIX}/books/{book_id}/reclassify",
@@ -389,10 +388,12 @@ def test_reclassify_route_registers_progress(
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["data"]["status"] == "classifying"
-    # 2026-09-15 严格 LLM:重新分类是后台任务,活动清单里立刻能看到(durable 游标),完成后书 ready
+    # 重新分类是作业表上的分类作业:活动清单里立刻能看到(作业行 + 幂等键别名),完成后书 ready
     activity = client.get(f"{PREFIX}/activity").json()["data"]["items"]
     entry = next(item for item in activity if item["key"] == "sr-reclassify-1")
     assert entry["kind_label"] == "重新分类" and entry["book_id"] == book_id
+    job_entry = next(item for item in activity if item["key"] == entry["compat_alias_of"])
+    assert job_entry["kind"] == "classify" and job_entry["mode"] == "reclassify"
     wait_book_status(client, book_id)
     deadline = time.monotonic() + 15
     snap = client.get(f"{PREFIX}/imports/sr-reclassify-1/progress").json()["data"]["progress"]

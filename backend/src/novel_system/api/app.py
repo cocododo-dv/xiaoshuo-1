@@ -60,6 +60,16 @@ async def _lifespan(_app: FastAPI):
     from novel_system.services.background_recovery import run_startup_recovery
 
     run_startup_recovery()
+    # 风格参考 v3 统一作业表:处理器在各自模块导入时注册(register_job_handler);常驻清扫线程启动时
+    # 先清扫一次(心跳过期的 running → queued)并派发全部排队作业,之后每 30 s 一次——重启 /
+    # --reload 留下的作业不需要人工介入。
+    from novel_system.services.style_reference import import_job  # noqa: F401 — 注册 classify 处理器
+    from novel_system.services.style_reference.jobs import (
+        shutdown_job_workers,
+        start_job_sweeper,
+    )
+
+    start_job_sweeper()
     try:
         yield
     finally:
@@ -74,14 +84,10 @@ async def _lifespan(_app: FastAPI):
             shutdown_style_reference_rag_index_executor,
         )
 
-        from novel_system.services.style_reference.import_job import (
-            shutdown_style_reference_classification_executor,
-        )
-
+        shutdown_job_workers(wait=False)
         shutdown_style_reference_run_executor(wait=False)
         shutdown_style_reference_validation_executor(wait=False)
         shutdown_style_reference_rag_index_executor(wait=False)
-        shutdown_style_reference_classification_executor(wait=False)
 
 
 def _is_loopback_host(host: str | None) -> bool:

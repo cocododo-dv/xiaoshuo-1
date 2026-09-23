@@ -28,7 +28,7 @@ from novel_system.api.deps import get_session
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
-from novel_system.db.models import ReviewItem, StyleReferenceParagraph, utcnow
+from novel_system.db.models import ReviewItem, StyleReferenceJob, StyleReferenceParagraph, utcnow
 
 logger = logging.getLogger(__name__)
 from novel_system.services.errors import DomainError
@@ -43,15 +43,30 @@ from novel_system.services.style_reference.import_progress import (
 )
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.import_job import (
-    classification_state,
-    request_classification_cancel,
-    start_style_reference_classification_worker,
+    cancel_classification,
+    classification_payload,
+    classification_provenance,
+    count_paragraphs,
+    estimate_classification,
+    find_job_by_op_key,
+    latest_classification_job,
+    legacy_progress_snapshot,
 )
 from novel_system.services.style_reference.ingest import (
     MAX_REFERENCE_BOOK_BYTES,
     IngestService,
 )
-from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed, ensure_local_only_llm
+from novel_system.services.style_reference.jobs import (
+    JOB_KIND_CLASSIFY,
+    StyleJobService,
+    dispatch_job,
+)
+from novel_system.services.style_reference.policy import (
+    default_cloud_policy,
+    ensure_local_only_llm,
+    resolve_node_endpoint,
+)
+from novel_system.services.style_reference.segmentation.llm import CLASSIFY_NODE_IDS
 from novel_system.services.style_reference.materialization import MaterializationService
 from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
@@ -118,11 +133,17 @@ class PreviewRequest(BaseModel):
 
 
 class ReclassifyRequest(BaseModel):
-    """重新分类(2026-09-15 严格 LLM:后台任务)。``resume=true`` 从上次的游标继续(失败 / 取消 /
-    中断后),否则清派生数据从头分类。"""
+    """重新分类(后台分类作业)。
+
+    - 缺省(``mode="reclassify"``):**破坏式**——先清掉这本书的全部派生数据(抽取 / 画像 / 绑定 /
+      禁用词 / 回测 / 作业 / 窗口索引),再从头分类;
+    - ``mode="retype"``:**就地重标段落类型**——正文不变,派生数据与绑定全部保留,书保持可用;
+    - ``resume=true``:把最近一次失败 / 取消 / 中断的分类作业从游标续跑(进程重启之后也行)。
+    """
 
     model_config = ConfigDict(extra="forbid")
     resume: bool = False
+    mode: Literal["reclassify", "retype"] = "reclassify"
 
 
 class ImportPathRequest(BaseModel):
@@ -225,7 +246,18 @@ class ValidateGeneratedRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _serialize_book(book) -> dict[str, Any]:
+_NO_JOB = object()
+
+
+def _serialize_book(book, *, classification_job: Any = _NO_JOB) -> dict[str, Any]:
+    """书的载荷。``classification`` = 最近一个分类作业的摘要;``classification_provenance`` = 段落类型
+    的来源(新作业写的,老书按校准信息推出来),带一致率。``classification_job`` 由列表端点批量传入。"""
+    stats = book.stats_json or {}
+    if classification_job is _NO_JOB:
+        session = Session.object_session(book)
+        classification_job = (
+            latest_classification_job(session, book.book_id) if session is not None else None
+        )
     return {
         "book_id": book.book_id,
         "title": book.title,
@@ -236,8 +268,10 @@ def _serialize_book(book) -> dict[str, Any]:
         "text_checksum": book.text_checksum,
         "total_chars": book.total_chars,
         "status": book.status,
-        "stats_json": book.stats_json or {},
-        "classification": _serialize_classification(book),
+        "stats_json": stats,
+        "classification": classification_payload(classification_job),
+        "classification_provenance": classification_provenance(stats),
+        "paragraph_types_revision": int(stats.get("paragraph_types_revision") or 0),
         "created_at": book.created_at,
         "updated_at": book.updated_at,
     }
@@ -391,19 +425,11 @@ def import_book_path(
 
     op_key = request.headers.get("X-Idempotency-Key")
     client = _require_import_llm(body["cloud_policy"])
-    progress = start_import_progress(op_key, title=body["title"], source="path")
 
     def _do() -> dict[str, Any]:
-        # 严格 LLM(2026-09-15):导入只做准备工作,整本 LLM 分类由提交后派发的后台任务
-        # 逐批执行(import_job),没有启发式兜底。
-        service = IngestService(
-            session,
-            llm_client=client,
-            llm_enabled=True,
-            progress=progress,
-            classification_mode="job",
-            op_key=op_key,
-        )
+        # 严格 LLM(2026-09-15):导入只做准备工作,整本 LLM 分类是提交后派发的分类作业
+        # (作业表 kind=classify,见 import_job),没有启发式兜底。
+        service = IngestService(session, llm_enabled=True, op_key=op_key, llm_client=client)
         result = service.ingest_path(
             file_path=body["file_path"],
             title=body["title"],
@@ -411,26 +437,17 @@ def import_book_path(
             cloud_policy=body["cloud_policy"],
             rights_declaration=body.get("rights_declaration"),
         )
-        return {
-            "book": _serialize_book(result.book),
-            "paragraphs_count": result.paragraphs_count,
-            "safety": result.safety_payload,
-            "classification": _serialize_classification(result.book),
-        }
+        return _import_response(result)
 
-    try:
-        return idempotent_response(
-            request,
-            session,
-            method="POST",
-            path_template=f"{PATH_PREFIX}/books/import-path",
-            payload=body,
-            action=_do,
-            after_commit=lambda result: _dispatch_classification(result, client=client, op_key=op_key),
-        )
-    except BaseException as exc:
-        progress.fail(code=_error_code_of(exc), message=str(exc))
-        raise
+    return idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template=f"{PATH_PREFIX}/books/import-path",
+        payload=body,
+        action=_do,
+        after_commit=_dispatch_classification,
+    )
 
 
 def _error_code_of(exc: BaseException) -> str:
@@ -439,39 +456,31 @@ def _error_code_of(exc: BaseException) -> str:
 
 def _require_import_llm(cloud_policy: str):
     """2026-09-15 严格 LLM:导入 / 重新分类没有启发式兜底——LLM 未启用 409
-    ``STYLE_REFERENCE_LLM_REQUIRED``;「仅本机」策略要求运行时模型是本地的。"""
+    ``STYLE_REFERENCE_LLM_REQUIRED``;「仅本机」策略要求**分类节点的实际路由**是本机模型(v3 I7)。"""
     client, enabled = _get_llm_client_and_enabled()
     if not enabled or client is None:
         raise LLMRequiredError(operation="import_book")
     if cloud_policy == "local_only":
-        ensure_local_only_llm(operation="import_book")
+        ensure_local_only_llm(operation="import_book", node_ids=CLASSIFY_NODE_IDS, llm_client=client)
     return client
 
 
-def _dispatch_classification(result: dict[str, Any], *, client: Any, op_key: str | None) -> None:
-    book = result.get("book") or {}
-    if str(book.get("status") or "") != "ingesting":
-        return
-    start_style_reference_classification_worker(
-        book_id=str(book.get("book_id") or ""), llm_client=client, op_key=op_key
-    )
-
-
-def _serialize_classification(book) -> dict[str, Any] | None:
-    state = classification_state(book)
-    if state is None:
-        return None
+def _import_response(result) -> dict[str, Any]:
+    job = result.job
     return {
-        "state": state.get("state"),
-        "kind": state.get("kind"),
-        "op_key": state.get("op_key"),
-        "batches_done": state.get("batches_done"),
-        "batches_total": state.get("batches_total"),
-        "llm_calls": state.get("llm_calls"),
-        "cursor": state.get("cursor"),
-        "error": state.get("error"),
-        "cancel_requested": str(getattr(book, "status", "") or "") == "cancelling",
+        "book": _serialize_book(result.book, classification_job=job),
+        "paragraphs_count": result.paragraphs_count,
+        "safety": result.safety_payload,
+        "classification": classification_payload(job),
+        "job_id": job.job_id if job is not None else None,
     }
+
+
+def _dispatch_classification(result: dict[str, Any]) -> None:
+    """事务提交后把分类作业投给工人(认领是条件写,重复投递无害;漏投的由清扫线程补派)。"""
+    job_id = str(result.get("job_id") or (result.get("classification") or {}).get("job_id") or "")
+    if job_id:
+        dispatch_job(job_id)
 
 
 """上传体积上限:参考书是纯文本,30 万字 UTF-8 约 1MB;10MB 已极宽裕,
@@ -522,22 +531,12 @@ async def import_book_upload(
         "rights_declaration": rights_obj,
     }
 
-    # 导入进度按客户端幂等键登记(进程内),前端在 POST 挂起期间轮询
-    # GET …/imports/{key}/progress 画进度条;同一个键已有在跑的导入时这里拿到的是空实现,
-    # 不会改写真正在执行的那条进度。请求返回后后台分类任务接着同一条继续汇报。
+    # 分类作业的 op_key = 客户端幂等键:活动清单与 GET …/imports/{key}/progress 按它找到这本书的作业。
     op_key = request.headers.get("X-Idempotency-Key")
     client = _require_import_llm(cloud_policy)
-    progress = start_import_progress(op_key, title=title, source="upload")
 
     def _do() -> dict[str, Any]:
-        service = IngestService(
-            session,
-            llm_client=client,
-            llm_enabled=True,
-            progress=progress,
-            classification_mode="job",
-            op_key=op_key,
-        )
+        service = IngestService(session, llm_enabled=True, op_key=op_key, llm_client=client)
         result = service.ingest_upload(
             raw_bytes=raw_bytes,
             file_name=payload["file_name"],
@@ -546,20 +545,13 @@ async def import_book_upload(
             cloud_policy=payload["cloud_policy"],
             rights_declaration=payload.get("rights_declaration"),
         )
-        return {
-            "book": _serialize_book(result.book),
-            "paragraphs_count": result.paragraphs_count,
-            "safety": result.safety_payload,
-            "classification": _serialize_classification(result.book),
-        }
+        return _import_response(result)
 
-    # 这个处理器因为要 await 读上传体而是 async def,但导入本身(安全扫描、切段、最多几十次
-    # 串行 LLM 分类调用、指标计算)是同步的 CPU/网络工作。2026-09-15 前它直接在事件循环里
-    # 跑,一本大书导入的几分钟到几小时内后端对所有其他请求都无响应(工作台整体假死)。
-    # 与 FastAPI 对同步路由的做法一致,放到线程池里执行;请求级 Session 只在这一个线程里用。
+    # 处理器因为要 await 读上传体而是 async def,准备工作(安全扫描、切段、批量落段落行)是同步的:
+    # 放到线程池里执行,不堵事件循环;请求级 Session 只在这一个线程里用。
     def _run_import() -> Any:
         # 幂等边界在这里显式调用(tests/test_route_mutation_policy 按 AST 找调用点),
-        # 整段在线程池里执行;分类 worker 在事务提交后派发。
+        # 整段在线程池里执行;分类作业在事务提交后派发。
         return idempotent_response(
             request,
             session,
@@ -567,26 +559,43 @@ async def import_book_upload(
             path_template=f"{PATH_PREFIX}/books/import-upload",
             payload=payload,
             action=_do,
-            after_commit=lambda result: _dispatch_classification(result, client=client, op_key=op_key),
+            after_commit=_dispatch_classification,
         )
 
-    try:
-        return await run_in_threadpool(_run_import)
-    except BaseException as exc:
-        progress.fail(code=_error_code_of(exc), message=str(exc))
-        raise
+    return await run_in_threadpool(_run_import)
 
 
 _IMPORT_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,%d}$" % IMPORT_KEY_MAX_LENGTH)
 
 
+@router.get(f"{PATH_PREFIX}/runtime")
+def get_style_reference_runtime(request: Request):
+    """只读:导入对话框的默认值。``llm_enabled``(有没有可用模型)、``llm_is_local``(两个分类节点的
+    实际路由是否都是本机模型)、``default_cloud_policy``(分类走本机模型时 ``local_only``,否则
+    ``allow_full_cloud``——云端模型下默认「仅本机」必然导入失败)与分类节点的路由摘要。"""
+    client, enabled = _get_llm_client_and_enabled()
+    routes = [resolve_node_endpoint(node_id, llm_client=client).as_dict() for node_id in CLASSIFY_NODE_IDS]
+    llm_is_local = bool(enabled) and all(route["local"] for route in routes)
+    return ok(
+        {
+            "llm_enabled": bool(enabled and client is not None),
+            "llm_is_local": llm_is_local,
+            "default_cloud_policy": (
+                default_cloud_policy(CLASSIFY_NODE_IDS, llm_client=client) if enabled else "local_only"
+            ),
+            "classify_routes": routes,
+        },
+        req_id=_req_id(request),
+    )
+
+
 @router.get(f"{PATH_PREFIX}/activity")
 def get_activity(request: Request, session: Session = Depends(get_session)):
-    """参考书活动清单(2026-09-15):模块里所有在跑 / 十分钟内结束的耗时操作,统一形状。
+    """参考书活动清单:模块里所有在跑 / 十分钟内结束的耗时操作,统一形状。
 
-    进程内登记簿(导入 / 重新分类 / 合成画像 / 应用画像建索引 / 回测阶段)+ durable 行
-    (抽取 run 的子维粒度进度、回测报告终态)合成一份;前端一个轮询画全部进度条,刷新页面
-    后也能续接。见 ``services/style_reference/activity.py``。
+    作业表(分类作业;键 ``job:<id>``,另带兼容旧前端的幂等键别名)+ 进程内登记簿(合成画像 /
+    应用画像建索引 / 回测阶段)+ durable 行(抽取 run、回测报告)合成一份;见
+    ``services/style_reference/activity.py``。
     """
     return ok(
         {"items": list_activity(session), "server_time": utcnow()},
@@ -595,23 +604,30 @@ def get_activity(request: Request, session: Session = Depends(get_session)):
 
 
 @router.get(f"{PATH_PREFIX}/imports/{{import_key}}/progress")
-def get_import_progress_route(import_key: str, request: Request):
-    """只读:一次导入(按其 ``X-Idempotency-Key``)的阶段 / 分类批次 / 百分比。
-
-    进度只存在于执行那条导入的进程里,终态条目保留十分钟;不认识的键(还没到服务端、
-    换了进程、或已过期)一律 404,前端把它当「尚未登记」继续等 POST 的结果。
-    """
+def get_import_progress_route(import_key: str, request: Request, session: Session = Depends(get_session)):
+    """兼容别名(旧前端导入轮询用,P7 删除):按幂等键找分类作业(``op_key``),返回旧的进度快照形状;
+    作业表里没有时退回进程内登记簿(合成画像等尚未迁出的操作)。都不认识 → 404,前端把它当
+    「尚未登记」继续等 POST 的结果。"""
     if not _IMPORT_KEY_RE.match(import_key or ""):
         raise DomainError(
             "STYLE_REFERENCE_IMPORT_PROGRESS_UNKNOWN",
             "import key is not a valid idempotency key",
             status_code=404,
         )
+    job = find_job_by_op_key(session, import_key)
+    if job is not None:
+        book = StyleReferenceRepository(session).get_book(job.book_id) if job.book_id else None
+        snapshot = legacy_progress_snapshot(
+            job,
+            title=book.title if book is not None else None,
+            total_chars=int(book.total_chars or 0) if book is not None else None,
+        )
+        return ok({"progress": snapshot}, req_id=_req_id(request))
     snapshot = get_import_progress(import_key)
     if snapshot is None:
         raise DomainError(
             "STYLE_REFERENCE_IMPORT_PROGRESS_UNKNOWN",
-            "no import with this key is running or recently finished in this process",
+            "no import with this key is known",
             status_code=404,
         )
     return ok({"progress": snapshot}, req_id=_req_id(request))
@@ -625,8 +641,19 @@ def list_books(
 ):
     repo = StyleReferenceRepository(session)
     books = repo.list_books(status=status)
+    latest: dict[str, Any] = {}
+    if books:
+        for job in session.scalars(
+            select(StyleReferenceJob)
+            .where(
+                StyleReferenceJob.kind == JOB_KIND_CLASSIFY,
+                StyleReferenceJob.book_id.in_([b.book_id for b in books]),
+            )
+            .order_by(StyleReferenceJob.created_at)
+        ):
+            latest[job.book_id] = job  # 按创建时间升序:最后写入的就是最近一个
     return ok(
-        {"books": [_serialize_book(b) for b in books]},
+        {"books": [_serialize_book(b, classification_job=latest.get(b.book_id)) for b in books]},
         req_id=_req_id(request),
     )
 
@@ -646,6 +673,27 @@ def get_book(
             status_code=404,
         )
     return ok({"book": _serialize_book(book)}, req_id=_req_id(request))
+
+
+@router.get(f"{PATH_PREFIX}/books/{{book_id}}/classification/estimate")
+def estimate_book_classification(
+    book_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """只读:整本(重新)分类的批数 / 调用 / 输入输出 token / 分钟(作者就地重标类型前看费用)。
+
+    与分类作业同一套计划(锚定集、按字数分批、同模型时不做快模型对照);均值优先取本地账本,
+    取不到用默认值(``basis`` 里如实标出来源)。
+    """
+    book = StyleReferenceRepository(session).get_book(book_id)
+    if book is None:
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_NOT_FOUND",
+            f"book {book_id!r} not found",
+            status_code=404,
+        )
+    return ok({"estimate": estimate_classification(session, book)}, req_id=_req_id(request))
 
 
 # 2026-09-14 风格保真修补(WP4.2):本场参考窗口「展开原文」——按段落序号闭区间读参考书原文。
@@ -717,17 +765,17 @@ def delete_book(
     def _do() -> dict[str, Any]:
         repo = StyleReferenceRepository(session)
         book = repo.get_book(book_id)
-        if book is not None and book.status in ("ingesting", "cancelling"):
-            # 分类 worker 在下一批边界看到书没了 / 取消状态即退出
-            request_classification_cancel(session, book_id)
         if book is None:
             raise DomainError(
                 "STYLE_REFERENCE_BOOK_NOT_FOUND",
                 f"book {book_id!r} not found",
                 status_code=404,
             )
-        # FK 反向 cascade(无 ON DELETE CASCADE):派生数据走 purge_derived_data
-        # (与 reclassify 共用),再删 paragraphs → book
+        # 同一事务里先把这本书的活动作业收尾为 cancelled:旧工人的条件写全部落空、不再调模型
+        # (删书后同一份文本重新导入,旧线程也不会接着把正文发出去,v3 I2)。
+        StyleJobService(session).cancel_all_for_book(book_id)
+        # FK 反向 cascade(无 ON DELETE CASCADE):派生数据(含作业与窗口索引)走 purge_derived_data
+        # (与破坏式重新分类共用),再删 paragraphs → book
         purge_derived_data(session, book_id)
         repo.delete_paragraphs_for_book(book_id)
         repo.delete_book(book_id)
@@ -750,86 +798,82 @@ def reclassify_book(
     payload: ReclassifyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    """重跑段落分类(2026-09-15 严格 LLM:后台任务,整本都由 LLM 分类)。
+    """重新分类(后台分类作业,整本都由 LLM 分类;事务提交后派发)。
 
-    非续跑先清空派生数据(runs / findings / profiles / bindings 等;paragraphs 与 book 保留),
-    书置 ``ingesting``,分类 worker 在事务提交后派发;``resume=true`` 从上次游标继续。
-    LLM 未启用 409 ``STYLE_REFERENCE_LLM_REQUIRED``;「仅本机」的书需要本地模型。
+    - 缺省:**破坏式**——先清掉这本书的全部派生数据(抽取 run / 发现 / 引文 / 画像 / 绑定 / 禁用词 /
+      回测报告 / 作业 / 窗口索引;段落与书保留),书置 ``ingesting``,从头分类;
+    - ``{"mode": "retype"}``:**就地重标段落类型**——正文不变,抽取、画像、绑定全部保留,书保持 ``ready``,
+      完成后 ``paragraph_types_revision`` +1;
+    - ``{"resume": true}``:把最近一次失败 / 取消 / 中断的分类作业放回队列,从游标续跑(进程重启后也行)。
+
+    LLM 未启用 409 ``STYLE_REFERENCE_LLM_REQUIRED``;「仅本机」的书要求分类节点走本机模型;
+    已有排队 / 运行中的分类作业 409 ``STYLE_REFERENCE_CLASSIFICATION_ALREADY_ACTIVE``。
     """
     resume = bool(payload.resume) if payload is not None else False
+    mode = payload.mode if payload is not None else "reclassify"
     op_key = request.headers.get("X-Idempotency-Key")
-    existing = StyleReferenceRepository(session).get_book(book_id)
-    client = _require_import_llm(existing.cloud_policy if existing is not None else "")
-    if existing is not None:
-        state = classification_state(existing)
-        if existing.status in ("ingesting", "cancelling") and state is not None and state.get("state") in ("queued", "running"):
-            raise DomainError(
-                "STYLE_REFERENCE_CLASSIFICATION_ALREADY_ACTIVE",
-                "这本书正在分类,请等它完成或先取消",
-                status_code=409,
-                details={"book_id": book_id, "op_key": state.get("op_key")},
-            )
-    progress = (
-        start_import_progress(
-            op_key, kind="reclassify", title=existing.title, source="reclassify", book_id=book_id
-        )
-        if existing is not None
-        else start_import_progress(None)
-    )
+    client, enabled = _get_llm_client_and_enabled()
+    if not enabled or client is None:
+        raise LLMRequiredError(operation="reclassify_book")
 
     def _do() -> dict[str, Any]:
-        service = IngestService(
-            session,
-            llm_client=client,
-            llm_enabled=True,
-            progress=progress,
-            classification_mode="job",
-            op_key=op_key,
-        )
-        state = service.start_reclassify_job(book_id, resume=resume)
+        service = IngestService(session, llm_enabled=True, op_key=op_key, llm_client=client)
+        job = service.resume(book_id) if resume else service.start_reclassify(book_id, mode=mode)
         book = StyleReferenceRepository(session).get_book(book_id)
         return {
-            "book": _serialize_book(book),
+            "book": _serialize_book(book, classification_job=job),
             "book_id": book_id,
             "status": "classifying",
+            "mode": str((job.params_json or {}).get("mode") or mode),
             "resume": resume,
-            "paragraphs_count": int(state.get("total_paragraphs") or 0),
-            "classification": _serialize_classification(book),
+            "job_id": job.job_id,
+            "paragraphs_count": count_paragraphs(session, book_id),
+            "classification": classification_payload(job),
         }
 
-    try:
-        return idempotent_response(
-            request,
-            session,
-            method="POST",
-            path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
-            payload={"book_id": book_id, "resume": resume},
-            action=_do,
-            after_commit=lambda result: _dispatch_classification(result, client=client, op_key=op_key),
-        )
-    except BaseException as exc:
-        progress.fail(code=_error_code_of(exc), message=str(exc))
-        raise
+    return idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
+        payload={"book_id": book_id, "resume": resume, "mode": mode},
+        action=_do,
+        after_commit=_dispatch_classification,
+    )
 
 
 @router.post(f"{PATH_PREFIX}/books/{{book_id}}/classification/cancel")
-def cancel_classification(
+def cancel_book_classification(
     book_id: str,
     request: Request,
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    """取消进行中的分类任务:置标志,worker 在下一批边界退出,书标 failed(可「继续分类」或删书)。"""
+    """取消这本书正在排队 / 运行的分类作业。排队中或工人已死(心跳过期)的作业在这个请求里直接收尾
+    (书标 failed;就地重标类型的书回到 ready);运行中的由工人在下一个检查点收尾。之后可「继续分类」。"""
 
     def _do() -> dict[str, Any]:
-        state = request_classification_cancel(session, book_id)
-        if state is None:
+        if StyleReferenceRepository(session).get_book(book_id) is None:
             raise DomainError(
                 "STYLE_REFERENCE_BOOK_NOT_FOUND",
-                f"book {book_id!r} has no classification job",
+                f"book {book_id!r} not found",
                 status_code=404,
             )
-        return {"book_id": book_id, "state": state.get("state"), "cancel_requested": bool(state.get("cancel_requested"))}
+        job = cancel_classification(session, book_id)
+        if job is None:
+            raise DomainError(
+                "STYLE_REFERENCE_CLASSIFICATION_NOT_ACTIVE",
+                "这本书没有正在排队或运行的分类。",
+                status_code=409,
+                details={"book_id": book_id},
+            )
+        return {
+            "book_id": book_id,
+            "job_id": job.job_id,
+            "state": job.state,
+            "cancel_requested": True,
+            "finished": job.state == "cancelled",
+        }
 
     return idempotent_response(
         request,

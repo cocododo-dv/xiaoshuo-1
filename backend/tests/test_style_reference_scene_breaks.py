@@ -29,9 +29,10 @@ def _reset_yaml_cache():
 
 
 def test_scene_break_detectors() -> None:
-    for text in ("***", "＊＊＊", "———", "——", "※ ※ ※", "~~~~", "- - -", "=====", "……", "◇◇◇"):
+    for text in ("***", "＊＊＊", "———", "——", "※ ※ ※", "~~~~", "- - -", "=====", "◇◇◇", "· · ·"):
         assert is_scene_break_paragraph(text), text
-    for text in ("第一章", "……他走了", "", "*注*", "一", "1", "***太长" + "*" * 40):
+    # 2026-09-23 v3(I10):单独一行的省略号是停顿 / 沉默,不是场界
+    for text in ("第一章", "……他走了", "", "*注*", "一", "1", "***太长" + "*" * 40, "……", "......", "。。。", "⋯⋯"):
         assert not is_scene_break_paragraph(text), text
     text = "段一\n\n段二\n\n\n\n段三\n\n段四\n\n\n段五"
     assert explicit_scene_breaks(text) == [1, 3]
@@ -65,6 +66,60 @@ def test_ingest_records_scene_breaks(session) -> None:
     # 段 0 章题、1–2 正文、3 = ***、4–5 正文、(三个换行) 6、7
     assert stats["scene_breaks"] == [3, 5]
     assert stats["paratext_dropped"] == 0
+
+
+def _ingest_text(session, text: str, name: str):
+    from novel_system.services.style_reference.ingest import IngestService
+
+    return IngestService(session, llm_enabled=False).ingest_upload(
+        raw_bytes=text.encode("utf-8"),
+        file_name=f"{name}.txt",
+        title=name,
+        author_label="作者",
+        cloud_policy="segments_only",
+        rights_declaration={"analysis_rights": True, "send_rights": True},
+    )
+
+
+def test_single_newline_books_count_one_blank_line_as_a_scene_break(session) -> None:
+    """2026-09-23 v3(I10):网文 TXT 按单换行切段时,一个空行就是场界,编号与段落表一致
+    (旧实现按空行口径数段,编号错位,还要求 3 个换行)。"""
+    line = "他沿着堤岸往北走,风从河面上刮过来,带着一股潮湿的铁锈味,远处的灯一盏一盏灭了下去。" * 2
+    first = "\n".join(f"{i}:{line}" for i in range(20))
+    second = "\n".join(f"{i + 20}:{line}" for i in range(20))
+    result = _ingest_text(session, first + "\n\n" + second, "single_newline")
+    assert result.paragraphs_count == 40
+    assert result.book.stats_json["scene_breaks"] == [19]
+
+
+def test_blank_line_breaks_survive_paratext_removal_and_ellipsis_lines_are_not_breaks(session) -> None:
+    prose = "她把茶杯推到桌子另一头,没有说话,窗外的雨又密了一层,檐下的水声连成了线。"
+    text = (
+        f"{prose}一\n\n{prose}二\n\n[1] 这是一条脚注,不是作者的文字。\n\n\n\n"
+        f"{prose}三\n\n……\n\n{prose}四\n\n\n\n{prose}五"
+    )
+    result = _ingest_text(session, text, "paratext_breaks")
+    stats = result.book.stats_json
+    assert stats["paratext_dropped"] == 1
+    # 剥掉脚注后:0 一、1 二、2 三、3 ……、4 四、5 五;脚注之后的空行场界挪到「二」之后,「……」不是场界
+    assert result.paragraphs_count == 6
+    assert stats["scene_breaks"] == [1, 4]
+
+
+def test_explicit_scene_breaks_follow_the_basis_of_the_actual_split() -> None:
+    from novel_system.services.style_reference.text_utils import (
+        explicit_scene_breaks as breaks,
+        remap_scene_breaks,
+    )
+
+    text = "甲\n乙\n\n丙\n丁"
+    assert breaks(text, ["甲", "乙", "丙", "丁"]) == [1]  # 单换行口径:一个空行即场界
+    assert breaks(text, ["甲\n乙", "丙\n丁"]) == []  # 空行口径:一个空行只是段界
+    assert breaks(text, ["对不上"]) == []
+    # 删段 / 重编号后的搬运:落在被删段之后的挪到前一个保留段,挪到最后一段之后的不记
+    assert remap_scene_breaks([1, 3, 5], {0: 0, 1: 1, 3: 2, 4: 3, 5: 4}) == [1, 2]
+    assert remap_scene_breaks([2], {0: 0, 1: 1, 3: 2}) == [1]
+    assert remap_scene_breaks([7], {0: 0, 1: 1}) == []
 
 
 # ---------------------------------------------------------------------------

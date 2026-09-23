@@ -80,36 +80,140 @@ _SCENE_BREAK_RE = re.compile(
     r"^[\s\*＊※◇◆□■○●〇△▲☆★~～\-—―–_＿=＝#＃\.·•…、:：;；\|｜/／\\<>《》()（）\[\]【】]{1,40}$"
 )
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+# 2026-09-23(v3 I10):只由省略号 / 句点组成的行(「……」「......」「。。。」)是停顿或沉默,不是场界。
+_ELLIPSIS_ONLY_RE = re.compile(r"^[\s…⋯\.。]+$")
 
 
 def is_scene_break_paragraph(text: str) -> bool:
-    """段落是否为纯符号的场分隔行(不含任何汉字,≤40 字符)。"""
+    """段落是否为纯符号的场分隔行(不含任何汉字,≤40 字符;单独一行的省略号不算)。"""
     stripped = str(text or "").strip()
     if not stripped or len(stripped) > 40 or _CJK_RE.search(stripped):
+        return False
+    if _ELLIPSIS_ONLY_RE.match(stripped):
         return False
     return _SCENE_BREAK_RE.match(stripped) is not None
 
 
-def explicit_scene_breaks(text: str) -> list[int]:
-    """原文(已统一换行、**尚未**合并多余空行)里 3 个以上连续换行所在的段落边界。
+# 空行型场界的切段口径(与 split_paragraphs 的两种切法一一对应)与各自的阈值:
+# 空行切段时段与段之间本来就隔一个空行,要 3 个以上换行(两个以上空行)才是场界;
+# 单换行切段(网文 TXT)时段与段之间只有一个换行,出现一个空行(2 个换行)就是场界。
+_SCENE_BREAK_BASES: tuple[tuple[str, str, int], ...] = (
+    ("blank_line", r"\n\s*\n", 3),
+    ("single_newline", r"\n+", 2),
+)
 
-    返回「其后紧跟该空白的段落」在 :func:`split_paragraphs` 编号下的索引(空行切段口径;
-    若该书退化为单换行切段,空行不是段界,返回空列表由调用方处理)。
+
+def gap_preserving_text(text: str) -> str:
+    """与 :func:`normalize_text` 同一清洗(统一换行、剥控制字符、去首尾空白),但**不合并**多余空行。
+
+    空行型场界要在这份文本上数:它切出的段与 ``split_paragraphs(normalize_text(text))`` 逐段相同,
+    只是段与段之间的换行数还在。
+    """
+    text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    return text.strip()
+
+
+def _bodies_and_gaps(text: str, separator: str) -> tuple[list[str], list[int]]:
+    """按 ``separator`` 切出的非空段(strip 后)与每段之前的换行数(首段之前记 0)。"""
+    bodies: list[str] = []
+    gaps: list[int] = []
+    pending = 0
+    for position, part in enumerate(re.split(f"({separator})", text)):
+        if position % 2 == 1:  # 捕获组 = 分隔符
+            pending += part.count("\n")
+            continue
+        stripped = part.strip()
+        if not stripped:
+            pending += part.count("\n")
+            continue
+        gaps.append(pending if bodies else 0)
+        bodies.append(stripped)
+        pending = 0
+    return bodies, gaps
+
+
+def explicit_scene_breaks(text: str, paragraph_bodies: list[str] | None = None) -> list[int]:
+    """原文(已统一换行、**尚未**合并多余空行,见 :func:`gap_preserving_text`)里的空行型场界。
+
+    返回「其后有场界」的段落索引。``paragraph_bodies`` 是 :func:`split_paragraphs` 在同一本书
+    (合并空行后)上**实际**切出的段(剥副文本之前):按它判断切段口径——空行切段时 3 个以上换行
+    是场界,退化为单换行切段(网文 TXT)时一个空行就是场界,编号与段落表一致;哪种口径都切不出
+    这些段时返回 []。不给 ``paragraph_bodies`` 时按空行口径(旧行为)。
     """
     if not text:
         return []
-    breaks: list[int] = []
+    for _basis, separator, threshold in _SCENE_BREAK_BASES:
+        bodies, gaps = _bodies_and_gaps(text, separator)
+        if paragraph_bodies is not None and bodies != list(paragraph_bodies):
+            continue
+        return sorted({index - 1 for index in range(1, len(bodies)) if gaps[index] >= threshold})
+    return []
+
+
+def scene_break_indexes(
+    gap_text: str,
+    raw_bodies: list[str],
+    kept: list[bool],
+) -> list[int]:
+    """导入期的场界:「其后有场界」的段落索引,按**剥离副文本之后**的段落编号。
+
+    - 空行型场界按 ``split_paragraphs`` 实际用的切段口径数(:func:`explicit_scene_breaks`);
+    - 剥副文本时不丢场界:落在被剥段之后的场界挪到它之前最近的保留段上;挪到全书最后一段
+      之后(后面已没有场)的不记;
+    - 纯符号分隔行(非省略号行)本身记为场界。
+
+    ``raw_bodies`` 是剥离前的全部段,``kept[i]`` 表示第 i 段保留(不是副文本)。
+    """
+    new_index: list[int | None] = []
+    last_kept: list[int | None] = []
     count = 0
-    for part in re.split(r"(\n\s*\n)", text):
-        if not part:
-            continue
-        if part.startswith("\n") and part.strip() == "":
-            if part.count("\n") >= 3 and count > 0:
-                breaks.append(count - 1)
-            continue
-        if part.strip():
+    previous: int | None = None
+    for keep in kept:
+        if keep:
+            new_index.append(count)
+            previous = count
             count += 1
-    return sorted(set(breaks))
+        else:
+            new_index.append(None)
+        last_kept.append(previous)
+    breaks: set[int] = set()
+    for raw in explicit_scene_breaks(gap_text, raw_bodies):
+        if 0 <= raw < len(last_kept):
+            mapped = last_kept[raw]
+            if mapped is not None and mapped < count - 1:
+                breaks.add(mapped)
+    for raw, body in enumerate(raw_bodies):
+        mapped = new_index[raw] if raw < len(new_index) else None
+        if mapped is not None and is_scene_break_paragraph(body):
+            breaks.add(mapped)
+    return sorted(breaks)
+
+
+def remap_scene_breaks(
+    breaks: list[int],
+    old_to_new: dict[int, int],
+) -> list[int]:
+    """段落删除 / 重编号之后搬运已记录的场界(刷新工具用)。
+
+    ``old_to_new`` 是保留段的旧编号 → 新编号。落在被删段之后的场界挪到它之前最近的保留段;
+    挪到最后一段之后(后面已没有场)的不记。
+    """
+    import bisect
+
+    if not breaks or not old_to_new:
+        return []
+    kept_old = sorted(old_to_new)
+    last_new = max(old_to_new.values())
+    result: set[int] = set()
+    for old in breaks:
+        position = bisect.bisect_right(kept_old, int(old)) - 1
+        if position < 0:
+            continue
+        mapped = old_to_new[kept_old[position]]
+        if mapped < last_new:
+            result.add(mapped)
+    return sorted(result)
 
 
 # 单独命中即判副文本的强标记(「----用户上传之内容开始----」这类分隔线只含一个站点用语)

@@ -1,4 +1,4 @@
-"""StyleReference 运行时 cleanup。"""
+"""StyleReference 运行时 cleanup:删书 / 破坏式重新分类时清派生数据,遥测留存清理。"""
 
 from __future__ import annotations
 
@@ -17,38 +17,33 @@ from novel_system.db.models import (
     StyleReferenceFinding,
     StyleReferenceFindingFeedback,
     StyleReferenceInjectionBinding,
+    StyleReferenceJob,
     StyleReferenceProfile,
     StyleReferenceQuote,
     StyleReferenceRun,
     StyleReferenceValidationReport,
+    StyleReferenceWindow,
 )
 
 
 _LOGGER = logging.getLogger(__name__)
 
-# 物化提升落库的运行时风格行（approve 时由 ReviewItem 提升而来，以 source_review_id 标记来源）。
-# 删书须按 source_review_id 一并清除，否则孤儿行仍 runtime-active 注入下游成稿。
-
 
 def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
-    """删除 book 的全部派生数据,保留 paragraphs 与 book 本身。
+    """删除一本书的全部派生数据,保留段落表与书本身(``delete_book`` 与破坏式重新分类共用)。
 
-    覆盖 10 张派生表(validation reports → bindings → banned terms → profiles →
-    finding_feedback → evidences → findings → extractions → quotes → runs,
-    FK 反向顺序)+ 相关 ReviewItem(``review_style_ref_apply_*`` /
-    ``review_style_ref_calib_*`` / ``review_style_ref_finding_*`` 前缀)+ **apply/calib
-    review 提升落库的 5 张运行时风格表**(style_observations / style_rules /
-    narrative_patterns / banned_rule_clusters / calibration_lines,按 source_review_id
-    前缀清除——否则删书后孤儿行仍 runtime-active 注入下游成稿)+ 每个 profile 的
-    三粒度 RAG 向量索引(向量后端,独立于 DB 事务)。
+    按 FK 反向顺序清 12 张派生表:回测报告 → 绑定 → 禁用词(每个画像)→ 画像 → 发现反馈 →
+    证据 → 发现 → 抽取 → 引文 → 抽取 run → 作业(``style_reference_jobs``,该书的分类 / 学习 /
+    检查作业;还在跑的工人的条件写随之落空)→ 窗口索引(``style_reference_windows``);外加
+    相关 ReviewItem(``review_style_ref_finding_*`` 按发现、``review_style_ref_apply_*`` /
+    ``review_style_ref_calib_*`` 按画像的遗留待办行)与每个画像的 RAG 向量索引(向量后端,独立于
+    DB 事务,失败只记警告)。
 
-    刻意不删 ``style_reference_metric_events``:纯运营遥测(无 book_id / FK 列),
-    由 ``cleanup_metric_events`` 的 90 天留存独立清理。删书后其 profile_id /
-    binding_id 字段可能悬空,但聚合按 event_kind/时间窗口分组、不回链已删 profile,
-    故不构成完整性问题。
+    刻意不删:``style_reference_metric_events``(纯运营遥测,无 book 列,由 ``cleanup_metric_events``
+    的 90 天留存独立清理);``style_reference_scene_windows`` / ``style_fidelity_readings``(按场景 /
+    画像键,没有书的外键,属于作品侧的历史)。
 
-    路由 ``delete_book`` 与 ``reclassify`` 共用;flush 但不 commit。
-    返回 {表名: 删除行数} 摘要。
+    flush 但不 commit。返回 {表名: 删除行数} 摘要。
     """
     from novel_system.services.style_reference.repository import (
         StyleReferenceRepository,
@@ -153,6 +148,14 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     _exec(
         delete(StyleReferenceRun).where(StyleReferenceRun.book_id == book_id),
         "runs",
+    )
+    _exec(
+        delete(StyleReferenceJob).where(StyleReferenceJob.book_id == book_id),
+        "jobs",
+    )
+    _exec(
+        delete(StyleReferenceWindow).where(StyleReferenceWindow.book_id == book_id),
+        "windows",
     )
     session.flush()
     # 进程内抄袭语料缓存按 (book_id, checksum) 键;删书/重分类后清一次,

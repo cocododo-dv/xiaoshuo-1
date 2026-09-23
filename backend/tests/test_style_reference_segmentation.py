@@ -1,6 +1,8 @@
-"""segmentation 单测:启发式 8 类 + LLM 模式 + 锚定校准。
+"""segmentation 单测:启发式 8 类(离线夹具模式)+ LLM 分类的原子单元(一批一次调用)。
 
-参见 plans/style-reference-v1-1-fancy-shannon.md §"测试策略"。
+整本 LLM 分类是分类作业(``import_job``,作业表 kind=classify)的事,作业级的锚定校准 / 分批 / 并行 /
+重试 / 续跑在 ``test_style_reference_import_job.py``;这里钉住一批请求的安全封装、占位符处理、渲染失败、
+调用失败不降级到启发式,以及 ``classify_paragraphs`` 只剩离线夹具模式。
 """
 
 from __future__ import annotations
@@ -171,96 +173,20 @@ def test_classify_paragraphs_llm_disabled_ignores_client(fake_paragraph_classifi
 
 
 # ---------------------------------------------------------------------------
-# LLM 锚定校准
+# LLM:一批一次记账调用(作业的原子单元)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("rule", "expected_fallback", "expected_agreement", "expected_rest_node"),
-    [
-        ("default", False, 1.0, segmentation_llm.NODE_BULK),
-        ("disagree_after_anchor", True, 0.0, segmentation_llm.NODE_ANCHOR),
-    ],
-)
-def test_classify_paragraphs_secures_every_llm_request_without_changing_results(
+def _anchor_runtime() -> segmentation_llm.NodeRuntime:
+    return segmentation_llm.load_classification_runtimes()[segmentation_llm.NODE_ANCHOR]
+
+
+@pytest.mark.parametrize("node_id", [segmentation_llm.NODE_ANCHOR, segmentation_llm.NODE_BULK])
+def test_classify_batch_secures_the_request_and_accounts_the_call(
     fake_paragraph_classifier,
     session,
-    rule: str,
-    expected_fallback: bool,
-    expected_agreement: float,
-    expected_rest_node: str,
+    node_id: str,
 ) -> None:
-    class CapturingClient(fake_paragraph_classifier):
-        def __init__(self) -> None:
-            super().__init__(rule=rule)
-            self.requests = []
-
-        def generate(self, request):  # noqa: ANN001
-            self.requests.append(request)
-            return super().generate(request)
-
-    client = CapturingClient()
-    paragraphs = [
-        (paragraph_index, paragraph_index + 1, _MALICIOUS_PARAGRAPH)
-        for paragraph_index in range(segmentation_llm.ANCHOR_SIZE + 1)
-    ]
-
-    result = classify_paragraphs(
-        paragraphs,
-        llm_enabled=True,
-        llm_client=client,
-        session=session,
-        scope_id="sr_book_secure",
-    )
-
-    assert len(result.classifications) == len(paragraphs)
-    assert result.calibration["fallback_to_heuristic"] is False
-    assert result.calibration["fallback_to_strong"] is expected_fallback
-    assert result.calibration["fast_model_agreement"] == expected_agreement
-    assert all(item.confidence == 0.9 for item in result.classifications)
-    assert all(
-        item.classifier_confidence_level == "high"
-        for item in result.classifications
-    )
-    assert client.call_count == len(client.requests) == 17
-    assert client.requests[-1].node_id == expected_rest_node
-    assert {request.node_id for request in client.requests} == {
-        segmentation_llm.NODE_ANCHOR,
-        segmentation_llm.NODE_BULK,
-    }
-    for request in client.requests:
-        _assert_secured_request(request)
-    calls = session.query(LlmCall).all()
-    attempts = session.query(LlmCallAttempt).all()
-    assert len(calls) == len(attempts) == 17
-    assert {call.scope_type for call in calls} == {"style_reference_book"}
-    assert {call.scope_id for call in calls} == {"sr_book_secure"}
-    assert {attempt.accounting_status for attempt in attempts} == {"settled"}
-
-
-def test_classify_paragraphs_moves_template_placeholder_before_bounded_payload(
-    fake_paragraph_classifier,
-    monkeypatch,
-    session,
-) -> None:
-    templates = load_prompt_templates()
-    placeholder_task = (
-        "Classify every paragraph listed here: {paragraphs}\n"
-        "Return only the configured schema."
-    )
-    patched_templates = {
-        **templates,
-        segmentation_llm.NODE_ANCHOR: replace(
-            templates[segmentation_llm.NODE_ANCHOR], task_prompt=placeholder_task
-        ),
-        segmentation_llm.NODE_BULK: replace(
-            templates[segmentation_llm.NODE_BULK], task_prompt=placeholder_task
-        ),
-    }
-    monkeypatch.setattr(
-        segmentation_llm, "load_prompt_templates", lambda: patched_templates
-    )
-
     class CapturingClient(fake_paragraph_classifier):
         def __init__(self) -> None:
             super().__init__()
@@ -271,30 +197,64 @@ def test_classify_paragraphs_moves_template_placeholder_before_bounded_payload(
             return super().generate(request)
 
     client = CapturingClient()
-    result = classify_paragraphs(
-        [(0, 1, _MALICIOUS_PARAGRAPH)],
-        llm_enabled=True,
-        llm_client=client,
+    runtime = segmentation_llm.load_classification_runtimes()[node_id]
+    texts = [_MALICIOUS_PARAGRAPH] * 6
+    indexes = list(range(10, 16))
+
+    result = segmentation_llm.classify_batch(
+        runtime,
+        [1, 2, 4],
+        texts,
+        indexes,
+        client,
         session=session,
-        scope_id="sr_book_placeholder",
+        scope_id="sr_book_secure",
+        step="paragraph_classification:anchor_strong:11:3",
     )
 
-    assert len(result.classifications) == 1
-    # 书不超过锚定集:没有余段就不做快模型对照(2026-09-15),只有一次强模型调用
-    assert result.calibration["fast_model_agreement"] is None
-    assert result.calibration["rest_classifier"] is None
+    assert set(result) == {11, 12, 14}
+    assert all(conf == 0.9 for _ptype, conf in result.values())
     assert len(client.requests) == 1
-    for request in client.requests:
-        user_prompt = request.messages[-1]["content"]
-        opening = f"[UNTRUSTED_REFERENCE_DATA:{request.node_id}]"
-        assert user_prompt.startswith(
-            "Classify every paragraph listed here: See the bounded payload below."
-        )
-        assert "{paragraphs}" not in user_prompt
-        assert user_prompt.index("See the bounded payload below.") < user_prompt.index(
-            opening
-        )
-        assert user_prompt.index('"paragraphs"') > user_prompt.index(opening)
+    request = client.requests[0]
+    _assert_secured_request(request)
+    payload = json.loads(
+        request.messages[1]["content"].split(f"[UNTRUSTED_REFERENCE_DATA:{node_id}]\n", 1)[1].split(
+            "\n[/UNTRUSTED_REFERENCE_DATA]", 1
+        )[0]
+    )
+    # 批外的前 / 后一段作只读上下文;批内相邻的段不重复给
+    by_index = {item["paragraph_index"]: item for item in payload["paragraphs"]}
+    assert "context_before" in by_index[11] and "context_after" not in by_index[11]
+    assert "context_before" not in by_index[12] and "context_after" in by_index[12]
+    assert "context_before" in by_index[14] and "context_after" in by_index[14]
+    calls = session.query(LlmCall).all()
+    attempts = session.query(LlmCallAttempt).all()
+    assert len(calls) == len(attempts) == 1
+    assert calls[0].scope_type == "style_reference_book" and calls[0].scope_id == "sr_book_secure"
+    assert calls[0].step == "paragraph_classification:anchor_strong:11:3"
+    assert attempts[0].accounting_status == "settled"
+
+
+def test_batch_request_moves_the_template_placeholder_before_the_bounded_payload() -> None:
+    runtime = _anchor_runtime()
+    placeholder_task = (
+        "Classify every paragraph listed here: {paragraphs}\n"
+        "Return only the configured schema."
+    )
+    patched = segmentation_llm.NodeRuntime(
+        node_id=runtime.node_id,
+        route=runtime.route,
+        template=replace(runtime.template, task_prompt=placeholder_task),
+    )
+    request = segmentation_llm.build_batch_request(
+        patched, [{"paragraph_index": 0, "text": _MALICIOUS_PARAGRAPH}]
+    )
+    user_prompt = request.messages[-1]["content"]
+    opening = f"[UNTRUSTED_REFERENCE_DATA:{request.node_id}]"
+    assert user_prompt.startswith("Classify every paragraph listed here: See the bounded payload below.")
+    assert "{paragraphs}" not in user_prompt
+    assert user_prompt.index("See the bounded payload below.") < user_prompt.index(opening)
+    assert user_prompt.index('"paragraphs"') > user_prompt.index(opening)
 
 
 @pytest.mark.parametrize(
@@ -311,9 +271,7 @@ def test_segmentation_renderer_failure_uses_stable_error_without_calling_client(
     def fail_render(*_args, **_kwargs):
         raise TypeError(leaked_payload)
 
-    monkeypatch.setattr(
-        segmentation_llm, renderer_name, fail_render, raising=False
-    )
+    monkeypatch.setattr(segmentation_llm, renderer_name, fail_render, raising=False)
 
     class CountingClient:
         call_count = 0
@@ -324,95 +282,45 @@ def test_segmentation_renderer_failure_uses_stable_error_without_calling_client(
 
     client = CountingClient()
     with pytest.raises(segmentation_llm.SegmentationLLMError) as exc_info:
-        segmentation_llm._classify_via_node(
-            [(0, 1, leaked_payload)],
-            segmentation_llm.NODE_ANCHOR,
+        segmentation_llm.classify_batch(
+            _anchor_runtime(),
+            [0],
+            [leaked_payload],
+            [0],
             client,
             session=session,
             scope_id="sr_book_renderer",
+            step="paragraph_classification:anchor_strong:0:1",
         )
 
-    assert exc_info.value.code == "STYLE_REF_LLM_PROMPT_RENDER_FAILED"
+    assert exc_info.value.code == "STYLE_REFERENCE_CLASSIFY_PROMPT_RENDER_FAILED"
     assert leaked_payload not in str(exc_info.value)
     assert client.call_count == 0
 
 
-def test_classify_paragraphs_llm_agreement_high(
-    fake_paragraph_classifier, session, monkeypatch
-) -> None:
-    """默认 fake classifier 在 anchor/bulk 上返回相同结果,agreement=1.0 → 用 fast 路径。
-    锚定集缩到 2 段,让 3 段的样本有余段(没有余段就不做快模型对照)。"""
-    monkeypatch.setattr(segmentation_llm, "ANCHOR_SIZE", 2)
-    client = fake_paragraph_classifier()
-    paragraphs = [
-        (0, 10, "他说:“你好。”"),
-        (10, 30, "我心里想着昨天的事,觉得有些不安。"),
-        (30, 60, "故事从一个平凡的午后开始,一切都和往常一样。"),
-    ]
-    result = classify_paragraphs(
-        paragraphs,
-        llm_enabled=True,
-        llm_client=client,
-        session=session,
-        scope_id="sr_book_agreement_high",
-    )
-    # anchor + bulk 都被调过
-    assert client.call_count >= 2
-    assert result.calibration["fallback_to_strong"] is False
-    assert result.calibration["fast_model_agreement"] >= 0.85
-
-
-def test_classify_paragraphs_llm_agreement_low_falls_back_to_strong(
-    fake_paragraph_classifier,
-    session,
-    monkeypatch,
-) -> None:
-    """rule=disagree_after_anchor 使 bulk 返回全 transition,与 anchor 大量不一致 → fallback to strong。"""
-    monkeypatch.setattr(segmentation_llm, "ANCHOR_SIZE", 2)
-    client = fake_paragraph_classifier(rule="disagree_after_anchor")
-    paragraphs = [
-        (0, 10, "他说:“你好。”"),
-        (10, 30, "我心里想着昨天的事,觉得有些不安。"),
-        (30, 60, "故事从一个平凡的午后开始,一切都和往常一样。"),
-    ]
-    result = classify_paragraphs(
-        paragraphs,
-        llm_enabled=True,
-        llm_client=client,
-        session=session,
-        scope_id="sr_book_agreement_low",
-    )
-    assert result.calibration["fallback_to_strong"] is True
-    assert result.calibration["fast_model_agreement"] < 0.85
-
-
-def test_classify_paragraphs_llm_failure_is_an_error_not_a_heuristic_fallback(session) -> None:
-    """2026-09-15 严格 LLM:LLM 调用失败就是失败(502 + 原因 + author_action),不降级到启发式。"""
-
-    from novel_system.services.errors import DomainError
-    from novel_system.services.style_reference.errors import ClassificationFailedError
+def test_llm_failure_is_an_error_never_a_heuristic_fallback(session) -> None:
+    """2026-09-15 严格 LLM:调用失败就是失败(作业整批重试 → 502),不降级到启发式;
+    ``classify_paragraphs`` 只剩离线夹具模式,带着 ``llm_enabled=True`` 调用是编程错误。"""
     from tests.accounted_llm_fakes import AccountedGenerateMixin
 
     class FailingClient(AccountedGenerateMixin):
         def generate(self, _request):
             raise RuntimeError("network down")
 
-    paragraphs = [(0, 5, "几日后。"), (5, 30, "他心里想着,觉得不安。")]
-    with pytest.raises(ClassificationFailedError) as caught:
-        classify_paragraphs(
-            paragraphs,
-            llm_enabled=True,
-            llm_client=FailingClient(),
+    with pytest.raises(segmentation_llm.SegmentationLLMError) as caught:
+        segmentation_llm.classify_batch(
+            _anchor_runtime(),
+            [0, 1],
+            ["几日后。", "他心里想着,觉得不安。"],
+            [0, 1],
+            FailingClient(),
             session=session,
             scope_id="sr_book_failure",
+            step="paragraph_classification:anchor_strong:0:2",
         )
-    err = caught.value
-    assert isinstance(err, DomainError)
-    assert err.status_code == 502
-    assert err.code == "STYLE_REFERENCE_CLASSIFICATION_FAILED"
-    assert err.details["reason_code"] == "STYLE_REF_LLM_GENERATE_FAILED"
-    assert err.details["book_id"] == "sr_book_failure"
-    assert err.details["author_action"]["view"] == "systemConfig"
+    assert caught.value.code == "STYLE_REFERENCE_CLASSIFY_LLM_CALL_FAILED"
+    with pytest.raises(ValueError):
+        classify_paragraphs([(0, 5, "几日后。")], llm_enabled=True, llm_client=FailingClient())
 
 
 # ---------------------------------------------------------------------------
@@ -551,69 +459,3 @@ def test_heuristic_speech_exclusions_reuse_function_words_yaml() -> None:
     assert {"知道", "应该", "道理", "小说"} <= yaml_exclusions
     assert yaml_exclusions <= set(_speech_exclusions())
     assert {"叫做", "念头"} <= set(_speech_exclusions())
-
-
-# ---------- 2026-09-15 有界导入:余段过 LLM 有上限,大书余段整体走启发式 ----------
-#
-# 真实故障:一本 26,677 段的书在 segments_only 策略下导入,锚定集之外的 26,477 段按
-# BATCH_SIZE=25 逐批过快模型 = 1,059 次串行调用;路由到思考型中转时实测 17.7 s/次 ≈ 5 小时,
-# 同步 HTTP 请求里作者看到的只有「导入没成功」。
-
-
-def _plain_paragraphs(count: int) -> list[tuple[int, int, str]]:
-    bodies = [
-        "他把灯拧暗了一点,窗外的雨声就显得更近。",
-        "「你来了。」她说。",
-        "几日后。",
-        "门外的脚步声走到一半,又退了回去。她没有立刻回答。",
-    ]
-    return [
-        (index * 40, index * 40 + 30, bodies[index % len(bodies)]) for index in range(count)
-    ]
-
-
-def test_classify_paragraphs_classifies_every_paragraph_with_the_llm(
-    fake_paragraph_classifier, monkeypatch, session
-) -> None:
-    """2026-09-15 严格 LLM:没有余段上限,书的每一段都由 LLM 分类。"""
-    monkeypatch.setattr(segmentation_llm, "ANCHOR_SIZE", 25)
-
-    class CapturingClient(fake_paragraph_classifier):
-        def __init__(self) -> None:
-            super().__init__()
-            self.requests = []
-
-        def generate(self, request):  # noqa: ANN001
-            self.requests.append(request)
-            return super().generate(request)
-
-    client = CapturingClient()
-    paragraphs = _plain_paragraphs(25 + 30)  # 锚定 25 + 余段 30:设计的三步
-
-    result = classify_paragraphs(
-        paragraphs,
-        llm_enabled=True,
-        llm_client=client,
-        session=session,
-        scope_id="sr_book_at_cap",
-    )
-
-    # 强模型锚定 1 批 + 快模型锚定 1 批 + 余段 30 段 2 批
-    assert client.call_count == 4
-    assert [request.node_id for request in client.requests] == [
-        segmentation_llm.NODE_ANCHOR,
-        segmentation_llm.NODE_BULK,
-        segmentation_llm.NODE_BULK,
-        segmentation_llm.NODE_BULK,
-    ]
-    assert len(result.classifications) == 55
-    assert {item.classifier_confidence_level for item in result.classifications} == {"high"}
-    calibration = result.calibration
-    assert calibration["rest_classifier"] == "fast_llm"
-    assert calibration["fast_model_agreement"] == 1.0
-    assert calibration["fallback_to_strong"] is False
-    assert calibration["llm_classified_paragraphs"] == 55
-    assert calibration["heuristic_classified_paragraphs"] == 0
-    assert calibration["fallback_to_heuristic"] is False
-    assert "heuristic_anchor_agreement" not in calibration
-    assert "llm_bulk_paragraph_cap" not in calibration
