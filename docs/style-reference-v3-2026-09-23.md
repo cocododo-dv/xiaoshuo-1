@@ -452,3 +452,116 @@ A/B：上线后的库复制三份，各跑三场从没起草过的场景（第 1
   路由换成 opus。
 - 用量：每场 6–9 次调用、约 11–22 万输入 tokens（旧管线 opus 一场约 42 万）、2.5–5 分钟。个别场 soft QC / 准定稿评审在这个中转上
   推理爆量（一次 6.8 万输出 tokens、2.5 分钟）：评审节点的推理档可以在系统配置里调低。
+
+## 8. 清理与优化（2026-09-24，上线后的状态评估 → 全部处理）
+
+上线后的状态评估（四路只读审阅 + 实库核对；结论与逐条出处记在会话记忆）：v3 的五条结构承诺在代码里都成立，
+测试与 CI 全绿，实库上线后一次起草都没跑过；剩下的是一批可机械清理的旧兼容、几处会让作者卡住的口子、一个评分口径 bug、
+一处与契约不符的规划层行为，以及一项明显的成本浪费（重新学习每次重新给全书窗口打标签）。作者的决定：**全部清理、优化**。
+本节是这一轮的契约：处理方式、分包与文件归属；实现与本节冲突时先改本节。
+
+### 8.1 处理决定（逐条）
+
+**作者会碰到的**
+- C1 对照检查作业不能取消 / 放弃：新增 `POST /api/v2/style-reference/checks/{job_id}/cancel`（queued / 心跳过期 → 直接收尾 cancelled；
+  running → 置取消标记，工人在下一个 `check_continue` 处停；已结束 → 409 `STYLE_REFERENCE_CHECK_NOT_ACTIVE`，与分类 / 学习的取消同形）。
+  活动清单的「取消」对 check 作业开放（按载荷的 `cancellable`）；对照检查页在排队 / 进行中给「取消」，取消后条目清掉
+  （`fidDismissCheck`）；轮询 1.5 s，超过 3 分钟后放慢到 5 s，不再无上限地以 1.5 s 轮询。
+- C2 学习失败不可续跑却给「继续学习」：`learn_payload.resumable` = 已取消 / 心跳过期 / 失败且 `error.retryable` 不为 false；
+  不可续跑的失败（`input_too_small` 等）只给「重新学习」；正文太短（作业失败的 `reason_code == input_too_small`，或建作业时的
+  409 `STYLE_REFERENCE_INPUT_TOO_SMALL`）另给「仍然学习」= `POST …/learn {"force": true}`（后端早已支持 `force`，前端从没发过）。
+- C3 对照检查评审分用了弃用口径：`check_job.normalize_judge_output` 改按模板声明的刻度（`review_scores.declared_score_scale` /
+  `normalize_score`，与软 QC / 准定稿 / 深评同一条路），越界丢掉、不夹；模板没声明刻度（旧提示词快照）时才退回按一次回答推断。
+- C4 旧版全局应用的文案自相矛盾：状态卡改说「这条旧版应用对所有没有自己应用的作品生效；要解除，在下面「这份文风还用在」里解除
+  （那里的解除才是对全部作品）」，下方列表的「解除」保留（`ws-styleref.test.jsx` 已钉这一行为）。
+- C5 后端 `author_action` 无按钮 / 死词汇：`srErrorInfo` 认得 `resume_learning`（继续学习）、`review_book`（查看这本书 → 总览）、
+  `resume_classification` / `wait_or_resume_classification`（继续分类）、`review_cloud_policy`（去这本书的隐私设置 → 总览）；
+  `redeclare_send_rights` 发生在导入对话框内，就地提示即可。删掉前端里没人产出的 `cancelling` 书状态与
+  `STYLE_REFERENCE_IMPORT_CANCELLED`；`ws-fidelity-model.js` 补 `STYLE_REFERENCE_CHECK_TARGET_INVALID` 等 CHECK_* 文案。
+  活动清单「打开」一次在起草台发起的对照检查：对照检查页按作业 id 取结果（新增 `fidAdoptJob(key, jobId)`），不再落到空表单。
+
+**契约偏差**
+- C6 规划层「仅本机」的书遇云端路由：**保留「不送、不报错」**（与 bundle 派生段同一规则：可选增强不能让规划失败；提示注入才 409），
+  但要看得见——`resolve_project_style_reference` / `build_planning_style_reference` 在不送时记 warning 日志（带 `route.reason`），
+  `resolve_project_style_reference` 不再吞掉所有异常只记 debug（改 warning + exc_info），现行说明 §5 写清三种路径的行为。
+- C7 轻量策略把绑定到非 active 画像当成未绑定：`_live_policy_without_contract` 改为返回 `MODE_DEGRADED` +
+  `error_code="STYLE_REFERENCE_PROFILE_NOT_ACTIVE"`（带 profile_id / binding_id），与冻结路径一致；抄袭门由此报 unavailable 而不是 0 本书通过。
+- C8 `cleanup_metric_events` 没人调：清扫线程启动时跑一次、之后每 24 小时一次（独立 session，异常只记日志）。
+
+**结构残留（退役）**
+- S1 旧绑定 / 旧画像兼容 → 迁移 `20260924_0092`（只改数据，不改结构；降级为空操作）：
+  (a) 每条绑定 `config_json` 回填成完整 v3 键（`reference_mode`：旧 strategy A → `card_only`，其余 → `full`，已有值不动；
+  `sample_windows`：缺失时由旧 `intensity` 换算 `round(3 + 9·i/100)`，没有 intensity → 12；`dimension_states` 缺失 → `{}`（读时补 normal）；
+  `draft_mode` 不回填——缺键时仍在契约构建期取 yaml 默认），`strategy` 列统一写 `mixed`；
+  (b) `profile_json.profile_version != "style_profile_v3"` 且未归档的画像 → `status = "archived"`（旧画像没有文风卡；界面对这本书显示
+  「没学过」→ 学习文风就地更新同一份画像：`_choose_profile` 允许选中**有绑定的**归档画像并在 finalize 复活为 active，绑定不动）；
+  (c) 删掉旧版写的 ReviewItem 待办行（`cleanup.py` 里那三种 `review_style_ref_*` 前缀）。
+  然后删：`binding_config.legacy_intensity_to_windows` / `_LEGACY_STRATEGY_MODES`（`normalize_binding_config(config)` 不再收 strategy），
+  `review_effects._bind_style_profile` / `_legacy_binding_config` 及其注册，`binding_apply.legacy_strategy`，`cleanup.py` 的旧 ReviewItem 块，
+  `inject/render.LegacyCardSource` + `LEGACY_*_HEADERS` + 审计里的 `legacy_profile` / `legacy_digit_lines_dropped`，
+  `summaries._legacy_view` / `RELEARN_LEGACY` / 载荷键 `legacy`，`runtime_contract.legacy_forbidden_findings` + 预览载荷 `forbidden_findings`，
+  `LEGACY_PROFILE_JSON_KEYS`（`voice_signature` 过渡别名**保留**），`import_job._legacy_kind` / 载荷键 `classification.kind`，
+  `InjectionStrategy` 只剩 `MIXED`，`TaskType` 只剩实际写 / 读的值。**保留**：v1 契约的读取与校验（`_validate_v1`、`contract_layer` 的多层分支、
+  `frozen_legacy` / `legacy_live` 态）——旧 bundle 是不可变历史，读它不是兼容债；`classification_provenance.legacy_heuristic` 是数据来源标注，保留。
+  `strategy` 列本身保留（常量 `mixed`；删列要重建表，另议）。
+- S2 v2 指标包络退役（第二波，见 8.3 W3）：`metrics.py` / `candidate_rerank.py` / `classification_stats` 的 `MetricsEngine` 统计 /
+  `tolerance_floors.yaml` / `profile_json.metrics_baseline` / `book.stats_json.metrics` + `prose_shape_metrics` / `runtime_contract` 的
+  `blend_profile_metric_baselines`、`contract_metric_mean_map`、`contract_profile_objects`（若只剩包络在用）。起草里的四处消费者改用读数：
+  (a) `_candidate_style_assessment`：去掉包络目标，`style_score` 改由读数给（有读数：`1 − percentile/100`，四位小数；没有：None），
+  抄袭门照旧；读数 / 抄袭检查抛异常时 `plagiarism_checked=False`，有绑定时 `_offer_candidates_for_selection` 不把「没检查成」的候选交给盲选；
+  (b) `_normalize_style_paragraph_shape` 整个删掉（三处调用点原文不动；审计键 `paragraph_shape_audit` 不再写，旧检查点带它也能读）；
+  (c) `_assess_style_anchor_conformance` 与它触发的 `style_structure` 修复删掉；neutral_first 且有绑定时，风格稿出来后读一次读数，
+  用 `style_step.revision_keep_decision` 与中性稿比：不更像就把中性稿当风格稿交付（通知同 style_first 的 `STYLE_STEP_KEPT_FIRST`），
+  读数不可信 / 未绑定 → 照旧接受风格稿；
+  (d) `_assess_style_rewrite_conformance` → `_assess_style_rewrite_drift`：两稿各读一次，`regressed = 改写稿 distance > 来源稿 distance +
+  patch_max_distance_increase`，`comparable` = 两边读数都可信；未绑定 / 不可信 → `comparable=False`，**消费方语义不变**
+  （去模板改写按 `regressed` 拒，风格挽救补丁在 `comparable is not True` 时照旧不采用）。
+  `refresh_style_reference_books` 工具不再重算指标块；金标 `tests/golden/style_reference/expected/*.json` 若含指标块则重生成并在提交里说明。
+- S3 「绑定」只在 StylePolicy 解析：`planning_context.resolve_project_style_reference` 与 `snowflake_chaptering._reference_chapter_scale_hint`
+  改走 `style_policy_live(session, scope, freeze_contract=True/False)`；`bundle_builder` 冻结路径直接用 `inject.bindings.resolve_binding_layers`
+  + `StyleReferenceRepository`，删 `injection.py`（`InjectionService` 兼容壳）；`scene_execution._active_style_reference_profile` /
+  `_normalize_reference_rules` 与 `projects._bound_style_reference_profiles` / `_reference_profile_safe_summary` 删掉——**执行契约快照的形状与
+  哈希不能变**：`reference_rules` 固定写三个空表，`reference_profile_ids` 由 `style_policy_live(freeze_contract=False).profile_id` 给
+  （项目级绑定 → 同一个 id → 同一哈希）；v1 仪表盘不再带 `reference_profiles`；`literary_quality.get_dimension_weights` 的绑定表查询删掉
+  （读的键没人写过）。作用域优先级只写一次（`inject/bindings.SCOPE_RANK`；`runtime_contract` / `style_policy` 引用它——若成环就放到 `schemas.py`）。
+- S4 死代码：`runtime_contract.is_style_bound` / `effective_draft_mode` / `_STYLE_BOUND_MODES` / `contract_metric_mean_map` /
+  `StyleGenerationContext` / `extract_style_generation_context` / 与 `paragraph_root` 重复的 `compute_paragraph_root`，
+  `inject/selection.select_scene_windows`，`inject/__init__` 的惰性 `_EXPORTS` 门面，`readings.attach_judge`，`style_fidelity_view.selected_style_attempt`，
+  `import_job.latest_classification_job`，`learn_job.learn_activity_entry`，`protected_terms.contains_protected`，`schemas.RunStatus` / `RunPhase`（若确无读者），
+  `voice_signature.VoiceLexicon` / `clear_voice_signature_cache` / `render_voice_habits` 的死参数 `baseline`，`segmentation.classify_paragraphs`
+  的死参数 `llm_client`；`voice_signature` 里 200 行 `build-baseline` 命令行移到 `tools/build_voice_baseline.py`（文档随之改）。
+  包 `__init__.py` 只留说明（39 个导出零使用者；`test_style_reference_import_order.py` 改守「包导入不拉起任何子模块」）。
+  预览契约去掉 v2 字段：`InjectionPreviewRequest.strategy` / `intensity` / `sub_dimensions` / `include_*`，`SystemPromptFragments.strategy` /
+  `metric_anchor_block` / `forbidden_block`，`InjectionPreviewStats` 旧名；`profiles.py` 不再映射 intensity。
+  `test_service_architecture.py` 的旧判定白名单随删除更新。`config_loader` 提到的不存在的 extraction yaml 注释改掉。
+- S5 作业脚手架去重：`_Stopped`、`_conflict_error`、`_fresh` / `_check_continue` / `_pre_call_check`、两套并行调用循环
+  （学习作业的 `_run_parallel` + `_call_in_worker`、分类作业的 `_run_batches` + `_call_with_retries`）收进 `jobs.py`（或 `job_runtime.py`）一份，
+  三种作业共用；行为（退避 5 / 15 s、排空在飞批、`stop_when` 重规划、所有权条件写、`JobInterrupted`）不变，现有测试全部保留。
+- S6 每场冻结选窗的旧行：`_store` 的 `params_json` 补 `book_id` / `profile_id`；删书 / 破坏式重分类的 `purge_derived_data` 顺带删这本书的
+  `style_reference_scene_windows` 行（按 `json_extract(params_json,'$.book_id')`；没有 book_id 的旧行不管，实库为 0 行）。
+
+**优化**
+- O1 窗口标签不再依赖文风卡（重新学习从 71 次调用降到 ≈6 次）：`tags_json` 改为 `{situations, moods, dimensions, gist}`，`dimensions` =
+  这一窗最能示范的 ≤3 个维度（`dimensions.SubDimension` 的 16 个键），**不再有 `devices`**；`TAGS_VERSION = "window_tags_v2"`；
+  提示词 `style_ref_tag_windows` v2 给出 16 维的键与中文名、要求只填键；学习作业的打标签步只给 `tags_version != TAGS_VERSION`
+  （或根哈希变了）的窗口打，`params.retag: true` 强制全打，估算随之只算要打的窗；选窗的「手法示范 ≈2」配额改为「维度示范 ≈2」：
+  目标维 = 绑定里的重点维 ∪ `revise_dimensions` ∪ 近期常见偏差维，按 `window.dimensions` 重合挑；`window_refs` / 预览 / 起草台证据栏的窗口标签
+  改显示维度中文名（前端 `STYLE_DIMENSION_LABELS`），配额名相应改叫「维度示范」。文风卡各维的 `devices` 仍在（画像页显示），只是不再进窗口标签。
+  上线：实库『龙族』的 520 窗要在下一次学习时按 v2 重打（65 次调用，约 5 分钟）。
+- O2 运维：删掉仓库根目录的死 `backend.pid`；`qa2-ui.mjs` 对风格页补几条真实断言（四步、书库、导入被模型门挡住）。
+
+### 8.2 分包与文件归属（第一波并行，互不重叠；第二波在第一波合并后）
+
+| 包 | 内容 | 只能改这些文件 |
+|---|---|---|
+| W1 作业 / 学习 / 检查 | C1 后端、C2 后端、C3、C8、S4 中学习侧死代码与 voice_signature 命令行搬家、S5、O1 生产侧（tags.py / learn_tags / 学习作业打标签步 / windows.set_window_tags / 提示词 v2 / 估算） | `services/style_reference/{jobs,learn_job,learn_tags,learn_select,learn_extract,learn_card,import_job,check_job,windows,tags,cleanup,activity,voice_signature,protected_terms,config_loader}.py`、`segmentation/__init__.py`、`api/routes/style_fidelity.py`、`api/routes/style_reference/{learn,books,activity}.py`、`tools/build_voice_baseline.py`（新）、`config/prompts.yaml`（只动 `style_ref_tag_windows`）、`tests/test_style_reference_{jobs,learn_job,learn_units,import_job,check_job_fixes,activity,routes_v3,voice_signature,windows,segmentation,metric_events_cleanup,config_loader,route_followups}.py`、`tests/test_style_fidelity_v3.py`、`tests/test_prompt_template_contracts.py`；新错误码定义在 `check_job.py` 内，不改 `errors.py` |
+| W2 策略 / 契约 / 注入 / 退役 | C6、C7、S1（迁移 0092 + 删兼容）、S3、S4 其余、S6、O1 消费侧（selection / render / window_refs / 预览） | `services/style_policy.py`、`services/style_prompt_injection.py`、`services/style_fidelity_view.py`、`services/style_reference/{runtime_contract,injection(删),binding_config,binding_apply,summaries,schemas,readings,card_states,planning_context,structure,repository,__init__}.py`、`services/style_reference/inject/*`、`services/{bundle_builder,snowflake_chaptering,scene_execution,projects,literary_quality,review_effects,chapter_planning_context,snowflake_workspace_llm,near_final,scene_blueprint}.py`、`api/routes/style_reference/{profiles,bindings,_common,__init__}.py`、`db/schema_contract.py`、`alembic/versions/20260924_0092_*.py`、`tests/test_migration_0092_*.py`（新）、`tests/test_style_reference_{policy,runtime_contract,inject_v3,inject_bindings,inject_review_fixes,binding_apply,schema,repository,injection_preview_endpoint,injection_layers,control_plane_boundaries,review_fixes,routes,narrative_guidance,structure,planning_writer_injection,import_order}.py`、`tests/test_structure_follows_reference.py`、`tests/test_style_windows_surface.py`、`tests/test_style_fidelity_ui_payloads.py`、`tests/test_service_architecture.py`、`tests/style_reference_inject_helpers.py`、`tests/style_reference_factories.py`（窗口种子直接写 v2 形状的 `tags_json`） |
+| W4 前端 | C1 / C2 / C4 / C5 前端、O1 前端标签、O2 的 qa2-ui、删 `SrLegacyPortrait` 与 `legacy_profile` 文案、失败分支的测试 | `frontend-react/src/ws-styleref*`、`ws-fidelity-store.js`、`ws-fidelity-model.js`、`ws-scene-derive.js`、`ws-scene-evidence.jsx`、`ws-labels.js`、`lib/messages.js`、对应 `*.test.*`、`frontend-react/scripts/qa2-ui.mjs` |
+| W3 指标包络（第二波） | S2 | `services/scene_generation.py`、`services/orchestrator.py`（只动候选交付过滤）、`services/style_reference/{candidate_rerank(删),metrics(删),classification_stats,ingest,learn_job(只动 `_profile_json` 的两个 v2 键),runtime_contract(只动 metrics_baseline 相关),config_loader,measure}.py`、`tools/refresh_style_reference_books.py`、`config/style_reference/tolerance_floors.yaml`（删）、`tests/test_scene_generation.py`、`tests/test_style_first_draft.py`、`tests/test_style_reference_{candidate_rerank(删),metrics(删),golden,learn_job,review_fixes,runtime_contract,config_loader}.py`、`tests/golden/style_reference/**` |
+| W5 文档（主会话） | 现行说明、本节完成日志、CLAUDE.md、操作手册、`injection_budget.yaml` 注释、README | `docs/**`、`CLAUDE.md`、`README.md`、`config/style_reference/injection_budget.yaml`（只动注释） |
+
+约定：各包在自己的工作树里改、只跑与自己相关的测试与守卫（`pytest` 各自传不同的 `--basetemp`），不碰 `/home/ubuntu/xiaoshuo`
+（作者在跑的实例）；测试只用合成文本与中性名字（公开仓库）；一个包不改另一个包的文件——需要对方改的写进最终报告，由主会话在合并时处理。
+
+### 8.3 完成日志
+（各包合并后由主会话填写。）
