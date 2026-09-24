@@ -365,8 +365,12 @@ const ERROR_TEXT = {
   STYLE_REFERENCE_CHECK_JUDGE_FAILED: "模型的参考评审没有完成（调用失败或没给出分数），可以重新检查。",
   STYLE_REFERENCE_CHECK_CONFIG_MISSING: "这台机器还没有对照检查用的评审提示词：同步提示词模板（sync_prompt_templates --execute）后再试。",
   STYLE_REFERENCE_CHECK_NOT_FOUND: "这次检查的记录已经不在了，重新检查一次。",
+  STYLE_REFERENCE_CHECK_NOT_ACTIVE: "这次检查已经结束了，不用取消。",
+  STYLE_REFERENCE_CHECK_TARGET_INVALID: "要检查的对象没有给对：贴一段文字或选一场（二选一），并说清对照哪份参考。",
   STYLE_REFERENCE_CLOUD_POLICY_BLOCKED: "这本书设为「仅本机模型」，但评审用的是云端模型：换成本机模型再查。",
+  STYLE_REFERENCE_CLOUD_POLICY_INVALID: "这本书的原文范围设置不对，不能交给模型评审：重新导入并选一档范围。",
   STYLE_REFERENCE_PROFILE_NOT_FOUND: "这份文风画像已经不在了。",
+  STYLE_REFERENCE_PROFILE_NOT_ACTIVE: "这部作品用的那份文风画像已经不是在用的版本（归档或换掉了）：重新学习文风，或重新用于作品。",
   STYLE_REFERENCE_JOB_CANCELLED: "这次检查被取消了。",
   SCENE_NOT_FOUND: "这一场已经不在目录里了。",
   NETWORK_ERROR: "连不上后端：检查后端是否在运行后重试。",
@@ -378,16 +382,20 @@ const RETRYABLE = new Set([
   "NETWORK_ERROR", "REQUEST_TIMEOUT",
 ]);
 
+/* 后端的中文原话比固定文案说得具体的码（哪一处没给对）：有中文原话就用它，固定文案只兜底 */
+const PREFER_SERVER_MESSAGE = new Set(["STYLE_REFERENCE_CHECK_TARGET_INVALID"]);
+
 /* 出错 → { code, message, action }；action：{ type: "settings" | "learn" | "apply" | "retry", label } 或 null */
 export function fidErrorInfo(error, fallback = "对照检查没有完成，可以重新检查。") {
   const code = String((error && error.code) || "");
   const details = (error && error.details) || {};
   const serverMessage = String((error && error.message) || "");
-  const message = ERROR_TEXT[code] || (isChineseMessage(serverMessage) ? serverMessage : fallback);
+  const chinese = isChineseMessage(serverMessage) ? serverMessage : "";
+  const message = (PREFER_SERVER_MESSAGE.has(code) && chinese) || ERROR_TEXT[code] || chinese || fallback;
   let action = null;
   if (code === "STYLE_REFERENCE_LLM_REQUIRED" || code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED") action = { type: "settings", label: "去设置模型" };
   else if (code === "STYLE_REFERENCE_CHECK_NOT_BOUND") action = { type: "apply", label: "去用于作品" };
-  else if (code === "STYLE_REFERENCE_CHECK_NO_REFERENCE" || code === "STYLE_REFERENCE_CHECK_REFERENCE_EMPTY") action = { type: "learn", label: "去学习文风" };
+  else if (code === "STYLE_REFERENCE_CHECK_NO_REFERENCE" || code === "STYLE_REFERENCE_CHECK_REFERENCE_EMPTY" || code === "STYLE_REFERENCE_PROFILE_NOT_ACTIVE") action = { type: "learn", label: "去学习文风" };
   else if (RETRYABLE.has(code) || details.retryable === true || (error && error.retryable === true) || !code) action = { type: "retry", label: "重新检查" };
   return { code, message, action };
 }

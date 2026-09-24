@@ -8,7 +8,8 @@ import {
 } from "./ws-styleref-model.js";
 import {
   srActivityEntries, srActivityStart, srBookById, srBooks, srBooksState, srDeleteBooks, srLoadProjectBinding,
-  srLoadRuntime, srRememberSession, srSessionUi, srSetViewMounted, srSubscribe, srSyncBooks,
+  srLoadRuntime, srRememberSession, srResumeClassification, srSessionUi, srSetViewMounted, srStartLearn, srSubscribe,
+  srSyncBooks,
 } from "./ws-styleref-store.js";
 import { SrMenu, srActiveWork, srNotify, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
 import { srRunningFor } from "./ws-styleref-activity.jsx";
@@ -32,6 +33,8 @@ export function WsStyleRef({ go }) {
   const [stage, setStage] = React.useState(null);
   const [importOpen, setImportOpen] = React.useState(false);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
+  /* 从「参考书活动」打开的一次对照检查：把作业 id 交给「对照检查」页认领，认领过就清掉 */
+  const [checkJob, setCheckJob] = React.useState(null);
   const bodyRef = React.useRef(null);
   const [workTick, setWorkTick] = React.useState(0);
   const work = srActiveWork();
@@ -87,10 +90,12 @@ export function WsStyleRef({ go }) {
   }, [book && book.id, stage, workTick]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = 0; }, [stage, bookId]);
 
-  /* targetStage：从活动面板「打开」一次对照检查时直接落在「对照检查」；其余照旧按这本书的进度自动落点 */
-  const selectBook = (id, targetStage = null) => {
+  /* targetStage：从活动面板「打开」一次对照检查时直接落在「对照检查」（jobId 交给那一页认领）；出错提示的
+     「查看这本书」落在总览；其余照旧按这本书的进度自动落点 */
+  const selectBook = (id, targetStage = null, jobId = null) => {
     setSwitcherOpen(false);
     setImportOpen(false);
+    if (jobId) setCheckJob(String(jobId));
     if (id === bookId) { if (targetStage) setStage(targetStage); return; }
     setBookId(id);
     setStage(targetStage);
@@ -105,15 +110,28 @@ export function WsStyleRef({ go }) {
   };
 
   const openSettings = () => { if (go) go("settings", { type: "ws:settings-tab", detail: "ai" }); };
-  /* 出错时的下一步（SrErrorLine 的按钮）：去设置模型 / 打开书库里的那本 / 去学习文风 / 去用于作品 */
+  /* 出错时的下一步（SrErrorLine 的按钮，按 srErrorInfo 的 action）：去设置模型 / 打开书库里的那本（带 stage 就落在那一步）/
+     去学习文风 / 去用于作品 / 继续学习 / 继续分类 / 仍然学习（正文很短）——后三种直接发起作业并落到能看进度的那一步 */
   const onAction = (action) => {
     if (!action) return;
+    const target = action.bookId ? String(action.bookId) : null;
+    const fail = (e) => srNotifyError(e, "没有发起成，请稍后重试。");
     if (action.type === "settings") openSettings();
-    else if (action.type === "open_book" && action.bookId) selectBook(action.bookId);
+    else if (action.type === "open_book" && target) selectBook(target, action.stage || null);
     else if (action.type === "learn") {
-      if (action.bookId && action.bookId !== bookId) selectBook(action.bookId);
+      if (target && target !== bookId) selectBook(target);
       selectStage("learn");
     } else if (action.type === "apply") selectStage("apply");
+    else if (action.type === "resume_learn" && target) {
+      selectBook(target, "learn");
+      srStartLearn(target, { resume: true }).catch(fail);
+    } else if (action.type === "force_learn" && target) {
+      selectBook(target, "learn");
+      srStartLearn(target, { force: true }).catch(fail);
+    } else if (action.type === "resume_classify" && target) {
+      selectBook(target, "book");
+      srResumeClassification(target).catch(fail);
+    }
   };
 
   const onDeleteBook = async (target) => {
@@ -164,7 +182,9 @@ export function WsStyleRef({ go }) {
               {stage === "book" && <SrOverview book={book} onAction={onAction} />}
               {stage === "learn" && <SrLearn book={book} go={selectStage} onAction={onAction} />}
               {stage === "apply" && <SrApply key={`${book.id}|${workId}`} book={book} go={selectStage} onAction={onAction} />}
-              {stage === "check" && <SrCheck key={`${book.id}|${workId}`} book={book} go={selectStage} onAction={onAction} />}
+              {stage === "check" && (
+                <SrCheck key={`${book.id}|${workId}`} book={book} go={selectStage} onAction={onAction} adoptJobId={checkJob} onAdopted={() => setCheckJob(null)} />
+              )}
             </div>
           </section>
         ) : (

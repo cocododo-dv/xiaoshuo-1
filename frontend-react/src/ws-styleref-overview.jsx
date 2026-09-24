@@ -22,7 +22,7 @@ import { SrErrorLine, SrProgressBar, useSrStore } from "./ws-styleref-ui.jsx";
 const SR_INPUT_LABEL = { skip: "语料不足", low: "偏少", medium: "适中", high: "充足" };
 const SR_INPUT_TONE = { skip: "neutral", low: "info", medium: "warn", high: "ok" };
 
-const srIsCancelCode = (code) => code === "STYLE_REFERENCE_JOB_CANCELLED" || code === "STYLE_REFERENCE_IMPORT_CANCELLED";
+const srIsCancelCode = (code) => code === "STYLE_REFERENCE_JOB_CANCELLED";
 
 function srParaDist(stats) {
   const dist = (stats && stats.paragraph_type_distribution) || {};
@@ -99,7 +99,6 @@ function SrClassifyCard({ book, onAction }) {
   };
 
   const pill = running ? { tone: "warn", label: `分类中 ${view.percentText}` }
-    : book.rawStatus === "cancelling" ? { tone: "neutral", label: "取消中" }
     : incomplete ? { tone: "danger", label: "未完成" }
     : retypeLeft ? { tone: "warn", label: retypeLeft.cancelled ? "重新分类已取消" : "重新分类没完成" }
     : provenance.legacy ? { tone: "warn", label: "旧版规则标的" }

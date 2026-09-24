@@ -166,4 +166,20 @@ describe("对照检查作业与出错", () => {
     expect(fidErrorInfo({ code: "WHATEVER", message: "boom in english" }).message).toBe("对照检查没有完成，可以重新检查。");
     expect(fidErrorInfo({ code: "STYLE_REFERENCE_CHECK_TARGET_INVALID", message: "一次最多检查 60000 字；把文字分段检查。" }).message).toBe("一次最多检查 60000 字；把文字分段检查。");
   });
+
+  it("2026-09-24 补的码：取消时已结束、检查对象没给对（英文原话时才用固定文案）、原文范围不对、画像不是在用的版本", () => {
+    const infos = [
+      fidErrorInfo({ code: "STYLE_REFERENCE_CHECK_NOT_ACTIVE", message: "check not active" }),
+      fidErrorInfo({ code: "STYLE_REFERENCE_CHECK_TARGET_INVALID", message: "text and scene_id are mutually exclusive" }),
+      fidErrorInfo({ code: "STYLE_REFERENCE_CLOUD_POLICY_INVALID", message: "bad cloud policy" }),
+      fidErrorInfo({ code: "STYLE_REFERENCE_PROFILE_NOT_ACTIVE", message: "profile archived" }),
+    ];
+    expect(infos[0].message).toBe("这次检查已经结束了，不用取消。");
+    expect(infos[0].action).toBeNull();
+    expect(infos[1].message).toContain("二选一");
+    expect(infos[2].message).toContain("原文范围");
+    expect(infos[3].message).toContain("不是在用的版本");
+    expect(infos[3].action).toEqual({ type: "learn", label: "去学习文风" });
+    for (const info of infos) expect(info.message).not.toMatch(/[A-Za-z]/);
+  });
 });

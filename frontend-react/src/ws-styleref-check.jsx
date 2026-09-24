@@ -2,13 +2,13 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Segmented, Spinner } from "./ws-ui.jsx";
 import { fidErrorInfo, fidJobView, fidReadingStates } from "./ws-fidelity-model.js";
-import { fidCheck, fidResumeCheck, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
+import { fidAdoptJob, fidCancelCheck, fidCheck, fidResumeCheck, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
 import {
   FidelityCopyLine, FidelityDimensionTable, FidelityErrorLine, FidelityGaps, FidelityHeadline, FidelityJudgeLine,
 } from "./ws-fidelity-ui.jsx";
 import { srAppliedToWork, srFormatDuration, srFormatWhen, srIsLegacyGlobalBinding, srSceneLabel, srSceneOptions } from "./ws-styleref-model.js";
 import { srActivityTrack, srLoadProjectBinding, srLoadRuntime, srLoadWorkScenes, srProjectBinding, srRuntime } from "./ws-styleref-store.js";
-import { SrProgressBar, SrStageEmpty, srActiveWork, useSrStore } from "./ws-styleref-ui.jsx";
+import { SrProgressBar, SrStageEmpty, srActiveWork, srNotify, useSrStore } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 第四步「对照检查」：拿一段文字（或当前作品的一场）对照这本书的作者，看像不像。
@@ -17,6 +17,8 @@ import { SrProgressBar, SrStageEmpty, srActiveWork, useSrStore } from "./ws-styl
    · 再请模型对着原文样例和文风卡按 16 维打分，每维一句说明；
    · 顺带查照搬（只给计数，从不给参考原文）。
    贴的文字只对照这份画像；选一场时，这部作品用着这本书就按它现在的设置（重点 / 不学）查，没用就按这份画像查。
+   排队 / 进行中可以取消（取消后条目清掉，可以再发起）。从「参考书活动」打开一次检查（可能是在起草台发起的）时按作业 id
+   认领到这本书名下（adoptJobId → fidAdoptJob），看到的是那次的结果而不是空表单——没有本机记下的目标就没有「再查一次」。
    结果与进度记在模块里（离开再回来还在），刷新页面就没了——一场的检查结果另外记在那一场的读数里（起草台可看）。
    ========================================================== */
 
@@ -26,7 +28,7 @@ export function srCheckKey(bookId) {
   return `book:${bookId}`;
 }
 
-export function SrCheck({ book, go, onAction }) {
+export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = null }) {
   useSrStore("detail", "books");
   useFidelityStore();
   const profileId = book.profile ? book.profile.profile_id : null;
@@ -43,10 +45,17 @@ export function SrCheck({ book, go, onAction }) {
   const [text, setText] = React.useState(lastTarget.text || "");
   const [sceneId, setSceneId] = React.useState(lastSceneHere);
   const [chapters, setChapters] = React.useState(null);
+  const [cancelling, setCancelling] = React.useState(false);
 
   React.useEffect(() => { srLoadRuntime(); }, []);
   React.useEffect(() => { if (workId) srLoadProjectBinding(workId); }, [workId]);
   React.useEffect(() => { fidResumeCheck(key); }, [key]);
+  /* 从「参考书活动」打开的一次检查：按作业 id 认领到这本书名下；认领过就告诉外壳，别在下次挂载时又认领一遍旧作业 */
+  React.useEffect(() => {
+    if (!adoptJobId) return;
+    fidAdoptJob(key, adoptJobId);
+    if (onAdopted) onAdopted(adoptJobId);
+  }, [adoptJobId, key]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(() => {
     let alive = true;
     setChapters(null);
@@ -95,6 +104,16 @@ export function SrCheck({ book, go, onAction }) {
     if (!action) return;
     if (action.type === "retry") retry();
     else if (onAction) onAction(action);
+  };
+  const cancel = async () => {
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      const result = await fidCancelCheck(key);
+      if (result && !result.ok && result.error) srNotify(fidErrorInfo(result.error, "没有取消成，请稍后再试。").message);
+    } finally {
+      setCancelling(false);
+    }
   };
 
   const describe = (target) => {
@@ -192,13 +211,14 @@ export function SrCheck({ book, go, onAction }) {
         </div>
       </div>
 
-      {entry && <SrCheckOutcome entry={entry} describe={describe} onAction={act} />}
+      {entry && <SrCheckOutcome entry={entry} describe={describe} onAction={act} onCancel={cancel} cancelling={cancelling} />}
     </div>
   );
 }
 
-function SrCheckOutcome({ entry, describe, onAction }) {
-  const what = describe(entry.target);
+function SrCheckOutcome({ entry, describe, onAction, onCancel, cancelling }) {
+  /* 认领来的条目没有本机记下的目标：说清是从活动里打开的一次，不冒充当前表单里的选择 */
+  const what = describe(entry.target) || (entry.adopted ? "从「参考书活动」打开的一次检查" : "");
   if (entry.phase === "starting" || entry.phase === "running") {
     const view = fidJobView(entry.job);
     return (
@@ -208,12 +228,20 @@ function SrCheckOutcome({ entry, describe, onAction }) {
         <div className="sr-activity-meta">
           {[view.label || "排队中", view.elapsed != null && view.elapsed > 0 ? `已用 ${srFormatDuration(view.elapsed)}` : null].filter(Boolean).join(" · ")}
         </div>
-        <p className="sr-ov-hint">可以离开这一页，检查在后台接着做，进度也在「参考书活动」里。</p>
+        <div className="sr-ov-foot">
+          <span className="sr-ov-hint">可以离开这一页，检查在后台接着做，进度也在「参考书活动」里；取消了这条就清掉，可以再发起。</span>
+          <button type="button" className="btn btn-ghost btn-sm" data-testid="sr-check-cancel" disabled={!!cancelling} onClick={onCancel}>
+            {cancelling ? <><Spinner size={12} /> 正在取消…</> : "取消"}
+          </button>
+        </div>
       </div>
     );
   }
   if (entry.phase === "failed") {
-    return <FidelityErrorLine info={fidErrorInfo(entry.error)} onAction={onAction} testId="sr-check-error" />;
+    const info = fidErrorInfo(entry.error);
+    /* 没有本机记下的目标（认领来的）：「重新检查」没有可发的东西——只说原因，作者在上面的表单里再发一次 */
+    const shown = info.action && info.action.type === "retry" && !entry.target ? { ...info, action: null } : info;
+    return <FidelityErrorLine info={shown} onAction={onAction} testId="sr-check-error" />;
   }
   const reading = entry.reading;
   if (!reading) return null;
@@ -226,9 +254,11 @@ function SrCheckOutcome({ entry, describe, onAction }) {
             <div className="card-title">像不像</div>
             <div className="card-sub">{[what, finished ? `检查于 ${srFormatWhen(finished)}` : null].filter(Boolean).join(" · ")}</div>
           </div>
-          <button type="button" className="btn btn-ghost btn-sm" data-testid="sr-check-again" onClick={() => onAction({ type: "retry" })}>
-            <I.Refresh size={13} /> 再查一次
-          </button>
+          {entry.target && (
+            <button type="button" className="btn btn-ghost btn-sm" data-testid="sr-check-again" onClick={() => onAction({ type: "retry" })}>
+              <I.Refresh size={13} /> 再查一次
+            </button>
+          )}
         </div>
         <FidelityHeadline reading={reading} testId="sr-check-headline" />
         <div className="sr-check-lines">

@@ -420,6 +420,15 @@ describe("导入、重新分类、学习", () => {
     await store.srStartLearn("bk-b", { resume: true });
     expect(client.apiPost).toHaveBeenLastCalledWith(`${API}/books/bk-b/learn`, { resume: true });
 
+    // 正文很短也学（清理 C2）；全书窗口重打标签（O1）
+    client.apiPost.mockResolvedValueOnce({ job_id: "job-l3" });
+    await store.srStartLearn("bk-b", { force: true });
+    expect(client.apiPost).toHaveBeenLastCalledWith(`${API}/books/bk-b/learn`, { force: true });
+    client.apiPost.mockResolvedValueOnce({ job_id: "job-l4" });
+    await store.srStartLearn("bk-b", { retag: true });
+    expect(client.apiPost).toHaveBeenLastCalledWith(`${API}/books/bk-b/learn`, { retag: true });
+    expect(typeof store.srActivityPoke).toBe("function");
+
     client.apiPost.mockResolvedValueOnce({ cancelled: true });
     await store.srCancelLearn("bk-b");
     expect(client.apiPost).toHaveBeenLastCalledWith(`${API}/books/bk-b/learn/cancel`, {});

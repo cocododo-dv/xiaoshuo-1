@@ -223,7 +223,6 @@
 .sr-line.is-pinned { border-color: var(--ok); box-shadow: inset 3px 0 0 var(--ok); }
 .sr-line.is-excluded { background: var(--paper-1); }
 .sr-line.is-excluded .sr-line-text { text-decoration: line-through; color: var(--ink-3); }
-.sr-line.is-dropped .sr-line-text { color: var(--ink-3); }
 .sr-line-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .sr-line-text { font-size: var(--fs-md); line-height: 1.65; color: var(--ink-1); }
 .sr-line-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }

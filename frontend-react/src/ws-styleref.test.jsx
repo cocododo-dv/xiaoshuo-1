@@ -85,7 +85,7 @@ const PREVIEW = {
   windows: [
     {
       window_no: 7, chapter: 3, position: "opening", start: 120, end: 150, chars: 3900, paragraphs: 31, slot: "position",
-      situations: ["开章引入"], moods: ["平静"], devices: ["留白"], gist: "某人在渡口等船", paragraph_type: "narration",
+      situations: ["开章引入"], moods: ["平静"], dimensions: ["language.rhetoric", "scene.dialogue"], gist: "某人在渡口等船", paragraph_type: "narration",
     },
   ],
   blocks: { card: "[文风卡]\n· 对白常常只有半句", voice: "[声音]\n· 句尾少用语气词", samples: "……", red_line: "[红线]\n不许照搬" },
@@ -402,6 +402,18 @@ describe("导入对话框", () => {
     await openImport();
     expect(byTestId("sr-import-error")).toBeNull();
   });
+
+  it("配的是云端模型、选「仅本机模型」：提示分类会被拒并锁住「导入」（sr-import-local-blocked）", async () => {
+    state.runtime = { llm_enabled: true, llm_is_local: false, default_cloud_policy: "allow_full_cloud" };
+    await mountView();
+    await openImport();
+    expect(byTestId("sr-import-local-blocked")).toBeNull();
+    await click($('input[name="sr-cloud-policy"][value="local_only"]'));
+    await settle();
+    expect(byTestId("sr-import-local-blocked").textContent).toContain("「仅本机模型」的书会被拒绝");
+    expect(byTestId("sr-import-submit").disabled).toBe(true);
+    expect(byTestId("sr-import-why").textContent).toContain("导入不了");
+  });
 });
 
 describe("第一步 · 参考书", () => {
@@ -482,6 +494,23 @@ describe("第一步 · 参考书", () => {
     expect(byTestId("sr-overview-retype-unfinished").textContent).toContain("被取消了");
     expect(byTestId("sr-overview-classify-reason")).toBeNull();
     expect(byTestId("sr-overview-resume")).toBeTruthy();
+  });
+
+  it("「继续分类」被拒（正在学习文风）：出错行说中文原因、不给英文（sr-overview-error）", async () => {
+    state.books = [bookRow({
+      status: "failed",
+      classification: { job_id: "jc", state: "failed", mode: "import", batches_done: 2, batches_total: 5, resumable: true, error: { code: "STYLE_REFERENCE_CLASSIFY_LLM_CALL_FAILED", message: "llm call failed" } },
+    })];
+    client.apiPost.mockImplementation((url) => (url.endsWith("/reclassify")
+      ? Promise.reject(Object.assign(new Error("book learning"), { code: "STYLE_REFERENCE_BOOK_LEARNING", status: 409 }))
+      : Promise.resolve({})));
+    await mountView();
+    expect(byTestId("sr-overview-classify-reason").textContent).toContain("分类时模型调用失败");
+    await click(byTestId("sr-overview-resume"));
+    await settle();
+    expect(byTestId("sr-overview-error").textContent).toContain("这本书正在学习文风：等学完再重新分类。");
+    expect(byTestId("sr-overview-error").textContent).not.toContain("book learning");
+    expect(document.body.textContent).not.toContain("llm call failed");
   });
 });
 
@@ -582,6 +611,119 @@ describe("第二步 · 学习文风", () => {
     await settle();
     expect(confirm.mock.calls[0][0]).toContain("重新学习《甲书》的文风？");
     expect(client.apiPost.mock.calls.some(([url]) => url.endsWith("/learn"))).toBe(false);
+  });
+
+  it("上次学习失败且不可续跑（后端 resumable=false）：只给「重新学习」，不给「继续学习」（清理 C2）", async () => {
+    const failed = { job_id: "job-l9", state: "failed", resumable: false, error: { code: "STYLE_REFERENCE_LEARN_FAILED", message: "挑出的窗口里没有正文段。" } };
+    state.books = [bookRow({ learn: failed })];
+    state.learn = { ...state.learn, learn: failed };
+    await mountView();
+    expect(byTestId("sr-learn-status").textContent).toBe("学习没有完成");
+    expect(byTestId("sr-learn-resume")).toBeNull();
+    expect(byTestId("sr-learn-force")).toBeNull();
+    expect(byTestId("sr-learn-start").textContent).toContain("重新学习");
+    expect(byTestId("sr-learn-last-error").textContent).toBe("上次学习没有完成：挑出的窗口里没有正文段。");
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/learn") ? { job_id: "job-l10" } : {}));
+    await click(byTestId("sr-learn-start"));
+    await settle();
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/learn`, {});
+  });
+
+  it("上次学习失败但能续（resumable=true）：「继续学习」照旧在", async () => {
+    const failed = { job_id: "job-l9", state: "failed", resumable: true, error: { code: "STYLE_REFERENCE_LEARN_LLM_CALL_FAILED", message: "x" } };
+    state.books = [bookRow({ learn: failed })];
+    state.learn = { ...state.learn, learn: failed };
+    await mountView();
+    expect(byTestId("sr-learn-resume").textContent).toContain("继续学习");
+    expect(byTestId("sr-learn-force")).toBeNull();
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/learn") ? { job_id: "job-l9" } : {}));
+    await click(byTestId("sr-learn-resume"));
+    await settle();
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/learn`, { resume: true });
+  });
+
+  it("正文太短而失败（reason_code input_too_small）：另给「仍然学习（正文很短）」= force，不给「继续学习」", async () => {
+    const failed = { job_id: "job-l9", state: "failed", resumable: false, error: { code: "STYLE_REFERENCE_LEARN_FAILED", message: "正文太少，学不出可靠的文风。", details: { reason_code: "input_too_small" } } };
+    state.books = [bookRow({ learn: failed })];
+    state.learn = { ...state.learn, learn: failed };
+    await mountView();
+    expect(byTestId("sr-learn-resume")).toBeNull();
+    expect(byTestId("sr-learn-last-error").textContent).toContain("正文太少");
+    const force = byTestId("sr-learn-force");
+    expect(force.textContent).toContain("仍然学习（正文很短）");
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/learn") ? { job_id: "job-l11" } : {}));
+    await click(force);
+    await settle();
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/learn`, { force: true });
+    expect(client.apiPost.mock.calls.filter(([url]) => url.endsWith("/learn"))).toHaveLength(1);
+  });
+
+  it("建作业时就被拒「正文太少」（409）：出错行说中文并给「仍然学习」，点了就地发 force", async () => {
+    await mountView();
+    const posts = [];
+    client.apiPost.mockImplementation((url, body) => {
+      if (!url.endsWith("/learn")) return Promise.resolve({});
+      posts.push(body);
+      return body && body.force
+        ? Promise.resolve({ job_id: "job-l12" })
+        : Promise.reject(Object.assign(new Error("input too small"), { code: "STYLE_REFERENCE_INPUT_TOO_SMALL", status: 409, details: { book_id: "bk-a" } }));
+    });
+    await click(byTestId("sr-learn-start"));
+    await settle();
+    expect(byTestId("sr-learn-error").textContent).toContain("正文太少");
+    expect(byTestId("sr-learn-error").textContent).not.toContain("input too small");
+    expect(byTestId("sr-learn-error-action").textContent).toBe("仍然学习");
+    await click(byTestId("sr-learn-error-action"));
+    await settle();
+    expect(posts).toEqual([{}, { force: true }]);
+  });
+
+  it("出错行按后端的 author_action 给按钮：resume_learning → 「继续学习」直接续跑（清理 C5）", async () => {
+    await mountView();
+    const posts = [];
+    client.apiPost.mockImplementation((url, body) => {
+      if (!url.endsWith("/learn")) return Promise.resolve({});
+      posts.push(body);
+      return body && body.resume
+        ? Promise.resolve({ job_id: "job-l20" })
+        : Promise.reject(Object.assign(new Error("already active"), { code: "STYLE_REFERENCE_LEARN_ALREADY_ACTIVE", status: 409, details: { author_action: { action: "resume_learning", book_id: "bk-a" } } }));
+    });
+    await click(byTestId("sr-learn-start"));
+    await settle();
+    expect(byTestId("sr-learn-error").textContent).toContain("已经在学习文风了");
+    expect(byTestId("sr-learn-error-action").textContent).toBe("继续学习");
+    await click(byTestId("sr-learn-error-action"));
+    await settle();
+    expect(posts).toEqual([{}, { resume: true }]);
+    expect($(".sr-step.is-active").dataset.stage).toBe("learn");
+  });
+
+  it("出错行按后端的 author_action 给按钮：review_book → 「查看这本书」落到那本书的总览（清理 C5）", async () => {
+    state.books = [bookRow(), bookRow({ book_id: "bk-b", title: "乙书" })];
+    await mountView();
+    client.apiPost.mockImplementation((url) => (url.endsWith("/learn")
+      ? Promise.reject(Object.assign(new Error("not ready"), { code: "STYLE_REFERENCE_BOOK_NOT_READY", status: 409, details: { author_action: { action: "review_book", book_id: "bk-b" } } }))
+      : Promise.resolve({})));
+    await click(byTestId("sr-learn-start"));
+    await settle();
+    expect(byTestId("sr-learn-error-action").textContent).toBe("查看这本书");
+    await click(byTestId("sr-learn-error-action"));
+    await settle();
+    await settle();
+    expect($(".sr-stage-title").textContent).toBe("乙书");
+    expect($(".sr-step.is-active").dataset.stage).toBe("book");
+    expect(byTestId("sr-overview-classify")).toBeTruthy();
+  });
+
+  it("分类还没完成：学习卡说明并给「去看段落分类」（sr-learn-blocked）", async () => {
+    state.books = [bookRow({ status: "ingesting" })];
+    await mountView();
+    await openStage("learn");
+    expect(byTestId("sr-learn-blocked").textContent).toContain("分完才能学");
+    expect(byTestId("sr-learn-start")).toBeNull();
+    await click($('[data-testid="sr-learn-blocked"] button'));
+    await settle();
+    expect($(".sr-step.is-active").dataset.stage).toBe("book");
   });
 });
 
@@ -697,16 +839,12 @@ describe("文风画像", () => {
     expect(byTestId("sr-banned").textContent).toContain("本书专名 2 个");
   });
 
-  it("旧版画像：说明并列出起草时读的句子，含数字的标「起草时不带」", async () => {
-    state.profile = {
-      profile_id: "pf-a", has_card: false, needs_relearn: true, relearn_reason: "legacy_profile", dimensions: [], temperament: [],
-      legacy: { summary: "旧摘要", groups: [{ key: "style_features", label: "写法特征", lines: [{ text: "短句多", dropped_in_drafting: false }, { text: "平均句长 12 字", dropped_in_drafting: true }] }] },
-      voice: { habits: [] }, structure: { lines: [] },
-    };
+  it("没有文风卡的画像（旧版画像已归档，界面上不再有「旧版画像」这一说）：只说先学习文风", async () => {
+    state.profile = { profile_id: "pf-a", has_card: false, needs_relearn: false, relearn_reason: null, dimensions: [], temperament: [], voice: { habits: [] }, structure: { lines: [] } };
     await openPortrait();
-    const legacy = byTestId("sr-portrait-legacy");
-    expect(legacy.textContent).toContain("这是旧版画像");
-    expect(legacy.textContent).toContain("起草时不带");
+    expect(byTestId("sr-portrait-no-card").textContent).toContain("还没有文风卡");
+    expect(byTestId("sr-portrait-legacy")).toBeNull();
+    expect(document.body.textContent).not.toContain("旧版画像");
   });
 });
 
@@ -1009,6 +1147,85 @@ describe("第三步 · 用于作品", () => {
     await openStage("apply");
     expect(byTestId("sr-apply-empty")).toBeTruthy();
   });
+
+  it("旧版全局应用的状态卡：对所有没有自己应用的作品生效、要解除去下面「这份文风还用在」里解除；下面照旧有「解除」（清理 C4）", async () => {
+    const GLOBAL = { ...OWN_BINDING, binding_id: "bd-g", scope: "global", scope_ref_id: null };
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.projectBinding = { project_id: "w1", binding: GLOBAL, profile: PROFILE_SUMMARY, book: { book_id: "bk-a", title: "甲书" } };
+    state.profileBindings = [GLOBAL];
+    await mountView();
+    await openStage("apply");
+    await settle();
+    const text = byTestId("sr-apply-legacy").textContent;
+    expect(text).toContain("这条旧版应用对所有没有自己应用的作品生效，要解除请到下面「这份文风还用在」里解除（那里解除才是对全部作品）");
+    expect(text).toContain("点「用于《北岸手记》」给这部作品单独建一条应用");
+    expect(text).not.toContain("只读、不改也不解除");
+    expect(byTestId("sr-apply-unbind")).toBeNull();
+    const others = byTestId("sr-apply-others");
+    expect(others.textContent).toContain("没有自己应用的所有作品");
+    expect([...others.querySelectorAll("button")].some((b) => b.textContent === "解除")).toBe(true);
+  });
+
+  it("用于作品被拒（画像依据变过，author_action 指向学习）：出错行说中文并给「去学习文风」，点了落到「学习文风」（sr-apply-error）", async () => {
+    await openApply();
+    client.apiPost.mockImplementation((url) => {
+      if (url.endsWith("/apply")) {
+        return Promise.reject(Object.assign(new Error("profile stale"), { code: "STYLE_REFERENCE_PROFILE_STALE", status: 409, details: { author_action: { action: "learn_style", book_id: "bk-a" } } }));
+      }
+      if (url.endsWith("/injection-preview")) return Promise.resolve(PREVIEW);
+      return Promise.resolve({});
+    });
+    await click(byTestId("sr-apply-submit"));
+    await settle();
+    expect(byTestId("sr-apply-error").textContent).toContain("这份画像的依据变过了");
+    expect(byTestId("sr-apply-error").textContent).not.toContain("profile stale");
+    expect(byTestId("sr-apply-error-action").textContent).toBe("去学习文风");
+    await click(byTestId("sr-apply-error-action"));
+    await settle();
+    expect($(".sr-step.is-active").dataset.stage).toBe("learn");
+  });
+
+  it("没有打开作品：用于作品只说明先打开一部（sr-apply-no-work）", async () => {
+    workHolder.current = null;
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    await mountView();
+    await openStage("apply");
+    expect(byTestId("sr-apply-no-work").textContent).toContain("还没有打开作品");
+    expect(byTestId("sr-apply-form")).toBeNull();
+  });
+
+  it("本场预览出错：说中文原因（sr-scene-preview-error）", async () => {
+    await openApply();
+    await settle();
+    const select = byTestId("sr-scene-select");
+    await act(async () => { select.value = "sc-1"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    client.apiPost.mockImplementation((url) => (url.endsWith("/injection-preview")
+      ? Promise.reject(Object.assign(new Error("profile not found"), { code: "STYLE_REFERENCE_PROFILE_NOT_FOUND", status: 404 }))
+      : Promise.resolve({})));
+    await click(byTestId("sr-scene-preview-run"));
+    await settle();
+    expect(byTestId("sr-scene-preview-error").textContent).toContain("这份文风画像已经不在了");
+    expect(byTestId("sr-scene-preview-error").textContent).not.toContain("profile not found");
+    expect(byTestId("sr-scene-preview-result")).toBeNull();
+  });
+
+  it("本场预览的窗口标签：示范的维度念成中文名，配额叫「维度示范」，不再有「手法」（O1）", async () => {
+    await openApply();
+    await settle();
+    const select = byTestId("sr-scene-select");
+    await act(async () => { select.value = "sc-1"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    client.apiPost.mockImplementation((url) => (url.endsWith("/injection-preview")
+      ? Promise.resolve({ ...PREVIEW, windows: [{ ...PREVIEW.windows[0], slot: "dimension", dimensions: ["language.rhetoric", "scene.dialogue"], devices: ["留白"] }] })
+      : Promise.resolve({})));
+    await click(byTestId("sr-scene-preview-run"));
+    await settle();
+    const win = $(".sr-window", byTestId("sr-scene-preview-result"));
+    expect(win.textContent).toContain("维度示范");
+    expect(win.textContent).toContain("修辞手法");
+    expect(win.textContent).toContain("对话写法");
+    expect(win.textContent).not.toContain("留白");
+    expect(win.textContent).not.toContain("language.rhetoric");
+  });
 });
 
 describe("第四步 · 对照检查", () => {
@@ -1204,6 +1421,67 @@ describe("第四步 · 对照检查", () => {
     expect(byTestId("sr-check-result").textContent).toContain("另一部作品的一场");
     expect(byTestId("sr-check-result").textContent).not.toContain("当前作品的一场");
   });
+
+  it("排队 / 进行中给「取消」：POST …/cancel，条目清掉，「开始对照检查」又能点（清理 C1）", async () => {
+    await openCheck();
+    await typeText("一段文字".repeat(100));
+    routeCheck({
+      post: () => Promise.resolve({ job_id: "job-c", job: JOB("running") }),
+      get: () => Promise.resolve({ job: JOB("running") }),
+    });
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, opts) => (url === `${API}/checks/job-c/cancel` ? Promise.resolve({ job: JOB("cancelled") }) : basePost(url, body, opts)));
+    await click(byTestId("sr-check-start"));
+    await settle();
+    expect(byTestId("sr-check-running")).toBeTruthy();
+    expect(byTestId("sr-check-start").disabled).toBe(true);
+    await click(byTestId("sr-check-cancel"));
+    await settle();
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/checks/job-c/cancel`, {});
+    expect(byTestId("sr-check-running")).toBeNull();
+    expect(byTestId("sr-check-error")).toBeNull();
+    expect(byTestId("sr-check-start").disabled).toBe(false);
+    expect(byTestId("sr-check-start").textContent).toContain("开始对照检查");
+    expect(fidStore.fidCheck("book:bk-a")).toBeNull();
+  });
+
+  it("取消时作业已经结束（409）：提示一句，并把结果拿回来", async () => {
+    await openCheck();
+    await typeText("一段文字".repeat(100));
+    routeCheck({
+      post: () => Promise.resolve({ job_id: "job-c", job: JOB("running") }),
+      get: () => Promise.resolve({ job: JOB("succeeded", { finished_at: "2026-09-23T10:00:00" }), reading: CHECK_READING }),
+    });
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, opts) => (url === `${API}/checks/job-c/cancel`
+      ? Promise.reject(Object.assign(new Error("check not active"), { code: "STYLE_REFERENCE_CHECK_NOT_ACTIVE", status: 409 }))
+      : basePost(url, body, opts)));
+    await click(byTestId("sr-check-start"));
+    await settle();
+    await click(byTestId("sr-check-cancel"));
+    await settle();
+    await settle();
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("已经结束"));
+    expect(byTestId("sr-check-result")).toBeTruthy();
+    expect(byTestId("sr-check-running")).toBeNull();
+  });
+
+  it("出了结果给「再查一次」：按同样的目标再发一次（sr-check-again）", async () => {
+    await openCheck();
+    await typeText("一段文字".repeat(100));
+    const bodies = [];
+    routeCheck({
+      post: (body) => { bodies.push(body); return Promise.resolve({ job_id: "job-c", job: JOB("succeeded", { finished_at: "2026-09-23T10:00:00" }), reading: CHECK_READING }); },
+      get: () => Promise.resolve({}),
+    });
+    await click(byTestId("sr-check-start"));
+    await settle();
+    expect(byTestId("sr-check-result")).toBeTruthy();
+    await click(byTestId("sr-check-again"));
+    await settle();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+  });
 });
 
 describe("参考书活动", () => {
@@ -1269,5 +1547,134 @@ describe("参考书活动", () => {
     expect(item, "续跑的条目被当成「关掉过」丢掉了").toBeTruthy();
     expect(item.dataset.activityStatus).toBe("succeeded");
     expect(item.textContent).toContain("完成");
+  });
+
+  const READING_A = {
+    reading_id: "sfr-9", scene_id: "sc-1", project_id: "w1", profile_id: "pf-a", source: "manual_check", stage: "manual",
+    percentile: 41.6, within_range: true, max_percentile: 90, emphasized_dimensions: [], excluded_dimensions: [], reliable: true,
+    char_count: 1800, window_count: 40, out_of_band: [], dimension_scores: {}, judge: null, copy_check: { blocked: false, hits: 0, protected_hits: 0 },
+  };
+  async function typeCheckText(value) {
+    const area = byTestId("sr-check-text");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    await act(async () => {
+      setter.call(area, value);
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("进行中的对照检查可以取消（按载荷的 cancellable）：POST …/checks/{id}/cancel；标着不可取消的不给按钮（清理 C1）", async () => {
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.activity = [
+      { key: "job:jc1", job_id: "jc1", kind: "check", status: "running", book_id: "bk-a", title: "甲书", percent: 40, cancellable: true },
+      { key: "job:jc2", job_id: "jc2", kind: "check", status: "running", book_id: "bk-a", title: "甲书", percent: 40, cancellable: false },
+    ];
+    await mountView();
+    await settle(20);
+    expect($('[data-activity-key="job:jc2"] [data-testid="sr-activity-cancel"]')).toBeNull();
+    const cancel = $('[data-activity-key="job:jc1"] [data-testid="sr-activity-cancel"]');
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/cancel") ? { job: { job_id: "jc1", kind: "check", status: "cancelled" } } : {}));
+    await click(cancel);
+    await settle();
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/checks/jc1/cancel`, {});
+  });
+
+  it("做完的对照检查「打开」：落在这本书的「对照检查」并按作业 id 取那次的结果（在起草台发起的也能看到）", async () => {
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.activity = [{ key: "job:jc", job_id: "jc", kind: "check", status: "succeeded", book_id: "bk-a", title: "甲书", percent: 100 }];
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => (url === `${API}/checks/jc`
+      ? Promise.resolve({ job: { key: "job:jc", job_id: "jc", kind: "check", status: "succeeded", finished_at: "2026-09-23T10:00:00" }, reading: READING_A })
+      : baseGet(url)));
+    await mountView();
+    await settle(20);
+    await click($(".sr-activity-older-toggle"));
+    await click($('[data-activity-key="job:jc"] [data-testid="sr-activity-open"]'));
+    await settle();
+    await settle();
+    expect($(".sr-step.is-active").dataset.stage).toBe("check");
+    expect(client.apiGet.mock.calls.some(([url]) => url === `${API}/checks/jc`)).toBe(true);
+    expect(byTestId("sr-check-result")).toBeTruthy();
+    expect(byTestId("sr-check-headline").textContent).toContain("第42位/ 100");
+    expect(byTestId("sr-check-result").textContent).toContain("从「参考书活动」打开的一次检查");
+    // 本机没记着它的目标：没有「再查一次」（不知道要发什么），表单照常可以再发起
+    expect(byTestId("sr-check-again")).toBeNull();
+    expect(byTestId("sr-check-form")).toBeTruthy();
+    // 认领过就清掉：再换到别的步再回来，不会又认领一遍
+    await openStage("learn");
+    client.apiGet.mockClear();
+    await openStage("check");
+    await settle();
+    expect(client.apiGet.mock.calls.some(([url]) => url === `${API}/checks/jc`)).toBe(false);
+    expect(byTestId("sr-check-result")).toBeTruthy();
+  });
+
+  it("没做成的对照检查：不记着目标的给「打开」——对照检查页说原因、不给会落空的「重新检查」；本机记着目标的给「重新检查」", async () => {
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    const failedJob = (id) => ({ key: `job:${id}`, job_id: id, kind: "check", status: "failed", book_id: "bk-a", title: "甲书", error: { code: "STYLE_REFERENCE_CHECK_JUDGE_FAILED", message: "judge failed", retryable: true } });
+    state.activity = [failedJob("jx")];
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => (url === `${API}/checks/jx` ? Promise.resolve({ job: failedJob("jx"), reading: null }) : baseGet(url)));
+    await mountView();
+    await settle(20);
+    const row = $('[data-activity-key="job:jx"]');
+    expect(row.textContent).toContain("没有完成：模型的参考评审没有完成");
+    expect($('[data-testid="sr-activity-recheck"]', row)).toBeNull();
+    await click($('[data-testid="sr-activity-open"]', row));
+    await settle();
+    await settle();
+    expect($(".sr-step.is-active").dataset.stage).toBe("check");
+    expect(byTestId("sr-check-error").textContent).toContain("模型的参考评审没有完成");
+    expect(byTestId("sr-check-error-action")).toBeNull();
+
+    // 在这一页发起一次并失败：活动清单里这条记着目标，给「重新检查」，按同样的目标再发
+    await typeCheckText("一段文字".repeat(100));
+    const bodies = [];
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, opts) => {
+      if (url !== `${API}/checks`) return basePost(url, body, opts);
+      bodies.push(body);
+      return Promise.resolve(bodies.length === 1
+        ? { job_id: "jy", job: failedJob("jy") }
+        : { job_id: "jz", job: { key: "job:jz", job_id: "jz", kind: "check", status: "running", book_id: "bk-a" } });
+    });
+    state.activity = [failedJob("jy")];
+    await click(byTestId("sr-check-start"));
+    await settle(20);
+    await settle();
+    const failedRow = $('[data-activity-key="job:jy"]');
+    expect(failedRow, "发起的作业没有登记进活动清单").toBeTruthy();
+    expect($('[data-testid="sr-activity-open"]', failedRow)).toBeNull();
+    await click($('[data-testid="sr-activity-recheck"]', failedRow));
+    await settle();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect($('[data-activity-key="job:jy"]')).toBeNull();
+    expect($('[data-activity-key="job:jz"]')).toBeTruthy();
+    expect(byTestId("sr-check-running")).toBeTruthy();
+  });
+
+  it("正文太短而失败的学习：给「仍然学习」（force），不给「继续学习」（后端 resumable=false）（清理 C2）", async () => {
+    state.activity = [{ key: "job:j1", job_id: "j1", kind: "learn", status: "failed", book_id: "bk-a", title: "甲书", resumable: false, error: { code: "STYLE_REFERENCE_LEARN_FAILED", message: "正文太少。", details: { reason_code: "input_too_small" } } }];
+    await mountView();
+    await settle(20);
+    const item = $('[data-activity-key="job:j1"]');
+    expect($('[data-testid="sr-activity-resume"]', item)).toBeNull();
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/learn") ? { job_id: "j2" } : {}));
+    await click($('[data-testid="sr-activity-force-learn"]', item));
+    await settle();
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/learn`, { force: true });
+    expect($('[data-activity-key="job:j1"]')).toBeNull();
+    expect($('[data-activity-key="job:j2"]')).toBeTruthy();
+  });
+
+  it("不可续跑的失败（resumable=false，不是正文太短）：既没有「继续学习」也没有「仍然学习」，只能关闭", async () => {
+    state.activity = [{ key: "job:j1", job_id: "j1", kind: "learn", status: "failed", book_id: "bk-a", title: "甲书", resumable: false, error: { code: "STYLE_REFERENCE_LEARN_FAILED", message: "挑出的窗口里没有正文段。" } }];
+    await mountView();
+    await settle(20);
+    const item = $('[data-activity-key="job:j1"]');
+    expect($('[data-testid="sr-activity-resume"]', item)).toBeNull();
+    expect($('[data-testid="sr-activity-force-learn"]', item)).toBeNull();
+    expect([...item.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["关闭"]);
   });
 });

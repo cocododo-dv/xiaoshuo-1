@@ -4,21 +4,22 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  CHAPTER_STATE_META,
+  CHAPTER_STATE_ORDER,
   LLM_NODE_LABELS,
   PARAGRAPH_TYPE_LABELS,
+  SCENE_STATE_META,
+  SCENE_STATE_ORDER,
   STYLE_DIMENSIONS,
   STYLE_DIMENSION_LABELS,
   STYLE_LAYER_ORDER,
   STYLE_MOOD_TAGS,
   STYLE_SITUATION_TAGS,
+  STYLE_WINDOW_SLOT_LABELS,
   WINDOW_POSITION_LABELS,
-  CHAPTER_STATE_META,
-  CHAPTER_STATE_ORDER,
-  SCENE_STATE_META,
-  SCENE_STATE_ORDER,
   accountingStatusMeta,
-  chapterLabel,
   chapterHeading,
+  chapterLabel,
   chapterLabelById,
   chapterOwnTitle,
   chapterStateMeta,
@@ -34,6 +35,7 @@ import {
   styleDimensionLabel,
   styleJobKindLabel,
   styleLayerOf,
+  styleWindowSlotLabel,
 } from "./ws-labels.js";
 
 const BOOK = [
@@ -193,5 +195,16 @@ describe("风格参考词表与后端一致", () => {
     for (const gone of ["style_ref_supplement_evidence", "style_ref_preview_generate", "style_ref_rag_rerank"]) {
       expect(LLM_NODE_LABELS[gone], gone).toBeUndefined();
     }
+  });
+});
+
+describe("样例窗配额的叫法（2026-09-24 O1：窗口标签记维度，不再记手法）", () => {
+  it("「手法示范」改叫「维度示范」：新的 slot 名 dimension / revise_dimension 有叫法，O1 之前冻结的场上的 device / revise_device 也照旧念得出", () => {
+    expect(styleWindowSlotLabel("dimension")).toBe("维度示范");
+    expect(styleWindowSlotLabel("revise_dimension")).toBe("示范要改的维度");
+    expect(styleWindowSlotLabel("device")).toBe("维度示范");
+    expect(styleWindowSlotLabel("revise_device")).toBe("示范要改的维度");
+    expect(styleWindowSlotLabel("nope")).toBe("");
+    for (const label of Object.values(STYLE_WINDOW_SLOT_LABELS)) expect(label).not.toContain("手法");
   });
 });
