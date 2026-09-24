@@ -255,28 +255,38 @@ def test_kernel_change_rebuilds_features_but_keeps_tags(session) -> None:
 
 
 def test_set_window_tags_keeps_to_the_vocabularies(session) -> None:
+    """v2 形状(2026-09-24 §8 O1):{situations, moods, dimensions, gist};维度只认 16 个键、至多 3 个;v1 的 devices 不进库。"""
+    from novel_system.services.style_reference.tags import TAGS_VERSION
+
     book_id = seed_book(session, "win_tags", synthetic_rows("tags", chapters=2))
     W.ensure_window_index(session, book_id)
     written = W.set_window_tags(
         session,
         book_id,
         {
-            1: {"situations": ["对峙审问", "不存在的场面"], "moods": ["紧张", "诙谐", "伤感"], "devices": ["降维比喻", "别的"], "gist": "x" * 80},
+            1: {
+                "situations": ["对峙审问", "不存在的场面"],
+                "moods": ["紧张", "诙谐", "伤感"],
+                "dimensions": ["scene.dialogue", "不存在的维", "scene.dialogue", "narrative.pacing", "theme.values", "language.rhetoric"],
+                "devices": ["降维比喻", "别的"],
+                "gist": "x" * 80,
+            },
             "2": {"situations": ["赶路转场"]},
             999: {"situations": ["日常闲谈"]},
         },
-        tags_version="window_tags_v1",
-        devices=["降维比喻"],
+        tags_version=TAGS_VERSION,
     )
     session.commit()
     assert written == 2
     windows = W.load_windows(session, book_id)
     first = windows[0].tags_json
+    assert set(first) == {"situations", "moods", "dimensions", "gist"}
     assert first["situations"] == ["对峙审问"]
     assert first["moods"] == ["紧张", "诙谐"]
-    assert first["devices"] == ["降维比喻"]
+    assert first["dimensions"] == ["scene.dialogue", "narrative.pacing", "theme.values"]
     assert len(first["gist"]) == 40
-    assert windows[1].tags_json["situations"] == ["赶路转场"]
+    assert windows[0].tags_version == TAGS_VERSION == "window_tags_v2"
+    assert windows[1].tags_json == {"situations": ["赶路转场"], "moods": [], "dimensions": [], "gist": ""}
 
 
 def test_front_matter_and_paratext_never_enter_windows(session) -> None:

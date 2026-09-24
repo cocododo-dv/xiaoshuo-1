@@ -5,7 +5,9 @@
 - ``GET /api/v1/projects/{project_id}/style-fidelity``：作品的读数走势、近期常见偏差、按维平均（确定性分与评审分分开）；
 - ``GET /api/v2/style-reference/readings/{reading_id}``：一条读数；
 - ``POST /api/v2/style-reference/checks``：对照检查——建一个作业（作业表 kind=check），读数 + 参考评审 + 抄袭门；
-- ``GET /api/v2/style-reference/checks/{job_id}``：对照检查作业的进度与结果读数。
+- ``GET /api/v2/style-reference/checks/{job_id}``：对照检查作业的进度与结果读数；
+- ``POST /api/v2/style-reference/checks/{job_id}/cancel``：取消（排队中 / 心跳过期的当场收尾，运行中的在下一个检查点收尾；
+  已结束 409 ``STYLE_REFERENCE_CHECK_NOT_ACTIVE``），响应与 ``GET`` 同形。
 
 读数入库只有 ``services.style_reference.readings.record_fidelity_reading`` 一个入口；这里的读接口都不写库。
 旧的「回测」接口（``/profiles/{id}/validate``、``/reports``）与它的报告表都已删除（迁移 0091）。
@@ -21,8 +23,9 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.mutations import idempotent_response
+from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.db.models import SceneCard, StyleFidelityReading, StyleReferenceJob
+from novel_system.db.models import SceneCard, StyleFidelityReading
 from novel_system.services.errors import DomainError
 from novel_system.services.style_fidelity_view import (
     project_style_fidelity,
@@ -31,11 +34,13 @@ from novel_system.services.style_fidelity_view import (
 from novel_system.services.style_reference import check_job as check_job_service
 from novel_system.services.style_reference.check_job import (
     CHECK_MAX_TEXT_CHARS,
+    cancel_check_job,
+    check_job_or_404,
     check_job_payload,
     start_check_job,
 )
 from novel_system.services.style_reference.errors import LLMRequiredError
-from novel_system.services.style_reference.jobs import JOB_KIND_CHECK, dispatch_job
+from novel_system.services.style_reference.jobs import dispatch_job
 from novel_system.services.style_reference.readings import reading_payload
 
 router = APIRouter(tags=["style_fidelity"])
@@ -151,11 +156,36 @@ def get_style_check(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    job = session.get(StyleReferenceJob, job_id)
-    if job is None or job.kind != JOB_KIND_CHECK:
-        raise DomainError(
-            "STYLE_REFERENCE_CHECK_NOT_FOUND",
-            f"style check {job_id!r} not found",
-            status_code=404,
-        )
+    job = check_job_or_404(session, job_id)
     return ok(check_job_payload(session, job), req_id=_req_id(request))
+
+
+@router.post(f"{STYLE_REFERENCE_PREFIX}/checks/{{job_id}}/cancel")
+def cancel_style_check(
+    job_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    """取消一次对照检查（与分类 / 学习的取消同形）：排队中 / 心跳过期的作业在这个请求里收尾为 cancelled，运行中的置
+    取消标记、工人在下一个检查点收尾；已结束 409 ``STYLE_REFERENCE_CHECK_NOT_ACTIVE``，没有 404。响应 = ``GET`` 的
+    作业载荷（``job`` / ``reading``）加 ``job_id`` / ``state`` / ``cancel_requested`` / ``finished``。"""
+
+    def _do() -> dict[str, Any]:
+        job = cancel_check_job(session, job_id)
+        return {
+            "job_id": job.job_id,
+            "state": job.state,
+            "cancel_requested": True,
+            "finished": job.state == "cancelled",
+            **check_job_payload(session, job),
+        }
+
+    return idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template=f"{STYLE_REFERENCE_PREFIX}/checks/{{job_id}}/cancel",
+        payload={"job_id": job_id},
+        action=_do,
+    )

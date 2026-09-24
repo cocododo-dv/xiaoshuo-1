@@ -20,6 +20,7 @@ import yaml
 from novel_system.services.style_reference import voice_signature as vs
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
+from novel_system.tools import build_voice_baseline
 
 CORPUS = Path(__file__).resolve().parent / "golden" / "style_reference" / "corpus"
 BASELINE_PATH = Path(__file__).resolve().parents[2] / "config" / "style_reference" / "voice_baseline.yaml"
@@ -76,12 +77,13 @@ def test_function_words_yaml_groups_are_complete_and_disjoint() -> None:
 
 
 def test_baseline_yaml_matches_generator(baseline: dict) -> None:
-    """基线文件必须能由 build-baseline 从黄金语料确定性再生成(分句 / 词表改动后需重跑)。"""
+    """基线文件必须能由 build-baseline(2026-09-24 起在 tools/build_voice_baseline.py)从黄金语料确定性再生成
+    (分句 / 词表改动后需重跑)。"""
     assert baseline["version"] == vs.VOICE_BASELINE_VERSION
     assert baseline["signature_version"] == vs.VOICE_SIGNATURE_VERSION
     assert baseline["block_chars"] == vs.BASELINE_BLOCK_CHARS
     assert set(baseline["features"]) == set(vs.FEATURE_NAMES)
-    regenerated = vs.build_voice_baseline(CORPUS)
+    regenerated = build_voice_baseline.build_voice_baseline(CORPUS)
     assert regenerated["block_count"] == baseline["block_count"] > 20
     for name in vs.FEATURE_NAMES:
         expected = regenerated["features"][name]
@@ -95,12 +97,24 @@ def test_baseline_yaml_matches_generator(baseline: dict) -> None:
 
 def test_build_baseline_cli_writes_loadable_yaml(tmp_path: Path) -> None:
     output = tmp_path / "voice_baseline.yaml"
-    assert vs._main(["build-baseline", "--corpus-dir", str(CORPUS), "--output", str(output)]) == 0
-    loaded = yaml.safe_load(output.read_text(encoding="utf-8"))
+    assert build_voice_baseline.main(["build-baseline", "--corpus-dir", str(CORPUS), "--output", str(output)]) == 0
+    text = output.read_text(encoding="utf-8")
+    loaded = yaml.safe_load(text)
     assert loaded["version"] == vs.VOICE_BASELINE_VERSION
     assert set(loaded["features"]) == set(vs.FEATURE_NAMES)
     assert loaded["block_count"] > 0
     assert {record["file"] for record in loaded["corpus"]} == {path.name for path in CORPUS.glob("*.txt")}
+    # 文件头记下重建命令(新位置)
+    assert "python -m novel_system.tools.build_voice_baseline build-baseline" in text
+    assert build_voice_baseline.default_corpus_dir() == CORPUS and build_voice_baseline.default_baseline_path() == BASELINE_PATH
+
+
+def test_baseline_cli_and_dead_aliases_left_the_service_module() -> None:
+    """2026-09-24 §8 S4:命令行搬到 tools,``VoiceLexicon`` / ``clear_voice_signature_cache`` / 习惯句的 ``baseline`` 参数删掉。"""
+    for name in ("_main", "build_voice_baseline", "render_voice_baseline_yaml", "_chunk_paragraphs", "VoiceLexicon", "clear_voice_signature_cache"):
+        assert not hasattr(vs, name), name
+    inspected = build_voice_baseline.main(["inspect", str(CORPUS / "luxun_kongyiji.txt")])
+    assert inspected == 0
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +166,7 @@ def test_signature_shape_on_golden_corpus(luxun: dict, zhuziqing: dict) -> None:
 def test_degenerate_inputs_are_safe(text: str, baseline: dict) -> None:
     signature = vs.compute_voice_signature_for_text(text, baseline=baseline)
     _assert_signature_shape(signature)
-    assert vs.render_voice_habits(signature, baseline) == []
+    assert vs.render_voice_habits(signature) == []
     assert vs.distinctive_features(signature, baseline) is not None
 
 
@@ -227,8 +241,8 @@ def test_z_scores_shrink_std_for_aggregated_signature(luxun: dict, baseline: dic
 def test_render_habits_are_bounded_digit_free_and_author_specific(
     luxun: dict, zhuziqing: dict, baseline: dict
 ) -> None:
-    lines_lu = vs.render_voice_habits(luxun, baseline)
-    lines_zhu = vs.render_voice_habits(zhuziqing, baseline)
+    lines_lu = vs.render_voice_habits(luxun)
+    lines_zhu = vs.render_voice_habits(zhuziqing)
     for lines in (lines_lu, lines_zhu):
         assert 3 <= len(lines) <= vs.MAX_HABIT_LINES
         assert len(set(lines)) == len(lines)
@@ -250,21 +264,24 @@ def test_render_habits_are_bounded_digit_free_and_author_specific(
 
 
 def test_render_habits_do_not_depend_on_any_baseline(luxun: dict, baseline: dict) -> None:
-    """习惯句是作者自己的绝对描述:给不给基线、给哪份基线,结果都一样。"""
-    with_baseline = vs.render_voice_habits(luxun, baseline)
-    assert vs.render_voice_habits(luxun, {}) == with_baseline
-    assert vs.render_voice_habits(luxun) == with_baseline
+    """习惯句是作者自己的绝对描述,不与任何基线比较:从前的 ``baseline`` 参数已删(2026-09-24 §8 S4),签名只收签名。"""
+    lines = vs.render_voice_habits(luxun)
+    assert lines and vs.render_voice_habits(dict(luxun)) == lines
+    with pytest.raises(TypeError):
+        vs.render_voice_habits(luxun, baseline)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        vs.render_voice_habits(luxun, baseline=baseline)  # type: ignore[call-arg]
 
 
-def test_render_accepts_features_only(luxun: dict, baseline: dict) -> None:
-    features_only = vs.render_voice_habits(luxun["features"], baseline)
+def test_render_accepts_features_only(luxun: dict) -> None:
+    features_only = vs.render_voice_habits(luxun["features"])
     assert features_only
     assert all(not _DIGITS.search(line) for line in features_only)
     # 没有 top_words 就没有「多用某某词」的行,只剩频率与形状
     assert not any(line.startswith("连接多用") or line.startswith("常用副词") for line in features_only)
     assert any(line.startswith("连接词每千字约") for line in features_only)
-    assert vs.render_voice_habits({}, baseline) == []
-    assert vs.render_voice_habits({"features": {}}, baseline) == []
+    assert vs.render_voice_habits({}) == []
+    assert vs.render_voice_habits({"features": {}}) == []
 
 
 def test_render_habit_frequencies_are_spelled_in_words() -> None:
@@ -362,7 +379,7 @@ def test_deliberate_repetition_threshold_is_block_count_independent(baseline: di
     assert above["features"]["redup_total_per_1k"] >= redup["p85"]
     assert above["deliberate_repetition"] is True
     # 习惯句按作者自己的绝对密度说「常用叠词」
-    assert "常用叠词" in vs.render_voice_habits(above, baseline)
+    assert "常用叠词" in vs.render_voice_habits(above)
     assert vs.compute_voice_signature(_DENSE_REDUP_PARAGRAPHS * 4, baseline=baseline)["deliberate_repetition"] is True
 
 

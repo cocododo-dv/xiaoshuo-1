@@ -567,15 +567,36 @@ def test_tag_batches_respect_window_and_char_limits() -> None:
 
 
 def test_tag_output_is_parsed_strictly() -> None:
+    """v2 标签(2026-09-24 §8 O1):场面 / 情绪限于词表,维度只认 16 个键(去重、至多 3 个),v1 的 devices 不进库。"""
     good = {
         "windows": [
-            {"window": 3, "situations": ["日常闲谈", "编的场面"], "moods": ["诙谐"], "devices": ["降维比喻", "不在表里"], "gist": "韩小暖在码头等人"},
-            {"window": 4, "situations": ["危机应对"], "moods": ["紧张", "恐惧", "平静"], "devices": [], "gist": "一场追逐"},
+            {
+                "window": 3,
+                "situations": ["日常闲谈", "编的场面"],
+                "moods": ["诙谐"],
+                "dimensions": ["scene.dialogue", "language.rhetoric", "编的维度", "scene.dialogue"],
+                "devices": ["降维比喻"],
+                "gist": "韩小暖在码头等人",
+            },
+            {
+                "window": 4,
+                "situations": ["危机应对"],
+                "moods": ["紧张", "恐惧", "平静"],
+                "dimensions": ["narrative.pacing", "scene.environment", "theme.motifs", "language.vocabulary"],
+                "gist": "一场追逐",
+            },
         ]
     }
-    tags = learn_tags.parse_tag_output(good, [3, 4], devices=["降维比喻"], protected_terms=[{"term": "韩小暖", "kind": "person"}])
-    assert tags[3] == {"situations": ["日常闲谈"], "moods": ["诙谐"], "devices": ["降维比喻"], "gist": "某人在码头等人"}
+    tags = learn_tags.parse_tag_output(good, [3, 4], protected_terms=[{"term": "韩小暖", "kind": "person"}])
+    assert tags[3] == {
+        "situations": ["日常闲谈"],
+        "moods": ["诙谐"],
+        "dimensions": ["scene.dialogue", "language.rhetoric"],
+        "gist": "某人在码头等人",
+    }
     assert tags[4]["moods"] == ["紧张", "恐惧"]
+    assert tags[4]["dimensions"] == ["narrative.pacing", "scene.environment", "theme.motifs"]  # 至多 3 个
+    assert set(tags[4]) == {"situations", "moods", "dimensions", "gist"}
     for bad in (
         {"windows": [good["windows"][0]]},  # 缺一窗
         {"windows": [*good["windows"], {"window": 9}]},  # 多出
@@ -583,7 +604,17 @@ def test_tag_output_is_parsed_strictly() -> None:
         {"nope": []},
     ):
         with pytest.raises(learn_tags.TagBatchMismatch):
-            learn_tags.parse_tag_output(bad, [3, 4], devices=[])
+            learn_tags.parse_tag_output(bad, [3, 4])
+
+
+def test_tag_payload_sends_the_dimension_vocabulary_instead_of_card_devices() -> None:
+    from novel_system.services.style_reference.card import DIMENSION_LABELS
+    from novel_system.services.style_reference.tags import DIMENSION_KEYS, MAX_DIMENSIONS, TAGS_VERSION
+
+    payload = learn_tags.tag_payload([{"window": 1, "chapter": 1, "position": "章首", "text": "x"}], book_title="书")
+    assert set(payload) == {"book_title", "situation_vocabulary", "mood_vocabulary", "dimension_vocabulary", "windows"}
+    assert payload["dimension_vocabulary"] == [{"key": key, "label": DIMENSION_LABELS[key]} for key in DIMENSION_KEYS]
+    assert len(DIMENSION_KEYS) == 16 and MAX_DIMENSIONS == 3 and TAGS_VERSION == "window_tags_v2"
 
 
 # ---------------------------------------------------------------- 提示词 / 节点契约
@@ -623,6 +654,16 @@ def test_learn_prompts_and_node_routes_are_aligned() -> None:
     item = tag_schema["properties"]["windows"]["items"]["properties"]
     assert item["situations"]["items"]["enum"] == list(SITUATION_TAGS)
     assert item["moods"]["items"]["enum"] == list(MOOD_TAGS)
+    # v2:维度枚举 = 16 维的键,不再有 devices;学习作业开工前按这个模板判 v2
+    from novel_system.services.style_reference.tags import DIMENSION_KEYS, MAX_DIMENSIONS
+
+    assert item["dimensions"]["items"]["enum"] == list(DIMENSION_KEYS) and item["dimensions"]["maxItems"] == MAX_DIMENSIONS
+    assert "devices" not in item and "dimensions" in tag_schema["properties"]["windows"]["items"]["required"]
+    assert templates["style_ref_tag_windows"].version >= "2026-09-24.v2"
+    from novel_system.services.style_reference.learn_job import ensure_tag_template_current
+    from novel_system.services.style_reference.learn_llm import load_learn_runtimes
+
+    ensure_tag_template_current(load_learn_runtimes())  # 仓库里的模板是 v2:不抛
     assert "style_ref_supplement_evidence" not in templates
     assert get_llm_node_spec("style_ref_supplement_evidence") is None
     assert get_llm_node_spec("style_ref_tag_windows").reasoning_level == "off"

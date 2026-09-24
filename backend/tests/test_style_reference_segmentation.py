@@ -163,11 +163,13 @@ def test_classify_paragraphs_empty_input() -> None:
     assert result.calibration["input_empty"] is True
 
 
-def test_classify_paragraphs_llm_disabled_ignores_client(fake_paragraph_classifier) -> None:
-    """llm_enabled=False 即使传入 llm_client 也不会触发 LLM 调用。"""
+def test_classify_paragraphs_has_no_client_parameter(fake_paragraph_classifier) -> None:
+    """离线夹具模式从不调模型:2026-09-24(§8 S4)删掉了从不使用的 ``llm_client`` 参数,传它是编程错误。"""
     client = fake_paragraph_classifier()
     paragraphs = [(0, 10, "他说:“你好。”"), (10, 20, "几日后。")]
-    result = classify_paragraphs(paragraphs, llm_enabled=False, llm_client=client)
+    with pytest.raises(TypeError):
+        classify_paragraphs(paragraphs, llm_enabled=False, llm_client=client)  # type: ignore[call-arg]
+    result = classify_paragraphs(paragraphs, llm_enabled=False)
     assert client.call_count == 0
     assert result.calibration["fallback_to_heuristic"] is True
 
@@ -320,7 +322,7 @@ def test_llm_failure_is_an_error_never_a_heuristic_fallback(session) -> None:
         )
     assert caught.value.code == "STYLE_REFERENCE_CLASSIFY_LLM_CALL_FAILED"
     with pytest.raises(ValueError):
-        classify_paragraphs([(0, 5, "几日后。")], llm_enabled=True, llm_client=FailingClient())
+        classify_paragraphs([(0, 5, "几日后。")], llm_enabled=True)
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,16 @@
 
 **作业所有权**：每个进度写之后立刻提交（不带着 SQLite 的写锁去建窗口索引、跑抄袭门、调模型）；进度写 / 结束写
 落空（被取消、被清扫重排、书被删）→ ``JobLost``，框架回滚——评审回来之后先 ``check_continue`` 再记读数，
-``succeed`` 落空就连读数一起回滚，旧工人不会在别人的作业上留下一条读数。
+``succeed`` 落空就连读数一起回滚，旧工人不会在别人的作业上留下一条读数。检查点走 ``job_runtime.JobRun``
+（与分类 / 学习共用）。
+
+**取消**（2026-09-24 §8 C1）：``cancel_check_job`` / ``POST …/checks/{job_id}/cancel``——排队中 / 心跳过期的作业在请求里
+直接收尾为 cancelled，运行中的置取消标记、工人在下一个 ``check_continue`` 处停（评审回来也不记读数）；已结束的
+409 ``STYLE_REFERENCE_CHECK_NOT_ACTIVE``。
+
+**评审分的刻度**（§8 C3）：按模板 ``structured_schema`` 声明的刻度逐个换算（``review_scores.declared_score_scale`` /
+``normalize_score``：越界的分丢掉、不夹），与软 QC / 准定稿 / 深评同一条路；模板没声明刻度（旧提示词快照）时才
+退回按一次回答推断量级。
 """
 
 from __future__ import annotations
@@ -60,8 +69,10 @@ from novel_system.services.style_reference.binding_config import (
     normalize_binding_config,
 )
 from novel_system.services.style_reference.errors import LLMRequiredError
+from novel_system.services.style_reference.job_runtime import JobRun
 from novel_system.services.style_reference.jobs import (
     JOB_KIND_CHECK,
+    TERMINAL_STATES,
     ClaimedJob,
     JobLost,
     StyleJobService,
@@ -88,6 +99,8 @@ CHECK_CONFIG_MISSING_CODE = "STYLE_REFERENCE_CHECK_CONFIG_MISSING"
 CHECK_NO_REFERENCE_CODE = "STYLE_REFERENCE_CHECK_NO_REFERENCE"
 CHECK_REFERENCE_EMPTY_CODE = "STYLE_REFERENCE_CHECK_REFERENCE_EMPTY"
 CHECK_JUDGE_FAILED_CODE = "STYLE_REFERENCE_CHECK_JUDGE_FAILED"
+CHECK_NOT_FOUND_CODE = "STYLE_REFERENCE_CHECK_NOT_FOUND"
+CHECK_NOT_ACTIVE_CODE = "STYLE_REFERENCE_CHECK_NOT_ACTIVE"
 
 TARGET_TEXT = "text"
 TARGET_SCENE = "scene"
@@ -332,6 +345,27 @@ def start_check_job(
     return job
 
 
+def check_job_or_404(session: Session, job_id: str) -> StyleReferenceJob:
+    job = session.get(StyleReferenceJob, str(job_id))
+    if job is None or job.kind != JOB_KIND_CHECK:
+        raise DomainError(CHECK_NOT_FOUND_CODE, f"style check {job_id!r} not found", status_code=404)
+    return job
+
+
+def cancel_check_job(session: Session, job_id: str) -> StyleReferenceJob:
+    """取消一个对照检查作业（与分类 / 学习的取消同形）：排队中 / 心跳过期的在这里直接收尾为 cancelled，运行中的置
+    取消标记、工人在下一个 ``check_continue`` 处停；已结束的 409 ``STYLE_REFERENCE_CHECK_NOT_ACTIVE``；没有 404。"""
+    job = check_job_or_404(session, job_id)
+    if job.state in TERMINAL_STATES:
+        raise DomainError(
+            CHECK_NOT_ACTIVE_CODE,
+            "这次对照检查已经结束（完成、失败或已取消），没有可取消的。",
+            status_code=409,
+            details={"job_id": job.job_id, "state": job.state},
+        )
+    return StyleJobService(session).request_cancel(job.job_id)
+
+
 # ---------------------------------------------------------------------------
 # 参考评审
 # ---------------------------------------------------------------------------
@@ -354,9 +388,29 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def normalize_judge_output(structured: Mapping[str, Any], dimension_states: Mapping[str, Any] | None) -> dict[str, Any]:
-    """评审输出 → 10 分制（量级按一次回答的全部分数定：``review_scores``）；「不学」维与未知维丢掉。"""
-    from novel_system.services.review_scores import score_scale, to_unit, unit_to_judge_scale
+JUDGE_SCORE_FIELDS: tuple[str, ...] = ("overall", "dimensions")
+
+
+def normalize_judge_output(
+    structured: Mapping[str, Any],
+    dimension_states: Mapping[str, Any] | None,
+    *,
+    schema: Any = None,
+) -> dict[str, Any]:
+    """评审输出 → 10 分制;「不学」维与未知维丢掉。
+
+    刻度以模板 ``structured_schema``（``schema``）声明的为准（``review_scores.declared_score_scale``：``overall`` /
+    ``dimensions.*.score`` 的 ``maximum``），逐个分数按它换算，不在 ``[0, 刻度]`` 里的**丢掉**（总分丢掉就是没有总分、
+    由按维分均值补；按维分丢掉那一维）——0–10 的提示下答 85 是答错了，不能把整份回答按 0–100 除掉；全在 1 以下的回答
+    也按 0–10 读（0.9 是十分之一，不是 9 分）。模板没声明刻度（``schema`` 为 None 或没有 ``maximum``，旧提示词快照）
+    时才退回按一次回答推断量级并夹到边界（``score_scale`` + ``to_unit``，旧口径）。"""
+    from novel_system.services.review_scores import (
+        declared_score_scale,
+        normalize_score,
+        score_scale,
+        to_unit,
+        unit_to_judge_scale,
+    )
 
     states = dict(dimension_states or {})
     raw_dims = structured.get("dimensions") if isinstance(structured.get("dimensions"), Mapping) else {}
@@ -371,12 +425,20 @@ def normalize_judge_output(structured: Mapping[str, Any], dimension_states: Mapp
         note = str(value.get("note") or "").strip() if isinstance(value, Mapping) else ""
         entries[dim] = (score, note)
     overall = _finite(structured.get("overall"))
-    scale = score_scale([overall, *(score for score, _note in entries.values())])
-    dimensions = {
-        dim: {"score": unit_to_judge_scale(to_unit(score, scale)), "note": note[:200]}
-        for dim, (score, note) in entries.items()
-    }
-    overall_judge = unit_to_judge_scale(to_unit(overall, scale)) if overall is not None else None
+    declared = declared_score_scale(schema, *JUDGE_SCORE_FIELDS)
+    if declared is not None:
+        unit_of = lambda score: normalize_score(score, declared)  # noqa: E731 — 越界丢掉
+    else:
+        inferred = score_scale([overall, *(score for score, _note in entries.values())])
+        unit_of = lambda score: to_unit(score, inferred)  # noqa: E731 — 旧口径：按回答推断、夹到边界
+    dimensions: dict[str, dict[str, Any]] = {}
+    for dim, (score, note) in entries.items():
+        unit = unit_of(score)
+        if unit is None:
+            continue
+        dimensions[dim] = {"score": unit_to_judge_scale(unit), "note": note[:200]}
+    overall_unit = unit_of(overall) if overall is not None else None
+    overall_judge = unit_to_judge_scale(overall_unit) if overall_unit is not None else None
     if overall_judge is None and dimensions:
         overall_judge = round(sum(item["score"] for item in dimensions.values()) / len(dimensions), 1)
     return {
@@ -526,7 +588,11 @@ def run_reference_judge(
         raise _judge_failed(
             "参考评审没有返回结构化结果。", {"llm_call_id": llm_call_id, "reason": "no_structured_output"}
         )
-    judge = normalize_judge_output(structured, getattr(policy, "dimension_states", None))
+    judge = normalize_judge_output(
+        structured,
+        getattr(policy, "dimension_states", None),
+        schema=getattr(template, "structured_schema", None),
+    )
     if not judge["dimensions"] and judge["overall"] is None:
         raise _judge_failed("参考评审没有给出任何分数。", {"llm_call_id": llm_call_id, "reason": "no_scores"})
     judge["llm_call_id"] = str(getattr(response, "llm_call_id", None) or llm_call_id)
@@ -539,26 +605,14 @@ def run_reference_judge(
 # ---------------------------------------------------------------------------
 
 
-def _checkpoint(
-    session: Session,
-    service: StyleJobService,
-    claimed: ClaimedJob,
-    *,
-    commit: bool = True,
-    **progress: Any,
-) -> None:
-    """一个进度写：落空（被取消收尾、被清扫重排、书被删——已不是这个作业的主人）→ ``JobLost``（框架回滚）；
-    写成了就立刻提交，不带着 SQLite 的写锁去建窗口索引、跑抄袭门、等模型。"""
-    if not service.progress(claimed, **progress):
-        raise JobLost(claimed.job_id)
-    if commit:
-        session.commit()
-
-
 def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobService) -> None:
+    """``check`` 作业处理器。终态由框架写（取消 / 失败没有附带状态要落，所以不走 ``JobRun.run``），检查点
+    （``check_continue`` / ``checkpoint``：进度写落空 → ``JobLost``，写成了立刻提交，不带着 SQLite 的写锁去建窗口
+    索引、跑抄袭门、等模型）与分类 / 学习共用 ``JobRun``。"""
+    run = JobRun(session, claimed, service)
     params = dict(claimed.params or {})
-    service.check_continue(claimed)
-    _checkpoint(session, service, claimed, phase="measure", phase_label="读数", done=0, total=3)
+    run.check_continue()
+    run.checkpoint(phase="measure", phase_label="读数", done=0, total=3)
     policy, scope = _full_policy(session, params)
     if not getattr(policy, "bound", False):
         raise _not_bound_error(params)
@@ -588,8 +642,8 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
     from novel_system.services.reference_copy_gate import check_reference_copy
 
     copy_check = check_reference_copy(session, visible_text, policy=policy)
-    service.check_continue(claimed)
-    _checkpoint(session, service, claimed, phase="judge", phase_label="参考评审", done=1, total=3)
+    run.check_continue()
+    run.checkpoint(phase="judge", phase_label="参考评审", done=1, total=3)
     llm_client, llm_enabled = resolve_check_client()
     if not llm_enabled or llm_client is None:
         raise LLMRequiredError(operation="style_check")
@@ -603,8 +657,8 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
         project_id=project_id,
     )
     # 评审可能走了很久：期间作业被取消 / 被清扫重排给别的工人 / 书被删了——先确认还是自己的，再记读数
-    service.check_continue(claimed)
-    _checkpoint(session, service, claimed, phase="record", phase_label="记录读数", done=2, total=3, llm_calls_delta=1)
+    run.check_continue()
+    run.checkpoint(phase="record", phase_label="记录读数", done=2, total=3, llm_calls_delta=1)
     row = readings.record_fidelity_reading(
         session,
         policy=policy,
@@ -622,7 +676,7 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
     if row is None:  # pragma: no cover — 上面已确认绑定且读得出
         raise DomainError(CHECK_NO_REFERENCE_CODE, "读数没有记下来。", status_code=409)
     # 读数与「完成」同一个事务：结束写落空就连读数一起回滚（JobLost → 框架 rollback）
-    _checkpoint(session, service, claimed, commit=False, phase="done", phase_label="完成", done=3, total=3)
+    run.checkpoint(commit=False, phase="done", phase_label="完成", done=3, total=3)
     succeeded = service.succeed(
         claimed,
         {
@@ -655,12 +709,16 @@ __all__ = [
     "CHECK_JUDGE_FAILED_CODE",
     "CHECK_MAX_TEXT_CHARS",
     "CHECK_NODE_ID",
+    "CHECK_NOT_ACTIVE_CODE",
     "CHECK_NOT_BOUND_CODE",
+    "CHECK_NOT_FOUND_CODE",
     "CHECK_NO_REFERENCE_CODE",
     "CHECK_NO_TEXT_CODE",
     "CHECK_REFERENCE_EMPTY_CODE",
     "CHECK_TARGET_INVALID_CODE",
     "CHECK_TEMPLATE",
+    "cancel_check_job",
+    "check_job_or_404",
     "check_job_payload",
     "normalize_judge_output",
     "resolve_check_client",

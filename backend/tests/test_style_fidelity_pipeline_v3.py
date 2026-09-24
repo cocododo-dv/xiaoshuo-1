@@ -389,12 +389,13 @@ class _JudgeLLM(AccountedGenerateMixin):
         self.requests.append(request)
         if self.fail:
             raise RuntimeError("relay down")
+        # 模板声明 0–10(2026-09-24 §8 C3 起评审分按声明的刻度读,越界的丢掉):替身按 0–10 答
         structured = self.output or {
-            "overall": 72,
+            "overall": 7.2,
             "summary": "对白再松一点就更像",
             "dimensions": {
-                "scene.dialogue": {"score": 60, "note": "对白偏正式"},
-                "language.rhetoric": {"score": 85, "note": "比方的取向对了"},
+                "scene.dialogue": {"score": 6.0, "note": "对白偏正式"},
+                "language.rhetoric": {"score": 8.5, "note": "比方的取向对了"},
             },
         }
         return SimpleNamespace(
@@ -525,7 +526,7 @@ def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) ->
     monkeypatch.setattr(
         check_job,
         "resolve_check_client",
-        lambda: (_JudgeLLM({"overall": 90, "dimensions": {"scene.dialogue": {"score": 80, "note": "好多了"}}}), True),
+        lambda: (_JudgeLLM({"overall": 9, "dimensions": {"scene.dialogue": {"score": 8, "note": "好多了"}}}), True),
     )
     again = _post_check(client, {"scene_id": scene.scene_id}, "fid-check-scene-again")
     run_job_inline(again.json()["data"]["job_id"])
@@ -592,6 +593,8 @@ def test_check_job_keeps_control_plane_failures_distinct(client, session, monkey
 
 
 def test_judge_output_is_rescaled_and_drops_excluded_dimensions() -> None:
+    """没给模板 schema(旧提示词快照的兜底路径):按一次回答推断量级;声明了刻度的路径见
+    ``test_style_reference_check_job_fixes.py``(2026-09-24 §8 C3)。「不学」维两条路都丢。"""
     judge = check_job.normalize_judge_output(
         {
             "overall": 0.8,

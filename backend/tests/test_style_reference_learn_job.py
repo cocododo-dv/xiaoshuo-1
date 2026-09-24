@@ -56,7 +56,8 @@ from novel_system.services.style_reference.jobs import (
     run_job_inline,
 )
 from tests.style_reference_factories import make_book
-from novel_system.services.style_reference.tags import MOOD_TAGS, SITUATION_TAGS, TAGS_VERSION
+from novel_system.services.style_reference.card import DIMENSION_LABELS
+from novel_system.services.style_reference.tags import DIMENSION_KEYS, MOOD_TAGS, SITUATION_TAGS, TAGS_VERSION
 from tests.learn_fakes import (
     NODE_PROTECTED,
     NODE_SYNTH,
@@ -551,21 +552,127 @@ def test_author_banned_terms_filter_the_card_and_an_emptied_card_leaves_the_prof
 # ---------------------------------------------------------------- tags
 
 
+def _tags_v2_script(node, payload, _call_no):
+    """v2 标签的假回答：每窗带 dimensions（一个合法键、一个不在表里的、一个重复的）与 v1 的 devices（应被丢掉）。"""
+    if node != NODE_TAGS:
+        return None
+    return {
+        "windows": [
+            {
+                "window": w["window"],
+                "situations": ["日常闲谈", "不在词表里的场面"],
+                "moods": ["平静"],
+                "dimensions": ["scene.dialogue", "编的维度", "scene.dialogue", "language.rhetoric"],
+                "devices": ["旧版手法"],
+                "gist": "韩小暖在院子里说话",
+            }
+            for w in payload.get("windows") or []
+        ]
+    }
+
+
 def test_every_window_is_tagged_in_parallel_batches_and_gists_are_masked(session, monkeypatch) -> None:
     monkeypatch.setattr(learn_tags, "TAG_BATCH_WINDOWS", 1)
-    fake, job = _learn(monkeypatch, session, _fake(gist_name="韩小暖", delay=0.05))
+    fake, job = _learn(monkeypatch, session, _fake(script=_tags_v2_script, delay=0.05))
     assert job.state == "succeeded"
     windows = session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == "learn_book")).all()
     assert fake.count(NODE_TAGS) == len(windows) and len(windows) >= 4
     assert fake.max_inflight[NODE_TAGS] <= learn_job.PARALLEL_CALLS
     for window in windows:
         tags = window.tags_json
+        assert set(tags) == {"situations", "moods", "dimensions", "gist"}  # v2 形状：没有 devices
         assert set(tags["situations"]) <= set(SITUATION_TAGS) and tags["situations"] == ["日常闲谈"]
         assert set(tags["moods"]) <= set(MOOD_TAGS)
+        assert tags["dimensions"] == ["scene.dialogue", "language.rhetoric"]  # 16 个键之外的丢掉、去重
         assert tags["gist"] == "某人在院子里说话"  # 专名换成代称
-        assert tags["devices"] and tags["devices"][0] in job.cursor_json["tags"]["devices"]
+        assert window.tags_version == TAGS_VERSION == "window_tags_v2"
+    assert "devices" not in job.cursor_json["tags"]
+    assert job.cursor_json["tags"]["planned"] == len(windows) and job.cursor_json["tags"]["current"] == 0
     tag_payload = next(payload for node, payload in fake.payloads if node == NODE_TAGS)
     assert tag_payload["situation_vocabulary"] == list(SITUATION_TAGS)
+    assert "device_vocabulary" not in tag_payload
+    # 16 维的键与中文名一起送给模型
+    assert [d["key"] for d in tag_payload["dimension_vocabulary"]] == list(DIMENSION_KEYS)
+    assert {d["label"] for d in tag_payload["dimension_vocabulary"]} == set(DIMENSION_LABELS.values())
+
+
+def test_relearning_only_tags_windows_whose_tags_are_not_current(session, monkeypatch) -> None:
+    """重新学习不再给全书重打标签：打过（当前版本）的窗口一次都不再调；只有没标签 / 旧版本的窗口才进批。"""
+    _fake1, first = _learn(monkeypatch, session)
+    assert first.state == "succeeded", first.error_json
+    windows = session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == "learn_book")).all()
+    assert len(windows) >= 4 and all(w.tags_version == TAGS_VERSION for w in windows)
+    # 估算随之只算要打的窗：全部是当前版本 → 0 批
+    estimate = learn_job.estimate_learning(session, session.get(StyleReferenceBook, "learn_book"))
+    assert estimate["windows"] == len(windows) and estimate["windows_to_tag"] == 0
+    assert estimate["calls"]["tags"] == 0 and estimate["est_calls"] == 4 + 2
+    assert learn_job.estimate_learning(session, session.get(StyleReferenceBook, "learn_book"), retag=True)["windows_to_tag"] == len(windows)
+
+    second_fake = _use(monkeypatch, _fake())
+    second_id = _start("learn_book")
+    run_job_inline(second_id)
+    second = _job(second_id)
+    assert second.state == "succeeded", second.error_json
+    assert second_fake.count(NODE_TAGS) == 0
+    assert second.cursor_json["tags"]["batches"] == [] and second.cursor_json["tags"]["current"] == len(windows)
+    assert second.result_json["windows"]["tagged"] == 0 and second.result_json["windows"]["tag_batches"] == 0
+    assert second.progress_json["done"] == second.progress_json["total"]
+
+    # 两个窗口的标签是旧版本 / 没有标签 → 只有它们进批
+    with SessionLocal() as db:
+        rows = db.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == "learn_book").order_by(StyleReferenceWindow.window_no)).all()
+        rows[0].tags_version = "window_tags_v1"
+        rows[1].tags_json = None
+        rows[1].tags_version = None
+        db.commit()
+        stale_numbers = {rows[0].window_no, rows[1].window_no}
+    session.expire_all()  # 上面的改动在另一个会话里提交:这里的身份映射要重读
+    monkeypatch.setattr(learn_tags, "TAG_BATCH_WINDOWS", 1)
+    estimate = learn_job.estimate_learning(session, session.get(StyleReferenceBook, "learn_book"))
+    assert estimate["windows_to_tag"] == 2 and estimate["calls"]["tags"] == 2
+    third_fake = _use(monkeypatch, _fake())
+    third_id = _start("learn_book")
+    run_job_inline(third_id)
+    third = _job(third_id)
+    assert third.state == "succeeded", third.error_json
+    assert third_fake.count(NODE_TAGS) == 2
+    tagged = {w for batch in third.cursor_json["tags"]["batches"] for w in batch}
+    assert tagged == stale_numbers
+    session.expire_all()
+    assert all(w.tags_version == TAGS_VERSION and w.tags_json for w in session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == "learn_book")))
+
+    # retag：全书重打
+    retag_fake = _use(monkeypatch, _fake())
+    retag_id = _start("learn_book", retag=True)
+    assert _job(retag_id).params_json["retag"] is True
+    run_job_inline(retag_id)
+    assert _job(retag_id).state == "succeeded"
+    assert retag_fake.count(NODE_TAGS) == len(windows)
+
+
+def test_start_refuses_a_v1_tag_template(session, monkeypatch) -> None:
+    """保存过提示词快照、还是 v1 标签模板（要 devices、没有 dimensions）的安装：建作业前 409，作业里也不调。"""
+    seed_book(session)
+    _use(monkeypatch, _fake())
+    config_dir = Path(__file__).resolve().parents[2] / "config"
+    prompts = yaml.safe_load((config_dir / "prompts.yaml").read_text(encoding="utf-8"))
+    old = dict(prompts["templates"]["style_ref_tag_windows"])
+    old["version"] = "2026-09-23.v1"
+    item = old["structured_schema"]["properties"]["windows"]["items"]
+    props = {k: v for k, v in item["properties"].items() if k != "dimensions"}
+    props["devices"] = {"type": "array", "maxItems": 5, "items": {"type": "string"}}
+    old["structured_schema"] = {
+        **old["structured_schema"],
+        "properties": {"windows": {"type": "array", "items": {**item, "properties": props, "required": ["window", "situations", "moods", "devices", "gist"]}}},
+    }
+    prompts["templates"]["style_ref_tag_windows"] = old
+    _activate_snapshot(session, "prompts", prompts)
+    with pytest.raises(DomainError) as excinfo:
+        learn_job.start_learn_job(session, "learn_book")
+    assert excinfo.value.code == "STYLE_REFERENCE_LEARN_CONFIG_MISSING" and excinfo.value.status_code == 409
+    assert excinfo.value.details["stale_templates"] == ["style_ref_tag_windows"]
+    assert excinfo.value.details["author_action"]["view"] == "systemConfig"
+    assert session.scalars(select(StyleReferenceJob)).first() is None
 
 
 def test_a_mismatched_tag_batch_is_retried(session, monkeypatch) -> None:
@@ -943,7 +1050,11 @@ def test_learn_routes_create_dispatch_cancel_and_report(client, session, monkeyp
     assert listed["learn"]["job_id"] == data["job_id"]
     detail = client.get(f"{PREFIX}/books/learn_book/learn").json()["data"]
     assert detail["learn"]["result"]["profile_id"] == book["learn"]["profile_id"]
-    assert detail["estimate"]["calls"]["extract"] == 4 and detail["estimate"]["calls"]["tags"] >= 1
+    # 学完之后全书标签都是当前版本:再学一次不用重打(估算只算要打的窗);?retag=true 按全书估
+    assert detail["estimate"]["calls"]["extract"] == 4 and detail["estimate"]["calls"]["tags"] == 0
+    assert detail["estimate"]["windows_to_tag"] == 0 and detail["estimate"]["windows"] >= 4
+    retag = client.get(f"{PREFIX}/books/learn_book/learn?retag=true").json()["data"]["estimate"]
+    assert retag["windows_to_tag"] == retag["windows"] and retag["calls"]["tags"] >= 1
     assert {route["node_id"] for route in detail["routes"]} == set(learn_job.LEARN_NODE_IDS)
 
     activity = client.get(f"{PREFIX}/activity").json()["data"]["items"]
@@ -1060,3 +1171,110 @@ def test_a_protected_name_the_author_removed_is_not_brought_back_by_relearning(c
     rows = {(t.term, t.source) for t in session.scalars(select(StyleReferenceBannedTerm).where(StyleReferenceBannedTerm.profile_id == profile_id))}
     assert rows == {(ORG, "protected_auto")}
     assert session.get(StyleReferenceProfile, profile_id).profile_json[DISMISSED_KEY] == ["程铁"]
+
+
+# ---------------------------------------------------------------- 2026-09-24 §8 C2：能不能续、失败后的出路、归档画像就地更新
+
+
+def test_learn_payload_resumable_follows_the_failure_kind(session) -> None:
+    """已取消 / 心跳过期 → 能续;失败要看 error.retryable(input_too_small 之类续了只会再失败一次,只能重学)。"""
+    seed_book(session)
+    service = StyleJobService(session)
+
+    def failed(*, retryable: bool, reason: str) -> StyleReferenceJob:
+        job = service.create(JOB_KIND_LEARN, book_id="learn_book", allow_parallel=True)
+        claimed = service.claim(job.job_id)
+        service.fail(claimed, code="STYLE_REFERENCE_LEARN_FAILED", message="x", retryable=retryable, details={"reason_code": reason, "retryable": retryable})
+        return service.get(job.job_id, fresh=True)
+
+    hard = learn_job.learn_payload(failed(retryable=False, reason="input_too_small"))
+    assert hard["resumable"] is False
+    assert hard["error"]["retryable"] is False and hard["error"]["details"]["reason_code"] == "input_too_small"
+    soft = learn_job.learn_payload(failed(retryable=True, reason="extract_failed"))
+    assert soft["resumable"] is True and soft["error"]["retryable"] is True
+
+    cancelled = service.create(JOB_KIND_LEARN, book_id="learn_book", allow_parallel=True)
+    service.request_cancel(cancelled.job_id)
+    assert learn_job.learn_payload(service.get(cancelled.job_id, fresh=True))["resumable"] is True
+
+    stalled = service.create(JOB_KIND_LEARN, book_id="learn_book", allow_parallel=True)
+    service.claim(stalled.job_id)
+    session.execute(
+        update(StyleReferenceJob)
+        .where(StyleReferenceJob.job_id == stalled.job_id)
+        .values(heartbeat_at=(datetime.now(UTC) - timedelta(seconds=600)).isoformat())
+    )
+    payload = learn_job.learn_payload(service.get(stalled.job_id, fresh=True))
+    assert payload["stalled"] is True and payload["resumable"] is True
+
+    done = service.create(JOB_KIND_LEARN, book_id="learn_book", allow_parallel=True)
+    service.succeed(service.claim(done.job_id), {"ok": True})
+    assert learn_job.learn_payload(service.get(done.job_id, fresh=True))["resumable"] is False
+
+
+def test_a_book_too_small_for_windows_fails_without_resume_and_force_still_creates_a_fresh_job(session, monkeypatch) -> None:
+    """正文太少:作业以 input_too_small 失败(不可续),载荷给出 retryable / reason_code;失败的作业不挡「仍然学习」
+    (``force``)建一个新作业。"""
+    seed_book(session, rows=learn_rows(chapters=1, per_chapter=3))
+    _use(monkeypatch, _fake())
+    job_id = _start("learn_book")
+    run_job_inline(job_id)
+    job = _job(job_id)
+    assert job.state == "failed" and job.error_json["code"] == "STYLE_REFERENCE_LEARN_FAILED"
+    payload = learn_job.learn_payload(job)
+    assert payload["error"]["retryable"] is False and payload["error"]["details"]["reason_code"] == "input_too_small"
+    assert payload["resumable"] is False
+    assert payload["error"]["details"]["author_action"]["action"] == "review_book"
+
+    forced = _start("learn_book", force=True)
+    assert forced != job_id
+    forced_job = _job(forced)
+    assert forced_job.state == "queued" and forced_job.params_json["force"] is True and forced_job.params_json["skipped_layers"] == []
+
+
+def test_relearning_picks_the_archived_profile_that_still_has_an_active_binding_and_revives_it(session, monkeypatch) -> None:
+    """迁移 0092 把旧版画像归档、绑定保留:学习文风就地更新那份画像并复活为 active,绑定不动;没有绑定的归档画像不选。"""
+    _fake1, first = _learn(monkeypatch, session)
+    profile_id = first.result_json["profile_id"]
+    with SessionLocal() as db:
+        db.get(StyleReferenceProfile, profile_id).status = "archived"
+        db.add(
+            StyleReferenceInjectionBinding(
+                binding_id="bind_archived",
+                profile_id=profile_id,
+                scope="project",
+                scope_ref_id="proj_archived",
+                task_type="scene_generation",
+                strategy="mixed",
+                config_json={"reference_mode": "full"},
+                status="active",
+            )
+        )
+        db.commit()
+    _use(monkeypatch, _fake())
+    second_id = _start("learn_book")
+    assert _job(second_id).params_json["profile_id"] == profile_id
+    run_job_inline(second_id)
+    second = _job(second_id)
+    assert second.state == "succeeded", second.error_json
+    assert second.result_json["profile_id"] == profile_id and second.result_json["profile_created"] is False
+    profile = _profile(profile_id)
+    assert profile.status == "active" and profile.version_tag == "v2"
+    session.expire_all()
+    binding = session.get(StyleReferenceInjectionBinding, "bind_archived")
+    assert binding.profile_id == profile_id and binding.status == "active" and binding.config_json == {"reference_mode": "full"}
+    assert session.scalar(select(StyleReferenceProfile.profile_id).where(StyleReferenceProfile.book_id == "learn_book", StyleReferenceProfile.profile_id != profile_id)) is None
+
+    # 归档且没有生效绑定(解除过)的画像不选:新建一份
+    with SessionLocal() as db:
+        db.get(StyleReferenceProfile, profile_id).status = "archived"
+        db.get(StyleReferenceInjectionBinding, "bind_archived").status = "revoked"
+        db.commit()
+    _use(monkeypatch, _fake())
+    third_id = _start("learn_book")
+    assert _job(third_id).params_json["profile_id"] is None
+    run_job_inline(third_id)
+    third = _job(third_id)
+    assert third.state == "succeeded" and third.result_json["profile_created"] is True
+    assert third.result_json["profile_id"] != profile_id
+    assert _profile(profile_id).status == "archived"

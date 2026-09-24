@@ -43,13 +43,15 @@ class LearnRequest(BaseModel):
     """「学习文风」:建一个学习作业(或 ``resume`` 续上最近一次失败 / 取消 / 中断的)。
 
     ``profile_id``:要就地更新的画像(缺省:这本书有绑定的 / active 的 / 最近更新的那份;没有画像就新建);
-    ``force``:正文少到四层都被评估为 skip 时仍要学。
+    ``force``:正文少到四层都被评估为 skip 时仍要学(界面上的「仍然学习」);
+    ``retag``:给全书每个窗口重打标签(缺省只补标签版本不是当前版本的窗口)。
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
     profile_id: str | None = Field(default=None, max_length=128)
     resume: bool = False
     force: bool = False
+    retag: bool = False
 
 
 @router.post(f"{PATH_PREFIX}/books/{{book_id}}/learn")
@@ -80,6 +82,7 @@ def learn_book_style(
             profile_id=body.get("profile_id"),
             force=bool(body.get("force")),
             resume=bool(body.get("resume")),
+            retag=bool(body.get("retag")),
             op_key=op_key,
             llm_client=client,
         )
@@ -107,9 +110,11 @@ def _dispatch_learn(result: dict[str, Any]) -> None:
 def get_book_learning(
     book_id: str,
     request: Request,
+    retag: bool = False,
     session: Session = Depends(get_session),
 ):
-    """只读:这本书最近一次学习文风作业的摘要 + 学一次的调用数估计(学习节点的路由摘要)。"""
+    """只读:这本书最近一次学习文风作业的摘要 + 学一次的调用数估计(学习节点的路由摘要)。
+    估算里的标签批数只算还要打的窗口(``windows_to_tag``);``?retag=true`` 按全书重打估。"""
     book = StyleReferenceRepository(session).get_book(book_id)
     if book is None:
         raise DomainError(
@@ -121,7 +126,7 @@ def get_book_learning(
     return ok(
         {
             "learn": learn_payload(latest_learn_job(session, book_id)),
-            "estimate": estimate_learning(session, book),
+            "estimate": estimate_learning(session, book, retag=bool(retag)),
             "routes": [resolve_node_endpoint(node_id, llm_client=client).as_dict() for node_id in LEARN_NODE_IDS],
         },
         req_id=req_id(request),

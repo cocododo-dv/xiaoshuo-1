@@ -11,15 +11,18 @@
                  结果落抽取 / 发现 / 引文 / 证据表（挂在一行只作血缘的 run 上）；最多 3 层并行；
 4. ``synthesize`` 一次调用写文风卡（``learn_card``：无依据 / 带统计数字的行丢掉，对账去矛盾）；卡暂存在游标里；
 5. ``protected`` 受保护专名（``protected_terms``：统计候选 → 模型确认 → 必须在原书里原样出现）；暂存游标；
-6. ``tags``      给全书每个窗口打场面 / 情绪 / 手法标签（``learn_tags``：每批 ≤8 窗，最多 3 批并行，每批退避重试
-                 两次）；每批写完即记游标，重启只补没做完的批；
+6. ``tags``      给窗口打场面 / 情绪 / 维度标签（``learn_tags``：每批 ≤8 窗，最多 3 批并行，每批退避重试两次）。
+                 标签不依赖文风卡（2026-09-24 §8 O1）：只给 ``tags_version`` 还不是当前版本（或还没有标签）的窗口打，
+                 重新学习不再给全书重打；``params.retag`` 强制全打；每批写完即记游标，重启只补没做完的批；
 7. ``finalize``  专名与原文重合过滤卡片、沿用作者的 ✓ / ✗、写画像（v3 键，见 ``_profile_json``）与受保护专名行、
                  结果（计数 / 调用 / token / 耗时）——一个事务：先条件写作业行拿写锁，再重读画像合并行状态。
 
-已有画像的书**就地更新**那份画像（同一个 profile_id、version_tag +1、状态 active），绑定照常生效；没有画像的书
-新建一份 active 画像。严格 LLM：没有模型 409 ``STYLE_REFERENCE_LLM_REQUIRED``；学习节点没有路由、提示词模板缺失
-或还是旧版本（保存过提示词快照、没同步）建作业时就 409 ``STYLE_REFERENCE_LEARN_CONFIG_MISSING``（开工时再查一次）；
-每次调用前按节点的实际路由查书的云策略。LLM 客户端在作业开始时按当前配置取（``resolve_learn_client``，测试在这里打桩）。
+已有画像的书**就地更新**那份画像（同一个 profile_id、version_tag +1、状态 active），绑定照常生效——还有生效绑定的
+归档画像（迁移 0092 把旧版画像归档）同样就地更新并复活为 active；没有画像的书新建一份 active 画像。严格 LLM：
+没有模型 409 ``STYLE_REFERENCE_LLM_REQUIRED``；学习节点没有路由、提示词模板缺失或还是旧版本（保存过提示词快照、
+没同步）建作业时就 409 ``STYLE_REFERENCE_LEARN_CONFIG_MISSING``（开工时再查一次）；每次调用前按节点的实际路由查书的
+云策略。LLM 客户端在作业开始时按当前配置取（``resolve_learn_client``，测试在这里打桩）。处理器的脚手架（检查点、
+并行调用循环、终态映射）在 ``job_runtime.JobRun``，与分类 / 对照检查共用。
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, wait
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,8 +61,13 @@ from novel_system.services.style_reference.card import (
 )
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.fidelity import DIMENSION_FEATURES, reference_distribution_for_book
+from novel_system.services.style_reference.job_runtime import (
+    JobRun,
+    JobStopped,
+    conflict_error_by_kind,
+    retry_attempts,
+)
 from novel_system.services.style_reference.jobs import (
-    JOB_FAILED_CODE,
     JOB_KIND_CLASSIFY,
     JOB_KIND_LEARN,
     STATE_CANCELLED,
@@ -68,13 +76,9 @@ from novel_system.services.style_reference.jobs import (
     STATE_SUCCEEDED,
     ClaimedJob,
     DaemonCallPool,
-    JobCancelled,
-    JobInterrupted,
     JobLost,
     StyleJobService,
     heartbeat_is_stale,
-    is_worker_interruption,
-    job_activity_entry,
     register_job_handler,
 )
 from novel_system.services.style_reference.learn_card import (
@@ -107,6 +111,7 @@ from novel_system.services.style_reference.learn_extract import (
 from novel_system.services.style_reference.learn_llm import (
     EXTRACT_NODES,
     LAYERS,
+    LEARN_CONFIG_MISSING_CODE,
     LEARN_NODE_IDS,
     NODE_PROTECTED_TERMS,
     NODE_SYNTHESIZE,
@@ -198,7 +203,6 @@ PROTECTED_ATTEMPTS = 2
 TAG_ATTEMPTS = 3  # 1 次 + 2 次退避重试
 CALL_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 15.0)
 WAIT_POLL_SECONDS = 2.0
-MAX_CARD_DEVICES = 24
 
 LEARN_FAILED_CODE = "STYLE_REFERENCE_LEARN_FAILED"
 LEARN_ALREADY_ACTIVE_CODE = "STYLE_REFERENCE_LEARN_ALREADY_ACTIVE"
@@ -276,7 +280,11 @@ def _book_or_404(session: Session, book_id: str) -> StyleReferenceBook:
 
 
 def _target_profile(session: Session, book_id: str, requested: str | None) -> StyleReferenceProfile | None:
-    """重新学习要就地更新的画像：指定了就用它（必须属于这本书）；否则优先有绑定的、再 active、再最近更新的。"""
+    """重新学习要就地更新的画像：指定了就用它（必须属于这本书）；否则优先有绑定的、再 active、再最近更新的。
+
+    归档画像一般不选（作者归档过的不再动）——但**还有生效绑定的**归档画像要选：迁移 0092 把没有文风卡的旧版画像归档、
+    绑定保留，「学习文风」就是要就地把它学成 v3 并复活（finalize 置 active，绑定不动），而不是另建一份、让绑定
+    继续指着那份旧画像。"""
     if requested:
         profile = session.get(StyleReferenceProfile, str(requested))
         if profile is None:
@@ -291,20 +299,26 @@ def _target_profile(session: Session, book_id: str, requested: str | None) -> St
                 details={"profile_id": requested, "book_id": book_id},
             )
         return profile
-    profiles = [
-        p
-        for p in session.scalars(select(StyleReferenceProfile).where(StyleReferenceProfile.book_id == str(book_id)))
-        if str(p.status or "") != "archived"
-    ]
-    if not profiles:
+    rows = list(session.scalars(select(StyleReferenceProfile).where(StyleReferenceProfile.book_id == str(book_id))))
+    if not rows:
         return None
+    ids = [p.profile_id for p in rows]
     bound = set(
         session.scalars(
+            select(StyleReferenceInjectionBinding.profile_id).where(StyleReferenceInjectionBinding.profile_id.in_(ids))
+        )
+    )
+    actively_bound = set(
+        session.scalars(
             select(StyleReferenceInjectionBinding.profile_id).where(
-                StyleReferenceInjectionBinding.profile_id.in_([p.profile_id for p in profiles])
+                StyleReferenceInjectionBinding.profile_id.in_(ids),
+                StyleReferenceInjectionBinding.status == "active",
             )
         )
     )
+    profiles = [p for p in rows if str(p.status or "") != "archived" or p.profile_id in actively_bound]
+    if not profiles:
+        return None
     profiles.sort(
         key=lambda p: (
             p.profile_id in bound,
@@ -324,6 +338,40 @@ def _skipped_layers(book: StyleReferenceBook, *, force: bool) -> list[str]:
     return [layer for layer in LAYERS if assessment.get(layer) == "skip"]
 
 
+def _tag_template_is_v2(template: Any) -> bool:
+    """窗口标签模板的输出带 ``windows[].dimensions``（v2，2026-09-24）。旧的 v1 模板（保存过提示词快照、没同步）
+    还在要 ``devices``：用它打出来的标签没有维度、却会记成当前版本，之后再也不会重打——所以按旧模板一律拒。"""
+    schema = getattr(template, "structured_schema", None)
+    try:
+        return "dimensions" in schema["properties"]["windows"]["items"]["properties"]
+    except (KeyError, TypeError):
+        return False
+
+
+def ensure_tag_template_current(runtimes: Mapping[str, LearnNodeRuntime]) -> None:
+    """``load_learn_runtimes`` 之外的一条契约：打标签的模板必须是 v2（见 :func:`_tag_template_is_v2`）；不是 → 与
+    模板缺失同一个 409 ``STYLE_REFERENCE_LEARN_CONFIG_MISSING``（``details.stale_templates``）。"""
+    runtime = runtimes.get(NODE_TAG_WINDOWS)
+    if runtime is None or _tag_template_is_v2(runtime.template):
+        return
+    raise DomainError(
+        LEARN_CONFIG_MISSING_CODE,
+        "学习文风要用的模型节点还没配好。提示词模板缺失或还是旧版本:"
+        f"{NODE_TAG_WINDOWS}(窗口标签 v2 输出维度,保存过提示词快照的安装要同步提示词模板:sync_prompt_templates --execute)。",
+        status_code=409,
+        details={
+            "missing_routes": [],
+            "missing_templates": [],
+            "stale_templates": [NODE_TAG_WINDOWS],
+            "author_action": {
+                "action": "sync_prompt_templates",
+                "view": "systemConfig",
+                "label": "同步提示词模板",
+            },
+        },
+    )
+
+
 def start_learn_job(
     session: Session,
     book_id: str,
@@ -331,10 +379,13 @@ def start_learn_job(
     profile_id: str | None = None,
     force: bool = False,
     resume: bool = False,
+    retag: bool = False,
     op_key: str | None = None,
     llm_client: Any | None = None,
 ) -> StyleReferenceJob:
-    """建（或续）这本书的学习作业（调用方提交后派发）。检查见模块文档与各错误码。"""
+    """建（或续）这本书的学习作业（调用方提交后派发）。检查见模块文档与各错误码。
+
+    ``retag``：给全书每个窗口重打标签（缺省只补标签版本不是当前版本的窗口）。"""
     book = _book_or_404(session, book_id)
     if str(book.status or "") != "ready":
         raise DomainError(
@@ -362,7 +413,7 @@ def start_learn_job(
             details={"book_id": book_id, "job_id": active.job_id, "state": active.state},
         )
     # 节点路由 / 提示词模板缺失或是旧版本:建作业之前就 409(不建一个注定在工人里失败的作业);作业开工时再查一次
-    load_learn_runtimes()
+    ensure_tag_template_current(load_learn_runtimes())
     ensure_cloud_llm_allowed(book, operation="learn_style", node_ids=LEARN_NODE_IDS, llm_client=llm_client)
     skipped = _skipped_layers(book, force=force)
     if len(skipped) == len(LAYERS):
@@ -382,7 +433,7 @@ def start_learn_job(
                 status_code=409,
                 details={"book_id": book_id},
             )
-        job = service.requeue(latest.job_id)
+        job = service.requeue(latest.job_id, params_update={"retag": True} if retag else None)
         # 放回队列这条 UPDATE 已拿到写锁:再查一次分类作业(与建作业同一个「先写后查」,见 jobs 模块文档)
         conflict = service.first_conflict(book_id, kinds=(JOB_KIND_CLASSIFY,), excluding=job.job_id)
         if conflict is not None:
@@ -403,11 +454,14 @@ def start_learn_job(
         params={
             "profile_id": target.profile_id if target is not None else None,
             "force": bool(force),
+            "retag": bool(retag),
             "skipped_layers": skipped,
         },
         phase="queued",
         exclusive_with=(JOB_KIND_CLASSIFY,),
-        conflict_error=lambda other: _conflict_error(other, book_id),
+        conflict_error=lambda other: conflict_error_by_kind(
+            other, book_id, by_kind={JOB_KIND_CLASSIFY: _classifying_error}, default=_already_learning_error
+        ),
     )
     job.progress_json = {"phase": "queued", "phase_label": "排队中"}
     session.flush()
@@ -423,10 +477,7 @@ def _classifying_error(job: StyleReferenceJob, book_id: str) -> DomainError:
     )
 
 
-def _conflict_error(other: StyleReferenceJob, book_id: str) -> DomainError:
-    """建学习作业时撞上的活动作业 → 对应的 409(分类在跑 / 已有学习)。"""
-    if other.kind == JOB_KIND_CLASSIFY:
-        return _classifying_error(other, book_id)
+def _already_learning_error(other: StyleReferenceJob, book_id: str) -> DomainError:
     return DomainError(
         LEARN_ALREADY_ACTIVE_CODE,
         "这本书正在学习文风:等它完成,或先取消。",
@@ -450,7 +501,15 @@ def learn_payload(job: StyleReferenceJob | None) -> dict[str, Any] | None:
         return None
     cursor = dict(job.cursor_json or {})
     progress = dict(job.progress_json or {})
+    error = dict(job.error_json) if job.error_json else None
     stalled = job.state == STATE_RUNNING and heartbeat_is_stale(job.heartbeat_at)
+    # 能不能「继续学习」:取消 / 心跳过期的能;失败的看 error.retryable——正文太少(input_too_small)、卡片被滤空这类
+    # 失败续跑只会再失败一次,只能「重新学习」(或带 force「仍然学习」)
+    resumable = (
+        job.state == STATE_CANCELLED
+        or stalled
+        or (job.state == STATE_FAILED and (error or {}).get("retryable") is not False)
+    )
     return {
         "job_id": job.job_id,
         "state": job.state,
@@ -463,41 +522,49 @@ def learn_payload(job: StyleReferenceJob | None) -> dict[str, Any] | None:
         "profile_id": job.profile_id or (job.result_json or {}).get("profile_id"),
         "phases_done": list(cursor.get("phases_done") or []),
         "attempt": int(job.attempt or 0),
-        "error": dict(job.error_json) if job.error_json else None,
+        "error": error,
         "result": dict(job.result_json) if job.result_json else None,
         "cancel_requested": bool(job.cancel_requested),
         "stalled": stalled,
-        "resumable": job.state in (STATE_FAILED, STATE_CANCELLED) or stalled,
+        "resumable": resumable,
         "created_at": job.created_at,
         "started_at": job.started_at,
         "finished_at": job.finished_at,
     }
 
 
-def learn_activity_entry(job: StyleReferenceJob, *, title: str | None) -> dict[str, Any]:
-    entry = job_activity_entry(job)
-    entry["title"] = title
-    entry["phases_done"] = list(dict(job.cursor_json or {}).get("phases_done") or [])
-    return entry
+def windows_needing_tags(rows: Sequence[Any], *, retag: bool = False) -> list[Any]:
+    """还要打标签的窗口：标签版本不是当前版本(或没有标签)的;``retag`` 时全部。"""
+    if retag:
+        return list(rows)
+    return [w for w in rows if not w.tags_json or str(w.tags_version or "") != TAGS_VERSION]
 
 
-def estimate_learning(session: Session, book: StyleReferenceBook) -> dict[str, Any]:
-    """学一次要多少次调用 / 多少字的输入（窗口索引是最新的才给出标签批数，否则按全书字数粗估）。"""
+def _tag_plan_input(rows: Sequence[Any]) -> list[tuple[int, int]]:
+    return [(int(w.window_no), int(w.chars or 0)) for w in rows]
+
+
+def estimate_learning(session: Session, book: StyleReferenceBook, *, retag: bool = False) -> dict[str, Any]:
+    """学一次要多少次调用 / 多少字的输入（窗口索引是最新的才给出标签批数，否则按全书字数粗估）。
+
+    标签只算还要打的窗口(``windows_to_tag``;全部是当前版本时 ``tags`` 批数为 0),``retag`` 按全书算。"""
     marker = index_marker(book.stats_json) or {}
     rows = load_windows(session, book.book_id) if marker else []
-    windows = [(int(w.window_no), int(w.chars or 0)) for w in rows]
+    to_tag = windows_needing_tags(rows, retag=retag)
+    windows = [(int(w.window_no), int(w.chars or 0)) for w in to_tag]
     batches = plan_tag_batches(windows) if windows else []
     tag_chars = sum(min(chars, 3000) for _no, chars in windows)
     return {
         "book_id": book.book_id,
-        "windows": len(windows) or None,
+        "windows": len(rows) or None,
+        "windows_to_tag": len(to_tag) if rows else None,
         "calls": {
             "extract": len(LAYERS),
             "synthesize": 1,
             "protected": 1,
-            "tags": len(batches) or None,
+            "tags": len(batches) if rows else None,
         },
-        "est_calls": (len(LAYERS) + 2 + len(batches)) if batches else None,
+        "est_calls": (len(LAYERS) + 2 + len(batches)) if rows else None,
         "est_input_chars": {
             "extract_per_call": 44_000,
             "tags_total": tag_chars or None,
@@ -507,10 +574,6 @@ def estimate_learning(session: Session, book: StyleReferenceBook) -> dict[str, A
 
 
 # ---------------------------------------------------------------- the handler
-
-
-class _Stopped(Exception):
-    """作业已停(取消 / 失败 / 丢了所有权):工人线程里还没开始的重试不再发。"""
 
 
 @dataclass
@@ -533,44 +596,29 @@ def _set_run_status(session: Session, run_id: str | None, status: str) -> None:
     )
 
 
-class _LearnRun:
+class _LearnRun(JobRun):
+    operation = "learn_style"
+
     def __init__(self, session: Session, claimed: ClaimedJob, service: StyleJobService) -> None:
-        self.session = session
-        self.claimed = claimed
-        self.service = service
-        self.book_id = str(claimed.book_id or "")
+        super().__init__(session, claimed, service)
         self.params = dict(claimed.params or {})
         self.cursor: dict[str, Any] = dict(claimed.cursor or {})
-        self.client: Any = None
         self.runtimes: dict[str, LearnNodeRuntime] = {}
         self.book_title = ""
-        self.cloud_policy_checked: set[str] = set()
 
-    # ---- lifecycle ------------------------------------------------------
-    def run(self) -> None:
-        try:
-            self._run()
-        except (JobLost, JobInterrupted):
-            self.session.rollback()
-            raise
-        except JobCancelled:
-            self._finish(cancelled=True)
-        except DomainError as exc:
-            if is_worker_interruption(exc, self.claimed):
-                self.session.rollback()
-                raise JobInterrupted(self.claimed.job_id) from exc
-            self._finish(
-                code=exc.code,
-                message=str(exc.message),
-                retryable=bool(getattr(exc, "retryable", False) or (exc.details or {}).get("retryable")),
-                details=exc.details if isinstance(exc.details, Mapping) else None,
-            )
-        except Exception as exc:  # noqa: BLE001 — 作业边界:记失败(可续跑),游标保留
-            if is_worker_interruption(exc, self.claimed):
-                self.session.rollback()
-                raise JobInterrupted(self.claimed.job_id) from exc
-            logger.exception("learn job %s failed", self.claimed.job_id)
-            self._finish(code=str(getattr(exc, "code", None) or JOB_FAILED_CODE), message=f"{type(exc).__name__}: {exc}", retryable=True)
+    # ---- lifecycle (终态的附带写:血缘 run 行) -----------------------------
+    def finish_cancelled(self) -> None:
+        self._finish(cancelled=True)
+
+    def finish_failed(
+        self,
+        *,
+        code: str,
+        message: str,
+        retryable: bool,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._finish(code=code, message=message, retryable=retryable, details=details)
 
     def _finish(
         self,
@@ -592,46 +640,12 @@ class _LearnRun:
         _set_run_status(self.session, self.cursor.get("run_id"), "cancelled" if cancelled else "failed")
         self.session.commit()
 
-    def _fresh(self) -> None:
-        """结束当前读事务,之后读到别的连接刚提交的取消 / 删书。"""
-        self.session.commit()
-
-    def _check_continue(self) -> None:
-        self._fresh()
-        self.service.check_continue(self.claimed)
-
-    def _book(self) -> StyleReferenceBook:
-        book = self.session.execute(
-            select(StyleReferenceBook)
-            .where(StyleReferenceBook.book_id == self.book_id)
-            .execution_options(populate_existing=True)
-        ).scalar_one_or_none()
-        if book is None:
-            raise JobLost(self.claimed.job_id)
-        return book
-
-    def _pre_call_check(self, node_ids: Sequence[str]) -> None:
-        """每次派发前:作业仍归我且没被取消、书还在、书的云策略仍允许这些节点的实际路由。"""
-        self._check_continue()
-        book = self._book()
-        ensure_cloud_llm_allowed(
-            book,
-            operation="learn_style",
-            routes={node_id: self.runtimes[node_id].route for node_id in node_ids},
-            llm_client=self.client,
-        )
+    def _node_routes(self, node_ids: Sequence[str]) -> dict[str, Any]:
+        return {node_id: self.runtimes[node_id].route for node_id in node_ids}
 
     def _save(self, *, progress: Mapping[str, Any] | None = None, write: Callable[[], None] | None = None) -> None:
-        """游标（条件写，本事务第一条写）→ 调用方的写 → 进度，一次提交。"""
-        self._fresh()
-        if not self.service.save_cursor(self.claimed, self.cursor):
-            self.session.rollback()
-            raise JobLost(self.claimed.job_id)
-        if write is not None:
-            write()
-        if progress is not None:
-            self.service.progress(self.claimed, **dict(progress))
-        self.session.commit()
+        """游标（条件写，本事务第一条写）→ 调用方的写 → 进度，一次提交（``JobRun.save_cursor``）。"""
+        self.save_cursor(self.cursor, progress=progress, write=write)
 
     def _done(self, phase: str) -> bool:
         return phase in (self.cursor.get("phases_done") or [])
@@ -683,11 +697,8 @@ class _LearnRun:
         values = self._progress_values(phase, detail=detail)
         extra = dict(values.pop("extra"))
         extra.update({"phase_started_at": utcnow(), "phase_done_at_start": int(self.cursor.get("steps_done") or 0)})
-        self._fresh()
-        if not self.service.progress(self.claimed, extra=extra, **values):
-            self.session.rollback()
-            raise JobLost(self.claimed.job_id)
-        self.session.commit()
+        self.fresh()
+        self.checkpoint(extra=extra, **values)
 
     def _count_call(self, attempts: int) -> None:
         self.cursor["llm_calls"] = int(self.cursor.get("llm_calls") or 0) + int(attempts)
@@ -695,8 +706,8 @@ class _LearnRun:
 
     # ---- main -----------------------------------------------------------
     def _run(self) -> None:
-        self._check_continue()
-        book = self._book()
+        self.check_continue()
+        book = self.book()
         self.book_title = str(book.title or "")
         if int(self.cursor.get("version") or 0) != CURSOR_VERSION:
             self.cursor = {"version": CURSOR_VERSION, "phases_done": [], "started_at": utcnow()}
@@ -705,6 +716,7 @@ class _LearnRun:
             raise LLMRequiredError(operation="learn_style")
         self.client = client
         self.runtimes = load_learn_runtimes()
+        ensure_tag_template_current(self.runtimes)
         ensure_cloud_llm_allowed(
             book,
             operation="learn_style",
@@ -756,7 +768,7 @@ class _LearnRun:
                 retryable=False,
                 details={"book_id": self.book_id},
             )
-        book = self._book()
+        book = self.book()
         marker = index_marker(book.stats_json) or {}
         stats = dict(book.stats_json or {})
         self.cursor["index"] = {
@@ -766,15 +778,18 @@ class _LearnRun:
             "types_revision": int(stats.get("paragraph_types_revision") or 0),
             "window_count": len(windows),
             "marker_root": marker.get("root"),
-            "tag_batches": len(plan_tag_batches([(int(w.window_no), int(w.chars or 0)) for w in windows])),
+            "tag_batches": len(plan_tag_batches(_tag_plan_input(windows_needing_tags(windows, retag=self._retag())))),
         }
         self._mark_done(PHASE_WINDOWS, began, detail=f"{len(windows)} 个窗口")
+
+    def _retag(self) -> bool:
+        return bool(self.params.get("retag"))
 
     # ---- b. select --------------------------------------------------------
     def _phase_select(self) -> None:
         began = time.monotonic()
         self._enter(PHASE_SELECT)
-        book = self._book()
+        book = self.book()
         rows = load_windows(self.session, self.book_id)
         if not rows:
             rows = ensure_window_index(self.session, self.book_id, commit=True)
@@ -856,13 +871,20 @@ class _LearnRun:
                 raise LearnFailedError(REASON_INPUT_TOO_SMALL, "挑出的窗口里没有正文段。", retryable=False)
 
             def submit(pool: DaemonCallPool, layer: str, stop: threading.Event) -> Future:
-                self._pre_call_check([EXTRACT_NODES[layer]])
+                self.pre_call_check(self._node_routes([EXTRACT_NODES[layer]]))
                 return pool.submit(self._extract_layer, layer, ext_set, stop)
 
             def apply(layer: str, outcome: _LayerOutcome) -> None:
                 self._apply_layer(run_id, outcome)
 
-            self._run_parallel(pending, submit, apply, thread_prefix="sr_learn_extract")
+            self.run_parallel(
+                pending,
+                submit,
+                apply,
+                max_inflight=PARALLEL_CALLS,
+                poll_seconds=WAIT_POLL_SECONDS,
+                thread_prefix="sr_learn_extract",
+            )
         total = sum(
             int(counts.get("observations", 0)) + int(counts.get("avoid", 0))
             for layer_state in (self.cursor.get("layers_done") or {}).values()
@@ -884,9 +906,7 @@ class _LearnRun:
         attempts = 0
         last_call: str | None = None
         errors: list[str] = []
-        for attempt in range(EXTRACT_ATTEMPTS):
-            if stop.is_set():
-                raise _Stopped()
+        for attempt in retry_attempts(EXTRACT_ATTEMPTS, (), stop):
             try:
                 result = call_structured(
                     runtime,
@@ -955,7 +975,7 @@ class _LearnRun:
         cached = self.cursor.get("voice")
         if isinstance(cached, Mapping) and cached.get("features"):
             return dict(cached)
-        book = self._book()
+        book = self.book()
         stats = dict(book.stats_json or {})
         signature = stats.get("voice_signature")
         if not (
@@ -986,7 +1006,7 @@ class _LearnRun:
         cached = self.cursor.get("structure_card")
         if isinstance(cached, Mapping):
             return dict(cached)
-        book = self._book()
+        book = self.book()
         stats = dict(book.stats_json or {})
         rows = [
             {"paragraph_index": index, "paragraph_type": ptype, "text": text, "paragraph_id": pid}
@@ -1046,7 +1066,7 @@ class _LearnRun:
         errors: list[str] = []
         extra: str | None = None
         for attempt in range(SYNTH_ATTEMPTS):
-            self._pre_call_check([NODE_SYNTHESIZE])
+            self.pre_call_check(self._node_routes([NODE_SYNTHESIZE]))
             try:
                 result = self._call_in_worker(
                     lambda extra=extra, attempt=attempt: call_structured(
@@ -1118,7 +1138,7 @@ class _LearnRun:
         attempts = 0
         errors: list[str] = []
         for attempt in range(PROTECTED_ATTEMPTS):
-            self._pre_call_check([NODE_PROTECTED_TERMS])
+            self.pre_call_check(self._node_routes([NODE_PROTECTED_TERMS]))
             try:
                 result = self._call_in_worker(
                     lambda attempt=attempt: call_structured(
@@ -1156,18 +1176,10 @@ class _LearnRun:
         self._mark_done(PHASE_PROTECTED, began, detail=f"{len(terms)} 个专名", calls=attempts)
 
     # ---- f. tags ----------------------------------------------------------
-    def _card_devices(self) -> list[str]:
-        card_raw = (self.cursor.get("card") or {}).get("card")
-        devices: list[str] = []
-        if isinstance(card_raw, Mapping):
-            for entry in card_raw.get("dimensions") or []:
-                for device in entry.get("devices") or []:
-                    text = str(device or "").strip()
-                    if text and text not in devices:
-                        devices.append(text)
-        return devices[:MAX_CARD_DEVICES]
-
     def _phase_tags(self) -> None:
+        """只给还要打的窗口打标签(标签版本不是 ``TAGS_VERSION`` 的;``params.retag`` 全打)。根哈希变了(索引重建、
+        旧标签已丢)的窗口自然没有标签,也在这一批里;打过的窗口重新学习时不再重打——这就是重新学习从 71 次调用降到
+        ≈6 次的地方。"""
         began = time.monotonic()
         for _round in range(3):
             rows = ensure_window_index(self.session, self.book_id, commit=True)
@@ -1176,21 +1188,29 @@ class _LearnRun:
             root = str(rows[0].root_sha256)
             tags_state = dict(self.cursor.get("tags") or {})
             if tags_state.get("root") != root:
+                to_tag = windows_needing_tags(rows, retag=self._retag())
                 tags_state = {
                     "root": root,
-                    "batches": plan_tag_batches([(int(w.window_no), int(w.chars or 0)) for w in rows]),
+                    "batches": plan_tag_batches(_tag_plan_input(to_tag)),
                     "done": [],
-                    "devices": self._card_devices(),
                     "tagged": 0,
+                    "planned": len(to_tag),
+                    "current": len(rows) - len(to_tag),
                 }
                 self.cursor["tags"] = tags_state
                 self._save()
             batches: list[list[int]] = [list(b) for b in tags_state["batches"]]
             done = set(int(i) for i in tags_state.get("done") or [])
             pending = [i for i in range(len(batches)) if i not in done]
-            self._enter(PHASE_TAGS, detail=f"第 {len(done) + 1}/{len(batches)} 批")
+            self._enter(
+                PHASE_TAGS,
+                detail=(
+                    f"第 {len(done) + 1}/{len(batches)} 批"
+                    if batches
+                    else f"{len(rows)} 个窗口的标签都是当前版本,不用重打"
+                ),
+            )
             by_no = {int(w.window_no): w for w in rows}
-            devices = [str(d) for d in tags_state.get("devices") or []]
             dismissed_tags = self._dismissed_terms(str(self.params.get("profile_id") or self.claimed.profile_id or "") or None)
             protected = [
                 t for t in (self.cursor.get("protected") or {}).get("terms") or []
@@ -1198,7 +1218,7 @@ class _LearnRun:
             ]
 
             def submit(pool: DaemonCallPool, index: int, stop: threading.Event) -> Future:
-                self._pre_call_check([NODE_TAG_WINDOWS])
+                self.pre_call_check(self._node_routes([NODE_TAG_WINDOWS]))
                 batch_rows = [by_no[no] for no in batches[index] if no in by_no]
                 texts = window_texts(self.session, batch_rows)
                 windows = [
@@ -1210,16 +1230,16 @@ class _LearnRun:
                     }
                     for w in batch_rows
                 ]
-                payload = tag_payload(windows, devices=devices, book_title=self.book_title)
+                payload = tag_payload(windows, book_title=self.book_title)
                 expected = [int(w.window_no) for w in batch_rows]
-                return pool.submit(self._tag_batch, index, payload, expected, devices, protected, stop)
+                return pool.submit(self._tag_batch, index, payload, expected, protected, stop)
 
             restart = False
 
             def apply(index: int, outcome: tuple[dict[int, dict[str, Any]], int]) -> None:
                 nonlocal restart
                 tags, attempts = outcome
-                marker = index_marker(self._book().stats_json) or {}
+                marker = index_marker(self.book().stats_json) or {}
                 if marker.get("root") != root:
                     restart = True  # 索引在打标签期间重建了:按新索引重新规划
                     return
@@ -1233,7 +1253,7 @@ class _LearnRun:
                 def write() -> None:
                     from novel_system.services.style_reference.windows import set_window_tags
 
-                    set_window_tags(self.session, self.book_id, tags, tags_version=TAGS_VERSION, devices=devices)
+                    set_window_tags(self.session, self.book_id, tags, tags_version=TAGS_VERSION)
 
                 self._save(
                     write=write,
@@ -1243,12 +1263,24 @@ class _LearnRun:
                 )
 
             if pending:
-                self._run_parallel(pending, submit, apply, thread_prefix="sr_learn_tags", stop_when=lambda: restart)
+                self.run_parallel(
+                    pending,
+                    submit,
+                    apply,
+                    max_inflight=PARALLEL_CALLS,
+                    poll_seconds=WAIT_POLL_SECONDS,
+                    thread_prefix="sr_learn_tags",
+                    stop_when=lambda: restart,
+                )
             if not restart:
                 break
             self.cursor["tags"] = {}
+        tags_state = dict(self.cursor.get("tags") or {})
         self._mark_done(
-            PHASE_TAGS, began, detail=f"{int((self.cursor.get('tags') or {}).get('tagged') or 0)} 个窗口", step=False
+            PHASE_TAGS,
+            began,
+            detail=f"{int(tags_state.get('tagged') or 0)} 个窗口(沿用 {int(tags_state.get('current') or 0)} 个)",
+            step=False,
         )
 
     def _tag_batch(
@@ -1256,20 +1288,13 @@ class _LearnRun:
         index: int,
         payload: Mapping[str, Any],
         expected: Sequence[int],
-        devices: Sequence[str],
         protected: Sequence[Mapping[str, Any]],
         stop: threading.Event,
     ) -> tuple[dict[int, dict[str, Any]], int]:
         """工人线程:一批最多 ``TAG_ATTEMPTS`` 次(退避重试);输出对不上整批重试。"""
         runtime = self.runtimes[NODE_TAG_WINDOWS]
         problems: list[str] = []
-        for attempt in range(TAG_ATTEMPTS):
-            if stop.is_set():
-                raise _Stopped()
-            if attempt:
-                delay = CALL_RETRY_BACKOFF_SECONDS[min(attempt - 1, len(CALL_RETRY_BACKOFF_SECONDS) - 1)]
-                if stop.wait(max(0.0, float(delay))):
-                    raise _Stopped()
+        for attempt in retry_attempts(TAG_ATTEMPTS, CALL_RETRY_BACKOFF_SECONDS, stop):
             try:
                 result = call_structured(
                     runtime,
@@ -1278,7 +1303,7 @@ class _LearnRun:
                     scope_id=self.book_id,
                     step=f"learn:{self.claimed.job_id}:tags:{index}:{attempt + 1}",
                 )
-                tags = parse_tag_output(result.structured, expected, devices=devices, protected_terms=protected)
+                tags = parse_tag_output(result.structured, expected, protected_terms=protected)
                 return tags, attempt + 1
             except LearnCallError as exc:
                 problems.append(f"attempt {attempt + 1}: {exc.code}: {exc.message[:200]}")
@@ -1291,67 +1316,9 @@ class _LearnRun:
             details={"batch": index, "windows": list(expected), "attempts": TAG_ATTEMPTS, "problems": problems},
         )
 
-    # ---- parallel helper --------------------------------------------------
-    def _run_parallel(
-        self,
-        items: Sequence[Any],
-        submit: Callable[[DaemonCallPool, Any, threading.Event], Future],
-        apply: Callable[[Any, Any], None],
-        *,
-        thread_prefix: str,
-        stop_when: Callable[[], bool] | None = None,
-    ) -> None:
-        """最多 ``PARALLEL_CALLS`` 个调用同时在飞(调用在工人线程,写库只在作业线程);等待时每
-        ``WAIT_POLL_SECONDS`` 秒查一次取消 / 所有权。
-
-        某个调用失败:不再派发新的,已经在飞的调用(已经花了钱)等它们回来、成功的照常落库,然后整步失败
-        (游标里已完成的保留,续跑只补没做完的);``BaseException``(进程被打断)立即向上抛。"""
-        pending = list(items)
-        in_flight: dict[Future, Any] = {}
-        stop = threading.Event()
-        failure: Exception | None = None
-        # 调用跑在守护线程里:进程退出(--reload / 停服)不等在飞的网络请求,作业由框架放回队列
-        pool = DaemonCallPool(max_workers=PARALLEL_CALLS, thread_name_prefix=f"{thread_prefix}_{self.claimed.job_id[-6:]}")
-        try:
-            while pending or in_flight:
-                while pending and failure is None and len(in_flight) < PARALLEL_CALLS and not (stop_when and stop_when()):
-                    item = pending.pop(0)
-                    in_flight[submit(pool, item, stop)] = item
-                if not in_flight:
-                    break
-                done, _ = wait(list(in_flight), timeout=WAIT_POLL_SECONDS, return_when=FIRST_COMPLETED)
-                if not done:
-                    self._check_continue()
-                    continue
-                for future in done:
-                    item = in_flight.pop(future)
-                    error = future.exception()
-                    if error is None:
-                        apply(item, future.result())
-                    elif isinstance(error, Exception) and not isinstance(error, (JobLost, JobCancelled, JobInterrupted)):
-                        failure = failure or error
-                    else:
-                        raise error
-                if failure is not None or (stop_when and stop_when()):
-                    pending.clear()
-            if failure is not None:
-                raise failure
-        finally:
-            stop.set()
-            pool.shutdown(wait=False, cancel_futures=True)
-
     def _call_in_worker(self, fn: Callable[[], Any]) -> Any:
-        """单个调用放到工人线程里,等待时照样查取消 / 所有权(取消在两秒内生效,在飞的结果丢弃)。"""
-        pool = DaemonCallPool(max_workers=1, thread_name_prefix=f"sr_learn_call_{self.claimed.job_id[-6:]}")
-        try:
-            future = pool.submit(fn)
-            while True:
-                done, _ = wait([future], timeout=WAIT_POLL_SECONDS)
-                if done:
-                    return future.result()
-                self._check_continue()
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+        """单个调用放到守护线程里,等待时照样查取消 / 所有权(``JobRun.call_in_worker``)。"""
+        return self.call_in_worker(fn, thread_prefix="sr_learn_call", poll_seconds=WAIT_POLL_SECONDS)
 
     # ---- g. finalize ------------------------------------------------------
     def _ledger(self) -> dict[str, Any]:
@@ -1389,7 +1356,7 @@ class _LearnRun:
         began = time.monotonic()
         self._enter(PHASE_FINALIZE)
         run_id = str(self.cursor.get("run_id") or "")
-        book = self._book()
+        book = self.book()
         texts = [t for t in self._body_texts() if non_body_kind(t) is None]
         overlap = CorpusOverlapIndex(texts, threshold_chars=12)
         # 作者给这份画像录入的禁用词(任何域)同样不能进卡片:画像已存在时一并过滤
@@ -1454,7 +1421,7 @@ class _LearnRun:
         self._record_done(PHASE_FINALIZE, began)
 
         # --- 一个事务:游标(条件写,拿写锁)→ 重读画像合并行状态 → 画像 / 专名 / run → 作业成功 ---
-        self._fresh()
+        self.fresh()
         if not self.service.save_cursor(self.claimed, self.cursor):
             self.session.rollback()
             raise JobLost(self.claimed.job_id)
@@ -1706,11 +1673,12 @@ __all__ = [
     "PHASE_ORDER",
     "active_learn_job",
     "cancel_learn",
+    "ensure_tag_template_current",
     "estimate_learning",
     "latest_learn_job",
-    "learn_activity_entry",
     "learn_payload",
     "resolve_learn_client",
     "run_learn_job",
     "start_learn_job",
+    "windows_needing_tags",
 ]

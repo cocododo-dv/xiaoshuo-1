@@ -1,7 +1,6 @@
 """风格参考 v3（2026-09-23）— 统一的持久作业：分类 / 学习文风 / 对照检查。
 
-取代进程内登记簿（``import_progress``）、书上的 JSON 游标与 run / report 行各自的心跳。一个作业一行
-（``style_reference_jobs``），生命周期：
+一个作业一行（``style_reference_jobs``；进度、游标、心跳都在这一行上，没有别的进程内状态），生命周期：
 
     queued --claim--> running --succeed/fail/cancel--> succeeded / failed / cancelled
                          |
@@ -31,6 +30,10 @@ SQLite 的写锁，两个几乎同时的请求在这里串行化，后到的一�
 ``JobLost``，进程要退出 → ``JobInterrupted``）、``service.progress`` / ``service.save_cursor``，最后
 ``service.succeed``；抛出的 ``DomainError`` 由框架记为失败（错误码原样保留），其余异常记为
 ``STYLE_REFERENCE_JOB_FAILED``——进程退出期间冒出来的异常（代已变 / 线程池已关）一律按中断放回队列。
+三种处理器共用的脚手架（检查点、并行调用循环、终态映射）在 ``job_runtime.JobRun``。
+
+**维护任务**（``register_maintenance_task``）：随清扫线程跑的定期任务（例：``cleanup`` 登记的遥测 90 天留存
+清理）——清扫线程启动时先跑一次，之后每隔登记的间隔再跑；任务自己开会话，异常只记日志、不影响清扫。
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -918,18 +922,57 @@ def _job_kind(job_id: str) -> str | None:
         return None
 
 
+# ---------------------------------------------------------------------- 维护任务（随清扫线程跑）
+MaintenanceTask = Callable[[], Any]
+_MAINTENANCE: dict[str, tuple[MaintenanceTask, float]] = {}
+_MAINTENANCE_LAST_RUN: dict[str, float] = {}
+
+
+def register_maintenance_task(name: str, task: MaintenanceTask, *, interval_seconds: float) -> None:
+    """登记一项随清扫线程跑的定期维护任务（模块导入时登记，与处理器同一种约定）：清扫线程启动时先跑一次，之后每
+    ``interval_seconds`` 秒跑一次。任务自己开会话、自己提交；抛出的异常由清扫线程记日志，不影响清扫与别的任务。
+    同名重复登记覆盖（模块被重新导入时无害）。"""
+    _MAINTENANCE[str(name)] = (task, max(1.0, float(interval_seconds)))
+
+
+def run_due_maintenance(*, now: float | None = None) -> list[str]:
+    """跑一遍到期的维护任务（``now`` 是单调时钟秒数，缺省当前）；返回这一轮跑了的任务名（失败的不算）。"""
+    current = time.monotonic() if now is None else float(now)
+    ran: list[str] = []
+    for name, (task, interval) in list(_MAINTENANCE.items()):
+        last = _MAINTENANCE_LAST_RUN.get(name)
+        if last is not None and current - last < interval:
+            continue
+        _MAINTENANCE_LAST_RUN[name] = current
+        try:
+            task()
+        except Exception:  # noqa: BLE001 — 维护任务失败只记日志，下一个间隔再试
+            logger.exception("style job maintenance task %s failed", name)
+            continue
+        ran.append(name)
+    return ran
+
+
+def sweeper_tick(*, now: float | None = None) -> None:
+    """清扫线程的一拍：清扫并派发，再跑到期的维护任务。"""
+    sweep_and_dispatch()
+    run_due_maintenance(now=now)
+
+
 def start_job_sweeper(*, interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> None:
-    """常驻清扫线程（FastAPI lifespan 启动时调用一次；重复调用无害）。"""
+    """常驻清扫线程（FastAPI lifespan 启动时调用一次；重复调用无害）。启动时先跑一拍（清扫 + 全部维护任务），
+    之后每 ``interval_seconds`` 秒一拍（维护任务只在各自的间隔到期时才跑）。"""
     global _SWEEPER
     with _EXECUTOR_LOCK:
         if _SWEEPER is not None and _SWEEPER.is_alive():
             return
         _SWEEPER_STOP.clear()
+        _MAINTENANCE_LAST_RUN.clear()
 
         def _loop() -> None:
-            sweep_and_dispatch()
+            sweeper_tick()
             while not _SWEEPER_STOP.wait(max(1.0, float(interval_seconds))):
-                sweep_and_dispatch()
+                sweeper_tick()
 
         _SWEEPER = threading.Thread(target=_loop, name="sr_job_sweeper", daemon=True)
         _SWEEPER.start()
@@ -983,11 +1026,14 @@ __all__ = [
     "is_worker_interruption",
     "job_activity_entry",
     "register_job_handler",
+    "register_maintenance_task",
     "registered_job_handler",
     "run_cancel_hook",
+    "run_due_maintenance",
     "run_job_inline",
     "shutdown_job_workers",
     "start_job_sweeper",
     "sweep_and_dispatch",
+    "sweeper_tick",
     "worker_generation_changed",
 ]

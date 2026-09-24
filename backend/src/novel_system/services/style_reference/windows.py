@@ -10,7 +10,7 @@
   这些窗口的分布（``fidelity.py``）；``dialogue_share`` 取测量核的唯一对白占比；``type_mix_json`` 是段型构成；
 - **典型度**：这一窗在本书自己的窗口分布里有多典型（各特征稳健 z 的 |z| 均值取负，越大越典型）——不是离
   鲁迅 / 朱自清基线多远；
-- **标签**：学习作业给每窗打的场面 / 情绪 / 手法（``set_window_tags``，词表见 ``tags.py``）。
+- **标签**：学习作业给每窗打的场面 / 情绪 / 维度（``set_window_tags``，词表见 ``tags.py``；v2 起不再有手法）。
 
 失效（契约文档 §3.1）：``book.stats_json["window_index"] = {version, root, types_revision, kernel_version}``。
 根哈希或索引版本变了整组重建；只有段落类型变了，就地重算段型构成、保留标签；测量核版本变了，重算特征与
@@ -495,13 +495,11 @@ def set_window_tags(
     tags_by_window_no: Mapping[int, Mapping[str, Any]],
     *,
     tags_version: str,
-    devices: Iterable[str] = (),
 ) -> int:
-    """写学习作业给窗口打的标签（经 ``tags.normalize_window_tags`` 规整；手法限于 ``devices``），返回写了几窗。
+    """写学习作业给窗口打的标签（经 ``tags.normalize_window_tags`` 规整成 v2 形状），返回写了几窗。
 
     只写当前索引版本 + 当前根哈希的行；不认识的窗号忽略。
     """
-    device_list = tuple(devices)
     windows = {int(w.window_no): w for w in load_windows(session, book_id)}
     now = utcnow()
     written = 0
@@ -513,7 +511,7 @@ def set_window_tags(
         window = windows.get(window_no)
         if window is None:
             continue
-        window.tags_json = normalize_window_tags(raw_tags, devices=device_list)
+        window.tags_json = normalize_window_tags(raw_tags)
         window.tags_version = str(tags_version)
         window.updated_at = now
         written += 1

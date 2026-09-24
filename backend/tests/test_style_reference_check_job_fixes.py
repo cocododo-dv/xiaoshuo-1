@@ -300,3 +300,211 @@ def test_scene_check_job_created_with_the_client_project_still_files_under_the_s
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_FakeJudge(), True))
     run_job_inline(job.job_id)
     assert _reading_of(job.job_id).project_id == scene.project_id
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-24 §8 C1：取消对照检查（与分类 / 学习的取消同形）
+# ---------------------------------------------------------------------------
+
+CHECKS = "/api/v2/style-reference/checks"
+
+
+def _cancel(client, job_id: str, key: str):
+    return client.post(f"{CHECKS}/{job_id}/cancel", json={}, headers={"X-Idempotency-Key": key})
+
+
+def _activity_entry(client, job_id: str) -> dict:
+    items = client.get("/api/v2/style-reference/activity").json()["data"]["items"]
+    return next(item for item in items if item.get("job_id") == job_id)
+
+
+def test_cancel_of_a_queued_check_finishes_in_the_request(client, session) -> None:
+    job_id = _start_check(session, "c1_queued")
+    entry = _activity_entry(client, job_id)
+    assert entry["kind"] == "check" and entry["status"] == "queued" and entry["cancellable"] is True
+
+    resp = _cancel(client, job_id, "c1-queued")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["job_id"] == job_id and data["state"] == "cancelled"
+    assert data["cancel_requested"] is True and data["finished"] is True
+    # 响应与 GET /checks/{id} 同形：作业条目 + 读数（取消的作业没有读数）
+    assert data["job"]["status"] == "cancelled" and data["job"]["cancellable"] is False and data["reading"] is None
+    assert set(client.get(f"{CHECKS}/{job_id}").json()["data"]) == {"job", "reading"}
+    with SessionLocal() as db:
+        job = db.get(StyleReferenceJob, job_id)
+        assert job.state == "cancelled" and job.owner_token is None and job.finished_at
+    # 已结束 → 409，不是幂等地再「取消」一次
+    again = _cancel(client, job_id, "c1-queued-again")
+    assert again.status_code == 409 and again.json()["error"]["code"] == check_job.CHECK_NOT_ACTIVE_CODE
+    assert again.json()["error"]["code"] == "STYLE_REFERENCE_CHECK_NOT_ACTIVE"
+
+
+def test_cancel_of_a_running_check_sets_the_flag_and_the_worker_stops_at_its_next_checkpoint(client, session) -> None:
+    from novel_system.services.style_reference.jobs import JobCancelled
+
+    job_id = _start_check(session, "c1_running")
+    with SessionLocal() as worker_db:
+        claimed = StyleJobService(worker_db).claim(job_id)  # 一个还活着的工人正拿着 owner_token
+        worker_db.commit()
+    assert claimed is not None
+    assert _activity_entry(client, job_id)["cancellable"] is True
+
+    resp = _cancel(client, job_id, "c1-running")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["state"] == "running" and data["finished"] is False and data["cancel_requested"] is True
+    assert data["job"]["status"] == "running" and data["job"]["cancel_requested"] is True
+    # 工人在下一个检查点看到取消
+    with SessionLocal() as worker_db:
+        with pytest.raises(JobCancelled):
+            StyleJobService(worker_db).check_continue(claimed)
+        assert StyleJobService(worker_db).finish_cancelled(claimed)
+        worker_db.commit()
+    assert _activity_entry(client, job_id)["status"] == "cancelled"
+
+
+def test_cancel_check_rejects_finished_missing_and_foreign_jobs(client, session, monkeypatch) -> None:
+    from novel_system.services.style_reference.jobs import JOB_KIND_LEARN
+
+    job_id = _start_check(session, "c1_done")
+    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_FakeJudge(), True))
+    run_job_inline(job_id)
+    with SessionLocal() as db:
+        assert db.get(StyleReferenceJob, job_id).state == "succeeded"
+    finished = _cancel(client, job_id, "c1-done")
+    assert finished.status_code == 409 and finished.json()["error"]["code"] == check_job.CHECK_NOT_ACTIVE_CODE
+    assert finished.json()["error"]["details"]["state"] == "succeeded"
+
+    missing = _cancel(client, "sr_job_nope", "c1-missing")
+    assert missing.status_code == 404 and missing.json()["error"]["code"] == "STYLE_REFERENCE_CHECK_NOT_FOUND"
+
+    # 别的种类的作业不走这个口
+    with SessionLocal() as db:
+        learn = StyleJobService(db).create(JOB_KIND_LEARN, book_id=db.get(StyleReferenceJob, job_id).book_id)
+        db.commit()
+        learn_id = learn.job_id
+    foreign = _cancel(client, learn_id, "c1-foreign")
+    assert foreign.status_code == 404
+    with SessionLocal() as db:
+        assert db.get(StyleReferenceJob, learn_id).state == "queued"
+
+    # 幂等键是必需的
+    bare = client.post(f"{CHECKS}/{job_id}/cancel", json={})
+    assert bare.status_code == 400 and bare.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+
+def test_cancel_arriving_during_the_judge_records_nothing_through_the_service(session, monkeypatch) -> None:
+    """服务层的取消（路由背后的那个函数）在评审期间到达：作业收尾为 cancelled，读数一条不记。"""
+    job_id = _start_check(session, "c1_mid_judge")
+
+    def _cancel_mid_judge() -> None:
+        with SessionLocal() as other:
+            job = check_job.cancel_check_job(other, job_id)
+            assert job.state == "running" and job.cancel_requested == 1
+            other.commit()
+
+    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_FakeJudge(_cancel_mid_judge), True))
+    run_job_inline(job_id)
+    assert _readings_count() == 0
+    with SessionLocal() as db:
+        assert db.get(StyleReferenceJob, job_id).state == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-24 §8 C3：评审分按模板声明的刻度（越界丢掉、不夹；没声明才按一次回答推断）
+# ---------------------------------------------------------------------------
+
+
+def _judge_schema() -> dict:
+    from novel_system.services.prompt_builder import load_prompt_templates
+
+    schema = load_prompt_templates()[check_job.CHECK_TEMPLATE].structured_schema
+    assert schema["properties"]["overall"]["maximum"] == 10
+    return schema
+
+
+def test_judge_scores_follow_the_declared_zero_to_ten_scale() -> None:
+    schema = _judge_schema()
+    # 一个误写的 85 不再把整份回答按 0–100 除：它被丢掉，其余按 0–10 读
+    judge = check_job.normalize_judge_output(
+        {"overall": 7, "dimensions": {"scene.dialogue": {"score": 85, "note": "n"}, "theme.values": {"score": 6}}},
+        {},
+        schema=schema,
+    )
+    assert judge["overall"] == 7.0
+    assert judge["dimensions"] == {"theme.values": {"score": 6.0, "note": ""}}
+    # 越界的总分丢掉 → 由按维分均值补；越界的 12 那一维丢掉
+    judge = check_job.normalize_judge_output(
+        {"overall": 12, "dimensions": {"scene.dialogue": {"score": 6}, "theme.values": {"score": 12}}},
+        {},
+        schema=schema,
+    )
+    assert judge["overall"] == 6.0 and set(judge["dimensions"]) == {"scene.dialogue"}
+    # 全在 1 以下的回答也按 0–10 读：0.9 就是 0.9 分，不是 9 分
+    judge = check_job.normalize_judge_output(
+        {"overall": 0.9, "dimensions": {"scene.dialogue": {"score": 0.6}}}, {}, schema=schema
+    )
+    assert judge["overall"] == 0.9 and judge["dimensions"]["scene.dialogue"]["score"] == 0.6
+    # 边界与「不学」维照旧
+    judge = check_job.normalize_judge_output(
+        {"overall": 10, "dimensions": {"scene.dialogue": {"score": 0}, "theme.values": {"score": 9}}},
+        {"theme.values": "exclude"},
+        schema=schema,
+    )
+    assert judge["overall"] == 10.0 and judge["dimensions"] == {"scene.dialogue": {"score": 0.0, "note": ""}}
+    # 整份回答都答错了刻度 → 没有分数（作业据此失败，不会把 60 分记成 6 分）
+    judge = check_job.normalize_judge_output(
+        {"overall": 72, "dimensions": {"scene.dialogue": {"score": 60}}}, {}, schema=schema
+    )
+    assert judge["overall"] is None and judge["dimensions"] == {}
+
+
+def test_judge_scores_fall_back_to_inference_only_without_a_declared_scale() -> None:
+    """旧提示词快照（模板没写 maximum）：才按一次回答推断量级并夹到边界（旧口径）。"""
+    for schema in (None, {"type": "object", "properties": {"overall": {"type": "number"}}}):
+        judge = check_job.normalize_judge_output(
+            {"overall": 72, "dimensions": {"scene.dialogue": {"score": 60}}}, {}, schema=schema
+        )
+        assert judge["overall"] == 7.2 and judge["dimensions"]["scene.dialogue"]["score"] == 6.0
+        judge = check_job.normalize_judge_output(
+            {"overall": 0.8, "dimensions": {"scene.dialogue": {"score": 0.6}}}, {}, schema=schema
+        )
+        assert judge["overall"] == 8.0 and judge["dimensions"]["scene.dialogue"]["score"] == 6.0
+
+
+class _HundredScaleJudge(_FakeJudge):
+    """答错刻度的评审（0–100）。"""
+
+    def generate(self, request):  # noqa: ANN001
+        self.requests.append(request)
+        structured = {"overall": 72, "summary": "合成", "dimensions": {"scene.dialogue": {"score": 60, "note": "n"}}}
+        return SimpleNamespace(
+            structured_output=structured,
+            text=json.dumps(structured, ensure_ascii=False),
+            usage={},
+            finish_reason="stop",
+            provider="fake",
+            model="fake",
+            response_format="json_object",
+            request_id=None,
+            raw_response={},
+        )
+
+
+def test_check_job_reads_the_judge_on_the_template_scale(session, monkeypatch) -> None:
+    """作业里评审按模板刻度读：答 7 / 6 记 7.0 / 6.0；答 72 / 60（0–100）没有一个分在刻度内 → 作业失败，不记读数。"""
+    good_id = _start_check(session, "c3_good")
+    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_FakeJudge(), True))
+    run_job_inline(good_id)
+    reading = _reading_of(good_id)
+    assert reading.judge_json["overall"] == 7.0 and reading.judge_json["dimensions"]["scene.dialogue"]["score"] == 6.0
+
+    bad_id = _start_check(session, "c3_bad")
+    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_HundredScaleJudge(), True))
+    run_job_inline(bad_id)
+    with SessionLocal() as db:
+        job = db.get(StyleReferenceJob, bad_id)
+        assert job.state == "failed" and job.error_json["code"] == check_job.CHECK_JUDGE_FAILED_CODE
+        assert job.error_json["details"]["reason"] == "no_scores"
+    assert _readings_count() == 1
