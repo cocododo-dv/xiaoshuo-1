@@ -68,7 +68,7 @@ TEMPLATE_CONTRACT: dict[str, tuple[tuple[str, ...], ...]] = {
     **{node: (("dimensions", "observations"), ("dimensions", "avoid")) for node in EXTRACT_NODES.values()},
     NODE_SYNTHESIZE: (("dimensions", "do"), ("dimensions", "avoid"), ("temperament",)),
     NODE_PROTECTED_TERMS: (("terms",),),
-    NODE_TAG_WINDOWS: (("windows", "situations"), ("windows", "gist")),
+    NODE_TAG_WINDOWS: (("windows", "situations"), ("windows", "dimensions"), ("windows", "gist")),
 }
 
 

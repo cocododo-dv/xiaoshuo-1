@@ -228,14 +228,14 @@ class FakeLearnLLM(AccountedGenerateMixin):
             ]
             return {"terms": terms}
         if node == NODE_TAGS:
-            devices = list(payload.get("device_vocabulary") or [])
+            vocabulary = [str(d.get("key") or "") for d in payload.get("dimension_vocabulary") or [] if isinstance(d, dict)]
             return {
                 "windows": [
                     {
                         "window": w["window"],
                         "situations": ["日常闲谈", "不在词表里的场面"],
                         "moods": ["平静"],
-                        "devices": devices[:1],
+                        "dimensions": vocabulary[:1],
                         "gist": f"{self.gist_name}在院子里说话" if self.gist_name else "主角在院子里说话",
                     }
                     for w in payload.get("windows") or []

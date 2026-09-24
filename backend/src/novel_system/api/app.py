@@ -67,6 +67,7 @@ async def _lifespan(_app: FastAPI):
     from novel_system.services.style_reference import import_job  # noqa: F401 — 注册 classify 处理器
     from novel_system.services.style_reference import learn_job  # noqa: F401 — 注册 learn 处理器
     from novel_system.services.style_reference import check_job  # noqa: F401 — 注册 check 处理器
+    from novel_system.services.style_reference import cleanup  # noqa: F401 — 登记维护任务（审计遥测 90 天留存）
     from novel_system.services.style_reference.jobs import (
         shutdown_job_workers,
         start_job_sweeper,

@@ -618,7 +618,13 @@ class _LearnRun(JobRun):
         retryable: bool,
         details: Mapping[str, Any] | None = None,
     ) -> None:
-        self._finish(code=code, message=message, retryable=retryable, details=details)
+        # 失败详情总带 book_id（作者动作 resume_learning / review_book 也带）：前端按它把「继续学习」/「仍然学习」/「查看这本书」做成按钮
+        payload = dict(details or {})
+        payload.setdefault("book_id", self.book_id)
+        action = payload.get("author_action")
+        if isinstance(action, Mapping):
+            payload["author_action"] = {**dict(action), "book_id": dict(action).get("book_id") or self.book_id}
+        self._finish(code=code, message=message, retryable=retryable, details=payload)
 
     def _finish(
         self,
