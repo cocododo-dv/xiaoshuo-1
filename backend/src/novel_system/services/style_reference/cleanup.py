@@ -11,7 +11,6 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    ReviewItem,
     StyleReferenceBannedTerm,
     StyleReferenceEvidence,
     StyleReferenceExtraction,
@@ -38,13 +37,11 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
 
     按 FK 反向顺序清 10 张派生表:绑定 → 禁用词(每个画像)→ 画像 → 证据 → 发现 → 抽取 → 引文 →
     抽取 run → 作业(``style_reference_jobs``,该书的分类 / 学习 / 检查作业;还在跑的工人的条件写随之
-    落空)→ 窗口索引(``style_reference_windows``);外加
-    相关 ReviewItem(``review_style_ref_finding_*`` 按发现、``review_style_ref_apply_*`` /
-    ``review_style_ref_calib_*`` 按画像的遗留待办行)。
+    落空)→ 窗口索引(``style_reference_windows``)→ 这本书的每场冻结选窗(``style_reference_scene_windows``,按
+    ``params_json.book_id``;2026-09-24 S6)。旧版写的 ``review_style_ref_*`` 待办行由迁移 ``20260924_0092`` 一次删净,这里不再管。
 
     刻意不删:``style_reference_metric_events``(纯运营遥测,无 book 列,由 ``cleanup_metric_events``
-    的 90 天留存独立清理);``style_reference_scene_windows`` / ``style_fidelity_readings``(按场景 /
-    画像键,没有书的外键,属于作品侧的历史)。
+    的 90 天留存独立清理);``style_fidelity_readings``(按场景 / 画像键,没有书的外键,属于作品侧的历史)。
 
     flush 但不 commit。返回 {表名: 删除行数} 摘要。
     """
@@ -62,26 +59,6 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     def _exec(stmt, key: str) -> None:
         result = session.execute(stmt)
         counts[key] = counts.get(key, 0) + int(result.rowcount or 0)
-
-    # 相关 ReviewItem(旧版本写下的待办行):finding review id 是确定性的(finding_id 后 12 位),
-    # apply / calib 按 profile_id 后 12 位做前缀匹配(写它们的物化 / 校准模块早已删除,只剩清理)。
-    review_ids = {f"review_style_ref_finding_{fid[-12:]}" for fid in finding_ids}
-    review_ids.update(f.review_id for f in findings if f.review_id)
-    if review_ids:
-        _exec(
-            delete(ReviewItem).where(ReviewItem.review_id.in_(sorted(review_ids))),
-            "review_items",
-        )
-    for pid in profile_ids:
-        suffix = pid[-12:] if len(pid) > 12 else pid
-        for prefix in ("review_style_ref_apply_", "review_style_ref_calib_"):
-            pattern = f"{prefix}{suffix}_"
-            _exec(
-                delete(ReviewItem).where(
-                    ReviewItem.review_id.startswith(pattern, autoescape=True)
-                ),
-                "review_items",
-            )
 
     for pid in profile_ids:
         _exec(
@@ -133,6 +110,9 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
         delete(StyleReferenceWindow).where(StyleReferenceWindow.book_id == book_id),
         "windows",
     )
+    from novel_system.services.style_reference.inject.selection import purge_scene_windows_for_book
+
+    counts["scene_windows"] = counts.get("scene_windows", 0) + int(purge_scene_windows_for_book(session, book_id))
     session.flush()
     # 唯一抄袭门的进程内索引 / 结果缓存按书的指纹(含校验和)键;删书 / 重分类后清一次,
     # 避免陈旧条目滞留(命中键含指纹,无正确性风险,纯内存卫生)
