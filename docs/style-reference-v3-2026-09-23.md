@@ -362,7 +362,7 @@ StylePolicy 贯穿（架构守卫：只有 style_policy / runtime_contract 能�
 （`check_job`，新模板 `style_ref_check_judge` v1 走 `soft_qc` 节点路由：确定性读数 + 16 维参考评审 + 抄袭门）。读数接口：
 `GET /api/v1/scenes/{id}/style-fidelity`、`GET /api/v1/projects/{id}/style-fidelity`、`GET /api/v2/style-reference/readings/{id}`、
 `POST/GET /api/v2/style-reference/checks`；工作台摘要带 `style_fidelity`。阈值（`injection_budget.yaml` 的 `fidelity:` 段，暂定）：
-风格步百分位上限 90、修改至少近 0.03、补丁距离最多远 0.05、评审容差 0.02。
+风格步百分位上限 90、修改至少近 0.03、补丁距离最多远 0.05、评审容差 0.02（复核线改为 0.1，上线 A/B 后保持）。
 
 ### P6a 接口与界面 · 第一部分
 路由拆成包（books / learn / profiles / bindings / activity）；书与画像列表只给摘要（画像列表不再带整份 profile_json）；直接绑定

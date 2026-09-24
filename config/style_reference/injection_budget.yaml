@@ -28,7 +28,7 @@ style_first_length_slack: 0.5
 style_first_reference_scene_chars_max: 5000
 
 # 2026-09-23 风格参考 v3(P5b,L1 / N6 / V7):风格步与软补丁的「像不像」阈值(style_step.fidelity_thresholds 读)。
-# 全部是**临时值**——上线前用真实模型小规模 A/B 定(契约 docs/style-reference-v3-2026-09-23.md §6 第 5 步)。
+# 2026-09-24 用作者的真实路由在 3 场 × 3 臂上核过(契约 docs/style-reference-v3-2026-09-23.md §7「上线与 A/B」):风格步 6 次决定全对,保持这些值。
 # style_step_max_percentile:首稿读数的百分位 ≤ 它、且「重点」维没有越界 → 风格步不调模型,首稿即风格稿
 #   (真实参考书上随机 30 段原文九成 ≤ 90);否则做定向修改。
 # revision_min_improvement:定向修改稿的 distance 至少比首稿小这么多才采用,否则保留首稿(永不越改越远)。

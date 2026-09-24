@@ -1,6 +1,6 @@
 # 风格参考（现行说明）
 
-> 风格参考模块的**现行说明**，对应 2026-09-23 风格参考 v3 之后的代码（Alembic head `20260923_0091`）。
+> 风格参考模块的**现行说明**，对应 2026-09-23 风格参考 v3 及 2026-09-24 清理与优化之后的代码（Alembic head `20260924_0092`）。
 > 本轮重构的设计、问题台账与完成日志见 [风格参考 v3 变更记录](style-reference-v3-2026-09-23.md)；更早的设计、评估与实施账本归档在
 > [history/style/](history/style/)，只描述当时的实现。本文与代码冲突时以代码为准，并回头改本文。
 
@@ -13,7 +13,7 @@
 - **严格 LLM**：分类、学习、对照检查都要模型；没有可用模型时 409 `STYLE_REFERENCE_LLM_REQUIRED` 并引导去系统配置，产品路径没有
   启发式兜底（启发式分类器只留作测试夹具模式 `IngestService(llm_enabled=False)`）。
 
-## 2. 三步
+## 2. 三步（外加第四步「对照检查」）
 
 「风格」页（`frontend-react/src/ws-styleref*.jsx`；说法在 `ws-styleref-model.js`，请求与缓存在 `ws-styleref-store.js`，16 维 /
 段落类型 / 场面标签的唯一词表在 `ws-labels.js`）：
@@ -21,46 +21,51 @@
 1. **参考书**：导入 txt / md，选「原文能发到哪里」、勾权属声明；请求只做准备（解码、切段、剥副文本、记场界、落库），然后建 `classify` 作业。
 2. **学习文风**：一个按钮、一个 `learn` 作业（§4.3）；下面就是文风画像（气质、16 维文风卡、✓ / ✗、声音、尺度、禁用词）。
 3. **用于作品**：参考方式、样例窗数、起草方式，直接写绑定（一个目标只有一条生效绑定）；「本场预览」与起草同一套选窗。
+4. **对照检查**：随时可用的第四步（§4.4）——贴一段文字或选本作品的一场，看它像不像这位作者。
 
-左栏「参考书活动」列出在跑与刚结束的作业（段落分类、学习文风、对照检查），可取消、可继续。
+左栏「参考书活动」列出在跑与刚结束的作业（段落分类、学习文风、对照检查）：在跑的都可取消（对照检查也可以），失败或取消的可继续；
+不可续跑的失败（如正文太短）只给「重新学习」，正文太短另可「仍然学习」。
 
 ## 3. 数据模型
 
 | 表 | 内容 |
 |---|---|
-| `style_reference_books` | 参考书：`cloud_policy`、`text_checksum`（唯一，重复导入 409）、`status`（`ingesting` / `cancelling` / `ready` / `failed`）、`stats_json` |
+| `style_reference_books` | 参考书：`cloud_policy`、`text_checksum`（唯一，重复导入 409）、`status`（`ingesting` / `ready` / `failed`；v3 之前的行可能残留 `pending` / `cancelling`，分类作业接手时修正）、`stats_json` |
 | `style_reference_paragraphs` | 段落：`paragraph_index`、`paragraph_type`（8 类，枚举 `schemas.ParagraphType`；分类前 `unclassified`）、原文 |
 | `style_reference_jobs` | 统一作业表（§4） |
 | `style_reference_windows` | 持久化的全书样例窗口：起止段、章号、章内位置、字数、段型构成、对白占比、典型度、测量核特征、标签 |
 | `…_runs` / `…_extractions` / `…_findings` / `…_evidences` / `…_quotes` | 学习作业的抽取血缘：每条发现带 2–4 处逐字核对过的原文引文，文风卡句引用它们 |
-| `style_reference_profiles` | 画像 `profile_json` v3；重新学习**就地更新**同一行（`version_tag` +1，绑定不动） |
-| `style_reference_injection_bindings` | 绑定：`scope` ∈ project / scene / character（旧 global 只读兼容）、`config_json` v3；`strategy` 列恒写 `mixed` |
+| `style_reference_profiles` | 画像 `profile_json` v3；重新学习**就地更新**同一行（`version_tag` +1，绑定不动）。v3 之前的画像（没有文风卡）由迁移 `20260924_0092` 归档；有绑定的归档画像在下一次学习时就地复活 |
+| `style_reference_injection_bindings` | 绑定：`scope` ∈ project / scene / character（旧 global 只读兼容）、`config_json` v3（迁移 `20260924_0092` 把旧行的策略 / 强度一次性回填成 v3 键）；`strategy` 列恒写 `mixed`（删列要重建表，暂留） |
 | `style_reference_banned_terms` | 生成期禁用词：作者录入、预置（不可删）、学习作业自动登记的受保护专名（`source="protected_auto"`） |
-| `style_reference_scene_windows` | 每场冻结一次的选窗（§5.2） |
+| `style_reference_scene_windows` | 每场冻结一次的选窗（§5.2）；`params_json` 带 `book_id` / `profile_id`，删书 / 破坏式重新分类时随书删 |
 | `style_fidelity_readings` | 「像不像」读数（§7），按场景 / 画像记，不存章 id |
-| `style_reference_metric_events` | 只追加的审计遥测（`cleanup.cleanup_metric_events` 90 天留存） |
+| `style_reference_metric_events` | 只追加的审计遥测；清扫线程启动时与之后每 24 小时清一次 90 天前的行（`cleanup.cleanup_metric_events`） |
 
 迁移 `20260923_0090` 建作业 / 窗口 / 读数 / 每场选窗四张表；`20260923_0091` 删掉 👍/👎 表 `style_reference_finding_feedback`、旧回测表
-`style_reference_validation_reports` 与 `style_reference_findings.base_confidence`（降级只恢复结构）。删书与破坏式重新分类共用
-`cleanup.purge_derived_data`；读数与每场选窗属于作品侧历史，删书时保留。
+`style_reference_validation_reports` 与 `style_reference_findings.base_confidence`（降级只恢复结构）；`20260924_0092` 只改数据（绑定配置回填、
+旧画像归档、旧待办行删除，降级为空操作）。删书与破坏式重新分类共用 `cleanup.purge_derived_data`；读数属于作品侧历史，删书时保留，
+这本书的每场选窗行一并删除。
 
 **`book.stats_json`**：`paragraph_root_sha256` / `paragraph_count`（段落根哈希；改段落的写入者负责 `pop`）、`paragraph_types_revision`
 （分类每成功一次 +1）、`classification_provenance`（`llm` / `legacy_heuristic` + 一致率）、`window_index`（窗口表的有效标记：根哈希或索引版本
-变了整组重建，类型或测量核变了就地重算、保留标签）、`scene_breaks`（导入时记下的场界）。
+变了整组重建，类型或测量核变了就地重算、保留标签）、`scene_breaks`（导入时记下的场界）。窗口标签（`tags_json`，`window_tags_v2`）=
+场面 / 情绪 / **维度**（这一窗最能示范的 ≤3 个维度键）/ 梗概，与文风卡无关：重新学习时已有 v2 标签的窗口不再重打。
 
 **画像 `profile_json` v3**（`learn_job._profile_json`）：
 
 | 键 | 内容 |
 |---|---|
-| `dimension_card` | 文风卡（`card.DimensionCard`）：16 维按辨识度排，每维一句概括、通用模型的默认写法、1–3 条「这位作者这样写」（`do`）与「作者不这么写」（`avoid`，每句带证据引文，允许 ≤11 字的原话作例子）、手法名（选窗用）、可测特征；顶层 `temperament`（气质，至多 4 条必须体现） |
+| `dimension_card` | 文风卡（`card.DimensionCard`）：16 维按辨识度排，每维一句概括、通用模型的默认写法、1–3 条「这位作者这样写」（`do`）与「作者不这么写」（`avoid`，每句带证据引文，允许 ≤11 字的原话作例子）、手法名（画像页显示）、可测特征；顶层 `temperament`（气质，至多 4 条必须体现） |
 | `card_line_states` | 作者对每句的 ✓（`pinned`，每场都带）/ ✗（`excluded`，不再用）；不让画像失效，重新学习时沿用 |
 | `voice` | 测量核声音特征 + 具体习惯句（作者自己的高频词与大致频率）+ 作者自身的参照分布 |
 | `voice_signature` | **过渡别名**：与 `voice` 同源、不带分布。运行时契约的画像白名单与刻意复沓旗标 `deliberate_repetition` 的读者（新鲜度预算、场景诊断）还在用——保留 |
 | `structure_card` / `planning_guidance` / `narrative_guidance` | 结构画像（章长、开合类型、章首章尾样例、场长、章题样式）、场景手法、叙事机制 |
-| `qualitative_summary` / `metrics_baseline` / `sub_dimensions` | 概述、量化基线（旧读者用）、按维摘要 |
+| `qualitative_summary` | 概述（v2 的 `metrics_baseline` / `sub_dimensions` 已随指标包络一起删除，旧画像里的残留键不再读） |
 | `reference_basis` / `learned_from` / `protected_terms_version` | 学自哪本书；学时的类型版本与根哈希（据此提示「段落类型已更新 / 正文变过，建议重新学习」）；专名集合指纹 |
 
-没有 `dimension_card` 的旧画像照样能用：旧的正向特征 / 禁忌陈述充当卡替身（含数字的行不带），界面标「旧版画像」。
+没有 `dimension_card` 的旧画像不再充当卡替身：迁移 `20260924_0092` 把它们归档，界面对这本书显示「没学过」；「学习文风」就地更新
+（有绑定的归档画像复活为 active，绑定不动）。
 
 **绑定 `config_json` v3**（唯一解释者 `binding_config.normalize_binding_config`）：
 
@@ -71,7 +76,8 @@
 | `dimension_states` | 各维 `emphasize` / `normal`（默认）/ `exclude` | 重点：排卡首、多带一句、选窗偏向它、读数权重 ×2、优先修改；不学：从卡、读数、修改里去掉 |
 | `draft_mode` | `style_first`（默认）/ `neutral_first` | 作者手笔直起 / 先中性后润色（阅读对照组）；冻结进运行时契约 |
 
-旧绑定一次映射：策略 A → `card_only`，B / C / mixed → `full`，`intensity` i → `round(3 + 9·i/100)` 窗。
+旧绑定由迁移 `20260924_0092` 一次性回填成 v3 键（策略 A → `card_only`，其余 → `full`；`intensity` i → `round(3 + 9·i/100)` 窗，
+没有就 12；`draft_mode` 不回填，缺键时仍在契约构建期取 yaml 默认）；代码里不再有旧映射。
 
 ## 4. 作业
 
@@ -81,6 +87,7 @@
   都以「owner_token 仍是我、state 仍是 running」为条件——被清扫重排、取消、删书的作业，旧工人的写全部落空，自然停下。
 - 心跳 15 s，超过 60 s 算过期。FastAPI lifespan 启动常驻清扫线程（`start_job_sweeper`：启动时一次，之后每 30 s），把过期的 running
   放回 queued、派发所有 queued 到有界线程池（分类 / 学习 2 个工人；对照检查单独一条车道 2 个工人，不在长作业后面排队）；重复派发无害。
+  同一条线程启动时与之后每 24 小时清一次 90 天前的审计遥测行。
   处理器在模块导入时注册（`import_job` / `learn_job` / `check_job`）。
 - **进程退出不算失败**：lifespan 结束（`--reload`、停服）时 `shutdown_job_workers` 把「工人代」+1，在跑的处理器在下一个检查点
   （两秒内）抛 `JobInterrupted`，作业放回 queued（游标、attempt 保留），下次启动的清扫接着跑；Ctrl-C 同样放回队列。LLM 调用跑在守护线程里
@@ -89,7 +96,8 @@
 - **互斥**：同一本书的分类与学习互斥，各自也只能有一个活动作业。建作业「先插入、再查」——INSERT 已拿到 SQLite 的写锁，几乎同时的两个请求
   在这里串行化，后到的一定看得见先到的（`409 …_ALREADY_ACTIVE / …_BOOK_LEARNING / …_BOOK_CLASSIFYING`）；续跑放回队列之后同样复查；
   破坏式重分类先写书行拿锁再查、再清派生数据。
-- 取消：排队中或心跳过期的作业在请求里直接收尾，运行中的在下一个检查点收尾；工人死前被要求取消的作业由清扫直接收尾。框架里收尾的取消都跑
+- 取消（三种作业都可以：`…/classification/cancel`、`…/learn/cancel`、`…/checks/{job_id}/cancel`）：排队中或心跳过期的作业在请求里直接收尾，
+  运行中的在下一个检查点收尾；工人死前被要求取消的作业由清扫直接收尾。框架里收尾的取消都跑
   这类作业登记的收尾钩子（分类：书的状态；学习：run 行）。放回队列是条件写：已经成功的作业不会被「继续」拉回 queued。
 - `GET /api/v2/style-reference/activity` 只列作业表条目（`job:<id>`：**全部**在跑 / 排队的 + 十分钟内结束的至多 100 条）；界面把它当完整清单，
   清单里不再有的在跑条目会被收掉。各个建作业的响应都带 `job_id`。
@@ -116,18 +124,22 @@
    日常词、通用范畴词、单字一律不要）→ 确定性筛子（必须在原书里原样出现、2–12 字、不是单字、全书至少出现 3 次、不在
    日常词 / 范畴词表里，`protected_terms.parse_protected_terms`）→ 写成 `protected_auto` 禁用词（作者录入的行不动；作者在画像里删掉过的
    自动专名记在 `profile_json.protected_terms_dismissed`，重新学习不再加回来、也不再拿它滤卡片）；
-6. `tags` 给全书每个窗口打场面 / 情绪 / 手法标签（`style_ref_tag_windows`，每批 ≤8 窗；词表 `tags.py`）；
+6. `tags` 给还没有 v2 标签（或标签版本变了）的窗口打场面 / 情绪 / **维度**标签（`style_ref_tag_windows` v2，每批 ≤8 窗；词表 `tags.py`，
+   维度 = 这一窗最能示范的 ≤3 个维度键，不再依赖文风卡的手法）；全书已打过就跳过（重新学习约 6 次调用），`{"retag": true}` 强制重打；
 7. `finalize` 专名与原文重合过滤卡片、沿用 ✓ / ✗、写画像，一个事务；卡片被滤空则作业失败，在用的画像不动。
 
 建作业时就拒：书未就绪 `STYLE_REFERENCE_BOOK_NOT_READY`、正在分类 `…_BOOK_CLASSIFYING`、已在学 `…_LEARN_ALREADY_ACTIVE`、学习节点没有
-路由或模板是旧版 `…_LEARN_CONFIG_MISSING`（均 409）。学习在跑时重新分类一律 409 `STYLE_REFERENCE_BOOK_LEARNING`。
+路由或模板是旧版 `…_LEARN_CONFIG_MISSING`、正文太短 `…_INPUT_TOO_SMALL`（`{"force": true}` 仍可学）（均 409）。学习在跑时重新分类一律
+409 `STYLE_REFERENCE_BOOK_LEARNING`。失败的作业只有 `error.retryable` 不为 false 时才可「继续学习」（`learn.resumable`）；
+正文太短这类失败只能「重新学习」或「仍然学习」。
 
 ### 4.4 对照检查（`check_job.py`，kind=check）
 
 `POST /api/v2/style-reference/checks`：`text`（≤6 万字）与 `scene_id` 恰好给一个，并说明对照哪份参考（`profile_id` 或 `project_id`）。
 给 `scene_id` 时作品一律取这一场所属的作品（建作业与跑作业时都按场景取，不信客户端给的 `project_id`），读数记在那部作品下。
 作业做三件事：确定性读数 → 参考评审（模板 `style_ref_check_judge`，走 `soft_qc` 节点路由；冻结选窗前 4 窗 + 文风卡 + 声音 + 红线；
-16 维各 0–10 分 + 总分）→ 抄袭门（只记计数），写一条 `source=manual_check` 的读数。评审失败作业就失败，不降级成只有读数。
+16 维各 0–10 分 + 总分，按模板声明的刻度换算、越界的分丢掉）→ 抄袭门（只记计数），写一条 `source=manual_check` 的读数。评审失败作业就失败，
+不降级成只有读数。`POST /checks/{job_id}/cancel` 取消（排队中立即收尾，运行中在评审回来的检查点收尾；已结束 → 409 `…_CHECK_NOT_ACTIVE`）。
 
 - 评审的参考块按 `soft_qc` 的**实际路由**判云策略（§11）：「仅本机」的书遇云端路由 → 作业以 409 `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`
   失败，参考一个字都不发；并按评审模板的输入预算压（与 soft_qc 同一档，`NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET` 收紧时照收紧；待查文字
@@ -152,7 +164,8 @@
 ### 5.2 每场冻结选窗（`inject/selection.py`）
 
 只看本场设计、不看草稿：窗口表 + 种子（`scene_id`）+ 章内位置 + 场面标签（蓝图给的 `situation_tags`，没有就从设计推）+ 对白 / 概述
-倾向 + 窗数 + 维度状态 + 文风卡手法。配额（k=12，其它 k 按比例）：章首 / 章末位置 ≤3、场面标签 ≈4、重点维 / 近期偏差维的手法示范 ≈2，
+倾向 + 窗数 + 维度状态。配额（k=12，其它 k 按比例）：章首 / 章末位置 ≤3、场面标签 ≈4、重点维 / 改稿维 / 近期偏差维的**维度示范** ≈2
+（按窗口的维度标签重合挑），
 其余在全书按典型度加权抽样，一章至多一窗。结果冻结在 `style_reference_scene_windows`，同一场的首稿、修改、评审、补丁看同一组窗；
 评审节点取前 4 窗（`REVIEW_K`），规划节点前 3 窗（`PLAN_K`），改稿至多把 2 窗换成示范要改那几维的窗。呈现时按原书顺序。
 
@@ -209,7 +222,9 @@
 7. 归档：唯一抄袭门 + 终稿读数。
 
 房风规则只在 `policy.defers_house_taste()` 时让位（反模板门只提示、自动批评不出补丁、成稿门的文学阈值按绑定书校准、新鲜度只留逐字
-n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这些硬门从不让位。`neutral_first` 是对照组：中性首稿再由 `style_draft` 改成作者手笔。
+n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这些硬门从不让位。`neutral_first` 是对照组：中性首稿再由 `style_draft` 改成作者手笔，
+有绑定时改完读一次读数，不比中性稿更像就交付中性稿（与直起同一条「永不越改越远」规则）；旧的 21 指标包络（段密度合并、形态修复、
+改写不退步）已删除，改写不退步只看读数（`patch_max_distance_increase`）。
 `NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED` 打开时候选 = 首稿 + (N−1) 个定向修改，先把被抄袭门拦的候选排到最后，再按 `distance` 排序
 （首稿赢平手）；续跑时槽位数不少于已经落下检查点的槽位；按正文去重后不到两份就不开关键场景的终选门。风格链路的 `STYLE_*`
 提示码挂在尝试记录上，起草台工作台按本次运行读出，连同 `style_fidelity`（各阶段读数与决定）。
@@ -248,7 +263,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 + `author_action`（「第 N–M 字与参考书原文连续 12 字以上相同……」）+ `details.reference_copy`（检查记录：位置 / 计数 / 哈希；每条走
 成稿门的路径都带，前端据此说人话）。
 
-绑定的书已不在书库、或风格策略解析降级：那一边**没有查成**（`unavailable`），不能当成「查过、没重合」——风格稿门报
+绑定的书已不在书库、绑定指向的画像不是 active（`STYLE_REFERENCE_PROFILE_NOT_ACTIVE`）、或风格策略解析降级：那一边**没有查成**（`unavailable`），不能当成「查过、没重合」——风格稿门报
 `unavailable`（软 QC 挂 Q2 复核、起草链路发 `STYLE_GATE_UNAVAILABLE`），成稿门报不拦的警告 `source_safety:unavailable`。
 检查本身出错（库读不出）才 fail-closed `SOURCE_SAFETY_UNAVAILABLE`。
 
@@ -258,13 +273,13 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 
 | 模块 | 接口 |
 |---|---|
-| `books.py` | `POST /books/import-upload`（≤10 MB）· `POST /books/import-path`（要配 `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS`）· `GET /runtime`（有没有模型、分类节点是否本机、推荐的 `default_cloud_policy`）· `GET /books` · `GET /books/{id}` · `GET /books/{id}/paragraphs?start=&end=`（≤80 段）· `GET /books/{id}/classification/estimate` · `POST /books/{id}/reclassify`（缺省破坏式；`{"mode":"retype"}` 就地；`{"resume":true}` 续跑）· `POST /books/{id}/classification/cancel` · `DELETE /books/{id}` · `POST /books/bulk-delete` |
-| `learn.py` | `POST /books/{id}/learn`（`{"resume":true}` 续跑）· `GET /books/{id}/learn` · `POST /books/{id}/learn/cancel` · `GET /books/{id}/runs` · `GET /runs/{id}/findings` |
+| `books.py` | `POST /books/import-upload`（≤10 MB）· `POST /books/import-path`（要配 `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS`，还要 `X-Admin-Token`；没配 `NOVEL_SYSTEM_ADMIN_TOKEN` 时只放行回环客户端）· `GET /runtime`（有没有模型、分类节点是否本机、推荐的 `default_cloud_policy`）· `GET /books` · `GET /books/{id}` · `GET /books/{id}/paragraphs?start=&end=`（≤80 段）· `GET /books/{id}/classification/estimate` · `POST /books/{id}/reclassify`（缺省破坏式；`{"mode":"retype"}` 就地；`{"resume":true}` 续跑）· `POST /books/{id}/classification/cancel` · `DELETE /books/{id}` · `POST /books/bulk-delete` |
+| `learn.py` | `POST /books/{id}/learn`（`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate` + 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` · `GET /books/{id}/runs` · `GET /runs/{id}/findings` |
 | `profiles.py` | `GET /profiles`（摘要）· `GET /profiles/{id}`（文风画像页）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
 | `bindings.py` | `POST /profiles/{id}/apply {scope, scope_ref_id, config}`（同一目标只留一条生效绑定，旧的在 `replaced` 里说出来）· `PATCH /bindings/{id}`（维度状态按维合并）· `DELETE /bindings/{id}` · `GET /profiles/{id}/bindings` · `GET /projects/{id}/style-binding` · `GET /injection/layers` |
 | `activity.py` | `GET /activity` |
 
-`api/routes/style_fidelity.py`：两个 `style-fidelity` 读接口、`GET /readings/{id}`、`POST /checks`、`GET /checks/{job_id}`（§4.4、§7）。
+`api/routes/style_fidelity.py`：两个 `style-fidelity` 读接口、`GET /readings/{id}`、`POST /checks`、`GET /checks/{job_id}`、`POST /checks/{job_id}/cancel`（§4.4、§7）。
 已删除、不要加回来：`/imports/{key}/progress`、旧抽取 run 与 `/runs/{id}/synthesize`、示例预览 `/profiles/{id}/preview`、回测
 `/profiles/{id}/validate` 与 `/reports`、`/bindings/{id}/injection-preview`、`/injection/task-defaults`、👍/👎。
 
@@ -276,9 +291,8 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 |---|---|
 | `injection_budget.yaml` | 单窗上限 5000、文风卡预算 2600、`draft_mode_default`、直起长度放宽 0.5、参考场长上限 5000、上一场尾部节选 900、`fidelity:` 阈值 |
 | `function_words.yaml` | 测量核与专名候选共用的闭类虚词表 |
-| `voice_baseline.yaml` | 黄金语料分位基线，现在只判「刻意复沓」；重建：`python -m novel_system.services.style_reference.voice_signature build-baseline` |
+| `voice_baseline.yaml` | 黄金语料分位基线，现在只判「刻意复沓」；重建：`python -m novel_system.tools.build_voice_baseline` |
 | `input_thresholds.yaml` | 每层抽取的语料量门槛 |
-| `tolerance_floors.yaml` | 量化目标包络下限（`candidate_rerank.build_style_target`，候选审计与改写不退步检查） |
 | `banned_adjectives.yaml` | 空泛评价词：抽取陈述里出现就丢掉那条发现 |
 | `anti_plagiarism_template.txt` | 红线段 |
 
@@ -314,11 +328,12 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
   - 规划参考块（`planning_context`）不说节点时按全部消费节点判：项目级（雪花 09 / 10、起章名、章规划四节点）、场景级（场景蓝图、
     章架构、人物压力）、起章名；「仅本机」的书有一个消费节点走云端就不给参考块（规划照常，不报错）。
   - 未知 / 空策略：本机节点只送文风卡，云端节点 409 `STYLE_REFERENCE_CLOUD_POLICY_INVALID`。
-- **迁移**：停服、`python -m novel_system.tools.db_backup --backup <src.db> <dst.db>`，再 `alembic upgrade head`（0090、0091）。
+- **迁移**：停服、`python -m novel_system.tools.db_backup --backup <src.db> <dst.db>`，再 `alembic upgrade head`（0090、0091、0092）。
+  0092 之后窗口标签是 v2：之前学过的书在下一次「学习文风」时重打全书标签（『龙族』520 窗约 65 次调用），此后重新学习只剩约 6 次调用。
 - **工具**（`backend/` 下，默认干跑、`--execute` 才写库，先备份）：`purge_style_reference_books --book ID`（可重复）和 / 或 `--id-prefix PREFIX`
   （至少 4 个字符；删书及全部派生数据，就是书库删除的 `cleanup.delete_reference_book`，绑定范围内的规划产物一并作废）；`refresh_style_reference_books --book ID | --all`（就绪的书剥副文本、重编号、保留场界、重算统计；段落变了
   会 `pop` 根哈希、窗口随之重建；空行场界只有重新导入才能恢复；有排队 / 运行中的分类或学习作业的书跳过——就地重标时书一直是 ready；
-  `--execute` 时每本书先拿写锁、在锁里重新核对并重算计划，`stats_json` 只合并本工具管的键）。
+  `--execute` 时每本书先拿写锁、在锁里重新核对并重算计划，`stats_json` 只合并本工具管的键）；`build_voice_baseline`（重建 `voice_baseline.yaml`）。
 
 ## 12. 排障
 
@@ -327,17 +342,18 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | `STYLE_REFERENCE_LLM_REQUIRED`（409） | 没有可用模型；去系统配置 |
 | `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`（409） | 「仅本机」的书遇到云端节点路由（分类、学习、对照检查，也包括起草 / 改稿 / 评审 / 本场预览时参考要进的那个节点；`details.node_id` 是哪个节点，`details.reason = "node_unknown"` 表示调用方没说清节点）；把那个节点换成本机模型，或换一档范围重新导入 |
 | `STYLE_REFERENCE_CLOUD_POLICY_INVALID`（409） | 书的云策略认不出来，参考不能进云端节点；重新导入并选一档 |
-| `…_SEND_RIGHTS_REQUIRED` / `…_DECLARATION_REQUIRED` | 非本机范围没有确认发送权；重新导入并勾选 |
-| `…_BOOK_DUPLICATE`（409）/ `…_BOOK_EMPTY`（400）/ `…_UPLOAD_TOO_LARGE` / `…_BOOK_FORMAT_UNSUPPORTED` | 同一份文本已在书库（`details.book_id`）/ 没有正文 / 超过 10 MB / 不是 txt、md |
+| `…_SEND_RIGHTS_REQUIRED` / `…_SEND_RIGHTS_DECLARATION_REQUIRED`（409）/ `…_RIGHTS_DECLARATION_INVALID`（400） | 非本机范围没有确认发送权 / 声明字段不合法；重新导入并勾选 |
+| `…_BOOK_DUPLICATE`（409）/ `…_BOOK_EMPTY`（400）/ `…_UPLOAD_TOO_LARGE`（413）/ `…_BOOK_FORMAT_UNSUPPORTED` | 同一份文本已在书库（`details.book_id`）/ 没有正文 / 超过 10 MB / 不是 txt、md |
 | `…_CLASSIFICATION_FAILED`（502） | 某批重试后仍失败；游标保留，「继续分类」 |
 | `…_ALREADY_ACTIVE` / `…_BOOK_LEARNING` / `…_BOOK_CLASSIFYING` / `…_BOOK_NOT_READY` | 同一本书有冲突的作业在跑，或分类没完成；等它结束、取消或「继续分类」 |
 | `…_LEARN_CONFIG_MISSING` | 学习节点没有路由或模板是旧版；「一键补齐」+ `sync_prompt_templates --execute` |
 | `…_INPUT_TOO_SMALL` / 学习失败 `card_filtered_empty` | 正文太少 / 卡句全被专名、禁用词或原文重合滤掉（在用的画像不受影响） |
 | `…_PROFILE_STALE`（409） | 画像的依据变过；重新学习再用于作品 |
-| `…_CHECK_NOT_BOUND` / `…_CHECK_TARGET_INVALID` / `…_CHECK_JUDGE_FAILED` | 对照检查没有可对照的参考 / `text` 与 `scene_id` 没有恰好给一个 / 评审调用失败 |
+| `…_CHECK_NOT_BOUND` / `…_CHECK_TARGET_INVALID` / `…_CHECK_JUDGE_FAILED` / `…_CHECK_NOT_ACTIVE` | 对照检查没有可对照的参考 / `text` 与 `scene_id` 没有恰好给一个（超过 6 万字的 `text` 在请求校验就被拒）/ 评审调用失败 / 取消一个已结束的检查 |
+| `…_PROFILE_NOT_ACTIVE` | 绑定指向的画像已归档（v3 之前的画像在迁移 0092 归档）；对这本书「学习文风」就地复活，或重新应用 |
 | `SOURCE_SAFETY_BLOCKED`（409） | 与参考书原文连续 12 字以上相同（唯一的硬门）；按 `author_action` / `details.reference_copy` 给的位置改写 |
 | 成稿门警告 `source_safety:protected_term` | 正文用了画像禁用词表里的专名——不拦；是参考书的专名就换掉，日常词被误收就到文风画像的禁用词里删掉 |
-| 成稿门警告 `source_safety:unavailable` / 风格稿门 `unavailable` | 绑定的书已删或绑定解析失败，那一边没做原文重合检查；恢复绑定后可再做对照检查 |
+| 成稿门警告 `source_safety:unavailable` / 风格稿门 `unavailable` | 绑定的书已删、画像不是 active 或绑定解析失败，那一边没做原文重合检查；恢复绑定后可再做对照检查 |
 | 提示 `STYLE_REFERENCE_BOOK_CHANGED` / `…_SAMPLES_BLOCKED` / `…_NO_WINDOWS` / `…_BOOK_MISSING` | 冻结后书被改过（按当前索引选窗）/ 样例被云策略挡下（没有发送权声明、或冻结时不许送云）/ 还没有窗口 / 书已删除（冻结快照是送云策略时文风卡照送、原文不送；快照说不清策略时什么都不送） |
 | 作业「卡住」（`stalled`） | 心跳过期 60 s 后清扫线程放回队列；也可取消或继续 |
 
