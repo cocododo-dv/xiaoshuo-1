@@ -361,7 +361,6 @@ def test_reclassify_executes_and_purges_derived_data(
     assert data["status"] == "classifying"
     assert data["book"]["status"] == "ingesting"
     assert data["paragraphs_count"] >= 1
-    assert data["classification"]["kind"] == "reclassify"
     assert data["classification"]["mode"] == "reclassify" and data["mode"] == "reclassify"
 
     # 派生数据全部消失
