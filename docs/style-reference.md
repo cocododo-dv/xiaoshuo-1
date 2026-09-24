@@ -274,7 +274,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | 模块 | 接口 |
 |---|---|
 | `books.py` | `POST /books/import-upload`（≤10 MB）· `POST /books/import-path`（要配 `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS`，还要 `X-Admin-Token`；没配 `NOVEL_SYSTEM_ADMIN_TOKEN` 时只放行回环客户端）· `GET /runtime`（有没有模型、分类节点是否本机、推荐的 `default_cloud_policy`）· `GET /books` · `GET /books/{id}` · `GET /books/{id}/paragraphs?start=&end=`（≤80 段）· `GET /books/{id}/classification/estimate` · `POST /books/{id}/reclassify`（缺省破坏式；`{"mode":"retype"}` 就地；`{"resume":true}` 续跑）· `POST /books/{id}/classification/cancel` · `DELETE /books/{id}` · `POST /books/bulk-delete` |
-| `learn.py` | `POST /books/{id}/learn`（`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate` + 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` · `GET /books/{id}/runs` · `GET /runs/{id}/findings` |
+| `learn.py` | `POST /books/{id}/learn`（`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate`（含 `windows_to_tag`；`?retag=true` 按全书重打估）+ 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` · `GET /books/{id}/runs` · `GET /runs/{id}/findings` |
 | `profiles.py` | `GET /profiles`（摘要）· `GET /profiles/{id}`（文风画像页）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
 | `bindings.py` | `POST /profiles/{id}/apply {scope, scope_ref_id, config}`（同一目标只留一条生效绑定，旧的在 `replaced` 里说出来）· `PATCH /bindings/{id}`（维度状态按维合并）· `DELETE /bindings/{id}` · `GET /profiles/{id}/bindings` · `GET /projects/{id}/style-binding` · `GET /injection/layers` |
 | `activity.py` | `GET /activity` |
@@ -291,7 +291,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 |---|---|
 | `injection_budget.yaml` | 单窗上限 5000、文风卡预算 2600、`draft_mode_default`、直起长度放宽 0.5、参考场长上限 5000、上一场尾部节选 900、`fidelity:` 阈值 |
 | `function_words.yaml` | 测量核与专名候选共用的闭类虚词表 |
-| `voice_baseline.yaml` | 黄金语料分位基线，现在只判「刻意复沓」；重建：`python -m novel_system.tools.build_voice_baseline` |
+| `voice_baseline.yaml` | 黄金语料分位基线，现在只判「刻意复沓」；重建：`python -m novel_system.tools.build_voice_baseline build-baseline`（`inspect PATH` 查看） |
 | `input_thresholds.yaml` | 每层抽取的语料量门槛 |
 | `banned_adjectives.yaml` | 空泛评价词：抽取陈述里出现就丢掉那条发现 |
 | `anti_plagiarism_template.txt` | 红线段 |
@@ -333,7 +333,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 - **工具**（`backend/` 下，默认干跑、`--execute` 才写库，先备份）：`purge_style_reference_books --book ID`（可重复）和 / 或 `--id-prefix PREFIX`
   （至少 4 个字符；删书及全部派生数据，就是书库删除的 `cleanup.delete_reference_book`，绑定范围内的规划产物一并作废）；`refresh_style_reference_books --book ID | --all`（就绪的书剥副文本、重编号、保留场界、重算统计；段落变了
   会 `pop` 根哈希、窗口随之重建；空行场界只有重新导入才能恢复；有排队 / 运行中的分类或学习作业的书跳过——就地重标时书一直是 ready；
-  `--execute` 时每本书先拿写锁、在锁里重新核对并重算计划，`stats_json` 只合并本工具管的键）；`build_voice_baseline`（重建 `voice_baseline.yaml`）。
+  `--execute` 时每本书先拿写锁、在锁里重新核对并重算计划，`stats_json` 只合并本工具管的键）；`build_voice_baseline build-baseline`（重建 `voice_baseline.yaml`；`inspect PATH` 查看）。
 
 ## 12. 排障
 
@@ -346,7 +346,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | `…_BOOK_DUPLICATE`（409）/ `…_BOOK_EMPTY`（400）/ `…_UPLOAD_TOO_LARGE`（413）/ `…_BOOK_FORMAT_UNSUPPORTED` | 同一份文本已在书库（`details.book_id`）/ 没有正文 / 超过 10 MB / 不是 txt、md |
 | `…_CLASSIFICATION_FAILED`（502） | 某批重试后仍失败；游标保留，「继续分类」 |
 | `…_ALREADY_ACTIVE` / `…_BOOK_LEARNING` / `…_BOOK_CLASSIFYING` / `…_BOOK_NOT_READY` | 同一本书有冲突的作业在跑，或分类没完成；等它结束、取消或「继续分类」 |
-| `…_LEARN_CONFIG_MISSING` | 学习节点没有路由或模板是旧版；「一键补齐」+ `sync_prompt_templates --execute` |
+| `…_LEARN_CONFIG_MISSING` | 学习节点没有路由或模板是旧版（`details.stale_templates` 列出哪几个，如 `style_ref_tag_windows` 还是 v1）；「一键补齐」+ `sync_prompt_templates --execute` |
 | `…_INPUT_TOO_SMALL` / 学习失败 `card_filtered_empty` | 正文太少 / 卡句全被专名、禁用词或原文重合滤掉（在用的画像不受影响） |
 | `…_PROFILE_STALE`（409） | 画像的依据变过；重新学习再用于作品 |
 | `…_CHECK_NOT_BOUND` / `…_CHECK_TARGET_INVALID` / `…_CHECK_JUDGE_FAILED` / `…_CHECK_NOT_ACTIVE` | 对照检查没有可对照的参考 / `text` 与 `scene_id` 没有恰好给一个（超过 6 万字的 `text` 在请求校验就被拒）/ 评审调用失败 / 取消一个已结束的检查 |
