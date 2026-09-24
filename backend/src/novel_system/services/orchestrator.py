@@ -7529,12 +7529,17 @@ class Orchestrator:
         §4.4）；全部无效时返回 None——管线继续，由 QC 层裁决，不装作可选。候选按正文去重后不到两份时
         调用方根本不开这道门（:meth:`_distinct_candidate_count`）。
         blinded_order 是随机置换（§5.5 展示顺序必须随机化并记录）。
+
+        风格参考 v3（S2 a）：有绑定时，抄袭门「没检查成」的候选（``plagiarism_checked`` 不为 True——读数 / 抄袭门
+        抛过异常）也不交给作者盲选（fail-closed；成稿门仍是最后一道）；未绑定的场景没有抄袭门，照旧交付。
         """
         import random
         import uuid
         from novel_system.db.models import HumanReviewEvent
         from novel_system.services.source_safety import scan_source_safety
+        from novel_system.services.style_policy import style_policy_for_bundle
 
+        style_bound = bool(getattr(style_policy_for_bundle(bundle), "bound", False))
         valid_candidates: list[Any] = []
         offered_texts: set[str] = set()
         for cand in candidates:
@@ -7551,6 +7556,13 @@ class Orchestrator:
                 ranking.get("plagiarism_checked") is True
                 and ranking.get("plagiarism_passed") is False
             ):
+                continue
+            if style_bound and ranking.get("plagiarism_checked") is not True:
+                _LOGGER.warning(
+                    "candidate %s of scene %s was never copy-checked; not offered for blind selection",
+                    getattr(cand, "row_id", None),
+                    scene.scene_id,
+                )
                 continue
             offered_texts.add(content)
             valid_candidates.append(cand)

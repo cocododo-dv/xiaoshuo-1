@@ -1,7 +1,7 @@
 """2026-07 深度评审修复回归 — 每项缺陷一组可证伪锚点。
 
 覆盖(编号对应评审报告):
-- D4 metrics 字符集勘误:全角 ？/； 计数、重复字符不双计
+- D4 标点字符集勘误(2026-09-24 起在测量核 measure 里,v2 指标包络已删):全角 ？/； 计数、ASCII ? 不双计
 - D6 resolve 选取单点过滤非 active profile 的 binding(注入 / qc gate 一致)
 - D8 binding 决平时间戳微秒精度
 - D10 import-path 后缀白名单(任意服务器文件读取面收窄)
@@ -56,42 +56,30 @@ def _ingest(seed: str, *, cloud_policy: str = "segments_only") -> str:
 
 
 # ---------------------------------------------------------------------------
-# D4 — metrics 字符集勘误
+# D4 — 标点字符集勘误(测量核)
 # ---------------------------------------------------------------------------
 
 
 def test_fullwidth_question_and_semicolon_are_counted() -> None:
-    """全角 ？/； 必须计入密度(修复前两指标对中文文本恒 ≈0)。"""
-    from novel_system.services.style_reference.metrics import (
-        MetricsEngine,
-        ParagraphRecord,
-    )
+    """全角 ？/； 必须计入测量核的标点计数(修复前旧指标对中文文本恒 ≈0;2026-09-24 起测量核是唯一的计数入口)。"""
+    from novel_system.services.style_reference.measure import measure_text
 
-    engine = MetricsEngine()
-    paras = [ParagraphRecord(text="你要去哪里？我不知道；他也不知道。", paragraph_type="narration")]
-    out = engine.compute_all(paras)
-    assert out["question_density_per_1k"] > 0, "全角？未被统计"
-    assert out["semicolon_density_per_1k"] > 0, "全角；未被统计"
+    measure = measure_text("你要去哪里？我不知道；他也不知道。")
+    assert measure.punct_counts["question"] > 0, "全角？未被统计"
+    assert measure.punct_counts["semicolon"] > 0, "全角；未被统计"
 
 
 def test_ascii_question_not_double_counted() -> None:
-    """修复前 "??"(两个 ASCII ?)使每个 ASCII 问号被双计。3 个可见字含 1 个 ? → 1000/3 每千字
-    (2026-09-23 起「每千字」按可见字算,不含标点)。"""
-    from novel_system.services.style_reference.metrics import (
-        MetricsEngine,
-        ParagraphRecord,
-    )
+    """修复前 "??"(两个 ASCII ?)使每个 ASCII 问号被双计。"""
+    from novel_system.services.style_reference.measure import measure_text
 
-    engine = MetricsEngine()
-    out = engine.compute_all([ParagraphRecord(text="abc?", paragraph_type="narration")])
-    assert out["question_density_per_1k"] == pytest.approx(1000.0 / 3)
+    assert measure_text("abc?").punct_counts["question"] == 1
 
 
-def test_punct_chars_have_no_duplicates_and_include_fullwidth_colon() -> None:
-    from novel_system.services.style_reference.metrics import _PUNCT_CHARS
+def test_punct_chars_include_fullwidth_question_semicolon_and_colon() -> None:
+    from novel_system.services.style_reference.measure import PUNCT_CHARS
 
-    assert len(set(_PUNCT_CHARS)) == len(_PUNCT_CHARS), "标点字符集含重复字符(会双计)"
-    assert "：" in _PUNCT_CHARS
+    assert {"？", "；", "：", "?", ";", ":"} <= set(PUNCT_CHARS)
 
 
 # ---------------------------------------------------------------------------

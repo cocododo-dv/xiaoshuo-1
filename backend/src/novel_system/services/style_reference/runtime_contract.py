@@ -33,12 +33,10 @@ import copy
 import hashlib
 import json
 import logging
-import math
 import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 from novel_system.services.hash_engine import canonical_json
@@ -56,7 +54,6 @@ STYLE_RUNTIME_CONTRACT_VERSION_V1 = "style_reference_runtime_contract_v1"
 STYLE_RUNTIME_CONTRACT_VERSION_V2 = "style_reference_runtime_contract_v2"
 STYLE_RUNTIME_CONTRACT_VERSION = STYLE_RUNTIME_CONTRACT_VERSION_V2
 SUPPORTED_CONTRACT_VERSIONS = frozenset({STYLE_RUNTIME_CONTRACT_VERSION_V1, STYLE_RUNTIME_CONTRACT_VERSION_V2})
-STYLE_CONTEXT_VERSION = "style_reference_generation_context_v1"
 # v1 契约的画像白名单（只用于校验旧 bundle 里冻结的 v1 契约）
 _FROZEN_PROFILE_JSON_KEYS_V1 = frozenset(
     {
@@ -93,13 +90,12 @@ V3_PROFILE_JSON_KEYS = frozenset(
         "learned_from",
         "profile_version",
         "protected_terms_version",
-        # 量化基线：v2 指标包络的旧读者（scene_generation 的候选评估）还在读——第二波（契约文档 §8.1 S2，W3）随包络一起删
-        "metrics_baseline",
     }
 )
 FROZEN_PROFILE_JSON_KEYS = V3_PROFILE_JSON_KEYS
-# 读侧白名单：迁移 0092 之前冻结进旧 bundle 的 v2 契约还带旧画像键（卡替身 / 叙事概述 …）——旧 bundle 是不可变
-# 历史，校验放行；新契约只写 :data:`FROZEN_PROFILE_JSON_KEYS`
+# 读侧白名单：迁移 0092 之前冻结进旧 bundle 的 v2 契约还带旧画像键（卡替身 / 叙事概述 …），2026-09-24 之前冻结的
+# 还带 v2 的量化基线 ``metrics_baseline``（指标包络随 S2 删除，新契约不再冻结它）——旧 bundle 是不可变历史，
+# 校验放行；新契约只写 :data:`FROZEN_PROFILE_JSON_KEYS`
 _READ_PROFILE_JSON_KEYS = FROZEN_PROFILE_JSON_KEYS | _FROZEN_PROFILE_JSON_KEYS_V1
 # 声音块只冻结渲染与旧读者要用的小键（v3 的 ``voice`` 可能带作者自身分布，不进契约）
 _VOICE_SIGNATURE_KEYS = ("version", "habits", "deliberate_repetition", "features", "top_words", "stats")
@@ -118,12 +114,6 @@ def _json_hash(payload: Mapping[str, Any]) -> str:
 
 def _text_hash(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
-
-
-def _profile_value(profile: Any, name: str, default: Any = None) -> Any:
-    if isinstance(profile, Mapping):
-        return profile.get(name, default)
-    return getattr(profile, name, default)
 
 
 DRAFT_MODE_STYLE_FIRST = "style_first"
@@ -714,116 +704,6 @@ def style_runtime_contract_status_from_bundle(
     return None
 
 
-def contract_profile_objects(
-    contract: Mapping[str, Any],
-    *,
-    per_layer: bool = True,
-) -> list[Any]:
-    validated = validate_style_runtime_contract(contract)
-    snapshots = []
-    for layer in validated["layers"]:
-        snapshot = dict(layer["profile"])
-        # These runtime-only attributes let validation consume the same frozen
-        # safety inputs as generation without changing the persisted profile
-        # payload or consulting mutable rows by profile_id.
-        snapshot["runtime_contract_banned_terms"] = copy.deepcopy(
-            list(layer["banned_terms"])
-        )
-        snapshot["runtime_contract_forbidden_findings"] = copy.deepcopy(
-            list(layer["forbidden_findings"])
-        )
-        snapshot["runtime_contract_book"] = copy.deepcopy(dict(layer["book"]))
-        snapshots.append(snapshot)
-    if not per_layer:
-        snapshots = list(
-            {snapshot["profile_id"]: snapshot for snapshot in snapshots}.values()
-        )
-    return [SimpleNamespace(**copy.deepcopy(snapshot)) for snapshot in snapshots]
-
-
-def blend_profile_metric_baselines(
-    profiles: Sequence[Any],
-) -> dict[str, dict[str, float | int]]:
-    """Blend ordered generic→specific baselines with total variance."""
-    if not profiles:
-        return {}
-    weighted_profiles = list(zip(profiles, range(1, len(profiles) + 1), strict=True))
-    metric_names: set[str] = set()
-    for profile, _weight in weighted_profiles:
-        profile_json = _profile_value(profile, "profile_json", {}) or {}
-        baseline = (
-            profile_json.get("metrics_baseline")
-            if isinstance(profile_json, Mapping)
-            else {}
-        )
-        if isinstance(baseline, Mapping):
-            metric_names.update(str(name) for name in baseline)
-
-    blended: dict[str, dict[str, float | int]] = {}
-    for metric in sorted(metric_names):
-        components: list[tuple[float, float, float]] = []
-        for profile, weight in weighted_profiles:
-            profile_json = _profile_value(profile, "profile_json", {}) or {}
-            baseline = (
-                profile_json.get("metrics_baseline")
-                if isinstance(profile_json, Mapping)
-                else {}
-            )
-            raw = baseline.get(metric) if isinstance(baseline, Mapping) else None
-            if isinstance(raw, Mapping):
-                raw_mean = raw.get("mean")
-                raw_std = raw.get("std", 0.0)
-            else:
-                raw_mean = raw
-                raw_std = 0.0
-            try:
-                mean = float(raw_mean)
-                std = float(raw_std)
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(mean) or not math.isfinite(std) or std < 0:
-                continue
-            components.append((float(weight), mean, std))
-        if not components:
-            continue
-        weight_sum = sum(weight for weight, _mean, _std in components)
-        target_mean = (
-            sum(weight * mean for weight, mean, _std in components) / weight_sum
-        )
-        target_variance = (
-            sum(
-                weight * (std**2 + (mean - target_mean) ** 2)
-                for weight, mean, std in components
-            )
-            / weight_sum
-        )
-        blended[metric] = {
-            "mean": target_mean,
-            "std": math.sqrt(max(0.0, target_variance)),
-            "component_count": len(components),
-        }
-    return blended
-
-
-# 2026-09-24 清理（S4）判定为死代码，但 ``scene_generation.py`` 还有一条从未用到的 import
-# （``extract_style_generation_context``，W3 的文件）——那条 import 删掉之后这三个名字
-# （STYLE_CONTEXT_VERSION / StyleGenerationContext / extract_style_generation_context）随之删除。
-@dataclass(frozen=True, slots=True)
-class StyleGenerationContext:
-    query_text: str
-    source_kind: str
-    query_sha256: str
-    char_count: int
-    version: str = STYLE_CONTEXT_VERSION
-
-    def audit_dict(self) -> dict[str, Any]:
-        return {
-            "version": self.version,
-            "source_kind": self.source_kind,
-            "query_sha256": self.query_sha256,
-            "char_count": self.char_count,
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class StyleRuntimeContractState:
@@ -905,26 +785,9 @@ def resolve_style_runtime_contract_state(
     return StyleRuntimeContractState(status=None, mode="legacy_live")
 
 
-def extract_style_generation_context(
-    text: str | None,
-    *,
-    source_kind: str,
-    max_chars: int = 2000,
-) -> StyleGenerationContext:
-    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    normalized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", normalized).strip()
-    query = normalized[-max(1, int(max_chars)) :] if normalized else ""
-    return StyleGenerationContext(
-        query_text=query,
-        source_kind=str(source_kind),
-        query_sha256=_text_hash(query),
-        char_count=len(query),
-    )
-
 
 __all__ = [
     "FROZEN_PROFILE_JSON_KEYS",
-    "STYLE_CONTEXT_VERSION",
     "DRAFT_MODE_NEUTRAL_FIRST",
     "DRAFT_MODE_STYLE_FIRST",
     "STYLE_RUNTIME_CONTRACT_VERSION",
@@ -938,12 +801,8 @@ __all__ = [
     "inline_contract_payload",
     "frozen_profile_json",
     "reset_contract_memo",
-    "StyleGenerationContext",
     "StyleRuntimeContractState",
-    "blend_profile_metric_baselines",
     "build_style_runtime_contract",
-    "contract_profile_objects",
-    "extract_style_generation_context",
     "resolve_draft_mode",
     "resolve_style_runtime_contract_state",
     "style_runtime_contract_from_bundle",

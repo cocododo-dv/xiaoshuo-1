@@ -1459,11 +1459,6 @@ class _LearnRun(JobRun):
             planning=planning,
             narrative=derive_narrative_guidance(card),
             qualitative_summary=assembly.qualitative_summary,
-            metrics_baseline={
-                **dict((book.stats_json or {}).get("metrics") or {}),
-                **dict((book.stats_json or {}).get("prose_shape_metrics") or {}),
-            },
-            sub_dimensions=sub_dimensions,
             learned_from={
                 "types_revision": int(index_state.get("types_revision") or 0),
                 "root": index_state.get("root"),
@@ -1608,15 +1603,15 @@ def _profile_json(
     planning: Sequence[str],
     narrative: Sequence[str],
     qualitative_summary: str,
-    metrics_baseline: Mapping[str, Any],
-    sub_dimensions: Mapping[str, Any],
     learned_from: Mapping[str, Any],
     protected: Sequence[ProtectedTerm],
     paragraph_count: int,
 ) -> dict[str, Any]:
     """v3 画像（契约 §2.2）。``voice`` = 测量核声音特征 + 具体习惯句 + 作者自身的参照分布；另写一份不带分布的
     ``voice_signature`` 过渡别名。不写 ``exemplar_windows``（窗口在窗口表）、``scene_samples_index`` 与旧的
-    ``style_features`` / ``narrative_patterns`` / ``banned_replication_rules`` / ``calibration_guidance``。"""
+    ``style_features`` / ``narrative_patterns`` / ``banned_replication_rules`` / ``calibration_guidance``；
+    2026-09-24（S2）起也不写 v2 的 ``metrics_baseline``（指标包络已删）与 ``sub_dimensions``（各维证据计数只留在
+    ``coverage_json`` / run 血缘里）。"""
     card_json = card.model_dump(mode="json") if card is not None else None
     if card_json is not None:
         for entry in card_json.get("dimensions") or []:
@@ -1638,8 +1633,6 @@ def _profile_json(
         "planning_guidance": list(planning),
         "narrative_guidance": list(narrative),
         "qualitative_summary": qualitative_summary,
-        "metrics_baseline": dict(metrics_baseline),
-        "sub_dimensions": dict(sub_dimensions),
         "reference_basis": {
             "version": REFERENCE_BASIS_VERSION,
             "mode": "reference_derived",

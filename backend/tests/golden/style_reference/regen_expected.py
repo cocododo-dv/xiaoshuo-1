@@ -2,8 +2,9 @@
 """重新生成黄金语料 ingest 期望 JSON。
 
 在隔离临时 SQLite 上跑真实 IngestService(启发式分类,无 LLM,结果确定),
-把 stats_json 的关键面落盘到 expected/。corpus 或 metrics 算法**有意**
-变更后运行本脚本并连同 expected 一起提交。
+把 stats_json 的关键面落盘到 expected/。corpus、分段规则或启发式分类**有意**
+变更后运行本脚本并连同 expected 一起提交(2026-09-24 起不再有 ``metrics`` 块:
+v2 指标包络随风格参考 v3 S2 删除)。
 
 用法(backend 目录下):
     python tests/golden/style_reference/regen_expected.py
@@ -61,7 +62,6 @@ def main() -> None:
                     "paragraphs_count": result.paragraphs_count,
                     "input_assessment": stats["input_assessment"],
                     "paragraph_type_distribution": stats["paragraph_type_distribution"],
-                    "metrics": stats["metrics"],
                 }
             out = GOLDEN_DIR / "expected" / f"{name}_ingest_expected.json"
             out.write_text(

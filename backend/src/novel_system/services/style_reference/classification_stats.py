@@ -2,6 +2,8 @@
 
 2026-09-15:整本 LLM 分类由后台任务(``import_job``)在最后一步从段落行算这些统计;抽成叶子
 模块是为了不让 ``import_job`` 反向依赖 ``ingest``(``ingest`` 已经按需导入 ``import_job``)。
+2026-09-24(风格参考 v3 S2):v2 的 21 指标 / 段落形状块(``metrics`` / ``prose_shape_metrics``,``MetricsEngine``)
+随指标包络删除——「像不像」只看读数(``fidelity``);这里只剩分类器校准与段型分布。
 """
 
 from __future__ import annotations
@@ -9,46 +11,22 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from novel_system.services.style_reference.metrics import (
-    MetricsEngine,
-    ParagraphRecord,
-    compute_prose_shape_with_variance,
-)
 from novel_system.services.style_reference.segmentation.types import SegmentationResult
 
 
 def compute_classification_stats(
     paragraph_spans: list[tuple[int, int, str]],
     seg_result: SegmentationResult,
-    *,
-    metrics_engine: MetricsEngine | None = None,
 ) -> dict[str, Any]:
-    """返回 ``metrics`` / ``prose_shape_metrics`` / ``classifier_calibration`` /
-    ``paragraph_type_distribution`` 四个键。"""
-    records = [
-        ParagraphRecord(text=body, paragraph_type=c.paragraph_type)
-        for (_s, _e, body), c in zip(paragraph_spans, seg_result.classifications)
-    ]
-    engine = metrics_engine or MetricsEngine()
-    metrics_with_var = engine.compute_with_variance(records)
-    sample_count = len(records)
-    metrics_block: dict[str, dict[str, float | int]] = {
-        name: {"mean": float(mean), "std": float(std), "sample_count": sample_count}
-        for name, (mean, std) in metrics_with_var.items()
-    }
-    prose_shape_block: dict[str, dict[str, float | int]] = {
-        name: {"mean": float(mean), "std": float(std), "sample_count": sample_count}
-        for name, (mean, std) in compute_prose_shape_with_variance(records).items()
-    }
-    type_counter = Counter(c.paragraph_type for c in seg_result.classifications)
+    """返回 ``classifier_calibration`` / ``paragraph_type_distribution`` 两个键。"""
+    sample_count = min(len(paragraph_spans), len(seg_result.classifications))
+    type_counter = Counter(c.paragraph_type for c in seg_result.classifications[:sample_count])
     type_distribution = (
         {ptype: round(count / sample_count, 4) for ptype, count in type_counter.items()}
         if sample_count
         else {}
     )
     return {
-        "metrics": metrics_block,
-        "prose_shape_metrics": prose_shape_block,
         "classifier_calibration": seg_result.calibration,
         "paragraph_type_distribution": type_distribution,
     }

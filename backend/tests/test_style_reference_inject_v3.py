@@ -514,12 +514,12 @@ def test_contract_v2_freezes_one_slim_layer(session) -> None:
     assert len(book["paragraph_root_sha256"]) == 64 and book["paragraph_count"] > 0
     assert "chapters" not in (layer["profile"]["profile_json"].get("structure_card") or {})
     # 没有文风卡的旧画像：只冻结 v3 白名单里的键（2026-09-24 起旧的卡替身键 style_features / narrative_patterns …
-    # 不再冻结；量化基线暂留给 W3）；禁忌陈述恒为空表（键保留：它进契约哈希）
+    # 不再冻结；v2 量化基线 metrics_baseline 随指标包络删除（S2，W3）也不再冻结）；禁忌陈述恒为空表（键保留：它进契约哈希）
     legacy = build_style_runtime_contract(StyleReferenceRepository(session), [layers[0]], task_type="scene_generation")
     frozen_json = legacy["layers"][0]["profile"]["profile_json"]
-    assert {"metrics_baseline", "qualitative_summary", "voice_signature"} <= set(frozen_json)
+    assert {"qualitative_summary", "voice_signature"} <= set(frozen_json)
     assert not {"style_features", "narrative_patterns", "calibration_guidance", "banned_replication_rules", "narrative_summary"} & set(frozen_json)
-    assert not {"scene_samples_index", "exemplar_windows", "sub_dimensions", "generation_safe_forbidden_findings"} & set(frozen_json)
+    assert not {"scene_samples_index", "exemplar_windows", "sub_dimensions", "metrics_baseline", "generation_safe_forbidden_findings"} & set(frozen_json)
     assert legacy["layers"][0]["forbidden_findings"] == []
     assert len(json.dumps(legacy, ensure_ascii=False)) < 20000
     # 根哈希存进了书的 stats（下次构建不再现算）

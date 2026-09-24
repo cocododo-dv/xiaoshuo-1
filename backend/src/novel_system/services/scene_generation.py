@@ -53,8 +53,6 @@ from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.services.style_reference.runtime_contract import (
     DRAFT_MODE_NEUTRAL_FIRST,
     DRAFT_MODE_STYLE_FIRST,
-    contract_profile_objects,
-    extract_style_generation_context,
 )
 from novel_system.services.style_prompt_injection import (  # noqa: F401  (re-export for callers/tests)
     PLACEMENT_USER_TAIL,
@@ -498,7 +496,6 @@ ANTI_TEMPLATE_GATE_DIMENSIONS = {
     "false_poetic_closure",
     "self_repetition",
 }
-_STYLE_REWRITE_REGRESSION_TOLERANCE = 0.01
 
 
 # §6.3 multi-strategy diversification prompts for low-dispersion retry
@@ -1355,8 +1352,8 @@ class SceneGenerationService:
                     break
             candidates.sort(key=lambda pair: pair[1], reverse=True)
 
-        # 2026-09-14 减法:候选重排层(shadow / active、基准授权)已删除——候选保持质量序;每个
-        # 候选仍算一次冻结画像的贴合读数与 12 字抄袭守卫(盲选门据此剔除抄袭候选,工作台读数据此展示)。
+        # 2026-09-14 减法:候选重排层(shadow / active、基准授权)已删除——候选保持质量序;每个候选仍读一次
+        # 「像不像」读数(style_score)并过唯一抄袭门(盲选门据此剔除抄袭 / 没检查成的候选,工作台据此展示)。
         for rank, (result, score) in enumerate(candidates):
             result.ranking_audit = self._candidate_style_assessment(
                 bundle, result, float(score), rank=rank
@@ -1383,73 +1380,81 @@ class SceneGenerationService:
         *,
         rank: int,
     ) -> dict[str, Any]:
-        """单个候选的风格贴合读数 + 抄袭守卫(纯函数评分核;失败只降级为质量序读数)。"""
+        """单个候选的审计：``style_score`` 由读数给（``1 − percentile/100``，四位小数；读不出 / 不可信 → None），
+        原文重合走唯一抄袭门；候选保持质量序（风格参考 v3 S2：旧的 21 指标包络已删）。
+
+        读数或抄袭门抛异常 → ``plagiarism_checked=False`` / ``plagiarism_passed=None``：有绑定时终选门不把
+        「没检查成」的候选交给作者盲选（fail-closed；成稿门仍是最后一道），候选本身照常交付。"""
         rerank: dict[str, Any] = {"applied_mode": "off", "reason": None}
-        fallback = {
+        audit: dict[str, Any] = {
             "row_id": result.row_id,
             "quality_score": round(float(quality_score), 6),
             "style_score": None,
+            "fidelity_distance": None,
+            "fidelity_percentile": None,
             "rank": rank,
             "selected": rank == 0,
             "selection_reason": "quality_order",
+            "plagiarism_checked": False,
+            "plagiarism_passed": None,
+            "plagiarism_hit_count": 0,
+            "plagiarism_max_match_chars": 0,
         }
+        content = result.content or ""
         try:
-            from novel_system.services.reference_copy_gate import check_reference_copy
-            from novel_system.services.style_reference.candidate_rerank import (
-                CandidateRerankPolicy,
-                assess_candidate_text,
-                build_style_target,
-            )
-            from novel_system.services.style_reference.runtime_contract import (
-                contract_profile_objects,
-            )
-
             policy = style_policy_for_bundle(bundle)
             rerank["runtime_contract_mode"] = policy.mode
-            contract = policy.contract
-            target = None
-            if policy.mode == "absent" or contract is None:
+            if not policy.bound:
                 rerank["reason"] = (
                     "bundle_has_no_style_profile"
                     if policy.mode == "absent"
                     else (policy.error_code or "frozen_runtime_contract_unavailable")
                 )
-            else:
-                target = build_style_target(contract_profile_objects(contract))
-                if target is None:
-                    rerank["reason"] = "profile_metrics_insufficient"
-            assessment = assess_candidate_text(
-                result.row_id,
-                result.content or "",
-                float(quality_score),
-                target,
-                CandidateRerankPolicy(),
-            )
-            if policy.bound and (result.content or ""):
-                # 风格参考 v3：候选的原文重合走唯一抄袭门（按书一次索引、同一稿不重复扫描）
-                copy = check_reference_copy(self.session, result.content or "", policy=policy)
-                assessment.plagiarism_checked = True
-                assessment.plagiarism_passed = not copy.hits
-                assessment.plagiarism_hit_count = len(copy.hits)
-                assessment.plagiarism_max_match_chars = max(
-                    (hit.matched_chars for hit in copy.hits), default=0
-                )
-        except Exception as exc:  # noqa: BLE001 — 读数是可选增强,不阻断候选交付
+                return {**audit, "rerank": rerank}
+            if not content.strip():
+                rerank["reason"] = "empty_candidate"
+                return {**audit, "rerank": rerank}
+            from novel_system.services.reference_copy_gate import check_reference_copy
+
+            # 读数在保存点里读（第一次读一本书要建窗口索引、写库），失败只回滚保存点、不弄坏会话
+            with self.session.begin_nested():
+                reading = style_readings.reading_for_text(self.session, policy, content)
+            # 风格参考 v3：候选的原文重合走唯一抄袭门（按书一次索引、同一稿不重复扫描）
+            copy = check_reference_copy(self.session, content, policy=policy)
+        except Exception as exc:  # noqa: BLE001 — 读数 / 抄袭门是可选增强,不阻断候选交付;但「没检查成」要如实记
             _LOGGER.warning(
                 "style candidate assessment degraded for scene %s", result.row_id, exc_info=True
             )
             return {
-                **fallback,
+                **audit,
                 "rerank": {
                     **rerank,
                     "reason": "assessment_internal_error",
                     "error_code": getattr(exc, "code", exc.__class__.__name__),
                 },
             }
-        assessment.rank = rank
-        assessment.selected = rank == 0
-        assessment.selection_reason = "quality_order"
-        return {**assessment.to_audit_dict(), "rerank": rerank}
+        if reading is None:
+            rerank["reason"] = "reading_unavailable"
+        else:
+            audit["fidelity_distance"] = reading.distance
+            audit["fidelity_percentile"] = reading.percentile
+            if reading.reliable:
+                audit["style_score"] = round(1.0 - float(reading.percentile) / 100.0, 4)
+            else:
+                rerank["reason"] = "reading_unreliable"
+        if copy.unavailable and not copy.hits:
+            # 有一边没有查成（书已删 / 策略降级）：不能当成「查过、没重合」
+            rerank["copy_gate"] = "unavailable"
+            return {**audit, "rerank": rerank}
+        audit.update(
+            {
+                "plagiarism_checked": True,
+                "plagiarism_passed": not copy.hits,
+                "plagiarism_hit_count": len(copy.hits),
+                "plagiarism_max_match_chars": max((hit.matched_chars for hit in copy.hits), default=0),
+            }
+        )
+        return {**audit, "rerank": rerank}
 
     # ------------------------------------------------------------------
     # 风格参考 v3（P5b，L1 / N6）：作者手笔直起时的风格步——按读数决定
@@ -1596,6 +1601,136 @@ class SceneGenerationService:
         except Exception as exc:  # noqa: BLE001 — 读数是观察：失败按读不出处理
             _LOGGER.warning("%s fidelity reading failed (%s)", what, ref, exc_info=True)
             return None, str(getattr(exc, "code", None) or type(exc).__name__)
+
+    def _neutral_first_style_keep(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        policy: Any,
+        row_id: str,
+        neutral_row_id: str,
+        neutral_content: str,
+        style_content: str,
+        llm_call_id: str,
+        notices: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str | None, str]:
+        """中性首稿再润色（neutral_first）且有绑定（风格参考 v3 S2 c）：风格稿出来后各读一次读数，用
+        :func:`style_step.revision_keep_decision` 与中性稿比——不更像（distance 没有小 ``revision_min_improvement``）
+        就把中性稿当风格稿交付，与作者手笔直起同一条「永不越改越远」规则、同一组阈值；读数不可信 / 读不出 /
+        读数出错 → 照旧接受风格稿（决定里记原因）。
+
+        返回 ``(风格步决定, 被退回的风格稿行 id 或 None, 交付的正文)``。读数记进 ``style_fidelity_readings``
+        （中性稿 first_draft、风格稿 revision，按稿行幂等）；被退回的风格稿另存一行 ``style_rejected``。"""
+        thresholds = style_step.fidelity_thresholds()
+        neutral_reading, neutral_error = self._observe_reading(
+            policy, neutral_content, ref=scene.scene_id, what="neutral-draft"
+        )
+        style_reading, style_error = self._observe_reading(
+            policy, style_content, ref=scene.scene_id, what="style-draft"
+        )
+        project_id = style_readings.scene_project_id(self.session, scene)
+        neutral_row = (
+            style_readings.record_fidelity_reading(
+                self.session,
+                policy=policy,
+                text=neutral_content,
+                source=style_readings.SOURCE_PIPELINE,
+                stage=style_readings.STAGE_FIRST_DRAFT,
+                scene_id=scene.scene_id,
+                project_id=project_id,
+                draft_ref=neutral_row_id,
+                reading=neutral_reading,
+                max_percentile=thresholds.style_step_max_percentile,
+            )
+            if neutral_reading is not None
+            else None
+        )
+        comparable = (
+            neutral_reading is not None
+            and style_reading is not None
+            and bool(neutral_reading.reliable)
+            and bool(style_reading.reliable)
+        )
+        if comparable:
+            keep, reason = style_step.revision_keep_decision(
+                neutral_reading,
+                style_reading,
+                copy_blocked=False,
+                base_safe=True,
+                thresholds=thresholds,
+            )
+        else:
+            keep = True
+            if (neutral_reading is None and neutral_error) or (style_reading is None and style_error):
+                reason = style_step.REASON_READING_FAILED
+            elif neutral_reading is None or style_reading is None:
+                reason = style_step.REASON_READING_UNAVAILABLE
+            else:
+                reason = style_step.REASON_READING_UNRELIABLE
+        rejected_row_id: str | None = None
+        delivered = style_content
+        if not keep:
+            rejected_hash = hashlib.sha256(style_content.encode("utf-8")).hexdigest()[:10]
+            rejected_row_id = f"{row_id}_rejected_{rejected_hash}"
+            self.session.add(
+                SceneDraft(
+                    row_id=rejected_row_id,
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    stage="style_rejected",
+                    status="rejected",
+                    content=style_content,
+                    source_bundle_id=bundle["bundle_id"],
+                    source_bundle_hash=bundle["bundle_snapshot_hash"],
+                    generation_llm_call_id=llm_call_id,
+                )
+            )
+            delivered = neutral_content
+            notices.append(
+                style_notice(
+                    STYLE_NOTICE_REVISION_REJECTED,
+                    "风格稿没有比中性稿更像参考作者（读数没有变近），这一场交付中性稿。",
+                    severity="info",
+                    reason=reason,
+                    first_distance=getattr(neutral_reading, "distance", None),
+                    revision_distance=getattr(style_reading, "distance", None),
+                    rejected_candidate_row_id=rejected_row_id,
+                    draft_mode=DRAFT_MODE_NEUTRAL_FIRST,
+                )
+            )
+        style_row = (
+            style_readings.record_fidelity_reading(
+                self.session,
+                policy=policy,
+                text=style_content,
+                source=style_readings.SOURCE_PIPELINE,
+                stage=style_readings.STAGE_REVISION,
+                scene_id=scene.scene_id,
+                project_id=project_id,
+                draft_ref=rejected_row_id or row_id,
+                reading=style_reading,
+                max_percentile=thresholds.style_step_max_percentile,
+            )
+            if style_reading is not None
+            else None
+        )
+        decision = {
+            "version": STYLE_STEP_VERSION,
+            "decision": style_step.DECISION_REVISION_KEPT if keep else style_step.DECISION_REVISION_REJECTED,
+            "reason": reason,
+            "llm_call": True,
+            "draft_mode": DRAFT_MODE_NEUTRAL_FIRST,
+            "dimensions": [],
+            "first_reading": style_step.reading_brief(
+                neutral_reading, reading_id=neutral_row.reading_id if neutral_row is not None else None
+            ),
+            "revision_reading": style_step.reading_brief(
+                style_reading, reading_id=style_row.reading_id if style_row is not None else None
+            ),
+            "thresholds": thresholds.audit(),
+        }
+        return decision, rejected_row_id, delivered
 
     def _first_draft_lineage(self, first_row_id: str) -> tuple[str | None, str, str | None]:
         """首稿的 (llm_call_id, execution_step_key, execution_id)——「首稿即风格稿」的产品沿用首稿那次调用的谱系。"""
@@ -2473,7 +2608,8 @@ class SceneGenerationService:
             )
             prompt = injected
         base_prompt = prompt
-        style_first = style_policy_for_bundle(bundle).style_first
+        policy = style_policy_for_bundle(bundle)
+        style_first = policy.style_first
 
         if stage == "style_draft":
             extra_instruction += _style_length_instruction(
@@ -2524,14 +2660,6 @@ class SceneGenerationService:
                     execution_step_key=execution_step_key,
                 )
                 style_content = _extract_scene_text(node_result.response)
-                paragraph_shape_audit: dict[str, Any] | None = None
-                if stage == "style_draft":
-                    style_content, paragraph_shape_audit = (
-                        _normalize_style_paragraph_shape(
-                            bundle=bundle,
-                            text=style_content,
-                        )
-                    )
             except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
                 self._record_runner_failure_attempt(
                     scene=scene,
@@ -2594,6 +2722,22 @@ class SceneGenerationService:
                         draft_mode=(DRAFT_MODE_STYLE_FIRST if style_first else None),
                     )
                 )
+            # 风格参考 v3（S2 c）：中性首稿再润色且有绑定——风格稿出来后读一次读数，与中性稿比，不更像就把中性稿
+            # 当风格稿交付（与作者手笔直起同一条「永不越改越远」规则）；读数不可信 / 未绑定 → 照旧接受风格稿。
+            style_step_decision: dict[str, Any] | None = None
+            not_closer_row_id: str | None = None
+            if stage == "style_draft" and base_safety["accepted"] and not style_first and policy.bound:
+                style_step_decision, not_closer_row_id, style_content = self._neutral_first_style_keep(
+                    scene=scene,
+                    bundle=bundle,
+                    policy=policy,
+                    row_id=row_id,
+                    neutral_row_id=source_draft_row_id,
+                    neutral_content=neutral_content,
+                    style_content=style_content,
+                    llm_call_id=node_result.llm_call_id,
+                    notices=notices,
+                )
             self.session.add(
                 SceneDraft(
                     row_id=row_id,
@@ -2611,6 +2755,7 @@ class SceneGenerationService:
             if (
                 stage in _STYLED_GATE_GENERATION_STAGES
                 and rejected_candidate_row_id is None
+                and not_closer_row_id is None
             ):
                 # v2（规格 §2.W5.5）styled-draft gate：样例预算放大后，每一份落库的
                 # provider 风格化输出都必须过一次确定性抄袭 + 生成禁用词检查。
@@ -2632,12 +2777,15 @@ class SceneGenerationService:
                 if style_first
                 else "approved_neutral_fallback"
             )
+            content_source = (
+                fallback_content_source
+                if rejected_candidate_row_id is not None
+                else style_step.CONTENT_SOURCE_REVISION_NOT_CLOSER
+                if not_closer_row_id is not None
+                else "provider_style_output"
+            )
             if runtime_audit is not None:
-                runtime_audit["generation_outcome"] = (
-                    fallback_content_source
-                    if rejected_candidate_row_id is not None
-                    else "provider_style_output"
-                )
+                runtime_audit["generation_outcome"] = content_source
                 runtime_audit["draft_mode"] = (
                     DRAFT_MODE_STYLE_FIRST if style_first else DRAFT_MODE_NEUTRAL_FIRST
                 )
@@ -2655,11 +2803,7 @@ class SceneGenerationService:
                         "source_draft_row_id": source_draft_row_id,
                         "base_safety": base_safety,
                         "rejected_candidate_row_id": rejected_candidate_row_id,
-                        "content_source": (
-                            fallback_content_source
-                            if rejected_candidate_row_id is not None
-                            else "provider_style_output"
-                        ),
+                        "content_source": content_source,
                         "notices": deepcopy(notices),
                         **(
                             {"styled_draft_gate": deepcopy(styled_draft_gate)}
@@ -2668,11 +2812,10 @@ class SceneGenerationService:
                         ),
                         **(
                             {
-                                "paragraph_shape_normalization": (
-                                    paragraph_shape_audit
-                                )
+                                "style_step": deepcopy(style_step_decision),
+                                "not_closer_rejected_row_id": not_closer_row_id,
                             }
-                            if paragraph_shape_audit is not None
+                            if style_step_decision is not None
                             else {}
                         ),
                         **(
@@ -2700,6 +2843,7 @@ class SceneGenerationService:
                 execution_step_key=execution_step_key,
                 notices=deepcopy(notices),
                 styled_draft_gate=deepcopy(styled_draft_gate),
+                style_step=deepcopy(style_step_decision) if style_step_decision is not None else None,
             )
             if product_callback is not None and product_slot_key is not None:
                 product_callback(
@@ -2761,38 +2905,8 @@ class SceneGenerationService:
             quality_gate["base_safety"] = base_safety
             if style_first:
                 # 2026-09-12 风格直起:房风维度整体让位——只记录为 advisory_findings,不触发
-                # 去模板改写;参考派生的形状包络(style_anchor_audit)与安全门仍可触发修复。
+                # 去模板改写;安全门仍可触发修复(旧的参考派生形状包络随 v2 指标包络删除,风格参考 v3 S2)。
                 quality_gate = _defer_house_taste_gate(quality_gate)
-            style_anchor_audit = _assess_style_anchor_conformance(
-                bundle=bundle,
-                text=quality_source_content,
-            )
-            quality_gate["style_anchor_audit"] = style_anchor_audit
-            if base_safety["accepted"] and style_anchor_audit.get("requires_repair"):
-                quality_gate["triggered"] = True
-                quality_gate["rewrite_pass"] = 1
-                anchor_signal_id = f"quality:scene:{scene.scene_id}:style_structure"
-                if "style_structure" not in quality_gate["risk_dimensions"]:
-                    quality_gate["risk_dimensions"].insert(0, "style_structure")
-                if anchor_signal_id not in quality_gate["quality_signal_ids"]:
-                    quality_gate["quality_signal_ids"].insert(0, anchor_signal_id)
-                quality_gate["findings"].insert(
-                    0,
-                    {
-                        "dimension": "style_structure",
-                        "severity": "taste",
-                        "issue": "The safe style draft is outside a high-confidence reference-derived prose-shape envelope.",
-                        "evidence_excerpt": "",
-                        "recommendation": " ".join(
-                            str(item)
-                            for item in style_anchor_audit.get("repair_directions", [])
-                            if str(item).strip()
-                        ),
-                        "quality_signal_id": anchor_signal_id,
-                        "scene_id": scene.scene_id,
-                        "chapter_id": scene.chapter_id,
-                    },
-                )
             if not base_safety["accepted"]:
                 quality_gate["triggered"] = True
                 quality_gate["rewrite_pass"] = 1
@@ -3088,12 +3202,9 @@ class SceneGenerationService:
                 "error_code": exc.error_code,
             }
 
-        rewritten_content, paragraph_shape_audit = _normalize_style_paragraph_shape(
-            bundle=bundle,
-            text=rewritten_content,
-        )
-        conformance = _assess_style_rewrite_conformance(
-            bundle=bundle,
+        conformance = _assess_style_rewrite_drift(
+            self.session,
+            policy_or_bundle=bundle,
             source_content=neutral_content,
             rewritten_content=rewritten_content,
         )
@@ -3109,9 +3220,11 @@ class SceneGenerationService:
         salvage_reasons: list[str] = []
         if not salvage_audit.get("valid"):
             salvage_reasons.append("style_salvage_patch_invalid")
+        # 消费语义不变(风格参考 v3 S2 d):两稿读数不可比(未绑定 / 不可信 / 读不出)→ 挽救补丁不采用;
+        # 改写稿比来源稿远出 patch_max_distance_increase → 不采用
         if conformance.get("comparable") is not True:
             salvage_reasons.append("style_salvage_conformance_unavailable")
-        elif float(conformance.get("score_delta") or 0.0) < -0.01:
+        elif conformance.get("regressed") is True:
             salvage_reasons.append("style_salvage_conformance_regressed")
         if salvage_reasons:
             acceptance["reasons"] = list(
@@ -3119,7 +3232,7 @@ class SceneGenerationService:
             )
             acceptance["accepted"] = False
         acceptance["style_salvage_non_regression_enforced"] = True
-        acceptance["style_salvage_regression_tolerance"] = 0.01
+        acceptance["style_salvage_max_distance_increase"] = conformance.get("max_distance_increase")
 
         self.session.add(
             SceneDraft(
@@ -3147,7 +3260,6 @@ class SceneGenerationService:
             "quality_gate": quality_gate,
             "acceptance": acceptance,
             "style_salvage": salvage_audit,
-            "paragraph_shape_normalization": paragraph_shape_audit,
             **(
                 {
                     "style_reference_runtime": deepcopy(
@@ -3178,7 +3290,6 @@ class SceneGenerationService:
             "row_id": row_id,
             "acceptance": acceptance,
             "style_salvage": salvage_audit,
-            "paragraph_shape_normalization": paragraph_shape_audit,
         }
         if not acceptance["accepted"]:
             return None, outcome
@@ -3405,12 +3516,6 @@ class SceneGenerationService:
                     }
             else:
                 rewritten_content = _extract_scene_text(node_result.response)
-            rewritten_content, paragraph_shape_audit = (
-                _normalize_style_paragraph_shape(
-                    bundle=bundle,
-                    text=rewritten_content,
-                )
-            )
         except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
             self._record_runner_failure_attempt(
                 scene=scene,
@@ -3448,8 +3553,9 @@ class SceneGenerationService:
             authoritative_content=authoritative_content,
             rewritten_content=rewritten_content,
             source_quality_gate=quality_gate,
-            style_conformance=_assess_style_rewrite_conformance(
-                bundle=bundle,
+            style_conformance=_assess_style_rewrite_drift(
+                self.session,
+                policy_or_bundle=bundle,
                 source_content=source_content,
                 rewritten_content=rewritten_content,
             ),
@@ -3487,7 +3593,6 @@ class SceneGenerationService:
                     "authoritative_source_row_id": authoritative_row_id,
                     "quality_gate": quality_gate,
                     "acceptance": acceptance,
-                    "paragraph_shape_normalization": paragraph_shape_audit,
                     **(
                         {"length_patch": length_patch_audit}
                         if length_patch_audit is not None
@@ -3518,7 +3623,6 @@ class SceneGenerationService:
             "row_id": row_id,
             "acceptance": acceptance,
             "repair_source_style_draft_row_id": source_row_id,
-            "paragraph_shape_normalization": paragraph_shape_audit,
             **(
                 {"length_patch": length_patch_audit}
                 if length_patch_audit is not None
@@ -4514,8 +4618,8 @@ def _assess_de_template_rewrite(
                 reasons.append("target_quality_defects_worsened")
 
     # 普通去模板改写只是对已安全风格稿做局部修补，不能用通用质量收益交换
-    # 对冻结风格画像的可观测偏离。仅在两稿均达到候选评分的最低文本量、指标
-    # 覆盖率和置信度时启用；安全修复仍以事实/长度/禁词/文本完整性为最高优先级。
+    # 「像不像」读数上的可证明退步（改写稿比来源稿远出 patch_max_distance_increase）。
+    # 仅在两稿读数都可信时启用；安全修复仍以事实/长度/禁词/文本完整性为最高优先级。
     conformance = dict(style_conformance or {})
     enforce_style_non_regression = bool(
         authoritative_content is None and conformance.get("comparable") is True
@@ -4576,388 +4680,86 @@ def _quality_gate_dimension_counts(quality_gate: dict[str, Any]) -> dict[str, in
     return dict(sorted(counts.items()))
 
 
-def _assess_style_rewrite_conformance(
+def _assess_style_rewrite_drift(
+    session: Session,
     *,
-    bundle: dict[str, Any] | None,
+    policy_or_bundle: Any,
     source_content: str,
     rewritten_content: str,
 ) -> dict[str, Any]:
-    """用冻结画像审计二次改写是否显著偏离，失败时保守地不启用门禁。
+    """改写不退步（风格参考 v3 S2 d）：两稿各读一次「像不像」读数——
 
-    这里复用候选重排的分组、容差和最低置信度，但不改变候选重排的 shadow
-    发布状态：它只保护同一稿件的一次局部修补不发生可证明的风格回退。
+    ``regressed`` = 改写稿 distance > 来源稿 distance + ``patch_max_distance_increase``；``comparable`` = 两边读数都可信。
+    未绑定 / 读不出 / 不可信 / 读数出错 → ``comparable=False``（``regressed`` 恒 False），消费方语义不变：去模板改写
+    只在 ``regressed`` 时拒，风格挽救补丁在 ``comparable is not True`` 时不采用。读数在保存点里读，失败只回滚保存点。
+    ``policy_or_bundle`` 收 StylePolicy 或 bundle（bundle 按其冻结契约解析策略）。
     """
-
-    base_audit: dict[str, Any] = {
-        "version": "style_rewrite_non_regression_v1",
+    thresholds = style_step.fidelity_thresholds()
+    audit: dict[str, Any] = {
+        "version": "style_rewrite_drift_v1",
         "available": False,
         "comparable": False,
         "regressed": False,
-        "regression_tolerance": _STYLE_REWRITE_REGRESSION_TOLERANCE,
+        "max_distance_increase": float(thresholds.patch_max_distance_increase),
+        "source": None,
+        "rewritten": None,
     }
     try:
-        policy = style_policy_for_bundle(bundle)
-        base_audit["runtime_contract_mode"] = policy.mode
-        if policy.error_code is not None:
+        policy = (
+            policy_or_bundle
+            if hasattr(policy_or_bundle, "bound")
+            else style_policy_for_bundle(policy_or_bundle)
+        )
+        audit["runtime_contract_mode"] = getattr(policy, "mode", None)
+        if not getattr(policy, "bound", False):
+            audit["unavailable_reason"] = (
+                getattr(policy, "error_code", None)
+                or ("bundle_has_no_style_profile" if getattr(policy, "mode", None) == "absent" else "style_policy_unbound")
+            )
+            return audit
+
+        readings_by_sha: dict[str, tuple[Any, str | None]] = {}
+
+        def _read(text: str, what: str) -> tuple[Any, str | None]:
+            sha = style_readings.text_sha256(text)
+            if sha not in readings_by_sha:
+                try:
+                    with session.begin_nested():
+                        readings_by_sha[sha] = (style_readings.reading_for_text(session, policy, text), None)
+                except Exception as exc:  # noqa: BLE001 — 读数是观察：失败按读不出处理
+                    _LOGGER.warning("%s fidelity reading failed (rewrite drift)", what, exc_info=True)
+                    readings_by_sha[sha] = (None, str(getattr(exc, "code", None) or type(exc).__name__))
+            return readings_by_sha[sha]
+
+        def _brief(reading: Any) -> dict[str, Any] | None:
+            if reading is None:
+                return None
             return {
-                **base_audit,
-                "unavailable_reason": policy.error_code,
-            }
-        if policy.contract is None:
-            return {
-                **base_audit,
-                "unavailable_reason": "frozen_runtime_contract_unavailable",
+                "distance": float(reading.distance),
+                "percentile": float(reading.percentile),
+                "reliable": bool(reading.reliable),
+                "char_count": int(reading.char_count),
             }
 
-        # 局部导入保持 scene_generation 的基础导入路径轻量，并复用已经审计过的
-        # 纯文本评分器；不读取当前活动画像，不使用作者身份、主题词或隐藏评测。
-        from novel_system.services.style_reference.candidate_rerank import (
-            CandidateRerankPolicy,
-            assess_candidate_text,
-            build_style_target,
-        )
-
-        profiles = contract_profile_objects(policy.contract)
-        target = build_style_target(profiles)
-        if target is None:
-            return {
-                **base_audit,
-                "unavailable_reason": "frozen_metric_target_unavailable",
-            }
-        policy = CandidateRerankPolicy()
-        source = assess_candidate_text(
-            "source",
-            source_content,
-            0.0,
-            target,
-            policy,
-        )
-        rewritten = assess_candidate_text(
-            "rewritten",
-            rewritten_content,
-            0.0,
-            target,
-            policy,
-        )
-        source_score = source.style_score
-        rewritten_score = rewritten.style_score
-        comparable = bool(
-            source.style_eligible
-            and rewritten.style_eligible
-            and source_score is not None
-            and rewritten_score is not None
-        )
-        delta = (
-            float(rewritten_score) - float(source_score)
-            if source_score is not None and rewritten_score is not None
-            else None
-        )
-
-        def score_audit(assessment: Any) -> dict[str, Any]:
-            return {
-                "style_score": (
-                    None
-                    if assessment.style_score is None
-                    else round(float(assessment.style_score), 6)
-                ),
-                "style_confidence": round(float(assessment.style_confidence), 6),
-                "metric_count": int(assessment.metric_count),
-                "substantive_chars": int(assessment.substantive_chars),
-                "group_scores": {
-                    key: round(float(value), 6)
-                    for key, value in sorted(assessment.group_scores.items())
-                },
-                "top_deviations": list(assessment.top_deviations),
-                "eligible": bool(assessment.style_eligible),
-            }
-
-        return {
-            **base_audit,
-            "available": True,
-            "comparable": comparable,
-            "target_hash": target.target_hash,
-            "source": score_audit(source),
-            "rewritten": score_audit(rewritten),
-            "score_delta": None if delta is None else round(delta, 6),
-            "regressed": bool(
-                comparable
-                and delta is not None
-                and delta < -_STYLE_REWRITE_REGRESSION_TOLERANCE
-            ),
-            **(
-                {"unavailable_reason": "minimum_evidence_not_met"}
-                if not comparable
-                else {}
-            ),
-        }
-    except Exception:  # noqa: BLE001 — optional evidence gate must fail open
-        _LOGGER.warning("style rewrite conformance audit degraded", exc_info=True)
-        return {
-            **base_audit,
-            "unavailable_reason": "style_conformance_internal_error",
-        }
-
-
-def _merge_adjacent_style_paragraphs(
-    paragraphs: list[str],
-    target_count: int,
-) -> str:
-    """按累计可见字数选择相邻边界；只删除段间空白，不改正文序列。"""
-
-    if target_count >= len(paragraphs):
-        return "\n\n".join(paragraphs)
-    target_count = max(1, target_count)
-    lengths = [_visible_char_count(paragraph) for paragraph in paragraphs]
-    prefix = [0]
-    for length in lengths:
-        prefix.append(prefix[-1] + length)
-    total = prefix[-1]
-
-    boundaries: list[int] = []
-    previous = 0
-    for group_index in range(1, target_count):
-        minimum_boundary = previous + 1
-        maximum_boundary = len(paragraphs) - (target_count - group_index)
-        ideal_cumulative = total * group_index / target_count
-        boundary = min(
-            range(minimum_boundary, maximum_boundary + 1),
-            key=lambda index: (abs(prefix[index] - ideal_cumulative), index),
-        )
-        boundaries.append(boundary)
-        previous = boundary
-
-    groups: list[str] = []
-    start = 0
-    for end in [*boundaries, len(paragraphs)]:
-        groups.append("".join(paragraphs[start:end]))
-        start = end
-    return "\n\n".join(groups)
-
-
-def _normalize_style_paragraph_shape(
-    *,
-    bundle: dict[str, Any] | None,
-    text: str,
-) -> tuple[str, dict[str, Any]]:
-    """只在冻结画像明确要求时合并过密段落；从不自动拆段或改字。"""
-
-    audit: dict[str, Any] = {
-        "version": "style_paragraph_normalization_v1",
-        "available": False,
-        "applied": False,
-        "operation": "merge_adjacent_only",
-    }
-    try:
-        policy = style_policy_for_bundle(bundle)
-        audit["runtime_contract_mode"] = policy.mode
-        if policy.error_code is not None:
-            return text, {**audit, "reason": policy.error_code}
-        if policy.contract is None:
-            return text, {
-                **audit,
-                "reason": "frozen_runtime_contract_unavailable",
-            }
-        if policy.defers_house_taste():
-            # 2026-09-14 风格保真修补:有绑定时不再按全书平均段密度机械合并段落——合并规则按累计
-            # 字数硬拼、不认对白行,对白密的场会被黏成一段;样例本身已示范作者怎么分段。
-            return text, {**audit, "reason": "deferred_to_reference"}
-
-        from novel_system.services.style_reference.candidate_rerank import (
-            build_style_target,
-        )
-
-        target = build_style_target(contract_profile_objects(policy.contract))
-        if target is None:
-            return text, {**audit, "reason": "style_target_unavailable"}
-        paragraph_target = target.metrics.get("paragraphs_per_1k")
-        if paragraph_target is None:
-            return text, {
-                **audit,
-                "reason": "paragraph_target_unavailable",
-                "target_hash": target.target_hash,
-            }
-
-        visible_chars = _visible_char_count(text)
-        paragraphs = [
-            part.strip()
-            for part in re.split(r"\n\s*\n", text)
-            if part.strip()
-        ]
-        current_count = len(paragraphs)
-        audit.update(
-            {
-                "available": True,
-                "target_hash": target.target_hash,
-                "visible_chars": visible_chars,
-                "before_paragraph_count": current_count,
-                "target_rate": round(paragraph_target.mean, 4),
-                "target_tolerance": round(paragraph_target.tolerance, 4),
-            }
-        )
-        if visible_chars < 300 or current_count < 2:
-            return text, {**audit, "reason": "minimum_evidence_not_met"}
-
-        lower_rate = max(0.0, paragraph_target.mean - paragraph_target.tolerance)
-        upper_rate = paragraph_target.mean + paragraph_target.tolerance
-        current_rate = current_count * 1000.0 / visible_chars
-        minimum_count = max(1, math.ceil(visible_chars * lower_rate / 1000.0))
-        maximum_count = max(
-            minimum_count,
-            math.floor(visible_chars * upper_rate / 1000.0),
-        )
-        preferred_count = max(
-            minimum_count,
-            min(
-                maximum_count,
-                max(1, round(visible_chars * paragraph_target.mean / 1000.0)),
-            ),
-        )
-        audit.update(
-            {
-                "before_rate": round(current_rate, 4),
-                "acceptable_count_range": [minimum_count, maximum_count],
-                "preferred_count": preferred_count,
-            }
-        )
-        if current_rate <= upper_rate or preferred_count >= current_count:
-            return text, {**audit, "reason": "not_over_segmented"}
-
-        normalized = _merge_adjacent_style_paragraphs(
-            paragraphs,
-            preferred_count,
-        )
-        sequence_preserved = re.sub(r"\s+", "", normalized) == re.sub(
-            r"\s+", "", text
-        )
-        if not sequence_preserved:
-            return text, {**audit, "reason": "content_sequence_guard_failed"}
-        after_count = len(
-            [part for part in re.split(r"\n\s*\n", normalized) if part.strip()]
-        )
-        return normalized, {
-            **audit,
-            "applied": True,
-            "reason": "over_segmented_merged",
-            "after_paragraph_count": after_count,
-            "after_rate": round(after_count * 1000.0 / visible_chars, 4),
-            "content_sequence_preserved": True,
-        }
-    except Exception:  # noqa: BLE001 — 可选形态整理必须 fail-open
-        _LOGGER.warning("style paragraph normalization degraded", exc_info=True)
-        return text, {**audit, "reason": "paragraph_normalization_internal_error"}
-
-
-def _assess_style_anchor_conformance(
-    *,
-    bundle: dict[str, Any] | None,
-    text: str,
-) -> dict[str, Any]:
-    """用隐藏统计识别明显形态偏差，只向二改暴露定性修复方向。"""
-
-    audit: dict[str, Any] = {
-        "version": "style_distribution_repair_v2",
-        "available": False,
-        "requires_repair": False,
-        "violations": [],
-        "repair_directions": [],
-    }
-    try:
-        policy = style_policy_for_bundle(bundle)
-        audit["runtime_contract_mode"] = policy.mode
-        if policy.error_code is not None:
-            return {**audit, "unavailable_reason": policy.error_code}
-        if policy.contract is None:
-            return {
-                **audit,
-                "unavailable_reason": "frozen_runtime_contract_unavailable",
-            }
-        if policy.defers_house_taste():
-            # 2026-09-14 风格保真修补:段密度 / 分号包络是全书均值,一场的形态偏离均值不是错误;
-            # 有绑定时不再据此触发去模板改写(只记录),风格稿的形状由样例决定。
-            return {**audit, "unavailable_reason": "deferred_to_reference", "deferred": True}
-
-        from novel_system.services.style_reference.candidate_rerank import (
-            build_style_target,
-        )
-        from novel_system.services.style_reference.metrics import compute_generated_metrics
-
-        target = build_style_target(contract_profile_objects(policy.contract))
-        actual = compute_generated_metrics(text)
-        visible_chars = _visible_char_count(text)
-        if target is None or visible_chars < 300 or not actual:
-            return {
-                **audit,
-                "unavailable_reason": "minimum_evidence_not_met",
-                "visible_chars": visible_chars,
-            }
-
-        violations: list[dict[str, Any]] = []
-        directions: list[str] = []
-
-        paragraph_target = target.metrics.get("paragraphs_per_1k")
-        if paragraph_target is not None and "paragraphs_per_1k" in actual:
-            current_rate = float(actual["paragraphs_per_1k"])
-            lower_rate = max(0.0, paragraph_target.mean - paragraph_target.tolerance)
-            upper_rate = paragraph_target.mean + paragraph_target.tolerance
-            if current_rate < lower_rate or current_rate > upper_rate:
-                directions.append(
-                    (
-                        "Paragraph structure is substantially more fragmented than the reference tendency. "
-                        "Merge adjacent fragments that perform the same narrative function; never merge across "
-                        "a POV, action, time, or information-release boundary."
-                    )
-                    if current_rate > upper_rate
-                    else (
-                        "Paragraph structure is substantially denser than the reference tendency. "
-                        "Split only where POV, action, time, or information function genuinely changes; "
-                        "do not chase a paragraph count."
-                    )
-                )
-                violations.append(
-                    {
-                        "metric": "paragraphs_per_1k",
-                        "actual": round(current_rate, 4),
-                        "target": round(paragraph_target.mean, 4),
-                        "tolerance": round(paragraph_target.tolerance, 4),
-                    }
-                )
-
-        semicolon_target = target.metrics.get("semicolon_density_per_1k")
-        if semicolon_target is not None and "semicolon_density_per_1k" in actual:
-            current_rate = float(actual["semicolon_density_per_1k"])
-            upper_rate = semicolon_target.mean + semicolon_target.tolerance
-            # “分号不足”不是文学缺陷。主动补足标点最容易导致统计投机和机械腔；
-            # 仅在明显过量时要求删除无语义依据的分号。
-            if current_rate > upper_rate:
-                directions.append(
-                    "Semicolon rhythm is substantially denser than the reference tendency. "
-                    "Keep semicolons only between genuinely parallel or progressive clauses; "
-                    "do not replace them with another repeated punctuation pattern."
-                )
-                violations.append(
-                    {
-                        "metric": "semicolon_density_per_1k",
-                        "actual": round(current_rate, 4),
-                        "target": round(semicolon_target.mean, 4),
-                        "tolerance": round(semicolon_target.tolerance, 4),
-                    }
-                )
-
-        return {
-            **audit,
-            "available": True,
-            "requires_repair": bool(violations),
-            "target_hash": target.target_hash,
-            "visible_chars": visible_chars,
-            "violations": violations,
-            "repair_directions": directions,
-        }
-    except Exception:  # noqa: BLE001 — optional prompt guidance must fail open
-        _LOGGER.warning("style anchor conformance audit degraded", exc_info=True)
-        return {
-            **audit,
-            "unavailable_reason": "style_anchor_internal_error",
-        }
+        source_reading, source_error = _read(source_content, "source")
+        rewritten_reading, rewritten_error = _read(rewritten_content, "rewritten")
+        audit["source"] = _brief(source_reading)
+        audit["rewritten"] = _brief(rewritten_reading)
+        if source_reading is None or rewritten_reading is None:
+            audit["unavailable_reason"] = "reading_failed" if (source_error or rewritten_error) else "reading_unavailable"
+            return audit
+        audit["available"] = True
+        comparable = bool(source_reading.reliable) and bool(rewritten_reading.reliable)
+        delta = float(rewritten_reading.distance) - float(source_reading.distance)
+        audit["comparable"] = comparable
+        audit["distance_delta"] = round(delta, 6)
+        audit["regressed"] = bool(comparable and delta > float(thresholds.patch_max_distance_increase))
+        if not comparable:
+            audit["unavailable_reason"] = "reading_unreliable"
+        return audit
+    except Exception:  # noqa: BLE001 — optional evidence gate must fail open (comparable=False)
+        _LOGGER.warning("style rewrite drift audit degraded", exc_info=True)
+        return {**audit, "unavailable_reason": "style_drift_internal_error"}
 
 
 def _assess_style_base_rewrite(

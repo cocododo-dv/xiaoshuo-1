@@ -372,22 +372,33 @@ def test_targeted_revision_losing_a_required_fact_keeps_the_first_draft(session,
     assert step["reason"] == S.REASON_BASE_UNSAFE and step["base_safety_accepted"] is False
 
 
-def test_neutral_first_keeps_the_old_restyle_untouched(session, monkeypatch) -> None:
+def test_neutral_first_keeps_the_old_restyle_template_and_reads_both_drafts(session, monkeypatch) -> None:
+    """对照组（neutral_first）仍走旧的「改成作者手笔」模板；2026-09-24（S2 c）起有绑定时改完读一次读数，
+    与中性稿比——更像就采用（下面），不更像就交付中性稿（test_style_first_draft 的 S2 块）。"""
     scene, bundle, _book, _profile = _bound_scene(session, "fid_neutral", draft_mode="neutral_first")
     runner = _Runner(outputs={"style_draft": REVISED}, default=LONG_FIRST)
     service = SceneGenerationService(session, llm_runner=runner)
     first = service.generate_neutral_draft(scene.scene_id, bundle)
     session.commit()
-    _install_readings(monkeypatch, {}, default=_reading(0.5, 10.0))
-    service.generate_style_draft(scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content)
+    _install_readings(monkeypatch, {"窗外的雨": _reading(1.40, 97.0), "雨下了一夜": _reading(1.10, 60.0)})
+    result = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
     session.commit()
 
     call = next(item for item in runner.calls if item["step"] == "style_draft")
     assert call["prompt"]["template_name"] == "style_draft"
     assert "## Approved Neutral Draft" in call["user_prompt"]
+    assert result.content == REVISED
     details = _style_attempt(session, scene.scene_id).details_json
-    assert "style_step" not in details and details["content_source"] == "provider_style_output"
-    assert _readings(session, scene.scene_id) == [], "对照组不记管线读数"
+    assert details["content_source"] == "provider_style_output"
+    assert details["style_step"]["decision"] == S.DECISION_REVISION_KEPT
+    assert details["style_step"]["reason"] == S.REASON_CLOSER and details["style_step"]["draft_mode"] == "neutral_first"
+    rows = _readings(session, scene.scene_id)
+    assert [(row.stage, row.draft_ref, row.distance) for row in rows] == [
+        (R.STAGE_FIRST_DRAFT, first.row_id, 1.40),
+        (R.STAGE_REVISION, result.row_id, 1.10),
+    ]
 
 
 def test_missing_revision_template_keeps_the_first_draft_with_a_warning(session, monkeypatch) -> None:

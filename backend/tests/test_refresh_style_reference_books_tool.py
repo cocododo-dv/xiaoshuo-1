@@ -60,9 +60,22 @@ def _seed_book_with_legacy_rows(session) -> str:
 
 
 def test_plan_and_apply_strip_paratext_and_recompute_stats(session) -> None:
+    from novel_system.services.style_reference.paragraph_root import patch_book_stats
+
     book_id = _seed_book_with_legacy_rows(session)
+    # 旧库里的 v2 指标块（2026-09-24 随指标包络删除，没有读者）：刷新时顺带删掉，不再重算
+    patch_book_stats(
+        session,
+        book_id,
+        {"metrics": {"classical_word_ratio": {"mean": 0.1, "std": 0.0, "sample_count": 16}}, "prose_shape_metrics": {}},
+    )
+    session.commit()
     plan = plan_book_refresh(session, book_id)
     assert plan is not None
+    assert plan["legacy_metric_keys"] == ["metrics", "prose_shape_metrics"]
+    assert set(plan["stats_update"]) == {
+        "paragraph_type_distribution", "voice_signature", "scene_breaks", "paratext_dropped"
+    }
     assert [p.paragraph_id for p in plan["paratext"]] == ["legacy_p_100", "legacy_p_101"]
     # 剥掉两段副文本后重编号:「***」从 102 挪到 13(紧跟 0..12 之后),场界跟着新编号
     assert [(p.paragraph_id, new) for p, new in plan["renumber"]] == [("legacy_p_102", 13)]
@@ -89,8 +102,10 @@ def test_plan_and_apply_strip_paratext_and_recompute_stats(session) -> None:
     assert stats["refresh"]["paragraphs_renumbered"] == 1
     # 段落行变了:根哈希 / 段数由写入者作废,窗口索引据此重建(契约 §3.1)
     assert "paragraph_root_sha256" not in stats and "paragraph_count" not in stats
-    assert stats["metrics"]["classical_word_ratio"]["sample_count"] == plan["kept_count"]
+    assert "metrics" not in stats and "prose_shape_metrics" not in stats
+    assert sum(stats["paragraph_type_distribution"].values()) > 0.99
     assert stats["voice_signature"]["features"]["person_third_share"] >= 0.0
+    assert stats["refresh"]["tool"] == "refresh_style_reference_books_v3"
 
 
 def test_cli_dry_run_then_execute(session, capsys) -> None:

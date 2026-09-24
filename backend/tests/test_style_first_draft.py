@@ -699,3 +699,349 @@ def test_run_job_view_reports_the_frozen_draft_mode(session) -> None:
     state.current_bundle_id = bundle["bundle_id"]
     session.commit()
     assert service.serialize_job(job)["draft_mode"] == DRAFT_MODE_STYLE_FIRST
+
+
+# ---------------------------------------------------------------------------
+# 风格参考 v3 S2（2026-09-24）· v2 指标包络退役：neutral_first 也按读数「永不越改越远」；候选 style_score 由读数给、
+# 没检查成的候选不进盲选；改写不退步只看读数（patch_max_distance_increase）
+# ---------------------------------------------------------------------------
+
+_NEUTRAL_MARK = "对面的人先开口"  # 只在 _NEUTRAL_TEXT 里
+_VOICED_MARK = "她终于没有去接"  # 在 _VOICED_TEXT / _HOUSE_TASTE_TEXT 里
+_CLEANED_TEXT = "脚步在门外停了；他将信封搁到桌上——也不说话，只等着。她没有去接，只把手收回袖子里。"
+_CLEANED_MARK = "收回袖子里"
+
+
+def _fixed_reading(distance: float, percentile: float, *, reliable: bool = True):
+    from novel_system.services.style_reference.fidelity import FidelityReading
+
+    return FidelityReading(
+        distance=distance,
+        percentile=percentile,
+        out_of_band=[],
+        dimension_scores={},
+        feature_z={},
+        char_count=900,
+        window_count=28,
+        reliable=reliable,
+        kernel_version="measure_v1",
+        reference_version="ref_test",
+    )
+
+
+def _install_readings(monkeypatch, table: dict[str, object]) -> None:
+    """``readings.reading_for_text`` 的替身：文字含哪个记号就给哪个读数（未绑定照旧 None；值是异常类则抛出）。"""
+    from novel_system.services.style_reference import readings
+
+    def fake(_session, policy, text):  # noqa: ANN001
+        if policy is None or not getattr(policy, "bound", False) or not str(text or "").strip():
+            return None
+        for marker, reading in table.items():
+            if marker in str(text):
+                if isinstance(reading, type) and issubclass(reading, Exception):
+                    raise reading("reading blew up")
+                return reading
+        return None
+
+    monkeypatch.setattr(readings, "reading_for_text", fake)
+
+
+def _neutral_first_scene(session, seed: str):
+    _seed_binding(seed, project_id=f"proj_{seed}", config_json={"draft_mode": "neutral_first"})
+    scene = _seed_scene(session, project_id=f"proj_{seed}", scene_id=f"{seed.upper()}_SC01", chapter_id=seed.upper())
+    return scene, _frozen_bundle(f"proj_{seed}", scene.scene_id, scene.chapter_id)
+
+
+def _style_attempt(session, scene_id: str) -> AttemptTracker:
+    return session.execute(
+        select(AttemptTracker).where(AttemptTracker.scene_id == scene_id, AttemptTracker.step == "style_draft")
+    ).scalars().one()
+
+
+def _readings_by_stage(session, scene_id: str) -> dict[tuple[str, str], float]:
+    from novel_system.db.models import StyleFidelityReading
+
+    rows = session.scalars(select(StyleFidelityReading).where(StyleFidelityReading.scene_id == scene_id)).all()
+    return {(row.stage, row.draft_ref): row.distance for row in rows}
+
+
+def test_neutral_first_keeps_the_style_draft_when_it_reads_closer(session, monkeypatch) -> None:
+    scene, bundle = _neutral_first_scene(session, "sfd_s2a")
+    runner = _Runner(outputs={"neutral_draft": _NEUTRAL_TEXT, "style_draft": _VOICED_TEXT}, default=_VOICED_TEXT)
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(monkeypatch, {_NEUTRAL_MARK: _fixed_reading(1.5, 97.0), _VOICED_MARK: _fixed_reading(1.0, 60.0)})
+    refined = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+    assert refined.content == _VOICED_TEXT
+    assert refined.style_step["decision"] == "revision_kept" and refined.style_step["reason"] == "closer_to_author"
+    assert refined.style_step["draft_mode"] == DRAFT_MODE_NEUTRAL_FIRST
+    assert sg.STYLE_NOTICE_REVISION_REJECTED not in [item["code"] for item in refined.notices]
+    attempt = _style_attempt(session, scene.scene_id)
+    assert attempt.details_json["content_source"] == "provider_style_output"
+    assert attempt.details_json["style_step"]["first_reading"]["distance"] == 1.5
+    assert attempt.details_json["style_step"]["revision_reading"]["distance"] == 1.0
+    assert attempt.details_json["not_closer_rejected_row_id"] is None
+    assert attempt.details_json["style_reference_runtime"]["generation_outcome"] == "provider_style_output"
+    # 两条读数：中性稿 first_draft（按中性稿行）、风格稿 revision（按风格稿行）
+    assert _readings_by_stage(session, scene.scene_id) == {
+        ("first_draft", first.row_id): 1.5,
+        ("revision", refined.row_id): 1.0,
+    }
+
+
+def test_neutral_first_delivers_the_neutral_draft_when_the_style_draft_is_not_closer(session, monkeypatch) -> None:
+    scene, bundle = _neutral_first_scene(session, "sfd_s2b")
+    runner = _Runner(outputs={"neutral_draft": _NEUTRAL_TEXT, "style_draft": _VOICED_TEXT}, default=_VOICED_TEXT)
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    # 风格稿比中性稿远（1.2 > 1.0）：不更像 → 交付中性稿（与作者手笔直起同一条「永不越改越远」规则）
+    _install_readings(monkeypatch, {_NEUTRAL_MARK: _fixed_reading(1.0, 60.0), _VOICED_MARK: _fixed_reading(1.2, 80.0)})
+    refined = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+    assert refined.content == _NEUTRAL_TEXT
+    assert session.get(SceneDraft, refined.row_id).content == _NEUTRAL_TEXT
+    rejected = next(item for item in refined.notices if item["code"] == sg.STYLE_NOTICE_REVISION_REJECTED)
+    assert rejected["reason"] == "not_closer" and "中性稿" in rejected["message"]
+    assert rejected["draft_mode"] == DRAFT_MODE_NEUTRAL_FIRST
+    assert rejected["first_distance"] == 1.0 and rejected["revision_distance"] == 1.2
+    rejected_row = session.get(SceneDraft, rejected["rejected_candidate_row_id"])
+    assert rejected_row.stage == "style_rejected" and rejected_row.status == "rejected" and rejected_row.content == _VOICED_TEXT
+    attempt = _style_attempt(session, scene.scene_id)
+    assert attempt.details_json["content_source"] == "revision_not_closer"
+    assert attempt.details_json["not_closer_rejected_row_id"] == rejected_row.row_id
+    assert attempt.details_json["rejected_candidate_row_id"] is None  # 不是安全门回退：不进安全修复通道
+    assert attempt.details_json["style_step"]["decision"] == "revision_rejected"
+    assert attempt.details_json["style_reference_runtime"]["generation_outcome"] == "revision_not_closer"
+    assert refined.style_step["reason"] == "not_closer"
+    # 风格稿的 revision 读数按被退回的那一行记
+    assert _readings_by_stage(session, scene.scene_id) == {
+        ("first_draft", first.row_id): 1.0,
+        ("revision", rejected_row.row_id): 1.2,
+    }
+    # 差得不到 revision_min_improvement 也算「不更像」（阈值与作者手笔直起同一组）
+    thresholds = sg.style_step.fidelity_thresholds()
+    scene2, bundle2 = _neutral_first_scene(session, "sfd_s2b2")
+    runner2 = _Runner(outputs={"neutral_draft": _NEUTRAL_TEXT, "style_draft": _VOICED_TEXT}, default=_VOICED_TEXT)
+    service2 = SceneGenerationService(session, llm_runner=runner2)
+    first2 = service2.generate_neutral_draft(scene2.scene_id, bundle2)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {
+            _NEUTRAL_MARK: _fixed_reading(1.0, 60.0),
+            _VOICED_MARK: _fixed_reading(1.0 - thresholds.revision_min_improvement / 2, 58.0),
+        },
+    )
+    refined2 = service2.generate_style_draft(
+        scene2.scene_id, bundle2, neutral_draft_row_id=first2.row_id, neutral_content=first2.content
+    )
+    assert refined2.content == _NEUTRAL_TEXT and refined2.style_step["reason"] == "not_closer"
+
+
+def test_neutral_first_accepts_the_style_draft_when_readings_are_unreliable_or_fail(session, monkeypatch) -> None:
+    # 不可信（太短 / 窗口太少）→ 照旧接受风格稿，段落原样交付（旧的段落形态整理已删）
+    scene, bundle = _neutral_first_scene(session, "sfd_s2c")
+    two_paragraphs = _VOICED_TEXT + "\n\n她把手收回袖子里。"
+    runner = _Runner(outputs={"neutral_draft": _NEUTRAL_TEXT, "style_draft": two_paragraphs}, default=two_paragraphs)
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {_NEUTRAL_MARK: _fixed_reading(1.0, 60.0), _VOICED_MARK: _fixed_reading(1.9, 99.0, reliable=False)},
+    )
+    refined = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+    assert refined.content == two_paragraphs
+    assert refined.style_step["decision"] == "revision_kept" and refined.style_step["reason"] == "reading_unreliable"
+    assert sg.STYLE_NOTICE_REVISION_REJECTED not in [item["code"] for item in refined.notices]
+    attempt = _style_attempt(session, scene.scene_id)
+    assert attempt.details_json["content_source"] == "provider_style_output"
+    assert "paragraph_shape_normalization" not in attempt.details_json
+    # 读数出错（不是「书没有尺子」）→ 同样接受风格稿，原因单独说
+    scene2, bundle2 = _neutral_first_scene(session, "sfd_s2c2")
+    runner2 = _Runner(outputs={"neutral_draft": _NEUTRAL_TEXT, "style_draft": _VOICED_TEXT}, default=_VOICED_TEXT)
+    service2 = SceneGenerationService(session, llm_runner=runner2)
+    first2 = service2.generate_neutral_draft(scene2.scene_id, bundle2)
+    session.commit()
+    _install_readings(monkeypatch, {_NEUTRAL_MARK: RuntimeError, _VOICED_MARK: _fixed_reading(1.0, 60.0)})
+    refined2 = service2.generate_style_draft(
+        scene2.scene_id, bundle2, neutral_draft_row_id=first2.row_id, neutral_content=first2.content
+    )
+    session.commit()
+    assert refined2.content == _VOICED_TEXT
+    assert refined2.style_step["decision"] == "revision_kept" and refined2.style_step["reason"] == "reading_failed"
+    assert refined2.style_step["first_reading"] is None and refined2.style_step["revision_reading"]["distance"] == 1.0
+    assert _readings_by_stage(session, scene2.scene_id) == {("revision", refined2.row_id): 1.0}
+    # 读不出（书没有可用的尺子）→ 接受，原因 reading_unavailable
+    scene3, bundle3 = _neutral_first_scene(session, "sfd_s2c3")
+    runner3 = _Runner(outputs={"neutral_draft": _NEUTRAL_TEXT, "style_draft": _VOICED_TEXT}, default=_VOICED_TEXT)
+    service3 = SceneGenerationService(session, llm_runner=runner3)
+    first3 = service3.generate_neutral_draft(scene3.scene_id, bundle3)
+    session.commit()
+    _install_readings(monkeypatch, {})
+    refined3 = service3.generate_style_draft(
+        scene3.scene_id, bundle3, neutral_draft_row_id=first3.row_id, neutral_content=first3.content
+    )
+    assert refined3.content == _VOICED_TEXT and refined3.style_step["reason"] == "reading_unavailable"
+
+
+def test_neutral_first_candidate_style_score_comes_from_readings_and_unchecked_candidates_are_not_offered(
+    session, monkeypatch
+) -> None:
+    from novel_system.services.orchestrator import Orchestrator
+
+    scene, bundle = _neutral_first_scene(session, "sfd_s2d")
+    service = SceneGenerationService(session, llm_runner=_Runner(outputs={}, default=_VOICED_TEXT))
+    result = sg.StyleGenerationResult(
+        row_id="cand_a",
+        content=_VOICED_TEXT,
+        llm_call_id="llm_a",
+        bundle_id=bundle["bundle_id"],
+        bundle_hash=bundle["bundle_snapshot_hash"],
+    )
+    # 读数可信：style_score = 1 − percentile/100（四位小数）；抄袭门查过、没重合
+    _install_readings(monkeypatch, {_VOICED_MARK: _fixed_reading(1.0, 30.0)})
+    audit = service._candidate_style_assessment(bundle, result, 0.5, rank=0)
+    assert audit["style_score"] == 0.7 and audit["fidelity_distance"] == 1.0 and audit["fidelity_percentile"] == 30.0
+    assert audit["plagiarism_checked"] is True and audit["plagiarism_passed"] is True and audit["plagiarism_hit_count"] == 0
+    assert audit["rank"] == 0 and audit["selected"] is True and audit["selection_reason"] == "quality_order"
+    assert audit["quality_score"] == 0.5
+    assert audit["rerank"] == {"applied_mode": "off", "reason": None, "runtime_contract_mode": "frozen"}
+    # 读数不可信 → style_score None（抄袭门照查）
+    _install_readings(monkeypatch, {_VOICED_MARK: _fixed_reading(1.0, 30.0, reliable=False)})
+    unreliable = service._candidate_style_assessment(bundle, result, 0.5, rank=1)
+    assert unreliable["style_score"] is None and unreliable["plagiarism_checked"] is True
+    assert unreliable["rerank"]["reason"] == "reading_unreliable" and unreliable["selected"] is False
+    # 读数抛异常 → 没检查成：plagiarism_checked=False / plagiarism_passed=None，候选照常交付
+    _install_readings(monkeypatch, {_VOICED_MARK: RuntimeError})
+    unchecked = service._candidate_style_assessment(bundle, result, 0.5, rank=1)
+    assert unchecked["plagiarism_checked"] is False and unchecked["plagiarism_passed"] is None
+    assert unchecked["style_score"] is None and unchecked["rerank"]["reason"] == "assessment_internal_error"
+    assert unchecked["rerank"]["error_code"] == "RuntimeError"
+    # 未绑定的 bundle：不读、不查（照旧）
+    unbound = service._candidate_style_assessment({"snapshot": {}}, result, 0.5, rank=0)
+    assert unbound["style_score"] is None and unbound["plagiarism_checked"] is False and unbound["plagiarism_passed"] is None
+    # 终选门：有绑定时没检查成的候选不交给盲选；全部没检查成 → None（管线继续）；未绑定照旧交付
+    state = session.get(SceneRunState, scene.scene_id)
+    checked = SimpleNamespace(row_id="cand_ok", content=_NEUTRAL_TEXT, ranking_audit={**audit, "row_id": "cand_ok"})
+    unchecked_cand = SimpleNamespace(row_id="cand_unchecked", content=_VOICED_TEXT, ranking_audit=unchecked)
+    orchestrator = Orchestrator(session)
+    assert orchestrator._offer_candidates_for_selection(scene, state, bundle, [unchecked_cand, checked]) == ["cand_ok"]
+    assert orchestrator._offer_candidates_for_selection(scene, state, bundle, [unchecked_cand]) is None
+    assert orchestrator._offer_candidates_for_selection(scene, state, {"snapshot": {}}, [unchecked_cand]) == [
+        "cand_unchecked"
+    ]
+
+
+def test_style_rewrite_drift_reads_both_texts_and_flags_a_measurable_regression(session, monkeypatch) -> None:
+    _seed_binding("sfd_s2e", project_id="proj_sfd_s2e", config_json={"draft_mode": "neutral_first"})
+    bundle = _frozen_bundle("proj_sfd_s2e", "SFD_S2E_SC01", "SFD_S2E")
+    thresholds = sg.style_step.fidelity_thresholds()
+    step = float(thresholds.patch_max_distance_increase)
+
+    def drift(policy_or_bundle, source_d, rewritten_d, *, rewritten_reliable: bool = True):
+        _install_readings(
+            monkeypatch,
+            {
+                _NEUTRAL_MARK: _fixed_reading(source_d, 60.0),
+                _VOICED_MARK: _fixed_reading(rewritten_d, 70.0, reliable=rewritten_reliable),
+            },
+        )
+        return sg._assess_style_rewrite_drift(
+            session, policy_or_bundle=policy_or_bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
+        )
+
+    regressed = drift(bundle, 1.0, 1.0 + step + 0.01)
+    assert regressed["version"] == "style_rewrite_drift_v1"
+    assert regressed["available"] is True and regressed["comparable"] is True and regressed["regressed"] is True
+    assert regressed["source"]["distance"] == 1.0 and regressed["rewritten"]["distance"] == pytest.approx(1.0 + step + 0.01)
+    assert regressed["max_distance_increase"] == step and regressed["distance_delta"] == pytest.approx(step + 0.01)
+    assert "unavailable_reason" not in regressed
+    # 远得不到 patch_max_distance_increase → 不算退步；也收 StylePolicy
+    fine = drift(style_policy_for_bundle(bundle), 1.0, 1.0 + step - 0.01)
+    assert fine["comparable"] is True and fine["regressed"] is False
+    # 改写稿更像 → 不算退步
+    assert drift(bundle, 1.0, 0.5)["regressed"] is False
+    # 一边不可信 → 不可比、不算退步
+    unreliable = drift(bundle, 1.0, 3.0, rewritten_reliable=False)
+    assert unreliable["available"] is True and unreliable["comparable"] is False and unreliable["regressed"] is False
+    assert unreliable["unavailable_reason"] == "reading_unreliable"
+    # 读数出错 → 不可比
+    _install_readings(monkeypatch, {_NEUTRAL_MARK: RuntimeError, _VOICED_MARK: _fixed_reading(1.0, 60.0)})
+    failed = sg._assess_style_rewrite_drift(
+        session, policy_or_bundle=bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
+    )
+    assert failed["available"] is False and failed["comparable"] is False and failed["regressed"] is False
+    assert failed["unavailable_reason"] == "reading_failed" and failed["source"] is None
+    # 未绑定 → 不可比（去模板不拒、挽救补丁不采用——消费方语义不变）
+    unbound = sg._assess_style_rewrite_drift(
+        session, policy_or_bundle={"snapshot": {}}, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
+    )
+    assert unbound["available"] is False and unbound["comparable"] is False and unbound["regressed"] is False
+    assert unbound["unavailable_reason"] in {"bundle_has_no_style_profile", "style_policy_unbound"}
+    # 同一段文字只读一次
+    calls: list[str] = []
+    from novel_system.services.style_reference import readings
+
+    original = readings.reading_for_text
+
+    def counting(session_, policy, text):  # noqa: ANN001
+        calls.append(text)
+        return original(session_, policy, text)
+
+    _install_readings(monkeypatch, {_NEUTRAL_MARK: _fixed_reading(1.0, 60.0)})
+    original = readings.reading_for_text
+    monkeypatch.setattr(readings, "reading_for_text", counting)
+    same = sg._assess_style_rewrite_drift(
+        session, policy_or_bundle=bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_NEUTRAL_TEXT
+    )
+    assert len(calls) == 1 and same["regressed"] is False and same["comparable"] is True
+
+
+def test_de_template_rewrite_is_rejected_when_it_reads_farther_from_the_author(session, monkeypatch) -> None:
+    """去模板改写按读数拒：改写稿比来源稿远出 patch_max_distance_increase → style_conformance_regressed，基稿保留。"""
+    scene, bundle = _neutral_first_scene(session, "sfd_s2f")
+    runner = _Runner(
+        outputs={"neutral_draft": _NEUTRAL_TEXT, "style_draft": _HOUSE_TASTE_TEXT, "de_template": _CLEANED_TEXT},
+        default=_CLEANED_TEXT,
+    )
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    # 风格稿比中性稿像（交付）；房风门触发去模板；去模板稿比风格稿远 0.3 → 拒
+    _install_readings(
+        monkeypatch,
+        {
+            _NEUTRAL_MARK: _fixed_reading(1.5, 97.0),
+            _CLEANED_MARK: _fixed_reading(1.3, 85.0),
+            _VOICED_MARK: _fixed_reading(1.0, 60.0),
+        },
+    )
+    refined = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+    steps = [str(call["step"]) for call in runner.calls]
+    assert "de_template" in steps, steps
+    assert refined.content == _HOUSE_TASTE_TEXT
+    de_template = session.execute(
+        select(AttemptTracker).where(AttemptTracker.scene_id == scene.scene_id, AttemptTracker.step == "de_template")
+    ).scalars().one()
+    acceptance = de_template.details_json["acceptance"]
+    assert acceptance["accepted"] is False
+    assert "style_conformance_regressed" in acceptance["reasons"]
+    assert acceptance["style_non_regression_enforced"] is True
+    assert acceptance["style_conformance"]["regressed"] is True
+    assert acceptance["style_conformance"]["source"]["distance"] == 1.0
+    assert acceptance["style_conformance"]["rewritten"]["distance"] == 1.3
+    assert "paragraph_shape_normalization" not in de_template.details_json

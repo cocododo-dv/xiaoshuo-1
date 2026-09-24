@@ -23,10 +23,7 @@ from novel_system.services.style_reference.inject.request import StyleRenderRequ
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
-    blend_profile_metric_baselines,
     build_style_runtime_contract,
-    contract_profile_objects,
-    extract_style_generation_context,
     resolve_style_runtime_contract_state,
     style_runtime_contract_from_bundle,
     style_runtime_contract_status_from_bundle,
@@ -468,50 +465,6 @@ def test_qc_gate_validates_the_frozen_contract_profiles(session, monkeypatch) ->
     frozen_lines = frozen_profile["profile_json"]["dimension_card"]["dimensions"][0]["lines"]
     assert [line["text"] for line in frozen_lines] == ["句式舒展，收束克制"]
     assert "style_features" not in frozen_profile["profile_json"]
-
-
-def test_layered_baseline_blends_mean_and_total_variance(
-    session,
-) -> None:
-    base = SimpleNamespace(
-        profile_id="base",
-        book_id="",
-        profile_json={
-            "metrics_baseline": {"avg_sentence_length": {"mean": 10.0, "std": 1.0}}
-        },
-    )
-    specific = SimpleNamespace(
-        profile_id="specific",
-        book_id="",
-        profile_json={
-            "metrics_baseline": {"avg_sentence_length": {"mean": 20.0, "std": 2.0}}
-        },
-    )
-
-    blended = blend_profile_metric_baselines([base, specific])
-    assert blended["avg_sentence_length"]["mean"] == pytest.approx(50.0 / 3.0)
-    assert blended["avg_sentence_length"]["std"] > 2.0
-    # 2026-09-23 风格参考 v3（P5b）：旧的量化回测（以混合基线为对照目标）随校验层删除，只保留混合本身。
-
-
-def test_context_extractor_is_bounded_normalized_and_audit_contains_only_hash() -> None:
-    context = extract_style_generation_context(
-        "前文\r\n\x00后文" + "甲" * 30,
-        source_kind="continuation_tail",
-        max_chars=12,
-    )
-
-    assert context.query_text == "甲" * 12
-    assert context.char_count == 12
-    assert set(context.audit_dict()) == {
-        "version",
-        "source_kind",
-        "query_sha256",
-        "char_count",
-    }
-    assert context.query_text not in json.dumps(
-        context.audit_dict(), ensure_ascii=False
-    )
 
 
 def test_contract_aware_bundle_never_falls_back_to_a_later_live_binding(
