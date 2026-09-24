@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from novel_system.services.style_reference.segmentation.heuristic import classify_heuristic
 from novel_system.services.style_reference.segmentation.llm import SegmentationLLMError
 from novel_system.services.style_reference.segmentation.types import (
@@ -23,9 +21,9 @@ def classify_paragraphs(
     paragraphs: list[tuple[int, int, str]],
     *,
     llm_enabled: bool = False,
-    llm_client: Any | None = None,  # noqa: ARG001 — 离线夹具模式不用模型,保留签名兼容
 ) -> SegmentationResult:
-    """离线夹具模式的段落分类(启发式)。``paragraphs`` 元素是 ``(start_offset, end_offset, body)``。"""
+    """离线夹具模式的段落分类(启发式)。``paragraphs`` 元素是 ``(start_offset, end_offset, body)``;
+    没有模型客户端参数(2026-09-24 删掉了从不使用的 ``llm_client``:这条路永远不调模型)。"""
     if llm_enabled:
         raise ValueError(
             "LLM paragraph classification runs as a classify job (style_reference.import_job); "

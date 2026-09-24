@@ -36,7 +36,6 @@ from novel_system.services.style_reference.schemas import (
     FindingKind,
 )
 from novel_system.services.style_reference.structure import non_body_kind
-from novel_system.services.style_reference.tags import DEVICE_MAX_CHARS
 from novel_system.services.style_reference.text_utils import compact_ws
 from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
 
@@ -45,6 +44,8 @@ MAX_AVOID = 2
 MIN_EVIDENCE = 2
 MAX_EVIDENCE = 4
 MAX_DEVICES = 3
+# 文风卡各维的手法名(画像页显示)最长几个字;窗口标签 v2 起不再带手法,这个上限只属于抽取 / 文风卡
+DEVICE_MAX_CHARS = 8
 QUOTE_MIN_CHARS = 4
 QUOTE_MAX_CHARS = 80
 STATEMENT_MIN_CHARS = 6

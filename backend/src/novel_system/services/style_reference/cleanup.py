@@ -1,5 +1,5 @@
 """StyleReference 运行时 cleanup:删书(单本 / 批量共用 ``delete_reference_book``)/ 破坏式重新分类时清派生数据,
-遥测留存清理。"""
+遥测留存清理(``cleanup_metric_events``;2026-09-24 §8 C8 起由清扫线程定期跑,见文件末尾的登记)。"""
 
 from __future__ import annotations
 
@@ -23,9 +23,14 @@ from novel_system.db.models import (
     StyleReferenceRun,
     StyleReferenceWindow,
 )
+from novel_system.services.style_reference.jobs import register_maintenance_task
 
 
 _LOGGER = logging.getLogger(__name__)
+
+METRIC_EVENTS_RETENTION_DAYS = 90
+METRIC_EVENTS_CLEANUP_INTERVAL_SECONDS = 24 * 3600.0
+METRIC_EVENTS_MAINTENANCE_TASK = "style_reference_metric_events_retention"
 
 
 def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
@@ -272,3 +277,29 @@ def cleanup_metric_events(
         "cutoff": cutoff,
         "executed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+
+
+def run_metric_events_retention() -> dict[str, Any]:
+    """清扫线程的维护任务(C8):自己开会话,真删 ``METRIC_EVENTS_RETENTION_DAYS`` 天前的遥测事件并提交;
+    抛出的异常由清扫线程记日志(``jobs.run_due_maintenance``)。"""
+    from novel_system.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        summary = cleanup_metric_events(session, days_threshold=METRIC_EVENTS_RETENTION_DAYS, dry_run=False)
+        session.commit()
+    if int(summary.get("deleted_count") or 0):
+        _LOGGER.info(
+            "style-reference metric events retention: deleted %d event(s) older than %s",
+            int(summary["deleted_count"]),
+            summary.get("cutoff"),
+        )
+    return summary
+
+
+# 清扫线程启动时跑一次、之后每 24 小时一次。模块导入时登记(与作业处理器同一种约定):书库路由在应用装配时就导入
+# 本模块,所以 lifespan 起清扫线程之前一定登记过;jobs 不能反过来导入本模块(本模块要用 StyleJobService,会成环)。
+register_maintenance_task(
+    METRIC_EVENTS_MAINTENANCE_TASK,
+    run_metric_events_retention,
+    interval_seconds=METRIC_EVENTS_CLEANUP_INTERVAL_SECONDS,
+)

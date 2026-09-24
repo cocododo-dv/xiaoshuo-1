@@ -13,20 +13,15 @@
   z 值接口（``feature_z_scores`` / ``distinctive_features``）已没有管线调用方——样例窗口的典型度在 ``windows.py``、
   「像不像作者」的读数看作者自己的窗口分布（``fidelity.py``）——只留作检验基线本身的工具（黄金语料测试用）。
 
-基线由本模块的 ``__main__`` 子命令 ``build-baseline`` 用 ``backend/tests/golden/style_reference/corpus`` 全部文本
-按 1500 字块生成；测量口径变了（``measure.KERNEL_VERSION``）就要重跑。
+基线由运维工具 ``python -m novel_system.tools.build_voice_baseline build-baseline`` 用
+``backend/tests/golden/style_reference/corpus`` 全部文本按 1500 字块生成（2026-09-24 从本模块的 ``__main__`` 搬过去）；
+测量口径变了（``measure.KERNEL_VERSION``）就要重跑。
 """
 
 from __future__ import annotations
 
-import argparse
-import hashlib
-import json
 import math
-import statistics
-import sys
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any
 
 from novel_system.services.style_reference.config_loader import load_optional_yaml_config
@@ -41,13 +36,11 @@ from novel_system.services.style_reference.measure import (
     SPEECH_VERB_LABELS,
     KernelLexicon,
     TextMeasure,
-    clear_kernel_cache,
     kernel_features,
     load_kernel_lexicon,
     measure_paragraphs,
     measure_text,
 )
-from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
 
 # v2（2026-09-23）：测量核口径（段内换行即段界、引号不含 ‘’、人称只数叙述、追加 5 个特征）。
 VOICE_SIGNATURE_VERSION = "voice_signature_v2"
@@ -69,18 +62,10 @@ _Z_CLIP = 8.0
 TOP_WORD_GROUPS: tuple[str, ...] = (*FUNCTION_WORD_GROUPS, "sentence_final", "speech_verb")
 _SPEECH_VERB_LABELS = SPEECH_VERB_LABELS
 
-# 旧名兼容:词表只有一张,编译在测量核里。
-VoiceLexicon = KernelLexicon
-
 
 def load_voice_lexicon() -> KernelLexicon:
-    """返回编译后的闭类词表(测量核里的唯一一张)。"""
+    """返回编译后的闭类词表(测量核里的唯一一张;清缓存用 ``measure.clear_kernel_cache``)。"""
     return load_kernel_lexicon()
-
-
-def clear_voice_signature_cache() -> None:
-    """清空词表缓存,供测试用(配合 config_loader.clear_config_cache)。"""
-    clear_kernel_cache()
 
 
 def load_voice_baseline() -> dict[str, Any]:
@@ -467,16 +452,12 @@ _PUNCT_HABITS: tuple[tuple[str, str, float, float], ...] = (
 )
 
 
-def render_voice_habits(
-    features: Mapping[str, Any],
-    baseline: Mapping[str, Any] | None = None,
-) -> list[str]:
+def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
     """把声音签名渲染成 ≤12 行生成器可执行的中文习惯句。
 
     只描述作者自己:高频词(``top_words``,整份签名时才有)与大致频率(中文数字),绝不说「比一般作家偏多 /
-    偏少」。``baseline`` 参数保留只为旧调用方的签名兼容,不再使用。输出不含阿拉伯数字。
+    偏少」——不与任何基线比较(v2 起;从前的 ``baseline`` 参数已删)。输出不含阿拉伯数字。
     """
-    del baseline  # v2 起习惯句不与任何基线比较
     values, top_words = _unpack(features)
     if not values or not any(value != 0.0 for value in values.values()):
         return []
@@ -623,172 +604,14 @@ def render_voice_habits(
     return deduped[:MAX_HABIT_LINES]
 
 
-# ---------------------------------------------------------------------------
-# 基线生成(__main__ 子命令)
-# ---------------------------------------------------------------------------
+def quantile(values: Sequence[float], ratio: float) -> float:
+    """块间分位数(线性插值);基线生成工具 ``tools.build_voice_baseline`` 用它算 p15 / p50 / p85。"""
+    return _quantile(values, ratio)
 
 
-def _chunk_paragraphs(paragraphs: Sequence[str], block_chars: int) -> list[list[str]]:
-    """按累计字数把段落切成 ≈block_chars 的块;残尾并入最后一块(与 metrics 一致)。"""
-    blocks: list[list[str]] = []
-    current: list[str] = []
-    current_chars = 0
-    for paragraph in paragraphs:
-        current.append(paragraph)
-        current_chars += len(paragraph)
-        if current_chars >= block_chars:
-            blocks.append(current)
-            current = []
-            current_chars = 0
-    if current:
-        if blocks:
-            blocks[-1].extend(current)
-        else:
-            blocks.append(current)
-    return blocks
-
-
-def build_voice_baseline(
-    corpus_dir: str | Path,
-    *,
-    block_chars: int = BASELINE_BLOCK_CHARS,
-) -> dict[str, Any]:
-    """用 corpus_dir 下全部 ``*.txt`` 按 block_chars 字块计算每个特征的 mean/std/p15/p50/p85。"""
-    directory = Path(corpus_dir)
-    files = sorted(path for path in directory.glob("*.txt") if path.is_file())
-    if not files:
-        raise FileNotFoundError(f"no *.txt corpus files under {directory}")
-    block_features: list[Mapping[str, float]] = []
-    all_paragraphs: list[str] = []
-    corpus_records: list[dict[str, Any]] = []
-    for path in files:
-        raw = path.read_text(encoding="utf-8")
-        normalized = normalize_text(raw)
-        paragraphs = [body for _start, _end, body in split_paragraphs(normalized)]
-        blocks = _chunk_paragraphs(paragraphs, block_chars)
-        for block in blocks:
-            block_features.append(compute_voice_signature(block, baseline={})["features"])
-        all_paragraphs.extend(paragraphs)
-        corpus_records.append(
-            {
-                "file": path.name,
-                "chars": len(normalized),
-                "paragraphs": len(paragraphs),
-                "blocks": len(blocks),
-                "normalized_sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
-            }
-        )
-    corpus_signature = compute_voice_signature(all_paragraphs, baseline={})
-    stats: dict[str, dict[str, float]] = {}
-    for name in FEATURE_NAMES:
-        values = [float(block.get(name, 0.0)) for block in block_features]
-        stats[name] = {
-            "mean": _round(statistics.fmean(values)),
-            "std": _round(statistics.pstdev(values) if len(values) > 1 else 0.0),
-            "p15": _round(_quantile(values, 0.15)),
-            "p50": _round(_quantile(values, 0.50)),
-            "p85": _round(_quantile(values, 0.85)),
-        }
-    return {
-        "version": VOICE_BASELINE_VERSION,
-        "signature_version": VOICE_SIGNATURE_VERSION,
-        "kernel_version": KERNEL_VERSION,
-        "block_chars": int(block_chars),
-        "block_count": len(block_features),
-        "corpus": corpus_records,
-        "features": stats,
-        "top_words": corpus_signature["top_words"],
-    }
-
-
-def render_voice_baseline_yaml(baseline: Mapping[str, Any], *, command: str, generated_at: str) -> str:
-    """把基线写成带来源注释的 YAML(手工排版,保证稳定与可读)。"""
-    lines = [
-        "# 声音签名基线(voice_signature.py 消费,勿手改数值)。",
-        "# 用 backend/tests/golden/style_reference/corpus 全部公版文本(鲁迅短篇 + 朱自清散文;",
-        "# luxun_kongyiji / zhuziqing_essays 与主集有重叠,照收)按测量核口径计算:",
-        f"# 按 {baseline['block_chars']} 字块切分,对每个特征取块间 mean / std / p15 / p50 / p85。",
-        "# 用途只剩两处:deliberate_repetition(叠词 / 短句连打 ≥ 字面 p85)与旧 z 值接口;",
-        "# 习惯句不再与它比较,「像不像作者」看作者自己的窗口分布(fidelity.py)。",
-        "# 测量口径(measure.KERNEL_VERSION)变了就重新生成(backend 目录下):",
-        f"#   {command}",
-        f"# generated_at: {generated_at}",
-        f"version: {baseline['version']}",
-        f"signature_version: {baseline['signature_version']}",
-        f"kernel_version: {baseline.get('kernel_version', KERNEL_VERSION)}",
-        f"block_chars: {baseline['block_chars']}",
-        f"block_count: {baseline['block_count']}",
-        "corpus:",
-    ]
-    for record in baseline["corpus"]:
-        lines.append(
-            f"  - {{file: {json.dumps(record['file'], ensure_ascii=False)}, chars: {record['chars']}, "
-            f"paragraphs: {record['paragraphs']}, blocks: {record['blocks']}, "
-            f"normalized_sha256: {record['normalized_sha256']}}}"
-        )
-    lines.append("features:")
-    for name in FEATURE_NAMES:
-        entry = baseline["features"][name]
-        lines.append(
-            f"  {name}: {{mean: {entry['mean']}, std: {entry['std']}, "
-            f"p15: {entry['p15']}, p50: {entry['p50']}, p85: {entry['p85']}}}"
-        )
-    lines.append("top_words:")
-    for group in TOP_WORD_GROUPS:
-        entries = baseline["top_words"].get(group) or []
-        rendered = ", ".join(
-            f"[{json.dumps(str(word), ensure_ascii=False)}, {_round(share)}]" for word, share in entries
-        )
-        lines.append(f"  {group}: [{rendered}]")
-    return "\n".join(lines) + "\n"
-
-
-def _default_corpus_dir() -> Path:
-    return Path(__file__).resolve().parents[4] / "tests" / "golden" / "style_reference" / "corpus"
-
-
-def _default_baseline_path() -> Path:
-    return Path(__file__).resolve().parents[5] / "config" / "style_reference" / "voice_baseline.yaml"
-
-
-def _main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="python -m novel_system.services.style_reference.voice_signature",
-        description="声音签名工具:生成基线 / 检视单个文本的签名与习惯句。",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-    build = sub.add_parser("build-baseline", help="用黄金语料生成 voice_baseline.yaml")
-    build.add_argument("--corpus-dir", default=str(_default_corpus_dir()))
-    build.add_argument("--output", default=str(_default_baseline_path()))
-    build.add_argument("--block-chars", type=int, default=BASELINE_BLOCK_CHARS)
-    inspect = sub.add_parser("inspect", help="打印一个文本文件的签名与习惯句")
-    inspect.add_argument("path")
-    args = parser.parse_args(argv)
-
-    if args.command == "build-baseline":
-        import datetime
-
-        baseline = build_voice_baseline(args.corpus_dir, block_chars=args.block_chars)
-        command = (
-            "python -m novel_system.services.style_reference.voice_signature build-baseline"
-            f" --block-chars {args.block_chars}"
-        )
-        generated_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-        output = Path(args.output)
-        output.write_text(
-            render_voice_baseline_yaml(baseline, command=command, generated_at=generated_at),
-            encoding="utf-8",
-        )
-        sys.stdout.write(f"=> {output} ({baseline['block_count']} blocks, {len(FEATURE_NAMES)} features)\n")
-        return 0
-    if args.command == "inspect":
-        text = Path(args.path).read_text(encoding="utf-8")
-        signature = compute_voice_signature_for_text(text)
-        sys.stdout.write(json.dumps(signature, ensure_ascii=False, indent=2) + "\n")
-        for line in render_voice_habits(signature):
-            sys.stdout.write(f"- {line}\n")
-        return 0
-    return 2
+def round_stat(value: float) -> float:
+    """基线里的统计量统一保留六位小数(与 ``voice_baseline.yaml`` 的写法一致)。"""
+    return _round(value)
 
 
 __all__ = [
@@ -808,20 +631,14 @@ __all__ = [
     "TOP_WORD_GROUPS",
     "VOICE_BASELINE_VERSION",
     "VOICE_SIGNATURE_VERSION",
-    "VoiceLexicon",
-    "build_voice_baseline",
-    "clear_voice_signature_cache",
     "compute_voice_signature",
     "compute_voice_signature_for_text",
     "distinctive_features",
     "feature_z_scores",
     "load_voice_baseline",
     "load_voice_lexicon",
-    "render_voice_baseline_yaml",
+    "quantile",
     "render_voice_habits",
+    "round_stat",
     "signature_from_measure",
 ]
-
-
-if __name__ == "__main__":  # pragma: no cover - CLI 入口
-    sys.exit(_main())

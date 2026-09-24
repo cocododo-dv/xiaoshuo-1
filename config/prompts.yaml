@@ -966,25 +966,30 @@ templates:
               term: {type: string, maxLength: 16}
               kind: {type: string, enum: [person, place, organization, item, term]}
 
-  # 窗口标签(learn_job 第 6 步,台账 N3):给全书每一个样例窗口打场面 / 情绪 / 手法标签,起草时按本场设计挑同类场面的
-  # 原文。每批 ≤8 窗、≤26,000 字(一窗送前 2,200 字 + 后 800 字)→ 预算 36000。实测(190 万字的真实参考书,
-  # 520 窗):65 批,每批估 2.1–2.7 万 token(中位 2.56 万);全书合计估 ≈165 万 token,约占学习一次输入的九成——
-  # 所以这个节点默认用小模型、不开推理。场面 / 情绪的枚举与 services/style_reference/tags.py 的词表逐项相同(有测试钉住)。
+  # 窗口标签(learn_job 第 6 步,台账 N3;2026-09-24 §8 O1 改 v2):给样例窗口打场面 / 情绪 / 维度标签,起草时按本场
+  # 设计挑同类场面的原文、按维度挑「维度示范」窗。v2 不再要 devices(v1 取自文风卡各维的手法名,使标签依赖文风卡、
+  # 每次重新学习都得给全书重打);dimensions = 这一窗最能示范的 ≤3 个维度,只填 dimension_vocabulary 里的 key。标签
+  # 只取决于原文,所以只给标签版本不是当前版本的窗口打。每批 ≤8 窗、≤26,000 字(一窗送前 2,200 字 + 后 800 字)→ 预算
+  # 36000。实测(190 万字的真实参考书,520 窗):65 批,每批估 2.1–2.7 万 token(中位 2.56 万);全书合计估 ≈165 万
+  # token——所以这个节点默认用小模型、不开推理。场面 / 情绪 / 维度的枚举与 services/style_reference/tags.py 的词表
+  # 逐项相同(有测试钉住)。
   style_ref_tag_windows:
-    version: "2026-09-23.v1"
+    version: "2026-09-24.v2"
     input_token_budget: 36000
     system_prompt: |
       你给一位作者全书的连续片段逐个打标签。之后写新场景时,系统会按这些标签挑出这位作者写同类场面的原文作样例,
-      所以标签要准,反映片段**主要**在写什么。
+      也会按维度挑出最能示范某一维写法的原文,所以标签要准,反映片段**主要**在写什么、**最能看出**作者哪几方面的写法。
       每个片段输出:
         - situations:1–3 个场面标签,只能从 situation_vocabulary 里选;
         - moods:1–2 个情绪标签,只能从 mood_vocabulary 里选;
-        - devices:片段里**明显用到**的作者招牌手法,只能从 device_vocabulary 里选;没有就给空数组;
+        - dimensions:这一段最能示范作者写法的 1–3 个维度,只能填 dimension_vocabulary 里的 key(如
+          scene.dialogue、language.rhetoric;label 是它的中文名,帮你认维度,不要填 label);挑这一段里作者的做法
+          **最鲜明、最典型**的那几维,不是这一段碰巧涉及的所有维;拿不准就少填;
         - gist:≤40 字,这一段写了什么;用「主角」「一个女孩」「同伴」这类代称,不写人名、地名、专有设定名。
       每个输入片段都必须输出恰好一项,window 原样照抄,不多不少。只输出 schema 规定的 JSON。
     task_prompt: |
-      输入见数据块:situation_vocabulary、mood_vocabulary、device_vocabulary、windows(每个片段带 window 片段号、
-      chapter、position、text;长片段中间用「……(中略)……」省去了一段)。按 schema 输出 windows。
+      输入见数据块:situation_vocabulary、mood_vocabulary、dimension_vocabulary(16 维的 key 与中文 label)、windows
+      (每个片段带 window 片段号、chapter、position、text;长片段中间用「……(中略)……」省去了一段)。按 schema 输出 windows。
     structured_schema:
       type: object
       additionalProperties: false
@@ -995,7 +1000,7 @@ templates:
           items:
             type: object
             additionalProperties: false
-            required: [window, situations, moods, devices, gist]
+            required: [window, situations, moods, dimensions, gist]
             properties:
               window: {type: integer}
               situations:
@@ -1010,10 +1015,12 @@ templates:
                 items:
                   type: string
                   enum: [紧张, 诙谐, 伤感, 温情, 压抑, 热血, 荒诞, 悬疑, 平静, 恐惧]
-              devices:
+              dimensions:
                 type: array
-                maxItems: 5
-                items: {type: string}
+                maxItems: 3
+                items:
+                  type: string
+                  enum: [language.sentence_structure, language.vocabulary, language.rhetoric, language.punctuation, narrative.perspective, narrative.pacing, narrative.time_handling, narrative.information_density, scene.environment, scene.character_portrayal, scene.dialogue, scene.sensory_priority, theme.emotional_tone, theme.values, theme.motifs, theme.narrative_philosophy]
               gist: {type: string, maxLength: 40}
 
   style_ref_check_judge:

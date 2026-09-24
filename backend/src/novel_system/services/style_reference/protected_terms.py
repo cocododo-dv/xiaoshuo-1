@@ -336,11 +336,6 @@ def mask_protected(text: str, terms: Sequence[ProtectedTerm | Mapping[str, Any]]
     return out
 
 
-def contains_protected(text: str, terms: Iterable[str]) -> bool:
-    body = str(text or "")
-    return any(term and term in body for term in terms)
-
-
 # ---------------------------------------------------------------------------
 # 落库
 # ---------------------------------------------------------------------------
@@ -440,7 +435,6 @@ __all__ = [
     "TERM_KINDS",
     "dismiss_protected_term",
     "dismissed_protected_terms",
-    "contains_protected",
     "is_everyday_word",
     "mask_protected",
     "parse_protected_terms",
