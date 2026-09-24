@@ -424,7 +424,6 @@ def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str
     marks = _book_marks(session, [profile.book_id]).get(str(profile.book_id))
     version = str(profile_json.get("profile_version") or "")
     reason = relearn_reason(version, learned, marks)
-    sub_dimensions = profile_json.get("sub_dimensions") if isinstance(profile_json.get("sub_dimensions"), Mapping) else {}
 
     finding_ids: set[str] = set()
     direct_quotes: set[str] = set()
@@ -471,8 +470,9 @@ def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str
     order = [entry.dimension for entry in card.dimensions] if card is not None else list(ALL_DIMENSIONS)
     for dimension in order:
         entry = entries.get(dimension)
-        counts = sub_dimensions.get(dimension) if isinstance(sub_dimensions.get(dimension), Mapping) else {}
         lines = [_line(dimension, line) for line in entry.lines] if entry is not None else []
+        # 2026-09-24：v2 的 profile_json.sub_dimensions 已随指标包络删除；条数与引文数直接从文风卡这一维的句与证据算
+        evidence_count = len({ev["quote_id"] for line in lines for ev in line["evidence"]})
         dimensions.append(
             {
                 "dimension": dimension,
@@ -484,10 +484,10 @@ def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str
                 "devices": list(entry.devices) if entry is not None else [],
                 "measurable_features": list(entry.measurable_features) if entry is not None else [],
                 "lines": lines,
-                "evidence_count": len({ev["quote_id"] for line in lines for ev in line["evidence"]} | set()),
-                "observation_count": _int(counts.get("observation_count")),
-                "avoid_count": _int(counts.get("forbidden_pattern_count")),
-                "quote_count": _int(counts.get("quote_count")),
+                "evidence_count": evidence_count,
+                "observation_count": sum(1 for line in lines if line.get("kind") == "do"),
+                "avoid_count": sum(1 for line in lines if line.get("kind") == "avoid"),
+                "quote_count": evidence_count,
             }
         )
     protected_count = _int(

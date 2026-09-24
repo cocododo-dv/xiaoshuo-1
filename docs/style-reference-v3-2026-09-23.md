@@ -597,4 +597,11 @@ A/B：上线后的库复制三份，各跑三场从没起草过的场景（第 1
 - **合并跟进（主会话）**：lifespan 显式导入 `cleanup` 登记维护任务；`learn_llm.TEMPLATE_CONTRACT` 要求 `windows[].dimensions`；学习失败详情带
   `book_id`；测试替身按 v2 标签答；`purge_derived_data` 接 `purge_scene_windows_for_book`、删旧待办行块；重分类路由测试只看 `mode`；
   文档随之（现行说明、操作手册、README、CLAUDE.md、阈值注释）。
-- **W3 指标包络退役**：（第二波，见下。）
+- **W3 指标包络退役（第二波）**：删 `metrics.py` / `candidate_rerank.py` / `tolerance_floors.yaml` 与画像的 `metrics_baseline` / `sub_dimensions`
+  键、书的 `stats_json.metrics` / `prose_shape_metrics`（刷新工具 v3 顺带删旧库的死键）、`runtime_contract` 的 `blend_profile_metric_baselines` /
+  `contract_profile_objects` / `StyleGenerationContext`（v1 读侧白名单仍认旧键，旧 bundle 照旧校验）；起草的四处消费者改用读数：候选
+  `style_score = 1 − percentile/100`（读数可信才给；读数 / 抄袭门出错的候选记「没检查成」，有绑定时不进匿名终选）；段密度合并与形态修复
+  整个删掉；**neutral_first 且有绑定**时风格稿出来后中性稿 / 风格稿各读一次读数，不更像（distance 没小 ≥ `revision_min_improvement`）就交付
+  中性稿（提示 `STYLE_REVISION_REJECTED` / `not_closer`，尝试行记 `style_step`），读数不可信照旧接受风格稿；改写不退步 = 读数
+  `distance` 远出 `patch_max_distance_increase`（`_assess_style_rewrite_drift`；去模板按它拒，挽救补丁在读数不可比时照旧不采用）。
+  金标只去掉了指标块（段数 / 段型分布逐值不变）。合并跟进：画像页每维的条数 / 引文数改从文风卡的句与证据算。

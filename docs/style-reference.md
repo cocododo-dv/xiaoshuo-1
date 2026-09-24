@@ -331,7 +331,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 - **迁移**：停服、`python -m novel_system.tools.db_backup --backup <src.db> <dst.db>`，再 `alembic upgrade head`（0090、0091、0092）。
   0092 之后窗口标签是 v2：之前学过的书在下一次「学习文风」时重打全书标签（『龙族』520 窗约 65 次调用），此后重新学习只剩约 6 次调用。
 - **工具**（`backend/` 下，默认干跑、`--execute` 才写库，先备份）：`purge_style_reference_books --book ID`（可重复）和 / 或 `--id-prefix PREFIX`
-  （至少 4 个字符；删书及全部派生数据，就是书库删除的 `cleanup.delete_reference_book`，绑定范围内的规划产物一并作废）；`refresh_style_reference_books --book ID | --all`（就绪的书剥副文本、重编号、保留场界、重算统计；段落变了
+  （至少 4 个字符；删书及全部派生数据，就是书库删除的 `cleanup.delete_reference_book`，绑定范围内的规划产物一并作废）；`refresh_style_reference_books --book ID | --all`（就绪的书剥副文本、重编号、保留场界、重算段型统计、顺带删掉旧库里的死键 `metrics` / `prose_shape_metrics`；段落变了
   会 `pop` 根哈希、窗口随之重建；空行场界只有重新导入才能恢复；有排队 / 运行中的分类或学习作业的书跳过——就地重标时书一直是 ready；
   `--execute` 时每本书先拿写锁、在锁里重新核对并重算计划，`stats_json` 只合并本工具管的键）；`build_voice_baseline build-baseline`（重建 `voice_baseline.yaml`；`inspect PATH` 查看）。
 

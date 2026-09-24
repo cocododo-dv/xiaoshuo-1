@@ -754,7 +754,7 @@ def derive_narrative_guidance(card: DimensionCard | None, *, limit: int = NARRAT
 
 
 def sub_dimension_summary(session: Session, run_id: str) -> dict[str, dict[str, Any]]:
-    """``profile_json.sub_dimensions``：每维观察 / 避免条数、证据引文数（按证据计，台账 E10）与置信度。"""
+    """每维观察 / 避免条数、证据引文数（按证据计，台账 E10）与置信度——只进 run / 画像的 ``coverage_json``（2026-09-24 起画像不再写 ``sub_dimensions`` 键）。"""
     findings = list(session.scalars(select(StyleReferenceFinding).where(StyleReferenceFinding.run_id == run_id)))
     evidence_counts: dict[str, int] = defaultdict(int)
     for finding_id, _quote_id in session.execute(

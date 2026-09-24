@@ -66,7 +66,7 @@ def _layer_voice_features(layer: Mapping[str, Any]) -> dict[str, float]:
 def contract_voice_reference(contract: Mapping[str, Any] | None) -> dict[str, float]:
     """契约各层 ``voice_signature.features`` 的加权均值（泛 → 具体权重 1..n）。
 
-    与 ``runtime_contract.blend_profile_metric_baselines`` 同一口径：越具体的层权重越大。
+    越具体的层权重越大（2026-09-24 指标基线合并已删，这里是唯一的按层加权）。
     没有任何层带 voice_signature 时返回 ``{}``。
     """
     layers = _contract_layers(contract)
