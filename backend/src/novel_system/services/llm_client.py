@@ -82,6 +82,12 @@ TRUNCATED_FINISH_REASONS = {"length", "max_tokens", "max_output_tokens", "model_
 # 这两类失败都是"输出预算不够"的症状,原样重发只会复现同一个结果——跳过重试,
 # 直接走降级阶梯抬预算。
 BUDGET_DEGRADE_ERROR_CODES = {"LLM_RESPONSE_MISSING_TEXT", "LLM_RESPONSE_TRUNCATED"}
+# 2026-09-24:正文里出现 prompt 里没有的 U+FFFD = 模型与客户端之间丢了字节(本客户端按
+# 严格 UTF-8 解析,只可能是中转 / 引擎那一侧替换的)。实测中转的 opus 4 次长稿 2 次带乱码
+# (同一场的首稿与修复),那一场因此作废。同一请求重发即可换回干净正文——占用普通重试额度;
+# 最后一次仍带乱码就照常交回,由调用方的文本完整性闸门决定(起草稿会被拒,不会带乱码入稿)。
+CORRUPTED_OUTPUT_ERROR_CODE = "LLM_RESPONSE_CORRUPTED_TEXT"
+_REPLACEMENT_CHARACTER = "\ufffd"
 SUPPORTED_PROVIDERS = frozenset(supported_provider_types())
 MAX_RETRY_BACKOFF_SECONDS = 30.0
 
@@ -115,6 +121,22 @@ _STRUCTURED_OUTPUT_ERROR_SIGNATURES = (
 def _structured_output_rejection_signature(text: str | None) -> bool:
     lowered = (text or "").lower()
     return any(sig in lowered for sig in _STRUCTURED_OUTPUT_ERROR_SIGNATURES)
+
+
+def _corrupted_output_characters(response: LLMResponse, request: LLMRequest) -> int:
+    """正文 / 结构化输出里 U+FFFD 的个数;prompt 自己带 U+FFFD(模型可能照抄)时记 0。"""
+    count = (response.text or "").count(_REPLACEMENT_CHARACTER)
+    if response.structured_output is not None:
+        # 结构化正文可能把它写成 \ufffd 转义,解析后才现身
+        count = max(
+            count,
+            json.dumps(response.structured_output, ensure_ascii=False).count(_REPLACEMENT_CHARACTER),
+        )
+    if not count:
+        return 0
+    if _REPLACEMENT_CHARACTER in json.dumps(request.messages, ensure_ascii=False):
+        return 0
+    return count
 
 
 def _thinking_with_forced_tool_rejection(text: str | None) -> bool:
@@ -859,6 +881,42 @@ class LLMClient(OnlineAccountedExecution):
                         started_at=started_at,
                     )
                     raise error from exc
+                corrupted = _corrupted_output_characters(parsed_response, request)
+                if corrupted and attempt < self._max_retries:
+                    error = LLMResponseError(
+                        CORRUPTED_OUTPUT_ERROR_CODE,
+                        "llm output carried U+FFFD replacement characters the prompt did not contain "
+                        "(bytes were lost between the model and this client); re-sending the request",
+                        retryable=True,
+                        details=_with_attempt_metadata(
+                            {"replacement_characters": corrupted},
+                            attempt=attempt,
+                            max_retries=self._max_retries,
+                        ),
+                    )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        raw_response=body,
+                        provider_request_id=_extract_request_id(body),
+                        started_at=started_at,
+                    )
+                    logger.warning(
+                        "llm output corrupted (%d U+FFFD) node=%s provider=%s model=%s; retry %d/%d",
+                        corrupted, request.node_id, provider_config.provider_id, request.model,
+                        attempt + 1, self._max_retries,
+                    )
+                    self._sleep_before_retry(attempt)
+                    dispatch_kind = "response_parse_retry"
+                    continue
+                if corrupted:
+                    logger.warning(
+                        "llm output still corrupted (%d U+FFFD) after %d attempts node=%s provider=%s model=%s; "
+                        "handing it to the caller's integrity gate",
+                        corrupted, attempt + 1, request.node_id, provider_config.provider_id, request.model,
+                    )
                 if accounting_hook is not None:
                     accounting_hook.after_response(
                         hook_handle,

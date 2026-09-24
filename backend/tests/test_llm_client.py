@@ -1491,3 +1491,87 @@ def test_llm_client_unexpected_post_error_terminates_attempt_once() -> None:
     assert hook.before == [("attempt-1", "initial", 8)]
     assert hook.errors == [("attempt-1", "LLM_HTTP_CLIENT_EXCEPTION")]
     assert hook.responses == []
+
+
+def _replacement_client(outputs: list[str], *, max_retries: int) -> tuple[LLMClient, list[int]]:
+    posts: list[int] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        posts.append(1)
+        index = min(len(posts), len(outputs)) - 1
+        return httpx.Response(
+            200,
+            json={"id": f"resp-{len(posts)}", "model": "test", "output_text": outputs[index]},
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=max_retries,
+        transport=httpx.MockTransport(handler),
+    )
+    return client, posts
+
+
+def _prose_request(prompt: str = "写一段。", *, response_format: str = "text") -> LLMRequest:
+    return LLMRequest(
+        model="test",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_output_tokens=64,
+        response_format=response_format,
+    )
+
+
+def test_llm_client_resends_output_that_lost_bytes_in_transit() -> None:
+    # 中转偶尔把多字节字符换成 U+FFFD;同一请求重发一次就能换回干净正文。
+    client, posts = _replacement_client(["雨下\ufffd\ufffd一夜。", "雨下了一夜。"], max_retries=2)
+    hook = _RecordingAttemptHook()
+
+    response = client.generate(_prose_request(), accounting_hook=hook)
+
+    assert response.text == "雨下了一夜。"
+    assert len(posts) == 2
+    assert hook.before == [
+        ("attempt-1", "initial", 64),
+        ("attempt-2", "response_parse_retry", 64),
+    ]
+    assert hook.errors == [("attempt-1", "LLM_RESPONSE_CORRUPTED_TEXT")]
+    assert hook.responses == [("attempt-2", "resp-2")]
+
+
+def test_llm_client_resends_structured_output_whose_json_escapes_carry_replacement_characters() -> None:
+    client, posts = _replacement_client(
+        ['{"scene_text": "雨下\\ufffd一夜。"}', '{"scene_text": "雨下了一夜。"}'],
+        max_retries=1,
+    )
+
+    response = client.generate(_prose_request(response_format="json_object"))
+
+    assert response.structured_output == {"scene_text": "雨下了一夜。"}
+    assert len(posts) == 2
+
+
+def test_llm_client_hands_still_corrupted_output_to_the_caller_after_the_retry_budget() -> None:
+    # 重试额度用完仍带乱码:照常交回(不抛错),由调用方的文本完整性闸门拒稿。
+    client, posts = _replacement_client(["雨下\ufffd一夜。"], max_retries=1)
+    hook = _RecordingAttemptHook()
+
+    response = client.generate(_prose_request(), accounting_hook=hook)
+
+    assert response.text == "雨下\ufffd一夜。"
+    assert len(posts) == 2
+    assert hook.errors == [("attempt-1", "LLM_RESPONSE_CORRUPTED_TEXT")]
+    assert hook.responses == [("attempt-2", "resp-2")]
+
+
+def test_llm_client_keeps_replacement_characters_the_prompt_itself_carries() -> None:
+    # prompt 里本来就有 U+FFFD(作者贴进来的坏字),模型照抄不算传输损坏,不白白重发。
+    client, posts = _replacement_client(["原文里的\ufffd照抄。"], max_retries=2)
+
+    response = client.generate(_prose_request("把这句改写：原文里的\ufffd。"))
+
+    assert response.text == "原文里的\ufffd照抄。"
+    assert len(posts) == 1
