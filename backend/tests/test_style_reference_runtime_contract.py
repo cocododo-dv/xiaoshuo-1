@@ -34,11 +34,26 @@ from novel_system.services.style_reference.runtime_contract import (
 )
 
 
+def _card_with_line(text: str) -> dict:
+    return {
+        "version": "dimension_card_v1",
+        "temperament": [],
+        "dimensions": [
+            {
+                "dimension": "language.sentence_structure",
+                "distinctiveness": 0.9,
+                "devices": [],
+                "lines": [{"text": text, "mandatory": True, "distinctiveness": 0.9}],
+            }
+        ],
+    }
+
+
 def _seed_reference(
     session,
     *,
     seed: str,
-    strategy: str = "A",
+    config_json: dict | None = None,
     task_type: str = "scene_generation",
     feature: str = "句式舒展，收束克制",
 ):
@@ -87,8 +102,11 @@ def _seed_reference(
         title="匿名风格",
         status="active",
         profile_json={
+            "profile_version": "style_profile_v3",
             "narrative_summary": "克制观察，动作先于解释。",
             "qualitative_summary": "克制观察，动作先于解释。",
+            # 2026-09-24 起没有旧画像的卡替身：要进提示的句子在文风卡上
+            "dimension_card": _card_with_line(feature),
             "style_features": [feature],
             "banned_replication_rules": ["不要复刻专名与独特意象"],
             "scene_samples_index": {"narration": [quote_id]},
@@ -118,8 +136,8 @@ def _seed_reference(
         scope="project",
         scope_ref_id=f"contract_project_{seed}",
         task_type=task_type,
-        strategy=strategy,
-        config_json={"intensity": 70},
+        strategy="mixed",
+        config_json=dict(config_json or {}),
         status="active",
     )
     session.flush()
@@ -136,7 +154,7 @@ def _seed_reference(
 
 
 def test_contract_is_hashed_tamper_evident_and_contains_no_raw_quote(session) -> None:
-    seeded = _seed_reference(session, seed="hash", strategy="B")
+    seeded = _seed_reference(session, seed="hash")
     contract = build_style_runtime_contract(
         seeded.repo,
         [seeded.binding],
@@ -166,46 +184,11 @@ def test_contract_is_hashed_tamper_evident_and_contains_no_raw_quote(session) ->
         validate_style_runtime_contract(tampered)
 
 
-def test_contract_freezes_only_generation_safe_forbidden_findings(session) -> None:
-    seeded = _seed_reference(session, seed="safe_forbidden_contract", strategy="A")
-    profile = seeded.repo.get_profile(seeded.profile_id)
-    profile.profile_json = {
-        **dict(profile.profile_json or {}),
-        "generation_safe_forbidden_findings": [
-            {
-                "finding_id": "safe_forbidden_1",
-                "sub_dimension": "language.vocabulary",
-                "statement": "避免复用参考文本中的具体措辞",
-                "status": "approved",
-            }
-        ],
-        "source_overlap_filter": {"applied": True, "threshold_chars": 8},
-    }
-    session.flush()
-
-    contract = build_style_runtime_contract(
-        seeded.repo,
-        [seeded.binding],
-        task_type="scene_generation",
-    )
-
-    assert contract is not None
-    assert contract["layers"][0]["forbidden_findings"] == [
-        {
-            "finding_id": "safe_forbidden_1",
-            "sub_dimension": "language.vocabulary",
-            "statement": "避免复用参考文本中的具体措辞",
-            "status": "approved",
-        }
-    ]
-    assert validate_style_runtime_contract(contract) == contract
-
-
 def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
     session,
 ) -> None:
     reset_render_cache()
-    seeded = _seed_reference(session, seed="frozen", strategy="A")
+    seeded = _seed_reference(session, seed="frozen", config_json={"reference_mode": "card_only"})
     contract = build_style_runtime_contract(
         seeded.repo,
         [seeded.binding],
@@ -219,10 +202,9 @@ def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
     profile = seeded.repo.get_profile(seeded.profile_id)
     profile.profile_json = {
         **dict(profile.profile_json or {}),
-        "style_features": ["后来被修改的实时风格"],
+        "dimension_card": _card_with_line("后来被修改的实时风格"),
     }
-    seeded.binding.strategy = "C"
-    seeded.binding.config_json = {"intensity": 5}
+    seeded.binding.config_json = {"reference_mode": "full", "sample_windows": 3}
     session.flush()
 
     frozen_after = render_style(session, frozen_policy, request, use_cache=False)
@@ -237,14 +219,16 @@ def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
     assert "后来被修改的实时风格" in live_after
     assert live_policy.contract_hash != contract["contract_hash"]
     assert frozen_after.audit["contract_hash"] == contract["contract_hash"]
-    # 冻结的是 v3 规范化配置：旧策略 A → 只用文风卡（旧画像的卡替身），不送窗口
+    # 冻结的是 v3 规范化配置：只用文风卡，不送窗口；后来改了绑定（3 窗）也不影响冻结的那份
+    # （书是 segments_only：现解析的参考方式仍被云策略压成 card_only，但窗数已经是改过的 3）
     assert frozen_policy.reference_mode == "card_only" and frozen_after.stats["few_shot_windows"] == 0
+    assert frozen_policy.sample_windows == 12 and live_policy.sample_windows == 3
 
 
 def test_frozen_contract_samples_require_current_send_rights(session) -> None:
     """样例窗口在渲染时再查一次发送权：冻结后作者撤回了发送权 → 一窗都不送（卡与红线照送）。"""
     reset_render_cache()
-    seeded = _seed_reference(session, seed="rights", strategy="B")
+    seeded = _seed_reference(session, seed="rights")
     book = seeded.repo.get_book(seeded.book_id)
     book.cloud_policy = "allow_full_cloud"
     for index in range(80):
@@ -285,7 +269,7 @@ def test_styled_gate_uses_the_live_banned_terms_not_the_frozen_contract(
     """
     from novel_system.services.qc_engine import _styled_gate_report
 
-    seeded = _seed_reference(session, seed="validation_inputs", strategy="A")
+    seeded = _seed_reference(session, seed="validation_inputs", config_json={"reference_mode": "card_only"})
     contract = build_style_runtime_contract(
         seeded.repo,
         [seeded.binding],
@@ -315,15 +299,15 @@ def test_styled_gate_uses_the_live_banned_terms_not_the_frozen_contract(
 def test_task_specific_bundle_contract_and_scene_injection_context_are_auditable(
     session,
 ) -> None:
-    seeded = _seed_reference(session, seed="tasks", strategy="A")
+    seeded = _seed_reference(session, seed="tasks", config_json={"reference_mode": "card_only"})
     long_binding = seeded.repo.create_binding(
         binding_id="contract_binding_tasks_long",
         profile_id=seeded.profile_id,
         scope="project",
         scope_ref_id=seeded.project_id,
         task_type="long_form_continuation",
-        strategy="A",
-        config_json={},
+        strategy="mixed",
+        config_json={"reference_mode": "card_only"},
         status="active",
     )
     session.flush()
@@ -400,7 +384,7 @@ def test_task_specific_bundle_contract_and_scene_injection_context_are_auditable
 
 
 def test_qc_gate_validates_the_frozen_contract_profiles(session, monkeypatch) -> None:
-    seeded = _seed_reference(session, seed="qc", strategy="A")
+    seeded = _seed_reference(session, seed="qc", config_json={"reference_mode": "card_only"})
     contract = build_style_runtime_contract(
         seeded.repo,
         [seeded.binding],
@@ -453,7 +437,7 @@ def test_qc_gate_validates_the_frozen_contract_profiles(session, monkeypatch) ->
     profile = seeded.repo.get_profile(seeded.profile_id)
     profile.profile_json = {
         **dict(profile.profile_json or {}),
-        "style_features": ["不应被本次质检读取的实时修改"],
+        "dimension_card": _card_with_line("不应被本次质检读取的实时修改"),
     }
     session.flush()
 
@@ -481,7 +465,9 @@ def test_qc_gate_validates_the_frozen_contract_profiles(session, monkeypatch) ->
     policy = captured["policy"]
     assert policy.bound and policy.contract_hash == contract["contract_hash"]
     frozen_profile = policy.contract["layers"][-1]["profile"]
-    assert frozen_profile["profile_json"]["style_features"] == ["句式舒展，收束克制"]
+    frozen_lines = frozen_profile["profile_json"]["dimension_card"]["dimensions"][0]["lines"]
+    assert [line["text"] for line in frozen_lines] == ["句式舒展，收束克制"]
+    assert "style_features" not in frozen_profile["profile_json"]
 
 
 def test_layered_baseline_blends_mean_and_total_variance(
@@ -531,7 +517,7 @@ def test_context_extractor_is_bounded_normalized_and_audit_contains_only_hash() 
 def test_contract_aware_bundle_never_falls_back_to_a_later_live_binding(
     session,
 ) -> None:
-    seeded = _seed_reference(session, seed="no_fallback", strategy="A")
+    seeded = _seed_reference(session, seed="no_fallback", config_json={"reference_mode": "card_only"})
     contract = build_style_runtime_contract(
         seeded.repo,
         [seeded.binding],
@@ -601,7 +587,7 @@ def test_contract_freezes_voice_signature_and_narrative_guidance_but_not_raw_fie
     session,
 ) -> None:
     """2026-09 v2 · W1:新键进冻结契约;非 allow-list 键(含原文)仍被拒之门外。"""
-    seeded = _seed_reference(session, seed="v2_keys", strategy="A")
+    seeded = _seed_reference(session, seed="v2_keys", config_json={"reference_mode": "card_only"})
     profile = seeded.repo.get_profile(seeded.profile_id)
     voice_signature = {
         "version": "voice_signature_v1",
@@ -635,7 +621,7 @@ def test_contract_freezes_voice_signature_and_narrative_guidance_but_not_raw_fie
     assert validate_style_runtime_contract(contract) == contract
 
     # 旧画像(没有新键)照旧可冻结、可校验——优雅退化。
-    legacy = _seed_reference(session, seed="v2_legacy", strategy="A")
+    legacy = _seed_reference(session, seed="v2_legacy", config_json={"reference_mode": "card_only"})
     legacy_contract = build_style_runtime_contract(
         legacy.repo,
         [legacy.binding],

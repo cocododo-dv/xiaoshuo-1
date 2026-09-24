@@ -1,4 +1,4 @@
-"""PR-8 §5.1 — scene_generation._inject_style_reference 与 InjectionService 集成。"""
+"""PR-8 §5.1 — scene_generation._inject_style_reference 与注入渲染（inject.render / inject.bindings）的集成。"""
 
 from __future__ import annotations
 
@@ -28,15 +28,36 @@ def _auto_online_pipeline(monkeypatch):
     _install_online_pipeline(monkeypatch)
 
 
+def _v3_profile_json(lines: list[str]) -> dict:
+    """带文风卡的 v3 画像（2026-09-24 起没有卡替身：旧的 style_features 列表不再进提示）——每条句子一行「这样写」。"""
+    return {
+        "profile_version": "style_profile_v3",
+        "narrative_summary": "短句白话",
+        "dimension_card": {
+            "version": "dimension_card_v1",
+            "temperament": [],
+            "dimensions": [
+                {
+                    "dimension": "language.sentence_structure",
+                    "distinctiveness": 0.9,
+                    "devices": [],
+                    "lines": [{"text": text, "mandatory": True, "distinctiveness": 0.9} for text in lines],
+                }
+            ],
+        },
+    }
+
+
 def _seed_style_reference_binding(
     *,
     project_id: str,
     seed: str,
     task_type: str = "scene_generation",
     style_features: list[str] | None = None,
-    strategy: str = "A",
+    reference_mode: str = "card_only",
     profile_status: str = "active",
 ) -> None:
+    """项目级绑定；缺省只用文风卡（与这些用例原来的旧策略 A 同一语义：不选样例窗，书没有段落也不会报 NO_WINDOWS）。"""
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         book_id = f"sr_book_{seed}"
@@ -60,10 +81,7 @@ def _seed_style_reference_binding(
             run_id=run_id,
             title="t",
             status=profile_status,
-            profile_json={
-                "narrative_summary": "短句白话",
-                "style_features": style_features or ["短句", "克制"],
-            },
+            profile_json=_v3_profile_json(style_features or ["短句", "克制"]),
             coverage_json={},
             source_finding_ids_json=[],
         )
@@ -73,8 +91,8 @@ def _seed_style_reference_binding(
             scope="project",
             scope_ref_id=project_id,
             task_type=task_type,
-            strategy=strategy,
-            config_json={},
+            strategy="mixed",
+            config_json={"reference_mode": reference_mode},
             status="active",
         )
         session.commit()
@@ -250,7 +268,7 @@ def _seed_character_binding(*, seed: str, character_id: str, feature: str) -> No
             run_id=f"sr_run_{seed}",
             title="t",
             status="active",
-            profile_json={"narrative_summary": "n", "style_features": [feature]},
+            profile_json=_v3_profile_json([feature]),
             coverage_json={},
             source_finding_ids_json=[],
         )
@@ -260,7 +278,7 @@ def _seed_character_binding(*, seed: str, character_id: str, feature: str) -> No
             scope="character",
             scope_ref_id=character_id,
             task_type="scene_generation",
-            strategy="A",
+            strategy="mixed",
             config_json={},
             status="active",
         )
@@ -308,7 +326,7 @@ def _seed_scene_binding(*, seed: str, scene_id: str, feature: str) -> None:
             run_id=f"sr_run_{seed}",
             title="t",
             status="active",
-            profile_json={"narrative_summary": "n", "style_features": [feature]},
+            profile_json=_v3_profile_json([feature]),
             coverage_json={},
             source_finding_ids_json=[],
         )
@@ -318,7 +336,7 @@ def _seed_scene_binding(*, seed: str, scene_id: str, feature: str) -> None:
             scope="scene",
             scope_ref_id=scene_id,
             task_type="scene_generation",
-            strategy="A",
+            strategy="mixed",
             config_json={},
             status="active",
         )

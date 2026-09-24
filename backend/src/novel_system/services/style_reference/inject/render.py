@@ -22,9 +22,9 @@
 样例原本的位置写明「本次没有附原文样例，照文风卡与声音特征写」（M5）——起草模板说样例在消息末尾，不能让模型
 去找一块不存在的样例。
 
-**旧画像**（还没有 ``dimension_card``——学习作业跑之前的所有画像）：旧的正向特征 / 叙事模式 / 偏离校准与禁忌
-陈述渲染成简单的 ``[正向风格特征]`` / ``[禁忌模式]`` 替身，**含数字的行整行不要**（不再有量化软化机器，J11），
-审计记 ``legacy_profile: true``。
+**没有文风卡的画像**（迁移 0092 已把学习作业跑之前的旧画像归档，绑定它的作品按「画像未启用」降级）：不再有
+卡替身（2026-09-24 清理删掉了 ``[正向风格特征]`` / ``[禁忌模式]`` 替身与它的数字行剔除）——这样的画像只送声音块
+（若有）、样例与红线。
 
 **不学的维**（``dimension_states == exclude``）：卡里整维不出现，声音块里属于这一维的习惯句、近期常见偏差里
 属于这一维的条目也不带（L8）。
@@ -100,7 +100,6 @@ from novel_system.services.style_reference.inject.selection import (
     role_windows,
 )
 from novel_system.services.style_reference.policy import decide_reference_route
-from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.runtime_contract import contract_layer
 from novel_system.services.style_reference.schemas import (
     FEW_SHOT_CLOSING_MANDATE,
@@ -130,7 +129,6 @@ CARD_EXAMPLE_MAX_CHARS = 11
 CARD_EXAMPLE_MIN_CHARS = 4
 _CLAUSE_SPLIT_RE = re.compile(r"[，。！？；：、,.!?;:…—\n\r\t「」『』“”‘’\"'（）()《》〈〉【】\[\]〔〕]+")
 _ESCAPED_BOUNDARY_TOKEN = "UNTRUSTED_BOUNDARY_ESCAPED"
-_DIGIT_RE = re.compile(r"[0-9０-９]")
 _SENTENCE_END = "。！？!?…"
 _CLOSERS = "”’」』\"'）)】"
 
@@ -208,18 +206,6 @@ CARD_HEADERS: dict[str, str] = {
     ROLE_REVISE: (
         "[文风卡](改稿时逐维对照：只改不像这位作者的地方，改完要更像；样例是权威，标「必须」的每场都要体现)"
     ),
-}
-LEGACY_POSITIVE_HEADERS: dict[str, str] = {
-    ROLE_DRAFT: "[正向风格特征](这位作者的写法；样例是权威，这里帮你不漏掉)",
-    ROLE_REVISE: "[正向风格特征](改稿时对照这些写法，只改不像的地方)",
-    ROLE_REVIEW: "[正向风格特征](评审时对照：稿子有没有写出这些手法)",
-    ROLE_PLAN: "[正向风格特征](规划时按这些手法设想场面、情绪与收场)",
-}
-LEGACY_FORBIDDEN_HEADERS: dict[str, str] = {
-    ROLE_DRAFT: "[禁忌模式](这位作者不这么写)",
-    ROLE_REVISE: "[禁忌模式](这位作者不这么写)",
-    ROLE_REVIEW: "[禁忌模式](评审时对照：稿子有没有落进这些模式)",
-    ROLE_PLAN: "[禁忌模式](这位作者不这么写)",
 }
 RECENT_GAPS_HEADER = "[近期常见偏差](前几场草稿里反复出现的不像之处，这一场特别注意)"
 _FALLBACK_RED_LINE = """## 严格禁止
@@ -335,10 +321,6 @@ def window_position_tag(ref: WindowRef) -> str:
     return label or "样例"
 
 
-def _has_digit(text: str) -> bool:
-    return bool(_DIGIT_RE.search(text))
-
-
 def _layer(contract: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return contract_layer(contract)
 
@@ -436,123 +418,12 @@ class DimensionCardSource(CardSource):
         return block
 
 
-class LegacyCardSource(CardSource):
-    """旧画像（没有 dimension_card）的卡替身：正向特征 / 叙事模式 / 偏离校准 + 禁忌陈述；含数字的行整行不要。"""
-
-    kind = "legacy"
-
-    def __init__(
-        self,
-        profile_json: Mapping[str, Any],
-        *,
-        forbidden_findings: Sequence[Mapping[str, Any]],
-        dimension_states: Mapping[str, str],
-        role: str,
-        recent_gaps: Sequence[str],
-        budget_chars: int = DEFAULT_CARD_BUDGET_CHARS,
-    ) -> None:
-        self.role = role
-        self.budget_chars = max(0, int(budget_chars))
-        self.dropped_digit_lines = 0
-
-        def _clean(values: Any) -> list[str]:
-            out: list[str] = []
-            for value in values if isinstance(values, (list, tuple)) else []:
-                text = " ".join(str(value or "").split())
-                if not text:
-                    continue
-                if _has_digit(text):
-                    self.dropped_digit_lines += 1
-                    continue
-                if text not in out:
-                    out.append(text)
-            return out
-
-        # 概述：定性概述优先，没有时用不是量化基线的叙事概述（与旧「概述」行同一口径）
-        summary = " ".join(generation_safe_summary(profile_json).split())
-        if summary and _has_digit(summary):
-            self.dropped_digit_lines += 1
-            summary = ""
-        self.summary = summary
-        features = _clean(profile_json.get("style_features"))
-        patterns = _clean(profile_json.get("narrative_patterns"))
-        calibration = _clean(profile_json.get("calibration_guidance"))
-        positive: list[tuple[str, str]] = []
-        for index in range(max(len(features), len(patterns), len(calibration))):
-            if index < len(features):
-                positive.append((f"pos:{len(positive)}", f"- [表达机制] {features[index]}"))
-            if index < len(patterns):
-                positive.append((f"pos:{len(positive)}", f"- [叙事机制] {patterns[index]}"))
-            if index < len(calibration):
-                positive.append((f"pos:{len(positive)}", f"- [偏离校准] {calibration[index]}"))
-        states = dict(dimension_states)
-        forbidden_texts = _clean(profile_json.get("banned_replication_rules"))
-        finding_texts = _clean(
-            [
-                item.get("statement")
-                for item in forbidden_findings
-                if isinstance(item, Mapping)
-                and str(item.get("status") or "") != "rejected"
-                and states.get(str(item.get("sub_dimension") or "")) != DIMENSION_EXCLUDE
-            ]
-        )
-        for text in finding_texts:
-            if text not in forbidden_texts:
-                forbidden_texts.append(text)
-        self.positive = positive
-        self.forbidden = [(f"neg:{i}", f"- {text}") for i, text in enumerate(forbidden_texts)]
-        self.gaps = [(f"gap:{i}", f"- {text}") for i, text in enumerate(recent_gaps)]
-        order = [uid for uid, _line in reversed(self.positive)]
-        order.extend(uid for uid, _line in reversed(self.forbidden))
-        if self.summary:
-            order.append("summary")
-        order.extend(uid for uid, _line in reversed(self.gaps))
-        self.drop_order = tuple(order)
-
-    @property
-    def is_empty(self) -> bool:
-        return not (self.summary or self.positive or self.forbidden)
-
-    def render(self, excluded: frozenset[str] = frozenset()) -> str:
-        """整张替身与文风卡同一个总预算：超了就按去掉顺序整行去（永不截半句）。"""
-        block = self._render(excluded)
-        if not self.budget_chars or len(block) <= self.budget_chars:
-            return block
-        dropped = set(excluded)
-        for unit in self.drop_order:
-            if unit in dropped:
-                continue
-            dropped.add(unit)
-            block = self._render(frozenset(dropped))
-            if len(block) <= self.budget_chars:
-                break
-        return block
-
-    def _render(self, excluded: frozenset[str]) -> str:
-        sections: list[str] = []
-        positive = [line for uid, line in self.positive if uid not in excluded]
-        summary = self.summary if self.summary and "summary" not in excluded else ""
-        if summary or positive:
-            lines = [LEGACY_POSITIVE_HEADERS.get(self.role, LEGACY_POSITIVE_HEADERS[ROLE_DRAFT])]
-            if summary:
-                lines.append(f"概述：{summary}")
-            lines.extend(positive)
-            sections.append("\n".join(lines))
-        forbidden = [line for uid, line in self.forbidden if uid not in excluded]
-        if forbidden:
-            sections.append("\n".join([LEGACY_FORBIDDEN_HEADERS.get(self.role, LEGACY_FORBIDDEN_HEADERS[ROLE_DRAFT]), *forbidden]))
-        gaps = [line for uid, line in self.gaps if uid not in excluded]
-        if gaps and sections:
-            sections.append("\n".join([RECENT_GAPS_HEADER, *gaps]))
-        return "\n\n".join(sections)
-
-
-_POSITIVE_SECTIONS = ("[文风卡]", "[正向风格特征]")
-_FORBIDDEN_SECTIONS = ("[作者不这么写]", "[禁忌模式]")
+_POSITIVE_SECTIONS = ("[文风卡]",)
+_AVOID_SECTIONS = ("[作者不这么写]",)
 
 
 def count_card_lines(block: str) -> tuple[int, int]:
-    """(正向条数, 禁忌条数)：``- `` 开头的条目行按所在小节归类；气质行算一条正向。"""
+    """(正向条数, 「作者不这么写」条数)：``- `` 开头的条目行按所在小节归类；气质行算一条正向。"""
     positive = forbidden = 0
     section = ""
     for line in block.splitlines():
@@ -562,7 +433,7 @@ def count_card_lines(block: str) -> tuple[int, int]:
             continue
         if section.startswith(_POSITIVE_SECTIONS) and (stripped.startswith("- ") or stripped.startswith("气质")):
             positive += 1
-        elif section.startswith(_FORBIDDEN_SECTIONS) and stripped.startswith("- "):
+        elif section.startswith(_AVOID_SECTIONS) and stripped.startswith("- "):
             forbidden += 1
     return positive, forbidden
 
@@ -856,18 +727,19 @@ def render_stats(
     blocks: Mapping[str, Any],
     k: int,
 ) -> dict[str, int]:
-    """读数（``InjectionPreviewStats`` 的字段；抽象块只有卡 / 声音，量化指标行恒为 0）。"""
-    positive, forbidden = count_card_lines(str(blocks.get("card") or ""))
+    """读数（``InjectionPreviewStats`` 的字段）：卡的正向条数 / 「作者不这么写」条数、声音行数、样例窗数与字数、
+    前缀总字数、卡的字数、窗数上限。"""
+    positive, avoid = count_card_lines(str(blocks.get("card") or ""))
     windows = list(blocks.get("windows") or [])
+    card = str(blocks.get("card") or "")
     return {
         "positive_lines": positive,
-        "forbidden_lines": forbidden,
-        "metric_lines": 0,
+        "avoid_lines": avoid,
         "voice_lines": sum(1 for line in str(blocks.get("voice") or "").splitlines() if line.startswith("- ")),
         "few_shot_windows": len(windows),
         "few_shot_chars": sum(int(w.chars) for w in windows),
         "total_prefix_chars": len(system_prefix) + len(user_tail),
-        "intensity_effective_total_chars": len(str(blocks.get("card") or "")),
+        "card_chars": len(card),
         "few_shot_k": int(k),
     }
 
@@ -1010,42 +882,33 @@ def build_card_source(
     request: StyleRenderRequest,
     profile_json: Mapping[str, Any],
     *,
-    forbidden_findings: Sequence[Mapping[str, Any]],
     examples_allowed: bool,
     reference_mode: str | None = None,
     recent_gaps: Sequence[str] | None = None,
     protected_terms: Sequence[str] = (),
 ) -> CardSource | None:
-    """v3 文风卡 → :class:`DimensionCardSource`；旧画像 → :class:`LegacyCardSource`（空替身 → None）。
+    """v3 文风卡 → :class:`DimensionCardSource`；画像没有文风卡 → ``None``（没有卡替身，2026-09-24）。
 
     ``card_only`` 且允许送原文时给卡句挂 ≤11 字的原话例子（不含 ``protected_terms``，M3）；``recent_gaps``
     缺省用请求里的（渲染入口传去掉「不学」维之后的，L8）。"""
     card = card_from_profile_json(profile_json)
+    if card is None:
+        return None
     states = dict(getattr(policy, "dimension_states", None) or {})
     mode = reference_mode if reference_mode is not None else getattr(policy, "reference_mode", None)
     gaps = tuple(request.recent_gaps if recent_gaps is None else recent_gaps)
-    if card is not None:
-        examples: dict[str, str] = {}
-        if mode == REFERENCE_MODE_CARD_ONLY and examples_allowed and session is not None:
-            examples = card_examples(session, card, protected_terms=protected_terms)
-        return DimensionCardSource(
-            card,
-            role=request.role,
-            dimension_states=states,
-            line_states=line_states_from_profile_json(profile_json),
-            recent_gaps=gaps,
-            budget_chars=_budget_int("card_budget_chars", DEFAULT_CARD_BUDGET_CHARS),
-            examples=examples,
-        )
-    legacy = LegacyCardSource(
-        profile_json,
-        forbidden_findings=forbidden_findings,
-        dimension_states=states,
+    examples: dict[str, str] = {}
+    if mode == REFERENCE_MODE_CARD_ONLY and examples_allowed and session is not None:
+        examples = card_examples(session, card, protected_terms=protected_terms)
+    return DimensionCardSource(
+        card,
         role=request.role,
+        dimension_states=states,
+        line_states=line_states_from_profile_json(profile_json),
         recent_gaps=gaps,
         budget_chars=_budget_int("card_budget_chars", DEFAULT_CARD_BUDGET_CHARS),
+        examples=examples,
     )
-    return None if legacy.is_empty else legacy
 
 
 def render_style(
@@ -1104,7 +967,6 @@ def render_style(
                 window_refs=(),
                 stats=render_stats(system_prefix="", user_tail="", blocks={}, k=0),
                 notices=notices,
-                legacy_profile=False,
                 reference_mode=reference_mode,
                 route=route.audit(),
             )
@@ -1146,7 +1008,6 @@ def render_style(
             policy,
             request,
             profile_json,
-            forbidden_findings=[item for item in layer.get("forbidden_findings") or [] if isinstance(item, Mapping)],
             examples_allowed=samples_allowed,
             reference_mode=reference_mode,
             recent_gaps=recent_gaps,
@@ -1173,7 +1034,7 @@ def render_style(
         frozen_root = str(book_snapshot.get("paragraph_root_sha256") or "") or None
         if frozen_root and selection.root and frozen_root != selection.root:
             notices.append(NOTICE_BOOK_CHANGED)
-        refs = role_windows(policy, request, selection, card=getattr(card_source, "card", None))
+        refs = role_windows(policy, request, selection)
         windows = _sample_windows(session, book_id, refs)
     red_line = red_line_block([str(t) for t in layer.get("banned_terms") or []])
     closing = ""
@@ -1205,8 +1066,6 @@ def render_style(
         window_refs=refs_out,
         stats=stats,
         notices=notices,
-        legacy_profile=isinstance(card_source, LegacyCardSource),
-        legacy_digit_lines_dropped=getattr(card_source, "dropped_digit_lines", 0) if card_source else 0,
         card_examples=getattr(card_source, "example_count", 0) if card_source else 0,
         samples_blocked=samples_blocked,
         reference_mode=reference_mode,
@@ -1251,9 +1110,6 @@ __all__ = [
     "FEW_SHOT_CLOSING_MANDATE_REVISE",
     "FIT_EXAMPLE_PREFIX",
     "FIT_GAPS_UNIT",
-    "LEGACY_FORBIDDEN_HEADERS",
-    "LEGACY_POSITIVE_HEADERS",
-    "LegacyCardSource",
     "NOTICE_BOOK_CHANGED",
     "NOTICE_BOOK_MISSING",
     "NOTICE_SAMPLES_BLOCKED",

@@ -584,7 +584,7 @@ def test_budget_fit_keeps_the_revise_demonstration_windows_longest(session) -> N
     ensure_window_index(session, book_id)
     numbers = window_numbers(session, book_id)
     tagged = numbers[5:9]
-    tag_windows(session, book_id, {no: {"devices": ["倒计时"]} for no in tagged}, devices=("倒计时",))
+    tag_windows(session, book_id, {no: {"dimensions": ["narrative.pacing"]} for no in tagged})
     bind(session, profile_id, binding_id="l3_bind")
     policy = policy_from_contract(_contract(session), mode="frozen")
     rendered = render_style(

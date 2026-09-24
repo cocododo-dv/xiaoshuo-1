@@ -1,13 +1,14 @@
 """风格参考 v3 — 书库与画像的读模型(台账 U10 / E10 / N9):书库列表的摘要、画像摘要、文风画像页的详情。
 
 - :func:`book_summaries`:``GET /books`` 每本书一条——状态、段落类型的来源与一致率、最近一次分类 / 学习作业、
-  这本书的画像摘要(``needs_relearn``:旧版画像、段落类型在学完之后又更新过、或正文变过)、用在了哪些作品上;
+  这本书的画像摘要(``needs_relearn``:段落类型在学完之后又更新过、或正文变过)、用在了哪些作品上;
   不带 ``stats_json``(详情端点才带);
 - :func:`list_profile_summaries` / :func:`profile_summaries`:``GET /profiles`` 的摘要——**不带** ``profile_json``
   (旧画像一份就有几百 KB,列表只要几个字段:画像版本、学在何时、文风卡几句、要不要重新学);
 - :func:`profile_detail`:``GET /profiles/{id}`` 的文风画像页——规范化后的 16 维文风卡、每句的 ✓ / ✗ 状态与
   依据(发现 → 证据 → 引文;引文是参考作者自己的原话,只在本机给作者看)、气质、声音习惯、结构摘要、各维计数、
-  ``learned_from``。
+  ``learned_from``。没有文风卡的旧画像(迁移 0092 已归档)只是 ``has_card=False`` 的空壳:旧的「卡替身」视图与
+  ``legacy`` 载荷键已删(2026-09-24)。
 
 画像摘要只读列与几个小 JSON 键(``json_extract``),不加载整份 ``profile_json``。全部只读。
 """
@@ -15,7 +16,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -54,7 +54,6 @@ from novel_system.services.style_reference.paragraph_root import ROOT_KEY
 from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.structure import render_structure_card_parts
 
-RELEARN_LEGACY = "legacy_profile"
 RELEARN_TYPES_CHANGED = "types_changed"
 RELEARN_TEXT_CHANGED = "text_changed"
 
@@ -64,8 +63,7 @@ PROTECTED_SOURCE = "protected_auto"
 # 文风画像页每句最多带几条原话(总数另给);发现的陈述最多几条
 LINE_EVIDENCE_MAX = 6
 LINE_SOURCES_MAX = 3
-LEGACY_LINES_MAX = 12
-_DIGIT_RE = re.compile(r"[0-9０-９]")
+PLANNING_GUIDANCE_LINES_MAX = 12
 
 
 def _json(value: Any) -> Any:
@@ -144,9 +142,12 @@ def _book_marks(session: Session, book_ids: Iterable[str]) -> dict[str, dict[str
 
 
 def relearn_reason(profile_version: str, learned_from: Mapping[str, Any], book_marks: Mapping[str, Any] | None) -> str | None:
-    """这份画像该不该重新学:旧版画像(没有文风卡);学完之后段落类型又更新过;学完之后正文变过。"""
+    """这份画像该不该重新学:学完之后段落类型又更新过;学完之后正文变过。
+
+    没有 v3 版本标记的旧画像不是「要重新学」,是「没学过」(``has_card=False``;迁移 0092 把它们归档,学习文风时
+    就地更新同一份画像并复活)——不给理由。"""
     if str(profile_version or "") != PROFILE_VERSION_V3:
-        return RELEARN_LEGACY
+        return None
     marks = dict(book_marks or {})
     if _int(learned_from.get("types_revision")) != _int(marks.get("types_revision")):
         return RELEARN_TYPES_CHANGED
@@ -302,7 +303,7 @@ def book_summaries(
                 "project_title": project_titles.get(str(binding.scope_ref_id)),
                 "binding_id": binding.binding_id,
                 "profile_id": binding.profile_id,
-                "config": normalize_binding_config(binding.strategy, binding.config_json or {}),
+                "config": normalize_binding_config(binding.config_json or {}),
             }
         )
     out: list[dict[str, Any]] = []
@@ -364,7 +365,7 @@ def _voice(profile_json: Mapping[str, Any]) -> dict[str, Any]:
     return {"habits": [], "deliberate_repetition": False, "source": None}
 
 
-def _clean_lines(values: Any, *, limit: int = LEGACY_LINES_MAX) -> list[str]:
+def _clean_lines(values: Any, *, limit: int = PLANNING_GUIDANCE_LINES_MAX) -> list[str]:
     out: list[str] = []
     for value in values if isinstance(values, (list, tuple)) else []:
         text = " ".join(str(value or "").split())
@@ -373,27 +374,6 @@ def _clean_lines(values: Any, *, limit: int = LEGACY_LINES_MAX) -> list[str]:
         if len(out) >= limit:
             break
     return out
-
-
-def _legacy_view(profile_json: Mapping[str, Any]) -> dict[str, Any]:
-    """旧版画像(没有文风卡):起草时的卡替身读的就是这几组句子——含数字的句子起草时整句不带,这里如实标出。"""
-    groups = []
-    for key, label in (
-        ("style_features", "写法特征"),
-        ("narrative_patterns", "叙事手法"),
-        ("calibration_guidance", "偏离时怎么改"),
-        ("banned_replication_rules", "不许照搬的东西"),
-    ):
-        lines = _clean_lines(profile_json.get(key))
-        if lines:
-            groups.append(
-                {
-                    "key": key,
-                    "label": label,
-                    "lines": [{"text": text, "dropped_in_drafting": bool(_DIGIT_RE.search(text))} for text in lines],
-                }
-            )
-    return {"summary": generation_safe_summary(profile_json), "groups": groups}
 
 
 def _evidence_index(
@@ -436,7 +416,7 @@ def _evidence_index(
 
 
 def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str, Any]:
-    """文风画像页的全部数据(见模块文档)。旧版画像:``has_card=False``,16 维为空壳,另给 ``legacy``。"""
+    """文风画像页的全部数据(见模块文档)。没有文风卡的画像:``has_card=False``,16 维为空壳。"""
     profile_json = profile.profile_json if isinstance(profile.profile_json, Mapping) else {}
     card = card_from_profile_json(profile_json)
     states = line_states_from_profile_json(profile_json)
@@ -550,19 +530,16 @@ def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str
         "voice": _voice(profile_json),
         "structure": {"lines": _structure_lines(profile_json)},
         "planning_guidance": _clean_lines(profile_json.get("planning_guidance")),
-        "sub_dimensions": {key: dict(value) for key, value in sub_dimensions.items() if isinstance(value, Mapping)},
         "protected_terms_count": protected_count,
         "coverage": {
             key: coverage.get(key)
             for key in ("card_lines", "findings_count", "quotes_count", "sub_dim_count")
             if key in coverage
         },
-        "legacy": _legacy_view(profile_json) if card is None else None,
     }
 
 
 __all__ = [
-    "RELEARN_LEGACY",
     "RELEARN_TEXT_CHANGED",
     "RELEARN_TYPES_CHANGED",
     "book_summaries",

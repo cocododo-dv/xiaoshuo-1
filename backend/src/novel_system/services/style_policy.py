@@ -11,7 +11,7 @@ v3 起所有节点只看 :class:`StylePolicy`：
 
 ``bound``：有一份可用的风格契约（冻结或现解析）且画像可用——渲染参考、抄袭门、读数都以它为准。
 ``style_first``：``bound`` 且起草方式是作者手笔直起——房风规则让位、首稿直起、风格步按读数决定。
-中立模块：只依赖风格参考包的叶子（runtime_contract / binding_config），不依赖任何管线模块。
+中立模块：只依赖风格参考包的叶子（runtime_contract / binding_config / inject.bindings），不依赖任何管线模块。
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from novel_system.services.style_reference.binding_config import (
     sends_card,
     sends_samples,
 )
+from novel_system.services.style_reference.inject.bindings import SCOPE_RANK
 from novel_system.services.style_reference.runtime_contract import (
     contract_layer,
     contract_payload_fingerprint,
@@ -51,6 +52,10 @@ MODE_FROZEN_LEGACY = "frozen_legacy"
 MODE_LIVE = "live"
 MODE_DEGRADED = "degraded"
 BOUND_MODES = frozenset({MODE_FROZEN, MODE_FROZEN_LEGACY, MODE_LIVE})
+# 2026-09-24（契约文档 §8.1 C7）：轻量现解析里，作者的绑定指向的画像不是 active（归档 / 草稿）——不是「没有绑定」，
+# 是「绑了、暂时用不了」：策略降级并带上画像 / 绑定 / 书的 id，抄袭门由此报 unavailable（不是 0 本书通过）
+PROFILE_NOT_ACTIVE_CODE = "STYLE_REFERENCE_PROFILE_NOT_ACTIVE"
+_UNMATCHED_RANK = 99
 
 _CACHE_MAX = 64
 _CACHE: "OrderedDict[str, StylePolicy]" = OrderedDict()
@@ -112,7 +117,7 @@ def policy_from_contract(contract: Mapping[str, Any], *, mode: str) -> StylePoli
     binding = layer.get("binding") if isinstance(layer.get("binding"), Mapping) else {}
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     book = layer.get("book") if isinstance(layer.get("book"), Mapping) else {}
-    config = normalize_binding_config(binding.get("strategy"), binding.get("config_json"))
+    config = normalize_binding_config(binding.get("config_json"))
     # 起草方式以契约顶层冻结值为准；v1 契约缺键时按「先中性」处理（与旧 effective_draft_mode 一致）
     draft_mode = str(contract.get("draft_mode") or "") or DRAFT_MODE_NEUTRAL_FIRST
     if draft_mode not in (DRAFT_MODE_STYLE_FIRST, DRAFT_MODE_NEUTRAL_FIRST):
@@ -192,7 +197,9 @@ def style_policy_live(
     ``contract_hash`` 为 None）——给只需要「绑没绑、是否让位、参考的是哪本书 / 哪份画像」的节点用
     （场景诊断逐场判定、抄袭门、写作台采纳）。冻结一份契约要读全书段落算根哈希（真实库约 0.8 s），
     逐场做不起；要渲染参考的节点仍用默认的冻结路径。选层规则与注入单选一致：scene > character（POV
-    优先）> project > global，同层取最新——最具体的一层说了算。
+    优先）> project > global，同层取最新——最具体的一层说了算。命中的绑定里没有一条指向 active 画像时
+    **降级**（``error_code=STYLE_REFERENCE_PROFILE_NOT_ACTIVE``，带最具体那条的 profile / binding / book id），
+    不当作未绑定（C7）。
     """
     if scope is None:
         return UNBOUND
@@ -238,7 +245,11 @@ def _scope_character_ids(scope: Any) -> list[str]:
 
 
 def _live_policy_without_contract(session: Any, scope: Any, *, task_type: str) -> StylePolicy:
-    """``style_policy_live(..., freeze_contract=False)`` 的实现：只查几列，不加载画像 JSON、不冻结契约。"""
+    """``style_policy_live(..., freeze_contract=False)`` 的实现：只查几列，不加载画像 JSON、不冻结契约。
+
+    与冻结路径同一条选层规则（``inject.bindings.SCOPE_RANK``：scene > character（POV 在前）> project > global，
+    同层取最新），且同样只在指向 active 画像的绑定里选；命中的绑定**全部**指向非 active 画像时不再回答
+    「未绑定」，而是降级（C7）——冻结路径在这种情形下冻不出契约，这里给出同样的降级形状。"""
     project_id = str(getattr(scope, "project_id", None) or "") or None
     scene_id = str(getattr(scope, "scene_id", None) or "") or None
     character_ids = _scope_character_ids(scope)
@@ -265,17 +276,18 @@ def _live_policy_without_contract(session: Any, scope: Any, *, task_type: str) -
 
         def rank(binding: Any) -> tuple[int, int]:
             ref = str(binding.scope_ref_id or "")
-            if scene_id and binding.scope == "scene" and ref == scene_id:
-                return 0, 0
-            if binding.scope == "character" and ref in character_ids:
-                return 1, character_ids.index(ref)
-            if project_id and binding.scope == "project" and ref == project_id:
-                return 2, 0
-            if binding.scope == "global":
-                return 3, 0
-            return 99, 0
+            scope_name = str(binding.scope or "")
+            if scene_id and scope_name == "scene" and ref == scene_id:
+                return SCOPE_RANK["scene"], 0
+            if scope_name == "character" and ref in character_ids:
+                return SCOPE_RANK["character"], character_ids.index(ref)
+            if project_id and scope_name == "project" and ref == project_id:
+                return SCOPE_RANK["project"], 0
+            if scope_name == "global":
+                return SCOPE_RANK["global"], 0
+            return _UNMATCHED_RANK, 0
 
-        candidates = [binding for binding in bindings if rank(binding)[0] < 99]
+        candidates = [binding for binding in bindings if rank(binding)[0] < _UNMATCHED_RANK]
         if not candidates:
             return UNBOUND
         profile_rows = {
@@ -288,12 +300,20 @@ def _live_policy_without_contract(session: Any, scope: Any, *, task_type: str) -
                 ).where(StyleReferenceProfile.profile_id.in_({b.profile_id for b in candidates}))
             ).all()
         }
-        candidates = [b for b in candidates if profile_rows.get(str(b.profile_id), ("", ""))[0] == "active"]
-        if not candidates:
-            return UNBOUND
         # 同层同序取最新（created_at 是 ISO 字符串，字典序即时间序）
         candidates.sort(key=lambda b: str(b.created_at or ""), reverse=True)
-        best = min(candidates, key=rank)
+        usable = [b for b in candidates if profile_rows.get(str(b.profile_id), ("", ""))[0] == "active"]
+        if not usable:
+            # 绑了、但画像都不是 active（归档 / 草稿 / 已删）：降级，不是未绑定
+            stuck = min(candidates, key=rank)
+            return StylePolicy(
+                mode=MODE_DEGRADED,
+                error_code=PROFILE_NOT_ACTIVE_CODE,
+                profile_id=str(stuck.profile_id),
+                binding_id=str(stuck.binding_id),
+                book_id=profile_rows.get(str(stuck.profile_id), ("", ""))[1] or None,
+            )
+        best = min(usable, key=rank)
         book_id = profile_rows[str(best.profile_id)][1] or None
         cloud_policy = None
         if book_id:
@@ -301,7 +321,7 @@ def _live_policy_without_contract(session: Any, scope: Any, *, task_type: str) -
                 select(StyleReferenceBook.cloud_policy).where(StyleReferenceBook.book_id == book_id)
             ).scalar_one_or_none()
         raw_config = best.config_json if isinstance(best.config_json, Mapping) else {}
-        config = normalize_binding_config(best.strategy, raw_config)
+        config = normalize_binding_config(raw_config)
         draft_mode = resolve_draft_mode(raw_config)
     except Exception as exc:  # noqa: BLE001 — 实时解析失败：未绑定 + 错误码（不阻断调用方）
         logger.warning("light live style policy resolution failed: %s", exc)
@@ -367,6 +387,7 @@ __all__ = [
     "MODE_FROZEN_LEGACY",
     "MODE_LIVE",
     "MODE_NONE",
+    "PROFILE_NOT_ACTIVE_CODE",
     "StylePolicy",
     "UNBOUND",
     "policy_from_contract",

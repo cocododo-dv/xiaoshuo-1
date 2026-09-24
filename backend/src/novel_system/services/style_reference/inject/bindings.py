@@ -1,6 +1,7 @@
 """风格参考 v3 — 绑定解析（从 ``InjectionService`` 搬出，叶子模块：只依赖 ORM）。
 
-优先级单点：scene（0）> character（1，POV 在前、其余台上人物按出场顺序）> project（2）> global（3）；同级取
+优先级单点 :data:`SCOPE_RANK`（``runtime_contract.contract_layer`` 与 ``style_policy`` 的轻量现解析都引用它，
+不各写一份）：scene（0）> character（1，POV 在前、其余台上人物按出场顺序）> project（2）> global（3）；同级取
 最新创建的一条。v3 起**只冻结最具体的一层**（:func:`most_specific_binding`）——旧的多层合并按层序把样例 /
 声音取自「最后一层」，而角色层是按 POV 优先排的，最后一层恰恰是最不重要的配角（J7）。
 
@@ -238,7 +239,7 @@ def describe_binding_layers(
     applied_summary: dict[str, Any] | None = None
     for binding in layers:
         title, status, book_id = profile_rows.get(str(binding.profile_id), (None, None, None))
-        config = normalize_binding_config(binding.strategy, binding.config_json or {})
+        config = normalize_binding_config(binding.config_json or {})
         is_applied = binding is applied
         entry: dict[str, Any] = {
             "rank": SCOPE_RANK.get(str(binding.scope), 9),

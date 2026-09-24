@@ -1,4 +1,4 @@
-"""风格参考 v3 · 注入（P4）：inject/ 包、每场冻结选窗、参考方式、文风卡、旧画像替身、契约 v2、贪心拟合、适配器。
+"""风格参考 v3 · 注入（P4）：inject/ 包、每场冻结选窗、参考方式、文风卡、契约 v2、贪心拟合、适配器。
 
 全部合成数据（``style_reference_inject_helpers``）；无真实模型、无真实作者原文。
 """
@@ -46,7 +46,7 @@ from novel_system.services.style_reference.inject.request import (
     infer_role,
 )
 from novel_system.services.style_reference.inject.selection import (
-    SLOT_DEVICE,
+    SLOT_DIMENSION,
     SLOT_POSITION,
     SLOT_SITUATION,
     IndexWindow,
@@ -201,7 +201,7 @@ def _synthetic_index(count: int = 300, chapters: int = 60, *, tags: dict[int, tu
         chapter = (no - 1) // per + 1
         offset = (no - 1) % per
         position = "opening" if offset == 0 else ("closing" if offset == per - 1 else "middle")
-        situations, devices = (tags or {}).get(no, ((), ()))
+        situations, dimensions = (tags or {}).get(no, ((), ()))
         windows.append(
             IndexWindow(
                 window_no=no,
@@ -214,7 +214,7 @@ def _synthetic_index(count: int = 300, chapters: int = 60, *, tags: dict[int, tu
                 dialogue_share=(no % 7) / 10,
                 typicality=-1.0 - ((no * 37) % 100) / 100,
                 situations=situations,
-                devices=devices,
+                dimensions=dimensions,
             )
         )
     return windows
@@ -263,23 +263,23 @@ def test_position_quota_for_opening_and_closing_scenes() -> None:
         matched = [ref for ref in refs if ref.slot == SLOT_POSITION]
         assert len(matched) == 3 and all(ref.position == position for ref in matched)
         assert refs[:3] == matched  # 位置窗排在选窗顺序最前（评审 / 规划先拿到它们）
-    assert selection_quotas(12, has_position=True) == {"position": 3, "situation": 4, "device": 2}
-    assert selection_quotas(4, has_position=True) == {"position": 1, "situation": 1, "device": 1}
+    assert selection_quotas(12, has_position=True) == {"position": 3, "situation": 4, "dimension": 2}
+    assert selection_quotas(4, has_position=True) == {"position": 1, "situation": 1, "dimension": 1}
     assert selection_quotas(12, has_position=False)["position"] == 0
 
 
-def test_situation_and_device_quotas_use_tagged_windows_only() -> None:
+def test_situation_and_dimension_quotas_use_tagged_windows_only() -> None:
     tags = {no: (("对峙审问",), ()) for no in range(1, 301, 11)}
-    tags.update({no: ((), ("倒计时",)) for no in range(5, 301, 13)})
+    tags.update({no: ((), ("narrative.pacing",)) for no in range(5, 301, 13)})
     index = _synthetic_index(300, 60, tags=tags)
-    refs = compute_selection(index, k=12, seed="SC_TAGS", situation_tags=["对峙审问"], devices=["倒计时"])
+    refs = compute_selection(index, k=12, seed="SC_TAGS", situation_tags=["对峙审问"], dimensions=["narrative.pacing"])
     situation = [ref for ref in refs if ref.slot == SLOT_SITUATION]
-    device = [ref for ref in refs if ref.slot == SLOT_DEVICE]
+    device = [ref for ref in refs if ref.slot == SLOT_DIMENSION]
     assert len(situation) == 4 and all("对峙审问" in ref.situations for ref in situation)
-    assert len(device) == 2 and all("倒计时" in ref.devices for ref in device)
+    assert len(device) == 2 and all("narrative.pacing" in ref.dimensions for ref in device)
     # 没打标签的书：标签配额不计，典型度抽样补满
-    untagged = compute_selection(_synthetic_index(300, 60), k=12, seed="SC_TAGS", situation_tags=["对峙审问"], devices=["倒计时"])
-    assert len(untagged) == 12 and not [ref for ref in untagged if ref.slot in (SLOT_SITUATION, SLOT_DEVICE)]
+    untagged = compute_selection(_synthetic_index(300, 60), k=12, seed="SC_TAGS", situation_tags=["对峙审问"], dimensions=["narrative.pacing"])
+    assert len(untagged) == 12 and not [ref for ref in untagged if ref.slot in (SLOT_SITUATION, SLOT_DIMENSION)]
 
 
 def test_derive_situation_tags_from_scene_design(session) -> None:
@@ -296,19 +296,22 @@ def test_derive_situation_tags_from_scene_design(session) -> None:
     assert derive_situation_tags(None) == ()
 
 
-def test_dimension_emphasis_and_revise_pull_device_windows(session) -> None:
+def test_dimension_emphasis_and_revise_pull_dimension_windows(session) -> None:
+    """O1：重点维 / 改稿维按窗口标签的 ``dimensions``（这一窗最能示范的维）挑窗，不再经文风卡的手法名。"""
     book_id, profile_id = seed_reference(session, "devices")
     ensure_window_index(session, book_id)
     numbers = [int(w.window_no) for w in load_windows(session, book_id)]
     tagged = numbers[5:9]
-    tag_windows(session, book_id, {no: {"devices": ["倒计时"]} for no in tagged}, devices=("倒计时",))
+    tag_windows(session, book_id, {no: {"dimensions": ["narrative.pacing", "language.punctuation"]} for no in tagged})
     policy, _ = _policy_from_existing(
         session, "devices", profile_id, config={"dimension_states": {"narrative.pacing": "emphasize"}}
     )
     draft = render_style(session, policy, StyleRenderRequest(scene_id="SC_DEV", bundle_id="B"))
-    device_refs = [ref for ref in draft.window_refs if ref["slot"] == SLOT_DEVICE]
+    device_refs = [ref for ref in draft.window_refs if ref["slot"] == SLOT_DIMENSION]
     assert len(device_refs) == 2 and all(ref["window_no"] in tagged for ref in device_refs)
-    # 改稿要改「修辞」维（卡里的手法没有窗口示范）→ 不换；要改「节奏」维 → 换进示范倒计时的窗
+    assert all(ref["dimensions"] == ["narrative.pacing", "language.punctuation"] for ref in device_refs)
+    assert "devices" not in device_refs[0]
+    # 改稿要改「修辞」维（没有窗口示范它）→ 不换；要改「节奏」维 → 换进示范它的窗
     plain = render_style(session, policy, StyleRenderRequest(role=ROLE_REVISE, scene_id="SC_DEV", bundle_id="B", revise_dimensions=("language.rhetoric",)))
     assert {r["window_no"] for r in plain.window_refs} == {r["window_no"] for r in draft.window_refs}
     swapped = render_style(session, policy, StyleRenderRequest(role=ROLE_REVISE, scene_id="SC_DEV", bundle_id="B", revise_dimensions=("narrative.pacing",)))
@@ -408,28 +411,6 @@ def test_card_rendering_honours_dimension_and_line_states(session) -> None:
     contract = build_style_runtime_contract(StyleReferenceRepository(session), layers, task_type="scene_generation")
     card2 = render_style(session, policy_from_contract(contract, mode="frozen"), StyleRenderRequest(scene_id="SC_S")).system_prefix
     assert "一段里常叠两三个比方" in card2 and "紧张处拿日常小物件" not in card2
-
-
-def test_legacy_profile_renders_a_card_substitute_without_digit_lines(session) -> None:
-    policy, _ = _policy(
-        session,
-        "legacy",
-        card=False,
-        legacy=True,
-        config={"dimension_states": {"theme.values": "exclude"}},
-    )
-    rendered = render_style(session, policy, StyleRenderRequest(scene_id="SC_LEG"))
-    prefix = rendered.system_prefix
-    assert "[正向风格特征]" in prefix and "[禁忌模式]" in prefix and "[文风卡]" not in prefix
-    assert "名词具体到器物" in prefix and "若解释过多就改回动作" in prefix
-    body_lines = [line for line in prefix.splitlines() if line.startswith("- [") or line.startswith("- 不") or line.startswith("- 禁")]
-    assert body_lines and not any(ch.isdigit() for line in body_lines for ch in line)
-    assert "29" not in prefix and "3 轮" not in prefix and "每 3 段" not in prefix
-    assert "不把宏大使命写得比日子重" not in prefix  # 不学的维（theme.values）的禁忌不出现
-    assert "被驳回的禁忌" not in prefix
-    assert "风格分布指导" not in prefix and "[风格检索样例]" not in prefix
-    audit = rendered.audit
-    assert audit["legacy_profile"] is True and audit["legacy_digit_lines_dropped"] >= 3
 
 
 def test_red_line_carries_protected_terms_and_is_never_truncated(session) -> None:
@@ -532,12 +513,14 @@ def test_contract_v2_freezes_one_slim_layer(session) -> None:
     assert book["cloud_policy"] == "allow_full_cloud" and book["cloud_llm_allowed_at_freeze"] is True
     assert len(book["paragraph_root_sha256"]) == 64 and book["paragraph_count"] > 0
     assert "chapters" not in (layer["profile"]["profile_json"].get("structure_card") or {})
-    # 旧画像：只冻结白名单里的兼容键；样例索引 / 窗口索引 / 子维统计不进契约
+    # 没有文风卡的旧画像：只冻结 v3 白名单里的键（2026-09-24 起旧的卡替身键 style_features / narrative_patterns …
+    # 不再冻结；量化基线暂留给 W3）；禁忌陈述恒为空表（键保留：它进契约哈希）
     legacy = build_style_runtime_contract(StyleReferenceRepository(session), [layers[0]], task_type="scene_generation")
     frozen_json = legacy["layers"][0]["profile"]["profile_json"]
-    assert {"style_features", "narrative_patterns", "metrics_baseline"} <= set(frozen_json)
+    assert {"metrics_baseline", "qualitative_summary", "voice_signature"} <= set(frozen_json)
+    assert not {"style_features", "narrative_patterns", "calibration_guidance", "banned_replication_rules", "narrative_summary"} & set(frozen_json)
     assert not {"scene_samples_index", "exemplar_windows", "sub_dimensions", "generation_safe_forbidden_findings"} & set(frozen_json)
-    assert [f["finding_id"] for f in legacy["layers"][0]["forbidden_findings"]] == ["f1", "f2", "f3", "f4"]
+    assert legacy["layers"][0]["forbidden_findings"] == []
     assert len(json.dumps(legacy, ensure_ascii=False)) < 20000
     # 根哈希存进了书的 stats（下次构建不再现算）
     assert session.get(StyleReferenceBook, book_id).stats_json.get("paragraph_root_sha256")
@@ -685,7 +668,6 @@ def test_adapter_audit_shape_and_user_tail(session) -> None:
         "selection",
         "blocks",
         "notices",
-        "legacy_profile",
         "prefix_chars",
         "prefix_sha256",
         "runtime_contract_status",
@@ -697,7 +679,7 @@ def test_adapter_audit_shape_and_user_tail(session) -> None:
     assert audit["runtime_contract_status"] == "frozen" and audit["profile_ids"] == [profile_id]
     assert audit["budget_fit"]["policy"] == "no_compaction_needed"
     ref = audit["few_shot_window_refs"][0]
-    assert {"start", "end", "chapter", "position", "paragraphs", "chars", "window_no", "slot"} <= set(ref)
+    assert {"start", "end", "chapter", "position", "paragraphs", "chars", "window_no", "slot", "dimensions"} <= set(ref)
     text = json.dumps(audit, ensure_ascii=False)
     assert "灯芯" not in text and "渡口" not in text  # 审计不含正文
     # 章首场：位置窗排在最前，尾块有开章补充
@@ -799,7 +781,7 @@ def test_preview_uses_the_drafting_selection_and_order(session) -> None:
     # 预览不写冻结行（起草那一行仍是唯一的一行）
     assert session.scalar(select(func.count()).select_from(StyleReferenceSceneWindows)) == 1
     card_only = preview_render(session, profile_id, {"reference_mode": "card_only"})
-    assert card_only["stats"]["few_shot_windows"] == 0 and card_only["fragments"]["strategy"] == "A"
+    assert card_only["stats"]["few_shot_windows"] == 0 and "strategy" not in card_only["fragments"]
 
 
 def test_describe_binding_layers_is_cheap_and_marks_the_applied_layer(session, monkeypatch) -> None:

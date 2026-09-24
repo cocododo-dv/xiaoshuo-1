@@ -60,14 +60,13 @@ def test_layers_endpoint_empty_when_no_bindings() -> None:
 
 def test_layers_single_binding_is_applied_with_its_v3_config() -> None:
     profile_id = _seed_profile("single")
-    _bind(profile_id, binding_id="sr_bind_il_single", scope="project", scope_ref_id="proj_il_s", config_json={"intensity": 50})
+    _bind(profile_id, binding_id="sr_bind_il_single", scope="project", scope_ref_id="proj_il_s", config_json={"sample_windows": 8})
     with TestClient(create_app()) as client:
         data = client.get(f"{PREFIX}/injection/layers", params={"project_id": "proj_il_s"}).json()["data"]
     assert len(data["layers"]) == 1
     layer = data["layers"][0]
     assert layer["scope"] == "project" and layer["applied"] is True and layer["weight"] == 1
     assert layer["profile_title"] == "画像single" and layer["profile_status"] == "active"
-    # 旧强度 50 → 8 窗(与旧 k(i) 同一公式)
     assert layer["sample_windows"] == 8 and layer["reference_mode"] == "full"
     assert data["merged"]["layer_count"] == 1 and data["merged"]["binding_id"] == "sr_bind_il_single"
 

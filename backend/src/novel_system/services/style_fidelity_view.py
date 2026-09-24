@@ -87,19 +87,6 @@ def selected_style_row_id(session: Session, scene_id: str, bundle_id: str | None
     return None
 
 
-def selected_style_attempt(session: Session, scene_id: str, bundle_id: str | None) -> AttemptTracker | None:
-    """这次运行选中的那一份风格稿的尝试行（带风格步的决定与 notices）；认不出选中稿时取最近一次。"""
-    attempts = _attempts(session, scene_id, ("style_draft",), bundle_id=bundle_id)
-    if not attempts:
-        return None
-    selected = selected_style_row_id(session, scene_id, bundle_id)
-    if selected:
-        for attempt in attempts:
-            if str((attempt.details_json or {}).get("row_id") or "") == selected:
-                return attempt
-    return attempts[0]
-
-
 def _bundle_bound(session: Session, bundle_id: str | None) -> bool:
     """这次运行的 bundle 冻结的是不是一份风格绑定（没有 bundle 行的旧数据按「不确定」放过，不在这里拦）。"""
     if not bundle_id:
@@ -393,6 +380,5 @@ __all__ = [
     "scene_decisions",
     "scene_judge",
     "scene_style_fidelity",
-    "selected_style_attempt",
     "selected_style_row_id",
 ]

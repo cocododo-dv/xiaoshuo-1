@@ -190,7 +190,7 @@ def test_profile_needs_relearn_when_the_text_changed(client: TestClient) -> None
 def test_profile_detail_has_the_card_states_and_evidence(client: TestClient) -> None:
     book_id, profile_id = _v3_reference("detail")
     profile = client.get(f"{PREFIX}/profiles/{profile_id}").json()["data"]["profile"]
-    assert profile["has_card"] is True and profile["needs_relearn"] is False and profile["legacy"] is None
+    assert profile["has_card"] is True and profile["needs_relearn"] is False and "legacy" not in profile
     assert profile["temperament"] == ["危急关头用自嘲冲淡紧张"]
     assert profile["voice"]["habits"] == ["短句接长句", "对白不加引导词"]
     dims = profile["dimensions"]
@@ -226,19 +226,6 @@ def test_profile_detail_has_the_card_states_and_evidence(client: TestClient) -> 
     assert again["dimensions"][0]["lines"][0]["state"] == "pinned"
     assert again["card_line_states"] == {first["line_id"]: "pinned"} and again["status"] == "active"
     assert book_id == again["book_id"]
-
-
-def test_legacy_profile_detail_shows_what_drafting_still_reads(client: TestClient) -> None:
-    with SessionLocal() as session:
-        _book_id, profile_id = seed_reference(session, "legacy_detail", chapters=2, per_chapter=20, card=False, legacy=True)
-    profile = client.get(f"{PREFIX}/profiles/{profile_id}").json()["data"]["profile"]
-    assert profile["has_card"] is False and profile["relearn_reason"] == "legacy_profile"
-    groups = {group["key"]: group for group in profile["legacy"]["groups"]}
-    features = groups["style_features"]["lines"]
-    # 含数字的句子起草时整句不带:如实标出
-    assert any(item["dropped_in_drafting"] for item in features)
-    assert any(not item["dropped_in_drafting"] for item in features)
-    assert all(not d["lines"] for d in profile["dimensions"])
 
 
 # ---------------------------------------------------------------------------

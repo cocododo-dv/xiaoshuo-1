@@ -25,8 +25,15 @@ from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
     build_style_runtime_contract,
 )
-from novel_system.services.style_reference.windows import ensure_window_index, load_windows, set_window_tags
-from tests.style_reference_factories import DEVICES, VOICE_HABITS, card_payload, make_binding, make_book
+from novel_system.services.style_reference.windows import load_windows
+from tests.style_reference_factories import (
+    DEVICES,
+    VOICE_HABITS,
+    card_payload,
+    make_binding,
+    make_book,
+    make_windows,
+)
 from tests.test_style_reference_windows import synthetic_rows
 
 RIGHTS = {"rights_declaration": {"declared": True, "analysis_rights": True, "send_rights": True}}
@@ -328,11 +335,11 @@ def frozen_bundle(session: Session, *, bundle_id: str, project_id: str = PROJECT
     }
 
 
-def tag_windows(session: Session, book_id: str, tags: dict[int, dict[str, Any]], *, devices: tuple[str, ...] = ()) -> int:
-    ensure_window_index(session, book_id)
-    written = set_window_tags(session, book_id, tags, tags_version="window_tags_v1", devices=devices)
+def tag_windows(session: Session, book_id: str, tags: dict[int, dict[str, Any]]) -> int:
+    """按窗口号直接写 v2 标签（``{situations, moods, dimensions, gist}``）；返回写了几窗。"""
+    numbers = {int(w.window_no) for w in make_windows(session, book_id, tags=tags)}
     session.commit()
-    return written
+    return sum(1 for no in tags if int(no) in numbers)
 
 
 def window_numbers(session: Session, book_id: str) -> list[int]:

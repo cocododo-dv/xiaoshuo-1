@@ -26,12 +26,12 @@ from novel_system.services.bundle_builder import latest_styled_draft_for_scene
 from novel_system.services.qc_engine import STYLED_DRAFT_GATE_STAGES
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.style_policy import style_policy_for_bundle
+from novel_system.services.style_reference.inject.bindings import resolve_binding_layers
 from novel_system.services.style_reference.runtime_contract import (
     DRAFT_MODE_NEUTRAL_FIRST,
     DRAFT_MODE_STYLE_FIRST,
     build_style_runtime_contract,
-    effective_draft_mode,
-    is_style_bound,
     resolve_draft_mode,
     validate_style_runtime_contract,
 )
@@ -69,11 +69,8 @@ def _seed_binding(seed: str, *, project_id: str, config_json: dict | None = None
 def _frozen_bundle(project_id: str, scene_id: str, chapter_id: str) -> dict:
     """按 bundle_builder 的冻结方式（status=frozen + inline contract）造一份 bundle。"""
     with SessionLocal() as session:
-        from novel_system.services.style_reference.injection import InjectionService
-
-        svc = InjectionService(session)
-        layers = svc.resolve_binding_layers(project_id, "scene_generation", character_ids=[], scene_id=scene_id)
-        contract = build_style_runtime_contract(svc.repo, layers, task_type="scene_generation")
+        layers = resolve_binding_layers(session, project_id, "scene_generation", character_ids=[], scene_id=scene_id)
+        contract = build_style_runtime_contract(StyleReferenceRepository(session), layers, task_type="scene_generation")
     return {
         "bundle_id": f"bundle_{scene_id}_sfd",
         "bundle_snapshot_hash": "bundle_hash_sfd",
@@ -185,13 +182,15 @@ def test_contract_freezes_default_style_first_and_explicit_neutral_first() -> No
     bundle = _frozen_bundle("proj_sfd_c1", "SFD_C1_SC01", "SFD_C1")
     contract = json.loads(bundle["snapshot"]["inline_digests"]["_style_reference_runtime_contract"])
     assert contract["draft_mode"] == DRAFT_MODE_STYLE_FIRST
-    assert effective_draft_mode(bundle) == DRAFT_MODE_STYLE_FIRST and is_style_bound(bundle)
+    policy = style_policy_for_bundle(bundle)
+    assert policy.draft_mode == DRAFT_MODE_STYLE_FIRST and policy.bound and policy.style_first
 
     _seed_binding("sfd_c2", project_id="proj_sfd_c2", config_json={"draft_mode": "neutral_first"})
     bundle2 = _frozen_bundle("proj_sfd_c2", "SFD_C2_SC01", "SFD_C2")
     contract2 = json.loads(bundle2["snapshot"]["inline_digests"]["_style_reference_runtime_contract"])
     assert contract2["draft_mode"] == DRAFT_MODE_NEUTRAL_FIRST
-    assert effective_draft_mode(bundle2) == DRAFT_MODE_NEUTRAL_FIRST and not is_style_bound(bundle2)
+    policy2 = style_policy_for_bundle(bundle2)
+    assert policy2.draft_mode == DRAFT_MODE_NEUTRAL_FIRST and policy2.bound and not policy2.style_first
 
 
 def test_resolve_draft_mode_ignores_garbage_and_falls_back_to_yaml_default() -> None:
@@ -218,10 +217,12 @@ def test_validation_rejects_bad_draft_mode_and_old_contracts_default_to_neutral_
     old_bundle = json.loads(json.dumps(bundle))
     old_bundle["snapshot"]["inline_digests"]["_style_reference_runtime_contract"] = json.dumps(old, ensure_ascii=False, sort_keys=True)
     old_bundle["snapshot"]["source_version_refs"]["style_reference_runtime_contract_hash"] = old["contract_hash"]
-    assert effective_draft_mode(old_bundle) == DRAFT_MODE_NEUTRAL_FIRST
-    # 无绑定 / 明确 absent → neutral_first
-    assert effective_draft_mode(None) == DRAFT_MODE_NEUTRAL_FIRST
-    assert effective_draft_mode({"snapshot": {"source_version_refs": {"style_reference_runtime_contract_status": "absent"}}}) == DRAFT_MODE_NEUTRAL_FIRST
+    old_policy = style_policy_for_bundle(old_bundle)
+    assert old_policy.bound and old_policy.draft_mode == DRAFT_MODE_NEUTRAL_FIRST and not old_policy.style_first
+    # 无绑定 / 明确 absent → 不让位（neutral_first）
+    assert style_policy_for_bundle(None).draft_mode == DRAFT_MODE_NEUTRAL_FIRST
+    absent = style_policy_for_bundle({"snapshot": {"source_version_refs": {"style_reference_runtime_contract_status": "absent"}}})
+    assert absent.draft_mode == DRAFT_MODE_NEUTRAL_FIRST and not absent.bound and not absent.style_first
 
 
 def test_apply_request_carries_draft_mode_into_config_json() -> None:
@@ -663,18 +664,6 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
 # ---------------------------------------------------------------------------
 # 决策卡 effect 与运行任务视图
 # ---------------------------------------------------------------------------
-
-
-def test_review_effect_apply_carries_draft_mode_like_the_route() -> None:
-    """待办里还没处理的旧「应用画像」卡:卡上的起草方式与强度经 v3 直接绑定同一口径映射(P6a)。"""
-    from novel_system.services.review_effects import _legacy_binding_config
-    from novel_system.services.style_reference.binding_config import normalize_binding_config
-
-    mapped = normalize_binding_config("mixed", _legacy_binding_config({"intensity": 90, "draft_mode": "neutral_first"}))
-    assert mapped["draft_mode"] == "neutral_first" and mapped["sample_windows"] == 11
-    assert normalize_binding_config("mixed", _legacy_binding_config({"draft_mode": " Style_First "}))["draft_mode"] == "style_first"
-    assert normalize_binding_config("mixed", _legacy_binding_config({"draft_mode": "hybrid"}))["draft_mode"] == "style_first"
-    assert _legacy_binding_config({}) == {}
 
 
 def test_run_job_view_reports_the_frozen_draft_mode(session) -> None:

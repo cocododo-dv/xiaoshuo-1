@@ -28,7 +28,6 @@ from novel_system.api.routes import (
     literary_quality,
     project_overview,
     projects,
-    reference_safety,
     review,
     scenes,
     snowflake,
@@ -405,7 +404,6 @@ def create_app() -> FastAPI:
     app.include_router(writer_deep_review.router)
     app.include_router(review.router)
     app.include_router(library.router)
-    app.include_router(reference_safety.router)
     app.include_router(system_config.router)
     app.include_router(literary_quality.router)
     app.include_router(style_reference.router)

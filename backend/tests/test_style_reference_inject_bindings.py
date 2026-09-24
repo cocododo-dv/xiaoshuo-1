@@ -14,8 +14,6 @@ from novel_system.services.style_reference.inject.bindings import (
     resolve_active_binding,
     resolve_binding_layers,
 )
-from novel_system.services.style_reference import injection as injection_compat
-from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
 
@@ -152,16 +150,3 @@ def test_contract_and_live_policy_freeze_the_pov_layer(session) -> None:
     assert policy.bound and policy.binding_id == "bd_bind_freeze_pov" and policy.mode == "live"
 
 
-def test_compat_shim_keeps_the_old_call_shapes(session) -> None:
-    _seed("shim", [{"label": "project", "scope": "project", "ref": "P6"}])
-    service = InjectionService(session)
-    assert service.repo is not None
-    assert service.resolve_active_binding("P6", "scene_generation").binding_id == "bd_bind_shim_project"
-    assert [b.binding_id for b in service.resolve_binding_layers("P6", "scene_generation")] == ["bd_bind_shim_project"]
-    assert service.describe_binding_layers("P6", "scene_generation")["merged"]["binding_id"] == "bd_bind_shim_project"
-    # 旧的「任务默认策略」两件已删(P6a):绑定一律经 binding_apply 写,strategy 列恒 mixed
-    assert not hasattr(injection_compat, "default_injection_strategy")
-    assert not hasattr(injection_compat, "injection_task_defaults")
-    # P7:兼容层只剩 InjectionService(章内位置 / 对白配额在 inject.selection)
-    assert injection_compat.__all__ == ["InjectionService"]
-    assert not hasattr(injection_compat, "scene_sampling_hints")

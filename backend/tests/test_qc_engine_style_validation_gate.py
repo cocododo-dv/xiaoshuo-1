@@ -85,8 +85,9 @@ def _seed_style_binding(
         repo.create_binding(
             binding_id=binding_id, profile_id=profile_id,
             scope=scope, scope_ref_id=scope_ref_id if scope_ref_id is not None else project_id,
-            task_type="scene_generation", strategy="A",
-            config_json={}, status="active",
+            # 只用文风卡（这些用例原来写的旧策略 A 的语义；2026-09-24 起 strategy 列恒 mixed、参考方式看 config）
+            task_type="scene_generation", strategy="mixed",
+            config_json={"reference_mode": "card_only"}, status="active",
         )
         for i, term in enumerate(forbidden_terms or []):
             repo.create_banned_term(
@@ -565,9 +566,25 @@ def _run_soft_qc(session, runner, draft_content: str):
 
 
 def test_soft_qc_prompt_receives_same_style_reference_prefix(session) -> None:
+    # 2026-09-24 起没有旧画像的卡替身：前缀里的抽象块是 v3 文风卡 + 声音特征
     _seed_style_binding(
         project_id="proj_soft_prefix", seed="soft_prefix",
-        profile_json={"narrative_summary": "n", "style_features": ["短句克制", "动作先于解释"]},
+        profile_json={
+            "profile_version": "style_profile_v3",
+            "dimension_card": {
+                "version": "dimension_card_v1",
+                "temperament": [],
+                "dimensions": [
+                    {
+                        "dimension": "language.sentence_structure",
+                        "distinctiveness": 0.9,
+                        "devices": [],
+                        "lines": [{"text": "短句克制", "mandatory": True, "distinctiveness": 0.9}],
+                    }
+                ],
+            },
+            "voice_signature": {"version": "voice_signature_v2", "habits": ["动作先于解释"], "deliberate_repetition": False},
+        },
         paragraphs=[REFERENCE_PARAGRAPH],
     )
     _seed_soft_scene(session, project_id="proj_soft_prefix", draft_content=CLEAN_TEXT)
@@ -579,9 +596,9 @@ def test_soft_qc_prompt_receives_same_style_reference_prefix(session) -> None:
     assert len(runner.calls) == 1
     system_prompt = runner.calls[0]["prompt"]["system_prompt"]
     assert system_prompt.startswith("[STYLE_REFERENCE]\n")
-    assert "短句克制" in system_prompt
-    # 模板文案：不再是七维打分，而是对照声音特征 / 正向机制
-    assert "[声音特征]" in system_prompt and "[正向风格特征]" in system_prompt
+    assert "短句克制" in system_prompt and "动作先于解释" in system_prompt
+    # 模板文案：不再是七维打分，而是对照文风卡 / 声音特征
+    assert "[声音特征]" in system_prompt and "[文风卡]" in system_prompt
     assert "Score style adherence from 0 to 1" not in runner.calls[0]["user_prompt"]
     attempt = session.execute(
         select(AttemptTracker).where(AttemptTracker.step == "soft_qc")

@@ -202,7 +202,7 @@ def test_planning_is_superseded_only_when_the_reference_changes(session) -> None
 
 
 def test_legacy_rows_are_rewritten_without_counting_as_a_change(session) -> None:
-    """旧绑定(策略 A + 强度 40)改写成 v3 四键:语义不变(只用文风卡、7 窗)不算参考变了。"""
+    """迁移 0092 回填过的行(v3 三键、没有 draft_mode、strategy 已是 mixed)再「用于作品」:补齐第四键不算参考变了。"""
     _book, profile_id = _profile(session, "ba_legacy")
     project_id = _project(session, "PRJ_BA_LEGACY")
     legacy = bind(
@@ -210,14 +210,14 @@ def test_legacy_rows_are_rewritten_without_counting_as_a_change(session) -> None
         profile_id,
         binding_id="ba_legacy_bind",
         scope_ref_id=project_id,
-        strategy="A",
-        config_json={"intensity": 40, "sub_dimensions": ["language.rhetoric"]},
+        config_json={"reference_mode": "card_only", "sample_windows": 7, "dimension_states": {}},
     )
     change = apply_style_profile(session, profile_id, scope="project", scope_ref_id=project_id)
     session.commit()
     assert change.binding.binding_id == legacy.binding_id and change.changed is False
     assert change.binding.strategy == "mixed"
     assert change.binding.config_json["reference_mode"] == "card_only" and change.binding.config_json["sample_windows"] == 7
+    assert change.binding.config_json["draft_mode"] == "style_first"
 
 
 def test_update_and_remove_binding(session) -> None:
