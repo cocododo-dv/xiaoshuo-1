@@ -40,7 +40,8 @@ def test_dryrun_preview_v3_fields(client: TestClient) -> None:
     assert data["draft_mode"] == "style_first" and data["sample_windows"] == 12
     assert len(data["windows"]) == 12
     window = data["windows"][0]
-    assert {"window_no", "chapter", "position", "chars", "paragraphs", "slot", "situations", "moods", "devices", "gist", "paragraph_type"} <= set(window)
+    assert {"window_no", "chapter", "position", "chars", "paragraphs", "slot", "situations", "moods", "dimensions", "gist", "paragraph_type"} <= set(window)
+    assert "devices" not in window
     # 每窗带占比最大的段落类型（合成书只有对话 / 叙述两类正文段）
     assert {w["paragraph_type"] for w in data["windows"]} <= {"dialogue", "narration"}
     assert all(w["paragraph_type"] for w in data["windows"])
@@ -72,7 +73,8 @@ def test_dryrun_preview_404_profile(client: TestClient) -> None:
 
 def test_dryrun_preview_422_invalid_values(client: TestClient) -> None:
     _, profile_id = _seed("invalid")
-    for body in ({"intensity": 101}, {"sample_windows": 17}, {"reference_mode": "rag"}, {"dimension_states": {"language.rhetoric": "loud"}}):
+    # 旧 strategy / intensity 不再收（2026-09-24）：未知键一律 422
+    for body in ({"intensity": 50}, {"strategy": "A"}, {"sample_windows": 17}, {"reference_mode": "rag"}, {"dimension_states": {"language.rhetoric": "loud"}}):
         assert client.post(f"{PREFIX}/profiles/{profile_id}/injection-preview", json=body).status_code == 422
 
 
@@ -83,11 +85,10 @@ def test_dryrun_reference_modes_and_sample_windows(client: TestClient) -> None:
     assert full["stats"]["few_shot_windows"] == 12 and full["sample_windows"] == 12
     fewer = client.post(url, json={"sample_windows": 5}).json()["data"]
     assert fewer["stats"]["few_shot_windows"] == 5 and fewer["stats"]["few_shot_k"] == 5
-    # 旧滑块仍映射:强度 0 → 3 窗
-    legacy = client.post(url, json={"strategy": "mixed", "intensity": 0}).json()["data"]
-    assert legacy["stats"]["few_shot_windows"] == 3
     card = client.post(url, json={"reference_mode": "card_only"}).json()["data"]
-    assert card["stats"]["few_shot_windows"] == 0 and card["fragments"]["strategy"] == "A"
+    assert card["stats"]["few_shot_windows"] == 0 and set(card["fragments"]) == {"positive_block", "voice_block", "few_shot_block", "anti_plagiarism_block"}
+    assert set(card["stats"]) == {"positive_lines", "avoid_lines", "voice_lines", "few_shot_windows", "few_shot_chars", "total_prefix_chars", "card_chars", "few_shot_k"}
+    assert card["stats"]["card_chars"] == len(card["fragments"]["positive_block"]) and card["stats"]["avoid_lines"] >= 1
     assert "\n- (第" not in card["user_tail"] and "本次没有附参考作者的原文样例" in card["user_tail"]
     samples = client.post(url, json={"reference_mode": "samples_only"}).json()["data"]
     assert samples["fragments"]["positive_block"] == "" and samples["fragments"]["voice_block"] == ""

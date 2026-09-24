@@ -6,19 +6,23 @@
 
 - **只看本场设计**，不看任何草稿：窗口索引（``windows.py``，持久化）+ 种子（``scene_id``）+ 章内位置 + 场面
   标签（蓝图给的 ``situation_tags``，没有就由 :func:`derive_situation_tags` 从场景设计推）+ 对白 / 概述倾向 +
-  窗数 k + 维度状态 + 文风卡手法；
-- **配额**（k=12，其它 k 按比例）：章首 / 章末位置匹配 ≤3；场面标签匹配 ≈4；重点维 / 近期偏差维的手法示范 ≈2；
-  对白密的场（或概述场）让一半窗口有相应的质地；其余在**全书**按典型度加权、按种子抽样——一章至多一窗，
-  不够再放宽（先不相邻，再任意）。没打标签的窗（学习作业还没跑）不计入标签配额，由典型度抽样补足；
+  窗数 k + 维度状态 + 改稿维 + 近期偏差维；
+- **配额**（k=12，其它 k 按比例）：章首 / 章末位置匹配 ≤3；场面标签匹配 ≈4；维度示范 ≈2（目标维 = 绑定里的
+  重点维 ∪ 改稿维 ∪ 近期常见偏差维，按窗口标签的 ``dimensions``——这一窗最能示范的 ≤3 维——重合挑，2026-09-24
+  O1 起窗口标签不再有书特有的「手法」）；对白密的场（或概述场）让一半窗口有相应的质地；其余在**全书**按典型度
+  加权、按种子抽样——一章至多一窗，不够再放宽（先不相邻，再任意）。没打标签的窗（学习作业还没跑、或还是 v1
+  标签）不计入标签 / 维度配额，由典型度抽样补足；
 - **冻结**：结果写进 ``style_reference_scene_windows``（``selection_key`` = sha256(bundle_id 或 "live" |
   契约哈希 | scene_id | :data:`SELECTION_VERSION`)），同一 bundle 里这一场以后的每道工序都读这一行——首稿、
-  改稿、评审、补丁看到同一组窗（评审取前 4 窗、规划前 3 窗，改稿至多把 2 窗换成示范要改那几维手法的窗）；
+  改稿、评审、补丁看到同一组窗（评审取前 4 窗、规划前 3 窗，改稿至多把 2 窗换成示范要改那几维的窗）；
   索引的段落根哈希变了（书被改过）才按当前索引重选并覆盖这一行；
 - **没有 bundle 的节点跟着这一场的当前 bundle 走**（M4）：对照检查的评审、写作台的深评 / 局部深评 / 局部补丁 /
   建议都不带 bundle。这一场的 ``SceneRunState.current_bundle_id`` 已经冻结过选窗、且那一行的契约哈希就是现在
   这份策略的契约哈希时，直接用那一组窗（不另写一行 "live"）；否则才按 "live" 选窗、冻结。「每场冻结一次」
   因此是真的每场，不是每个 bundle；
-- 选窗结果按**选窗顺序**存（位置 → 场面 → 手法 → 质地 → 典型），渲染时按原书顺序呈现。
+- 选窗结果按**选窗顺序**存（位置 → 场面 → 维度 → 质地 → 典型），渲染时按原书顺序呈现；冻结行的 ``params_json``
+  记下 ``book_id`` / ``profile_id``，删书 / 破坏式重分类时 :func:`purge_scene_windows_for_book` 按 ``book_id`` 清掉
+  这本书的冻结行（S6）。
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -45,10 +49,10 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.style_reference.binding_config import (
+    ALL_DIMENSIONS,
     DIMENSION_EMPHASIZE,
     DIMENSION_EXCLUDE,
 )
-from novel_system.services.style_reference.card import DimensionCard, card_from_profile_json
 from novel_system.services.style_reference.inject.gaps import gap_dimensions
 from novel_system.services.style_reference.inject.request import (
     POSITION_CLOSING,
@@ -57,7 +61,6 @@ from novel_system.services.style_reference.inject.request import (
     ROLE_REVISE,
     StyleRenderRequest,
 )
-from novel_system.services.style_reference.runtime_contract import contract_layer
 from novel_system.services.style_reference.tags import MAX_SITUATIONS, normalize_situation_tags
 from novel_system.services.style_reference.windows import (
     WINDOW_INDEX_VERSION,
@@ -79,17 +82,19 @@ TYPICALITY_Z_CLIP = 3.0
 # k=12 时的配额基数（其它 k 按比例；位置 ≤3）
 POSITION_QUOTA_MAX = 3
 SITUATION_QUOTA_BASE = 4
-DEVICE_QUOTA_BASE = 2
+DIMENSION_QUOTA_BASE = 2
 QUOTA_BASE_K = 12
-# 改稿可换成手法示范窗的窗数
+# 改稿可换成维度示范窗的窗数
 REVISE_SWAP_MAX = 2
 
+# 配额槽位 id（冻结行与 window_refs 里的 ``slot``；前端 STYLE_WINDOW_SLOT_LABELS 按它显示中文）。
+# 2026-09-24 O1：``device`` → ``dimension``、``revise_device`` → ``revise_dimension``
 SLOT_POSITION = "position"
 SLOT_SITUATION = "situation"
-SLOT_DEVICE = "device"
+SLOT_DIMENSION = "dimension"
 SLOT_TEXTURE = "texture"
 SLOT_TYPICAL = "typical"
-SLOT_REVISE = "revise_device"
+SLOT_REVISE = "revise_dimension"
 
 NOTICE_BOOK_MISSING = "STYLE_REFERENCE_BOOK_MISSING"
 NOTICE_NO_WINDOWS = "STYLE_REFERENCE_NO_WINDOWS"
@@ -98,6 +103,16 @@ NOTICE_NO_WINDOWS = "STYLE_REFERENCE_NO_WINDOWS"
 # ---------------------------------------------------------------------------
 # 数据
 # ---------------------------------------------------------------------------
+
+
+def _dimension_keys(values: Any) -> tuple[str, ...]:
+    """窗口标签 / 冻结引用里的维度键：只认 16 维的键（v1 标签的 ``devices`` 不在这里，读出来就是空）。"""
+    out: list[str] = []
+    for value in values if isinstance(values, (list, tuple)) else ():
+        key = str(value or "").strip()
+        if key in ALL_DIMENSIONS and key not in out:
+            out.append(key)
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -114,7 +129,7 @@ class IndexWindow:
     dialogue_share: float
     typicality: float
     situations: tuple[str, ...] = ()
-    devices: tuple[str, ...] = ()
+    dimensions: tuple[str, ...] = ()
     paragraph_type: str = ""
 
     @property
@@ -138,7 +153,7 @@ class WindowRef:
     typicality: float = 0.0
     slot: str = SLOT_TYPICAL
     situations: tuple[str, ...] = ()
-    devices: tuple[str, ...] = ()
+    dimensions: tuple[str, ...] = ()
     paragraph_type: str = ""
 
     @classmethod
@@ -155,7 +170,7 @@ class WindowRef:
             typicality=round(float(window.typicality), 4),
             slot=slot,
             situations=tuple(window.situations),
-            devices=tuple(window.devices),
+            dimensions=tuple(window.dimensions),
             paragraph_type=window.paragraph_type,
         )
 
@@ -194,7 +209,7 @@ class WindowRef:
             typicality=_float("typicality"),
             slot=str(raw.get("slot") or SLOT_TYPICAL),
             situations=tuple(str(s) for s in raw.get("situations") or () if str(s or "").strip()),
-            devices=tuple(str(s) for s in raw.get("devices") or () if str(s or "").strip()),
+            dimensions=_dimension_keys(raw.get("dimensions")),
             paragraph_type=str(raw.get("paragraph_type") or ""),
         )
 
@@ -211,7 +226,7 @@ class WindowRef:
             "typicality": self.typicality,
             "slot": self.slot,
             "situations": list(self.situations),
-            "devices": list(self.devices),
+            "dimensions": list(self.dimensions),
             "paragraph_type": self.paragraph_type,
         }
 
@@ -374,37 +389,14 @@ def derive_situation_tags(scene: Any) -> tuple[str, ...]:
     return tuple(normalize_situation_tags(tags)[:MAX_SITUATIONS])
 
 
-def card_devices(card: DimensionCard | None, dimensions: Iterable[str]) -> list[str]:
-    """文风卡里这几维的手法名（选窗的手法配额用）。"""
-    if card is None:
-        return []
-    out: list[str] = []
-    for dimension in dimensions:
-        entry = card.entry(str(dimension))
-        if entry is None:
-            continue
-        for device in entry.devices:
-            text = str(device or "").strip()
-            if text and text not in out:
-                out.append(text)
-    return out
-
-
-def _policy_card(policy: Any) -> DimensionCard | None:
-    layer = contract_layer(getattr(policy, "contract", None))
-    profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
-    return card_from_profile_json(profile.get("profile_json") if isinstance(profile, Mapping) else None)
-
-
-def target_devices(policy: Any, request: StyleRenderRequest, card: DimensionCard | None) -> list[str]:
-    """手法配额的目标：重点维 + 近期常见偏差维的手法（不学的维除外）。"""
+def target_dimensions(policy: Any, request: StyleRenderRequest) -> list[str]:
+    """维度配额的目标维（按出现顺序去重）：绑定里的重点维 ∪ 改稿维 ∪ 近期常见偏差维；不学的维除外。"""
     states = dict(getattr(policy, "dimension_states", None) or {})
     dims = [dim for dim, state in states.items() if state == DIMENSION_EMPHASIZE]
-    for dim in gap_dimensions(request.recent_gaps):
-        if dim not in dims:
+    for dim in [*request.revise_dimensions, *gap_dimensions(request.recent_gaps)]:
+        if dim in ALL_DIMENSIONS and dim not in dims:
             dims.append(dim)
-    dims = [dim for dim in dims if states.get(dim) != DIMENSION_EXCLUDE]
-    return card_devices(card, dims)
+    return [dim for dim in dims if states.get(dim) != DIMENSION_EXCLUDE]
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +469,7 @@ def load_index(
                 dialogue_share=float(dialogue or 0.0),
                 typicality=float(typical or 0.0),
                 situations=tuple(str(s) for s in tags.get("situations") or () if str(s or "").strip()),
-                devices=tuple(str(s) for s in tags.get("devices") or () if str(s or "").strip()),
+                dimensions=_dimension_keys(tags.get("dimensions")),
                 paragraph_type=_dominant_type(type_mix),
             )
         )
@@ -522,7 +514,7 @@ def _sampling_keys(windows: Sequence[IndexWindow], seed: str) -> dict[int, float
 
 
 def selection_quotas(k: int, *, has_position: bool) -> dict[str, int]:
-    """k=12 → 位置 3 / 场面 4 / 手法 2，其余按典型度；其它 k 按比例（位置 ≤3）。"""
+    """k=12 → 位置 3 / 场面 4 / 维度 2，其余按典型度；其它 k 按比例（位置 ≤3）。"""
     k = max(0, int(k))
 
     def _scaled(base: int) -> int:
@@ -531,7 +523,7 @@ def selection_quotas(k: int, *, has_position: bool) -> dict[str, int]:
     return {
         "position": min(POSITION_QUOTA_MAX, int(math.ceil(k / 4))) if has_position and k > 0 else 0,
         "situation": _scaled(SITUATION_QUOTA_BASE),
-        "device": _scaled(DEVICE_QUOTA_BASE),
+        "dimension": _scaled(DIMENSION_QUOTA_BASE),
     }
 
 
@@ -550,7 +542,7 @@ def compute_selection(
     seed: str,
     position: str | None = None,
     situation_tags: Sequence[str] = (),
-    devices: Sequence[str] = (),
+    dimensions: Sequence[str] = (),
     dialogue_heavy: bool = False,
     rendering_mode: str | None = None,
 ) -> list[WindowRef]:
@@ -606,14 +598,14 @@ def compute_selection(
             SLOT_SITUATION,
             boost=lambda w: 1.0 + 0.5 * (len(wanted_situations & set(w.situations)) - 1),
         )
-    wanted_devices = set(devices or ())
-    if wanted_devices:
-        already = sum(1 for w, _slot in chosen if wanted_devices & set(w.devices))
+    wanted_dimensions = set(dimensions or ())
+    if wanted_dimensions:
+        already = sum(1 for w, _slot in chosen if wanted_dimensions & set(w.dimensions))
         _take(
-            (w for w in windows if wanted_devices & set(w.devices)),
-            quotas["device"] - already,
-            SLOT_DEVICE,
-            boost=lambda w: 1.0 + 0.5 * (len(wanted_devices & set(w.devices)) - 1),
+            (w for w in windows if wanted_dimensions & set(w.dimensions)),
+            quotas["dimension"] - already,
+            SLOT_DIMENSION,
+            boost=lambda w: 1.0 + 0.5 * (len(wanted_dimensions & set(w.dimensions)) - 1),
         )
     half = int(math.ceil(k / 2))
     if str(rendering_mode or "") == "summary":
@@ -645,16 +637,14 @@ def selection_seed(policy: Any, request: StyleRenderRequest) -> str:
     return f"{anchor}|{getattr(policy, 'book_id', '') or ''}|{SELECTION_VERSION}"
 
 
-def selection_inputs(
-    policy: Any, request: StyleRenderRequest, *, scene: Any = None, card: DimensionCard | None = None
-) -> dict[str, Any]:
-    """选窗输入（只来自本场设计 + 绑定 + 文风卡，不看草稿）；请求没给场面标签时由场景设计推。"""
+def selection_inputs(policy: Any, request: StyleRenderRequest, *, scene: Any = None) -> dict[str, Any]:
+    """选窗输入（只来自本场设计 + 绑定 + 请求里的改稿维 / 近期偏差，不看草稿）；请求没给场面标签时由场景设计推。"""
     tags = list(request.situation_tags) or list(derive_situation_tags(scene))
     return {
         "k": int(getattr(policy, "sample_windows", 0) or 0),
         "position": request.position,
         "situation_tags": tags,
-        "devices": target_devices(policy, request, card),
+        "dimensions": target_dimensions(policy, request),
         "dialogue_heavy": bool(request.dialogue_heavy),
         "rendering_mode": request.rendering_mode,
     }
@@ -818,22 +808,23 @@ def resolve_scene_selection(
                     index=tuple(windows),
                 )
             logger.info("scene window selection %s is stale (book changed); reselecting", existing.selection_id)
-    card = _policy_card(policy)
-    inputs = selection_inputs(policy, request, scene=scene, card=card)
+    inputs = selection_inputs(policy, request, scene=scene)
     refs = compute_selection(
         windows,
         k=k,
         seed=selection_seed(policy, request),
         position=inputs["position"],
         situation_tags=inputs["situation_tags"],
-        devices=inputs["devices"],
+        dimensions=inputs["dimensions"],
         dialogue_heavy=inputs["dialogue_heavy"],
         rendering_mode=inputs["rendering_mode"],
     )
     params = {
         **inputs,
         "version": SELECTION_VERSION,
+        # 书与画像的 id：删书 / 破坏式重分类按 book_id 清冻结行（S6）；画像 id 只给审计
         "book_id": book_id,
+        "profile_id": str(getattr(policy, "profile_id", "") or "") or None,
         "root": root,
         "index_version": WINDOW_INDEX_VERSION,
         "index_window_count": len(windows),
@@ -862,42 +853,23 @@ def resolve_scene_selection(
     )
 
 
-def select_scene_windows(
-    session: Session,
-    policy: Any,
-    request: StyleRenderRequest,
-    *,
-    scene: Any = None,
-) -> list[WindowRef]:
-    """契约文档 §3 的入口：这一场冻结的选窗（按选窗顺序，全部 k 窗；各角色取其前缀）。"""
-    return list(resolve_scene_selection(session, policy, request, scene=scene).refs)
-
-
-def role_windows(
-    policy: Any,
-    request: StyleRenderRequest,
-    selection: SceneSelection,
-    *,
-    card: DimensionCard | None = None,
-) -> list[WindowRef]:
+def role_windows(policy: Any, request: StyleRenderRequest, selection: SceneSelection) -> list[WindowRef]:
     """这一次渲染用哪几窗：冻结选窗的前 k 窗（评审 4 / 规划 3 / 调用方上限）。
 
     改稿（``role=revise``，给了 ``revise_dimensions``）：把至多 :data:`REVISE_SWAP_MAX` 窗（从选窗顺序末尾——
-    典型度补位的窗——开始换）换成示范这几维手法、且不在本场选窗里的窗；换哪几窗由种子
-    （scene_id + 维）确定。文风卡没有这几维的手法、或没有打过标签的窗时不换。
+    典型度补位的窗——开始换）换成示范这几维（窗口标签 ``dimensions`` 重合）、且不在本场选窗里的窗；换哪几窗
+    由种子（scene_id + 维）确定。没有打过 v2 标签的窗时不换。
     """
     k = request.effective_k(getattr(policy, "sample_windows", 0))
     refs = list(selection.refs)[:k]
     if request.role != ROLE_REVISE or not request.revise_dimensions or not refs or not selection.index:
         return refs
     states = dict(getattr(policy, "dimension_states", None) or {})
-    wanted = set(
-        card_devices(card, [d for d in request.revise_dimensions if states.get(d) != DIMENSION_EXCLUDE])
-    )
+    wanted = {d for d in request.revise_dimensions if states.get(d) != DIMENSION_EXCLUDE}
     if not wanted:
         return refs
     taken = {ref.window_no for ref in refs}
-    candidates = [w for w in selection.index if w.window_no not in taken and wanted & set(w.devices)]
+    candidates = [w for w in selection.index if w.window_no not in taken and wanted & set(w.dimensions)]
     if not candidates:
         return refs
     seed = f"{request.scene_id or 'none'}|revise|{','.join(sorted(request.revise_dimensions))}|{SELECTION_VERSION}"
@@ -906,7 +878,7 @@ def role_windows(
     candidates.sort(
         key=lambda w: (
             w.chapter in used_chapters,
-            -(keys[w.window_no] / (1.0 + 0.5 * (len(wanted & set(w.devices)) - 1))),
+            -(keys[w.window_no] / (1.0 + 0.5 * (len(wanted & set(w.dimensions)) - 1))),
             w.window_no,
         )
     )
@@ -921,6 +893,23 @@ def role_windows(
     return refs
 
 
+def purge_scene_windows_for_book(session: Session, book_id: str) -> int:
+    """删掉这本书的每场冻结选窗（``params_json.book_id``；只 flush，不 commit），返回删了几行。
+
+    删书 / 破坏式重分类时由 ``cleanup.purge_derived_data`` 调用（S6）：书没了或段落全换，冻结的窗号与区间已经指不到
+    原文；没有 ``book_id`` 的旧行（写入 ``profile_id`` / ``book_id`` 之前的）不动。
+    """
+    if not str(book_id or "").strip():
+        return 0
+    result = session.execute(
+        delete(StyleReferenceSceneWindows).where(
+            func.json_extract(StyleReferenceSceneWindows.params_json, "$.book_id") == str(book_id)
+        )
+    )
+    session.flush()
+    return int(result.rowcount or 0)
+
+
 __all__ = [
     "DIALOGUE_WINDOW_SHARE",
     "EMPTY_SELECTION",
@@ -930,7 +919,7 @@ __all__ = [
     "NOTICE_NO_WINDOWS",
     "REVISE_SWAP_MAX",
     "SELECTION_VERSION",
-    "SLOT_DEVICE",
+    "SLOT_DIMENSION",
     "SLOT_POSITION",
     "SLOT_REVISE",
     "SLOT_SITUATION",
@@ -938,23 +927,22 @@ __all__ = [
     "SLOT_TYPICAL",
     "SceneSelection",
     "WindowRef",
-    "card_devices",
     "compute_selection",
     "current_bundle_selection",
     "derive_situation_tags",
     "load_index",
     "position_matches",
+    "purge_scene_windows_for_book",
     "resolve_scene_selection",
     "role_windows",
     "scene_chapter_position",
     "scene_dialogue_heavy",
     "scene_form",
     "scene_rendering_mode",
-    "select_scene_windows",
     "selection_inputs",
     "selection_key",
     "selection_quotas",
     "selection_seed",
-    "target_devices",
+    "target_dimensions",
     "typicality_weights",
 ]

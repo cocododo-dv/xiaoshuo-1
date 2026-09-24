@@ -427,19 +427,6 @@ def record_author_draft_reading(
     )
 
 
-def attach_judge(session: Session, reading_id: str | None, judge: Any) -> StyleFidelityReading | None:
-    """给一条已入库的读数补上评审分（软 QC 在读数之后才评完的那一轮）。"""
-    if not reading_id:
-        return None
-    row = session.get(StyleFidelityReading, str(reading_id))
-    normalized = normalize_judge(judge)
-    if row is None or normalized is None:
-        return row
-    row.judge_json = normalized
-    session.flush()
-    return row
-
-
 # ---------------------------------------------------------------------------
 # 查询 / API 形状
 # ---------------------------------------------------------------------------
@@ -714,7 +701,6 @@ __all__ = [
     "STAGE_MANUAL",
     "STAGE_PATCHED",
     "STAGE_REVISION",
-    "attach_judge",
     "copy_check_summary",
     "latest_scene_readings",
     "normalize_judge",

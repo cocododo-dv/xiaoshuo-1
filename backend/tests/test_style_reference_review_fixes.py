@@ -130,13 +130,12 @@ def _seed_binding(seed: str, *, profile_status: str, project_id: str) -> None:
 
 def test_resolve_skips_binding_of_inactive_profile() -> None:
     """draft/archived profile 的 binding 不再被 resolve 选中(与注入渲染一致)。"""
-    from novel_system.services.style_reference.injection import InjectionService
+    from novel_system.services.style_reference.inject.bindings import resolve_active_binding, resolve_binding_layers
 
     _seed_binding("res_draft", profile_status="draft", project_id="proj_res_draft")
     with SessionLocal() as session:
-        svc = InjectionService(session)
-        assert svc.resolve_active_binding("proj_res_draft", "scene_generation") is None
-        assert svc.resolve_binding_layers("proj_res_draft", "scene_generation") == []
+        assert resolve_active_binding(session, "proj_res_draft", "scene_generation") is None
+        assert resolve_binding_layers(session, "proj_res_draft", "scene_generation") == []
 
     # 对照:profile 激活后即可被选中(证明过滤条件就是 profile 状态本身)
     with SessionLocal() as session:
@@ -144,9 +143,7 @@ def test_resolve_skips_binding_of_inactive_profile() -> None:
         repo.update_profile("sr_profile_res_draft", status="active")
         session.commit()
     with SessionLocal() as session:
-        picked = InjectionService(session).resolve_active_binding(
-            "proj_res_draft", "scene_generation"
-        )
+        picked = resolve_active_binding(session, "proj_res_draft", "scene_generation")
         assert picked is not None and picked.binding_id == "sr_bind_res_draft"
 
 

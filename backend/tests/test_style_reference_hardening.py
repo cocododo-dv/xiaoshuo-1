@@ -24,7 +24,6 @@ from novel_system.services.style_reference.errors import (
     LLMRequiredError,
 )
 from novel_system.services.style_reference.ingest import IngestService
-from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_policy import style_policy_live
 from novel_system.services.style_reference.inject.fit import fit_rendered
 from novel_system.services.style_reference.inject.render import render_style
@@ -89,6 +88,27 @@ def _seed_book(
         )
         session.commit()
     return book_id
+
+
+def _card_profile_json(lines_by_dimension: dict[str, list[str]], *, summary: str = "短句白描") -> dict:
+    """带文风卡的 v3 画像（2026-09-24 起旧画像没有卡替身：要进提示的句子必须在卡上）。"""
+    return {
+        "profile_version": "style_profile_v3",
+        "qualitative_summary": summary,
+        "dimension_card": {
+            "version": "dimension_card_v1",
+            "temperament": [],
+            "dimensions": [
+                {
+                    "dimension": dimension,
+                    "distinctiveness": 0.9,
+                    "devices": [],
+                    "lines": [{"text": text, "distinctiveness": 0.8} for text in lines],
+                }
+                for dimension, lines in lines_by_dimension.items()
+            ],
+        },
+    }
 
 
 def _seed_profile_for_book(seed: str, book_id: str, *, profile_json: dict | None = None) -> str:
@@ -227,16 +247,13 @@ def test_style_check_without_llm_is_refused():
 
 
 def _seed_injection(seed: str, *, banned_terms: list[str] | None = None) -> str:
-    """book + profile + project binding(strategy A)。返回 project_id。"""
+    """book + profile(带文风卡)+ project binding(只用文风卡)。返回 project_id。"""
     project_id = f"proj_hd_{seed}"
     book_id = _seed_book(seed, cloud_policy="segments_only", with_paragraphs=False)
     profile_id = _seed_profile_for_book(
         seed,
         book_id,
-        profile_json={
-            "narrative_summary": "短句白描",
-            "style_features": ["短句", "白描"],
-        },
+        profile_json=_card_profile_json({"language.sentence_structure": ["短句", "白描"]}),
     )
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
@@ -246,8 +263,8 @@ def _seed_injection(seed: str, *, banned_terms: list[str] | None = None) -> str:
             scope="project",
             scope_ref_id=project_id,
             task_type="scene_generation",
-            strategy="A",
-            config_json={},
+            strategy="mixed",
+            config_json={"reference_mode": "card_only"},
             status="active",
         )
         for i, term in enumerate(banned_terms or []):
@@ -300,13 +317,16 @@ def test_anti_plagiarism_block_survives_budget_truncation():
     """预算压缩(贪心去卡句 / 声音)不得动红线段。"""
     project_id = "proj_hd_budget"
     book_id = _seed_book("budget", cloud_policy="segments_only", with_paragraphs=False)
+    from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
+
+    lines = [f"要点{'甲乙丙丁戊己庚辛壬癸'[i % 10]}{'子丑寅卯'[i // 10]}" * 12 for i in range(30)]
     profile_id = _seed_profile_for_book(
         "budget",
         book_id,
-        profile_json={
-            "qualitative_summary": "概述" * 50,
-            "style_features": [f"要点{'甲乙丙丁戊己庚辛壬癸'[i % 10]}{'子丑寅卯'[i // 10]}" * 12 for i in range(30)],
-        },
+        profile_json=_card_profile_json(
+            {dimension: lines[index * 2 : index * 2 + 2] for index, dimension in enumerate(ALL_DIMENSIONS[:15])},
+            summary="概述" * 50,
+        ),
     )
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
@@ -316,7 +336,7 @@ def test_anti_plagiarism_block_survives_budget_truncation():
             scope="project",
             scope_ref_id=project_id,
             task_type="scene_generation",
-            strategy="B",
+            strategy="mixed",
             config_json={},
             status="active",
         )
@@ -324,7 +344,7 @@ def test_anti_plagiarism_block_survives_budget_truncation():
         rendered = _render_live(session, project_id)
     red_line = rendered.system_prefix[rendered.system_prefix.index("## 严格禁止") :]
     fitted, audit = fit_rendered(rendered, base_system_prompt="", user_prompt="u", target_input_tokens=len(red_line) + 300)
-    # 整张卡替身有总预算(整行截断);再压预算时按整行去,红线段完整保留
+    # 整张文风卡有总预算(整句取舍);再压预算时按整句去,红线段完整保留
     assert len(rendered.system_prefix) < 2600 + len(red_line) + 400
     assert audit["compacted"] and audit["dropped_card_units"] >= 1
     assert len(fitted.system_prefix) < len(rendered.system_prefix)
@@ -515,7 +535,7 @@ def test_binding_unique_constraint_blocks_duplicates():
         session.rollback()
 
 
-def _seed_windowed_binding(seed: str, *, strategy: str, cloud_policy: str = "allow_full_cloud") -> str:
+def _seed_windowed_binding(seed: str, *, config_json: dict | None = None, cloud_policy: str = "allow_full_cloud") -> str:
     """一本够切窗的书(一章约 3,000 字)+ 旧画像 + project 绑定。返回 project_id。"""
     book_id = _seed_book(seed, cloud_policy=cloud_policy, with_paragraphs=False)
     with SessionLocal() as session:
@@ -534,7 +554,7 @@ def _seed_windowed_binding(seed: str, *, strategy: str, cloud_policy: str = "all
                 classifier_confidence=0.9,
             )
         session.commit()
-    profile_id = _seed_profile_for_book(seed, book_id, profile_json={"qualitative_summary": "短句白描", "style_features": ["短句"]})
+    profile_id = _seed_profile_for_book(seed, book_id, profile_json=_card_profile_json({"language.sentence_structure": ["短句"]}))
     project_id = f"proj_{seed}"
     with SessionLocal() as session:
         StyleReferenceRepository(session).create_binding(
@@ -543,18 +563,18 @@ def _seed_windowed_binding(seed: str, *, strategy: str, cloud_policy: str = "all
             scope="project",
             scope_ref_id=project_id,
             task_type="scene_generation",
-            strategy=strategy,
-            config_json={},
+            strategy="mixed",
+            config_json=dict(config_json or {}),
             status="active",
         )
         session.commit()
     return project_id
 
 
-def test_legacy_strategy_b_renders_windows_from_the_book_index():
-    """v3:样例只来自全书窗口索引(旧的证据引文路径已删);旧策略 B / mixed 映射为全面模仿。"""
-    for strategy in ("B", "mixed"):
-        project_id = _seed_windowed_binding(f"fewshot_{strategy}", strategy=strategy)
+def test_full_reference_mode_renders_windows_from_the_book_index():
+    """v3:样例只来自全书窗口索引(旧的证据引文路径已删);缺 reference_mode 与显式 full 都是全面模仿。"""
+    for label, config in (("default", {}), ("full", {"reference_mode": "full"})):
+        project_id = _seed_windowed_binding(f"fewshot_{label}", config_json=config)
         with SessionLocal() as session:
             rendered = _render_live(session, project_id)
         assert rendered.stats["few_shot_windows"] == 1
@@ -563,9 +583,9 @@ def test_legacy_strategy_b_renders_windows_from_the_book_index():
         assert "严格禁止" in rendered.system_prefix
 
 
-def test_legacy_strategy_a_and_segments_only_books_send_no_windows():
-    project_id = _seed_windowed_binding("nofs", strategy="A")
-    segments = _seed_windowed_binding("nofs_seg", strategy="mixed", cloud_policy="segments_only")
+def test_card_only_bindings_and_segments_only_books_send_no_windows():
+    project_id = _seed_windowed_binding("nofs", config_json={"reference_mode": "card_only"})
+    segments = _seed_windowed_binding("nofs_seg", cloud_policy="segments_only")
     with SessionLocal() as session:
         for pid in (project_id, segments):
             rendered = _render_live(session, pid)
@@ -605,126 +625,6 @@ def test_failed_idempotent_action_does_not_half_commit():
         assert StyleReferenceRepository(session).get_run("sr_run_hd_half") is None, (
             "失败 action 的半成品 run 行不应被提交"
         )
-
-
-# ---------------------------------------------------------------------------
-# 9. bind_style_profile 决策卡 effect 转发注入配置(apply 决策卡 → 批准 → 真 bind)
-# ---------------------------------------------------------------------------
-
-
-def test_bind_style_profile_effect_forwards_injection_config():
-    """待办里还没处理的旧「应用画像」卡:批准时走 v3 直接绑定,卡上的旧键映射成 v3 配置
-    (强度 35 → round(3 + 9·0.35) = 6 窗;mixed → 全面模仿;旧 sub_dimensions 不再有「只学几维」的语义)。"""
-    from novel_system.services.review_effects import run_effect
-
-    book_id = _seed_book("effectcfg", cloud_policy="segments_only", with_paragraphs=False)
-    profile_id = _seed_profile_for_book("effectcfg", book_id)
-    project_id = _seed_project("proj_effectcfg")
-    with SessionLocal() as session:
-        result = run_effect(
-            session,
-            project_id,
-            {
-                "type": "bind_style_profile",
-                "profile_id": profile_id,
-                "scope": "project",
-                "strategy": "mixed",
-                "intensity": 35,
-                "sub_dimensions": ["language.rhetoric", "scene.dialogue"],
-                "include_metric": True,
-            },
-        )
-        session.commit()
-        binding = StyleReferenceRepository(session).get_binding(result["binding_id"])
-        assert binding.scope == "project"
-        assert binding.scope_ref_id == project_id
-        assert binding.strategy == "mixed"
-        assert binding.config_json["sample_windows"] == 6
-        assert binding.config_json["reference_mode"] == "full"
-        assert set(binding.config_json["dimension_states"].values()) == {"normal"}
-        assert "intensity" not in binding.config_json and "sub_dimensions" not in binding.config_json
-
-
-def test_bind_style_profile_effect_scene_and_character_scope():
-    """立项 A — 旧决策卡 scope=scene/character + scope_ref_id 落成对应 scope 的真 binding,
-    且 resolve_active_binding(scene_id=...) 命中场景级绑定(scene > character > project 优先级);
-    旧卡上的策略 A 映射成「只用文风卡」。"""
-    from novel_system.services.review_effects import run_effect
-    from novel_system.services.style_reference.injection import InjectionService
-    from tests.style_reference_inject_helpers import seed_scene
-
-    book_id = _seed_book("scoperef", cloud_policy="segments_only", with_paragraphs=False)
-    profile_id = _seed_profile_for_book("scoperef", book_id)
-    with SessionLocal() as session:
-        scene = seed_scene(session, "SCOPEREF_SC01", project_id="proj_scoperef", chapter_id="SCOPEREF_CH01")
-        scene_res = run_effect(session, "proj_scoperef", {
-            "type": "bind_style_profile", "profile_id": profile_id,
-            "scope": "scene", "scope_ref_id": scene.scene_id,
-            "task_type": "scene_generation", "strategy": "A",
-        })
-        char_res = run_effect(session, "proj_scoperef", {
-            "type": "bind_style_profile", "profile_id": profile_id,
-            "scope": "character", "scope_ref_id": "scoperef_CHAR01",
-            "task_type": "scene_generation", "strategy": "B",
-        })
-        session.commit()
-        repo = StyleReferenceRepository(session)
-        sb = repo.get_binding(scene_res["binding_id"])
-        cb = repo.get_binding(char_res["binding_id"])
-        assert sb.scope == "scene" and sb.scope_ref_id == scene.scene_id
-        assert sb.config_json["reference_mode"] == "card_only" and sb.strategy == "mixed"
-        assert cb.scope == "character" and cb.scope_ref_id == "scoperef_CHAR01"
-        assert cb.config_json["reference_mode"] == "full"
-        # 注入选取:scene_id 命中场景级绑定(优先级最高)
-        picked = InjectionService(session).resolve_active_binding(
-            "proj_scoperef", "scene_generation",
-            character_ids=["scoperef_CHAR01"], scene_id=scene.scene_id,
-        )
-        assert picked is not None
-        assert picked.scope == "scene" and picked.scope_ref_id == scene.scene_id
-        # 角色级单独命中:scene 不匹配时,character_ids 命中角色级绑定
-        picked_char = InjectionService(session).resolve_active_binding(
-            "proj_scoperef", "scene_generation",
-            character_ids=["scoperef_CHAR01"], scene_id="other_scene",
-        )
-        assert picked_char is not None
-        assert picked_char.scope == "character" and picked_char.scope_ref_id == "scoperef_CHAR01"
-
-
-def test_bind_style_profile_effect_scene_requires_scope_ref_id():
-    """立项 A — scene/character 级绑定缺 scope_ref_id 应拒绝(防静默回退 project_id 成脏数据)。"""
-    from novel_system.services.review_effects import run_effect
-
-    book_id = _seed_book("scoperefreq", cloud_policy="segments_only", with_paragraphs=False)
-    profile_id = _seed_profile_for_book("scoperefreq", book_id)
-    with SessionLocal() as session:
-        with pytest.raises(DomainError) as exc:
-            run_effect(session, "proj_scoperefreq", {
-                "type": "bind_style_profile", "profile_id": profile_id, "scope": "scene",
-            })
-        assert exc.value.status_code == 400
-
-
-def test_bind_style_profile_effect_without_config_gets_v3_defaults():
-    """无配置的旧卡:绑定落 v3 默认(全面模仿 · 12 窗 · 作者手笔直起 · 各维正常),目标默认取卡的作品。"""
-    from novel_system.services.review_effects import run_effect
-
-    book_id = _seed_book("effectplain", cloud_policy="segments_only", with_paragraphs=False)
-    profile_id = _seed_profile_for_book("effectplain", book_id)
-    project_id = _seed_project("proj_effectplain")
-    with SessionLocal() as session:
-        result = run_effect(
-            session,
-            project_id,
-            {"type": "bind_style_profile", "profile_id": profile_id},
-        )
-        session.commit()
-        binding = StyleReferenceRepository(session).get_binding(result["binding_id"])
-        assert binding.config_json["reference_mode"] == "full"
-        assert binding.config_json["sample_windows"] == 12
-        assert binding.config_json["draft_mode"] == "style_first"
-        assert binding.strategy == "mixed"
-        assert binding.scope_ref_id == project_id
 
 
 # ---------------------------------------------------------------------------

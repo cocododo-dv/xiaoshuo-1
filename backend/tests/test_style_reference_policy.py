@@ -124,3 +124,50 @@ def test_unknown_cloud_policy_is_fail_closed_even_with_send_rights(
 def test_none_book_keeps_caller_not_found_behavior() -> None:
     assert cloud_llm_allowed(None) is True
     ensure_cloud_llm_allowed(None, operation="caller_handles_not_found")
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-24 清理 C7：轻量现解析里，绑定指向非 active 画像 → 降级（不是未绑定）
+# ---------------------------------------------------------------------------
+
+
+def _scope(project_id: str, *, scene_id: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(project_id=project_id, scene_id=scene_id, pov_character_id=None, onstage_chars_json=[])
+
+
+def test_light_live_policy_degrades_when_the_bound_profile_is_not_active(session) -> None:
+    from novel_system.db.models import StoryProject, StyleReferenceProfile
+    from novel_system.services.style_policy import (
+        MODE_DEGRADED,
+        MODE_LIVE,
+        PROFILE_NOT_ACTIVE_CODE,
+        style_policy_live,
+    )
+    from tests.style_reference_factories import make_binding, make_book, make_profile, synthetic_paragraphs
+
+    project_id = "PRJ_C7"
+    session.add(StoryProject(project_id=project_id, title="C7", outline_text=""))
+    book_id = make_book(session, "book_c7", paragraphs=synthetic_paragraphs(6))
+    archived = make_profile(session, book_id, profile_id="profile_c7_archived", status="archived")
+    binding = make_binding(session, archived, binding_id="bind_c7_project", scope_ref_id=project_id)
+    session.commit()
+
+    policy = style_policy_live(session, _scope(project_id), freeze_contract=False)
+    assert policy.bound is False and policy.mode == MODE_DEGRADED
+    assert policy.error_code == PROFILE_NOT_ACTIVE_CODE
+    # 带上是哪份画像 / 哪条绑定 / 哪本书：界面能说「画像未启用」，抄袭门能报 unavailable
+    assert (policy.profile_id, policy.binding_id, policy.book_id) == (archived, binding.binding_id, book_id)
+    assert policy.audit()["error_code"] == PROFILE_NOT_ACTIVE_CODE
+
+    # 同一目标上另有指向 active 画像的绑定：与冻结路径一样只在可用的绑定里选，不降级
+    active = make_profile(session, book_id, profile_id="profile_c7_active", status="active")
+    usable = make_binding(session, active, binding_id="bind_c7_global", scope="global", scope_ref_id=None)
+    session.commit()
+    bound = style_policy_live(session, _scope(project_id), freeze_contract=False)
+    assert bound.bound and bound.mode == MODE_LIVE and bound.binding_id == usable.binding_id
+
+    # 画像启用后同一条绑定就是生效的那条
+    session.get(StyleReferenceProfile, archived).status = "active"
+    session.commit()
+    revived = style_policy_live(session, _scope(project_id), freeze_contract=False)
+    assert revived.bound and revived.binding_id == binding.binding_id and revived.profile_id == archived

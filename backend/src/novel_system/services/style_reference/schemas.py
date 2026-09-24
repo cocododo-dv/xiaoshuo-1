@@ -3,7 +3,9 @@
 2026-09-23（v3 P3）：删掉从未被使用的 11 个 Row 模型、未用的枚举（FeedbackVote / BookStatus / ExtractionStatus /
 FindingStatus / InputAssessmentLevel）与旧学习链路的契约（ExtractionFindingInput / ExtractionOutput /
 SupplementEvidenceOutput / SynthesizedProfile / ProfileSubDimensionSummary）；学习作业的输出校验在
-``learn_extract`` / ``learn_card`` 里。
+``learn_extract`` / ``learn_card`` 里。2026-09-24（清理 S1 / S4）：``RunStatus`` / ``RunPhase`` 无读者删掉，
+``InjectionStrategy`` 只剩 ``MIXED``、``TaskType`` 只剩 ``SCENE_GENERATION``（实际写 / 读的唯一值），预览契约
+去掉 v2 字段（``strategy`` / ``intensity`` / ``sub_dimensions`` / ``include_*`` / ``metric_*`` / ``forbidden_*``）。
 """
 
 from __future__ import annotations
@@ -55,21 +57,6 @@ class ExtractionPurpose(str, Enum):
     FULL_RETRY = "full_retry"
 
 
-class RunStatus(str, Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    DONE = "done"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class RunPhase(str, Enum):
-    INGEST = "ingest"
-    EXTRACT = "extract"
-    SYNTHESIZE = "synthesize"
-    DONE = "done"
-
-
 class ProfileStatus(str, Enum):
     DRAFT = "draft"
     ACTIVE = "active"
@@ -91,27 +78,17 @@ class BindingStatus(str, Enum):
 
 
 class InjectionStrategy(str, Enum):
-    """绑定行的旧 ``strategy`` 列(A / B / C / mixed)。v3 起一律写 ``mixed``;怎么送参考看绑定配置的
-    ``reference_mode``(``binding_config``:旧 A → card_only,B / C / mixed → full)。"""
+    """绑定行的 ``strategy`` 列:v3 起恒为 ``mixed``(旧 A / B / C 由迁移 0092 统一改写;怎么送参考只看绑定配置的
+    ``reference_mode``)。列本身保留,删列要重建表,另议。"""
 
-    A = "A"
-    B = "B"
-    C = "C"
     MIXED = "mixed"
 
 
 class TaskType(str, Enum):
-    """注入策略默认表的 key。来源:§5.1 TaskType。"""
+    """绑定行的 ``task_type``:v3 只写 / 只读 ``scene_generation``(旧 ``long_form_continuation`` 等值从没被枚举校验过,
+    库里的存量行按字符串比对,不经这个枚举)。"""
 
-    PROJECT_INIT = "project_init"
     SCENE_GENERATION = "scene_generation"
-    FINE_TUNING = "fine_tuning"
-    # deprecated——「长文续写」生产路径已下线(2026-08,产品拍板不接线)。
-    # 值必须保留:存量 DB 的 StyleReferenceInjectionBinding.task_type 可能仍是
-    # 'long_form_continuation',读取/校验路径(TaskType(...) 与 Pydantic 字段)
-    # 收窄枚举会让存量行直接炸掉。仅从 UI 选项与任务卡片列表中移除。
-    LONG_FORM_CONTINUATION = "long_form_continuation"
-    KEY_CHAPTER = "key_chapter"
 
 
 class BannedTermScope(str, Enum):
@@ -201,23 +178,19 @@ FEW_SHOT_CLOSING_MANDATE = (
 
 
 class SystemPromptFragments(BaseModel):
-    """本场预览(``POST /profiles/{id}/injection-preview``)返回的分块文本 + 旧 ``strategy`` 回填。
+    """本场预览(``POST /profiles/{id}/injection-preview``)返回的分块文本。
 
     起草 / 评审节点的提示由 ``inject.render.render_style`` 直接拼(system 前缀 + user 尾块),不经过这个模型;
     这里只是预览接口的响应形状:``positive_block`` = 文风卡,``voice_block`` = 声音习惯,``few_shot_block`` =
-    样例窗(起草时在 user 消息末尾),``anti_plagiarism_block`` = 红线(永不截断)。``forbidden_block`` /
-    ``metric_anchor_block`` 是旧画像时代的块名,v3 恒为空串。
+    样例窗(起草时在 user 消息末尾),``anti_plagiarism_block`` = 红线(永不截断)。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     positive_block: str = ""
-    forbidden_block: str = ""
-    metric_anchor_block: str = ""
     voice_block: str = ""
     few_shot_block: str = ""
     anti_plagiarism_block: str = ""
-    strategy: InjectionStrategy = InjectionStrategy.A
 
 
 # ---------------------------------------------------------------------------
@@ -228,25 +201,16 @@ class SystemPromptFragments(BaseModel):
 class InjectionPreviewRequest(BaseModel):
     """「本场预览」``POST /profiles/{id}/injection-preview`` 的请求体——只读,**不写**绑定、不冻结选窗。
 
-    v3 的旋钮是下面四个绑定配置键(不传时由旧 ``strategy`` / ``intensity`` 映射,见 ``binding_config``);
-    ``scene_id`` 给了就按那一场的设计挑窗(与起草同一套选窗),``project_id`` 给了就带上这部作品的近期常见偏差。
-    旧的 ``sub_dimensions`` / ``include_*`` 只为兼容旧请求体保留,不再改变渲染。
+    旋钮就是 v3 的四个绑定配置键(不传的取默认,见 ``binding_config``);``scene_id`` 给了就按那一场的设计挑窗
+    (与起草同一套选窗),``project_id`` 给了就带上这部作品的近期常见偏差。旧的 ``strategy`` / ``intensity`` /
+    ``sub_dimensions`` / ``include_*`` 不再收(2026-09-24;React 客户端只发这四键)。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    strategy: InjectionStrategy | None = None
-    task_type: TaskType = TaskType.SCENE_GENERATION
-    intensity: int = Field(default=100, ge=0, le=100)
-    sub_dimensions: list[str] = Field(default_factory=list, max_length=128)
-    include_positive: bool = True
-    include_forbidden: bool = True
-    include_metric: bool | None = None
     # 2026-09-14 保真修补(WP4.3):按场景预览——同一轮换种子与场景位置提示,作者看到的就是
     # 这一场实际拿到的窗口;不传则为无种子的通用预览。
     scene_id: str | None = Field(default=None, max_length=128)
-    # 2026-09-23 风格参考 v3:绑定的四个旋钮(不传时由旧 strategy / intensity 映射,见 binding_config);
-    # project_id 给了就带上这部作品的近期常见偏差。旧 sub_dimensions / include_* 不再改变渲染。
     reference_mode: Literal["full", "samples_only", "card_only"] | None = None
     sample_windows: int | None = Field(default=None, ge=0, le=16)
     dimension_states: dict[str, Literal["emphasize", "normal", "exclude"]] | None = None
@@ -257,21 +221,20 @@ class InjectionPreviewRequest(BaseModel):
 class InjectionPreviewStats(BaseModel):
     """本场预览的读数(``inject.render.render_stats`` 给出,与起草同一次渲染)。
 
-    行数 = 各块中以 `- ` 起头的条目行;`few_shot_windows` 是这一场拿到的样例窗数,`few_shot_chars` 是这些窗的
-    原文总字数;`total_prefix_chars` 是 system 前缀与 user 尾块的总字数;`few_shot_k` 是窗数上限。旧名沿用:
-    `intensity_effective_total_chars` 现在是文风卡块的字数,`metric_lines` 恒为 0(量化指导块已删)。
+    行数 = 各块中以 `- ` 起头的条目行(`positive_lines` 文风卡的正向句,`avoid_lines`「作者不这么写」);
+    `few_shot_windows` 是这一场拿到的样例窗数,`few_shot_chars` 是这些窗的原文总字数;`total_prefix_chars` 是
+    system 前缀与 user 尾块的总字数;`card_chars` 是文风卡块的字数;`few_shot_k` 是窗数上限。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     positive_lines: int = 0
-    forbidden_lines: int = 0
-    metric_lines: int = 0
+    avoid_lines: int = 0
     voice_lines: int = 0
     few_shot_windows: int = 0
     few_shot_chars: int = 0
     total_prefix_chars: int = 0
-    intensity_effective_total_chars: int = 0
+    card_chars: int = 0
     few_shot_k: int = 0
 
 

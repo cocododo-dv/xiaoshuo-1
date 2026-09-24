@@ -46,10 +46,6 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.scene_rehome import rehome_scenes
-from novel_system.services.style_reference.schemas import (
-    BindingScope,
-    TaskType,
-)
 from novel_system.services.system_config import SystemConfigService
 from novel_system.services.snowflake_steps import SNOWFLAKE_METHOD_VERSION
 from novel_system.settings import get_settings
@@ -435,7 +431,6 @@ class ProjectService:
         project = self.require_project(project_id)
         latest_plan = self._latest_plan(project_id)
         chapters = self._chapter_payloads(project_id)
-        reference_profile_ids = self._project_reference_profile_ids(project)
         current_chapter = next(
             (
                 chapter
@@ -446,13 +441,10 @@ class ProjectService:
         )
         backtrack_items: list[dict[str, Any]] = []
         return {
-            "project": project_payload(
-                project, reference_profile_ids=reference_profile_ids
-            ),
+            "project": project_payload(project),
             "latest_plan": outline_plan_payload(latest_plan) if latest_plan else None,
             "chapters": chapters,
             "current_chapter": current_chapter,
-            "reference_profiles": self._reference_profile_payloads(project),
             "backtrack_items": backtrack_items,
             "review_packet": ProjectChapterFlowService(self.session).review_packet(
                 project, project.current_chapter_id
@@ -792,44 +784,6 @@ class ProjectService:
             .all()
         )
         return [chapter_payload(self.session, chapter) for chapter in chapters]
-
-    def _reference_profile_payloads(
-        self, project: StoryProject
-    ) -> list[dict[str, Any]]:
-        bound_profiles = self._bound_style_reference_profiles(project.project_id)
-        return [
-            reference_profile_payload(profile, binding=binding)
-            for binding, profile in bound_profiles
-        ]
-
-    def _bound_style_reference_profiles(
-        self,
-        project_id: str,
-    ) -> list[tuple[StyleReferenceInjectionBinding, StyleReferenceProfile]]:
-        rows = self.session.execute(
-            select(StyleReferenceInjectionBinding, StyleReferenceProfile)
-            .join(
-                StyleReferenceProfile,
-                StyleReferenceProfile.profile_id
-                == StyleReferenceInjectionBinding.profile_id,
-            )
-            .where(
-                StyleReferenceInjectionBinding.scope == BindingScope.PROJECT.value,
-                StyleReferenceInjectionBinding.scope_ref_id == project_id,
-                StyleReferenceInjectionBinding.task_type
-                == TaskType.SCENE_GENERATION.value,
-                StyleReferenceInjectionBinding.status == "active",
-            )
-            .order_by(
-                StyleReferenceInjectionBinding.created_at.desc(),
-                StyleReferenceInjectionBinding.binding_id.desc(),
-            )
-        ).all()
-        return [(binding, profile) for binding, profile in rows]
-
-    def _project_reference_profile_ids(self, project: StoryProject) -> list[str]:
-        bound_profiles = self._bound_style_reference_profiles(project.project_id)
-        return [profile.profile_id for _, profile in bound_profiles]
 
     def _next_action(
         self,
@@ -1260,13 +1214,6 @@ class ProjectChapterFlowService:
             "issues_summary": issues_summary,
             "run_status": latest_job.status if latest_job else "idle",
             "reference_safety": list(REFERENCE_SAFETY_RULES),
-            "reference_profile_summaries": [
-                profile.get("safe_summary")
-                for profile in ProjectService(self.session)._reference_profile_payloads(
-                    project
-                )
-                if profile.get("safe_summary")
-            ],
             "small_revision_entry": {
                 "writer_room_object_type": "chapter",
                 "writer_room_object_id": chapter.chapter_id,
@@ -1626,11 +1573,7 @@ def project_summary_payload(project: StoryProject) -> dict[str, Any]:
     return payload
 
 
-def project_payload(
-    project: StoryProject,
-    *,
-    reference_profile_ids: list[str] | None = None,
-) -> dict[str, Any]:
+def project_payload(project: StoryProject) -> dict[str, Any]:
     return {
         "project_id": project.project_id,
         "title": project.title,
@@ -1655,7 +1598,6 @@ def project_payload(
         "active_outline_plan_id": project.active_outline_plan_id,
         "current_chapter_id": project.current_chapter_id,
         "approved_chapter_ids": list(project.approved_chapter_ids_json or []),
-        "reference_profile_ids": list(reference_profile_ids or []),
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
@@ -1715,67 +1657,6 @@ def scene_payload(scene: SceneCard) -> dict[str, Any]:
         "target_length_band": scene.target_length_band,
         "scene_type": scene.scene_type,
         "is_chapter_last": scene.is_chapter_last,
-    }
-
-
-def reference_profile_payload(
-    profile: StyleReferenceProfile,
-    *,
-    binding: StyleReferenceInjectionBinding | None = None,
-) -> dict[str, Any]:
-    safe_summary = _reference_profile_safe_summary(profile.profile_json or {})
-    payload = {
-        "profile_id": profile.profile_id,
-        "title": profile.title,
-        "status": profile.status,
-        "profile_json": profile.profile_json or {},
-        "safe_summary": safe_summary,
-    }
-    if binding is not None:
-        payload.update(
-            {
-                "binding_id": binding.binding_id,
-                "scope": binding.scope,
-                "scope_ref_id": binding.scope_ref_id,
-                "task_type": binding.task_type,
-                "strategy": binding.strategy,
-            }
-        )
-    return payload
-
-
-def _reference_profile_safe_summary(profile_json: dict[str, Any]) -> dict[str, Any]:
-    tags = []
-    for label, keys in (
-        ("节奏", ("style_features", "rhythm", "pacing", "style_rules")),
-        (
-            "结构",
-            (
-                "narrative_patterns",
-                "structure_patterns",
-                "structure_techniques",
-                "structure_rules",
-                "calibration_guidance",
-            ),
-        ),
-        (
-            "安全提示",
-            (
-                "banned_replication_rules",
-                "safety_rules",
-                "forbidden_copy_rules",
-                "safety_constraints",
-            ),
-        ),
-    ):
-        values: list[str] = []
-        for key in keys:
-            values.extend(_string_list(profile_json.get(key)))
-        if values:
-            tags.append({"label": label, "summary": values[0][:120]})
-    return {
-        "abstract_tags": tags[:6],
-        "safety_note": "仅使用抽象节奏、结构和安全规则；不展示或复制参考书原文。",
     }
 
 

@@ -397,11 +397,13 @@ def test_resolve_project_style_reference_degrades_and_renders(session, monkeypat
     assert reference["planning_guidance"].startswith("[场景手法]")
     assert module.structure_card_text(reference) == f"{reference['structure_card']}\n{reference['structure_samples']}"
 
-    # 解析异常 → None（只记 debug 日志，不阻断规划）
-    def _boom(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+    # 渲染异常 → None（记 warning，不阻断规划；绑定解析本身走 style_policy_live，降级同样 → None）
+    def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
         raise RuntimeError("resolver exploded")
 
-    monkeypatch.setattr(module, "resolve_binding_layers", _boom)
+    monkeypatch.setattr(module, "render_planning_reference", _boom)
+    assert module.resolve_project_style_reference(session, PROJECT_ID) is None
+    monkeypatch.setattr(module, "style_policy_live", _boom)
     assert module.resolve_project_style_reference(session, PROJECT_ID) is None
 
 

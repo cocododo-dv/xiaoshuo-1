@@ -151,7 +151,7 @@ def _profile_policy(session: Session, profile_id: str) -> Any:
         raise DomainError(
             "STYLE_REFERENCE_PROFILE_NOT_FOUND", f"profile {profile_id!r} not found", status_code=404
         )
-    contract = preview_contract(session, profile, normalize_binding_config(None, {}))
+    contract = preview_contract(session, profile, normalize_binding_config({}))
     return policy_from_contract(contract, mode=POLICY_MODE_CHECK)
 
 

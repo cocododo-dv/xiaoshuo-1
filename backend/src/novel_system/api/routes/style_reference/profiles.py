@@ -252,7 +252,7 @@ def delete_banned_term(
 
 
 def injection_preview_payload(result: dict[str, Any]) -> dict[str, Any]:
-    """旧预览端点的字段(``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` / ``window_refs``)。"""
+    """预览端点的基础字段(``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` / ``window_refs``)。"""
     stats = result.get("stats") or {}
     return InjectionPreviewResponse(
         fragments=SystemPromptFragments(**result["fragments"]),
@@ -272,13 +272,14 @@ def dryrun_injection_preview(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """本场预览(dryrun,不写绑定、不写选窗冻结行):按入参的 v3 配置渲染——与起草同一套选窗、同一个块次序;
-    给了 ``scene_id`` 就是这一场起草时会拿到的窗。返回旧字段 + ``windows``(章 / 位置 / 标签 / 梗概)、``blocks``、
-    ``sizes``、生效的 ``reference_mode`` 与 ``notices``(见 ``scene_preview``)。"""
+    """本场预览(dryrun,不写绑定、不写选窗冻结行):按入参的 v3 四键渲染——与起草同一套选窗、同一个块次序;
+    给了 ``scene_id`` 就是这一场起草时会拿到的窗。返回 ``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` /
+    ``window_refs`` + ``windows``(章 / 位置 / 标签 / 维度 / 梗概)、``blocks``、``sizes``、生效的 ``reference_mode`` 与
+    ``notices``(见 ``scene_preview``)。旧 ``strategy`` / ``intensity`` 入参不再收(2026-09-24)。"""
     # idempotency-exempt: deterministic read-only preview; no binding / selection written (the
     # book's window index may be built once as a cache).
     _profile_or_404(session, profile_id)
-    config: dict[str, Any] = {"intensity": payload.intensity}
+    config: dict[str, Any] = {}
     if payload.reference_mode is not None:
         config["reference_mode"] = payload.reference_mode
     if payload.sample_windows is not None:
@@ -287,14 +288,12 @@ def dryrun_injection_preview(
         config["dimension_states"] = dict(payload.dimension_states)
     if payload.draft_mode is not None:
         config["draft_mode"] = payload.draft_mode
-    strategy = payload.strategy.value if payload.strategy is not None else None
     result = preview_render(
         session,
         profile_id,
         config,
         scene_id=payload.scene_id,
         project_id=payload.project_id,
-        strategy=strategy,
     )
     data = injection_preview_payload(result)
     data.update(
@@ -302,7 +301,7 @@ def dryrun_injection_preview(
             session,
             profile_id,
             result,
-            config=normalize_binding_config(strategy, config),
+            config=normalize_binding_config(config),
             scene_id=payload.scene_id,
         )
     )

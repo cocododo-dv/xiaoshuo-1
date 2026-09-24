@@ -29,6 +29,11 @@ RIGHTS_STATS: dict[str, Any] = {
     "rights_declaration": {"declared": True, "analysis_rights": True, "send_rights": True}
 }
 
+# 窗口标签 v2 的形状（2026-09-24 O1：``{situations, moods, dimensions, gist}``，没有 devices）——这里直接写行，
+# 不经 ``tags.normalize_window_tags``（生产侧由学习作业写）
+TAGS_VERSION_V2 = "window_tags_v2"
+TAG_KEYS_V2: tuple[str, ...] = ("situations", "moods", "dimensions")
+
 # 泛化的写法描述（与 ``style_reference_inject_helpers`` 的合成文风卡同一套说法）
 VOICE_HABITS: list[str] = [
     "句子多靠「就」「也」「还」并置推进，少用「然而」「于是」",
@@ -356,23 +361,33 @@ def make_binding(
     )
 
 
+def window_tags_v2(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    """一窗的 v2 标签（``situations`` / ``moods`` / ``dimensions`` 列表 + ``gist``；缺的补空）。"""
+    raw = dict(raw or {})
+    tags: dict[str, Any] = {key: [str(v) for v in (raw.get(key) or [])] for key in TAG_KEYS_V2}
+    tags["gist"] = str(raw.get("gist") or "")
+    return tags
+
+
 def make_windows(
     session: Session,
     book_id: str,
     *,
     tags: Mapping[int, Mapping[str, Any]] | None = None,
-    devices: Sequence[str] = (),
 ) -> list[StyleReferenceWindow]:
-    """建这本书的持久化窗口索引（``windows.ensure_window_index``），可选地按窗口号写场面 / 情绪 / 手法标签。"""
-    from novel_system.services.style_reference.windows import (
-        ensure_window_index,
-        load_windows,
-        set_window_tags,
-    )
+    """建这本书的持久化窗口索引（``windows.ensure_window_index``），可选地按窗口号直接写 v2 标签
+    （``{situations, moods, dimensions, gist}``，``tags_version = window_tags_v2``；不认识的窗号忽略）。"""
+    from novel_system.services.style_reference.windows import ensure_window_index, load_windows
 
     ensure_window_index(session, book_id)
     if tags:
-        set_window_tags(session, book_id, dict(tags), tags_version="window_tags_v1", devices=tuple(devices))
+        by_no = {int(window.window_no): window for window in load_windows(session, book_id)}
+        for raw_no, raw_tags in tags.items():
+            window = by_no.get(int(raw_no))
+            if window is None:
+                continue
+            window.tags_json = window_tags_v2(raw_tags)
+            window.tags_version = TAGS_VERSION_V2
     session.flush()
     return load_windows(session, book_id)
 
@@ -380,6 +395,7 @@ def make_windows(
 __all__ = [
     "DEVICES",
     "RIGHTS_STATS",
+    "TAGS_VERSION_V2",
     "VOICE_HABITS",
     "card_payload",
     "make_banned_terms",
@@ -390,4 +406,5 @@ __all__ = [
     "make_windows",
     "synthetic_paragraphs",
     "v3_profile_json",
+    "window_tags_v2",
 ]

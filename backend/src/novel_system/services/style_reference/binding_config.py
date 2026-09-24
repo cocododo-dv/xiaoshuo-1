@@ -8,10 +8,9 @@ v3 的绑定配置只有四个作者可见的旋钮：
 - ``dimension_states``：16 维各自 ``emphasize`` 重点 / ``normal`` 正常 / ``exclude`` 不学（缺省全部 normal）。
 - ``draft_mode``：``style_first``（作者手笔直起，默认）/ ``neutral_first``（先中性后润色，对照用）。
 
-旧绑定（策略 A/B/C/mixed + intensity + sub_dimensions + include_*）在这里一次性映射成 v3 语义，下游不再
-各自解释旧键：A → card_only（它本来就不带样例）；B / C / mixed → full；intensity i → round(3 + 9·i/100)
-窗（与旧 k(i) 同一公式，默认 100 → 12）；旧 ``sub_dimensions`` 是「只注入这些维的禁忌」，映射为未列出的维
-``normal``（不再有「只学几维」的隐含语义——那会让画像更不像）。
+旧绑定（策略 A/B/C/mixed + intensity + sub_dimensions + include_*）由迁移 ``20260924_0092`` 一次性回填成这四键
+（A → card_only、其余 → full；intensity i → round(3 + 9·i/100) 窗；``draft_mode`` 缺键仍在契约构建期取 yaml 默认），
+这里不再解释任何旧键：缺键取默认，未知键丢弃。
 """
 
 from __future__ import annotations
@@ -41,22 +40,6 @@ MAX_SAMPLE_WINDOWS = 16
 
 ALL_DIMENSIONS: tuple[str, ...] = tuple(dim.value for dim in SubDimension)
 
-_LEGACY_STRATEGY_MODES = {
-    "A": REFERENCE_MODE_CARD_ONLY,
-    "B": REFERENCE_MODE_FULL,
-    "C": REFERENCE_MODE_FULL,
-    "mixed": REFERENCE_MODE_FULL,
-}
-
-
-def legacy_intensity_to_windows(intensity: Any) -> int:
-    try:
-        value = int(round(float(intensity)))
-    except (TypeError, ValueError):
-        value = 100
-    value = max(0, min(100, value))
-    return int(round(3 + 9 * value / 100))
-
 
 def _clamp_windows(value: Any) -> int:
     try:
@@ -78,28 +61,22 @@ def normalize_dimension_states(raw: Any) -> dict[str, str]:
     return states
 
 
-def normalize_binding_config(strategy: str | None, config_json: Mapping[str, Any] | None) -> dict[str, Any]:
-    """任意新旧绑定 → v3 四键（外加原样保留的未知键，方便审计）。"""
+def normalize_binding_config(config_json: Mapping[str, Any] | None) -> dict[str, Any]:
+    """任意绑定配置 → v3 四键（缺键取默认、越界夹回、未知键丢弃）。"""
     config = dict(config_json or {})
     mode = str(config.get("reference_mode") or "").strip().lower()
     if mode not in REFERENCE_MODES:
-        mode = _LEGACY_STRATEGY_MODES.get(str(strategy or "mixed"), REFERENCE_MODE_FULL)
-    if "sample_windows" in config:
-        windows = _clamp_windows(config.get("sample_windows"))
-    elif "intensity" in config:
-        windows = _clamp_windows(legacy_intensity_to_windows(config.get("intensity")))
-    else:
-        windows = DEFAULT_SAMPLE_WINDOWS
+        mode = REFERENCE_MODE_FULL
+    windows = _clamp_windows(config.get("sample_windows")) if "sample_windows" in config else DEFAULT_SAMPLE_WINDOWS
     draft_mode = str(config.get("draft_mode") or "").strip().lower()
     if draft_mode not in DRAFT_MODES:
         draft_mode = DRAFT_MODE_STYLE_FIRST
-    normalized = {
+    return {
         "reference_mode": mode,
         "sample_windows": windows,
         "dimension_states": normalize_dimension_states(config.get("dimension_states")),
         "draft_mode": draft_mode,
     }
-    return normalized
 
 
 def effective_reference_mode(mode: str, *, cloud_policy: str | None) -> str:
@@ -134,7 +111,6 @@ __all__ = [
     "REFERENCE_MODE_FULL",
     "REFERENCE_MODE_SAMPLES_ONLY",
     "effective_reference_mode",
-    "legacy_intensity_to_windows",
     "normalize_binding_config",
     "normalize_dimension_states",
     "sends_card",

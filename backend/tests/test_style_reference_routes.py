@@ -447,10 +447,10 @@ def test_list_profiles(client: TestClient) -> None:
     assert resp.status_code == 200
     profiles = resp.json()["data"]["profiles"]
     assert [p["profile_id"] for p in profiles] == [profile_id]
-    # 摘要不带 profile_json(台账 U10);旧版画像(没有文风卡)要重新学
+    # 摘要不带 profile_json(台账 U10);没有 v3 版本标记的旧画像不是「要重新学」,是「没学过」(2026-09-24)
     summary = profiles[0]
     assert "profile_json" not in summary
-    assert summary["needs_relearn"] is True and summary["relearn_reason"] == "legacy_profile"
+    assert summary["needs_relearn"] is False and summary["relearn_reason"] is None and summary["profile_version"] is None
     assert summary["card_lines"] == 0 and summary["book_id"] == book_id
 
 
@@ -462,7 +462,7 @@ def test_get_profile_happy(client: TestClient) -> None:
     profile = resp.json()["data"]["profile"]
     assert profile["profile_id"] == profile_id and "profile_json" not in profile
     assert profile["has_card"] is False and len(profile["dimensions"]) == 16
-    assert profile["legacy"] is not None
+    assert "legacy" not in profile and "sub_dimensions" not in profile
 
 
 def test_get_profile_404(client: TestClient) -> None:

@@ -186,7 +186,7 @@ def test_workbench_windows_carry_the_learned_gist_and_tags_for_v3_refs(session: 
             position="opening",
             chars=3820,
             paragraph_count=60,
-            tags_json={"situations": ["开章引入"], "moods": ["平静"], "devices": ["留白"], "gist": "某人在渡口等船"},
+            tags_json={"situations": ["开章引入"], "moods": ["平静"], "dimensions": ["scene.environment"], "gist": "某人在渡口等船"},
         )
     )
     v3_ref = {
@@ -199,12 +199,12 @@ def test_workbench_windows_carry_the_learned_gist_and_tags_for_v3_refs(session: 
         "paragraphs": 60,
         "slot": "position",
         "situations": ["旧标签"],
-        "devices": [],
+        "dimensions": [],
         "paragraph_type": "narration",
         "dialogue_share": 0.1,
         "typicality": 0.8,
     }
-    missing_ref = {**v3_ref, "window_no": 8, "start": 200, "end": 230, "situations": ["冻结时的场面"], "devices": ["倒叙"]}
+    missing_ref = {**v3_ref, "window_no": 8, "start": 200, "end": 230, "situations": ["冻结时的场面"], "dimensions": ["narrative.time_handling"]}
     legacy_ref = {"start": 640, "end": 662, "chapter": 9, "position": "closing", "paragraph_type": "dialogue", "paragraphs": 23, "chars": 1510}
     session.add(
         _attempt(scene_id, step="style_draft", bundle_id="bundle_v2", refs=[v3_ref, missing_ref, legacy_ref], profile_ids=["profile_p6b"])
@@ -224,15 +224,15 @@ def test_workbench_windows_carry_the_learned_gist_and_tags_for_v3_refs(session: 
         "slot": "position",
         "situations": ["开章引入"],
         "moods": ["平静"],
-        "devices": ["留白"],
+        "dimensions": ["scene.environment"],
         "gist": "某人在渡口等船",
     }
     # 索引里没有这一窗（换过索引）：留下冻结时的标签，没有梗概
-    assert (windows[1]["window_no"], windows[1]["gist"], windows[1]["situations"], windows[1]["devices"]) == (
+    assert (windows[1]["window_no"], windows[1]["gist"], windows[1]["situations"], windows[1]["dimensions"]) == (
         8,
         "",
         ["冻结时的场面"],
-        ["倒叙"],
+        ["narrative.time_handling"],
     )
     # 旧审计（没有窗号）的形状不变
     assert windows[2] == {**legacy_ref}

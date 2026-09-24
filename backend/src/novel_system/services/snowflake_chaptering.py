@@ -1889,16 +1889,20 @@ def _reference_chapter_titles(session: Any, project_id: str) -> dict[str, Any] |
 def _reference_chapter_scale_hint(session: Any, project_id: str) -> dict[str, Any] | None:
     """项目 / 全局作用域绑定的参考画像 → {chapter_chars_median, scene_chars_median, scenes_per_chapter}。
 
-    任何异常都返回 None(可选增强,分章提议不能因参考失败而失败)。
+    绑定只在 ``style_policy_live`` 解析(2026-09-24 S3;轻量路径——这里只要画像 id,不冻结契约);任何异常都
+    返回 None(可选增强,分章提议不能因参考失败而失败)。
     """
     try:
-        from novel_system.services.style_reference.injection import InjectionService
+        from types import SimpleNamespace
 
-        service = InjectionService(session)
-        layers = service.resolve_binding_layers(str(project_id), "scene_generation", character_ids=[], scene_id=None)
-        if not layers:
+        from novel_system.db.models import StyleReferenceProfile
+        from novel_system.services.style_policy import style_policy_live
+
+        scope = SimpleNamespace(project_id=str(project_id), scene_id=None, pov_character_id=None, onstage_chars_json=[])
+        policy = style_policy_live(session, scope, task_type="scene_generation", freeze_contract=False)
+        if not policy.bound or not policy.profile_id:
             return None
-        profile = service.repo.get_profile(str(getattr(layers[-1], "profile_id", "") or ""))
+        profile = session.get(StyleReferenceProfile, str(policy.profile_id))
         card = (getattr(profile, "profile_json", None) or {}).get("structure_card") if profile is not None else None
         if not isinstance(card, dict) or int(card.get("chapter_count") or 0) <= 1:
             return None

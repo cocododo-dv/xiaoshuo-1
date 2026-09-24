@@ -2,11 +2,11 @@
 
 场景运行有 ``bundle_builder.resolve_scene_style_runtime_contract``（scene > character >
 project > global）；规划一章 / 排一张场表时还没有具体的场，只能按 **project + global**
-作用域解析。本模块把这条路径收口成一个函数，并把冻结契约里最具体一层的
-``structure_card`` / ``planning_guidance`` 渲染成规划节点可直接注入的中文块：
+作用域解析——绑定只在 ``style_policy.style_policy_live`` 解析（2026-09-24 S3，这里不再自己走层）。本模块把
+冻结契约里最具体一层的 ``structure_card`` / ``planning_guidance`` 渲染成规划节点可直接注入的中文块：
 
 - ``resolve_project_style_reference(session, project_id)`` → 见 :func:`render_planning_reference`
-  的返回值；无绑定 / 旧画像无键 / 解析异常 → ``None``（只记 debug 日志，规划永不因此阻断）。
+  的返回值；无绑定 / 旧画像无键 → ``None``；解析异常 → ``None`` 并记 **warning**（带堆栈；规划永不因此阻断）。
 - ``render_planning_reference(contract, session=...)`` → ``{"contract_hash", "profile_id",
   "structure_card", "structure_samples", "planning_guidance"}``。样例块单独成键：雪花提示词
   预算可以先卸样例、再卸整张画像（``snowflake_prompt_budget``）。
@@ -17,7 +17,8 @@ project > global）；规划一章 / 排一张场表时还没有具体的场，�
 每一个都满足——
 
 - 「仅本机」的书：这些节点都走本机模型才给参考（含章首 / 章尾原文样例）；有一个走云端就**什么都不给**
-  （返回 ``None``——规划是可选增强，不报错，但由这本书派生的结构画像、场景手法、叙事机制、章题一个字都不送）；
+  （返回 ``None``——规划是可选增强，不报错，但由这本书派生的结构画像、场景手法、叙事机制、章题一个字都不送；
+  **要看得见**：记 warning 日志，带 ``route.reason`` 与路由审计，C6）；
 - 送云策略的书：章首 / 章尾样例与章题样例是参考原文，只有该书**冻结时**与**现在**都允许送云端（严格发送权声明）
   才渲染；否则只给带数字的画像。
 """
@@ -27,12 +28,14 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import StyleReferenceParagraph
+from novel_system.services.style_policy import style_policy_live
 from novel_system.services.style_reference.binding_config import (
     DIMENSION_EMPHASIZE,
     DIMENSION_EXCLUDE,
@@ -44,7 +47,6 @@ from novel_system.services.style_reference.card import (
     card_from_profile_json,
     line_states_from_profile_json,
 )
-from novel_system.services.style_reference.inject.bindings import resolve_binding_layers
 from novel_system.services.style_reference.narrative_guidance import (
     NARRATIVE_GUIDANCE_SECTION_KEY,
     collect_narrative_guidance,
@@ -52,7 +54,7 @@ from novel_system.services.style_reference.narrative_guidance import (
 )
 from novel_system.services.style_reference.policy import ReferenceRouteDecision, decide_reference_route
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract, contract_layer
+from novel_system.services.style_reference.runtime_contract import contract_layer
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.structure import (
     PLANNING_GUIDANCE_HEADER,
@@ -163,6 +165,20 @@ SCENE_PLANNING_NODE_IDS: tuple[str, ...] = (
 CHAPTER_TITLE_NODE_IDS: tuple[str, ...] = ("snowflake_chapter_plan",)
 
 
+def _log_withheld(layer: Mapping[str, Any], route: ReferenceRouteDecision, where: str) -> None:
+    """规划层不送这本书派生的东西（不报错，C6）——但要看得见：warning 带原因与路由审计（不含正文）。"""
+    book = layer.get("book") if isinstance(layer.get("book"), Mapping) else {}
+    profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
+    logger.warning(
+        "planning style reference withheld in %s (reason=%s, book=%s, profile=%s): %s",
+        where,
+        route.reason,
+        str(book.get("book_id") or ""),
+        str(profile.get("profile_id") or ""),
+        route.audit(),
+    )
+
+
 def _route_decision(
     layer: Mapping[str, Any],
     session: Session | None,
@@ -253,7 +269,7 @@ def render_planning_reference(
         return None
     route = _route_decision(layer, session, tuple(node_ids) if node_ids else PROJECT_PLANNING_NODE_IDS)
     if not route.send_book:
-        logger.debug("planning style reference withheld (%s): %s", route.reason, route.audit())
+        _log_withheld(layer, route, "render_planning_reference")
         return None
     samples_allowed = route.send_samples
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
@@ -271,8 +287,7 @@ def render_planning_reference(
     )
     binding = layer.get("binding") if isinstance(layer.get("binding"), Mapping) else {}
     dimension_states = normalize_binding_config(
-        str(binding.get("strategy") or "mixed"),
-        binding.get("config_json") if isinstance(binding.get("config_json"), Mapping) else {},
+        binding.get("config_json") if isinstance(binding.get("config_json"), Mapping) else {}
     )["dimension_states"]
     # 2026-09-23 风格参考 v3（L5，全学）：有文风卡的画像给规划节点卡里场景层 / 主题层的句子与气质，
     # 不再给旧的 [场景手法] 观察陈述；旧画像照旧。
@@ -346,25 +361,30 @@ def resolve_project_style_reference(
     task_type: str = PLANNING_REFERENCE_TASK_TYPE,
     node_ids: Sequence[str] | None = None,
 ) -> dict[str, Any] | None:
-    """按 project + global 作用域解析 active 绑定、冻结契约、渲染规划层参考块。
+    """按 project + global 作用域解析 active 绑定（``style_policy_live``，冻结契约）、渲染规划层参考块。
 
     ``node_ids``：接收这份规划提示的节点（缺省 :data:`PROJECT_PLANNING_NODE_IDS`，每一个都要满足书的云策略）。
-    任何异常都吞掉并返回 ``None``：这是规划节点的可选增强，缺参考不能让规划失败。
+    这是规划节点的可选增强，缺参考不能让规划失败：解析降级（``policy.mode == degraded``）或渲染异常都返回
+    ``None``，但记 warning（带错误码 / 堆栈），不再悄悄吞掉（C6）。
     """
     if not project_id:
         return None
+    scope = SimpleNamespace(project_id=str(project_id), scene_id=None, pov_character_id=None, onstage_chars_json=[])
     try:
-        layers = resolve_binding_layers(session, str(project_id), task_type, character_ids=[], scene_id=None)
-        if not layers:
+        policy = style_policy_live(session, scope, task_type=task_type, freeze_contract=True)
+        if policy.mode == "degraded":
+            logger.warning(
+                "project style reference unavailable for project %s: style policy degraded (%s)",
+                project_id,
+                policy.error_code,
+            )
             return None
-        contract = build_style_runtime_contract(StyleReferenceRepository(session), layers, task_type=task_type)
-        if not contract:
+        contract = policy.contract if policy.bound else None
+        if not isinstance(contract, Mapping):
             return None
         return render_planning_reference(contract, session=session, node_ids=node_ids)
-    except Exception:  # noqa: BLE001 — 可选增强：解析失败只记日志
-        logger.debug(
-            "project style reference unavailable for project %s", project_id, exc_info=True
-        )
+    except Exception:  # noqa: BLE001 — 可选增强：渲染失败记 warning（带堆栈），规划照常
+        logger.warning("project style reference unavailable for project %s", project_id, exc_info=True)
         return None
 
 
@@ -395,8 +415,11 @@ def build_planning_style_reference(
         return None
     layer = contract_layer(contract)
     nodes = tuple(node_ids) if node_ids else SCENE_PLANNING_NODE_IDS
-    if layer and not _route_decision(layer, session, nodes).send_book:
-        return None
+    if layer:
+        route = _route_decision(layer, session, nodes)
+        if not route.send_book:
+            _log_withheld(layer, route, "build_planning_style_reference")
+            return None
     contract_hash = str(contract.get("contract_hash") or "")
     lines = collect_narrative_guidance(contract)
     reference = render_planning_reference(contract, session=session, node_ids=nodes)

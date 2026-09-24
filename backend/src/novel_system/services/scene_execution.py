@@ -4,6 +4,7 @@ import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import and_, select
@@ -19,8 +20,6 @@ from novel_system.db.models import (
     SceneRunState,
     SnowflakeArtifact,
     StoryProject,
-    StyleReferenceInjectionBinding,
-    StyleReferenceProfile,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.qc_constraints import strip_reference_policy
@@ -31,8 +30,12 @@ from novel_system.services.story_slots import (
 )
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.narrative_position import NarrativePositionService
+from novel_system.services.style_policy import style_policy_live
 
 EXECUTION_CONTRACT_VERSION = "scene_execution_contract_v1"
+# 来源快照里的「参考规则」：v3 画像没有 style_rules / structure_rules / safety_rules 这些旧键，这三个表从来都是空的；
+# 2026-09-24（S3）起固定写三个空表——键与形状保留，快照哈希（`source_snapshot_hash`）不能因清理而变
+EMPTY_REFERENCE_RULES: dict[str, list[str]] = {"style_rules": [], "structure_rules": [], "safety_rules": []}
 logger = logging.getLogger(__name__)
 
 
@@ -394,36 +397,19 @@ class SceneExecutionContractService:
 
 
     def _reference_rules(self, project: StoryProject | None) -> dict[str, list[str]]:
-        if project is None:
-            return {"style_rules": [], "structure_rules": [], "safety_rules": []}
-        style_profile = self._active_style_reference_profile(project.project_id)
-        if style_profile is not None and style_profile.status == "active":
-            return _normalize_reference_rules(style_profile.profile_json or {})
-        return {"style_rules": [], "structure_rules": [], "safety_rules": []}
-
-    def _active_style_reference_profile(self, project_id: str) -> StyleReferenceProfile | None:
-        binding = self.session.execute(
-            select(StyleReferenceInjectionBinding)
-            .where(
-                StyleReferenceInjectionBinding.scope == "project",
-                StyleReferenceInjectionBinding.scope_ref_id == project_id,
-                StyleReferenceInjectionBinding.task_type == "scene_generation",
-                StyleReferenceInjectionBinding.status == "active",
-            )
-            .order_by(
-                StyleReferenceInjectionBinding.created_at.desc(),
-                StyleReferenceInjectionBinding.binding_id.desc(),
-            )
-        ).scalars().first()
-        if binding is None:
-            return None
-        return self.session.get(StyleReferenceProfile, binding.profile_id)
+        return {key: list(value) for key, value in EMPTY_REFERENCE_RULES.items()}
 
     def _reference_profile_ids(self, project: StoryProject) -> list[str]:
-        style_profile = self._active_style_reference_profile(project.project_id)
-        if style_profile is not None:
-            return [style_profile.profile_id]
-        return []
+        """来源快照里登记的参考画像 id：作品级绑定按 ``style_policy_live``（轻量路径）解析（S3）。
+
+        画像不是 active 时策略降级但仍带 ``profile_id``（C7），与原来「绑定行指向的画像 id」同一个值——
+        既有场景的 ``source_snapshot_hash`` 不变。
+        """
+        scope = SimpleNamespace(
+            project_id=str(project.project_id), scene_id=None, pov_character_id=None, onstage_chars_json=[]
+        )
+        policy = style_policy_live(self.session, scope, task_type="scene_generation", freeze_contract=False)
+        return [str(policy.profile_id)] if policy.profile_id else []
 
 
     def _canonical_completed_scene_ids(
@@ -482,37 +468,6 @@ def _is_explicit_structured_scene(scene: SceneCard, brief: dict[str, Any]) -> bo
     return False
 
 
-def _normalize_reference_rules(profile_json: dict[str, Any]) -> dict[str, list[str]]:
-    style_rules = _listify(profile_json.get("style_rules"))
-    structure_rules = _listify(profile_json.get("structure_rules"))
-    safety_rules = _listify(profile_json.get("safety_rules"))
-    if not style_rules:
-        style_rules = (
-            _listify(profile_json.get("style_features"))
-            + _listify(profile_json.get("rhythm"))
-            + _listify(profile_json.get("syntax"))
-            + _listify(profile_json.get("narrative_methods"))
-        )
-    if not structure_rules:
-        structure_rules = (
-            _listify(profile_json.get("narrative_patterns"))
-            + _listify(profile_json.get("calibration_guidance"))
-            + _listify(profile_json.get("structure_patterns"))
-            + _listify(profile_json.get("structure_techniques"))
-        )
-    if not safety_rules:
-        safety_rules = (
-            _listify(profile_json.get("banned_replication_rules"))
-            + _listify(profile_json.get("forbidden_copy_rules"))
-            + _listify(profile_json.get("safety_constraints"))
-        )
-    return {
-        "style_rules": _dedupe(style_rules),
-        "structure_rules": _dedupe(structure_rules),
-        "safety_rules": _dedupe(safety_rules),
-    }
-
-
 FIELD_LABELS = {
     "scene_crucible": "坩埚/场景压力",
     "crucible": "坩埚/场景压力",
@@ -537,15 +492,6 @@ def _has_text(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
-def _listify(value: Any) -> list[str]:
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else []
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
 def _beat_text(scene: SceneCard, index: int) -> str:
     beats = [str(item).strip() for item in list(scene.beats_json or []) if str(item).strip()]
     if index < 0 or index >= len(beats):
@@ -558,12 +504,3 @@ def _last_beat(scene: SceneCard) -> str:
     return beats[-1] if beats else ""
 
 
-def _dedupe(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        ordered.append(value)
-    return ordered

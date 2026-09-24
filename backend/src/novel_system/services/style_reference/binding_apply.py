@@ -13,8 +13,7 @@
 起草方式);旧 ``strategy`` 列恒写 ``mixed``(怎么送参考只看 ``reference_mode``)。参考变了(新绑定 / 配置变了 /
 换了画像 / 解除),作用范围内按旧参考做的场景蓝图、人物压力蓝图与章架构作废,下一次运行重做。
 
-待办里还没处理的旧「应用画像」卡(effect ``bind_style_profile``)也走 :func:`apply_style_profile`:
-卡上的旧键(strategy / intensity / sub_dimensions / include_*)由 ``normalize_binding_config`` 一次映射。
+旧「应用画像」待办卡(effect ``bind_style_profile``)与它的旧键映射已随迁移 0092 删除(2026-09-24)。
 """
 
 from __future__ import annotations
@@ -82,13 +81,13 @@ class BindingChange:
 
 
 def stored_config(binding: StyleReferenceInjectionBinding) -> dict[str, Any]:
-    """一条绑定按 v3 语义的配置(旧 strategy / intensity 在这里映射)。"""
-    return normalize_binding_config(binding.strategy, binding.config_json or {})
+    """一条绑定按 v3 语义的配置(缺键取默认)。"""
+    return normalize_binding_config(binding.config_json or {})
 
 
 def merge_config(base: Mapping[str, Any] | None, patch: Mapping[str, Any] | None) -> dict[str, Any]:
     """``base``(已规范的 v3 配置)⊕ ``patch``:顶层三键覆盖,``dimension_states`` 按维合并;结果再规范一次。"""
-    merged: dict[str, Any] = dict(normalize_binding_config(BINDING_STRATEGY, base or {}))
+    merged: dict[str, Any] = dict(normalize_binding_config(base or {}))
     patch = dict(patch or {})
     for key in _TOP_LEVEL_KEYS:
         if patch.get(key) is not None:
@@ -96,7 +95,7 @@ def merge_config(base: Mapping[str, Any] | None, patch: Mapping[str, Any] | None
     states = patch.get("dimension_states")
     if isinstance(states, Mapping):
         merged["dimension_states"] = {**dict(merged.get("dimension_states") or {}), **dict(states)}
-    return normalize_binding_config(BINDING_STRATEGY, merged)
+    return normalize_binding_config(merged)
 
 
 def binding_payload(
@@ -238,20 +237,16 @@ def apply_style_profile(
     scope: str,
     scope_ref_id: str | None,
     config: Mapping[str, Any] | None = None,
-    legacy_strategy: str | None = None,
 ) -> BindingChange:
     """把画像用于一个目标(只 flush)。
 
-    ``config``:v3 配置里要设的键(缺的键:这一行已有的配置保留、新建时取默认)。``legacy_strategy``:只给
-    旧待办卡用——卡上的 strategy 与旧配置键一起经 ``normalize_binding_config`` 映射成 v3 配置。
+    ``config``:v3 配置里要设的键(缺的键:这一行已有的配置保留、新建时取默认)。
     """
     scope = str(scope or "").strip()
     ref = str(scope_ref_id or "").strip()
     _check_target(session, scope, ref)
     profile = _profile_or_error(session, profile_id)
     patch: dict[str, Any] = dict(config or {})
-    if legacy_strategy is not None:
-        patch = normalize_binding_config(legacy_strategy, patch)
 
     same_target = list(
         session.scalars(
@@ -275,7 +270,7 @@ def apply_style_profile(
         binding = own
         before = stored_config(binding)
         new_config = merge_config(before, patch)
-        # 「变了」按语义算:v3 配置不同,或这一行原本不生效;旧格式的行改写成 v3 四键不算参考变了
+        # 「变了」按语义算:v3 配置不同,或这一行原本不生效
         changed = new_config != before or binding.status != BindingStatus.ACTIVE.value
         binding.config_json = new_config
         binding.strategy = BINDING_STRATEGY

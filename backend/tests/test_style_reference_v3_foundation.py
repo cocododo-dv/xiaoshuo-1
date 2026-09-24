@@ -17,7 +17,6 @@ from novel_system.services.style_reference.binding_config import (
     REFERENCE_MODE_CARD_ONLY,
     REFERENCE_MODE_FULL,
     effective_reference_mode,
-    legacy_intensity_to_windows,
     normalize_binding_config,
 )
 from novel_system.services.style_reference.card import (
@@ -33,23 +32,23 @@ from novel_system.services.style_reference.card import (
 )
 
 
-def test_legacy_bindings_map_to_v3_semantics() -> None:
-    assert legacy_intensity_to_windows(100) == 12
-    assert legacy_intensity_to_windows(0) == 3
-    legacy = normalize_binding_config("A", {"intensity": 50, "sub_dimensions": ["language.vocabulary"]})
-    # A 本来就不带样例 → 只用文风卡；intensity 50 → 8 窗；旧 sub_dimensions 不再意味着「只学几维」
-    assert legacy["reference_mode"] == REFERENCE_MODE_CARD_ONLY
-    assert legacy["sample_windows"] == 8
-    assert set(legacy["dimension_states"].values()) == {"normal"}
-    assert legacy["draft_mode"] == "style_first"
-    for strategy in ("B", "C", "mixed", None):
-        assert normalize_binding_config(strategy, {})["reference_mode"] == REFERENCE_MODE_FULL
-    assert normalize_binding_config("mixed", {})["sample_windows"] == DEFAULT_SAMPLE_WINDOWS
+def test_missing_binding_keys_take_v3_defaults_and_legacy_keys_are_ignored() -> None:
+    """2026-09-24：旧键（strategy / intensity / sub_dimensions / include_*）由迁移 0092 一次回填，代码不再解释——
+    缺键取默认（full / 12 窗 / 全 normal / style_first），旧键与未知键丢弃。"""
+    defaults = normalize_binding_config({})
+    assert defaults["reference_mode"] == REFERENCE_MODE_FULL and defaults["sample_windows"] == DEFAULT_SAMPLE_WINDOWS
+    assert set(defaults["dimension_states"].values()) == {"normal"} and defaults["draft_mode"] == "style_first"
+    assert normalize_binding_config(None) == defaults
+    stale = normalize_binding_config({"intensity": 50, "sub_dimensions": ["language.vocabulary"], "include_metric": True})
+    assert stale == defaults
+    assert set(normalize_binding_config({"reference_mode": "card_only", "bogus": 1})) == {
+        "reference_mode", "sample_windows", "dimension_states", "draft_mode"
+    }
+    assert normalize_binding_config({"reference_mode": "card_only"})["reference_mode"] == REFERENCE_MODE_CARD_ONLY
 
 
 def test_v3_binding_keys_win_and_are_clamped() -> None:
     config = normalize_binding_config(
-        "A",
         {
             "reference_mode": "samples_only",
             "sample_windows": 99,

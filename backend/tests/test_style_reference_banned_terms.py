@@ -18,7 +18,9 @@ from tests.style_reference_factories import RIGHTS_STATS, make_book, make_profil
 PREFIX = "/api/v2/style-reference"
 
 
-def _seed_book_with_profile(seed: str, *, paragraphs: list[str] | None = None) -> tuple[str, str]:
+def _seed_book_with_profile(
+    seed: str, *, paragraphs: list[str] | None = None, profile_json: dict | None = None
+) -> tuple[str, str]:
     with SessionLocal() as session:
         book_id = make_book(
             session,
@@ -34,7 +36,7 @@ def _seed_book_with_profile(seed: str, *, paragraphs: list[str] | None = None) -
             book_id,
             profile_id=f"sr_profile_bt_{seed}",
             run_id=f"sr_run_bt_{seed}",
-            profile_json={"narrative_summary": "短句"},
+            profile_json=profile_json or {"narrative_summary": "短句"},
         )
         session.commit()
     return book_id, profile_id
@@ -160,7 +162,10 @@ def test_preset_banned_term_cannot_be_deleted() -> None:
 
 def test_generation_banned_term_reaches_injection_redline() -> None:
     """generation 域禁用词创建后必须实际出现在注入红线段(端到端消费)。"""
-    _, profile_id = _seed_book_with_profile("inject")
+    from tests.style_reference_factories import v3_profile_json
+
+    # 红线只随任一块参考同注：画像要有文风卡（2026-09-24 起没有旧画像的卡替身）
+    _, profile_id = _seed_book_with_profile("inject", profile_json=v3_profile_json())
     with TestClient(create_app()) as client:
         resp = client.post(
             f"{PREFIX}/profiles/{profile_id}/banned-terms",
@@ -170,7 +175,7 @@ def test_generation_banned_term_reaches_injection_redline() -> None:
         assert resp.status_code == 200
         resp = client.post(
             f"{PREFIX}/profiles/{profile_id}/injection-preview",
-            json={"strategy": "A"},
+            json={"reference_mode": "card_only"},
         )
         assert resp.status_code == 200
         frags = resp.json()["data"]["fragments"]

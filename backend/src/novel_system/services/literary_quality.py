@@ -69,15 +69,6 @@ DIMENSION_WEIGHTS = {
     # sum = 1.00 (0.08+0.05+0.05+0.05+0.07+0.05+0.07+0.07+0.06+0.03+0.03+0.02+0+0.06+0.05+0.06+0.04+0.03+0.03+0.04+0.06)
 }
 
-STYLE_WEIGHT_ADJUSTMENTS: dict[str, dict[str, float]] = {
-    "hard_boiled": {"perception_filter": 0.5, "dialogue_as_report": 1.5},
-    "literary": {"syntax_monotony": 0.5, "decorative_imagery": 0.5},
-    "thriller": {"template_action_reuse": 1.5, "ending_drive": 1.5},
-    "wuxia": {"image_homogeneity": 0.8, "decorative_imagery": 0.7},
-}
-"""Multipliers applied to base weights per writing style, then renormalized to sum=1.0."""
-
-
 # Deterministic prose signals can reject obvious failure modes, but they cannot
 # establish literary excellence.  Automated results therefore have an explicit
 # ceiling below a human judgment and are never policy evidence on their own.
@@ -87,89 +78,16 @@ AUTOMATED_EVIDENCE_TARGET_SENTENCES = 3
 AUTOMATED_EVIDENCE_SIGNAL = "automated_evidence_sufficiency"
 
 
-def _renormalize_weights(weights: dict[str, float]) -> dict[str, float]:
-    """Renormalize weight dict so values sum to 1.0, preserving relative ratios."""
-    total = sum(weights.values())
-    if total <= 0.0:
-        return dict(DIMENSION_WEIGHTS)
-    return {dim: round(w / total, 6) for dim, w in weights.items()}
-
-
 def get_dimension_weights(
     project_id: str | None = None,
     session: Session | None = None,
-    *,
-    style_profile: dict[str, Any] | None = None,
 ) -> dict[str, float]:
-    """Return effective quality-dimension weights for a project.
+    """一部作品的 21 维质量权重：恒为 :data:`DIMENSION_WEIGHTS` 的一份拷贝。
 
-    Resolution order:
-    1. If *style_profile* is given and contains ``quality_weight_overrides``
-       (a dict mapping dimension names to multiplier floats), those multipliers
-       are applied to ``DIMENSION_WEIGHTS`` and the result is renormalized.
-    2. If *project_id* and *session* are given, the function looks up the
-       project's active ``StyleReferenceInjectionBinding`` to find a
-       ``StyleReferenceProfile`` whose ``profile_json`` might contain
-       ``quality_weight_overrides`` or ``style_tag`` (mapped through
-       ``STYLE_WEIGHT_ADJUSTMENTS``).
-    3. Falls back to the static ``DIMENSION_WEIGHTS`` constant.
+    2026-09-24（风格参考 v3 清理 S3）之前这里会查作品的风格绑定，读画像里的 ``quality_weight_overrides`` /
+    ``style_tag`` 调权重——这两个键从来没有任何写入者（学习作业不产出它们），查询只是白跑一趟。参数保留给
+    调用方（``scene_generation`` / ``final_text_gate``）的签名；房风权重让不让位由 ``StylePolicy`` 决定，不在这里。
     """
-    overrides: dict[str, float] | None = None
-    style_tag: str | None = None
-
-    # --- explicit style_profile dict (e.g. passed from caller) ---
-    if style_profile:
-        overrides = style_profile.get("quality_weight_overrides")
-        if not overrides:
-            style_tag = style_profile.get("style_tag")
-
-    # --- DB lookup for project-bound profile ---
-    if overrides is None and style_tag is None and project_id and session:
-        try:
-            from novel_system.db.models import (
-                StyleReferenceInjectionBinding,
-                StyleReferenceProfile,
-            )
-            binding = session.execute(
-                select(StyleReferenceInjectionBinding)
-                .where(
-                    StyleReferenceInjectionBinding.scope == "project",
-                    StyleReferenceInjectionBinding.scope_ref_id == project_id,
-                    StyleReferenceInjectionBinding.status == "active",
-                )
-                .order_by(StyleReferenceInjectionBinding.created_at.desc())
-            ).scalars().first()
-            if binding is not None:
-                profile = session.get(StyleReferenceProfile, binding.profile_id)
-                if profile is not None:
-                    pj = profile.profile_json or {}
-                    overrides = pj.get("quality_weight_overrides")
-                    if not overrides:
-                        style_tag = pj.get("style_tag")
-        except Exception:
-            _LOGGER.warning(
-                "Style-bound literary weights lookup degraded project_id=%s",
-                project_id,
-                exc_info=True,
-            )
-
-    # --- apply overrides as multipliers ---
-    if isinstance(overrides, dict) and overrides:
-        adjusted = {
-            dim: base * overrides.get(dim, 1.0)
-            for dim, base in DIMENSION_WEIGHTS.items()
-        }
-        return _renormalize_weights(adjusted)
-
-    # --- apply style_tag through STYLE_WEIGHT_ADJUSTMENTS ---
-    if style_tag and style_tag in STYLE_WEIGHT_ADJUSTMENTS:
-        multipliers = STYLE_WEIGHT_ADJUSTMENTS[style_tag]
-        adjusted = {
-            dim: base * multipliers.get(dim, 1.0)
-            for dim, base in DIMENSION_WEIGHTS.items()
-        }
-        return _renormalize_weights(adjusted)
-
     return dict(DIMENSION_WEIGHTS)
 
 

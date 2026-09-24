@@ -11,8 +11,9 @@
   判，与起草同一个判定（H1）：「仅本机」的书遇云端起草路由 → 409 ``STYLE_REFERENCE_CLOUD_POLICY_BLOCKED``（界面把它
   当错误说出来：这一场起草时什么参考都拿不到）。
 
-返回旧预览端点的形状（``fragments`` / ``prefix`` / ``stats`` / ``window_refs``，``stats`` 的键即
-``InjectionPreviewStats``），外加 ``user_tail`` 与 ``reference_mode``。
+返回预览端点的形状（``fragments`` / ``prefix`` / ``stats`` / ``window_refs``，``stats`` 的键即
+``InjectionPreviewStats``），外加 ``user_tail`` 与 ``reference_mode``。入参只有 v3 的四个绑定配置键
+（旧 ``strategy`` / ``intensity`` 不再收，2026-09-24）。
 """
 
 from __future__ import annotations
@@ -26,11 +27,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneCard, StyleReferenceBook, StyleReferenceProfile
 from novel_system.services.style_policy import policy_from_contract
-from novel_system.services.style_reference.binding_config import (
-    REFERENCE_MODE_CARD_ONLY,
-    REFERENCE_MODE_SAMPLES_ONLY,
-    normalize_binding_config,
-)
+from novel_system.services.style_reference.binding_config import normalize_binding_config
 from novel_system.services.style_reference.inject.gaps import recent_gaps_for_project
 from novel_system.services.style_reference.inject.render import render_style
 from novel_system.services.style_reference.inject.request import (
@@ -47,10 +44,7 @@ from novel_system.services.style_reference.inject.selection import (
 )
 from novel_system.services.style_reference.policy import book_allows_cloud
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.runtime_contract import (
-    frozen_profile_json,
-    legacy_forbidden_findings,
-)
+from novel_system.services.style_reference.runtime_contract import frozen_profile_json
 
 PREVIEW_MODE = "preview"
 # 预览的就是首稿（作者手笔直起的 style_first_draft 与先中性后润色的 style_draft 都在 style_draft 路由下派发）
@@ -61,8 +55,6 @@ def preview_contract(
     session: Session,
     profile: StyleReferenceProfile,
     config: Mapping[str, Any],
-    *,
-    strategy: str | None = None,
 ) -> dict[str, Any]:
     """预览用的契约（形状同 v2 契约的一层，不校验、不入库；契约哈希带 ``preview:`` 前缀）。"""
     repo = StyleReferenceRepository(session)
@@ -85,7 +77,7 @@ def preview_contract(
             "scope": "preview",
             "scope_ref_id": "",
             "task_type": "scene_generation",
-            "strategy": str(strategy or "mixed"),
+            "strategy": "mixed",
             "status": "active",
             "config_json": dict(config),
         },
@@ -95,7 +87,7 @@ def preview_contract(
             "status": str(profile.status),
             "profile_json": profile_json,
         },
-        "forbidden_findings": legacy_forbidden_findings(repo, profile, raw_json),
+        "forbidden_findings": [],
         "banned_terms": banned_terms,
         "book": {
             "book_id": str(profile.book_id),
@@ -121,15 +113,6 @@ def preview_contract(
     }
 
 
-def _strategy_label(reference_mode: str) -> str:
-    """旧 ``fragments.strategy`` 字段（前端旧页面按它显示提示）：只用卡 → A，只用样例 → B，全面模仿 → mixed。"""
-    if reference_mode == REFERENCE_MODE_CARD_ONLY:
-        return "A"
-    if reference_mode == REFERENCE_MODE_SAMPLES_ONLY:
-        return "B"
-    return "mixed"
-
-
 def preview_render(
     session: Session,
     profile_id: str,
@@ -137,14 +120,13 @@ def preview_render(
     *,
     scene_id: str | None = None,
     project_id: str | None = None,
-    strategy: str | None = None,
 ) -> dict[str, Any]:
     """按 (画像, 绑定配置[, 场景 / 作品]) 渲染起草时的参考；画像不存在 → ``LookupError``。"""
     profile = session.get(StyleReferenceProfile, str(profile_id))
     if profile is None:
         raise LookupError(profile_id)
-    normalized = normalize_binding_config(strategy, dict(config or {}))
-    contract = preview_contract(session, profile, normalized, strategy=strategy)
+    normalized = normalize_binding_config(dict(config or {}))
+    contract = preview_contract(session, profile, normalized)
     policy = policy_from_contract(contract, mode=PREVIEW_MODE)
     scene = session.get(SceneCard, str(scene_id)) if scene_id else None
     project = project_id or (getattr(scene, "project_id", None) if scene is not None else None)
@@ -177,12 +159,9 @@ def preview_render(
     reference_mode = str((rendered.audit or {}).get("reference_mode") or policy.reference_mode)
     fragments = {
         "positive_block": blocks["card"],
-        "forbidden_block": "",
-        "metric_anchor_block": "",
         "voice_block": blocks["voice"],
         "few_shot_block": blocks["samples"],
         "anti_plagiarism_block": blocks["red_line"],
-        "strategy": _strategy_label(reference_mode),
     }
     return {
         "fragments": fragments,

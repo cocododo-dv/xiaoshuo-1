@@ -50,7 +50,10 @@ from novel_system.services.scene_structure_brief import (
 from novel_system.services.style_reference.config_loader import (
     load_optional_yaml_config,
 )
-from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.inject.bindings import (
+    ordered_character_ids,
+    resolve_binding_layers,
+)
 from novel_system.services.style_reference.narrative_guidance import (
     NARRATIVE_GUIDANCE_SECTION_KEY,
     collect_narrative_guidance,
@@ -63,6 +66,7 @@ from novel_system.services.style_policy import (
     policy_from_contract,
 )
 from novel_system.services.style_reference.policy import decide_reference_route
+from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
     build_style_runtime_contract,
@@ -156,27 +160,19 @@ def resolve_scene_style_runtime_contract(
     scene > character > project > global 作用域解析。解析 / 冻结失败时抛出，
     由调用方决定如何降级（bundle 内部的降级槽记录不在这里做）。
     """
-    style_injection = InjectionService(session)
-    character_ids = list(
-        dict.fromkeys(
-            value
-            for value in [
-                getattr(scene, "pov_character_id", None),
-                *(getattr(scene, "onstage_chars_json", None) or []),
-            ]
-            if value
-        )
-    )
-    layers = style_injection.resolve_binding_layers(
+    layers = resolve_binding_layers(
+        session,
         getattr(scene, "project_id", None),
         task_type,
-        character_ids=character_ids,
+        character_ids=ordered_character_ids(
+            getattr(scene, "pov_character_id", None), getattr(scene, "onstage_chars_json", None)
+        ),
         scene_id=getattr(scene, "scene_id", None),
     )
     if not layers:
         return None
     return build_style_runtime_contract(
-        style_injection.repo,
+        StyleReferenceRepository(session),
         layers,
         task_type=task_type,
     )
@@ -565,20 +561,11 @@ class BundleBuilder:
             "chapter_goal": chapter.chapter_id,
             "scene_card": scene.scene_id,
         }
-        style_injection = InjectionService(self.session)
-        style_character_ids = list(
-            dict.fromkeys(
-                value
-                for value in [
-                    scene.pov_character_id,
-                    *(scene.onstage_chars_json or []),
-                ]
-                if value
-            )
-        )
+        style_character_ids = ordered_character_ids(scene.pov_character_id, scene.onstage_chars_json)
         reference_resolution_degraded = False
         try:
-            reference_layers = style_injection.resolve_binding_layers(
+            reference_layers = resolve_binding_layers(
+                self.session,
                 scene.project_id,
                 "scene_generation",
                 character_ids=style_character_ids,
@@ -655,7 +642,7 @@ class BundleBuilder:
         if reference_layers:
             try:
                 style_runtime_contract = build_style_runtime_contract(
-                    style_injection.repo,
+                    StyleReferenceRepository(self.session),
                     reference_layers,
                     task_type="scene_generation",
                 )

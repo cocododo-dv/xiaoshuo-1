@@ -6,8 +6,10 @@ resolve 端点在同一事务里执行 effect 并把卡置 resolved；未知 typ
 首批 effect：
 - insert_scene       复用 CatalogService.create_scene（P3）
 - rename_chapter     复用 CatalogService.update_chapter
-- bind_style_profile 复用 style_reference binding_apply.apply_style_profile(旧卡照样能批准)
 - create_entity / add_timeline_event  P6 资料库接通时注册
+
+旧「应用画像」卡的 effect ``bind_style_profile`` 已删（2026-09-24，风格参考 v3 清理 S1）：界面直接绑定、不再发卡，
+库里旧版写下的待办行由迁移 ``20260924_0092`` 删掉；再遇到这个 type 按未知 effect 拒绝。
 """
 
 from __future__ import annotations
@@ -93,64 +95,6 @@ def _rename_chapter(
     )
 
 
-def _bind_style_profile(
-    session: Session, project_id: str, payload: dict[str, Any]
-) -> dict[str, Any]:
-    """旧「应用画像」决策卡(风格参考 v3 起界面直接绑定,不再发卡):待办里还没处理的旧卡照样能批准——
-    走与 ``POST /profiles/{id}/apply`` 同一个 ``apply_style_profile``;卡上的旧键(strategy / intensity /
-    sub_dimensions / include_* / draft_mode)由 ``normalize_binding_config`` 一次映射成 v3 配置。"""
-    from novel_system.services.style_reference.binding_apply import apply_style_profile
-
-    profile_id = str(payload.get("profile_id") or "").strip()
-    if not profile_id:
-        raise DomainError(
-            "REVIEW_EFFECT_INVALID",
-            "bind_style_profile requires profile_id",
-            status_code=400,
-        )
-    scope_value = str(payload.get("scope") or "project")
-    raw_scope_ref = str(payload.get("scope_ref_id") or "").strip()
-    # 立项 A — scene/character 级绑定必须显式带目标 id;缺失则拒绝(否则静默回退
-    # project_id 会落成「场景级绑定却指向项目」的脏数据)。项目级缺省回退 project_id。
-    if scope_value in ("scene", "character") and not raw_scope_ref:
-        raise DomainError(
-            "REVIEW_EFFECT_INVALID",
-            f"bind_style_profile scope={scope_value} requires scope_ref_id",
-            status_code=400,
-        )
-    change = apply_style_profile(
-        session,
-        profile_id,
-        scope=scope_value,
-        scope_ref_id=raw_scope_ref or project_id,
-        config=_legacy_binding_config(payload),
-        legacy_strategy=str(payload.get("strategy") or "mixed"),
-    )
-    return {
-        "profile_id": profile_id,
-        "binding_id": change.binding.binding_id,
-        "replaced": change.replaced,
-    }
-
-
-_LEGACY_CONFIG_KEYS = (
-    "intensity",
-    "sub_dimensions",
-    "include_positive",
-    "include_forbidden",
-    "include_metric",
-    "draft_mode",
-    "reference_mode",
-    "sample_windows",
-    "dimension_states",
-)
-
-
-def _legacy_binding_config(payload: dict[str, Any]) -> dict[str, Any]:
-    """旧决策卡 effect 载荷里的绑定配置键(原样取出,交给 ``normalize_binding_config`` 映射)。"""
-    return {key: payload[key] for key in _LEGACY_CONFIG_KEYS if payload.get(key) is not None}
-
-
 def _create_entity(
     session: Session, project_id: str, payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -188,6 +132,5 @@ def _add_timeline_event(
 
 register_effect("insert_scene", _insert_scene)
 register_effect("rename_chapter", _rename_chapter)
-register_effect("bind_style_profile", _bind_style_profile)
 register_effect("create_entity", _create_entity)
 register_effect("add_timeline_event", _add_timeline_event)

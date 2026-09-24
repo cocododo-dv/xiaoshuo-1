@@ -148,8 +148,10 @@ def test_alembic_bootstrap_does_not_read_database_backed_runtime_config() -> Non
 
 
 # 风格参考 v3（V8）：「有没有风格绑定、要不要让位」只有一个判定来源——StylePolicy。
-# 旧的三个判定函数只允许 style_policy（把它们包成策略）与 runtime_contract（定义处）调用；
+# 旧的判定函数只允许 style_policy（把它们包成策略）与 runtime_contract（定义处）调用；
 # 管线节点一律 style_policy_for_bundle / style_policy_for_scene / style_policy_live。
+# 2026-09-24 清理（S4）删掉了 is_style_bound / effective_draft_mode（无人调用）；白名单只准减少——
+# 它们的名字仍在这里，谁把它们加回来都会被这道守卫拦下。
 _STYLE_BINDING_PREDICATES = frozenset(
     {"is_style_bound", "effective_draft_mode", "resolve_style_runtime_contract_state"}
 )

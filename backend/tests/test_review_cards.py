@@ -154,60 +154,6 @@ def test_seeded_review_effects_target_the_editable_current_chapter(client, sessi
     assert any(scene["title"] == "样例反应场" for scene in chapter["scenes"])
 
 
-def test_resolve_bind_style_profile_forwards_injection_config(client, session):
-    """待办里还没处理的旧「应用画像」决策卡(bind_style_profile effect + 旧注入配置)在收件箱批准后,
-    走 v3 直接绑定:真正创建一条 binding,旧键映射成 v3 配置(界面已改为直接绑定,不再发卡)。"""
-    from novel_system.services.style_reference.repository import StyleReferenceRepository
-
-    project = _create_project(client)
-    pid = project["project_id"]
-
-    # 同一 DB 落一个最小就绪画像(无需 LLM)
-    repo = StyleReferenceRepository(session)
-    repo.create_book(
-        book_id="sr_book_rc", title="鲁迅", source_kind="upload",
-        cloud_policy="segments_only", text_checksum="chk_rc", total_chars=50000,
-        status="ready", stats_json={"rights_declaration": {
-            "declared": True, "analysis_rights": True, "send_rights": True,
-        }},
-    )
-    repo.create_run(run_id="sr_run_rc", book_id="sr_book_rc", status="done", phase="done")
-    repo.create_profile(
-        profile_id="sr_profile_rc", book_id="sr_book_rc", run_id="sr_run_rc",
-        title="冷峻短句", status="active",
-        profile_json={"narrative_summary": "短句白描"}, coverage_json={},
-        source_finding_ids_json=[],
-    )
-    session.commit()
-
-    card = _card(
-        client, pid, kind="decision", title="应用风格画像「冷峻短句」到项目",
-        actions=[
-            {"label": "批准应用", "intent": "primary", "op": "resolve",
-             "effect": {"type": "bind_style_profile", "profile_id": "sr_profile_rc",
-                        "scope": "project", "task_type": "scene_generation",
-                        "strategy": "mixed", "intensity": 40,
-                        "sub_dimensions": ["language.rhetoric"], "include_metric": True}},
-            {"label": "丢弃", "intent": "quiet", "op": "resolve"},
-        ],
-    )
-    resolved = _post(client, f"/api/v1/review-items/{card['id']}/resolve", {"action_index": 0, "project_id": pid})
-    assert resolved.status_code == 200, resolved.text
-
-    # 经 HTTP 读回绑定(穿过 app session,必见已提交数据)
-    bindings = client.get("/api/v2/style-reference/profiles/sr_profile_rc/bindings").json()["data"]["bindings"]
-    assert len(bindings) == 1, bindings
-    b = bindings[0]
-    assert b["scope"] == "project"
-    assert b["scope_ref_id"] == pid          # 默认取卡片 project_id
-    assert b["strategy"] == "mixed"
-    # 强度 40 → round(3 + 9·0.4) = 7 窗;mixed → 全面模仿;旧 sub_dimensions / include_* 不再落库
-    assert b["config"]["sample_windows"] == 7
-    assert b["config"]["reference_mode"] == "full"
-    assert b["config_json"] == b["config"]
-    assert "intensity" not in b["config_json"] and "sub_dimensions" not in b["config_json"]
-
-
 def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, session):
     seed_fixture_works(session)
     session.commit()

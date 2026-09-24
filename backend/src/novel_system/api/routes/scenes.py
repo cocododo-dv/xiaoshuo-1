@@ -1877,7 +1877,8 @@ def _style_window_ref(item: Any) -> dict | None:
         ref["window_no"] = window_no
         ref["slot"] = str(item.get("slot") or "")
         ref["situations"] = _style_window_tags(item.get("situations"))
-        ref["devices"] = _style_window_tags(item.get("devices"))
+        # 2026-09-24 O1：窗口标签的「手法」改为这一窗最能示范的维度键（前端按 STYLE_DIMENSION_LABELS 显示）
+        ref["dimensions"] = _style_window_tags(item.get("dimensions"))
     return ref
 
 
@@ -1900,7 +1901,7 @@ def _attach_style_window_tags(session: Session, book_id: str | None, windows: li
         tags = (rows.get(int(window["window_no"])) or {}).get("tags") or {}
         window["situations"] = _style_window_tags(tags.get("situations")) or window.get("situations") or []
         window["moods"] = _style_window_tags(tags.get("moods"))
-        window["devices"] = _style_window_tags(tags.get("devices")) or window.get("devices") or []
+        window["dimensions"] = _style_window_tags(tags.get("dimensions")) or window.get("dimensions") or []
         window["gist"] = str(tags.get("gist") or "")
 
 

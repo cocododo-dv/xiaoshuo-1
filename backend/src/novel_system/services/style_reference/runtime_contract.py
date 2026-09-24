@@ -10,7 +10,8 @@ book into every bundle.
 - **只冻结一层**：最具体的活动绑定（scene > character（POV 在前）> project > global）。旧契约按层序多层合并，
   样例与声音取「最后一层」，而角色层是 POV 优先排的——最后一层恰恰是最不重要的配角（J7）。调用方仍可传入整组
   命中层（``bundle_builder`` / ``scene_blueprint`` / 写作台），这里挑出最具体的一层冻结。
-- **瘦身**：画像键按 :data:`FROZEN_PROFILE_JSON_KEYS` 白名单（v3 键 + 旧画像的兼容键；结构画像去掉逐章列表）；
+- **瘦身**：画像键按 :data:`FROZEN_PROFILE_JSON_KEYS` 白名单（v3 键；结构画像去掉逐章列表）；旧 bundle 里冻结的
+  契约可能还带迁移 0092 之前的旧画像键（``style_features`` …），校验按读侧白名单放行——旧 bundle 是不可变历史；
   **不再冻结** ``sample_quote_refs`` / ``sample_paragraph_refs``（约 9.1 万字，只服务「根哈希失配时退回证据引文」
   的兜底路径，那条路径已删——失配时按当前窗口索引渲染并在审计里记 ``STYLE_REFERENCE_BOOK_CHANGED``，J6）。
 - **书快照**：``book_id`` / ``text_checksum`` / ``cloud_policy`` / ``cloud_llm_allowed_at_freeze`` /
@@ -21,7 +22,8 @@ book into every bundle.
   接收提示的节点路由判（``policy.decide_reference_route``，H1）。
 - **绑定快照**存规范化后的 v3 配置（``binding_config.normalize_binding_config``：参考方式 / 样例窗数 / 维度状态 /
   起草方式）；顶层 ``draft_mode`` 不变。
-- v1 契约（旧 bundle 里冻结的）照旧能校验、能用（``style_policy.policy_from_contract`` 读最后一层）。
+- v1 契约（旧 bundle 里冻结的）照旧能校验、能用（``style_policy.policy_from_contract`` 经 :func:`contract_layer`
+  读最具体的一层）：``_validate_v1`` 与多层分支是不可变历史的读取器，不是兼容债。
 - 校验按内容指纹记忆（J1：一场里 40 多次深拷贝校验），每次返回新的对象（调用方改了也不污染缓存）。
 """
 
@@ -42,7 +44,7 @@ from typing import Any, Mapping, Sequence
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.style_reference.binding_config import normalize_binding_config
 from novel_system.services.style_reference.config_loader import load_yaml_config
-from novel_system.services.style_reference.inject.bindings import most_specific_binding
+from novel_system.services.style_reference.inject.bindings import SCOPE_RANK, most_specific_binding
 from novel_system.services.style_reference.paragraph_root import ensure_paragraph_root
 from novel_system.services.style_reference.policy import book_allows_cloud
 from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION
@@ -91,26 +93,21 @@ V3_PROFILE_JSON_KEYS = frozenset(
         "learned_from",
         "profile_version",
         "protected_terms_version",
-    }
-)
-# v2：学习作业跑之前的旧画像还要用到的键（卡替身的正向 / 禁忌行、量化基线的旧读者）
-LEGACY_PROFILE_JSON_KEYS = frozenset(
-    {
-        "narrative_summary",
-        "style_features",
-        "narrative_patterns",
-        "calibration_guidance",
-        "banned_replication_rules",
+        # 量化基线：v2 指标包络的旧读者（scene_generation 的候选评估）还在读——第二波（契约文档 §8.1 S2，W3）随包络一起删
         "metrics_baseline",
     }
 )
-FROZEN_PROFILE_JSON_KEYS = V3_PROFILE_JSON_KEYS | LEGACY_PROFILE_JSON_KEYS
-_FROZEN_PROFILE_JSON_KEYS = FROZEN_PROFILE_JSON_KEYS
+FROZEN_PROFILE_JSON_KEYS = V3_PROFILE_JSON_KEYS
+# 读侧白名单：迁移 0092 之前冻结进旧 bundle 的 v2 契约还带旧画像键（卡替身 / 叙事概述 …）——旧 bundle 是不可变
+# 历史，校验放行；新契约只写 :data:`FROZEN_PROFILE_JSON_KEYS`
+_READ_PROFILE_JSON_KEYS = FROZEN_PROFILE_JSON_KEYS | _FROZEN_PROFILE_JSON_KEYS_V1
 # 声音块只冻结渲染与旧读者要用的小键（v3 的 ``voice`` 可能带作者自身分布，不进契约）
 _VOICE_SIGNATURE_KEYS = ("version", "habits", "deliberate_repetition", "features", "top_words", "stats")
 _VOICE_KEYS = ("version", "habits", "deliberate_repetition", "features")
 _STRUCTURE_CARD_DROPPED_KEYS = frozenset({"chapters"})
 _V2_FORBIDDEN_LAYER_KEYS = ("sample_quote_refs", "sample_paragraph_refs")
+# 读侧：新契约的绑定快照恒写 ``strategy: "mixed"``（迁移 0092 统一了列值），旧 bundle 里冻结的契约还带 A / B / C——
+# 旧 bundle 是不可变历史，校验放行
 _ALLOWED_STRATEGIES = frozenset({"A", "B", "C", "mixed"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -188,9 +185,6 @@ def _paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:
         return "", 0
 
 
-_SCOPE_RANK = {"scene": 0, "character": 1, "project": 2, "global": 3}
-
-
 def contract_layer(contract: Mapping[str, Any] | None) -> Mapping[str, Any]:
     """契约里生效的那一层（没有 → ``{}``）。
 
@@ -210,7 +204,7 @@ def contract_layer(contract: Mapping[str, Any] | None) -> Mapping[str, Any]:
     def _key(item: tuple[int, Mapping[str, Any]]) -> tuple[int, int]:
         index, layer = item
         binding = layer.get("binding") if isinstance(layer.get("binding"), Mapping) else {}
-        return _SCOPE_RANK.get(str(binding.get("scope") or ""), 9), index
+        return SCOPE_RANK.get(str(binding.get("scope") or ""), 9), index
 
     return min(enumerate(candidates), key=_key)[1]
 
@@ -231,42 +225,6 @@ def frozen_profile_json(raw_profile_json: Mapping[str, Any] | None) -> dict[str,
             value = {k: value[k] for k in _VOICE_KEYS if k in value}
         frozen[key] = value
     return frozen
-
-
-def legacy_forbidden_findings(repo: Any, profile: Any, raw_profile_json: Mapping[str, Any] | None) -> list[dict[str, Any]]:
-    """旧画像（没有文风卡）的禁忌陈述：合成期的 ``generation_safe_forbidden_findings``，更旧的画像回退查 finding 表。
-
-    有文风卡的 v3 画像返回 ``[]``——「作者不这么写」已经在卡里。
-    """
-    raw = raw_profile_json if isinstance(raw_profile_json, Mapping) else {}
-    if isinstance(raw.get("dimension_card"), Mapping):
-        return []
-    safe_forbidden = raw.get("generation_safe_forbidden_findings")
-    if isinstance(safe_forbidden, list):
-        return [
-            {
-                "finding_id": str(item.get("finding_id") or ""),
-                "sub_dimension": str(item.get("sub_dimension") or ""),
-                "statement": str(item.get("statement") or ""),
-                "status": str(item.get("status") or ""),
-            }
-            for item in copy.deepcopy(safe_forbidden)
-            if isinstance(item, Mapping) and str(item.get("finding_id") or "") and isinstance(item.get("statement"), str)
-        ]
-    findings: list[dict[str, Any]] = []
-    for finding_id in list(_profile_value(profile, "source_finding_ids_json", None) or []):
-        finding = repo.get_finding(str(finding_id))
-        if finding is None or getattr(finding, "finding_kind", None) != "forbidden_pattern":
-            continue
-        findings.append(
-            {
-                "finding_id": str(finding.finding_id),
-                "sub_dimension": str(finding.sub_dimension or ""),
-                "statement": str(finding.statement or ""),
-                "status": str(finding.status or ""),
-            }
-        )
-    return findings
 
 
 def build_style_runtime_contract(
@@ -323,7 +281,7 @@ def build_style_runtime_contract(
     if not isinstance(raw_config, Mapping):
         raise ValueError("style binding config must be an object")
     draft_mode = resolve_draft_mode(raw_config)
-    config = normalize_binding_config(str(binding.strategy or "mixed"), raw_config)
+    config = normalize_binding_config(raw_config)
     config["draft_mode"] = draft_mode
     layer: dict[str, Any] = {
         "order": 0,
@@ -346,7 +304,9 @@ def build_style_runtime_contract(
             "profile_json": frozen_profile_json(raw_profile_json),
             "source_finding_ids_json": [str(item) for item in raw_finding_ids if str(item or "")],
         },
-        "forbidden_findings": legacy_forbidden_findings(repo, profile, raw_profile_json),
+        # 旧画像（没有文风卡）的禁忌陈述曾冻结在这里；v3 画像的「作者不这么写」在卡里，这一键恒为空表——
+        # 键本身保留：它进 layer_hash / contract_hash，去掉会让每一份新契约的哈希都变
+        "forbidden_findings": [],
         "banned_terms": banned_terms,
         "book": book_snapshot,
     }
@@ -460,7 +420,7 @@ def _validate_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("style runtime contract layer snapshot is invalid")
     if not isinstance(binding.get("config_json"), Mapping) or not isinstance(profile.get("profile_json"), Mapping):
         raise ValueError("style runtime contract payload shape is invalid")
-    if not set(profile["profile_json"]).issubset(FROZEN_PROFILE_JSON_KEYS):
+    if not set(profile["profile_json"]).issubset(_READ_PROFILE_JSON_KEYS):
         raise ValueError("style runtime contract profile payload is not allow-listed")
     finding_ids = profile.get("source_finding_ids_json", [])
     if not isinstance(finding_ids, list) or any(not isinstance(item, str) or not item for item in finding_ids):
@@ -845,15 +805,9 @@ def blend_profile_metric_baselines(
     return blended
 
 
-def contract_metric_mean_map(contract: Mapping[str, Any]) -> dict[str, float]:
-    baseline = blend_profile_metric_baselines(contract_profile_objects(contract))
-    return {
-        metric: float(stats["mean"])
-        for metric, stats in baseline.items()
-        if isinstance(stats, Mapping) and "mean" in stats
-    }
-
-
+# 2026-09-24 清理（S4）判定为死代码，但 ``scene_generation.py`` 还有一条从未用到的 import
+# （``extract_style_generation_context``，W3 的文件）——那条 import 删掉之后这三个名字
+# （STYLE_CONTEXT_VERSION / StyleGenerationContext / extract_style_generation_context）随之删除。
 @dataclass(frozen=True, slots=True)
 class StyleGenerationContext:
     query_text: str
@@ -951,36 +905,6 @@ def resolve_style_runtime_contract_state(
     return StyleRuntimeContractState(status=None, mode="legacy_live")
 
 
-_STYLE_BOUND_MODES = frozenset({"frozen", "frozen_legacy"})
-
-
-def effective_draft_mode(
-    bundle_or_snapshot: Mapping[str, Any] | None,
-    *,
-    task_type: str = "scene_generation",
-) -> str:
-    """这份 bundle 的起草方式。
-
-    只有冻结的契约(``frozen`` / ``frozen_legacy``)且契约写了 ``style_first`` 才是
-    style_first;无绑定 / absent / degraded / 旧契约缺键一律 ``neutral_first``——让位与
-    首稿直起都以此为准,无绑定的项目行为逐字不变。
-    """
-    state = resolve_style_runtime_contract_state(bundle_or_snapshot, task_type=task_type)
-    if state.mode not in _STYLE_BOUND_MODES or not isinstance(state.contract, Mapping):
-        return DRAFT_MODE_NEUTRAL_FIRST
-    mode = str(state.contract.get("draft_mode") or "")
-    return mode if mode in _ALLOWED_DRAFT_MODES else DRAFT_MODE_NEUTRAL_FIRST
-
-
-def is_style_bound(
-    bundle_or_snapshot: Mapping[str, Any] | None,
-    *,
-    task_type: str = "scene_generation",
-) -> bool:
-    """``effective_draft_mode(...) == "style_first"``:房风门让位与首稿直起的统一条件。"""
-    return effective_draft_mode(bundle_or_snapshot, task_type=task_type) == DRAFT_MODE_STYLE_FIRST
-
-
 def extract_style_generation_context(
     text: str | None,
     *,
@@ -1000,7 +924,6 @@ def extract_style_generation_context(
 
 __all__ = [
     "FROZEN_PROFILE_JSON_KEYS",
-    "LEGACY_PROFILE_JSON_KEYS",
     "STYLE_CONTEXT_VERSION",
     "DRAFT_MODE_NEUTRAL_FIRST",
     "DRAFT_MODE_STYLE_FIRST",
@@ -1014,17 +937,13 @@ __all__ = [
     "contract_payload_fingerprint",
     "inline_contract_payload",
     "frozen_profile_json",
-    "legacy_forbidden_findings",
     "reset_contract_memo",
     "StyleGenerationContext",
     "StyleRuntimeContractState",
     "blend_profile_metric_baselines",
     "build_style_runtime_contract",
-    "contract_metric_mean_map",
     "contract_profile_objects",
-    "effective_draft_mode",
     "extract_style_generation_context",
-    "is_style_bound",
     "resolve_draft_mode",
     "resolve_style_runtime_contract_state",
     "style_runtime_contract_from_bundle",
