@@ -564,4 +564,37 @@ A/B：上线后的库复制三份，各跑三场从没起草过的场景（第 1
 （作者在跑的实例）；测试只用合成文本与中性名字（公开仓库）；一个包不改另一个包的文件——需要对方改的写进最终报告，由主会话在合并时处理。
 
 ### 8.3 完成日志
-（各包合并后由主会话填写。）
+
+三包并行（各自的工作树、互不重叠的文件），主会话合并并处理跨包事项；第二波（W3）在第一波合并后单独做。合并后的第一波验证：
+后端风格道 + 守卫 + 相关非风格测试 1,147 通过 / 3 跳过（31 分钟），前端全量 1,147 通过、构建通过。
+
+- **W1 作业 / 学习 / 检查**：`POST …/checks/{job_id}/cancel`（排队 / 心跳过期当场收尾、运行中在评审回来的检查点收尾、已结束 409
+  `…_CHECK_NOT_ACTIVE`）；`learn.resumable` 只在 `error.retryable` 不为 false 时为真，失败详情与作者动作总带 `book_id`；对照检查评审分按模板
+  声明的刻度（`declared_score_scale` + `normalize_score`，越界丢弃），无 schema 才退回旧推断；遥测 90 天留存由清扫线程的维护任务登记簿跑
+  （启动一拍、每 24 小时）；`job_runtime.py` 收拢三种作业的脚手架（`JobStopped`、`retry_attempts`、`conflict_error_by_kind`、`JobRun` 的
+  `check_continue` / `pre_call_check` / `checkpoint` / `save_cursor` / `run_parallel`），行为不变；窗口标签 v2（`dimensions` ≤3 个维度键，无
+  `devices`；`style_ref_tag_windows` v2；模板契约要求 `windows[].dimensions`，旧模板 409 `…_LEARN_CONFIG_MISSING` 带 `stale_templates`）；打标签只给
+  没有当前版本标签的窗，`retag` 强制全打，估算给 `windows_to_tag`；`build-baseline` 命令行搬到 `tools/build_voice_baseline.py`；删
+  `latest_classification_job` / `_legacy_kind`（载荷键 `classification.kind`）/ `learn_activity_entry` / `contains_protected` / `VoiceLexicon` /
+  `clear_voice_signature_cache` / 死参数 `baseline` 与 `llm_client`；有 active 绑定的归档画像可被学习作业选中并复活。
+- **W2 策略 / 契约 / 注入 / 退役**：迁移 `20260924_0092`（只改数据、降级空操作：绑定配置回填 v3 键、`strategy` 统一 `mixed`、非 v3 画像归档、旧
+  `review_style_ref_*` 待办行删除）；`normalize_binding_config(config)` 只认 v3 键；删 `injection.py`（`InjectionService`）、`LegacyCardSource`、
+  `_legacy_view` / 载荷键 `legacy` 与 `sub_dimensions`、`legacy_forbidden_findings` / 预览键 `forbidden_findings`、`review_effects` 的旧绑定效应、
+  预览请求的 v2 字段（`extra="forbid"`）、`runtime_contract` 的 `is_style_bound` / `effective_draft_mode` / `contract_metric_mean_map`、
+  `inject/selection.select_scene_windows`、`inject/__init__` 门面、`readings.attach_judge`、`style_fidelity_view.selected_style_attempt`、包
+  `__init__` 的 39 个导出（守卫改为「包导入不拉起子模块」）、无人调用的 `reference_safety` 服务与两条路由；`InjectionStrategy` 只剩 `MIXED`、
+  `TaskType` 只剩 `scene_generation`；「绑定」只在 `StylePolicy` 解析（规划层、起章名、执行契约、v1 仪表盘、文学质量权重的旁路查询删除；
+  执行契约快照的形状与哈希有测试钉住不变）；作用域优先级只写一次（`inject/bindings.SCOPE_RANK`）；轻量策略遇非 active 画像 → 降级
+  `STYLE_REFERENCE_PROFILE_NOT_ACTIVE`（抄袭门报 unavailable）；规划层不送时记 warning（带 `route.reason`），异常记 warning + traceback；
+  每场冻结选窗的 `params_json` 带 `book_id` / `profile_id`，`purge_scene_windows_for_book` 由 `purge_derived_data` 调用；选窗的「维度示范 ≈2」
+  配额（重点维 ∪ 改稿维 ∪ 近期偏差维 × 窗口的维度标签）取代手法配额，`window_refs` / 预览 / 证据栏带 `dimensions`。保留：v1 契约的读取与校验、
+  `compute_paragraph_root`（快速根哈希的对照实现）、`classification_provenance.legacy_heuristic`。
+- **W4 前端**：对照检查「取消」（页内与活动清单）、`fidAdoptJob` 按作业 id 认领（活动清单「打开」不再落到空表单）、轮询 3 分钟后放慢到 5 s；
+  学习卡按 `resumable` 决定「继续学习」/「重新学习」，正文太短给「仍然学习」（`force`）；`srErrorInfo` 认得 `resume_learning` / `review_book` /
+  `resume_classification` / `wait_or_resume_classification` / `review_cloud_policy`；旧版全局应用的文案指向正确的解除处；删 `cancelling` 书状态、
+  `STYLE_REFERENCE_IMPORT_CANCELLED`、`SrLegacyPortrait` 与「旧版画像」文案；窗口标签显示维度中文名（`STYLE_WINDOW_SLOT_LABELS` 的 `dimension`
+  = 维度示范，旧 id 仍能显示）；`qa2-ui.mjs` 对风格页补真实断言（四步、书库、导入被模型门挡住）；新增 22 个页面用例覆盖失败分支。
+- **合并跟进（主会话）**：lifespan 显式导入 `cleanup` 登记维护任务；`learn_llm.TEMPLATE_CONTRACT` 要求 `windows[].dimensions`；学习失败详情带
+  `book_id`；测试替身按 v2 标签答；`purge_derived_data` 接 `purge_scene_windows_for_book`、删旧待办行块；重分类路由测试只看 `mode`；
+  文档随之（现行说明、操作手册、README、CLAUDE.md、阈值注释）。
+- **W3 指标包络退役**：（第二波，见下。）
