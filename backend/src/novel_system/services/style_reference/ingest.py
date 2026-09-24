@@ -44,7 +44,6 @@ from novel_system.services.style_reference.errors import (
     EmptyBookError,
     LLMRequiredError,
 )
-from novel_system.services.style_reference.metrics import MetricsEngine
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed, ensure_local_only_llm
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import CloudPolicy
@@ -318,7 +317,6 @@ class IngestService:
         self._op_key = op_key
         # 只用来解析分类节点的实际路由(「仅本机」检查);分类本身在作业里按当时的配置取客户端。
         self._llm_client = llm_client
-        self._metrics_engine: MetricsEngine | None = None
 
     # ------------------------------------------------------------------ public
 
@@ -633,11 +631,4 @@ class IngestService:
         seg_result: SegmentationResult,
     ) -> dict[str, Any]:
         """stats_json 中跟段落分类绑定的键(实现见叶子模块 ``classification_stats``,分类作业也用它)。"""
-        return compute_classification_stats(
-            paragraph_spans, seg_result, metrics_engine=self._get_metrics_engine()
-        )
-
-    def _get_metrics_engine(self) -> MetricsEngine:
-        if self._metrics_engine is None:
-            self._metrics_engine = MetricsEngine()
-        return self._metrics_engine
+        return compute_classification_stats(paragraph_spans, seg_result)

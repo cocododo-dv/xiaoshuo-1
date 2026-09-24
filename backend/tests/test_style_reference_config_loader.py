@@ -45,10 +45,10 @@ def test_load_banned_adjectives_yaml_returns_items_key() -> None:
     assert "文笔优美" in cfg["items"]
 
 
-def test_load_tolerance_floors_yaml() -> None:
-    cfg = load_yaml_config("tolerance_floors")
-    assert "avg_sentence_length" in cfg
-    assert cfg["avg_sentence_length"] == 3.0
+def test_tolerance_floors_is_gone() -> None:
+    """2026-09-24 风格参考 v3 S2:v2 指标包络(metrics.py / candidate_rerank.py)连同 tolerance_floors.yaml 一起删除。"""
+    with pytest.raises(FileNotFoundError):
+        load_yaml_config("tolerance_floors")
 
 
 def test_load_anti_plagiarism_template() -> None:

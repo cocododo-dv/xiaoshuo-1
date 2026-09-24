@@ -9,9 +9,10 @@
    留洞会把样例窗切碎);
 3. **保留**导入期记下的场界(含只有重新导入才能恢复的空行型场界):按新编号搬运,落在被剥段之后的
    挪到前一个保留段;单独一行的省略号(「……」)不再算场界;再并上纯符号分隔行;
-4. 重算 ``stats_json`` 的 ``metrics`` / ``prose_shape_metrics`` / ``paragraph_type_distribution`` /
-   ``voice_signature`` / ``paratext_dropped``,写 ``refresh`` 审计;段落行有变化时 ``pop`` 掉
-   ``paragraph_root_sha256`` / ``paragraph_count``(契约 §3.1:写段落表的人负责,窗口索引据此重建)。
+4. 重算 ``stats_json`` 的 ``paragraph_type_distribution`` / ``voice_signature`` / ``paratext_dropped``,写 ``refresh``
+   审计,顺带删掉旧的 v2 指标块 ``metrics`` / ``prose_shape_metrics``(指标包络 2026-09-24 随风格参考 v3 S2 删除,
+   没有读者);段落行有变化时 ``pop`` 掉 ``paragraph_root_sha256`` / ``paragraph_count``(契约 §3.1:写段落表的人负责,
+   窗口索引据此重建)。
 
 没有就绪的书(分类中 / 失败)与有排队 / 运行中作业(分类 / 就地重标 / 学习文风)的书一律跳过——就地重标时
 书一直是 ready,得看作业表。``--execute`` 时每本书一个事务:先拿写锁(``BEGIN IMMEDIATE``),在锁里重新
@@ -36,11 +37,6 @@ from novel_system.db.models import StyleReferenceBook
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.jobs import BOOK_EXCLUSIVE_KINDS, StyleJobService
 from novel_system.services.style_reference.paragraph_root import COUNT_KEY, ROOT_KEY, patch_book_stats
-from novel_system.services.style_reference.metrics import (
-    MetricsEngine,
-    ParagraphRecord,
-    compute_prose_shape_with_variance,
-)
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.text_utils import (
     is_paratext_paragraph,
@@ -49,9 +45,11 @@ from novel_system.services.style_reference.text_utils import (
 )
 from novel_system.services.style_reference.voice_signature import compute_voice_signature
 
-TOOL_VERSION = "refresh_style_reference_books_v2"
+TOOL_VERSION = "refresh_style_reference_books_v3"
 
 _ELLIPSIS_ONLY = frozenset("…⋯.。 \t")
+# 旧 v2 指标块(无读者):刷新时顺带删掉
+_LEGACY_METRIC_KEYS = ("metrics", "prose_shape_metrics")
 
 
 def _is_ellipsis_line(text: str) -> bool:
@@ -84,16 +82,7 @@ def plan_book_refresh(session, book_id: str) -> dict[str, Any] | None:
     old_to_new = {int(p.paragraph_index): new for new, p in enumerate(kept)}
     renumber = [(p, new) for new, p in enumerate(kept) if int(p.paragraph_index) != new]
     kept_texts = [str(p.text or "") for p in kept if str(p.text or "").strip()]
-    records = [ParagraphRecord(text=str(p.text or ""), paragraph_type=p.paragraph_type) for p in kept]
-    sample_count = len(records)
-    metrics_block = {
-        name: {"mean": float(mean), "std": float(std), "sample_count": sample_count}
-        for name, (mean, std) in MetricsEngine().compute_with_variance(records).items()
-    }
-    prose_shape_block = {
-        name: {"mean": float(mean), "std": float(std), "sample_count": sample_count}
-        for name, (mean, std) in compute_prose_shape_with_variance(records).items()
-    }
+    sample_count = len(kept)
     type_counter = Counter(p.paragraph_type for p in kept)
     type_distribution = (
         {ptype: round(count / sample_count, 4) for ptype, count in type_counter.items()}
@@ -129,21 +118,14 @@ def plan_book_refresh(session, book_id: str) -> dict[str, Any] | None:
         "scene_breaks": scene_breaks,
         "scene_breaks_before": len(old_stats.get("scene_breaks") or []),
         "stats_update": {
-            "metrics": metrics_block,
-            "prose_shape_metrics": prose_shape_block,
             "paragraph_type_distribution": type_distribution,
             "voice_signature": voice_signature,
             "scene_breaks": scene_breaks,
             "paratext_dropped": int(old_stats.get("paratext_dropped") or 0) + len(paratext),
         },
-        "before": {
-            "person_third_share": old_voice.get("person_third_share"),
-            "classical_word_ratio": ((old_stats.get("metrics") or {}).get("classical_word_ratio") or {}).get("mean"),
-        },
-        "after": {
-            "person_third_share": (voice_signature.get("features") or {}).get("person_third_share"),
-            "classical_word_ratio": (metrics_block.get("classical_word_ratio") or {}).get("mean"),
-        },
+        "legacy_metric_keys": [key for key in _LEGACY_METRIC_KEYS if key in old_stats],
+        "before": {"person_third_share": old_voice.get("person_third_share")},
+        "after": {"person_third_share": (voice_signature.get("features") or {}).get("person_third_share")},
     }
 
 
@@ -171,6 +153,19 @@ def apply_book_refresh(session, plan: dict[str, Any]) -> None:
     }
     # 只合并本工具管的键(json_set),别的写者写进 stats_json 的键原样保留
     patch_book_stats(session, book.book_id, values)
+    if plan.get("legacy_metric_keys"):
+        # 旧 v2 指标块没有读者(2026-09-24 S2):顺带删掉,不再重算
+        session.execute(
+            update(StyleReferenceBook)
+            .where(StyleReferenceBook.book_id == book.book_id)
+            .values(
+                stats_json=func.json_remove(
+                    StyleReferenceBook.stats_json, *[f"$.{key}" for key in plan["legacy_metric_keys"]]
+                )
+            )
+            .execution_options(synchronize_session=False)
+        )
+        session.expire(book, ["stats_json"])
     if plan["rows_changed"]:
         # 契约 §3.1:改动段落行的写入者负责作废根哈希;窗口索引发现缺失时现算并重建。
         session.execute(
@@ -199,8 +194,8 @@ def _describe(plan: dict[str, Any]) -> str:
         f"{plan['book'].book_id}  《{plan['title']}》  段落 {plan['paragraph_count']} → {plan['kept_count']}"
         f"（副文本 {len(plan['paratext'])} 段，重编号 {len(plan['renumber'])} 段，"
         f"解除引文 {len(plan['quotes_to_detach'])} 条，场界 {plan['scene_breaks_before']} → {len(plan['scene_breaks'])} 处）",
-        f"  人称·第三人称占比 {_fmt(plan['before']['person_third_share'])} → {_fmt(plan['after']['person_third_share'])}；"
-        f"文言比例 {_fmt(plan['before']['classical_word_ratio'])} → {_fmt(plan['after']['classical_word_ratio'])}",
+        f"  人称·第三人称占比 {_fmt(plan['before']['person_third_share'])} → {_fmt(plan['after']['person_third_share'])}"
+        + (f"；删掉旧指标块 {' / '.join(plan['legacy_metric_keys'])}" if plan.get("legacy_metric_keys") else ""),
     ]
     for paragraph in plan["paratext"][:3]:
         lines.append(f"  剥离 #{paragraph.paragraph_index}: {str(paragraph.text or '')[:48]}")

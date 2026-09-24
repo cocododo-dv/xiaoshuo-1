@@ -3,8 +3,9 @@
 语料:公版鲁迅短篇(主力 ~66k 字)+ 朱自清散文(对照 ~8k 字)+
 单篇孔乙己(下限,全层 skip)。expected/ 由
 `tests/golden/style_reference/regen_expected.py` 在真实 ingest 管线上生成,
-本文件断言管线输出与 expected 完全一致——metrics / 分段 / 分类启发式的
-任何无意变更都会在这里现形。
+本文件断言管线输出与 expected 完全一致——分段 / 分类启发式的任何无意变更都会在这里现形
+(2026-09-24 风格参考 v3 S2:v2 的 21 指标块随指标包络删除,expected 不再含 ``metrics``;
+「像不像」只看读数 fidelity)。
 """
 
 from __future__ import annotations
@@ -103,12 +104,9 @@ def test_ingest_matches_expected(name: str, fname: str):
     assert stats["paragraph_type_distribution"] == pytest.approx(
         expected["paragraph_type_distribution"], rel=1e-9
     )
-    assert set(stats["metrics"]) == set(expected["metrics"])
-    for metric, exp in expected["metrics"].items():
-        got = stats["metrics"][metric]
-        assert got["mean"] == pytest.approx(exp["mean"], rel=1e-9), metric
-        assert got["std"] == pytest.approx(exp["std"], rel=1e-9), metric
-        assert got["sample_count"] == exp["sample_count"]
+    # v2 指标包络已删(2026-09-24 S2):ingest 不再写 21 指标 / 段落形状块
+    assert "metrics" not in stats and "prose_shape_metrics" not in stats
+    assert "metrics" not in expected
 
 
 def test_kongyiji_assesses_all_skip():
@@ -175,28 +173,3 @@ def test_flowery_sample_reads_far_outside_the_reference():
     assert not within_author_range(flowery)
     assert flowery.distance > own.distance * 1.5, (flowery.distance, own.distance)
 
-
-def test_chunk_variance_tightens_std_vs_paragraph_level():
-    """块间 std 修正(2026-06):证明退化方差被收紧——
-    真实鲁迅语料上 dialogue_ratio 的块间 std 显著小于逐段 std(后者因逐段 0/1
-    取值退化到 ~0.5,使 tolerance 宽到几乎不拦截);同时 mean 不变(== compute_all)。"""
-    import statistics
-
-    from novel_system.services.style_reference.metrics import MetricsEngine, ParagraphRecord
-
-    book_id, _stats, _count = _ingest(CORPUS / "luxun_short_stories.txt", "var_lu")
-    with SessionLocal() as session:
-        paras = [
-            ParagraphRecord(text=p.text, paragraph_type=p.paragraph_type)
-            for p in StyleReferenceRepository(session).list_paragraphs(book_id)
-        ]
-    engine = MetricsEngine()
-    chunk_mean, chunk_std = engine.compute_with_variance(paras)["dialogue_ratio"]
-    para_vals = [engine._per_paragraph("dialogue_ratio", p) for p in paras]
-    para_std = statistics.pstdev(para_vals)
-
-    # mean 不随分块改变(仍是全文逐段均值)
-    assert chunk_mean == pytest.approx(engine.compute_all(paras)["dialogue_ratio"], rel=1e-9)
-    # 块间 std 严格小于逐段 std,且脱离退化区(~0.5)
-    assert chunk_std < para_std, f"块间 std {chunk_std:.3f} 应小于逐段 std {para_std:.3f}"
-    assert chunk_std < 0.4, f"块间 std 应脱离逐段 0/1 的退化方差区,实际 {chunk_std:.3f}"

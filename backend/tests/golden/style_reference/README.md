@@ -18,7 +18,7 @@ backend/tests/golden/style_reference/
 │   ├── zhuziqing_benchmark_essays.txt # 跨内容基准:朱自清散文 16 篇,约 43,400 字
 │   └── luxun_kongyiji.txt        # 下限测试集:单篇《孔乙己》,约 2,600 字(全层 skip)
 ├── expected/
-│   ├── luxun_ingest_expected.json      # 主力集 ingest 期望(26 metrics + input_assessment 等)
+│   ├── luxun_ingest_expected.json      # 主力集 ingest 期望(段数 / input_assessment / 段型分布)
 │   └── zhuziqing_ingest_expected.json  # 对照集 ingest 期望
 └── README.md
 ```
@@ -54,7 +54,7 @@ python tests/golden/style_reference/fetch_zhuziqing_benchmark_corpus.py --write
 
 ## 期望文件再生成
 
-corpus 或 metrics 算法**有意**变更后,重新生成 expected:
+corpus、分段规则或启发式分类**有意**变更后,重新生成 expected(2026-09-24 起 expected 不再含 v2 指标块):
 
 ```powershell
 cd backend

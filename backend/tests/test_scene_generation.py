@@ -44,10 +44,8 @@ from novel_system.services.scene_generation import (
     _apply_style_length_patch,
     _apply_style_salvage_patch,
     _assess_de_template_rewrite,
-    _assess_style_anchor_conformance,
     _extract_scene_text,
     _neutral_length_instruction,
-    _normalize_style_paragraph_shape,
     _scene_text_integrity_markers,
     _style_repair_length_instruction,
 )
@@ -1320,12 +1318,13 @@ def test_extreme_underlength_style_uses_bounded_neutral_salvage(
         },
     }
     client = FakeExtremeUnderlengthThenSalvageClient()
+    # 未绑定的场景没有读数（挽救补丁不可比 → 不采用，见 test_style_salvage_is_never_adopted_without_comparable_readings）；
+    # 这里把「改写不退步」定死为可比且没退步，只看补丁本身的接线
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._assess_style_rewrite_conformance",
-        lambda **_kwargs: {
+        "novel_system.services.scene_generation._assess_style_rewrite_drift",
+        lambda *_args, **_kwargs: {
             "available": True,
             "comparable": True,
-            "score_delta": -0.002,
             "regressed": False,
         },
     )
@@ -1407,7 +1406,6 @@ def test_safety_repair_does_not_reject_safe_text_for_quality_score_drop(session)
             "available": True,
             "comparable": True,
             "regressed": True,
-            "score_delta": -0.2,
         },
     )
 
@@ -1573,7 +1571,6 @@ def test_ordinary_de_template_rejects_measurable_frozen_style_regression(session
             "available": True,
             "comparable": True,
             "regressed": True,
-            "score_delta": -0.010001,
         },
     )
 
@@ -1615,91 +1612,55 @@ def test_ordinary_de_template_requires_actionable_target_defect_reduction(
     assert assessment["source_target_evidence_available"] is True
 
 
-def test_style_anchor_audit_exposes_soft_shape_repair_without_punctuation_quota(
-    monkeypatch,
-) -> None:
-    profile = SimpleNamespace(
-        profile_id="frozen_profile",
-        profile_json={
-            "metrics_baseline": {
-                "paragraphs_per_1k": {"mean": 5.0, "std": 0.5},
-                "semicolon_density_per_1k": {"mean": 10.0, "std": 1.0},
-            }
+def test_style_salvage_is_never_adopted_without_comparable_readings(session) -> None:
+    """风格参考 v3 S2（d）：改写不退步只看读数。未绑定的场景没有读数 → 两稿不可比 → 挽救补丁照旧不采用
+    （与指标包络时代同一结果：``style_salvage_conformance_unavailable``），终稿回到已批准的中性稿；
+    旧的段落形态整理（``paragraph_shape_normalization``）不再写。"""
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="100-260 Chinese characters",
+    )
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "Goal"},
         },
-    )
-    from novel_system.services.style_policy import StylePolicy
-
-    # 风格参考 v3：这两道形态整理 / 审计只看 bundle 的 StylePolicy（先中性后润色 → 不让位）
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation.style_policy_for_bundle",
-        lambda _bundle, **_kwargs: StylePolicy(
-            bound=True, style_first=False, mode="frozen", contract={"frozen": True}
-        ),
-    )
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation.contract_profile_objects",
-        lambda _contract: [profile],
-    )
-    text = "\n\n".join("他沿着走廊走到门边，又停下来看了一眼窗外的雨。" for _ in range(20))
-
-    audit = _assess_style_anchor_conformance(bundle={"snapshot": {}}, text=text)
-
-    assert audit["available"] is True
-    assert audit["requires_repair"] is True
-    # 段落明显碎裂需要修；分号少不是文学缺陷，不能为了拟合统计主动补分号。
-    assert {item["metric"] for item in audit["violations"]} == {
-        "paragraphs_per_1k",
     }
-    assert any("Paragraph structure" in item for item in audit["repair_directions"])
-    assert not any("Semicolon rhythm" in item for item in audit["repair_directions"])
-    assert not any(char.isdigit() for item in audit["repair_directions"] for char in item)
+    client = FakeExtremeUnderlengthThenSalvageClient()
 
-
-def test_style_paragraph_normalization_only_merges_and_preserves_text_sequence(
-    monkeypatch,
-) -> None:
-    target = SimpleNamespace(
-        target_hash="target_hash_demo",
-        metrics={
-            "paragraphs_per_1k": SimpleNamespace(
-                mean=5.0,
-                tolerance=1.0,
-            )
-        },
-    )
-    from novel_system.services.style_policy import StylePolicy
-
-    # 风格参考 v3：这两道形态整理 / 审计只看 bundle 的 StylePolicy（先中性后润色 → 不让位）
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation.style_policy_for_bundle",
-        lambda _bundle, **_kwargs: StylePolicy(
-            bound=True, style_first=False, mode="frozen", contract={"frozen": True}
-        ),
-    )
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation.contract_profile_objects",
-        lambda _contract: [],
-    )
-    monkeypatch.setattr(
-        "novel_system.services.style_reference.candidate_rerank.build_style_target",
-        lambda _profiles: target,
-    )
-    text = "\n\n".join(
-        f"第{index}盏灯沿着长廊依次暗下，他走到门边，又停住听了一会雨声。"
-        for index in range(24)
+    result = SceneGenerationService(session, llm_client=client).generate_style_draft(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content=client.neutral,
     )
 
-    normalized, audit = _normalize_style_paragraph_shape(
-        bundle={"snapshot": {}},
-        text=text,
-    )
+    assert len(client.requests) == 2
+    assert result.content == client.neutral
+    salvage_attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "style_salvage_patch")
+    ).scalar_one()
+    acceptance = salvage_attempt.details_json["acceptance"]
+    assert acceptance["accepted"] is False
+    assert "style_salvage_conformance_unavailable" in acceptance["reasons"]
+    assert "style_salvage_conformance_regressed" not in acceptance["reasons"]
+    drift = acceptance["style_conformance"]
+    assert drift["version"] == "style_rewrite_drift_v1"
+    assert drift["available"] is False and drift["comparable"] is False and drift["regressed"] is False
+    assert drift["unavailable_reason"] in {"bundle_has_no_style_profile", "style_policy_unbound"}
+    assert acceptance["style_salvage_non_regression_enforced"] is True
+    assert "style_salvage_regression_tolerance" not in acceptance
+    assert "paragraph_shape_normalization" not in salvage_attempt.details_json
+    style_attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "style_draft")
+    ).scalar_one()
+    assert "paragraph_shape_normalization" not in style_attempt.details_json
+    assert "style_step" not in style_attempt.details_json  # 未绑定：没有读数决定
 
-    assert audit["applied"] is True
-    assert audit["operation"] == "merge_adjacent_only"
-    assert audit["before_paragraph_count"] == 24
-    assert audit["after_paragraph_count"] == audit["preferred_count"]
-    assert "".join(normalized.split()) == "".join(text.split())
-    assert audit["content_sequence_preserved"] is True
 
 
 class _FakeBestOfNDeTemplateClient(AccountedGenerateMixin):

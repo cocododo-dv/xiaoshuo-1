@@ -197,9 +197,10 @@ def test_learn_job_runs_every_phase_and_writes_a_v3_profile(session, monkeypatch
     assert "sent_len_mean" in pj["dimension_card"]["dimensions"][0]["measurable_features"] or any(measurable.values())
     assert any(line.mandatory for _dim, line in lines)
     assert pj["card_line_states"] == {}
-    # 证据引文按证据计(台账 E10)
-    assert all(v["quote_count"] > 0 for v in pj["sub_dimensions"].values())
-    assert set(pj["sub_dimensions"]) == {entry.dimension for entry in card.dimensions}
+    # 证据引文按证据计(台账 E10):各维计数只留在 coverage / run 血缘里,不再进画像(2026-09-24 S2;
+    # v2 的量化基线 metrics_baseline 随指标包络一起不再写)
+    assert "sub_dimensions" not in pj and "metrics_baseline" not in pj
+    assert profile.coverage_json["sub_dim_count"] == len(card.dimensions) and profile.coverage_json["quotes_count"] > 0
     # 声音:绝对习惯句 + 作者自身分布;结构画像去掉 chapters
     assert pj["voice"]["habits"] and pj["voice"]["distribution"]["window_count"] == len(windows)
     # 过渡别名:旧读者(注入的声音习惯行、漂移、诊断)读 voice_signature,同源、不带分布
@@ -215,7 +216,6 @@ def test_learn_job_runs_every_phase_and_writes_a_v3_profile(session, monkeypatch
     assert learned["extraction"]["windows"] == sorted(w.window_no for w in windows)
     assert pj["protected_terms_version"].startswith("pt_v1_")
     assert pj["reference_basis"]["book_id"] == "learn_book"
-    assert pj["metrics_baseline"] == {}  # 测试书的 stats 没有导入期指标
     # 血缘 run:done、只作血缘
     run = session.get(StyleReferenceRun, result["run_id"])
     assert run.status == "done" and run.dispatch_state == "learn_job" and profile.run_id == run.run_id
@@ -1112,9 +1112,9 @@ def test_card_line_route_and_removed_routes(client, session, monkeypatch) -> Non
 
 def test_evidence_counts_are_consistent_with_the_rows(session, monkeypatch) -> None:
     _fake1, job = _learn(monkeypatch, session)
-    pj = _profile(job.result_json["profile_id"]).profile_json
+    profile = _profile(job.result_json["profile_id"])
     evidences = session.scalars(select(StyleReferenceEvidence)).all()
-    assert sum(v["quote_count"] for v in pj["sub_dimensions"].values()) == len(evidences)
+    assert profile.coverage_json["quotes_count"] == len(evidences)
 
 
 def test_worker_shutdown_mid_learning_requeues_instead_of_failing(session, monkeypatch) -> None:

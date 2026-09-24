@@ -89,15 +89,13 @@ def test_ingest_upload_happy_path(ingest_service: IngestService) -> None:
     assert result.paragraphs_count == 5
     stats = book.stats_json
     assert set(stats.keys()) >= {
-        "metrics",
-        "prose_shape_metrics",
         "input_assessment",
         "classifier_calibration",
         "paragraph_type_distribution",
         "safety",
     }
-    assert len(stats["metrics"]) == 21
-    assert len(stats["prose_shape_metrics"]) == 5
+    # v2 指标包络已删(2026-09-24 S2):不再写 21 指标 / 段落形状块
+    assert "metrics" not in stats and "prose_shape_metrics" not in stats
     # 离线 fallback 标记
     assert stats["classifier_calibration"]["fallback_to_heuristic"] is True
     # 段落分布非空
@@ -197,24 +195,12 @@ def test_ingest_luxun_placeholder(ingest_service: IngestService) -> None:
     assert book.status == "ready"
     assert result.paragraphs_count > 0
     stats = book.stats_json
-    # 4 个核心 key 必存
-    assert "metrics" in stats
+    # 3 个核心 key 必存(v2 的 metrics / prose_shape_metrics 指标块随指标包络删除,2026-09-24 S2)
     assert "input_assessment" in stats
     assert "classifier_calibration" in stats
     assert "paragraph_type_distribution" in stats
-    # metrics 21 项(2026-09-23 测量核:感官词表指标删除)
-    assert len(stats["metrics"]) == 21
-    # 段落形态另存，不改变冻结的 21 项 QC 分母
-    assert len(stats["prose_shape_metrics"]) == 5
-    assert "paragraph_mean_chars" in stats["prose_shape_metrics"]
-    # 每个 metric 都含 mean / std / sample_count
-    for name, m in {
-        **stats["metrics"],
-        **stats["prose_shape_metrics"],
-    }.items():
-        assert "mean" in m
-        assert "std" in m
-        assert "sample_count" in m
+    assert "metrics" not in stats and "prose_shape_metrics" not in stats
+    assert sum(stats["paragraph_type_distribution"].values()) == pytest.approx(1.0, rel=0.05)
     # v2 W3:全书声音签名随 ingest 落库
     assert stats["voice_signature"]["version"] == "voice_signature_v2"
     assert stats["voice_signature"]["stats"]["char_count"] > 0
