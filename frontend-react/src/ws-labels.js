@@ -329,14 +329,18 @@ export function windowPositionLabel(position) {
   return WINDOW_POSITION_LABELS[position] || "";
 }
 
-/* 一场的样例窗是按哪条配额选进来的（后端 inject/selection 的 slot；本场预览与起草台「本场参考窗口」共用） */
+/* 一场的样例窗是按哪条配额选进来的（后端 inject/selection 的 slot；本场预览与起草台「本场参考窗口」共用）。
+   2026-09-24 O1：窗口标签不再有「手法」，改记这一窗最能示范的维度（16 维的键），配额随之叫「维度示范」；
+   O1 之前冻结的场（style_reference_scene_windows 旧行）还带旧的 slot 名，照旧给个叫法。 */
 export const STYLE_WINDOW_SLOT_LABELS = {
   position: "按章内位置挑",
   situation: "按场面挑",
-  device: "示范重点手法",
+  dimension: "维度示范",
   texture: "按对白 / 叙述的质地挑",
   typical: "全书典型片段",
-  revise_device: "示范要改的手法",
+  revise_dimension: "示范要改的维度",
+  device: "维度示范",
+  revise_device: "示范要改的维度",
 };
 
 export function styleWindowSlotLabel(slot) {

@@ -8,7 +8,7 @@
      2026-09-21 删掉了前端自己的「质检」（短句率 / 句式重复 / 超长句的红绿判词与划线）
      和永远对不上的「戏剧卡对齐」——它们和后端按参考作者放宽的门互相矛盾。
    ========================================================== */
-import { paragraphTypeLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
+import { paragraphTypeLabel, styleDimensionLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
 
 /* ---- 场景在台面上的状态词：本地「从没提交过」的场叫「待起草」；「排队中」只留给后端真的排上了队的任务
    （job.status=queued）。过去两者都叫「排队」，同一场在头部写「排队」、在书脊上写「待起草」。 ---- */
@@ -102,7 +102,8 @@ function scnDraftModeFrom(wb) {
 /* ---- 风格提示 + 本场参考窗口 + 像不像（2026-09-14 WP4.2；2026-09-23 风格参考 v3 · P6b 改白话）----
    后端每次运行都算出 STYLE_* notices（generation_summary.notices）、这一场提示里实际放入的参考书样例窗口
    （generation_summary.style_windows：{book_id, profile_id, step, windows[]}；窗口只有段落序号闭区间与读数，
-   v3 的窗还带窗号、按哪条配额选进来的、学习作业打的场面 / 情绪 / 手法标签与一句话梗概，不含原文）和这次运行的
+   v3 的窗还带窗号、按哪条配额选进来的、学习作业打的场面 / 情绪标签、最能示范的维度（16 维的键）与一句话梗概，
+   不含原文）和这次运行的
    「像不像」（generation_summary.style_fidelity：首稿读数、风格步的决定、修改稿读数、补丁的去留、终稿读数、评审）。
    这里把三者规整后记进运行记录（随 scnRunSave 持久化）。
    提示条的话由前端按 code + reason / stage 说（「注入」一律说「带入起草」；后端原话里夹着 soft_qc、n-gram、
@@ -235,7 +236,8 @@ function scnWindowTags(value) {
   return Array.isArray(value) ? value.map((tag) => String(tag || "").trim()).filter(Boolean) : [];
 }
 /* generation_summary.style_windows → {bookId, profileId, step, windows: [{start, end, chapter, position, paragraphType,
-   paragraphs, chars, windowNo?, slot?, gist?, situations?, moods?, devices?}]} | null（v3 的窗才有后几项） */
+   paragraphs, chars, windowNo?, slot?, gist?, situations?, moods?, dimensions?}]} | null（v3 的窗才有后几项；
+   dimensions 是 16 维的键，念给作者时经 ws-labels 翻成中文） */
 function scnStyleWindowsFrom(wb) {
   const summary = wb && wb.generation_summary;
   const raw = summary && typeof summary === "object" ? summary.style_windows : null;
@@ -255,7 +257,7 @@ function scnStyleWindowsFrom(wb) {
       if (Number.isInteger(w.window_no)) item.windowNo = w.window_no;
       if (w.slot) item.slot = String(w.slot);
       if (typeof w.gist === "string" && w.gist.trim()) item.gist = w.gist.trim();
-      ["situations", "moods", "devices"].forEach((key) => {
+      ["situations", "moods", "dimensions"].forEach((key) => {
         const tags = scnWindowTags(w[key]);
         if (tags.length) item[key] = tags;
       });
@@ -277,12 +279,12 @@ function scnStyleWindowLabel(w) {
   const range = `第 ${w.start + 1}–${w.end + 1} 段（${Number(w.chars || 0).toLocaleString("zh-CN")} 字）`;
   return where ? `${where} · ${range}` : range;
 }
-/* 窗口的标签行：按哪条配额选进来的、场面 / 情绪、手法、以哪种段落为主（都用风格参考的词） */
+/* 窗口的标签行：按哪条配额选进来的、场面 / 情绪、示范的维度（中文名）、以哪种段落为主（都用风格参考的词） */
 function scnStyleWindowTags(w) {
   return {
     slot: styleWindowSlotLabel(w.slot),
     tags: [...(w.situations || []), ...(w.moods || [])],
-    devices: w.devices || [],
+    dimensions: (w.dimensions || []).map(styleDimensionLabel),
     paragraphType: paragraphTypeLabel(w.paragraphType) && PARAGRAPH_TYPES_SHOWN.has(w.paragraphType) ? `${paragraphTypeLabel(w.paragraphType)}为主` : "",
   };
 }

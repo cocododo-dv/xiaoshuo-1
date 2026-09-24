@@ -566,8 +566,14 @@ export async function srCancelClassification(bookId) {
 /* ==========================================================
    学习文风：开始 / 继续 / 取消
    ========================================================== */
-export async function srStartLearn(bookId, { resume = false } = {}) {
-  const data = await apiPost(`${API}/books/${encodeURIComponent(bookId)}/learn`, resume ? { resume: true } : {});
+/* resume：从断点续跑；force：正文很短也学（作业因 input_too_small 失败、或建作业时 409 STYLE_REFERENCE_INPUT_TOO_SMALL 之后）；
+   retag：全书窗口的标签都重打（缺省只补标签版本旧了的窗） */
+export async function srStartLearn(bookId, { resume = false, force = false, retag = false } = {}) {
+  const body = {};
+  if (resume) body.resume = true;
+  if (force) body.force = true;
+  if (retag) body.retag = true;
+  const data = await apiPost(`${API}/books/${encodeURIComponent(bookId)}/learn`, body);
   if (data && data.job_id) srActivityTrack(data.job_id, { kind: "learn", book_id: bookId, title: srBookTitle(bookId) });
   srLoadLearn(bookId, { force: true });
   srSyncBooks();
@@ -873,7 +879,8 @@ export function srActivityStart() {
   srActivitySchedule(0);
 }
 
-function srActivityPoke() {
+/* 发起 / 取消了一项作业：马上拉一次活动清单（界面在别的 store 里取消了对照检查时也用） */
+export function srActivityPoke() {
   clearTimeout(srActivityTimer);
   srActivityTimer = null;
   srActivitySchedule(0);

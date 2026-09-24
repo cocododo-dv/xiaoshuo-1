@@ -25,6 +25,7 @@ import {
   srFormatCount,
   srFormatMinutes,
   srFormatPct,
+  srInputTooSmall,
   srIsChineseMessage,
   srIsLegacyGlobalBinding,
   srJobErrorText,
@@ -243,7 +244,8 @@ describe("估算与格式", () => {
 
   it("为什么建议重新学习", () => {
     expect(srRelearnText("types_changed")).toBe("段落类型已更新，建议重新学习：挑样本、打标签都要看段落类型。");
-    expect(srRelearnText("legacy_profile")).toContain("旧版画像");
+    // 旧版画像这一理由不在了（S1 把没有文风卡的旧画像归档，界面上就是「没学过」）
+    expect(srRelearnText("legacy_profile")).toBeNull();
     expect(srRelearnText("nope")).toBeNull();
   });
 });
@@ -265,7 +267,10 @@ describe("一本书走到哪一步", () => {
     expect(srBookPipeline(book(), { running: { learn: { percentText: "10%" } } }).label).toBe("学习中 10%");
     expect(srBookPipeline(book({ profile: profile() })).label).toBe("已学好");
     expect(srBookPipeline(book({ profile: profile({ needs_relearn: true, relearn_reason: "types_changed" }) })).label).toBe("建议重新学习");
-    expect(srBookPipeline(book({ profile: profile({ needs_relearn: true, relearn_reason: "legacy_profile" }) })).label).toBe("旧版画像");
+    expect(srBookPipeline(book({ profile: profile({ needs_relearn: true, relearn_reason: "whatever" }) })).label).toBe("建议重新学习");
+    // 「取消中」不是书的状态（后端从没产出过 cancelling）：认不出的状态按没在分类处理，不再有「取消中」徽标
+    expect(srBookPipeline(book({ rawStatus: "cancelling" })).label).not.toBe("取消中");
+    expect(srStageStates(book({ rawStatus: "cancelling" })).book).not.toBe("running");
     const applied = book({ profile: profile(), appliedProjects: [{ project_id: "w1", binding_id: "bd1" }] });
     expect(srBookPipeline(applied, { workId: "w1" }).label).toBe("当前作品在用");
     expect(srBookPipeline(applied, { workId: "w2" }).label).toBe("已学好");
@@ -383,5 +388,47 @@ describe("书库排序、筛选与落点", () => {
     expect(prefs.last).toEqual({ bookId: "b", stage: null });
     storage.setItem("ws_sr_ui_v1", "{not json");
     expect(srReadUiPrefs(storage)).toEqual({ last: null, works: {} });
+  });
+});
+
+describe("出错说法 · 后端 author_action 与死词汇（2026-09-24 清理 C5）", () => {
+  it("author_action 有按钮：继续学习 / 查看这本书（落在总览）/ 继续分类 / 去这本书的设置；导入框里的重报发送权只就地提示", () => {
+    const actionOf = (action, code = "STYLE_REFERENCE_BOOK_NOT_READY") => srErrorInfo({ code, message: "x", details: { author_action: { action, book_id: "b7" } } }).action;
+    expect(actionOf("resume_learning")).toEqual({ type: "resume_learn", label: "继续学习", bookId: "b7" });
+    expect(actionOf("review_book")).toEqual({ type: "open_book", label: "查看这本书", bookId: "b7", stage: "book" });
+    expect(actionOf("resume_classification")).toEqual({ type: "resume_classify", label: "继续分类", bookId: "b7" });
+    expect(actionOf("wait_or_resume_classification")).toEqual({ type: "resume_classify", label: "继续分类", bookId: "b7" });
+    expect(actionOf("review_cloud_policy", "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED")).toEqual({ type: "open_book", label: "去这本书的设置", bookId: "b7", stage: "book" });
+    expect(actionOf("redeclare_send_rights", "STYLE_REFERENCE_SEND_RIGHTS_REQUIRED")).toBeNull();
+    expect(actionOf("something_new")).toBeNull();
+    // 不知道是哪本书：不给会落空的按钮；book_id 也可以在 details 顶层
+    expect(srErrorInfo({ code: "STYLE_REFERENCE_BOOK_NOT_READY", details: { author_action: { action: "review_book" } } }).action).toBeNull();
+    expect(srErrorInfo({ code: "STYLE_REFERENCE_BOOK_CLASSIFYING", details: { book_id: "b8", author_action: { action: "wait_or_resume_classification" } } }).action)
+      .toEqual({ type: "resume_classify", label: "继续分类", bookId: "b8" });
+    // 指向系统配置的仍是「去设置模型」，优先于别的 action
+    expect(srErrorInfo({ code: "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED", details: { author_action: { view: "systemConfig", action: "review_cloud_policy", book_id: "b7" } } }).action)
+      .toEqual({ type: "settings", label: "去设置模型" });
+  });
+
+  it("正文太少：作业失败带 reason_code、建作业时 409 都给「仍然学习」（force）", () => {
+    expect(srInputTooSmall({ code: "STYLE_REFERENCE_INPUT_TOO_SMALL" })).toBe(true);
+    expect(srInputTooSmall({ code: "STYLE_REFERENCE_LEARN_FAILED", details: { reason_code: "input_too_small" } })).toBe(true);
+    expect(srInputTooSmall({ code: "STYLE_REFERENCE_LEARN_FAILED", details: { reason_code: "llm_call_failed" } })).toBe(false);
+    expect(srInputTooSmall(null)).toBe(false);
+    const info = srErrorInfo({ code: "STYLE_REFERENCE_INPUT_TOO_SMALL", message: "input too small", details: { book_id: "b1" } });
+    expect(info.message).toContain("正文太少");
+    expect(info.message).not.toContain("input too small");
+    expect(info.action).toEqual({ type: "force_learn", label: "仍然学习", bookId: "b1" });
+    expect(srErrorInfo({ code: "STYLE_REFERENCE_LEARN_FAILED", message: "语料太少。", details: { reason_code: "input_too_small" } }).action)
+      .toEqual({ type: "force_learn", label: "仍然学习", bookId: null });
+  });
+
+  it("对照检查作业的码在活动面板里也说中文；旧的 IMPORT_CANCELLED 不再是一个码", () => {
+    expect(srJobErrorText({ code: "STYLE_REFERENCE_CHECK_JUDGE_FAILED", message: "judge failed" })).toContain("参考评审没有完成");
+    expect(srJobErrorText({ code: "STYLE_REFERENCE_CHECK_TARGET_INVALID", message: "bad target" })).toContain("二选一");
+    expect(srErrorInfo({ code: "STYLE_REFERENCE_CHECK_NOT_ACTIVE", message: "not active" }).message).toBe("这次检查已经结束了，不用取消。");
+    expect(srErrorInfo({ code: "STYLE_REFERENCE_CHECK_NOT_FOUND", message: "gone" }).message).toContain("已经不在了");
+    expect(srErrorInfo({ code: "STYLE_REFERENCE_PROFILE_NOT_ACTIVE", message: "inactive" }).message).toContain("不是在用的版本");
+    expect(srErrorInfo({ code: "STYLE_REFERENCE_IMPORT_CANCELLED", message: "import cancelled" }).message).toBe("操作没有完成，请稍后重试。");
   });
 });

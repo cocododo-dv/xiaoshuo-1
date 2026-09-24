@@ -153,13 +153,63 @@ const qualLen = await page.evaluate(() => (document.querySelector(".ws-content")
 chk("文学质量视图渲染非空", qualLen > 60, `len=${qualLen}`);
 await shot("quality-tide");
 
-// ---- STYLE-12：风格视图渲染 ----
+// ---- STYLE-12：风格页（参考书 → 学习文风 → 用于作品 → 对照检查）----
+// 隔离的 E2E 后端没有配模型、夹具里也没有参考书：验真实断言——书库空态（有书时是四步步骤条）、导入被「先接入模型」
+// 挡住（对话框里的 sr-import-no-llm 提示 + 「导入」锁住）、这一页没有 console error。模型 / 书库的实际情况先问后端，
+// 不在不同的情况下凑一个空过的「通过」。
 ctx = "STYLE-12";
 net.length = 0;
+consoleErrs.length = 0;
+let styleRuntime = null;
+try {
+  const rt = await page.request.get(`${API}/api/v2/style-reference/runtime`);
+  if (rt.ok()) { const body = await rt.json(); styleRuntime = body?.data || body || null; }
+} catch (e) { /* 读不到运行时：下面按「不知道有没有模型」跳过模型门的断言 */ }
 await go("work-a", "styleref");
 await page.waitForTimeout(1400);
-const styleLen = await page.evaluate(() => (document.querySelector(".ws-content")?.innerText || "").length);
-chk("风格视图渲染非空", styleLen > 60, `len=${styleLen}`);
+chk("风格页外壳渲染", await page.evaluate(() => !!document.querySelector(".sr-page")));
+const styleState = await page.evaluate(() => ({
+  books: document.querySelectorAll(".sr-book-list .sr-book-item").length,
+  empty: !!document.querySelector('[data-testid="sr-import-first"]'),
+  steps: [...document.querySelectorAll(".sr-stepper .sr-step .sr-step-name")].map((el) => el.textContent.trim()),
+  libraryHead: !!document.querySelector(".sr-books-head") || !!document.querySelector('[data-testid="sr-books-switch"]'),
+}));
+chk("书库栏（或窄屏的「参考书库」按钮）渲染", styleState.libraryHead, JSON.stringify(styleState));
+if (styleState.books > 0) {
+  chk("有书时步骤条是四步：参考书 / 学习文风 / 用于作品 / 对照检查", JSON.stringify(styleState.steps) === JSON.stringify(["参考书", "学习文风", "用于作品", "对照检查"]), JSON.stringify(styleState.steps));
+} else {
+  chk("空书库：给「导入第一本参考书」的空态", styleState.empty && styleState.steps.length === 0, JSON.stringify(styleState));
+  skip("有书时步骤条是四步", "夹具后端没有参考书，步骤条不显示");
+}
+// 打开导入对话框：没有模型时提示并锁住「导入」（导入之后要由模型给每一段分类）
+const importBtn = page.locator('[data-testid="sr-import-first"], [data-testid="sr-books-import"]').first();
+if (await importBtn.count()) {
+  await importBtn.click().catch(() => {});
+  await page.waitForTimeout(600);
+  const importState = await page.evaluate(() => ({
+    dialog: !!document.querySelector(".sr-import-dialog"),
+    noLlm: !!document.querySelector('[data-testid="sr-import-no-llm"]'),
+    submitDisabled: !!document.querySelector('[data-testid="sr-import-submit"]')?.disabled,
+    why: document.querySelector('[data-testid="sr-import-why"]')?.textContent || "",
+  }));
+  chk("导入对话框打开", importState.dialog, JSON.stringify(importState));
+  if (styleRuntime && styleRuntime.llm_enabled === false) {
+    chk("没有模型：导入对话框里提示「还没有接入模型」并锁住「导入」", importState.noLlm && importState.submitDisabled && /模型/.test(importState.why), JSON.stringify(importState));
+  } else if (styleRuntime && styleRuntime.llm_enabled === true) {
+    chk("配了模型：没有「还没有接入模型」的提示，「导入」只被权属 / 文件挡住", !importState.noLlm && importState.submitDisabled, JSON.stringify(importState));
+  } else {
+    skip("导入被模型门挡住", "读不到 /style-reference/runtime，不知道有没有模型");
+  }
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(300);
+  chk("Esc 关闭导入对话框", await page.evaluate(() => !document.querySelector(".sr-import-dialog")));
+} else {
+  chk("有「导入参考书」的入口", false, "既没有 sr-import-first 也没有 sr-books-import");
+}
+const styleErrs = consoleErrs.filter(e => e.ctx === "STYLE-12" && !/favicon|404.*\.png|ResizeObserver/i.test(e.t));
+chk("风格页无 console error", styleErrs.length === 0, JSON.stringify(styleErrs.slice(0, 3)));
+const style4xx = net.filter(n => n.status >= 400);
+chk("风格页没有 4xx / 5xx 请求", style4xx.length === 0, JSON.stringify(style4xx.slice(0, 3)));
 await shot("styleref-tide");
 
 // ---- 全局 console 错误汇总（巡检全部视图）----

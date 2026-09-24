@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import {
-  SR_ACTIVITY_WHERE, srActivityView, srFormatWhen, srJobErrorText, srLearnEstimateText, srRelearnText,
+  SR_ACTIVITY_WHERE, srActivityView, srFormatWhen, srInputTooSmall, srJobErrorText, srLearnEstimateText, srRelearnText,
 } from "./ws-styleref-model.js";
 import {
   srActivityFor, srCancelLearn, srLearnInfo, srLoadLearn, srLoadRuntime, srRuntime, srStartLearn,
@@ -14,9 +14,11 @@ import { SrPortrait } from "./ws-styleref-portrait.jsx";
 /* ==========================================================
    风格参考 · 第二步「学习文风」：一个按钮、一个作业（整理窗口 → 挑样本 → 分层读原文 → 写文风卡 →
    识别本书专名 → 给全书片段打标签 → 写入画像），下面就是学出来的文风画像。
-   · 开始前给估算（调用次数、每层读多少原文）；在跑时显示进度、可取消；失败 / 取消后可「继续学习」（从断点续上）；
+   · 开始前给估算（调用次数、每层读多少原文）；在跑时显示进度、可取消；失败 / 取消后可「继续学习」（从断点续上，
+     按后端的 resumable——不可续跑的失败只给「重新学习」）；正文太短而失败（reason_code input_too_small，或建作业时
+     409 STYLE_REFERENCE_INPUT_TOO_SMALL）另给「仍然学习」= force；
    · 已经学过：重新学习是就地更新同一份画像（用在作品上的设置与你的 ✓ / ✗ 都保留）；
-   · 段落类型更新过 / 正文变过 / 旧版画像时，提示建议重新学习。
+   · 段落类型更新过 / 正文变过时，提示建议重新学习。
    ========================================================== */
 
 export function SrLearn({ book, go, onAction }) {
@@ -51,12 +53,15 @@ export function SrLearnCard({ book, go, onAction }) {
   const profile = book.profile;
   const ready = book.rawStatus === "ready";
   const classifying = !!srActivityFor(book.id, "classify");
-  const resumable = !running && lastJob && (lastJob.state === "failed" || lastJob.state === "cancelled" || lastJob.stalled) && lastJob.resumable;
+  const unfinished = !running && !!lastJob && (lastJob.state === "failed" || lastJob.state === "cancelled" || !!lastJob.stalled);
+  /* 能不能从断点续上，听后端的 resumable：不可续跑的失败（正文太少这类）只能重新学习 */
+  const resumable = unfinished && !!lastJob.resumable;
+  const tooSmall = unfinished && lastJob.state === "failed" && srInputTooSmall(lastJob.error);
   const estimateText = data ? srLearnEstimateText(data.estimate, { bookChars: book.chars }) : null;
 
-  const start = async (resume = false) => {
+  const start = async (resume = false, { force = false } = {}) => {
     if (busy) return;
-    if (!resume && profile) {
+    if (!resume && !force && profile) {
       const ok = await wsConfirm({
         title: `重新学习《${book.title}》的文风？`,
         body: `${estimateText ? `${estimateText}。` : ""}会就地更新这份文风画像：用在作品上的设置和你对各句的 ✓ / ✗ 都保留。`,
@@ -64,10 +69,15 @@ export function SrLearnCard({ book, go, onAction }) {
       });
       if (!ok) return;
     }
-    setBusy(resume ? "resume" : "start"); setError(null);
-    try { await srStartLearn(book.id, { resume }); }
+    setBusy(resume ? "resume" : force ? "force" : "start"); setError(null);
+    try { await srStartLearn(book.id, { resume, force }); }
     catch (e) { setError(e); }
     finally { setBusy(null); }
+  };
+  /* 建作业时就被拒「正文太少」：出错行给「仍然学习」，在这里就地发 force，不用绕到外壳 */
+  const act = (action) => {
+    if (action && action.type === "force_learn") start(false, { force: true });
+    else if (onAction) onAction(action);
   };
 
   const cancel = async () => {
@@ -79,9 +89,9 @@ export function SrLearnCard({ book, go, onAction }) {
   };
 
   const status = running ? { tone: "warn", label: `学习中 ${view.percentText}` }
-    : profile && profile.needs_relearn ? { tone: "warn", label: profile.relearn_reason === "legacy_profile" ? "旧版画像" : "建议重新学习" }
+    : profile && profile.needs_relearn ? { tone: "warn", label: "建议重新学习" }
     : profile ? { tone: "ok", label: "已学好" }
-    : resumable ? { tone: "danger", label: "学习没有完成" }
+    : unfinished ? { tone: "danger", label: "学习没有完成" }
     : { tone: "neutral", label: "还没学" };
   /* 上次失败的原因只说中文：作业边界记下的英文原话（「TypeError: …」）换成一句中文 */
   const lastError = !running && lastJob && lastJob.state === "failed" && lastJob.error
@@ -147,15 +157,20 @@ export function SrLearnCard({ book, go, onAction }) {
                 {busy === "resume" ? <><Spinner size={12} /> 启动中…</> : "继续学习"}
               </button>
             )}
+            {tooSmall && (
+              <button type="button" className="btn btn-accent btn-sm" data-testid="sr-learn-force" disabled={!!busy || classifying || !!gate} onClick={() => start(false, { force: true })}>
+                {busy === "force" ? <><Spinner size={12} /> 启动中…</> : "仍然学习（正文很短）"}
+              </button>
+            )}
             <button
               type="button"
-              className={`btn ${resumable || (profile && !profile.needs_relearn) ? "btn-ghost" : "btn-accent"} btn-sm`}
+              className={`btn ${resumable || tooSmall || (profile && !profile.needs_relearn) ? "btn-ghost" : "btn-accent"} btn-sm`}
               data-testid="sr-learn-start"
               disabled={!!busy || classifying || !!gate}
               title={classifying ? "正在重新分类段落，分完再学" : gate ? gate.text : undefined}
               onClick={() => start(false)}
             >
-              {busy === "start" ? <><Spinner size={12} /> 启动中…</> : <><I.Sparkles size={13} /> {profile ? "重新学习" : "学习文风"}</>}
+              {busy === "start" ? <><Spinner size={12} /> 启动中…</> : <><I.Sparkles size={13} /> {profile || unfinished ? "重新学习" : "学习文风"}</>}
             </button>
             <span className="sr-learn-estimate" data-testid="sr-learn-estimate">
               {estimateText || (info && info.phase === "loading" ? "正在估算……" : "")}
@@ -163,7 +178,7 @@ export function SrLearnCard({ book, go, onAction }) {
           </div>
         </>
       )}
-      <SrErrorLine error={error} onAction={onAction} testId="sr-learn-error" />
+      <SrErrorLine error={error} onAction={act} testId="sr-learn-error" />
     </div>
   );
 }

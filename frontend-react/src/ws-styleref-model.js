@@ -213,7 +213,7 @@ const SR_ERROR_TEXT = {
   STYLE_REFERENCE_LEARN_NOTHING_TO_RESUME: "没有中断的学习可以继续，直接「学习文风」即可。",
   STYLE_REFERENCE_LEARN_NOT_ACTIVE: "这本书现在没有在学习。",
   STYLE_REFERENCE_LEARN_CONFIG_MISSING: "学习文风用到的模型节点还没配好（或提示词是旧版本）。",
-  STYLE_REFERENCE_INPUT_TOO_SMALL: "这本书的正文太少，学不出可靠的文风。",
+  STYLE_REFERENCE_INPUT_TOO_SMALL: "这本书的正文太少，学不出可靠的文风；要学也可以（「仍然学习」），文风卡的依据会少。",
   STYLE_REFERENCE_CLASSIFICATION_ALREADY_ACTIVE: "这本书已经在分类段落了。",
   STYLE_REFERENCE_CLASSIFICATION_NOT_ACTIVE: "这本书现在没有在分类。",
   STYLE_REFERENCE_CLASSIFICATION_NOTHING_TO_RESUME: "没有中断的分类可以继续。",
@@ -221,6 +221,7 @@ const SR_ERROR_TEXT = {
   STYLE_REFERENCE_PROFILE_HAS_NO_CARD: "这份画像还没有文风卡：先学习文风。",
   STYLE_REFERENCE_PROFILE_STALE: "这份画像的依据变过了：先重新学习文风，再用于作品。",
   STYLE_REFERENCE_PROFILE_ARCHIVED: "这份画像已经归档，不能再用于作品。",
+  STYLE_REFERENCE_PROFILE_NOT_ACTIVE: "这部作品用的那份文风画像已经不是在用的版本（归档或换掉了）：重新学习文风，或重新用于作品。",
   STYLE_REFERENCE_CARD_LINE_NOT_FOUND: "这一句已经不在文风卡上了（可能刚重新学过）。",
   STYLE_REFERENCE_APPLY_TARGET_NOT_FOUND: "要用这本书的作品已经不在了。",
   STYLE_REFERENCE_BINDING_NOT_FOUND: "这条应用已经解除了。",
@@ -234,7 +235,6 @@ const SR_ERROR_TEXT = {
   /* 作业的失败与收尾（活动面板、学习 / 分类卡片上的「没有完成：……」） */
   STYLE_REFERENCE_JOB_FAILED: "后台作业出了意外停下了，请稍后重试。",
   STYLE_REFERENCE_JOB_CANCELLED: "已经取消了。",
-  STYLE_REFERENCE_IMPORT_CANCELLED: "已经取消了。",
   STYLE_REFERENCE_JOB_NOT_FOUND: "这项作业已经不在了。",
   STYLE_REFERENCE_JOB_NOT_RESUMABLE: "这项作业不能接着做了，重新开始即可。",
   STYLE_REFERENCE_JOB_ALREADY_ACTIVE: "这本书已经有一项作业在跑了，等它结束再试。",
@@ -249,6 +249,16 @@ const SR_ERROR_TEXT = {
   STYLE_REFERENCE_PARAGRAPHS_CHANGED: "分类期间这本书的段落被改动过，这次分类停下了：重新分类即可。",
   STYLE_REFERENCE_LEARN_FAILED: "学习文风没有完成。",
   STYLE_REFERENCE_LEARN_LLM_CALL_FAILED: "学习时模型调用失败：检查模型接入后「继续学习」。",
+  /* 对照检查作业（活动面板里失败的条目、取消）——与 ws-fidelity-model 的 ERROR_TEXT 同一套说法 */
+  STYLE_REFERENCE_CHECK_NOT_FOUND: "这次检查的记录已经不在了，重新检查一次。",
+  STYLE_REFERENCE_CHECK_NOT_ACTIVE: "这次检查已经结束了，不用取消。",
+  STYLE_REFERENCE_CHECK_TARGET_INVALID: "要检查的对象没有给对：贴一段文字或选一场（二选一），并说清对照哪份参考。",
+  STYLE_REFERENCE_CHECK_NOT_BOUND: "这一场（这部作品）还没有用上参考书的文风，没有可以对照的参考。",
+  STYLE_REFERENCE_CHECK_NO_TEXT: "这一场还没有正文可以检查（没有终稿、草稿，也没有你写的稿子）。",
+  STYLE_REFERENCE_CHECK_NO_REFERENCE: "参考书还没有可以拿来比的片段：等段落分类做完、学完文风之后再查。",
+  STYLE_REFERENCE_CHECK_REFERENCE_EMPTY: "这份文风画像拿不出可以对照的参考（没有原文片段，也没有文风卡）：先学习文风。",
+  STYLE_REFERENCE_CHECK_JUDGE_FAILED: "模型的参考评审没有完成（调用失败或没给出分数），可以重新检查。",
+  STYLE_REFERENCE_CHECK_CONFIG_MISSING: "这台机器还没有对照检查用的评审提示词：同步提示词模板（sync_prompt_templates --execute）后再试。",
   NETWORK_ERROR: "连不上后端：检查后端是否在运行后重试。",
   REQUEST_TIMEOUT: "等太久了没有回音，稍后再试。",
 };
@@ -256,9 +266,29 @@ const SR_ERROR_TEXT = {
 /* 后端的原话能不能直接给作者看：见 lib/messages.js（与对照检查同一个口径） */
 export const srIsChineseMessage = isChineseMessage;
 
+/* 学习作业因为正文太少而失败（作业的 error 带 reason_code），或建作业时就被拒（409 STYLE_REFERENCE_INPUT_TOO_SMALL）：
+   都可以「仍然学习」（POST …/learn {force: true}） */
+export function srInputTooSmall(error) {
+  if (!error) return false;
+  if (error.code === "STYLE_REFERENCE_INPUT_TOO_SMALL") return true;
+  const details = error.details && typeof error.details === "object" ? error.details : {};
+  return details.reason_code === "input_too_small";
+}
+
+/* 后端 author_action.action → 界面上的下一步按钮（没列的就地提示即可，例如导入对话框里的 redeclare_send_rights） */
+const SR_AUTHOR_ACTIONS = {
+  learn_style: { type: "learn", label: "去学习文风" },
+  resume_learning: { type: "resume_learn", label: "继续学习" },
+  review_book: { type: "open_book", label: "查看这本书", stage: "book" },
+  resume_classification: { type: "resume_classify", label: "继续分类" },
+  wait_or_resume_classification: { type: "resume_classify", label: "继续分类" },
+  review_cloud_policy: { type: "open_book", label: "去这本书的设置", stage: "book" },
+};
+
 /* 出错 → { code, message, action }。message 优先按错误码给固定的中文；认不出的码用后端的中文原话，
    英文原话一律不给作者看（fallback 也只能给中文：调用方不要把 error.message 当 fallback 传进来）。
-   action：{ type: "settings" | "open_book" | "learn", label, bookId? } 或 null。 */
+   action：{ type: "settings" | "open_book" | "learn" | "force_learn" | "resume_learn" | "resume_classify", label, bookId?, stage? }
+   或 null——open_book 带 stage 时落在那一步（review_book / review_cloud_policy 落在「参考书」总览），不带就按进度落点。 */
 export function srErrorInfo(error, fallback = "操作没有完成，请稍后重试。") {
   const code = (error && error.code) || "";
   const details = (error && error.details) || {};
@@ -270,16 +300,20 @@ export function srErrorInfo(error, fallback = "操作没有完成，请稍后重
   if (code === "STYLE_REFERENCE_BOOK_DUPLICATE" && details.title) {
     message = `书库里已经有同一份文本：《${details.title}》。`;
   }
-  const authorAction = details.author_action || null;
+  const authorAction = details.author_action && typeof details.author_action === "object" ? details.author_action : null;
+  const bookId = String((authorAction && authorAction.book_id) || details.book_id || "") || null;
   let action = null;
   if (code === "STYLE_REFERENCE_BOOK_DUPLICATE" && details.book_id) {
     action = { type: "open_book", label: "打开这本", bookId: String(details.book_id) };
+  } else if (srInputTooSmall(error)) {
+    action = { type: "force_learn", label: "仍然学习", bookId };
   } else if (authorAction && authorAction.view === "systemConfig") {
     action = { type: "settings", label: "去设置模型" };
   } else if (code === "STYLE_REFERENCE_LLM_REQUIRED" || code === "STYLE_REFERENCE_LEARN_CONFIG_MISSING") {
     action = { type: "settings", label: "去设置模型" };
-  } else if (authorAction && authorAction.action === "learn_style") {
-    action = { type: "learn", label: "去学习文风", bookId: authorAction.book_id ? String(authorAction.book_id) : null };
+  } else if (authorAction && SR_AUTHOR_ACTIONS[authorAction.action]) {
+    const spec = SR_AUTHOR_ACTIONS[authorAction.action];
+    if (spec.type === "learn" || bookId) action = { ...spec, bookId };
   }
   return { code, message, action };
 }
@@ -359,7 +393,6 @@ export function srLearnEstimateText(estimate, { bookChars = null } = {}) {
 
 /* 为什么建议重新学习 */
 export const SR_RELEARN_TEXT = {
-  legacy_profile: "这是旧版画像，还没有文风卡：学习文风后换成文风卡（就地更新，用在作品上的设置不变）。",
   types_changed: "段落类型已更新，建议重新学习：挑样本、打标签都要看段落类型。",
   text_changed: "这本书的正文变过了，建议重新学习。",
 };
@@ -433,7 +466,6 @@ export function srBookPipeline(book, { running = {}, workId = null } = {}) {
   const raw = book.rawStatus;
   if (running.classify) return { key: "classifying", label: `分类中 ${running.classify.percentText || ""}`.trim(), tone: "warn" };
   if (raw === "ingesting") return { key: "classifying", label: "分类中", tone: "warn" };
-  if (raw === "cancelling") return { key: "cancelling", label: "取消中", tone: "neutral" };
   if (raw === "failed") return { key: "classify_failed", label: "分类未完成", tone: "danger" };
   if (running.learn) return { key: "learning", label: `学习中 ${running.learn.percentText || ""}`.trim(), tone: "warn" };
   const profile = book.profile;
@@ -443,7 +475,7 @@ export function srBookPipeline(book, { running = {}, workId = null } = {}) {
       : { key: "applied", label: "当前作品在用", tone: "ok" };
   }
   if (profile) {
-    if (profile.needs_relearn) return { key: "relearn", label: profile.relearn_reason === "legacy_profile" ? "旧版画像" : "建议重新学习", tone: "warn" };
+    if (profile.needs_relearn) return { key: "relearn", label: "建议重新学习", tone: "warn" };
     return { key: "learned", label: "已学好", tone: "info" };
   }
   if (book.learn && (book.learn.state === "failed" || book.learn.state === "cancelled")) {
@@ -470,7 +502,7 @@ export function srStageStates(book, { running = {}, workId = null } = {}) {
   const states = { book: "done", learn: "todo", apply: "todo", check: "blocked" };
   if (!book) return states;
   const raw = book.rawStatus;
-  if (running.classify || raw === "ingesting" || raw === "cancelling") states.book = "running";
+  if (running.classify || raw === "ingesting") states.book = "running";
   else if (raw === "failed") states.book = "attention";
   else if (srRetypeUnfinished(book)) states.book = "attention";
   else if (srProvenanceView(book.provenance).legacy) states.book = "attention";

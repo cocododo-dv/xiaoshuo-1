@@ -104,7 +104,9 @@ export function SrPortrait({ book, go, onAction }) {
       </div>
 
       {!profile.has_card ? (
-        <SrLegacyPortrait profile={profile} />
+        <div className="card" data-testid="sr-portrait-no-card">
+          <Notice tone="warn">这份画像还没有文风卡：点上面的「学习文风」学一次。</Notice>
+        </div>
       ) : (
         <>
           {profile.temperament && profile.temperament.length > 0 && (
@@ -287,32 +289,6 @@ function SrCardLine({ line, onState }) {
         </ul>
       )}
     </li>
-  );
-}
-
-/* 旧版画像：没有文风卡，起草时读的是这些句子（含数字的整句不带） */
-function SrLegacyPortrait({ profile }) {
-  const legacy = profile.legacy || {};
-  return (
-    <div className="card" data-testid="sr-portrait-legacy">
-      <Notice tone="warn" title="这是旧版画像">还没有按 16 个维度写的文风卡：点上面的「重新学习」换成文风卡。换之前，起草时照旧读下面这些句子。</Notice>
-      {legacy.summary && <p className="sr-temperament-summary text-serif">{legacy.summary}</p>}
-      {(legacy.groups || []).map((group) => (
-        <div key={group.key} className="sr-dim-section">
-          <div className="sr-dim-section-label">{group.label}</div>
-          <ul className="sr-lines">
-            {group.lines.map((line, i) => (
-              <li key={i} className={`sr-line${line.dropped_in_drafting ? " is-dropped" : ""}`}>
-                <div className="sr-line-main">
-                  <span className="sr-line-text text-serif">{line.text}</span>
-                  {line.dropped_in_drafting && <Tag tone="neutral" title="含数字的句子起草时整句不带">起草时不带</Tag>}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
-    </div>
   );
 }
 

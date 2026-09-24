@@ -58,7 +58,7 @@ function GateBlock({ gate, budgetBlock }) {
 }
 
 /* 本场参考窗口：这一场提示里实际放入的参考书原文窗口——在哪一章、章首还是章末、多长，学习文风时给它打的一句话梗概
-   与场面 / 情绪 / 手法标签、按哪条配额选进来的（v3 的窗才有后几样）。默认收起，展开时才按区间取原文并在组件内缓存；
+   与场面 / 情绪标签、最能示范的维度、按哪条配额选进来的（v3 的窗才有后几样）。默认收起，展开时才按区间取原文并在组件内缓存；
    参考书已不可用（没有 bookId）时整行不可展开。 */
 function SceneStyleWindowsPanel({ styleWindows, fetchText = scnFetchStyleWindowText }) {
   const [open, setOpen] = useState({});
@@ -106,7 +106,7 @@ function SceneStyleWindowsPanel({ styleWindows, fetchText = scnFetchStyleWindowT
           const busy = Boolean(loading[key]);
           const panelId = `scn2-style-window-${i}`;
           const labels = scnStyleWindowTags(w);
-          const hasTags = !!(labels.slot || labels.tags.length || labels.devices.length || labels.paragraphType);
+          const hasTags = !!(labels.slot || labels.tags.length || labels.dimensions.length || labels.paragraphType);
           return (
             <li key={key} className={`scn2-style-window${isOpen ? " is-open" : ""}`} data-testid="scene-style-window-row">
               <button
@@ -125,7 +125,7 @@ function SceneStyleWindowsPanel({ styleWindows, fetchText = scnFetchStyleWindowT
                     <span className="scn2-style-window-tags">
                       {labels.slot && <Tag outline>{labels.slot}</Tag>}
                       {labels.tags.map((tag) => <Tag key={`t-${tag}`}>{tag}</Tag>)}
-                      {labels.devices.map((device) => <Tag key={`d-${device}`} tone="accent" outline>{device}</Tag>)}
+                      {labels.dimensions.map((dimension) => <Tag key={`d-${dimension}`} tone="accent" outline>{dimension}</Tag>)}
                       {labels.paragraphType && <Tag outline>{labels.paragraphType}</Tag>}
                     </span>
                   )}

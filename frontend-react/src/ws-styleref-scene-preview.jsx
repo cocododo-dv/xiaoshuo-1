@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
-import { paragraphTypeLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
+import { paragraphTypeLabel, styleDimensionLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
 import { SR_SEGMENTS_ONLY_LABEL, srFormatChars, srReferenceModeMeta, srSceneOptions } from "./ws-styleref-model.js";
 import { srLoadParagraphs, srLoadWorkScenes, srScenePreview } from "./ws-styleref-store.js";
 import { SrErrorLine } from "./ws-styleref-ui.jsx";
@@ -9,7 +9,8 @@ import { SrErrorLine } from "./ws-styleref-ui.jsx";
 /* ==========================================================
    风格参考 · 本场预览（取代旧的「示例预览」）：挑当前作品的一场，看它起草时会拿到什么——
    与起草同一套选窗、同一个块次序（后端 POST …/injection-preview，只读，不写冻结行）：
-   · 样例窗：第几章 · 章首 / 章末 / 整章、字数、学习作业给它打的场面 / 情绪 / 手法标签与一句话梗概，可展开读原文；
+   · 样例窗：第几章 · 章首 / 章末 / 整章、字数、学习作业给它打的场面 / 情绪标签、最能示范的维度（中文名）与一句话梗概，
+     可展开读原文；
    · 文风卡、声音习惯、红线三块的全文；
    · 各块多少字；书的原文范围压过设置时（起草不发原文）如实说实际带的是什么。
    用的是「用于作品」页上正在编辑的设置（还没保存也能先看）。
@@ -167,7 +168,7 @@ function SrWindowItem({ book, window: w }) {
         <span className="sr-window-tags">
           {styleWindowSlotLabel(w.slot) && <Tag outline>{styleWindowSlotLabel(w.slot)}</Tag>}
           {tags.map((t) => <Tag key={t}>{t}</Tag>)}
-          {(w.devices || []).map((d) => <Tag key={`d-${d}`} tone="accent" outline>{d}</Tag>)}
+          {(w.dimensions || []).map((d) => <Tag key={`d-${d}`} tone="accent" outline>{styleDimensionLabel(d)}</Tag>)}
           {w.paragraph_type && <Tag outline>{paragraphTypeLabel(w.paragraph_type)}为主</Tag>}
         </span>
       </button>

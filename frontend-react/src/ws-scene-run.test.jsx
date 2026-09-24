@@ -2648,7 +2648,7 @@ describe("风格链路提示与本场参考窗口（WP4）", () => {
     expect(mod.scnStyleWindowLabel(windows.windows[0])).toBe("第 1 章 · 章首 · 第 1–60 段（3,800 字）");
     expect(mod.scnStyleWindowLabel({ start: 4, end: 4, chapter: 0, position: "", paragraphType: "x_new", paragraphs: 1, chars: 12 })).toBe("第 5–5 段（12 字）");
     // 段落类型、配额、标签用风格参考同一张词表；词表外的段落类型不念给作者
-    expect(mod.scnStyleWindowTags(windows.windows[1])).toEqual({ slot: "", tags: [], devices: [], paragraphType: "对话为主" });
+    expect(mod.scnStyleWindowTags(windows.windows[1])).toEqual({ slot: "", tags: [], dimensions: [], paragraphType: "对话为主" });
     expect(mod.scnStyleWindowTags({ paragraphType: "x_new" }).paragraphType).toBe("");
   });
 
@@ -2976,7 +2976,7 @@ describe("像不像（风格参考 v3）", () => {
     expect(all).not.toMatch(/风格步|读数尺子|软 QC|sync_prompt_templates|STYLE_/);
   });
 
-  it("本场参考窗口：v3 的窗带一句话梗概与标签（配额、场面 / 情绪、手法、以哪种段落为主）", async () => {
+  it("本场参考窗口：v3 的窗带一句话梗概与标签（配额、场面 / 情绪、示范的维度、以哪种段落为主）", async () => {
     const { mod } = await loadSceneRun();
     const styleWindows = mod.scnStyleWindowsFrom({
       generation_summary: {
@@ -2984,17 +2984,22 @@ describe("像不像（风格参考 v3）", () => {
           book_id: "book-1", profile_id: "profile-1", step: "neutral_draft",
           windows: [{
             start: 120, end: 179, chapter: 3, position: "opening", paragraph_type: "narration", paragraphs: 60, chars: 3820,
-            window_no: 7, slot: "position", situations: ["开章引入"], moods: ["平静"], devices: ["留白"], gist: "某人在渡口等船",
+            window_no: 7, slot: "dimension", situations: ["开章引入"], moods: ["平静"], dimensions: ["language.rhetoric"], gist: "某人在渡口等船",
+            devices: ["留白"],
           }],
         },
       },
     });
-    expect(styleWindows.windows[0]).toMatchObject({ windowNo: 7, slot: "position", gist: "某人在渡口等船", situations: ["开章引入"], moods: ["平静"], devices: ["留白"] });
+    // 2026-09-24 O1：窗口标签记的是维度键，不再有 devices（旧字段来了也不收）
+    expect(styleWindows.windows[0]).toMatchObject({ windowNo: 7, slot: "dimension", gist: "某人在渡口等船", situations: ["开章引入"], moods: ["平静"], dimensions: ["language.rhetoric"] });
+    expect(styleWindows.windows[0].devices).toBeUndefined();
+    expect(mod.scnStyleWindowTags(styleWindows.windows[0])).toMatchObject({ slot: "维度示范", dimensions: ["修辞手法"] });
     const view = await renderRunJobControl(mod.SceneStyleWindowsPanel, { styleWindows });
     const row = view.host.querySelector('[data-testid="scene-style-window-row"]');
     expect(row.textContent).toContain("第 3 章 · 章首 · 第 121–180 段（3,820 字）");
     expect(row.querySelector('[data-testid="scene-style-window-gist"]').textContent).toBe("某人在渡口等船");
-    for (const word of ["按章内位置挑", "开章引入", "平静", "留白", "叙述为主"]) expect(row.textContent).toContain(word);
+    for (const word of ["维度示范", "开章引入", "平静", "修辞手法", "叙述为主"]) expect(row.textContent).toContain(word);
+    expect(row.textContent).not.toContain("留白");
     expect(view.host.textContent).toContain("（首稿）");
   });
 
