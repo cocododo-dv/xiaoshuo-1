@@ -3,7 +3,7 @@ import { storeAlert } from "./lib/store-utils.js";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
 import { copyGateAcceptMessage, isCopyGateError } from "./ws-copy-gate.js";
-import { wrAiLocalError, wrContinueCandidates, wrIsOfflinePlaceholder } from "./ws-writer-ai.js";
+import { wrAiLocalError, wrContinueCandidates } from "./ws-writer-ai.js";
 
 /* ==========================================================
    写作台的 AI 请求（2026-09-21 从 ws-writer.jsx 拆出）
@@ -81,7 +81,6 @@ export async function wrRequestRewrite({ sceneId, text, instruction, finding = n
   const data = await apiPost("/api/v1/passages/patch-candidates", body);
   const cand = data && data.candidate;
   const options = (cand && cand.replacement_options) || [];
-  if (wrIsOfflinePlaceholder(cand && cand.rationale)) throw wrAiLocalError("no-model");
   if (!options.length) throw wrAiLocalError("no-result");
   return {
     texts: options.slice(0, 3).map((option) => String(option.replacement_text || "").trim()).filter(Boolean),

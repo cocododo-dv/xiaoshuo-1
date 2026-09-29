@@ -31,7 +31,6 @@ export function wrAiError(error) {
     /_LLM_NOT_CONFIGURED$|^LLM_(NOT_CONFIGURED|DISABLED|REQUIRED)/.test(code)
     || details.author_action
     || /^configure_/.test(nextAction)
-    || code === "no-model"
   ) {
     return {
       kind: "config",
@@ -112,21 +111,14 @@ function tidy(text) {
   return String(text || "").replace(/\s*\n\s*/g, "").trim();
 }
 
-/* 离线兜底产物是确定性占位文字——按「模型不可用」如实处理，不混进候选里 */
-export function wrIsOfflinePlaceholder(rationale) {
-  return /offline deterministic/i.test(String(rationale || ""));
-}
-
 /* generate-set 的响应 → 候选卡片 { id, approach, tone, note, html }。
-   一条可用的都没有时抛本地错误（全是离线占位 → no-model，否则 no-result），由 wrAiError 翻译。 */
+   一条可用的都没有时抛本地错误 no-result，由 wrAiError 翻译（没配模型时服务端直接回 409，不会走到这里）。 */
 export function wrContinueCandidates(generated) {
   const cands = [];
-  let offline = false;
   const proposals = Array.isArray(generated && generated.proposals) ? generated.proposals : [];
   proposals.forEach((proposal, index) => {
     const text = tidy(proposal && proposal.content);
     if (!text) return;
-    if (wrIsOfflinePlaceholder(proposal && proposal.rationale)) { offline = true; return; }
     const direction = wrContinueDirection(proposal, index);
     cands.push({
       id: (proposal && proposal.proposal_id) || ("cand" + cands.length),
@@ -136,7 +128,7 @@ export function wrContinueCandidates(generated) {
       html: escapeHtmlText(text),
     });
   });
-  if (!cands.length) throw wrAiLocalError(offline ? "no-model" : "no-result");
+  if (!cands.length) throw wrAiLocalError("no-result");
   return cands;
 }
 
