@@ -16,6 +16,7 @@ export const EMPTY_RUN = Object.freeze({
   currentSceneId: null,
   errorCode: null,
   message: "",
+  action: null,
   refreshWarning: "",
 });
 
@@ -44,6 +45,19 @@ export function runErrorMessage(error) {
   return (error && error.message) || "章节运行请求失败，请稍后重试。";
 }
 
+/* 后端 author_action 里给作者的那扇门：去哪一页（target_view）、哪一场（target_ref 为 scene_card:<后端 scene id> 时）、
+   按钮上写什么（primary_button_label）。没有 author_action 就是 null。 */
+export function runAction(authorAction) {
+  if (!authorAction || typeof authorAction !== "object") return null;
+  const ref = String(authorAction.target_ref || "").trim();
+  const scene = /^scene_card:(.+)$/.exec(ref);
+  return {
+    view: String(authorAction.target_view || "").trim(),
+    sceneId: scene ? scene[1] : null,
+    label: String(authorAction.primary_button_label || "").trim(),
+  };
+}
+
 export function normalizeRun(payload) {
   if (!payload || typeof payload !== "object") return null;
   const status = payload.status === "queued" ? "pending" : payload.status;
@@ -61,6 +75,7 @@ export function normalizeRun(payload) {
     currentSceneId: payload.current_scene_id || null,
     errorCode: (latestError && latestError.code) || null,
     message: (authorAction && authorAction.message) || (latestError && latestError.message) || "",
+    action: runAction(authorAction),
     refreshWarning: "",
   };
 }

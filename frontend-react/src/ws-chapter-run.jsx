@@ -1,10 +1,37 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
+import { navigateWithViewIntent } from "./ws-view-intents.js";
 import { ACTIVE_STATUSES, EMPTY_RUN, LAST_RUN_LABEL, STATUS_COPY, TERMINAL_STATUSES, buttonLabel, normalizeRun } from "./ws-chapter-run-model.js";
 import { useChapterRun } from "./ws-chapter-run-state.js";
 
 /* 章节编排的「运行本章」：按钮 + 状态卡。状态与请求在 ws-chapter-run-state.js（useChapterRun），
    纯数据（normalizeRun、文案）在 ws-chapter-run-model.js；这里只画。normalizeRun 照旧从这里转出（单测用）。 */
+
+/* 受阻 / 失败时后端在 author_action 里点名的那扇门，按钮用它给的字：
+   这一场在等你（例如关键场景等你终选）→ 去 AI 起草台打开那一场；有一条待办要处理 → 去待办；
+   模型没配好（没配模型那一种已经有「请配置模型」）→ 去系统设置。过去卡片只念一句话，没有门。 */
+function openSceneOnDesk(backendSceneId) {
+  let sid = null;
+  try { sid = WsCatalog.sidForBackendId(backendSceneId); } catch (e) { sid = null; }
+  if (sid) navigateWithViewIntent("scene", "ws:scene-enqueue", { sid });
+  else window.location.hash = "#scene";
+}
+
+function runDoor(run, onConfigureModel) {
+  const action = run.action;
+  if (!action || (run.status !== "blocked" && run.status !== "failed")) return null;
+  if (action.view === "scene" && action.sceneId) {
+    return { label: action.label || "去 AI 起草台", icon: I.Play, open: () => openSceneOnDesk(action.sceneId) };
+  }
+  if (action.view === "review") {
+    return { label: action.label || "去待办", icon: I.Inbox, open: () => { window.location.hash = "#review"; } };
+  }
+  if (action.view === "config" && onConfigureModel && run.errorCode !== "LLM_DISABLED_FOR_CHAPTER_RUN") {
+    return { label: action.label || "去系统设置", icon: I.Settings, open: onConfigureModel };
+  }
+  return null;
+}
 
 /**
  * 章节级真实运行入口（章节编排的「运行本章」）。
@@ -59,6 +86,7 @@ function ArrChapterRunAction({
         ? I.Refresh
         : I.Clock;
   const showCard = hydrationStatus === "ready" && cardOpen && shownRun.status !== "idle" && !!copy;
+  const door = runDoor(shownRun, onConfigureModel);
   const showChip = hydrationStatus === "ready" && !cardOpen && terminal;
 
   return (
@@ -132,6 +160,11 @@ function ArrChapterRunAction({
             {shownRun.errorCode === "LLM_DISABLED_FOR_CHAPTER_RUN" ? (
               <button className="btn btn-accent btn-sm" type="button" onClick={onConfigureModel}>
                 <I.Settings size={13} /> 请配置模型
+              </button>
+            ) : null}
+            {door ? (
+              <button className="btn btn-accent btn-sm" type="button" data-testid="chapter-run-action" onClick={door.open}>
+                <door.icon size={13} /> {door.label}
               </button>
             ) : null}
             {shownRun.status === "completed" ? (
