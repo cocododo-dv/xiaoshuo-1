@@ -137,8 +137,6 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
         "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/accept-stale",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/assistant",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/scene-triage/suggest",
-        "/api/v2/projects/UNKNOWN/snowflake-workspace/scenes/accept-stale",
-        "/api/v2/projects/UNKNOWN/snowflake-workspace/scene-triage/UNKNOWN/apply",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/orphaned-scenes/UNKNOWN/resolve",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/resync",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/outline/approve",

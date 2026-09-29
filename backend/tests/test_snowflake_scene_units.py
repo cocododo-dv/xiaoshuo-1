@@ -18,12 +18,11 @@ from novel_system.services.scene_design_context import render_scene_design_conte
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.snowflake_chaptering import _rhythm_report
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService, _scene_card_beats
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _materialize, _plan, _seed
+from tests.test_snowflake_rendering_mode import PROJECT_ID, _edit_plan, _materialize, _plan, _seed
 
 
 def _skip_u3(session, service: SnowflakeWorkspaceService) -> None:
-    plan = _plan(session, "u3")
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"rendering_mode": "skip"})
+    _edit_plan(service, "u3", rendering_mode="skip")
     assert _plan(session, "u3").rendering_mode == "skip"
 
 
@@ -39,8 +38,7 @@ def test_skipped_reactive_scene_is_not_materialized_and_weighs_nothing(session) 
     cards = {scene["scene_id"]: scene for chapter in plan_json["chapters"] for scene in chapter["scenes"]}
     assert cards[_plan(session, "u2").scene_id]["is_chapter_last"] == 1
     # 主动场改 skip 不合法：收口成 full
-    plan = _plan(session, "u1")
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"rendering_mode": "skip"})
+    _edit_plan(service, "u1", rendering_mode="skip")
     assert _plan(session, "u1").rendering_mode == "full"
 
     report = _rhythm_report(
@@ -64,7 +62,7 @@ def test_flipping_a_materialized_scene_to_skip_trashes_its_card_and_back_restore
     assert card is not None and not card.trashed_flag
     assert service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))["pending_count"] == 0
 
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"rendering_mode": "skip"})
+    _edit_plan(service, "u3", rendering_mode="skip")
     status = service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))
     pending = {item["scene_id"]: item for item in status["pending_scenes"]}
     assert plan.scene_id in pending and "trashed_flag" in pending[plan.scene_id]["changed_fields"]
@@ -75,7 +73,7 @@ def test_flipping_a_materialized_scene_to_skip_trashes_its_card_and_back_restore
     assert card.writer_brief_json.get("rendering_mode") == "skip"
     assert service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))["pending_count"] == 0
 
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"rendering_mode": "full"})
+    _edit_plan(service, "u3", rendering_mode="full")
     service.resync_materialized_scenes(PROJECT_ID, {"scene_ids": [plan.scene_id]})
     session.expire_all()
     card = session.get(SceneCard, plan.scene_id)
@@ -93,8 +91,7 @@ def test_design_context_carries_the_skipped_beat_into_the_next_scene(session) ->
     session.add(StoryCharacter(character_id="c1", project_id=PROJECT_ID, display_name="她", role="主角", summary_json={}, synopsis_json={}, bible_json={}, status="approved"))
     session.flush()
     # u2 略过；u3 是它之后的一场
-    plan_u2 = _plan(session, "u2")
-    service.update_scene_plan(PROJECT_ID, plan_u2.scene_plan_id, {"rendering_mode": "skip"})
+    _edit_plan(service, "u2", rendering_mode="skip")
     _materialize(session, service)
     card_u3 = session.get(SceneCard, _plan(session, "u3").scene_id)
     text = render_scene_design_context(card_u3, session) or ""

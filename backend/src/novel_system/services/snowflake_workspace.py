@@ -498,18 +498,53 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace, "step_run": self._step_run_payload(run)}
 
-    def step_history(self, project_id: str, step_key: str, *, include_draft: bool = False) -> dict[str, Any]:
+    def step_history(
+        self,
+        project_id: str,
+        step_key: str,
+        *,
+        include_draft: bool = False,
+        step_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """一步的服务端版本列表（新的在前）。``step_run_id`` 只取那一版——历史页先列版本（不带草稿），
+        预览某一版时再按它取草稿（R15a：「服务器上保存的版本」的前提）。"""
         project = self._require_snowflake_project(project_id)
         self._require_step(step_key)
+        query = select(SnowflakeStepRun).where(
+            SnowflakeStepRun.project_id == project.project_id, SnowflakeStepRun.step_key == step_key
+        )
+        wanted = str(step_run_id or "").strip()
+        if wanted:
+            query = query.where(SnowflakeStepRun.step_run_id == wanted)
         rows = self.session.execute(
-            select(SnowflakeStepRun)
-            .where(SnowflakeStepRun.project_id == project.project_id, SnowflakeStepRun.step_key == step_key)
-            .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.updated_at.desc(), SnowflakeStepRun.created_at.desc())
+            query.order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.updated_at.desc(), SnowflakeStepRun.created_at.desc())
         ).scalars().all()
+        if wanted and not rows:
+            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "该历史版本不属于当前项目的这一步骤。", status_code=404)
+        preserved = self._wipe_guard_preservations([row.step_run_id for row in rows])
+        items = []
+        for row in rows:
+            payload = self._step_run_history_payload(row, include_draft=include_draft)
+            # 抹空保护新起的那一版：它记着被保住的是哪一版（界面可以据此一键取回）
+            payload["wipe_guard_preserved_step_run_id"] = preserved.get(row.step_run_id)
+            items.append(payload)
+        return {"project_id": project.project_id, "step_key": step_key, "items": items}
+
+    def _wipe_guard_preservations(self, step_run_ids: list[str]) -> dict[str, str]:
+        """抹空保护新起的版本 → 它保住的上一版（``snowflake_step_wipe_preserved`` 操作日志）。"""
+        if not step_run_ids:
+            return {}
+        rows = self.session.execute(
+            select(OperationLog.object_ref, OperationLog.payload_json).where(
+                OperationLog.event_type == "snowflake_step_wipe_preserved",
+                OperationLog.object_type == "snowflake_step_run",
+                OperationLog.object_ref.in_(step_run_ids),
+            )
+        ).all()
         return {
-            "project_id": project.project_id,
-            "step_key": step_key,
-            "items": [self._step_run_history_payload(row, include_draft=include_draft) for row in rows],
+            str(object_ref): str((payload or {}).get("preserved_step_run_id") or "")
+            for object_ref, payload in rows
+            if (payload or {}).get("preserved_step_run_id")
         }
 
     def restore_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -540,17 +575,26 @@ class SnowflakeWorkspaceService:
         )
         self.session.add(run)
         self.session.flush()
-        self._sync_structured_step_data(project, step_key, draft, run)
+        sync_notice = self._sync_structured_step_data(project, step_key, draft, run)
+        if sync_notice:
+            # 恢复一版旧的 07 可能让章表变短：尾部的章连同场景归属一起没了——与生成同一条路，挂进健康度，
+            # 回包也如实带着（R15a：恢复界面要在这里告诉作者）。
+            run.health_json = self._step_health(
+                step_key, draft, "pending_review", generation_source="history_restore", generation_notice=sync_notice
+            )
         self.session.flush()
         workspace = self.workspace(project.project_id)
         step_run = self._step_run_payload(run) or {}
         step_run["restored_from_step_run_id"] = source_run.step_run_id
-        return {
+        result = {
             "step": self._step_from_workspace(workspace, step_key),
             "workspace": workspace,
             "step_run": step_run,
             "restored_from": self._step_run_history_payload(source_run, include_draft=False),
         }
+        if sync_notice:
+            result["notice"] = sync_notice
+        return result
 
     def approve_step(
         self,
@@ -754,6 +798,10 @@ class SnowflakeWorkspaceService:
         latest_by_step = self._latest_by_step(project.project_id)
         run.input_refs_json = self._input_refs(step_key, latest_by_step)
         run.consumed_input_sigs_json = snapshot_consumed_sigs(latest_by_step, list(run.input_refs_json.keys()))
+        if step_key in SCENE_PLAN_STEPS:
+            # R15a：09 / 10 的「已复核」同时是对这一步产出的场景计划说「仍然有效」——以前逐场复核只有一个
+            # 没有界面调用的接口，作者点完步骤级的「已复核」，整理闸门仍被一场一场的「需要先复核」挡住。
+            self._accept_stale_scene_plans(project.project_id, accepted_at=accepted_at, actor_ref=actor_ref, note=note)
         self.session.add(
             OperationLog(
                 event_type="snowflake_step_stale_accepted",
@@ -934,30 +982,6 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         return {"items": workspace["triage_items"], "workspace": workspace}
 
-    def apply_scene_triage_repair(self, project_id: str, triage_id: str) -> dict[str, Any]:
-        project = self._require_snowflake_project(project_id)
-        row = self.session.get(SnowflakeSceneTriageItem, triage_id)
-        if row is None or row.project_id != project.project_id:
-            raise DomainError("SNOWFLAKE_TRIAGE_NOT_FOUND", "未找到该场景急救记录。", status_code=404)
-        scene = self.session.get(SnowflakeScenePlan, row.scene_plan_id)
-        if scene is None or scene.project_id != project.project_id or scene.removed_at:
-            raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "未找到该场景计划。", status_code=404)
-        patch = _sanitize_scene_patch(row.repair_patch_json or {})
-        if not patch:
-            raise DomainError("SNOWFLAKE_TRIAGE_REPAIR_EMPTY", "该急救记录没有可应用的修复补丁。", status_code=409)
-        self._apply_scene_patch(scene, patch)
-        scene.diagnosis_json = diagnose_scene_detail(_scene_plan_payload(scene))
-        row.recommended_status = scene.diagnosis_json["recommended_status"]
-        row.score = scene.diagnosis_json["score"]
-        row.missing_fields_json = scene.diagnosis_json["missing_fields"]
-        row.fix_steps_json = scene.diagnosis_json["fix_steps"]
-        row.pressure_flags_json = scene.diagnosis_json["pressure_flags"]
-        row.effective_status = row.manual_status or row.recommended_status
-        row.blocking = 1 if row.effective_status in EXCLUDED_TRIAGE_STATUSES else 0
-        row.manual_override = 1 if row.manual_status and row.manual_status != row.recommended_status else 0
-        self.session.flush()
-        return {"triage": self._triage_payload(row), "scene": _scene_plan_payload(scene), "workspace": self.workspace(project.project_id)}
-
     def _latest_triage_row(self, project_id: str, scene_plan_id: str) -> SnowflakeSceneTriageItem | None:
         return latest_triage_rows(self.session, project_id).get(scene_plan_id)
 
@@ -966,33 +990,30 @@ class SnowflakeWorkspaceService:
         每一场只看最新的一条分诊记录（历史数据可能一场多行）。"""
         return excluded_scene_plan_ids(self.session, project_id)
 
-    def accept_stale_scenes(self, project_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
-        project = self._require_snowflake_project(project_id)
-        body = payload or {}
-        requested_ids = [str(item or "").strip() for item in body.get("scene_plan_ids") or [] if str(item or "").strip()]
-        scenes = self._scene_plans(project.project_id)
-        if requested_ids:
-            requested = set(requested_ids)
-            scenes = [scene for scene in scenes if scene.scene_plan_id in requested]
-        if not scenes:
-            raise DomainError("SNOWFLAKE_STALE_SCENES_NOT_FOUND", "未找到匹配的场景计划。", status_code=404)
-        note = str(body.get("note") or "").strip() or None
-        accepted_at = utcnow()
-        accepted: list[dict[str, Any]] = []
-        for scene in scenes:
-            if scene.status != "stale":
+    def _accept_stale_scene_plans(
+        self,
+        project_id: str,
+        *,
+        accepted_at: str,
+        actor_ref: str = "operator",
+        note: str | None = None,
+    ) -> list[str]:
+        """把还没复核的过期场景计划标成「已复核、仍然有效」，逐场留一条操作日志；返回复核了哪几场。"""
+        accepted: list[str] = []
+        for scene in self._scene_plans(project_id):
+            if scene.status != "stale" or scene.stale_accepted_at:
                 continue
             scene.stale_accepted_at = accepted_at
             scene.stale_accepted_by = actor_ref or "operator"
             scene.stale_accepted_note = note
-            accepted.append(_scene_plan_payload(scene))
+            accepted.append(scene.scene_plan_id)
             self.session.add(
                 OperationLog(
                     event_type="snowflake_scene_stale_accepted",
                     object_type="snowflake_scene_plan",
                     object_ref=scene.scene_plan_id,
                     payload_json={
-                        "project_id": project.project_id,
+                        "project_id": project_id,
                         "scene_id": scene.scene_id,
                         "scene_plan_id": scene.scene_plan_id,
                         "accepted_at": accepted_at,
@@ -1002,24 +1023,7 @@ class SnowflakeWorkspaceService:
                     },
                 )
             )
-        if not accepted:
-            raise DomainError("SNOWFLAKE_SCENES_NOT_STALE", "未找到匹配的、处于过期状态的场景计划。", status_code=409)
-        self.session.flush()
-        return {"accepted_scenes": accepted, "workspace": self.workspace(project.project_id)}
-
-    def update_scene_plan(self, project_id: str, scene_plan_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        project = self._require_snowflake_project(project_id)
-        scene = self.session.get(SnowflakeScenePlan, scene_plan_id)
-        if scene is None or scene.project_id != project.project_id or scene.removed_at:
-            raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "未找到该场景计划。", status_code=404)
-        self._apply_scene_patch(scene, _sanitize_scene_patch(payload or {}))
-        scene.status = "draft" if scene.status in {"approved", "stale"} else scene.status
-        scene.stale_accepted_at = None
-        scene.stale_accepted_by = None
-        scene.stale_accepted_note = None
-        scene.diagnosis_json = diagnose_scene_detail(_scene_plan_payload(scene))
-        self.session.flush()
-        return {"scene": _scene_plan_payload(scene), "workspace": self.workspace(project.project_id)}
+        return accepted
 
     def materialize(self, project_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -2172,7 +2176,15 @@ class SnowflakeWorkspaceService:
                 }
             )
 
-        def add_scene_item(*, severity: str, kind: str, message: str, item: dict[str, Any]) -> None:
+        def add_scene_item(
+            *,
+            severity: str,
+            kind: str,
+            message: str,
+            item: dict[str, Any],
+            step_key: str = "scene_details",
+            primary_action: dict[str, Any] | None = None,
+        ) -> None:
             if severity == "blocker":
                 blockers.append(message)
             else:
@@ -2185,11 +2197,11 @@ class SnowflakeWorkspaceService:
                     "severity": severity,
                     "kind": kind,
                     "message": message,
-                    "step_key": "scene_details",
+                    "step_key": step_key,
                     "scene_id": scene_id or None,
                     "scene_plan_id": scene_plan_id or None,
                     "target_view": "snowflake-workbench",
-                    "primary_action": {
+                    "primary_action": primary_action or {
                         "type": "open_triage",
                         "label": "去修这个场景" if severity == "blocker" else "查看这个提醒",
                         "panel": "triage",
@@ -2302,6 +2314,19 @@ class SnowflakeWorkspaceService:
                 step_key="scene_details",
             )
 
+        # R15a：过期的场景计划由 09 / 10 的「已复核」一处解开（步骤级复核连同场景计划一起复核）——
+        # 提示指向还没复核的那一步，而不是去分诊面板「修这个场景」（那里没有复核按钮）。
+        stale_plan_step = next(
+            (
+                key
+                for key in ("scene_list", "scene_details")
+                if latest_by_step.get(key) is not None
+                and latest_by_step[key].status == "stale"
+                and not latest_by_step[key].stale_accepted_at
+            ),
+            "scene_details",
+        )
+        stale_plan_label = _step_display_label(stale_plan_step)
         for scene in scene_plans or []:
             if scene.status != "stale":
                 continue
@@ -2318,8 +2343,13 @@ class SnowflakeWorkspaceService:
             add_scene_item(
                 severity="blocker",
                 kind="stale_scene_plan",
-                message=f"{scene_label} 需要先复核，才能整理为章节结构。",
+                message=(
+                    f"{scene_label} 在上游改动后需要复核：到「{stale_plan_label}」看过后点「已复核」，"
+                    "或改完再「确认本步」，才能整理为章节结构。"
+                ),
                 item=item,
+                step_key=stale_plan_step,
+                primary_action={"type": "jump_to_step", "label": "去点「已复核」", "step_key": stale_plan_step},
             )
 
         for item in triage_items:
@@ -3415,8 +3445,10 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
     }
 
 
+#: 产出场景计划的两步（09 场景列表 / 10 场景规划）：它们的「已复核」连同过期的场景计划一起复核
+SCENE_PLAN_STEPS = frozenset({"scene_list", "scene_details"})
 #: 确认这两步时（工作台带 ``sync_catalog``）已物化的场景卡自动跟上构思
-CATALOG_SYNC_STEPS = frozenset({"scene_list", "scene_details"})
+CATALOG_SYNC_STEPS = SCENE_PLAN_STEPS
 
 #: 构思里的场景题名超过这个长度就当它是摘要（09 没单独起题名时 title 会跟着摘要走）
 _SCENE_TITLE_SEED_MAX_CHARS = 40

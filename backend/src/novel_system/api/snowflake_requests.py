@@ -110,14 +110,6 @@ class SnowflakeSceneTriageSuggestRequest(StrictRequestModel):
     draft_override: BoundedJsonObject | None = None
 
 
-class SnowflakeAcceptStaleScenesRequest(StrictRequestModel):
-    scene_plan_ids: list[SnowflakeReference] | None = Field(
-        default=None,
-        max_length=10_000,
-    )
-    note: str | None = Field(default=None, max_length=10_000)
-
-
 class SnowflakeOrphanResolveRequest(StrictRequestModel):
     # Vocabulary stays in the domain service so its stable error code survives.
     action: str | None = Field(default=None, max_length=64)

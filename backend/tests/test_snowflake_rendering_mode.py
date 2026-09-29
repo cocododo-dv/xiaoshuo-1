@@ -85,6 +85,37 @@ def _seed(session) -> SnowflakeWorkspaceService:
     return service
 
 
+#: 已有场景计划上只归 09 改的字段（第 10 步的草稿不改它们，见 snowflake_workspace.SCENE_LIST_OWNED_FIELDS）
+_LIST_OWNED = ("primary_form", "scene_type", "pov_character_id")
+
+
+def _edit_plan(service: SnowflakeWorkspaceService, row_uid: str, **fields) -> None:
+    """作者改一场的真实路径（R15a 删掉了逐场的 PATCH …/scenes/{id}）：形态 / 视角在 09 改（整张场景表），
+    其余字段在 10 改（整张场景规划表，只动这一行）。"""
+    listed = {key: value for key, value in fields.items() if key in _LIST_OWNED}
+    if listed:
+        if "primary_form" in listed:
+            listed["scene_type"] = listed["primary_form"]
+        rows = _step_rows(service, "scene_list")
+        for row in rows:
+            if row["row_uid"] == row_uid:
+                row.update(listed)
+        service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": rows}})
+    detailed = {key: value for key, value in fields.items() if key not in _LIST_OWNED}
+    if detailed:
+        rows = _step_rows(service, "scene_details")
+        for row in rows:
+            if row["row_uid"] == row_uid:
+                row.update(detailed)
+        service.update_step(PROJECT_ID, "scene_details", {"draft": {"scenes": rows}})
+
+
+def _step_rows(service: SnowflakeWorkspaceService, step_key: str) -> list[dict]:
+    workspace = service.workspace(PROJECT_ID)
+    step = next(item for item in workspace["steps"] if item["step_key"] == step_key)
+    return [dict(row) for row in step["draft"]["scenes"]]
+
+
 def _plan(session, row_uid: str) -> SnowflakeScenePlan:
     return next(
         plan
@@ -112,14 +143,13 @@ def test_summary_is_legal_for_both_forms_and_skip_only_for_reactive(session) -> 
     assert by_uid["u1"]["rendering_mode"] == "summary"
 
     # 场景类型改回主动：概述照样保留；略过则收口成 full
-    plan = _plan(session, "u2")
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"primary_form": "proactive"})
+    _edit_plan(service, "u2", primary_form="proactive")
     assert _plan(session, "u2").rendering_mode == "summary"
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"rendering_mode": "skip"})
+    _edit_plan(service, "u2", rendering_mode="skip")
     assert _plan(session, "u2").rendering_mode == "full"
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"primary_form": "reactive", "rendering_mode": "skip"})
+    _edit_plan(service, "u2", primary_form="reactive", rendering_mode="skip")
     assert _plan(session, "u2").rendering_mode == "skip"
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"primary_form": "proactive"})
+    _edit_plan(service, "u2", primary_form="proactive")
     assert _plan(session, "u2").rendering_mode == "full"
 
 
@@ -222,7 +252,7 @@ def test_switching_back_to_full_resyncs_the_card_to_the_default_band(session) ->
     # 刚物化完不应报待同步
     assert service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))["pending_count"] == 0
 
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"rendering_mode": "full"})
+    _edit_plan(service, "u2", rendering_mode="full")
     status = service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))
     pending = {item["scene_id"]: item for item in status["pending_scenes"]}
     assert plan.scene_id in pending

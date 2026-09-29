@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session, request_id_of
@@ -9,7 +9,6 @@ from novel_system.api.project_requests import ProjectCreateRequest
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.api.snowflake_requests import (
-    SnowflakeAcceptStaleScenesRequest,
     SnowflakeAcceptStaleStepRequest,
     SnowflakeAssistantRequest,
     SnowflakeDirectionBriefRequest,
@@ -123,10 +122,14 @@ def get_workspace_step_history(
     step_key: str,
     request: Request,
     include_draft: bool = False,
+    step_run_id: str | None = Query(default=None, max_length=255),
     session: Session = Depends(get_session),
 ):
+    """一步的服务端版本（新的在前）；``step_run_id`` 只取那一版（预览时按版本取草稿）。"""
     return ok(
-        SnowflakeWorkspaceService(session).step_history(project_id, step_key, include_draft=include_draft),
+        SnowflakeWorkspaceService(session).step_history(
+            project_id, step_key, include_draft=include_draft, step_run_id=step_run_id
+        ),
         req_id=request_id_of(request),
     )
 
@@ -266,66 +269,6 @@ def save_workspace_scene_triage(
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/scene-triage",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).save_scene_triage(project_id, body),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/snowflake-workspace/scenes/accept-stale")
-def accept_workspace_stale_scenes(
-    project_id: str,
-    request: Request,
-    payload: SnowflakeAcceptStaleScenesRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scenes/accept-stale",
-        payload={"project_id": project_id, "body": body},
-        action=lambda: SnowflakeWorkspaceService(session).accept_stale_scenes(
-            project_id,
-            body,
-            actor_ref=actor_ref_of(request),
-        ),
-    )
-
-
-@router.patch("/api/v2/projects/{project_id}/snowflake-workspace/scenes/{scene_plan_id}")
-def update_workspace_scene_plan(
-    project_id: str,
-    scene_plan_id: str,
-    payload: BoundedJsonObject | None,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    body = payload or {}
-    return optional_idempotent_response(
-        request,
-        session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scenes/{scene_plan_id}",
-        payload={"project_id": project_id, "scene_plan_id": scene_plan_id, "body": body},
-        action=lambda: SnowflakeWorkspaceService(session).update_scene_plan(project_id, scene_plan_id, body),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/snowflake-workspace/scene-triage/{triage_id}/apply")
-def apply_workspace_scene_triage_repair(
-    project_id: str,
-    triage_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json") if payload else {}
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scene-triage/{triage_id}/apply",
-        payload={"project_id": project_id, "triage_id": triage_id, "body": body},
-        action=lambda: SnowflakeWorkspaceService(session).apply_scene_triage_repair(project_id, triage_id),
     )
 
 

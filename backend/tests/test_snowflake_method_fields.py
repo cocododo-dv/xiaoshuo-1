@@ -17,19 +17,16 @@ from novel_system.db.models import SceneCard, SnowflakeStepRun, StoryCharacter, 
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _materialize, _plan, _seed
+from tests.test_snowflake_rendering_mode import PROJECT_ID, _edit_plan, _materialize, _plan, _seed
 
 
 def _fill_u1(session, service: SnowflakeWorkspaceService) -> None:
-    plan = _plan(session, "u1")
-    service.update_scene_plan(
-        PROJECT_ID,
-        plan.scene_plan_id,
-        {
-            "onstage_chars_json": ["c2", "c3"],
-            "story_time": "第三天傍晚",
-            "expected_reader_emotion": "替她捏一把汗，又暗暗希望她再赌一次。",
-        },
+    _edit_plan(
+        service,
+        "u1",
+        onstage_chars_json=["c2", "c3"],
+        story_time="第三天傍晚",
+        expected_reader_emotion="替她捏一把汗，又暗暗希望她再赌一次。",
     )
 
 
@@ -58,7 +55,7 @@ def test_method_fields_persist_materialize_and_reach_the_structure_brief(session
     assert "Reader should feel (读者应感到): 替她捏一把汗，又暗暗希望她再赌一次。" in brief
     # 刚物化完没有待同步；改了故事时间之后回流能追上
     assert service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))["pending_count"] == 0
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"story_time": "第四天清晨"})
+    _edit_plan(service, "u1", story_time="第四天清晨")
     status = service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))
     assert plan.scene_id in status["pending_scene_plan_ids"] or any(item["scene_id"] == plan.scene_id for item in status["pending_scenes"])
     service.resync_materialized_scenes(PROJECT_ID, {"scene_ids": [plan.scene_id]})

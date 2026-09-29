@@ -174,9 +174,15 @@ def test_fe_resync_reactive_scene_beats_fallback_keeps_reaction_and_dilemma(clie
     assert (reactive_plan.dilemma or "").strip()
 
     # 清空这个反应场景的 beats_json，模拟"作者手工加场/清过节拍、从未再填"的情形。
+    # 作者改一场走第 10 步的草稿（R15a 删掉了逐场的 PATCH …/scenes/{id}）
+    workspace = client.get(f"/api/v2/projects/{pid}/snowflake-workspace").json()["data"]
+    rows = [dict(row) for row in next(s for s in workspace["steps"] if s["step_key"] == "scene_details")["draft"]["scenes"]]
+    for row in rows:
+        if row["scene_plan_id"] == reactive_plan.scene_plan_id:
+            row["beats_json"] = []
     clear_response = client.patch(
-        f"/api/v2/projects/{pid}/snowflake-workspace/scenes/{reactive_plan.scene_plan_id}",
-        json={"beats_json": []},
+        f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_details",
+        json={"draft": {"scenes": rows}},
     )
     assert clear_response.status_code == 200, clear_response.text
 
