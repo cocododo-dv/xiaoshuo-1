@@ -42,7 +42,6 @@ from novel_system.services.scene_lookup import require_project
 from novel_system.services.snowflake_queries import latest_outline_plan
 
 PROJECT_STATUS_OUTLINE_DRAFT = "outline_draft"
-PROJECT_STATUS_OUTLINE_REVIEW = "outline_review"
 PROJECT_STATUS_CHAPTER_READY = "chapter_ready"
 PROJECT_STATUS_CHAPTER_RUNNING = "chapter_running"
 PROJECT_STATUS_CHAPTER_BLOCKED = "chapter_blocked"

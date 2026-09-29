@@ -4365,13 +4365,15 @@ def _constrain_style_length_patch_schema(
                 f"One of exactly {item_count} insertions; all insertions together "
                 f"must add {minimum_delta}-{maximum_delta} visible characters."
             )
-    prompt["prompt_hash"] = sha256_json_normalized({
-                "template_name": prompt.get("template_name"),
-                "template_version": prompt.get("template_version"),
-                "system_prompt": prompt.get("system_prompt"),
-                "user_prompt": prompt.get("user_prompt"),
-                "structured_schema": schema,
-            })
+    prompt["prompt_hash"] = sha256_json_normalized(
+        {
+            "template_name": prompt.get("template_name"),
+            "template_version": prompt.get("template_version"),
+            "system_prompt": prompt.get("system_prompt"),
+            "user_prompt": prompt.get("user_prompt"),
+            "structured_schema": schema,
+        }
+    )
 
 
 def _constrain_style_salvage_schema(
