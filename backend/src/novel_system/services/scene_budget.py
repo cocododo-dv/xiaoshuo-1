@@ -13,7 +13,7 @@
 - 预算耗尽后停止**新**调用，返回已有最佳稿——基线必经调用不拦但照常计数；
   可选支出（补候选 / LLM 批判 / 补丁 / near-final 重写）过 ``can_spend`` 闸。
 - 预算按场景生命周期累计；自动流程不得重置（§7.12），扩容唯一入口是作者
-  显式 topup（路由层留 OperationLog 审计）。
+  显式 topup（:func:`apply_topup`，写 OperationLog 审计）。
 - token 口径：本 Wave 落「实际 usage 累计 + 估算判定」最小闭环；估算/实际/
   计费三口径与跨 provider 分槽归 Wave 6 成本聚合。
 - 顺序管线内「先预留后发起」退化为逐次前置检查（无并发候选生成）。
@@ -33,6 +33,7 @@ from novel_system.accounting_contract import (
     PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
 )
 from novel_system.db.models import LlmCall, OperationLog, SceneRunState
+from novel_system.services.errors import DomainError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ LEGACY_INITIAL_ATTEMPT_BUDGET = 4
 # 想重新武装：设 NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER=正数（恢复 N×基线 + 配置重试上限）。
 UNARMED_SCENE_TOKEN_BUDGET = 1 << 52  # ~4.5e15 token
 UNARMED_ATTEMPT_BUDGET = 1 << 30  # ~1.07e9 次；远超任何真实重试，且给 topup/int64 留足余量
+# 三道额度（含作者追加后）都落在有符号 64 位整数里；审计回放按同一上限校验。
+LIFECYCLE_BUDGET_MAX = (1 << 63) - 1
 
 
 def _armed_scene_budget_multiplier() -> int:
@@ -171,14 +174,16 @@ def ensure_scene_budget_initialized(
         )
     else:
         _validate_uninitialized_scene_budget_state(state)
-        effective_baseline, armed_provider_budget = _canonical_budget_candidate(session)
         multiplier = _armed_scene_budget_multiplier()
+        effective_baseline: int | None = None
         if multiplier > 0:
+            effective_baseline, armed_provider_budget = _canonical_budget_candidate(session)
             scene_budget = multiplier * effective_baseline
             effective_provider_budget = armed_provider_budget
             effective_attempt_budget = int(state.attempt_budget)
         else:
-            # 解除武装（单作者默认）：三道额度落到有限哨兵，预留闸门恒不触发；记账照旧。
+            # 解除武装（单作者默认）：三道额度落到有限哨兵，预留闸门恒不触发；记账照旧。哨兵预算用不上基线，
+            # 于是不估（估算要渲染一遍 style_draft 模板、查一遍路由），依据里记 None。
             scene_budget = UNARMED_SCENE_TOKEN_BUDGET
             effective_provider_budget = UNARMED_ATTEMPT_BUDGET
             effective_attempt_budget = UNARMED_ATTEMPT_BUDGET
@@ -223,6 +228,114 @@ def ensure_scene_budget_initialized(
         raise RuntimeError(f"scene budget initialization lost its CAS: {scene_id}")
     _validate_scene_budget_state(session, state)
     return state
+
+
+def apply_topup(
+    session: Session,
+    scene_id: str,
+    *,
+    extra_tokens: int,
+    extra_attempts: int,
+    extra_provider_attempts: int,
+    reason: str,
+    actor_ref: str,
+) -> dict[str, Any]:
+    """作者显式追加生命周期预算（唯一扩容入口）：先确立 / 校验不可变依据，再一条 CAS 同时追加三道额度（超出有符号
+    64 位上限 → 422 ``INVALID_BUDGET_TOPUP``、什么都不改），最后写 ``scene_budget_topup`` 审计——审计回放据此还原每一个
+    合法前缀。入参的类型与范围由路由校验；幂等由路由的幂等层负责。
+    """
+    ensure_scene_budget_initialized(session, scene_id)
+    updated_budgets = session.execute(
+        update(SceneRunState)
+        .where(
+            SceneRunState.scene_id == scene_id,
+            SceneRunState.scene_token_budget.is_not(None),
+            SceneRunState.scene_token_budget <= LIFECYCLE_BUDGET_MAX - extra_tokens,
+            SceneRunState.attempt_budget <= LIFECYCLE_BUDGET_MAX - extra_attempts,
+            SceneRunState.provider_attempt_budget
+            <= LIFECYCLE_BUDGET_MAX - extra_provider_attempts,
+        )
+        .values(
+            scene_token_budget=SceneRunState.scene_token_budget + extra_tokens,
+            attempt_budget=SceneRunState.attempt_budget + extra_attempts,
+            provider_attempt_budget=(
+                SceneRunState.provider_attempt_budget + extra_provider_attempts
+            ),
+        )
+        .returning(
+            SceneRunState.scene_token_budget,
+            SceneRunState.attempt_budget,
+            SceneRunState.provider_attempt_budget,
+        )
+        .execution_options(synchronize_session=False)
+    ).one_or_none()
+    if updated_budgets is None:
+        current = session.execute(
+            select(
+                SceneRunState.scene_token_budget,
+                SceneRunState.attempt_budget,
+                SceneRunState.provider_attempt_budget,
+            ).where(SceneRunState.scene_id == scene_id)
+        ).one()
+        details = {
+            "extra_tokens": extra_tokens,
+            "scene_token_budget": current.scene_token_budget,
+            "max_scene_token_budget": LIFECYCLE_BUDGET_MAX,
+        }
+        if extra_attempts or extra_provider_attempts:
+            details.update(
+                {
+                    "extra_attempts": extra_attempts,
+                    "attempt_budget": current.attempt_budget,
+                    "extra_provider_attempts": extra_provider_attempts,
+                    "provider_attempt_budget": current.provider_attempt_budget,
+                    "max_lifecycle_budget": LIFECYCLE_BUDGET_MAX,
+                }
+            )
+        raise DomainError(
+            "INVALID_BUDGET_TOPUP",
+            "lifecycle budget topup exceeds the signed 64-bit limit",
+            status_code=422,
+            details=details,
+        )
+    new_budget, new_attempt_budget, new_provider_attempt_budget = map(
+        int, updated_budgets
+    )
+    state = session.get(SceneRunState, scene_id)
+    assert state is not None
+    session.refresh(state)
+    session.add(
+        OperationLog(
+            event_type="scene_budget_topup",
+            object_type="scene",
+            object_ref=scene_id,
+            payload_json={
+                "extra_tokens": extra_tokens,
+                "extra_attempts": extra_attempts,
+                "extra_provider_attempts": extra_provider_attempts,
+                "reason": reason,
+                "actor_ref": actor_ref,
+                "scene_token_budget": new_budget,
+                "scene_tokens_used": int(state.scene_tokens_used or 0),
+                "scene_tokens_reserved": int(state.scene_tokens_reserved or 0),
+                "attempt_budget": new_attempt_budget,
+                "total_attempt_count": int(state.total_attempt_count or 0),
+                "provider_attempt_budget": new_provider_attempt_budget,
+                "provider_attempts_used": int(state.provider_attempts_used or 0),
+            },
+        )
+    )
+    session.flush()
+    return {
+        "scene_id": scene_id,
+        "scene_token_budget": new_budget,
+        "scene_tokens_used": int(state.scene_tokens_used or 0),
+        "scene_tokens_reserved": int(state.scene_tokens_reserved or 0),
+        "attempt_budget": new_attempt_budget,
+        "total_attempt_count": int(state.total_attempt_count or 0),
+        "provider_attempt_budget": new_provider_attempt_budget,
+        "provider_attempts_used": int(state.provider_attempts_used or 0),
+    }
 
 
 def _current_operation_id(session: Session) -> int:
@@ -302,7 +415,7 @@ def _audited_scene_budget_snapshots(
             previous[1] + extra_attempts,
             previous[2] + extra_provider_attempts,
         )
-        if any(value > (1 << 63) - 1 for value in effective):
+        if any(value > LIFECYCLE_BUDGET_MAX for value in effective):
             raise _corrupt_budget_state("topup audit exceeds the signed 64-bit limit")
         reported_budget = payload.get("scene_token_budget")
         if (
