@@ -23,13 +23,15 @@ from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.llm_client import (
-    DEFAULT_PROVIDER_BASE_URLS,
     LLMClient,
     LLMConfigurationError,
     LLMRequest,
     ProviderRuntimeConfig,
     SUPPORTED_API_MODES,
     SUPPORTED_CREDENTIAL_MODES,
+)
+from novel_system.services.llm_routing import (
+    DEFAULT_PROVIDER_BASE_URLS,
     SUPPORTED_PROVIDERS,
     parse_model_routing_config,
 )

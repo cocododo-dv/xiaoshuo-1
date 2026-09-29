@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from novel_system.settings import get_settings
-from novel_system.services import llm_client
+from novel_system.services import llm_client, llm_routing
 from novel_system.services.llm_client import (
     LLM_CONNECT_TIMEOUT_SECONDS,
     LLMClient,
@@ -780,7 +780,7 @@ def test_provider_attempt_budget_defaults_old_snapshots_and_preserves_explicit_v
         }
     )
 
-    assert getattr(llm_client, "DEFAULT_PROVIDER_ATTEMPT_BUDGET", None) == 32
+    assert getattr(llm_routing, "DEFAULT_PROVIDER_ATTEMPT_BUDGET", None) == 32
     assert empty_snapshot.retry_budget["provider_attempt_budget"] == 32
     assert explicit_snapshot.retry_budget["provider_attempt_budget"] == 17
 

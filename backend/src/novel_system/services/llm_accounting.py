@@ -40,8 +40,12 @@ from novel_system.services.llm_client import (
     OnlineAccountedExecution,
 )
 from novel_system.services.llm_providers.base import LLMDispatchKind
+from novel_system.services.llm_providers.usage import (
+    NormalizedUsage,
+    extract_raw_usage,
+    normalize_raw_usage,
+)
 from novel_system.services.hash_engine import sha256_json_plain
-from novel_system.services.value_coercion import usage_int
 
 
 logger = logging.getLogger(__name__)
@@ -150,14 +154,6 @@ class RequestUsageEstimate:
 
 
 @dataclass(frozen=True, slots=True)
-class NormalizedUsage:
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    usage_is_estimate: bool
-
-
-@dataclass(frozen=True, slots=True)
 class AccountingRecoveryResult:
     status: Literal["released", "failed"]
     error_code: str | None
@@ -257,8 +253,8 @@ class _AccountedCompletionProbeExecution(OnlineAccountedExecution):
             )
             raise error
 
-        raw_usage = _extract_raw_usage(body)
-        normalized = _normalize_raw_usage(raw_usage)
+        raw_usage = extract_raw_usage(body)
+        normalized = normalize_raw_usage(raw_usage)
         usage = (
             {
                 "input_tokens": normalized.prompt_tokens,
@@ -767,7 +763,7 @@ def normalize_response_usage(response: LLMResponse, request: LLMRequest) -> Norm
         return NormalizedUsage(0, 0, 0, False)
 
     if response.usage_complete is True:
-        actual = _normalize_raw_usage(response.raw_usage)
+        actual = normalize_raw_usage(response.raw_usage)
         if actual is not None:
             return actual
 
@@ -2711,8 +2707,8 @@ def _usage_for_failed_attempt(
     request: LLMRequest,
     raw_response: dict[str, Any] | None,
 ) -> NormalizedUsage:
-    raw_usage = _extract_raw_usage(raw_response)
-    actual = _normalize_raw_usage(raw_usage)
+    raw_usage = extract_raw_usage(raw_response)
+    actual = normalize_raw_usage(raw_usage)
     if actual is not None:
         return actual
     estimate = estimate_request_usage(request)
@@ -2724,45 +2720,8 @@ def _usage_for_failed_attempt(
     )
 
 
-def _normalize_raw_usage(raw_usage: dict[str, Any] | None) -> NormalizedUsage | None:
-    if raw_usage is None:
-        return None
-    key_sets = (
-        ("input_tokens", "output_tokens", "total_tokens"),
-        ("prompt_tokens", "completion_tokens", "total_tokens"),
-        ("promptTokenCount", "candidatesTokenCount", "totalTokenCount"),
-        ("prompt_eval_count", "eval_count", None),
-    )
-    for prompt_key, completion_key, total_key in key_sets:
-        if prompt_key not in raw_usage and completion_key not in raw_usage:
-            continue
-        prompt = usage_int(raw_usage.get(prompt_key))
-        completion = usage_int(raw_usage.get(completion_key))
-        if prompt is None or completion is None:
-            return None
-        expected_total = prompt + completion
-        if total_key is not None and total_key in raw_usage:
-            total = usage_int(raw_usage.get(total_key))
-            if total is None or total != expected_total:
-                return None
-        return NormalizedUsage(prompt, completion, expected_total, False)
-    return None
 
 
-def _extract_raw_usage(body: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(body, dict):
-        return None
-    for key in ("usage", "usageMetadata"):
-        value = body.get(key)
-        if isinstance(value, dict):
-            return dict(value)
-    if "prompt_eval_count" in body or "eval_count" in body:
-        return {
-            key: body.get(key)
-            for key in ("prompt_eval_count", "eval_count")
-            if key in body
-        }
-    return None
 
 
 def _probe_response_body(response: httpx.Response) -> dict[str, Any]:

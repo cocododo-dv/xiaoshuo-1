@@ -41,7 +41,7 @@ def owner_lease_ttl_seconds() -> int:
     读取失败时回退 settings 缺省。
     """
     try:
-        from novel_system.services.llm_client import load_model_routing_config
+        from novel_system.services.llm_routing import load_model_routing_config
 
         value = load_model_routing_config().job_runtime.get("idempotency_claim_ttl_seconds")
         if value is not None:
@@ -53,7 +53,7 @@ def owner_lease_ttl_seconds() -> int:
 
 def owner_lease_grace_seconds() -> int:
     try:
-        from novel_system.services.llm_client import load_model_routing_config
+        from novel_system.services.llm_routing import load_model_routing_config
 
         value = load_model_routing_config().job_runtime.get("heartbeat_interval_seconds")
         if value is not None:

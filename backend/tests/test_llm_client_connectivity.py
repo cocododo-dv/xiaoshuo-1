@@ -166,9 +166,6 @@ def test_json_object_also_rejected_degrades_to_prompt_only() -> None:
 def test_connectivity_caps_cached_across_calls() -> None:
     """降级结论按 (provider_id, model) 进程内缓存:第二次 generate 直接按学到的
     档位发请求,不再重复浪费一跳注定失败的 json_schema 探测。"""
-    from novel_system.services import llm_client as mod
-
-    mod._CONNECTIVITY_CAPS.clear()
     seen_formats: list[str] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -193,14 +190,11 @@ def test_connectivity_caps_cached_across_calls() -> None:
     client.generate(_request(model="cap-model"))
     # 第 1 次:schema 探测失败 + json_object 成功;第 2 次:直接 json_object
     assert seen_formats == ["json_schema", "json_object", "json_object"]
-    mod._CONNECTIVITY_CAPS.clear()
 
 
 def test_missing_text_degrades_reasoning_off_and_bigger_budget() -> None:
     """reasoning 模型把 max_tokens 烧在思考上(content 空):不做无脑重试,
     立即降级——去掉 reasoning 参数 + 输出预算×2;结论(关 reasoning)进能力缓存。"""
-    from novel_system.services import llm_client as mod
-
     requests_seen: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -239,7 +233,6 @@ def test_missing_text_degrades_reasoning_off_and_bigger_budget() -> None:
     client.generate(_request(model="think-model", response_schema=None, max_output_tokens=1000))
     assert "reasoning" not in requests_seen[2]
     assert requests_seen[2]["enable_thinking"] is False
-    mod._CONNECTIVITY_CAPS.clear()
 
 
 def test_missing_text_on_strict_openai_does_not_send_unknown_params() -> None:

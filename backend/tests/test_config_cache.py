@@ -22,7 +22,7 @@ from sqlalchemy import event, update
 from novel_system.api.app import create_app
 from novel_system.db.models import SystemConfigSnapshot
 from novel_system.db.session import engine
-from novel_system.services import config_cache, idempotency, llm_client, llm_service_base, llm_task_runner, prompt_builder
+from novel_system.services import config_cache, idempotency, llm_routing, llm_service_base, llm_task_runner, prompt_builder
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.llm_client import load_model_routing_config, reset_model_routing_cache
 from novel_system.services.prompt_builder import (
@@ -297,7 +297,7 @@ def test_sync_prompt_templates_activation_is_visible_at_once(session, tmp_path, 
 
 
 def test_model_routing_is_parsed_once_per_content(monkeypatch) -> None:
-    parses = _count_calls(monkeypatch, llm_client, "parse_model_routing_config")
+    parses = _count_calls(monkeypatch, llm_routing, "parse_model_routing_config")
     yaml_parses = _count_yaml_parses(monkeypatch)
 
     routings = {id(load_model_routing_config()) for _ in range(5)}

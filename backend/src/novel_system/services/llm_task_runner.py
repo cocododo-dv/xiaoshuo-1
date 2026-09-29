@@ -20,14 +20,14 @@ from novel_system.services.llm_accounting import (
     record_rejected_call,
 )
 from novel_system.services.llm_client import (
-    MAX_DEGRADE_HOPS,
     MAX_RETRY_BACKOFF_SECONDS,
     LLMClient,
     LLMRequest,
     LLMResponse,
     OnlineAccountedExecution,
-    build_llm_request,
 )
+from novel_system.services.llm_degrade import MAX_DEGRADE_HOPS
+from novel_system.services.llm_routing import build_llm_request
 from novel_system.services.llm_audit import (
     error_audit_summary,
     json_fingerprint,
