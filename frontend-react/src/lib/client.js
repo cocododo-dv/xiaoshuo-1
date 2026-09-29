@@ -187,7 +187,7 @@ export function setRemoteAccessToken(value) {
 }
 
 /* 别的标签页改了 API 地址：下一个请求重新解析（sessionStorage 不跨标签页，令牌不用听） */
-if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+if (typeof window !== "undefined" && window.addEventListener) {
   window.addEventListener("storage", (event) => {
     if (!event || event.key == null || event.key === API_BASE_KEY || event.key === API_BASE_DEFAULT_KEY) apiBaseCache = null;
   });
