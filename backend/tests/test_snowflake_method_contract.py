@@ -592,7 +592,9 @@ def test_phase_d_prompt_contracts() -> None:
     outline = templates["snowflake_generate_long_synopsis"]
     assert "exactly 5 paragraphs" in outline["task_prompt"] and "600-1000 Chinese characters" in outline["task_prompt"]
     assert "never write chapter lists or headings into `paragraphs`" in outline["task_prompt"]
-    assert "`chapters` is the source of truth for chapter membership" in outline["task_prompt"]
+    # R11（v7）：07 的章表是已确认分章的只读镜像——生成不再要章表，结构化输出里也没有 chapters 键
+    assert "Do not return a chapter table" in outline["task_prompt"]
+    assert "chapters" not in outline["structured_schema"]["properties"]
 
     scene_list = templates["snowflake_generate_scene_list"]
     assert "long_synopsis.paragraphs are five page-length expansions" in scene_list["task_prompt"]

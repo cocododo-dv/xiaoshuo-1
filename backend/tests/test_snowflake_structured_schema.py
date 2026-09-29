@@ -105,8 +105,8 @@ def test_collection_item_schemas_list_the_canonical_keys() -> None:
         ("character_bibles", "characters"),
         ("scene_list", "scenes"),
         ("scene_details", "scenes"),
-        ("long_synopsis", "chapters"),
     ):
+        # （07 的章表 v7 起不再由生成产出——R11；章表 schema 的补全规则在下一个用例里单独验）
         template = templates[f"snowflake_generate_{step_key}"]
         assert not template.structured_schema["properties"][field_key]["items"].get("properties"), (
             "yaml 里的成员 schema 本就没有 properties——补全在服务端按编辑器模板派生，别再手抄一份"
@@ -144,10 +144,16 @@ def test_template_value_types_map_to_schema_types() -> None:
     props = enriched["properties"]["characters"]["items"]["properties"]
     assert props["values"] == {"type": "array", "items": {"type": "string"}}
 
-    template = load_prompt_templates()["snowflake_generate_long_synopsis"].structured_schema
-    enriched, _ = enrich_structured_schema(template, step_key="long_synopsis")
+    # 07 的章表按编辑器模板补全的形状（chapter_seq / act 是整数）——v7 起 07 的生成不再要章表（R11），
+    # 这里直接拿一份带 chapters 的 schema 验补全规则本身
+    enriched, _ = enrich_structured_schema(
+        {"type": "object", "properties": {"chapters": {"type": "array", "items": {"type": "object", "additionalProperties": True}}}},
+        step_key="long_synopsis",
+    )
     props = enriched["properties"]["chapters"]["items"]["properties"]
     assert props["chapter_seq"] == {"type": "integer"} and props["act"] == {"type": "integer"}
+    long_synopsis = load_prompt_templates()["snowflake_generate_long_synopsis"].structured_schema
+    assert set(long_synopsis["properties"]) == {"paragraphs"}
 
 
 def test_coach_patch_and_triage_repair_patch_are_enriched_too() -> None:
