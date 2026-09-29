@@ -68,6 +68,10 @@ def _collect(session) -> dict[str, Any]:
         "asymmetry_omniscient_suwan_guzhou": log.information_asymmetry_digest(
             WORLD_PROJECT, None, [SUWAN, GUZHOU], scene_id=target
         ),
+        # 林远对苏晚有两条独有认知：两条的先后必须与进程的字符串哈希种子无关
+        "asymmetry_omniscient_onstage": log.information_asymmetry_digest(
+            WORLD_PROJECT, None, ONSTAGE, scene_id=target
+        ),
         "asymmetry_pov_linyuan": log.information_asymmetry_digest(
             WORLD_PROJECT, None, ONSTAGE, scene_id=target, pov_character_id=LINYUAN
         ),

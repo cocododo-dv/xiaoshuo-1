@@ -585,13 +585,15 @@ class NarrativeEventLog:
                 b_exclusive = b_knows - a_knows
                 if a_exclusive or b_exclusive:
                     lines.append(f"\n### {char_a} ↔ {char_b}")
+                    # 集合按排序取前 5 条：以前按集合的迭代次序取，字符串哈希每个进程随机，
+                    # 同一份库在不同进程里拼出的提示词（和 bundle 哈希）不一样。
                     if a_exclusive:
                         lines.append(f"  {char_a} knows but {char_b} doesn't:")
-                        for fact in list(a_exclusive)[:5]:
+                        for fact in sorted(a_exclusive)[:5]:
                             lines.append(f"    - {fact}")
                     if b_exclusive:
                         lines.append(f"  {char_b} knows but {char_a} doesn't:")
-                        for fact in list(b_exclusive)[:5]:
+                        for fact in sorted(b_exclusive)[:5]:
                             lines.append(f"    - {fact}")
 
         for char_id in onstage_character_ids:
