@@ -128,19 +128,21 @@ class DaemonLane:
             return len(self._queue)
 
     def _work(self) -> None:
-        try:
-            while True:
-                with self._lock:
-                    if self._closed or not self._queue:
-                        return
-                    fn, args = self._queue.popleft()
-                try:
-                    fn(*args)
-                except Exception:  # noqa: BLE001 — 车道边界：一个任务失败不带走工人
-                    logger.exception("%s lane task failed", self.name)
-        finally:
+        while True:
             with self._lock:
-                self._threads -= 1
+                # 决定退出与减计数在同一把锁里：否则刚好这时提交的任务看到「工人满了」不再起新工人，就没人跑它
+                if self._closed or not self._queue:
+                    self._threads -= 1
+                    return
+                fn, args = self._queue.popleft()
+            try:
+                fn(*args)
+            except Exception:  # noqa: BLE001 — 车道边界：一个任务失败不带走工人
+                logger.exception("%s lane task failed", self.name)
+            except BaseException:
+                with self._lock:
+                    self._threads -= 1
+                raise
 
 
 _LANES: dict[str, DaemonLane] = {}

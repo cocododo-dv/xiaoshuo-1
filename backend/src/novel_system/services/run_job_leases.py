@@ -315,13 +315,13 @@ def release_held_leases() -> list[str]:
     """进程要退出：本进程工人持有的租约就地到期（条件在 worker_id / attempt_no 上），返回到期了的任务。
 
     先把工人代 +1（``background_jobs.bump_worker_generation``）再调它：这之后工人不再续约，到期的租约不会被
-    心跳线程又续上。
+    心跳线程又续上。登记不清：工人线程还活着时（同一进程里下一个 lifespan，测试里会有）它们仍算「本进程在跑」，
+    不会被再派发一次；工人结束时自己注销。
     """
     from novel_system.db.session import SessionLocal
 
     with _REGISTRY_LOCK:
         leases = list(_HELD.values())
-        _HELD.clear()
     released: list[str] = []
     for lease in leases:
         try:
