@@ -108,7 +108,6 @@ def run_style_generation(
     patch_brief: list[str] | None = None,
     attempt_details_extra: dict[str, Any] | None = None,
     temperature_override: float | None = None,
-    extra_system_prefix: str | None = None,
     execution_step_key: str | None = None,
     product_slot_key: str | None = None,
     product_slot_order: int | None = None,
@@ -148,13 +147,6 @@ def run_style_generation(
         )
         raise
 
-    # §6.3 diversification: prepend caller-supplied system prefix (prompt variation / style emphasis)
-    if extra_system_prefix and prompt is not None:
-        injected = dict(prompt)
-        injected["system_prompt"] = extra_system_prefix + (
-            prompt.get("system_prompt") or ""
-        )
-        prompt = injected
     base_prompt = prompt
     policy = style_policy_for_bundle(bundle)
     style_first = policy.style_first

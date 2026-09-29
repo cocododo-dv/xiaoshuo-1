@@ -100,7 +100,8 @@ def generate_first_draft(
     # neutral_first(对照组):中性稿固定事件、因果与连续性,风格参考只在后续
     # style_draft / rewrite 阶段注入。
     # style_first(2026-09-12 风格直起):同一步位注入 [STYLE_REFERENCE] 前缀,第一稿就以
-    # 参考作者的手笔从 bundle 写;长度带按 style_first_length_slack 放宽(上下文变量已设)。
+    # 参考作者的手笔从 bundle 写;长度带按上方 lengths(LengthPolicy.for_scene:style_first_length_slack
+    # 与参考作者的场尺度)放宽。
     base_prompt = prompt
     base_user_prompt = prompt["user_prompt"] + _author_note_instruction_for_bundle(
         bundle, author_note
