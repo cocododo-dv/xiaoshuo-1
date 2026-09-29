@@ -81,7 +81,7 @@ def test_llm_wordlist_blocking_keys_downgrade_without_deterministic_evidence() -
         assert issue["blocking"] is False, key
 
 
-def test_llm_source_leak_claim_downgrades_when_scan_is_clean() -> None:
+def test_llm_source_leak_claim_is_a_warning_when_scan_is_clean() -> None:
     issue = classify_issue(
         {"issue_key": "source_leak_risk", "message": "可能泄漏"},
         scene=_scene(),
@@ -89,8 +89,6 @@ def test_llm_source_leak_claim_downgrades_when_scan_is_clean() -> None:
     )
     assert issue["quality_level"] == "Q2"
     assert issue["blocking"] is False
-    assert issue["downgraded_from"] == "Q0"
-    assert issue["downgrade_reason"] == "no_deterministic_verification"
 
 
 def test_llm_pronoun_drift_claim_never_blocks() -> None:
@@ -107,17 +105,18 @@ def test_llm_pronoun_drift_claim_never_blocks() -> None:
 
 # ---------- 确定性复核通过 → Q0/Q1 + verified_by ----------
 
-def test_source_leak_verified_by_deterministic_scan_blocks(monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
+def test_protected_term_in_the_text_never_blocks(monkeypatch) -> None:
+    """批准#12（B04-15）：受保护专名处处只提醒——正文里真有一个全局受保护专名，模型的 source_leak_risk 也只是 Q2
+    警告；与参考书连续 12 字相同（抄袭门）才是唯一能拦下正文的一条。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["灰港学院"]')
     issue = classify_issue(
         {"issue_key": "source_leak_risk", "message": "命中保护词"},
         scene=_scene(),
-        content="他想起路明非说过的话。",
+        content="他想起在灰港学院听过的话。",
     )
-    assert issue["quality_level"] == "Q0"
-    assert issue["blocking"] is True
-    assert issue["verified_by"] == "source_safety_scan"
-    assert issue["authority_ref"]
+    assert issue["quality_level"] == "Q2"
+    assert issue["blocking"] is False
+    assert issue["verified_by"] is None
 
 
 def test_missing_required_text_verified_only_when_truly_missing() -> None:

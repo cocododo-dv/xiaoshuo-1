@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import AuthorDraft, ChapterGoal, ChapterMemory, FinalScene, SceneCard
 from novel_system.services.errors import DomainError
 from novel_system.services.manuscript_html import plain_manuscript_text
+from novel_system.services.source_safety import find_protected_term_spans
 from novel_system.services.value_coercion import optional_text
 from novel_system.services.scene_text import current_author_draft, final_chapter_memory, pointed_final_scene
 
@@ -1856,22 +1857,34 @@ def _chapter_set_payoff_reveal_checks(chapters: list[ChapterGoal], source_rows: 
 
 
 def _reference_safety_findings(source_rows: list[dict[str, Any]], protected_terms: list[str]) -> list[dict[str, Any]]:
+    """作者给的受保护专名在复审文字里的出现，每段文字每个词报一次（按传入的词序）。
+
+    与抄袭门同一套匹配（``source_safety.find_protected_term_spans``：插空格、换标点、繁体、大小写都认得出，批准#12
+    的「一种匹配」）；以前这里是裸的 ``term in text``，「灰 港学院」就漏了。"""
     findings: list[dict[str, Any]] = []
     for row in source_rows:
         text = str(row.get("content") or "")
         for term in protected_terms:
-            if term and term in text:
-                findings.append(
-                    {
-                        "term": term,
-                        "chapter_id": row.get("chapter_id"),
-                        "scene_id": row.get("scene_id"),
-                        "object_type": row.get("object_type"),
-                        "object_id": row.get("object_id"),
-                        "source_ref": row.get("source_ref"),
-                        "evidence_excerpt": _excerpt(text, term),
-                    }
-                )
+            spans = find_protected_term_spans(text, [term]) if term else []
+            if not spans:
+                continue
+            _term, start, end = spans[0]
+            findings.append(
+                {
+                    "term": term,
+                    "chapter_id": row.get("chapter_id"),
+                    "scene_id": row.get("scene_id"),
+                    "object_type": row.get("object_type"),
+                    "object_id": row.get("object_id"),
+                    "source_ref": row.get("source_ref"),
+                    # 字面命中照旧按词取摘录；变体命中按命中的位置取
+                    "evidence_excerpt": (
+                        _excerpt(text, term)
+                        if term.lower() in text.lower()
+                        else _compact_ws(text[max(0, start - 70) : end + 70])
+                    ),
+                }
+            )
     return findings
 
 

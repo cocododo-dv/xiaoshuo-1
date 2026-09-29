@@ -1,7 +1,7 @@
 """统一质量分级分类器（结果闭环治理 §5.4/§6.1，Wave 2）。
 
 四级分类：
-- Q0 数据持久化、来源泄漏、血缘缺失、安全错误 —— 阻断归档，保留正文
+- Q0 数据持久化、原文照抄（抄袭门）、血缘缺失、安全错误 —— 阻断归档，保留正文
 - Q1 有确定证据的硬事实冲突 —— 阻断自动归档，交作者确认或修订
 - Q2 结构、节奏、钩子、代价、关系转折不足 —— 正文照常交付，醒目警告
 - Q3 AI 口癖、比喻、句式、风格与实验指标 —— 只进诊断，不改变状态
@@ -52,7 +52,9 @@ class IssuePolicy:
 
 ISSUE_KEY_POLICY: dict[str, IssuePolicy] = {
     # ---- Q0 候选（数据/来源安全） ----
-    "source_leak_risk": IssuePolicy(Q0, "source_safety_scan", Q2),
+    # 与参考书连续 12 字相同（抄袭门）是唯一能拦下正文的一条。受保护专名处处只提醒（批准#12）：模型报的
+    # source_leak_risk 就算正文里真有一个受保护专名也只是 Q2 警告（走默认策略），与成稿门的
+    # source_safety:protected_term 同一个口径——以前这里按环境变量的全局词复核成 Q0，硬质检会因此退回重写。
     "style_plagiarism": IssuePolicy(Q0, "style_plagiarism_ngram", Q2),
     # ---- Q1 候选（有确定证据的硬事实冲突） ----
     "event_log_consistency_violation": IssuePolicy(Q1, "narrative_event_log_keyword", Q2),
@@ -88,20 +90,6 @@ def _policy_for(issue_key: str) -> IssuePolicy:
 
 # ---------- 确定性复核器（提案 → 复核的唯一升级通道） ----------
 
-def _verify_source_leak(scene: SceneCard | None, content: str, issue: dict[str, Any]) -> dict[str, Any] | None:
-    from novel_system.services.source_safety import scan_source_safety
-
-    scan = scan_source_safety(content or "")
-    if scan.get("safe", True):
-        return None
-    blocked = scan.get("blocked_terms") or []
-    return {
-        "verified_by": "source_safety_scan",
-        "authority_ref": f"source_safety:protected_terms:{','.join(blocked[:5])}",
-        "evidence_spans": [{"text": term} for term in blocked[:5]],
-    }
-
-
 def _verify_required_text(scene: SceneCard | None, content: str, issue: dict[str, Any]) -> dict[str, Any] | None:
     # 按组复核（批准#11）：有一组没写就成立，证据是漏掉的那几组
     must_include = getattr(scene, "must_include_text", None) if scene is not None else None
@@ -129,7 +117,6 @@ def _verify_forbidden_term(scene: SceneCard | None, content: str, issue: dict[st
 
 
 _INLINE_VERIFIERS = {
-    "source_safety_scan": _verify_source_leak,
     "scene_card_required_text": _verify_required_text,
     "scene_card_forbidden_term": _verify_forbidden_term,
 }

@@ -304,7 +304,7 @@ def test_literary_quality_chapter_set_review_scores_cross_chapter_arc_and_safety
         "/api/v1/literary-quality/chapter-set-review",
         json={
             "chapter_ids": ["LQSET01", "LQSET02", "LQSET03"],
-            "protected_terms": ["龙族", "路明非", "卡塞尔"],
+            "protected_terms": ["灰港学院", "欧文·灰港", "镜湖档案馆"],
         },
     )
 
@@ -320,6 +320,26 @@ def test_literary_quality_chapter_set_review_scores_cross_chapter_arc_and_safety
     assert payload["reference_safety_findings"] == []
     assert any(row["token"] == "玻璃雨" for row in payload["repeated_patterns"])
     assert payload["recommended_next_action"]["action"] in {"open_deepdesk_patch", "none"}
+
+
+def test_chapter_set_review_matches_protected_term_variants_like_the_copy_gate(client, session) -> None:
+    """批准#12（B04-15）：章组复审的受保护专名与抄袭门同一套匹配——插了空格 / 标点的写法也认得出。"""
+    final_row_id = _seed_quality_scene(session, chapter_id="LQSET_SAFE", scene_id="LQSET_SAFE_SC01")
+    final = session.get(FinalScene, final_row_id)
+    final.content = "林昭在灰 港-学院门口停下。欧文把旧信递给她，雨城的钟响了三下。"
+    session.commit()
+
+    response = client.post(
+        "/api/v1/literary-quality/chapter-set-review",
+        json={"chapter_ids": ["LQSET_SAFE"], "protected_terms": ["灰港学院", "欧文", "镜湖档案馆"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    scene_findings = [row for row in payload["reference_safety_findings"] if row["object_type"] == "scene"]
+    assert [row["term"] for row in scene_findings] == ["灰港学院", "欧文"]
+    assert "灰 港-学院" in scene_findings[0]["evidence_excerpt"]
+    assert payload["scores"]["reference_safety"] == 0.0
 
 
 def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(client, session) -> None:
