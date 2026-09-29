@@ -4,7 +4,7 @@ import pytest
 
 from novel_system.db.models import ChapterGoal, SceneCard, StoryProject
 from novel_system.services.narrative_event_log import NarrativeEventLog
-from novel_system.services.qc_engine import _event_log_consistency_issues
+from novel_system.services.qc_engine import _deterministic_quality_issues
 from novel_system.services.quality_classifier import classify_issues
 
 
@@ -142,7 +142,7 @@ def test_continuity_engine_failure_surfaces_nonblocking_warning(monkeypatch) -> 
         scene_goal="check",
     )
 
-    raw = _event_log_consistency_issues(scene, "正文")
+    raw = _deterministic_quality_issues(scene, "正文")
     classified = classify_issues(raw, scene=scene, content="正文")
 
     assert raw[0]["issue_key"] == "continuity_validation_unavailable"

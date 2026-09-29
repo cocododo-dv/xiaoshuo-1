@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from novel_system.contracts.qc import SoftQCOutput
 from novel_system.db.models import (
@@ -29,7 +29,11 @@ from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.character_continuity import detect_mechanical_required_beat_listing
+from novel_system.services.quality_checks.continuity import (
+    CONTINUITY_UNAVAILABLE_KEY,
+    EVENT_LOG_VIOLATION_KEY,
+    deterministic_continuity_issues,
+)
 from novel_system.services.quality_classifier import (
     classify_issue,
     classify_issues,
@@ -46,7 +50,6 @@ from novel_system.services.qc_validator import (
     apply_style_scores_alias,
     validate_qc_report,
 )
-from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.style_prompt_injection import (
     STYLED_GATE_UNAVAILABLE_VERDICT,
 )
@@ -514,96 +517,36 @@ def _reported_duplicate_appears_once(issue_blob: str, content: str) -> bool:
     return bool(quoted) and all(content.count(fragment) <= 1 for fragment in quoted)
 
 
-def _deterministic_quality_issues(
-    scene: SceneCard, bundle: dict[str, Any], content: str
-) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
-    listing_issue = detect_mechanical_required_beat_listing(
-        content=content,
-        must_include_text=scene.must_include_text,
-    )
-    if listing_issue is not None:
-        issues.append(listing_issue)
-    issues.extend(_event_log_consistency_issues(scene, content))
-    # Wave 2（§5.4 提案—复核）：确定性检测器的产出打上来源标——检测器即复核器，
-    # 分类器据此允许 Q0/Q1 升级；LLM 提案没有这个标，只能走内联复核或降 Q2。
-    for issue in issues:
-        if isinstance(issue, dict):
-            issue.setdefault("source", "deterministic")
-    return issues
+def _deterministic_quality_issues(scene: SceneCard, content: str) -> list[dict[str, Any]]:
+    """确定性连续性检查（与成稿门同一份：``quality_checks.continuity``），质检这一侧加 severity。
 
-
-def _event_log_consistency_issues(
-    scene: SceneCard, content: str
-) -> list[dict[str, Any]]:
-    """Blueprint §15/§13 Step 6: check hard facts from event log against generated text."""
-    try:
-        from novel_system.services.narrative_event_log import NarrativeEventLog
+    Wave 2（§5.4 提案—复核）：检测器的产出带 ``source="deterministic"``——检测器即复核器，分类器据此允许
+    Q0/Q1 升级；LLM 提案没有这个标，只能走内联复核或降 Q2。事件账本读不出时给一条不阻断的诊断 issue（只记
+    异常类型名）。读库用场景卡所在的会话（以前另开一个会话，读的是别的连接已提交的快照）。
+    """
+    session = object_session(scene)
+    if session is not None:
+        check = deterministic_continuity_issues(session, scene, content)
+    else:  # 没挂在会话上的场景卡：借一个会话只读
         from novel_system.db.session import SessionLocal
 
-        session = SessionLocal()
-        try:
-            log = NarrativeEventLog(session)
-            project_id = require_scene_project_id(session, scene)
-            issues: list[dict[str, Any]] = []
-
-            # --- Event log fact consistency (§15: hard facts only) ---
-            report = log.check_consistency(
-                content,
-                project_id,
-                scene.scene_id,
-                character_ids=scene.onstage_chars_json or [],
-            )
-            if report.violations:
-                # §15: keyword violations block (high); advisory LLM flags inform (medium).
-                issues.extend(
-                    {
-                        "issue_key": (
-                            "event_log_consistency_violation"
-                            if getattr(v, "source", "keyword") == "keyword"
-                            else "event_log_consistency_llm_flag"
-                        ),
-                        "severity": (
-                            "high"
-                            if getattr(v, "source", "keyword") == "keyword"
-                            else "medium"
-                        ),
-                        "message": (
-                            f"Event log contradiction: {v.entity_id}.{v.fact_key} "
-                            f"expected '{v.expected}' but text suggests '{v.actual}'"
-                            + (
-                                ""
-                                if getattr(v, "source", "keyword") == "keyword"
-                                else " (LLM advisory — human spot-check)"
-                            )
-                        ),
-                        "details": {
-                            "entity_id": v.entity_id,
-                            "fact_key": v.fact_key,
-                            "expected": v.expected,
-                            "actual": v.actual,
-                            "evidence": v.evidence,
-                            "source": getattr(v, "source", "keyword"),
-                        },
-                    }
-                    for v in report.violations
-                )
-
-            return issues
-        finally:
-            session.close()
-    except (
-        Exception
-    ) as exc:  # noqa: BLE001 - surface availability without leaking details
-        return [
+        with SessionLocal() as own:
+            check = deterministic_continuity_issues(own, scene, content)
+    issues = [
+        {**issue, "severity": "high"} if issue.get("issue_key") == EVENT_LOG_VIOLATION_KEY else issue
+        for issue in check.issues
+    ]
+    if check.unavailable_error is not None:
+        issues.append(
             {
-                "issue_key": "continuity_validation_unavailable",
+                "issue_key": CONTINUITY_UNAVAILABLE_KEY,
                 "severity": "medium",
                 "message": "Narrative continuity validation was unavailable; review this scene manually.",
                 "source": "system_diagnostic",
-                "details": {"error_type": type(exc).__name__, "retryable": True},
+                "details": {"error_type": check.unavailable_error, "retryable": True},
             }
-        ]
+        )
+    return issues
 
 
 def _dedupe_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -819,13 +762,12 @@ def _qc_clear_downstream_outputs(state: SceneRunState) -> None:
 
 def _qc_apply_deterministic_quality_gates(
     scene: SceneCard,
-    bundle: dict[str, Any],
     draft_content: str,
     payload: dict[str, Any],
     *,
     qc_type: str,
 ) -> dict[str, Any]:
-    deterministic_issues = _deterministic_quality_issues(scene, bundle, draft_content)
+    deterministic_issues = _deterministic_quality_issues(scene, draft_content)
     payload = _drop_llm_pronoun_issues(payload=payload, qc_type=qc_type)
     if not deterministic_issues:
         return payload
@@ -1373,7 +1315,7 @@ class HardQcEngine:
 
         payload = self._apply_deterministic_sanity(scene, neutral_content, payload)
         payload = _qc_apply_deterministic_quality_gates(
-            scene, bundle, neutral_content, payload, qc_type="hard_qc"
+            scene, neutral_content, payload, qc_type="hard_qc"
         )
         payload = _annotate_qc_issues(scene, neutral_content, payload)
         payload = _promote_constraint_conflicts_to_human_review(payload)
@@ -1993,7 +1935,7 @@ class SoftQcEngine:
         )
 
         payload = _qc_apply_deterministic_quality_gates(
-            scene, bundle, source_draft_content, payload, qc_type="soft_qc"
+            scene, source_draft_content, payload, qc_type="soft_qc"
         )
         payload = self._apply_quality_grading(scene, source_draft_content, payload)
         # v2（规格 §2.W5.5）styled-draft gate：风格稿的确定性抄袭 / 生成禁用词检查。

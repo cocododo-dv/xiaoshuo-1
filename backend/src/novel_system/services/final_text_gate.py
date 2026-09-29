@@ -5,7 +5,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneBundle, SceneCard, SceneRunState
-from novel_system.services.character_continuity import detect_mechanical_required_beat_listing
 from novel_system.services.content_safety import ContentSafetyService
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_text, verify_bundle_snapshot_hash
@@ -23,7 +22,10 @@ from novel_system.services.reference_copy_gate import (
     protected_term_warning,
     unavailable_warning,
 )
-from novel_system.services.scene_ownership import require_scene_project_id
+from novel_system.services.quality_checks.continuity import (
+    CONTINUITY_UNAVAILABLE_KEY,
+    deterministic_continuity_issues,
+)
 from novel_system.services.style_policy import StylePolicy, style_policy_for_scene, style_policy_live
 
 
@@ -95,7 +97,6 @@ class FinalTextGateService:
         continuity = self._continuity(
             scene,
             actual_content,
-            bundle,
             allow_author_waiver=allow_author_waiver,
         )
         literary = self._literary(scene, actual_content, policy)
@@ -298,13 +299,12 @@ class FinalTextGateService:
         self,
         scene: SceneCard | None,
         content: str,
-        bundle: SceneBundle | None,
         *,
         allow_author_waiver: bool,
     ) -> dict[str, Any]:
         if scene is None:
             warning = {
-                "issue_key": "continuity_validation_unavailable",
+                "issue_key": CONTINUITY_UNAVAILABLE_KEY,
                 "quality_level": "Q2",
                 "blocking": False,
                 "message": "Scene card is unavailable; archive continuity checks were skipped.",
@@ -337,54 +337,16 @@ class FinalTextGateService:
                 }
             )
 
-        listing = detect_mechanical_required_beat_listing(
-            content=content,
-            must_include_text=scene.must_include_text,
-        )
-        if listing is not None:
-            issues.append({**listing, "source": "deterministic"})
-
+        # 节拍清单 + 事件账本的硬事实：与硬 / 软质检同一份检查（quality_checks.continuity）
+        check = deterministic_continuity_issues(self.session, scene, content)
+        issues.extend(check.issues)
         event_warning: dict[str, Any] | None = None
-        try:
-            from novel_system.services.narrative_event_log import NarrativeEventLog
-
-            project_id = require_scene_project_id(self.session, scene)
-            report = NarrativeEventLog(self.session).check_consistency(
-                content,
-                project_id,
-                scene.scene_id,
-                character_ids=scene.onstage_chars_json or [],
-            )
-            for violation in report.violations:
-                source = getattr(violation, "source", "keyword")
-                issues.append(
-                    {
-                        "issue_key": (
-                            "event_log_consistency_violation"
-                            if source == "keyword"
-                            else "event_log_consistency_llm_flag"
-                        ),
-                        "message": (
-                            f"Event log contradiction: {violation.entity_id}.{violation.fact_key} "
-                            f"expected '{violation.expected}' but text suggests '{violation.actual}'"
-                        ),
-                        "source": "deterministic" if source == "keyword" else "llm_advisory",
-                        "details": {
-                            "entity_id": violation.entity_id,
-                            "fact_key": violation.fact_key,
-                            "expected": violation.expected,
-                            "actual": violation.actual,
-                            "evidence": violation.evidence,
-                            "source": source,
-                        },
-                    }
-                )
-        except Exception as exc:  # noqa: BLE001 - no deterministic evidence means no Q1 claim
+        if check.unavailable_error is not None:  # 没有确定性证据就不下 Q1 结论
             event_warning = {
-                "issue_key": "continuity_validation_unavailable",
+                "issue_key": CONTINUITY_UNAVAILABLE_KEY,
                 "quality_level": "Q2",
                 "blocking": False,
-                "message": f"Narrative continuity validation unavailable ({type(exc).__name__}).",
+                "message": f"Narrative continuity validation unavailable ({check.unavailable_error}).",
             }
 
         classified = classify_issues(issues, scene=scene, content=content)
