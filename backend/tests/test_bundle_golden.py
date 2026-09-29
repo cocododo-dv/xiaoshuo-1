@@ -19,12 +19,10 @@ import os
 from pathlib import Path
 
 from novel_system.db.models import (
-    AuthorPreferenceProfile,
     ChapterGoal,
     ChapterMemory,
     FinalScene,
     GenerationPlanningArtifact,
-    RelationProfile,
     SceneBlueprint,
     SceneCard,
     SceneDraft,
@@ -36,7 +34,6 @@ from novel_system.db.models import (
     StyleReferenceInjectionBinding,
     StyleReferenceProfile,
     StyleReferenceRun,
-    VoiceProfile,
     VolumeSummary,
 )
 from novel_system.services.bundle_builder import BundleBuilder
@@ -120,34 +117,6 @@ def _seed_book(session) -> None:
         session.add(SceneRunState(scene_id=scene.scene_id, scene_status="ready"))
     session.flush()
 
-    # 声线卡 / 关系卡（库里有就注入）
-    session.add(
-        VoiceProfile(
-            row_id="voice_gold_v1",
-            voice_profile_id="VOICE_林昭",
-            version=1,
-            character_id="林昭",
-            content="林昭说话短，压力越大越冷。",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at=T0,
-            updated_at=T0,
-        )
-    )
-    session.add(
-        RelationProfile(
-            row_id="relation_gold_v1",
-            relation_profile_id="REL_林昭_许望",
-            left_character_id="林昭",
-            right_character_id="许望",
-            version=1,
-            content="旧友重逢，许望知道得更多。",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at=T0,
-            updated_at=T0,
-        )
-    )
     # 已写成的三场：成稿、记忆与风格稿——下一场的上一场记忆、新鲜度预算、前文声音锚、章间过渡、相似场景
     for seq, (chapter_id, scene_seq, text) in enumerate(
         (
@@ -243,18 +212,6 @@ def _seed_book(session) -> None:
             status="active",
             created_at=_at(5),
             updated_at=_at(5),
-        )
-    )
-    session.add(
-        AuthorPreferenceProfile(
-            profile_id="author_pref_gold",
-            scope_type="global",
-            scope_ref_id="global",
-            status="approved",
-            runtime_eligible=1,
-            summary_json={"prefer": ["短句"], "avoid": ["总结式收尾"]},
-            created_at=_at(6),
-            updated_at=_at(6),
         )
     )
     session.add(

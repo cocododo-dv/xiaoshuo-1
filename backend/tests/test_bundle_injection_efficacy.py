@@ -164,34 +164,6 @@ def test_chapter_transition_buffer_skips_a_trashed_previous_chapter(session):
     assert buffer is not None and "上一章结尾：旧信落进雨里。" in buffer
 
 
-def test_similar_scene_collection_indexes_one_current_text_per_scene(session):
-    """B03-04：相似场景集合按场一条、取当前正文（旧版不再作为同 id 的重复文档进集合）。"""
-    from novel_system.services.vector_store import get_vector_store
-
-    scenes = _seed_book(session, "P_RERUN_SIM", [("CH01", 1, 3, 0)])
-    first = scenes["P_RERUN_SIM_CH01_SC01"]
-    _add_final(session, first, row_id="final_sim_old", content="旧版：案卷潮了。", created_at="2026-09-01T00:00:00+00:00")
-    _add_final(
-        session, first, row_id="final_sim_new", content="新版：案卷烧了。", created_at="2026-09-02T00:00:00+00:00", current=True
-    )
-    _add_final(
-        session,
-        scenes["P_RERUN_SIM_CH01_SC02"],
-        row_id="final_sim_second",
-        content="第二场：雨城起雾。",
-        created_at="2026-09-02T00:00:00+00:00",
-        current=True,
-    )
-
-    BundleBuilder(session)._similar_scene_context(scenes["P_RERUN_SIM_CH01_SC03"])
-
-    documents = get_vector_store().load_collection("scenes_P_RERUN_SIM")
-    assert sorted((doc["id"], doc["text"]) for doc in documents) == [
-        (first.scene_id, "新版：案卷烧了。"),
-        ("P_RERUN_SIM_CH01_SC02", "第二场：雨城起雾。"),
-    ]
-
-
 def test_narrative_state_digest_uses_scene_project_id(session):
     """P-6：目录式 chapter_id 下，权威状态注入必须按 scene.project_id 命中事件。"""
     scene = _seed_catalog_style_scene(session)

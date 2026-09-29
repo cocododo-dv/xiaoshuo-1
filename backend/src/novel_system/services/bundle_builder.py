@@ -18,14 +18,11 @@ from sqlalchemy.orm import Session
 
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
 from novel_system.db.models import (
-    AuthorPreferenceProfile,
-    ChapterGoal,
     GenerationPlanningArtifact,
     SceneBundle,
     SceneCard,
     SceneMemory,
     SceneRunState,
-    StoryProject,
     StoryCharacter,
     VolumeSummary,
     StyleReferenceBook,
@@ -97,14 +94,9 @@ from novel_system.services.writer_briefs import (
     normalize_scene_writer_brief,
     writer_brief_has_content,
 )
-from novel_system.services.author_preferences import (
-    merge_preference_summaries,
-    safe_preference_summary_for_prompt,
-)
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.scene_lookup import get_chapter_or_404, get_scene_or_404
 from novel_system.services.planning_queries import (
-    current_final_scenes,
     latest_active_planning_artifact,
     latest_scene_blueprint,
 )
@@ -415,37 +407,8 @@ class BundleBuilder:
                 refs={"chapter_story_architecture_artifact_row_id": chapter_architecture.row_id},
             )
 
-        # 声线卡 / 关系卡是可选的注入：库里有就带上，没有就没有这一节。过去缺卡会在这里 409
-        # BUNDLE_SOURCE_MISSING——可产品里早已没有地方能写这两类卡（见 scene_run_preflight._blocking_items）。
-        voice_profile = self.resolver.resolve_active_voice_profile(self.session, scene)
-        if voice_profile:
-            sections.add(
-                "pov_voice",
-                ref_id=voice_profile.voice_profile_id,
-                digest_key="voice_card",
-                text=voice_profile.content,
-                refs={
-                    "voice_profile_id": voice_profile.voice_profile_id,
-                    "voice_profile_row_id": voice_profile.row_id,
-                    "voice_profile_version": voice_profile.version,
-                },
-            )
-
-        relation_profile = self.resolver.resolve_active_relation_profile(
-            self.session, scene
-        )
-        if relation_profile:
-            sections.add(
-                "relation",
-                ref_id=relation_profile.relation_profile_id,
-                digest_key="relation_card",
-                text=relation_profile.content,
-                refs={
-                    "relation_profile_id": relation_profile.relation_profile_id,
-                    "relation_profile_row_id": relation_profile.row_id,
-                    "relation_profile_version": relation_profile.version,
-                },
-            )
+        # 声线卡 / 关系卡不再进 bundle（批准#15，重评 R8）：产品里没有任何地方能写这两类卡，实库两张表都是空的；
+        # 角色的声音与关系来自构思（Scene Design Context 里的 POV 角色摘要、价值观、视角故事、同场角色）。
 
         # 解析 pov/onstage 的权威 display_name（StoryCharacter），避免裸 id 进提示词当人名
         contract_char_ids = [
@@ -469,10 +432,8 @@ class BundleBuilder:
         character_contract = build_character_contract_digest(
             pov_character_id=scene.pov_character_id,
             onstage_character_ids=scene.onstage_chars_json,
-            voice_profile_content=voice_profile.content if voice_profile else None,
-            relation_profile_content=(
-                relation_profile.content if relation_profile else None
-            ),
+            voice_profile_content=None,
+            relation_profile_content=None,
             display_names=character_display_names,
         )
         if character_contract:
@@ -512,10 +473,6 @@ class BundleBuilder:
                 },
             )
 
-        similar_scenes = None if reference_first else self._similar_scene_context(scene)
-        if similar_scenes:
-            sections.digest("similar_scene", similar_scenes)
-
         if previous_memory:
             sections.add(
                 "prev_scene_memory",
@@ -536,38 +493,6 @@ class BundleBuilder:
                 ref_id=scene.chapter_id,
                 text=json.dumps(freshness_budget["budget"], ensure_ascii=False, sort_keys=True),
                 refs={"literary_freshness_source_final_scene_ids": freshness_budget["source_final_scene_ids"]},
-            )
-
-        author_preference_profiles = self._approved_runtime_author_preference_profiles(
-            scene, chapter
-        )
-        if author_preference_profiles:
-            author_preference_profile = author_preference_profiles[-1]
-            merged_preference: dict[str, Any] = {}
-            for row in author_preference_profiles:
-                merged_preference = merge_preference_summaries(
-                    merged_preference, row.summary_json or {}
-                )
-            runtime_preference = safe_preference_summary_for_prompt(merged_preference)
-            profile_ids = [row.profile_id for row in author_preference_profiles]
-            sections.add(
-                "author_preference_profile",
-                ref_id=author_preference_profile.profile_id,
-                text=json.dumps(
-                    {
-                        "profile_id": author_preference_profile.profile_id,
-                        "profile_ids": profile_ids,
-                        "kind": "approved_author_preference_profile",
-                        "summary": runtime_preference,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                refs={
-                    "author_preference_profile_id": author_preference_profile.profile_id,
-                    "author_preference_profile_ids": profile_ids,
-                    "author_preference_profile_updated_at": author_preference_profile.updated_at,
-                },
             )
 
         scene_summary = self.resolver.resolve_scene_summary(self.session, scene)
@@ -605,11 +530,8 @@ class BundleBuilder:
             contract_version="BSHASH_v1",
             stage_allowlist_name="bundle_build_allowlist_v1",
             source_version_refs=sections.source_version_refs,
-            resolved_ref_ids={
-                "relation_ids": (
-                    [relation_profile.relation_profile_id] if relation_profile else []
-                ),
-            },
+            # 关系卡退役（R8）后恒为空表；键留着，没有卡的 bundle 哈希不变
+            resolved_ref_ids={"relation_ids": []},
             ordered_injections=sections.ordered_injections,
             inline_digests=sections.inline_digests,
         )
@@ -768,46 +690,6 @@ class BundleBuilder:
             .first()
         )
 
-    def _approved_runtime_author_preference_profiles(
-        self,
-        scene: SceneCard,
-        chapter: ChapterGoal,
-    ) -> list[AuthorPreferenceProfile]:
-        project_id = scene.project_id or chapter.project_id
-        project = self.session.get(StoryProject, project_id) if project_id else None
-        scopes: list[tuple[str, str]] = [("global", "global")]
-        genre = (
-            " ".join(str(project.genre or "").strip().lower().split())
-            if project
-            else ""
-        )
-        if genre:
-            scopes.append(("genre", genre[:120]))
-        if project_id:
-            scopes.append(("project", project_id))
-        scopes.append(("chapter", chapter.chapter_id))
-        rows: list[AuthorPreferenceProfile] = []
-        for scope_type, scope_ref_id in scopes:
-            rows.extend(
-                self.session.execute(
-                    select(AuthorPreferenceProfile)
-                    .where(
-                        AuthorPreferenceProfile.scope_type == scope_type,
-                        AuthorPreferenceProfile.scope_ref_id == scope_ref_id,
-                        AuthorPreferenceProfile.status == "approved",
-                        AuthorPreferenceProfile.runtime_eligible == 1,
-                    )
-                    .order_by(
-                        AuthorPreferenceProfile.updated_at.asc(),
-                        AuthorPreferenceProfile.profile_id.asc(),
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        return rows
-
-
     def _chapter_transition_buffer(self, scene: SceneCard) -> str | None:
         """章间过渡缓冲（见 ``bundle_continuity.chapter_transition_text``）；失败只记降级槽。"""
         try:
@@ -815,64 +697,6 @@ class BundleBuilder:
         except Exception:
             self._slot_degraded("chapter_transition_buffer", scene)
             return None
-
-    def _similar_scene_context(self, scene: SceneCard) -> str | None:
-        """Blueprint §3 Track 3: semantic retrieval for atmosphere/echo material."""
-        try:
-            # 审计 P-7 关联：统一走 get_vector_store()（memory=进程级单例 / chroma=持久化）。
-            # 行为保持"每次由 DB 重建集合再查询"——自包含且结果始终新鲜。
-            from novel_system.services.vector_store import get_vector_store
-
-            project_id = require_scene_project_id(self.session, scene)
-            collection_name = f"scenes_{project_id}"
-            store = get_vector_store()
-            other_scene_ids = list(
-                self.session.execute(
-                    select(SceneCard.scene_id)
-                    .where(
-                        SceneCard.trashed_flag == 0,
-                        SceneCard.scene_id != scene.scene_id,
-                        SceneCard.project_id == project_id,
-                    )
-                    .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-                ).scalars()
-            )
-            # 每场一条、取当前正文（重跑过的场的旧版不再以同一个 id 重复进集合，B03-04）
-            current_finals = current_final_scenes(self.session, other_scene_ids)
-            approved_scenes = [
-                current_finals[scene_id] for scene_id in other_scene_ids if scene_id in current_finals
-            ]
-            if not approved_scenes or len(approved_scenes) < 2:
-                return None
-            documents = [
-                {"id": fs.scene_id, "text": (fs.content or "")[:600]}
-                for fs in approved_scenes
-                if fs.content
-            ]
-            if not documents:
-                return None
-            store.write_collection(collection_name, documents)
-            query_text = scene.scene_goal or ""
-            if scene.location:
-                query_text += f" {scene.location}"
-            results = store.query(collection_name, query_text, top_k=2)
-            if not results:
-                return None
-            lines = [
-                "## Similar Scene Context (§3 Track 3 — inspiration only, NOT fact-authoritative)",
-                "These excerpts are for atmosphere/echo reference. They may be imprecise.",
-                "Do NOT copy facts, character states, or plot points from them.",
-                "Use them only for tonal resonance, imagery contrast, or emotional echoing.",
-            ]
-            for item in results:
-                lines.append(
-                    f"\n[scene {item.get('id', '?')}]\n{item.get('text', '')[:400]}"
-                )
-            return "\n".join(lines)
-        except Exception:
-            self._slot_degraded("similar_scene", scene)
-            return None
-
 
     def _information_asymmetry_digest(self, scene: SceneCard) -> str | None:
         """Blueprint §2/§11: inject information gaps between onstage characters."""

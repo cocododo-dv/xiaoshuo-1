@@ -3,7 +3,7 @@
 
 BSHASH_v1 的哈希依赖注入段的顺序；存库的冻结快照（JSON）依赖两个字典的键序——登记顺序就是快照的字节顺序。
 一个注入段 = 先记它的来源版本引用，再排进注入顺序，最后放正文（``add``）；只进正文、不排注入顺序的段（叙事状态、
-信息差、章间过渡、相似场景）与内部信号（以 ``_`` 开头，不渲染成段落）用 ``digest``。
+信息差、章间过渡）与内部信号（以 ``_`` 开头，不渲染成段落）用 ``digest``。
 
 bundle 能写的正文键在这里一处声明：进提示词的业务段必须在 ``context_budget.SECTION_SPECS`` 里有渲染位
 （``tests/test_prompt_assembly_e2e.py`` 对着这张表查），没声明的键写不进来。
@@ -33,17 +33,13 @@ BUNDLE_SECTION_DIGEST_KEYS: frozenset[str] = frozenset(
         "scene_blueprint",
         "character_pressure",
         "chapter_story_architecture",
-        "voice_card",
-        "relation_card",
         "character_contract",
         "narrative_state",
         "information_asymmetry",
         "chapter_transition_buffer",
         "previous_scene_voice_anchor",
-        "similar_scene",
         "scene_memory",
         "literary_freshness_budget",
-        "author_preference_profile",
         "scene_summary",
         "chapter_summary",
         "volume_summary",
