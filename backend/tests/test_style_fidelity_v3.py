@@ -644,6 +644,75 @@ def test_best_of_n_ranks_copy_blocked_candidates_last(session, monkeypatch) -> N
     assert session.get(SceneRunState, scene.scene_id).current_style_draft_row_id == candidates[0].row_id
 
 
+def _copy_gate_could_not_run(monkeypatch) -> None:
+    """抄袭门的一边没有查成（冻结之后绑定的书被删 / 策略降级），也没有查出命中。"""
+    from novel_system.services import reference_copy_gate
+
+    monkeypatch.setattr(
+        reference_copy_gate,
+        "check_reference_copy",
+        lambda _session, _text, **_kwargs: reference_copy_gate.CopyCheck(blocked=False, missing_books=("book_gone",)),
+    )
+
+
+def test_targeted_revision_is_not_adopted_when_its_copy_check_could_not_run(session, monkeypatch) -> None:
+    """B02-08：抄袭门没查成不是「查过、没重合」——更像的定向修改稿也不采用（保留首稿，fail-closed），原因与提示
+    如实说「没能检查」，而不是说它照抄了。"""
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_copyna")
+    runner = _Runner(outputs={"style_draft": REVISED}, default=LONG_FIRST)
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {"窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT), "雨下了一夜": _reading(1.10, 60.0)},
+    )
+    _copy_gate_could_not_run(monkeypatch)
+
+    result = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+
+    assert result.content == LONG_FIRST
+    step = _style_attempt(session, scene.scene_id).details_json["style_step"]
+    assert step["decision"] == S.DECISION_REVISION_REJECTED
+    assert step["reason"] == sg.REASON_COPY_UNCHECKED
+    notice = next(item for item in result.notices if item["code"] == sg.STYLE_NOTICE_REVISION_REJECTED)
+    assert notice["reason"] == sg.REASON_COPY_UNCHECKED and "没能检查" in notice["message"]
+
+
+def test_best_of_n_never_reports_an_unchecked_candidate_as_copy_checked(session, monkeypatch) -> None:
+    """B02-08：作者手笔直起的候选排序不能把「没查成」记成 plagiarism_checked=True——否则匿名终选门会把从没核对过
+    原文的候选交给作者盲选。"""
+    from novel_system.services.orchestrator import Orchestrator
+
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_bonna")
+    runner = _SeqRunner([LONG_FIRST, OTHER_REVISED, REVISED])
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {
+            "窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT),
+            "那一夜的雨": _reading(1.30, 90.5),
+            "雨下了一夜": _reading(1.10, 60.0),
+        },
+    )
+    _copy_gate_could_not_run(monkeypatch)
+
+    candidates = service.generate_style_draft_candidates(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content, n_candidates=3
+    )
+    session.commit()
+
+    assert [c.ranking_audit["plagiarism_checked"] for c in candidates] == [False, False, False]
+    assert [c.ranking_audit["plagiarism_passed"] for c in candidates] == [None, None, None]
+    state = session.get(SceneRunState, scene.scene_id)
+    assert Orchestrator(session)._offer_candidates_for_selection(scene, state, bundle, candidates) is None
+
+
 def test_best_of_n_resume_keeps_every_already_produced_slot(session, monkeypatch) -> None:
     """L1：续跑时首稿读数变了（这次读不出 / 不可信），槽位数不能缩回 1——已经落下检查点的槽位一个都不能丢，
     否则检查点里的工作项对不上（RUN_CHECKPOINT_CORRUPT）；也不能为它们重新调模型。"""

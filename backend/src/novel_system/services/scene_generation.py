@@ -46,6 +46,7 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_constraints import (
     constraint_terms,
     contains_forbidden_term,
+    forbidden_terms as card_forbidden_terms,
     source_field_satisfied,
 )
 from novel_system.services.style_reference.config_loader import load_yaml_config
@@ -218,6 +219,8 @@ FIRST_DRAFT_FALLBACK_CONTENT_SOURCE = "first_draft_fallback"
 # 风格参考 v3（P5b）：风格步「首稿即风格稿」产品的谱系标记（StyleGenerationResult.lineage / 检查点描述符）。
 LINEAGE_FIRST_DRAFT_ACCEPTED = "first_draft_accepted"
 STYLE_STEP_VERSION = "style_step_v1"
+# 定向修改稿的抄袭门没有查成（书已删 / 策略降级 / 检查出错）：与「查出新带进的重合」（copy_gate_blocked）分开说。
+REASON_COPY_UNCHECKED = "copy_gate_unavailable"
 _STYLE_NOTICE_SEVERITIES = ("info", "warning", "error", "blocking")
 
 
@@ -657,6 +660,7 @@ class SceneGenerationService:
                 bundle=bundle,
                 llm_call_id=fallback_llm_call_id,
                 step="neutral_draft",
+                node_id=draft_node_id,
                 execution_step_key="neutral_draft",
                 started_at=started_at,
                 task_config=None,
@@ -809,7 +813,8 @@ class SceneGenerationService:
                     state=state,
                     bundle=bundle,
                     step="neutral_draft_repair",
-                    prompt=prompt,
+                    # 记的是修复这一遍实际发出的提示（style_first 下重新注入过、审计不同），不是首稿那一份
+                    prompt=repair_prompt_payload,
                     exc=exc,
                 )
                 # 第一遍 provider 调用已经真实消耗了一次业务尝试。若修复在
@@ -2016,6 +2021,7 @@ class SceneGenerationService:
                 bundle=bundle,
                 llm_call_id=fallback_llm_call_id,
                 step="style_draft",
+                node_id="style_draft",
                 execution_step_key=execution_step_key,
                 started_at=started_at,
                 task_config=None,
@@ -2094,6 +2100,7 @@ class SceneGenerationService:
         copy_check = None
         introduced = None
         copy_blocked = False
+        copy_unchecked = False
         try:
             from novel_system.services.reference_copy_gate import check_reference_copy, introduced_copy
 
@@ -2102,9 +2109,12 @@ class SceneGenerationService:
             # 一次调用、还把「照抄」记到修改头上；首稿自己的重合由硬 QC / 成稿门对全文把关
             introduced = introduced_copy(copy_check, revision_content, first_content)
             copy_blocked = bool(introduced.blocked)
+            if not copy_blocked and copy_check.unavailable and not copy_check.hits:
+                # 有一边没有查成（书已删 / 策略降级）又没查出命中：不是「查过、没重合」——同样保留首稿（fail-closed）
+                copy_blocked = copy_unchecked = True
         except Exception:  # noqa: BLE001 — 抄袭门查不成：按拦下处理（fail-closed），保留首稿
             _LOGGER.warning("copy gate failed on targeted revision for scene %s", scene.scene_id, exc_info=True)
-            copy_blocked = True
+            copy_blocked = copy_unchecked = True
         # L3：读数在保存点里读，失败只回滚保存点（读不出按「不更像」处理），不耽误后面落库与检查点
         revision_reading, _revision_error = self._observe_reading(
             policy, revision_content, ref=scene.scene_id, what="revision"
@@ -2128,6 +2138,9 @@ class SceneGenerationService:
                 base_safe=bool(base_safety["accepted"]),
                 thresholds=thresholds,
             )
+        if copy_unchecked and keep_reason == style_step.REASON_COPY_BLOCKED:
+            # 没查成不是查出了重合：原因与提示如实说「没能检查」
+            keep_reason = REASON_COPY_UNCHECKED
         rejected_row_id: str | None = None
         if keep:
             content = revision_content
@@ -2158,6 +2171,7 @@ class SceneGenerationService:
                     {
                         style_step.REASON_NOT_CLOSER: "定向修改没有让稿子更像参考作者（读数没有变近），保留了首稿。",
                         style_step.REASON_COPY_BLOCKED: "定向修改稿新带进了与参考书原文连续相同的句子，已丢弃，保留首稿。",
+                        REASON_COPY_UNCHECKED: "抄袭门这次没能检查定向修改稿（参考书已不在书库或风格策略降级），为免带进没核对过的原文，保留首稿。",
                         style_step.REASON_BASE_UNSAFE: "定向修改稿没过确定性安全门（长度 / 必写项 / 禁写内容 / 文本完整性），保留首稿。",
                         style_step.REASON_REVISION_UNREADABLE: "定向修改稿读不出读数，无法确认更像，保留首稿。",
                     }.get(keep_reason, "定向修改没有采用，保留首稿。"),
@@ -2390,7 +2404,8 @@ class SceneGenerationService:
         from novel_system.services.literary_quality import adversarial_rank_score
         from novel_system.services.reference_copy_gate import check_reference_copy
 
-        scored: list[tuple[StyleGenerationResult, int, Any, bool]] = []
+        # 抄袭门的结论：True = 查过没重合，False = 查出重合，None = 没查成（书已删 / 策略降级 / 检查出错）
+        scored: list[tuple[StyleGenerationResult, int, Any, bool | None]] = []
         for result, idx in results:
             if (result.content or "") == "":
                 reading = None
@@ -2401,14 +2416,17 @@ class SceneGenerationService:
                 reading, _error = self._observe_reading(
                     policy, result.content, ref=result.row_id, what="candidate"
                 )
+            copy_passed: bool | None
             try:
-                copy_passed = not check_reference_copy(self.session, result.content or "", policy=policy).blocked
-            except Exception:  # noqa: BLE001 — 抄袭门查不成：候选按未过处理（排最后，终选门会剔除）
-                copy_passed = False
+                copy = check_reference_copy(self.session, result.content or "", policy=policy)
+                # 有一边没有查成又没查出命中：不能当成「查过、没重合」（终选门不把没查成的候选交给作者）
+                copy_passed = None if (copy.unavailable and not copy.hits) else not copy.blocked
+            except Exception:  # noqa: BLE001 — 抄袭门查不成：候选按没查成处理（排最后，终选门会剔除）
+                copy_passed = None
             scored.append((result, idx, reading, copy_passed))
         scored.sort(
             key=lambda item: (
-                not item[3],
+                item[3] is not True,
                 item[2] is None,
                 float(item[2].distance) if item[2] is not None else 0.0,
                 item[1],
@@ -2435,7 +2453,7 @@ class SceneGenerationService:
                     within_author_range(reading, max_percentile=max_percentile) if reading is not None else None
                 ),
                 "duplicate_of_row_id": duplicate_of,
-                "plagiarism_checked": True,
+                "plagiarism_checked": copy_passed is not None,
                 "plagiarism_passed": copy_passed,
                 "rerank": {"applied_mode": "fidelity_distance", "reason": None},
             }
@@ -2588,6 +2606,7 @@ class SceneGenerationService:
                 bundle=bundle,
                 llm_call_id=fallback_llm_call_id,
                 step=llm_step,
+                node_id=("style_patch" if llm_step == "soft_patch" else llm_step),
                 execution_step_key=execution_step_key,
                 started_at=started_at,
                 task_config=None,
@@ -3840,6 +3859,7 @@ class SceneGenerationService:
         bundle: dict[str, Any],
         llm_call_id: str,
         step: str,
+        node_id: str,
         execution_step_key: str | None = None,
         started_at: float,
         task_config: Any | None,
@@ -3858,7 +3878,8 @@ class SceneGenerationService:
                 provider_id=getattr(task_config, "provider_id", None),
                 account_id=getattr(task_config, "account_id", None),
                 model=getattr(task_config, "model", None),
-                node_id=step,
+                # 这一步本该派发到的节点（soft_patch 走 style_patch 路由、作者手笔首稿走 style_draft），不是步名
+                node_id=node_id,
                 reasoning_level=getattr(task_config, "reasoning_level", None),
                 native_reasoning_json=None,
                 credential_mode=getattr(task_config, "credential_mode", None),
@@ -4513,7 +4534,7 @@ def _assess_de_template_rewrite(
     missing_required = sorted(set(required_terms) - rewritten_required)
     missing_without_regression = sorted(set(missing_required) - set(lost_required))
 
-    forbidden_terms = constraint_terms(scene.forbidden_text or "")
+    forbidden_terms = card_forbidden_terms(scene.forbidden_text)
     source_forbidden = {
         term
         for term in forbidden_terms
@@ -4772,7 +4793,7 @@ def _assess_style_base_rewrite(
     missing_required = sorted(set(required_terms) - rewritten_required)
     missing_without_regression = sorted(set(missing_required) - set(lost_required))
 
-    forbidden_terms = constraint_terms(scene.forbidden_text or "")
+    forbidden_terms = card_forbidden_terms(scene.forbidden_text)
     source_forbidden = {
         term for term in forbidden_terms if contains_forbidden_term(term, source_content)
     }
@@ -5123,7 +5144,7 @@ def _neutral_repair_brief(
         for term in required_terms
         if not source_field_satisfied(term, source_content)
     ]
-    forbidden_terms = constraint_terms(scene.forbidden_text or "")
+    forbidden_terms = card_forbidden_terms(scene.forbidden_text)
     forbidden_hits = [
         term for term in forbidden_terms if contains_forbidden_term(term, source_content)
     ]
@@ -5437,7 +5458,7 @@ def _assess_neutral_draft(scene: SceneCard, content: str) -> dict[str, Any]:
     missing_required = [
         term for term in required_terms if not source_field_satisfied(term, content)
     ]
-    forbidden_terms = constraint_terms(scene.forbidden_text or "")
+    forbidden_terms = card_forbidden_terms(scene.forbidden_text)
     forbidden_hits = [
         term for term in forbidden_terms if contains_forbidden_term(term, content)
     ]

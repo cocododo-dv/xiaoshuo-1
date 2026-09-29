@@ -43,8 +43,11 @@ from novel_system.services.scene_generation import (
     _apply_style_length_patch,
     _apply_style_salvage_patch,
     _assess_de_template_rewrite,
+    _assess_neutral_draft,
+    _assess_style_base_rewrite,
     _extract_scene_text,
     _neutral_length_instruction,
+    _neutral_repair_brief,
     _scene_text_integrity_markers,
     _style_repair_length_instruction,
 )
@@ -795,6 +798,67 @@ def test_neutral_repair_keeps_an_already_valid_source_in_a_local_length_window()
     assert "previous length already passed" in instruction
     assert "within 810-990 visible characters" in instruction
     assert "smallest localized edits" in instruction
+
+
+_LEGACY_POLICY_SENTENCE = "不得复制参考书原文表达、人物、设定或桥段。"
+
+
+def test_legacy_reference_policy_sentence_is_not_a_forbidden_word_list() -> None:
+    """B04-05：旧卡的 forbidden_text 还带着防抄袭政策句——那不是禁用词表，「人物」不是禁用词；
+    中性稿验收、修复简报与两个改写验收都只经 qc_constraints.forbidden_terms 读这个字段。"""
+    scene = SimpleNamespace(
+        scene_id="SC_POLICY",
+        chapter_id="CH_POLICY",
+        must_include_text="",
+        forbidden_text=_LEGACY_POLICY_SENTENCE,
+        target_length_band=None,
+    )
+    content = "这号人物站在雨里，手里攥着那封旧信，一句话也没说。" * 3
+    source = "他站在雨里，手里什么也没拿，一句话也没说。" * 3
+
+    assessment = _assess_neutral_draft(scene, content)
+    assert "forbidden_content_present" not in assessment["reasons"]
+    assert assessment["forbidden_hit_count"] == 0
+    assert "人物" not in _neutral_repair_brief(scene, source_content=content, assessment=assessment)
+    base = _assess_style_base_rewrite(scene=scene, source_content=source, rewritten_content=content)
+    assert "forbidden_content_added" not in base["reasons"]
+    rewrite = _assess_de_template_rewrite(
+        scene=scene,
+        source_content=source,
+        rewritten_content=content,
+        source_quality_gate={"score": 0.0, "findings": []},
+    )
+    assert "forbidden_content_added" not in rewrite["reasons"]
+
+    # 作者真写的禁用词照样拦——哪怕接在政策句后面
+    scene.forbidden_text = _LEGACY_POLICY_SENTENCE + "旧信"
+    assessment = _assess_neutral_draft(scene, content)
+    assert "forbidden_content_present" in assessment["reasons"]
+    assert "旧信" in _neutral_repair_brief(scene, source_content=content, assessment=assessment)
+    assert "forbidden_content_added" in _assess_style_base_rewrite(
+        scene=scene, source_content=source, rewritten_content=content
+    )["reasons"]
+
+
+def test_scene_card_forbidden_text_is_only_split_by_qc_constraints() -> None:
+    """B04-05 守卫：场景卡 forbidden_text 只经 qc_constraints.forbidden_terms / strip_reference_policy 读——
+    别处不许用 constraint_terms(...) 直接拆它（防抄袭政策句会被拆成「人物」这样的假禁用词）。"""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "novel_system"
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "qc_constraints.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if name == "constraint_terms" and "forbidden" in ast.unparse(node):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == []
 
 
 def test_neutral_draft_repairs_missing_alternative_even_without_length_band(session) -> None:
@@ -1857,11 +1921,43 @@ def test_run_scene_records_neutral_prompt_builder_failure_and_clears_stale_state
     state = session.get(SceneRunState, "CH100_SC01")
 
     assert llm_call.step == "neutral_draft"
+    assert llm_call.node_id == "neutral_draft"
     assert llm_call.error_code == "PromptConfigurationError"
     assert attempt.status == "failed"
     assert state.current_neutral_draft_row_id is None
     assert state.current_qc_report_id is None
     assert state.soft_patch_count == 0
+
+
+def test_prompt_builder_failure_records_the_node_the_step_routes_to(session, monkeypatch) -> None:
+    """B02-20：装配提示词就失败时，账本行记的是这一步本该派发到的节点——软补丁走 style_patch 路由，
+    不是步名 soft_patch（成本看板按节点归类，步名在节点表里查不到）。"""
+    _seed_scene(session)
+
+    def failing_prompt_builder(self):
+        raise PromptConfigurationError("prompts config missing")
+
+    monkeypatch.setattr(SceneGenerationService, "_prompt_builder", failing_prompt_builder)
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+    }
+    service = SceneGenerationService(session, llm_client=FakeSceneClient())
+    with pytest.raises(PromptConfigurationError):
+        service.generate_style_patch(
+            "CH100_SC01",
+            bundle,
+            source_style_draft_row_id="draft_style_CH100_SC01",
+            source_style_content="旧稿。",
+            rewrite_brief=["补一处动作"],
+            source_qc_report_id="qc_report_CH100_SC01",
+        )
+    session.commit()
+
+    llm_call = session.execute(select(LlmCall).where(LlmCall.step == "soft_patch")).scalars().one()
+    assert llm_call.node_id == "style_patch"
+    assert llm_call.accounting_status == "rejected"
 
 
 def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:

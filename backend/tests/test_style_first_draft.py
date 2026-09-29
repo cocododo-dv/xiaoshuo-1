@@ -339,6 +339,60 @@ def test_style_first_repair_keeps_the_prefix_and_label(session) -> None:
     assert "keep the reference author's manner" in repair_call["user_prompt"]
 
 
+def test_style_first_repair_failure_records_the_repair_prompt_it_sent(session) -> None:
+    """B02-20：首稿修复那一遍调用失败时，失败尝试记的是修复这一遍实际发出的提示（按修复提示重新注入过、
+    审计不同），不是首稿那一份。"""
+    from novel_system.services.llm_task_runner import LLMNodeExecutionError
+
+    _seed_binding("sfd_d3f", project_id="proj_sfd_d3f")
+    scene = _seed_scene(session, project_id="proj_sfd_d3f", scene_id="SFD_D3F_SC01", chapter_id="SFD_D3F")
+    bundle = _frozen_bundle("proj_sfd_d3f", scene.scene_id, scene.chapter_id)
+
+    class _FailingRepairRunner(_Runner):
+        def run(self, **kwargs):  # noqa: ANN003
+            if kwargs.get("step") == "neutral_draft_repair":
+                self.calls.append(kwargs)
+                raise LLMNodeExecutionError(
+                    llm_call_id="llm_call_sfd_repair_failed",
+                    error_code="LLM_PROVIDER_ERROR",
+                    message="provider unavailable",
+                    request_summary={},
+                    response_summary={},
+                )
+            return super().run(**kwargs)
+
+    # 首稿漏了必含项「信封」→ 一次修复，修复这一遍调用失败
+    runner = _FailingRepairRunner(outputs={"neutral_draft": "脚步在门外停了；他什么也没放下。"}, default=_VOICED_TEXT)
+    service = SceneGenerationService(session, llm_runner=runner)
+    passes: list[int] = []
+    original_inject = service._inject_style_reference
+
+    def tagging_inject(prompt, scene_card, **kwargs):  # noqa: ANN001, ANN003
+        injected = dict(original_inject(prompt, scene_card, **kwargs))
+        passes.append(len(passes) + 1)
+        injected["_style_reference_runtime_audit"] = {
+            **dict(injected.get("_style_reference_runtime_audit") or {}),
+            "probe_pass": passes[-1],
+        }
+        return injected
+
+    service._inject_style_reference = tagging_inject
+    with pytest.raises(LLMNodeExecutionError):
+        service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+
+    assert passes == [1, 2], "首稿与修复各注入一次"
+    failed = session.execute(
+        select(AttemptTracker).where(
+            AttemptTracker.scene_id == scene.scene_id,
+            AttemptTracker.step == "neutral_draft_repair",
+            AttemptTracker.status == "failed",
+        )
+    ).scalars().one()
+    assert failed.details_json["style_reference_runtime"]["probe_pass"] == 2
+    assert failed.details_json["template_name"] == "style_first_draft"
+
+
 def test_style_draft_step_labels_the_source_as_first_draft_under_style_first(session, monkeypatch) -> None:
     """风格参考 v3（P5b，L1）：作者手笔直起时风格步不再「复读」——首稿越界才做定向修改，来源稿仍标成首稿。"""
     _seed_binding("sfd_d4", project_id="proj_sfd_d4")
