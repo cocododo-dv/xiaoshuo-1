@@ -1,18 +1,38 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 from novel_system.api.app import create_app
 from novel_system.db.base import Base
-from novel_system.db.session import SessionLocal, engine
+from novel_system.db.session import SessionLocal, reset_engine
+
+
+@pytest.fixture(scope="session")
+def _schema_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """整套 ORM 表结构每个会话只建一次，每个测试拿一份文件副本。
+
+    逐测试 drop_all + create_all（72 张表、113 个索引、每条 DDL 一次 fsync）约 1 s / 测试，
+    占本机全量的一半多；文件副本 1–3 ms。模板用一个不带 WAL / 外键钩子的临时 engine 建，
+    不经 db.session.engine()，所以不会把引擎状态带进任何测试；每次会话现建、从不入库，
+    表结构漂移守卫照旧拿活的 ORM 与 Alembic 对比。
+    """
+    path = tmp_path_factory.mktemp("schema_template") / "template.db"
+    template_engine = sa.create_engine(f"sqlite:///{path}")
+    try:
+        Base.metadata.create_all(bind=template_engine)
+    finally:
+        template_engine.dispose()
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -20,13 +40,16 @@ def isolated_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
+    _schema_template: Path,
 ) -> Generator[None, None, None]:
     is_chroma_integration = request.node.get_closest_marker("chroma_integration") is not None
     if is_chroma_integration and sys.platform == "win32":
         pytest.skip("Chroma integration tests require Linux/WSL; native Windows Chroma is blocked")
 
     vector_backend = "chroma" if is_chroma_integration else "memory"
-    monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
+    database_path = tmp_path / "test.db"
+    shutil.copyfile(_schema_template, database_path)
+    monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{database_path}")
     monkeypatch.setenv("NOVEL_SYSTEM_CHROMA_DIR", str(tmp_path / "chroma"))
     monkeypatch.setenv("NOVEL_SYSTEM_VECTOR_BACKEND", vector_backend)
     # Path-import tests are isolated to the per-test temporary directory. In
@@ -47,13 +70,11 @@ def isolated_database(
     # A small set of acceptance tests seed review lifecycle fixtures through a
     # hidden maintenance boundary. Production keeps this disabled by default.
     monkeypatch.setenv("NOVEL_SYSTEM_ENABLE_FIXTURE_IMPORT", "true")
-    from novel_system.db.session import reset_engine
 
     reset_engine()
-    Base.metadata.drop_all(bind=engine())
-    Base.metadata.create_all(bind=engine())
     yield
-    Base.metadata.drop_all(bind=engine())
+    # 关掉本测试的连接池（Windows 上不关掉删不了 tmp 目录里的库文件）。
+    reset_engine()
 
 
 @pytest.fixture
