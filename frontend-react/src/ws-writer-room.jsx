@@ -18,7 +18,7 @@ import { wrAnnoAnchoredIds, wrAnnoApply, wrAnnoLoad, wrAnnoRefresh, wrAnnoSave }
 import {
   useImmersionChrome, useRailResize, useWrCounter, useWrEvent, useWrLayout, useWriterShortcuts,
 } from "./ws-writer-hooks.js";
-import { useWrCatalog, useWrSceneMeta, wrInitialScene, wrNeighbours } from "./ws-writer-catalog.js";
+import { useWrCatalog, useWrCatalogStatus, useWrSceneMeta, wrInitialScene, wrNeighbours } from "./ws-writer-catalog.js";
 import { useCanonicalPromotion, useDocBinding } from "./ws-writer-doc.js";
 import { useDeepPosture } from "./ws-writer-deep-posture.js";
 import { WrEntityPop, WrMentionPicker, useWrEntities, useWrMention, wrHighlightEntities } from "./ws-writer-entities.jsx";
@@ -71,21 +71,25 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
      FE-ALIGN P3：目录是后端异步装载的；冷启动直达写作台时 activeScene 可能是 null，目录就绪后选中在写场景。
      切换作品 / 目录重载时，旧作品的场景 id 绝不能继续留在编辑器里；命中就换成目录里现在的 sid
      （乐观创建时的临时 sid、旧深链里的位置式 sid 都经别名解析到同一场）。 */
-  const keepOrRefocus = useWrEvent(() => setActiveScene((prev) => {
+  const refocusTarget = (prev) => {
     const kept = prev ? WsCatalog.sceneById(prev) : null;
     if (kept) return kept.scene.sid;
     const hit = WsCatalog.focusScene ? WsCatalog.focusScene() : WsCatalog.writingScene();
     return hit && hit.scene ? hit.scene.sid : null;
-  }));
-  const { chapters, rev, refresh } = useWrCatalog(keepOrRefocus);
-  const meta = useWrSceneMeta(chapters, activeScene, rev);
+  };
+  /* 目录这次通知没动到当前场（绝大多数时候：自动保存回写字数）就不排更新——空更新也会让整间写作台重渲染 */
+  const keepOrRefocus = useWrEvent(() => {
+    if (refocusTarget(activeScene) === activeScene) return;
+    setActiveScene(refocusTarget);
+  });
+  const { chapters, refresh } = useWrCatalog(keepOrRefocus);
+  const meta = useWrSceneMeta(chapters, activeScene);
   const design = meta.design;
   const activeChapter = chapters.find((chapter) => chapter.scenes.some((scene) => scene.id === activeScene));
   const approvedLocked = !!(activeChapter && activeChapter.state === "approved");
-  const catalogLoadError = WsCatalog.loadError ? WsCatalog.loadError() : null;
-  const catalogPending = !!(WsCatalog.ready && !WsCatalog.ready());
-  const catalogUnavailable = catalogPending && !!catalogLoadError;
-  const catalogLoading = catalogPending && !catalogLoadError;
+  const catalogStatus = useWrCatalogStatus();
+  const catalogUnavailable = catalogStatus.pending && catalogStatus.failed;
+  const catalogLoading = catalogStatus.pending && !catalogStatus.failed;
   const nav = useMemo(() => wrNeighbours(chapters, activeScene), [chapters, activeScene]);
 
   /* ---- 布局（两侧栏的停靠规则要看姿态，useWrLayout 在深改姿态之后调用） ---- */

@@ -398,6 +398,39 @@ describe("写作台 · 当前段标记（F03-09）", () => {
 });
 
 
+describe("写作台 · 目录只改了字数（F03-10）", () => {
+  it("自动保存回写的字数不让整间写作台重渲染；目录里这一场的设计变了，页头照样跟着变", async () => {
+    const { client, WriterRoom } = await loadWriter();
+    client.apiPost.mockImplementation((url) => (/\/author-drafts\/scene\/s1\/ensure$/.test(url)
+      ? Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "<p>起点</p>" } })
+      : Promise.resolve({})));
+    let commits = 0;
+    const host = await render(
+      <React.Profiler id="writer-room" onRender={() => { commits += 1; }}>
+        <WriterRoom t={{}} setTweak={() => {}} />
+      </React.Profiler>,
+    );
+    const editor = () => host.querySelector(".wr-editor");
+    const card = () => host.querySelector('[data-testid="scene-design-card"]');
+    await vi.waitFor(() => expect(editor().textContent).toContain("起点"), T);
+    await vi.waitFor(() => expect(card().textContent).toContain("替父亲点名"), T);
+    await wait(300);
+    const settled = commits;
+    await act(async () => { window.WsCatalog.recordSceneWords("ch01s1", 4321); });
+    await wait(100);
+    expect(window.WsCatalog.sceneById("ch01s1").scene.words).toBe(4321);
+    expect(commits).toBe(settled);
+
+    const base = client.apiGet.getMockImplementation();
+    const scene = DEFAULT_CHAP.scenes[0];
+    client.apiGet.mockImplementation((url) => (/\/api\/v2\/projects\/[^/]+\/catalog(\?|$)/.test(url)
+      ? Promise.resolve({ chapters: [{ ...DEFAULT_CHAP, scenes: [{ ...scene, brief: { ...scene.brief, goal: "替父亲去码头点名" } }] }] })
+      : base(url)));
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(card().textContent).toContain("替父亲去码头点名"), T);
+  }, LONG);
+});
+
 describe("写作台 · @ 唤档案", () => {
   const rangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
   afterEach(() => {

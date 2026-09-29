@@ -9,10 +9,14 @@ import { manuscriptStage, sceneLabel } from "./labels/catalog.js";
    WsCatalog 是章节 / 场景的单一真相源；写作台只把它映射成大纲要的形状，
    并算出当前这一场的页头（章场编号、题名、设计卡）。
    目录每次通知（包括每次自动保存后的字数回写）都会给一份新数组；大纲的形状没变时
-   沿用上一份，React.memo 的大纲栏就不必重渲染。ESM 模块，不写 window。
+   沿用上一份，React.memo 的大纲栏就不必重渲染；页头 / 设计卡与装载状态也按内容订阅——
+   只改了字数的通知不让整间写作台重渲染。ESM 模块，不写 window。
    ========================================================== */
 
-const { useEffect, useMemo, useState } = React;
+const { useEffect, useMemo, useRef, useState, useSyncExternalStore } = React;
+
+/* useSyncExternalStore 要一个稳定的订阅函数 */
+const subscribeCatalog = (fn) => (WsCatalog ? WsCatalog.subscribe(fn) : () => {});
 
 /* 目录 → 大纲形状（写作器本地渲染用） */
 export function wrFromCatalog() {
@@ -100,32 +104,56 @@ export function wrNeighbours(chapters, sceneId) {
   return { prevId: prev ? prev.id : null, nextId: next ? next.id : null, nextTitle: next ? next.title || "" : "" };
 }
 
-/* 订阅目录：大纲形状 + 一个版本号（设计卡等随目录内容变化的派生值按它重算）。
-   onChange(prevScene => nextScene) 让调用方在目录重载 / 换作品时校正当前场。 */
+/* 订阅目录：大纲形状。形状没变就沿用上一份、连空更新也不排（否则每次目录通知——包括每次自动保存
+   的字数回写——都让整间写作台重渲染一遍）。onChange() 让调用方在目录重载 / 换作品时校正当前场。 */
 export function useWrCatalog(onChange) {
   const [chapters, setChapters] = useState(wrFromCatalog);
-  const [rev, setRev] = useState(0);
+  const shownRef = useRef(chapters);
+  const adopt = (next) => {
+    if (sameOutline(shownRef.current, next)) return shownRef.current;
+    shownRef.current = next;
+    setChapters(next);
+    return next;
+  };
   useEffect(() => {
     if (!WsCatalog) return undefined;
     const sync = () => {
-      const next = wrFromCatalog();
-      setChapters((prev) => (sameOutline(prev, next) ? prev : next));
-      setRev((value) => value + 1);
+      adopt(wrFromCatalog());
       if (onChange) onChange();
     };
     const un = WsCatalog.subscribe(sync);
     sync();
     return un;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const refresh = () => {
-    const next = wrFromCatalog();
-    setChapters((prev) => (sameOutline(prev, next) ? prev : next));
-    return next;
-  };
-  return { chapters, setChapters, rev, refresh };
+  const refresh = () => adopt(wrFromCatalog());
+  return { chapters, refresh };
 }
 
-export function useWrSceneMeta(chapters, sceneId, rev) {
-  // rev：目录内容变了（设计卡、字数……）但大纲形状没变时，页头的设计卡也要重算
-  return useMemo(() => wrSceneMeta(chapters, sceneId), [chapters, sceneId, rev]); // eslint-disable-line react-hooks/exhaustive-deps
+/* 当前这一场页头里取自目录的那部分（本场目标 + 设计卡）压成一个字符串：字数不在里面，
+   所以每次自动保存的字数回写不会让页头重算、写作台重渲染（过去每次目录通知都递增一个版本号）。 */
+function sceneDetailSignature(sceneId) {
+  if (!sceneId || !WsCatalog) return "";
+  let hit = null;
+  try { hit = WsCatalog.sceneById(sceneId); } catch (e) { hit = null; }
+  if (!hit || !hit.scene) return "";
+  return JSON.stringify([hit.scene.goal || "", sceneDesignModel(hit)]);
+}
+
+export function useWrSceneMeta(chapters, sceneId) {
+  // 大纲形状没变、目录里这一场的设计卡变了（构思同步过来、章节编排改了）时，页头也要重算
+  const detail = useSyncExternalStore(subscribeCatalog, () => sceneDetailSignature(sceneId));
+  return useMemo(() => wrSceneMeta(chapters, sceneId), [chapters, sceneId, detail]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/* 目录的装载状态（还没就绪 / 读失败）：变了才让写作台重渲染 */
+function catalogStatusSnapshot() {
+  if (!WsCatalog) return "ready";
+  const pending = !!(WsCatalog.ready && !WsCatalog.ready());
+  const failed = !!(WsCatalog.loadError && WsCatalog.loadError());
+  return `${pending ? "pending" : "ready"}${failed ? ":failed" : ""}`;
+}
+
+export function useWrCatalogStatus() {
+  const status = useSyncExternalStore(subscribeCatalog, catalogStatusSnapshot);
+  return { pending: status.startsWith("pending"), failed: status.endsWith(":failed") };
 }
