@@ -148,6 +148,38 @@ def test_yaml_errors_read_exactly_like_the_pure_loaders() -> None:
     assert validate_config("models", broken) == ({}, {"ok": False, "message": str(pure.value)})
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "task_routing:\n  neutral_draft:\n    model: gpt\t5\n",  # 值里夹制表符
+        "a: b\t\n",  # 行尾制表符
+        "a:\tb\n",  # 冒号后制表符
+        "a: [1,\t2]\n",  # 流式列表里的制表符
+        "required: [a, b? c]\n",  # 流式纯量里的 ?
+        "k:\n  # c1\n  |# c2\n  x: 1\n",  # libyaml 会把映射读成字符串
+        "a: \ud800\n",  # 孤立代理字符：libyaml 抛 UnicodeEncodeError
+    ],
+)
+def test_author_yaml_is_validated_by_the_strict_pure_parser(raw: str) -> None:
+    """复核 R1：系统配置的校验接受范围与报错原文和纯 Python 解析器完全一致（libyaml 更宽，不能用它校验作者输入）。"""
+    try:
+        yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        expected = ({}, {"ok": False, "message": str(exc)})
+    else:  # pragma: no cover - 这些输入纯解析器都拒绝
+        raise AssertionError(f"pure SafeLoader accepted {raw!r}")
+    assert validate_config("models", raw) == expected
+
+
+def test_safe_load_yaml_falls_back_to_the_pure_parser_on_unicode_errors() -> None:
+    raw = "a: \ud800\n"
+    with pytest.raises(yaml.YAMLError) as pure:
+        yaml.safe_load(raw)
+    with pytest.raises(yaml.YAMLError) as fast:
+        safe_load_yaml(raw)
+    assert str(fast.value) == str(pure.value)
+
+
 def test_content_keyed_cache_is_a_small_lru_that_never_caches_failures() -> None:
     cache = ContentKeyedCache(maxsize=2)
     assert cache.get_or_build("a", lambda: 1) == 1
@@ -503,3 +535,30 @@ def test_read_paths_never_reparse_config_and_never_write(monkeypatch) -> None:
     assert yaml_parses["models"] <= 1
     # 这几个只读摘要不发 LLM 调用，也就不该装配提示词（X01-02：服务构造时不再顺手建 PromptBuilder）
     assert template_loads == []
+
+
+def test_a_settings_read_failure_in_run_is_not_disguised_as_an_llm_failure(session, monkeypatch) -> None:
+    """复核 R2：设置延迟读取后，读设置时的数据库错误仍要原样抛出（API 层据此回可重试的 DATABASE_BUSY），
+    不能被 run() 的兜底包装成不可重试的 LLMNodeExecutionError。"""
+    from sqlalchemy.exc import OperationalError
+
+    from novel_system.services import llm_task_runner as ltr
+    from novel_system.services.llm_accounting import LLMCallContext
+
+    def boom(*_args, **_kwargs):
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(ltr, "get_settings", boom)
+    runner = ltr.LLMNodeRunner(session)
+    with pytest.raises(OperationalError):
+        runner.run(
+            scene_id="S1",
+            chapter_id="C1",
+            bundle_id="b",
+            bundle_hash="h",
+            node_id="neutral_draft",
+            step="neutral_draft",
+            prompt={"system_prompt": "s", "user_prompt": "u", "token_budget": {}},
+            user_prompt="u",
+            context=LLMCallContext(scope_type="system", scope_id="sys", node_id="neutral_draft", step="neutral_draft"),
+        )

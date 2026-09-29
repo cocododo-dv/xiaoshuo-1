@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import LlmCall, OperationLog, SystemConfigSnapshot, SystemSecret, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
-from novel_system.services.config_cache import safe_load_yaml
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.llm_client import (
@@ -1457,7 +1456,10 @@ def _ensure_category(category: str) -> None:
 
 
 def _parse_yaml_mapping(yaml_raw: str) -> dict[str, Any]:
-    payload = safe_load_yaml(yaml_raw) if yaml_raw.strip() else {}
+    # 作者在系统配置里提交的 YAML 用纯 Python 解析器校验：libyaml 比它宽（值里夹制表符、流式列表里的 ``?``、
+    # ``|#`` 块头都放行，后者还会把映射悄悄读成字符串），这里要的是原来那套严格的接受范围与报错原文。
+    # 只在保存 / 校验草稿时走，冷路径，慢一点无妨。
+    payload = yaml.safe_load(yaml_raw) if yaml_raw.strip() else {}
     if payload is None:
         payload = {}
     if not isinstance(payload, dict):

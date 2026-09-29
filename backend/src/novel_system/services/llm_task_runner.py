@@ -326,6 +326,10 @@ class LLMNodeRunner:
         task_config: Any | None = None
         request: LLMRequest | None = None
         request_summary: dict[str, Any] = {}
+        if self._llm_client is None:
+            # 运行时设置延迟到第一次用到才读；但读设置失败（数据库忙等）不是一次 LLM 调用失败，得在下面的
+            # 兜底包装之外原样抛出，照旧由 API 层映射成可重试的 DATABASE_BUSY——和原来在构造时读一样。
+            self.settings  # noqa: B018
 
         try:
             execution_mode = self._provider_execution_mode()

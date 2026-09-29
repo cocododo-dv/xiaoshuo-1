@@ -38,7 +38,8 @@ def safe_load_yaml(text: str) -> Any:
     """``yaml.safe_load`` 的等价物：先用 C 解析器，报错时用纯 Python 解析器重解析（错误照原样抛出）。"""
     try:
         return yaml.load(text, Loader=_FAST_SAFE_LOADER)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, UnicodeError):
+        # libyaml 遇到孤立代理字符抛的是 UnicodeEncodeError，不是 YAMLError；同样交给纯解析器给出原来的报错
         if _FAST_SAFE_LOADER is yaml.SafeLoader:
             raise
     return yaml.load(text, Loader=yaml.SafeLoader)
