@@ -3,7 +3,7 @@ import { storeAlert } from "./lib/store-utils.js";
 import { htmlToParagraphs, manuscriptToDocHTML, sanitizeManuscriptHTML } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
-import { wsToast } from "./ws-notify.jsx";
+import { wsNotify } from "./ws-notify.jsx";
 import { randomSuffix } from "./lib/ids.js";
 import { emit } from "./lib/events.js";
 
@@ -262,7 +262,7 @@ function cacheWrite(sid, html) {
 /* 本地稿被放进「同步与恢复」时告诉作者一声，并给一个直接打开它的按钮（入口在左侧导航栏底部）。
    外壳的提示层没挂上时（单测里单独加载 store）退回浏览器提示框。 */
 function recoveryNotice(sid, message) {
-  const shown = wsToast({
+  wsNotify({
     message,
     tone: "warn",
     timeout: 12000,
@@ -271,7 +271,6 @@ function recoveryNotice(sid, message) {
       onClick: () => { emit("ws:recovery-open", { sid }); },
     },
   });
-  if (!shown) { try { window.alert(message); } catch (e) {} }
 }
 
 function notifyLoaded(sid) {

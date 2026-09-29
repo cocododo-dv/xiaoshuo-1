@@ -12,6 +12,7 @@ import { registerAlertSink } from "./lib/store-utils.js";
    · wsToast({ message, tone, action: { label, onClick }, timeout }) —— 一条短暂的提示；
      提示摞成一列（最多 TOAST_MAX 条），新的不顶掉还没到时的旧的；同一句话重复来只留一条（重新计时）。
      视图自己的回执（UndoToast）也进同一列（ws-undo-toast.jsx 的提示栈），不再和这里的提示叠在同一块像素上；
+   · wsNotify(同 wsToast 的参数) —— 同一条提示，提示层没挂时退回 window.alert；
    · wsConfirm({ title, body, confirmLabel, cancelLabel, tone }) → Promise<boolean> ——
      应用内的确认框（WsDialog：焦点陷阱、Esc / 遮罩等于取消、关闭后焦点回到原处）；
    · store 的 storeAlert 在提示层挂载时改走这里（lib/store-utils.js 的 registerAlertSink）。
@@ -33,6 +34,15 @@ function wsToast(input) {
   if (!hostApi || !opts.message) return false;
   hostApi.toast(opts);
   return true;
+}
+
+/* 一条提示，提示层没挂时退回 window.alert（无头环境里静默）：视图 / store 的回执与失败提示用它，
+   不再各写一遍「toast，否则 alert」。参数同 wsToast；返回是否进了应用内的提示层。 */
+function wsNotify(input) {
+  const opts = typeof input === "string" ? { message: input } : (input || {});
+  if (wsToast(opts)) return true;
+  try { window.alert(opts.message); } catch (e) { /* 无头环境 */ }
+  return false;
 }
 
 function wsConfirm(input) {
@@ -190,4 +200,4 @@ function WsToastHost() {
   );
 }
 
-export { WsToastHost, wsConfirm, wsToast };
+export { WsToastHost, wsConfirm, wsNotify, wsToast };

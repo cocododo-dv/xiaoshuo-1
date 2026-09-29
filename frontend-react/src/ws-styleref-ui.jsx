@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks } from "./ws-works.jsx";
-import { wsToast } from "./ws-notify.jsx";
+import { wsNotify } from "./ws-notify.jsx";
 import { useStoreTick } from "./lib/store-utils.js";
 import { EmptyState } from "./ws-ui.jsx";
 import { srErrorInfo } from "./ws-styleref-model.js";
@@ -19,8 +19,7 @@ import { isRealWorkId } from "./lib/work-id.js";
 
 /* 失败 / 回执提示：外壳的提示层挂着时走应用内提示（ws-notify），没挂（单测里单独渲染）时退回 alert。 */
 export function srNotify(message, tone = "danger") {
-  if (wsToast({ message, tone })) return;
-  try { window.alert(message); } catch (e) { /* 无头环境 */ }
+  wsNotify({ message, tone });
 }
 
 /* 出错时的一句话提示（按错误码给中文，见 srErrorInfo） */
