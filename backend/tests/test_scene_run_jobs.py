@@ -277,6 +277,50 @@ def test_claimed_scene_job_starts_at_planning_not_at_the_draft(client, session, 
     assert observed == ["planning_running"]
 
 
+def test_polling_a_running_scene_job_reads_its_frozen_bundle_once(session, monkeypatch) -> None:
+    """B03-10：前端运行中每 2 秒轮询一次任务，任务视图的 draft_mode 每次都去读整份冻结 bundle（实库约 200 KB）。
+    冻结 bundle 不再变：同一个 bundle 的起草方式只读一次。"""
+    from novel_system.db.models import SceneBundle
+    from novel_system.services import style_policy as style_policy_module
+
+    _seed_job_scene(session, scene_id="SC_DRAFT_MODE")
+    session.add(
+        SceneBundle(
+            bundle_id="bundle_SC_DRAFT_MODE_v1",
+            scene_id="SC_DRAFT_MODE",
+            chapter_id="CH_SCENE_JOB",
+            execution_mode="P2",
+            bundle_snapshot_hash="hash",
+            frozen_snapshot_json={"inline_digests": {}, "source_version_refs": {}},
+        )
+    )
+    session.add(SceneRunState(scene_id="SC_DRAFT_MODE", current_bundle_id="bundle_SC_DRAFT_MODE_v1"))
+    job = ChapterRunJob(
+        job_id="scene_run_draft_mode_poll",
+        scene_id="SC_DRAFT_MODE",
+        status="running",
+        job_type="scene_run_full",
+        worker_id="worker-a",
+        attempt_no=1,
+        payload_json={"current_step": "bundle_ready"},
+        result_summary_json={"current_step": "bundle_ready"},
+    )
+    session.add(job)
+    session.commit()
+    reads: list[int] = []
+    original = style_policy_module.style_policy_for_bundle
+    monkeypatch.setattr(
+        style_policy_module,
+        "style_policy_for_bundle",
+        lambda snapshot, *args, **kwargs: reads.append(1) or original(snapshot, *args, **kwargs),
+    )
+
+    polls = [SceneRunJobService(session).serialize_job(job) for _ in range(3)]
+
+    assert {poll["draft_mode"] for poll in polls} == {"neutral_first"}
+    assert reads == [1]
+
+
 def test_scene_run_job_serialization_prefers_authoritative_scene_column(session) -> None:
     _seed_job_scene(session, scene_id="SCENE_COLUMN", chapter_id="CHJOB")
     job = ChapterRunJob(

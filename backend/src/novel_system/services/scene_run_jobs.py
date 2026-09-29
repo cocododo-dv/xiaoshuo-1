@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+from collections import OrderedDict
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -8,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import ChapterRunJob, LlmCall, OperationLog, QcReport, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
@@ -40,6 +43,13 @@ from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 
 _LOGGER = logging.getLogger(__name__)
+
+# 冻结 bundle 的起草方式（B03-10）：bundle 冻结后不再变，任务轮询（运行中每 2 秒一次）只在第一次读整份快照。
+# 按 bundle_id 记，库换了 id 会重复（测试每个用例一个新库），所以登记复位。
+_BUNDLE_DRAFT_MODES: OrderedDict[str, str | None] = OrderedDict()
+_BUNDLE_DRAFT_MODES_LIMIT = 256
+_BUNDLE_DRAFT_MODES_LOCK = threading.Lock()
+register_cache_reset("scene_run_jobs.bundle_draft_modes", _BUNDLE_DRAFT_MODES.clear)
 
 RUN_JOB_CANCEL_REQUESTED = "RUN_JOB_CANCEL_REQUESTED_BY_AUTHOR"
 RUN_JOB_CANCELLED = "RUN_JOB_CANCELLED_BY_AUTHOR"
@@ -365,16 +375,26 @@ class SceneRunJobService:
     def _scene_draft_mode(self, scene_state: SceneRunState | None) -> str | None:
         if scene_state is None or not scene_state.current_bundle_id:
             return None
+        bundle_id = str(scene_state.current_bundle_id)
+        with _BUNDLE_DRAFT_MODES_LOCK:
+            if bundle_id in _BUNDLE_DRAFT_MODES:
+                _BUNDLE_DRAFT_MODES.move_to_end(bundle_id)
+                return _BUNDLE_DRAFT_MODES[bundle_id]
         try:
             from novel_system.db.models import SceneBundle
             from novel_system.services.style_policy import style_policy_for_bundle
 
-            bundle_row = self.session.get(SceneBundle, scene_state.current_bundle_id)
+            bundle_row = self.session.get(SceneBundle, bundle_id)
             if bundle_row is None:
                 return None
-            return style_policy_for_bundle(bundle_row.frozen_snapshot_json).draft_mode
+            draft_mode = style_policy_for_bundle(bundle_row.frozen_snapshot_json).draft_mode
         except Exception:  # noqa: BLE001 — 只读展示,不影响任务视图
             return None
+        with _BUNDLE_DRAFT_MODES_LOCK:
+            _BUNDLE_DRAFT_MODES[bundle_id] = draft_mode
+            while len(_BUNDLE_DRAFT_MODES) > _BUNDLE_DRAFT_MODES_LIMIT:
+                _BUNDLE_DRAFT_MODES.popitem(last=False)
+        return draft_mode
 
     def serialize_job(self, job: ChapterRunJob) -> dict[str, Any]:
         payload = dict(job.payload_json or {})

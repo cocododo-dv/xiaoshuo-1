@@ -116,6 +116,40 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
     return shared
 
 
+def test_run_status_is_a_read_only_projection(session) -> None:
+    """B03-26：GET run-status 是前端章节运行时的轮询路径：视图按场景状态收敛（租约过期的 running 显示成
+    pending），但不改 ORM 行、不 flush——修之前每次轮询都把收敛结果写进会话、拿 SQLite 写锁，再随请求丢掉。"""
+    from novel_system.db.models import SceneCard
+
+    _add_job_parent(session, "CH_RO")
+    session.add(SceneCard(scene_id="CH_RO_SC01", chapter_id="CH_RO", scene_seq=1, scene_goal="goal"))
+    expired = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    session.add(
+        ChapterRunJob(
+            job_id="chapter-run-status-ro",
+            chapter_id="CH_RO",
+            status="running",
+            job_type="chapter_run_full",
+            worker_id="dead-worker",
+            attempt_no=1,
+            lease_expires_at=expired,
+            payload_json={"scene_ids": ["CH_RO_SC01"], "completed_scene_ids": []},
+            result_summary_json={"scene_ids": ["CH_RO_SC01"], "completed_scene_ids": []},
+        )
+    )
+    session.commit()
+    job = session.get(ChapterRunJob, "chapter-run-status-ro")
+
+    view = ChapterRunnerService(session).run_status("CH_RO")
+
+    assert view["status"] == "pending"
+    assert view["scene_ids"] == ["CH_RO_SC01"] and view["completed_scene_ids"] == []
+    assert job.status == "running" and job.lease_expires_at == expired
+    assert not session.dirty and not session.new
+    with SessionLocal() as observer:
+        assert observer.get(ChapterRunJob, "chapter-run-status-ro").status == "running"
+
+
 def test_chapter_job_detached_renewal_is_visible_to_other_sessions(session) -> None:
     _add_job_parent(session, "CH_RENEW")
     job = ChapterRunJob(

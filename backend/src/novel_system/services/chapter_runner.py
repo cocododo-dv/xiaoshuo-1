@@ -64,6 +64,18 @@ class _CompositeLeaseRenewer:
             renew(lease_seconds=lease_seconds)
 
 
+class _ReconciledJobView:
+    """GET run-status 的只读视图：收敛后的字段盖在任务行上，其余照读任务行（不改 ORM 行，B03-26）。"""
+
+    def __init__(self, job: ChapterRunJob, fields: dict[str, Any]) -> None:
+        self._job = job
+        self._fields = fields
+
+    def __getattr__(self, name: str) -> Any:
+        fields = self.__dict__["_fields"]
+        return fields[name] if name in fields else getattr(self.__dict__["_job"], name)
+
+
 class ChapterRunnerService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -273,9 +285,9 @@ class ChapterRunnerService:
                 "finished_at": None,
                 "source": None,
             }
-        self._reconcile_job(job, self._scene_ids(chapter_id))
-        self.session.flush()
-        return self._serialize_job(job)
+        # 轮询路径只读（B03-26）：收敛结果只进视图，不写回任务行、不拿写锁
+        fields = self._reconciled_fields(job, self._scene_ids(chapter_id))
+        return self._serialize_job(_ReconciledJobView(job, fields))
 
     def prepare_full_run(self, chapter_id: str) -> tuple[dict[str, Any], bool]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
@@ -372,17 +384,28 @@ class ChapterRunnerService:
         return not lease_is_active(job.lease_expires_at)
 
     def _reconcile_job(self, job: ChapterRunJob, scene_ids: list[str]) -> None:
+        for name, value in self._reconciled_fields(job, scene_ids).items():
+            if getattr(job, name) != value:
+                setattr(job, name, value)
+
+    def _reconciled_fields(self, job: ChapterRunJob, scene_ids: list[str]) -> dict[str, Any]:
+        """任务按场景现状收敛后的字段（纯计算，不改 job）：``_reconcile_job`` 写回，``run_status`` 只拿来做视图。"""
+        status = job.status
+        lease_expires_at = job.lease_expires_at
+        finished_at = job.finished_at
+        error_code = job.error_code
+        error_text = job.error_text
         if self._is_stale_running(job):
             # 过期租约的 running 对外不能再报"运行中"：回到 pending 让 run-job 重新
             # 拉起 worker（_claim_running 本来就允许接管这种行，这里只是让状态与之一致）。
-            job.status = JOB_STATUS_PENDING
-            job.lease_expires_at = None
-            job.finished_at = None
+            status = JOB_STATUS_PENDING
+            lease_expires_at = None
+            finished_at = None
         payload = self._payload(job)
         # failed 是作者可见的终态：错误码 / author_action 必须一直保留到作者显式重试
         # （_transition_explicit_failed_retry）。归档步失败时 near-final 早已写下定稿行，
         # 若仍从场景状态反推"完成"，失败任务会被伪装成 completed / 100% 且错误被清空。
-        failed = job.status == JOB_STATUS_FAILED
+        failed = status == JOB_STATUS_FAILED
         finalized_scene_ids = set() if failed else self._finalized_scene_ids(scene_ids)
         completed_set = {
             scene_id
@@ -412,28 +435,35 @@ class ChapterRunnerService:
                 "current_scene_id": current_scene_id,
             }
         )
-        job.payload_json = payload
         summary = dict(job.result_summary_json or {})
         latest_error = summary.get("latest_error")
         if blocked_scene_id is None and not failed:
             if next_scene_id is None:
                 latest_error = None
-                job.error_code = None
-                job.error_text = None
-                job.status = JOB_STATUS_COMPLETED
-                job.finished_at = job.finished_at or utcnow()
-            elif job.status in {JOB_STATUS_BLOCKED, JOB_STATUS_COMPLETED}:
+                error_code = None
+                error_text = None
+                status = JOB_STATUS_COMPLETED
+                finished_at = finished_at or utcnow()
+            elif status in {JOB_STATUS_BLOCKED, JOB_STATUS_COMPLETED}:
                 latest_error = None
-                job.error_code = None
-                job.error_text = None
-                job.status = JOB_STATUS_PENDING
-                job.finished_at = None
+                error_code = None
+                error_text = None
+                status = JOB_STATUS_PENDING
+                finished_at = None
         summary["scene_ids"] = scene_ids
         summary["completed_scene_ids"] = completed
         summary["blocked_scene_id"] = blocked_scene_id
         summary["current_scene_id"] = current_scene_id
         summary["latest_error"] = latest_error
-        job.result_summary_json = summary
+        return {
+            "status": status,
+            "lease_expires_at": lease_expires_at,
+            "finished_at": finished_at,
+            "error_code": error_code,
+            "error_text": error_text,
+            "payload_json": payload,
+            "result_summary_json": summary,
+        }
 
     def _finalized_scene_ids(self, scene_ids: list[str]) -> set[str]:
         """章任务可以跳过的场景：已归档且有定稿行。
