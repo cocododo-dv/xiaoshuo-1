@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
 import { modEnterShortcut } from "./lib/platform.js";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { activeWorkId } from "./ws-snow-hooks.js";
 import { CoachInline, CoachReply } from "./ws-snow-reply.jsx";

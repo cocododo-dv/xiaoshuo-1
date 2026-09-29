@@ -5,7 +5,7 @@ import { LIB_REL_TYPES, LIB_chapterLabel, LIB_relType } from "./ws-library-deriv
 import { apiDelete, apiPatch, apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
 import { wsKey, WsWorks } from "./ws-works.jsx";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { LibGlyph, libAccClass, libCatLabel } from "./ws-library-parts.jsx";
 import { Segmented } from "./ws-ui.jsx";
 

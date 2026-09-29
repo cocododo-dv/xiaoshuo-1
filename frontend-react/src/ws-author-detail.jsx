@@ -7,7 +7,7 @@ import { ArrChapterStateTag, ArrGrip, ArrSceneStateTag } from "./ws-author-ui.js
 import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
 import { planIntentsForScene, sceneDesignModel } from "./ws-scene-design.jsx";
 import { EmptyState, IconButton, Notice, Tag } from "./ws-ui.jsx";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { chapterLabel, sceneNoLabel } from "./ws-labels.js";
 
 /* ==========================================================

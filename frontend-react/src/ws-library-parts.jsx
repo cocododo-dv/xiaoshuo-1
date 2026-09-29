@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { cx } from "./ws-ui.jsx";
 import { LIB_CATS } from "./ws-library-data.jsx";
 
 /* ==========================================================
@@ -8,8 +9,6 @@ import { LIB_CATS } from "./ws-library-data.jsx";
    每一处都有自己的一套 CSS；现在都从这里出，样式在 ws-library.css 的 .lib-glyph / .lib-row。
    空态统一用 ws-ui 的 EmptyState，不再单独包一层。纯 ESM，不写 window。
    ========================================================== */
-
-const cx = (...parts) => parts.filter(Boolean).join(" ");
 
 /* 类别 id → 类别定义（名字、图标、强调色） */
 const LIB_CAT_BY_ID = LIB_CATS.reduce((m, c) => { m[c.id] = c; return m; }, {});

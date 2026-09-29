@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { onRovingTabKeyDown } from "./a11y-tabs.js";
+import { onRovingTabKeyDown } from "./lib/keyboard.js";
 import { modEnterShortcut } from "./lib/platform.js";
 import { WsDialog, isImeComposing } from "./ws-dialog.jsx";
 import { Notice } from "./ws-ui.jsx";

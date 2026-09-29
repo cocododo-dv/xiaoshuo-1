@@ -9,7 +9,7 @@ import { WS_LINE_HEIGHT_PRESETS, WS_PREFS, lineHeightPreset } from "./ws-prefs.j
 import { WS_NAV_GROUPS } from "./ws-nav.js";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
 import { wsConfirm } from "./ws-notify.jsx";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { WR_ANNO_KEY_PREFIX, wrAnnoLoad } from "./ws-writer-annotations.js";
 
 const { useState: useSt6, useEffect: useEf6, useLayoutEffect: useLayout6, useRef: useRef6 } = React;

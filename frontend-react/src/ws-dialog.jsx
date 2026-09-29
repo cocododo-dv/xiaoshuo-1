@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom";
+import { isImeComposing } from "./lib/keyboard.js";
 
 /* 共享对话框原语（2026-09-21 前端重构）。
    以前每个视图各写一遍：窗口级 Esc 监听、没有焦点陷阱、关闭后焦点丢在 body、
@@ -23,12 +24,8 @@ export function focusableIn(root) {
     .filter((node) => !node.hidden && node.getAttribute("aria-hidden") !== "true" && !node.closest("[inert]"));
 }
 
-/* 输入法组字中的回车 / 方向键不是命令（拼音选词时按回车会误触发提交）。 */
-export function isImeComposing(event) {
-  if (!event) return false;
-  const native = event.nativeEvent || event;
-  return Boolean(native.isComposing || event.isComposing || native.keyCode === 229 || event.keyCode === 229);
-}
+/* 输入法组字判定住在 lib/keyboard.js；这里转出，旧的导入路径照旧可用。 */
+export { isImeComposing };
 
 /* 当前打开的对话框栈：只有栈顶响应 Esc / 焦点陷阱。每一项记着它的根节点（topModalLayer 用）。 */
 const dialogStack = [];

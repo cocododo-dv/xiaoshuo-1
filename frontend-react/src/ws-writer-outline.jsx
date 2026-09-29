@@ -4,7 +4,7 @@ import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 import { CloseButton, Tag } from "./ws-ui.jsx";
 import { chapterHeading, chapterLabel, chapterStateMeta, sceneLabel, sceneStateMeta } from "./ws-labels.js";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { useWrEvent, useWrInert } from "./ws-writer-hooks.js";
 
 /* ==========================================================

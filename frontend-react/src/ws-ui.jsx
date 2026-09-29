@@ -1,13 +1,14 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { onRovingTabKeyDown } from "./a11y-tabs.js";
+import { ROVING_KEYS, onRovingTabKeyDown, rovingIndex } from "./lib/keyboard.js";
 
 /* 共享界面原语（2026-09-21 前端重构）。样式在 ws-ui.css。
    审计时同一个概念在各视图里各写一遍：6 种页头、13 种分段 / 页签、37 种标签、
    24 种空态、十几种提示条。新代码和改到的地方用这里的组件；类名是契约，
    测试 / 冒烟脚本若需要钩子，用 testId / className 透传。纯 ESM，不写 window。 */
 
-const cx = (...parts) => parts.filter(Boolean).join(" ");
+/* className 拼接：丢掉假值，其余用空格连起来。视图里需要时从这里 import，不再各写一份。 */
+export const cx = (...parts) => parts.filter(Boolean).join(" ");
 
 /* 页头：标题（衬线）+ 一句说明 + 右侧动作。crumb 只在确实能帮作者定位时才给
    （例如「第 3 章 · 第 2 场」），不要再在每个标题上面放装饰性小字。 */
@@ -30,16 +31,11 @@ export function PageHeader({ title, description, crumb, meta, actions, className
    Segmented 与视图里自绘的卡片式单选组（例如风格注入策略）共用；items: [{ value, disabled? }]，
    按钮按 items 的顺序排在 event.currentTarget（radiogroup）里。 */
 export function onRadioGroupKeyDown(event, { items, value, onChange }) {
-  const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
-  if (!keys.includes(event.key)) return;
+  if (!ROVING_KEYS.includes(event.key)) return;
   const enabled = items.filter((item) => !item.disabled);
   if (!enabled.length) return;
   const at = Math.max(0, enabled.findIndex((item) => item.value === value));
-  let next = at;
-  if (event.key === "Home") next = 0;
-  else if (event.key === "End") next = enabled.length - 1;
-  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (at - 1 + enabled.length) % enabled.length;
-  else next = (at + 1) % enabled.length;
+  const next = rovingIndex(event.key, at, enabled.length);
   event.preventDefault();
   if (onChange) onChange(enabled[next].value);
   const buttons = event.currentTarget.querySelectorAll('[role="radio"]:not([disabled])');

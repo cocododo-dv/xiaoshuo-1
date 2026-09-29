@@ -1,4 +1,5 @@
 import React from "react";
+import { cx } from "./ws-ui.jsx";
 
 /* ==========================================================
    设置页的小零件：Section（一个卡片区块）、Row（标签 + 控件的一行）、Toggle（开关）、Field（接上 Row 标签的输入控件）。
@@ -7,7 +8,6 @@ import React from "react";
    分段单选用共享的 ws-ui.jsx Segmented（radiogroup），这里不再有私有版本。
    ========================================================== */
 
-const cx = (...parts) => parts.filter(Boolean).join(" ");
 const RowContext = React.createContext(null);
 
 function useSetRow() {
