@@ -3,7 +3,8 @@ import { WsWorks, wsKey } from "./ws-works.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { apiPost } from "./lib/client.js";
 import {
-  S2_STEPS, S2_BE_KEY, s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds,
+  S2_STEPS, S2_BE_KEY, s2AdoptServerScaffold, s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds,
+  s2SettlePlanning,
 } from "./ws-snow-model.js";
 import { useWindowEvents as useSnowEvents } from "./lib/events.js";
 
@@ -237,7 +238,7 @@ export function useSnowGeneration(env) {
           const fePlans = (fe.scaffold || {}).plans || {};
           setScaffolds(prev => {
             const cur = prev[key] || {};
-            return { ...prev, [key]: { ...cur, sel: focusRow, plans: { ...(cur.plans || {}), [focusRow]: fePlans[focusRow] || (cur.plans || {})[focusRow] || {} } } };
+            return s2SettlePlanning({ ...prev, [key]: { ...cur, sel: focusRow, plans: { ...(cur.plans || {}), [focusRow]: fePlans[focusRow] || (cur.plans || {})[focusRow] || {} } } });
           });
         } else if (focusChar && (key === "characters" || key === "backstory" || key === "profile")) {
           /* 单角色定向：只把焦点角色的生成结果并回本地，其余角色保持本地态
@@ -248,7 +249,8 @@ export function useSnowGeneration(env) {
             return { ...prev, [key]: { ...cur, sel: focusChar, chars: { ...(cur.chars || {}), [focusChar]: feChars[focusChar] || (cur.chars || {})[focusChar] || {} } } };
           });
         } else {
-          setScaffolds(prev => ({ ...prev, [key]: fe.scaffold }));
+          // 整步替换：只活在前端的线索 / 错误信念接到新稿上，plan 的形态 / 视角摘掉（F02-01 / 02）
+          setScaffolds(prev => s2AdoptServerScaffold(prev, key, fe.scaffold));
         }
         setDrafts(prev => ({ ...prev, [key]: "" })); // 脚手架即唯一内容源，避免旧自由草稿盖住它
       } else if (fe && fe.text != null) {

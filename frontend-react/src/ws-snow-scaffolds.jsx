@@ -18,14 +18,14 @@ import { countChars } from "./lib/text.js";
 
 /* 编辑页的编辑器：有脚手架的步骤用脚手架（旧版遗留的自由草稿在上方明示），否则是自由文本。
    memo：只有这一步的内容、引用的上游脚手架或 AI 忙态变了才重渲染（回调都是稳定引用）。 */
-export const S2StepEditor = React.memo(function S2StepEditor({ step, data, draft, setDraft, scaffold, onScaffold, refs, go, ai, onOpenChapterPlan, catalogHasChapters }) {
+export const S2StepEditor = React.memo(function S2StepEditor({ step, data, draft, setDraft, scaffold, onScaffold, onSceneRow, refs, go, ai, onOpenChapterPlan, catalogHasChapters }) {
   if (!data.scaffold) {
     return <S2Edit draft={draft} setDraft={setDraft} stepName={step.name} target={data.target} meter={data.meter} />;
   }
   return (
     <React.Fragment>
       {draft.trim() ? <S2DraftOverride draft={draft} setDraft={setDraft} stepName={step.name} /> : null}
-      <S2Scaffold kind={data.scaffold.type} scaffold={scaffold} onScaffold={onScaffold} refs={refs} go={go} ai={ai} onOpenChapterPlan={onOpenChapterPlan} catalogHasChapters={catalogHasChapters} />
+      <S2Scaffold kind={data.scaffold.type} scaffold={scaffold} onScaffold={onScaffold} onSceneRow={onSceneRow} refs={refs} go={go} ai={ai} onOpenChapterPlan={onOpenChapterPlan} catalogHasChapters={catalogHasChapters} />
     </React.Fragment>
   );
 });
@@ -81,7 +81,7 @@ function S2DraftOverride({ draft, setDraft, stepName }) {
 /* ====== Structured scaffolds ====== */
 /* 脚手架上方原来各有一条「说明」横幅，大多是在复述右栏的「本步任务」；现在只留那些说出数据规则的话
    （名册归 04 管、章表可以留空）。 */
-function S2Scaffold({ kind, scaffold, onScaffold, refs, go, ai, onOpenChapterPlan, catalogHasChapters }) {
+function S2Scaffold({ kind, scaffold, onScaffold, onSceneRow, refs, go, ai, onOpenChapterPlan, catalogHasChapters }) {
   return (
     <div className="edit-pane">
       {kind === "beats" && <S2Beats scaffold={scaffold} onScaffold={onScaffold} />}
@@ -92,7 +92,7 @@ function S2Scaffold({ kind, scaffold, onScaffold, refs, go, ai, onOpenChapterPla
       {kind === "backstory" && <S2CharDeep scaffold={scaffold} onScaffold={onScaffold} ai={ai} fields={S2_BACKSTORY_FIELDS} roster={(refs && refs.characters) || null} go={go} />}
       {kind === "profile" && <S2CharDeep scaffold={scaffold} onScaffold={onScaffold} ai={ai} fields={S2_PROFILE_FIELDS} roster={(refs && refs.characters) || null} go={go} />}
       {kind === "scenelist" && <S2SceneList scaffold={scaffold} onScaffold={onScaffold} refs={refs} onOpenChapterPlan={onOpenChapterPlan} />}
-      {kind === "scene" && <S2ScenePlan scaffold={scaffold} onScaffold={onScaffold} refs={refs} go={go} ai={ai} />}
+      {kind === "scene" && <S2ScenePlan scaffold={scaffold} onScaffold={onScaffold} onSceneRow={onSceneRow} refs={refs} go={go} ai={ai} />}
     </div>
   );
 }

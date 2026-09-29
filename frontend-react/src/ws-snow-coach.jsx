@@ -6,7 +6,7 @@ import { isImeComposing } from "./lib/keyboard.js";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { activeWorkId } from "./ws-snow-hooks.js";
 import { CoachInline, CoachReply } from "./ws-snow-reply.jsx";
-import { BRIEF_KIND_LABEL, BRIEF_KIND_ORDER, S2_BE_KEY, s2BriefDeltaParts, s2Provenance } from "./ws-snow-model.js";
+import { BRIEF_KIND_LABEL, BRIEF_KIND_ORDER, S2_BE_KEY, s2AdoptServerScaffold, s2BriefDeltaParts, s2Provenance } from "./ws-snow-model.js";
 
 /* ==========================================================
    教练 · 要点 · 方向 · 生成（阶段 T / U）
@@ -80,7 +80,7 @@ export function useSnowCoach(env, tab) {
     e.pushHist("填入教练改写", `${e.active.num} ${e.active.name} · 填入前留底`, "我", e.snapNow(key), key);
     let fe = null;
     try { fe = SnowSync.applyCanonPatch(key, { drafts: e.drafts, scaffolds: e.scaffolds }, patch, null); } catch (err) {}
-    if (fe && fe.scaffold) e.setScaffolds(prev => ({ ...prev, [key]: fe.scaffold }));
+    if (fe && fe.scaffold) e.setScaffolds(prev => s2AdoptServerScaffold(prev, key, fe.scaffold));
     else if (fe && fe.text != null) e.setDrafts(prev => ({ ...prev, [key]: fe.text }));
     e.setTabFor(key, "edit");
     e.showToast(`已填入「${(turn && turn.candidate_label) || "教练改写"}」· 可回滚`, "gold");

@@ -352,4 +352,46 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     await vi.waitFor(() => expect(generateCalls().length).toBe(1), T);
     expect(generateCalls()[0][1]).toMatchObject({ source: "fe_brief_regen" });
   });
+
+  /* F02-02：整步生成回来的脚手架由规范草稿反推，里面没有只活在前端的内容——以前整步替换把它们一并抹掉 */
+  const CACHE = "ws_snow_state_v2::coach-book";
+  const readCache = () => JSON.parse(window.localStorage.getItem(CACHE));
+
+  it("F02-02：03「AI 生成本步」换掉五句骨架，作者写的错误信念留着", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: {
+      paragraph: { premiseF: "谎言能护住所爱的人", premiseT: "只有说出真相才护得住", setup: "旧", d1: "", d2: "", d3: "", resolution: "" },
+    } }));
+    window.SnowSync.applyServerStep = vi.fn(() => ({ scaffold: {
+      premiseF: "", premiseT: "只有说出真相才护得住", setup: "她回到雨城。", d1: "旧信寄到。", d2: "", d3: "", resolution: "" } }));
+    const host = await renderSnow("paragraph");
+    await act(async () => host.querySelector('[data-testid="snow-ai-generate"]').click());
+    await vi.waitFor(() => expect(generateCalls().length).toBe(1), T);
+    await vi.waitFor(() => expect(readCache().scaffolds.paragraph.setup).toBe("她回到雨城。"), T);
+    expect(readCache().scaffolds.paragraph.premiseF).toBe("谎言能护住所爱的人");
+    expect(host.querySelector('input[aria-label="错误信念"]').value).toBe("谎言能护住所爱的人");
+  });
+
+  it("F02-02：09「AI 生成整表」换掉场景行，支线（含折射）与还在的场挂在哪条线上都留着", async () => {
+    const lines = [
+      { id: "main", name: "主线", kind: "main", tone: "crimson", refract: "" },
+      { id: "L1", name: "旧案线", kind: "sub", tone: "slate", refract: "替恩师撒的谎" },
+    ];
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: {
+      scenes: { lines, list: [
+        { id: "S01", type: "proactive", line: "L1", pov: "", place: "码头", event: "取信", crucible: "", fn: "", spine: "" },
+        { id: "S02", type: "reactive", line: "main", pov: "", place: "旅馆", event: "消化", crucible: "", fn: "", spine: "" },
+      ] },
+    } }));
+    window.SnowSync.applyServerStep = vi.fn(() => ({ scaffold: { lines: [], list: [
+      { id: "S01", type: "proactive", line: "main", pov: "", place: "码头", event: "她在码头取到旧信", crucible: "退路被断", fn: "", spine: "" },
+      { id: "S09", type: "proactive", line: "main", pov: "", place: "旧屋", event: "新的一场", crucible: "", fn: "", spine: "" },
+    ] } }));
+    const host = await renderSnow("scenes");
+    await act(async () => host.querySelector('[data-testid="snow-ai-generate-table"]').click());
+    await vi.waitFor(() => expect(generateCalls().length).toBe(1), T);
+    await vi.waitFor(() => expect(readCache().scaffolds.scenes.list[0].event).toBe("她在码头取到旧信"), T);
+    const scenes = readCache().scaffolds.scenes;
+    expect(scenes.lines).toEqual(lines);
+    expect(scenes.list.map(r => [r.id, r.line])).toEqual([["S01", "L1"], ["S09", "main"]]);
+  });
 });

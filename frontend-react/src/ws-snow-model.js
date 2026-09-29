@@ -529,7 +529,66 @@ export function s2MergeScaffolds(stored) {
     if (k === "planning" && base[k].plans && stored[k].plans) base[k].plans = { ...base[k].plans, ...stored[k].plans };
   });
   base.planning = s2NormalizePlanning(base.planning);
-  return base;
+  return s2SettlePlanning(base);
+}
+
+/* 第 10 步的 plan 里不存形态（mode）与视角（pov）：两者只有 09 场景行这一个家。
+   以前 10 的编辑器把渲染时的默认值（mode、pov、空篇幅……）连同改动的那一格一起写进 plan，水合与 AI 生成
+   也把服务端的 primary_form / pov_character_id 反推进 plan；上行时 plan.mode / plan.pov 优先于 09 的行——
+   在 09 把一场改成反应场（或换了视角）之后，第 10 步的下一次上行又把服务端改回去（F02-01）。
+   这里在每条进入视图状态的路上把两者从 plan 里摘掉；plan 带着视角而 09 那一行还没有视角时，视角挪进
+   09 的行（作者或模型给过的值不丢）。没有可摘的键时原样返回同一个对象。 */
+export function s2SettlePlanning(scaffolds) {
+  const planning = scaffolds && scaffolds.planning;
+  const plans = planning && planning.plans;
+  if (!plans || !Object.values(plans).some(p => p && typeof p === "object" && ("mode" in p || "pov" in p))) return scaffolds;
+  const povFor = {};
+  const nextPlans = {};
+  Object.entries(plans).forEach(([id, p]) => {
+    if (!p || typeof p !== "object") { nextPlans[id] = p; return; }
+    const rest = { ...p };
+    delete rest.mode; delete rest.pov;
+    nextPlans[id] = rest;
+    if (p.pov) povFor[id] = p.pov;
+  });
+  const scenes = scaffolds.scenes || {};
+  const list = Array.isArray(scenes.list) ? scenes.list : [];
+  const nextList = list.map(s => (s && !s.pov && povFor[s.id]) ? { ...s, pov: povFor[s.id] } : s);
+  const out = { ...scaffolds, planning: { ...planning, plans: nextPlans } };
+  if (nextList.some((s, i) => s !== list[i])) out.scenes = { ...scenes, list: nextList };
+  return out;
+}
+
+/* 只活在前端脚手架里的内容（F02-02）：09 的线索（lines，含每条线的「折射道德前提」）、每场挂在哪条线上
+   （line），03 的错误信念（premiseF）。它们不进规范草稿，服务端回来的整步草稿（AI 生成、填入教练改写）
+   反推出来的脚手架里没有它们——以前整步替换就把它们一并抹掉。这里把旧脚手架里的这几样接到新脚手架上：
+   线索表新稿为空时沿用旧表；一场按 id 还在、它原来挂的线也还在，就挂回原来的线。 */
+export function s2PreserveFeOnly(key, prev, next) {
+  if (!prev || !next || typeof next !== "object") return next;
+  if (key === "paragraph") {
+    const premiseF = String(prev.premiseF || "");
+    if (!premiseF.trim() || String(next.premiseF || "").trim()) return next;
+    // 只写了错误信念时，canon 的 moral_premise 就是它——回来的 premiseT 是它的回声，不是作者写的真信念
+    const echo = !String(prev.premiseT || "").trim() && String(next.premiseT || "").trim() === premiseF.trim();
+    return { ...next, premiseF, ...(echo ? { premiseT: "" } : {}) };
+  }
+  if (key === "scenes") {
+    const prevLines = Array.isArray(prev.lines) ? prev.lines : [];
+    const lines = Array.isArray(next.lines) && next.lines.length ? next.lines : prevLines;
+    const lineIds = new Set(lines.map(l => l && l.id));
+    const prevLineOf = Object.fromEntries((prev.list || []).filter(s => s && s.id).map(s => [s.id, s.line]));
+    const list = (next.list || []).map(s => {
+      const line = s && prevLineOf[s.id];
+      return (line && line !== s.line && lineIds.has(line)) ? { ...s, line } : s;
+    });
+    return { ...next, lines, list };
+  }
+  return next;
+}
+
+/* 服务端回来的整步脚手架落进视图状态：保住只活在前端的内容，并按第 10 步的规矩摘掉 plan 里的形态 / 视角 */
+export function s2AdoptServerScaffold(scaffolds, key, next) {
+  return s2SettlePlanning({ ...scaffolds, [key]: s2PreserveFeOnly(key, (scaffolds || {})[key], next) });
 }
 export function s2MergeChecks(stored) {
   const base = s2DefaultChecks();

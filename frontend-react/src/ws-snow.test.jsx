@@ -23,6 +23,7 @@ vi.mock("./ws-snow-sync.jsx", () => ({
 
 import { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2NormalizeState, s2ReorderScenes } from "./ws-snow.jsx";
 import { WS_SNOW_STEPS } from "./ws-nav.js";
+import { canonFromFE } from "./ws-snow-canon.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -650,6 +651,54 @@ describe("阶段 M · 09/10 交互", () => {
     const summaryBtn = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-plan-render-opt')].find(b => b.textContent === "概述两段");
     await act(async () => { summaryBtn.click(); });
     expect(host.querySelector('[data-testid="snow-plan-length"]')).toBeNull();
+  });
+
+  it("F02-01：第 10 步只存改动的那一格——形态 / 视角不进 plan；随后在 09 改形态、改视角，第 10 步上行跟着 09 走", async () => {
+    const seeded = threeScenes();
+    seeded.scaffolds.characters.chars.c2 = { name: "沈砚", role: "反派", goal: "", ambition: "", values: "", conflict: "", epiphany: "" };
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    const host = await renderAt("planning");
+    const time = host.querySelector('[data-testid="snow-plan-story-time"]');
+    const setNative = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => { setNative.call(time, "第三天傍晚"); time.dispatchEvent(new Event("input", { bubbles: true })); });
+    const readCache = () => JSON.parse(window.localStorage.getItem(CACHE));
+    await vi.waitFor(() => expect(readCache().scaffolds.planning.plans.S01.story_time).toBe("第三天傍晚"), { timeout: 2000 });
+    const stored = readCache().scaffolds.planning.plans.S01;
+    // 以前第一次改动就把渲染时的默认值整份冻进 plan：mode / pov / 空篇幅 / 空破例理由……
+    expect(Object.keys(stored).sort()).toEqual(["conflict", "goal", "setback", "story_time"]);
+
+    // 作者随后在 09 把 S01 改成反应场、换了视角：第 10 步的上行按 09 的行走，不再把服务端改回去
+    const cache = readCache();
+    cache.scaffolds.scenes.list[0] = { ...cache.scaffolds.scenes.list[0], type: "reactive", pov: "c2" };
+    const row = canonFromFE("planning", cache).scenes.find(r => r.row_uid === "S01");
+    expect(row.primary_form).toBe("reactive");
+    expect(row.pov_character_id).toBe("c2");
+    // 没写过篇幅 / 必须出现 / 破例理由：不上行（服务端或模型给的值不被抹成「中」和空串）
+    expect("target_length_band" in row).toBe(false);
+    expect("must_include_text" in row).toBe(false);
+    expect("exception_reason" in row).toBe(false);
+  });
+
+  it("F02-01：第 10 步的视角选择改的是 09 那一行；旧缓存 plan 里的形态 / 视角在读入时摘掉（09 没有视角时视角挪进去）", async () => {
+    const seeded = threeScenes();
+    seeded.scaffolds.characters.chars.c2 = { name: "沈砚", role: "反派", goal: "", ambition: "", values: "", conflict: "", epiphany: "" };
+    seeded.scaffolds.scenes.list[1] = { ...seeded.scaffolds.scenes.list[1], pov: "" };
+    seeded.scaffolds.planning.plans.S01 = { mode: "reactive", pov: "c2", goal: "拿到账本" };
+    seeded.scaffolds.planning.plans.S02 = { mode: "proactive", pov: "c2", reaction: "崩了一下" };
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    const host = await renderAt("planning");
+    // S01：09 是主动 / 林岑，旧 plan 里的「反应 / 沈砚」不再作数
+    expect(host.querySelector(".sf-plan-type").textContent).toContain("主动场");
+    const pov = host.querySelector('.sf-plan-pov select');
+    expect(pov.value).toBe("c1");
+    await act(async () => { pov.value = "c2"; pov.dispatchEvent(new Event("change", { bubbles: true })); });
+    const readCache = () => JSON.parse(window.localStorage.getItem(CACHE));
+    await vi.waitFor(() => expect(readCache().scaffolds.scenes.list[0].pov).toBe("c2"), { timeout: 2000 });
+    const cache = readCache();
+    expect(cache.scaffolds.planning.plans.S01).toEqual({ goal: "拿到账本" });
+    // S02 在 09 里没有视角：旧 plan 的视角挪进 09 的行，plan 里只剩内容
+    expect(cache.scaffolds.scenes.list[1].pov).toBe("c2");
+    expect(cache.scaffolds.planning.plans.S02).toEqual({ reaction: "崩了一下" });
   });
 
   it("阶段 R：作者裁定——点「待删」经 SnowSync.saveTriageVerdict 写回服务端并高亮；失败回滚到上一次裁定", async () => {

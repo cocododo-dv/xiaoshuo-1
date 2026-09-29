@@ -11,7 +11,7 @@ import { useUndoToast, UndoToast } from "./ws-undo-toast.jsx";
 import {
   S2_STEPS, S2_BE_STEPS, S2_BE_KEY, S2_STEP_DATA, S2_STATE_LABEL, TRACK_LABEL,
   s2BlankScaffolds, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates, s2FindStepKey,
-  s2LandingStep, s2MergeScaffolds, s2SceneNo, s2StaleMap,
+  s2LandingStep, s2MergeScaffolds, s2SceneNo, s2SettlePlanning, s2StaleMap,
 } from "./ws-snow-model.js";
 import {
   activeWorkId, s2Key, s2Load, s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS,
@@ -152,6 +152,11 @@ function WsSnowflake({ initialStep }) {
   const draft = drafts[activeKey] || "";
   const setDraft = useStableCallback((v) => setDrafts(prev => ({ ...prev, [activeKey]: typeof v === "function" ? v(prev[activeKey]) : v })));
   const updateScaffold = useStableCallback((updater) => setScaffolds(prev => ({ ...prev, [activeKey]: updater(prev[activeKey]) })));
+  // 第 10 步改视角就是改 09 那一行（视角只有一个家，F02-01）
+  const updateSceneRow = useStableCallback((rowId, patch) => setScaffolds(prev => {
+    const sc = prev.scenes || {};
+    return { ...prev, scenes: { ...sc, list: (sc.list || []).map(s => (s && s.id === rowId ? { ...s, ...patch } : s)) } };
+  }));
   const toggleCheck = useStableCallback((i) => setChecks(prev => ({ ...prev, [activeKey]: (prev[activeKey] || []).map((v, j) => j === i ? !v : v) })));
   const doneCount = S2_STEPS.filter(s => states[s.key] === "done").length;
 
@@ -425,7 +430,7 @@ function WsSnowflake({ initialStep }) {
     // 回滚前先给当前状态留底，回滚本身也可被撤销
     const backup = snapNow(h.key);
     setDrafts(prev => ({ ...prev, [h.key]: h.snap.draft || "" }));
-    if (h.snap.scaffold) setScaffolds(prev => ({ ...prev, [h.key]: JSON.parse(JSON.stringify(h.snap.scaffold)) }));
+    if (h.snap.scaffold) setScaffolds(prev => s2SettlePlanning({ ...prev, [h.key]: JSON.parse(JSON.stringify(h.snap.scaffold)) }));
     setHistory(prev => [{ t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${formatLocaleMonthDayTime(h.t)}`, key: h.key, snap: backup }, ...prev].slice(0, 80));
     selectStep(h.key); setTabFor(h.key, "edit"); setSnapDiff(null);
     showToast(`已回滚 · ${st.name}`, "gold");
@@ -773,7 +778,7 @@ function WsSnowflake({ initialStep }) {
                   brief={brief} usage={briefUsage} health={curHealth} onOpenCoach={() => setTab("coach")}
                   onRegenWithBrief={regenWithBrief} err={genErr} onClearErr={() => gen.clearGenErr(activeKey)} />
                 <S2StepEditor step={active} data={data} draft={draft} setDraft={setDraft}
-                  scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} refs={scaffolds} go={selectStep}
+                  scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} onSceneRow={updateSceneRow} refs={scaffolds} go={selectStep}
                   ai={isTableStep ? sceneAI : isCharStep ? charAI : undefined} onOpenChapterPlan={openChapterPlan}
                   catalogHasChapters={catalogChapters.length > 0} />
               </React.Fragment>

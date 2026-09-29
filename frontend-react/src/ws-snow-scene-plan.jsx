@@ -17,7 +17,7 @@ const { useState: useSS } = React;
 /* 第 10 步的版面围绕三拍：场景头（编号 · 题名 · 形态 · 视角 · 你的裁定）→ 主三拍 → 接着的次要三拍 →
    收起的「场景卡细节」→ 破例理由 → 分诊结果。以前三拍前面先铺了十二个零散输入框，三拍本身落在首屏之外、
    还是两行高的框，长一点的节拍就被截住。「场景卡细节」收起与否按本机记住。 */
-export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
+export function S2ScenePlan({ scaffold, onScaffold, onSceneRow, refs, go, ai }) {
   const list = ((refs && refs.scenes) || {}).list || [];
   const roster = s2RosterList(refs);
   const plans = scaffold.plans || {};
@@ -26,9 +26,13 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const selIdx = list.findIndex(s => s.id === selId);
   // 类型跟随 09 的真相：主动/反应在场景列表里定，这里不再各说各话
   const proactive = scene ? scene.type !== "reactive" : true;
-  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", onstage: [], story_time: "", reader_emotion: "", hook: "", exit_change: "", title: "", length: "", must_include: "", exception: "", ...(plans[selId] || {}) };
-  plan.mode = proactive ? "proactive" : "reactive";
-  const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...plan, [f]: v } } }));
+  const plan = plans[selId] || {};
+  /* 只写改动的那一格，写在存储里那份 plan 上（函数式更新）：以前把渲染时补齐的默认值（形态、视角、空篇幅……）
+     整份写进去，第一次改任何一格就把它们冻住，上行时盖回服务端（F02-01）。 */
+  const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...((s.plans || {})[selId] || {}), [f]: v } } }));
+  // 视角只有 09 的场景行一个家：这里选视角就是改 09 那一行
+  const setPov = (v) => { if (onSceneRow) onSceneRow(selId, { pov: v }); };
+  const scenePov = (scene && scene.pov) || "";
   const selScene = (id) => onScaffold(s => ({ ...s, sel: id }));
   // hooks 一律在提前返回之前（09 在空与非空之间切换时——水合、清空——hook 数量不能变）
   const [secondaryOpen, setSecondaryOpen] = useSS(false);
@@ -140,7 +144,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           </span>
           <label className="sf-plan-pov">
             <span className="sf-field-label">视角</span>
-            <S2PovPick value={plan.pov} roster={roster} onChange={(v) => setPlan("pov", v)} className="sf-field-input" placeholder={s2PovLabel(scene.pov, roster) || "视角人物"} ariaLabel={`${no} 的视角人物`} />
+            <S2PovPick value={scenePov} roster={roster} onChange={setPov} className="sf-field-input" placeholder={s2PovLabel(scene.pov, roster) || "视角人物"} ariaLabel={`${no} 的视角人物`} />
           </label>
         </div>
         <div className="sf-plan-head-sub">
@@ -177,7 +181,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
         </div>
       )}
 
-      <div className="sf-gcs" key={selId + plan.mode} role="group" aria-label={proactive ? "主动场三拍：目标、冲突、挫败" : "反应场三拍：反应、两难、决定"}>
+      <div className="sf-gcs" key={selId + (proactive ? "proactive" : "reactive")} role="group" aria-label={proactive ? "主动场三拍：目标、冲突、挫败" : "反应场三拍：反应、两难、决定"}>
         {triples.map((t, i) => (
           <div key={t.f} className={`sf-beat ${proactive ? "tone-crimson" : "tone-slate"} ${t.f === "cost_requirement" ? "is-optional" : ""}`}>
             <div className="sf-beat-side"><span className="sf-beat-idx">{i + 1}</span></div>
@@ -215,7 +219,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           <div className="sf-field is-wide sf-plan-onstage" data-testid="snow-plan-onstage" title="这一场里还有谁在场（视角人物之外）——写手与连续性检查都要用">
             <span className="sf-field-label">在场人物</span>
             <span className="sf-plan-onstage-chips" role="group" aria-label="在场人物">
-              {(roster || []).filter(r => r.id !== plan.pov).map(r => {
+              {(roster || []).filter(r => r.id !== scenePov).map(r => {
                 const on = (plan.onstage || []).includes(r.id);
                 return (
                   <button key={r.id} type="button" aria-pressed={on} className={`sf-plan-render-opt ${on ? "is-on" : ""}`}
