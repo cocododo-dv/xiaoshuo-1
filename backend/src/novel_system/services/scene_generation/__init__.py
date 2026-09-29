@@ -281,15 +281,14 @@ class SceneGenerationService:
         neutral_content: str,
         author_note: str | None = None,
         n_candidates: int = 3,
+        # 编排器还在传补候选的上限（P01c 删掉这个传参后一起删）；多稿不再补候选，用不上它
         max_candidates: int | None = None,
-        resume_candidates: list[StyleGenerationResult] | None = None,
-        candidate_checkpoint: Callable[[int, StyleGenerationResult], None] | None = None,
         step_reconciler: Callable[[str], None] | None = None,
         resume_bases: dict[str, StyleGenerationResult] | None = None,
         resume_products: dict[str, StyleGenerationResult] | None = None,
         product_callback: ProductCallback | None = None,
     ) -> list[StyleGenerationResult]:
-        """Best-of-N 风格候选（``NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED``）；两种起草方式的做法见 :mod:`.best_of_n`。"""
+        """Best-of-N 风格候选（``NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED``）：只有作者手笔直起才出多稿，见 :mod:`.best_of_n`。"""
         return best_of_n.generate_candidates(
             self,
             scene_id,
@@ -298,9 +297,6 @@ class SceneGenerationService:
             neutral_content=neutral_content,
             author_note=author_note,
             n_candidates=n_candidates,
-            max_candidates=max_candidates,
-            resume_candidates=resume_candidates,
-            candidate_checkpoint=candidate_checkpoint,
             step_reconciler=step_reconciler,
             resume_bases=resume_bases,
             resume_products=resume_products,

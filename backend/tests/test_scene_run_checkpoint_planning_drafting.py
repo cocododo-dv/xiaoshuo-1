@@ -34,7 +34,6 @@ from tests.support.checkpoint_fakes import (
     _PlanningCheckpointClient,
     _FailBundleAfterPlanning,
     _planning_checkpoint_orchestrator,
-    _FailSecondCandidateOnceClient,
     _SettledButUnparseableGenerationClient,
     _HardPassClient,
     _FailAfterStyle,
@@ -49,6 +48,27 @@ from tests.support.checkpoint_fakes import (
     _select_first_checkpoint_candidate,
     _selection_resume_orchestrator,
 )
+from tests.support.style_first_fixtures import bind_style_first, install_readings, reading
+
+
+def _style_first_resume_scene(session, monkeypatch) -> None:
+    """2026-09-30 [批准#2] 之后多稿只剩作者手笔直起：多稿 / 终选的续跑场景绑一本合成参考书（style_first）。
+    首稿读数可信（修改槽位照改），第一份修改稿（供应商第 2 次回稿）读得最近、排第一；生命周期预算解除武装
+    （首稿带参考样例窗，套件默认的武装预算装不下）。"""
+    _seed_resume_scene(session)
+    bind_style_first(session, "resume_bon", project_id="P_RESUME")
+    install_readings(monkeypatch, {_durable_scene_text(2): reading(0.5, 30.0)}, default=reading(1.0, 60.0))
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "0")
+
+
+class _FailFirstRevisionOnceClient(_CountingGenerationClient):
+    """首稿之后的第一次调用（槽位 1 的定向修改，即第二份候选）失败一次。"""
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if len(self.requests) == 2:
+            raise ValueError("candidate two failed once")
+        return _response({"scene_text": _durable_scene_text(len(self.requests))}, f"generation-{len(self.requests)}")
 
 
 def test_unexpected_hard_qc_prompt_failure_is_fail_closed_without_report_or_checkpoint(session) -> None:
@@ -172,8 +192,8 @@ def test_failure_audit_snapshot_fault_persists_unrecoverable_fence_in_file_datab
     assert len(generation_client.requests) == provider_calls
 
 
-def test_selection_resume_audit_restore_fault_persists_unrecoverable_fence_in_file_database(session) -> None:
-    _seed_resume_scene(session)
+def test_selection_resume_audit_restore_fault_persists_unrecoverable_fence_in_file_database(session, monkeypatch) -> None:
+    _style_first_resume_scene(session, monkeypatch)
     scene_id = "CH_RESUME_SC01"
     scene = session.get(SceneCard, scene_id)
     scene.constraint_intensity = 0.9
@@ -234,8 +254,8 @@ def test_selection_resume_audit_restore_fault_persists_unrecoverable_fence_in_fi
     assert failing_near_final.calls == near_calls
 
 
-def test_selection_resume_fresh_idempotency_execution_continues_after_complete_soft_subcursor(session) -> None:
-    _seed_resume_scene(session)
+def test_selection_resume_fresh_idempotency_execution_continues_after_complete_soft_subcursor(session, monkeypatch) -> None:
+    _style_first_resume_scene(session, monkeypatch)
     scene_id = "CH_RESUME_SC01"
     scene = session.get(SceneCard, scene_id)
     scene.constraint_intensity = 0.9
@@ -314,8 +334,14 @@ def test_selection_resume_fresh_idempotency_execution_continues_after_complete_s
     assert session.get(HumanReviewEvent, gate_id).details_json["resumed"] is True
 
 
-def test_selection_resume_same_execution_continues_after_partial_near_final_subcursor(session) -> None:
-    _seed_resume_scene(session)
+def test_selection_resume_same_execution_continues_after_partial_near_final_subcursor(session, monkeypatch) -> None:
+    _style_first_resume_scene(session, monkeypatch)
+    # 准定稿改写（供应商第 3 次回稿）读得与选中的候选一样近：改写没有离作者更远，照常进第二轮评审
+    install_readings(
+        monkeypatch,
+        {_durable_scene_text(2): reading(0.5, 30.0), _durable_scene_text(3): reading(0.5, 30.0)},
+        default=reading(1.0, 60.0),
+    )
     scene_id = "CH_RESUME_SC01"
     scene = session.get(SceneCard, scene_id)
     scene.constraint_intensity = 0.9
@@ -780,8 +806,9 @@ def test_same_execution_retry_before_first_checkpoint_is_resumed_and_preserves_c
 
 
 def test_best_of_n_blocks_dispatched_missing_second_candidate_without_repeating_provider(session, monkeypatch) -> None:
-    _seed_resume_scene(session)
-    generation_client = _FailSecondCandidateOnceClient()
+    # 作者手笔直起：第一份候选是首稿本身（不调模型），第二份是槽位 1 的定向修改——供应商那一次失败
+    _style_first_resume_scene(session, monkeypatch)
+    generation_client = _FailFirstRevisionOnceClient()
     late_failure = _FailAfterStyle()
     monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
 
@@ -802,7 +829,7 @@ def test_best_of_n_blocks_dispatched_missing_second_candidate_without_repeating_
     assert state.run_checkpoint_json["artifact_refs"]["style_candidate_row_ids"] == [
         "draft_style_cand_CH_RESUME_SC01_v1_0"
     ]
-    assert len(generation_client.requests) == 3
+    assert len(generation_client.requests) == 2
 
     with pytest.raises(DomainError) as exc_info:
         orchestrator().run_scene("CH_RESUME_SC01", execution_id="idempotency:resume-candidates")
@@ -813,7 +840,7 @@ def test_best_of_n_blocks_dispatched_missing_second_candidate_without_repeating_
     assert state.run_checkpoint_json["artifact_refs"]["style_candidate_row_ids"] == [
         "draft_style_cand_CH_RESUME_SC01_v1_0"
     ]
-    assert len(generation_client.requests) == 3
+    assert len(generation_client.requests) == 2
     draft_ids = session.execute(select(SceneDraft.row_id).order_by(SceneDraft.row_id)).scalars().all()
     assert draft_ids == [
         "draft_neutral_CH_RESUME_SC01_v1",
@@ -825,11 +852,12 @@ def test_best_of_n_blocks_dispatched_missing_second_candidate_without_repeating_
             LlmCall.step == "style_draft",
         )
     ).scalars().all()
-    assert sorted(candidate_steps) == ["style_draft:0", "style_draft:1"]
+    # 首稿那份候选沿用首稿的调用（neutral_draft 步），只有槽位 1 的定向修改记在 style_draft 步
+    assert sorted(candidate_steps) == ["style_draft:1"]
 
 
 def test_best_of_n_releases_undispatched_second_candidate_reservation_then_retries_once(session, monkeypatch) -> None:
-    _seed_resume_scene(session)
+    _style_first_resume_scene(session, monkeypatch)
     generation_client = _CountingGenerationClient()
     late_failure = _FailAfterStyle()
     execution_id = "idempotency:resume-undispatched-candidate"
@@ -890,7 +918,7 @@ def test_best_of_n_releases_undispatched_second_candidate_reservation_then_retri
     with pytest.raises(RuntimeError, match="crash after candidate reservation"):
         first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
 
-    assert len(generation_client.requests) == 2
+    assert len(generation_client.requests) == 1  # 只有首稿；第一份候选就是首稿本身
     with pytest.raises(RuntimeError, match="fail after style checkpoint"):
         orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)
 
@@ -900,7 +928,7 @@ def test_best_of_n_releases_undispatched_second_candidate_reservation_then_retri
     assert state.scene_tokens_reserved == 0
     assert state.run_checkpoint == "soft_qc_ready"
     assert state.run_checkpoint_json["sub_index"] == 0
-    assert len(generation_client.requests) == 3
+    assert len(generation_client.requests) == 2
     assert set(state.run_checkpoint_json["artifact_refs"]["candidate_row_ids"]) == {
         "draft_style_cand_CH_RESUME_SC01_v1_1",
         "draft_style_cand_CH_RESUME_SC01_v1_0",

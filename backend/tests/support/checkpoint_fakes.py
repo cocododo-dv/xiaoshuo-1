@@ -151,29 +151,11 @@ def _planning_checkpoint_orchestrator(session, client: _PlanningCheckpointClient
     return orchestrator
 
 
-class _FailSecondCandidateOnceClient(_CountingGenerationClient):
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        self.requests.append(request)
-        if len(self.requests) == 3:
-            raise ValueError("candidate two failed once")
-        payload = {"scene_text": _durable_scene_text(len(self.requests))}
-        return _response(payload, f"generation-{len(self.requests)}")
-
-
 class _FailDeTemplateClient(_CountingGenerationClient):
     def generate(self, request: LLMRequest) -> LLMResponse:
         self.requests.append(request)
         if request.node_id == "style_patch":
             raise ValueError("de-template provider failed")
-        payload = {"scene_text": _durable_scene_text(len(self.requests))}
-        return _response(payload, f"generation-{len(self.requests)}")
-
-
-class _FailFourthGenerationClient(_CountingGenerationClient):
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        self.requests.append(request)
-        if len(self.requests) == 4:
-            raise ValueError("next candidate failed after de-template")
         payload = {"scene_text": _durable_scene_text(len(self.requests))}
         return _response(payload, f"generation-{len(self.requests)}")
 

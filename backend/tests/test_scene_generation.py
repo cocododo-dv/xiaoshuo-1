@@ -39,7 +39,6 @@ from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import (
     LengthPolicy,
     SceneGenerationService,
-    StyleGenerationResult,
     _apply_style_length_patch,
     _apply_style_salvage_patch,
     _assess_de_template_rewrite,
@@ -1676,82 +1675,6 @@ def test_style_salvage_is_never_adopted_without_comparable_readings(session) -> 
 
 
 
-class _FakeBestOfNDeTemplateClient(AccountedGenerateMixin):
-    """每个候选的 style 稿都返回触发反模板闸的模板文本，去模板稿返回各异的清理文本。"""
-
-    def __init__(self) -> None:
-        self.requests: list[LLMRequest] = []
-        self._style_n = 0
-        self._patch_n = 0
-
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        self.requests.append(request)
-        if request.node_id == "style_patch":
-            self._patch_n += 1
-            structured_output = {
-                "scene_text": (
-                    f"清理稿{self._patch_n}：她把钥匙扣进掌心，拔掉录音线；门缝里的光灭了，"
-                    f"走廊尽头响起第{self._patch_n}声敲门，她没有回头。"
-                ),
-                "style_notes": ["removed repeated action template"],
-            }
-            request_id = f"resp_fake_de_template_{self._patch_n}"
-            model = "fake-patch-model"
-        else:
-            self._style_n += 1
-            structured_output = {
-                "scene_text": (
-                    "她低头看着钥匙，沉默了片刻。"
-                    "他低头看着录音，沉默了片刻。"
-                    "她低头看着门缝，沉默了片刻。"
-                    f"她知道真相必须公开。候选{self._style_n}。"
-                ),
-                "style_notes": ["kept an unsafe template"],
-            }
-            request_id = f"resp_fake_style_template_{self._style_n}"
-            model = "fake-style-model"
-        return LLMResponse(
-            request_id=request_id,
-            provider="fake-provider",
-            model=model,
-            text=__import__("json").dumps(structured_output),
-            structured_output=structured_output,
-            response_format="json_object",
-            raw_response={"id": request_id, "model": model, "usage": {}, "finish_reason": "stop"},
-            usage={"input_tokens": 80, "output_tokens": 30, "total_tokens": 110},
-            finish_reason="stop",
-        )
-
-
-def test_best_of_n_multiple_candidates_de_template_no_pk_collision(session) -> None:
-    """QA3 回归：Best-of-N 下 ≥2 个候选都触发去模板时，去模板稿 row_id 必须互异，
-    不得因共用 row_id 撞 SceneDraft 主键抛 IntegrityError 致整跑崩溃。"""
-    _seed_scene(session)
-    bundle = {
-        "bundle_id": "bundle_CH100_SC01",
-        "bundle_snapshot_hash": "bundle_hash_demo",
-        "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
-    }
-    fake_client = _FakeBestOfNDeTemplateClient()
-
-    # 修复前：第二个候选的去模板稿与第一个共用 row_id → flush 抛 IntegrityError。
-    results = SceneGenerationService(session, llm_client=fake_client).generate_style_draft_candidates(
-        "CH100_SC01",
-        bundle,
-        neutral_draft_row_id="draft_neutral_CH100_SC01",
-        neutral_content="Approved neutral draft.",
-        n_candidates=2,
-    )
-    assert results, "应至少产出一个候选"
-
-    de_template_drafts = session.execute(
-        select(SceneDraft).where(SceneDraft.stage == "de_template")
-    ).scalars().all()
-    assert len(de_template_drafts) >= 2, f"应有 ≥2 条去模板稿(每候选一条)，实得 {len(de_template_drafts)}"
-    row_ids = [d.row_id for d in de_template_drafts]
-    assert len(set(row_ids)) == len(row_ids), f"去模板稿 row_id 必须互异，实得 {row_ids}"
-
-
 def test_generate_style_draft_blocks_provider_when_scene_must_split(session) -> None:
     _seed_scene(session)
     fake_client = FakeSceneClient()
@@ -2020,35 +1943,40 @@ def test_online_draft_cannot_advance_when_neutral_repair_still_misses_required_f
     assert all(llm_call.finish_reason == "stop" for llm_call in llm_calls)
 
 
-def test_generate_style_draft_candidates_returns_sorted_list(session) -> None:
+def test_best_of_n_without_style_first_drafts_one_candidate(session) -> None:
+    """2026-09-30 [批准#2]：先中性后润色的多稿整套删掉——没绑作者手笔直起的作品，开关打开、要 3 份也只起一稿，
+    与编排器的单稿路径同一个结果：同一个步位与续跑基稿、不按温度展开、不补候选、不写分散度。"""
     _seed_scene(session, must_include_text=None)
-    fake_client = FakeSceneClient()
-    service = SceneGenerationService(session, llm_client=fake_client)
-    bundle_builder = BundleBuilder(session)
-    bundle = bundle_builder.build("CH100_SC01")
-
+    service = SceneGenerationService(session, llm_client=FakeSceneClient())
+    bundle = BundleBuilder(session).build("CH100_SC01")
     neutral = service.generate_neutral_draft("CH100_SC01", bundle)
+    reconciled: list[str] = []
+
     candidates = service.generate_style_draft_candidates(
         "CH100_SC01",
         bundle,
         neutral_draft_row_id=neutral.row_id,
         neutral_content=neutral.content,
         n_candidates=3,
+        max_candidates=5,
+        step_reconciler=reconciled.append,
     )
     session.commit()
 
-    assert len(candidates) >= 1
-    assert all(isinstance(c, StyleGenerationResult) for c in candidates)
-    assert all(c.content for c in candidates)
-
-    attempts = session.execute(
-        select(AttemptTracker).where(AttemptTracker.step == "style_draft")
+    assert len(candidates) == 1
+    assert reconciled[:1] == ["style_draft:0"]
+    style_rows = session.execute(
+        select(SceneDraft.row_id).where(SceneDraft.scene_id == "CH100_SC01", SceneDraft.stage == "style_draft")
     ).scalars().all()
-    candidate_indices = [a.details_json.get("candidate_index") for a in attempts if a.details_json.get("candidate_index") is not None]
-    assert len(candidate_indices) >= 1
-
+    assert [row_id for row_id in style_rows if "_cand_" in row_id] == []
+    attempts = session.execute(
+        select(AttemptTracker).where(AttemptTracker.scene_id == "CH100_SC01", AttemptTracker.step == "style_draft")
+    ).scalars().all()
+    assert len(attempts) == 1
+    assert "candidate_index" not in (attempts[0].details_json or {})
     state = session.get(SceneRunState, "CH100_SC01")
     assert state.current_style_draft_row_id == candidates[0].row_id
+    assert state.candidate_dispersion_score is None
 
 
 def test_adversarial_rank_score_lower_for_ai_heavy_text() -> None:

@@ -14,21 +14,23 @@ from sqlalchemy import select
 
 from novel_system.db.models import (
     AttemptTracker,
-    ChapterGoal,
     FinalScene,
     SceneCard,
     SceneDraft,
     SceneRunState,
-    StoryProject,
     StyleFidelityReading,
 )
 from novel_system.services import scene_generation as sg
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.style_reference import readings as R
 from novel_system.services.style_reference import style_step as S
-from novel_system.services.style_reference.fidelity import FidelityReading
 from tests.style_reference_inject_helpers import bind, seed_reference
-from tests.test_style_first_draft import _Runner, _frozen_bundle
+from tests.support.style_first_fixtures import PACING_OUT
+from tests.support.style_first_fixtures import bound_scene as _bound_scene
+from tests.support.style_first_fixtures import seed_scene as _seed_scene
+from tests.support.style_first_fixtures import install_readings as _install_readings
+from tests.support.style_first_fixtures import reading as _reading
+from tests.test_style_first_draft import _Runner
 
 LONG_FIRST = ("窗外的雨下了一整夜，他把茶杯推到桌角，信封就压在杯底。" * 30)
 REVISED = ("雨下了一夜。他把茶杯往桌角一推，信封压在杯底，谁也没去碰。" * 30)
@@ -38,97 +40,6 @@ OTHER_REVISED = ("那一夜的雨没停过，他推开茶杯，杯底压着信�
 # ---------------------------------------------------------------------------
 # 夹具
 # ---------------------------------------------------------------------------
-
-
-def _reading(
-    distance: float,
-    percentile: float,
-    *,
-    reliable: bool = True,
-    out_of_band: list[dict] | None = None,
-    emphasized: tuple[str, ...] = (),
-    chars: int = 1200,
-) -> FidelityReading:
-    return FidelityReading(
-        distance=distance,
-        percentile=percentile,
-        out_of_band=list(out_of_band or []),
-        dimension_scores={"narrative.pacing": 6.0, "language.punctuation": 8.5},
-        feature_z={},
-        char_count=chars,
-        window_count=28,
-        reliable=reliable,
-        kernel_version="measure_v1",
-        reference_version="ref_test",
-        emphasized_dimensions=emphasized,
-    )
-
-
-PACING_OUT = [
-    {
-        "feature": "para_len_mean",
-        "dimension": "narrative.pacing",
-        "z": 3.1,
-        "direction": "high",
-        "phrase": "段落比作者长，换段太少",
-        "value": 180.0,
-        "author_typical": 60.0,
-    }
-]
-
-
-def _install_readings(monkeypatch, table: dict[str, FidelityReading], default: FidelityReading | None = None) -> None:
-    """``readings.reading_for_text`` 的替身：文字里含哪个记号就给哪个读数（未绑定照旧 None）。"""
-
-    def fake(session, policy, text):  # noqa: ANN001
-        if policy is None or not getattr(policy, "bound", False) or not str(text or "").strip():
-            return None
-        for marker, reading in table.items():
-            if marker in text:
-                return reading
-        return default
-
-    monkeypatch.setattr(R, "reading_for_text", fake)
-
-
-def _seed_scene(session, *, project_id: str, scene_id: str, chapter_id: str, band: str = "short", must: str = "信封") -> SceneCard:
-    session.add(StoryProject(project_id=project_id, title="读数", outline_text=""))
-    session.add(ChapterGoal(chapter_id=chapter_id, project_id=project_id, planned_scene_count=1, chapter_goal="g"))
-    scene = SceneCard(
-        scene_id=scene_id,
-        chapter_id=chapter_id,
-        project_id=project_id,
-        scene_seq=1,
-        pov_character_id="CHAR_A",
-        onstage_chars_json=["CHAR_A"],
-        location="茶馆",
-        scene_goal="把信交出去",
-        beats_json=["到场"],
-        must_include_text=must,
-        target_length_band=band,
-        scene_type="reveal",
-        is_chapter_last=0,
-    )
-    session.add(scene)
-    session.add(SceneRunState(scene_id=scene_id, scene_status="ready"))
-    session.commit()
-    return scene
-
-
-def _bound_scene(session, key: str, *, draft_mode: str = "style_first", card: bool = True, **scene_kwargs):
-    project_id = f"proj_{key}"
-    book_id, profile_id = seed_reference(session, key, card=card, chapters=14, per_chapter=100)
-    bind(
-        session,
-        profile_id,
-        binding_id=f"bind_{key}",
-        scope="project",
-        scope_ref_id=project_id,
-        config_json={"draft_mode": draft_mode},
-    )
-    scene = _seed_scene(session, project_id=project_id, scene_id=f"{key.upper()}_SC01", chapter_id=f"{key.upper()}_CH", **scene_kwargs)
-    bundle = _frozen_bundle(project_id, scene.scene_id, scene.chapter_id)
-    return scene, bundle, book_id, profile_id
 
 
 class _SeqRunner(_Runner):
