@@ -9,11 +9,11 @@ from novel_system.services.content_safety import ContentSafetyService
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_text, verify_bundle_snapshot_hash
 from novel_system.services.literary_quality import (
-    DIMENSION_WEIGHTS,
     QUALITY_DIMENSIONS,
     analyze_literary_quality,
     ignored_dimensions_from_findings,
 )
+from novel_system.services.literary_quality.scoring import weighted_score
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
 from novel_system.services.qc_constraints import contains_forbidden_term, required_groups_missing
 from novel_system.services.reference_copy_gate import (
@@ -425,29 +425,20 @@ class FinalTextGateService:
                 content, calibration=calibration if calibrated else None
             )
             habitual = set(calibration.habitual_dimensions) if calibrated else set()
-            weights = DIMENSION_WEIGHTS
 
             def effective(dimension: str) -> float:
                 if dimension in habitual:
                     return 1.0
                 return float(signals[dimension].get("score", 1.0))
 
-            overall_score = round(
-                sum(effective(dimension) * float(weights.get(dimension, 0.0)) for dimension in QUALITY_DIMENSIONS),
-                4,
-            )
-            core_weight = sum(float(weights.get(dimension, 0.0)) for dimension in _CHARACTER_SCENE_CORE_DIMENSIONS)
-            character_scene_core = (
-                round(
-                    sum(
-                        effective(dimension) * float(weights.get(dimension, 0.0))
-                        for dimension in _CHARACTER_SCENE_CORE_DIMENSIONS
-                    )
-                    / core_weight,
-                    4,
-                )
-                if core_weight > 0
-                else overall_score
+            # 参考作者常态的维度按已满足计（分数照实记在 signals 里）
+            overall_score = weighted_score(signals, QUALITY_DIMENSIONS, forced_ok=habitual)
+            character_scene_core = weighted_score(
+                signals,
+                _CHARACTER_SCENE_CORE_DIMENSIONS,
+                forced_ok=habitual,
+                normalize=True,
+                empty=overall_score,
             )
             scores = {
                 "character_scene_core": character_scene_core,

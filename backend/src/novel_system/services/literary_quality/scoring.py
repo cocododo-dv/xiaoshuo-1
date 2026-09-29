@@ -1,16 +1,48 @@
-"""自动诊断分：文字够不够下判断（证据充分度），以及人类评判之下的上限（``AUTOMATED_DIAGNOSTIC_CEILING``）。"""
+"""自动诊断分：规则维度的加权分（一个公式）、文字够不够下判断（证据充分度），以及人类评判之下的上限
+（``AUTOMATED_DIAGNOSTIC_CEILING``）。"""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
 from novel_system.services.literary_quality.dimensions import (
     AUTOMATED_DIAGNOSTIC_CEILING,
     AUTOMATED_EVIDENCE_TARGET_CHARS,
     AUTOMATED_EVIDENCE_TARGET_SENTENCES,
+    DIMENSION_WEIGHTS,
 )
 from novel_system.services.literary_quality.text import _compact_ws, _sentences
+
+
+def weighted_score(
+    signals: Mapping[str, Mapping[str, Any]],
+    dimensions: Iterable[str],
+    weights: Mapping[str, float] = DIMENSION_WEIGHTS,
+    *,
+    forced_ok: Collection[str] = (),
+    normalize: bool = False,
+    empty: float = 1.0,
+) -> float:
+    """规则维度的加权分：Σ 分数 × 权重，四舍五入到 4 位（B04-16：以前四处各写一遍）。
+
+    文学质量视图的条目分、成稿门的总分与「人物场景核心」、对抗排名分都走这一个公式——各自只选维度组与权重，
+    要不要再乘证据上限见 :func:`automated_diagnostic_assessment`。``forced_ok`` 里的维度按满分算（成稿门：参考
+    作者常态的维度）；``normalize`` 时除以这组维度的权重和，权重和不为正时给 ``empty``。没有信号的维度按满分算。
+    """
+    dims = tuple(dimensions)
+
+    def score(dimension: str) -> float:
+        if dimension in forced_ok:
+            return 1.0
+        return float(signals.get(dimension, {}).get("score", 1.0))
+
+    total = sum(score(dimension) * float(weights.get(dimension, 0.0)) for dimension in dims)
+    if not normalize:
+        return round(total, 4)
+    weight_total = sum(float(weights.get(dimension, 0.0)) for dimension in dims)
+    return round(total / weight_total, 4) if weight_total > 0 else empty
 
 
 def automated_evidence_sufficiency(text: str) -> float:

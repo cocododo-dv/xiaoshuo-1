@@ -62,6 +62,7 @@ from novel_system.services.literary_quality.rules import analyze_literary_qualit
 from novel_system.services.literary_quality.scoring import (
     automated_diagnostic_assessment,
     automated_evidence_sufficiency,
+    weighted_score,
 )
 from novel_system.services.literary_quality.service import (
     LiteraryQualityService,
@@ -111,5 +112,6 @@ __all__ = [
     "poisson_tail",
     "rule_signal_id",
     "unify_rule_finding",
+    "weighted_score",
     "wilson_lower_bound",
 ]

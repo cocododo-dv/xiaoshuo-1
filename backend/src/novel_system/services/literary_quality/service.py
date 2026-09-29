@@ -18,11 +18,7 @@ from novel_system.services.literary_quality.chapter_set import (
     _chapter_set_scores,
     _reference_safety_findings,
 )
-from novel_system.services.literary_quality.dimensions import (
-    DIMENSION_WEIGHTS,
-    QUALITY_DIMENSIONS,
-    QUALITY_TEXT_LAYERS,
-)
+from novel_system.services.literary_quality.dimensions import QUALITY_DIMENSIONS, QUALITY_TEXT_LAYERS
 from novel_system.services.literary_quality.fingerprint import fingerprint_literary_quality
 from novel_system.services.literary_quality.report import (
     _cross_scene_reuse,
@@ -35,7 +31,7 @@ from novel_system.services.literary_quality.report import (
     _validate_quality_filters,
 )
 from novel_system.services.literary_quality.rules import analyze_literary_quality
-from novel_system.services.literary_quality.scoring import automated_diagnostic_assessment
+from novel_system.services.literary_quality.scoring import automated_diagnostic_assessment, weighted_score
 from novel_system.services.manuscript_html import plain_manuscript_text
 from novel_system.services.scene_text import current_author_draft, final_chapter_memory, pointed_final_scene
 from novel_system.services.value_coercion import optional_text
@@ -291,10 +287,7 @@ class LiteraryQualityService:
         findings = [finding for finding in all_findings if not finding.get("ignored")]
         ignored_findings = [finding for finding in all_findings if finding.get("ignored")]
         fingerprint = fingerprint_literary_quality(text)
-        raw_score = round(
-            sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS),
-            4,
-        )
+        raw_score = weighted_score(signals, QUALITY_DIMENSIONS)
         automated_assessment = automated_diagnostic_assessment(
             text,
             raw_diagnostic_score=raw_score,

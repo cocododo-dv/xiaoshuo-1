@@ -5,7 +5,7 @@ from __future__ import annotations
 from novel_system.services.literary_quality.dimensions import DIMENSION_WEIGHTS
 from novel_system.services.literary_quality.fingerprint import fingerprint_literary_quality
 from novel_system.services.literary_quality.rules import analyze_literary_quality
-from novel_system.services.literary_quality.scoring import automated_diagnostic_assessment
+from novel_system.services.literary_quality.scoring import automated_diagnostic_assessment, weighted_score
 
 
 ADVERSARIAL_DIMS: tuple[str, ...] = (
@@ -47,11 +47,7 @@ def adversarial_rank_score(
         return 0.0
     effective = weights if weights is not None else DIMENSION_WEIGHTS
     signals, _ = analyze_literary_quality(text)
-    total_w = sum(effective.get(d, 0.0) for d in ADVERSARIAL_DIMS)
-    raw_score = 1.0 if total_w <= 0.0 else round(
-        sum(signals.get(d, {}).get("score", 1.0) * effective.get(d, 0.0) for d in ADVERSARIAL_DIMS) / total_w,
-        4,
-    )
+    raw_score = weighted_score(signals, ADVERSARIAL_DIMS, effective, normalize=True)
     return automated_diagnostic_assessment(
         text,
         raw_diagnostic_score=raw_score,

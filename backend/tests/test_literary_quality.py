@@ -510,6 +510,24 @@ def test_literary_quality_dimension_weights_sum_to_one() -> None:
     assert set(DIMENSION_WEIGHTS) == set(QUALITY_DIMENSIONS)
 
 
+def test_weighted_score_is_the_one_formula_for_every_caller() -> None:
+    """B04-16：条目分、成稿门的总分与人物场景核心、对抗排名分都走 ``scoring.weighted_score``（维度组各选各的）。"""
+    from novel_system.services.literary_quality import DIMENSION_WEIGHTS, weighted_score
+
+    signals, _ = analyze_literary_quality("她低头看着钥匙，沉默了片刻。他低头看着录音，沉默了片刻。她知道真相必须公开。")
+    risky = [dimension for dimension in QUALITY_DIMENSIONS if signals[dimension]["risk"]]
+    assert risky
+    assert weighted_score(signals, QUALITY_DIMENSIONS) == round(
+        sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS), 4
+    )
+    # 成稿门：参考作者常态的维度按已满足计——全都放过就是满分
+    assert weighted_score(signals, QUALITY_DIMENSIONS, forced_ok=risky) == 1.0
+    # 归一：除以这组维度的权重和；没有信号的维度按满分算；权重和为 0 时给 empty
+    core = ("no_choice_scene", "choice_pressure")
+    assert weighted_score({}, core, normalize=True) == 1.0
+    assert weighted_score(signals, core, {"no_choice_scene": 0.0}, normalize=True, empty=0.42) == 0.42
+
+
 def test_self_repetition_dimension_defaults_to_no_risk() -> None:
     signals, _ = analyze_literary_quality("She opened the door. He must choose.")
     assert signals["self_repetition"]["risk"] is False
