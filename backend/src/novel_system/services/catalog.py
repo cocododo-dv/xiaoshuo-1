@@ -27,7 +27,6 @@
 """
 from __future__ import annotations
 
-import re
 import uuid
 from typing import Any
 
@@ -42,6 +41,20 @@ from novel_system.db.models import (
     StoryCharacter,
     StoryProject,
 )
+from novel_system.services.catalog_labels import (  # noqa: F401  (re-exported: 目录的读者从这里拿)
+    CATALOG_ACTS,
+    SCENE_BRIEF_GCS,
+    SCENE_BRIEF_RDD,
+    SCENE_TITLE_MAX_CHARS,
+    chapter_title,
+    focus_scene_payload,
+    normalize_act,
+    scene_display_title,
+    scene_kind,
+    scene_title,
+    short_scene_title,
+)
+from novel_system.services.catalog_ordering import reseat_display_orders, reseat_scene_seqs
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
     require_chapter_mutation_allowed,
@@ -55,10 +68,7 @@ from novel_system.services.chapter_structure_ownership import (
 )
 from novel_system.services.chapter_title_sync import adopt_catalog_title, is_auto_chapter_title
 from novel_system.services.errors import DomainError
-from novel_system.services.projects import (
-    PROJECT_STATUS_CHAPTER_FINAL_REVIEW,
-    ProjectService,
-)
+from novel_system.services.project_status import PROJECT_STATUS_CHAPTER_FINAL_REVIEW
 from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-exported: 目录的读者从这里拿)
     PLAN_OWNED_SCENE_FIELDS,
     SNOWFLAKE_SOURCES,
@@ -67,7 +77,7 @@ from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-ex
     is_snowflake_origin,
     live_plan_scene_ids,
 )
-from novel_system.services.scene_lookup import active_chapter_scenes, require_project_chapter
+from novel_system.services.scene_lookup import active_chapter_scenes, require_project, require_project_chapter
 
 CHAPTER_STATES = ("planned", "todo", "writing", "draft", "review", "approved")
 SCENE_STATES = ("todo", "writing", "done")
@@ -89,112 +99,14 @@ NARRATIVE_FIELDS = (
     "notes",
 )
 
-SCENE_BRIEF_GCS = ("goal", "conflict", "setback")
-SCENE_BRIEF_RDD = ("reaction", "dilemma", "decision")
-
-#: 目录侧的幕（章节编排按它分卷）
-CATALOG_ACTS = ("act1", "act2", "act3")
-#: 目录里显示用的场景短题上限（整句摘要另有 ``summary``）
-SCENE_TITLE_MAX_CHARS = 18
-_ACT_DIGIT = re.compile(r"[123]")
-_ACT_CN = {"一": "act1", "二": "act2", "三": "act3"}
-_TITLE_CLAUSE_BREAK = re.compile(r"[，。；：！？,;:!?\n]")
-
-
-def normalize_act(value: Any) -> str:
-    """目录侧的幕只有 ``act1`` / ``act2`` / ``act3``。
-
-    雪花物化曾把幕写成整数 1 / 2 / 3，而章节编排按 ``act === "act1"`` 分卷——整数幕的章在看板和
-    章节序列里**一张都不显示**（2026-09-19 真实故障：目录 6 章，编排台只看得见手建的那一章）。
-    读取时统一归一，写入方也已改成字符串；认不出的值落到第一幕，绝不让一章从看板上消失。
-    """
-    text = str(value if value is not None else "").strip().lower()
-    if text in CATALOG_ACTS:
-        return text
-    digit = _ACT_DIGIT.search(text)
-    if digit:
-        return f"act{digit.group(0)}"
-    for char, act in _ACT_CN.items():
-        if char in text:
-            return act
-    return "act1"
-
-
-def short_scene_title(text: Any) -> str:
-    """整句摘要 → 列表里放得下的短题：够短就原样；否则取第一个分句；分句也太长就截断加省略号。"""
-    value = " ".join(str(text or "").split())
-    if len(value) <= SCENE_TITLE_MAX_CHARS:
-        return value
-    head = _TITLE_CLAUSE_BREAK.split(value, 1)[0].strip()
-    if 4 <= len(head) <= SCENE_TITLE_MAX_CHARS:
-        return head
-    base = head if len(head) > SCENE_TITLE_MAX_CHARS else value
-    return f"{base[: SCENE_TITLE_MAX_CHARS - 1].rstrip()}…"
-
-
-def scene_kind(scene: SceneCard) -> str:
-    brief = dict(scene.writer_brief_json or {})
-    raw = str(brief.get("primary_form") or scene.scene_type or "proactive").strip().lower()
-    return "reactive" if raw.startswith("react") or raw == "反应" else "proactive"
-
-
-def chapter_title(chapter: ChapterGoal) -> str:
-    narrative = dict(chapter.narrative_json or {})
-    if str(narrative.get("title") or "").strip():
-        return str(narrative["title"]).strip()
-    brief = dict(chapter.writer_brief_json or {})
-    for key in ("chapter_title", "title"):
-        if str(brief.get(key) or "").strip():
-            return str(brief[key]).strip()
-    goal = str(chapter.chapter_goal or "").strip()
-    return (goal.splitlines()[0][:24] if goal else "") or chapter.chapter_id
-
-
-def scene_title(scene: SceneCard) -> str:
-    brief = dict(scene.writer_brief_json or {})
-    if str(brief.get("title") or "").strip():
-        return str(brief["title"]).strip()
-    return str(scene.scene_goal or "").strip() or scene.scene_id
-
-
-def scene_display_title(scene: SceneCard) -> str:
-    """目录载荷里的场景题名：作者 / 构思起的题名原样用；没有题名时从摘要里取一个短题。
-
-    雪花场景卡的 ``scene_goal`` 是 09 的整句摘要（六七十字）——拿它当题名，大纲、队列、命令面板
-    每一行都是一整段话。整句另以 ``summary`` 给出，:func:`scene_title` 的口径（规划上下文、回收站）不变。
-    """
-    brief = dict(scene.writer_brief_json or {})
-    if str(brief.get("title") or "").strip():
-        return str(brief["title"]).strip()
-    return short_scene_title(scene.scene_goal) or scene.scene_id
-
-
-def focus_scene_payload(scenes: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """一章里「现在该写哪一场」：在写的那一场 → 第一场没写完的 → 最后一场。
-
-    主页的「继续写作」、写作台的落点、AI 起草台的落点共用这一条规则（前端 ``WsCatalog.focusScene``
-    是它的镜像）。过去三处各有各的规则：主页取章里最后一场，写作台取全书任何一场「在写」的场，
-    于是雪花刚物化完，主页指着第 5 场、写作台却开在一张手建的空白占位场上。
-    """
-    if not scenes:
-        return None
-    for wanted in ("writing",):
-        hit = next((scene for scene in scenes if scene.get("state") == wanted), None)
-        if hit is not None:
-            return hit
-    pending = next((scene for scene in scenes if scene.get("state") != "done"), None)
-    return pending if pending is not None else scenes[-1]
-
-
 class CatalogService:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self._projects = ProjectService(session)
 
     # ---------- 读 ----------
 
     def catalog(self, project_id: str) -> dict[str, Any]:
-        project = self._projects.require_project(project_id)
+        project = require_project(self.session, project_id)
         chapters = self.chapter_rows(project_id)
         context = self.read_context(project_id, [chapter.chapter_id for chapter in chapters])
         return {
@@ -489,7 +401,7 @@ class CatalogService:
         *,
         actor_ref: str = "operator",
     ) -> dict[str, Any]:
-        project = self._projects.require_project(project_id)
+        project = require_project(self.session, project_id)
         chapter = require_project_chapter(self.session, project_id, chapter_id)
         body = payload or {}
         updates: dict[str, Any] = {}
@@ -590,7 +502,7 @@ class CatalogService:
         }
 
     def create_chapter(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        project = self._projects.require_project(project_id)
+        project = require_project(self.session, project_id)
         body = payload or {}
         existing = self.chapter_rows(project_id)
         title = str(body.get("title") or "").strip() or f"第 {len(existing) + 1} 章"
@@ -837,7 +749,7 @@ class CatalogService:
         both their relative sequence and their absolute catalog position.
         """
 
-        project = self._projects.require_project(project_id)
+        project = require_project(self.session, project_id)
         requested = list(chapter_ids)
         if len(requested) != len(set(requested)):
             raise DomainError(
@@ -977,7 +889,7 @@ class CatalogService:
 
     def import_catalog(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """一次性迁移入口（admin 保护）：localStorage 旧目录 → 后端行。仅允许空目录导入。"""
-        project = self._projects.require_project(project_id)
+        project = require_project(self.session, project_id)
         if self.chapter_rows(project_id):
             raise DomainError(
                 "CATALOG_NOT_EMPTY",
@@ -1141,7 +1053,7 @@ class CatalogService:
 
     def _scene_payload_with_slug(self, scene: SceneCard) -> dict[str, Any]:
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        self._projects.require_project(chapter.project_id)
+        require_project(self.session, chapter.project_id)
         chapters = self.chapter_rows(chapter.project_id)
         index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter.chapter_id)
         return self.scene_payload(
@@ -1192,54 +1104,23 @@ class CatalogService:
         )
 
     def _renumber(self, ordered: list[SceneCard]) -> None:
-        if not ordered:
-            return
-        temporary_start = max(int(scene.scene_seq or 0) for scene in ordered) + 1
-        for offset, scene in enumerate(ordered):
-            scene.scene_seq = temporary_start + offset
-        self.session.flush()
-        for index, scene in enumerate(ordered, start=1):
-            scene.scene_seq = index
-            scene.is_chapter_last = 1 if index == len(ordered) else 0
-        self.session.flush()
+        reseat_scene_seqs(self.session, ordered)
 
     def _assign_chapter_orders(
         self,
         assignments: list[tuple[ChapterGoal, int]],
     ) -> None:
-        changed = [
-            (chapter, int(display_order))
-            for chapter, display_order in assignments
-            if chapter.display_order != int(display_order)
-        ]
-        if not changed:
-            return
-        project_ids = {chapter.project_id for chapter, _ in changed}
-        active_rows = list(
-            self.session.execute(
-                select(ChapterGoal).where(
-                    ChapterGoal.project_id.in_(project_ids),
-                    ChapterGoal.trashed_flag == 0,
-                )
-            ).scalars().all()
-        )
-        next_temporary_by_project = {
-            project_id: max(
-                (
-                    int(chapter.display_order or 0)
-                    for chapter in active_rows
-                    if chapter.project_id == project_id
-                ),
-                default=0,
+        project_ids = {chapter.project_id for chapter, _ in assignments}
+        active_rows = (
+            list(
+                self.session.execute(
+                    select(ChapterGoal).where(
+                        ChapterGoal.project_id.in_(project_ids),
+                        ChapterGoal.trashed_flag == 0,
+                    )
+                ).scalars().all()
             )
-            + 1
-            for project_id in project_ids
-        }
-        for chapter, _display_order in changed:
-            project_id = chapter.project_id
-            chapter.display_order = next_temporary_by_project[project_id]
-            next_temporary_by_project[project_id] += 1
-        self.session.flush()
-        for chapter, display_order in changed:
-            chapter.display_order = display_order
-        self.session.flush()
+            if any(chapter.display_order != int(order) for chapter, order in assignments)
+            else []
+        )
+        reseat_display_orders(self.session, assignments, scope=active_rows)

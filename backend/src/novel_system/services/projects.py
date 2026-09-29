@@ -25,12 +25,24 @@ from novel_system.services.catalog_placeholders import (  # noqa: F401  (re-expo
     AUTO_TRASHED_PLACEHOLDER_CHAPTER,
     trash_pristine_placeholder_chapters,
 )
+from novel_system.services.catalog_ordering import park
 from novel_system.services.catalog_trash_cascade import revive_cascade_trashed_scene_cards
 from novel_system.services.chapter_approval import is_chapter_approved
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.errors import DomainError
+from novel_system.services.project_status import (  # noqa: F401  (re-exported: 状态词表的老地址)
+    PLAN_STATUS_APPROVED,
+    PLAN_STATUS_PENDING_REVIEW,
+    PROJECT_STATUS_CHAPTER_BLOCKED,
+    PROJECT_STATUS_CHAPTER_FINAL_REVIEW,
+    PROJECT_STATUS_CHAPTER_READY,
+    PROJECT_STATUS_CHAPTER_RUNNING,
+    PROJECT_STATUS_COMPLETED,
+    PROJECT_STATUS_OUTLINE_DRAFT,
+    REFERENCE_SAFETY_RULES,
+)
 from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.scene_rehome import rehome_scenes
@@ -40,21 +52,6 @@ from novel_system.settings import get_settings
 from novel_system.services.scene_lookup import require_project
 from novel_system.services.snowflake_queries import latest_outline_plan
 
-PROJECT_STATUS_OUTLINE_DRAFT = "outline_draft"
-PROJECT_STATUS_CHAPTER_READY = "chapter_ready"
-PROJECT_STATUS_CHAPTER_RUNNING = "chapter_running"
-PROJECT_STATUS_CHAPTER_BLOCKED = "chapter_blocked"
-PROJECT_STATUS_CHAPTER_FINAL_REVIEW = "chapter_final_review"
-PROJECT_STATUS_COMPLETED = "completed"
-
-PLAN_STATUS_PENDING_REVIEW = "pending_review"
-PLAN_STATUS_APPROVED = "approved"
-
-REFERENCE_SAFETY_RULES = [
-    "参考书只进入抽象风格画像，不复制原文表达。",
-    "不得复刻参考书人物、设定、桥段、特殊意象或标志性句式。",
-    "运行时只使用节奏、句法、叙事手法、结构技巧和禁复刻规则。",
-]
 
 
 #: 「重新分章后变空、被系统送进回收站」的标记（``trashed_by``）。带这个标记的章是空着进回收站的，
@@ -199,11 +196,8 @@ class _CatalogPlacement:
         #: 手加的卡跟着锚点换了章：``{scene_id: (旧章, 新章)}``——运行时行要跟着走（scene_rehome）
         self.moved_followers: dict[str, tuple[str, str]] = {}
         self._sizes: dict[str, int] = {}
-        if cards:
-            park_base = max(int(card.scene_seq or 0) for card in cards) + 1_000_000
-            for offset, card in enumerate(cards):
-                card.scene_seq = park_base + offset
-            session.flush()
+        # 最终序号由 final_scene_seq 一章一章写下，中途不再停车：停车位必须高过任何一章最终的场数
+        park(session, cards, "scene_seq")
 
     def settle_chapter_order(self) -> str:
         """计划内的章在目录里按这一版章表的顺序排。返回 ``settled`` / ``unchanged`` / ``held_by_approved``。
@@ -260,10 +254,7 @@ class _CatalogPlacement:
             self.session.flush()
             return "held_by_approved"
         # (project_id, display_order) 在活跃章上唯一：两阶段落位，先挪到不会撞的高位再写最终值
-        park = max((int(item.display_order or 0) for item in active), default=0) + 1_000
-        for offset, chapter_id in enumerate(desired):
-            by_id[chapter_id].display_order = park + offset
-        self.session.flush()
+        park(self.session, [by_id[chapter_id] for chapter_id in desired], "display_order")
         for index, chapter_id in enumerate(desired, start=1):
             by_id[chapter_id].display_order = index
         self.session.flush()

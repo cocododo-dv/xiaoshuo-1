@@ -25,7 +25,7 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
-from novel_system.services.catalog import chapter_title, scene_title
+from novel_system.services.catalog_labels import chapter_title, scene_title
 from novel_system.services.errors import DomainError
 from novel_system.services.project_purge import (
     build_project_purge_plan,

@@ -22,10 +22,10 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.catalog import CatalogService, focus_scene_payload
-from novel_system.services.projects import ProjectService
 from novel_system.services.snowflake_steps import list_step_definitions
 from novel_system.services.writing_stats import WritingStatsService, count_words
 from novel_system.services.snowflake_queries import latest_by_step, step_gate_satisfied
+from novel_system.services.scene_lookup import require_project
 
 _TAG_BREAK_RE = re.compile(r"</(?:p|div|h\d|li|blockquote)>|<br\s*/?>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -42,20 +42,19 @@ def _content_lines(content: str | None) -> list[str]:
 class ProjectOverviewService:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self._projects = ProjectService(session)
         self._stats = WritingStatsService(session)
         self._catalog = CatalogService(session)
 
     # ---- writing-stats ----
 
     def writing_stats(self, project_id: str) -> dict[str, Any]:
-        self._projects.require_project(project_id)
+        require_project(self.session, project_id)
         return self._stats.stats_payload(project_id)
 
     # ---- dashboard ----
 
     def dashboard(self, project_id: str) -> dict[str, Any]:
-        project = self._projects.require_project(project_id)
+        project = require_project(self.session, project_id)
         chapter_views = self._chapter_views(project)
         current = self._current_chapter_view(project, chapter_views)
         resume, brief = self._resume_and_brief(current)

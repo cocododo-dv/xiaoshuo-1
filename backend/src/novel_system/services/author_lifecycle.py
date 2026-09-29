@@ -25,6 +25,7 @@ from novel_system.db.models import (
     StoryProject,
     utcnow,
 )
+from novel_system.services.catalog_ordering import park, reseat_display_orders
 from novel_system.services.chapter_approval import (
     approved_chapter_block,
     is_chapter_approved,
@@ -639,29 +640,14 @@ class AuthorLifecycleService:
                 .order_by(ChapterGoal.display_order.asc(), ChapterGoal.chapter_id.asc())
             ).scalars().all()
         )
-        final_positions = {
-            chapter.chapter_id: int(chapter.display_order or 0) + 1
-            for chapter in active_chapters
-        }
-        if active_chapters:
-            temporary_start = max(
-                int(chapter.display_order or 0) for chapter in active_chapters
-            ) + 1
-            for offset, chapter in enumerate(active_chapters):
-                chapter.display_order = temporary_start + offset
-            self.session.flush()
-            for chapter in active_chapters:
-                chapter.display_order = final_positions[chapter.chapter_id]
-            self.session.flush()
+        reseat_display_orders(
+            self.session,
+            [(chapter, int(chapter.display_order or 0) + 1) for chapter in active_chapters],
+        )
         restored.display_order = desired_order
 
     def _park_scene_orders(self, scenes: list[SceneCard]) -> None:
-        if not scenes:
-            return
-        temporary_start = max(int(scene.scene_seq or 0) for scene in scenes) + 1
-        for offset, scene in enumerate(scenes):
-            scene.scene_seq = temporary_start + offset
-        self.session.flush()
+        park(self.session, scenes, "scene_seq")
 
     def next_scene_append_seq(self, chapter_id: str) -> int:
         chapter_scenes = self._chapter_scenes(chapter_id)

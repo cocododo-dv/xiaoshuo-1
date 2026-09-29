@@ -208,6 +208,14 @@ SHARED_HELPER_LEAVES: dict[str, set[str]] = {
     "novel_system.services.snowflake_scene_order": {"novel_system.db.models"},
     "novel_system.services.snowflake_triage": {"novel_system.db.models"},
     "novel_system.services.author_preferences": set(),
+    # 2026-09-30 P05：书脊的状态词表、目录标签与两阶段落位（B08-15 / B08-23）
+    "novel_system.services.project_status": set(),
+    "novel_system.services.catalog_labels": {"novel_system.db.models"},
+    "novel_system.services.catalog_ordering": set(),
+    "novel_system.services.catalog_trash_cascade": {
+        "novel_system.db.models",
+        "novel_system.services.catalog_ordering",
+    },
 }
 
 

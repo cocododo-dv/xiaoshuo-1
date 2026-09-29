@@ -17,6 +17,7 @@ from novel_system.api.request_types import (
 from novel_system.api.response import ok
 from novel_system.db.models import ChapterGoal, ChapterState, SceneCard
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.catalog_ordering import reseat_scene_seqs
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
     require_chapter_mutation_allowed,
@@ -335,16 +336,7 @@ def _reorder_chapter_scenes(session: Session, chapter_id: str, payload: dict) ->
         operation="chapters.reorder_scenes",
     )
     if changed:
-        temporary_start = max(
-            int(scene.scene_seq or 0) for scene in ordered_scenes
-        ) + 1
-        for offset, scene in enumerate(ordered_scenes):
-            scene.scene_seq = temporary_start + offset
-        session.flush()
-        for index, scene in enumerate(ordered_scenes, start=1):
-            scene.scene_seq = index
-            scene.is_chapter_last = 1 if scene.scene_id == last_scene_id else 0
-        session.flush()
+        reseat_scene_seqs(session, ordered_scenes, last_scene_id=last_scene_id)
     return {
         "chapter_id": chapter_id,
         "changed": changed,
