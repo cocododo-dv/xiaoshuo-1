@@ -72,22 +72,36 @@ function toDocHTML(content) {
   return manuscriptToDocHTML(content);
 }
 
+/* 断行的块：它们的边界算一次换行（一段套在 <div> 里、用 <br> 分行，和并排的 <p> 是同一段文字） */
+const LINE_BREAK_TAGS = new Set(["P", "DIV", "BLOCKQUOTE", "LI", "UL", "OL", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "BR"]);
+
+function collectText(node, out) {
+  node.childNodes.forEach((child) => {
+    if (child.nodeType === 3) { out.push(child.nodeValue); return; }
+    if (child.nodeType !== 1) return;
+    const breaks = LINE_BREAK_TAGS.has(child.tagName);
+    if (breaks) out.push("\n");
+    collectText(child, out);
+    if (breaks) out.push("\n");
+  });
+}
+
 /* 一份正文的文字与分段（不看标记怎么写：服务端消毒后的写法可能和本机的不一样；开头的旧占位句不算字） */
 function docText(html) {
   const clean = toDocHTML(html == null ? "" : html);
   if (!clean) return "";
+  let joined;
   if (typeof document === "undefined") {
-    return clean.replace(/<[^>]*>/g, "\n").split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
+    joined = clean.replace(/<[^>]*>/g, "\n");
+  } else {
+    const template = document.createElement("template");
+    template.innerHTML = clean;
+    stripLeadingPlaceholder(template.content);
+    const out = [];
+    collectText(template.content, out);
+    joined = out.join("");
   }
-  const template = document.createElement("template");
-  template.innerHTML = clean;
-  stripLeadingPlaceholder(template.content);
-  const lines = [];
-  template.content.childNodes.forEach((node) => {
-    const text = (node.textContent || "").replace(/\s+/g, " ").trim();
-    if (text) lines.push(text);
-  });
-  return lines.join("\n");
+  return joined.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
 }
 
 /* 两份正文是不是同一段文字。写作台用它判断「读到的新版本是不是作者正在写的底稿」。 */

@@ -465,6 +465,21 @@ describe("恢复（同步与恢复中心的「恢复」）", () => {
   });
 });
 
+describe("两份正文是不是同一段文字（写作台据此决定接着写还是按冲突换稿）", () => {
+  it("只看字和分段：写法不同、套了一层、<br> 分行、纯文本与 <p>、开头的旧占位句都算同一段；多一个字就不是", async () => {
+    await loadDocs();
+    const { sameManuscriptText } = await import("./wr-doc-cache.js");
+    expect(sameManuscriptText("<p>一</p><p>二</p>", "<div><p>一</p><p>二</p></div>")).toBe(true);
+    expect(sameManuscriptText("<p>一<br>二</p>", "<p>一</p><p>二</p>")).toBe(true);
+    expect(sameManuscriptText("<p><span>起点</span></p>", '<p class="is-active">起点</p>')).toBe(true);
+    expect(sameManuscriptText("一\n二", "<p>一</p><p>二</p>")).toBe(true);
+    expect(sameManuscriptText("<p>在这里开始写这一场……</p>", "")).toBe(true);
+    expect(sameManuscriptText(null, "<p><br></p>")).toBe(true);
+    expect(sameManuscriptText("<p>一</p>", "<p>一二</p>")).toBe(false);
+    expect(sameManuscriptText("<p>一</p><p>二</p>", "<p>一二</p>")).toBe(false);
+  });
+});
+
 describe("跨作品与两个标签页", () => {
   it("路上那一次回来时作者已切到另一部作品：未同步标记和冲突副本都记在原作品名下", async () => {
     const second = { ...DEFAULT_PROJECT, project_id: "prj-second", title: "旧港" };
