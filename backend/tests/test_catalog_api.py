@@ -1,7 +1,11 @@
 """FE-ALIGN Phase 3: 目录 API（/api/v2/projects/{id}/catalog…）。"""
 from __future__ import annotations
 
+import pytest
+
 from novel_system.db.models import AuthorDraft, ChapterGoal, StoryProject
+from novel_system.services.catalog import CatalogService
+from novel_system.services.errors import DomainError
 
 _seq = 0
 
@@ -153,8 +157,8 @@ def test_scene_crud_insert_and_kind_brief(client):
     assert patched["brief"]["decision"] == "撕掉信"
 
 
-def test_catalog_import_then_blocked_when_not_empty(client, session, monkeypatch):
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+def test_catalog_import_then_blocked_when_not_empty(client, session):
+    """旧版整批导入：浏览器一次性迁移的接口已删（批准 #25），服务只给测试夹具播种——规则照旧。"""
     project = _create_project(client)
     pid = project["project_id"]
     payload = {
@@ -173,15 +177,8 @@ def test_catalog_import_then_blocked_when_not_empty(client, session, monkeypatch
             {"title": "迁移章二", "state": "writing", "current": True, "scenes": [{"title": "在写场", "kind": "主动", "state": "writing"}]},
         ]
     }
-    no_token = client.post(
-        f"/api/v2/projects/{pid}/catalog/import",
-        json=payload,
-        headers={"X-Idempotency-Key": "catalog-import-no-token"},
-    )
-    assert no_token.status_code == 403  # admin 保护
-
-    data = _post(client, f"/api/v2/projects/{pid}/catalog/import", payload,
-                 extra_headers={"X-Admin-Token": "admin-token"})
+    data = CatalogService(session).import_catalog(pid, payload)
+    session.commit()
     assert data["created_chapter_count"] == 2
     assert data["created_scene_count"] == 3
 
@@ -198,46 +195,50 @@ def test_catalog_import_then_blocked_when_not_empty(client, session, monkeypatch
     assert dashboard["project"]["current_chapter_id"] == tree["chapters"][1]["chapter_id"]
     assert dashboard["project"]["status"] == "chapter_ready"
 
-    again = client.post(
-        f"/api/v2/projects/{pid}/catalog/import",
-        json=payload,
-        headers={"X-Idempotency-Key": "catalog-import-again", "X-Admin-Token": "admin-token"},
-    )
-    assert again.status_code == 409  # 非空目录拒绝导入
+    with pytest.raises(DomainError) as again:
+        CatalogService(session).import_catalog(pid, payload)
+    assert again.value.code == "CATALOG_NOT_EMPTY"  # 非空目录拒绝导入
 
 
-def test_catalog_import_rejects_non_linear_approval_or_current(client, monkeypatch):
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+def test_catalog_import_rejects_non_linear_approval_or_current(client, session):
     project = _create_project(client)
     pid = project["project_id"]
-    path = f"/api/v2/projects/{pid}/catalog/import"
-    headers = {"X-Admin-Token": "admin-token", "X-Idempotency-Key": "catalog-import-nonlinear-approved"}
 
-    non_linear = client.post(
-        path,
-        json={
-            "chapters": [
-                {"title": "First", "state": "draft", "current": True},
-                {"title": "Second", "state": "approved"},
-            ]
-        },
-        headers=headers,
-    )
-    assert non_linear.status_code == 400
-    assert non_linear.json()["error"]["code"] == "CATALOG_IMPORT_APPROVAL_ORDER_INVALID"
+    with pytest.raises(DomainError) as non_linear:
+        CatalogService(session).import_catalog(
+            pid,
+            {
+                "chapters": [
+                    {"title": "First", "state": "draft", "current": True},
+                    {"title": "Second", "state": "approved"},
+                ]
+            },
+        )
+    assert non_linear.value.status_code == 400
+    assert non_linear.value.code == "CATALOG_IMPORT_APPROVAL_ORDER_INVALID"
 
-    wrong_current = client.post(
-        path,
-        json={
-            "chapters": [
-                {"title": "First", "state": "approved", "current": True},
-                {"title": "Second", "state": "writing"},
-            ]
-        },
-        headers={**headers, "X-Idempotency-Key": "catalog-import-wrong-current"},
+    with pytest.raises(DomainError) as wrong_current:
+        CatalogService(session).import_catalog(
+            pid,
+            {
+                "chapters": [
+                    {"title": "First", "state": "approved", "current": True},
+                    {"title": "Second", "state": "writing"},
+                ]
+            },
+        )
+    assert wrong_current.value.status_code == 400
+    assert wrong_current.value.code == "CATALOG_IMPORT_CURRENT_INVALID"
+
+
+def test_catalog_import_route_is_gone(client):
+    project = _create_project(client)
+    response = client.post(
+        f"/api/v2/projects/{project['project_id']}/catalog/import",
+        json={"chapters": [{"title": "旧目录"}]},
+        headers={"X-Idempotency-Key": "catalog-import-gone"},
     )
-    assert wrong_current.status_code == 400
-    assert wrong_current.json()["error"]["code"] == "CATALOG_IMPORT_CURRENT_INVALID"
+    assert response.status_code in {404, 405}
 
 
 def test_draft_save_updates_scene_words_and_returns_rollup(client, session):

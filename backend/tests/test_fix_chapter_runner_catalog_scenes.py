@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from novel_system.db.models import ChapterRunJob, FinalScene, SceneCard, SceneRunState
+from novel_system.services.catalog import CatalogService
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
 
@@ -48,16 +49,8 @@ def _create_catalog_chapter(client, project_id: str, *, title: str = "第一章"
             "current": True,
             "words_target": None,
             "act": None,
-            "tension": None,
-            "pov": None,
-            "time_label": None,
-            "place": None,
-            "entry": None,
-            "exit": None,
-            "align": None,
             "promise": None,
             "drama": {},
-            "threads": [],
             "with_scene": with_scene,
         },
         headers={"X-Idempotency-Key": _key("fix-cr-chapter")},
@@ -183,11 +176,11 @@ def test_v2_catalog_scenes_get_scene_run_state_like_v1_scenes(client, session) -
 def test_run_full_over_imported_catalog_scenes_uses_lazy_run_state(client, session, monkeypatch) -> None:
     """目录导入（迁移/夹具路径）不预建状态行：运行本章必须靠惰性补建起步，而不是 SCENE_NOT_FOUND。"""
 
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     project_id = _create_project(client)
-    response = client.post(
-        f"/api/v2/projects/{project_id}/catalog/import",
-        json={
+    # 浏览器一次性迁移用的 import 接口已删（批准 #25）；导入服务照旧给夹具播种
+    CatalogService(session).import_catalog(
+        project_id,
+        {
             "chapters": [
                 {
                     "title": "导入章",
@@ -200,9 +193,8 @@ def test_run_full_over_imported_catalog_scenes_uses_lazy_run_state(client, sessi
                 }
             ]
         },
-        headers={"X-Idempotency-Key": _key("fix-cr-import"), "X-Admin-Token": "admin-token"},
     )
-    assert response.status_code == 200, response.text
+    session.commit()
     scene_ids = session.execute(
         select(SceneCard.scene_id).where(SceneCard.project_id == project_id).order_by(SceneCard.scene_seq)
     ).scalars().all()

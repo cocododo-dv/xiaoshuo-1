@@ -62,6 +62,3 @@ class CatalogSceneUpdateRequest(_CatalogSceneFieldsRequest):
     pov_character_id: str | None = Field(default=None, max_length=255)
     pov_character_name: str | None = Field(default=None, max_length=500)
 
-
-class CatalogImportRequest(StrictRequestModel):
-    chapters: list[BoundedJsonObject] | None = Field(default=None, max_length=10_000)

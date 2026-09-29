@@ -130,7 +130,7 @@ await check("⑦ 回收站：删整部 → 恢复 → 数据无损", async () =>
   let items = (await api("/api/v2/projects")).items;
   if (items.some(w => w.project_id === pid)) throw new Error("still listed after remove");
   await page.evaluate(async (args) => {
-    await fetch(`${args.api}/api/v2/projects/${args.pid}/restore`, {
+    await fetch(`${args.api}/api/v2/trash/${encodeURIComponent("work:" + args.pid)}/restore`, {
       method: "POST", headers: { "Content-Type": "application/json", "X-Idempotency-Key": "acc-restore-" + Date.now() }, body: "{}",
     });
   }, { api: API, pid });

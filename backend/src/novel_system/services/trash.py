@@ -106,14 +106,7 @@ class TrashService:
         items.sort(key=lambda item: item.get("removed_at") or "", reverse=True)
         return {"items": items}
 
-    # ---- 章/场景级软删（v2 catalog 桥接；校验归属后走既有 lifecycle 服务） ----
-
-    def trash_chapter_in_project(self, project_id: str, chapter_id: str, *, actor_ref: str) -> dict[str, Any]:
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None or chapter.project_id != project_id:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found in project", status_code=404)
-        result = self._lifecycle.trash_chapters([chapter_id], actor_ref)
-        return self._lifecycle_result(f"chapter:{chapter_id}", result)
+    # ---- 场景级软删（校验归属后走既有 lifecycle 服务；分章面板「丢弃孤儿场景」用它） ----
 
     def trash_scene_in_project(self, project_id: str, scene_id: str, *, actor_ref: str) -> dict[str, Any]:
         scene = self.session.get(SceneCard, scene_id)
