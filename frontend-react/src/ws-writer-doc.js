@@ -53,9 +53,9 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
   const saveTimer = useRef(null);
   const dirtyRef = useRef(false);  // 有未落盘的改动（保存在路上时仍为 true，存上了才清）
   const editVersionRef = useRef(0);
-  /* 在路上的那一次保存：{ sceneId, editVersion, html, done }。done 在它（连同 409 之后换稿）处理完时
-     兑现为 "saved" / "conflict" / "failed"——等着存下一稿的、离场冲刷都看它。 */
-  const inFlightRef = useRef(null);
+  /* 每一场在路上的那一次保存：sceneId → { editVersion, html, done }。done 在它（连同 409 之后换稿）
+     处理完时兑现为 "saved" / "conflict" / "failed"——等着存下一稿的、离场冲刷都看它。 */
+  const inFlightRef = useRef(new Map());
   const mountedRef = useRef(false);
   const sceneRef = useRef(activeScene);
   const decorateEvent = useWrEvent((el) => { if (decorate) decorate(el); });
@@ -134,8 +134,8 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     /* 上一次保存还在路上：等它（连同 409 之后的换稿）落地再定。它撞上 409 时这一次作废——
        编辑器要么已换成服务端版本（这段字已在同步与恢复），要么 WrDocs 拒绝覆盖、等作者处理，都不自动再存。 */
     let prior = null;
-    while (inFlightRef.current && inFlightRef.current.sceneId === sceneId) {
-      prior = await inFlightRef.current.done;
+    while (inFlightRef.current.has(sceneId)) {
+      prior = await inFlightRef.current.get(sceneId).done;
       if (!stillCurrent()) return false;
     }
     if (prior === "conflict") return false;
@@ -152,8 +152,8 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     const html = wrSerializeManuscript(el);
     const editVersion = editVersionRef.current;
     let settle = null;
-    const run = { sceneId, editVersion, html, done: new Promise((resolve) => { settle = resolve; }) };
-    inFlightRef.current = run;
+    const run = { editVersion, html, done: new Promise((resolve) => { settle = resolve; }) };
+    inFlightRef.current.set(sceneId, run);
     let outcome = "failed";
     try {
       // 目录字数以保存回包的 words_rollup 为准（WrDocs 已经写进目录），这里不再拿本机计数盖它
@@ -177,7 +177,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       }
       return false;
     } finally {
-      if (inFlightRef.current === run) inFlightRef.current = null;
+      if (inFlightRef.current.get(sceneId) === run) inFlightRef.current.delete(sceneId);
       settle(outcome);
     }
   }, [activeScene, editorRef, beforeSaveEvent]);
@@ -241,7 +241,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       if (typeof cleanupAfterLoad === "function") cleanupAfterLoad();
       clearTimeout(saveTimer.current);
       if (dirtyRef.current && sid && !wrSceneIsApproved(sid)) {
-        const inFlight = inFlightRef.current && inFlightRef.current.sceneId === sid ? inFlightRef.current : null;
+        const inFlight = inFlightRef.current.get(sid) || null;
         if (inFlight && inFlight.editVersion === editVersionRef.current) {
           /* 保存还在路上、之后没再敲字：不再叠一次同样的正文——叠上去的那次在它 409 时会绕过冲突副本、
              带着刷新后的修订号把另一台设备的正文盖掉。它断网 / 服务端出错失败时，同一部作品下补发一次。 */

@@ -317,6 +317,39 @@ describe("useDocBinding · 保存还在路上时换场", () => {
     expect(WrRecovery.list().some((entry) => entry.html.includes("本机改了一句"))).toBe(true);
   }, LONG);
 
+  it("换走、在另一场存过、又换回来：回来后的自动保存照样等这一场还在路上的那一次，它 409 时不叠上去", async () => {
+    const { client, WriterRoom, WrRecovery } = await loadWriter({ catalog: [TWO_SCENE_CHAP] });
+    routeTwoScenes(client);
+    const first = deferred();
+    client.apiPatch.mockImplementation((url, body) => {
+      if (url.endsWith("/author-drafts/d1") && patchesTo(client, "d1").length === 1) return first.promise;
+      const draftId = url.split("/").pop();
+      return Promise.resolve({ draft: { draft_id: draftId, revision_no: Number(body.base_revision_no) + 1, content: body.content } });
+    });
+
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const editor = () => host.querySelector(".wr-editor");
+    const openScene = (sid) => act(async () => { window.dispatchEvent(new CustomEvent("ws:writer-scene", { detail: sid })); });
+    await vi.waitFor(() => expect(editor().textContent).toContain("起点正文"), T);
+    await typeInto(editor(), "<p>起点正文，本机改了一句</p>");
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(1), T);
+    await openScene("ch01s2");
+    await vi.waitFor(() => expect(editor().textContent).toContain("第二场"), T);
+    await typeInto(editor(), "<p>第二场，也改了</p>");
+    await vi.waitFor(() => expect(patchesTo(client, "d2")).toHaveLength(1), T);
+    await openScene("ch01s1");
+    await vi.waitFor(() => expect(editor().textContent).toContain("本机改了一句"), T);
+    await typeInto(editor(), "<p>起点正文，本机改了一句，回来又写</p>");
+    await wait(1200); // 回来之后的自动保存到点：第一场那一次还在路上
+    expect(patchesTo(client, "d1")).toHaveLength(1);
+    await act(async () => { first.reject(conflict()); });
+
+    await vi.waitFor(() => expect(editor().textContent).toContain("另一台设备的正文"), T);
+    await wait(300);
+    expect(patchesTo(client, "d1")).toHaveLength(1);
+    expect(WrRecovery.list().some((entry) => entry.html.includes("回来又写"))).toBe(true);
+  }, LONG);
+
   it("那一次断网失败：离场之后补发同一稿", async () => {
     const { client, WriterRoom } = await loadWriter({ catalog: [TWO_SCENE_CHAP] });
     routeTwoScenes(client);
