@@ -150,6 +150,64 @@ def test_index_is_built_once_per_book_and_results_are_cached(session, monkeypatc
     assert builds == [refs["book_id"], refs["book_id"]]
 
 
+def test_a_stored_paragraph_root_spares_the_whole_book_scan(session) -> None:
+    """B04-25：书的统计里存着段落根哈希时，指纹就用它——不再每次检查都把全书段落数一遍、加一遍长度（2.6 万段
+    一次十几毫秒，一场运行要查十来次）。改段落的写入者负责把根哈希 pop 掉（契约 §3.1）：pop 之后下一次检查照旧
+    按段落表认出新添的段落。根哈希每次现读库，会话里旧的书对象骗不了它。"""
+    from sqlalchemy import event, func, update
+
+    from novel_system.db.models import StyleReferenceBook
+    from novel_system.services.style_reference.paragraph_root import (
+        COUNT_KEY,
+        ROOT_KEY,
+        compute_paragraph_root_fast,
+        patch_book_stats,
+    )
+
+    scene = _seed_scene(session)
+    refs = _bind(session)
+    root, count = compute_paragraph_root_fast(session, refs["book_id"])
+    patch_book_stats(session, refs["book_id"], {ROOT_KEY: root, COUNT_KEY: count})
+    session.commit()
+    policy = style_policy_live(session, scene, freeze_contract=False)
+    statements: list[str] = []
+
+    def record(_conn, _cursor, statement, *_args):
+        statements.append(statement.lower())
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        clean = check_reference_copy(session, "一段干净的正文，说的是另一件事。", policy=policy)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert clean.blocked is False
+    assert not any("sum(length(" in statement for statement in statements), "存着根哈希时不再扫全书段落"
+
+    # 守 §3.1 的写入者：添一段，同时把根哈希 pop 掉（另一个连接改的也一样——根哈希现读库）
+    session.add(
+        StyleReferenceParagraph(
+            paragraph_id="sr_par_copy_gate_rooted_late",
+            book_id=refs["book_id"],
+            paragraph_index=99,
+            paragraph_type="narration",
+            start_offset=0,
+            end_offset=10,
+            text="后来添进来的一段参考原文，足够长也足够特别。",
+            char_count=22,
+        )
+    )
+    session.execute(
+        update(StyleReferenceBook)
+        .where(StyleReferenceBook.book_id == refs["book_id"])
+        .values(stats_json=func.json_remove(StyleReferenceBook.stats_json, f"$.{ROOT_KEY}", f"$.{COUNT_KEY}"))
+        .execution_options(synchronize_session=False)
+    )
+    session.commit()
+    late = check_reference_copy(session, "他说：后来添进来的一段参考原文，足够长。", policy=policy)
+    assert late.blocked is True
+
+
 def test_protected_names_come_from_generation_banned_terms_and_environment(session, monkeypatch) -> None:
     """受保护专名（画像现行的生成期禁用词 + 环境变量全局词）只报、从不拦（H1）；检查记录不写词本身。"""
     scene = _seed_scene(session)
