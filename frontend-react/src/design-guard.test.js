@@ -74,7 +74,7 @@ const MAX_JSX_RAW_COLOURS = 0;
 // 还在用旧 .pill 标签（styles.css，颜料名 crimson / gold / sage / slate / rose）的 className 个数上限
 // （棘轮，只降不升）。新代码用 ws-ui 的 <Tag tone dot>：crimson → accent、gold → warn、sage → ok、
 // slate → info、rose → danger、不带色 → neutral。各视图包改到时换掉，降到 0 后删掉 .pill 样式。
-const MAX_LEGACY_PILL_CLASS_USES = 15;
+const MAX_LEGACY_PILL_CLASS_USES = 13;
 
 const ANIMATION_KEYWORDS = new Set([
   "none", "infinite", "linear", "ease", "ease-in", "ease-out", "ease-in-out", "both", "forwards",

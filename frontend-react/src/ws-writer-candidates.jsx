@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { Notice, Spinner } from "./ws-ui.jsx";
+import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { wrPickedText, wrSentences } from "./writer-candidates.js";
 import { wrAiError, wrContinueChips } from "./ws-writer-ai.js";
 import { wrContinueMulti } from "./ws-writer-requests.js";
@@ -87,7 +87,7 @@ function WrCandCard({ cand, index, picked, selected, onToggle, onAdopt, onAdoptT
       onMouseEnter={onSelect} onClick={onSelect}>
       <div className="wr-cand-head">
         <span className="wr-cand-key" aria-hidden="true">{index + 1}</span>
-        <span className={`pill pill-${cand.tone} text-xs`}><span className="pill-dot" />{cand.approach}</span>
+        <Tag tone={cand.tone} dot>{cand.approach}</Tag>
         {picked.length > 0 && <span className="wr-cand-pickn">已选 {picked.length} 句</span>}
       </div>
       <WrCandText html={cand.html} picked={picked} onToggle={onToggle} />
@@ -137,7 +137,7 @@ export function WrContinueChips({ design, onPick }) {
   return (
     <div className="wr-chips" aria-label="续写提示快捷词">
       {chips.map((chip) => (
-        <button type="button" key={chip.label} className="pill wr-chip" title={chip.prompt} onClick={() => onPick(chip.prompt)}>{chip.label}</button>
+        <button type="button" key={chip.label} className="ws-tag wr-chip" data-tone="neutral" title={chip.prompt} onClick={() => onPick(chip.prompt)}>{chip.label}</button>
       ))}
     </div>
   );

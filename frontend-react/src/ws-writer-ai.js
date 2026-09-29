@@ -78,9 +78,9 @@ export function wrAiLocalError(code) {
 }
 
 const CONTINUE_DIRECTIONS = [
-  { key: "action", label: "动作推进", tone: "crimson" },
-  { key: "relationship", label: "关系压力", tone: "slate" },
-  { key: "suspense", label: "悬念", tone: "gold" },
+  { key: "action", label: "动作推进", tone: "accent" },
+  { key: "relationship", label: "关系压力", tone: "info" },
+  { key: "suspense", label: "悬念", tone: "warn" },
 ];
 
 export function wrContinueDirection(proposal, index) {
@@ -88,7 +88,7 @@ export function wrContinueDirection(proposal, index) {
   const slot = source.includes(":") ? source.slice(source.lastIndexOf(":") + 1) : "";
   return CONTINUE_DIRECTIONS.find((item) => item.key === slot)
     || CONTINUE_DIRECTIONS[index]
-    || { key: "", label: `第 ${index + 1} 条`, tone: "slate" };
+    || { key: "", label: `第 ${index + 1} 条`, tone: "info" };
 }
 
 /* 续写提示的快捷词：只放「接着往下写」一类的指令（续写接口只追加下一拍，从不改已有正文）；

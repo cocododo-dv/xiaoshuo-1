@@ -58,7 +58,7 @@ describe("续写候选与调音指令", () => {
       { proposal_id: "p1", proposal_source: "continuation:relationship", content: "她说<好>\n。", rationale: "关系" },
       { proposal_id: "p3", content: "  " },
     ] });
-    expect(cands).toEqual([{ id: "p1", approach: "关系压力", tone: "slate", note: "关系", html: "她说&lt;好&gt;。" }]);
+    expect(cands).toEqual([{ id: "p1", approach: "关系压力", tone: "info", note: "关系", html: "她说&lt;好&gt;。" }]);
   });
 
   it("一条可用的都没有 → no-result（换个说法重试）", () => {
