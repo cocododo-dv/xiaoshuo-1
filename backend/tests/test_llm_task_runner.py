@@ -662,13 +662,13 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         ("services/near_final.py", "NearFinalAcceptanceService", "evaluate_scene"),
         # 2026-09-12 风格直起:公共入口 generate_neutral_draft / _run_style_generation 只设长度带
         # 放宽上下文再委派;真正调用 runner 的是这两个 inner 方法(调用点数量不变)。
-        ("services/scene_generation.py", "SceneGenerationService", "_generate_first_draft"),
-        ("services/scene_generation.py", "SceneGenerationService", "_run_style_generation_inner"),
-        ("services/scene_generation.py", "SceneGenerationService", "_run_de_template_pass"),
-        ("services/scene_generation.py", "SceneGenerationService", "_run_style_salvage_pass"),
+        ("services/scene_generation/__init__.py", "SceneGenerationService", "_generate_first_draft"),
+        ("services/scene_generation/__init__.py", "SceneGenerationService", "_run_style_generation_inner"),
+        ("services/scene_generation/__init__.py", "SceneGenerationService", "_run_de_template_pass"),
+        ("services/scene_generation/__init__.py", "SceneGenerationService", "_run_style_salvage_pass"),
         # 2026-09-23 风格参考 v3（P5b）：style_first 下风格步越界时的定向修改（style_targeted_revision，
         # 走 style_draft 节点路由），与风格稿同一条场景运行记账路径。
-        ("services/scene_generation.py", "SceneGenerationService", "_run_targeted_revision"),
+        ("services/scene_generation/__init__.py", "SceneGenerationService", "_run_targeted_revision"),
         ("services/scene_blueprint.py", "SceneBlueprintService", "generate"),
         # Hard/Soft QC 的 LLM 调用已收敛为模块级统一降级出口（两引擎共用一个 .run( 调用点）
         ("services/qc_engine.py", "", "_qc_run_node_with_degradation"),
