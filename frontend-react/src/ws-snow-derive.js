@@ -265,6 +265,21 @@ export function s2LandingStep({ states, health, lastVisited } = {}) {
   return last || S2_STEPS[S2_STEPS.length - 1].key;
 }
 
+/* 服务端以「前面的步骤还没确认」拒绝确认 / 复核 / 略过（SNOWFLAKE_PREVIOUS_STEP_REQUIRED）时卡在哪一步：
+   错误详情 missing_previous_steps 按步序排，第一项就是该先去的那一步。返回 { key, label, more }——key 是前端步骤键
+   （认不出的后端键给 null，只报它的名字），more 是后面还差几步；不是这种错误返回 null。 */
+export function s2BlockedStep(err) {
+  const missing = (err && err.details && Array.isArray(err.details.missing_previous_steps)) ? err.details.missing_previous_steps : [];
+  const first = missing[0];
+  if (!first) return null;
+  const st = S2_STEPS.find(s => s.be === first.step_key) || null;
+  return {
+    key: st ? st.key : null,
+    label: st ? `${st.num} ${st.name}` : String(first.label || first.step_key || "前面的步骤"),
+    more: missing.length - 1,
+  };
+}
+
 /* ---- 本步要点（阶段 T / U）与 AI 入口的小推导 ---- */
 export const BRIEF_KIND_LABEL = { decision: "决定", rejection: "否决", constraint: "约束", pending: "待定" };
 export const BRIEF_KIND_ORDER = ["decision", "constraint", "rejection", "pending"];

@@ -600,7 +600,7 @@ describe("阶段 M · 09/10 交互", () => {
     expect("exception_reason" in row).toBe(false);
   });
 
-  it("F02-01：第 10 步的视角选择改的是 09 那一行；旧缓存 plan 里的形态 / 视角在读入时摘掉（09 没有视角时视角挪进去）", async () => {
+  it("F02-01 / Q2-01：第 10 步的视角同形态一样只读（显示 09 那一行的视角，门去 09）；旧缓存 plan 里的形态 / 视角在读入时摘掉（09 没有视角时视角挪进去）", async () => {
     const seeded = threeScenes();
     seeded.scaffolds.characters.chars.c2 = { name: "沈砚", role: "反派", goal: "", ambition: "", values: "", conflict: "", epiphany: "" };
     seeded.scaffolds.scenes.list[1] = { ...seeded.scaffolds.scenes.list[1], pov: "" };
@@ -610,16 +610,51 @@ describe("阶段 M · 09/10 交互", () => {
     const host = await renderAt("planning");
     // S01：09 是主动 / 林岑，旧 plan 里的「反应 / 沈砚」不再作数
     expect(host.querySelector(".sf-plan-type").textContent).toContain("主动场");
-    const pov = host.querySelector('.sf-plan-pov select');
-    expect(pov.value).toBe("c1");
-    await act(async () => { pov.value = "c2"; pov.dispatchEvent(new Event("change", { bubbles: true })); });
-    const readCache = () => JSON.parse(window.localStorage.getItem(CACHE));
-    await vi.waitFor(() => expect(readCache().scaffolds.scenes.list[0].pov).toBe("c2"), { timeout: 2000 });
-    const cache = readCache();
+    const pov = () => host.querySelector('[data-testid="snow-plan-pov"]');
+    expect(pov().textContent).toContain("林岑");
+    // 第 10 步没有能改视角的控件：以前这里的下拉改的是 09 那一行，09 随之待重新确认，在第 10 步确认却被服务端拒绝
+    expect(pov().querySelector("select, input, textarea")).toBeNull();
+    // S02 在 09 里没有视角：旧 plan 的视角挪进 09 的行，第 10 步显示的就是它
+    await act(async () => host.querySelectorAll(".sf-plan-cell")[1].click());
+    expect(pov().textContent).toContain("沈砚");
+    // 读入后的第一次落盘（450ms 防抖）：plan 里只剩内容，挪进去的视角在 09 的行上
+    await act(async () => { await new Promise(r => setTimeout(r, 500)); });
+    const cache = JSON.parse(window.localStorage.getItem(CACHE));
     expect(cache.scaffolds.planning.plans.S01).toEqual({ goal: "拿到账本" });
-    // S02 在 09 里没有视角：旧 plan 的视角挪进 09 的行，plan 里只剩内容
-    expect(cache.scaffolds.scenes.list[1].pov).toBe("c2");
     expect(cache.scaffolds.planning.plans.S02).toEqual({ reaction: "崩了一下" });
+    expect(cache.scaffolds.scenes.list[0].pov).toBe("c1");
+    expect(cache.scaffolds.scenes.list[1].pov).toBe("c2");
+    // 门：去 09 场景列表（与形态胶囊里那扇门一样）
+    await act(async () => host.querySelector('[data-testid="snow-plan-pov-go"]').click());
+    expect(host.querySelector('[data-testid="snow-scene-row-1"] .sc-pov').value).toBe("c2");
+    expect(host.querySelector('[data-testid="snow-plan-pov"]')).toBeNull();
+  });
+
+  it("Q2-01：确认被服务端以「前面的步骤没确认」拒绝时，回执点名是哪一步、给一扇去那一步的门；本地不标已确认、不跳步", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
+    const blocked = Object.assign(new Error("需要先确认前面的雪花步骤。"), {
+      code: "SNOWFLAKE_PREVIOUS_STEP_REQUIRED", status: 409,
+      details: { missing_previous_steps: [{ step_key: "scene_list", label: "场景列表" }, { step_key: "one_sentence_summary", label: "一句话概括" }] },
+    });
+    window.SnowSync.needsReconfirm = vi.fn(() => true);
+    window.SnowSync.approveStep = vi.fn(async () => { throw blocked; });
+    const host = await renderAt("planning");
+    await act(async () => host.querySelector('[data-testid="snow-confirm-step"]').click());
+    expect(window.SnowSync.approveStep).toHaveBeenCalledWith("new-book", "planning");
+    const toast = host.querySelector('[data-testid="undo-toast"]');
+    expect(toast.textContent).toContain("重新确认未能记入服务端：先确认「09 场景列表」（前面还有 1 步没确认）");
+    expect(host.querySelector('[data-testid="snow-step-planning"]').className).not.toContain("s-done");
+    expect(host.querySelector('[data-testid="snow-plan-pov"]')).toBeTruthy(); // 还在第 10 步
+    // 门：去 09
+    await act(async () => host.querySelector('[data-testid="undo-toast-action"]').click());
+    expect(host.querySelector('[data-testid="snow-scene-row-0"]')).toBeTruthy();
+
+    // 别的错误照旧给服务端的原话
+    window.SnowSync.approveStep = vi.fn(async () => { throw new Error("网络断了"); });
+    await act(async () => host.querySelector('[data-testid="snow-step-planning"]').click());
+    await act(async () => host.querySelector('[data-testid="snow-confirm-step"]').click());
+    expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("重新确认未能记入服务端：网络断了");
+    expect(host.querySelector('[data-testid="undo-toast-action"]')).toBeNull();
   });
 
   it("阶段 R：作者裁定——点「待删」经 SnowSync.saveTriageVerdict 写回服务端并高亮；失败回滚到上一次裁定", async () => {

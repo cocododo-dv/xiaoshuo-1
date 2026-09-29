@@ -5,7 +5,7 @@ import { SnowSync } from "./ws-snow-sync.jsx";
 import { useFocusTrap, isImeComposing } from "./ws-dialog.jsx";
 import {
   S2_STEPS, S2_STATE_LABEL,
-  s2BlankScaffolds, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates, s2FindStepKey,
+  s2BlankScaffolds, s2BlockedStep, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates, s2FindStepKey,
   s2LandingStep, s2MergeScaffolds, s2SettlePlanning,
 } from "./ws-snow-model.js";
 import {
@@ -178,6 +178,20 @@ export function useSnowStepFlow({
     }
     return Math.min(S2_STEPS.length - 1, from + 1);
   };
+  /* 服务端没记下（确认 / 复核 / 略过）时的回执。卡在「前面的步骤还没确认」时点名是哪一步、给一扇去那一步的门——
+     以前只转述「需要先确认前面的雪花步骤。」，作者得一步步去找；其余错误照旧给服务端的原话。 */
+  const failToast = (lead, err) => {
+    const blocked = s2BlockedStep(err);
+    if (!blocked) {
+      showToast(`${lead}：` + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      return;
+    }
+    pushToast({
+      text: `${lead}：先确认「${blocked.label}」${blocked.more > 0 ? `（前面还有 ${blocked.more} 步没确认）` : ""}`,
+      tone: "crimson", timeout: 7000,
+      ...(blocked.key ? { actionLabel: `去 ${blocked.label}`, onAction: () => { selectStep(blocked.key); setTabFor(blocked.key, "edit"); } } : {}),
+    });
+  };
   const confirmStep = async () => {
     /* 阶段 G：确认过又改了的步骤（后端 pending_review + revised_after_approval）不再在键入后自动补批准，
        而是在这里由作者显式重新确认——下游失效级联在这一刻发生、回包整份工作台刷新健康。失败就诚实提示，不跳步。 */
@@ -188,7 +202,7 @@ export function useSnowStepFlow({
       try {
         await SnowSync.approveStep(workId, activeKey);
       } catch (err) {
-        showToast("重新确认未能记入服务端：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+        failToast("重新确认未能记入服务端", err);
         return;
       }
     }
@@ -211,7 +225,7 @@ export function useSnowStepFlow({
       if (!workId) throw new Error("同步层未就绪");
       await SnowSync.acceptStale(workId, activeKey, "");
     } catch (err) {
-      showToast("复核未能记入服务端：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      failToast("复核未能记入服务端", err);
       return;
     }
     setStates(prev => ({ ...prev, [activeKey]: "done" }));
@@ -242,7 +256,7 @@ export function useSnowStepFlow({
       if (!workId) throw new Error("同步层未就绪");
       await SnowSync.skipStep(workId, activeKey, reason);
     } catch (err) {
-      showToast("略过未能记入服务端：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      failToast("略过未能记入服务端", err);
       return false;
     }
     setStates(prev => ({ ...prev, [activeKey]: prev[activeKey] === "done" ? "done" : "skip" }));

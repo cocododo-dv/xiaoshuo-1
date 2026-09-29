@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { S2AutoText, S2PovPick } from "./ws-snow-fields.jsx";
+import { S2AutoText } from "./ws-snow-fields.jsx";
 import { s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS } from "./ws-snow-hooks.js";
 import {
   S2_TRIAGE_LABEL, S2_VERDICTS, s2BusyOn, s2InferSpine, s2PlanState, s2PovLabel, s2RosterList, s2SceneNo,
@@ -9,7 +9,7 @@ import {
 /* ==========================================================
    10 场景规划（从 ws-snow-scenes.jsx 拆出，2026-09-22）
    ----------------------------------------------------------
-   逐场画草图：主动 目标 / 冲突 / 挫败，反应 反应 / 两难 / 决定。形态跟随 09，这里只规划、裁定。
+   逐场画草图：主动 目标 / 冲突 / 挫败，反应 反应 / 两难 / 决定。形态与视角跟随 09，这里只规划、裁定。
    ========================================================== */
 
 const { useState: useSS } = React;
@@ -17,7 +17,7 @@ const { useState: useSS } = React;
 /* 第 10 步的版面围绕三拍：场景头（编号 · 题名 · 形态 · 视角 · 你的裁定）→ 主三拍 → 接着的次要三拍 →
    收起的「场景卡细节」→ 破例理由 → 分诊结果。以前三拍前面先铺了十二个零散输入框，三拍本身落在首屏之外、
    还是两行高的框，长一点的节拍就被截住。「场景卡细节」收起与否按本机记住。 */
-export function S2ScenePlan({ scaffold, onScaffold, onSceneRow, refs, go, ai }) {
+export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const list = ((refs && refs.scenes) || {}).list || [];
   const roster = s2RosterList(refs);
   const plans = scaffold.plans || {};
@@ -30,8 +30,7 @@ export function S2ScenePlan({ scaffold, onScaffold, onSceneRow, refs, go, ai }) 
   /* 只写改动的那一格，写在存储里那份 plan 上（函数式更新）：以前把渲染时补齐的默认值（形态、视角、空篇幅……）
      整份写进去，第一次改任何一格就把它们冻住，上行时盖回服务端（F02-01）。 */
   const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...((s.plans || {})[selId] || {}), [f]: v } } }));
-  // 视角只有 09 的场景行一个家：这里选视角就是改 09 那一行
-  const setPov = (v) => { if (onSceneRow) onSceneRow(selId, { pov: v }); };
+  // 视角同形态一样只有 09 的场景行一个家：这里只显示，改就去 09
   const scenePov = (scene && scene.pov) || "";
   const selScene = (id) => onScaffold(s => ({ ...s, sel: id }));
   // hooks 一律在提前返回之前（09 在空与非空之间切换时——水合、清空——hook 数量不能变）
@@ -142,10 +141,14 @@ export function S2ScenePlan({ scaffold, onScaffold, onSceneRow, refs, go, ai }) 
             {proactive ? "主动场" : "反应场"}
             <button type="button" className="sf-plan-type-go" onClick={() => go && go("scenes")} title="在 09 场景列表里改形态">在 09 改</button>
           </span>
-          <label className="sf-plan-pov">
+          {/* 视角与形态同一个规矩：09 定，这里只读、旁边一扇门。以前这里有一个视角下拉，改的其实是 09 那一行——
+              09 随之「待重新确认」，在第 10 步点「确认本步」却被服务端以「前面的步骤没确认」拒绝。 */}
+          <span className={`sf-plan-pov ${scenePov ? "" : "is-empty"}`} data-testid="snow-plan-pov" title="视角跟随 09 场景列表">
             <span className="sf-field-label">视角</span>
-            <S2PovPick value={scenePov} roster={roster} onChange={setPov} className="sf-field-input" placeholder={s2PovLabel(scene.pov, roster) || "视角人物"} ariaLabel={`${no} 的视角人物`} />
-          </label>
+            <span className="sf-plan-pov-name">{scenePov ? s2PovLabel(scenePov, roster) : "未定"}</span>
+            <button type="button" className="sf-plan-type-go" data-testid="snow-plan-pov-go" onClick={() => go && go("scenes")}
+              title="在 09 场景列表里改视角" aria-label={`在 09 场景列表里改 ${no} 的视角`}>在 09 改</button>
+          </span>
         </div>
         <div className="sf-plan-head-sub">
           {scene.place && <span><I.MapPin size={11} /> {scene.place}</span>}

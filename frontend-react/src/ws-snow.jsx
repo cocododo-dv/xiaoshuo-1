@@ -124,11 +124,6 @@ function WsSnowflake({ initialStep }) {
   const draft = drafts[activeKey] || "";
   const setDraft = useStableCallback((v) => setDrafts(prev => ({ ...prev, [activeKey]: typeof v === "function" ? v(prev[activeKey]) : v })));
   const updateScaffold = useStableCallback((updater) => setScaffolds(prev => ({ ...prev, [activeKey]: updater(prev[activeKey]) })));
-  // 第 10 步改视角就是改 09 那一行（视角只有一个家，F02-01）
-  const updateSceneRow = useStableCallback((rowId, patch) => setScaffolds(prev => {
-    const sc = prev.scenes || {};
-    return { ...prev, scenes: { ...sc, list: (sc.list || []).map(s => (s && s.id === rowId ? { ...s, ...patch } : s)) } };
-  }));
   const toggleCheck = useStableCallback((i) => setChecks(prev => ({ ...prev, [activeKey]: (prev[activeKey] || []).map((v, j) => j === i ? !v : v) })));
   const doneCount = S2_STEPS.filter(s => states[s.key] === "done").length;
 
@@ -367,7 +362,7 @@ function WsSnowflake({ initialStep }) {
                   brief={brief} usage={briefUsage} health={curHealth} onOpenCoach={() => setTab("coach")}
                   onRegenWithBrief={regenWithBrief} err={genErr} onClearErr={() => gen.clearGenErr(activeKey)} />
                 <S2StepEditor step={active} data={data} draft={draft} setDraft={setDraft}
-                  scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} onSceneRow={updateSceneRow} refs={scaffolds} go={selectStep}
+                  scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} refs={scaffolds} go={selectStep}
                   ai={isTableStep ? sceneAI : isCharStep ? charAI : undefined} onOpenChapterPlan={openChapterPlan}
                   catalogHasChapters={catalogChapters.length > 0} />
               </React.Fragment>

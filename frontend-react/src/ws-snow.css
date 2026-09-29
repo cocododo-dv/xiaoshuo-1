@@ -411,9 +411,12 @@
 .sf-plan-type.is-rea { background: var(--slate-wash); color: var(--slate-ink); }
 .sf-plan-type-go { border: 0; border-radius: 999px; padding: 1px 8px; font: inherit; font-size: 11px; font-weight: 600; background: var(--paper-0); color: inherit; cursor: pointer; }
 .sf-plan-type-go:hover { text-decoration: underline; }
+/* 视角只读（09 定）：名字 + 与形态胶囊同一句「在 09 改」；场景头是白底，门带一道细边才看得见 */
 .sf-plan-pov { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 200px; min-width: 140px; }
 .sf-plan-pov .sf-field-label { white-space: nowrap; flex: 0 0 auto; }
-.sf-plan-pov .sf-field-input { padding: 5px 8px; font-size: var(--fs-sm); }
+.sf-plan-pov-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
+.sf-plan-pov.is-empty .sf-plan-pov-name { font-weight: 400; color: var(--ink-3); }
+.sf-plan-pov .sf-plan-type-go { flex: 0 0 auto; border: 1px solid var(--line-2); color: var(--ink-2); }
 .sf-plan-head-sub { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: var(--fs-xs); color: var(--ink-3); padding-left: 2px; }
 .sf-plan-head-sub span { display: inline-flex; align-items: center; gap: 4px; }
 .sf-plan-spine { color: var(--gold-ink); font-weight: 600; }

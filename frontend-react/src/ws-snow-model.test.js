@@ -9,7 +9,7 @@ import { SNOW_STEPS, snowStepByBackendKey } from "./snow-steps.js";
 import { WS_SNOW_STEPS } from "./ws-nav.js";
 import {
   S2_BE_KEY, S2_BE_STEPS, S2_STEPS, S2_STEP_DATA,
-  s2AdoptServerScaffold, s2Ancestors, s2BlankScaffolds, s2FindStepKey, s2InferSpine, s2LandingStep, s2LineStats,
+  s2AdoptServerScaffold, s2Ancestors, s2BlankScaffolds, s2BlockedStep, s2FindStepKey, s2InferSpine, s2LandingStep, s2LineStats,
   s2MergeScaffolds, s2NormalizeState, s2PacingRuns, s2PlanAuto, s2PlanSlots, s2PlanState, s2PreserveFeOnly,
   S2_DEFAULT_LINES, s2ReorderScenes, s2SceneAuto, s2SceneLines, s2SceneListStats, s2SettlePlanning, s2StaleMap, s2UpstreamDrift,
 } from "./ws-snow-model.js";
@@ -34,6 +34,18 @@ describe("步骤目录只有一份", () => {
     expect(s2FindStepKey("nope")).toBe("");
     // 依赖 DAG：09 既从 07 展开，也依赖 04 的角色表
     expect(s2Ancestors("scenes")).toEqual(expect.arrayContaining(["outline", "characters", "synopsis", "paragraph", "logline", "audience"]));
+  });
+
+  it("s2BlockedStep（Q2-01）：服务端以「前面的步骤没确认」拒绝时点名第一步（前端的号与名字）；认不出的后端键只报名字；别的错误给 null", () => {
+    const blocked = (missing) => Object.assign(new Error("需要先确认前面的雪花步骤。"), {
+      code: "SNOWFLAKE_PREVIOUS_STEP_REQUIRED", details: { missing_previous_steps: missing },
+    });
+    expect(s2BlockedStep(blocked([{ step_key: "scene_list", label: "场景列表" }, { step_key: "long_synopsis", label: "长篇大纲" }])))
+      .toEqual({ key: "scenes", label: "09 场景列表", more: 1 });
+    expect(s2BlockedStep(blocked([{ step_key: "not_a_step", label: "合成步骤" }]))).toEqual({ key: null, label: "合成步骤", more: 0 });
+    expect(s2BlockedStep(blocked([]))).toBeNull();
+    expect(s2BlockedStep(new Error("网络断了"))).toBeNull();
+    expect(s2BlockedStep(null)).toBeNull();
   });
 });
 
