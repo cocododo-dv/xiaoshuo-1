@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.project_requests import ProjectCreateRequest
 from novel_system.api.request_types import EmptyRequest
@@ -65,13 +65,13 @@ def create_project(payload: ProjectCreateRequest, request: Request, session: Ses
 def list_projects(request: Request, session: Session = Depends(get_session)):
     return ok(
         ProjectService(session).list(),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
 @router.get("/api/v1/projects/{project_id}/dashboard")
 def project_dashboard(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(ProjectService(session).dashboard(project_id), req_id=getattr(request.state, "request_id", None))
+    return ok(ProjectService(session).dashboard(project_id), req_id=request_id_of(request))
 
 
 @router.post("/api/v1/projects/{project_id}/outline-plan/{plan_id}/approve")
@@ -158,7 +158,7 @@ def approve_project_chapter_final(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return idempotent_response(
         request,
         session,
@@ -178,7 +178,7 @@ def reopen_project_chapter_final(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return idempotent_response(
         request,
         session,
@@ -203,7 +203,7 @@ def confirm_project_chapter_read(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return optional_idempotent_response(
         request,
         session,

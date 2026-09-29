@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.project_requests import ProjectProfileUpdateRequest
 from novel_system.api.response import ok
@@ -39,10 +39,10 @@ def update_project_profile(
 @router.get("/api/v2/projects/{project_id}/writing-stats")
 def project_writing_stats(project_id: str, request: Request, session: Session = Depends(get_session)):
     result = ProjectOverviewService(session).writing_stats(project_id)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.get("/api/v2/projects/{project_id}/dashboard")
 def project_dashboard_v2(project_id: str, request: Request, session: Session = Depends(get_session)):
     result = ProjectOverviewService(session).dashboard(project_id)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return ok(result, req_id=request_id_of(request))

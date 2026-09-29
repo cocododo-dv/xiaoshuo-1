@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import (
     BoundedJsonObject,
@@ -76,7 +76,7 @@ class ChapterSceneOrderRequest(BaseModel):
 def list_chapters(request: Request, session: Session = Depends(get_session)):
     return ok(
         {"items": AuthorLifecycleService(session).list_active_chapters()},
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -106,7 +106,7 @@ def create_chapter(
 @router.post("/api/v1/chapters/trash")
 def trash_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return idempotent_response(
         request,
         session,
@@ -256,7 +256,7 @@ def run_chapter_full(
 def chapter_run_status(chapter_id: str, request: Request, session: Session = Depends(get_session)):
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     payload = ChapterRunnerService(session).run_status(chapter_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.post("/api/v1/chapters/{chapter_id}/scene-order")

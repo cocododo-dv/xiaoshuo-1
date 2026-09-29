@@ -67,10 +67,6 @@ def serialize_banned_term(term) -> dict[str, Any]:
     }
 
 
-def req_id(request: Request) -> str | None:
-    return getattr(request.state, "request_id", None)
-
-
 def client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
 
@@ -103,7 +99,6 @@ __all__ = [
     "client_host",
     "dispatch",
     "llm_client_and_enabled",
-    "req_id",
     "serialize_banned_term",
     "serialize_finding",
     "serialize_run",

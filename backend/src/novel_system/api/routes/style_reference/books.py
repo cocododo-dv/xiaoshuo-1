@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
@@ -25,7 +25,6 @@ from novel_system.api.routes.style_reference._common import (
     client_host,
     dispatch,
     llm_client_and_enabled,
-    req_id,
 )
 from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.errors import DomainError
@@ -259,7 +258,7 @@ def get_style_reference_runtime(request: Request):
             ),
             "classify_routes": routes,
         },
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )
 
 
@@ -272,7 +271,7 @@ def list_books(
     """书库列表(按导入时间):每本书的状态、段落类型的来源与一致率、最近的分类 / 学习作业、画像摘要
     (``needs_relearn`` / ``relearn_reason``)与 ``applied_projects``;不带 ``stats_json``。"""
     books = StyleReferenceRepository(session).list_books(status=status)
-    return ok({"books": book_summaries(session, books)}, req_id=req_id(request))
+    return ok({"books": book_summaries(session, books)}, req_id=request_id_of(request))
 
 
 @router.get(f"{PATH_PREFIX}/books/{{book_id}}")
@@ -289,7 +288,7 @@ def get_book(
             f"book {book_id!r} not found",
             status_code=404,
         )
-    return ok({"book": _book_payload(session, book)}, req_id=req_id(request))
+    return ok({"book": _book_payload(session, book)}, req_id=request_id_of(request))
 
 
 @router.get(f"{PATH_PREFIX}/books/{{book_id}}/classification/estimate")
@@ -310,7 +309,7 @@ def estimate_book_classification(
             f"book {book_id!r} not found",
             status_code=404,
         )
-    return ok({"estimate": estimate_classification(session, book)}, req_id=req_id(request))
+    return ok({"estimate": estimate_classification(session, book)}, req_id=request_id_of(request))
 
 
 # 2026-09-14 风格保真修补(WP4.2):本场参考窗口「展开原文」——按段落序号闭区间读参考书原文。
@@ -368,7 +367,7 @@ def get_book_paragraph_range(
                 for row in rows
             ],
         },
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )
 
 

@@ -45,6 +45,7 @@ from novel_system.db.session import engine
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
 from novel_system.settings import get_settings
+from novel_system.api.deps import request_id_of
 
 
 logger = logging.getLogger(__name__)
@@ -313,7 +314,7 @@ def create_app() -> FastAPI:
             exc.message,
             status_code=exc.status_code,
             details=exc.details,
-            req_id=getattr(request.state, "request_id", None),
+            req_id=request_id_of(request),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -355,7 +356,7 @@ def create_app() -> FastAPI:
                 "issue_count": len(exc.errors()),
                 "truncated": len(exc.errors()) > len(issues),
             },
-            req_id=getattr(request.state, "request_id", None),
+            req_id=request_id_of(request),
         )
 
     @app.exception_handler(OperationalError)
@@ -366,19 +367,19 @@ def create_app() -> FastAPI:
                 "database is busy; retry after the current long-running operation finishes",
                 status_code=503,
                 details={"retryable": True},
-                req_id=getattr(request.state, "request_id", None),
+                req_id=request_id_of(request),
             )
         return error(
             "DATABASE_OPERATION_FAILED",
             "database operation failed",
             status_code=500,
             details={"retryable": False},
-            req_id=getattr(request.state, "request_id", None),
+            req_id=request_id_of(request),
         )
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):
-        req_id = getattr(request.state, "request_id", None)
+        req_id = request_id_of(request)
         logger.exception("Unhandled API error request_id=%s", req_id)
         return error(
             "INTERNAL_ERROR",

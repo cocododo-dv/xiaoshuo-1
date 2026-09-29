@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.project_requests import ProjectCreateRequest
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
@@ -27,15 +27,11 @@ from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 router = APIRouter(tags=["snowflake-workspace"])
 
 
-def _actor(request: Request) -> str:
-    return getattr(request.state, "operator_ref", None) or "operator"
-
-
 @router.get("/api/v2/projects")
 def list_snowflake_workspace_projects(request: Request, session: Session = Depends(get_session)):
     return ok(
         SnowflakeWorkspaceService(session).list_projects(),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -60,7 +56,7 @@ def create_snowflake_workspace_project(
 def get_snowflake_workspace(project_id: str, request: Request, session: Session = Depends(get_session)):
     return ok(
         SnowflakeWorkspaceService(session).workspace(project_id),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -131,7 +127,7 @@ def get_workspace_step_history(
 ):
     return ok(
         SnowflakeWorkspaceService(session).step_history(project_id, step_key, include_draft=include_draft),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -170,7 +166,7 @@ def approve_workspace_step(
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
         payload={"project_id": project_id, "step_key": step_key, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).approve_step(
-            project_id, step_key, body, actor_ref=_actor(request)
+            project_id, step_key, body, actor_ref=actor_ref_of(request)
         ),
     )
 
@@ -194,7 +190,7 @@ def accept_workspace_stale_step(
             project_id,
             step_key,
             body,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -290,7 +286,7 @@ def accept_workspace_stale_scenes(
         action=lambda: SnowflakeWorkspaceService(session).accept_stale_scenes(
             project_id,
             body,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -341,7 +337,7 @@ def materialize_workspace_outline(
     session: Session = Depends(get_session),
 ):
     body = payload or {}
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return idempotent_response(
         request,
         session,
@@ -464,7 +460,7 @@ def save_chapter_plan(
         saved = SnowflakeChapteringService(session).save(
             project_id,
             body,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         )
         return {**saved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
 
@@ -501,7 +497,7 @@ def resolve_orphaned_scene(
             project_id,
             scene_plan_id,
             action=action,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         )
         return {**resolved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
 
@@ -520,7 +516,7 @@ def get_workspace_resync_status(project_id: str, request: Request, session: Sess
     """阶段 X：写作台 / AI 起草台用的轻量读口——哪几场的场景卡落后于构思。"""
     return ok(
         SnowflakeWorkspaceService(session).resync_status(project_id),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -541,7 +537,7 @@ def resync_workspace_scenes(
         action=lambda: SnowflakeWorkspaceService(session).resync_materialized_scenes(
             project_id,
             body,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 

@@ -19,14 +19,13 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.api.routes.style_reference._common import (
     PATH_PREFIX,
     ROUTE_TAGS,
-    req_id,
     serialize_banned_term,
 )
 from novel_system.services.errors import DomainError
@@ -84,7 +83,7 @@ def list_profiles(
     """画像摘要(按创建时间):画像版本、学在何时、文风卡几句、要不要重新学;不带 ``profile_json``。"""
     return ok(
         {"profiles": list_profile_summaries(session, book_id=book_id, status=status)},
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )
 
 
@@ -96,7 +95,7 @@ def get_profile(
 ):
     """文风画像页:气质、16 维文风卡(按辨识度)与每句的 ✓ / ✗ 状态和依据引文、声音习惯、结构、各维计数。"""
     profile = _profile_or_404(session, profile_id)
-    return ok({"profile": profile_detail(session, profile)}, req_id=req_id(request))
+    return ok({"profile": profile_detail(session, profile)}, req_id=request_id_of(request))
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}")
@@ -148,7 +147,7 @@ def list_banned_terms(
     terms = repo.list_banned_terms(profile_id, scope=scope)
     return ok(
         {"terms": [serialize_banned_term(t) for t in terms]},
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )
 
 
@@ -305,4 +304,4 @@ def dryrun_injection_preview(
             scene_id=payload.scene_id,
         )
     )
-    return ok(data, req_id=req_id(request))
+    return ok(data, req_id=request_id_of(request))

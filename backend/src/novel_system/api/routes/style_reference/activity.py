@@ -10,9 +10,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.response import ok
-from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS, req_id
+from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS
 from novel_system.db.models import utcnow
 from novel_system.services.style_reference.activity import list_activity
 
@@ -24,5 +24,5 @@ def get_activity(request: Request, session: Session = Depends(get_session)):
     """参考书活动清单(只读):作业表里在跑与十分钟内结束的分类 / 学习文风 / 对照检查作业。"""
     return ok(
         {"items": list_activity(session), "server_time": utcnow()},
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )

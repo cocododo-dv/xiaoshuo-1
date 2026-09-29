@@ -24,11 +24,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS, req_id
+from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS
 from novel_system.db.models import StyleReferenceBook, StyleReferenceProfile
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.binding_apply import (
@@ -168,7 +168,7 @@ def list_bindings(
     cloud_policy = _cloud_policy_of(session, profile_id)
     return ok(
         {"bindings": [binding_payload(b, cloud_policy=cloud_policy) for b in bindings]},
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )
 
 
@@ -204,7 +204,7 @@ def get_project_style_binding(
     现解析的风格策略审计(不冻结契约、不写库)。作品不存在 404 ``STYLE_REFERENCE_PROJECT_NOT_FOUND``。"""
     if not project_id or len(project_id) > 128:
         raise DomainError("STYLE_REFERENCE_PROJECT_NOT_FOUND", "project not found", status_code=404)
-    return ok(project_style_binding(session, project_id), req_id=req_id(request))
+    return ok(project_style_binding(session, project_id), req_id=request_id_of(request))
 
 
 @router.get(f"{PATH_PREFIX}/injection/layers")
@@ -228,4 +228,4 @@ def get_injection_layers(
         character_ids=chars,
         scene_id=scene_id,
     )
-    return ok(data, req_id=req_id(request))
+    return ok(data, req_id=request_id_of(request))

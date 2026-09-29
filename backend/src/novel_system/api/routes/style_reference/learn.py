@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
@@ -18,7 +18,6 @@ from novel_system.api.routes.style_reference._common import (
     ROUTE_TAGS,
     dispatch,
     llm_client_and_enabled,
-    req_id,
     serialize_finding,
     serialize_run,
 )
@@ -129,7 +128,7 @@ def get_book_learning(
             "estimate": estimate_learning(session, book, retag=bool(retag)),
             "routes": [resolve_node_endpoint(node_id, llm_client=client).as_dict() for node_id in LEARN_NODE_IDS],
         },
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )
 
 
@@ -190,7 +189,7 @@ def list_book_runs(
     runs = sorted(runs, key=lambda r: (r.created_at or "", r.run_id), reverse=True)
     return ok(
         {"runs": [serialize_run(r) for r in runs]},
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )
 
 
@@ -242,5 +241,5 @@ def list_run_findings(
                 for f in findings
             ]
         },
-        req_id=req_id(request),
+        req_id=request_id_of(request),
     )

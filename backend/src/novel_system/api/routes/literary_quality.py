@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import StrictRequestModel
 from novel_system.api.response import ok
@@ -60,7 +60,7 @@ def literary_quality_overview(
         min_severity=min_severity,
         project_id=project_id,
     )
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.post("/api/v1/literary-quality/analyze-text")

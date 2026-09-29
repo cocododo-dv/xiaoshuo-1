@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest, WriterBriefJsonInput
 from novel_system.api.response import ok
@@ -215,7 +215,7 @@ def get_scene_author_notes(
     session: Session = Depends(get_session),
 ):
     result = SceneNotesService(session).get(scene_id)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.patch("/api/v1/scenes/{scene_id}/author-notes")
@@ -245,7 +245,7 @@ def trash_scenes(
     payload: SceneIdsRequest, request: Request, session: Session = Depends(get_session)
 ):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return idempotent_response(
         request,
         session,
@@ -527,7 +527,7 @@ def create_scene_run_job(
     session: Session = Depends(get_session),
     payload: SceneRunJobRequest | None = Body(default=None),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     _reject_manual_checkpoint_controls(body)
     job_to_start: str | None = None
@@ -570,7 +570,7 @@ def get_run_job(job_id: str, request: Request, session: Session = Depends(get_se
     service = SceneRunJobService(session)
     job = service.get_job(job_id)
     return ok(
-        service.serialize_job(job), req_id=getattr(request.state, "request_id", None)
+        service.serialize_job(job), req_id=request_id_of(request)
     )
 
 
@@ -581,7 +581,7 @@ def cancel_run_job(
     session: Session = Depends(get_session),
     payload: SceneRunCancelRequest | None = Body(default=None),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
 
     def cancel() -> dict:
@@ -615,7 +615,7 @@ def get_latest_scene_run_job(
     service = SceneRunJobService(session)
     return ok(
         service.serialize_job(service.latest_job(scene_id)),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -653,7 +653,7 @@ def list_scene_run_states(
     ]
     return ok(
         {"items": items, "count": len(items)},
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -679,7 +679,7 @@ def scene_status(
                 # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
                 **compute_author_state(session, scene_id, None),
             },
-            req_id=getattr(request.state, "request_id", None),
+            req_id=request_id_of(request),
         )
     return ok(
         {
@@ -694,7 +694,7 @@ def scene_status(
             # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
             **compute_author_state(session, scene_id, state),
         },
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -791,7 +791,7 @@ def get_scene_style_candidates(
                 "dispersion_score": dispersion_score,
                 "criticality": criticality_info,
             },
-            req_id=getattr(request.state, "request_id", None),
+            req_id=request_id_of(request),
         )
 
     # 无终选 gate：旧诊断形状（按分降序、带分数）——仅限非盲化诊断用途
@@ -836,7 +836,7 @@ def get_scene_style_candidates(
             ),
             "criticality": criticality_info,
         },
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -854,7 +854,7 @@ def select_style_candidate(
     409 SELECTION_LOCKED；变更选择需先显式 reopen（留审计）。记录
     选择耗时/无明显差异标记（§5.5 记录选择、放弃、无明显差异和选择耗时）。
     """
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
 
     def _select(session: Session) -> dict[str, Any]:
@@ -1033,7 +1033,7 @@ def topup_scene_budget(
     payload: SceneBudgetTopupRequest | None = Body(default=None),
 ):
     """作者显式追加 token/业务尝试/provider 尝试预算；唯一扩容入口，留审计。"""
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json") if payload else {}
     raw_extras = {
         "extra_tokens": body.get("extra_tokens", 0),
@@ -1239,7 +1239,7 @@ def adopt_current_scene(
     确定性来源安全扫描命中 409 SOURCE_SAFETY_BLOCKED（草稿保留可重试，
     设计红线 8：来源安全未通过可保存草稿但不能标记为已安全归档）。
     """
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json") if payload is not None else {}
     accepted_warning_codes = body.get("accepted_warning_codes") or []
     exact_author_draft = body.get("exact_author_draft")
@@ -1734,7 +1734,7 @@ def scene_workbench(
             ),
             "attempts": [_serialize_attempt(item) for item in attempts],
         },
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
     return response
 

@@ -11,21 +11,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.trash import TrashService
 
 router = APIRouter(tags=["trash"])
-
-
-def _req_id(request: Request):
-    return getattr(request.state, "request_id", None)
-
-
-def _actor(request: Request) -> str:
-    return getattr(request.state, "operator_ref", None) or "operator"
 
 
 @router.delete("/api/v2/projects/{project_id}")
@@ -41,7 +33,7 @@ def trash_project(
         method="DELETE",
         path_template="/api/v2/projects/{project_id}",
         payload={"project_id": project_id},
-        action=lambda: TrashService(session).trash_project(project_id, actor_ref=_actor(request)),
+        action=lambda: TrashService(session).trash_project(project_id, actor_ref=actor_ref_of(request)),
     )
 
 
@@ -64,7 +56,7 @@ def restore_project(
 
 @router.get("/api/v2/trash")
 def list_trash(request: Request, project_id: str | None = None, session: Session = Depends(get_session)):
-    return ok(TrashService(session).list_trash(project_id), req_id=_req_id(request))
+    return ok(TrashService(session).list_trash(project_id), req_id=request_id_of(request))
 
 
 @router.post("/api/v2/trash/{entry_id}/restore")
@@ -80,7 +72,7 @@ def restore_trash_entry(
         method="POST",
         path_template="/api/v2/trash/{entry_id}/restore",
         payload={"entry_id": entry_id},
-        action=lambda: TrashService(session).restore_entry(entry_id, actor_ref=_actor(request)),
+        action=lambda: TrashService(session).restore_entry(entry_id, actor_ref=actor_ref_of(request)),
     )
 
 
