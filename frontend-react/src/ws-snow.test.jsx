@@ -634,6 +634,7 @@ describe("阶段 M · 09/10 交互", () => {
     const seeded = threeScenes();
     seeded.scaffolds.characters.chars.c2 = { name: "沈砚", role: "反派", goal: "", ambition: "", values: "", conflict: "", epiphany: "" };
     seeded.scaffolds.scenes.list[1] = { ...seeded.scaffolds.scenes.list[1], pov: "" };
+    seeded.scaffolds.scenes.list[2] = { ...seeded.scaffolds.scenes.list[2], pov: "" };
     seeded.scaffolds.planning.plans.S01 = { mode: "reactive", pov: "c2", goal: "拿到账本" };
     seeded.scaffolds.planning.plans.S02 = { mode: "proactive", pov: "c2", reaction: "崩了一下" };
     window.localStorage.setItem(CACHE, JSON.stringify(seeded));
@@ -647,6 +648,10 @@ describe("阶段 M · 09/10 交互", () => {
     // S02 在 09 里没有视角：旧 plan 的视角挪进 09 的行，第 10 步显示的就是它
     await act(async () => host.querySelectorAll(".sf-plan-cell")[1].click());
     expect(pov().textContent).toContain("沈砚");
+    // S03 在 09 里、第 10 步里都没有视角：写「未定」
+    await act(async () => host.querySelectorAll(".sf-plan-cell")[2].click());
+    expect(pov().textContent).toContain("未定");
+    expect(pov().className).toContain("is-empty");
     // 读入后的第一次落盘（450ms 防抖）：plan 里只剩内容，挪进去的视角在 09 的行上
     await act(async () => { await new Promise(r => setTimeout(r, 500)); });
     const cache = JSON.parse(window.localStorage.getItem(CACHE));
