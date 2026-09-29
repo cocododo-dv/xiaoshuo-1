@@ -178,15 +178,18 @@ export function useWrMention({ editorRef, onInserted }) {
   const inserted = useWrEvent(() => { if (onInserted) onInserted(); });
 
   const closeMention = useCallback(() => { ctxRef.current = null; setMention(null); }, []);
+  /* 高亮只在检索词变了（或选择器刚打开）时回到第一条：写作台松开 ↑↓ 时会再检测一次，
+     那一下检索词没变，不能把 keydown 刚挪好的高亮又拨回去 */
   const detectMention = useCallback(() => {
     const sel = window.getSelection();
     const node = sel && sel.rangeCount ? sel.anchorNode : null;
     const match = node && node.nodeType === 3 ? /@([^@\s]{0,12})$/.exec(node.nodeValue.slice(0, sel.anchorOffset)) : null;
     if (!match) { closeMention(); return; }
-    ctxRef.current = { node, start: match.index, end: sel.anchorOffset };
+    const previous = ctxRef.current;
+    ctxRef.current = { node, start: match.index, end: sel.anchorOffset, query: match[1] };
     const rect = sel.getRangeAt(0).cloneRange().getBoundingClientRect();
     setMention({ query: match[1], x: rect.left || rect.right, y: rect.bottom || rect.top });
-    setMentionIdx(0);
+    if (!previous || previous.query !== match[1]) setMentionIdx(0);
   }, [closeMention]);
 
   const mentionList = mention

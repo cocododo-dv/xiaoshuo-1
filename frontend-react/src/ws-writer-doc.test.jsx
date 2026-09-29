@@ -397,3 +397,53 @@ describe("写作台 · 当前段标记（F03-09）", () => {
   }, LONG);
 });
 
+
+describe("写作台 · @ 唤档案", () => {
+  const rangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
+  afterEach(() => {
+    delete window.LIB_ENTRIES;
+    delete window.LIB_BY_ID;
+    if (rangeRect) Object.defineProperty(Range.prototype, "getBoundingClientRect", rangeRect);
+    else delete Range.prototype.getBoundingClientRect;
+  });
+
+  it("↓ 挪到第二条：松键时不跳回第一条，回车插入的是第二条", async () => {
+    if (!rangeRect) {
+      Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({ left: 10, right: 10, top: 10, bottom: 20, width: 0, height: 10 }),
+      });
+    }
+    window.LIB_ENTRIES = [
+      { id: "e1", name: "林昭", cat: "people", kind: "人物", accent: "crimson", glyph: "林", summary: "" },
+      { id: "e2", name: "雨城", cat: "places", kind: "地点", accent: "slate", glyph: "雨", summary: "" },
+    ];
+    window.LIB_BY_ID = { e1: window.LIB_ENTRIES[0], e2: window.LIB_ENTRIES[1] };
+    const { client, WriterRoom } = await loadWriter();
+    client.apiPost.mockImplementation((url) => (/\/author-drafts\/scene\/s1\/ensure$/.test(url)
+      ? Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "<p>起点</p>" } })
+      : Promise.resolve({})));
+    client.apiPatch.mockImplementation((url, body) => Promise.resolve({ draft: { draft_id: "d1", revision_no: 2, content: body.content } }));
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const editor = () => host.querySelector(".wr-editor");
+    await vi.waitFor(() => expect(editor().textContent).toContain("起点"), T);
+    await act(async () => {
+      editor().innerHTML = "<p>起点@</p>";
+      const text = editor().querySelector("p").firstChild;
+      const range = document.createRange();
+      range.setStart(text, text.nodeValue.length);
+      range.collapse(true);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      editor().dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "@" }));
+    });
+    const items = () => [...host.querySelectorAll(".wr-mention-item")];
+    await vi.waitFor(() => expect(items()).toHaveLength(2), T);
+    const key = (type, name) => act(async () => { editor().dispatchEvent(new KeyboardEvent(type, { bubbles: true, key: name })); });
+    await key("keydown", "ArrowDown");
+    await key("keyup", "ArrowDown");
+    expect(items().map((li) => li.classList.contains("is-sel"))).toEqual([false, true]);
+    await key("keydown", "Enter");
+    expect(editor().querySelector(".wr-entity").getAttribute("data-lib-id")).toBe("e2");
+  }, LONG);
+});
