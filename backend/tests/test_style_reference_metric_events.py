@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.metrics_recorder import MetricsRecorder

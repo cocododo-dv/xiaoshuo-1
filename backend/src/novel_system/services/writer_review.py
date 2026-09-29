@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-import hashlib
-import uuid
-from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
@@ -11,32 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    ChapterGoal,
-    ChapterMemory,
-    ChapterState,
-    FinalScene,
     RevisionCandidate,
-    SceneBlueprint,
-    SceneBundle,
-    SceneCard,
-    SceneDraft,
-    SceneRunState,
     WriterEvaluation,
 )
-from novel_system.services.author_actions import author_action
-from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.llm_task_runner import (
-    SCENE_SPLIT_RECOMMENDATION,
-    LLMNodeContinuityError,
-    LLMNodeExecutionError,
     LLMNodeRunner,
-    current_llm_execution_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.scene_lookup import require_chapter, require_scene
-from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 WRITER_RUBRIC_ID = "drama_effectiveness_v1"
 
@@ -44,7 +21,6 @@ WRITER_RUBRIC_ID = "drama_effectiveness_v1"
 # 只是"修订候选不可用 + 原因"作为一条 blocker finding 持久化，GET 与 run 响应
 # 都从它派生 revision_blocker，作家刷新页面后原因不会丢。
 REVISION_BLOCKER_DIMENSION = "writer_revision_candidate"
-REVISION_PAYLOAD_INVALID_CODE = "WRITER_REVISION_PAYLOAD_INVALID"
 
 WRITER_RUBRIC_DIMENSIONS: tuple[str, ...] = (
     "desire",
@@ -269,12 +245,5 @@ class WriterReviewService:
             "candidates": [self.serialize_revision(candidate) for candidate in candidates],
             "revision_blocker": _revision_blocker_from_evaluation(latest),
         }
-
-
-    def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        return require_chapter(self.session, chapter_id)
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id)
 
 

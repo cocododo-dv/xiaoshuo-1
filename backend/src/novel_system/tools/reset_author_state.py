@@ -49,8 +49,6 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryCharacter,
     StoryProject,
-    SystemConfigSnapshot,
-    SystemSecret,
     VoiceProfile,
     WriterEvaluation,
 )

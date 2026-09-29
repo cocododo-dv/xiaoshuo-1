@@ -63,7 +63,6 @@ from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.fidelity import DIMENSION_FEATURES, reference_distribution_for_book
 from novel_system.services.style_reference.job_runtime import (
     JobRun,
-    JobStopped,
     conflict_error_by_kind,
     retry_attempts,
 )
@@ -225,10 +224,9 @@ RUN_DISPATCH_STATE = "learn_job"
 
 def resolve_learn_client() -> tuple[Any | None, bool]:
     """作业开始时按**当前**运行时配置取 LLM 客户端（不在请求里捕获）；测试在这里打桩。"""
-    from novel_system.services.system_config import build_runtime_llm_client
-    from novel_system.settings import get_settings
+    from novel_system.services.llm_service_base import runtime_llm_client_and_enabled
 
-    return build_runtime_llm_client(settings=get_settings())
+    return runtime_llm_client_and_enabled()
 
 
 class LearnFailedError(DomainError):

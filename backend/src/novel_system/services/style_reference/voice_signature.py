@@ -41,6 +41,8 @@ from novel_system.services.style_reference.measure import (
     measure_paragraphs,
     measure_text,
 )
+# ``quantile``（块间线性插值分位数）从这里再导出：基线生成工具 ``tools.build_voice_baseline`` 用它算 p15 / p50 / p85。
+from novel_system.services.value_coercion import finite_or_zero, quantile
 
 # v2（2026-09-23）：测量核口径（段内换行即段界、引号不含 ‘’、人称只数叙述、追加 5 个特征）。
 VOICE_SIGNATURE_VERSION = "voice_signature_v2"
@@ -60,7 +62,6 @@ _Z_CLIP = 8.0
 
 # top_words 的组:8 个虚词组 + 句末助词 + 引导动词。
 TOP_WORD_GROUPS: tuple[str, ...] = (*FUNCTION_WORD_GROUPS, "sentence_final", "speech_verb")
-_SPEECH_VERB_LABELS = SPEECH_VERB_LABELS
 
 
 def load_voice_lexicon() -> KernelLexicon:
@@ -82,31 +83,8 @@ def load_voice_baseline() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _finite(value: Any) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(number):
-        return 0.0
-    return number
-
-
 def _round(value: float) -> float:
-    return round(_finite(value), 6)
-
-
-def _quantile(values: Sequence[float], ratio: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    position = (len(ordered) - 1) * ratio
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return float(ordered[lower])
-    fraction = position - lower
-    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+    return round(finite_or_zero(value), 6)
 
 
 def _top_words(counter: Mapping[str, int], limit: int = TOP_WORDS_PER_GROUP) -> list[list[Any]]:
@@ -251,10 +229,10 @@ def _unpack(features_or_signature: Mapping[str, Any] | None) -> tuple[dict[str, 
     if isinstance(inner, Mapping):
         top_words = features_or_signature.get("top_words")
         return (
-            {str(k): _finite(v) for k, v in inner.items()},
+            {str(k): finite_or_zero(v) for k, v in inner.items()},
             dict(top_words) if isinstance(top_words, Mapping) else {},
         )
-    return {str(k): _finite(v) for k, v in features_or_signature.items() if isinstance(v, (int, float))}, {}
+    return {str(k): finite_or_zero(v) for k, v in features_or_signature.items() if isinstance(v, (int, float))}, {}
 
 
 def feature_z_scores(
@@ -285,13 +263,13 @@ def feature_z_scores(
         if entry is None:
             continue
         if isinstance(entry, Mapping):
-            mean = _finite(entry.get("mean", 0.0))
-            std = _finite(entry.get("std", 0.0))
+            mean = finite_or_zero(entry.get("mean", 0.0))
+            std = finite_or_zero(entry.get("std", 0.0))
         else:
-            mean = _finite(entry)
+            mean = finite_or_zero(entry)
             std = 0.0
         if baseline_std is not None and name in baseline_std:
-            std = _finite(baseline_std.get(name))
+            std = finite_or_zero(baseline_std.get(name))
         floor = max(1e-6, 0.05 * abs(mean))
         effective_std = max(std, floor) / scale
         z = (value - mean) / effective_std
@@ -394,7 +372,7 @@ def _cn_count(value: int) -> str:
 
 def _rate_phrase(rate: float, unit: str) -> str:
     """每千字的频率 → 「每千字约三个」/「每两千字约一处」/ ""(几乎没有)。"""
-    value = _finite(rate)
+    value = finite_or_zero(rate)
     if value >= 1.0:
         return f"每千字约{_cn_count(round(value))}{unit}"
     if value >= 0.2:
@@ -403,7 +381,7 @@ def _rate_phrase(rate: float, unit: str) -> str:
 
 
 def _every_n_sentences(ratio: float) -> str:
-    value = _finite(ratio)
+    value = finite_or_zero(ratio)
     if value <= 0:
         return ""
     n = max(1, int(round(1.0 / value)))
@@ -414,7 +392,7 @@ def _every_n_sentences(ratio: float) -> str:
 
 def _tenths_phrase(share: float) -> str:
     """0–1 的比例 → 「约四成」/「不到一成」/「几乎全部」。"""
-    value = _finite(share)
+    value = finite_or_zero(share)
     if value >= 0.95:
         return "几乎全部"
     if value < 0.05:
@@ -432,7 +410,7 @@ def _author_words(top_words: Mapping[str, Any], group: str, *, limit: int = 3, m
     for entry in entries or []:
         if not isinstance(entry, (list, tuple)) or len(entry) < 2:
             continue
-        word, share = str(entry[0]), _finite(entry[1])
+        word, share = str(entry[0]), finite_or_zero(entry[1])
         if word and share >= min_share:
             result.append(word)
         if len(result) >= limit:
@@ -470,7 +448,7 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
             pass
 
     def value(name: str) -> float:
-        return _finite(values.get(name, 0.0))
+        return finite_or_zero(values.get(name, 0.0))
 
     lexicon = load_kernel_lexicon()
     lines: list[str] = []  # 按重要性排列,超过 MAX_HABIT_LINES 从末尾截
@@ -602,11 +580,6 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
         if line and line not in deduped:
             deduped.append(line)
     return deduped[:MAX_HABIT_LINES]
-
-
-def quantile(values: Sequence[float], ratio: float) -> float:
-    """块间分位数(线性插值);基线生成工具 ``tools.build_voice_baseline`` 用它算 p15 / p50 / p85。"""
-    return _quantile(values, ratio)
 
 
 def round_stat(value: float) -> float:

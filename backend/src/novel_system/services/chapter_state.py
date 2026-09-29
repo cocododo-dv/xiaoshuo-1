@@ -11,16 +11,15 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterGoal, ChapterState
-from novel_system.services.errors import DomainError
+from novel_system.db.models import ChapterState
+from novel_system.services.scene_lookup import get_chapter_or_404
 
 
 def ensure_chapter_state(session: Session, chapter_id: str) -> ChapterState:
     """返回 chapter 的运行时状态行；缺行时按全库统一默认值补建并 flush。"""
     chapter_state = session.get(ChapterState, chapter_id)
     if chapter_state is None:
-        if session.get(ChapterGoal, chapter_id) is None:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+        get_chapter_or_404(session, chapter_id)
         chapter_state = ChapterState(
             chapter_id=chapter_id,
             current_phase="drafting",
@@ -34,8 +33,7 @@ def ensure_chapter_state(session: Session, chapter_id: str) -> ChapterState:
 
 def chapter_state_snapshot(session: Session, chapter_id: str) -> dict:
     """只读投影章的运行时状态；缺行时返回默认值而不落库（GET 路径不得写状态）。"""
-    if session.get(ChapterGoal, chapter_id) is None:
-        raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+    get_chapter_or_404(session, chapter_id)
     chapter_state = session.get(ChapterState, chapter_id)
     return {
         "chapter_id": chapter_id,

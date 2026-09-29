@@ -12,6 +12,8 @@ import json
 import re
 from typing import Any
 
+from novel_system.services.hash_engine import sha256_text
+
 
 AUDIT_SCHEMA_VERSION = 2
 AUDIT_SUMMARY_BYTE_CAP = 16_384
@@ -179,7 +181,7 @@ def bounded_identifier(value: Any) -> str | None:
         and bool(_SAFE_ATOM.fullmatch(text))
     ):
         return text
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    digest = sha256_text(text)
     return f"sha256:{digest};chars={len(text)}"
 
 
@@ -197,7 +199,7 @@ def fingerprint_identifier(value: Any) -> str | None:
     text = str(value)
     if _HASHED_IDENTIFIER.fullmatch(text):
         return text
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    digest = sha256_text(text)
     return f"sha256:{digest};chars={len(text)}"
 
 
@@ -213,7 +215,7 @@ def audit_error_text(value: Any, *, error_code: Any = None) -> str | None:
     )
     if already_redacted.fullmatch(text):
         return text
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    digest = sha256_text(text)
     return f"{code};message_sha256={digest};message_chars={len(text)}"
 
 
@@ -449,7 +451,7 @@ def _safe_field_name(value: Any) -> str:
     text = str(value)
     if len(text) <= 64 and _SAFE_FIELD.fullmatch(text):
         return text
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+    digest = sha256_text(text)[:24]
     return f"field_sha256_{digest}"
 
 

@@ -38,6 +38,7 @@ from novel_system.services.llm_providers.base import (
     SUPPORTED_REASONING_LEVELS,
     SUPPORTED_RESPONSE_FORMATS,
 )
+from novel_system.services.value_coercion import optional_text, usage_int
 
 __all__ = [
     "DEFAULT_PROVIDER_BASE_URLS",
@@ -1165,9 +1166,9 @@ def _load_task_model_config(task_name: str, payload: Any) -> TaskModelConfig:
     try:
         return TaskModelConfig(
             provider=_parse_provider(task_name, payload),
-            model_profile=_optional_str(payload.get("model_profile")),
-            provider_id=_optional_str(payload.get("provider_id")),
-            account_id=_optional_str(payload.get("account_id")),
+            model_profile=optional_text(payload.get("model_profile")),
+            provider_id=optional_text(payload.get("provider_id")),
+            account_id=optional_text(payload.get("account_id")),
             model=str(payload["model"]),
             temperature=_parse_float_config_value(task_name, payload, "temperature"),
             max_output_tokens=_parse_int_config_value(task_name, payload, "max_output_tokens"),
@@ -1318,12 +1319,6 @@ def _parse_provider_options(task_name: str, payload: dict[str, Any]) -> dict[str
     return dict(provider_options)
 
 
-def _optional_str(value: Any) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
 def _loads_json_object_text(text: str) -> Any:
     """从正文里取出 JSON 对象;正文带 markdown 围栏或前后缀说明时做救援解析。
 
@@ -1438,18 +1433,10 @@ def _usage_output_tokens(raw_usage: dict[str, Any] | None) -> int | None:
     if not isinstance(raw_usage, dict):
         return None
     for key in ("completion_tokens", "output_tokens", "candidatesTokenCount", "eval_count"):
-        number = _usage_number(raw_usage.get(key))
+        number = usage_int(raw_usage.get(key))
         if number is not None:
             return number
     return None
-
-
-def _usage_number(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    if value < 0 or int(value) != value:
-        return None
-    return int(value)
 
 
 def _raw_usage_is_complete(usage: dict[str, Any] | None) -> bool:
@@ -1464,19 +1451,19 @@ def _raw_usage_is_complete(usage: dict[str, Any] | None) -> bool:
     for input_key, output_key, total_key in key_sets:
         if input_key not in usage and output_key not in usage:
             continue
-        input_tokens = _usage_number(usage.get(input_key))
-        output_tokens = _usage_number(usage.get(output_key))
+        input_tokens = usage_int(usage.get(input_key))
+        output_tokens = usage_int(usage.get(output_key))
         if input_tokens is None or output_tokens is None:
             return False
         if total_key is None or total_key not in usage:
             return True
-        total_tokens = _usage_number(usage.get(total_key))
+        total_tokens = usage_int(usage.get(total_key))
         return total_tokens is not None and total_tokens == input_tokens + output_tokens
     return False
 
 
 def _safe_usage_int(value: Any) -> int:
-    parsed = _usage_number(value)
+    parsed = usage_int(value)
     return parsed if parsed is not None else 0
 
 

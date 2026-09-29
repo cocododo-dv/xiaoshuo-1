@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from novel_system.services.llm_providers.base import LLMRequest, ProviderRuntimeConfig
-from novel_system.services.llm_providers.openai_chat_family import OpenAIChatFamilyAdapter
+from novel_system.services.llm_providers.openai_chat_family import OpenAIChatFamilyAdapter, thinking_enabled_or_disabled
 
 
 class ZhipuGLMAdapter(OpenAIChatFamilyAdapter):
@@ -18,5 +18,4 @@ class ZhipuGLMAdapter(OpenAIChatFamilyAdapter):
         request: LLMRequest,
         provider_config: ProviderRuntimeConfig,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        native_reasoning = {"type": "enabled" if request.reasoning_level in {"medium", "high"} else "disabled"}
-        return {"thinking": native_reasoning}, native_reasoning
+        return thinking_enabled_or_disabled(request)

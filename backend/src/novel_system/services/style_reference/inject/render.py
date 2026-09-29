@@ -40,7 +40,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 import threading
@@ -114,6 +113,7 @@ from novel_system.services.style_reference.untrusted_data import (
     frame_reference_samples,
 )
 from novel_system.services.style_reference.windows import marker_is_current, window_texts
+from novel_system.services.hash_engine import sha256_text
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +208,6 @@ CARD_HEADERS: dict[str, str] = {
         "[文风卡](改稿时逐维对照：只改不像这位作者的地方，改完要更像；样例是权威，标「必须」的每场都要体现)"
     ),
 }
-RECENT_GAPS_HEADER = "[近期常见偏差](前几场草稿里反复出现的不像之处，这一场特别注意)"
 _FALLBACK_RED_LINE = """## 严格禁止
 - 复用或微改任何参考样本中的完整句子;连续 12 字以上与参考原文相同即视为抄袭
 - 搬用参考样本中的人物、地名、专名、事件与情节
@@ -802,7 +801,7 @@ def _cache_key(
             str(request.dialogue_heavy),
             str(request.rendering_mode or ""),
             ",".join(request.revise_dimensions),
-            hashlib.sha256("\x1f".join(request.recent_gaps).encode("utf-8")).hexdigest()[:16],
+            sha256_text("\x1f".join(request.recent_gaps))[:16],
             str(root or ""),
             # 接收提示的节点、路由是否本机、这一次送什么（H1：换了节点路由不会拿到旧渲染）
             route_token,
@@ -810,7 +809,7 @@ def _cache_key(
             selection_anchor,
         ]
     )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return sha256_text(material)
 
 
 def _cache_get(key: str) -> RenderedStyle | None:
@@ -1119,7 +1118,6 @@ __all__ = [
     "NOTICE_SAMPLES_BLOCKED",
     "NO_SAMPLES_SYSTEM_NOTES",
     "NO_SAMPLES_TAIL_NOTES",
-    "RECENT_GAPS_HEADER",
     "RenderParts",
     "RenderedStyle",
     "SAMPLE_HEADERS",

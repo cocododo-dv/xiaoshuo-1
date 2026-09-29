@@ -26,7 +26,6 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -38,17 +37,6 @@ from novel_system.services.narrative_position import NarrativePositionService
 
 # 秘密性质的信息不对称键——这些键的**内容**受 POV 过滤；其余事实为公共。
 _SECRET_CONTENT_KEYS = ("secret_held_by", "believes_false")
-
-
-@dataclass(slots=True)
-class PovProjection:
-    """一次投影的结构化结果（供 digest 格式化与脱敏共用）。"""
-
-    pov_character_id: str
-    public_facts_by_char: dict[str, dict[str, str]] = field(default_factory=dict)
-    pov_owned_secrets: list[tuple[str, str]] = field(default_factory=list)  # (key, value)
-    suppressed_secret_owners: list[str] = field(default_factory=list)
-    suppressed_secret_values: set[str] = field(default_factory=set)
 
 
 class PovKnowledgeProjection:

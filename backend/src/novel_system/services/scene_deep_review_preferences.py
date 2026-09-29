@@ -17,7 +17,7 @@ class SceneDeepReviewPreferencesService:
         self.session = session
 
     def get(self, scene_id: str) -> dict[str, Any]:
-        return self._payload(self._require_scene(scene_id))
+        return self._payload(require_scene(self.session, scene_id, trashed_as_conflict=True))
 
     def save(
         self,
@@ -27,7 +27,7 @@ class SceneDeepReviewPreferencesService:
         ignored_issue_keys: list[str],
         base_revision_no: int,
     ) -> dict[str, Any]:
-        self._require_scene(scene_id)
+        require_scene(self.session, scene_id, trashed_as_conflict=True)
         next_revision_no = int(base_revision_no) + 1
         changed = self.session.execute(
             update(SceneCard)
@@ -55,7 +55,7 @@ class SceneDeepReviewPreferencesService:
                 details={"current_revision_no": current_revision},
             )
         self.session.expire_all()
-        scene = self._require_scene(scene_id)
+        scene = require_scene(self.session, scene_id, trashed_as_conflict=True)
         payload = self._payload(scene)
         # 2026-09-22 场景诊断第三轮：忽略 / 恢复之后这一场 / 这一章开着的发现数随响应回传（角标不是闸门）
         try:
@@ -65,9 +65,6 @@ class SceneDeepReviewPreferencesService:
         except Exception:  # noqa: BLE001
             pass
         return payload
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id, trashed_as_conflict=True)
 
     @staticmethod
     def _payload(scene: SceneCard) -> dict[str, Any]:

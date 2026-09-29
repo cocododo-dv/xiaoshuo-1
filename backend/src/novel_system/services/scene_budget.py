@@ -119,7 +119,8 @@ def ensure_scene_budget_initialized(
         raise RuntimeError(f"scene run state disappeared during budget initialization: {scene_id}")
 
     if state.scene_budget_basis_json is not None:
-        basis_budget = _basis_scene_token_budget(state.scene_budget_basis_json)
+        # 依据里的预算必须是正整数（坏数据 fail-closed，抛 corrupt budget state）
+        _basis_scene_token_budget(state.scene_budget_basis_json)
         if state.scene_token_budget is None:
             effective_budget = audited_scene_budget_prefixes(session, state)[-1]
             _validate_scene_budget_state(session, state, effective_budget=effective_budget)
@@ -501,70 +502,6 @@ def estimate_baseline_tokens(session: Session, snapshot: dict[str, Any]) -> int:
     except Exception:
         _LOGGER.debug("baseline output cap lookup degraded; using fallback", exc_info=True)
     return input_tokens + output_tokens
-
-
-def ensure_budget(
-    state: SceneRunState,
-    baseline_tokens: int,
-    *,
-    provider_attempt_budget: int = DEFAULT_PROVIDER_ATTEMPT_BUDGET,
-) -> None:
-    """一次性初始化预算依据；补全 legacy provenance；非空依据不可覆盖。"""
-    if state.scene_budget_basis_json:
-        if state.scene_token_budget is None:
-            basis = state.scene_budget_basis_json
-            recovered_budget = (
-                basis.get("scene_token_budget") if isinstance(basis, dict) else None
-            )
-            if (
-                not isinstance(recovered_budget, int)
-                or isinstance(recovered_budget, bool)
-                or recovered_budget <= 0
-            ):
-                raise ValueError("immutable scene budget basis has no positive token budget")
-            state.scene_token_budget = recovered_budget
-        return
-
-    effective_provider_budget = max(1, int(provider_attempt_budget))
-    if state.scene_token_budget is not None:
-        state.provider_attempt_budget = effective_provider_budget
-        state.scene_budget_basis_json = {
-            "basis_type": "legacy_existing_scene_token_budget",
-            "scene_token_budget": int(state.scene_token_budget),
-            "token_budget_basis": {
-                "reconstructable": False,
-                "reason": "legacy_scene_token_budget_without_basis",
-            },
-            "provider_attempt_budget": {
-                "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
-                "value": effective_provider_budget,
-            },
-            "attempt_budget": {
-                "source": "scene_run_states.initial",
-                "value": int(state.attempt_budget),
-            },
-        }
-        return
-
-    if baseline_tokens <= 0:
-        return
-    baseline = int(baseline_tokens)
-    scene_budget = BUDGET_MULTIPLIER * baseline
-    state.scene_token_budget = scene_budget
-    state.provider_attempt_budget = effective_provider_budget
-    state.scene_budget_basis_json = {
-        "baseline_tokens": baseline,
-        "budget_multiplier": BUDGET_MULTIPLIER,
-        "scene_token_budget": scene_budget,
-        "provider_attempt_budget": {
-            "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
-            "value": effective_provider_budget,
-        },
-        "attempt_budget": {
-            "source": "scene_run_states.initial",
-            "value": int(state.attempt_budget),
-        },
-    }
 
 
 def budget_unit(state: SceneRunState) -> int:

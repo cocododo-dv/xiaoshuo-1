@@ -11,7 +11,6 @@ semantic critic LLM pass for deeper, context-aware feedback.
 from __future__ import annotations
 
 import json
-import hashlib
 from copy import deepcopy
 import logging
 from dataclasses import dataclass, field, replace
@@ -31,9 +30,9 @@ from novel_system.services.llm_audit import sanitize_audit_summary
 logger = logging.getLogger(__name__)
 
 from novel_system.services.literary_quality import (
-    ADVERSARIAL_DIMS,
     analyze_literary_quality,
 )
+from novel_system.services.hash_engine import sha256_json_plain
 
 CRITIQUE_THRESHOLD = 0.3
 
@@ -179,13 +178,7 @@ class CritiqueResult:
 
 
 def critique_llm_contribution_hash(contribution: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        contribution,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return sha256_json_plain(contribution)
 
 
 def auto_critique(

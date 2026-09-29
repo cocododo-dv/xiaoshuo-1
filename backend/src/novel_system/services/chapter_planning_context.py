@@ -42,6 +42,8 @@ from novel_system.services.style_reference.planning_context import (
     STRUCTURE_REFERENCE_HOW_TO_USE,
     resolve_project_style_reference,
 )
+from novel_system.services.scene_lookup import require_project
+from novel_system.services.planning_queries import latest_active_planning_artifact
 
 CHAPTER_ARCHITECTURE_ARTIFACT = "chapter_story_architecture"
 # 2026-09-12 结构跟随：参考作者结构画像 / 场景手法的 slot 名。体量由渲染器封顶（画像 ≤1,500 字
@@ -99,9 +101,7 @@ class ChapterPlanningContextBuilder:
 
     def build(self, project_id: str, chapter_id: str) -> ChapterPlanningContext:
         self._degraded = []
-        project = self.session.get(StoryProject, project_id)
-        if project is None:
-            raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+        project = require_project(self.session, project_id)
         chapters = self._catalog.chapter_rows(project_id)
         index = next((i for i, row in enumerate(chapters) if row.chapter_id == chapter_id), None)
         if index is None:
@@ -413,19 +413,12 @@ class ChapterPlanningContextBuilder:
 def latest_chapter_architecture(
     session: Session, chapter_id: str
 ) -> GenerationPlanningArtifact | None:
-    return session.execute(
-        select(GenerationPlanningArtifact)
-        .where(
-            GenerationPlanningArtifact.artifact_type == CHAPTER_ARCHITECTURE_ARTIFACT,
-            GenerationPlanningArtifact.object_type == "chapter",
-            GenerationPlanningArtifact.object_id == chapter_id,
-            GenerationPlanningArtifact.status == "active",
-        )
-        .order_by(
-            GenerationPlanningArtifact.created_at.desc(),
-            GenerationPlanningArtifact.row_id.desc(),
-        )
-    ).scalars().first()
+    return latest_active_planning_artifact(
+        session,
+        artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
+        object_type="chapter",
+        object_id=chapter_id,
+    )
 
 
 def _truncate_value(value: Any, budget: int) -> Any:

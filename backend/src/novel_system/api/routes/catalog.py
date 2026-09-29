@@ -20,7 +20,7 @@ from novel_system.api.catalog_requests import (
     CatalogSceneCreateRequest,
     CatalogSceneUpdateRequest,
 )
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest, StrictRequestModel
 from novel_system.api.response import ok
@@ -36,17 +36,9 @@ class ChapterOrderRequest(StrictRequestModel):
     ] = Field(min_length=1, max_length=10_000)
 
 
-def _req_id(request: Request):
-    return getattr(request.state, "request_id", None)
-
-
-def _operator(request: Request) -> str:
-    return getattr(request.state, "operator_ref", None) or "operator"
-
-
 @router.get("/api/v2/projects/{project_id}/catalog")
 def get_catalog(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(CatalogService(session).catalog(project_id), req_id=_req_id(request))
+    return ok(CatalogService(session).catalog(project_id), req_id=request_id_of(request))
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters")
@@ -83,7 +75,7 @@ def update_catalog_chapter(
         path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: CatalogService(session).update_chapter(
-            project_id, chapter_id, body, actor_ref=_operator(request)
+            project_id, chapter_id, body, actor_ref=actor_ref_of(request)
         ),
     )
 
@@ -169,7 +161,7 @@ def trash_catalog_chapter(
             "body": payload.model_dump(mode="json") if payload else {},
         },
         action=lambda: TrashService(session).trash_chapter_in_project(
-            project_id, chapter_id, actor_ref=_operator(request)
+            project_id, chapter_id, actor_ref=actor_ref_of(request)
         ),
     )
 
@@ -196,7 +188,7 @@ def trash_catalog_scene(
             "body": payload.model_dump(mode="json") if payload else {},
         },
         action=lambda: TrashService(session).trash_scene_in_project(
-            project_id, scene_id, actor_ref=_operator(request)
+            project_id, scene_id, actor_ref=actor_ref_of(request)
         ),
     )
 

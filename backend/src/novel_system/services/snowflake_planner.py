@@ -17,6 +17,7 @@ from novel_system.services.snowflake_staleness import (
     snapshot_consumed_sigs,
 )
 from novel_system.services.snowflake_steps import STEP_ORDER, planner_step_list
+from novel_system.services.snowflake_queries import latest_by_step, next_outline_plan_version, next_step_version
 
 SNOWFLAKE_STEPS = planner_step_list()
 STEP_INDEX = STEP_ORDER
@@ -257,17 +258,7 @@ class SnowflakePlannerService:
         }
 
     def _latest_by_step(self, project_id: str) -> dict[str, SnowflakeArtifact]:
-        rows = self.session.execute(
-            select(SnowflakeArtifact)
-            .where(SnowflakeArtifact.project_id == project_id)
-            .order_by(SnowflakeArtifact.version.asc(), SnowflakeArtifact.created_at.asc())
-        ).scalars().all()
-        latest: dict[str, SnowflakeArtifact] = {}
-        for row in rows:
-            if row.status == "superseded":
-                continue
-            latest[row.step_key] = row
-        return latest
+        return latest_by_step(self.session, SnowflakeArtifact, project_id)
 
     def _current_step_key(self, latest_by_step: dict[str, SnowflakeArtifact]) -> str | None:
         for step in SNOWFLAKE_STEPS:
@@ -309,20 +300,10 @@ class SnowflakePlannerService:
                 )
 
     def _next_version(self, project_id: str, step_key: str) -> int:
-        latest = self.session.execute(
-            select(SnowflakeArtifact.version)
-            .where(SnowflakeArtifact.project_id == project_id, SnowflakeArtifact.step_key == step_key)
-            .order_by(SnowflakeArtifact.version.desc())
-        ).scalar()
-        return int(latest or 0) + 1
+        return next_step_version(self.session, SnowflakeArtifact, project_id, step_key)
 
     def _next_plan_version(self, project_id: str) -> int:
-        latest = self.session.execute(
-            select(OutlinePlan.version)
-            .where(OutlinePlan.project_id == project_id)
-            .order_by(OutlinePlan.version.desc())
-        ).scalar()
-        return int(latest or 0) + 1
+        return next_outline_plan_version(self.session, project_id)
 
     def _input_refs(self, step_key: str, latest_by_step: dict[str, SnowflakeArtifact]) -> dict[str, Any]:
         step_index = STEP_INDEX[step_key]
@@ -486,7 +467,6 @@ def _build_outline_based_artifact(
     lines = _ensure_outline_lines(project, outline_lines)
     zh = _looks_chinese(" ".join([project.title or "", project.genre or "", *lines]))
     lead = "主角" if zh else "the protagonist"
-    opposition = lines[1] if len(lines) > 1 else lines[0]
     final_pressure = lines[-1]
     title = str(project.title or ("未命名小说" if zh else "Untitled Novel")).strip()
     genre = str(project.genre or ("长篇小说" if zh else "Novel")).strip()

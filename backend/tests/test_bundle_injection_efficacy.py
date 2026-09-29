@@ -13,10 +13,6 @@ from novel_system.db.models import (
     SceneCard,
     SceneRunState,
     StoryProject,
-    StyleReferenceBook,
-    StyleReferenceInjectionBinding,
-    StyleReferenceProfile,
-    StyleReferenceRun,
 )
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.narrative_event_log import NarrativeEventLog

@@ -67,20 +67,6 @@ def load_active_config_payload(
     return read_with_transient_retry(_read, sleep=sleep)
 
 
-def load_active_config_yaml(
-    category: str,
-    *,
-    session_factory=SessionLocal,
-    sleep: Callable[[float], None] = time.sleep,
-) -> str | None:
-    def _read():
-        with session_factory() as session:
-            row = _active_snapshot_value(session, category, SystemConfigSnapshot.yaml_raw)
-            return None if row is None else row[0]
-
-    return read_with_transient_retry(_read, sleep=sleep)
-
-
 def load_active_config_parsed(
     category: str,
     parse: Callable[[dict[str, Any]], T],

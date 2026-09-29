@@ -8,7 +8,6 @@ from novel_system.db.models import (
     ChapterGoal,
     ChapterRunJob,
     HumanReviewEvent,
-    SceneCard,
     SceneRunState,
 )
 from novel_system.db.session import SessionLocal

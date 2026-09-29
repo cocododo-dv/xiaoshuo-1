@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -18,7 +17,6 @@ from novel_system.db.models import (
     ChapterGoal,
     FinalScene,
     GenerationPlanningArtifact,
-    SceneBlueprint,
     SceneBundle,
     SceneCard,
     SceneDraft,
@@ -29,8 +27,7 @@ from novel_system.db.models import (
     VolumeSummary,
     StyleReferenceBook,
 )
-from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import compute_bundle_hash_projection
+from novel_system.services.hash_engine import compute_bundle_hash_projection, sha256_text
 from novel_system.services.literary_quality import fingerprint_literary_quality
 from novel_system.services.resolver import Resolver
 from novel_system.services.character_continuity import (
@@ -91,6 +88,8 @@ from novel_system.services.author_preferences import (
     safe_preference_summary_for_prompt,
 )
 from novel_system.services.author_instructions import normalize_author_note
+from novel_system.services.scene_lookup import get_chapter_or_404, get_scene_or_404
+from novel_system.services.planning_queries import latest_active_planning_artifact, latest_scene_blueprint
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -504,18 +503,6 @@ class BundleBuilder:
             exc_info=True,
         )
 
-    @staticmethod
-    def _single_or_list(values: list[str]) -> str | list[str]:
-        return values[0] if len(values) == 1 else values
-
-    @staticmethod
-    def _combined_text(rows: list[Any], text_field: str) -> str:
-        return "\n\n".join(
-            str(getattr(row, text_field))
-            for row in rows
-            if getattr(row, text_field, None)
-        )
-
     def _next_bundle_id(self, scene_id: str, state: SceneRunState) -> tuple[str, int]:
         build_no = (state.bundle_build_count or 0) + 1
         while True:
@@ -533,12 +520,8 @@ class BundleBuilder:
         author_note: str | None = None,
     ) -> dict[str, Any]:
         self._degraded_slots = set()
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        if chapter is None:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+        scene = get_scene_or_404(self.session, scene_id)
+        chapter = get_chapter_or_404(self.session, scene.chapter_id)
         state = self.session.get(SceneRunState, scene_id)
         previous_memory = (
             self.session.execute(
@@ -709,9 +692,7 @@ class BundleBuilder:
                 self._slot_degraded("style_reference_runtime_contract", scene)
         normalized_author_note = normalize_author_note(author_note)
         if normalized_author_note:
-            instruction_hash = hashlib.sha256(
-                normalized_author_note.encode("utf-8")
-            ).hexdigest()
+            instruction_hash = sha256_text(normalized_author_note)
             source_version_refs["author_instruction_hash"] = instruction_hash
             ordered_injections.append(
                 {
@@ -752,20 +733,7 @@ class BundleBuilder:
                 sort_keys=True,
             )
 
-        scene_blueprint = (
-            self.session.execute(
-                select(SceneBlueprint)
-                .where(
-                    SceneBlueprint.scene_id == scene.scene_id,
-                    SceneBlueprint.status.in_(("accepted", "draft")),
-                )
-                .order_by(
-                    SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc()
-                )
-            )
-            .scalars()
-            .first()
-        )
+        scene_blueprint = latest_scene_blueprint(self.session, scene.scene_id)
         if scene_blueprint is not None:
             source_version_refs["scene_blueprint_row_id"] = scene_blueprint.row_id
             ordered_injections.append(
@@ -1155,22 +1123,8 @@ class BundleBuilder:
         object_type: str,
         object_id: str,
     ) -> GenerationPlanningArtifact | None:
-        return (
-            self.session.execute(
-                select(GenerationPlanningArtifact)
-                .where(
-                    GenerationPlanningArtifact.artifact_type == artifact_type,
-                    GenerationPlanningArtifact.object_type == object_type,
-                    GenerationPlanningArtifact.object_id == object_id,
-                    GenerationPlanningArtifact.status == "active",
-                )
-                .order_by(
-                    GenerationPlanningArtifact.created_at.desc(),
-                    GenerationPlanningArtifact.row_id.desc(),
-                )
-            )
-            .scalars()
-            .first()
+        return latest_active_planning_artifact(
+            self.session, artifact_type=artifact_type, object_type=object_type, object_id=object_id
         )
 
 

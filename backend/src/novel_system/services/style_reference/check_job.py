@@ -34,7 +34,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import uuid
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -84,6 +83,8 @@ from novel_system.services.style_reference.untrusted_data import (
     UNTRUSTED_SYSTEM_INSTRUCTION,
     secure_reference_block,
 )
+from novel_system.services.value_coercion import finite_or_none
+from novel_system.services.scene_lookup import get_scene_or_404
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +110,9 @@ POLICY_MODE_CHECK = "check"
 
 def resolve_check_client() -> tuple[Any | None, bool]:
     """按**当前**运行时配置取 LLM 客户端（请求时查一次、作业开工时再取一次）；测试在这里打桩。"""
-    from novel_system.services.system_config import build_runtime_llm_client
-    from novel_system.settings import get_settings
+    from novel_system.services.llm_service_base import runtime_llm_client_and_enabled
 
-    return build_runtime_llm_client(settings=get_settings())
+    return runtime_llm_client_and_enabled()
 
 
 # ---------------------------------------------------------------------------
@@ -197,9 +197,7 @@ def _full_policy(session: Session, params: Mapping[str, Any]) -> tuple[Any, Any]
         scene = session.get(SceneCard, str(params["scene_id"])) if params.get("scene_id") else None
         return _profile_policy(session, str(params["profile_id"])), scene or _scope(params.get("project_id"))
     if params.get("scene_id"):
-        scene = session.get(SceneCard, str(params["scene_id"]))
-        if scene is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        scene = get_scene_or_404(session, str(params["scene_id"]))
         return style_policy_live(session, scene), scene
     scope = _scope(str(params.get("project_id") or "") or None)
     return style_policy_live(session, scope), scope
@@ -305,9 +303,7 @@ def start_check_job(
         "scene_id": str(scene_id) if has_scene else None,
     }
     if has_scene:
-        scene = session.get(SceneCard, str(scene_id))
-        if scene is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        scene = get_scene_or_404(session, str(scene_id))
         # 一场属于哪部作品只看场景本身，不信客户端给的 project_id：界面换过作品时带来的是另一部作品的 id，
         # 读数（与记账）会记到别的作品名下，进了那部作品的走势与按维平均
         params["project_id"] = readings.scene_project_id(session, scene)
@@ -378,16 +374,6 @@ def _judge_failed(message: str, details: dict[str, Any]) -> DomainError:
     return error
 
 
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
 JUDGE_SCORE_FIELDS: tuple[str, ...] = ("overall", "dimensions")
 
 
@@ -419,12 +405,12 @@ def normalize_judge_output(
         dim = str(key)
         if dim not in ALL_DIMENSIONS or states.get(dim) == DIMENSION_EXCLUDE:
             continue
-        score = _finite(value.get("score") if isinstance(value, Mapping) else value)
+        score = finite_or_none(value.get("score") if isinstance(value, Mapping) else value)
         if score is None:
             continue
         note = str(value.get("note") or "").strip() if isinstance(value, Mapping) else ""
         entries[dim] = (score, note)
-    overall = _finite(structured.get("overall"))
+    overall = finite_or_none(structured.get("overall"))
     declared = declared_score_scale(schema, *JUDGE_SCORE_FIELDS)
     if declared is not None:
         unit_of = lambda score: normalize_score(score, declared)  # noqa: E731 — 越界丢掉
@@ -620,9 +606,7 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
     project_id = params.get("project_id")
     if scene_id:
         # 作品按场景本身定（修正之前建的作业，参数里可能还是客户端给的另一部作品）
-        scene_row = session.get(SceneCard, str(scene_id))
-        if scene_row is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        scene_row = get_scene_or_404(session, str(scene_id))
         project_id = readings.scene_project_id(session, scene_row)
         text, text_ref = scene_current_text(session, str(scene_id))
         if not text.strip():

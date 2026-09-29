@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import uuid
@@ -14,7 +13,7 @@ from collections.abc import Mapping
 
 from novel_system.db.models import ChapterGoal, SceneBlueprint, SceneCard, SceneRunState
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json
+from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
@@ -44,6 +43,7 @@ from novel_system.services.style_reference.planning_context import (
 )
 from novel_system.services.style_reference.tags import MAX_SITUATIONS, normalize_situation_tags
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
+from novel_system.services.planning_queries import latest_scene_blueprint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -131,11 +131,7 @@ class SceneBlueprintService:
         return LLMNodeRunner(self.session, llm_client=self._llm_client)
 
     def latest(self, scene_id: str) -> SceneBlueprint | None:
-        return self.session.execute(
-            select(SceneBlueprint)
-            .where(SceneBlueprint.scene_id == scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
-            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
-        ).scalars().first()
+        return latest_scene_blueprint(self.session, scene_id)
 
     def latest_payload(self, scene_id: str) -> dict[str, Any] | None:
         return self.serialize(self.latest(scene_id))
@@ -176,8 +172,8 @@ class SceneBlueprintService:
         *,
         execution_step_key: str | None = None,
     ) -> SceneBlueprint:
-        scene = self._require_scene(scene_id)
-        chapter = self._require_chapter(scene.chapter_id)
+        scene = require_scene(self.session, scene_id)
+        chapter = require_chapter(self.session, scene.chapter_id)
         # 风格参考 v3：蓝图没有 bundle，按当前活动绑定现解析一份策略（冻结契约，前缀与快照同源）
         policy = self._style_policy(scene)
         facts = policy.defers_house_taste()
@@ -340,7 +336,7 @@ class SceneBlueprintService:
             reference = build_planning_style_reference(contract, session=self.session, node_ids=("scene_blueprint",))
             if reference is not None:
                 register_planning_style_reference(snapshot, reference)
-        source_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        source_hash = sha256_json_normalized(snapshot)
         return {
             "source_bundle_id": source_bundle_id,
             "source_bundle_hash": state.current_bundle_hash if state and state.current_bundle_hash else source_hash,
@@ -399,12 +395,6 @@ class SceneBlueprintService:
                 exc_info=True,
             )
             return prompt
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id)
-
-    def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        return require_chapter(self.session, chapter_id)
 
 
 def _blueprint_user_prompt(

@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
+from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.canonical_manuscripts import CanonicalSceneService
@@ -101,7 +101,7 @@ class ProposalRejectRequest(StrictAuthorDraftRequest):
 @router.get("/api/v1/author-drafts/{object_type}/{object_id}/current")
 def get_current_author_draft(object_type: str, object_id: str, request: Request, session: Session = Depends(get_session)):
     payload = AuthorDraftService(session).current(object_type, object_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.post("/api/v1/author-drafts/{object_type}/{object_id}/ensure")
@@ -112,7 +112,7 @@ def ensure_author_draft(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return optional_idempotent_response(
         request,
         session,
@@ -131,7 +131,7 @@ def ensure_blank_author_draft(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return optional_idempotent_response(
         request,
         session,
@@ -149,7 +149,7 @@ def save_author_draft(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True)
     return optional_idempotent_response(
         request,
@@ -175,7 +175,7 @@ def promote_author_draft_canonical(
     final already has a complete, hash-matched canon commit.
     """
 
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
     return idempotent_response(
         request,
@@ -194,19 +194,19 @@ def promote_author_draft_canonical(
 @router.get("/api/v1/author-drafts/{draft_id}/revisions")
 def list_author_draft_revisions(draft_id: str, request: Request, session: Session = Depends(get_session)):
     result = AuthorDraftService(session).revisions(draft_id)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.get("/api/v1/author-drafts/{draft_id}/revisions/{revision_no}")
 def get_author_draft_revision(draft_id: str, revision_no: int, request: Request, session: Session = Depends(get_session)):
     result = AuthorDraftService(session).revision(draft_id, revision_no)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.get("/api/v1/author-drafts/{draft_id}/proposals")
 def get_author_draft_proposals(draft_id: str, request: Request, session: Session = Depends(get_session)):
     result = AuthorDraftService(session).proposals(draft_id)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.get("/api/v1/author-drafts/{draft_id}/proposals/{proposal_id}/diff")
@@ -217,7 +217,7 @@ def get_author_draft_proposal_diff(
     session: Session = Depends(get_session),
 ):
     result = AuthorDraftService(session).proposal_diff(draft_id, proposal_id)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.post("/api/v1/author-drafts/{draft_id}/apply-proposal")
@@ -227,7 +227,7 @@ def apply_author_draft_scoped_proposal(
     payload: ScopedProposalApplyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
     return optional_idempotent_response(
         request,
@@ -246,7 +246,7 @@ def generate_author_draft_proposal(
     payload: ProposalGenerateRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
     return optional_idempotent_response(
         request,
@@ -265,7 +265,7 @@ def generate_author_draft_proposal_set(
     payload: ProposalGenerateSetRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
     return optional_idempotent_response(
         request,
@@ -284,7 +284,7 @@ def apply_author_draft_proposal(
     payload: ProposalApplyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
     return optional_idempotent_response(
         request,
@@ -303,7 +303,7 @@ def reject_author_draft_proposal(
     payload: ProposalRejectRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
     return optional_idempotent_response(
         request,

@@ -93,10 +93,7 @@ class AuthorNodeOnlineFake(AccountedGenerateMixin):
         return _response(request, payload, len(self.requests))
 
 
-_AUTHOR_NODE_RUNNER_MODULES = (
-    "novel_system.services.author_drafts",
-    "novel_system.services.projects",
-)
+_AUTHOR_NODE_RUNNER_MODULES = ("novel_system.services.author_drafts",)
 
 
 def install_online_author_pipeline(monkeypatch) -> None:

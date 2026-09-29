@@ -8,9 +8,10 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+from novel_system.services.hash_engine import sha256_text
 
 AUDIT_VERSION = "style_render_audit_v3"
 
@@ -18,7 +19,7 @@ AUDIT_VERSION = "style_render_audit_v3"
 def block_digest(text: str) -> dict[str, Any]:
     return {
         "chars": len(text),
-        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None,
+        "sha256": sha256_text(text) if text else None,
     }
 
 
@@ -77,7 +78,7 @@ def build_audit(
         "few_shot_window_refs": [dict(item) for item in window_refs],
         "render_stats": dict(stats),
         "prefix_chars": len(rendered),
-        "prefix_sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+        "prefix_sha256": sha256_text(rendered),
     }
 
 

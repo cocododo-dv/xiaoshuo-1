@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from novel_system.cache_registry import register_cache_reset
-from novel_system.services.hash_engine import canonical_json
+from novel_system.services.hash_engine import sha256_json_normalized, sha256_text
 from novel_system.services.style_reference.binding_config import normalize_binding_config
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.inject.bindings import SCOPE_RANK, most_specific_binding
@@ -110,11 +110,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _json_hash(payload: Mapping[str, Any]) -> str:
-    return hashlib.sha256(canonical_json(dict(payload)).encode("utf-8")).hexdigest()
-
-
-def _text_hash(text: str) -> str:
-    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+    return sha256_json_normalized(dict(payload))
 
 
 DRAFT_MODE_STYLE_FIRST = "style_first"
@@ -157,7 +153,7 @@ def compute_paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:
             index = 0
         text = str(getattr(paragraph, "text", "") or "")
         digest.update(f"{index}\x1f".encode("utf-8"))
-        digest.update(_text_hash(text).encode("utf-8"))
+        digest.update(sha256_text(text).encode("utf-8"))
         digest.update(b"\x1e")
         count += 1
     if count == 0:
@@ -356,7 +352,7 @@ def _fingerprint(payload: Mapping[str, Any]) -> str | None:
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     except (TypeError, ValueError):
         return None
-    return "p:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return "p:" + sha256_text(encoded)
 
 
 def validate_style_runtime_contract(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -645,7 +641,7 @@ def contract_payload_fingerprint(raw: Any) -> str | None:
     记忆键一律用它，不用载荷里**自报**的 ``contract_hash``：改过内容、却留着原哈希的载荷指纹不同，不会命中
     校验过的那一份（L2）。"""
     if isinstance(raw, str):
-        return "s:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return "s:" + sha256_text(raw)
     if isinstance(raw, Mapping):
         return _fingerprint(raw)
     return None
@@ -661,7 +657,7 @@ def style_runtime_contract_from_bundle(
         return None
     if isinstance(raw, str):
         # bundle 里冻结的是 JSON 字符串:按字符串本身记忆,命中时连解析都省了
-        raw_key = "s:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        raw_key = "s:" + sha256_text(raw)
         cached = _memo_get(raw_key)
         if cached is not None:
             return cached

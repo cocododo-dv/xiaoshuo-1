@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.response import ok
 from novel_system.services import cost_aggregation
 from novel_system.services.llm_accounting import llm_quota_snapshot
@@ -33,7 +33,7 @@ def project_cost_summary(
     else:
         payload = {"level": "project", "summary": cost_aggregation.project_cost(session, project_id)}
     payload["quota"] = llm_quota_snapshot(session, project_id=project_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.get("/api/v2/projects/{project_id}/cost-dashboard")
@@ -45,4 +45,4 @@ def project_cost_dashboard(
 ):
     payload = cost_aggregation.project_cost_dashboard(session, project_id, days=days)
     payload["quota"] = llm_quota_snapshot(session, project_id=project_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))

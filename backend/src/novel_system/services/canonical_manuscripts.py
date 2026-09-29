@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
 import uuid
@@ -29,6 +28,7 @@ from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
+from novel_system.services.hash_engine import sha256_text
 
 
 _MAX_CANONICAL_CHARS = 1_000_000
@@ -95,7 +95,7 @@ def canonicalize_author_text(content: str) -> str:
 
 
 def canonical_content_hash(content: str) -> str:
-    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+    return sha256_text(content)
 
 
 class CanonicalSceneService:

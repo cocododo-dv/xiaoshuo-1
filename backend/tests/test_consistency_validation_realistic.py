@@ -26,7 +26,6 @@ Run standalone:  pytest tests/test_consistency_validation_realistic.py -s
 """
 from __future__ import annotations
 
-import textwrap
 from dataclasses import dataclass
 
 import pytest
@@ -38,7 +37,6 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.narrative_event_log import (
-    ConsistencyViolation,
     NarrativeEventLog,
 )
 

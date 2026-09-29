@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,11 +9,8 @@ from typing import Any, Mapping
 import yaml
 
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
-from novel_system.services.hash_engine import canonical_json, normalize
+from novel_system.services.hash_engine import normalize, normalize_string, sha256_json_normalized
 from novel_system.services.context_budget import (
-    CONTINUITY_DROP_ORDER,
-    SECTION_SPECS,
-    PromptSection as _PromptSection,
     apply_context_budget,
     collect_prompt_sections as _collect_sections,
     estimate_tokens as _estimate_tokens,
@@ -201,17 +197,15 @@ class PromptBuilder:
         budget["estimated_input_tokens"] = final_estimate
         budget["remaining_input_tokens"] = budget["target_input_tokens"] - final_estimate
 
-        prompt_hash = hashlib.sha256(
-            canonical_json(
-                {
-                    "template_name": template.name,
-                    "template_version": template.version,
-                    "system_prompt": system_prompt,
-                    "user_prompt": user_prompt,
-                    "structured_schema": structured_schema,
-                }
-            ).encode("utf-8")
-        ).hexdigest()
+        prompt_hash = sha256_json_normalized(
+            {
+                "template_name": template.name,
+                "template_version": template.version,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "structured_schema": structured_schema,
+            }
+        )
 
         return {
             "template_name": template.name,
@@ -287,7 +281,7 @@ def _default_input_token_budget(template: PromptTemplate) -> int:
 def _scene_input_token_budget_override() -> int:
     """NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET：未设/0 = 模板值与地板取大；正数 = 三族统一上限。
 
-    语义与 settings._get_quota_int_env 相同（非负整数，0 关闭）。直接读环境变量而不
+    语义与 env_parsing.quota_int_env 相同（非负整数，0 关闭）。直接读环境变量而不
     走 get_settings()，是因为这个旋钮只属于提示词装配层，且 PromptBuilder 在请求期被
     反复构造；非法值在这里就报配置错误，而不是留到运行时变成一次莫名其妙的超限。
     """
@@ -367,10 +361,10 @@ def _load_prompt_template(template_name: str, payload: Any) -> PromptTemplate:
 
     return PromptTemplate(
         name=template_name,
-        version=_normalize_text(version),
+        version=normalize_string(version),
         input_token_budget=input_token_budget,
-        system_prompt=_normalize_text(system_prompt),
-        task_prompt=_normalize_text(task_prompt),
+        system_prompt=normalize_string(system_prompt),
+        task_prompt=normalize_string(task_prompt),
         structured_schema=_clone_jsonish(normalized_schema),
     )
 
@@ -395,13 +389,6 @@ def _normalize_mapping(payload: Mapping[str, Any]) -> dict[str, Any]:
     normalized = normalize(dict(payload))
     if not isinstance(normalized, dict):
         raise ValueError("payload must normalize to a mapping")
-    return normalized
-
-
-def _normalize_text(text: str) -> str:
-    normalized = normalize(text)
-    if not isinstance(normalized, str):
-        raise ValueError("text must normalize to a string")
     return normalized
 
 

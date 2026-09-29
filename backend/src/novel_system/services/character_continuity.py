@@ -6,13 +6,6 @@ from typing import Any, Iterable
 
 
 CHARACTER_CONTRACT_VERSION = "CHARACTER_CONTRACT_v1"
-BLOCKING_QC_ISSUE_KEYS = {
-    "character_pronoun_drift",
-    "instruction_residue",
-    "mechanical_required_beat_listing",
-    "scene_conflict_missing",
-    "source_leak_risk",
-}
 
 
 def build_character_contract_digest(
@@ -134,16 +127,6 @@ def detect_mechanical_required_beat_listing(
         "message": "Required beats appear as a tail-loaded checklist instead of being woven into scene action.",
         "matched_terms": matched_terms,
     }
-
-
-def has_blocking_qc_issue(issues: Iterable[Any]) -> bool:
-    for issue in issues:
-        if not isinstance(issue, dict):
-            continue
-        issue_key = issue.get("issue_key")
-        if isinstance(issue_key, str) and issue_key.strip() in BLOCKING_QC_ISSUE_KEYS:
-            return True
-    return False
 
 
 def parse_character_contract_digest(contract_digest: str | None) -> dict[str, Any] | None:

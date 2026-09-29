@@ -1,7 +1,6 @@
 """Tests for narrative event sourcing — blueprint §2 / §17 Action B."""
 from __future__ import annotations
 
-import pytest
 
 from novel_system.db.models import (
     ChapterGoal,
@@ -274,82 +273,3 @@ def test_log_events_batch(session) -> None:
 
     assert len(events) == 2
     assert all(e.event_id.startswith("nevt_") for e in events)
-
-
-def _consistency_context():
-    from novel_system.services.llm_accounting import LLMCallContext
-
-    return LLMCallContext(
-        scope_type="scene",
-        scope_id="CH_EVT01_SC02",
-        project_id="PROJ1",
-        chapter_id="CH_EVT01",
-        scene_id="CH_EVT01_SC02",
-        node_id="consistency_extract",
-        step="consistency:llm_flag:0",
-    )
-
-
-def _seed_consistency_fact(session) -> NarrativeEventLog:
-    _seed_project(session)
-    log = NarrativeEventLog(session)
-    log.log_event(
-        project_id="PROJ1",
-        scene_id="CH_EVT01_SC01",
-        chapter_id="CH_EVT01",
-        event_type="character_state",
-        entity_type="character",
-        entity_id="CHAR_LIN",
-        fact_key="physical_state",
-        fact_value="right_arm_severed",
-    )
-    session.commit()
-    return log
-
-
-def test_consistency_llm_requires_context_before_runner_io(session) -> None:
-    from novel_system.services.llm_accounting import LLMAccountingRejected
-
-    log = _seed_consistency_fact(session)
-    calls: list[str] = []
-
-    class _Runner:
-        def run_task(self, **_kwargs):
-            calls.append("provider")
-            return '{"violations": []}'
-
-    with pytest.raises(LLMAccountingRejected) as rejected:
-        log.check_consistency_llm(
-            "CHAR_LIN lifts a crate.",
-            "PROJ1",
-            "CH_EVT01_SC02",
-            character_ids=["CHAR_LIN"],
-            llm_runner=_Runner(),
-        )
-
-    assert rejected.value.code == "LLM_ACCOUNTING_CONTEXT_REQUIRED"
-    assert calls == []
-
-
-def test_consistency_llm_passes_explicit_context_to_run_task(session) -> None:
-    log = _seed_consistency_fact(session)
-    calls: list[dict] = []
-    context = _consistency_context()
-
-    class _Runner:
-        def run_task(self, **kwargs):
-            calls.append(kwargs)
-            return '{"violations": []}'
-
-    log.check_consistency_llm(
-        "CHAR_LIN lifts a crate.",
-        "PROJ1",
-        "CH_EVT01_SC02",
-        character_ids=["CHAR_LIN"],
-        llm_runner=_Runner(),
-        llm_context=context,
-    )
-
-    assert len(calls) == 1
-    assert calls[0]["task_name"] == "consistency_extract"
-    assert calls[0]["context"] is context

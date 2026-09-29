@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
+
+from novel_system.env_parsing import non_negative_float_env, positive_int_env, quota_int_env
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +14,9 @@ class LLMAccountingRuntime:
     project_daily_token_limit: int
     daily_request_limit: int
     max_concurrent_requests: int
+    # Startup reconciliation only touches unowned, non-scene reservations
+    # older than this conservative TTL.  It must comfortably exceed normal
+    # provider retries so a live legacy request is not mistaken for a crash.
     reservation_recovery_ttl_seconds: int
     daily_cost_limit_usd: float
     input_cost_per_million_usd: float
@@ -40,10 +44,6 @@ class LLMAccountingRuntime:
         return self.max_concurrent_requests
 
     @property
-    def llm_reservation_recovery_ttl_seconds(self) -> int:
-        return self.reservation_recovery_ttl_seconds
-
-    @property
     def llm_daily_cost_limit_usd(self) -> float:
         return self.daily_cost_limit_usd
 
@@ -58,25 +58,25 @@ class LLMAccountingRuntime:
 
 def load_llm_accounting_runtime() -> LLMAccountingRuntime:
     runtime = LLMAccountingRuntime(
-        daily_token_limit=_quota_int("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", 0),
-        monthly_token_limit=_quota_int("NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT", 0),
-        project_daily_token_limit=_quota_int(
+        daily_token_limit=quota_int_env("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", 0),
+        monthly_token_limit=quota_int_env("NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT", 0),
+        project_daily_token_limit=quota_int_env(
             "NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT", 0
         ),
-        daily_request_limit=_quota_int("NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT", 0),
-        max_concurrent_requests=_quota_int(
+        daily_request_limit=quota_int_env("NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT", 0),
+        max_concurrent_requests=quota_int_env(
             "NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", 0
         ),
-        reservation_recovery_ttl_seconds=_positive_int(
+        reservation_recovery_ttl_seconds=positive_int_env(
             "NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS", 3_600
         ),
-        daily_cost_limit_usd=_non_negative_float(
+        daily_cost_limit_usd=non_negative_float_env(
             "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD", 0.0
         ),
-        input_cost_per_million_usd=_non_negative_float(
+        input_cost_per_million_usd=non_negative_float_env(
             "NOVEL_SYSTEM_LLM_INPUT_COST_PER_MILLION_USD", 0.0
         ),
-        output_cost_per_million_usd=_non_negative_float(
+        output_cost_per_million_usd=non_negative_float_env(
             "NOVEL_SYSTEM_LLM_OUTPUT_COST_PER_MILLION_USD", 0.0
         ),
     )
@@ -88,43 +88,3 @@ def load_llm_accounting_runtime() -> LLMAccountingRuntime:
             "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD requires at least one configured token price"
         )
     return runtime
-
-
-def _quota_int(name: str, default: int) -> int:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    message = f"{name} must be a non-negative integer (0 disables the limit)"
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(message) from exc
-    if value < 0:
-        raise ValueError(message)
-    return value
-
-
-def _positive_int(name: str, default: int) -> int:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-def _non_negative_float(name: str, default: float) -> float:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    try:
-        value = float(raw_value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a valid number") from exc
-    if value < 0:
-        raise ValueError(f"{name} must be non-negative")
-    return value

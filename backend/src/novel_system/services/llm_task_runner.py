@@ -27,16 +27,13 @@ from novel_system.services.llm_client import (
     LLMResponse,
     OnlineAccountedExecution,
     build_llm_request,
-    load_model_routing_config,
-    resolve_node_route,
 )
 from novel_system.services.llm_audit import (
     error_audit_summary,
     json_fingerprint,
     sanitize_audit_summary,
 )
-from novel_system.services.system_config import load_llm_provider_runtime_configs
-from novel_system.settings import get_settings
+from novel_system.services.llm_service_base import RuntimeLLMAccess
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +50,7 @@ logger = logging.getLogger(__name__)
 # 不限时(timeout_seconds <= 0)的调度租约上限。租约只用来防重复执行,没有
 # 超时秒数可乘时不能退回默认 TTL(几分钟)——那样长任务会在调用中途丢租约,
 # 客户端重试会把它当崩溃回收并二次执行(审计 P-8)。取一个与
-# llm_reservation_recovery_ttl_seconds 同量级的平顶,崩溃后最多滞留这么久。
+# reservation_recovery_ttl_seconds（NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS）同量级的平顶,崩溃后最多滞留这么久。
 UNBOUNDED_TIMEOUT_LEASE_SECONDS = 3_600
 
 
@@ -276,7 +273,7 @@ class LLMNodeContinuityError(LLMNodeExecutionError):
         self.continuity_warning = continuity_warning
 
 
-class LLMNodeRunner:
+class LLMNodeRunner(RuntimeLLMAccess):
     def __init__(
         self,
         session: Session,
@@ -286,19 +283,18 @@ class LLMNodeRunner:
         settings: Any | None = None,
     ) -> None:
         self.session = session
-        self._settings = settings
-        self._llm_client = llm_client
-        self._routing_config = routing_config
-        self._provider_configs: dict[str, Any] | None = None
+        self._init_runtime_llm_access(
+            llm_client=llm_client,
+            routing_config=routing_config,
+            settings=settings,
+        )
         self._accounting_lifecycle_observer: Callable[[str, str], None] | None = None
 
     @property
     def settings(self) -> Any:
         # 运行时设置（活动 api 快照 + 密钥解密）第一次用到时才读：只读服务在构造时就建好运行器，
         # 大多数只读请求一次 LLM 调用都不发，不该为此读库解密。
-        if self._settings is None:
-            self._settings = get_settings()
-        return self._settings
+        return self._settings_payload()
 
     @settings.setter
     def settings(self, value: Any) -> None:
@@ -646,12 +642,7 @@ class LLMNodeRunner:
         # 离线模式退役后不再允许"借用"别的节点的 provider/model——那会掩盖
         # 代码与路由快照的漂移。run_task 的 ad-hoc 别名在进入该边界之前已由
         # _AD_HOC_ROUTE_ALIASES 解析。
-        return resolve_node_route(self._routing(), node_id)
-
-    def _routing(self) -> Any:
-        if self._routing_config is None:
-            self._routing_config = load_model_routing_config()
-        return self._routing_config
+        return self._task_config(node_id)
 
     @staticmethod
     def _build_request(
@@ -718,14 +709,8 @@ class LLMNodeRunner:
         self._assert_online_execution_available()
         if self._llm_client is not None:
             return self._llm_client
-        return LLMClient(
-            provider=self.settings.llm_provider,
-            base_url=self.settings.llm_base_url,
-            api_key=self.settings.llm_api_key,
-            timeout_seconds=self.settings.llm_timeout_seconds,
-            retry_backoff_seconds=self._retry_backoff_seconds(),
-            provider_configs=self._runtime_provider_configs(),
-        )
+        # 只有场景运行器带重试退避(B09-09 现状),其余服务用 LLMClient 默认值。
+        return self._build_runtime_client(retry_backoff_seconds=self._retry_backoff_seconds())
 
     @property
     def provider_execution_mode(self) -> str:
@@ -1098,11 +1083,6 @@ class LLMNodeRunner:
         except Exception:
             pass
         return 1.5
-
-    def _runtime_provider_configs(self) -> dict[str, Any]:
-        if self._provider_configs is None:
-            self._provider_configs = load_llm_provider_runtime_configs()
-        return self._provider_configs
 
 def _requires_scene_split(continuity_warning: Any) -> bool:
     return isinstance(continuity_warning, dict) and bool(continuity_warning.get("requires_scene_split"))

@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from novel_system.services.llm_providers.base import LLMRequest, ProviderRuntimeConfig
-from novel_system.services.llm_providers.openai_chat_family import OpenAIChatFamilyAdapter
+from novel_system.services.llm_providers.openai_chat_family import OpenAIChatFamilyAdapter, thinking_enabled_on_demand
 
 
 class MoonshotAdapter(OpenAIChatFamilyAdapter):
@@ -28,7 +28,4 @@ class MoonshotAdapter(OpenAIChatFamilyAdapter):
         request: LLMRequest,
         provider_config: ProviderRuntimeConfig,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        if request.reasoning_level in {"medium", "high"}:
-            native_reasoning = {"type": "enabled"}
-            return {"thinking": native_reasoning}, native_reasoning
-        return {}, None
+        return thinking_enabled_on_demand(request)

@@ -18,20 +18,11 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
+from novel_system.services.value_coercion import finite_or_none
 
 JUDGE_SCALE_MAX = 10.0
 # 分数恰好落在边界上的浮点噪声（10.000000001）不算越界
 _SCALE_EPSILON = 1e-9
-
-
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
 
 
 def _declared_maximum(spec: Any) -> float | None:
@@ -39,7 +30,7 @@ def _declared_maximum(spec: Any) -> float | None:
     ``score``），取第一个声明了的。"""
     if not isinstance(spec, Mapping):
         return None
-    maximum = _finite(spec.get("maximum"))
+    maximum = finite_or_none(spec.get("maximum"))
     if maximum is not None and maximum > 0:
         return maximum
     properties = spec.get("properties")
@@ -72,7 +63,7 @@ def score_scale(values: Iterable[Any]) -> float:
 
     声明了刻度的模板一律用 :func:`declared_score_scale`——按回答推断会把全在 1 以下的 0–10 回答读成满分、
     被一个误写的 85 带着把整份回答按 0–100 除。"""
-    numbers = [number for number in (_finite(value) for value in values) if number is not None]
+    numbers = [number for number in (finite_or_none(value) for value in values) if number is not None]
     top = max(numbers, default=0.0)
     if top > 10.0:
         return 100.0
@@ -92,7 +83,7 @@ def response_score_scale(schema: Any, fields: Iterable[str], values: Iterable[An
 def normalize_score(value: Any, scale: float) -> float | None:
     """一个分数按刻度换算到 [0, 1]（四位小数）：非数值 / NaN → ``None``；不在 ``[0, scale]`` 里 → ``None``（丢掉，
     不夹到边界——越界的分是答错了刻度，夹成 0 或 1 会假装成一个极端的评分）。"""
-    number = _finite(value)
+    number = finite_or_none(value)
     if number is None:
         return None
     top = float(scale or 1.0)
@@ -123,13 +114,13 @@ def judge_dimension_scores(raw: Any) -> dict[str, Any]:
     return {
         str(key): value
         for key, value in raw.items()
-        if str(key) in ALL_DIMENSIONS and _finite(value) is not None
+        if str(key) in ALL_DIMENSIONS and finite_or_none(value) is not None
     }
 
 
 def unit_to_judge_scale(value: Any) -> float | None:
     """0–1 → 0–10（一位小数），落库 / 读数用评审的 10 分制。"""
-    number = _finite(value)
+    number = finite_or_none(value)
     return None if number is None else round(max(0.0, min(1.0, number)) * JUDGE_SCALE_MAX, 1)
 
 

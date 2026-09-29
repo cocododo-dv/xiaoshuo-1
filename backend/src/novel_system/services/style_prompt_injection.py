@@ -30,7 +30,6 @@ prompt + degraded 审计」那条路：降级等于换一份提示照样调用�
 from __future__ import annotations
 
 import copy
-import hashlib
 import logging
 from collections.abc import Mapping, Sequence
 from types import SimpleNamespace
@@ -79,6 +78,7 @@ from novel_system.services.style_reference.runtime_contract import (
     style_runtime_contract_status_from_bundle,
     validate_style_runtime_contract,
 )
+from novel_system.services.hash_engine import sha256_text
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -415,7 +415,7 @@ def inject_style_reference_prefix(
         "runtime_contract_mode": mode,
         "placement": request.placement,
         "prefix_chars": len(rendered_text),
-        "prefix_sha256": hashlib.sha256(rendered_text.encode("utf-8")).hexdigest(),
+        "prefix_sha256": sha256_text(rendered_text),
     }
     if budget_fit is not None:
         audit["budget_fit"] = budget_fit

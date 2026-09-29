@@ -34,6 +34,7 @@ from novel_system.services.project_purge import (
 )
 from novel_system.services.project_ownership import delete_project_owned_rows
 from novel_system.services.vector_store import VectorStore, get_vector_store
+from novel_system.services.scene_lookup import require_project
 
 
 class TrashService:
@@ -347,10 +348,7 @@ class TrashService:
     # ---- internals ----
 
     def _require_project(self, project_id: str, *, allow_trashed: bool = False) -> StoryProject:
-        project = self.session.get(StoryProject, project_id)
-        if project is None or (not allow_trashed and project.trashed_flag == 1):
-            raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
-        return project
+        return require_project(self.session, project_id, reject_trashed=not allow_trashed)
 
     @staticmethod
     def _parse_entry(entry_id: str) -> tuple[str, str]:

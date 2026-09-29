@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
@@ -17,10 +17,6 @@ router = APIRouter(tags=["system_config"])
 
 def _client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
-
-
-def _actor(request: Request) -> str:
-    return getattr(request.state, "operator_ref", None) or "operator"
 
 
 class SystemConfigDraftRequest(BaseModel):
@@ -98,7 +94,7 @@ class LlmRoleRoutesRequest(BaseModel):
 
 @router.get("/api/v1/system-config")
 def system_config_overview(request: Request, session: Session = Depends(get_session)):
-    return ok(SystemConfigService(session).overview(), req_id=getattr(request.state, "request_id", None))
+    return ok(SystemConfigService(session).overview(), req_id=request_id_of(request))
 
 
 @router.post("/api/v1/system-config/drafts")
@@ -120,7 +116,7 @@ def create_system_config_draft(
             category=payload.category,
             yaml_raw=payload.yaml_raw,
             secrets=payload.secrets,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -142,7 +138,7 @@ def activate_system_config_snapshot(
         payload={"snapshot_id": snapshot_id},
         action=lambda: SystemConfigService(session, auto_commit=False).activate(
             snapshot_id,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -170,18 +166,18 @@ def test_system_config_provider(
 def export_system_config_category(category: str, request: Request, session: Session = Depends(get_session)):
     return ok(
         SystemConfigService(session).export_category(category),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
 @router.get("/api/v1/system-config/llm")
 def system_config_llm_overview(request: Request, session: Session = Depends(get_session)):
-    return ok(SystemConfigService(session).llm_overview(), req_id=getattr(request.state, "request_id", None))
+    return ok(SystemConfigService(session).llm_overview(), req_id=request_id_of(request))
 
 
 @router.get("/api/v1/system-config/llm/calls/audit")
 def system_config_llm_call_audit(request: Request, session: Session = Depends(get_session)):
-    return ok(SystemConfigService(session).llm_call_audit(), req_id=getattr(request.state, "request_id", None))
+    return ok(SystemConfigService(session).llm_call_audit(), req_id=request_id_of(request))
 
 
 @router.post("/api/v1/system-config/llm/providers")
@@ -201,7 +197,7 @@ def save_system_config_llm_provider(
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).save_llm_provider(
             payload=body,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -223,7 +219,7 @@ def delete_system_config_llm_provider(
         payload={"provider_id": provider_id},
         action=lambda: SystemConfigService(session, auto_commit=False).delete_llm_provider(
             provider_id=provider_id,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -245,7 +241,7 @@ def set_default_system_config_llm_provider(
         payload={"provider_id": provider_id},
         action=lambda: SystemConfigService(session, auto_commit=False).set_default_llm_provider(
             provider_id=provider_id,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -267,7 +263,7 @@ def save_system_config_llm_node_routes(
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).save_llm_node_routes(
             payload=body,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -289,7 +285,7 @@ def sync_missing_system_config_llm_node_routes(
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).sync_missing_llm_node_routes(
             payload=body,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -322,7 +318,7 @@ def probe_system_config_llm_provider(
 def list_system_config_llm_provider_presets(request: Request, session: Session = Depends(get_session)):
     return ok(
         SystemConfigService(session).llm_provider_presets(),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -357,6 +353,6 @@ def save_system_config_llm_role_routes(
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).save_llm_role_routes(
             payload=body,
-            actor_ref=_actor(request),
+            actor_ref=actor_ref_of(request),
         ),
     )

@@ -30,7 +30,6 @@ Run standalone:  pytest tests/test_adversarial_dimension_ablation.py -s
 """
 from __future__ import annotations
 
-import pytest
 
 from novel_system.services.literary_quality import (
     ADVERSARIAL_DIMS,

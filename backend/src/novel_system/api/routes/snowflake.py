@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
@@ -18,7 +18,7 @@ router = APIRouter(tags=["snowflake"])
 
 @router.get("/api/v1/projects/{project_id}/snowflake")
 def snowflake_state(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(SnowflakePlannerService(session).state(project_id), req_id=getattr(request.state, "request_id", None))
+    return ok(SnowflakePlannerService(session).state(project_id), req_id=request_id_of(request))
 
 
 @router.post("/api/v1/projects/{project_id}/snowflake/steps/{step_key}/generate")

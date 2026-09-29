@@ -228,32 +228,6 @@ def make_profile(
     return profile_id
 
 
-def make_banned_terms(
-    session: Session,
-    profile_id: str,
-    terms: Iterable[str | tuple[str, str]],
-    *,
-    source: str = "user",
-    key: str | None = None,
-) -> list[str]:
-    """画像的禁用词：元素是词本身（生成期）或 ``(词, 作用域)``。返回 term_id 列表。"""
-    repo = StyleReferenceRepository(session)
-    ids: list[str] = []
-    for index, item in enumerate(terms):
-        term, scope = (item, "generation") if isinstance(item, str) else item
-        term_id = f"term_{key or profile_id}_{index}"
-        repo.create_banned_term(
-            term_id=term_id,
-            profile_id=profile_id,
-            term=term,
-            replacement_hint=None,
-            source=source,
-            scope=scope,
-        )
-        ids.append(term_id)
-    return ids
-
-
 # ---------------------------------------------------------------------------
 # 学习血缘：run → 抽取 → 发现 → 引文 → 证据
 # ---------------------------------------------------------------------------
@@ -398,7 +372,6 @@ __all__ = [
     "TAGS_VERSION_V2",
     "VOICE_HABITS",
     "card_payload",
-    "make_banned_terms",
     "make_binding",
     "make_book",
     "make_learning_lineage",

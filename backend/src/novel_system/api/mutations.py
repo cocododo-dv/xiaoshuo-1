@@ -20,6 +20,7 @@ from novel_system.services.idempotency import (
     execute_with_idempotency,
     execute_with_optional_idempotency,
 )
+from novel_system.api.deps import request_id_of, actor_ref_of
 
 
 def idempotent_response(
@@ -39,7 +40,7 @@ def idempotent_response(
     ``IDEMPOTENCY_KEY_REQUIRED`` raised by ``execute_with_idempotency``.
     """
 
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -54,7 +55,7 @@ def idempotent_response(
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(
         result,
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
         headers=headers,
     )
 
@@ -70,7 +71,7 @@ def optional_idempotent_response(
 ) -> JSONResponse:
     """Execute and commit one mutation, replaying it when a key is supplied."""
 
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     result, status = execute_with_optional_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -83,6 +84,6 @@ def optional_idempotent_response(
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(
         result,
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
         headers=headers,
     )

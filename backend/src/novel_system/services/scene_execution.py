@@ -1,36 +1,29 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import uuid
-from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     ChapterGoal,
-    FinalScene,
-    QcReport,
     SceneBlueprint,
     SceneCard,
     SceneExecutionContract,
-    SceneRunState,
-    SnowflakeArtifact,
     StoryProject,
 )
-from novel_system.services.errors import DomainError
 from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
     normalize_story_slot,
     normalize_story_slot_mapping,
 )
-from novel_system.services.hash_engine import canonical_json
-from novel_system.services.narrative_position import NarrativePositionService
+from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.style_policy import style_policy_live
+from novel_system.services.planning_queries import latest_scene_blueprint
 
 EXECUTION_CONTRACT_VERSION = "scene_execution_contract_v1"
 # 来源快照里的「参考规则」：v3 画像没有 style_rules / structure_rules / safety_rules 这些旧键，这三个表从来都是空的；
@@ -130,13 +123,13 @@ class SceneExecutionContractService:
         SceneExecutionContract | None,
     ]:
         """解析场景快照上下文；末位返回可直接复用的最新契约（快照未变且非 stale），否则为 None。"""
-        scene = self._require_scene(scene_id)
-        chapter = self._require_chapter(scene.chapter_id)
+        scene = require_scene(self.session, scene_id)
+        chapter = require_chapter(self.session, scene.chapter_id)
         project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
         blueprint = self._latest_blueprint(scene_id)
         reference_rules = self._reference_rules(project)
         snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
-        snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        snapshot_hash = sha256_json_normalized(snapshot)
         latest = self.latest(scene_id)
         cached = (
             latest
@@ -351,11 +344,7 @@ class SceneExecutionContractService:
         return missing
 
     def _latest_blueprint(self, scene_id: str) -> SceneBlueprint | None:
-        return self.session.execute(
-            select(SceneBlueprint)
-            .where(SceneBlueprint.scene_id == scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
-            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
-        ).scalars().first()
+        return latest_scene_blueprint(self.session, scene_id)
 
     def _source_snapshot(
         self,
@@ -412,44 +401,6 @@ class SceneExecutionContractService:
         return [str(policy.profile_id)] if policy.profile_id else []
 
 
-    def _canonical_completed_scene_ids(
-        self,
-        project_id: str,
-        *,
-        position_service: NarrativePositionService | None = None,
-    ) -> set[str]:
-        """Return only scenes whose runtime pointer names the authority row.
-
-        ``final_scenes`` is append-only history after author-draft promotion.  A
-        historical/superseded row must never satisfy a causal prerequisite merely
-        because it still exists.  The scene is complete only when the current
-        ``SceneRunState`` pointer resolves to a ``FinalScene`` for that same scene.
-        """
-
-        positions = position_service or NarrativePositionService(self.session)
-        statement = (
-            positions.scene_statement(project_id)
-            .join(SceneRunState, SceneRunState.scene_id == SceneCard.scene_id)
-            .join(
-                FinalScene,
-                and_(
-                    FinalScene.row_id == SceneRunState.current_final_scene_row_id,
-                    FinalScene.scene_id == SceneCard.scene_id,
-                ),
-            )
-        )
-        return {
-            completed_scene.scene_id
-            for completed_scene in self.session.execute(statement).scalars().all()
-        }
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id)
-
-    def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        return require_chapter(self.session, chapter_id)
-
-
 def _infer_scene_mode(scene: SceneCard, brief: dict[str, Any]) -> str:
     for value in (brief.get("scene_mode"), brief.get("scene_form"), scene.scene_type):
         text = str(value or "").strip().lower()
@@ -466,19 +417,6 @@ def _is_explicit_structured_scene(scene: SceneCard, brief: dict[str, Any]) -> bo
         if text in {"proactive", "reactive", "reaction", "goal"}:
             return True
     return False
-
-
-FIELD_LABELS = {
-    "scene_crucible": "坩埚/场景压力",
-    "crucible": "坩埚/场景压力",
-    "conflict": "冲突推进",
-    "setback_or_victory": "挫折/胜负变化",
-    "setback": "挫折",
-    "goal": "场景目标",
-    "reaction": "反应",
-    "dilemma": "困境",
-    "decision": "决定",
-}
 
 
 def _first_text(*values: Any) -> str:

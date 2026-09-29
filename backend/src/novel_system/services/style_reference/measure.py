@@ -26,7 +26,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 import statistics
 import threading
@@ -40,6 +39,7 @@ from novel_system.cache_registry import register_cache_reset
 from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.text_utils import split_sentences
+from novel_system.services.value_coercion import finite_or_zero, quantile  # quantile 在此再导出（线性插值分位数）
 
 KERNEL_VERSION = "measure_v1"
 
@@ -791,16 +791,8 @@ def _measure(paragraphs: Sequence[str], *, detailed: bool = True) -> TextMeasure
 # ---------------------------------------------------------------------------
 
 
-def _finite(value: Any) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return number if math.isfinite(number) else 0.0
-
-
 def _round(value: float) -> float:
-    return round(_finite(value), 6)
+    return round(finite_or_zero(value), 6)
 
 
 def per_1k(count: float, chars: int) -> float:
@@ -809,20 +801,6 @@ def per_1k(count: float, chars: int) -> float:
 
 def share(count: float, total: float) -> float:
     return count / total if total > 0 else 0.0
-
-
-def quantile(values: Sequence[float], ratio: float) -> float:
-    """线性插值分位数（与旧 voice_signature / structure 同口径）。"""
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    position = (len(ordered) - 1) * ratio
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return float(ordered[lower])
-    fraction = position - lower
-    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
 
 
 def _sentence_sequence_features(lengths: Sequence[int]) -> dict[str, float]:
@@ -983,7 +961,7 @@ def feature_scale_floor(name: str, center: float) -> float:
         "corr": _CORR_FLOOR,
     }[kind]
     relative = 0.02 if kind == "lexical" else _RELATIVE_FLOOR
-    return max(base, relative * abs(_finite(center)))
+    return max(base, relative * abs(finite_or_zero(center)))
 
 
 def robust_scale(name: str, center: float, mad: float, p10: float, p90: float) -> float:
@@ -993,15 +971,15 @@ def robust_scale(name: str, center: float, mad: float, p10: float, p90: float) -
     （作者几乎从不用）时落到单位下限。
     """
     return max(
-        MAD_TO_SIGMA * max(0.0, _finite(mad)),
-        max(0.0, _finite(p90) - _finite(p10)) / P10_P90_TO_SIGMA,
+        MAD_TO_SIGMA * max(0.0, finite_or_zero(mad)),
+        max(0.0, finite_or_zero(p90) - finite_or_zero(p10)) / P10_P90_TO_SIGMA,
         feature_scale_floor(name, center),
     )
 
 
 def robust_center_scale(values: Sequence[float], name: str) -> tuple[float, float]:
     """一组窗口上某特征的稳健中心（中位数）与尺度（见 :func:`robust_scale`）。"""
-    cleaned = [_finite(value) for value in values]
+    cleaned = [finite_or_zero(value) for value in values]
     if not cleaned:
         return 0.0, feature_scale_floor(name, 0.0)
     center = statistics.median(cleaned)

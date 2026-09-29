@@ -631,7 +631,8 @@ def test_all_production_run_task_calls_pass_explicit_context() -> None:
             if not any(keyword.arg == "context" for keyword in node.keywords):
                 offenders.append(location)
 
-    assert len(calls) == 3
+    # prose_event_extractor + auto_critique（check_consistency_llm 已随死代码删除）
+    assert len(calls) == 2
     assert offenders == []
 
 

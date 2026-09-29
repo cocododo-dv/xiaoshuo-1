@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from novel_system.services.value_coercion import coerce_string_list, has_value
+
 
 SNOWFLAKE_METHOD_VERSION = "2026-04-29.v2"
 # 2026-09-13 阶段 C：反应场的呈现方式。full = 整场戏剧化；summary = 两段概述（约 200–500 字）。
@@ -852,7 +854,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
             thin = [
                 _text(character.get("display_name") or character.get("name") or f"character_{index}")
                 for index, character in enumerate(characters[:4], start=1)
-                if len([item for item in _coerce_string_list(character.get("values")) if _text(item)]) < 2
+                if len([item for item in coerce_string_list(character.get("values")) if _text(item)]) < 2
                 or not _text(character.get("one_sentence_summary"))
             ]
             if thin:
@@ -976,7 +978,7 @@ def _normalize_scene_item(item: dict[str, Any], *, index: int) -> dict[str, Any]
     normalized.setdefault("crucible", normalized.get("scene_crucible") or "")
     normalized.setdefault("scene_crucible", normalized.get("crucible") or "")
     if "beats_json" in normalized:
-        normalized["beats_json"] = _coerce_string_list(normalized.get("beats_json"))
+        normalized["beats_json"] = coerce_string_list(normalized.get("beats_json"))
     return normalized
 
 
@@ -1049,7 +1051,7 @@ def _missing_fields_for_step(step_key: str, draft: dict[str, Any]) -> list[str]:
         key = str(field.get("key") or "")
         if field.get("optional"):
             continue  # 可选字段空着不算缺失（01 叙述人称、07 章表）
-        if key and not _has_value(draft.get(key)):
+        if key and not has_value(draft.get(key)):
             missing.append(key)
     return missing
 
@@ -1112,9 +1114,9 @@ def _missing_scene_detail_fields(scene: dict[str, Any]) -> list[str]:
     scene_type = str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip().lower()
     required = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
     missing = []
-    if not _has_value(scene.get("scene_crucible") or scene.get("crucible")):
+    if not has_value(scene.get("scene_crucible") or scene.get("crucible")):
         missing.append("crucible")
-    missing.extend(key for key in required if not _has_value(scene.get(key)))
+    missing.extend(key for key in required if not has_value(scene.get(key)))
     return missing
 
 
@@ -1128,7 +1130,7 @@ def diagnose_scene_detail(scene: dict[str, Any], *, index: int = 1) -> dict[str,
     total_fields = len(required) + 1
     filled_fields = max(0, total_fields - len(missing_fields))
     pressure_flags = [f"missing_{field}" for field in missing_fields]
-    scene_core_empty = not _has_value(payload.get("title")) and not _has_value(payload.get("summary"))
+    scene_core_empty = not has_value(payload.get("title")) and not has_value(payload.get("summary"))
     if scene_core_empty and all(field in missing_fields for field in required):
         pressure_flags.append("scene_core_empty")
     weak_flags, advice = _weak_scene_pressure_flags(payload, scene_type)
@@ -1184,7 +1186,7 @@ def _weak_scene_pressure_flags(scene: dict[str, Any], scene_type: str) -> tuple[
 
     # 阶段 H：「代价」是本项目对原著的强化，不是原著的三拍——按原著五分钟写法规划的场不该因此
     # 拿不到「通过」。缺代价只提醒（Blueprint §4 的道理仍在：免费选择 = 注水）。
-    if not _has_value(scene.get("cost_requirement")):
+    if not has_value(scene.get("cost_requirement")):
         advice.append("建议：写出角色为这个选择付出了什么——什么信任被消耗、什么可能性被关闭、什么代价不可逆；免费选择 = 注水。")
 
     beats = ("reaction", "dilemma", "decision") if scene_type == "reactive" else ("goal", "conflict", "setback")
@@ -1590,26 +1592,6 @@ def _coerce_positional_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item or "").strip() for item in value]
-
-
-def _coerce_string_list(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [item.strip() for item in value.splitlines() if item.strip()]
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _has_value(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, list):
-        return any(_has_value(item) for item in value)
-    if isinstance(value, dict):
-        return any(_has_value(item) for item in value.values())
-    return True
 
 
 def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

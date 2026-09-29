@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import uuid
@@ -27,7 +26,7 @@ from novel_system.db.models import (
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.author_preferences import merge_preference_summaries, safe_preference_summary_for_prompt
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json
+from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.llm_task_runner import (
     LLMNodeExecutionError,
@@ -53,7 +52,6 @@ from novel_system.services.scene_diagnosis import (
     candidate_category_for_dimension,
     locate_in_paragraphs,
     passage_scope,
-    scene_form_from_findings,
     serialize_evaluation as _serialize_evaluation,
     serialize_passage_review,
     serialize_patch_candidate as _serialize_patch_candidate,
@@ -69,6 +67,7 @@ from novel_system.services.style_prompt_injection import (
 )
 from novel_system.services.style_reference.inject.request import PLAN_K
 from novel_system.settings import get_settings
+from novel_system.services.scene_text import current_author_draft
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,8 +132,8 @@ class WriterDeepReviewService:
     ) -> LLMCallContext:
         execution_id = current_llm_execution_id()
         if object_type == "scene":
-            scene = self._require_scene(scene_id or object_id)
-            chapter = self._require_chapter(scene.chapter_id)
+            scene = require_scene(self.session, scene_id or object_id)
+            chapter = require_chapter(self.session, scene.chapter_id)
             return LLMCallContext(
                 scope_type="scene",
                 scope_id=scene.scene_id,
@@ -147,7 +146,7 @@ class WriterDeepReviewService:
                 execution_step_key=execution_step_key if execution_id is not None else None,
                 provider_execution_mode=self._llm_runner.provider_execution_mode,
             )
-        chapter = self._require_chapter(chapter_id or object_id)
+        chapter = require_chapter(self.session, chapter_id or object_id)
         return LLMCallContext(
             scope_type="chapter",
             scope_id=chapter.chapter_id,
@@ -173,7 +172,7 @@ class WriterDeepReviewService:
     def run_scene_review(self, scene_id: str, actor_ref: str = "operator") -> dict[str, Any]:
         """「AI 深评」：对当前作者稿跑一次 writer_deep_review 节点，返回统一诊断载荷。拒绝式：无模型即 409。"""
 
-        scene = self._require_scene(scene_id)
+        scene = require_scene(self.session, scene_id)
         source = self._scene_source(scene)
         self._create_deep_review(
             object_type="scene",
@@ -195,7 +194,7 @@ class WriterDeepReviewService:
         模型，载荷带 ``notice.code = CHAPTER_REVIEW_UP_TO_DATE``；上一轮没记哈希（老的行）→ 退回整章。
         """
 
-        chapter = self._require_chapter(chapter_id)
+        chapter = require_chapter(self.session, chapter_id)
         scope = scope if scope in {"all", "changed"} else "all"
         diagnosis_service = SceneDiagnosisService(self.session)
         scenes = diagnosis_service.chapter_scenes(chapter.chapter_id)
@@ -268,7 +267,7 @@ class WriterDeepReviewService:
         """
 
         self._require_live_llm("writer_passage_review")
-        scene = self._require_scene(scene_id)
+        scene = require_scene(self.session, scene_id)
         diagnosis_service = SceneDiagnosisService(self.session)
         text = diagnosis_service.text_for_scene(scene)
         if text.layer == "none":
@@ -371,7 +370,7 @@ class WriterDeepReviewService:
                 scene_id=scene.scene_id,
                 chapter_id=scene.chapter_id,
                 bundle_id=text.ref or f"writer_passage_review:{scene.scene_id}",
-                bundle_hash=hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
+                bundle_hash=sha256_json_normalized(snapshot),
                 node_id="writer_deep_review",
                 step="writer_passage_review",
                 prompt=prompt,
@@ -815,7 +814,7 @@ class WriterDeepReviewService:
                 scene_id=scene_id or object_id,
                 chapter_id=chapter_id or object_id,
                 bundle_id=source.get("source_text_ref") or f"writer_deep_review:{object_type}:{object_id}",
-                bundle_hash=hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
+                bundle_hash=sha256_json_normalized(snapshot),
                 node_id="writer_deep_review",
                 step="writer_deep_review",
                 prompt=prompt,
@@ -1022,7 +1021,7 @@ class WriterDeepReviewService:
             scene_id=context.scene_id,
             chapter_id=context.chapter_id,
             bundle_id=snapshot["source_version_refs"]["target_text_ref"] or "writer_passage_patch",
-            bundle_hash=hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
+            bundle_hash=sha256_json_normalized(snapshot),
             node_id="writer_passage_patch",
             step="writer_passage_patch",
             prompt=prompt,
@@ -1234,21 +1233,7 @@ class WriterDeepReviewService:
         }
 
     def _current_author_draft(self, object_type: str, object_id: str) -> AuthorDraft | None:
-        return self.session.execute(
-            select(AuthorDraft)
-            .where(
-                AuthorDraft.object_type == object_type,
-                AuthorDraft.object_id == object_id,
-                AuthorDraft.status == "current",
-            )
-            .order_by(AuthorDraft.updated_at.desc(), AuthorDraft.draft_id.desc())
-        ).scalars().first()
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id)
-
-    def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        return require_chapter(self.session, chapter_id)
+        return current_author_draft(self.session, object_type, object_id)
 
     def _require_patch_candidate(self, patch_id: str) -> PassagePatchCandidate:
         row = self.session.get(PassagePatchCandidate, patch_id)
@@ -1778,10 +1763,6 @@ def _preference_tags(payload: dict[str, Any], issue_dimension: str, *, instructi
     return [issue_dimension][:8]
 
 
-# 供旧调用方 / 测试按名字取：场景形态推断现在只看模型给的 scene_form（scene_diagnosis）
-_scene_form_from_findings = scene_form_from_findings
-
-
 def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
     findings = _normalize_findings(payload.get("findings"))
     scores = _normalize_scores(payload.get("scores"))
@@ -2028,14 +2009,6 @@ def _category_label(value: str | None) -> str:
 def _repeated_ai_trace_terms(text: str) -> list[str]:
     watched = ("手指", "停顿", "幽蓝", "冷光", "低声", "盐霜", "泛着")
     return [term for term in watched if text.count(term) >= 2 or (term in {"幽蓝", "冷光", "盐霜"} and term in text)]
-
-
-def _first_match(text: str, terms: tuple[str, ...]) -> str:
-    for term in terms:
-        index = text.find(term)
-        if index >= 0:
-            return text[max(0, index - 10) : index + len(term) + 16]
-    return text[:40]
 
 
 def _required_text(payload: dict[str, Any], key: str) -> str:

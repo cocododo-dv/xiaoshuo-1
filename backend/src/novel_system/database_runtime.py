@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from novel_system.env_parsing import bool_env
+
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = BACKEND_ROOT / "novel_system.db"
@@ -23,20 +25,9 @@ def load_database_runtime() -> DatabaseRuntime:
             "NOVEL_SYSTEM_DATABASE_URL",
             f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}",
         ),
-        sqlite_foreign_keys_enabled=_strict_bool_env(
+        sqlite_foreign_keys_enabled=bool_env(
             "NOVEL_SYSTEM_SQLITE_FOREIGN_KEYS_ENABLED",
             True,
+            strict=True,
         ),
     )
-
-
-def _strict_bool_env(name: str, default: bool) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    normalized = raw_value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be a boolean (1/0, true/false, yes/no, on/off)")

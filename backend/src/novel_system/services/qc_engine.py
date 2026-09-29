@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import re
 import uuid
@@ -52,15 +50,13 @@ from novel_system.services.style_prompt_injection import (
     STYLED_GATE_UNAVAILABLE_VERDICT,
 )
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
+from novel_system.services.hash_engine import sha256_text
 
 
 _LOGGER = logging.getLogger(__name__)
 
 CONTINUITY_BUDGET_ISSUE_KEY = "continuity_budget_exceeded"
 CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe input budget after deterministic continuity compaction."
-CONTINUITY_BUDGET_REWRITE = (
-    "Split the scene and retry QC with a smaller continuity scope."
-)
 HARD_QC_REQUIRED_ISSUE_KEYS = {"missing_required_text", "missing_hard_constraint"}
 HARD_QC_STYLE_ONLY_ISSUE_KEYS = {
     "style_compliance",
@@ -321,10 +317,6 @@ def _issue_blob(issues: list[Any], rewrite_brief: list[Any]) -> str:
             parts.append(str(issue.get("message") or ""))
     parts.extend(str(item) for item in rewrite_brief)
     return "\n".join(parts)
-
-
-def _content_hash(content: str) -> str:
-    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
 
 
 def _scene_card_source_texts(scene: SceneCard) -> list[str]:
@@ -1053,7 +1045,7 @@ def _styled_gate_result(
             "matched_length": int(hit.get("matched_length") or 0),
             # 抄袭门给的命中本来就只有指纹；旧校验报告带原文，这里就地压成指纹
             "matched_sha256": str(hit.get("matched_sha256") or "")
-            or hashlib.sha256(str(hit.get("matched_text") or "").encode("utf-8")).hexdigest()[:16],
+            or sha256_text(hit.get("matched_text"))[:16],
         }
         for hit in raw_hits[:_STYLED_GATE_MAX_HITS]
         if isinstance(hit, dict)
@@ -2104,7 +2096,7 @@ class SoftQcEngine:
                 if blocking_issue
                 else "soft_qc_requested_human_review"
             )
-            source_draft_content_hash = _content_hash(source_draft_content)
+            source_draft_content_hash = sha256_text(source_draft_content)
             accepted_waiver = self.human_review_manager.accepted_soft_risk_waiver(
                 scene_id=scene.scene_id,
                 trigger_reason=trigger_reason,

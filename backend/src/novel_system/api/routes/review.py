@@ -7,7 +7,7 @@ from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest, StrictRequestModel
 from novel_system.api.response import ok
@@ -83,7 +83,7 @@ def list_review_items(
         if not project_id:
             raise DomainError("REVIEW_PROJECT_REQUIRED", "project_id is required with state filter", status_code=400)
         result = ReviewCardService(session).list_cards(project_id, state=state)
-        return ok(result, req_id=getattr(request.state, "request_id", None))
+        return ok(result, req_id=request_id_of(request))
     query = select(ReviewItem)
     if status:
         query = query.where(ReviewItem.status == status)
@@ -107,19 +107,19 @@ def list_review_items(
     )
     return ok(
         {"items": [_serialize_review(item, session=session) for item in page_items], "pagination": pagination},
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 @router.get("/api/v1/review-items/badge")
 def review_badge(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(ReviewCardService(session).badge(project_id), req_id=getattr(request.state, "request_id", None))
+    return ok(ReviewCardService(session).badge(project_id), req_id=request_id_of(request))
 
 @router.get("/api/v1/review-items/{review_id}")
 def review_detail(review_id: str, request: Request, session: Session = Depends(get_session)):
     item = session.get(ReviewItem, review_id)
     if item is None:
         raise DomainError("REVIEW_NOT_FOUND", f"review {review_id} not found", status_code=404)
-    return ok(_serialize_review(item, session=session), req_id=getattr(request.state, "request_id", None))
+    return ok(_serialize_review(item, session=session), req_id=request_id_of(request))
 
 @router.post("/api/v1/review-items")
 def create_review_item(
@@ -128,7 +128,7 @@ def create_review_item(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     # FE-ALIGN P5：带 kind 的载荷走卡片创建（dedupe_key 去重）；legacy 载荷保持原 upsert 流
     is_card = "kind" in body and "review_id" not in body
     action = (
@@ -152,7 +152,7 @@ def resolve_review_card(
     payload: ReviewCardResolveRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     return idempotent_response(
         request,

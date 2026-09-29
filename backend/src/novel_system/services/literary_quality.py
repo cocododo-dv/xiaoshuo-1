@@ -12,9 +12,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import AuthorDraft, ChapterGoal, ChapterMemory, ChapterState, FinalScene, SceneCard, SceneRunState
+from novel_system.db.models import AuthorDraft, ChapterGoal, ChapterMemory, FinalScene, SceneCard
 from novel_system.services.errors import DomainError
 from novel_system.services.manuscript_html import plain_manuscript_text
+from novel_system.services.value_coercion import optional_text
+from novel_system.services.scene_text import current_author_draft, final_chapter_memory, pointed_final_scene
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -968,10 +970,10 @@ class LiteraryQualityService:
         content = payload.get("content")
         if not isinstance(content, str) or not content.strip():
             raise DomainError("LITERARY_QUALITY_TEXT_REQUIRED", "content is required", status_code=400)
-        object_type = _optional_string(payload.get("object_type")) or "ad_hoc"
-        object_id = _optional_string(payload.get("object_id")) or "scratch"
-        chapter_id = _optional_string(payload.get("chapter_id")) or object_id
-        scene_id = _optional_string(payload.get("scene_id"))
+        object_type = optional_text(payload.get("object_type")) or "ad_hoc"
+        object_id = optional_text(payload.get("object_id")) or "scratch"
+        chapter_id = optional_text(payload.get("chapter_id")) or object_id
+        scene_id = optional_text(payload.get("scene_id"))
         scene = self.session.get(SceneCard, scene_id) if scene_id else None
         item = self._analyze_item(
             object_type,
@@ -980,7 +982,7 @@ class LiteraryQualityService:
             scene_id,
             {
                 "text_layer": "ad_hoc",
-                "source_ref": _optional_string(payload.get("source_ref")) or f"ad_hoc:{object_id}",
+                "source_ref": optional_text(payload.get("source_ref")) or f"ad_hoc:{object_id}",
                 "content": content,
             },
             ignored_keys=self._scene_ignored_keys(scene),
@@ -999,7 +1001,7 @@ class LiteraryQualityService:
         if not chapter_ids:
             raise DomainError("LITERARY_QUALITY_CHAPTER_SET_REQUIRED", "chapter_ids are required", status_code=400)
         protected_terms = _string_list(payload.get("protected_terms"))
-        text_layer = _optional_string(payload.get("text_layer")) or "author_draft_preferred"
+        text_layer = optional_text(payload.get("text_layer")) or "author_draft_preferred"
         if text_layer not in QUALITY_TEXT_LAYERS:
             raise DomainError("LITERARY_QUALITY_LAYER_INVALID", "unsupported literary quality text layer", status_code=400)
 
@@ -1226,43 +1228,13 @@ class LiteraryQualityService:
         }
 
     def _current_author_draft(self, object_type: str, object_id: str) -> AuthorDraft | None:
-        return self.session.execute(
-            select(AuthorDraft)
-            .where(
-                AuthorDraft.object_type == object_type,
-                AuthorDraft.object_id == object_id,
-                AuthorDraft.status == "current",
-            )
-            .order_by(AuthorDraft.updated_at.desc(), AuthorDraft.draft_id.desc())
-        ).scalars().first()
+        return current_author_draft(self.session, object_type, object_id)
 
     def _final_scene(self, scene_id: str) -> FinalScene | None:
-        state = self.session.get(SceneRunState, scene_id)
-        if state is not None and state.current_final_scene_row_id:
-            pointed = self.session.get(FinalScene, state.current_final_scene_row_id)
-            if pointed is not None and pointed.scene_id == scene_id:
-                return pointed
-        return self.session.execute(
-            select(FinalScene)
-            .where(FinalScene.scene_id == scene_id)
-            .order_by(FinalScene.created_at.desc(), FinalScene.row_id.desc())
-        ).scalars().first()
+        return pointed_final_scene(self.session, scene_id)
 
     def _final_chapter_memory(self, chapter_id: str) -> ChapterMemory | None:
-        state = self.session.get(ChapterState, chapter_id)
-        if state is not None and state.last_final_memory_row_id:
-            pointed = self.session.get(ChapterMemory, state.last_final_memory_row_id)
-            if pointed is not None and pointed.chapter_id == chapter_id and pointed.aggregate_stage == "final":
-                return pointed
-        return self.session.execute(
-            select(ChapterMemory)
-            .where(
-                ChapterMemory.chapter_id == chapter_id,
-                ChapterMemory.aggregate_stage == "final",
-                ChapterMemory.active_flag == 1,
-            )
-            .order_by(ChapterMemory.created_at.desc(), ChapterMemory.row_id.desc())
-        ).scalars().first()
+        return final_chapter_memory(self.session, chapter_id)
 
     def _assembled_chapter_text(self, chapter_id: str) -> str:
         parts: list[str] = []
@@ -2258,12 +2230,6 @@ def _top_counter(counter: Counter[str], *, limit: int) -> list[dict[str, Any]]:
         for value, count in counter.most_common(limit)
         if value and count > 0
     ]
-
-
-def _optional_string(value: Any) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
 
 
 def _add_term_signal(

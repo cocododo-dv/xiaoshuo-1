@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.library_requests import (
     LibraryCharacterRequest,
     LibraryEntityCreateRequest,
@@ -23,7 +23,7 @@ router = APIRouter(tags=["library"])
 @router.get("/api/v2/projects/{project_id}/library")
 def library_overview(project_id: str, request: Request, session: Session = Depends(get_session)):
     result = LibraryService(session).overview(project_id)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.post("/api/v2/projects/{project_id}/library/entities")
@@ -110,7 +110,7 @@ def delete_library_relation(
 
 @router.get("/api/v2/projects/{project_id}/library/timeline")
 def list_library_timeline(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(LibraryService(session).list_timeline(project_id), req_id=getattr(request.state, "request_id", None))
+    return ok(LibraryService(session).list_timeline(project_id), req_id=request_id_of(request))
 
 
 @router.post("/api/v2/projects/{project_id}/library/timeline")
@@ -174,7 +174,7 @@ def delete_library_timeline_event(
 
 @router.get("/api/v2/projects/{project_id}/library/graph")
 def library_graph(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(LibraryService(session).graph(project_id), req_id=getattr(request.state, "request_id", None))
+    return ok(LibraryService(session).graph(project_id), req_id=request_id_of(request))
 
 
 @router.post("/api/v2/projects/{project_id}/library/characters")

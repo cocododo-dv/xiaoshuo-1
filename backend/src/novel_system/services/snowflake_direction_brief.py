@@ -20,7 +20,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import uuid
 from copy import deepcopy
@@ -31,7 +30,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from novel_system.db.models import SnowflakeDirectionBrief, utcnow
-from novel_system.services.hash_engine import canonical_json
+from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.snowflake_steps import STEP_ORDER, list_step_definitions
 
 KINDS = ("decision", "rejection", "constraint", "pending")
@@ -376,7 +375,7 @@ def brief_fingerprint(row: SnowflakeDirectionBrief | None, inherited: list[dict[
         "lines": [[line.get("kind"), line.get("scope"), line.get("text")] for line in own],
         "inherited": [[item.get("step_key"), item.get("line_id"), item.get("text")] for item in inherited],
     }
-    digest = hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()[:16]
+    digest = sha256_json_normalized(material)[:16]
     return {
         "used": True,
         "revision": int(row.revision) if row is not None else 0,

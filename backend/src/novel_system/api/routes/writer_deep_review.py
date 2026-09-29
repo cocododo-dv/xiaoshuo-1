@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest, StrictRequestModel
 from novel_system.api.response import ok
@@ -98,7 +98,7 @@ def get_scene_deep_review_preferences(
     session: Session = Depends(get_session),
 ):
     payload = SceneDeepReviewPreferencesService(session).get(scene_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.patch("/api/v1/scenes/{scene_id}/deep-review/preferences")
@@ -127,7 +127,7 @@ def save_scene_deep_review_preferences(
 @router.get("/api/v1/scenes/{scene_id}/deep-review")
 def get_scene_deep_review(scene_id: str, request: Request, session: Session = Depends(get_session)):
     payload = WriterDeepReviewService(session).scene_summary(scene_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.post("/api/v1/scenes/{scene_id}/deep-review")
@@ -137,7 +137,7 @@ def run_scene_deep_review(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return optional_idempotent_response(
         request,
         session,
@@ -155,7 +155,7 @@ def run_scene_passage_review(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True)
     return optional_idempotent_response(
         request,
@@ -182,7 +182,7 @@ def get_project_diagnosis_summary(project_id: str, request: Request, session: Se
     （``diagnosis_rollup``），见 GET …/scenes/{id}/diagnosis-rollup。"""
 
     payload = SceneDiagnosisService(session).project_summary(project_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.get("/api/v1/scenes/{scene_id}/diagnosis-rollup")
@@ -191,7 +191,7 @@ def get_scene_diagnosis_rollup(scene_id: str, request: Request, session: Session
 
     service = SceneDiagnosisService(session)
     scene = require_scene(session, scene_id, trashed_as_conflict=True)
-    return ok(service.scene_rollup(scene), req_id=getattr(request.state, "request_id", None))
+    return ok(service.scene_rollup(scene), req_id=request_id_of(request))
 
 
 @router.get("/api/v1/chapters/{chapter_id}/diagnosis-rollup")
@@ -199,13 +199,13 @@ def get_chapter_diagnosis_rollup(chapter_id: str, request: Request, session: Ses
     """这一章的计数（章条目 + 章里每一场的条目）：章运行 / 场景运行在服务端归档了终稿之后前端据此更新角标。"""
 
     payload = SceneDiagnosisService(session).chapter_rollup(chapter_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.get("/api/v1/chapters/{chapter_id}/deep-review")
 def get_chapter_deep_review(chapter_id: str, request: Request, session: Session = Depends(get_session)):
     payload = WriterDeepReviewService(session).chapter_summary(chapter_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))
 
 
 @router.post("/api/v1/chapters/{chapter_id}/deep-review")
@@ -215,7 +215,7 @@ def run_chapter_deep_review(
     payload: ChapterReviewRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     scope = (payload.scope if payload is not None else None) or "all"
     return optional_idempotent_response(
         request,
@@ -233,7 +233,7 @@ def create_passage_patch_candidate(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True)
     return optional_idempotent_response(
         request,
@@ -252,7 +252,7 @@ def accept_passage_patch_candidate(
     payload: PassagePatchAcceptRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     return optional_idempotent_response(
         request,
@@ -273,7 +273,7 @@ def reject_passage_patch_candidate(
     payload: PassagePatchRejectRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     return optional_idempotent_response(
         request,
@@ -290,4 +290,4 @@ def reject_passage_patch_candidate(
 @router.get("/api/v1/author-preference-profile")
 def get_author_preference_profile(request: Request, session: Session = Depends(get_session)):
     payload = WriterDeepReviewService(session).author_preference_profile()
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(payload, req_id=request_id_of(request))

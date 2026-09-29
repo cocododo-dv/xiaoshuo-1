@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from sqlalchemy import select
@@ -21,18 +20,12 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import SceneCard, SceneRunState, SnowflakeStepRun, StoryProject
 from novel_system.services.catalog import CatalogService
 from novel_system.services.snowflake_steps import list_step_definitions
+from novel_system.services.hash_engine import sha256_text
+from novel_system.services.snowflake_queries import step_gate_satisfied
 
 
 def _fingerprint(*parts: Any) -> str:
-    return hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()[:10]
-
-
-def _gate_satisfied(run: SnowflakeStepRun | None) -> bool:
-    if run is None:
-        return False
-    if run.status in {"approved", "skipped"}:
-        return True
-    return run.status == "stale" and bool(run.stale_accepted_at)
+    return sha256_text("|".join(str(p) for p in parts))[:10]
 
 
 def derive_cards(session: Session, project_id: str) -> list[dict[str, Any]]:
@@ -61,12 +54,12 @@ def _snowflake_gaps(session: Session, project_id: str) -> list[dict[str, Any]]:
     steps = list_step_definitions()
     cards: list[dict[str, Any]] = []
     max_satisfied_index = max(
-        (index for index, step in enumerate(steps) if _gate_satisfied(latest.get(step["step_key"]))),
+        (index for index, step in enumerate(steps) if step_gate_satisfied(latest.get(step["step_key"]))),
         default=-1,
     )
     for index, step in enumerate(steps):
         run = latest.get(step["step_key"])
-        if _gate_satisfied(run):
+        if step_gate_satisfied(run):
             continue
         drafted = run is not None and run.status == "pending_review"
         gap_behind = index < max_satisfied_index  # 后续步骤已确认，本步却是空缺/未确认

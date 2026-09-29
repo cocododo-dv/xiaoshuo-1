@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -10,15 +9,10 @@ from novel_system.db.models import (
     ChapterGoal,
     ChapterRunJob,
     FinalScene,
-    LlmCall,
     OperationLog,
     SceneCard,
     SceneRunState,
     StoryProject,
-    StyleReferenceBook,
-    StyleReferenceInjectionBinding,
-    StyleReferenceProfile,
-    StyleReferenceRun,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.canon_continuity import CanonContinuityService

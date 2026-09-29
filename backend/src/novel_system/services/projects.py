@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import re
 import threading
 import uuid
 from typing import Any
@@ -20,8 +18,6 @@ from novel_system.db.models import (
     SceneCard,
     SceneRunState,
     StoryProject,
-    StyleReferenceInjectionBinding,
-    StyleReferenceProfile,
     utcnow,
 )
 from novel_system.db.session import SessionLocal
@@ -35,23 +31,17 @@ from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_accounting import LLMCallContext
-from novel_system.services.llm_task_runner import (
-    LLMNodeExecutionError,
-    LLMNodeRunner,
-    current_llm_execution_id,
-)
-from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.scene_rehome import rehome_scenes
 from novel_system.services.system_config import SystemConfigService
 from novel_system.services.snowflake_steps import SNOWFLAKE_METHOD_VERSION
 from novel_system.settings import get_settings
+from novel_system.services.hash_engine import sha256_text
+from novel_system.services.scene_lookup import require_project
+from novel_system.services.snowflake_queries import latest_outline_plan
 
 PROJECT_STATUS_OUTLINE_DRAFT = "outline_draft"
-PROJECT_STATUS_OUTLINE_REVIEW = "outline_review"
 PROJECT_STATUS_CHAPTER_READY = "chapter_ready"
 PROJECT_STATUS_CHAPTER_RUNNING = "chapter_running"
 PROJECT_STATUS_CHAPTER_BLOCKED = "chapter_blocked"
@@ -735,9 +725,7 @@ class ProjectService:
         }
 
     def require_project(self, project_id: str) -> StoryProject:
-        project = self.session.get(StoryProject, project_id)
-        if project is None:
-            raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+        project = require_project(self.session, project_id)
         return project
 
     def _approved_plan_result(
@@ -761,15 +749,7 @@ class ProjectService:
         return plan
 
     def _latest_plan(self, project_id: str) -> OutlinePlan | None:
-        return (
-            self.session.execute(
-                select(OutlinePlan)
-                .where(OutlinePlan.project_id == project_id)
-                .order_by(OutlinePlan.version.desc(), OutlinePlan.created_at.desc())
-            )
-            .scalars()
-            .first()
-        )
+        return latest_outline_plan(self.session, project_id)
 
     def _chapter_payloads(self, project_id: str) -> list[dict[str, Any]]:
         chapters = (
@@ -1238,7 +1218,7 @@ class ProjectChapterFlowService:
 
     @staticmethod
     def _chapter_body_hash(body: str) -> str:
-        return hashlib.sha256(str(body or "").encode("utf-8")).hexdigest()
+        return sha256_text(body)
 
     def _latest_read_confirmation(
         self, project_id: str, chapter_id: str, body_hash: str
@@ -1703,41 +1683,6 @@ def _qc_issue_summaries(
             }
         )
     return items
-
-
-def _outline_points(outline_text: str, chapter_count: int) -> list[str]:
-    lines = [
-        re.sub(r"^[\s\-\*\d\.、）)]+", "", line).strip()
-        for line in str(outline_text or "").splitlines()
-        if line.strip()
-    ]
-    if not lines:
-        lines = [
-            part.strip()
-            for part in re.split(r"[。！？!?；;]\s*", str(outline_text or ""))
-            if part.strip()
-        ]
-    if not lines:
-        lines = ["围绕用户大纲推进核心冲突"]
-    while len(lines) < chapter_count:
-        lines.append(lines[-1])
-    return lines[:chapter_count]
-
-
-def _scene_role(scene_index: int, scene_count: int) -> str:
-    if scene_index == 1:
-        return "开场承压"
-    if scene_index == scene_count:
-        return "转折收束"
-    return "冲突升级"
-
-
-def _chapter_push(index: int, chapter_count: int, point: str) -> str:
-    if index == 1:
-        return f"建立主矛盾和行动入口：{point}"
-    if index == chapter_count:
-        return f"兑现核心承诺并留下长期余波：{point}"
-    return f"升级阻力并改变人物关系：{point}"
 
 
 def _optional_text(value: Any) -> str | None:

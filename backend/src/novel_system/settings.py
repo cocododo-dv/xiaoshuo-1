@@ -5,13 +5,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from novel_system.core_runtime import load_core_runtime
-from novel_system.database_runtime import DEFAULT_DATABASE_PATH, load_database_runtime
+from novel_system.database_runtime import load_database_runtime
+from novel_system.env_parsing import (
+    bool_env,
+    list_env,
+    path_list_env,
+    positive_int_env,
+    quota_int_env,
+)
 from novel_system.llm_accounting_runtime import load_llm_accounting_runtime
 from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-REPOSITORY_ROOT = BACKEND_ROOT.parent
 DEFAULT_VECTOR_STORE_DIR = BACKEND_ROOT / ".vector_store"
 
 
@@ -21,10 +27,7 @@ class Settings:
     vector_backend: str
     vector_store_dir: Path
     sqlite_foreign_keys_enabled: bool = True
-    chroma_collection_prefix: str = "novel_system"
     idempotency_ttl_seconds: int = 90
-    verify_lease_ttl_seconds: int = 180
-    reindex_lease_ttl_seconds: int = 180
     llm_provider: str = "openai_compatible"
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str | None = None
@@ -49,10 +52,6 @@ class Settings:
     llm_project_daily_token_limit: int = 0
     llm_daily_request_limit: int = 0
     llm_max_concurrent_requests: int = 0
-    # Startup reconciliation only touches unowned, non-scene reservations
-    # older than this conservative TTL.  It must comfortably exceed normal
-    # provider retries so a live legacy request is not mistaken for a crash.
-    llm_reservation_recovery_ttl_seconds: int = 3_600
     llm_daily_cost_limit_usd: float = 0.0
     llm_input_cost_per_million_usd: float = 0.0
     llm_output_cost_per_million_usd: float = 0.0
@@ -103,9 +102,6 @@ class Settings:
     # ``review`` prevents unattended archive for high-risk heuristic matches;
     # ``audit`` records the same findings without blocking publication.
     content_safety_mode: str = "review"
-    # Test/acceptance fixture import is a write-capable maintenance boundary.
-    # It is absent from OpenAPI and disabled unless an operator opts in.
-    fixture_import_enabled: bool = False
     # 2026-09-13 阶段 A：雪花 / 章节编排写下的场景结构（形态、坩埚、三拍、代价）作为
     # ``Scene Structure (Snowflake)`` 事实 section 进入起草 bundle、蓝图与近终稿快照。
     # 默认开；``NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF=false`` 只作回滚开关。
@@ -116,78 +112,9 @@ class Settings:
     scene_design_context_enabled: bool = True
 
 
-def _get_bool_env(name: str, default: bool) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _get_strict_bool_env(name: str, default: bool) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    normalized = raw_value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be a boolean (1/0, true/false, yes/no, on/off)")
-
-
-def _get_positive_int_env(name: str, default: int) -> int:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-def _get_quota_int_env(name: str, default: int) -> int:
-    """Parse an optional hard-fence bound, where ``0`` disables the fence."""
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    message = f"{name} must be a non-negative integer (0 disables the limit)"
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(message) from exc
-    if value < 0:
-        raise ValueError(message)
-    return value
-
-
-def _get_list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    items = tuple(item.strip() for item in raw_value.split(",") if item.strip())
-    return items or default
-
-
 def _resolve_runtime_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else BACKEND_ROOT / path
-
-
-def _get_path_list_env(
-    name: str,
-    default: tuple[Path, ...] = (),
-) -> tuple[Path, ...]:
-    raw_value = os.environ.get(name, "")
-    if not raw_value.strip():
-        return default
-    return tuple(
-        _resolve_runtime_path(item.strip())
-        for item in raw_value.split(os.pathsep)
-        if item.strip()
-    )
 
 
 def get_settings(*, include_runtime_config: bool = True) -> Settings:
@@ -198,40 +125,36 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     vector_store_dir = _resolve_runtime_path(
         os.environ.get("NOVEL_SYSTEM_CHROMA_DIR", DEFAULT_VECTOR_STORE_DIR)
     )
-    chroma_collection_prefix = os.environ.get("NOVEL_SYSTEM_CHROMA_COLLECTION_PREFIX", "novel_system")
     core_runtime = load_core_runtime()
     llm_provider = core_runtime.llm_provider
     llm_base_url = core_runtime.llm_base_url
     llm_api_key = core_runtime.llm_api_key
     llm_timeout_seconds = core_runtime.llm_timeout_seconds
     llm_enabled = core_runtime.llm_enabled
-    llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
-    llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
-    scene_best_of_n_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", False)
-    scene_structure_brief_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
-    scene_design_context_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_DESIGN_CONTEXT", True)
+    llm_auto_critique_enabled = bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
+    llm_event_extraction_enabled = bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
+    scene_best_of_n_enabled = bool_env("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", False)
+    scene_structure_brief_enabled = bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
+    scene_design_context_enabled = bool_env("NOVEL_SYSTEM_SCENE_DESIGN_CONTEXT", True)
     accounting_runtime = load_llm_accounting_runtime()
     llm_daily_token_limit = accounting_runtime.daily_token_limit
     llm_monthly_token_limit = accounting_runtime.monthly_token_limit
     llm_project_daily_token_limit = accounting_runtime.project_daily_token_limit
     llm_daily_request_limit = accounting_runtime.daily_request_limit
     llm_max_concurrent_requests = accounting_runtime.max_concurrent_requests
-    llm_reservation_recovery_ttl_seconds = (
-        accounting_runtime.reservation_recovery_ttl_seconds
-    )
     llm_daily_cost_limit_usd = accounting_runtime.daily_cost_limit_usd
     llm_input_cost_per_million_usd = accounting_runtime.input_cost_per_million_usd
     llm_output_cost_per_million_usd = accounting_runtime.output_cost_per_million_usd
-    scene_token_budget_multiplier = _get_quota_int_env(
+    scene_token_budget_multiplier = quota_int_env(
         "NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", 0
     )
-    snowflake_input_token_budget = _get_quota_int_env(
+    snowflake_input_token_budget = quota_int_env(
         "NOVEL_SYSTEM_SNOWFLAKE_INPUT_TOKEN_BUDGET", 0
     )
     admin_token = core_runtime.admin_token
     config_secret = core_runtime.config_secret
-    auto_create_tables = _get_bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", False)
-    cors_origins = _get_list_env(
+    auto_create_tables = bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", False)
+    cors_origins = list_env(
         "NOVEL_SYSTEM_CORS_ORIGINS",
         (
             "http://127.0.0.1:5173",
@@ -245,16 +168,17 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
             "http://localhost:8081",
         ),
     )
-    cors_allow_credentials = _get_bool_env("NOVEL_SYSTEM_CORS_ALLOW_CREDENTIALS", True)
-    expose_error_detail = _get_bool_env("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", False)
-    local_only = _get_strict_bool_env("NOVEL_SYSTEM_LOCAL_ONLY", True)
+    cors_allow_credentials = bool_env("NOVEL_SYSTEM_CORS_ALLOW_CREDENTIALS", True)
+    expose_error_detail = bool_env("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", False)
+    local_only = bool_env("NOVEL_SYSTEM_LOCAL_ONLY", True, strict=True)
     remote_access_token = os.environ.get("NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN") or None
-    max_request_body_bytes = _get_positive_int_env(
+    max_request_body_bytes = positive_int_env(
         "NOVEL_SYSTEM_MAX_REQUEST_BODY_BYTES",
         16 * 1024 * 1024,
     )
-    style_reference_import_roots = _get_path_list_env(
-        "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS"
+    style_reference_import_roots = path_list_env(
+        "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS",
+        _resolve_runtime_path,
     )
     content_safety_mode = os.environ.get("NOVEL_SYSTEM_CONTENT_SAFETY_MODE", "review").strip().lower()
     if content_safety_mode not in {"review", "audit"}:
@@ -264,7 +188,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         vector_backend=vector_backend,
         vector_store_dir=vector_store_dir,
         sqlite_foreign_keys_enabled=sqlite_foreign_keys_enabled,
-        chroma_collection_prefix=chroma_collection_prefix,
         llm_provider=llm_provider,
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
@@ -280,7 +203,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_project_daily_token_limit=llm_project_daily_token_limit,
         llm_daily_request_limit=llm_daily_request_limit,
         llm_max_concurrent_requests=llm_max_concurrent_requests,
-        llm_reservation_recovery_ttl_seconds=llm_reservation_recovery_ttl_seconds,
         llm_daily_cost_limit_usd=llm_daily_cost_limit_usd,
         llm_input_cost_per_million_usd=llm_input_cost_per_million_usd,
         llm_output_cost_per_million_usd=llm_output_cost_per_million_usd,
@@ -297,7 +219,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         max_request_body_bytes=max_request_body_bytes,
         style_reference_import_roots=style_reference_import_roots,
         content_safety_mode=content_safety_mode,
-        fixture_import_enabled=_get_strict_bool_env("NOVEL_SYSTEM_ENABLE_FIXTURE_IMPORT", False),
     )
     if not include_runtime_config:
         return settings

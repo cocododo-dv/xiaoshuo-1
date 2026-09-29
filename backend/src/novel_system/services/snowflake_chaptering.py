@@ -54,9 +54,10 @@ from novel_system.services.chapter_title_sync import (  # noqa: F401  (is_auto_c
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_design_ownership import is_snowflake_origin
-from novel_system.services.snowflake_scene_order import renumber_scene_seq, sort_in_story_order
+from novel_system.services.snowflake_scene_order import live_scene_plans_in_story_order, renumber_scene_seq
 from novel_system.services.snowflake_steps import effective_rendering_mode
 from novel_system.services.snowflake_triage import excluded_scene_plan_ids
+from novel_system.services.value_coercion import int_or_default
 
 #: ``from_scenes`` = 按场景列表推一份章表（不落库的预览，确认时才建章）；``auto`` = 由服务端按现状挑：
 #: 已有归属 → keep_current，07 里有作者写的章表 → spine_anchor，否则 → from_scenes。
@@ -223,13 +224,7 @@ class SnowflakeChapteringService:
         分章读到的是各章的场交错洗在一起的顺序（1、10、2、11……）。故事序的唯一来源见
         ``snowflake_scene_order``。
         """
-        rows = self.session.execute(
-            select(SnowflakeScenePlan).where(
-                SnowflakeScenePlan.project_id == project_id,
-                SnowflakeScenePlan.removed_at.is_(None),
-            )
-        ).scalars().all()
-        return sort_in_story_order(self.session, project_id, rows)
+        return live_scene_plans_in_story_order(self.session, project_id)
 
     # ------------------------------------------------------ 章表惰性派生
 
@@ -508,8 +503,8 @@ class SnowflakeChapteringService:
         """
         payload = body or {}
         total = len(scenes)
-        requested_target = _as_int(payload.get("target_chapter_count"))
-        requested_per = _as_int(payload.get("scenes_per_chapter"))
+        requested_target = int_or_default(payload.get("target_chapter_count"), 0)
+        requested_per = int_or_default(payload.get("scenes_per_chapter"), 0)
         project = self.session.get(StoryProject, project_id)
         project_target = int(getattr(project, "target_chapter_count", 0) or 0)
         reference_hint = None
@@ -1698,15 +1693,6 @@ class SnowflakeChapteringService:
             "chaptered": bool(chapter_count) and not unassigned,
         }
 
-    def unassigned_scene_plans(self, project_id: str) -> list[SnowflakeScenePlan]:
-        """还没有分章的活跃场。物化前置闸门用它判断能不能整理。"""
-        valid_chapter_ids = {chapter.chapter_plan_id for chapter in self.chapter_plans(project_id)}
-        return [
-            plan
-            for plan in self.scene_plans(project_id)
-            if not plan.chapter_plan_id or plan.chapter_plan_id not in valid_chapter_ids
-        ]
-
 
 # ------------------------------------------------------------------ 节奏体检
 
@@ -1862,13 +1848,6 @@ def parse_outline_chapters(draft: dict[str, Any] | None) -> list[dict[str, Any]]
                 }
             )
     return chapters
-
-
-def _as_int(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
 
 
 # 参考作者无显式场界时,推每章场数所用的「中等场」字数(与场景卡 medium 长度带同量级)

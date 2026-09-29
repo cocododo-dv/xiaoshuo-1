@@ -59,7 +59,6 @@ def build_project_purge_plan(
     chapters = tuple(dict.fromkeys(chapter_ids))
     scenes = tuple(dict.fromkeys(scene_ids))
     characters = tuple(dict.fromkeys(character_ids))
-    refs = tuple(dict.fromkeys((project_id, *chapters, *scenes, *characters)))
 
     bundle_ids = tuple(
         session.execute(

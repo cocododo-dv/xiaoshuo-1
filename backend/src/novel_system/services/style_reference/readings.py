@@ -15,9 +15,7 @@ final / manual。
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import math
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -38,6 +36,8 @@ from novel_system.services.style_reference.fidelity import (
     reference_distribution_for_book,
     within_author_range,
 )
+from novel_system.services.hash_engine import sha256_text
+from novel_system.services.value_coercion import finite_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ def reading_for_text(session: Session, policy: Any, text: str) -> FidelityReadin
 
 
 def text_sha256(text: str) -> str:
-    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+    return sha256_text(text)
 
 
 def scene_project_id(session: Session, scene: Any) -> str | None:
@@ -152,16 +152,6 @@ def copy_check_summary(copy_check: Any) -> dict[str, Any] | None:
     }
 
 
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
 def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] | None:
     """评审分 → ``{overall, dimensions: {dim: {score, note}}, source, summary}``（10 分制，一位小数）。
 
@@ -189,11 +179,11 @@ def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] 
     overall_raw = judge.get("overall", judge.get("style_score"))
     dimensions: dict[str, dict[str, Any]] = {}
     for dim, (score, note) in raw_dims.items():
-        number = _finite(score)
+        number = finite_or_none(score)
         if number is None:
             continue
         dimensions[dim] = {"score": round(max(0.0, min(10.0, number)), 1), "note": note[:200]}
-    overall_number = _finite(overall_raw)
+    overall_number = finite_or_none(overall_raw)
     if overall_number is None and dimensions:
         overall_number = sum(item["score"] for item in dimensions.values()) / len(dimensions)
     if overall_number is None and not dimensions:
@@ -452,7 +442,7 @@ def reading_payload(row: StyleFidelityReading | None) -> dict[str, Any] | None:
                 "z": item.get("z"),
             }
         )
-    threshold = _finite(data.get("max_percentile"))
+    threshold = finite_or_none(data.get("max_percentile"))
     if threshold is None:
         threshold = _default_max_percentile()
     within = data.get("within_range")
@@ -461,7 +451,7 @@ def reading_payload(row: StyleFidelityReading | None) -> dict[str, Any] | None:
     copy = dict(row.copy_check_json) if isinstance(row.copy_check_json, Mapping) else None
     reliable = bool(data.get("reliable", False))
     char_count = int(row.char_count or 0)
-    window_count = int(_finite(data.get("window_count")) or 0)
+    window_count = int(finite_or_none(data.get("window_count")) or 0)
     return {
         "reading_id": row.reading_id,
         "scene_id": row.scene_id,
@@ -631,7 +621,7 @@ def project_fidelity_summary(
             "distance": row.distance,
             "within_range": bool((row.reading_json or {}).get("within_range")),
             "reliable": bool((row.reading_json or {}).get("reliable", False)),
-            "max_percentile": _finite((row.reading_json or {}).get("max_percentile")),
+            "max_percentile": finite_or_none((row.reading_json or {}).get("max_percentile")),
             "created_at": row.created_at,
         }
         for row in trend_rows[-max(0, int(trend_limit)) :]
@@ -643,7 +633,7 @@ def project_fidelity_summary(
     deterministic: dict[str, list[float]] = {}
     for row in latest_final.values():
         for dim, score in dict((row.reading_json or {}).get("dimension_scores") or {}).items():
-            number = _finite(score)
+            number = finite_or_none(score)
             if number is not None:
                 deterministic.setdefault(str(dim), []).append(number)
     latest_judged: dict[str, StyleFidelityReading] = {}
@@ -659,7 +649,7 @@ def project_fidelity_summary(
     for row in [*latest_judged.values(), *unscoped_judged]:
         judge = row.judge_json if isinstance(row.judge_json, Mapping) else None
         for dim, entry in dict((judge or {}).get("dimensions") or {}).items():
-            number = _finite(entry.get("score") if isinstance(entry, Mapping) else entry)
+            number = finite_or_none(entry.get("score") if isinstance(entry, Mapping) else entry)
             if number is not None:
                 judged.setdefault(str(dim), []).append(number)
     dims = sorted(set(deterministic) | set(judged), key=lambda dim: list(DIMENSION_LABELS).index(dim) if dim in DIMENSION_LABELS else 99)

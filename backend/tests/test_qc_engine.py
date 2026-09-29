@@ -7,7 +7,6 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from novel_system.api.routes.scenes import _serialize_generation_summary, _serialize_qc_summary
 from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
@@ -16,7 +15,6 @@ from novel_system.db.models import (
     HumanReviewEvent,
     LlmCall,
     LlmCallAttempt,
-    OperationLog,
     QcReport,
     RelationProfile,
     SceneCard,
@@ -26,7 +24,6 @@ from novel_system.db.models import (
     StoryProject,
     VoiceProfile,
 )
-from novel_system.services.human_review_manager import HumanReviewManager
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
 from novel_system.services.llm_task_runner import (

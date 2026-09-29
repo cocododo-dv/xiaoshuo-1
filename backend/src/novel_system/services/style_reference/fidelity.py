@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import statistics
@@ -55,6 +54,8 @@ from novel_system.services.style_reference.windows import (
     index_marker,
     marker_is_current,
 )
+from novel_system.services.hash_engine import sha256_text
+from novel_system.services.value_coercion import finite_or_zero
 
 FIDELITY_VERSION = "fidelity_v1"
 # 单个特征的 |z| 封顶：一个特征离谱不该压过其余几十个
@@ -283,14 +284,6 @@ class ReferenceDistribution:
         }
 
 
-def _finite(value: Any) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return number if math.isfinite(number) else 0.0
-
-
 def _quantile_without(ordered: Sequence[float], removed: int, ratio: float) -> float:
     """``ordered`` 去掉第 ``removed`` 个元素后的线性插值分位数（与 ``measure.quantile`` 同口径）。"""
     size = len(ordered) - 1
@@ -344,7 +337,7 @@ def build_reference_distribution(
     ``window_features`` 每项是 ``kernel_features`` 的结果（持久化窗口的 ``features_json``）；缺的特征按 0。
     少于 3 窗时没有留一，参照窗口的 |z| 对全体分布算（``reliable`` 为 False）。
     """
-    rows = [{name: _finite((item or {}).get(name, 0.0)) for name in FEATURE_NAMES} for item in window_features]
+    rows = [{name: finite_or_zero((item or {}).get(name, 0.0)) for name in FEATURE_NAMES} for item in window_features]
     n = len(rows)
     center: dict[str, float] = {}
     scale: dict[str, float] = {}
@@ -388,7 +381,7 @@ def build_reference_distribution(
         window_count=n,
         loo_abs_z=tuple(tuple(row) for row in loo),
         kernel_version=KERNEL_VERSION,
-        reference_version=f"ref_{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:16]}",
+        reference_version=f"ref_{sha256_text(fingerprint)[:16]}",
         source=dict(source or {}),
     )
 
@@ -502,7 +495,7 @@ def reading_from_features(
     z_values: dict[str, float] = {}
     distance = 0.0
     for name in dist.features:
-        value = _finite(features.get(name, 0.0))
+        value = finite_or_zero(features.get(name, 0.0))
         z = (value - float(dist.center[name])) / float(dist.scale[name])
         z = max(-Z_CLIP, min(Z_CLIP, z))
         z_values[name] = z
@@ -528,7 +521,7 @@ def reading_from_features(
                 "z": round(z, 2),
                 "direction": direction,
                 "phrase": feature_phrase(name, direction),
-                "value": round(_finite(features.get(name, 0.0)), 4),
+                "value": round(finite_or_zero(features.get(name, 0.0)), 4),
                 "author_typical": round(float(dist.center[name]), 4),
             }
         )
@@ -704,12 +697,12 @@ def recent_gap_entries(
             if not isinstance(entry, Mapping):
                 continue
             feature = str(entry.get("feature") or "")
-            direction = str(entry.get("direction") or ("high" if _finite(entry.get("z")) > 0 else "low"))
+            direction = str(entry.get("direction") or ("high" if finite_or_zero(entry.get("z")) > 0 else "low"))
             key = (feature, direction)
             if not feature or key in seen:
                 continue
             seen.add(key)
-            hits.setdefault(key, []).append(abs(_finite(entry.get("z"))))
+            hits.setdefault(key, []).append(abs(finite_or_zero(entry.get("z"))))
             phrases.setdefault(key, str(entry.get("phrase") or "") or feature_phrase(feature, direction))
             dimensions.setdefault(key, str(entry.get("dimension") or "") or FEATURE_DIMENSIONS.get(feature))
     ranked = sorted(

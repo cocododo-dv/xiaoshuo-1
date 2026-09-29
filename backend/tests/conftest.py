@@ -216,7 +216,6 @@ def build_fake_paragraph_classifier():
     `rule` 控制启发式行为,便于覆盖锚定校准 agreement >= 0.85 与 < 0.85 两条路径。
     """
     import json
-    import re
 
     class _FakeLLMResponse:
         def __init__(self, classifications: list[dict]) -> None:

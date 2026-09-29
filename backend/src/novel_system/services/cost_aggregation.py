@@ -60,7 +60,7 @@ def classify_phase(node_id: str | None, step: str | None = None) -> str:
     key = (node_id or step or "").lower()
     if not key:
         return PHASE_OTHER
-    # revision 优先于 candidate：`scene_auto_rewrite`/`style_patch` 含 draft 语义但属修订
+    # revision 优先于 candidate：`scene_literary_rewrite`/`style_patch` 含 draft 语义但属修订
     if any(t in key for t in ("patch", "rewrite", "revision")):
         return PHASE_REVISION
     if any(

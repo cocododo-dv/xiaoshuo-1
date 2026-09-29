@@ -23,11 +23,12 @@ diff 比对。
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+from novel_system.services.hash_engine import sha256_text
 
 # 「哪步读上游哪些（顶层）字段」——每一步**直接展开**的上游（Ingermanson：一句扩一段、一段扩一页）。
 #
@@ -171,7 +172,7 @@ def stable_json(value: Any) -> str:
 
 
 def _sig(value: Any) -> str:
-    return hashlib.sha256(stable_json(value).encode("utf-8")).hexdigest()[:16]
+    return sha256_text(stable_json(value))[:16]
 
 
 def semantic_payload(payload: dict[str, Any] | None) -> dict[str, Any]:

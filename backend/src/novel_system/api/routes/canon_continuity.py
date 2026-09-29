@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
@@ -75,7 +75,7 @@ def scene_canon_status(
 ):
     return ok(
         CanonContinuityService(session).scene_status(project_id, scene_id),
-        req_id=getattr(request.state, "request_id", None),
+        req_id=request_id_of(request),
     )
 
 
@@ -133,7 +133,7 @@ def decide_fact_candidate(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return optional_idempotent_response(
         request,
         session,
@@ -158,7 +158,7 @@ def verify_scene_canon(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    actor_ref = actor_ref_of(request)
     return optional_idempotent_response(
         request,
         session,

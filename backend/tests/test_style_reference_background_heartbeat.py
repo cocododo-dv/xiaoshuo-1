@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import time
 
 from novel_system.services.style_reference.background_heartbeat import periodic_heartbeat

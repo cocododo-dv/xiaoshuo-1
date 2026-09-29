@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import unicodedata
 import uuid
 from collections.abc import Iterable
@@ -26,6 +25,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.narrative_event_log import ENTITY_TYPES, EVENT_TYPES, NarrativeEventLog
+from novel_system.services.hash_engine import sha256_text
 
 
 _COMPLETED_EXTRACTION_OUTCOMES = {"completed_events", "completed_empty"}
@@ -1853,11 +1853,11 @@ class CanonContinuityService:
     def _final_hash(final: FinalScene) -> str:
         # The prose itself is authoritative. A cached content_hash can become
         # stale if an older mutation path edits a FinalScene in place.
-        return hashlib.sha256((final.content or "").encode("utf-8")).hexdigest()
+        return sha256_text(final.content)
 
     @staticmethod
     def _stable_digest(value: str) -> str:
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+        return sha256_text(value)
 
     @staticmethod
     def _scene_not_found() -> DomainError:

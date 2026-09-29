@@ -67,20 +67,15 @@ def serialize_banned_term(term) -> dict[str, Any]:
     }
 
 
-def req_id(request: Request) -> str | None:
-    return getattr(request.state, "request_id", None)
-
-
 def client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
 
 
 def _get_llm_client_and_enabled():
-    """委托统一工厂 build_runtime_llm_client;包上保留同名属性供路由测试打桩。"""
-    from novel_system.services.system_config import build_runtime_llm_client
-    from novel_system.settings import get_settings
+    """委托统一工厂 runtime_llm_client_and_enabled;包上保留同名属性供路由测试打桩。"""
+    from novel_system.services.llm_service_base import runtime_llm_client_and_enabled
 
-    return build_runtime_llm_client(settings=get_settings())
+    return runtime_llm_client_and_enabled()
 
 
 def llm_client_and_enabled():
@@ -103,7 +98,6 @@ __all__ = [
     "client_host",
     "dispatch",
     "llm_client_and_enabled",
-    "req_id",
     "serialize_banned_term",
     "serialize_finding",
     "serialize_run",

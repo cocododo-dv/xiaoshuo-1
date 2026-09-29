@@ -18,6 +18,7 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.scene_run_checkpoint import chapter_scene_execution_id
+from novel_system.services.scene_lookup import get_scene_or_404
 
 JOB_TYPE_CHAPTER_FULL = "chapter_run_full"
 JOB_STATUS_PENDING = "pending"
@@ -606,8 +607,7 @@ class ChapterRunnerService:
             # v2 目录（React 章节编排）建的场景只有 SceneCard 没有运行时状态行；
             # v1 scenes POST / orchestrator / scene_run_jobs 都按同一初始约定惰性补建，
             # 这里不能再当作 SCENE_NOT_FOUND 拒绝，否则整章一起步就失败。
-            if self.session.get(SceneCard, scene_id) is None:
-                raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+            get_scene_or_404(self.session, scene_id)
             state = SceneRunState(scene_id=scene_id, scene_status="ready")
             self.session.add(state)
             self.session.flush()

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
+from novel_system.services.scene_lookup import get_scene_or_404
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -328,9 +329,7 @@ class Orchestrator:
         lease_renewer=None,
     ) -> dict:
         author_note = normalize_author_note(author_note)
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        get_scene_or_404(self.session, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         if state is None:
             state = SceneRunState(scene_id=scene_id, scene_status="ready")
@@ -459,9 +458,7 @@ class Orchestrator:
         # reliable（默认）：Q2/Q3 警告随稿归档；strict：存在 Q2 时停在可归档的
         # quality_warning，由作者经 adopt-current 显式接受；auto 保留（按
         # criticality 决策），当前按 reliable 处理。Q0/Q1 阻断与模式无关。
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        scene = get_scene_or_404(self.session, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         if state is None:
             # FE 目录直接建的场景没有运行时状态行（scenes POST 才会建）：按同一约定补建
@@ -672,7 +669,6 @@ class Orchestrator:
 
         from novel_system.services.scene_criticality import classify_scene_with_context
 
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
         # §6.4 / §16：chapter_seq、连续过渡计数、constraint_intensity 的上下文推导
         # 统一收敛在 classify_scene_with_context——与崩溃续跑同一入口，判定不得分叉。
         criticality = classify_scene_with_context(self.session, scene)
@@ -7691,9 +7687,7 @@ class Orchestrator:
         发布为可恢复的 patch/revision 状态，不能把它当作 checkpoint 真值。
         选中稿即后续批判/软 QC/near-final 的输入（§4.4 上限归人）。
         """
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        scene = get_scene_or_404(self.session, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         checkpoint_payload = (
             (state.run_checkpoint_json or {}) if state is not None else {}

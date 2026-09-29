@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import difflib
 import logging
@@ -20,7 +19,6 @@ from novel_system.db.models import (
     AuthorPreferenceProfile,
     ChapterGoal,
     ChapterMemory,
-    ChapterState,
     FinalScene,
     PassagePatchCandidate,
     ReviewItem,
@@ -29,10 +27,9 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
-from novel_system.services.canonical_manuscripts import canonicalize_author_text
 from novel_system.services.chapter_approval import require_author_target_mutation_allowed
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json
+from novel_system.services.hash_engine import canonical_json, sha256_json_normalized, sha256_text
 from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import (
@@ -47,9 +44,7 @@ from novel_system.services.reference_copy_gate import (
     copy_block_author_action,
     introduced_copy,
 )
-from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.style_reference.readings import STAGE_REVISION, record_author_draft_reading
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 from novel_system.services.style_prompt_injection import (
     PLACEMENT_USER_TAIL,
@@ -58,22 +53,13 @@ from novel_system.services.style_prompt_injection import (
     resolve_style_scope,
 )
 from novel_system.services.writer_briefs import (
-    empty_chapter_writer_brief,
-    empty_scene_writer_brief,
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
 )
 from novel_system.services.writing_stats import WritingStatsService, count_words
-
-AUTHOR_DRAFT_EVENT_TYPES = {
-    "created",
-    "edited",
-    "candidate_inserted",
-    "candidate_saved",
-    "candidate_rejected",
-    "proposal_applied",
-    "proposal_rejected",
-}
+from novel_system.services.author_preferences import safe_runtime_phrase
+from novel_system.services.scene_lookup import require_project
+from novel_system.services.scene_text import current_author_draft, final_chapter_memory
 
 _RUNTIME_FINAL_UNAVAILABLE = object()
 _LOGGER = logging.getLogger(__name__)
@@ -81,19 +67,7 @@ _LOGGER = logging.getLogger(__name__)
 # 章节稿 / 续写 / 近终稿改写 / 语言 / 对白 / 局部段落）；结构候选是修订笔记，不是正文。
 _NON_PROSE_PROPOSAL_KINDS = frozenset({"structure_note"})
 
-# 发现稿「提取结构」允许导入的雪花步骤；提示词契约、归一化与错误提示共用这一份。
-PROJECT_DISCOVERY_STEP_KEYS = (
-    "book_brief",
-    "one_sentence_summary",
-    "one_paragraph_summary",
-    "scene_list",
-    "scene_details",
-)
-# 骨架里不给模型看的字段：系统默认策略，不是要从稿子里提取的东西。
-_PROJECT_STEP_SKELETON_OMIT = {"book_brief": {"safety_rules"}}
-
 DESK_DEFAULT_MODE = "write_first"
-AUTHOR_PROPOSAL_TRIAD = ("structure_candidate", "passage_candidate", "language_candidate")
 AUTHOR_PROPOSAL_APPLY_MODES = {"replace", "append", "new_version", "local_patch", "range_replace", "paragraph_replace"}
 AUTHOR_PROPOSAL_KIND_APPLY_MODES = {
     "structure_note": "append",
@@ -469,7 +443,7 @@ class AuthorDraftService:
             "proposal_type": proposal.proposal_type,
             "target_range": proposal.target_range_json or None,
             "before_text_hash": proposal.before_text_hash,
-            "current_text_hash": _text_hash(before_text),
+            "current_text_hash": sha256_text(before_text),
             "merge_status": merge_status,
             "before_text": before_text,
             "after_text": after_text,
@@ -504,7 +478,7 @@ class AuthorDraftService:
                     "draft_id": draft.draft_id,
                     "proposal_id": proposal.proposal_id,
                     "before_text_hash": proposal.before_text_hash,
-                    "current_text_hash": _text_hash(current),
+                    "current_text_hash": sha256_text(current),
                 },
             )
         request_payload = payload or {}
@@ -696,7 +670,7 @@ class AuthorDraftService:
             rationale=generated_rationale or _proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction),
             source_llm_call_id=source_llm_call_id,
             target_range_json=target_range,
-            before_text_hash=_text_hash(draft.content or ""),
+            before_text_hash=sha256_text(draft.content or ""),
             replacement_text=replacement_text,
             proposal_kind=proposal_kind,
             source_evaluation_id=source_evaluation_id,
@@ -747,7 +721,7 @@ class AuthorDraftService:
             )
             # 2026-09-22 风格参考优先:写手建议(整稿 / 续写 / 改写)也把样例放到 user 消息末尾
             user_prompt = apply_style_user_tail(prompt, user_prompt)
-        bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        bundle_hash = sha256_json_normalized(snapshot)
         runner = LLMNodeRunner(self.session)
         execution_step_key = f"author_proposal_generate:{draft.draft_id}:{proposal_type}"
         context = self._llm_context_for_target(
@@ -1100,23 +1074,6 @@ class AuthorDraftService:
         }
 
     @staticmethod
-    def serialize_event(row: AuthorDraftEvent) -> dict[str, Any]:
-        return {
-            "event_id": row.event_id,
-            "draft_id": row.draft_id,
-            "object_type": row.object_type,
-            "object_id": row.object_id,
-            "event_type": row.event_type,
-            "patch_id": row.patch_id,
-            "revision_id": row.revision_id,
-            "option_id": row.option_id,
-            "note": row.note,
-            "payload_json": row.payload_json or {},
-            "created_by": row.created_by,
-            "created_at": row.created_at,
-        }
-
-    @staticmethod
     def serialize_proposal(row: AuthorDraftProposal) -> dict[str, Any]:
         return {
             "proposal_id": row.proposal_id,
@@ -1144,8 +1101,7 @@ class AuthorDraftService:
 
     def _require_target(self, object_type: str, object_id: str) -> None:
         if object_type == "project":
-            if self.session.get(StoryProject, object_id) is None:
-                raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+            require_project(self.session, object_id)
             return
         if object_type == "chapter":
             self.lifecycle.require_active_chapter(object_id)
@@ -1156,15 +1112,7 @@ class AuthorDraftService:
         raise DomainError("AUTHOR_DRAFT_TARGET_INVALID", "object_type must be scene, chapter, or project", status_code=400)
 
     def _current_row(self, object_type: str, object_id: str) -> AuthorDraft | None:
-        return self.session.execute(
-            select(AuthorDraft)
-            .where(
-                AuthorDraft.object_type == object_type,
-                AuthorDraft.object_id == object_id,
-                AuthorDraft.status == "current",
-            )
-            .order_by(AuthorDraft.updated_at.desc(), AuthorDraft.draft_id.desc())
-        ).scalars().first()
+        return current_author_draft(self.session, object_type, object_id)
 
     def _require_draft(self, draft_id: str) -> AuthorDraft:
         draft = self.session.get(AuthorDraft, draft_id)
@@ -1469,20 +1417,7 @@ class AuthorDraftService:
         return {"source_text_ref": f"chapter_assembled:{chapter_id}", "content": "\n".join(parts)}
 
     def _chapter_aggregate(self, chapter_id: str) -> ChapterMemory | None:
-        state = self.session.get(ChapterState, chapter_id)
-        if state is not None and state.last_final_memory_row_id:
-            pointed = self.session.get(ChapterMemory, state.last_final_memory_row_id)
-            if pointed is not None and pointed.chapter_id == chapter_id and pointed.aggregate_stage == "final":
-                return pointed
-        return self.session.execute(
-            select(ChapterMemory)
-            .where(
-                ChapterMemory.chapter_id == chapter_id,
-                ChapterMemory.aggregate_stage == "final",
-                ChapterMemory.active_flag == 1,
-            )
-            .order_by(ChapterMemory.created_at.desc(), ChapterMemory.row_id.desc())
-        ).scalars().first()
+        return final_chapter_memory(self.session, chapter_id)
 
     def _add_event(
         self,
@@ -1514,9 +1449,7 @@ class AuthorDraftService:
 
     def _target_payload(self, object_type: str, object_id: str) -> dict[str, Any]:
         if object_type == "project":
-            project = self.session.get(StoryProject, object_id)
-            if project is None:
-                raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+            project = require_project(self.session, object_id)
             return {
                 "object_type": "project",
                 "object_id": project.project_id,
@@ -1616,10 +1549,6 @@ def _apply_proposal_content(current: str, proposal_content: str, apply_mode: str
     return proposal_text
 
 
-def _text_hash(text: str) -> str:
-    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
-
-
 def _proposal_kind_from_type(proposal_type: str | None) -> str:
     value = str(proposal_type or "").strip()
     if value in {"passage_candidate", "local_patch"}:
@@ -1679,7 +1608,7 @@ def _proposal_mode_triads(mode: str) -> tuple[tuple[str, str], tuple[str, str], 
 
 
 def _proposal_hash_matches(proposal: AuthorDraftProposal, current: str) -> bool:
-    return not proposal.before_text_hash or proposal.before_text_hash == _text_hash(current)
+    return not proposal.before_text_hash or proposal.before_text_hash == sha256_text(current)
 
 
 def _target_excerpt(proposal: AuthorDraftProposal) -> str:
@@ -1875,7 +1804,7 @@ def _normalized_preference_scope_ref(value: str | None) -> str:
 
 
 def _preference_profile_id(scope_type: str, scope_ref_id: str, source: str) -> str:
-    digest = hashlib.sha256(f"{scope_type}:{scope_ref_id}".encode("utf-8")).hexdigest()[:16]
+    digest = sha256_text(f"{scope_type}:{scope_ref_id}")[:16]
     return f"author_pref_{scope_type}_{digest}_{source}"
 
 
@@ -2036,7 +1965,7 @@ def _safe_preference_summary_for_prompt(summary: dict[str, Any]) -> dict[str, An
         source_values = summary.get(key, [])
         values = []
         for value in source_values if isinstance(source_values, list) else []:
-            sanitized = _safe_trace_for_prompt(value)
+            sanitized = safe_runtime_phrase(value)
             if sanitized:
                 values.append(sanitized)
         if values:
@@ -2045,36 +1974,12 @@ def _safe_preference_summary_for_prompt(summary: dict[str, Any]) -> dict[str, An
     traces = []
     source_traces = summary.get("rejected_ai_traces", [])
     for trace in source_traces if isinstance(source_traces, list) else []:
-        sanitized = _safe_trace_for_prompt(trace)
+        sanitized = safe_runtime_phrase(trace)
         if sanitized:
             traces.append(sanitized)
     if traces:
         safe["rejected_ai_traces"] = _unique_tail(traces, limit=20)
     return safe
-
-
-def _safe_trace_for_prompt(value: Any) -> str:
-    text = " ".join(str(value or "").split())
-    if not text:
-        return ""
-    lowered = text.lower()
-    blocked = (
-        "ignore previous",
-        "ignore all",
-        "system prompt",
-        "developer message",
-        "tool call",
-        "execute ",
-        "忽略以上",
-        "忽略之前",
-        "系统提示",
-        "开发者消息",
-        "调用工具",
-        "执行命令",
-    )
-    if any(marker in lowered for marker in blocked):
-        return ""
-    return text[:120]
 
 
 def _short_excerpt(text: str, *, limit: int = 160) -> str:

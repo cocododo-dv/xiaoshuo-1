@@ -21,11 +21,11 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session
+from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.db.models import SceneCard, StyleFidelityReading
+from novel_system.db.models import StyleFidelityReading
 from novel_system.services.errors import DomainError
 from novel_system.services.style_fidelity_view import (
     project_style_fidelity,
@@ -42,14 +42,11 @@ from novel_system.services.style_reference.check_job import (
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.jobs import dispatch_job
 from novel_system.services.style_reference.readings import reading_payload
+from novel_system.services.scene_lookup import get_scene_or_404, require_project
 
 router = APIRouter(tags=["style_fidelity"])
 
 STYLE_REFERENCE_PREFIX = "/api/v2/style-reference"
-
-
-def _req_id(request: Request) -> str | None:
-    return getattr(request.state, "request_id", None)
 
 
 class CheckRequest(BaseModel):
@@ -69,10 +66,8 @@ def get_scene_style_fidelity(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    scene = session.get(SceneCard, scene_id)
-    if scene is None:
-        raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-    return ok(scene_style_fidelity(session, scene), req_id=_req_id(request))
+    scene = get_scene_or_404(session, scene_id)
+    return ok(scene_style_fidelity(session, scene), req_id=request_id_of(request))
 
 
 @router.get("/api/v1/projects/{project_id}/style-fidelity")
@@ -81,11 +76,8 @@ def get_project_style_fidelity(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    from novel_system.db.models import StoryProject
-
-    if session.get(StoryProject, project_id) is None:
-        raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
-    return ok(project_style_fidelity(session, project_id), req_id=_req_id(request))
+    require_project(session, project_id)
+    return ok(project_style_fidelity(session, project_id), req_id=request_id_of(request))
 
 
 @router.get(f"{STYLE_REFERENCE_PREFIX}/readings/{{reading_id}}")
@@ -101,7 +93,7 @@ def get_fidelity_reading(
             f"reading {reading_id!r} not found",
             status_code=404,
         )
-    return ok({"reading": reading_payload(row)}, req_id=_req_id(request))
+    return ok({"reading": reading_payload(row)}, req_id=request_id_of(request))
 
 
 @router.post(f"{STYLE_REFERENCE_PREFIX}/checks")
@@ -157,7 +149,7 @@ def get_style_check(
     session: Session = Depends(get_session),
 ):
     job = check_job_or_404(session, job_id)
-    return ok(check_job_payload(session, job), req_id=_req_id(request))
+    return ok(check_job_payload(session, job), req_id=request_id_of(request))
 
 
 @router.post(f"{STYLE_REFERENCE_PREFIX}/checks/{{job_id}}/cancel")

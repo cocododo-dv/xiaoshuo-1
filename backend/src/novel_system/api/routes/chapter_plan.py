@@ -18,21 +18,13 @@ from novel_system.api.chapter_plan_requests import (
     ChapterPlanCandidatesRequest,
     ChapterPlanFillRequest,
 )
-from novel_system.api.deps import get_session
+from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.chapter_plan_llm import ChapterPlanService
 
 router = APIRouter(tags=["chapter-plan"])
-
-
-def _req_id(request: Request):
-    return getattr(request.state, "request_id", None)
-
-
-def _operator(request: Request) -> str:
-    return getattr(request.state, "operator_ref", None) or "operator"
 
 
 @router.get("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture")
@@ -43,7 +35,7 @@ def get_chapter_architecture(
     session: Session = Depends(get_session),
 ):
     result = ChapterPlanService(session).get_architecture(project_id, chapter_id)
-    return ok(result, req_id=_req_id(request))
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.put("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture")
@@ -65,7 +57,7 @@ def put_chapter_architecture(
             project_id,
             chapter_id,
             body,
-            actor_ref=_operator(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -88,7 +80,7 @@ def generate_chapter_architecture(
         action=lambda: ChapterPlanService(session).generate_architecture(
             project_id,
             chapter_id,
-            actor_ref=_operator(request),
+            actor_ref=actor_ref_of(request),
         ),
     )
 
@@ -169,6 +161,6 @@ def chapter_plan_apply(
             project_id,
             chapter_id,
             body,
-            actor_ref=_operator(request),
+            actor_ref=actor_ref_of(request),
         ),
     )

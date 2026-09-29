@@ -21,9 +21,7 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
     StyleFidelityReading,
-    StyleReferenceJob,
 )
-from novel_system.db.session import SessionLocal
 from novel_system.services import scene_generation as sg
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.style_reference import readings as R

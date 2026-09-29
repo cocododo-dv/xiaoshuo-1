@@ -15,8 +15,6 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     LlmCall,
-    PassagePatchCandidate,
-    ReviewItem,
     SceneCard,
     SceneRunState,
     StoryProject,

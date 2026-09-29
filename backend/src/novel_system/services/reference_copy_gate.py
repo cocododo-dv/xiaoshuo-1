@@ -30,7 +30,6 @@ from __future__ import annotations
 import array
 import bisect
 import dataclasses
-import hashlib
 import threading
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
@@ -57,12 +56,12 @@ from novel_system.services.style_reference.validation.plagiarism import (
     normalize_text_for_matching,
     normalize_with_offsets,
 )
+from novel_system.services.hash_engine import sha256_text
 
 COPY_GATE_VERSION = "reference_copy_gate_v1"
 THRESHOLD_CHARS = 12
 MAX_REPORTED_HITS = 20
 MAX_WARNING_TERMS = 8
-BLOCK_ISSUE_KEY = "reference_copy"
 ENV_TERM_SOURCE = "environment"
 # 成稿门的两条不拦警告（issue_key）：用了受保护专名 / 有一边没查成（书已删、策略降级）
 PROTECTED_TERM_WARNING_KEY = "source_safety:protected_term"
@@ -168,7 +167,7 @@ class CopyCheck:
 
 
 def _sha(text: str, length: int = 16) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
+    return sha256_text(text)[:length]
 
 
 class _BookCopyIndex:
@@ -363,7 +362,7 @@ def check_reference_copy(
     直接抛出——调用方按自己的语义 fail-closed。
     """
     content = str(text or "")
-    text_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    text_sha256 = sha256_text(content)
     books: list[str] = []
     profiles: list[str] = []
     unavailable_reasons: list[str] = []
@@ -476,7 +475,7 @@ def introduced_copy(check: CopyCheck, text: str, baseline: str | None) -> CopyCh
         protected_hits=protected,
         extra={
             **dict(check.extra),
-            "baseline_sha256": hashlib.sha256(str(baseline).encode("utf-8")).hexdigest(),
+            "baseline_sha256": sha256_text(str(baseline)),
             "preexisting_hit_count": len(check.hits) - len(hits),
             "preexisting_protected_hit_count": len(check.protected_hits) - len(protected),
         },
@@ -623,7 +622,6 @@ register_cache_reset("reference_copy_gate", reset_reference_copy_gate_cache)
 
 
 __all__ = [
-    "BLOCK_ISSUE_KEY",
     "COPY_GATE_VERSION",
     "CopyCheck",
     "CopyHit",

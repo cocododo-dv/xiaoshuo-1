@@ -13,7 +13,7 @@ import pathlib
 
 import yaml
 
-from novel_system.db.models import SceneCard, StoryCharacter, StoryProject
+from novel_system.db.models import SceneCard, StoryCharacter
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.snowflake_chaptering import _rhythm_report

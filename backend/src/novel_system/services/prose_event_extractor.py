@@ -19,7 +19,6 @@ parse-failed outcomes. Accounting/control-plane integrity failures are never deg
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
@@ -35,6 +34,7 @@ from novel_system.services.llm_accounting import (
     validate_product_call,
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
+from novel_system.services.hash_engine import sha256_text
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def prose_extraction_parsed_hash(events: list[dict[str, Any]]) -> str:
         separators=(",", ":"),
         default=str,
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return sha256_text(payload)
 
 
 @dataclass(slots=True)
