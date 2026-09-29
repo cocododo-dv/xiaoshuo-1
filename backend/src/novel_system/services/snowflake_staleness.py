@@ -132,6 +132,10 @@ def scene_row_content(row: dict[str, Any]) -> str:
         value = row.get(key)
         if value not in ("", None, [], {}):
             content[key] = value
+    # 呈现方式的默认值 full 与缺席同义（与 semantic_payload 同一口径）：生成器写的行没有这个键，前端上行的
+    # 行总带着 full——以前运行时失效据此把每一场都判成「改了」，改一场就把全书写过的场打回 needs_replan。
+    if str(content.get("rendering_mode") or "").strip().lower() in {"", "full"}:
+        content.pop("rendering_mode", None)
     scene_type = str(row.get("scene_type") or row.get("primary_form") or "").strip().lower()
     if scene_type:
         content["scene_type"] = scene_type

@@ -280,3 +280,14 @@ def test_first_upstream_approval_keeps_existing_downstream_draft_approvable(clie
     second = _approve(client, pid, "one_sentence_summary")
     assert second.status_code == 200, second.text
     assert second.json()["data"]["step"]["status"] == "approved"
+
+
+def test_scene_content_treats_the_default_rendering_mode_as_absent() -> None:
+    """生成器写的场景行没有 rendering_mode，前端上行的行总带着 full：两者说的是同一件事（与 semantic_payload
+    剥默认值同一口径）。以前运行时失效按内容投影比对时把每一场都判成「改了」。"""
+    from novel_system.services.snowflake_staleness import scene_row_content
+
+    generated = {"scene_id": "S1", "summary": "取账本"}
+    pushed = {"scene_id": "S1", "summary": "取账本", "rendering_mode": "full", "spine": ""}
+    assert scene_row_content(generated) == scene_row_content(pushed)
+    assert scene_row_content({**pushed, "rendering_mode": "summary"}) != scene_row_content(generated)
