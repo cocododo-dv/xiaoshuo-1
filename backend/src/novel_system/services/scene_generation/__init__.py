@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import math
-import re
 import time
 import uuid
 from copy import deepcopy
@@ -20,10 +18,8 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.author_instructions import render_author_note_instruction
-from novel_system.services.hash_engine import sha256_json_normalized, sha256_text
+from novel_system.services.hash_engine import sha256_text
 from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
-from novel_system.services.llm_client import LLMResponse
 from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.llm_task_runner import (
     CONTINUITY_BUDGET_ERROR_CODE,
@@ -35,12 +31,6 @@ from novel_system.services.llm_task_runner import (
     current_llm_execution_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.qc_constraints import (
-    constraint_terms,
-    contains_forbidden_term,
-    forbidden_terms as card_forbidden_terms,
-    source_field_satisfied,
-)
 from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.services.style_reference.runtime_contract import (
     DRAFT_MODE_NEUTRAL_FIRST,
@@ -57,6 +47,18 @@ from novel_system.services.style_prompt_injection import (
 from novel_system.services.style_reference import readings as style_readings
 from novel_system.services.style_reference import style_step
 from novel_system.services.style_reference.fidelity import within_author_range
+from novel_system.services.scene_generation.briefs import (
+    JSON_SCHEMA_INSTRUCTION,
+    _NEUTRAL_STYLE_INSTRUCTION,
+    _STYLE_DE_TEMPLATE_REPAIR_TASK_PROMPT,
+    _STYLE_SAFETY_REPAIR_TASK_PROMPT,
+    _author_note_instruction_for_bundle,
+    _de_template_rewrite_brief,
+    _neutral_repair_brief,
+    _style_safety_repair_brief,
+    author_note_instruction,
+    build_style_user_prompt,
+)
 from novel_system.services.scene_generation.contracts import (
     FIRST_DRAFT_SOURCE_LABEL,
     LINEAGE_FIRST_DRAFT_ACCEPTED,
@@ -80,9 +82,20 @@ from novel_system.services.scene_generation.length_policy import (
     _style_first_length_slack,
     _style_length_instruction,
     _style_repair_length_instruction,
-    _style_repair_working_window,
 )
 from novel_system.services.scene_generation import text_gates
+from novel_system.services.scene_generation.segment_patch import (
+    _annotate_style_length_patch_source,
+    _apply_style_length_patch,
+    _apply_style_salvage_patch,
+    _constrain_style_length_patch_schema,
+    _constrain_style_salvage_schema,
+    _requires_style_salvage,
+    _style_length_patch_editable_segment_ids,
+    _style_length_patch_instruction,
+    _style_salvage_editable_segment_ids,
+    _style_salvage_instruction,
+)
 from novel_system.services.scene_generation.text_gates import (
     ConstraintSnapshot,
     _anti_template_quality_gate,
@@ -90,7 +103,6 @@ from novel_system.services.scene_generation.text_gates import (
     _assess_neutral_draft,
     _assess_style_base_rewrite,
     _extract_scene_text,
-    _normalize_literal_unicode_escapes,
     _scene_text_integrity_markers,
     _visible_char_count,
     assess_rewrite_regressions,
@@ -155,11 +167,14 @@ __all__ = [
     "SceneGenerationService",
     "StyleGenerationResult",
     "_anti_template_quality_gate",
+    "_apply_style_length_patch",
+    "_apply_style_salvage_patch",
     "_assess_de_template_rewrite",
     "_assess_neutral_draft",
     "_assess_style_base_rewrite",
     "_extract_scene_text",
     "_neutral_length_instruction",
+    "_neutral_repair_brief",
     "_parse_numeric_length_band",
     "_reference_scale_sentence",
     "_reference_scene_scale_from_bundle",
@@ -169,6 +184,7 @@ __all__ = [
     "_style_repair_length_instruction",
     "_visible_char_count",
     "assess_rewrite_regressions",
+    "author_note_instruction",
     "_scene_text_integrity_markers",
     "_styled_draft_gate_notices",
     "inject_style_reference_prefix",
@@ -208,28 +224,10 @@ def _counts_as_business_attempt(exc: Exception) -> bool:
     )
 
 
-JSON_SCHEMA_INSTRUCTION = "Return JSON that matches the structured schema exactly."
-
 # 生成侧要跑 styled-draft gate 的阶段：落库内容是 provider 的风格化输出、且会成为终稿
 # 候选的每一个阶段。style_draft 回退中性稿时不跑（内容是已批准的中性稿）。
 _STYLED_GATE_GENERATION_STAGES: frozenset[str] = frozenset(
     {"style_draft", "near_final_rewrite"}
-)
-# neutral_first 风格稿（重组中性稿）的来源稿指令；style_first 在入口就分流到风格步，走不到这条链。
-_NEUTRAL_STYLE_INSTRUCTION = "Apply the style prompt template without changing the approved facts."
-
-
-_STYLE_SAFETY_REPAIR_TASK_PROMPT = (
-    "Edit the labeled rejected style draft directly. This is a local safety repair, not a new composition. "
-    "Preserve its wording, paragraph architecture, reusable style, facts, chronology, and ending wherever they "
-    "already pass; change only the exact hard-constraint failures listed below. Return one complete replacement "
-    "scene_text and no commentary."
-)
-_STYLE_DE_TEMPLATE_REPAIR_TASK_PROMPT = (
-    "Edit the labeled style draft directly. Apply only the listed de-template corrections while preserving its "
-    "facts, chronology, functional paragraph architecture, broad style distribution, distinctive wording, and ending function. "
-    "Do not restart the scene, recompose it from a blank page, or rewrite unaffected passages. Return one complete "
-    "replacement scene_text and no commentary."
 )
 # §6.3 multi-strategy diversification prompts for low-dispersion retry
 _DIVERSIFICATION_PROMPT = (
@@ -294,25 +292,6 @@ def _policy_card(policy: Any) -> tuple[Any, dict[str, str]]:
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
     return card_from_profile_json(profile_json), line_states_from_profile_json(profile_json)
-
-
-def author_note_instruction(author_note: str | None) -> str:
-    """Backward-compatible renderer; bundle injection now carries it to every stage."""
-    return render_author_note_instruction(author_note)
-
-
-def _author_note_instruction_for_bundle(
-    bundle: dict[str, Any],
-    author_note: str | None,
-) -> str:
-    note = str(author_note or "").strip()
-    frozen = str(
-        ((bundle.get("snapshot") or {}).get("inline_digests") or {}).get(
-            "author_instruction"
-        )
-        or ""
-    )
-    return "" if note == frozen else author_note_instruction(author_note)
 
 
 class SceneGenerationService:
@@ -3317,26 +3296,15 @@ class SceneGenerationService:
         patch_brief: list[str] | None = None,
         patch_heading: str = "Patch Brief",
     ) -> str:
-        prompt_parts = [
+        return build_style_user_prompt(
             base_prompt,
-            "",
-            f"## {source_label}",
-            neutral_content,
-            "",
-            f"Source Draft Row ID: {source_row_id}",
-            extra_instruction,
-        ]
-        if patch_brief:
-            prompt_parts.extend(
-                [
-                    "",
-                    f"## {patch_heading}",
-                    "\n".join(f"- {item}" for item in patch_brief),
-                ]
-            )
-        if JSON_SCHEMA_INSTRUCTION not in base_prompt:
-            prompt_parts.extend(["", JSON_SCHEMA_INSTRUCTION])
-        return "\n".join(prompt_parts).strip()
+            neutral_content=neutral_content,
+            source_label=source_label,
+            source_row_id=source_row_id,
+            extra_instruction=extra_instruction,
+            patch_brief=patch_brief,
+            patch_heading=patch_heading,
+        )
 
     def _prompt_builder(self) -> PromptBuilder:
         if self._prompt_builder_instance is None:
@@ -3601,455 +3569,6 @@ def _candidate_dispersion(texts: list[str]) -> float:
     return sum(distances) / len(distances) if distances else 0.0
 
 
-def _apply_style_length_patch(
-    *,
-    source_content: str,
-    response: LLMResponse,
-    lengths: LengthPolicy,
-    llm_call_id: str,
-) -> tuple[str, dict[str, Any]]:
-    """验证并套用模型提交的分段编号 replacement；任何歧义都整批拒绝。"""
-
-    def reject(reason: str) -> None:
-        raise SceneGenerationPostprocessError(
-            llm_call_id=llm_call_id,
-            message=f"style length patch invalid: {reason}",
-        )
-
-    length_range = lengths.hard_range()
-    if length_range is None:
-        reject("target_length_range_unavailable")
-    assert length_range is not None
-    minimum, maximum = length_range
-    source_length = _visible_char_count(source_content)
-    if minimum <= source_length <= maximum:
-        reject("source_length_already_valid")
-    local_minimum, local_maximum, target = _style_repair_working_window(
-        minimum,
-        maximum,
-        source_length=source_length,
-    )
-    direction = "expand" if source_length < minimum else "compress"
-
-    payload = response.structured_output or {}
-    raw_edits = payload.get("edits") if isinstance(payload, dict) else None
-    if not isinstance(raw_edits, list) or not 1 <= len(raw_edits) <= 6:
-        reject("edit_count_invalid")
-
-    segments = _style_length_patch_segments(source_content)
-    editable_segment_ids = _style_length_patch_editable_segment_ids(
-        source_content,
-        lengths,
-    )
-    editable_segments = {
-        segment["segment_id"]: segment
-        for segment in segments
-        if segment["segment_id"] in editable_segment_ids
-    }
-    if not editable_segments:
-        reject("editable_segments_unavailable")
-    edits: list[tuple[int, int, str, int, int, str]] = []
-    submitted_segment_ids: list[str] = []
-    for raw in raw_edits:
-        if not isinstance(raw, dict):
-            reject("edit_shape_invalid")
-        segment_id = raw.get("segment_id")
-        new_text = raw.get("new_text")
-        if not isinstance(segment_id, str) or not segment_id.strip():
-            reject("segment_id_invalid")
-        if not isinstance(new_text, str):
-            reject("new_text_invalid")
-        segment_id = segment_id.strip().upper()
-        segment = editable_segments.get(segment_id)
-        if segment is None:
-            reject("segment_id_not_editable")
-        if segment_id in submitted_segment_ids:
-            reject("segment_id_repeated")
-        new_text = _normalize_literal_unicode_escapes(new_text)
-        if "⟦S" in new_text or "SEGMENT" in new_text.upper():
-            reject("segment_marker_leaked_into_new_text")
-        if direction == "expand":
-            start = int(segment["end"])
-            end = start
-            old_chars = 0
-        else:
-            start = int(segment["start"])
-            end = int(segment["end"])
-            old_chars = int(segment["visible_chars"])
-        new_chars = _visible_char_count(new_text)
-        delta = new_chars - old_chars
-        if direction == "expand":
-            if delta <= 0:
-                reject("expansion_insertion_must_add_text")
-        elif delta >= 0:
-            reject("compression_segment_replacement_must_be_shorter")
-        submitted_segment_ids.append(segment_id)
-        edits.append((start, end, new_text, delta, old_chars, segment_id))
-
-    edits.sort(key=lambda item: item[0])
-    if any(
-        left[1] > right[0]
-        or (left[0] == left[1] == right[0] == right[1])
-        for left, right in zip(edits, edits[1:])
-    ):
-        reject("edits_overlap")
-    scope_limit = max(600, source_length // 2)
-    best_choice: tuple[
-        tuple[int, int, int, tuple[str, ...]],
-        list[tuple[int, int, str, int, int, str]],
-    ] | None = None
-    for mask in range(1, 1 << len(edits)):
-        selected = [
-            edit for index, edit in enumerate(edits) if mask & (1 << index)
-        ]
-        selected_old_chars = sum(edit[4] for edit in selected)
-        selected_delta = sum(edit[3] for edit in selected)
-        if max(selected_old_chars, abs(selected_delta)) > scope_limit:
-            continue
-        candidate_length = source_length + selected_delta
-        if not minimum <= candidate_length <= maximum:
-            continue
-        score = (
-            0 if local_minimum <= candidate_length <= local_maximum else 1,
-            abs(candidate_length - target),
-            len(selected),
-            tuple(edit[5] for edit in selected),
-        )
-        if best_choice is None or score < best_choice[0]:
-            best_choice = (score, selected)
-    if best_choice is None:
-        reject("no_safe_edit_subset_reaches_target_range")
-    selected_edits = best_choice[1]
-    total_old_chars = sum(edit[4] for edit in selected_edits)
-    total_delta = sum(edit[3] for edit in selected_edits)
-    applied_segment_ids = [edit[5] for edit in selected_edits]
-
-    patched = source_content
-    for start, end, new_text, _delta, _old_chars, _segment_id in reversed(
-        selected_edits
-    ):
-        patched = patched[:start] + new_text + patched[end:]
-    output_length = _visible_char_count(patched)
-    if not minimum <= output_length <= maximum:
-        reject("patched_length_outside_absolute_range")
-    if output_length - source_length != total_delta:
-        reject("visible_delta_mismatch")
-
-    return patched, {
-        "version": "style_length_patch_v3",
-        "valid": True,
-        "mode": direction,
-        "edit_count": len(selected_edits),
-        "submitted_edit_count": len(edits),
-        "omitted_edit_count": len(edits) - len(selected_edits),
-        "segment_ids": applied_segment_ids,
-        "source_visible_chars": source_length,
-        "patched_visible_chars": output_length,
-        "visible_delta": total_delta,
-        "absolute_range": [minimum, maximum],
-        "correction_window": [local_minimum, local_maximum],
-        "correction_window_hit": local_minimum <= output_length <= local_maximum,
-        "correction_target": target,
-        "edited_source_visible_chars": total_old_chars,
-        "deterministic_segment_address_validation": True,
-        "non_overlapping": True,
-    }
-
-
-def _apply_style_salvage_patch(
-    *,
-    source_content: str,
-    response: LLMResponse,
-    lengths: LengthPolicy,
-    llm_call_id: str,
-) -> tuple[str, dict[str, Any]]:
-    """只替换一个预编号中段，保留中性安全稿的其余文字与结尾。"""
-
-    def reject(reason: str) -> None:
-        raise SceneGenerationPostprocessError(
-            llm_call_id=llm_call_id,
-            message=f"style salvage patch invalid: {reason}",
-        )
-
-    payload = response.structured_output or {}
-    raw_edits = payload.get("edits") if isinstance(payload, dict) else None
-    if not isinstance(raw_edits, list) or len(raw_edits) != 1:
-        reject("exactly_one_edit_required")
-    raw = raw_edits[0]
-    if not isinstance(raw, dict):
-        reject("edit_shape_invalid")
-    segment_id = raw.get("segment_id")
-    new_text = raw.get("new_text")
-    if not isinstance(segment_id, str) or not segment_id.strip():
-        reject("segment_id_invalid")
-    if not isinstance(new_text, str):
-        reject("new_text_invalid")
-    segment_id = segment_id.strip().upper()
-    new_text = _normalize_literal_unicode_escapes(new_text).strip()
-    editable_ids = _style_salvage_editable_segment_ids(source_content)
-    segment_by_id = {
-        str(segment["segment_id"]): segment
-        for segment in _style_length_patch_segments(source_content)
-    }
-    segment = segment_by_id.get(segment_id)
-    if segment_id not in editable_ids or segment is None:
-        reject("segment_id_not_editable")
-    if "⟦S" in new_text or "SEGMENT" in new_text.upper():
-        reject("segment_marker_leaked_into_new_text")
-    old_text = source_content[int(segment["start"]) : int(segment["end"])]
-    old_chars = int(segment["visible_chars"])
-    new_chars = _visible_char_count(new_text)
-    minimum_chars = max(20, math.floor(old_chars * 0.50))
-    maximum_chars = max(minimum_chars, math.ceil(old_chars * 1.35))
-    if not minimum_chars <= new_chars <= maximum_chars:
-        reject("replacement_length_outside_local_window")
-    from novel_system.services.style_reference.validation.plagiarism import (
-        normalize_text_for_matching,
-    )
-
-    if normalize_text_for_matching(old_text) == normalize_text_for_matching(new_text):
-        reject("replacement_not_substantively_changed")
-    start = int(segment["start"])
-    end = int(segment["end"])
-    patched = source_content[:start] + new_text + source_content[end:]
-    length_range = lengths.hard_range()
-    output_chars = _visible_char_count(patched)
-    if length_range is not None and not length_range[0] <= output_chars <= length_range[1]:
-        reject("patched_length_outside_absolute_range")
-    return patched, {
-        "version": "style_salvage_patch_v1",
-        "valid": True,
-        "segment_id": segment_id,
-        "source_visible_chars": _visible_char_count(source_content),
-        "old_segment_visible_chars": old_chars,
-        "new_segment_visible_chars": new_chars,
-        "patched_visible_chars": output_chars,
-        "replacement_window": [minimum_chars, maximum_chars],
-        "substantive_change": True,
-        "protected_ending": True,
-    }
-
-
-def _style_length_patch_segments(source_content: str) -> list[dict[str, Any]]:
-    """将正文切成稳定的可定位段；最后一段由调用方固定保护。"""
-
-    line_spans = [
-        (match.start(), match.end())
-        for match in re.finditer(r"[^\r\n]*\S[^\r\n]*", source_content)
-    ]
-    spans = line_spans
-    if len(line_spans) == 1:
-        line_start, line_end = line_spans[0]
-        line_text = source_content[line_start:line_end]
-        sentence_spans = [
-            (line_start + match.start(), line_start + match.end())
-            for match in re.finditer(
-                r".+?(?:[。！？!?]”?|。?$)",
-                line_text,
-            )
-            if match.group(0).strip()
-        ]
-        if len(sentence_spans) >= 2:
-            spans = sentence_spans
-    return [
-        {
-            "segment_id": f"S{index:03d}",
-            "start": start,
-            "end": end,
-            "visible_chars": _visible_char_count(source_content[start:end]),
-        }
-        for index, (start, end) in enumerate(spans, start=1)
-    ]
-
-
-def _style_length_patch_editable_segment_ids(
-    source_content: str,
-    lengths: LengthPolicy,
-) -> list[str]:
-    segments = _style_length_patch_segments(source_content)
-    if len(segments) < 2:
-        return []
-    candidates = segments[:-1]
-    length_range = lengths.hard_range()
-    source_length = _visible_char_count(source_content)
-    if length_range is None or source_length < length_range[0]:
-        return [str(segment["segment_id"]) for segment in candidates]
-
-    minimum, maximum = length_range
-    _local_minimum, local_maximum, _target = _style_repair_working_window(
-        minimum,
-        maximum,
-        source_length=source_length,
-    )
-    desired_reduction = max(1, source_length - local_maximum)
-    minimum_useful_chars = max(24, min(80, math.ceil(desired_reduction / 6)))
-    useful = [
-        segment
-        for segment in candidates
-        if int(segment["visible_chars"]) >= minimum_useful_chars
-    ]
-    if not useful:
-        useful = [max(candidates, key=lambda segment: int(segment["visible_chars"]))]
-    return [str(segment["segment_id"]) for segment in useful]
-
-
-def _style_salvage_editable_segment_ids(source_content: str) -> list[str]:
-    segments = _style_length_patch_segments(source_content)
-    if len(segments) < 2:
-        return []
-    source_length = max(1, _visible_char_count(source_content))
-    candidates = [
-        segment
-        for segment in segments[:-1]
-        if int(segment["visible_chars"]) >= 60
-        and 0.10
-        <= int(segment["visible_chars"]) / source_length
-        <= 0.35
-    ]
-    if not candidates:
-        candidates = [
-            segment
-            for segment in segments[:-1]
-            if int(segment["visible_chars"]) >= 40
-            and int(segment["visible_chars"]) / source_length <= 0.45
-        ]
-    candidates = sorted(
-        candidates,
-        key=lambda segment: (
-            abs(int(segment["visible_chars"]) / source_length - 0.22),
-            int(str(segment["segment_id"])[1:]),
-        ),
-    )[:4]
-    candidate_ids = {str(segment["segment_id"]) for segment in candidates}
-    return [
-        str(segment["segment_id"])
-        for segment in segments
-        if str(segment["segment_id"]) in candidate_ids
-    ]
-
-
-def _annotate_style_length_patch_source(
-    source_content: str,
-    *,
-    editable_segment_ids: Sequence[str] | None = None,
-) -> tuple[str, list[str]]:
-    segments = _style_length_patch_segments(source_content)
-    if not segments:
-        return source_content, []
-    editable_ids = (
-        [str(value) for value in editable_segment_ids]
-        if editable_segment_ids is not None
-        else [str(segment["segment_id"]) for segment in segments[:-1]]
-    )
-    editable_set = set(editable_ids)
-    parts: list[str] = []
-    cursor = 0
-    for index, segment in enumerate(segments):
-        start = int(segment["start"])
-        end = int(segment["end"])
-        segment_id = str(segment["segment_id"])
-        parts.append(source_content[cursor:start])
-        marker = (
-            f"⟦{segment_id}:PROTECTED_ENDING⟧"
-            if index == len(segments) - 1
-            else (
-                f"⟦{segment_id}⟧"
-                if segment_id in editable_set
-                else f"⟦{segment_id}:PROTECTED⟧"
-            )
-        )
-        parts.append(marker)
-        parts.append(source_content[start:end])
-        cursor = end
-    parts.append(source_content[cursor:])
-    return "".join(parts), editable_ids
-
-
-def _constrain_style_length_patch_schema(
-    prompt: dict[str, Any],
-    *,
-    editable_segment_ids: Sequence[str],
-    lengths: LengthPolicy,
-    source_length: int,
-) -> None:
-    """把本次可编辑 ID 收紧为 JSON Schema enum，并刷新审计 hash。"""
-
-    schema = prompt.get("structured_schema")
-    try:
-        edits_schema = schema["properties"]["edits"]
-        item_schema = edits_schema["items"]
-        properties = item_schema["properties"]
-        segment_schema = properties["segment_id"]
-        new_text_schema = properties["new_text"]
-    except (KeyError, TypeError):
-        return
-    if editable_segment_ids:
-        segment_schema["enum"] = list(editable_segment_ids)
-        edits_schema["maxItems"] = min(6, len(editable_segment_ids))
-    length_range = lengths.hard_range()
-    if length_range is not None and source_length < length_range[0]:
-        local_minimum, local_maximum, _target = _style_repair_working_window(
-            *length_range,
-            source_length=source_length,
-        )
-        minimum_delta = max(1, local_minimum - source_length)
-        maximum_delta = max(minimum_delta, local_maximum - source_length)
-        item_count = min(
-            len(editable_segment_ids),
-            6,
-            max(1, math.ceil(minimum_delta / 240)),
-        )
-        if item_count > 0:
-            edits_schema["minItems"] = item_count
-            edits_schema["maxItems"] = item_count
-            new_text_schema["minLength"] = math.ceil(
-                minimum_delta / item_count
-            )
-            new_text_schema["maxLength"] = max(
-                new_text_schema["minLength"],
-                maximum_delta // item_count,
-            )
-            new_text_schema["description"] = (
-                f"One of exactly {item_count} insertions; all insertions together "
-                f"must add {minimum_delta}-{maximum_delta} visible characters."
-            )
-    prompt["prompt_hash"] = sha256_json_normalized(
-        {
-            "template_name": prompt.get("template_name"),
-            "template_version": prompt.get("template_version"),
-            "system_prompt": prompt.get("system_prompt"),
-            "user_prompt": prompt.get("user_prompt"),
-            "structured_schema": schema,
-        }
-    )
-
-
-def _constrain_style_salvage_schema(
-    prompt: dict[str, Any],
-    *,
-    editable_segment_ids: Sequence[str],
-) -> None:
-    schema = prompt.get("structured_schema")
-    try:
-        edits_schema = schema["properties"]["edits"]
-        segment_schema = edits_schema["items"]["properties"]["segment_id"]
-    except (KeyError, TypeError):
-        return
-    if editable_segment_ids:
-        segment_schema["enum"] = list(editable_segment_ids)
-    edits_schema["minItems"] = 1
-    edits_schema["maxItems"] = 1
-    prompt["prompt_hash"] = sha256_json_normalized(
-        {
-            "template_name": prompt.get("template_name"),
-            "template_version": prompt.get("template_version"),
-            "system_prompt": prompt.get("system_prompt"),
-            "user_prompt": prompt.get("user_prompt"),
-            "structured_schema": schema,
-        }
-    )
-
-
 def _assess_style_rewrite_drift(
     session: Session,
     *,
@@ -4184,242 +3703,3 @@ def _resume_style_repair_source(
     return fallback_row_id, fallback_content
 
 
-def _requires_style_salvage(base_safety: dict[str, Any]) -> bool:
-    """只有事实安全但极端过短的风格稿才改为局部风格挽救。"""
-
-    if set(base_safety.get("reasons") or []) != {"target_length_not_met"}:
-        return False
-    length_range = base_safety.get("target_length_range")
-    rewritten_length = base_safety.get("rewritten_visible_chars")
-    if (
-        not isinstance(length_range, list)
-        or len(length_range) != 2
-        or not isinstance(length_range[0], int)
-        or not isinstance(rewritten_length, int)
-    ):
-        return False
-    return rewritten_length < math.ceil(length_range[0] * 0.6)
-
-
-def _neutral_repair_brief(
-    scene: SceneCard,
-    *,
-    source_content: str,
-    assessment: dict[str, Any],
-) -> str:
-    """把中性稿的确定性失败逐项翻译成一次有界修复，不再误称为长度重试。"""
-
-    required_terms = constraint_terms(scene.must_include_text or "")
-    missing_terms = [
-        term
-        for term in required_terms
-        if not source_field_satisfied(term, source_content)
-    ]
-    forbidden_terms = card_forbidden_terms(scene.forbidden_text)
-    forbidden_hits = [
-        term for term in forbidden_terms if contains_forbidden_term(term, source_content)
-    ]
-    integrity_markers = _scene_text_integrity_markers(source_content)
-    lines = [
-        "This is the only deterministic repair attempt. Edit the labeled draft directly and return one complete replacement scene only.",
-        "Preserve every already-correct fact, causal step, character identity, chronology, and ending function.",
-    ]
-    if missing_terms:
-        lines.append(
-            "Restore each missing required constraint explicitly. A vertical bar means alternatives; include at least one literal alternative from every listed group: "
-            + "；".join(missing_terms)
-            + "。"
-        )
-    if forbidden_hits:
-        lines.append(
-            "Remove every currently present forbidden constraint without replacing it with a spelling variant: "
-            + "；".join(forbidden_hits)
-            + "。"
-        )
-    if integrity_markers:
-        lines.append(
-            "Remove response-format commentary, markdown/JSON wrappers, control tokens, malformed Unicode, and encoding artifacts; output Chinese scene prose only."
-        )
-    if "paragraphs_collapsed" in integrity_markers:
-        lines.append(
-            "The scene came back as one unbroken block. Restore paragraph breaks (a newline between paragraphs): "
-            "start a new paragraph for each speaker's line and at each shift of action, place or time, the way the reference passages do."
-        )
-    if "target_length_not_met" not in set(assessment.get("reasons") or []):
-        lines.append(
-            "The current length is already acceptable; do not broadly expand or compress it while fixing the listed issue."
-        )
-    return "\n".join(f"- {line}" for line in lines)
-
-
-def _style_length_patch_instruction(
-    scene: SceneCard,
-    *,
-    lengths: LengthPolicy,
-    source_length: int,
-    editable_segment_ids: Sequence[str],
-) -> str:
-    length_range = lengths.hard_range()
-    if length_range is None:
-        return ""
-    minimum, maximum = length_range
-    local_minimum, local_maximum, target = _style_repair_working_window(
-        minimum,
-        maximum,
-        source_length=source_length,
-    )
-    if source_length < minimum:
-        direction = (
-            f"Expansion only: the combined replacements must add "
-            f"{local_minimum - source_length}-{local_maximum - source_length} visible characters. "
-            "For each selected segment_id, new_text is inserted immediately after that immutable source segment."
-        )
-    else:
-        direction = (
-            f"Compression only: the combined replacements must remove "
-            f"{source_length - local_maximum}-{source_length - local_minimum} visible characters. "
-            "For each selected segment_id, new_text replaces that one source segment and must be shorter. "
-            "Delete only repetition or decorative description; do not replace omitted text with an ellipsis."
-        )
-    required_terms = constraint_terms(scene.must_include_text or "")
-    required_rule = (
-        " Do not alter or remove any required constraint group: "
-        + "；".join(required_terms)
-        + "。"
-        if required_terms
-        else ""
-    )
-    return (
-        "\n\n[Deterministic Local Length Patch Contract]\n"
-        f"The immutable source has about {source_length} visible characters. The final text after applying all edits "
-        f"must be {local_minimum}-{local_maximum}, aiming near {target}; the absolute scene range is "
-        f"{minimum}-{maximum}. {direction} Editable segment IDs: "
-        f"{', '.join(editable_segment_ids) if editable_segment_ids else '(none)'}. "
-        "The final source segment marked PROTECTED_ENDING is forbidden. Segment markers are addresses and must "
-        "never appear in new_text."
-        f"{required_rule}"
-        " Return edits only, never scene_text or the complete scene."
-    )
-
-
-def _style_salvage_instruction(
-    scene: SceneCard,
-    *,
-    source_content: str,
-    editable_segment_ids: Sequence[str],
-) -> str:
-    segments = {
-        str(segment["segment_id"]): int(segment["visible_chars"])
-        for segment in _style_length_patch_segments(source_content)
-    }
-    windows = []
-    for segment_id in editable_segment_ids:
-        visible_chars = segments.get(segment_id, 0)
-        windows.append(
-            f"{segment_id}={max(20, math.floor(visible_chars * 0.50))}-"
-            f"{max(20, math.ceil(visible_chars * 1.35))} visible characters"
-        )
-    required_terms = constraint_terms(scene.must_include_text or "")
-    required_rule = (
-        " Preserve every required constraint group wherever it appears: "
-        + "；".join(required_terms)
-        + "。"
-        if required_terms
-        else ""
-    )
-    return (
-        "\n\n[Deterministic Bounded Style Salvage Contract]\n"
-        "Replace exactly one editable segment; all other source characters and the protected ending remain "
-        "immutable. Allowed segment windows: "
-        + ("; ".join(windows) if windows else "(none)")
-        + ". Make a substantive lexical/syntactic rewrite using the injected reusable style mechanisms, not a "
-        "punctuation-only or whitespace-only change."
-        + required_rule
-        + " Return edits only, never scene_text or the complete scene."
-    )
-
-
-def _de_template_rewrite_brief(quality_gate: dict[str, Any]) -> list[str]:
-    brief = [
-        "Run no more than this one de-template pass; do not add another rewrite loop.",
-        "Keep the same plot facts, speaker identities, core choice, cost, and final hook.",
-        "Preserve the reference-derived broad rhythm and paragraph tendencies, but never keep or add an awkward sentence merely to match punctuation or length statistics.",
-    ]
-    for finding in quality_gate.get("findings", [])[:5]:
-        signal_id = finding.get("quality_signal_id", "quality:unknown")
-        issue = finding.get("issue") or "anti-template risk"
-        evidence = finding.get("evidence_excerpt") or ""
-        recommendation = finding.get("recommendation") or ""
-        brief.append(f"{signal_id}: {issue}")
-        if evidence:
-            brief.append(f"Evidence: {evidence}")
-        if recommendation:
-            brief.append(f"Fix: {recommendation}")
-    return brief
-
-
-def _style_safety_repair_brief(
-    *,
-    scene: SceneCard,
-    source_content: str,
-    authoritative_content: str,
-    lengths: LengthPolicy,
-) -> list[str]:
-    """把确定性失败翻译成一次可执行、无正文泄漏的修复清单。"""
-    del authoritative_content  # 仅表明调用方已提供可信事实基线；正文不进入提示。
-    required_terms = constraint_terms(scene.must_include_text or "")
-    missing_terms = [
-        term
-        for term in required_terms
-        if not source_field_satisfied(term, source_content)
-    ]
-    length_range = lengths.hard_range()
-    current_length = _visible_char_count(source_content)
-    brief = [
-        "This is the only safety repair attempt. Edit the labeled rejected draft directly, keep its distinctive reusable style, and change only what the hard constraints require.",
-        "Return only the complete replacement scene_text prose: no reasoning, markdown fence, JSON wrapper, schema label, or commentary.",
-    ]
-    if required_terms:
-        brief.append(
-            "Every final required constraint must be explicit. A vertical bar means alternatives; include at least one literal alternative from each group: "
-            + "；".join(required_terms)
-            + "。"
-        )
-    if missing_terms:
-        brief.append(
-            "Restore the currently missing required constraints: "
-            + "；".join(missing_terms)
-            + "。"
-        )
-    if length_range is not None:
-        minimum, maximum = length_range
-        local_minimum, local_maximum, target = _style_repair_working_window(
-            minimum,
-            maximum,
-            source_length=current_length,
-        )
-        brief.append(
-            f"Final visible Chinese prose length must be {minimum}-{maximum} characters; "
-            f"the rejected draft is about {current_length}. Aim near {target} and keep the working "
-            f"window at {local_minimum}-{local_maximum}; never use the absolute maximum as the target."
-        )
-        if current_length < minimum:
-            brief.append(
-                f"Add {local_minimum - current_length}-{local_maximum - current_length} visible characters; do not return fewer or more than that correction range. "
-                "Keep every existing factual beat in order; "
-                "add concrete action-reaction, blocking, perception, or consequence inside the same event "
-                f"until {local_minimum}-{local_maximum} visible characters are present."
-            )
-        elif current_length > maximum:
-            brief.append(
-                f"Remove {current_length - local_maximum}-{current_length - local_minimum} visible characters by compressing repetition only, "
-                f"then stop inside {local_minimum}-{local_maximum}; do not remove any required fact, causal step, or ending hook."
-            )
-    if _scene_text_integrity_markers(source_content):
-        brief.append(
-            "Remove malformed Unicode escapes, placeholder controls, and encoding artifacts while preserving the intended Chinese prose."
-        )
-    brief.append(
-        "Use the Scene Card as factual authority. Do not invent a new event, change chronology, or replace the ending hook."
-    )
-    return brief
