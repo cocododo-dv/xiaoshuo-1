@@ -247,24 +247,24 @@ describe("章名规则只有一份，与后端同一张标记表（F02-06）", (
   });
 
   it("isAutoChapterTitle：空 / 「第 N 章」/ 带占位标记（含「未命名章节」）是系统章名；作者起的名字不是", () => {
-    ["", "  ", "第 3 章", "第12章", "（待补）", "未命名章节", "未命名", "TODO 开场"].forEach(t => expect(isAutoChapterTitle(t), t).toBe(true));
-    ["雨夜来信", "第三章的灯", "第 3 章 · 雨夜"].forEach(t => expect(isAutoChapterTitle(t), t).toBe(false));
+    ["", "  ", "第 7 章", "第12章", "（占位）", "未命名章节", "未命名", "TODO 开场"].forEach(t => expect(isAutoChapterTitle(t), t).toBe(true));
+    ["雨夜来信", "第三章的灯", "第 7 章 · 雨夜"].forEach(t => expect(isAutoChapterTitle(t), t).toBe(false));
     // 面板从分章模型取的是同一个函数
     expect(panelIsAutoChapterTitle).toBe(isAutoChapterTitle);
   });
 
   it("isPlaceholderChapterRow：章名空或带占位标记、且摘要 / 章目标 / 脊柱全空", () => {
-    expect(isPlaceholderChapterRow({ title: "（待补）" })).toBe(true);
+    expect(isPlaceholderChapterRow({ title: "（占位）" })).toBe(true);
     expect(isPlaceholderChapterRow({ title: "未命名章节", summary: "" })).toBe(true);
     expect(isPlaceholderChapterRow({ title: "", goal: "信件迫使主角回乡" })).toBe(false);
-    expect(isPlaceholderChapterRow({ title: "（待补）", spine: "灾一" })).toBe(false);
+    expect(isPlaceholderChapterRow({ title: "（占位）", spine: "灾一" })).toBe(false);
     expect(isPlaceholderChapterRow({ title: "雨夜来信" })).toBe(false);
   });
 
   it("chapterNoInTitle：章名空着或就是对得上的「第 N 章」时，章号已经在框里", () => {
     expect(chapterNoInTitle("", 0)).toBe(true);
-    expect(chapterNoInTitle("第 2 章", 1)).toBe(true);
-    expect(chapterNoInTitle("第 2 章", 2)).toBe(false);
+    expect(chapterNoInTitle("第 8 章", 7)).toBe(true);
+    expect(chapterNoInTitle("第 8 章", 8)).toBe(false);
     expect(chapterNoInTitle("雨夜来信", 0)).toBe(false);
   });
 });
