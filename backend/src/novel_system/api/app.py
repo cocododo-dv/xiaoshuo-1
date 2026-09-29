@@ -42,8 +42,6 @@ from novel_system.api.routes import (
     writer_deep_review,
 )
 from novel_system.db import models  # noqa: F401
-from novel_system.db.base import Base
-from novel_system.db.session import engine
 from novel_system.settings import get_settings
 
 
@@ -107,8 +105,6 @@ def create_app() -> FastAPI:
         raise RuntimeError(
             "NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN is required when NOVEL_SYSTEM_LOCAL_ONLY=false"
         )
-    if app_settings.auto_create_tables:
-        Base.metadata.create_all(bind=engine())
     app = FastAPI(title="Novel System P2", lifespan=_lifespan)
     allow_origins = list(app_settings.cors_origins)
     allow_credentials = app_settings.cors_allow_credentials and "*" not in allow_origins

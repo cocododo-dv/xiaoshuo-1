@@ -29,13 +29,16 @@ def _stamp_database_revision(revision: str = SUPPORTED_DATABASE_REVISION) -> Non
         )
 
 
-def test_create_app_respects_explicit_auto_create_tables_off(monkeypatch) -> None:
+def test_create_app_never_builds_the_schema_itself(monkeypatch) -> None:
+    """库结构只由 Alembic 建。退役的 NOVEL_SYSTEM_AUTO_CREATE_TABLES（B12-20）即使设成 true 也不再让后端
+    create_all 建表——那会盖住 ORM 与迁移之间的漂移。"""
     calls: list[object] = []
 
-    monkeypatch.setenv("NOVEL_SYSTEM_AUTO_CREATE_TABLES", "false")
+    monkeypatch.setenv("NOVEL_SYSTEM_AUTO_CREATE_TABLES", "true")
     monkeypatch.setattr(Base.metadata, "create_all", lambda *args, **kwargs: calls.append((args, kwargs)))
 
-    create_app()
+    with TestClient(create_app()) as client:
+        client.get("/live")
 
     assert calls == []
 

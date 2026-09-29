@@ -6,8 +6,8 @@ from pathlib import Path
 
 import sqlalchemy as sa
 
+from novel_system.db import models  # noqa: F401 — register every mapped table (db/__init__ no longer does)
 from novel_system.db.base import Base
-from novel_system.settings import get_settings
 
 
 def test_revision_files_do_not_import_live_orm_metadata() -> None:
@@ -40,14 +40,6 @@ def test_revision_files_do_not_import_live_orm_metadata() -> None:
         "Alembic revisions must use frozen, explicit DDL instead of importing the live ORM: "
         + "; ".join(offenders)
     )
-
-
-def test_settings_disable_auto_create_tables_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("NOVEL_SYSTEM_AUTO_CREATE_TABLES", raising=False)
-
-    settings = get_settings(include_runtime_config=False)
-
-    assert settings.auto_create_tables is False
 
 
 def test_primary_metadata_excludes_legacy_reference_tables() -> None:
@@ -134,8 +126,8 @@ def _schema_snapshot(engine) -> dict:
 def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> None:
     """Guard against model/migration drift (the class that broke ``start-dev``).
 
-    Production and dev build their schema via ``alembic upgrade head`` (the app's
-    ``auto_create_tables`` defaults to False), while the test suite builds it via
+    Production and dev build their schema via ``alembic upgrade head`` (the app
+    never builds it itself), while the test suite builds it via
     ``Base.metadata.create_all``. When the two diverge — e.g. a new ORM column or a
     migration-only index — every existing test still passes (it runs on the ORM-built
     schema) yet runtime 500s (``OperationalError: no such column ...``) or silently
