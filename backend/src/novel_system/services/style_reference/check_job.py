@@ -110,10 +110,9 @@ POLICY_MODE_CHECK = "check"
 
 def resolve_check_client() -> tuple[Any | None, bool]:
     """按**当前**运行时配置取 LLM 客户端（请求时查一次、作业开工时再取一次）；测试在这里打桩。"""
-    from novel_system.services.system_config import build_runtime_llm_client
-    from novel_system.settings import get_settings
+    from novel_system.services.llm_service_base import runtime_llm_client_and_enabled
 
-    return build_runtime_llm_client(settings=get_settings())
+    return runtime_llm_client_and_enabled()
 
 
 # ---------------------------------------------------------------------------

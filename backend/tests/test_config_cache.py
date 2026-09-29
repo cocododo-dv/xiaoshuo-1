@@ -22,7 +22,7 @@ from sqlalchemy import event, update
 from novel_system.api.app import create_app
 from novel_system.db.models import SystemConfigSnapshot
 from novel_system.db.session import engine
-from novel_system.services import config_cache, idempotency, llm_client, llm_task_runner, prompt_builder
+from novel_system.services import config_cache, idempotency, llm_client, llm_service_base, llm_task_runner, prompt_builder
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.llm_client import load_model_routing_config, reset_model_routing_cache
 from novel_system.services.prompt_builder import (
@@ -419,7 +419,7 @@ def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_use
         raise AssertionError("constructing a read-only service must not load prompts or runtime settings")
 
     monkeypatch.setattr(prompt_builder, "load_prompt_templates", refuse)
-    monkeypatch.setattr(llm_task_runner, "get_settings", refuse)
+    monkeypatch.setattr(llm_service_base, "get_settings", refuse)
 
     services = [
         cls(session)
@@ -548,7 +548,7 @@ def test_a_settings_read_failure_in_run_is_not_disguised_as_an_llm_failure(sessi
     def boom(*_args, **_kwargs):
         raise OperationalError("SELECT 1", {}, Exception("database is locked"))
 
-    monkeypatch.setattr(ltr, "get_settings", boom)
+    monkeypatch.setattr(llm_service_base, "get_settings", boom)
     runner = ltr.LLMNodeRunner(session)
     with pytest.raises(OperationalError):
         runner.run(

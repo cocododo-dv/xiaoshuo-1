@@ -45,26 +45,16 @@ from novel_system.services.chapter_planning_context import (
     latest_chapter_architecture,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json, normalize
+from novel_system.services.hash_engine import normalize
 from novel_system.services.llm_accounting import (
     LLMCallContext,
     execute_accounted_call,
     mark_postprocess_failure,
 )
 from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
-from novel_system.services.llm_client import (
-    LLMClient,
-    LLMConfigurationError,
-    build_llm_request,
-    load_model_routing_config,
-    resolve_node_route,
-)
-from novel_system.services.prompt_builder import (
-    PromptConfigurationError,
-    load_prompt_templates,
-)
-from novel_system.services.system_config import load_llm_provider_runtime_configs
-from novel_system.settings import get_settings
+from novel_system.services.llm_client import LLMConfigurationError, build_llm_request
+from novel_system.services.llm_service_base import RuntimeLLMAccess, structured_prompt_hash
+from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.scene_lookup import require_project_chapter
 
 ARCHITECTURE_FIELDS = (
@@ -106,7 +96,7 @@ REVIEW_FINDING_CODES = (
 )
 
 
-class ChapterPlanService:
+class ChapterPlanService(RuntimeLLMAccess):
     def __init__(
         self,
         session: Session,
@@ -116,11 +106,11 @@ class ChapterPlanService:
         prompt_templates: dict[str, Any] | None = None,
     ) -> None:
         self.session = session
-        self._llm_client = llm_client
-        self._routing_config = routing_config
-        self._prompt_templates = prompt_templates
-        self._provider_configs: dict[str, Any] | None = None
-        self._settings = None
+        self._init_runtime_llm_access(
+            llm_client=llm_client,
+            routing_config=routing_config,
+            prompt_templates=prompt_templates,
+        )
         self._catalog = CatalogService(session)
         self._context_builder = ChapterPlanningContextBuilder(session)
 
@@ -458,50 +448,12 @@ class ChapterPlanService:
     def llm_enabled(self) -> bool:
         return self._llm_enabled()
 
-    def _llm_enabled(self) -> bool:
-        return bool(self._settings_payload().llm_enabled)
-
     def _llm_action(self) -> dict[str, Any]:
         settings = self._settings_payload()
         return llm_setup_action(
             llm_enabled=bool(settings.llm_enabled),
             generation_mode="chapter_plan",
         )
-
-    def _settings_payload(self):
-        if self._settings is None:
-            self._settings = get_settings()
-        return self._settings
-
-    def _client(self) -> Any:
-        if self._llm_client is not None:
-            return self._llm_client
-        settings = self._settings_payload()
-        return LLMClient(
-            provider=settings.llm_provider,
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            timeout_seconds=settings.llm_timeout_seconds,
-            provider_configs=self._runtime_provider_configs(),
-        )
-
-    def _runtime_provider_configs(self) -> dict[str, Any]:
-        if self._provider_configs is None:
-            self._provider_configs = load_llm_provider_runtime_configs()
-        return self._provider_configs
-
-    def _routing(self) -> Any:
-        if self._routing_config is None:
-            self._routing_config = load_model_routing_config()
-        return self._routing_config
-
-    def _task_config(self, task_key: str) -> Any:
-        return resolve_node_route(self._routing(), task_key)
-
-    def _template(self, template_name: str) -> Any:
-        if self._prompt_templates is None:
-            self._prompt_templates = load_prompt_templates()
-        return self._prompt_templates[template_name]
 
     def _run_structured_task(
         self,
@@ -542,7 +494,7 @@ class ChapterPlanService:
             ) from exc
 
         user_prompt = _render_user_prompt(template, prompt_payload)
-        prompt_hash = _prompt_hash(
+        prompt_hash = structured_prompt_hash(
             template_name,
             template.version,
             template.system_prompt,
@@ -1062,27 +1014,6 @@ def _render_user_prompt(template: Any, prompt_payload: dict[str, Any]) -> str:
         + f"Required top-level JSON keys: {required_text or 'follow the provided schema'}.\n"
         "Return only valid JSON. Do not wrap it in markdown fences."
     )
-
-
-def _prompt_hash(
-    template_name: str,
-    template_version: str,
-    system_prompt: str,
-    user_prompt: str,
-    structured_schema: dict[str, Any],
-) -> str:
-    return uuid.uuid5(
-        uuid.NAMESPACE_URL,
-        canonical_json(
-            {
-                "template_name": template_name,
-                "template_version": template_version,
-                "system_prompt": system_prompt,
-                "user_prompt": user_prompt,
-                "structured_schema": structured_schema,
-            }
-        ),
-    ).hex
 
 
 def _coerce_notes(value: Any) -> list[dict[str, str]]:

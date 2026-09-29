@@ -13,14 +13,9 @@ from sqlalchemy import func, select
 
 from novel_system.db.models import LlmCall, SnowflakeScenePlan, StoryProject
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json, normalize
-from novel_system.services.llm_client import (
-    LLMClient,
-    LLMConfigurationError,
-    build_llm_request,
-    load_model_routing_config,
-    resolve_node_route,
-)
+from novel_system.services.hash_engine import normalize
+from novel_system.services.llm_client import LLMConfigurationError, build_llm_request
+from novel_system.services.llm_service_base import RuntimeLLMAccess, structured_prompt_hash
 from novel_system.services.llm_accounting import (
     LLMCallContext,
     execute_accounted_call,
@@ -28,7 +23,7 @@ from novel_system.services.llm_accounting import (
 )
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
-from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
+from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.snowflake_direction_brief import coerce_brief_update
 from novel_system.services.snowflake_prompt_budget import (
     AUTHOR_DIRECTION_BRIEF_KEY,
@@ -53,8 +48,6 @@ from novel_system.services.style_reference.planning_context import (
     STRUCTURE_REFERENCE_HOW_TO_USE,
     resolve_project_style_reference,
 )
-from novel_system.services.system_config import load_llm_provider_runtime_configs
-from novel_system.settings import get_settings
 from novel_system.services.value_coercion import coerce_string_list, has_value, int_or_default
 
 
@@ -106,7 +99,7 @@ SCENE_DETAIL_MAX_BATCHES_PER_RUN = 6
 _STRUCTURE_REFERENCE_STEPS = frozenset({"scene_list", "scene_details"})
 
 
-class SnowflakeWorkspaceLLMService:
+class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
     def __init__(
         self,
         session: Session,
@@ -116,11 +109,11 @@ class SnowflakeWorkspaceLLMService:
         prompt_templates: dict[str, Any] | None = None,
     ) -> None:
         self.session = session
-        self._llm_client = llm_client
-        self._routing_config = routing_config
-        self._prompt_templates = prompt_templates
-        self._provider_configs: dict[str, Any] | None = None
-        self._settings = None
+        self._init_runtime_llm_access(
+            llm_client=llm_client,
+            routing_config=routing_config,
+            prompt_templates=prompt_templates,
+        )
         # 场景规划分批深化会多次调用 _generate_step_once：同一次请求内的绑定解析只做一遍。
         self._style_reference_cache: dict[str, dict[str, Any] | None] = {}
 
@@ -904,7 +897,7 @@ class SnowflakeWorkspaceLLMService:
             step_key=schema_step_key,
             template_name=template_name,
         )
-        prompt_hash = _prompt_hash(template_name, template.version, template.system_prompt, user_prompt, structured_schema)
+        prompt_hash = structured_prompt_hash(template_name, template.version, template.system_prompt, user_prompt, structured_schema)
         llm_call_id = f"llm_call_project_{task_key}_{uuid.uuid4().hex[:12]}"
         request = build_llm_request(
             task_config,
@@ -1107,44 +1100,6 @@ class SnowflakeWorkspaceLLMService:
     def llm_enabled(self) -> bool:
         """公开可用性探针：FE 的「采纳并结构化」用它决定报错而不是落 fallback 版本。"""
         return self._llm_enabled()
-
-    def _llm_enabled(self) -> bool:
-        return bool(self._settings_payload().llm_enabled)
-
-    def _settings_payload(self):
-        if self._settings is None:
-            self._settings = get_settings()
-        return self._settings
-
-    def _client(self) -> Any:
-        if self._llm_client is not None:
-            return self._llm_client
-        settings = self._settings_payload()
-        return LLMClient(
-            provider=settings.llm_provider,
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            timeout_seconds=settings.llm_timeout_seconds,
-            provider_configs=self._runtime_provider_configs(),
-        )
-
-    def _runtime_provider_configs(self) -> dict[str, Any]:
-        if self._provider_configs is None:
-            self._provider_configs = load_llm_provider_runtime_configs()
-        return self._provider_configs
-
-    def _routing(self) -> Any:
-        if self._routing_config is None:
-            self._routing_config = load_model_routing_config()
-        return self._routing_config
-
-    def _task_config(self, task_key: str) -> Any:
-        return resolve_node_route(self._routing(), task_key)
-
-    def _template(self, template_name: str) -> Any:
-        if self._prompt_templates is None:
-            self._prompt_templates = load_prompt_templates()
-        return self._prompt_templates[template_name]
 
     def _supplement_accounted_call(
         self,
@@ -1519,27 +1474,6 @@ def _render_user_prompt(template: Any, prompt_payload: dict[str, Any]) -> str:
         f"Required top-level JSON keys: {required_text or 'follow the provided schema'}.\n"
         "Return only valid JSON. Do not wrap it in markdown fences."
     )
-
-
-def _prompt_hash(
-    template_name: str,
-    template_version: str,
-    system_prompt: str,
-    user_prompt: str,
-    structured_schema: dict[str, Any],
-) -> str:
-    return uuid.uuid5(
-        uuid.NAMESPACE_URL,
-        canonical_json(
-            {
-                "template_name": template_name,
-                "template_version": template_version,
-                "system_prompt": system_prompt,
-                "user_prompt": user_prompt,
-                "structured_schema": structured_schema,
-            }
-        ),
-    ).hex
 
 
 def enrich_structured_schema(

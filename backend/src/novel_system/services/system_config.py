@@ -230,33 +230,44 @@ def _provider_runtime_configs(payload, *, read_secret) -> dict[str, ProviderRunt
     return runtime_configs
 
 
-def build_runtime_llm_client(
-    *,
+def build_llm_client(
     settings: Any,
+    *,
     provider_configs: dict[str, ProviderRuntimeConfig] | None = None,
-    client_cls: type[LLMClient] | None = None,
-) -> tuple[LLMClient | None, bool]:
-    """运行时 LLM client 的统一工厂(fail-closed):LLM 未启用返回 (None, False)。
+    retry_backoff_seconds: float | None = None,
+) -> LLMClient:
+    """运行时 LLMClient 的唯一构造点:按设置建客户端,不管启用与否(是否可用由调用方先判)。
 
     settings 必传,由调用方 get_settings() 取得:settings 模块要读本模块的
     活动快照,本模块反向 import settings(哪怕函数内延迟)会构成依赖环,
     被 test_service_architecture 的全包环守卫拒绝。
-    provider_configs 供调用方先用同一份配置做凭据检查(literary_eval),
-    client_cls 保住调用方模块全局名 LLMClient 的测试打桩点。
+    retry_backoff_seconds 为 None 时用 LLMClient 的默认值(不退避);现状只有
+    场景运行器传(B09-09)。
     """
-    if not settings.llm_enabled:
-        return None, False
     if provider_configs is None:
         provider_configs = load_llm_provider_runtime_configs()
-    factory = client_cls or LLMClient
-    client = factory(
+    extra: dict[str, Any] = {}
+    if retry_backoff_seconds is not None:
+        extra["retry_backoff_seconds"] = retry_backoff_seconds
+    return LLMClient(
         provider=settings.llm_provider,
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key,
         timeout_seconds=settings.llm_timeout_seconds,
         provider_configs=provider_configs,
+        **extra,
     )
-    return client, True
+
+
+def build_runtime_llm_client(
+    *,
+    settings: Any,
+    provider_configs: dict[str, ProviderRuntimeConfig] | None = None,
+) -> tuple[LLMClient | None, bool]:
+    """fail-closed 版工厂:LLM 未启用返回 (None, False),否则 (build_llm_client(...), True)。"""
+    if not settings.llm_enabled:
+        return None, False
+    return build_llm_client(settings, provider_configs=provider_configs), True
 
 
 class SystemConfigService:

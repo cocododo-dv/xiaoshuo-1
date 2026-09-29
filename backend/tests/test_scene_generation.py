@@ -1900,7 +1900,7 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
             }
 
     monkeypatch.setattr(
-        "novel_system.services.llm_task_runner.load_model_routing_config",
+        "novel_system.services.llm_service_base.load_model_routing_config",
         lambda: FakeRoutingConfig(),
     )
 

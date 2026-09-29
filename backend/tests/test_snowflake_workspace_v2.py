@@ -1212,7 +1212,7 @@ def test_workspace_v2_live_missing_snowflake_route_explains_node_route_gap(clien
     from novel_system.services.llm_client import ModelRoutingConfig
 
     monkeypatch.setattr(
-        "novel_system.services.snowflake_workspace_llm.load_model_routing_config",
+        "novel_system.services.llm_service_base.load_model_routing_config",
         lambda: ModelRoutingConfig(
             node_routing={},
             task_routing={},
