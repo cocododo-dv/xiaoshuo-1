@@ -127,6 +127,8 @@ SCENE_PATCH_FIELDS = {
     # 阶段 N：作者的破例理由（原著：不过关也可以放行，但要知道理由）。
     "exception_reason",
 }
+#: 已有场景计划行上只归 09 场景列表改的字段（第 10 步的草稿不改它们）
+SCENE_LIST_OWNED_FIELDS = ("primary_form", "scene_type", "pov_character_id")
 
 
 
@@ -2724,6 +2726,11 @@ class SnowflakeWorkspaceService:
             patch = _sanitize_scene_patch(item)
             patch.pop("scene_id", None)
             patch.pop("chapter_id", None)
+            if step_key == "scene_details" and not created:
+                # 形态与视角归 09（场景列表）：第 10 步只深化三拍，不改已有行的这两样（F02-01 的后端兜底——
+                # 前端第 10 步曾把渲染时的默认值冻进本地计划，推 10 时把 09 刚改过的形态与视角改回去）。
+                for key in SCENE_LIST_OWNED_FIELDS:
+                    patch.pop(key, None)
             self._apply_scene_patch(plan, patch)
             # 阶段 G：草稿同步只把**内容真的变了**（或新建）的场打回 draft；「AI 补全这一场」和
             # 一次无谓的整表 PATCH 不再把其余几十场的确认与复核留痕一起清零。批准仍然整表置 approved。
