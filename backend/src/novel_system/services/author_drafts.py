@@ -15,9 +15,7 @@ from novel_system.db.models import (
     AuthorDraftProposal,
     AuthorDraftRevision,
     ChapterGoal,
-    ChapterMemory,
     FinalScene,
-    PassagePatchCandidate,
     SceneCard,
     SceneRunState,
 )
@@ -51,12 +49,10 @@ from novel_system.services.writer_briefs import (
     normalize_scene_writer_brief,
 )
 from novel_system.services.writing_stats import WritingStatsService, count_words
-from novel_system.services.scene_lookup import require_project
-from novel_system.services.scene_text import current_author_draft, final_chapter_memory
+from novel_system.services.scene_text import current_author_draft
 
 _RUNTIME_FINAL_UNAVAILABLE = object()
 _LOGGER = logging.getLogger(__name__)
-DESK_DEFAULT_MODE = "write_first"
 #: 写作台「AI 续写」：一次生成三条走向不同的续写候选（同一个幂等意图）。这是作者稿建议唯一还在用的生成方式——
 #: 采纳 / 放弃 / 对比 / 单条生成 / 列表这几个接口界面从没调过，已删（批准 #7）；候选由前端插进正文、走普通保存。
 CONTINUATION_VARIANTS_MODE = "continuation_variants"
@@ -91,20 +87,12 @@ class AuthorDraftService:
             "execution_step_key": execution_step_key if execution_id is not None else None,
             "provider_execution_mode": runner.provider_execution_mode,
         }
-        if target["object_type"] == "scene":
-            return LLMCallContext(
-                scope_type="scene",
-                scene_id=target["scene_id"],
-                chapter_id=target["chapter_id"],
-                **common,
-            )
-        if target["object_type"] == "chapter":
-            return LLMCallContext(
-                scope_type="chapter",
-                chapter_id=target["chapter_id"],
-                **common,
-            )
-        return LLMCallContext(scope_type="project", **common)
+        return LLMCallContext(
+            scope_type="scene",
+            scene_id=target["scene_id"],
+            chapter_id=target["chapter_id"],
+            **common,
+        )
 
     def current(self, object_type: str, object_id: str) -> dict[str, Any]:
         self._require_target(object_type, object_id)
@@ -118,24 +106,9 @@ class AuthorDraftService:
         current = self._current_row(object_type, object_id)
         if current is not None:
             return self._draft_response(current)
-        try:
-            source = self._source_for_target(object_type, object_id)
-        except DomainError as exc:
-            if exc.code != "AUTHOR_DRAFT_SOURCE_MISSING":
-                raise
-            source = self._blank_source_for_target(object_type, object_id)
+        source = self._scene_source(object_id) or self._blank_scene_source(object_id)
         draft = self._create_draft_row(object_type, object_id, source=source, actor_ref=actor_ref)
         return self._draft_response(draft)
-
-    def ensure_blank(self, object_type: str, object_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
-        self._require_target(object_type, object_id)
-        current = self._current_row(object_type, object_id)
-        if current is not None:
-            return self._draft_response(current)
-        source = self._blank_source_for_target(object_type, object_id)
-        draft = self._create_draft_row(object_type, object_id, source=source, actor_ref=actor_ref)
-        return self._draft_response(draft)
-
 
     def _create_draft_row(
         self,
@@ -170,20 +143,16 @@ class AuthorDraftService:
         return draft
 
     def _resolve_project_id(self, object_type: str, object_id: str) -> str | None:
-        if object_type == "project":
-            return object_id
-        if object_type == "chapter":
-            chapter = self.session.get(ChapterGoal, object_id)
-            return chapter.project_id if chapter else None
-        if object_type == "scene":
-            scene = self.session.get(SceneCard, object_id)
-            if scene is None:
-                return None
-            if scene.project_id:
-                return scene.project_id
-            chapter = self.session.get(ChapterGoal, scene.chapter_id)
-            return chapter.project_id if chapter else None
-        return None
+        """场景稿归哪部作品（场景卡自己的 project_id，旧卡没有就看它所在的章）；不是场景稿给 None。"""
+        if object_type != "scene":
+            return None
+        scene = self.session.get(SceneCard, object_id)
+        if scene is None:
+            return None
+        if scene.project_id:
+            return scene.project_id
+        chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        return chapter.project_id if chapter else None
 
     def save(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -518,12 +487,7 @@ class AuthorDraftService:
             return prompt
 
     def _draft_copy_scope(self, draft: AuthorDraft):
-        return resolve_style_scope(
-            self.session,
-            scene_id=draft.object_id if draft.object_type == "scene" else None,
-            chapter_id=draft.object_id if draft.object_type == "chapter" else None,
-            project_id=draft.object_id if draft.object_type == "project" else None,
-        )
+        return resolve_style_scope(self.session, scene_id=draft.object_id)
 
     def _proposal_copy_check(self, draft: AuthorDraft, proposal: AuthorDraftProposal):
         """模型写的建议文字过唯一抄袭门；拦下 → 返回检查结果，干净 → None。
@@ -627,72 +591,30 @@ class AuthorDraftService:
         }
 
     def _draft_response(self, draft: AuthorDraft) -> dict[str, Any]:
-        desk_context = self._desk_context(draft)
-        runtime_ref = desk_context.get("runtime_final_ref")
-        runtime_final_id = (
-            runtime_ref.removeprefix("final_scene:")
-            if isinstance(runtime_ref, str) and runtime_ref.startswith("final_scene:")
-            else None
-        )
+        """作者稿接口（ensure / current / 保存）的回包：草稿本身 + 这一场当前权威正文的指针。
+
+        写作台读的就是这两样（``draft.{draft_id, revision_no, content, canonical_dirty, last_promoted_*}``、
+        ``runtime_final_ref``）。过去每次回包都附一整份「台面上下文」——开着的段落补丁、续写候选全文、偏好摘要、
+        章汇总指针……前端一样不读，续写候选还随每次点击越积越多（B08-02）。
+        """
+        runtime_ref = self._runtime_final_ref(draft)
+        runtime_final_id = runtime_ref.removeprefix("final_scene:") if runtime_ref else None
         serialized = self.serialize_draft(
             draft,
             current_final_scene_row_id=(
                 runtime_final_id if draft.object_type == "scene" else _RUNTIME_FINAL_UNAVAILABLE
             ),
         )
-        return {"draft": serialized, **desk_context}
+        return {"draft": serialized, "runtime_final_ref": runtime_ref}
 
-    def _desk_context(self, draft: AuthorDraft) -> dict[str, Any]:
-        runtime_final_ref = None
-        aggregate_ref = None
-        try:
-            source = self._source_for_target(draft.object_type, draft.object_id)
-            if source["source_text_ref"].startswith("final_scene:"):
-                runtime_final_ref = source["source_text_ref"]
-            elif source["source_text_ref"].startswith("chapter_memory:"):
-                aggregate_ref = source["source_text_ref"]
-        except DomainError:
-            pass
-        if draft.object_type == "scene":
-            scene = self.lifecycle.require_active_scene(draft.object_id)
-            aggregate = self._chapter_aggregate(scene.chapter_id)
-            if aggregate is not None:
-                aggregate_ref = f"chapter_memory:{aggregate.row_id}"
-        elif draft.object_type == "chapter":
-            aggregate = self._chapter_aggregate(draft.object_id)
-            if aggregate is not None:
-                aggregate_ref = f"chapter_memory:{aggregate.row_id}"
-        return {
-            "draft_mode": draft.object_type,
-            "desk_mode": DESK_DEFAULT_MODE,
-            "source_layer": _source_layer(draft.source_text_ref),
-            "runtime_final_ref": runtime_final_ref,
-            "aggregate_ref": aggregate_ref,
-            "open_patch_candidates": [
-                _serialize_patch_candidate(row)
-                for row in self.session.execute(
-                    select(PassagePatchCandidate)
-                    .where(
-                        PassagePatchCandidate.object_type == draft.object_type,
-                        PassagePatchCandidate.object_id == draft.object_id,
-                        PassagePatchCandidate.status == "candidate",
-                    )
-                    .order_by(PassagePatchCandidate.created_at.desc(), PassagePatchCandidate.patch_id.desc())
-                ).scalars().all()
-            ],
-            "open_draft_proposals": [
-                self.serialize_proposal(row)
-                for row in self.session.execute(
-                    select(AuthorDraftProposal)
-                    .where(
-                        AuthorDraftProposal.draft_id == draft.draft_id,
-                        AuthorDraftProposal.status == "candidate",
-                    )
-                    .order_by(AuthorDraftProposal.created_at.desc(), AuthorDraftProposal.proposal_id.desc())
-                ).scalars().all()
-            ],
-        }
-
+    def _runtime_final_ref(self, draft: AuthorDraft) -> str | None:
+        """场景稿：这一场当前的权威正文（``final_scene:<row_id>``，还没有就 None）。场景进了回收站 → 409，
+        与过去回包里读台面上下文时一样——保存一份回收站里的场景稿随之整笔回滚。"""
+        if draft.object_type != "scene":
+            return None
+        self.lifecycle.require_active_scene(draft.object_id)
+        source = self._scene_source(draft.object_id)
+        return source["source_text_ref"] if source is not None else None
 
     @staticmethod
     def serialize_draft(
@@ -756,16 +678,10 @@ class AuthorDraftService:
 
 
     def _require_target(self, object_type: str, object_id: str) -> None:
-        if object_type == "project":
-            require_project(self.session, object_id)
-            return
-        if object_type == "chapter":
-            self.lifecycle.require_active_chapter(object_id)
-            return
-        if object_type == "scene":
-            self.lifecycle.require_active_scene(object_id)
-            return
-        raise DomainError("AUTHOR_DRAFT_TARGET_INVALID", "object_type must be scene, chapter, or project", status_code=400)
+        # 作者稿只有场景稿：写作台只建场景稿；章稿 / 作品稿（退役的发现稿）只剩测试在建，库里也没有（B08-22）
+        if object_type != "scene":
+            raise DomainError("AUTHOR_DRAFT_TARGET_INVALID", "object_type must be scene", status_code=400)
+        self.lifecycle.require_active_scene(object_id)
 
     def _current_row(self, object_type: str, object_id: str) -> AuthorDraft | None:
         return current_author_draft(self.session, object_type, object_id)
@@ -778,59 +694,23 @@ class AuthorDraftService:
             raise DomainError("AUTHOR_DRAFT_NOT_CURRENT", "author draft is not current", status_code=409)
         return draft
 
-    def _source_for_target(self, object_type: str, object_id: str) -> dict[str, str]:
-        if object_type == "project":
-            self._require_target(object_type, object_id)
-            raise DomainError("AUTHOR_DRAFT_SOURCE_MISSING", "project discovery draft has no runtime source", status_code=409)
-        if object_type == "scene":
-            return self._scene_source(object_id)
-        return self._chapter_source(object_id)
+    def _scene_source(self, scene_id: str) -> dict[str, str] | None:
+        """这一场当前的权威正文（新建作者稿从它起步）；还没有就 None。"""
+        scene = self.lifecycle.require_active_scene(scene_id)
+        state = self.session.get(SceneRunState, scene.scene_id)
+        final_row = self.session.get(FinalScene, state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
+        if final_row is None:
+            return None
+        return {"source_text_ref": f"final_scene:{final_row.row_id}", "content": final_row.content or ""}
 
-    def _blank_source_for_target(self, object_type: str, object_id: str) -> dict[str, str]:
-        if object_type == "project":
-            self._require_target(object_type, object_id)
-            return {"source_text_ref": f"project_discovery:{object_id}:blank", "content": ""}
-        if object_type == "chapter":
-            self.lifecycle.require_active_chapter(object_id)
-            return {"source_text_ref": f"author_blank:chapter:{object_id}", "content": ""}
-        scene = self.lifecycle.require_active_scene(object_id)
+    def _blank_scene_source(self, scene_id: str) -> dict[str, str]:
+        scene = self.lifecycle.require_active_scene(scene_id)
         self.lifecycle.require_active_chapter(scene.chapter_id)
         # 阶段 X：空白稿就是空白。过去这里把场景卡抄成一段「【章节目标】…【场景目标】…【节拍】…」脚手架
         # 塞进正文——那是没有随行场景卡的旧作者台留下的做法。现在设计卡常驻在正文旁边（写作台 / AI 起草台
         # 同一张），抄进正文的那份只会：算进字数、要作者先删掉才能动笔、构思改了它也不跟着变
         # （一份永远停在首次打开那一刻的旧卡），忘了删还会被一起提升成权威正文。
         return {"source_text_ref": f"scene_card:{scene.scene_id}:blank", "content": ""}
-
-    def _scene_source(self, scene_id: str) -> dict[str, str]:
-        scene = self.lifecycle.require_active_scene(scene_id)
-        state = self.session.get(SceneRunState, scene.scene_id)
-        final_row = self.session.get(FinalScene, state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
-        if final_row is None:
-            raise DomainError("AUTHOR_DRAFT_SOURCE_MISSING", "scene has no current final scene", status_code=409)
-        return {"source_text_ref": f"final_scene:{final_row.row_id}", "content": final_row.content or ""}
-
-    def _chapter_source(self, chapter_id: str) -> dict[str, str]:
-        self.lifecycle.require_active_chapter(chapter_id)
-        aggregate = self._chapter_aggregate(chapter_id)
-        if aggregate is not None:
-            return {"source_text_ref": f"chapter_memory:{aggregate.row_id}", "content": aggregate.content or ""}
-        scenes = self.session.execute(
-            select(SceneCard)
-            .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-            .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-        ).scalars().all()
-        parts: list[str] = []
-        for scene in scenes:
-            state = self.session.get(SceneRunState, scene.scene_id)
-            final_row = self.session.get(FinalScene, state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
-            if final_row is not None:
-                parts.append(final_row.content or "")
-        if not parts:
-            raise DomainError("AUTHOR_DRAFT_SOURCE_MISSING", "chapter has no manuscript text", status_code=409)
-        return {"source_text_ref": f"chapter_assembled:{chapter_id}", "content": "\n".join(parts)}
-
-    def _chapter_aggregate(self, chapter_id: str) -> ChapterMemory | None:
-        return final_chapter_memory(self.session, chapter_id)
 
     def _add_event(
         self,
@@ -861,58 +741,24 @@ class AuthorDraftService:
         return event
 
     def _target_payload(self, object_type: str, object_id: str) -> dict[str, Any]:
-        if object_type == "project":
-            project = require_project(self.session, object_id)
-            return {
-                "object_type": "project",
-                "object_id": project.project_id,
-                "project_id": project.project_id,
-                "chapter_id": None,
-                "scene_id": None,
-                "project": {
-                    "title": project.title,
-                    "genre": project.genre or "",
-                    "target_chapter_count": project.target_chapter_count,
-                    "target_word_count": project.target_word_count,
-                    "outline_text": project.outline_text or "",
-                    "planning_mode": project.planning_mode,
-                },
-                "chapter_goal": "",
-                "chapter_writer_brief": {},
-                "scene_card": {},
-                "current_writer_brief": {},
-            }
-        if object_type == "scene":
-            scene = self.lifecycle.require_active_scene(object_id)
-            chapter = self.lifecycle.require_active_chapter(scene.chapter_id)
-            return {
-                "object_type": "scene",
-                "object_id": scene.scene_id,
-                "project_id": scene.project_id or chapter.project_id,
-                "chapter_id": scene.chapter_id,
-                "scene_id": scene.scene_id,
-                "chapter_goal": chapter.chapter_goal or "",
-                "chapter_writer_brief": normalize_chapter_writer_brief(chapter.writer_brief_json),
-                "scene_card": {
-                    "scene_goal": scene.scene_goal or "",
-                    "beats": scene.beats_json or [],
-                    "location": scene.location or "",
-                    "exit_change": scene.exit_change or "",
-                    "hook": scene.hook or "",
-                },
-                "current_writer_brief": normalize_scene_writer_brief(scene.writer_brief_json),
-            }
-        chapter = self.lifecycle.require_active_chapter(object_id)
+        scene = self.lifecycle.require_active_scene(object_id)
+        chapter = self.lifecycle.require_active_chapter(scene.chapter_id)
         return {
-            "object_type": "chapter",
-            "object_id": chapter.chapter_id,
-            "project_id": chapter.project_id,
-            "chapter_id": chapter.chapter_id,
-            "scene_id": None,
+            "object_type": "scene",
+            "object_id": scene.scene_id,
+            "project_id": scene.project_id or chapter.project_id,
+            "chapter_id": scene.chapter_id,
+            "scene_id": scene.scene_id,
             "chapter_goal": chapter.chapter_goal or "",
             "chapter_writer_brief": normalize_chapter_writer_brief(chapter.writer_brief_json),
-            "scene_card": {},
-            "current_writer_brief": normalize_chapter_writer_brief(chapter.writer_brief_json),
+            "scene_card": {
+                "scene_goal": scene.scene_goal or "",
+                "beats": scene.beats_json or [],
+                "location": scene.location or "",
+                "exit_change": scene.exit_change or "",
+                "hook": scene.hook or "",
+            },
+            "current_writer_brief": normalize_scene_writer_brief(scene.writer_brief_json),
         }
 
 
@@ -921,21 +767,6 @@ def _optional_text(payload: dict[str, Any], key: str) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
-
-
-def _source_layer(source_text_ref: str | None) -> str:
-    value = str(source_text_ref or "")
-    if value.startswith("author_blank:") or value.endswith(":blank"):
-        return "author_blank"
-    if value.startswith("project_discovery:"):
-        return "project_discovery"
-    if value.startswith("final_scene:"):
-        return "ai_draft"
-    if value.startswith("chapter_memory:") or value.startswith("chapter_assembled:"):
-        return "runtime_aggregate"
-    if value.startswith("author_draft:"):
-        return "author_draft"
-    return "unknown"
 
 
 @dataclass(frozen=True)
@@ -1041,33 +872,3 @@ def _normalize_proposal_payload(
 def _proposal_rationale(*, target: dict[str, Any], instruction: str | None) -> str:
     focus = instruction or target.get("chapter_goal") or "writer-facing drafting target"
     return f"续写候选：只推进下一拍，不改写作者现有正文。依据：{focus}"
-
-
-def _serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
-    return {
-        "patch_id": row.patch_id,
-        "object_type": row.object_type,
-        "object_id": row.object_id,
-        "chapter_id": row.chapter_id,
-        "scene_id": row.scene_id,
-        "source_text_ref": row.source_text_ref,
-        "target_text_ref": row.target_text_ref,
-        "source_draft_id": row.source_draft_id,
-        "source_excerpt": row.source_excerpt,
-        "issue_dimension": row.issue_dimension,
-        "candidate_category": row.candidate_category,
-        "target_range": row.target_range_json or None,
-        "revision_strategy": row.revision_strategy,
-        "preference_tags": row.preference_tags_json or [],
-        "inserted_into_author_draft": bool(row.inserted_into_author_draft),
-        "replacement_options": row.replacement_options_json or [],
-        "rationale": row.rationale,
-        "status": row.status,
-        "author_decision": row.author_decision,
-        "selected_option_id": row.selected_option_id,
-        "author_decision_note": row.author_decision_note,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-

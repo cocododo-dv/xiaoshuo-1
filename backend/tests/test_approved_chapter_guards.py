@@ -112,7 +112,7 @@ def test_approved_chapter_catalog_and_lifecycle_writes_are_locked_but_noops_work
     )["scene"]
     draft = _post(
         client,
-        f"/api/v1/author-drafts/scene/{first_scene['scene_id']}/ensure-blank",
+        f"/api/v1/author-drafts/scene/{first_scene['scene_id']}/ensure",
     )["draft"]
     _approve_chapter(session, project_id, chapter_id)
 
@@ -216,17 +216,14 @@ def test_approved_chapter_catalog_and_lifecycle_writes_are_locked_but_noops_work
     assert batch_trash.json()["data"]["processed"] == []
     assert batch_trash.json()["data"]["blocked"][0]["code"] == "CHAPTER_APPROVED_LOCKED"
 
-    scene_trash = client.delete(
-        f"/api/v2/projects/{project_id}/catalog/scenes/{first_scene['scene_id']}"
+    chapter_trash = client.post(
+        "/api/v1/chapters/trash",
+        json={"chapter_ids": [chapter_id]},
+        headers={"X-Idempotency-Key": "approved-v1-trash-chapter"},
     )
-    assert scene_trash.status_code == 409
-    assert scene_trash.json()["error"]["details"]["blocked"][0]["code"] == "CHAPTER_APPROVED_LOCKED"
-
-    chapter_trash = client.delete(
-        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}"
-    )
-    assert chapter_trash.status_code == 409
-    assert chapter_trash.json()["error"]["details"]["blocked"][0]["code"] == "CHAPTER_APPROVED_LOCKED"
+    assert chapter_trash.status_code == 200
+    assert chapter_trash.json()["data"]["processed"] == []
+    assert chapter_trash.json()["data"]["blocked"][0]["code"] == "CHAPTER_APPROVED_LOCKED"
 
 
 def test_chapter_order_requires_strict_complete_project_set_and_keeps_approved_position(

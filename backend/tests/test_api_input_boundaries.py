@@ -155,7 +155,6 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
         "/api/v2/projects/UNKNOWN/library/timeline",
         "/api/v2/projects/UNKNOWN/library/characters",
         "/api/v1/author-drafts/chapter/UNKNOWN/ensure",
-        "/api/v1/author-drafts/chapter/UNKNOWN/ensure-blank",
         "/api/v1/chapters/UNKNOWN/deep-review",
         "/api/v1/chapters/UNKNOWN/run/full",
         "/api/v1/scenes/UNKNOWN/deep-review",

@@ -205,40 +205,52 @@ def _set_final_aggregate(session, chapter_id: str, content: str) -> str:
     return row_id
 
 
-def test_ensure_and_save_chapter_and_scene_author_drafts_without_overwriting_runtime_outputs(client, session) -> None:
+def test_ensure_and_save_scene_author_drafts_without_overwriting_runtime_outputs(client, session) -> None:
     _create_chapter(client, "AD100")
     _create_scene(client, "AD100_SC01", chapter_id="AD100", scene_seq=1)
     _create_scene(client, "AD100_SC02", chapter_id="AD100", scene_seq=2, is_chapter_last=1)
     final_row_id = _finalize_scene(session, "AD100_SC01", "AD100", "场景运行终稿。")
     aggregate_row_id = _set_final_aggregate(session, "AD100", "章节最终聚合稿。")
 
-    chapter_response = client.post("/api/v1/author-drafts/chapter/AD100/ensure")
     scene_response = client.post("/api/v1/author-drafts/scene/AD100_SC01/ensure")
 
-    assert chapter_response.status_code == 200
     assert scene_response.status_code == 200
-    chapter_draft = chapter_response.json()["data"]["draft"]
-    scene_draft = scene_response.json()["data"]["draft"]
-    assert chapter_draft["content"] == "章节最终聚合稿。"
-    assert chapter_draft["source_text_ref"] == f"chapter_memory:{aggregate_row_id}"
+    ensured = scene_response.json()["data"]
+    scene_draft = ensured["draft"]
     assert scene_draft["content"] == "场景运行终稿。"
     assert scene_draft["source_text_ref"] == f"final_scene:{final_row_id}"
+    # 回包只有写作台读的两样：草稿与这一场当前权威正文的指针（台面上下文已删，B08-02）
+    assert set(ensured) == {"draft", "runtime_final_ref"}
+    assert ensured["runtime_final_ref"] == f"final_scene:{final_row_id}"
 
     save_response = client.patch(
-        f"/api/v1/author-drafts/{chapter_draft['draft_id']}",
-        json={"content": "作者手工改过的章节稿。", "base_revision_no": 1},
+        f"/api/v1/author-drafts/{scene_draft['draft_id']}",
+        json={"content": "作者手工改过的场景稿。", "base_revision_no": 1},
     )
 
     assert save_response.status_code == 200
-    saved = save_response.json()["data"]["draft"]
-    assert saved["content"] == "作者手工改过的章节稿。"
+    saved_payload = save_response.json()["data"]
+    saved = saved_payload["draft"]
+    assert saved["content"] == "作者手工改过的场景稿。"
     assert saved["revision_no"] == 2
+    assert set(saved_payload) == {"draft", "runtime_final_ref", "changed", "words_rollup", "diagnosis_rollup"}
 
     session.expire_all()
     assert session.get(ChapterMemory, aggregate_row_id).content == "章节最终聚合稿。"
     assert session.get(FinalScene, final_row_id).content == "场景运行终稿。"
-    assert session.query(AuthorDraft).filter_by(object_type="chapter", object_id="AD100").count() == 1
     assert {row.event_type for row in session.query(AuthorDraftEvent).all()} >= {"created", "edited"}
+
+
+def test_author_drafts_are_scene_drafts_only(client, session) -> None:
+    """章稿 / 作品稿只剩测试在建、库里没有（B08-22）：不再新建，也读不到。"""
+    _create_chapter(client, "AD110", planned_scene_count=1)
+    project_id = session.get(ChapterGoal, "AD110").project_id
+    for object_type, object_id in (("chapter", "AD110"), ("project", project_id)):
+        for method, suffix in (("post", "ensure"), ("get", "current")):
+            response = client.request(method, f"/api/v1/author-drafts/{object_type}/{object_id}/{suffix}")
+            assert response.status_code == 400, (object_type, suffix, response.text)
+            assert response.json()["error"]["code"] == "AUTHOR_DRAFT_TARGET_INVALID"
+    assert session.query(AuthorDraft).count() == 0
 
 
 def test_scene_draft_is_dirty_when_runtime_final_pointer_moves_after_promotion(client, session) -> None:
@@ -281,7 +293,7 @@ def test_author_draft_save_uses_optimistic_locking(client, session) -> None:
     _create_chapter(client, "AD200", planned_scene_count=1)
     _create_scene(client, "AD200_SC01", chapter_id="AD200", scene_seq=1, is_chapter_last=1)
     _finalize_scene(session, "AD200_SC01", "AD200", "第一版。")
-    draft = client.post("/api/v1/author-drafts/chapter/AD200/ensure").json()["data"]["draft"]
+    draft = client.post("/api/v1/author-drafts/scene/AD200_SC01/ensure").json()["data"]["draft"]
 
     first_save = client.patch(
         f"/api/v1/author-drafts/{draft['draft_id']}",
@@ -551,37 +563,18 @@ def test_the_continuation_prompt_carries_no_preference_section(client, session, 
     assert "续写下一段，自然承接当前正文。" in prompt_text
 
 
-def test_chapter_author_draft_falls_back_to_assembled_scene_text_when_no_aggregate_exists(client, session) -> None:
-    _create_chapter(client, "AD300")
-    _create_scene(client, "AD300_SC02", chapter_id="AD300", scene_seq=2, is_chapter_last=1)
-    _create_scene(client, "AD300_SC01", chapter_id="AD300", scene_seq=1)
-    _finalize_scene(session, "AD300_SC02", "AD300", "第二场。")
-    _finalize_scene(session, "AD300_SC01", "AD300", "第一场。")
-
-    response = client.post("/api/v1/author-drafts/chapter/AD300/ensure")
-
-    assert response.status_code == 200
-    draft = response.json()["data"]["draft"]
-    assert draft["source_text_ref"] == "chapter_assembled:AD300"
-    assert draft["content"] == "第一场。\n第二场。"
-
-
-def test_ensure_blank_creates_author_drafts_without_runtime_final_scene(client, session) -> None:
+def test_ensure_creates_a_blank_scene_draft_when_the_scene_has_no_final(client, session) -> None:
     _create_chapter(client, "AD500", planned_scene_count=1)
     _create_scene(client, "AD500_SC01", chapter_id="AD500", scene_seq=1, is_chapter_last=1)
 
-    chapter_response = client.post("/api/v1/author-drafts/chapter/AD500/ensure-blank")
-    scene_response = client.post("/api/v1/author-drafts/scene/AD500_SC01/ensure-blank")
+    scene_response = client.post("/api/v1/author-drafts/scene/AD500_SC01/ensure")
 
-    assert chapter_response.status_code == 200
     assert scene_response.status_code == 200
-    chapter_draft = chapter_response.json()["data"]["draft"]
     scene_draft = scene_response.json()["data"]["draft"]
-    assert chapter_draft["source_text_ref"] == "author_blank:chapter:AD500"
-    assert chapter_draft["content"] == ""
     assert scene_draft["source_text_ref"] == "scene_card:AD500_SC01:blank"
     # 阶段 X：空白稿就是空白——场景卡常驻在正文旁边，不再抄成脚手架塞进正文
     assert scene_draft["content"] == ""
     assert session.query(FinalScene).count() == 0
-
-
+    # ensure-blank 没有界面调用，已删（批准 #24a）：ensure 在没有权威正文时就给空白稿
+    gone = client.post("/api/v1/author-drafts/scene/AD500_SC01/ensure-blank")
+    assert gone.status_code in {404, 405}

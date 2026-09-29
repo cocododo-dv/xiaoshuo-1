@@ -83,25 +83,6 @@ def ensure_author_draft(
     )
 
 
-@router.post("/api/v1/author-drafts/{object_type}/{object_id}/ensure-blank")
-def ensure_blank_author_draft(
-    object_type: str,
-    object_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = actor_ref_of(request)
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/author-drafts/{object_type}/{object_id}/ensure-blank",
-        payload={"object_type": object_type, "object_id": object_id},
-        action=lambda: AuthorDraftService(session).ensure_blank(object_type, object_id, actor_ref=actor_ref),
-    )
-
-
 @router.patch("/api/v1/author-drafts/{draft_id}")
 def save_author_draft(
     draft_id: str,

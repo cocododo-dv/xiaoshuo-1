@@ -430,7 +430,7 @@ def test_chapter_read_through_can_cover_only_the_changed_scenes(client: TestClie
 
     # 改了第二场的字：按哈希判——只有第二场是改过的
     service = AuthorDraftService(session)
-    draft = service.ensure_blank("scene", SCENE2_ID, actor_ref="writer")["draft"]
+    draft = service.ensure("scene", SCENE2_ID, actor_ref="writer")["draft"]
     service.save(draft["draft_id"], {"content": "<p>许望没有停钟。</p><p>她把证据袋放回抽屉。</p>", "base_revision_no": draft["revision_no"]}, actor_ref="writer")
     session.commit()
     stale = client.get(f"/api/v1/chapters/{CHAPTER_ID}/deep-review").json()["data"]
@@ -511,7 +511,7 @@ def test_counts_travel_with_every_write_and_add_up_like_the_summary(client: Test
     assert summarize_counts(summary["scenes"], summary["chapters"]) == summary["totals"]
 
     # 作者稿一存：响应带这一场 / 这一章的新计数（字改短了，发现少了）
-    revision = AuthorDraftService(session).ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]["revision_no"]
+    revision = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]["revision_no"]
     saved = client.patch(f"/api/v1/author-drafts/{draft_id}", json={"content": "<p>她走了。</p>", "base_revision_no": revision}).json()["data"]
     assert saved["changed"] is True and "words_rollup" in saved
     after = saved["diagnosis_rollup"]
