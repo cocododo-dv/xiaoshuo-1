@@ -11,7 +11,7 @@ import {
   S2_BE_KEY, S2_BE_STEPS, S2_STEPS, S2_STEP_DATA,
   s2AdoptServerScaffold, s2Ancestors, s2BlankScaffolds, s2FindStepKey, s2InferSpine, s2LandingStep, s2LineStats,
   s2MergeScaffolds, s2NormalizeState, s2PacingRuns, s2PlanAuto, s2PlanSlots, s2PlanState, s2PreserveFeOnly,
-  s2ReorderScenes, s2SceneAuto, s2SettlePlanning, s2StaleMap, s2UpstreamDrift,
+  S2_DEFAULT_LINES, s2ReorderScenes, s2SceneAuto, s2SceneLines, s2SceneListStats, s2SettlePlanning, s2StaleMap, s2UpstreamDrift,
 } from "./ws-snow-model.js";
 
 describe("步骤目录只有一份", () => {
@@ -54,6 +54,17 @@ describe("09 场景列表的推导", () => {
     const [main, sub] = s2LineStats(list, lines);
     expect(main).toMatchObject({ count: 7, span: 9, clustered: false, noRefract: false });
     expect(sub).toMatchObject({ pos: [1, 2], count: 2, span: 2, clustered: true, noRefract: true });
+  });
+
+  it("s2SceneListStats：表头、织线与右栏共用一份统计——同一份 list / lines 只算一次；没有支线时用同一条默认主线", () => {
+    const list = [{ id: "S01", type: "proactive", fn: "灾难一", crucible: "c" }, { id: "S02", type: "reactive", spine: "灾二", crucible: "" }];
+    const lines = s2SceneLines({ lines: [] });
+    expect(lines).toBe(S2_DEFAULT_LINES);
+    const a = s2SceneListStats(list, lines);
+    expect(s2SceneListStats(list, lines)).toBe(a);
+    expect(a).toMatchObject({ pro: 1, rea: 1, noCrucible: 1, spineHit: 2, inferredHit: 1, inferred: ["灾一", ""] });
+    // 改了一场（新数组）就重算
+    expect(s2SceneListStats(list.map(r => ({ ...r })), lines)).not.toBe(a);
   });
 
   it("s2SceneAuto：场场有坩埚、节奏、支线分布三项核对", () => {

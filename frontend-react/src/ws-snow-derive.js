@@ -55,16 +55,46 @@ export function s2LineStats(list, lines) {
   });
 }
 
-// 09 场景列表的结构核对：只读织线 / 节奏的确定性结构，不打分（与画布上的诊断同源）。
-// 「支线织入并折射主题」曾在这里——只有主线的书永远不过，那是一条意见，不是结构事实，已去掉。
+/* 还没有支线时，09 只有这一条主线（表格、织线、结构核对共用同一个对象，memo 才认得出「没变」） */
+export const S2_DEFAULT_LINES = Object.freeze([Object.freeze({ id: "main", name: "主线", kind: "main", tone: "crimson", refract: "" })]);
+export function s2SceneLines(scaffold) {
+  const lines = scaffold && scaffold.lines;
+  return lines && lines.length ? lines : S2_DEFAULT_LINES;
+}
+
+/* 09 场景表的统计：表头计数、织线、节奏提示与右栏的结构核对共用一份。
+   按 (list, lines) 的对象身份记住上一次的结果——键入时表格与右栏在同一次渲染里各要一次，
+   以前两边各算一遍（节奏、织线、每场两次灾难推断）。 */
+const sceneStatsCache = new WeakMap();
+export function s2SceneListStats(list, lines) {
+  const rows = Array.isArray(list) ? list : [];
+  const lns = lines || S2_DEFAULT_LINES;
+  const hit = sceneStatsCache.get(rows);
+  if (hit && hit.lines === lns) return hit.stats;
+  const pacing = s2PacingRuns(rows);
+  const inferred = rows.map(s => (s.spine ? "" : s2InferSpine(s.fn)));
+  const pro = rows.filter(s => s.type === "proactive").length;
+  const stats = {
+    pacing,
+    lineStats: s2LineStats(rows, lns),
+    inferred,
+    pro,
+    rea: rows.length - pro,
+    noCrucible: rows.filter(s => !(s.crucible || "").trim()).length,
+    spineHit: rows.filter((s, i) => s.spine || inferred[i]).length,
+    inferredHit: inferred.filter(Boolean).length,
+    tightMax: pacing.tight.length ? Math.max(...pacing.tight.map(r => r.len)) : 0,
+    slackMax: pacing.slack.length ? Math.max(...pacing.slack.map(r => r.len)) : 0,
+  };
+  sceneStatsCache.set(rows, { lines: lns, stats });
+  return stats;
+}
+
+// 09 场景列表的结构核对：只读织线 / 节奏的确定性结构，不打分（与场景表的统计同一份）。
 export function s2SceneAuto(scaffold) {
   const list = (scaffold && scaffold.list) || [];
-  const lines = (scaffold && scaffold.lines) || [];
-  const pacing = s2PacingRuns(list);
-  const stats = s2LineStats(list, lines);
-  const noCru = list.filter(s => !(s.crucible || "").trim()).length;
-  const tightMax = pacing.tight.length ? Math.max(...pacing.tight.map(r => r.len)) : 0;
-  const clustered = stats.filter(s => s.clustered).length;
+  const { noCrucible: noCru, tightMax, lineStats } = s2SceneListStats(list, s2SceneLines(scaffold));
+  const clustered = lineStats.filter(s => s.clustered).length;
   return [
     { t: "场场有冲突", pass: list.length > 0 && noCru === 0, val: !list.length ? "还没有场景" : noCru ? `${noCru} 场还没写坩埚` : `${list.length} 场都写了坩埚` },
     // 阶段 B：反应场是少数（Ingermanson），连续主动只是提醒——阈值放宽到 5，且不算硬标准
