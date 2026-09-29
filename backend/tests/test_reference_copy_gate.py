@@ -26,6 +26,7 @@ from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     check_reference_copy_for_scope,
     copy_block_author_action,
+    copy_gate_policies,
 )
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.validation.plagiarism import check_plagiarism
@@ -308,6 +309,23 @@ def test_scope_helper_checks_the_live_binding_even_when_the_bundle_froze_none(se
         session, "他想：" + REFERENCE_PASSAGE[:30], scope=scene, bundle_snapshot=absent_bundle
     )
     assert check.blocked is True
+
+
+def test_copy_gate_policies_take_the_callers_resolved_policy(session) -> None:
+    """B04-26：成稿门把已经解析好的这一场的策略交给 ``copy_gate_policies``（文学规则与抄袭门看同一份）——它就是
+    第一份；它本身已是现解析时不再补一份现解析；冻结了「无绑定」时照旧补上当前的活动绑定。"""
+    scene = _seed_scene(session)
+    _bind(session)
+    live = style_policy_live(session, scene, freeze_contract=False)
+    assert live.bound and live.mode == "live"
+    assert copy_gate_policies(session, scope=scene, policy=live) == [live]
+    frozen = StylePolicy(bound=True, mode="frozen", profile_id="sr_profile_frozen", book_id="sr_book_frozen")
+    policies = copy_gate_policies(session, scope=scene, policy=frozen)
+    assert policies[0] is frozen
+    assert [item.mode for item in policies] == ["frozen", "live"]
+    assert [item.mode for item in copy_gate_policies(session, scope=scene, policy=StylePolicy(mode="absent"))] == ["live"]
+    degraded = StylePolicy(mode="degraded", error_code="runtime_contract_invalid")
+    assert copy_gate_policies(session, scope=None, policy=degraded) == [degraded]
 
 
 def test_applying_an_ai_proposal_that_copies_the_reference_is_refused(session) -> None:

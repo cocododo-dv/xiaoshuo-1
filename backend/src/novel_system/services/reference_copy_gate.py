@@ -495,21 +495,26 @@ def copy_gate_policies(
     *,
     scope: Any = None,
     bundle_snapshot: Mapping[str, Any] | None = None,
+    policy: Any = None,
 ) -> list[Any]:
     """抄袭门要比对的绑定：bundle 冻结的那份（绑定时）+ 作用域当前的活动绑定（轻量现解析，不冻结契约）。
 
     两边都查：采纳作者稿、成稿中心提升等路径上，正文可能在冻结之后才粘进参考原文，冻结时没绑定或换了书，
     今天绑着的书照样要拦。哪一边解析降级（契约损坏、现解析失败）就把那份降级策略也带上——
     :func:`check_reference_copy` 据此把结果标成 ``unavailable``（那一边没有查成），而不是悄悄少查一边。
+
+    ``policy``：调用方已经解析好的这一场的策略（成稿门一次评估只解析一份，文学规则与抄袭门看的是同一份）——给了
+    就用它代替从 ``bundle_snapshot`` 解析的那份；它本身已是现解析时不再补一份现解析。
     """
-    from novel_system.services.style_policy import style_policy_for_bundle, style_policy_live
+    from novel_system.services.style_policy import MODE_LIVE, style_policy_for_bundle, style_policy_live
 
     policies: list[Any] = []
-    if isinstance(bundle_snapshot, Mapping):
-        frozen = style_policy_for_bundle(bundle_snapshot)
-        if frozen.bound or _policy_unavailable_reason(frozen) is not None:
-            policies.append(frozen)
-    if scope is not None:
+    primary = policy
+    if primary is None and isinstance(bundle_snapshot, Mapping):
+        primary = style_policy_for_bundle(bundle_snapshot)
+    if primary is not None and (primary.bound or _policy_unavailable_reason(primary) is not None):
+        policies.append(primary)
+    if scope is not None and getattr(primary, "mode", None) != MODE_LIVE:
         live = style_policy_live(session, scope, freeze_contract=False)
         if live.bound or _policy_unavailable_reason(live) is not None:
             policies.append(live)

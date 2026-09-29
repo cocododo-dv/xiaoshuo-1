@@ -19,6 +19,7 @@ from novel_system.services.qc_constraints import contains_forbidden_term, requir
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     copy_block_author_action,
+    copy_gate_policies,
     protected_term_warning,
     unavailable_warning,
 )
@@ -26,7 +27,7 @@ from novel_system.services.quality_checks.continuity import (
     CONTINUITY_UNAVAILABLE_KEY,
     deterministic_continuity_issues,
 )
-from novel_system.services.style_policy import StylePolicy, style_policy_for_scene, style_policy_live
+from novel_system.services.style_policy import StylePolicy, style_policy_for_scene
 
 
 FINAL_TEXT_GATE_SCHEMA_VERSION = 3
@@ -259,16 +260,14 @@ class FinalTextGateService:
         的禁用词表。命中只记哈希与位置，拦下时带 ``author_action`` 说清是第几字到第几字。
         """
         try:
-            extra: list[StylePolicy] = []
-            if scene is not None and policy.mode != "live":
-                live = style_policy_live(self.session, scene, freeze_contract=False)
-                if live.bound or live.mode == "degraded":
-                    extra.append(live)
+            # 这一场的策略（已解析好的那一份）+ 当前的活动绑定：与采纳 / 提升各条路径同一个组合规则（B04-26）
+            policies = copy_gate_policies(self.session, scope=scene, policy=policy)
+            own = any(item is policy for item in policies)
             check = check_reference_copy(
                 self.session,
                 content,
-                policy=policy if (policy.bound or policy.mode == "degraded") else None,
-                extra_policies=extra,
+                policy=policy if own else None,
+                extra_policies=[item for item in policies if item is not policy],
             )
         except Exception as exc:  # noqa: BLE001 - a safety assertion must fail closed
             return (
