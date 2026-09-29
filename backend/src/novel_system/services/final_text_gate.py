@@ -15,7 +15,7 @@ from novel_system.services.literary_quality import (
     ignored_dimensions_from_findings,
 )
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
-from novel_system.services.qc_constraints import contains_forbidden_term, source_field_satisfied
+from novel_system.services.qc_constraints import contains_forbidden_term, required_groups_missing
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     copy_block_author_action,
@@ -317,16 +317,19 @@ class FinalTextGateService:
             }
 
         issues: list[dict[str, Any]] = []
-        if isinstance(scene.must_include_text, str) and scene.must_include_text.strip():
-            if not source_field_satisfied(scene.must_include_text, content):
-                issues.append(
-                    {
-                        "issue_key": "missing_required_text",
-                        "message": "Final text does not satisfy scene-card required text.",
-                        "source": "deterministic",
-                        "authority_ref": f"scene_card:{scene.scene_id}.must_include_text",
-                    }
-                )
+        # 必写内容按组查（批准#11）：整组没写就是已证实的 Q1，证据是漏掉的那几组
+        missing_groups = required_groups_missing(scene.must_include_text, content)
+        if missing_groups:
+            issues.append(
+                {
+                    "issue_key": "missing_required_text",
+                    "message": "Final text does not satisfy scene-card required text.",
+                    "source": "deterministic",
+                    "authority_ref": f"scene_card:{scene.scene_id}.must_include_text",
+                    "evidence_spans": [{"text": group[:120]} for group in missing_groups[:5]],
+                    "details": {"missing_groups": missing_groups},
+                }
+            )
         if contains_forbidden_term(scene.forbidden_text, content):
             issues.append(
                 {

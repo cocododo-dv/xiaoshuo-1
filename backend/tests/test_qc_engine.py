@@ -846,6 +846,50 @@ def test_soft_qc_does_not_waive_a_repeat_patch_that_still_has_a_verified_issue(s
     assert issue["verified_by"] == "scene_card_forbidden_term"
 
 
+def test_hard_qc_keeps_a_missing_required_group_claim(session) -> None:
+    """批准#11（B04-04）：模型说「必写的第二组没写」，而正文确实只写了第一组——这不是「被场景卡否定」的误报，
+    照常作为已证实的 Q1 退回改写（整段口径下它会被当成误报删掉）。"""
+    _seed_scene(session)
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.must_include_text = "主角交出钥匙，门外传来警笛"
+    state = session.get(SceneRunState, "CH100_SC01")
+    state.active_execution_id = "exec-hard-groups"
+    state.run_execution_status = "active"
+    session.commit()
+    content = "他犹豫很久，最后主角交出钥匙。夜很静。"
+    runner = _QcPayloadRunner(
+        _base_qc_payload(
+            resolution_code="hard_fail_partial",
+            next_action="partial_rewrite",
+            issues=[{"issue_key": "missing_required_text", "message": "场景卡要求门外传来警笛，正文没有。"}],
+        )
+    )
+    token = begin_llm_execution("exec-hard-groups")
+    try:
+        decision = HardQcEngine(session, llm_runner=runner).evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            neutral_draft_row_id="draft_neutral_CH100_SC01",
+            neutral_content=content,
+            execution_step_key="hard_qc:0",
+        )
+    finally:
+        end_llm_execution(token)
+    session.commit()
+
+    report = session.get(QcReport, decision.qc_report_id)
+    assert decision.branch == "rewrite_partial"
+    assert report.resolution_code == "hard_fail_partial"
+    issue = report.issues_json[0]
+    assert issue["issue_key"] == "missing_required_text"
+    assert issue["quality_level"] == "Q1"
+    assert issue["evidence_spans"] == [{"text": "门外传来警笛"}]
+
+
 def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_style_generation(
     session,
     monkeypatch,

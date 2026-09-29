@@ -8,6 +8,7 @@ from novel_system.services.qc_constraints import (
     forbidden_hits,
     forbidden_terms,
     issue_mentions_source,
+    required_groups_missing,
     source_field_satisfied,
     strip_reference_policy,
 )
@@ -58,3 +59,19 @@ def test_forbidden_hits_report_the_spelling_that_occurs() -> None:
     assert forbidden_hits("黑伞|雨伞", "晴天。") == []
     assert forbidden_hits(REFERENCE_POLICY_SENTENCES[0] + "青花瓷", "这号人物端着青花瓷。") == ["青花瓷"]
     assert forbidden_hits(None, "雨伞") == []
+
+
+def test_required_text_is_checked_group_by_group() -> None:
+    """批准#11（B04-04）：必写内容按组查。整段口径只要沾上两个三字片段就算满足，一整组没写也放过。"""
+    required = "主角交出钥匙，门外传来警笛"
+    content = "他犹豫很久，最后主角交出钥匙。夜很静。"
+    assert source_field_satisfied(required, content) is True  # 旧口径：整段算满足
+    assert required_groups_missing(required, content) == ["门外传来警笛"]
+    assert required_groups_missing(required, content + "门外传来警笛声。") == []
+    # 组内 A|B 任一即可；容忍改写（同 source_field_satisfied）
+    assert required_groups_missing("交出钥匙|递出钥匙、警笛", "她递出钥匙，远处响起警笛。") == []
+    assert required_groups_missing("", "任何正文") == []
+    assert required_groups_missing(None, "任何正文") == []
+    # 一整段分不出 ≥2 字的组：按整段查
+    assert required_groups_missing("伞", "她撑开伞。") == []
+    assert required_groups_missing("伞", "她走进雨里。") == ["伞"]

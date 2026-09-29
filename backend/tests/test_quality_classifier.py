@@ -140,6 +140,20 @@ def test_missing_required_text_verified_only_when_truly_missing() -> None:
     assert satisfied["downgraded_from"] == "Q1"
 
 
+def test_missing_required_group_is_verified_even_when_another_group_is_present() -> None:
+    """批准#11：必写内容按组复核——写了第一组、漏了第二组，模型说「缺了警笛」就是已证实的 Q1，证据指出漏的那一组。"""
+    scene = _scene(must_include_text="主角交出钥匙，门外传来警笛")
+    issue = classify_issue(
+        {"issue_key": "missing_required_text", "message": "缺少：门外传来警笛"},
+        scene=scene,
+        content="他犹豫很久，最后主角交出钥匙。夜很静。",
+    )
+    assert issue["quality_level"] == "Q1"
+    assert issue["blocking"] is True
+    assert issue["verified_by"] == "scene_card_required_text"
+    assert issue["evidence_spans"] == [{"text": "门外传来警笛"}]
+
+
 def test_forbidden_text_verified_only_when_term_present() -> None:
     scene = _scene(forbidden_text="青花瓷")
     hit = classify_issue(

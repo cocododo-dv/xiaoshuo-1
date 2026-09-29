@@ -43,6 +43,7 @@ from novel_system.services.qc_constraints import (
     contains_forbidden_term,
     issue_mentions_source,
     named_scene_card_sources,
+    required_groups_missing,
     source_field_satisfied,
 )
 from novel_system.services.qc_validator import (
@@ -1576,6 +1577,12 @@ class HardQcEngine:
         ):
             return True
         if issue_key in HARD_QC_REQUIRED_ISSUE_KEYS:
+            # 必写内容按组查（批准#11）：意见说的正是没写进去的那一组，就不是被场景卡否定的误报
+            if any(
+                issue_mentions_source(issue_blob, group)
+                for group in required_groups_missing(scene.must_include_text, neutral_content)
+            ):
+                return False
             return self._source_field_satisfies_reported_issue(
                 scene.must_include_text, neutral_content, issue_blob
             ) or any(

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from novel_system.db.models import SceneCard
-from novel_system.services.qc_constraints import forbidden_hits, source_field_satisfied
+from novel_system.services.qc_constraints import forbidden_hits, required_groups_missing
 
 Q0 = "Q0"
 Q1 = "Q1"
@@ -103,15 +103,15 @@ def _verify_source_leak(scene: SceneCard | None, content: str, issue: dict[str, 
 
 
 def _verify_required_text(scene: SceneCard | None, content: str, issue: dict[str, Any]) -> dict[str, Any] | None:
+    # 按组复核（批准#11）：有一组没写就成立，证据是漏掉的那几组
     must_include = getattr(scene, "must_include_text", None) if scene is not None else None
-    if not isinstance(must_include, str) or not must_include.strip():
-        return None
-    if source_field_satisfied(must_include, content or ""):
+    missing = required_groups_missing(must_include, content or "")
+    if not missing:
         return None
     return {
         "verified_by": "scene_card_required_text",
         "authority_ref": f"scene_card:{getattr(scene, 'scene_id', '')}.must_include_text",
-        "evidence_spans": [{"text": must_include.strip()[:120]}],
+        "evidence_spans": [{"text": group[:120]} for group in missing[:5]],
     }
 
 
