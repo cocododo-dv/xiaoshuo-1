@@ -1,6 +1,6 @@
 import React from "react";
 import { apiGet, apiPatch } from "./lib/client.js";
-import { WsCatalog } from "./ws-catalog.jsx";
+import { sceneApiId } from "./ws-scene-id.js";
 import { wsKey } from "./ws-works.jsx";
 
 /* ==========================================================
@@ -37,7 +37,7 @@ export function WrCtxNotes({ scene }) {
     if (sceneState.current === state) setStatus("saving");
     state.chain = state.chain.then(async () => {
       try {
-        const sceneId = state.backendSceneId || await WsCatalog.__backendSceneId(state.scene);
+        const sceneId = state.backendSceneId || await sceneApiId(state.scene);
         if (!sceneId) throw Object.assign(new Error("场景尚未同步到服务器"), { code: "SCENE_NOT_READY" });
         state.backendSceneId = sceneId;
         const data = await apiPatch(`/api/v1/scenes/${sceneId}/author-notes`, {
@@ -99,7 +99,7 @@ export function WrCtxNotes({ scene }) {
         const leaving = leavingChains.get(wrNotesKey(scene));
         if (leaving) await leaving;
         if (!state.active || sceneState.current !== state) return;
-        const sceneId = await WsCatalog.__backendSceneId(scene);
+        const sceneId = await sceneApiId(scene);
         if (!sceneId || !state.active || sceneState.current !== state) return;
         state.backendSceneId = sceneId;
         const data = await apiGet(`/api/v1/scenes/${sceneId}/author-notes`);

@@ -1,9 +1,10 @@
 import { apiGet, apiPost } from "./lib/client.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { sceneApiId } from "./ws-scene-id.js";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
-import { escapeHtmlText, hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
+import { escapeHtmlText, hasAuthorText, htmlToParagraphs, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { copyGateAdoptMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { fidPatchView, fidRankText, fidStyleStepView, fidVerdict } from "./ws-fidelity-model.js";
@@ -25,10 +26,8 @@ import { isRealWorkId } from "./lib/work-id.js";
 
 const NOT_SYNCED_MESSAGE = "这一场还没同步到后端目录——稍候片刻或刷新后重试。";
 
-/* 目录 sid → 后端 scene id；目录还没同步到后端时是 null。 */
-async function scnSceneIdOf(sid) {
-  return (await WsCatalog.__backendSceneId(sid)) || null;
-}
+/* 目录 sid → 后端 scene id；目录还没同步到后端时是 null（ws-scene-id.js）。 */
+const scnSceneIdOf = sceneApiId;
 async function scnRequireSceneId(sid) {
   const sceneId = await scnSceneIdOf(sid);
   if (!sceneId) throw new Error(NOT_SYNCED_MESSAGE);
@@ -314,13 +313,6 @@ async function scnHydrateAfterSelection(sid, resumed) {
 function scnDraftHTML(draft) {
   return (draft || []).map(p => "<p>" + escapeHtmlText(scnParaText(p)) + "</p>").join("");
 }
-function scnHTMLParas(raw) {
-  if (!raw) return [];
-  const node = document.createElement("div");
-  node.innerHTML = raw;
-  const items = [...node.querySelectorAll("p, li")].map(el => (el.textContent || "").trim()).filter(Boolean);
-  return items.length ? items : ((node.textContent || "").trim() ? [(node.textContent || "").trim()] : []);
-}
 function scnAdoptionPreview(sid, draft) {
   const html = scnDraftHTML(draft);
   let existing = "";
@@ -332,7 +324,7 @@ function scnAdoptionPreview(sid, draft) {
     html,
     existing,
     hasReal: hasAuthorText(existing),
-    diff: WrDocVersions.diff(scnHTMLParas(stripLegacyDraftPlaceholder(existing)), scnHTMLParas(html)),
+    diff: WrDocVersions.diff(htmlToParagraphs(stripLegacyDraftPlaceholder(existing)), htmlToParagraphs(html)),
   };
 }
 /* 预检先等服务器上的作者稿：WrDocs.draftId 与别处正在进行的 ensure 共用一次请求、读不到服务器时抛错；

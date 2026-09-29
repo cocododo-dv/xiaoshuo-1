@@ -1,6 +1,6 @@
 import { apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
-import { WsCatalog } from "./ws-catalog.jsx";
+import { sceneApiId } from "./ws-scene-id.js";
 import { WrDocs } from "./wr-doc-store.jsx";
 import { copyGateAcceptMessage, isCopyGateError } from "./ws-copy-gate.js";
 import { wrAiLocalError, wrContinueCandidates } from "./ws-writer-ai.js";
@@ -44,10 +44,7 @@ export async function wrContinueMulti(instruction, sceneId) {
    也带上作者稿 id：后端把整场正文当上下文，补丁才接得上前后文。 */
 export async function wrRequestRewrite({ sceneId, text, instruction, finding = null }) {
   const sid = sceneId;
-  let backendId = null;
-  try {
-    backendId = sid && WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
-  } catch (e) {}
+  const backendId = await sceneApiId(sid);
   if (!backendId) throw wrAiLocalError("no-scene");
   let draftId = null;
   try { draftId = await WrDocs.draftId(sid); } catch (e) {}

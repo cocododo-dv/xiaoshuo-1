@@ -1,5 +1,6 @@
 import React from "react";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { sceneApiId } from "./ws-scene-id.js";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
 import { sceneLabel } from "./labels/catalog.js";
 import {
@@ -303,7 +304,7 @@ function useSceneRuns({ items, runs, setRuns, pickedId, pinItem }) {
     setAuthoritativeRunJob(null);
     const sid = selected && selected.sid;
     if (!sid) return () => { alive = false; };
-    Promise.resolve(WsCatalog.__backendSceneId(sid))
+    sceneApiId(sid)
       .then(sceneId => { if (alive) setActiveBackendScene(sceneId ? { sid, sceneId } : null); })
       .catch(() => { if (alive) setActiveBackendScene(null); });
     return () => { alive = false; };
