@@ -131,6 +131,79 @@ def test_scene_run_job_idempotency_replay_does_not_start_a_second_worker(client,
     assert started == [first.json()["data"]["job_id"]]
 
 
+@pytest.mark.parametrize(
+    ("node_key", "stage"),
+    [
+        ("budget_ready", "planning_running"),
+        ("planning_ready", "bundle_built"),
+        ("bundle_ready", "neutral_running"),
+        ("neutral_ready", "hard_qc_running"),
+        ("hard_qc_ready", "style_running"),
+        ("style_ready", "soft_qc_running"),
+        ("selection_wait", "awaiting_candidate_selection"),
+        ("soft_qc_ready", "acceptance_review_running"),
+        ("near_final_ready", "near_final"),
+        ("archived", "archived"),
+    ],
+)
+def test_running_scene_job_reports_the_stage_in_progress_not_the_checkpoint_node(
+    session, node_key: str, stage: str
+) -> None:
+    """B03-03：检查点每存一次都把节点名（budget_ready / planning_ready …）写进任务的 current_step，
+    前端的步位表只认管线阶段词，作者看到的是原样的英文词。任务视图只说一套词：检查点节点 → 进行中的阶段。"""
+    _seed_job_scene(session, scene_id=f"SC_STEP_{node_key}")
+    job = ChapterRunJob(
+        job_id=f"scene_run_step_{node_key}",
+        scene_id=f"SC_STEP_{node_key}",
+        status="running",
+        job_type="scene_run_full",
+        worker_id="worker-a",
+        attempt_no=1,
+        payload_json={"current_step": node_key, "current_sub_index": 4},
+        result_summary_json={"current_step": node_key, "current_sub_index": 4},
+    )
+    session.add(job)
+    session.commit()
+
+    serialized = SceneRunJobService(session).serialize_job(job)
+
+    assert serialized["current_step"] == stage
+
+
+def test_every_checkpoint_node_maps_into_the_scene_stage_vocabulary() -> None:
+    from novel_system.services.run_job_leases import SCENE_RUN_STAGE_ORDER, scene_job_step
+    from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER
+
+    known = {*SCENE_RUN_STAGE_ORDER, "awaiting_candidate_selection"}
+    for node_key in RUN_CHECKPOINT_ORDER:
+        assert scene_job_step(node_key) in known, node_key
+    for token in (*SCENE_RUN_STAGE_ORDER, "queued", "preflight_blocked", "blocked", "failed", "cancelled"):
+        assert scene_job_step(token) == token
+
+
+def test_claimed_scene_job_starts_at_planning_not_at_the_draft(client, session, monkeypatch) -> None:
+    """B03-03：认领时写的是 neutral_running（「中性稿」），而管线先做的是规划；认领写 planning_running。"""
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
+    observed: list[str] = []
+
+    class _Observer:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            with SessionLocal() as other:
+                observed.append(SceneRunJobService(other).serialize_job(other.get(ChapterRunJob, job_id))["current_step"])
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _Observer)
+    job_module._run_scene_job_worker(job_id)
+
+    assert observed == ["planning_running"]
+
+
 def test_scene_run_job_serialization_prefers_authoritative_scene_column(session) -> None:
     _seed_job_scene(session, scene_id="SCENE_COLUMN", chapter_id="CHJOB")
     job = ChapterRunJob(

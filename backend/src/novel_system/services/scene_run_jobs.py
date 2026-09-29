@@ -18,12 +18,17 @@ from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.run_job_leases import (
+    JOB_TYPE_SCENE_FULL,
+    SCENE_RUN_STAGE_ORDER,
+    SCENE_STEP_CLAIMED,
+    scene_job_step,
+)
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService, scene_job_execution_id
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 
 _LOGGER = logging.getLogger(__name__)
 
-JOB_TYPE_SCENE_FULL = "scene_run_full"
 RUN_JOB_CANCEL_REQUESTED = "RUN_JOB_CANCEL_REQUESTED_BY_AUTHOR"
 RUN_JOB_CANCELLED = "RUN_JOB_CANCELLED_BY_AUTHOR"
 _BUDGET_REJECTION_CODES = frozenset(
@@ -43,18 +48,6 @@ _BUDGET_REJECTION_CODES = frozenset(
 _CANCELLED_JOB_REGISTRY: set[str] = set()
 _CANCELLED_JOB_REGISTRY_LOCK = threading.Lock()
 register_cache_reset("scene_run_jobs.cancelled_hints", _CANCELLED_JOB_REGISTRY.clear)
-SCENE_RUN_STAGE_ORDER = [
-    "planning_running",
-    "bundle_built",
-    "neutral_running",
-    "hard_qc_running",
-    "style_running",
-    "soft_qc_running",
-    "rewrite_running",
-    "acceptance_review_running",
-    "near_final",
-    "archived",
-]
 
 
 @dataclass
@@ -153,7 +146,6 @@ class SceneRunJobService:
                 "scene_id": scene_id,
                 "actor_ref": actor_ref,
                 "current_step": current_step,
-                "stage_order": SCENE_RUN_STAGE_ORDER,
                 "lock_wait_ms": 0,
                 "run_preflight_status": run_preflight.get("overall_status"),
                 **({"author_note": note} if note else {}),
@@ -408,7 +400,10 @@ class SceneRunJobService:
         # 历史真值仍在 payload/result_summary 里，只有视图层收敛。
         scene_state = self.session.get(SceneRunState, str(scene_id)) if scene_id else None
         scene_status = scene_state.scene_status if scene_state else None
-        current_step = payload.get("current_step") or summary.get("current_step") or job.status
+        # 检查点把节点名（budget_ready …）写进 current_step；任务视图只说作者词表里的阶段（B03-03）
+        current_step = scene_job_step(
+            payload.get("current_step") or summary.get("current_step") or job.status
+        )
         if scene_status == "archived" and job.status not in {"queued", "running", "cancel_requested"}:
             current_step = "archived"
         return {
@@ -422,7 +417,7 @@ class SceneRunJobService:
             # 2026-09-12 风格直起:运行中即可知道中性步位写的是作者手笔首稿还是中性稿
             # (bundle 冻结后才有;之前为 None,前端回退到工作台读数)。
             "draft_mode": self._scene_draft_mode(scene_state),
-            "stage_order": payload.get("stage_order") or SCENE_RUN_STAGE_ORDER,
+            "stage_order": list(SCENE_RUN_STAGE_ORDER),
             "started_at": job.started_at,
             "finished_at": job.finished_at,
             "elapsed_ms": _elapsed_ms(job.started_at or job.created_at, job.finished_at),
@@ -1116,7 +1111,7 @@ def _run_scene_job_worker(job_id: str) -> None:
         owner = service.claim_running(
             job_id,
             worker_id=f"scene-job-thread:{uuid4().hex}",
-            current_step="neutral_running",
+            current_step=SCENE_STEP_CLAIMED,
             lease_seconds=owner_lease_ttl_seconds(),
         )
         service.claim_scene_active_job(owner, scene_id)
