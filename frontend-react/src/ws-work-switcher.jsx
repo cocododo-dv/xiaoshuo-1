@@ -1,4 +1,5 @@
 import React from "react";
+import { useWindowEvents } from "./lib/events.js";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
 import { WsWorks, useActiveWork, useWorks } from "./ws-works.jsx";
@@ -37,11 +38,7 @@ function WorkSwitcher({ go }) {
   const focusBrand = () => { if (brandRef.current) brandRef.current.focus({ preventScroll: true }); };
 
   // 命令面板 / 空书架页可以直接要新建对话框
-  useEffect(() => {
-    const h = () => { setOpen(false); setNewOpen(true); };
-    window.addEventListener("ws:new-work", h);
-    return () => window.removeEventListener("ws:new-work", h);
-  }, []);
+  useWindowEvents({ "ws:new-work": () => { setOpen(false); setNewOpen(true); } });
 
   // 新建对话框关掉后把焦点还给书名按钮：放在 effect 里，排在 WsDialog 卸载时的焦点归还之后
   // （它记下的「打开前焦点」是已经随浮层消失的「新建作品」按钮，会落回 body）。
