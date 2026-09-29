@@ -378,6 +378,39 @@ def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(cli
     assert payload["reference_safety_findings"][0]["source_ref"] == f"author_draft:{scene_draft.draft_id}"
 
 
+def test_chapter_set_review_reads_the_reference_calibration_like_the_overview(session) -> None:
+    """批准#13a（B04-13）：章组复审里的场与巡检、写作台深改面板用同一份参考书校准——参考作者常态的维度降为提示，
+    不会在章组复审里又冒成要改的问题（以前章组复审分析各场时没把场交给校准解析器）。"""
+    from novel_system.services.literary_quality import LiteraryQualityService, RuleCalibration
+
+    final_row_id = _seed_quality_scene(session, chapter_id="LQCAL", scene_id="LQCAL_SC01")
+    _signals, raw_findings = analyze_literary_quality(session.get(FinalScene, final_row_id).content)
+    habit = next(finding["dimension"] for finding in raw_findings if finding["severity"] != "info")
+    calibration = RuleCalibration(
+        source="reference",
+        dimension_stats={habit: {"fired": 40, "n": 48, "share": 0.833, "lower_bound": 0.75, "level": "habit"}},
+        windows=48,
+    )
+    resolved: list[str] = []
+
+    def resolver(scene):
+        resolved.append(scene.scene_id)
+        return calibration
+
+    service = LiteraryQualityService(session, rule_calibration_resolver=resolver)
+    overview_scene = next(
+        item for item in service.overview(chapter_id="LQCAL")["items"] if item["object_type"] == "scene"
+    )
+    review_scene = service.chapter_set_review({"chapter_ids": ["LQCAL"]})["scenes"][0]
+
+    assert resolved == ["LQCAL_SC01", "LQCAL_SC01"]
+    assert review_scene["findings"] == overview_scene["findings"]
+    assert review_scene["rule_calibration"] == overview_scene["rule_calibration"]
+    assert review_scene["rule_calibration"] is not None
+    calibrated = [finding for finding in review_scene["findings"] if finding["dimension"] == habit]
+    assert calibrated and all(finding["severity"] == "info" for finding in calibrated)
+
+
 def test_literary_quality_chapter_set_review_reports_missing_payoff_chapter_ids(client, session) -> None:
     session.add(
         ChapterGoal(

@@ -1055,6 +1055,8 @@ class LiteraryQualityService:
                         scene.scene_id,
                         scene_source,
                         ignored_keys=self._scene_ignored_keys(scene),
+                        # 与巡检、写作台深改面板同一份参考书校准（批准#13a）
+                        scene=scene,
                     )
                 )
                 source_rows.append(
