@@ -263,7 +263,9 @@ def test_accepting_resolved_candidate_commits_canon_and_builds_snapshot(session)
         seeded["next_scene_id"],
     )
     assert "Recent Committed Continuity Changes" in checkpoint
-    assert "CHAR_LINYUAN.injury = 右臂骨折" in checkpoint
+    # 提示词里印人物名，不印角色 id（批准 #14）
+    assert "林远.injury = 右臂骨折" in checkpoint
+    assert "CHAR_LINYUAN" not in checkpoint
 
 
 def test_candidate_acceptance_commit_cannot_fake_scene_completion(session) -> None:

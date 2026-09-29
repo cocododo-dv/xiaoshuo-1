@@ -29,6 +29,8 @@ def test_wrong_location_names_the_place_that_comes_first_in_the_clause() -> None
 
 
 def test_entity_reference_keeps_the_raw_id_as_a_fallback_name() -> None:
-    reference = EntityReference.of("CHAR_LINYUAN", ("林远", "阿远", "林远"))
+    reference = EntityReference.of("CHAR_LINYUAN", ("林远", "阿远", "林远"), display="林远")
     assert reference.names == ("林远", "阿远", "char_linyuan")
     assert reference.labels == ("林远", "阿远", "CHAR_LINYUAN")
+    assert reference.display == "林远"
+    assert EntityReference.of("CHAR_X").display == "CHAR_X"

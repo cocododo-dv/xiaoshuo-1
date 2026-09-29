@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 
 from novel_system.db.models import NarrativeEvent
+from novel_system.services.character_names import display_name_of
 from novel_system.services.narrative.replay import (
     NarrativeEventStore,
     runtime_authority_clause,
@@ -29,6 +30,8 @@ class ConsistencyViolation:
     # §15: "keyword" = high-confidence deterministic match (blocking) — the only producer
     # since the advisory LLM flag layer (check_consistency_llm) was removed.
     source: str = "keyword"
+    # 给作者看的名字（人物显示名；没有就是 id）——entity_id 仍是账本里的 id
+    entity_name: str = ""
 
 
 @dataclass(slots=True)
@@ -49,6 +52,7 @@ def check_consistency(
     """正文与这一场之前的权威状态做硬事实矛盾检查（蓝图 §17 Action B 的「一次增量一致性检查」）。"""
     snapshot = snapshot_before(store, project_id, scene_id)
     chars = character_ids or snapshot.characters()
+    names = snapshot.names()
 
     violations: list[ConsistencyViolation] = []
     facts_checked = 0
@@ -57,7 +61,15 @@ def check_consistency(
     # distinguish "character is at the WRONG named place" from generic prose.
     # Locations live both as location entities AND as `location` facts asserted
     # on characters (location_change events), so gather both.
-    known_locations = {loc.lower() for loc in snapshot.entities_of_type("location") if loc}
+    # 地点实体按 id 记账，正文里写的是它的名字 / 别名：两样都算已知地名（B11-01）。
+    known_locations = set()
+    for location_id in snapshot.entities_of_type("location"):
+        if not location_id:
+            continue
+        known_locations.add(location_id.lower())
+        known = names.get(location_id)
+        if known is not None:
+            known_locations |= {name.lower() for name in known.match_names()}
     loc_values = store.session.execute(
         select(NarrativeEvent.fact_value).where(
             NarrativeEvent.project_id == project_id,
@@ -69,13 +81,20 @@ def check_consistency(
 
     for char_id in chars:
         state = snapshot.character_state(char_id)
+        known = names.get(char_id)
+        # 正史事实按角色 id 存，正文写的是名字：按显示名 + 别名找，id 本身兜底（B11-01）
+        reference = EntityReference.of(
+            char_id,
+            known.match_names() if known is not None else (),
+            display=display_name_of(names, char_id),
+        )
         for fact_key, projected in state.facts.items():
             if fact_key not in CHECKABLE_FACT_KEYS:
                 continue
             facts_checked += 1
             violation = check_fact_against_text(
                 text_lower,
-                EntityReference.of(char_id),
+                reference,
                 fact_key,
                 projected.fact_value,
                 known_locations=known_locations,
@@ -352,15 +371,27 @@ class EntityReference:
     entity_id: str
     names: tuple[str, ...]
     labels: tuple[str, ...]
+    display: str
 
     @classmethod
-    def of(cls, entity_id: str, extra_names: tuple[str, ...] = ()) -> EntityReference:
+    def of(
+        cls,
+        entity_id: str,
+        extra_names: tuple[str, ...] = (),
+        *,
+        display: str | None = None,
+    ) -> EntityReference:
         seen: dict[str, str] = {}
         for label in (*extra_names, entity_id):
             clean = str(label or "").strip()
             if clean and clean.lower() not in seen:
                 seen[clean.lower()] = clean
-        return cls(entity_id=entity_id, names=tuple(seen), labels=tuple(seen.values()))
+        return cls(
+            entity_id=entity_id,
+            names=tuple(seen),
+            labels=tuple(seen.values()),
+            display=display or entity_id,
+        )
 
     def in_clause(self, clause: str) -> bool:
         return any(name in clause for name in self.names)
@@ -396,6 +427,7 @@ class _FactCheck:
             actual=actual,
             entity_id=self.entity.entity_id,
             evidence=evidence,
+            entity_name=self.entity.display,
         )
 
 
@@ -434,7 +466,7 @@ def _check_location(check: _FactCheck) -> ConsistencyViolation | None:
         if present_wrong:
             return check.violation(
                 expected=check.fact_value,
-                actual=f"text places {check.entity.entity_id} at {present_wrong}",
+                actual=f"text places {check.entity.display} at {present_wrong}",
                 evidence=clause[:80],
             )
     return None

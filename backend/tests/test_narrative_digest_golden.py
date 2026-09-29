@@ -35,6 +35,7 @@ def _consistency(log: NarrativeEventLog, text: str) -> list[dict[str, Any]]:
         {
             "fact_key": violation.fact_key,
             "entity_id": violation.entity_id,
+            "entity_name": violation.entity_name,
             "expected": violation.expected,
             "actual": violation.actual,
             "evidence": violation.evidence,

@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import NarrativeEvent, SceneCard
+from novel_system.services.character_names import display_name_of, labelled_name_of
 from novel_system.services.narrative import digests
 from novel_system.services.narrative.replay import (
     NarrativeEventStore,
@@ -139,6 +140,8 @@ def format_pov_state(
 ) -> str:
     """POV 过滤的权威状态摘要（写作提示词用）。"""
     chars = onstage_character_ids or snapshot.characters()
+    names = snapshot.names()
+    pov_name = display_name_of(names, pov_character_id)
     lines: list[str] = [digests.CHARACTER_STATE_HEADER]
     suppressed_owners: list[str] = []
 
@@ -158,7 +161,7 @@ def format_pov_state(
                 visible.append((key, value))  # 公共事实
         if not visible:
             continue
-        lines.append(f"\n### {char_id}")
+        lines.append(f"\n### {labelled_name_of(names, char_id)}")
         for key, value in visible:
             lines.append(f"- {key}: {value}")
 
@@ -168,11 +171,11 @@ def format_pov_state(
     for event in snapshot.learns_events(pov_character_id):
         (suspected if is_suspected(event) else known_regular).append((event.fact_key, event.fact_value))
     if known_regular:
-        lines.append(f"\n### POV知识边界 ({pov_character_id} 已知信息)")
+        lines.append(f"\n### POV知识边界 ({pov_name} 已知信息)")
         for key, value in known_regular:
             lines.append(f"- {key}: {value}")
     if suspected:
-        lines.append(f"\n### POV怀疑 ({pov_character_id} 尚未确证，勿写成既定事实)")
+        lines.append(f"\n### POV怀疑 ({pov_name} 尚未确证，勿写成既定事实)")
         for key, value in suspected:
             lines.append(f"- {key}: {value}（尚未确证/suspected）")
 
@@ -181,8 +184,8 @@ def format_pov_state(
         lines.append("\n## 写作约束（信息差·勿泄漏内容）")
         for owner in suppressed_owners:
             lines.append(
-                f"- 角色 {owner} 掌握 {pov_character_id} 未知的信息；"
-                f"勿在 {pov_character_id} 视角泄漏其内容。"
+                f"- 角色 {display_name_of(names, owner)} 掌握 {pov_name} 未知的信息；"
+                f"勿在 {pov_name} 视角泄漏其内容。"
             )
 
     # 地点 / 物品状态（公共，与全知摘要逐字节相同）
@@ -198,6 +201,8 @@ def format_pov_asymmetry(
     """POV 视角的信息不对称摘要——只显示 POV 独有认知，他人独有内容仅给盲区提示。"""
     if len(onstage_character_ids) < 2:
         return ""
+    names = snapshot.names()
+    pov_name = display_name_of(names, pov_character_id)
     lines: list[str] = ["## Information Asymmetry (POV-filtered, do NOT leak hidden content)"]
 
     pov_knows = {f"{fact.fact_key}:{fact.fact_value}" for fact in snapshot.known_facts(pov_character_id)}
@@ -216,7 +221,7 @@ def format_pov_asymmetry(
                 blind_owners.append(other)
 
     if exclusive_lines:
-        lines.append(f"\n### {pov_character_id} 独有认知（可据此行动）")
+        lines.append(f"\n### {pov_name} 独有认知（可据此行动）")
         # 去重保序
         seen: set[str] = set()
         for line in exclusive_lines:
@@ -226,12 +231,12 @@ def format_pov_asymmetry(
     if blind_owners:
         lines.append("\n### 信息盲区（勿在 POV 视角泄漏内容）")
         for owner in blind_owners:
-            lines.append(f"  - 角色 {owner} 掌握 {pov_character_id} 未知的信息")
+            lines.append(f"  - 角色 {display_name_of(names, owner)} 掌握 {pov_name} 未知的信息")
 
     pov_state = snapshot.character_state(pov_character_id)
     own_secrets = [pov_state.facts[key].fact_value for key in SECRET_CONTENT_KEYS if pov_state.facts.get(key)]
     if own_secrets:
-        lines.append(f"\n### {pov_character_id} 自身秘密/信念")
+        lines.append(f"\n### {pov_name} 自身秘密/信念")
         for secret in own_secrets:
             lines.append(f"  - {secret}")
 

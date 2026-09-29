@@ -18,6 +18,7 @@ from novel_system.db.models import (
     FinalScene,
     NarrativeEvent,
 )
+from novel_system.services.character_names import EntityNames, project_entity_names
 from novel_system.services.errors import DomainError
 from novel_system.services.narrative.taxonomy import (
     CANON_MANAGED_SOURCE_KINDS,
@@ -398,6 +399,7 @@ class ProjectionSnapshot:
         self._character_states: dict[str, CharacterState] = {}
         self._entity_states: dict[tuple[str, str], EntityState] = {}
         self._listings: dict[str, list[str]] = {}
+        self._names: dict[str, EntityNames] | None = None
 
     def entity_events(self, entity_id: str) -> list[NarrativeEvent]:
         """这个实体名下（不分 entity_type）的事件，按位置排好。"""
@@ -440,6 +442,12 @@ class ProjectionSnapshot:
 
     def characters(self) -> list[str]:
         return self.entities_of_type("character")
+
+    def names(self) -> dict[str, EntityNames]:
+        """这部作品人物 / 资料库实体的显示名与别名（摘要印名字、连续性检查按名字找，B11-01）。"""
+        if self._names is None:
+            self._names = project_entity_names(self.session, self.project_id)
+        return self._names
 
 
 def snapshot_before(store: NarrativeEventStore, project_id: str, scene_id: str) -> ProjectionSnapshot:

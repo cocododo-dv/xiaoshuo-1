@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from novel_system.services.character_names import display_name_of, labelled_name_of
 from novel_system.services.narrative.replay import ProjectionSnapshot
 
 CHARACTER_STATE_HEADER = "## Authoritative Character State (from event log, do NOT contradict)"
@@ -22,7 +23,7 @@ def entity_state_lines(snapshot: ProjectionSnapshot) -> list[str]:
         for entity_id in snapshot.entities_of_type(entity_type):
             state = snapshot.entity_state(entity_type, entity_id)
             if state.facts:
-                block.append(f"\n### {entity_id}")
+                block.append(f"\n### {labelled_name_of(snapshot.names(), entity_id)}")
                 for key, value in sorted(state.as_dict().items()):
                     block.append(f"- {key}: {value}")
         if block:
@@ -43,7 +44,7 @@ def format_state(
         state = snapshot.character_state(char_id)
         if not state.facts:
             continue
-        lines.append(f"\n### {char_id}")
+        lines.append(f"\n### {labelled_name_of(snapshot.names(), char_id)}")
         for key, value in sorted(state.as_dict().items()):
             lines.append(f"- {key}: {value}")
     lines.extend(entity_state_lines(snapshot))
@@ -55,6 +56,7 @@ def format_asymmetry(snapshot: ProjectionSnapshot, onstage_character_ids: list[s
     if len(onstage_character_ids) < 2:
         return ""
 
+    names = snapshot.names()
     lines: list[str] = ["## Information Asymmetry (who knows what the other doesn't)"]
     knowledge: dict[str, set[str]] = {}
     secrets: dict[str, list[str]] = {}
@@ -75,25 +77,26 @@ def format_asymmetry(snapshot: ProjectionSnapshot, onstage_character_ids: list[s
             a_exclusive = a_knows - b_knows
             b_exclusive = b_knows - a_knows
             if a_exclusive or b_exclusive:
-                lines.append(f"\n### {char_a} ↔ {char_b}")
+                name_a, name_b = display_name_of(names, char_a), display_name_of(names, char_b)
+                lines.append(f"\n### {name_a} ↔ {name_b}")
                 # 集合按排序取前 5 条：以前按集合的迭代次序取，字符串哈希每个进程随机，
                 # 同一份库在不同进程里拼出的提示词（和 bundle 哈希）不一样。
                 if a_exclusive:
-                    lines.append(f"  {char_a} knows but {char_b} doesn't:")
+                    lines.append(f"  {name_a} knows but {name_b} doesn't:")
                     for fact in sorted(a_exclusive)[:5]:
                         lines.append(f"    - {fact}")
                 if b_exclusive:
-                    lines.append(f"  {char_b} knows but {char_a} doesn't:")
+                    lines.append(f"  {name_b} knows but {name_a} doesn't:")
                     for fact in sorted(b_exclusive)[:5]:
                         lines.append(f"    - {fact}")
 
     for char_id in onstage_character_ids:
         if char_id in secrets:
-            lines.append(f"\n### Secrets held by {char_id}")
+            lines.append(f"\n### Secrets held by {display_name_of(names, char_id)}")
             for secret in secrets[char_id][:3]:
                 lines.append(f"  - {secret}")
         if char_id in false_beliefs:
-            lines.append(f"\n### False beliefs of {char_id}")
+            lines.append(f"\n### False beliefs of {display_name_of(names, char_id)}")
             for belief in false_beliefs[char_id][:3]:
                 lines.append(f"  - {belief}")
 

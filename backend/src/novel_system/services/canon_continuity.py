@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unicodedata
 import uuid
 from collections.abc import Iterable
 from typing import Any
@@ -23,6 +22,12 @@ from novel_system.db.models import (
     TimelineEvent,
     utcnow,
 )
+from novel_system.services.character_names import (
+    character_alias_values,
+    display_name_of,
+    normalized_name,
+    project_entity_names,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.narrative_event_log import ENTITY_TYPES, EVENT_TYPES, NarrativeEventLog
 from novel_system.services.hash_engine import sha256_text
@@ -33,18 +38,6 @@ _DEGRADED_EXTRACTION_OUTCOMES = {
     "rejected_before_dispatch",
     "provider_failed",
     "parse_failed",
-}
-_ALIAS_KEYS = {
-    "alias",
-    "aliases",
-    "aka",
-    "nickname",
-    "nicknames",
-    "other_names",
-    "former_names",
-    "别名",
-    "昵称",
-    "曾用名",
 }
 _SCENE_COMPLETION_COMMIT_KINDS = {"author_verification", "facts_unchanged"}
 
@@ -909,14 +902,17 @@ class CanonContinuityService:
         if not rows:
             return ""
         rows = rows[-max(1, max_deltas):]
+        # 快照里记的是实体 id，提示词里写名字（B11-01）；没有记录的 id 原样印
+        names = project_entity_names(self.session, project_id)
         lines = [
             "## Recent Committed Continuity Changes (canon only; do NOT contradict)",
         ]
         for snapshot, delta in rows:
+            entity_id = str(delta.get("entity_id") or "")
             lines.append(
                 "- "
                 f"[{snapshot.chapter_id}/{snapshot.scene_id}] "
-                f"{delta.get('entity_id')}.{delta.get('fact_key')} = "
+                f"{display_name_of(names, entity_id) if entity_id else delta.get('entity_id')}.{delta.get('fact_key')} = "
                 f"{delta.get('fact_value')} ({delta.get('event_type')})"
             )
         return "\n".join(lines)
@@ -1628,36 +1624,13 @@ class CanonContinuityService:
         row = self.session.get(LibraryEntity, entity_id)
         return bool(row is not None and row.project_id == project_id)
 
-    def _character_aliases(self, row: StoryCharacter) -> set[str]:
-        values: list[str] = []
-        for payload in (row.summary_json, row.synopsis_json, row.bible_json):
-            self._collect_alias_values(payload, values)
-        return {self._normalized_name(value) for value in values if self._normalized_name(value)}
-
-    @classmethod
-    def _collect_alias_values(cls, value: Any, output: list[str], *, parent_key: str = "") -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                normalized_key = str(key).strip().casefold()
-                if normalized_key in _ALIAS_KEYS:
-                    cls._collect_scalar_values(child, output)
-                elif isinstance(child, (dict, list)):
-                    cls._collect_alias_values(child, output, parent_key=normalized_key)
-        elif isinstance(value, list):
-            for child in value:
-                cls._collect_alias_values(child, output, parent_key=parent_key)
-
     @staticmethod
-    def _collect_scalar_values(value: Any, output: list[str]) -> None:
-        if isinstance(value, str):
-            output.extend(part.strip() for part in value.replace("，", ",").split(",") if part.strip())
-        elif isinstance(value, list):
-            output.extend(str(part).strip() for part in value if str(part).strip())
+    def _character_aliases(row: StoryCharacter) -> set[str]:
+        return {normalized_name(value) for value in character_alias_values(row) if normalized_name(value)}
 
     @staticmethod
     def _normalized_name(value: Any) -> str:
-        normalized = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
-        return "".join(normalized.split())
+        return normalized_name(value)
 
     @staticmethod
     def _entity_type_for_event(event_type: str) -> str:

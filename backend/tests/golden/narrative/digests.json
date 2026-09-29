@@ -1,16 +1,16 @@
 {
-  "state_omniscient_onstage": "## Authoritative Character State (from event log, do NOT contradict)\n\n### CHAR_LINYUAN\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- missing_limb: 右臂\n- suspects_insider: 城里有人通风报信\n\n### CHAR_SUWAN\n- knows_archive: 案卷在北境\n- location: 北境\n- revealed_to: CHAR_GUZHOU\n- secret_held_by: 苏晚藏着半页旧信\n\n### CHAR_GUZHOU\n- believes_false: 顾舟以为案卷已经烧毁\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### ENT_BELL_TOWER\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### ENT_OLD_LETTER\n- holder: 苏晚",
-  "state_omniscient_all_characters": "## Authoritative Character State (from event log, do NOT contradict)\n\n### CHAR_GUZHOU\n- believes_false: 顾舟以为案卷已经烧毁\n\n### CHAR_LINYUAN\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- missing_limb: 右臂\n- suspects_insider: 城里有人通风报信\n\n### CHAR_SUWAN\n- knows_archive: 案卷在北境\n- location: 北境\n- revealed_to: CHAR_GUZHOU\n- secret_held_by: 苏晚藏着半页旧信\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### ENT_BELL_TOWER\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### ENT_OLD_LETTER\n- holder: 苏晚",
-  "state_omniscient_chapter_two_opening": "## Authoritative Character State (from event log, do NOT contradict)\n\n### CHAR_GUZHOU\n- believes_false: 顾舟以为案卷已经烧毁\n\n### CHAR_LINYUAN\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- suspects_insider: 城里有人通风报信\n\n### CHAR_SUWAN\n- knows_archive: 案卷在北境\n- revealed_to: CHAR_GUZHOU\n- secret_held_by: 苏晚藏着半页旧信\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### ENT_BELL_TOWER\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### ENT_OLD_LETTER\n- holder: 苏晚",
-  "state_pov_linyuan": "## Authoritative Character State (from event log, do NOT contradict)\n\n### CHAR_LINYUAN\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- missing_limb: 右臂\n- suspects_insider: 城里有人通风报信\n\n### CHAR_SUWAN\n- knows_archive: 案卷在北境\n- location: 北境\n\n### POV知识边界 (CHAR_LINYUAN 已知信息)\n- knows_letter: 旧信藏在钟楼\n\n### POV怀疑 (CHAR_LINYUAN 尚未确证，勿写成既定事实)\n- suspects_insider: 城里有人通风报信（尚未确证/suspected）\n\n## 写作约束（信息差·勿泄漏内容）\n- 角色 CHAR_SUWAN 掌握 CHAR_LINYUAN 未知的信息；勿在 CHAR_LINYUAN 视角泄漏其内容。\n- 角色 CHAR_GUZHOU 掌握 CHAR_LINYUAN 未知的信息；勿在 CHAR_LINYUAN 视角泄漏其内容。\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### ENT_BELL_TOWER\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### ENT_OLD_LETTER\n- holder: 苏晚",
-  "state_pov_guzhou": "## Authoritative Character State (from event log, do NOT contradict)\n\n### CHAR_LINYUAN\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- missing_limb: 右臂\n- suspects_insider: 城里有人通风报信\n\n### CHAR_SUWAN\n- knows_archive: 案卷在北境\n- location: 北境\n- revealed_to: CHAR_GUZHOU\n- secret_held_by: 苏晚藏着半页旧信\n\n### CHAR_GUZHOU\n- believes_false: 顾舟以为案卷已经烧毁\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### ENT_BELL_TOWER\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### ENT_OLD_LETTER\n- holder: 苏晚",
-  "asymmetry_omniscient_suwan_guzhou": "## Information Asymmetry (who knows what the other doesn't)\n\n### CHAR_SUWAN ↔ CHAR_GUZHOU\n  CHAR_SUWAN knows but CHAR_GUZHOU doesn't:\n    - knows_archive:案卷在北境\n\n### Secrets held by CHAR_SUWAN\n  - 苏晚藏着半页旧信\n\n### False beliefs of CHAR_GUZHOU\n  - 顾舟以为案卷已经烧毁",
-  "asymmetry_omniscient_onstage": "## Information Asymmetry (who knows what the other doesn't)\n\n### CHAR_LINYUAN ↔ CHAR_SUWAN\n  CHAR_LINYUAN knows but CHAR_SUWAN doesn't:\n    - knows_letter:旧信藏在钟楼\n    - suspects_insider:城里有人通风报信\n  CHAR_SUWAN knows but CHAR_LINYUAN doesn't:\n    - knows_archive:案卷在北境\n\n### CHAR_LINYUAN ↔ CHAR_GUZHOU\n  CHAR_LINYUAN knows but CHAR_GUZHOU doesn't:\n    - knows_letter:旧信藏在钟楼\n    - suspects_insider:城里有人通风报信\n\n### CHAR_SUWAN ↔ CHAR_GUZHOU\n  CHAR_SUWAN knows but CHAR_GUZHOU doesn't:\n    - knows_archive:案卷在北境\n\n### Secrets held by CHAR_SUWAN\n  - 苏晚藏着半页旧信\n\n### False beliefs of CHAR_GUZHOU\n  - 顾舟以为案卷已经烧毁",
-  "asymmetry_pov_linyuan": "## Information Asymmetry (POV-filtered, do NOT leak hidden content)\n\n### CHAR_LINYUAN 独有认知（可据此行动）\n  - knows_letter:旧信藏在钟楼\n  - suspects_insider:城里有人通风报信\n\n### 信息盲区（勿在 POV 视角泄漏内容）\n  - 角色 CHAR_SUWAN 掌握 CHAR_LINYUAN 未知的信息\n  - 角色 CHAR_GUZHOU 掌握 CHAR_LINYUAN 未知的信息",
-  "asymmetry_pov_suwan": "## Information Asymmetry (POV-filtered, do NOT leak hidden content)\n\n### CHAR_SUWAN 独有认知（可据此行动）\n  - knows_archive:案卷在北境\n\n### 信息盲区（勿在 POV 视角泄漏内容）\n  - 角色 CHAR_LINYUAN 掌握 CHAR_SUWAN 未知的信息\n  - 角色 CHAR_GUZHOU 掌握 CHAR_SUWAN 未知的信息\n\n### CHAR_SUWAN 自身秘密/信念\n  - 苏晚藏着半页旧信",
+  "state_omniscient_onstage": "## Authoritative Character State (from event log, do NOT contradict)\n\n### 林远 (CHAR_LINYUAN)\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- missing_limb: 右臂\n- suspects_insider: 城里有人通风报信\n\n### 苏晚 (CHAR_SUWAN)\n- knows_archive: 案卷在北境\n- location: 北境\n- revealed_to: CHAR_GUZHOU\n- secret_held_by: 苏晚藏着半页旧信\n\n### 顾舟 (CHAR_GUZHOU)\n- believes_false: 顾舟以为案卷已经烧毁\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### 钟楼 (ENT_BELL_TOWER)\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### 旧信 (ENT_OLD_LETTER)\n- holder: 苏晚",
+  "state_omniscient_all_characters": "## Authoritative Character State (from event log, do NOT contradict)\n\n### 顾舟 (CHAR_GUZHOU)\n- believes_false: 顾舟以为案卷已经烧毁\n\n### 林远 (CHAR_LINYUAN)\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- missing_limb: 右臂\n- suspects_insider: 城里有人通风报信\n\n### 苏晚 (CHAR_SUWAN)\n- knows_archive: 案卷在北境\n- location: 北境\n- revealed_to: CHAR_GUZHOU\n- secret_held_by: 苏晚藏着半页旧信\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### 钟楼 (ENT_BELL_TOWER)\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### 旧信 (ENT_OLD_LETTER)\n- holder: 苏晚",
+  "state_omniscient_chapter_two_opening": "## Authoritative Character State (from event log, do NOT contradict)\n\n### 顾舟 (CHAR_GUZHOU)\n- believes_false: 顾舟以为案卷已经烧毁\n\n### 林远 (CHAR_LINYUAN)\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- suspects_insider: 城里有人通风报信\n\n### 苏晚 (CHAR_SUWAN)\n- knows_archive: 案卷在北境\n- revealed_to: CHAR_GUZHOU\n- secret_held_by: 苏晚藏着半页旧信\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### 钟楼 (ENT_BELL_TOWER)\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### 旧信 (ENT_OLD_LETTER)\n- holder: 苏晚",
+  "state_pov_linyuan": "## Authoritative Character State (from event log, do NOT contradict)\n\n### 林远 (CHAR_LINYUAN)\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- missing_limb: 右臂\n- suspects_insider: 城里有人通风报信\n\n### 苏晚 (CHAR_SUWAN)\n- knows_archive: 案卷在北境\n- location: 北境\n\n### POV知识边界 (林远 已知信息)\n- knows_letter: 旧信藏在钟楼\n\n### POV怀疑 (林远 尚未确证，勿写成既定事实)\n- suspects_insider: 城里有人通风报信（尚未确证/suspected）\n\n## 写作约束（信息差·勿泄漏内容）\n- 角色 苏晚 掌握 林远 未知的信息；勿在 林远 视角泄漏其内容。\n- 角色 顾舟 掌握 林远 未知的信息；勿在 林远 视角泄漏其内容。\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### 钟楼 (ENT_BELL_TOWER)\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### 旧信 (ENT_OLD_LETTER)\n- holder: 苏晚",
+  "state_pov_guzhou": "## Authoritative Character State (from event log, do NOT contradict)\n\n### 林远 (CHAR_LINYUAN)\n- knows_letter: 旧信藏在钟楼\n- location: 雨城\n- missing_limb: 右臂\n- suspects_insider: 城里有人通风报信\n\n### 苏晚 (CHAR_SUWAN)\n- knows_archive: 案卷在北境\n- location: 北境\n- revealed_to: CHAR_GUZHOU\n- secret_held_by: 苏晚藏着半页旧信\n\n### 顾舟 (CHAR_GUZHOU)\n- believes_false: 顾舟以为案卷已经烧毁\n\n## Authoritative Location State (from event log, do NOT contradict)\n\n### 钟楼 (ENT_BELL_TOWER)\n- bell: 钟声停了\n\n## Authoritative Item State (from event log, do NOT contradict)\n\n### 旧信 (ENT_OLD_LETTER)\n- holder: 苏晚",
+  "asymmetry_omniscient_suwan_guzhou": "## Information Asymmetry (who knows what the other doesn't)\n\n### 苏晚 ↔ 顾舟\n  苏晚 knows but 顾舟 doesn't:\n    - knows_archive:案卷在北境\n\n### Secrets held by 苏晚\n  - 苏晚藏着半页旧信\n\n### False beliefs of 顾舟\n  - 顾舟以为案卷已经烧毁",
+  "asymmetry_omniscient_onstage": "## Information Asymmetry (who knows what the other doesn't)\n\n### 林远 ↔ 苏晚\n  林远 knows but 苏晚 doesn't:\n    - knows_letter:旧信藏在钟楼\n    - suspects_insider:城里有人通风报信\n  苏晚 knows but 林远 doesn't:\n    - knows_archive:案卷在北境\n\n### 林远 ↔ 顾舟\n  林远 knows but 顾舟 doesn't:\n    - knows_letter:旧信藏在钟楼\n    - suspects_insider:城里有人通风报信\n\n### 苏晚 ↔ 顾舟\n  苏晚 knows but 顾舟 doesn't:\n    - knows_archive:案卷在北境\n\n### Secrets held by 苏晚\n  - 苏晚藏着半页旧信\n\n### False beliefs of 顾舟\n  - 顾舟以为案卷已经烧毁",
+  "asymmetry_pov_linyuan": "## Information Asymmetry (POV-filtered, do NOT leak hidden content)\n\n### 林远 独有认知（可据此行动）\n  - knows_letter:旧信藏在钟楼\n  - suspects_insider:城里有人通风报信\n\n### 信息盲区（勿在 POV 视角泄漏内容）\n  - 角色 苏晚 掌握 林远 未知的信息\n  - 角色 顾舟 掌握 林远 未知的信息",
+  "asymmetry_pov_suwan": "## Information Asymmetry (POV-filtered, do NOT leak hidden content)\n\n### 苏晚 独有认知（可据此行动）\n  - knows_archive:案卷在北境\n\n### 信息盲区（勿在 POV 视角泄漏内容）\n  - 角色 林远 掌握 苏晚 未知的信息\n  - 角色 顾舟 掌握 苏晚 未知的信息\n\n### 苏晚 自身秘密/信念\n  - 苏晚藏着半页旧信",
   "asymmetry_single_onstage": "",
-  "recent_checkpoint": "## Recent Committed Continuity Changes (canon only; do NOT contradict)\n- [PRJ_NARR_WORLD_CH02/PRJ_NARR_WORLD_CH02_SC01] CHAR_LINYUAN.missing_limb = 右臂 (character_state)\n- [PRJ_NARR_WORLD_CH02/PRJ_NARR_WORLD_CH02_SC01] CHAR_SUWAN.location = 北境 (location_change)",
-  "recent_checkpoint_pov_linyuan": "## Recent Committed Continuity Changes (canon only; do NOT contradict)\n- [PRJ_NARR_WORLD_CH02/PRJ_NARR_WORLD_CH02_SC01] CHAR_LINYUAN.missing_limb = 右臂 (character_state)\n- [PRJ_NARR_WORLD_CH02/PRJ_NARR_WORLD_CH02_SC01] CHAR_SUWAN.location = 北境 (location_change)",
+  "recent_checkpoint": "## Recent Committed Continuity Changes (canon only; do NOT contradict)\n- [PRJ_NARR_WORLD_CH02/PRJ_NARR_WORLD_CH02_SC01] 林远.missing_limb = 右臂 (character_state)\n- [PRJ_NARR_WORLD_CH02/PRJ_NARR_WORLD_CH02_SC01] 苏晚.location = 北境 (location_change)",
+  "recent_checkpoint_pov_linyuan": "## Recent Committed Continuity Changes (canon only; do NOT contradict)\n- [PRJ_NARR_WORLD_CH02/PRJ_NARR_WORLD_CH02_SC01] 林远.missing_limb = 右臂 (character_state)\n- [PRJ_NARR_WORLD_CH02/PRJ_NARR_WORLD_CH02_SC01] 苏晚.location = 北境 (location_change)",
   "pov_known_fact_values_linyuan": [
     "北境",
     "右臂",
@@ -29,6 +29,24 @@
   ],
   "consistency_prose_with_names": [
     {
+      "fact_key": "missing_limb",
+      "entity_id": "CHAR_LINYUAN",
+      "entity_name": "林远",
+      "expected": "missing: 右臂",
+      "actual": "text uses the missing limb",
+      "evidence": "林远抬起右手握紧刀柄",
+      "source": "keyword"
+    },
+    {
+      "fact_key": "location",
+      "entity_id": "CHAR_SUWAN",
+      "entity_name": "苏晚",
+      "expected": "北境",
+      "actual": "text places 苏晚 at 雨城",
+      "evidence": "苏晚还在雨城等消息",
+      "source": "keyword"
+    },
+    {
       "facts_checked": 3
     }
   ],
@@ -36,6 +54,7 @@
     {
       "fact_key": "missing_limb",
       "entity_id": "CHAR_LINYUAN",
+      "entity_name": "林远",
       "expected": "missing: 右臂",
       "actual": "text uses the missing limb",
       "evidence": "char_linyuan抬起右手握紧刀柄",
@@ -44,8 +63,9 @@
     {
       "fact_key": "location",
       "entity_id": "CHAR_SUWAN",
+      "entity_name": "苏晚",
       "expected": "北境",
-      "actual": "text places CHAR_SUWAN at 雨城",
+      "actual": "text places 苏晚 at 雨城",
       "evidence": "char_suwan还在雨城等消息",
       "source": "keyword"
     },
