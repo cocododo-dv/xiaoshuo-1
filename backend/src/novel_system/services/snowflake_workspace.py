@@ -50,6 +50,13 @@ from novel_system.services.snowflake_draft_merge import (  # noqa: F401 — 旧�
     overlay_keeping_members as _merge_dicts_keeping_members,
 )
 from novel_system.services.snowflake_scene_brief import beats_from_detail, scene_writer_brief
+from novel_system.services.snowflake_step_runs import (
+    WIPE_PRESERVED_EVENT,
+    StepRunStore,
+    step_run_history_payload,
+    step_run_payload,
+    would_wipe_story as _would_wipe_story,
+)
 from novel_system.services.snowflake_staleness import (
     changed_scene_row_uids,
     stable_json,
@@ -102,7 +109,7 @@ from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMS
 from novel_system.services.hash_engine import sha256_text
 from novel_system.services.value_coercion import coerce_string_list, int_or_default
 from novel_system.services.writing_stats import WritingStatsService
-from novel_system.services.snowflake_queries import latest_by_step, latest_outline_plan, next_outline_plan_version, next_step_version
+from novel_system.services.snowflake_queries import latest_outline_plan, next_outline_plan_version
 
 SCENE_PATCH_FIELDS = {
     # P1-1: scene_id / chapter_id are system-minted identity, never author-editable.
@@ -153,6 +160,8 @@ _IN_CHUNK = 500
 class SnowflakeWorkspaceService:
     def __init__(self, session: Session) -> None:
         self.session = session
+        # 一步的版本：最新版、造新版、原位改写待审版、让位、历史（B06-17）
+        self._runs = StepRunStore(session)
         self._projects = ProjectService(session)
         self._chaptering = SnowflakeChapteringService(session)
         self._llm = SnowflakeWorkspaceLLMService(session)
@@ -391,14 +400,12 @@ class SnowflakeWorkspaceService:
             status = "pending_review"
             approved_at = None
 
-        run = SnowflakeStepRun(
-            step_run_id=f"snowflake_step_run_{project.project_id}_{step_key}_{uuid.uuid4().hex[:10]}",
-            project_id=project.project_id,
-            step_key=step_key,
-            version=self._next_step_version(project.project_id, step_key),
+        run = self._runs.new_run(
+            project.project_id,
+            step_key,
+            draft=draft,
             status=status,
-            draft_json=draft,
-            health_json=self._step_health(
+            health=self._step_health(
                 step_key,
                 draft,
                 status,
@@ -408,11 +415,10 @@ class SnowflakeWorkspaceService:
                 direction_brief=brief_ref,
                 direction=direction_ref,
             ),
-            input_refs_json=self._input_refs(step_key, latest_by_step),
+            input_refs=self._input_refs(step_key, latest_by_step),
             llm_call_id=llm_call_id,
             approved_at=approved_at,
         )
-        self.session.add(run)
         self.session.flush()
         if direction_turn is not None:
             # 「已按此生成」：回合记住它被哪一版采纳过（方向回合还记第几条）——界面打徽章，教练下一轮看得到作者选了哪个方向
@@ -434,7 +440,7 @@ class SnowflakeWorkspaceService:
                 direction=direction_ref,
             )
         if status == "skipped":
-            self._supersede_same_step(run)
+            self._runs.supersede_others(run)
             self._mark_downstream_stale(run)
         self.session.flush()
         workspace = self.mutation_workspace(project.project_id)
@@ -543,29 +549,25 @@ class SnowflakeWorkspaceService:
         wipes_story = latest is not None and _would_wipe_story(latest.draft_json, draft)
         if latest is not None and latest.status == "pending_review" and not wipes_story:
             run = latest
-            run.draft_json = draft
-            run.input_refs_json = self._input_refs(step_key, latest_by_step)
-            run.health_json = self._step_health(step_key, draft, "pending_review", generation_source="author")
-            run.stale_reason = None
-            run.stale_accepted_at = None
-            run.stale_accepted_by = None
-            run.stale_accepted_note = None
-        else:
-            run = SnowflakeStepRun(
-                step_run_id=f"snowflake_step_run_{project.project_id}_{step_key}_{uuid.uuid4().hex[:10]}",
-                project_id=project.project_id,
-                step_key=step_key,
-                version=self._next_step_version(project.project_id, step_key),
-                status="pending_review",
-                draft_json=draft,
-                health_json=self._step_health(step_key, draft, "pending_review", generation_source="author"),
-                input_refs_json=self._input_refs(step_key, latest_by_step),
+            StepRunStore.rewrite_pending(
+                run,
+                draft=draft,
+                health=self._step_health(step_key, draft, "pending_review", generation_source="author"),
+                input_refs=self._input_refs(step_key, latest_by_step),
             )
-            self.session.add(run)
+        else:
+            run = self._runs.new_run(
+                project.project_id,
+                step_key,
+                draft=draft,
+                status="pending_review",
+                health=self._step_health(step_key, draft, "pending_review", generation_source="author"),
+                input_refs=self._input_refs(step_key, latest_by_step),
+            )
             if wipes_story and latest is not None and latest.status == "pending_review":
                 self.session.add(
                     OperationLog(
-                        event_type="snowflake_step_wipe_preserved",
+                        event_type=WIPE_PRESERVED_EVENT,
                         object_type="snowflake_step_run",
                         object_ref=run.step_run_id,
                         payload_json={
@@ -603,44 +605,19 @@ class SnowflakeWorkspaceService:
         预览某一版时再按它取草稿（R15a：「服务器上保存的版本」的前提）。"""
         project = self._require_snowflake_project(project_id)
         self._require_step(step_key)
-        query = select(SnowflakeStepRun).where(
-            SnowflakeStepRun.project_id == project.project_id, SnowflakeStepRun.step_key == step_key
-        )
-        wanted = str(step_run_id or "").strip()
-        if wanted:
-            query = query.where(SnowflakeStepRun.step_run_id == wanted)
-        rows = self.session.execute(
-            query.order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.updated_at.desc(), SnowflakeStepRun.created_at.desc())
-        ).scalars().all()
-        if wanted and not rows:
+        rows = self._runs.history(project.project_id, step_key, step_run_id=step_run_id)
+        if str(step_run_id or "").strip() and not rows:
             raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "该历史版本不属于当前项目的这一步骤。", status_code=404)
-        preserved = self._wipe_guard_preservations([row.step_run_id for row in rows])
+        preserved = self._runs.wipe_guard_preservations([row.step_run_id for row in rows])
         items = []
         for row in rows:
-            payload = self._step_run_history_payload(row, include_draft=include_draft)
+            payload = step_run_history_payload(row, include_draft=include_draft)
             if include_draft:
                 payload["draft"] = present_draft(project.project_id, payload.get("draft"))
             # 抹空保护新起的那一版：它记着被保住的是哪一版（界面可以据此一键取回）
             payload["wipe_guard_preserved_step_run_id"] = preserved.get(row.step_run_id)
             items.append(payload)
         return {"project_id": project.project_id, "step_key": step_key, "items": items}
-
-    def _wipe_guard_preservations(self, step_run_ids: list[str]) -> dict[str, str]:
-        """抹空保护新起的版本 → 它保住的上一版（``snowflake_step_wipe_preserved`` 操作日志）。"""
-        if not step_run_ids:
-            return {}
-        rows = self.session.execute(
-            select(OperationLog.object_ref, OperationLog.payload_json).where(
-                OperationLog.event_type == "snowflake_step_wipe_preserved",
-                OperationLog.object_type == "snowflake_step_run",
-                OperationLog.object_ref.in_(step_run_ids),
-            )
-        ).all()
-        return {
-            str(object_ref): str((payload or {}).get("preserved_step_run_id") or "")
-            for object_ref, payload in rows
-            if (payload or {}).get("preserved_step_run_id")
-        }
 
     def restore_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -658,17 +635,14 @@ class SnowflakeWorkspaceService:
         draft = canonicalize_draft(project.project_id, deepcopy(source_run.draft_json or {}), mint_missing=True)
         refs = self._input_refs(step_key, latest_by_step)
         refs["restored_from_step_run_id"] = source_run.step_run_id
-        run = SnowflakeStepRun(
-            step_run_id=f"snowflake_step_run_{project.project_id}_{step_key}_{uuid.uuid4().hex[:10]}",
-            project_id=project.project_id,
-            step_key=step_key,
-            version=self._next_step_version(project.project_id, step_key),
+        run = self._runs.new_run(
+            project.project_id,
+            step_key,
+            draft=draft,
             status="pending_review",
-            draft_json=draft,
-            health_json=self._step_health(step_key, draft, "pending_review", generation_source="history_restore"),
-            input_refs_json=refs,
+            health=self._step_health(step_key, draft, "pending_review", generation_source="history_restore"),
+            input_refs=refs,
         )
-        self.session.add(run)
         self.session.flush()
         sync_notice = self._sync_structured_step_data(project, step_key, draft, run)
         if sync_notice:
@@ -685,7 +659,7 @@ class SnowflakeWorkspaceService:
             "step": self._step_from_workspace(workspace, step_key),
             "workspace": workspace,
             "step_run": step_run,
-            "restored_from": self._step_run_history_payload(source_run, include_draft=False),
+            "restored_from": step_run_history_payload(source_run, include_draft=False),
         }
         if sync_notice:
             result["notice"] = sync_notice
@@ -720,8 +694,8 @@ class SnowflakeWorkspaceService:
             raise DomainError("SNOWFLAKE_STEP_RUN_NOT_APPROVABLE", "这一步骤当前状态不能被确认。", status_code=409)
 
         self._require_previous_gates(step_key, latest_by_step, allow_self=run.step_run_id)
-        previous_run = self._latest_approved_step_run(project.project_id, step_key, exclude_step_run_id=run.step_run_id)
-        self._supersede_same_step(run)
+        previous_run = self._runs.latest_confirmed(project.project_id, step_key, exclude_step_run_id=run.step_run_id)
+        self._runs.supersede_others(run)
         run.status = "approved"
         run.approved_at = utcnow()
         run.health_json = self._step_health(
@@ -1812,7 +1786,7 @@ class SnowflakeWorkspaceService:
         return blockers
 
     def _latest_by_step(self, project_id: str) -> dict[str, SnowflakeStepRun]:
-        return latest_by_step(self.session, SnowflakeStepRun, project_id)
+        return self._runs.latest_by_step(project_id)
 
     def _input_refs(self, step_key: str, latest_by_step: dict[str, SnowflakeStepRun]) -> dict[str, Any]:
         step_index = STEP_ORDER[step_key]
@@ -1822,27 +1796,6 @@ class SnowflakeWorkspaceService:
             if run is not None and self._gate_satisfied(step["step_key"], latest_by_step):
                 refs[step["step_key"]] = run.step_run_id
         return refs
-
-    def _next_step_version(self, project_id: str, step_key: str) -> int:
-        return next_step_version(self.session, SnowflakeStepRun, project_id, step_key)
-
-    def _latest_approved_step_run(
-        self,
-        project_id: str,
-        step_key: str,
-        *,
-        exclude_step_run_id: str,
-    ) -> SnowflakeStepRun | None:
-        return self.session.execute(
-            select(SnowflakeStepRun)
-            .where(
-                SnowflakeStepRun.project_id == project_id,
-                SnowflakeStepRun.step_key == step_key,
-                SnowflakeStepRun.step_run_id != exclude_step_run_id,
-                SnowflakeStepRun.status.in_(["approved", "skipped"]),
-            )
-            .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
-        ).scalars().first()
 
     def _next_plan_version(self, project_id: str) -> int:
         return next_outline_plan_version(self.session, project_id)
@@ -3104,18 +3057,6 @@ class SnowflakeWorkspaceService:
         # 阶段 N：概述对两种形态都合法，略过只给反应场。
         scene.rendering_mode = effective_rendering_mode(scene.scene_type, scene.rendering_mode)
 
-    def _supersede_same_step(self, run: SnowflakeStepRun) -> None:
-        rows = self.session.execute(
-            select(SnowflakeStepRun).where(
-                SnowflakeStepRun.project_id == run.project_id,
-                SnowflakeStepRun.step_key == run.step_key,
-                SnowflakeStepRun.step_run_id != run.step_run_id,
-                SnowflakeStepRun.status.in_(["approved", "skipped"]),
-            )
-        ).scalars().all()
-        for row in rows:
-            row.status = "superseded"
-
     def _mark_downstream_stale(self, run: SnowflakeStepRun, *, previous_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         # P0-3: a single dependency/diff-aware judgment replaces the old "stale every
         # later step" loop. Only steps whose approval snapshot of THIS step's consumed
@@ -3291,54 +3232,8 @@ class SnowflakeWorkspaceService:
             health["direction"] = deepcopy(direction)
         return health
 
-    @staticmethod
-    def _step_run_payload(run: SnowflakeStepRun | None, *, include_diagnosis: bool = True) -> dict[str, Any] | None:
-        """一版草稿的元数据。``diagnosis_json`` 是 ``health`` 的一份深拷贝，只有 GET 的工作台还带它（B06-05）。"""
-        if run is None:
-            return None
-        payload = {
-            "step_run_id": run.step_run_id,
-            "artifact_id": run.step_run_id,
-            "step_key": run.step_key,
-            "version": run.version,
-            "status": run.status,
-            "diagnosis_json": deepcopy(run.health_json or {}),
-            "llm_call_id": run.llm_call_id,
-            "approved_at": run.approved_at,
-            "stale_reason": run.stale_reason,
-            "stale_accepted_at": run.stale_accepted_at,
-            "stale_accepted_by": run.stale_accepted_by,
-            "stale_accepted_note": run.stale_accepted_note,
-            # 阶段 E：本版草稿写入时消费的上游 step_run_id（按 step_key）——前端用它对照
-            # 各上游现在的 step_run_id，把「上游改了什么」拉成消费版本 vs 当前版本的 diff。
-            "input_refs": deepcopy(run.input_refs_json or {}),
-            "created_at": run.created_at,
-            "updated_at": run.updated_at,
-        }
-        if not include_diagnosis:
-            del payload["diagnosis_json"]
-        return payload
-
-    @staticmethod
-    def _step_run_history_payload(run: SnowflakeStepRun, *, include_draft: bool = False) -> dict[str, Any]:
-        payload = {
-            "step_run_id": run.step_run_id,
-            "version": run.version,
-            "status": run.status,
-            "created_at": run.created_at,
-            "updated_at": run.updated_at,
-            "approved_at": run.approved_at,
-            "stale_reason": run.stale_reason,
-            "stale_accepted_at": run.stale_accepted_at,
-            "stale_accepted_by": run.stale_accepted_by,
-            "stale_accepted_note": run.stale_accepted_note,
-            "generation_source": str((run.health_json or {}).get("generation_source") or ""),
-            "trigger_source": str((run.health_json or {}).get("trigger_source") or ""),
-            "draft_summary": _draft_summary(run.draft_json or {}),
-        }
-        if include_draft:
-            payload["draft"] = deepcopy(run.draft_json or {})
-        return payload
+    #: 一版草稿的元数据（``snowflake_step_runs.step_run_payload``）
+    _step_run_payload = staticmethod(step_run_payload)
 
     @staticmethod
     def _step_from_workspace(workspace: dict[str, Any], step_key: str) -> dict[str, Any]:
@@ -3404,34 +3299,6 @@ class SnowflakeWorkspaceService:
 # 阶段 U：「先看 3 个方向」没带作者要求时，回合里的「我」这一行写这句
 CANDIDATES_DEFAULT_ASK = "给我 3 个不同方向"
 
-# 抹空保护：一步草稿里不算「故事文字」的键——身份、枚举与排序，空白默认稿也会带着它们（如角色步的 role=主角）
-_NON_STORY_KEYS = frozenset({
-    "character_id", "row_uid", "scene_id", "scene_plan_id", "chapter_id", "role", "primary_form", "scene_type",
-    "rendering_mode", "target_length_band", "act", "chapter_seq", "scene_seq", "spine", "status", "version",
-    "pov_character_id", "protagonist_character_id", "onstage_chars_json",
-})
-_WIPE_GUARD_MIN_CHARS = 8  # 两三个字的试笔被清空不值得多留一版
-
-
-def _story_text_chars(value: Any, key: str | None = None) -> int:
-    if key is not None and (key in _NON_STORY_KEYS or str(key).startswith("fe_")):
-        return 0
-    if isinstance(value, str):
-        return len(value.strip())
-    if isinstance(value, list):
-        return sum(_story_text_chars(item) for item in value)
-    if isinstance(value, dict):
-        return sum(_story_text_chars(item, str(name)) for name, item in value.items())
-    return 0
-
-
-def _would_wipe_story(previous: Any, incoming: Any) -> bool:
-    """整步抹空：旧稿有成段的故事文字，新稿一个字都没有（只剩身份 / 枚举 / fe_* 写穿键）。"""
-    return (
-        _story_text_chars(semantic_payload(previous if isinstance(previous, dict) else {})) >= _WIPE_GUARD_MIN_CHARS
-        and _story_text_chars(semantic_payload(incoming if isinstance(incoming, dict) else {})) == 0
-    )
-
 _PROTAGONIST_EXCLUDE_ZH = ("对手", "反派", "对立", "配角", "敌")
 _PROTAGONIST_TOKENS_EN = ("protagonist", "main character", "heroine", "hero", "lead")
 _PROTAGONIST_EXCLUDE_EN = ("antagonist", "opposition", "villain", "rival", "supporting")
@@ -3447,30 +3314,6 @@ def _is_protagonist_role(role: Any) -> bool:
     if any(token in text for token in _PROTAGONIST_EXCLUDE_EN):
         return False
     return any(token in text for token in _PROTAGONIST_TOKENS_EN)
-
-
-def _draft_summary(value: Any, *, limit: int = 180) -> str:
-    pieces: list[str] = []
-
-    def visit(item: Any) -> None:
-        if len(" ".join(pieces)) >= limit:
-            return
-        if isinstance(item, str):
-            text = " ".join(item.split())
-            if text:
-                pieces.append(text)
-            return
-        if isinstance(item, list):
-            for child in item[:8]:
-                visit(child)
-            return
-        if isinstance(item, dict):
-            for child in item.values():
-                visit(child)
-
-    visit(value)
-    summary = " ".join(pieces)
-    return summary[:limit].rstrip()
 
 
 _SCENE_PLAN_STATE_KEYS: frozenset[str] = frozenset(
