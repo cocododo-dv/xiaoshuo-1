@@ -45,8 +45,9 @@ from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from tests.real_llm_fakes import install_online_pipeline
 
 PROJECT_ID = "prj-design"
-POV_ID = "c1"
-FOE_ID = "c2"
+# 库里的角色 id 带作品前缀（B06-01：雪花写入时规范成 f"{project_id}_{raw}"）
+POV_ID = f"{PROJECT_ID}_c1"
+FOE_ID = f"{PROJECT_ID}_c2"
 LOGLINE = "林一鸣必须在真凶今晚动手前证明自己无罪，但唯一的证据握在想让他认罪的人手里。"
 PENDING_LOGLINE = "一个还没确认的新一句话。"
 SENTENCES = [

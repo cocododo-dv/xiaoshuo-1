@@ -881,12 +881,12 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
 
 def merge_step_draft(
     step_key: str,
-    artifact_json: dict[str, Any] | None,
+    stored_draft: dict[str, Any] | None,
     *,
     latest_by_step: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     draft = default_step_draft(step_key, latest_by_step=latest_by_step)
-    payload = artifact_json or {}
+    payload = stored_draft or {}
     if not isinstance(payload, dict):
         return draft
     return _normalize_step_draft(step_key, _merge_dicts(draft, payload))
@@ -899,7 +899,7 @@ def default_step_draft(step_key: str, *, latest_by_step: dict[str, Any] | None =
         scene_list_artifact = (latest_by_step or {}).get("scene_list")
         scenes = []
         if scene_list_artifact is not None:
-            scenes = list((scene_list_artifact.artifact_json or {}).get("scenes") or [])
+            scenes = list((scene_list_artifact.draft_json or {}).get("scenes") or [])
         if scenes:
             draft["scenes"] = [_scene_detail_seed(scene, index) for index, scene in enumerate(scenes, start=1)]
     return _normalize_step_draft(step_key, draft)

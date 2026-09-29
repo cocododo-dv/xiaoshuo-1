@@ -39,6 +39,11 @@ from novel_system.services.projects import (
     trash_emptied_snowflake_chapters,
 )
 from novel_system.services.project_runtime_invalidation import ProjectRuntimeInvalidationService
+from novel_system.services.snowflake_character_ids import (
+    canonical_character_id,
+    canonicalize_draft,
+    present_draft,
+)
 from novel_system.services.snowflake_scene_brief import beats_from_detail, scene_writer_brief
 from novel_system.services.snowflake_staleness import (
     changed_scene_row_uids,
@@ -178,6 +183,27 @@ class SnowflakeWorkspaceService:
         }
 
     def workspace(self, project_id: str) -> dict[str, Any]:
+        """交给前端的工作台：角色 id 按草稿口径（剥作品前缀，见 ``snowflake_character_ids``）。"""
+        return self._present_workspace(project_id, self._workspace_payload(project_id))
+
+    def _present_workspace(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        steps = []
+        for step in payload.get("steps") or []:
+            steps.append({**step, "draft": present_draft(project_id, step.get("draft"))})
+        return {
+            **payload,
+            "steps": steps,
+            "assistant_history": [self._present_turn(project_id, turn) for turn in payload.get("assistant_history") or []],
+        }
+
+    @staticmethod
+    def _present_turn(project_id: str, turn: dict[str, Any]) -> dict[str, Any]:
+        if not turn.get("candidate_patch"):
+            return turn
+        return {**turn, "candidate_patch": present_draft(project_id, turn["candidate_patch"])}
+
+    def _workspace_payload(self, project_id: str) -> dict[str, Any]:
+        """工作台的库内口径（角色 id 带作品前缀）：提示词与服务端内部都读它。"""
         project = self._require_snowflake_project(project_id)
         latest_by_step = self._latest_by_step(project_id)
         current_step_key = self._current_step_key(latest_by_step)
@@ -244,9 +270,13 @@ class SnowflakeWorkspaceService:
             # 「AI 补全这个角色」通道：只深化指定角色（character_id/姓名皆可指），
             # 按 character_id 合并回底稿，其余角色保持原样。仅角色三步（04/06/08）支持。
             focus_character_refs = [str(ref or "").strip() for ref in (body.get("focus_character_refs") or []) if str(ref or "").strip()]
+            # 前端按草稿口径（不带作品前缀）指角色；库里的草稿是规范口径——两种写法都认（姓名照旧认）
+            focus_character_refs = list(
+                dict.fromkeys([*focus_character_refs, *(canonical_character_id(project.project_id, ref) for ref in focus_character_refs)])
+            )
             # draft_override：FE 带来的本地最新规范草稿（与上行 PATCH 同源），盖在
             # 存档之上作为生成底稿——消除「刚加的角色/场还没自动保存上行」的竞态。
-            draft_override = self._merged_draft_override(latest_by_step, step_key, body.get("draft_override"))
+            draft_override = self._merged_draft_override(project.project_id, latest_by_step, step_key, body.get("draft_override"))
             if body.get("require_llm") and not self._llm.llm_enabled():
                 raise DomainError(
                     "SNOWFLAKE_LLM_REQUIRED",
@@ -292,7 +322,8 @@ class SnowflakeWorkspaceService:
                 author_direction_brief=brief_prompt,
                 direction_kind=direction_kind,
             )
-            draft = llm_result.payload
+            # 模型看到的是规范口径的 id，回来的也按规范口径落库；缺 id 的新角色在这里铸号
+            draft = canonicalize_draft(project.project_id, llm_result.payload, mint_missing=True)
             source = llm_result.source
             llm_call_id = llm_result.llm_call_id
             # 分批深化中途失败等「作者必须知道但不属于草稿」的事实随健康度落库
@@ -374,7 +405,7 @@ class SnowflakeWorkspaceService:
             step_key=step_key,
             target_chars=target_chars,
             latest_by_step=latest_by_step,
-            draft_override=self._merged_draft_override(latest_by_step, step_key, body.get("draft_override")),
+            draft_override=self._merged_draft_override(project.project_id, latest_by_step, step_key, body.get("draft_override")),
             author_ask=ask or None,
             focus_scene_id=focus_scene_id,
             author_direction_brief=(
@@ -403,8 +434,8 @@ class SnowflakeWorkspaceService:
             "llm_call_id": llm_result.llm_call_id,
             "candidates": candidates,
             "turn_id": turn.turn_id,
-            "turn": self._assistant_turn_payload(turn),
-            "assistant_history": self._assistant_history(project.project_id),
+            "turn": self._present_turn(project.project_id, self._assistant_turn_payload(turn)),
+            "assistant_history": self._presented_history(project.project_id),
         }
 
     def update_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -414,7 +445,12 @@ class SnowflakeWorkspaceService:
         latest_by_step = self._latest_by_step(project.project_id)
         if self._draft_gate_mode(project) == "strict":
             self._require_previous_gates(step_key, latest_by_step)
-        draft = merge_step_draft(step_key, body.get("draft") or {}, latest_by_step=latest_by_step)
+        # 写入即规范（B06-01）：角色 id 与视角 / 在场 / 全书主角的引用一律带作品前缀，缺 id 的角色铸号
+        draft = canonicalize_draft(
+            project.project_id,
+            merge_step_draft(step_key, body.get("draft") or {}, latest_by_step=latest_by_step),
+            mint_missing=True,
+        )
         latest = latest_by_step.get(step_key)
 
         # 防静默回退：已批准/已跳过步骤收到无故事含义的 re-PATCH 时保持原状态与版本。
@@ -510,6 +546,8 @@ class SnowflakeWorkspaceService:
         items = []
         for row in rows:
             payload = self._step_run_history_payload(row, include_draft=include_draft)
+            if include_draft:
+                payload["draft"] = present_draft(project.project_id, payload.get("draft"))
             # 抹空保护新起的那一版：它记着被保住的是哪一版（界面可以据此一键取回）
             payload["wipe_guard_preserved_step_run_id"] = preserved.get(row.step_run_id)
             items.append(payload)
@@ -545,7 +583,7 @@ class SnowflakeWorkspaceService:
         latest_by_step = self._latest_by_step(project.project_id)
         if self._draft_gate_mode(project) == "strict":
             self._require_previous_gates(step_key, latest_by_step)
-        draft = deepcopy(source_run.draft_json or {})
+        draft = canonicalize_draft(project.project_id, deepcopy(source_run.draft_json or {}), mint_missing=True)
         refs = self._input_refs(step_key, latest_by_step)
         refs["restored_from_step_run_id"] = source_run.step_run_id
         run = SnowflakeStepRun(
@@ -810,10 +848,10 @@ class SnowflakeWorkspaceService:
         project = self._require_snowflake_project(project_id)
         body = payload or {}
         latest_by_step = self._latest_by_step(project.project_id)
-        workspace = self.workspace(project.project_id)
+        workspace = self._workspace_payload(project.project_id)
         step_key = str(body.get("step_key") or workspace.get("current_step_key") or "book_brief").strip() or "book_brief"
         step = self._step_from_workspace(workspace, step_key)
-        step = self._step_with_override(step, body.get("draft_override"), latest_by_step=latest_by_step)
+        step = self._step_with_override(project.project_id, step, body.get("draft_override"), latest_by_step=latest_by_step)
         approved_context = self._approved_context(workspace)
         focus_scene_id = str(body.get("focus_scene_id") or "").strip() or None
         # 阶段 T：教练有记忆——当前要点（含作者撤下的）、继承的全书级要点、本步最近几轮问答
@@ -860,7 +898,9 @@ class SnowflakeWorkspaceService:
                     payload_json={"project_id": project.project_id, "step_key": step_key, "turn_id": turn.turn_id, **brief_delta},
                 )
             )
-        history = self._assistant_history(project.project_id)
+        history = self._presented_history(project.project_id)
+        if result.get("candidate_patch"):
+            result = {**result, "candidate_patch": present_draft(project.project_id, result["candidate_patch"])}
         return {
             **result,
             "turn_id": turn.turn_id,
@@ -906,11 +946,13 @@ class SnowflakeWorkspaceService:
     def suggest_scene_triage(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         body = payload or {}
-        workspace = self.workspace(project.project_id)
+        workspace = self._workspace_payload(project.project_id)
         step = self._step_from_workspace(workspace, "scene_details")
         if not step.get("draft", {}).get("scenes"):
             raise DomainError("SNOWFLAKE_SCENE_DETAILS_REQUIRED", "需要先完成场景规划（场景细化）。", status_code=409)
-        step = self._step_with_override(step, body.get("draft_override"), latest_by_step=self._latest_by_step(project.project_id))
+        step = self._step_with_override(
+            project.project_id, step, body.get("draft_override"), latest_by_step=self._latest_by_step(project.project_id)
+        )
         llm_result = self._llm.scene_triage_suggestions(
             project=workspace["project"],
             step=step,
@@ -1987,6 +2029,9 @@ class SnowflakeWorkspaceService:
             )
         return items
 
+    def _presented_history(self, project_id: str) -> list[dict[str, Any]]:
+        return [self._present_turn(project_id, turn) for turn in self._assistant_history(project_id)]
+
     def _assistant_history(self, project_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
         rows = self.session.execute(
             select(SnowflakeAssistantTurn)
@@ -2586,21 +2631,31 @@ class SnowflakeWorkspaceService:
         }
 
     def _sync_character_plans(self, project_id: str, step_key: str, characters: list[Any], *, approved: bool) -> None:
-        for index, item in enumerate(characters, start=1):
+        # 草稿已按规范口径落库（角色 id 带作品前缀、缺 id 的已铸号）；按 character_id 一次预读本作品的角色计划
+        plans = {
+            row.character_id: row
+            for row in self.session.execute(
+                select(SnowflakeCharacterPlan).where(SnowflakeCharacterPlan.project_id == project_id)
+            ).scalars()
+        }
+        for item in characters:
             if not isinstance(item, dict):
                 continue
-            character_id = str(item.get("character_id") or f"{project_id}_CHAR{index:02d}").strip()
+            character_id = str(item.get("character_id") or "").strip()
+            if not character_id:
+                continue  # 完全空的成员不进名册（也没有铸号）
             display_name = str(item.get("display_name") or item.get("name") or character_id).strip()
-            plan_id = f"snowflake_character_plan_{project_id}_{character_id}"
-            plan = self.session.get(SnowflakeCharacterPlan, plan_id)
+            plan = plans.get(character_id)
             if plan is None:
+                # 旧规则 snowflake_character_plan_{project}_{raw} 恰好等于 snowflake_character_plan_{规范 id}
                 plan = SnowflakeCharacterPlan(
-                    character_plan_id=plan_id,
+                    character_plan_id=f"snowflake_character_plan_{character_id}",
                     project_id=project_id,
                     character_id=character_id,
                     display_name=display_name,
                 )
                 self.session.add(plan)
+                plans[character_id] = plan
             plan.display_name = display_name
             plan.role = item.get("role") or plan.role
             plan.source_step_key = step_key
@@ -2618,6 +2673,9 @@ class SnowflakeWorkspaceService:
 
     def _sync_story_character(self, project_id: str, character_id: str, display_name: str, item: dict[str, Any], step_key: str) -> None:
         row = self.session.get(StoryCharacter, character_id)
+        if row is not None and row.project_id != project_id:
+            # 全局主键上别的作品的人：绝不改写（B06-01 修掉的就是这个跨作品覆盖）
+            return
         if row is None:
             row = StoryCharacter(
                 character_id=character_id,
@@ -3173,6 +3231,7 @@ class SnowflakeWorkspaceService:
 
     @staticmethod
     def _merged_draft_override(
+        project_id: str,
         latest_by_step: dict[str, SnowflakeStepRun],
         step_key: str,
         draft_override: Any,
@@ -3184,14 +3243,17 @@ class SnowflakeWorkspaceService:
         latest = latest_by_step.get(step_key)
         base_payload = {
             key: value
-            for key, value in (((latest.artifact_json if latest is not None else None) or {}).items())
+            for key, value in (((latest.draft_json if latest is not None else None) or {}).items())
             if not str(key).startswith("fe_")
         }
-        override_payload = {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
+        override_payload = canonicalize_draft(
+            project_id, {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
+        )
         return _merge_dicts_keeping_members(base_payload, override_payload)
 
     @staticmethod
     def _step_with_override(
+        project_id: str,
         step: dict[str, Any],
         draft_override: Any,
         *,
@@ -3204,9 +3266,9 @@ class SnowflakeWorkspaceService:
         # 不是删除指令。助手/场景三分类同样必须按成员对位合并——整表替换会让前端少带几个
         # 成员就把存档里的成员整片抹掉,教练/分类器于是只看到半截故事(与 generate 同一 bug)。
         # 先剥掉 fe_* 写透键,再按成员 id 对位。
-        override_payload = {
-            key: value for key, value in draft_override.items() if not str(key).startswith("fe_")
-        }
+        override_payload = canonicalize_draft(
+            project_id, {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
+        )
         merged_step["draft"] = _merge_dicts_keeping_members(merged_step.get("draft") or {}, override_payload)
         merged_step["draft"] = merge_step_draft(
             str(merged_step.get("step_key") or ""),

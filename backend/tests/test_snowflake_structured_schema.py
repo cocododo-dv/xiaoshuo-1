@@ -312,8 +312,8 @@ def test_empty_items_never_become_phantom_members() -> None:
         [{}, {"display_name": "周砚", "role": "对手"}], template=template, project_id="PRJ", latest_by_step={}, base_items=[]
     )
     assert [item["display_name"] for item in kept] == ["周砚"]
-    # 只有 id 的成员仍然保留：它是「补全」语义里的合法无操作（不清空既有内容）
-    assert _sanitize_character_items([{"character_id": "c1"}], template=template, project_id="PRJ", latest_by_step={}, base_items=[])[0]["character_id"] == "c1"
+    # 只有 id 的成员仍然保留：它是「补全」语义里的合法无操作（不清空既有内容）；id 落库前补上作品前缀（B06-01）
+    assert _sanitize_character_items([{"character_id": "c1"}], template=template, project_id="PRJ", latest_by_step={}, base_items=[])[0]["character_id"] == "PRJ_c1"
 
     scene_template = next(
         field["template"] for field in get_step_definition("scene_list")["editor"]["fields"] if field["key"] == "scenes"

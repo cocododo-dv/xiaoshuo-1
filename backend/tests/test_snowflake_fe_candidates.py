@@ -793,7 +793,7 @@ def test_generate_step_focus_character_only_touches_target(client, monkeypatch) 
     focus_prompt = captured[-1].messages[1]["content"]
     assert '"focus_characters"' in focus_prompt and "只深化" in focus_prompt
     focus_members = _prompt_payload(focus_prompt)["focus_characters"]["characters"]
-    assert [m["character_id"] for m in focus_members] == ["c2"]
+    assert [m["character_id"] for m in focus_members] == [f"{pid}_c2"]  # 提示词里是库里的口径（B06-01）
 
     missing = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/character_sheets/generate",

@@ -32,12 +32,13 @@ def _fill_u1(session, service: SnowflakeWorkspaceService) -> None:
 
 def test_method_fields_persist_materialize_and_reach_the_structure_brief(session) -> None:
     service = _seed(session)
+    # 库里的角色 id 带作品前缀（B06-01）；第 10 步的草稿里写的是前端的 c1 / c2 / c3
     for character_id, name, role in (("c1", "她", "主角"), ("c2", "弟弟", "盟友"), ("c3", "债主", "对手")):
-        session.add(StoryCharacter(character_id=character_id, project_id=PROJECT_ID, display_name=name, role=role, summary_json={}, synopsis_json={}, bible_json={}, status="approved"))
+        session.add(StoryCharacter(character_id=f"{PROJECT_ID}_{character_id}", project_id=PROJECT_ID, display_name=name, role=role, summary_json={}, synopsis_json={}, bible_json={}, status="approved"))
     session.flush()
     _fill_u1(session, service)
     plan = _plan(session, "u1")
-    assert plan.onstage_chars_json == ["c2", "c3"]
+    assert plan.onstage_chars_json == [f"{PROJECT_ID}_c2", f"{PROJECT_ID}_c3"]
     assert plan.story_time == "第三天傍晚"
     assert plan.expected_reader_emotion.startswith("替她捏一把汗")
     payload = next(step for step in service.workspace(PROJECT_ID)["steps"] if step["step_key"] == "scene_details")["draft"]["scenes"]
@@ -46,7 +47,7 @@ def test_method_fields_persist_materialize_and_reach_the_structure_brief(session
 
     _materialize(session, service)
     card = session.get(SceneCard, plan.scene_id)
-    assert card.onstage_chars_json == ["c2", "c3"]
+    assert card.onstage_chars_json == [f"{PROJECT_ID}_c2", f"{PROJECT_ID}_c3"]
     assert card.writer_brief_json["story_time"] == "第三天傍晚"
     assert card.writer_brief_json["expected_reader_emotion"].startswith("替她捏一把汗")
     brief = render_scene_structure_brief(card, session) or ""

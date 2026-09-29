@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from tests.test_snowflake_rendering_mode import PROJECT_ID, _plan, _seed
 
+# 库里的角色 id 带作品前缀（B06-01）；前端草稿里写的是不带前缀的 c1 / c2
+C1, C2 = f"{PROJECT_ID}_c1", f"{PROJECT_ID}_c2"
+
 
 def _details_row(service, row_uid: str) -> dict:
     workspace = service.workspace(PROJECT_ID)
@@ -20,7 +23,7 @@ def _details_row(service, row_uid: str) -> dict:
 def test_scene_details_cannot_revert_the_form_or_pov_that_09_owns(session) -> None:
     service = _seed(session)
     assert _plan(session, "u2").scene_type == "reactive"
-    assert _plan(session, "u2").pov_character_id == "c1"
+    assert _plan(session, "u2").pov_character_id == C1
 
     stale_row = {**_details_row(service, "u2"), "primary_form": "proactive", "scene_type": "proactive", "pov_character_id": "c9"}
     stale_row["dilemma"] = "报警伤弟弟；不报警明天轮到自己，还会连累证人。"
@@ -28,7 +31,7 @@ def test_scene_details_cannot_revert_the_form_or_pov_that_09_owns(session) -> No
 
     plan = _plan(session, "u2")
     assert plan.scene_type == "reactive"
-    assert plan.pov_character_id == "c1"
+    assert plan.pov_character_id == C1
     assert plan.dilemma.endswith("还会连累证人。"), "第 10 步自己的字段照常落库"
 
 
@@ -43,7 +46,7 @@ def test_09_still_changes_the_form_and_pov(session) -> None:
 
     plan = _plan(session, "u2")
     assert plan.scene_type == "proactive"
-    assert plan.pov_character_id == "c2"
+    assert plan.pov_character_id == C2
 
 
 def test_a_scene_first_seen_in_step_10_takes_its_form_from_step_10(session) -> None:
@@ -59,4 +62,4 @@ def test_a_scene_first_seen_in_step_10_takes_its_form_from_step_10(session) -> N
 
     plan = _plan(session, "u-new")
     assert plan.scene_type == "reactive"
-    assert plan.pov_character_id == "c2"
+    assert plan.pov_character_id == C2

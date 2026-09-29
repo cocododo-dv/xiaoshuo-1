@@ -24,6 +24,7 @@ from novel_system.services.llm_accounting import (
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
 from novel_system.services.prompt_builder import PromptConfigurationError
+from novel_system.services.snowflake_character_ids import canonical_character_id, mint_character_id
 from novel_system.services.snowflake_direction_brief import coerce_brief_update
 from novel_system.services.snowflake_prompt_budget import (
     AUTHOR_DIRECTION_BRIEF_KEY,
@@ -141,7 +142,7 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
                 step_key,
                 draft_override
                 or (
-                    latest_by_step.get(step_key).artifact_json
+                    latest_by_step.get(step_key).draft_json
                     if latest_by_step.get(step_key) is not None
                     else None
                 ),
@@ -307,7 +308,7 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
         current_source = (
             draft_override
             if draft_override
-            else (latest_by_step.get(step_key).artifact_json if latest_by_step.get(step_key) is not None else None)
+            else (latest_by_step.get(step_key).draft_json if latest_by_step.get(step_key) is not None else None)
         )
         current_draft = merge_step_draft(
             step_key,
@@ -362,7 +363,7 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
                     matched_refs |= hit
             if refs - matched_refs and step_key != "character_sheets":
                 roster_artifact = latest_by_step.get("character_sheets")
-                roster = (getattr(roster_artifact, "artifact_json", None) or {}).get("characters") if roster_artifact is not None else None
+                roster = (getattr(roster_artifact, "draft_json", None) or {}).get("characters") if roster_artifact is not None else None
                 for member in roster or []:
                     if not isinstance(member, dict):
                         continue
@@ -602,7 +603,7 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             current_source = (
                 draft_override
                 if draft_override
-                else (latest.artifact_json if latest is not None else None)
+                else (latest.draft_json if latest is not None else None)
             )
             current_canonical = merge_step_draft(step_key, current_source, latest_by_step=dict(latest_by_step))
             prompt_payload.update(
@@ -678,6 +679,7 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
                 output,
                 latest_by_step=dict(latest_by_step),
                 base_draft=step.get("draft") if isinstance(step.get("draft"), dict) else {},
+                project_id=str(project.get("project_id") or ""),
             ),
         )
 
@@ -1208,7 +1210,7 @@ def _upstream_step_context(
         if artifact is None:
             continue
         draft = _sanitize_canonical_draft(
-            merge_step_draft(key, getattr(artifact, "artifact_json", None), latest_by_step=dict(latest_by_step))
+            merge_step_draft(key, getattr(artifact, "draft_json", None), latest_by_step=dict(latest_by_step))
         )
         # 空骨架（还没写的步骤）不占提示预算，也别让模型误以为作者已经交代过什么。
         if not has_value(draft):
@@ -1638,6 +1640,7 @@ def _normalize_assistant_output(
     *,
     latest_by_step: dict[str, Any],
     base_draft: dict[str, Any],
+    project_id: str | None = None,
 ) -> dict[str, Any]:
     reply = str(output.get("reply") or "").strip()
     suggestions = coerce_string_list(output.get("suggestions"))
@@ -1648,7 +1651,7 @@ def _normalize_assistant_output(
             step_key,
             output.get("candidate_patch") or {},
             latest_by_step=latest_by_step,
-            project_id=_project_id_from_steps(latest_by_step),
+            project_id=project_id or _project_id_from_steps(latest_by_step),
             base=base_draft,
             # 教练回复不能因为补丁多了一段就整条报废：违反数量契约的键丢弃，回复与建议照常送达。
             count_policy="drop",
@@ -2114,7 +2117,7 @@ def _sanitize_character_items(
         artifact = latest_by_step.get(step_key)
         if artifact is None:
             continue
-        for item in (artifact.artifact_json or {}).get("characters") or []:
+        for item in (artifact.draft_json or {}).get("characters") or []:
             if not isinstance(item, dict):
                 continue
             display_name = str(item.get("display_name") or "").strip()
@@ -2138,8 +2141,10 @@ def _sanitize_character_items(
         if not character_id and display_name:
             character_id = existing_by_name.get(display_name, "")
         if not character_id:
-            character_id = f"{project_id}_CHAR{index:02d}"
-        item["character_id"] = character_id
+            # 不再按位置编号（删掉中间一个角色，按位置编的号会落到下一个人身上）：铸一个规范 id（B06-01）
+            character_id = mint_character_id(project_id)
+        # 模型回的可能是前端口径的 id（c1）：规范成库里的口径，按 id 合并回底稿才对得上同一个人
+        item["character_id"] = canonical_character_id(project_id, character_id)
         for field_key, template_value in template.items():
             if field_key == "character_id":
                 continue

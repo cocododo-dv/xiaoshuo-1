@@ -93,18 +93,19 @@ def test_explicit_protagonist_outranks_the_first_lead_role(session) -> None:
         }},
     )
     hint = service._protagonist_hint(PROJECT_ID)
-    assert hint == {"character_id": "c2", "display_name": "乙"}
+    # 场景简报里写的是库里的口径（带作品前缀，B06-01）
+    assert hint == {"character_id": f"{PROJECT_ID}_c2", "display_name": "乙"}
     # 没有显式指定：退回第一个「主角」
     service.update_step(PROJECT_ID, "character_sheets", {"draft": {"protagonist_character_id": "", "characters": [
         {"character_id": "c1", "display_name": "甲", "role": "主角", "goal": "x"},
         {"character_id": "c2", "display_name": "乙", "role": "主角", "goal": "y"},
     ]}})
-    assert service._protagonist_hint(PROJECT_ID)["character_id"] == "c1"
+    assert service._protagonist_hint(PROJECT_ID)["character_id"] == f"{PROJECT_ID}_c1"
     # 指向不存在的角色：忽略，退回启发式
     service.update_step(PROJECT_ID, "character_sheets", {"draft": {"protagonist_character_id": "nobody", "characters": [
         {"character_id": "c1", "display_name": "甲", "role": "主角", "goal": "x"},
     ]}})
-    assert service._protagonist_hint(PROJECT_ID)["character_id"] == "c1"
+    assert service._protagonist_hint(PROJECT_ID)["character_id"] == f"{PROJECT_ID}_c1"
 
 
 def test_summary_scenes_get_no_style_first_length_slack(monkeypatch) -> None:

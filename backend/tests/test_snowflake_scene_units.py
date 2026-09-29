@@ -88,7 +88,7 @@ def test_flipping_a_materialized_scene_to_skip_trashes_its_card_and_back_restore
 
 def test_design_context_carries_the_skipped_beat_into_the_next_scene(session) -> None:
     service = _seed(session)
-    session.add(StoryCharacter(character_id="c1", project_id=PROJECT_ID, display_name="她", role="主角", summary_json={}, synopsis_json={}, bible_json={}, status="approved"))
+    session.add(StoryCharacter(character_id=f"{PROJECT_ID}_c1", project_id=PROJECT_ID, display_name="她", role="主角", summary_json={}, synopsis_json={}, bible_json={}, status="approved"))
     session.flush()
     # u2 略过；u3 是它之后的一场
     _edit_plan(service, "u2", rendering_mode="skip")
