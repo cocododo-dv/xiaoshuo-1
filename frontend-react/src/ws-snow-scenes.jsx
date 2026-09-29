@@ -2,13 +2,12 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { apiPost } from "./lib/client.js";
 import { SnowSync } from "./ws-snow-sync.jsx";
-import { activeWorkId, useSnowEvents } from "./ws-snow-hooks.js";
+import { activeWorkId, useSnowNotices } from "./ws-snow-hooks.js";
+import { snowDraftOverride } from "./ws-snow-generation.js";
 import {
   S2_PLAN_FIELDS, S2_TRIAGE_LABEL, s2BusyOn,
 } from "./ws-snow-model.js";
 import { formatClockTime } from "./lib/format.js";
-export { S2SceneList } from "./ws-snow-scene-list.jsx";
-export { S2ScenePlan } from "./ws-snow-scene-plan.jsx";
 
 /* ==========================================================
    09 场景列表 · 10 场景规划
@@ -75,8 +74,8 @@ export function S2SceneAiActions({ step, ai, sceneRows, plans, emphasize = false
 /* 场景分诊（第 10 步）：后端逐场评估 pass/maybe/rewrite + 修复建议/补丁。
    draft_override 带本地最新折叠草稿，免受自动保存节流竞态影响。分诊结果随手存档（save_scene_triage）；
    会话内记住 triage_id，复诊时原行更新而不是堆新行。作者的裁定（pass / maybe / rewrite / cut）本地即时更新、
-   服务端存档，失败回滚并提示。env 同 useSnowGeneration（调用时读最新值）。 */
-export function useSnowTriage(env) {
+   服务端存档，失败回滚并提示。api 是工作台 API（ws-snow-workbench.jsx，调用时读视图的最新值）。 */
+export function useSnowTriage(api) {
   const [triage, setTriage] = useSS(null);   // { items: rowUid -> item, at, source }
   const [triageBusy, setTriageBusy] = useSS(false);
   const triageIdsRef = useSR({});            // scene_plan_id -> triage_id（会话内复用）
@@ -85,28 +84,28 @@ export function useSnowTriage(env) {
   const restore = () => {
     if (triage) return;
     try {
-      const saved = SnowSync.triageItems();
+      const saved = SnowSync.triageItems(api.workId());
       if (saved && saved.items && Object.keys(saved.items).length) setTriage(saved);
     } catch (e) {}
   };
   useSE(() => { restore(); }, [triage]);
-  useSnowEvents({ "ws:snow-hydrated": restore });
+  useSnowNotices({ hydrated: restore });
 
   const runTriage = async () => {
     if (triageBusy) return;
-    const { activeKey: key, drafts, scaffolds } = env.current;
+    const { key } = api.current();
+    const doc = api.doc();
     setTriageBusy(true);
     try {
       const workId = activeWorkId();
       if (!workId) throw new Error("作品尚未就绪");
-      let draftOverride = null;
-      try { draftOverride = SnowSync.canonDraft("planning", { drafts, scaffolds }); } catch (e) {}
+      const draftOverride = snowDraftOverride("planning", doc, workId);
       const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/scene-triage/suggest`,
         draftOverride && (draftOverride.scenes || []).length ? { draft_override: draftOverride } : {});
       const byRow = {};
       (res && res.items || []).forEach(it => { const k = it.row_uid || it.scene_id; if (k) byRow[k] = it; });
       setTriage({ items: byRow, at: Date.now(), source: (res && res.source) || "fallback" });
-      env.current.pushHist("场景分诊", `10 场景规划 · ${Object.keys(byRow).length} 场`, res && res.source === "llm" ? "AI" : "规则", null, key);
+      api.journal("场景分诊", `10 场景规划 · ${Object.keys(byRow).length} 场`, res && res.source === "llm" ? "AI" : "规则", null, key);
       // 存档为推荐态（不写人工裁定），让「重写场挡物化」的闸门真实生效
       try {
         const saved = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/scene-triage`, {
@@ -121,9 +120,9 @@ export function useSnowTriage(env) {
         (saved && saved.items || []).forEach(it => { if (it.scene_plan_id && it.triage_id) triageIdsRef.current[it.scene_plan_id] = it.triage_id; });
         try { SnowSync.refetch(workId); } catch (e2) {}
       } catch (e2) { /* 存档失败不打断分诊展示；下次分诊重试 */ }
-      env.current.showToast(res && res.source === "llm" ? "分诊完成 · AI 评估每场压力 · 已存档" : "分诊完成 · 规则诊断（启用 LLM 可得更深评估）· 已存档", "gold");
+      api.toast(res && res.source === "llm" ? "分诊完成 · AI 评估每场压力 · 已存档" : "分诊完成 · 规则诊断（启用 LLM 可得更深评估）· 已存档", "gold");
     } catch (err) {
-      env.current.showToast("分诊失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      api.toast("分诊失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
     } finally {
       setTriageBusy(false);
     }
@@ -133,10 +132,9 @@ export function useSnowTriage(env) {
   const applyTriageRepair = (rowUid, item) => {
     const patch = (item && item.repair_patch) || {};
     if (!Object.keys(patch).length) return;
-    const e = env.current;
-    e.pushHist("应用修复补丁", `10 场景规划 · ${e.sceneLabel(rowUid)} 修复前留底`, "我", e.snapNow("planning"), e.activeKey);
+    api.journal("应用修复补丁", `10 场景规划 · ${api.sceneLabel(rowUid)} 修复前留底`, "我", api.snapshot("planning"), api.current().key);
     const planKeys = ["goal", "conflict", "setback", "reaction", "dilemma", "decision", "cost_requirement"];
-    e.setScaffolds(prev => {
+    api.setScaffolds(prev => {
       const cur = prev.planning || {};
       const plan = { ...((cur.plans || {})[rowUid] || {}) };
       planKeys.forEach(k => { if (patch[k]) plan[k] = patch[k]; });
@@ -150,12 +148,12 @@ export function useSnowTriage(env) {
       }
       return next;
     });
-    e.showToast(`已应用修复补丁 · ${e.sceneLabel(rowUid)} · 可回滚`, "gold");
+    api.toast(`已应用修复补丁 · ${api.sceneLabel(rowUid)} · 可回滚`, "gold");
   };
 
   /* 阶段 R：作者对某一场的裁定（pass / maybe / rewrite / cut）——本地即时更新，服务端存档（失败回滚并提示） */
   const setTriageVerdict = async (rowUid, status) => {
-    const key = env.current.activeKey;
+    const { key } = api.current();
     const prevTriage = triage;
     const cur = (triage && triage.items && triage.items[rowUid]) || {};
     const next = { ...(triage || { at: Date.now(), source: "author" }), items: { ...((triage && triage.items) || {}), [rowUid]: { ...cur, status, manual: true } } };
@@ -168,12 +166,12 @@ export function useSnowTriage(env) {
         if (saved.scene_plan_id) triageIdsRef.current[saved.scene_plan_id] = saved.triage_id;
         setTriage(t => t ? { ...t, items: { ...t.items, [rowUid]: { ...(t.items[rowUid] || {}), triage_id: saved.triage_id, scene_plan_id: saved.scene_plan_id || (t.items[rowUid] || {}).scene_plan_id, recommended_status: saved.recommended_status || (t.items[rowUid] || {}).recommended_status } } } : t);
       }
-      const no = env.current.sceneLabel(rowUid);
-      env.current.pushHist("分诊裁定", `10 场景规划 · ${no}：${S2_TRIAGE_LABEL[status] || status}`, "我", null, key);
-      env.current.showToast(status === "cut" ? `${no} 已标待删：整理时不建卡，三拍留在构思里` : status === "rewrite" ? `${no} 标为该重写：整理时先不建卡` : `${no} 裁定为${S2_TRIAGE_LABEL[status] || status}`, "gold");
+      const no = api.sceneLabel(rowUid);
+      api.journal("分诊裁定", `10 场景规划 · ${no}：${S2_TRIAGE_LABEL[status] || status}`, "我", null, key);
+      api.toast(status === "cut" ? `${no} 已标待删：整理时不建卡，三拍留在构思里` : status === "rewrite" ? `${no} 标为该重写：整理时先不建卡` : `${no} 裁定为${S2_TRIAGE_LABEL[status] || status}`, "gold");
     } catch (err) {
       setTriage(prevTriage);
-      env.current.showToast("裁定未保存：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      api.toast("裁定未保存：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
     }
   };
 

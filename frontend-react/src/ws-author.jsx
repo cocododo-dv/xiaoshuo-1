@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { WsChapterPlanPanel } from "./ws-snow-chapters.jsx";
+import { SnowSync } from "./ws-snow-sync.jsx";
 import { planIntentsForScene } from "./ws-scene-design.jsx";
 import { arrChapterChecks, arrIsPlanChapter, arrIsPlanScene } from "./ws-author-derive.js";
 import {
@@ -112,7 +113,7 @@ function WsAuthor({ go }) {
      章的结构只有这一个编辑器；章节编排只是它的第二扇门。确认写入之后目录整份重拉，这里给一句回执。 */
   const [planOpen, setPlanOpen] = useState(false);
   const openPlan = () => {
-    if (!window.SnowSync || !window.SnowSync.chapterPreview) { notifyError("分章能力还没准备好，请刷新页面后再试。"); return; }
+    if (!SnowSync || !SnowSync.chapterPreview) { notifyError("分章能力还没准备好，请刷新页面后再试。"); return; }
     setPlanOpen(true);
   };
   const onPlanDone = (result) => {
@@ -129,7 +130,7 @@ function WsAuthor({ go }) {
     refreshResync();
   };
   const goToSnowStep = (beKey) => {
-    const feKey = (window.SnowSync && window.SnowSync.feStepKey && window.SnowSync.feStepKey(beKey)) || "";
+    const feKey = (SnowSync && SnowSync.feStepKey && SnowSync.feStepKey(beKey)) || "";
     setPlanOpen(false);
     goView("snowflake", feKey ? { type: "ws:snow-step", detail: feKey } : null);
   };

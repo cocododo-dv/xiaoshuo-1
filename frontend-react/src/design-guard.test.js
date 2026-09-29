@@ -60,9 +60,9 @@ const KNOWN_OFF_SCALE_BREAKPOINTS = [
   "ws-shell.css: max-height: 680px",
   "ws-shell.css: max-width: 720px",
   "ws-snow.css: max-width: 1180px",
-  "ws-snow.css: max-width: 1279px",
   "ws-snow.css: max-width: 760px",
   "ws-snow.css: min-width: 1181px",
+  "ws-snow.css: max-width: 1279px",
 ];
 // 颜料字压在同色 -wash 底上、但容器里只有 aria-hidden 图标的规则（"文件: 选择器"）。图形只需 3:1，
 // 颜料在自己的 wash 上够用；容器里一旦放字，就得换成 --*-ink 并从这里删掉。
@@ -74,7 +74,7 @@ const MAX_JSX_RAW_COLOURS = 0;
 // 还在用旧 .pill 标签（styles.css，颜料名 crimson / gold / sage / slate / rose）的 className 个数上限
 // （棘轮，只降不升）。新代码用 ws-ui 的 <Tag tone dot>：crimson → accent、gold → warn、sage → ok、
 // slate → info、rose → danger、不带色 → neutral。各视图包改到时换掉，降到 0 后删掉 .pill 样式。
-const MAX_LEGACY_PILL_CLASS_USES = 15;
+const MAX_LEGACY_PILL_CLASS_USES = 3;
 
 const ANIMATION_KEYWORDS = new Set([
   "none", "infinite", "linear", "ease", "ease-in", "ease-out", "ease-in-out", "both", "forwards",

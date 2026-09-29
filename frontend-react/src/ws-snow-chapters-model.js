@@ -7,6 +7,10 @@
    这里的每一个改动都守着这条纪律；分章算法本身在后端（snowflake_chaptering.py）。
    ========================================================== */
 import { wanFixed } from "./lib/format.js";
+import { chapterNoInTitle, isAutoChapterTitle } from "./labels/catalog.js";
+
+/* 章名规则的家在 labels/catalog.js（与后端同一口径）；面板与测试照旧从这里取 */
+export { chapterNoInTitle, isAutoChapterTitle };
 
 export const ACT_LABEL = { 1: "第一幕", 2: "第二幕", 3: "第三幕" };
 
@@ -71,15 +75,6 @@ export function rhythmSummary(rhythm) {
   const missing = (rhythm.spine_placement || []).filter(s => !s.placed).length;
   if (!offHinge && !missing) items.push({ k: "", v: "三个灾难都落在幕的铰链上" });
   return items;
-}
-
-/* 章名框里已经带着这一章的章号吗：章名就是「第 N 章」这种占位，或者空着（占位提示「第 N 章（未命名）」里有章号）。
-   这时章名框左边不再并排写一遍「第 N 章」。 */
-export function chapterNoInTitle(title, index) {
-  const text = String(title || "").trim();
-  if (!text) return true;
-  const m = /^第\s*(\d+)\s*章$/.exec(text);
-  return !!(m && Number(m[1]) === index + 1);
 }
 
 /* 「每章约 N 场」这个数从哪来——面板必须说得出口，不能是个黑盒。 */
@@ -222,12 +217,6 @@ export function mergeChapterIntoPrevious(draft, chapterIndex) {
   const [gone] = next.chapters.splice(chapterIndex, 1);
   next.chapters[chapterIndex - 1].scenes.push(...gone.scenes);
   return respine(next);
-}
-
-/* 章名是不是系统起的占位（空 / 「第 N 章」/「（待补）」）——AI 起章名只碰这些。与后端 is_auto_chapter_title 同一口径。 */
-export function isAutoChapterTitle(title) {
-  const text = String(title || "").trim();
-  return !text || AUTO_TITLE_RE.test(text) || ["待补", "TODO", "todo", "TBD", "tbd", "占位"].some(m => text.includes(m));
 }
 
 /* 章摘要是不是从场上抄来的默认值（空，或与本面板里某一场的摘要一字不差）——这种摘要可以被 AI 写的替掉；

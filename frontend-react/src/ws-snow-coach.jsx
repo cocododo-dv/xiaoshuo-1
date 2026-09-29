@@ -1,12 +1,14 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { Tag } from "./ws-ui.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
 import { modEnterShortcut } from "./lib/platform.js";
 import { isImeComposing } from "./lib/keyboard.js";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { activeWorkId } from "./ws-snow-hooks.js";
+import { snowDraftOverride } from "./ws-snow-generation.js";
 import { CoachInline, CoachReply } from "./ws-snow-reply.jsx";
-import { BRIEF_KIND_LABEL, BRIEF_KIND_ORDER, S2_BE_KEY, s2BriefDeltaParts, s2Provenance } from "./ws-snow-model.js";
+import { BRIEF_KIND_LABEL, BRIEF_KIND_ORDER, S2_BE_KEY, s2AdoptServerScaffold, s2BriefDeltaParts, s2Provenance } from "./ws-snow-model.js";
 
 /* ==========================================================
    教练 · 要点 · 方向 · 生成（阶段 T / U）
@@ -22,8 +24,8 @@ const { useState: useSS, useEffect: useSE, useRef: useSR } = React;
 /* 驻场教练（snowflake_workspace_assistant）：逐步对话辅导，回合服务端持久化。
    第 10 步自动聚焦当前选中场（row_uid，后端已兼容）；带 draft_override 免竞态。
    candidate_patch 是教练的「改写」：应用时空值不清空、按 id 对位、不删成员。
-   env 同 useSnowGeneration（调用时读最新值）；tab 是当前步骤的页签。 */
-export function useSnowCoach(env, tab) {
+   api 是工作台 API（ws-snow-workbench.jsx，调用时读视图的最新值）；tab 是当前步骤的页签。 */
+export function useSnowCoach(api, tab) {
   /* 驻场教练日志（后端 assistant_history，全步骤，服务端持久化；阶段 U 起方向回合也在里面） */
   const [coachHist, setCoachHist] = useSS([]);
   const [coachBusy, setCoachBusy] = useSS(false);
@@ -47,15 +49,15 @@ export function useSnowCoach(env, tab) {
     const msg = String(message || "").trim();
     if (coachBusy || !msg) return;
     setCoachBusy(true);
-    const { activeKey: key, active: step, drafts, scaffolds } = env.current;
+    const { key, step } = api.current();
+    const { drafts, scaffolds } = api.doc();
     try {
       const workId = activeWorkId();
       const beKey = S2_BE_KEY[key];
       if (!workId || !beKey) throw new Error("作品尚未就绪，稍后重试");
       const body = { step_key: beKey, message: msg };
-      let dOv = null;
-      try { dOv = SnowSync.canonDraft(key, { drafts, scaffolds }); } catch (e) {}
-      if (dOv && Object.keys(dOv).length) body.draft_override = dOv;
+      const dOv = snowDraftOverride(key, { drafts, scaffolds }, workId);
+      if (dOv) body.draft_override = dOv;
       const focusRow = key === "planning" ? ((scaffolds.planning || {}).sel || "") : "";
       if (focusRow) body.focus_scene_id = focusRow;
       const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/assistant`, body);
@@ -63,9 +65,9 @@ export function useSnowCoach(env, tab) {
       // 阶段 T：教练每轮重述作者意图要点——回包带本步最新要点，落镜像；差异随回合落表，日志里那一轮自己会说
       if (res && res.direction_brief) { try { SnowSync.setDirectionBrief(workId, key, res.direction_brief); } catch (e) {} }
       const parts = s2BriefDeltaParts(res && res.brief_delta);
-      env.current.pushHist("教练问答", `${step.num} ${step.name}${body.focus_scene_id ? " · 聚焦 " + env.current.sceneLabel(body.focus_scene_id) : ""}${parts.length ? " · 要点 " + parts.join(" / ") : ""}`, "AI", null, key);
+      api.journal("教练问答", `${step.num} ${step.name}${body.focus_scene_id ? " · 聚焦 " + api.sceneLabel(body.focus_scene_id) : ""}${parts.length ? " · 要点 " + parts.join(" / ") : ""}`, "AI", null, key);
     } catch (err) {
-      env.current.showToast("教练回复失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      api.toast("教练回复失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
     } finally {
       setCoachBusy(false);
     }
@@ -75,27 +77,26 @@ export function useSnowCoach(env, tab) {
   const applyCoachPatch = (turn) => {
     const patch = turn && turn.candidate_patch;
     if (!patch || !Object.keys(patch).length) return;
-    const e = env.current;
-    const key = e.activeKey;
-    e.pushHist("填入教练改写", `${e.active.num} ${e.active.name} · 填入前留底`, "我", e.snapNow(key), key);
+    const { key, step } = api.current();
+    api.journal("填入教练改写", `${step.num} ${step.name} · 填入前留底`, "我", api.snapshot(key), key);
     let fe = null;
-    try { fe = SnowSync.applyCanonPatch(key, { drafts: e.drafts, scaffolds: e.scaffolds }, patch, null); } catch (err) {}
-    if (fe && fe.scaffold) e.setScaffolds(prev => ({ ...prev, [key]: fe.scaffold }));
-    else if (fe && fe.text != null) e.setDrafts(prev => ({ ...prev, [key]: fe.text }));
-    e.setTabFor(key, "edit");
-    e.showToast(`已填入「${(turn && turn.candidate_label) || "教练改写"}」· 可回滚`, "gold");
+    try { fe = SnowSync.applyCanonPatch(key, api.doc(), patch, null); } catch (err) {}
+    if (fe && fe.scaffold) api.setScaffolds(prev => s2AdoptServerScaffold(prev, key, fe.scaffold));
+    else if (fe && fe.text != null) api.setDrafts(prev => ({ ...prev, [key]: fe.text }));
+    api.showTab(key, "edit");
+    api.toast(`已填入「${(turn && turn.candidate_label) || "教练改写"}」· 可回滚`, "gold");
   };
 
   /* 阶段 T：作者编辑本步要点（撤下 / 改写 / 加条 / 范围 / 恢复 / 继承）——乐观写入，失败由 store 回滚并上抛 */
   const saveBrief = async (lines, inherit) => {
     const workId = activeWorkId();
     if (!workId) return;
-    const key = env.current.activeKey;
+    const { key } = api.current();
     setBriefBusy(true);
     try {
       await SnowSync.saveDirectionBrief(workId, key, { lines, inherit_upstream: inherit });
     } catch (err) {
-      env.current.showToast("要点未保存：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      api.toast("要点未保存：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
     } finally {
       setBriefBusy(false);
     }
@@ -143,7 +144,7 @@ export function S2AiBar({ stepName, canGenerate, emphasize = false, primary, str
         </div>
       )}
       {err && (
-        <div className="sf-cand-err" role="alert" data-testid="snow-ai-error">
+        <div className="sf-ai-err" role="alert" data-testid="snow-ai-error">
           <I.AlertTriangle size={13} /><span>{err}</span>
           <button className="btn btn-quiet btn-sm" onClick={onClearErr}>知道了</button>
         </div>
@@ -290,11 +291,11 @@ function S2DirectionCards({ turn, freeText, focusLabel, structBusy, busyTarget, 
           <header className="sf-dir-head">
             <span className="sf-dir-id">{S2_ID_LETTERS[i] || i + 1}</span>
             <span className="sf-dir-label">{c.label}</span>
-            {c.tag && <span className="pill text-xs"><span className="pill-dot" />{c.tag}</span>}
-            {chosen === i && <span className="pill pill-sage text-xs sf-dir-chosen" title="本步有一版就是按这个方向生成的"><span className="pill-dot" />已按此生成</span>}
+            {c.tag && <Tag dot>{c.tag}</Tag>}
+            {chosen === i && <Tag tone="ok" dot className="sf-dir-chosen" title="本步有一版就是按这个方向生成的">已按此生成</Tag>}
           </header>
           <p className="sf-dir-text">{c.text}</p>
-          {(c.notes || []).length > 0 && <div className="sf-dir-notes">{c.notes.map((n, j) => <span key={j} className="pill text-xs">{n}</span>)}</div>}
+          {(c.notes || []).length > 0 && <div className="sf-dir-notes">{c.notes.map((n, j) => <Tag key={j}>{n}</Tag>)}</div>}
           <div className="sf-dir-actions">
             {freeText ? (
               <button className="btn btn-primary btn-sm" onClick={() => onAdoptText(turn, i)} data-testid="snow-direction-use-text" title="这一句就是本步的内容，直接采用（不再调用模型）">
@@ -386,7 +387,7 @@ export function S2Coach({ active, beKey, history, busy, dirBusy, focusRow, focus
                               {replyBusy ? <I.Refresh size={13} className="sf-spin" /> : <I.Wand size={13} />} {replyBusy ? "生成中…" : "按此生成本步"}
                             </button>
                           )}
-                          {adopted && <span className="pill pill-sage text-xs sf-dir-chosen" title="本步有一版就是按这段回复生成的"><span className="pill-dot" />已按此生成</span>}
+                          {adopted && <Tag tone="ok" dot className="sf-dir-chosen" title="本步有一版就是按这段回复生成的">已按此生成</Tag>}
                         </div>
                       )}
                     </React.Fragment>
@@ -406,7 +407,7 @@ export function S2Coach({ active, beKey, history, busy, dirBusy, focusRow, focus
         {dirBusy && <div className="sf-coach-busy" data-testid="snow-directions-busy"><I.Refresh size={13} className="sf-spin" /> 教练正在依上游材料与本步要点想三个方向…</div>}
       </div>
       {err && (
-        <div className="sf-cand-err" role="alert" data-testid="snow-coach-error">
+        <div className="sf-ai-err" role="alert" data-testid="snow-coach-error">
           <I.AlertTriangle size={13} /><span>{err}</span>
           <button className="btn btn-quiet btn-sm" onClick={onClearErr}>知道了</button>
         </div>

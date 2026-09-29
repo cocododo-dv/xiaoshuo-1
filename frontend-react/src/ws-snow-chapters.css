@@ -1,0 +1,61 @@
+/* 分章面板（ws-snow-chapters.jsx）的样式——构思页与章节编排共用这一张面板（2026-09-29 从 ws-snow.css 拆出）。
+   main.jsx 里紧跟 ws-snow.css 导入，其后是 ws-snow-editors.css：三份的先后就是拆之前一个文件里的先后。 */
+
+/* 分章预览面板（P2）：整理章节结构不再是黑盒，作者在这里看见并调整归属。
+   外壳用共享的 .ws-dialog-scrim / .ws-dialog（面板就地渲染，见 ws-snow-chapters.jsx）；正文自己滚，页脚常驻。 */
+/* 宿主壳不占盒子：遮罩是 fixed 全屏，壳只用来接住遮罩上的 mousedown（保住对话框里的焦点） */
+.sf-chapterplan-host { display: contents; }
+.sf-chapterplan { width: min(960px, 100%); max-height: calc(100vh - 48px); overflow: hidden; }
+.sf-chapterplan-head { border-bottom: 1px solid var(--line-1); padding-bottom: var(--s3); }
+/* 「有还没确认的调整」和它的「撤销调整」挨在一起，靠左；取消 / 确认写入靠右 */
+.sf-chapterplan-dirtyline { margin-right: auto; display: flex; align-items: center; gap: var(--s2); }
+.sf-chapterplan-dirty { font-size: var(--fs-xs); color: var(--gold-ink); }
+.sf-chapterplan-bar { display: flex; align-items: center; gap: 8px; padding: 10px 24px; border-bottom: 1px solid var(--line-1); flex-wrap: wrap; }
+.sf-chapterplan-rhythm { display: flex; align-items: center; gap: 6px 16px; flex-wrap: wrap; padding: 7px 24px; border-bottom: 1px solid var(--line-1); font-size: var(--fs-xs); color: var(--ink-3); }
+/* 节奏体检一项一个标签：「每章 2–5 场」「平均 4.3 场」「第一幕 1 章 / 5 场」，不再用「·」串成一串 */
+.sf-chapterplan-rhythmitem { white-space: nowrap; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.sf-chapterplan-rhythmk { margin-right: 4px; color: var(--ink-3); }
+.sf-chapterplan-rationale { display: flex; align-items: flex-start; gap: 6px; padding: 8px 24px; border-bottom: 1px solid var(--line-1); font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); background: var(--paper-1); }
+.sf-chapterplan-empty { padding: 32px 24px; text-align: center; color: var(--ink-3); font-size: var(--fs-sm); }
+.sf-chapterplan-empty.tone-rose { color: var(--danger-ink); }
+.sf-chapterplan-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 24px; display: grid; gap: 14px; align-content: start; }
+.sf-chapterplan-act { display: grid; gap: 8px; }
+.sf-chapterplan-actlabel { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); }
+.sf-chapterplan-chapter { border: 1px solid var(--line-1); border-radius: 10px; background: var(--paper-1); overflow: hidden; }
+.sf-chapterplan-chapter.is-empty { border-style: dashed; opacity: .72; }
+.sf-chapterplan-chapter.is-unassigned { border-color: var(--crimson); }
+.sf-chapterplan-chaphead { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line-1); }
+.sf-chapterplan-title { flex: 1; min-width: 0; border: 1px solid transparent; background: transparent; color: var(--ink-1); font: 600 var(--fs-sm)/1.5 var(--font-serif); padding: 2px 4px; border-radius: 6px; }
+.sf-chapterplan-title:focus { outline: none; border-color: var(--gold); background: var(--paper-0); }
+.sf-chapterplan-title.as-text { font-weight: 600; }
+.sf-chapterplan-spine { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--gold-wash); color: var(--gold-ink); }
+.sf-chapterplan-count { font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+.sf-chapterplan-scenes { list-style: none; margin: 0; padding: 4px 6px; display: grid; gap: 2px; }
+.sf-chapterplan-scene { display: flex; align-items: flex-start; gap: 6px; padding: 3px 4px; border-radius: 6px; font-size: var(--fs-xs); }
+.sf-chapterplan-scene:hover { background: var(--paper-2); }
+.sf-chapterplan-scene.is-placeholder { color: var(--ink-3); font-style: italic; }
+.sf-chapterplan-kind { font-size: 11px; padding: 1px 5px; border-radius: 4px; background: var(--crimson-wash); color: var(--crimson-ink); flex: none; margin-top: 2px; }
+.sf-chapterplan-kind.is-reactive { background: var(--slate-soft); color: var(--slate-ink); }
+.sf-chapterplan-scenetitle { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.5; color: var(--ink-2); }
+/* 2026-09-18 面板重做：场景列表序号 / 功能标签 / 章号 / 「每章约 N 场」 */
+.sf-chapterplan-no { flex: none; width: 22px; font: 600 11px/1.7 var(--font-sans); font-variant-numeric: tabular-nums; color: var(--ink-3); text-align: right; }
+.sf-chapterplan-chapno { flex: none; font: 600 11px/1 var(--font-sans); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.sf-chapterplan-scenemain { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.sf-chapterplan-fn { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sf-chapterplan-sceneacts { flex: none; display: inline-flex; gap: 2px; opacity: .7; }
+.sf-chapterplan-scene:hover .sf-chapterplan-sceneacts, .sf-chapterplan-sceneacts:focus-within { opacity: 1; }
+.sf-chapterplan-sum { display: block; width: 100%; box-sizing: border-box; border: none; border-bottom: 1px solid var(--line-1); background: transparent; color: var(--ink-2); font-size: var(--fs-xs); line-height: 1.6; padding: 4px 12px 4px 36px; }
+.sf-chapterplan-sum::placeholder { color: var(--ink-4); }
+.sf-chapterplan-sum:focus { outline: none; background: var(--paper-0); color: var(--ink-1); border-bottom-color: var(--gold); box-shadow: inset 0 -1px 0 var(--gold); }
+.sf-chapterplan-scale { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 24px; border-bottom: 1px solid var(--line-1); font-size: var(--fs-xs); color: var(--ink-2); }
+.sf-chapterplan-scale-field { display: inline-flex; align-items: center; gap: 6px; }
+.sf-chapterplan-scale-field input { width: 52px; padding: 2px 6px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--paper-0); color: var(--ink-1); font: 600 var(--fs-xs)/1.5 var(--font-sans); font-variant-numeric: tabular-nums; text-align: center; }
+.sf-chapterplan-scale-note { color: var(--ink-3); font-size: var(--fs-xs); }
+.sf-chapterplan-anchor { font-size: 11px; color: var(--gold-ink); flex: none; }
+.sf-chapterplan-unplanned { font-size: 11px; color: var(--crimson-ink); flex: none; }
+.sf-chapterplan-warnings { border-top: 1px solid var(--line-1); padding: 8px 24px; display: grid; gap: 4px; max-height: 22vh; overflow: auto; }
+.sf-chapterplan-warn { display: flex; align-items: flex-start; gap: 6px; font-size: var(--fs-xs); line-height: 1.6; }
+.sf-chapterplan-warn.tone-rose { color: var(--danger-ink); }
+.sf-chapterplan-warn-actions { display: inline-flex; gap: 6px; margin-left: 8px; flex: none; }
+.sf-chapterplan-warn.tone-gold { color: var(--gold-ink); }
+.sf-chapterplan > .sf-chapterplan-warn { padding: 0 24px 8px; }

@@ -18,6 +18,8 @@ import "./ws-scene-design.css";
 import "./ws-styleref.css";
 import "./ws-fidelity.css";
 import "./ws-snow.css";
+import "./ws-snow-chapters.css";
+import "./ws-snow-editors.css";
 
 import { App } from "./ws-app.jsx";
 import ReactDOMClient from "react-dom/client";

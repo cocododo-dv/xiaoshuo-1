@@ -4,7 +4,6 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoachInline, CoachReply, parseCoachInline, parseCoachReply } from "./ws-snow-reply.jsx";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const mounted = [];
 async function render(node) {

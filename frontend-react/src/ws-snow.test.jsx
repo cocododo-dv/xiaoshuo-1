@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const catalog = vi.hoisted(() => ({
   get: vi.fn(() => []),
-  adoptOutline: vi.fn(async () => 2),
 }));
 
 vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: catalog }));
@@ -15,16 +14,23 @@ vi.mock("./ws-works.jsx", () => ({
     active: () => ({ id: "new-book", title: "真正的新书" }),
   },
 }));
-// 视图从 ws-snow-sync.jsx 直接 import SnowSync；分章面板（与章节编排共用）仍读 window.SnowSync。
-// 每个用例把自己的假 SnowSync 挂在 window 上，这里的模块 mock 转发过去（用例没给的方法读出来是 undefined）。
+// 视图从 ws-snow-sync.jsx 直接 import SnowSync。每个用例把自己的假 SnowSync 挂在 window 上，这里的模块 mock
+// 转发过去（用例没给的方法读出来是 undefined）；subscribe 用例一般不给，由这里的通知表兜着——
+// notify(kind, detail) 就是同步层发出的一条通知（hydrated / health / …）。
+const snowListeners = vi.hoisted(() => new Set());
 vi.mock("./ws-snow-sync.jsx", () => ({
-  SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
+  SnowSync: new Proxy({}, { get: (_target, name) => {
+    if (window.SnowSync && window.SnowSync[name]) return window.SnowSync[name];
+    if (name === "subscribe") return (fn) => { snowListeners.add(fn); return () => snowListeners.delete(fn); };
+    return undefined;
+  } }),
 }));
+const notify = (kind, detail) => act(async () => { [...snowListeners].forEach(fn => fn(kind, detail)); });
 
-import { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2NormalizeState, s2ReorderScenes } from "./ws-snow.jsx";
-import { WS_SNOW_STEPS } from "./ws-nav.js";
+import { WsSnowflake, WsConstruct } from "./ws-snow.jsx";
+import { s2PlanState } from "./ws-snow-model.js";
+import { canonFromFE } from "./ws-snow-canon.js";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const mounted = [];
 
@@ -39,9 +45,7 @@ async function renderSnow() {
 
 describe("真实新项目的雪花顶部主操作", () => {
   beforeEach(() => {
-    window.localStorage.clear();
     catalog.get.mockReturnValue([]);
-    catalog.adoptOutline.mockClear();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.spyOn(window, "alert").mockImplementation(() => {});
     // 分章面板打开即拉后端预览（算法在后端，前端不再持有第二套）
@@ -101,17 +105,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeTruthy();
     expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
     // 预览阶段绝不落库
-    expect(catalog.adoptOutline).not.toHaveBeenCalled();
     expect(window.SnowSync.materialize).not.toHaveBeenCalled();
-  });
-
-  it("SNOW-01：同步层广播 ws:snow-chapter-plan（每次水合 / 自动保存后都会发）不再把分章面板弹出来", async () => {
-    // 以前视图把这个事件名当「打开面板」的命令，而 SnowSync 在每次捕获工作台时都用它广播分章状态——
-    // 结果面板在落地、刷新、09/10 自动保存后自己弹出来。命令改成视图内的回调，广播只归同步层。
-    const host = await renderSnow();
-    await act(async () => { window.dispatchEvent(new CustomEvent("ws:snow-chapter-plan", { detail: "new-book" })); });
-    expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeNull();
-    expect(window.SnowSync.chapterPreview).not.toHaveBeenCalled();
   });
 
   it("右栏只有一个评分：后端的评定；没有按关键词计数的「实时自评」，也没有页脚的「自检 0/3」", async () => {
@@ -324,7 +318,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     await act(async () => { document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
     expect(document.querySelector('[data-testid="snow-upstream-diff"]')).toBeNull();
     // 导入结构：从「更多」菜单打开，提交走 SnowSync.importCanonicalPlan
-    await act(async () => host.querySelector(".sf-more-btn").click());
+    await act(async () => host.querySelector('[data-testid="snow-more"]').click());
     await act(async () => document.querySelector('[data-testid="snow-import-open"]').click());
     const dialog = document.querySelector('[data-testid="snow-import-dialog"]');
     expect(dialog.getAttribute("role")).toBe("dialog");
@@ -350,7 +344,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     }));
     const host = await renderSnow();
     expect([...host.querySelectorAll("button")].some(b => b.textContent.trim() === "重置")).toBe(false);
-    await act(async () => host.querySelector('.sf-more-btn').click());
+    await act(async () => host.querySelector('[data-testid="snow-more"]').click());
     await act(async () => document.querySelector('[data-testid="snow-reset-open"]').click());
     const dialog = document.querySelector('[data-testid="snow-reset-dialog"]');
     expect(dialog.getAttribute("role")).toBe("dialog");
@@ -371,66 +365,6 @@ describe("真实新项目的雪花顶部主操作", () => {
 
 
 /* —— 阶段 E：10 的覆盖格按 09 的形态数槽；本地失效图只是乐观预判（后端优先的合并在视图里） —— */
-describe("阶段 E · 场景规划覆盖格与本地失效图", () => {
-  it("s2PlanSlots / s2PlanState：传入 09 的类型时按它取三槽，存储的 plan.mode 只是兜底", () => {
-    const legacyReactivePlan = { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人", goal: "", conflict: "", setback: "" };
-    expect(s2PlanSlots(legacyReactivePlan)).toEqual(["reaction", "dilemma", "decision"]);
-    expect(s2PlanState(legacyReactivePlan)).toBe(2);
-    // 09 把这一场切回主动：格子必须按 GCS 数槽——三个 RDD 槽再满也算「未规划」
-    expect(s2PlanSlots(legacyReactivePlan, "proactive")).toEqual(["goal", "conflict", "setback"]);
-    expect(s2PlanState(legacyReactivePlan, "proactive")).toBe(0);
-    expect(s2PlanState({ mode: "proactive", goal: "拿到账本", conflict: "", setback: "" }, "reactive")).toBe(0);
-    expect(s2PlanState({ mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "" }, "proactive")).toBe(1);
-    expect(s2PlanState(null, "proactive")).toBe(0);
-  });
-
-  it("s2PlanAuto：逐场覆盖与三槽填满都按 09 的类型判", () => {
-    const scenes = { list: [
-      { id: "S01", type: "proactive" },
-      { id: "S02", type: "proactive" },   // 09 已切回主动，存储的 plan 还是 RDD
-    ] };
-    const planning = { plans: {
-      S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧" },
-      S02: { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人" },
-    } };
-    const auto = s2PlanAuto(planning, scenes);
-    const byTitle = Object.fromEntries(auto.map(a => [a.t, a]));
-    expect(byTitle["逐场覆盖"].val).toBe("1/2 场已规划");
-    expect(byTitle["三槽填满"].val).toBe("1/2 场三槽齐");
-    expect(byTitle["链条衔接"].pass).toBe(true);
-  });
-
-  it("E3 第二步：需复核只来自后端 status=stale（未确认仍有效）；漂移上游按 input_refs 对照当前 step_run_id", () => {
-    const health = {
-      audience: { beStatus: "approved", stepRunId: "run_brief_v1", inputRefs: {} },
-      logline: { beStatus: "approved", stepRunId: "run_logline_v2", inputRefs: { book_brief: "run_brief_v1" } },
-      paragraph: { beStatus: "stale", staleAcceptedAt: null, staleReason: "one_sentence_summary 改了被消费字段 ['summary']",
-        stepRunId: "run_para_v1", inputRefs: { book_brief: "run_brief_v1", one_sentence_summary: "run_logline_v1" } },
-      // 作者已「确认仍有效」：后端刷新了它消费的版本，不再进需复核图
-      characters: { beStatus: "stale", staleAcceptedAt: "2026-09-13T10:00:00Z", stepRunId: "run_chars_v1", inputRefs: { one_sentence_summary: "run_logline_v2" } },
-      // 上游有了新版本但后端没判定失效（消费的字段没变）：只是漂移提示，不算需复核
-      synopsis: { beStatus: "approved", stepRunId: "run_syn_v1", inputRefs: { one_sentence_summary: "run_logline_v1" } },
-      // 后端 stale 但没有 input_refs 记录（旧数据）：仍需复核，漂移列表为空
-      outline: { beStatus: "stale", staleAcceptedAt: null, stepRunId: "run_out_v1", inputRefs: {} },
-    };
-    expect(s2UpstreamDrift(health, "paragraph")).toEqual(["logline"]);   // book_brief 没变，不在列表里
-    expect(s2UpstreamDrift(health, "synopsis")).toEqual(["logline"]);
-    expect(s2UpstreamDrift(health, "characters")).toEqual([]);
-    expect(s2StaleMap(health)).toEqual({ paragraph: ["logline"], outline: [] });
-    expect(s2StaleMap({})).toEqual({});
-    expect(s2StaleMap(undefined)).toEqual({});
-  });
-
-  it("E3 第二步：旧缓存里的 revs / confirmRevs 被归一化丢弃，不再进入状态", () => {
-    const normalized = s2NormalizeState({ drafts: {}, states: { logline: "done" }, revs: { logline: 3 }, confirmRevs: { paragraph: { logline: 2 } } });
-    expect(normalized).not.toHaveProperty("revs");
-    expect(normalized).not.toHaveProperty("confirmRevs");
-    expect(normalized.states.logline).toBe("done");
-  });
-});
-
-
-/* —— 阶段 M：09 是一张能随手挪的表；10 有钩子 / 离场变化；分诊随水合回来；略过写回服务端 —— */
 describe("阶段 M · 09/10 交互", () => {
   const CACHE = "ws_snow_state_v2::new-book";
   const threeScenes = () => ({
@@ -447,7 +381,6 @@ describe("阶段 M · 09/10 交互", () => {
   });
 
   beforeEach(() => {
-    window.localStorage.clear();
     catalog.get.mockReturnValue([]);
     vi.spyOn(window, "alert").mockImplementation(() => {});
     window.SnowSync = { chapterPreview: vi.fn(), materialize: vi.fn(), skipStep: vi.fn(async () => ({ beStatus: "skipped" })) };
@@ -471,17 +404,6 @@ describe("阶段 M · 09/10 交互", () => {
     return host;
   }
   const rowIds = (host) => [...host.querySelectorAll(".sf-scene-row .sc-no")].map(el => el.getAttribute("title"));
-
-  it("s2ReorderScenes：把一场挪到另一位置，其余顺序不变；越界或原地是无操作且不改原数组", () => {
-    const list = [{ id: "S01" }, { id: "S02" }, { id: "S03" }, { id: "S04" }];
-    expect(s2ReorderScenes(list, 0, 2).map(s => s.id)).toEqual(["S02", "S03", "S01", "S04"]);
-    expect(s2ReorderScenes(list, 3, 0).map(s => s.id)).toEqual(["S04", "S01", "S02", "S03"]);
-    expect(s2ReorderScenes(list, 1, 1).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
-    expect(s2ReorderScenes(list, 1, 9).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
-    expect(s2ReorderScenes(list, -1, 0).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
-    expect(list.map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
-    expect(s2ReorderScenes(undefined, 0, 1)).toEqual([]);
-  });
 
   it("09 场景表：同一章的第一场前有只读章头；「在这一场后面插一场」插在原位之后并继承线 / POV / 地点；拖放换位走同一纯函数", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
@@ -591,6 +513,36 @@ describe("阶段 M · 09/10 交互", () => {
     expect(window.SnowSync.skipStep).toHaveBeenCalledTimes(2);
   });
 
+  it("Q2-02：略过浮层点外面、焦点移出、再点一下「略过此步」只是收起——写了一半的理由留着；Esc 与取消才清掉", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
+    const host = await renderAt("characters");
+    const openBtn = () => host.querySelector('[data-testid="snow-skip-open"]');
+    const reason = () => host.querySelector('[data-testid="snow-skip-reason"]');
+    const reopen = async () => { await act(async () => openBtn().click()); return reason().value; };
+    await act(async () => openBtn().click());
+    const input = reason();
+    const setNative = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => { setNative.call(input, "人物表等第二稿"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    // 点页面别处
+    await act(async () => { document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+    expect(reason()).toBeNull();
+    expect(await reopen()).toBe("人物表等第二稿");
+    // 再点一下按钮
+    await act(async () => openBtn().click());
+    expect(reason()).toBeNull();
+    expect(await reopen()).toBe("人物表等第二稿");
+    // 焦点移到浮层外
+    await act(async () => { host.querySelector('[data-testid="snow-confirm-step"]').focus(); });
+    expect(reason()).toBeNull();
+    expect(await reopen()).toBe("人物表等第二稿");
+    // Esc：收起并清掉，焦点回到按钮
+    await act(async () => { reason().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(reason()).toBeNull();
+    expect(document.activeElement).toBe(openBtn());
+    expect(await reopen()).toBe("");
+    expect(window.SnowSync.skipStep).not.toHaveBeenCalled();
+  });
+
   it("07 章节表按数组顺序显示；第二幕已有章时「添加第一幕章节」插在第一幕最后一章之后，而不是存成最后一章", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { outline: { chapters: [
       { id: "01", act: 1, title: "合成一章", summary: "a", spine: "" },
@@ -639,17 +591,144 @@ describe("阶段 M · 09/10 交互", () => {
     for (const id of ["snow-plan-title", "snow-plan-must-include", "snow-plan-exception", "snow-plan-length", "snow-plan-length-custom", "snow-plan-render", "snow-plan-verdict"]) {
       expect(host.querySelector(`[data-testid="${id}"]`), id).toBeTruthy();
     }
-    const renderOpts = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-plan-render-opt')].map(b => b.textContent);
+    const renderOpts = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-chip')].map(b => b.textContent);
     expect(renderOpts).toEqual(["完整场", "概述两段"]); // S01 是主动场：可以概述，没有「略过」
     expect(s2PlanState({ exception: "全书收尾的叙述交代" }, "proactive")).toBe(2);
     expect(s2PlanState({ goal: "g" }, "proactive")).toBe(1);
-    const longBtn = [...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-plan-render-opt')].find(b => b.textContent === "长");
+    const longBtn = [...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-chip')].find(b => b.textContent === "长");
     await act(async () => { longBtn.click(); });
-    expect([...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-plan-render-opt')].find(b => b.textContent === "长").className).toContain("is-on");
+    expect([...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-chip')].find(b => b.textContent === "长").className).toContain("is-on");
     // 概述两段：篇幅带固定 200–500，篇幅选择器让位
-    const summaryBtn = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-plan-render-opt')].find(b => b.textContent === "概述两段");
+    const summaryBtn = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-chip')].find(b => b.textContent === "概述两段");
     await act(async () => { summaryBtn.click(); });
     expect(host.querySelector('[data-testid="snow-plan-length"]')).toBeNull();
+  });
+
+  it("F02-01：第 10 步只存改动的那一格——形态 / 视角不进 plan；随后在 09 改形态、改视角，第 10 步上行跟着 09 走", async () => {
+    const seeded = threeScenes();
+    seeded.scaffolds.characters.chars.c2 = { name: "沈砚", role: "反派", goal: "", ambition: "", values: "", conflict: "", epiphany: "" };
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    const host = await renderAt("planning");
+    const time = host.querySelector('[data-testid="snow-plan-story-time"]');
+    const setNative = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => { setNative.call(time, "第三天傍晚"); time.dispatchEvent(new Event("input", { bubbles: true })); });
+    const readCache = () => JSON.parse(window.localStorage.getItem(CACHE));
+    await vi.waitFor(() => expect(readCache().scaffolds.planning.plans.S01.story_time).toBe("第三天傍晚"), { timeout: 2000 });
+    const stored = readCache().scaffolds.planning.plans.S01;
+    // 以前第一次改动就把渲染时的默认值整份冻进 plan：mode / pov / 空篇幅 / 空破例理由……
+    expect(Object.keys(stored).sort()).toEqual(["conflict", "goal", "setback", "story_time"]);
+
+    // 作者随后在 09 把 S01 改成反应场、换了视角：第 10 步的上行按 09 的行走，不再把服务端改回去
+    const cache = readCache();
+    cache.scaffolds.scenes.list[0] = { ...cache.scaffolds.scenes.list[0], type: "reactive", pov: "c2" };
+    const row = canonFromFE("planning", cache).scenes.find(r => r.row_uid === "S01");
+    expect(row.primary_form).toBe("reactive");
+    expect(row.pov_character_id).toBe("c2");
+    // 没写过篇幅 / 必须出现 / 破例理由：不上行（服务端或模型给的值不被抹成「中」和空串）
+    expect("target_length_band" in row).toBe(false);
+    expect("must_include_text" in row).toBe(false);
+    expect("exception_reason" in row).toBe(false);
+  });
+
+  it("F02-01 / Q2-01：第 10 步的视角同形态一样只读（显示 09 那一行的视角，门去 09）；旧缓存 plan 里的形态 / 视角在读入时摘掉（09 没有视角时视角挪进去）", async () => {
+    const seeded = threeScenes();
+    seeded.scaffolds.characters.chars.c2 = { name: "沈砚", role: "反派", goal: "", ambition: "", values: "", conflict: "", epiphany: "" };
+    seeded.scaffolds.scenes.list[1] = { ...seeded.scaffolds.scenes.list[1], pov: "" };
+    seeded.scaffolds.scenes.list[2] = { ...seeded.scaffolds.scenes.list[2], pov: "" };
+    seeded.scaffolds.planning.plans.S01 = { mode: "reactive", pov: "c2", goal: "拿到账本" };
+    seeded.scaffolds.planning.plans.S02 = { mode: "proactive", pov: "c2", reaction: "崩了一下" };
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    const host = await renderAt("planning");
+    // S01：09 是主动 / 林岑，旧 plan 里的「反应 / 沈砚」不再作数
+    expect(host.querySelector(".sf-plan-type").textContent).toContain("主动场");
+    const pov = () => host.querySelector('[data-testid="snow-plan-pov"]');
+    expect(pov().textContent).toContain("林岑");
+    // 第 10 步没有能改视角的控件：以前这里的下拉改的是 09 那一行，09 随之待重新确认，在第 10 步确认却被服务端拒绝
+    expect(pov().querySelector("select, input, textarea")).toBeNull();
+    // S02 在 09 里没有视角：旧 plan 的视角挪进 09 的行，第 10 步显示的就是它
+    await act(async () => host.querySelectorAll(".sf-plan-cell")[1].click());
+    expect(pov().textContent).toContain("沈砚");
+    // S03 在 09 里、第 10 步里都没有视角：写「未定」
+    await act(async () => host.querySelectorAll(".sf-plan-cell")[2].click());
+    expect(pov().textContent).toContain("未定");
+    expect(pov().className).toContain("is-empty");
+    // 读入后的第一次落盘（450ms 防抖）：plan 里只剩内容，挪进去的视角在 09 的行上
+    await act(async () => { await new Promise(r => setTimeout(r, 500)); });
+    const cache = JSON.parse(window.localStorage.getItem(CACHE));
+    expect(cache.scaffolds.planning.plans.S01).toEqual({ goal: "拿到账本" });
+    expect(cache.scaffolds.planning.plans.S02).toEqual({ reaction: "崩了一下" });
+    expect(cache.scaffolds.scenes.list[0].pov).toBe("c1");
+    expect(cache.scaffolds.scenes.list[1].pov).toBe("c2");
+    // 门：去 09 场景列表（与形态胶囊里那扇门一样）
+    await act(async () => host.querySelector('[data-testid="snow-plan-pov-go"]').click());
+    expect(host.querySelector('[data-testid="snow-scene-row-1"] .sc-pov').value).toBe("c2");
+    expect(host.querySelector('[data-testid="snow-plan-pov"]')).toBeNull();
+  });
+
+  it("Q2-03：读缓存时收归 09 的视角换了人——历史里记一条「视角统一到 09」写明原来是谁、现在按谁；挪进 09 的可回滚；只记一次", async () => {
+    const seeded = threeScenes();
+    seeded.scaffolds.characters.chars.c2 = { name: "沈砚", role: "反派", goal: "", ambition: "", values: "", conflict: "", epiphany: "" };
+    seeded.scaffolds.scenes.list[1] = { ...seeded.scaffolds.scenes.list[1], pov: "" };
+    seeded.scaffolds.planning.plans.S01 = { pov: "c2", goal: "拿到账本" };      // 旧版第 10 步挑过别人：按 09 的林岑
+    seeded.scaffolds.planning.plans.S02 = { pov: "c2", reaction: "崩了一下" };   // 09 没填：挪进 09
+    seeded.scaffolds.planning.plans.S03 = { pov: "c1", goal: "找证人" };        // 与 09 相同：冻住的默认值，不算
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    const openHistory = async (host) => {
+      const tab = [...host.querySelectorAll('[role="tab"]')].find(b => b.textContent.includes("历史"));
+      await act(async () => tab.click());
+      return [...host.querySelectorAll(".hist-row")].filter(r => r.textContent.includes("视角统一到 09"));
+    };
+    let host = await renderAt("planning");
+    const rows = await openHistory(host);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("S01 第 10 步记的是「沈砚」，按 09 的「林岑」");
+    expect(rows[0].textContent).toContain("S02 09 没填，用第 10 步的「沈砚」");
+    expect(rows[0].textContent).not.toContain("S03");
+
+    // 落盘之后再打开：plan 里已经没有视角可收，不再记第二条
+    await act(async () => { await new Promise(r => setTimeout(r, 500)); });
+    const first = mounted.pop();
+    await act(async () => first.root.unmount());
+    first.host.remove();
+    host = await renderAt("planning");
+    const again = await openHistory(host);
+    expect(again).toHaveLength(1);
+
+    // 挪进 09 的那一场可以回滚：09 回到没填视角
+    await act(async () => again[0].querySelector(".hist-restore").click());
+    const apply = [...document.querySelectorAll(".ws-dialog-foot button")].find(b => b.textContent.includes("确认回滚"));
+    await act(async () => apply.click());
+    await act(async () => { await new Promise(r => setTimeout(r, 500)); });
+    const cache = JSON.parse(window.localStorage.getItem(CACHE));
+    expect(cache.scaffolds.scenes.list.map(r => r.pov)).toEqual(["c1", "", "c1"]);
+    expect(cache.scaffolds.planning.plans.S02).toEqual({ reaction: "崩了一下" });
+  });
+
+  it("Q2-01：确认被服务端以「前面的步骤没确认」拒绝时，回执点名是哪一步、给一扇去那一步的门；本地不标已确认、不跳步", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
+    const blocked = Object.assign(new Error("需要先确认前面的雪花步骤。"), {
+      code: "SNOWFLAKE_PREVIOUS_STEP_REQUIRED", status: 409,
+      details: { missing_previous_steps: [{ step_key: "scene_list", label: "场景列表" }, { step_key: "one_sentence_summary", label: "一句话概括" }] },
+    });
+    window.SnowSync.needsReconfirm = vi.fn(() => true);
+    window.SnowSync.approveStep = vi.fn(async () => { throw blocked; });
+    const host = await renderAt("planning");
+    await act(async () => host.querySelector('[data-testid="snow-confirm-step"]').click());
+    expect(window.SnowSync.approveStep).toHaveBeenCalledWith("new-book", "planning");
+    const toast = host.querySelector('[data-testid="undo-toast"]');
+    expect(toast.textContent).toContain("重新确认未能记入服务端：先确认「09 场景列表」（前面还有 1 步没确认）");
+    expect(host.querySelector('[data-testid="snow-step-planning"]').className).not.toContain("s-done");
+    expect(host.querySelector('[data-testid="snow-plan-pov"]')).toBeTruthy(); // 还在第 10 步
+    // 门：去 09
+    await act(async () => host.querySelector('[data-testid="undo-toast-action"]').click());
+    expect(host.querySelector('[data-testid="snow-scene-row-0"]')).toBeTruthy();
+
+    // 别的错误照旧给服务端的原话
+    window.SnowSync.approveStep = vi.fn(async () => { throw new Error("网络断了"); });
+    await act(async () => host.querySelector('[data-testid="snow-step-planning"]').click());
+    await act(async () => host.querySelector('[data-testid="snow-confirm-step"]').click());
+    expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("重新确认未能记入服务端：网络断了");
+    expect(host.querySelector('[data-testid="undo-toast-action"]')).toBeNull();
   });
 
   it("阶段 R：作者裁定——点「待删」经 SnowSync.saveTriageVerdict 写回服务端并高亮；失败回滚到上一次裁定", async () => {
@@ -691,10 +770,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
   });
 
   beforeEach(() => {
-    window.localStorage.clear();
     catalog.get.mockReturnValue([]);
-    window.__snowSceneTarget = null;
-    window.__snowStepTarget = null;
     window.SnowSync = { chapterPreview: vi.fn(), materialize: vi.fn() };
   });
   afterEach(async () => {
@@ -705,8 +781,6 @@ describe("SNOW-20 · 就地换步与落点", () => {
     }
     vi.restoreAllMocks();
     try { delete window.SnowSync; } catch (e) {}
-    window.__snowSceneTarget = null;
-    window.__snowStepTarget = null;
   });
 
   async function mount(element) {
@@ -720,11 +794,6 @@ describe("SNOW-20 · 就地换步与落点", () => {
   const title = (host) => host.querySelector(".snow-canvas-title").textContent;
   const fire = (type, detail) => act(async () => { window.dispatchEvent(new CustomEvent(type, { detail })); });
 
-  it("步骤目录与外壳导航里的那份（ws-nav WS_SNOW_STEPS）一致：键、后端键、序号、名字", () => {
-    expect(WS_SNOW_STEPS.map(s => [s.key, s.be, s.num, s.name]))
-      .toEqual(S2_STEPS.map(s => [s.key, Object.fromEntries(S2_BE_STEPS)[s.key], s.num, s.name]));
-  });
-
   it("成稿中心「回第 10 步」：先换步再选场，在同一个视图实例里完成（页面节点不换、目标被消费）", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(3))));
     window.SnowSync.rowUidForSceneId = vi.fn((workId, sceneId) => (sceneId === "sc-backend-2" ? "S02" : ""));
@@ -736,7 +805,6 @@ describe("SNOW-20 · 就地换步与落点", () => {
     expect(title(host)).toBe("场景规划");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S02");
     expect(window.SnowSync.rowUidForSceneId).toHaveBeenCalledWith("new-book", "sc-backend-2");
-    expect(window.__snowSceneTarget).toBeNull();
     // 以前 WsConstruct 按目标步骤给 WsSnowflake 换 key：这里会是一个新的页面节点
     expect(host.querySelector(".snow-page")).toBe(page);
   });
@@ -750,18 +818,14 @@ describe("SNOW-20 · 就地换步与落点", () => {
     await fire("ws:snow-scene", "sc-backend-3");
     expect(title(host)).toBe("场景规划");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S01");
-    expect(window.__snowSceneTarget).toBe("sc-backend-3");
     mapped = "S03";
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S03");
-    expect(window.__snowSceneTarget).toBeNull();
-  });
-
-  it("挂载前留下的目标步骤（旧握手 window.__snowStepTarget）：落在那一步，并被清掉", async () => {
-    window.__snowStepTarget = "outline";
-    const host = await mount(<WsConstruct />);
-    expect(title(host)).toBe("长篇大纲");
-    expect(window.__snowStepTarget).toBeNull();
+    // 目标用过即清：选中落盘之后再来一次水合，即使对照表此刻把那个 scene_id 对到别的场，也不会再挪
+    await vi.waitFor(() => expect(JSON.parse(window.localStorage.getItem(CACHE)).scaffolds.planning.sel).toBe("S03"), { timeout: 2000 });
+    mapped = "S02";
+    await notify("hydrated", "new-book");
+    expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S03");
   });
 
   it("没有外部目标时落在还没确认的第一步", async () => {
@@ -792,10 +856,10 @@ describe("SNOW-20 · 就地换步与落点", () => {
     const host = await mount(<WsSnowflake />);
     expect(title(host)).toBe("读者定位");
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(8))));
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(title(host)).toBe("场景列表");
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(9))));
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(title(host)).toBe("场景列表");
   });
 
@@ -804,7 +868,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
     const host = await mount(<WsSnowflake />);
     await act(async () => { host.querySelector(".snow-page").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(8))));
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(title(host)).toBe("读者定位");
   });
 

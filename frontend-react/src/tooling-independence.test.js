@@ -45,7 +45,6 @@ const KNOWN_WINDOW_WRITERS = [
   "ws-library-edit.jsx",
   "ws-review.jsx",
   "ws-snow-sync.jsx",
-  "ws-snow.jsx",
   "ws-works.jsx",
 ];
 

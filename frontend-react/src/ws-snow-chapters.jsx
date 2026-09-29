@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
 import { CloseButton, Segmented } from "./ws-ui.jsx";
+import { SnowSync } from "./ws-snow-sync.jsx";
 import {
   ACT_LABEL, applyChapterNames, buildChapterPlanPayload, buildChapterTitlesRequest, chapterActRuns, homeChapterFor,
   isAutoChapterTitle, isNewChapter, mergeChapterIntoPrevious, moveSceneToChapter, rhythmSummary, scaleExplanation,
@@ -73,10 +74,10 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
       setBusy(true);
       setError("");
       try {
-        if (!window.SnowSync || typeof window.SnowSync.chapterPreview !== "function") {
+        if (!SnowSync || typeof SnowSync.chapterPreview !== "function") {
           throw new Error("雪花同步模块尚未就绪，请刷新页面后重试。");
         }
-        const preview = await window.SnowSync.chapterPreview(strategy, options || {});
+        const preview = await SnowSync.chapterPreview(strategy, options || {});
         const shaped = shapeDraft(preview);
         pristineRef.current = shaped;
         setDraft(shaped);
@@ -164,7 +165,7 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
     setResolving(scenePlanId);
     setError("");
     try {
-      await window.SnowSync.resolveOrphanedScene(scenePlanId, action);
+      await SnowSync.resolveOrphanedScene(scenePlanId, action);
       noteFocusReturn();
       await load(draft ? draft.strategy : "auto");
     } catch (e) {
@@ -185,11 +186,11 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
     setSuggesting(true);
     setError("");
     try {
-      if (!window.SnowSync || typeof window.SnowSync.chapterSuggest !== "function") {
+      if (!SnowSync || typeof SnowSync.chapterSuggest !== "function") {
         throw new Error("AI 分章能力尚未就绪，请刷新页面后重试。");
       }
       const base = draft && draft.strategy !== "llm_suggested" && draft.strategy !== "from_scenes" ? draft.strategy : "keep_current";
-      const suggestion = await window.SnowSync.chapterSuggest(base);
+      const suggestion = await SnowSync.chapterSuggest(base);
       const shaped = shapeDraft(suggestion);
       pristineRef.current = shaped;
       setDraft(shaped);
@@ -215,10 +216,10 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
     setError("");
     setNameNote("");
     try {
-      if (!window.SnowSync || typeof window.SnowSync.chapterTitles !== "function") {
+      if (!SnowSync || typeof SnowSync.chapterTitles !== "function") {
         throw new Error("AI 起章名尚未就绪，请刷新页面后重试。");
       }
-      const result = await window.SnowSync.chapterTitles(buildChapterTitlesRequest(draft));
+      const result = await SnowSync.chapterTitles(buildChapterTitlesRequest(draft));
       // 等模型的这段时间里作者可能还在改章名：基于**此刻**的面板算，而不是点按钮时的那一份
       const { draft: next, applied } = applyChapterNames(draftRef.current || draft, (result && result.titles) || []);
       if (applied) { setDraft(next); setDirty(true); }
@@ -279,11 +280,11 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
     setSaving(true);
     setError("");
     try {
-      if (!window.SnowSync || typeof window.SnowSync.materialize !== "function") {
+      if (!SnowSync || typeof SnowSync.materialize !== "function") {
         throw new Error("雪花同步模块尚未就绪，请刷新页面后重试。");
       }
       const payload = buildChapterPlanPayload({ ...draft, chapters: draft.chapters.filter(c => c.scenes.length || !isNewChapter(c)) });
-      const result = await window.SnowSync.materialize(null, payload);
+      const result = await SnowSync.materialize(null, payload);
       onDone(result);
     } catch (e) {
       const freshGate = e && e.details && e.details.materialization_gate;

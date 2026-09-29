@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { S2AutoText, S2PovPick } from "./ws-snow-fields.jsx";
+import { S2AutoText } from "./ws-snow-fields.jsx";
 import { s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS } from "./ws-snow-hooks.js";
 import {
   S2_TRIAGE_LABEL, S2_VERDICTS, s2BusyOn, s2InferSpine, s2PlanState, s2PovLabel, s2RosterList, s2SceneNo,
@@ -9,7 +9,7 @@ import {
 /* ==========================================================
    10 场景规划（从 ws-snow-scenes.jsx 拆出，2026-09-22）
    ----------------------------------------------------------
-   逐场画草图：主动 目标 / 冲突 / 挫败，反应 反应 / 两难 / 决定。形态跟随 09，这里只规划、裁定。
+   逐场画草图：主动 目标 / 冲突 / 挫败，反应 反应 / 两难 / 决定。形态与视角跟随 09，这里只规划、裁定。
    ========================================================== */
 
 const { useState: useSS } = React;
@@ -26,9 +26,12 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const selIdx = list.findIndex(s => s.id === selId);
   // 类型跟随 09 的真相：主动/反应在场景列表里定，这里不再各说各话
   const proactive = scene ? scene.type !== "reactive" : true;
-  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", rendering: "full", onstage: [], story_time: "", reader_emotion: "", hook: "", exit_change: "", title: "", length: "", must_include: "", exception: "", ...(plans[selId] || {}) };
-  plan.mode = proactive ? "proactive" : "reactive";
-  const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...plan, [f]: v } } }));
+  const plan = plans[selId] || {};
+  /* 只写改动的那一格，写在存储里那份 plan 上（函数式更新）：以前把渲染时补齐的默认值（形态、视角、空篇幅……）
+     整份写进去，第一次改任何一格就把它们冻住，上行时盖回服务端（F02-01）。 */
+  const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...((s.plans || {})[selId] || {}), [f]: v } } }));
+  // 视角同形态一样只有 09 的场景行一个家：这里只显示，改就去 09
+  const scenePov = (scene && scene.pov) || "";
   const selScene = (id) => onScaffold(s => ({ ...s, sel: id }));
   // hooks 一律在提前返回之前（09 在空与非空之间切换时——水合、清空——hook 数量不能变）
   const [secondaryOpen, setSecondaryOpen] = useSS(false);
@@ -138,10 +141,14 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
             {proactive ? "主动场" : "反应场"}
             <button type="button" className="sf-plan-type-go" onClick={() => go && go("scenes")} title="在 09 场景列表里改形态">在 09 改</button>
           </span>
-          <label className="sf-plan-pov">
+          {/* 视角与形态同一个规矩：09 定，这里只读、旁边一扇门。以前这里有一个视角下拉，改的其实是 09 那一行——
+              09 随之「待重新确认」，在第 10 步点「确认本步」却被服务端以「前面的步骤没确认」拒绝。 */}
+          <span className={`sf-plan-pov ${scenePov ? "" : "is-empty"}`} data-testid="snow-plan-pov" title="视角跟随 09 场景列表">
             <span className="sf-field-label">视角</span>
-            <S2PovPick value={plan.pov} roster={roster} onChange={(v) => setPlan("pov", v)} className="sf-field-input" placeholder={s2PovLabel(scene.pov, roster) || "视角人物"} ariaLabel={`${no} 的视角人物`} />
-          </label>
+            <span className="sf-plan-pov-name">{scenePov ? s2PovLabel(scenePov, roster) : "未定"}</span>
+            <button type="button" className="sf-plan-type-go" data-testid="snow-plan-pov-go" onClick={() => go && go("scenes")}
+              title="在 09 场景列表里改视角" aria-label={`在 09 场景列表里改 ${no} 的视角`}>在 09 改</button>
+          </span>
         </div>
         <div className="sf-plan-head-sub">
           {scene.place && <span><I.MapPin size={11} /> {scene.place}</span>}
@@ -161,7 +168,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
             <span className="sf-field-label">你的裁定</span>
             {S2_VERDICTS.map(v => (
               <button key={v} type="button" data-testid={`snow-verdict-${v}`} aria-pressed={!!(selTri && selTri.status === v && selTri.manual)}
-                className={`sf-plan-render-opt tri-${v} ${selTri && selTri.status === v && selTri.manual ? "is-on" : ""}`} onClick={() => ai.onVerdict(selId, v)}>{S2_TRIAGE_LABEL[v]}</button>
+                className={`sf-chip tri-${v} ${selTri && selTri.status === v && selTri.manual ? "is-on" : ""}`} onClick={() => ai.onVerdict(selId, v)}>{S2_TRIAGE_LABEL[v]}</button>
             ))}
             {selTri && !selTri.manual && selTri.status && <span className="sf-plan-verdict-hint">系统建议：{S2_TRIAGE_LABEL[selTri.status] || selTri.status}</span>}
           </div>
@@ -177,7 +184,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
         </div>
       )}
 
-      <div className="sf-gcs" key={selId + plan.mode} role="group" aria-label={proactive ? "主动场三拍：目标、冲突、挫败" : "反应场三拍：反应、两难、决定"}>
+      <div className="sf-gcs" key={selId + (proactive ? "proactive" : "reactive")} role="group" aria-label={proactive ? "主动场三拍：目标、冲突、挫败" : "反应场三拍：反应、两难、决定"}>
         {triples.map((t, i) => (
           <div key={t.f} className={`sf-beat ${proactive ? "tone-crimson" : "tone-slate"} ${t.f === "cost_requirement" ? "is-optional" : ""}`}>
             <div className="sf-beat-side"><span className="sf-beat-idx">{i + 1}</span></div>
@@ -215,10 +222,10 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           <div className="sf-field is-wide sf-plan-onstage" data-testid="snow-plan-onstage" title="这一场里还有谁在场（视角人物之外）——写手与连续性检查都要用">
             <span className="sf-field-label">在场人物</span>
             <span className="sf-plan-onstage-chips" role="group" aria-label="在场人物">
-              {(roster || []).filter(r => r.id !== plan.pov).map(r => {
+              {(roster || []).filter(r => r.id !== scenePov).map(r => {
                 const on = (plan.onstage || []).includes(r.id);
                 return (
-                  <button key={r.id} type="button" aria-pressed={on} className={`sf-plan-render-opt ${on ? "is-on" : ""}`}
+                  <button key={r.id} type="button" aria-pressed={on} className={`sf-chip ${on ? "is-on" : ""}`}
                     onClick={() => setPlan("onstage", on ? (plan.onstage || []).filter(x => x !== r.id) : [...(plan.onstage || []), r.id])}>{r.name}</button>
                 );
               })}
@@ -242,9 +249,9 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
             title="整场戏剧化，还是两三段叙述概述（约 200–500 字）？概述场整理后拿到 200-500 的篇幅带，起草按概述写">
             <span className="sf-field-label">呈现</span>
             <span className="sf-plan-opts">
-              <button type="button" aria-pressed={renderMode === "full"} className={`sf-plan-render-opt ${renderMode === "full" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
-              <button type="button" aria-pressed={renderMode === "summary"} className={`sf-plan-render-opt ${renderMode === "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "summary")}>概述两段</button>
-              {!proactive && <button type="button" aria-pressed={renderMode === "skip"} className={`sf-plan-render-opt ${renderMode === "skip" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "skip")} title="页面上略过这一场，直接进下一场主动场景——反应 / 两难 / 决定照样写，它们决定下一场的目标，也会带给下一场的写手">略过</button>}
+              <button type="button" aria-pressed={renderMode === "full"} className={`sf-chip ${renderMode === "full" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
+              <button type="button" aria-pressed={renderMode === "summary"} className={`sf-chip ${renderMode === "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "summary")}>概述两段</button>
+              {!proactive && <button type="button" aria-pressed={renderMode === "skip"} className={`sf-chip ${renderMode === "skip" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "skip")} title="页面上略过这一场，直接进下一场主动场景——反应 / 两难 / 决定照样写，它们决定下一场的目标，也会带给下一场的写手">略过</button>}
             </span>
           </div>
           {/* 阶段 R：篇幅带——原著「场景长度没有标准，一百词到五千词都可以」；短 / 中 / 长或自定义字数区间（如 800-1200，数值带会被起草硬约束）；概述场固定 200–500 */}
@@ -254,7 +261,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
               <span className="sf-field-label">篇幅</span>
               <span className="sf-plan-opts">
                 {[["short", "短"], ["medium", "中"], ["long", "长"]].map(([v, l]) => (
-                  <button key={v} type="button" aria-pressed={(plan.length || "medium") === v} className={`sf-plan-render-opt ${(plan.length || "medium") === v ? "is-on" : ""}`} onClick={() => setPlan("length", v)}>{l}</button>
+                  <button key={v} type="button" aria-pressed={(plan.length || "medium") === v} className={`sf-chip ${(plan.length || "medium") === v ? "is-on" : ""}`} onClick={() => setPlan("length", v)}>{l}</button>
                 ))}
                 <input className="sf-field-input sf-plan-length-custom" data-testid="snow-plan-length-custom" value={/^\d+\s*[-–—]\s*\d+$/.test(plan.length || "") ? plan.length : ""} onChange={(e) => setPlan("length", e.target.value.trim())} placeholder="或写字数，如 800-1200" aria-label="自定义字数区间" />
               </span>
