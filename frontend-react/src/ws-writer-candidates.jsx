@@ -21,7 +21,7 @@ export function WrAiErrorBlock({ error, onRetry, onOpenSettings }) {
   if (!error) return null;
   const info = wrAiError(error);
   const configOnly = info.kind === "config";
-  const retry = !configOnly && onRetry
+  const retry = !configOnly && onRetry && info.actionLabel
     ? <button type="button" className="btn btn-ghost btn-sm" onClick={onRetry}>{info.actionLabel}</button> : null;
   const settings = info.offersSettings && onOpenSettings
     ? <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>去系统设置</button> : null;

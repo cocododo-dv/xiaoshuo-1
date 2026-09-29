@@ -16,6 +16,7 @@ import { copyGateGenerationMessage, isCopyGateError } from "./ws-copy-gate.js";
 import { escapeHtmlText } from "./manuscript-html.js";
 
 /* kind: copy（AI 写出来的每一版都照搬了参考书，被抄袭门拦下丢掉）| config（去系统设置）| not-ready（场景还没同步好）
+        | too-long（选区超过一次改写的上限：请分段改写，没有「重试」）
         | empty（模型没给出可用结果）| unclear（服务器没说清原因：重试，也给去系统设置）| retry
    offersSettings：提示里要不要同时给「去系统设置」（config 与 unclear 为 true）。
    抄袭门的拒绝也带 author_action（「去改写这些位置」），所以要先认它：过去它被当成「没有可用的模型」。 */
@@ -44,6 +45,14 @@ export function wrAiError(error) {
       kind: "not-ready",
       message: "这一场还没有同步到服务器，稍等几秒再试。",
       actionLabel: "重试",
+    };
+  }
+  if (code === "selection-too-long") {
+    const length = Number(details.length) || 0;
+    return {
+      kind: "too-long",
+      message: `选区太长${length ? `（${length} 字）` : ""}，请分段改写。`,
+      actionLabel: "",
     };
   }
   if (code === "no-result") {

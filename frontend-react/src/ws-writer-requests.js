@@ -11,7 +11,7 @@ import { wrAiLocalError, wrContinueCandidates } from "./ws-writer-ai.js";
    · wrContinueMulti(instruction, sceneId)：AI 续写。一次 generate-set 业务意图
      （mode: continuation_variants），服务端按 动作推进 / 关系压力 / 悬念 生成三条
      「只推进下一拍、不改写作者现有正文」的续写（author_proposal_generate 模板）。
-   · wrRequestRewrite({ sceneId, text, instruction })：选区改写，接 passages/patch-candidates
+   · wrRequestRewrite({ sceneId, text, instruction })：选区改写（超过 WR_REWRITE_MAX_CHARS 就在本地拒绝），接 passages/patch-candidates
      （writer_passage_patch 节点）。返回 { texts, patch }——patch 是这一次候选的裁决把手，
      采纳 / 放弃经 wrDecidePatch 回传（服务端记下这一次候选的去留；采纳时再过一遍抄袭门）。
    · 抄袭门（与绑定的参考书原文连续相同；用了它的专名只提醒、不拦）：生成时每一版都被拦下 → 409，wrAiError 说成 kind copy；
@@ -21,6 +21,11 @@ import { wrAiLocalError, wrContinueCandidates } from "./ws-writer-ai.js";
    服务端的失败原样抛出（ApiRequestError 带 code / status / details），由 wrAiError 翻译。
    ESM 模块，不写 window。
    ========================================================== */
+
+/* 一次选区改写最多送多少字（按码点数，量的就是要送出去的那段字）。这是改写请求的预算，与批注能圈多少字
+   （WR_ANNO_MAX_QUOTE）无关。超了就在本地说「选区太长，请分段改写」：不发请求、不截短——过去只把前 2000 字
+   送去改，却把整个选区换掉，后面的字就这么没了。 */
+export const WR_REWRITE_MAX_CHARS = 2000;
 
 export async function wrContinueMulti(instruction, sceneId) {
   const sid = sceneId;
@@ -43,6 +48,11 @@ export async function wrContinueMulti(instruction, sceneId) {
    不再是「润色」两个字；没有发现时维度是 author_instruction，指令本身走 instruction。
    也带上作者稿 id：后端把整场正文当上下文，补丁才接得上前后文。 */
 export async function wrRequestRewrite({ sceneId, text, instruction, finding = null }) {
+  const excerpt = String(text || "");
+  const length = Array.from(excerpt).length;
+  if (length > WR_REWRITE_MAX_CHARS) {
+    throw Object.assign(wrAiLocalError("selection-too-long"), { details: { length, limit: WR_REWRITE_MAX_CHARS } });
+  }
   const sid = sceneId;
   const backendId = await sceneApiId(sid);
   if (!backendId) throw wrAiLocalError("no-scene");
@@ -52,7 +62,7 @@ export async function wrRequestRewrite({ sceneId, text, instruction, finding = n
     object_type: "scene",
     object_id: backendId,
     scene_id: backendId,
-    source_excerpt: String(text || "").slice(0, 2000),
+    source_excerpt: excerpt,
     issue_dimension: finding && finding.dimension ? String(finding.dimension) : "author_instruction",
     instruction: String(instruction || "").slice(0, 4000),
   };

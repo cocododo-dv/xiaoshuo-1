@@ -37,6 +37,14 @@ describe("写作台 AI 失败提示按错误代码分流", () => {
   });
 });
 
+describe("选区改写的字数上限", () => {
+  it("选区太长（本地拒绝，没发请求）：说字数、请分段改写；不给「重试」，也不叫作者去配置模型", () => {
+    const info = wrAiError(Object.assign(wrAiLocalError("selection-too-long"), { details: { length: 2500, limit: 2000 } }));
+    expect(info).toMatchObject({ kind: "too-long", message: "选区太长（2500 字），请分段改写。", actionLabel: "" });
+    expect(info.offersSettings).toBeFalsy();
+  });
+});
+
 describe("续写候选的方向与快捷词", () => {
   it("按 proposal_source 的方向命名，缺了就按位置", () => {
     expect(wrContinueDirection({ proposal_source: "writer_room_continuation_variants:suspense" }, 0).label).toBe("悬念");
