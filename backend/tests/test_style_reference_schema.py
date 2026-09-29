@@ -66,8 +66,9 @@ def _alembic_config(db_url: str) -> Config:
 def isolated_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    _hermetic_test_process: None,
 ) -> Generator[Path, None, None]:
-    """覆盖父 conftest 的同名 fixture:仅设 DB URL,不调 create_all。"""
+    """覆盖父 conftest 的同名 fixture:仅设 DB URL,不调 create_all(显式依赖环境清理,保证它先跑)。"""
     db_path = tmp_path / "test.db"
     db_url = f"sqlite:///{db_path}"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", db_url)

@@ -12,6 +12,7 @@ from typing import Any, Literal
 import httpx
 
 from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
+from novel_system.cache_registry import register_cache_reset
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.llm_providers import (
     default_provider_base_urls,
@@ -322,6 +323,7 @@ def _degrade_request_after_failure(
 #   api_mode: 404 降级学到的端点模式
 #   structured_tier: 2=json_schema / 1=json_object / 0=不发 response_format
 _CONNECTIVITY_CAPS: dict[tuple[str, str], dict[str, Any]] = {}
+register_cache_reset("llm_client.connectivity_caps", _CONNECTIVITY_CAPS.clear)
 
 
 def _request_structured_tier(request: LLMRequest) -> int:

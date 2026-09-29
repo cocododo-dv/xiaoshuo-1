@@ -127,8 +127,9 @@ def _schema_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def _hermetic_test_process(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     """每个用例：先清掉会话里冒出来的 NOVEL_SYSTEM_*（X04-05），前后各复位一次登记过的进程级缓存（X04-16）。
 
-    必须定义在 ``isolated_database`` 之前：同作用域的自动夹具按定义顺序排，它要先清、``isolated_database`` 后设
-    测试默认值（按名覆盖 ``isolated_database`` 的测试文件也一样）。缓存为什么要复位见 ``novel_system.cache_registry``。
+    它必须先于设测试默认值的 ``isolated_database`` 运行。pytest 对同一处定义的自动夹具按**名字**排序（不是按定义
+    顺序），所以真正的保证是显式依赖：``isolated_database`` 以及按名覆盖它的测试文件都把本夹具列为参数。
+    缓存为什么要复位见 ``novel_system.cache_registry``。
     """
     for key in developer_env_keys():
         monkeypatch.delenv(key)

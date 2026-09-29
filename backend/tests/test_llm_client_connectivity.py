@@ -22,15 +22,6 @@ from novel_system.services.llm_providers.base import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _clear_connectivity_caps():
-    from novel_system.services import llm_client as mod
-
-    mod._CONNECTIVITY_CAPS.clear()
-    yield
-    mod._CONNECTIVITY_CAPS.clear()
-
-
 def _chat_ok(content: str = '{"ok": true}') -> httpx.Response:
     return httpx.Response(200, json={
         "id": "chat-1",

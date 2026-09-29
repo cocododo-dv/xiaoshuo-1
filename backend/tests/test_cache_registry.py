@@ -15,6 +15,7 @@ from novel_system.cache_registry import register_cache_reset, registered_cache_n
 
 # 已知的进程级缓存：模块 → 它在定义处登记的名字。新加一处按库内容缓存的地方，就在这里加一行。
 KNOWN_CACHES = {
+    "novel_system.services.llm_client": ("llm_client.connectivity_caps",),
     "novel_system.services.pricing": ("pricing.price_book",),
     "novel_system.services.reference_copy_gate": ("reference_copy_gate",),
     "novel_system.services.scene_diagnosis": ("scene_diagnosis.findings", "scene_diagnosis.reference_craft"),
