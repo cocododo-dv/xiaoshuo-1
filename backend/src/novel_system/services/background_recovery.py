@@ -8,7 +8,8 @@ state.
 - 启动恢复（``run_startup_recovery``，lifespan 同步调用一次）：排队的任务、租约已过期 / 没有租约的 running
   任务再派发；过期的取消请求收尾；遗留的 LLM 记账预留回收。
 - 周期恢复（B03-01，``start_run_job_sweeper``，每分钟一拍，启动那一拍不跑）：进程还活着时，租约过期、本进程
-  里又没有它的工人的 running 任务再派发；主人已死的取消请求收尾。
+  里又没有它的工人的 running 任务再派发；主人已死的取消请求收尾。同一拍顺带跑到期的全系统维护任务
+  （``services/maintenance.py``）。
 - 进程退出（``shutdown_run_job_workers``）：工人代 +1（在跑的工人不再续租）、关工人车道、把本进程工人持有的
   租约就地到期——重启后的启动恢复立刻接着跑，不必等 600 秒的租约自然过期。
 """
@@ -39,6 +40,7 @@ from novel_system.services.background_jobs import (
     daemon_lane,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.maintenance import reset_maintenance_schedule, run_due_maintenance
 from novel_system.services.run_job_leases import (
     CHAPTER_RUN_LANE,
     CHAPTER_RUN_LANE_WORKERS,
@@ -276,15 +278,24 @@ def sweep_orphaned_run_jobs(*, now: datetime | None = None) -> dict[str, Any]:
     return summary
 
 
+def run_job_sweeper_tick() -> dict[str, Any]:
+    """巡检线程的一拍：周期恢复，然后跑到期的全系统维护任务（维护任务的失败由登记簿自己记日志、隔离）。"""
+    summary = sweep_orphaned_run_jobs()
+    summary["maintenance"] = run_due_maintenance()
+    return summary
+
+
 def start_run_job_sweeper(*, interval_seconds: float = RUN_JOB_SWEEP_INTERVAL_SECONDS) -> None:
-    """运行任务的周期恢复线程（lifespan 启动时调用；重复调用无害）。启动那一拍不跑——启动恢复刚同步扫过。"""
+    """运行任务的周期恢复线程（lifespan 启动时调用；重复调用无害）。启动那一拍不跑——启动恢复刚同步扫过；
+    全系统维护任务的计时从线程启动时算起。"""
     global _RUN_JOB_SWEEPER
     with _RUN_JOB_SWEEPER_LOCK:
         if _RUN_JOB_SWEEPER is not None and _RUN_JOB_SWEEPER.is_alive():
             return
+        reset_maintenance_schedule()
         _RUN_JOB_SWEEPER = PeriodicThread(
             RUN_JOB_SWEEPER_THREAD_NAME,
-            lambda: sweep_orphaned_run_jobs(),
+            lambda: run_job_sweeper_tick(),
             interval_seconds=interval_seconds,
             run_first=False,
         ).start()

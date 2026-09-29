@@ -208,6 +208,17 @@ SHARED_HELPER_LEAVES: dict[str, set[str]] = {
     "novel_system.services.snowflake_scene_order": {"novel_system.db.models"},
     "novel_system.services.snowflake_triage": {"novel_system.db.models"},
     "novel_system.services.author_preferences": set(),
+    # P01b：后台作业的通用运行时、全系统维护登记簿、运行任务的租约内核、房风词表
+    "novel_system.services.background_jobs": set(),
+    "novel_system.services.maintenance": {"novel_system.services.background_jobs"},
+    "novel_system.services.run_job_leases": {
+        "novel_system.cache_registry",
+        "novel_system.db.models",
+        "novel_system.db.session",
+        "novel_system.services.background_jobs",
+        "novel_system.services.errors",
+    },
+    "novel_system.services.house_taste_lexicons": set(),
 }
 
 

@@ -119,6 +119,37 @@ def test_maintenance_registry_defers_tasks_registered_not_to_run_at_start() -> N
     assert "deferred" not in registry.tasks and "deferred" not in registry.last_run
 
 
+def test_maintenance_registry_defers_a_task_registered_after_the_thread_started() -> None:
+    """``run_at_start=False`` 从登记那一刻起计时：周期线程已在跑（``reset_schedule`` 之后）才登记的任务，下一拍不跑。"""
+    registry = MaintenanceRegistry("test")
+    registry.reset_schedule()
+    ran: list[str] = []
+    registry.register("late", lambda: ran.append("late"), interval_seconds=60, run_at_start=False)
+
+    assert registry.run_due() == []
+    # 同名重复登记（模块重新导入）不重置已有的计时
+    registry.register("late", lambda: ran.append("late"), interval_seconds=60, run_at_start=False)
+    assert registry.run_due(now=time.monotonic() + 61) == ["late"]
+    assert ran == ["late"]
+
+
+def test_periodic_thread_keeps_ticking_after_a_tick_raises() -> None:
+    calls: list[int] = []
+
+    def tick() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("first tick fails")
+
+    periodic = PeriodicThread("t_periodic_raise", tick, interval_seconds=1.0, run_first=True)
+    periodic.start()
+    try:
+        assert _wait_until(lambda: len(calls) >= 2, timeout=5)
+        assert periodic.is_alive()
+    finally:
+        periodic.stop(join_timeout=5)
+
+
 def test_periodic_thread_without_a_first_tick_waits_a_full_interval_and_stops_on_its_own_signal() -> None:
     ticks: list[float] = []
     periodic = PeriodicThread("t_periodic", lambda: ticks.append(time.monotonic()), interval_seconds=1.0, run_first=False)

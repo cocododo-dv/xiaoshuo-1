@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -540,6 +541,37 @@ def test_periodic_run_job_sweep_recovers_orphans_without_a_restart(session, monk
     session.expire_all()
     assert session.get(ChapterRunJob, "scene-cancel-orphan").status == "cancelled"
     assert session.get(ChapterRunJob, "scene-queued").status == "queued"
+
+
+def test_run_job_sweeper_tick_runs_due_system_maintenance(monkeypatch) -> None:
+    """巡检线程的一拍顺带跑到期的全系统维护任务（``services/maintenance.py``）：启动时就跑的任务第一拍跑，
+    ``run_at_start=False`` 的等满一个间隔；一个任务失败不影响别的任务，也不影响巡检本身。"""
+    from novel_system.services import background_recovery as recovery_module
+    from novel_system.services import maintenance
+
+    ran: list[str] = []
+
+    def failing() -> None:
+        raise RuntimeError("maintenance task failed")
+
+    monkeypatch.setattr(recovery_module, "sweep_orphaned_run_jobs", lambda: {"run_jobs": {}})
+    maintenance.register_maintenance_task("t_eager", lambda: ran.append("eager"), interval_seconds=3600)
+    maintenance.register_maintenance_task("t_failing", failing, interval_seconds=3600)
+    maintenance.register_maintenance_task(
+        "t_deferred", lambda: ran.append("deferred"), interval_seconds=3600, run_at_start=False
+    )
+    try:
+        maintenance.reset_maintenance_schedule()
+        summary = recovery_module.run_job_sweeper_tick()
+        assert summary == {"run_jobs": {}, "maintenance": ["t_eager"]}
+        assert ran == ["eager"]
+        # 同一个间隔内的下一拍什么也不跑
+        assert recovery_module.run_job_sweeper_tick()["maintenance"] == []
+        assert maintenance.run_due_maintenance(now=time.monotonic() + 3601) == ["t_eager", "t_deferred"]
+        assert ran == ["eager", "eager", "deferred"]
+    finally:
+        for name in ("t_eager", "t_failing", "t_deferred"):
+            maintenance.unregister_maintenance_task(name)
 
 
 def test_lifespan_runs_the_run_job_sweeper_only_while_the_app_is_up() -> None:

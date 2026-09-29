@@ -174,7 +174,8 @@ MaintenanceTask = Callable[[], Any]
 class MaintenanceRegistry:
     """随周期线程跑的定期任务：``register`` 登记（同名覆盖），``run_due`` 跑到期的。
 
-    ``run_at_start=True`` 的任务在周期线程第一拍就跑（``reset_schedule`` 之后），否则等满一个间隔。
+    ``run_at_start=True`` 的任务在周期线程第一拍就跑（``reset_schedule`` 之后），否则从登记（或周期线程启动）
+    那一刻起等满一个间隔——周期线程已经在跑时才登记的任务也一样，不会在下一拍就跑。
     ``tasks`` / ``last_run`` 是可直接读写的字典（风格作业模块把它们原样当 ``_MAINTENANCE`` /
     ``_MAINTENANCE_LAST_RUN`` 转出去）。
     """
@@ -199,6 +200,8 @@ class MaintenanceRegistry:
             self._deferred.discard(key)
         else:
             self._deferred.add(key)
+            # 没有上次运行的记录就从现在起计时（重复登记不重置已有的计时）
+            self.last_run.setdefault(key, time.monotonic())
 
     def unregister(self, name: str) -> None:
         self.tasks.pop(str(name), None)
@@ -234,6 +237,7 @@ class MaintenanceRegistry:
 # ---------------------------------------------------------------------- 周期线程
 class PeriodicThread:
     """一条守护线程：``run_first`` 时先跑一拍，之后每 ``interval_seconds`` 秒一拍，直到自己的停止信号置位。
+    一拍抛出的异常只记日志，线程不会因此退出。
 
     停止信号每条线程一个（启动时新建、线程闭包里抓住自己那一个）：旧线程还在一拍里时下一个 lifespan 启动新线程，
     旧线程醒来看到的是自己那个已置位的信号，不会接着循环（P00a / X04-20）。
@@ -251,11 +255,17 @@ class PeriodicThread:
         stop = self.stop_event
         interval = max(1.0, float(interval_seconds))
 
+        def _tick() -> None:
+            try:
+                tick()
+            except Exception:  # noqa: BLE001 — 周期线程边界：一拍失败只记日志，线程照常等下一拍
+                logger.exception("periodic thread %s tick failed", name)
+
         def _loop() -> None:
             if run_first:
-                tick()
+                _tick()
             while not stop.wait(interval):
-                tick()
+                _tick()
 
         self.thread = threading.Thread(target=_loop, name=name, daemon=True)
 
