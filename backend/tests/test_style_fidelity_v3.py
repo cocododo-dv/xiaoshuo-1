@@ -922,7 +922,8 @@ def test_patch_and_repair_passes_render_the_reference_as_a_revision(session, mon
         scene=scene, state=state, bundle=bundle, execution_step_key=None, lengths=sg.LengthPolicy.for_scene(bundle, scene)
     )
     if pass_kind == "salvage":
-        service._run_style_salvage_pass(
+        sg.neutral_style.run_style_salvage_pass(
+            service,
             **common,
             checkpoint_base_row_id="row_base",
             rejected_style_row_id="row_rejected",
@@ -932,7 +933,8 @@ def test_patch_and_repair_passes_render_the_reference_as_a_revision(session, mon
             quality_gate={"base_safety": {"accepted": False, "reasons": ["required_facts_missing"]}},
         )
     else:
-        service._run_de_template_pass(
+        sg.neutral_style.run_de_template_pass(
+            service,
             **common,
             base_prompt=service._prompt_builder().build(bundle["snapshot"], "style_draft"),
             checkpoint_base_row_id="row_base",

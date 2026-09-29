@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
+
+from sqlalchemy.orm import Session
 
 from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.style_reference.runtime_contract import DRAFT_MODE_NEUTRAL_FIRST
@@ -65,6 +67,37 @@ class StyleGenerationResult:
 
 # 产品回调（编排器据此写检查点）：(槽位键, "base" | "final", 结果, 元数据)。
 ProductCallback = Callable[[str, str, StyleGenerationResult, dict[str, Any]], None]
+
+
+class GenerationHost(Protocol):
+    """各流程模块（first_draft / style_first / neutral_style / best_of_n）从门面借用的东西——
+    :class:`~novel_system.services.scene_generation.SceneGenerationService` 就是它。
+
+    流程是模块函数、第一个参数收门面：会话、模型节点执行器、模板构建器、参考注入与风格门都按实例查找，
+    测试替换门面上的这几个方法照旧生效。
+    """
+
+    session: Session
+    _llm_runner: Any  # LLMNodeRunner（叶子模块不 import 它）
+
+    def _prompt_builder(self) -> Any: ...
+
+    def _inject_style_reference(
+        self, prompt: dict[str, Any] | None, scene: Any, **kwargs: Any
+    ) -> dict[str, Any] | None: ...
+
+    def _styled_draft_style_gate(
+        self,
+        scene: Any,
+        style_content: str,
+        *,
+        bundle: dict[str, Any] | None = None,
+        stage: str = "style_draft",
+    ) -> dict[str, Any] | None: ...
+
+    def generate_style_draft(
+        self, scene_id: str, bundle: dict[str, Any], **kwargs: Any
+    ) -> StyleGenerationResult: ...
 
 
 # 来源稿标签:作者手笔直起的定向修改看到首稿,neutral_first 的风格稿看到已批准的中性稿。

@@ -386,7 +386,7 @@ def test_progressive_topup_resumes_its_locked_base_without_replay(session, monke
     scene.constraint_intensity = 0.5
     session.commit()
     monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
-    monkeypatch.setattr("novel_system.services.scene_generation._candidate_dispersion", lambda contents: 0.0)
+    monkeypatch.setattr("novel_system.services.scene_generation.best_of_n._candidate_dispersion", lambda contents: 0.0)
     monkeypatch.setattr(
         "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {

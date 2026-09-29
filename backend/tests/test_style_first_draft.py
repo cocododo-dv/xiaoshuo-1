@@ -956,7 +956,7 @@ def test_neutral_first_candidate_style_score_comes_from_readings_and_unchecked_c
     )
     # 读数可信：style_score = 1 − percentile/100（四位小数）；抄袭门查过、没重合
     _install_readings(monkeypatch, {_VOICED_MARK: _fixed_reading(1.0, 30.0)})
-    audit = service._candidate_style_assessment(bundle, result, 0.5, rank=0)
+    audit = sg.best_of_n.candidate_style_assessment(service, bundle, result, 0.5, rank=0)
     assert audit["style_score"] == 0.7 and audit["fidelity_distance"] == 1.0 and audit["fidelity_percentile"] == 30.0
     assert audit["plagiarism_checked"] is True and audit["plagiarism_passed"] is True and audit["plagiarism_hit_count"] == 0
     assert audit["rank"] == 0 and audit["selected"] is True and audit["selection_reason"] == "quality_order"
@@ -964,17 +964,17 @@ def test_neutral_first_candidate_style_score_comes_from_readings_and_unchecked_c
     assert audit["rerank"] == {"applied_mode": "off", "reason": None, "runtime_contract_mode": "frozen"}
     # 读数不可信 → style_score None（抄袭门照查）
     _install_readings(monkeypatch, {_VOICED_MARK: _fixed_reading(1.0, 30.0, reliable=False)})
-    unreliable = service._candidate_style_assessment(bundle, result, 0.5, rank=1)
+    unreliable = sg.best_of_n.candidate_style_assessment(service, bundle, result, 0.5, rank=1)
     assert unreliable["style_score"] is None and unreliable["plagiarism_checked"] is True
     assert unreliable["rerank"]["reason"] == "reading_unreliable" and unreliable["selected"] is False
     # 读数抛异常 → 没检查成：plagiarism_checked=False / plagiarism_passed=None，候选照常交付
     _install_readings(monkeypatch, {_VOICED_MARK: RuntimeError})
-    unchecked = service._candidate_style_assessment(bundle, result, 0.5, rank=1)
+    unchecked = sg.best_of_n.candidate_style_assessment(service, bundle, result, 0.5, rank=1)
     assert unchecked["plagiarism_checked"] is False and unchecked["plagiarism_passed"] is None
     assert unchecked["style_score"] is None and unchecked["rerank"]["reason"] == "assessment_internal_error"
     assert unchecked["rerank"]["error_code"] == "RuntimeError"
     # 未绑定的 bundle：不读、不查（照旧）
-    unbound = service._candidate_style_assessment({"snapshot": {}}, result, 0.5, rank=0)
+    unbound = sg.best_of_n.candidate_style_assessment(service, {"snapshot": {}}, result, 0.5, rank=0)
     assert unbound["style_score"] is None and unbound["plagiarism_checked"] is False and unbound["plagiarism_passed"] is None
     # 终选门：有绑定时没检查成的候选不交给盲选；全部没检查成 → None（管线继续）；未绑定照旧交付
     state = session.get(SceneRunState, scene.scene_id)
