@@ -1835,8 +1835,8 @@ def test_quota_env_accepts_zero_as_disabled_and_still_rejects_negative(
     """``0`` is the documented "no ceiling" value; a negative stays a config error.
 
     The disarmed-install test above exercises the dataclass default, so without
-    this the parser swap (`_get_positive_int_env` -> `_get_quota_int_env`) has no
-    coverage at all — and `_get_positive_int_env` rejects the very ``0`` that
+    this the parser swap (`positive_int_env` -> `quota_int_env`) has no
+    coverage at all — and `positive_int_env` rejects the very ``0`` that
     docs/runtime-safety.md tells the operator to set.
     """
 

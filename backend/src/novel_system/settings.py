@@ -6,6 +6,13 @@ from pathlib import Path
 
 from novel_system.core_runtime import load_core_runtime
 from novel_system.database_runtime import load_database_runtime
+from novel_system.env_parsing import (
+    bool_env,
+    list_env,
+    path_list_env,
+    positive_int_env,
+    quota_int_env,
+)
 from novel_system.llm_accounting_runtime import load_llm_accounting_runtime
 from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
 
@@ -105,78 +112,9 @@ class Settings:
     scene_design_context_enabled: bool = True
 
 
-def _get_bool_env(name: str, default: bool) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _get_strict_bool_env(name: str, default: bool) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    normalized = raw_value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be a boolean (1/0, true/false, yes/no, on/off)")
-
-
-def _get_positive_int_env(name: str, default: int) -> int:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-def _get_quota_int_env(name: str, default: int) -> int:
-    """Parse an optional hard-fence bound, where ``0`` disables the fence."""
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    message = f"{name} must be a non-negative integer (0 disables the limit)"
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(message) from exc
-    if value < 0:
-        raise ValueError(message)
-    return value
-
-
-def _get_list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    items = tuple(item.strip() for item in raw_value.split(",") if item.strip())
-    return items or default
-
-
 def _resolve_runtime_path(value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else BACKEND_ROOT / path
-
-
-def _get_path_list_env(
-    name: str,
-    default: tuple[Path, ...] = (),
-) -> tuple[Path, ...]:
-    raw_value = os.environ.get(name, "")
-    if not raw_value.strip():
-        return default
-    return tuple(
-        _resolve_runtime_path(item.strip())
-        for item in raw_value.split(os.pathsep)
-        if item.strip()
-    )
 
 
 def get_settings(*, include_runtime_config: bool = True) -> Settings:
@@ -193,11 +131,11 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_api_key = core_runtime.llm_api_key
     llm_timeout_seconds = core_runtime.llm_timeout_seconds
     llm_enabled = core_runtime.llm_enabled
-    llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
-    llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
-    scene_best_of_n_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", False)
-    scene_structure_brief_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
-    scene_design_context_enabled = _get_bool_env("NOVEL_SYSTEM_SCENE_DESIGN_CONTEXT", True)
+    llm_auto_critique_enabled = bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
+    llm_event_extraction_enabled = bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
+    scene_best_of_n_enabled = bool_env("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", False)
+    scene_structure_brief_enabled = bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
+    scene_design_context_enabled = bool_env("NOVEL_SYSTEM_SCENE_DESIGN_CONTEXT", True)
     accounting_runtime = load_llm_accounting_runtime()
     llm_daily_token_limit = accounting_runtime.daily_token_limit
     llm_monthly_token_limit = accounting_runtime.monthly_token_limit
@@ -207,16 +145,16 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_daily_cost_limit_usd = accounting_runtime.daily_cost_limit_usd
     llm_input_cost_per_million_usd = accounting_runtime.input_cost_per_million_usd
     llm_output_cost_per_million_usd = accounting_runtime.output_cost_per_million_usd
-    scene_token_budget_multiplier = _get_quota_int_env(
+    scene_token_budget_multiplier = quota_int_env(
         "NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", 0
     )
-    snowflake_input_token_budget = _get_quota_int_env(
+    snowflake_input_token_budget = quota_int_env(
         "NOVEL_SYSTEM_SNOWFLAKE_INPUT_TOKEN_BUDGET", 0
     )
     admin_token = core_runtime.admin_token
     config_secret = core_runtime.config_secret
-    auto_create_tables = _get_bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", False)
-    cors_origins = _get_list_env(
+    auto_create_tables = bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", False)
+    cors_origins = list_env(
         "NOVEL_SYSTEM_CORS_ORIGINS",
         (
             "http://127.0.0.1:5173",
@@ -230,16 +168,17 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
             "http://localhost:8081",
         ),
     )
-    cors_allow_credentials = _get_bool_env("NOVEL_SYSTEM_CORS_ALLOW_CREDENTIALS", True)
-    expose_error_detail = _get_bool_env("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", False)
-    local_only = _get_strict_bool_env("NOVEL_SYSTEM_LOCAL_ONLY", True)
+    cors_allow_credentials = bool_env("NOVEL_SYSTEM_CORS_ALLOW_CREDENTIALS", True)
+    expose_error_detail = bool_env("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", False)
+    local_only = bool_env("NOVEL_SYSTEM_LOCAL_ONLY", True, strict=True)
     remote_access_token = os.environ.get("NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN") or None
-    max_request_body_bytes = _get_positive_int_env(
+    max_request_body_bytes = positive_int_env(
         "NOVEL_SYSTEM_MAX_REQUEST_BODY_BYTES",
         16 * 1024 * 1024,
     )
-    style_reference_import_roots = _get_path_list_env(
-        "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS"
+    style_reference_import_roots = path_list_env(
+        "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS",
+        _resolve_runtime_path,
     )
     content_safety_mode = os.environ.get("NOVEL_SYSTEM_CONTENT_SAFETY_MODE", "review").strip().lower()
     if content_safety_mode not in {"review", "audit"}:
