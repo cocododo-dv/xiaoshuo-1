@@ -12,9 +12,6 @@ import yaml
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.context_budget import (
-    CONTINUITY_DROP_ORDER,
-    SECTION_SPECS,
-    PromptSection as _PromptSection,
     apply_context_budget,
     collect_prompt_sections as _collect_sections,
     estimate_tokens as _estimate_tokens,

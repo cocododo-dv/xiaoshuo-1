@@ -3,25 +3,19 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     ChapterGoal,
-    FinalScene,
-    QcReport,
     SceneBlueprint,
     SceneCard,
     SceneExecutionContract,
-    SceneRunState,
-    SnowflakeArtifact,
     StoryProject,
 )
-from novel_system.services.errors import DomainError
 from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
@@ -29,7 +23,6 @@ from novel_system.services.story_slots import (
     normalize_story_slot_mapping,
 )
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.narrative_position import NarrativePositionService
 from novel_system.services.style_policy import style_policy_live
 
 EXECUTION_CONTRACT_VERSION = "scene_execution_contract_v1"

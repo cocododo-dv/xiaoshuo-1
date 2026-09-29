@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import re
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (

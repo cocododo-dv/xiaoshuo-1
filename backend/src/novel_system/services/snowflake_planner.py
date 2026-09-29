@@ -486,7 +486,6 @@ def _build_outline_based_artifact(
     lines = _ensure_outline_lines(project, outline_lines)
     zh = _looks_chinese(" ".join([project.title or "", project.genre or "", *lines]))
     lead = "主角" if zh else "the protagonist"
-    opposition = lines[1] if len(lines) > 1 else lines[0]
     final_pressure = lines[-1]
     title = str(project.title or ("未命名小说" if zh else "Untitled Novel")).strip()
     genre = str(project.genre or ("长篇小说" if zh else "Novel")).strip()

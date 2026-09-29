@@ -31,7 +31,6 @@ from novel_system.services.llm_audit import sanitize_audit_summary
 logger = logging.getLogger(__name__)
 
 from novel_system.services.literary_quality import (
-    ADVERSARIAL_DIMS,
     analyze_literary_quality,
 )
 

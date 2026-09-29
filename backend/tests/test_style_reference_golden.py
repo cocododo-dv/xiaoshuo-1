@@ -17,7 +17,6 @@ import pytest
 
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.ingest import IngestService
-from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
 )

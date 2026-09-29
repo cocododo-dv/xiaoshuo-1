@@ -15,7 +15,6 @@ from novel_system.db.models import (
     LlmCallAttempt,
     SceneCard,
     StyleReferenceBook,
-    StyleReferenceProfile,
     StyleReferenceRun,
 )
 from novel_system.db.session import SessionLocal

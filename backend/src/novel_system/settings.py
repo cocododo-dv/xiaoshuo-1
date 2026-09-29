@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from novel_system.core_runtime import load_core_runtime
-from novel_system.database_runtime import DEFAULT_DATABASE_PATH, load_database_runtime
+from novel_system.database_runtime import load_database_runtime
 from novel_system.llm_accounting_runtime import load_llm_accounting_runtime
 from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
 

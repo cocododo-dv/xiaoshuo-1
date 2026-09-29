@@ -53,7 +53,6 @@ from novel_system.services.scene_diagnosis import (
     candidate_category_for_dimension,
     locate_in_paragraphs,
     passage_scope,
-    scene_form_from_findings,
     serialize_evaluation as _serialize_evaluation,
     serialize_passage_review,
     serialize_patch_candidate as _serialize_patch_candidate,

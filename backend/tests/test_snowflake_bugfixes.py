@@ -12,12 +12,11 @@ import pathlib
 
 import yaml
 
-from novel_system.db.models import ChapterGoal, SceneCard, SnowflakeChapterPlan, StoryCharacter
+from novel_system.db.models import ChapterGoal, SceneCard
 from novel_system.services.scene_generation import _style_first_length_slack
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.snowflake_workspace_llm import _sanitize_scene_list_items
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _materialize, _plan, _seed
+from tests.test_snowflake_rendering_mode import PROJECT_ID, _plan, _seed
 
 
 def test_resync_cross_chapter_move_keeps_the_source_chapter_goal_and_recomputes_chapter_last(session) -> None:
@@ -33,7 +32,7 @@ def test_resync_cross_chapter_move_keeps_the_source_chapter_goal_and_recomputes_
     chaptering = SnowflakeChapteringService(session)
     chapters = chaptering.chapter_plans(PROJECT_ID)
     assert len(chapters) == 2
-    plans = service._scene_plans(PROJECT_ID)
+    service._scene_plans(PROJECT_ID)
     # u1, u2 → 第一章；u3 → 第二章
     chaptering.save(PROJECT_ID, {"assignments": [
         {"scene_plan_id": _plan(session, "u1").scene_plan_id, "chapter_row_uid": chapters[0].row_uid},

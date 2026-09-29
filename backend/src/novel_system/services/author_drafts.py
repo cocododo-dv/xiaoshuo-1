@@ -29,7 +29,6 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
-from novel_system.services.canonical_manuscripts import canonicalize_author_text
 from novel_system.services.chapter_approval import require_author_target_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
@@ -47,9 +46,7 @@ from novel_system.services.reference_copy_gate import (
     copy_block_author_action,
     introduced_copy,
 )
-from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.style_reference.readings import STAGE_REVISION, record_author_draft_reading
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 from novel_system.services.style_prompt_injection import (
     PLACEMENT_USER_TAIL,
@@ -58,7 +55,6 @@ from novel_system.services.style_prompt_injection import (
     resolve_style_scope,
 )
 from novel_system.services.writer_briefs import (
-    empty_scene_writer_brief,
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
 )

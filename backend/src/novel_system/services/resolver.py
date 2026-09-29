@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (

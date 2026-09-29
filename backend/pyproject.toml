@@ -58,4 +58,6 @@ line-length = 120
 [tool.ruff.lint]
 # Start with correctness checks. Formatting/style migration can be phased in
 # without hiding undefined names or syntax failures in the meantime.
-select = ["E9", "F63", "F7", "F82"]
+# F401 / F841: unused imports and locals are dead code; an import that exists only so a test can
+# monkeypatch it (or for a side effect) carries ``# noqa: F401`` with the reason.
+select = ["E9", "F63", "F7", "F82", "F401", "F841"]

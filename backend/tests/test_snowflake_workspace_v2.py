@@ -14,14 +14,12 @@ from novel_system.db.models import (
     OutlinePlan,
     SceneCard,
     SnowflakeArtifact,
-    SnowflakeCharacterPlan,
     SnowflakeRevisionLink,
     SnowflakeScenePlan,
     SnowflakeSceneTriageItem,
     SnowflakeStepRun,
 )
 from novel_system.services.llm_client import LLMResponse
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 
 
 _INTENT_SEQUENCE = count()

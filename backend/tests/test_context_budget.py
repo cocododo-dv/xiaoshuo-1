@@ -4,7 +4,6 @@ from sqlalchemy import select
 
 from novel_system.db.models import AttemptTracker, ChapterGoal, HumanReviewEvent, LlmCall, QcReport, SceneCard, SceneDraft, SceneRunState, StoryProject
 from novel_system.services.context_budget import (
-    CONTINUITY_DROP_ORDER,
     _compress_continuity_digest,
     _compress_style_observations,
     apply_context_budget,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 
-from novel_system.db.models import ChapterGoal, HumanReviewEvent, ReviewItem, SceneCard
+from novel_system.db.models import ChapterGoal, ReviewItem, SceneCard
 
 
 def _encode_test_payload(value) -> str:

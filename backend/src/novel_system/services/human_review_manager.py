@@ -5,8 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import HumanReviewEvent, OperationLog, ReviewItem
-from novel_system.services.errors import DomainError
+from novel_system.db.models import HumanReviewEvent
 
 
 class HumanReviewManager:

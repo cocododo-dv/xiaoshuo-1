@@ -51,7 +51,6 @@ from novel_system.services.style_reference.inject.selection import (
     IndexWindow,
     compute_selection,
     derive_situation_tags,
-    load_index,
     resolve_scene_selection,
     selection_quotas,
 )
@@ -71,7 +70,6 @@ from novel_system.services.style_reference.schemas import (
 )
 from novel_system.services.style_reference.windows import ensure_window_index, load_windows
 from tests.style_reference_inject_helpers import (
-    DEVICES,
     PROJECT_ID,
     VOICE_HABITS,
     bind,

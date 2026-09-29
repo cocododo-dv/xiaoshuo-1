@@ -276,7 +276,7 @@ def test_candidate_acceptance_commit_cannot_fake_scene_completion(session) -> No
         outcome="completed_events",
         event_ids=[event.event_id],
     )
-    decision = service.decide_candidate(
+    service.decide_candidate(
         seeded["project_id"],
         staged["candidate_ids"][0],
         action="accept",

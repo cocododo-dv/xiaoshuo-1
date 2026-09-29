@@ -46,7 +46,6 @@ from novel_system.services.near_final import (
     NEAR_FINAL_REWRITE_TYPE,
     NEAR_FINAL_RUBRIC_ID,
 )
-from novel_system.services.pagination import paginate_select, resolve_pagination_request
 from novel_system.services.projects import ProjectService
 from novel_system.services.reference_copy_gate import (
     check_reference_copy_for_scope,
@@ -56,7 +55,6 @@ from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import latest_style_notices
 from novel_system.services.scene_notes import SceneNotesService
-from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.services.scene_run_jobs import (
     SceneRunJobService,
@@ -460,7 +458,6 @@ def run_scene(
     session: Session = Depends(get_session),
     payload: SceneRunCommandRequest | None = Body(default=None),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     AuthorLifecycleService(session).require_active_scene(scene_id)
     _reject_manual_checkpoint_controls(body)
@@ -1013,7 +1010,6 @@ def resume_after_selection(
     session: Session = Depends(get_session),
 ):
     """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。"""
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
     return idempotent_response(
         request,

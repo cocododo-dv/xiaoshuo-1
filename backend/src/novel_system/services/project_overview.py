@@ -18,8 +18,6 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AuthorDraft,
-    ChapterGoal,
-    ReviewItem,
     SnowflakeStepRun,
     StoryProject,
 )

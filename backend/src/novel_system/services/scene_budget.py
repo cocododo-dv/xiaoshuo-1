@@ -119,7 +119,8 @@ def ensure_scene_budget_initialized(
         raise RuntimeError(f"scene run state disappeared during budget initialization: {scene_id}")
 
     if state.scene_budget_basis_json is not None:
-        basis_budget = _basis_scene_token_budget(state.scene_budget_basis_json)
+        # 依据里的预算必须是正整数（坏数据 fail-closed，抛 corrupt budget state）
+        _basis_scene_token_budget(state.scene_budget_basis_json)
         if state.scene_token_budget is None:
             effective_budget = audited_scene_budget_prefixes(session, state)[-1]
             _validate_scene_budget_state(session, state, effective_budget=effective_budget)

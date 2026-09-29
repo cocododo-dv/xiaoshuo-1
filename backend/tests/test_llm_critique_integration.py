@@ -99,7 +99,7 @@ def _task_error(
 
 
 def _seed_failure_ledger(session, *, context, outcome: str, error_code: str) -> None:
-    from novel_system.db.models import LlmCall, LlmCallAttempt, SceneRunState
+    from novel_system.db.models import LlmCall, LlmCallAttempt
 
     dispatched = outcome == "provider_failed"
     tokens = 11 if dispatched else 0

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
+from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.canonical_manuscripts import CanonicalSceneService

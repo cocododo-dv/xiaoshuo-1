@@ -672,7 +672,6 @@ class Orchestrator:
 
         from novel_system.services.scene_criticality import classify_scene_with_context
 
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
         # §6.4 / §16：chapter_seq、连续过渡计数、constraint_intensity 的上下文推导
         # 统一收敛在 classify_scene_with_context——与崩溃续跑同一入口，判定不得分叉。
         criticality = classify_scene_with_context(self.session, scene)

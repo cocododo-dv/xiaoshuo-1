@@ -64,7 +64,6 @@ from novel_system.services.snowflake_steps import (
     SNOWFLAKE_METHOD_VERSION,
     STEP_ORDER,
     SUMMARY_LENGTH_BAND,
-    default_step_draft,
     diagnose_step_pressure,
     diagnose_scene_detail,
     editor_payload,
@@ -1074,7 +1073,6 @@ class SnowflakeWorkspaceService:
         protagonist = self._protagonist_hint(project.project_id)
         # 阶段 N：作者裁定该重写 / 待删的场不物化（三拍留在构思里，回流时再补建或取回）。
         excluded = self._excluded_scene_plan_ids(project.project_id)
-        by_plan_id = {chapter.chapter_plan_id: chapter for chapter in chapters}
         grouped: dict[str, list[SnowflakeScenePlan]] = {chapter.chapter_plan_id: [] for chapter in chapters}
         for scene in scene_plans:
             key = scene.chapter_plan_id or ""

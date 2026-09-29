@@ -6,10 +6,10 @@ from fastapi.testclient import TestClient
 
 from novel_system.api.app import SUPPORTED_DATABASE_REVISION, create_app
 from novel_system.db.base import Base
+from novel_system.database_runtime import DEFAULT_DATABASE_PATH
 from novel_system.db.session import engine
 from novel_system.settings import (
     BACKEND_ROOT,
-    DEFAULT_DATABASE_PATH,
     DEFAULT_VECTOR_STORE_DIR,
     get_settings,
 )

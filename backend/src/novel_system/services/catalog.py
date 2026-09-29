@@ -36,7 +36,6 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AttemptTracker,
-    AuthorDraft,
     ChapterGoal,
     SceneCard,
     SceneRunState,
@@ -1153,7 +1152,7 @@ class CatalogService:
 
     def _scene_payload_with_slug(self, scene: SceneCard) -> dict[str, Any]:
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        project = self._projects.require_project(chapter.project_id)
+        self._projects.require_project(chapter.project_id)
         chapters = self.chapter_rows(chapter.project_id)
         index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter.chapter_id)
         return self.scene_payload(

@@ -1,7 +1,6 @@
 """Tests for narrative event sourcing — blueprint §2 / §17 Action B."""
 from __future__ import annotations
 
-import pytest
 
 from novel_system.db.models import (
     ChapterGoal,

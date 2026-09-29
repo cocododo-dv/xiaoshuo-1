@@ -651,7 +651,7 @@ def test_online_wrapper_that_drops_hook_never_leaves_a_live_parent(session) -> N
         )
     )
     session.commit()
-    cached_state = session.get(SceneRunState, scene_id)
+    session.get(SceneRunState, scene_id)  # 行进会话的身份表（缓存态）
     post_count = 0
 
     def handler(_request: httpx.Request) -> httpx.Response:

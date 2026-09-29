@@ -26,7 +26,6 @@ from novel_system.db.models import (
     OperationLog,
     RelationProfile,
     SceneCard,
-    SceneDraft,
     SceneRunState,
     StoryProject,
     VoiceProfile,

@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from novel_system.services.snowflake_staleness import scene_row_content
 from novel_system.services.scene_planning_staleness import supersede_scene_planning_artifacts
 from novel_system.db.models import (
-    ChapterGoal,
     ChapterState,
     FinalScene,
     QcReport,

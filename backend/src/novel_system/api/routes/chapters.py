@@ -241,7 +241,6 @@ def run_chapter_full(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     return idempotent_response(
         request,

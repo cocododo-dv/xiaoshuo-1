@@ -10,7 +10,6 @@ from novel_system.db.models import (
     FinalScene,
     LlmCall,
     PassagePatchCandidate,
-    ReviewItem,
     SceneCard,
     SceneRunState,
     StoryProject,

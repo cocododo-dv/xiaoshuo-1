@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-import hashlib
-import uuid
-from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
@@ -12,31 +8,15 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     ChapterGoal,
-    ChapterMemory,
-    ChapterState,
-    FinalScene,
     RevisionCandidate,
-    SceneBlueprint,
-    SceneBundle,
     SceneCard,
-    SceneDraft,
-    SceneRunState,
     WriterEvaluation,
 )
-from novel_system.services.author_actions import author_action
-from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.llm_task_runner import (
-    SCENE_SPLIT_RECOMMENDATION,
-    LLMNodeContinuityError,
-    LLMNodeExecutionError,
     LLMNodeRunner,
-    current_llm_execution_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import require_chapter, require_scene
-from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 WRITER_RUBRIC_ID = "drama_effectiveness_v1"
 

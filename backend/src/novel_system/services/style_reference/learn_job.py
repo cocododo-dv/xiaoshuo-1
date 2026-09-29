@@ -63,7 +63,6 @@ from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.fidelity import DIMENSION_FEATURES, reference_distribution_for_book
 from novel_system.services.style_reference.job_runtime import (
     JobRun,
-    JobStopped,
     conflict_error_by_kind,
     retry_attempts,
 )

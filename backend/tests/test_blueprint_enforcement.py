@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from novel_system.db.models import (
     ChapterGoal,
-    ChapterState,
     SceneCard,
 )
 

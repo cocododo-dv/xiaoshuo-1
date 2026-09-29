@@ -25,14 +25,12 @@ import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
-    AuthorDraft,
     ChapterGoal,
     LlmCall,
     SceneCard,
     SceneRunState,
     StoryProject,
 )
-from novel_system.services import author_drafts as author_drafts_module
 from novel_system.services import near_final as near_final_module
 from novel_system.services import qc_engine as qc_engine_module
 from novel_system.services import writer_review as writer_review_module
