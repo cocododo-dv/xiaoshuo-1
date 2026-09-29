@@ -9,10 +9,13 @@ import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import inspect as sqlalchemy_inspect, text
 
 from novel_system.api.errors import install_exception_handlers
 from novel_system.api.middleware import UnhandledErrorMiddleware
+from novel_system.api.readiness import (  # noqa: F401 — SUPPORTED_DATABASE_REVISION 仍从这里导出
+    SUPPORTED_DATABASE_REVISION,
+    check_database_ready,
+)
 from novel_system.api.response import error
 from novel_system.api.openapi_contract import install_api_openapi_contract
 from novel_system.api.request_limits import RequestBodyLimitMiddleware
@@ -40,14 +43,11 @@ from novel_system.api.routes import (
 )
 from novel_system.db import models  # noqa: F401
 from novel_system.db.base import Base
-from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
 from novel_system.db.session import engine
-from novel_system.services.errors import DomainError
 from novel_system.settings import get_settings
 
 
 logger = logging.getLogger(__name__)
-SUPPORTED_DATABASE_REVISION = CURRENT_SCHEMA_REVISION
 
 
 @asynccontextmanager
@@ -208,107 +208,7 @@ def create_app() -> FastAPI:
 
     @app.get("/ready", tags=["health"])
     def ready() -> dict[str, str]:
-        try:
-            with engine().connect() as connection:
-                revisions = tuple(
-                    str(value)
-                    for value in connection.execute(
-                        text("SELECT version_num FROM alembic_version")
-                    ).scalars()
-                    if value
-                )
-                inspector = sqlalchemy_inspect(connection)
-                available_tables = set(inspector.get_table_names())
-                required_columns = {
-                    table_name: tuple(column.name for column in table.columns)
-                    for table_name, table in Base.metadata.tables.items()
-                }
-                missing_required_columns = {
-                    table_name: sorted(
-                        set(expected_columns)
-                        - {
-                            str(column["name"])
-                            for column in inspector.get_columns(table_name)
-                        }
-                    )
-                    for table_name, expected_columns in required_columns.items()
-                    if table_name in available_tables
-                }
-                missing_required_columns = {
-                    table_name: columns
-                    for table_name, columns in missing_required_columns.items()
-                    if columns
-                }
-        except Exception as exc:
-            logger.exception("Readiness database probe failed")
-            raise DomainError(
-                "SERVICE_NOT_READY",
-                "database readiness probe failed",
-                status_code=503,
-                details={
-                    "retryable": True,
-                    "reason": "database_probe_failed",
-                    "expected_revision": SUPPORTED_DATABASE_REVISION,
-                },
-            ) from exc
-        if revisions != (SUPPORTED_DATABASE_REVISION,):
-            current_revision = revisions[0] if len(revisions) == 1 else None
-            logger.error(
-                "Readiness schema revision mismatch expected=%s actual=%s",
-                SUPPORTED_DATABASE_REVISION,
-                revisions,
-            )
-            raise DomainError(
-                "SERVICE_NOT_READY",
-                "database schema revision is not ready",
-                status_code=503,
-                details={
-                    "retryable": False,
-                    "reason": "schema_revision_mismatch",
-                    "expected_revision": SUPPORTED_DATABASE_REVISION,
-                    "current_revision": current_revision,
-                },
-            )
-        missing_tables = sorted(set(Base.metadata.tables) - available_tables)
-        if missing_tables:
-            logger.error(
-                "Readiness schema table check failed revision=%s missing_tables=%s",
-                SUPPORTED_DATABASE_REVISION,
-                missing_tables,
-            )
-            raise DomainError(
-                "SERVICE_NOT_READY",
-                "database schema is incomplete",
-                status_code=503,
-                details={
-                    "retryable": False,
-                    "reason": "schema_tables_missing",
-                    "expected_revision": SUPPORTED_DATABASE_REVISION,
-                    "missing_table_count": len(missing_tables),
-                },
-            )
-        if missing_required_columns:
-            missing_column_count = sum(
-                len(columns) for columns in missing_required_columns.values()
-            )
-            logger.error(
-                "Readiness schema column check failed revision=%s tables=%s columns=%s",
-                SUPPORTED_DATABASE_REVISION,
-                len(missing_required_columns),
-                missing_column_count,
-            )
-            raise DomainError(
-                "SERVICE_NOT_READY",
-                "database schema is incomplete",
-                status_code=503,
-                details={
-                    "retryable": False,
-                    "reason": "schema_columns_missing",
-                    "expected_revision": SUPPORTED_DATABASE_REVISION,
-                    "missing_table_count": len(missing_required_columns),
-                    "missing_column_count": missing_column_count,
-                },
-            )
+        check_database_ready()
         return {"status": "ready"}
 
     install_exception_handlers(app, expose_error_detail=app_settings.expose_error_detail)
