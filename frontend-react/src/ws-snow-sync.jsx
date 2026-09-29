@@ -467,8 +467,6 @@ function canonText(feKey, draft) {
    9/10 步再改动后与目录场景卡（SceneCard）的 diff。pendingCount>0 = 构思领先于目录，
    写作台 / AI 起草台拿到的还是旧三拍。只读后端真相，与写穿缓存分开存。 */
 const snowResync = {}; // workId -> { pendingCount, pendingScenes }
-/* P2 分章现状（后端只读真相）：章数、未分章场数、是否已分完。随 workspace 回包更新。 */
-const snowChapterStatus = {}; // workId -> chapter_plan_status
 const snowSyncStates = {}; // workId -> 本机缓存 / 服务端写穿的诚实状态
 
 function snowErrorShape(error, fallback, scope = "remote") {
@@ -575,19 +573,6 @@ function captureTriage(workId, ws) {
   snowTriage[workId] = { items, at: Date.now(), source: "workspace" };
 }
 
-function captureChapterStatus(workId, ws) {
-  if (!workId || !ws || !ws.chapter_plan_status) return;
-  const s = ws.chapter_plan_status;
-  snowChapterStatus[workId] = {
-    chapterCount: Number(s.chapter_count) || 0,
-    assignedSceneCount: Number(s.assigned_scene_count) || 0,
-    unassignedSceneCount: Number(s.unassigned_scene_count) || 0,
-    unassignedScenes: Array.isArray(s.unassigned_scenes) ? s.unassigned_scenes : [],
-    chaptered: !!s.chaptered,
-  };
-  emit("ws:snow-chapter-plan", workId);
-}
-
 /* 水合入口：去重（每个作品自动水合一次，force 强制重拉）+ 串行（同一作品的水合排成一条链，
    调用方 await 到的是「这次水合做完」）。返回 true = 成功读到了服务端工作台。永不 reject。 */
 function snowHydrate(workId, opts) {
@@ -629,7 +614,6 @@ async function snowHydrateRun(workId) {
   }
   snowReadyFlags[workId] = !!(ws && ws.ready_to_materialize);
   captureResync(workId, ws);
-  captureChapterStatus(workId, ws);
   captureTriage(workId, ws);
   captureDirectionBriefs(workId, ws);
   const remote = { drafts: {}, scaffolds: {}, checks: {}, states: {}, _t: 0 };
@@ -912,7 +896,6 @@ async function adoptServerChapters(workId) {
   try { ws = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`); } catch (e) { return false; }
   snowReadyFlags[workId] = !!(ws && ws.ready_to_materialize);
   captureResync(workId, ws);
-  captureChapterStatus(workId, ws);
   captureTriage(workId, ws);
   captureWorkspaceHealth(workId, ws);
   const stepDraft = (beKey) => (((ws && ws.steps) || []).find(s => s && s.step_key === beKey) || {}).draft || null;
@@ -953,7 +936,6 @@ async function attachMaterializationGate(result, workId) {
     const workspace = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
     snowReadyFlags[workId] = !!(workspace && workspace.ready_to_materialize);
     captureResync(workId, workspace);
-    captureChapterStatus(workId, workspace);
     captureTriage(workId, workspace);
     captureDirectionBriefs(workId, workspace);
     return { ...(result || {}), materialization_gate: (workspace && workspace.materialization_gate) || null };
@@ -1076,7 +1058,6 @@ const SnowSync = {
     snowHydrateOk[id] = true; // 导入逐步写过、此刻又读到了服务端工作台：本机缓存就是服务端真相，水合闸门放行
     snowReadyFlags[id] = !!(workspace && workspace.ready_to_materialize);
     captureResync(id, workspace || {});
-    captureChapterStatus(id, workspace || {});
     captureDirectionBriefs(id, workspace || {});
     const normalizedLocal = s2NormalizeState(local);
     try { localStorage.setItem(snowCacheKey(id), JSON.stringify(normalizedLocal)); } catch (e) {}
@@ -1302,9 +1283,6 @@ const SnowSync = {
     const stale = !!used && !disabled && usedRevision != null && usedRevision < current;
     return { hasBrief: true, stale, disabled, usedRevision, currentRevision: current };
   },
-  /* 分章现状（后端只读真相）：{chapter_count, unassigned_scene_count, chaptered, …}。
-     顶部「整理为章节结构」据此决定是直接开面板还是先提示补 07 章表。 */
-  chapterPlanStatus(workId) { return snowChapterStatus[workId || activeWork()] || { chapter_count: 0, unassigned_scene_count: 0, chaptered: false }; },
   /* 阶段 M：工作台里存档的分诊（rowUid -> item），刷新后第 10 步也能看到上次的分诊。 */
   triageItems(workId) { return snowTriage[workId || activeWork()] || null; },
   /* 阶段 R：scene_id ↔ 09 row_uid 对照（来自最近一次水合的工作台） */
@@ -1343,15 +1321,6 @@ const SnowSync = {
       emit("ws:snow-health", id);
     }
     return (snowHealth[id] || {})[feKey] || null;
-  },
-  /* 阶段 K：按场景列表提议章表并落库（Ingermanson：章是列完场之后的包装决定）。已有章表时要带 replace。 */
-  async chapterPropose(options, workId) {
-    const id = workId || activeWork();
-    if (!id) throw new Error("作品尚未就绪");
-    const body = options && typeof options === "object" ? options : {};
-    const result = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/propose`, body);
-    try { await adoptServerChapters(id); } catch (e) {}
-    return result;
   },
   /* 分章预览（只读）。strategy：auto（服务端按现状挑）/ from_scenes（按场景分章）/ spine_anchor / even /
      keep_current。options.scenesPerChapter / options.targetChapterCount 只对 from_scenes 有意义——
@@ -1394,15 +1363,6 @@ const SnowSync = {
     const data = await apiPost(
       `/api/v2/projects/${id}/snowflake-workspace/orphaned-scenes/${scenePlanId}/resolve`,
       { action });
-    if (data && data.workspace) captureChapterStatus(id, data.workspace);
-    return data;
-  },
-  /* 只保存分章（不物化）：作者在面板里调完想先存一版。 */
-  async saveChapterPlan(payload, workId) {
-    const id = workId || activeWork();
-    const data = await apiPatch(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan`, payload || {});
-    if (data && data.workspace) captureChapterStatus(id, data.workspace);
-    try { await adoptServerChapters(id); } catch (e) {}
     return data;
   },
   /* 物化主路径：approved scene plans → ChapterGoal/SceneCard（成功后目录重拉）。

@@ -1,5 +1,5 @@
 // 单测共享底座：给 mock 后的 lib/client.js 装一个「按 URL 路由」的 apiGet，
-// 让各 store 在 import 期触发的拉取（projects / catalog / trash / review / audit）
+// 让各 store 在 import 期触发的拉取（projects / catalog / trash / review）
 // 都拿到确定性形状的后端数据。写动词（apiPost/apiPatch/apiDelete）默认 resolve，
 // 具体用例再按需 mockRejectedValueOnce 制造失败以验证回滚/告警。
 //
@@ -66,20 +66,10 @@ export const DEFAULT_REVIEW_CARD = {
   actions: [{ label: "知道了", intent: "quiet", op: "resolve" }],
 };
 
-/** 默认审计 finding（设定漂移，未裁决）。 */
-export const DEFAULT_FINDING = {
-  finding_id: "f1",
-  kind: "drift",
-  status: "open",
-  text: "道具材质前后不一致",
-  evidence: JSON.stringify({ subject: "道具材质", value: "黄铜", source: "ch03" }),
-  updated_at: "2026-06-08T00:00:00Z",
-};
-
 /**
  * 给已 mock 的 client 模块装 URL 路由。
  * @param {object} client - 由调用方 `await import("./lib/client.js")` 得到的 mock 模块。
- * @param {object} [opts] - 覆盖默认数据：{ projects, catalog, trash, reviewOpen, reviewSnoozed, findings, snowflakeWorkspace }。
+ * @param {object} [opts] - 覆盖默认数据：{ projects, catalog, trash, reviewOpen, reviewSnoozed, snowflakeWorkspace }。
  */
 export function installApiRouter(client, opts = {}) {
   const projects = opts.projects ?? [DEFAULT_PROJECT];
@@ -87,7 +77,6 @@ export function installApiRouter(client, opts = {}) {
   const trash = opts.trash ?? [];
   const reviewOpen = opts.reviewOpen ?? [];
   const reviewSnoozed = opts.reviewSnoozed ?? [];
-  const findings = opts.findings ?? [];
   const snowWorkspace = opts.snowflakeWorkspace ?? {};
 
   client.apiGet.mockImplementation((url) => {
@@ -100,7 +89,6 @@ export function installApiRouter(client, opts = {}) {
     if (url.includes("/review-items")) {
       return Promise.resolve({ items: url.includes("state=snoozed") ? reviewSnoozed : reviewOpen });
     }
-    if (url.includes("/longform/audit")) return Promise.resolve({ findings });
     return Promise.resolve({});
   });
   client.apiPost.mockResolvedValue({});

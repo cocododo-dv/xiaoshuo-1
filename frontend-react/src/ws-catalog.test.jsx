@@ -15,9 +15,6 @@ vi.mock("./lib/client.js", () => ({
   apiDelete: vi.fn(),
 }));
 
-// ws-catalog 的依赖链会经 ws-snow-sync.jsx 拉到 ws-snow.jsx，而后者只被取用
-// S2_BE_STEPS（FE↔BE 步骤映射）。mock 成空，避免为测 store 契约而拉入整张雪花视图模块。
-vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [] }));
 
 const T = { timeout: 5000, interval: 25 };
 

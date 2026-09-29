@@ -151,7 +151,6 @@ describe("WsReview 视图", () => {
   beforeEach(() => {
     vi.resetModules();
     window.localStorage.clear();
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   });
   afterEach(async () => {
     if (root) await act(async () => root.unmount());

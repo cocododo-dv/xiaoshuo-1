@@ -141,7 +141,7 @@ function WorkPopover({ works, activeId, onPick, onNew, onClose }) {
           {works.map(w => {
             const pct = w.wordsTarget ? Math.min(100, Math.round((w.wordsTotal / w.wordsTarget) * 100)) : 0;
             const isActive = w.id === activeId;
-            const deletable = !WsWorks.isSeed(w.id) && works.length > 1;
+            const deletable = works.length > 1;
             return (
               <div key={w.id} className="ws-wsw-item">
                 <button type="button" ref={isActive ? activeRowRef : undefined} className={`ws-wsw-row ${isActive ? "is-active" : ""}`}

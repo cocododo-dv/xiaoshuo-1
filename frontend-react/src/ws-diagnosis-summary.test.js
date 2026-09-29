@@ -9,8 +9,6 @@ vi.mock("./ws-works.jsx", () => ({ WsWorks: { activeId: () => "prj-main" } }));
 const catalog = { chapters: [] };
 vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: { get: () => catalog.chapters } }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 const S1 = { chapter_id: "c1", text_layer: "author_draft", open: 3, blocking: 1, revision: 2, taste: 0, info: 0, ignored: 1, stale: 0, ai_status: "current", review_status: "not_run" };
 const S2 = { chapter_id: "c1", text_layer: "author_draft", open: 1, blocking: 0, revision: 1, taste: 0, info: 0, ignored: 0, stale: 0, ai_status: "not_run", review_status: "not_run" };
 const S3 = { chapter_id: "c2", text_layer: "none", open: 0, blocking: 0, revision: 0, taste: 0, info: 0, ignored: 0, stale: 0, ai_status: "not_run", review_status: "not_run" };

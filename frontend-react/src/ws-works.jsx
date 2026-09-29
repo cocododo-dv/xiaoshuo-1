@@ -15,7 +15,7 @@ import { sceneLabel } from "./labels/catalog.js";
    · 字数/进度字段（wordsTotal/wordsToday/streak/chaptersWritten）只读派生：
      由 writing-stats / dashboard 填充，update() 不再回写（原 catPushTotals 回写路径删除）
    · 公开方法签名/订阅语义与原型一致（契约附录）；ws:work-changed 只在切换作品 / 书架成员变化时广播，
-     派生统计回写改发 ws:work-stats-changed（2026-09-21，见 wsNotify）
+     派生统计与档案字段的变化只通知 WsWorks.subscribe 的订阅者（见 wsNotify）
    ========================================================== */
 
 const WS_WORKS_LS = "ws_works_created_v1";   // 旧 localStorage 时代的本地作品（一次性上行迁移源）
@@ -92,10 +92,8 @@ function wsAdaptHome(d) {
         { k: "挫败", tone: "crimson", v: brief.setback || "" },
       ];
   const resume = d.resume || {};
-  /* 章内第几场：后端单独给（阶段 X 起 scene_slug 是稳定的 scene_id，不再含位置）；
-     旧后端没有 scene_no 时退回从位置式 slug（ch08s3）里读。 */
-  const legacyNo = /^ch\d+s(\d+)$/.exec(resume.scene_slug || "");
-  const sceneNo = String(resume.scene_no || (legacyNo ? legacyNo[1] : "") || "");
+  /* 章内第几场：后端单独给（阶段 X 起 scene_slug 是稳定的 scene_id，不再含位置） */
+  const sceneNo = String(resume.scene_no || "");
   const snow = wsAdaptSnow(d);
   const act = (d.snowflake || []).find(s => s.status === "active");
   return {
@@ -204,8 +202,8 @@ function wsSaveCache() {
 
 /* ws:work-changed 的语义是「当前作品换了 / 书架成员变了」：目录、回收站、待办、资料、雪花都拿它
    当「重拉本作品的一切」的信号。字数 / 今日 / 连续天数这类派生统计每次自动保存都会回写，过去同样
-   广播它，一次字数汇总就引发约 10 个 GET 和整个应用重渲。现在统计变化只广播
-   ws:work-stats-changed（React 侧走 WsWorks.subscribe），档案字段（书名 / 主色）也只走 subscribe。
+   广播它，一次字数汇总就引发约 10 个 GET 和整个应用重渲。现在统计与档案字段（书名 / 主色）的变化
+   只通知 WsWorks.subscribe 的订阅者（React 侧的 hook 都走它），不上窗口事件。
    作品 id 第一次从 __loading__ 落定时 id 变了，照旧广播 ws:work-changed。 */
 function wsMembership() { return WS_WORKS.filter(w => !w.pending).map(w => w.id).join("\u0001"); }
 /* 这个 id 是不是一部还在等后端正式 id 的新建作品 */
@@ -221,7 +219,7 @@ function wsNotify() {
   const members = wsMembership();
   const switched = WS_ACTIVE_ID !== wsBroadcast.id || members !== wsBroadcast.members;
   wsBroadcast = { id: WS_ACTIVE_ID, members };
-  emit(switched ? "ws:work-changed" : "ws:work-stats-changed", WS_ACTIVE_ID);
+  if (switched) emit("ws:work-changed", WS_ACTIVE_ID);
 }
 
 function wsToastError(error, fallback) {
@@ -461,8 +459,6 @@ const WsWorks = {
       wsToastError(error, "保存作品档案失败。");
     });
   },
-  /* FE-ALIGN P4：摘除「种子不可删」前端限制。视图以 isSeed 作为删除门闩，故恒为 false。 */
-  isSeed: () => false,
   subscribe(fn) { return wsSubs.subscribe(fn); },
   subscribeStatus(fn) { return wsStatusSubs.subscribe(fn); },
   status(id) {

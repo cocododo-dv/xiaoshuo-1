@@ -61,7 +61,7 @@ function catPushTotals() {
       streak: stats.streak_days || 0,
       chaptersWritten: written,
     };
-    /* 仅在值变化时注入 —— __applyDerived 会通知 WsWorks 的订阅者（并广播 ws:work-stats-changed），
+    /* 仅在值变化时注入 —— __applyDerived 会通知 WsWorks 的订阅者，
        值没变也注入只会让主页、切换器白白重渲一轮 */
     if (w && (w.wordsTotal !== next.wordsTotal || w.wordsToday !== next.wordsToday
       || w.streak !== next.streak || w.chaptersWritten !== next.chaptersWritten)) {

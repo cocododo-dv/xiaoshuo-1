@@ -147,7 +147,6 @@ let rvLoadError = null;                    // { pid, message }：最近一次拉
    失败时广播会让它把「还没读到」说成「没有待办」。 */
 const rvLoadListeners = new Set();
 function rvNotifyLoad() { rvLoadListeners.forEach((fn) => { try { fn(); } catch (e) {} }); }
-const rvResolvedSet = new Set();          // 本会话内已处理 id（rvIsResolved 用）
 const rvPendingAction = {};               // id → 本次点击的 action_index（resolve 携带）
 
 const rvUrgentCount = () => rvCache.open.filter(i => i.priority === 1).length;
@@ -260,8 +259,6 @@ async function rvMigrateLegacy(pid) {
   return migration;
 }
 
-function rvCustomList() { return rvCache.open.filter(i => !i.live); }
-
 function rvPush(item) {
   const payload = rvToPayload(item || {});
   rvWrite(payload.project_id, () => apiPost("/api/v1/review-items", payload)).catch((e) => {
@@ -323,7 +320,6 @@ function rvResolveAction(item, action) {
 
 function rvMarkResolved(ids) {
   const pid = rvActiveId();
-  (ids || []).forEach(id => rvResolvedSet.add(id));
   rvCache = { ...rvCache, open: rvCache.open.filter(i => !ids.includes(i.id)) };
   rvBumpDone((ids || []).length);
   rvEmit();
@@ -342,7 +338,6 @@ function rvMarkResolved(ids) {
 /* 撤销：items 是视图刚放回列表的卡。缓存里也放回去（不广播，视图已经按原位置插好），
    免得撤销后、服务端确认前的任何一次广播又把它们从视图里同步掉。 */
 function rvUnresolve(ids, items) {
-  (ids || []).forEach(id => rvResolvedSet.delete(id));
   const back = (items || []).filter(it => it && !rvCache.open.some(x => x.id === it.id));
   if (back.length) rvCache = { ...rvCache, open: [...rvCache.open, ...back] };
   rvBumpDone(-(ids || []).length);
@@ -377,8 +372,6 @@ function rvUnsnooze(id) {
   rvEmit();
   rvWrite(pid, () => apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/unsnooze`, { project_id: pid }).catch(() => {}));
 }
-
-function rvIsResolved(id) { return rvResolvedSet.has(id); }
 
 /* 启动装载 + 真相变动时刷新（派生卡在后端现算，目录/作品切换都可能改变它们）。
    模块在 HMR/测试 resetModules 后可能重新执行，先撤销旧实例的全局订阅。 */
@@ -833,10 +826,10 @@ function RvEmpty({ hasSnoozed, go }) {
   );
 }
 
-Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, rvResolveAction });
+Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvResolveAction });
 
 /* ESM 导出（window.* 赋值过渡期保留，旧调用方与冒烟脚本仍读 window.rvOpenItems 等） */
 export {
-  WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, rvMigrateLegacy,
+  WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvMigrateLegacy,
   rvResolveAction, rvReady, useReviewOpenItems,
 };
