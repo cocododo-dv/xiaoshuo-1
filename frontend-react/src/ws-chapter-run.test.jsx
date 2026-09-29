@@ -27,8 +27,6 @@ import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { ArrChapterRunAction, normalizeRun } from "./ws-chapter-run.jsx";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 const mounted = [];
 const CHAPTER = { id: "ch01", backendId: "chapter-1", title: "盐场的早班", state: "writing", current: true };
 

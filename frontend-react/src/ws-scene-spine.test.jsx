@@ -15,7 +15,6 @@ vi.mock("./lib/client.js", () => ({
 // 任务控制条的两个请求（ws-scene-job-api.js）
 vi.mock("./ws-scene-job-api.js", () => ({ cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn() }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const T = { timeout: 5000, interval: 25 };
 const mounted = [];
 const QUEUE_KEY = "scn-queue:v1::prj-main";

@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const mounted = [];
 
 const REVIEW = {

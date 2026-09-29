@@ -6,8 +6,6 @@ vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
 }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 function deferred() {
   let resolve;
   let reject;

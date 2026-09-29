@@ -7,8 +7,6 @@ import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.js";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),

@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { WrCanonicalControl } from "./wr-canonical-control.jsx";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 const mounted = [];
 
 async function renderControl(props) {
