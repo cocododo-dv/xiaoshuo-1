@@ -992,3 +992,400 @@ describe("读缓存换成了别的版本（水合 / 复核），作者正在写"
     expect(ctx.WrDocs.state("ch01s1").revision).toBe(4);
   }, LONG);
 });
+
+/* ==========================================================
+   W1 复核一：两路复核（lens A / lens B）在 b75f2d5 上复现的不安全顺序，房间级（真写作台 + 真 WrDocs + 起草台的
+   scnAdoptToDoc + 同步与恢复的 WrRecovery）。服务端按修订号比对：PATCH / adopt-current / promote-canonical 的
+   base 不是眼下的修订号就 409。每条断言的都是安全的结果。
+   ========================================================== */
+
+/* s1 → d1「起点正文」、s2 → d2「第二场」，都是 rev 1。hooks.ensure(sceneId, current) / hooks.patch(url, body, apply) /
+   hooks.promote(url, body) 换掉那一路的回法；history 记下每一次存上的正文，promoted 记下每一次提升（采纳的带 via）。 */
+function casServer(client) {
+  const drafts = {
+    s1: { id: "d1", revision: 1, content: "<p>起点正文</p>", history: [] },
+    s2: { id: "d2", revision: 1, content: "<p>第二场</p>", history: [] },
+  };
+  const hooks = { ensure: null, patch: null, promote: null };
+  const promoted = [];
+  const byId = (id) => Object.values(drafts).find((draft) => draft.id === id);
+  const snapshot = (draft) => ({ draft: { draft_id: draft.id, revision_no: draft.revision, content: draft.content } });
+  const apply = (url, body) => {
+    const draft = byId(url.split("/").pop());
+    if (Number(body.base_revision_no) !== draft.revision) return Promise.reject(conflict());
+    draft.revision += 1;
+    draft.content = body.content;
+    draft.history.push({ revision: draft.revision, content: body.content, via: "patch" });
+    return Promise.resolve(snapshot(draft));
+  };
+  const baseGet = client.apiGet.getMockImplementation();
+  client.apiGet.mockImplementation((url) => (/deep-review/.test(url) ? Promise.resolve({ findings: [], text: "" }) : baseGet(url)));
+  client.apiPost.mockImplementation((url, body) => {
+    const ensure = /\/author-drafts\/scene\/([^/]+)\/ensure$/.exec(url);
+    if (ensure) {
+      const draft = drafts[ensure[1]];
+      const current = () => Promise.resolve(snapshot(draft));
+      return hooks.ensure ? hooks.ensure(ensure[1], current) : current();
+    }
+    const adoption = /\/api\/v1\/scenes\/([^/]+)\/adopt-current$/.exec(url);
+    if (adoption) {
+      const draft = drafts[adoption[1]];
+      const exact = body.exact_author_draft;
+      if (Number(exact.base_revision_no) !== draft.revision) return Promise.reject(conflict());
+      draft.revision += 1;
+      draft.content = exact.content;
+      draft.history.push({ revision: draft.revision, content: exact.content, via: "adopt" });
+      promoted.push({ draft: draft.id, revision: draft.revision, content: draft.content, via: "adopt" });
+      return Promise.resolve({
+        scene_id: adoption[1], scene_status: "archived", final_scene_row_id: `f-${draft.revision}`, content_hash: "h",
+        author_draft: { draft_id: draft.id, revision_no: draft.revision, content: draft.content, last_promoted_revision_no: draft.revision, canonical_dirty: false },
+      });
+    }
+    const promote = /\/author-drafts\/([^/]+)\/promote-canonical$/.exec(url);
+    if (promote) {
+      if (hooks.promote) return hooks.promote(url, body);
+      const draft = byId(promote[1]);
+      if (Number(body.base_revision_no) !== draft.revision) return Promise.reject(conflict());
+      promoted.push({ draft: draft.id, revision: draft.revision, content: draft.content });
+      return Promise.resolve({ final_scene_row_id: `f-${draft.revision}`, draft_revision_no: draft.revision, canonical_dirty: false });
+    }
+    return Promise.resolve({});
+  });
+  client.apiPatch.mockImplementation((url, body) => {
+    if (!/\/author-drafts\//.test(url)) return Promise.resolve({});
+    return hooks.patch ? hooks.patch(url, body, apply) : apply(url, body);
+  });
+  return { drafts, hooks, promoted, apply };
+}
+
+/* d1 的第一次 PATCH 卡住（hung），之后照常按修订号比对 */
+function holdFirstPatch(srv, { thenApply = false } = {}) {
+  const hung = deferred();
+  let first = true;
+  srv.hooks.patch = (url, body, apply) => {
+    if (url.endsWith("/d1") && first) {
+      first = false;
+      return thenApply ? hung.promise.then(() => apply(url, body)) : hung.promise;
+    }
+    return apply(url, body);
+  };
+  return hung;
+}
+
+const AI_DRAFT = [{ id: "p1", parts: [{ text: "潮水退去，她看清了闸门上的名字。" }] }];
+const ADOPTED_TEXT = "潮水退去，她看清了闸门上的名字。";
+const adoptOnDesk = async () => {
+  const api = await import("./ws-scene-api.js");
+  let adopted = null;
+  await act(async () => { adopted = await api.scnAdoptToDoc("ch01s1", AI_DRAFT, null, { mode: "overwrite", confirmed: true }); });
+  expect(adopted).toMatchObject({ ok: true, archived: true });
+  return adopted;
+};
+const d1Texts = (client) => patchesTo(client, "d1").map(([, body]) => body.content);
+const conflictNotices = () => window.alert.mock.calls.map(([message]) => String(message)).filter((message) => message.includes("别处被修改"));
+
+describe("复核一 · 起草台采用时写作台的保存还在路上（R-A1 · R-A1c · R-A1d · V-A2 · V-A3）", () => {
+  it("R-A1 / R-A1d 最后一次自动保存还在路上、随后断网失败：离场冲刷不补发采纳前的字；回到写作台看到的就是服务端上的采纳稿，它已是权威正文", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom } = ctx;
+    const srv = casServer(client);
+    const hung = holdFirstPatch(srv);
+    const one = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    let current = one.host;
+    const r = room(ctx, () => current);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，本机改了一句</p>");
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(1), T);
+    await unmount(one.entry);                            // 切到 AI 起草台：离场冲刷在等路上那一次
+    await adoptOnDesk();
+    await act(async () => { hung.reject(offline()); });  // 服务端其实按修订号拒绝了它，回包丢了
+    await wait(300);
+    expect(d1Texts(client)).toEqual(["<p>起点正文，本机改了一句</p>"]);
+    expect(srv.drafts.s1.content).toBe(`<p>${ADOPTED_TEXT}</p>`);
+
+    const two = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    current = two.host;
+    await vi.waitFor(() => expect(r.editor().textContent).toBe(ADOPTED_TEXT), T);
+    await wait(300);
+    expect(d1Texts(client)).toHaveLength(1);
+    expect(current.querySelector('[data-testid="canonical-status"]').textContent).toContain("权威正文已更新");
+    expect(current.querySelector(".wr-canonical-promote").disabled).toBe(true);
+    expect(srv.promoted.map((entry) => entry.content)).toEqual([`<p>${ADOPTED_TEXT}</p>`]);
+    expect(r.recoveryHas("本机改了一句")).toBe(true);
+  }, LONG);
+
+  it("R-A1c 路上那一次在采用之后撞上 409（本来就会）：不提示「别处被修改」，采纳前的字只在同步与恢复里留一份", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom, WrRecovery } = ctx;
+    const srv = casServer(client);
+    const hung = holdFirstPatch(srv);
+    const one = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => one.host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，本机改了一句</p>");
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(1), T);
+    await unmount(one.entry);
+    await adoptOnDesk();
+    await act(async () => { hung.reject(conflict()); });
+    await wait(500);
+    expect(conflictNotices()).toEqual([]);
+    expect(WrRecovery.list().filter((entry) => entry.html.includes("本机改了一句"))).toHaveLength(1);
+    expect(srv.drafts.s1.content).toBe(`<p>${ADOPTED_TEXT}</p>`);
+    expect(ctx.WrDocs.state("ch01s1")).toMatchObject({ conflictPending: false, dirty: false });
+  }, LONG);
+
+  it("V-A2 换场的离场冲刷还在路上时采用、它随后回 500：回到这一场看到采纳稿，接着写是在采纳的修订号上写，采纳前的字不再发", async () => {
+    const ctx = await loadWriter({ catalog: [TWO_SCENE_CHAP] });
+    const { client, WriterRoom } = ctx;
+    const srv = casServer(client);
+    const hung = holdFirstPatch(srv);
+    const { host } = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，采纳前作者写的</p>");
+    await openScene("ch01s2");
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(1), T);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("第二场"), T);
+    await adoptOnDesk();
+    await act(async () => { hung.reject(serverError()); });
+    await wait(300);
+    expect(srv.drafts.s1.content).toBe(`<p>${ADOPTED_TEXT}</p>`);
+    await openScene("ch01s1");
+    await vi.waitFor(() => expect(r.editor().textContent).toBe(ADOPTED_TEXT), T);
+    await wait(300);
+    expect(r.status()).not.toContain("保存失败");
+    await r.append("，续写");
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(2), T);
+    expect(patchesTo(client, "d1")[1][1]).toEqual({ content: `<p>${ADOPTED_TEXT}，续写</p>`, base_revision_no: 2 });
+    expect(srv.drafts.s1.history.map((entry) => entry.via)).toEqual(["adopt", "patch"]);
+  }, LONG);
+
+  it("V-A3 路上是较旧的一稿、离场时又交了较新的一稿，采用之后路上那一次回 500：回来进深改不发任何一稿，状态不说失败", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom } = ctx;
+    const srv = casServer(client);
+    const hung = holdFirstPatch(srv);
+    const one = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    let current = one.host;
+    const r = room(ctx, () => current);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，第一稿</p>");
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(1), T);
+    await r.append("，第二稿");
+    await unmount(one.entry);                            // 离场冲刷把第二稿交出去（排在路上那一次后面）
+    await adoptOnDesk();
+    await act(async () => { hung.reject(serverError()); });
+    await wait(300);
+    const two = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    current = two.host;
+    await vi.waitFor(() => expect(r.editor().textContent).toBe(ADOPTED_TEXT), T);
+    expect(r.status()).not.toContain("保存失败");
+    await act(async () => { window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: "deep" })); });
+    await wait(800);
+    expect(patchesTo(client, "d1")).toHaveLength(1);
+    expect(srv.drafts.s1.content).toBe(`<p>${ADOPTED_TEXT}</p>`);
+    expect(r.status()).not.toContain("保存失败");
+    expect(r.recoveryHas("第二稿")).toBe(true);
+  }, LONG);
+});
+
+describe("复核一 · 同步与恢复的「恢复」「重试同步」（R-A2 · V-B · S-B2）", () => {
+  it("R-A2 写作台开着这一场时「恢复」没同步上（断网）：编辑器当场换成恢复稿，状态是保存失败；联网后点提升，存上并提升的就是编辑器里的这一稿", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom, WrRecovery, WrDocs } = ctx;
+    const srv = casServer(client);
+    const { host } = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，作者眼下的正文 X</p>");
+    await vi.waitFor(() => expect(srv.drafts.s1.content).toContain("正文 X"), T);
+    await vi.waitFor(() => expect(r.status()).toContain("已保存"), T);
+    const entry = WrRecovery.createCandidate("ch01s1", "<p>要恢复的那一稿 R</p>");
+    srv.hooks.patch = () => Promise.reject(offline());
+    let restoreError = null;
+    await act(async () => { try { await WrRecovery.restore(entry.id); } catch (e) { restoreError = e; } });
+    expect(r.editor().textContent).toBe("要恢复的那一稿 R");        // 编辑器与本机缓存同一刻换成恢复稿
+    expect(restoreError).toMatchObject({ code: "RECOVERY_NOT_SYNCED" });
+    await vi.waitFor(() => expect(r.status()).toBe("草稿保存失败"), T);
+    expect(WrDocs.cachedHTML("ch01s1")).toBe("<p>要恢复的那一稿 R</p>");
+    expect(r.recoveryHas("作者眼下的正文 X")).toBe(true);   // 恢复前的正文自动备份过
+    srv.hooks.patch = null;                                // 联网了；作者没再敲字，点「提升」
+    await act(async () => { host.querySelector(".wr-canonical-promote").click(); });
+    await vi.waitFor(() => expect(srv.promoted).toHaveLength(1), T);
+    expect(srv.promoted[0].content).toBe("<p>要恢复的那一稿 R</p>");
+    expect(r.editor().textContent).toBe("要恢复的那一稿 R");
+    expect(r.status()).toBe("草稿已保存");
+  }, LONG);
+
+  it("V-B 自动保存还在路上时「重试同步」、作者接着写：写作台当场换成恢复稿，作者是在它上面接着写的；恢复前的字不在它后面再发一次", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom, WrRecovery } = ctx;
+    const srv = casServer(client);
+    const hung = holdFirstPatch(srv, { thenApply: true });
+    const { host } = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，作者在写</p>");
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(1), T);
+    const entry = WrRecovery.create({ sid: "ch01s1", html: "<p>上次没同步上的那一稿</p>", type: "unsynced", reason: "断网", label: "场景 ch01s1 · 未同步稿" });
+    let result = null;
+    let retrying = null;
+    await act(async () => { retrying = WrRecovery.retry(entry.id).then((value) => { result = value; }); });
+    expect(r.editor().textContent).toBe("上次没同步上的那一稿");   // 同步中：编辑器已经是恢复稿
+    expect(result).toBeNull();
+    await r.append("，接着写");
+    await wait(1300);
+    await act(async () => { hung.resolve(); });
+    await act(async () => { await retrying; });
+    await wait(300);
+    expect(d1Texts(client)).toEqual(["<p>起点正文，作者在写</p>", "<p>上次没同步上的那一稿，接着写</p>"]);
+    expect(srv.drafts.s1.content).toBe("<p>上次没同步上的那一稿，接着写</p>");
+    expect(result).toMatchObject({ removed: false });            // 存下的是接着写的那一稿：记录先留着
+    expect(WrRecovery.list().some((item) => item.id === entry.id)).toBe(true);
+    expect(r.recoveryHas("作者在写")).toBe(true);                 // 恢复前的正文自动备份过
+  }, LONG);
+
+  it("S-B2 「重试同步」时编辑器里还有没交出去的几句、恢复稿的 PATCH 很慢：那几句先进同步与恢复，编辑器换成恢复稿；恢复稿存上后不会被旧编辑器的自动保存盖掉", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom, WrRecovery } = ctx;
+    const srv = casServer(client);
+    const { host } = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，作者在写</p>");
+    await vi.waitFor(() => expect(r.status()).toContain("已保存"), T);
+    await r.append("，还没存的一句");                           // 900 ms 的自动保存还没到点
+    const hung = deferred();
+    srv.hooks.patch = (url, body, apply) => {
+      if (url.endsWith("/d1") && body.content.includes("上次没同步上")) { srv.hooks.patch = null; return hung.promise.then(() => apply(url, body)); }
+      return apply(url, body);
+    };
+    const entry = WrRecovery.create({ sid: "ch01s1", html: "<p>上次没同步上的那一稿</p>", type: "unsynced", reason: "断网", label: "场景 ch01s1 · 未同步稿" });
+    let result = null;
+    let retrying = null;
+    await act(async () => { retrying = WrRecovery.retry(entry.id).then((value) => { result = value; }); });
+    expect(r.editor().textContent).toBe("上次没同步上的那一稿");
+    await wait(1300);                                            // 旧编辑器的自动保存到点的时候
+    await act(async () => { hung.resolve(); });
+    await act(async () => { await retrying; });
+    await wait(300);
+    expect(srv.drafts.s1.content).toBe("<p>上次没同步上的那一稿</p>");
+    expect(d1Texts(client).filter((html) => html.includes("还没存的一句"))).toEqual([]);
+    expect(result).toMatchObject({ removed: true });
+    expect(WrRecovery.list().some((item) => item.id === entry.id)).toBe(false);
+    expect(r.recoveryHas("还没存的一句")).toBe(true);
+  }, LONG);
+});
+
+describe("复核一 · 409 之后换上的是服务端眼下的版本（V-C）", () => {
+  it("V-C 回到一场时后台复核发出、回得很慢，另一台设备随后存下 rev 3，作者的第一次保存 409：编辑器换成另一台设备的版本，不是复核那份旧快照", async () => {
+    const ctx = await loadWriter({ catalog: [TWO_SCENE_CHAP] });
+    const { client, WriterRoom, WrDocs } = ctx;
+    const srv = casServer(client);
+    const { host } = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await openScene("ch01s2");
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("第二场"), T);
+    const slow = deferred();
+    srv.hooks.ensure = (sceneId, current) => (sceneId === "s1" && srv.drafts.s1.revision === 1
+      ? current().then((snapshot) => slow.promise.then(() => snapshot))
+      : current());
+    await openScene("ch01s1");
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await wait(50);
+    srv.drafts.s1.revision = 3;                          // 另一台设备存下 rev 3
+    srv.drafts.s1.content = `<p>${SERVER}</p>`;
+    await r.append("，本机接着写");
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(1), T);
+    await act(async () => { slow.resolve(); });
+    await vi.waitFor(() => expect(r.editor().textContent).toContain(SERVER), T);
+    expect(WrDocs.state("ch01s1")).toMatchObject({ revision: 3, conflictPending: false });
+    expect(r.recoveryHas("本机接着写")).toBe(true);
+  }, LONG);
+});
+
+describe("复核一 · 状态照实说（V-D · R-V13）", () => {
+  it("V-D 提升在路上时作者接着写、存上了新的一版：提升回来后不说「权威正文已更新」，提升按钮仍可点", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom } = ctx;
+    const srv = casServer(client);
+    const { host } = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => host);
+    const canonical = () => host.querySelector('[data-testid="canonical-status"]').textContent;
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，一</p>");
+    await vi.waitFor(() => expect(r.status()).toContain("已保存"), T);
+    const promoting = deferred();
+    srv.hooks.promote = () => promoting.promise;
+    await act(async () => { host.querySelector(".wr-canonical-promote").click(); });
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(true), T);
+    await r.append("，二");
+    await wait(1300);
+    await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(2), T);
+    await act(async () => { promoting.resolve({ final_scene_row_id: "f1", draft_revision_no: 2, canonical_dirty: false }); });
+    await wait(300);
+    expect(srv.drafts.s1.revision).toBe(3);
+    expect(canonical()).not.toContain("权威正文已更新");
+    expect(host.querySelector(".wr-canonical-promote").disabled).toBe(false);
+  }, LONG);
+
+  it("R-V13 409 之后读不到服务端版本期间接着敲字：状态一直是「草稿保存失败」，不闪「正在保存」", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom } = ctx;
+    const srv = casServer(client);
+    let down = false;
+    srv.hooks.ensure = (sceneId, current) => (down && sceneId === "s1" ? Promise.reject(offline()) : current());
+    srv.hooks.patch = (url, body, apply) => {
+      if (url.endsWith("/d1") && !down) {
+        down = true;
+        srv.drafts.s1.revision = 3;
+        srv.drafts.s1.content = `<p>${SERVER}</p>`;
+        return Promise.reject(conflict());
+      }
+      return apply(url, body);
+    };
+    const { host } = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，本机改了一句</p>");
+    await vi.waitFor(() => expect(r.status()).toBe("草稿保存失败"), T);
+    await r.type("<p>起点正文，本机改了一句，接着写</p>");
+    expect(r.status()).toBe("草稿保存失败");
+    await wait(400);
+    expect(r.status()).toBe("草稿保存失败");
+    await wait(1000);
+    expect(r.status()).toBe("草稿保存失败");
+    r.expectKept("接着写");
+    expect(patchesTo(client, "d1")).toHaveLength(1);
+  }, LONG);
+});
+
+describe("复核一 · 刷新 / 关掉 / 切到后台前没到自动保存的几句（R-C1）", () => {
+  it("R-C1 visibilitychange（切到后台）与 pagehide（刷新 / 关掉）时，编辑器里还没交出去的字已经在本机缓存和未同步标记里", async () => {
+    const ctx = await loadWriter();
+    const { client, WriterRoom } = ctx;
+    const srv = casServer(client);
+    srv.hooks.patch = () => new Promise(() => {});      // 后端卡住：只看本机
+    const { host } = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，切到后台前敲的一句</p>");
+    await wait(300);
+    const visibility = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    } finally {
+      delete document.visibilityState;
+      if (visibility) expect(document.visibilityState).toBe(visibility.get.call(document));
+    }
+    r.expectDurable("切到后台前敲的一句");
+    expect(window.localStorage.getItem(PENDING_KEY)).not.toBeNull();
+    await r.append("，刷新前又敲的一句");
+    await wait(300);
+    await act(async () => { window.dispatchEvent(new Event("pagehide")); });
+    r.expectDurable("刷新前又敲的一句");
+    expect(client.apiPatch).toHaveBeenCalled();
+  }, LONG);
+});

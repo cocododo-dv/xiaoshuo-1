@@ -1,7 +1,7 @@
 import { htmlToParagraphs } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { WrDocs, notifyLoaded } from "./wr-doc-sync.js";
+import { WrDocs } from "./wr-doc-sync.js";
 import { cacheRead, cacheReadForWork } from "./wr-doc-cache.js";
 import { WrDocVersions, diffSentences } from "./wr-doc-versions.js";
 import { activeWorkId, notifyRecoveryChanged, recoveryCreate, recoveryList, recoveryRemove } from "./wr-recovery-store.js";
@@ -14,6 +14,20 @@ import { activeWorkId, notifyRecoveryChanged, recoveryCreate, recoveryList, reco
      wr-recovery-store.js 本机恢复记录（冲突副本、未同步稿、备份、AI 候选）
    这里放 WrRecovery（同步与恢复中心用：列、比、恢复、重试），登记目录装载后的预热，转出三个对象。
    ========================================================== */
+
+/* 恢复稿交给 WrDocs 之后没能同步上服务端：说清它眼下在哪、之后会怎样（同步与恢复中心照原话显示） */
+function restoreFailure(error) {
+  if (error && error.code === "AUTHOR_DRAFT_CONFLICT") {
+    return Object.assign(new Error("这一场在别处有更新，编辑器已换成服务端的最新版本；这份记录还在，可以比较后再恢复。"), {
+      code: "AUTHOR_DRAFT_CONFLICT",
+      cause: error,
+    });
+  }
+  return Object.assign(new Error("已恢复到编辑器和这台电脑的本机缓存，但还没同步到服务端（网络或服务端出错）。下一次保存或离开这一场时会再同步；这份记录仍保留。"), {
+    code: "RECOVERY_NOT_SYNCED",
+    cause: error,
+  });
+}
 
 function assertRecoveryWork(entry) {
   const current = activeWorkId();
@@ -90,15 +104,23 @@ const WrRecovery = {
         requireDurable: true,
       });
     }
-    await WrDocs.save(entry.sid, entry.html || "");
-    notifyLoaded(entry.sid);
+    // 编辑器与本机缓存在同一个调用里换成恢复稿（WrDocs.replace 同步通知写作台）：之后要同步的就是作者眼前的这一稿，
+    // 服务器这次没存上也一样——它停在本机，下一次保存或离开这一场时再发，不会有一份作者看不见的正文被悄悄提升或冲刷上去。
+    let settled;
+    try {
+      settled = await WrDocs.replace(entry.sid, entry.html || "", { reason: "restore" });
+    } catch (error) {
+      throw restoreFailure(error);
+    }
     notifyRecoveryChanged(entry, "restored");
-    return { entry, replacedBackup, state: WrDocs.state(entry.sid) };
+    return { entry, replacedBackup, carried: settled.carried, state: WrDocs.state(entry.sid) };
   },
+  /* 重试同步 = 恢复 + 服务端存下的正是这一稿时移出列表。它发出去之前就被随后的改动取代了（存下的是更新的一稿）时
+     记录留着，removed=false，由调用方说清。 */
   async retry(id) {
     const result = await WrRecovery.restore(id);
-    recoveryRemove(id);
-    return result;
+    const removed = result.carried !== false && recoveryRemove(id);
+    return { ...result, removed: !!removed };
   },
 };
 

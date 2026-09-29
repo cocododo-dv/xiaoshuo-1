@@ -16,14 +16,16 @@ import { useWrEvent } from "./ws-writer-hooks.js";
    ----------------------------------------------------------
    · useDocBinding：一场一份正文。换场时同步读 WrDocs 缓存进编辑器、后台水合服务端草稿；
      敲字后 900ms 自动保存（落盘的只有 wrSerializeManuscript 出来的干净正文；目录字数随保存
-     回包的 words_rollup 更新）；离开这一场 / 卸载前把没交出去的字用「当时的」场景 id 和作品交给 WrDocs。
+     回包的 words_rollup 更新）；离开这一场 / 卸载前、页面被刷新 / 关掉 / 切到后台时（pagehide、
+     visibilitychange），把没交出去的字用「当时的」场景 id 和作品交给 WrDocs。
      保存的一切——同一场一次只有一个请求、排队只留最新一稿、失败留在本机待重发、409 的冲突副本和
      读服务端版本——都在 WrDocs（wr-doc-sync.js）里，这里不排队、不重试、不自己处理冲突：
      自动保存 / 离场 / 提升 / 进深改前只管 WrDocs.save + WrDocs.flush，然后听 WrDocs 的通知——
      conflict-resolved：编辑器换成服务端版本（编辑器里还没交出去的字先经 WrDocs 留进同步与恢复）；
      loaded：读缓存换成了别的版本（水合 / 复核读到的服务端新版本、恢复、采纳）：作者正在旧版本上写，
-     同样先留一份再换；读到的就是作者正在写的底稿，就接着写；
-     state：冲突中（服务端版本还没读到）或保存失败时状态是「草稿保存失败」，编辑器里的字不动。
+     同样先留一份再换；读到的就是作者正在写的底稿，就接着写；换上的正文还在等保存（恢复稿）时状态照 WrDocs 说；
+     state：冲突中（服务端版本还没读到）或保存失败时状态是「草稿保存失败」，编辑器里的字不动；冲突中接着敲字
+     也不闪「正在保存」（WrDocs 不会发）。
      decorate(el)：每次整段换掉编辑器内容之后调用（标实体、标批注）；
      afterLoad(el)：换场载入之后调用，可返回清理函数；beforeSave(el, sceneId)：交给 WrDocs 之前调用。
    · useCanonicalPromotion：把已保存的草稿提升为权威正文，含内容风险逐项复核那一轮。
@@ -49,11 +51,18 @@ function saveToWork(sid, html, workId) {
   } catch (e) { /* 同上 */ }
 }
 
-/* WrDocs 的状态快照 → 保存状态键（loaded / saving / saved / failed / locked，字在 wr-canonical-control 的 SAVE_LABELS） */
-function saveStatusOf(state) {
-  if (!state) return "loaded";
+/* WrDocs 的状态快照 → 保存状态键（loaded / saving / saved / failed / locked，字在 wr-canonical-control 的 SAVE_LABELS）。
+   idle：没有要保存的字时说什么（刚换场是「已加载」，读缓存换成新版本后是「已保存」或「已加载」） */
+function saveStatusOf(state, idle = "loaded") {
+  if (!state) return idle;
   if (state.conflictPending || state.lastSaveError) return "failed";
-  return state.dirty ? "saving" : "loaded";
+  return state.dirty ? "saving" : idle;
+}
+
+/* WrDocs 眼下的权威正文状态（提升回来时草稿可能已经又往前走了一版） */
+function canonicalStatusOf(sceneId) {
+  const state = WrDocs.state(sceneId);
+  return state && state.canonicalDirty === false ? "current" : "dirty";
 }
 
 export function useDocBinding({ activeScene, editorRef, counter, decorate, afterLoad, beforeSave }) {
@@ -88,10 +97,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     el.setAttribute("data-empty", count === 0 ? "on" : "off");
   }, [counter, editorRef]);
 
-  const canonicalFromStore = (sceneId) => {
-    const state = WrDocs.state(sceneId);
-    return state && state.canonicalDirty === false ? "current" : "dirty";
-  };
+  const canonicalFromStore = canonicalStatusOf;
 
   /* 编辑器里的字交给 WrDocs（有没交出去的才交）。之后的一切——本机缓存、排队、重发、冲突——WrDocs 管 */
   const handOver = (el, sceneId) => {
@@ -134,7 +140,9 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
 
   const schedulePersist = useCallback(() => {
     if (wrSceneIsApproved(activeScene)) return;
-    setSaved("saving");
+    // 冲突中（服务端版本还没读到）WrDocs 不会发这一稿：状态留在「草稿保存失败」，不闪「正在保存」
+    const state = WrDocs.state(activeScene);
+    setSaved(state && state.conflictPending ? "failed" : "saving");
     setCanonicalStatus("dirty");
     dirtyRef.current = true;
     editVersionRef.current += 1;
@@ -191,12 +199,13 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       baseRef.current = wrSerializeManuscript(el);
       setCanonicalStatus(canonicalFromStore(sid));
     };
-    /* 读缓存换成了别的版本：作者正在写的就是这份底稿（文字一样）时接着写，下一次保存带新的修订号；否则换稿 */
+    /* 读缓存换成了别的版本：作者正在写的就是这份底稿（文字一样）时接着写，下一次保存带新的修订号；否则换稿。
+       换上的正文还在等保存（恢复稿）或没存上时，状态照 WrDocs 的说 */
     const onLoaded = (detail) => {
       const typing = editVersionRef.current !== handedRef.current;
       if (typing && sameManuscriptText(detail.html, baseRef.current)) return;
       replaceEditor(detail.html, detail.reason || "server");
-      setSaved(typing ? "loaded" : "saved");
+      setSaved(saveStatusOf(detail, typing ? "loaded" : "saved"));
     };
     const onResolved = (detail) => {
       replaceEditor(detail.html, "conflict");
@@ -216,21 +225,33 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       else if (kind === "loaded") onLoaded(detail);
       else if (kind === "conflict-resolved") onResolved(detail);
     });
-    /* 离开这个场景（或卸载）时：没交出去的字用「当时的」场景 id 和作品交给 WrDocs；再让 WrDocs 冲刷一次——
+    /* 编辑器里还没交出去的字，用「当时的」场景 id 和作品交给 WrDocs（它在调用之内就写进本机缓存和未同步标记）。
+       交了返回 true */
+    const handOverNow = () => {
+      if (wrSceneIsApproved(sid) || editVersionRef.current === handedRef.current) return false;
+      try { beforeSaveEvent(el, sid); } catch (e) {}
+      saveToWork(sid, wrSerializeManuscript(el), workId);
+      handedRef.current = editVersionRef.current;
+      return true;
+    };
+    /* 刷新 / 关掉标签页 / 切到后台：React 的清理不会跑，900 ms 的自动保存也可能来不及——这几句先交出去，
+       刷新之后按跨会话的路径还在（本机缓存 + 未同步标记） */
+    const onPageHide = () => { handOverNow(); };
+    const onVisibility = () => { if (document.visibilityState === "hidden") handOverNow(); };
+    window.addEventListener("pagehide", onPageHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    /* 离开这个场景（或卸载）时：没交出去的字交给 WrDocs；再让 WrDocs 冲刷一次——
        路上那一次（或刚交的这一稿）失败时它补发一次最新的一稿，409 由它走冲突副本 */
     return () => {
       unsubscribe();
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibility);
       if (typeof cleanupAfterLoad === "function") cleanupAfterLoad();
       clearTimeout(saveTimer.current);
       if (!wrSceneIsApproved(sid)) {
-        if (editVersionRef.current !== handedRef.current) {
-          try { beforeSaveEvent(el, sid); } catch (e) {}
-          saveToWork(sid, wrSerializeManuscript(el), workId);
-          handedRef.current = editVersionRef.current;
-          // 不等回包的离场冲刷：先按本机计数更新目录，回包的 words_rollup 到了再以服务端为准
-          if (currentWorkId() === workId) {
-            try { WsCatalog.recordSceneWords(sid, wrCountText(el)); } catch (e) {}
-          }
+        // 不等回包的离场冲刷：先按本机计数更新目录，回包的 words_rollup 到了再以服务端为准
+        if (handOverNow() && currentWorkId() === workId) {
+          try { WsCatalog.recordSceneWords(sid, wrCountText(el)); } catch (e) {}
         }
         try { void WrDocs.flush(sid, { retry: true, ...(workScope(workId) || {}) }); } catch (e) {}
       }
@@ -311,7 +332,8 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
     setCanonicalStatus("promoting");
     try {
       const data = await WrDocs.promote(activeScene, { narrativeEffect: "facts_unchanged" });
-      setCanonicalStatus("current");
+      // 提升在路上时作者又存了一稿：提升的是较早的那个修订号，照 WrDocs 说「待更新」，不说「已更新」
+      setCanonicalStatus(canonicalStatusOf(activeScene));
       notify(promotedMessage("草稿已提升为权威正文，场景记忆与章节汇总已随之重建。", data));
     } catch (e) {
       const code = e && e.code;
@@ -353,7 +375,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
         acceptedWarningCodes: acceptedForRetry,
       });
       setReview(null);
-      setCanonicalStatus("current");
+      setCanonicalStatus(canonicalStatusOf(review.sid));
       notify(promotedMessage("已按你的逐项确认重新校验，草稿已提升为权威正文。", data));
     } catch (e) {
       if (e && e.code === "CONTENT_SAFETY_REVIEW_REQUIRED") {

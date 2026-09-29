@@ -75,18 +75,52 @@ function toDocHTML(content) {
 /* 断行的块：它们的边界算一次换行（一段套在 <div> 里、用 <br> 分行，和并排的 <p> 是同一段文字） */
 const LINE_BREAK_TAGS = new Set(["P", "DIV", "BLOCKQUOTE", "LI", "UL", "OL", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "BR"]);
 
-function collectText(node, out) {
+/* 格式也是正文：别的设备只改了格式（加了斜体、一段改成引文），也是改了。同一种格式的几种写法算一样
+   （<b> 与 <strong>、<i> 与 <em>、<s> 与 <strike>）；span / mark 是空壳和黄底（载入时就拆掉），p / div 是普通的一段，都不算。 */
+const FORMAT_OF_TAG = {
+  B: "b", STRONG: "b", I: "i", EM: "i", U: "u", S: "s", STRIKE: "s", CODE: "code", SUB: "sub", SUP: "sup",
+  BLOCKQUOTE: "#quote", LI: "#li", OL: "#ol", PRE: "#pre",
+  H1: "#h1", H2: "#h2", H3: "#h3", H4: "#h4", H5: "#h5", H6: "#h6",
+};
+const FORMAT_MARK = "\u0001";
+const FORMAT_END = "\u0002";
+
+function formatKey(active) {
+  return Object.keys(active).filter((kind) => active[kind] > 0).sort().join(",");
+}
+
+/* 按文档序收集文字：块的边界记一次换行；每一段有字的文字前面，格式（行内 + 所在的块）和前一段不同时记一个格式标记。
+   只看「这几个字是什么格式」，不看标记怎么嵌套、拆成几个节点（<b>甲</b><b>乙</b> 与 <b>甲乙</b> 一样）。 */
+function collectText(node, out, state) {
   node.childNodes.forEach((child) => {
-    if (child.nodeType === 3) { out.push(child.nodeValue); return; }
+    if (child.nodeType === 3) {
+      if (/\S/.test(child.nodeValue)) {
+        const key = formatKey(state.active);
+        if (key !== state.last) { out.push(FORMAT_MARK + key + FORMAT_END); state.last = key; }
+      }
+      out.push(child.nodeValue);
+      return;
+    }
     if (child.nodeType !== 1) return;
     const breaks = LINE_BREAK_TAGS.has(child.tagName);
-    if (breaks) out.push("\n");
-    collectText(child, out);
-    if (breaks) out.push("\n");
+    const format = FORMAT_OF_TAG[child.tagName];
+    if (breaks) { out.push("\n"); state.last = ""; }
+    if (format) state.active[format] = (state.active[format] || 0) + 1;
+    collectText(child, out, state);
+    if (format) state.active[format] -= 1;
+    if (breaks) { out.push("\n"); state.last = ""; }
   });
 }
 
-/* 一份正文的文字与分段（不看标记怎么写：服务端消毒后的写法可能和本机的不一样；开头的旧占位句不算字） */
+/* 一行：空白归一；格式标记两边的空白挪到标记外面（「甲 <b>乙</b>」与「甲<b> 乙</b>」一样） */
+function normalizeLine(line) {
+  return line
+    .replace(/\s+/g, " ")
+    .replace(/ ?(\u0001[^\u0002]*\u0002) ?/g, (match, mark) => (match.length > mark.length ? " " : "") + mark)
+    .trim();
+}
+
+/* 一份正文的文字、分段与格式（不看标记怎么写：服务端消毒后的写法可能和本机的不一样；开头的旧占位句不算字） */
 function docText(html) {
   const clean = toDocHTML(html == null ? "" : html);
   if (!clean) return "";
@@ -98,13 +132,13 @@ function docText(html) {
     template.innerHTML = clean;
     stripLeadingPlaceholder(template.content);
     const out = [];
-    collectText(template.content, out);
+    collectText(template.content, out, { active: {}, last: "" });
     joined = out.join("");
   }
-  return joined.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
+  return joined.split("\n").map(normalizeLine).filter(Boolean).join("\n");
 }
 
-/* 两份正文是不是同一段文字。写作台用它判断「读到的新版本是不是作者正在写的底稿」。 */
+/* 两份正文是不是同一段文字（字、分段、格式都一样）。写作台用它判断「读到的新版本是不是作者正在写的底稿」。 */
 function sameManuscriptText(a, b) {
   return docText(a) === docText(b);
 }

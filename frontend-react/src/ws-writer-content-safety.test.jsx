@@ -86,7 +86,9 @@ afterEach(async () => {
 describe("WriterRoom canonical 内容风险复核接缝", () => {
   it("首次 409 打开逐项确认；作者勾选后仅携 exact code 重试", async () => {
     const { WriterRoom, WrDocs } = await loadWriter();
-    vi.spyOn(WrDocs, "state").mockReturnValue({ canonicalDirty: true });
+    // 提升成功后权威正文状态照 WrDocs 说（提升在路上时草稿可能又往前走了一版）：替身的提升成功时把替身状态一起翻过来
+    let canonicalDirty = true;
+    vi.spyOn(WrDocs, "state").mockImplementation(() => ({ canonicalDirty }));
     vi.spyOn(WrDocs, "load").mockReturnValue("<p>作者正文</p>");
     vi.spyOn(WrDocs, "save").mockResolvedValue({});
     const reviewError = Object.assign(new Error("review required"), {
@@ -111,7 +113,7 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
     });
     const promote = vi.spyOn(WrDocs, "promote")
       .mockRejectedValueOnce(reviewError)
-      .mockResolvedValueOnce({ canonical_dirty: false });
+      .mockImplementationOnce(async () => { canonicalDirty = false; return { canonical_dirty: false }; });
 
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
     await vi.waitFor(() => expect(host.querySelector(".wr-canonical-promote")?.disabled).toBe(false), T);
