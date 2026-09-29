@@ -11,6 +11,8 @@ are, under their own names — they are NOT this module's contract:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -60,3 +62,107 @@ def final_chapter_memory(session: Session, chapter_id: str) -> ChapterMemory | N
         )
         .order_by(ChapterMemory.created_at.desc(), ChapterMemory.row_id.desc())
     ).scalars().first()
+
+
+# ---- 批量版本：规则与上面的单行查询逐条相同，行数多少都是固定几次查询（文学质量巡检一次看全书） ----
+
+
+def _unique_ids(ids: Iterable[str]) -> list[str]:
+    return [value for value in dict.fromkeys(ids) if value]
+
+
+def current_author_drafts(session: Session, object_type: str, object_ids: Iterable[str]) -> dict[str, AuthorDraft]:
+    """:func:`current_author_draft` for many objects of one type: object id → draft (objects without one are absent)."""
+    ids = _unique_ids(object_ids)
+    drafts: dict[str, AuthorDraft] = {}
+    if not ids:
+        return drafts
+    for draft in session.execute(
+        select(AuthorDraft)
+        .where(
+            AuthorDraft.object_type == object_type,
+            AuthorDraft.object_id.in_(ids),
+            AuthorDraft.status == "current",
+        )
+        .order_by(AuthorDraft.object_id, AuthorDraft.updated_at.desc(), AuthorDraft.draft_id.desc())
+    ).scalars():
+        drafts.setdefault(draft.object_id, draft)
+    return drafts
+
+
+def pointed_final_scenes(session: Session, scene_ids: Iterable[str]) -> dict[str, FinalScene]:
+    """:func:`pointed_final_scene` for many scenes: scene id → final row (scenes without one are absent)."""
+    ids = _unique_ids(scene_ids)
+    finals: dict[str, FinalScene] = {}
+    if not ids:
+        return finals
+    pointers = {
+        scene_id: row_id
+        for scene_id, row_id in session.execute(
+            select(SceneRunState.scene_id, SceneRunState.current_final_scene_row_id).where(
+                SceneRunState.scene_id.in_(ids)
+            )
+        ).all()
+        if row_id
+    }
+    if pointers:
+        rows = {
+            row.row_id: row
+            for row in session.execute(
+                select(FinalScene).where(FinalScene.row_id.in_(list(dict.fromkeys(pointers.values()))))
+            ).scalars()
+        }
+        for scene_id, row_id in pointers.items():
+            pointed = rows.get(row_id)
+            if pointed is not None and pointed.scene_id == scene_id:
+                finals[scene_id] = pointed
+    missing = [scene_id for scene_id in ids if scene_id not in finals]
+    if missing:
+        for row in session.execute(
+            select(FinalScene)
+            .where(FinalScene.scene_id.in_(missing))
+            .order_by(FinalScene.scene_id, FinalScene.created_at.desc(), FinalScene.row_id.desc())
+        ).scalars():
+            finals.setdefault(row.scene_id, row)
+    return finals
+
+
+def final_chapter_memories(session: Session, chapter_ids: Iterable[str]) -> dict[str, ChapterMemory]:
+    """:func:`final_chapter_memory` for many chapters: chapter id → final aggregate (chapters without one are absent)."""
+    ids = _unique_ids(chapter_ids)
+    memories: dict[str, ChapterMemory] = {}
+    if not ids:
+        return memories
+    pointers = {
+        chapter_id: row_id
+        for chapter_id, row_id in session.execute(
+            select(ChapterState.chapter_id, ChapterState.last_final_memory_row_id).where(
+                ChapterState.chapter_id.in_(ids)
+            )
+        ).all()
+        if row_id
+    }
+    if pointers:
+        rows = {
+            row.row_id: row
+            for row in session.execute(
+                select(ChapterMemory).where(ChapterMemory.row_id.in_(list(dict.fromkeys(pointers.values()))))
+            ).scalars()
+        }
+        for chapter_id, row_id in pointers.items():
+            pointed = rows.get(row_id)
+            if pointed is not None and pointed.chapter_id == chapter_id and pointed.aggregate_stage == "final":
+                memories[chapter_id] = pointed
+    missing = [chapter_id for chapter_id in ids if chapter_id not in memories]
+    if missing:
+        for row in session.execute(
+            select(ChapterMemory)
+            .where(
+                ChapterMemory.chapter_id.in_(missing),
+                ChapterMemory.aggregate_stage == "final",
+                ChapterMemory.active_flag == 1,
+            )
+            .order_by(ChapterMemory.chapter_id, ChapterMemory.created_at.desc(), ChapterMemory.row_id.desc())
+        ).scalars():
+            memories.setdefault(row.chapter_id, row)
+    return memories

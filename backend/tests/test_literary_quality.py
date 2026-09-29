@@ -636,10 +636,47 @@ def test_literary_quality_overview_exposes_filters_clusters_fingerprints_and_reu
     assert all(item["recommended_next_action"]["action"] == "open_deepdesk_patch" for item in payload["items"])
     assert payload["risk_clusters"][0]["dimension"] == "template_action_reuse"
     assert payload["risk_clusters"][0]["count"] >= 2
-    assert any(row["object_id"].startswith("LQ300_SC") for row in payload["fingerprints"])
-    assert "action_templates" in payload["fingerprints"][0]["fingerprint"]
+    # 指纹只在各条目里（顶层那份一模一样的列表没人读，已删，B04-14）
+    assert "fingerprints" not in payload
+    assert any(item["object_id"].startswith("LQ300_SC") for item in payload["items"])
+    assert all("action_templates" in item["fingerprint"] for item in payload["items"])
     assert any(row["cluster_type"] == "action_template" for row in payload["cross_scene_reuse"])
     assert payload["recommended_next_action"]["action"] == "open_deepdesk_patch"
+    # 规则维度与中文名由服务端给（筛选项用，B04-31）
+    assert [row["dimension"] for row in payload["dimensions"]] == list(QUALITY_DIMENSIONS)
+    assert {row["dimension"]: row["label"] for row in payload["dimensions"]}["template_action_reuse"] == "模板动作复用"
+
+
+def test_overview_reads_the_texts_in_a_fixed_number_of_queries(session) -> None:
+    """B04-14：巡检一次看全书，查询数不随章 / 场的多少增长（以前逐章逐场各查两三次作者稿、终稿、章节汇总）。"""
+    from sqlalchemy import event
+
+    from novel_system.services.literary_quality import LiteraryQualityService
+
+    engine = session.get_bind()
+    statements: list[str] = []
+
+    def count(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    def overview_statements(text_layer: str) -> int:
+        session.expire_all()
+        statements.clear()
+        event.listen(engine, "before_cursor_execute", count)
+        try:
+            payload = LiteraryQualityService(session).overview(text_layer=text_layer)
+        finally:
+            event.remove(engine, "before_cursor_execute", count)
+        assert payload["items"]
+        return len(statements)
+
+    for index in range(2):
+        _seed_quality_scene(session, chapter_id=f"LQN{index}", scene_id=f"LQN{index}_SC01")
+    few = {layer: overview_statements(layer) for layer in ("author_draft_preferred", "runtime", "chapter_assembled")}
+    for index in range(2, 8):
+        _seed_quality_scene(session, chapter_id=f"LQN{index}", scene_id=f"LQN{index}_SC01")
+    many = {layer: overview_statements(layer) for layer in ("author_draft_preferred", "runtime", "chapter_assembled")}
+    assert many == few
 
 
 def test_literary_quality_analyze_text_returns_quality_spine_without_database_mutation(client, session) -> None:
