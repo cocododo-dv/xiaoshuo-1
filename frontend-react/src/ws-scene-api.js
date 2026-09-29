@@ -13,6 +13,7 @@ import {
   scnGateLog, scnFriendly, scnRunUiAbortError, scnStyleNoticeLabel, scnRunRecordFromWorkbench,
 } from "./ws-scene-derive.js";
 import { isRealWorkId } from "./lib/work-id.js";
+import { createPoller } from "./lib/poll.js";
 
 /* ==========================================================
    AI 起草台 — 与后端说话的部分
@@ -37,23 +38,6 @@ async function scnRequireSceneId(sid) {
 function scnThrowIfAborted(signal) {
   if (signal && signal.aborted) throw scnRunUiAbortError();
 }
-function scnPollDelay(delayMs, signal) {
-  scnThrowIfAborted(signal);
-  if (!signal) return new Promise(resolve => setTimeout(resolve, delayMs));
-  return new Promise((resolve, reject) => {
-    const finish = () => {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    };
-    const abort = () => {
-      clearTimeout(timer);
-      reject(scnRunUiAbortError());
-    };
-    const timer = setTimeout(finish, delayMs);
-    signal.addEventListener("abort", abort, { once: true });
-  });
-}
-
 /* 等待终态。页面传 lifecycle.waitForTerminal（由场景页唯一的任务控制条轮询 latest，终态时兑现），
    这里就不再自己每 2 秒去问 run-jobs/{id}——过去同一个任务被两个轮询者同时问。
    没传（冒烟脚本、单测直接调用）时退回自己轮询。没有客户端时限：一次 LLM 调用本来就可能要 15 分钟，
@@ -87,17 +71,35 @@ async function scnWaitForTerminalJob(job, sceneId, lifecycle, trackedGet, signal
     // null：控制条那边看到的是别的任务（另一个标签页又起了一次、或一条迟到的旧 latest）——
     // 认不准就自己盯住这一个任务，宁可多一个轮询者也不卡在「运行中」。
   }
-  let last = job;
-  while (!RUN_JOB_TERMINAL_STATUSES.has(last.status)) {
-    await scnPollDelay(2000, signal);
-    scnThrowIfAborted(signal);
-    try {
-      last = await trackedGet(`/api/v1/run-jobs/${job.job_id}`);
-    } catch (e) {
-      scnThrowIfAborted(signal);
-    }
-  }
-  return last;
+  return scnPollJob(job, trackedGet, signal);
+}
+
+/* 自己盯住一个任务：每 2 秒问一次 run-jobs/{id}，读失败照常再问；页面隐藏时放慢、回到前台立刻问
+   （lib/poll.js）。中途取消（signal）→ 以 SCENE_RUN_UI_ABORTED 结束，在途的 GET 随 signal 一起中止。 */
+function scnPollJob(job, trackedGet, signal) {
+  return new Promise((resolve, reject) => {
+    let last = job;
+    let poller = null;
+    const onAbort = () => {
+      if (poller) poller.stop();
+      reject(scnRunUiAbortError());
+    };
+    if (signal && signal.aborted) { onAbort(); return; }
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    poller = createPoller({
+      interval: 2000,
+      run: async () => {
+        if (signal && signal.aborted) return false;
+        try { last = await trackedGet(`/api/v1/run-jobs/${job.job_id}`); } catch (e) { /* 读失败：下一轮再问 */ }
+        if (signal && signal.aborted) return false;
+        if (!RUN_JOB_TERMINAL_STATUSES.has(last.status)) return true;
+        if (signal) signal.removeEventListener("abort", onAbort);
+        resolve(last);
+        return false;
+      },
+    });
+    poller.start();
+  });
 }
 
 /* ---- 完整一跑（FE-ALIGN F6）：投递 run job → 等终态 → workbench 取产出 ----
