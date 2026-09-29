@@ -28,6 +28,15 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
+from novel_system.services.run_job_leases import (
+    JOB_TYPE_CHAPTER_FULL,
+    JOB_TYPE_SCENE_FULL,
+    RUN_JOB_TYPES,
+    STATUS_PENDING,
+    STATUS_QUEUED,
+    STATUS_RUNNING,
+    lease_is_active,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -48,24 +57,23 @@ def recover_run_job_dispatches(
     """Re-submit queued/pending jobs and abandoned RUNNING leases."""
 
     current = now or datetime.now(UTC)
-    current_iso = current.isoformat()
     rows = list(
         session.scalars(
             select(ChapterRunJob).where(
-                ChapterRunJob.job_type.in_(("scene_run_full", "chapter_run_full")),
-                ChapterRunJob.status.in_(("queued", "pending", "running")),
+                ChapterRunJob.job_type.in_(RUN_JOB_TYPES),
+                ChapterRunJob.status.in_((STATUS_QUEUED, STATUS_PENDING, STATUS_RUNNING)),
             )
         )
     )
     candidates: list[tuple[str, str, str | None, str | None]] = []
     skipped_active: list[str] = []
     for job in rows:
-        if job.status == "running" and _lease_is_active(job.lease_expires_at, current_iso):
+        if job.status == STATUS_RUNNING and lease_is_active(job.lease_expires_at, now=current):
             skipped_active.append(job.job_id)
             continue
-        if job.job_type == "scene_run_full" and job.status not in {"queued", "running"}:
+        if job.job_type == JOB_TYPE_SCENE_FULL and job.status not in {STATUS_QUEUED, STATUS_RUNNING}:
             continue
-        if job.job_type == "chapter_run_full" and job.status not in {"pending", "running"}:
+        if job.job_type == JOB_TYPE_CHAPTER_FULL and job.status not in {STATUS_PENDING, STATUS_RUNNING}:
             continue
         project_id: str | None = None
         if job.chapter_id:
@@ -77,7 +85,7 @@ def recover_run_job_dispatches(
     dispatched_scene: list[str] = []
     dispatched_chapter: list[str] = []
     for job_type, job_id, chapter_id, project_id in candidates:
-        if job_type == "scene_run_full":
+        if job_type == JOB_TYPE_SCENE_FULL:
             scene_dispatch(job_id)
             dispatched_scene.append(job_id)
         elif chapter_id:
@@ -222,7 +230,7 @@ def acquire_startup_recovery_lease(
     if current_row is None:
         session.rollback()
         return False
-    if _lease_is_active(current_row.lease_expires_at, current.isoformat()):
+    if lease_is_active(current_row.lease_expires_at, now=current):
         session.rollback()
         return False
     previous_owner = current_row.owner_id
@@ -320,25 +328,3 @@ def _fail_style_run(
         .execution_options(synchronize_session=False)
     )
     return changed.rowcount == 1
-
-
-def _lease_is_active(value: str | None, now_iso: str) -> bool:
-    # ISO-8601 timestamps produced by the service are fixed-width UTC values;
-    # parse malformed/legacy values as abandoned rather than immortal.
-    parsed = _parse_iso(value)
-    if parsed is None:
-        return False
-    now = _parse_iso(now_iso)
-    return bool(now is not None and parsed > now)
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)

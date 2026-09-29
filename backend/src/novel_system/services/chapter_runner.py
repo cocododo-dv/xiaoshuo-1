@@ -1,61 +1,46 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneRunState, utcnow
-from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_actions import author_action
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
+from novel_system.services.run_job_leases import (
+    JOB_TYPE_CHAPTER_FULL,
+    STATUS_BLOCKED,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_PENDING,
+    STATUS_RUNNING,
+    RunJobLease,
+    cas_claim,
+    lease_is_active,
+)
 from novel_system.services.scene_run_checkpoint import chapter_scene_execution_id
 from novel_system.services.scene_lookup import active_chapter_scenes, get_scene_or_404
 
-JOB_TYPE_CHAPTER_FULL = "chapter_run_full"
-JOB_STATUS_PENDING = "pending"
-JOB_STATUS_RUNNING = "running"
-JOB_STATUS_BLOCKED = "blocked"
-JOB_STATUS_COMPLETED = "completed"
-JOB_STATUS_FAILED = "failed"
+JOB_STATUS_PENDING = STATUS_PENDING
+JOB_STATUS_RUNNING = STATUS_RUNNING
+JOB_STATUS_BLOCKED = STATUS_BLOCKED
+JOB_STATUS_COMPLETED = STATUS_COMPLETED
+JOB_STATUS_FAILED = STATUS_FAILED
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ChapterRunLease:
-    job_id: str
-    worker_id: str
-    attempt_no: int
-    lease_expires_at: str
-    _service: "ChapterRunnerService" = field(repr=False, compare=False)
-
-    def renew(self, *, lease_seconds: int) -> str:
-        self.lease_expires_at = self._service._renew_lease(self, lease_seconds=lease_seconds)
-        return self.lease_expires_at
-
-    def renew_detached(self, *, lease_seconds: int) -> str:
-        """Renew with an independent session for long provider calls."""
-
-        with SessionLocal() as session:
-            service = ChapterRunnerService(session)
-            detached = ChapterRunLease(
-                job_id=self.job_id,
-                worker_id=self.worker_id,
-                attempt_no=self.attempt_no,
-                lease_expires_at=self.lease_expires_at,
-                _service=service,
-            )
-            expires = service._renew_lease(detached, lease_seconds=lease_seconds)
-            session.commit()
-            return expires
+class ChapterRunLease(RunJobLease):
+    job_type: ClassVar[str] = JOB_TYPE_CHAPTER_FULL
+    lost_message: ClassVar[str] = "chapter run owner lease was lost"
 
 
 @dataclass
@@ -372,13 +357,13 @@ class ChapterRunnerService:
     def _is_stale_running(job: ChapterRunJob) -> bool:
         """running 但租约（非空）已过期：没有任何 worker 还持有它。
 
-        与 `_claim_running` 的 CAS 判定同一口径（ISO 字符串比较）。租约为 None 的
+        与 `_claim_running` 的判定同一口径（run_job_leases.lease_is_active）。租约为 None 的
         running 行不算过期——那是遗留/手工行，仍按"有 worker 在跑"处理。
         """
 
         if job.status != JOB_STATUS_RUNNING or not job.lease_expires_at:
             return False
-        return job.lease_expires_at <= datetime.now(UTC).isoformat()
+        return not lease_is_active(job.lease_expires_at)
 
     def _reconcile_job(self, job: ChapterRunJob, scene_ids: list[str]) -> None:
         if self._is_stale_running(job):
@@ -472,14 +457,8 @@ class ChapterRunnerService:
     ) -> ChapterRunLease:
         self.session.refresh(job)
         now = datetime.now(UTC)
-        now_iso = now.isoformat()
-        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
-        running_without_active_lease = (
-            job.status == JOB_STATUS_RUNNING
-            and (
-                job.lease_expires_at is None
-                or job.lease_expires_at <= now_iso
-            )
+        running_without_active_lease = job.status == JOB_STATUS_RUNNING and not lease_is_active(
+            job.lease_expires_at, now=now
         )
         if job.status == JOB_STATUS_RUNNING and not running_without_active_lease:
             raise DomainError(
@@ -495,32 +474,16 @@ class ChapterRunnerService:
                 status_code=409,
                 details={"job_id": job.job_id, "status": job.status},
             )
-        old_status = job.status
-        old_worker = job.worker_id
         old_attempt = int(job.attempt_no or 0)
-        old_expiry = job.lease_expires_at
-        conditions = [
-            ChapterRunJob.job_id == job.job_id,
-            ChapterRunJob.job_type == JOB_TYPE_CHAPTER_FULL,
-            ChapterRunJob.status == old_status,
-            ChapterRunJob.attempt_no == old_attempt,
-            ChapterRunJob.worker_id.is_(None) if old_worker is None else ChapterRunJob.worker_id == old_worker,
-            ChapterRunJob.lease_expires_at.is_(None) if old_expiry is None else ChapterRunJob.lease_expires_at == old_expiry,
-        ]
-        claimed = self.session.execute(
-            update(ChapterRunJob)
-            .where(*conditions)
-            .values(
-                status=JOB_STATUS_RUNNING,
-                worker_id=worker_id,
-                attempt_no=old_attempt + 1,
-                started_at=job.started_at or now_iso,
-                heartbeat_at=now_iso,
-                lease_expires_at=expires,
-            )
-            .execution_options(synchronize_session=False)
+        expires = cas_claim(
+            self.session,
+            job,
+            job_type=JOB_TYPE_CHAPTER_FULL,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            now=now,
         )
-        if claimed.rowcount != 1:
+        if expires is None:
             self.session.rollback()
             raise DomainError("RUN_JOB_IN_PROGRESS", "another worker won the chapter run claim", status_code=409)
         self.session.flush()
@@ -532,47 +495,15 @@ class ChapterRunnerService:
             worker_id=worker_id,
             attempt_no=old_attempt + 1,
             lease_expires_at=expires,
-            _service=self,
+            _session=self.session,
         )
-
-    def _renew_lease(self, owner: ChapterRunLease, *, lease_seconds: int) -> str:
-        now = datetime.now(UTC)
-        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
-        renewed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.job_type == JOB_TYPE_CHAPTER_FULL,
-                ChapterRunJob.status == JOB_STATUS_RUNNING,
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(heartbeat_at=now.isoformat(), lease_expires_at=expires)
-            .execution_options(synchronize_session=False)
-        )
-        if renewed.rowcount != 1:
-            self.session.rollback()
-            raise DomainError("RUN_OWNER_LEASE_LOST", "chapter run owner lease was lost", status_code=409)
-        self.session.flush()
-        return expires
 
     def _fence_active_owner(self, job: ChapterRunJob) -> None:
         owner = self._active_owner
         if owner is None:
             return
         self.session.flush()
-        fenced = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.status == JOB_STATUS_RUNNING,
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(heartbeat_at=utcnow())
-            .execution_options(synchronize_session=False)
-        )
-        if fenced.rowcount != 1:
+        if not owner.update_owned(self.session, statuses=(JOB_STATUS_RUNNING,), values={"heartbeat_at": utcnow()}):
             self.session.rollback()
             raise DomainError("RUN_OWNER_LEASE_LOST", "chapter run owner was replaced", status_code=409)
         self.session.flush()

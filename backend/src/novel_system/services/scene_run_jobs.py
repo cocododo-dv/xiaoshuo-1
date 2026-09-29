@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from sqlalchemy import or_, select, update
@@ -19,9 +18,17 @@ from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.run_job_leases import (
     JOB_TYPE_SCENE_FULL,
+    OWNED_STATUSES,
     SCENE_RUN_STAGE_ORDER,
     SCENE_STEP_CLAIMED,
+    RunJobLease,
+    begin_immediate,
+    cas_claim,
+    lease_expiry,
+    lease_is_active,
+    parse_iso,
     scene_job_step,
+    update_observed,
 )
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService, scene_job_execution_id
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
@@ -46,33 +53,12 @@ _BUDGET_REJECTION_CODES = frozenset(
 )
 
 
-@dataclass
-class SceneRunJobLease:
-    job_id: str
-    worker_id: str
-    attempt_no: int
-    lease_expires_at: str
-    _service: "SceneRunJobService" = field(repr=False, compare=False)
+class SceneRunJobLease(RunJobLease):
+    """场景任务的租约：请求取消之后（cancel_requested）主人仍可续约，把在飞的结算做完。"""
 
-    def renew(self, *, lease_seconds: int) -> str:
-        self.lease_expires_at = self._service.renew_lease(self, lease_seconds=lease_seconds)
-        return self.lease_expires_at
-
-    def renew_detached(self, *, lease_seconds: int) -> str:
-        """Renew with an independent session for long provider calls."""
-
-        with SessionLocal() as session:
-            service = SceneRunJobService(session)
-            detached = SceneRunJobLease(
-                job_id=self.job_id,
-                worker_id=self.worker_id,
-                attempt_no=self.attempt_no,
-                lease_expires_at=self.lease_expires_at,
-                _service=service,
-            )
-            expires = service.renew_lease(detached, lease_seconds=lease_seconds)
-            session.commit()
-            return expires
+    job_type: ClassVar[str] = JOB_TYPE_SCENE_FULL
+    renewable_statuses: ClassVar[tuple[str, ...]] = OWNED_STATUSES
+    lost_message: ClassVar[str] = "scene run job owner lease was lost"
 
 
 class SceneRunJobService:
@@ -242,7 +228,7 @@ class SceneRunJobService:
             worker_id=job.worker_id,
             attempt_no=int(job.attempt_no),
             lease_expires_at=str(job.lease_expires_at or ""),
-            _service=self,
+            _session=self.session,
         )
 
     def claim_scene_active_job(self, owner: SceneRunJobLease, scene_id: str) -> None:
@@ -448,14 +434,10 @@ class SceneRunJobService:
         job = self.get_job(job_id)
         self.session.refresh(job)
         now = datetime.now(UTC)
-        now_iso = now.isoformat()
-        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
         # A RUNNING row without a lease is an abandoned pre-lease/crash state,
         # not an immortal owner.  The CAS below still fences on the observed
         # worker/attempt/NULL lease so only one recovery worker can take it.
-        if job.status == "running" and (
-            job.lease_expires_at is not None and job.lease_expires_at > now_iso
-        ):
+        if job.status == "running" and lease_is_active(job.lease_expires_at, now=now):
             self.session.rollback()
             raise DomainError(
                 "RUN_JOB_IN_PROGRESS",
@@ -480,50 +462,21 @@ class SceneRunJobService:
                 details={"job_id": job_id, "status": job.status},
             )
 
-        old_status = job.status
-        old_worker = job.worker_id
         old_attempt = int(job.attempt_no or 0)
-        old_expiry = job.lease_expires_at
-        conditions = [
-            ChapterRunJob.job_id == job_id,
-            ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-            ChapterRunJob.status == old_status,
-            ChapterRunJob.attempt_no == old_attempt,
-        ]
-        conditions.append(
-            ChapterRunJob.worker_id.is_(None)
-            if old_worker is None
-            else ChapterRunJob.worker_id == old_worker
+        expires = cas_claim(
+            self.session,
+            job,
+            job_type=JOB_TYPE_SCENE_FULL,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            now=now,
+            clear_outcome=True,
         )
-        conditions.append(
-            ChapterRunJob.lease_expires_at.is_(None)
-            if old_expiry is None
-            else ChapterRunJob.lease_expires_at == old_expiry
-        )
-        claimed = self.session.execute(
-            update(ChapterRunJob)
-            .where(*conditions)
-            .values(
-                status="running",
-                worker_id=worker_id,
-                attempt_no=old_attempt + 1,
-                started_at=job.started_at or now_iso,
-                heartbeat_at=now_iso,
-                lease_expires_at=expires,
-                finished_at=None,
-                error_code=None,
-                error_text=None,
-            )
-            .execution_options(synchronize_session=False)
-        )
-        if claimed.rowcount != 1:
+        if expires is None:
             self.session.rollback()
             current = self.get_job(job_id)
             self.session.refresh(current)
-            if current.status == "running" and (
-                current.lease_expires_at is not None
-                and current.lease_expires_at > now_iso
-            ):
+            if current.status == "running" and lease_is_active(current.lease_expires_at, now=now):
                 raise DomainError(
                     "RUN_JOB_IN_PROGRESS",
                     "another worker won the scene run job claim",
@@ -547,38 +500,8 @@ class SceneRunJobService:
             worker_id=worker_id,
             attempt_no=old_attempt + 1,
             lease_expires_at=expires,
-            _service=self,
+            _session=self.session,
         )
-
-    def renew_lease(self, owner: SceneRunJobLease, *, lease_seconds: int) -> str:
-        now = datetime.now(UTC)
-        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
-        renewed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-                ChapterRunJob.status.in_(("running", "cancel_requested")),
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(heartbeat_at=now.isoformat(), lease_expires_at=expires)
-            .execution_options(synchronize_session=False)
-        )
-        if renewed.rowcount != 1:
-            self.session.rollback()
-            raise DomainError(
-                "RUN_OWNER_LEASE_LOST",
-                "scene run job owner lease was lost",
-                status_code=409,
-                details={
-                    "job_id": owner.job_id,
-                    "worker_id": owner.worker_id,
-                    "attempt_no": owner.attempt_no,
-                },
-            )
-        self.session.flush()
-        return expires
 
     def mark_finished(
         self,
@@ -649,35 +572,16 @@ class SceneRunJobService:
         _begin_immediate(self.session)
         job = self.get_job(job_id)
         self.session.refresh(job)
-        now_iso = datetime.now(UTC).isoformat()
-        live_owner = job.status == "running" and (
-            job.lease_expires_at is not None and job.lease_expires_at > now_iso
-        )
+        live_owner = job.status == "running" and lease_is_active(job.lease_expires_at)
         if job.status not in {"queued", "running"} or live_owner:
             self.session.rollback()
             return False
-        changed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == job_id,
-                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-                ChapterRunJob.status == job.status,
-                ChapterRunJob.attempt_no == job.attempt_no,
-                (
-                    ChapterRunJob.worker_id.is_(None)
-                    if job.worker_id is None
-                    else ChapterRunJob.worker_id == job.worker_id
-                ),
-                (
-                    ChapterRunJob.lease_expires_at.is_(None)
-                    if job.lease_expires_at is None
-                    else ChapterRunJob.lease_expires_at == job.lease_expires_at
-                ),
-            )
-            .values(status="failed", finished_at=utcnow())
-            .execution_options(synchronize_session=False)
-        )
-        if changed.rowcount != 1:
+        if not update_observed(
+            self.session,
+            job,
+            job_type=JOB_TYPE_SCENE_FULL,
+            values={"status": "failed", "finished_at": utcnow()},
+        ):
             self.session.rollback()
             return False
         self.session.refresh(job)
@@ -750,24 +654,16 @@ class SceneRunJobService:
         reason: str | None = None,
     ) -> ChapterRunJob:
         now = utcnow()
-        changed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-                ChapterRunJob.status == "cancel_requested",
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(
-                status="cancelled",
-                finished_at=now,
-                error_code=RUN_JOB_CANCELLED,
-                error_text="scene run cancelled by author",
-            )
-            .execution_options(synchronize_session=False)
-        )
-        if changed.rowcount != 1:
+        if not owner.update_owned(
+            self.session,
+            statuses=("cancel_requested",),
+            values={
+                "status": "cancelled",
+                "finished_at": now,
+                "error_code": RUN_JOB_CANCELLED,
+                "error_text": "scene run cancelled by author",
+            },
+        ):
             self.session.rollback()
             job = self.get_job(owner.job_id)
             self.session.refresh(job)
@@ -812,26 +708,11 @@ class SceneRunJobService:
         return job
 
     def _transition_owned_job(self, owner: SceneRunJobLease, *, status: str) -> None:
-        changed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-                ChapterRunJob.status == "running",
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(status=status, finished_at=utcnow())
-            .execution_options(synchronize_session=False)
-        )
-        if changed.rowcount != 1:
+        if not owner.update_owned(
+            self.session, statuses=("running",), values={"status": status, "finished_at": utcnow()}
+        ):
             self.session.rollback()
-            raise DomainError(
-                "RUN_OWNER_LEASE_LOST",
-                "scene run job owner was replaced before terminal update",
-                status_code=409,
-                details={"job_id": owner.job_id, "attempt_no": owner.attempt_no},
-            )
+            raise owner.lost("scene run job owner was replaced before terminal update")
         self.session.flush()
 
     def _clear_active_job(self, job: ChapterRunJob) -> None:
@@ -930,8 +811,8 @@ def _preflight_next_action(run_preflight: dict[str, Any]) -> str:
 
 
 def _begin_immediate(session: Session) -> None:
-    if session.get_bind().dialect.name == "sqlite":
-        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    # 本模块经这个名字调用（测试会替换它模拟 DATABASE_BUSY）
+    begin_immediate(session)
 
 
 def recover_expired_cancel_requested_jobs(
@@ -972,17 +853,13 @@ def recover_expired_cancel_requested_jobs(
         if row is None:
             session.rollback()
             continue
-        try:
-            expiry = datetime.fromisoformat(str(row.lease_expires_at)) if row.lease_expires_at else None
-        except ValueError:
-            expiry = None
-        if expiry is not None and expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=UTC)
+        # 没有租约 / 租约格式坏掉的取消请求不在这里收尾
+        expiry = parse_iso(row.lease_expires_at)
         if expiry is None or expiry > now:
             session.rollback()
             continue
         old_attempt = int(row.attempt_no or 0)
-        recovery_expiry = (now + timedelta(seconds=owner_lease_ttl_seconds())).isoformat()
+        recovery_expiry = lease_expiry(owner_lease_ttl_seconds(), now=now)
         claimed = session.execute(
             update(ChapterRunJob)
             .where(
