@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -101,28 +101,39 @@ class SnowflakeWorkspaceService(
         ]
         # FE-ALIGN P2: 切换器/主页需要每部作品的统计摘要（只读派生，D2 服务端计算）。
         stats = WritingStatsService(self.session)
+        written = self._chapters_written_by_project([str(item.get("project_id") or "") for item in items])
         for item in items:
             project_id = item.get("project_id")
             item["stats"] = stats.stats_payload(project_id)
-            item["chapters_written"] = self._chapters_written(project_id)
+            item["chapters_written"] = written.get(str(project_id or ""), 0)
         return {"items": items}
 
-    def _chapters_written(self, project_id: str) -> int:
-        """FE-ALIGN P3：已动笔章数 = 有正文字数 rollup 或状态非 planned/todo 的章。"""
+    def _chapters_written_by_project(self, project_ids: list[str]) -> dict[str, int]:
+        """FE-ALIGN P3：已动笔章数 = 有正文字数 rollup 或状态非 planned/todo 的章（回收站里的章不算）。
+
+        两条查询算完所有作品（B06-18）：以前每部作品每一章一条查询，章越多作品列表越慢。
+        """
+        ids = [project_id for project_id in dict.fromkeys(project_ids) if project_id]
+        if not ids:
+            return {}
         chapters = self.session.execute(
-            select(ChapterGoal).where(
-                ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0
+            select(ChapterGoal.chapter_id, ChapterGoal.project_id, ChapterGoal.state).where(
+                ChapterGoal.project_id.in_(ids), ChapterGoal.trashed_flag == 0
             )
-        ).scalars().all()
-        written = 0
-        for chapter in chapters:
-            scene_words = self.session.execute(
-                select(SceneCard.words_current).where(
-                    SceneCard.chapter_id == chapter.chapter_id, SceneCard.trashed_flag == 0
-                )
-            ).scalars().all()
-            if sum(int(w or 0) for w in scene_words) > 0 or str(chapter.state or "planned") not in {"planned", "todo"}:
-                written += 1
+        ).all()
+        words: dict[str, int] = {}
+        chapter_ids = [chapter_id for chapter_id, _project_id, _state in chapters]
+        for start in range(0, len(chapter_ids), 500):
+            rows = self.session.execute(
+                select(SceneCard.chapter_id, func.sum(SceneCard.words_current))
+                .where(SceneCard.chapter_id.in_(chapter_ids[start : start + 500]), SceneCard.trashed_flag == 0)
+                .group_by(SceneCard.chapter_id)
+            ).all()
+            words.update({str(chapter_id): int(total or 0) for chapter_id, total in rows})
+        written: dict[str, int] = {}
+        for chapter_id, project_id, state in chapters:
+            if words.get(str(chapter_id), 0) > 0 or str(state or "planned") not in {"planned", "todo"}:
+                written[str(project_id)] = written.get(str(project_id), 0) + 1
         return written
 
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
