@@ -72,6 +72,33 @@ function catPushTotals() {
   });
 }
 
+/* 正文每次自动保存都会回写 rollup：它已经带着 words_total（直接用），但今日字数 / 连续天数还得
+   GET writing-stats。过去每存一次就发一次（审计 F01-07）；现在同一段写作里合并成停笔后的一次。
+   rollup 带上 words_today / streak_days 时（后端补上这两个字段之后）连这一次也省掉。 */
+const CAT_TOTALS_SETTLE_MS = 15_000;
+let catTotalsTimer = null;
+function catPushTotalsSoon() {
+  clearTimeout(catTotalsTimer);
+  catTotalsTimer = setTimeout(() => { catTotalsTimer = null; catPushTotals(); }, CAT_TOTALS_SETTLE_MS);
+}
+
+/* rollup 里现成的统计直接注入书架（值没变就不注入，免得主页、切换器白白重渲）；
+   返回 true = 今日 / 连续天数也齐了，不必再问 writing-stats */
+function catApplyRollupStats(rollup) {
+  const id = catActiveId();
+  if (!isRealWorkId(id) || !rollup) return false;
+  const next = {};
+  if (typeof rollup.words_total === "number") next.wordsTotal = rollup.words_total;
+  if (typeof rollup.words_today === "number") next.wordsToday = rollup.words_today;
+  if (typeof rollup.streak_days === "number") next.streak = rollup.streak_days;
+  next.chaptersWritten = catLoad(id).filter(c => ((c.words && c.words.cur) || 0) > 0).length;
+  try {
+    const w = WsWorks.list().find(x => x.id === id);
+    if (w && Object.keys(next).some(key => w[key] !== next[key])) WsWorks.__applyDerived(id, next);
+  } catch (e) { return false; }
+  return "wordsToday" in next && "streak" in next;
+}
+
 /* ---- store（FE-ALIGN Phase 3：目录真相源 = /api/v2/projects/{id}/catalog）----
    · get() 保持同步：每作品一份内存缓存，启动/切换作品时从 API 填充，
      写后乐观更新 + 端点调用，失败整体重拉（服务端为准）+ 提示。
@@ -280,6 +307,18 @@ const CAT_SID_MIGRATED_LS = "ws_sid_migrated_v1";
 const CAT_SID_KEY_PREFIXES = ["wr-doc:", "wr-doc-pending:", "wr-notes:", "wr-notes-pending:", "scn-run:"];
 const CAT_SID_LIST_KEYS = ["scn-queue:v1", "scn-queue-dismissed:v1"];
 
+/* 反向依赖的登记口（审计 F01-02）：写作台正文 store 与雪花同步层都 import 目录，目录不能反过来 import 它们
+   （会闭成环），过去就去读 window.WrDocs / window.SnowSync。现在由它们在加载时来这里登记：
+   · loaded：每次目录装载成功后调用（fn(workId)）——正文 store 据此预热当前在写那一场；
+   · planTitlesSynced：台子上改的章名被后端写穿到章计划后、目录重拉之前 await（fn(workId)）——雪花缓存接章表。 */
+const catLoadedHooks = new Set();
+const catPlanTitleHooks = new Set();
+function catRegister(set, fn) {
+  if (typeof fn !== "function") return () => {};
+  set.add(fn);
+  return () => { set.delete(fn); };
+}
+
 function catNotify() {
   catSubs.notify();
   emit("ws:catalog-changed");
@@ -381,7 +420,7 @@ const catLoader = createKeyedLoader({
     delete catErrorMap[workId];
     catNotify();
     catPushTotals();
-    try { window.WrDocs && window.WrDocs.hydrateActive && window.WrDocs.hydrateActive(); } catch (e) {}
+    catLoadedHooks.forEach((fn) => { try { fn(workId); } catch (e) {} });
   },
   onError(workId, e) {
     catErrorMap[workId] = e instanceof Error ? e : new Error("章节目录加载失败");
@@ -632,10 +671,9 @@ function catDispatchDiff(workId, prev, next) {
     try {
       for (const op of ops) await op();
       if (planTitleSynced) {
-        try {
-          const sync = window.SnowSync;
-          if (sync && typeof sync.adoptServerChapters === "function") await sync.adoptServerChapters(workId);
-        } catch (e) { console.warn("[WsCatalog] 本机雪花缓存接章表失败（下次打开构思时水合）:", e); }
+        for (const fn of catPlanTitleHooks) {
+          try { await fn(workId); } catch (e) { console.warn("[WsCatalog] 本机雪花缓存接章表失败（下次打开构思时水合）:", e); }
+        }
       }
       emit("ws:trash-changed");
     } catch (e) {
@@ -838,6 +876,9 @@ const WsCatalog = {
     };
   },
   subscribe(fn) { return catSubs.subscribe(fn); },
+  /* 反向依赖的登记口（见 catLoadedHooks）：返回注销函数 */
+  onLoaded(fn) { return catRegister(catLoadedHooks, fn); },
+  onPlanTitlesSynced(fn) { return catRegister(catPlanTitleHooks, fn); },
   /* —— FE-ALIGN 内部接缝（非契约面）—— */
   __backendSceneId: catBackendSceneId,
   __applyWordsRollup(sid, rollup) {
@@ -852,7 +893,7 @@ const WsCatalog = {
       });
       catNotify();
     }
-    catPushTotals();
+    if (!catApplyRollupStats(rollup)) catPushTotalsSoon();
   },
   __refresh(workId) { return catRefetch(workId || catActiveId()); },
 };
@@ -870,11 +911,11 @@ function useCatalogChapters() {
 /* 启动 & 切换作品：装载目录 + 同步统计（进度同源）。
    模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉旧实例挂在 window 上的监听器（在回收站那段末尾登记）。 */
 retireModuleListeners("ws-catalog");
+/* 统计由目录装载成功时推一次（catLoader.apply）；启动 / 换作品时不再在目录还空着的时候先推一次 */
 try { catFetch(catActiveId(), { migrate: true }); } catch (e) {}
-try { catPushTotals(); } catch (e) {}
 const catOnWorkChanged = () => {
+  clearTimeout(catTotalsTimer); catTotalsTimer = null;
   try { catFetch(catActiveId(), { migrate: true }); } catch (e) {}
-  try { catPushTotals(); } catch (e) {}
 };
 window.addEventListener("ws:work-changed", catOnWorkChanged);
 
@@ -1015,6 +1056,7 @@ adoptModuleListeners("ws-catalog", () => {
   window.removeEventListener("ws:work-changed", catOnWorkChanged);
   window.removeEventListener("ws:work-changed", trashOnWorkChanged);
   window.removeEventListener("ws:trash-changed", trashOnChanged);
+  clearTimeout(catTotalsTimer);
 });
 
 Object.assign(window, { WsCatalog, useCatalogChapters, WsTrashStore });

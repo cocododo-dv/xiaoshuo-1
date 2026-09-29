@@ -6,6 +6,8 @@ import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { wsNotify } from "./ws-notify.jsx";
 import { randomSuffix } from "./lib/ids.js";
 import { emit } from "./lib/events.js";
+import { WsWorks, wsKey } from "./ws-works.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 
 /* ==========================================================
    WrDocs — 写作器正文文档 store（FE-ALIGN Phase 3）
@@ -15,21 +17,22 @@ import { emit } from "./lib/events.js";
    localStorage 的 wr-doc:<sid> 键退化为「同步读缓存」：写作器在
    render/effect 里同步取文档，API 负责水合与持久化；跨浏览器以
    服务端为准（水合覆盖缓存，本地未保存改动优先）。
-   sid = 目录 slug（ch08s3）；后端 scene_id 经 WsCatalog 映射。
+   sid = 目录 slug（阶段 X 起就是稳定的 scene_id）；后端 scene_id 经 WsCatalog 映射。
    冲突（409 AUTHOR_DRAFT_CONFLICT）：以服务端为准重新水合。
    ========================================================== */
 
-const wrKeyOf = (sid) => (window.wsKey ? window.wsKey("wr-doc:" + sid) : "wr-doc:" + sid);
+const wrKeyOf = (sid) => wsKey("wr-doc:" + sid);
 // Wave 1（治理 · 设计项 5）：保存失败的持久化标记——dirty 只在内存 docMeta，
 // 重启浏览器即丢，下次水合会用服务端旧版静默覆盖较新的本地稿。标记跨会话存活，
 // 启动水合时据此走「冲突副本 + 作者选择」而不是静默覆盖。
-const wrPendingKeyOf = (sid) => (window.wsKey ? window.wsKey("wr-doc-pending:" + sid) : "wr-doc-pending:" + sid);
+const wrPendingKeyOf = (sid) => wsKey("wr-doc-pending:" + sid);
 const WR_RECOVERY_PREFIX = "wr-recovery:v1:";
 const volatileDocs = new Map();
 const volatileRecoveries = new Map();
 
+/* 当前作品 id（本机键 / 内存表的命名空间，加载占位也照用）。try 是有用的：不少单测 mock 的 WsWorks 没有 activeId */
 function activeWorkId() {
-  try { return (window.WsWorks && window.WsWorks.activeId && window.WsWorks.activeId()) || ""; } catch (e) { return ""; }
+  try { return WsWorks.activeId() || ""; } catch (e) { return ""; }
 }
 
 function isStorageQuotaError(error) {
@@ -155,9 +158,7 @@ function pendingClear(sid) {
 const docMeta = {};
 
 function metaKeyOf(sid) {
-  let work = "";
-  try { work = (window.WsWorks && window.WsWorks.activeId()) || ""; } catch (e) {}
-  return work + "::" + sid;
+  return activeWorkId() + "::" + sid;
 }
 
 function meta(sid) {
@@ -278,9 +279,7 @@ function notifyLoaded(sid) {
 }
 
 async function backendSceneId(sid) {
-  const cat = window.WsCatalog;
-  if (!cat || !cat.__backendSceneId) return null;
-  try { return await cat.__backendSceneId(sid); } catch (e) { return null; }
+  try { return await WsCatalog.__backendSceneId(sid); } catch (e) { return null; }
 }
 
 /* 文本 → 文档 HTML（服务端草稿以 \n 分段；写作器编辑器吃 <p> 段落） */
@@ -394,9 +393,7 @@ async function pushSave(sid, html, saveVersion) {
     } else {
       pendingWrite(sid);
     }
-    if (data && data.words_rollup && window.WsCatalog && window.WsCatalog.__applyWordsRollup) {
-      window.WsCatalog.__applyWordsRollup(sid, data.words_rollup);
-    }
+    if (data && data.words_rollup) WsCatalog.__applyWordsRollup(sid, data.words_rollup);
     /* 2026-09-22 场景诊断第三轮：正文一存，服务端把这一场 / 这一章开着的发现数带回来，角标随之更新 */
     if (data && data.diagnosis_rollup) {
       try { WsDiagnosis.applyRollup(data.diagnosis_rollup); } catch (e) {}
@@ -633,7 +630,7 @@ const WrDocs = {
   /* 当前在写场景预热（目录装载后调用） */
   hydrateActive() {
     try {
-      const w = window.WsCatalog && window.WsCatalog.writingScene();
+      const w = WsCatalog.writingScene();
       if (w && w.scene && w.scene.sid) hydrate(w.scene.sid);
     } catch (e) {}
   },
@@ -722,6 +719,9 @@ const WrRecovery = {
     return result;
   },
 };
+
+/* 目录每次装载成功后预热当前在写那一场（经 WrDocs 的属性调用：单测会 spy 它） */
+WsCatalog.onLoaded(() => WrDocs.hydrateActive());
 
 Object.assign(window, { WrDocs, WrDocVersions, WrRecovery });
 

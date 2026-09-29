@@ -224,7 +224,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(chapter.scenes[0].design.storyIndex).toBe(6);
 
     const adopt = vi.fn(async () => true);
-    window.SnowSync = { adoptServerChapters: adopt };
+    const unregister = mod.WsCatalog.onPlanTitlesSynced(adopt);
     client.apiPatch.mockResolvedValue({ chapter: {}, changed: true, plan_title_synced: true });
     mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({ ...c, title: "旧案重开" })));
     await vi.waitFor(() => expect(adopt).toHaveBeenCalledWith("prj-main"), T);
@@ -236,7 +236,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({ ...c, promise: "读者知道旧信是谁寄的" })));
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/prj-main/catalog/chapters/c1", { promise: "读者知道旧信是谁寄的" }), T);
     expect(adopt).not.toHaveBeenCalled();
-    delete window.SnowSync;
+    unregister();
   });
 
   it("手建的章（旧载荷没有 structure）归台面：可拖、可改，章名不写穿", async () => {
@@ -418,6 +418,24 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
       "/api/v2/projects/prj-main/catalog/chapter-order",
       { chapter_ids: ["c2", "c1"] },
     ), T);
+  });
+
+  it("正文自动保存回写 rollup：总字数立刻用上，不再每存一次就 GET writing-stats；rollup 带齐今日 / 连续天数时连问都不问（F01-07）", async () => {
+    const { mod, client } = await loadCatalog();
+    const statsGets = () => client.apiGet.mock.calls.filter(([url]) => url.includes("/writing-stats")).length;
+    await vi.waitFor(() => expect(window.WsWorks.active().wordsTotal).toBe(38000), T);
+    const before = statsGets();
+
+    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 120, chapter_words: 120, words_total: 38120 });
+    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 180, chapter_words: 180, words_total: 38180 });
+    expect(window.WsWorks.active().wordsTotal).toBe(38180);
+    expect(mod.WsCatalog.sceneById("ch01s1").scene.words).toBe(180);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(statsGets()).toBe(before);
+
+    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 200, chapter_words: 200, words_total: 38200, words_today: 200, streak_days: 4 });
+    expect(window.WsWorks.active()).toMatchObject({ wordsTotal: 38200, wordsToday: 200, streak: 4 });
+    expect(statsGets()).toBe(before);
   });
 
   it("写入之前发出、写入之后才回来的读取不盖掉新状态：写后补读另发一次，第二次改名不退回去（F01-05）", async () => {

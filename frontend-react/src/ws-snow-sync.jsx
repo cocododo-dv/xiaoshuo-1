@@ -514,7 +514,7 @@ function afterApproveCatalogSync(workId, res) {
   if (!workId || !sync) return;
   if (res.workspace) captureResync(workId, res.workspace);
   if (sync.synced_count > 0) {
-    try { if (WsCatalog && WsCatalog.__refresh) WsCatalog.__refresh(workId); } catch (e) {}
+    try { WsCatalog.__refresh(workId); } catch (e) {}
   }
   if (sync.synced_count > 0 || sync.held_count > 0) {
     emit("ws:snow-catalog-synced", { workId, ...sync });
@@ -834,7 +834,7 @@ async function snowPushKey(cacheKey) {
   // 的回流横幅跟上。hydrate 的 _t 比较保证较新的本地草稿不会被回写覆盖。
   if (pushedSceneish) {
     try {
-      const hasCatalog = !!(WsCatalog && WsCatalog.get && WsCatalog.get().length);
+      const hasCatalog = !!WsCatalog.get().length;
       if (hasCatalog) await snowHydrate(workId, { force: true });
     } catch (e) {}
   }
@@ -1089,7 +1089,7 @@ const SnowSync = {
     const body = Array.isArray(scenePlanIds) && scenePlanIds.length ? { scene_plan_ids: scenePlanIds } : {};
     const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/resync`, body);
     if (data && data.workspace) captureResync(id, data.workspace);
-    try { if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh(id); } catch (e) {}
+    try { await WsCatalog.__refresh(id); } catch (e) {}
     const results = (data && data.results) || [];
     return {
       synced: results.filter(r => r && r.synced).length,
@@ -1378,7 +1378,7 @@ const SnowSync = {
     // 都要先接过服务端的章表——否则一次失败的批准之后，本机旧章表会在下一次 07 上行时把它冲掉。
     try { await adoptServerChapters(id); } catch (e) {}
     const approved = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/outline/approve`, {});
-    try { if (WsCatalog && WsCatalog.reset) WsCatalog.reset(); } catch (e) {}
+    try { WsCatalog.reset(); } catch (e) {}
     const createdChapters = (approved && approved.created_chapter_count) || 0;
     // 服务端这一步可能自动把空章 / 占位章移入回收站、或把场景卡取回：让开着的回收站也跟上
     const trashMoved = ["trashed_empty_chapters", "trashed_placeholder_chapters", "restored_chapter_ids", "restored_scene_ids"]
@@ -1398,6 +1398,10 @@ const SnowSync = {
     };
   },
 };
+
+/* 台子上改的章名被后端写穿到章计划后，目录在重拉之前等本机雪花缓存接过服务端章表（登记口见 ws-catalog.jsx）。
+   经 SnowSync 的属性调用：单测会替换它。 */
+WsCatalog.onPlanTitlesSynced((workId) => SnowSync.adoptServerChapters(workId));
 
 Object.assign(window, { SnowSync });
 
