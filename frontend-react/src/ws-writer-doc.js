@@ -2,7 +2,7 @@ import React from "react";
 import { storeAlert } from "./lib/store-utils.js";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WrDocs, WrRecovery } from "./wr-doc-store.jsx";
-import { contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
+import { contentSafetyReviewFromError, exactCodesMatch } from "./wr-content-safety-review.jsx";
 import { copyGatePromoteMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { WR_EMPTY_DOC, wrCountText, wrPrepareLoadedHTML, wrSerializeManuscript } from "./ws-writer-manuscript.js";
@@ -299,8 +299,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
   const confirm = useWrEvent(async (acceptedCodes) => {
     if (!review || busy) return;
     const exactCodes = review.findings.map((item) => item.code);
-    const received = Array.isArray(acceptedCodes) ? acceptedCodes : [];
-    if (received.length !== exactCodes.length || exactCodes.some((code, index) => received[index] !== code)) {
+    if (!exactCodesMatch(exactCodes, acceptedCodes)) {
       setError("确认项与服务端返回的风险代码不一致，已停止提升。");
       return;
     }

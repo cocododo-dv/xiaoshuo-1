@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
 import { wsToast } from "./ws-notify.jsx";
 import { CloseButton, IconButton, Notice, Tag } from "./ws-ui.jsx";
-import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
+import { ContentSafetyReviewDialog, contentSafetyReviewFromError, exactCodesMatch } from "./wr-content-safety-review.jsx";
 import { scnAdoptToDoc, scnPrepareAdoption } from "./ws-scene-api.js";
 import { scnRunSave } from "./ws-scene-store.js";
 
@@ -301,7 +301,7 @@ function SceneAdoptionDialogs({ adoption }) {
           onCancel={adoption.closeSafetyReview}
           onConfirm={async (acceptedWarningCodes) => {
             const expected = safetyReview.review.findings.map(item => item.code);
-            if (acceptedWarningCodes.length !== expected.length || expected.some(code => !acceptedWarningCodes.includes(code))) {
+            if (!exactCodesMatch(expected, acceptedWarningCodes)) {
               adoption.setSafetyError("请逐项核对当前服务端返回的全部风险提示后再继续。");
               return;
             }

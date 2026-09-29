@@ -146,3 +146,14 @@ describe("canonical 内容风险逐项确认", () => {
     expect(text).not.toMatch(/\bhigh\b|\bheuristic\b/);
   });
 });
+
+describe("exactCodesMatch：写作台提升与起草台归档同一种读法", () => {
+  it("一条不少、一条不多、没有重复；顺序无关", async () => {
+    const { exactCodesMatch } = await import("./wr-content-safety-review.jsx");
+    expect(exactCodesMatch(["a", "b"], ["b", "a"])).toBe(true);
+    expect(exactCodesMatch(["a", "b"], ["a"])).toBe(false);
+    expect(exactCodesMatch(["a"], ["a", "c"])).toBe(false);
+    expect(exactCodesMatch(["a", "b"], ["a", "a"])).toBe(false);
+    expect(exactCodesMatch(["a"], null)).toBe(false);
+  });
+});
