@@ -433,69 +433,6 @@ def test_workspace_v2_step_history_restore_rejects_cross_project_runs(client) ->
     assert response.json()["error"]["code"] == "SNOWFLAKE_STEP_RUN_NOT_FOUND"
 
 
-def test_discovery_import_accepts_character_steps_and_merges_by_character_id(client, session) -> None:
-    project = _create_project(client, key="discovery-character-import")
-    service = SnowflakeWorkspaceService(session)
-
-    first = service.import_discovery_steps(
-        project["project_id"],
-        {
-            "character_sheets": {
-                "characters": [
-                    {
-                        "character_id": "MARA",
-                        "display_name": "Mara Vale",
-                        "role": "protagonist",
-                        "goal": "Expose the rail crime.",
-                    }
-                ]
-            }
-        },
-    )
-    second = service.import_discovery_steps(
-        project["project_id"],
-        {
-            "character_sheets": {
-                "characters": [
-                    {
-                        "character_id": "MARA",
-                        "display_name": "Mara Vale",
-                        "ambition": "Clear her father's name.",
-                    }
-                ]
-            },
-            "character_synopses": {
-                "characters": [
-                    {
-                        "character_id": "MARA",
-                        "display_name": "Mara Vale",
-                        "synopsis": "She learned to distrust official stories.",
-                    }
-                ]
-            },
-        },
-    )
-    session.commit()
-
-    assert first["imported_step_keys"] == ["character_sheets"]
-    assert second["imported_step_keys"] == ["character_sheets", "character_synopses"]
-    latest_sheet = (
-        session.query(SnowflakeStepRun)
-        .filter(SnowflakeStepRun.project_id == project["project_id"], SnowflakeStepRun.step_key == "character_sheets")
-        .order_by(SnowflakeStepRun.version.desc())
-        .first()
-    )
-    assert latest_sheet is not None
-    character = latest_sheet.draft_json["characters"][0]
-    assert character["character_id"] == "MARA"
-    assert character["role"] == "protagonist"
-    assert character["ambition"] == "Clear her father's name."
-    plan = session.get(SnowflakeCharacterPlan, f"snowflake_character_plan_{project['project_id']}_MARA")
-    assert plan is not None
-    assert plan.summary_json["role"] == "protagonist"
-    assert plan.synopsis_json["synopsis"].startswith("She learned")
-
-
 def test_workspace_v2_uses_structured_scene_plans_and_applies_triage_repair(client, session) -> None:
     project = _create_project(client, key="structured-scene-plans")
     for step_key in [

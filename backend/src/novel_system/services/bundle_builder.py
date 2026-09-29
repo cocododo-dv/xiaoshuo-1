@@ -504,18 +504,6 @@ class BundleBuilder:
             exc_info=True,
         )
 
-    @staticmethod
-    def _single_or_list(values: list[str]) -> str | list[str]:
-        return values[0] if len(values) == 1 else values
-
-    @staticmethod
-    def _combined_text(rows: list[Any], text_field: str) -> str:
-        return "\n\n".join(
-            str(getattr(row, text_field))
-            for row in rows
-            if getattr(row, text_field, None)
-        )
-
     def _next_bundle_id(self, scene_id: str, state: SceneRunState) -> tuple[str, int]:
         build_no = (state.bundle_build_count or 0) + 1
         while True:

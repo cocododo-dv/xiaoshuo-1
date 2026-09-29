@@ -97,7 +97,6 @@ SOURCE_LABELS: dict[str, str] = {
     "ai": "AI 深评",
 }
 SEVERITIES: tuple[str, ...] = ("blocking", "revision", "taste", "info")
-SEVERITY_LABELS: dict[str, str] = {"blocking": "阻断", "revision": "修订", "taste": "审美", "info": "提示"}
 PASSAGE_VERDICTS: tuple[str, ...] = ("holds", "partly", "does_not_hold", "no_finding")
 PASSAGE_VERDICT_LABELS: dict[str, str] = {
     "holds": "成立",
@@ -105,7 +104,6 @@ PASSAGE_VERDICT_LABELS: dict[str, str] = {
     "does_not_hold": "不成立",
     "no_finding": "没有要改的",
 }
-EVALUATION_STATUSES: tuple[str, ...] = ("not_run", "current", "stale")
 
 # 深评（literary_revision_v1）的十维与五个镜头
 AI_DIMENSION_LABELS: dict[str, str] = {

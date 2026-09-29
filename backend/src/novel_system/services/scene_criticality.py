@@ -18,7 +18,6 @@ from novel_system.db.models import ChapterGoal, SceneCard
 CRITICAL_FUNCTION_TAGS = frozenset({"turn", "reveal"})
 HIGH_TENSION_THRESHOLD = 7
 GOLDEN_CHAPTER_COUNT = 3
-GOLDEN_SCENE_SEQ_HEURISTIC = 9
 
 
 @dataclass(slots=True)
@@ -31,10 +30,6 @@ class SceneCriticality:
     # Wave 3（治理 §5.5 成本分配）：初始候选数——关键先 3 补到 5、标准先 2 补到 3、
     # 过渡恒 1；低分散时按预算逐个补到 best_of_n 上限（渐进补候选）。
     initial_best_of_n: int = 1
-
-    @property
-    def is_critical(self) -> bool:
-        return self.level == "critical"
 
     @property
     def max_best_of_n(self) -> int:

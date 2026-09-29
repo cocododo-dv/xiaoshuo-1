@@ -23,9 +23,6 @@ from novel_system.services.author_actions import author_action
 from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.snowflake_scene_order import sort_in_story_order
 
-#: 归构思所有的章结构字段（目录 API 回包 ``details.fields`` 用的名字）
-PLAN_OWNED_CHAPTER_FIELDS = ("act", "order")
-
 
 def live_chapter_plans_by_catalog_id(session: Session, project_id: str | None) -> dict[str, SnowflakeChapterPlan]:
     """目录章 id → 钉着它的那一行章计划（没被软删的）。一个目录章至多被一行钉住（铸号规则保证）。"""

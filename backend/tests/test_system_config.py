@@ -9,10 +9,10 @@ from sqlalchemy import select
 from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.api.app import create_app
 from novel_system.db.models import LlmCall, LlmCallAttempt, SystemConfigSnapshot, SystemSecret
-from novel_system.services.settings_helpers import llm_generation_mode
 from novel_system.services.llm_audit import fingerprint_identifier
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
 
 
@@ -252,7 +252,7 @@ def test_system_config_local_setup_mode_allows_loopback_writes_without_admin_tok
     assert provider["credential_mode"] == "none"
 
 
-def test_no_key_local_provider_counts_as_live_generation_mode(monkeypatch) -> None:
+def test_no_key_local_provider_is_an_enabled_runtime_provider(monkeypatch) -> None:
     monkeypatch.delenv("NOVEL_SYSTEM_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
@@ -275,7 +275,10 @@ def test_no_key_local_provider_counts_as_live_generation_mode(monkeypatch) -> No
     assert response.status_code == 200
     assert get_settings().llm_enabled is True
     assert get_settings().llm_api_key is None
-    assert llm_generation_mode() == "live"
+    # 无密钥的本地模型：运行时 provider 配置启用、凭据模式 none（调用时不要求 API key）
+    provider_config = load_llm_provider_runtime_configs()["local_qwen"]
+    assert provider_config.enabled is True
+    assert provider_config.credential_mode == "none"
 
 
 def test_llm_overview_marks_default_routes_without_provider_as_not_ready(client) -> None:

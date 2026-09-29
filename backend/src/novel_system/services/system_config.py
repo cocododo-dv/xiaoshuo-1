@@ -91,12 +91,6 @@ def load_active_config_payload(category: str) -> dict[str, Any] | None:
     return read_payload(category, session_factory=SessionLocal, sleep=time.sleep)
 
 
-def load_active_config_yaml(category: str) -> str | None:
-    from novel_system.services.config_snapshot_reader import load_active_config_yaml as read_yaml
-
-    return read_yaml(category, session_factory=SessionLocal, sleep=time.sleep)
-
-
 def apply_active_api_config(settings):
     """把活动 api 快照与它用到的密钥叠到环境设置上。
 

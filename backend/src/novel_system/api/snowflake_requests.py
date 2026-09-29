@@ -104,9 +104,6 @@ class SnowflakeAssistantRequest(StrictRequestModel):
     draft_override: BoundedJsonObject | None = None
     focus_scene_id: str | None = Field(default=None, max_length=255)
     message: str | None = Field(default=None, max_length=20_000)
-    # The current client embeds the excerpt in ``message`` as well.  Keep this
-    # compatibility field explicit instead of accepting arbitrary ignored keys.
-    discovery_draft_excerpt: str | None = Field(default=None, max_length=10_000)
 
 
 class SnowflakeSceneTriageSuggestRequest(StrictRequestModel):

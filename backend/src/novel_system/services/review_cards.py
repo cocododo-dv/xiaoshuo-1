@@ -23,7 +23,6 @@ from novel_system.services.review_effects import run_effect
 
 CARD_ITEM_TYPE = "fe_card"
 CARD_KINDS = ("decision", "risk", "qc", "idea", "note")
-CARD_STATES = ("open", "resolved", "snoozed")
 
 # legacy item_type → 卡片 kind 的展示默认（响应映射，不回写行）
 LEGACY_KIND_DEFAULTS = {

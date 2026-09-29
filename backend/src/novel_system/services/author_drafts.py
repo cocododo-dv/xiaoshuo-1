@@ -58,22 +58,11 @@ from novel_system.services.style_prompt_injection import (
     resolve_style_scope,
 )
 from novel_system.services.writer_briefs import (
-    empty_chapter_writer_brief,
     empty_scene_writer_brief,
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
 )
 from novel_system.services.writing_stats import WritingStatsService, count_words
-
-AUTHOR_DRAFT_EVENT_TYPES = {
-    "created",
-    "edited",
-    "candidate_inserted",
-    "candidate_saved",
-    "candidate_rejected",
-    "proposal_applied",
-    "proposal_rejected",
-}
 
 _RUNTIME_FINAL_UNAVAILABLE = object()
 _LOGGER = logging.getLogger(__name__)
@@ -81,19 +70,7 @@ _LOGGER = logging.getLogger(__name__)
 # 章节稿 / 续写 / 近终稿改写 / 语言 / 对白 / 局部段落）；结构候选是修订笔记，不是正文。
 _NON_PROSE_PROPOSAL_KINDS = frozenset({"structure_note"})
 
-# 发现稿「提取结构」允许导入的雪花步骤；提示词契约、归一化与错误提示共用这一份。
-PROJECT_DISCOVERY_STEP_KEYS = (
-    "book_brief",
-    "one_sentence_summary",
-    "one_paragraph_summary",
-    "scene_list",
-    "scene_details",
-)
-# 骨架里不给模型看的字段：系统默认策略，不是要从稿子里提取的东西。
-_PROJECT_STEP_SKELETON_OMIT = {"book_brief": {"safety_rules"}}
-
 DESK_DEFAULT_MODE = "write_first"
-AUTHOR_PROPOSAL_TRIAD = ("structure_candidate", "passage_candidate", "language_candidate")
 AUTHOR_PROPOSAL_APPLY_MODES = {"replace", "append", "new_version", "local_patch", "range_replace", "paragraph_replace"}
 AUTHOR_PROPOSAL_KIND_APPLY_MODES = {
     "structure_note": "append",
@@ -1097,23 +1074,6 @@ class AuthorDraftService:
             "updated_by": row.updated_by,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
-        }
-
-    @staticmethod
-    def serialize_event(row: AuthorDraftEvent) -> dict[str, Any]:
-        return {
-            "event_id": row.event_id,
-            "draft_id": row.draft_id,
-            "object_type": row.object_type,
-            "object_id": row.object_id,
-            "event_type": row.event_type,
-            "patch_id": row.patch_id,
-            "revision_id": row.revision_id,
-            "option_id": row.option_id,
-            "note": row.note,
-            "payload_json": row.payload_json or {},
-            "created_by": row.created_by,
-            "created_at": row.created_at,
         }
 
     @staticmethod

@@ -51,56 +51,6 @@ def resolve_pagination_request(
     )
 
 
-def paginate_items(
-    items: Sequence[T],
-    *,
-    request: PaginationRequest,
-    cursor_values: Callable[[T], Sequence[Any]],
-) -> tuple[list[T], dict[str, Any]]:
-    total = len(items)
-
-    if request.mode == "page":
-        assert request.page is not None
-        start = max(request.page - 1, 0) * request.limit
-        end = start + request.limit
-        page_items = list(items[start:end])
-        has_next = end < total
-        next_cursor = _encode_cursor(cursor_values(page_items[-1])) if has_next and page_items else None
-        return page_items, {
-            "mode": "page",
-            "limit": request.limit,
-            "page": request.page,
-            "page_size": request.page_size,
-            "returned": len(page_items),
-            "total": total,
-            "has_next": has_next,
-            "next_cursor": next_cursor,
-        }
-
-    start = 0
-    decoded_cursor = _decode_cursor(request.cursor)
-    if decoded_cursor is not None:
-        for index, item in enumerate(items):
-            if list(cursor_values(item)) == decoded_cursor:
-                start = index + 1
-                break
-
-    end = start + request.limit
-    page_items = list(items[start:end])
-    has_next = end < total
-    next_cursor = _encode_cursor(cursor_values(page_items[-1])) if has_next and page_items else None
-    return page_items, {
-        "mode": "cursor",
-        "limit": request.limit,
-        "page": None,
-        "page_size": None,
-        "returned": len(page_items),
-        "total": total,
-        "has_next": has_next,
-        "next_cursor": next_cursor,
-    }
-
-
 def paginate_select(
     session: Session,
     statement,

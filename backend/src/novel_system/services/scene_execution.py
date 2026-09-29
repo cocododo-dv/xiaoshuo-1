@@ -412,37 +412,6 @@ class SceneExecutionContractService:
         return [str(policy.profile_id)] if policy.profile_id else []
 
 
-    def _canonical_completed_scene_ids(
-        self,
-        project_id: str,
-        *,
-        position_service: NarrativePositionService | None = None,
-    ) -> set[str]:
-        """Return only scenes whose runtime pointer names the authority row.
-
-        ``final_scenes`` is append-only history after author-draft promotion.  A
-        historical/superseded row must never satisfy a causal prerequisite merely
-        because it still exists.  The scene is complete only when the current
-        ``SceneRunState`` pointer resolves to a ``FinalScene`` for that same scene.
-        """
-
-        positions = position_service or NarrativePositionService(self.session)
-        statement = (
-            positions.scene_statement(project_id)
-            .join(SceneRunState, SceneRunState.scene_id == SceneCard.scene_id)
-            .join(
-                FinalScene,
-                and_(
-                    FinalScene.row_id == SceneRunState.current_final_scene_row_id,
-                    FinalScene.scene_id == SceneCard.scene_id,
-                ),
-            )
-        )
-        return {
-            completed_scene.scene_id
-            for completed_scene in self.session.execute(statement).scalars().all()
-        }
-
     def _require_scene(self, scene_id: str) -> SceneCard:
         return require_scene(self.session, scene_id)
 
@@ -466,19 +435,6 @@ def _is_explicit_structured_scene(scene: SceneCard, brief: dict[str, Any]) -> bo
         if text in {"proactive", "reactive", "reaction", "goal"}:
             return True
     return False
-
-
-FIELD_LABELS = {
-    "scene_crucible": "坩埚/场景压力",
-    "crucible": "坩埚/场景压力",
-    "conflict": "冲突推进",
-    "setback_or_victory": "挫折/胜负变化",
-    "setback": "挫折",
-    "goal": "场景目标",
-    "reaction": "反应",
-    "dilemma": "困境",
-    "decision": "决定",
-}
 
 
 def _first_text(*values: Any) -> str:

@@ -1778,10 +1778,6 @@ def _preference_tags(payload: dict[str, Any], issue_dimension: str, *, instructi
     return [issue_dimension][:8]
 
 
-# 供旧调用方 / 测试按名字取：场景形态推断现在只看模型给的 scene_form（scene_diagnosis）
-_scene_form_from_findings = scene_form_from_findings
-
-
 def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
     findings = _normalize_findings(payload.get("findings"))
     scores = _normalize_scores(payload.get("scores"))
@@ -2028,14 +2024,6 @@ def _category_label(value: str | None) -> str:
 def _repeated_ai_trace_terms(text: str) -> list[str]:
     watched = ("手指", "停顿", "幽蓝", "冷光", "低声", "盐霜", "泛着")
     return [term for term in watched if text.count(term) >= 2 or (term in {"幽蓝", "冷光", "盐霜"} and term in text)]
-
-
-def _first_match(text: str, terms: tuple[str, ...]) -> str:
-    for term in terms:
-        index = text.find(term)
-        if index >= 0:
-            return text[max(0, index - 10) : index + len(term) + 16]
-    return text[:40]
 
 
 def _required_text(payload: dict[str, Any], key: str) -> str:

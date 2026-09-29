@@ -63,15 +63,6 @@ class ProfileStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-class BindingScope(str, Enum):
-    """注入绑定的目标范围(``style_reference_injection_bindings.scope``)。v3 只写 project / scene / character;
-    旧 global 行只读兼容。"""
-
-    PROJECT = "project"
-    SCENE = "scene"
-    CHARACTER = "character"
-
-
 class BindingStatus(str, Enum):
     ACTIVE = "active"
     DISABLED = "disabled"
@@ -89,13 +80,6 @@ class TaskType(str, Enum):
     库里的存量行按字符串比对,不经这个枚举)。"""
 
     SCENE_GENERATION = "scene_generation"
-
-
-class BannedTermScope(str, Enum):
-    """来源:§4.3 banned_terms.scope。"""
-
-    GENERATION = "generation"
-    EXTRACTION = "extraction"
 
 
 class CloudPolicy(str, Enum):

@@ -443,13 +443,6 @@ class FinalTextGateService:
         }
 
 
-    @staticmethod
-    def _json_digest(value: Any, *, expected: type) -> Any:
-        decoded = json.loads(value) if isinstance(value, str) else value
-        if not isinstance(decoded, expected):
-            raise TypeError(f"expected {expected.__name__} digest")
-        return decoded
-
     def _rule_calibration(self, policy: StylePolicy) -> Any:
         """绑定的参考书对 21 维规则的校准（与写作台深改面板 / 文学质量视图同一份）；未绑定或不可用 → None。"""
         if not policy.bound:

@@ -58,9 +58,6 @@ _LOGGER = logging.getLogger(__name__)
 
 CONTINUITY_BUDGET_ISSUE_KEY = "continuity_budget_exceeded"
 CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe input budget after deterministic continuity compaction."
-CONTINUITY_BUDGET_REWRITE = (
-    "Split the scene and retry QC with a smaller continuity scope."
-)
 HARD_QC_REQUIRED_ISSUE_KEYS = {"missing_required_text", "missing_hard_constraint"}
 HARD_QC_STYLE_ONLY_ISSUE_KEYS = {
     "style_compliance",

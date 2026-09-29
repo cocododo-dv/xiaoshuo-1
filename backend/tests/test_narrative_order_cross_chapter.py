@@ -157,52 +157,6 @@ def test_legacy_scene_seq_cursor_is_rejected_for_multi_chapter_project(session) 
     assert rejected.value.code == "NARRATIVE_CURSOR_AMBIGUOUS"
 
 
-def test_obligation_boundary_crosses_chapters(session) -> None:
-    _seed_two_chapters(session)
-    log = NarrativeEventLog(session)
-    planted = log.log_event(
-        project_id=PROJECT,
-        scene_id="NO_CH1_SC2",
-        chapter_id="NO_CH1",
-        event_type="foreshadow_plant",
-        entity_type="foreshadow",
-        entity_id="FS_A",
-        fact_key="status",
-        fact_value="planted",
-        obligation_ids=["OB_A"],
-        authority_status="accepted",
-        source_kind="test_fixture",
-    )
-    log.log_event(
-        project_id=PROJECT,
-        scene_id="NO_CH2_SC1",
-        chapter_id="NO_CH2",
-        event_type="foreshadow_resolve",
-        entity_type="foreshadow",
-        entity_id="OB_A",
-        fact_key="status",
-        fact_value="resolved",
-        authority_status="accepted",
-        source_kind="test_fixture",
-    )
-    session.commit()
-
-    before = log.find_unfulfilled_obligations(
-        PROJECT, before_scene_id="NO_CH2_SC1",
-    )
-    through = log.find_unfulfilled_obligations(
-        PROJECT, up_to_scene_id="NO_CH2_SC1",
-    )
-
-    assert before == [{
-        "event_id": planted.event_id,
-        "scene_id": "NO_CH1_SC2",
-        "obligation_id": "OB_A",
-        "status": "unfulfilled",
-    }]
-    assert through[0]["status"] == "fulfilled"
-
-
 def test_final_aggregate_uses_scene_order_not_memory_row_id(session) -> None:
     _seed_two_chapters(session)
     session.add_all([

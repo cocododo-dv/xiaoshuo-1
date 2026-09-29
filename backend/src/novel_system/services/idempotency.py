@@ -695,22 +695,3 @@ def _dedupe_targets(targets: list[dict[str, str] | None]) -> list[dict[str, str]
         seen_refs.add(target_ref)
         deduped.append(target)
     return deduped
-
-
-def _result_targets(items: Any) -> list[dict[str, str]]:
-    if not isinstance(items, list):
-        return []
-    targets: list[dict[str, str]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        target = item.get("target")
-        if not isinstance(target, dict):
-            continue
-        target_type = target.get("target_type")
-        target_id = target.get("target_id")
-        target_ref = target.get("target_ref")
-        structured = structured_target(target_type, target_id, target_ref)
-        if structured is not None:
-            targets.append(structured)
-    return targets

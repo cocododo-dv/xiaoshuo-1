@@ -454,41 +454,6 @@ class AuthorLifecycleService:
             "current_final_scene_row_id": scene_state.current_final_scene_row_id if scene_state else None,
         }
 
-    def serialize_trashed_chapter(self, chapter: ChapterGoal) -> dict:
-        return {
-            "chapter_id": chapter.chapter_id,
-            "chapter_goal": chapter.chapter_goal,
-            "trashed_at": chapter.trashed_at,
-            "trashed_by": chapter.trashed_by,
-            "scene_count": self._count_scenes(chapter.chapter_id, trashed_flag=1),
-            "restore_allowed": 1,
-            "restore_block_reason": None,
-            "purge_allowed": 0 if self.chapter_purge_block_reason(chapter) else 1,
-            "purge_block_reason": self.chapter_purge_block_reason(chapter),
-        }
-
-    def serialize_trashed_scene(self, scene: SceneCard) -> dict:
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        chapter_trashed = 1 if chapter is not None and chapter.trashed_flag == 1 else 0
-        restore_block_reason = SCENE_CHAPTER_TRASHED_RESTORE_REASON if chapter_trashed else None
-        if chapter_trashed:
-            purge_block_reason = SCENE_CHAPTER_TRASHED_PURGE_REASON
-        else:
-            purge_block_reason = self.scene_purge_block_reason(scene)
-        return {
-            "scene_id": scene.scene_id,
-            "chapter_id": scene.chapter_id,
-            "scene_seq": scene.scene_seq,
-            "scene_goal": scene.scene_goal,
-            "trashed_at": scene.trashed_at,
-            "trashed_by": scene.trashed_by,
-            "chapter_trashed": chapter_trashed,
-            "restore_allowed": 0 if restore_block_reason else 1,
-            "restore_block_reason": restore_block_reason,
-            "purge_allowed": 0 if purge_block_reason else 1,
-            "purge_block_reason": purge_block_reason,
-        }
-
     def scene_purge_block_reason(self, scene: SceneCard) -> str | None:
         state = self.session.get(SceneRunState, scene.scene_id)
         if state is not None:
@@ -641,12 +606,6 @@ class AuthorLifecycleService:
     def _count_scenes(self, chapter_id: str, *, trashed_flag: int) -> int:
         return len(self._chapter_scenes(chapter_id, trashed_flag=trashed_flag))
 
-    def _next_active_scene_seq(self, chapter_id: str) -> int:
-        active_scenes = self._chapter_scenes(chapter_id, trashed_flag=0)
-        if not active_scenes:
-            return 1
-        return max(scene.scene_seq for scene in active_scenes) + 1
-
     def _make_room_for_restored_scene(self, restored: SceneCard) -> None:
         """Preserve the scene's original position, shifting active collisions right."""
 
@@ -713,30 +672,6 @@ class AuthorLifecycleService:
         if not chapter_scenes:
             return 1
         return max(scene.scene_seq for scene in chapter_scenes) + 1
-
-    def _last_active_scene(self, chapter_id: str) -> SceneCard | None:
-        active_scenes = self._chapter_scenes(chapter_id, trashed_flag=0)
-        if not active_scenes:
-            return None
-        return active_scenes[-1]
-
-    def _suggest_next_scene_id(self, chapter_id: str) -> str:
-        pattern = re.compile(rf"^{re.escape(chapter_id)}_SC(\d+)$")
-        used_suffixes: set[int] = set()
-        suffix_width = 2
-        for scene in self._chapter_scenes(chapter_id):
-            match = pattern.match(scene.scene_id)
-            if match is None:
-                continue
-            used_suffixes.add(int(match.group(1)))
-            suffix_width = max(suffix_width, len(match.group(1)))
-
-        next_suffix = 1
-        while next_suffix in used_suffixes:
-            next_suffix += 1
-
-        width = max(suffix_width, len(str(next_suffix)), 2)
-        return f"{chapter_id}_SC{next_suffix:0{width}d}"
 
     def _has_rows(self, statement) -> bool:
         return self.session.execute(statement.limit(1)).first() is not None

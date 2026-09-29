@@ -1698,15 +1698,6 @@ class SnowflakeChapteringService:
             "chaptered": bool(chapter_count) and not unassigned,
         }
 
-    def unassigned_scene_plans(self, project_id: str) -> list[SnowflakeScenePlan]:
-        """还没有分章的活跃场。物化前置闸门用它判断能不能整理。"""
-        valid_chapter_ids = {chapter.chapter_plan_id for chapter in self.chapter_plans(project_id)}
-        return [
-            plan
-            for plan in self.scene_plans(project_id)
-            if not plan.chapter_plan_id or plan.chapter_plan_id not in valid_chapter_ids
-        ]
-
 
 # ------------------------------------------------------------------ 节奏体检
 

@@ -546,68 +546,6 @@ class SnowflakeWorkspaceService:
             "restored_from": self._step_run_history_payload(source_run, include_draft=False),
         }
 
-    def import_discovery_steps(
-        self,
-        project_id: str,
-        step_drafts: dict[str, Any],
-        *,
-        actor_ref: str = "operator",
-    ) -> dict[str, Any]:
-        del actor_ref
-        project = self._require_snowflake_project(project_id)
-        allowed_order = [
-            "book_brief",
-            "one_sentence_summary",
-            "one_paragraph_summary",
-            "character_sheets",
-            "character_synopses",
-            "scene_list",
-            "scene_details",
-        ]
-        latest_by_step = self._latest_by_step(project.project_id)
-        imported_runs: list[SnowflakeStepRun] = []
-        for step_key in allowed_order:
-            raw_draft = step_drafts.get(step_key)
-            if not isinstance(raw_draft, dict):
-                continue
-            self._require_step(step_key)
-            latest = latest_by_step.get(step_key)
-            if step_key in {"character_sheets", "character_synopses", "character_bibles"}:
-                raw_draft = self._merge_character_import_draft(latest.draft_json if latest else {}, raw_draft)
-            draft = merge_step_draft(step_key, raw_draft, latest_by_step=latest_by_step)
-            if latest is not None and latest.status == "pending_review":
-                run = latest
-                run.draft_json = draft
-                run.input_refs_json = self._input_refs(step_key, latest_by_step)
-                run.health_json = self._step_health(step_key, draft, "pending_review", generation_source="author_discovery")
-                run.stale_reason = None
-                run.stale_accepted_at = None
-                run.stale_accepted_by = None
-                run.stale_accepted_note = None
-            else:
-                run = SnowflakeStepRun(
-                    step_run_id=f"snowflake_step_run_{project.project_id}_{step_key}_{uuid.uuid4().hex[:10]}",
-                    project_id=project.project_id,
-                    step_key=step_key,
-                    version=self._next_step_version(project.project_id, step_key),
-                    status="pending_review",
-                    draft_json=draft,
-                    health_json=self._step_health(step_key, draft, "pending_review", generation_source="author_discovery"),
-                    input_refs_json=self._input_refs(step_key, latest_by_step),
-                )
-                self.session.add(run)
-            self.session.flush()
-            self._sync_structured_step_data(project, step_key, draft, run)
-            latest_by_step[step_key] = run
-            imported_runs.append(run)
-        self.session.flush()
-        workspace = self.workspace(project.project_id)
-        return {
-            "imported_step_keys": [run.step_key for run in imported_runs],
-            "step_runs": [self._step_run_payload(run) for run in imported_runs],
-            "workspace": workspace,
-        }
-
     def approve_step(
         self,
         project_id: str,
@@ -3219,40 +3157,6 @@ class SnowflakeWorkspaceService:
         return payload
 
     @staticmethod
-    def _merge_character_import_draft(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
-        existing_characters = existing.get("characters") if isinstance(existing, dict) else None
-        incoming_characters = incoming.get("characters") if isinstance(incoming, dict) else None
-        if not isinstance(existing_characters, list) or not isinstance(incoming_characters, list):
-            return deepcopy(incoming)
-        existing_by_id: dict[str, dict[str, Any]] = {}
-        merged_characters: list[dict[str, Any]] = []
-        for item in existing_characters:
-            if not isinstance(item, dict):
-                continue
-            cloned = deepcopy(item)
-            identity = _character_identity(cloned)
-            if identity:
-                existing_by_id[identity] = cloned
-            merged_characters.append(cloned)
-        for item in incoming_characters:
-            if not isinstance(item, dict):
-                continue
-            identity = _character_identity(item)
-            if not identity or identity not in existing_by_id:
-                cloned = deepcopy(item)
-                merged_characters.append(cloned)
-                if identity:
-                    existing_by_id[identity] = cloned
-                continue
-            merged_item = _merge_preserving_existing(existing_by_id[identity], item)
-            existing_by_id[identity].clear()
-            existing_by_id[identity].update(merged_item)
-        return {
-            **deepcopy(incoming),
-            "characters": merged_characters,
-        }
-
-    @staticmethod
     def _step_from_workspace(workspace: dict[str, Any], step_key: str) -> dict[str, Any]:
         for step in workspace.get("steps") or []:
             if step.get("step_key") == step_key:
@@ -3475,36 +3379,6 @@ def _draft_summary(value: Any, *, limit: int = 180) -> str:
     visit(value)
     summary = " ".join(pieces)
     return summary[:limit].rstrip()
-
-
-def _character_identity(item: dict[str, Any]) -> str:
-    return str(item.get("character_id") or item.get("display_name") or item.get("name") or "").strip()
-
-
-def _has_meaningful_value(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set, dict)):
-        return bool(value)
-    return True
-
-
-def _merge_preserving_existing(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-    merged = deepcopy(existing)
-    for key, value in incoming.items():
-        if not _has_meaningful_value(value):
-            continue
-        current = merged.get(key)
-        if not _has_meaningful_value(current):
-            merged[key] = deepcopy(value)
-            continue
-        if isinstance(current, dict) and isinstance(value, dict):
-            merged[key] = _merge_preserving_existing(current, value)
-        elif isinstance(current, list) and isinstance(value, list):
-            merged[key] = current or deepcopy(value)
-    return merged
 
 
 _SCENE_PLAN_STATE_KEYS: frozenset[str] = frozenset(

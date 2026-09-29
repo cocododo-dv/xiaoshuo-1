@@ -194,24 +194,3 @@ class ProjectOverviewService:
                 status = "todo"
             board.append({"step_key": step["step_key"], "label": step["label"], "status": status})
         return board
-
-    def _last_manuscript(
-        self, project: StoryProject, *, chapter_views: list[dict[str, Any]]
-    ) -> dict[str, Any] | None:
-        approved_ids = list(project.approved_chapter_ids_json or [])
-        if not approved_ids:
-            return None
-        view_by_id = {view["chapter_id"]: view for view in chapter_views}
-        last_id = approved_ids[-1]
-        chapter = self.session.get(ChapterGoal, last_id)
-        view = view_by_id.get(last_id)
-        return {
-            "no": view["no"] if view else last_id,
-            "title": view["title"] if view else (_fallback_title(chapter) if chapter else last_id),
-            "at": chapter.updated_at if chapter else None,
-        }
-
-
-def _fallback_title(chapter: ChapterGoal) -> str:
-    text = str(chapter.chapter_goal or "").strip().splitlines()[0] if chapter.chapter_goal else ""
-    return text[:24] or chapter.chapter_id

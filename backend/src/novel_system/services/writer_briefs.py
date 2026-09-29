@@ -38,10 +38,6 @@ SCENE_WRITER_BRIEF_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
-def empty_chapter_writer_brief() -> dict[str, str]:
-    return {"schema_version": WRITER_BRIEF_SCHEMA_VERSION, **{key: "" for key, _label in CHAPTER_WRITER_BRIEF_FIELDS}}
-
-
 def empty_scene_writer_brief() -> dict[str, str]:
     return {"schema_version": WRITER_BRIEF_SCHEMA_VERSION, **{key: "" for key, _label in SCENE_WRITER_BRIEF_FIELDS}}
 

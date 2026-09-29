@@ -76,8 +76,6 @@ ARCHITECTURE_FIELDS = (
 )
 _ARCHITECTURE_LIST_FIELDS = {"escalation_path", "reveal_plan"}
 
-# 填空补丁允许触碰的场景字段（brief 键按 kind 另行校验）。
-_PATCH_SCENE_FIELDS = ("title", "pov_character_name", "exit_change", "hook")
 _PATCH_DRAMA_FIELDS = (
     "promise",
     "spine",

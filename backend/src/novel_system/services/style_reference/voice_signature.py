@@ -60,7 +60,6 @@ _Z_CLIP = 8.0
 
 # top_words 的组:8 个虚词组 + 句末助词 + 引导动词。
 TOP_WORD_GROUPS: tuple[str, ...] = (*FUNCTION_WORD_GROUPS, "sentence_final", "speech_verb")
-_SPEECH_VERB_LABELS = SPEECH_VERB_LABELS
 
 
 def load_voice_lexicon() -> KernelLexicon:

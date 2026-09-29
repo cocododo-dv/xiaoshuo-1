@@ -52,7 +52,6 @@ MODE_FROZEN = "frozen"
 MODE_FROZEN_LEGACY = "frozen_legacy"
 MODE_LIVE = "live"
 MODE_DEGRADED = "degraded"
-BOUND_MODES = frozenset({MODE_FROZEN, MODE_FROZEN_LEGACY, MODE_LIVE})
 # 2026-09-24（契约文档 §8.1 C7）：轻量现解析里，作者的绑定指向的画像不是 active（归档 / 草稿）——不是「没有绑定」，
 # 是「绑了、暂时用不了」：策略降级并带上画像 / 绑定 / 书的 id，抄袭门由此报 unavailable（不是 0 本书通过）
 PROFILE_NOT_ACTIVE_CODE = "STYLE_REFERENCE_PROFILE_NOT_ACTIVE"
@@ -384,7 +383,6 @@ register_cache_reset("style_policy", reset_style_policy_cache)
 
 
 __all__ = [
-    "BOUND_MODES",
     "MODE_ABSENT",
     "MODE_DEGRADED",
     "MODE_FROZEN",

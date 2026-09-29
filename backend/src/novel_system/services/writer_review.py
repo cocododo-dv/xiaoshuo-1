@@ -44,7 +44,6 @@ WRITER_RUBRIC_ID = "drama_effectiveness_v1"
 # 只是"修订候选不可用 + 原因"作为一条 blocker finding 持久化，GET 与 run 响应
 # 都从它派生 revision_blocker，作家刷新页面后原因不会丢。
 REVISION_BLOCKER_DIMENSION = "writer_revision_candidate"
-REVISION_PAYLOAD_INVALID_CODE = "WRITER_REVISION_PAYLOAD_INVALID"
 
 WRITER_RUBRIC_DIMENSIONS: tuple[str, ...] = (
     "desire",

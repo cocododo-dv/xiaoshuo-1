@@ -1705,41 +1705,6 @@ def _qc_issue_summaries(
     return items
 
 
-def _outline_points(outline_text: str, chapter_count: int) -> list[str]:
-    lines = [
-        re.sub(r"^[\s\-\*\d\.、）)]+", "", line).strip()
-        for line in str(outline_text or "").splitlines()
-        if line.strip()
-    ]
-    if not lines:
-        lines = [
-            part.strip()
-            for part in re.split(r"[。！？!?；;]\s*", str(outline_text or ""))
-            if part.strip()
-        ]
-    if not lines:
-        lines = ["围绕用户大纲推进核心冲突"]
-    while len(lines) < chapter_count:
-        lines.append(lines[-1])
-    return lines[:chapter_count]
-
-
-def _scene_role(scene_index: int, scene_count: int) -> str:
-    if scene_index == 1:
-        return "开场承压"
-    if scene_index == scene_count:
-        return "转折收束"
-    return "冲突升级"
-
-
-def _chapter_push(index: int, chapter_count: int, point: str) -> str:
-    if index == 1:
-        return f"建立主矛盾和行动入口：{point}"
-    if index == chapter_count:
-        return f"兑现核心承诺并留下长期余波：{point}"
-    return f"升级阻力并改变人物关系：{point}"
-
-
 def _optional_text(value: Any) -> str | None:
     text = str(value).strip() if value is not None else ""
     return text or None

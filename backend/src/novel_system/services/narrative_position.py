@@ -173,16 +173,6 @@ class NarrativePositionService:
             )
         )
 
-    def ordered_scenes(self, project_id: str) -> list[SceneCard]:
-        statement = self.scene_statement(project_id).order_by(
-            self.chapter_missing_expr().asc(),
-            self.chapter_order_expr().asc(),
-            ChapterGoal.chapter_id.asc(),
-            SceneCard.scene_seq.asc(),
-            SceneCard.scene_id.asc(),
-        )
-        return list(self.session.execute(statement).scalars().all())
-
     def scenes_before(self, project_id: str, scene_id: str) -> list[SceneCard]:
         cursor = self.cursor_for_scene(project_id, scene_id)
         statement = self.before(self.scene_statement(project_id), cursor)
@@ -194,24 +184,3 @@ class NarrativePositionService:
             SceneCard.scene_id.asc(),
         )
         return list(self.session.execute(statement).scalars().all())
-
-    def scene_ordinal(self, project_id: str, scene_id: str) -> int:
-        ordered = self.ordered_scenes(project_id)
-        for index, scene in enumerate(ordered, start=1):
-            if scene.scene_id == scene_id:
-                return index
-        raise DomainError(
-            "NARRATIVE_CURSOR_SCENE_NOT_FOUND",
-            f"active scene '{scene_id}' was not found in project '{project_id}'",
-            status_code=404,
-        )
-
-    def distance_between_scenes(
-        self,
-        project_id: str,
-        earlier_scene_id: str,
-        later_scene_id: str,
-    ) -> int:
-        return self.scene_ordinal(project_id, later_scene_id) - self.scene_ordinal(
-            project_id, earlier_scene_id
-        )

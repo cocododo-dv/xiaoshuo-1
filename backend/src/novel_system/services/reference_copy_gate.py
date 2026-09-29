@@ -62,7 +62,6 @@ COPY_GATE_VERSION = "reference_copy_gate_v1"
 THRESHOLD_CHARS = 12
 MAX_REPORTED_HITS = 20
 MAX_WARNING_TERMS = 8
-BLOCK_ISSUE_KEY = "reference_copy"
 ENV_TERM_SOURCE = "environment"
 # 成稿门的两条不拦警告（issue_key）：用了受保护专名 / 有一边没查成（书已删、策略降级）
 PROTECTED_TERM_WARNING_KEY = "source_safety:protected_term"
@@ -623,7 +622,6 @@ register_cache_reset("reference_copy_gate", reset_reference_copy_gate_cache)
 
 
 __all__ = [
-    "BLOCK_ISSUE_KEY",
     "COPY_GATE_VERSION",
     "CopyCheck",
     "CopyHit",

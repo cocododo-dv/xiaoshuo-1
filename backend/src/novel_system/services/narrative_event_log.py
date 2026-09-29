@@ -107,8 +107,8 @@ class ConsistencyViolation:
     actual: str
     entity_id: str
     evidence: str
-    # §15: "keyword" = high-confidence deterministic match (blocking);
-    # "llm_flag" = advisory LLM flag for human spot-check (never auto-blocks).
+    # §15: "keyword" = high-confidence deterministic match (blocking) — the only producer
+    # since the advisory LLM flag layer (check_consistency_llm) was removed.
     source: str = "keyword"
 
 
@@ -117,11 +117,6 @@ class ConsistencyReport:
     passed: bool
     violations: list[ConsistencyViolation] = field(default_factory=list)
     facts_checked: int = 0
-
-    @property
-    def blocking_violations(self) -> list[ConsistencyViolation]:
-        """Only deterministic (keyword) violations gate generation; LLM flags advise."""
-        return [v for v in self.violations if v.source == "keyword"]
 
 
 class NarrativeEventLog:
@@ -379,40 +374,6 @@ class NarrativeEventLog:
             )
         return state
 
-    def project_location_state(
-        self,
-        location_id: str,
-        project_id: str,
-        *,
-        up_to_scene_seq: int | None = None,
-        up_to_scene_id: str | None = None,
-        before_scene_id: str | None = None,
-    ) -> EntityState:
-        """Replay location events to reconstruct location state."""
-        return self.project_entity_state(
-            "location", location_id, project_id,
-            up_to_scene_seq=up_to_scene_seq,
-            up_to_scene_id=up_to_scene_id,
-            before_scene_id=before_scene_id,
-        )
-
-    def project_item_state(
-        self,
-        item_id: str,
-        project_id: str,
-        *,
-        up_to_scene_seq: int | None = None,
-        up_to_scene_id: str | None = None,
-        before_scene_id: str | None = None,
-    ) -> EntityState:
-        """Replay item events to reconstruct item state."""
-        return self.project_entity_state(
-            "item", item_id, project_id,
-            up_to_scene_seq=up_to_scene_seq,
-            up_to_scene_id=up_to_scene_id,
-            before_scene_id=before_scene_id,
-        )
-
     def known_facts_for_character(
         self,
         character_id: str,
@@ -488,50 +449,6 @@ class NarrativeEventLog:
             )
         return states
 
-    def all_entities_at_scene(
-        self,
-        project_id: str,
-        scene_seq: int | None = None,
-        *,
-        scene_id: str | None = None,
-    ) -> dict[str, dict[str, EntityState]]:
-        """Project all entity states at a given scene.
-
-        Returns {entity_type: {entity_id: EntityState}} for every entity type.
-        """
-        query = self._event_statement(
-            project_id,
-            up_to_scene_id=scene_id,
-            up_to_scene_seq=scene_seq if scene_id is None else None,
-        )
-        events = self.session.execute(query).scalars().all()
-
-        by_type: dict[str, dict[str, EntityState]] = {}
-        for evt in events:
-            type_bucket = by_type.setdefault(evt.entity_type, {})
-            state = type_bucket.setdefault(
-                evt.entity_id,
-                EntityState(entity_type=evt.entity_type, entity_id=evt.entity_id),
-            )
-            existing = state.facts.get(evt.fact_key)
-            if (
-                existing is not None
-                and existing.scene_id == evt.scene_id
-                and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
-            ):
-                continue  # 同场景内 advisory 不得反超高置信 spec 事实
-            state.facts[evt.fact_key] = ProjectedFact(
-                entity_type=evt.entity_type,
-                entity_id=evt.entity_id,
-                fact_key=evt.fact_key,
-                fact_value=evt.fact_value,
-                scene_id=evt.scene_id,
-                scene_seq=evt.scene_seq,
-                event_id=evt.event_id,
-                confidence=evt.confidence,
-            )
-        return by_type
-
     def check_consistency(
         self,
         generated_text: str,
@@ -591,87 +508,6 @@ class NarrativeEventLog:
             passed=len(violations) == 0,
             violations=violations,
             facts_checked=facts_checked,
-        )
-
-    def check_consistency_llm(
-        self,
-        generated_text: str,
-        project_id: str,
-        scene_id: str,
-        *,
-        character_ids: list[str] | None = None,
-        llm_runner: Any | None = None,
-        llm_context: LLMCallContext | None = None,
-    ) -> ConsistencyReport:
-        """§15 honest-boundary hybrid check: keyword pass + ONE advisory LLM flag pass.
-
-        Blueprint §15 is explicit that "校验是用不可靠验证不可靠" — a structural circular
-        dependency. So this stays deliberately conservative:
-        - The keyword pass (check_consistency) remains the authoritative, blocking layer.
-        - The LLM pass runs at most ONE call, ONLY over already-projected hard facts, and
-          its findings are marked source="llm_flag" → advisory (human spot-check), never
-          auto-blocking. This is the "+ 人工抽检兜底" half of §15 made cheaper.
-        - When no llm_runner is supplied, this degrades to the pure keyword result.
-
-        Catches cases the deterministic keyword scan cannot — e.g. an *implied*
-        two-handed action ("拉紧两侧的缰绳") when an arm is missing — without letting a
-        hallucinating extractor gate generation. (Literal misuse such as "双手握剑"
-        or "抬起右手握刀" is now caught deterministically by the keyword layer.)
-        """
-        base = self.check_consistency(
-            generated_text, project_id, scene_id, character_ids=character_ids,
-        )
-        if llm_runner is None:
-            return base
-        if llm_context is None:
-            raise LLMAccountingRejected(
-                "LLM_ACCOUNTING_CONTEXT_REQUIRED",
-                "narrative consistency LLM execution requires explicit accounting context",
-            )
-
-        self.positions.cursor_for_scene(project_id, scene_id)
-        chars = character_ids or self._characters_in_project(project_id)
-        fact_lines: list[str] = []
-        for char_id in chars:
-            state = self.project_character_state(
-                char_id, project_id, before_scene_id=scene_id,
-            )
-            for fact_key, projected in state.facts.items():
-                if fact_key in _CHECKABLE_FACT_KEYS:
-                    fact_lines.append(f"- {char_id}.{fact_key} = {projected.fact_value}")
-        if not fact_lines:
-            return base
-
-        facts_block = "\n".join(fact_lines)
-        task_prompt = _LLM_CONSISTENCY_TASK_TEMPLATE.format(
-            facts_block=facts_block, text=generated_text,
-        )
-        try:
-            response = llm_runner.run_task(
-                task_name="consistency_extract",
-                prompt_text=task_prompt,
-                system_prompt=_LLM_CONSISTENCY_SYSTEM_PROMPT,
-                context=llm_context,
-            )
-        except Exception:
-            return base  # LLM failure must never break the conservative path
-
-        llm_violations = _parse_llm_consistency_response(response)
-        if not llm_violations:
-            return base
-
-        # Merge advisory flags, deduped against keyword hits by (entity, fact_key).
-        seen = {(v.entity_id, v.fact_key) for v in base.violations}
-        merged = list(base.violations)
-        for v in llm_violations:
-            if (v.entity_id, v.fact_key) not in seen:
-                merged.append(v)
-                seen.add((v.entity_id, v.fact_key))
-        return ConsistencyReport(
-            # passed reflects only blocking (keyword) violations; LLM flags are advisory.
-            passed=len([m for m in merged if m.source == "keyword"]) == 0,
-            violations=merged,
-            facts_checked=base.facts_checked,
         )
 
     def format_state_for_prompt(
@@ -840,172 +676,8 @@ class NarrativeEventLog:
         return "\n".join(lines) if len(lines) > 1 else ""
 
     # ------------------------------------------------------------------
-    # Causal chain queries (blueprint §2: 因果链追踪)
-    # ------------------------------------------------------------------
-
-    def trace_causal_chain(
-        self,
-        event_id: str,
-        *,
-        max_depth: int = 20,
-    ) -> list[NarrativeEvent]:
-        """Walk causal_predecessor_id links backward from *event_id*.
-
-        Returns the chain in chronological order (oldest ancestor first,
-        the starting event last).  Stops when max_depth is reached or the
-        predecessor link is ``None``.
-        """
-        chain: list[NarrativeEvent] = []
-        current_id: str | None = event_id
-        visited: set[str] = set()
-
-        while current_id is not None and len(chain) < max_depth:
-            if current_id in visited:
-                break  # cycle guard
-            visited.add(current_id)
-            evt = self.session.get(NarrativeEvent, current_id)
-            if evt is None:
-                break
-            chain.append(evt)
-            current_id = evt.causal_predecessor_id
-
-        chain.reverse()  # oldest ancestor first
-        return chain
-
-    def downstream_events(self, event_id: str) -> list[NarrativeEvent]:
-        """Return immediate children — events whose causal_predecessor_id == *event_id*."""
-        parent = self.session.get(NarrativeEvent, event_id)
-        if parent is None:
-            return []
-        query = self._event_statement(parent.project_id).where(
-            NarrativeEvent.causal_predecessor_id == event_id
-        )
-        return list(self.session.execute(query).scalars().all())
-
-    def find_unfulfilled_obligations(
-        self,
-        project_id: str,
-        *,
-        up_to_scene_seq: int | None = None,
-        up_to_scene_id: str | None = None,
-        before_scene_id: str | None = None,
-    ) -> list[dict[str, str]]:
-        """Identify foreshadow obligations that have not yet been resolved.
-
-        Scans events with non-empty ``obligation_ids`` and checks whether a
-        corresponding ``foreshadow_resolve`` event exists for each obligation.
-
-        Returns a list of dicts::
-
-            {"event_id", "scene_id", "obligation_id", "status"}
-
-        where *status* is ``"fulfilled"`` or ``"unfulfilled"``.
-        """
-        # 1. Collect all events that carry obligations
-        plant_query = self._event_statement(
-            project_id,
-            before_scene_id=before_scene_id,
-            up_to_scene_id=up_to_scene_id,
-            up_to_scene_seq=up_to_scene_seq,
-        ).where(NarrativeEvent.obligation_ids.isnot(None))
-        plant_events = self.session.execute(plant_query).scalars().all()
-
-        # 2. Collect all foreshadow_resolve events in the project
-        resolve_query = self._event_statement(
-            project_id,
-            before_scene_id=before_scene_id,
-            up_to_scene_id=up_to_scene_id,
-            up_to_scene_seq=up_to_scene_seq,
-        ).where(NarrativeEvent.event_type == "foreshadow_resolve")
-        resolve_events = self.session.execute(resolve_query).scalars().all()
-
-        # Build a set of resolved obligation IDs.
-        resolved_ids: set[str] = set()
-        for rev in resolve_events:
-            resolved_ids.add(rev.entity_id)
-            for oid in (rev.obligation_ids or []):
-                resolved_ids.add(oid)
-
-        # 3. Match
-        results: list[dict[str, str]] = []
-        for evt in plant_events:
-            for oid in (evt.obligation_ids or []):
-                status = "fulfilled" if oid in resolved_ids else "unfulfilled"
-                results.append({
-                    "event_id": evt.event_id,
-                    "scene_id": evt.scene_id,
-                    "obligation_id": oid,
-                    "status": status,
-                })
-        return results
-
-    def format_causal_context_for_prompt(
-        self,
-        project_id: str,
-        scene_id: str,
-        *,
-        onstage_character_ids: list[str] | None = None,
-    ) -> str:
-        """Format a compact "Causal Context" prompt section.
-
-        Includes:
-        * recent causal chain entries relevant to onstage characters
-        * unfulfilled foreshadow obligations
-
-        Kept to ~20 lines to stay within prompt budget.
-        """
-        self.positions.cursor_for_scene(project_id, scene_id)
-        lines: list[str] = ["## Causal Context"]
-
-        # --- Recent causal events for onstage characters ---
-        char_ids = onstage_character_ids or self._characters_in_project(project_id)
-        if char_ids:
-            recent_query = (
-                self._event_statement(
-                    project_id,
-                    before_scene_id=scene_id,
-                    descending=True,
-                )
-                .where(
-                    NarrativeEvent.entity_id.in_(char_ids),
-                    NarrativeEvent.causal_predecessor_id.isnot(None),
-                )
-                .limit(8)
-            )
-            recent = list(self.session.execute(recent_query).scalars().all())
-            recent.reverse()  # chronological
-
-            if recent:
-                lines.append("")
-                lines.append("### Recent causal events")
-                for evt in recent:
-                    lines.append(
-                        f"- [{evt.entity_id}] {evt.event_type}: "
-                        f"{evt.fact_key}={evt.fact_value} (scene {evt.scene_id})"
-                    )
-
-        # --- Unfulfilled obligations ---
-        obligations = self.find_unfulfilled_obligations(
-            project_id, before_scene_id=scene_id,
-        )
-        unfulfilled = [o for o in obligations if o["status"] == "unfulfilled"]
-        if unfulfilled:
-            lines.append("")
-            lines.append("### Unfulfilled foreshadow obligations")
-            for ob in unfulfilled[:6]:  # cap to stay compact
-                lines.append(f"- obligation {ob['obligation_id']} (planted in scene {ob['scene_id']})")
-
-        return "\n".join(lines) if len(lines) > 1 else ""
-
-    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    def _scene_seq(self, scene_id: str) -> int:
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is not None:
-            return scene.scene_seq or 0
-        return 0
 
     def _characters_in_project(self, project_id: str) -> list[str]:
         return self._entities_of_type_in_project(project_id, "character")
@@ -1065,63 +737,6 @@ _CHECKABLE_FACT_KEYS = {
     "ability",
 }
 
-# §15 hybrid consistency — advisory LLM flag layer. Strict prompt: only report
-# CONTRADICTIONS of the given hard facts, never invent new facts, never judge style.
-_LLM_CONSISTENCY_SYSTEM_PROMPT = (
-    "你是连续性校验器。只做一件事：判断给定散文是否与【已确立的硬事实】矛盾。"
-    "硬事实指角色生死、位置、身体状态（如断肢）、持有物、外貌、能力。"
-    "规则：(1) 只报矛盾，不报风格问题；(2) 绝不臆造事实清单之外的内容；"
-    "(3) 不确定时不报；(4) 严格输出 JSON，无任何额外文字。"
-    'JSON 格式：{"violations": [{"entity": "角色名", "fact_key": "字段", '
-    '"expected": "事实值", "actual": "文中矛盾表现", "evidence": "原文片段"}]}'
-)
-
-_LLM_CONSISTENCY_TASK_TEMPLATE = (
-    "【已确立的硬事实】\n{facts_block}\n\n"
-    "【待校验散文】\n{text}\n\n"
-    "请仅输出矛盾项的 JSON。若无矛盾，输出 {{\"violations\": []}}。"
-)
-
-
-def _parse_llm_consistency_response(response: Any) -> list[ConsistencyViolation]:
-    """Parse the advisory LLM consistency response into source='llm_flag' violations."""
-    import json as _json
-
-    if response is None:
-        return []
-    raw = response
-    if not isinstance(raw, str):
-        raw = getattr(response, "text", None) or getattr(response, "content", None) or ""
-    raw = (raw or "").strip()
-    if not raw:
-        return []
-    # Tolerate ```json fences and surrounding prose.
-    if "```" in raw:
-        raw = raw.replace("```json", "```").split("```")[1] if raw.count("```") >= 2 else raw
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        return []
-    try:
-        parsed = _json.loads(raw[start:end + 1])
-    except (ValueError, TypeError):
-        return []
-    out: list[ConsistencyViolation] = []
-    for item in parsed.get("violations") or []:
-        if not isinstance(item, dict):
-            continue
-        entity = str(item.get("entity") or "").strip()
-        fact_key = str(item.get("fact_key") or "").strip()
-        if not entity or not fact_key:
-            continue
-        out.append(ConsistencyViolation(
-            fact_key=fact_key,
-            expected=str(item.get("expected") or ""),
-            actual=str(item.get("actual") or ""),
-            entity_id=entity,
-            evidence=str(item.get("evidence") or "")[:200],
-            source="llm_flag",
-        ))
-    return out
 
 # ---------------------------------------------------------------------------
 # Hard-fact contradiction detection (blueprint §13 Step 6 / §17 Action B)
@@ -1576,60 +1191,3 @@ def _check_fact_against_text(
                     )
 
     return None
-
-
-def check_spec_constraints(
-    generated_text: str,
-    spec: dict[str, Any],
-) -> list[ConsistencyViolation]:
-    """Blueprint §13 Step 6: check generated text against scene spec hard constraints.
-
-    Validates that mandatory spec elements (must_include_text, onstage characters,
-    POV character presence, exit_change) are reflected in the generated prose.
-    This is a spec-level check complementary to the event-log fact check.
-    """
-    violations: list[ConsistencyViolation] = []
-    text_lower = generated_text.lower()
-
-    # must_include_text — hard constraint from scene card
-    must_include = spec.get("must_include_text") or ""
-    if must_include and len(must_include) > 3:
-        # Check each clause (split by semicolons or newlines)
-        clauses = [c.strip() for c in must_include.replace("\n", ";").split(";") if c.strip()]
-        for clause in clauses[:5]:  # cap to avoid noise
-            if len(clause) > 5 and clause.lower() not in text_lower:
-                violations.append(ConsistencyViolation(
-                    fact_key="must_include_text",
-                    expected=clause[:100],
-                    actual="not found in generated text",
-                    entity_id="scene_spec",
-                    evidence=f"spec requires: {clause[:60]}",
-                ))
-
-    # POV character should appear in text
-    pov = spec.get("pov_character_id") or ""
-    if pov and len(pov) > 1 and pov.lower() not in text_lower:
-        violations.append(ConsistencyViolation(
-            fact_key="pov_character_presence",
-            expected=f"POV character '{pov}' should appear",
-            actual="POV character name not found in text",
-            entity_id=pov,
-            evidence="character name absent from prose",
-        ))
-
-    # cost_requirement — if specified, some cost signal should exist in text
-    cost = spec.get("cost_requirement") or ""
-    if cost and len(cost) > 10:
-        # Extract key nouns from cost description for soft matching
-        cost_keywords = [w for w in cost.lower().split() if len(w) > 2][:5]
-        found_any = any(kw in text_lower for kw in cost_keywords)
-        if not found_any and len(cost_keywords) >= 2:
-            violations.append(ConsistencyViolation(
-                fact_key="cost_requirement",
-                expected=f"cost: {cost[:100]}",
-                actual="no cost-related content detected in text",
-                entity_id="scene_spec",
-                evidence=f"keywords checked: {', '.join(cost_keywords[:3])}",
-            ))
-
-    return violations

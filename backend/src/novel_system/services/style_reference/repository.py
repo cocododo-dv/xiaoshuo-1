@@ -79,9 +79,6 @@ class StyleReferenceRepository:
         self.session.flush()
         return row
 
-    def get_paragraph(self, paragraph_id: str) -> StyleReferenceParagraph | None:
-        return self.session.get(StyleReferenceParagraph, paragraph_id)
-
     def list_paragraphs(
         self,
         book_id: str,
@@ -96,12 +93,6 @@ class StyleReferenceRepository:
         if paragraph_type is not None:
             stmt = stmt.where(StyleReferenceParagraph.paragraph_type == paragraph_type)
         return list(self.session.scalars(stmt).all())
-
-    def delete_paragraphs_for_book(self, book_id: str) -> int:
-        result = self.session.execute(
-            delete(StyleReferenceParagraph).where(StyleReferenceParagraph.book_id == book_id)
-        )
-        return int(result.rowcount or 0)
 
     # ----------------------------------------------------------------- runs
     def create_run(self, **kwargs: Any) -> StyleReferenceRun:
@@ -127,15 +118,6 @@ class StyleReferenceRepository:
         stmt = stmt.order_by(StyleReferenceRun.created_at, StyleReferenceRun.run_id)
         return list(self.session.scalars(stmt).all())
 
-    def update_run(self, run_id: str, **updates: Any) -> StyleReferenceRun | None:
-        run = self.get_run(run_id)
-        if run is None:
-            return None
-        for key, value in updates.items():
-            setattr(run, key, value)
-        self.session.flush()
-        return run
-
     # ----------------------------------------------------------- extractions
     def create_extraction(self, **kwargs: Any) -> StyleReferenceExtraction:
         row = StyleReferenceExtraction(**kwargs)
@@ -143,34 +125,12 @@ class StyleReferenceRepository:
         self.session.flush()
         return row
 
-    def list_extractions(
-        self,
-        *,
-        book_id: str | None = None,
-        run_id: str | None = None,
-        layer: str | None = None,
-        sub_dimension: str | None = None,
-    ) -> list[StyleReferenceExtraction]:
-        stmt = select(StyleReferenceExtraction)
-        if book_id is not None:
-            stmt = stmt.where(StyleReferenceExtraction.book_id == book_id)
-        if run_id is not None:
-            stmt = stmt.where(StyleReferenceExtraction.run_id == run_id)
-        if layer is not None:
-            stmt = stmt.where(StyleReferenceExtraction.layer == layer)
-        if sub_dimension is not None:
-            stmt = stmt.where(StyleReferenceExtraction.sub_dimension == sub_dimension)
-        return list(self.session.scalars(stmt).all())
-
     # --------------------------------------------------------------- quotes
     def create_quote(self, **kwargs: Any) -> StyleReferenceQuote:
         row = StyleReferenceQuote(**kwargs)
         self.session.add(row)
         self.session.flush()
         return row
-
-    def get_quote(self, quote_id: str) -> StyleReferenceQuote | None:
-        return self.session.get(StyleReferenceQuote, quote_id)
 
     def list_quotes(self, book_id: str) -> list[StyleReferenceQuote]:
         stmt = (
@@ -249,15 +209,6 @@ class StyleReferenceRepository:
             stmt = stmt.where(StyleReferenceFinding.status == status)
         stmt = stmt.order_by(StyleReferenceFinding.created_at, StyleReferenceFinding.finding_id)
         return list(self.session.scalars(stmt).all())
-
-    def update_finding(self, finding_id: str, **updates: Any) -> StyleReferenceFinding | None:
-        row = self.get_finding(finding_id)
-        if row is None:
-            return None
-        for key, value in updates.items():
-            setattr(row, key, value)
-        self.session.flush()
-        return row
 
     # ------------------------------------------------------------- profiles
     def create_profile(self, **kwargs: Any) -> StyleReferenceProfile:
@@ -358,25 +309,6 @@ class StyleReferenceRepository:
             StyleReferenceBannedTerm.scope == scope,
         )
         return self.session.scalars(stmt).first()
-
-    def list_banned_terms_for_book(
-        self,
-        book_id: str,
-        *,
-        scope: str | None = None,
-    ) -> list[StyleReferenceBannedTerm]:
-        """一本书全部 profile 的禁用词并集(extraction 域抽取过滤用)。"""
-        stmt = (
-            select(StyleReferenceBannedTerm)
-            .join(
-                StyleReferenceProfile,
-                StyleReferenceBannedTerm.profile_id == StyleReferenceProfile.profile_id,
-            )
-            .where(StyleReferenceProfile.book_id == book_id)
-        )
-        if scope is not None:
-            stmt = stmt.where(StyleReferenceBannedTerm.scope == scope)
-        return list(self.session.scalars(stmt).all())
 
     def delete_banned_term(self, term_id: str) -> int:
         result = self.session.execute(

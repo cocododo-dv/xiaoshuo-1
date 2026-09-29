@@ -40,7 +40,6 @@ from novel_system.services.scene_budget import (
     FALLBACK_INPUT_TOKENS,
     FALLBACK_OUTPUT_TOKENS,
     can_spend,
-    ensure_budget,
     ensure_scene_budget_initialized,
     estimate_baseline_tokens,
 )
@@ -301,105 +300,12 @@ def test_existing_budget_is_not_overwritten(session) -> None:
         }
 
 
-def test_legacy_budget_basis_is_completed_once_with_current_provider_config(session) -> None:
+# ---------- can_spend 纯函数 ----------
+
+def test_can_spend_semantics(session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 12345
-    state.provider_attempt_budget = 7
-    state.scene_budget_basis_json = None
-
-    ensure_budget(state, 100, provider_attempt_budget=23)
-
-    assert state.scene_token_budget == 12345
-    assert state.provider_attempt_budget == 23
-    assert state.scene_budget_basis_json == {
-        "basis_type": "legacy_existing_scene_token_budget",
-        "scene_token_budget": 12345,
-        "token_budget_basis": {
-            "reconstructable": False,
-            "reason": "legacy_scene_token_budget_without_basis",
-        },
-        "provider_attempt_budget": {
-            "config_key": "retry_budget.provider_attempt_budget",
-            "value": 23,
-        },
-        "attempt_budget": {
-            "source": "scene_run_states.initial",
-            "value": 4,
-        },
-    }
-    completed_basis = dict(state.scene_budget_basis_json)
-
-    ensure_budget(state, 999, provider_attempt_budget=99)
-
-    assert state.scene_token_budget == 12345
-    assert state.provider_attempt_budget == 23
-    assert state.scene_budget_basis_json == completed_basis
-
-
-def test_nonempty_budget_basis_restores_missing_token_budget_without_other_mutation(session) -> None:
-    _seed_scene(session)
-    state = session.get(SceneRunState, SCENE_ID)
-    existing_basis = {
-        "basis_type": "externally_managed",
-        "scene_token_budget": 777,
-        "opaque": {"value": 1},
-    }
-    state.scene_token_budget = None
-    state.provider_attempt_budget = 7
-    state.scene_budget_basis_json = existing_basis
-
-    ensure_budget(state, 100, provider_attempt_budget=23)
-
-    assert state.scene_token_budget == 777
-    assert state.provider_attempt_budget == 7
-    assert state.scene_budget_basis_json == existing_basis
-
-
-def test_nonempty_budget_basis_without_recoverable_token_budget_fails_closed(session) -> None:
-    _seed_scene(session)
-    state = session.get(SceneRunState, SCENE_ID)
-    existing_basis = {"basis_type": "externally_managed", "opaque": {"value": 1}}
-    state.scene_token_budget = None
-    state.provider_attempt_budget = 7
-    state.scene_budget_basis_json = existing_basis
-
-    with pytest.raises(ValueError, match="immutable scene budget basis has no positive token budget"):
-        ensure_budget(state, 100, provider_attempt_budget=23)
-
-    assert state.scene_token_budget is None
-    assert state.provider_attempt_budget == 7
-    assert state.scene_budget_basis_json == existing_basis
-
-
-# ---------- can_spend / ensure_budget 纯函数 ----------
-
-def test_can_spend_and_ensure_budget_semantics(session) -> None:
-    _seed_scene(session)
-    state = session.get(SceneRunState, SCENE_ID)
-
-    assert "provider_attempt_budget" in inspect.signature(ensure_budget).parameters
-    ensure_budget(state, 100, provider_attempt_budget=23)
-    assert state.scene_token_budget == 500
-    assert state.provider_attempt_budget == 23
-    assert state.scene_budget_basis_json == {
-        "baseline_tokens": 100,
-        "budget_multiplier": 5,
-        "scene_token_budget": 500,
-        "provider_attempt_budget": {
-            "config_key": "retry_budget.provider_attempt_budget",
-            "value": 23,
-        },
-        "attempt_budget": {
-            "source": "scene_run_states.initial",
-            "value": 4,
-        },
-    }
-    first_basis = dict(state.scene_budget_basis_json)
-    ensure_budget(state, 999, provider_attempt_budget=99)  # 已设不覆盖
-    assert state.scene_token_budget == 500
-    assert state.provider_attempt_budget == 23
-    assert state.scene_budget_basis_json == first_basis
+    state.scene_token_budget = 500
 
     state.scene_tokens_used = 0
     assert can_spend(state, 500) is True
@@ -469,7 +375,6 @@ def test_orchestrator_budget_checkpoint_uses_only_public_canonical_initializer()
     source = inspect.getsource(Orchestrator._run_scene_pipeline)
 
     assert "ensure_scene_budget_initialized(" in source
-    assert "ensure_budget(" not in source
 
 
 def test_independent_scene_nodes_share_one_immutable_public_budget_basis(session) -> None:

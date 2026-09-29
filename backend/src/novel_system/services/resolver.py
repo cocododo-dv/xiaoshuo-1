@@ -15,14 +15,6 @@ from novel_system.db.models import (
 
 
 class Resolver:
-    @staticmethod
-    def _scoped_clause(model_cls, scene: SceneCard):
-        return or_(
-            model_cls.scope == "global",
-            and_(model_cls.scope == "chapter", model_cls.scope_ref_id == scene.chapter_id),
-            and_(model_cls.scope == "scene", model_cls.scope_ref_id == scene.scene_id),
-        )
-
     def resolve_relation_profile_id(self, scene: SceneCard) -> str | None:
         if scene.resolved_relation_id:
             return scene.resolved_relation_id

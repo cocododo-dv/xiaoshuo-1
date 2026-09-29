@@ -24,10 +24,7 @@ from novel_system.db.models import (
     SceneCard,
     StoryProject,
 )
-from novel_system.services.narrative_event_log import (
-    NarrativeEventLog,
-    check_spec_constraints,
-)
+from novel_system.services.narrative_event_log import NarrativeEventLog
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -290,62 +287,6 @@ CLEAN_PASSAGES: list[BuggyPassage] = [
 
 
 # ---------------------------------------------------------------------------
-# Spec-constraint test cases
-# ---------------------------------------------------------------------------
-@dataclass
-class SpecTestCase:
-    label: str
-    text: str
-    spec: dict
-    expected_violation_count: int
-    description: str
-
-
-SPEC_CASES: list[SpecTestCase] = [
-    SpecTestCase(
-        label="SPEC-1:必含文本缺失",
-        text="林远独自站在城墙上,望着远方的原野。北风呼啸,雪花纷飞。",
-        spec={
-            "must_include_text": "低头看着断臂的伤口;月光洒在他的肩头",
-            "pov_character_id": "林远",
-        },
-        expected_violation_count=2,  # both clauses missing
-        description="必含文本的两个分句都不在正文中",
-    ),
-    SpecTestCase(
-        label="SPEC-2:POV角色缺失",
-        text="沧澜城的清晨,街道上行人稀少。远处传来钟声,回荡在空旷的广场上。",
-        spec={
-            "pov_character_id": "林远",
-        },
-        expected_violation_count=1,  # POV character not in text
-        description="林远是 POV 角色但正文中完全没出现他的名字",
-    ),
-    SpecTestCase(
-        label="SPEC-3:代价要素缺失",
-        text="他走过长廊,推开了门,里面空无一人。",
-        spec={
-            "pov_character_id": "他",
-            "cost_requirement": "必须展现 牺牲 代价 和 痛苦 的抉择",
-        },
-        expected_violation_count=1,  # cost keywords absent
-        description="spec 要求展现代价/牺牲,但正文无相关内容",
-    ),
-    SpecTestCase(
-        label="SPEC-CLEAN:全部满足",
-        text="林远低头看着断臂的伤口,月光洒在他的肩头,阵阵刺痛让他想起那场牺牲的代价。",
-        spec={
-            "must_include_text": "低头看着断臂的伤口;月光洒在他的肩头",
-            "pov_character_id": "林远",
-            "cost_requirement": "必须展现 牺牲 代价",
-        },
-        expected_violation_count=0,
-        description="正文完全满足 spec 约束,不应报警",
-    ),
-]
-
-
-# ---------------------------------------------------------------------------
 # Metric helpers
 # ---------------------------------------------------------------------------
 
@@ -533,72 +474,6 @@ class TestConsistencyValidation:
             f"False positive on {passage.label}: "
             f"{[(v.fact_key, v.expected, v.actual) for v in report.violations]}"
         )
-
-    # -- spec-constraint tests --
-
-    @pytest.mark.parametrize(
-        "idx",
-        range(len(SPEC_CASES)),
-        ids=[c.label for c in SPEC_CASES],
-    )
-    def test_spec_constraints(self, session, idx: int) -> None:
-        """check_spec_constraints should flag missing spec elements."""
-        # session fixture needed only so isolated_database runs (table creation)
-        case = SPEC_CASES[idx]
-        violations = check_spec_constraints(case.text, case.spec)
-        assert len(violations) == case.expected_violation_count, (
-            f"{case.label}: expected {case.expected_violation_count} violations, "
-            f"got {len(violations)}: "
-            f"{[(v.fact_key, v.expected, v.actual) for v in violations]}\n"
-            f"  description: {case.description}"
-        )
-
-    # -- spec-constraint aggregate metrics --
-
-    def test_spec_constraints_aggregate(self, session) -> None:
-        """Aggregate recall/precision/F1 over spec test cases."""
-        total_expected = 0
-        true_positives = 0
-        false_positives = 0
-
-        results: list[str] = []
-
-        for case in SPEC_CASES:
-            violations = check_spec_constraints(case.text, case.spec)
-            detected = len(violations)
-
-            if case.expected_violation_count > 0:
-                caught = min(detected, case.expected_violation_count)
-                true_positives += caught
-                total_expected += case.expected_violation_count
-                false_positives += max(0, detected - case.expected_violation_count)
-                status = "CAUGHT" if caught >= case.expected_violation_count else "PARTIAL"
-            else:
-                false_positives += detected
-                status = "CLEAN-OK" if detected == 0 else "FALSE-ALARM"
-
-            results.append(f"  [{status}] {case.label}: {detected}/{case.expected_violation_count}")
-
-        false_negatives = total_expected - true_positives
-        recall = _safe_div(true_positives, true_positives + false_negatives)
-        precision = _safe_div(true_positives, true_positives + false_positives)
-        f1 = _f1(precision, recall)
-
-        summary = (
-            "\n" + "=" * 72 + "\n"
-            "  Spec-Constraint Validation Report\n"
-            "=" * 72 + "\n"
-            + "\n".join(results) + "\n"
-            + "-" * 72 + "\n"
-            f"  Recall:    {recall:.2%}\n"
-            f"  Precision: {precision:.2%}\n"
-            f"  F1 Score:  {f1:.2%}\n"
-            + "-" * 72 + "\n"
-        )
-        print(summary)
-
-        assert recall >= 0.75, f"Spec recall {recall:.2%} below 75% floor"
-        assert precision >= 0.75, f"Spec precision {precision:.2%} below 75% floor"
 
     # -- state projection sanity checks --
 
