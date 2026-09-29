@@ -5,6 +5,7 @@ import { navigateWithViewIntent, queueViewIntent } from "./ws-view-intents.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { ARR_ACTS } from "./ws-author-data.jsx";
 import { arrIsPlanChapter, arrIsPlanScene } from "./ws-author-derive.js";
+import { randomSuffix } from "./lib/ids.js";
 
 /* ==========================================================
    章节编排 · 外壳的管线（hooks + 两个小工具）
@@ -65,7 +66,7 @@ export function arrGoView(go, view, intents) {
 /* 每一场都得有 sid（行内编辑与重排靠它认人）。目录 store 已经给乐观新建的场补了临时 sid，这里兜本页新加的场。 */
 export const arrStampIds = (list) => list.map((c) => ({
   ...c,
-  scenes: (c.scenes || []).map((s, i) => (s.sid ? s : { ...s, sid: c.id + "-s" + i + "-" + Math.random().toString(36).slice(2, 6) })),
+  scenes: (c.scenes || []).map((s, i) => (s.sid ? s : { ...s, sid: c.id + "-s" + i + "-" + randomSuffix(4) })),
 }));
 
 /* ---- 本页的章表 ----

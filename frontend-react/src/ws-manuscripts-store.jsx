@@ -9,17 +9,14 @@
    ========================================================== */
 
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { emit } from "./lib/events.js";
 
 // chapterBackendId → { status: idle|loading|ready|error, detail, error }
 const manuCache = {};
 const manuInflight = {};
 
 function dispatchManuscriptState(chapterId, status) {
-  try {
-    window.dispatchEvent(new CustomEvent("ws:manuscripts-loaded", {
-      detail: { chapterId, status },
-    }));
-  } catch (e) {}
+  emit("ws:manuscripts-loaded", { chapterId, status });
 }
 
 function normalizedLoadError(error) {

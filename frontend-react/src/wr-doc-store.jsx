@@ -4,6 +4,8 @@ import { htmlToParagraphs, manuscriptToDocHTML, sanitizeManuscriptHTML } from ".
 import { countChars } from "./lib/text.js";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { wsToast } from "./ws-notify.jsx";
+import { randomSuffix } from "./lib/ids.js";
+import { emit } from "./lib/events.js";
 
 /* ==========================================================
    WrDocs — 写作器正文文档 store（FE-ALIGN Phase 3）
@@ -47,14 +49,12 @@ function storageFailure(error, message = "浏览器本地存储空间不足") {
 }
 
 function notifyRecoveryChanged(entry, action = "changed") {
-  try {
-    window.dispatchEvent(new CustomEvent("ws:recovery-changed", { detail: { action, entry } }));
-  } catch (e) {}
+  emit("ws:recovery-changed", { action, entry });
 }
 
 function recoveryCreate({ sid, html, type = "conflict", reason = "", label = "", source = "writer", requireDurable = false } = {}) {
   const createdAt = Date.now();
-  const id = `${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const id = `${createdAt.toString(36)}-${randomSuffix(6)}`;
   const entry = {
     id,
     version: 1,
@@ -222,9 +222,7 @@ function stateSnapshot(sid) {
 }
 
 function notifyState(sid) {
-  try {
-    window.dispatchEvent(new CustomEvent("ws:wr-doc-state", { detail: { sid, ...stateSnapshot(sid) } }));
-  } catch (e) {}
+  emit("ws:wr-doc-state", { sid, ...stateSnapshot(sid) });
 }
 
 function cacheRead(sid) {
@@ -270,14 +268,14 @@ function recoveryNotice(sid, message) {
     timeout: 12000,
     action: {
       label: "打开同步与恢复",
-      onClick: () => { try { window.dispatchEvent(new CustomEvent("ws:recovery-open", { detail: { sid } })); } catch (e) {} },
+      onClick: () => { emit("ws:recovery-open", { sid }); },
     },
   });
   if (!shown) { try { window.alert(message); } catch (e) {} }
 }
 
 function notifyLoaded(sid) {
-  try { window.dispatchEvent(new CustomEvent("ws:wr-doc-loaded", { detail: sid })); } catch (e) {}
+  emit("ws:wr-doc-loaded", sid);
 }
 
 async function backendSceneId(sid) {

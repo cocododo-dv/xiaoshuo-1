@@ -5,6 +5,7 @@ import { apiPost } from "./lib/client.js";
 import {
   S2_STEPS, S2_BE_KEY, s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds,
 } from "./ws-snow-model.js";
+import { useWindowEvents as useSnowEvents } from "./lib/events.js";
 
 /* ==========================================================
    雪花工作台的环境与状态钩子
@@ -58,20 +59,9 @@ export function s2SaveUiPref(key, value) { try { localStorage.setItem(key, JSON.
 
 /* ---- 小钩子 ---- */
 
-/* 窗口事件订阅：{ 事件名: 处理函数 }。只按事件名挂一次，处理函数每次渲染换成最新的（不再随依赖反复拆装）。 */
-export function useSnowEvents(handlers) {
-  const ref = useRef(handlers);
-  ref.current = handlers;
-  const names = Object.keys(handlers).sort().join("|");
-  useEffect(() => {
-    const bound = (names ? names.split("|") : []).map(name => [name, (event) => {
-      const handler = ref.current && ref.current[name];
-      if (handler) handler(event);
-    }]);
-    bound.forEach(([name, fn]) => window.addEventListener(name, fn));
-    return () => bound.forEach(([name, fn]) => window.removeEventListener(name, fn));
-  }, [names]);
-}
+/* 窗口事件订阅：{ 事件名: 处理函数 }。实现是 lib/events.js 的 useWindowEvents（只按事件名挂一次，
+   处理函数每次渲染换成最新的）；雪花各件沿用这个名字。 */
+export { useSnowEvents };
 
 /* 身份不变、行为总是最新的回调：传给 memo 过的子组件时，不因父组件重渲染而让子组件跟着重渲染 */
 export function useStableCallback(fn) {

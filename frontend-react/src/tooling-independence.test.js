@@ -139,4 +139,13 @@ describe("React 工具链独立性", () => {
     const fixed = KNOWN_WINDOW_WRITERS.filter((name) => !writers.includes(name));
     expect(fixed, "这些已经不写 window 了，把它们从 KNOWN_WINDOW_WRITERS 里删掉").toEqual([]);
   });
+
+  it("全局对象上只有 lib/events.js 的跨重载去重登记表（Symbol 键），别的模块不往 globalThis[…] 上写", () => {
+    // 上面的 window 守卫只认 `window.x =`；把状态藏到 globalThis[键] 上同样是全局接缝，只许这一处
+    const slotWriters = sourceModules()
+      .filter((file) => /globalThis\[[^\]]+\]\s*=(?!=)/.test(fs.readFileSync(file, "utf8")))
+      .map((file) => path.relative(srcDir, file).split(path.sep).join("/"))
+      .sort();
+    expect(slotWriters).toEqual(["lib/events.js"]);
+  });
 });

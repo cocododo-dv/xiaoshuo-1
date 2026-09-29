@@ -14,6 +14,7 @@ import { ArrChapterContext, ArrRail } from "./ws-author-side.jsx";
 import { EmptyState, Spinner } from "./ws-ui.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 import { chapterLabel, chapterOwnTitle } from "./ws-labels.js";
+import { randomSuffix } from "./lib/ids.js";
 
 /* ==========================================================
    章节编排 — Chapter Arrangement（外壳）
@@ -229,7 +230,7 @@ function WsAuthor({ go }) {
   const updateCurrent = (fn) => commitChapters((cs) => cs.map((c) => (c.id === ch.id ? fn(c) : c)));
   const addScene = () => {
     if (locked) return;
-    updateCurrent((c) => ({ ...c, scenes: [...c.scenes, { sid: "s_" + Math.random().toString(36).slice(2, 8), title: "未命名场景", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }] }));
+    updateCurrent((c) => ({ ...c, scenes: [...c.scenes, { sid: "s_" + randomSuffix(6), title: "未命名场景", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }] }));
   };
   const patchTitle = (val) => { if (!locked) updateCurrent((c) => ({ ...c, title: val })); };
   const patchDrama = (key, val) => {

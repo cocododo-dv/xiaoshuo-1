@@ -1,6 +1,7 @@
 import { apiGet, apiPost } from "./lib/client.js";
 import { useStoreTick } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
+import { emit } from "./lib/events.js";
 
 /* ==========================================================
    文学质量的 store（从 ws-quality.jsx 拆出，2026-09-22）——轻量模块级缓存 + 自定义事件。
@@ -10,7 +11,7 @@ import { WsWorks } from "./ws-works.jsx";
 let qState = { overview: null, analyze: null, review: null, loading: false, analyzing: false, reviewing: false, error: null, errorScope: null };
 
 export function qSnapshot() { return qState; }
-function qEmit() { try { window.dispatchEvent(new CustomEvent("ws:quality-changed")); } catch (e) {} }
+function qEmit() { emit("ws:quality-changed"); }
 
 /* 查询串：跳过空值 */
 function qBuildPath(base, filters) {

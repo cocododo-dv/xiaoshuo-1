@@ -2,6 +2,7 @@ import React from "react";
 import { WsWorks } from "./ws-works.jsx";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
+import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 
 /* ==========================================================
    WsCatalog — 章节 / 场景单一真相源（per-work）
@@ -277,7 +278,7 @@ const CAT_SID_LIST_KEYS = ["scn-queue:v1", "scn-queue-dismissed:v1"];
 
 function catNotify() {
   catSubs.notify();
-  try { window.dispatchEvent(new CustomEvent("ws:catalog-changed")); } catch (e) {}
+  emit("ws:catalog-changed");
 }
 
 /* sid 解析：直接命中 → 会话内别名（乐观创建的临时 sid，建好之后后端给的是稳定 id）→ 位置式旧 slug
@@ -621,7 +622,7 @@ async function catDispatchDiff(workId, prev, next) {
       } catch (e) { console.warn("[WsCatalog] 本机雪花缓存接章表失败（下次打开构思时水合）:", e); }
     }
     catFetch(workId, { migrate: false }); // 以服务端编号/rollup 收敛
-    try { window.dispatchEvent(new CustomEvent("ws:trash-changed")); } catch (e) {}
+    emit("ws:trash-changed");
   } catch (e) {
     catRecover(e);
   }
@@ -849,13 +850,9 @@ function useCatalogChapters() {
   return WsCatalog.get();
 }
 
-/* 启动 & 切换作品：装载目录 + 同步统计（进度同源） */
-if (window.__wsCatalogGlobalHandlers) {
-  const old = window.__wsCatalogGlobalHandlers;
-  window.removeEventListener("ws:work-changed", old.catalogWorkChanged);
-  window.removeEventListener("ws:work-changed", old.trashWorkChanged);
-  window.removeEventListener("ws:trash-changed", old.trashChanged);
-}
+/* 启动 & 切换作品：装载目录 + 同步统计（进度同源）。
+   模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉旧实例挂在 window 上的监听器（在回收站那段末尾登记）。 */
+retireModuleListeners("ws-catalog");
 try { catFetch(catActiveId()); } catch (e) {}
 try { catPushTotals(); } catch (e) {}
 const catOnWorkChanged = () => {
@@ -977,11 +974,11 @@ window.addEventListener("ws:work-changed", trashOnWorkChanged);
 /* 软删端点完成后的精确刷新信号（WsWorks.remove / 目录删除成功时 dispatch） */
 const trashOnChanged = () => { try { trashFetch(); } catch (e) {} };
 window.addEventListener("ws:trash-changed", trashOnChanged);
-window.__wsCatalogGlobalHandlers = {
-  catalogWorkChanged: catOnWorkChanged,
-  trashWorkChanged: trashOnWorkChanged,
-  trashChanged: trashOnChanged,
-};
+adoptModuleListeners("ws-catalog", () => {
+  window.removeEventListener("ws:work-changed", catOnWorkChanged);
+  window.removeEventListener("ws:work-changed", trashOnWorkChanged);
+  window.removeEventListener("ws:trash-changed", trashOnChanged);
+});
 
 Object.assign(window, { WsCatalog, useCatalogChapters, WsTrashStore });
 

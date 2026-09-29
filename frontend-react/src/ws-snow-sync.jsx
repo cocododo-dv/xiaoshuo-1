@@ -2,6 +2,8 @@ import { apiGet, apiPatch, apiPost, apiPut } from "./lib/client.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow-model.js";
+import { randomSuffix } from "./lib/ids.js";
+import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 
 /* global window */
 /* ==========================================================
@@ -483,7 +485,7 @@ function setSnowSyncState(workId, patch) {
     phase: "idle", pendingSteps: [], error: null, localSavedAt: null, lastSyncedAt: null,
   };
   snowSyncStates[workId] = { ...previous, ...patch };
-  try { window.dispatchEvent(new CustomEvent("ws:snow-sync-state", { detail: { workId, state: snowSyncStates[workId] } })); } catch (e) {}
+  emit("ws:snow-sync-state", { workId, state: snowSyncStates[workId] });
 }
 
 function readSnowSyncState(workId) {
@@ -516,14 +518,14 @@ function afterApproveCatalogSync(workId, res) {
     try { if (WsCatalog && WsCatalog.__refresh) WsCatalog.__refresh(workId); } catch (e) {}
   }
   if (sync.synced_count > 0 || sync.held_count > 0) {
-    try { window.dispatchEvent(new CustomEvent("ws:snow-catalog-synced", { detail: { workId, ...sync } })); } catch (e) {}
+    emit("ws:snow-catalog-synced", { workId, ...sync });
   }
 }
 
 function captureResync(workId, ws) {
   if (!workId || !ws || !ws.resync_status) return;
   snowResync[workId] = shapeResync(ws);
-  try { window.dispatchEvent(new CustomEvent("ws:snow-resync", { detail: workId })); } catch (e) {}
+  emit("ws:snow-resync", workId);
 }
 
 /* 阶段 M：分诊结果随工作台回包水合——以前只活在组件内存里，一刷新就没了。
@@ -534,7 +536,7 @@ const snowSceneIds = {}; // workId -> { rowBySceneId, sceneByRow }
 /* 阶段 T：作者意图要点（后端 direction_briefs 镜像）：workId -> beKey -> brief payload
    （含已撤条目供恢复、继承的上游全书级条目）。教练回包 / 生成回包 / 全量水合都会刷新它。 */
 const snowBriefs = {};
-function emitBrief(workId) { try { window.dispatchEvent(new CustomEvent("ws:snow-brief", { detail: workId })); } catch (e) {} }
+function emitBrief(workId) { emit("ws:snow-brief", workId); }
 function captureDirectionBriefs(workId, ws) {
   if (!workId || !ws || !ws.direction_briefs || typeof ws.direction_briefs !== "object") return false;
   snowBriefs[workId] = { ...ws.direction_briefs };
@@ -582,7 +584,7 @@ function captureChapterStatus(workId, ws) {
     unassignedScenes: Array.isArray(s.unassigned_scenes) ? s.unassigned_scenes : [],
     chaptered: !!s.chaptered,
   };
-  try { window.dispatchEvent(new CustomEvent("ws:snow-chapter-plan", { detail: workId })); } catch (e) {}
+  emit("ws:snow-chapter-plan", workId);
 }
 
 /* 水合入口：去重（每个作品自动水合一次，force 强制重拉）+ 串行（同一作品的水合排成一条链，
@@ -663,7 +665,7 @@ async function snowHydrateRun(workId) {
     }
   });
   snowHealth[workId] = health;
-  try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId })); } catch (e) {}
+  emit("ws:snow-health", workId);
   if (!any) return true; // 服务端还没有构思数据：保留本地（含种子门控默认）
   // BUG-2 防回退：用后端真相预填 lastPushed（去重账本），使随后第一个 autosave 不再把这些未改动的步骤
   // 全量 re-push。否则新会话 lastPushed 为空 → snowPushKey 全量上行：后端 update_step 对非 pending_review
@@ -701,7 +703,7 @@ async function snowHydrateRun(workId) {
       .filter(feKey => stepIsPristine(feKey, cache) && !stepIsPristine(feKey, remote));
     if (rescuable(local).length) {
       // 先让仍挂载的视图把此刻的内存态落盘（同步事件）：胜负已定，重读不改变判定，只避免接回时吃掉最后几百毫秒的键入
-      try { window.dispatchEvent(new CustomEvent("ws:snow-flush-local", { detail: { workId } })); } catch (e) {}
+      emit("ws:snow-flush-local", { workId });
       try { local = JSON.parse(localStorage.getItem(key)) || local; } catch (e) {}
       const rescued = rescuable(local);
       if (rescued.length) {
@@ -714,7 +716,7 @@ async function snowHydrateRun(workId) {
         });
         if (!Array.isArray(local.history) || !local.history.length) { if (Array.isArray(remote.history)) merged.history = remote.history; }
         try { localStorage.setItem(key, JSON.stringify(merged)); } catch (e) {}
-        try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: workId })); } catch (e) {}
+        emit("ws:snow-hydrated", workId);
       }
     }
     // 水合本身就发现“本机已确认、服务端仍待审”时主动补批，不再依赖视图恰好
@@ -724,7 +726,7 @@ async function snowHydrateRun(workId) {
     return true; // 本地不旧于服务端：作者动过的步骤以本地为准
   }
   try { localStorage.setItem(key, JSON.stringify(remote)); } catch (e) {}
-  try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: workId })); } catch (e) {}
+  emit("ws:snow-hydrated", workId);
   if (approvalRetryNeeded) schedulePush(key);
   return true;
 }
@@ -887,9 +889,7 @@ async function flushSnowPush(workId) {
   // 先向仍挂载的雪花视图要一份“此刻内存态”的同步落盘，跨过视图自身 450ms 的
   // localStorage 防抖。事件是同步分发的；视图写完会立刻发 ws:snow-saved，把 key
   // 放进下面要排空的队列。作者页直达等没有雪花视图的场景则只排已有队列。
-  try {
-    window.dispatchEvent(new CustomEvent("ws:snow-flush-local", { detail: { workId: id } }));
-  } catch (e) {}
+  emit("ws:snow-flush-local", { workId: id });
   if (pendingKeys.has(key)) {
     pendingKeys.delete(key);
     if (!pendingKeys.size) {
@@ -917,7 +917,7 @@ async function adoptServerChapters(workId) {
   const stepDraft = (beKey) => (((ws && ws.steps) || []).find(s => s && s.step_key === beKey) || {}).draft || null;
   const outlineDraft = stepDraft("long_synopsis");
   const sceneDraft = stepDraft("scene_list");
-  try { window.dispatchEvent(new CustomEvent("ws:snow-flush-local", { detail: { workId } })); } catch (e) {}
+  emit("ws:snow-flush-local", { workId });
   const key = snowCacheKey(workId);
   let local = null;
   try { local = JSON.parse(localStorage.getItem(key)); } catch (e) {}
@@ -942,8 +942,8 @@ async function adoptServerChapters(workId) {
     canonMine[feKey] = stripFe(draft);
     if (mine[feKey]) mine[feKey] = { ...mine[feKey], sig: stepSig(buildStepFragment(feKey, merged, workId)) };
   });
-  try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId })); } catch (e) {}
-  try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: workId })); } catch (e) {}
+  emit("ws:snow-health", workId);
+  emit("ws:snow-hydrated", workId);
   return true;
 }
 
@@ -963,13 +963,8 @@ async function attachMaterializationGate(result, workId) {
   }
 }
 
-const previousGlobalHandlers = window.__snowSyncGlobalHandlers;
-if (previousGlobalHandlers) {
-  try { window.removeEventListener("ws:snow-saved", previousGlobalHandlers.saved); } catch (e) {}
-  try { window.removeEventListener("hashchange", previousGlobalHandlers.hashchange); } catch (e) {}
-  try { window.removeEventListener("ws:work-changed", previousGlobalHandlers.workChanged); } catch (e) {}
-  try { clearTimeout(previousGlobalHandlers.hydrateTimer); } catch (e) {}
-}
+/* 模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉旧实例的监听器与启动水合定时器 */
+retireModuleListeners("ws-snow-sync");
 
 const onSnowSaved = (e) => {
   const key = (e && e.detail) || (activeWork() ? snowCacheKey(activeWork()) : null);
@@ -987,12 +982,12 @@ window.addEventListener("hashchange", onSnowHashChange);
 window.addEventListener("ws:work-changed", onSnowWorkChanged);
 // 启动水合（等待 WsWorks 就绪）。句柄必须单独保存，便于 HMR/测试模块重载时撤销旧监听器。
 const snowHydrateTimer = setTimeout(() => snowHydrate(activeWork()), 600);
-window.__snowSyncGlobalHandlers = {
-  saved: onSnowSaved,
-  hashchange: onSnowHashChange,
-  workChanged: onSnowWorkChanged,
-  hydrateTimer: snowHydrateTimer,
-};
+adoptModuleListeners("ws-snow-sync", () => {
+  window.removeEventListener("ws:snow-saved", onSnowSaved);
+  window.removeEventListener("hashchange", onSnowHashChange);
+  window.removeEventListener("ws:work-changed", onSnowWorkChanged);
+  clearTimeout(snowHydrateTimer);
+});
 
 const SnowSync = {
   refetch(workId) { return snowHydrate(workId || activeWork(), { force: true }); },
@@ -1093,8 +1088,8 @@ const SnowSync = {
       const fragment = buildStepFragment(feKey, normalizedLocal, id);
       mine[feKey] = { sig: stepSig(fragment), state: fragment.fe_state };
     }
-    try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
-    try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: id })); } catch (e) {}
+    emit("ws:snow-health", id);
+    emit("ws:snow-hydrated", id);
     setSnowSyncState(id, { phase: "synced", pendingSteps: [], error: null, localSavedAt: importedAt, lastSyncedAt: Date.now() });
     return { approvedStepKeys, readyToMaterialize: snowReadyFlags[id], workspace };
   },
@@ -1136,7 +1131,7 @@ const SnowSync = {
     if (res && res.step) {
       (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(res.step);
       captureWorkspaceHealth(id, res.workspace);
-      try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+      emit("ws:snow-health", id);
     }
     afterApproveCatalogSync(id, res);
     return (snowHealth[id] || {})[feKey] || null;
@@ -1155,7 +1150,7 @@ const SnowSync = {
     if (res && res.step) {
       (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(res.step);
       captureWorkspaceHealth(id, res.workspace); // 下游闸门随之变化
-      try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+      emit("ws:snow-health", id);
     }
     return (snowHealth[id] || {})[feKey] || null;
   },
@@ -1198,7 +1193,7 @@ const SnowSync = {
     const canon = stripFe(step.draft || {});
     (snowCanon[id] || (snowCanon[id] = {}))[feKey] = canon;
     (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(step);
-    try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+    emit("ws:snow-health", id);
     return feFromCanon(feKey, canon);
   },
   /* 视图把当前内存态折成本步规范草稿（如场景分诊的 draft_override）——
@@ -1266,7 +1261,7 @@ const SnowSync = {
         const base = l.line_id ? known.get(l.line_id) : null;
         if (l.line_id) keep.add(l.line_id);
         const same = !!base && base.text === l.text && base.kind === l.kind && base.scope === l.scope;
-        return { ...(base || {}), line_id: l.line_id || `local_${Math.random().toString(36).slice(2, 10)}`,
+        return { ...(base || {}), line_id: l.line_id || `local_${randomSuffix(8)}`,
           kind: l.kind, scope: l.scope, text: l.text, status: l.status || "active", dismissed_by: null,
           origin: same ? (base.origin || "coach") : "author" };
       });
@@ -1344,7 +1339,7 @@ const SnowSync = {
     if (res && res.step) {
       (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(res.step);
       captureWorkspaceHealth(id, res.workspace);
-      try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+      emit("ws:snow-health", id);
     }
     return (snowHealth[id] || {})[feKey] || null;
   },
@@ -1427,7 +1422,7 @@ const SnowSync = {
     // 服务端这一步可能自动把空章 / 占位章移入回收站、或把场景卡取回：让开着的回收站也跟上
     const trashMoved = ["trashed_empty_chapters", "trashed_placeholder_chapters", "restored_chapter_ids", "restored_scene_ids"]
       .some((key) => Array.isArray(approved && approved[key]) && approved[key].length > 0);
-    if (trashMoved) { try { window.dispatchEvent(new CustomEvent("ws:trash-changed")); } catch (e) {} }
+    if (trashMoved) { emit("ws:trash-changed"); }
     return {
       ...(data || {}),
       created_chapter_count: createdChapters,

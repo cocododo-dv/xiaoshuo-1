@@ -1,5 +1,7 @@
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { srActivityActive, srNormalizeConfig, srSpineColor } from "./ws-styleref-model.js";
+import { randomSuffix } from "./lib/ids.js";
+import { emit } from "./lib/events.js";
 
 /* ==========================================================
    风格参考 · store（2026-09-23 v3 重建）
@@ -15,7 +17,7 @@ import { srActivityActive, srNormalizeConfig, srSpineColor } from "./ws-styleref
    · 导入成功 → sr:book-imported（页面据此切到新书）
    写操作都是「先改界面、再等服务端；失败回滚并把错误抛给调用方」（✓ / ✗、改绑定、解除、批量删除、用于作品），
    说法由界面按 ws-styleref-model 的 srErrorInfo 给。所有请求都经 lib/client.js（上传也是：FormData）。
-   只 import lib/client.js 与纯派生 ws-styleref-model.js；不写 window（事件用 window.dispatchEvent 广播）。
+   只 import lib/client.js 与纯派生 ws-styleref-model.js；不写 window（事件用 lib/events.js 的 emit 广播）。
    当前作品由界面层在加载时经 srConfigureHost 接上（ws-styleref-ui.jsx）；没接上时当没有作品。
    ========================================================== */
 
@@ -46,7 +48,7 @@ const SR_EVENTS = {
 };
 
 function srEmit(channel, detail) {
-  window.dispatchEvent(detail === undefined ? new CustomEvent(SR_EVENTS[channel]) : new CustomEvent(SR_EVENTS[channel], { detail }));
+  emit(SR_EVENTS[channel], detail);
 }
 
 /* 订阅若干频道：返回 (listener) => 退订函数（lib/store-utils 的 useStoreTick 要的形状） */
@@ -529,7 +531,7 @@ export async function srRunImport({ file, title, authorLabel = null, cloudPolicy
   if (authorLabel && String(authorLabel).trim()) form.append("author_label", String(authorLabel).trim());
   form.append("cloud_policy", cloudPolicy);
   if (rightsDeclaration) form.append("rights_declaration", JSON.stringify(rightsDeclaration));
-  const key = importKey || `sr-import-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const key = importKey || `sr-import-${Date.now().toString(36)}${randomSuffix(4)}`;
   const data = (await apiPost(`${API}/books/import-upload`, form, { idempotencyKey: key })) || {};
   const book = data.book || {};
   if (data.job_id) srActivityTrack(data.job_id, { kind: "classify", mode: "import", book_id: book.book_id, title: book.title || title });

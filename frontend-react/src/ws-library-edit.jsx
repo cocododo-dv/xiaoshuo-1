@@ -8,6 +8,7 @@ import { wsKey, WsWorks } from "./ws-works.jsx";
 import { isImeComposing } from "./lib/keyboard.js";
 import { LibGlyph, libAccClass, libCatLabel } from "./ws-library-parts.jsx";
 import { Segmented } from "./ws-ui.jsx";
+import { randomSuffix } from "./lib/ids.js";
 
 const { useState: useEdSt, useEffect: useEdEffect, useMemo: useEdMemo, useId: useEdId } = React;
 
@@ -269,7 +270,7 @@ function LIB_migrateLegacy() {
 function LIB_newEntry(cat, name) {
   const meta = LIB_CATS.find(c => c.id === cat) || LIB_CATS[0];
   const glyph = (name || "新").trim().charAt(0) || "新";
-  const id = "u-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+  const id = "u-" + Date.now().toString(36) + "-" + randomSuffix(4);
   return {
     id, cat, name: name || "未命名档案", code: "",
     kind: "", accent: meta.accent, glyph, user: true,
