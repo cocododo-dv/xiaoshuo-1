@@ -37,13 +37,15 @@ function notifyRecoveryChanged(entry, action = "changed") {
   emit("ws:recovery-changed", { action, entry });
 }
 
-function recoveryCreate({ sid, html, type = "conflict", reason = "", label = "", source = "writer", requireDurable = false } = {}) {
+/* workId 省略 = 当前作品。正文 store 的异步收尾（409 之后的冲突副本等）显式给出这一场所属的作品：
+   那时作者可能已经切到另一部作品，记录不能挂到那一部名下。 */
+function recoveryCreate({ sid, html, type = "conflict", reason = "", label = "", source = "writer", requireDurable = false, workId } = {}) {
   const createdAt = Date.now();
   const id = `${createdAt.toString(36)}-${randomSuffix(6)}`;
   const entry = {
     id,
     version: 1,
-    workId: activeWorkId(),
+    workId: workId == null ? activeWorkId() : workId,
     sid: sid || "",
     type,
     reason,

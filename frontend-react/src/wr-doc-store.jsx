@@ -1,13 +1,15 @@
 import { htmlToParagraphs } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { WrDocs, cacheRead, cacheReadForWork, notifyLoaded } from "./wr-doc-sync.js";
+import { WrDocs, notifyLoaded } from "./wr-doc-sync.js";
+import { cacheRead, cacheReadForWork } from "./wr-doc-cache.js";
 import { WrDocVersions, diffSentences } from "./wr-doc-versions.js";
 import { activeWorkId, notifyRecoveryChanged, recoveryCreate, recoveryList, recoveryRemove } from "./wr-recovery-store.js";
 
 /* ==========================================================
    写作台正文的门面（2026-09-29 拆分）：
-     wr-doc-sync.js       WrDocs——作者稿的读缓存、水合、串行保存、提升为权威正文
+     wr-doc-sync.js       WrDocs——作者稿的水合、保存状态机（一次一个请求、只留最新一稿、409 冲突副本）、提升为权威正文
+     wr-doc-cache.js      本机这一层：读缓存、未同步标记、会话内存里的那一份
      wr-doc-versions.js   WrDocVersions——修订历史与句级对比
      wr-recovery-store.js 本机恢复记录（冲突副本、未同步稿、备份、AI 候选）
    这里放 WrRecovery（同步与恢复中心用：列、比、恢复、重试），登记目录装载后的预热，转出三个对象。
@@ -69,6 +71,9 @@ const WrRecovery = {
     const entry = recoveryList().find(item => item.id === id);
     if (!entry) throw Object.assign(new Error("恢复记录已不存在"), { code: "RECOVERY_NOT_FOUND" });
     assertRecoveryWork(entry);
+    // 先和服务端对齐（这一场这次还没打开过、或冲突后服务端版本还没读到时）：下面自动备份的「当前正文」
+    // 就是服务端眼下那一版，不是这台电脑上可能过时的缓存；读不到服务器就停下，不盲目覆盖。
+    await WrDocs.hydrate(entry.sid);
     const current = cacheRead(entry.sid) || "";
     const hasCurrent = countChars(htmlToParagraphs(current).join("")) > 0;
     let replacedBackup = null;

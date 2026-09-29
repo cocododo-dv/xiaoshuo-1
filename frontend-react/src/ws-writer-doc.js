@@ -1,61 +1,71 @@
 import React from "react";
-import { emit } from "./lib/events.js";
 import { storeAlert } from "./lib/store-utils.js";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsWorks } from "./ws-works.jsx";
-import { WrDocs, WrRecovery } from "./wr-doc-store.jsx";
+import { WrDocs } from "./wr-doc-store.jsx";
+import { sameManuscriptText } from "./wr-doc-cache.js";
 import { contentSafetyReviewFromError, exactCodesMatch } from "./wr-content-safety-review.jsx";
 import { copyGatePromoteMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
-import { wsConfirm, wsNotify } from "./ws-notify.jsx";
+import { wsConfirm } from "./ws-notify.jsx";
 import { WR_EMPTY_DOC, wrCountText, wrPrepareLoadedHTML, wrSerializeManuscript } from "./ws-writer-manuscript.js";
 import { wrSceneIsApproved } from "./ws-writer-catalog.js";
 import { useWrEvent } from "./ws-writer-hooks.js";
 
 /* ==========================================================
-   写作台正文与权威正文（2026-09-21 从 WriterRoom 拆出）
+   写作台正文与权威正文（2026-09-21 从 WriterRoom 拆出；2026-09-30 W1 保存全交给 WrDocs）
    ----------------------------------------------------------
    · useDocBinding：一场一份正文。换场时同步读 WrDocs 缓存进编辑器、后台水合服务端草稿；
      敲字后 900ms 自动保存（落盘的只有 wrSerializeManuscript 出来的干净正文；目录字数随保存
-     回包的 words_rollup 更新）；离开这一场 / 卸载前把没落盘的改动用「当时的」场景 id 冲掉。
-     同一场同一时刻只有一次保存在路上：下一次等它（连同 409 之后 WrDocs 的重新水合）落地再定——
-     叠上去的保存会带着刷新后的修订号，把另一台设备同时存下的正文静默盖掉。
-     409 时编辑器一律换成服务端版本，本机的字（那一稿、它在路上时又敲的）都在「同步与恢复」。
+     回包的 words_rollup 更新）；离开这一场 / 卸载前把没交出去的字用「当时的」场景 id 和作品交给 WrDocs。
+     保存的一切——同一场一次只有一个请求、排队只留最新一稿、失败留在本机待重发、409 的冲突副本和
+     读服务端版本——都在 WrDocs（wr-doc-sync.js）里，这里不排队、不重试、不自己处理冲突：
+     自动保存 / 离场 / 提升 / 进深改前只管 WrDocs.save + WrDocs.flush，然后听 WrDocs 的通知——
+     conflict-resolved：编辑器换成服务端版本（编辑器里还没交出去的字先经 WrDocs 留进同步与恢复）；
+     loaded：读缓存换成了别的版本（水合 / 复核读到的服务端新版本、恢复、采纳）：作者正在旧版本上写，
+     同样先留一份再换；读到的就是作者正在写的底稿，就接着写；
+     state：冲突中（服务端版本还没读到）或保存失败时状态是「草稿保存失败」，编辑器里的字不动。
      decorate(el)：每次整段换掉编辑器内容之后调用（标实体、标批注）；
-     afterLoad(el)：换场载入之后调用，可返回清理函数；beforeSave(el, sceneId)：落盘前调用。
+     afterLoad(el)：换场载入之后调用，可返回清理函数；beforeSave(el, sceneId)：交给 WrDocs 之前调用。
    · useCanonicalPromotion：把已保存的草稿提升为权威正文，含内容风险逐项复核那一轮。
    ESM 模块，不写 window。
    ========================================================== */
 
 const { useCallback, useEffect, useLayoutEffect, useRef, useState } = React;
 
-/* 当前作品 id（离场后补发那一稿之前核对：作品换了就不发，免得落到另一部作品同名的场上）。
-   try 是有用的：不少单测 mock 的 WsWorks 没有 activeId */
+/* 当前作品 id（离场时这一场所属的作品）。try 是有用的：不少单测 mock 的 WsWorks 没有 activeId */
 function currentWorkId() {
   try { return WsWorks.activeId() || ""; } catch (e) { return ""; }
 }
 
-/* 409 时保存路上又敲的那几个字放不进本机存储（配额满了）：它只留在本次会话的「同步与恢复」里，
-   刷新或关掉页面就没了——编辑器已经换成服务端版本，这里说清楚、给一个直接打开它的按钮。 */
-function volatileConflictNotice(sceneId) {
-  wsNotify({
-    message: "这份正文在别处被修改过，编辑器已换成服务端的最新版本。保存进行中你又写的那几句因为浏览器存储空间不足，只留在本次会话的「同步与恢复」里——刷新或关掉页面前请打开它导出或恢复。",
-    tone: "danger",
-    timeout: 20000,
-    action: { label: "打开同步与恢复", onClick: () => { emit("ws:recovery-open", { sid: sceneId }); } },
-  });
+/* 这一场所属的作品已经不是当前作品（离场冲刷、切作品那一刻到点的自动保存）时才把作品带给 WrDocs；平常照常按当前作品 */
+function workScope(workId) {
+  return workId && workId !== currentWorkId() ? { workId } : null;
+}
+function saveToWork(sid, html, workId) {
+  const scope = workScope(workId);
+  // 结果由 WrDocs 管（失败留在本机待重发，409 走冲突），这里不接；Promise.resolve 兜住单测里不回 Promise 的替身
+  try {
+    void Promise.resolve(scope ? WrDocs.save(sid, html, scope) : WrDocs.save(sid, html)).catch(() => {});
+  } catch (e) { /* 同上 */ }
+}
+
+/* WrDocs 的状态快照 → 保存状态键（loaded / saving / saved / failed / locked，字在 wr-canonical-control 的 SAVE_LABELS） */
+function saveStatusOf(state) {
+  if (!state) return "loaded";
+  if (state.conflictPending || state.lastSaveError) return "failed";
+  return state.dirty ? "saving" : "loaded";
 }
 
 export function useDocBinding({ activeScene, editorRef, counter, decorate, afterLoad, beforeSave }) {
-  // 保存状态的键（loaded / saving / saved / failed / locked），字在 wr-canonical-control 的 SAVE_LABELS
   const [saved, setSaved] = useState("saved");
   const [savedAt, setSavedAt] = useState(null);
   const [canonicalStatus, setCanonicalStatus] = useState("unknown");
   const saveTimer = useRef(null);
-  const dirtyRef = useRef(false);  // 有未落盘的改动（保存在路上时仍为 true，存上了才清）
-  const editVersionRef = useRef(0);
-  /* 每一场在路上的那一次保存：sceneId → { editVersion, html, done }。done 在它（连同 409 之后换稿）
-     处理完时兑现为 "saved" / "conflict" / "failed"——等着存下一稿的、离场冲刷都看它。 */
-  const inFlightRef = useRef(new Map());
+  const dirtyRef = useRef(false);     // 有还没确认存上的字：敲字即为 true，WrDocs 说存上了（或编辑器整篇换稿）才清
+  const editVersionRef = useRef(0);   // 每敲一次、每次整篇换稿都 +1
+  const handedRef = useRef(0);        // 交给 WrDocs 的最新一版；和 editVersionRef 相等 = 编辑器里的字 WrDocs 都有了
+  const baseRef = useRef("");         // 编辑器上一次整篇换稿后的正文：作者是在它上面写的
+  const workRef = useRef("");         // 这一场所属的作品：保存 / 冲刷都带上它（离场时作品可能已经换了）
   const mountedRef = useRef(false);
   const sceneRef = useRef(activeScene);
   const decorateEvent = useWrEvent((el) => { if (decorate) decorate(el); });
@@ -83,104 +93,44 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     return state && state.canonicalDirty === false ? "current" : "dirty";
   };
 
-  /* 把读缓存里的这一场放进编辑器（服务端水合 / 409 冲突之后） */
-  const showStored = (el, sceneId) => {
-    let fresh = null;
-    try { fresh = WrDocs.load(sceneId); } catch (e) {}
-    const next = fresh == null ? null : wrPrepareLoadedHTML(fresh);
-    if (next != null && wrSerializeManuscript(el) !== next) {
-      el.innerHTML = next || WR_EMPTY_DOC;
-      decorateEvent(el);
-      recount();
-    }
+  /* 编辑器里的字交给 WrDocs（有没交出去的才交）。之后的一切——本机缓存、排队、重发、冲突——WrDocs 管 */
+  const handOver = (el, sceneId) => {
+    if (editVersionRef.current === handedRef.current) return;
+    beforeSaveEvent(el, sceneId);
+    const html = wrSerializeManuscript(el);
+    handedRef.current = editVersionRef.current;
+    saveToWork(sceneId, html, workRef.current);
   };
 
-  /* 409 冲突：WrDocs 已把本机那一稿放进「同步与恢复」、读缓存换成了服务端版本（toast 这么说）。
-     编辑器必须跟着换，否则下一次敲字会带着新的 base_revision_no 把另一台设备的正文盖掉。
-     保存在路上时作者又敲的字不在那份副本里，先另存一份再换；那一份放不进本机存储时照样换
-     （WrDocs 的修订号已经刷新，留着本机稿只会在下一次敲字时静默盖掉服务端版本），并说清它只在本次会话里。
-     WrDocs 自己没能留副本（配额不足）时它不换读缓存、也不刷新修订号（下一次保存照旧 409），编辑器也不动。 */
-  const adoptServerAfterConflict = (el, sceneId, savedHTML, editVersion) => {
-    const state = WrDocs.state(sceneId);
-    if (!state || state.dirty) return false;
-    let pendingBackup = null;
-    if (editVersionRef.current !== editVersion) {
-      const pendingHTML = wrSerializeManuscript(el);
-      if (pendingHTML !== savedHTML) {
-        pendingBackup = WrRecovery.create({
-          sid: sceneId,
-          html: pendingHTML,
-          type: "conflict",
-          reason: "服务端在别处更新（409 冲突）时编辑器里还有没保存的改动",
-          label: `场景 ${sceneId} · 冲突本地稿`,
-        });
-      }
-    }
-    clearTimeout(saveTimer.current);
-    editVersionRef.current += 1;
-    dirtyRef.current = false;
-    showStored(el, sceneId);
-    setSaved("loaded");
-    setCanonicalStatus(canonicalFromStore(sceneId));
-    if (pendingBackup && pendingBackup.durable === false) volatileConflictNotice(sceneId);
-    return true;
-  };
-
-  /* 真·自动保存：正文落盘 + 字数增量回写目录/作品。返回这之后编辑器里的字是否都已存上。 */
-  const persistDoc = useCallback(async () => {
+  /* 把编辑器里的字交给 WrDocs 并等结果 → "saved" | "conflict" | "failed" | "locked" | "dirty"（等的时候又敲了字）| "none" */
+  const settle = async (options) => {
     const sceneId = activeScene;
-    if (!editorRef.current || !sceneId) return false;
-    const stillCurrent = () => mountedRef.current && sceneRef.current === sceneId;
-    /* 上一次保存还在路上：等它（连同 409 之后的换稿）落地再定。它撞上 409 时这一次作废——
-       编辑器要么已换成服务端版本（这段字已在同步与恢复），要么 WrDocs 拒绝覆盖、等作者处理，都不自动再存。 */
-    let prior = null;
-    while (inFlightRef.current.has(sceneId)) {
-      prior = await inFlightRef.current.get(sceneId).done;
-      if (!stillCurrent()) return false;
-    }
-    if (prior === "conflict") return false;
     const el = editorRef.current;
-    if (!el) return false;
+    if (!el || !sceneId) return "none";
     if (wrSceneIsApproved(sceneId)) {
       dirtyRef.current = false;
       setSaved("locked");
-      return false;
+      return "locked";
     }
-    if (!dirtyRef.current) return prior !== "failed";   // 在路上那一次已经把这些字存上了
-    beforeSaveEvent(el, sceneId);
-    /* 落盘的只有干净正文：实体高亮、批注划线、改写标记、深改诊断、段落状态 class 都不进草稿 */
-    const html = wrSerializeManuscript(el);
+    handOver(el, sceneId);
     const editVersion = editVersionRef.current;
-    let settle = null;
-    const run = { editVersion, html, done: new Promise((resolve) => { settle = resolve; }) };
-    inFlightRef.current.set(sceneId, run);
-    let outcome = "failed";
-    try {
-      // 目录字数以保存回包的 words_rollup 为准（WrDocs 已经写进目录），这里不再拿本机计数盖它
-      await WrDocs.save(sceneId, html);
-      outcome = "saved";
-      if (stillCurrent() && editVersionRef.current === editVersion) {
-        dirtyRef.current = false;
-        setSaved("saved");
-        setSavedAt(Date.now());
-        setCanonicalStatus(canonicalFromStore(sceneId));
-      }
-      return true;
-    } catch (e) {
-      if (e && e.code === "AUTHOR_DRAFT_CONFLICT") {
-        outcome = "conflict";
-        if (stillCurrent() && adoptServerAfterConflict(el, sceneId, html, editVersion)) return false;
-      }
-      if (stillCurrent() && editVersionRef.current === editVersion) {
-        dirtyRef.current = true;
-        setSaved("failed");
-      }
-      return false;
-    } finally {
-      if (inFlightRef.current.get(sceneId) === run) inFlightRef.current.delete(sceneId);
-      settle(outcome);
+    const outcome = await WrDocs.flush(sceneId, { ...(options || {}), ...(workScope(workRef.current) || {}) });
+    if (!mountedRef.current || sceneRef.current !== sceneId) return outcome;
+    // 等的时候又敲了字，或编辑器已经整篇换成服务端版本（冲突）：下一次再定
+    if (editVersionRef.current !== editVersion) return outcome === "saved" ? "dirty" : outcome;
+    if (outcome === "saved") {
+      dirtyRef.current = false;
+      setSaved("saved");
+      setSavedAt(Date.now());
+      setCanonicalStatus(canonicalFromStore(sceneId));
+    } else {
+      setSaved("failed"); // 冲突中 / 保存失败：编辑器里的字不动，dirty 不清
     }
-  }, [activeScene, editorRef, beforeSaveEvent]);
+    return outcome;
+  };
+
+  /* 真·自动保存：返回这之后编辑器里的字是否都已存上（深改进场前、提升前也走它） */
+  const persistDoc = useCallback(async () => (await settle()) === "saved", [activeScene, editorRef, beforeSaveEvent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const schedulePersist = useCallback(() => {
     if (wrSceneIsApproved(activeScene)) return;
@@ -206,64 +156,91 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       setCanonicalStatus("unknown");
       return undefined;
     }
+    const sid = activeScene;
+    const workId = currentWorkId();
+    workRef.current = workId;
     editVersionRef.current += 1;
-    dirtyRef.current = false;
-    setSaved("loaded");
-    setCanonicalStatus(canonicalFromStore(activeScene));
+    handedRef.current = editVersionRef.current;
+    const initial = WrDocs.state(sid);
+    dirtyRef.current = !!(initial && initial.dirty); // WrDocs 这一场还有没存上的字（路上 / 排队 / 失败待重发 / 冲突中）
+    setSaved(saveStatusOf(initial));
+    setCanonicalStatus(canonicalFromStore(sid));
     let stored = null;
-    try { stored = WrDocs.load(activeScene); } catch (e) {}
+    try { stored = WrDocs.load(sid); } catch (e) {}
     el.innerHTML = wrPrepareLoadedHTML(stored) || WR_EMPTY_DOC;
+    baseRef.current = wrSerializeManuscript(el);
     decorateEvent(el);
     recount();
     const cleanupAfterLoad = afterLoadEvent(el);
 
-    /* 服务端草稿水合完成且本地无未保存改动 → 回填编辑器（跨浏览器以服务端为准） */
-    const onDocLoaded = (sid) => {
-      if (sid !== activeScene || dirtyRef.current) return;
-      showStored(el, activeScene);
-      setSaved("saved");
-      setCanonicalStatus(canonicalFromStore(activeScene));
+    /* 编辑器整篇换成 html（冲突之后的服务端版本 / 读缓存换成的新版本）。还没交给 WrDocs 的字是在上一个版本上写的：先经 WrDocs 留进同步与恢复 */
+    const replaceEditor = (html, reason) => {
+      if (editVersionRef.current !== handedRef.current) {
+        try { WrDocs.keepLocalCopy(sid, wrSerializeManuscript(el), { reason, ...(workScope(workId) || {}) }); } catch (e) {}
+      }
+      clearTimeout(saveTimer.current);
+      editVersionRef.current += 1;
+      handedRef.current = editVersionRef.current;
+      dirtyRef.current = false;
+      const next = wrPrepareLoadedHTML(html == null ? "" : html);
+      if (wrSerializeManuscript(el) !== next) {
+        el.innerHTML = next || WR_EMPTY_DOC;
+        decorateEvent(el);
+        recount();
+      }
+      baseRef.current = wrSerializeManuscript(el);
+      setCanonicalStatus(canonicalFromStore(sid));
     };
-    const onDocState = (detail) => {
-      if (!detail || detail.sid !== activeScene) return;
-      if (detail.lastSaveError) setSaved("failed");
-      else if (!detail.dirty) setSaved("saved");
+    /* 读缓存换成了别的版本：作者正在写的就是这份底稿（文字一样）时接着写，下一次保存带新的修订号；否则换稿 */
+    const onLoaded = (detail) => {
+      const typing = editVersionRef.current !== handedRef.current;
+      if (typing && sameManuscriptText(detail.html, baseRef.current)) return;
+      replaceEditor(detail.html, detail.reason || "server");
+      setSaved(typing ? "loaded" : "saved");
+    };
+    const onResolved = (detail) => {
+      replaceEditor(detail.html, "conflict");
+      setSaved("loaded");
+    };
+    const onState = (detail) => {
       setCanonicalStatus(detail.canonicalDirty === false ? "current" : "dirty");
+      if (detail.conflictPending || detail.lastSaveError) { setSaved("failed"); return; }
+      if (!detail.dirty && editVersionRef.current === handedRef.current) {
+        dirtyRef.current = false;
+        setSaved("saved");
+      }
     };
     const unsubscribe = WrDocs.subscribe((kind, detail) => {
-      if (kind === "loaded") onDocLoaded(detail);
-      else if (kind === "state") onDocState(detail);
+      if (!detail || detail.sid !== sid || (detail.workId != null && detail.workId !== workId)) return;
+      if (kind === "state") onState(detail);
+      else if (kind === "loaded") onLoaded(detail);
+      else if (kind === "conflict-resolved") onResolved(detail);
     });
-    /* 离开这个场景（或卸载）时，把未落盘的改动用「当时的」场景 id 冲掉 */
-    const sid = activeScene;
+    /* 离开这个场景（或卸载）时：没交出去的字用「当时的」场景 id 和作品交给 WrDocs；再让 WrDocs 冲刷一次——
+       路上那一次（或刚交的这一稿）失败时它补发一次最新的一稿，409 由它走冲突副本 */
     return () => {
       unsubscribe();
       if (typeof cleanupAfterLoad === "function") cleanupAfterLoad();
       clearTimeout(saveTimer.current);
-      if (dirtyRef.current && sid && !wrSceneIsApproved(sid)) {
-        const inFlight = inFlightRef.current.get(sid) || null;
-        if (inFlight && inFlight.editVersion === editVersionRef.current) {
-          /* 保存还在路上、之后没再敲字：不再叠一次同样的正文——叠上去的那次在它 409 时会绕过冲突副本、
-             带着刷新后的修订号把另一台设备的正文盖掉。它断网 / 服务端出错失败时，同一部作品下补发一次。 */
-          const workId = currentWorkId();
-          void inFlight.done.then((outcome) => {
-            if (outcome !== "failed" || currentWorkId() !== workId) return;
-            try { void WrDocs.save(sid, inFlight.html).catch(() => {}); } catch (e) {}
-          });
-        } else {
+      if (!wrSceneIsApproved(sid)) {
+        if (editVersionRef.current !== handedRef.current) {
           try { beforeSaveEvent(el, sid); } catch (e) {}
-          try { void WrDocs.save(sid, wrSerializeManuscript(el)).catch(() => {}); } catch (e) {}
+          saveToWork(sid, wrSerializeManuscript(el), workId);
+          handedRef.current = editVersionRef.current;
+          // 不等回包的离场冲刷：先按本机计数更新目录，回包的 words_rollup 到了再以服务端为准
+          if (currentWorkId() === workId) {
+            try { WsCatalog.recordSceneWords(sid, wrCountText(el)); } catch (e) {}
+          }
         }
-        // 不等回包的离场冲刷：先按本机计数更新目录，回包的 words_rollup 到了再以服务端为准
-        try { WsCatalog.recordSceneWords(sid, wrCountText(el)); } catch (e) {}
-        dirtyRef.current = false;
+        try { void WrDocs.flush(sid, { retry: true, ...(workScope(workId) || {}) }); } catch (e) {}
       }
+      dirtyRef.current = false;
     };
   }, [activeScene]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     saved, setSaved, savedAt, canonicalStatus, setCanonicalStatus,
-    dirtyRef, recount, persistDoc, schedulePersist, cancelPendingSave,
+    dirtyRef, recount, persistDoc, schedulePersist, cancelPendingSave, settle,
   };
 }
 
@@ -299,7 +276,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
   const [review, setReview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const { setSaved, setCanonicalStatus, dirtyRef, persistDoc, cancelPendingSave } = doc;
+  const { setSaved, setCanonicalStatus, dirtyRef, settle, cancelPendingSave } = doc;
 
   const promote = useWrEvent(async () => {
     if (!activeScene) return;
@@ -308,10 +285,16 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
       return;
     }
     cancelPendingSave();
-    if (dirtyRef.current) {
+    const state = WrDocs.state(activeScene);
+    if (dirtyRef.current || (state && (state.dirty || state.conflictPending))) {
       setSaved("saving");
-      const savedOk = await persistDoc();
-      if (!savedOk) {
+      const outcome = await settle();
+      if (outcome === "conflict") {
+        // 409：编辑器已换成（或正要换成）服务端版本，本机的字在同步与恢复——说的是冲突，不是「还没保存」
+        storeAlert(null, canonicalPromotionErrorMessage({ code: "AUTHOR_DRAFT_CONFLICT" }));
+        return;
+      }
+      if (outcome !== "saved") {
         storeAlert(null, "草稿还没有保存到服务端，暂时不能提升为权威正文。先让草稿保存成功再试。");
         return;
       }
