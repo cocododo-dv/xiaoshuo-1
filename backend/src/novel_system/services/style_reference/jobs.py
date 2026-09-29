@@ -34,6 +34,10 @@ SQLite 的写锁，两个几乎同时的请求在这里串行化，后到的一�
 
 **维护任务**（``register_maintenance_task``）：随清扫线程跑的定期任务（例：``cleanup`` 登记的遥测 90 天留存
 清理）——清扫线程启动时先跑一次，之后每隔登记的间隔再跑；任务自己开会话，异常只记日志、不影响清扫。
+
+与业务无关的运行时（工人代、守护调用池、维护任务登记簿、带自己停止信号的周期线程）在
+``services.background_jobs``；这里转出旧名字（``DaemonCallPool``、``current_worker_generation`` …），调用方与
+测试照旧从本模块取。
 """
 
 from __future__ import annotations
@@ -41,10 +45,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
-import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -53,6 +56,15 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import StyleReferenceJob, utcnow
+from novel_system.services.background_jobs import (
+    DaemonCallPool,
+    MaintenanceRegistry,
+    MaintenanceTask,
+    PeriodicThread,
+    bump_worker_generation,
+    current_worker_generation,
+    generation_changed,
+)
 from novel_system.services.errors import DomainError
 
 logger = logging.getLogger(__name__)
@@ -676,8 +688,7 @@ _SWEEPER: threading.Thread | None = None
 # 当前清扫线程自己的停止信号：每次启动换一个新的（线程闭包里抓住的是自己那一个），停下后不再清。旧做法共用一个事件：
 # 旧线程还在一拍里时下一个 lifespan 启动、把事件清掉，旧线程醒来看到的是没置位的事件，就接着每 30 s 清扫一次。
 _SWEEPER_STOP = threading.Event()
-# 工人代：``shutdown_job_workers`` 每次 +1；认领时记下当时的代，检查点发现代变了 = 进程要退出
-_GENERATION = 0
+# 工人代在 background_jobs：``shutdown_job_workers`` 每次 +1；认领时记下当时的代，检查点发现代变了 = 进程要退出
 
 _LANE_LONG = "long"
 _LANE_CHECK = "check"
@@ -712,12 +723,8 @@ def run_cancel_hook(session: Session, job_id: str) -> None:
         logger.exception("style job %s cancel hook failed", job_id)
 
 
-def current_worker_generation() -> int:
-    return _GENERATION
-
-
 def worker_generation_changed(claimed: ClaimedJob) -> bool:
-    return claimed.generation is not None and claimed.generation != _GENERATION
+    return generation_changed(claimed.generation)
 
 
 def is_worker_interruption(exc: BaseException, claimed: ClaimedJob | None = None) -> bool:
@@ -725,48 +732,6 @@ def is_worker_interruption(exc: BaseException, claimed: ClaimedJob | None = None
     if claimed is not None and worker_generation_changed(claimed):
         return True
     return isinstance(exc, RuntimeError) and "after" in str(exc) and "shutdown" in str(exc)
-
-
-class DaemonCallPool:
-    """给处理器的 LLM 调用用的「线程池」：每个调用一条守护线程，并发上限由调用方控制（在飞数）。
-
-    ``concurrent.futures.ThreadPoolExecutor`` 的线程在解释器退出时会被逐个 join——``--reload`` / 停服要等在飞的
-    网络请求回来（最长到 LLM 超时）。这里的线程是守护线程：进程退出时直接丢下，作业由框架放回队列，下次续跑；
-    丢下的调用的记账预留由记账层按 TTL 回收。接口是处理器用到的那部分 ``Executor``（``submit`` / ``shutdown``）。
-    """
-
-    def __init__(self, max_workers: int | None = None, thread_name_prefix: str = "sr_call") -> None:
-        del max_workers  # 并发由调用方控制
-        self._prefix = thread_name_prefix
-        self._closed = False
-        self._lock = threading.Lock()
-        self._count = 0
-
-    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("cannot schedule new futures after shutdown")
-            self._count += 1
-            name = f"{self._prefix}_{self._count}"
-        future: Future = Future()
-
-        def runner() -> None:
-            if not future.set_running_or_notify_cancel():
-                return
-            try:
-                result = fn(*args, **kwargs)
-            except BaseException as exc:  # noqa: BLE001 — 原样交给 Future
-                future.set_exception(exc)
-            else:
-                future.set_result(result)
-
-        threading.Thread(target=runner, name=name, daemon=True).start()
-        return future
-
-    def shutdown(self, wait: bool = False, *, cancel_futures: bool = False) -> None:
-        del wait, cancel_futures  # 守护线程不等；已开始的调用无法撤回（结果被丢弃）
-        with self._lock:
-            self._closed = True
 
 
 def _session_factory():
@@ -926,34 +891,22 @@ def _job_kind(job_id: str) -> str | None:
 
 
 # ---------------------------------------------------------------------- 维护任务（随清扫线程跑）
-MaintenanceTask = Callable[[], Any]
-_MAINTENANCE: dict[str, tuple[MaintenanceTask, float]] = {}
-_MAINTENANCE_LAST_RUN: dict[str, float] = {}
+_STYLE_MAINTENANCE = MaintenanceRegistry("style job")
+# 登记簿的两张表原样转出（测试直接读写它们）
+_MAINTENANCE: dict[str, tuple[MaintenanceTask, float]] = _STYLE_MAINTENANCE.tasks
+_MAINTENANCE_LAST_RUN: dict[str, float] = _STYLE_MAINTENANCE.last_run
 
 
 def register_maintenance_task(name: str, task: MaintenanceTask, *, interval_seconds: float) -> None:
     """登记一项随清扫线程跑的定期维护任务（模块导入时登记，与处理器同一种约定）：清扫线程启动时先跑一次，之后每
     ``interval_seconds`` 秒跑一次。任务自己开会话、自己提交；抛出的异常由清扫线程记日志，不影响清扫与别的任务。
     同名重复登记覆盖（模块被重新导入时无害）。"""
-    _MAINTENANCE[str(name)] = (task, max(1.0, float(interval_seconds)))
+    _STYLE_MAINTENANCE.register(name, task, interval_seconds=interval_seconds)
 
 
 def run_due_maintenance(*, now: float | None = None) -> list[str]:
     """跑一遍到期的维护任务（``now`` 是单调时钟秒数，缺省当前）；返回这一轮跑了的任务名（失败的不算）。"""
-    current = time.monotonic() if now is None else float(now)
-    ran: list[str] = []
-    for name, (task, interval) in list(_MAINTENANCE.items()):
-        last = _MAINTENANCE_LAST_RUN.get(name)
-        if last is not None and current - last < interval:
-            continue
-        _MAINTENANCE_LAST_RUN[name] = current
-        try:
-            task()
-        except Exception:  # noqa: BLE001 — 维护任务失败只记日志，下一个间隔再试
-            logger.exception("style job maintenance task %s failed", name)
-            continue
-        ran.append(name)
-    return ran
+    return _STYLE_MAINTENANCE.run_due(now=now)
 
 
 def sweeper_tick(*, now: float | None = None) -> None:
@@ -969,27 +922,22 @@ def start_job_sweeper(*, interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> No
     with _EXECUTOR_LOCK:
         if _SWEEPER is not None and _SWEEPER.is_alive():
             return
-        stop = threading.Event()
-        _MAINTENANCE_LAST_RUN.clear()
-
-        def _loop() -> None:
-            sweeper_tick()
-            while not stop.wait(max(1.0, float(interval_seconds))):
-                sweeper_tick()
-
-        _SWEEPER_STOP = stop
-        _SWEEPER = threading.Thread(target=_loop, name=SWEEPER_THREAD_NAME, daemon=True)
-        _SWEEPER.start()
+        _STYLE_MAINTENANCE.reset_schedule()
+        # 每一拍按名字取本模块的 sweeper_tick（测试会替换它）
+        sweeper = PeriodicThread(SWEEPER_THREAD_NAME, lambda: sweeper_tick(), interval_seconds=interval_seconds)
+        _SWEEPER_STOP = sweeper.stop_event
+        _SWEEPER = sweeper.thread
+        sweeper.start()
 
 
 def shutdown_job_workers(*, wait: bool = False) -> None:
     """lifespan 结束：停清扫、工人代 +1（在跑的处理器在下一个检查点把作业放回队列）、关线程池。
 
     ``wait=True`` 等在跑的处理器放回作业再返回（测试用）；缺省不等——它们在几秒内自己放回。"""
-    global _SWEEPER, _GENERATION
+    global _SWEEPER
     with _EXECUTOR_LOCK:
         _SWEEPER_STOP.set()
-        _GENERATION += 1
+        bump_worker_generation()
         executors = list(_EXECUTORS.values())
         _EXECUTORS.clear()
         _SWEEPER = None
