@@ -49,3 +49,37 @@ class ProjectCreateRequest(_ProjectFieldsRequest):
 
 class ProjectProfileUpdateRequest(_ProjectFieldsRequest):
     pass
+
+
+# ---- 本章流程：运行本章、已通读、确认定稿、重开定稿 ----
+
+
+class ProjectChapterRunJobRequest(StrictRequestModel):
+    """运行本章没有可调的选项（离线演示已退役，``offline_demo`` 一并删去）；空对象即可。"""
+
+
+class ProjectChapterReadConfirmRequest(StrictRequestModel):
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ProjectChapterReadConfirmationRequest(StrictRequestModel):
+    body_hash: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ProjectChapterApproveFinalRequest(StrictRequestModel):
+    revision_notes: str | None = Field(default=None, max_length=2000)
+    # 批准 #10：「已通读」随「确认定稿」一次提交，绑定作者读到的那一份正文（GET chapter-manuscripts 的 body_hash）
+    read_confirmation: ProjectChapterReadConfirmationRequest | None = None
+
+
+class ProjectChapterReopenFinalRequest(StrictRequestModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        reason = value.strip()
+        if not reason:
+            raise ValueError("reason must not be blank")
+        return reason

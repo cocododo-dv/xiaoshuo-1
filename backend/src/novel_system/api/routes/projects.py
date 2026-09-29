@@ -3,58 +3,22 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.project_requests import ProjectCreateRequest
+from novel_system.api.project_requests import (
+    ProjectChapterApproveFinalRequest,
+    ProjectChapterReadConfirmRequest,
+    ProjectChapterReopenFinalRequest,
+    ProjectChapterRunJobRequest,
+    ProjectCreateRequest,
+)
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.projects import ProjectChapterFlowService, ProjectService, start_project_chapter_run_job_worker
 
 router = APIRouter(tags=["projects"])
-
-
-class ProjectChapterRunJobRequest(BaseModel):
-    """运行本章没有可调的选项（离线演示已退役，``offline_demo`` 一并删去）；空对象即可。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-
-class ProjectChapterReadConfirmRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    note: str | None = Field(default=None, max_length=1000)
-
-
-class ProjectChapterReadConfirmationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    body_hash: str = Field(min_length=1, max_length=128)
-    note: str | None = Field(default=None, max_length=1000)
-
-
-class ProjectChapterApproveFinalRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    revision_notes: str | None = Field(default=None, max_length=2000)
-    # 批准 #10：「已通读」随「确认定稿」一次提交，绑定作者读到的那一份正文（GET chapter-manuscripts 的 body_hash）
-    read_confirmation: ProjectChapterReadConfirmationRequest | None = None
-
-
-class ProjectChapterReopenFinalRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    reason: str = Field(min_length=1, max_length=1000)
-
-    @field_validator("reason")
-    @classmethod
-    def validate_reason(cls, value: str) -> str:
-        reason = value.strip()
-        if not reason:
-            raise ValueError("reason must not be blank")
-        return reason
 
 
 @router.post("/api/v1/projects")
