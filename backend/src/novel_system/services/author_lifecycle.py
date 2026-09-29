@@ -25,13 +25,12 @@ from novel_system.db.models import (
     StoryProject,
     utcnow,
 )
-from novel_system.services.catalog_ordering import park, reseat_display_orders
+from novel_system.services.catalog_ordering import compact_chapter_orders, park, reseat_display_orders
 from novel_system.services.chapter_approval import (
     approved_chapter_block,
     is_chapter_approved,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.vector_store import VectorStore, get_vector_store
 from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
@@ -46,14 +45,8 @@ SCENE_CHAPTER_TRASHED_PURGE_REASON = "该场景随章节一起回收，请在章
 
 
 class AuthorLifecycleService:
-    def __init__(
-        self,
-        session: Session,
-        *,
-        vector_store: VectorStore | None = None,
-    ) -> None:
+    def __init__(self, session: Session) -> None:
         self.session = session
-        self._vector_store = vector_store
 
     def require_active_chapter(self, chapter_id: str) -> ChapterGoal:
         chapter = get_chapter_or_404(self.session, chapter_id)
@@ -253,7 +246,6 @@ class AuthorLifecycleService:
                     }
                 )
                 continue
-            self._delete_scene_vectors([scene])
             run_state = self.session.get(SceneRunState, scene.scene_id)
             if run_state is not None:
                 self.session.delete(run_state)
@@ -304,6 +296,7 @@ class AuthorLifecycleService:
                 scene_ids.append(scene.scene_id)
             processed.append({"chapter_id": chapter_id, "scene_ids": scene_ids})
         self.session.flush()
+        self._compact_chapter_orders(processed)
         return {"processed": processed, "blocked": blocked}
 
     def restore_chapters(self, chapter_ids: list[str]) -> dict:
@@ -339,7 +332,18 @@ class AuthorLifecycleService:
             self._normalize_active_last_scene(chapter_id)
             processed.append({"chapter_id": chapter_id, "scene_ids": scene_ids})
         self.session.flush()
+        self._compact_chapter_orders(processed)
         return {"processed": processed, "blocked": blocked}
+
+    def _compact_chapter_orders(self, processed: list[dict]) -> None:
+        """删章 / 恢复章改了作品的活跃章集合：把这些作品的章序压实（过去由下一次目录读取顺手补）。"""
+        project_ids = {
+            chapter.project_id
+            for item in processed
+            if (chapter := self.session.get(ChapterGoal, item["chapter_id"])) is not None and chapter.project_id
+        }
+        for project_id in sorted(project_ids):
+            compact_chapter_orders(self.session, project_id)
 
     def purge_chapters(self, chapter_ids: list[str]) -> dict:
         processed: list[dict] = []
@@ -373,12 +377,6 @@ class AuthorLifecycleService:
                 )
                 continue
             scene_ids = [scene.scene_id for scene in self._chapter_scenes(chapter_id, trashed_flag=1)]
-            scenes = [
-                scene
-                for scene_id in scene_ids
-                if (scene := self.session.get(SceneCard, scene_id)) is not None
-            ]
-            self._delete_scene_vectors(scenes)
             for scene_id in scene_ids:
                 state = self.session.get(SceneRunState, scene_id)
                 if state is not None:
@@ -500,53 +498,6 @@ class AuthorLifecycleService:
         if self._has_rows(select(ChapterRunJob.job_id).where(ChapterRunJob.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         return None
-
-    def _delete_scene_vectors(self, scenes: list[SceneCard]) -> None:
-        if not scenes:
-            return
-        by_project: dict[str, list[str]] = {}
-        for scene in scenes:
-            project_id = scene.project_id
-            if not project_id:
-                chapter = self.session.get(ChapterGoal, scene.chapter_id)
-                project_id = chapter.project_id if chapter is not None else None
-            # Pre-project legacy fixtures used opaque chapter IDs such as
-            # ``CH630`` and indexed them under that exact collection suffix.
-            # This cleanup-only compatibility path is safe because it never
-            # infers a prefix from a structured ``*_CH_*`` identifier.
-            if not project_id and "_" not in scene.chapter_id:
-                project_id = scene.chapter_id
-            if not project_id:
-                raise DomainError(
-                    "PROJECT_OWNERSHIP_UNRESOLVED",
-                    "cannot permanently delete scene vectors without authoritative project ownership",
-                    status_code=409,
-                    details={
-                        "scene_id": scene.scene_id,
-                        "chapter_id": scene.chapter_id,
-                    },
-                )
-            by_project.setdefault(project_id, []).append(scene.scene_id)
-
-        store = self._vector_store or get_vector_store()
-        for project_id, scene_ids in by_project.items():
-            collection_name = f"scenes_{project_id}"
-            try:
-                store.delete_documents(collection_name, scene_ids)
-            except DomainError:
-                raise
-            except Exception as exc:
-                raise DomainError(
-                    "SCENE_VECTOR_PURGE_FAILED",
-                    "scene vector documents could not be permanently deleted",
-                    status_code=503,
-                    details={
-                        "project_id": project_id,
-                        "scene_ids": scene_ids,
-                        "collection_name": collection_name,
-                        "retryable": True,
-                    },
-                ) from exc
 
     def chapter_purge_block_reason(self, chapter: ChapterGoal) -> str | None:
         if self._has_rows(

@@ -4,10 +4,10 @@ from __future__ import annotations
 from novel_system.db.models import (
     ChapterGoal,
     SceneCard,
+    SceneRunState,
     StoryProject,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
-from novel_system.services.vector_store import InMemoryVectorStore
 
 
 def _create_chapter(client, chapter_id: str, *, goal: str = "Author a chapter") -> None:
@@ -63,13 +63,13 @@ def _create_scene(
     assert response.status_code == 200
 
 
-def test_scene_purge_removes_only_its_project_vector_document(session) -> None:
-    project_id = "project_vector_purge"
-    chapter_id = "chapter_vector_purge"
-    scene_id = "scene_vector_purge"
+def test_scene_purge_removes_only_the_trashed_scene_and_its_run_state(session) -> None:
+    project_id = "project_scene_purge"
+    chapter_id = "chapter_scene_purge"
+    scene_id = "scene_scene_purge"
     session.add(StoryProject(
         project_id=project_id,
-        title="Vector purge",
+        title="Scene purge",
         outline_text="",
         planning_mode="snowflake",
     ))
@@ -77,33 +77,37 @@ def test_scene_purge_removes_only_its_project_vector_document(session) -> None:
     session.add(ChapterGoal(
         chapter_id=chapter_id,
         project_id=project_id,
-        chapter_goal="Purge one vector",
+        chapter_goal="Purge one scene",
     ))
     session.flush()
-    session.add(SceneCard(
-        scene_id=scene_id,
-        chapter_id=chapter_id,
-        project_id=project_id,
-        scene_seq=1,
-        scene_goal="Purge",
-        trashed_flag=1,
-    ))
+    session.add_all([
+        SceneCard(
+            scene_id=scene_id,
+            chapter_id=chapter_id,
+            project_id=project_id,
+            scene_seq=1,
+            scene_goal="Purge",
+            trashed_flag=1,
+        ),
+        SceneCard(
+            scene_id="scene_kept",
+            chapter_id=chapter_id,
+            project_id=project_id,
+            scene_seq=2,
+            scene_goal="Keep",
+        ),
+    ])
     session.flush()
-    store = InMemoryVectorStore()
-    store.write_collection(
-        f"scenes_{project_id}",
-        [
-            {"id": scene_id, "text": "delete me"},
-            {"id": "another_scene", "text": "keep me"},
-        ],
-    )
+    session.add_all([SceneRunState(scene_id=scene_id), SceneRunState(scene_id="scene_kept")])
+    session.flush()
 
-    result = AuthorLifecycleService(session, vector_store=store).purge_scenes([scene_id])
+    result = AuthorLifecycleService(session).purge_scenes([scene_id])
 
     assert result == {"processed": [{"scene_id": scene_id}], "blocked": []}
-    assert store.load_collection(f"scenes_{project_id}") == [
-        {"id": "another_scene", "text": "keep me"}
-    ]
+    assert session.get(SceneCard, scene_id) is None
+    assert session.get(SceneRunState, scene_id) is None
+    assert session.get(SceneCard, "scene_kept") is not None
+    assert session.get(SceneRunState, "scene_kept") is not None
 
 
 def test_chapter_trash_is_blocked_when_it_has_previously_trashed_child_scenes(client) -> None:

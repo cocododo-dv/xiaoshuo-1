@@ -4,7 +4,8 @@
 创建的行与本服务读写的是同一批行（护栏测试 test_catalog_single_source.py）。
 
 约定：
-- 章顺序 = display_order（混合 chapter_id 格式下不能依赖字典序；缺号惰性补齐）。
+- 章顺序 = display_order（混合 chapter_id 格式下不能依赖字典序）。读取不写库：改动章集合的写入口自己压实章序
+  （``catalog_ordering.compact_chapter_orders``；库里原有的漂移由迁移 0097 一次补齐）。
 - 场景顺序 = 既有 scene_seq（与 v1 scene-order 端点同一套逻辑，不另建列）。
 - 章标题写 narrative_json["title"]；读取回退 writer_brief_json.chapter_title →
   writer_brief_json.title → chapter_goal 首行。
@@ -30,7 +31,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -54,7 +55,7 @@ from novel_system.services.catalog_labels import (  # noqa: F401  (re-exported: 
     scene_title,
     short_scene_title,
 )
-from novel_system.services.catalog_ordering import reseat_display_orders, reseat_scene_seqs
+from novel_system.services.catalog_ordering import compact_chapter_orders, reseat_display_orders, reseat_scene_seqs
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
     require_chapter_mutation_allowed,
@@ -118,9 +119,10 @@ class CatalogService:
         }
 
     def read_context(self, project_id: str, chapter_ids: list[str]) -> dict[str, Any]:
-        """整本目录一次读完要用的查表（角色名、场景管线状态）——逐场去查是 N+1。
+        """整本目录一次读完要用的查表（各章场景卡、场景三问、角色名、场景管线状态……）——逐章 / 逐场去查是 N+1
+        （80 章的目录过去要 173 条查询，B08-12）。查询条数与章数、场数无关。
 
-        管线状态按章号取（不按 ``SceneCard.project_id``）：v1 建的旧场景卡没有 project_id，
+        场景卡与管线状态按章号取（不按 ``SceneCard.project_id``）：v1 建的旧场景卡没有 project_id，
         归属是从章上推出来的。
         """
         names = {
@@ -129,8 +131,16 @@ class CatalogService:
                 select(StoryCharacter).where(StoryCharacter.project_id == project_id)
             ).scalars()
         }
+        scenes_by_chapter: dict[str, list[SceneCard]] = {chapter_id: [] for chapter_id in chapter_ids}
         run_states: dict[str, SceneRunState] = {}
+        story_checks: dict[str, dict[str, Any]] = {}
         if chapter_ids:
+            for scene in self.session.execute(
+                select(SceneCard)
+                .where(SceneCard.chapter_id.in_(chapter_ids), SceneCard.trashed_flag == 0)
+                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+            ).scalars():
+                scenes_by_chapter.setdefault(str(scene.chapter_id), []).append(scene)
             run_states = {
                 row.scene_id: row
                 for row in self.session.execute(
@@ -139,9 +149,14 @@ class CatalogService:
                     .where(SceneCard.chapter_id.in_(chapter_ids), SceneCard.trashed_flag == 0)
                 ).scalars()
             }
+            story_checks = self._story_checks_where(
+                SceneCard.chapter_id.in_(chapter_ids), SceneCard.trashed_flag == 0
+            )
         return {
             "character_names": names,
             "run_states": run_states,
+            "scenes_by_chapter": scenes_by_chapter,
+            "story_checks": story_checks,
             "plan_scene_ids": live_plan_scene_ids(self.session, project_id),
             # 阶段 Z：哪些目录章被构思的分章钉着、每一场在故事序上是第几场
             "chapter_plans": live_chapter_plans_by_catalog_id(self.session, project_id),
@@ -149,6 +164,8 @@ class CatalogService:
         }
 
     def chapter_rows(self, project_id: str) -> list[ChapterGoal]:
+        """作品的活跃章按章序排好（没有章序的排最后，同序按 chapter_id）。纯读——章序由写入口压实
+        （``catalog_ordering.compact_chapter_orders``），读取不再顺手写库（B08-14，迁移 0097）。"""
         rows = list(
             self.session.execute(
                 select(ChapterGoal).where(
@@ -156,20 +173,7 @@ class CatalogService:
                 )
             ).scalars().all()
         )
-        # 缺 display_order 的行（雪花物化/旧数据）按 chapter_id 字典序惰性补号
         rows.sort(key=lambda c: (c.display_order is None, c.display_order or 0, c.chapter_id))
-        pending = [
-            (chapter, index)
-            for index, chapter in enumerate(rows, start=1)
-            if chapter.display_order != index
-        ]
-        # A read/backfill must never move an approved row as a side effect.  A
-        # legacy drift remains visible and must be repaired through the explicit
-        # reopen flow rather than silently weakening final-approval immutability.
-        if pending and not any(
-            is_chapter_approved(self.session, chapter) for chapter, _ in pending
-        ):
-            self._assign_chapter_orders(pending)
         return rows
 
     def scene_rows(self, chapter_id: str) -> list[SceneCard]:
@@ -190,9 +194,13 @@ class CatalogService:
             # 单章回包（建章 / 改章）与整本目录说同一套话：结构归属、故事序场次、设计归属都要查表。
             # 逐章循环的调用方应当自己先取一次 read_context 传进来（review_derived / project_overview 都是）。
             context = self.read_context(project.project_id, [chapter.chapter_id])
-        scenes = self.scene_rows(chapter.chapter_id)
+        scenes = (context.get("scenes_by_chapter") or {}).get(chapter.chapter_id)
+        if scenes is None:
+            scenes = self.scene_rows(chapter.chapter_id)
         words_cur = sum(int(s.words_current or 0) for s in scenes)
-        story_checks = self.story_checks([s.scene_id for s in scenes])
+        story_checks = context.get("story_checks")
+        if story_checks is None:
+            story_checks = self.story_checks([s.scene_id for s in scenes])
         title = chapter_title(chapter)
         origin = "snowflake" if is_snowflake_origin(brief) else "manual"
         goal = str(chapter.chapter_goal or "").strip()
@@ -265,23 +273,29 @@ class CatalogService:
         }
 
     def story_checks(self, scene_ids: list[str]) -> dict[str, dict[str, Any]]:
-        """阶段 D：每场最近一次准定稿评审的场景三问（一次查询，按 attempt 倒序取首条）。"""
+        """阶段 D：每场最近一次准定稿评审的场景三问（无评审或那次评审没有三问 → 不在结果里）。"""
         if not scene_ids:
             return {}
-        rows = self.session.execute(
-            select(AttemptTracker.scene_id, AttemptTracker.details_json)
-            .where(
-                AttemptTracker.scene_id.in_(scene_ids),
-                AttemptTracker.step == "near_final_acceptance_review",
+        return self._story_checks_where(SceneCard.scene_id.in_(scene_ids))
+
+    def _story_checks_where(self, *scene_filters: Any) -> dict[str, dict[str, Any]]:
+        """一条查询：按场取最近一次（attempt_id 最大）准定稿评审，只读它的 details_json——不再把每场的评审历史全拉回来。"""
+        latest = (
+            select(
+                AttemptTracker.scene_id.label("scene_id"),
+                func.max(AttemptTracker.attempt_id).label("attempt_id"),
             )
-            .order_by(AttemptTracker.attempt_id.desc())
-        ).all()
-        seen: set[str] = set()
+            .join(SceneCard, SceneCard.scene_id == AttemptTracker.scene_id)
+            .where(AttemptTracker.step == "near_final_acceptance_review", *scene_filters)
+            .group_by(AttemptTracker.scene_id)
+            .subquery()
+        )
         result: dict[str, dict[str, Any]] = {}
-        for scene_id, details in rows:
-            if scene_id in seen:
-                continue
-            seen.add(scene_id)
+        for scene_id, details in self.session.execute(
+            select(AttemptTracker.scene_id, AttemptTracker.details_json).join(
+                latest, AttemptTracker.attempt_id == latest.c.attempt_id
+            )
+        ).all():
             check = (details or {}).get("scene_story_check") if isinstance(details, dict) else None
             if isinstance(check, dict):
                 result[scene_id] = check
@@ -504,6 +518,7 @@ class CatalogService:
     def create_chapter(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         project = require_project(self.session, project_id)
         body = payload or {}
+        compact_chapter_orders(self.session, project_id)
         existing = self.chapter_rows(project_id)
         title = str(body.get("title") or "").strip() or f"第 {len(existing) + 1} 章"
         # 空目录首章立为在写章（抄 WsCatalog.addChapter 语义）；调用方也可显式传 state/current
@@ -758,6 +773,7 @@ class CatalogService:
                 status_code=400,
             )
 
+        compact_chapter_orders(self.session, project.project_id)
         current_rows = self.chapter_rows(project_id)
         current_ids = [chapter.chapter_id for chapter in current_rows]
         requested_set = set(requested)

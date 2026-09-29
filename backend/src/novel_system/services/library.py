@@ -15,13 +15,11 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     LibraryEntity,
     LibraryRelation,
-    RelationProfile,
     SceneCard,
     SnowflakeCharacterPlan,
     SnowflakeScenePlan,
     StoryCharacter,
     TimelineEvent,
-    VoiceProfile,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_lookup import require_project
@@ -446,21 +444,6 @@ class LibraryService:
                     select(SnowflakeCharacterPlan).where(
                         SnowflakeCharacterPlan.project_id == project_id,
                         SnowflakeCharacterPlan.character_id == character_id,
-                    )
-                ).all()
-            ),
-            "voice_profiles": len(
-                self.session.scalars(
-                    select(VoiceProfile).where(
-                        VoiceProfile.character_id == character_id,
-                    )
-                ).all()
-            ),
-            "relation_profiles": len(
-                self.session.scalars(
-                    select(RelationProfile).where(
-                        (RelationProfile.left_character_id == character_id)
-                        | (RelationProfile.right_character_id == character_id)
                     )
                 ).all()
             ),

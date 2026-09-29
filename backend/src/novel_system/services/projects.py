@@ -25,7 +25,7 @@ from novel_system.services.catalog_placeholders import (  # noqa: F401  (re-expo
     AUTO_TRASHED_PLACEHOLDER_CHAPTER,
     trash_pristine_placeholder_chapters,
 )
-from novel_system.services.catalog_ordering import park
+from novel_system.services.catalog_ordering import compact_chapter_orders, park
 from novel_system.services.catalog_trash_cascade import revive_cascade_trashed_scene_cards
 from novel_system.services.chapter_approval import is_chapter_approved
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
@@ -65,6 +65,7 @@ def trash_emptied_snowflake_chapters(
     *,
     keep_chapter_ids: set[str],
     actor_ref: str = AUTO_TRASHED_EMPTY_CHAPTER,
+    compact_orders: bool = True,
 ) -> list[dict[str, Any]]:
     """重新分章之后，把**雪花整理出来、现在已经空了**的旧章移入回收站（可恢复），返回被移走的章。
 
@@ -74,6 +75,8 @@ def trash_emptied_snowflake_chapters(
     只动同时满足这几条的章：雪花物化 / 回流建的（不碰作者在章节编排里手建的章）、不在这一版分章里、
     一张场景卡都没有（活跃的、回收站里的都算——里面还有作者手加的场就原样保留）、没有终审通过。
     走回收站而不是物理删除：作者随时可以在回收站里取回。
+
+    移走了章就顺手压实剩下的章序（``compact_orders``）；物化自己最后统一落位、压实，传 ``False``。
     """
     trashed: list[dict[str, Any]] = []
     now = utcnow()
@@ -110,6 +113,8 @@ def trash_emptied_snowflake_chapters(
         )
     if trashed:
         session.flush()
+        if compact_orders:
+            compact_chapter_orders(session, project_id)
     return trashed
 
 
@@ -212,7 +217,7 @@ class _CatalogPlacement:
           顺序与目录位置都锁着）：算出来的顺序会让某个终审章换位置，就整个不动，新章照旧接在最后
           （``held_by_approved``，回执里告诉作者），由作者先到成稿中心重新打开再整理一次。
 
-        不补空号——目录读取时会惰性压实 ``display_order``。
+        不补空号——物化最后统一压实（``catalog_ordering.compact_chapter_orders``）。
         """
         active = list(
             self.session.execute(
@@ -680,6 +685,7 @@ class ProjectService:
             self.session,
             project.project_id,
             keep_chapter_ids={str(item.get("chapter_id") or "").strip() for item in chapters},
+            compact_orders=False,
         )
         chapter_order = placement.settle_chapter_order()
         plan.status = PLAN_STATUS_APPROVED
@@ -695,6 +701,9 @@ class ProjectService:
         ):
             project.current_chapter_id = str(chapters[0]["chapter_id"])
         project.status = PROJECT_STATUS_CHAPTER_READY
+        # 移走占位章 / 空章、取回回收站里的章之后，按章表落位没有排到的空号在这里压实
+        # （「未变」「被终审章挡住」两种落位结果不补空号；过去这一步由下一次目录读取顺手做）
+        compact_chapter_orders(self.session, project.project_id)
         self.session.flush()
         return {
             "project": project_payload(project),

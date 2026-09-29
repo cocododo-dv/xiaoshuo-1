@@ -10,46 +10,26 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    AuthorDraft,
-    AuthorDraftEvent,
     ChapterGoal,
-    ChapterRunJob,
-    ChapterState,
     SceneCard,
-    SceneRunState,
     StoryProject,
     utcnow,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.catalog_labels import chapter_title, scene_title
 from novel_system.services.errors import DomainError
-from novel_system.services.project_purge import (
-    build_project_purge_plan,
-    delete_indirect_project_rows,
-    purge_project_vectors,
-)
-from novel_system.services.project_ownership import delete_project_owned_rows
-from novel_system.services.vector_store import VectorStore, get_vector_store
+from novel_system.services.project_purge import build_project_purge_plan, purge_project_rows
 from novel_system.services.scene_lookup import require_project
 
 
 class TrashService:
-    def __init__(
-        self,
-        session: Session,
-        *,
-        vector_store: VectorStore | None = None,
-    ) -> None:
+    def __init__(self, session: Session) -> None:
         self.session = session
-        self._vector_store = vector_store
-        self._lifecycle = AuthorLifecycleService(
-            session,
-            vector_store=vector_store,
-        )
+        self._lifecycle = AuthorLifecycleService(session)
 
     # ---- 作品级 ----
 
@@ -171,179 +151,21 @@ class TrashService:
     def purge_project(self, project_id: str) -> dict[str, Any]:
         """整部作品永久清除（D3 手动）。删除项目本体与全部派生数据。
 
-        审计 P-2：此前只删 FE 域 + 雪花域 15 张表，正文全文仍以草稿/成稿/
-        场景记忆/修订快照/LLM 审计载荷等形式留库（"永久清除"语义未兑现），
-        且孤儿行永远无法经 UI 清理。现按 scene/chapter/draft/project 四个维度
-        补全运行时派生表（对齐 style_reference/cleanup.py 的删书标准）。
-        刻意保留 OperationLog（纯操作审计，无正文，与 style_reference 保留
-        MetricEvent 同一取舍）。
+        审计 P-2：此前只删 FE 域 + 雪花域 15 张表，正文全文仍以草稿 / 成稿 / 场景记忆 / 修订快照 /
+        LLM 审计载荷等形式留库。现在按元数据推出作品名下的每一行（``project_purge``：作品 / 章 / 场景 /
+        作者稿 / 人物各维度 + 几种间接引用），新表不必再来这里登记。刻意保留 OperationLog（纯操作审计，
+        无正文，与 style_reference 保留 MetricEvent 同一取舍）。
         """
         project = self._require_project(project_id, allow_trashed=True)
         if project.trashed_flag != 1:
             raise DomainError(
                 "PROJECT_NOT_TRASHED", "project must be trashed before purge", status_code=409
             )
-        chapter_ids = [
-            row
-            for row in self.session.execute(
-                select(ChapterGoal.chapter_id).where(ChapterGoal.project_id == project_id)
-            ).scalars().all()
-        ]
-        scene_ids = [
-            row
-            for row in self.session.execute(
-                select(SceneCard.scene_id).where(SceneCard.project_id == project_id)
-            ).scalars().all()
-        ]
-        draft_ids = []
-        if scene_ids or chapter_ids:
-            draft_ids = [
-                row
-                for row in self.session.execute(
-                    select(AuthorDraft.draft_id).where(
-                        (
-                            (AuthorDraft.object_type == "scene") & AuthorDraft.object_id.in_(scene_ids or [""])
-                        )
-                        | (
-                            (AuthorDraft.object_type == "chapter") & AuthorDraft.object_id.in_(chapter_ids or [""])
-                        )
-                        | ((AuthorDraft.object_type == "project") & (AuthorDraft.object_id == project_id))
-                    )
-                ).scalars().all()
-            ]
-
-        from novel_system.db.models import (
-            AttemptTracker,
-            AuthorDraftProposal,
-            AuthorDraftRevision,
-            ChapterMemory,
-            ChapterRollingNote,
-            FinalScene,
-            GenerationPlanningArtifact,
-            HumanReviewEvent,
-            LlmCall,
-            LlmCallAttempt,
-            PassagePatchCandidate,
-            QcReport,
-            ReviewItem,
-            RevisionCandidate,
-            SceneBlueprint,
-            SceneBundle,
-            SceneDraft,
-            SceneExecutionContract,
-            SceneMemory,
-            StoryCharacter,
-            WriterEvaluation,
-        )
-
-        character_ids = [
-            row
-            for row in self.session.execute(
-                select(StoryCharacter.character_id).where(StoryCharacter.project_id == project_id)
-            ).scalars().all()
-        ]
-        purge_plan = build_project_purge_plan(
-            self.session,
-            project_id=project_id,
-            chapter_ids=chapter_ids,
-            scene_ids=scene_ids,
-            character_ids=character_ids,
-        )
-        vector_store = self._vector_store or get_vector_store()
-        purged_vector_collections = purge_project_vectors(purge_plan, vector_store)
-
-        if draft_ids:
-            self.session.execute(delete(AuthorDraftEvent).where(AuthorDraftEvent.draft_id.in_(draft_ids)))
-            self.session.execute(delete(AuthorDraftRevision).where(AuthorDraftRevision.draft_id.in_(draft_ids)))
-            self.session.execute(delete(AuthorDraftProposal).where(AuthorDraftProposal.draft_id.in_(draft_ids)))
-            self.session.execute(delete(AuthorDraft).where(AuthorDraft.draft_id.in_(draft_ids)))
-
-        # —— scene 维度派生表（正文/运行时痕迹）——
-        if scene_ids:
-            for model in (
-                SceneDraft,
-                FinalScene,
-                SceneMemory,
-                ChapterRollingNote,
-                SceneBundle,
-                SceneBlueprint,
-                SceneExecutionContract,
-            ):
-                self.session.execute(delete(model).where(model.scene_id.in_(scene_ids)))
-
-        # —— chapter 维度派生表 ——
-        if chapter_ids:
-            self.session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id.in_(chapter_ids)))
-
-        # —— scene ∪ chapter 双列维度（行可能只挂其中一列）——
-        if scene_ids or chapter_ids:
-            for model in (
-                QcReport,
-                WriterEvaluation,
-                RevisionCandidate,
-                PassagePatchCandidate,
-                AttemptTracker,
-                HumanReviewEvent,
-                GenerationPlanningArtifact,
-            ):
-                self.session.execute(
-                    delete(model).where(
-                        model.scene_id.in_(scene_ids or [""])
-                        | model.chapter_id.in_(chapter_ids or [""])
-                    )
-                )
-
-        # legacy ReviewItem/LlmCall 行可能只挂 scene/chapter 列
-        if scene_ids or chapter_ids:
-            self.session.execute(
-                delete(ReviewItem).where(
-                    ReviewItem.scene_id.in_(scene_ids or [""])
-                    | ReviewItem.chapter_id.in_(chapter_ids or [""])
-                )
-            )
-        llm_call_scope = (
-            (LlmCall.project_id == project_id)
-            | LlmCall.scene_id.in_(scene_ids or [""])
-            | LlmCall.chapter_id.in_(chapter_ids or [""])
-        )
-        llm_call_ids = select(LlmCall.llm_call_id).where(llm_call_scope)
-        # 运行连接默认强制 FK；仍显式按子→父删除，既让维护期开关关闭时安全，
-        # 也让删除意图与审计范围保持清晰。
-        self.session.execute(
-            delete(LlmCallAttempt).where(LlmCallAttempt.llm_call_id.in_(llm_call_ids))
-        )
-        self.session.execute(delete(LlmCall).where(llm_call_scope))
-
-        # —— 运行时状态与项目所有权图 ——
-        # ChapterRunJob / SceneRunState / ChapterState 没有 project_id，先显式删除。随后由
-        # 元数据拓扑统一删除所有带 project_id 的子表及 SceneCard/ChapterGoal；
-        # 不能先删章/场，否则新加入的真实外键会让永久清除在半途失败。
-        if scene_ids or chapter_ids:
-            self.session.execute(
-                delete(ChapterRunJob).where(
-                    ChapterRunJob.scene_id.in_(scene_ids or [""])
-                    | ChapterRunJob.chapter_id.in_(chapter_ids or [""])
-                )
-            )
-        if scene_ids:
-            self.session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
-        if chapter_ids:
-            self.session.execute(delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids)))
-
-        # scope_ref_id、人物引用、版本注册表和互操作记录没有直接 project_id，
-        # 必须在通用 project_id 删除器之前按预先冻结的所有权计划清除。
-        delete_indirect_project_rows(self.session, purge_plan)
-
-        # 所有带 project_id 的 ORM 表共享同一份元数据派生清单，新增项目模型
-        # 不需要再来此处手工登记。
-        delete_project_owned_rows(self.session, project_id)
+        # 所有权先冻结再删：删到一半时章 / 场景行已经没了，就再也推不出它们名下的行
+        purge_project_rows(self.session, build_project_purge_plan(self.session, project_id))
         self.session.delete(project)
         self.session.flush()
-        return {
-            "project_id": project_id,
-            "purged": True,
-            "purged_vector_collections": list(purged_vector_collections),
-        }
+        return {"project_id": project_id, "purged": True}
 
     # ---- internals ----
 
