@@ -1,65 +1,112 @@
+"""系统配置：五类配置快照（api / models / prompts / allowlists / hash_contract）与「设置 → AI 模型」的服务。
+
+2026-09-30 拆开（B09-13 / B09-11）：
+* ``system_config_secrets``：密钥的加密存取与状态；
+* ``llm_provider_config``：服务（provider）配置的规范化、叠到环境设置上、运行时配置与客户端工厂；
+* ``llm_provider_probe``：「测试连接」与拉模型列表；
+* ``llm_route_config``：节点路由的就绪视图、分工槽、退役路由剪枝、写路由的激活守门；
+本模块留 ``SystemConfigService``（快照的草稿 / 激活，设置页的各个动作）、配置校验与默认值、管理令牌，
+并转出拆出去的公开名字（路由、工具、各服务从这里 import）。
+
+``load_active_config_payload`` / ``load_secret_value`` 在本模块经 ``SessionLocal`` 与 ``time.sleep``
+读库（测试在这里打桩）。没有界面能重新激活旧快照：运维回滚用 ``SystemConfigService(session).activate(
+<snapshot_id>, actor_ref=...)``（``sync_prompt_templates`` / ``raise_llm_output_budget`` 也是这样写快照的）。
+"""
+
 from __future__ import annotations
 
-import base64
-import hashlib
 import hmac
-import ipaddress
 import time
 import uuid
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
-import httpx
 import yaml
-from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import OperationLog, SystemConfigSnapshot, SystemSecret, utcnow
 from novel_system.db.session import SessionLocal
-from novel_system.env_config import (
-    DEFAULT_LLM_TIMEOUT_SECONDS,
-    env_admin_token,
-    env_config_secret,
-    load_env_settings,
-)
+from novel_system.env_config import DEFAULT_LLM_TIMEOUT_SECONDS, env_admin_token, env_config_secret, load_env_settings
+from novel_system.services.config_snapshot_reader import active_snapshot, read_with_transient_retry
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
-from novel_system.services.llm_client import (
-    LLMClient,
-    LLMConfigurationError,
-    LLMRequest,
-    ProviderRuntimeConfig,
-    SUPPORTED_API_MODES,
-    SUPPORTED_CREDENTIAL_MODES,
-)
-from novel_system.services.llm_routing import (
-    DEFAULT_PROVIDER_BASE_URLS,
-    LEGACY_TASK_ALIASES,
-    SUPPORTED_PROVIDERS,
-    parse_model_routing_config,
-    routing_for_models_payload,
-)
-from novel_system.services.llm_accounting import LLMCallContext
-from novel_system.services.llm_provider_probe import execute_accounted_completion_probe
-from novel_system.services.llm_providers import (
-    adapter_registry,
-    get_provider_preset,
-    provider_catalog as adapter_provider_catalog,
-    provider_preset_payloads,
-)
+from novel_system.services.llm_client import LLMConfigurationError, ProviderRuntimeConfig
 from novel_system.services.llm_node_registry import (
     active_llm_node_ids,
     default_task_config_payload,
     get_role_slot_spec,
     llm_node_catalog,
-    role_slot_catalog,
     role_slot_node_ids,
 )
+from novel_system.services.llm_provider_config import (
+    apply_active_api_config,
+    bool_value,
+    build_llm_client,
+    build_runtime_llm_client,
+    coerce_api_payload,
+    load_llm_provider_runtime_configs,
+    normalize_provider_base_url,
+    normalize_provider_model_ids,
+    normalize_provider_payload,
+    provider_catalog,
+    provider_payloads_from_llm,
+    required_text,
+    validate_api_config,
+)
+from novel_system.services.llm_provider_probe import (
+    PROVIDER_PROBE_TIMEOUT_SECONDS,
+    ProbeTarget,
+    fetch_model_listing,
+    listed_model_ids,
+    probe_timeout_seconds,
+    provider_error_summary,
+    run_provider_probe,
+)
+from novel_system.services.llm_providers import adapter_registry, get_provider_preset, provider_preset_payloads
+from novel_system.services.llm_route_config import (
+    annotate_node_route_readiness,
+    llm_readiness_summary,
+    parse_route_config_or_raise,
+    provider_route_api_mode,
+    provider_view_ready,
+    role_slot_overview,
+    serialize_task_config,
+    validate_activating_node_route_bindings,
+    writable_models_payload,
+)
+from novel_system.services.llm_routing import parse_model_routing_config, routing_for_models_payload
 from novel_system.services.prompt_builder import PromptConfigurationError, parse_prompt_templates
+from novel_system.services.system_config_secrets import (
+    LLM_API_KEY_SECRET_ID,
+    LLM_PROVIDER_SECRET_PREFIX,
+    llm_provider_api_key_secret_id,
+    none_secret_status,
+    save_secret_value,
+    secret_status,
+    secret_value,
+)
 from novel_system.services.value_coercion import optional_text
+
+__all__ = [
+    "CONFIG_CATEGORIES",
+    "LLM_API_KEY_SECRET_ID",
+    "LLM_PROVIDER_SECRET_PREFIX",
+    "ProviderRuntimeConfig",
+    "SystemConfigService",
+    "YAML_CONFIG_FILES",
+    "apply_active_api_config",
+    "build_llm_client",
+    "build_runtime_llm_client",
+    "default_config_payload",
+    "llm_provider_api_key_secret_id",
+    "load_active_config_payload",
+    "load_llm_provider_runtime_configs",
+    "load_secret_value",
+    "repo_config_dir",
+    "require_admin_token",
+    "validate_config",
+]
 
 
 CONFIG_CATEGORIES = ("api", "models", "prompts", "allowlists", "hash_contract")
@@ -69,12 +116,6 @@ YAML_CONFIG_FILES = {
     "allowlists": "allowlists.yaml",
     "hash_contract": "hash_contract.yaml",
 }
-LLM_API_KEY_SECRET_ID = "llm_api_key"
-LLM_PROVIDER_SECRET_PREFIX = "llm_provider"
-# 探活调用向记账层申报的输出预算(详见 _probe_completion 内注释)
-PROBE_ACCOUNTING_OUTPUT_BUDGET = 1024
-# 「测试连接」的超时与长文本生成上限无关，探测必须有限且短。
-PROVIDER_PROBE_TIMEOUT_SECONDS = 30.0
 
 
 def repo_config_dir() -> Path:
@@ -82,8 +123,6 @@ def repo_config_dir() -> Path:
 
 
 def _read_with_transient_retry(reader):
-    from novel_system.services.config_snapshot_reader import read_with_transient_retry
-
     return read_with_transient_retry(reader, sleep=time.sleep)
 
 
@@ -93,180 +132,12 @@ def load_active_config_payload(category: str) -> dict[str, Any] | None:
     return read_payload(category, session_factory=SessionLocal, sleep=time.sleep)
 
 
-def apply_active_api_config(settings):
-    """把活动 api 快照与它用到的密钥叠到环境设置上。
-
-    快照与密钥在同一个只读事务里读（原来是三个会话各读一样，``get_settings()`` 在一次请求里会被调很多次）；
-    SQLite 忙时整个事务按 ``read_with_transient_retry`` 重试。
-    """
-    return _read_with_transient_retry(lambda: _apply_active_api_config(settings))
-
-
-def _apply_active_api_config(settings):
-    from novel_system.services.config_snapshot_reader import active_config_payload
-
-    with SessionLocal() as session:
-        return _overlay_api_config(
-            settings,
-            payload=active_config_payload(session, "api"),
-            read_secret=lambda secret_id: _secret_value(session, secret_id),
-        )
-
-
-def _overlay_api_config(settings, *, payload, read_secret):
-    api_key = read_secret(LLM_API_KEY_SECRET_ID)
-    if not payload and not api_key:
-        return settings
-
-    llm_payload = _coerce_api_payload(payload or {})
-    providers = _provider_payloads_from_llm(llm_payload)
-    if providers:
-        provider_id = str(llm_payload.get("default_provider_id") or next(iter(providers.keys())))
-        provider_payload = providers.get(provider_id) or next(iter(providers.values()))
-        provider_secret = read_secret(llm_provider_api_key_secret_id(provider_id))
-        return replace(
-            settings,
-            llm_provider=provider_payload.get("provider_type", provider_payload.get("provider", settings.llm_provider)),
-            llm_base_url=_normalize_provider_base_url(
-                provider_payload.get("base_url", settings.llm_base_url),
-                provider_payload.get("provider_type", provider_payload.get("provider", settings.llm_provider)),
-            ),
-            llm_enabled=llm_payload.get("enabled", provider_payload.get("enabled", settings.llm_enabled)),
-            llm_timeout_seconds=llm_payload.get("timeout_seconds", settings.llm_timeout_seconds),
-            llm_api_key=provider_secret or api_key or settings.llm_api_key,
-        )
-    return replace(
-        settings,
-        llm_provider=llm_payload.get("provider", settings.llm_provider),
-        llm_base_url=_normalize_provider_base_url(
-            llm_payload.get("base_url", settings.llm_base_url),
-            llm_payload.get("provider", settings.llm_provider),
-        ),
-        llm_enabled=llm_payload.get("enabled", settings.llm_enabled),
-        llm_timeout_seconds=llm_payload.get("timeout_seconds", settings.llm_timeout_seconds),
-        llm_api_key=api_key or settings.llm_api_key,
-    )
-
-
 def load_secret_value(secret_id: str) -> str | None:
     def _read():
         with SessionLocal() as session:
-            return _secret_value(session, secret_id)
+            return secret_value(session, secret_id)
 
     return _read_with_transient_retry(_read)
-
-
-def _secret_value(session: Session, secret_id: str) -> str | None:
-    """解密后的密钥；没有这一条、没配 NOVEL_SYSTEM_CONFIG_SECRET 或解不开 → ``None``。"""
-    secret = session.get(SystemSecret, secret_id)
-    if secret is None:
-        return None
-    try:
-        return _decrypt_secret(secret.encrypted_value)
-    except (DomainError, InvalidToken):
-        return None
-
-
-def llm_provider_api_key_secret_id(provider_id: str) -> str:
-    return f"{LLM_PROVIDER_SECRET_PREFIX}:{provider_id}:api_key"
-
-
-def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
-    """每个服务商的运行时配置（地址、模式、解密后的密钥）；快照与密钥在同一个只读事务里读。"""
-    return _read_with_transient_retry(_load_llm_provider_runtime_configs)
-
-
-def _load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
-    from novel_system.services.config_snapshot_reader import active_config_payload
-
-    with SessionLocal() as session:
-        return _provider_runtime_configs(
-            active_config_payload(session, "api") or {},
-            read_secret=lambda secret_id: _secret_value(session, secret_id),
-        )
-
-
-def _provider_runtime_configs(payload, *, read_secret) -> dict[str, ProviderRuntimeConfig]:
-    llm_payload = _coerce_api_payload(payload) if payload else {}
-    providers = _provider_payloads_from_llm(llm_payload)
-    if not providers:
-        settings = load_env_settings()
-        provider_id = settings.llm_provider
-        providers = {
-            provider_id: {
-                "provider_id": provider_id,
-                "provider_type": settings.llm_provider,
-                "base_url": settings.llm_base_url,
-                "credential_mode": "api_key" if settings.llm_api_key else "none",
-                "enabled": settings.llm_enabled,
-                "timeout_seconds": settings.llm_timeout_seconds,
-            }
-        }
-
-    runtime_configs: dict[str, ProviderRuntimeConfig] = {}
-    for provider_id, provider_payload in providers.items():
-        credential_mode = str(provider_payload.get("credential_mode") or "api_key")
-        if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
-            continue
-        secret_id = llm_provider_api_key_secret_id(provider_id)
-        secret_value = read_secret(secret_id)
-        legacy_api_key = read_secret(LLM_API_KEY_SECRET_ID) if provider_id in {"openai_compatible", "openai"} else None
-        runtime_configs[provider_id] = ProviderRuntimeConfig(
-            provider_id=provider_id,
-            provider_type=str(provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id),
-            account_id=optional_text(provider_payload.get("account_id")),
-            base_url=_normalize_provider_base_url(
-                provider_payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(str(provider_payload.get("provider_type")), ""),
-                provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id,
-            ),
-            api_key=(secret_value or legacy_api_key) if credential_mode == "api_key" else None,
-            credential_mode=credential_mode if credential_mode in SUPPORTED_CREDENTIAL_MODES else "api_key",
-            api_mode=str(provider_payload.get("api_mode") or "chat"),  # type: ignore[arg-type]
-            enabled=_bool_value(provider_payload.get("enabled", True)),
-            models=tuple(str(item) for item in provider_payload.get("models", []) if isinstance(item, str)),
-            provider_options=dict(provider_payload.get("provider_options") or {}),
-        )
-    return runtime_configs
-
-
-def build_llm_client(
-    settings: Any,
-    *,
-    provider_configs: dict[str, ProviderRuntimeConfig] | None = None,
-    retry_backoff_seconds: float | None = None,
-) -> LLMClient:
-    """运行时 LLMClient 的唯一构造点:按设置建客户端,不管启用与否(是否可用由调用方先判)。
-
-    settings 必传,由调用方 get_settings() 取得:settings 模块要读本模块的
-    活动快照,本模块反向 import settings(哪怕函数内延迟)会构成依赖环,
-    被 test_service_architecture 的全包环守卫拒绝。
-    retry_backoff_seconds 为 None 时用 LLMClient 的默认值(不退避);现状只有
-    场景运行器传(B09-09)。
-    """
-    if provider_configs is None:
-        provider_configs = load_llm_provider_runtime_configs()
-    extra: dict[str, Any] = {}
-    if retry_backoff_seconds is not None:
-        extra["retry_backoff_seconds"] = retry_backoff_seconds
-    return LLMClient(
-        provider=settings.llm_provider,
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        timeout_seconds=settings.llm_timeout_seconds,
-        provider_configs=provider_configs,
-        **extra,
-    )
-
-
-def build_runtime_llm_client(
-    *,
-    settings: Any,
-    provider_configs: dict[str, ProviderRuntimeConfig] | None = None,
-) -> tuple[LLMClient | None, bool]:
-    """fail-closed 版工厂:LLM 未启用返回 (None, False),否则 (build_llm_client(...), True)。"""
-    if not settings.llm_enabled:
-        return None, False
-    return build_llm_client(settings, provider_configs=provider_configs), True
 
 
 class SystemConfigService:
@@ -355,7 +226,7 @@ class SystemConfigService:
                 details=validation,
             )
 
-        previous = _active_snapshot(self.session, snapshot.category)
+        previous = active_snapshot(self.session, snapshot.category)
         if previous is not None and previous.snapshot_id != snapshot.snapshot_id:
             previous.active_flag = 0
             previous.status = "superseded"
@@ -381,198 +252,16 @@ class SystemConfigService:
         return {"snapshot": _serialize_snapshot(snapshot)}
 
     def test_provider(self, *, payload: dict[str, Any]) -> dict[str, Any]:
-        provider_payload = _coerce_api_payload(payload)
-        provider = str(provider_payload.get("provider_type") or provider_payload.get("provider") or "openai_compatible")
-        if provider not in SUPPORTED_PROVIDERS:
-            raise DomainError("CONFIG_PROVIDER_UNSUPPORTED", f"unsupported provider {provider}", status_code=422)
-
-        base_url = _normalize_provider_base_url(provider_payload.get("base_url"), provider)
-        if not base_url:
-            raise DomainError("CONFIG_PROVIDER_INVALID", "provider base_url is required", status_code=422)
-
-        provider_id = optional_text(provider_payload.get("provider_id"))
-        default_credential_mode = "none" if provider_id and not provider_payload.get("api_key") else "api_key"
-        credential_mode = str(provider_payload.get("credential_mode") or default_credential_mode)
-        if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
-            raise DomainError(
-                "CONFIG_PROVIDER_INVALID",
-                f"unsupported credential_mode {credential_mode}",
-                status_code=422,
-            )
-        api_key = None
-        if credential_mode == "api_key":
-            provider_secret = load_secret_value(llm_provider_api_key_secret_id(provider_id)) if provider_id else None
-            api_key = provider_payload.get("api_key") or provider_secret or load_secret_value(LLM_API_KEY_SECRET_ID)
-        timeout_value = provider_payload.get("timeout_seconds")
-        timeout_seconds = _probe_timeout_seconds(timeout_value, default_seconds=10.0)
-        requested_model = _requested_probe_model(provider_payload)
-        should_check_completion = bool(requested_model) and _bool_value(provider_payload.get("check_completion", False))
-        trust_env = _httpx_trust_env_for_base_url(base_url)
-        adapter = adapter_registry()[provider]
-        provider_options = dict(provider_payload.get("provider_options") or {})
-        list_request = adapter.list_models_request(base_url=base_url, api_key=api_key, provider_options=provider_options)
-        started_at = time.perf_counter()
-        if list_request is None:
-            checks: dict[str, Any] = {
-                "connection": {
-                    "ok": None,
-                    "status_code": None,
-                    "message": "该服务不提供模型列表接口，跳过连接检查",
-                }
-            }
-            if should_check_completion and requested_model:
-                completion_result = _probe_completion(
-                    session=self.session,
-                    provider=provider,
-                    base_url=base_url,
-                    api_key=api_key,
-                    provider_options=provider_options,
-                    model=str(requested_model),
-                    api_mode=str(provider_payload.get("api_mode") or "chat"),
-                    timeout_seconds=timeout_seconds,
-                )
-                checks["completion"] = completion_result
-                return {
-                    "ok": completion_result["ok"] is True,
-                    "status_code": completion_result.get("status_code"),
-                    "latency_ms": int((time.perf_counter() - started_at) * 1000),
-                    "message": completion_result["message"]
-                    if completion_result["ok"] is not True
-                    else f"模型 {requested_model} 已通过最小生成探测（该服务不提供模型列表接口）",
-                    "available_models": [],
-                    "checks": checks,
-                }
-            return {
-                "ok": False,
-                "status_code": None,
-                "latency_ms": int((time.perf_counter() - started_at) * 1000),
-                "message": "该服务不提供模型列表接口；请填写模型名并勾选生成探测",
-                "available_models": [],
-                "checks": checks,
-            }
-        try:
-            response = httpx.get(list_request.url, headers=list_request.headers, timeout=timeout_seconds, trust_env=trust_env)
-        except httpx.RequestError as exc:
-            return {
-                "ok": False,
-                "status_code": None,
-                "latency_ms": int((time.perf_counter() - started_at) * 1000),
-                "message": str(exc),
-                "available_models": [],
-                "checks": {
-                    "connection": {
-                        "ok": False,
-                        "status_code": None,
-                        "message": str(exc),
-                    }
-                },
-            }
-
-        latency_ms = int((time.perf_counter() - started_at) * 1000)
-        checks: dict[str, Any] = {
-            "connection": {
-                "ok": response.is_success,
-                "status_code": response.status_code,
-                "latency_ms": latency_ms,
-                "message": "model list endpoint reached" if response.is_success else _provider_error_summary(response),
-            }
-        }
-        if not response.is_success:
-            if should_check_completion and requested_model:
-                completion_result = _probe_completion(
-                    session=self.session,
-                    provider=provider,
-                    base_url=base_url,
-                    api_key=api_key,
-                    provider_options=provider_options,
-                    model=str(requested_model),
-                    api_mode=str(provider_payload.get("api_mode") or "chat"),
-                    timeout_seconds=timeout_seconds,
-                )
-                checks["completion"] = completion_result
-                if completion_result["ok"] is True:
-                    return {
-                        "ok": True,
-                        "status_code": completion_result.get("status_code") or response.status_code,
-                        "latency_ms": int((time.perf_counter() - started_at) * 1000),
-                        "message": (
-                            f"模型 {requested_model} 已通过最小生成探测；"
-                            f"/models 不可用：{_provider_error_summary(response)}"
-                        ),
-                        "available_models": [],
-                        "checks": checks,
-                    }
-            return {
-                "ok": False,
-                "status_code": response.status_code,
-                "latency_ms": latency_ms,
-                "message": _provider_error_summary(response),
-                "available_models": [],
-                "checks": checks,
-            }
-
-        model_ids = _normalize_provider_model_ids(adapter.normalize_listed_model_ids(_extract_model_ids(response)))
-        if requested_model:
-            model_ok = requested_model in model_ids
-            checks["model"] = {
-                "ok": model_ok,
-                "requested_model": requested_model,
-                "available_models": model_ids,
-            }
-            if not model_ok:
-                available_hint = "、".join(model_ids[:5]) if model_ids else "未能从 /models 解析到模型列表"
-                return {
-                    "ok": False,
-                    "status_code": response.status_code,
-                    "latency_ms": latency_ms,
-                    "message": f"模型 {requested_model} 未在服务返回的模型列表中出现。可用模型：{available_hint}",
-                    "available_models": model_ids,
-                    "checks": checks,
-                }
-
-        if should_check_completion:
-            completion_result = _probe_completion(
-                session=self.session,
-                provider=provider,
-                base_url=base_url,
-                api_key=api_key,
-                provider_options=provider_options,
-                model=str(requested_model),
-                api_mode=str(provider_payload.get("api_mode") or "chat"),
-                timeout_seconds=timeout_seconds,
-            )
-            checks["completion"] = completion_result
-            if completion_result["ok"] is not True:
-                return {
-                    "ok": False,
-                    "status_code": completion_result.get("status_code") or response.status_code,
-                    "latency_ms": int((time.perf_counter() - started_at) * 1000),
-                    "message": completion_result["message"],
-                    "available_models": model_ids,
-                    "checks": checks,
-                }
-
-        message = (
-            f"模型 {requested_model} 可用：连接、模型名、生成均通过"
-            if requested_model and checks.get("completion", {}).get("ok") is True
-            else (f"模型 {requested_model} 已在服务列表中找到" if requested_model else "provider probe succeeded")
-        )
-        return {
-            "ok": True,
-            "status_code": response.status_code,
-            "latency_ms": int((time.perf_counter() - started_at) * 1000),
-            "message": message,
-            "available_models": model_ids,
-            "checks": checks,
-        }
+        """「测试连接」：连接 → 模型名 → 最小生成三项检查（编排在 ``llm_provider_probe.run_provider_probe``）。"""
+        return run_provider_probe(self.session, payload, read_secret=load_secret_value)
 
     def llm_overview(self) -> dict[str, Any]:
         api_payload = self._category_payload("api")
         models_payload = self._category_payload("models")
-        llm_payload = _coerce_api_payload(dict(api_payload.get("parsed") or {}))
+        llm_payload = coerce_api_payload(dict(api_payload.get("parsed") or {}))
         providers = {
             provider_id: self._serialize_provider(provider_id, provider_payload)
-            for provider_id, provider_payload in _provider_payloads_from_llm(llm_payload).items()
+            for provider_id, provider_payload in provider_payloads_from_llm(llm_payload).items()
         }
         node_catalog = llm_node_catalog()
         try:
@@ -584,7 +273,7 @@ class SystemConfigService:
                 api_has_providers=bool(providers),
             )
             node_routes = {
-                node_id: _serialize_task_config(node_id, task_config, node_catalog.get(node_id))
+                node_id: serialize_task_config(node_id, task_config, node_catalog.get(node_id))
                 for node_id, task_config in routing.node_routing.items()
             }
         except LLMConfigurationError:
@@ -614,7 +303,7 @@ class SystemConfigService:
                     "order": spec["order"],
                 }
             )
-        _annotate_node_route_readiness(node_routes=node_routes, providers=providers)
+        annotate_node_route_readiness(node_routes=node_routes, providers=providers)
         missing_active_routes = [
             node_id
             for node_id in active_llm_node_ids()
@@ -632,7 +321,7 @@ class SystemConfigService:
             if route.get("configured") and route.get("ready") is not True
         ]
         return {
-            "provider_catalog": _provider_catalog(),
+            "provider_catalog": provider_catalog(),
             "default_provider_id": llm_payload.get("default_provider_id") or next(iter(providers.keys()), None),
             # runtime 随 overview 带出,管理面前端无需再拉全量 /system-config(含全部历史快照)
             "runtime": {
@@ -645,25 +334,25 @@ class SystemConfigService:
             "missing_active_routes": missing_active_routes,
             "blocked_routes": blocked_routes,
             "stale_routes": stale_routes,
-            "readiness": _llm_readiness_summary(providers=providers, node_routes=node_routes),
-            "role_slots": _role_slot_overview(node_routes),
+            "readiness": llm_readiness_summary(providers=providers, node_routes=node_routes),
+            "role_slots": role_slot_overview(node_routes),
             "api_snapshot": api_payload.get("active_snapshot"),
             "models_snapshot": models_payload.get("active_snapshot"),
         }
 
     def save_llm_provider(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
         try:
-            provider = _normalize_provider_payload(payload)
+            provider = normalize_provider_payload(payload)
         except ValueError as exc:
             raise DomainError("CONFIG_PROVIDER_INVALID", str(exc), status_code=422) from exc
         provider_id = provider["provider_id"]
         api_key = optional_text(payload.get("api_key"))
         llm_payload = self._current_api_llm_payload()
-        providers = _provider_payloads_from_llm(llm_payload)
+        providers = provider_payloads_from_llm(llm_payload)
         providers[provider_id] = {key: value for key, value in provider.items() if key != "api_key"}
         llm_payload["providers"] = providers
         llm_payload["default_provider_id"] = llm_payload.get("default_provider_id") or provider_id
-        llm_payload["enabled"] = True if provider["enabled"] else _bool_value(llm_payload.get("enabled", True))
+        llm_payload["enabled"] = True if provider["enabled"] else bool_value(llm_payload.get("enabled", True))
         llm_payload.setdefault("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS)
         snapshot = self._store_config_snapshot(
             category="api",
@@ -678,7 +367,7 @@ class SystemConfigService:
             existing_secret = self.session.get(SystemSecret, llm_provider_api_key_secret_id(provider_id))
             if existing_secret is not None:
                 self.session.delete(existing_secret)
-            secret_status = _none_secret_status()
+            secret_status = none_secret_status()
         elif api_key:
             secret_status = self._save_secret_value(
                 secret_id=llm_provider_api_key_secret_id(provider_id),
@@ -700,14 +389,14 @@ class SystemConfigService:
         }
 
     def set_default_llm_provider(self, *, provider_id: str, actor_ref: str) -> dict[str, Any]:
-        provider_id = _required_text(provider_id, "provider_id")
+        provider_id = required_text(provider_id, "provider_id")
         llm_payload = self._current_api_llm_payload()
-        providers = _provider_payloads_from_llm(llm_payload)
+        providers = provider_payloads_from_llm(llm_payload)
         if provider_id not in providers:
             raise DomainError("CONFIG_PROVIDER_NOT_FOUND", f"provider {provider_id} was not found", status_code=404)
         llm_payload["providers"] = providers
         llm_payload["default_provider_id"] = provider_id
-        llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
+        llm_payload["enabled"] = bool_value(llm_payload.get("enabled", True))
         llm_payload.setdefault("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS)
         snapshot = self._store_config_snapshot(
             category="api",
@@ -725,9 +414,9 @@ class SystemConfigService:
         }
 
     def delete_llm_provider(self, *, provider_id: str, actor_ref: str) -> dict[str, Any]:
-        provider_id = _required_text(provider_id, "provider_id")
+        provider_id = required_text(provider_id, "provider_id")
         llm_payload = self._current_api_llm_payload()
-        providers = _provider_payloads_from_llm(llm_payload)
+        providers = provider_payloads_from_llm(llm_payload)
         if provider_id not in providers:
             raise DomainError("CONFIG_PROVIDER_NOT_FOUND", f"provider {provider_id} was not found", status_code=404)
         providers.pop(provider_id)
@@ -738,7 +427,7 @@ class SystemConfigService:
                 llm_payload.pop("default_provider_id", None)
             else:
                 llm_payload["default_provider_id"] = next_default
-        llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
+        llm_payload["enabled"] = bool_value(llm_payload.get("enabled", True))
         llm_payload.setdefault("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS)
         snapshot = self._store_config_snapshot(
             category="api",
@@ -796,13 +485,13 @@ class SystemConfigService:
             raise DomainError("CONFIG_PROVIDER_NOT_FOUND", "configure a provider before syncing node routes", status_code=422)
 
         provider = providers[provider_id]
-        if not _provider_view_ready(provider):
+        if not provider_view_ready(provider):
             raise DomainError(
                 "CONFIG_ROUTE_PROVIDER_NOT_READY",
                 f"provider {provider_id} is not ready; enable it and configure credentials first",
                 status_code=422,
             )
-        models = _normalize_provider_model_ids(provider.get("models") or [])
+        models = normalize_provider_model_ids(provider.get("models") or [])
         model = optional_text(payload.get("model")) or (models[0] if models else None)
         if not model:
             raise DomainError(
@@ -820,12 +509,12 @@ class SystemConfigService:
         # 老安装的快照里可能还带着已退役节点的路由(常指向早已删除的服务)。
         # 这里只补齐目录内节点,退役条目不会被重绑,却会被激活校验拦成 422,
         # 让「一键补齐路由」永远失败——先剪掉,并在响应里告知剪了什么。
-        config_payload, pruned_stale_routes = _writable_models_payload(self._category_payload("models"))
+        config_payload, pruned_stale_routes = writable_models_payload(self._category_payload("models"))
         node_routing = config_payload["node_routing"]
         synced_node_ids: list[str] = []
         provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
         account_id = optional_text(provider.get("account_id"))
-        api_mode = _provider_route_api_mode(provider_id, provider)
+        api_mode = provider_route_api_mode(provider_id, provider)
         credential_mode = optional_text(provider.get("credential_mode"))
         for node_id in active_llm_node_ids():
             route = overview["node_routes"].get(node_id) or {}
@@ -848,10 +537,10 @@ class SystemConfigService:
             )
             synced_node_ids.append(node_id)
 
-        routing_config = _parse_route_config_or_raise(config_payload)
-        activate = _bool_value(payload.get("activate", False))
+        routing_config = parse_route_config_or_raise(config_payload)
+        activate = bool_value(payload.get("activate", False))
         if activate:
-            _validate_activating_node_route_bindings(
+            validate_activating_node_route_bindings(
                 node_routing=routing_config.node_routing,
                 providers=providers,
             )
@@ -877,7 +566,7 @@ class SystemConfigService:
         if provider is None:
             raise DomainError("CONFIG_PROVIDER_NOT_FOUND", f"provider {provider_id} was not found", status_code=404)
         probe_payload = dict(provider)
-        probe_payload["timeout_seconds"] = _probe_timeout_seconds(
+        probe_payload["timeout_seconds"] = probe_timeout_seconds(
             llm_payload.get("timeout_seconds"), default_seconds=PROVIDER_PROBE_TIMEOUT_SECONDS
         )
         probe_payload.update(payload or {})
@@ -886,7 +575,7 @@ class SystemConfigService:
     def llm_provider_presets(self) -> dict[str, Any]:
         return {
             "presets": provider_preset_payloads(),
-            "provider_catalog": _provider_catalog(),
+            "provider_catalog": provider_catalog(),
         }
 
     def list_llm_provider_models(self, *, provider_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -900,16 +589,21 @@ class SystemConfigService:
         adapter = adapter_registry().get(provider_type)
         if adapter is None:
             raise DomainError("CONFIG_PROVIDER_UNSUPPORTED", f"unsupported provider {provider_type}", status_code=422)
-        base_url = _normalize_provider_base_url(provider.get("base_url"), provider_type)
-        credential_mode = str(provider.get("credential_mode") or "api_key")
         api_key = None
-        if credential_mode == "api_key":
+        if str(provider.get("credential_mode") or "api_key") == "api_key":
             api_key = load_secret_value(llm_provider_api_key_secret_id(provider_id)) or load_secret_value(LLM_API_KEY_SECRET_ID)
-        timeout_value = payload.get("timeout_seconds") or llm_payload.get("timeout_seconds")
-        timeout_seconds = _probe_timeout_seconds(timeout_value, default_seconds=10.0)
-        provider_options = dict(provider.get("provider_options") or {})
+        target = ProbeTarget(
+            provider=provider_type,
+            base_url=normalize_provider_base_url(provider.get("base_url"), provider_type),
+            api_key=api_key,
+            provider_options=dict(provider.get("provider_options") or {}),
+            api_mode=str(provider.get("api_mode") or "chat"),
+            timeout_seconds=probe_timeout_seconds(
+                payload.get("timeout_seconds") or llm_payload.get("timeout_seconds"), default_seconds=10.0
+            ),
+        )
 
-        configured_models = _normalize_provider_model_ids(provider.get("models") or [])
+        configured_models = normalize_provider_model_ids(provider.get("models") or [])
         preset = get_provider_preset(provider_type)
         preset_models = list(preset.common_models) if preset is not None else []
         fallback_models = list(dict.fromkeys([*configured_models, *preset_models]))
@@ -925,24 +619,16 @@ class SystemConfigService:
                 "message": message,
             }
 
-        list_request = adapter.list_models_request(base_url=base_url, api_key=api_key, provider_options=provider_options)
-        if list_request is None:
+        listing = fetch_model_listing(adapter, target)
+        if not listing.supported:
             return _fallback("该服务不提供模型列表接口，已返回预设/已配置模型")
-
-        started_at = time.perf_counter()
-        try:
-            response = httpx.get(
-                list_request.url,
-                headers=list_request.headers,
-                timeout=timeout_seconds,
-                trust_env=_httpx_trust_env_for_base_url(base_url),
-            )
-        except httpx.RequestError as exc:
-            return _fallback(f"模型列表拉取失败：{exc}")
+        if listing.response is None:
+            return _fallback(f"模型列表拉取失败：{listing.error}")
+        response = listing.response
         if not response.is_success:
-            return _fallback(f"模型列表拉取失败：{_provider_error_summary(response)}", status_code=response.status_code)
+            return _fallback(f"模型列表拉取失败：{provider_error_summary(response)}", status_code=response.status_code)
 
-        model_ids = _normalize_provider_model_ids(adapter.normalize_listed_model_ids(_extract_model_ids(response)))
+        model_ids = listed_model_ids(adapter, response)
         return {
             "provider_id": provider_id,
             "provider_type": provider_type,
@@ -950,7 +636,7 @@ class SystemConfigService:
             "source": "live",
             "available_models": model_ids,
             "status_code": response.status_code,
-            "latency_ms": int((time.perf_counter() - started_at) * 1000),
+            "latency_ms": listing.latency_ms,
             "message": f"已从服务实时拉取 {len(model_ids)} 个模型",
         }
 
@@ -963,7 +649,7 @@ class SystemConfigService:
         providers = overview["providers"]
 
         # 同 sync-missing:退役节点的残留路由不随分工前滚,剪掉并回报。
-        config_payload, pruned_stale_routes = _writable_models_payload(self._category_payload("models"))
+        config_payload, pruned_stale_routes = writable_models_payload(self._category_payload("models"))
         node_routing = config_payload["node_routing"]
 
         applied: dict[str, dict[str, Any]] = {}
@@ -981,13 +667,13 @@ class SystemConfigService:
                     status_code=404 if provider_id else 422,
                 )
             provider = providers[provider_id]
-            if not _provider_view_ready(provider):
+            if not provider_view_ready(provider):
                 raise DomainError(
                     "CONFIG_ROUTE_PROVIDER_NOT_READY",
                     f"provider {provider_id} is not ready; enable it and configure credentials first",
                     status_code=422,
                 )
-            models = _normalize_provider_model_ids(provider.get("models") or [])
+            models = normalize_provider_model_ids(provider.get("models") or [])
             model = optional_text(binding.get("model")) or (models[0] if models else None)
             if not model:
                 raise DomainError(
@@ -1004,7 +690,7 @@ class SystemConfigService:
 
             provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
             account_id = optional_text(provider.get("account_id"))
-            api_mode = _provider_route_api_mode(provider_id, provider)
+            api_mode = provider_route_api_mode(provider_id, provider)
             credential_mode = optional_text(provider.get("credential_mode"))
             slot_node_ids = role_slot_node_ids(slot.slot_id)
             for node_id in slot_node_ids:
@@ -1023,13 +709,13 @@ class SystemConfigService:
                 "node_ids": slot_node_ids,
             }
 
-        routing_config = _parse_route_config_or_raise(config_payload)
-        activate = _bool_value(payload.get("activate", True))
+        routing_config = parse_route_config_or_raise(config_payload)
+        activate = bool_value(payload.get("activate", True))
         if activate:
             # 只校验本次触达的槽内节点:允许「先把写作主力分出去」的渐进配置,
             # 未触达节点保持原状(与今日的默认 repo 路由同等待遇)。
             touched_node_ids = {node_id for entry in applied.values() for node_id in entry["node_ids"]}
-            _validate_activating_node_route_bindings(
+            validate_activating_node_route_bindings(
                 node_routing={
                     node_id: task_config
                     for node_id, task_config in routing_config.node_routing.items()
@@ -1054,7 +740,7 @@ class SystemConfigService:
         }
 
     def _category_payload(self, category: str) -> dict[str, Any]:
-        active = _active_snapshot(self.session, category)
+        active = active_snapshot(self.session, category)
         if active is not None:
             payload = {
                 "category": category,
@@ -1079,11 +765,11 @@ class SystemConfigService:
         return payload
 
     def _current_api_llm_payload(self) -> dict[str, Any]:
-        active = _active_snapshot(self.session, "api")
+        active = active_snapshot(self.session, "api")
         if active is not None:
-            return _coerce_api_payload(dict(active.parsed_json or {}))
+            return coerce_api_payload(dict(active.parsed_json or {}))
         _, parsed, _, _ = default_config_payload("api")
-        return _coerce_api_payload(parsed)
+        return coerce_api_payload(parsed)
 
     def _store_config_snapshot(
         self,
@@ -1096,7 +782,7 @@ class SystemConfigService:
         actor_ref: str,
     ) -> SystemConfigSnapshot:
         if active:
-            previous = _active_snapshot(self.session, category)
+            previous = active_snapshot(self.session, category)
             if previous is not None:
                 previous.active_flag = 0
                 previous.status = "superseded"
@@ -1147,64 +833,33 @@ class SystemConfigService:
         metadata: dict[str, Any],
         expires_at: str | None = None,
     ) -> dict[str, Any]:
-        secret = self.session.get(SystemSecret, secret_id)
-        encrypted = _encrypt_secret(raw_value)
-        if secret is None:
-            secret = SystemSecret(
-                secret_id=secret_id,
-                encrypted_value=encrypted,
-                value_hint=_mask_secret(raw_value),
-                secret_type=secret_type,
-                metadata_json=metadata,
-                expires_at=expires_at,
-                updated_by=actor_ref,
-            )
-        else:
-            secret.encrypted_value = encrypted
-            secret.value_hint = _mask_secret(raw_value)
-            secret.secret_type = secret_type
-            secret.metadata_json = metadata
-            secret.expires_at = expires_at
-            secret.updated_by = actor_ref
-        self.session.add(secret)
-        return self._secret_status(secret_id, secret=secret)
+        return save_secret_value(
+            self.session,
+            secret_id=secret_id,
+            raw_value=raw_value,
+            actor_ref=actor_ref,
+            secret_type=secret_type,
+            metadata=metadata,
+            expires_at=expires_at,
+        )
 
     def _secret_status(self, secret_id: str, *, secret: SystemSecret | None = None) -> dict[str, Any]:
-        item = secret or self.session.get(SystemSecret, secret_id)
-        decryptable = False
-        if item is not None and item.encrypted_value:
-            # BUG-001: secret 记录"存在"不等于"可解密"。config.secret 轮换后旧密文
-            # InvalidToken,运行期 load_secret_value 静默返 None → api_key 为空,但
-            # 就绪侧若只看 configured 就会假阳性。这里真正试解密,把三态拆开。
-            try:
-                decrypted = _decrypt_secret(item.encrypted_value)
-                decryptable = bool(decrypted and decrypted.strip())
-            except (DomainError, InvalidToken):
-                decryptable = False
-        return {
-            "configured": item is not None,
-            "decryptable": decryptable,
-            "hint": item.value_hint if item is not None else None,
-            "secret_type": item.secret_type if item is not None else None,
-            "metadata": item.metadata_json if item is not None else {},
-            "expires_at": item.expires_at if item is not None else None,
-            "updated_at": item.updated_at if item is not None else None,
-        }
+        return secret_status(self.session, secret_id, secret=secret)
 
     def _serialize_provider(self, provider_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         credential_mode = str(payload.get("credential_mode") or "api_key")
         secret_id = llm_provider_api_key_secret_id(provider_id)
-        secret_status = _none_secret_status() if credential_mode == "none" else self._secret_status(secret_id)
+        secret_status = none_secret_status() if credential_mode == "none" else self._secret_status(secret_id)
         provider_type = payload.get("provider_type") or payload.get("provider")
         return {
             "provider_id": provider_id,
             "provider_type": provider_type,
             "account_id": payload.get("account_id"),
-            "base_url": _normalize_provider_base_url(payload.get("base_url"), provider_type),
-            "enabled": _bool_value(payload.get("enabled", True)),
+            "base_url": normalize_provider_base_url(payload.get("base_url"), provider_type),
+            "enabled": bool_value(payload.get("enabled", True)),
             "credential_mode": credential_mode,
             "api_mode": payload.get("api_mode", "chat"),
-            "models": _normalize_provider_model_ids(payload.get("models") or []),
+            "models": normalize_provider_model_ids(payload.get("models") or []),
             "provider_options": dict(payload.get("provider_options") or {}),
             "secret": secret_status,
         }
@@ -1214,7 +869,7 @@ def validate_config(category: str, yaml_raw: str) -> tuple[dict[str, Any], dict[
     try:
         parsed = _parse_yaml_mapping(yaml_raw)
         if category == "api":
-            normalized_api = {"llm": _validate_api_config(parsed)}
+            normalized_api = {"llm": validate_api_config(parsed)}
             return normalized_api, {"ok": True, "message": "api config is valid"}
         if category == "models":
             parse_model_routing_config(parsed)
@@ -1273,14 +928,6 @@ def _is_loopback_client(client_host: str | None) -> bool:
     return str(client_host or "").strip().lower() in {"127.0.0.1", "::1", "localhost"}
 
 
-def _active_snapshot(session: Session, category: str) -> SystemConfigSnapshot | None:
-    return session.execute(
-        select(SystemConfigSnapshot)
-        .where(SystemConfigSnapshot.category == category, SystemConfigSnapshot.active_flag == 1)
-        .order_by(SystemConfigSnapshot.version.desc(), SystemConfigSnapshot.created_at.desc())
-    ).scalars().first()
-
-
 def _serialize_snapshot(snapshot: SystemConfigSnapshot) -> dict[str, Any]:
     return {
         "snapshot_id": snapshot.snapshot_id,
@@ -1332,521 +979,6 @@ def _parse_yaml_mapping(yaml_raw: str) -> dict[str, Any]:
     return normalized
 
 
-def _api_timeout_seconds(llm: dict[str, Any]) -> float:
-    """解析 llm.timeout_seconds：缺省使用安全上限，显式 0 表示不限时。
-
-    15 分钟不会重引入历史上的 30 秒误杀，同时避免静默上游永久占用 worker。
-    负数仍然拒绝：那是笔误，不是“不限”的写法。
-    """
-    timeout_seconds = _float_value(
-        llm.get("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS),
-        "llm.timeout_seconds",
-    )
-    if timeout_seconds < 0:
-        raise ValueError("llm.timeout_seconds must not be negative (0 = no ceiling)")
-    return timeout_seconds
-
-
-def _probe_timeout_seconds(
-    value: Any,
-    *,
-    default_seconds: float,
-    maximum_seconds: float = PROVIDER_PROBE_TIMEOUT_SECONDS,
-) -> float:
-    """连通性探测始终有限:0(生成不限时)对"测试连接"没有意义,只会让按钮空转。
-
-    探测问的是"这个地址通不通",不是"这个模型写得慢不慢"。
-    """
-    if value is None:
-        return min(default_seconds, maximum_seconds)
-    timeout_seconds = _float_value(value, "timeout_seconds")
-    if timeout_seconds <= 0:
-        return min(default_seconds, maximum_seconds)
-    return min(timeout_seconds, maximum_seconds)
-
-
-def _validate_api_config(parsed: dict[str, Any]) -> dict[str, Any]:
-    llm = _coerce_api_payload(parsed)
-    providers = _provider_payloads_from_llm(llm)
-    if providers:
-        normalized_providers = {
-            provider_id: _normalize_provider_payload({"provider_id": provider_id, **provider_payload})
-            for provider_id, provider_payload in providers.items()
-        }
-        timeout_seconds = _api_timeout_seconds(llm)
-        return {
-            "enabled": _bool_value(llm.get("enabled", True)),
-            "timeout_seconds": timeout_seconds,
-            "default_provider_id": llm.get("default_provider_id") or next(iter(normalized_providers.keys())),
-            "providers": normalized_providers,
-        }
-
-    provider = str(llm.get("provider") or "openai_compatible")
-    if provider not in SUPPORTED_PROVIDERS:
-        raise ValueError(f"unsupported provider {provider}")
-
-    base_url = _normalize_provider_base_url(llm.get("base_url"), provider)
-    if not base_url:
-        raise ValueError("llm.base_url is required")
-
-    timeout_seconds = _api_timeout_seconds(llm)
-
-    return {
-        "provider": provider,
-        "base_url": base_url,
-        "enabled": _bool_value(llm.get("enabled", False)),
-        "timeout_seconds": timeout_seconds,
-    }
-
-
-def _provider_payloads_from_llm(llm: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    providers = llm.get("providers")
-    if isinstance(providers, dict):
-        return {
-            str(provider_id): dict(provider_payload)
-            for provider_id, provider_payload in providers.items()
-            if isinstance(provider_payload, dict)
-        }
-    return {}
-
-
-def _normalize_provider_base_url(value: Any, provider: Any | None = None) -> str:
-    base_url = str(value or "").strip().rstrip("/")
-    for suffix in ("/chat/completions", "/completions", "/responses", "/models"):
-        if base_url.endswith(suffix):
-            base_url = base_url[: -len(suffix)].rstrip("/")
-            break
-    provider_name = str(provider or "").strip()
-    adapter = adapter_registry().get(provider_name)
-    if adapter is not None and adapter.appends_v1_to_bare_host:
-        try:
-            parts = urlsplit(base_url)
-        except ValueError:
-            parts = None
-        if parts is not None and parts.scheme and parts.netloc and parts.path in {"", "/"}:
-            base_url = f"{base_url}/v1"
-    return base_url
-
-
-def _httpx_trust_env_for_base_url(base_url: str) -> bool:
-    try:
-        hostname = urlsplit(base_url).hostname
-    except ValueError:
-        return True
-    if not hostname:
-        return True
-    if hostname.lower() == "localhost":
-        return False
-    try:
-        return not ipaddress.ip_address(hostname).is_loopback
-    except ValueError:
-        return True
-
-
-def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    provider_id = _required_text(payload.get("provider_id"), "provider_id")
-    provider_type = str(payload.get("provider_type") or payload.get("provider") or "").strip()
-    if provider_type not in SUPPORTED_PROVIDERS:
-        raise ValueError(f"unsupported provider {provider_type}")
-    credential_mode = str(payload.get("credential_mode") or "api_key")
-    if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
-        raise ValueError(f"unsupported credential_mode {credential_mode}")
-    base_url = _normalize_provider_base_url(payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(provider_type), provider_type)
-    if not base_url:
-        raise ValueError("provider base_url is required")
-    models = payload.get("models") if isinstance(payload.get("models"), list) else []
-    provider_options = payload.get("provider_options") if isinstance(payload.get("provider_options"), dict) else {}
-    # api_mode 决定节点路由的端点(chat/responses);写错的值会在之后的
-    # role-routes / sync-missing 解析路由时才炸成 LLMConfigurationError,这里就拦住。
-    api_mode = str(payload.get("api_mode") or adapter_registry()[provider_type].default_api_mode)
-    if api_mode not in SUPPORTED_API_MODES:
-        raise ValueError(
-            f"provider {provider_id} has unsupported api_mode {api_mode}; "
-            f"expected one of {', '.join(sorted(SUPPORTED_API_MODES))}"
-        )
-    return {
-        "provider_id": provider_id,
-        "provider_type": provider_type,
-        "account_id": optional_text(payload.get("account_id")),
-        "base_url": base_url,
-        "enabled": _bool_value(payload.get("enabled", True)),
-        "credential_mode": credential_mode,
-        "api_mode": api_mode,
-        "models": _normalize_provider_model_ids(models),
-        "provider_options": dict(provider_options),
-    }
-
-
-def _provider_catalog() -> dict[str, dict[str, Any]]:
-    return adapter_provider_catalog()
-
-
-def _none_secret_status() -> dict[str, Any]:
-    return {
-        "configured": False,
-        "decryptable": False,
-        "hint": None,
-        "secret_type": "none",
-        "metadata": {},
-        "expires_at": None,
-        "updated_at": None,
-    }
-
-
-def _serialize_task_config(node_id: str, task_config, spec: dict[str, Any] | None) -> dict[str, Any]:
-    payload = {
-        "node_id": node_id,
-        "status": "active",
-        "configured": True,
-        "provider": task_config.provider,
-        "provider_id": task_config.provider_id,
-        "account_id": task_config.account_id,
-        "model": task_config.model,
-        "temperature": task_config.temperature,
-        "max_output_tokens": task_config.max_output_tokens,
-        "response_format": task_config.response_format,
-        "reasoning_level": task_config.reasoning_level,
-        "api_mode": task_config.api_mode,
-        "credential_mode": task_config.credential_mode,
-        "provider_options": task_config.provider_options,
-    }
-    if spec:
-        payload.update(
-            {
-                "status": spec["status"],
-                "group": spec["group"],
-                "label": spec["label"],
-                "requires_llm": spec["requires_llm"],
-                "template_name": spec["template_name"],
-                "order": spec["order"],
-            }
-        )
-    else:
-        payload.setdefault("requires_llm", True)
-    return payload
-
-
-def _provider_view_ready(provider: dict[str, Any]) -> bool:
-    if provider.get("enabled") is False:
-        return False
-    credential_mode = str(provider.get("credential_mode") or "api_key")
-    if credential_mode == "none":
-        return True
-    secret = provider.get("secret") if isinstance(provider.get("secret"), dict) else {}
-    # BUG-001: 必须"可解密"才算就绪——仅"存在"会在 config.secret 轮换后假阳性。
-    return secret.get("decryptable") is True
-
-
-def _route_readiness(route: dict[str, Any], providers: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    provider_id = optional_text(route.get("provider_id"))
-    model = optional_text(route.get("model"))
-    configured = bool(route.get("configured") or provider_id or model)
-    if not configured:
-        return {
-            "ready": False,
-            "provider_ready": False,
-            "provider_missing": False,
-            "model_missing": False,
-            "readiness_reason": "not_configured",
-        }
-
-    if not provider_id:
-        return {
-            "ready": False,
-            "provider_ready": False,
-            "provider_missing": True,
-            "model_missing": False,
-            "readiness_reason": "provider_id_missing",
-        }
-    provider = providers.get(provider_id)
-    if provider is None:
-        return {
-            "ready": False,
-            "provider_ready": False,
-            "provider_missing": True,
-            "model_missing": False,
-            "readiness_reason": f"provider_not_found:{provider_id}",
-        }
-
-    provider_ready = _provider_view_ready(provider)
-    if not model:
-        return {
-            "ready": False,
-            "provider_ready": provider_ready,
-            "provider_missing": False,
-            "model_missing": True,
-            "readiness_reason": "model_missing",
-        }
-    models = _normalize_provider_model_ids(provider.get("models") or [])
-    model_missing = bool(models and model not in models)
-    ready = provider_ready and not model_missing
-    reason = "ready"
-    if not provider_ready:
-        # BUG-001: 区分"未配置密钥" vs "密文无法解密(config.secret 轮换)",别压成一态。
-        secret = provider.get("secret") if isinstance(provider.get("secret"), dict) else {}
-        credential_mode = str(provider.get("credential_mode") or "api_key")
-        if provider.get("enabled") is False:
-            reason = "provider_disabled"
-        elif credential_mode != "none" and secret.get("configured") and not secret.get("decryptable"):
-            reason = "secret_decrypt_failed"
-        elif credential_mode != "none" and not secret.get("configured"):
-            reason = "secret_missing"
-        else:
-            reason = "provider_not_ready"
-    elif model_missing:
-        reason = f"model_not_listed:{model}"
-    return {
-        "ready": ready,
-        "provider_ready": provider_ready,
-        "provider_missing": False,
-        "model_missing": model_missing,
-        "readiness_reason": reason,
-    }
-
-
-def _annotate_node_route_readiness(
-    *,
-    node_routes: dict[str, dict[str, Any]],
-    providers: dict[str, dict[str, Any]],
-) -> None:
-    for route in node_routes.values():
-        route.update(_route_readiness(route, providers))
-
-
-def _llm_readiness_summary(
-    *,
-    providers: dict[str, dict[str, Any]],
-    node_routes: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    provider_count = len(providers)
-    active_provider_count = sum(1 for provider in providers.values() if _provider_view_ready(provider))
-    active_routes = list(node_routes.values())
-    configured_routes = [
-        route
-        for route in active_routes
-        if route.get("configured") or route.get("provider_id") or route.get("model")
-    ]
-    ready_routes = [route for route in active_routes if route.get("ready") is True]
-    blocked_routes = [route for route in active_routes if route.get("ready") is not True]
-    return {
-        "provider_count": provider_count,
-        "active_provider_count": active_provider_count,
-        "configured_route_count": len(configured_routes),
-        "active_route_count": len(active_routes),
-        "ready_route_count": len(ready_routes),
-        "blocked_route_count": len(blocked_routes),
-        "blocked_routes": [
-            {
-                "node_id": route.get("node_id"),
-                "provider_id": route.get("provider_id"),
-                "model": route.get("model"),
-                "reason": route.get("readiness_reason"),
-            }
-            for route in blocked_routes
-        ],
-        "ready": active_provider_count > 0 and len(ready_routes) > 0 and not blocked_routes,
-    }
-
-
-def _role_slot_overview(node_routes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """槽位目录 + 从 node_routes 反推当前生效绑定(槽内全节点一致才算)。"""
-    slots: list[dict[str, Any]] = []
-    for entry in role_slot_catalog():
-        bindings = {
-            (
-                optional_text((node_routes.get(node_id) or {}).get("provider_id")),
-                optional_text((node_routes.get(node_id) or {}).get("model")),
-            )
-            for node_id in entry["node_ids"]
-        }
-        if len(bindings) == 1:
-            provider_id, model = next(iter(bindings))
-            current = (
-                {"provider_id": provider_id, "model": model, "mixed": False}
-                if provider_id or model
-                else None
-            )
-        else:
-            current = {"provider_id": None, "model": None, "mixed": True}
-        slots.append({**entry, "current": current})
-    return slots
-
-
-def _retired_route_ids(*routing_tables: dict[str, Any]) -> list[str]:
-    """路由表里已退役的键:不在节点注册表,也不是 task 别名。"""
-    node_catalog = llm_node_catalog()
-    return sorted(
-        {
-            str(key)
-            for table in routing_tables
-            for key in table
-            if key not in node_catalog and key not in LEGACY_TASK_ALIASES
-        }
-    )
-
-
-def _prune_retired_routes(config_payload: dict[str, Any]) -> list[str]:
-    """就地剪掉 node_routing / task_routing 里退役节点的路由,返回剪掉的 id(已排序)。
-
-    parse_model_routing_config 会把 task_routing 并入 node_routing,所以两张表都得剪,
-    否则退役条目会在下一次解析时重新冒出来;在解析之前剪,退役条目自身的字段错误也
-    不会再阻塞保存。
-    """
-    pruned: set[str] = set()
-    for table_name in ("node_routing", "task_routing"):
-        table = config_payload.get(table_name)
-        if not isinstance(table, dict):
-            continue
-        for key in _retired_route_ids(table):
-            del table[key]
-            pruned.add(key)
-    return sorted(pruned)
-
-
-def _writable_models_payload(models_category: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """写路由(一键补齐 / 分工)的起点:当前活动 models 快照里只留 ``node_routing``,返回 (新快照内容, 剪掉的退役节点)。
-
-    老快照 ``task_routing`` 里还在起作用的条目(node_routing 里没有的节点)并进 node_routing,解析结果不变;
-    其余各段不再抄进新快照——task_routing 是节点注册表的旧抄本,retry_budget / job_runtime 以仓库 models.yaml
-    为准,model_profiles / role_assignments 没人读(2026-09-30 重评 R4、批准#5a)。没有活动快照时从空表开始:
-    注册表默认路由只给「API 配置来自环境变量」的安装用,不写进作者的快照。
-    """
-    current = dict(models_category.get("parsed") or {}) if models_category.get("active_snapshot") else {}
-    node_routing = dict(current.get("node_routing") or {})
-    legacy_task_routing = current.get("task_routing")
-    if isinstance(legacy_task_routing, dict):
-        for key, route in legacy_task_routing.items():
-            if key not in LEGACY_TASK_ALIASES and key not in node_routing:
-                node_routing[key] = route
-    config_payload: dict[str, Any] = {"node_routing": node_routing}
-    return config_payload, _prune_retired_routes(config_payload)
-
-
-def _parse_route_config_or_raise(config_payload: dict[str, Any]):
-    """路由解析错误(某节点 api_mode / response_format 写错等)是作者可修的配置问题,
-    必须以 422 + 点名节点的消息回到设置页,而不是漏成 500 INTERNAL_ERROR。"""
-    try:
-        return parse_model_routing_config(config_payload)
-    except LLMConfigurationError as exc:
-        raise DomainError(
-            "CONFIG_ROUTE_INVALID",
-            f"LLM node route config is invalid: {exc.message}",
-            status_code=422,
-            details={"llm_error_code": exc.code},
-        ) from exc
-
-
-def _provider_route_api_mode(provider_id: str, provider: dict[str, Any]) -> str:
-    """把服务声明的 api_mode 展开到节点路由前先校验:老快照里的非法值会让路由解析
-    在下游炸成 500,这里改为 422 并点名该服务。"""
-    api_mode = optional_text(provider.get("api_mode")) or "responses"
-    if api_mode not in SUPPORTED_API_MODES:
-        raise DomainError(
-            "CONFIG_PROVIDER_INVALID",
-            f"provider {provider_id} has unsupported api_mode {api_mode}; "
-            f"set it to one of {', '.join(sorted(SUPPORTED_API_MODES))} and save the provider again",
-            status_code=422,
-        )
-    return api_mode
-
-
-def _validate_activating_node_route_bindings(
-    *,
-    node_routing: dict[str, Any],
-    providers: dict[str, dict[str, Any]],
-) -> None:
-    missing_bindings: list[str] = []
-    missing_models: list[str] = []
-    not_ready_providers: list[str] = []
-    node_catalog = llm_node_catalog()
-    for node_id, task_config in node_routing.items():
-        if node_id not in node_catalog:
-            # 退役节点的残留路由是惰性的:不参与激活校验(它常指向已删除的服务),
-            # 由写路径剪枝、overview 的 stale_routes 展示。
-            continue
-        provider_id = task_config.provider_id
-        if not provider_id or provider_id not in providers:
-            missing_bindings.append(f"{node_id}:{provider_id or 'missing_provider_id'}")
-            continue
-        if not _provider_view_ready(providers[provider_id]):
-            not_ready_providers.append(f"{node_id}:{provider_id}")
-        models = _normalize_provider_model_ids(providers[provider_id].get("models") or [])
-        if not optional_text(task_config.model):
-            missing_models.append(f"{node_id}:{provider_id}:missing_model")
-        elif models and task_config.model not in models:
-            missing_models.append(f"{node_id}:{provider_id}:{task_config.model}")
-
-    if missing_bindings:
-        raise DomainError(
-            "CONFIG_ROUTE_PROVIDER_MISSING",
-            "active LLM node routes must reference an existing provider_id: " + ", ".join(missing_bindings),
-            status_code=422,
-        )
-    if not_ready_providers:
-        raise DomainError(
-            "CONFIG_ROUTE_PROVIDER_NOT_READY",
-            "active LLM node routes must reference an enabled provider with configured credentials: "
-            + ", ".join(not_ready_providers),
-            status_code=422,
-        )
-    if missing_models:
-        raise DomainError(
-            "CONFIG_ROUTE_MODEL_MISSING",
-            "active LLM node routes must use a model listed by their provider config: " + ", ".join(missing_models),
-            status_code=422,
-        )
-
-
-def _required_text(value: Any, field: str) -> str:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    raise ValueError(f"{field} is required")
-
-
-def _coerce_api_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    llm = payload.get("llm") if isinstance(payload.get("llm"), dict) else payload
-    if not isinstance(llm, dict):
-        raise ValueError("api config must include an llm mapping")
-    return llm
-
-
-def _bool_value(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
-def _float_value(value: Any, field: str) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be a valid number") from exc
-
-
-def _encrypt_secret(value: str) -> str:
-    return _fernet().encrypt(value.encode("utf-8")).decode("utf-8")
-
-
-def _decrypt_secret(value: str) -> str:
-    return _fernet().decrypt(value.encode("utf-8")).decode("utf-8")
-
-
-def _fernet() -> Fernet:
-    secret = _config_secret()
-    if not secret:
-        raise DomainError("CONFIG_SECRET_REQUIRED", "NOVEL_SYSTEM_CONFIG_SECRET is required to manage secrets", 403)
-    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
-    return Fernet(key)
-
-
-def _mask_secret(value: str) -> str:
-    if len(value) <= 8:
-        return "*" * len(value)
-    return f"{value[:3]}...{value[-4:]}"
-
-
 def _admin_token() -> str | None:
     return env_admin_token()
 
@@ -1855,206 +987,3 @@ def _config_secret() -> str | None:
     return env_config_secret()
 
 
-def _requested_probe_model(payload: dict[str, Any]) -> str | None:
-    explicit_model = optional_text(payload.get("model"))
-    if explicit_model:
-        return explicit_model
-    models = payload.get("models")
-    if isinstance(models, list):
-        for model in models:
-            candidate = optional_text(model)
-            if candidate:
-                return candidate
-    return None
-
-
-def _contains_cjk(value: str) -> bool:
-    return any(
-        "\u3400" <= char <= "\u9fff" or "\uf900" <= char <= "\ufaff"
-        for char in value
-    )
-
-
-def _looks_like_provider_model_id(value: str) -> bool:
-    text = value.strip()
-    return bool(text) and not _contains_cjk(text) and not any(char.isspace() for char in text) and any(char.isalnum() for char in text)
-
-
-def _normalize_provider_model_id(value: str) -> str:
-    text = value.strip()
-    if "/" not in text:
-        return text
-    prefix, suffix = text.split("/", 1)
-    suffix = suffix.strip()
-    if _contains_cjk(prefix) and _looks_like_provider_model_id(suffix):
-        return suffix
-    return text
-
-
-def _normalize_provider_model_ids(values: Any) -> list[str]:
-    if not isinstance(values, (list, tuple)):
-        return []
-    return list(
-        dict.fromkeys(
-            normalized
-            for model in values
-            if isinstance(model, str)
-            for normalized in [_normalize_provider_model_id(model)]
-            if normalized
-        )
-    )
-
-
-def _extract_model_ids(response: httpx.Response) -> list[str]:
-    try:
-        payload = response.json()
-    except ValueError:
-        return []
-    candidates: list[Any] = []
-    if isinstance(payload, dict):
-        for key in ("data", "models"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                candidates.extend(value)
-        if not candidates:
-            candidates.append(payload)
-    elif isinstance(payload, list):
-        candidates.extend(payload)
-
-    model_ids: list[str] = []
-    for item in candidates:
-        if isinstance(item, str):
-            normalized = _normalize_provider_model_id(item)
-            if normalized:
-                model_ids.append(normalized)
-        elif isinstance(item, dict):
-            for key in ("id", "name", "model"):
-                value = optional_text(item.get(key))
-                if value:
-                    normalized = _normalize_provider_model_id(value)
-                    if normalized:
-                        model_ids.append(normalized)
-                    break
-    return list(dict.fromkeys(model_ids))
-
-
-def _probe_completion(
-    *,
-    session: Session,
-    provider: str,
-    base_url: str,
-    api_key: str | None,
-    provider_options: dict[str, Any] | None,
-    model: str,
-    api_mode: str,
-    timeout_seconds: float,
-) -> dict[str, Any]:
-    adapter = adapter_registry().get(provider)
-    probe = (
-        adapter.completion_probe_request(
-            base_url=base_url,
-            model=model,
-            api_mode=api_mode,
-            api_key=api_key,
-            provider_options=provider_options,
-        )
-        if adapter is not None
-        else None
-    )
-    if probe is None:
-        return {
-            "ok": None,
-            "status_code": None,
-            "api_mode": api_mode,
-            "endpoint": None,
-            "message": f"completion check skipped for provider {provider}",
-        }
-    # 记账申报的输出预算必须 ≥ adapter 探活载荷真正允许的输出(各家 wire 上限 8),
-    # 并给两类真实偏差留余量:厂商对话模板使 prompt 计数高于本地估算(实测 ping=11 vs 估 8)、
-    # 思考型后端可能不按 max_tokens 截断 reasoning tokens。曾申报 1 → 预留 9 < 实际 19,
-    # 探活必然触发 LLM_USAGE_EXCEEDS_RESERVATION 拦截(probe 是 system scope,不入场景预算,
-    # 超配无成本)。
-    request = LLMRequest(
-        model=model,
-        messages=[{"role": "user", "content": "ping"}],
-        temperature=0.0,
-        max_output_tokens=PROBE_ACCOUNTING_OUTPUT_BUDGET,
-        response_format="text",
-        provider=provider,
-        timeout_seconds=timeout_seconds,
-        api_mode=probe.api_mode,
-        node_id="provider_probe",
-        provider_options=provider_options or {},
-    )
-    accounted = execute_accounted_completion_probe(
-        session,
-        request,
-        LLMCallContext(
-            scope_type="system",
-            scope_id="provider_probe",
-            node_id="provider_probe",
-            step="completion_probe",
-        ),
-        url=probe.url,
-        headers=probe.headers,
-        payload=probe.payload,
-        timeout_seconds=timeout_seconds,
-        trust_env=_httpx_trust_env_for_base_url(base_url),
-    )
-    response = accounted.response
-    if response is None:
-        return {
-            "ok": False,
-            "status_code": None,
-            "api_mode": probe.api_mode,
-            "endpoint": probe.endpoint,
-            "message": accounted.error_message or "completion probe failed",
-            "error_code": accounted.error_code,
-            "llm_call_id": accounted.llm_call_id,
-        }
-    result = {
-        "ok": response.is_success and accounted.error_code is None,
-        "status_code": response.status_code,
-        "model": model,
-        "api_mode": probe.api_mode,
-        "endpoint": probe.endpoint,
-        "message": (
-            "minimal completion succeeded"
-            if response.is_success and accounted.error_code is None
-            else accounted.error_message or "completion probe accounting failed"
-            if response.is_success
-            else _completion_error_summary(
-                response,
-                api_mode=probe.api_mode,
-                endpoint=probe.endpoint,
-            )
-        ),
-        "error_code": accounted.error_code,
-        "llm_call_id": accounted.llm_call_id,
-    }
-    if response.status_code == 404 and probe.api_mode == "responses":
-        result["next_action"] = "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider"
-    return result
-
-
-def _completion_error_summary(response: httpx.Response, *, api_mode: str, endpoint: str) -> str:
-    if response.status_code == 404 and api_mode == "responses" and endpoint == "/responses":
-        return (
-            "Responses API endpoint returned 404; this provider or relay may only support Chat Completions. "
-            "Set api_mode to chat and sync node routes, or use a provider that supports the Responses API."
-        )
-    return _provider_error_summary(response)
-
-
-def _provider_error_summary(response: httpx.Response) -> str:
-    try:
-        payload = response.json()
-    except ValueError:
-        return response.text[:200] if response.text else f"provider returned status {response.status_code}"
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict) and isinstance(error.get("message"), str):
-            return error["message"]
-        if isinstance(payload.get("message"), str):
-            return payload["message"]
-    return f"provider returned status {response.status_code}"

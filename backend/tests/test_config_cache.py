@@ -359,7 +359,7 @@ def test_node_routes_saved_through_system_config_are_visible_at_once(client, mon
 
 
 def test_runtime_settings_read_snapshot_and_keys_in_one_transaction_and_follow_saves(session, monkeypatch) -> None:
-    from novel_system.services import system_config
+    from novel_system.services import llm_provider_config, system_config
     from novel_system.settings import get_settings
 
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
@@ -381,7 +381,7 @@ def test_runtime_settings_read_snapshot_and_keys_in_one_transaction_and_follow_s
         )
 
     save_provider("sk-fixture-first-0001")
-    sessions = _count_calls(monkeypatch, system_config, "SessionLocal")
+    sessions = _count_calls(monkeypatch, llm_provider_config, "SessionLocal")
 
     settings = get_settings()
     assert (settings.llm_enabled, settings.llm_api_key) == (True, "sk-fixture-first-0001")

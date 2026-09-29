@@ -54,7 +54,7 @@ def test_completion_probe_success_missing_usage_http_and_transport_are_accounted
     def fake_models(url: str, **_kwargs):
         return httpx.Response(200, json={"data": [{"id": "probe-model"}]})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
     outcomes = [
         httpx.Response(
             200,
@@ -143,7 +143,7 @@ def test_completion_probe_reservation_covers_real_provider_usage(client, session
     def fake_models(url: str, **_kwargs):
         return httpx.Response(200, json={"data": [{"id": "probe-model"}]})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
     usages = [
         {"prompt_tokens": 11, "completion_tokens": 8, "total_tokens": 19},      # 实测 sensenova 案例
         {"prompt_tokens": 11, "completion_tokens": 700, "total_tokens": 711},   # 思考型后端不截断 reasoning
@@ -428,13 +428,13 @@ def test_route_activation_gate_requires_an_existing_provider_binding() -> None:
     import pytest
 
     from novel_system.services.errors import DomainError
-    from novel_system.services.system_config import _validate_activating_node_route_bindings
+    from novel_system.services.llm_route_config import validate_activating_node_route_bindings
 
     routes = _parsed_routes(
         {"style_draft": {"provider": "openai_compatible", "provider_id": "missing_qwen", "model": "Qwen3-14B-Q8_0.gguf", "api_mode": "chat"}}
     )
     with pytest.raises(DomainError) as excinfo:
-        _validate_activating_node_route_bindings(node_routing=routes, providers={})
+        validate_activating_node_route_bindings(node_routing=routes, providers={})
     assert excinfo.value.code == "CONFIG_ROUTE_PROVIDER_MISSING"
     assert "missing_qwen" in excinfo.value.message
 
@@ -443,7 +443,7 @@ def test_route_activation_gate_requires_a_ready_provider_secret(client, monkeypa
     import pytest
 
     from novel_system.services.errors import DomainError
-    from novel_system.services.system_config import _validate_activating_node_route_bindings
+    from novel_system.services.llm_route_config import validate_activating_node_route_bindings
 
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
@@ -468,7 +468,7 @@ def test_route_activation_gate_requires_a_ready_provider_secret(client, monkeypa
         {"neutral_draft": {"provider": "openai", "provider_id": "openai_no_secret", "model": "gpt-5.4", "api_mode": "responses"}}
     )
     with pytest.raises(DomainError) as excinfo:
-        _validate_activating_node_route_bindings(node_routing=routes, providers=providers)
+        validate_activating_node_route_bindings(node_routing=routes, providers=providers)
     assert excinfo.value.code == "CONFIG_ROUTE_PROVIDER_NOT_READY"
     assert "openai_no_secret" in excinfo.value.message
     # 分工保存同样拒绝(在展开路由之前就查服务是否就绪)
@@ -1030,7 +1030,7 @@ def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(clien
         assert json["stream"] is False
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
     monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     probe_response = client.post(
@@ -1057,7 +1057,7 @@ def test_llm_provider_probe_bypasses_system_proxy_for_loopback_base_url(client, 
         assert trust_env is False
         return httpx.Response(200, json={"data": [{"id": "relay-model"}]})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
 
     response = client.post(
         "/api/v1/system-config/test-provider",
@@ -1095,7 +1095,7 @@ def test_llm_provider_probe_normalizes_proxy_alias_model_ids(client, monkeypatch
             },
         )
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
 
     response = client.post(
         "/api/v1/system-config/test-provider",
@@ -1181,7 +1181,7 @@ llm:
         assert json["model"] == "qwen3:14b"
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
     monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     response = client.post(
@@ -1232,7 +1232,7 @@ def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, 
         assert json["messages"][0]["content"] == "ping"
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
     monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     response = client.post(
@@ -1282,7 +1282,7 @@ def test_llm_provider_probe_uses_configured_responses_protocol(client, monkeypat
         assert "input" in json
         return httpx.Response(404, json={"detail": "Not Found"})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
     monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     probe_response = client.post(
@@ -1338,7 +1338,7 @@ def test_llm_provider_probe_accepts_completion_when_models_endpoint_is_unavailab
         assert json["stream"] is False
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
     monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     probe_response = client.post(
@@ -1379,7 +1379,7 @@ def test_llm_provider_probe_reports_available_models_when_local_name_does_not_ma
         assert trust_env is True
         return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}, {"id": "llama3.1:8b"}]})
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models)
 
     response = client.post(
         "/api/v1/system-config/llm/providers/local_qwen/probe",

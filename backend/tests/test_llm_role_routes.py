@@ -253,7 +253,7 @@ def test_provider_models_endpoint_live_and_preset_fallback(client, monkeypatch) 
         request = httpx.Request("GET", url)
         return httpx.Response(200, json={"data": [{"id": "live-a"}, {"id": "live-b"}]}, request=request)
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models_ok)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models_ok)
     response = client.get(
         "/api/v1/system-config/llm/providers/live_provider/models",
         headers=ADMIN_HEADERS,
@@ -268,7 +268,7 @@ def test_provider_models_endpoint_live_and_preset_fallback(client, monkeypatch) 
 
         raise httpx.ConnectError("boom", request=httpx.Request("GET", url))
 
-    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models_down)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.get", fake_models_down)
     response = client.get(
         "/api/v1/system-config/llm/providers/live_provider/models",
         headers=ADMIN_HEADERS,

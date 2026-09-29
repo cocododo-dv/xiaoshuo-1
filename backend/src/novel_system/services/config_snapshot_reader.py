@@ -48,6 +48,15 @@ def _active_snapshot_value(session, category: str, column):
     ).first()
 
 
+def active_snapshot(session, category: str) -> SystemConfigSnapshot | None:
+    """活动快照这一行（同一类别有多条活动行时取版本最高、最新的那条）；没有 → ``None``。"""
+    return session.execute(
+        select(SystemConfigSnapshot)
+        .where(SystemConfigSnapshot.category == category, SystemConfigSnapshot.active_flag == 1)
+        .order_by(SystemConfigSnapshot.version.desc(), SystemConfigSnapshot.created_at.desc())
+    ).scalars().first()
+
+
 def active_config_payload(session, category: str) -> dict[str, Any] | None:
     """在调用方的会话里读活动快照的 ``parsed_json``（新 dict）；没有活动快照 → ``None``。"""
     row = _active_snapshot_value(session, category, SystemConfigSnapshot.parsed_json)

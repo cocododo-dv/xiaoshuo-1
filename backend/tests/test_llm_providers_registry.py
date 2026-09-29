@@ -9,7 +9,7 @@ from novel_system.services.llm_providers import (
     supported_provider_types,
 )
 from novel_system.services.llm_providers.base import LLMConfigurationError, ProviderAdapter
-from novel_system.services.system_config import _normalize_provider_base_url
+from novel_system.services.llm_provider_config import normalize_provider_base_url as _normalize_provider_base_url
 
 
 EXPECTED_PROVIDER_TYPES = {
