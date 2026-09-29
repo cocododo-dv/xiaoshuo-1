@@ -99,6 +99,29 @@ def _describe_violations(counts: dict[tuple[str, str], int]) -> str:
     return summary
 
 
+def _revisions_may_run(migration_context) -> bool:
+    """Whether this command can apply a revision -- only then is the FK scan worth it.
+
+    ``upgrade`` / ``downgrade`` / ``stamp`` carry a destination; ``current``,
+    ``check``, ``history`` and ``show`` never run a revision. A destination the
+    database is already at applies nothing either: that is every launcher start
+    (``upgrade head`` on an up-to-date database), where a cold scan of a
+    ~400 MB database costs seconds for nothing. A destination that cannot be
+    compared here (``-1``, ``+2``, a partial id) counts as "may run".
+    """
+
+    if migration_context.opts.get("destination_rev") is None:
+        return False
+    destination = context.get_revision_argument()
+    if destination is None:  # "base"
+        wanted: set[str] = set()
+    elif isinstance(destination, tuple):  # "heads"
+        wanted = set(destination)
+    else:
+        wanted = {destination}
+    return set(migration_context.get_current_heads()) != wanted
+
+
 def _refuse_foreign_keys_broken_by_this_run(
     before: dict[tuple[str, str], int],
     after: dict[tuple[str, str], int],
@@ -108,10 +131,14 @@ def _refuse_foreign_keys_broken_by_this_run(
     Migrations run with enforcement off (table rebuilds need it), so nothing
     else notices rows a revision orphaned. SQLite commits every revision on its
     own, so this runs after the last one: the revisions stay applied and the
-    command exits non-zero, which stops the launchers before a backend starts
-    on the damaged database. Violations the database already had before this
-    run are reported but do not fail it -- a migration did not cause them, and
-    refusing would only keep the author out of an otherwise working install.
+    command exits non-zero, which stops the launcher that ran it before its
+    backend starts. The failure fires once: a second ``upgrade head`` finds
+    nothing to apply, skips the scan (``_revisions_may_run``) and lets the
+    backend start on the orphaned rows -- so the error tells the operator to
+    restore the backup taken before the upgrade or repair the rows first.
+    Violations the database already had before a run that applies revisions are
+    reported but do not fail it -- a migration did not cause them, and refusing
+    would only keep the author out of an otherwise working install.
     """
 
     introduced = {
@@ -120,7 +147,11 @@ def _refuse_foreign_keys_broken_by_this_run(
     if introduced:
         raise RuntimeError(
             f"sqlite_foreign_key_check_failed: {sum(introduced.values())} row(s) violate a "
-            f"foreign key after migrating: {_describe_violations(introduced)}"
+            f"foreign key after migrating: {_describe_violations(introduced)}. "
+            "These revisions are already applied (SQLite commits each one), so running the "
+            "upgrade again finds nothing to apply and will not stop the backend from starting "
+            "on these rows. Before starting it, restore the backup taken before this upgrade "
+            "(python -m novel_system.tools.db_backup --restore BACKUP DST) or repair the listed rows."
         )
     if after:
         logging.getLogger("alembic.env").warning(
@@ -139,8 +170,9 @@ def run_migrations_online() -> None:
     if is_sqlite:
         # SQLite table-rebuild migrations need FK enforcement disabled on their
         # dedicated connection. Runtime application connections use the opposite
-        # fail-closed default in db/session.py. A full PRAGMA foreign_key_check
-        # runs after the last revision (``_refuse_foreign_keys_broken_by_this_run``).
+        # fail-closed default in db/session.py. When revisions may run, a full
+        # PRAGMA foreign_key_check runs before the first and after the last one
+        # (``_refuse_foreign_keys_broken_by_this_run``).
         @event.listens_for(connectable, "connect")
         def configure_sqlite_migration_connection(
             dbapi_connection,
@@ -157,10 +189,11 @@ def run_migrations_online() -> None:
                 cursor.close()
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
-        violations_before = _foreign_key_violations(connection) if is_sqlite else {}
+        check_foreign_keys = is_sqlite and _revisions_may_run(context.get_context())
+        violations_before = _foreign_key_violations(connection) if check_foreign_keys else {}
         with context.begin_transaction():
             context.run_migrations()
-        if is_sqlite:
+        if check_foreign_keys:
             _refuse_foreign_keys_broken_by_this_run(violations_before, _foreign_key_violations(connection))
 
 
