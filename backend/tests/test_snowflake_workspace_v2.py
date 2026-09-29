@@ -525,12 +525,13 @@ def test_workspace_v2_uses_structured_scene_plans_and_persists_triage_repair_pat
     assert stored_scene.setback.startswith("The witness gives proof")
 
 
-def test_workspace_v2_records_revision_links_when_upstream_step_is_reapproved(client, session) -> None:
+def test_workspace_v2_logs_one_cascade_event_when_upstream_step_is_reapproved(client, session) -> None:
+    """B06-14：一次失效级联留一条操作日志；snowflake_revision_links 不再写（从来没有读者）。"""
     project = _create_project(client, key="structured-revision-links")
     _approve_generated_step(client, project["project_id"], "book_brief")
     _approve_generated_step(client, project["project_id"], "one_sentence_summary")
 
-    replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    replacement = _generate_step(client, project["project_id"], "book_brief")
     client.patch(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
         json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},
@@ -557,17 +558,22 @@ def test_workspace_v2_records_revision_links_when_upstream_step_is_reapproved(cl
         )
         .one()
     )
-    link = (
-        session.query(SnowflakeRevisionLink)
+    approved_brief = (
+        session.query(SnowflakeStepRun)
         .filter(
-            SnowflakeRevisionLink.project_id == project["project_id"],
-            SnowflakeRevisionLink.source_step_key == "book_brief",
-            SnowflakeRevisionLink.affected_kind == "step_run",
-            SnowflakeRevisionLink.affected_id == stale_run.step_run_id,
+            SnowflakeStepRun.project_id == project["project_id"],
+            SnowflakeStepRun.step_key == "book_brief",
+            SnowflakeStepRun.status == "approved",
         )
         .one()
     )
-    assert link.status == "open"
+    [log] = session.query(OperationLog).filter_by(event_type="snowflake_downstream_marked_stale").all()
+    assert log.object_ref == approved_brief.step_run_id
+    assert log.payload_json["step_key"] == "book_brief"
+    assert log.payload_json["affected_step_run_ids"] == [stale_run.step_run_id]
+    assert log.payload_json["affected_step_keys"] == ["one_sentence_summary"]
+    assert log.payload_json["reasons"]["one_sentence_summary"] == stale_run.stale_reason
+    assert session.query(SnowflakeRevisionLink).filter_by(project_id=project["project_id"]).count() == 0
 
 
 def test_workspace_v2_supports_structured_save_assistant_and_step_approval(client, session) -> None:

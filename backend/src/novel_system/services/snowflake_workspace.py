@@ -19,7 +19,6 @@ from novel_system.db.models import (
     SceneRunState,
     SnowflakeAssistantTurn,
     SnowflakeCharacterPlan,
-    SnowflakeRevisionLink,
     SnowflakeChapterPlan,
     SnowflakeScenePlan,
     SnowflakeSceneTriageItem,
@@ -2963,6 +2962,7 @@ class SnowflakeWorkspaceService:
         affected_step_run_ids: list[str] = []
         affected_scene_plan_ids: list[str] = []
         stale_step_keys: set[str] = set()
+        reasons: dict[str, str] = {}
         for hit in hits:
             row = hit.row
             row.status = "stale"
@@ -2972,7 +2972,7 @@ class SnowflakeWorkspaceService:
             row.stale_accepted_note = None
             affected_step_run_ids.append(row.step_run_id)
             stale_step_keys.add(row.step_key)
-            self._record_revision_link(run, affected_kind="step_run", affected_id=row.step_run_id, reason=hit.reason)
+            reasons[row.step_key] = hit.reason
 
         # Scene plans are the materialized output of scene_list / scene_details, so they
         # only go stale when one of those steps is itself affected — not on every change
@@ -2993,7 +2993,27 @@ class SnowflakeWorkspaceService:
                 scene.stale_accepted_by = None
                 scene.stale_accepted_note = None
                 affected_scene_plan_ids.append(scene.scene_plan_id)
-                self._record_revision_link(run, affected_kind="scene_plan", affected_id=scene.scene_plan_id, reason=reason)
+            if affected_scene_plan_ids:
+                reasons["scene_plans"] = reason
+
+        if affected_step_run_ids or affected_scene_plan_ids:
+            # 一次失效级联留一条操作日志（B06-14）：以前每个受影响的步骤 / 场景计划各写一行
+            # snowflake_revision_links（外加一次去重查询），那张表从来没有读者，状态也从不离开 open。
+            self.session.add(
+                OperationLog(
+                    event_type="snowflake_downstream_marked_stale",
+                    object_type="snowflake_step_run",
+                    object_ref=run.step_run_id,
+                    payload_json={
+                        "project_id": run.project_id,
+                        "step_key": run.step_key,
+                        "affected_step_run_ids": affected_step_run_ids,
+                        "affected_step_keys": sorted(stale_step_keys),
+                        "affected_scene_plan_ids": affected_scene_plan_ids,
+                        "reasons": reasons,
+                    },
+                )
+            )
 
         summary = (
             f"{run.step_key} 改动影响 {len(affected_step_run_ids)} 个下游步骤、"
@@ -3030,31 +3050,6 @@ class SnowflakeWorkspaceService:
                 if part
             ),
         }
-
-    def _record_revision_link(self, run: SnowflakeStepRun, *, affected_kind: str, affected_id: str, reason: str) -> None:
-        existing = self.session.execute(
-            select(SnowflakeRevisionLink).where(
-                SnowflakeRevisionLink.project_id == run.project_id,
-                SnowflakeRevisionLink.source_step_run_id == run.step_run_id,
-                SnowflakeRevisionLink.affected_kind == affected_kind,
-                SnowflakeRevisionLink.affected_id == affected_id,
-                SnowflakeRevisionLink.status == "open",
-            )
-        ).scalars().first()
-        if existing is not None:
-            return
-        self.session.add(
-            SnowflakeRevisionLink(
-                revision_link_id=f"snowflake_revision_{run.project_id}_{uuid.uuid4().hex[:10]}",
-                project_id=run.project_id,
-                source_step_key=run.step_key,
-                source_step_run_id=run.step_run_id,
-                affected_kind=affected_kind,
-                affected_id=affected_id,
-                reason=reason,
-                status="open",
-            )
-        )
 
     def _skip_draft(self, step_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         step = get_step_definition(step_key)
