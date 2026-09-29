@@ -14,14 +14,11 @@ from novel_system.db.models import (
     LlmCall,
     LlmCallAttempt,
     SceneCard,
-    StyleReferenceBook,
-    StyleReferenceRun,
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.background_recovery import (
     acquire_startup_recovery_lease,
     recover_run_job_dispatches,
-    retire_legacy_style_reference_runs,
     run_startup_recovery,
 )
 from novel_system.services.errors import DomainError
@@ -412,63 +409,6 @@ def test_startup_recovery_uses_configured_ttl_for_legacy_llm_reservations(
     ]
     session.expire_all()
     assert session.get(LlmCall, "legacy-startup-recovery").accounting_status == "released"
-
-
-def test_legacy_style_reference_runs_are_retired_and_learn_runs_are_left_alone(session) -> None:
-    """旧抽取流程(RunOrchestrator,2026-09-23 删除)留下的「运行中」run 标 failed;学习作业的血缘 run 不动。"""
-    session.add(
-        StyleReferenceBook(
-            book_id="book-recovery",
-            title="Recovery",
-            source_kind="upload",
-            cloud_policy="segments_only",
-            text_checksum="book-recovery-checksum",
-        )
-    )
-    session.add_all(
-        [
-            StyleReferenceRun(
-                run_id="run-queued",
-                book_id="book-recovery",
-                status="running",
-                phase="extract",
-                dispatch_state="queued",
-                requested_layers_json=["language", "scene"],
-            ),
-            StyleReferenceRun(
-                run_id="run-running",
-                book_id="book-recovery",
-                status="running",
-                phase="extract",
-                dispatch_state="running",
-                requested_layers_json=["language"],
-            ),
-            StyleReferenceRun(
-                run_id="run-learn",
-                book_id="book-recovery",
-                status="running",
-                phase="extract",
-                dispatch_state="learn_job",
-            ),
-            StyleReferenceRun(
-                run_id="run-done",
-                book_id="book-recovery",
-                status="done",
-                phase="done",
-                dispatch_state="completed",
-            ),
-        ]
-    )
-    session.commit()
-
-    assert sorted(retire_legacy_style_reference_runs(session)) == ["run-queued", "run-running"]
-    session.expire_all()
-    for run_id in ("run-queued", "run-running"):
-        run = session.get(StyleReferenceRun, run_id)
-        assert run.status == "failed" and run.error_code == "STYLE_REFERENCE_RUN_RETIRED"
-    assert session.get(StyleReferenceRun, "run-learn").status == "running"
-    assert session.get(StyleReferenceRun, "run-done").status == "done"
-    assert retire_legacy_style_reference_runs(session) == []
 
 
 # ---------------------------------------------------------------------------
