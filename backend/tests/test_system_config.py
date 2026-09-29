@@ -49,7 +49,7 @@ def test_completion_probe_success_missing_usage_http_and_transport_are_accounted
             return _outcome
 
         monkeypatch.setattr(
-            "novel_system.services.llm_accounting.httpx.post",
+            "novel_system.services.llm_provider_probe.httpx.post",
             fake_completion,
         )
         response = client.post(
@@ -128,7 +128,7 @@ def test_completion_probe_reservation_covers_real_provider_usage(client, session
                 json={"choices": [{"message": {"content": "pong"}}], "usage": _usage},
             )
 
-        monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
+        monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
         response = client.post(
             "/api/v1/system-config/test-provider",
             headers=ADMIN_HEADERS,
@@ -1159,7 +1159,7 @@ def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(clien
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     probe_response = client.post(
         "/api/v1/system-config/llm/providers/cli_proxy/probe",
@@ -1321,7 +1321,7 @@ llm:
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     response = client.post(
         "/api/v1/system-config/llm/providers/local_qwen/probe",
@@ -1372,7 +1372,7 @@ def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, 
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     response = client.post(
         "/api/v1/system-config/llm/providers/local_qwen/probe",
@@ -1422,7 +1422,7 @@ def test_llm_provider_probe_uses_configured_responses_protocol(client, monkeypat
         return httpx.Response(404, json={"detail": "Not Found"})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     probe_response = client.post(
         "/api/v1/system-config/llm/providers/gcli2api/probe",
@@ -1478,7 +1478,7 @@ def test_llm_provider_probe_accepts_completion_when_models_endpoint_is_unavailab
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_provider_probe.httpx.post", fake_completion)
 
     probe_response = client.post(
         "/api/v1/system-config/llm/providers/cli_proxy/probe",

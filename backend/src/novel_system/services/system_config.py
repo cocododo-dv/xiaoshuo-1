@@ -42,10 +42,8 @@ from novel_system.services.llm_routing import (
     parse_model_routing_config,
     routing_for_models_payload,
 )
-from novel_system.services.llm_accounting import (
-    LLMCallContext,
-    execute_accounted_completion_probe,
-)
+from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_provider_probe import execute_accounted_completion_probe
 from novel_system.services.llm_providers import (
     adapter_registry,
     get_provider_preset,

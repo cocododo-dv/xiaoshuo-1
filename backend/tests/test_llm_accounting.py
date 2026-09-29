@@ -20,6 +20,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.db.session import SessionLocal
+from novel_system.services import llm_scene_fence
 from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse
 
 
@@ -1998,7 +1999,7 @@ def test_recovery_releases_reserved_but_undispatched_attempt_and_allows_retry(se
     assert session.query(LlmCallAttempt).one().accounting_status == "released"
     assert session.get(SceneRunState, scene_id).scene_tokens_reserved == 0
     assert session.get(SceneRunState, scene_id).provider_attempts_used == 0
-    accounting._release_scene_reservation(session, scene_id, attempt.reserved_tokens)
+    llm_scene_fence.release_scene_reservation(session, scene_id, attempt.reserved_tokens)
 
     accounting.execute_accounted_call(
         session,
@@ -2104,7 +2105,6 @@ def test_recovery_charges_dispatched_unknown_attempt_and_same_call_is_not_resent
 
 
 def test_release_idempotence_does_not_hide_a_different_nonzero_fence(session) -> None:
-    accounting = _accounting_module()
     scene_id = "scene-release-fence-conflict"
     session.add(
         _scene_run_state(
@@ -2118,7 +2118,7 @@ def test_release_idempotence_does_not_hide_a_different_nonzero_fence(session) ->
     session.commit()
 
     with pytest.raises(Exception) as conflict:
-        accounting._release_scene_reservation(session, scene_id, 123)
+        llm_scene_fence.release_scene_reservation(session, scene_id, 123)
     assert getattr(conflict.value, "code", None) == "LLM_ACCOUNTING_SCENE_RESERVATION_CORRUPT"
     session.rollback()
     assert session.get(SceneRunState, scene_id).scene_tokens_reserved == 321
