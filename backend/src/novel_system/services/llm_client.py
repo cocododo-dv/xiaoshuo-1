@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-import yaml
 
 from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
+from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.llm_providers import (
     default_provider_base_urls,
     get_adapter,
@@ -1065,18 +1065,36 @@ class LLMClient(OnlineAccountedExecution):
             )
 
 
-def load_model_routing_config(path: str | Path | None = None) -> ModelRoutingConfig:
-    if path is None:
-        from novel_system.services.config_snapshot_reader import load_active_config_payload
+# 解析好的路由按来源内容记忆（活动 models 快照的原文 / 文件正文，见 config_cache）：同一份内容只解析一次，
+# 内容一变（系统配置保存路由 / 切换快照、raise_llm_output_budget、改文件）下一次读取就重新解析。
+_MODEL_ROUTING_CACHE = ContentKeyedCache(maxsize=4)
 
-        raw_payload = load_active_config_payload("models")
-        if raw_payload is None:
-            config_path = _default_models_config_path()
-            raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+def load_model_routing_config(path: str | Path | None = None) -> ModelRoutingConfig:
+    """模型路由：库里有活动 models 快照读快照，否则读 ``config/models.yaml``；给 ``path`` 就读那份文件。
+
+    返回的 ``ModelRoutingConfig`` 由缓存共享、只读（调用方都只查表；要改先拷贝）。
+    """
+    if path is None:
+        from novel_system.services.config_snapshot_reader import load_active_config_parsed
+
+        routing = load_active_config_parsed(
+            "models", parse_model_routing_config, cache=_MODEL_ROUTING_CACHE
+        )
+        if routing is not None:
+            return routing
+        config_path = _default_models_config_path()
     else:
         config_path = Path(path)
-        raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    return parse_model_routing_config(raw_payload)
+    text = config_path.read_text(encoding="utf-8")
+    return _MODEL_ROUTING_CACHE.get_or_build(
+        ("file", text), lambda: parse_model_routing_config(safe_load_yaml(text))
+    )
+
+
+def reset_model_routing_cache() -> None:
+    """清空模型路由的解析缓存（缓存按内容取键，本身不会过期；给测试 / 释放内存用）。"""
+    _MODEL_ROUTING_CACHE.clear()
 
 
 def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:

@@ -25,6 +25,7 @@ from typing import Any
 import yaml
 
 from novel_system.db.session import SessionLocal
+from novel_system.services.config_cache import safe_load_yaml
 from novel_system.services.system_config import SystemConfigService
 
 # 客户端降级阶梯的上限（MAX_OUTPUT_TOKENS_CEILING），配置值与之对齐才有意义。
@@ -88,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             print("库内没有活动的 models 配置快照——运行时直接读 config/models.yaml，改文件即可生效。")
             return 0
 
-        payload = yaml.safe_load(category["yaml_raw"]) or {}
+        payload = safe_load_yaml(category["yaml_raw"]) or {}
         if not any(isinstance(payload.get(table), dict) for table in ROUTING_TABLES):
             print("活动快照里既没有 node_routing 也没有 task_routing，无需处理。")
             return 0

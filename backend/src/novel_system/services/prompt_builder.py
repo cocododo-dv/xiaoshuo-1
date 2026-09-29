@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.context_budget import (
     CONTINUITY_DROP_ORDER,
@@ -224,24 +225,46 @@ class PromptBuilder:
         }
 
 
-def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTemplate]:
-    if path is None:
-        from novel_system.services.config_snapshot_reader import load_active_config_payload
+# 解析好的模板按来源内容记忆（活动 prompts 快照的原文 / 文件正文，见 config_cache）：同一份内容只解析一次，
+# 内容一变（系统配置保存 / 切换快照、sync_prompt_templates、改文件）下一次读取就重新解析。
+_PROMPT_TEMPLATE_CACHE = ContentKeyedCache(maxsize=4)
 
-        raw_payload = load_active_config_payload("prompts")
-        if raw_payload is None:
-            config_path = _default_prompts_config_path()
-            try:
-                raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            except yaml.YAMLError as exc:
-                raise PromptConfigurationError("prompts config could not be parsed") from exc
+
+def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTemplate]:
+    """提示词模板：库里有活动 prompts 快照读快照，否则读 ``config/prompts.yaml``；给 ``path`` 就读那份文件。
+
+    每次返回一个新的 dict（调用方可以增删键），里面的 ``PromptTemplate`` 与它的 ``structured_schema``
+    由缓存共享、只读——要改 schema 先深拷贝（``PromptBuilder.build`` 已经返回拷贝）。
+    """
+    if path is None:
+        from novel_system.services.config_snapshot_reader import load_active_config_parsed
+
+        templates = load_active_config_parsed(
+            "prompts", parse_prompt_templates, cache=_PROMPT_TEMPLATE_CACHE
+        )
+        if templates is None:
+            templates = _load_prompt_templates_file(_default_prompts_config_path())
     else:
-        config_path = Path(path)
-        try:
-            raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            raise PromptConfigurationError("prompts config could not be parsed") from exc
+        templates = _load_prompt_templates_file(Path(path))
+    return dict(templates)
+
+
+def _load_prompt_templates_file(config_path: Path) -> dict[str, PromptTemplate]:
+    text = config_path.read_text(encoding="utf-8")
+    return _PROMPT_TEMPLATE_CACHE.get_or_build(("file", text), lambda: _parse_prompt_templates_yaml(text))
+
+
+def _parse_prompt_templates_yaml(text: str) -> dict[str, PromptTemplate]:
+    try:
+        raw_payload = safe_load_yaml(text)
+    except yaml.YAMLError as exc:
+        raise PromptConfigurationError("prompts config could not be parsed") from exc
     return parse_prompt_templates(raw_payload)
+
+
+def reset_prompt_template_cache() -> None:
+    """清空提示词模板的解析缓存（缓存按内容取键，本身不会过期；给测试 / 释放内存用）。"""
+    _PROMPT_TEMPLATE_CACHE.clear()
 
 
 def default_input_token_budget(template: PromptTemplate) -> int:

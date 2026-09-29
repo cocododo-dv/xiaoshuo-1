@@ -34,6 +34,7 @@ from typing import Any
 import yaml
 
 from novel_system.db.session import SessionLocal
+from novel_system.services.config_cache import safe_load_yaml
 from novel_system.services.system_config import SystemConfigService
 
 # 版本号变了才同步的字段——它们承载创作意图，可能被作者在界面上改过。
@@ -153,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     repo_path = _repo_prompts_path()
     try:
-        repo_payload = yaml.safe_load(repo_path.read_text(encoding="utf-8")) or {}
+        repo_payload = safe_load_yaml(repo_path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
         print(f"读不了仓库提示词文件 {repo_path}：{exc}")
         return 2
@@ -176,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             print("库内没有活动的 prompts 快照——运行时直接读 config/prompts.yaml，改文件即已生效，无需同步。")
             return 0
 
-        payload = yaml.safe_load(category["yaml_raw"]) or {}
+        payload = safe_load_yaml(category["yaml_raw"]) or {}
         snapshot_templates = payload.get("templates")
         if not isinstance(snapshot_templates, dict):
             print("活动快照里没有 templates 段，形状异常——请先在系统配置界面检查这一版。")

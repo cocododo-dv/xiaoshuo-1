@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+from novel_system.services.config_cache import safe_load_yaml
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def load_price_book() -> PriceBook:
     default = _builtin_default_snapshot()
     snapshots: list[PriceSnapshot] = []
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        raw = safe_load_yaml(path.read_text(encoding="utf-8")) or {}
         default_raw = raw.get("default_estimate")
         if isinstance(default_raw, dict):
             default = _coerce_snapshot(default_raw)
