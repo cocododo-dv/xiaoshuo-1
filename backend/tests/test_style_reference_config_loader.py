@@ -14,11 +14,6 @@ from novel_system.services.style_reference.config_loader import (
 )
 
 
-def setup_function() -> None:
-    """每个测试开始时清缓存。"""
-    clear_config_cache()
-
-
 def test_load_input_thresholds_yaml() -> None:
     cfg = load_yaml_config("input_thresholds")
     assert set(cfg.keys()) >= {"language", "narrative", "scene", "theme"}

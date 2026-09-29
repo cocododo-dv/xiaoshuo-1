@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 from novel_system.api.app import create_app
+from novel_system.cache_registry import reset_all_caches
 from novel_system.db.base import Base
 from novel_system.db.session import SessionLocal, reset_engine
 
@@ -33,6 +34,14 @@ def _schema_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     finally:
         template_engine.dispose()
     return path
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_test_process() -> Generator[None, None, None]:
+    """每个用例前后各复位一次登记过的进程级缓存（X04-16；为什么要复位见 ``novel_system.cache_registry``）。"""
+    reset_all_caches()
+    yield
+    reset_all_caches()
 
 
 @pytest.fixture(autouse=True)

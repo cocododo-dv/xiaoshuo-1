@@ -32,17 +32,9 @@ from novel_system.services.style_reference.repository import StyleReferenceRepos
 from tests.style_reference_factories import RIGHTS_STATS, make_book, make_profile
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
-    reset_reference_copy_gate_cache,
 )
 from novel_system.services.style_reference.check_job import start_check_job
 from novel_system.services.style_reference.validation import check_plagiarism
-
-
-@pytest.fixture(autouse=True)
-def _clear_corpus_cache():
-    reset_reference_copy_gate_cache()
-    yield
-    reset_reference_copy_gate_cache()
 
 
 class _SentinelLLM:

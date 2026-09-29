@@ -40,6 +40,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import (
     StyleReferenceBannedTerm,
     StyleReferenceBook,
@@ -616,6 +617,9 @@ def reset_reference_copy_gate_cache() -> None:
     with _LOCK:
         _INDEX_CACHE.clear()
         _RESULT_CACHE.clear()
+
+
+register_cache_reset("reference_copy_gate", reset_reference_copy_gate_cache)
 
 
 __all__ = [

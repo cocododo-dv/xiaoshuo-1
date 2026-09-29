@@ -53,6 +53,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import StyleReferenceBook
 from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
@@ -766,6 +767,9 @@ _CACHE_LOCK = threading.Lock()
 def reset_render_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+
+
+register_cache_reset("style_reference.inject.render", reset_render_cache)
 
 
 def _cache_key(

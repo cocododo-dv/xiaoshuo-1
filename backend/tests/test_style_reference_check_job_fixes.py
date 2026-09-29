@@ -19,10 +19,8 @@ from sqlalchemy import func, select, update
 from novel_system.db.models import StyleFidelityReading, StyleReferenceJob
 from novel_system.db.session import SessionLocal
 from novel_system.services.context_budget import estimate_tokens
-from novel_system.services.style_policy import reset_style_policy_cache
 from novel_system.services.style_reference import check_job
 from novel_system.services.style_reference import policy as policy_module
-from novel_system.services.style_reference.config_loader import clear_config_cache
 from novel_system.services.style_reference.errors import CloudPolicyBlockedError
 from novel_system.services.style_reference.inject.render import reset_render_cache
 from novel_system.services.style_reference.jobs import (
@@ -31,20 +29,8 @@ from novel_system.services.style_reference.jobs import (
     register_job_handler,
     run_job_inline,
 )
-from novel_system.services.style_reference.runtime_contract import reset_contract_memo
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.style_reference_inject_helpers import seed_reference
-
-
-@pytest.fixture(autouse=True)
-def _fresh_caches():
-    clear_config_cache()
-    reset_render_cache()
-    reset_contract_memo()
-    reset_style_policy_cache()
-    yield
-    reset_render_cache()
-    reset_style_policy_cache()
 
 
 def _routes(monkeypatch, local_nodes: set[str] | None) -> None:

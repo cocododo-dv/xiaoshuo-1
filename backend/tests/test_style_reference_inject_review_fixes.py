@@ -31,7 +31,6 @@ from novel_system.services.style_policy import (
     MODE_DEGRADED,
     MODE_FROZEN,
     policy_from_contract,
-    reset_style_policy_cache,
     style_policy_for_bundle,
 )
 from novel_system.services.style_prompt_injection import (
@@ -50,7 +49,6 @@ from novel_system.services.style_reference.card import (
     plan_card_block,
     render_card_block,
 )
-from novel_system.services.style_reference.config_loader import clear_config_cache
 from novel_system.services.style_reference.errors import CloudPolicyBlockedError
 from novel_system.services.style_reference.inject import selection as selection_module
 from novel_system.services.style_reference.inject.bindings import resolve_binding_layers
@@ -93,7 +91,6 @@ from novel_system.services.style_reference.runtime_contract import (
     _json_hash,
     build_style_runtime_contract,
     contract_layer,
-    reset_contract_memo,
 )
 from novel_system.services.style_reference.schemas import FEW_SHOT_CLOSING_MANDATE_FINAL, FEW_SHOT_IN_USER_MESSAGE_NOTE
 from novel_system.services.style_reference.voice_signature import (
@@ -112,17 +109,6 @@ from tests.style_reference_inject_helpers import (
     tag_windows,
     window_numbers,
 )
-
-
-@pytest.fixture(autouse=True)
-def _fresh_caches():
-    clear_config_cache()
-    reset_render_cache()
-    reset_contract_memo()
-    reset_style_policy_cache()
-    yield
-    reset_render_cache()
-    reset_style_policy_cache()
 
 
 def _routes(monkeypatch, local_nodes: set[str] | None) -> None:

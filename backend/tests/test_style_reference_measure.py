@@ -123,7 +123,6 @@ def test_light_measures_cannot_feed_kernel_features() -> None:
 
 
 def test_large_inputs_are_measured_once() -> None:
-    m.clear_kernel_cache()
     big = [paragraph + f"第{index}回。" for index in range(1200) for paragraph in _PARAGRAPHS]
     first = m.measure_paragraphs(big)
     assert m.measure_paragraphs(list(big)) is first

@@ -21,6 +21,8 @@ from typing import Any
 
 import yaml
 
+from novel_system.cache_registry import register_cache_reset
+
 
 def _config_dir() -> Path:
     """仓库根 / config / style_reference。
@@ -76,3 +78,6 @@ def clear_config_cache() -> None:
     """清空所有 yaml 与 text 模板缓存,供测试用。"""
     _load_yaml.cache_clear()
     load_text_template.cache_clear()
+
+
+register_cache_reset("style_reference.config_loader", clear_config_cache)

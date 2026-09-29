@@ -21,7 +21,6 @@ import pytest
 from novel_system.db.session import SessionLocal
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
-    reset_reference_copy_gate_cache,
 )
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
@@ -32,13 +31,6 @@ pytestmark = pytest.mark.skipif(
     not LOCAL_CORPUS or not Path(LOCAL_CORPUS).exists(),
     reason="NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS 未设置或文件不存在(本地私有语料通道,可选)",
 )
-
-
-@pytest.fixture(autouse=True)
-def _clear_corpus_cache():
-    reset_reference_copy_gate_cache()
-    yield
-    reset_reference_copy_gate_cache()
 
 
 @pytest.fixture(scope="function")

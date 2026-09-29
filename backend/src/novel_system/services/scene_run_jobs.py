@@ -9,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import ChapterRunJob, LlmCall, OperationLog, QcReport, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
@@ -38,6 +39,7 @@ _BUDGET_REJECTION_CODES = frozenset(
 )
 _CANCELLED_JOB_REGISTRY: set[str] = set()
 _CANCELLED_JOB_REGISTRY_LOCK = threading.Lock()
+register_cache_reset("scene_run_jobs.cancelled_hints", _CANCELLED_JOB_REGISTRY.clear)
 SCENE_RUN_STAGE_ORDER = [
     "planning_running",
     "bundle_built",

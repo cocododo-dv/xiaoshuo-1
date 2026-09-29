@@ -39,6 +39,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.style_reference.binding_config import normalize_binding_config
 from novel_system.services.style_reference.config_loader import load_yaml_config
@@ -328,6 +329,9 @@ _VALIDATED_LOCK = threading.Lock()
 def reset_contract_memo() -> None:
     with _VALIDATED_LOCK:
         _VALIDATED.clear()
+
+
+register_cache_reset("style_reference.runtime_contract.validated", reset_contract_memo)
 
 
 def _memo_get(key: str) -> dict[str, Any] | None:

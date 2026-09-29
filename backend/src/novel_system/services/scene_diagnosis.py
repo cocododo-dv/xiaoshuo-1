@@ -48,6 +48,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import (
     AuthorDraft,
     ChapterGoal,
@@ -317,6 +318,7 @@ def passage_scope(
 
 _FINDINGS_CACHE: "OrderedDict[tuple[Any, ...], list[dict[str, Any]]]" = OrderedDict()
 _FINDINGS_CACHE_MAX = 512
+register_cache_reset("scene_diagnosis.findings", _FINDINGS_CACHE.clear)
 STYLE_TASK_TYPE = "scene_generation"
 
 
@@ -401,6 +403,7 @@ class CraftCalibration:
 
 DEFAULT_CRAFT_CALIBRATION = CraftCalibration()
 _REFERENCE_CRAFT_CACHE: dict[tuple[str, int, str], dict[str, Any]] = {}
+register_cache_reset("scene_diagnosis.reference_craft", _REFERENCE_CRAFT_CACHE.clear)
 
 
 def _evenly(items: list[str], limit: int) -> list[str]:

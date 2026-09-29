@@ -12,13 +12,6 @@ import pytest
 from novel_system.services import pricing
 
 
-@pytest.fixture(autouse=True)
-def _reset_price_cache():
-    pricing.reset_price_book_cache()
-    yield
-    pricing.reset_price_book_cache()
-
-
 def test_resolve_price_known_model_from_config():
     snap = pricing.resolve_price("openai_compatible", "gpt-5")
     assert snap.provider == "openai_compatible"
