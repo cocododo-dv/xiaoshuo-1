@@ -14,6 +14,7 @@ from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
     AuthorDraftProposal,
+    AuthorDraftRevision,
     AuthorPreferenceProfile,
     ChapterGoal,
     ChapterMemory,
@@ -30,7 +31,6 @@ from novel_system.db.models import (
     OutlinePlan,
     PassagePatchCandidate,
     QcReport,
-    RelationProfile,
     ReviewItem,
     RevisionCandidate,
     SnowflakeAssistantTurn,
@@ -49,7 +49,7 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryCharacter,
     StoryProject,
-    VoiceProfile,
+    StyleReferenceSceneWindows,
     WriterEvaluation,
 )
 from novel_system.db.session import SessionLocal
@@ -65,6 +65,37 @@ PRESERVED_REVIEW_SOURCES = {"reference_book_learning", "reference_profile_apply"
 # 参考书不随作者状态重置(书、画像、绑定都保留),它们的 LLM 账本行也保留:现役风格参考节点全是
 # ``style_ref_*``(分类 / 抽取 / 合成 / 评审…);``reference_`` 是已下线的旧 reference_* 节点族留下的审计行。
 PRESERVED_LLM_NODE_PREFIXES = ("style_ref_", "reference_")
+
+# 作者状态重置不碰的表（B12-16）。每张表要么是 ``_reset_targets()`` 的目标，要么写在这里并说明为什么留着：
+# tests/test_reset_author_state.py 的完整性守卫在一张新表两边都不在、或这里写着一张已经不存在的表时变红——
+# 与 services/scene_rehome.py 的 REHOMED_MODELS / NOT_REHOMED_TABLES 同一个约定。
+PRESERVED_TABLES = frozenset(
+    {
+        # 系统配置：模型 / 提示词快照与加密保存的服务商密钥
+        "system_config_snapshots",
+        "system_secrets",
+        # 启动恢复的进程级租约，不属于任何作品
+        "background_recovery_leases",
+        # 参考书不随作者状态重置：书、段落、学习血缘（run · 抽取 · 引文 · 发现 · 证据）、画像、绑定、禁用词、
+        # 作业、窗口索引与遥测都留着（每场冻结的选窗属于场景，随作者状态清掉）
+        "style_reference_books",
+        "style_reference_paragraphs",
+        "style_reference_runs",
+        "style_reference_extractions",
+        "style_reference_quotes",
+        "style_reference_findings",
+        "style_reference_evidences",
+        "style_reference_profiles",
+        "style_reference_injection_bindings",
+        "style_reference_banned_terms",
+        "style_reference_jobs",
+        "style_reference_windows",
+        "style_reference_metric_events",
+        # 声线卡 / 关系卡：没有写入者、一行没有，迁移 0098 删表（重评 R8）——重置不再碰它们
+        "voice_profiles",
+        "relation_profiles",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -142,6 +173,8 @@ def _reset_targets() -> list[ResetTarget]:
         ResetTarget("passage_patch_candidates", PassagePatchCandidate),
         ResetTarget("author_draft_events", AuthorDraftEvent),
         ResetTarget("author_draft_proposals", AuthorDraftProposal),
+        # 修订快照存的是整场正文，没有 project_id 也没有外键：按作品派生的清单漏得掉它
+        ResetTarget("author_draft_revisions", AuthorDraftRevision),
         ResetTarget("author_drafts", AuthorDraft),
         ResetTarget("revision_candidates", RevisionCandidate),
         ResetTarget("writer_evaluations", WriterEvaluation),
@@ -156,8 +189,8 @@ def _reset_targets() -> list[ResetTarget]:
         ResetTarget("chapter_memories", ChapterMemory),
         ResetTarget("chapter_rolling_notes", ChapterRollingNote),
         ResetTarget("author_preference_profiles", AuthorPreferenceProfile),
-        ResetTarget("voice_profiles", VoiceProfile),
-        ResetTarget("relation_profiles", RelationProfile),
+        # 每场冻结的风格选窗属于场景（只有 scene_id），场景清掉它也得清
+        ResetTarget("style_reference_scene_windows", StyleReferenceSceneWindows),
         ResetTarget("scene_run_states", SceneRunState),
         ResetTarget("scene_cards", SceneCard),
         ResetTarget("chapter_states", ChapterState),
