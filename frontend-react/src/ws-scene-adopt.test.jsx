@@ -331,17 +331,21 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
     expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
   });
 
+  /* 两次各是新打开的一页：本机缓存里各是一份旧草稿（W1 复核二起，一页打开过的场读的是这一页自己的那一份，
+     另一页 / 别处后来直接写进本机存储的字不算这一页的正文，所以第二份草稿要在新的一页里打开） */
   it("旧草稿只剩开头那句占位：算空稿，不要求确认；占位后面接着写了字就算作者稿", async () => {
-    const { mod } = await loadWithCatalog();
-    const key = window.wsKey("wr-doc:ch01s1");
-    window.localStorage.setItem(key, "<p><br></p><p>在这里开始写这一场……</p>");
-    const empty = await mod.scnPrepareAdoption("ch01s1", DRAFT);
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", "<p><br></p><p>在这里开始写这一场……</p>");
+    const first = await loadWithCatalog();
+    const empty = await first.mod.scnPrepareAdoption("ch01s1", DRAFT);
     expect(empty.hasReal).toBe(false);
     // 差异里也不把占位当成要删掉的一段
     expect(empty.diff.dels).toBe(0);
 
-    window.localStorage.setItem(key, "<p>在这里开始写这一场……潮水涨上来了。</p>");
-    const started = await mod.scnPrepareAdoption("ch01s1", DRAFT);
+    vi.resetModules();
+    window.localStorage.clear();
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", "<p>在这里开始写这一场……潮水涨上来了。</p>");
+    const second = await loadWithCatalog();
+    const started = await second.mod.scnPrepareAdoption("ch01s1", DRAFT);
     expect(started.hasReal).toBe(true);
   });
 

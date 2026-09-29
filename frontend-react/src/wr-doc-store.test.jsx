@@ -69,8 +69,9 @@ describe("WrDocs.save（ensure + PATCH 带 base_revision_no）", () => {
     await mod.WrDocs.save("ch01s1", "<p>正文</p>");
     // 同步缓存：视图零等待即可读到
     expect(mod.WrDocs.load("ch01s1")).toBe("<p>正文</p>");
+    // 每一次 ensure 带自己的幂等键（复核二 W1-R2A-1：回包丢了的那一次不会被服务端按同一个键重放给之后的读取）
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v1/author-drafts/scene/s1/ensure", {}), T);
+      "/api/v1/author-drafts/scene/s1/ensure", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })), T);
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
       "/api/v1/author-drafts/d1",
       { content: "<p>正文</p>", base_revision_no: 1 }), T);
@@ -168,7 +169,18 @@ describe("WrDocs 409 冲突重水合（历史 bug 回归）", () => {
   it("PATCH 抛 AUTHOR_DRAFT_CONFLICT → 重新 ensure 重水合 + alert 提示", async () => {
     const { mod, client } = await loadDocs();
     const conflict = Object.assign(new Error("conflict"), { code: "AUTHOR_DRAFT_CONFLICT" });
-    client.apiPatch.mockRejectedValueOnce(conflict); // 仅首次保存冲突
+    // 409 = 服务端在别处往前走了：冲突之后的 ensure 读到的是另一台设备存下的 rev 2（读回来的修订号比撞上的那一次还旧，
+    // WrDocs 当没读到、马上再读——这里按真实服务端回包，不再回一份不可能出现的旧快照）
+    let patched = false;
+    client.apiPost.mockImplementation((url) => {
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        return Promise.resolve(patched
+          ? { draft: { draft_id: "d1", revision_no: 2, content: "<p>另一台设备的正文</p>" } }
+          : { draft: { draft_id: "d1", revision_no: 1, content: "" } });
+      }
+      return Promise.resolve({});
+    });
+    client.apiPatch.mockImplementationOnce(() => { patched = true; return Promise.reject(conflict); }); // 仅首次保存冲突
     client.apiPost.mockClear();
 
     await expect(mod.WrDocs.save("ch01s1", "<p>本地改动</p>")).rejects.toBe(conflict);

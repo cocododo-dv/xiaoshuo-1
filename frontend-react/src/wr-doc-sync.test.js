@@ -2,7 +2,7 @@
 // 排队只留最新一稿、失败留在本机待重发、409 的冲突副本 + 读服务端版本 + 读不到时拒绝保存、水合共用一次、
 // 已水合的场后台复核、两个标签页。房间级的保存顺序见 ws-writer-doc-saves.test.jsx。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PROJECT, installApiRouter } from "./test-helpers.js";
+import { DEFAULT_CHAP, DEFAULT_PROJECT, installApiRouter } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -756,7 +756,9 @@ describe("复核一 · 409 之后只认冲突之后读到的服务端版本（W1
     expect(recoveryHtml(mod)).toContain("<p>起点，本机一句</p>");
   });
 
-  it("冲突之后读回来的修订号比撞上的那一次还旧（幂等重放的旧回包）：不当成服务端版本，保持冲突，稍后再读", async () => {
+  /* 复核二 W1-R2A-1：读回来的是冲突之前的旧快照（服务端按回包丢了的那一次的幂等键重放）——当没读到、马上再读，
+     不提示「暂时读不到」（服务端明明连得上）。每一次 ensure 带自己的键之后，这种重放本来就不该再出现。 */
+  it("冲突之后读回来的修订号比撞上的那一次还旧（重放的旧快照）：不当成服务端版本，马上再读，不提示「暂时读不到」", async () => {
     const { mod, client, server, events, routeEnsure } = await loadDocs();
     server.content = "<p>起点</p>";
     await mod.WrDocs.hydrate("ch01s1");
@@ -771,9 +773,28 @@ describe("复核一 · 409 之后只认冲突之后读到的服务端版本（W1
       return Promise.reject(conflictError());
     });
     await expect(mod.WrDocs.save("ch01s1", "<p>起点，本机一句</p>")).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "conflict-resolved")).toBe(true), T);
+    expect(events.filter((event) => event.kind === "conflict-resolved").map((event) => event.html)).toEqual([SERVER]);
+    expect(window.alert.mock.calls.map(([message]) => String(message)).filter((message) => message.includes("暂时读不到"))).toEqual([]);
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ conflictPending: false, revision: 3 });
+    expect(recoveryHtml(mod)).toContain("<p>起点，本机一句</p>");
+  });
+
+  it("读回来的一直是冲突之前的旧快照：几次之后才算读不到（保持冲突、提示一次），之后读到了照常换上", async () => {
+    const { mod, client, server, events, routeEnsure } = await loadDocs();
+    server.content = "<p>起点</p>";
+    await mod.WrDocs.hydrate("ch01s1");
+    let stale = true;
+    client.apiPatch.mockImplementationOnce(() => {
+      otherDevice(server);
+      routeEnsure((current) => (stale ? Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "<p>起点</p>" } }) : current()));
+      return Promise.reject(conflictError());
+    });
+    await expect(mod.WrDocs.save("ch01s1", "<p>起点，本机一句</p>")).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
     await vi.waitFor(() => expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("暂时读不到")), T);
     expect(events.some((event) => event.kind === "conflict-resolved")).toBe(false);
     expect(mod.WrDocs.state("ch01s1")).toMatchObject({ conflictPending: true, revision: 1 });
+    stale = false;
     window.dispatchEvent(new Event("focus"));
     await vi.waitFor(() => expect(events.some((event) => event.kind === "conflict-resolved" && event.html === SERVER)).toBe(true), { timeout: 1000, interval: 20 });
     expect(mod.WrDocs.state("ch01s1")).toMatchObject({ conflictPending: false, revision: 3 });
@@ -816,8 +837,10 @@ describe("复核一 · 回包丢了的那一稿其实存上了（W1-A6）", () =
     expect(client.apiPatch).toHaveBeenCalledTimes(2);
   });
 
-  it("核对时读不到服务端：按冲突处理——本机稿先进同步与恢复，读到之前不再发保存", async () => {
-    const { mod, client, server, routeEnsure } = await loadDocs();
+  /* 复核二 W1-R2A-1 · W1-R2B-4：核对读不到服务端不等于别处改过——保持核对（不发保存、状态是保存失败），不开冲突、
+     不提示「别处被修改」；读到之后按结果走：这里服务端真是另一台设备的版本，那时才走冲突（本机稿进同步与恢复）。 */
+  it("核对时读不到服务端：不开冲突、不提示，保持核对、不发保存；读到之后才按结果走（这里是别处的版本 → 冲突）", async () => {
+    const { mod, client, server, events, routeEnsure } = await loadDocs();
     await mod.WrDocs.hydrate("ch01s1");
     client.apiPatch
       .mockImplementationOnce(() => Promise.reject(offlineError()))
@@ -828,11 +851,25 @@ describe("复核一 · 回包丢了的那一稿其实存上了（W1-A6）", () =
         return Promise.reject(conflictError());
       });
     await expect(mod.WrDocs.save("ch01s1", "<p>第一句</p>")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
-    await expect(mod.WrDocs.save("ch01s1", "<p>第一句，第二句</p>")).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
-    await vi.waitFor(() => expect(mod.WrDocs.state("ch01s1").conflictPending).toBe(true), T);
-    expect(recoveryHtml(mod)).toContain("<p>第一句，第二句</p>");
-    await expect(mod.WrDocs.save("ch01s1", "<p>第一句，第二句，第三句</p>")).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    await expect(mod.WrDocs.save("ch01s1", "<p>第一句，第二句</p>")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({
+      conflictPending: false, dirty: true, saving: false, lastSaveError: expect.objectContaining({ code: "NETWORK_ERROR" }),
+    });
+    expect(window.alert).not.toHaveBeenCalled();
+    expect(mod.WrRecovery.list()).toEqual([]);
+    expect(window.localStorage.getItem(cacheKey())).toBe("<p>第一句，第二句</p>");
+    expect(window.localStorage.getItem(pendingKey())).not.toBeNull();
+    // 核对期间接着写：只进本机缓存，不发（同时再读一次服务端，还是读不到）
+    await expect(mod.WrDocs.save("ch01s1", "<p>第一句，第二句，第三句</p>")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
     expect(client.apiPatch).toHaveBeenCalledTimes(2);
+    expect(events.some((event) => event.kind === "conflict-resolved")).toBe(false);
+    // 连上了：读到的是另一台设备的 rev 2 → 冲突，最新的本机稿进同步与恢复，编辑器换成服务端版本
+    routeEnsure(null);
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "conflict-resolved" && event.html === SERVER)).toBe(true), { timeout: 1000, interval: 20 });
+    expect(recoveryHtml(mod)).toContain("<p>第一句，第二句，第三句</p>");
+    expect(client.apiPatch).toHaveBeenCalledTimes(2);
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ conflictPending: false, revision: 2, lastSaveError: null });
   });
 });
 
@@ -953,5 +990,451 @@ describe("复核一 · 格式也是正文（W1-R1B-7）", () => {
     await vi.waitFor(() => expect(events.some((event) => event.kind === "conflict-resolved" && event.html === "<p>他<em>终于</em>回来了。</p>")).toBe(true), T);
     expect(client.apiPatch).not.toHaveBeenCalled();
     expect(recoveryHtml(mod)).toContain("<p>他终于回来了。门没关。</p>");
+  });
+});
+
+/* ==========================================================
+   W1 复核二：两路复核（lens A / lens B）在 bd6f02d 上复现的顺序，改成断言安全结果的永久用例（用例名带复核编号）。
+   服务端更像真的（像 author_drafts.save + 幂等层）：PATCH 按修订号比对，409 带 details.current_revision_no；内容没变
+   修订号不动；「回包丢了」= 服务端存上了、浏览器只看到断网，同一份请求再来时按幂等键重放当时的回包。
+   多个标签页 = 多份 store 实例（vi.resetModules）共用一份 shared 与同一个 localStorage。
+   ========================================================== */
+
+function sharedServer(content = "<p>起点</p>", revision = 1) {
+  return { revision, content, applied: [], lost: new Map(), promoted: [], hooks: {} };
+}
+
+const casConflict = (current) => Object.assign(new Error("author draft has changed; refresh before saving"), {
+  code: "AUTHOR_DRAFT_CONFLICT", status: 409, details: { current_revision_no: current },
+});
+
+/* 装上 shared 这台服务端（每个标签页 loadDocs 之后都要装一次：client 替身是同一个模块，loadDocs 会把它换回默认） */
+function routeServer(client, shared) {
+  const snapshot = () => ({ draft: { draft_id: "d1", revision_no: shared.revision, content: shared.content } });
+  const keyOf = (body) => JSON.stringify([Number(body.base_revision_no), body.content]);
+  const apply = (body) => {
+    const key = keyOf(body);
+    if (shared.lost.has(key)) { // 回包丢了的那一次：同一份请求再来，按幂等键重放当时的回包
+      const stored = shared.lost.get(key);
+      shared.lost.delete(key);
+      return Promise.resolve(stored);
+    }
+    if (Number(body.base_revision_no) !== shared.revision) return Promise.reject(casConflict(shared.revision));
+    if (body.content !== shared.content) {
+      shared.revision += 1;
+      shared.content = body.content;
+      shared.applied.push(body.content);
+    }
+    return Promise.resolve(snapshot());
+  };
+  /* 服务端存上了，回包在回来的路上丢了 */
+  const applyLost = (body) => apply(body).then((stored) => {
+    shared.lost.set(keyOf(body), stored);
+    return Promise.reject(offlineError());
+  });
+  shared.api = { apply, applyLost, snapshot };
+  client.apiPost.mockImplementation((url, body) => {
+    if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+      const current = () => Promise.resolve(snapshot());
+      return shared.hooks.ensure ? shared.hooks.ensure(current) : current();
+    }
+    if (/promote-canonical$/.test(url)) {
+      if (Number(body.base_revision_no) !== shared.revision) return Promise.reject(casConflict(shared.revision));
+      shared.promoted.push({ revision: shared.revision, content: shared.content });
+      return Promise.resolve({ final_scene_row_id: `f-${shared.revision}`, draft_revision_no: shared.revision, canonical_dirty: false });
+    }
+    return Promise.resolve({});
+  });
+  client.apiPatch.mockImplementation((url, body) => (shared.hooks.patch ? shared.hooks.patch(body, shared.api) : apply(body)));
+  return shared;
+}
+
+/* 一个标签页：一份新的 store 实例，装上共用的服务端 */
+async function openTab(shared, options) {
+  const tab = await loadDocs(options);
+  routeServer(tab.client, shared);
+  return tab;
+}
+
+const alertTexts = () => window.alert.mock.calls.map(([message]) => String(message));
+const elsewhereAlerts = () => alertTexts().filter((message) => message.includes("别处被修改") || message.includes("在别处有更新"));
+
+describe("复核二 · 409 之后核对自己那一稿读不到 / 读到旧快照（W1-R2A-1 · W1-R2B-4）", () => {
+  async function lostThenConflict(shared, mod) {
+    shared.hooks.patch = (body, api) => { shared.hooks.patch = null; return api.applyLost(body); };
+    await expect(mod.WrDocs.save("ch01s1", "<p>起点，第一句</p>")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    expect(shared).toMatchObject({ revision: 2, content: "<p>起点，第一句</p>" }); // 其实存上了
+  }
+
+  it("R2-D / NS-1a 核对的那一次读取断网：不开冲突、不提示「别处被修改」，编辑器不退回到自己更旧的一稿；连上之后接着发最新的一稿", async () => {
+    const shared = sharedServer();
+    const { mod, client, events } = await openTab(shared);
+    await mod.WrDocs.hydrate("ch01s1");
+    await lostThenConflict(shared, mod);
+    let blip = true;
+    shared.hooks.ensure = (current) => {
+      if (!blip) return current();
+      blip = false;
+      return Promise.reject(offlineError());
+    };
+    await expect(mod.WrDocs.save("ch01s1", "<p>起点，第一句，第二句</p>")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    await tick();
+    expect(events.some((event) => event.kind === "conflict-resolved")).toBe(false);
+    expect(alertTexts()).toEqual([]);
+    expect(mod.WrRecovery.list()).toEqual([]);
+    expect(mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点，第一句，第二句</p>");
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ conflictPending: false, dirty: true, saving: false, lastSaveError: expect.objectContaining({ code: "NETWORK_ERROR" }) });
+    expect(patches(client)).toHaveLength(2);
+    // 重新联网：再核对一次，认出 rev 2 是自己那一稿，最新的一稿接着发
+    window.dispatchEvent(new Event("online"));
+    await vi.waitFor(() => expect(shared.content).toBe("<p>起点，第一句，第二句</p>"), { timeout: 1000, interval: 20 });
+    expect(shared.applied).toEqual(["<p>起点，第一句</p>", "<p>起点，第一句，第二句</p>"]);
+    expect(patches(client).map((body) => body.base_revision_no)).toEqual([1, 1, 2]);
+    await vi.waitFor(() => expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, revision: 3, lastSaveError: null }), T);
+    expect(alertTexts()).toEqual([]);
+    expect(mod.WrRecovery.list()).toEqual([]);
+    expect(events.some((event) => event.kind === "conflict-resolved")).toBe(false);
+  });
+
+  it("NS-1b 核对读回来的是冲突之前的旧快照（服务端重放了回包丢了的那一次 ensure）：当没读到、马上再读，认出自己那一稿", async () => {
+    const shared = sharedServer();
+    const { mod, events } = await openTab(shared);
+    await mod.WrDocs.hydrate("ch01s1");
+    await lostThenConflict(shared, mod);
+    let replay = { draft: { draft_id: "d1", revision_no: 1, content: "<p>起点</p>" } };
+    shared.hooks.ensure = (current) => {
+      if (!replay) return current();
+      const stored = replay;
+      replay = null;
+      return Promise.resolve(stored);
+    };
+    await expect(mod.WrDocs.save("ch01s1", "<p>起点，第一句，第二句</p>")).resolves.toBeTruthy();
+    expect(shared.applied).toEqual(["<p>起点，第一句</p>", "<p>起点，第一句，第二句</p>"]);
+    expect(events.some((event) => event.kind === "conflict-resolved")).toBe(false);
+    expect(alertTexts()).toEqual([]);
+    expect(mod.WrRecovery.list()).toEqual([]);
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, revision: 3, conflictPending: false });
+  });
+
+  it("每一次 ensure 都带自己的幂等键：回包丢了的那一次不会被服务端按同一个键重放给之后的读取", async () => {
+    const { mod, client, server } = await loadDocs();
+    await mod.WrDocs.hydrate("ch01s1");
+    server.revision = 2;
+    server.content = "<p>别处的一版</p>";
+    mod.WrDocs.load("ch01s1");
+    const ensureCalls = () => client.apiPost.mock.calls.filter(([url]) => /\/ensure$/.test(url));
+    await vi.waitFor(() => expect(mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>别处的一版</p>"), T);
+    const keys = ensureCalls().map(([, , options]) => options && options.idempotencyKey);
+    expect(keys.length).toBeGreaterThanOrEqual(2);
+    expect(keys.every((key) => typeof key === "string" && key.length > 0)).toBe(true);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("复核二 · 两个标签页共用读缓存（W1-R2B-1 · W1-R2B-3）", () => {
+  it("NS-17 A 页重新打开这一场时，共用读缓存里是 B 页没同步上的字：A 页读到的仍是自己的那一份；提升的就是 A 页显示的那一版", async () => {
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", "<p>起点</p>");
+    const shared = sharedServer("<p>起点</p>");
+    const tabA = await openTab(shared);
+    expect(tabA.mod.WrDocs.load("ch01s1")).toBe("<p>起点</p>");
+    await tabA.mod.WrDocs.hydrate("ch01s1");
+    vi.resetModules();
+    const tabB = await openTab(shared);
+    await tabB.mod.WrDocs.hydrate("ch01s1");
+    shared.hooks.patch = () => { shared.hooks.patch = null; return Promise.reject(serverError()); };
+    await expect(tabB.mod.WrDocs.save("ch01s1", "<p>起点，B 页没存上的一段</p>")).rejects.toMatchObject({ code: "DATABASE_ERROR" });
+    expect(window.localStorage.getItem(cacheKey())).toBe("<p>起点，B 页没存上的一段</p>");
+
+    // 回到 A 页、重新打开这一场
+    expect(tabA.mod.WrDocs.load("ch01s1")).toBe("<p>起点</p>");
+    expect(tabA.mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点</p>");
+    await tick(80);
+    expect(tabA.mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, revision: 1 });
+    await tabA.mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    expect(shared.promoted).toEqual([{ revision: 1, content: "<p>起点</p>" }]);
+    // B 页没同步上的字没丢：还在共用读缓存里、带着未同步标记（B 页下一次保存照常再发），或已经进了同步与恢复
+    const inSlot = window.localStorage.getItem(cacheKey()) === "<p>起点，B 页没存上的一段</p>"
+      && window.localStorage.getItem(pendingKey()) != null;
+    expect({ kept: inSlot || recoveryHtml(tabA.mod).includes("<p>起点，B 页没存上的一段</p>") }).toEqual({ kept: true });
+  });
+
+  it("NS-2 B 页一次 5xx 停着，A 页随后在同一场存了一稿：B 页没同步上的字先进同步与恢复（提示一次），B 页关掉之后还在", async () => {
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", "<p>起点</p>");
+    const shared = sharedServer("<p>起点</p>");
+    const tabA = await openTab(shared);
+    await tabA.mod.WrDocs.hydrate("ch01s1");
+    vi.resetModules();
+    const tabB = await openTab(shared);
+    await tabB.mod.WrDocs.hydrate("ch01s1");
+    shared.hooks.patch = () => { shared.hooks.patch = null; return Promise.reject(serverError()); };
+    await expect(tabB.mod.WrDocs.save("ch01s1", "<p>起点，B 页写的一段</p>")).rejects.toMatchObject({ code: "DATABASE_ERROR" });
+
+    await tabA.mod.WrDocs.save("ch01s1", "<p>起点，A 页写的一段</p>");
+    expect(shared.content).toBe("<p>起点，A 页写的一段</p>");
+    expect(recoveryHtml(tabA.mod)).toContain("<p>起点，B 页写的一段</p>");
+    expect(alertTexts().filter((message) => message.includes("另一个标签页"))).toHaveLength(1);
+
+    // B 页关掉（它的内存没了），这一场在新的一页里打开：B 页的字在同步与恢复里，编辑器是服务端上 A 页的那一稿
+    vi.resetModules();
+    const tabC = await openTab(shared);
+    tabC.mod.WrDocs.load("ch01s1");
+    await tabC.mod.WrDocs.hydrate("ch01s1");
+    expect(recoveryHtml(tabC.mod)).toContain("<p>起点，B 页写的一段</p>");
+    expect(tabC.mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点，A 页写的一段</p>");
+  });
+
+  it("A 页的保存在路上时 B 页写进了没同步上的字：A 页存上了不清未同步标记，B 页关掉以后它照样进同步与恢复", async () => {
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", "<p>起点</p>");
+    const shared = sharedServer("<p>起点</p>");
+    const tabA = await openTab(shared);
+    await tabA.mod.WrDocs.hydrate("ch01s1");
+    vi.resetModules();
+    const tabB = await openTab(shared);
+    await tabB.mod.WrDocs.hydrate("ch01s1");
+    const hung = deferred();
+    shared.hooks.patch = (body, api) => {
+      shared.hooks.patch = () => Promise.reject(serverError()); // B 页那一次：服务端出错
+      return hung.promise.then(() => api.apply(body));
+    };
+    const saveA = tabA.mod.WrDocs.save("ch01s1", "<p>起点，A 页写的</p>");
+    await vi.waitFor(() => expect(tabA.client.apiPatch).toHaveBeenCalledTimes(1), T);
+    await expect(tabB.mod.WrDocs.save("ch01s1", "<p>起点，B 页写的</p>")).rejects.toMatchObject({ code: "DATABASE_ERROR" });
+    hung.resolve();
+    await saveA;
+    expect(shared.content).toBe("<p>起点，A 页写的</p>");
+    expect(window.localStorage.getItem(cacheKey())).toBe("<p>起点，B 页写的</p>");
+    expect(window.localStorage.getItem(pendingKey())).not.toBeNull();
+
+    vi.resetModules();
+    const tabC = await openTab(shared);
+    tabC.mod.WrDocs.load("ch01s1");
+    await tabC.mod.WrDocs.hydrate("ch01s1");
+    expect(recoveryHtml(tabC.mod)).toContain("<p>起点，B 页写的</p>");
+    expect(tabC.mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点，A 页写的</p>");
+  });
+});
+
+describe("复核二 · 空白与空行也是正文（W1-R2B-5）", () => {
+  it("全角空格的段首缩进、两段之间的空行不同就不是同一段；排版空白、&nbsp;、开头结尾的空段、空行的几种写法都算一样", async () => {
+    await loadDocs();
+    const { sameManuscriptText: same } = await import("./wr-doc-cache.js");
+    expect(same("<p>　　他终于回来了。</p>", "<p>他终于回来了。</p>")).toBe(false);
+    expect(same("<p>他终于回来了。　</p>", "<p>他终于回来了。</p>")).toBe(false);
+    expect(same("<p>A</p><p><br></p><p>B</p>", "<p>A</p><p>B</p>")).toBe(false);
+    expect(same("<p>A<br><br>B</p>", "<p>A</p><p>B</p>")).toBe(false);
+    expect(same("<p>A<br><br>B</p>", "<p>A</p><p><br></p><p>B</p>")).toBe(true);
+    expect(same("<p>A</p><p>&nbsp;</p><p>B</p>", "<p>A</p><p><br></p><p>B</p>")).toBe(true);
+    expect(same("<p>A</p><p><br></p><p><br></p><p>B</p>", "<p>A</p><p><br></p><p>B</p>")).toBe(true);
+    expect(same("<div><p>A</p><p><br></p></div><p>B</p>", "<p>A</p><p><br></p><p>B</p>")).toBe(true);
+    expect(same("<p>A</p><p><br></p>", "<p>A</p>")).toBe(true);
+    expect(same("<p><br></p><p>A</p>", "<p>A</p>")).toBe(true);
+    expect(same("<p>A<br></p><p>B</p>", "<p>A</p><p>B</p>")).toBe(true);
+    expect(same("<p>A</p>\n<p>B</p>", "<p>A</p><p>B</p>")).toBe(true);
+    expect(same("<p>A&nbsp; B </p>", "<p>A B</p>")).toBe(true);
+  });
+
+  async function staleCacheThenType(stale, serverHTML, typed) {
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", stale);
+    const ctx = await loadDocs();
+    ctx.server.revision = 5;
+    ctx.server.content = serverHTML;
+    const ensure = deferred();
+    ctx.routeEnsure((current) => ensure.promise.then(() => current()));
+    ctx.mod.WrDocs.load("ch01s1");
+    const save = ctx.mod.WrDocs.save("ch01s1", typed);
+    ensure.resolve();
+    await expect(save).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    await vi.waitFor(() => expect(ctx.events.some((event) => event.kind === "conflict-resolved" && event.html === serverHTML)).toBe(true), T);
+    expect(ctx.client.apiPatch).not.toHaveBeenCalled();
+    expect(recoveryHtml(ctx.mod)).toContain(typed);
+    expect(ctx.mod.WrDocs.cachedHTML("ch01s1")).toBe(serverHTML);
+  }
+
+  it("NS-3a 另一台设备只加了全角空格的段首缩进（rev 5），这台电脑在旧缓存上打开就写：按冲突处理，缩进不被静默去掉", async () => {
+    await staleCacheThenType(
+      "<p>他终于回来了。</p><p>门外的雨停了。</p>",
+      "<p>　　他终于回来了。</p><p>　　门外的雨停了。</p>",
+      "<p>他终于回来了。</p><p>门外的雨停了。他没进门。</p>",
+    );
+  });
+
+  it("NS-3b 另一台设备只在两段之间加了一个空行（rev 5）：同样按冲突处理", async () => {
+    await staleCacheThenType(
+      "<p>他终于回来了。</p><p>第二天清早，码头空了。</p>",
+      "<p>他终于回来了。</p><p><br></p><p>第二天清早，码头空了。</p>",
+      "<p>他终于回来了。</p><p>第二天清早，码头空了。潮水退了。</p>",
+    );
+  });
+});
+
+describe("复核二 · 同步与恢复的「恢复」说的是真话（W1-R2A-2 · W1-R2A-3 · W1-R2B-6）", () => {
+  it("R2-F 恢复一份目录里已经没有这一场的记录：说清恢复不了；不写本机缓存、不标未同步、不发请求，记录还在", async () => {
+    const { mod, client, events } = await loadDocs();
+    const entry = mod.WrRecovery.create({ sid: "ch09s9", html: "<p>一场已经删掉的戏</p>", type: "conflict", reason: "409", label: "场景 ch09s9 · 冲突本地稿" });
+    const failure = await mod.WrRecovery.restore(entry.id).catch((error) => error);
+    expect(failure).toMatchObject({ code: "RECOVERY_SCENE_UNAVAILABLE" });
+    expect(failure.message).not.toMatch(/已恢复到编辑器|网络或服务端出错|会再同步/);
+    expect(window.localStorage.getItem(window.wsKey("wr-doc:ch09s9"))).toBeNull();
+    expect(window.localStorage.getItem(window.wsKey("wr-doc-pending:ch09s9"))).toBeNull();
+    expect(events.some((event) => event.kind === "loaded" && event.sid === "ch09s9")).toBe(false);
+    expect(client.apiPatch).not.toHaveBeenCalled();
+    expect(mod.WrRecovery.list().some((item) => item.id === entry.id)).toBe(true);
+  });
+
+  it("R2-A 恢复进一章已批准锁定的场：先停下、说要先重新打开本章；不换稿、不写本机缓存、不发请求，记录还在", async () => {
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", "<p>起点正文</p>");
+    const { mod, client, events } = await loadDocs({ opts: { catalog: [{ ...DEFAULT_CHAP, state: "approved" }] } });
+    const entry = mod.WrRecovery.create({ sid: "ch01s1", html: "<p>以前冲突时留下的本机稿</p>", type: "conflict", reason: "409", label: "场景 ch01s1 · 冲突本地稿" });
+    const failure = await mod.WrRecovery.restore(entry.id).catch((error) => error);
+    expect(failure).toMatchObject({ code: "CHAPTER_APPROVED_LOCKED" });
+    expect(failure.message).toContain("重新打开本章");
+    expect(failure.message).not.toMatch(/网络或服务端出错|会再同步/);
+    await expect(mod.WrDocs.replace("ch01s1", "<p>以前冲突时留下的本机稿</p>")).rejects.toMatchObject({ code: "CHAPTER_APPROVED_LOCKED" });
+    expect(events.some((event) => event.kind === "loaded" && event.reason === "restore")).toBe(false);
+    expect(window.localStorage.getItem(cacheKey())).toBe("<p>起点正文</p>");
+    expect(window.localStorage.getItem(pendingKey())).toBeNull();
+    expect(client.apiPatch).not.toHaveBeenCalled();
+    expect(mod.WrRecovery.list().some((item) => item.id === entry.id)).toBe(true);
+  });
+
+  it("恢复稿的 PATCH 被服务端明确拒绝（这期间章在别处批准了）：说服务端拒绝了什么，不说「之后会再同步」；编辑器和本机缓存换回服务端的正文，记录还在", async () => {
+    const shared = sharedServer();
+    const { mod, client, events } = await openTab(shared);
+    await mod.WrDocs.hydrate("ch01s1");
+    await mod.WrDocs.save("ch01s1", "<p>起点，恢复前的正文</p>");                 // rev 2
+    shared.hooks.patch = () => Promise.reject(Object.assign(new Error("approved chapter must be explicitly reopened before it or its scenes can change"), {
+      code: "CHAPTER_APPROVED_LOCKED", status: 409, retryable: false, details: {},
+    }));
+    const entry = mod.WrRecovery.createCandidate("ch01s1", "<p>要恢复的那一稿</p>");
+    const before = events.length;
+    const failure = await mod.WrRecovery.restore(entry.id).catch((error) => error);
+    expect(failure).toMatchObject({ code: "RECOVERY_REFUSED" });
+    expect(failure.message).toContain("已批准锁定");
+    expect(failure.message).toContain("编辑器换回了服务端上的正文");
+    expect(failure.message).not.toMatch(/网络或服务端出错|会再同步/);
+    expect(events.slice(before).filter((event) => event.kind === "loaded").map((event) => [event.reason, event.html])).toEqual([
+      ["restore", "<p>要恢复的那一稿</p>"],
+      ["server", "<p>起点，恢复前的正文</p>"],
+    ]);
+    expect(mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点，恢复前的正文</p>");
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, lastSaveError: null, revision: 2 });
+    expect(window.localStorage.getItem(pendingKey())).toBeNull();
+    expect(mod.WrRecovery.list().some((item) => item.id === entry.id)).toBe(true);
+    // 不再重发被拒的那一稿
+    await expect(mod.WrDocs.flush("ch01s1")).resolves.toBe("saved");
+    expect(patches(client).map((body) => body.content)).toEqual(["<p>起点，恢复前的正文</p>", "<p>要恢复的那一稿</p>"]);
+  });
+
+  it("NS-4 「恢复」撞上 409、随后读不到服务端版本：失败说明照实说「还没读下来」，不说编辑器已换成服务端版本；什么都没被盖掉", async () => {
+    const shared = sharedServer();
+    const { mod, events } = await openTab(shared);
+    await mod.WrDocs.hydrate("ch01s1");
+    await mod.WrDocs.save("ch01s1", "<p>起点，作者的正文 X</p>");          // rev 2
+    shared.revision = 3;                                                     // 另一台设备 rev 3
+    shared.content = "<p>另一台设备的正文</p>";
+    shared.hooks.ensure = () => Promise.reject(offlineError());              // 冲突之后读不到服务端版本
+    const entry = mod.WrRecovery.createCandidate("ch01s1", "<p>要恢复的那一稿 R</p>");
+    const failure = await mod.WrRecovery.restore(entry.id).catch((error) => error);
+    await tick(80);
+    expect(failure).toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    expect(failure.message).toContain("还没读下来");
+    expect(failure.message).not.toContain("编辑器已换成服务端的最新版本");
+    expect(events.some((event) => event.kind === "conflict-resolved")).toBe(false);
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ conflictPending: true });
+    expect(shared.content).toBe("<p>另一台设备的正文</p>");
+    expect(recoveryHtml(mod)).toEqual(expect.arrayContaining(["<p>起点，作者的正文 X</p>", "<p>要恢复的那一稿 R</p>"]));
+  });
+
+  it("NS-8b 核对进行中「恢复」、核对读到的是另一台设备的版本：恢复照实报冲突（编辑器已换成它），本机的两稿都在同步与恢复", async () => {
+    const shared = sharedServer();
+    const { mod, events } = await openTab(shared);
+    await mod.WrDocs.hydrate("ch01s1");
+    shared.hooks.patch = (body) => {
+      shared.hooks.patch = null;
+      shared.revision = 2;
+      shared.content = "<p>另一台设备的正文</p>";
+      void body;
+      return Promise.reject(offlineError());
+    };
+    await expect(mod.WrDocs.save("ch01s1", "<p>起点，第一句</p>")).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    const hold = deferred();
+    let checking = false;
+    shared.hooks.ensure = (current) => { checking = true; return hold.promise.then(() => { shared.hooks.ensure = null; return current(); }); };
+    void mod.WrDocs.save("ch01s1", "<p>起点，第一句，第二句</p>").catch(() => {});
+    await vi.waitFor(() => expect(checking).toBe(true), T);
+    const entry = mod.WrRecovery.create({ sid: "ch01s1", html: "<p>要恢复的那一稿</p>", type: "unsynced", reason: "断网", label: "场景 ch01s1 · 未同步稿" });
+    const restoring = mod.WrRecovery.restore(entry.id).catch((error) => error);
+    await tick(40);
+    hold.resolve();
+    const failure = await restoring;
+    expect(failure).toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    expect(failure.message).toContain("编辑器已换成服务端的最新版本");
+    expect(events.filter((event) => event.kind === "conflict-resolved").map((event) => event.html)).toEqual(["<p>另一台设备的正文</p>"]);
+    expect(recoveryHtml(mod)).toEqual(expect.arrayContaining(["<p>起点，第一句，第二句</p>", "<p>要恢复的那一稿</p>"]));
+    expect(shared.content).toBe("<p>另一台设备的正文</p>");
+  });
+});
+
+describe("复核二 · 提升只提升作者眼前的那一稿（W1-R2A-4）", () => {
+  it("R2-B2 打开时水合没成、编辑器是这台电脑的旧缓存，点提升：先水合，读到别处更新的版本就不提升，编辑器换成它；看过之后再提升的就是它", async () => {
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", "<p>这台电脑上的旧稿</p>");
+    const { mod, client, events, server, routeEnsure } = await loadDocs();
+    server.revision = 4;
+    server.content = "<p>另一台设备上改过的一版</p>";
+    let first = true;
+    routeEnsure((current) => {
+      if (!first) return current();
+      first = false;
+      return Promise.reject(offlineError());
+    });
+    expect(mod.WrDocs.load("ch01s1")).toBe("<p>这台电脑上的旧稿</p>");
+    await tick();
+    expect(mod.WrDocs.state("ch01s1").revision).toBe(0);                  // 水合没成
+    await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" })).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(false);
+    expect(events.filter((event) => event.kind === "loaded").map((event) => event.html)).toEqual(["<p>另一台设备上改过的一版</p>"]);
+    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/author-drafts/d1/promote-canonical", expect.objectContaining({ base_revision_no: 4 }));
+  });
+
+  it("服务端是 ensure 刚建的空稿、本机缓存里有这一场上次没同步上的字：它是还没同步上的工作稿（不提升那份空稿）；冲刷时传上去，提升的就是它", async () => {
+    window.localStorage.setItem("wr-doc:ch01s1::prj-main", "<p>这台电脑上没同步上的一段</p>");
+    window.localStorage.setItem("wr-doc-pending:ch01s1::prj-main", String(Date.now()));
+    const { mod, client, server } = await loadDocs();
+    client.apiPatch.mockImplementation(casPatch(server));
+    expect(mod.WrDocs.load("ch01s1")).toBe("<p>这台电脑上没同步上的一段</p>");
+    await vi.waitFor(() => expect(mod.WrDocs.state("ch01s1")).toMatchObject({
+      dirty: true, lastSaveError: expect.objectContaining({ code: "AUTHOR_DRAFT_NOT_SYNCED" }),
+    }), T);
+    expect(client.apiPatch).not.toHaveBeenCalled();                 // 水合本身不发请求
+    await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" })).rejects.toMatchObject({ code: "AUTHOR_DRAFT_NOT_SYNCED" });
+    expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(false);
+    // 写作台提升之前先冲刷：工作稿传上去，提升的就是它
+    await expect(mod.WrDocs.flush("ch01s1")).resolves.toBe("saved");
+    expect(patches(client)).toEqual([{ content: "<p>这台电脑上没同步上的一段</p>", base_revision_no: 1 }]);
+    expect(window.localStorage.getItem(pendingKey())).toBeNull();
+    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/author-drafts/d1/promote-canonical", expect.objectContaining({ base_revision_no: 2 }));
+    expect(mod.WrRecovery.list()).toEqual([]);
+  });
+});
+
+describe("复核二 · 保存失败后停着的一稿", () => {
+  it("重新联网 / 窗口重新聚焦时再发一次：发的是停着的最新一稿，不是更早的", async () => {
+    const { mod, client } = await loadDocs();
+    const first = deferred();
+    client.apiPatch.mockImplementationOnce(() => first.promise);
+    const a = mod.WrDocs.save("ch01s1", "<p>一</p>");
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledTimes(1), T);
+    const b = mod.WrDocs.save("ch01s1", "<p>一二</p>");
+    first.reject(offlineError());
+    await expect(a).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    await expect(b).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    await tick();
+    expect(client.apiPatch).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new Event("online"));
+    await vi.waitFor(() => expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, lastSaveError: null }), T);
+    expect(patches(client).map((body) => body.content)).toEqual(["<p>一</p>", "<p>一二</p>"]);
+    expect(window.localStorage.getItem(pendingKey())).toBeNull();
   });
 });
