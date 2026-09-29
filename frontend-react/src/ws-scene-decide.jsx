@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { CloseButton, Notice, Spinner, Tag } from "./ws-ui.jsx";
-import { scnFindingIsPlainLanguage, scnFindingText } from "./ws-scene-derive.js";
+import { AUTHOR_NOTE_LIMIT, scnFindingIsPlainLanguage, scnFindingText } from "./ws-scene-derive.js";
 
 const { useEffect, useState } = React;
 
@@ -40,7 +40,7 @@ function DecisionBar({ scene, state, runJobStatus, go, onEditPlan = null, onArch
   const [rework, setRework] = useState(false);
   const [note, setNote] = useState("");
   const normalizedNoteLength = Array.from(note.trim()).length;
-  const noteTooLong = normalizedNoteLength > 2000;
+  const noteTooLong = normalizedNoteLength > AUTHOR_NOTE_LIMIT;
   useEffect(() => { setRework(false); setNote(""); }, [scene.id]);
 
   const openWriter = (posture) => go && go("writer", [
@@ -174,8 +174,8 @@ function DecisionBar({ scene, state, runJobStatus, go, onEditPlan = null, onArch
               role={noteTooLong ? "alert" : undefined}
             >
               {noteTooLong
-                ? `作者指令 ${normalizedNoteLength} / 2000 字；请精简，系统不会静默截断。`
-                : `作者指令 ${normalizedNoteLength} / 2000 字 · 将保留为第 ${(scene.attempt || 1) + 1} 次尝试`}
+                ? `作者指令 ${normalizedNoteLength} / ${AUTHOR_NOTE_LIMIT} 字；请精简，系统不会静默截断。`
+                : `作者指令 ${normalizedNoteLength} / ${AUTHOR_NOTE_LIMIT} 字 · 将保留为第 ${(scene.attempt || 1) + 1} 次尝试`}
             </span>
             <button className="btn btn-accent btn-sm" onClick={() => { if (onRun) { onRun(note); setRework(false); } }} disabled={noteTooLong || !onRun}>
               <I.Refresh size={13} /> {note.trim() ? "确认退回重写" : "直接重跑"}

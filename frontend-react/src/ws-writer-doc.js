@@ -24,7 +24,8 @@ import { useWrEvent } from "./ws-writer-hooks.js";
 const { useCallback, useEffect, useLayoutEffect, useRef, useState } = React;
 
 export function useDocBinding({ activeScene, editorRef, counter, decorate, afterLoad, beforeSave }) {
-  const [saved, setSaved] = useState("草稿已保存");
+  // 保存状态的键（loaded / saving / saved / failed / locked），字在 wr-canonical-control 的 SAVE_LABELS
+  const [saved, setSaved] = useState("saved");
   const [savedAt, setSavedAt] = useState(null);
   const [canonicalStatus, setCanonicalStatus] = useState("unknown");
   const saveTimer = useRef(null);
@@ -93,7 +94,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     editVersionRef.current += 1;
     dirtyRef.current = false;
     showStored(el, sceneId);
-    setSaved("草稿已加载");
+    setSaved("loaded");
     setCanonicalStatus(canonicalFromStore(sceneId));
     return true;
   };
@@ -104,7 +105,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     if (!el || !activeScene) return false;
     if (wrSceneIsApproved(activeScene)) {
       dirtyRef.current = false;
-      setSaved("终稿已锁定");
+      setSaved("locked");
       return false;
     }
     const sceneId = activeScene;
@@ -118,7 +119,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       await WrDocs.save(sceneId, html);
       if (stillCurrent() && editVersionRef.current === editVersion) {
         dirtyRef.current = false;
-        setSaved("草稿已保存");
+        setSaved("saved");
         setSavedAt(Date.now());
         setCanonicalStatus(canonicalFromStore(sceneId));
       }
@@ -130,7 +131,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       }
       if (stillCurrent() && editVersionRef.current === editVersion) {
         dirtyRef.current = true;
-        setSaved("草稿保存失败");
+        setSaved("failed");
       }
       return false;
     }
@@ -138,7 +139,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
 
   const schedulePersist = useCallback(() => {
     if (wrSceneIsApproved(activeScene)) return;
-    setSaved("正在保存草稿…");
+    setSaved("saving");
     setCanonicalStatus("dirty");
     dirtyRef.current = true;
     editVersionRef.current += 1;
@@ -162,7 +163,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     }
     editVersionRef.current += 1;
     dirtyRef.current = false;
-    setSaved("草稿已加载");
+    setSaved("loaded");
     setCanonicalStatus(canonicalFromStore(activeScene));
     let stored = null;
     try { stored = WrDocs.load(activeScene); } catch (e) {}
@@ -175,13 +176,13 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     const onDocLoaded = (sid) => {
       if (sid !== activeScene || dirtyRef.current) return;
       showStored(el, activeScene);
-      setSaved("草稿已保存");
+      setSaved("saved");
       setCanonicalStatus(canonicalFromStore(activeScene));
     };
     const onDocState = (detail) => {
       if (!detail || detail.sid !== activeScene) return;
-      if (detail.lastSaveError) setSaved("草稿保存失败");
-      else if (!detail.dirty) setSaved("草稿已保存");
+      if (detail.lastSaveError) setSaved("failed");
+      else if (!detail.dirty) setSaved("saved");
       setCanonicalStatus(detail.canonicalDirty === false ? "current" : "dirty");
     };
     const unsubscribe = WrDocs.subscribe((kind, detail) => {
@@ -252,7 +253,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
     }
     cancelPendingSave();
     if (dirtyRef.current) {
-      setSaved("正在保存草稿…");
+      setSaved("saving");
       const savedOk = await persistDoc();
       if (!savedOk) {
         storeAlert(null, "草稿还没有保存到服务端，暂时不能提升为权威正文。先让草稿保存成功再试。");

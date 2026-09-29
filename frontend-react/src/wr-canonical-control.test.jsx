@@ -27,7 +27,7 @@ describe("WrCanonicalControl", () => {
   it("把草稿保存与权威正文同步显示为两个独立状态", async () => {
     const onPromote = vi.fn();
     const { host } = await renderControl({
-      saveStatus: "草稿已保存",
+      saveStatus: "saved",
       canonicalStatus: "dirty",
       onPromote,
     });
@@ -45,7 +45,7 @@ describe("WrCanonicalControl", () => {
 
   it("提升中与已同步状态禁止重复提交", async () => {
     const { host, root } = await renderControl({
-      saveStatus: "草稿已保存",
+      saveStatus: "saved",
       canonicalStatus: "promoting",
       onPromote: vi.fn(),
     });
@@ -53,7 +53,7 @@ describe("WrCanonicalControl", () => {
     expect(host.querySelector("button").disabled).toBe(true);
 
     await act(async () => root.render(
-      <WrCanonicalControl saveStatus="草稿已保存" canonicalStatus="current" onPromote={vi.fn()} />,
+      <WrCanonicalControl saveStatus="saved" canonicalStatus="current" onPromote={vi.fn()} />,
     ));
     expect(host.querySelector('[data-testid="canonical-status"]').textContent).toBe("权威正文已更新");
     expect(host.querySelector("button").disabled).toBe(true);
@@ -61,7 +61,7 @@ describe("WrCanonicalControl", () => {
 
   it("空白场（none）：不显示「待更新」，也不给提升按钮", async () => {
     const onPromote = vi.fn();
-    const { host } = await renderControl({ saveStatus: "草稿已加载", canonicalStatus: "none", onPromote });
+    const { host } = await renderControl({ saveStatus: "loaded", canonicalStatus: "none", onPromote });
     const status = host.querySelector('[data-testid="canonical-status"]');
     expect(status.textContent).toBe("还没有可提升的正文");
     expect(status.textContent).not.toContain("待更新");
@@ -77,7 +77,7 @@ describe("WrCanonicalControl", () => {
 
   it("等待作者内容风险复核时禁止从底层按钮重复提升", async () => {
     const { host } = await renderControl({
-      saveStatus: "草稿已保存",
+      saveStatus: "saved",
       canonicalStatus: "review",
       onPromote: vi.fn(),
     });

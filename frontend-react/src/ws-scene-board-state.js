@@ -9,7 +9,7 @@ import {
 import {
   scnBackendRunSids, scnHydrateAfterSelection, scnHydrateFromBackend, scnResumeAfterSelection, scnRun, scnTopupBudget,
 } from "./ws-scene-api.js";
-import { RUN_JOB_TERMINAL_STATUSES, SCN_RUN_UI_ABORTED, scnRunUiAbortError, scnTerminalJobMessage } from "./ws-scene-derive.js";
+import { AUTHOR_NOTE_LIMIT, RUN_JOB_TERMINAL_STATUSES, SCN_RUN_UI_ABORTED, scnRunUiAbortError, scnTerminalJobMessage } from "./ws-scene-derive.js";
 import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 const { useEffect, useRef, useState } = React;
@@ -425,8 +425,8 @@ function useSceneRuns({ items, runs, setRuns, pickedId, pinItem }) {
     runAbortControllers.current[id] = controller;
     const token = (runSeq.current[id] || 0) + 1; runSeq.current[id] = token;
     const normalizedNote = note == null ? "" : String(note).trim();
-    if (Array.from(normalizedNote).length > 2000) {
-      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), error: "作者改写指令不能超过 2000 个字符，请精简后重试；内容没有被静默截断。" } }));
+    if (Array.from(normalizedNote).length > AUTHOR_NOTE_LIMIT) {
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), error: `作者改写指令不能超过 ${AUTHOR_NOTE_LIMIT} 个字符，请精简后重试；内容没有被静默截断。` } }));
       delete runAbortControllers.current[id];
       return;
     }

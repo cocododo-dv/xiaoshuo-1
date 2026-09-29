@@ -14,6 +14,7 @@ import { SceneRunJobControl } from "./ws-scene-job.jsx";
 import { DecisionBar } from "./ws-scene-decide.jsx";
 import { AttemptCompare, Evidence } from "./ws-scene-evidence.jsx";
 import { SceneAdoptionDialogs, SceneAdoptionNote, useSceneAdoption } from "./ws-scene-adopt.jsx";
+import { AUTHOR_NOTE_LIMIT } from "./ws-scene-derive.js";
 
 const { useState, useEffect, useMemo, useRef } = React;
 
@@ -30,9 +31,8 @@ const { useState, useEffect, useMemo, useRef } = React;
    各栏在 ws-scene-spine / -stage / -decide / -evidence，与后端说话的在 ws-scene-api.js。
    ========================================================== */
 
-/* 「参考该版复盘意见重写」的作者指令。复盘意见可能本身就是一条近 2000 字的旧指令：
+/* 「参考该版复盘意见重写」的作者指令。复盘意见可能本身就是一条近 AUTHOR_NOTE_LIMIT 字的旧指令：
    整句超过上限时把意见截短（带省略号），而不是让 startRun 以「指令太长」拒收、点了没反应。 */
-const AUTHOR_NOTE_LIMIT = 2000;
 function attemptRewriteNote(attempt) {
   const attemptNo = (attempt && (attempt.n || attempt.attempt)) || "所选";
   const verdict = attempt && attempt.cmp && attempt.cmp.verdict ? String(attempt.cmp.verdict).trim() : "";

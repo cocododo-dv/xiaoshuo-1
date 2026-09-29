@@ -9,7 +9,7 @@ import { countChars } from "./lib/text.js";
 import { copyGateAdoptMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { fidPatchView, fidRankText, fidStyleStepView, fidVerdict } from "./ws-fidelity-model.js";
 import {
-  RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES, scnPipeStepName, scnParaText,
+  AUTHOR_NOTE_LIMIT, RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES, scnPipeStepName, scnParaText,
   scnGateLog, scnFriendly, scnRunUiAbortError, scnStyleNoticeLabel, scnRunRecordFromWorkbench,
 } from "./ws-scene-derive.js";
 import { isRealWorkId } from "./lib/work-id.js";
@@ -117,8 +117,8 @@ async function scnRun(item, note, _prevText, lifecycle = {}) {
   // 由「采纳并归档」留下明确接受记录；无 Q2 时后端仍可按契约自动完成。
   const body = { run_policy: (lifecycle && lifecycle.runPolicy) || "strict" };
   const authorNote = note == null ? "" : String(note).trim();
-  if (Array.from(authorNote).length > 2000) {
-    const error = new Error("作者改写指令不能超过 2000 个字符，请精简后重试；系统没有截断或提交这段指令。");
+  if (Array.from(authorNote).length > AUTHOR_NOTE_LIMIT) {
+    const error = new Error(`作者改写指令不能超过 ${AUTHOR_NOTE_LIMIT} 个字符，请精简后重试；系统没有截断或提交这段指令。`);
     error.code = "AUTHOR_NOTE_TOO_LONG";
     throw error;
   }

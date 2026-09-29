@@ -11,6 +11,15 @@ const CANONICAL_LABELS = {
   error: "权威正文提升失败",
 };
 
+/* 草稿保存状态：useDocBinding 只给键，这里给字（过去状态本身就是中文句子，按字比较）。 */
+export const SAVE_LABELS = {
+  loaded: "草稿已加载",
+  saving: "正在保存草稿…",
+  saved: "草稿已保存",
+  failed: "草稿保存失败",
+  locked: "终稿已锁定",
+};
+
 /* none：这一场一个字都没有。不显示「待更新」这种暗示有事要办的状态，也不给提升按钮——
    空白场没有可提升的正文。状态文字仍留给读屏（ws-sr-only），按钮留在原位但隐藏，
    保证它始终是这个控件里的第一个 <button>（调用方与单测按这个位置找它）。 */
@@ -18,12 +27,13 @@ function WrCanonicalControl({ saveStatus, canonicalStatus, disabled = false, onP
   const status = CANONICAL_LABELS[canonicalStatus] ? canonicalStatus : "unknown";
   const busy = status === "promoting";
   const none = status === "none";
-  const saveFailed = saveStatus === "草稿保存失败";
+  const saveFailed = saveStatus === "failed";
+  const saveText = SAVE_LABELS[saveStatus] || SAVE_LABELS.saved;
   const promotionDisabled = disabled || busy || none || status === "review" || status === "unknown" || status === "current";
   return (
     <div className="wr-publish-state" aria-label="草稿与权威正文状态">
-      <span role="status" aria-live="polite" aria-atomic="true" className={`wr-save ${saveStatus === "草稿已保存" ? "" : "saving"} ${saveFailed ? "is-error" : ""}`} data-testid="draft-save-status" title={saveStatus}>
-        <span className="wr-save-dot" aria-hidden="true" /><span className="wr-save-text">{saveStatus}</span>
+      <span role="status" aria-live="polite" aria-atomic="true" className={`wr-save ${saveStatus === "saved" ? "" : "saving"} ${saveFailed ? "is-error" : ""}`} data-testid="draft-save-status" title={saveText}>
+        <span className="wr-save-dot" aria-hidden="true" /><span className="wr-save-text">{saveText}</span>
       </span>
       <span role="status" aria-live="polite" aria-atomic="true" className={`wr-canonical-state is-${status}${none ? " ws-sr-only" : ""}`} data-testid="canonical-status" title={CANONICAL_LABELS[status]}>
         <span className="wr-canonical-dot" aria-hidden="true" /><span className="wr-canonical-text">{CANONICAL_LABELS[status]}</span>
