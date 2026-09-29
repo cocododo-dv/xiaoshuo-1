@@ -686,7 +686,6 @@ class LLMNodeRunner(RuntimeLLMAccess):
             "provider": request.provider,
             "provider_id": request.provider_id,
             "account_id": request.account_id,
-            "model_profile": getattr(task_config, "model_profile", None),
             "reasoning_level": request.reasoning_level,
             "credential_mode": request.credential_mode,
             "token_budget": final_budget["budget"],

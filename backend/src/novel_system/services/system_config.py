@@ -879,7 +879,6 @@ class SystemConfigService:
 
     def save_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
         config_payload = {
-            "model_profiles": dict(payload.get("model_profiles") or {}),
             "task_routing": dict(payload.get("task_routing") or {}),
             "node_routing": dict(payload.get("node_routing") or {}),
             "retry_budget": dict(payload.get("retry_budget") or {}),
@@ -942,7 +941,6 @@ class SystemConfigService:
         node_routing = dict(current_models.get("node_routing") or {})
         task_routing = dict(current_models.get("task_routing") or {})
         config_payload = {
-            "model_profiles": dict(current_models.get("model_profiles") or {}),
             "task_routing": task_routing,
             "node_routing": node_routing,
             "retry_budget": dict(current_models.get("retry_budget") or {}),
@@ -1156,7 +1154,6 @@ class SystemConfigService:
             }
 
         config_payload = {
-            "model_profiles": dict(current_models.get("model_profiles") or {}),
             "task_routing": task_routing,
             "node_routing": node_routing,
             "retry_budget": dict(current_models.get("retry_budget") or {}),

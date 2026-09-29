@@ -24,7 +24,6 @@ class LLMNodeSpec:
     response_format: str = "json_object"
     reasoning_level: str = "medium"
     api_mode: str = "responses"
-    model_profile: str | None = None
     # §7 anti-mean sampling — decoding-level penalties carried into DB node routing so the
     # System-Config UI route keeps them instead of silently dropping to None on the DB path.
     frequency_penalty: float | None = None
@@ -46,7 +45,6 @@ class LLMNodeSpec:
             "response_format": self.response_format,
             "reasoning_level": self.reasoning_level,
             "api_mode": self.api_mode,
-            "model_profile": self.model_profile,
             "frequency_penalty": self.frequency_penalty,
             "presence_penalty": self.presence_penalty,
             "top_p": self.top_p,
@@ -77,8 +75,6 @@ class LLMNodeSpec:
             payload["account_id"] = account_id
         if credential_mode:
             payload["credential_mode"] = credential_mode
-        if self.model_profile:
-            payload["model_profile"] = self.model_profile
         # §7 carry decoding-level sampling penalties into the route payload so DB-stored
         # node routing (System-Config UI) preserves them instead of dropping them to None.
         if self.frequency_penalty is not None:
@@ -212,7 +208,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         # 思考 token 同样吃这个预算：3200 装不下（config/models.yaml 同名 task 早已是 8192，但系统设置
         # 同步进库的 node_routing 以这里的默认值为准、且运行时优先于 task_routing——两处必须一致）。
         max_output_tokens=8192,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "snowflake_workspace_assistant",
@@ -221,7 +216,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_workspace_assistant",
         temperature=0.35,
         max_output_tokens=3200,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "snowflake_scene_triage",
@@ -230,7 +224,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_scene_triage_suggest",
         temperature=0.15,
         max_output_tokens=2200,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "snowflake_chapter_plan",
@@ -239,7 +232,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_chapter_plan_suggest",
         temperature=0.2,
         max_output_tokens=2600,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "scene_blueprint",
@@ -273,7 +265,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_scene_plan_candidates",
         temperature=0.6,
         max_output_tokens=3200,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "chapter_scene_plan_fill",
@@ -282,7 +273,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_scene_plan_fill",
         temperature=0.2,
         max_output_tokens=3200,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "chapter_plan_review",
@@ -291,7 +281,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_plan_review",
         temperature=0.15,
         max_output_tokens=2600,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "neutral_draft",
@@ -328,7 +317,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="scene_literary_rewrite",
         temperature=0.55,
         max_output_tokens=6000,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "hard_qc",
@@ -369,7 +357,9 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "rewrite",
         template_name="writer_passage_patch",
         temperature=0.45,
-        max_output_tokens=2600,
+        # 2026-09-30 重评 R12:改写候选不再逐项回抄原文,一次要装下两版近 2000 字的改写(含思考 token),
+        # 2600 装不下。与 models.yaml 同名 task 一致。
+        max_output_tokens=8192,
     ),
     LLMNodeSpec(
         "writer_deep_review",

@@ -34,7 +34,6 @@ class TaskModelConfig:
     temperature: float
     max_output_tokens: int
     response_format: str
-    model_profile: str | None = None
     provider_id: str | None = None
     account_id: str | None = None
     reasoning_level: Literal["off", "low", "medium", "high"] = "medium"
@@ -54,7 +53,6 @@ class TaskModelConfig:
 class ModelRoutingConfig:
     node_routing: dict[str, TaskModelConfig]
     task_routing: dict[str, TaskModelConfig]
-    model_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     retry_budget: dict[str, int] = field(default_factory=dict)
     job_runtime: dict[str, Any] = field(default_factory=dict)
 
@@ -169,7 +167,6 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
 
     raw_node_routing = _require_mapping(raw_payload, "node_routing")
     raw_task_routing = _require_mapping(raw_payload, "task_routing")
-    raw_model_profiles = _require_mapping(raw_payload, "model_profiles")
     retry_budget = dict(_require_mapping(raw_payload, "retry_budget"))
     provider_attempt_budget = retry_budget.get("provider_attempt_budget")
     if (
@@ -204,7 +201,6 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
     return ModelRoutingConfig(
         node_routing=node_routing,
         task_routing=task_routing,
-        model_profiles=_normalize_model_profiles(raw_model_profiles),
         retry_budget=retry_budget,
         job_runtime=dict(job_runtime),
     )
@@ -224,7 +220,6 @@ def _load_task_model_config(task_name: str, payload: Any) -> TaskModelConfig:
     try:
         return TaskModelConfig(
             provider=_parse_provider(task_name, payload),
-            model_profile=optional_text(payload.get("model_profile")),
             provider_id=optional_text(payload.get("provider_id")),
             account_id=optional_text(payload.get("account_id")),
             model=str(payload["model"]),
@@ -263,21 +258,6 @@ def _require_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
-def _normalize_model_profiles(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    profiles: dict[str, dict[str, Any]] = {}
-    for profile_key, profile_payload in payload.items():
-        if not isinstance(profile_key, str):
-            raise LLMConfigurationError(
-                "LLM_MODEL_CONFIG_INVALID",
-                "model profile names must be strings",
-            )
-        if not isinstance(profile_payload, dict):
-            raise LLMConfigurationError(
-                "LLM_MODEL_CONFIG_INVALID",
-                f"model_profiles.{profile_key} must be a mapping",
-            )
-        profiles[profile_key] = dict(profile_payload)
-    return profiles
 
 
 def _parse_float_config_value(task_name: str, payload: dict[str, Any], field: str) -> float:

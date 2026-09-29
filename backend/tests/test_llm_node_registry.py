@@ -20,9 +20,10 @@
 """
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 
-from novel_system.services.llm_client import load_model_routing_config
+from novel_system.services.llm_client import TaskModelConfig, load_model_routing_config
 from novel_system.services.llm_node_registry import get_llm_node_spec, llm_node_specs
 from novel_system.services.prompt_builder import load_prompt_templates
 
@@ -103,3 +104,53 @@ def test_style_analysis_defaults_are_stable_and_have_verified_output_headroom():
         assert spec is not None
         assert route.temperature == spec.temperature == 0.0
         assert route.max_output_tokens == spec.max_output_tokens == max_output_tokens
+
+
+def _spec_as_task_config(spec) -> dict:
+    return {
+        "provider": spec.provider,
+        "model": spec.model,
+        "temperature": spec.temperature,
+        "max_output_tokens": spec.max_output_tokens,
+        "response_format": spec.response_format,
+        "provider_id": None,
+        "account_id": None,
+        "reasoning_level": spec.reasoning_level,
+        "api_mode": spec.api_mode,
+        "credential_mode": None,
+        "provider_options": {},
+        "frequency_penalty": spec.frequency_penalty,
+        "presence_penalty": spec.presence_penalty,
+        "top_p": spec.top_p,
+        "timeout_seconds": None,
+    }
+
+
+def test_repo_task_routing_is_a_field_for_field_copy_of_the_node_registry():
+    """B09-07 / 重评 R4 第一步:models.yaml 的 task_routing 与节点注册表逐节点、逐字段相同(0 处差异),
+    唯一多出来的键是 stylize 别名(= style_draft)。这是删掉那张表之前的证明。"""
+    root = Path(__file__).resolve().parents[2]
+    routing = load_model_routing_config(root / "config" / "models.yaml")
+    specs = {spec.node_id: spec for spec in llm_node_specs()}
+    assert set(routing.task_routing) == set(specs) | {"stylize"}
+    diffs = []
+    for node_id, spec in specs.items():
+        route = routing.task_routing[node_id]
+        expected = _spec_as_task_config(spec)
+        diffs.extend(
+            (node_id, field.name, getattr(route, field.name), expected[field.name])
+            for field in fields(TaskModelConfig)
+            if getattr(route, field.name) != expected[field.name]
+        )
+    assert diffs == []
+    assert routing.task_routing["stylize"] == routing.task_routing["style_draft"]
+
+
+def test_writer_passage_patch_output_budget_fits_two_long_rewrites():
+    """重评 R12:改写候选不再回抄原文,两版近 2000 字的改写(含思考 token)一次装下——节点默认值与仓库
+    models.yaml 同为 8192(已存过 models 快照的安装由快照瘦身迁移带到这个默认值)。"""
+    root = Path(__file__).resolve().parents[2]
+    routing = load_model_routing_config(root / "config" / "models.yaml")
+    spec = get_llm_node_spec("writer_passage_patch")
+    assert spec is not None
+    assert spec.max_output_tokens == routing.task_routing["writer_passage_patch"].max_output_tokens == 8192
