@@ -273,10 +273,6 @@ task_routing:
     model_profile: quality_strong
 
 retry_budget:
-  hard_partial_max: 2
-  hard_full_max: 1
-  soft_patch_max: 2
-  total_attempt_budget: 4
   # 每场景真实 provider HTTP dispatch 的独立硬上限；内部 retry/degrade
   # 仍须逐次过闸，不能把理论重试数当作可消费额度。
   provider_attempt_budget: 32
@@ -285,10 +281,4 @@ job_runtime:
   # 幂等租约须覆盖最长的同步操作：LLM 场景 run（Best-of-N 最多 9 次生成 + 多轮 QC）
   # 常态 3-10 分钟。90s 会让客户端重试把仍在执行的 run 当过期回收 → 并发二次执行。
   idempotency_claim_ttl_seconds: 600
-  reindex_lease_ttl_seconds: 180
-  verify_lease_ttl_seconds: 180
   heartbeat_interval_seconds: 45
-  max_reclaim_attempts:
-    idempotency: 3
-    reindex: 3
-    verify: 3

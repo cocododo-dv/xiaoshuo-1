@@ -11,7 +11,6 @@ from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-REPOSITORY_ROOT = BACKEND_ROOT.parent
 DEFAULT_VECTOR_STORE_DIR = BACKEND_ROOT / ".vector_store"
 
 
@@ -21,10 +20,7 @@ class Settings:
     vector_backend: str
     vector_store_dir: Path
     sqlite_foreign_keys_enabled: bool = True
-    chroma_collection_prefix: str = "novel_system"
     idempotency_ttl_seconds: int = 90
-    verify_lease_ttl_seconds: int = 180
-    reindex_lease_ttl_seconds: int = 180
     llm_provider: str = "openai_compatible"
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str | None = None
@@ -49,10 +45,6 @@ class Settings:
     llm_project_daily_token_limit: int = 0
     llm_daily_request_limit: int = 0
     llm_max_concurrent_requests: int = 0
-    # Startup reconciliation only touches unowned, non-scene reservations
-    # older than this conservative TTL.  It must comfortably exceed normal
-    # provider retries so a live legacy request is not mistaken for a crash.
-    llm_reservation_recovery_ttl_seconds: int = 3_600
     llm_daily_cost_limit_usd: float = 0.0
     llm_input_cost_per_million_usd: float = 0.0
     llm_output_cost_per_million_usd: float = 0.0
@@ -103,9 +95,6 @@ class Settings:
     # ``review`` prevents unattended archive for high-risk heuristic matches;
     # ``audit`` records the same findings without blocking publication.
     content_safety_mode: str = "review"
-    # Test/acceptance fixture import is a write-capable maintenance boundary.
-    # It is absent from OpenAPI and disabled unless an operator opts in.
-    fixture_import_enabled: bool = False
     # 2026-09-13 阶段 A：雪花 / 章节编排写下的场景结构（形态、坩埚、三拍、代价）作为
     # ``Scene Structure (Snowflake)`` 事实 section 进入起草 bundle、蓝图与近终稿快照。
     # 默认开；``NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF=false`` 只作回滚开关。
@@ -198,7 +187,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     vector_store_dir = _resolve_runtime_path(
         os.environ.get("NOVEL_SYSTEM_CHROMA_DIR", DEFAULT_VECTOR_STORE_DIR)
     )
-    chroma_collection_prefix = os.environ.get("NOVEL_SYSTEM_CHROMA_COLLECTION_PREFIX", "novel_system")
     core_runtime = load_core_runtime()
     llm_provider = core_runtime.llm_provider
     llm_base_url = core_runtime.llm_base_url
@@ -216,9 +204,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_project_daily_token_limit = accounting_runtime.project_daily_token_limit
     llm_daily_request_limit = accounting_runtime.daily_request_limit
     llm_max_concurrent_requests = accounting_runtime.max_concurrent_requests
-    llm_reservation_recovery_ttl_seconds = (
-        accounting_runtime.reservation_recovery_ttl_seconds
-    )
     llm_daily_cost_limit_usd = accounting_runtime.daily_cost_limit_usd
     llm_input_cost_per_million_usd = accounting_runtime.input_cost_per_million_usd
     llm_output_cost_per_million_usd = accounting_runtime.output_cost_per_million_usd
@@ -264,7 +249,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         vector_backend=vector_backend,
         vector_store_dir=vector_store_dir,
         sqlite_foreign_keys_enabled=sqlite_foreign_keys_enabled,
-        chroma_collection_prefix=chroma_collection_prefix,
         llm_provider=llm_provider,
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
@@ -280,7 +264,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_project_daily_token_limit=llm_project_daily_token_limit,
         llm_daily_request_limit=llm_daily_request_limit,
         llm_max_concurrent_requests=llm_max_concurrent_requests,
-        llm_reservation_recovery_ttl_seconds=llm_reservation_recovery_ttl_seconds,
         llm_daily_cost_limit_usd=llm_daily_cost_limit_usd,
         llm_input_cost_per_million_usd=llm_input_cost_per_million_usd,
         llm_output_cost_per_million_usd=llm_output_cost_per_million_usd,
@@ -297,7 +280,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         max_request_body_bytes=max_request_body_bytes,
         style_reference_import_roots=style_reference_import_roots,
         content_safety_mode=content_safety_mode,
-        fixture_import_enabled=_get_strict_bool_env("NOVEL_SYSTEM_ENABLE_FIXTURE_IMPORT", False),
     )
     if not include_runtime_config:
         return settings

@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # 不限时(timeout_seconds <= 0)的调度租约上限。租约只用来防重复执行,没有
 # 超时秒数可乘时不能退回默认 TTL(几分钟)——那样长任务会在调用中途丢租约,
 # 客户端重试会把它当崩溃回收并二次执行(审计 P-8)。取一个与
-# llm_reservation_recovery_ttl_seconds 同量级的平顶,崩溃后最多滞留这么久。
+# reservation_recovery_ttl_seconds（NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS）同量级的平顶,崩溃后最多滞留这么久。
 UNBOUNDED_TIMEOUT_LEASE_SECONDS = 3_600
 
 

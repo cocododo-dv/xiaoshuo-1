@@ -13,6 +13,9 @@ class LLMAccountingRuntime:
     project_daily_token_limit: int
     daily_request_limit: int
     max_concurrent_requests: int
+    # Startup reconciliation only touches unowned, non-scene reservations
+    # older than this conservative TTL.  It must comfortably exceed normal
+    # provider retries so a live legacy request is not mistaken for a crash.
     reservation_recovery_ttl_seconds: int
     daily_cost_limit_usd: float
     input_cost_per_million_usd: float
@@ -38,10 +41,6 @@ class LLMAccountingRuntime:
     @property
     def llm_max_concurrent_requests(self) -> int:
         return self.max_concurrent_requests
-
-    @property
-    def llm_reservation_recovery_ttl_seconds(self) -> int:
-        return self.reservation_recovery_ttl_seconds
 
     @property
     def llm_daily_cost_limit_usd(self) -> float:
