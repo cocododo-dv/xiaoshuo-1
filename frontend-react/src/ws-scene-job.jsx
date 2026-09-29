@@ -1,6 +1,6 @@
 import React from "react";
 import { Spinner } from "./ws-ui.jsx";
-import { cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
+import { cancelRunJob, getLatestSceneRunJob } from "./ws-scene-job-api.js";
 import {
   RUN_JOB_CANCELABLE_STATUSES, RUN_JOB_POLLING_STATUSES, RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES,
   runJobStepLabel,

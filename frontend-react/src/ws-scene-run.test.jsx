@@ -14,9 +14,9 @@ vi.mock("./lib/client.js", () => ({
   apiPost: vi.fn(),
   apiPatch: vi.fn(),
   apiDelete: vi.fn(),
-  cancelRunJob: vi.fn(),
-  getLatestSceneRunJob: vi.fn(),
 }));
+// 任务控制条的两个请求（ws-scene-job-api.js）
+vi.mock("./ws-scene-job-api.js", () => ({ cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn() }));
 
 
 const T = { timeout: 5000, interval: 25 };
@@ -74,7 +74,9 @@ async function loadSceneRun(opts) {
   });
   const mod = await import("./ws-scene-run.jsx");
   await settleActive((opts && opts.projects && opts.projects[0] && opts.projects[0].project_id) || "prj-main");
-  return { mod, client };
+  // 任务控制条的两个请求（mock）并进 client，测试照旧写 client.getLatestSceneRunJob
+  const { cancelRunJob, getLatestSceneRunJob } = await import("./ws-scene-job-api.js");
+  return { mod, client: { ...client, cancelRunJob, getLatestSceneRunJob } };
 }
 
 const mountedRoots = [];
@@ -130,60 +132,24 @@ describe("scene run cancellation client", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses the authoritative latest path and the shared POST idempotency contract", async () => {
-    const client = await vi.importActual("./lib/client.js");
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ ok: true, data: { job_id: "job/latest" } }),
-      })
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ ok: true, data: { job_id: "job/retry", status: "cancel_requested" } }),
-      });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await client.getLatestSceneRunJob("SC /一");
-    await expect(client.cancelRunJob("job/retry")).rejects.toMatchObject({
-      code: "NETWORK_ERROR",
-      retryable: true,
-    });
-    await client.cancelRunJob("job/retry");
-
-    expect(fetchMock.mock.calls[0][0]).toMatch(/\/api\/v1\/scenes\/SC%20%2F%E4%B8%80\/run\/jobs\/latest$/);
-    const firstCancel = fetchMock.mock.calls[1];
-    const retryCancel = fetchMock.mock.calls[2];
-    expect(firstCancel[0]).toMatch(/\/api\/v1\/run-jobs\/job%2Fretry\/cancel$/);
-    expect(firstCancel[1]).toMatchObject({ method: "POST", body: "{}" });
-    expect(firstCancel[1].headers["X-Operator-Ref"]).toBe("operator");
-    expect(firstCancel[1].headers["X-Idempotency-Key"]).toBeTruthy();
-    expect(retryCancel[1].headers["X-Idempotency-Key"]).toBe(
-      firstCancel[1].headers["X-Idempotency-Key"],
-    );
-  });
-
-  it("forwards AbortSignal to fetch and reports an intentional abort faithfully", async () => {
-    const client = await vi.importActual("./lib/client.js");
-    let fetchSignal = null;
-    vi.stubGlobal("fetch", vi.fn((url, init) => new Promise((resolve, reject) => {
-      void url;
-      void resolve;
-      fetchSignal = init.signal;
-      init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-    })));
+  // 幂等键在同一次取消的重试里沿用、AbortSignal 转给 fetch：那是 apiGet / apiPost 的契约（lib/client.test.js）。
+  // 这里钉住两个请求走的路径与参数都交给了它们。
+  it("latest 与 cancel 走权威路径（场景 id / 任务 id 编码），选项原样交给 apiGet / apiPost", async () => {
+    const api = await vi.importActual("./ws-scene-job-api.js");
+    const client = await import("./lib/client.js");
+    client.apiGet.mockResolvedValue({ job_id: "job/latest" });
+    client.apiPost.mockResolvedValue({ job_id: "job/retry", status: "cancel_requested" });
     const controller = new AbortController();
 
-    const pending = client.getLatestSceneRunJob("SC01", { signal: controller.signal });
-    controller.abort();
+    await api.getLatestSceneRunJob("SC /一", { signal: controller.signal });
+    await api.cancelRunJob("job/retry", { signal: controller.signal });
 
-    await expect(pending).rejects.toMatchObject({ code: "REQUEST_ABORTED", retryable: true });
-    expect(fetchSignal).not.toBe(controller.signal);
-    expect(controller.signal.aborted).toBe(true);
-    expect(fetchSignal.aborted).toBe(true);
-    expect(fetchSignal.aborted).toBe(true);
+    expect(client.apiGet).toHaveBeenCalledWith(
+      "/api/v1/scenes/SC%20%2F%E4%B8%80/run/jobs/latest", { signal: controller.signal },
+    );
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/run-jobs/job%2Fretry/cancel", {}, { signal: controller.signal },
+    );
   });
 });
 
