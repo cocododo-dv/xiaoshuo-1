@@ -15,6 +15,12 @@ from novel_system.database_runtime import DEFAULT_DATABASE_PATH, load_database_r
 _ENGINE = None
 _SESSION_FACTORY = None
 
+# ``connection.info`` marker: ``PRAGMA defer_foreign_keys=ON`` is in force on this
+# DBAPI connection, set in the recorded state (see ``_configure_sqlite_transaction``).
+_FK_DEFERRED_KEY = "novel_system.sqlite_defer_foreign_keys"
+_FK_DEFERRED_IN_TRANSACTION = "in_transaction"
+_FK_DEFERRED_OUTSIDE_TRANSACTION = "outside_transaction"
+
 
 def _running_under_pytest() -> bool:
     return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
@@ -133,7 +139,8 @@ def _install_sqlite_pragmas(
     enforce_foreign_keys: bool = True,
 ) -> None:
     @event.listens_for(sqlalchemy_engine, "connect")
-    def set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+    def set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+        connection_record.info.pop(_FK_DEFERRED_KEY, None)
         _configure_sqlite_connection(
             dbapi_connection,
             enforce_foreign_keys=enforce_foreign_keys,
@@ -144,6 +151,46 @@ def _install_sqlite_pragmas(
         @event.listens_for(sqlalchemy_engine, "begin")
         def defer_sqlite_foreign_keys(sqlalchemy_connection) -> None:
             _configure_sqlite_transaction(sqlalchemy_connection)
+
+        # The deferral marker stays valid only while SQLite keeps the flag.
+        # Every statement that runs outside a DBAPI transaction may end in an
+        # autocommit that clears it (a plain SELECT does), and every
+        # transaction end clears it; forget the marker at those points.
+        @event.listens_for(sqlalchemy_engine, "before_cursor_execute")
+        def forget_deferral_outside_transactions(
+            sqlalchemy_connection,
+            _cursor,
+            _statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            if not sqlalchemy_connection.connection.dbapi_connection.in_transaction:
+                sqlalchemy_connection.info.pop(_FK_DEFERRED_KEY, None)
+
+        @event.listens_for(sqlalchemy_engine, "commit")
+        @event.listens_for(sqlalchemy_engine, "rollback")
+        def forget_deferral_at_transaction_end(sqlalchemy_connection) -> None:
+            _forget_fk_deferral(sqlalchemy_connection)
+
+        @event.listens_for(sqlalchemy_engine, "handle_error")
+        def forget_deferral_after_database_error(exception_context) -> None:
+            # SQLite may roll a whole transaction back on some errors.
+            if exception_context.connection is not None:
+                _forget_fk_deferral(exception_context.connection)
+
+        @event.listens_for(sqlalchemy_engine, "checkin")
+        def forget_deferral_on_checkin(_dbapi_connection, connection_record) -> None:
+            if connection_record is not None:
+                connection_record.info.pop(_FK_DEFERRED_KEY, None)
+
+
+def _forget_fk_deferral(sqlalchemy_connection) -> None:
+    try:
+        info = sqlalchemy_connection.info
+    except Exception:  # noqa: BLE001 — an invalidated connection: its marker goes with its DBAPI connection
+        return
+    info.pop(_FK_DEFERRED_KEY, None)
 
 
 def _install_sqlite_session_pragmas(
@@ -157,11 +204,13 @@ def _install_sqlite_session_pragmas(
     connection after ``Session.commit()`` without reliably producing a second
     engine-level ``begin`` event.  The ORM ``after_begin`` event is the stable
     transaction boundary in that case.  Keeping both hooks also covers direct
-    ``Connection`` users and ORM users.  Before an ORM flush we explicitly open
-    a deferred DBAPI transaction when the legacy driver has not opened one yet;
-    this prevents its first DML statement from resetting the pragma.  Read-only
-    sessions remain in legacy mode, preserving the project's explicit
-    ``BEGIN IMMEDIATE`` accounting lock semantics and short-lived read behavior.
+    ``Connection`` users and ORM users; the configurator is idempotent, so the
+    usual back-to-back ``begin`` / ``after_begin`` pair costs one PRAGMA.
+    Before an ORM flush we explicitly open a deferred DBAPI transaction when
+    the legacy driver has not opened one yet; this prevents its first DML
+    statement from resetting the pragma.  Read-only sessions remain in legacy
+    mode, preserving the project's explicit ``BEGIN IMMEDIATE`` accounting lock
+    semantics and short-lived read behavior.
     """
 
     if not enforce_foreign_keys:
@@ -192,30 +241,34 @@ def _install_sqlite_session_pragmas(
 
 
 def _configure_sqlite_transaction(sqlalchemy_connection) -> None:
-    """Defer FK checks until commit for every SQLite transaction.
+    """Defer FK checks until commit for the SQLite transaction (idempotent).
 
     The model layer intentionally has few ORM relationships, so SQLAlchemy
     cannot always topologically order a valid parent/child graph added in one
     unit of work.  SQLite resets ``defer_foreign_keys`` after each commit or
-    rollback; the engine ``begin`` hook therefore must set and verify it for
-    every transaction while keeping enforcement itself enabled.
+    rollback -- and, outside a transaction, at the end of every statement that
+    reads the database -- so it is set again for every transaction while
+    enforcement itself stays enabled (verified once per connection at connect).
+
+    The hooks fire several times per transaction (engine ``begin``, ORM
+    ``after_begin``, every flush).  ``connection.info[_FK_DEFERRED_KEY]``
+    records the DBAPI state the flag was set in (inside a transaction, or
+    outside one with no statement run since); the event hooks in
+    ``_install_sqlite_pragmas`` forget it whenever SQLite may have cleared the
+    flag, so a repeated call in the same state issues nothing (B12-12 / X01-22).
+    Turning deferral on can only relax the per-statement check, never skip the
+    one at commit, so a missing flag makes FK checks stricter, not looser.
     """
 
-    foreign_keys = sqlalchemy_connection.exec_driver_sql(
-        "PRAGMA foreign_keys"
-    ).scalar_one()
-    if int(foreign_keys) != 1:
-        raise RuntimeError(
-            f"sqlite_foreign_keys_not_enabled_at_transaction_begin: actual={foreign_keys}"
-        )
+    state = (
+        _FK_DEFERRED_IN_TRANSACTION
+        if sqlalchemy_connection.connection.dbapi_connection.in_transaction
+        else _FK_DEFERRED_OUTSIDE_TRANSACTION
+    )
+    if sqlalchemy_connection.info.get(_FK_DEFERRED_KEY) == state:
+        return
     sqlalchemy_connection.exec_driver_sql("PRAGMA defer_foreign_keys=ON")
-    deferred = sqlalchemy_connection.exec_driver_sql(
-        "PRAGMA defer_foreign_keys"
-    ).scalar_one()
-    if int(deferred) != 1:
-        raise RuntimeError(
-            f"sqlite_defer_foreign_keys_not_enabled: expected=1, actual={deferred}"
-        )
+    sqlalchemy_connection.info[_FK_DEFERRED_KEY] = state
 
 
 def session_factory():
