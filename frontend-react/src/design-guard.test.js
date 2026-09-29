@@ -71,6 +71,10 @@ const ICON_ONLY_PIGMENT_ON_WASH = [
 ];
 // JSX / JS（非测试）里写死颜色的行数上限（棘轮，只降不升；现在是 0）。
 const MAX_JSX_RAW_COLOURS = 0;
+// 还在用旧 .pill 标签（styles.css，颜料名 crimson / gold / sage / slate / rose）的 className 个数上限
+// （棘轮，只降不升）。新代码用 ws-ui 的 <Tag tone dot>：crimson → accent、gold → warn、sage → ok、
+// slate → info、rose → danger、不带色 → neutral。各视图包改到时换掉，降到 0 后删掉 .pill 样式。
+const MAX_LEGACY_PILL_CLASS_USES = 15;
 
 const ANIMATION_KEYWORDS = new Set([
   "none", "infinite", "linear", "ease", "ease-in", "ease-out", "ease-in-out", "both", "forwards",
@@ -125,6 +129,18 @@ describe("设计系统守卫", () => {
       .map(({ file }) => file);
     expect(withStyleTags.length, `这些文件在 JSX 里注入 <style>：${withStyleTags.join(", ")}；样式放进对应的 .css`)
       .toBeLessThanOrEqual(MAX_JSX_STYLE_TAG_FILES);
+  });
+
+  it("旧 .pill 标签只减不增（新代码用 <Tag>）", () => {
+    const uses = [];
+    for (const { file, source } of FILES.filter(({ file }) => !file.endsWith(".css"))) {
+      for (const m of source.matchAll(/className=(?:"([^"]*)"|'([^']*)'|\{`([^`]*)`\})/g)) {
+        const value = m[1] ?? m[2] ?? m[3];
+        if (value.split(/\s+/).includes("pill")) uses.push(file);
+      }
+    }
+    expect(uses.length, `这些地方还在用 .pill：${uses.join(", ")}；换成 ws-ui 的 <Tag tone dot>`)
+      .toBeLessThanOrEqual(MAX_LEGACY_PILL_CLASS_USES);
   });
 
   it("色调变量只由 [data-tone] 和零特异性的 :where() 默认值设置（否则会盖过作者指定的色调）", () => {
