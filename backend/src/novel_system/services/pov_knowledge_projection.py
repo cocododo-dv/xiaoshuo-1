@@ -31,14 +31,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import NarrativeEvent
-from novel_system.services.narrative_contracts import (
+from novel_system.services.narrative.replay import require_scene_boundary
+from novel_system.services.narrative.taxonomy import (
     INFORMATION_ASYMMETRY_FACT_KEYS,
-    require_scene_boundary,
+    SECRET_CONTENT_KEYS as _SECRET_CONTENT_KEYS,
 )
 from novel_system.services.narrative_position import NarrativePositionService
-
-# 秘密性质的信息不对称键——这些键的**内容**受 POV 过滤；其余事实为公共。
-_SECRET_CONTENT_KEYS = ("secret_held_by", "believes_false")
 
 
 class PovKnowledgeProjection:
