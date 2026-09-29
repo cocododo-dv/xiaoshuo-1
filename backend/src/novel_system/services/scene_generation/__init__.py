@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import contextlib
 import hashlib
-from contextvars import ContextVar
-import json
 import logging
 import math
 import re
@@ -48,7 +45,6 @@ from novel_system.services.qc_constraints import (
     forbidden_terms as card_forbidden_terms,
     source_field_satisfied,
 )
-from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.services.style_reference.runtime_contract import (
     DRAFT_MODE_NEUTRAL_FIRST,
@@ -77,6 +73,19 @@ from novel_system.services.scene_generation.contracts import (
     SceneGenerationPostprocessError,
     StyleGenerationResult,
     versioned_scene_artifact_id,
+)
+from novel_system.services.scene_generation.length_policy import (
+    LengthPolicy,
+    _length_fitness,
+    _neutral_length_instruction,
+    _parse_numeric_length_band,
+    _reference_scale_sentence,
+    _reference_scene_scale_from_bundle,
+    _style_first_length_instruction,
+    _style_first_length_slack,
+    _style_length_instruction,
+    _style_repair_length_instruction,
+    _style_repair_working_window,
 )
 from novel_system.services.scene_generation.notices import (
     STYLE_NOTICE_ATTEMPT_STEPS,
@@ -108,6 +117,7 @@ from novel_system.services.scene_generation.notices import (
 # （monkeypatch）某个助手，替换它所在的子模块，不是这里。
 __all__ = [
     "FIRST_DRAFT_SOURCE_LABEL",
+    "LengthPolicy",
     "LINEAGE_FIRST_DRAFT_ACCEPTED",
     "NEUTRAL_DRAFT_SOURCE_LABEL",
     "REASON_COPY_UNCHECKED",
@@ -135,6 +145,14 @@ __all__ = [
     "SceneGenerationPostprocessError",
     "SceneGenerationService",
     "StyleGenerationResult",
+    "_neutral_length_instruction",
+    "_parse_numeric_length_band",
+    "_reference_scale_sentence",
+    "_reference_scene_scale_from_bundle",
+    "_style_first_length_instruction",
+    "_style_first_length_slack",
+    "_style_length_instruction",
+    "_style_repair_length_instruction",
     "_styled_draft_gate_notices",
     "inject_style_reference_prefix",
     "latest_style_notices",
@@ -324,8 +342,7 @@ class SceneGenerationService:
         bundle 写首稿(``style_first_draft`` 模板 + ``[STYLE_REFERENCE]`` 前缀,走 style_draft
         节点路由)。步位、``stage="neutral_draft"`` 行、attempt step、指针、账本字段全部不变。
         """
-        with _length_band_slack_for(bundle, self.session.get(SceneCard, scene_id)):
-            return self._generate_first_draft(scene_id, bundle, author_note=author_note)
+        return self._generate_first_draft(scene_id, bundle, author_note=author_note)
 
     def _generate_first_draft(
         self,
@@ -336,6 +353,7 @@ class SceneGenerationService:
     ) -> NeutralGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        lengths = LengthPolicy.for_scene(bundle, scene)
         fallback_llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
@@ -377,7 +395,7 @@ class SceneGenerationService:
         # 风格参考 v3：首稿显式按起草口径渲染，场面标签用 bundle 冻结的（蓝图给的）——没有就从场景设计推
         first_draft_tags = frozen_situation_tags(bundle)
         if style_first:
-            user_prompt = base_user_prompt + _style_first_length_instruction(scene)
+            user_prompt = base_user_prompt + _style_first_length_instruction(lengths)
             prompt = self._inject_style_reference(
                 base_prompt,
                 scene,
@@ -402,7 +420,7 @@ class SceneGenerationService:
                     )
                 )
         else:
-            user_prompt = base_user_prompt + _neutral_length_instruction(scene)
+            user_prompt = base_user_prompt + _neutral_length_instruction(lengths)
         try:
             node_result = self._llm_runner.run(
                 scene_id=scene_id,
@@ -430,20 +448,20 @@ class SceneGenerationService:
             raise
 
         neutral_row_id = versioned_scene_artifact_id("draft_neutral", scene_id, bundle)
-        neutral_assessment = _assess_neutral_draft(scene, neutral_content)
+        neutral_assessment = _assess_neutral_draft(scene, neutral_content, lengths)
         repair_audit: dict[str, Any] | None = None
         if not neutral_assessment["accepted"]:
             original_content = neutral_content
             original_result = node_result
             repair_length_instruction = (
                 _style_first_length_instruction(
-                    scene,
+                    lengths,
                     previous_length=_visible_char_count(original_content),
                     retry=True,
                 )
                 if style_first
                 else _neutral_length_instruction(
-                    scene,
+                    lengths,
                     previous_length=_visible_char_count(original_content),
                     retry=True,
                 )
@@ -501,7 +519,7 @@ class SceneGenerationService:
                     temperature_override=0.1,
                 )
                 repaired_content = _extract_scene_text(repaired_result.response)
-                repaired_assessment = _assess_neutral_draft(scene, repaired_content)
+                repaired_assessment = _assess_neutral_draft(scene, repaired_content, lengths)
             except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
                 self._record_runner_failure_attempt(
                     scene=scene,
@@ -557,7 +575,7 @@ class SceneGenerationService:
                     "repair_llm_call_id": repaired_result.llm_call_id,
                     "rejected_row_id": rejected_row_id,
                     "original_assessment": _assess_neutral_draft(
-                        scene, original_content
+                        scene, original_content, lengths
                     ),
                     "repair_assessment": repaired_assessment,
                 }
@@ -1165,73 +1183,72 @@ class SceneGenerationService:
         temperature_override: float | None = None,
         attempt_details_extra: dict[str, Any] | None = None,
     ) -> StyleGenerationResult:
-        with _length_band_slack_for(bundle, scene):
-            if resume_base is not None:
-                return self._finish_style_first_resume(
-                    scene=scene,
-                    bundle=bundle,
-                    resume_base=resume_base,
-                    first_row_id=first_row_id,
-                    slot_key=slot_key,
-                    slot_order=slot_order,
-                    execution_step_key=execution_step_key,
-                    product_callback=product_callback,
-                )
-            thresholds = style_step.fidelity_thresholds()
-            reading_error = first_reading_error
-            if first_reading is None and first_reading_id is None and not first_reading_done:
-                first_reading, first_reading_id, reading_error = self._record_first_draft_reading(
-                    scene, policy, first_row_id, first_content, thresholds
-                )
-            revise, gate_reason = style_step.style_step_gate(first_reading, thresholds)
-            if reading_error is not None and first_reading is None:
-                # L8：读数出错（异常）与「参考书没有可用的尺子」是两回事，原因与提示分开说
-                gate_reason = style_step.REASON_READING_FAILED
-            if candidate_mode and first_reading is not None and first_reading.reliable:
-                # Best-of-N 的修改槽位：首稿在不在范围内都改（候选按 distance 排序，首稿永远在候选里）
-                revise, gate_reason = True, style_step.REASON_CANDIDATE_SLOT
-            if force_accept:
-                revise = False
-            if not revise:
-                return self._accept_first_draft(
-                    scene=scene,
-                    state=state,
-                    bundle=bundle,
-                    first_row_id=first_row_id,
-                    first_content=first_content,
-                    first_reading=first_reading,
-                    first_reading_id=first_reading_id,
-                    reason=gate_reason,
-                    thresholds=thresholds,
-                    row_id=row_id,
-                    slot_key=slot_key,
-                    slot_order=slot_order,
-                    product_callback=product_callback,
-                    attempt_details_extra=attempt_details_extra,
-                )
-            if step_reconciler is not None:
-                step_reconciler(execution_step_key)
-            return self._run_targeted_revision(
+        if resume_base is not None:
+            return self._finish_style_first_resume(
                 scene=scene,
-                state=state,
                 bundle=bundle,
-                policy=policy,
+                resume_base=resume_base,
                 first_row_id=first_row_id,
-                first_content=first_content,
-                first_reading=first_reading,
-                first_reading_id=first_reading_id,
-                gate_reason=gate_reason,
-                thresholds=thresholds,
-                author_note=author_note,
-                row_id=row_id,
                 slot_key=slot_key,
                 slot_order=slot_order,
                 execution_step_key=execution_step_key,
                 product_callback=product_callback,
-                candidate_mode=candidate_mode,
-                temperature_override=temperature_override,
+            )
+        thresholds = style_step.fidelity_thresholds()
+        reading_error = first_reading_error
+        if first_reading is None and first_reading_id is None and not first_reading_done:
+            first_reading, first_reading_id, reading_error = self._record_first_draft_reading(
+                scene, policy, first_row_id, first_content, thresholds
+            )
+        revise, gate_reason = style_step.style_step_gate(first_reading, thresholds)
+        if reading_error is not None and first_reading is None:
+            # L8：读数出错（异常）与「参考书没有可用的尺子」是两回事，原因与提示分开说
+            gate_reason = style_step.REASON_READING_FAILED
+        if candidate_mode and first_reading is not None and first_reading.reliable:
+            # Best-of-N 的修改槽位：首稿在不在范围内都改（候选按 distance 排序，首稿永远在候选里）
+            revise, gate_reason = True, style_step.REASON_CANDIDATE_SLOT
+        if force_accept:
+            revise = False
+        if not revise:
+            return self._accept_first_draft(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                first_row_id=first_row_id,
+                first_content=first_content,
+                first_reading=first_reading,
+                first_reading_id=first_reading_id,
+                reason=gate_reason,
+                thresholds=thresholds,
+                row_id=row_id,
+                slot_key=slot_key,
+                slot_order=slot_order,
+                product_callback=product_callback,
                 attempt_details_extra=attempt_details_extra,
             )
+        if step_reconciler is not None:
+            step_reconciler(execution_step_key)
+        return self._run_targeted_revision(
+            scene=scene,
+            state=state,
+            bundle=bundle,
+            policy=policy,
+            first_row_id=first_row_id,
+            first_content=first_content,
+            first_reading=first_reading,
+            first_reading_id=first_reading_id,
+            gate_reason=gate_reason,
+            thresholds=thresholds,
+            author_note=author_note,
+            row_id=row_id,
+            slot_key=slot_key,
+            slot_order=slot_order,
+            execution_step_key=execution_step_key,
+            product_callback=product_callback,
+            candidate_mode=candidate_mode,
+            temperature_override=temperature_override,
+            attempt_details_extra=attempt_details_extra,
+        )
 
     def _record_first_draft_reading(
         self,
@@ -1680,6 +1697,7 @@ class SceneGenerationService:
         dimensions = style_step.revision_dimensions(first_reading, getattr(policy, "dimension_states", None))
         differences = style_step.revision_differences(first_reading, dimensions)
         card_lines = style_step.card_lines_for(card, dimensions, line_states=line_states)
+        lengths = LengthPolicy.for_scene(bundle, scene)
         fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
@@ -1715,7 +1733,7 @@ class SceneGenerationService:
                 dimensions=dimensions, differences=differences, card_lines=card_lines
             ),
             _style_length_instruction(
-                scene, source_length=_visible_char_count(first_content), style_first=True
+                lengths, source_length=_visible_char_count(first_content), style_first=True
             ).strip(),
         ]
         if JSON_SCHEMA_INSTRUCTION not in base_prompt["user_prompt"]:
@@ -1766,7 +1784,7 @@ class SceneGenerationService:
             raise
 
         base_safety = _assess_style_base_rewrite(
-            scene=scene, source_content=first_content, rewritten_content=revision_content
+            scene=scene, source_content=first_content, rewritten_content=revision_content, lengths=lengths
         )
         copy_check = None
         introduced = None
@@ -1990,76 +2008,75 @@ class SceneGenerationService:
         首稿永远是槽位 initial:0（不调模型）；读数不可信 / 读不出时只有首稿一个候选。修改槽位不做分散度补候选
         （它们是按测得的差异定向改的，不是独立采样）。关键场景的匿名终选门不变（按正文去重后给作者选）。
         """
-        with _length_band_slack_for(bundle, scene):
-            thresholds = style_step.fidelity_thresholds()
-            first_reading, first_reading_id, first_reading_error = self._record_first_draft_reading(
-                scene, policy, first_row_id, first_content, thresholds
+        thresholds = style_step.fidelity_thresholds()
+        first_reading, first_reading_id, first_reading_error = self._record_first_draft_reading(
+            scene, policy, first_row_id, first_content, thresholds
+        )
+        usable = first_reading is not None and first_reading.reliable
+        try:
+            base_temp = self._llm_runner.task_config("style_draft").temperature
+        except KeyError:
+            base_temp = 0.7
+        slot_count = max(1, int(n_candidates)) if usable else 1
+        # L1：续跑时读数可能与第一次不同（书改过、这次读不出），槽位数不能因此缩回去——已经落下检查点的槽位
+        # （产品或基稿）一个都不能丢，否则检查点里的工作项对不上，续跑报 RUN_CHECKPOINT_CORRUPT
+        resumed_indices = [
+            int(key.split(":", 1)[1])
+            for key in (*resume_products, *resume_bases)
+            if key.startswith("initial:") and key.split(":", 1)[1].isdigit()
+        ]
+        if resumed_indices:
+            slot_count = max(slot_count, max(resumed_indices) + 1)
+        results: list[tuple[StyleGenerationResult, int]] = []
+        for idx in range(slot_count):
+            slot_key = f"initial:{idx}"
+            if slot_key in resume_products:
+                results.append((resume_products[slot_key], idx))
+                continue
+            row_id = versioned_scene_artifact_id("draft_style_cand", scene.scene_id, bundle) + f"_{idx}"
+            temperature = round(min(2.0, max(0.0, float(base_temp) + 0.05 * idx)), 3)
+            result = self._style_first_step(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                policy=policy,
+                first_row_id=first_row_id,
+                first_content=first_content,
+                author_note=author_note,
+                row_id=row_id,
+                slot_key=slot_key,
+                slot_order=idx,
+                execution_step_key=f"style_draft:{idx}",
+                resume_base=resume_bases.get(slot_key),
+                product_callback=product_callback,
+                step_reconciler=step_reconciler,
+                first_reading=first_reading,
+                first_reading_id=first_reading_id,
+                first_reading_done=True,
+                first_reading_error=first_reading_error,
+                candidate_mode=idx > 0,
+                force_accept=idx == 0,
+                temperature_override=temperature if idx > 0 else None,
+                attempt_details_extra={
+                    "source_neutral_draft_row_id": first_row_id,
+                    "candidate_index": idx,
+                    "n_candidates": n_candidates,
+                    **({"temperature_override": temperature} if idx > 0 else {}),
+                },
             )
-            usable = first_reading is not None and first_reading.reliable
-            try:
-                base_temp = self._llm_runner.task_config("style_draft").temperature
-            except KeyError:
-                base_temp = 0.7
-            slot_count = max(1, int(n_candidates)) if usable else 1
-            # L1：续跑时读数可能与第一次不同（书改过、这次读不出），槽位数不能因此缩回去——已经落下检查点的槽位
-            # （产品或基稿）一个都不能丢，否则检查点里的工作项对不上，续跑报 RUN_CHECKPOINT_CORRUPT
-            resumed_indices = [
-                int(key.split(":", 1)[1])
-                for key in (*resume_products, *resume_bases)
-                if key.startswith("initial:") and key.split(":", 1)[1].isdigit()
-            ]
-            if resumed_indices:
-                slot_count = max(slot_count, max(resumed_indices) + 1)
-            results: list[tuple[StyleGenerationResult, int]] = []
-            for idx in range(slot_count):
-                slot_key = f"initial:{idx}"
-                if slot_key in resume_products:
-                    results.append((resume_products[slot_key], idx))
-                    continue
-                row_id = versioned_scene_artifact_id("draft_style_cand", scene.scene_id, bundle) + f"_{idx}"
-                temperature = round(min(2.0, max(0.0, float(base_temp) + 0.05 * idx)), 3)
-                result = self._style_first_step(
-                    scene=scene,
-                    state=state,
-                    bundle=bundle,
-                    policy=policy,
-                    first_row_id=first_row_id,
-                    first_content=first_content,
-                    author_note=author_note,
-                    row_id=row_id,
-                    slot_key=slot_key,
-                    slot_order=idx,
-                    execution_step_key=f"style_draft:{idx}",
-                    resume_base=resume_bases.get(slot_key),
-                    product_callback=product_callback,
-                    step_reconciler=step_reconciler,
-                    first_reading=first_reading,
-                    first_reading_id=first_reading_id,
-                    first_reading_done=True,
-                    first_reading_error=first_reading_error,
-                    candidate_mode=idx > 0,
-                    force_accept=idx == 0,
-                    temperature_override=temperature if idx > 0 else None,
-                    attempt_details_extra={
-                        "source_neutral_draft_row_id": first_row_id,
-                        "candidate_index": idx,
-                        "n_candidates": n_candidates,
-                        **({"temperature_override": temperature} if idx > 0 else {}),
-                    },
-                )
-                results.append((result, idx))
-            ranked = self._rank_style_first_candidates(
-                results, policy=policy, first_reading=first_reading, first_row_id=first_row_id
-            )
-            best = ranked[0]
-            state.current_style_draft_row_id = best.row_id
-            state.latest_valid_draft_row_id = best.row_id
-            state.current_bundle_id = bundle["bundle_id"]
-            state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-            if len(ranked) >= 2:
-                state.candidate_dispersion_score = round(_candidate_dispersion([c.content for c in ranked]), 4)
-            self.session.flush()
-            return ranked
+            results.append((result, idx))
+        ranked = self._rank_style_first_candidates(
+            results, policy=policy, first_reading=first_reading, first_row_id=first_row_id
+        )
+        best = ranked[0]
+        state.current_style_draft_row_id = best.row_id
+        state.latest_valid_draft_row_id = best.row_id
+        state.current_bundle_id = bundle["bundle_id"]
+        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+        if len(ranked) >= 2:
+            state.candidate_dispersion_score = round(_candidate_dispersion([c.content for c in ranked]), 4)
+        self.session.flush()
+        return ranked
 
     def _rank_style_first_candidates(
         self,
@@ -2224,12 +2241,7 @@ class SceneGenerationService:
             },
         )
 
-    def _run_style_generation(self, **kwargs: Any) -> StyleGenerationResult:
-        """风格通道公共入口:按 bundle 的 StylePolicy(与场景的呈现方式)设长度带放宽,再进真正的实现。"""
-        with _length_band_slack_for(kwargs.get("bundle"), kwargs.get("scene")):
-            return self._run_style_generation_inner(**kwargs)
-
-    def _run_style_generation_inner(
+    def _run_style_generation(
         self,
         *,
         scene: SceneCard,
@@ -2259,6 +2271,8 @@ class SceneGenerationService:
         step_reconciler: Callable[[str], None] | None = None,
         render_role: str | None = None,
     ) -> StyleGenerationResult:
+        # 长度带按 bundle 的 StylePolicy（与场景的呈现方式）放宽，这一遍里的验收、指引与补丁都用它
+        lengths = LengthPolicy.for_scene(bundle, scene)
         fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
@@ -2302,7 +2316,7 @@ class SceneGenerationService:
         if stage == "style_draft":
             # style_draft 步只有 neutral_first 走得到（style_first 在入口就分流到风格步）
             extra_instruction += _style_length_instruction(
-                scene,
+                lengths,
                 source_length=_visible_char_count(neutral_content),
             )
 
@@ -2366,6 +2380,7 @@ class SceneGenerationService:
                 scene=scene,
                 source_content=neutral_content,
                 rewritten_content=style_content,
+                lengths=lengths,
             )
             rejected_candidate_row_id: str | None = None
             repair_source_row_id = row_id
@@ -2553,6 +2568,7 @@ class SceneGenerationService:
                     scene=scene,
                     source_content=neutral_content,
                     rewritten_content=style_content,
+                    lengths=lengths,
                 ),
             )
             repair_source_row_id, repair_source_content = (
@@ -2631,6 +2647,7 @@ class SceneGenerationService:
                         neutral_content=neutral_content,
                         quality_gate=quality_gate,
                         execution_step_key=de_template_step_key,
+                        lengths=lengths,
                     )
                 else:
                     (
@@ -2658,6 +2675,7 @@ class SceneGenerationService:
                         ),
                         quality_gate=quality_gate,
                         execution_step_key=de_template_step_key,
+                        lengths=lengths,
                     )
                 remaining_reasons = set(
                     (de_template_outcome.get("acceptance") or {}).get("reasons")
@@ -2709,6 +2727,7 @@ class SceneGenerationService:
                             authoritative_content=neutral_content,
                             quality_gate=followup_quality_gate,
                             execution_step_key=followup_step_key,
+                            lengths=lengths,
                         )
                         de_template_outcome["prior_repair_outcome"] = (
                             prior_repair_outcome
@@ -2770,6 +2789,7 @@ class SceneGenerationService:
         neutral_content: str,
         quality_gate: dict[str, Any],
         execution_step_key: str | None,
+        lengths: LengthPolicy,
     ) -> tuple[StyleGenerationResult | None, dict[str, Any]]:
         source_suffix = hashlib.sha1(
             rejected_style_row_id.encode("utf-8")
@@ -2839,7 +2859,7 @@ class SceneGenerationService:
                 rewritten_content, salvage_audit = _apply_style_salvage_patch(
                     source_content=neutral_content,
                     response=node_result.response,
-                    scene=scene,
+                    lengths=lengths,
                     llm_call_id=node_result.llm_call_id,
                 )
             except SceneGenerationPostprocessError as patch_exc:
@@ -2881,6 +2901,7 @@ class SceneGenerationService:
             rewritten_content=rewritten_content,
             source_quality_gate=quality_gate,
             style_conformance=conformance,
+            lengths=lengths,
         )
         salvage_reasons: list[str] = []
         if not salvage_audit.get("valid"):
@@ -2990,6 +3011,7 @@ class SceneGenerationService:
         authoritative_content: str | None,
         quality_gate: dict[str, Any],
         execution_step_key: str | None,
+        lengths: LengthPolicy,
     ) -> tuple[StyleGenerationResult | None, dict[str, Any]]:
         # 每个触发去模板的候选（source_row_id 已带 _{idx}/_retry_{idx}）必须派生唯一的去模板稿 row_id，
         # 否则 Best-of-N 下 ≥2 个候选都触发反模板闸时，第二条 SceneDraft 撞主键 → IntegrityError → 整跑崩溃。
@@ -3003,7 +3025,7 @@ class SceneGenerationService:
         is_length_patch = bool(
             is_safety_repair
             and base_safety_reasons == {"target_length_not_met"}
-            and _parse_numeric_length_band(scene.target_length_band) is not None
+            and lengths.hard_range() is not None
         )
         length_patch_audit: dict[str, Any] | None = None
         # 去模板 / 安全修复 / 长度补丁只在 neutral_first 的风格稿链上跑（作者手笔直起在入口就分流到风格步）。
@@ -3016,7 +3038,7 @@ class SceneGenerationService:
             )
             editable_segment_ids = _style_length_patch_editable_segment_ids(
                 source_content,
-                scene,
+                lengths,
             )
             annotated_source, _ = _annotate_style_length_patch_source(
                 source_content,
@@ -3025,7 +3047,7 @@ class SceneGenerationService:
             _constrain_style_length_patch_schema(
                 prompt,
                 editable_segment_ids=editable_segment_ids,
-                scene=scene,
+                lengths=lengths,
                 source_length=_visible_char_count(source_content),
             )
             user_prompt = self._build_style_user_prompt(
@@ -3035,6 +3057,7 @@ class SceneGenerationService:
                 source_row_id=source_row_id,
                 extra_instruction=_style_length_patch_instruction(
                     scene,
+                    lengths=lengths,
                     source_length=_visible_char_count(source_content),
                     editable_segment_ids=editable_segment_ids,
                 ),
@@ -3045,11 +3068,12 @@ class SceneGenerationService:
                     scene=scene,
                     source_content=source_content,
                     authoritative_content=authoritative_content,
+                    lengths=lengths,
                 )
             else:
                 repair_brief = _de_template_rewrite_brief(quality_gate)
             repair_length_instruction = _style_repair_length_instruction(
-                scene,
+                lengths,
                 source_length=_visible_char_count(source_content),
             )
             user_prompt = self._build_style_user_prompt(
@@ -3129,7 +3153,7 @@ class SceneGenerationService:
                         _apply_style_length_patch(
                             source_content=source_content,
                             response=node_result.response,
-                            scene=scene,
+                            lengths=lengths,
                             llm_call_id=node_result.llm_call_id,
                         )
                     )
@@ -3189,6 +3213,7 @@ class SceneGenerationService:
                 source_content=source_content,
                 rewritten_content=rewritten_content,
             ),
+            lengths=lengths,
         )
 
         self.session.add(
@@ -3593,7 +3618,7 @@ def _apply_style_length_patch(
     *,
     source_content: str,
     response: LLMResponse,
-    scene: SceneCard,
+    lengths: LengthPolicy,
     llm_call_id: str,
 ) -> tuple[str, dict[str, Any]]:
     """验证并套用模型提交的分段编号 replacement；任何歧义都整批拒绝。"""
@@ -3604,7 +3629,7 @@ def _apply_style_length_patch(
             message=f"style length patch invalid: {reason}",
         )
 
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     if length_range is None:
         reject("target_length_range_unavailable")
     assert length_range is not None
@@ -3627,7 +3652,7 @@ def _apply_style_length_patch(
     segments = _style_length_patch_segments(source_content)
     editable_segment_ids = _style_length_patch_editable_segment_ids(
         source_content,
-        scene,
+        lengths,
     )
     editable_segments = {
         segment["segment_id"]: segment
@@ -3748,7 +3773,7 @@ def _apply_style_salvage_patch(
     *,
     source_content: str,
     response: LLMResponse,
-    scene: SceneCard,
+    lengths: LengthPolicy,
     llm_call_id: str,
 ) -> tuple[str, dict[str, Any]]:
     """只替换一个预编号中段，保留中性安全稿的其余文字与结尾。"""
@@ -3800,7 +3825,7 @@ def _apply_style_salvage_patch(
     start = int(segment["start"])
     end = int(segment["end"])
     patched = source_content[:start] + new_text + source_content[end:]
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     output_chars = _visible_char_count(patched)
     if length_range is not None and not length_range[0] <= output_chars <= length_range[1]:
         reject("patched_length_outside_absolute_range")
@@ -3852,13 +3877,13 @@ def _style_length_patch_segments(source_content: str) -> list[dict[str, Any]]:
 
 def _style_length_patch_editable_segment_ids(
     source_content: str,
-    scene: SceneCard,
+    lengths: LengthPolicy,
 ) -> list[str]:
     segments = _style_length_patch_segments(source_content)
     if len(segments) < 2:
         return []
     candidates = segments[:-1]
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     source_length = _visible_char_count(source_content)
     if length_range is None or source_length < length_range[0]:
         return [str(segment["segment_id"]) for segment in candidates]
@@ -3957,7 +3982,7 @@ def _constrain_style_length_patch_schema(
     prompt: dict[str, Any],
     *,
     editable_segment_ids: Sequence[str],
-    scene: SceneCard,
+    lengths: LengthPolicy,
     source_length: int,
 ) -> None:
     """把本次可编辑 ID 收紧为 JSON Schema enum，并刷新审计 hash。"""
@@ -3974,7 +3999,7 @@ def _constrain_style_length_patch_schema(
     if editable_segment_ids:
         segment_schema["enum"] = list(editable_segment_ids)
         edits_schema["maxItems"] = min(6, len(editable_segment_ids))
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     if length_range is not None and source_length < length_range[0]:
         local_minimum, local_maximum, _target = _style_repair_working_window(
             *length_range,
@@ -4051,11 +4076,6 @@ _MODEL_RESPONSE_ARTIFACT_RE = re.compile(
     r"\bthe (?:actual json|draft looks|final json)|source draft row id|"
     r"[\"']scene_text[\"']\s*:)"
 )
-_NUMERIC_LENGTH_BAND_RE = re.compile(
-    r"(?P<minimum>\d{2,6})\s*(?:-|–|—|~|～|至|到)\s*(?P<maximum>\d{2,6})"
-)
-
-
 def _normalize_literal_unicode_escapes(text: str) -> str:
     """只还原可无歧义识别的 Unicode 转义残片，不做通用 escape 解码。"""
 
@@ -4123,11 +4143,12 @@ def _assess_de_template_rewrite(
     rewritten_content: str,
     source_quality_gate: dict[str, Any],
     style_conformance: dict[str, Any] | None = None,
+    lengths: LengthPolicy,
 ) -> dict[str, Any]:
     """确定性验收一次去模板改写；只阻止可证明的回退，不猜测作者审美。"""
     source_length = _visible_char_count(source_content)
     rewritten_length = _visible_char_count(rewritten_content)
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     source_length_score = _length_fitness(source_length, length_range)
     rewritten_length_score = _length_fitness(rewritten_length, length_range)
 
@@ -4391,6 +4412,7 @@ def _assess_style_base_rewrite(
     scene: SceneCard,
     source_content: str,
     rewritten_content: str,
+    lengths: LengthPolicy,
 ) -> dict[str, Any]:
     """第一遍风格改写的硬安全门；审美质量留给后续质量门。"""
     required_terms = constraint_terms(scene.must_include_text or "")
@@ -4417,7 +4439,7 @@ def _assess_style_base_rewrite(
     rewritten_integrity = _scene_text_integrity_markers(rewritten_content)
     new_integrity = sorted(set(rewritten_integrity) - set(source_integrity))
     rewritten_length = _visible_char_count(rewritten_content)
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     length_score = _length_fitness(rewritten_length, length_range)
 
     reasons: list[str] = []
@@ -4460,16 +4482,16 @@ def assess_rewrite_regressions(
 ) -> dict[str, Any]:
     """「改一整场」的产物（定稿改写）相对来源稿的确定性回退（风格参考 v3 复核，A/B 实测）。
 
-    在与起草同一个长度带放宽下（``_length_band_slack_for``）评估改写稿与来源稿，只报改写稿**新添**的问题——
+    在与起草同一个长度带放宽下（:meth:`LengthPolicy.for_scene`）评估改写稿与来源稿，只报改写稿**新添**的问题——
     来源稿本来就有的（例如本来就缺的必写项、本来就不在长度带里）不算回退。返回 ``{"regressed", "reasons",
     "rewritten_integrity_markers"}``；``reasons`` 用 :func:`_assess_style_base_rewrite` 的原因码。"""
-    with _length_band_slack_for(bundle, scene):
-        rewritten = _assess_style_base_rewrite(
-            scene=scene, source_content=source_content, rewritten_content=rewritten_content
-        )
-        baseline = _assess_style_base_rewrite(
-            scene=scene, source_content=source_content, rewritten_content=source_content
-        )
+    lengths = LengthPolicy.for_scene(bundle, scene)
+    rewritten = _assess_style_base_rewrite(
+        scene=scene, source_content=source_content, rewritten_content=rewritten_content, lengths=lengths
+    )
+    baseline = _assess_style_base_rewrite(
+        scene=scene, source_content=source_content, rewritten_content=source_content, lengths=lengths
+    )
     carried = set(baseline.get("reasons") or [])
     reasons = [reason for reason in rewritten.get("reasons") or [] if reason not in carried]
     return {
@@ -4533,195 +4555,6 @@ def _resume_style_repair_source(
 
 def _visible_char_count(text: str) -> int:
     return sum(not char.isspace() for char in text)
-
-
-# 2026-09-12 风格直起:style_first 下场景卡数字长度带两侧各放宽 style_first_length_slack
-# (作者自己的场景尺度优先于系统的长度带,越界才触发长度补丁)。放宽比例由本模块的公共入口
-# (generate_neutral_draft / _run_style_generation)按 bundle 是否 style_bound 设进这个
-# 上下文变量,所有解析长度带的判定 / 指令 / 补丁窗口自动跟随;默认 0 = 现状。
-_LENGTH_BAND_SLACK: ContextVar[float] = ContextVar("scene_length_band_slack", default=0.0)
-_STYLE_FIRST_LENGTH_SLACK_DEFAULT = 0.5
-# 2026-09-22 结构跟随参考书:bundle 冻结的「参考作者一场多长」(bundle_builder 按参考章长 ÷ 本章场数
-# 推算,inline_digests["_style_reference_scene_scale"])。style_first 下硬范围上限抬到这个尺度
-# (× (1 + slack),封顶 ceiling),长度指引把它说成写作目标;neutral_first / 概述场不设。
-_REFERENCE_SCENE_SCALE: ContextVar[dict[str, Any] | None] = ContextVar("scene_reference_scale", default=None)
-_REFERENCE_SCENE_SCALE_KEY = "_style_reference_scene_scale"
-
-
-def _bundle_inline_digests(bundle: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    """bundle 既可能是 BundleBuilder 返回的外壳(``{"snapshot": {...}}``)也可能是快照本身。"""
-    if not isinstance(bundle, Mapping):
-        return {}
-    digests = bundle.get("inline_digests")
-    if isinstance(digests, Mapping):
-        return digests
-    snapshot = bundle.get("snapshot")
-    if isinstance(snapshot, Mapping) and isinstance(snapshot.get("inline_digests"), Mapping):
-        return snapshot["inline_digests"]
-    return {}
-
-
-def _reference_scene_scale_from_bundle(bundle: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    raw = _bundle_inline_digests(bundle).get(_REFERENCE_SCENE_SCALE_KEY)
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    try:
-        derived = int(payload.get("derived_scene_chars") or 0)
-    except (TypeError, ValueError):
-        return None
-    if derived <= 0:
-        return None
-    return payload
-
-
-def _reference_scale_sentence(scale: Mapping[str, Any] | None) -> str:
-    """长度指引里说明参考尺度的一句(没有尺度 → 空串)。"""
-    if not scale:
-        return ""
-    derived = int(scale.get("derived_scene_chars") or 0)
-    if derived <= 0:
-        return ""
-    if str(scale.get("basis") or "") == "explicit_scene_breaks":
-        return (
-            f" Measured on the reference book: this author's scenes run about {derived:,} visible characters — "
-            "write at that scale; the card's band is the plan's floor, not a ceiling."
-        )
-    chapter = scale.get("chapter_chars") if isinstance(scale.get("chapter_chars"), Mapping) else {}
-    median = int(chapter.get("median") or 0)
-    p10 = int(chapter.get("p10") or 0)
-    p90 = int(chapter.get("p90") or 0)
-    scenes = int(scale.get("scenes_in_chapter") or 1)
-    spread = f" ({p10:,}–{p90:,} is normal)" if p10 and p90 else ""
-    return (
-        f" Measured on the reference book: a chapter runs about {median:,} characters{spread} and this chapter has "
-        f"{scenes} scene{'s' if scenes != 1 else ''}, so a scene of this author's is about {derived:,} visible characters — "
-        "write at that scale; the card's band is the plan's floor, not a ceiling."
-    )
-
-
-def _scene_rendering_mode(scene: Any) -> str:
-    """场景卡上结构化的呈现方式(``writer_brief_json.rendering_mode``:full / summary / skip),缺省 full。"""
-    brief = getattr(scene, "writer_brief_json", None) if scene is not None else None
-    value = str(brief.get("rendering_mode") or "") if isinstance(brief, Mapping) else ""
-    return value.strip().lower() or "full"
-
-
-def _style_first_length_slack(bundle: Mapping[str, Any] | None, scene: Any = None) -> float:
-    if not style_policy_for_bundle(bundle).defers_house_taste():
-        return 0.0
-    # 阶段 L：「概述两段」的场是作者的呈现决定（200–500 字），风格直起也不把它放宽成整场。
-    # 风格参考 v3：读场景卡上结构化的 rendering_mode，不再在结构简报的渲染文本里找「Rendering mode: summary」。
-    if _scene_rendering_mode(scene) == "summary":
-        return 0.0
-    try:
-        budget = load_yaml_config("injection_budget")
-    except FileNotFoundError:
-        budget = {}
-    try:
-        slack = float(budget.get("style_first_length_slack", _STYLE_FIRST_LENGTH_SLACK_DEFAULT))
-    except (TypeError, ValueError):
-        slack = _STYLE_FIRST_LENGTH_SLACK_DEFAULT
-    return max(0.0, min(slack, 0.9))
-
-
-@contextlib.contextmanager
-def _length_band_slack_for(bundle: Mapping[str, Any] | None, scene: Any = None):
-    slack = _style_first_length_slack(bundle, scene)
-    token = _LENGTH_BAND_SLACK.set(slack)
-    # 参考尺度只在放宽生效(style_first 且非概述场)时随行;否则 None = 现状。
-    scale_token = _REFERENCE_SCENE_SCALE.set(_reference_scene_scale_from_bundle(bundle) if slack > 0 else None)
-    try:
-        yield
-    finally:
-        _REFERENCE_SCENE_SCALE.reset(scale_token)
-        _LENGTH_BAND_SLACK.reset(token)
-
-
-def _parse_numeric_length_band(
-    value: str | None, *, slack: float | None = None
-) -> tuple[int, int] | None:
-    match = _NUMERIC_LENGTH_BAND_RE.search(value or "")
-    if match is None:
-        return None
-    minimum = int(match.group("minimum"))
-    maximum = int(match.group("maximum"))
-    if minimum <= 0 or maximum < minimum:
-        return None
-    effective_slack = _LENGTH_BAND_SLACK.get() if slack is None else slack
-    if effective_slack > 0:
-        minimum = max(1, int(round(minimum * (1.0 - effective_slack))))
-        maximum = max(minimum, int(round(maximum * (1.0 + effective_slack))))
-        # 2026-09-22 结构跟随参考书:硬范围上限至少抬到参考作者的场尺度 × (1 + slack)(封顶 ceiling),
-        # 作者(或第 10 步的模型)定的带不再把一场压在参考尺度之下;下限不动。显式 slack 的调用
-        # (计划值)不看参考尺度。
-        scale = _REFERENCE_SCENE_SCALE.get() if slack is None else None
-        if scale:
-            derived = int(scale.get("derived_scene_chars") or 0)
-            ceiling = int(scale.get("ceiling") or 0) or derived
-            if derived > 0:
-                maximum = max(maximum, min(int(round(derived * (1.0 + effective_slack))), max(ceiling, derived)))
-    return minimum, maximum
-
-
-def _length_fitness(length: int, target: tuple[int, int] | None) -> float:
-    if target is None:
-        return 1.0
-    minimum, maximum = target
-    if minimum <= length <= maximum:
-        return 1.0
-    if length < minimum:
-        return length / minimum
-    return maximum / length
-
-
-def _safe_length_window(minimum: int, maximum: int) -> tuple[int, int, int]:
-    width = maximum - minimum
-    margin = min(50, max(10, width // 10)) if width >= 40 else 0
-    safe_minimum = minimum + margin
-    safe_maximum = maximum - margin
-    if safe_minimum > safe_maximum:
-        safe_minimum, safe_maximum = minimum, maximum
-    target = round((safe_minimum + safe_maximum) / 2)
-    return safe_minimum, safe_maximum, target
-
-
-def _style_repair_working_window(
-    minimum: int,
-    maximum: int,
-    *,
-    source_length: int,
-) -> tuple[int, int, int]:
-    """长度不合格时贴近最近安全边界修，不把局部校正变成整篇伸缩。"""
-
-    safe_minimum, safe_maximum, safe_target = _safe_length_window(
-        minimum,
-        maximum,
-    )
-    if minimum <= source_length <= maximum:
-        local_minimum = max(minimum, source_length * 9 // 10)
-        local_maximum = min(maximum, (source_length * 11 + 9) // 10)
-        if local_minimum <= local_maximum:
-            return local_minimum, local_maximum, source_length
-        return minimum, maximum, min(max(source_length, minimum), maximum)
-
-    safe_width = max(0, safe_maximum - safe_minimum)
-    correction_span = min(120, max(80, safe_width // 8))
-    if source_length < minimum:
-        local_minimum = safe_minimum
-        local_maximum = min(safe_maximum, safe_minimum + correction_span)
-    else:
-        local_maximum = safe_maximum
-        local_minimum = max(safe_minimum, safe_maximum - correction_span)
-    target = round((local_minimum + local_maximum) / 2)
-    if local_minimum > local_maximum:
-        return safe_minimum, safe_maximum, safe_target
-    return local_minimum, local_maximum, target
 
 
 def _requires_style_salvage(base_safety: dict[str, Any]) -> bool:
@@ -4792,191 +4625,14 @@ def _neutral_repair_brief(
     return "\n".join(f"- {line}" for line in lines)
 
 
-def _neutral_length_instruction(
-    scene: SceneCard,
-    *,
-    previous_length: int | None = None,
-    retry: bool = False,
-) -> str:
-    length_range = _parse_numeric_length_band(scene.target_length_band)
-    if length_range is None:
-        return ""
-    minimum, maximum = length_range
-    safe_minimum, safe_maximum, target = _safe_length_window(minimum, maximum)
-    prior = (
-        f" The previous attempt was about {previous_length} visible characters and was rejected."
-        if previous_length is not None
-        else ""
-    )
-    retry_rule = (
-        " Edit the labeled rejected draft directly and return one complete replacement scene, not commentary, a continuation, or a synopsis. Preserve every required fact, causal step, and ending function."
-        if retry
-        else ""
-    )
-    delta_rule = ""
-    if retry and previous_length is not None:
-        if previous_length < safe_minimum:
-            delta_rule = (
-                f" Add at least {safe_minimum - previous_length} visible characters inside existing action-reaction, blocking, perception, or consequence; do not add a new event."
-            )
-        elif previous_length > safe_maximum:
-            delta_rule = (
-                f" Remove at least {previous_length - safe_maximum} visible characters by compressing repetition and decorative description only; do not remove a required fact."
-            )
-        else:
-            local_minimum = max(safe_minimum, previous_length * 9 // 10)
-            local_maximum = min(
-                safe_maximum,
-                (previous_length * 11 + 9) // 10,
-            )
-            delta_rule = (
-                f" The previous length already passed. Keep the repaired scene within {local_minimum}-{local_maximum} visible characters, make the smallest localized edits needed, and do not restage or broadly rewrite unchanged paragraphs."
-            )
-    return (
-        "\n\n[Deterministic Scene Length Guard]\n"
-        f"Absolute final range: {minimum}-{maximum} visible non-whitespace Chinese prose characters."
-        f" Aim near {target}; use {safe_minimum}-{safe_maximum} as the working window so minor counting differences cannot cross the hard boundary."
-        f"{prior}{retry_rule}{delta_rule} Before returning, count once and compress or expand existing action-reaction beats; preserve every required fact and do not add a new event."
-    )
-
-
-def _style_first_length_instruction(
-    scene: SceneCard,
-    *,
-    previous_length: int | None = None,
-    retry: bool = False,
-) -> str:
-    """style_first 首稿的长度指引:场景卡的带是计划值,作者自己的尺度在放宽后的硬范围内优先。"""
-    planned = _parse_numeric_length_band(scene.target_length_band, slack=0.0)
-    length_range = _parse_numeric_length_band(scene.target_length_band)
-    if planned is None or length_range is None:
-        return ""
-    minimum, maximum = length_range
-    prior = (
-        f" The previous attempt was about {previous_length} visible characters and was rejected."
-        if previous_length is not None
-        else ""
-    )
-    retry_rule = (
-        " Edit the labeled rejected draft directly and return one complete replacement scene, not commentary, a continuation, or a synopsis. Preserve every required fact, causal step, and ending function, and keep the reference author's manner."
-        if retry
-        else ""
-    )
-    delta_rule = ""
-    if retry and previous_length is not None:
-        if previous_length < minimum:
-            delta_rule = (
-                f" Add at least {minimum - previous_length} visible characters with this author's own means; do not add a new event."
-            )
-        elif previous_length > maximum:
-            delta_rule = (
-                f" Remove at least {previous_length - maximum} visible characters; do not remove a required fact."
-            )
-    scale_note = _reference_scale_sentence(_REFERENCE_SCENE_SCALE.get())
-    return (
-        "\n\n[Scene Length Guide]\n"
-        f"The scene card planned {planned[0]}-{planned[1]} visible non-whitespace Chinese prose characters. "
-        f"The reference author's own scale for a scene like this takes precedence inside the hard range {minimum}-{maximum}: "
-        "the scene may run shorter or longer the way that author's scenes do, but must stay inside the hard range."
-        f"{scale_note} "
-        "Fill or compress with this author's own means — summary, digression, dialogue, description, reflection — "
-        f"not only action-reaction beats; never drop a required fact and never add a new event.{prior}{retry_rule}{delta_rule}"
-    )
-
-
-def _style_length_instruction(
-    scene: SceneCard,
-    *,
-    source_length: int,
-    style_first: bool = False,
-) -> str:
-    length_range = _parse_numeric_length_band(scene.target_length_band)
-    if length_range is None:
-        return ""
-    minimum, maximum = length_range
-    safe_minimum, safe_maximum, target = _safe_length_window(minimum, maximum)
-    if style_first:
-        planned = _parse_numeric_length_band(scene.target_length_band, slack=0.0) or length_range
-        scale_note = _reference_scale_sentence(_REFERENCE_SCENE_SCALE.get())
-        return (
-            "\n\n[Style Revision Length Guide]\n"
-            f"The first draft is about {source_length} visible characters; the scene card planned {planned[0]}-{planned[1]}. "
-            f"The complete revision must stay inside the hard range {minimum}-{maximum}; within it, the reference author's own scale wins."
-            f"{scale_note} "
-            "Count once before returning. Fill or compress with this author's own means — summary, digression, dialogue, description, reflection — "
-            "never by dropping a required beat."
-        )
-    return (
-        "\n\n[Deterministic Style Rewrite Length Guard]\n"
-        f"The approved source is about {source_length} visible characters. The complete final rewrite must be "
-        f"{minimum}-{maximum}; aim near {target} and keep {safe_minimum}-{safe_maximum} as the working window. "
-        "Count once before returning. Style compression is not permission to drop a required beat or fall below "
-        "the lower bound; expand or compress only existing action-reaction, blocking, perception, and consequence."
-    )
-
-
-def _style_repair_length_instruction(
-    scene: SceneCard,
-    *,
-    source_length: int,
-) -> str:
-    """二改使用局部长度窗，防止修一个问题却把合格稿整体扩写或压缩。"""
-
-    length_range = _parse_numeric_length_band(scene.target_length_band)
-    if length_range is None:
-        if source_length <= 0:
-            return ""
-        local_minimum = max(20, source_length * 9 // 10)
-        local_maximum = max(
-            local_minimum,
-            (source_length * 11 + 9) // 10,
-        )
-        return (
-            "\n\n[Deterministic Style Repair Length Guard]\n"
-            f"Keep the complete repaired scene within {local_minimum}-{local_maximum} visible non-whitespace "
-            f"characters (the source is about {source_length}). Make the smallest localized edits needed; "
-            "do not restage, summarize, or broadly rewrite unchanged paragraphs."
-        )
-
-    minimum, maximum = length_range
-    local_minimum, local_maximum, target = _style_repair_working_window(
-        minimum,
-        maximum,
-        source_length=source_length,
-    )
-    if minimum <= source_length <= maximum:
-        local_rule = (
-            f"The source already passes at about {source_length}; keep the repaired scene within "
-            f"the local {local_minimum}-{local_maximum} window and make the smallest localized edits needed."
-        )
-    else:
-        if source_length < minimum:
-            delta_rule = (
-                f"add {local_minimum - source_length}-{local_maximum - source_length} visible characters"
-            )
-        else:
-            delta_rule = (
-                f"remove {source_length - local_maximum}-{source_length - local_minimum} visible characters"
-            )
-        local_rule = (
-            f"The source is about {source_length} and is outside the hard range; {delta_rule}, finish inside "
-            f"the narrow {local_minimum}-{local_maximum} correction window, and aim near {target}. Change only "
-            "existing action-reaction, blocking, perception, consequence, or removable repetition."
-        )
-    return (
-        "\n\n[Deterministic Style Repair Length Guard]\n"
-        f"Absolute final range: {minimum}-{maximum} visible non-whitespace Chinese prose characters. "
-        f"{local_rule} Preserve every required fact, causal step, and ending function; count once before returning."
-    )
-
-
 def _style_length_patch_instruction(
     scene: SceneCard,
     *,
+    lengths: LengthPolicy,
     source_length: int,
     editable_segment_ids: Sequence[str],
 ) -> str:
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     if length_range is None:
         return ""
     minimum, maximum = length_range
@@ -5056,7 +4712,7 @@ def _style_salvage_instruction(
     )
 
 
-def _assess_neutral_draft(scene: SceneCard, content: str) -> dict[str, Any]:
+def _assess_neutral_draft(scene: SceneCard, content: str, lengths: LengthPolicy) -> dict[str, Any]:
     required_terms = constraint_terms(scene.must_include_text or "")
     missing_required = [
         term for term in required_terms if not source_field_satisfied(term, content)
@@ -5067,7 +4723,7 @@ def _assess_neutral_draft(scene: SceneCard, content: str) -> dict[str, Any]:
     ]
     integrity = _scene_text_integrity_markers(content)
     visible_chars = _visible_char_count(content)
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     length_score = _length_fitness(visible_chars, length_range)
     reasons: list[str] = []
     if visible_chars < 20:
@@ -5156,6 +4812,7 @@ def _style_safety_repair_brief(
     scene: SceneCard,
     source_content: str,
     authoritative_content: str,
+    lengths: LengthPolicy,
 ) -> list[str]:
     """把确定性失败翻译成一次可执行、无正文泄漏的修复清单。"""
     del authoritative_content  # 仅表明调用方已提供可信事实基线；正文不进入提示。
@@ -5165,7 +4822,7 @@ def _style_safety_repair_brief(
         for term in required_terms
         if not source_field_satisfied(term, source_content)
     ]
-    length_range = _parse_numeric_length_band(scene.target_length_band)
+    length_range = lengths.hard_range()
     current_length = _visible_char_count(source_content)
     brief = [
         "This is the only safety repair attempt. Edit the labeled rejected draft directly, keep its distinctive reusable style, and change only what the hard constraints require.",

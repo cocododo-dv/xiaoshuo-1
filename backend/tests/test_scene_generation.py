@@ -38,6 +38,7 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import (
+    LengthPolicy,
     SceneGenerationService,
     StyleGenerationResult,
     _apply_style_length_patch,
@@ -790,7 +791,7 @@ def test_neutral_repair_keeps_an_already_valid_source_in_a_local_length_window()
     scene = SimpleNamespace(target_length_band="700-1350 Chinese characters")
 
     instruction = _neutral_length_instruction(
-        scene,
+        LengthPolicy.plain(scene),
         previous_length=900,
         retry=True,
     )
@@ -816,14 +817,17 @@ def test_legacy_reference_policy_sentence_is_not_a_forbidden_word_list() -> None
     content = "这号人物站在雨里，手里攥着那封旧信，一句话也没说。" * 3
     source = "他站在雨里，手里什么也没拿，一句话也没说。" * 3
 
-    assessment = _assess_neutral_draft(scene, content)
+    assessment = _assess_neutral_draft(scene, content, LengthPolicy.plain(scene))
     assert "forbidden_content_present" not in assessment["reasons"]
     assert assessment["forbidden_hit_count"] == 0
     assert "人物" not in _neutral_repair_brief(scene, source_content=content, assessment=assessment)
-    base = _assess_style_base_rewrite(scene=scene, source_content=source, rewritten_content=content)
+    base = _assess_style_base_rewrite(
+        scene=scene, source_content=source, rewritten_content=content, lengths=LengthPolicy.plain(scene)
+    )
     assert "forbidden_content_added" not in base["reasons"]
     rewrite = _assess_de_template_rewrite(
         scene=scene,
+        lengths=LengthPolicy.plain(scene),
         source_content=source,
         rewritten_content=content,
         source_quality_gate={"score": 0.0, "findings": []},
@@ -832,11 +836,11 @@ def test_legacy_reference_policy_sentence_is_not_a_forbidden_word_list() -> None
 
     # 作者真写的禁用词照样拦——哪怕接在政策句后面
     scene.forbidden_text = _LEGACY_POLICY_SENTENCE + "旧信"
-    assessment = _assess_neutral_draft(scene, content)
+    assessment = _assess_neutral_draft(scene, content, LengthPolicy.plain(scene))
     assert "forbidden_content_present" in assessment["reasons"]
     assert "旧信" in _neutral_repair_brief(scene, source_content=content, assessment=assessment)
     assert "forbidden_content_added" in _assess_style_base_rewrite(
-        scene=scene, source_content=source, rewritten_content=content
+        scene=scene, source_content=source, rewritten_content=content, lengths=LengthPolicy.plain(scene)
     )["reasons"]
 
 
@@ -1442,7 +1446,7 @@ def test_style_salvage_patch_rejects_protected_ending_segment() -> None:
         _apply_style_salvage_patch(
             source_content=source,
             response=response,
-            scene=SimpleNamespace(target_length_band="120-260 Chinese characters"),
+            lengths=LengthPolicy(band="120-260 Chinese characters"),
             llm_call_id="llm_salvage_protected_ending",
         )
 
@@ -1461,6 +1465,7 @@ def test_safety_repair_does_not_reject_safe_text_for_quality_score_drop(session)
 
     assessment = _assess_de_template_rewrite(
         scene=scene,
+        lengths=LengthPolicy.plain(scene),
         source_content="红色信封在她手中。",
         authoritative_content="她接过红色信封，确认门外有人，随后把信封收好。",
         rewritten_content=rewritten,
@@ -1501,7 +1506,7 @@ def test_style_repair_length_guard_targets_nearest_safe_boundary(
     scene = SimpleNamespace(target_length_band=target_length_band)
 
     instruction = _style_repair_length_instruction(
-        scene,
+        LengthPolicy.plain(scene),
         source_length=source_length,
     )
 
@@ -1534,7 +1539,7 @@ def test_exact_style_length_patch_applies_non_overlapping_expansion() -> None:
     patched, audit = _apply_style_length_patch(
         source_content=source,
         response=response,
-        scene=SimpleNamespace(target_length_band="100-200 Chinese characters"),
+        lengths=LengthPolicy(band="100-200 Chinese characters"),
         llm_call_id="llm_patch_expand",
     )
 
@@ -1571,7 +1576,7 @@ def test_exact_style_length_patch_uses_segment_id_to_disambiguate_repeated_span(
     patched, audit = _apply_style_length_patch(
         source_content=source,
         response=response,
-        scene=SimpleNamespace(target_length_band="100-130 Chinese characters"),
+        lengths=LengthPolicy(band="100-130 Chinese characters"),
         llm_call_id="llm_patch_disambiguated_compress",
     )
 
@@ -1604,7 +1609,7 @@ def test_exact_style_length_patch_selects_safe_subset_of_oversized_insertions() 
     patched, audit = _apply_style_length_patch(
         source_content=source,
         response=response,
-        scene=SimpleNamespace(target_length_band="700-1350 Chinese characters"),
+        lengths=LengthPolicy(band="700-1350 Chinese characters"),
         llm_call_id="llm_patch_subset_expand",
     )
 
@@ -1627,6 +1632,7 @@ def test_ordinary_de_template_rejects_measurable_frozen_style_regression(session
 
     assessment = _assess_de_template_rewrite(
         scene=scene,
+        lengths=LengthPolicy.plain(scene),
         source_content=source,
         rewritten_content=rewritten,
         source_quality_gate={"score": 0.0, "findings": []},
@@ -1665,6 +1671,7 @@ def test_ordinary_de_template_requires_actionable_target_defect_reduction(
 
     assessment = _assess_de_template_rewrite(
         scene=scene,
+        lengths=LengthPolicy.plain(scene),
         source_content="她把红色信封压在桌角，没有拆。门外脚步停住，她抬头听着，随后关灯。",
         rewritten_content="她把红色信封压在桌角，没有拆。门外脚步停住，她抬头听着，随后关了灯。",
         source_quality_gate=unchanged_gate,

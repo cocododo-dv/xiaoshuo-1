@@ -918,7 +918,9 @@ def test_patch_and_repair_passes_render_the_reference_as_a_revision(session, mon
     scene, bundle, _book, _profile = _bound_scene(session, f"fid_role_{pass_kind}", draft_mode="neutral_first")
     service = SceneGenerationService(session, llm_runner=_Runner(outputs={}, default=LONG_FIRST))
     state = session.get(SceneRunState, scene.scene_id)
-    common = dict(scene=scene, state=state, bundle=bundle, execution_step_key=None)
+    common = dict(
+        scene=scene, state=state, bundle=bundle, execution_step_key=None, lengths=sg.LengthPolicy.for_scene(bundle, scene)
+    )
     if pass_kind == "salvage":
         service._run_style_salvage_pass(
             **common,

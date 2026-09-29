@@ -492,16 +492,16 @@ def test_neutral_first_neutral_draft_never_anchors_voice(session) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_length_band_widens_only_inside_a_style_bound_context() -> None:
+def test_length_band_widens_only_for_a_style_bound_bundle() -> None:
     _seed_binding("sfd_l1", project_id="proj_sfd_l1")
     bound = _frozen_bundle("proj_sfd_l1", "SFD_L1_SC01", "SFD_L1")
+    scene = SimpleNamespace(target_length_band="1200-1800", writer_brief_json={})
     assert sg._parse_numeric_length_band("1200-1800") == (1200, 1800)
-    with sg._length_band_slack_for(bound):
-        assert sg._parse_numeric_length_band("1200-1800") == (600, 2700)
-        assert sg._parse_numeric_length_band("1200-1800", slack=0.0) == (1200, 1800)
-    assert sg._parse_numeric_length_band("1200-1800") == (1200, 1800)
-    with sg._length_band_slack_for({"snapshot": {}}):
-        assert sg._parse_numeric_length_band("1200-1800") == (1200, 1800)
+    widened = sg.LengthPolicy.for_scene(bound, scene)
+    assert widened.hard_range() == (600, 2700)
+    assert widened.planned_range() == (1200, 1800)
+    assert sg.LengthPolicy.plain(scene).hard_range() == (1200, 1800)
+    assert sg.LengthPolicy.for_scene({"snapshot": {}}, scene).hard_range() == (1200, 1800)
 
 
 def test_style_first_accepts_the_authors_scale_where_neutral_first_rejects_it(session) -> None:
@@ -510,14 +510,13 @@ def test_style_first_accepts_the_authors_scale_where_neutral_first_rejects_it(se
     bundle = _frozen_bundle("proj_sfd_l2", scene.scene_id, scene.chapter_id)
     short_but_complete = ("脚步在门外停了；他将信封搁到桌上——也不说话，只等着。" * 40)[:900]
     assert 600 <= sg._visible_char_count(short_but_complete) < 1200
-    with sg._length_band_slack_for(bundle):
-        assessment = sg._assess_neutral_draft(scene, short_but_complete)
+    widened = sg.LengthPolicy.for_scene(bundle, scene)
+    assessment = sg._assess_neutral_draft(scene, short_but_complete, widened)
     assert assessment["accepted"], assessment
     assert assessment["target_length_range"] == [600, 2700]
-    assert not sg._assess_neutral_draft(scene, short_but_complete)["accepted"]
+    assert not sg._assess_neutral_draft(scene, short_but_complete, sg.LengthPolicy.plain(scene))["accepted"]
     # 首稿的长度指引告诉模型:计划带 vs 硬范围,作者尺度优先
-    with sg._length_band_slack_for(bundle):
-        guide = sg._style_first_length_instruction(scene)
+    guide = sg._style_first_length_instruction(widened)
     assert "planned 1200-1800" in guide and "hard range 600-2700" in guide
     assert "this author's own means" in guide
 
@@ -606,7 +605,11 @@ def test_de_template_regression_check_counts_house_dims(session) -> None:
     scene = _seed_scene(session, project_id="proj_sfd_g3", scene_id="SFD_G3_SC01", chapter_id="SFD_G3")
     source_gate = sg._anti_template_quality_gate(_VOICED_TEXT, scene_id=scene.scene_id, chapter_id=scene.chapter_id)
     strict = sg._assess_de_template_rewrite(
-        scene=scene, source_content=_VOICED_TEXT, rewritten_content=_HOUSE_TASTE_TEXT, source_quality_gate=source_gate
+        scene=scene,
+        source_content=_VOICED_TEXT,
+        rewritten_content=_HOUSE_TASTE_TEXT,
+        source_quality_gate=source_gate,
+        lengths=sg.LengthPolicy.plain(scene),
     )
     assert "anti_template_risks_increased" in strict["reasons"]
 

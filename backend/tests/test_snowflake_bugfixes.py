@@ -110,7 +110,7 @@ def test_explicit_protagonist_outranks_the_first_lead_role(session) -> None:
 def test_summary_scenes_get_no_style_first_length_slack(monkeypatch) -> None:
     from types import SimpleNamespace
 
-    import novel_system.services.scene_generation as generation
+    from novel_system.services.scene_generation import length_policy as generation
     from novel_system.services.style_policy import StylePolicy
 
     monkeypatch.setattr(
