@@ -7,7 +7,7 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 from sqlalchemy.orm import Session
 
@@ -134,18 +134,13 @@ def _execution_owner_lease_seconds(
     return max(default_ttl, envelope)
 
 
-def _renew_execution_owner(
-    *,
-    request_timeout_seconds: float | None = None,
-    client: object | None = None,
-) -> bool:
+def _renew_execution_owner(*, lease_seconds: int | None = None) -> bool:
+    """续当前执行主人的租约；不给 ``lease_seconds`` 就按默认 TTL（调用结束后的那一次）。"""
     runtime = _CURRENT_EXECUTION.get()
     if runtime is None or runtime.lease_renewer is None:
         return False
-    lease_seconds = _execution_owner_lease_seconds(
-        request_timeout_seconds=request_timeout_seconds,
-        client=client,
-    )
+    if lease_seconds is None:
+        lease_seconds = _execution_owner_lease_seconds(request_timeout_seconds=None)
     runtime.lease_renewer(lease_seconds=lease_seconds)
     return True
 
@@ -351,26 +346,14 @@ class LLMNodeRunner(RuntimeLLMAccess):
                     "bundle_hash": bundle_hash,
                     "recommended_action": "Enable and configure an LLM provider in System Config, then retry.",
                 }
-                response_summary = error_audit_summary(rejection, promote_attempt_fields=True)
-                record_rejected_call(
-                    self.session,
-                    None,
-                    accounted_context,
+                self._reject_before_dispatch(
                     rejection,
+                    accounted_context,
                     llm_call_id=llm_call_id,
                     prompt_hash=prompt.get("prompt_hash"),
-                    request_payload_summary=request_summary,
-                    response_payload_summary=response_summary,
-                )
-                raise LLMNodeExecutionError(
-                    llm_call_id=llm_call_id,
-                    error_code=rejection.code,
-                    message=str(rejection),
                     request_summary=request_summary,
-                    response_summary=response_summary,
-                    original_error=rejection,
-                    retryable=False,
-                ) from rejection
+                    response_summary=error_audit_summary(rejection, promote_attempt_fields=True),
+                )
             try:
                 task_config = self.task_config(node_id)
             except KeyError as exc:
@@ -398,25 +381,15 @@ class LLMNodeRunner(RuntimeLLMAccess):
                     f"LLM node route is not configured: {node_id}",
                     details={"node_id": node_id},
                 )
-                record_rejected_call(
-                    self.session,
-                    None,
-                    accounted_context,
+                self._reject_before_dispatch(
                     rejection,
+                    accounted_context,
                     llm_call_id=llm_call_id,
                     prompt_hash=prompt.get("prompt_hash"),
-                    request_payload_summary=request_summary,
-                    response_payload_summary=response_summary,
-                )
-                raise LLMNodeExecutionError(
-                    llm_call_id=llm_call_id,
-                    error_code="LLM_ROUTE_NOT_CONFIGURED",
-                    message=f"LLM node route is not configured: {node_id}",
                     request_summary=request_summary,
                     response_summary=response_summary,
-                    original_error=exc,
-                    retryable=False,
-                ) from exc
+                    cause=exc,
+                )
             request = self._build_request(prompt, user_prompt=user_prompt, node_id=node_id, task_config=task_config, temperature_override=temperature_override)
             final_budget = finalize_request_budget(
                 system_prompt=request.messages[0]["content"],
@@ -466,19 +439,7 @@ class LLMNodeRunner(RuntimeLLMAccess):
                 )
 
             client = self._client()
-            request_timeout_seconds = request.timeout_seconds or self.settings.llm_timeout_seconds
-            lease_seconds = _execution_owner_lease_seconds(
-                request_timeout_seconds=request_timeout_seconds,
-                client=client,
-            )
-            _renew_execution_owner(
-                request_timeout_seconds=request_timeout_seconds,
-                client=client,
-            )
-            # Provider I/O must never hold an open database transaction. The owner
-            # renewal above is fenced and committed before dispatch.
-            self.session.commit()
-            try:
+            with self._owner_lease(client, request) as lease_seconds:
                 with _execution_owner_heartbeat(lease_seconds=lease_seconds):
                     response = execute_accounted_call(
                         self.session,
@@ -488,9 +449,6 @@ class LLMNodeRunner(RuntimeLLMAccess):
                         llm_call_id=llm_call_id,
                         _lifecycle_observer=self._accounting_lifecycle_observer,
                     )
-            finally:
-                _renew_execution_owner()
-                self.session.commit()
         except LLMNodeExecutionError:
             raise
         except Exception as exc:
@@ -598,17 +556,7 @@ class LLMNodeRunner(RuntimeLLMAccess):
 
         client = self._client()
         llm_call_id = f"llm_task_{uuid.uuid4().hex}"
-        request_timeout_seconds = request.timeout_seconds or self.settings.llm_timeout_seconds
-        lease_seconds = _execution_owner_lease_seconds(
-            request_timeout_seconds=request_timeout_seconds,
-            client=client,
-        )
-        _renew_execution_owner(
-            request_timeout_seconds=request_timeout_seconds,
-            client=client,
-        )
-        self.session.commit()
-        try:
+        with self._owner_lease(client, request) as lease_seconds:
             try:
                 with _execution_owner_heartbeat(lease_seconds=lease_seconds):
                     return execute_accounted_call(
@@ -632,9 +580,57 @@ class LLMNodeRunner(RuntimeLLMAccess):
                     original_error=exc,
                     retryable=bool(getattr(exc, "retryable", False)),
                 ) from exc
+
+    @contextmanager
+    def _owner_lease(self, client: Any, request: LLMRequest):
+        """派发前按这次调用的超时与重试包络续一次执行主人租约并提交，产出租约秒数（心跳用同一个数）；
+        调用结束（无论成败）再按默认 TTL 续一次。租约只算一次（B09-19：原来一次调用要读五六遍模型路由快照）。
+
+        供应商 I/O 期间绝不持有数据库写事务：续约之后先提交再派发。"""
+        lease_seconds = _execution_owner_lease_seconds(
+            request_timeout_seconds=request.timeout_seconds or self.settings.llm_timeout_seconds,
+            client=client,
+        )
+        _renew_execution_owner(lease_seconds=lease_seconds)
+        self.session.commit()
+        try:
+            yield lease_seconds
         finally:
             _renew_execution_owner()
             self.session.commit()
+
+    def _reject_before_dispatch(
+        self,
+        rejection: LLMAccountingRejected,
+        context: LLMCallContext,
+        *,
+        llm_call_id: str,
+        prompt_hash: str | None,
+        request_summary: dict[str, Any],
+        response_summary: dict[str, Any],
+        cause: BaseException | None = None,
+    ) -> NoReturn:
+        """落一条派发前被拒的审计行（零物理尝试），再抛成节点执行错误（不可重试）。"""
+        record_rejected_call(
+            self.session,
+            None,
+            context,
+            rejection,
+            llm_call_id=llm_call_id,
+            prompt_hash=prompt_hash,
+            request_payload_summary=request_summary,
+            response_payload_summary=response_summary,
+        )
+        origin = cause if cause is not None else rejection
+        raise LLMNodeExecutionError(
+            llm_call_id=llm_call_id,
+            error_code=rejection.code,
+            message=str(rejection),
+            request_summary=request_summary,
+            response_summary=response_summary,
+            original_error=origin,
+            retryable=False,
+        ) from origin
 
     def task_config(self, node_id: str) -> Any:
         # 每个运行时节点必须在自己的 node id 下绑定路由(node_routing 优先,
