@@ -330,24 +330,16 @@ def _issue_blob(issues: list[Any], rewrite_brief: list[Any]) -> str:
     return "\n".join(parts)
 
 
-def _scene_card_source_texts(scene: SceneCard) -> list[str]:
-    texts = [
-        scene.must_include_text,
-        scene.hook,
-        scene.exit_change,
-        scene.scene_goal,
-        scene.location,
-    ]
-    beats = scene.beats_json if isinstance(scene.beats_json, list) else []
-    texts.extend(item for item in beats if isinstance(item, str))
-    return [text for text in texts if isinstance(text, str) and text.strip()]
-
-
 def _named_scene_card_source_texts(scene: SceneCard) -> list[tuple[str, str]]:
     # 字段顺序即冲突归因优先级（与 preflight 侧不同：QC 侧含 location 且 hook 优先）。
     return named_scene_card_sources(
         scene, ("hook", "must_include_text", "exit_change", "scene_goal", "location")
     )
+
+
+def _scene_card_source_texts(scene: SceneCard) -> list[str]:
+    """场景卡上的非空文本源（字段 + 节拍）；只拿来判「有没有一处满足」，次序无关。"""
+    return [text for _name, text in _named_scene_card_source_texts(scene)]
 
 
 def _terms_from_qc_text(text: str) -> list[str]:
@@ -691,6 +683,19 @@ def _normalize_soft_qc_scores(payload: Mapping[str, Any], *, schema: Any = None)
             values = list(normalized["dimension_scores"].values())
             normalized["style_score"] = round(sum(values) / len(values), 4)
     return normalized
+
+
+def _style_deviation_instruction(deviation: Any) -> str:
+    """一条 style_deviations → 修补简报里的一句：「维度：改法」，带上评审引的那段原稿（补丁据此找到位置）。"""
+    brief = str(getattr(deviation, "patch_brief", "") or "").strip()
+    if not brief:
+        return ""
+    dimension = str(getattr(deviation, "dimension", "") or "").strip()
+    text = brief if not dimension or dimension == "style" or brief.startswith(dimension) else f"{dimension}：{brief}"
+    evidence = str(getattr(deviation, "evidence", "") or "").strip()
+    if evidence and evidence not in text:
+        text += f"（原稿：「{evidence[:80]}」）"
+    return text
 
 
 def _prompt_carries_reference(prompt: Mapping[str, Any] | None) -> bool:
@@ -2501,6 +2506,23 @@ class SoftQcEngine(QcEngineBase):
     @staticmethod
     def _serialize_rewrite_brief(report: Any, *, reference_carried: bool = True) -> list[dict[str, Any]]:
         entries = [{"instruction": item} for item in report.rewrite_brief]
+        if report.resolution_code == "soft_patch":
+            # 批准#13b（B04-20）：评审按维给的定位改法（style_deviations 的 patch_brief：哪一段、照样例的哪种手法改）
+            # 写进修补简报——提示词本来就要它、校验也收了，以前落库时丢掉，补丁只拿到笼统的一句「这一维不像」。
+            # 补丁读的是 instruction（orchestrator._rewrite_brief_from_report），起草台的质检摘要也照样列出。
+            seen = {str(item).strip() for item in report.rewrite_brief}
+            for deviation in report.style_deviations:
+                instruction = _style_deviation_instruction(deviation)
+                if instruction and instruction not in seen:
+                    seen.add(instruction)
+                    entries.append(
+                        {
+                            "instruction": instruction,
+                            "kind": "style_deviation",
+                            "dimension": deviation.dimension,
+                            "severity": deviation.severity,
+                        }
+                    )
         if report.resolution_code == "soft_waive" and report.carry_forward_note:
             entries.append(
                 {

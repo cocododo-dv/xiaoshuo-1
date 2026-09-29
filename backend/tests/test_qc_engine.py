@@ -890,6 +890,59 @@ def test_hard_qc_keeps_a_missing_required_group_claim(session) -> None:
     assert issue["evidence_spans"] == [{"text": "门外传来警笛"}]
 
 
+def test_soft_qc_patch_brief_carries_the_reviewers_located_style_deviations(session) -> None:
+    """批准#13b（B04-20）：评审按维给的定位改法（style_deviations 的 patch_brief）写进修补简报——补丁读的是
+    instruction 条目，以前这些改法校验完就丢了，补丁只拿到笼统的「这一维不像」。"""
+    _seed_scene(session)
+    content = "林岑像一只受惊的鸟，把旧信塞回案卷。她没有回头。"
+    state = session.get(SceneRunState, "CH100_SC01")
+    state.active_execution_id = "exec-soft-deviation"
+    state.run_execution_status = "active"
+    session.commit()
+    payload = _base_soft_qc_payload(
+        resolution_code="soft_patch",
+        next_action="patch",
+        issues=[{"issue_key": "style_reference.language.rhetoric", "message": "比喻太书面。"}],
+        rewrite_brief=["language.rhetoric：比喻换成样例那种日常器物。"],
+        style_deviations=[
+            {
+                "dimension": "language.rhetoric",
+                "severity": "medium",
+                "patch_brief": "第一句的比喻换成样例那种日常器物的比喻，别用鸟。",
+                "evidence": "像一只受惊的鸟",
+            },
+            {"dimension": "language.rhetoric", "severity": "low", "patch_brief": ""},
+        ],
+    )
+    token = begin_llm_execution("exec-soft-deviation")
+    try:
+        decision = SoftQcEngine(session, llm_runner=_QcPayloadRunner(payload)).evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            source_draft_row_id="draft_style_CH100_SC01",
+            source_draft_content=content,
+            execution_step_key="soft_qc:0",
+        )
+    finally:
+        end_llm_execution(token)
+    session.commit()
+
+    report = session.get(QcReport, decision.qc_report_id)
+    assert decision.branch == "patch"
+    instructions = [entry["instruction"] for entry in report.rewrite_brief_json if entry.get("instruction")]
+    assert instructions == [
+        "language.rhetoric：比喻换成样例那种日常器物。",
+        "language.rhetoric：第一句的比喻换成样例那种日常器物的比喻，别用鸟。（原稿：「像一只受惊的鸟」）",
+    ]
+    deviation = report.rewrite_brief_json[1]
+    assert deviation["kind"] == "style_deviation"
+    assert deviation["dimension"] == "language.rhetoric" and deviation["severity"] == "medium"
+
+
 def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_style_generation(
     session,
     monkeypatch,
