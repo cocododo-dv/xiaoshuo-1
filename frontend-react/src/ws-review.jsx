@@ -12,6 +12,7 @@ import { wsToast } from "./ws-notify.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { preferenceHintLabel, reviewSourceLabel } from "./ws-labels.js";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsReview — 待办收件箱
@@ -158,7 +159,7 @@ let rvFetching = null;
 let rvLastFetchAt = 0;
 function rvFetch() {
   const pid = rvActiveId();
-  if (!pid || pid === "__loading__") return Promise.resolve();
+  if (!isRealWorkId(pid)) return Promise.resolve();
   if (rvFetching) return rvFetching;
   rvLastFetchAt = Date.now();
   rvFetching = (async () => {
@@ -210,7 +211,7 @@ function rvFetchThrottled() {
    不会复制已成功写入的卡片。resolved/snoozed 状态无法可靠映射，保留为 open。 */
 const rvLegacyMigrations = new Map();
 async function rvMigrateLegacy(pid) {
-  if (!pid || pid === "__loading__") return false;
+  if (!isRealWorkId(pid)) return false;
   const flagKey = RV_MIGRATED_LS + "::" + pid;
   try {
     if (localStorage.getItem(flagKey)) return true;

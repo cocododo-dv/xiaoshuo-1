@@ -9,6 +9,7 @@ import { isImeComposing } from "./lib/keyboard.js";
 import { LibGlyph, libAccClass, libCatLabel } from "./ws-library-parts.jsx";
 import { Segmented } from "./ws-ui.jsx";
 import { randomSuffix } from "./lib/ids.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 const { useState: useEdSt, useEffect: useEdEffect, useMemo: useEdMemo, useId: useEdId } = React;
 
@@ -248,7 +249,7 @@ function LIB_migrateLegacy() {
   libMigrationPromise = (async () => {
     try {
       const pid = libProjectId();
-      if (!pid || pid === "__loading__") return false;
+      if (!isRealWorkId(pid)) return false;
       const flag = LIB_K(LIB_MIGRATED_KEY);
       if (localStorage.getItem(flag)) return true;
       const edits = JSON.parse(localStorage.getItem(LIB_K(LIB_EDIT_KEY)) || "{}") || {};

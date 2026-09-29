@@ -3,6 +3,7 @@ import { WsWorks } from "./ws-works.jsx";
 import { fidFinalsSummary } from "./ws-fidelity-model.js";
 import { fidLoadProject, fidProject, useFidelityStore } from "./ws-fidelity-store.js";
 import { FidelityBadge } from "./ws-fidelity-ui.jsx";
+import { realWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    成稿中心 · 像不像（2026-09-23 风格参考 v3 · P6b）
@@ -13,8 +14,7 @@ import { FidelityBadge } from "./ws-fidelity-ui.jsx";
 
 export function useManuFidelity() {
   useFidelityStore();
-  const workId = WsWorks.activeId();
-  const live = workId && workId !== "__loading__" ? workId : null;
+  const live = realWorkId(WsWorks.activeId());
   React.useEffect(() => { if (live) fidLoadProject(live, { force: true }); }, [live]);
   const entry = live ? fidProject(live) : null;
   const data = entry && entry.data;

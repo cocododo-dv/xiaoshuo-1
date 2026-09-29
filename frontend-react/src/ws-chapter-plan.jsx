@@ -2,6 +2,7 @@ import { apiGet, apiPost, apiPut } from "./lib/client.js";
 import { createSubscribers } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { realWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsChapterPlan — 章节编排的 LLM 规划 store
@@ -53,7 +54,7 @@ function cpBucket(chapterId) {
 function cpProjectId() {
   try {
     const id = WsWorks ? WsWorks.activeId() : null;
-    return id && id !== "__loading__" ? id : null;
+    return realWorkId(id);
   } catch (e) { return null; }
 }
 

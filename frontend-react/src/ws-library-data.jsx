@@ -2,6 +2,7 @@ import { apiGet } from "./lib/client.js";
 import { createSubscribers } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    Library data — 档案库（后端 /library 聚合的适配层）
@@ -149,7 +150,7 @@ function libClearForProject(projectId) {
    旧覆盖层迁移靠它区分「资料库确实是空的」和「还没读到」。 */
 function libFetch() {
   const pid = libActiveId();
-  if (!pid || pid === "__loading__") {
+  if (!isRealWorkId(pid)) {
     if (libVisibleProjectId !== null || LIB_ENTRIES.length || LIB_RELATIONS.length) {
       libRequestSerial += 1; // 让尚未返回的旧作品请求失效
       libFetching = null;

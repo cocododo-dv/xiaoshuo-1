@@ -4,6 +4,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow-model.js";
 import { randomSuffix } from "./lib/ids.js";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* global window */
 /* ==========================================================
@@ -1026,7 +1027,7 @@ const SnowSync = {
      和审计日志均不绕过；任一步失败立即停止，不把半成品谎称为 10/10。 */
   async importCanonicalPlan(workId, payload) {
     const id = workId || activeWork();
-    if (!id || id === "__loading__") throw new Error("请先选择一个作品再导入雪花计划。");
+    if (!isRealWorkId(id)) throw new Error("请先选择一个作品再导入雪花计划。");
     const stepDrafts = payload && payload.steps && typeof payload.steps === "object" ? payload.steps : payload;
     if (!stepDrafts || typeof stepDrafts !== "object" || Array.isArray(stepDrafts)) {
       throw new Error("结构化计划必须是包含 steps 的 JSON 对象。");

@@ -9,6 +9,7 @@ import {
   CalibersDetails, ChapterTable, DrillPanel, EstimatePill, ModelTable, NodeBars, PhaseBars, QuotaSection, TopCallsTable,
   TrendChart, fmtInt, fmtMoney, quotaArmed,
 } from "./ws-cost-parts.jsx";
+import { realWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsCost — 成本看板
@@ -31,7 +32,7 @@ function WsCost() {
   const st = useCostState();
   /* 只跟「当前是哪部作品」走：写作时的字数回写不让整张看板重渲 */
   const identity = useActiveWorkIdentity();
-  const activeId = identity && identity.id && identity.id !== "__loading__" ? identity.id : null;
+  const activeId = realWorkId(identity && identity.id);
   const chapters = useCatalogChapters() || [];
 
   // 跟随当前作品：挂载 / 切书自动加载；已有同项目缓存则不重复请求

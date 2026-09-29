@@ -5,6 +5,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
+import { isRealWorkId } from "./lib/work-id.js";
 
 const { useEffect, useRef, useState } = React;
 
@@ -249,7 +250,7 @@ function ArrChapterRunAction({
       });
       return;
     }
-    if (!projectId || projectId === "__loading__") {
+    if (!isRealWorkId(projectId)) {
       setHydration({
         status: "error",
         chapterKey,
@@ -265,7 +266,7 @@ function ArrChapterRunAction({
     const chapterId = chapter && chapter.backendId;
     const chapterKey = chapterId || (chapter && chapter.id) || "";
     const projectId = WsWorks.activeId();
-    if (!chapterId || !projectId || projectId === "__loading__") return;
+    if (!chapterId || !isRealWorkId(projectId)) return;
     const token = requestRef.current + 1;
     requestRef.current = token;
     completedRef.current = null;
@@ -296,7 +297,7 @@ function ArrChapterRunAction({
       return;
     }
     const projectId = WsWorks.activeId();
-    if (!projectId || projectId === "__loading__") {
+    if (!isRealWorkId(projectId)) {
       setCardOpen(true);
       setRun({
         ...EMPTY_RUN,

@@ -2,6 +2,7 @@ import { apiGet, apiPost } from "./lib/client.js";
 import { useStoreTick } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 import { emit } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    文学质量的 store（从 ws-quality.jsx 拆出，2026-09-22）——轻量模块级缓存 + 自定义事件。
@@ -28,7 +29,7 @@ function qBuildPath(base, filters) {
    作品列表还没到（__loading__）或没有作品时返回原 filters → 退回全局。 */
 export function qScopeFilters(filters) {
   const pid = WsWorks.activeId();
-  return pid && pid !== "__loading__" ? { ...filters, project_id: pid } : filters;
+  return isRealWorkId(pid) ? { ...filters, project_id: pid } : filters;
 }
 
 export async function qLoadOverview(filters = {}) {

@@ -3,6 +3,7 @@ import { WsWorks } from "./ws-works.jsx";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsCatalog — 章节 / 场景单一真相源（per-work）
@@ -45,7 +46,7 @@ function catStamp(list) {
 function catPushTotals() {
   if (!WsWorks) return;
   const id = catActiveId();
-  if (!id || id === "__loading__") return; // 启动占位作品（列表尚未从后端返回）
+  if (!isRealWorkId(id)) return; // 启动占位作品（列表尚未从后端返回）
   const chs = catLoad(id);
   const written = chs.filter(c => ((c.words && c.words.cur) || 0) > 0).length;
   apiGet(`/api/v2/projects/${id}/writing-stats`).then((stats) => {
@@ -355,7 +356,7 @@ function catLoad(workId) { return catCache[workId] || CAT_EMPTY; }
 const catFetching = {};
 function catFetch(workId, options) {
   const migrate = !options || options.migrate !== false;
-  if (!workId || workId === "__loading__") return Promise.resolve();
+  if (!isRealWorkId(workId)) return Promise.resolve();
   if (catFetching[workId]) return catFetching[workId];
   delete catErrorMap[workId];
   catFetching[workId] = (async () => {
@@ -894,7 +895,7 @@ function trashAdapt(item) {
 function trashFetch() {
   if (trashFetching) return trashFetching;
   const id = catActiveId();
-  const qs = id && id !== "__loading__" ? `?project_id=${encodeURIComponent(id)}` : "";
+  const qs = isRealWorkId(id) ? `?project_id=${encodeURIComponent(id)}` : "";
   // 已经读到过一次时，后台刷新不把状态打回「读取中」（视图不该因此闪一下）
   if (trashLoad.status !== "ready") { trashLoad = { status: "loading", message: "" }; trashNotify(); }
   trashFetching = apiGet(`/api/v2/trash${qs}`).then((data) => {
