@@ -42,8 +42,22 @@ def effective_rendering_mode(scene_type: Any, value: Any) -> str:
     return mode
 
 
+# 一段话概括恰好五句；一页梗概把五句各扩一段、长篇大纲再把五段各扩成约一页（阶段 B / D）——都是五。
+SYNOPSIS_PARAGRAPHS = 5
 # 阶段 D：第 6 步的分形——一页梗概的五段各扩成约一页，恰好五段。
-LONG_SYNOPSIS_PARAGRAPHS = 5
+LONG_SYNOPSIS_PARAGRAPHS = SYNOPSIS_PARAGRAPHS
+
+#: 三个角色步（04 角色摘要表 / 06 角色背景故事 / 08 角色全档案）：集合成员是角色，按 character_id 对位
+CHARACTER_STEPS: tuple[str, ...] = ("character_sheets", "character_synopses", "character_bibles")
+
+#: 场景的两种形态（Ingermanson：主动场 目标 / 冲突 / 挫折，反应场 反应 / 两难 / 决定）
+SCENE_FORMS: frozenset[str] = frozenset({"proactive", "reactive"})
+
+
+def coerce_scene_form(value: Any, default: str = "proactive") -> str:
+    """场景形态的收口：不是 proactive / reactive 的一律按 ``default``（默认主动场，阶段 B 起不再按行号交替）。"""
+    form = str(value or "").strip().lower()
+    return form if form in SCENE_FORMS else default
 
 
 #: 算「这一步已经定了」的步骤状态（确认 / 略过）。过期（stale）的步骤要作者点过「已复核」才算，见

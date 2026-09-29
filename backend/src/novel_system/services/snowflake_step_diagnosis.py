@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from novel_system.services.value_coercion import coerce_string_list, has_value
-from novel_system.services.snowflake_step_catalog import step_definition_view
+from novel_system.services.snowflake_step_catalog import CHARACTER_STEPS, SCENE_FORMS, step_definition_view
 from novel_system.services.snowflake_step_guidance import _FIELD_HELP
 from novel_system.services.snowflake_step_drafts import derive_three_act
 
@@ -77,7 +77,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
             fix_steps.append("建议：让每次灾难都迫使承诺、价值转变或不可逆升级。")
         elif sentences:
             strengths.append("三幕灾难链已经有可见压力")
-    elif step_key in {"character_sheets", "character_synopses", "character_bibles"}:
+    elif step_key in CHARACTER_STEPS:
         characters = [item for item in payload.get("characters") or [] if isinstance(item, dict)]
         if not characters:
             flags.append("character_pressure_missing")
@@ -181,7 +181,7 @@ def _total_fields_for_step(step_key: str, draft: dict[str, Any]) -> int:
                 total += 1
                 continue
             scene_type = str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip().lower()
-            total += 4 if scene_type in {"proactive", "reactive"} else 1
+            total += 4 if scene_type in SCENE_FORMS else 1
         return total
     return len(step_definition_view(step_key).get("editor", {}).get("fields") or [])
 
@@ -237,7 +237,7 @@ def _missing_scene_detail_fields(scene: dict[str, Any]) -> list[str]:
 def diagnose_scene_detail(scene: dict[str, Any], *, index: int = 1) -> dict[str, Any]:
     payload = scene if isinstance(scene, dict) else {}
     scene_type = str(payload.get("primary_form") or payload.get("scene_type") or "proactive").strip().lower()
-    if scene_type not in {"proactive", "reactive"}:
+    if scene_type not in SCENE_FORMS:
         scene_type = "proactive"
     required = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
     missing_fields = _missing_scene_detail_fields(payload)

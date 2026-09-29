@@ -19,6 +19,7 @@ from copy import deepcopy
 from typing import Any, Callable
 
 from novel_system.services.context_budget import estimate_tokens
+from novel_system.services.snowflake_step_catalog import CHARACTER_STEPS
 
 # 本步契约与作者显式意图：任何情况下都不降载。降了它们模型就不知道要产出什么，
 # 省下的预算换来一次废调用。
@@ -65,8 +66,9 @@ _SCENE_LIST_DELTA_KEYS = (
 # 的内容，也不会因为名册缺人而现编一个。
 _CHARACTER_REFERENCE_KEYS = ("character_id", "display_name", "role", "one_sentence_summary")
 
-# 参照级场景：留身份、位置与标题，模型知道「这一场在哪、叫什么」。
-_SCENE_REFERENCE_KEYS = (
+# 参照级场景：留身份、位置与标题，模型知道「这一场在哪、叫什么」。（与 snowflake_llm_context._SCENE_REFERENCE_KEYS
+# 不是一回事：那边是焦外场景的参照键，这里是降载阶梯压到最小的场景。）
+_REFERENCE_SCENE_KEYS_MIN = (
     "scene_id",
     "row_uid",
     "chapter_id",
@@ -76,7 +78,7 @@ _SCENE_REFERENCE_KEYS = (
     "scene_type",
 )
 
-_CHARACTER_STEP_KEYS = ("character_sheets", "character_synopses", "character_bibles")
+_CHARACTER_STEP_KEYS = CHARACTER_STEPS
 
 # 同一份材料在不同节点上叫不同的键：整步生成用 upstream_steps / current_draft，
 # 驻场教练用 approved_context，候选生成用 current_canonical_draft。形状完全一致
@@ -374,7 +376,7 @@ def _rung_reference_scenes(payload: dict[str, Any], focus: dict[str, Any]) -> di
         if {str(scene.get("scene_id") or ""), str(scene.get("row_uid") or "")} & keep:
             trimmed.append(scene)
             continue
-        reference = {key: scene[key] for key in _SCENE_REFERENCE_KEYS if key in scene and scene[key] not in ("", None)}
+        reference = {key: scene[key] for key in _REFERENCE_SCENE_KEYS_MIN if key in scene and scene[key] not in ("", None)}
         if reference != scene:
             changed = True
         trimmed.append(reference)

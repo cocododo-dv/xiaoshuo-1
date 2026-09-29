@@ -30,7 +30,12 @@ from novel_system.services.snowflake_scene_rows import (
     scene_plan_content_signature,
     scene_plan_payload,
 )
-from novel_system.services.snowflake_step_catalog import RENDERING_MODES, effective_rendering_mode
+from novel_system.services.snowflake_step_catalog import (
+    CHARACTER_STEPS,
+    RENDERING_MODES,
+    coerce_scene_form,
+    effective_rendering_mode,
+)
 from novel_system.services.snowflake_step_diagnosis import diagnose_scene_detail
 from novel_system.services.value_coercion import coerce_string_list, int_or_default
 
@@ -49,7 +54,7 @@ class SnowflakeStructuredSyncMixin:
         approved: bool = False,
     ) -> dict[str, Any] | None:
         """同步结构化步数据。返回「作者必须知道、但不属于草稿」的事实（目前只有章表收缩）。"""
-        if step_key in {"character_sheets", "character_synopses", "character_bibles"}:
+        if step_key in CHARACTER_STEPS:
             self._sync_character_plans(project.project_id, step_key, draft.get("characters") or [], approved=approved)
         if step_key == "long_synopsis":
             return self._sync_chapter_plans(project.project_id, draft, run, approved=approved)
@@ -355,7 +360,7 @@ class SnowflakeStructuredSyncMixin:
                 continue
             if key == "primary_form":
                 scene_type = str(value or "").strip().lower()
-                scene.scene_type = scene_type if scene_type in {"proactive", "reactive"} else "proactive"
+                scene.scene_type = coerce_scene_form(scene_type)
                 continue
             if not hasattr(scene, key):
                 continue
@@ -365,7 +370,7 @@ class SnowflakeStructuredSyncMixin:
                 setattr(scene, key, int_or_default(value, scene.scene_seq or 1))
             elif key == "scene_type":
                 scene_type = str(value or "").strip().lower()
-                setattr(scene, key, scene_type if scene_type in {"proactive", "reactive"} else "proactive")
+                setattr(scene, key, coerce_scene_form(scene_type))
             elif key == "rendering_mode":
                 mode = str(value or "").strip().lower()
                 scene.rendering_mode = mode if mode in RENDERING_MODES else "full"

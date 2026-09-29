@@ -10,7 +10,7 @@ from typing import Any
 
 from novel_system.services.value_coercion import coerce_string_list
 from novel_system.services.snowflake_draft_merge import merge_default
-from novel_system.services.snowflake_step_catalog import LONG_SYNOPSIS_PARAGRAPHS, step_definition_view
+from novel_system.services.snowflake_step_catalog import LONG_SYNOPSIS_PARAGRAPHS, SCENE_FORMS, step_definition_view
 
 
 def derive_three_act(draft: dict[str, Any] | None) -> dict[str, str]:
@@ -106,7 +106,7 @@ def _normalize_scene_item(item: dict[str, Any], *, index: int) -> dict[str, Any]
         or normalized.get("scene_type")
         or "proactive"
     ).strip().lower()
-    if primary_form not in {"proactive", "reactive"}:
+    if primary_form not in SCENE_FORMS:
         primary_form = "proactive"
     normalized["primary_form"] = primary_form
     normalized["scene_type"] = primary_form
@@ -120,7 +120,7 @@ def _normalize_scene_item(item: dict[str, Any], *, index: int) -> dict[str, Any]
 def _scene_detail_seed(scene: dict[str, Any], index: int) -> dict[str, Any]:
     # 形态跟随第 9 步的标注；没标就是主动场（阶段 B：不再按奇偶交替播种反应场）。
     scene_type = str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip().lower() or "proactive"
-    if scene_type not in {"proactive", "reactive"}:
+    if scene_type not in SCENE_FORMS:
         scene_type = "proactive"
     base = {
         "scene_id": scene.get("scene_id") or "",

@@ -11,6 +11,10 @@
 from __future__ import annotations
 
 from novel_system.services.snowflake_step_catalog import (  # noqa: F401
+    CHARACTER_STEPS,
+    SCENE_FORMS,
+    SYNOPSIS_PARAGRAPHS,
+    coerce_scene_form,
     CONFIRMED_STEP_STATUSES,
     LONG_SYNOPSIS_PARAGRAPHS,
     MATERIALIZATION_REQUIRED_STEPS,

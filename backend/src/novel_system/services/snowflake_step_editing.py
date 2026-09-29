@@ -17,7 +17,7 @@ from novel_system.services.hash_engine import sha256_text
 from novel_system.services.snowflake_character_ids import canonical_character_id, canonicalize_draft, present_draft
 from novel_system.services.snowflake_draft_merge import overlay_keeping_members
 from novel_system.services.snowflake_staleness import semantic_payload
-from novel_system.services.snowflake_step_catalog import step_definition_view
+from novel_system.services.snowflake_step_catalog import CHARACTER_STEPS, step_definition_view
 from novel_system.services.snowflake_step_diagnosis import diagnose_step_pressure, step_completeness
 from novel_system.services.snowflake_step_drafts import merge_step_draft
 from novel_system.services.snowflake_step_runs import (
@@ -110,7 +110,7 @@ class SnowflakeStepEditingMixin:
                 focus_scene_refs=focus_scene_refs if step_key == "scene_details" else None,
                 focus_character_refs=(
                     focus_character_refs
-                    if step_key in {"character_sheets", "character_synopses", "character_bibles"}
+                    if step_key in CHARACTER_STEPS
                     else None
                 ),
                 draft_override=draft_override,

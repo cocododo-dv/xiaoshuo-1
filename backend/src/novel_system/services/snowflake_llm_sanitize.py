@@ -12,7 +12,14 @@ from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.snowflake_character_ids import canonical_character_id, mint_character_id
 from novel_system.services.snowflake_draft_merge import apply_member_patch, patch_id_key
-from novel_system.services.snowflake_step_catalog import LONG_SYNOPSIS_PARAGRAPHS, RENDERING_MODES, get_step_definition
+from novel_system.services.snowflake_step_catalog import (
+    CHARACTER_STEPS,
+    LONG_SYNOPSIS_PARAGRAPHS,
+    RENDERING_MODES,
+    SCENE_FORMS,
+    SYNOPSIS_PARAGRAPHS,
+    get_step_definition,
+)
 from novel_system.services.snowflake_step_diagnosis import is_lead_role, step_completeness
 from novel_system.services.value_coercion import coerce_string_list, has_value, int_or_default
 
@@ -37,7 +44,7 @@ class StructuredCountMismatch(ValueError):
 
 
 # 一页梗概 = 五句各扩一段（Ingermanson 第 4 步）。前端 05 也只有五个槽。
-SHORT_SYNOPSIS_PARAGRAPHS = 5
+SHORT_SYNOPSIS_PARAGRAPHS = SYNOPSIS_PARAGRAPHS
 
 
 # 场景规划里承载「这一场被深化过」的内容键——身份/序号/章归属不算内容。
@@ -123,7 +130,7 @@ _SERVER_ASSIGNED_ITEM_KEYS = {"row_uid", "scene_id", "chapter_id", "chapter_titl
 _SCENE_LIST_CONTENT_KEYS = ("summary", "pov_character_id", "location", "crucible", "chapter_role")
 
 
-_CHARACTER_COLLECTION_STEPS = {"character_sheets", "character_synopses", "character_bibles"}
+_CHARACTER_COLLECTION_STEPS = frozenset(CHARACTER_STEPS)
 
 
 def _collect_generation_gaps(step_key: str, draft: dict[str, Any] | None) -> list[str]:
@@ -558,7 +565,7 @@ def _sanitize_scene_list_items(
             or item.get("scene_type")
             or "proactive"
         ).strip().lower()
-        scene_type = scene_type if scene_type in {"proactive", "reactive"} else "proactive"
+        scene_type = scene_type if scene_type in SCENE_FORMS else "proactive"
         item["primary_form"] = scene_type
         item["scene_type"] = scene_type
         spine = str(raw_item.get("spine") or "").strip()
@@ -642,7 +649,7 @@ def _sanitize_scene_detail_items(
                     or merged.get("scene_type")
                     or "proactive"
                 ).strip().lower()
-                scene_type = scene_type if scene_type in {"proactive", "reactive"} else str(merged.get("primary_form") or merged.get("scene_type") or "proactive")
+                scene_type = scene_type if scene_type in SCENE_FORMS else str(merged.get("primary_form") or merged.get("scene_type") or "proactive")
                 merged["primary_form"] = scene_type
                 merged["scene_type"] = scene_type
             elif key in {"beats_json", "onstage_chars_json"}:
