@@ -8,11 +8,11 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect as sqlalchemy_inspect, text
-from sqlalchemy.exc import OperationalError
 
+from novel_system.api.errors import install_exception_handlers
+from novel_system.api.middleware import UnhandledErrorMiddleware
 from novel_system.api.response import error
 from novel_system.api.openapi_contract import install_api_openapi_contract
 from novel_system.api.request_limits import RequestBodyLimitMiddleware
@@ -42,10 +42,8 @@ from novel_system.db import models  # noqa: F401
 from novel_system.db.base import Base
 from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
 from novel_system.db.session import engine
-from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
 from novel_system.settings import get_settings
-from novel_system.api.deps import request_id_of
 
 
 logger = logging.getLogger(__name__)
@@ -120,6 +118,12 @@ def create_app() -> FastAPI:
     app.add_middleware(
         RequestBodyLimitMiddleware,
         max_bytes=app_settings.max_request_body_bytes,
+    )
+    # Unhandled exceptions become the standard 500 envelope inside CORS, so the
+    # browser can read them and the request-id middleware stamps them (B12-03).
+    app.add_middleware(
+        UnhandledErrorMiddleware,
+        expose_error_detail=app_settings.expose_error_detail,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -307,87 +311,7 @@ def create_app() -> FastAPI:
             )
         return {"status": "ready"}
 
-    @app.exception_handler(DomainError)
-    async def domain_error_handler(request: Request, exc: DomainError):
-        return error(
-            exc.code,
-            exc.message,
-            status_code=exc.status_code,
-            details=exc.details,
-            req_id=request_id_of(request),
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def request_validation_error_handler(
-        request: Request,
-        exc: RequestValidationError,
-    ):
-        # Never echo Pydantic's ``input`` field: it can contain an entire
-        # manuscript or secret.  Field paths and stable error types are enough
-        # for clients to correct the request while preserving the API envelope.
-        issues = []
-        for item in exc.errors()[:32]:
-            issue_type = str(item.get("type") or "validation_error")
-            public_message = {
-                "extra_forbidden": "unexpected field",
-                "field_required": "required field is missing",
-                "int_type": "value must be an integer",
-                "list_type": "value must be a list",
-                "string_type": "value must be a string",
-                "string_too_long": "string exceeds the allowed length",
-                "string_too_short": "string is shorter than the allowed length",
-                "too_long": "collection exceeds the allowed length",
-                "greater_than_equal": "value is below the allowed minimum",
-                "less_than_equal": "value exceeds the allowed maximum",
-            }.get(issue_type, "invalid value")
-            issues.append(
-                {
-                    "field": ".".join(str(part) for part in item.get("loc", ())),
-                    "type": issue_type,
-                    "message": public_message,
-                }
-            )
-        return error(
-            "REQUEST_VALIDATION_FAILED",
-            "request validation failed",
-            status_code=422,
-            details={
-                "issues": issues,
-                "issue_count": len(exc.errors()),
-                "truncated": len(exc.errors()) > len(issues),
-            },
-            req_id=request_id_of(request),
-        )
-
-    @app.exception_handler(OperationalError)
-    async def operational_error_handler(request: Request, exc: OperationalError):
-        if is_database_busy_error(exc):
-            return error(
-                "DATABASE_BUSY",
-                "database is busy; retry after the current long-running operation finishes",
-                status_code=503,
-                details={"retryable": True},
-                req_id=request_id_of(request),
-            )
-        return error(
-            "DATABASE_OPERATION_FAILED",
-            "database operation failed",
-            status_code=500,
-            details={"retryable": False},
-            req_id=request_id_of(request),
-        )
-
-    @app.exception_handler(Exception)
-    async def unhandled_error_handler(request: Request, exc: Exception):
-        req_id = request_id_of(request)
-        logger.exception("Unhandled API error request_id=%s", req_id)
-        return error(
-            "INTERNAL_ERROR",
-            str(exc) if app_settings.expose_error_detail else "internal server error",
-            status_code=500,
-            details={"retryable": False},
-            req_id=req_id,
-        )
+    install_exception_handlers(app, expose_error_detail=app_settings.expose_error_detail)
 
     app.include_router(catalog.router)
     app.include_router(canon_continuity.router)
