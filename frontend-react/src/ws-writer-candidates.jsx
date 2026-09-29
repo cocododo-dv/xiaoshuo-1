@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
-import { wrPickedText, wrSentences } from "./writer-candidates.js";
+import { wrCandSentences, wrPickedParas } from "./writer-candidates.js";
 import { wrAiError, wrContinueChips } from "./ws-writer-ai.js";
 import { wrContinueMulti } from "./ws-writer-requests.js";
 
@@ -65,23 +65,30 @@ export function useWrContinuation(sceneId) {
   return { prompt, setPrompt, phase, cands, error, picks, copyBlocked, run, toggle };
 }
 
-/* 候选按句拆开，点句子只挑那几句 */
-function WrCandText({ html, picked, onToggle }) {
-  const sentences = wrSentences(html);
+/* 候选按段画、每段按句拆开，点句子只挑那几句（句子的序号在整条候选里连续编） */
+function WrCandText({ sentences, picked, onToggle }) {
+  const paras = [];
+  sentences.forEach((sentence, index) => {
+    (paras[sentence.para] = paras[sentence.para] || []).push({ html: sentence.html, index });
+  });
   return (
-    <p className="wr-cand-text">
-      {sentences.map((sentence, index) => (
-        <span key={index}
-          className={`wr-sen ${picked.includes(index) ? "is-pick" : ""}`}
-          onClick={(e) => { e.stopPropagation(); onToggle(index); }}
-          dangerouslySetInnerHTML={{ __html: sentence }} />
-      ))}
-    </p>
+    <div className="wr-cand-text">
+      {paras.map((items, para) => (items ? (
+        <p key={para}>
+          {items.map(({ html, index }) => (
+            <span key={index}
+              className={`wr-sen ${picked.includes(index) ? "is-pick" : ""}`}
+              onClick={(e) => { e.stopPropagation(); onToggle(index); }}
+              dangerouslySetInnerHTML={{ __html: html }} />
+          ))}
+        </p>
+      ) : null))}
+    </div>
   );
 }
 
 function WrCandCard({ cand, index, picked, selected, onToggle, onAdopt, onAdoptText, onMerge, onSelect, style }) {
-  const sentences = wrSentences(cand.html);
+  const sentences = wrCandSentences(cand.paras);
   return (
     <article className={`wr-cand ${selected ? "is-sel" : ""}`} style={style}
       onMouseEnter={onSelect} onClick={onSelect}>
@@ -90,13 +97,13 @@ function WrCandCard({ cand, index, picked, selected, onToggle, onAdopt, onAdoptT
         <Tag tone={cand.tone} dot>{cand.approach}</Tag>
         {picked.length > 0 && <span className="wr-cand-pickn">已选 {picked.length} 句</span>}
       </div>
-      <WrCandText html={cand.html} picked={picked} onToggle={onToggle} />
+      <WrCandText sentences={sentences} picked={picked} onToggle={onToggle} />
       {cand.note && <p className="wr-cand-note">{cand.note}</p>}
       <div className="wr-cand-act">
         <button type="button" className="btn btn-quiet btn-sm" onClick={(e) => { e.stopPropagation(); if (onMerge) onMerge(cand); }}
           title="插到正文末尾，由你改成自己的话；虚线框只标到离开这一场为止">作为草稿插入</button>
         {picked.length > 0
-          ? <button type="button" className="btn btn-accent btn-sm" onClick={(e) => { e.stopPropagation(); if (onAdoptText) onAdoptText(wrPickedText(sentences, picked)); }}>采纳选中 {picked.length} 句</button>
+          ? <button type="button" className="btn btn-accent btn-sm" onClick={(e) => { e.stopPropagation(); if (onAdoptText) onAdoptText(wrPickedParas(sentences, picked)); }}>采纳选中 {picked.length} 句</button>
           : <button type="button" className="btn btn-accent btn-sm" onClick={(e) => { e.stopPropagation(); onAdopt(cand); }}>采纳整段</button>}
       </div>
     </article>

@@ -218,10 +218,12 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     }
     doc.recount();
     doc.schedulePersist();
-    // 作者一碰「作为草稿插入」的那一段，它就成了作者自己的字
+    // 作者一碰「作为草稿插入」的那一段，它就成了作者自己的字（插进来的是几段就各算各的）
     if (el) {
-      const merged = el.querySelector("p.is-merge");
-      if (merged && merged.contains(window.getSelection().anchorNode)) merged.classList.remove("is-merge");
+      const anchor = window.getSelection().anchorNode;
+      const node = anchor && anchor.nodeType === 1 ? anchor : anchor && anchor.parentElement;
+      const merged = node && node.closest ? node.closest("p.is-merge") : null;
+      if (merged && el.contains(merged)) merged.classList.remove("is-merge");
     }
     updateActive();
   };
@@ -275,51 +277,62 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     selection.addRange(range);
   };
 
-  /* 采纳后留在正文里：空白页上那个空段落先拿掉，免得正文以一个空行开头 */
-  const appendParagraph = (className, html) => {
+  /* 采纳后留在正文里：续写是几段就追加几段 <p>（空白页上那个空段落先拿掉，免得正文以一个空行开头）。
+     返回追加的段落；光标放在最后一段末尾。 */
+  const appendParagraphs = (className, htmls) => {
     const el = editorRef.current;
-    if (approvedLocked || inDeep || !el) return null;
-    const p = document.createElement("p");
-    p.className = className;
-    p.innerHTML = html;
+    const list = (htmls || []).filter((html) => html);
+    if (approvedLocked || inDeep || !el || !list.length) return [];
     if (el.children.length === 1 && !String(el.textContent || "").trim()) el.innerHTML = "";
-    el.appendChild(p);
+    const added = list.map((html) => {
+      const p = document.createElement("p");
+      p.className = className;
+      p.innerHTML = html;
+      el.appendChild(p);
+      return p;
+    });
     trayReturnRef.current = null;
     setTrayOpen(false);
     if (!layout.dockRight) layout.closeRight();
-    caretToEnd(p);
+    caretToEnd(added[added.length - 1]);
     doc.recount();
     doc.schedulePersist();
-    return p;
+    return added;
   };
   const scrollToEnd = () => {
     const scroller = scrollRef.current;
     if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
   };
-  const adoptHTML = (html) => {
-    const p = appendParagraph("is-fresh", html);
-    if (!p) return;
+  const adoptParagraphs = (htmls) => {
+    const added = appendParagraphs("is-fresh", htmls);
+    if (!added.length) return;
     requestAnimationFrame(() => {
       scrollToEnd();
       updateActive();
-      setTimeout(() => p.classList.remove("is-fresh"), 1600);
+      setTimeout(() => added.forEach((p) => p.classList.remove("is-fresh")), 1600);
     });
   };
-  const adoptText = useWrEvent((text) => {
-    if (!text) return;
-    const holder = document.createElement("p");
-    holder.textContent = text;
-    adoptHTML(holder.innerHTML);
+  /* 候选里的一段（已转义的 HTML）→ 可以进正文的段落 HTML */
+  const candParagraphs = (cand) => ((cand && cand.paras) || []).map((html) => sanitizeManuscriptHTML(String(html).replace(/<\/?mark>/g, "")));
+  /* 采纳选中的几句：texts 是按原来的段落拼好的纯文字（一段一条） */
+  const adoptText = useWrEvent((texts) => {
+    const list = (Array.isArray(texts) ? texts : [texts]).filter((text) => text);
+    if (!list.length) return;
+    adoptParagraphs(list.map((text) => {
+      const holder = document.createElement("p");
+      holder.textContent = text;
+      return holder.innerHTML;
+    }));
   });
-  const adopt = useWrEvent((cand) => adoptHTML(sanitizeManuscriptHTML(cand.html.replace(/<\/?mark>/g, ""))));
-  /* 作为草稿插入：插成一段待改的草稿段落并把光标放进去，让作者用自己的话揉进去，而不是原样收下。
+  const adopt = useWrEvent((cand) => adoptParagraphs(candParagraphs(cand)));
+  /* 作为草稿插入：插成待改的草稿段落并把光标放进去，让作者用自己的话揉进去，而不是原样收下。
      草稿段落的虚线框只在这次打开时可见（落盘的是干净正文）。 */
   const merge = useWrEvent((cand) => {
-    const p = appendParagraph("is-merge", sanitizeManuscriptHTML(cand.html.replace(/<\/?mark>/g, "")));
-    if (!p) return;
+    const added = appendParagraphs("is-merge", candParagraphs(cand));
+    if (!added.length) return;
     requestAnimationFrame(() => {
       scrollToEnd();
-      caretToEnd(p);
+      caretToEnd(added[added.length - 1]);
       updateActive();
     });
   });

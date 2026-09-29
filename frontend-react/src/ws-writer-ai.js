@@ -8,7 +8,7 @@
    · wrContinueDirection(proposal, index)：后端一次生成三条续写，分别按
      动作推进 / 关系压力 / 悬念 三个方向（author_drafts.CONTINUATION_VARIANT_DIRECTIONS，
      proposal_source 的后缀就是方向），候选卡片据此命名，不再叫「候选 1/2/3」。
-   · wrContinueCandidates(generated)：generate-set 的响应 → 候选卡片数据。
+   · wrContinueCandidates(generated)：generate-set 的响应 → 候选卡片数据（按段）。
    · WR_RW_ACTIONS / wrToneInstr：选区工具条的改写指令。
    纯函数模块，不读 store、不写 window；真正发请求的在 ws-writer-requests.js。
    ========================================================== */
@@ -107,25 +107,27 @@ export function wrContinueChips(design) {
   return chips;
 }
 
-function tidy(text) {
-  return String(text || "").replace(/\s*\n\s*/g, "").trim();
+/* 续写正文 → 段落：服务端按换行分段。过去整条去掉换行，三五段的续写被当成一段显示、采纳成一个 <p>，
+   不同人物的对白挤进同一段。换行两边的空白去掉，空段不要。 */
+function continuationParagraphs(text) {
+  return String(text || "").split(/\s*\n\s*/).map((part) => part.trim()).filter(Boolean);
 }
 
-/* generate-set 的响应 → 候选卡片 { id, approach, tone, note, html }。
+/* generate-set 的响应 → 候选卡片 { id, approach, tone, note, paras }（paras：每段一条已转义的 HTML）。
    一条可用的都没有时抛本地错误 no-result，由 wrAiError 翻译（没配模型时服务端直接回 409，不会走到这里）。 */
 export function wrContinueCandidates(generated) {
   const cands = [];
   const proposals = Array.isArray(generated && generated.proposals) ? generated.proposals : [];
   proposals.forEach((proposal, index) => {
-    const text = tidy(proposal && proposal.content);
-    if (!text) return;
+    const paras = continuationParagraphs(proposal && proposal.content);
+    if (!paras.length) return;
     const direction = wrContinueDirection(proposal, index);
     cands.push({
       id: (proposal && proposal.proposal_id) || ("cand" + cands.length),
       approach: direction.label,
       tone: direction.tone,
       note: (proposal && proposal.rationale) || "",
-      html: escapeHtmlText(text),
+      paras: paras.map(escapeHtmlText),
     });
   });
   if (!cands.length) throw wrAiLocalError("no-result");
