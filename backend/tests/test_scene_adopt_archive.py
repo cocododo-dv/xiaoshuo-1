@@ -818,6 +818,20 @@ def test_final_gate_does_not_warn_about_the_diagnostic_evidence_signal(session):
     assert "literary:automated_evidence_sufficiency" not in gate["warning_codes"]
 
 
+def test_final_gate_result_carries_each_value_once(session):
+    """B04-24：成稿门的结果不再把同一个值换个名字再存一遍（literary / blockers / blocking_codes /
+    promotion_blocking_codes 没人读，存进归档记录与操作日志时白白翻倍）；读者认的旧名 archivable 照旧给。"""
+    from novel_system.services.final_text_gate import FINAL_TEXT_GATE_SCHEMA_VERSION, FinalTextGateService
+
+    gate = FinalTextGateService(session).evaluate(scene_id="scene_short_text", content="她推开门，选择离开。")
+
+    assert not {"literary", "blockers", "blocking_codes", "promotion_blocking_codes"} & set(gate)
+    assert gate["archivable"] is gate["safe_to_archive"]
+    assert gate["literary_quality"]["available"] is True
+    assert {"archive_blockers", "promotion_blockers", "auto_promotable"} <= set(gate)
+    assert gate["schema_version"] == FINAL_TEXT_GATE_SCHEMA_VERSION == 4
+
+
 def test_final_gate_checks_required_text_group_by_group(session):
     """批准#11（B04-04）：必写内容整组没写，成稿门就是已证实的 Q1——以前只要沾上两个三字片段就算整段满足。"""
     from novel_system.db.models import ChapterGoal, SceneCard, StoryProject

@@ -30,7 +30,8 @@ from novel_system.services.quality_checks.continuity import (
 from novel_system.services.style_policy import StylePolicy, style_policy_for_scene
 
 
-FINAL_TEXT_GATE_SCHEMA_VERSION = 3
+# 4：结果不再带同值的别名 literary / blockers / blocking_codes / promotion_blocking_codes（B04-24，没人读）
+FINAL_TEXT_GATE_SCHEMA_VERSION = 4
 CHARACTER_SCENE_CORE_MIN = 0.80
 ENDING_DRIVE_MIN = 0.78
 CHOICE_PRESSURE_MIN = 0.78
@@ -146,22 +147,17 @@ class FinalTextGateService:
                 "literary_warnings_unresolved": literary_warnings_unresolved,
                 "author_confirmed_final": bool(author_confirmed_final),
             },
-            # Backward-compatible alias retained for existing archive callers.
+            # 旧名，存下来的结果与读它们的归档摘要 / 成稿中心仍认它（新结果照旧给）
             "archivable": safe_to_archive,
             "auto_promotable": not promotion_blockers,
-            # ``blockers`` remains a convenient alias for promotion callers.
-            "blockers": promotion_blockers,
             "archive_blockers": archive_blockers,
             "promotion_blockers": promotion_blockers,
-            "blocking_codes": archive_blockers,
-            "promotion_blocking_codes": promotion_blockers,
             "warning_codes": warning_codes,
             "warnings": warnings,
             "source_safety": source_safety,
             "bundle_integrity": bundle_integrity,
             "content_safety": content_safety,
             "continuity": continuity,
-            "literary": literary,
             "literary_quality": literary,
         }
 
