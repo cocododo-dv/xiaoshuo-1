@@ -377,7 +377,7 @@ class SnowflakeWorkspaceService:
                 author_direction_brief=brief_prompt,
                 direction_kind=direction_kind,
             )
-            # 模型看到的是规范口径的 id，回来的也按规范口径落库；缺 id 的新角色在这里铸号
+            # 模型看到的是规范口径的 id，回来的也按规范口径落库；缺 id 的新成员在这里铸号
             draft = canonicalize_draft(project.project_id, llm_result.payload, mint_missing=True)
             source = llm_result.source
             llm_call_id = llm_result.llm_call_id

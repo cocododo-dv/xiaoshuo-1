@@ -11,7 +11,7 @@ B06-01（2026-09-30 作者批准 #16c）：React 的角色表按 c1 / c2 / … �
   视角（``pov_character_id``）、在场人物（``onstage_chars_json``）、全书主角（``protagonist_character_id``）的引用
   同一口径。
 - **交给前端时剥前缀**：前端本机缓存、写穿的 ``fe_scaffold`` 与规范字段里的 id 永远是同一个字符串——保真合并
-  （``mergeCanon``）按 id 对位，才对得上；前端给新角色编号（c1 / c2 / …）也不会撞上一个它从没见过的带前缀的 id。
+  （``mergeCanon``）按 id 对位，才对得上；前端给新加的人物编号（c1 / c2 / …）也不会撞上一个它从没见过的带前缀的 id。
   ``fe_*`` 写穿键是前端自己的数据，服务端从不改写。
 - 两个方向互为逆运算：``canonical(present(x)) == x``（x 带本作品前缀），``present(canonical(y)) == y``（y 不带）。
 """
