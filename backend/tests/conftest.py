@@ -11,6 +11,78 @@ import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
+# ---------------------------------------------------------------------------
+# 会话开始：只跑本检出的代码、不带开发者的 NOVEL_SYSTEM_* 环境（都必须先于下面任何 novel_system 导入）
+# ---------------------------------------------------------------------------
+
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+# 本检出里 novel_system 可以来自的两处：backend/src 下的包，和 backend/ 下只有 __init__.py 的旧导入垫片
+_CHECKOUT_PACKAGE_DIRS = (
+    (_BACKEND_DIR / "src" / "novel_system").resolve(),
+    (_BACKEND_DIR / "novel_system").resolve(),
+)
+# 只有这两个 NOVEL_SYSTEM_* 可以从外面带进测试进程：可选的本地私有语料通道、E2E 通道用的解释器路径
+ENV_PASSTHROUGH = frozenset({"NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS", "NOVEL_SYSTEM_PYTHON"})
+
+
+def _inside_checkout(path: str | os.PathLike[str]) -> bool:
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return False
+    return any(resolved == root or root in resolved.parents for root in _CHECKOUT_PACKAGE_DIRS)
+
+
+def foreign_novel_system_modules() -> list[str]:
+    """已经导入的 novel_system 模块里，文件不在本检出的（``名字 → 路径``）。"""
+    foreign: list[str] = []
+    for name, module in list(sys.modules.items()):
+        if name != "novel_system" and not name.startswith("novel_system."):
+            continue
+        origin = getattr(module, "__file__", None)
+        if origin and not _inside_checkout(origin):
+            foreign.append(f"{name} → {origin}")
+    return sorted(foreign)
+
+
+def _refuse_foreign_code(when: str) -> None:
+    foreign = foreign_novel_system_modules()
+    if foreign:
+        raise pytest.UsageError(
+            f"测试会话（{when}）导入了本检出之外的 novel_system 代码，拒绝运行。本检出：{_CHECKOUT_PACKAGE_DIRS[0]}\n  "
+            + "\n  ".join(foreign[:20])
+            + "\n多半是在 git worktree 里跑、共用 venv 的可编辑安装指向了另一个检出：从本检出的 backend/ 目录跑 pytest，"
+            "PYTHONPATH 以本检出的 backend/src 开头。"
+        )
+
+
+def confine_novel_system_to_this_checkout() -> None:
+    """测试会话只导入本检出的 novel_system（X04-06）。
+
+    各 git worktree 共用一个 venv，venv 里可编辑安装的 .pth 指向另一个检出；backend/novel_system/__init__.py 这个
+    垫片用 ``pkgutil.extend_path``，于是 ``novel_system.__path__`` 里混进了那个检出的包目录——在本检出里删掉 / 搬走的
+    模块还能从那边悄悄导进来，测试照样绿。这里把外来目录从 ``__path__`` 里拿掉（之后本检出里没有的模块就是
+    ModuleNotFoundError），已经从外面导进来的模块直接拒跑。垫片本身留着：``python -m novel_system.tools…`` 从 backend/
+    启动时靠它。
+    """
+    import novel_system
+
+    novel_system.__path__[:] = [entry for entry in novel_system.__path__ if _inside_checkout(entry)]
+    _refuse_foreign_code("会话开始")
+
+
+def developer_env_keys() -> list[str]:
+    """当前环境里要清掉的 NOVEL_SYSTEM_* 变量（``ENV_PASSTHROUGH`` 以外的全部）。"""
+    return sorted(key for key in os.environ if key.startswith("NOVEL_SYSTEM_") and key not in ENV_PASSTHROUGH)
+
+
+confine_novel_system_to_this_checkout()
+# 测试进程不认开发者 shell 里的 NOVEL_SYSTEM_*（X04-05）：作者的机器为实跑导出了 LLM_ENABLED / BASE_URL / API_KEY，
+# 不清掉的话「没配 LLM 就 fail-closed」的用例会真的把提示词发给服务商。这里在导入期清一次（模块级 skipif、会话级
+# 夹具与子进程都看不到它们），每个用例开始前 ``_hermetic_test_process`` 再清一次，``isolated_database`` 再设测试默认值。
+for _key in developer_env_keys():
+    del os.environ[_key]
+
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 from novel_system.api.app import create_app
@@ -18,6 +90,19 @@ from novel_system.cache_registry import reset_all_caches
 from novel_system.db.base import Base
 from novel_system.db.session import SessionLocal, reset_engine
 from novel_system.services.style_reference.jobs import SWEEPER_THREAD_NAME, shutdown_job_workers
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """会话结束再查一遍：整个会话导入过的 novel_system 模块都来自本检出。"""
+    foreign = foreign_novel_system_modules()
+    if foreign:
+        session.exitstatus = pytest.ExitCode.USAGE_ERROR
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        message = "测试会话导入了本检出之外的 novel_system 代码：\n  " + "\n  ".join(foreign[:20])
+        if reporter is not None:
+            reporter.write_line("\n" + message, red=True)
+        else:
+            print(message, file=sys.stderr)
 
 
 @pytest.fixture(scope="session")
@@ -39,8 +124,14 @@ def _schema_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_test_process() -> Generator[None, None, None]:
-    """每个用例前后各复位一次登记过的进程级缓存（X04-16；为什么要复位见 ``novel_system.cache_registry``）。"""
+def _hermetic_test_process(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """每个用例：先清掉会话里冒出来的 NOVEL_SYSTEM_*（X04-05），前后各复位一次登记过的进程级缓存（X04-16）。
+
+    必须定义在 ``isolated_database`` 之前：同作用域的自动夹具按定义顺序排，它要先清、``isolated_database`` 后设
+    测试默认值（按名覆盖 ``isolated_database`` 的测试文件也一样）。缓存为什么要复位见 ``novel_system.cache_registry``。
+    """
+    for key in developer_env_keys():
+        monkeypatch.delenv(key)
     reset_all_caches()
     yield
     reset_all_caches()
@@ -66,6 +157,7 @@ def isolated_database(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
     _schema_template: Path,
+    _hermetic_test_process: None,
 ) -> Generator[None, None, None]:
     is_chroma_integration = request.node.get_closest_marker("chroma_integration") is not None
     if is_chroma_integration and sys.platform == "win32":
@@ -92,9 +184,6 @@ def isolated_database(
     # 「武装 5×」为基线运行——绝大多数断言都建立在这道闸门存在之上（5×基线、耗尽码、topup
     # 审计等）。解除武装本身由 test_scene_token_budget.py 里显式设 0 的专门用例覆盖。
     monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "5")
-    # A small set of acceptance tests seed review lifecycle fixtures through a
-    # hidden maintenance boundary. Production keeps this disabled by default.
-    monkeypatch.setenv("NOVEL_SYSTEM_ENABLE_FIXTURE_IMPORT", "true")
 
     reset_engine()
     yield
