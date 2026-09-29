@@ -1,4 +1,5 @@
 import { LEGACY_DRAFT_PLACEHOLDER, sanitizeManuscriptHTML, stripLeadingPlaceholder, unwrapInline } from "./manuscript-html.js";
+import { countChars } from "./lib/text.js";
 
 /* ==========================================================
    写作台正文的序列化边界（2026-09-21）
@@ -40,7 +41,7 @@ export function wrStripUiMarkup(root) {
 }
 
 function hasText(root) {
-  return !!String((root && root.textContent) || "").replace(/\s/g, "");
+  return countChars((root && root.textContent) || "") > 0;
 }
 
 /* 编辑器 → 存盘 HTML。不改动传入的节点（克隆后处理）；没有一个字时返回空串。 */
@@ -140,5 +141,5 @@ export function wrBlockSlice(block, range) {
 export function wrCountText(el) {
   if (!el) return 0;
   const text = el.innerText != null ? el.innerText : el.textContent;
-  return String(text || "").replace(/\s/g, "").length;
+  return countChars(text || "");
 }

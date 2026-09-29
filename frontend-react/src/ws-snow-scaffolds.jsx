@@ -6,6 +6,7 @@ import { S2AutoText } from "./ws-snow-fields.jsx";
 import { S2SceneList } from "./ws-snow-scene-list.jsx";
 import { S2ScenePlan } from "./ws-snow-scene-plan.jsx";
 import { S2_SPINE_OPTS, s2BusyOn } from "./ws-snow-model.js";
+import { countChars } from "./lib/text.js";
 
 /* ==========================================================
    雪花十步的编辑器（编辑页）
@@ -32,7 +33,7 @@ export const S2StepEditor = React.memo(function S2StepEditor({ step, data, draft
 /* ====== Freeform editor (+ optional word meter) ====== */
 function S2Edit({ draft, setDraft, stepName, target, meter }) {
   // 字数只报一处、只有一个口径：有长度尺就看尺子，没有才在工具行里报（以前工具行「目标约 60」、尺子「/ 42」、页头「≤25 词」三个数并存）
-  const len = draft.replace(/\s+/g, "").length;
+  const len = countChars(draft);
   return (
     <div className="edit-pane">
       {meter
@@ -399,7 +400,7 @@ function S2SynopsisBeats({ scaffold, onScaffold, refs }) {
       {S2_SYN_BEATS.map((b, i) => {
         const src = para03[b.ref] || "";
         const expanded = (paras[b.f] || "");
-        const grew = expanded.replace(/\s/g, "").length > src.replace(/\s/g, "").length;
+        const grew = countChars(expanded) > countChars(src);
         return (
           <div key={b.f} className={`sf-syn-row tone-${b.tone}`}>
             <div className="sf-syn-side">
@@ -415,7 +416,7 @@ function S2SynopsisBeats({ scaffold, onScaffold, refs }) {
               <S2AutoText className="sf-syn-text" minRows={3} value={expanded} onChange={(e) => setPara(b.f, e.target.value)} aria-label={`${b.label}：扩成一段`} placeholder={`把「${b.label}」扩成一段有画面的梗概…`} />
               {expanded.trim() && (
                 <div className={`sf-syn-meta ${grew ? "is-ok" : "is-warn"}`}>
-                  {grew ? <><I.Check size={10} /> 已展开（{expanded.replace(/\s/g, "").length} 字 &gt; 源句 {src.replace(/\s/g, "").length}）</> : <><I.AlertTriangle size={10} /> 还没比源句长——再填点画面</>}
+                  {grew ? <><I.Check size={10} /> 已展开（{countChars(expanded)} 字 &gt; 源句 {countChars(src)}）</> : <><I.AlertTriangle size={10} /> 还没比源句长——再填点画面</>}
                 </div>
               )}
             </div>
@@ -479,8 +480,8 @@ function S2ChapterOutline({ scaffold, onScaffold, refs, onOpenChapterPlan, catal
         {S2_SYN_BEATS.map((b, i) => {
           const src = syn05[b.f] || "";
           const expanded = expansions[b.f] || "";
-          const len = expanded.replace(/\s/g, "").length;
-          const grew = len > src.replace(/\s/g, "").length;
+          const len = countChars(expanded);
+          const grew = len > countChars(src);
           return (
             <div key={b.f} className={`sf-syn-row tone-${b.tone}`}>
               <div className="sf-syn-side">

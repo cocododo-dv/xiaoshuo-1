@@ -1,6 +1,7 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
 import { htmlToParagraphs, manuscriptToDocHTML, sanitizeManuscriptHTML } from "./manuscript-html.js";
+import { countChars } from "./lib/text.js";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { wsToast } from "./ws-notify.jsx";
 
@@ -698,7 +699,7 @@ const WrRecovery = {
     if (!entry) throw Object.assign(new Error("恢复记录已不存在"), { code: "RECOVERY_NOT_FOUND" });
     assertRecoveryWork(entry);
     const current = cacheRead(entry.sid) || "";
-    const hasCurrent = htmlToParagraphs(current).join("").replace(/\s/g, "").length > 0;
+    const hasCurrent = countChars(htmlToParagraphs(current).join("")) > 0;
     let replacedBackup = null;
     if (hasCurrent && current !== (entry.html || "")) {
       // “恢复”本质上也是一次显式替换：先留下可撤销的当前稿，配额不足则

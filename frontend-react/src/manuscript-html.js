@@ -1,3 +1,9 @@
+/* 正文 HTML 小工具的唯一住处（2026-09-29 前端共享层）：消毒、转义、拆空壳标记、旧占位句、
+   HTML → 段落 / 纯文本，以及编辑器「一段」的选择器。纯函数模块，不读 store、不写 window；
+   用到 document 的函数在没有 DOM 的环境里各自退回。 */
+
+import { countChars } from "./lib/text.js";
+
 const ALLOWED_MANUSCRIPT_TAGS = new Set([
   "P", "BR", "DIV", "SPAN", "STRONG", "B", "EM", "I", "U", "S", "STRIKE",
   "BLOCKQUOTE", "UL", "OL", "LI", "PRE", "CODE", "H1", "H2", "H3", "H4",
@@ -11,10 +17,6 @@ const DROP_WITH_CONTENT = new Set([
 const DROP_EMPTY = new Set([
   "IMG", "AUDIO", "VIDEO", "SOURCE", "TRACK", "LINK", "META", "BASE", "INPUT",
 ]);
-
-/* 正文 HTML 小工具的唯一住处（2026-09-29 前端共享层）：消毒、转义、拆空壳标记、旧占位句、
-   HTML → 段落 / 纯文本，以及编辑器「一段」的选择器。纯函数模块，不读 store、不写 window；
-   用到 document 的函数在没有 DOM 的环境里各自退回。 */
 
 /* 编辑器里「一段」是什么：后端 manuscript_html.manuscript_paragraphs 按同一条规则数段（契约），
    诊断发现的 paragraph_index 就是这个选择器在编辑器里命中的第几个。 */
@@ -136,7 +138,7 @@ export function hasAuthorText(html) {
     template.innerHTML = stripLegacyDraftPlaceholder(sanitizeManuscriptHTML(raw));
     text = template.content.textContent || "";
   }
-  return text.replace(/\s/g, "").length > 0;
+  return countChars(text) > 0;
 }
 
 export function manuscriptToDocHTML(value) {

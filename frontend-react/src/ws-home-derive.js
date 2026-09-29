@@ -11,6 +11,7 @@
 import { snowStepByBackendKey } from "./ws-nav.js";
 import { CHAPTER_STATE_ORDER, chapterHeading, chapterLabel, chapterStateMeta, manuscriptStage, sceneLabel } from "./ws-labels.js";
 import { LEGACY_DRAFT_PLACEHOLDER } from "./manuscript-html.js";
+import { countChars } from "./lib/text.js";
 
 const HM_BEAT_TONES = ["sage", "gold", "crimson"];
 
@@ -106,8 +107,7 @@ function hmFocusModel(focus, home) {
 }
 
 /* 旧占位句自己的字数（编辑器口径：去掉空白后的字符数）。后端还不认识这句占位，旧草稿按它计过字。 */
-const hmCharCount = (s) => String(s == null ? "" : s).replace(/\s/g, "").length;
-const HM_PLACEHOLDER_WORDS = hmCharCount(LEGACY_DRAFT_PLACEHOLDER);
+const HM_PLACEHOLDER_WORDS = countChars(LEGACY_DRAFT_PLACEHOLDER);
 
 /* 服务端 dashboard 的 last_lines：后端从草稿纯文本切出来的末两行，没去旧占位。
    只有这几行就是整份草稿时，第一行才是草稿的开头——一行时必然如此；两行时拿同一份草稿的字数对一下
@@ -115,7 +115,7 @@ const HM_PLACEHOLDER_WORDS = hmCharCount(LEGACY_DRAFT_PLACEHOLDER);
    整行是占位就删行，占位后面接着写的只删这几个字；正文后面恰好写到这句话，是作者的字。 */
 function hmDashboardLines(lines, draftWords) {
   const list = (Array.isArray(lines) ? lines : []).map(x => String(x == null ? "" : x).trim()).filter(Boolean);
-  const whole = list.length === 1 || (list.length > 1 && list.reduce((n, x) => n + hmCharCount(x), 0) === draftWords);
+  const whole = list.length === 1 || (list.length > 1 && list.reduce((n, x) => n + countChars(x), 0) === draftWords);
   if (!whole || !list[0].startsWith(LEGACY_DRAFT_PLACEHOLDER)) return { lines: list, placeholderOnly: false };
   const rest = list[0].slice(LEGACY_DRAFT_PLACEHOLDER.length).trim();
   const out = rest ? [rest, ...list.slice(1)] : list.slice(1);

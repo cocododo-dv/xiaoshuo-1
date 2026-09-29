@@ -9,6 +9,7 @@
      和永远对不上的「戏剧卡对齐」——它们和后端按参考作者放宽的门互相矛盾。
    ========================================================== */
 import { paragraphTypeLabel, styleDimensionLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
+import { countChars } from "./lib/text.js";
 
 /* ---- 场景在台面上的状态词：本地「从没提交过」的场叫「待起草」；「排队中」只留给后端真的排上了队的任务
    （job.status=queued）。过去两者都叫「排队」，同一场在头部写「排队」、在书脊上写「待起草」。 ---- */
@@ -308,7 +309,7 @@ function scnQC(paras) {
   const draft = (paras || [])
     .map((p, i) => ({ id: p.id || `p${i + 1}`, parts: [{ text: String((p && p.text) || "") }] }))
     .filter(p => p.parts[0].text);
-  const words = draft.map(p => p.parts[0].text).join("").replace(/\s/g, "").length;
+  const words = countChars(draft.map(p => p.parts[0].text).join(""));
   return { draft, words, verdict: { words } };
 }
 function scnReQC(draft) {

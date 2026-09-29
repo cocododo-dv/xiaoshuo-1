@@ -4,6 +4,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
 import { escapeHtmlText, hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
+import { countChars } from "./lib/text.js";
 import { copyGateAdoptMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { fidPatchView, fidRankText, fidStyleStepView, fidVerdict } from "./ws-fidelity-model.js";
 import {
@@ -441,7 +442,7 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   }
   const hit = WsCatalog.sceneById(sid);
   const prev = hit && typeof hit.scene.words === "number" ? hit.scene.words : 0;
-  const count = text.replace(/\s/g, "").length;
+  const count = countChars(text);
   try { WsCatalog.recordSceneWords(sid, count, prev); } catch (e) {}
   try {
     WsCatalog.set(WsCatalog.get().map(c => ({
