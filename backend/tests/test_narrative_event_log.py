@@ -121,29 +121,6 @@ def test_known_facts_tracks_character_learns(session) -> None:
     assert facts_at_3[-1].fact_value == "true"
 
 
-def test_all_facts_at_scene_projects_all_characters(session) -> None:
-    _seed_project(session)
-    log = NarrativeEventLog(session)
-
-    log.log_event(
-        project_id="PROJ1", scene_id="CH_EVT01_SC01", chapter_id="CH_EVT01",
-        event_type="character_state", entity_type="character", entity_id="CHAR_LIN",
-        fact_key="location", fact_value="沧澜城",
-    )
-    log.log_event(
-        project_id="PROJ1", scene_id="CH_EVT01_SC01", chapter_id="CH_EVT01",
-        event_type="character_state", entity_type="character", entity_id="CHAR_SU",
-        fact_key="location", fact_value="京城",
-    )
-    session.commit()
-
-    states = log.all_facts_at_scene("PROJ1", scene_seq=1)
-    assert "CHAR_LIN" in states
-    assert "CHAR_SU" in states
-    assert states["CHAR_LIN"].get("location") == "沧澜城"
-    assert states["CHAR_SU"].get("location") == "京城"
-
-
 def test_check_consistency_passes_for_valid_text(session) -> None:
     _seed_project(session)
     log = NarrativeEventLog(session)
@@ -251,25 +228,3 @@ def test_information_asymmetry_digest_pov_hides_secrets(session) -> None:
     )
     assert "毒药在酒里" not in out
     assert "Secrets held by CHAR_X" not in out
-
-
-def test_log_events_batch(session) -> None:
-    _seed_project(session)
-    log = NarrativeEventLog(session)
-
-    events = log.log_events_batch([
-        dict(
-            project_id="PROJ1", scene_id="CH_EVT01_SC01", chapter_id="CH_EVT01",
-            event_type="character_state", entity_type="character", entity_id="A",
-            fact_key="location", fact_value="east",
-        ),
-        dict(
-            project_id="PROJ1", scene_id="CH_EVT01_SC01", chapter_id="CH_EVT01",
-            event_type="character_state", entity_type="character", entity_id="B",
-            fact_key="location", fact_value="west",
-        ),
-    ])
-    session.commit()
-
-    assert len(events) == 2
-    assert all(e.event_id.startswith("nevt_") for e in events)

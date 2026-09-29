@@ -29,7 +29,7 @@ def build_character_contract_digest(
         metadata = voice_metadata if is_pov else {}
         # 优先用 StoryCharacter 的权威 display_name；其次声线卡元数据；最后才退化到 id。
         # 否则裸 character_id 会被当成角色名写进提示词 → 模型把 id 当人名/线索写进正文。
-        display_name = (names.get(character_id) or "").strip() or metadata.get("display_name") or _display_name_from_id(character_id)
+        display_name = (names.get(character_id) or "").strip() or metadata.get("display_name") or character_id
         character = {
             "character_id": character_id,
             "display_name": display_name,
@@ -188,12 +188,6 @@ def _extract_aliases(content: str) -> list[str]:
     if not raw:
         return []
     return list(dict.fromkeys(token.strip() for token in re.split(r"[,，、/;；\s]+", raw) if token.strip()))
-
-
-def _display_name_from_id(character_id: str) -> str:
-    if re.search(r"[\u4e00-\u9fff]", character_id):
-        return character_id
-    return character_id
 
 
 def _single_line(value: str) -> str:

@@ -772,8 +772,6 @@ class CanonContinuityService:
                     fact_value=source.fact_value,
                     confidence=source.confidence,
                     causal_predecessor_id=source.event_id,
-                    theme_tags=list(source.theme_tags or []),
-                    obligation_ids=list(source.obligation_ids or []),
                     source_text_excerpt=source.source_text_excerpt,
                     authority_status="accepted",
                     source_kind="facts_unchanged",
@@ -902,15 +900,6 @@ class CanonContinuityService:
                 f"{delta.get('entity_id')}.{delta.get('fact_key')} = "
                 f"{delta.get('fact_value')} ({delta.get('event_type')})"
             )
-        obligations = list(
-            dict.fromkeys(
-                obligation
-                for snapshot in snapshots
-                for obligation in (snapshot.open_obligations_json or [])
-            )
-        )
-        if obligations:
-            lines.append("- Open obligations: " + ", ".join(obligations[:20]))
         return "\n".join(lines)
 
     def scene_status(self, project_id: str, scene_id: str) -> dict[str, Any]:
@@ -1201,13 +1190,6 @@ class CanonContinuityService:
             if item["event_type"] in {"location_change", "foreshadow_plant", "foreshadow_resolve"}
         ]
         snapshot.entity_ids_json = list(dict.fromkeys(event.entity_id for event in events))
-        snapshot.open_obligations_json = list(
-            dict.fromkeys(
-                obligation
-                for event in events
-                for obligation in (event.obligation_ids or [])
-            )
-        )
         snapshot.source_commit_ids_json = [commit.commit_id for commit in commits]
         snapshot.latest_commit_id = commits[-1].commit_id if commits else None
         snapshot.summary_text = "\n".join(self._delta_summary(item) for item in deltas)
@@ -1292,13 +1274,6 @@ class CanonContinuityService:
                 entity
                 for item in current_scene_snapshots
                 for entity in (item.entity_ids_json or [])
-            )
-        )
-        snapshot.open_obligations_json = list(
-            dict.fromkeys(
-                obligation
-                for item in current_scene_snapshots
-                for obligation in (item.open_obligations_json or [])
             )
         )
         snapshot.source_commit_ids_json = list(

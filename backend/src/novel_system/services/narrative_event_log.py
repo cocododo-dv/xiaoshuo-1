@@ -56,7 +56,6 @@ class ProjectedFact:
     fact_key: str
     fact_value: str
     scene_id: str
-    scene_seq: int
     event_id: str
     confidence: str = "high"
 
@@ -233,9 +232,6 @@ class NarrativeEventLog:
         fact_key: str,
         fact_value: str,
         confidence: str = "high",
-        causal_predecessor_id: str | None = None,
-        theme_tags: list[str] | None = None,
-        obligation_ids: list[str] | None = None,
         source_text_excerpt: str | None = None,
         payload: dict[str, Any] | None = None,
         authority_status: str = "planned",
@@ -255,6 +251,8 @@ class NarrativeEventLog:
             project_id=project_id,
             scene_id=scene_id,
             chapter_id=chapter_id,
+            # 写入时的章内位置，只作记录：重放按场景卡的当前位置排序（narrative_position），
+            # 场景挪动后这一列不跟着改。
             scene_seq=cursor.scene_seq,
             event_type=event_type,
             entity_type=entity_type,
@@ -262,9 +260,6 @@ class NarrativeEventLog:
             fact_key=fact_key,
             fact_value=fact_value,
             confidence=confidence,
-            causal_predecessor_id=causal_predecessor_id,
-            theme_tags=theme_tags or [],
-            obligation_ids=obligation_ids or [],
             source_text_excerpt=source_text_excerpt,
             authority_status=authority_status,
             source_kind=source_kind,
@@ -275,12 +270,6 @@ class NarrativeEventLog:
         self.session.add(event)
         self.session.flush()
         return event
-
-    def log_events_batch(self, events: list[dict[str, Any]]) -> list[NarrativeEvent]:
-        result = []
-        for evt in events:
-            result.append(self.log_event(**evt))
-        return result
 
     def project_character_state(
         self,
@@ -320,7 +309,6 @@ class NarrativeEventLog:
                 fact_key=evt.fact_key,
                 fact_value=evt.fact_value,
                 scene_id=evt.scene_id,
-                scene_seq=evt.scene_seq,
                 event_id=evt.event_id,
                 confidence=evt.confidence,
             )
@@ -366,7 +354,6 @@ class NarrativeEventLog:
                 fact_key=evt.fact_key,
                 fact_value=evt.fact_value,
                 scene_id=evt.scene_id,
-                scene_seq=evt.scene_seq,
                 event_id=evt.event_id,
                 confidence=evt.confidence,
             )
@@ -403,49 +390,11 @@ class NarrativeEventLog:
                 fact_key=evt.fact_key,
                 fact_value=evt.fact_value,
                 scene_id=evt.scene_id,
-                scene_seq=evt.scene_seq,
                 event_id=evt.event_id,
                 confidence=evt.confidence,
             )
             for evt in events
         ]
-
-    def all_facts_at_scene(
-        self,
-        project_id: str,
-        scene_seq: int | None = None,
-        *,
-        scene_id: str | None = None,
-    ) -> dict[str, CharacterState]:
-        """Project all character states at a given scene. Returns {character_id: CharacterState}."""
-        query = self._event_statement(
-            project_id,
-            up_to_scene_id=scene_id,
-            up_to_scene_seq=scene_seq if scene_id is None else None,
-        ).where(NarrativeEvent.entity_type == "character")
-        events = self.session.execute(query).scalars().all()
-
-        states: dict[str, CharacterState] = {}
-        for evt in events:
-            state = states.setdefault(evt.entity_id, CharacterState(character_id=evt.entity_id))
-            existing = state.facts.get(evt.fact_key)
-            if (
-                existing is not None
-                and existing.scene_id == evt.scene_id
-                and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
-            ):
-                continue  # 同场景内 advisory 不得反超高置信 spec 事实
-            state.facts[evt.fact_key] = ProjectedFact(
-                entity_type=evt.entity_type,
-                entity_id=evt.entity_id,
-                fact_key=evt.fact_key,
-                fact_value=evt.fact_value,
-                scene_id=evt.scene_id,
-                scene_seq=evt.scene_seq,
-                event_id=evt.event_id,
-                confidence=evt.confidence,
-            )
-        return states
 
     def check_consistency(
         self,
@@ -522,7 +471,7 @@ class NarrativeEventLog:
         Wave 4（§5.6）：这是**写作提示词**槽位。当指定 ``pov_character_id`` 时，委派
         `PovKnowledgeProjection` 做 POV 减法投影，隐藏非 POV 秘密内容；``pov=None``
         保持全知视角全量注入（逐字节不变）。**硬 QC 不走此方法**——它读
-        `project_character_state` / `all_facts_at_scene` 的全量权威状态，不受投影影响。
+        `project_character_state` / `check_consistency` 的全量权威状态，不受投影影响。
         """
         if pov_character_id:
             from novel_system.services.pov_knowledge_projection import (
@@ -549,15 +498,6 @@ class NarrativeEventLog:
             lines.append(f"\n### {char_id}")
             for key, value in sorted(state.as_dict().items()):
                 lines.append(f"- {key}: {value}")
-
-        if pov_character_id:
-            known = self.known_facts_for_character(
-                pov_character_id, project_id, **boundary,
-            )
-            if known:
-                lines.append(f"\n### POV知识边界 ({pov_character_id} 已知信息)")
-                for fact in known:
-                    lines.append(f"- {fact.fact_key}: {fact.fact_value}")
 
         location_ids = self._entities_of_type_in_project(project_id, "location")
         if location_ids:
