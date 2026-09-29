@@ -1229,10 +1229,12 @@ describe("复核一 · 同步与恢复的「恢复」「重试同步」（R-A2 �
     await vi.waitFor(() => expect(patchesTo(client, "d1")).toHaveLength(1), T);
     const entry = WrRecovery.create({ sid: "ch01s1", html: "<p>上次没同步上的那一稿</p>", type: "unsynced", reason: "断网", label: "场景 ch01s1 · 未同步稿" });
     let result = null;
+    let failure = null;
     let retrying = null;
-    await act(async () => { retrying = WrRecovery.retry(entry.id).then((value) => { result = value; }); });
+    await act(async () => { retrying = WrRecovery.retry(entry.id).then((value) => { result = value; }, (error) => { failure = error; }); });
     expect(r.editor().textContent).toBe("上次没同步上的那一稿");   // 同步中：编辑器已经是恢复稿
     expect(result).toBeNull();
+    expect(failure).toBeNull();
     await r.append("，接着写");
     await wait(1300);
     await act(async () => { hung.resolve(); });
@@ -1240,7 +1242,8 @@ describe("复核一 · 同步与恢复的「恢复」「重试同步」（R-A2 �
     await wait(300);
     expect(d1Texts(client)).toEqual(["<p>起点正文，作者在写</p>", "<p>上次没同步上的那一稿，接着写</p>"]);
     expect(srv.drafts.s1.content).toBe("<p>上次没同步上的那一稿，接着写</p>");
-    expect(result).toMatchObject({ removed: false });            // 存下的是接着写的那一稿：记录先留着
+    expect(result).toBeNull();                                   // 存下的是接着写的那一稿：不报「已同步」，记录先留着
+    expect(failure).toMatchObject({ code: "RECOVERY_SUPERSEDED" });
     expect(WrRecovery.list().some((item) => item.id === entry.id)).toBe(true);
     expect(r.recoveryHas("作者在写")).toBe(true);                 // 恢复前的正文自动备份过
   }, LONG);

@@ -202,15 +202,13 @@ function WrRecoveryCenter() {
     setBusy(kind);
     setMessage("");
     try {
-      const result = await action();
+      await action();
       refresh();
-      if (kind !== "retry") setMessage("已恢复为当前草稿并同步到服务端。恢复记录仍保留，确认无误后可删除。");
-      else if (result && result.removed === false) setMessage("已恢复为当前草稿；同步到服务端的是随后又改过的一稿，这份记录先留着，确认无误后可删除。");
-      else setMessage("已同步到服务端，并移出恢复列表。");
+      setMessage(kind === "retry" ? "已同步到服务端，并移出恢复列表。" : "已恢复为当前草稿并同步到服务端。恢复记录仍保留，确认无误后可删除。");
     } catch (error) {
       refresh();
-      // 恢复稿已经在编辑器和本机缓存里、只是还没同步上：照原话说清，不说「未完成」
-      if (error && error.code === "RECOVERY_NOT_SYNCED") setMessage(error.message);
+      // 恢复稿已经在编辑器和本机缓存里，只是还没同步上 / 被随后改过的一稿取代：照原话说清，不说「未完成」
+      if (error && (error.code === "RECOVERY_NOT_SYNCED" || error.code === "RECOVERY_SUPERSEDED")) setMessage(error.message);
       else setMessage(`操作未完成：${(error && error.message) || "请检查网络后重试"}`);
     } finally { setBusy(""); }
   };

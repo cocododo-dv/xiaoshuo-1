@@ -690,7 +690,7 @@ describe("复核一 · 恢复 / 重试同步：编辑器与本机缓存同一刻
     expect(server.content).toBe("<p>要恢复的那一稿 R</p>");
   });
 
-  it("S-B 重试同步时路上还有一次保存：写作台当场换成恢复稿；作者在它上面接着写的那一稿存上了，记录留着（removed=false）", async () => {
+  it("S-B 重试同步时路上还有一次保存：写作台当场换成恢复稿；恢复稿被随后的一稿取代时不报成功（RECOVERY_SUPERSEDED），记录留着", async () => {
     const { mod, client, server, events } = await loadDocs();
     server.content = "<p>起点</p>";
     await mod.WrDocs.hydrate("ch01s1");
@@ -701,15 +701,18 @@ describe("复核一 · 恢复 / 重试同步：编辑器与本机缓存同一刻
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledTimes(1), T);
     const entry = mod.WrRecovery.create({ sid: "ch01s1", html: "<p>上次没同步上的那一稿</p>", type: "unsynced", reason: "断网", label: "场景 ch01s1 · 未同步稿" });
     let result = null;
-    const retrying = mod.WrRecovery.retry(entry.id).then((value) => { result = value; });
+    let failure = null;
+    const retrying = mod.WrRecovery.retry(entry.id).then((value) => { result = value; }, (error) => { failure = error; });
     await vi.waitFor(() => expect(loadedRestores(events)).toEqual(["<p>上次没同步上的那一稿</p>"]), T);
     expect(result).toBeNull();
+    expect(failure).toBeNull();
     // 作者在编辑器里（已经是恢复稿）接着写
     void mod.WrDocs.save("ch01s1", "<p>上次没同步上的那一稿，接着写</p>").catch(() => {});
     hung.resolve();
     await retrying;
     expect(server.applied).toEqual(["<p>起点，作者在写</p>", "<p>上次没同步上的那一稿，接着写</p>"]);
-    expect(result).toMatchObject({ removed: false, carried: false });
+    expect(result).toBeNull();
+    expect(failure).toMatchObject({ code: "RECOVERY_SUPERSEDED" });
     expect(mod.WrRecovery.list().some((item) => item.id === entry.id)).toBe(true);
   });
 

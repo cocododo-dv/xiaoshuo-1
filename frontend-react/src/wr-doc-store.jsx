@@ -115,12 +115,17 @@ const WrRecovery = {
     notifyRecoveryChanged(entry, "restored");
     return { entry, replacedBackup, carried: settled.carried, state: WrDocs.state(entry.sid) };
   },
-  /* 重试同步 = 恢复 + 服务端存下的正是这一稿时移出列表。它发出去之前就被随后的改动取代了（存下的是更新的一稿）时
-     记录留着，removed=false，由调用方说清。 */
+  /* 重试同步 = 恢复 + 服务端存下的正是这一稿时移出列表。它发出去之前就被随后的改动取代了（存下的是更新的一稿）：
+     这份记录本身没有同步上去——记录留着，抛 RECOVERY_SUPERSEDED（原话给作者看），不报成功。 */
   async retry(id) {
     const result = await WrRecovery.restore(id);
-    const removed = result.carried !== false && recoveryRemove(id);
-    return { ...result, removed: !!removed };
+    if (result.carried === false) {
+      throw Object.assign(new Error("已恢复为当前草稿，但它发出去之前就被随后改过的一稿取代，同步到服务端的是那一稿；这份记录先留着，确认无误后可删除。"), {
+        code: "RECOVERY_SUPERSEDED",
+      });
+    }
+    recoveryRemove(id);
+    return { ...result, removed: true };
   },
 };
 
