@@ -172,25 +172,26 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     const cleanupAfterLoad = afterLoadEvent(el);
 
     /* 服务端草稿水合完成且本地无未保存改动 → 回填编辑器（跨浏览器以服务端为准） */
-    const onDocLoaded = (e) => {
-      if (!e || e.detail !== activeScene || dirtyRef.current) return;
+    const onDocLoaded = (sid) => {
+      if (sid !== activeScene || dirtyRef.current) return;
       showStored(el, activeScene);
       setSaved("草稿已保存");
       setCanonicalStatus(canonicalFromStore(activeScene));
     };
-    const onDocState = (e) => {
-      if (!e || !e.detail || e.detail.sid !== activeScene) return;
-      if (e.detail.lastSaveError) setSaved("草稿保存失败");
-      else if (!e.detail.dirty) setSaved("草稿已保存");
-      setCanonicalStatus(e.detail.canonicalDirty === false ? "current" : "dirty");
+    const onDocState = (detail) => {
+      if (!detail || detail.sid !== activeScene) return;
+      if (detail.lastSaveError) setSaved("草稿保存失败");
+      else if (!detail.dirty) setSaved("草稿已保存");
+      setCanonicalStatus(detail.canonicalDirty === false ? "current" : "dirty");
     };
-    window.addEventListener("ws:wr-doc-loaded", onDocLoaded);
-    window.addEventListener("ws:wr-doc-state", onDocState);
+    const unsubscribe = WrDocs.subscribe((kind, detail) => {
+      if (kind === "loaded") onDocLoaded(detail);
+      else if (kind === "state") onDocState(detail);
+    });
     /* 离开这个场景（或卸载）时，把未落盘的改动用「当时的」场景 id 冲掉 */
     const sid = activeScene;
     return () => {
-      window.removeEventListener("ws:wr-doc-loaded", onDocLoaded);
-      window.removeEventListener("ws:wr-doc-state", onDocState);
+      unsubscribe();
       if (typeof cleanupAfterLoad === "function") cleanupAfterLoad();
       clearTimeout(saveTimer.current);
       if (dirtyRef.current && sid && !wrSceneIsApproved(sid)) {
