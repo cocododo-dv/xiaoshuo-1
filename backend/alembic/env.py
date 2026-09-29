@@ -1,13 +1,50 @@
 from __future__ import annotations
 
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, event, pool
 
-from novel_system.database_runtime import load_database_runtime
-from novel_system.db.base import Base
-from novel_system.db import models  # noqa: F401
+import novel_system
+
+# Checkout guard (B12-08). Git worktrees share one venv whose editable install
+# points at another checkout. ``python -m alembic`` run from a worktree's
+# ``backend/`` without ``PYTHONPATH=src`` would read this checkout's revisions
+# but import the other checkout's ``novel_system`` -- including its default
+# database path, i.e. that checkout's real ``backend/novel_system.db``. Refuse
+# before anything below imports the application or opens a database. The
+# check is written out here on purpose: it must not depend on the package it
+# is checking.
+_THIS_CHECKOUT_PACKAGE = Path(__file__).resolve().parents[1] / "src" / "novel_system"
+
+
+def _loaded_novel_system_dirs() -> set[Path]:
+    dirs = {Path(entry).resolve() for entry in getattr(novel_system, "__path__", ())}
+    origin = getattr(novel_system, "__file__", None)
+    if origin:
+        dirs.add(Path(origin).resolve().parent)
+    return dirs
+
+
+def _refuse_foreign_novel_system() -> None:
+    loaded = _loaded_novel_system_dirs()
+    if loaded != {_THIS_CHECKOUT_PACKAGE}:
+        backend_dir = _THIS_CHECKOUT_PACKAGE.parents[1]
+        raise RuntimeError(
+            "checkout mismatch: these migrations belong to "
+            f"{backend_dir}, but novel_system was imported from "
+            f"{', '.join(sorted(str(path) for path in loaded)) or '<unknown>'}. "
+            f"Run Alembic with PYTHONPATH={backend_dir / 'src'} (from {backend_dir}: "
+            "PYTHONPATH=src python -m alembic ...)."
+        )
+
+
+_refuse_foreign_novel_system()
+
+from novel_system.database_runtime import load_database_runtime  # noqa: E402
+from novel_system.db.base import Base  # noqa: E402
+from novel_system.db import models  # noqa: E402,F401
 
 config = context.config
 

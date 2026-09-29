@@ -54,6 +54,7 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.project_ownership import project_owned_models_child_first
+from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
 PRESERVED_DOMAINS = [
     "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
@@ -233,6 +234,7 @@ def _chunked(items: list[Any], *, size: int) -> Iterable[list[Any]]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    refuse_foreign_checkout("reset_author_state")
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true", help="perform the destructive reset")
     parser.add_argument("--yes", action="store_true", help="confirm the destructive reset")

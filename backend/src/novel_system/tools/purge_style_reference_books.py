@@ -33,6 +33,7 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.cleanup import delete_reference_book
+from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
 MIN_PREFIX_CHARS = 4
 
@@ -114,6 +115,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    refuse_foreign_checkout("purge_style_reference_books")
     args = _parse_args(argv)
     with SessionLocal() as session:
         books = select_books(

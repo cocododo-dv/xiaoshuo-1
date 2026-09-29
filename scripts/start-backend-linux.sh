@@ -21,6 +21,9 @@ dev_stop_port "$PORT"
 cd "$REPO_ROOT/backend"
 
 export NOVEL_SYSTEM_VECTOR_BACKEND=memory
+# This checkout's code, never whatever the venv's editable install points at (the venv may be
+# shared by several git worktrees): alembic/env.py refuses to migrate otherwise.
+export PYTHONPATH="$REPO_ROOT/backend/src"
 PYTHON="$REPO_ROOT/backend/.venv/bin/python"
 CONFIG_SECRET_FILE="$RUN_DIR/config.secret"
 ARTIFACT_RETENTION_DAYS="${NOVEL_SYSTEM_ARTIFACT_RETENTION_DAYS:-14}"

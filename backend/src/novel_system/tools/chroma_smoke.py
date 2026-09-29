@@ -5,6 +5,7 @@ from pathlib import Path
 
 from novel_system.services.vector_store import get_vector_store
 from novel_system.settings import get_settings
+from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
 
 def run_chroma_smoke(persist_directory: Path | None = None) -> dict:
@@ -33,6 +34,7 @@ def run_chroma_smoke(persist_directory: Path | None = None) -> dict:
 
 
 def main() -> None:
+    refuse_foreign_checkout("chroma_smoke")
     print(json.dumps(run_chroma_smoke(), ensure_ascii=False, indent=2))
 
 

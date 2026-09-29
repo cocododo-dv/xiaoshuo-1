@@ -6,7 +6,7 @@
 WAL checkpoint 不繁忙。运维上仍必须先停止服务：SQLite 无法仅凭文件接口证明另一个空闲
 进程不会在检查之后重新写入。
 
-本模块不导入 ORM 或应用 settings，可独立用于任意文件型 SQLite 数据库。
+本模块不导入 ORM 或应用 settings，可独立用于任意文件型 SQLite 数据库（命令行入口先过只依赖标准库的检出守卫）。
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ import sqlite3
 import sys
 import tempfile
 from typing import Any
+
+from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
 _META_SUFFIX = ".meta.json"
 _SIDECAR_SUFFIXES = ("-wal", "-shm")
@@ -304,6 +306,7 @@ def _utcnow() -> str:
 
 
 def _main(argv: list[str] | None = None) -> int:
+    refuse_foreign_checkout("db_backup")
     parser = argparse.ArgumentParser(description="SQLite 一致性备份 / 校验 / 停机恢复")
     subcommands = parser.add_mutually_exclusive_group(required=True)
     subcommands.add_argument("--backup", nargs=2, metavar=("SRC", "DST"))

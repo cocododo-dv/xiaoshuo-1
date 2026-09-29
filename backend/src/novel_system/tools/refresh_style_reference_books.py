@@ -44,6 +44,7 @@ from novel_system.services.style_reference.text_utils import (
     remap_scene_breaks,
 )
 from novel_system.services.style_reference.voice_signature import compute_voice_signature
+from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
 TOOL_VERSION = "refresh_style_reference_books_v3"
 
@@ -212,6 +213,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    refuse_foreign_checkout("refresh_style_reference_books")
     args = _parse_args(argv)
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)

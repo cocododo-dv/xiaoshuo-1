@@ -35,6 +35,7 @@ from novel_system.services.style_reference.voice_signature import (
     render_voice_habits,
     round_stat,
 )
+from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
 COMMAND = "python -m novel_system.tools.build_voice_baseline build-baseline"
 
@@ -165,6 +166,7 @@ def default_baseline_path() -> Path:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    refuse_foreign_checkout("build_voice_baseline")
     parser = argparse.ArgumentParser(
         prog="python -m novel_system.tools.build_voice_baseline",
         description="声音签名工具:生成基线 / 检视单个文本的签名与习惯句。",
