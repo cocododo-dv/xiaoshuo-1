@@ -42,11 +42,6 @@
      "score": 0.0,
      "evidence": "看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
     },
-    "valid_ambiguity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
-    },
     "expository_dialogue": {
      "risk": false,
      "score": 1.0,
@@ -474,11 +469,6 @@
      "score": 1.0,
      "evidence": ""
     },
-    "valid_ambiguity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
-    },
     "expository_dialogue": {
      "risk": true,
      "score": 0.0,
@@ -884,11 +874,6 @@
      "score": 0.0,
      "evidence": "，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
     },
-    "valid_ambiguity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
-    },
     "expository_dialogue": {
      "risk": false,
      "score": 1.0,
@@ -1289,11 +1274,6 @@
      "score": 1.0,
      "evidence": ""
     },
-    "valid_ambiguity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
-    },
     "expository_dialogue": {
      "risk": false,
      "score": 1.0,
@@ -1556,11 +1536,6 @@
      "evidence": "他把目光重新移回那扇紧闭的门边"
     },
     "false_clarity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
-    },
-    "valid_ambiguity": {
      "risk": false,
      "score": 1.0,
      "evidence": ""
@@ -1852,11 +1827,6 @@
      "score": 1.0,
      "evidence": ""
     },
-    "valid_ambiguity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
-    },
     "expository_dialogue": {
      "risk": false,
      "score": 1.0,
@@ -2058,11 +2028,6 @@
      "evidence": ""
     },
     "false_clarity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
-    },
-    "valid_ambiguity": {
      "risk": false,
      "score": 1.0,
      "evidence": ""
@@ -2286,11 +2251,6 @@
      "risk": true,
      "score": 0.0,
      "evidence": "看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
-    },
-    "valid_ambiguity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
     },
     "expository_dialogue": {
      "risk": false,
@@ -2702,11 +2662,6 @@
      "score": 1.0,
      "evidence": ""
     },
-    "valid_ambiguity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
-    },
     "expository_dialogue": {
      "risk": true,
      "score": 0.0,
@@ -3086,11 +3041,6 @@
      "risk": true,
      "score": 0.0,
      "evidence": "，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
-    },
-    "valid_ambiguity": {
-     "risk": false,
-     "score": 1.0,
-     "evidence": ""
     },
     "expository_dialogue": {
      "risk": false,

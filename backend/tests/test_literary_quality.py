@@ -13,6 +13,8 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.literary_quality import (
+    AUTOMATED_EVIDENCE_SIGNAL,
+    QUALITY_DIMENSIONS,
     adversarial_rank_score,
     analyze_literary_quality,
 )
@@ -172,7 +174,7 @@ def test_literary_quality_overview_falls_back_to_runtime_text_and_final_aggregat
     assert memory_items[0]["text_layer"] == "chapter_memory_final"
 
 
-def test_literary_quality_detects_template_reuse_and_protects_valid_ambiguity() -> None:
+def test_literary_quality_detects_template_reuse() -> None:
     text = (
         "她低头看着钥匙，沉默了片刻。\n"
         "他低头看着录音，沉默了片刻。\n"
@@ -187,8 +189,10 @@ def test_literary_quality_detects_template_reuse_and_protects_valid_ambiguity() 
     assert signals["image_field_reuse"]["risk"] is True
     assert signals["syntax_monotony"]["risk"] is True
     assert signals["false_clarity"]["risk"] is True
-    assert signals["valid_ambiguity"]["risk"] is False
-    assert signals["valid_ambiguity"]["score"] == 1.0
+    # 批准#13c（重评 R7）：永远打满分、从不报问题的「有效留白」维度删了
+    assert "valid_ambiguity" not in signals
+    assert set(signals) - {AUTOMATED_EVIDENCE_SIGNAL} == set(QUALITY_DIMENSIONS)
+    assert "valid_ambiguity" not in QUALITY_DIMENSIONS
     finding_dimensions = {finding["dimension"] for finding in findings}
     assert {
         "template_action_reuse",
@@ -470,6 +474,7 @@ def test_action_keyword_bundle_is_insufficient_evidence_not_literary_perfection(
 def test_literary_quality_dimension_weights_sum_to_one() -> None:
     from novel_system.services.literary_quality import DIMENSION_WEIGHTS
     assert abs(sum(DIMENSION_WEIGHTS.values()) - 1.0) < 1e-9
+    assert set(DIMENSION_WEIGHTS) == set(QUALITY_DIMENSIONS)
 
 
 def test_self_repetition_dimension_defaults_to_no_risk() -> None:
@@ -543,6 +548,13 @@ def _seed_cross_scene_template_reuse(session) -> None:
             )
         )
     session.commit()
+
+
+def test_valid_ambiguity_is_no_longer_a_risk_filter(client) -> None:
+    """批准#13c（重评 R7）：删掉的「有效留白」不再是可选的风险维度——旧标签页还带着它时拿到标准的 400。"""
+    response = client.get("/api/v1/literary-quality/overview", params={"risk_type": "valid_ambiguity"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "LITERARY_QUALITY_RISK_TYPE_INVALID"
 
 
 def test_literary_quality_overview_exposes_filters_clusters_fingerprints_and_reuse(client, session) -> None:

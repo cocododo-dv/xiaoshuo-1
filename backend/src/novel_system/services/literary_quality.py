@@ -36,7 +36,6 @@ QUALITY_DIMENSIONS: tuple[str, ...] = (
     "image_field_reuse",
     "syntax_monotony",
     "false_clarity",
-    "valid_ambiguity",
     "painless_scene",
     "decorative_imagery",
     "dialogue_as_report",
@@ -60,7 +59,6 @@ DIMENSION_WEIGHTS = {
     "image_field_reuse": 0.03,
     "syntax_monotony": 0.03,
     "false_clarity": 0.02,
-    "valid_ambiguity": 0.00,
     "painless_scene": 0.06,
     "decorative_imagery": 0.05,
     "dialogue_as_report": 0.06,
@@ -69,7 +67,7 @@ DIMENSION_WEIGHTS = {
     "perception_filter": 0.03,
     "self_repetition": 0.04,
     "conflict_too_clean": 0.06,
-    # sum = 1.00 (0.08+0.05+0.05+0.05+0.07+0.05+0.07+0.07+0.06+0.03+0.03+0.02+0+0.06+0.05+0.06+0.04+0.03+0.03+0.04+0.06)
+    # sum = 1.00 (0.08+0.05+0.05+0.05+0.07+0.05+0.07+0.07+0.06+0.03+0.03+0.02+0.06+0.05+0.06+0.04+0.03+0.03+0.04+0.06)
 }
 
 # Deterministic prose signals can reject obvious failure modes, but they cannot
@@ -109,7 +107,7 @@ QUALITY_TEXT_LAYERS = {
 FINDING_ANCHORS: tuple[str, ...] = ("text", "ending", "scene")
 RULE_SIGNAL_SOURCE = "rules"
 
-# 21 维的中文名与「问题 / 改法」。这里是唯一一份：文学质量视图、写作台深改面板、成稿门
+# 规则维度（QUALITY_DIMENSIONS）的中文名与「问题 / 改法」。这里是唯一一份：文学质量视图、写作台深改面板、成稿门
 # 都读服务端给出的中文，不再各自维护一张英文 → 中文的对照表。
 DIMENSION_LABELS: dict[str, str] = {
     "model_voice": "模型腔",
@@ -124,7 +122,6 @@ DIMENSION_LABELS: dict[str, str] = {
     "image_field_reuse": "意象场复用",
     "syntax_monotony": "句式单调",
     "false_clarity": "虚假清晰",
-    "valid_ambiguity": "有效留白",
     "painless_scene": "无痛场景",
     "decorative_imagery": "装饰性意象",
     "dialogue_as_report": "对白即汇报",
@@ -157,7 +154,6 @@ DIMENSION_NOTES: dict[str, tuple[str, str]] = {
     "perception_filter": ("叙述用「{needle}」这类感知动词转述，而不是直接呈现。", "删掉感知动词，让刺激直接落成动作、物件或感官细节。"),
     "self_repetition": ("有一句实质内容被逐字重复。", "事实只说一次；把重复的句子换成新的后果、反应或信息。"),
     "conflict_too_clean": ("冲突解决得太干净：「{needle}」之后人物很快就互相理解了。", "留下代价或余波：一句没说出口的怨、一个被接受的半谎，或一个人物本不想给的让步。"),
-    "valid_ambiguity": ("有效留白。", ""),
 }
 
 
@@ -669,7 +665,7 @@ PERCEPTION_FILTER_TERMS = (
 
 
 # ---------------------------------------------------------------------------
-# 2026-09-22 第三轮：按参考书校准 21 维规则（词表 + 维度）
+# 2026-09-22 第三轮：按参考书校准规则维度（词表 + 维度）
 # ---------------------------------------------------------------------------
 
 RULE_NEEDLE_TAIL_ALPHA = 0.10           # 词表词：稿子里的次数在参考作者的密度下出现概率 < 1/10 才算反常（照提示）
@@ -723,7 +719,7 @@ def dimension_level(fired: int, total: int) -> tuple[str | None, float]:
 
 @dataclass(frozen=True)
 class RuleCalibration:
-    """按绑定的参考书校准 21 维规则。阈值不是定值：
+    """按绑定的参考书校准规则维度（QUALITY_DIMENSIONS）。阈值不是定值：
 
     * **词表词**（只校准「命中即毛病」的词表 ``FAULT_LEXICONS``；抉择 / 压力 / 代价 / 收尾动作这些「缺席才是
       毛病」的词表不动）：记参考作者每万字用某个词的次数 ``needle_rates``；诊断一稿时按这位作者的密度算这个词
@@ -1268,7 +1264,7 @@ def analyze_literary_quality(
     *,
     calibration: RuleCalibration | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
-    """21 维规则。``calibration``（有风格绑定时由 scene_diagnosis 按参考书算出）：参考作者的常用词从「命中即
+    """规则维度（QUALITY_DIMENSIONS）。``calibration``（有风格绑定时由 scene_diagnosis 按参考书算出）：参考作者的常用词从「命中即
     毛病」的词表里去掉，作者常态的维度降为 ``info``——没有校准时就是房风词表，行为与从前逐字相同。"""
 
     normalized = _compact_ws(text)
@@ -1292,7 +1288,6 @@ def analyze_literary_quality(
     _add_syntax_monotony_signal(signals, findings, normalized)
     _add_self_repetition_signal(signals, findings, normalized)
     _add_false_clarity_signal(signals, findings, normalized, terms=lex["false_clarity"])
-    _add_valid_ambiguity_signal(signals, findings, normalized)
     _add_expository_dialogue_signal(signals, findings, normalized, terms=lex["expository_dialogue"])
     _add_dialogue_as_report_signal(signals, findings, normalized, terms=lex["report_dialogue"])
     _add_absence_signal(
@@ -2733,14 +2728,6 @@ def _add_false_clarity_signal(
             needle=term,
         )
     )
-
-
-def _add_valid_ambiguity_signal(
-    signals: dict[str, dict[str, Any]],
-    findings: list[dict[str, str]],
-    text: str,
-) -> None:
-    signals["valid_ambiguity"] = {"risk": False, "score": 1.0, "evidence": ""}
 
 
 def _add_summary_ending_signal(

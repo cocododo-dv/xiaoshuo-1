@@ -396,7 +396,7 @@ class FinalTextGateService:
 
 
     def _rule_calibration(self, policy: StylePolicy) -> Any:
-        """绑定的参考书对 21 维规则的校准（与写作台深改面板 / 文学质量视图同一份）；未绑定或不可用 → None。"""
+        """绑定的参考书对规则维度的校准（与写作台深改面板 / 文学质量视图同一份）；未绑定或不可用 → None。"""
         if not policy.bound:
             return None
         try:
@@ -409,7 +409,7 @@ class FinalTextGateService:
     def _literary(
         self, scene: SceneCard | None, content: str, policy: StylePolicy | None = None
     ) -> dict[str, Any]:
-        """21 维文学规则的分数、Q3 警告与三道自动晋升阈值。风格参考 v3 V11——一条让位规则：
+        """文学规则维度的分数、Q3 警告与三道自动晋升阈值。风格参考 v3 V11——一条让位规则：
 
         * 没有绑定：房风规则照旧（阈值施加，风险维度挂 Q3 警告）；
         * 有绑定且参考书校准可用：按校准判——这位作者常用的词不算毛病，常态（habit）维度不挂警告、在阈值里
