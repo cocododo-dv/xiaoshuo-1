@@ -168,7 +168,7 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
                 self.session.flush()
                 return result
 
-    monkeypatch.setattr("novel_system.services.projects.ChapterRunnerService", FakeChapterRunnerService)
+    monkeypatch.setattr("novel_system.services.chapter_final_flow.ChapterRunnerService", FakeChapterRunnerService)
     project = _create_project(client, target_chapter_count=2)
     plan = _generate_plan(client, project["project_id"])
     approved = _approve_plan(client, project["project_id"], plan["plan_id"])

@@ -4,7 +4,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session, request_id_of
@@ -15,17 +14,10 @@ from novel_system.api.request_types import (
     WriterBriefJsonInput,
 )
 from novel_system.api.response import ok
-from novel_system.db.models import ChapterGoal, ChapterState, SceneCard
 from novel_system.services.author_lifecycle import AuthorLifecycleService
-from novel_system.services.catalog_ordering import reseat_scene_seqs
-from novel_system.services.chapter_approval import (
-    is_chapter_approved,
-    require_chapter_mutation_allowed,
-)
+from novel_system.services.catalog import CatalogService
 from novel_system.services.chapter_runner import ChapterRunnerService
-from novel_system.services.errors import DomainError
-from novel_system.services.scene_design_ownership import plan_owned_scene_ids, scene_order_owned_by_plan_action
-from novel_system.services.text_validation import validate_user_text_payload
+from novel_system.services.chapter_upsert import upsert_chapter
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
 router = APIRouter(tags=["chapters"])
@@ -100,7 +92,7 @@ def create_chapter(
         method="POST",
         path_template="/api/v1/chapters",
         payload=body,
-        action=lambda: _create_chapter(session, body),
+        action=lambda: upsert_chapter(session, body),
     )
 
 
@@ -116,123 +108,6 @@ def trash_chapters(payload: ChapterIdsRequest, request: Request, session: Sessio
         payload=body,
         action=lambda: AuthorLifecycleService(session).trash_chapters(body["chapter_ids"], actor_ref),
     )
-
-
-def _create_chapter(session: Session, payload: dict) -> dict:
-    validate_user_text_payload(payload, field_prefix="chapter")
-    payload = {
-        **payload,
-        "writer_brief_json": normalize_chapter_writer_brief(payload.get("writer_brief_json")),
-    }
-    chapter = session.get(ChapterGoal, payload["chapter_id"])
-    created = chapter is None
-    _assert_chapter_display_order_available(
-        session,
-        chapter_id=payload["chapter_id"],
-        project_id=(payload.get("project_id") if chapter is None else chapter.project_id),
-        display_order=(
-            payload.get("display_order")
-            if "display_order" in payload
-            else (chapter.display_order if chapter is not None else None)
-        ),
-    )
-    if chapter is None:
-        if str(payload.get("state") or "").strip() == "approved":
-            raise DomainError(
-                "CATALOG_CHAPTER_APPROVAL_REQUIRES_PROJECT_FLOW",
-                "chapter approval must use the project final-approval flow",
-                status_code=409,
-            )
-        chapter = ChapterGoal(**payload)
-        session.add(chapter)
-        session.flush()
-        changed = True
-    else:
-        if chapter.trashed_flag == 1:
-            raise DomainError("CHAPTER_TRASHED", "chapter is currently in author trash")
-        if (
-            str(payload.get("state") or "").strip() == "approved"
-            and not is_chapter_approved(session, chapter)
-        ):
-            raise DomainError(
-                "CATALOG_CHAPTER_APPROVAL_REQUIRES_PROJECT_FLOW",
-                "chapter approval must use the project final-approval flow",
-                status_code=409,
-            )
-        if "project_id" in payload and payload["project_id"] != chapter.project_id:
-            raise DomainError(
-                "CHAPTER_IDENTITY_IMMUTABLE",
-                "an existing chapter cannot be moved to another project",
-                status_code=409,
-            )
-        if "outline_plan_id" in payload and payload["outline_plan_id"] != chapter.outline_plan_id:
-            raise DomainError(
-                "CHAPTER_IDENTITY_IMMUTABLE",
-                "an existing chapter cannot be rebound to another outline plan",
-                status_code=409,
-            )
-        changed_fields = [
-            key
-            for key, value in payload.items()
-            if key != "chapter_id" and getattr(chapter, key) != value
-        ]
-        changed = require_chapter_mutation_allowed(
-            session,
-            chapter,
-            changed_fields=changed_fields,
-            operation="chapters.upsert",
-        )
-        if changed:
-            for key, value in payload.items():
-                setattr(chapter, key, value)
-
-    state = session.get(ChapterState, payload["chapter_id"])
-    # Replaying the same payload against a locked final is a true no-op: do not
-    # opportunistically create runtime rows or touch update timestamps.
-    should_create_state = state is None and (
-        created or not is_chapter_approved(session, chapter)
-    )
-    if should_create_state:
-        state = ChapterState(
-            chapter_id=payload["chapter_id"],
-            current_phase="drafting",
-            mid_aggregate_enabled_effective=0,
-            aggregate_block_reason="none",
-        )
-        session.add(state)
-        changed = True
-    session.flush()
-    return {"chapter_id": chapter.chapter_id, "changed": changed}
-
-
-def _assert_chapter_display_order_available(
-    session: Session,
-    *,
-    chapter_id: str,
-    project_id: str | None,
-    display_order: int | None,
-) -> None:
-    if project_id is None or display_order is None:
-        return
-    conflict = session.execute(
-        select(ChapterGoal.chapter_id).where(
-            ChapterGoal.project_id == project_id,
-            ChapterGoal.display_order == int(display_order),
-            ChapterGoal.trashed_flag == 0,
-            ChapterGoal.chapter_id != chapter_id,
-        )
-    ).scalar_one_or_none()
-    if conflict is not None:
-        raise DomainError(
-            "CHAPTER_DISPLAY_ORDER_CONFLICT",
-            "another active chapter already uses this display_order",
-            status_code=409,
-            details={
-                "project_id": project_id,
-                "display_order": int(display_order),
-                "conflicting_chapter_id": conflict,
-            },
-        )
 
 
 @router.post("/api/v1/chapters/{chapter_id}/run/full")
@@ -274,74 +149,5 @@ def reorder_chapter_scenes(
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/scene-order",
         payload={"chapter_id": chapter_id, **body},
-        action=lambda: _reorder_chapter_scenes(session, chapter_id, body),
+        action=lambda: CatalogService(session).reorder_scenes(chapter_id, body),
     )
-
-
-def _reorder_chapter_scenes(session: Session, chapter_id: str, payload: dict) -> dict:
-    chapter = AuthorLifecycleService(session).require_active_chapter(chapter_id)
-
-    scene_ids = payload.get("scene_ids")
-    if not isinstance(scene_ids, list) or not scene_ids or not all(isinstance(scene_id, str) and scene_id for scene_id in scene_ids):
-        raise DomainError("SCENE_ORDER_INVALID", "scene_ids must be a non-empty list", status_code=400)
-    if len(scene_ids) != len(set(scene_ids)):
-        raise DomainError("SCENE_ORDER_DUPLICATE", "scene_ids must not contain duplicates", status_code=400)
-
-    last_scene_id = payload.get("last_scene_id")
-    if not isinstance(last_scene_id, str) or last_scene_id not in scene_ids:
-        raise DomainError("SCENE_ORDER_LAST_SCENE_INVALID", "last_scene_id must be present in scene_ids", status_code=400)
-
-    chapter_scenes = session.execute(
-        select(SceneCard).where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-    ).scalars().all()
-    chapter_scene_map = {scene.scene_id: scene for scene in chapter_scenes}
-    other_chapter_scenes = {
-        scene.scene_id
-        for scene in session.execute(select(SceneCard).where(SceneCard.scene_id.in_(scene_ids), SceneCard.trashed_flag == 0)).scalars().all()
-        if scene.chapter_id != chapter_id
-    }
-    if other_chapter_scenes:
-        raise DomainError("SCENE_ORDER_CHAPTER_MISMATCH", "scene_ids must belong to the same chapter")
-
-    if set(scene_ids) != set(chapter_scene_map):
-        raise DomainError("SCENE_ORDER_INCOMPLETE", "scene_ids must include every scene in the chapter", status_code=409)
-
-    ordered_scenes = [chapter_scene_map[scene_id] for scene_id in scene_ids]
-    # 阶段 Y「设计只有一处可改」：雪花整理出来的场，彼此的先后 = 故事序（构思第 9 步的行序）。台子上挪了，
-    # 下一次同步就会按故事序摆回去——所以这里不收；手加的场照常可以挪到任何两场之间。
-    owned = plan_owned_scene_ids(session, chapter.project_id, list(chapter_scenes))
-    if owned:
-        current_owned = [
-            scene.scene_id
-            for scene in sorted(chapter_scenes, key=lambda item: (int(item.scene_seq or 0), item.scene_id))
-            if scene.scene_id in owned
-        ]
-        if [scene_id for scene_id in scene_ids if scene_id in owned] != current_owned:
-            raise DomainError(
-                "CATALOG_SCENE_ORDER_OWNED_BY_PLAN",
-                "这几场是雪花整理出来的，它们的先后在构思第 9 步「场景列表」里拖动，确认后自动同步到目录；手加的场可以在这里挪。",
-                status_code=409,
-                details={"chapter_id": chapter_id, "author_action": scene_order_owned_by_plan_action()},
-            )
-    changed_fields = [
-        f"scene:{scene.scene_id}.order"
-        for index, scene in enumerate(ordered_scenes, start=1)
-        if scene.scene_seq != index
-        or scene.is_chapter_last != (1 if scene.scene_id == last_scene_id else 0)
-    ]
-    changed = require_chapter_mutation_allowed(
-        session,
-        chapter,
-        changed_fields=changed_fields,
-        operation="chapters.reorder_scenes",
-    )
-    if changed:
-        reseat_scene_seqs(session, ordered_scenes, last_scene_id=last_scene_id)
-    return {
-        "chapter_id": chapter_id,
-        "changed": changed,
-        "scenes": [
-            {"scene_id": scene.scene_id, "scene_seq": scene.scene_seq, "is_chapter_last": scene.is_chapter_last}
-            for scene in ordered_scenes
-        ],
-    }

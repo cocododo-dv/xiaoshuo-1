@@ -11,6 +11,9 @@ from typing import Any
 
 from novel_system.db.models import ChapterGoal, SceneCard
 
+CHAPTER_STATES = ("planned", "todo", "writing", "draft", "review", "approved")
+SCENE_STATES = ("todo", "writing", "done")
+
 SCENE_BRIEF_GCS = ("goal", "conflict", "setback")
 SCENE_BRIEF_RDD = ("reaction", "dilemma", "decision")
 
@@ -58,6 +61,11 @@ def scene_kind(scene: SceneCard) -> str:
     brief = dict(scene.writer_brief_json or {})
     raw = str(brief.get("primary_form") or scene.scene_type or "proactive").strip().lower()
     return "reactive" if raw.startswith("react") or raw == "反应" else "proactive"
+
+
+def parse_scene_kind(value: Any) -> str:
+    """请求 / 旧目录里写的场景形态（``reactive`` / ``反应`` / 其他）→ ``reactive`` 或 ``proactive``。"""
+    return "reactive" if str(value or "").strip().lower() in {"reactive", "反应"} else "proactive"
 
 
 def chapter_title(chapter: ChapterGoal) -> str:

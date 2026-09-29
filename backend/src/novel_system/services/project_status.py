@@ -20,3 +20,12 @@ REFERENCE_SAFETY_RULES = [
     "不得复刻参考书人物、设定、桥段、特殊意象或标志性句式。",
     "运行时只使用节奏、句法、叙事手法、结构技巧和禁复刻规则。",
 ]
+
+#: 作品状态 → v1 看板 / 运行本章回包的下一步（``outline_draft`` 另看大纲计划）
+NEXT_ACTION_BY_STATUS = {
+    PROJECT_STATUS_COMPLETED: "completed",
+    PROJECT_STATUS_CHAPTER_FINAL_REVIEW: "approve_chapter_final",
+    PROJECT_STATUS_CHAPTER_RUNNING: "view_chapter_progress",
+    PROJECT_STATUS_CHAPTER_READY: "run_current_chapter",
+    PROJECT_STATUS_CHAPTER_BLOCKED: "resolve_blocker",
+}

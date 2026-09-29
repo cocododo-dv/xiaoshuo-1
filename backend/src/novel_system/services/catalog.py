@@ -31,31 +31,34 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from novel_system.db.models import (
-    AttemptTracker,
     ChapterGoal,
     SceneCard,
     SceneRunState,
     StoryCharacter,
-    StoryProject,
 )
+from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.catalog_import import import_catalog
 from novel_system.services.catalog_labels import (  # noqa: F401  (re-exported: 目录的读者从这里拿)
     CATALOG_ACTS,
+    CHAPTER_STATES,
     SCENE_BRIEF_GCS,
     SCENE_BRIEF_RDD,
+    SCENE_STATES,
     SCENE_TITLE_MAX_CHARS,
     chapter_title,
     focus_scene_payload,
     normalize_act,
+    parse_scene_kind,
     scene_display_title,
     scene_kind,
     scene_title,
     short_scene_title,
 )
 from novel_system.services.catalog_ordering import compact_chapter_orders, reseat_display_orders, reseat_scene_seqs
+from novel_system.services.catalog_reader import CatalogReader
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
     require_chapter_mutation_allowed,
@@ -64,10 +67,9 @@ from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.chapter_structure_ownership import (
     chapter_structure_owned_by_plan_action,
     live_chapter_plans_by_catalog_id,
-    story_scene_numbers,
     structure_owned_by_plan,
 )
-from novel_system.services.chapter_title_sync import adopt_catalog_title, is_auto_chapter_title
+from novel_system.services.chapter_title_sync import adopt_catalog_title
 from novel_system.services.errors import DomainError
 from novel_system.services.project_status import PROJECT_STATUS_CHAPTER_FINAL_REVIEW
 from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-exported: 目录的读者从这里拿)
@@ -77,11 +79,10 @@ from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-ex
     design_owned_by_plan_action,
     is_snowflake_origin,
     live_plan_scene_ids,
+    plan_owned_scene_ids,
+    scene_order_owned_by_plan_action,
 )
-from novel_system.services.scene_lookup import active_chapter_scenes, require_project, require_project_chapter
-
-CHAPTER_STATES = ("planned", "todo", "writing", "draft", "review", "approved")
-SCENE_STATES = ("todo", "writing", "done")
+from novel_system.services.scene_lookup import require_project, require_project_chapter
 
 # narrative_json 里由目录 API 维护的字段（形状抄 design/ws-catalog.jsx 章节对象）
 NARRATIVE_FIELDS = (
@@ -100,310 +101,8 @@ NARRATIVE_FIELDS = (
     "notes",
 )
 
-class CatalogService:
-    def __init__(self, session: Session) -> None:
-        self.session = session
-
-    # ---------- 读 ----------
-
-    def catalog(self, project_id: str) -> dict[str, Any]:
-        project = require_project(self.session, project_id)
-        chapters = self.chapter_rows(project_id)
-        context = self.read_context(project_id, [chapter.chapter_id for chapter in chapters])
-        return {
-            "project_id": project_id,
-            "chapters": [
-                self.chapter_payload(project, chapter, index, context=context)
-                for index, chapter in enumerate(chapters)
-            ],
-        }
-
-    def read_context(self, project_id: str, chapter_ids: list[str]) -> dict[str, Any]:
-        """整本目录一次读完要用的查表（各章场景卡、场景三问、角色名、场景管线状态……）——逐章 / 逐场去查是 N+1
-        （80 章的目录过去要 173 条查询，B08-12）。查询条数与章数、场数无关。
-
-        场景卡与管线状态按章号取（不按 ``SceneCard.project_id``）：v1 建的旧场景卡没有 project_id，
-        归属是从章上推出来的。
-        """
-        names = {
-            row.character_id: row.display_name or ""
-            for row in self.session.execute(
-                select(StoryCharacter).where(StoryCharacter.project_id == project_id)
-            ).scalars()
-        }
-        scenes_by_chapter: dict[str, list[SceneCard]] = {chapter_id: [] for chapter_id in chapter_ids}
-        run_states: dict[str, SceneRunState] = {}
-        story_checks: dict[str, dict[str, Any]] = {}
-        if chapter_ids:
-            for scene in self.session.execute(
-                select(SceneCard)
-                .where(SceneCard.chapter_id.in_(chapter_ids), SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-            ).scalars():
-                scenes_by_chapter.setdefault(str(scene.chapter_id), []).append(scene)
-            run_states = {
-                row.scene_id: row
-                for row in self.session.execute(
-                    select(SceneRunState)
-                    .join(SceneCard, SceneCard.scene_id == SceneRunState.scene_id)
-                    .where(SceneCard.chapter_id.in_(chapter_ids), SceneCard.trashed_flag == 0)
-                ).scalars()
-            }
-            story_checks = self._story_checks_where(
-                SceneCard.chapter_id.in_(chapter_ids), SceneCard.trashed_flag == 0
-            )
-        return {
-            "character_names": names,
-            "run_states": run_states,
-            "scenes_by_chapter": scenes_by_chapter,
-            "story_checks": story_checks,
-            "plan_scene_ids": live_plan_scene_ids(self.session, project_id),
-            # 阶段 Z：哪些目录章被构思的分章钉着、每一场在故事序上是第几场
-            "chapter_plans": live_chapter_plans_by_catalog_id(self.session, project_id),
-            "story_numbers": story_scene_numbers(self.session, project_id),
-        }
-
-    def chapter_rows(self, project_id: str) -> list[ChapterGoal]:
-        """作品的活跃章按章序排好（没有章序的排最后，同序按 chapter_id）。纯读——章序由写入口压实
-        （``catalog_ordering.compact_chapter_orders``），读取不再顺手写库（B08-14，迁移 0097）。"""
-        rows = list(
-            self.session.execute(
-                select(ChapterGoal).where(
-                    ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0
-                )
-            ).scalars().all()
-        )
-        rows.sort(key=lambda c: (c.display_order is None, c.display_order or 0, c.chapter_id))
-        return rows
-
-    def scene_rows(self, chapter_id: str) -> list[SceneCard]:
-        return active_chapter_scenes(self.session, chapter_id)
-
-    def chapter_payload(
-        self,
-        project: StoryProject,
-        chapter: ChapterGoal,
-        index: int,
-        *,
-        context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        narrative = dict(chapter.narrative_json or {})
-        brief = dict(chapter.writer_brief_json or {})
-        slug = f"ch{index + 1:02d}"
-        if context is None:
-            # 单章回包（建章 / 改章）与整本目录说同一套话：结构归属、故事序场次、设计归属都要查表。
-            # 逐章循环的调用方应当自己先取一次 read_context 传进来（review_derived / project_overview 都是）。
-            context = self.read_context(project.project_id, [chapter.chapter_id])
-        scenes = (context.get("scenes_by_chapter") or {}).get(chapter.chapter_id)
-        if scenes is None:
-            scenes = self.scene_rows(chapter.chapter_id)
-        words_cur = sum(int(s.words_current or 0) for s in scenes)
-        story_checks = context.get("story_checks")
-        if story_checks is None:
-            story_checks = self.story_checks([s.scene_id for s in scenes])
-        title = chapter_title(chapter)
-        origin = "snowflake" if is_snowflake_origin(brief) else "manual"
-        goal = str(chapter.chapter_goal or "").strip()
-        summary = str(chapter.main_plot_push or "").strip()
-        return {
-            "chapter_id": chapter.chapter_id,
-            "slug": slug,
-            "no": f"{index + 1:02d}",
-            "title": title,
-            "state": str(chapter.state or "planned"),
-            "current": chapter.chapter_id == project.current_chapter_id,
-            "words": {"cur": words_cur, "target": chapter.words_target},
-            "act": normalize_act(narrative.get("act")),
-            "tension": narrative.get("tension"),
-            "pov": narrative.get("pov"),
-            "time_label": narrative.get("time_label"),
-            "place": narrative.get("place"),
-            "entry": narrative.get("entry"),
-            "exit": narrative.get("exit"),
-            "align": narrative.get("align"),
-            "promise": narrative.get("promise"),
-            "drama": dict(narrative.get("drama") or {}),
-            "threads": list(narrative.get("threads") or []),
-            # 阶段 X：章从哪来、构思里给它写了什么——台子上不用再开雪花工作台去对
-            "origin": origin,
-            "summary": summary if summary != title else "",
-            "goal": goal if goal != title else "",
-            "spine": str(narrative.get("spine") or "").strip(),
-            # 阶段 Z：这一章的结构归谁改、它是章表里的哪一行、装着故事序上第几到第几场
-            "structure": self._chapter_structure(chapter, title=title, context=context),
-            "scenes": [
-                self.scene_payload(
-                    scene,
-                    chapter_slug=slug,
-                    story_check=story_checks.get(scene.scene_id),
-                    context=context,
-                )
-                for scene in scenes
-            ],
-        }
-
-    def _chapter_structure(
-        self,
-        chapter: ChapterGoal,
-        *,
-        title: str,
-        context: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        """这一章的结构在哪里改（见 ``chapter_structure_ownership``）。
-
-        ``title_auto``：章名还是系统起的占位（「第 N 章」）——章节编排据此提醒「还没起名」，与分章面板的
-        「AI 起章名」同一条判定。
-        """
-        pinned = (context or {}).get("chapter_plans")
-        if pinned is None:
-            pinned = live_chapter_plans_by_catalog_id(self.session, chapter.project_id)
-        if not structure_owned_by_plan(chapter, pinned):
-            return {"owner": "desk", "row_uid": "", "scene_range": None, "planned_scene_count": 0, "title_auto": False}
-        plan = pinned[chapter.chapter_id]
-        numbers = (context or {}).get("story_numbers")
-        if numbers is None:
-            numbers = story_scene_numbers(self.session, chapter.project_id)
-        span = (numbers.get("by_chapter_plan_id") or {}).get(plan.chapter_plan_id)
-        return {
-            "owner": "plan",
-            "row_uid": plan.row_uid,
-            "scene_range": {"first": span["first"], "last": span["last"]} if span else None,
-            "planned_scene_count": int(span["count"]) if span else 0,
-            "title_auto": is_auto_chapter_title(title),
-        }
-
-    def story_checks(self, scene_ids: list[str]) -> dict[str, dict[str, Any]]:
-        """阶段 D：每场最近一次准定稿评审的场景三问（无评审或那次评审没有三问 → 不在结果里）。"""
-        if not scene_ids:
-            return {}
-        return self._story_checks_where(SceneCard.scene_id.in_(scene_ids))
-
-    def _story_checks_where(self, *scene_filters: Any) -> dict[str, dict[str, Any]]:
-        """一条查询：按场取最近一次（attempt_id 最大）准定稿评审，只读它的 details_json——不再把每场的评审历史全拉回来。"""
-        latest = (
-            select(
-                AttemptTracker.scene_id.label("scene_id"),
-                func.max(AttemptTracker.attempt_id).label("attempt_id"),
-            )
-            .join(SceneCard, SceneCard.scene_id == AttemptTracker.scene_id)
-            .where(AttemptTracker.step == "near_final_acceptance_review", *scene_filters)
-            .group_by(AttemptTracker.scene_id)
-            .subquery()
-        )
-        result: dict[str, dict[str, Any]] = {}
-        for scene_id, details in self.session.execute(
-            select(AttemptTracker.scene_id, AttemptTracker.details_json).join(
-                latest, AttemptTracker.attempt_id == latest.c.attempt_id
-            )
-        ).all():
-            check = (details or {}).get("scene_story_check") if isinstance(details, dict) else None
-            if isinstance(check, dict):
-                result[scene_id] = check
-        return result
-
-    def scene_payload(
-        self,
-        scene: SceneCard,
-        *,
-        chapter_slug: str,
-        story_check: dict[str, Any] | None = None,
-        context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        kind = scene_kind(scene)
-        brief_json = dict(scene.writer_brief_json or {})
-        keys = SCENE_BRIEF_GCS if kind == "proactive" else SCENE_BRIEF_RDD
-        names = (context or {}).get("character_names")
-        pov_id = str(scene.pov_character_id or "")
-        return {
-            "scene_id": scene.scene_id,
-            "chapter_id": scene.chapter_id,
-            # 场景 slug = scene_id（稳定身份，见模块说明）；位置式旧 slug 只供前端迁移本机旧键
-            "slug": scene.scene_id,
-            "legacy_slug": f"{chapter_slug}s{scene.scene_seq}",
-            "seq": scene.scene_seq,
-            "title": scene_display_title(scene),
-            "summary": str(scene.scene_goal or "").strip(),
-            "kind": kind,
-            "state": str(scene.state or "todo"),
-            "words": int(scene.words_current or 0),
-            "brief": {"kind": kind, **{key: str(brief_json.get(key) or "") for key in keys}},
-            "pov_character_id": pov_id,
-            "pov_character_name": self._character_name(pov_id, names),
-            # 章节编排 LLM 规划（2026-07-16）可填的两个交接槽；可加性扩展，旧前端忽略即可。
-            "exit_change": str(scene.exit_change or ""),
-            "hook": str(scene.hook or ""),
-            # 阶段 D：最近一次准定稿评审的场景三问（无评审则 null），成稿中心按场展示，非阻断
-            "story_check": dict(story_check) if isinstance(story_check, dict) else None,
-            # 阶段 X：整张设计卡 + 真实工作状态
-            "design": self._scene_design(
-                scene,
-                kind=kind,
-                names=names,
-                plan_scene_ids=(context or {}).get("plan_scene_ids"),
-                story_numbers=(context or {}).get("story_numbers"),
-            ),
-            "work": self._scene_work(scene, context=context),
-        }
-
-    def _character_name(self, character_id: str, names: dict[str, str] | None) -> str:
-        if not character_id:
-            return ""
-        if names is not None and character_id in names:
-            return names[character_id]
-        # 查表里没有（旧角色行没带 project_id）：退回单行读取
-        character = self.session.get(StoryCharacter, character_id)
-        return (character.display_name or "") if character is not None else ""
-
-    def _scene_design(
-        self,
-        scene: SceneCard,
-        *,
-        kind: str,
-        names: dict[str, str] | None,
-        plan_scene_ids: set[str] | None = None,
-        story_numbers: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """场景卡上的设计（雪花物化 / 回流写进去的，或作者在章节编排里填的）——只读地摊给台子。"""
-        brief = dict(scene.writer_brief_json or {})
-
-        def text(key: str) -> str:
-            return str(brief.get(key) or "").strip()
-
-        other = SCENE_BRIEF_RDD if kind == "proactive" else SCENE_BRIEF_GCS
-        cast_ids = [str(item).strip() for item in (scene.onstage_chars_json or []) if str(item or "").strip()]
-        rendering_mode = text("rendering_mode").lower() or "full"
-        return {
-            "origin": "snowflake" if is_snowflake_origin(brief) else "manual",
-            # 阶段 Y：这张卡的设计在哪里改——``plan`` = 构思第 10 步（台子上只读），``desk`` = 就在台子上
-            "owner": "plan" if design_owned_by_plan(self.session, scene, plan_scene_ids=plan_scene_ids) else "desk",
-            # 阶段 Z：它在构思里是第几场（故事序，1 起；不在构思里的场为 0）——与分章面板、09 场景列表同一套编号
-            "story_index": int(((story_numbers or {}).get("by_scene_id") or {}).get(scene.scene_id) or 0),
-            "crucible": text("scene_crucible"),
-            "location": str(scene.location or "").strip(),
-            "story_time": text("story_time"),
-            "cast": [{"character_id": cid, "name": self._character_name(cid, names) or cid} for cid in cast_ids],
-            "reader_emotion": text("expected_reader_emotion"),
-            "must_include": str(scene.must_include_text or "").strip(),
-            "must_withhold": text("must_withhold"),
-            "cost": text("cost_requirement"),
-            "length_band": str(scene.target_length_band or "").strip(),
-            "rendering_mode": rendering_mode if rendering_mode in {"full", "summary", "skip"} else "full",
-            # 一场可以接着另一组三拍（阶段 I / N）：主形态在 brief，另一组在这里
-            "followup": {key: text(key) for key in other if text(key)},
-            "exception_reason": text("exception_reason"),
-            "protagonist": text("protagonist_hint"),
-            "is_chapter_last": bool(scene.is_chapter_last),
-        }
-
-    def _scene_work(self, scene: SceneCard, *, context: dict[str, Any] | None) -> dict[str, Any]:
-        """这一场真实干到哪了：目录的 ``state`` 只是作者手打的标签，管线状态和定稿才是事实。"""
-        run_states = (context or {}).get("run_states")
-        state = run_states.get(scene.scene_id) if run_states is not None else self.session.get(SceneRunState, scene.scene_id)
-        return {
-            "run_status": str(state.scene_status or "ready") if state is not None else "",
-            "has_final": bool(state is not None and state.current_final_scene_row_id),
-            "has_words": int(scene.words_current or 0) > 0,
-        }
+class CatalogService(CatalogReader):
+    """目录服务：读取面在 ``CatalogReader``，这里是写入口（建 / 改章与场、调章序与场序、旧版整批导入）。"""
 
     # ---------- 写 ----------
 
@@ -574,7 +273,7 @@ class CatalogService:
         if "title" in body:
             brief["title"] = str(body["title"] or "").strip()
         if "kind" in body:
-            kind = "reactive" if str(body["kind"]).strip().lower() in {"reactive", "反应"} else "proactive"
+            kind = parse_scene_kind(body["kind"])
             updates["scene_type"] = kind
             brief["primary_form"] = kind
         if "state" in body:
@@ -606,32 +305,11 @@ class CatalogService:
             key for key in ("exit_change", "hook")
             if key in updates and str(updates[key] or "") != str(getattr(scene, key) or "")
         )
-        # POV 角色:按 id 选既有角色,或按名 find-or-create(让冷启动作品无需走完整雪花
-        # 物化即可设 pov,解执行契约的 pov_character_id 硬阻断);空串显式清空。
-        needs_character_create = False
-        character_name = ""
-        if "pov_character_id" in body or "pov_character_name" in body:
-            pov_id = str(body.get("pov_character_id") or "").strip()
-            pov_name = str(body.get("pov_character_name") or "").strip()
-            if pov_id:
-                character = self.session.get(StoryCharacter, pov_id)
-                if character is None or character.project_id != project_id:
-                    raise DomainError("CATALOG_POV_CHARACTER_NOT_FOUND", "pov character not found in project", status_code=400)
-                updates["pov_character_id"] = pov_id
-            elif pov_name:
-                existing_character = self.session.execute(
-                    select(StoryCharacter).where(
-                        StoryCharacter.project_id == project_id,
-                        StoryCharacter.display_name == pov_name,
-                    )
-                ).scalars().first()
-                if existing_character is None:
-                    needs_character_create = True
-                    character_name = pov_name
-                else:
-                    updates["pov_character_id"] = existing_character.character_id
-            else:
-                updates["pov_character_id"] = None
+        # POV 角色：按 id 选既有角色，或按名找（找不到的名字等确认这一场可写之后再建）；空串显式清空。
+        pov_given, pov_id, character_name = self._resolve_pov(project_id, body)
+        needs_character_create = bool(character_name)
+        if pov_given and not needs_character_create:
+            updates["pov_character_id"] = pov_id
         if needs_character_create or (
             "pov_character_id" in updates and (updates["pov_character_id"] or None) != (scene.pov_character_id or None)
         ):
@@ -676,6 +354,31 @@ class CatalogService:
             "changed": changed,
         }
 
+    def _resolve_pov(self, project_id: str, body: dict[str, Any]) -> tuple[bool, str | None, str]:
+        """请求里的 POV → ``(给了没有, 角色 id, 还得新建的角色名)``。
+
+        按 id 选这部作品里既有的角色（不是这部作品的 → 400）；只给名字就按名找，找不到把名字交回调用方
+        （让冷启动作品不必走完整雪花物化就能设 POV，解执行契约的 pov_character_id 硬阻断）；两样都空 = 显式清空。
+        """
+        if "pov_character_id" not in body and "pov_character_name" not in body:
+            return False, None, ""
+        pov_id = str(body.get("pov_character_id") or "").strip()
+        pov_name = str(body.get("pov_character_name") or "").strip()
+        if pov_id:
+            character = self.session.get(StoryCharacter, pov_id)
+            if character is None or character.project_id != project_id:
+                raise DomainError("CATALOG_POV_CHARACTER_NOT_FOUND", "pov character not found in project", status_code=400)
+            return True, pov_id, ""
+        if pov_name:
+            existing = self.session.execute(
+                select(StoryCharacter).where(
+                    StoryCharacter.project_id == project_id,
+                    StoryCharacter.display_name == pov_name,
+                )
+            ).scalars().first()
+            return (True, existing.character_id, "") if existing is not None else (True, None, pov_name)
+        return True, None, ""
+
     def _find_or_create_character(self, project_id: str, display_name: str) -> StoryCharacter:
         existing = self.session.execute(
             select(StoryCharacter).where(
@@ -707,7 +410,7 @@ class CatalogService:
         at = body.get("at")
         position = int(at) if at is not None else len(scenes)
         position = max(0, min(position, len(scenes)))
-        kind = "reactive" if str(body.get("kind") or "").strip().lower() in {"reactive", "反应"} else "proactive"
+        kind = parse_scene_kind(body.get("kind"))
         state = str(body.get("state") or "todo")
         if state not in SCENE_STATES:
             raise DomainError("CATALOG_STATE_INVALID", f"scene state must be one of {SCENE_STATES}", status_code=400)
@@ -730,25 +433,11 @@ class CatalogService:
             scene.exit_change = str(body.get("exit_change") or "")
         if "hook" in body:
             scene.hook = str(body.get("hook") or "")
-        if "pov_character_id" in body or "pov_character_name" in body:
-            pov_id = str(body.get("pov_character_id") or "").strip()
-            pov_name = str(body.get("pov_character_name") or "").strip()
-            if pov_id:
-                character = self.session.get(StoryCharacter, pov_id)
-                if character is None or character.project_id != project_id:
-                    raise DomainError(
-                        "CATALOG_POV_CHARACTER_NOT_FOUND",
-                        "pov character not found in project",
-                        status_code=400,
-                    )
-                scene.pov_character_id = pov_id
-            elif pov_name:
-                scene.pov_character_id = self._find_or_create_character(
-                    project_id,
-                    pov_name,
-                ).character_id
-            else:
-                scene.pov_character_id = None
+        pov_given, pov_id, character_name = self._resolve_pov(project_id, body)
+        if pov_given:
+            scene.pov_character_id = (
+                self._find_or_create_character(project_id, character_name).character_id if character_name else pov_id
+            )
         self.session.flush()
         return {"scene": self._scene_payload_with_slug(scene), "changed": True}
 
@@ -903,155 +592,79 @@ class CatalogService:
             "changed": True,
         }
 
-    def import_catalog(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """一次性迁移入口（admin 保护）：localStorage 旧目录 → 后端行。仅允许空目录导入。"""
-        project = require_project(self.session, project_id)
-        if self.chapter_rows(project_id):
-            raise DomainError(
-                "CATALOG_NOT_EMPTY",
-                "catalog import is only allowed into an empty catalog",
-                status_code=409,
-            )
-        chapters = list((payload or {}).get("chapters") or [])
-        if not chapters:
-            raise DomainError("CATALOG_IMPORT_EMPTY", "chapters are required", status_code=400)
-        normalized_states = [
-            state if state in CHAPTER_STATES else "planned"
-            for state in (str(item.get("state") or "planned") for item in chapters)
-        ]
-        requested_current_indexes = [index for index, item in enumerate(chapters) if bool(item.get("current"))]
-        if len(requested_current_indexes) > 1:
-            raise DomainError(
-                "CATALOG_IMPORT_CURRENT_INVALID",
-                "catalog import can contain at most one current chapter",
-                status_code=400,
-            )
-        if requested_current_indexes:
-            expected_current_index = requested_current_indexes[0]
-            if normalized_states[expected_current_index] == "approved":
-                raise DomainError(
-                    "CATALOG_IMPORT_CURRENT_INVALID",
-                    "current chapter cannot already be approved",
-                    status_code=400,
-                )
-            if any(state == "approved" for state in normalized_states[expected_current_index + 1:]):
-                raise DomainError(
-                    "CATALOG_IMPORT_APPROVAL_ORDER_INVALID",
-                    "approved chapters must precede the current chapter",
-                    status_code=400,
-                )
-            # A controlled legacy import may carry intermediate review/draft
-            # labels before its explicit current chapter.  The project flow is
-            # linear, so canonicalize that historical prefix as approved.
-            normalized_states[:expected_current_index] = ["approved"] * expected_current_index
-            approved_prefix_length = expected_current_index
-        else:
-            approved_prefix_length = 0
-            for state in normalized_states:
-                if state != "approved":
-                    break
-                approved_prefix_length += 1
-            if any(state == "approved" for state in normalized_states[approved_prefix_length:]):
-                raise DomainError(
-                    "CATALOG_IMPORT_APPROVAL_ORDER_INVALID",
-                    "approved chapters must form a contiguous prefix in catalog order",
-                    status_code=400,
-                )
-            expected_current_index = approved_prefix_length if approved_prefix_length < len(chapters) else None
-        created_scenes = 0
-        created_chapter_ids: list[str] = []
-        for order, item in enumerate(chapters, start=1):
-            title = str(item.get("title") or f"第 {order} 章").strip()
-            state = normalized_states[order - 1]
-            chapter = ChapterGoal(
-                chapter_id=f"{project_id}_CH_{uuid.uuid4().hex[:8]}",
-                project_id=project_id,
-                planned_scene_count=len(item.get("scenes") or []),
-                chapter_goal=title,
-                state=state,
-                words_target=int((item.get("words") or {}).get("target") or 0) or None,
-                display_order=order,
-                narrative_json={
-                    "title": title,
-                    "act": item.get("act"),
-                    "tension": item.get("tension"),
-                    "pov": item.get("pov"),
-                    "time_label": item.get("time"),
-                    "place": item.get("place"),
-                    "entry": item.get("entry"),
-                    "exit": item.get("exit"),
-                    "align": item.get("align"),
-                    "promise": item.get("promise"),
-                    "drama": dict(item.get("drama") or {}),
-                    "threads": list(item.get("threads") or []),
-                },
-                writer_brief_json={"source": "catalog_import", "title": title},
-            )
-            self.session.add(chapter)
-            self.session.flush()
-            created_chapter_ids.append(chapter.chapter_id)
-            scenes_in = list(item.get("scenes") or [])
-            # 旧目录的字数挂在章级（words.cur），场景级缺失时把差额摊给零字数场景，
-            # 保证 rollup（章字数 = Σ场景字数）不丢数据。
-            chapter_cur = int((item.get("words") or {}).get("cur") or 0)
-            scene_words = [int(sc.get("words") or 0) for sc in scenes_in]
-            shortfall = chapter_cur - sum(scene_words)
-            zero_slots = [i for i, w in enumerate(scene_words) if w == 0]
-            if scenes_in and shortfall > 0:
-                slots = zero_slots or [len(scenes_in) - 1]
-                base, remainder = divmod(shortfall, len(slots))
-                for j, i in enumerate(slots):
-                    scene_words[i] += base + (remainder if j == len(slots) - 1 else 0)
-            for seq, sc in enumerate(scenes_in, start=1):
-                kind = "reactive" if str(sc.get("kind") or "").strip() in {"反应", "reactive"} else "proactive"
-                s_state = str(sc.get("state") or "todo")
-                scene = SceneCard(
-                    scene_id=f"{chapter.chapter_id}_SC{seq:02d}",
-                    chapter_id=chapter.chapter_id,
-                    project_id=project_id,
-                    scene_seq=seq,
-                    scene_goal=str(sc.get("title") or "").strip() or f"场景 {seq}",
-                    scene_type=kind,
-                    state=s_state if s_state in SCENE_STATES else ("writing" if s_state == "active" else "todo"),
-                    words_current=scene_words[seq - 1],
-                    is_chapter_last=1 if seq == len(scenes_in) else 0,
-                    writer_brief_json={
-                        "source": "catalog_import",
-                        "title": str(sc.get("title") or "").strip(),
-                        "primary_form": kind,
-                        **(
-                            {"goal": str(sc.get("goal") or ""), "conflict": str(sc.get("obstacle") or ""), "setback": str(sc.get("turn") or "")}
-                            if kind == "proactive"
-                            else {"reaction": str(sc.get("goal") or ""), "dilemma": str(sc.get("obstacle") or ""), "decision": str(sc.get("turn") or "")}
-                        ),
-                    },
-                )
-                self.session.add(scene)
-                # 导入路径不在这里补建 SceneRunState：测试夹具（fixture_works）经由本路径
-                # 播种并自行管理状态行；运行本章对缺行场景会惰性补建（chapter_runner）。
-                created_scenes += 1
-        project.approved_chapter_ids_json = created_chapter_ids[:approved_prefix_length]
-        if expected_current_index is None:
-            project.current_chapter_id = None
-            project.status = "completed"
-        else:
-            project.current_chapter_id = created_chapter_ids[expected_current_index]
-            project.status = "chapter_ready"
-        self.session.flush()
-        return {"created_chapter_count": len(chapters), "created_scene_count": created_scenes}
+    def reorder_scenes(self, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """v1 场景重排（``POST /api/v1/chapters/{chapter_id}/scene-order``，章节编排拖场用）：整章活跃场景的新顺序 + 章末那一场。"""
+        session = self.session
+        chapter = AuthorLifecycleService(session).require_active_chapter(chapter_id)
 
-    # ---------- 字数 rollup（正文保存埋点用） ----------
+        scene_ids = payload.get("scene_ids")
+        if not isinstance(scene_ids, list) or not scene_ids or not all(isinstance(scene_id, str) and scene_id for scene_id in scene_ids):
+            raise DomainError("SCENE_ORDER_INVALID", "scene_ids must be a non-empty list", status_code=400)
+        if len(scene_ids) != len(set(scene_ids)):
+            raise DomainError("SCENE_ORDER_DUPLICATE", "scene_ids must not contain duplicates", status_code=400)
 
-    def words_rollup(self, scene: SceneCard) -> dict[str, Any]:
-        chapter_words = sum(
-            int(s.words_current or 0) for s in self.scene_rows(scene.chapter_id)
-        )
-        return {
-            "scene_id": scene.scene_id,
-            "scene_words": int(scene.words_current or 0),
-            "chapter_id": scene.chapter_id,
-            "chapter_words": chapter_words,
+        last_scene_id = payload.get("last_scene_id")
+        if not isinstance(last_scene_id, str) or last_scene_id not in scene_ids:
+            raise DomainError("SCENE_ORDER_LAST_SCENE_INVALID", "last_scene_id must be present in scene_ids", status_code=400)
+
+        chapter_scenes = session.execute(
+            select(SceneCard).where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
+        ).scalars().all()
+        chapter_scene_map = {scene.scene_id: scene for scene in chapter_scenes}
+        other_chapter_scenes = {
+            scene.scene_id
+            for scene in session.execute(select(SceneCard).where(SceneCard.scene_id.in_(scene_ids), SceneCard.trashed_flag == 0)).scalars().all()
+            if scene.chapter_id != chapter_id
         }
+        if other_chapter_scenes:
+            raise DomainError("SCENE_ORDER_CHAPTER_MISMATCH", "scene_ids must belong to the same chapter")
+
+        if set(scene_ids) != set(chapter_scene_map):
+            raise DomainError("SCENE_ORDER_INCOMPLETE", "scene_ids must include every scene in the chapter", status_code=409)
+
+        ordered_scenes = [chapter_scene_map[scene_id] for scene_id in scene_ids]
+        # 阶段 Y「设计只有一处可改」：雪花整理出来的场，彼此的先后 = 故事序（构思第 9 步的行序）。台子上挪了，
+        # 下一次同步就会按故事序摆回去——所以这里不收；手加的场照常可以挪到任何两场之间。
+        owned = plan_owned_scene_ids(session, chapter.project_id, list(chapter_scenes))
+        if owned:
+            current_owned = [
+                scene.scene_id
+                for scene in sorted(chapter_scenes, key=lambda item: (int(item.scene_seq or 0), item.scene_id))
+                if scene.scene_id in owned
+            ]
+            if [scene_id for scene_id in scene_ids if scene_id in owned] != current_owned:
+                raise DomainError(
+                    "CATALOG_SCENE_ORDER_OWNED_BY_PLAN",
+                    "这几场是雪花整理出来的，它们的先后在构思第 9 步「场景列表」里拖动，确认后自动同步到目录；手加的场可以在这里挪。",
+                    status_code=409,
+                    details={"chapter_id": chapter_id, "author_action": scene_order_owned_by_plan_action()},
+                )
+        changed_fields = [
+            f"scene:{scene.scene_id}.order"
+            for index, scene in enumerate(ordered_scenes, start=1)
+            if scene.scene_seq != index
+            or scene.is_chapter_last != (1 if scene.scene_id == last_scene_id else 0)
+        ]
+        changed = require_chapter_mutation_allowed(
+            session,
+            chapter,
+            changed_fields=changed_fields,
+            operation="chapters.reorder_scenes",
+        )
+        if changed:
+            reseat_scene_seqs(session, ordered_scenes, last_scene_id=last_scene_id)
+        return {
+            "chapter_id": chapter_id,
+            "changed": changed,
+            "scenes": [
+                {"scene_id": scene.scene_id, "scene_seq": scene.scene_seq, "is_chapter_last": scene.is_chapter_last}
+                for scene in ordered_scenes
+            ],
+        }
+
+    def import_catalog(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """一次性迁移入口的旧形状：现在只给测试夹具播种（见 ``catalog_import``）。"""
+        return import_catalog(self.session, project_id, payload)
 
     # ---------- internals ----------
 
@@ -1066,17 +679,6 @@ class CatalogService:
         if owner != project_id:
             raise DomainError("SCENE_NOT_FOUND", "scene not found in project", status_code=404)
         return scene
-
-    def _scene_payload_with_slug(self, scene: SceneCard) -> dict[str, Any]:
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        require_project(self.session, chapter.project_id)
-        chapters = self.chapter_rows(chapter.project_id)
-        index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter.chapter_id)
-        return self.scene_payload(
-            scene,
-            chapter_slug=f"ch{index + 1:02d}",
-            story_check=self.story_checks([scene.scene_id]).get(scene.scene_id),
-        )
 
     def _insert_scene(
         self,
