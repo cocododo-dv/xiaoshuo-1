@@ -25,6 +25,8 @@ from novel_system.services.snowflake_step_catalog import (  # noqa: F401
     effective_rendering_mode,
     get_step_definition,
     list_step_definitions,
+    step_definition_view,
+    step_definition_views,
 )
 from novel_system.services.snowflake_step_guidance import (  # noqa: F401
     _DEFAULT_GUIDANCE,

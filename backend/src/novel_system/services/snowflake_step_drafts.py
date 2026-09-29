@@ -9,7 +9,7 @@ from copy import deepcopy
 from typing import Any
 
 from novel_system.services.value_coercion import coerce_string_list
-from novel_system.services.snowflake_step_catalog import LONG_SYNOPSIS_PARAGRAPHS, get_step_definition
+from novel_system.services.snowflake_step_catalog import LONG_SYNOPSIS_PARAGRAPHS, step_definition_view
 
 
 def derive_three_act(draft: dict[str, Any] | None) -> dict[str, str]:
@@ -42,7 +42,7 @@ def merge_step_draft(
 
 
 def default_step_draft(step_key: str, *, latest_by_step: dict[str, Any] | None = None) -> dict[str, Any]:
-    step = get_step_definition(step_key)
+    step = step_definition_view(step_key)
     draft = deepcopy(step.get("default_draft") or {})
     if step_key == "scene_details":
         scene_list_artifact = (latest_by_step or {}).get("scene_list")
@@ -74,7 +74,7 @@ def _normalize_step_draft(step_key: str, draft: dict[str, Any]) -> dict[str, Any
 def _normalize_character_bible(item: dict[str, Any]) -> dict[str, Any]:
     template_field = next(
         field
-        for field in get_step_definition("character_bibles")["editor"]["fields"]
+        for field in step_definition_view("character_bibles")["editor"]["fields"]
         if field.get("key") == "characters"
     )
     template = deepcopy(template_field.get("template") or {})

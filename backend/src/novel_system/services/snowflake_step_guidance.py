@@ -8,7 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from novel_system.services.snowflake_step_catalog import MATERIALIZATION_REQUIRED_STEPS, get_step_definition
+from novel_system.services.snowflake_step_catalog import MATERIALIZATION_REQUIRED_STEPS, step_definition_view
 
 
 _DEFAULT_GUIDANCE = {
@@ -213,7 +213,7 @@ _FIELD_HELP: dict[str, dict[str, str]] = {
 
 
 def editor_payload(step_key: str) -> dict[str, Any]:
-    editor = deepcopy(get_step_definition(step_key)["editor"])
+    editor = deepcopy(step_definition_view(step_key)["editor"])
     _enrich_editor_fields(editor.get("fields") or [])
     return editor
 

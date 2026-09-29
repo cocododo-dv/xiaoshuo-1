@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -33,13 +35,14 @@ def latest_triage_rows(session: Session, project_id: str) -> dict[str, Snowflake
     return latest
 
 
+def plan_ids_with_status(rows: Mapping[str, SnowflakeSceneTriageItem], statuses: frozenset[str]) -> set[str]:
+    """在已读出的最新记录（``latest_triage_rows`` 的结果）上挑 effective_status 落在 ``statuses`` 里的场景计划 id。"""
+    return {plan_id for plan_id, row in rows.items() if plan_id and str(row.effective_status or "").strip().lower() in statuses}
+
+
 def latest_triage_plan_ids(session: Session, project_id: str, statuses: frozenset[str]) -> set[str]:
     """effective_status 落在 ``statuses`` 里的场景计划 id（按最新记录）。"""
-    return {
-        plan_id
-        for plan_id, row in latest_triage_rows(session, project_id).items()
-        if plan_id and str(row.effective_status or "").strip().lower() in statuses
-    }
+    return plan_ids_with_status(latest_triage_rows(session, project_id), statuses)
 
 
 def excluded_scene_plan_ids(session: Session, project_id: str) -> set[str]:

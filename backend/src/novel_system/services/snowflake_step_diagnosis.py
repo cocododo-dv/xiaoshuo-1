@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from novel_system.services.value_coercion import coerce_string_list, has_value
-from novel_system.services.snowflake_step_catalog import get_step_definition
+from novel_system.services.snowflake_step_catalog import step_definition_view
 from novel_system.services.snowflake_step_guidance import _FIELD_HELP
 from novel_system.services.snowflake_step_drafts import derive_three_act
 
@@ -159,7 +159,7 @@ def _missing_fields_for_step(step_key: str, draft: dict[str, Any]) -> list[str]:
             missing.extend(f"{scene.get('scene_id') or index}.{field}" for field in scene_missing)
         return missing
 
-    fields = get_step_definition(step_key).get("editor", {}).get("fields") or []
+    fields = step_definition_view(step_key).get("editor", {}).get("fields") or []
     missing = []
     for field in fields:
         key = str(field.get("key") or "")
@@ -183,7 +183,7 @@ def _total_fields_for_step(step_key: str, draft: dict[str, Any]) -> int:
             scene_type = str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip().lower()
             total += 4 if scene_type in {"proactive", "reactive"} else 1
         return total
-    return len(get_step_definition(step_key).get("editor", {}).get("fields") or [])
+    return len(step_definition_view(step_key).get("editor", {}).get("fields") or [])
 
 
 def _diagnose_scene_step_pressure(step_key: str, draft: dict[str, Any]) -> dict[str, Any]:
@@ -369,7 +369,7 @@ def _collect_scene_placeholder_texts() -> dict[str, frozenset[str]]:
                 bucket.add(normalized)
             # 多行占位例句（「① … ② … ③ …」）也按整段登记；单独一行不算占位——作者可能真写了一轮。
 
-    for field in get_step_definition("scene_details")["editor"]["fields"]:
+    for field in step_definition_view("scene_details")["editor"]["fields"]:
         for mode in field.get("scene_modes") or []:
             for mode_field in mode.get("fields") or []:
                 add(str(mode_field.get("key") or ""), mode_field.get("hint"), mode_field.get("placeholder"))

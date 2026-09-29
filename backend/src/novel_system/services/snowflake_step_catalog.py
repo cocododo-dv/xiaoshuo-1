@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
+from types import MappingProxyType
 from typing import Any
 
 
@@ -549,3 +551,19 @@ def get_step_definition(step_key: str) -> dict[str, Any]:
         if step["step_key"] == step_key:
             return deepcopy(step)
     raise KeyError(step_key)
+
+
+# 只读视图（B06-04）：工作台每建一次要把整份目录深拷贝十几次、单步定义上百次，全是只读的循环与取值。
+# 服务内部只读的地方用视图（不拷贝）；要改、或者要把一部分交出去的地方照旧用上面两个深拷贝访问器。
+_STEP_VIEWS: tuple[Mapping[str, Any], ...] = tuple(MappingProxyType(step) for step in SNOWFLAKE_STEP_CATALOG)
+_STEP_VIEW_BY_KEY: Mapping[str, Mapping[str, Any]] = MappingProxyType({view["step_key"]: view for view in _STEP_VIEWS})
+
+
+def step_definition_views() -> tuple[Mapping[str, Any], ...]:
+    """十步定义的只读视图，按方法顺序。不拷贝：嵌套的列表 / 字典是目录本身，只许读。"""
+    return _STEP_VIEWS
+
+
+def step_definition_view(step_key: str) -> Mapping[str, Any]:
+    """一步定义的只读视图（不拷贝，只许读）；未知步骤与 ``get_step_definition`` 一样抛 ``KeyError``。"""
+    return _STEP_VIEW_BY_KEY[step_key]

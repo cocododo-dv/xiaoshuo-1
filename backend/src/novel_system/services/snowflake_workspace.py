@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import func, select
@@ -67,10 +68,10 @@ from novel_system.services.snowflake_steps import (
     diagnose_scene_detail,
     editor_payload,
     effective_rendering_mode,
-    get_step_definition,
-    list_step_definitions,
     merge_step_draft,
     step_completeness,
+    step_definition_view,
+    step_definition_views,
     step_guidance,
 )
 from novel_system.services.scene_rehome import rehome_scenes
@@ -79,8 +80,18 @@ from novel_system.services.snowflake_chaptering import (
     mint_chapter_row_uid,
     parse_outline_chapters,
 )
-from novel_system.services.snowflake_scene_order import live_scene_plans_in_story_order, positions_from_rows, renumber_scene_seq
-from novel_system.services.snowflake_triage import EXCLUDED_TRIAGE_STATUSES, excluded_scene_plan_ids, latest_triage_rows
+from novel_system.services.snowflake_scene_order import (
+    live_scene_plans_in_story_order,
+    positions_from_rows,
+    renumber_scene_seq,
+    sort_in_story_order,
+)
+from novel_system.services.snowflake_triage import (
+    EXCLUDED_TRIAGE_STATUSES,
+    excluded_scene_plan_ids,
+    latest_triage_rows,
+    plan_ids_with_status,
+)
 from novel_system.services.snowflake_direction_brief import DirectionBriefStore, delta_changed
 from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService, draft_has_content
 from novel_system.services.hash_engine import sha256_text
@@ -129,6 +140,8 @@ SCENE_PATCH_FIELDS = {
 }
 #: 已有场景计划行上只归 09 场景列表改的字段（第 10 步的草稿不改它们）
 SCENE_LIST_OWNED_FIELDS = ("primary_form", "scene_type", "pov_character_id")
+#: 一条 ``IN`` 查询最多带多少个 id（远低于 SQLite 的变量上限）
+_IN_CHUNK = 500
 
 
 
@@ -187,14 +200,15 @@ class SnowflakeWorkspaceService:
         return self._present_workspace(project_id, self._workspace_payload(project_id))
 
     def _present_workspace(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        steps = []
-        for step in payload.get("steps") or []:
-            steps.append({**step, "draft": present_draft(project_id, step.get("draft"))})
         return {
             **payload,
-            "steps": steps,
+            "steps": [self._present_step(project_id, step) for step in payload.get("steps") or []],
             "assistant_history": [self._present_turn(project_id, turn) for turn in payload.get("assistant_history") or []],
         }
+
+    @staticmethod
+    def _present_step(project_id: str, step: dict[str, Any]) -> dict[str, Any]:
+        return {**step, "draft": present_draft(project_id, step.get("draft"))}
 
     @staticmethod
     def _present_turn(project_id: str, turn: dict[str, Any]) -> dict[str, Any]:
@@ -203,18 +217,28 @@ class SnowflakeWorkspaceService:
         return {**turn, "candidate_patch": present_draft(project_id, turn["candidate_patch"])}
 
     def _workspace_payload(self, project_id: str) -> dict[str, Any]:
-        """工作台的库内口径（角色 id 带作品前缀）：提示词与服务端内部都读它。"""
+        """工作台的库内口径（角色 id 带作品前缀）：提示词与服务端内部都读它。
+
+        一次构建每样东西只读一遍库（B06-04）：各步最新版本、按故事序排好的场景计划（故事序用已读出的 09 草稿算）、
+        每场最新的分诊记录、场景卡，各段共用。
+        """
         project = self._require_snowflake_project(project_id)
         latest_by_step = self._latest_by_step(project_id)
         current_step_key = self._current_step_key(latest_by_step)
-        scene_plans = self._scene_plans(project_id)
-        scene_board = self._scene_board(project_id, scene_plans=scene_plans)
-        triage_items = self._triage_items(project_id)
+        scene_plans = self._scene_plans(project_id, latest_by_step=latest_by_step)
+        triage_rows = latest_triage_rows(self.session, project_id)
+        triage_items = self._triage_items(project_id, scene_plans=scene_plans, triage_rows=triage_rows)
         latest_plan = self._latest_plan(project_id)
         confirmed_steps = self._steps_with_confirmed_version(project_id)
         steps = [
-            self._workspace_step(step, latest_by_step, project_id=project_id, confirmed_steps=confirmed_steps)
-            for step in list_step_definitions()
+            self._workspace_step(
+                step,
+                latest_by_step,
+                project_id=project_id,
+                confirmed_steps=confirmed_steps,
+                scene_plans=scene_plans,
+            )
+            for step in step_definition_views()
         ]
         chapter_plan_status = self._chaptering.status(project_id, scene_plans)
         gate = self._materialization_gate(latest_by_step, triage_items, scene_plans, chapter_plan_status)
@@ -227,13 +251,17 @@ class SnowflakeWorkspaceService:
             "current_step_key": current_step_key,
             "ready_to_materialize": gate["status"] != "blocked",
             "latest_plan": outline_plan_payload(latest_plan) if latest_plan is not None else None,
-            "scene_board": scene_board,
+            "scene_board": self._scene_board(project_id, scene_plans=scene_plans),
             "triage_items": triage_items,
             "assistant_history": self._assistant_history(project_id),
             # 阶段 T：每步的作者意图要点（含已撤条目供恢复、继承的上游全书级条目）
             "direction_briefs": self._briefs.all_payloads(project_id),
             "materialization_gate": gate,
-            "resync_status": self._resync_status(project.project_id, scene_plans),
+            "resync_status": self._resync_status(
+                project.project_id,
+                scene_plans,
+                excluded=plan_ids_with_status(triage_rows, EXCLUDED_TRIAGE_STATUSES),
+            ),
             "steps": steps,
         }
 
@@ -726,11 +754,12 @@ class SnowflakeWorkspaceService:
         plans = self._scene_plans(project_id)
         excluded = self._excluded_scene_plan_ids(project_id)
         order_drift = self._scene_card_order_drift(project_id, plans)
+        cards = self._scene_cards_by_id(project_id, [plan.scene_id for plan in plans])
         eligible: list[str] = []
         held: list[dict[str, Any]] = []
         for plan in plans:
-            scene = self.session.get(SceneCard, plan.scene_id)
-            if scene is None or scene.project_id != project_id:
+            scene = cards.get(plan.scene_id)
+            if scene is None:
                 continue  # 还没物化的场：进目录走「整理为章节结构」
             patch = self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
             diff = self._scene_card_diff(scene, patch)
@@ -1298,7 +1327,8 @@ class SnowflakeWorkspaceService:
             for item in body.get("scene_ids") or []
             if str(item or "").strip()
         }
-        plans = self._scene_plans(project.project_id)
+        all_plans = self._scene_plans(project.project_id)
+        plans = all_plans
         if requested_plan_ids:
             plans = [plan for plan in plans if plan.scene_plan_id in requested_plan_ids]
         if requested_scene_ids:
@@ -1312,14 +1342,15 @@ class SnowflakeWorkspaceService:
         touched_chapter_ids: set[str] = set()
         moved_scenes: dict[str, tuple[str, str]] = {}  # 阶段 Y：换了章的场，运行时行要跟着走
         excluded = self._excluded_scene_plan_ids(project.project_id)
-        order_drift = self._scene_card_order_drift(project.project_id)
+        order_drift = self._scene_card_order_drift(project.project_id, all_plans)
+        cards = self._scene_cards_by_id(project.project_id, [plan.scene_id for plan in plans])
         # 第一遍：只算补丁（不动库）。场景卡的位置 = 章 + 章内序，两样都受唯一索引
         # (chapter_id, scene_seq) 约束；一张一张地改会撞上还没搬走的那一张，所以位置留到最后
         # 由 _settle_scene_card_order 两阶段统一落位，补丁里不再带 scene_seq。
         prepared: list[tuple[SnowflakeScenePlan, SceneCard | None, dict[str, Any], dict[str, Any] | None]] = []
         for plan in plans:
-            scene = self.session.get(SceneCard, plan.scene_id)
-            if scene is None or scene.project_id != project.project_id:
+            scene = cards.get(plan.scene_id)
+            if scene is None:
                 prepared.append((plan, None, {}, None))
                 continue
             scene_patch = self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
@@ -1607,14 +1638,15 @@ class SnowflakeWorkspaceService:
 
     def _workspace_step(
         self,
-        step: dict[str, Any],
+        step: Mapping[str, Any],
         latest_by_step: dict[str, SnowflakeStepRun],
         *,
         project_id: str,
         confirmed_steps: set[str] | None = None,
+        scene_plans: list[SnowflakeScenePlan] | None = None,
     ) -> dict[str, Any]:
         run = latest_by_step.get(step["step_key"])
-        draft = self._draft_for_step(step["step_key"], run, latest_by_step, project_id=project_id)
+        draft = self._draft_for_step(step["step_key"], run, latest_by_step, project_id=project_id, scene_plans=scene_plans)
         status = run.status if run is not None else "draft"
         approval_blockers = self._previous_gate_blockers(step["step_key"], latest_by_step)
         if confirmed_steps is None:
@@ -1657,12 +1689,12 @@ class SnowflakeWorkspaceService:
         latest_by_step: dict[str, SnowflakeStepRun],
         *,
         project_id: str,
+        scene_plans: list[SnowflakeScenePlan] | None = None,
     ) -> dict[str, Any]:
-        if step_key == "scene_list":
-            scenes = [_scene_list_payload(scene) for scene in self._scene_plans(project_id)]
-            return {"scenes": scenes} if scenes else merge_step_draft(step_key, run.draft_json if run else None, latest_by_step=latest_by_step)
-        if step_key == "scene_details":
-            scenes = [_scene_plan_payload(scene) for scene in self._scene_plans(project_id)]
+        if step_key in SCENE_PLAN_STEPS:
+            plans = self._scene_plans(project_id) if scene_plans is None else scene_plans
+            row_payload = _scene_list_payload if step_key == "scene_list" else _scene_plan_payload
+            scenes = [row_payload(scene) for scene in plans]
             return {"scenes": scenes} if scenes else merge_step_draft(step_key, run.draft_json if run else None, latest_by_step=latest_by_step)
         return merge_step_draft(step_key, run.draft_json if run else None, latest_by_step=latest_by_step)
 
@@ -1676,7 +1708,7 @@ class SnowflakeWorkspaceService:
         return run.status == "stale" and bool(run.stale_accepted_at)
 
     def _current_step_key(self, latest_by_step: dict[str, SnowflakeStepRun]) -> str | None:
-        for step in list_step_definitions():
+        for step in step_definition_views():
             if not self._gate_satisfied(step["step_key"], latest_by_step):
                 return step["step_key"]
         return None
@@ -1699,7 +1731,7 @@ class SnowflakeWorkspaceService:
     ) -> None:
         step_index = STEP_ORDER[step_key]
         blockers = []
-        for step in list_step_definitions()[:step_index]:
+        for step in step_definition_views()[:step_index]:
             run = latest_by_step.get(step["step_key"])
             if allow_self and run is not None and run.step_run_id == allow_self:
                 continue
@@ -1730,7 +1762,7 @@ class SnowflakeWorkspaceService:
         latest_by_step: dict[str, SnowflakeStepRun],
     ) -> list[dict[str, str]]:
         blockers: list[dict[str, str]] = []
-        for step in list_step_definitions()[: STEP_ORDER[step_key]]:
+        for step in step_definition_views()[: STEP_ORDER[step_key]]:
             if not self._gate_satisfied(step["step_key"], latest_by_step):
                 blockers.append({"step_key": step["step_key"], "label": step["label"]})
         return blockers
@@ -1741,7 +1773,7 @@ class SnowflakeWorkspaceService:
     def _input_refs(self, step_key: str, latest_by_step: dict[str, SnowflakeStepRun]) -> dict[str, Any]:
         step_index = STEP_ORDER[step_key]
         refs: dict[str, Any] = {}
-        for step in list_step_definitions()[:step_index]:
+        for step in step_definition_views()[:step_index]:
             run = latest_by_step.get(step["step_key"])
             if run is not None and self._gate_satisfied(step["step_key"], latest_by_step):
                 refs[step["step_key"]] = run.step_run_id
@@ -1774,15 +1806,30 @@ class SnowflakeWorkspaceService:
     def _latest_plan(self, project_id: str) -> OutlinePlan | None:
         return latest_outline_plan(self.session, project_id)
 
-    def _scene_plans(self, project_id: str) -> list[SnowflakeScenePlan]:
+    def _scene_plans(
+        self, project_id: str, *, latest_by_step: dict[str, SnowflakeStepRun] | None = None
+    ) -> list[SnowflakeScenePlan]:
         """活跃场景计划，按**故事序**（09 场景列表的行序，见 ``snowflake_scene_order``）。
 
         软删的场（P1-3）在这里就被挡掉——工作台、诊断、闸门、回流状态和物化输入全部经过这一个
         入口，所以幽灵场不会再从任何一处冒出来。顺序同理只有这一个口径：09 / 10 两步交给前端的
         草稿就是按它排的，曾经的 ``(chapter_id, scene_seq)`` 在分章之后会把场景表按章重新洗一遍，
         新浏览器水合到的 09 于是不是作者排的那张表，下一次保存再把乱序写回去。
+
+        ``latest_by_step``：同一次构建里刚读出的各步最新版本——故事序直接用其中的 09 草稿算，不再为排序
+        把 09 再读一遍（B06-04；它与 ``story_positions`` 取的是同一行：最新一版未被取代的 09）。
         """
-        return live_scene_plans_in_story_order(self.session, project_id)
+        if latest_by_step is None:
+            return live_scene_plans_in_story_order(self.session, project_id)
+        rows = self.session.execute(
+            select(SnowflakeScenePlan).where(
+                SnowflakeScenePlan.project_id == project_id,
+                SnowflakeScenePlan.removed_at.is_(None),
+            )
+        ).scalars().all()
+        scene_list = latest_by_step.get("scene_list")
+        positions = positions_from_rows((scene_list.draft_json or {}).get("scenes")) if scene_list is not None else {}
+        return sort_in_story_order(self.session, project_id, rows, positions=positions)
 
     def _scene_board(self, project_id: str, *, scene_plans: list[SnowflakeScenePlan] | None = None) -> dict[str, Any]:
         scenes = [_scene_plan_payload(scene) for scene in (scene_plans if scene_plans is not None else self._scene_plans(project_id))]
@@ -1801,13 +1848,21 @@ class SnowflakeWorkspaceService:
             chapter["scene_count"] += 1
         return {"chapters": list(chapters_by_id.values()), "scenes": scenes}
 
-    def _resync_status(self, project_id: str, scene_plans: list[SnowflakeScenePlan]) -> dict[str, Any]:
+    def _resync_status(
+        self,
+        project_id: str,
+        scene_plans: list[SnowflakeScenePlan],
+        *,
+        excluded: set[str] | None = None,
+    ) -> dict[str, Any]:
         pending: list[dict[str, Any]] = []
-        excluded = self._excluded_scene_plan_ids(project_id)
+        if excluded is None:
+            excluded = self._excluded_scene_plan_ids(project_id)
         order_drift = self._scene_card_order_drift(project_id, scene_plans)
+        cards = self._scene_cards_by_id(project_id, [plan.scene_id for plan in scene_plans])
         for plan in scene_plans:
-            scene = self.session.get(SceneCard, plan.scene_id)
-            if scene is None or scene.project_id != project_id:
+            scene = cards.get(plan.scene_id)
+            if scene is None:
                 continue
             diff = self._scene_card_diff(
                 scene, self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
@@ -1831,6 +1886,17 @@ class SnowflakeWorkspaceService:
             "pending_scene_plan_ids": [item["scene_plan_id"] for item in pending],
             "pending_scenes": pending,
         }
+
+    def _scene_cards_by_id(self, project_id: str, scene_ids: list[str]) -> dict[str, SceneCard]:
+        """这些场景计划已经物化出的场景卡（含回收站里的）：一次 ``IN`` 查询，代替逐场 ``session.get``（B06-04 / 06）。"""
+        wanted = sorted({scene_id for scene_id in scene_ids if scene_id})
+        cards: dict[str, SceneCard] = {}
+        for start in range(0, len(wanted), _IN_CHUNK):
+            chunk = wanted[start : start + _IN_CHUNK]
+            for card in self.session.execute(select(SceneCard).where(SceneCard.scene_id.in_(chunk))).scalars():
+                if card.project_id == project_id:
+                    cards[card.scene_id] = card
+        return cards
 
     def _recompute_chapter_last(self, project_id: str, chapter_ids: set[str]) -> None:
         """回流搬过场之后重算每章的章末标记（scene_criticality 把章末当高潮位）——物化时算过一次，
@@ -1993,12 +2059,18 @@ class SnowflakeWorkspaceService:
             "llm_call_count": llm_call_count,
         }
 
-    def _triage_items(self, project_id: str) -> list[dict[str, Any]]:
+    def _triage_items(
+        self,
+        project_id: str,
+        *,
+        scene_plans: list[SnowflakeScenePlan] | None = None,
+        triage_rows: dict[str, SnowflakeSceneTriageItem] | None = None,
+    ) -> list[dict[str, Any]]:
         # 每一场只看最新的一条分诊记录——与物化 / 回流 / 设计上下文同一个口径（snowflake_triage）。
         # 以前按库里的扫描顺序取行：作者看到「通过」，整理时这一场却按更新的「待删」不建卡（B06-02）。
-        stored = latest_triage_rows(self.session, project_id)
+        stored = latest_triage_rows(self.session, project_id) if triage_rows is None else triage_rows
         items: list[dict[str, Any]] = []
-        for scene in self._scene_plans(project_id):
+        for scene in self._scene_plans(project_id) if scene_plans is None else scene_plans:
             row = stored.get(scene.scene_plan_id)
             if row is not None:
                 items.append(self._triage_payload(row))
@@ -2713,6 +2785,18 @@ class SnowflakeWorkspaceService:
         seen_row_uids: set[str] = set()
         seen_scene_ids: set[str] = set()
         touched_row_uids: set[str] = set()
+        # 本作品的全部场景计划（含软删的：同一 row_uid 回来要复活它）一次读进来，逐行对位查字典——
+        # 以前每一行两三条查询，60 场的自动保存光对位就是一百多条语句（B06-06）。新建与认领 row_uid 时同步更新两张表。
+        known_plans = list(
+            self.session.execute(select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == project_id)).scalars()
+        )
+        by_row_uid: dict[str, SnowflakeScenePlan] = {}
+        by_scene_id: dict[str, SnowflakeScenePlan] = {}
+        for known in known_plans:
+            if known.row_uid:
+                by_row_uid.setdefault(known.row_uid, known)
+            if known.scene_id:
+                by_scene_id.setdefault(known.scene_id, known)
         for index, item in enumerate(scenes, start=1):
             if not isinstance(item, dict):
                 continue
@@ -2727,12 +2811,12 @@ class SnowflakeWorkspaceService:
             duplicate_in_payload = bool(row_uid) and row_uid in seen_row_uids
             if duplicate_in_payload:
                 row_uid = ""
-            plan = self._scene_plan_by_row_uid(project_id, row_uid) if row_uid else None
+            plan = by_row_uid.get(row_uid) if row_uid else None
             if plan is None and not duplicate_in_payload and incoming_scene_id:
                 # row_uid 缺席或未命中时回退到 scene_id 查找：规划器骨架与 LLM 结构化输出
                 # 只回显 scene_id（提示词明确要求 row_uid 留空），这条回退是第 10 步能绑回
                 # 第 9 步建下的行、而不是每次生成都复制一份的唯一依据。
-                plan = self._scene_plan_by_scene_id(project_id, incoming_scene_id)
+                plan = by_scene_id.get(incoming_scene_id)
             if plan is not None and plan.row_uid and plan.row_uid in seen_row_uids:
                 plan = None  # 已被本轮前一条认领，不能二次绑定
             created = plan is None
@@ -2770,7 +2854,7 @@ class SnowflakeWorkspaceService:
                 # 在它缺席或已被占用时才用 row_uid 铸——前端 canonFromFE 恰好不发
                 # scene_id，所以作者手改场景表这一路始终走 row_uid 基、天然不撞号。
                 scene_id = incoming_scene_id or _mint_scene_id(project_id, row_uid)
-                if scene_id in seen_scene_ids or self._scene_plan_by_scene_id(project_id, scene_id) is not None:
+                if scene_id in seen_scene_ids or scene_id in by_scene_id:
                     scene_id = _mint_scene_id(project_id, row_uid)
                 plan = SnowflakeScenePlan(
                     scene_plan_id=f"snowflake_scene_plan_{project_id}_{row_uid}",
@@ -2781,12 +2865,16 @@ class SnowflakeWorkspaceService:
                     scene_seq=scene_seq,
                 )
                 self.session.add(plan)
+                known_plans.append(plan)
+                by_row_uid.setdefault(row_uid, plan)
+                by_scene_id.setdefault(scene_id, plan)
                 minted = True
             else:
                 scene_id = plan.scene_id
                 if not plan.row_uid:
                     # Adopt a row_uid for a legacy row matched via scene_id.
                     plan.row_uid = row_uid or _mint_row_uid()
+                    by_row_uid.setdefault(plan.row_uid, plan)
                     minted = True
                 row_uid = plan.row_uid
 
@@ -2831,7 +2919,7 @@ class SnowflakeWorkspaceService:
                 minted = True
 
         if step_key == "scene_list" and touched_row_uids:
-            self._reconcile_removed_scene_plans(project_id, touched_row_uids)
+            self._reconcile_removed_scene_plans(project_id, touched_row_uids, plans=known_plans)
 
         # 章内序统一重算（scene_seq 的唯一写入方）。故事序的来源：09 同步用**这一份**草稿的行序；
         # 第 10 步的草稿可能只带回一部分场（分批生成 / 单场补全），不能拿它当全书顺序——读最新 09 草稿。
@@ -2848,7 +2936,13 @@ class SnowflakeWorkspaceService:
             # 铸好的 row_uid / scene_id 于是只活在本次回包里，落库的草稿仍然没有身份。
             flag_modified(run, "draft_json")
 
-    def _reconcile_removed_scene_plans(self, project_id: str, kept_row_uids: set[str]) -> None:
+    def _reconcile_removed_scene_plans(
+        self,
+        project_id: str,
+        kept_row_uids: set[str],
+        *,
+        plans: list[SnowflakeScenePlan] | None = None,
+    ) -> None:
         """P1-3 收口：把不在本次场景列表里的场标记为已删除。
 
         只在 ``scene_list`` 步生效 —— 「哪些场存在」是第 9 步的职责，第 10 步只负责
@@ -2859,18 +2953,22 @@ class SnowflakeWorkspaceService:
         - 已经物化成 ``SceneCard`` 的场只打 ``orphaned_flag``，不软删 —— 那边可能已经
           有正文了，删不删要作者自己决定。
         """
-        rows = self.session.execute(
-            select(SnowflakeScenePlan).where(
-                SnowflakeScenePlan.project_id == project_id,
-                SnowflakeScenePlan.removed_at.is_(None),
-            )
-        ).scalars().all()
+        if plans is None:
+            rows = self.session.execute(
+                select(SnowflakeScenePlan).where(
+                    SnowflakeScenePlan.project_id == project_id,
+                    SnowflakeScenePlan.removed_at.is_(None),
+                )
+            ).scalars().all()
+        else:
+            # 调用方（``_sync_scene_plans``）已经读过本作品的全部计划、也带上了这次新建的：按同一条件在内存里筛
+            rows = [plan for plan in plans if plan.project_id == project_id and plan.removed_at is None]
+        leaving = [plan for plan in rows if (plan.row_uid or "") not in kept_row_uids]
+        cards = self._scene_cards_by_id(project_id, [plan.scene_id for plan in leaving])
         removed_at = utcnow()
-        for plan in rows:
-            if (plan.row_uid or "") in kept_row_uids:
-                continue
-            materialized = self.session.get(SceneCard, plan.scene_id)
-            if materialized is not None and materialized.project_id == project_id:
+        for plan in leaving:
+            materialized = cards.get(plan.scene_id)
+            if materialized is not None:
                 if plan.orphaned_flag:
                     continue
                 plan.orphaned_flag = 1
@@ -2897,13 +2995,6 @@ class SnowflakeWorkspaceService:
     def _scene_plan_by_scene_id(self, project_id: str, scene_id: str) -> SnowflakeScenePlan | None:
         return self.session.execute(
             select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == project_id, SnowflakeScenePlan.scene_id == scene_id)
-        ).scalars().first()
-
-    def _scene_plan_by_row_uid(self, project_id: str, row_uid: str) -> SnowflakeScenePlan | None:
-        if not row_uid:
-            return None
-        return self.session.execute(
-            select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == project_id, SnowflakeScenePlan.row_uid == row_uid)
         ).scalars().first()
 
     def _scene_plan_for_triage_item(self, project_id: str, item: dict[str, Any]) -> SnowflakeScenePlan:
@@ -3095,7 +3186,7 @@ class SnowflakeWorkspaceService:
         }
 
     def _skip_draft(self, step_key: str, payload: dict[str, Any]) -> dict[str, Any]:
-        step = get_step_definition(step_key)
+        step = step_definition_view(step_key)
         if not step.get("skippable"):
             raise DomainError("SNOWFLAKE_STEP_NOT_SKIPPABLE", "这一步骤不能跳过。", status_code=400)
         reason = str(payload.get("skip_reason") or "").strip()
@@ -3573,7 +3664,7 @@ def _coerce_triage_status(value: Any) -> str:
 
 def _step_display_label(step_key: str) -> str:
     try:
-        return str(get_step_definition(step_key).get("label") or step_key)
+        return str(step_definition_view(step_key).get("label") or step_key)
     except KeyError:
         return step_key
 
