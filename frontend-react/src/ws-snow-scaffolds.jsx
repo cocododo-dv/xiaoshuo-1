@@ -1,7 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { chapterActRuns, chapterNoInTitle } from "./ws-snow-chapters-model.js";
+import { chapterActRuns } from "./ws-snow-chapters-model.js";
+import { chapterNoInTitle, isPlaceholderChapterRow } from "./labels/catalog.js";
 import { S2AutoText } from "./ws-snow-fields.jsx";
 import { S2SceneList } from "./ws-snow-scene-list.jsx";
 import { S2ScenePlan } from "./ws-snow-scene-plan.jsx";
@@ -429,10 +430,9 @@ function S2ChapterOutline({ scaffold, onScaffold, refs, onOpenChapterPlan, catal
     return { ...s, chapters: [...list.slice(0, at + 1), fresh, ...list.slice(at + 1)] };
   });
   const spineHits = chapters.filter(c => c.spine).length;
-  /* 占位章 = 「添加章节」点出来、还什么都没写的行（章名空或「（待补）」，摘要 / 章目标 / 脊柱全空）。
-     与后端 is_placeholder_chapter 同一口径：整张表都是占位时，分章面板当它不存在、直接按场景分章。 */
-  const isPlaceholder = (c) => (!(c.title || "").trim() || (c.title || "").includes("待补"))
-    && !(c.summary || "").trim() && !(c.goal || "").trim() && !(c.spine || "").trim();
+  /* 占位章 = 「添加章节」点出来、还什么都没写的行（isPlaceholderChapterRow，与后端 is_placeholder_chapter
+     同一口径）：整张表都是占位时，分章面板当它不存在、直接按场景分章。 */
+  const isPlaceholder = isPlaceholderChapterRow;
   const placeholders = chapters.filter(isPlaceholder).length;
   const runs = chapterActRuns(chapters);
   const lastRunOfAct = {};

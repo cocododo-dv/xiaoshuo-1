@@ -5,6 +5,8 @@
    路由本身（hash 读写、别名重定向、懒加载）仍在 ws-app.jsx。
    ========================================================== */
 
+import { SNOW_STEPS, snowStepByBackendKey } from "./snow-steps.js";
+
 /* 导航分组：日常写作永远在；生产与质控、运维工具只在高级模式出现，让作家模式的侧栏保持安静。
    「系统」组（设置 / 回收站）不进可滚动的导航区，固定在侧栏底部。
    desc 是命令面板里的一句说明；kw 是拼音 / 英文检索词（面板按它模糊匹配）。 */
@@ -79,23 +81,9 @@ function systemNavGroup() {
   return WS_NAV_GROUPS.find(g => g.id === WS_SYSTEM_GROUP) || null;
 }
 
-/* 雪花十步：前端步骤键（ws:snow-step 的 detail）、后端 step_key、序号、全名与主页上的短名。 */
-const WS_SNOW_STEPS = [
-  { key: "audience",   be: "book_brief",            num: "01", name: "读者定位",   short: "读者定位" },
-  { key: "logline",    be: "one_sentence_summary",  num: "02", name: "一句话概括", short: "一句话" },
-  { key: "paragraph",  be: "one_paragraph_summary", num: "03", name: "一段话概括", short: "一段话" },
-  { key: "characters", be: "character_sheets",      num: "04", name: "角色摘要表", short: "角色摘要" },
-  { key: "synopsis",   be: "short_synopsis",        num: "05", name: "一页梗概",   short: "一页梗概" },
-  { key: "backstory",  be: "character_synopses",    num: "06", name: "角色背景",   short: "角色背景" },
-  { key: "outline",    be: "long_synopsis",         num: "07", name: "长篇大纲",   short: "长篇大纲" },
-  { key: "profile",    be: "character_bibles",      num: "08", name: "角色全档案", short: "角色全档案" },
-  { key: "scenes",     be: "scene_list",            num: "09", name: "场景列表",   short: "场景列表" },
-  { key: "planning",   be: "scene_details",         num: "10", name: "场景规划",   short: "场景规划" },
-];
-
-function snowStepByBackendKey(beKey) {
-  return WS_SNOW_STEPS.find(s => s.be === beKey) || null;
-}
+/* 雪花十步：前端步骤键（ws:snow-step 的 detail）、后端 step_key、序号、全名与主页上的短名——
+   目录只有一份，在叶子模块 snow-steps.js（构思视图也从那里取）。 */
+const WS_SNOW_STEPS = SNOW_STEPS;
 
 export {
   WS_NAV_GROUPS, WS_NAV_ITEMS, WS_SYSTEM_GROUP, WS_VIEW_LABELS, WS_ALL_VIEWS,

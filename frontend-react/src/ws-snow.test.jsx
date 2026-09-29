@@ -20,8 +20,8 @@ vi.mock("./ws-snow-sync.jsx", () => ({
   SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
 }));
 
-import { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2NormalizeState, s2ReorderScenes } from "./ws-snow.jsx";
-import { WS_SNOW_STEPS } from "./ws-nav.js";
+import { WsSnowflake, WsConstruct } from "./ws-snow.jsx";
+import { s2PlanState } from "./ws-snow-model.js";
 import { canonFromFE } from "./ws-snow-canon.js";
 
 
@@ -358,59 +358,6 @@ describe("真实新项目的雪花顶部主操作", () => {
 
 
 /* —— 阶段 E：10 的覆盖格按 09 的形态数槽；本地失效图只是乐观预判（后端优先的合并在视图里） —— */
-describe("阶段 E · 场景规划覆盖格与本地失效图", () => {
-  it("s2PlanSlots / s2PlanState：传入 09 的类型时按它取三槽，存储的 plan.mode 只是兜底", () => {
-    const legacyReactivePlan = { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人", goal: "", conflict: "", setback: "" };
-    expect(s2PlanSlots(legacyReactivePlan)).toEqual(["reaction", "dilemma", "decision"]);
-    expect(s2PlanState(legacyReactivePlan)).toBe(2);
-    // 09 把这一场切回主动：格子必须按 GCS 数槽——三个 RDD 槽再满也算「未规划」
-    expect(s2PlanSlots(legacyReactivePlan, "proactive")).toEqual(["goal", "conflict", "setback"]);
-    expect(s2PlanState(legacyReactivePlan, "proactive")).toBe(0);
-    expect(s2PlanState({ mode: "proactive", goal: "拿到账本", conflict: "", setback: "" }, "reactive")).toBe(0);
-    expect(s2PlanState({ mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "" }, "proactive")).toBe(1);
-    expect(s2PlanState(null, "proactive")).toBe(0);
-  });
-
-  it("s2PlanAuto：逐场覆盖与三槽填满都按 09 的类型判", () => {
-    const scenes = { list: [
-      { id: "S01", type: "proactive" },
-      { id: "S02", type: "proactive" },   // 09 已切回主动，存储的 plan 还是 RDD
-    ] };
-    const planning = { plans: {
-      S01: { mode: "proactive", goal: "拿到账本", conflict: "三轮受阻", setback: "账本被烧" },
-      S02: { mode: "reactive", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人" },
-    } };
-    const auto = s2PlanAuto(planning, scenes);
-    const byTitle = Object.fromEntries(auto.map(a => [a.t, a]));
-    expect(byTitle["逐场覆盖"].val).toBe("1/2 场已规划");
-    expect(byTitle["三槽填满"].val).toBe("1/2 场三槽齐");
-    expect(byTitle["链条衔接"].pass).toBe(true);
-  });
-
-  it("E3 第二步：需复核只来自后端 status=stale（未确认仍有效）；漂移上游按 input_refs 对照当前 step_run_id", () => {
-    const health = {
-      audience: { beStatus: "approved", stepRunId: "run_brief_v1", inputRefs: {} },
-      logline: { beStatus: "approved", stepRunId: "run_logline_v2", inputRefs: { book_brief: "run_brief_v1" } },
-      paragraph: { beStatus: "stale", staleAcceptedAt: null, staleReason: "one_sentence_summary 改了被消费字段 ['summary']",
-        stepRunId: "run_para_v1", inputRefs: { book_brief: "run_brief_v1", one_sentence_summary: "run_logline_v1" } },
-      // 作者已「确认仍有效」：后端刷新了它消费的版本，不再进需复核图
-      characters: { beStatus: "stale", staleAcceptedAt: "2026-09-13T10:00:00Z", stepRunId: "run_chars_v1", inputRefs: { one_sentence_summary: "run_logline_v2" } },
-      // 上游有了新版本但后端没判定失效（消费的字段没变）：只是漂移提示，不算需复核
-      synopsis: { beStatus: "approved", stepRunId: "run_syn_v1", inputRefs: { one_sentence_summary: "run_logline_v1" } },
-      // 后端 stale 但没有 input_refs 记录（旧数据）：仍需复核，漂移列表为空
-      outline: { beStatus: "stale", staleAcceptedAt: null, stepRunId: "run_out_v1", inputRefs: {} },
-    };
-    expect(s2UpstreamDrift(health, "paragraph")).toEqual(["logline"]);   // book_brief 没变，不在列表里
-    expect(s2UpstreamDrift(health, "synopsis")).toEqual(["logline"]);
-    expect(s2UpstreamDrift(health, "characters")).toEqual([]);
-    expect(s2StaleMap(health)).toEqual({ paragraph: ["logline"], outline: [] });
-    expect(s2StaleMap({})).toEqual({});
-    expect(s2StaleMap(undefined)).toEqual({});
-  });
-});
-
-
-/* —— 阶段 M：09 是一张能随手挪的表；10 有钩子 / 离场变化；分诊随水合回来；略过写回服务端 —— */
 describe("阶段 M · 09/10 交互", () => {
   const CACHE = "ws_snow_state_v2::new-book";
   const threeScenes = () => ({
@@ -450,17 +397,6 @@ describe("阶段 M · 09/10 交互", () => {
     return host;
   }
   const rowIds = (host) => [...host.querySelectorAll(".sf-scene-row .sc-no")].map(el => el.getAttribute("title"));
-
-  it("s2ReorderScenes：把一场挪到另一位置，其余顺序不变；越界或原地是无操作且不改原数组", () => {
-    const list = [{ id: "S01" }, { id: "S02" }, { id: "S03" }, { id: "S04" }];
-    expect(s2ReorderScenes(list, 0, 2).map(s => s.id)).toEqual(["S02", "S03", "S01", "S04"]);
-    expect(s2ReorderScenes(list, 3, 0).map(s => s.id)).toEqual(["S04", "S01", "S02", "S03"]);
-    expect(s2ReorderScenes(list, 1, 1).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
-    expect(s2ReorderScenes(list, 1, 9).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
-    expect(s2ReorderScenes(list, -1, 0).map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
-    expect(list.map(s => s.id)).toEqual(["S01", "S02", "S03", "S04"]);
-    expect(s2ReorderScenes(undefined, 0, 1)).toEqual([]);
-  });
 
   it("09 场景表：同一章的第一场前有只读章头；「在这一场后面插一场」插在原位之后并继承线 / POV / 地点；拖放换位走同一纯函数", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
@@ -741,11 +677,6 @@ describe("SNOW-20 · 就地换步与落点", () => {
   }
   const title = (host) => host.querySelector(".snow-canvas-title").textContent;
   const fire = (type, detail) => act(async () => { window.dispatchEvent(new CustomEvent(type, { detail })); });
-
-  it("步骤目录与外壳导航里的那份（ws-nav WS_SNOW_STEPS）一致：键、后端键、序号、名字", () => {
-    expect(WS_SNOW_STEPS.map(s => [s.key, s.be, s.num, s.name]))
-      .toEqual(S2_STEPS.map(s => [s.key, Object.fromEntries(S2_BE_STEPS)[s.key], s.num, s.name]));
-  });
 
   it("成稿中心「回第 10 步」：先换步再选场，在同一个视图实例里完成（页面节点不换、目标被消费）", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(3))));

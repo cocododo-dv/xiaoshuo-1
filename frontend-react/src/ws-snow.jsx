@@ -853,7 +853,3 @@ function WsConstruct() {
 }
 
 export { WsSnowflake, WsConstruct };
-export {
-  S2_STEPS, S2_BE_STEPS, s2NormalizeState,
-  s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2ReorderScenes,
-} from "./ws-snow-model.js";

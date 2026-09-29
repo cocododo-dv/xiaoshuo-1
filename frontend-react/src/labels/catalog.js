@@ -82,6 +82,35 @@ export function isPlaceholderChapterTitle(title) {
   return /^第\s*[0-9一二三四五六七八九十百千零〇]+\s*章$/.test(text) || /^(未命名(章节)?|（待补）)$/.test(text);
 }
 
+/* 系统起的章名（AI 起章名只碰这些；作者起的名字不碰）——与后端 chapter_title_sync.is_auto_chapter_title
+   同一口径：空、「第 N 章」（阿拉伯数字，跟着章序走的那种），或含下面任一占位标记（「未命名」= 章节编排里
+   把章名清空后落下的「未命名章节」）。标记表与后端 PLACEHOLDER_TITLE_MARKERS 逐项相同。
+   上面的 isPlaceholderChapterTitle 是另一条规则：只管显示时要不要把章名拼在编号后面。 */
+export const PLACEHOLDER_CHAPTER_TITLE_MARKERS = ["待补", "TODO", "todo", "TBD", "tbd", "占位", "未命名"];
+const AUTO_CHAPTER_TITLE_RE = /^第\s*\d+\s*章$/;
+export function isAutoChapterTitle(title) {
+  const text = String(title || "").trim();
+  return !text || AUTO_CHAPTER_TITLE_RE.test(text) || PLACEHOLDER_CHAPTER_TITLE_MARKERS.some(m => text.includes(m));
+}
+
+/* 07 章表里「添加章节」点出来、还什么都没写的行（章名空或带占位标记，摘要 / 章目标 / 脊柱全空）——
+   与后端 snowflake_chaptering.is_placeholder_chapter 同一口径。行上的章目标前端叫 goal、后端叫 chapter_goal。 */
+export function isPlaceholderChapterRow(chapter) {
+  const c = chapter || {};
+  const title = String(c.title || "").trim();
+  const blankTitle = !title || PLACEHOLDER_CHAPTER_TITLE_MARKERS.some(m => title.includes(m));
+  return blankTitle && ![c.summary, c.goal, c.chapter_goal, c.spine].some(v => String(v || "").trim());
+}
+
+/* 章名框里已经带着这一章的章号吗（index 从 0 起）：章名就是「第 N 章」这种占位且 N 对得上，或者空着
+   （占位提示「第 N 章（未命名）」里有章号）。这时章名框左边不再并排写一遍「第 N 章」。 */
+export function chapterNoInTitle(title, index) {
+  const text = String(title || "").trim();
+  if (!text) return true;
+  const m = /^第\s*(\d+)\s*章$/.exec(text);
+  return !!(m && Number(m[1]) === index + 1);
+}
+
 /* 章自己的名字；占位或没有时为空串——列表行只在它不空时才把「第 N 章」放在名字旁边。 */
 export function chapterOwnTitle(chapter) {
   const title = String((chapter && chapter.title) || "").trim();
