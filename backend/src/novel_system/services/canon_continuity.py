@@ -833,23 +833,42 @@ class CanonContinuityService:
             project_id,
             before_scene_id,
         )
+        # 以前从这一场往前逐场各查三次（运行状态、快照、终稿），没有正史的作品每次起草都扫全书
+        # （B11-06）：现在两条语句找出前面哪些场的当前终稿有「已完成」的快照，逐场的核对只做到够数为止。
+        current_finals = {
+            scene_id: final_row_id
+            for scene_id, final_row_id in self.session.execute(
+                select(SceneRunState.scene_id, SceneRunState.current_final_scene_row_id).where(
+                    SceneRunState.scene_id.in_([scene.scene_id for scene in positioned])
+                )
+            ).all()
+            if final_row_id
+        }
+        complete_snapshot_ids = set(
+            self.session.execute(
+                select(ContinuitySnapshot.snapshot_id).where(
+                    ContinuitySnapshot.snapshot_id.in_(
+                        [f"continuity_scene_{final_row_id}" for final_row_id in current_finals.values()]
+                    ),
+                    ContinuitySnapshot.project_id == project_id,
+                    ContinuitySnapshot.status == "complete",
+                )
+            ).scalars().all()
+        ) if current_finals else set()
         snapshots: list[ContinuitySnapshot] = []
         for scene in reversed(positioned):
-            state = self.session.get(SceneRunState, scene.scene_id)
-            if state is None or not state.current_final_scene_row_id:
+            final_row_id = current_finals.get(scene.scene_id)
+            if not final_row_id or f"continuity_scene_{final_row_id}" not in complete_snapshot_ids:
                 continue
-            snapshot = self.session.get(
-                ContinuitySnapshot,
-                f"continuity_scene_{state.current_final_scene_row_id}",
-            )
+            snapshot = self.session.get(ContinuitySnapshot, f"continuity_scene_{final_row_id}")
             if (
                 snapshot is None
                 or snapshot.project_id != project_id
                 or snapshot.status != "complete"
-                or snapshot.final_scene_row_id != state.current_final_scene_row_id
+                or snapshot.final_scene_row_id != final_row_id
             ):
                 continue
-            final = self.session.get(FinalScene, state.current_final_scene_row_id)
+            final = self.session.get(FinalScene, final_row_id)
             if not self._has_valid_completion_commit(
                 final,
                 snapshot,

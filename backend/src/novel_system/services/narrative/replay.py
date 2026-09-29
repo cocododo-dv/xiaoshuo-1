@@ -362,3 +362,86 @@ class NarrativeEventStore:
     @staticmethod
     def _runtime_authority_clause():
         return runtime_authority_clause()
+
+
+class ProjectionSnapshot:
+    """一个作品截到某条场景边界之前的全部已认可事件：一趟按位置排序的查询取齐，之后逐实体的投影都在内存里做。
+
+    摘要、POV 投影与连续性检查以前每个角色、每个地点 / 物品、每条秘密的知情判定都各查一次库（一次起草光这几段
+    就有上百条语句，B11-06）。现在每个调用只查这一趟：事件次序与逐实体查询完全相同——同一条按位置排序的语句，
+    按实体取它的子序列。实体清单（``entities_of_type``）照旧是那条不截边界的去重查询，次序与以前一致。
+    """
+
+    def __init__(
+        self,
+        store: NarrativeEventStore,
+        project_id: str,
+        *,
+        before_scene_id: str | None = None,
+        up_to_scene_id: str | None = None,
+    ) -> None:
+        self.store = store
+        self.session = store.session
+        self.project_id = project_id
+        self.before_scene_id = before_scene_id
+        statement = store._event_statement(
+            project_id,
+            before_scene_id=before_scene_id,
+            up_to_scene_id=up_to_scene_id,
+        )
+        self.events: list[NarrativeEvent] = list(self.session.execute(statement).scalars().all())
+        self._by_entity: dict[str, list[NarrativeEvent]] = {}
+        self._by_type_entity: dict[tuple[str, str], list[NarrativeEvent]] = {}
+        for event in self.events:
+            self._by_entity.setdefault(event.entity_id, []).append(event)
+            self._by_type_entity.setdefault((event.entity_type, event.entity_id), []).append(event)
+        self._character_states: dict[str, CharacterState] = {}
+        self._entity_states: dict[tuple[str, str], EntityState] = {}
+        self._listings: dict[str, list[str]] = {}
+
+    def entity_events(self, entity_id: str) -> list[NarrativeEvent]:
+        """这个实体名下（不分 entity_type）的事件，按位置排好。"""
+        return self._by_entity.get(entity_id, [])
+
+    def character_state(self, character_id: str) -> CharacterState:
+        state = self._character_states.get(character_id)
+        if state is None:
+            state = fold_events(self.entity_events(character_id), CharacterState(character_id))
+            self._character_states[character_id] = state
+        return state
+
+    def entity_state(self, entity_type: str, entity_id: str) -> EntityState:
+        key = (entity_type, entity_id)
+        state = self._entity_states.get(key)
+        if state is None:
+            state = fold_events(
+                self._by_type_entity.get(key, []),
+                EntityState(entity_type=entity_type, entity_id=entity_id),
+            )
+            self._entity_states[key] = state
+        return state
+
+    def learns_events(self, character_id: str) -> list[NarrativeEvent]:
+        return [event for event in self.entity_events(character_id) if event.event_type == "character_learns"]
+
+    def known_facts(self, character_id: str) -> list[ProjectedFact]:
+        return [ProjectedFact.from_event(event) for event in self.learns_events(character_id)]
+
+    def fact_values(self, entity_id: str, fact_key: str) -> list[str]:
+        return [event.fact_value for event in self.entity_events(entity_id) if event.fact_key == fact_key]
+
+    def entities_of_type(self, entity_type: str) -> list[str]:
+        """全作品里有已认可事件的这类实体（不截边界，与以前的实体清单同一条查询、同一个次序）。"""
+        listed = self._listings.get(entity_type)
+        if listed is None:
+            listed = self.store._entities_of_type_in_project(self.project_id, entity_type)
+            self._listings[entity_type] = listed
+        return listed
+
+    def characters(self) -> list[str]:
+        return self.entities_of_type("character")
+
+
+def snapshot_before(store: NarrativeEventStore, project_id: str, scene_id: str) -> ProjectionSnapshot:
+    """写这一场时能看到的已认可状态：截到这一场之前（不含本场）。"""
+    return ProjectionSnapshot(store, project_id, before_scene_id=scene_id)

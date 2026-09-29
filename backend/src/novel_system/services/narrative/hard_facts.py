@@ -11,7 +11,11 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 
 from novel_system.db.models import NarrativeEvent
-from novel_system.services.narrative.replay import NarrativeEventStore, runtime_authority_clause
+from novel_system.services.narrative.replay import (
+    NarrativeEventStore,
+    runtime_authority_clause,
+    snapshot_before,
+)
 from novel_system.services.narrative.taxonomy import CHECKABLE_FACT_KEYS
 
 
@@ -42,16 +46,9 @@ def check_consistency(
     *,
     character_ids: list[str] | None = None,
 ) -> ConsistencyReport:
-    """Check generated text against projected character state for contradictions.
-
-    Checks hard facts (location, physical_state, alive) against text content.
-    This is the "one incremental consistency check" from blueprint §17 Action B.
-    """
-    store.positions.cursor_for_scene(project_id, scene_id)
-    if character_ids:
-        chars = character_ids
-    else:
-        chars = store._characters_in_project(project_id)
+    """正文与这一场之前的权威状态做硬事实矛盾检查（蓝图 §17 Action B 的「一次增量一致性检查」）。"""
+    snapshot = snapshot_before(store, project_id, scene_id)
+    chars = character_ids or snapshot.characters()
 
     violations: list[ConsistencyViolation] = []
     facts_checked = 0
@@ -60,11 +57,7 @@ def check_consistency(
     # distinguish "character is at the WRONG named place" from generic prose.
     # Locations live both as location entities AND as `location` facts asserted
     # on characters (location_change events), so gather both.
-    known_locations = {
-        loc.lower()
-        for loc in store._entities_of_type_in_project(project_id, "location")
-        if loc
-    }
+    known_locations = {loc.lower() for loc in snapshot.entities_of_type("location") if loc}
     loc_values = store.session.execute(
         select(NarrativeEvent.fact_value).where(
             NarrativeEvent.project_id == project_id,
@@ -75,9 +68,7 @@ def check_consistency(
     known_locations |= {v.lower() for v in loc_values if v}
 
     for char_id in chars:
-        state = store.project_character_state(
-            char_id, project_id, before_scene_id=scene_id,
-        )
+        state = snapshot.character_state(char_id)
         for fact_key, projected in state.facts.items():
             if fact_key not in CHECKABLE_FACT_KEYS:
                 continue
