@@ -3,8 +3,6 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectRequired, ViewErrorBoundary } from "./ws-view-boundary.jsx";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 describe("页面错误隔离", () => {
   let host;
   let root;

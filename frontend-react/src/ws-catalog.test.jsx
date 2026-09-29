@@ -15,9 +15,6 @@ vi.mock("./lib/client.js", () => ({
   apiDelete: vi.fn(),
 }));
 
-// ws-catalog 的依赖链会经 ws-snow-sync.jsx 拉到 ws-snow.jsx，而后者只被取用
-// S2_BE_STEPS（FE↔BE 步骤映射）。mock 成空，避免为测 store 契约而拉入整张雪花视图模块。
-vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [] }));
 
 const T = { timeout: 5000, interval: 25 };
 
@@ -227,7 +224,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(chapter.scenes[0].design.storyIndex).toBe(6);
 
     const adopt = vi.fn(async () => true);
-    window.SnowSync = { adoptServerChapters: adopt };
+    const unregister = mod.WsCatalog.onPlanTitlesSynced(adopt);
     client.apiPatch.mockResolvedValue({ chapter: {}, changed: true, plan_title_synced: true });
     mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({ ...c, title: "旧案重开" })));
     await vi.waitFor(() => expect(adopt).toHaveBeenCalledWith("prj-main"), T);
@@ -239,7 +236,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({ ...c, promise: "读者知道旧信是谁寄的" })));
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/prj-main/catalog/chapters/c1", { promise: "读者知道旧信是谁寄的" }), T);
     expect(adopt).not.toHaveBeenCalled();
-    delete window.SnowSync;
+    unregister();
   });
 
   it("手建的章（旧载荷没有 structure）归台面：可拖、可改，章名不写穿", async () => {
@@ -422,6 +419,53 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
       { chapter_ids: ["c2", "c1"] },
     ), T);
   });
+
+  it("正文自动保存回写 rollup：总字数立刻用上，不再每存一次就 GET writing-stats；rollup 带齐今日 / 连续天数时连问都不问（F01-07）", async () => {
+    const { mod, client } = await loadCatalog();
+    const statsGets = () => client.apiGet.mock.calls.filter(([url]) => url.includes("/writing-stats")).length;
+    await vi.waitFor(() => expect(window.WsWorks.active().wordsTotal).toBe(38000), T);
+    const before = statsGets();
+
+    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 120, chapter_words: 120, words_total: 38120 });
+    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 180, chapter_words: 180, words_total: 38180 });
+    expect(window.WsWorks.active().wordsTotal).toBe(38180);
+    expect(mod.WsCatalog.sceneById("ch01s1").scene.words).toBe(180);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 节流：连着两次保存至多问一次（首次立刻问，让今日字数跟得上），不再每存一次就问
+    expect(statsGets()).toBeLessThanOrEqual(before + 1);
+    const afterBurst = statsGets();
+
+    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 200, chapter_words: 200, words_total: 38200, words_today: 200, streak_days: 4 });
+    expect(window.WsWorks.active()).toMatchObject({ wordsTotal: 38200, wordsToday: 200, streak: 4 });
+    expect(statsGets()).toBe(afterBurst);
+  });
+
+  it("写入之前发出、写入之后才回来的读取不盖掉新状态：写后补读另发一次，第二次改名不退回去（F01-05）", async () => {
+    const { mod, client } = await loadCatalog();
+    const route = client.apiGet.getMockImplementation();
+    const scene = (title) => ({ chapters: [{ ...DEFAULT_CHAP, scenes: [{ ...DEFAULT_CHAP.scenes[0], title }] }] });
+    let releaseStale;
+    const stale = new Promise((resolve) => { releaseStale = resolve; });
+    let catalogGets = 0;
+    client.apiGet.mockImplementation((url) => {
+      if (url !== "/api/v2/projects/prj-main/catalog") return route(url);
+      catalogGets += 1;
+      // 第一次：改名之前发出的那次后台刷新（回来的是改名前的服务端状态）；之后：服务端已经是新标题
+      return catalogGets === 1 ? stale : Promise.resolve(scene("第二次改名"));
+    });
+    mod.WsCatalog.__refresh();
+    await vi.waitFor(() => expect(catalogGets).toBe(1), T);
+
+    mod.WsCatalog.renameScene("ch01", "ch01s1", "第二次改名");
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
+      "/api/v2/projects/prj-main/catalog/scenes/s1", { title: "第二次改名" }), T);
+    releaseStale(scene("交班"));
+
+    // 写后补读不能并进写入之前那次：它另发一次，拿到服务端的新标题
+    await vi.waitFor(() => expect(catalogGets).toBe(2), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(mod.WsCatalog.sceneById("ch01s1").scene.title).toBe("第二次改名");
+  });
 });
 
 describe("WsTrashStore（回收站乐观恢复 + 失败告警）", () => {
@@ -469,6 +513,31 @@ describe("WsTrashStore（回收站乐观恢复 + 失败告警）", () => {
     expect(mod.WsTrashStore.loadState().status).toBe("loading");
     await again;
     expect(mod.WsTrashStore.loadState()).toEqual({ status: "ready", message: "" });
+  });
+
+  it("拉取途中换了作品：不沿用上一部的在飞请求，列表是新作品的（F01-05）", async () => {
+    const other = { ...DEFAULT_PROJECT, project_id: "prj-other", title: "另一部" };
+    const client = await import("./lib/client.js");
+    installApiRouter(client, { projects: [DEFAULT_PROJECT, other] });
+    const route = client.apiGet.getMockImplementation();
+    let releaseMain;
+    const mainTrash = new Promise((resolve) => { releaseMain = resolve; });
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/trash?project_id=prj-main") return mainTrash;
+      if (url === "/api/v2/trash?project_id=prj-other") return Promise.resolve({ items: [{ ...DEFAULT_TRASH, id: "scene:o1", title: "另一部的场" }] });
+      return route(url);
+    });
+    const mod = await import("./ws-catalog.jsx");
+    await settleActive();
+    await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v2/trash?project_id=prj-main"), T);
+
+    window.WsWorks.setActive("prj-other");
+    await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v2/trash?project_id=prj-other"), T);
+    releaseMain({ items: [{ ...DEFAULT_TRASH, id: "scene:m1", title: "上一部的场" }] });
+
+    await vi.waitFor(() => expect(mod.WsTrashStore.list().map((x) => x.id)).toEqual(["scene:o1"]), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(mod.WsTrashStore.list().map((x) => x.id)).toEqual(["scene:o1"]);
   });
 
   it("restore 失败时告警", async () => {

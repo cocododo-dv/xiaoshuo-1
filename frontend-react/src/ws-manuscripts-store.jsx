@@ -10,15 +10,22 @@
 
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { emit } from "./lib/events.js";
+import { createSubscribers } from "./lib/store-utils.js";
 
 // chapterBackendId → { status: idle|loading|ready|error, detail, error }
 const manuCache = {};
 const manuInflight = {};
 
+/* 状态变化：订阅者（WsManuStore.subscribe）与 ws:manuscripts-loaded 窗口事件同一条消息（成稿中心的工作流
+   还在听窗口事件；改用 subscribe 之后事件可以收掉）。 */
+const manuSubs = createSubscribers();
 function dispatchManuscriptState(chapterId, status) {
+  manuSubs.notify();
   emit("ws:manuscripts-loaded", { chapterId, status });
 }
 
+/* 读失败的形状刻意不用 store-kit 的 toStoreError：成稿中心按错误码分支，码只取后端给的 error.code
+   （没有就是 MANUSCRIPT_LOAD_FAILED，不拿 HTTP 状态顶替），也不关心离线标志。 */
 function normalizedLoadError(error) {
   return {
     code: (error && error.code) || "MANUSCRIPT_LOAD_FAILED",
@@ -220,6 +227,8 @@ const WsManuStore = {
   },
 
   /** 作品切换/归档后失效重拉 */
+  /* 任何一章的读取状态变了就通知；返回退订函数 */
+  subscribe(fn) { return manuSubs.subscribe(fn); },
   invalidate(chapterId) {
     if (chapterId) { delete manuCache[chapterId]; }
     else { Object.keys(manuCache).forEach((k) => delete manuCache[k]); }

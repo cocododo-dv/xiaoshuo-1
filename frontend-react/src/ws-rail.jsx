@@ -1,4 +1,5 @@
 import React from "react";
+import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { useReviewBadge } from "./ws-review-badge.jsx";
 import { ViewErrorBoundary } from "./ws-view-boundary.jsx";
@@ -33,16 +34,25 @@ const LazyWrRecoveryCenter = lazyNamed(() => import("./wr-recovery-center.jsx"),
    Shift 先于 Tab 到达，清掉后紧接着的 Tab 又会记上，所以 Shift+Tab 照常。
    监听挂在 window 的捕获阶段，比 document 上的对话框 Esc 处理更早，谁 stopPropagation 都拦不住。 */
 let railLastInput = "pointer";
+/* 模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉上一个实例挂的三个监听 */
 if (typeof window !== "undefined") {
-  window.addEventListener("keydown", (e) => {
+  retireModuleListeners("ws-rail");
+  const onKey = (e) => {
     // 浏览器自动填充派发的 keydown 可能没有 key，按空串处理
     const key = e.key || "";
     const inRail = Boolean(e.target && typeof e.target.closest === "function" && e.target.closest(".ws-rail"));
     const moves = key === "Tab" || (inRail && (key.startsWith("Arrow") || key === "Home" || key === "End"));
     railLastInput = moves ? "keyboard" : "other";
-  }, true);
-  window.addEventListener("pointerdown", () => { railLastInput = "pointer"; }, true);
-  window.addEventListener("mousedown", () => { railLastInput = "pointer"; }, true);
+  };
+  const onPointer = () => { railLastInput = "pointer"; };
+  window.addEventListener("keydown", onKey, true);
+  window.addEventListener("pointerdown", onPointer, true);
+  window.addEventListener("mousedown", onPointer, true);
+  adoptModuleListeners("ws-rail", () => {
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("pointerdown", onPointer, true);
+    window.removeEventListener("mousedown", onPointer, true);
+  });
 }
 
 /* 展开态：悬停意图（原生 pointerenter / pointerleave——React 的合成 enter/leave 按组件树算，
@@ -227,7 +237,7 @@ function Rail({ view, go, t, setTweak, mode, onPalette }) {
             <span className="ws-item-ic">{night ? <I.Sun size={18} /> : <I.Moon size={18} />}</span>
             <span className="ws-foot-label">{night ? "切到白昼" : "切到夜灯"}</span>
           </button>
-          <button type="button" className="ws-foot-btn" onClick={() => window.dispatchEvent(new CustomEvent("ws:tweaks-open"))} title="舒适度设置">
+          <button type="button" className="ws-foot-btn" onClick={() => emit("ws:tweaks-open")} title="舒适度设置">
             <span className="ws-item-ic"><I.Sliders size={18} /></span>
             <span className="ws-foot-label">排版与舒适度</span>
           </button>

@@ -9,8 +9,6 @@ vi.mock("./ws-works.jsx", () => ({ WsWorks: { activeId: () => "prj-main" } }));
 const catalog = { chapters: [] };
 vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: { get: () => catalog.chapters } }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 const S1 = { chapter_id: "c1", text_layer: "author_draft", open: 3, blocking: 1, revision: 2, taste: 0, info: 0, ignored: 1, stale: 0, ai_status: "current", review_status: "not_run" };
 const S2 = { chapter_id: "c1", text_layer: "author_draft", open: 1, blocking: 0, revision: 1, taste: 0, info: 0, ignored: 0, stale: 0, ai_status: "not_run", review_status: "not_run" };
 const S3 = { chapter_id: "c2", text_layer: "none", open: 0, blocking: 0, revision: 0, taste: 0, info: 0, ignored: 0, stale: 0, ai_status: "not_run", review_status: "not_run" };
@@ -148,6 +146,22 @@ describe("WsDiagnosis · 每场 / 每章开着的发现数", () => {
     await act(async () => { announceDiagnosisChanged({ sid: "ch01s1" }); });
     await vi.waitFor(() => expect(host.textContent).toBe("7/9"));
     expect(client.apiGet).toHaveBeenCalledTimes(2);
+  });
+
+  it("两个视图同时挂着 hook：先卸下的那个不带走另一个的监听（F01-23）", async () => {
+    const { useDiagnosisSummary, announceDiagnosisChanged } = await load();
+    const first = await mountProbe(useDiagnosisSummary);
+    const second = await mountProbe(useDiagnosisSummary);
+    await vi.waitFor(() => expect(second.textContent).toBe("3/5"));
+    expect(first.textContent).toBe("3/5");
+
+    // 先挂的那个先卸下（后进先出的 afterEach 之外，手动卸第一个）
+    const entry = mounted.shift();
+    await act(async () => entry.root.unmount());
+    entry.host.remove();
+
+    await act(async () => { announceDiagnosisChanged({ rollup: { project_id: "prj-main", chapter_id: "c1", chapters: { c1: { ...C1, open: 3, blocking: 1 } }, scenes: { s1: { ...S1, open: 2 }, s2: S2 } } }); });
+    await vi.waitFor(() => expect(second.textContent).toBe("2/4"));
   });
 
   it("refreshScene：起草台归档终稿后只拉这一章的 rollup", async () => {

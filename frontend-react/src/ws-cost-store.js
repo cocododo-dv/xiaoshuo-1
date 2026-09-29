@@ -1,14 +1,13 @@
-import React from "react";
 import { apiGet } from "./lib/client.js";
-import { emit } from "./lib/events.js";
+import { createStore } from "./lib/store-kit.js";
 
 /* ==========================================================
    成本看板的 store（从 ws-cost.jsx 拆出，2026-09-22）
-   模块级快照 csState + ws:cost-changed 广播；视图用 useCostState() 订阅。
+   一份 createStore 状态；视图用 useCostState() 订阅（过去是广播 ws:cost-changed、再由本模块自己去听）。
    只读：项目级一读聚合 cost-dashboard，章节 / 场景下钻 cost-summary。
    ========================================================== */
 
-let csState = {
+const csStore = createStore({
   projectId: null,
   level: "project",   // project | chapter | scene
   days: 30,
@@ -17,10 +16,9 @@ let csState = {
   quota: null,
   loading: false,
   error: null,
-};
+});
 
-export function csSnapshot() { return csState; }
-function csEmit() { emit("ws:cost-changed"); }
+export function csSnapshot() { return csStore.get(); }
 
 export const PHASE_LABEL = {
   candidate_generation: "候选生成",
@@ -33,60 +31,50 @@ export const COST_WINDOWS = [7, 30, 90];
 
 export async function costLoad(projectId, opts = {}) {
   if (!projectId) return null;
-  const days = Number(opts.days) > 0 ? Math.floor(Number(opts.days)) : csState.days;
+  const days = Number(opts.days) > 0 ? Math.floor(Number(opts.days)) : csStore.get().days;
   const level = opts.sceneId ? "scene" : opts.chapterId ? "chapter" : "project";
-  csState = { ...csState, projectId, level, days, loading: true, error: null };
-  csEmit();
+  csStore.set({ projectId, level, days, loading: true, error: null });
   try {
     const base = `/api/v2/projects/${encodeURIComponent(projectId)}`;
     let data;
     if (level === "project") {
       data = await apiGet(`${base}/cost-dashboard?days=${days}`);
-      csState = {
-        ...csState,
+      csStore.set({
         dashboard: data || null,
         summary: (data && data.summary) || null,
         quota: (data && data.quota) || null,
         loading: false,
-      };
+      });
     } else {
       const qs = opts.sceneId
         ? `scene_id=${encodeURIComponent(opts.sceneId)}`
         : `chapter_id=${encodeURIComponent(opts.chapterId)}`;
       data = await apiGet(`${base}/cost-summary?${qs}`);
-      csState = {
-        ...csState,
+      csStore.set((state) => ({
+        ...state,
         level: (data && data.level) || level,
         summary: (data && data.summary) || null,
-        quota: (data && data.quota) || csState.quota,
+        quota: (data && data.quota) || state.quota,
         loading: false,
-      };
+      }));
     }
-    csEmit();
     return data;
   } catch (e) {
-    csState = { ...csState, loading: false, error: (e && e.message) || "成本加载失败。" };
-    csEmit();
+    csStore.set({ loading: false, error: (e && e.message) || "成本加载失败。" });
     return null;
   }
 }
 
 /* 下钻返回：dashboard 还在缓存里就地还原，不重发请求 */
 export function costBack() {
-  if (csState.dashboard) {
-    csState = { ...csState, level: "project", summary: csState.dashboard.summary || null, error: null };
-    csEmit();
+  const state = csStore.get();
+  if (state.dashboard) {
+    csStore.set({ level: "project", summary: state.dashboard.summary || null, error: null });
     return;
   }
-  if (csState.projectId) costLoad(csState.projectId);
+  if (state.projectId) costLoad(state.projectId);
 }
 
 export function useCostState() {
-  const [, force] = React.useReducer((x) => x + 1, 0);
-  React.useEffect(() => {
-    const h = () => force();
-    window.addEventListener("ws:cost-changed", h);
-    return () => window.removeEventListener("ws:cost-changed", h);
-  }, []);
-  return csSnapshot();
+  return csStore.useStore();
 }

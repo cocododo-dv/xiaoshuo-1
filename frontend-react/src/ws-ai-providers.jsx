@@ -167,13 +167,6 @@ const WsAiProviders = {
     ), "overview");
   },
 
-  /* 高级路由:整表保存(node_routing 全量) */
-  async saveNodeRoutes(payload) {
-    return withBusy("node-routes", () => apiAdminPost(
-      "/api/v1/system-config/llm/node-routes", { activate: true, ...payload }, adminToken(),
-    ), "always");
-  },
-
   /* 一键补齐缺失路由(默认 provider 或指定 provider/model) */
   async syncMissing(payload = {}) {
     return withBusy("sync-missing", () => apiAdminPost(

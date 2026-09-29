@@ -1,6 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WrRecovery } from "./wr-doc-store.jsx";
+import { WsWorks } from "./ws-works.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 import { htmlToPlainText } from "./manuscript-html.js";
 import { WsDialog } from "./ws-dialog.jsx";
 import { wsConfirm, wsToast } from "./ws-notify.jsx";
@@ -32,22 +34,17 @@ function formatTime(value) {
 }
 
 /* 记录里存的是内部 id（场景 id、作品 id）；给作者看的一律换成标题，查不到就不显示 id。
-   目录与书架是 window 上的过渡期 store，这里只读、不写。 */
+   目录与书架只读、不写。 */
 function sceneTitleFor(sid) {
   if (!sid) return "";
-  try {
-    const hit = window.WsCatalog && window.WsCatalog.sceneById && window.WsCatalog.sceneById(sid);
-    return (hit && hit.scene && hit.scene.title) || "";
-  } catch (e) { return ""; }
+  const hit = WsCatalog.sceneById(sid);
+  return (hit && hit.scene && hit.scene.title) || "";
 }
 
 function workTitleFor(workId) {
   if (!workId) return "";
-  try {
-    const works = (window.WsWorks && window.WsWorks.list && window.WsWorks.list()) || [];
-    const hit = works.find((work) => work.id === workId);
-    return (hit && hit.title) || "";
-  } catch (e) { return ""; }
+  const hit = WsWorks.list().find((work) => work.id === workId);
+  return (hit && hit.title) || "";
 }
 
 /* 记录标签的惯例是「场景 <sid> · 说明」：把 sid 换成场景标题；说明和类型标签重复时（「AI 候选」）不再重复一遍。 */

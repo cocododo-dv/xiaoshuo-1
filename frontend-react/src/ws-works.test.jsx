@@ -213,10 +213,8 @@ describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统
   function recordEvents() {
     const seen = [];
     const onChanged = (event) => seen.push(["ws:work-changed", event.detail]);
-    const onStats = (event) => seen.push(["ws:work-stats-changed", event.detail]);
     window.addEventListener("ws:work-changed", onChanged);
-    window.addEventListener("ws:work-stats-changed", onStats);
-    return { seen, stop: () => { window.removeEventListener("ws:work-changed", onChanged); window.removeEventListener("ws:work-stats-changed", onStats); } };
+    return { seen, stop: () => { window.removeEventListener("ws:work-changed", onChanged); } };
   }
 
   it("作品 id 第一次从加载占位落定时照旧广播 ws:work-changed", async () => {
@@ -227,7 +225,7 @@ describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统
     } finally { rec.stop(); }
   });
 
-  it("字数统计回写与档案修改只发 ws:work-stats-changed；切换作品才发 ws:work-changed", async () => {
+  it("字数统计回写与档案修改只通知 subscribe 的订阅者，不广播窗口事件；切换作品才发 ws:work-changed", async () => {
     const { mod } = await loadStore([
       { project_id: "p1", title: "First", stats: {} },
       { project_id: "p2", title: "Second", stats: {} },
@@ -236,14 +234,50 @@ describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统
     // 等启动时的 dashboard 装载也落定，再开始记
     await vi.waitFor(() => expect(WsWorks.status("p1").dashboard.phase).toBe("ready"));
     const rec = recordEvents();
+    const ticks = vi.fn();
+    const unsubscribe = WsWorks.subscribe(ticks);
     try {
       WsWorks.__applyDerived("p1", { wordsToday: 4321 });
       WsWorks.update("p1", { title: "改过的书名" });
-      expect(rec.seen.map(([type]) => type)).toEqual(["ws:work-stats-changed", "ws:work-stats-changed"]);
+      expect(rec.seen).toEqual([]);
+      expect(ticks).toHaveBeenCalledTimes(2);
       expect(WsWorks.active().wordsToday).toBe(4321);
 
       WsWorks.setActive("p2");
       expect(rec.seen).toContainEqual(["ws:work-changed", "p2"]);
+    } finally { rec.stop(); unsubscribe(); }
+  });
+
+  it("新建作品：拿到正式 id 之前切换器里已经有它，但不广播、各 store 不拿临时 id 发 GET；正式 id 回来才换过去（F01-06）", async () => {
+    const { installApiRouter, DEFAULT_PROJECT } = await import("./test-helpers.js");
+    const client = await import("./lib/client.js");
+    installApiRouter(client, { projects: [DEFAULT_PROJECT] });
+    let releaseCreate;
+    client.apiPost.mockImplementation((url) => (url === "/api/v2/projects"
+      ? new Promise((resolve) => { releaseCreate = resolve; })
+      : Promise.resolve({})));
+    // 目录 / 回收站 / 待办这几个 store 都在听 ws:work-changed
+    await import("./ws-catalog.jsx");
+    await import("./ws-review.jsx");
+    const { WsWorks } = await import("./ws-works.jsx");
+    await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"));
+    await vi.waitFor(() => expect(WsWorks.status("prj-main").dashboard.phase).toBe("ready"));
+    const rec = recordEvents();
+    try {
+      client.apiGet.mockClear();
+      const temp = WsWorks.create({ title: "新的一部" });
+      expect(WsWorks.active().title).toBe("新的一部");
+      expect(WsWorks.list().map((w) => w.title)).toContain("新的一部");
+      expect(WsWorks.readyId()).toBe(null);
+      // 待办的换作品重读有 600 ms 去抖：等过去再看有没有拿临时 id 发出去的 GET
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(client.apiGet.mock.calls.map(([url]) => url).filter((url) => url.includes(temp.id))).toEqual([]);
+      expect(rec.seen.filter(([type]) => type === "ws:work-changed")).toEqual([]);
+
+      releaseCreate({ project: { project_id: "prj-new", title: "新的一部", stats: {} } });
+      await vi.waitFor(() => expect(WsWorks.readyId()).toBe("prj-new"));
+      expect(rec.seen).toContainEqual(["ws:work-changed", "prj-new"]);
+      await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/prj-new/catalog"));
     } finally { rec.stop(); }
   });
 
@@ -265,7 +299,6 @@ describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统
     const React = (await import("react")).default;
     const { act } = await import("react");
     const { createRoot } = await import("react-dom/client");
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     const renders = [];
     function Probe() {
       const identity = mod.useActiveWorkIdentity();

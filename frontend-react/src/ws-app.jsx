@@ -1,4 +1,5 @@
 import React from "react";
+import { emit } from "./lib/events.js";
 import { TweaksPanel } from "./tweaks-panel.jsx";
 import { WsWorks, useActiveWorkIdentity } from "./ws-works.jsx";
 import { WsPalette, usePaletteShortcut } from "./ws-palette.jsx";
@@ -120,7 +121,7 @@ function App() {
       case "go": go(cmd.view); break;
       case "theme": setTweak("theme", cmd.value); break;
       case "mode": setTweak("mode", cmd.value); break;
-      case "tweaks": window.dispatchEvent(new CustomEvent("ws:tweaks-open")); break;
+      case "tweaks": emit("ws:tweaks-open"); break;
       case "scene":
         go("writer", { type: "ws:writer-scene", detail: cmd.sceneId });
         break;
@@ -135,7 +136,7 @@ function App() {
         go("home");
         break;
       case "new-work":
-        window.dispatchEvent(new CustomEvent("ws:new-work"));
+        emit("ws:new-work");
         break;
       default: break;
     }
@@ -150,7 +151,7 @@ function App() {
         return (
           <ProjectRequired
             label={WS_VIEW_LABELS[view] || "这个页面"}
-            onCreate={() => window.dispatchEvent(new CustomEvent("ws:new-work"))}
+            onCreate={() => emit("ws:new-work")}
             onGoHome={() => go("home")}
           />
         );
