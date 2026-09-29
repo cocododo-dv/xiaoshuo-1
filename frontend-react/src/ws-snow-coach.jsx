@@ -144,7 +144,7 @@ export function S2AiBar({ stepName, canGenerate, emphasize = false, primary, str
         </div>
       )}
       {err && (
-        <div className="sf-cand-err" role="alert" data-testid="snow-ai-error">
+        <div className="sf-ai-err" role="alert" data-testid="snow-ai-error">
           <I.AlertTriangle size={13} /><span>{err}</span>
           <button className="btn btn-quiet btn-sm" onClick={onClearErr}>知道了</button>
         </div>
@@ -407,7 +407,7 @@ export function S2Coach({ active, beKey, history, busy, dirBusy, focusRow, focus
         {dirBusy && <div className="sf-coach-busy" data-testid="snow-directions-busy"><I.Refresh size={13} className="sf-spin" /> 教练正在依上游材料与本步要点想三个方向…</div>}
       </div>
       {err && (
-        <div className="sf-cand-err" role="alert" data-testid="snow-coach-error">
+        <div className="sf-ai-err" role="alert" data-testid="snow-coach-error">
           <I.AlertTriangle size={13} /><span>{err}</span>
           <button className="btn btn-quiet btn-sm" onClick={onClearErr}>知道了</button>
         </div>

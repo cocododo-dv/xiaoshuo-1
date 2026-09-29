@@ -58,7 +58,7 @@ export const S2Strip = React.memo(function S2Strip({ states, staleMap, activeKey
           onClick={onOpenChapterPlan} title="先预览分章（07 章表 + 09 场景 + 10 规划），确认后才写入章节目录">
           <I.Layout size={13} /> 整理章节结构
         </button>
-        <MenuButton label="更多操作" items={moreItems} testId="snow-more" />
+        <MenuButton label="更多操作" items={moreItems} testId="snow-more" className="sf-more" />
       </div>
     </header>
   );
@@ -348,7 +348,7 @@ export function S2ImportPlanDialog({ value, busy, error, onChange, onImport, onC
         <div className="sf-import-warning"><I.AlertTriangle size={14} /> 导入会为当前作品的十步各建一个新版本；任何一步失败就立即停下，不会装作已经完成。</div>
         <textarea ref={textRef} data-testid="snow-import-json" value={value} disabled={busy} onChange={(e) => onChange(e.target.value)} aria-label="十步规范 JSON"
           spellCheck="false" placeholder={'{\n  "steps": {\n    "book_brief": { ... },\n    "one_sentence_summary": { ... },\n    ...\n  }\n}'} />
-        {error && <div className="sf-cand-err" role="alert"><I.AlertTriangle size={13} /><span>{error}</span></div>}
+        {error && <div className="sf-ai-err" role="alert"><I.AlertTriangle size={13} /><span>{error}</span></div>}
       </div>
       <footer className="ws-dialog-foot">
         <span className="sf-dialog-hint">十步都要有：从读者定位到场景规划。</span>
