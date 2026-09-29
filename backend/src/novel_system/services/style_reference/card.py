@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -31,6 +30,7 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     normalize_dimension_states,
 )
+from novel_system.services.hash_engine import sha256_text
 
 DIMENSION_CARD_VERSION = "dimension_card_v1"
 PROFILE_VERSION_V3 = "style_profile_v3"
@@ -131,7 +131,7 @@ class DimensionCard(BaseModel):
 
 
 def line_id_for(dimension: str, text: str) -> str:
-    digest = hashlib.sha256(f"{dimension}\x1f{text.strip()}".encode("utf-8")).hexdigest()
+    digest = sha256_text(f"{dimension}\x1f{text.strip()}")
     return f"cl_{digest[:12]}"
 
 

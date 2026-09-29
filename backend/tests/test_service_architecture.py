@@ -194,3 +194,28 @@ def test_only_style_policy_resolves_style_binding_state() -> None:
         assert not path.exists() or _style_binding_predicate_uses(path), (
             f"{relative} 已不再调用旧判定函数：把它从 _STYLE_BINDING_PREDICATE_PENDING 里删掉"
         )
+
+
+# 2026-09-29 P00d S2：共享助手各有一个家，这些叶子只依赖模型 / 错误类型 / 彼此之间的叶子——
+# 任何域服务都能引它们而不闭环。
+SHARED_HELPER_LEAVES: dict[str, set[str]] = {
+    "novel_system.env_parsing": set(),
+    "novel_system.services.value_coercion": set(),
+    "novel_system.services.scene_lookup": {"novel_system.db.models", "novel_system.services.errors"},
+    "novel_system.services.scene_text": {"novel_system.db.models"},
+    "novel_system.services.planning_queries": {"novel_system.db.models"},
+    "novel_system.services.snowflake_queries": {"novel_system.db.models"},
+    "novel_system.services.snowflake_scene_order": {"novel_system.db.models"},
+    "novel_system.services.snowflake_triage": {"novel_system.db.models"},
+    "novel_system.services.author_preferences": set(),
+}
+
+
+def test_shared_helper_leaves_stay_leaves() -> None:
+    modules = {module: path for path, module in _modules_under(PACKAGE_ROOT).items()}
+    violations: list[str] = []
+    for leaf, allowed in SHARED_HELPER_LEAVES.items():
+        for target, line in _imports(modules[leaf]):
+            if target.startswith("novel_system") and target not in allowed:
+                violations.append(f"{leaf}:{line} imports {target}")
+    assert not violations, violations

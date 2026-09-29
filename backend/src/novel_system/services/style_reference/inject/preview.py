@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -45,6 +44,7 @@ from novel_system.services.style_reference.inject.selection import (
 from novel_system.services.style_reference.policy import book_allows_cloud
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import frozen_profile_json
+from novel_system.services.hash_engine import sha256_text
 
 PREVIEW_MODE = "preview"
 # 预览的就是首稿（作者手笔直起的 style_first_draft 与先中性后润色的 style_draft 都在 style_draft 路由下派发）
@@ -97,14 +97,14 @@ def preview_contract(
             "paragraph_root_sha256": stats.get("paragraph_root_sha256"),
         },
     }
-    digest = hashlib.sha256(
+    digest = sha256_text(
         json.dumps(
             {"profile": str(profile.profile_id), "updated": str(profile.updated_at), "config": dict(config), "terms": banned_terms},
             ensure_ascii=False,
             sort_keys=True,
             default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+        )
+    )
     return {
         "layers": [layer],
         "layer_count": 1,

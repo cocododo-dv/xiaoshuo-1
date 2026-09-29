@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -12,7 +11,7 @@ from novel_system.services.character_continuity import (
 )
 from novel_system.services.content_safety import ContentSafetyService
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import verify_bundle_snapshot_hash
+from novel_system.services.hash_engine import sha256_text, verify_bundle_snapshot_hash
 from novel_system.services.literary_quality import (
     DIMENSION_WEIGHTS,
     QUALITY_DIMENSIONS,
@@ -71,7 +70,7 @@ class FinalTextGateService:
             raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
 
         actual_content = str(content or "")
-        content_hash = hashlib.sha256(actual_content.encode("utf-8")).hexdigest()
+        content_hash = sha256_text(actual_content)
         bundle = self._resolve_bundle(scene_id, source_bundle_id)
         bundle_integrity = (
             verify_bundle_snapshot_hash(
@@ -412,7 +411,7 @@ class FinalTextGateService:
             waiver = HumanReviewManager(self.session).accepted_soft_risk_waiver(
                 scene_id=scene.scene_id,
                 trigger_reason="blocking_soft_qc_issue",
-                source_draft_content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                source_draft_content_hash=sha256_text(content),
             )
             if waiver is not None:
                 classified = [

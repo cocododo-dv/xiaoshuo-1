@@ -19,6 +19,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph
+from novel_system.services.hash_engine import sha256_text
 
 ROOT_KEY = "paragraph_root_sha256"
 COUNT_KEY = "paragraph_count"
@@ -39,7 +40,7 @@ def compute_paragraph_root_fast(session: Session, book_id: str) -> tuple[str, in
         except (TypeError, ValueError):
             number = 0
         digest.update(f"{number}\x1f".encode("utf-8"))
-        digest.update(hashlib.sha256(str(text or "").encode("utf-8")).hexdigest().encode("utf-8"))
+        digest.update(sha256_text(text).encode("utf-8"))
         digest.update(b"\x1e")
         count += 1
     if count == 0:

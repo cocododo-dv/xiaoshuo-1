@@ -40,7 +40,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 import threading
@@ -114,6 +113,7 @@ from novel_system.services.style_reference.untrusted_data import (
     frame_reference_samples,
 )
 from novel_system.services.style_reference.windows import marker_is_current, window_texts
+from novel_system.services.hash_engine import sha256_text
 
 logger = logging.getLogger(__name__)
 
@@ -801,7 +801,7 @@ def _cache_key(
             str(request.dialogue_heavy),
             str(request.rendering_mode or ""),
             ",".join(request.revise_dimensions),
-            hashlib.sha256("\x1f".join(request.recent_gaps).encode("utf-8")).hexdigest()[:16],
+            sha256_text("\x1f".join(request.recent_gaps))[:16],
             str(root or ""),
             # 接收提示的节点、路由是否本机、这一次送什么（H1：换了节点路由不会拿到旧渲染）
             route_token,
@@ -809,7 +809,7 @@ def _cache_key(
             selection_anchor,
         ]
     )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return sha256_text(material)
 
 
 def _cache_get(key: str) -> RenderedStyle | None:

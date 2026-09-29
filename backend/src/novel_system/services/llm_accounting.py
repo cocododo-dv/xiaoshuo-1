@@ -8,7 +8,6 @@ network.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
@@ -41,6 +40,8 @@ from novel_system.services.llm_client import (
     OnlineAccountedExecution,
 )
 from novel_system.services.llm_providers.base import LLMDispatchKind
+from novel_system.services.hash_engine import sha256_json_plain
+from novel_system.services.value_coercion import usage_int
 
 
 logger = logging.getLogger(__name__)
@@ -2735,25 +2736,17 @@ def _normalize_raw_usage(raw_usage: dict[str, Any] | None) -> NormalizedUsage | 
     for prompt_key, completion_key, total_key in key_sets:
         if prompt_key not in raw_usage and completion_key not in raw_usage:
             continue
-        prompt = _usage_int(raw_usage.get(prompt_key))
-        completion = _usage_int(raw_usage.get(completion_key))
+        prompt = usage_int(raw_usage.get(prompt_key))
+        completion = usage_int(raw_usage.get(completion_key))
         if prompt is None or completion is None:
             return None
         expected_total = prompt + completion
         if total_key is not None and total_key in raw_usage:
-            total = _usage_int(raw_usage.get(total_key))
+            total = usage_int(raw_usage.get(total_key))
             if total is None or total != expected_total:
                 return None
         return NormalizedUsage(prompt, completion, expected_total, False)
     return None
-
-
-def _usage_int(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    if value < 0 or int(value) != value:
-        return None
-    return int(value)
 
 
 def _extract_raw_usage(body: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2841,8 +2834,7 @@ def _has_exceeded_attempt(session: Session, call_id: str) -> bool:
 
 
 def _prompt_hash(request: LLMRequest) -> str:
-    canonical = json.dumps(request.messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return sha256_json_plain(request.messages)
 
 
 def _request_summary(request: LLMRequest) -> dict[str, Any]:

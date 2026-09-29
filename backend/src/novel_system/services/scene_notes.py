@@ -15,7 +15,7 @@ class SceneNotesService:
         self.session = session
 
     def get(self, scene_id: str) -> dict[str, Any]:
-        scene = self._require_scene(scene_id)
+        scene = require_scene(self.session, scene_id, trashed_as_conflict=True)
         return self._payload(scene)
 
     def save(
@@ -25,7 +25,7 @@ class SceneNotesService:
         *,
         base_revision_no: int,
     ) -> dict[str, Any]:
-        self._require_scene(scene_id)
+        require_scene(self.session, scene_id, trashed_as_conflict=True)
         next_revision_no = int(base_revision_no) + 1
         changed = self.session.execute(
             update(SceneCard)
@@ -52,10 +52,7 @@ class SceneNotesService:
                 details={"current_revision_no": current_revision},
             )
         self.session.expire_all()
-        return self._payload(self._require_scene(scene_id))
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id, trashed_as_conflict=True)
+        return self._payload(require_scene(self.session, scene_id, trashed_as_conflict=True))
 
     @staticmethod
     def _payload(scene: SceneCard) -> dict[str, Any]:

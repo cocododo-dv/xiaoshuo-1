@@ -18,10 +18,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 
 from novel_system.services.errors import DomainError
+from novel_system.services.hash_engine import sha256_text
 
 
 def decode_text(raw: bytes) -> str:
@@ -251,7 +251,7 @@ def compute_text_checksum(normalized_text: str) -> str:
 
     用作 book_id 前缀(`sr_book_{checksum[:12]}`)与去重键。
     """
-    return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+    return sha256_text(normalized_text)
 
 
 # 空行切段退化判据:平均段长超过该值视为「单换行分段的网文 TXT」

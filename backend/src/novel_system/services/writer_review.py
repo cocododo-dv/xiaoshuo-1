@@ -7,16 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    ChapterGoal,
     RevisionCandidate,
-    SceneCard,
     WriterEvaluation,
 )
 from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.scene_lookup import require_chapter, require_scene
 
 WRITER_RUBRIC_ID = "drama_effectiveness_v1"
 
@@ -248,12 +245,5 @@ class WriterReviewService:
             "candidates": [self.serialize_revision(candidate) for candidate in candidates],
             "revision_blocker": _revision_blocker_from_evaluation(latest),
         }
-
-
-    def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        return require_chapter(self.session, chapter_id)
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id)
 
 

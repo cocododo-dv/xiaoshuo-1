@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+
+from novel_system.services.hash_engine import sha256_text
 
 
 def _compute_statement_hash(statement: str) -> str:
@@ -17,7 +18,7 @@ def _compute_statement_hash(statement: str) -> str:
     PR-3 hotfix 0038:同 (extraction_id, sub_dim, finding_kind, statement_hash)
     唯一,允许同 sub_dim 同 kind 多条不同 statement 的 finding。
     """
-    return hashlib.sha256((statement or "").strip().encode("utf-8")).hexdigest()[:16]
+    return sha256_text((statement or "").strip())[:16]
 
 from novel_system.db.models import (
     StyleReferenceBannedTerm,

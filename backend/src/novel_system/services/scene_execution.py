@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import uuid
 from types import SimpleNamespace
@@ -22,8 +21,9 @@ from novel_system.services.story_slots import (
     normalize_story_slot,
     normalize_story_slot_mapping,
 )
-from novel_system.services.hash_engine import canonical_json
+from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.style_policy import style_policy_live
+from novel_system.services.planning_queries import latest_scene_blueprint
 
 EXECUTION_CONTRACT_VERSION = "scene_execution_contract_v1"
 # 来源快照里的「参考规则」：v3 画像没有 style_rules / structure_rules / safety_rules 这些旧键，这三个表从来都是空的；
@@ -123,13 +123,13 @@ class SceneExecutionContractService:
         SceneExecutionContract | None,
     ]:
         """解析场景快照上下文；末位返回可直接复用的最新契约（快照未变且非 stale），否则为 None。"""
-        scene = self._require_scene(scene_id)
-        chapter = self._require_chapter(scene.chapter_id)
+        scene = require_scene(self.session, scene_id)
+        chapter = require_chapter(self.session, scene.chapter_id)
         project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
         blueprint = self._latest_blueprint(scene_id)
         reference_rules = self._reference_rules(project)
         snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
-        snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        snapshot_hash = sha256_json_normalized(snapshot)
         latest = self.latest(scene_id)
         cached = (
             latest
@@ -344,11 +344,7 @@ class SceneExecutionContractService:
         return missing
 
     def _latest_blueprint(self, scene_id: str) -> SceneBlueprint | None:
-        return self.session.execute(
-            select(SceneBlueprint)
-            .where(SceneBlueprint.scene_id == scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
-            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
-        ).scalars().first()
+        return latest_scene_blueprint(self.session, scene_id)
 
     def _source_snapshot(
         self,
@@ -403,13 +399,6 @@ class SceneExecutionContractService:
         )
         policy = style_policy_live(self.session, scope, task_type="scene_generation", freeze_contract=False)
         return [str(policy.profile_id)] if policy.profile_id else []
-
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id)
-
-    def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        return require_chapter(self.session, chapter_id)
 
 
 def _infer_scene_mode(scene: SceneCard, brief: dict[str, Any]) -> str:

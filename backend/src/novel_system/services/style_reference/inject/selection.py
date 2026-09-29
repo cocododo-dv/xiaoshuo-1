@@ -27,7 +27,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
 import random
@@ -68,6 +67,7 @@ from novel_system.services.style_reference.windows import (
     index_marker,
     marker_is_current,
 )
+from novel_system.services.hash_engine import sha256_text
 
 logger = logging.getLogger(__name__)
 
@@ -500,7 +500,7 @@ def typicality_weights(windows: Sequence[IndexWindow]) -> list[float]:
 
 
 def _rng(seed: str) -> random.Random:
-    return random.Random(int(hashlib.sha256(str(seed).encode("utf-8")).hexdigest()[:16], 16))
+    return random.Random(int(sha256_text(str(seed))[:16], 16))
 
 
 def _sampling_keys(windows: Sequence[IndexWindow], seed: str) -> dict[int, float]:
@@ -628,7 +628,7 @@ def selection_key(policy: Any, request: StyleRenderRequest, *, bundle_id: str | 
             SELECTION_VERSION,
         )
     )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return sha256_text(material)
 
 
 def selection_seed(policy: Any, request: StyleRenderRequest) -> str:

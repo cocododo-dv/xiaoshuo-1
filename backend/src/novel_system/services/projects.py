@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import threading
 import uuid
 from typing import Any
@@ -38,6 +37,9 @@ from novel_system.services.scene_rehome import rehome_scenes
 from novel_system.services.system_config import SystemConfigService
 from novel_system.services.snowflake_steps import SNOWFLAKE_METHOD_VERSION
 from novel_system.settings import get_settings
+from novel_system.services.hash_engine import sha256_text
+from novel_system.services.scene_lookup import require_project
+from novel_system.services.snowflake_queries import latest_outline_plan
 
 PROJECT_STATUS_OUTLINE_DRAFT = "outline_draft"
 PROJECT_STATUS_OUTLINE_REVIEW = "outline_review"
@@ -724,9 +726,7 @@ class ProjectService:
         }
 
     def require_project(self, project_id: str) -> StoryProject:
-        project = self.session.get(StoryProject, project_id)
-        if project is None:
-            raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+        project = require_project(self.session, project_id)
         return project
 
     def _approved_plan_result(
@@ -750,15 +750,7 @@ class ProjectService:
         return plan
 
     def _latest_plan(self, project_id: str) -> OutlinePlan | None:
-        return (
-            self.session.execute(
-                select(OutlinePlan)
-                .where(OutlinePlan.project_id == project_id)
-                .order_by(OutlinePlan.version.desc(), OutlinePlan.created_at.desc())
-            )
-            .scalars()
-            .first()
-        )
+        return latest_outline_plan(self.session, project_id)
 
     def _chapter_payloads(self, project_id: str) -> list[dict[str, Any]]:
         chapters = (
@@ -1227,7 +1219,7 @@ class ProjectChapterFlowService:
 
     @staticmethod
     def _chapter_body_hash(body: str) -> str:
-        return hashlib.sha256(str(body or "").encode("utf-8")).hexdigest()
+        return sha256_text(body)
 
     def _latest_read_confirmation(
         self, project_id: str, chapter_id: str, body_hash: str

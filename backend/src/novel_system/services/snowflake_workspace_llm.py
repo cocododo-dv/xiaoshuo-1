@@ -55,6 +55,7 @@ from novel_system.services.style_reference.planning_context import (
 )
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
+from novel_system.services.value_coercion import coerce_string_list, has_value, int_or_default
 
 
 class SparseGenerationOutput(ValueError):
@@ -1267,7 +1268,7 @@ def _upstream_step_context(
             merge_step_draft(key, getattr(artifact, "artifact_json", None), latest_by_step=dict(latest_by_step))
         )
         # 空骨架（还没写的步骤）不占提示预算，也别让模型误以为作者已经交代过什么。
-        if not _has_value(draft):
+        if not has_value(draft):
             continue
         status = str(getattr(artifact, "status", "") or "")
         items.append(
@@ -1379,7 +1380,7 @@ def _compact_scene_context(draft: dict[str, Any], focus_refs: set[str]) -> dict[
             compacted.append(scene)
             continue
         keys = _SCENE_NEIGHBOR_KEYS if index in neighbor_positions else _SCENE_REFERENCE_KEYS
-        compacted.append({key: scene[key] for key in keys if key in scene and _has_value(scene[key])})
+        compacted.append({key: scene[key] for key in keys if key in scene and has_value(scene[key])})
     payload["scenes"] = compacted
     return payload
 
@@ -1717,7 +1718,7 @@ def _normalize_assistant_output(
     base_draft: dict[str, Any],
 ) -> dict[str, Any]:
     reply = str(output.get("reply") or "").strip()
-    suggestions = _coerce_string_list(output.get("suggestions"))
+    suggestions = coerce_string_list(output.get("suggestions"))
     candidate_label = str(output.get("candidate_label") or "").strip()
     patch = {}
     if isinstance(output.get("candidate_patch"), dict):
@@ -1756,8 +1757,8 @@ def _normalize_triage_output(output: dict[str, Any], base_draft: dict[str, Any])
         updates[scene_id] = {
             "status": status,
             "notes": str(item.get("notes") or "").strip(),
-            "missing_fields": _coerce_string_list(item.get("missing_fields")),
-            "fix_steps": _coerce_string_list(item.get("fix_steps")),
+            "missing_fields": coerce_string_list(item.get("missing_fields")),
+            "fix_steps": coerce_string_list(item.get("fix_steps")),
             "repair_patch": _sanitize_scene_repair_patch(item.get("repair_patch") or {}),
         }
     items = []
@@ -1801,9 +1802,9 @@ def _collect_generation_gaps(step_key: str, draft: dict[str, Any] | None) -> lis
                 value = item.get(field_key)
                 if isinstance(template_value, dict):
                     nested = value if isinstance(value, dict) else {}
-                    if not any(_has_value(nested_value) for nested_value in nested.values()):
+                    if not any(has_value(nested_value) for nested_value in nested.values()):
                         gaps.append(f"characters[{label}].{field_key}")
-                elif not _has_value(value):
+                elif not has_value(value):
                     gaps.append(f"characters[{label}].{field_key}")
     elif step_key == "scene_list":
         for index, item in enumerate(payload.get("scenes") or [], start=1):
@@ -1813,7 +1814,7 @@ def _collect_generation_gaps(step_key: str, draft: dict[str, Any] | None) -> lis
             gaps.extend(
                 f"scenes[{label}].{field_key}"
                 for field_key in _SCENE_LIST_CONTENT_KEYS
-                if not _has_value(item.get(field_key))
+                if not has_value(item.get(field_key))
             )
     return gaps
 
@@ -1853,7 +1854,7 @@ def _sanitize_step_patch(
             step_key=step_key,
             count_policy=count_policy,
         )
-        if _has_value(normalized):
+        if has_value(normalized):
             result[key] = normalized
     return result
 
@@ -1933,7 +1934,7 @@ def _sanitize_field_value(
     if kind == "paragraphs" and step_key in {"short_synopsis", "long_synopsis"}:
         # 阶段 B：一页梗概 = 五句各扩一段，恰好五段。多出来的段不再静默截掉。
         # 阶段 D：长篇大纲的五段展开同理——一页梗概的五段各扩成约一页，恰好五段。
-        items = _coerce_string_list(value)
+        items = coerce_string_list(value)
         expected = SHORT_SYNOPSIS_PARAGRAPHS if step_key == "short_synopsis" else LONG_SYNOPSIS_PARAGRAPHS
         if len(items) > expected:
             if step_key == "short_synopsis":
@@ -1951,10 +1952,10 @@ def _sanitize_field_value(
             return None
         return items
     if kind in {"list", "paragraphs"}:
-        return _coerce_string_list(value)
+        return coerce_string_list(value)
     if kind == "sentences":
         seed = base.get(key) if isinstance(base.get(key), list) else []
-        items = _coerce_string_list(value)
+        items = coerce_string_list(value)
         if seed and len(items) > len(seed):
             message = (
                 f"一段话概括要求恰好 {len(seed)} 句（开局、三次灾难、结局），"
@@ -2200,7 +2201,7 @@ def _sanitize_character_items(
         display_name = str(raw_item.get("display_name") or raw_item.get("name") or "").strip()
         character_id = str(raw_item.get("character_id") or "").strip()
         if not display_name and not character_id and not any(
-            _has_value(raw_item.get(field_key)) for field_key in template if field_key != "character_id"
+            has_value(raw_item.get(field_key)) for field_key in template if field_key != "character_id"
         ):
             # 完全空的成员（按 schema 约束解码的后端会回 `{}`）：不铸 id、不进名册——否则每个
             # 空对象都变成一个只有 id 的幽灵角色。
@@ -2216,7 +2217,7 @@ def _sanitize_character_items(
             sanitized = _prune_empty_values(_sanitize_template_value(template_value, raw_item.get(field_key)))
             # 生成/补丁是「补全」语义：空值不落键，_merge_patch 时不清空该成员的既有
             # 内容（与 FE 咨询式补丁一致）——模型部分回传不再抹掉手工填过的字段。
-            if _has_value(sanitized):
+            if has_value(sanitized):
                 item[field_key] = sanitized
         if not item.get("display_name"):
             item["display_name"] = display_name or character_id
@@ -2228,7 +2229,7 @@ def _prune_empty_values(value: Any) -> Any:
     """递归剥掉空叶子（"" / [] / {} / 全空子树），让补丁只携带有内容的键。"""
     if isinstance(value, dict):
         pruned = {key: _prune_empty_values(item) for key, item in value.items()}
-        return {key: item for key, item in pruned.items() if _has_value(item)}
+        return {key: item for key, item in pruned.items() if has_value(item)}
     return value
 
 
@@ -2269,13 +2270,13 @@ def _sanitize_scene_list_items(
     for index, raw_item in enumerate(value, start=1):
         if not isinstance(raw_item, dict):
             continue
-        if not any(_has_value(raw_item.get(field_key)) for field_key in (*template, "title", "mode", "spine")):
+        if not any(has_value(raw_item.get(field_key)) for field_key in (*template, "title", "mode", "spine")):
             # 完全空的成员（`{}`）不进场表：否则它会被铸成一场没有概要的幽灵场景。
             continue
         chapter_id = str(raw_item.get("chapter_id") or current_chapter_id or f"{project_id}_CH01").strip()
         current_chapter_id = chapter_id
         next_seq = scene_seq_by_chapter.get(chapter_id, 0) + 1
-        scene_seq = _coerce_int(raw_item.get("scene_seq"), default=next_seq)
+        scene_seq = int_or_default(raw_item.get("scene_seq"), next_seq)
         scene_seq_by_chapter[chapter_id] = scene_seq
         scene_id = str(raw_item.get("scene_id") or f"{chapter_id}_SC{scene_seq:02d}").strip()
         item = {
@@ -2387,7 +2388,7 @@ def _sanitize_scene_detail_items(
                 merged["primary_form"] = scene_type
                 merged["scene_type"] = scene_type
             elif key in {"beats_json", "onstage_chars_json"}:
-                beats = _coerce_string_list(overlay.get(key))
+                beats = coerce_string_list(overlay.get(key))
                 if beats:
                     merged[key] = beats
             else:
@@ -2407,7 +2408,7 @@ def _sanitize_template_value(template_value: Any, value: Any) -> Any:
             for field_key, nested_template in template_value.items()
         }
     if isinstance(template_value, list):
-        return _coerce_string_list(value)
+        return coerce_string_list(value)
     return str(value or "").strip()
 
 
@@ -2585,21 +2586,6 @@ def _sanitize_scene_repair_patch(value: Any) -> dict[str, str]:
     return {key: str(value.get(key) or "").strip() for key in allowed if key in value and str(value.get(key) or "").strip()}
 
 
-def _coerce_string_list(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [item.strip() for item in value.splitlines() if item.strip()]
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _coerce_int(value: Any, *, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _project_id_from_steps(latest_by_step: Mapping[str, Any]) -> str:
     for artifact in latest_by_step.values():
         project_id = str(getattr(artifact, "project_id", "") or "").strip()
@@ -2633,16 +2619,5 @@ def _llm_failure_message(exc: Exception, task_key: str) -> str:
 
 def draft_has_content(draft: Any) -> bool:
     """草稿里是否有任何非空内容——空骨架代表作者还没写，不该占提示上下文。"""
-    return _has_value(draft)
+    return has_value(draft)
 
-
-def _has_value(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, list):
-        return any(_has_value(item) for item in value)
-    if isinstance(value, dict):
-        return any(_has_value(item) for item in value.values())
-    return True

@@ -21,7 +21,6 @@ caching one across runs.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +39,7 @@ from novel_system.services.llm_accounting import (
     is_llm_control_plane_failure,
 )
 from novel_system.services.scene_ownership import require_scene_project_id
+from novel_system.services.hash_engine import sha256_json_plain, sha256_text
 
 if TYPE_CHECKING:
     from novel_system.services.prose_event_extractor import ProseExtractionResult
@@ -67,16 +67,11 @@ class SceneArchiveEffects:
 
     @staticmethod
     def _text_hash(content: str) -> str:
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return sha256_text(content)
 
     @staticmethod
     def _json_hash(payload: Any) -> str:
-        import json
-
-        encoded = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return sha256_json_plain(payload)
 
     def _record_narrative_events(
         self,

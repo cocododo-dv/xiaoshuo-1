@@ -12,16 +12,9 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any, Mapping, Sequence
 
-
-def _finite(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
+from novel_system.services.value_coercion import finite_or_none_accepting_bool
 
 
 def _contract_layers(contract: Mapping[str, Any] | None) -> list[dict[str, Any]]:
@@ -34,7 +27,7 @@ def _contract_layers(contract: Mapping[str, Any] | None) -> list[dict[str, Any]]
     layers = [layer for layer in raw_layers if isinstance(layer, Mapping)]
 
     def order_of(layer: Mapping[str, Any]) -> int:
-        value = _finite(layer.get("order"))
+        value = finite_or_none_accepting_bool(layer.get("order"))
         return int(value) if value is not None else 0
 
     return [dict(layer) for layer in sorted(layers, key=order_of)]
@@ -57,7 +50,7 @@ def _layer_voice_features(layer: Mapping[str, Any]) -> dict[str, float]:
         return {}
     result: dict[str, float] = {}
     for name, raw in features.items():
-        value = _finite(raw)
+        value = finite_or_none_accepting_bool(raw)
         if value is not None:
             result[str(name)] = value
     return result

@@ -56,14 +56,11 @@ from novel_system.db.models import (
     PassagePatchCandidate,
     SceneCard,
     SceneDraft,
-    SceneRunState,
-    StoryProject,
     StyleReferenceBook,
     StyleReferenceParagraph,
     StyleReferenceProfile,
     WriterEvaluation,
 )
-from novel_system.services.errors import DomainError
 from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.literary_quality import (
     DEFAULT_RULE_CALIBRATION,
@@ -77,10 +74,12 @@ from novel_system.services.literary_quality import (
     dimension_level,
     unify_rule_finding,
 )
-from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.scene_lookup import active_chapter_scenes, require_chapter, require_project, require_scene
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.text_utils import is_scene_break_paragraph
+from novel_system.services.hash_engine import sha256_text
+from novel_system.services.scene_text import current_author_draft, pointed_final_scene
 
 # 评审来源的 rubric id。深评的在这里定义（writer_deep_review 从这里取）；准定稿评审的
 # 与 near_final.NEAR_FINAL_RUBRIC_ID 相同——测试钉住两者相等，这里不 import near_final
@@ -193,7 +192,7 @@ class DiagnosisText:
 
     @property
     def sha256(self) -> str:
-        return hashlib.sha256(self.plain.encode("utf-8")).hexdigest()
+        return sha256_text(self.plain)
 
     @property
     def chars(self) -> int:
@@ -1139,36 +1138,13 @@ class SceneDiagnosisService:
         return DiagnosisText(layer="none", ref=None, content="", paragraphs=[], updated_at=None)
 
     def _current_author_draft(self, scene_id: str) -> AuthorDraft | None:
-        return self.session.execute(
-            select(AuthorDraft)
-            .where(
-                AuthorDraft.object_type == "scene",
-                AuthorDraft.object_id == scene_id,
-                AuthorDraft.status == "current",
-            )
-            .order_by(AuthorDraft.updated_at.desc(), AuthorDraft.draft_id.desc())
-        ).scalars().first()
+        return current_author_draft(self.session, "scene", scene_id)
 
     def _final_scene(self, scene_id: str) -> FinalScene | None:
-        state = self.session.get(SceneRunState, scene_id)
-        if state is not None and state.current_final_scene_row_id:
-            pointed = self.session.get(FinalScene, state.current_final_scene_row_id)
-            if pointed is not None and pointed.scene_id == scene_id:
-                return pointed
-        return self.session.execute(
-            select(FinalScene)
-            .where(FinalScene.scene_id == scene_id)
-            .order_by(FinalScene.created_at.desc(), FinalScene.row_id.desc())
-        ).scalars().first()
+        return pointed_final_scene(self.session, scene_id)
 
     def chapter_scenes(self, chapter_id: str) -> list[SceneCard]:
-        return list(
-            self.session.execute(
-                select(SceneCard)
-                .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-            ).scalars().all()
-        )
+        return active_chapter_scenes(self.session, chapter_id)
 
     # -- 评审行 ------------------------------------------------------------
 
@@ -1712,9 +1688,7 @@ class SceneDiagnosisService:
         """整本书的计数——视图挂载 / 换作品时读一次；之后的变化由 ``scene_rollup`` / ``chapter_rollup``
         随写回传（同一种 ``scenes`` / ``chapters`` 条目形状，前端本地汇总 ``totals``）。"""
 
-        project = self.session.get(StoryProject, project_id)
-        if project is None:
-            raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+        require_project(self.session, project_id)
         chapters = list(
             self.session.execute(
                 select(ChapterGoal)

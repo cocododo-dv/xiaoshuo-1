@@ -35,6 +35,7 @@ from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
 )
+from novel_system.services.scene_lookup import get_chapter_or_404, get_scene_or_404
 
 TRASH_BLOCK_REASON_HAS_TRASHED_SCENES = "章节下已有单独移入回收站的场景"
 SCENE_RUNTIME_ARTIFACTS_REASON = "场景已有下游运行产物"
@@ -54,18 +55,14 @@ class AuthorLifecycleService:
         self._vector_store = vector_store
 
     def require_active_chapter(self, chapter_id: str) -> ChapterGoal:
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+        chapter = get_chapter_or_404(self.session, chapter_id)
         if chapter.trashed_flag == 1:
             raise DomainError("CHAPTER_TRASHED", "chapter is currently in author trash")
         self._require_active_parent_project(chapter.project_id)
         return chapter
 
     def require_active_scene(self, scene_id: str) -> SceneCard:
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        scene = get_scene_or_404(self.session, scene_id)
         if scene.trashed_flag == 1:
             raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
         chapter = self.session.get(ChapterGoal, scene.chapter_id)

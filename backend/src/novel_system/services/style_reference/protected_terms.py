@@ -23,7 +23,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import uuid
@@ -38,6 +37,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import StyleReferenceBannedTerm, StyleReferenceProfile
 from novel_system.services.style_reference.measure import load_kernel_lexicon
 from novel_system.services.style_reference.text_utils import compact_ws
+from novel_system.services.hash_engine import sha256_text
 
 PROTECTED_SOURCE = "protected_auto"
 PROTECTED_SCOPE = "generation"
@@ -318,7 +318,7 @@ def parse_protected_terms(
 
 def protected_terms_version(terms: Sequence[ProtectedTerm | Mapping[str, Any]]) -> str:
     names = sorted(str(t.term if isinstance(t, ProtectedTerm) else t.get("term")) for t in terms)
-    digest = hashlib.sha256("\x1f".join(names).encode("utf-8")).hexdigest()[:12]
+    digest = sha256_text("\x1f".join(names))[:12]
     return f"{PROTECTED_TERMS_VERSION_PREFIX}_{digest}"
 
 

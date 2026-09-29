@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import inspect
 import json
 import logging
@@ -24,6 +23,7 @@ from novel_system.services.llm_audit import (
 )
 from novel_system.services.scene_run_checkpoint import idempotency_execution_id
 from novel_system.settings import get_settings
+from novel_system.services.hash_engine import sha256_text
 
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def owner_lease_grace_seconds() -> int:
 def canonical_request_hash(method: str, path_template: str, payload: Any) -> str:
     body = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     raw = f"{method.upper()}::{path_template}::{body}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return sha256_text(raw)
 
 
 @dataclass
@@ -645,7 +645,7 @@ def _operation_request_audit(payload: Any) -> dict[str, Any]:
             recovery_payload["risk_confirmation"] = {
                 "acknowledged": confirmation.get("acknowledged") is True,
                 "reason": reason[:reason_cap],
-                "reason_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest(),
+                "reason_sha256": sha256_text(reason),
                 "reason_chars": len(reason),
                 "reason_truncated": len(reason) > reason_cap,
                 "severity": str(confirmation.get("severity") or "high")[:32],

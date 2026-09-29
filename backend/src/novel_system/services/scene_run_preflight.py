@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SceneBlueprint, SceneCard
+from novel_system.db.models import SceneCard
 from novel_system.services.qc_constraints import (
     constraint_alternatives,
     forbidden_terms as literal_forbidden_terms,
@@ -15,6 +14,7 @@ from novel_system.services.scene_design_ownership import design_owned_by_plan
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_structure_brief import missing_structure_fields, scene_has_structure
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
+from novel_system.services.planning_queries import latest_scene_blueprint
 
 
 class SceneRunPreflightService:
@@ -163,11 +163,7 @@ class SceneRunPreflightService:
                     "technical_hint": "scene_card.beats_json is empty",
                 }
             )
-        latest_blueprint = self.session.execute(
-            select(SceneBlueprint)
-            .where(SceneBlueprint.scene_id == scene.scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
-            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
-        ).scalars().first()
+        latest_blueprint = latest_scene_blueprint(self.session, scene.scene_id)
         if latest_blueprint is None:
             items.append(
                 {

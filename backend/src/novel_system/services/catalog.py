@@ -67,6 +67,7 @@ from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-ex
     is_snowflake_origin,
     live_plan_scene_ids,
 )
+from novel_system.services.scene_lookup import active_chapter_scenes, require_project_chapter
 
 CHAPTER_STATES = ("planned", "todo", "writing", "draft", "review", "approved")
 SCENE_STATES = ("todo", "writing", "done")
@@ -260,13 +261,7 @@ class CatalogService:
         return rows
 
     def scene_rows(self, chapter_id: str) -> list[SceneCard]:
-        return list(
-            self.session.execute(
-                select(SceneCard)
-                .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-            ).scalars().all()
-        )
+        return active_chapter_scenes(self.session, chapter_id)
 
     def chapter_payload(
         self,
@@ -495,7 +490,7 @@ class CatalogService:
         actor_ref: str = "operator",
     ) -> dict[str, Any]:
         project = self._projects.require_project(project_id)
-        chapter = self._require_chapter(project_id, chapter_id)
+        chapter = require_project_chapter(self.session, project_id, chapter_id)
         body = payload or {}
         updates: dict[str, Any] = {}
         if "state" in body:
@@ -645,7 +640,7 @@ class CatalogService:
 
     def update_scene(self, project_id: str, scene_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         scene = self._require_scene(project_id, scene_id)
-        chapter = self._require_chapter(project_id, scene.chapter_id)
+        chapter = require_project_chapter(self.session, project_id, scene.chapter_id)
         body = payload or {}
         brief = dict(scene.writer_brief_json or {})
         updates: dict[str, Any] = {}
@@ -773,7 +768,7 @@ class CatalogService:
         return character
 
     def create_scene(self, project_id: str, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        chapter = self._require_chapter(project_id, chapter_id)
+        chapter = require_project_chapter(self.session, project_id, chapter_id)
         require_chapter_mutation_allowed(
             self.session,
             chapter,
@@ -1131,12 +1126,6 @@ class CatalogService:
         }
 
     # ---------- internals ----------
-
-    def _require_chapter(self, project_id: str, chapter_id: str) -> ChapterGoal:
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None or chapter.trashed_flag == 1 or chapter.project_id != project_id:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found in project", status_code=404)
-        return chapter
 
     def _require_scene(self, project_id: str, scene_id: str) -> SceneCard:
         scene = self.session.get(SceneCard, scene_id)

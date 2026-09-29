@@ -91,6 +91,17 @@ def sort_in_story_order(
     return sorted(rows, key=key)
 
 
+def live_scene_plans_in_story_order(session: Session, project_id: str) -> list[SnowflakeScenePlan]:
+    """活跃（未软删）的场景计划，按故事序——工作台与分章服务共用的唯一入口。"""
+    rows = session.execute(
+        select(SnowflakeScenePlan).where(
+            SnowflakeScenePlan.project_id == project_id,
+            SnowflakeScenePlan.removed_at.is_(None),
+        )
+    ).scalars().all()
+    return sort_in_story_order(session, project_id, rows)
+
+
 def renumber_scene_seq(
     session: Session,
     project_id: str,

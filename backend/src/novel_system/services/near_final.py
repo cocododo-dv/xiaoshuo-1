@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import uuid
@@ -24,7 +23,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import canonical_json
+from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
 from novel_system.services.llm_fail_closed import is_llm_capability_error, raise_llm_domain_error
 from novel_system.services.llm_task_runner import (
@@ -47,6 +46,7 @@ from novel_system.services.style_reference.planning_context import (
 )
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
+from novel_system.services.planning_queries import latest_active_planning_artifact, latest_scene_blueprint
 
 
 NEAR_FINAL_RUBRIC_ID = "near_final_acceptance_v1"
@@ -142,8 +142,8 @@ class NearFinalPlanningService:
         artifact_committed: Callable[[str, dict[str, Any], bool], None] | None = None,
         resume_artifacts: dict[str, GenerationPlanningArtifact] | None = None,
     ) -> dict[str, Any]:
-        scene = self._require_scene(scene_id)
-        chapter = self._require_chapter(scene.chapter_id)
+        scene = require_scene(self.session, scene_id)
+        chapter = require_chapter(self.session, scene.chapter_id)
         resume_artifacts = resume_artifacts or {}
         chapter_artifact = resume_artifacts.get("chapter_architecture")
         if chapter_artifact is None:
@@ -473,7 +473,7 @@ class NearFinalPlanningService:
             )
             if reference is not None:
                 register_planning_style_reference(snapshot, reference)
-        source_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        source_hash = sha256_json_normalized(snapshot)
         return {
             "source_bundle_id": f"near_final_planning_source_{scene.scene_id}",
             "source_bundle_hash": source_hash,
@@ -506,29 +506,12 @@ class NearFinalPlanningService:
         ]
 
     def _latest_artifact(self, *, artifact_type: str, object_type: str, object_id: str) -> GenerationPlanningArtifact | None:
-        return self.session.execute(
-            select(GenerationPlanningArtifact)
-            .where(
-                GenerationPlanningArtifact.artifact_type == artifact_type,
-                GenerationPlanningArtifact.object_type == object_type,
-                GenerationPlanningArtifact.object_id == object_id,
-                GenerationPlanningArtifact.status == "active",
-            )
-            .order_by(GenerationPlanningArtifact.created_at.desc(), GenerationPlanningArtifact.row_id.desc())
-        ).scalars().first()
+        return latest_active_planning_artifact(
+            self.session, artifact_type=artifact_type, object_type=object_type, object_id=object_id
+        )
 
     def _latest_scene_blueprint(self, scene_id: str) -> SceneBlueprint | None:
-        return self.session.execute(
-            select(SceneBlueprint)
-            .where(SceneBlueprint.scene_id == scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
-            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
-        ).scalars().first()
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id)
-
-    def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        return require_chapter(self.session, chapter_id)
+        return latest_scene_blueprint(self.session, scene_id)
 
 
 class NearFinalAcceptanceService:
@@ -600,7 +583,7 @@ class NearFinalAcceptanceService:
         actor_ref: str = "operator",
         execution_step_key: str = "near_final_acceptance:0",
     ) -> dict[str, Any]:
-        scene = self._require_scene(scene_id)
+        scene = require_scene(self.session, scene_id)
         prompt = self.prompt_builder.build(bundle["snapshot"], "near_final_acceptance_review")
         user_prompt = _acceptance_user_prompt(prompt["user_prompt"], source_content=source_content)
         # 2026-09-09 样例优先:验收评审拿到与 style_draft 相同的 [STYLE_REFERENCE] 前缀(同一冻结
@@ -714,7 +697,7 @@ class NearFinalAcceptanceService:
         *,
         execution_step_key: str = "chapter_near_final_review:0",
     ) -> dict[str, Any]:
-        chapter = self._require_chapter(chapter_id)
+        chapter = require_chapter(self.session, chapter_id)
         source = self._chapter_source(chapter)
         bundle = self._chapter_bundle(chapter, source)
         prompt = self.prompt_builder.build(bundle["snapshot"], "chapter_near_final_review")
@@ -1021,18 +1004,12 @@ class NearFinalAcceptanceService:
                 "chapter_summary": _compact_text(source.get("content") or ""),
             },
         }
-        snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        snapshot_hash = sha256_json_normalized(snapshot)
         return {
             "bundle_id": f"chapter_near_final_{chapter.chapter_id}_{uuid.uuid4().hex[:10]}",
             "bundle_snapshot_hash": snapshot_hash,
             "snapshot": snapshot,
         }
-
-    def _require_scene(self, scene_id: str) -> SceneCard:
-        return require_scene(self.session, scene_id)
-
-    def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        return require_chapter(self.session, chapter_id)
 
 
 def _planning_user_prompt(

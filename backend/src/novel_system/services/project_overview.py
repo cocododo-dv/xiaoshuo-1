@@ -25,6 +25,7 @@ from novel_system.services.catalog import CatalogService, focus_scene_payload
 from novel_system.services.projects import ProjectService
 from novel_system.services.snowflake_steps import list_step_definitions
 from novel_system.services.writing_stats import WritingStatsService, count_words
+from novel_system.services.snowflake_queries import latest_by_step, step_gate_satisfied
 
 _TAG_BREAK_RE = re.compile(r"</(?:p|div|h\d|li|blockquote)>|<br\s*/?>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -36,14 +37,6 @@ def _content_lines(content: str | None) -> list[str]:
     text = _TAG_BREAK_RE.sub("\n", content)
     text = _TAG_RE.sub("", text)
     return [line.strip() for line in text.splitlines() if line.strip()]
-
-
-def _gate_satisfied(run: SnowflakeStepRun | None) -> bool:
-    if run is None:
-        return False
-    if run.status in {"approved", "skipped"}:
-        return True
-    return run.status == "stale" and bool(run.stale_accepted_at)
 
 
 class ProjectOverviewService:
@@ -157,17 +150,7 @@ class ProjectOverviewService:
         return resume, dict(scene["brief"])
 
     def _latest_by_step(self, project_id: str) -> dict[str, SnowflakeStepRun]:
-        rows = self.session.execute(
-            select(SnowflakeStepRun)
-            .where(SnowflakeStepRun.project_id == project_id)
-            .order_by(SnowflakeStepRun.version.asc(), SnowflakeStepRun.created_at.asc())
-        ).scalars().all()
-        latest: dict[str, SnowflakeStepRun] = {}
-        for row in rows:
-            if row.status == "superseded":
-                continue
-            latest[row.step_key] = row
-        return latest
+        return latest_by_step(self.session, SnowflakeStepRun, project_id)
 
     def _snowflake_board(self, project_id: str) -> list[dict[str, Any]]:
         latest = self._latest_by_step(project_id)
@@ -175,7 +158,7 @@ class ProjectOverviewService:
             (
                 step["step_key"]
                 for step in list_step_definitions()
-                if not _gate_satisfied(latest.get(step["step_key"]))
+                if not step_gate_satisfied(latest.get(step["step_key"]))
             ),
             None,
         )

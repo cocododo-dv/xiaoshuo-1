@@ -25,7 +25,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.author_instructions import render_author_note_instruction
-from novel_system.services.hash_engine import canonical_json
+from novel_system.services.hash_engine import sha256_json_normalized, sha256_text
 from novel_system.services.literary_quality import (
     DIMENSION_WEIGHTS,
     analyze_literary_quality,
@@ -561,7 +561,7 @@ def versioned_scene_artifact_id(
     suffix = (
         bundle_hash[:12]
         if bundle_hash
-        else hashlib.sha256(canonical_json(bundle).encode("utf-8")).hexdigest()[:12]
+        else sha256_json_normalized(bundle)[:12]
     )
     return f"{prefix}_{scene_id}_{suffix}"
 
@@ -829,9 +829,7 @@ class SceneGenerationService:
                 rejected_result = (
                     original_result if repair_accepted else repaired_result
                 )
-                rejected_hash = hashlib.sha256(
-                    rejected_content.encode("utf-8")
-                ).hexdigest()[:10]
+                rejected_hash = sha256_text(rejected_content)[:10]
                 rejected_row_id = (
                     f"{neutral_row_id}_rejected_{rejected_hash}"
                 )
@@ -1671,7 +1669,7 @@ class SceneGenerationService:
         rejected_row_id: str | None = None
         delivered = style_content
         if not keep:
-            rejected_hash = hashlib.sha256(style_content.encode("utf-8")).hexdigest()[:10]
+            rejected_hash = sha256_text(style_content)[:10]
             rejected_row_id = f"{row_id}_rejected_{rejected_hash}"
             self.session.add(
                 SceneDraft(
@@ -2136,7 +2134,7 @@ class SceneGenerationService:
             content_source = style_step.CONTENT_SOURCE_TARGETED_REVISION
             revision_row_ref = row_id
         else:
-            rejected_hash = hashlib.sha256(revision_content.encode("utf-8")).hexdigest()[:10]
+            rejected_hash = sha256_text(revision_content)[:10]
             rejected_row_id = f"{row_id}_rejected_{rejected_hash}"
             self.session.add(
                 SceneDraft(
@@ -2683,9 +2681,7 @@ class SceneGenerationService:
             repair_source_row_id = row_id
             repair_source_content = style_content
             if stage == "style_draft" and not base_safety["accepted"]:
-                rejected_hash = hashlib.sha256(
-                    style_content.encode("utf-8")
-                ).hexdigest()[:10]
+                rejected_hash = sha256_text(style_content)[:10]
                 rejected_candidate_row_id = f"{row_id}_rejected_{rejected_hash}"
                 self.session.add(
                     SceneDraft(
@@ -4369,17 +4365,13 @@ def _constrain_style_length_patch_schema(
                 f"One of exactly {item_count} insertions; all insertions together "
                 f"must add {minimum_delta}-{maximum_delta} visible characters."
             )
-    prompt["prompt_hash"] = hashlib.sha256(
-        canonical_json(
-            {
+    prompt["prompt_hash"] = sha256_json_normalized({
                 "template_name": prompt.get("template_name"),
                 "template_version": prompt.get("template_version"),
                 "system_prompt": prompt.get("system_prompt"),
                 "user_prompt": prompt.get("user_prompt"),
                 "structured_schema": schema,
-            }
-        ).encode("utf-8")
-    ).hexdigest()
+            })
 
 
 def _constrain_style_salvage_schema(
@@ -4397,17 +4389,15 @@ def _constrain_style_salvage_schema(
         segment_schema["enum"] = list(editable_segment_ids)
     edits_schema["minItems"] = 1
     edits_schema["maxItems"] = 1
-    prompt["prompt_hash"] = hashlib.sha256(
-        canonical_json(
-            {
-                "template_name": prompt.get("template_name"),
-                "template_version": prompt.get("template_version"),
-                "system_prompt": prompt.get("system_prompt"),
-                "user_prompt": prompt.get("user_prompt"),
-                "structured_schema": schema,
-            }
-        ).encode("utf-8")
-    ).hexdigest()
+    prompt["prompt_hash"] = sha256_json_normalized(
+        {
+            "template_name": prompt.get("template_name"),
+            "template_version": prompt.get("template_version"),
+            "system_prompt": prompt.get("system_prompt"),
+            "user_prompt": prompt.get("user_prompt"),
+            "structured_schema": schema,
+        }
+    )
 
 
 _LITERAL_UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")

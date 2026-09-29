@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -10,6 +9,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ChapterRunJob, LlmCall, SceneRunState, utcnow
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import recover_incomplete_call
+from novel_system.services.hash_engine import sha256_json_plain, sha256_text
 
 
 RUN_CHECKPOINT_ORDER = (
@@ -1071,13 +1071,8 @@ class RunCheckpointContext:
 
     @staticmethod
     def _text_hash(content: str) -> str:
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return sha256_text(content)
 
     @staticmethod
     def _json_hash(payload: Any) -> str:
-        import json
-
-        encoded = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return sha256_json_plain(payload)

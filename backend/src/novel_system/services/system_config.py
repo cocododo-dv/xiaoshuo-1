@@ -54,6 +54,7 @@ from novel_system.services.llm_node_registry import (
     role_slot_node_ids,
 )
 from novel_system.services.prompt_builder import PromptConfigurationError, parse_prompt_templates
+from novel_system.services.value_coercion import optional_text
 
 
 CONFIG_CATEGORIES = ("api", "models", "prompts", "allowlists", "hash_contract")
@@ -214,7 +215,7 @@ def _provider_runtime_configs(payload, *, read_secret) -> dict[str, ProviderRunt
         runtime_configs[provider_id] = ProviderRuntimeConfig(
             provider_id=provider_id,
             provider_type=str(provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id),
-            account_id=_optional_text(provider_payload.get("account_id")),
+            account_id=optional_text(provider_payload.get("account_id")),
             base_url=_normalize_provider_base_url(
                 provider_payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(str(provider_payload.get("provider_type")), ""),
                 provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id,
@@ -387,7 +388,7 @@ class SystemConfigService:
         if not base_url:
             raise DomainError("CONFIG_PROVIDER_INVALID", "provider base_url is required", status_code=422)
 
-        provider_id = _optional_text(provider_payload.get("provider_id"))
+        provider_id = optional_text(provider_payload.get("provider_id"))
         default_credential_mode = "none" if provider_id and not provider_payload.get("api_key") else "api_key"
         credential_mode = str(provider_payload.get("credential_mode") or default_credential_mode)
         if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
@@ -740,7 +741,7 @@ class SystemConfigService:
         except ValueError as exc:
             raise DomainError("CONFIG_PROVIDER_INVALID", str(exc), status_code=422) from exc
         provider_id = provider["provider_id"]
-        api_key = _optional_text(payload.get("api_key"))
+        api_key = optional_text(payload.get("api_key"))
         llm_payload = self._current_api_llm_payload()
         providers = _provider_payloads_from_llm(llm_payload)
         providers[provider_id] = {key: value for key, value in provider.items() if key != "api_key"}
@@ -905,7 +906,7 @@ class SystemConfigService:
         overview = self.llm_overview()
         providers = overview["providers"]
         llm_payload = self._current_api_llm_payload()
-        provider_id = _optional_text(payload.get("provider_id")) or _optional_text(llm_payload.get("default_provider_id"))
+        provider_id = optional_text(payload.get("provider_id")) or optional_text(llm_payload.get("default_provider_id"))
         if provider_id is None:
             provider_id = next(iter(providers.keys()), None)
         if provider_id is None or provider_id not in providers:
@@ -919,7 +920,7 @@ class SystemConfigService:
                 status_code=422,
             )
         models = _normalize_provider_model_ids(provider.get("models") or [])
-        model = _optional_text(payload.get("model")) or (models[0] if models else None)
+        model = optional_text(payload.get("model")) or (models[0] if models else None)
         if not model:
             raise DomainError(
                 "CONFIG_ROUTE_MODEL_MISSING",
@@ -949,15 +950,15 @@ class SystemConfigService:
         pruned_stale_routes = _prune_retired_routes(config_payload)
         synced_node_ids: list[str] = []
         provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
-        account_id = _optional_text(provider.get("account_id"))
+        account_id = optional_text(provider.get("account_id"))
         api_mode = _provider_route_api_mode(provider_id, provider)
-        credential_mode = _optional_text(provider.get("credential_mode"))
+        credential_mode = optional_text(provider.get("credential_mode"))
         for node_id in active_llm_node_ids():
             route = overview["node_routes"].get(node_id) or {}
             needs_sync = (
                 not bool(route.get("configured"))
-                or not _optional_text(route.get("provider_id"))
-                or not _optional_text(route.get("model"))
+                or not optional_text(route.get("provider_id"))
+                or not optional_text(route.get("model"))
                 or route.get("ready") is not True
             )
             if not needs_sync:
@@ -1101,7 +1102,7 @@ class SystemConfigService:
                 raise DomainError("CONFIG_ROLE_SLOT_UNKNOWN", f"unknown role slot {slot_id}", status_code=422)
             if not isinstance(binding, dict):
                 raise DomainError("CONFIG_ROLE_ASSIGNMENT_INVALID", f"assignment for {slot_id} must be a mapping", status_code=422)
-            provider_id = _optional_text(binding.get("provider_id"))
+            provider_id = optional_text(binding.get("provider_id"))
             if not provider_id or provider_id not in providers:
                 raise DomainError(
                     "CONFIG_PROVIDER_NOT_FOUND",
@@ -1116,7 +1117,7 @@ class SystemConfigService:
                     status_code=422,
                 )
             models = _normalize_provider_model_ids(provider.get("models") or [])
-            model = _optional_text(binding.get("model")) or (models[0] if models else None)
+            model = optional_text(binding.get("model")) or (models[0] if models else None)
             if not model:
                 raise DomainError(
                     "CONFIG_ROUTE_MODEL_MISSING",
@@ -1131,9 +1132,9 @@ class SystemConfigService:
                 )
 
             provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
-            account_id = _optional_text(provider.get("account_id"))
+            account_id = optional_text(provider.get("account_id"))
             api_mode = _provider_route_api_mode(provider_id, provider)
-            credential_mode = _optional_text(provider.get("credential_mode"))
+            credential_mode = optional_text(provider.get("credential_mode"))
             slot_node_ids = role_slot_node_ids(slot.slot_id)
             for node_id in slot_node_ids:
                 node_routing[node_id] = default_task_config_payload(
@@ -1599,7 +1600,7 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "provider_id": provider_id,
         "provider_type": provider_type,
-        "account_id": _optional_text(payload.get("account_id")),
+        "account_id": optional_text(payload.get("account_id")),
         "base_url": base_url,
         "enabled": _bool_value(payload.get("enabled", True)),
         "credential_mode": credential_mode,
@@ -1672,8 +1673,8 @@ def _provider_view_ready(provider: dict[str, Any]) -> bool:
 
 def _route_readiness(route: dict[str, Any], providers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     status = str(route.get("status") or "active")
-    provider_id = _optional_text(route.get("provider_id"))
-    model = _optional_text(route.get("model"))
+    provider_id = optional_text(route.get("provider_id"))
+    model = optional_text(route.get("model"))
     configured = bool(route.get("configured") or provider_id or model)
     if status == "reserved" or route.get("requires_llm") is False:
         return {
@@ -1800,8 +1801,8 @@ def _role_slot_overview(node_routes: dict[str, dict[str, Any]]) -> list[dict[str
     for entry in role_slot_catalog():
         bindings = {
             (
-                _optional_text((node_routes.get(node_id) or {}).get("provider_id")),
-                _optional_text((node_routes.get(node_id) or {}).get("model")),
+                optional_text((node_routes.get(node_id) or {}).get("provider_id")),
+                optional_text((node_routes.get(node_id) or {}).get("model")),
             )
             for node_id in entry["node_ids"]
         }
@@ -1866,7 +1867,7 @@ def _parse_route_config_or_raise(config_payload: dict[str, Any]):
 def _provider_route_api_mode(provider_id: str, provider: dict[str, Any]) -> str:
     """把服务声明的 api_mode 展开到节点路由前先校验:老快照里的非法值会让路由解析
     在下游炸成 500,这里改为 422 并点名该服务。"""
-    api_mode = _optional_text(provider.get("api_mode")) or "responses"
+    api_mode = optional_text(provider.get("api_mode")) or "responses"
     if api_mode not in SUPPORTED_API_MODES:
         raise DomainError(
             "CONFIG_PROVIDER_INVALID",
@@ -1901,7 +1902,7 @@ def _validate_activating_node_route_bindings(
         if not _provider_view_ready(providers[provider_id]):
             not_ready_providers.append(f"{node_id}:{provider_id}")
         models = _normalize_provider_model_ids(providers[provider_id].get("models") or [])
-        if not _optional_text(task_config.model):
+        if not optional_text(task_config.model):
             missing_models.append(f"{node_id}:{provider_id}:missing_model")
         elif models and task_config.model not in models:
             missing_models.append(f"{node_id}:{provider_id}:{task_config.model}")
@@ -1931,12 +1932,6 @@ def _required_text(value: Any, field: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     raise ValueError(f"{field} is required")
-
-
-def _optional_text(value: Any) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
 
 
 def _coerce_api_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1996,13 +1991,13 @@ def _config_secret() -> str | None:
 
 
 def _requested_probe_model(payload: dict[str, Any]) -> str | None:
-    explicit_model = _optional_text(payload.get("model"))
+    explicit_model = optional_text(payload.get("model"))
     if explicit_model:
         return explicit_model
     models = payload.get("models")
     if isinstance(models, list):
         for model in models:
-            candidate = _optional_text(model)
+            candidate = optional_text(model)
             if candidate:
                 return candidate
     return None
@@ -2069,7 +2064,7 @@ def _extract_model_ids(response: httpx.Response) -> list[str]:
                 model_ids.append(normalized)
         elif isinstance(item, dict):
             for key in ("id", "name", "model"):
-                value = _optional_text(item.get(key))
+                value = optional_text(item.get(key))
                 if value:
                     normalized = _normalize_provider_model_id(value)
                     if normalized:

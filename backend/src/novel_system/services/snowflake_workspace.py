@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 from copy import deepcopy
 from typing import Any
@@ -80,10 +79,13 @@ from novel_system.services.snowflake_chaptering import (
     mint_chapter_row_uid,
     parse_outline_chapters,
 )
-from novel_system.services.snowflake_scene_order import positions_from_rows, renumber_scene_seq, sort_in_story_order
+from novel_system.services.snowflake_scene_order import live_scene_plans_in_story_order, positions_from_rows, renumber_scene_seq
 from novel_system.services.snowflake_triage import EXCLUDED_TRIAGE_STATUSES, excluded_scene_plan_ids, latest_triage_rows
 from novel_system.services.snowflake_direction_brief import DirectionBriefStore, delta_changed
 from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService, draft_has_content
+from novel_system.services.hash_engine import sha256_text
+from novel_system.services.value_coercion import coerce_string_list, int_or_default
+from novel_system.services.snowflake_queries import latest_by_step, latest_outline_plan, next_outline_plan_version, next_step_version
 
 STRUCTURED_GATE_STATUSES = set(GATE_STATUSES)
 SCENE_PATCH_FIELDS = {
@@ -281,7 +283,7 @@ class SnowflakeWorkspaceService:
             if direction_text:
                 direction_ref = {
                     "kind": direction_kind or "candidate",
-                    "sha": hashlib.sha256(direction_text.encode("utf-8")).hexdigest()[:16],
+                    "sha": sha256_text(direction_text)[:16],
                     "turn_id": direction_turn.turn_id if direction_turn is not None else None,
                     "candidate_index": direction_index,
                     "label": direction_label,
@@ -913,11 +915,11 @@ class SnowflakeWorkspaceService:
             row.recommended_status = recommended_status
             row.manual_status = manual_status
             row.effective_status = effective_status
-            row.score = _coerce_int(item.get("score"), diagnosis["score"])
-            row.missing_fields_json = _coerce_string_list(item.get("missing_fields")) or diagnosis["missing_fields"]
-            row.fix_steps_json = _coerce_string_list(item.get("fix_steps")) or diagnosis["fix_steps"]
+            row.score = int_or_default(item.get("score"), diagnosis["score"])
+            row.missing_fields_json = coerce_string_list(item.get("missing_fields")) or diagnosis["missing_fields"]
+            row.fix_steps_json = coerce_string_list(item.get("fix_steps")) or diagnosis["fix_steps"]
             row.repair_patch_json = _sanitize_scene_patch(item.get("repair_patch") or {})
-            row.pressure_flags_json = _coerce_string_list(item.get("pressure_flags")) or diagnosis["pressure_flags"]
+            row.pressure_flags_json = coerce_string_list(item.get("pressure_flags")) or diagnosis["pressure_flags"]
             row.notes = str(item.get("notes") or "").strip()
             # blocking = 这一场被排除在物化之外（该重写 / 待删）；阶段 N 起它不再阻断全书。
             row.blocking = 1 if effective_status in EXCLUDED_TRIAGE_STATUSES else 0
@@ -1699,17 +1701,7 @@ class SnowflakeWorkspaceService:
         return blockers
 
     def _latest_by_step(self, project_id: str) -> dict[str, SnowflakeStepRun]:
-        rows = self.session.execute(
-            select(SnowflakeStepRun)
-            .where(SnowflakeStepRun.project_id == project_id)
-            .order_by(SnowflakeStepRun.version.asc(), SnowflakeStepRun.created_at.asc())
-        ).scalars().all()
-        latest: dict[str, SnowflakeStepRun] = {}
-        for row in rows:
-            if row.status == "superseded":
-                continue
-            latest[row.step_key] = row
-        return latest
+        return latest_by_step(self.session, SnowflakeStepRun, project_id)
 
     def _input_refs(self, step_key: str, latest_by_step: dict[str, SnowflakeStepRun]) -> dict[str, Any]:
         step_index = STEP_ORDER[step_key]
@@ -1721,12 +1713,7 @@ class SnowflakeWorkspaceService:
         return refs
 
     def _next_step_version(self, project_id: str, step_key: str) -> int:
-        latest = self.session.execute(
-            select(SnowflakeStepRun.version)
-            .where(SnowflakeStepRun.project_id == project_id, SnowflakeStepRun.step_key == step_key)
-            .order_by(SnowflakeStepRun.version.desc())
-        ).scalar()
-        return int(latest or 0) + 1
+        return next_step_version(self.session, SnowflakeStepRun, project_id, step_key)
 
     def _latest_approved_step_run(
         self,
@@ -1747,19 +1734,10 @@ class SnowflakeWorkspaceService:
         ).scalars().first()
 
     def _next_plan_version(self, project_id: str) -> int:
-        latest = self.session.execute(
-            select(OutlinePlan.version)
-            .where(OutlinePlan.project_id == project_id)
-            .order_by(OutlinePlan.version.desc())
-        ).scalar()
-        return int(latest or 0) + 1
+        return next_outline_plan_version(self.session, project_id)
 
     def _latest_plan(self, project_id: str) -> OutlinePlan | None:
-        return self.session.execute(
-            select(OutlinePlan)
-            .where(OutlinePlan.project_id == project_id)
-            .order_by(OutlinePlan.version.desc(), OutlinePlan.created_at.desc())
-        ).scalars().first()
+        return latest_outline_plan(self.session, project_id)
 
     def _scene_plans(self, project_id: str) -> list[SnowflakeScenePlan]:
         """活跃场景计划，按**故事序**（09 场景列表的行序，见 ``snowflake_scene_order``）。
@@ -1769,13 +1747,7 @@ class SnowflakeWorkspaceService:
         草稿就是按它排的，曾经的 ``(chapter_id, scene_seq)`` 在分章之后会把场景表按章重新洗一遍，
         新浏览器水合到的 09 于是不是作者排的那张表，下一次保存再把乱序写回去。
         """
-        rows = self.session.execute(
-            select(SnowflakeScenePlan).where(
-                SnowflakeScenePlan.project_id == project_id,
-                SnowflakeScenePlan.removed_at.is_(None),
-            )
-        ).scalars().all()
-        return sort_in_story_order(self.session, project_id, rows)
+        return live_scene_plans_in_story_order(self.session, project_id)
 
     def _scene_board(self, project_id: str, *, scene_plans: list[SnowflakeScenePlan] | None = None) -> dict[str, Any]:
         scenes = [_scene_plan_payload(scene) for scene in (scene_plans if scene_plans is not None else self._scene_plans(project_id))]
@@ -2052,7 +2024,7 @@ class SnowflakeWorkspaceService:
             focus_scene_id=focus_scene_id,
             user_message=str(message or "").strip(),
             reply=str(result.get("reply") or "").strip(),
-            suggestions_json=_coerce_string_list(result.get("suggestions")),
+            suggestions_json=coerce_string_list(result.get("suggestions")),
             candidate_label=str(result.get("candidate_label") or "").strip() or None,
             candidate_patch_json=deepcopy(result.get("candidate_patch") or {}) or None,
             source=str(result.get("source") or "fallback").strip() or "fallback",
@@ -2528,7 +2500,7 @@ class SnowflakeWorkspaceService:
                 row.removed_at = None
                 row.removed_by = None
             row.chapter_seq = index
-            row.act = _coerce_int(item.get("act"), 1)
+            row.act = int_or_default(item.get("act"), 1)
             row.title = str(item.get("title") or "").strip()
             row.summary = str(item.get("summary") or "").strip()
             row.spine = str(item.get("spine") or "").strip()
@@ -2903,9 +2875,9 @@ class SnowflakeWorkspaceService:
             if not hasattr(scene, key):
                 continue
             if key in {"onstage_chars_json", "beats_json"}:
-                setattr(scene, key, _coerce_string_list(value))
+                setattr(scene, key, coerce_string_list(value))
             elif key == "scene_seq":
-                setattr(scene, key, _coerce_int(value, scene.scene_seq or 1))
+                setattr(scene, key, int_or_default(value, scene.scene_seq or 1))
             elif key == "scene_type":
                 scene_type = str(value or "").strip().lower()
                 setattr(scene, key, scene_type if scene_type in {"proactive", "reactive"} else "proactive")
@@ -3476,7 +3448,7 @@ def _scene_card_beats(scene_type: str, detail: dict[str, Any]) -> list[str]:
     v1 物化路也是它。hook 不进节拍：它已经单独落在 ``SceneCard.hook`` 与 brief 的
     ``next_scene_pull`` 上，resync 曾额外拼进去，正是「刚物化完就待同步」的来源。
     """
-    beats = _coerce_string_list(detail.get("beats_json"))
+    beats = coerce_string_list(detail.get("beats_json"))
     return beats or _beats_from_detail(scene_type, detail)
 
 
@@ -3513,14 +3485,6 @@ def _sanitize_scene_patch(payload: Any) -> dict[str, Any]:
     return patch
 
 
-def _coerce_string_list(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [item.strip() for item in value.splitlines() if item.strip()]
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
 def _coerce_triage_status(value: Any) -> str:
     # 阶段 N：cut（待删）是作者专用的裁定——原著「杀要杀得对：不真删，标记待删」；LLM 分诊只出 pass / maybe / rewrite。
     status = str(value or "").strip().lower()
@@ -3532,13 +3496,6 @@ def _step_display_label(step_key: str) -> str:
         return str(get_step_definition(step_key).get("label") or step_key)
     except KeyError:
         return step_key
-
-
-def _coerce_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _mint_row_uid() -> str:

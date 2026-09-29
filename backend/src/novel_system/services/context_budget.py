@@ -7,7 +7,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from novel_system.services.hash_engine import normalize
+from novel_system.services.hash_engine import normalize_string
 
 
 TOKEN_ESTIMATOR_VERSION = "cjk_aware_conservative_v1"
@@ -383,7 +383,7 @@ def estimate_tokens(text: str) -> int:
     provider's exact tokenizer.  Provider-reported usage remains authoritative
     for accounting after the request completes.
     """
-    normalized_text = _normalize_text(text)
+    normalized_text = normalize_string(text)
     if not normalized_text:
         return 0
     wide_count = sum(1 for char in normalized_text if _is_wide_token_char(char))
@@ -459,7 +459,7 @@ def _rendered_prompt_tokens(
 
 def _compress_style_observations(text: str) -> str:
     blocks = _split_blocks(text)
-    candidate = "\n\n".join(blocks[:3]) if blocks else _normalize_text(text)
+    candidate = "\n\n".join(blocks[:3]) if blocks else normalize_string(text)
     return _truncate_to_estimated_tokens(
         candidate,
         max_tokens=STYLE_OBSERVATION_COMPRESSED_TOKENS,
@@ -468,7 +468,7 @@ def _compress_style_observations(text: str) -> str:
 
 def _compress_voice_anchor(text: str) -> str:
     """保留声音锚的**尾部**（最靠近本场的节拍），并从句边界起头。"""
-    normalized = _normalize_text(text)
+    normalized = normalize_string(text)
     if not normalized or estimate_tokens(normalized) <= VOICE_ANCHOR_COMPRESSED_TOKENS:
         return normalized
     # 从尾部向前收，直到估算 token 落进上限。
@@ -486,13 +486,13 @@ def _compress_voice_anchor(text: str) -> str:
 def _compress_calibration_lines(text: str) -> str:
     blocks = _split_blocks(text)
     if len(blocks) <= 1:
-        return _normalize_text(text)
+        return normalize_string(text)
     return blocks[0]
 
 
 def _compress_continuity_digest(text: str) -> str:
     blocks = _split_blocks(text)
-    candidate = blocks[0] if blocks else _normalize_text(text)
+    candidate = blocks[0] if blocks else normalize_string(text)
     return _truncate_to_estimated_tokens(
         candidate,
         max_tokens=CONTINUITY_DIGEST_COMPRESSED_TOKENS,
@@ -538,23 +538,16 @@ def _first_text(inline_digests: Mapping[str, Any], digest_keys: tuple[str, ...])
     for digest_key in digest_keys:
         value = inline_digests.get(digest_key)
         if isinstance(value, str) and value.strip():
-            return _normalize_text(value)
+            return normalize_string(value)
     return None
 
 
-def _normalize_text(text: str) -> str:
-    normalized = normalize(text)
-    if not isinstance(normalized, str):
-        raise ValueError("text must normalize to a string")
-    return normalized
-
-
 def _split_blocks(text: str) -> list[str]:
-    return [block.strip() for block in _normalize_text(text).split("\n\n") if block.strip()]
+    return [block.strip() for block in normalize_string(text).split("\n\n") if block.strip()]
 
 
 def _apply_compressed_text(section: PromptSection, compressed_text: str) -> None:
-    if _normalize_text(compressed_text) == _normalize_text(section.text):
+    if normalize_string(compressed_text) == normalize_string(section.text):
         return
     section.compressed_text = compressed_text
     section.status = "compressed"
@@ -569,7 +562,7 @@ def _is_wide_token_char(char: str) -> bool:
 
 def _truncate_to_estimated_tokens(text: str, *, max_tokens: int) -> str:
     """Truncate mixed-language text without relying on whitespace tokenization."""
-    normalized = _normalize_text(text)
+    normalized = normalize_string(text)
     if not normalized or estimate_tokens(normalized) <= max_tokens:
         return normalized
 

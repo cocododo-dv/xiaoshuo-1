@@ -65,6 +65,7 @@ from novel_system.services.prompt_builder import (
 )
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
+from novel_system.services.scene_lookup import require_project_chapter
 
 ARCHITECTURE_FIELDS = (
     "chapter_promise",
@@ -126,14 +127,14 @@ class ChapterPlanService:
     # ---------- 章节蓝图（一等公民） ----------
 
     def get_architecture(self, project_id: str, chapter_id: str) -> dict[str, Any]:
-        self._require_chapter(project_id, chapter_id)
+        require_project_chapter(self.session, project_id, chapter_id)
         artifact = latest_chapter_architecture(self.session, chapter_id)
         return {"architecture": _serialize_architecture(artifact)}
 
     def generate_architecture(
         self, project_id: str, chapter_id: str, *, actor_ref: str = "operator"
     ) -> dict[str, Any]:
-        chapter = self._require_chapter(project_id, chapter_id)
+        chapter = require_project_chapter(self.session, project_id, chapter_id)
         require_chapter_mutation_allowed(
             self.session,
             chapter,
@@ -181,7 +182,7 @@ class ChapterPlanService:
         *,
         actor_ref: str = "operator",
     ) -> dict[str, Any]:
-        chapter = self._require_chapter(project_id, chapter_id)
+        chapter = require_project_chapter(self.session, project_id, chapter_id)
         require_chapter_mutation_allowed(
             self.session,
             chapter,
@@ -243,7 +244,7 @@ class ChapterPlanService:
     def candidates(
         self, project_id: str, chapter_id: str, body: dict[str, Any]
     ) -> dict[str, Any]:
-        self._require_chapter(project_id, chapter_id)
+        require_project_chapter(self.session, project_id, chapter_id)
         context = self._context_builder.build(project_id, chapter_id)
         if not self._llm_enabled():
             return {
@@ -275,7 +276,7 @@ class ChapterPlanService:
     # ---------- fill（收敛通道） ----------
 
     def fill(self, project_id: str, chapter_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        self._require_chapter(project_id, chapter_id)
+        require_project_chapter(self.session, project_id, chapter_id)
         context = self._context_builder.build(project_id, chapter_id)
         body = body or {}
         mode = str(body.get("mode") or "fill").strip().lower()
@@ -334,7 +335,7 @@ class ChapterPlanService:
     # ---------- review（体检通道） ----------
 
     def review(self, project_id: str, chapter_id: str) -> dict[str, Any]:
-        self._require_chapter(project_id, chapter_id)
+        require_project_chapter(self.session, project_id, chapter_id)
         context = self._context_builder.build(project_id, chapter_id)
         if not self._llm_enabled():
             return {
@@ -371,7 +372,7 @@ class ChapterPlanService:
         *,
         actor_ref: str = "operator",
     ) -> dict[str, Any]:
-        chapter = self._require_chapter(project_id, chapter_id)
+        chapter = require_project_chapter(self.session, project_id, chapter_id)
         scenes = self._catalog.scene_rows(chapter_id)
         patch, dropped = sanitize_plan_patch(
             scenes,
@@ -671,12 +672,6 @@ class ChapterPlanService:
         self.session.commit()
 
     # ---------- helpers ----------
-
-    def _require_chapter(self, project_id: str, chapter_id: str) -> ChapterGoal:
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None or chapter.project_id != project_id or chapter.trashed_flag:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found in project", status_code=404)
-        return chapter
 
 
 # ---------- 纯函数：补丁 sanitize 与输出归一 ----------
