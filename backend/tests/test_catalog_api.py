@@ -59,10 +59,8 @@ def test_patch_chapter_narrative_and_state(client):
             "title": "改名章",
             "state": "draft",
             "words_target": 4200,
-            "tension": 0.66,
-            "pov": "林岑",
+            "promise": "旧信要被打开",
             "drama": {"promise": "p", "spine": "s"},
-            "threads": [{"name": "盐钟", "role": "新引"}],
         },
     )
     assert response.status_code == 200, response.text
@@ -70,9 +68,17 @@ def test_patch_chapter_narrative_and_state(client):
     assert updated["title"] == "改名章"
     assert updated["state"] == "draft"
     assert updated["words"]["target"] == 4200
-    assert updated["tension"] == 0.66
+    assert updated["promise"] == "旧信要被打开"
     assert updated["drama"]["spine"] == "s"
-    assert updated["threads"][0]["name"] == "盐钟"
+    # 章级张力 / 视角 / 时间 / 地点 / 入口 / 出口 / 衔接 / 线索已退役（批准 #17a）：不再下发，写它们 422
+    retired = ("tension", "pov", "time_label", "place", "entry", "exit", "align", "threads")
+    assert not set(retired) & set(updated)
+    for key, value in (("tension", 0.66), ("pov", "林岑"), ("threads", [{"name": "盐钟"}])):
+        rejected = client.patch(
+            f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}",
+            json={key: value},
+        )
+        assert rejected.status_code == 422, (key, rejected.text)
 
     bad = client.patch(
         f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}",
@@ -147,7 +153,7 @@ def test_scene_crud_insert_and_kind_brief(client):
     assert patched["brief"]["decision"] == "撕掉信"
 
 
-def test_catalog_import_then_blocked_when_not_empty(client, monkeypatch):
+def test_catalog_import_then_blocked_when_not_empty(client, session, monkeypatch):
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     project = _create_project(client)
     pid = project["project_id"]
@@ -182,6 +188,9 @@ def test_catalog_import_then_blocked_when_not_empty(client, monkeypatch):
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     ch1 = tree["chapters"][0]
     assert ch1["words"]["cur"] == 3000  # 章级字数摊给场景后 rollup 不丢
+    # 旧目录里带着的退役章级字段（这里是 tension）不导进来
+    assert "tension" not in ch1
+    assert "tension" not in (session.get(ChapterGoal, ch1["chapter_id"]).narrative_json or {})
     assert ch1["scenes"][1]["kind"] == "reactive"
     assert tree["chapters"][1]["current"] is True
     dashboard = client.get(f"/api/v1/projects/{pid}/dashboard").json()["data"]

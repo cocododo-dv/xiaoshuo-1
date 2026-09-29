@@ -85,19 +85,12 @@ def import_catalog(session: Session, project_id: str, payload: dict[str, Any]) -
             state=state,
             words_target=int((item.get("words") or {}).get("target") or 0) or None,
             display_order=order,
+            # 章级的张力 / 视角 / 时间 / 地点 / 入口 / 出口 / 衔接 / 线索已退役（批准 #17a）：旧目录里带着也不导
             narrative_json={
                 "title": title,
                 "act": item.get("act"),
-                "tension": item.get("tension"),
-                "pov": item.get("pov"),
-                "time_label": item.get("time"),
-                "place": item.get("place"),
-                "entry": item.get("entry"),
-                "exit": item.get("exit"),
-                "align": item.get("align"),
                 "promise": item.get("promise"),
                 "drama": dict(item.get("drama") or {}),
-                "threads": list(item.get("threads") or []),
             },
             writer_brief_json={"source": "catalog_import", "title": title},
         )

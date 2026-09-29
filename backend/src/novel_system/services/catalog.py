@@ -84,20 +84,14 @@ from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-ex
 )
 from novel_system.services.scene_lookup import require_project, require_project_chapter
 
-# narrative_json 里由目录 API 维护的字段（形状抄 design/ws-catalog.jsx 章节对象）
+# narrative_json 里由目录 API 维护的字段。章级的张力 / 视角 / 时间 / 地点 / 入口 / 出口 / 衔接 / 线索（批准 #17a）
+# 没有任何地方能填、也没有程序写它们，不再读、不再写、不再下发——库里已有的旧值原样留着；
+# 章节编排里看到的视角、时间、地点、入口出口从各场读出来。
 NARRATIVE_FIELDS = (
     "title",
     "act",
-    "tension",
-    "pov",
-    "time_label",
-    "place",
-    "entry",
-    "exit",
-    "align",
     "promise",
     "drama",
-    "threads",
     "notes",
 )
 
