@@ -2,7 +2,7 @@ import React from "react";
 import { WsWorks, wsKey } from "./ws-works.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import {
-  s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds,
+  s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds, s2PovSettleEntry,
 } from "./ws-snow-model.js";
 import { emit, useWindowEvents as useSnowEvents } from "./lib/events.js";
 import { readyWorkId } from "./lib/ready-work.js";
@@ -99,10 +99,17 @@ export function useSnowMedia(query) {
 /* ---- 十步内容：本机缓存是写穿 SnowSync 的那一层 ----
    myKey 在挂载时冻结（作品切换时整张视图会按作品重挂），卸载时的落盘写回正确的作品。
    落盘 450ms 防抖，写完广播 ws:snow-saved——SnowSync 据此比对、上行。持久化的形状
-   {drafts, scaffolds, checks, states, history, _t} 由同步层读取，不能变。 */
+   {drafts, scaffolds, checks, states, history, _t} 由同步层读取，不能变。
+   读缓存（挂载、水合之后重读）时脚手架经 s2MergeScaffolds 归一：第 10 步 plan 里旧存的视角收归 09；
+   换了人的场在历史最前面记一条「视角统一到 09」（s2PovSettleEntry），不悄悄丢掉作者在旧版第 10 步挑过的视角。 */
+function readSnowCache(key) {
+  const s = s2Load(key);
+  const entry = s2PovSettleEntry(s.scaffolds, s.drafts);
+  return entry ? { ...s, history: [entry, ...(Array.isArray(s.history) ? s.history : [])] } : s;
+}
 export function useSnowDocument(myKey, workId) {
   const initialRef = useRef(null);
-  if (initialRef.current == null) initialRef.current = s2Load(myKey);
+  if (initialRef.current == null) initialRef.current = readSnowCache(myKey);
   const saved = initialRef.current;
   const [drafts, setDrafts] = useState(() => ({ ...s2DefaultDrafts(), ...(saved.drafts || {}) }));
   const [scaffolds, setScaffolds] = useState(() => s2MergeScaffolds(saved.scaffolds));
@@ -147,7 +154,7 @@ export function useSnowDocument(myKey, workId) {
     /* 后端水合（SnowSync）落盘后重读缓存，刷新本组件状态 */
     hydrated: (hydratedWorkId) => {
       if (!hydratedWorkId || myKey !== s2KeyFor(hydratedWorkId)) return;
-      const s = s2Load(myKey);
+      const s = readSnowCache(myKey);
       setDrafts({ ...s2DefaultDrafts(), ...(s.drafts || {}) });
       setScaffolds(s2MergeScaffolds(s.scaffolds));
       setChecks(s2MergeChecks(s.checks));

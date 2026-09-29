@@ -10,7 +10,7 @@ import { WS_SNOW_STEPS } from "./ws-nav.js";
 import {
   S2_BE_KEY, S2_BE_STEPS, S2_STEPS, S2_STEP_DATA,
   s2AdoptServerScaffold, s2Ancestors, s2BlankScaffolds, s2BlockedStep, s2FindStepKey, s2InferSpine, s2LandingStep, s2LineStats,
-  s2MergeScaffolds, s2NormalizeState, s2PacingRuns, s2PlanAuto, s2PlanSlots, s2PlanState, s2PreserveFeOnly,
+  s2MergeScaffolds, s2NormalizeState, s2PacingRuns, s2PlanAuto, s2PlanPovChanges, s2PlanSlots, s2PlanState, s2PovSettleEntry, s2PreserveFeOnly,
   S2_DEFAULT_LINES, s2ReorderScenes, s2SceneAuto, s2SceneLines, s2SceneListStats, s2SettlePlanning, s2StaleMap, s2UpstreamDrift,
 } from "./ws-snow-model.js";
 
@@ -193,6 +193,35 @@ describe("缓存归一与服务端脚手架的落地（F02-01 / F02-02）", () =
     const clean = { scenes: sc.scenes, planning: { sel: "S01", plans: { S01: { goal: "g" } } } };
     expect(s2SettlePlanning(clean)).toBe(clean);
     expect(s2SettlePlanning(null)).toBeNull();
+  });
+
+  it("s2PlanPovChanges / s2PovSettleEntry（Q2-03）：换了人的视角按 09 的行序列出、写进一条历史；与 09 相同的不算；挪进 09 的附 09 的快照", () => {
+    const sc = {
+      characters: { sel: "c1", chars: { c1: { name: "林昭" }, c2: { name: "许言" } } },
+      scenes: scenes([
+        { id: "S01", type: "proactive", pov: "c1" },
+        { id: "row_0123456789abcdef", type: "reactive", pov: "" },
+        { id: "S03", type: "proactive", pov: "c1" },
+      ]),
+      planning: { sel: "S01", plans: { S01: { pov: "c2", goal: "g" }, row_0123456789abcdef: { pov: "c2" }, S03: { pov: "c1" }, S09: { pov: "c2" } } },
+    };
+    expect(s2PlanPovChanges(sc)).toEqual([
+      { id: "S01", index: 0, planPov: "c2", rowPov: "c1" },
+      { id: "row_0123456789abcdef", index: 1, planPov: "c2", rowPov: "" },
+    ]);
+    const entry = s2PovSettleEntry(sc, { scenes: "" }, 7);
+    expect(entry).toMatchObject({ t: 7, who: "系统", action: "视角统一到 09", key: "scenes" });
+    expect(entry.note).toBe("视角只在 09 场景列表里定：S01 第 10 步记的是「许言」，按 09 的「林昭」；S02 09 没填，用第 10 步的「许言」");
+    // 快照是 09 挪之前的样子：回滚 09 就回到没填视角
+    expect(entry.snap.scaffold.list.map(r => r.pov)).toEqual(["c1", "", "c1"]);
+    expect(entry.snap.scaffold.lines).toEqual([]);
+    // 只有丢掉、没有挪进去的：不附快照（09 没有变）
+    const dropped = { ...sc, planning: { plans: { S01: { pov: "c2" } } } };
+    expect(s2PovSettleEntry(dropped, {}, 1).snap).toBeNull();
+    // 与 09 相同 / 没有视角 / 没有 09：没有换人的场
+    expect(s2PovSettleEntry({ ...sc, planning: { plans: { S01: { pov: "c1" }, S03: { goal: "g" } } } })).toBeNull();
+    expect(s2PlanPovChanges({ planning: { plans: { S01: { pov: "c2" } } } })).toEqual([]);
+    expect(s2PlanPovChanges(null)).toEqual([]);
   });
 
   it("s2MergeScaffolds：缺的步骤补空白；第 10 步没选中时落在第一份规划上，并经 s2SettlePlanning 归一", () => {

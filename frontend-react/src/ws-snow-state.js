@@ -1,12 +1,13 @@
 /* ==========================================================
-   雪花十步 · 空白脚手架与缓存归一（叶子模块：只 import 步骤文案 ws-snow-guide.js）
+   雪花十步 · 空白脚手架与缓存归一（叶子模块：只 import 同层的步骤文案 ws-snow-guide.js 与纯推导 ws-snow-derive.js）
    ----------------------------------------------------------
-   新作品的空白十步、本机缓存读入时的归一（缺的键补齐、第 10 步 plan 摘掉形态 / 视角），
+   新作品的空白十步、本机缓存读入时的归一（缺的键补齐、第 10 步 plan 摘掉形态 / 视角，换了人的视角记进历史），
    以及服务端整步脚手架落进视图状态时保住只活在前端的内容。视图与同步层共用这一条边界。
    从 ws-snow-model.js 拆出（2026-09-29）；ws-snow-model.js 原样转出这里的全部名字。
    ========================================================== */
 
 import { S2_STEPS, S2_STEP_DATA } from "./ws-snow-guide.js";
+import { s2PovLabel, s2RosterList, s2SceneNo } from "./ws-snow-derive.js";
 
 /* ---- 空白脚手架与缓存归一（视图与同步层共用的一条边界） ---- */
 /* 所有作品（含新建）从空白十步开始 */
@@ -66,6 +67,43 @@ export function s2SettlePlanning(scaffolds) {
   const out = { ...scaffolds, planning: { ...planning, plans: nextPlans } };
   if (nextList.some((s, i) => s !== list[i])) out.scenes = { ...scenes, list: nextList };
   return out;
+}
+
+/* s2SettlePlanning 会让哪几场的视角换了人：plan 里记着视角，09 那一行却记的是另一个人（plan 的被丢掉），
+   或者 09 那一行没填（plan 的挪进去）。按 09 的行序返回 [{ id, index, planPov, rowPov }]，rowPov 为空 = 挪进 09。
+   与 09 相同的旧值（旧版第 10 步把渲染时的默认值冻进了 plan）不算。 */
+export function s2PlanPovChanges(scaffolds) {
+  const plans = ((scaffolds && scaffolds.planning) || {}).plans || {};
+  const list = ((scaffolds && scaffolds.scenes) || {}).list;
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  list.forEach((s, index) => {
+    const p = s && plans[s.id];
+    const planPov = (p && typeof p === "object" && p.pov) ? String(p.pov) : "";
+    const rowPov = (s && s.pov) ? String(s.pov) : "";
+    if (planPov && planPov !== rowPov) out.push({ id: s.id, index, planPov, rowPov });
+  });
+  return out;
+}
+
+/* 读缓存时 plan 里旧存的视角收归 09（F02-01），换了人的那几场不能悄悄没了：给历史一条「视角统一到 09」，
+   写明每一场第 10 步原来记的是谁、现在按谁。有 09 原来没填、从第 10 步挪进去的，附一份 09 挪之前的快照——
+   不想要就在「历史」里回滚 09。scaffolds 是归一之前的样子（读进来的缓存）；没有换人的场时返回 null。 */
+export function s2PovSettleEntry(scaffolds, drafts, t) {
+  const changes = s2PlanPovChanges(scaffolds);
+  if (!changes.length) return null;
+  const roster = s2RosterList(scaffolds);
+  const name = (pov) => s2PovLabel(pov, roster);
+  const parts = changes.map(c => {
+    const no = s2SceneNo(c.id, c.index);
+    return c.rowPov ? `${no} 第 10 步记的是「${name(c.planPov)}」，按 09 的「${name(c.rowPov)}」` : `${no} 09 没填，用第 10 步的「${name(c.planPov)}」`;
+  });
+  const shown = parts.slice(0, 6).join("；") + (parts.length > 6 ? `；另有 ${parts.length - 6} 场` : "");
+  let snap = null;
+  if (changes.some(c => !c.rowPov)) {
+    try { snap = JSON.parse(JSON.stringify({ draft: (drafts && drafts.scenes) || "", scaffold: { ...s2BlankScaffolds().scenes, ...scaffolds.scenes } })); } catch (e) { snap = null; }
+  }
+  return { t: t || Date.now(), who: "系统", action: "视角统一到 09", note: `视角只在 09 场景列表里定：${shown}`, key: "scenes", snap };
 }
 
 /* 只活在前端脚手架里的内容（F02-02）：09 的线索（lines，含每条线的「折射道德前提」）、每场挂在哪条线上

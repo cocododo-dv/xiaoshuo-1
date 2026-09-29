@@ -660,6 +660,45 @@ describe("阶段 M · 09/10 交互", () => {
     expect(host.querySelector('[data-testid="snow-plan-pov"]')).toBeNull();
   });
 
+  it("Q2-03：读缓存时收归 09 的视角换了人——历史里记一条「视角统一到 09」写明原来是谁、现在按谁；挪进 09 的可回滚；只记一次", async () => {
+    const seeded = threeScenes();
+    seeded.scaffolds.characters.chars.c2 = { name: "沈砚", role: "反派", goal: "", ambition: "", values: "", conflict: "", epiphany: "" };
+    seeded.scaffolds.scenes.list[1] = { ...seeded.scaffolds.scenes.list[1], pov: "" };
+    seeded.scaffolds.planning.plans.S01 = { pov: "c2", goal: "拿到账本" };      // 旧版第 10 步挑过别人：按 09 的林岑
+    seeded.scaffolds.planning.plans.S02 = { pov: "c2", reaction: "崩了一下" };   // 09 没填：挪进 09
+    seeded.scaffolds.planning.plans.S03 = { pov: "c1", goal: "找证人" };        // 与 09 相同：冻住的默认值，不算
+    window.localStorage.setItem(CACHE, JSON.stringify(seeded));
+    const openHistory = async (host) => {
+      const tab = [...host.querySelectorAll('[role="tab"]')].find(b => b.textContent.includes("历史"));
+      await act(async () => tab.click());
+      return [...host.querySelectorAll(".hist-row")].filter(r => r.textContent.includes("视角统一到 09"));
+    };
+    let host = await renderAt("planning");
+    const rows = await openHistory(host);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("S01 第 10 步记的是「沈砚」，按 09 的「林岑」");
+    expect(rows[0].textContent).toContain("S02 09 没填，用第 10 步的「沈砚」");
+    expect(rows[0].textContent).not.toContain("S03");
+
+    // 落盘之后再打开：plan 里已经没有视角可收，不再记第二条
+    await act(async () => { await new Promise(r => setTimeout(r, 500)); });
+    const first = mounted.pop();
+    await act(async () => first.root.unmount());
+    first.host.remove();
+    host = await renderAt("planning");
+    const again = await openHistory(host);
+    expect(again).toHaveLength(1);
+
+    // 挪进 09 的那一场可以回滚：09 回到没填视角
+    await act(async () => again[0].querySelector(".hist-restore").click());
+    const apply = [...document.querySelectorAll(".ws-dialog-foot button")].find(b => b.textContent.includes("确认回滚"));
+    await act(async () => apply.click());
+    await act(async () => { await new Promise(r => setTimeout(r, 500)); });
+    const cache = JSON.parse(window.localStorage.getItem(CACHE));
+    expect(cache.scaffolds.scenes.list.map(r => r.pov)).toEqual(["c1", "", "c1"]);
+    expect(cache.scaffolds.planning.plans.S02).toEqual({ reaction: "崩了一下" });
+  });
+
   it("Q2-01：确认被服务端以「前面的步骤没确认」拒绝时，回执点名是哪一步、给一扇去那一步的门；本地不标已确认、不跳步", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
     const blocked = Object.assign(new Error("需要先确认前面的雪花步骤。"), {
