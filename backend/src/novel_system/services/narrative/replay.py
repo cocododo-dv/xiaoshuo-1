@@ -176,7 +176,7 @@ class NarrativeEventStore:
         if before_scene_id is not None and up_to_scene_id is not None:
             raise DomainError(
                 "NARRATIVE_CURSOR_CONFLICT",
-                "use exactly one narrative boundary",
+                "叙事边界只能给一个：这一场之前，或截到这一场",
                 status_code=400,
             )
         statement = self.positions.event_statement(project_id).where(
@@ -241,7 +241,7 @@ class NarrativeEventStore:
         if cursor.chapter_id != chapter_id:
             raise DomainError(
                 "NARRATIVE_EVENT_CHAPTER_MISMATCH",
-                f"scene '{scene_id}' belongs to chapter '{cursor.chapter_id}', not '{chapter_id}'",
+                f"场景 {scene_id} 属于章 {cursor.chapter_id}，不是 {chapter_id}",
                 status_code=409,
             )
         event = NarrativeEvent(

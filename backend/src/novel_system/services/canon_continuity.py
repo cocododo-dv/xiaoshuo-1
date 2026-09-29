@@ -148,7 +148,7 @@ class CanonContinuityService:
                 }
             raise DomainError(
                 "CANON_SCENE_ALREADY_COMMITTED",
-                "a completed scene cannot be restaged with different extraction evidence",
+                "这一场的正史已经核对完成，不能再换一份抽取结果重新暂存",
                 status_code=409,
                 details={"final_scene_row_id": final.row_id},
             )
@@ -165,7 +165,7 @@ class CanonContinuityService:
             ):
                 raise DomainError(
                     "CANON_STAGED_EVENT_MISMATCH",
-                    "staged narrative event does not belong to the archived final scene",
+                    "暂存的事件不属于这一场归档的终稿",
                     status_code=409,
                     details={"event_id": str(event_id), "final_scene_row_id": final.row_id},
                 )
@@ -184,7 +184,7 @@ class CanonContinuityService:
             else:
                 raise DomainError(
                     "CANON_CANDIDATE_EVENT_CONFLICT",
-                    "a superseded fact candidate cannot be restaged",
+                    "已被新版本替换的候选不能重新暂存",
                     status_code=409,
                     details={"candidate_id": candidate.candidate_id},
                 )
@@ -263,7 +263,7 @@ class CanonContinuityService:
         if not get_settings().llm_enabled:
             raise DomainError(
                 "LLM_DISABLED_FOR_CANON_EXTRACTION",
-                "enable a live model before requesting continuity fact extraction",
+                "还没有接入可用的模型，不能提取正史事实：先到系统设置里配置模型",
                 status_code=409,
                 details={"scene_id": scene_id, "retryable": False},
             )
@@ -335,13 +335,13 @@ class CanonContinuityService:
         if self.scene_status(project_id, scene_id)["complete"]:
             raise DomainError(
                 "CANON_SCENE_ALREADY_COMMITTED",
-                "a completed scene is immutable; create or reopen a new final revision first",
+                "这一场的正史已经核对完成，不能再添加候选；要改先让终稿出新版本",
                 status_code=409,
                 details={"final_scene_row_id": final.row_id},
             )
         self._supersede_stale_current_revision(final)
         if event_type not in EVENT_TYPES:
-            raise DomainError("CANON_EVENT_TYPE_INVALID", "unsupported narrative event type", status_code=400)
+            raise DomainError("CANON_EVENT_TYPE_INVALID", "不支持这种事实类型", status_code=400)
         clean_entity = str(raw_entity_ref or "").strip()
         clean_key = str(fact_key or "").strip()
         clean_value = str(fact_value or "").strip()
@@ -349,23 +349,23 @@ class CanonContinuityService:
         if not all((clean_entity, clean_key, clean_value, clean_evidence)):
             raise DomainError(
                 "CANON_MANUAL_FACT_INCOMPLETE",
-                "entity, fact key, fact value, and evidence are required",
+                "人物 / 实体、事实、取值和原文证据都要填",
                 status_code=400,
             )
         evidence_start = final.content.find(clean_evidence)
         if evidence_start < 0:
             raise DomainError(
                 "CANON_EVIDENCE_NOT_IN_FINAL",
-                "manual fact evidence must be an exact excerpt from the current final scene",
+                "原文证据必须是当前终稿里一字不差的一段",
                 status_code=409,
             )
         resolved_type = entity_type or entity_type_for_event(event_type)
         if resolved_type not in ENTITY_TYPES:
-            raise DomainError("CANON_ENTITY_TYPE_INVALID", "unsupported entity type", status_code=400)
+            raise DomainError("CANON_ENTITY_TYPE_INVALID", "不支持这种实体类型", status_code=400)
         if planned_timeline_event_id:
             timeline = self.session.get(TimelineEvent, planned_timeline_event_id)
             if timeline is None or timeline.project_id != project_id:
-                raise DomainError("CANON_TIMELINE_EVENT_NOT_FOUND", "timeline event not found", status_code=404)
+                raise DomainError("CANON_TIMELINE_EVENT_NOT_FOUND", "找不到这个计划时间线事件", status_code=404)
 
         resolution = self._resolve_entity(project_id, resolved_type, clean_entity)
         candidate = FactCandidate(
@@ -420,18 +420,18 @@ class CanonContinuityService:
         expected_final_scene_row_id: str | None = None,
     ) -> dict[str, Any]:
         if action not in {"accept", "reject"}:
-            raise DomainError("CANON_DECISION_INVALID", "action must be accept or reject", status_code=400)
+            raise DomainError("CANON_DECISION_INVALID", "只能采纳或拒绝", status_code=400)
         candidate = self.session.get(FactCandidate, candidate_id)
         if candidate is None or candidate.project_id != project_id:
-            raise DomainError("CANON_CANDIDATE_NOT_FOUND", "fact candidate not found", status_code=404)
+            raise DomainError("CANON_CANDIDATE_NOT_FOUND", "找不到这条候选事实", status_code=404)
         final, _scene, owned_project_id, state = self._final_context(candidate.final_scene_row_id)
         if owned_project_id != project_id:
-            raise DomainError("CANON_CANDIDATE_NOT_FOUND", "fact candidate not found", status_code=404)
+            raise DomainError("CANON_CANDIDATE_NOT_FOUND", "找不到这条候选事实", status_code=404)
         self._require_current_final(state, final)
         if expected_final_scene_row_id and expected_final_scene_row_id != final.row_id:
             raise DomainError(
                 "CANON_FINAL_SCENE_CONFLICT",
-                "the final scene changed while the fact candidate was being reviewed",
+                "核对期间这一场的终稿换了新版本，请刷新后重新核对",
                 status_code=409,
                 details={
                     "expected_final_scene_row_id": expected_final_scene_row_id,
@@ -449,7 +449,7 @@ class CanonContinuityService:
         if candidate.status != "pending":
             raise DomainError(
                 "CANON_CANDIDATE_ALREADY_DECIDED",
-                "fact candidate already has a different terminal decision",
+                "这条候选已经有了另一个决定",
                 status_code=409,
             )
 
@@ -469,7 +469,7 @@ class CanonContinuityService:
             ):
                 raise DomainError(
                     "CANON_EVIDENCE_NOT_IN_FINAL",
-                    "a fact candidate cannot enter canon without an exact excerpt from the current final scene",
+                    "这条候选的原文证据在当前终稿里找不到原句，不能采纳进正史",
                     status_code=409,
                     details={
                         "candidate_id": candidate.candidate_id,
@@ -587,7 +587,7 @@ class CanonContinuityService:
         if expected_final_scene_row_id and expected_final_scene_row_id != final.row_id:
             raise DomainError(
                 "CANON_FINAL_SCENE_CONFLICT",
-                "the final scene changed before continuity verification",
+                "确认之前这一场的终稿换了新版本，请刷新后重新核对",
                 status_code=409,
             )
         self._supersede_stale_current_revision(final)
@@ -595,7 +595,7 @@ class CanonContinuityService:
         if pending_count:
             raise DomainError(
                 "CANON_CANDIDATES_PENDING",
-                "all fact candidates must be accepted or rejected before verification",
+                "还有候选没有采纳或拒绝，全部处理完才能确认本场正史",
                 status_code=409,
                 details={"pending_count": pending_count},
             )
@@ -603,7 +603,7 @@ class CanonContinuityService:
         if not clean_note:
             raise DomainError(
                 "CANON_VERIFICATION_NOTE_REQUIRED",
-                "scene verification requires an author audit note",
+                "确认本场正史需要写一句核对说明",
                 status_code=400,
             )
         # Verification of a replacement revision atomically retires the prior
@@ -671,7 +671,7 @@ class CanonContinuityService:
         if not source_final_scene_row_id or source_final_scene_row_id == final.row_id:
             raise DomainError(
                 "CANON_CARRY_SOURCE_REQUIRED",
-                "facts_unchanged requires a distinct previously committed final scene",
+                "「事实不变」要指定之前另一版已经核对过的终稿",
                 status_code=409,
                 details={
                     "final_scene_row_id": final.row_id,
@@ -699,7 +699,7 @@ class CanonContinuityService:
         ):
             raise DomainError(
                 "CANON_CARRY_SOURCE_NOT_COMMITTED",
-                "facts cannot be carried from a final scene without a complete, hash-matched canon commit",
+                "来源那一版终稿的正史没有完整核对（或正文后来变了），不能沿用它的事实",
                 status_code=409,
                 details={
                     "scene_id": scene.scene_id,
@@ -931,7 +931,7 @@ class CanonContinuityService:
     def chapter_status(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         chapter = self.session.get(ChapterGoal, chapter_id)
         if chapter is None or chapter.project_id != project_id or chapter.trashed_flag:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+            raise DomainError("CHAPTER_NOT_FOUND", "找不到这一章", status_code=404)
         items = self._scene_status_payloads(project_id, self._chapter_scene_rows(chapter_id))
         missing = [item["scene_id"] for item in items if item["status"] == "missing_final"]
         pending = [
@@ -959,7 +959,7 @@ class CanonContinuityService:
         if not status["complete"]:
             raise DomainError(
                 "CHAPTER_CANON_NOT_COMMITTED",
-                "every final scene must complete continuity review before chapter publication",
+                "这一章还有场的正史没有核对完成，全部核对完才能定稿",
                 status_code=409,
                 details=status,
             )
@@ -1130,7 +1130,7 @@ class CanonContinuityService:
             if existing.final_scene_row_id != final.row_id:
                 raise DomainError(
                     "CANON_CANDIDATE_EVENT_CONFLICT",
-                    "staged event is already bound to another final scene",
+                    "这条暂存事件已经绑定在另一版终稿上",
                     status_code=409,
                 )
             return existing
@@ -1232,7 +1232,7 @@ class CanonContinuityService:
             ):
                 raise DomainError(
                     "CANON_ENTITY_SELECTION_INVALID",
-                    "selected entity does not belong to this project",
+                    "选的人物 / 实体不属于这部作品",
                     status_code=409,
                 )
             if (
@@ -1241,7 +1241,7 @@ class CanonContinuityService:
             ):
                 raise DomainError(
                     "CANON_ENTITY_SELECTION_INVALID",
-                    "selected entity is not one of the candidate matches",
+                    "选的人物 / 实体不在这条候选的匹配里",
                     status_code=409,
                 )
             return selected_entity_id
@@ -1252,7 +1252,7 @@ class CanonContinuityService:
             return candidate.resolved_entity_id
         raise DomainError(
             "CANON_ENTITY_RESOLUTION_REQUIRED",
-            "an ambiguous or unresolved fact candidate needs an explicit entity selection",
+            "这条候选指的是谁还不确定，请先选定人物 / 实体",
             status_code=409,
             details={"entity_candidates": list(candidate.entity_candidates_json or [])},
         )
@@ -1435,10 +1435,10 @@ class CanonContinuityService:
     ) -> tuple[FinalScene, SceneCard, str, SceneRunState]:
         final = self.session.get(FinalScene, final_scene_row_id)
         if final is None:
-            raise DomainError("FINAL_SCENE_NOT_FOUND", "final scene not found", status_code=404)
+            raise DomainError("FINAL_SCENE_NOT_FOUND", "找不到这一版终稿", status_code=404)
         scene = self.session.get(SceneCard, final.scene_id)
         if scene is None or scene.chapter_id != final.chapter_id:
-            raise DomainError("CANON_SCENE_IDENTITY_INVALID", "final scene identity is invalid", status_code=409)
+            raise DomainError("CANON_SCENE_IDENTITY_INVALID", "终稿与场景对不上", status_code=409)
         project_id = self._scene_project_id(scene)
         return final, scene, project_id, self._require_state(scene.scene_id)
 
@@ -1459,7 +1459,7 @@ class CanonContinuityService:
             else None
         )
         if require_final and final is None:
-            raise DomainError("FINAL_SCENE_NOT_FOUND", "current final scene not found", status_code=404)
+            raise DomainError("FINAL_SCENE_NOT_FOUND", "这一场还没有当前终稿", status_code=404)
         return final, scene, project_id, state
 
     def _scene_project_id(self, scene: SceneCard) -> str:
@@ -1467,13 +1467,13 @@ class CanonContinuityService:
             return scene.project_id
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
         if chapter is None or not chapter.project_id:
-            raise DomainError("SCENE_PROJECT_REQUIRED", "scene has no project owner", status_code=409)
+            raise DomainError("SCENE_PROJECT_REQUIRED", "这一场没有所属作品", status_code=409)
         return chapter.project_id
 
     def _require_state(self, scene_id: str) -> SceneRunState:
         state = self.session.get(SceneRunState, scene_id)
         if state is None:
-            raise DomainError("SCENE_STATE_NOT_FOUND", "scene runtime state not found", status_code=409)
+            raise DomainError("SCENE_STATE_NOT_FOUND", "这一场还没有运行状态", status_code=409)
         return state
 
     @staticmethod
@@ -1481,7 +1481,7 @@ class CanonContinuityService:
         if state.current_final_scene_row_id != final.row_id:
             raise DomainError(
                 "CANON_FINAL_SCENE_CONFLICT",
-                "canon operation targets a superseded final scene",
+                "操作的是已被替换的旧版终稿，请刷新后重试",
                 status_code=409,
                 details={
                     "target_final_scene_row_id": final.row_id,
@@ -1715,7 +1715,7 @@ class CanonContinuityService:
             if commit is None or commit.status != "active":
                 raise DomainError(
                     "CANON_TIMELINE_COMMIT_INVALID",
-                    "an accepted timeline candidate has no active canon commit",
+                    "已采纳的时间线候选没有有效的正史提交",
                     status_code=409,
                     details={"candidate_id": candidate.candidate_id},
                 )
@@ -1753,7 +1753,7 @@ class CanonContinuityService:
             ):
                 raise DomainError(
                     "CANON_ACCEPTED_EVENT_INVALID",
-                    "an accepted fact candidate has no valid event and hash-matched audit commit",
+                    "已采纳的候选缺少有效的事件或与终稿对得上的提交",
                     status_code=409,
                     details={"candidate_id": candidate.candidate_id},
                 )
@@ -1770,7 +1770,7 @@ class CanonContinuityService:
     ) -> None:
         timeline = self.session.get(TimelineEvent, timeline_event_id)
         if timeline is None or timeline.project_id != project_id:
-            raise DomainError("CANON_TIMELINE_EVENT_NOT_FOUND", "timeline event not found", status_code=404)
+            raise DomainError("CANON_TIMELINE_EVENT_NOT_FOUND", "找不到这个计划时间线事件", status_code=404)
         timeline.realization_status = "realized"
         timeline.realized_canon_commit_id = commit_id
         timeline.realized_scene_id = scene_id
@@ -1898,4 +1898,4 @@ class CanonContinuityService:
 
     @staticmethod
     def _scene_not_found() -> DomainError:
-        return DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        return DomainError("SCENE_NOT_FOUND", "找不到这一场", status_code=404)
