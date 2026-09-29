@@ -1665,7 +1665,7 @@ def test_ordinary_de_template_requires_actionable_target_defect_reduction(
         "findings": [{"dimension": "model_voice"}],
     }
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: unchanged_gate,
     )
 

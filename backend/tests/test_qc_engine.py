@@ -289,7 +289,7 @@ def _allow_legacy_neutral_required_fact_gap(monkeypatch: pytest.MonkeyPatch) -> 
             return {**result, "accepted": True, "reasons": []}
         return result
 
-    monkeypatch.setattr(scene_generation_module, "_assess_neutral_draft", assess)
+    monkeypatch.setattr(scene_generation_module.text_gates, "_assess_neutral_draft", assess)
 
 
 def _base_qc_payload(*, resolution_code: str, next_action: str, issues: list[dict] | None = None) -> dict:

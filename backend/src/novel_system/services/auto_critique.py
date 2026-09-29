@@ -29,9 +29,9 @@ from novel_system.services.llm_audit import sanitize_audit_summary
 
 logger = logging.getLogger(__name__)
 
-from novel_system.services.literary_quality import (
-    analyze_literary_quality,
-)
+# 同一份稿子在一次运行里会被规则批判两遍（编排器先跑一遍，llm_auto_critique 里再合一遍），也被去模板门分析过：
+# 走按正文记忆的分析，只算一次。
+from novel_system.services.literary_signals import rule_analysis
 from novel_system.services.hash_engine import sha256_json_plain
 
 CRITIQUE_THRESHOLD = 0.3
@@ -211,7 +211,7 @@ def auto_critique(
             reason="skip_critique" if skip_critique else "empty_text",
         )
 
-    signals, _ = analyze_literary_quality(text)
+    signals, _ = rule_analysis(text)
 
     dimension_scores: dict[str, float] = {}
     flagged: list[str] = []

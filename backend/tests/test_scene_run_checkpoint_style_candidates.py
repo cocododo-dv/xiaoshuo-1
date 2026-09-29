@@ -36,7 +36,7 @@ from tests.support.checkpoint_fakes import (
 def test_de_template_selected_soft_input_resumes_from_sub0(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -78,7 +78,7 @@ def test_de_template_selected_soft_input_resumes_from_sub0(session, monkeypatch)
 def test_style_base_checkpoint_resumes_only_de_template_after_interruption(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -163,7 +163,7 @@ def test_style_base_checkpoint_resumes_only_de_template_after_interruption(sessi
 def test_failed_de_template_is_a_durable_final_outcome_and_is_not_replayed(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -219,7 +219,7 @@ def test_failed_de_template_recovery_rejects_error_code_detached_from_parent_cal
 ) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -286,7 +286,7 @@ def test_best_of_n_resumes_candidate_de_template_without_replaying_its_base(sess
     _seed_resume_scene(session)
     monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -340,7 +340,7 @@ def test_completed_candidate_de_template_survives_next_candidate_failure(session
     _seed_resume_scene(session)
     monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -388,7 +388,7 @@ def test_progressive_topup_resumes_its_locked_base_without_replay(session, monke
     monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
     monkeypatch.setattr("novel_system.services.scene_generation._candidate_dispersion", lambda contents: 0.0)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -441,7 +441,7 @@ def test_progressive_topup_resumes_its_locked_base_without_replay(session, monke
 def test_no_anti_template_trigger_persists_base_equals_final(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": False,
             "rewrite_pass": 0,
@@ -482,7 +482,7 @@ def test_completed_de_template_recovery_validates_its_base_lineage(
 ) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,

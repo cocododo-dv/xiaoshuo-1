@@ -640,7 +640,7 @@ def test_select_then_resume_accepts_completed_de_template_candidate_without_repl
 ) -> None:
     _seed_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -740,7 +740,7 @@ def test_rejected_de_template_is_audited_and_checkpoint_resume_uses_base_fallbac
 ) -> None:
     _seed_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -751,7 +751,7 @@ def test_rejected_de_template_is_audited_and_checkpoint_resume_uses_base_fallbac
         },
     )
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._assess_de_template_rewrite",
+        "novel_system.services.scene_generation.text_gates._assess_de_template_rewrite",
         lambda **kwargs: {
             "accepted": False,
             "reasons": ["test_rejection"],
