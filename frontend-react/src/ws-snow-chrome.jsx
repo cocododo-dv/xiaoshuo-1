@@ -121,7 +121,6 @@ export const S2StepList = React.memo(function S2StepList({ states, staleMap, hea
             <span className="snow-step-mark" aria-label={stale ? "需复核" : (S2_STATE_LABEL[st] || undefined)}>
               {stale ? <I.AlertTriangle size={13} className="sf-stale-ic" />
                 : st === "done" ? <I.Check size={13} className={beKnownUnapproved(s.key) ? "sf-mark-local" : undefined} />
-                : st === "warn" ? <I.AlertTriangle size={13} />
                 : st === "skip" ? <span className="sf-skip-mark">–</span>
                 : (st === "active" && activeKey !== s.key) ? <span className="snow-step-dot" /> : null}
             </span>

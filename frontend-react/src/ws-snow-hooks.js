@@ -3,7 +3,7 @@ import { WsWorks, wsKey } from "./ws-works.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { apiPost } from "./lib/client.js";
 import {
-  S2_STEPS, S2_BE_KEY, s2AdoptServerScaffold, s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds,
+  S2_BE_KEY, s2AdoptServerScaffold, s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds,
   s2SettlePlanning,
 } from "./ws-snow-model.js";
 import { useWindowEvents as useSnowEvents } from "./lib/events.js";
@@ -28,21 +28,6 @@ export function activeWorkId() {
    v2 起换键；旧 v1 键保留不删。 */
 export const s2Key = () => (wsKey ? wsKey("ws_snow_state_v2") : "ws_snow_state_v2");
 export function s2Load(key) { try { return JSON.parse(localStorage.getItem(key || s2Key())) || {}; } catch (e) { return {}; } }
-
-/* 主页速览：读同一份持久化真相，而非静态拷贝 */
-export function s2StepSummary() {
-  try {
-    const saved = s2Load();
-    const states = { ...s2DefaultStates(), ...(saved.states || {}) };
-    const steps = S2_STEPS.map(s => {
-      let v = states[s.key] || "todo";
-      if (v === "skip") v = "warn";
-      return { name: s.name, s: v };
-    });
-    const cur = S2_STEPS.find(s => { const v = states[s.key] || "todo"; return v !== "done" && v !== "skip"; });
-    return { steps, now: cur ? `${cur.name} · 第 ${cur.num} 步` : "十步已全部确认" };
-  } catch (e) { return null; }
-}
 
 /* ---- 界面偏好（只存本机，不同步，读写都容错：隐私窗口 / 存储被禁时照常工作） ---- */
 export const S2_PREF_KEYS = {
@@ -197,7 +182,7 @@ export function useSnowGeneration(env) {
      LLM 不可用时诚实报错，绝不落一版启发式草稿冒充）→ 整步规范草稿经 applyServerStep 反推回脚手架。
      focusRow 时只回写焦点场的规划（其余场保留本地态，防止未上行编辑被服务端旧值盖掉）。
      本步要点默认带入（服务端 use_direction_brief 缺省 true）：不想让某条要点约束生成，撤下那条即可。 */
-  const structuredGenerate = async ({ direction = null, directionKind = null, directionTurnId = null, directionIndex = null, focus = null, focusRow = null, focusChars = null, focusChar = null, source = null, target = null, histAction, histNote, doneAction, doneNote, toastOk, toastFail, switchTab = false, fallbackText = null }) => {
+  const structuredGenerate = async ({ direction = null, directionKind = null, directionTurnId = null, directionIndex = null, focus = null, focusRow = null, focusChars = null, focusChar = null, source = null, target = null, histAction, histNote, doneAction, doneNote, toastOk, toastFail, switchTab = false }) => {
     const e = env.current;
     const key = e.activeKey, step = e.active;
     if (structBusyMap[key]) return false;
@@ -255,8 +240,6 @@ export function useSnowGeneration(env) {
         setDrafts(prev => ({ ...prev, [key]: "" })); // 脚手架即唯一内容源，避免旧自由草稿盖住它
       } else if (fe && fe.text != null) {
         setDrafts(prev => ({ ...prev, [key]: fe.text }));
-      } else if (fallbackText != null) {
-        setDrafts(prev => ({ ...prev, [key]: fallbackText })); // 兜底：至少落自由草稿
       }
       if (switchTab) env.current.setTabFor(key, "edit");
       /* 分批深化中途失败等半成品：后端把事实放在 health.generation_notice，

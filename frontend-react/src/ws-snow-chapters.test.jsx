@@ -8,7 +8,6 @@ import {
   scaleExplanation, splitChapterAt,
 } from "./ws-snow-chapters.jsx";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const mounted = [];
 

@@ -11,7 +11,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const catalog = vi.hoisted(() => ({ get: vi.fn(() => []), adoptOutline: vi.fn(async () => 2) }));
+const catalog = vi.hoisted(() => ({ get: vi.fn(() => []) }));
 vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: catalog }));
 vi.mock("./ws-works.jsx", () => ({
   wsKey: (base) => `${base}::coach-book`,
@@ -33,7 +33,6 @@ vi.mock("./lib/client.js", () => ({
 import { WsSnowflake } from "./ws-snow.jsx";
 import * as client from "./lib/client.js";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const T = { timeout: 5000, interval: 25 };
 const mounted = [];
@@ -125,7 +124,6 @@ function installApi({ history = [], health = {} } = {}) {
 
 describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
   beforeEach(() => {
-    window.localStorage.clear();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     installApi();
   });

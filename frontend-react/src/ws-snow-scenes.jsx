@@ -7,8 +7,6 @@ import {
   S2_PLAN_FIELDS, S2_TRIAGE_LABEL, s2BusyOn,
 } from "./ws-snow-model.js";
 import { formatClockTime } from "./lib/format.js";
-export { S2SceneList } from "./ws-snow-scene-list.jsx";
-export { S2ScenePlan } from "./ws-snow-scene-plan.jsx";
 
 /* ==========================================================
    09 场景列表 · 10 场景规划

@@ -48,7 +48,6 @@
 @media (max-width: 1279px) { .snow-strip-bar { display: none; } }
 .snow-strip-tick.s-done   { background: var(--sage); }
 .snow-strip-tick.s-active { background: var(--crimson); box-shadow: 0 0 0 3px var(--crimson-wash); }
-.snow-strip-tick.s-warn   { background: var(--gold); }
 .snow-strip-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 
 .snow-cols {
@@ -107,7 +106,6 @@
   color: var(--ink-3);
 }
 .snow-step.s-done .snow-step-mark { background: var(--sage-wash); color: var(--sage-ink); }
-.snow-step.s-warn .snow-step-mark { background: var(--gold-wash); color: var(--gold-ink); }
 .snow-step.s-active .snow-step-mark { background: var(--crimson-wash); color: var(--crimson-ink); }
 .snow-step-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 
@@ -274,11 +272,6 @@
 
 /* ---------- 各步交互 ---------- */
 /* --- 自由草稿覆盖面板（采纳候选可见化） --- */
-.sf-dov { margin-bottom: 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--gold); background: var(--gold-wash); }
-.sf-dov-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.sf-dov-tag { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); font-weight: 600; color: var(--gold-ink); flex: 0 0 auto; }
-.sf-dov-note { flex: 1; min-width: 200px; font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.6; }
-.sf-dov-text { width: 100%; margin-top: 9px; padding: 9px 11px; border: 1px solid var(--line-1); border-radius: 9px; background: var(--paper-0); color: var(--ink-1); font: inherit; font-size: 13.5px; line-height: 1.8; resize: vertical; }
 /* --- 10 逐场规划 --- */
 .sf-plan-empty { display: flex; align-items: center; gap: 14px; padding: 26px 20px; border: 1px dashed var(--line-2); border-radius: 12px; color: var(--ink-2); }
 .sf-plan-empty > div { flex: 1; }

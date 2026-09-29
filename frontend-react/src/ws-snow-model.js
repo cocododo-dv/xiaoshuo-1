@@ -24,7 +24,7 @@ export const S2_STEPS = [
 export const TRACK_LABEL = { plot: "情节", character: "角色", orient: "定位" };
 
 /* 步骤状态的中文名（导出大纲、进度刻度、步骤列表共用） */
-export const S2_STATE_LABEL = { done: "已确认", warn: "需补", active: "进行中", skip: "已略过", todo: "待写", stale: "需复核" };
+export const S2_STATE_LABEL = { done: "已确认", active: "进行中", skip: "已略过", todo: "待写" };
 
 /* FE→BE 步骤键映射（正源；ws-snow-sync 复用同一份避免漂移） */
 export const S2_BE_STEPS = [
@@ -502,24 +502,7 @@ export function s2BlankScaffolds() {
 export function s2DefaultDrafts() { return Object.fromEntries(S2_STEPS.map(s => [s.key, ""])); }
 export function s2DefaultChecks() { return Object.fromEntries(S2_STEPS.map(s => [s.key, (((S2_STEP_DATA[s.key] || {}).guide || {}).checklist || []).map(() => false)])); }
 export function s2DefaultStates() { return Object.fromEntries(S2_STEPS.map(s => [s.key, "todo"])); }
-/* 第 10 步旧数据形状（全书只有一张 GCS/RDD 表）→ 逐场 plans 形状的一次性归一 */
 export const S2_PLAN_FIELDS = ["goal", "conflict", "setback", "reaction", "dilemma", "decision"];
-function s2NormalizePlanning(p) {
-  if (!p) return { sel: "", plans: {} };
-  const legacyAny = S2_PLAN_FIELDS.some(f => (p[f] || "").trim());
-  const out = { sel: p.sel || "", plans: { ...(p.plans || {}) } };
-  if (legacyAny && !p.plans) {
-    // 纯旧形状：把那张表挂到它标注的场景 id 下（解不出则 S01）
-    const m = /S\d+/.exec(p.scene || "");
-    const id = m ? m[0] : "S01";
-    const plan = { mode: p.mode || "proactive", pov: p.pov || "" };
-    S2_PLAN_FIELDS.forEach(f => { plan[f] = p[f] || ""; });
-    out.plans[id] = plan;
-    out.sel = id;
-  }
-  if (!out.sel) out.sel = Object.keys(out.plans)[0] || "";
-  return out;
-}
 export function s2MergeScaffolds(stored) {
   const base = s2BlankScaffolds();
   if (stored) Object.keys(base).forEach(k => {
@@ -528,7 +511,8 @@ export function s2MergeScaffolds(stored) {
     if (base[k].chars && stored[k].chars) base[k].chars = { ...base[k].chars, ...stored[k].chars };
     if (k === "planning" && base[k].plans && stored[k].plans) base[k].plans = { ...base[k].plans, ...stored[k].plans };
   });
-  base.planning = s2NormalizePlanning(base.planning);
+  // 没有选中场时落在第一份规划上
+  if (!base.planning.sel) base.planning = { ...base.planning, sel: Object.keys(base.planning.plans || {})[0] || "" };
   return s2SettlePlanning(base);
 }
 
@@ -601,7 +585,6 @@ export function s2MergeChecks(stored) {
    而被误判为作者编辑，再写回成 pending_review。 */
 export function s2NormalizeState(saved) {
   const source = { ...(saved || {}) };
-  delete source.revs; delete source.confirmRevs; // E3 第二步：旧缓存里的本地失效图直接丢弃
   return {
     ...source,
     drafts: { ...s2DefaultDrafts(), ...(source.drafts || {}) },

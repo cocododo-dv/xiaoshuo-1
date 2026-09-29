@@ -170,7 +170,7 @@ function WsSnowflake({ initialStep }) {
   const [snapDiff, setSnapDiff] = useSS(null);   // 待预览的历史快照条目
 
   /* ---- 跳到第 10 步的某一场（成稿中心的场景三问、分章面板里的一场）----
-     按 scene_id 对到 09 的 row_uid；对照表来自工作台，还没水合时把目标挂在 window.__snowSceneTarget 上，
+     按 scene_id 对到 09 的 row_uid；对照表来自工作台，还没水合时把目标先挂着（pendingSceneRef），
      水合回来再试一次。 */
   const focusPlanScene = (sceneId) => {
     if (!sceneId) return false;
@@ -186,11 +186,11 @@ function WsSnowflake({ initialStep }) {
     setScaffolds(prev => ({ ...prev, planning: { ...(prev.planning || {}), sel: rowUid } }));
     return true;
   };
+  const pendingSceneRef = useSR(null);
   const tryPendingScene = () => {
-    const target = window.__snowSceneTarget;
-    if (target && focusPlanScene(target)) window.__snowSceneTarget = null;
+    const target = pendingSceneRef.current;
+    if (target && focusPlanScene(target)) pendingSceneRef.current = null;
   };
-  useSE(() => { tryPendingScene(); }, []);
   const relandOnServer = (event) => {
     if (landedOnServerRef.current) return;
     if (!event || event.detail !== snowWorkId) return;
@@ -210,7 +210,7 @@ function WsSnowflake({ initialStep }) {
       setActiveKey(k);
       setTabFor(k, "edit");
     },
-    "ws:snow-scene": (event) => { window.__snowSceneTarget = event && event.detail; tryPendingScene(); },
+    "ws:snow-scene": (event) => { pendingSceneRef.current = (event && event.detail) || null; tryPendingScene(); },
     "ws:snow-hydrated": (event) => { relandOnServer(event); tryPendingScene(); },
   });
 
@@ -240,7 +240,7 @@ function WsSnowflake({ initialStep }) {
     movedRef.current = true;
     setActiveKey("planning");
     setTabFor("planning", "edit");
-    window.__snowSceneTarget = sceneId;
+    pendingSceneRef.current = sceneId || null;
     tryPendingScene();
   };
   const goToMaterializationStep = (beKey) => {
@@ -748,7 +748,6 @@ function WsSnowflake({ initialStep }) {
                 ) : (
                   <span className="pill" title="可以留空或略过"><span className="pill-dot" />建议</span>
                 )}
-                {stStatus === "warn" && <span className="pill pill-gold"><span className="pill-dot" />需补</span>}
                 {curStale && <span className="pill pill-gold"><span className="pill-dot" />需复核</span>}
                 <button ref={ctxBtnRef} className={`btn btn-quiet btn-sm sf-ctx-open ${ctxExpanded ? "is-on" : ""}`} onClick={toggleContext}
                   aria-expanded={ctxExpanded} aria-controls="snow-ctx" aria-label="本步上下文：任务、检查与写作指引"
@@ -842,22 +841,19 @@ function WsSnowflake({ initialStep }) {
   );
 }
 
-/* 构思路由的入口（ws-app 的 LazyWsConstruct）。只做两件事：接住挂载前留下的目标步骤
-   （旧握手 window.__snowStepTarget），以及告诉视图意图队列「雪花页就绪」——之后的跳步、跳场由
-   WsSnowflake 就地处理。以前这里按目标步骤给 WsSnowflake 换 key，每次外部跳步整张视图重挂。 */
+/* 构思路由的入口（ws-app 的 LazyWsConstruct）：告诉视图意图队列「雪花页就绪」——之后的跳步、跳场
+   （ws:snow-step / ws:snow-scene）由 WsSnowflake 就地处理。以前这里按目标步骤给 WsSnowflake 换 key，
+   每次外部跳步整张视图重挂；更早的 window.__snowStepTarget 握手已由视图意图队列取代。 */
 function WsConstruct() {
-  const [initialStep] = useSS(() => window.__snowStepTarget || null);
   useSE(() => {
-    window.__snowStepTarget = null;
     setViewIntentTargetReady("snowflake");
     return () => setViewIntentTargetReady("snowflake", false);
   }, []);
-  return <WsSnowflake initialStep={initialStep} />;
+  return <WsSnowflake />;
 }
 
 export { WsSnowflake, WsConstruct };
 export {
-  S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2NormalizeState, s2NextSceneRowId,
+  S2_STEPS, S2_BE_STEPS, s2NormalizeState,
   s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2ReorderScenes,
 } from "./ws-snow-model.js";
-export { s2StepSummary } from "./ws-snow-hooks.js";

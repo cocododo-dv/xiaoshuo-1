@@ -16,18 +16,13 @@ import { countChars } from "./lib/text.js";
    ws-snow-scene-list.jsx，10 在 ws-snow-scene-plan.jsx。S2StepEditor 按步骤挑编辑器，并对无关的重渲染（同步状态、健康、回执）免疫。
    ========================================================== */
 
-/* 编辑页的编辑器：有脚手架的步骤用脚手架（旧版遗留的自由草稿在上方明示），否则是自由文本。
+/* 编辑页的编辑器：有脚手架的步骤用脚手架，否则是自由文本。
    memo：只有这一步的内容、引用的上游脚手架或 AI 忙态变了才重渲染（回调都是稳定引用）。 */
 export const S2StepEditor = React.memo(function S2StepEditor({ step, data, draft, setDraft, scaffold, onScaffold, onSceneRow, refs, go, ai, onOpenChapterPlan, catalogHasChapters }) {
   if (!data.scaffold) {
     return <S2Edit draft={draft} setDraft={setDraft} stepName={step.name} target={data.target} meter={data.meter} />;
   }
-  return (
-    <React.Fragment>
-      {draft.trim() ? <S2DraftOverride draft={draft} setDraft={setDraft} stepName={step.name} /> : null}
-      <S2Scaffold kind={data.scaffold.type} scaffold={scaffold} onScaffold={onScaffold} onSceneRow={onSceneRow} refs={refs} go={go} ai={ai} onOpenChapterPlan={onOpenChapterPlan} catalogHasChapters={catalogHasChapters} />
-    </React.Fragment>
-  );
+  return <S2Scaffold kind={data.scaffold.type} scaffold={scaffold} onScaffold={onScaffold} onSceneRow={onSceneRow} refs={refs} go={go} ai={ai} onOpenChapterPlan={onOpenChapterPlan} catalogHasChapters={catalogHasChapters} />;
 });
 
 /* ====== Freeform editor (+ optional word meter) ====== */
@@ -54,26 +49,6 @@ function S2Meter({ len, target, note }) {
         <span className="sf-meter-count">{len} / {target} 字{over ? "，偏长，再砍一刀" : ""}</span>
         <span className="sf-meter-note">{note}</span>
       </div>
-    </div>
-  );
-}
-
-/* 旧版「仅作草稿」留下的自由草稿，在有脚手架的步骤上可见可编可退——
-   它会优先于脚手架参与评分 / 引用 / 导出，所以必须明示，不能藏在水面下。
-   阶段 U 起不再有新入口写它（方向一律「按此生成本步」进脚手架）；清掉即回到脚手架。 */
-function S2DraftOverride({ draft, setDraft, stepName }) {
-  const clear = () => {
-    if (!window.confirm(`清除这段自由草稿？本步将回到结构化脚手架作为唯一内容源。`)) return;
-    setDraft("");
-  };
-  return (
-    <div className="sf-dov">
-      <div className="sf-dov-head">
-        <span className="sf-dov-tag"><I.Wand size={12} /> 自由草稿（旧版采纳候选所得）</span>
-        <span className="sf-dov-note">只要这段非空，本步的评分、引用与导出都优先用它，而非下方脚手架。</span>
-        <button className="btn btn-quiet btn-sm" onClick={clear} title="清除草稿，回到脚手架"><I.X size={12} /> 清除草稿</button>
-      </div>
-      <textarea className="sf-dov-text" rows={4} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={`「${stepName}」的自由草稿…`} />
     </div>
   );
 }

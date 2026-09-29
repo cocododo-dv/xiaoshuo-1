@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const catalog = vi.hoisted(() => ({
   get: vi.fn(() => []),
-  adoptOutline: vi.fn(async () => 2),
 }));
 
 vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: catalog }));
@@ -25,7 +24,6 @@ import { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PlanSlots, s2PlanSta
 import { WS_SNOW_STEPS } from "./ws-nav.js";
 import { canonFromFE } from "./ws-snow-canon.js";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const mounted = [];
 
@@ -40,9 +38,7 @@ async function renderSnow() {
 
 describe("真实新项目的雪花顶部主操作", () => {
   beforeEach(() => {
-    window.localStorage.clear();
     catalog.get.mockReturnValue([]);
-    catalog.adoptOutline.mockClear();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.spyOn(window, "alert").mockImplementation(() => {});
     // 分章面板打开即拉后端预览（算法在后端，前端不再持有第二套）
@@ -102,17 +98,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeTruthy();
     expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
     // 预览阶段绝不落库
-    expect(catalog.adoptOutline).not.toHaveBeenCalled();
     expect(window.SnowSync.materialize).not.toHaveBeenCalled();
-  });
-
-  it("SNOW-01：同步层广播 ws:snow-chapter-plan（每次水合 / 自动保存后都会发）不再把分章面板弹出来", async () => {
-    // 以前视图把这个事件名当「打开面板」的命令，而 SnowSync 在每次捕获工作台时都用它广播分章状态——
-    // 结果面板在落地、刷新、09/10 自动保存后自己弹出来。命令改成视图内的回调，广播只归同步层。
-    const host = await renderSnow();
-    await act(async () => { window.dispatchEvent(new CustomEvent("ws:snow-chapter-plan", { detail: "new-book" })); });
-    expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeNull();
-    expect(window.SnowSync.chapterPreview).not.toHaveBeenCalled();
   });
 
   it("右栏只有一个评分：后端的评定；没有按关键词计数的「实时自评」，也没有页脚的「自检 0/3」", async () => {
@@ -421,13 +407,6 @@ describe("阶段 E · 场景规划覆盖格与本地失效图", () => {
     expect(s2StaleMap({})).toEqual({});
     expect(s2StaleMap(undefined)).toEqual({});
   });
-
-  it("E3 第二步：旧缓存里的 revs / confirmRevs 被归一化丢弃，不再进入状态", () => {
-    const normalized = s2NormalizeState({ drafts: {}, states: { logline: "done" }, revs: { logline: 3 }, confirmRevs: { paragraph: { logline: 2 } } });
-    expect(normalized).not.toHaveProperty("revs");
-    expect(normalized).not.toHaveProperty("confirmRevs");
-    expect(normalized.states.logline).toBe("done");
-  });
 });
 
 
@@ -448,7 +427,6 @@ describe("阶段 M · 09/10 交互", () => {
   });
 
   beforeEach(() => {
-    window.localStorage.clear();
     catalog.get.mockReturnValue([]);
     vi.spyOn(window, "alert").mockImplementation(() => {});
     window.SnowSync = { chapterPreview: vi.fn(), materialize: vi.fn(), skipStep: vi.fn(async () => ({ beStatus: "skipped" })) };
@@ -740,10 +718,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
   });
 
   beforeEach(() => {
-    window.localStorage.clear();
     catalog.get.mockReturnValue([]);
-    window.__snowSceneTarget = null;
-    window.__snowStepTarget = null;
     window.SnowSync = { chapterPreview: vi.fn(), materialize: vi.fn() };
   });
   afterEach(async () => {
@@ -754,8 +729,6 @@ describe("SNOW-20 · 就地换步与落点", () => {
     }
     vi.restoreAllMocks();
     try { delete window.SnowSync; } catch (e) {}
-    window.__snowSceneTarget = null;
-    window.__snowStepTarget = null;
   });
 
   async function mount(element) {
@@ -785,7 +758,6 @@ describe("SNOW-20 · 就地换步与落点", () => {
     expect(title(host)).toBe("场景规划");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S02");
     expect(window.SnowSync.rowUidForSceneId).toHaveBeenCalledWith("new-book", "sc-backend-2");
-    expect(window.__snowSceneTarget).toBeNull();
     // 以前 WsConstruct 按目标步骤给 WsSnowflake 换 key：这里会是一个新的页面节点
     expect(host.querySelector(".snow-page")).toBe(page);
   });
@@ -799,18 +771,14 @@ describe("SNOW-20 · 就地换步与落点", () => {
     await fire("ws:snow-scene", "sc-backend-3");
     expect(title(host)).toBe("场景规划");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S01");
-    expect(window.__snowSceneTarget).toBe("sc-backend-3");
     mapped = "S03";
     await fire("ws:snow-hydrated", "new-book");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S03");
-    expect(window.__snowSceneTarget).toBeNull();
-  });
-
-  it("挂载前留下的目标步骤（旧握手 window.__snowStepTarget）：落在那一步，并被清掉", async () => {
-    window.__snowStepTarget = "outline";
-    const host = await mount(<WsConstruct />);
-    expect(title(host)).toBe("长篇大纲");
-    expect(window.__snowStepTarget).toBeNull();
+    // 目标用过即清：选中落盘之后再来一次水合，即使对照表此刻把那个 scene_id 对到别的场，也不会再挪
+    await vi.waitFor(() => expect(JSON.parse(window.localStorage.getItem(CACHE)).scaffolds.planning.sel).toBe("S03"), { timeout: 2000 });
+    mapped = "S02";
+    await fire("ws:snow-hydrated", "new-book");
+    expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S03");
   });
 
   it("没有外部目标时落在还没确认的第一步", async () => {
