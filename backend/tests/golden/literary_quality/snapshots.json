@@ -1,0 +1,3494 @@
+{
+ "texts": {
+  "template_reuse": {
+   "signals": {
+    "model_voice": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "image_homogeneity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻"
+    },
+    "image_field_reuse": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "syntax_monotony": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻"
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "dialogue_as_report": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "no_choice_scene": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "summary_ending": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "ending_drive": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "conflict_too_clean": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "decorative_imagery": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "over_explained_motive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_poetic_closure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "perception_filter": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "automated_evidence_sufficiency": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": "82 substantive characters; 6 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "Possible model voice or generic emotional shortcut.",
+     "evidence_excerpt": "看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
+     "needle": "忽然意识到",
+     "anchor": "text"
+    },
+    {
+     "dimension": "template_action_reuse",
+     "severity": "revision",
+     "issue": "Action beats are repeating the same sentence template.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻",
+     "recommendation": "Keep one beat, then vary blocking, object movement, silence, or relational pressure.",
+     "needle": "她低头看着钥匙，沉默了片刻",
+     "anchor": "text"
+    },
+    {
+     "dimension": "image_field_reuse",
+     "severity": "taste",
+     "issue": "The atmospheric image field is doing too much repeated work: 光, 冷, 影, 月, 月光.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Let one image carry mood, and make the next beat change through an object, decision, or body position.",
+     "needle": "月",
+     "anchor": "text"
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "taste",
+     "issue": "Several consecutive sentences use the same syntactic shape.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻",
+     "recommendation": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture.",
+     "needle": "她低头看着钥匙，沉默了片刻",
+     "anchor": "text"
+    },
+    {
+     "dimension": "false_clarity",
+     "severity": "revision",
+     "issue": "The passage tells the reader what became clear instead of letting pressure reveal it.",
+     "evidence_excerpt": "看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference.",
+     "needle": "她知道",
+     "anchor": "text"
+    },
+    {
+     "dimension": "summary_ending",
+     "severity": "revision",
+     "issue": "The ending explains the effect instead of landing on an action or image.",
+     "evidence_excerpt": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Cut the summarizing sentence and end on the last irreversible action.",
+     "needle": "一切都",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "The final beat does not push the reader into the next scene.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "End with a new action, object movement, arrival, departure, reveal, or refusal.",
+     "needle": "",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "必须",
+     "anchor": "text"
+    },
+    {
+     "dimension": "false_poetic_closure",
+     "severity": "revision",
+     "issue": "The ending closes with poetic certainty rather than a hard next-scene action.",
+     "evidence_excerpt": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance.",
+     "needle": "一切都变得",
+     "anchor": "ending"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "「忽然意识到」像模型腔，或一句空泛的情绪捷径。",
+     "evidence_excerpt": "看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "把抽象的「领悟」换成具体的选择、动作或感官后果。",
+     "needle": "忽然意识到",
+     "anchor": "text",
+     "signal_id": "rules:model_voice:6636593e",
+     "source": "rules",
+     "label": "模型腔",
+     "issue_en": "Possible model voice or generic emotional shortcut.",
+     "recommendation_en": "Replace abstract realization with a concrete choice, gesture, or sensory consequence."
+    },
+    {
+     "dimension": "template_action_reuse",
+     "severity": "revision",
+     "issue": "动作节拍在重复同一个句子模板。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻",
+     "recommendation": "留一拍，其余变换走位、物件、沉默或人物之间的压力。",
+     "needle": "她低头看着钥匙，沉默了片刻",
+     "anchor": "text",
+     "signal_id": "rules:template_action_reuse:cf23dd60",
+     "source": "rules",
+     "label": "模板动作复用",
+     "issue_en": "Action beats are repeating the same sentence template.",
+     "recommendation_en": "Keep one beat, then vary blocking, object movement, silence, or relational pressure."
+    },
+    {
+     "dimension": "image_field_reuse",
+     "severity": "taste",
+     "issue": "氛围意象承担了太多重复的工作：月。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "让一个意象负责氛围，下一拍靠物件、决定或身体位置推进。",
+     "needle": "月",
+     "anchor": "text",
+     "signal_id": "rules:image_field_reuse:d9b59879",
+     "source": "rules",
+     "label": "意象场复用",
+     "issue_en": "The atmospheric image field is doing too much repeated work: 光, 冷, 影, 月, 月光.",
+     "recommendation_en": "Let one image carry mood, and make the next beat change through an object, decision, or body position."
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "taste",
+     "issue": "连续几句用了同一种句式。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻",
+     "recommendation": "用一个短句、一个压住不说的反应，或从后果开头的句子打断节奏。",
+     "needle": "她低头看着钥匙，沉默了片刻",
+     "anchor": "text",
+     "signal_id": "rules:syntax_monotony:cf23dd60",
+     "source": "rules",
+     "label": "句式单调",
+     "issue_en": "Several consecutive sentences use the same syntactic shape.",
+     "recommendation_en": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture."
+    },
+    {
+     "dimension": "false_clarity",
+     "severity": "revision",
+     "issue": "把本该由压力揭示的东西直接告诉了读者（「她知道」）。",
+     "evidence_excerpt": "看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "删掉解释，让选择、拒绝、交出物件或沉默替读者推断。",
+     "needle": "她知道",
+     "anchor": "text",
+     "signal_id": "rules:false_clarity:d1b6f2ab",
+     "source": "rules",
+     "label": "虚假清晰",
+     "issue_en": "The passage tells the reader what became clear instead of letting pressure reveal it.",
+     "recommendation_en": "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference."
+    },
+    {
+     "dimension": "summary_ending",
+     "severity": "revision",
+     "issue": "结尾在解释效果（「一切都」），而不是落在动作或画面上。",
+     "evidence_excerpt": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "删掉概括句，停在最后一个不可逆的动作上。",
+     "needle": "一切都",
+     "anchor": "ending",
+     "signal_id": "rules:summary_ending:4747a9ed",
+     "source": "rules",
+     "label": "概述式收尾",
+     "issue_en": "The ending explains the effect instead of landing on an action or image.",
+     "recommendation_en": "Cut the summarizing sentence and end on the last irreversible action."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "最后一拍没有把读者推进下一场。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "用新的动作、物件移动、到来、离开、揭露或拒绝收尾。",
+     "needle": "",
+     "anchor": "ending",
+     "signal_id": "rules:ending_drive:ending",
+     "source": "rules",
+     "label": "收束驱动",
+     "issue_en": "The final beat does not push the reader into the next scene.",
+     "recommendation_en": "End with a new action, object movement, arrival, departure, reveal, or refusal."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "必须",
+     "anchor": "text",
+     "signal_id": "rules:painless_scene:890e87b3",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    },
+    {
+     "dimension": "false_poetic_closure",
+     "severity": "revision",
+     "issue": "结尾用诗意的笃定（「一切都变得」）收束，而不是一个硬的下一步动作。",
+     "evidence_excerpt": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "停在看得见的动作、交出的物件、拒绝、离开或不可逆的揭露上。",
+     "needle": "一切都变得",
+     "anchor": "ending",
+     "signal_id": "rules:false_poetic_closure:502c86f3",
+     "source": "rules",
+     "label": "伪诗意收束",
+     "issue_en": "The ending closes with poetic certainty rather than a hard next-scene action.",
+     "recommendation_en": "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance."
+    }
+   ],
+   "fingerprint": {
+    "action_templates": [
+     {
+      "value": "pronoun_looked_at_object_then_silence",
+      "count": 3
+     }
+    ],
+    "image_fields": [
+     {
+      "value": "月",
+      "count": 2
+     },
+     {
+      "value": "光",
+      "count": 2
+     },
+     {
+      "value": "月光",
+      "count": 2
+     },
+     {
+      "value": "雾",
+      "count": 1
+     },
+     {
+      "value": "影",
+      "count": 1
+     },
+     {
+      "value": "风",
+      "count": 1
+     },
+     {
+      "value": "门",
+      "count": 1
+     },
+     {
+      "value": "钥匙",
+      "count": 1
+     },
+     {
+      "value": "手",
+      "count": 1
+     },
+     {
+      "value": "阴影",
+      "count": 1
+     }
+    ],
+    "syntax_shapes": [
+     {
+      "value": "pronoun_phrase_comma_phrase",
+      "count": 3
+     },
+     {
+      "value": "comma:1:len:2",
+      "count": 1
+     },
+     {
+      "value": "comma:0:len:1",
+      "count": 1
+     },
+     {
+      "value": "comma:0:len:0",
+      "count": 1
+     }
+    ],
+    "false_clarity": [
+     "她知道",
+     "忽然意识到",
+     "真相必须",
+     "一切都变得"
+    ],
+    "summary_ending": [
+     "一切都",
+     "她知道"
+    ],
+    "dialogue_exposition": [],
+    "choice_pressure": [],
+    "perception_filter": []
+   },
+   "adversarial_rank_score": 0.5682
+  },
+  "dialogue_report": {
+   "signals": {
+    "model_voice": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "image_homogeneity": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，"
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_field_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "syntax_monotony": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷 / ”老周说 / ”她觉得窗外的雨更冷了"
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。"
+    },
+    "dialogue_as_report": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。"
+    },
+    "no_choice_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "summary_ending": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "ending_drive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "conflict_too_clean": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "decorative_imagery": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "over_explained_motive": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧"
+    },
+    "false_poetic_closure": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "perception_filter": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "automated_evidence_sufficiency": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": "95 substantive characters; 7 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "Possible model voice or generic emotional shortcut.",
+     "evidence_excerpt": "，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
+     "needle": "不禁",
+     "anchor": "text"
+    },
+    {
+     "dimension": "image_homogeneity",
+     "severity": "taste",
+     "issue": "The same image field repeats too often: 雨.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，",
+     "recommendation": "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail.",
+     "needle": "雨",
+     "anchor": "text"
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "taste",
+     "issue": "Several consecutive sentences use the same syntactic shape.",
+     "evidence_excerpt": "林昭把旧信放回案卷 / ”老周说 / ”她觉得窗外的雨更冷了",
+     "recommendation": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture.",
+     "needle": "林昭把旧信放回案卷",
+     "anchor": "text"
+    },
+    {
+     "dimension": "expository_dialogue",
+     "severity": "revision",
+     "issue": "Dialogue is carrying explanation instead of pressure or subtext.",
+     "evidence_excerpt": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。",
+     "recommendation": "Move the fact into gesture, silence, contradiction, or a partial answer.",
+     "needle": "其实",
+     "anchor": "text"
+    },
+    {
+     "dimension": "dialogue_as_report",
+     "severity": "revision",
+     "issue": "Dialogue is reporting plot information instead of changing pressure between characters.",
+     "evidence_excerpt": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。",
+     "recommendation": "Turn the fact into a withheld answer, accusation, bargaining chip, or relationship wound.",
+     "needle": "真相是",
+     "anchor": "text"
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "The passage does not show a clear choice on the page.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "Give the character two incompatible options and make one option visibly cost something.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "over_explained_motive",
+     "severity": "revision",
+     "issue": "The motive is being explained directly instead of being pressured into action or omission.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧",
+     "recommendation": "Let the reader infer motive from what the character refuses, delays, hides, or chooses under pressure.",
+     "needle": "为了",
+     "anchor": "text"
+    },
+    {
+     "dimension": "perception_filter",
+     "severity": "revision",
+     "issue": "The narration routes sensation through a perception verb instead of rendering the stimulus directly.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "Delete the perception verb and let the stimulus land as action, object, or sensory detail.",
+     "needle": "她觉得",
+     "anchor": "text"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "「不禁」像模型腔，或一句空泛的情绪捷径。",
+     "evidence_excerpt": "，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "把抽象的「领悟」换成具体的选择、动作或感官后果。",
+     "needle": "不禁",
+     "anchor": "text",
+     "signal_id": "rules:model_voice:7d989e78",
+     "source": "rules",
+     "label": "模型腔",
+     "issue_en": "Possible model voice or generic emotional shortcut.",
+     "recommendation_en": "Replace abstract realization with a concrete choice, gesture, or sensory consequence."
+    },
+    {
+     "dimension": "image_homogeneity",
+     "severity": "taste",
+     "issue": "同一个意象反复出现：雨。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，",
+     "recommendation": "留一个锚定意象，其余靠动作、物件、温度、声音或空间变化换质感。",
+     "needle": "雨",
+     "anchor": "text",
+     "signal_id": "rules:image_homogeneity:8995b897",
+     "source": "rules",
+     "label": "意象同质",
+     "issue_en": "The same image field repeats too often: 雨.",
+     "recommendation_en": "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail."
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "taste",
+     "issue": "连续几句用了同一种句式。",
+     "evidence_excerpt": "林昭把旧信放回案卷 / ”老周说 / ”她觉得窗外的雨更冷了",
+     "recommendation": "用一个短句、一个压住不说的反应，或从后果开头的句子打断节奏。",
+     "needle": "林昭把旧信放回案卷",
+     "anchor": "text",
+     "signal_id": "rules:syntax_monotony:1578f838",
+     "source": "rules",
+     "label": "句式单调",
+     "issue_en": "Several consecutive sentences use the same syntactic shape.",
+     "recommendation_en": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture."
+    },
+    {
+     "dimension": "expository_dialogue",
+     "severity": "revision",
+     "issue": "对白在做解释（「其实」），而不是施压或留潜台词。",
+     "evidence_excerpt": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。",
+     "recommendation": "把事实挪进动作、沉默、矛盾或只答一半的回答里。",
+     "needle": "其实",
+     "anchor": "text",
+     "signal_id": "rules:expository_dialogue:b533bc82",
+     "source": "rules",
+     "label": "说明式对白",
+     "issue_en": "Dialogue is carrying explanation instead of pressure or subtext.",
+     "recommendation_en": "Move the fact into gesture, silence, contradiction, or a partial answer."
+    },
+    {
+     "dimension": "dialogue_as_report",
+     "severity": "revision",
+     "issue": "对白在汇报情节（「真相是」），没有改变人物之间的压力。",
+     "evidence_excerpt": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。",
+     "recommendation": "把事实变成不肯回答的问题、指控、筹码或关系里的伤口。",
+     "needle": "真相是",
+     "anchor": "text",
+     "signal_id": "rules:dialogue_as_report:0211f234",
+     "source": "rules",
+     "label": "对白即汇报",
+     "issue_en": "Dialogue is reporting plot information instead of changing pressure between characters.",
+     "recommendation_en": "Turn the fact into a withheld answer, accusation, bargaining chip, or relationship wound."
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "这一场在纸面上看不到明确的抉择。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "给人物两个不能兼得的选项，让其中一个看得见地付出代价。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:no_choice_scene:scene",
+     "source": "rules",
+     "label": "无抉择场景",
+     "issue_en": "The passage does not show a clear choice on the page.",
+     "recommendation_en": "Give the character two incompatible options and make one option visibly cost something."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:painless_scene:scene",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    },
+    {
+     "dimension": "over_explained_motive",
+     "severity": "revision",
+     "issue": "动机被直接解释（「为了」），而不是被逼成行动或省略。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧",
+     "recommendation": "让读者从人物拒绝、拖延、隐瞒或在压力下的选择里推断动机。",
+     "needle": "为了",
+     "anchor": "text",
+     "signal_id": "rules:over_explained_motive:823c6652",
+     "source": "rules",
+     "label": "过度解释动机",
+     "issue_en": "The motive is being explained directly instead of being pressured into action or omission.",
+     "recommendation_en": "Let the reader infer motive from what the character refuses, delays, hides, or chooses under pressure."
+    },
+    {
+     "dimension": "perception_filter",
+     "severity": "revision",
+     "issue": "叙述用「她觉得」这类感知动词转述，而不是直接呈现。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "删掉感知动词，让刺激直接落成动作、物件或感官细节。",
+     "needle": "她觉得",
+     "anchor": "text",
+     "signal_id": "rules:perception_filter:b1b651b6",
+     "source": "rules",
+     "label": "感知过滤",
+     "issue_en": "The narration routes sensation through a perception verb instead of rendering the stimulus directly.",
+     "recommendation_en": "Delete the perception verb and let the stimulus land as action, object, or sensory detail."
+    }
+   ],
+   "fingerprint": {
+    "action_templates": [],
+    "image_fields": [
+     {
+      "value": "雨",
+      "count": 3
+     },
+     {
+      "value": "冷",
+      "count": 1
+     }
+    ],
+    "syntax_shapes": [
+     {
+      "value": "comma:0:len:0",
+      "count": 3
+     },
+     {
+      "value": "comma:1:len:1",
+      "count": 2
+     },
+     {
+      "value": "comma:2:len:2",
+      "count": 1
+     },
+     {
+      "value": "comma:2:len:1",
+      "count": 1
+     }
+    ],
+    "false_clarity": [],
+    "summary_ending": [],
+    "dialogue_exposition": [
+     {
+      "value": "其实",
+      "count": 1
+     },
+     {
+      "value": "你知道",
+      "count": 1
+     },
+     {
+      "value": "我解释",
+      "count": 1
+     },
+     {
+      "value": "真相是",
+      "count": 1
+     },
+     {
+      "value": "因为",
+      "count": 1
+     }
+    ],
+    "choice_pressure": [],
+    "perception_filter": [
+     "她觉得"
+    ]
+   },
+   "adversarial_rank_score": 0.3864
+  },
+  "conflict_clean": {
+   "signals": {
+    "model_voice": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "image_homogeneity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_field_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "syntax_monotony": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "dialogue_as_report": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "no_choice_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "summary_ending": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "ending_drive": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "conflict_too_clean": {
+     "risk": true,
+     "score": 0.42,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有"
+    },
+    "decorative_imagery": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "over_explained_motive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_poetic_closure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "perception_filter": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "automated_evidence_sufficiency": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": "100 substantive characters; 6 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "Possible model voice or generic emotional shortcut.",
+     "evidence_excerpt": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
+     "needle": "仿佛命运",
+     "anchor": "text"
+    },
+    {
+     "dimension": "false_clarity",
+     "severity": "revision",
+     "issue": "The passage tells the reader what became clear instead of letting pressure reveal it.",
+     "evidence_excerpt": "，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference.",
+     "needle": "她知道",
+     "anchor": "text"
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "The passage does not show a clear choice on the page.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Give the character two incompatible options and make one option visibly cost something.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "summary_ending",
+     "severity": "revision",
+     "issue": "The ending explains the effect instead of landing on an action or image.",
+     "evidence_excerpt": "交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Cut the summarizing sentence and end on the last irreversible action.",
+     "needle": "这一刻",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "The final beat does not push the reader into the next scene.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "End with a new action, object movement, arrival, departure, reveal, or refusal.",
+     "needle": "",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "conflict_too_clean",
+     "severity": "revision",
+     "issue": "Conflict resolves too cleanly: 6 conflict signals vs 7 reconciliation signals in close proximity. Characters understand each other too quickly.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有",
+     "recommendation": "Leave residual friction: an unspoken resentment, a half-lie accepted, or agreement that costs something the character didn't want to give.",
+     "needle": "争吵",
+     "anchor": "text"
+    },
+    {
+     "dimension": "decorative_imagery",
+     "severity": "taste",
+     "issue": "The image work is carrying atmosphere more than action, relationship, information, or theme pressure.",
+     "evidence_excerpt": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Keep the strongest image only if it changes what a character does, reveals a withheld fact, or sharpens the cost of the choice.",
+     "needle": "仿佛命运",
+     "anchor": "text"
+    },
+    {
+     "dimension": "false_poetic_closure",
+     "severity": "revision",
+     "issue": "The ending closes with poetic certainty rather than a hard next-scene action.",
+     "evidence_excerpt": "为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance.",
+     "needle": "一切都变得",
+     "anchor": "ending"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "「仿佛命运」像模型腔，或一句空泛的情绪捷径。",
+     "evidence_excerpt": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "把抽象的「领悟」换成具体的选择、动作或感官后果。",
+     "needle": "仿佛命运",
+     "anchor": "text",
+     "signal_id": "rules:model_voice:21a8c532",
+     "source": "rules",
+     "label": "模型腔",
+     "issue_en": "Possible model voice or generic emotional shortcut.",
+     "recommendation_en": "Replace abstract realization with a concrete choice, gesture, or sensory consequence."
+    },
+    {
+     "dimension": "false_clarity",
+     "severity": "revision",
+     "issue": "把本该由压力揭示的东西直接告诉了读者（「她知道」）。",
+     "evidence_excerpt": "，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "删掉解释，让选择、拒绝、交出物件或沉默替读者推断。",
+     "needle": "她知道",
+     "anchor": "text",
+     "signal_id": "rules:false_clarity:d1b6f2ab",
+     "source": "rules",
+     "label": "虚假清晰",
+     "issue_en": "The passage tells the reader what became clear instead of letting pressure reveal it.",
+     "recommendation_en": "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference."
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "这一场在纸面上看不到明确的抉择。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "给人物两个不能兼得的选项，让其中一个看得见地付出代价。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:no_choice_scene:scene",
+     "source": "rules",
+     "label": "无抉择场景",
+     "issue_en": "The passage does not show a clear choice on the page.",
+     "recommendation_en": "Give the character two incompatible options and make one option visibly cost something."
+    },
+    {
+     "dimension": "summary_ending",
+     "severity": "revision",
+     "issue": "结尾在解释效果（「这一刻」），而不是落在动作或画面上。",
+     "evidence_excerpt": "交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "删掉概括句，停在最后一个不可逆的动作上。",
+     "needle": "这一刻",
+     "anchor": "ending",
+     "signal_id": "rules:summary_ending:140f8b18",
+     "source": "rules",
+     "label": "概述式收尾",
+     "issue_en": "The ending explains the effect instead of landing on an action or image.",
+     "recommendation_en": "Cut the summarizing sentence and end on the last irreversible action."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "最后一拍没有把读者推进下一场。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "用新的动作、物件移动、到来、离开、揭露或拒绝收尾。",
+     "needle": "",
+     "anchor": "ending",
+     "signal_id": "rules:ending_drive:ending",
+     "source": "rules",
+     "label": "收束驱动",
+     "issue_en": "The final beat does not push the reader into the next scene.",
+     "recommendation_en": "End with a new action, object movement, arrival, departure, reveal, or refusal."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:painless_scene:scene",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    },
+    {
+     "dimension": "conflict_too_clean",
+     "severity": "revision",
+     "issue": "冲突解决得太干净：「争吵」之后人物很快就互相理解了。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有",
+     "recommendation": "留下代价或余波：一句没说出口的怨、一个被接受的半谎，或一个人物本不想给的让步。",
+     "needle": "争吵",
+     "anchor": "text",
+     "signal_id": "rules:conflict_too_clean:813c48d6",
+     "source": "rules",
+     "label": "冲突过净",
+     "issue_en": "Conflict resolves too cleanly: 6 conflict signals vs 7 reconciliation signals in close proximity. Characters understand each other too quickly.",
+     "recommendation_en": "Leave residual friction: an unspoken resentment, a half-lie accepted, or agreement that costs something the character didn't want to give."
+    },
+    {
+     "dimension": "decorative_imagery",
+     "severity": "taste",
+     "issue": "意象（「仿佛命运」等）更多在渲染氛围，没有推动行动、关系、信息或主题。",
+     "evidence_excerpt": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "只留下能改变人物行为、揭出隐瞒或加重代价的那个意象。",
+     "needle": "仿佛命运",
+     "anchor": "text",
+     "signal_id": "rules:decorative_imagery:21a8c532",
+     "source": "rules",
+     "label": "装饰性意象",
+     "issue_en": "The image work is carrying atmosphere more than action, relationship, information, or theme pressure.",
+     "recommendation_en": "Keep the strongest image only if it changes what a character does, reveals a withheld fact, or sharpens the cost of the choice."
+    },
+    {
+     "dimension": "false_poetic_closure",
+     "severity": "revision",
+     "issue": "结尾用诗意的笃定（「一切都变得」）收束，而不是一个硬的下一步动作。",
+     "evidence_excerpt": "为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "停在看得见的动作、交出的物件、拒绝、离开或不可逆的揭露上。",
+     "needle": "一切都变得",
+     "anchor": "ending",
+     "signal_id": "rules:false_poetic_closure:502c86f3",
+     "source": "rules",
+     "label": "伪诗意收束",
+     "issue_en": "The ending closes with poetic certainty rather than a hard next-scene action.",
+     "recommendation_en": "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance."
+    }
+   ],
+   "fingerprint": {
+    "action_templates": [
+     {
+      "value": "action:点头",
+      "count": 1
+     }
+    ],
+    "image_fields": [
+     {
+      "value": "雨",
+      "count": 2
+     },
+     {
+      "value": "手",
+      "count": 1
+     }
+    ],
+    "syntax_shapes": [
+     {
+      "value": "comma:1:len:1",
+      "count": 2
+     },
+     {
+      "value": "comma:0:len:1",
+      "count": 1
+     },
+     {
+      "value": "pronoun_phrase_comma_phrase",
+      "count": 1
+     },
+     {
+      "value": "comma:5:len:2",
+      "count": 1
+     },
+     {
+      "value": "comma:2:len:2",
+      "count": 1
+     }
+    ],
+    "false_clarity": [
+     "她知道",
+     "一切都变得",
+     "这一刻她明白"
+    ],
+    "summary_ending": [
+     "这一刻",
+     "从此",
+     "一切都",
+     "她知道"
+    ],
+    "dialogue_exposition": [],
+    "choice_pressure": [],
+    "perception_filter": []
+   },
+   "adversarial_rank_score": 0.5286
+  },
+  "english": {
+   "signals": {
+    "model_voice": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "ild, and every choice would cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-"
+    },
+    "image_homogeneity": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "uld cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-white floo"
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_field_reuse": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "uld cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-white floo"
+    },
+    "syntax_monotony": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "dialogue_as_report": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "no_choice_scene": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "summary_ending": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "choice_pressure": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "ending_drive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "painless_scene": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "conflict_too_clean": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "decorative_imagery": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "over_explained_motive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_poetic_closure": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "perception_filter": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": " the archive or the child, and every choice would cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the"
+    },
+    "automated_evidence_sufficiency": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": "226 substantive characters; 5 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "Possible model voice or generic emotional shortcut.",
+     "evidence_excerpt": "ild, and every choice would cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-",
+     "recommendation": "Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
+     "needle": "somehow meaningful",
+     "anchor": "text"
+    },
+    {
+     "dimension": "image_homogeneity",
+     "severity": "taste",
+     "issue": "The same image field repeats too often: moon.",
+     "evidence_excerpt": "uld cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-white floo",
+     "recommendation": "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail.",
+     "needle": "moon",
+     "anchor": "text"
+    },
+    {
+     "dimension": "image_field_reuse",
+     "severity": "taste",
+     "issue": "The atmospheric image field is doing too much repeated work: light, moon, rain.",
+     "evidence_excerpt": "uld cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-white floo",
+     "recommendation": "Let one image carry mood, and make the next beat change through an object, decision, or body position.",
+     "needle": "moon",
+     "anchor": "text"
+    },
+    {
+     "dimension": "perception_filter",
+     "severity": "revision",
+     "issue": "The narration routes sensation through a perception verb instead of rendering the stimulus directly.",
+     "evidence_excerpt": " the archive or the child, and every choice would cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the",
+     "recommendation": "Delete the perception verb and let the stimulus land as action, object, or sensory detail.",
+     "needle": "she noticed",
+     "anchor": "text"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "「somehow meaningful」像模型腔，或一句空泛的情绪捷径。",
+     "evidence_excerpt": "ild, and every choice would cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-",
+     "recommendation": "把抽象的「领悟」换成具体的选择、动作或感官后果。",
+     "needle": "somehow meaningful",
+     "anchor": "text",
+     "signal_id": "rules:model_voice:54626ea2",
+     "source": "rules",
+     "label": "模型腔",
+     "issue_en": "Possible model voice or generic emotional shortcut.",
+     "recommendation_en": "Replace abstract realization with a concrete choice, gesture, or sensory consequence."
+    },
+    {
+     "dimension": "image_homogeneity",
+     "severity": "taste",
+     "issue": "同一个意象反复出现：moon。",
+     "evidence_excerpt": "uld cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-white floo",
+     "recommendation": "留一个锚定意象，其余靠动作、物件、温度、声音或空间变化换质感。",
+     "needle": "moon",
+     "anchor": "text",
+     "signal_id": "rules:image_homogeneity:46dcd4dd",
+     "source": "rules",
+     "label": "意象同质",
+     "issue_en": "The same image field repeats too often: moon.",
+     "recommendation_en": "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail."
+    },
+    {
+     "dimension": "image_field_reuse",
+     "severity": "taste",
+     "issue": "氛围意象承担了太多重复的工作：moon。",
+     "evidence_excerpt": "uld cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the moon light fell on the moon-white floo",
+     "recommendation": "让一个意象负责氛围，下一拍靠物件、决定或身体位置推进。",
+     "needle": "moon",
+     "anchor": "text",
+     "signal_id": "rules:image_field_reuse:46dcd4dd",
+     "source": "rules",
+     "label": "意象场复用",
+     "issue_en": "The atmospheric image field is doing too much repeated work: light, moon, rain.",
+     "recommendation_en": "Let one image carry mood, and make the next beat change through an object, decision, or body position."
+    },
+    {
+     "dimension": "perception_filter",
+     "severity": "revision",
+     "issue": "叙述用「she noticed」这类感知动词转述，而不是直接呈现。",
+     "evidence_excerpt": " the archive or the child, and every choice would cost her something. She noticed the rain. Somehow meaningful, the moon hung over the station, and the",
+     "recommendation": "删掉感知动词，让刺激直接落成动作、物件或感官细节。",
+     "needle": "she noticed",
+     "anchor": "text",
+     "signal_id": "rules:perception_filter:451337ba",
+     "source": "rules",
+     "label": "感知过滤",
+     "issue_en": "The narration routes sensation through a perception verb instead of rendering the stimulus directly.",
+     "recommendation_en": "Delete the perception verb and let the stimulus land as action, object, or sensory detail."
+    }
+   ],
+   "fingerprint": {
+    "action_templates": [],
+    "image_fields": [
+     {
+      "value": "moon",
+      "count": 3
+     },
+     {
+      "value": "light",
+      "count": 1
+     },
+     {
+      "value": "rain",
+      "count": 1
+     },
+     {
+      "value": "door",
+      "count": 1
+     },
+     {
+      "value": "key",
+      "count": 1
+     }
+    ],
+    "syntax_shapes": [
+     {
+      "value": "comma:0:len:2",
+      "count": 1
+     },
+     {
+      "value": "comma:1:len:4",
+      "count": 1
+     },
+     {
+      "value": "comma:0:len:1",
+      "count": 1
+     },
+     {
+      "value": "comma:2:len:4",
+      "count": 1
+     },
+     {
+      "value": "comma:0:len:3",
+      "count": 1
+     }
+    ],
+    "false_clarity": [],
+    "summary_ending": [],
+    "dialogue_exposition": [],
+    "choice_pressure": [
+     "had to choose",
+     "or the"
+    ],
+    "perception_filter": [
+     "she noticed",
+     "he noticed"
+    ]
+   },
+   "adversarial_rank_score": 0.7841
+  },
+  "mechanical_loop": {
+   "signals": {
+    "model_voice": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_homogeneity": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，"
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_field_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "syntax_monotony": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边"
+    },
+    "self_repetition": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "他把目光重新移回那扇紧闭的门边"
+    },
+    "false_clarity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "dialogue_as_report": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "no_choice_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。"
+    },
+    "summary_ending": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。"
+    },
+    "ending_drive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。"
+    },
+    "conflict_too_clean": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "decorative_imagery": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "over_explained_motive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_poetic_closure": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "perception_filter": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "automated_evidence_sufficiency": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": "88 substantive characters; 6 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "image_homogeneity",
+     "severity": "taste",
+     "issue": "The same image field repeats too often: 门.",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，",
+     "recommendation": "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail.",
+     "needle": "门",
+     "anchor": "text"
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "taste",
+     "issue": "Several consecutive sentences use the same syntactic shape.",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边",
+     "recommendation": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture.",
+     "needle": "他把目光重新移回那扇紧闭的门边",
+     "anchor": "text"
+    },
+    {
+     "dimension": "self_repetition",
+     "severity": "revision",
+     "issue": "The passage repeats a substantive sentence verbatim.",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边",
+     "recommendation": "Keep the fact once; replace the repeated sentence with a new consequence, reaction, or information beat.",
+     "needle": "他把目光重新移回那扇紧闭的门边",
+     "anchor": "text"
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "The passage does not show a clear choice on the page.",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。",
+     "recommendation": "Give the character two incompatible options and make one option visibly cost something.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "",
+     "anchor": "scene"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "image_homogeneity",
+     "severity": "taste",
+     "issue": "同一个意象反复出现：门。",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，",
+     "recommendation": "留一个锚定意象，其余靠动作、物件、温度、声音或空间变化换质感。",
+     "needle": "门",
+     "anchor": "text",
+     "signal_id": "rules:image_homogeneity:57b3e135",
+     "source": "rules",
+     "label": "意象同质",
+     "issue_en": "The same image field repeats too often: 门.",
+     "recommendation_en": "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail."
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "taste",
+     "issue": "连续几句用了同一种句式。",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边 / 他把目光重新移回那扇紧闭的门边",
+     "recommendation": "用一个短句、一个压住不说的反应，或从后果开头的句子打断节奏。",
+     "needle": "他把目光重新移回那扇紧闭的门边",
+     "anchor": "text",
+     "signal_id": "rules:syntax_monotony:7b81e679",
+     "source": "rules",
+     "label": "句式单调",
+     "issue_en": "Several consecutive sentences use the same syntactic shape.",
+     "recommendation_en": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture."
+    },
+    {
+     "dimension": "self_repetition",
+     "severity": "revision",
+     "issue": "有一句实质内容被逐字重复。",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边",
+     "recommendation": "事实只说一次；把重复的句子换成新的后果、反应或信息。",
+     "needle": "他把目光重新移回那扇紧闭的门边",
+     "anchor": "text",
+     "signal_id": "rules:self_repetition:7b81e679",
+     "source": "rules",
+     "label": "自我重复",
+     "issue_en": "The passage repeats a substantive sentence verbatim.",
+     "recommendation_en": "Keep the fact once; replace the repeated sentence with a new consequence, reaction, or information beat."
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "这一场在纸面上看不到明确的抉择。",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。",
+     "recommendation": "给人物两个不能兼得的选项，让其中一个看得见地付出代价。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:no_choice_scene:scene",
+     "source": "rules",
+     "label": "无抉择场景",
+     "issue_en": "The passage does not show a clear choice on the page.",
+     "recommendation_en": "Give the character two incompatible options and make one option visibly cost something."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他把目光重新移回那扇紧闭的门边。他转身，转身，又转身，走到窗前。门开了，门又关上，门外有光，光落在门上。",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:painless_scene:scene",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    }
+   ],
+   "fingerprint": {
+    "action_templates": [
+     {
+      "value": "action:转身",
+      "count": 1
+     }
+    ],
+    "image_fields": [
+     {
+      "value": "门",
+      "count": 8
+     },
+     {
+      "value": "光",
+      "count": 6
+     }
+    ],
+    "syntax_shapes": [
+     {
+      "value": "comma:0:len:1",
+      "count": 4
+     },
+     {
+      "value": "comma:3:len:1",
+      "count": 2
+     }
+    ],
+    "false_clarity": [],
+    "summary_ending": [],
+    "dialogue_exposition": [],
+    "choice_pressure": [],
+    "perception_filter": []
+   },
+   "adversarial_rank_score": 0.6364
+  },
+  "short": {
+   "signals": {
+    "model_voice": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_homogeneity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_field_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "syntax_monotony": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "dialogue_as_report": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "no_choice_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她推开门。"
+    },
+    "summary_ending": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她推开门。"
+    },
+    "ending_drive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她推开门。"
+    },
+    "conflict_too_clean": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "decorative_imagery": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "over_explained_motive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_poetic_closure": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "perception_filter": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "automated_evidence_sufficiency": {
+     "risk": true,
+     "score": 0.3333,
+     "evidence": "4 substantive characters; 1 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "The passage does not show a clear choice on the page.",
+     "evidence_excerpt": "她推开门。",
+     "recommendation": "Give the character two incompatible options and make one option visibly cost something.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "她推开门。",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "她推开门。",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "",
+     "anchor": "scene"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "这一场在纸面上看不到明确的抉择。",
+     "evidence_excerpt": "她推开门。",
+     "recommendation": "给人物两个不能兼得的选项，让其中一个看得见地付出代价。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:no_choice_scene:scene",
+     "source": "rules",
+     "label": "无抉择场景",
+     "issue_en": "The passage does not show a clear choice on the page.",
+     "recommendation_en": "Give the character two incompatible options and make one option visibly cost something."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "她推开门。",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "她推开门。",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:painless_scene:scene",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    }
+   ],
+   "fingerprint": {
+    "action_templates": [],
+    "image_fields": [
+     {
+      "value": "门",
+      "count": 1
+     }
+    ],
+    "syntax_shapes": [
+     {
+      "value": "comma:0:len:0",
+      "count": 1
+     }
+    ],
+    "false_clarity": [],
+    "summary_ending": [],
+    "dialogue_exposition": [],
+    "choice_pressure": [],
+    "perception_filter": []
+   },
+   "adversarial_rank_score": 0.4378
+  },
+  "empty": {
+   "signals": {
+    "model_voice": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_homogeneity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_field_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "syntax_monotony": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "dialogue_as_report": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "no_choice_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": ""
+    },
+    "summary_ending": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": ""
+    },
+    "ending_drive": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": ""
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": ""
+    },
+    "conflict_too_clean": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "decorative_imagery": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "over_explained_motive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_poetic_closure": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "perception_filter": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "automated_evidence_sufficiency": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "0 substantive characters; 0 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "The passage does not show a clear choice on the page.",
+     "evidence_excerpt": "",
+     "recommendation": "Give the character two incompatible options and make one option visibly cost something.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "The final beat does not push the reader into the next scene.",
+     "evidence_excerpt": "",
+     "recommendation": "End with a new action, object movement, arrival, departure, reveal, or refusal.",
+     "needle": "",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "",
+     "anchor": "scene"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "这一场在纸面上看不到明确的抉择。",
+     "evidence_excerpt": "",
+     "recommendation": "给人物两个不能兼得的选项，让其中一个看得见地付出代价。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:no_choice_scene:scene",
+     "source": "rules",
+     "label": "无抉择场景",
+     "issue_en": "The passage does not show a clear choice on the page.",
+     "recommendation_en": "Give the character two incompatible options and make one option visibly cost something."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "revision",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "最后一拍没有把读者推进下一场。",
+     "evidence_excerpt": "",
+     "recommendation": "用新的动作、物件移动、到来、离开、揭露或拒绝收尾。",
+     "needle": "",
+     "anchor": "ending",
+     "signal_id": "rules:ending_drive:ending",
+     "source": "rules",
+     "label": "收束驱动",
+     "issue_en": "The final beat does not push the reader into the next scene.",
+     "recommendation_en": "End with a new action, object movement, arrival, departure, reveal, or refusal."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:painless_scene:scene",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    }
+   ],
+   "fingerprint": {
+    "action_templates": [],
+    "image_fields": [],
+    "syntax_shapes": [],
+    "false_clarity": [],
+    "summary_ending": [],
+    "dialogue_exposition": [],
+    "choice_pressure": [],
+    "perception_filter": []
+   },
+   "adversarial_rank_score": 0.0
+  }
+ },
+ "calibrated": {
+  "template_reuse": {
+   "signals": {
+    "model_voice": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "image_homogeneity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻"
+    },
+    "image_field_reuse": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "syntax_monotony": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻"
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "dialogue_as_report": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "no_choice_scene": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "summary_ending": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "ending_drive": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "conflict_too_clean": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "decorative_imagery": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "over_explained_motive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_poetic_closure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    },
+    "perception_filter": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "automated_evidence_sufficiency": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": "82 substantive characters; 6 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "Possible model voice or generic emotional shortcut.",
+     "evidence_excerpt": "看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
+     "needle": "忽然意识到",
+     "anchor": "text"
+    },
+    {
+     "dimension": "template_action_reuse",
+     "severity": "info",
+     "issue": "Action beats are repeating the same sentence template.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻",
+     "recommendation": "Keep one beat, then vary blocking, object movement, silence, or relational pressure.",
+     "needle": "她低头看着钥匙，沉默了片刻",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "profile_deliberate_repetition",
+      "level": "habit",
+      "share": 0.0,
+      "lower_bound": 0.0,
+      "n": 0
+     }
+    },
+    {
+     "dimension": "image_field_reuse",
+     "severity": "info",
+     "issue": "The atmospheric image field is doing too much repeated work: 光, 冷, 影, 月, 阴影.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Let one image carry mood, and make the next beat change through an object, decision, or body position.",
+     "needle": "月",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "profile_deliberate_repetition",
+      "level": "habit",
+      "share": 0.0,
+      "lower_bound": 0.0,
+      "n": 0
+     }
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "info",
+     "issue": "Several consecutive sentences use the same syntactic shape.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻",
+     "recommendation": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture.",
+     "needle": "她低头看着钥匙，沉默了片刻",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "habit",
+      "share": 0.833,
+      "lower_bound": 0.75,
+      "n": 48
+     }
+    },
+    {
+     "dimension": "false_clarity",
+     "severity": "revision",
+     "issue": "The passage tells the reader what became clear instead of letting pressure reveal it.",
+     "evidence_excerpt": "看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference.",
+     "needle": "她知道",
+     "anchor": "text"
+    },
+    {
+     "dimension": "summary_ending",
+     "severity": "revision",
+     "issue": "The ending explains the effect instead of landing on an action or image.",
+     "evidence_excerpt": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Cut the summarizing sentence and end on the last irreversible action.",
+     "needle": "一切都",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "taste",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "common",
+      "share": 0.417,
+      "lower_bound": 0.33,
+      "n": 48
+     }
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "The final beat does not push the reader into the next scene.",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "End with a new action, object movement, arrival, departure, reveal, or refusal.",
+     "needle": "",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "必须",
+     "anchor": "text"
+    },
+    {
+     "dimension": "false_poetic_closure",
+     "severity": "revision",
+     "issue": "The ending closes with poetic certainty rather than a hard next-scene action.",
+     "evidence_excerpt": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance.",
+     "needle": "一切都变得",
+     "anchor": "ending"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "「忽然意识到」像模型腔，或一句空泛的情绪捷径。",
+     "evidence_excerpt": "看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "把抽象的「领悟」换成具体的选择、动作或感官后果。",
+     "needle": "忽然意识到",
+     "anchor": "text",
+     "signal_id": "rules:model_voice:6636593e",
+     "source": "rules",
+     "label": "模型腔",
+     "issue_en": "Possible model voice or generic emotional shortcut.",
+     "recommendation_en": "Replace abstract realization with a concrete choice, gesture, or sensory consequence."
+    },
+    {
+     "dimension": "template_action_reuse",
+     "severity": "info",
+     "issue": "动作节拍在重复同一个句子模板。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻",
+     "recommendation": "留一拍，其余变换走位、物件、沉默或人物之间的压力。",
+     "needle": "她低头看着钥匙，沉默了片刻",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "profile_deliberate_repetition",
+      "level": "habit",
+      "share": 0.0,
+      "lower_bound": 0.0,
+      "n": 0
+     },
+     "signal_id": "rules:template_action_reuse:cf23dd60",
+     "source": "rules",
+     "label": "模板动作复用",
+     "issue_en": "Action beats are repeating the same sentence template.",
+     "recommendation_en": "Keep one beat, then vary blocking, object movement, silence, or relational pressure."
+    },
+    {
+     "dimension": "image_field_reuse",
+     "severity": "info",
+     "issue": "氛围意象承担了太多重复的工作：月。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "让一个意象负责氛围，下一拍靠物件、决定或身体位置推进。",
+     "needle": "月",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "profile_deliberate_repetition",
+      "level": "habit",
+      "share": 0.0,
+      "lower_bound": 0.0,
+      "n": 0
+     },
+     "signal_id": "rules:image_field_reuse:d9b59879",
+     "source": "rules",
+     "label": "意象场复用",
+     "issue_en": "The atmospheric image field is doing too much repeated work: 光, 冷, 影, 月, 阴影.",
+     "recommendation_en": "Let one image carry mood, and make the next beat change through an object, decision, or body position."
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "info",
+     "issue": "连续几句用了同一种句式。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻 / 他低头看着录音，沉默了片刻 / 她低头看着门缝，沉默了片刻",
+     "recommendation": "用一个短句、一个压住不说的反应，或从后果开头的句子打断节奏。",
+     "needle": "她低头看着钥匙，沉默了片刻",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "habit",
+      "share": 0.833,
+      "lower_bound": 0.75,
+      "n": 48
+     },
+     "signal_id": "rules:syntax_monotony:cf23dd60",
+     "source": "rules",
+     "label": "句式单调",
+     "issue_en": "Several consecutive sentences use the same syntactic shape.",
+     "recommendation_en": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture."
+    },
+    {
+     "dimension": "false_clarity",
+     "severity": "revision",
+     "issue": "把本该由压力揭示的东西直接告诉了读者（「她知道」）。",
+     "evidence_excerpt": "看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "删掉解释，让选择、拒绝、交出物件或沉默替读者推断。",
+     "needle": "她知道",
+     "anchor": "text",
+     "signal_id": "rules:false_clarity:d1b6f2ab",
+     "source": "rules",
+     "label": "虚假清晰",
+     "issue_en": "The passage tells the reader what became clear instead of letting pressure reveal it.",
+     "recommendation_en": "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference."
+    },
+    {
+     "dimension": "summary_ending",
+     "severity": "revision",
+     "issue": "结尾在解释效果（「一切都」），而不是落在动作或画面上。",
+     "evidence_excerpt": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "删掉概括句，停在最后一个不可逆的动作上。",
+     "needle": "一切都",
+     "anchor": "ending",
+     "signal_id": "rules:summary_ending:4747a9ed",
+     "source": "rules",
+     "label": "概述式收尾",
+     "issue_en": "The ending explains the effect instead of landing on an action or image.",
+     "recommendation_en": "Cut the summarizing sentence and end on the last irreversible action."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "taste",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "common",
+      "share": 0.417,
+      "lower_bound": 0.33,
+      "n": 48
+     },
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "最后一拍没有把读者推进下一场。",
+     "evidence_excerpt": "她低头看着钥匙，沉默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "用新的动作、物件移动、到来、离开、揭露或拒绝收尾。",
+     "needle": "",
+     "anchor": "ending",
+     "signal_id": "rules:ending_drive:ending",
+     "source": "rules",
+     "label": "收束驱动",
+     "issue_en": "The final beat does not push the reader into the next scene.",
+     "recommendation_en": "End with a new action, object movement, arrival, departure, reveal, or refusal."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "必须",
+     "anchor": "text",
+     "signal_id": "rules:painless_scene:890e87b3",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    },
+    {
+     "dimension": "false_poetic_closure",
+     "severity": "revision",
+     "issue": "结尾用诗意的笃定（「一切都变得」）收束，而不是一个硬的下一步动作。",
+     "evidence_excerpt": "默了片刻。 他低头看着录音，沉默了片刻。 她低头看着门缝，沉默了片刻。 月光、阴影、冷风和雾气反复压下来，月光又落在她手上。 她忽然意识到这一切都变得不同了。她知道真相必须公开。",
+     "recommendation": "停在看得见的动作、交出的物件、拒绝、离开或不可逆的揭露上。",
+     "needle": "一切都变得",
+     "anchor": "ending",
+     "signal_id": "rules:false_poetic_closure:502c86f3",
+     "source": "rules",
+     "label": "伪诗意收束",
+     "issue_en": "The ending closes with poetic certainty rather than a hard next-scene action.",
+     "recommendation_en": "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance."
+    }
+   ],
+   "waived": [
+    {
+     "term": "月光",
+     "count": 2,
+     "reference_per_10k": 9.0,
+     "expected": 2.16,
+     "probability": 0.636
+    }
+   ]
+  },
+  "dialogue_report": {
+   "signals": {
+    "model_voice": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "image_homogeneity": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，"
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_field_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "syntax_monotony": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷 / ”老周说 / ”她觉得窗外的雨更冷了"
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。"
+    },
+    "dialogue_as_report": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。"
+    },
+    "no_choice_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "summary_ending": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "ending_drive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。"
+    },
+    "conflict_too_clean": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "decorative_imagery": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "over_explained_motive": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧"
+    },
+    "false_poetic_closure": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "perception_filter": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "automated_evidence_sufficiency": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": "95 substantive characters; 7 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "Possible model voice or generic emotional shortcut.",
+     "evidence_excerpt": "证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
+     "needle": "深吸一口气",
+     "anchor": "text"
+    },
+    {
+     "dimension": "image_homogeneity",
+     "severity": "info",
+     "issue": "The same image field repeats too often: 雨.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，",
+     "recommendation": "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail.",
+     "needle": "雨",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "profile_deliberate_repetition",
+      "level": "habit",
+      "share": 0.0,
+      "lower_bound": 0.0,
+      "n": 0
+     }
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "info",
+     "issue": "Several consecutive sentences use the same syntactic shape.",
+     "evidence_excerpt": "林昭把旧信放回案卷 / ”老周说 / ”她觉得窗外的雨更冷了",
+     "recommendation": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture.",
+     "needle": "林昭把旧信放回案卷",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "habit",
+      "share": 0.833,
+      "lower_bound": 0.75,
+      "n": 48
+     }
+    },
+    {
+     "dimension": "expository_dialogue",
+     "severity": "revision",
+     "issue": "Dialogue is carrying explanation instead of pressure or subtext.",
+     "evidence_excerpt": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。",
+     "recommendation": "Move the fact into gesture, silence, contradiction, or a partial answer.",
+     "needle": "其实",
+     "anchor": "text"
+    },
+    {
+     "dimension": "dialogue_as_report",
+     "severity": "revision",
+     "issue": "Dialogue is reporting plot information instead of changing pressure between characters.",
+     "evidence_excerpt": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。",
+     "recommendation": "Turn the fact into a withheld answer, accusation, bargaining chip, or relationship wound.",
+     "needle": "真相是",
+     "anchor": "text"
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "The passage does not show a clear choice on the page.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "Give the character two incompatible options and make one option visibly cost something.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "taste",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "common",
+      "share": 0.417,
+      "lower_bound": 0.33,
+      "n": 48
+     }
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "over_explained_motive",
+     "severity": "revision",
+     "issue": "The motive is being explained directly instead of being pressured into action or omission.",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧",
+     "recommendation": "Let the reader infer motive from what the character refuses, delays, hides, or chooses under pressure.",
+     "needle": "为了",
+     "anchor": "text"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "「深吸一口气」像模型腔，或一句空泛的情绪捷径。",
+     "evidence_excerpt": "证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "把抽象的「领悟」换成具体的选择、动作或感官后果。",
+     "needle": "深吸一口气",
+     "anchor": "text",
+     "signal_id": "rules:model_voice:55db430e",
+     "source": "rules",
+     "label": "模型腔",
+     "issue_en": "Possible model voice or generic emotional shortcut.",
+     "recommendation_en": "Replace abstract realization with a concrete choice, gesture, or sensory consequence."
+    },
+    {
+     "dimension": "image_homogeneity",
+     "severity": "info",
+     "issue": "同一个意象反复出现：雨。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，",
+     "recommendation": "留一个锚定意象，其余靠动作、物件、温度、声音或空间变化换质感。",
+     "needle": "雨",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "profile_deliberate_repetition",
+      "level": "habit",
+      "share": 0.0,
+      "lower_bound": 0.0,
+      "n": 0
+     },
+     "signal_id": "rules:image_homogeneity:8995b897",
+     "source": "rules",
+     "label": "意象同质",
+     "issue_en": "The same image field repeats too often: 雨.",
+     "recommendation_en": "Keep one anchor image, then vary texture through action, object, temperature, sound, or spatial detail."
+    },
+    {
+     "dimension": "syntax_monotony",
+     "severity": "info",
+     "issue": "连续几句用了同一种句式。",
+     "evidence_excerpt": "林昭把旧信放回案卷 / ”老周说 / ”她觉得窗外的雨更冷了",
+     "recommendation": "用一个短句、一个压住不说的反应，或从后果开头的句子打断节奏。",
+     "needle": "林昭把旧信放回案卷",
+     "anchor": "text",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "habit",
+      "share": 0.833,
+      "lower_bound": 0.75,
+      "n": 48
+     },
+     "signal_id": "rules:syntax_monotony:1578f838",
+     "source": "rules",
+     "label": "句式单调",
+     "issue_en": "Several consecutive sentences use the same syntactic shape.",
+     "recommendation_en": "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture."
+    },
+    {
+     "dimension": "expository_dialogue",
+     "severity": "revision",
+     "issue": "对白在做解释（「其实」），而不是施压或留潜台词。",
+     "evidence_excerpt": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。",
+     "recommendation": "把事实挪进动作、沉默、矛盾或只答一半的回答里。",
+     "needle": "其实",
+     "anchor": "text",
+     "signal_id": "rules:expository_dialogue:b533bc82",
+     "source": "rules",
+     "label": "说明式对白",
+     "issue_en": "Dialogue is carrying explanation instead of pressure or subtext.",
+     "recommendation_en": "Move the fact into gesture, silence, contradiction, or a partial answer."
+    },
+    {
+     "dimension": "dialogue_as_report",
+     "severity": "revision",
+     "issue": "对白在汇报情节（「真相是」），没有改变人物之间的压力。",
+     "evidence_excerpt": "你知道，其实我解释过，真相是他为了保护证人才离开雨城。",
+     "recommendation": "把事实变成不肯回答的问题、指控、筹码或关系里的伤口。",
+     "needle": "真相是",
+     "anchor": "text",
+     "signal_id": "rules:dialogue_as_report:0211f234",
+     "source": "rules",
+     "label": "对白即汇报",
+     "issue_en": "Dialogue is reporting plot information instead of changing pressure between characters.",
+     "recommendation_en": "Turn the fact into a withheld answer, accusation, bargaining chip, or relationship wound."
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "这一场在纸面上看不到明确的抉择。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "给人物两个不能兼得的选项，让其中一个看得见地付出代价。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:no_choice_scene:scene",
+     "source": "rules",
+     "label": "无抉择场景",
+     "issue_en": "The passage does not show a clear choice on the page.",
+     "recommendation_en": "Give the character two incompatible options and make one option visibly cost something."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "taste",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "common",
+      "share": 0.417,
+      "lower_bound": 0.33,
+      "n": 48
+     },
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧信，深吸一口气，把案卷推开。",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:painless_scene:scene",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    },
+    {
+     "dimension": "over_explained_motive",
+     "severity": "revision",
+     "issue": "动机被直接解释（「为了」），而不是被逼成行动或省略。",
+     "evidence_excerpt": "林昭把旧信放回案卷。“你知道，其实我解释过，真相是他为了保护证人才离开雨城。”老周说。“官方报告里写得很清楚，这是因为那晚的雨。”她觉得窗外的雨更冷了。因为她害怕，所以她没有回答。她不禁想起那封旧",
+     "recommendation": "让读者从人物拒绝、拖延、隐瞒或在压力下的选择里推断动机。",
+     "needle": "为了",
+     "anchor": "text",
+     "signal_id": "rules:over_explained_motive:823c6652",
+     "source": "rules",
+     "label": "过度解释动机",
+     "issue_en": "The motive is being explained directly instead of being pressured into action or omission.",
+     "recommendation_en": "Let the reader infer motive from what the character refuses, delays, hides, or chooses under pressure."
+    }
+   ],
+   "waived": [
+    {
+     "term": "不禁",
+     "count": 1,
+     "reference_per_10k": 5.0,
+     "expected": 1.2,
+     "probability": 0.699
+    },
+    {
+     "term": "她觉得",
+     "count": 1,
+     "reference_per_10k": 3.0,
+     "expected": 0.72,
+     "probability": 0.513
+    }
+   ]
+  },
+  "conflict_clean": {
+   "signals": {
+    "model_voice": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "image_homogeneity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "repetitive_action": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "template_action_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "image_field_reuse": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "syntax_monotony": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "self_repetition": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_clarity": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "valid_ambiguity": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "expository_dialogue": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "dialogue_as_report": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "no_choice_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "summary_ending": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "choice_pressure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "ending_drive": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "painless_scene": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "conflict_too_clean": {
+     "risk": true,
+     "score": 0.42,
+     "evidence": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有"
+    },
+    "decorative_imagery": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "over_explained_motive": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "false_poetic_closure": {
+     "risk": true,
+     "score": 0.0,
+     "evidence": "为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。"
+    },
+    "perception_filter": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": ""
+    },
+    "automated_evidence_sufficiency": {
+     "risk": false,
+     "score": 1.0,
+     "evidence": "100 substantive characters; 6 sentence units; targets=80/3",
+     "diagnostic_only": true,
+     "human_judgment_required": true
+    }
+   },
+   "findings": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "Possible model voice or generic emotional shortcut.",
+     "evidence_excerpt": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
+     "needle": "仿佛命运",
+     "anchor": "text"
+    },
+    {
+     "dimension": "false_clarity",
+     "severity": "revision",
+     "issue": "The passage tells the reader what became clear instead of letting pressure reveal it.",
+     "evidence_excerpt": "，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference.",
+     "needle": "她知道",
+     "anchor": "text"
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "The passage does not show a clear choice on the page.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Give the character two incompatible options and make one option visibly cost something.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "summary_ending",
+     "severity": "revision",
+     "issue": "The ending explains the effect instead of landing on an action or image.",
+     "evidence_excerpt": "交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Cut the summarizing sentence and end on the last irreversible action.",
+     "needle": "这一刻",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "taste",
+     "issue": "The choice lacks visible pressure or price.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "State the tradeoff through action: what is lost, risked, or refused because of the choice.",
+     "needle": "",
+     "anchor": "scene",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "common",
+      "share": 0.417,
+      "lower_bound": 0.33,
+      "n": 48
+     }
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "The final beat does not push the reader into the next scene.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "End with a new action, object movement, arrival, departure, reveal, or refusal.",
+     "needle": "",
+     "anchor": "ending"
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+     "needle": "",
+     "anchor": "scene"
+    },
+    {
+     "dimension": "conflict_too_clean",
+     "severity": "revision",
+     "issue": "Conflict resolves too cleanly: 6 conflict signals vs 7 reconciliation signals in close proximity. Characters understand each other too quickly.",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有",
+     "recommendation": "Leave residual friction: an unspoken resentment, a half-lie accepted, or agreement that costs something the character didn't want to give.",
+     "needle": "争吵",
+     "anchor": "text"
+    },
+    {
+     "dimension": "decorative_imagery",
+     "severity": "taste",
+     "issue": "The image work is carrying atmosphere more than action, relationship, information, or theme pressure.",
+     "evidence_excerpt": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "Keep the strongest image only if it changes what a character does, reveals a withheld fact, or sharpens the cost of the choice.",
+     "needle": "仿佛命运",
+     "anchor": "text"
+    },
+    {
+     "dimension": "false_poetic_closure",
+     "severity": "revision",
+     "issue": "The ending closes with poetic certainty rather than a hard next-scene action.",
+     "evidence_excerpt": "为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance.",
+     "needle": "一切都变得",
+     "anchor": "ending"
+    }
+   ],
+   "unified": [
+    {
+     "dimension": "model_voice",
+     "severity": "revision",
+     "issue": "「仿佛命运」像模型腔，或一句空泛的情绪捷径。",
+     "evidence_excerpt": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "把抽象的「领悟」换成具体的选择、动作或感官后果。",
+     "needle": "仿佛命运",
+     "anchor": "text",
+     "signal_id": "rules:model_voice:21a8c532",
+     "source": "rules",
+     "label": "模型腔",
+     "issue_en": "Possible model voice or generic emotional shortcut.",
+     "recommendation_en": "Replace abstract realization with a concrete choice, gesture, or sensory consequence."
+    },
+    {
+     "dimension": "false_clarity",
+     "severity": "revision",
+     "issue": "把本该由压力揭示的东西直接告诉了读者（「她知道」）。",
+     "evidence_excerpt": "，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "删掉解释，让选择、拒绝、交出物件或沉默替读者推断。",
+     "needle": "她知道",
+     "anchor": "text",
+     "signal_id": "rules:false_clarity:d1b6f2ab",
+     "source": "rules",
+     "label": "虚假清晰",
+     "issue_en": "The passage tells the reader what became clear instead of letting pressure reveal it.",
+     "recommendation_en": "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference."
+    },
+    {
+     "dimension": "no_choice_scene",
+     "severity": "revision",
+     "issue": "这一场在纸面上看不到明确的抉择。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "给人物两个不能兼得的选项，让其中一个看得见地付出代价。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:no_choice_scene:scene",
+     "source": "rules",
+     "label": "无抉择场景",
+     "issue_en": "The passage does not show a clear choice on the page.",
+     "recommendation_en": "Give the character two incompatible options and make one option visibly cost something."
+    },
+    {
+     "dimension": "summary_ending",
+     "severity": "revision",
+     "issue": "结尾在解释效果（「这一刻」），而不是落在动作或画面上。",
+     "evidence_excerpt": "交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "删掉概括句，停在最后一个不可逆的动作上。",
+     "needle": "这一刻",
+     "anchor": "ending",
+     "signal_id": "rules:summary_ending:140f8b18",
+     "source": "rules",
+     "label": "概述式收尾",
+     "issue_en": "The ending explains the effect instead of landing on an action or image.",
+     "recommendation_en": "Cut the summarizing sentence and end on the last irreversible action."
+    },
+    {
+     "dimension": "choice_pressure",
+     "severity": "taste",
+     "issue": "抉择缺少看得见的压力或代价。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "用动作写出这个选择丢掉、冒险或拒绝了什么。",
+     "needle": "",
+     "anchor": "scene",
+     "calibrated": {
+      "kind": "dimension_habit",
+      "level": "common",
+      "share": 0.417,
+      "lower_bound": 0.33,
+      "n": 48
+     },
+     "signal_id": "rules:choice_pressure:scene",
+     "source": "rules",
+     "label": "抉择压力",
+     "issue_en": "The choice lacks visible pressure or price.",
+     "recommendation_en": "State the tradeoff through action: what is lost, risked, or refused because of the choice."
+    },
+    {
+     "dimension": "ending_drive",
+     "severity": "revision",
+     "issue": "最后一拍没有把读者推进下一场。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "用新的动作、物件移动、到来、离开、揭露或拒绝收尾。",
+     "needle": "",
+     "anchor": "ending",
+     "signal_id": "rules:ending_drive:ending",
+     "source": "rules",
+     "label": "收束驱动",
+     "issue_en": "The final beat does not push the reader into the next scene.",
+     "recommendation_en": "End with a new action, object movement, arrival, departure, reveal, or refusal."
+    },
+    {
+     "dimension": "painless_scene",
+     "severity": "revision",
+     "issue": "结构也许清楚，但没有人疼：看不到具体的损失、背叛、风险或牺牲。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "让人物在纸面上付出代价：丢掉资源、伤一段关系、藏起什么，或背弃一个价值。",
+     "needle": "",
+     "anchor": "scene",
+     "signal_id": "rules:painless_scene:scene",
+     "source": "rules",
+     "label": "无痛场景",
+     "issue_en": "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+     "recommendation_en": "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another."
+    },
+    {
+     "dimension": "conflict_too_clean",
+     "severity": "revision",
+     "issue": "冲突解决得太干净：「争吵」之后人物很快就互相理解了。",
+     "evidence_excerpt": "雨城的码头上，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有",
+     "recommendation": "留下代价或余波：一句没说出口的怨、一个被接受的半谎，或一个人物本不想给的让步。",
+     "needle": "争吵",
+     "anchor": "text",
+     "signal_id": "rules:conflict_too_clean:813c48d6",
+     "source": "rules",
+     "label": "冲突过净",
+     "issue_en": "Conflict resolves too cleanly: 6 conflict signals vs 7 reconciliation signals in close proximity. Characters understand each other too quickly.",
+     "recommendation_en": "Leave residual friction: an unspoken resentment, a half-lie accepted, or agreement that costs something the character didn't want to give."
+    },
+    {
+     "dimension": "decorative_imagery",
+     "severity": "taste",
+     "issue": "意象（「仿佛命运」等）更多在渲染氛围，没有推动行动、关系、信息或主题。",
+     "evidence_excerpt": "，两个人争吵起来。林昭愤怒地质问他为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "只留下能改变人物行为、揭出隐瞒或加重代价的那个意象。",
+     "needle": "仿佛命运",
+     "anchor": "text",
+     "signal_id": "rules:decorative_imagery:21a8c532",
+     "source": "rules",
+     "label": "装饰性意象",
+     "issue_en": "The image work is carrying atmosphere more than action, relationship, information, or theme pressure.",
+     "recommendation_en": "Keep the strongest image only if it changes what a character does, reveals a withheld fact, or sharpens the cost of the choice."
+    },
+    {
+     "dimension": "false_poetic_closure",
+     "severity": "revision",
+     "issue": "结尾用诗意的笃定（「一切都变得」）收束，而不是一个硬的下一步动作。",
+     "evidence_excerpt": "为什么藏起旧信。他反驳，又拒绝交出案卷。片刻之后，她叹气，点头，理解了他的苦衷，两人握手和好，微笑着释然。仿佛命运早有安排，回声在雨里散开，一切都变得安静了。从此她知道，这一刻她明白了。",
+     "recommendation": "停在看得见的动作、交出的物件、拒绝、离开或不可逆的揭露上。",
+     "needle": "一切都变得",
+     "anchor": "ending",
+     "signal_id": "rules:false_poetic_closure:502c86f3",
+     "source": "rules",
+     "label": "伪诗意收束",
+     "issue_en": "The ending closes with poetic certainty rather than a hard next-scene action.",
+     "recommendation_en": "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance."
+    }
+   ],
+   "waived": [
+    {
+     "term": "仿佛",
+     "count": 1,
+     "reference_per_10k": 12.0,
+     "expected": 2.88,
+     "probability": 0.944
+    }
+   ]
+  }
+ },
+ "candidate_dispersion": 0.9045,
+ "calibration": {
+  "source": "reference",
+  "windows": 48,
+  "endings": 12,
+  "endings_source": "units",
+  "chars": 100000,
+  "deliberate_repetition": true,
+  "thresholds": {
+   "needle_tail_alpha": 0.1,
+   "judge_window_chars": 2400,
+   "dimension_habit_share": 0.5,
+   "dimension_common_share": 0.25,
+   "confidence_z": 1.2816
+  },
+  "needle_count": 5,
+  "top_needles": [
+   {
+    "term": "仿佛",
+    "per_10k": 12.0
+   },
+   {
+    "term": "月光",
+    "per_10k": 9.0
+   },
+   {
+    "term": "不禁",
+    "per_10k": 5.0
+   },
+   {
+    "term": "她觉得",
+    "per_10k": 3.0
+   },
+   {
+    "term": "命运",
+    "per_10k": 0.2
+   }
+  ],
+  "habitual_needles": [
+   "仿佛",
+   "月光",
+   "不禁"
+  ],
+  "habitual_dimensions": [
+   "image_field_reuse",
+   "image_homogeneity",
+   "repetitive_action",
+   "self_repetition",
+   "syntax_monotony",
+   "template_action_reuse"
+  ],
+  "common_dimensions": [
+   "choice_pressure"
+  ],
+  "dimension_levels": {
+   "choice_pressure": {
+    "fired": 20,
+    "n": 48,
+    "share": 0.417,
+    "lower_bound": 0.33,
+    "level": "common"
+   },
+   "syntax_monotony": {
+    "fired": 40,
+    "n": 48,
+    "share": 0.833,
+    "lower_bound": 0.75,
+    "level": "habit"
+   }
+  }
+ },
+ "calibration_signature": "96da32105469"
+}
