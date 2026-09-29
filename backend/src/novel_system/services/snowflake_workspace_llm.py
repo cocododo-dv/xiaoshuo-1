@@ -32,9 +32,9 @@ from novel_system.services.snowflake_prompt_budget import (
     budget_audit_fields,
 )
 from novel_system.services.snowflake_steps import (
+    CONFIRMED_STEP_STATUSES,
     LONG_SYNOPSIS_PARAGRAPHS,
     RENDERING_MODES,
-    SCENE_FIELD_EXAMPLES,
     STEP_ORDER,
     diagnose_scene_detail,
     diagnose_step_pressure,
@@ -739,7 +739,6 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             step_ref=step_key,
             prompt_payload=prompt_payload,
             normalize_output=lambda output: _normalize_triage_output(output, draft),
-            fallback_payload={"items": _fallback_triage_items(draft)},
         )
 
     def chapter_plan_suggestions(
@@ -828,20 +827,14 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
         step_ref: str,
         prompt_payload: dict[str, Any],
         normalize_output: Callable[[dict[str, Any]], dict[str, Any]],
-        fallback_payload: dict[str, Any] | None = None,
         schema_step_key: str | None = None,
     ) -> WorkspaceLLMResult:
         """``schema_step_key``：按这一步的编辑器模板把模板 structured_schema 里没有 properties 的
         成员对象补全（见 ``enrich_structured_schema``）——下发给 provider 的 json_schema 与提示词
         点名的规范键一致，按 schema 约束解码的后端才写得出内容。"""
         if not self._llm_enabled():
-            # 主生成路径（generate_step）fail-closed：不再静默返回罐头稿，引导作者去配置。
-            # 顾问型端点（候选建议/驻场教练/场景急救）传入 fallback_payload → 诚实规则回退
-            # （source="fallback"，绝非伪造生成）。
-            if fallback_payload is not None:
-                return WorkspaceLLMResult(
-                    source="fallback", llm_call_id=None, payload=normalize(fallback_payload)
-                )
+            # 所有雪花 LLM 节点 fail-closed（作者 2026-09-15「没有模型就不兜底」）：整步生成、方向、教练、
+            # AI 分诊（B06-20）、分章建议与起章名都不拿规则结果冒充 AI 产出，引导作者去配置。
             raise DomainError(
                 "SNOWFLAKE_LLM_NOT_CONFIGURED",
                 "雪花工作台的 AI 生成需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。",
@@ -1176,8 +1169,6 @@ def _sanitize_canonical_draft(draft: dict[str, Any] | None) -> dict[str, Any]:
         payload["author_free_draft"] = free_text
     return payload
 
-
-CONFIRMED_STEP_STATUSES = {"approved", "skipped"}
 
 # 上游上下文的用法说明：状态是「这份材料有多稳」的提示，不是「要不要遵守」的开关。
 UPSTREAM_STEPS_HOW_TO_USE = (
@@ -1680,7 +1671,7 @@ def _normalize_assistant_output(
 
 
 def _normalize_triage_output(output: dict[str, Any], base_draft: dict[str, Any]) -> dict[str, Any]:
-    base_items = _fallback_triage_items(base_draft)
+    base_items = _triage_skeleton_items(base_draft)
     updates = {}
     for item in output.get("items") or []:
         if not isinstance(item, dict):
@@ -2400,102 +2391,32 @@ def _collection_id_key(collection_key: str | None) -> str | None:
     return None
 
 
-_FIELD_LABELS = {
-    "target_reader": "目标读者",
-    "summary": "概括",
-    "scenes": "场景",
-    "crucible": "坩埚",
-    "scene_crucible": "坩埚",
-    "goal": "目标",
-    "conflict": "冲突",
-    "setback": "挫折",
-    "reaction": "反应",
-    "dilemma": "困境",
-    "decision": "决定",
-    "exit_change": "离场变化",
-    "hook": "钩子",
-}
+def _triage_skeleton_items(draft: dict[str, Any]) -> list[dict[str, Any]]:
+    """AI 分诊的逐场底稿：身份 + 规则层的判定、缺口与修法——模型没判到（或给了非法判定）的场就是它。
 
-_DIAGNOSTIC_LABELS = {
-    "scene_core_empty": "场景核心为空",
-    "weak_crucible_pressure": "坩埚压力不足",
-    "weak_goal_specificity": "目标不够具体",
-    "weak_conflict_escalation": "冲突升级不足",
-    "weak_setback_cost": "挫折代价不足",
-    "weak_reaction_specificity": "反应不够具体",
-    "fake_dilemma": "困境不是真两难",
-    "weak_decision_next_goal": "决定没有引出下一目标",
-}
-
-
-def _field_label(value: str) -> str:
-    return _FIELD_LABELS.get(str(value or ""), str(value or "字段"))
-
-
-def _diagnostic_label(value: str) -> str:
-    key = str(value or "")
-    if key in _DIAGNOSTIC_LABELS:
-        return _DIAGNOSTIC_LABELS[key]
-    if key.startswith("missing_"):
-        return f"缺少{_field_label(key.removeprefix('missing_'))}"
-    if key.startswith("placeholder_"):
-        return f"{_field_label(key.removeprefix('placeholder_'))}仍是占位"
-    return key
-
-
-def _fallback_triage_items(draft: dict[str, Any]) -> list[dict[str, Any]]:
+    2026-09-30（B06-20）：AI 分诊 fail-closed 之后这里只是底稿，不再是「LLM 关闭时的规则回退」：不带规则套话
+    备注，也不带修复例句（``SCENE_FIELD_EXAMPLES`` 写进字段就是占位）当修复补丁。
+    """
     items = []
     for index, raw_scene in enumerate(draft.get("scenes") or [], start=1):
         if not isinstance(raw_scene, dict):
             continue
         diagnosis = diagnose_scene_detail(raw_scene, index=index)
         scene_type = str(diagnosis.get("primary_form") or diagnosis.get("scene_type") or "proactive").strip().lower() or "proactive"
-        status = str(diagnosis.get("recommended_status") or "maybe")
-        missing_fields = [str(field) for field in diagnosis.get("missing_fields") or []]
-        if status == "rewrite":
-            notes = "修复场景压力：场景核心太薄，需要重建前提和坩埚。"
-        elif status == "maybe":
-            readable_flags = "、".join(_diagnostic_label(flag) for flag in diagnosis.get("pressure_flags") or missing_fields)
-            notes = f"修复场景压力：{readable_flags}。"
-        else:
-            notes = "核心压力清楚，可以继续。"
         items.append(
             {
                 "scene_id": str(raw_scene.get("scene_id") or f"scene_{index:02d}"),
                 "title": str(raw_scene.get("title") or raw_scene.get("summary") or f"Scene {index:02d}"),
                 "primary_form": scene_type,
                 "scene_type": scene_type,
-                "status": status,
-                "notes": notes,
-                "missing_fields": missing_fields,
-                "fix_steps": diagnosis.get("fix_steps") or _fallback_fix_steps(scene_type, missing_fields, status),
-                "repair_patch": _fallback_repair_patch(scene_type, missing_fields, diagnosis.get("pressure_flags")),
+                "status": str(diagnosis.get("recommended_status") or "maybe"),
+                "notes": "",
+                "missing_fields": [str(field) for field in diagnosis.get("missing_fields") or []],
+                "fix_steps": list(diagnosis.get("fix_steps") or []),
+                "repair_patch": {},
             }
         )
     return items
-
-
-def _fallback_fix_steps(scene_type: str, missing_fields: list[str], status: str) -> list[str]:
-    if status == "pass":
-        return []
-    if status == "rewrite":
-        return ["围绕具体坩埚和可见压力转折重建这一场。"]
-    label = "反应/困境/决定" if scene_type == "reactive" else "目标/冲突/挫折"
-    return [f"补齐缺失的{label}字段：{'、'.join(_field_label(field) for field in missing_fields)}。"]
-
-
-def _fallback_repair_patch(
-    scene_type: str,
-    missing_fields: list[str],
-    pressure_flags: list[str] | None = None,
-) -> dict[str, str]:
-    # 例句与 snowflake_steps.SCENE_FIELD_EXAMPLES 同源：应用后留在字段里会被规则层认作占位。
-    examples = SCENE_FIELD_EXAMPLES
-    required = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
-    keys = ["crucible" if field == "crucible" else field for field in missing_fields if field in {"crucible", *required}]
-    if pressure_flags and "missing_cost_requirement" in pressure_flags:
-        keys.append("cost_requirement")
-    return {key: examples[key] for key in keys if key in examples}
 
 
 # 场景分诊修补器接受的场景键——也是分诊 wire schema 里 repair_patch 的 properties（enrich_structured_schema）。

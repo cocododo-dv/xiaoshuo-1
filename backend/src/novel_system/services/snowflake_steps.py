@@ -32,6 +32,9 @@ def effective_rendering_mode(scene_type: Any, value: Any) -> str:
     return mode
 # 阶段 D：第 6 步的分形——一页梗概的五段各扩成约一页，恰好五段。
 LONG_SYNOPSIS_PARAGRAPHS = 5
+#: 算「这一步已经定了」的步骤状态（确认 / 略过）。过期（stale）的步骤要作者点过「已复核」才算，见
+#: ``snowflake_queries.step_gate_satisfied``。
+CONFIRMED_STEP_STATUSES: frozenset[str] = frozenset({"approved", "skipped"})
 MATERIALIZATION_REQUIRED_STEPS = [
     "book_brief",
     "one_sentence_summary",
@@ -1604,8 +1607,8 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
     return merged
 
 
-# 场景三拍的修复例句：LLM 关闭时「应用修复补丁」写进字段的就是它们（snowflake_workspace_llm
-# ``_fallback_repair_patch``），所以它们同时登记为占位文本——例句留在字段里就等于没写。
+# 场景三拍的修复例句：旧版 LLM 关闭时「应用修复补丁」写进字段的就是它们（AI 分诊 2026-09-30 起 fail-closed，
+# 不再递这些例句），库里旧数据可能还留着——它们同时登记为占位文本，例句留在字段里就等于没写。
 SCENE_FIELD_EXAMPLES: dict[str, str] = {
     "crucible": "一个具体压力把视角角色困在这里；离开会让损失永久化。",
     "goal": "拿到某个具体证据、许可或让步——读者能看出「赢」长什么样。",

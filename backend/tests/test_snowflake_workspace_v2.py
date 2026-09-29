@@ -1443,9 +1443,11 @@ def test_workspace_v2_scene_triage_suggest_returns_non_persistent_suggestions(cl
     )
 
 
-def test_workspace_v2_scene_triage_fallback_uses_chinese_coaching_copy(client, monkeypatch) -> None:
+def test_workspace_v2_scene_triage_suggest_is_fail_closed_without_llm(client, session, monkeypatch) -> None:
+    """B06-20：AI 分诊与教练 / 方向同一条路——没有模型就 409 + 去配置的 author_action，不拿规则诊断冒充 AI 分诊。
+    规则诊断照旧不用点就在 triage_items 里（triage_source = auto_diagnosis）。"""
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
-    project = _create_project(client, key="triage-fallback-cn")
+    project = _create_project(client, key="triage-fail-closed")
     for step_key in [
         "book_brief",
         "one_sentence_summary",
@@ -1460,35 +1462,26 @@ def test_workspace_v2_scene_triage_fallback_uses_chinese_coaching_copy(client, m
     ]:
         _approve_generated_step(client, project["project_id"], step_key)
 
-    workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
-    scene_step = next(step for step in workspace["steps"] if step["step_key"] == "scene_details")
-    weak_scene = {
-        **scene_step["draft"]["scenes"][0],
-        "scene_type": "proactive",
-        "scene_crucible": "A room.",
-        "goal": "Talk to the witness.",
-        "conflict": "They argue.",
-        "setback": "",
-    }
-    save_response = client.patch(
-        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_details",
-        json={"draft": {"scenes": [weak_scene]}},
-    )
-    assert save_response.status_code == 200, save_response.text
-
     response = client.post(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/scene-triage/suggest",
         json={},
     )
-    assert response.status_code == 200, response.text
-    payload = response.json()["data"]
-    item = payload["items"][0]
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["code"] == "SNOWFLAKE_LLM_NOT_CONFIGURED"
+    assert error["details"]["author_action"]
+    assert error["details"]["node_id"] == "snowflake_scene_triage"
 
-    assert payload["source"] == "fallback"
-    assert "修复场景压力" in item["notes"]
-    assert "Repair scene pressure" not in item["notes"]
-    assert item["fix_steps"]
-    assert all("setback" not in step for step in item["fix_steps"])
+    workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
+    assert workspace["triage_items"]
+    assert all(item["triage_source"] == "auto_diagnosis" for item in workspace["triage_items"])
+    session.expire_all()
+    assert (
+        session.query(SnowflakeSceneTriageItem)
+        .filter(SnowflakeSceneTriageItem.project_id == project["project_id"])
+        .count()
+        == 0
+    )
 
 
 def test_workspace_v2_persists_triage_repair_metadata_and_blocks_rewrite_materialization(client, session) -> None:

@@ -179,6 +179,24 @@ def test_cut_is_an_author_only_status() -> None:
     assert normalized["items"][0]["notes"] != "模型想删"
 
 
+def test_scenes_the_model_did_not_judge_keep_the_rule_verdict_without_canned_repairs() -> None:
+    """B06-20：分诊 fail-closed 之后，模型没判到的场只留规则层的判定与缺口——不再塞一段规则套话当备注，
+    也不再把修复例句（SCENE_FIELD_EXAMPLES，写进字段就是占位）当修复补丁递给作者。"""
+    draft = {
+        "scenes": [
+            {"scene_id": "SC1", "primary_form": "proactive", "crucible": "困", "goal": "g", "conflict": "c", "setback": ""},
+            {"scene_id": "SC2", "primary_form": "proactive", "crucible": "困", "goal": "g", "conflict": "c", "setback": "s"},
+        ]
+    }
+    normalized = _normalize_triage_output({"items": [{"scene_id": "SC2", "status": "pass", "notes": "成立"}]}, draft)
+    skipped, judged = normalized["items"]
+    assert skipped["scene_id"] == "SC1"
+    assert skipped["status"] == "maybe" and skipped["missing_fields"] == ["setback"]
+    assert skipped["notes"] == "" and skipped["repair_patch"] == {}
+    assert skipped["fix_steps"], "规则层的修法照旧给"
+    assert judged["status"] == "pass" and judged["notes"] == "成立"
+
+
 def test_cut_and_rewrite_verdicts_exclude_the_scene_and_warn_instead_of_blocking(session) -> None:
     service = _seed(session)
     _verdict(service, session, "u3", "cut")
