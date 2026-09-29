@@ -839,7 +839,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
             label = _text(character.get("display_name") or character.get("name") or f"character_{index}")
             pressure_text = _character_pressure_text(character)
             if not pressure_text:
-                if _is_lead_role(character.get("role")):
+                if is_lead_role(character.get("role")):
                     soft.append(label)
                 continue
             if _looks_generic(pressure_text, min_chars=12) or not _has_pressure_turn(pressure_text):
@@ -1441,8 +1441,8 @@ _GENERIC_FRAGMENTS = (
 _LEAD_ROLE_MARKERS = ("主角", "主人公", "对手", "反派", "protagonist", "antagonist", "hero", "heroine", "villain", "lead")
 
 
-def _is_lead_role(role: Any) -> bool:
-    """主角 / 对手一类的定位——原著只对他们要求完整的角色表。"""
+def is_lead_role(role: Any) -> bool:
+    """主角 / 对手一类的定位——原著只对他们要求完整的角色表（诊断提醒与生成后的修复重试共用这一条）。"""
     lowered = _text(role).lower()
     return any(marker in lowered for marker in _LEAD_ROLE_MARKERS)
 

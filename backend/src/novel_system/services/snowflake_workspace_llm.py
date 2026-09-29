@@ -39,6 +39,7 @@ from novel_system.services.snowflake_steps import (
     diagnose_scene_detail,
     diagnose_step_pressure,
     get_step_definition,
+    is_lead_role,
     list_step_definitions,
     merge_step_draft,
     step_completeness,
@@ -548,7 +549,9 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
                 "The previous attempt left every field listed in empty_fields blank after server-side "
                 "sanitization (unknown keys are discarded — use only the canonical keys named in the task). "
                 "Regenerate the complete step and make sure each listed field carries substantive, "
-                "story-specific content; empty strings and placeholders are defects."
+                "story-specific content; empty strings and placeholders are defects. An entry that names a whole "
+                "character (characters[name]) means that character carries nothing but a name: give it at least "
+                "its role. Blanks that are not listed may stay blank — minor characters may stay sparse."
             ),
         }
         try:
@@ -1726,20 +1729,27 @@ def _collect_generation_gaps(step_key: str, draft: dict[str, Any] | None) -> lis
     gaps = [str(field) for field in step_completeness(step_key, payload).get("missing_fields") or []]
     if step_key in _CHARACTER_COLLECTION_STEPS:
         template = _collection_template(step_key, "characters")
+        checked = [field_key for field_key in template if field_key not in _SERVER_ASSIGNED_ITEM_KEYS]
         for index, item in enumerate(payload.get("characters") or [], start=1):
             if not isinstance(item, dict):
                 continue
             label = str(item.get("display_name") or item.get("character_id") or index)
-            for field_key, template_value in template.items():
-                if field_key in _SERVER_ASSIGNED_ITEM_KEYS:
-                    continue
+            empty: list[str] = []
+            for field_key in checked:
+                template_value = template[field_key]
                 value = item.get(field_key)
                 if isinstance(template_value, dict):
                     nested = value if isinstance(value, dict) else {}
                     if not any(has_value(nested_value) for nested_value in nested.values()):
-                        gaps.append(f"characters[{label}].{field_key}")
+                        empty.append(field_key)
                 elif not has_value(value):
-                    gaps.append(f"characters[{label}].{field_key}")
+                    empty.append(field_key)
+            # 2026-09-30（B06-03，作者批准 #16b）：留白即合法——原著只要求主角 / 对手的表完整，配角可以只有
+            # 一行定位。配角只在整个成员一个字都没写（连定位都没有）时才算缺口，不再逐字段逼模型替作者编。
+            if is_lead_role(item.get("role")):
+                gaps.extend(f"characters[{label}].{field_key}" for field_key in empty)
+            elif checked and len(empty) == len(checked):
+                gaps.append(f"characters[{label}]")
     elif step_key == "scene_list":
         for index, item in enumerate(payload.get("scenes") or [], start=1):
             if not isinstance(item, dict):
