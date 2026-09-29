@@ -14,11 +14,18 @@ vi.mock("./ws-works.jsx", () => ({
     active: () => ({ id: "new-book", title: "真正的新书" }),
   },
 }));
-// 视图从 ws-snow-sync.jsx 直接 import SnowSync；分章面板（与章节编排共用）仍读 window.SnowSync。
-// 每个用例把自己的假 SnowSync 挂在 window 上，这里的模块 mock 转发过去（用例没给的方法读出来是 undefined）。
+// 视图从 ws-snow-sync.jsx 直接 import SnowSync。每个用例把自己的假 SnowSync 挂在 window 上，这里的模块 mock
+// 转发过去（用例没给的方法读出来是 undefined）；subscribe 用例一般不给，由这里的通知表兜着——
+// notify(kind, detail) 就是同步层发出的一条通知（hydrated / health / …）。
+const snowListeners = vi.hoisted(() => new Set());
 vi.mock("./ws-snow-sync.jsx", () => ({
-  SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
+  SnowSync: new Proxy({}, { get: (_target, name) => {
+    if (window.SnowSync && window.SnowSync[name]) return window.SnowSync[name];
+    if (name === "subscribe") return (fn) => { snowListeners.add(fn); return () => snowListeners.delete(fn); };
+    return undefined;
+  } }),
 }));
+const notify = (kind, detail) => act(async () => { [...snowListeners].forEach(fn => fn(kind, detail)); });
 
 import { WsSnowflake, WsConstruct } from "./ws-snow.jsx";
 import { s2PlanState } from "./ws-snow-model.js";
@@ -703,12 +710,12 @@ describe("SNOW-20 · 就地换步与落点", () => {
     expect(title(host)).toBe("场景规划");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S01");
     mapped = "S03";
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S03");
     // 目标用过即清：选中落盘之后再来一次水合，即使对照表此刻把那个 scene_id 对到别的场，也不会再挪
     await vi.waitFor(() => expect(JSON.parse(window.localStorage.getItem(CACHE)).scaffolds.planning.sel).toBe("S03"), { timeout: 2000 });
     mapped = "S02";
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S03");
   });
 
@@ -740,10 +747,10 @@ describe("SNOW-20 · 就地换步与落点", () => {
     const host = await mount(<WsSnowflake />);
     expect(title(host)).toBe("读者定位");
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(8))));
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(title(host)).toBe("场景列表");
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(9))));
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(title(host)).toBe("场景列表");
   });
 
@@ -752,7 +759,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
     const host = await mount(<WsSnowflake />);
     await act(async () => { host.querySelector(".snow-page").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(8))));
-    await fire("ws:snow-hydrated", "new-book");
+    await notify("hydrated", "new-book");
     expect(title(host)).toBe("读者定位");
   });
 

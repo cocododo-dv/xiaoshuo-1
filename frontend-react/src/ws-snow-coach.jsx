@@ -5,6 +5,7 @@ import { modEnterShortcut } from "./lib/platform.js";
 import { isImeComposing } from "./lib/keyboard.js";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { activeWorkId } from "./ws-snow-hooks.js";
+import { snowDraftOverride } from "./ws-snow-generation.js";
 import { CoachInline, CoachReply } from "./ws-snow-reply.jsx";
 import { BRIEF_KIND_LABEL, BRIEF_KIND_ORDER, S2_BE_KEY, s2AdoptServerScaffold, s2BriefDeltaParts, s2Provenance } from "./ws-snow-model.js";
 
@@ -53,9 +54,8 @@ export function useSnowCoach(env, tab) {
       const beKey = S2_BE_KEY[key];
       if (!workId || !beKey) throw new Error("作品尚未就绪，稍后重试");
       const body = { step_key: beKey, message: msg };
-      let dOv = null;
-      try { dOv = SnowSync.canonDraft(key, { drafts, scaffolds }); } catch (e) {}
-      if (dOv && Object.keys(dOv).length) body.draft_override = dOv;
+      const dOv = snowDraftOverride(key, { drafts, scaffolds }, workId);
+      if (dOv) body.draft_override = dOv;
       const focusRow = key === "planning" ? ((scaffolds.planning || {}).sel || "") : "";
       if (focusRow) body.focus_scene_id = focusRow;
       const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/assistant`, body);

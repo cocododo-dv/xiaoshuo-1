@@ -2,7 +2,8 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { apiPost } from "./lib/client.js";
 import { SnowSync } from "./ws-snow-sync.jsx";
-import { activeWorkId, useSnowEvents } from "./ws-snow-hooks.js";
+import { activeWorkId, useSnowNotices } from "./ws-snow-hooks.js";
+import { snowDraftOverride } from "./ws-snow-generation.js";
 import {
   S2_PLAN_FIELDS, S2_TRIAGE_LABEL, s2BusyOn,
 } from "./ws-snow-model.js";
@@ -88,7 +89,7 @@ export function useSnowTriage(env) {
     } catch (e) {}
   };
   useSE(() => { restore(); }, [triage]);
-  useSnowEvents({ "ws:snow-hydrated": restore });
+  useSnowNotices({ hydrated: restore });
 
   const runTriage = async () => {
     if (triageBusy) return;
@@ -97,8 +98,7 @@ export function useSnowTriage(env) {
     try {
       const workId = activeWorkId();
       if (!workId) throw new Error("作品尚未就绪");
-      let draftOverride = null;
-      try { draftOverride = SnowSync.canonDraft("planning", { drafts, scaffolds }); } catch (e) {}
+      const draftOverride = snowDraftOverride("planning", { drafts, scaffolds }, workId);
       const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/scene-triage/suggest`,
         draftOverride && (draftOverride.scenes || []).length ? { draft_override: draftOverride } : {});
       const byRow = {};

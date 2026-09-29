@@ -17,8 +17,8 @@ vi.mock("./ws-works.jsx", () => ({
   wsKey: (base) => `${base}::coach-book`,
   WsWorks: { activeId: () => "coach-book", active: () => ({ id: "coach-book", title: "方向之书" }) },
 }));
-// 视图从 ws-snow-sync.jsx 直接 import SnowSync；分章面板（与章节编排共用）仍读 window.SnowSync。
-// 每个用例把自己的假 SnowSync 挂在 window 上，这里的模块 mock 转发过去（用例没给的方法读出来是 undefined）。
+// 视图从 ws-snow-sync.jsx 直接 import SnowSync。每个用例把自己的假 SnowSync 挂在 window 上，
+// 这里的模块 mock 转发过去（用例没给的方法读出来是 undefined）。
 vi.mock("./ws-snow-sync.jsx", () => ({
   SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
 }));
@@ -292,6 +292,10 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     await vi.waitFor(() => expect(window.SnowSync.setDirectionBrief).toHaveBeenCalledTimes(1), T);
     expect(window.SnowSync.setDirectionBrief.mock.calls[0][1]).toBe("paragraph");
     expect(window.SnowSync.setDirectionBrief.mock.calls[0][2].revision).toBe(3);
+    // F02-10：教练的底稿与生成 / 方向同一份（pushCanon：服务端镜像 ⊕ 本地脚手架），不再是不带服务端键的 canonDraft
+    const coachCall = client.apiPost.mock.calls.find(c => String(c[0]).endsWith("/assistant"));
+    expect(coachCall[1]).toMatchObject({ step_key: "one_paragraph_summary", message: "结局苦乐参半", draft_override: { sentences: ["她回到雨城。", "", "", "", ""] } });
+    expect(window.SnowSync.canonDraft).not.toHaveBeenCalled();
   });
 
   it("教练回复里的 markdown 排成段落 / 粗体 / 斜体 / 列表，不再把星号印出来；「按此生成本步」仍把原文交给模型", async () => {
