@@ -12,7 +12,7 @@ vi.mock("./lib/client.js", () => ({
   cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn(),
 }));
 // 起草台只从雪花取提示词上下文（与队列无关）：mock 掉，避免为测队列拉进整张构思视图。
-vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [], s2ExportState: () => null }));
+vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [] }));
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const T = { timeout: 5000, interval: 25 };

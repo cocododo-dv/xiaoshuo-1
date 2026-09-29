@@ -1,6 +1,8 @@
 import { apiGet } from "./lib/client.js";
 import { createSubscribers } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
+import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    Library data — 档案库（后端 /library 聚合的适配层）
@@ -53,7 +55,7 @@ function libNotify() {
   LIB_REVISION += 1;
   libSubscribers.notify();
   /* 兼容仍通过 window 事件读取资料库的过渡期模块。 */
-  try { window.dispatchEvent(new CustomEvent("ws:library-changed")); } catch (e) {}
+  emit("ws:library-changed");
 }
 
 /* 读取状态变了（开始重试 / 读失败）但档案本身没变：只叫醒本模块的订阅者（视图），
@@ -148,7 +150,7 @@ function libClearForProject(projectId) {
    旧覆盖层迁移靠它区分「资料库确实是空的」和「还没读到」。 */
 function libFetch() {
   const pid = libActiveId();
-  if (!pid || pid === "__loading__") {
+  if (!isRealWorkId(pid)) {
     if (libVisibleProjectId !== null || LIB_ENTRIES.length || LIB_RELATIONS.length) {
       libRequestSerial += 1; // 让尚未返回的旧作品请求失效
       libFetching = null;
@@ -216,12 +218,11 @@ function libFetch() {
 }
 
 try { libFetch(); } catch (e) {}
-if (window.__wsLibraryDataWorkChanged) {
-  window.removeEventListener("ws:work-changed", window.__wsLibraryDataWorkChanged);
-}
+/* 模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉旧实例的监听器 */
+retireModuleListeners("ws-library-data");
 const libOnWorkChanged = () => { try { libFetch(); } catch (e) {} };
 window.addEventListener("ws:work-changed", libOnWorkChanged);
-window.__wsLibraryDataWorkChanged = libOnWorkChanged;
+adoptModuleListeners("ws-library-data", () => window.removeEventListener("ws:work-changed", libOnWorkChanged));
 Object.assign(window, {
   LIB_relationsRaw: () => LIB_RELATIONS,
   LIB_refetch: libFetch,

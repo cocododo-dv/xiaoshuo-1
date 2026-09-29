@@ -14,7 +14,7 @@ import {
   s2LandingStep, s2MergeScaffolds, s2SceneNo, s2StaleMap,
 } from "./ws-snow-model.js";
 import {
-  activeWorkId, s2Key, s2Load, s2LoadUiPref, s2SaveUiPref, s2StepSummary, S2_PREF_KEYS,
+  activeWorkId, s2Key, s2Load, s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS,
   useSnowDocument, useSnowEvents, useSnowGeneration, useSnowMedia, useSnowSyncMirror, useStableCallback,
 } from "./ws-snow-hooks.js";
 import { S2StepEditor } from "./ws-snow-scaffolds.jsx";
@@ -26,6 +26,7 @@ import {
   S2DeliveredBanner, S2Footer, S2ImportPlanDialog, S2ResetDialog, S2ResyncBanner, S2StaleBanner,
   S2StepList, S2Strip, S2SyncNotice, S2Tab,
 } from "./ws-snow-chrome.jsx";
+import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
    WsSnowflake — 构思 · 雪花十步法 (Snowflake Method workbench)
@@ -425,7 +426,7 @@ function WsSnowflake({ initialStep }) {
     const backup = snapNow(h.key);
     setDrafts(prev => ({ ...prev, [h.key]: h.snap.draft || "" }));
     if (h.snap.scaffold) setScaffolds(prev => ({ ...prev, [h.key]: JSON.parse(JSON.stringify(h.snap.scaffold)) }));
-    setHistory(prev => [{ t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${new Date(h.t).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`, key: h.key, snap: backup }, ...prev].slice(0, 80));
+    setHistory(prev => [{ t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${formatLocaleMonthDayTime(h.t)}`, key: h.key, snap: backup }, ...prev].slice(0, 80));
     selectStep(h.key); setTabFor(h.key, "edit"); setSnapDiff(null);
     showToast(`已回滚 · ${st.name}`, "gold");
   };
@@ -849,12 +850,9 @@ function WsConstruct() {
   return <WsSnowflake initialStep={initialStep} />;
 }
 
-/* 主页速览（smoke-f3 读 window.s2StepSummary）。其余旧的 window 导出没有读者，已去掉。 */
-window.s2StepSummary = s2StepSummary;
-
 export { WsSnowflake, WsConstruct };
 export {
   S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2NormalizeState, s2NextSceneRowId,
   s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2ReorderScenes,
 } from "./ws-snow-model.js";
-export { s2StepSummary, s2ExportState } from "./ws-snow-hooks.js";
+export { s2StepSummary } from "./ws-snow-hooks.js";

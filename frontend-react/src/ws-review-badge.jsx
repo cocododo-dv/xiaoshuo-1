@@ -1,6 +1,7 @@
 import React from "react";
 import { apiGet } from "./lib/client.js";
 import { WsWorks } from "./ws-works.jsx";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* 待办徽标只数「紧急（priority 1）」的未处理项。下面这些信号都可能改变它，但频率差别很大：
    待办 / 作品 / 回收站的变化是作者的动作，去抖 180ms 就拉；
@@ -32,7 +33,7 @@ function useReviewBadge() {
       const projectId = WsWorks.activeId();
       const version = ++requestVersion.current;
       lastFetchAt = Date.now();
-      if (!projectId || projectId === "__loading__") {
+      if (!isRealWorkId(projectId)) {
         setBadge(null);
         return;
       }

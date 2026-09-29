@@ -2,6 +2,7 @@ import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
+import { realWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsDesignSync — 「这张场景卡落后于已确认的构思了吗」（阶段 X）
@@ -19,7 +20,7 @@ const dsFetching = {};
 let dsBusy = {};           // sceneId → true（同步中）
 
 function dsWorkId() {
-  try { const id = WsWorks.activeId(); return id && id !== "__loading__" ? id : null; } catch (e) { return null; }
+  try { return realWorkId(WsWorks.activeId()); } catch (e) { return null; }
 }
 
 /* ws:catalog-changed 连写作时的字数回写都会广播——事件触发的重拉必须节流，否则每次自动保存都多打一个请求。

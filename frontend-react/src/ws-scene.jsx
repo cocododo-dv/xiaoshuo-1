@@ -6,7 +6,7 @@ import { useDesignSync } from "./ws-design-sync.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { EmptyState } from "./ws-ui.jsx";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { useSceneQueue, useSceneRuns } from "./ws-scene-board-state.js";
 import { SceneSpine } from "./ws-scene-spine.jsx";
 import { ArchivedStage, CandidatePicker, Pipeline, Preflight, ReviewStage, RunningStage, SceneHead, SceneStyleNoticeStrip } from "./ws-scene-stage.jsx";

@@ -4,6 +4,7 @@ import { I } from "./icons.jsx";
 import { WsWorks, useActiveWork, useWorks } from "./ws-works.jsx";
 import { WsDialog, isImeComposing, topModalLayer, useFocusTrap } from "./ws-dialog.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
+import { wanFixed } from "./lib/format.js";
 
 /* ==========================================================
    WorkSwitcher — 作品切换器（侧栏顶部的书名按钮）
@@ -80,7 +81,7 @@ function WorkSwitcher({ go }) {
 function workProgressLine(w) {
   if (!(w.chaptersWritten > 0)) return "尚未开始";
   const pct = w.wordsTarget ? Math.min(100, Math.round((w.wordsTotal / w.wordsTarget) * 100)) : 0;
-  return `${(w.wordsTotal / 10000).toFixed(1)} 万字 · ${pct}%`;
+  return `${wanFixed(w.wordsTotal, 1)} 万字 · ${pct}%`;
 }
 
 function WorkPopover({ works, activeId, onPick, onNew, onClose }) {

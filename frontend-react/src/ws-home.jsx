@@ -12,6 +12,7 @@ import {
 import { HomeRing, WsAiSetupNotice, WsHomeDataNotice } from "./ws-home-parts.jsx";
 import { HmChapters } from "./ws-home-chapters.jsx";
 import { WsHomeBlank, WsHomeCatalogError, WsHomeLoading, WsHomeNoWorks } from "./ws-home-states.jsx";
+import { LOADING_WORK_ID } from "./lib/work-id.js";
 
 /* ==========================================================
    WsHome — 项目主页
@@ -195,7 +196,7 @@ function WsHome({ go, mode = "writer" }) {
   const remote = useWorksStatus(work && work.id);
   const chapters = useCatalogChapters();
 
-  if (work.id === "__loading__" || (!work.id && remote.projects.phase === "loading")) {
+  if (work.id === LOADING_WORK_ID || (!work.id && remote.projects.phase === "loading")) {
     return <WsHomeLoading label="书架" />;
   }
   if (!work.id) return <WsHomeNoWorks remote={remote} />;

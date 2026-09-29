@@ -6,6 +6,7 @@
    章与场的展示件在 ws-snow-chapters-parts.jsx。章是场景列表上连续的一段——
    这里的每一个改动都守着这条纪律；分章算法本身在后端（snowflake_chaptering.py）。
    ========================================================== */
+import { wanFixed } from "./lib/format.js";
 
 export const ACT_LABEL = { 1: "第一幕", 2: "第二幕", 3: "第三幕" };
 
@@ -90,7 +91,7 @@ export function scaleExplanation(scale) {
   let base = "";
   if (scale.source === "reference" && hint) {
     const chars = Number(hint.chapter_chars_median) || 0;
-    const wan = chars >= 10000 ? `${(chars / 10000).toFixed(1)} 万` : `${chars}`;
+    const wan = chars >= 10000 ? `${wanFixed(chars, 1)} 万` : `${chars}`;
     base = `参考书一章约 ${wan}字 ≈ ${per} 场`;
   } else if (scale.source === "project_target") base = `作品设置：目标 ${scale.target_chapter_count} 章`;
   else if (scale.source === "request_target") base = `按你定的 ${scale.target_chapter_count} 章`;

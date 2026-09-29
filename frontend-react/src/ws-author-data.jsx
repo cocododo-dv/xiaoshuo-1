@@ -1,4 +1,4 @@
-import { CHAPTER_STATE_META, SCENE_STATE_META } from "./ws-labels.js";
+import { CHAPTER_STATE_META, SCENE_STATE_META } from "./labels/catalog.js";
 
 /* ==========================================================
    章节编排 — 结构常量（状态标签 / 幕框架）。章节真相来自后端目录。

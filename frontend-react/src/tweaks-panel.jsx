@@ -1,5 +1,5 @@
 import React from "react";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing, rovingIndex } from "./lib/keyboard.js";
 
 /* ==========================================================
    「排版与舒适度」快捷面板 + 它的几种表单控件
@@ -144,16 +144,12 @@ function TweakRadio({ label, value, options, hint, onChange }) {
   const idx = Math.max(0, opts.findIndex((o) => o.value === value));
   const n = opts.length;
   const onKeyDown = (event) => {
-    const keys = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
     const group = event.currentTarget.parentElement;
     const radios = group ? [...group.querySelectorAll('[role="radio"]')] : [];
     // 从有焦点的那段数起，而不是从选中的那段：两者不一致时（例如点过别处又用 Tab 回来）方向键不会反着走
     const here = radios.indexOf(event.currentTarget);
     const from = here >= 0 ? here : idx;
-    let next = null;
-    if (event.key in keys) next = (from + keys[event.key] + n) % n;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = n - 1;
+    const next = rovingIndex(event.key, from, n);
     if (next == null) return;
     event.preventDefault();
     onChange(opts[next].value);
@@ -191,6 +187,6 @@ function TweakSelect({ label, value, options, hint, onChange }) {
 }
 
 export {
-  TweaksPanel, TweakSection, TweakRow,
-  TweakSlider, TweakToggle, TweakRadio, TweakSelect,
+  TweaksPanel, TweakSection,
+  TweakSlider, TweakToggle, TweakRadio,
 };

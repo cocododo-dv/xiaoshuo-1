@@ -5,7 +5,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDialog, isImeComposing, topModalLayer } from "./ws-dialog.jsx";
 import { WS_NAV_ITEMS, WS_SNOW_STEPS } from "./ws-nav.js";
 import { modShortcut } from "./lib/platform.js";
-import { sceneLabel } from "./ws-labels.js";
+import { sceneLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    WsPalette — 全局命令面板（⌘K / Ctrl+K；提示文字由 lib/platform.js 按平台给）

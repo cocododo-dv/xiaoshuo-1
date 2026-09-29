@@ -1,7 +1,9 @@
 import React from "react";
-import { WsWorks, wsKey } from "./ws-works.jsx";
+import { WsWorks } from "./ws-works.jsx";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
+import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsCatalog — 章节 / 场景单一真相源（per-work）
@@ -19,10 +21,6 @@ import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.j
    ========================================================== */
 
 const CAT_LS = "arr.chapters.v2";            // v2：目录收敛后的新键；旧键由旧版编排台自动写入的陈旧种子，不再读取
-const CAT_DAY_LS = "ws_words_today_v1";     // 每日写作字数 { d, n }
-const CAT_STREAK_LS = "ws_streak_v1";       // 连续写作天数 { last, streak }，按作品
-
-const catKey = (base) => (wsKey ? wsKey(base) : base);
 const catActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 
 
@@ -41,10 +39,6 @@ function catStamp(list) {
   }));
 }
 
-function catSeedFor(workId) {
-  return []; // 目录真相来自后端；本地不再内置任何种子章节
-}
-
 /* 汇总同步进 WsWorks（切换器 / 主页进度同源）。
    FE-ALIGN P2（D2）：字数/今日/streak 改读后端 writing-stats（只读派生，
    经 WsWorks.__applyDerived 注入，WsWorks.update 的回写路径已删除）；
@@ -52,7 +46,7 @@ function catSeedFor(workId) {
 function catPushTotals() {
   if (!WsWorks) return;
   const id = catActiveId();
-  if (!id || id === "__loading__") return; // 启动占位作品（列表尚未从后端返回）
+  if (!isRealWorkId(id)) return; // 启动占位作品（列表尚未从后端返回）
   const chs = catLoad(id);
   const written = chs.filter(c => ((c.words && c.words.cur) || 0) > 0).length;
   apiGet(`/api/v2/projects/${id}/writing-stats`).then((stats) => {
@@ -285,7 +279,7 @@ const CAT_SID_LIST_KEYS = ["scn-queue:v1", "scn-queue-dismissed:v1"];
 
 function catNotify() {
   catSubs.notify();
-  try { window.dispatchEvent(new CustomEvent("ws:catalog-changed")); } catch (e) {}
+  emit("ws:catalog-changed");
 }
 
 /* sid 解析：直接命中 → 会话内别名（乐观创建的临时 sid，建好之后后端给的是稳定 id）→ 位置式旧 slug
@@ -362,7 +356,7 @@ function catLoad(workId) { return catCache[workId] || CAT_EMPTY; }
 const catFetching = {};
 function catFetch(workId, options) {
   const migrate = !options || options.migrate !== false;
-  if (!workId || workId === "__loading__") return Promise.resolve();
+  if (!isRealWorkId(workId)) return Promise.resolve();
   if (catFetching[workId]) return catFetching[workId];
   delete catErrorMap[workId];
   catFetching[workId] = (async () => {
@@ -629,7 +623,7 @@ async function catDispatchDiff(workId, prev, next) {
       } catch (e) { console.warn("[WsCatalog] 本机雪花缓存接章表失败（下次打开构思时水合）:", e); }
     }
     catFetch(workId, { migrate: false }); // 以服务端编号/rollup 收敛
-    try { window.dispatchEvent(new CustomEvent("ws:trash-changed")); } catch (e) {}
+    emit("ws:trash-changed");
   } catch (e) {
     catRecover(e);
   }
@@ -857,13 +851,9 @@ function useCatalogChapters() {
   return WsCatalog.get();
 }
 
-/* 启动 & 切换作品：装载目录 + 同步统计（进度同源） */
-if (window.__wsCatalogGlobalHandlers) {
-  const old = window.__wsCatalogGlobalHandlers;
-  window.removeEventListener("ws:work-changed", old.catalogWorkChanged);
-  window.removeEventListener("ws:work-changed", old.trashWorkChanged);
-  window.removeEventListener("ws:trash-changed", old.trashChanged);
-}
+/* 启动 & 切换作品：装载目录 + 同步统计（进度同源）。
+   模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉旧实例挂在 window 上的监听器（在回收站那段末尾登记）。 */
+retireModuleListeners("ws-catalog");
 try { catFetch(catActiveId()); } catch (e) {}
 try { catPushTotals(); } catch (e) {}
 const catOnWorkChanged = () => {
@@ -905,7 +895,7 @@ function trashAdapt(item) {
 function trashFetch() {
   if (trashFetching) return trashFetching;
   const id = catActiveId();
-  const qs = id && id !== "__loading__" ? `?project_id=${encodeURIComponent(id)}` : "";
+  const qs = isRealWorkId(id) ? `?project_id=${encodeURIComponent(id)}` : "";
   // 已经读到过一次时，后台刷新不把状态打回「读取中」（视图不该因此闪一下）
   if (trashLoad.status !== "ready") { trashLoad = { status: "loading", message: "" }; trashNotify(); }
   trashFetching = apiGet(`/api/v2/trash${qs}`).then((data) => {
@@ -985,11 +975,11 @@ window.addEventListener("ws:work-changed", trashOnWorkChanged);
 /* 软删端点完成后的精确刷新信号（WsWorks.remove / 目录删除成功时 dispatch） */
 const trashOnChanged = () => { try { trashFetch(); } catch (e) {} };
 window.addEventListener("ws:trash-changed", trashOnChanged);
-window.__wsCatalogGlobalHandlers = {
-  catalogWorkChanged: catOnWorkChanged,
-  trashWorkChanged: trashOnWorkChanged,
-  trashChanged: trashOnChanged,
-};
+adoptModuleListeners("ws-catalog", () => {
+  window.removeEventListener("ws:work-changed", catOnWorkChanged);
+  window.removeEventListener("ws:work-changed", trashOnWorkChanged);
+  window.removeEventListener("ws:trash-changed", trashOnChanged);
+});
 
 Object.assign(window, { WsCatalog, useCatalogChapters, WsTrashStore });
 

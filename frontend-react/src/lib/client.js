@@ -1,6 +1,7 @@
 // FE-ALIGN Phase 2: 自 frontend/src/lib/api/client.js 移植（两端共享同一契约）。
 // 信封 {ok,data,error,request_id} / X-Idempotency-Key / X-Operator-Ref /
 // novel-system-api-base 逻辑保持一致；去掉 Vue 端的 cursorPagination 依赖。
+import { randomSuffix } from "./ids.js";
 
 const API_BASE_KEY = "novel-system-api-base";
 const API_BASE_DEFAULT_KEY = "novel-system-api-base-default";
@@ -205,7 +206,7 @@ function acquireIdempotencyKey(method, path, body) {
   const signature = requestSignature(method, path, body);
   let key = inflightIdempotencyKeys.get(signature);
   if (!key) {
-    key = `${path}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    key = `${path}-${Date.now()}-${randomSuffix(6)}`;
     if (inflightIdempotencyKeys.size >= IDEMPOTENCY_KEYS_MAX) {
       const oldest = inflightIdempotencyKeys.keys().next().value;
       inflightIdempotencyKeys.delete(oldest);
@@ -220,7 +221,7 @@ function releaseIdempotencyKey(signature) {
 }
 
 function buildClientRequestId() {
-  return `client_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  return `client_${Date.now()}_${randomSuffix(6)}`;
 }
 
 export class ApiRequestError extends Error {
@@ -241,18 +242,6 @@ export class ApiRequestError extends Error {
     this.clientRequestId = clientRequestId;
     this.retryable = Boolean(retryable);
   }
-}
-
-export function buildQueryPath(path, filters = {}, aliases = {}) {
-  const params = new URLSearchParams();
-  Object.entries(filters || {}).forEach(([key, value]) => {
-    if (value === null || value === undefined || value === "") {
-      return;
-    }
-    params.set(aliases[key] || key, value);
-  });
-  const query = params.toString();
-  return query ? `${path}?${query}` : path;
 }
 
 function normalizeRequestError(error, clientRequestId = null, timeout = null) {
@@ -418,7 +407,7 @@ async function mutationRequest(method, path, body, { adminToken = "", signal, ti
   const { key, signature } = idempotencyKey
     ? { key: String(idempotencyKey), signature: null }
     : form
-      ? { key: `${path}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, signature: null }
+      ? { key: `${path}-${Date.now()}-${randomSuffix(6)}`, signature: null }
       : acquireIdempotencyKey(method, path, body);
   try {
     // FormData 不设 Content-Type：浏览器按 multipart 自己带上 boundary

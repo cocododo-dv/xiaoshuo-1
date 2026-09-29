@@ -38,15 +38,23 @@ afterEach(async () => {
 
 describe("没有挂提示层时", () => {
   it("storeAlert 仍走 window.alert，wsConfirm 退回 window.confirm，wsToast 返回 false", async () => {
-    const { storeAlert, wsConfirm, wsToast, wsNotifyReady } = await load();
+    const { storeAlert, wsConfirm, wsToast } = await load();
     const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    expect(wsNotifyReady()).toBe(false);
     storeAlert(new Error("保存失败"), "兜底");
     expect(alertSpy).toHaveBeenCalledWith("保存失败");
     await expect(wsConfirm({ title: "删除？", body: "会进回收站" })).resolves.toBe(false);
     expect(confirmSpy).toHaveBeenCalledWith("删除？\n会进回收站");
     expect(wsToast({ message: "你好" })).toBe(false);
+  });
+
+  it("wsNotify 退回 window.alert 并返回 false", async () => {
+    const { wsNotify } = await load();
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    expect(wsNotify({ message: "已恢复服务端版本", tone: "warn" })).toBe(false);
+    expect(alertSpy).toHaveBeenCalledWith("已恢复服务端版本");
+    expect(wsNotify("一句话")).toBe(false);
+    expect(alertSpy).toHaveBeenLastCalledWith("一句话");
   });
 });
 
@@ -65,6 +73,18 @@ describe("挂了提示层之后", () => {
     root = null;
     storeAlert(null, "卸载之后");
     expect(alertSpy).toHaveBeenCalledWith("卸载之后");
+  });
+
+  it("wsNotify 进应用内的提示层（带色调与动作），不弹浏览器 alert，返回 true", async () => {
+    const { wsNotify, WsToastHost } = await load();
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    await mountHost(WsToastHost);
+    const onClick = vi.fn();
+    await act(async () => { expect(wsNotify({ message: "本地稿放进了同步与恢复", tone: "warn", action: { label: "打开", onClick } })).toBe(true); });
+    expect(document.querySelector('[data-testid="undo-toast"]').textContent).toContain("本地稿放进了同步与恢复");
+    await act(async () => { document.querySelector('[data-testid="undo-toast-action"]').click(); });
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(alertSpy).not.toHaveBeenCalled();
   });
 
   it("wsToast 带动作按钮，点了执行并收起；过时自动消失", async () => {

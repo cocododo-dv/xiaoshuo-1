@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { navigateWithViewIntent } from "./ws-view-intents.js";
 import { useWrEvent } from "./ws-writer-hooks.js";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 
 /* ==========================================================
    档案实体 — 正文里已登记的人物 / 地点 / 术语（2026-09-21 从 ws-writer.jsx 拆出）

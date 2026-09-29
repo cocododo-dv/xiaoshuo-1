@@ -5,7 +5,7 @@
    · 一本书现在走到哪一步（书库徽标、页头、步骤条、落点）；
    · 作者读得懂的出错说法与下一步（按错误码 + 后端的 author_action，不给作者看英文原话）；
    · 估算、耗时、百分比的格式；活动条目的文案；界面偏好 ws_sr_ui_v1。
-   词表（16 维、段落类型、章内位置、场面 / 情绪标签、作业叫法）在 ws-labels.js，这里只引用。
+   词表（16 维、段落类型、章内位置、场面 / 情绪标签、作业叫法）在 labels/style-reference.js，这里只引用。
    不依赖 React，不写 window，可单测。
    ========================================================== */
 import { isChineseMessage } from "./lib/messages.js";
@@ -15,7 +15,8 @@ import {
   STYLE_LAYER_ORDER,
   styleJobKindLabel,
   styleLayerOf,
-} from "./ws-labels.js";
+} from "./labels/style-reference.js";
+import { formatCharsWan, formatCountWan, formatDurationClock, formatMinutesApprox, formatMonthDayTime, formatPercent } from "./lib/format.js";
 
 /* ---------- 用于作品：绑定配置的四个旋钮 ---------- */
 
@@ -320,50 +321,16 @@ export function srErrorInfo(error, fallback = "操作没有完成，请稍后重
 
 /* ---------- 估算与格式 ---------- */
 
-export function srFormatPct(value) {
-  const n = Number(value) * 100;
-  if (!Number.isFinite(n)) return "—";
-  const abs = Math.abs(n);
-  const text = abs > 0 && abs < 10 ? n.toFixed(1).replace(/\.0$/, "") : String(Math.round(n));
-  return `${text}%`;
-}
+/* 数字与时间文案住在 lib/format.js；风格参考沿用的旧名字从这里转出（视图与测试照旧从这里 import）。 */
+export const srFormatPct = formatPercent;
+export const srFormatDuration = formatDurationClock;
+export const srFormatMinutes = formatMinutesApprox;
+export const srFormatCount = formatCountWan;
+export const srFormatChars = formatCharsWan;
 
-export function srFormatDuration(seconds) {
-  const s = Math.max(0, Math.round(Number(seconds) || 0));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
-
-/* 分钟：<1 说「不到 1 分钟」，≥60 说「约 N 小时 M 分钟」 */
-export function srFormatMinutes(minutes) {
-  const m = Number(minutes);
-  if (!Number.isFinite(m) || m < 1) return "不到 1 分钟";
-  if (m < 60) return `约 ${Math.round(m)} 分钟`;
-  const h = Math.floor(m / 60);
-  const rest = Math.round(m - h * 60);
-  return rest ? `约 ${h} 小时 ${rest} 分钟` : `约 ${h} 小时`;
-}
-
-/* token / 字数：≥1 万写「N 万」 */
-export function srFormatCount(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) return "—";
-  if (n >= 10000) return `${(n / 10000).toFixed(n >= 100000 ? 0 : 1).replace(/\.0$/, "")} 万`;
-  return n.toLocaleString("zh-CN");
-}
-
-/* 字数：「980 字」「4.4 万字」（万后面不再空一格） */
-export function srFormatChars(value) {
-  const text = srFormatCount(value);
-  if (text === "—") return text;
-  return text.endsWith("万") ? `${text}字` : `${text} 字`;
-}
-
+/* 「M 月 D 日 HH:MM」；空值 / 非法值给 null（调用点靠它接 `|| "—"`）。 */
 export function srFormatWhen(iso) {
-  const d = iso ? new Date(iso) : null;
-  if (!d || Number.isNaN(d.getTime())) return null;
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${hh}:${mm}`;
+  return formatMonthDayTime(iso) || null;
 }
 
 /* 重新分类（就地重标类型）的费用：GET …/classification/estimate */
@@ -552,7 +519,7 @@ export function srActivityKindLabel(entry) {
   if (entry.kind === "classify") {
     if (entry.mode === "import") return "导入 · 段落分类";
     if (entry.mode === "retype") return "用模型重新分类";
-    return "段落分类";
+    return styleJobKindLabel("classify");
   }
   return styleJobKindLabel(entry.kind) || entry.kind_label || entry.kind || "";
 }

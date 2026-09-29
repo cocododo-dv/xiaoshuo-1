@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { agoLabel } from "./lib/ago.js";
+import { agoLabel } from "./lib/format.js";
 import { LIB_entrySub } from "./ws-library-derive.jsx";
 import { LibEntryRow, libAccClass, libCatLabel } from "./ws-library-parts.jsx";
 import { SectionLabel } from "./ws-ui.jsx";

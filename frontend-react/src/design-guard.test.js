@@ -32,10 +32,7 @@ const KNOWN_MISSING_KEYFRAMES = [];
 // JSX 里仍注入 <style> 的文件数上限（棘轮，只降不升）。
 const MAX_JSX_STYLE_TAG_FILES = 0;
 // 已知没人引用、暂时留着的规则（"文件: 选择器"）。棘轮：只删不加。
-// .help 是表单原语（.label / .input / .help 一组），暂时没有调用方。
-const KNOWN_DEAD_CSS = [
-  "styles.css: .help",
-];
+const KNOWN_DEAD_CSS = [];
 // 高于 40 的 z-index 字面量个数上限（棘轮，只降不升）。浮层一律走 styles.css 的 --z-* 刻度；
 // 0–40 是组件内部的局部叠放，可以写字面量。
 const MAX_Z_INDEX_LITERALS_ABOVE_40 = 0;
@@ -74,6 +71,10 @@ const ICON_ONLY_PIGMENT_ON_WASH = [
 ];
 // JSX / JS（非测试）里写死颜色的行数上限（棘轮，只降不升；现在是 0）。
 const MAX_JSX_RAW_COLOURS = 0;
+// 还在用旧 .pill 标签（styles.css，颜料名 crimson / gold / sage / slate / rose）的 className 个数上限
+// （棘轮，只降不升）。新代码用 ws-ui 的 <Tag tone dot>：crimson → accent、gold → warn、sage → ok、
+// slate → info、rose → danger、不带色 → neutral。各视图包改到时换掉，降到 0 后删掉 .pill 样式。
+const MAX_LEGACY_PILL_CLASS_USES = 15;
 
 const ANIMATION_KEYWORDS = new Set([
   "none", "infinite", "linear", "ease", "ease-in", "ease-out", "ease-in-out", "both", "forwards",
@@ -128,6 +129,18 @@ describe("设计系统守卫", () => {
       .map(({ file }) => file);
     expect(withStyleTags.length, `这些文件在 JSX 里注入 <style>：${withStyleTags.join(", ")}；样式放进对应的 .css`)
       .toBeLessThanOrEqual(MAX_JSX_STYLE_TAG_FILES);
+  });
+
+  it("旧 .pill 标签只减不增（新代码用 <Tag>）", () => {
+    const uses = [];
+    for (const { file, source } of FILES.filter(({ file }) => !file.endsWith(".css"))) {
+      for (const m of source.matchAll(/className=(?:"([^"]*)"|'([^']*)'|\{`([^`]*)`\})/g)) {
+        const value = m[1] ?? m[2] ?? m[3];
+        if (value.split(/\s+/).includes("pill")) uses.push(file);
+      }
+    }
+    expect(uses.length, `这些地方还在用 .pill：${uses.join(", ")}；换成 ws-ui 的 <Tag tone dot>`)
+      .toBeLessThanOrEqual(MAX_LEGACY_PILL_CLASS_USES);
   });
 
   it("色调变量只由 [data-tone] 和零特异性的 :where() 默认值设置（否则会盖过作者指定的色调）", () => {
@@ -198,10 +211,14 @@ describe("设计系统守卫", () => {
       }
     };
     walkTests(srcDir);
-    const scripts = path.join(root, "scripts");
-    for (const entry of fs.readdirSync(scripts)) {
-      if (/\.(mjs|js|cjs)$/.test(entry)) texts.push(fs.readFileSync(path.join(scripts, entry), "utf8"));
-    }
+    const walkScripts = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) walkScripts(abs);
+        else if (/\.(mjs|js|cjs)$/.test(entry.name)) texts.push(fs.readFileSync(abs, "utf8"));
+      }
+    };
+    walkScripts(path.join(root, "scripts"));
     texts.push(fs.readFileSync(path.join(root, "index.html"), "utf8"));
     const tokens = new Set();
     const prefixes = new Set();

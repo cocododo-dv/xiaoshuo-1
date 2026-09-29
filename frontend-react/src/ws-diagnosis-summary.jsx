@@ -2,6 +2,8 @@ import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { apiGet } from "./lib/client.js";
 import { createSubscribers, useStoreTick } from "./lib/store-utils.js";
+import { emit } from "./lib/events.js";
+import { realWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsDiagnosis — 一本书每一场 / 每一章开着的诊断发现数（2026-09-22 场景诊断统一；第三轮改成随写回传）
@@ -24,7 +26,7 @@ const dgSceneFetching = {}; // sceneId → Promise
 const DG_COUNT_KEYS = ["open", "blocking", "revision", "taste", "info", "ignored", "stale"];
 
 function dgWorkId() {
-  try { const id = WsWorks.activeId(); return id && id !== "__loading__" ? id : null; } catch (e) { return null; }
+  try { return realWorkId(WsWorks.activeId()); } catch (e) { return null; }
 }
 
 const EMPTY_SCENE = { open: 0, blocking: 0, revision: 0, taste: 0, info: 0, ignored: 0, stale: 0, ai_status: "not_run", review_status: "not_run" };
@@ -228,7 +230,7 @@ const WsDiagnosis = {
 /* 写作台深改面板 / 成稿中心里的动作之后广播。detail.rollup（写入响应里的 diagnosis_rollup）或
    detail.findings（面板里的清单）带着计数一起来，别的视图不必重拉；什么都没带才重拉一次。 */
 function announceDiagnosisChanged(detail) {
-  try { window.dispatchEvent(new CustomEvent("ws:diagnosis-changed", { detail: detail || {} })); } catch (e) {}
+  emit("ws:diagnosis-changed", detail || {});
 }
 
 function dgOnChanged(event) {

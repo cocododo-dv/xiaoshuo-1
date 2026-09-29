@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { wsToast } from "./ws-notify.jsx";
 import { CloseButton, PageHeader, Segmented, Spinner, Tag } from "./ws-ui.jsx";
-import { CHAPTER_STATE_META, CHAPTER_STATE_ORDER, chapterLabel, chapterStateMeta } from "./ws-labels.js";
+import { CHAPTER_STATE_META, CHAPTER_STATE_ORDER, chapterLabel, chapterStateMeta } from "./labels/catalog.js";
 import { manuCompile, manuScopeProblem } from "./ws-manuscripts-compile.js";
 import { manuDownload, manuRefreshChapters, manuSnapshotOf } from "./ws-manuscripts-workflow.js";
 

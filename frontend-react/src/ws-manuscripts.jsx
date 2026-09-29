@@ -4,7 +4,7 @@ import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { manuscriptChapterEligible } from "./ws-manuscripts-store.jsx";
 import { EmptyState, Notice, Segmented, Spinner } from "./ws-ui.jsx";
-import { SCENE_STATE_META, chapterHeading, chapterLabel, chapterOwnTitle } from "./ws-labels.js";
+import { SCENE_STATE_META, chapterHeading, chapterLabel, chapterOwnTitle } from "./labels/catalog.js";
 import {
   manuBuildBody, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuDefaultPick,
   manuFirstMissingScene, manuListGroups, manuProgressCells, manuScenesArchived,

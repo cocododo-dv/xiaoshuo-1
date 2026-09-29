@@ -11,6 +11,8 @@
 
    纯函数 + DOM 模块：不读 store、不写 window。存储键由调用方算好传进来。
    ========================================================== */
+import { unwrapNode } from "./manuscript-html.js";
+import { randomSuffix } from "./lib/ids.js";
 
 export const WR_ANNO_CONTEXT = 24;   // 前后各留多少字做上下文
 export const WR_ANNO_KEY_PREFIX = "wr-anno:";
@@ -73,7 +75,7 @@ export function wrAnnoSave(key, list) {
 }
 
 export function wrAnnoId() {
-  return "a" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  return "a" + Date.now().toString(36) + randomSuffix(6);
 }
 
 /* ---------------- 文本模型 ---------------- */
@@ -190,8 +192,7 @@ export function wrAnnoUnmark(root, id) {
   marksOf(root, id).forEach((mark) => {
     const parent = mark.parentNode;
     if (!parent) return;
-    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
-    parent.removeChild(mark);
+    unwrapNode(mark);
     if (parent.normalize) parent.normalize();
   });
 }

@@ -2,7 +2,7 @@ import React from "react";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 import { snowStepByBackendKey } from "./ws-nav.js";
-import { sceneLabel } from "./ws-labels.js";
+import { sceneLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    WsWorks — 多作品管理（FE-ALIGN Phase 2：后端为唯一真相源）

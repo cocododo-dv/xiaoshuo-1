@@ -6,7 +6,7 @@ import { ArrAiHealth } from "./ws-author-ai.jsx";
 import { ArrChapterStateTag, ArrMiniScenes } from "./ws-author-ui.jsx";
 import { isImeComposing, useFocusTrap } from "./ws-dialog.jsx";
 import { CloseButton } from "./ws-ui.jsx";
-import { chapterHeading, chapterLabel } from "./ws-labels.js";
+import { chapterHeading, chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    章节详情的两侧

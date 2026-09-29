@@ -1,22 +1,15 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
-import { dayTimeLabel } from "./lib/ago.js";
+import { recentOrDayTimeLabel } from "./lib/format.js";
 import { S2_STEPS, s2Ancestors, s2Content } from "./ws-snow-model.js";
+import { countChars } from "./lib/text.js";
 
 /* ==========================================================
    版本与来路：「历史」页签（操作时间线，带快照的节点可回滚）、「引用上下文」页签（本步展开自哪几层上游），
    以及两个对照对话框——回滚预览（快照 vs 当前）与「上游改了什么」（本步确认时消费的上游版本 vs 现在）。
    对话框统一走 WsDialog（焦点移入、Tab 困在框内、关闭后焦点回到打开它的按钮、Esc / 遮罩走同一条关闭路径）。
    ========================================================== */
-
-/* 一小时内走相对文案，更早走 lib/ago.js 的天级绝对文案（与成稿中心版本标签同款） */
-function s2HistTime(t) {
-  const diff = Date.now() - t;
-  if (diff < 60000) return "刚刚";
-  if (diff < 3600000) return Math.floor(diff / 60000) + " 分钟前";
-  return dayTimeLabel(t);
-}
 
 export function S2History({ history, go, onRestore }) {
   const list = history || [];
@@ -35,7 +28,7 @@ export function S2History({ history, go, onRestore }) {
         const st = S2_STEPS.find(s => s.key === h.key);
         return (
           <li key={i} className="hist-row">
-            <span className="hist-time">{s2HistTime(h.t)}</span>
+            <span className="hist-time">{recentOrDayTimeLabel(h.t)}</span>
             {/* 生成走的是作者在系统配置里接的任意一家模型，不是某个具体产品：旧记录里的「Claude」也显示为「AI」 */}
             <span className={`hist-who ${h.who === "Claude" || h.who === "AI" ? "is-ai" : ""}`}>{h.who === "Claude" ? "AI" : h.who}</span>
             <span className="hist-action">{h.action}</span>
@@ -86,7 +79,6 @@ export function S2SnapDiff({ h, current, onApply, onClose }) {
   const oldText = s2Content(h.snap.draft, h.snap.scaffold).trim();
   const curText = s2Content(current.draft, current.scaffold).trim();
   const same = oldText === curText;
-  const cnt = (t) => t.replace(/\s+/g, "").length;
   return (
     <WsDialog onClose={onClose} labelledBy="sf-snap-title" describedBy="sf-snap-desc" size="lg" className="sf-diff-dialog">
       <header className="ws-dialog-head">
@@ -102,11 +94,11 @@ export function S2SnapDiff({ h, current, onApply, onClose }) {
         ) : (
           <div className="sf-sd-cols">
             <div className="sf-sd-col is-old">
-              <div className="sf-sd-coltag"><I.Clock size={11} /> 快照（会恢复成这一版） · {cnt(oldText)} 字</div>
+              <div className="sf-sd-coltag"><I.Clock size={11} /> 快照（会恢复成这一版） · {countChars(oldText)} 字</div>
               <pre className="sf-sd-text text-serif">{oldText || "（空）"}</pre>
             </div>
             <div className="sf-sd-col is-cur">
-              <div className="sf-sd-coltag"><I.Pen size={11} /> 当前（会被替换，替换前另留一份） · {cnt(curText)} 字</div>
+              <div className="sf-sd-coltag"><I.Pen size={11} /> 当前（会被替换，替换前另留一份） · {countChars(curText)} 字</div>
               <pre className="sf-sd-text text-serif">{curText || "（空）"}</pre>
             </div>
           </div>
@@ -124,7 +116,6 @@ export function S2SnapDiff({ h, current, onApply, onClose }) {
 /* ---- 阶段 E：上游改了什么——本步确认时消费的上游版本 vs 现在的版本（后端 input_refs + history） ---- */
 export function S2UpstreamDiff({ diff, onClose }) {
   const st = S2_STEPS.find(s => s.key === diff.key) || {};
-  const cnt = (t) => String(t || "").replace(/\s+/g, "").length;
   const items = diff.items || [];
   return (
     <WsDialog onClose={onClose} labelledBy="sf-updiff-title" describedBy="sf-updiff-desc" size="lg" className="sf-diff-dialog" testId="snow-upstream-diff">
@@ -151,11 +142,11 @@ export function S2UpstreamDiff({ diff, onClose }) {
                   <div className="sf-updiff-head"><b>{up.num} {up.name}</b>：第 {item.oldVersion == null ? "?" : item.oldVersion} 版 → 第 {item.newVersion == null ? "?" : item.newVersion} 版{item.oldFound ? "" : "（旧版本已不在历史里）"}</div>
                   <div className="sf-sd-cols">
                     <div className="sf-sd-col is-old">
-                      <div className="sf-sd-coltag"><I.Clock size={11} /> 本步确认时用的版本 · {cnt(item.oldText)} 字</div>
+                      <div className="sf-sd-coltag"><I.Clock size={11} /> 本步确认时用的版本 · {countChars(item.oldText || "")} 字</div>
                       <pre className="sf-sd-text text-serif">{item.oldText || "（空）"}</pre>
                     </div>
                     <div className="sf-sd-col is-cur">
-                      <div className="sf-sd-coltag"><I.Pen size={11} /> 现在的版本 · {cnt(item.newText)} 字</div>
+                      <div className="sf-sd-coltag"><I.Pen size={11} /> 现在的版本 · {countChars(item.newText || "")} 字</div>
                       <pre className="sf-sd-text text-serif">{item.newText || "（空）"}</pre>
                     </div>
                   </div>

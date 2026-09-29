@@ -22,6 +22,33 @@ function sourceModules() {
   return modules;
 }
 
+// scripts/ 下的 .mjs（含子目录，例如 scripts/manual/），返回 [相对路径, 源码]
+function scriptSources() {
+  const out = [];
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(absolute);
+      else if (entry.name.endsWith(".mjs")) out.push([path.relative(scriptsDir, absolute), fs.readFileSync(absolute, "utf8")]);
+    }
+  };
+  walk(scriptsDir);
+  return out;
+}
+
+// 仍写 window 全局的过渡模块（旧 store 的运行时接缝）。棘轮：只删不加——哪个模块不再写 window，
+// 就把它从这里删掉（测试会提醒）；其它模块一律不许写，新代码用 ES 导出 / 导入或事件。
+const KNOWN_WINDOW_WRITERS = [
+  "wr-doc-store.jsx",
+  "ws-catalog.jsx",
+  "ws-library-data.jsx",
+  "ws-library-edit.jsx",
+  "ws-review.jsx",
+  "ws-snow-sync.jsx",
+  "ws-snow.jsx",
+  "ws-works.jsx",
+];
+
 function resolveRelativeModule(importer, specifier, knownModules) {
   const base = path.resolve(path.dirname(importer), specifier);
   return [base, `${base}.js`, `${base}.jsx`, path.join(base, "index.js"), path.join(base, "index.jsx")]
@@ -36,9 +63,7 @@ describe("React 工具链独立性", () => {
   });
 
   it("浏览器脚本按自身位置解析依赖，不依赖调用者工作目录", () => {
-    const browserScripts = fs.readdirSync(scriptsDir)
-      .filter((name) => name.endsWith(".mjs"))
-      .map((name) => [name, fs.readFileSync(path.join(scriptsDir, name), "utf8")])
+    const browserScripts = scriptSources()
       .filter(([, source]) => source.includes('require("playwright")'));
 
     expect(browserScripts.length).toBeGreaterThan(0);
@@ -103,41 +128,24 @@ describe("React 工具链独立性", () => {
     expect(missing).toEqual([]);
   });
 
-  it("新的 ESM-only 模块不再写入 window 全局命名空间", () => {
-    const esmOnly = [
-      "icons.jsx", "tweaks-panel.jsx", "ws-ai-providers.jsx", "ws-chapter-plan.jsx",
-      "ws-cost.jsx", "ws-deep.jsx", "ws-home.jsx", "ws-home-derive.js",
-      "ws-palette.jsx", "ws-quality.jsx", "ws-settings.jsx", "ws-settings-ai.jsx",
-      "ws-settings-shared.jsx", "ws-styleref.jsx", "ws-styleref-model.js", "ws-styleref-store.js", "ws-styleref-ui.jsx", "ws-styleref-activity.jsx", "ws-styleref-library.jsx", "ws-styleref-overview.jsx", "ws-styleref-learn.jsx", "ws-styleref-portrait.jsx", "ws-styleref-apply.jsx", "ws-styleref-scene-preview.jsx", "ws-styleref-check.jsx", "ws-styleref-fidelity.jsx", "ws-scene-run.jsx",
-      "ws-fidelity-model.js", "ws-fidelity-store.js", "ws-fidelity-ui.jsx", "ws-scene-fidelity.jsx", "ws-manuscripts-fidelity.jsx", "ws-copy-gate.js",
-      "ws-author-data.jsx", "ws-author-doctor.jsx", "ws-author-derive.js", "ws-author-spine.jsx",
-      "ws-author-pacing.jsx", "ws-author-ai.jsx", "ws-author-overview.jsx", "ws-author-detail.jsx",
-      "ws-author-side.jsx", "ws-author-ui.jsx", "ws-author-hooks.js", "ws-library-derive.jsx",
-      "ws-library-graph.jsx", "ws-library-overview.jsx", "ws-library-timeline.jsx", "ws-library-dossier.jsx", "ws-library-parts.jsx", "ws-trash.jsx", "ws-settings-ai-providers.jsx", "ws-settings-ai-routes.jsx", "ws-settings-ai-health.js",
-      "ws-manuscripts-store.jsx", "ws-manuscripts.jsx", "ws-labels.js", "ws-quality-ui.jsx", "ws-author.jsx",
-      "ws-manuscripts-compile.js", "ws-manuscripts-workflow.js", "ws-manuscripts-hero.jsx",
-      "ws-manuscripts-reader.jsx", "ws-manuscripts-canon.jsx", "ws-manuscripts-diff.jsx", "ws-manuscripts-dialogs.jsx",
-      "ws-scene.jsx", "ws-library.jsx", "ws-writer.jsx", "ws-dialog.jsx", "ws-ui.jsx",
-      "ws-nav.js", "ws-lazy.jsx", "ws-rail.jsx", "ws-work-switcher.jsx", "ws-notify.jsx", "ws-prefs.js",
-      "ws-cost-parts.jsx", "ws-cost-store.js", "ws-home-chapters.jsx", "ws-home-parts.jsx", "ws-home-states.jsx", "ws-quality-model.js",
-      "ws-quality-store.js", "ws-snow-chapters-model.js", "ws-snow-chapters-parts.jsx", "ws-snow-reply.jsx", "ws-snow-scene-list.jsx", "ws-snow-scene-plan.jsx",
-      "ws-scene-adopt.jsx", "ws-scene-api.js", "ws-scene-board-state.js", "ws-scene-decide.jsx", "ws-scene-derive.js", "ws-scene-evidence.jsx",
-      "ws-scene-job.jsx", "ws-scene-spine.jsx", "ws-scene-stage.jsx", "ws-scene-store.js", "ws-design-sync.jsx", "ws-chapter-run.jsx",
-      "ws-writer-ai.js", "ws-writer-annotations.js", "ws-writer-candidates.jsx", "ws-writer-catalog.js", "ws-writer-context.jsx", "ws-writer-deep-posture.js",
-      "ws-writer-doc.js", "ws-writer-dock.jsx", "ws-writer-entities.jsx", "ws-writer-header.jsx", "ws-writer-hooks.js", "ws-writer-inline.jsx",
-      "ws-writer-keys.js", "ws-writer-manuscript.js", "ws-writer-notes.jsx", "ws-writer-outline.jsx", "ws-writer-requests.js", "ws-writer-room.jsx",
-      "ws-writer-tray.jsx", "ws-snow-chrome.jsx", "ws-snow-coach.jsx", "ws-snow-fields.jsx", "ws-snow-history.jsx", "ws-snow-hooks.js",
-      "ws-snow-model.js", "ws-snow-rail.jsx", "ws-snow-scaffolds.jsx", "ws-snow-scenes.jsx",
-    ];
-    for (const name of esmOnly) {
-      const source = fs.readFileSync(path.join(srcDir, name), "utf8");
-      expect(source, name).not.toMatch(/Object\.assign\(window|window\.[A-Za-z_$][A-Za-z0-9_$]*\s*=/);
-    }
+  it("只有已知的过渡模块写 window 全局命名空间（新模块一律不写，列表只减不增）", () => {
+    // 正则故意从严：`window.x ===` 这样的比较也算写
+    const writers = sourceModules()
+      .filter((file) => /Object\.assign\(window|window\.[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(fs.readFileSync(file, "utf8")))
+      .map((file) => path.relative(srcDir, file).split(path.sep).join("/"))
+      .sort();
+    const unexpected = writers.filter((name) => !KNOWN_WINDOW_WRITERS.includes(name));
+    expect(unexpected, "这些模块新写了 window：改用 ES 导出 / 导入或事件").toEqual([]);
+    const fixed = KNOWN_WINDOW_WRITERS.filter((name) => !writers.includes(name));
+    expect(fixed, "这些已经不写 window 了，把它们从 KNOWN_WINDOW_WRITERS 里删掉").toEqual([]);
+  });
 
-    const remainingTransitionalModules = sourceModules().filter((file) => {
-      const source = fs.readFileSync(file, "utf8");
-      return /Object\.assign\(window|window\.[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(source);
-    });
-    expect(remainingTransitionalModules.length).toBeLessThanOrEqual(10);
+  it("全局对象上只有 lib/events.js 的跨重载去重登记表（Symbol 键），别的模块不往 globalThis[…] 上写", () => {
+    // 上面的 window 守卫只认 `window.x =`；把状态藏到 globalThis[键] 上同样是全局接缝，只许这一处
+    const slotWriters = sourceModules()
+      .filter((file) => /globalThis\[[^\]]+\]\s*=(?!=)/.test(fs.readFileSync(file, "utf8")))
+      .map((file) => path.relative(srcDir, file).split(path.sep).join("/"))
+      .sort();
+    expect(slotWriters).toEqual(["lib/events.js"]);
   });
 });

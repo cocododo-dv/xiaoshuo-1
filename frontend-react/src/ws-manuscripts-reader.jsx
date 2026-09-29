@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { wsConfirm, wsToast } from "./ws-notify.jsx";
 import { EmptyState, Spinner, Tag } from "./ws-ui.jsx";
-import { SCENE_STATE_META, chapterLabel, chapterStateMeta, chapterOwnTitle } from "./ws-labels.js";
+import { SCENE_STATE_META, chapterLabel, chapterStateMeta, chapterOwnTitle } from "./labels/catalog.js";
 
 const SCENE_DONE = SCENE_STATE_META.done.label;
 import { manuArchivedParas, manuDramaOf } from "./ws-manuscripts-compile.js";

@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { SceneDesignCard } from "./ws-scene-design.jsx";
 import { EmptyState, Notice, Spinner, Tabs, Tag } from "./ws-ui.jsx";
+import { countChars } from "./lib/text.js";
 import { scnCandidates, scnResumeAfterSelection, scnSelectCandidate } from "./ws-scene-api.js";
 import {
   RUN_STAGES, runJobStepLabel, scnFindingIsPlainLanguage, scnParaText, scnRunStageIndex,
@@ -260,7 +261,7 @@ function CandidatePicker({ sid, onDone, onRework = null }) {
   const candidates = st.candidates;
   const index = Math.min(tab, Math.max(0, candidates.length - 1));
   const current = candidates[index];
-  const wordsOf = (c) => String((c && c.content) || "").replace(/\s/g, "").length;
+  const wordsOf = (c) => countChars((c && c.content) || "");
   const busy = !!st.picking || st.resuming;
   return (
     <div className="scn2-review scn2-pick scn2-scroll">

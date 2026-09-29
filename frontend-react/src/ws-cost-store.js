@@ -1,5 +1,6 @@
 import React from "react";
 import { apiGet } from "./lib/client.js";
+import { emit } from "./lib/events.js";
 
 /* ==========================================================
    成本看板的 store（从 ws-cost.jsx 拆出，2026-09-22）
@@ -19,7 +20,7 @@ let csState = {
 };
 
 export function csSnapshot() { return csState; }
-function csEmit() { try { window.dispatchEvent(new CustomEvent("ws:cost-changed")); } catch (e) {} }
+function csEmit() { emit("ws:cost-changed"); }
 
 export const PHASE_LABEL = {
   candidate_generation: "候选生成",

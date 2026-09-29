@@ -4,7 +4,7 @@ import { WsWorks } from "./ws-works.jsx";
 import { rvPush } from "./ws-review.jsx";
 import { WsManuStore } from "./ws-manuscripts-store.jsx";
 import { wsToast } from "./ws-notify.jsx";
-import { chapterLabel } from "./ws-labels.js";
+import { chapterLabel } from "./labels/catalog.js";
 import { manuCanonicalBlockReason, manuCanonicalComplete, manuCompile } from "./ws-manuscripts-compile.js";
 
 /* ==========================================================

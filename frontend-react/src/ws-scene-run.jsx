@@ -2,7 +2,7 @@
    AI 起草台 — 运行引擎的对外门面
    ----------------------------------------------------------
    2026-09-21 拆分：原来这一个文件里同时有网络请求、localStorage、纯推导和三个 React 组件。
-   现在各归其位，这里只把名字原样转出去——单测与 scripts/smoke-f6.mjs 仍从这里 import，
+   现在各归其位，这里只把名字原样转出去——单测仍从这里 import，
    页面自己直接引用各模块（不经过门面，免得门面与页面互相牵连）。
    · ws-scene-derive.js   纯推导：状态词、七步进度、风格提示、裁决投影、workbench → 运行记录
    · ws-scene-store.js    本机持久化：scn-run:<sid> / scn-queue:v1 / scn-queue-dismissed:v1

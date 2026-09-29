@@ -25,9 +25,11 @@ npm test           # Vitest（含 tooling-independence / design-guard 等守卫�
 npm run build      # dist/
 ```
 
+Vitest 分两个项目（`vitest.config.js`）：`dom` 用 jsdom，是默认，`src/test-setup.js` 在这里统一打开 React 的 act 环境、每个用例后清空 localStorage / sessionStorage；`node` 只跑 `NODE_TESTS` 里列出的纯逻辑与读源码的守卫测试（不碰 DOM，省掉 jsdom 装配）。新测试默认进 `dom`，确认它和它 import 的模块都不碰 DOM 再加进 `NODE_TESTS`。
+
 ## API 配置
 
-- `VITE_NOVEL_SYSTEM_API_BASE`：后端地址，默认 `http://127.0.0.1:8000`。
+- `VITE_NOVEL_SYSTEM_API_BASE`：后端地址，默认 `http://127.0.0.1:8000`。`index.html` 的 CSP `connect-src` 默认只放行本机回环；这个地址不是 http 回环时（内网地址、https 反向代理），`build-csp.js` 的 Vite 插件在 dev 与 build 时把它的 origin 补进 `connect-src`。
 - `VITE_NOVEL_SYSTEM_ACCESS_TOKEN`：远程模式的共享访问令牌默认值。
 - `setRemoteAccessToken()`：集成层可写入当前标签页会话的令牌；值保存在 `sessionStorage`，不会写入 `localStorage`。
 
@@ -44,9 +46,9 @@ localStorage 的 `novel-system-api-base` 覆盖只有在同时存在 `novel-syst
 ## 结构约定
 
 - `src/` 是持续维护的正式源代码；早期设计原型和一次性迁移脚本已经退役，不要从历史提交重新生成或覆盖现有实现。
-- **共享界面层**（2026-09-21 重构）：设计令牌在 `src/styles.css`（语义色 `--accent/--ok/--warn/--danger/--info` 及其 `-wash` / `-ink`、`--scrim`、`--on-accent`、`--z-*` 层级刻度、`--fs-*` 字号刻度）；共用组件在 `src/ws-ui.jsx` + `src/ws-ui.css`（页头、分段、页签、标签、提示条、空态、统计块、图标按钮等）；模态框用 `src/ws-dialog.jsx`；提示与确认用 `src/ws-notify.jsx`（`wsToast` / `wsConfirm`）；界面偏好的范围与默认值只在 `src/ws-prefs.js` 定义一份；章 / 场标签与章节状态词汇在 `src/ws-labels.js`。新代码与改到的地方用这些，不要再在视图里写私有的同类控件。
+- **共享界面层**（2026-09-21 重构）：设计令牌在 `src/styles.css`（语义色 `--accent/--ok/--warn/--danger/--info` 及其 `-wash` / `-ink`、`--scrim`、`--on-accent`、`--z-*` 层级刻度、`--fs-*` 字号刻度）；共用组件在 `src/ws-ui.jsx` + `src/ws-ui.css`（页头、分段、页签、标签、提示条、空态、统计块、图标按钮、进度条 `ProgressBar`、卡片单选 `RadioCards`、非模态浮层 `Popover` / `usePopover`、菜单按钮 `MenuButton` 等）；模态框用 `src/ws-dialog.jsx`（浮层与模态框同一个层栈：Esc 归最上层）；提示与确认用 `src/ws-notify.jsx`（`wsToast` / `wsNotify`（提示层没挂时退回 alert）/ `wsConfirm`）；界面偏好的范围与默认值只在 `src/ws-prefs.js` 定义一份；词表按领域住在 `src/labels/`（`catalog.js` 章 / 场叫法与章节状态、`review.js`、`llm.js` 模型节点、`style-reference.js`），`src/ws-labels.js` 是转出门面。store 的共用骨架在 `src/lib/store-kit.js`（`createKeyedLoader`：只按键合并、写入之前发出的读取不覆盖本机新状态、在飞时失效就再读一次；`createStore`；`toStoreError`）。新代码与改到的地方用这些，不要再在视图里写私有的同类控件。
 - `src/main.jsx` 的样式导入顺序具有层叠语义：`styles.css`、`ws-ui.css` 在最前（`design-guard.test.js` 会检查），各视图的样式在后；调整时必须做视觉回归。
-- `window.*` 与部分同步 store 是现有运行时兼容接缝，新增代码优先使用模块导出；`tooling-independence.test.js` 禁止新的 ESM 模块写入 `window`。
+- `window.*` 与部分同步 store 是现有运行时兼容接缝，新增代码优先使用模块导出；`tooling-independence.test.js` 的 `KNOWN_WINDOW_WRITERS` 列出仍写 `window` 的过渡模块（只减不增），其它模块写 `window` 会让测试失败。
 - API 错误统一为 `ApiRequestError`；界面应优先使用稳定 `code` 和 `details`，不要解析错误文案。
 - 界面文案不出现英文大写小标题、原始 JSON、内部 id 或英文枚举值；夜间主题下的文字颜色只用令牌。
 
@@ -75,6 +77,8 @@ npx vitest run src/ws-catalog.test.jsx src/ws-book-spine.test.jsx src/ws-scene-s
 npx vitest run src/ws-chapter-run.test.jsx src/ws-manuscripts.test.jsx src/ws-manuscripts-flow.test.jsx
 npm run build
 ```
+
+`scripts/` 下只有契约 E2E 的套件（`run-smokes.mjs` 按清单依次执行）；`scripts/manual/shoot-views.mjs` 是不在任何 lane 里的手动逐页截图工具。
 
 仓库级 React 契约 E2E 由根目录脚本启动隔离后端、前端并自动清理。请从仓库根目录运行（Linux：`NOVEL_SYSTEM_PYTHON=$PWD/backend/.venv/bin/python bash scripts/verify_react_e2e.sh`，端口可用 `PLAYWRIGHT_BACKEND_PORT` / `PLAYWRIGHT_REACT_PORT` 改）：
 

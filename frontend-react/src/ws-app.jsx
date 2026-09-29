@@ -12,6 +12,7 @@ import { usePrefs } from "./ws-prefs.js";
 import {
   WS_PROJECT_SCOPED_VIEWS, WS_VIEW_ALIAS, WS_VIEW_LABELS, isAdvancedView, isKnownView,
 } from "./ws-nav.js";
+import { LOADING_WORK_ID } from "./lib/work-id.js";
 
 /* ==========================================================
    App — 外壳：hash 路由、懒加载页面、侧栏、命令面板、排版与舒适度面板、提示层。
@@ -144,7 +145,7 @@ function App() {
 
   const renderView = () => {
     if (WS_PROJECT_SCOPED_VIEWS.has(view)) {
-      if (work.id === "__loading__") return <ViewLoading label="书架" reason="data" />;
+      if (work.id === LOADING_WORK_ID) return <ViewLoading label="书架" reason="data" />;
       if (!work.id) {
         return (
           <ProjectRequired

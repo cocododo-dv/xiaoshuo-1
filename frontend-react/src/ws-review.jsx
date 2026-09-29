@@ -1,16 +1,18 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
-import { agoLabel } from "./lib/ago.js";
+import { agoLabel } from "./lib/format.js";
 import { apiGet, apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { PageHeader, Segmented, Tag, EmptyState, Notice, Spinner } from "./ws-ui.jsx";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { wsToast } from "./ws-notify.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
-import { preferenceHintLabel, reviewSourceLabel } from "./ws-labels.js";
+import { preferenceHintLabel, reviewSourceLabel } from "./labels/review.js";
+import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsReview — 待办收件箱
@@ -150,18 +152,14 @@ const rvUrgentCount = () => rvCache.open.filter(i => i.priority === 1).length;
 
 /* 广播时带上紧急条数：侧栏徽标拿它直接更新，不必为 store 自己的变化再拉一遍列表。 */
 function rvEmit() {
-  try {
-    window.dispatchEvent(new CustomEvent("ws:review-changed", {
-      detail: { urgent: rvUrgentCount(), projectId: rvActiveId() },
-    }));
-  } catch (e) {}
+  emit("ws:review-changed", { urgent: rvUrgentCount(), projectId: rvActiveId() });
 }
 
 let rvFetching = null;
 let rvLastFetchAt = 0;
 function rvFetch() {
   const pid = rvActiveId();
-  if (!pid || pid === "__loading__") return Promise.resolve();
+  if (!isRealWorkId(pid)) return Promise.resolve();
   if (rvFetching) return rvFetching;
   rvLastFetchAt = Date.now();
   rvFetching = (async () => {
@@ -213,7 +211,7 @@ function rvFetchThrottled() {
    不会复制已成功写入的卡片。resolved/snoozed 状态无法可靠映射，保留为 open。 */
 const rvLegacyMigrations = new Map();
 async function rvMigrateLegacy(pid) {
-  if (!pid || pid === "__loading__") return false;
+  if (!isRealWorkId(pid)) return false;
   const flagKey = RV_MIGRATED_LS + "::" + pid;
   try {
     if (localStorage.getItem(flagKey)) return true;
@@ -380,14 +378,7 @@ function rvIsResolved(id) { return rvResolvedSet.has(id); }
 
 /* 启动装载 + 真相变动时刷新（派生卡在后端现算，目录/作品切换都可能改变它们）。
    模块在 HMR/测试 resetModules 后可能重新执行，先撤销旧实例的全局订阅。 */
-if (window.__wsReviewGlobalHandlers) {
-  const old = window.__wsReviewGlobalHandlers;
-  window.removeEventListener("ws:work-changed", old.workChanged);
-  window.removeEventListener("ws:trash-changed", old.trashChanged);
-  window.removeEventListener("hashchange", old.hashChanged);
-  old.catalogUnsubscribe?.();
-  old.cancelPending?.();
-}
+retireModuleListeners("ws-review");
 const rvOnWorkChanged = () => {
   try {
     // 换了作品：上一部的列表不能冒充这一部的（rvReady 回到 false，徽标清零）
@@ -404,13 +395,13 @@ window.addEventListener("ws:trash-changed", rvOnTrashChanged);
 window.addEventListener("hashchange", rvOnHashChanged);
 let rvCatalogUnsubscribe = null;
 try { rvCatalogUnsubscribe = WsCatalog.subscribe(() => rvFetchThrottled()); } catch (e) {}
-window.__wsReviewGlobalHandlers = {
-  workChanged: rvOnWorkChanged,
-  trashChanged: rvOnTrashChanged,
-  hashChanged: rvOnHashChanged,
-  catalogUnsubscribe: rvCatalogUnsubscribe,
-  cancelPending: () => { clearTimeout(rvFetchTimer); clearTimeout(rvNoisyTimer); rvNoisyTimer = null; },
-};
+adoptModuleListeners("ws-review", () => {
+  window.removeEventListener("ws:work-changed", rvOnWorkChanged);
+  window.removeEventListener("ws:trash-changed", rvOnTrashChanged);
+  window.removeEventListener("hashchange", rvOnHashChanged);
+  if (rvCatalogUnsubscribe) rvCatalogUnsubscribe();
+  clearTimeout(rvFetchTimer); clearTimeout(rvNoisyTimer); rvNoisyTimer = null;
+});
 try { rvFetch(); } catch (e) {}
 
 /* 决策类待办（带真实效果或候选项）与实时派生项不允许被「无决策地划掉」：

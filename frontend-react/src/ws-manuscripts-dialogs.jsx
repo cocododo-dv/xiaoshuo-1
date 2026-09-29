@@ -1,7 +1,7 @@
 import React from "react";
 import { WsDialog } from "./ws-dialog.jsx";
 import { CloseButton, Notice, Segmented } from "./ws-ui.jsx";
-import { chapterLabel } from "./ws-labels.js";
+import { chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    成稿中心的三个流转对话框：退回小修 / 批准终稿 / 重新打开。

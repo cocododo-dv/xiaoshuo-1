@@ -3,13 +3,15 @@ import { WsWorks, wsKey } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
-import { hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
+import { escapeHtmlText, hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
+import { countChars } from "./lib/text.js";
 import { copyGateAdoptMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { fidPatchView, fidRankText, fidStyleStepView, fidVerdict } from "./ws-fidelity-model.js";
 import {
   RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES, scnPipeStepName, scnParaText,
   scnGateLog, scnFriendly, scnRunUiAbortError, scnStyleNoticeLabel, scnRunRecordFromWorkbench,
 } from "./ws-scene-derive.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    AI 起草台 — 与后端说话的部分
@@ -251,7 +253,7 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
    读不到时返回 null 而不是 []——场景页据此决定「这一场没进过管线、不必问 latest」，读不到就不能这么断定。 ---- */
 async function scnBackendRunSids() {
   const workId = WsWorks.activeId();
-  if (!workId || workId === "__loading__") return null;
+  if (!isRealWorkId(workId)) return null;
   let data = null;
   try { data = await apiGet(`/api/v1/scene-run-states?project_id=${encodeURIComponent(workId)}`); } catch (e) { return null; }
   const items = (data && data.items) || [];
@@ -312,9 +314,8 @@ async function scnHydrateAfterSelection(sid, resumed) {
    「完成」的真值在后端：POST adopt-current 携带浏览器当前正文和作者稿 base revision，服务端在同一事务内
    保存并提升精确修订。成功响应后只吸收权威修订到写作器缓存、回写字数、目录卡置 done——done 只由服务端
    archived 响应映射，不先本地置位。后端拒绝时不动本地任何状态，如实返回失败原因。 ---- */
-function scnEscape(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function scnDraftHTML(draft) {
-  return (draft || []).map(p => "<p>" + scnEscape(scnParaText(p)) + "</p>").join("");
+  return (draft || []).map(p => "<p>" + escapeHtmlText(scnParaText(p)) + "</p>").join("");
 }
 function scnHTMLParas(raw) {
   if (!raw) return [];
@@ -442,7 +443,7 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   }
   const hit = WsCatalog.sceneById(sid);
   const prev = hit && typeof hit.scene.words === "number" ? hit.scene.words : 0;
-  const count = text.replace(/\s/g, "").length;
+  const count = countChars(text);
   try { WsCatalog.recordSceneWords(sid, count, prev); } catch (e) {}
   try {
     WsCatalog.set(WsCatalog.get().map(c => ({

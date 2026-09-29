@@ -1,8 +1,11 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
-import { manuscriptToDocHTML, sanitizeManuscriptHTML } from "./manuscript-html.js";
+import { htmlToParagraphs, manuscriptToDocHTML, sanitizeManuscriptHTML } from "./manuscript-html.js";
+import { countChars } from "./lib/text.js";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
-import { wsToast } from "./ws-notify.jsx";
+import { wsNotify } from "./ws-notify.jsx";
+import { randomSuffix } from "./lib/ids.js";
+import { emit } from "./lib/events.js";
 
 /* ==========================================================
    WrDocs — 写作器正文文档 store（FE-ALIGN Phase 3）
@@ -46,14 +49,12 @@ function storageFailure(error, message = "浏览器本地存储空间不足") {
 }
 
 function notifyRecoveryChanged(entry, action = "changed") {
-  try {
-    window.dispatchEvent(new CustomEvent("ws:recovery-changed", { detail: { action, entry } }));
-  } catch (e) {}
+  emit("ws:recovery-changed", { action, entry });
 }
 
 function recoveryCreate({ sid, html, type = "conflict", reason = "", label = "", source = "writer", requireDurable = false } = {}) {
   const createdAt = Date.now();
-  const id = `${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const id = `${createdAt.toString(36)}-${randomSuffix(6)}`;
   const entry = {
     id,
     version: 1,
@@ -221,9 +222,7 @@ function stateSnapshot(sid) {
 }
 
 function notifyState(sid) {
-  try {
-    window.dispatchEvent(new CustomEvent("ws:wr-doc-state", { detail: { sid, ...stateSnapshot(sid) } }));
-  } catch (e) {}
+  emit("ws:wr-doc-state", { sid, ...stateSnapshot(sid) });
 }
 
 function cacheRead(sid) {
@@ -263,20 +262,19 @@ function cacheWrite(sid, html) {
 /* 本地稿被放进「同步与恢复」时告诉作者一声，并给一个直接打开它的按钮（入口在左侧导航栏底部）。
    外壳的提示层没挂上时（单测里单独加载 store）退回浏览器提示框。 */
 function recoveryNotice(sid, message) {
-  const shown = wsToast({
+  wsNotify({
     message,
     tone: "warn",
     timeout: 12000,
     action: {
       label: "打开同步与恢复",
-      onClick: () => { try { window.dispatchEvent(new CustomEvent("ws:recovery-open", { detail: { sid } })); } catch (e) {} },
+      onClick: () => { emit("ws:recovery-open", { sid }); },
     },
   });
-  if (!shown) { try { window.alert(message); } catch (e) {} }
 }
 
 function notifyLoaded(sid) {
-  try { window.dispatchEvent(new CustomEvent("ws:wr-doc-loaded", { detail: sid })); } catch (e) {}
+  emit("ws:wr-doc-loaded", sid);
 }
 
 async function backendSceneId(sid) {
@@ -471,19 +469,6 @@ async function pushSave(sid, html, saveVersion) {
    并提供句级 diff（LCS）。draftId 复用 WrDocs 的 ensure 链路。
    ========================================================== */
 
-function htmlToParas(raw) {
-  if (!raw) return [];
-  if (!/<\w+[^>]*>/.test(raw)) return String(raw).split(/\n+/).map(x => x.trim()).filter(Boolean);
-  const div = document.createElement("div");
-  div.innerHTML = sanitizeManuscriptHTML(raw);
-  let paras = Array.from(div.querySelectorAll("p, li")).map(p => (p.textContent || "").trim()).filter(Boolean);
-  if (!paras.length) {
-    const t = (div.textContent || "").trim();
-    paras = t ? t.split(/\n+/).map(x => x.trim()).filter(Boolean) : [];
-  }
-  return paras;
-}
-
 /* 句级 diff：A=旧版段落、B=新版段落 → 按 B 版式分段的 same/del/add 片段 */
 function diffSentences(aParas, bParas) {
   const split = (paras) => {
@@ -538,7 +523,7 @@ const WrDocVersions = {
     const m = await ensureDraft(sid);
     if (!m.draftId) return [];
     const data = await apiGet(`/api/v1/author-drafts/${m.draftId}/revisions/${revisionNo}`);
-    return htmlToParas((data && data.revision && data.revision.content) || "");
+    return htmlToParagraphs((data && data.revision && data.revision.content) || "");
   },
   diff: diffSentences,
 };
@@ -703,7 +688,7 @@ const WrRecovery = {
       entry,
       current,
       candidate: entry.html || "",
-      ...diffSentences(htmlToParas(current), htmlToParas(entry.html || "")),
+      ...diffSentences(htmlToParagraphs(current), htmlToParagraphs(entry.html || "")),
     };
   },
   async restore(id) {
@@ -711,7 +696,7 @@ const WrRecovery = {
     if (!entry) throw Object.assign(new Error("恢复记录已不存在"), { code: "RECOVERY_NOT_FOUND" });
     assertRecoveryWork(entry);
     const current = cacheRead(entry.sid) || "";
-    const hasCurrent = htmlToParas(current).join("").replace(/\s/g, "").length > 0;
+    const hasCurrent = countChars(htmlToParagraphs(current).join("")) > 0;
     let replacedBackup = null;
     if (hasCurrent && current !== (entry.html || "")) {
       // “恢复”本质上也是一次显式替换：先留下可撤销的当前稿，配额不足则

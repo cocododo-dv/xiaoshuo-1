@@ -5,6 +5,7 @@ import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { wrAiError } from "./ws-writer-ai.js";
 import { qSevLabel, qSevTone } from "./ws-quality-model.js";
 import { WsDiagnosis, announceDiagnosisChanged } from "./ws-diagnosis-summary.jsx";
+import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
    成稿中心 · 诊断页签（2026-09-22 场景诊断统一）
@@ -120,8 +121,7 @@ function ManuDiagnosis({ chapter, go }) {
   }
   const ai = (payload && payload.ai) || { status: "not_run" };
   const score = ai.overall_score != null ? Math.round(ai.overall_score * 100) : null;
-  const when = ai.created_at ? new Date(ai.created_at) : null;
-  const whenText = when && !Number.isNaN(when.getTime()) ? when.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+  const whenText = formatLocaleMonthDayTime(ai.created_at);
   const brief = ai.revision_brief || [];
   const chapterFindings = (payload && payload.chapter_findings) || [];
   const scenes = (payload && payload.scenes) || [];

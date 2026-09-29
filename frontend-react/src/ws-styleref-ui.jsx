@@ -1,11 +1,12 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks } from "./ws-works.jsx";
-import { wsToast } from "./ws-notify.jsx";
+import { wsNotify } from "./ws-notify.jsx";
 import { useStoreTick } from "./lib/store-utils.js";
 import { EmptyState } from "./ws-ui.jsx";
 import { srErrorInfo } from "./ws-styleref-model.js";
 import { srConfigureHost, srSubscribe } from "./ws-styleref-store.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    风格参考 · 各页共用的界面零件
@@ -18,8 +19,7 @@ import { srConfigureHost, srSubscribe } from "./ws-styleref-store.js";
 
 /* 失败 / 回执提示：外壳的提示层挂着时走应用内提示（ws-notify），没挂（单测里单独渲染）时退回 alert。 */
 export function srNotify(message, tone = "danger") {
-  if (wsToast({ message, tone })) return;
-  try { window.alert(message); } catch (e) { /* 无头环境 */ }
+  wsNotify({ message, tone });
 }
 
 /* 出错时的一句话提示（按错误码给中文，见 srErrorInfo） */
@@ -31,9 +31,9 @@ export function srNotifyError(error, fallback) {
 export function srActiveWork() {
   try {
     const w = WsWorks && typeof WsWorks.active === "function" ? WsWorks.active() : null;
-    if (w && w.id && w.id !== "__loading__") return { id: w.id, title: w.title || "" };
+    if (w && isRealWorkId(w.id)) return { id: w.id, title: w.title || "" };
     const id = WsWorks && typeof WsWorks.activeId === "function" ? WsWorks.activeId() : null;
-    return id && id !== "__loading__" ? { id, title: "" } : null;
+    return isRealWorkId(id) ? { id, title: "" } : null;
   } catch (e) {
     return null;
   }

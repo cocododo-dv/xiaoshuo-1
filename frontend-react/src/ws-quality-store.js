@@ -1,6 +1,8 @@
 import { apiGet, apiPost } from "./lib/client.js";
 import { useStoreTick } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
+import { emit } from "./lib/events.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    文学质量的 store（从 ws-quality.jsx 拆出，2026-09-22）——轻量模块级缓存 + 自定义事件。
@@ -10,9 +12,9 @@ import { WsWorks } from "./ws-works.jsx";
 let qState = { overview: null, analyze: null, review: null, loading: false, analyzing: false, reviewing: false, error: null, errorScope: null };
 
 export function qSnapshot() { return qState; }
-function qEmit() { try { window.dispatchEvent(new CustomEvent("ws:quality-changed")); } catch (e) {} }
+function qEmit() { emit("ws:quality-changed"); }
 
-/* 自建查询串：只 import apiGet/apiPost，避免单测 mock 掉 buildQueryPath */
+/* 查询串：跳过空值 */
 function qBuildPath(base, filters) {
   const p = new URLSearchParams();
   Object.entries(filters || {}).forEach(([k, v]) => {
@@ -27,7 +29,7 @@ function qBuildPath(base, filters) {
    作品列表还没到（__loading__）或没有作品时返回原 filters → 退回全局。 */
 export function qScopeFilters(filters) {
   const pid = WsWorks.activeId();
-  return pid && pid !== "__loading__" ? { ...filters, project_id: pid } : filters;
+  return isRealWorkId(pid) ? { ...filters, project_id: pid } : filters;
 }
 
 export async function qLoadOverview(filters = {}) {

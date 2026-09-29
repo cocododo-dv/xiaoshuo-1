@@ -10,6 +10,7 @@ import {
 } from "./ws-writer-annotations.js";
 import { WrAiErrorBlock } from "./ws-writer-candidates.jsx";
 import { wrBlockSlice } from "./ws-writer-manuscript.js";
+import { MANUSCRIPT_BLOCK_SELECTOR, unwrapNode } from "./manuscript-html.js";
 
 /* ==========================================================
    选区工具条 + 改写 / 批注弹层（2026-09-21 从 ws-writer.jsx 拆出）
@@ -139,7 +140,7 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     selRangeTextRef.current = range.toString();
     let block = range.startContainer;
     while (block && block.parentNode !== ed) block = block.parentNode;
-    const blocks = Array.from(ed.querySelectorAll("p, blockquote"));
+    const blocks = Array.from(ed.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR));
     const pid = block ? blocks.indexOf(block) : -1;
     /* 选区跨了几段：记下结束段的序号（深改的「AI 看这几段」按范围看；改写仍只取起始段里的那一截） */
     let endBlock = range.endContainer;
@@ -456,8 +457,7 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
   const unwrapRev = (span) => {
     const parent = span && span.parentNode;
     if (!parent) return;
-    while (span.firstChild) parent.insertBefore(span.firstChild, span);
-    parent.removeChild(span);
+    unwrapNode(span);
     if (parent.normalize) parent.normalize();
   };
   const revertRev = () => {

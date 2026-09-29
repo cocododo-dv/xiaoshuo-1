@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { IconButton, Segmented, Tag } from "./ws-ui.jsx";
 import { stateLabelOf, stateToneOf } from "./ws-scene-derive.js";
-import { SCENE_STATE_META, chapterLabel, chapterOwnTitle, sceneLabel, sceneNoLabel } from "./ws-labels.js";
+import { SCENE_STATE_META, chapterLabel, chapterOwnTitle, sceneLabel, sceneNoLabel } from "./labels/catalog.js";
 
 const { useState } = React;
 

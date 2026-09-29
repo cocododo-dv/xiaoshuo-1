@@ -1,9 +1,9 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { EmptyState, Notice, Segmented, Spinner, Tag } from "./ws-ui.jsx";
-import { styleDimensionLabel } from "./ws-labels.js";
+import { styleDimensionLabel } from "./labels/style-reference.js";
 import {
   SR_DIMENSION_STATES, srBindingOwnedByWork, srDimensionGroups, srFormatWhen, srIsLegacyGlobalBinding, srNormalizeConfig,
 } from "./ws-styleref-model.js";

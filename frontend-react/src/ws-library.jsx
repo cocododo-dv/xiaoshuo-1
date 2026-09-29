@@ -14,7 +14,7 @@ import { DossierCreate, DossierEdit, LIB_createEntry, LIB_deleteEntry, LIB_migra
 import { WsWorks, useActiveWorkIdentity } from "./ws-works.jsx";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
 import { wsConfirm } from "./ws-notify.jsx";
-import { isImeComposing } from "./ws-dialog.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner } from "./ws-ui.jsx";
 
 const {

@@ -1,4 +1,5 @@
-import { sanitizeManuscriptHTML } from "./manuscript-html.js";
+import { LEGACY_DRAFT_PLACEHOLDER, sanitizeManuscriptHTML, stripLeadingPlaceholder, unwrapInline } from "./manuscript-html.js";
+import { countChars } from "./lib/text.js";
 
 /* ==========================================================
    写作台正文的序列化边界（2026-09-21）
@@ -13,8 +14,8 @@ import { sanitizeManuscriptHTML } from "./manuscript-html.js";
    存下去的开场占位句。纯函数模块，不读 store、不写 window。
    ========================================================== */
 
-/* 旧版本把这句空白页提示当成一段正文种进编辑器，有的草稿里还留着它 */
-export const WR_LEGACY_PLACEHOLDER = "在这里开始写这一场……";
+/* 旧版本把这句空白页提示当成一段正文种进编辑器，有的草稿里还留着它（与主页 / AI 起草台同一份，住在 manuscript-html.js） */
+export { LEGACY_DRAFT_PLACEHOLDER as WR_LEGACY_PLACEHOLDER };
 
 /* 编辑器里一段也没有时放一个空段落：光标落在 <p> 里，敲下的字才有段落样式 */
 export const WR_EMPTY_DOC = "<p><br></p>";
@@ -23,18 +24,11 @@ export const WR_EMPTY_DOC = "<p><br></p>";
 const UI_CLASSES = ["is-active", "is-fresh", "is-merge", "wr-dx-para", "wr-entity-flash", "wr-anno-flash"];
 const UI_ATTRIBUTES = ["data-dx", "data-lib-id", "data-note", "data-orig", "title"];
 
-function unwrap(node) {
-  const parent = node.parentNode;
-  if (!parent) return;
-  while (node.firstChild) parent.insertBefore(node.firstChild, node);
-  parent.removeChild(node);
-}
-
 /* 就地拆掉 root 里所有界面标记。span / mark 在正文里没有别的来源：消毒后它们不带任何属性，
    只剩「一层空壳」或「一块黄底」，所以整类拆掉，而不是只拆带 class 的那几个。 */
 export function wrStripUiMarkup(root) {
   if (!root || !root.querySelectorAll) return root;
-  Array.from(root.querySelectorAll("span, mark")).forEach(unwrap);
+  unwrapInline(root);
   Array.from(root.querySelectorAll("[class]")).forEach((node) => {
     UI_CLASSES.forEach((name) => node.classList.remove(name));
     if (!node.classList.length) node.removeAttribute("class");
@@ -46,29 +40,8 @@ export function wrStripUiMarkup(root) {
   return root;
 }
 
-/* 去掉开头那句旧占位：整段都是占位就删段；作者接着占位往下写的，只删掉占位这几个字 */
-function stripLeadingPlaceholder(root) {
-  const blocks = Array.from(root.childNodes);
-  for (const block of blocks) {
-    const text = block.textContent || "";
-    if (!text.trim()) continue;
-    if (!text.trim().startsWith(WR_LEGACY_PLACEHOLDER)) return;
-    if (text.trim() === WR_LEGACY_PLACEHOLDER) { block.parentNode.removeChild(block); return; }
-    if (block.nodeType === 3) { block.nodeValue = text.trimStart().slice(WR_LEGACY_PLACEHOLDER.length); return; }
-    const walker = root.ownerDocument.createTreeWalker(block, 4 /* NodeFilter.SHOW_TEXT */);
-    let node;
-    while ((node = walker.nextNode())) {
-      if (!node.nodeValue.trim()) continue;
-      const lead = node.nodeValue.trimStart();
-      if (lead.startsWith(WR_LEGACY_PLACEHOLDER)) node.nodeValue = lead.slice(WR_LEGACY_PLACEHOLDER.length);
-      return;
-    }
-    return;
-  }
-}
-
 function hasText(root) {
-  return !!String((root && root.textContent) || "").replace(/\s/g, "");
+  return countChars((root && root.textContent) || "") > 0;
 }
 
 /* 编辑器 → 存盘 HTML。不改动传入的节点（克隆后处理）；没有一个字时返回空串。 */
@@ -89,7 +62,7 @@ export function wrPrepareLoadedHTML(html) {
   const template = document.createElement("template");
   template.innerHTML = clean;
   const root = template.content;
-  Array.from(root.querySelectorAll("span, mark")).forEach(unwrap);
+  unwrapInline(root);
   root.normalize();
   stripLeadingPlaceholder(root);
   if (!hasText(root)) return "";
@@ -168,5 +141,5 @@ export function wrBlockSlice(block, range) {
 export function wrCountText(el) {
   if (!el) return 0;
   const text = el.innerText != null ? el.innerText : el.textContent;
-  return String(text || "").replace(/\s/g, "").length;
+  return countChars(text || "");
 }
