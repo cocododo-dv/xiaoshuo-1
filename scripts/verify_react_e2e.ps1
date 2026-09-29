@@ -117,17 +117,7 @@ $env:NOVEL_SYSTEM_CORS_ORIGINS = $reactUrl.TrimEnd("/")
 
 Write-Step -Message "E2E runtime DB: $dbUrl"
 
-# Migration 20260523_0036 guards the one-time legacy reference_learning drop behind a
-# backups/style_reference_legacy_*.json file (a fresh `alembic upgrade head` otherwise
-# aborts). A throwaway e2e DB has nothing to back up, so use the migration's sanctioned
-# test override (STYLE_REFERENCE_REPO_ROOT) pointed at a shim dir holding a placeholder.
-$repoShim = Join-Path $runDir "repo-shim"
-$shimBackups = Join-Path $repoShim "backups"
-New-Item -ItemType Directory -Path $shimBackups -Force | Out-Null
-Set-Content -Path (Join-Path $shimBackups "style_reference_legacy_e2e.json") -Value "{}" -Encoding ascii
-$env:STYLE_REFERENCE_REPO_ROOT = $repoShim
-
-# --- Migrate (auto_create_tables defaults off; per-suite reseed is run-smokes' job) ---
+# --- Migrate (a fresh DB needs no legacy style-reference backup; reseed is run-smokes' job) ---
 Write-Step -Message "alembic upgrade head (e2e db)"
 Push-Location $backendDir
 try {
