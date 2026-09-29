@@ -1,3 +1,11 @@
+"""请求体里的正文输入校验（B04-32：原来的 services/text_validation.py——它是 API 的入口检查，不是质量闸门，只有
+章 / 场两个路由用它）。
+
+- ``validate_user_text_payload``：粘贴进来的文字像是乱码或没解码（U+FFFD、``???`` 占位、C1 控制符、被当成
+  Latin-1 读的 UTF-8）→ 400 ``TEXT_ENCODING_INVALID``；
+- ``clean_backfill_markers``：旧的 ``{{backfill …}}`` 占位只留下可见文字（章节运行补写早删了，E2E 夹具里还种着）。
+"""
+
 from __future__ import annotations
 
 import re

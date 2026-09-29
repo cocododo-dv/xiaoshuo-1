@@ -15,6 +15,7 @@ from novel_system.api.request_types import (
     WriterBriefJsonInput,
 )
 from novel_system.api.response import ok
+from novel_system.api.text_input import validate_user_text_payload
 from novel_system.db.models import ChapterGoal, ChapterState, SceneCard
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.chapter_approval import (
@@ -24,7 +25,6 @@ from novel_system.services.chapter_approval import (
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_design_ownership import plan_owned_scene_ids, scene_order_owned_by_plan_action
-from novel_system.services.text_validation import validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
 router = APIRouter(tags=["chapters"])
