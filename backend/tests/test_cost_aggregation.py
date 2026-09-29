@@ -702,6 +702,21 @@ def test_dashboard_money_for_priced_models_only(session, priced_gpt5):
     assert [(n["node_id"], n["cost"] is None) for n in nodes] == [("style_draft", False), ("hard_qc", True)]
 
 
+def test_price_book_is_read_once_per_aggregation_not_once_per_call(session, priced_gpt5, monkeypatch):
+    """价书缓存按文件正文、每次读取都读一遍文件：一次看板聚合只读一次，再交给每条调用的折算。"""
+    _dash_seed(session)
+    _call(session, "D1S1", node_id="style_patch", tokens=40, chapter_id="DCH1", project_id="DP", error_code="LLM_TIMEOUT")
+    reads: list[int] = []
+    load = pricing.load_price_book
+    monkeypatch.setattr(pricing, "load_price_book", lambda: reads.append(1) or load())
+    dash = ca.project_cost_dashboard(session, "DP")
+    assert dash["summary"]["pricing"]["priced_call_count"] == 3
+    assert len(reads) == 1
+    reads.clear()
+    assert ca.scene_cost(session, "D1S1")["extra_cost"]["failed_cost"] == pytest.approx(_gpt5_cost(40))
+    assert len(reads) == 1
+
+
 def test_dashboard_days_clamped_and_bad_input_safe(session):
     _dash_seed(session)
     assert ca.project_cost_dashboard(session, "DP", days=0)["trend"]["days"] == 1

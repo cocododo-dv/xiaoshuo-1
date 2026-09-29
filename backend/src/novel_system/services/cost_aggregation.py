@@ -125,12 +125,13 @@ _ACCOUNTING_MARKER = "_accounting_provider_execution_mode"
 
 @dataclass(slots=True)
 class _Ledger:
-    """一个范围（场景 / 章节 / 全书）的调用、它们的物理尝试、每条调用的金额（只折算一次）。"""
+    """一个范围（场景 / 章节 / 全书）的调用、它们的物理尝试、每条调用的金额（只折算一次，价书只读一次）。"""
 
     calls: list[Row]
     attempts: dict[str, list[Row]]
     costs: dict[str, dict[str, Any]]
     legacy_ids: frozenset[str]
+    book: pricing.PriceBook
 
 
 def _legacy_parent_ids(session: Session, call_ids: list[str]) -> frozenset[str]:
@@ -158,14 +159,15 @@ def _load_ledger(session: Session, condition: ColumnElement[bool]) -> _Ledger:
         )
         for attempt in rows:
             attempts.setdefault(attempt.llm_call_id, []).append(attempt)
+    book = pricing.load_price_book()
     costs = {
         call.llm_call_id: pricing.compute_cost(
-            call.provider, call.model, call.prompt_tokens, call.completion_tokens, at=call.created_at
+            call.provider, call.model, call.prompt_tokens, call.completion_tokens, at=call.created_at, book=book
         )
         for call in calls
     }
     without_attempts = [call.llm_call_id for call in calls if call.llm_call_id not in attempts]
-    return _Ledger(calls, attempts, costs, _legacy_parent_ids(session, without_attempts))
+    return _Ledger(calls, attempts, costs, _legacy_parent_ids(session, without_attempts), book)
 
 
 # ---- token 桶：token / 调用数为主，金额只累计已定价的部分 ------------------------------------------
@@ -303,7 +305,7 @@ def _summarize(ledger: _Ledger) -> dict[str, Any]:
         "total_tokens": total_tokens,
         "call_count": total["call_count"],
         "total_cost": total["cost"],
-        "currency": pricing.load_price_book().currency if priced_call_count else None,
+        "currency": ledger.book.currency if priced_call_count else None,
         "is_estimate": is_estimate,
         "pricing": {
             "priced_call_count": priced_call_count,
@@ -411,7 +413,12 @@ def _extra_cost(ledger: _Ledger, total_tokens: int) -> dict[str, Any]:
                 if not (attempt.error_code or attempt.accounting_status in _FAILED_ATTEMPT_STATUSES):
                     continue
                 cost = pricing.compute_cost(
-                    call.provider, call.model, attempt.prompt_tokens, attempt.completion_tokens, at=call.created_at
+                    call.provider,
+                    call.model,
+                    attempt.prompt_tokens,
+                    attempt.completion_tokens,
+                    at=call.created_at,
+                    book=ledger.book,
                 )
                 _add(failed, attempt.total_tokens, cost)
         elif call.error_code:

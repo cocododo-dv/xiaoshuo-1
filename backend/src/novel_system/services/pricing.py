@@ -12,7 +12,8 @@
 免得把两种货币加在一起。
 
 读路径永不抛：文件缺失、解析失败、条目不合法都只是少了单价（记告警），成本页不会因为价书 500。
-缓存按文件正文：改了价书，下一次读取就用新单价，不用重启后端。
+缓存按文件正文：改了价书，下一次读取就用新单价，不用重启后端。每次 :func:`load_price_book` 都读一遍文件，
+所以一次聚合要折算很多条调用时，先读一次价书，再把它经 ``book=`` 交给 :func:`compute_cost`。
 """
 
 from __future__ import annotations
@@ -141,14 +142,20 @@ def load_price_book() -> PriceBook:
     return book
 
 
-def resolve_price(provider: str | None, model: str | None, at: str | None = None) -> Price | None:
+def resolve_price(
+    provider: str | None,
+    model: str | None,
+    at: str | None = None,
+    *,
+    book: PriceBook | None = None,
+) -> Price | None:
     """(provider, model) 在 ``at`` 时生效的单价；价书里没有 → ``None``（未定价）。
 
     ``effective_at`` 与 ``at`` 都是 UTC ISO 字符串，按字典序即时间序比较；``at=None`` 取最新一条。
     """
     candidates = [
         price
-        for price in load_price_book().prices
+        for price in (book if book is not None else load_price_book()).prices
         if price.provider == provider
         and price.model == model
         and (at is None or price.effective_at is None or price.effective_at <= at)
@@ -175,9 +182,13 @@ def compute_cost(
     prompt_tokens: Any,
     completion_tokens: Any,
     at: str | None = None,
+    *,
+    book: PriceBook | None = None,
 ) -> dict[str, Any]:
     """token → 金额（token / 1000 × 单价）。未定价的模型回 ``priced: False``，金额字段全是 ``None``。"""
-    price = resolve_price(provider, model, at=at)
+    if book is None:
+        book = load_price_book()
+    price = resolve_price(provider, model, at=at, book=book)
     if price is None:
         return unpriced()
     input_cost = _as_int(prompt_tokens) / 1000.0 * price.input_per_1k
@@ -187,7 +198,7 @@ def compute_cost(
         "cost": input_cost + output_cost,
         "input_cost": input_cost,
         "output_cost": output_cost,
-        "currency": load_price_book().currency,
+        "currency": book.currency,
         "unit": {
             "input_per_1k": price.input_per_1k,
             "output_per_1k": price.output_per_1k,
