@@ -9,6 +9,7 @@ import {
   scnBackendRunSids, scnHydrateAfterSelection, scnHydrateFromBackend, scnResumeAfterSelection, scnRun, scnTopupBudget,
 } from "./ws-scene-api.js";
 import { RUN_JOB_TERMINAL_STATUSES, SCN_RUN_UI_ABORTED, scnRunUiAbortError, scnTerminalJobMessage } from "./ws-scene-derive.js";
+import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 const { useEffect, useRef, useState } = React;
 
@@ -441,7 +442,7 @@ function useSceneRuns({ items, runs, setRuns, pickedId, pinItem }) {
       });
       if (runSeq.current[id] !== token) return;
       setRuns(m => {
-        const stamp = new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+        const stamp = formatLocaleMonthDayTime(Date.now());
         const prevAtt = ((m[id] && m[id].attempts) || []).map(a => a.time && a.time.startsWith("本次") ? { ...a, time: stamp, result: "退回重写", tone: "slate" } : a);
         const attempts = [{ n: attempt, time: "本次 · 待裁决", result: "待裁决", tone: "gold", note: normalizedNote ? "按指令改写" : "初稿", cmp: normalizedNote ? { verdict: "作者改写指令：" + normalizedNote } : undefined }, ...prevAtt].slice(0, 8);
         const nr = { ...(m[id] || {}), ...res, authorNote: normalizedNote, state: res.state === "archived" ? "archived" : "ready", attempt, attempts, at: Date.now() };

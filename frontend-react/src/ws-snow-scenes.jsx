@@ -6,6 +6,7 @@ import { activeWorkId, useSnowEvents } from "./ws-snow-hooks.js";
 import {
   S2_PLAN_FIELDS, S2_TRIAGE_LABEL, s2BusyOn,
 } from "./ws-snow-model.js";
+import { formatClockTime } from "./lib/format.js";
 export { S2SceneList } from "./ws-snow-scene-list.jsx";
 export { S2ScenePlan } from "./ws-snow-scene-plan.jsx";
 
@@ -60,7 +61,7 @@ export function S2SceneAiActions({ step, ai, sceneRows, plans, emphasize = false
         <I.Activity size={13} className={ai.triageBusy ? "sf-spin" : ""} /> {ai.triageBusy ? "分诊中…" : "AI 分诊"}
       </button>
       {triItems && (
-        <span className="sf-triage-sum" title={`分诊于 ${new Date(triage.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}${triage.source === "llm" ? " · AI 评估" : ""}`}>
+        <span className="sf-triage-sum" title={`分诊于 ${formatClockTime(triage.at)}${triage.source === "llm" ? " · AI 评估" : ""}`}>
           <span className="tri-pass">{triCount("pass")} 过</span>
           <span className="tri-maybe">{triCount("maybe")} 修</span>
           <span className="tri-rewrite">{triCount("rewrite")} 重写</span>

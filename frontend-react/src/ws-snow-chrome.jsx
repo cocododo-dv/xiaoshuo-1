@@ -5,6 +5,7 @@ import { modEnterShortcut } from "./lib/platform.js";
 import { WsDialog, isImeComposing } from "./ws-dialog.jsx";
 import { Notice } from "./ws-ui.jsx";
 import { S2_STATE_LABEL, S2_STEPS } from "./ws-snow-model.js";
+import { formatClockTime } from "./lib/format.js";
 
 /* ==========================================================
    雪花工作台的外框：页头工具栏、左侧十步列表、三条横幅（交付 / 待同步 / 需复核）、页脚、
@@ -248,18 +249,17 @@ export function S2SyncNotice({ syncState, retryBusy, onRetry, onExport }) {
 
 /* 页脚：上一步 · 保存 / 同步状态（一句短话；出错时原因在画布上方的提示条里，这里只留「重试 / 立即导出」）·
    略过此步 · 确认本步 · 下一步 */
-const hhmm = (t) => new Date(t).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 export function S2Footer({ step, idx, settled, blank = false, syncState, savedAt, retryBusy, onRetry, onExport, onSkip, onConfirm, onPrev, onNext }) {
   const phase = (syncState && syncState.phase) || "idle";
   const error = syncState && syncState.error;
   const savedLabel = phase === "synced"
-    ? `服务器已同步${syncState.lastSyncedAt ? ` · ${hhmm(syncState.lastSyncedAt)}` : ""}`
+    ? `服务器已同步${syncState.lastSyncedAt ? ` · ${formatClockTime(syncState.lastSyncedAt)}` : ""}`
     : phase === "syncing"
       ? "本机已保存 · 正在同步服务器…"
       : phase === "error"
         ? (error && error.scope === "local" ? "本机保存失败" : "同步失败")
         : savedAt
-          ? `仅本机已保存 · ${hhmm(savedAt)}`
+          ? `仅本机已保存 · ${formatClockTime(savedAt)}`
           : "本机自动保存已开启 · 尚未同步服务器";
   return (
     <footer className="snow-canvas-foot">

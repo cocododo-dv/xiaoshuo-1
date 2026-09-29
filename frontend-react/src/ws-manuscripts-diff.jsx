@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { dayTimeLabel } from "./lib/ago.js";
+import { dayTimeLabel } from "./lib/format.js";
 import { Notice } from "./ws-ui.jsx";
 
 /* ==========================================================
@@ -31,7 +31,7 @@ function versionErrorText(error, fallback) {
   return (error && error.message) || fallback;
 }
 
-/* 版本下拉里的一项：「v3 · 9/21 14:05 · 1,200 字」（时间文案契约在 lib/ago.js：非法入参给空串） */
+/* 版本下拉里的一项：「v3 · 9/21 14:05 · 1,200 字」（时间文案契约在 lib/format.js：非法入参给空串） */
 function versionLabel(v) {
   return `v${v.revisionNo} · ${dayTimeLabel(v.at) || "—"}${v.words ? ` · ${v.words} 字` : ""}`;
 }

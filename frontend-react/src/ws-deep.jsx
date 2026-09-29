@@ -8,6 +8,7 @@ import { wrRangeForOffsets, wrRangeForText } from "./ws-writer-manuscript.js";
 import { MANUSCRIPT_BLOCK_SELECTOR, unwrapNode } from "./manuscript-html.js";
 import { useWrInert } from "./ws-writer-hooks.js";
 import { qSevLabel, qSevTone } from "./ws-quality-model.js";
+import { formatClockTime, formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
    ws-deep — 写作台深改面板（2026-09-22 场景诊断统一）
@@ -239,10 +240,7 @@ function DxAiError({ error, onRetry, onOpenSettings }) {
 function DxAiBlock({ ai, busy, error, onRun, onRetry, onOpenSettings }) {
   const status = (ai && ai.status) || "not_run";
   const score = ai && ai.overall_score != null ? Math.round(ai.overall_score * 100) : null;
-  const when = ai && ai.created_at ? new Date(ai.created_at) : null;
-  const whenText = when && !Number.isNaN(when.getTime())
-    ? when.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
-    : "";
+  const whenText = formatLocaleMonthDayTime(ai && ai.created_at);
   const brief = (ai && ai.revision_brief) || [];
   return (
     <section className="wr-dxd-ai" aria-label="AI 深评">
@@ -551,7 +549,7 @@ function WrDeepDrawer({
             <ul>
               {log.slice(0, 6).map((d, i) => (
                 <li key={i} className="wr-dxd-dec">
-                  <span className="wr-dxd-dec-t">{new Date(d.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  <span className="wr-dxd-dec-t">{formatClockTime(d.at)}</span>
                   <span className="wr-dxd-dec-x">{d.text}</span>
                 </li>
               ))}

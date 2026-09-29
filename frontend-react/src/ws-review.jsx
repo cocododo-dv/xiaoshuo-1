@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
-import { agoLabel } from "./lib/ago.js";
+import { agoLabel } from "./lib/format.js";
 import { apiGet, apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";

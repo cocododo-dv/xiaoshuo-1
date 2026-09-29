@@ -5,6 +5,7 @@ import {
   FID_STAGE_LABELS, fidBadgeView, fidDimensionGroups, fidJudgeView, fidReadingView, fidScoreText, fidScoreTone,
   fidScoreWord, fidTrendPoints,
 } from "./ws-fidelity-model.js";
+import { formatMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
    「像不像」的共用界面件（2026-09-23 风格参考 v3 · P6b）
@@ -186,16 +187,10 @@ function useWidth(ref, fallback) {
   return width;
 }
 
-function fmtWhen(iso) {
-  const d = iso ? new Date(iso) : null;
-  if (!d || Number.isNaN(d.getTime())) return "";
-  return `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
 function pointText(point, labelOf) {
   const where = (labelOf && point.sceneId ? labelOf(point.sceneId) : "") || "不在场景上的文字";
   const range = point.reliable ? (point.within ? "在作者的正常范围内" : "超出作者的正常范围") : "量不准";
-  return { where, what: `${FID_STAGE_LABELS[point.stage] || ""} · 第 ${point.rank} 位 · ${range}`, when: fmtWhen(point.at) };
+  return { where, what: `${FID_STAGE_LABELS[point.stage] || ""} · 第 ${point.rank} 位 · ${range}`, when: formatMonthDayTime(point.at) };
 }
 
 export function FidelityTrend({ trend, labelOf = null, maxPercentile = 90, testId }) {
@@ -305,8 +300,8 @@ export function FidelityTrend({ trend, labelOf = null, maxPercentile = 90, testI
             </div>
           )}
           <div className="fid-trend-axis-row" aria-hidden="true">
-            <span>{fmtWhen(points[0].at)}</span>
-            <span>{points.length > 1 ? fmtWhen(points[points.length - 1].at) : ""}</span>
+            <span>{formatMonthDayTime(points[0].at)}</span>
+            <span>{points.length > 1 ? formatMonthDayTime(points[points.length - 1].at) : ""}</span>
           </div>
         </div>
       ) : (

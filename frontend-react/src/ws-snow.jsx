@@ -26,6 +26,7 @@ import {
   S2DeliveredBanner, S2Footer, S2ImportPlanDialog, S2ResetDialog, S2ResyncBanner, S2StaleBanner,
   S2StepList, S2Strip, S2SyncNotice, S2Tab,
 } from "./ws-snow-chrome.jsx";
+import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
    WsSnowflake — 构思 · 雪花十步法 (Snowflake Method workbench)
@@ -425,7 +426,7 @@ function WsSnowflake({ initialStep }) {
     const backup = snapNow(h.key);
     setDrafts(prev => ({ ...prev, [h.key]: h.snap.draft || "" }));
     if (h.snap.scaffold) setScaffolds(prev => ({ ...prev, [h.key]: JSON.parse(JSON.stringify(h.snap.scaffold)) }));
-    setHistory(prev => [{ t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${new Date(h.t).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`, key: h.key, snap: backup }, ...prev].slice(0, 80));
+    setHistory(prev => [{ t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${formatLocaleMonthDayTime(h.t)}`, key: h.key, snap: backup }, ...prev].slice(0, 80));
     selectStep(h.key); setTabFor(h.key, "edit"); setSnapDiff(null);
     showToast(`已回滚 · ${st.name}`, "gold");
   };

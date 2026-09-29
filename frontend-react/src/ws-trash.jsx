@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { agoLabel } from "./lib/ago.js";
+import { agoLabel } from "./lib/format.js";
 import { useStoreTick } from "./lib/store-utils.js";
 import { WsTrashStore } from "./ws-catalog.jsx";
 import { wsConfirm } from "./ws-notify.jsx";

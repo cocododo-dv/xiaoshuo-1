@@ -27,6 +27,7 @@ import { WrOutline, useWrOutlineActions } from "./ws-writer-outline.jsx";
 import { WrContext } from "./ws-writer-context.jsx";
 import { WrTray } from "./ws-writer-tray.jsx";
 import { WrInlineRewrite } from "./ws-writer-inline.jsx";
+import { formatClockTime } from "./lib/format.js";
 
 /* ==========================================================
    WriterRoom — 写作台
@@ -464,7 +465,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
                 entities.onEditorClick(e);
               }} />
             <footer className="wr-scene-foot">
-              <span className="wr-foot-meta">{approvedLocked ? "终稿锁定，只读" : (doc.savedAt ? `自动保存于 ${new Date(doc.savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : "自动保存已开启")}</span>
+              <span className="wr-foot-meta">{approvedLocked ? "终稿锁定，只读" : (doc.savedAt ? `自动保存于 ${formatClockTime(doc.savedAt)}` : "自动保存已开启")}</span>
               <div className="wr-foot-nav">
                 <button type="button" className="btn btn-ghost btn-sm" disabled={!nav.prevId} onClick={() => { if (nav.prevId) setActiveScene(nav.prevId); }}>
                   <I.ChevronLeft size={13} /> 上一场

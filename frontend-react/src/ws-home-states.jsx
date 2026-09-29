@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { ViewLoading } from "./ws-view-boundary.jsx";
 import { HmBanner, HomeRing, WsAiSetupNotice, WsHomeDataNotice } from "./ws-home-parts.jsx";
+import { wanFixed } from "./lib/format.js";
 
 /* ==========================================================
    主页在「还没有一本可看的书」时的四种版面：读取中、章节目录读不到、书架是空的、
@@ -75,7 +76,7 @@ function WsHomeBlank({ work: p, go, remote }) {
           <div className="hm-book-meta">
             <div className="hm-book-lbl">全书进度</div>
             <div className="hm-book-val"><b>0</b> 章</div>
-            <div className="hm-book-sub">目标 {(p.wordsTarget / 10000).toFixed(0)} 万字</div>
+            <div className="hm-book-sub">目标 {wanFixed(p.wordsTarget, 0)} 万字</div>
           </div>
         </div>
       </header>

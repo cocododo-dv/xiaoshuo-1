@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
-import { dayTimeLabel } from "./lib/ago.js";
+import { recentOrDayTimeLabel } from "./lib/format.js";
 import { S2_STEPS, s2Ancestors, s2Content } from "./ws-snow-model.js";
 import { countChars } from "./lib/text.js";
 
@@ -10,14 +10,6 @@ import { countChars } from "./lib/text.js";
    以及两个对照对话框——回滚预览（快照 vs 当前）与「上游改了什么」（本步确认时消费的上游版本 vs 现在）。
    对话框统一走 WsDialog（焦点移入、Tab 困在框内、关闭后焦点回到打开它的按钮、Esc / 遮罩走同一条关闭路径）。
    ========================================================== */
-
-/* 一小时内走相对文案，更早走 lib/ago.js 的天级绝对文案（与成稿中心版本标签同款） */
-function s2HistTime(t) {
-  const diff = Date.now() - t;
-  if (diff < 60000) return "刚刚";
-  if (diff < 3600000) return Math.floor(diff / 60000) + " 分钟前";
-  return dayTimeLabel(t);
-}
 
 export function S2History({ history, go, onRestore }) {
   const list = history || [];
@@ -36,7 +28,7 @@ export function S2History({ history, go, onRestore }) {
         const st = S2_STEPS.find(s => s.key === h.key);
         return (
           <li key={i} className="hist-row">
-            <span className="hist-time">{s2HistTime(h.t)}</span>
+            <span className="hist-time">{recentOrDayTimeLabel(h.t)}</span>
             {/* 生成走的是作者在系统配置里接的任意一家模型，不是某个具体产品：旧记录里的「Claude」也显示为「AI」 */}
             <span className={`hist-who ${h.who === "Claude" || h.who === "AI" ? "is-ai" : ""}`}>{h.who === "Claude" ? "AI" : h.who}</span>
             <span className="hist-action">{h.action}</span>

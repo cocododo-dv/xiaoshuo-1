@@ -13,6 +13,7 @@ import {
 } from "./ws-styleref-store.js";
 import { SrActivityPanel, srRunningFor } from "./ws-styleref-activity.jsx";
 import { SrErrorLine, srActiveWork, srNotify, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
+import { wanFixed } from "./lib/format.js";
 
 /* ==========================================================
    风格参考 · 参考书库（左栏；≤1280 收进页头「参考书库」对话框）与导入
@@ -170,7 +171,7 @@ export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
 /* 书单一行：书脊色、书名、万字、进度徽标；选择模式下前面有勾选框，点整行就是勾选。 */
 function SrBookRow({ book: b, active, selecting, checked, onSelect, onToggle }) {
   const p = srPipelineFor(b);
-  const wan = (b.chars / 10000).toFixed(b.chars >= 100000 ? 0 : 1);
+  const wan = wanFixed(b.chars, b.chars >= 100000 ? 0 : 1);
   const label = `${b.title}${b.author ? ` · ${b.author}` : ""} · ${b.chars.toLocaleString()} 字`;
   if (selecting) {
     return (

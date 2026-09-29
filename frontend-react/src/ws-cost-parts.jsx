@@ -4,6 +4,7 @@ import { StatCard } from "./ws-quality-ui.jsx";
 import { Tag } from "./ws-ui.jsx";
 import { accountingStatusMeta, chapterLabelById, llmNodeLabel, sceneLabelById } from "./ws-labels.js";
 import { PHASE_LABEL, costBack } from "./ws-cost-store.js";
+import { formatIntOrDash as fmtInt, formatPercentRounded as fmtPct, isoMonthDay as fmtDay, isoMonthDayTime as fmtTime } from "./lib/format.js";
 
 /* ==========================================================
    成本看板的展示件（从 ws-cost.jsx 拆出，2026-09-22）
@@ -19,10 +20,8 @@ export function fmtMoney(v, cur) {
   const digits = n !== 0 && Math.abs(n) < 0.01 ? 4 : 2;
   return `${n.toFixed(digits)} ${cur || "USD"}`;
 }
-export function fmtInt(v) { return v === null || v === undefined ? "—" : Number(v).toLocaleString(); }
-function fmtPct(v) { return v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`; }
-function fmtDay(d) { return (d || "").slice(5); }
-function fmtTime(iso) { return (iso || "").replace("T", " ").slice(5, 16); }
+/* 数字 / 时间文案住在 lib/format.js（成本看板的口径各有名字）；fmtInt 照旧从这里转出给 ws-cost.jsx */
+export { fmtInt };
 
 /* ==========================================================
    小部件

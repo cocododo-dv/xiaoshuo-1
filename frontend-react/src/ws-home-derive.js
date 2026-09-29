@@ -12,6 +12,7 @@ import { snowStepByBackendKey } from "./ws-nav.js";
 import { CHAPTER_STATE_ORDER, chapterHeading, chapterLabel, chapterStateMeta, manuscriptStage, sceneLabel } from "./ws-labels.js";
 import { LEGACY_DRAFT_PLACEHOLDER } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
+import { wanFixed } from "./lib/format.js";
 
 const HM_BEAT_TONES = ["sage", "gold", "crimson"];
 
@@ -225,7 +226,7 @@ function hmBookProgress(totals, work) {
     written: (totals && totals.written) || 0,
     planned: (totals && totals.planned) || 0,
     pct: Math.min(100, Math.round((words / target) * 100)),
-    wordsWan: (words / 10000).toFixed(1),
+    wordsWan: wanFixed(words, 1),
     targetWan: ((work && work.wordsTarget) / 10000 || 0).toFixed(0),
   };
 }
