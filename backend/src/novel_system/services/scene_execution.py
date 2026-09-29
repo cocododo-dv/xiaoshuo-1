@@ -59,9 +59,7 @@ class SceneExecutionContractService:
         if cached is not None:
             return cached
 
-        payload, missing_fields, blocking_fields = self._assemble_payload(
-            scene, chapter, project, blueprint, reference_rules
-        )
+        payload, missing_fields, blocking_fields = self._payload(scene, chapter, blueprint, reference_rules)
         return SceneExecutionContract(
             contract_id=None,
             scene_id=scene.scene_id,
@@ -80,9 +78,7 @@ class SceneExecutionContractService:
         if cached is not None:
             return cached
 
-        payload, missing_fields, blocking_fields = self._assemble_payload(
-            scene, chapter, project, blueprint, reference_rules
-        )
+        payload, missing_fields, blocking_fields = self._payload(scene, chapter, blueprint, reference_rules)
         status = "active" if not blocking_fields else "blocked"
 
         rows = self.session.execute(
@@ -126,8 +122,8 @@ class SceneExecutionContractService:
         scene = require_scene(self.session, scene_id)
         chapter = require_chapter(self.session, scene.chapter_id)
         project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
-        blueprint = self._latest_blueprint(scene_id)
-        reference_rules = self._reference_rules(project)
+        blueprint = latest_scene_blueprint(self.session, scene_id)
+        reference_rules = {key: list(value) for key, value in EMPTY_REFERENCE_RULES.items()}
         snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
         snapshot_hash = sha256_json_normalized(snapshot)
         latest = self.latest(scene_id)
@@ -137,20 +133,6 @@ class SceneExecutionContractService:
             else None
         )
         return scene, chapter, project, blueprint, reference_rules, snapshot_hash, cached
-
-    def _assemble_payload(
-        self,
-        scene: SceneCard,
-        chapter: ChapterGoal,
-        project: StoryProject | None,
-        blueprint: SceneBlueprint | None,
-        reference_rules: dict[str, list[str]],
-    ) -> tuple[dict[str, Any], list[str], list[str]]:
-        """组装契约 payload，返回 (payload, missing_fields, blocking_fields)。"""
-        payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
-
-        blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
-        return payload, missing_fields, blocking_fields
 
     @staticmethod
     def serialize(row: SceneExecutionContract | None) -> dict[str, Any] | None:
@@ -178,7 +160,8 @@ class SceneExecutionContractService:
         chapter: ChapterGoal,
         blueprint: SceneBlueprint | None,
         reference_rules: dict[str, list[str]],
-    ) -> tuple[dict[str, Any], list[str]]:
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        """组装契约 payload，返回 (payload, missing_fields, blocking_fields)——带 ``(advisory)`` 的缺项不挡起草。"""
         brief = normalize_story_slot_mapping(scene.writer_brief_json or {})
         blueprint_json = dict(blueprint.blueprint_json or {}) if blueprint is not None else {}
         scene_mode = _infer_scene_mode(scene, brief)
@@ -313,7 +296,8 @@ class SceneExecutionContractService:
             }
         payload = {**common_payload, **mode_payload}
         missing_fields = self._missing_fields(payload)
-        return payload, missing_fields
+        blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
+        return payload, missing_fields, blocking_fields
 
     def _missing_fields(self, payload: dict[str, Any]) -> list[str]:
         missing = []
@@ -342,9 +326,6 @@ class SceneExecutionContractService:
         if payload.get("tension_target") is None:
             missing.append("tension_target(advisory)")
         return missing
-
-    def _latest_blueprint(self, scene_id: str) -> SceneBlueprint | None:
-        return latest_scene_blueprint(self.session, scene_id)
 
     def _source_snapshot(
         self,
@@ -383,10 +364,6 @@ class SceneExecutionContractService:
             "reference_rules": reference_rules,
             "contract_version": EXECUTION_CONTRACT_VERSION,
         }
-
-
-    def _reference_rules(self, project: StoryProject | None) -> dict[str, list[str]]:
-        return {key: list(value) for key, value in EMPTY_REFERENCE_RULES.items()}
 
     def _reference_profile_ids(self, project: StoryProject) -> list[str]:
         """来源快照里登记的参考画像 id：作品级绑定按 ``style_policy_live``（轻量路径）解析（S3）。

@@ -15,8 +15,6 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ChapterGoal, SceneCard
 
 
-CRITICAL_FUNCTION_TAGS = frozenset({"turn", "reveal"})
-HIGH_TENSION_THRESHOLD = 7
 GOLDEN_CHAPTER_COUNT = 3
 
 
@@ -46,12 +44,14 @@ def classify_scene(
     """Classify a scene's criticality from its spec fields.
 
     Signals that elevate to critical:
-    - Function tag is turn/reveal
-    - Tension target >= 7
     - is_chapter_last (chapter climax position)
     - scene_crucible is substantial (>30 chars — complex dramatic premise)
-    - Writer brief flags (expected_reader_emotion contains strong markers)
+    - proactive scene form
     - Golden chapter (first 3 chapters — §10 黄金三章)
+
+    ``function_tag`` / ``tension_target`` 曾经也算信号，但只有已退役的 v1 规划器写过它们（写作简报的 v2 归一化
+    也不留这两个键），2026-09-29 删掉。``constraint_intensity``（§16 呼吸阀）是场景卡上的一列，产品里没有写入者，
+    只在测试里设。
 
     Returns criticality with recommended pipeline settings.
     """
@@ -66,16 +66,6 @@ def classify_scene(
     if is_golden:
         score += 2
         reasons.append("golden_chapter")
-
-    function_tag = writer_brief.get("function_tag") or ""
-    if function_tag in CRITICAL_FUNCTION_TAGS:
-        score += 3
-        reasons.append(f"function_tag={function_tag}")
-
-    tension_target = writer_brief.get("tension_target")
-    if isinstance(tension_target, (int, float)) and tension_target >= HIGH_TENSION_THRESHOLD:
-        score += 2
-        reasons.append(f"tension={tension_target}")
 
     if scene.is_chapter_last == 1:
         score += 2
