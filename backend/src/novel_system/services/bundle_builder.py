@@ -265,7 +265,7 @@ class BundleBuilder:
                 refs={SCENE_DESIGN_SECTION_KEY: list(design_context.step_run_ids)},
             )
         # 2026-09-22 风格参考优先:契约写了 style_first 时,本系统自己的前文不再作为「声音」进入提示
-        # (前文声音锚 / 相似场景 / 整篇上一场正文)——第 1 场若跑偏,后面每一场都被要求接着那个腔写。
+        # (前文声音锚 / 整篇上一场正文)——第 1 场若跑偏,后面每一场都被要求接着那个腔写。
         # 风格参考 v3:契约每个 bundle 只建一次,这一次的 StylePolicy 管本 bundle 里所有让位判定(含新鲜度预算)。
         bundle_policy: StylePolicy = UNBOUND
         reference_first = False
