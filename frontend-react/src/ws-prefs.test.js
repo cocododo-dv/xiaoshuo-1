@@ -1,7 +1,9 @@
 // 界面偏好 schema（ws-prefs.js）单测：一份默认值、一份范围；旧的 ws_tweaks_v1 原样读得回来。
-import { describe, expect, it } from "vitest";
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vitest";
 import {
-  WS_LINE_HEIGHT_PRESETS, WS_PREFS, WS_PREF_DEFAULTS, clampPref, lineHeightPreset, normalizePrefs, prefDefaults, prefKeys,
+  WS_LINE_HEIGHT_PRESETS, WS_PREFS, WS_PREF_DEFAULTS, clampPref, lineHeightPreset, normalizePrefs, prefDefaults, prefKeys, usePrefs,
 } from "./ws-prefs.js";
 
 describe("ws-prefs schema", () => {
@@ -33,10 +35,11 @@ describe("ws-prefs schema", () => {
     expect(clampPref("unknownKey", "原样")).toBe("原样");
   });
 
-  it("normalizePrefs：旧数据原样读回、缺的键补默认、未知键保留", () => {
-    const saved = { theme: "night", fontSize: 21, scnShort: 70, legacyFlag: 1 };
+  it("normalizePrefs：旧数据原样读回、缺的键补默认、未知键保留、已删掉的偏好丢掉", () => {
+    const saved = { theme: "night", fontSize: 21, scnShort: 70, scnRepeat: 3, scnLong: 900, scnBeats: true, legacyFlag: 1 };
     const out = normalizePrefs(saved);
-    expect(out).toMatchObject({ theme: "night", fontSize: 21, scnShort: 70, legacyFlag: 1, mode: "writer", measure: 680 });
+    expect(out).toMatchObject({ theme: "night", fontSize: 21, legacyFlag: 1, mode: "writer", measure: 680 });
+    for (const retired of ["scnShort", "scnRepeat", "scnLong", "scnBeats"]) expect(out).not.toHaveProperty(retired);
     expect(normalizePrefs(null)).toEqual({ ...WS_PREF_DEFAULTS });
   });
 
@@ -44,5 +47,31 @@ describe("ws-prefs schema", () => {
     expect(WS_LINE_HEIGHT_PRESETS.map(p => p.value)).toEqual(["snug", "normal", "airy"]);
     WS_LINE_HEIGHT_PRESETS.forEach(p => expect(lineHeightPreset(p.lineHeight)).toBe(p.value));
     expect(lineHeightPreset(undefined)).toBe("normal");
+  });
+});
+
+describe("usePrefs", () => {
+  it("挂载不回写；改一次偏好在提交后写一次 ws_tweaks_v1（StrictMode 下也只一次），已删掉的键随之消失", async () => {
+    localStorage.setItem("ws_tweaks_v1", JSON.stringify({ theme: "night", scnShort: 70, legacyFlag: 1 }));
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    let prefs;
+    function Probe() { prefs = usePrefs(); return null; }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => { root.render(React.createElement(React.StrictMode, null, React.createElement(Probe))); });
+    expect(prefs[0]).toMatchObject({ theme: "night", legacyFlag: 1 });
+    expect(prefs[0]).not.toHaveProperty("scnShort");
+    expect(setItem).not.toHaveBeenCalled();
+
+    await act(async () => { prefs[1]("fontSize", 40); });
+    expect(prefs[0].fontSize).toBe(WS_PREFS.fontSize.max);
+    expect(setItem).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse(localStorage.getItem("ws_tweaks_v1"));
+    expect(stored).toMatchObject({ theme: "night", fontSize: WS_PREFS.fontSize.max, legacyFlag: 1 });
+    expect(stored).not.toHaveProperty("scnShort");
+
+    await act(async () => { prefs[1]({ theme: "dusk", motion: "off" }); });
+    expect(setItem).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(localStorage.getItem("ws_tweaks_v1"))).toMatchObject({ theme: "dusk", motion: "off" });
+    await act(async () => { root.unmount(); });
   });
 });

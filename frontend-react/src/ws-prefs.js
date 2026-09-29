@@ -11,9 +11,7 @@ import React from "react";
 
 const WS_PREFS_LS = "ws_tweaks_v1";
 
-/* scope：global（全局外观）/ writer（写作台）/ scene（AI 起草台显示）。
-   起草台的前端质检阈值（scnShort / scnRepeat / scnLong）与戏剧卡边条（scnBeats）已随本地质检启发式一起删除：
-   后端闸门是唯一的判定。旧数据里的这些键由 normalizePrefs 原样保留，不再有控件。 */
+/* scope：global（全局外观）/ writer（写作台）/ scene（AI 起草台显示）。 */
 const WS_PREFS = {
   theme: {
     scope: "global", label: "主题", type: "enum", default: "day",
@@ -70,6 +68,10 @@ const WS_LINE_HEIGHT_PRESETS = [
   { value: "airy", label: "宽松", lineHeight: 2.3 },
 ];
 
+/* 已删掉的偏好：起草台的前端质检阈值（scnShort / scnRepeat / scnLong）与戏剧卡边条（scnBeats）
+   随本地质检启发式一起删除，后端闸门是唯一的判定。读回时丢掉，下一次改偏好时就从 ws_tweaks_v1 里消失。 */
+const RETIRED_PREF_KEYS = new Set(["scnShort", "scnRepeat", "scnLong", "scnBeats"]);
+
 const WS_PREF_DEFAULTS = Object.freeze(Object.fromEntries(Object.entries(WS_PREFS).map(([key, spec]) => [key, spec.default])));
 
 function prefKeys(scope, group) {
@@ -96,11 +98,14 @@ function clampPref(key, value) {
   return value;
 }
 
-/* 读回的偏好：默认值打底，已知键收进范围，未知键原样保留（向后兼容） */
+/* 读回的偏好：默认值打底，已知键收进范围，已删掉的键丢掉，其余未知键原样保留（向后兼容） */
 function normalizePrefs(saved) {
   const out = { ...WS_PREF_DEFAULTS };
   if (saved && typeof saved === "object") {
-    Object.keys(saved).forEach((key) => { out[key] = WS_PREFS[key] ? clampPref(key, saved[key]) : saved[key]; });
+    Object.keys(saved).forEach((key) => {
+      if (RETIRED_PREF_KEYS.has(key)) return;
+      out[key] = WS_PREFS[key] ? clampPref(key, saved[key]) : saved[key];
+    });
   }
   return out;
 }
@@ -121,15 +126,21 @@ function readStoredPrefs() {
   }
 }
 
-/* 偏好的单一状态源（App 顶层用一次，往下传 t / setTweak）。setTweak(key, value) 或 setTweak({ ...edits })。 */
+/* 偏好的单一状态源（App 顶层用一次，往下传 t / setTweak）。setTweak(key, value) 或 setTweak({ ...edits })。
+   写 localStorage 放在提交之后的 effect 里：状态更新函数要保持纯（StrictMode 会调两次、React 可能重放）。
+   首次渲染读到的就是存着的那份，不回写。 */
 function usePrefs() {
   const [values, setValues] = React.useState(readStoredPrefs);
+  const loaded = React.useRef(values);
+  React.useEffect(() => {
+    if (values === loaded.current) return;
+    try { localStorage.setItem(WS_PREFS_LS, JSON.stringify(values)); } catch (e) {}
+  }, [values]);
   const setPref = React.useCallback((keyOrEdits, value) => {
     const edits = typeof keyOrEdits === "object" && keyOrEdits !== null ? keyOrEdits : { [keyOrEdits]: value };
     setValues((prev) => {
       const next = { ...prev };
       Object.keys(edits).forEach((key) => { next[key] = clampPref(key, edits[key]); });
-      try { localStorage.setItem(WS_PREFS_LS, JSON.stringify(next)); } catch (e) {}
       return next;
     });
   }, []);
@@ -137,6 +148,6 @@ function usePrefs() {
 }
 
 export {
-  WS_PREFS, WS_PREFS_LS, WS_PREF_DEFAULTS, WS_PREF_WRITER_GROUPS, WS_LINE_HEIGHT_PRESETS,
+  WS_PREFS, WS_PREF_DEFAULTS, WS_PREF_WRITER_GROUPS, WS_LINE_HEIGHT_PRESETS,
   prefKeys, prefDefaults, clampPref, normalizePrefs, lineHeightPreset, usePrefs,
 };
