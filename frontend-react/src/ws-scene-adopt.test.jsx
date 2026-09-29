@@ -647,4 +647,22 @@ describe("scnPrepareAdoption · 预检先等服务器上的作者稿", () => {
     ));
     await expect(api.scnPrepareAdoption("ch01s1", DRAFT)).rejects.toMatchObject({ code: "AUTHOR_DRAFT_PREFLIGHT_FAILED" });
   });
+
+  it("显式「存为候选」不碰作者稿，也就不必核对：服务器读不到时照样存进同步与恢复", async () => {
+    const { client, api, store } = await loadAdoption();
+    const down = Object.assign(new Error("offline"), { code: "NETWORK_ERROR" });
+    client.apiPost.mockImplementation((url) => (
+      /\/author-drafts\/scene\/s1\/ensure$/.test(url) ? Promise.reject(down) : Promise.resolve({})
+    ));
+    client.apiPost.mockClear();
+
+    const draft = [{ id: "p1", parts: [{ text: "AI 起草的一段。" }] }];
+    const result = await api.scnAdoptToDoc("ch01s1", draft, null, { mode: "candidate" });
+
+    expect(result).toMatchObject({ ok: true, archived: false, mode: "candidate" });
+    expect(store.WrRecovery.list()).toEqual([
+      expect.objectContaining({ sid: "ch01s1", type: "candidate", source: "ai", html: "<p>AI 起草的一段。</p>" }),
+    ]);
+    expect(client.apiPost.mock.calls.filter(([url]) => /\/ensure$/.test(url))).toEqual([]);
+  });
 });

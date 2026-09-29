@@ -351,18 +351,14 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
     const count = (gate.blocking || []).length;
     return { ok: false, reason: `${count ? `有 ${count} 条` : "有"}已证实的硬问题，暂不能归档——正文已保留，处理或重跑后再采纳` };
   }
-  const preview = await scnPrepareAdoption(sid, draft);
-  const html = preview.html;
-  const text = (draft || []).map(scnParaText).join("");
   // API 层也采用安全默认：任何未声明模式的调用，只要检测到作者正文，都先保存为候选。
   // 显式 overwrite 才可能进入覆盖路径，避免未来新增入口绕过页面对话框后又退回直接覆盖。
   const requestedMode = options.mode;
   if (requestedMode && !["candidate", "overwrite"].includes(requestedMode)) {
     return { ok: false, reason: "未知的采用模式，已停止以保护作者稿" };
   }
-  const mode = requestedMode || (preview.hasReal ? "candidate" : "overwrite");
-  if (mode === "candidate") {
-    const candidate = WrRecovery.createCandidate(sid, html, "AI 起草台候选；未覆盖作者当前正文，也未归档");
+  const saveCandidate = (candidateHTML) => {
+    const candidate = WrRecovery.createCandidate(sid, candidateHTML, "AI 起草台候选；未覆盖作者当前正文，也未归档");
     return {
       ok: true,
       archived: false,
@@ -370,7 +366,14 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       candidate,
       warning: candidate.durable === false ? "浏览器空间不足，候选仅保留在本次会话，请立即导出" : null,
     };
-  }
+  };
+  // 显式「存为候选」不碰作者稿，也就不必先核对服务器上的作者稿：服务器读不到时照样能把 AI 稿存下来
+  if (requestedMode === "candidate") return saveCandidate(scnDraftHTML(draft));
+  const preview = await scnPrepareAdoption(sid, draft);
+  const html = preview.html;
+  const text = (draft || []).map(scnParaText).join("");
+  const mode = requestedMode || (preview.hasReal ? "candidate" : "overwrite");
+  if (mode === "candidate") return saveCandidate(html);
   if (preview.hasReal && mode === "overwrite" && options.confirmed !== true) {
     return {
       ok: false,
