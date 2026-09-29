@@ -1,4 +1,5 @@
 import React from "react";
+import { emit } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
 import { wsToast } from "./ws-notify.jsx";
@@ -19,7 +20,7 @@ const { useEffect, useRef, useState } = React;
 
 /* 「同步与恢复」在侧栏底部；外壳听这个事件打开它（detail {id} 定位到一份候选，{sid} 定位到这一场）。 */
 function openRecoveryCenter(detail) {
-  window.dispatchEvent(new CustomEvent("ws:recovery-open", { detail: detail || null }));
+  emit("ws:recovery-open", detail || null);
 }
 
 function useSceneAdoption({ items, runs, setRuns, pickedId, pickedIdRef, mountedRef, onArchived, go }) {

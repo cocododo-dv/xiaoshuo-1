@@ -1,4 +1,5 @@
 import React from "react";
+import { useWindowEvents } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { navigateWithViewIntent } from "./ws-view-intents.js";
 import { useWrEvent } from "./ws-writer-hooks.js";
@@ -14,7 +15,7 @@ import { isImeComposing } from "./lib/keyboard.js";
    档案数据运行时读 window.LIB_*（资料库的过渡全局，只读）。ESM 模块，不写 window。
    ========================================================== */
 
-const { useCallback, useEffect, useRef, useState } = React;
+const { useCallback, useRef, useState } = React;
 
 function libLive() {
   return window.LIB_live ? window.LIB_live() : { entries: window.LIB_ENTRIES || [], byId: window.LIB_BY_ID || {} };
@@ -96,16 +97,14 @@ export function useWrEntities({ editorRef, scrollRef, onNeedScene }) {
   }, [editorRef, scrollRef]);
 
   /* 反向链路：从档案「在正文中定位」跳来 */
-  useEffect(() => {
-    const onLocate = (e) => {
+  useWindowEvents({
+    "ws:writer-locate": (e) => {
       const id = e.detail;
       if (!id || locateEntity(id)) return;
       pendingRef.current = id;
       needScene();
-    };
-    window.addEventListener("ws:writer-locate", onLocate);
-    return () => window.removeEventListener("ws:writer-locate", onLocate);
-  }, [locateEntity, needScene]);
+    },
+  });
 
   /* 正文重新载入后接着定位：返回取消函数 */
   const locatePending = useCallback(() => {

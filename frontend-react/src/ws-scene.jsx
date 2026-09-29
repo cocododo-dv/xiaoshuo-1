@@ -1,4 +1,5 @@
 import React from "react";
+import { useWindowEvents } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { useCatalogChapters, WsCatalog } from "./ws-catalog.jsx";
 import { planIntentsForScene, sceneDesignModel } from "./ws-scene-design.jsx";
@@ -60,17 +61,14 @@ function WsSceneBoard({ go, t }) {
 
   /* 窄屏证据抽屉：Esc 收起（对话框开着时 WsDialog 在捕获阶段先吃掉 Esc）。
      输入法组字时的 Esc、在文本框里按的 Esc（例如退回重写的指令框）不算——那是在跟输入框说话。 */
-  useEffect(() => {
-    if (!evidenceOpen) return undefined;
-    const onKey = (event) => {
+  useWindowEvents(evidenceOpen ? {
+    keydown: (event) => {
       if (event.key !== "Escape" || event.defaultPrevented || isImeComposing(event)) return;
       const target = event.target;
       if (target && target.closest && target.closest("textarea, input, select, [contenteditable='true']")) return;
       setEvidenceOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [evidenceOpen]);
+    },
+  } : {});
   /* 抽屉的焦点：拉开时落在抽屉的关闭按钮上；收起时焦点若还在抽屉里（或已掉到 body）就回到「证据」按钮。
      抽屉只在 ≤1120px 出现、没有遮罩，所以不锁焦点，只负责进出。宽屏时关闭按钮不显示，focus 什么也不做。 */
   const eviToggleRef = useRef(null);

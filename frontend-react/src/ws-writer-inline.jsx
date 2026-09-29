@@ -1,6 +1,6 @@
 import React from "react";
 import { focusableIn, isImeComposing } from "./ws-dialog.jsx";
-import { useWindowEvents } from "./lib/events.js";
+import { emit, useWindowEvents } from "./lib/events.js";
 import { WR_RW_ACTIONS } from "./ws-writer-ai.js";
 import { wrDecidePatch, wrRequestRewrite } from "./ws-writer-requests.js";
 import {
@@ -37,7 +37,7 @@ import { MANUSCRIPT_BLOCK_SELECTOR, unwrapNode } from "./manuscript-html.js";
 const { useEffect, useRef, useState } = React;
 
 function announceAnnotations(sceneId) {
-  window.dispatchEvent(new CustomEvent("ws:anno-change", { detail: { sid: sceneId } }));
+  emit("ws:anno-change", { sid: sceneId });
 }
 
 /* finding / onFindingDone（2026-09-22 诊断统一）：深改面板「选中这一句去改写 / 按诊断改写」带过来的那条发现。

@@ -1,4 +1,5 @@
 import React from "react";
+import { useWindowEvents } from "./lib/events.js";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { sceneApiId } from "./ws-scene-id.js";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
@@ -237,18 +238,17 @@ function useSceneQueue({ showNotice }) {
   }, []);
 
   /* 其它视图（章节编排「交给 AI」、写作台）经跨页指令送来的入列请求 */
-  useEffect(() => {
-    const onEnq = (e) => {
+  /* 先挂监听、再报「起草台已就绪」：排队的跨页意图在报就绪时立即派发（两个 effect 按声明顺序执行） */
+  useWindowEvents({
+    "ws:scene-enqueue": (e) => {
       const detail = e.detail || {};
       if (Array.isArray(detail.sids)) detail.sids.slice().reverse().forEach(enqueueSid);
       if (detail.sid) enqueueSid(detail.sid);
-    };
-    window.addEventListener("ws:scene-enqueue", onEnq);
+    },
+  });
+  useEffect(() => {
     setViewIntentTargetReady("scene");
-    return () => {
-      setViewIntentTargetReady("scene", false);
-      window.removeEventListener("ws:scene-enqueue", onEnq);
-    };
+    return () => setViewIntentTargetReady("scene", false);
   }, []);
 
   const pinned = items.filter(q => !q.transient);

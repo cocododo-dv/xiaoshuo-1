@@ -1,4 +1,5 @@
 import React from "react";
+import { emit, useWindowEvents } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { SceneDesignCard, planIntentsForScene, sdLoadCollapsed } from "./ws-scene-design.jsx";
@@ -158,7 +159,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
       wrHighlightEntities(el);
       annoScopeRef.current = { sid: activeScene, key: annoKey };
       annoAnchoredRef.current = Array.from(wrAnnoApply(el, wrAnnoLoad(annoKey))).sort().join(",");
-      window.dispatchEvent(new CustomEvent("ws:anno-change", { detail: { sid: activeScene } }));
+      emit("ws:anno-change", { sid: activeScene });
     },
     afterLoad: () => {
       const frame = requestAnimationFrame(updateActive);
@@ -178,7 +179,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
       const anchored = Array.from(wrAnnoAnchoredIds(el)).sort().join(",");
       if (annoAnchoredRef.current !== anchored) {
         annoAnchoredRef.current = anchored;
-        window.dispatchEvent(new CustomEvent("ws:anno-change", { detail: { sid: sceneId } }));
+        emit("ws:anno-change", { sid: sceneId });
       }
     },
   });
@@ -346,21 +347,16 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     const signalId = detail && typeof detail === "object" ? (detail.signal_id || detail.signalId || null) : null;
     deep.setPosture(next === "deep" ? "deep" : "draft", { signalId });
   });
+  /* 先挂监听、再报「写作台已就绪」：排队的跨页意图在报就绪时立即派发（两个 effect 按声明顺序执行） */
+  useWindowEvents({
+    "ws:writer-scene": (e) => { if (e.detail) onSceneIntent(e.detail); },
+    "ws:writer-action": (e) => onActionIntent(e.detail),
+    "ws:writer-posture": (e) => onPostureIntent(e.detail),
+  });
   useEffect(() => {
-    const onScene = (e) => { if (e.detail) onSceneIntent(e.detail); };
-    const onAction = (e) => onActionIntent(e.detail);
-    const onPosture = (e) => onPostureIntent(e.detail);
-    window.addEventListener("ws:writer-scene", onScene);
-    window.addEventListener("ws:writer-action", onAction);
-    window.addEventListener("ws:writer-posture", onPosture);
     setViewIntentTargetReady("writer");
-    return () => {
-      setViewIntentTargetReady("writer", false);
-      window.removeEventListener("ws:writer-scene", onScene);
-      window.removeEventListener("ws:writer-action", onAction);
-      window.removeEventListener("ws:writer-posture", onPosture);
-    };
-  }, [onSceneIntent, onActionIntent, onPostureIntent]);
+    return () => setViewIntentTargetReady("writer", false);
+  }, []);
 
   /* ---- 大纲 ---- */
   const outline = useWrOutlineActions({ chapters, refresh, activeScene, setActiveScene, showNotice, go });
