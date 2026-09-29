@@ -13,7 +13,7 @@ import { wrAiLocalError, wrContinueCandidates } from "./ws-writer-ai.js";
      「只推进下一拍、不改写作者现有正文」的续写（author_proposal_generate 模板）。
    · wrRequestRewrite({ sceneId, text, instruction })：选区改写，接 passages/patch-candidates
      （writer_passage_patch 节点）。返回 { texts, patch }——patch 是这一次候选的裁决把手，
-     采纳 / 放弃经 wrDecidePatch 回传（作者偏好画像的学习闭环）。
+     采纳 / 放弃经 wrDecidePatch 回传（服务端记下这一次候选的去留；采纳时再过一遍抄袭门）。
    · 抄袭门（与绑定的参考书原文连续相同；用了它的专名只提醒、不拦）：生成时每一版都被拦下 → 409，wrAiError 说成 kind copy；
      续写只丢了几版 → 列表上说丢了几版；采纳时被拦下 → 提示第几字要改（ws-copy-gate.js）。
    场景 id 一律由调用方显式传入：过去这里读一个由 WriterRoom 镜像出来的模块级「当前场景」，
@@ -39,7 +39,7 @@ export async function wrContinueMulti(instruction, sceneId) {
 }
 
 /* finding：深改面板交过来的那条发现（signal_id / dimension / issue / patch.candidate_category）。
-   带着它时改写请求按维度走：后端的修补类别、改写策略与偏好画像学的是「对白潜台词」这种维度，
+   带着它时改写请求按维度走：后端按「对白潜台词」这种维度定修补类别与改写策略，
    不再是「润色」两个字；没有发现时维度是 author_instruction，指令本身走 instruction。
    也带上作者稿 id：后端把整场正文当上下文，补丁才接得上前后文。 */
 export async function wrRequestRewrite({ sceneId, text, instruction, finding = null }) {
@@ -76,7 +76,7 @@ export async function wrRequestRewrite({ sceneId, text, instruction, finding = n
 }
 
 /* 候选裁决回传：采纳 = accept 选中的那一版，关掉没采纳 = reject。
-   一般的失败只影响偏好学习，不打扰作者（正文已经按作者的选择改好了）。只有一种要说：采纳时被抄袭门拦下——
+   一般的失败只是这次去留没记上，不打扰作者（正文已经按作者的选择改好了）。只有一种要说：采纳时被抄袭门拦下——
    那一版与参考书原文连续相同（生成之后换了绑定的书时会这样），它已经在正文里了，得告诉作者第几字要改。
    onRefused(message, error) 不给时走应用内提示。返回请求的 promise（测试用；调用方照旧可以不管）。 */
 export function wrDecidePatch(patch, pickIndex, accepted, { onRefused = null } = {}) {

@@ -33,7 +33,7 @@ import { useInlineAnnotation } from "./ws-writer-inline-anno.js";
 const { useEffect, useRef, useState } = React;
 
 /* finding / onFindingDone（2026-09-22 诊断统一）：深改面板「选中这一句去改写 / 按诊断改写」带过来的那条发现。
-   带着它时每一次改写请求都附上发现的 id / 维度 / 改法（后端按维度定修补类别、偏好画像按维度学）；
+   带着它时每一次改写请求都附上发现的 id / 维度 / 改法（后端按维度定修补类别与改写策略）；
    工具条多一个「按诊断改写」，autoRun 的发现一弹出工具条就直接出候选。
    作者把选区换到别处、关掉弹层、换场，这条发现就作废（onFindingDone）。 */
 export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnly = false, deep = false, onRewriteSelection, onOpenSettings, finding = null, onFindingDone, onPassageReview, passageBusy = false }) {

@@ -65,7 +65,7 @@ export function useInlineRewrite({ sceneId, selection, findingRef, disabled, set
       } catch (e) {}
       const sel = window.getSelection(); if (sel) sel.removeAllRanges();
       if (onCommit) onCommit();
-      wrDecidePatch(patchRef.current, pick, true); // 采纳回传（学习偏好）
+      wrDecidePatch(patchRef.current, pick, true); // 采纳回传（服务端记下去留、再过一遍抄袭门）
       patchRef.current = null;
     }
     return { done: true, caret };
