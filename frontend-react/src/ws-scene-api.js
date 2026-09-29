@@ -1,5 +1,5 @@
 import { apiGet, apiPost } from "./lib/client.js";
-import { WsWorks, wsKey } from "./ws-works.jsx";
+import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
@@ -327,7 +327,7 @@ function scnHTMLParas(raw) {
 function scnAdoptionPreview(sid, draft) {
   const html = scnDraftHTML(draft);
   let existing = "";
-  try { existing = WrRecovery.current(sid) || localStorage.getItem(wsKey("wr-doc:" + sid)) || ""; } catch (e) {}
+  try { existing = WrDocs.cachedHTML(sid) || ""; } catch (e) {}
   // 旧草稿开头可能留着空白页占位句：只去掉开头那一句再看有没有字。过去整份草稿里只要出现过这句话
   // 就当成空稿，作者正文后文恰好写到它时，AI 稿会不经确认直接覆盖。existing 本身不改（备份要逐字一致）。
   return {
@@ -338,8 +338,13 @@ function scnAdoptionPreview(sid, draft) {
     diff: WrDocVersions.diff(scnHTMLParas(stripLegacyDraftPlaceholder(existing)), scnHTMLParas(html)),
   };
 }
+/* 预检先等服务器上的作者稿：WrDocs.draftId 与别处正在进行的 ensure 共用一次请求、读不到服务器时抛错；
+   WrDocs.hydrate 遇到正在进行的水合会立刻返回、出错也不抛，单靠它会把还没水合的缓存当成空稿。 */
 async function scnPrepareAdoption(sid, draft) {
-  try { await WrDocs.hydrate(sid); } catch (e) {
+  try {
+    await WrDocs.draftId(sid);
+    await WrDocs.hydrate(sid);
+  } catch (e) {
     throw Object.assign(new Error("无法核对服务器上的作者稿，已停止采用；请检查网络后重试"), {
       code: "AUTHOR_DRAFT_PREFLIGHT_FAILED",
       cause: e,
