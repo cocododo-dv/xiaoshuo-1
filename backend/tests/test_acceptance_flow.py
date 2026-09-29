@@ -7,8 +7,6 @@ from tests.real_llm_fakes import ScenePipelineOnlineFake
 
 from .test_orchestrator_flow import seed_story
 
-pytestmark = pytest.mark.chroma_integration
-
 
 @pytest.fixture(autouse=True)
 def _online_pipeline(monkeypatch) -> None:

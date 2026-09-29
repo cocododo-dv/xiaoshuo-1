@@ -63,14 +63,13 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install --require-hashes -r requirements.lock
 
-      - name: Run backend non-Chroma shard
+      - name: Run backend shard
         run: >-
           python scripts/pytest_shard.py
           --shard-index "${{ matrix.shard }}"
           --shard-count 4
           --
           -q
-          -m "not chroma_integration"
           --junitxml=".test-results/backend-shard-${{ matrix.shard }}.xml"
 
       - name: Upload backend shard result
@@ -79,42 +78,6 @@ jobs:
         with:
           name: backend-shard-${{ matrix.shard }}-junit
           path: backend/.test-results/backend-shard-${{ matrix.shard }}.xml
-          if-no-files-found: warn
-          retention-days: 7
-
-  backend-chroma:
-    name: Backend Chroma Integration
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install backend with locked Chroma dependencies
-        run: python -m pip install --require-hashes -r requirements-chroma.lock
-
-      - name: Run Chroma runtime smoke check
-        run: python -m novel_system.tools.chroma_smoke
-
-      - name: Run Chroma integration tests
-        run: >-
-          python -m pytest -q -m "chroma_integration"
-          --junitxml=".test-results/backend-chroma.xml"
-
-      - name: Upload Chroma result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-chroma-junit
-          path: backend/.test-results/backend-chroma.xml
           if-no-files-found: warn
           retention-days: 7
 

@@ -156,20 +156,12 @@ def _wait_for_job_sweepers(timeout: float = 30.0) -> None:
 def isolated_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
     _schema_template: Path,
     _hermetic_test_process: None,
 ) -> Generator[None, None, None]:
-    is_chroma_integration = request.node.get_closest_marker("chroma_integration") is not None
-    if is_chroma_integration and sys.platform == "win32":
-        pytest.skip("Chroma integration tests require Linux/WSL; native Windows Chroma is blocked")
-
-    vector_backend = "chroma" if is_chroma_integration else "memory"
     database_path = tmp_path / "test.db"
     shutil.copyfile(_schema_template, database_path)
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{database_path}")
-    monkeypatch.setenv("NOVEL_SYSTEM_CHROMA_DIR", str(tmp_path / "chroma"))
-    monkeypatch.setenv("NOVEL_SYSTEM_VECTOR_BACKEND", vector_backend)
     # Path-import tests are isolated to the per-test temporary directory. In
     # production this capability is disabled unless an operator configures one
     # or more roots explicitly.
