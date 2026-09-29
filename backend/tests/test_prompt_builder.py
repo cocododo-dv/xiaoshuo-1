@@ -323,13 +323,10 @@ def test_prompt_builder_passes_template_task_kind_to_context_budget() -> None:
     )
 
     assert hard_qc["token_budget"]["task_kind"] == "hard_qc"
-    assert (
-        "drop_style_context_before_fact_context"
-        in hard_qc["token_budget"]["continuity_policy"]
-    )
+    assert "omit_scene_design_context" in hard_qc["token_budget"]["continuity_policy"]
     assert drafting["token_budget"]["task_kind"] == "drafting"
     assert (
-        "preserve_style_profile_author_preference_and_calibration"
+        "preserve_author_instruction_and_preference_profile"
         in drafting["token_budget"]["continuity_policy"]
     )
     assert chapter_review["token_budget"]["task_kind"] == "chapter_review"
@@ -704,7 +701,7 @@ def test_neutral_draft_prompt_sees_narrative_mechanisms_only() -> None:
     assert "关键信息放段首一次给出" in user_prompt
     assert "Previous Scene Voice Anchor" not in user_prompt
     assert "Style Drift Calibration" not in user_prompt
-    # 语言层：style_observations / calibration_lines 仍被中性稿屏蔽
+    # 旧 bundle 残留的语言层 digest（style_observation / calibration_line）没有任何 section 渲染
     assert "Gesture before explanation" not in user_prompt
     assert "The door closed like a sentence" not in user_prompt
     assert "[STYLE_REFERENCE]" not in payload["system_prompt"]
@@ -1103,3 +1100,14 @@ def test_bundle_builder_never_carries_drift_calibration(session) -> None:
     assert not any(key.startswith("style_drift_calibration") for key in snapshot["source_version_refs"])
     assert not any(item["slot"] == "style_drift_calibration" for item in snapshot["ordered_injections"])
     assert "逗号再密一点" not in PromptBuilder().build(snapshot, "style_draft")["user_prompt"]
+
+
+def test_task_kind_template_sets_only_name_shipped_templates() -> None:
+    """B02-12：按模板归任务类型的名单与输入预算地板只列 config/prompts.yaml 里真有的模板（旧名单里留着 10 个
+    早就删掉的名字：near_final_rewrite / project_outline_plan / 六个 v1 雪花模板 / 两个章级改写模板）。"""
+    from novel_system.services import prompt_builder as pb
+
+    shipped = set(pb.load_prompt_templates(pb._default_prompts_config_path()))
+    for name in ("DRAFTING_TEMPLATE_NAMES", "HARD_QC_TEMPLATE_NAMES", "CHAPTER_REVIEW_TEMPLATE_NAMES"):
+        assert getattr(pb, name) <= shipped, (name, sorted(getattr(pb, name) - shipped))
+    assert set(pb.RUNTIME_MIN_INPUT_BUDGETS) <= shipped

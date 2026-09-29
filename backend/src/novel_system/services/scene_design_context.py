@@ -36,7 +36,6 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryCharacter,
 )
-from novel_system.services.context_budget import compress_design_context
 from novel_system.services.snowflake_scene_order import sort_in_story_order
 from novel_system.services.snowflake_triage import latest_triage_plan_ids
 from novel_system.settings import get_settings
@@ -167,12 +166,6 @@ def build_scene_design_context(scene: SceneCard, session: Session | None) -> Sce
     if not lines:
         return None
     return SceneDesignContext(text="\n".join(lines), step_run_ids=used_runs)
-
-
-def compress_scene_design_context(text: str) -> str:
-    """预算紧时的压缩形态（实现在 context_budget，避免 settings 反向成环）：只留一句话、道德前提、
-    章位置、POV 摘要表与相邻两场；视角故事、五句脊柱、在场人物先让路。"""
-    return compress_design_context(text)
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ from novel_system.db.models import (
     VoiceProfile,
 )
 from novel_system.services.bundle_builder import BundleBuilder
-from novel_system.services.context_budget import apply_context_budget, collect_prompt_sections
+from novel_system.services.context_budget import apply_context_budget, collect_prompt_sections, compress_design_context
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_blueprint import SceneBlueprintService
@@ -32,7 +32,6 @@ from novel_system.services.scene_design_context import (
     SCENE_DESIGN_SECTION_KEY,
     SCENE_DESIGN_SECTION_LABEL,
     build_scene_design_context,
-    compress_scene_design_context,
     render_scene_design_context,
 )
 from novel_system.services.scene_structure_brief import (
@@ -330,7 +329,7 @@ def test_compression_keeps_the_essentials_and_drops_the_heavy_lines() -> None:
             "Next scene (S03) opens on Reaction: 反应。",
         ]
     )
-    compressed = compress_scene_design_context(text)
+    compressed = compress_design_context(text)
     assert "Story spine" not in compressed and "POV story so far" not in compressed and "Onstage" not in compressed
     for kept in ("Book logline", "Moral premise", "Chapter:", "Scene position", "POV character sheet", "Previous scene", "Next scene"):
         assert kept in compressed

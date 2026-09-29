@@ -123,24 +123,18 @@ STYLE_CHARACTER_CONTINUITY_INSTRUCTION = (
     "a name, a gesture, or context — not by mechanically repeating names."
 )
 _STYLE_CONTINUITY_TEMPLATES = frozenset({"style_draft", "style_first_draft", "style_targeted_revision"})
+# 按模板归任务类型（决定预算审计里记哪组策略、中性稿 / 硬 QC 先省略哪些 section）。
+# 只列 config/prompts.yaml 里真有的模板（test_prompt_builder 核对）。
 DRAFTING_TEMPLATE_NAMES = {
     "neutral_draft",
     "style_draft",
     "style_first_draft",
     "style_targeted_revision",
     "scene_literary_rewrite",
-    "near_final_rewrite",
-    "project_outline_plan",
     "scene_blueprint",
     "scene_blueprint_facts",
     "chapter_story_architecture",
     "character_pressure_blueprint",
-    "snowflake_generate_logline",
-    "snowflake_generate_one_paragraph",
-    "snowflake_generate_character_lineup",
-    "snowflake_generate_plot_beats",
-    "snowflake_generate_scene_plan",
-    "snowflake_generate_character_plan",
     "snowflake_workspace_assistant",
     "snowflake_scene_triage_suggest",
 }
@@ -152,8 +146,6 @@ HARD_QC_TEMPLATE_NAMES = {
 CHAPTER_REVIEW_TEMPLATE_NAMES = {
     "chapter_summary",
     "chapter_near_final_review",
-    "writer_chapter_diagnosis",
-    "writer_chapter_revision",
     "writer_deep_review",
 }
 

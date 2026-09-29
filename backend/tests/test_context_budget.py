@@ -5,7 +5,7 @@ from sqlalchemy import select
 from novel_system.db.models import AttemptTracker, ChapterGoal, HumanReviewEvent, LlmCall, QcReport, SceneCard, SceneDraft, SceneRunState, StoryProject
 from novel_system.services.context_budget import (
     _compress_continuity_digest,
-    _compress_style_observations,
+    _truncate_to_estimated_tokens,
     apply_context_budget,
     collect_prompt_sections,
     estimate_tokens,
@@ -63,21 +63,21 @@ def test_token_estimator_is_conservative_for_cjk_and_keeps_latin_ratio() -> None
 def test_cjk_compression_shortens_unspaced_paragraphs() -> None:
     paragraph = "顾舟沿着废弃站台向前走，铜铃在袖口里一下一下撞着腕骨。" * 12
 
-    style = _compress_style_observations(paragraph)
+    truncated = _truncate_to_estimated_tokens(paragraph, max_tokens=48)
     continuity = _compress_continuity_digest(paragraph)
 
-    assert len(style) < len(paragraph)
-    assert len(continuity) < len(style)
-    assert style.endswith("...")
+    assert len(truncated) < len(paragraph)
+    assert len(continuity) < len(truncated)
+    assert truncated.endswith("...")
     assert continuity.endswith("...")
-    assert estimate_tokens(style) <= 50
+    assert estimate_tokens(truncated) <= 50
     assert estimate_tokens(continuity) <= 26
 
 
 def test_latin_compression_remains_word_readable() -> None:
     paragraph = " ".join(f"observation-{index}" for index in range(80))
 
-    compressed = _compress_style_observations(paragraph)
+    compressed = _truncate_to_estimated_tokens(paragraph, max_tokens=48)
 
     assert compressed.startswith("observation-0")
     assert compressed.endswith("...")
