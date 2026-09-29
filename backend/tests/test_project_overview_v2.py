@@ -84,9 +84,10 @@ def test_writing_stats_same_day_accumulates(client, session):
     svc.record_words_delta(project["project_id"], 300, now=base)
     svc.record_words_delta(project["project_id"], 200, now=base + timedelta(hours=2))
     stats = svc.stats_payload(project["project_id"], now=base + timedelta(hours=3))
-    assert stats["words_total"] == 500
     assert stats["words_today"] == 500
     assert stats["streak_days"] == 1
+    # 全书字数按目录里各场的字数求和（批准 #9），不跟保存增量走：这部作品还没有场
+    assert stats["words_total"] == 0
 
 
 def test_writing_stats_streak_across_days(client, session):
@@ -116,15 +117,49 @@ def test_writing_stats_streak_broken_after_gap(client, session):
     assert stats["streak_days"] == 1
 
 
-def test_writing_stats_negative_delta_only_hits_total(client, session):
+def test_writing_stats_negative_delta_does_not_reduce_today(client, session):
     project = _create_project(client)
     svc = WritingStatsService(session)
     now = datetime(2026, 6, 10, 9, 0, tzinfo=WRITING_STATS_TZ)
     svc.record_words_delta(project["project_id"], 300, now=now)
     svc.record_words_delta(project["project_id"], -100, now=now + timedelta(minutes=5))
     stats = svc.stats_payload(project["project_id"], now=now + timedelta(minutes=6))
-    assert stats["words_total"] == 200
     assert stats["words_today"] == 300  # 负增量不回吐今日字数
+
+
+def test_book_words_is_the_sum_of_the_scenes_in_the_catalog(client, session):
+    """全书字数 = 目录里各场实际字数之和（批准 #9）：删场、删章、没走保存进来的字都对得上账。"""
+    project = _create_project(client)
+    project_id = project["project_id"]
+    for chapter_id, trashed in (("ch-book-1", 0), ("ch-book-gone", 1)):
+        session.add(ChapterGoal(chapter_id=chapter_id, project_id=project_id, chapter_goal="章", trashed_flag=trashed))
+    session.flush()
+    for seq, (scene_id, chapter_id, words, trashed) in enumerate((
+        ("sc-book-1", "ch-book-1", 120, 0),
+        ("sc-book-2", "ch-book-1", 80, 0),
+        ("sc-book-trashed", "ch-book-1", 50, 1),
+        ("sc-book-in-trashed-chapter", "ch-book-gone", 40, 1),
+    ), start=1):
+        session.add(
+            SceneCard(
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                project_id=project_id,
+                scene_seq=seq,
+                scene_goal="场",
+                words_current=words,
+                trashed_flag=trashed,
+            )
+        )
+    session.commit()
+    # 保存增量记账的计数器（旧口径）与全书字数无关
+    WritingStatsService(session).record_words_delta(project_id, 9999)
+    session.commit()
+
+    stats = client.get(f"/api/v2/projects/{project_id}/writing-stats").json()["data"]
+    assert stats["words_total"] == 200
+    catalog = client.get(f"/api/v2/projects/{project_id}/catalog").json()["data"]
+    assert stats["words_total"] == sum(chapter["words"]["cur"] for chapter in catalog["chapters"])
 
 
 def test_author_draft_save_reports_words_delta(client, session):
@@ -198,7 +233,9 @@ def test_dashboard_v2_shape_with_demo_seed(client, session):
     assert ch08["no"] == "08"
     assert ch08["pct"] > 0  # words rollup（场景字数求和 / words_target）
 
-    assert data["stats"]["words_total"] == 38420
+    # 全书字数 = 目录里各场字数之和（批准 #9；夹具播种的计数器基线不再显示）
+    catalog = client.get("/api/v2/projects/work-a/catalog").json()["data"]
+    assert data["stats"]["words_total"] == sum(chapter["words"]["cur"] for chapter in catalog["chapters"]) > 0
     assert data["stats"]["streak_days"] == 6  # streak_last_day=昨天 → 有效
 
 

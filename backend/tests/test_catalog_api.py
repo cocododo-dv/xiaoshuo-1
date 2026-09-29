@@ -267,7 +267,10 @@ def test_draft_save_updates_scene_words_and_returns_rollup(client, session):
     assert rollup["scene_id"] == scene_id
     assert rollup["scene_words"] == 19
     assert rollup["chapter_words"] == 19
-    assert "words_total" in rollup
+    # 全书字数 / 今日字数 / 连续天数随保存一起回来，写作台不必再问 writing-stats
+    assert rollup["words_total"] == 19
+    assert rollup["words_today"] == 19
+    assert rollup["streak_days"] == 1
 
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     assert tree["chapters"][0]["words"]["cur"] == 19

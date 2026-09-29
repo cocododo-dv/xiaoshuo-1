@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select, update
@@ -18,6 +19,7 @@ from novel_system.db.models import (
     FinalScene,
     SceneCard,
     SceneRunState,
+    utcnow,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.chapter_approval import require_author_target_mutation_allowed
@@ -31,6 +33,7 @@ from novel_system.services.llm_task_runner import (
     current_llm_execution_id,
 )
 from novel_system.services.manuscript_html import plain_manuscript_text, sanitize_manuscript_html
+from novel_system.services.pagination import paginate_select, resolve_pagination_request
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.reference_copy_gate import (
     check_reference_copy_for_scope,
@@ -225,11 +228,15 @@ class AuthorDraftService:
             scene = self.session.get(SceneCard, draft.object_id)
             if scene is not None:
                 scene.words_current = new_words
+                # 全书字数按库里各场求和（批准 #9）：会话不自动 flush，先把这一场的新字数写进去
+                self.session.flush()
                 from novel_system.services.catalog import CatalogService
 
                 words_rollup = CatalogService(self.session).words_rollup(scene)
                 if project_id:
-                    words_rollup["words_total"] = WritingStatsService(self.session).stats_payload(project_id)["words_total"]
+                    # 全书字数、今日字数、连续天数一起回传：写作台不必每存一次再去问 writing-stats
+                    stats = WritingStatsService(self.session).stats_payload(project_id)
+                    words_rollup.update({key: stats[key] for key in ("words_total", "words_today", "streak_days")})
         self._add_event(
             draft,
             event_type="edited",
@@ -519,8 +526,13 @@ class AuthorDraftService:
             },
         )
 
-    # FE-ALIGN F2 修订历史：每次 revision_no 推进存完整内容快照，支撑成稿中心版本对比。
+    # FE-ALIGN F2 修订历史：正文的完整内容快照，支撑成稿中心版本对比。
     def _snapshot_revision(self, draft: AuthorDraft, *, actor_ref: str, origin: str) -> None:
+        """记一份修订快照。自动保存（``edited``）按 5 分钟时段合并（批准 #8）：同一时段里接着上一份自动保存快照写，
+        只留这一时段最新的正文——除非上一份就是晋升过权威正文的那一版（它永远留着）；建稿那一版（``created``）也永远留着。
+
+        写作台停笔 900 毫秒就自动保存一次，过去每存一次就多一行全文快照（一晚上一场几百份），版本对比的列表一次全给。
+        """
         existing = self.session.execute(
             select(AuthorDraftRevision.draft_revision_id)
             .where(AuthorDraftRevision.draft_id == draft.draft_id)
@@ -528,6 +540,26 @@ class AuthorDraftService:
         ).scalar_one_or_none()
         if existing is not None:
             return
+        if origin == "edited":
+            latest = self.session.execute(
+                select(AuthorDraftRevision)
+                .where(AuthorDraftRevision.draft_id == draft.draft_id)
+                .order_by(AuthorDraftRevision.revision_no.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            now = utcnow()
+            if (
+                latest is not None
+                and latest.origin == "edited"
+                and latest.revision_no != draft.last_promoted_revision_no
+                and _same_revision_window(latest.created_at, now)
+            ):
+                latest.revision_no = int(draft.revision_no)
+                latest.content = draft.content or ""
+                latest.words = count_words(draft.content or "")
+                latest.created_by = actor_ref or "author_draft"
+                latest.created_at = now
+                return
         self.session.add(
             AuthorDraftRevision(
                 draft_revision_id=f"author_draft_rev_{uuid.uuid4().hex[:12]}",
@@ -540,14 +572,31 @@ class AuthorDraftService:
             )
         )
 
-    def revisions(self, draft_id: str) -> dict[str, Any]:
+    def revisions(
+        self,
+        draft_id: str,
+        *,
+        page: int | None = None,
+        page_size: int | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """版本对比的列表（新 → 旧，不带正文）。不给分页参数时照旧一次给全；给了（page / page_size 或
+        cursor / limit）就分页，回包多一个 ``pagination``（批准 #8）。"""
         draft = self._require_draft(draft_id)
-        rows = self.session.execute(
-            select(AuthorDraftRevision)
-            .where(AuthorDraftRevision.draft_id == draft.draft_id)
-            .order_by(AuthorDraftRevision.revision_no.desc())
-        ).scalars().all()
-        return {
+        statement = select(AuthorDraftRevision).where(AuthorDraftRevision.draft_id == draft.draft_id)
+        pagination: dict[str, Any] | None = None
+        if page is None and page_size is None and cursor is None and limit is None:
+            rows = self.session.execute(statement.order_by(AuthorDraftRevision.revision_no.desc())).scalars().all()
+        else:
+            rows, pagination = paginate_select(
+                self.session,
+                statement,
+                request=resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit),
+                order_columns=((AuthorDraftRevision.revision_no, "desc"),),
+                cursor_values=lambda row: [row.revision_no],
+            )
+        payload: dict[str, Any] = {
             "draft_id": draft.draft_id,
             "object_type": draft.object_type,
             "object_id": draft.object_id,
@@ -563,6 +612,9 @@ class AuthorDraftService:
                 for row in rows
             ],
         }
+        if pagination is not None:
+            payload["pagination"] = pagination
+        return payload
 
     def revision(self, draft_id: str, revision_no: int) -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -760,6 +812,22 @@ class AuthorDraftService:
             },
             "current_writer_brief": normalize_scene_writer_brief(scene.writer_brief_json),
         }
+
+
+#: 自动保存的修订快照合并的时段长度（秒）：同一个 5 分钟时段里至多留一份
+REVISION_COALESCE_SECONDS = 300
+
+
+def _same_revision_window(earlier: str | None, later: str) -> bool:
+    """两个时刻是否落在同一个 5 分钟时段（按 UTC 时钟对齐）。解析不了就当不同时段（宁可多留一份）。"""
+    try:
+        earlier_at = datetime.fromisoformat(str(earlier))
+        later_at = datetime.fromisoformat(str(later))
+    except ValueError:
+        return False
+    if earlier_at.tzinfo is None or later_at.tzinfo is None:
+        return False
+    return int(earlier_at.timestamp()) // REVISION_COALESCE_SECONDS == int(later_at.timestamp()) // REVISION_COALESCE_SECONDS
 
 
 def _optional_text(payload: dict[str, Any], key: str) -> str | None:

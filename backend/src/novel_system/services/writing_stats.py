@@ -1,7 +1,8 @@
 """FE-ALIGN Phase 2: 写作统计服务端化（决策 D2：服务端计算，时区 Asia/Shanghai）。
 
 数据源：正文保存主路径（AuthorDraftService.save）在保存时上报 words_delta，
-不另开上报端点。today/streak 规则照抄原型 design/ws-catalog.jsx：
+不另开上报端点。全书字数不走这条（批准 #9）：它就是目录里各场实际字数之和（``book_words``）。
+today/streak 规则照抄原型 design/ws-catalog.jsx：
 
 - catAddToday: 只记正向增量；自然日切换时今日计数清零重记。
 - catBumpStreak: 当天首次正向增量记账 —— 昨天也写过则 +1，否则重记为 1。
@@ -17,9 +18,10 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ProjectWritingStats, StoryProject, utcnow
+from novel_system.db.models import ChapterGoal, ProjectWritingStats, SceneCard, StoryProject, utcnow
 
 WRITING_STATS_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -90,7 +92,8 @@ class WritingStatsService:
     def record_words_delta(
         self, project_id: str, delta: int, *, now: datetime | None = None
     ) -> ProjectWritingStats:
-        """正文保存埋点：净增减都计入 words_total；今日/连续天数只认正向增量。"""
+        """正文保存埋点：今日 / 连续天数只认正向增量。（``words_total`` 列仍按净增减累加，但不再展示——
+        全书字数按场求和，见 :meth:`stats_payload`。）"""
         moment = now or datetime.now(WRITING_STATS_TZ)
         today = _local_day(moment)
         row = self._row(project_id, create=True)
@@ -113,18 +116,34 @@ class WritingStatsService:
         row.streak_days = (int(row.streak_days or 0) + 1) if row.streak_last_day == yesterday else 1
         row.streak_last_day = today
 
+    def book_words(self, project_id: str) -> int:
+        """全书字数：这部作品目录里（没进回收站的章里、没进回收站的）每一场的字数之和——与目录里各章字数加起来同一个数。"""
+        total = self.session.execute(
+            select(func.sum(SceneCard.words_current))
+            .join(ChapterGoal, ChapterGoal.chapter_id == SceneCard.chapter_id)
+            .where(
+                ChapterGoal.project_id == project_id,
+                ChapterGoal.trashed_flag == 0,
+                SceneCard.trashed_flag == 0,
+            )
+        ).scalar()
+        return int(total or 0)
+
     def stats_payload(
         self, project_id: str, *, now: datetime | None = None
     ) -> dict[str, Any]:
+        """写作统计。全书字数取目录里各场实际字数之和（批准 #9）——过去是只在保存时累加的计数器，删场、
+        AI 稿直接进作者稿、占位章都对不上账，越走越偏；今日字数与连续天数照旧按保存增量记。"""
         moment = now or datetime.now(WRITING_STATS_TZ)
         today = _local_day(moment)
         yesterday = _yesterday(today)
         row = self._row(project_id)
         project = self.session.get(StoryProject, project_id)
         words_target_daily = getattr(project, "words_target_daily", None) if project else None
+        words_total = self.book_words(project_id)
         if row is None:
             return {
-                "words_total": 0,
+                "words_total": words_total,
                 "words_today": 0,
                 "words_target_daily": words_target_daily,
                 "streak_days": 0,
@@ -136,7 +155,7 @@ class WritingStatsService:
             else 0
         )
         return {
-            "words_total": int(row.words_total or 0),
+            "words_total": words_total,
             "words_today": int(row.words_today or 0) if row.day == today else 0,
             "words_target_daily": words_target_daily,
             "streak_days": effective_streak,

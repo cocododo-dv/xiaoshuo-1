@@ -133,8 +133,18 @@ def promote_author_draft_canonical(
 
 
 @router.get("/api/v1/author-drafts/{draft_id}/revisions")
-def list_author_draft_revisions(draft_id: str, request: Request, session: Session = Depends(get_session)):
-    result = AuthorDraftService(session).revisions(draft_id)
+def list_author_draft_revisions(
+    draft_id: str,
+    request: Request,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+    session: Session = Depends(get_session),
+):
+    result = AuthorDraftService(session).revisions(
+        draft_id, page=page, page_size=page_size, cursor=cursor, limit=limit
+    )
     return ok(result, req_id=request_id_of(request))
 
 
