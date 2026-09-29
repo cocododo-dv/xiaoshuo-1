@@ -19,6 +19,9 @@ let root;
 async function mountRail(props = {}, apiOpts = {}, { withNotify = false, withPalette = false } = {}) {
   const client = await import("./lib/client.js");
   installApiRouter(client, apiOpts);
+  // 目录先装好（真实应用里启动就装载了）：待办 store 听目录的变化广播，目录晚到的装载广播会先占住节流窗口
+  const { WsCatalog } = await import("./ws-catalog.jsx");
+  if ((apiOpts.projects ?? [1]).length) await vi.waitFor(() => expect(WsCatalog.ready()).toBe(true), T);
   const { Rail } = await import("./ws-rail.jsx");
   const { WsToastHost } = await import("./ws-notify.jsx");
   const { WsPalette } = withPalette ? await import("./ws-palette.jsx") : { WsPalette: null };

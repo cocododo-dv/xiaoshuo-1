@@ -162,6 +162,11 @@ describe("WsReview 视图", () => {
 
   /* strict：包一层 React.StrictMode（npm run dev 的样子：更新函数会被跑两遍） */
   async function mount(cards, { strict = false } = {}) {
+    // 目录先装好（真实应用里启动就装载了）：收件箱 store 听目录的变化广播，目录晚到的装载广播会先占住节流窗口
+    const client0 = await import("./lib/client.js");
+    installApiRouter(client0, { reviewOpen: cards });
+    const catalog = await import("./ws-catalog.jsx");
+    await vi.waitFor(() => expect(catalog.WsCatalog.ready()).toBe(true), T);
     const { mod, client } = await loadReview({ reviewOpen: cards });
     await vi.waitFor(() => expect(mod.rvOpenItems().length).toBe(cards.length), T);
     host = document.createElement("div");
