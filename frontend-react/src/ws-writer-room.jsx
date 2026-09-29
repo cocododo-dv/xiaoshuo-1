@@ -523,15 +523,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
         onDeleteChapter={outline.onDeleteChapter} onDeleteBatch={outline.onDeleteBatch} onAdd={outline.onAdd}
         onPick={pickScene} onClose={layout.closeLeft} />
       {posture === "deep"
-        ? <WrDeepDrawer open={rightOpen} loading={deep.loading} error={deep.error} onRetry={deep.reload}
-            diagnosis={deep.diagnosis} findings={deep.findings} activeKey={deep.activeKey}
-            filter={deep.filter} onFilter={deep.setFilter} showIgnored={deep.showIgnored} onToggleIgnored={deep.toggleIgnored}
-            onPick={deep.pick} onIgnore={deep.ignore} onRestore={deep.restore} onRescan={deep.rescan}
-            onSelect={deep.selectForRewrite} onRewrite={deep.rewriteFromFinding}
-            aiBusy={deep.aiBusy} aiError={deep.aiError} onRunAi={deep.runAi} onOpenSettings={onOpenSettings}
-            onPassageReview={deep.reviewPassage} passageBusy={deep.passageBusy} passageError={deep.passageError}
-            lastPassage={deep.lastPassage} onRewriteParagraph={deep.rewriteParagraph} onLocateParagraph={deep.locateParagraph}
-            handoffMiss={deep.handoffMiss} log={deep.log} persistenceStatus={deep.persistenceStatus} onClose={layout.closeRight} />
+        ? <WrDeepDrawer deep={deep} open={rightOpen} onOpenSettings={onOpenSettings} onClose={layout.closeRight} />
         : <WrContext open={rightOpen} tab={rightTab} setTab={setRightTab} onClose={layout.closeRight} place={tw.aiPlace}
             tight={dockRight && railR < 232} sceneId={activeScene} design={design} designVariant={contextVariant} sync={sync} go={go}
             editorRef={editorRef} annoKey={annoKey} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} onOpenSettings={onOpenSettings} />}

@@ -1,11 +1,12 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { wsKey } from "./ws-works.jsx";
-import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { CloseButton, IconButton, Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { wrAiError } from "./ws-writer-ai.js";
-import { wrRangeForOffsets, wrRangeForText } from "./ws-writer-manuscript.js";
-import { MANUSCRIPT_BLOCK_SELECTOR, unwrapNode } from "./manuscript-html.js";
+import { sevClass, wrDeepMark, wrDeepUnmark, wrDxRangeFor } from "./ws-deep-marks.js";
+import {
+  wrDxAddSkip, wrDxApplyPreferences, wrDxFetch, wrDxLoadPreferences, wrDxLog, wrDxMergePreferences, wrDxPushLog,
+  wrDxRemoveSkip, wrDxReviewPassage, wrDxRunAi, wrDxSavePreferences, wrDxSkips, wrDxSnapshot, wrDxWithIgnored,
+} from "./ws-deep-prefs.js";
 import { useWrInert } from "./ws-writer-hooks.js";
 import { qSevLabel, qSevTone } from "./ws-quality-model.js";
 import { formatClockTime, formatLocaleMonthDayTime } from "./lib/format.js";
@@ -25,95 +26,9 @@ import { formatClockTime, formatLocaleMonthDayTime } from "./lib/format.js";
    深改只诊断、不改字：每一条给「选中这一句去改写」/「按诊断改写」——回到起草姿态、选中那一句，
    改写走选区工具条那条真实的改写接口，并把这条发现（id / 维度 / 改法）一起发给后端。
    忽略按 signal_id 记在服务端（deep-review/preferences，带修订号），文学质量视图和成稿门都认。
-   姿态本身（进出、偏好同步、选中去改写）在 ws-writer-deep-posture.js。
+   姿态本身（进出、偏好同步、选中去改写）在 ws-writer-deep-posture.js；本机偏好与诊断请求在
+   ws-deep-prefs.js，编辑器里的标注在 ws-deep-marks.js（2026-09-29 拆出，名字照旧从这里转出）。
    ========================================================== */
-
-const dxKey = (base) => (wsKey ? wsKey(base) : base);
-
-/* ---- 决定日志 / 忽略清单（按场景写穿到本机，服务端是真相）---- */
-function wrDxLog(sid) {
-  try { return JSON.parse(localStorage.getItem(dxKey("wr-deep-log:" + sid))) || []; } catch (e) { return []; }
-}
-function wrDxPushLog(sid, text) {
-  const list = [{ at: Date.now(), text }, ...wrDxLog(sid)].slice(0, 30);
-  try { localStorage.setItem(dxKey("wr-deep-log:" + sid), JSON.stringify(list)); } catch (e) {}
-  return list;
-}
-function wrDxSkips(sid) {
-  try { return new Set(JSON.parse(localStorage.getItem(dxKey("wr-deep-skip:" + sid))) || []); } catch (e) { return new Set(); }
-}
-function wrDxWriteSkips(sid, set) {
-  try { localStorage.setItem(dxKey("wr-deep-skip:" + sid), JSON.stringify([...set])); } catch (e) {}
-}
-function wrDxAddSkip(sid, key) {
-  const s = wrDxSkips(sid); s.add(key); wrDxWriteSkips(sid, s);
-}
-function wrDxRemoveSkip(sid, key) {
-  const s = wrDxSkips(sid); s.delete(key); wrDxWriteSkips(sid, s);
-}
-
-function wrDxSnapshot(sid) {
-  return { decision_log: wrDxLog(sid), ignored_issue_keys: [...wrDxSkips(sid)] };
-}
-
-function wrDxApplyPreferences(sid, preferences) {
-  const decisionLog = Array.isArray(preferences?.decision_log) ? preferences.decision_log.slice(0, 30) : [];
-  const ignoredKeys = Array.isArray(preferences?.ignored_issue_keys)
-    ? [...new Set(preferences.ignored_issue_keys)].slice(0, 200)
-    : [];
-  try { localStorage.setItem(dxKey("wr-deep-log:" + sid), JSON.stringify(decisionLog)); } catch (e) {}
-  try { localStorage.setItem(dxKey("wr-deep-skip:" + sid), JSON.stringify(ignoredKeys)); } catch (e) {}
-  return { decision_log: decisionLog, ignored_issue_keys: ignoredKeys };
-}
-
-function wrDxMergePreferences(remote, local, { localIgnoredAuthoritative = false } = {}) {
-  const seenLogs = new Set();
-  const decisionLog = [...(local?.decision_log || []), ...(remote?.decision_log || [])]
-    .filter((entry) => {
-      const key = `${entry?.at ?? ""}:${entry?.text ?? ""}`;
-      if (!entry?.text || seenLogs.has(key)) return false;
-      seenLogs.add(key);
-      return true;
-    })
-    .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))
-    .slice(0, 30);
-  const ignoredSource = localIgnoredAuthoritative
-    ? (local?.ignored_issue_keys || [])
-    : [...(local?.ignored_issue_keys || []), ...(remote?.ignored_issue_keys || [])];
-  return {
-    decision_log: decisionLog,
-    ignored_issue_keys: [...new Set(ignoredSource)].slice(0, 200),
-  };
-}
-
-async function wrDxLoadPreferences(sid) {
-  return apiGet(`/api/v1/scenes/${encodeURIComponent(sid)}/deep-review/preferences`);
-}
-
-async function wrDxSavePreferences(sid, snapshot, baseRevisionNo) {
-  return apiPatch(`/api/v1/scenes/${encodeURIComponent(sid)}/deep-review/preferences`, {
-    decision_log: (snapshot?.decision_log || []).slice(0, 30),
-    ignored_issue_keys: [...new Set(snapshot?.ignored_issue_keys || [])].slice(0, 200),
-    base_revision_no: baseRevisionNo,
-  });
-}
-
-/* ---- 诊断：服务端一份 ---- */
-async function wrDxFetch(backendId) {
-  return apiGet(`/api/v1/scenes/${encodeURIComponent(backendId)}/deep-review`);
-}
-async function wrDxRunAi(backendId) {
-  return apiPost(`/api/v1/scenes/${encodeURIComponent(backendId)}/deep-review`, {});
-}
-/* 「AI 看这一处」：body 是 { signal_id } （复核一条发现）或 { paragraph_index, excerpt }（独立看一段），可带 question */
-async function wrDxReviewPassage(backendId, body) {
-  return apiPost(`/api/v1/scenes/${encodeURIComponent(backendId)}/deep-review/passage`, body || {});
-}
-
-/* 发现的 ignored 按本机忽略清单重算（忽略 / 恢复不必等服务端往返） */
-function wrDxWithIgnored(findings, skips) {
-  return (findings || []).map((f) => ({ ...f, ignored: skips.has(f.signal_id) }));
-}
 
 const WR_DX_SOURCES = {
   rules: "规则",
@@ -130,91 +45,6 @@ const WR_DX_VERDICT = {
   does_not_hold: { label: "AI：不成立", tone: "ok" },
   no_finding: { label: "AI：没有要改的", tone: "ok" },
 };
-/* 类名写全，设计守卫按字面找引用 */
-const WR_DX_SEV_CLASS = { blocking: "sev-blocking", revision: "sev-revision", taste: "sev-taste", info: "sev-info" };
-const sevClass = (sev) => WR_DX_SEV_CLASS[sev] || WR_DX_SEV_CLASS.info;
-
-/* ---- 编辑器内标注 ---- */
-function wrDeepUnmark(el) {
-  if (!el) return;
-  el.querySelectorAll("mark.wr-dx").forEach((mk) => {
-    const parent = mk.parentNode;
-    unwrapNode(mk);
-    parent.normalize();
-  });
-  el.querySelectorAll(".wr-dx-para").forEach((p) => {
-    p.classList.remove("wr-dx-para", "is-active");
-    Object.values(WR_DX_SEV_CLASS).forEach((name) => p.classList.remove(name));
-    p.removeAttribute("data-dx");
-  });
-}
-
-/* 一条发现在编辑器里的 Range：先按段落序号 + 偏移，再按证据文字在那一段里找，最后全文找
-   （作者在前面加了段、改了几个字，标注仍落在那句话上）。返回 { block, range }；找不到给 null。 */
-function wrDxRangeFor(el, finding) {
-  const ev = finding && finding.evidence;
-  if (!el || !ev) return null;
-  const blocks = Array.from(el.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR));
-  let block = Number.isInteger(ev.paragraph_index) ? blocks[ev.paragraph_index] : null;
-  let range = null;
-  if (block) {
-    if (Number.isFinite(ev.start) && Number.isFinite(ev.end) && ev.end > ev.start) {
-      range = wrRangeForOffsets(block, ev.start, ev.end);
-      if (range && ev.excerpt && range.toString() !== ev.excerpt) range = null;
-    }
-    if (!range && ev.excerpt) range = wrRangeForText(block, ev.excerpt);
-  }
-  if (!range && ev.excerpt) {
-    for (const candidate of blocks) {
-      const hit = wrRangeForText(candidate, ev.excerpt);
-      if (hit) { block = candidate; range = hit; break; }
-    }
-  }
-  return range ? { block, range } : null;
-}
-
-function wrDeepMark(el, findings, activeKey) {
-  if (!el) return;
-  wrDeepUnmark(el);
-  /* 选中的跨段发现：另一段的那句也标出来（同一条 data-dx，淡一层） */
-  const activeFinding = (findings || []).find((f) => f.signal_id === activeKey && !f.ignored);
-  if (activeFinding && activeFinding.related && activeFinding.related.excerpt && !activeFinding.related.stale) {
-    const hit = wrDxRangeFor(el, { evidence: activeFinding.related });
-    if (hit && hit.range.toString().trim() !== (hit.block.textContent || "").trim()) {
-      try {
-        const mk = document.createElement("mark");
-        mk.className = "wr-dx is-related";
-        mk.setAttribute("data-dx", activeFinding.signal_id);
-        mk.appendChild(hit.range.extractContents());
-        hit.range.insertNode(mk);
-      } catch (e) { /* 标不上就只标焦点 */ }
-    }
-  }
-  (findings || []).forEach((f) => {
-    if (f.ignored || !f.evidence) return;
-    const hit = wrDxRangeFor(el, f);
-    if (!hit) return;
-    const { block, range } = hit;
-    const active = f.signal_id === activeKey;
-    const markParagraph = () => {
-      block.classList.add("wr-dx-para", sevClass(f.severity));
-      if (active) block.classList.add("is-active");
-      block.setAttribute("data-dx", f.signal_id);
-    };
-    const whole = range.toString().trim() === (block.textContent || "").trim();
-    if (whole) { markParagraph(); return; }
-    try {
-      const mk = document.createElement("mark");
-      mk.className = `wr-dx ${sevClass(f.severity)}${active ? " is-active" : ""}`;
-      mk.setAttribute("data-dx", f.signal_id);
-      /* extract + insert 比 surroundContents 稳：证据跨过实体高亮的 span 也能包起来 */
-      mk.appendChild(range.extractContents());
-      range.insertNode(mk);
-    } catch (e) {
-      markParagraph();
-    }
-  });
-}
 
 /* ==========================================================
    WrDeepDrawer — 写作台右栏 · 深改面板
@@ -401,16 +231,20 @@ function DxPassageNote({ passage, onRewriteParagraph }) {
   );
 }
 
-function WrDeepDrawer({
-  open, loading = false, error = null, onRetry,
-  diagnosis, findings = [], activeKey, filter = "all", onFilter,
-  showIgnored = false, onToggleIgnored,
-  onPick, onIgnore, onRestore, onRescan, onSelect, onRewrite,
-  aiBusy = false, aiError = null, onRunAi, onOpenSettings,
-  onPassageReview, passageBusy = null, passageError = null, lastPassage = null, onRewriteParagraph, onLocateParagraph,
-  handoffMiss = false,
-  log, persistenceStatus = "idle", onClose,
-}) {
+/* deep：useDeepPosture 的返回整个传进来（过去是从它拆出来的 27 个 prop） */
+function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
+  const {
+    loading = false, error = null, reload: onRetry,
+    diagnosis, findings = [], activeKey, filter = "all", setFilter: onFilter,
+    showIgnored = false, toggleIgnored: onToggleIgnored,
+    pick: onPick, ignore: onIgnore, restore: onRestore, rescan: onRescan,
+    selectForRewrite: onSelect, rewriteFromFinding: onRewrite,
+    aiBusy = false, aiError = null, runAi: onRunAi,
+    reviewPassage: onPassageReview, passageBusy = null, passageError = null, lastPassage = null,
+    rewriteParagraph: onRewriteParagraph, locateParagraph: onLocateParagraph,
+    handoffMiss = false,
+    log, persistenceStatus = "idle",
+  } = deep || {};
   const asideRef = React.useRef(null);
   /* 收起时只是移出画面：标 inert，Tab 不会走进看不见的按钮 */
   useWrInert(asideRef, !open);
