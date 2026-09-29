@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,6 +87,35 @@ def test_alembic_refuses_novel_system_from_another_checkout(tmp_path: Path) -> N
     # 在导入外来的 database_runtime 之前就拒绝了：外来代码一行没跑，库文件也没建
     assert not canary.exists()
     assert not database.exists()
+
+
+def test_a_checkout_whose_src_is_a_symlink_is_not_refused(tmp_path: Path) -> None:
+    """``backend/src`` 是符号链接（Windows 上是目录联接）的检出照样能跑：两边都按解析后的真实路径比。"""
+
+    backend = tmp_path / "linked_checkout" / "backend"
+    backend.mkdir(parents=True)
+    shutil.copytree(BACKEND_DIR / "alembic", backend / "alembic", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(BACKEND_DIR / "alembic.ini", backend / "alembic.ini")
+    try:
+        (backend / "src").symlink_to(BACKEND_DIR / "src", target_is_directory=True)
+    except OSError as exc:  # 没有建符号链接的权限（Windows 非管理员）
+        pytest.skip(f"cannot create a directory symlink here: {exc}")
+    database = tmp_path / "linked.db"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "current"],
+        cwd=backend,
+        env=_subprocess_env(pythonpath=backend / "src", database=database),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "checkout mismatch" not in output, output
+    # 运维工具的守卫同一个口径
+    assert _checkout_guard.checkout_mismatch(backend) is None
 
 
 # ---------------------------------------------------------------------------

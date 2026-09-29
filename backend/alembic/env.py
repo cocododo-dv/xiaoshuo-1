@@ -16,8 +16,11 @@ import novel_system
 # database path, i.e. that checkout's real ``backend/novel_system.db``. Refuse
 # before anything below imports the application or opens a database. The
 # check is written out here on purpose: it must not depend on the package it
-# is checking.
-_THIS_CHECKOUT_PACKAGE = Path(__file__).resolve().parents[1] / "src" / "novel_system"
+# is checking. Both sides are compared fully resolved: a checkout whose
+# backend/src is a symlink (or a Windows junction) imports the package through
+# the link, and the loaded dirs below are resolved too.
+_THIS_CHECKOUT_BACKEND = Path(__file__).resolve().parents[1]
+_THIS_CHECKOUT_PACKAGE = (_THIS_CHECKOUT_BACKEND / "src" / "novel_system").resolve()
 
 
 def _loaded_novel_system_dirs() -> set[Path]:
@@ -31,7 +34,8 @@ def _loaded_novel_system_dirs() -> set[Path]:
 def _refuse_foreign_novel_system() -> None:
     loaded = _loaded_novel_system_dirs()
     if loaded != {_THIS_CHECKOUT_PACKAGE}:
-        backend_dir = _THIS_CHECKOUT_PACKAGE.parents[1]
+        # The hint names this checkout's own src dir, not a link target.
+        backend_dir = _THIS_CHECKOUT_BACKEND
         raise RuntimeError(
             "checkout mismatch: these migrations belong to "
             f"{backend_dir}, but novel_system was imported from "
