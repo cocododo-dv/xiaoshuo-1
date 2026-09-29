@@ -75,6 +75,7 @@ from novel_system.services.snowflake_llm_context import (  # noqa: F401
     SCENE_DETAIL_BATCH_SIZE,
     SCENE_DETAIL_MAX_BATCHES_PER_RUN,
     UPSTREAM_STEPS_HOW_TO_USE,
+    GenerationFocus,
     _SCENE_NEIGHBOR_KEYS,
     _SCENE_REFERENCE_KEYS,
     _adopted_direction_payload,
@@ -89,6 +90,7 @@ from novel_system.services.snowflake_llm_context import (  # noqa: F401
     _scene_rules,
     _upstream_step_context,
     draft_has_content,
+    resolve_generation_focus,
 )
 from novel_system.services.snowflake_llm_schema import (  # noqa: F401
     _editor_schema_properties,
@@ -322,7 +324,7 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
         author_direction_brief: dict[str, Any] | None = None,
         direction_kind: str | None = None,
     ) -> WorkspaceLLMResult:
-        step_definition = get_step_definition(step_key)
+        """一次整步（或定向）生成：解析焦点 → 组提示载荷 → 按契约重试（B06-08 拆成三段）。"""
         # draft_override：FE 与上行 PATCH 同源的本地最新规范草稿（service 层已并入
         # 存档、剥 fe_*）——消除「刚编辑还没自动保存上行，模型看不到」的竞态。
         current_source = (
@@ -335,83 +337,86 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             current_source,
             latest_by_step=dict(latest_by_step),
         )
-        # 单场定向：refs 可以是 row_uid 或 scene_id；解析失败要报错而不是悄悄全量重写
-        focus_scene_ids: list[str] = []
-        focus_scenes: list[dict[str, Any]] = []
-        focus_scene_allowed: set[str] = set()
-        if focus_scene_refs:
-            refs = set(focus_scene_refs)
-            for scene in current_draft.get("scenes") or []:
-                if not isinstance(scene, dict):
-                    continue
-                if {str(scene.get("row_uid") or ""), str(scene.get("scene_id") or "")} & refs:
-                    focus_scenes.append(scene)
-                    # 身份口径必须与 _scene_detail_batches 一致：分批按 scene_id or row_uid
-                    # 指场，这里若只认 scene_id，缺编号的场就会让空转防线与修复重试
-                    # 双双对着空串比对，等于失效。
-                    focus_scene_ids.append(_scene_ref(scene))
-                    focus_scene_allowed |= {str(scene.get("scene_id") or ""), str(scene.get("row_uid") or "")}
-            focus_scene_allowed = {ref for ref in (focus_scene_allowed | refs) if ref}
-            if not focus_scenes:
-                raise DomainError(
-                    "SNOWFLAKE_FOCUS_SCENE_NOT_FOUND",
-                    "指定的场景不在当前场景规划草稿里（可能刚被删除或还未保存）——刷新后重试。",
-                    status_code=409,
-                    details={"focus_scene_refs": focus_scene_refs},
-                )
-        # 单角色定向（04/06/08 三个角色集合步）：refs 可以是 character_id 或姓名。
-        # 06/08 的成员可能还没在本步草稿里立档——用 04 角色摘要表的名册兜底解析，
-        # 解析出的种子成员（id/姓名/定位）进焦点上下文，生成后按 character_id 合并。
-        focus_character_ids: list[str] = []
-        focus_characters: list[dict[str, Any]] = []
-        focus_character_allowed: set[str] = set()
-        if focus_character_refs:
-            refs = {str(ref or "").strip() for ref in focus_character_refs if str(ref or "").strip()}
-            matched_refs: set[str] = set()
+        focus = resolve_generation_focus(
+            step_key,
+            current_draft,
+            latest_by_step,
+            focus_scene_refs=focus_scene_refs,
+            focus_character_refs=focus_character_refs,
+        )
+        prompt_payload = self._build_generation_payload(
+            project=project,
+            step_key=step_key,
+            latest_by_step=latest_by_step,
+            current_draft=current_draft,
+            focus=focus,
+            adopted_direction=adopted_direction,
+            direction_kind=direction_kind,
+            author_direction_brief=author_direction_brief,
+        )
+        # 集合步（角色×3 / 场景规划）的合并底稿一律用「当前最新草稿」（剥 fe_* 写穿键）：
+        # 默认底稿是空骨架 / 从 scene_list 重新播种的骨架，模型没回传的成员会被整体
+        # 丢掉——作者手工加的角色、焦点外场景的既有深化都要在这里幸存。
+        # scene_list 的「AI 生成整表」保持替换语义：重排整表时不让旧场景残留混排。
+        # long_synopsis 也要拿真底稿，但目的不同：章表**仍然整表替换**（模型重排/增删章是
+        # 合法的重生成），只是清洗器要能看见既有章的 row_uid 才能按章序把身份传下去。
+        # 底稿给空骨架 = 每次生成都判成全新的章 → 全书场景归属整片解绑（见 #1）。
+        keep_members = (
+            step_key in _CHARACTER_COLLECTION_STEPS
+            or step_key in {"scene_details", "long_synopsis"}
+        )
+        merge_base = (
+            {key: value for key, value in current_draft.items() if not str(key).startswith("fe_")}
+            if keep_members
+            else None
+        )
+        # 焦点定向的服务端硬约束：不管模型是否守约，输出里焦点外的成员一律丢弃，
+        # 合并时保持原样——「其余成员不动」不能只靠提示词。
+        focus_filter = focus.output_filter()
+        run_kwargs: dict[str, Any] = dict(
+            task_key="snowflake_step_generate",
+            template_name=f"snowflake_generate_{step_key}",
+            project_id=project.project_id,
+            step_ref=step_key,
+            schema_step_key=step_key,
+            normalize_output=lambda output: _normalize_full_step_output(
+                step_key,
+                output,
+                latest_by_step=dict(latest_by_step),
+                project_id=project.project_id,
+                base_override=merge_base,
+                focus_filter=focus_filter,
+            ),
+        )
+        return self._run_with_contract_retries(
+            step_key,
+            prompt_payload,
+            run_kwargs,
+            current_draft=current_draft,
+            focus=focus,
+        )
 
-            def _match_member(member: dict[str, Any]) -> set[str]:
-                return {str(member.get("character_id") or ""), str(member.get("display_name") or "").strip()} & refs
-
-            for member in current_draft.get("characters") or []:
-                if not isinstance(member, dict):
-                    continue
-                hit = _match_member(member)
-                if hit:
-                    focus_characters.append(member)
-                    focus_character_ids.append(str(member.get("character_id") or ""))
-                    focus_character_allowed |= {str(member.get("character_id") or ""), str(member.get("display_name") or "").strip()}
-                    matched_refs |= hit
-            if refs - matched_refs and step_key != "character_sheets":
-                roster_artifact = latest_by_step.get("character_sheets")
-                roster = (getattr(roster_artifact, "draft_json", None) or {}).get("characters") if roster_artifact is not None else None
-                for member in roster or []:
-                    if not isinstance(member, dict):
-                        continue
-                    hit = _match_member(member) - matched_refs
-                    if hit:
-                        seed = {
-                            "character_id": str(member.get("character_id") or ""),
-                            "display_name": str(member.get("display_name") or "").strip(),
-                            "role": str(member.get("role") or "").strip(),
-                        }
-                        focus_characters.append(seed)
-                        focus_character_ids.append(seed["character_id"])
-                        focus_character_allowed |= {seed["character_id"], seed["display_name"]}
-                        matched_refs |= hit
-            focus_character_allowed = {ref for ref in (focus_character_allowed | refs) if ref}
-            if not focus_characters:
-                raise DomainError(
-                    "SNOWFLAKE_FOCUS_CHARACTER_NOT_FOUND",
-                    "指定的角色不在当前名册里（可能刚被删除或还未保存）——刷新后重试。",
-                    status_code=409,
-                    details={"focus_character_refs": focus_character_refs},
-                )
+    def _build_generation_payload(
+        self,
+        *,
+        project: StoryProject,
+        step_key: str,
+        latest_by_step: Mapping[str, Any],
+        current_draft: dict[str, Any],
+        focus: GenerationFocus,
+        adopted_direction: str | None,
+        direction_kind: str | None,
+        author_direction_brief: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """整步生成的提示载荷（上游各步、本步底稿、压力量表、焦点、方向、作者意图要点、参考书结构画像）。"""
+        step_definition = get_step_definition(step_key)
+        compact_scenes = bool(focus.scenes) and step_key == "scene_details"
         upstream_steps = _upstream_step_context(latest_by_step, step_key=step_key)
-        if focus_scenes and step_key == "scene_details":
+        if compact_scenes:
             # 上游的场景列表是同一份场表的另一副本，整表随每批重发就是按批数翻倍。
             # 焦点场保留全量（pov/章内职能只在这里有），其余压成参照条目。
             upstream_steps = [
-                dict(item, draft=_compact_scene_context(item["draft"], focus_scene_allowed))
+                dict(item, draft=_compact_scene_context(item["draft"], focus.scene_allowed))
                 if item.get("step_key") == "scene_list"
                 else item
                 for item in upstream_steps
@@ -431,8 +436,8 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             # 定向深化时焦外场景压成参照条目：全表明细 × 每批一次 = 输入成本按批数翻倍，
             # 而模型对焦外场只需要「它是什么、接在哪」。紧邻前后场保留衔接字段。
             "current_draft": (
-                _compact_scene_context(current_draft, focus_scene_allowed)
-                if (focus_scenes and step_key == "scene_details")
+                _compact_scene_context(current_draft, focus.scene_allowed)
+                if compact_scenes
                 else _sanitize_canonical_draft(current_draft)
             ),
             "current_draft_how_to_use": CURRENT_DRAFT_HOW_TO_USE,
@@ -450,24 +455,24 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             prompt_payload["adopted_direction"] = _adopted_direction_payload(
                 adopted_direction,
                 kind=direction_kind,
-                focused=bool(focus_scenes or focus_characters),
+                focused=bool(focus.scenes or focus.characters),
             )
         # 2026-09-16 阶段 T：作者意图要点——教练对话蒸馏、作者核过的决定 / 否决 / 约束 / 待定
         # （加上游各步的全书级条目）。受保护键：降载阶梯永不削它。
         if author_direction_brief:
             prompt_payload[AUTHOR_DIRECTION_BRIEF_KEY] = author_direction_brief
-        if focus_scenes:
+        if focus.scenes:
             prompt_payload["focus_scenes"] = {
-                "scenes": normalize(focus_scenes),
+                "scenes": normalize(focus.scenes),
                 "how_to_use": (
                     "本次只深化 focus_scenes 里列出的场景：输出的 scenes 数组只包含这些场景，"
                     "scene_id 必须原样回传（服务端按 scene_id 合并，其余场景保持不动）；"
                     "结合前后场景的挫败/决定衔接（见 current_draft），不要改动场景的类型与顺序。"
                 ),
             }
-        if focus_characters:
+        if focus.characters:
             prompt_payload["focus_characters"] = {
-                "characters": normalize(focus_characters),
+                "characters": normalize(focus.characters),
                 "how_to_use": (
                     "本次只深化 focus_characters 里列出的角色：输出的 characters 数组只包含这些角色，"
                     "character_id 必须原样回传（服务端按 character_id 合并，其余角色保持不动）。"
@@ -475,44 +480,19 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
                     "（人物关系、立场、时间线必须与他们吻合），不要改写他们，也不要在输出里复述他们。"
                 ),
             }
-        # 集合步（角色×3 / 场景规划）的合并底稿一律用「当前最新草稿」（剥 fe_* 写穿键）：
-        # 默认底稿是空骨架 / 从 scene_list 重新播种的骨架，模型没回传的成员会被整体
-        # 丢掉——作者手工加的角色、焦点外场景的既有深化都要在这里幸存。
-        # scene_list 的「AI 生成整表」保持替换语义：重排整表时不让旧场景残留混排。
-        # long_synopsis 也要拿真底稿，但目的不同：章表**仍然整表替换**（模型重排/增删章是
-        # 合法的重生成），只是清洗器要能看见既有章的 row_uid 才能按章序把身份传下去。
-        # 底稿给空骨架 = 每次生成都判成全新的章 → 全书场景归属整片解绑（见 #1）。
-        keep_members = (
-            step_key in _CHARACTER_COLLECTION_STEPS
-            or step_key in {"scene_details", "long_synopsis"}
-        )
-        merge_base = (
-            {key: value for key, value in current_draft.items() if not str(key).startswith("fe_")}
-            if keep_members
-            else None
-        )
-        # 焦点定向的服务端硬约束：不管模型是否守约，输出里焦点外的成员一律丢弃，
-        # 合并时保持原样——「其余成员不动」不能只靠提示词。
-        focus_filter: dict[str, Any] | None = None
-        if focus_scenes:
-            focus_filter = {"field": "scenes", "id_keys": ("scene_id", "row_uid"), "allowed": focus_scene_allowed}
-        elif focus_characters:
-            focus_filter = {"field": "characters", "id_keys": ("character_id", "display_name", "name"), "allowed": focus_character_allowed}
-        run_kwargs: dict[str, Any] = dict(
-            task_key="snowflake_step_generate",
-            template_name=f"snowflake_generate_{step_key}",
-            project_id=project.project_id,
-            step_ref=step_key,
-            schema_step_key=step_key,
-            normalize_output=lambda output: _normalize_full_step_output(
-                step_key,
-                output,
-                latest_by_step=dict(latest_by_step),
-                project_id=project.project_id,
-                base_override=merge_base,
-                focus_filter=focus_filter,
-            ),
-        )
+        return prompt_payload
+
+    def _run_with_contract_retries(
+        self,
+        step_key: str,
+        prompt_payload: dict[str, Any],
+        run_kwargs: dict[str, Any],
+        *,
+        current_draft: dict[str, Any],
+        focus: GenerationFocus,
+    ) -> WorkspaceLLMResult:
+        """跑一次生成，契约没守住时带着理由各再给模型一次机会：数量契约 / 空成员（拒绝即重试，再错如实报错）、
+        完备性（首版有空字段 → 带空字段清单重试，只有更完整才采用）。"""
         try:
             result = self._run_structured_task(prompt_payload=prompt_payload, **run_kwargs)
         except DomainError as exc:
@@ -543,22 +523,14 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             step_key,
             base=current_draft,
             merged=result.payload,
-            targeted_ids=set(focus_scene_ids) if focus_scene_ids else None,
+            targeted_ids=set(focus.scene_ids) if focus.scene_ids else None,
         )
 
         # 完备性修复重试（残缺兜底）：模型输出经清洗（丢契约外键）后仍有空字段时，
         # 带着空字段清单再给模型一次机会；只有重试确实更完整才采用，失败保留首版。
         # 单场定向时只盯焦点场景的缺口——焦外场景本来就没让模型动。
         def collect_gaps(payload: dict[str, Any]) -> list[str]:
-            gaps = _collect_generation_gaps(step_key, payload)
-            if focus_scene_ids:
-                focus_set = set(focus_scene_ids)
-                gaps = [gap for gap in gaps if gap.split(".", 1)[0] in focus_set]
-            elif focus_characters:
-                # 角色缺口标签形如 characters[姓名或id].field——只盯焦点角色的缺口
-                allowed_labels = {f"characters[{ref}]" for ref in focus_character_allowed}
-                gaps = [gap for gap in gaps if gap.split(".", 1)[0] in allowed_labels]
-            return gaps
+            return focus.relevant_gaps(_collect_generation_gaps(step_key, payload))
 
         gaps = collect_gaps(result.payload)
         if not gaps:

@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from novel_system.db.models import StoryProject
+from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.snowflake_step_catalog import CONFIRMED_STEP_STATUSES, STEP_ORDER, list_step_definitions
 from novel_system.services.snowflake_step_drafts import merge_step_draft
@@ -160,6 +162,118 @@ def _scene_ref(scene: dict[str, Any]) -> str:
     会被「分批指得着、防线看不见」，一次白跑还报成功。
     """
     return str(scene.get("scene_id") or "").strip() or str(scene.get("row_uid") or "").strip()
+
+
+@dataclass(slots=True)
+class GenerationFocus:
+    """定向生成的焦点：第 10 步选中的场，或三个角色步选中的角色（两者至多其一；都没有就是整步生成）。"""
+
+    #: 焦点场的指认口径（``_scene_ref``：scene_id 优先，退到 row_uid）
+    scene_ids: list[str] = field(default_factory=list)
+    scenes: list[dict[str, Any]] = field(default_factory=list)
+    #: 模型输出里认作焦点场的 id（scene_id / row_uid / 请求里的 ref）
+    scene_allowed: set[str] = field(default_factory=set)
+    character_ids: list[str] = field(default_factory=list)
+    characters: list[dict[str, Any]] = field(default_factory=list)
+    #: 模型输出里认作焦点角色的 id 或姓名
+    character_allowed: set[str] = field(default_factory=set)
+
+    def output_filter(self) -> dict[str, Any] | None:
+        """焦点定向的服务端硬约束：输出里焦点外的成员一律丢弃（见 ``_filter_output_to_focus``）。"""
+        if self.scenes:
+            return {"field": "scenes", "id_keys": ("scene_id", "row_uid"), "allowed": self.scene_allowed}
+        if self.characters:
+            return {"field": "characters", "id_keys": ("character_id", "display_name", "name"), "allowed": self.character_allowed}
+        return None
+
+    def relevant_gaps(self, gaps: list[str]) -> list[str]:
+        """完备性修复只盯焦点成员的缺口——焦外成员本来就没让模型动。"""
+        if self.scene_ids:
+            focus_set = set(self.scene_ids)
+            return [gap for gap in gaps if gap.split(".", 1)[0] in focus_set]
+        if self.characters:
+            # 角色缺口标签形如 characters[姓名或id].field——只盯焦点角色的缺口
+            allowed_labels = {f"characters[{ref}]" for ref in self.character_allowed}
+            return [gap for gap in gaps if gap.split(".", 1)[0] in allowed_labels]
+        return gaps
+
+
+def resolve_generation_focus(
+    step_key: str,
+    current_draft: dict[str, Any],
+    latest_by_step: Mapping[str, Any],
+    *,
+    focus_scene_refs: list[str] | None = None,
+    focus_character_refs: list[str] | None = None,
+) -> GenerationFocus:
+    """把请求里的焦点 ref 解析成本步草稿里的成员；指认不到就报错，绝不悄悄变成整步重写。"""
+    focus = GenerationFocus()
+    # 单场定向：refs 可以是 row_uid 或 scene_id；解析失败要报错而不是悄悄全量重写
+    if focus_scene_refs:
+        refs = set(focus_scene_refs)
+        for scene in current_draft.get("scenes") or []:
+            if not isinstance(scene, dict):
+                continue
+            if {str(scene.get("row_uid") or ""), str(scene.get("scene_id") or "")} & refs:
+                focus.scenes.append(scene)
+                # 身份口径必须与 _scene_detail_batches 一致：分批按 scene_id or row_uid
+                # 指场，这里若只认 scene_id，缺编号的场就会让空转防线与修复重试
+                # 双双对着空串比对，等于失效。
+                focus.scene_ids.append(_scene_ref(scene))
+                focus.scene_allowed |= {str(scene.get("scene_id") or ""), str(scene.get("row_uid") or "")}
+        focus.scene_allowed = {ref for ref in (focus.scene_allowed | refs) if ref}
+        if not focus.scenes:
+            raise DomainError(
+                "SNOWFLAKE_FOCUS_SCENE_NOT_FOUND",
+                "指定的场景不在当前场景规划草稿里（可能刚被删除或还未保存）——刷新后重试。",
+                status_code=409,
+                details={"focus_scene_refs": focus_scene_refs},
+            )
+    # 单角色定向（04/06/08 三个角色集合步）：refs 可以是 character_id 或姓名。
+    # 06/08 的成员可能还没在本步草稿里立档——用 04 角色摘要表的名册兜底解析，
+    # 解析出的种子成员（id/姓名/定位）进焦点上下文，生成后按 character_id 合并。
+    if focus_character_refs:
+        refs = {str(ref or "").strip() for ref in focus_character_refs if str(ref or "").strip()}
+        matched_refs: set[str] = set()
+
+        def _match_member(member: dict[str, Any]) -> set[str]:
+            return {str(member.get("character_id") or ""), str(member.get("display_name") or "").strip()} & refs
+
+        for member in current_draft.get("characters") or []:
+            if not isinstance(member, dict):
+                continue
+            hit = _match_member(member)
+            if hit:
+                focus.characters.append(member)
+                focus.character_ids.append(str(member.get("character_id") or ""))
+                focus.character_allowed |= {str(member.get("character_id") or ""), str(member.get("display_name") or "").strip()}
+                matched_refs |= hit
+        if refs - matched_refs and step_key != "character_sheets":
+            roster_artifact = latest_by_step.get("character_sheets")
+            roster = (getattr(roster_artifact, "draft_json", None) or {}).get("characters") if roster_artifact is not None else None
+            for member in roster or []:
+                if not isinstance(member, dict):
+                    continue
+                hit = _match_member(member) - matched_refs
+                if hit:
+                    seed = {
+                        "character_id": str(member.get("character_id") or ""),
+                        "display_name": str(member.get("display_name") or "").strip(),
+                        "role": str(member.get("role") or "").strip(),
+                    }
+                    focus.characters.append(seed)
+                    focus.character_ids.append(seed["character_id"])
+                    focus.character_allowed |= {seed["character_id"], seed["display_name"]}
+                    matched_refs |= hit
+        focus.character_allowed = {ref for ref in (focus.character_allowed | refs) if ref}
+        if not focus.characters:
+            raise DomainError(
+                "SNOWFLAKE_FOCUS_CHARACTER_NOT_FOUND",
+                "指定的角色不在当前名册里（可能刚被删除或还未保存）——刷新后重试。",
+                status_code=409,
+                details={"focus_character_refs": focus_character_refs},
+            )
+    return focus
 
 
 def _scene_detail_batches(draft: dict[str, Any]) -> tuple[list[list[str]], int]:
