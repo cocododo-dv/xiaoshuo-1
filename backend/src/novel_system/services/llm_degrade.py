@@ -178,13 +178,26 @@ def degrade_request_after_failure(
     return None
 
 
-# 连通性能力缓存(进程内):记录某 (provider_id, model) 已实证的能力上限,
+# 连通性能力缓存(进程内):记录某个服务端点 + 模型已实证的能力上限,
 # 后续调用直接按学到的档位发请求,不再每次浪费一跳注定失败的探测
 # (重分类一本书要打数百批次,不缓存 = 数百个多余 400)。
 #   api_mode: 404 降级学到的端点模式
 #   structured_tier: 2=json_schema / 1=json_object / 0=不发 response_format
-CONNECTIVITY_CAPS: dict[tuple[str, str], dict[str, Any]] = {}
+# 键带上服务的类型、地址与声明的 api_mode(connectivity_caps_key):作者在设置里把同一个服务改到
+# 另一个中转 / 另一种模式后,旧中转学到的降级不再套到新中转上(B09-22,以前只按 (provider_id, model)
+# 记,要等后端重启才忘);多个后端进程各自学、各自忘,不需要跨进程失效通知。
+CONNECTIVITY_CAPS: dict[tuple[str, ...], dict[str, Any]] = {}
 register_cache_reset("llm_degrade.connectivity_caps", CONNECTIVITY_CAPS.clear)
+
+
+def connectivity_caps_key(provider_config: ProviderRuntimeConfig, model: str) -> tuple[str, ...]:
+    return (
+        str(provider_config.provider_id or ""),
+        str(provider_config.provider_type or ""),
+        str(provider_config.base_url or "").rstrip("/"),
+        str(getattr(provider_config, "api_mode", "") or ""),
+        str(model or ""),
+    )
 
 
 def request_structured_tier(request: LLMRequest) -> int:
@@ -196,7 +209,7 @@ def request_structured_tier(request: LLMRequest) -> int:
 
 
 def apply_connectivity_caps(request: LLMRequest, provider_config: ProviderRuntimeConfig) -> LLMRequest:
-    caps = CONNECTIVITY_CAPS.get((provider_config.provider_id, request.model))
+    caps = CONNECTIVITY_CAPS.get(connectivity_caps_key(provider_config, request.model))
     if not caps:
         return request
     req = request
@@ -220,8 +233,7 @@ def record_connectivity_caps(
     original: LLMRequest, final: LLMRequest, provider_config: ProviderRuntimeConfig
 ) -> None:
     """降级后成功才记录(hops>0 时调用):只降不升,进程重启即重置。"""
-    key = (provider_config.provider_id, final.model)
-    caps = CONNECTIVITY_CAPS.setdefault(key, {})
+    caps = CONNECTIVITY_CAPS.setdefault(connectivity_caps_key(provider_config, final.model), {})
     if final.api_mode != original.api_mode:
         caps["api_mode"] = final.api_mode
     final_tier = request_structured_tier(final)

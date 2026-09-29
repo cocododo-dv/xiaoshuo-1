@@ -192,6 +192,43 @@ def test_connectivity_caps_cached_across_calls() -> None:
     assert seen_formats == ["json_schema", "json_object", "json_object"]
 
 
+def test_connectivity_caps_are_not_reused_after_the_provider_endpoint_changes() -> None:
+    """B09-22:能力缓存按服务的端点配置记,作者把同一个服务改到新地址 / 新模式后不再沿用旧结论。
+
+    修复前缓存键只有 (provider_id, model):中转 A 不认 json_schema 学到的降级,在服务改到
+    支持 json_schema 的中转 B 之后仍然生效,直到后端重启。
+    """
+    seen: list[tuple[str, str]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        payload = json.loads(req.content)
+        fmt = (payload.get("response_format") or {}).get("type", "none")
+        seen.append((req.url.host, fmt))
+        if req.url.host == "relay-a" and fmt == "json_schema":
+            return httpx.Response(400, json={"error": {"message": "json_schema is not supported"}})
+        return _chat_ok()
+
+    def config(base_url: str) -> dict[str, ProviderRuntimeConfig]:
+        return {
+            "openai_compatible": ProviderRuntimeConfig(
+                provider_id="openai_compatible",
+                provider_type="openai_compatible",
+                base_url=base_url,
+                api_key="k",
+                api_mode="chat",
+            )
+        }
+
+    _client(handler, provider_configs=config("http://relay-a/v1")).generate(_request(model="cap-model"))
+    assert seen == [("relay-a", "json_schema"), ("relay-a", "json_object")]
+    # 同一个服务 id、同一个模型,换了地址:新中转支持 json_schema,第一跳就该按 json_schema 发
+    _client(handler, provider_configs=config("http://relay-b/v1")).generate(_request(model="cap-model"))
+    assert seen[2:] == [("relay-b", "json_schema")]
+    # 回到老地址:它学到的降级仍在
+    _client(handler, provider_configs=config("http://relay-a/v1")).generate(_request(model="cap-model"))
+    assert seen[3:] == [("relay-a", "json_object")]
+
+
 def test_missing_text_degrades_reasoning_off_and_bigger_budget() -> None:
     """reasoning 模型把 max_tokens 烧在思考上(content 空):不做无脑重试,
     立即降级——去掉 reasoning 参数 + 输出预算×2;结论(关 reasoning)进能力缓存。"""
@@ -412,7 +449,8 @@ def test_thinking_with_forced_tool_rejection_degrades_reasoning_off_and_caches_i
     assert response.structured_output == {"ok": True}
     assert [("reasoning" in b) for b in bodies] == [True, False]
     # 连通性缓存记住了 reasoning off:第二次调用直接不带 reasoning
-    assert mod._CONNECTIVITY_CAPS[("openai_compatible", "test-model")]["reasoning_level"] == "off"
+    learned = [caps for key, caps in mod._CONNECTIVITY_CAPS.items() if key[0] == "openai_compatible" and key[-1] == "test-model"]
+    assert [caps.get("reasoning_level") for caps in learned] == ["off"]
     client.generate(_request(reasoning_level="medium"))
     assert "reasoning" not in bodies[-1]
 

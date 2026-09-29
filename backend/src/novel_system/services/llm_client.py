@@ -12,6 +12,7 @@ import logging
 import random
 import socket
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -192,6 +193,73 @@ def describe_timeout_failure(timeout_seconds: float | None) -> str:
     return f"llm request timed out after {timeout_seconds} seconds"
 
 
+@dataclass(slots=True)
+class _AttemptFailure:
+    """一次物理尝试失败后的去向：``retry`` 且还有额度时退避后重发，否则抛出 ``error``。"""
+
+    error: BaseException
+    retry: bool = False
+    dispatch_kind: LLMDispatchKind = "transport_retry"
+    # 429 / 可重试状态码：退避时优先尊重它的 Retry-After
+    backoff_response: httpx.Response | None = None
+    # 抛出时的 ``from``（传输层异常、JSON 解析异常……）
+    cause: BaseException | None = None
+
+
+@dataclass(slots=True)
+class _AttemptContext:
+    """一次物理尝试的上下文：错误详情里的尝试序号、失败通知记账钩子。"""
+
+    request: LLMRequest
+    provider_config: ProviderRuntimeConfig
+    endpoint: str
+    attempt: int
+    max_retries: int
+    hook: LLMAttemptHook | None
+    hook_handle: object | None
+    started_at: float
+
+    def with_attempt_metadata(self, details: dict[str, Any]) -> dict[str, Any]:
+        return _with_attempt_metadata(details, attempt=self.attempt, max_retries=self.max_retries)
+
+    def http_error_details(self, response: httpx.Response) -> dict[str, Any]:
+        return _http_error_details(
+            response,
+            request=self.request,
+            provider_config=self.provider_config,
+            endpoint=self.endpoint,
+            attempt=self.attempt,
+            max_retries=self.max_retries,
+        )
+
+    def status_message(self, response: httpx.Response) -> str:
+        return _error_message_for_status(
+            response,
+            request=self.request,
+            provider_config=self.provider_config,
+            endpoint=self.endpoint,
+        )
+
+    def notify(
+        self,
+        error: BaseException,
+        *,
+        response: httpx.Response | None = None,
+        raw_response: dict[str, Any] | None = None,
+        provider_request_id: str | None = None,
+    ) -> None:
+        _notify_attempt_error(
+            self.hook,
+            self.hook_handle,
+            request=self.request,
+            error=error,
+            started_at=self.started_at,
+            response=response,
+            raw_response=raw_response,
+            provider_request_id=provider_request_id,
+        )
+
+
 class LLMClient(OnlineAccountedExecution):
     def __init__(
         self,
@@ -309,6 +377,11 @@ class LLMClient(OnlineAccountedExecution):
         accounting_hook: LLMAttemptHook | None,
         initial_dispatch_kind: LLMDispatchKind,
     ) -> LLMResponse:
+        """同一份请求的重试循环：每次物理尝试先过记账钩子，再发 POST、分类响应。
+
+        可重试的失败（超时 / 连接错误 / 429 / 可重试状态码 / 可重试的解析错误 / 正文带乱码）在还有额度时
+        退避后重发；其余失败与额度用尽时原样抛出，交给 ``generate`` 的降级阶梯或调用方。
+        """
         endpoint, payload, headers, native_reasoning = self._build_http_request(request, provider_config)
         timeout_seconds = request.timeout_seconds or self._timeout_seconds
         timeout_message = describe_timeout_failure(timeout_seconds)
@@ -329,309 +402,45 @@ class LLMClient(OnlineAccountedExecution):
                         request=request,
                         dispatch_kind=dispatch_kind,
                     )
-                started_at = time.perf_counter()
-                try:
-                    response = client.post(endpoint, json=payload, headers=headers)
-                except httpx.TimeoutException as exc:
-                    error = LLMTimeoutError(
-                        "LLM_REQUEST_TIMEOUT",
-                        timeout_message,
-                        retryable=True,
-                        details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
+                context = _AttemptContext(
+                    request=request,
+                    provider_config=provider_config,
+                    endpoint=endpoint,
+                    attempt=attempt,
+                    max_retries=self._max_retries,
+                    hook=accounting_hook,
+                    hook_handle=hook_handle,
+                    started_at=time.perf_counter(),
+                )
+                outcome = self._dispatch_attempt(
+                    client,
+                    payload=payload,
+                    headers=headers,
+                    context=context,
+                    timeout_message=timeout_message,
+                )
+                if isinstance(outcome, httpx.Response):
+                    outcome = self._classify_http_response(
+                        outcome,
+                        context=context,
+                        native_reasoning=native_reasoning,
                     )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        started_at=started_at,
-                    )
-                    if attempt < self._max_retries:
-                        self._sleep_before_retry(attempt)
-                        dispatch_kind = "transport_retry"
-                        continue
-                    raise error from exc
-                except httpx.RequestError as exc:
-                    error = LLMHTTPError(
-                        "LLM_HTTP_REQUEST_FAILED",
-                        f"llm request failed: {exc}",
-                        retryable=True,
-                        details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        started_at=started_at,
-                    )
-                    if attempt < self._max_retries:
-                        self._sleep_before_retry(attempt)
-                        dispatch_kind = "transport_retry"
-                        continue
-                    raise error from exc
-                except Exception as exc:
-                    error = LLMHTTPError(
-                        "LLM_HTTP_CLIENT_EXCEPTION",
-                        "llm HTTP client raised an unexpected exception",
-                        details=_with_attempt_metadata(
-                            {
-                                "original_error_type": exc.__class__.__name__,
-                                "original_error_message": str(exc),
-                            },
-                            attempt=attempt,
-                            max_retries=self._max_retries,
-                        ),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        started_at=started_at,
-                    )
-                    raise error from exc
-
-                if response.status_code == 429:
-                    error = LLMRateLimitError(
-                        "LLM_RATE_LIMITED",
-                        _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
-                        status_code=429,
-                        retryable=True,
-                        details=_http_error_details(
-                            response,
-                            request=request,
-                            provider_config=provider_config,
-                            endpoint=endpoint,
-                            attempt=attempt,
-                            max_retries=self._max_retries,
-                        ),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        response=response,
-                        started_at=started_at,
-                    )
-                    if attempt < self._max_retries:
-                        self._sleep_before_retry(attempt, response=response)
-                        dispatch_kind = "transport_retry"
-                        continue
-                    raise error
-
-                if response.status_code in RETRYABLE_STATUS_CODES:
-                    # 引擎级结构化输出错误(guided_grammar 等)重试不会自愈——立刻
-                    # 抛给 generate 的降级阶梯,不浪费重试预算三连击同一错误
-                    if structured_output_rejected(response.text):
-                        error = LLMHTTPError(
-                            "LLM_HTTP_STRUCTURED_OUTPUT_REJECTED",
-                            _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
-                            status_code=response.status_code,
-                            details=_http_error_details(
-                                response,
-                                request=request,
-                                provider_config=provider_config,
-                                endpoint=endpoint,
-                                attempt=attempt,
-                                max_retries=self._max_retries,
-                            ),
-                        )
-                        _notify_attempt_error(
-                            accounting_hook,
+                if isinstance(outcome, LLMResponse):
+                    if accounting_hook is not None:
+                        accounting_hook.after_response(
                             hook_handle,
                             request=request,
-                            error=error,
-                            response=response,
-                            started_at=started_at,
+                            response=outcome,
+                            latency_ms=_elapsed_ms(context.started_at),
                         )
-                        raise error
-                    error = LLMHTTPError(
-                        "LLM_HTTP_RETRYABLE_FAILURE",
-                        _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
-                        status_code=response.status_code,
-                        retryable=True,
-                        details=_http_error_details(
-                            response,
-                            request=request,
-                            provider_config=provider_config,
-                            endpoint=endpoint,
-                            attempt=attempt,
-                            max_retries=self._max_retries,
-                        ),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        response=response,
-                        started_at=started_at,
-                    )
-                    if attempt < self._max_retries:
-                        self._sleep_before_retry(attempt, response=response)
-                        dispatch_kind = "transport_retry"
-                        continue
-                    raise error
-
-                if response.is_error:
-                    error = LLMHTTPError(
-                        "LLM_HTTP_FAILURE",
-                        _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
-                        status_code=response.status_code,
-                        details=_http_error_details(
-                            response,
-                            request=request,
-                            provider_config=provider_config,
-                            endpoint=endpoint,
-                            attempt=attempt,
-                            max_retries=self._max_retries,
-                        ),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        response=response,
-                        started_at=started_at,
-                    )
-                    raise error
-
-                try:
-                    body = response.json()
-                except ValueError as exc:
-                    error = LLMResponseError(
-                        "LLM_RESPONSE_INVALID",
-                        "llm provider returned invalid JSON",
-                        details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        response=response,
-                        started_at=started_at,
-                    )
-                    raise error from exc
-                if not isinstance(body, dict):
-                    error = LLMResponseError(
-                        "LLM_RESPONSE_INVALID",
-                        "llm provider returned a non-object JSON response",
-                        details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        started_at=started_at,
-                    )
-                    raise error
-
-                try:
-                    parsed_response = self._parse_response(
-                        body,
-                        request,
-                        provider_config,
-                        native_reasoning=native_reasoning,
-                        attempt_count=attempt + 1,
-                        max_retries=self._max_retries,
-                    )
-                except LLMResponseError as exc:
-                    exc.details = _with_attempt_metadata(
-                        exc.details,
-                        attempt=attempt,
-                        max_retries=self._max_retries,
-                    )
-                    exc.retryable = exc.code in RETRYABLE_RESPONSE_ERROR_CODES
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=exc,
-                        raw_response=body,
-                        provider_request_id=_extract_request_id(body),
-                        started_at=started_at,
-                    )
-                    # 空正文/截断不是瞬时故障:同 prompt 同预算重发,大概率同样为空、
-                    # 同样在原地被砍断,每次白等一整个生成时长——直接交给降级阶梯
-                    # (关 reasoning / 扩输出预算),别浪费重试次数。
-                    if (
-                        exc.code in RETRYABLE_RESPONSE_ERROR_CODES
-                        and exc.code not in BUDGET_DEGRADE_ERROR_CODES
-                        and attempt < self._max_retries
-                    ):
-                        self._sleep_before_retry(attempt)
-                        dispatch_kind = "response_parse_retry"
-                        continue
-                    raise
-                except Exception as exc:
-                    error = LLMResponseError(
-                        "LLM_RESPONSE_INVALID",
-                        "llm provider response could not be parsed",
-                        details=_with_attempt_metadata(
-                            {"parser_error_type": exc.__class__.__name__},
-                            attempt=attempt,
-                            max_retries=self._max_retries,
-                        ),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        raw_response=body,
-                        provider_request_id=_extract_request_id(body),
-                        started_at=started_at,
-                    )
-                    raise error from exc
-                corrupted = _corrupted_output_characters(parsed_response, request)
-                if corrupted and attempt < self._max_retries:
-                    error = LLMResponseError(
-                        CORRUPTED_OUTPUT_ERROR_CODE,
-                        "llm output carried U+FFFD replacement characters the prompt did not contain "
-                        "(bytes were lost between the model and this client); re-sending the request",
-                        retryable=True,
-                        details=_with_attempt_metadata(
-                            {"replacement_characters": corrupted},
-                            attempt=attempt,
-                            max_retries=self._max_retries,
-                        ),
-                    )
-                    _notify_attempt_error(
-                        accounting_hook,
-                        hook_handle,
-                        request=request,
-                        error=error,
-                        raw_response=body,
-                        provider_request_id=_extract_request_id(body),
-                        started_at=started_at,
-                    )
-                    logger.warning(
-                        "llm output corrupted (%d U+FFFD) node=%s provider=%s model=%s; retry %d/%d",
-                        corrupted, request.node_id, provider_config.provider_id, request.model,
-                        attempt + 1, self._max_retries,
-                    )
-                    self._sleep_before_retry(attempt)
-                    dispatch_kind = "response_parse_retry"
+                    return outcome
+                if outcome.retry and attempt < self._max_retries:
+                    self._sleep_before_retry(attempt, response=outcome.backoff_response)
+                    dispatch_kind = outcome.dispatch_kind
                     continue
-                if corrupted:
-                    logger.warning(
-                        "llm output still corrupted (%d U+FFFD) after %d attempts node=%s provider=%s model=%s; "
-                        "handing it to the caller's integrity gate",
-                        corrupted, attempt + 1, request.node_id, provider_config.provider_id, request.model,
-                    )
-                if accounting_hook is not None:
-                    accounting_hook.after_response(
-                        hook_handle,
-                        request=request,
-                        response=parsed_response,
-                        latency_ms=_elapsed_ms(started_at),
-                    )
-                return parsed_response
+                if outcome.cause is not None:
+                    raise outcome.error from outcome.cause
+                raise outcome.error
 
         raise LLMHTTPError(
             "LLM_HTTP_FAILURE",
@@ -639,6 +448,175 @@ class LLMClient(OnlineAccountedExecution):
             retryable=True,
             details=_with_attempt_metadata({}, attempt=self._max_retries, max_retries=self._max_retries),
         )
+
+    def _dispatch_attempt(
+        self,
+        client: httpx.Client,
+        *,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        context: _AttemptContext,
+        timeout_message: str,
+    ) -> httpx.Response | _AttemptFailure:
+        """发一次 POST；传输层失败翻译成带去向的 ``_AttemptFailure``（超时与连接错误可重试）。"""
+        try:
+            return client.post(context.endpoint, json=payload, headers=headers)
+        except httpx.TimeoutException as exc:
+            error: LLMClientError = LLMTimeoutError(
+                "LLM_REQUEST_TIMEOUT",
+                timeout_message,
+                retryable=True,
+                details=context.with_attempt_metadata({}),
+            )
+            context.notify(error)
+            return _AttemptFailure(error, retry=True, cause=exc)
+        except httpx.RequestError as exc:
+            error = LLMHTTPError(
+                "LLM_HTTP_REQUEST_FAILED",
+                f"llm request failed: {exc}",
+                retryable=True,
+                details=context.with_attempt_metadata({}),
+            )
+            context.notify(error)
+            return _AttemptFailure(error, retry=True, cause=exc)
+        except Exception as exc:
+            error = LLMHTTPError(
+                "LLM_HTTP_CLIENT_EXCEPTION",
+                "llm HTTP client raised an unexpected exception",
+                details=context.with_attempt_metadata(
+                    {
+                        "original_error_type": exc.__class__.__name__,
+                        "original_error_message": str(exc),
+                    }
+                ),
+            )
+            context.notify(error)
+            return _AttemptFailure(error, cause=exc)
+
+    def _classify_http_response(
+        self,
+        response: httpx.Response,
+        *,
+        context: _AttemptContext,
+        native_reasoning: dict[str, Any] | None,
+    ) -> LLMResponse | _AttemptFailure:
+        """一次 HTTP 响应 → 可交付的 ``LLMResponse``，或带去向的 ``_AttemptFailure``。"""
+        request = context.request
+        if response.status_code == 429:
+            error: LLMClientError = LLMRateLimitError(
+                "LLM_RATE_LIMITED",
+                context.status_message(response),
+                status_code=429,
+                retryable=True,
+                details=context.http_error_details(response),
+            )
+            context.notify(error, response=response)
+            return _AttemptFailure(error, retry=True, backoff_response=response)
+
+        if response.status_code in RETRYABLE_STATUS_CODES:
+            # 引擎级结构化输出错误(guided_grammar 等)重试不会自愈——立刻
+            # 抛给 generate 的降级阶梯,不浪费重试预算三连击同一错误
+            if structured_output_rejected(response.text):
+                error = LLMHTTPError(
+                    "LLM_HTTP_STRUCTURED_OUTPUT_REJECTED",
+                    context.status_message(response),
+                    status_code=response.status_code,
+                    details=context.http_error_details(response),
+                )
+                context.notify(error, response=response)
+                return _AttemptFailure(error)
+            error = LLMHTTPError(
+                "LLM_HTTP_RETRYABLE_FAILURE",
+                context.status_message(response),
+                status_code=response.status_code,
+                retryable=True,
+                details=context.http_error_details(response),
+            )
+            context.notify(error, response=response)
+            return _AttemptFailure(error, retry=True, backoff_response=response)
+
+        if response.is_error:
+            error = LLMHTTPError(
+                "LLM_HTTP_FAILURE",
+                context.status_message(response),
+                status_code=response.status_code,
+                details=context.http_error_details(response),
+            )
+            context.notify(error, response=response)
+            return _AttemptFailure(error)
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            error = LLMResponseError(
+                "LLM_RESPONSE_INVALID",
+                "llm provider returned invalid JSON",
+                details=context.with_attempt_metadata({}),
+            )
+            context.notify(error, response=response)
+            return _AttemptFailure(error, cause=exc)
+        if not isinstance(body, dict):
+            error = LLMResponseError(
+                "LLM_RESPONSE_INVALID",
+                "llm provider returned a non-object JSON response",
+                details=context.with_attempt_metadata({}),
+            )
+            context.notify(error)
+            return _AttemptFailure(error)
+
+        try:
+            parsed_response = self._parse_response(
+                body,
+                request,
+                context.provider_config,
+                native_reasoning=native_reasoning,
+                attempt_count=context.attempt + 1,
+                max_retries=context.max_retries,
+            )
+        except LLMResponseError as exc:
+            exc.details = context.with_attempt_metadata(exc.details)
+            exc.retryable = exc.code in RETRYABLE_RESPONSE_ERROR_CODES
+            context.notify(exc, raw_response=body, provider_request_id=_extract_request_id(body))
+            # 空正文/截断不是瞬时故障:同 prompt 同预算重发,大概率同样为空、
+            # 同样在原地被砍断,每次白等一整个生成时长——直接交给降级阶梯
+            # (关 reasoning / 扩输出预算),别浪费重试次数。
+            return _AttemptFailure(
+                exc,
+                retry=exc.retryable and exc.code not in BUDGET_DEGRADE_ERROR_CODES,
+                dispatch_kind="response_parse_retry",
+            )
+        except Exception as exc:
+            error = LLMResponseError(
+                "LLM_RESPONSE_INVALID",
+                "llm provider response could not be parsed",
+                details=context.with_attempt_metadata({"parser_error_type": exc.__class__.__name__}),
+            )
+            context.notify(error, raw_response=body, provider_request_id=_extract_request_id(body))
+            return _AttemptFailure(error, cause=exc)
+
+        corrupted = _corrupted_output_characters(parsed_response, request)
+        if corrupted and context.attempt < context.max_retries:
+            error = LLMResponseError(
+                CORRUPTED_OUTPUT_ERROR_CODE,
+                "llm output carried U+FFFD replacement characters the prompt did not contain "
+                "(bytes were lost between the model and this client); re-sending the request",
+                retryable=True,
+                details=context.with_attempt_metadata({"replacement_characters": corrupted}),
+            )
+            context.notify(error, raw_response=body, provider_request_id=_extract_request_id(body))
+            logger.warning(
+                "llm output corrupted (%d U+FFFD) node=%s provider=%s model=%s; retry %d/%d",
+                corrupted, request.node_id, context.provider_config.provider_id, request.model,
+                context.attempt + 1, context.max_retries,
+            )
+            return _AttemptFailure(error, retry=True, dispatch_kind="response_parse_retry")
+        if corrupted:
+            logger.warning(
+                "llm output still corrupted (%d U+FFFD) after %d attempts node=%s provider=%s model=%s; "
+                "handing it to the caller's integrity gate",
+                corrupted, context.attempt + 1, request.node_id, context.provider_config.provider_id, request.model,
+            )
+        return parsed_response
 
     def _resolve_provider_config(self, request: LLMRequest) -> ProviderRuntimeConfig:
         provider_id = request.provider_id or request.provider
