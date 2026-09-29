@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
@@ -20,6 +23,24 @@ _SESSION_FACTORY = None
 _FK_DEFERRED_KEY = "novel_system.sqlite_defer_foreign_keys"
 _FK_DEFERRED_IN_TRANSACTION = "in_transaction"
 _FK_DEFERRED_OUTSIDE_TRANSACTION = "outside_transaction"
+
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def json_column_dumps(value: Any) -> str:
+    """JSON 列的序列化器：中文等非 ASCII 字符原样存 UTF-8，不再写成 ``\\uXXXX``（B12-13 / X01-07）。
+
+    同样的内容以前约大 1.6 倍（实库的幂等重放缓存 403 MB → 244 MB）。读回来是同一个 Python 对象
+    （``json.loads`` 对两种写法给出同一个值，旧行照读）；哈希都在 Python 对象上算，与存的文字无关；
+    SQLite 的 ``json_extract`` / ``json_set`` 两种写法都认。只有一处例外：JSON 里可以写单个代理项
+    （``"\\ud83d"``，模型输出或请求体里都可能出现），它编不成 UTF-8、原样写会让整个事务失败——
+    这种值照旧转义存。
+    """
+
+    text = json.dumps(value, ensure_ascii=False)
+    if not text.isascii() and _LONE_SURROGATE.search(text):
+        return json.dumps(value)
+    return text
 
 
 def _running_under_pytest() -> bool:
@@ -88,6 +109,7 @@ def engine():
         _ENGINE = create_engine(
             database_runtime.database_url,
             connect_args=connect_args,
+            json_serializer=json_column_dumps,
             future=True,
         )
         if is_sqlite:
