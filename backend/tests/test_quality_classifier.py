@@ -169,6 +169,19 @@ def test_forbidden_text_verified_only_when_term_present() -> None:
     assert clean["downgraded_from"] == "Q1"
 
 
+def test_forbidden_term_evidence_names_the_alternative_that_matched() -> None:
+    """B04-19：``A|B`` 的禁用词按命中的那个写法作证据——整条 ``黑伞|雨伞`` 不在正文里，证据以前是空的。"""
+    scene = _scene(forbidden_text="黑伞|雨伞、钥匙")
+    issue = classify_issue(
+        {"issue_key": "forbidden_text", "message": "出现禁用词"},
+        scene=scene,
+        content="她撑开雨伞走了。",
+    )
+    assert issue["quality_level"] == "Q1"
+    assert issue["verified_by"] == "scene_card_forbidden_term"
+    assert issue["evidence_spans"] == [{"text": "雨伞"}]
+
+
 def test_the_legacy_reference_policy_sentence_never_verifies_a_forbidden_text_issue() -> None:
     """旧卡的 forbidden_text 是物化写下的防抄袭政策句：正文里出现「人物」不是已证实的硬伤。"""
     scene = _scene(forbidden_text="不得复制参考书原文表达、人物、设定或桥段。")

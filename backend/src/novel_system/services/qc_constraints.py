@@ -63,14 +63,23 @@ def named_scene_card_sources(
     return sources
 
 
-def contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
+def forbidden_hits(forbidden_text: Any, content: str) -> list[str]:
+    """``forbidden_text`` 里在 ``content`` 中按字面出现的禁用写法（按词表顺序、去重）。
+
+    ``A|B`` 报的是真正出现的那个写法（``雨伞``），不是整条 ``黑伞|雨伞``——证据要能在正文里找到。
+    防抄袭政策句不是禁用词表（见 :func:`forbidden_terms`）。"""
     if not isinstance(forbidden_text, str) or not forbidden_text.strip():
-        return False
-    return any(
-        alternative in content
-        for term in forbidden_terms(forbidden_text)
-        for alternative in (constraint_alternatives(term) or [term])
-    )
+        return []
+    hits: list[str] = []
+    for term in forbidden_terms(forbidden_text):
+        for alternative in constraint_alternatives(term) or [term]:
+            if alternative in content and alternative not in hits:
+                hits.append(alternative)
+    return hits
+
+
+def contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
+    return bool(forbidden_hits(forbidden_text, content))
 
 
 def significant_fragments(text: str) -> list[str]:

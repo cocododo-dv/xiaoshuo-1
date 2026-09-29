@@ -5,6 +5,7 @@ from novel_system.services.qc_constraints import (
     constraint_alternatives,
     constraint_terms,
     contains_forbidden_term,
+    forbidden_hits,
     forbidden_terms,
     issue_mentions_source,
     source_field_satisfied,
@@ -50,3 +51,10 @@ def test_the_reference_policy_sentence_is_not_a_list_of_forbidden_words() -> Non
     assert contains_forbidden_term(policy + "死亡证明", "这号人物他见得多了。") is False
     for sentence in REFERENCE_POLICY_SENTENCES:
         assert forbidden_terms(sentence) == []
+
+
+def test_forbidden_hits_report_the_spelling_that_occurs() -> None:
+    assert forbidden_hits("黑伞|雨伞、钥匙", "她撑开雨伞，钥匙落在地上，又捡起钥匙。") == ["雨伞", "钥匙"]
+    assert forbidden_hits("黑伞|雨伞", "晴天。") == []
+    assert forbidden_hits(REFERENCE_POLICY_SENTENCES[0] + "青花瓷", "这号人物端着青花瓷。") == ["青花瓷"]
+    assert forbidden_hits(None, "雨伞") == []
