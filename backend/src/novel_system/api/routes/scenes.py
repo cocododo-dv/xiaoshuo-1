@@ -52,6 +52,7 @@ from novel_system.services.reference_copy_gate import (
     copy_block_author_action,
 )
 from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.scene_budget import budget_unit
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import latest_style_notices
 from novel_system.services.scene_notes import SceneNotesService
@@ -1197,17 +1198,8 @@ def _scene_lifecycle_budget_payload(state: SceneRunState) -> dict[str, int] | No
     budget = int(state.scene_token_budget)
     used = int(state.scene_tokens_used or 0)
     reserved = int(state.scene_tokens_reserved or 0)
-    basis = (
-        state.scene_budget_basis_json
-        if isinstance(state.scene_budget_basis_json, dict)
-        else {}
-    )
-    raw_baseline = basis.get("baseline_tokens")
-    baseline = (
-        int(raw_baseline)
-        if type(raw_baseline) is int and raw_baseline > 0
-        else max(1, budget // 5)
-    )
+    # 单发基线：依据里记的优先，旧依据按初始预算 ÷ 当时的倍率还原（不拿追加过的当前预算去除）
+    baseline = budget_unit(state)
     return {
         "scene_token_budget": budget,
         "scene_tokens_used": used,

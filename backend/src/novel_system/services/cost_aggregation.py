@@ -35,8 +35,6 @@ from novel_system.services import pricing
 
 _LOGGER = logging.getLogger(__name__)
 
-BUDGET_MULTIPLIER = 5
-
 PHASE_CANDIDATE = "candidate_generation"
 PHASE_QC = "quality_check"
 PHASE_REVISION = "revision"
@@ -281,7 +279,7 @@ def _budget_view(state: SceneRunState | None) -> dict[str, Any]:
         }
     budget = int(state.scene_token_budget)
     used = int(state.scene_tokens_used or 0)
-    from novel_system.services.scene_budget import is_scene_budget_disarmed
+    from novel_system.services.scene_budget import baseline_tokens, is_scene_budget_disarmed
 
     if is_scene_budget_disarmed(state):
         # 解除武装的场景没有真实上限——用 budget=None 表达「不限」，避免把哨兵天文数字
@@ -297,7 +295,8 @@ def _budget_view(state: SceneRunState | None) -> dict[str, Any]:
             "disarmed": True,
             "run_policy": state.run_policy,
         }
-    baseline = max(1, budget // BUDGET_MULTIPLIER)
+    # 单发基线取场景依据里记的（武装倍率不一定是 5，作者追加也不改基线）
+    baseline = baseline_tokens(state)
     return {
         "budget": budget,
         "used": used,
@@ -305,7 +304,7 @@ def _budget_view(state: SceneRunState | None) -> dict[str, Any]:
         "over_budget": used > budget,
         "usage_ratio": round(used / budget, 4) if budget else None,
         "baseline": baseline,
-        "multiplier_used": round(used / baseline, 4),
+        "multiplier_used": round(used / baseline, 4) if baseline else None,
         "run_policy": state.run_policy,
     }
 

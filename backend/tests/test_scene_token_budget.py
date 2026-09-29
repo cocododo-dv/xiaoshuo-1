@@ -873,6 +873,75 @@ def test_workbench_exposes_a_safe_lifecycle_budget_projection_for_author_topup(
     }
 
 
+# ---------- 单发基线：依据里记的那一份，不是「当前预算 ÷ 5」（B02-09） ----------
+
+def test_single_call_baseline_follows_the_armed_multiplier(monkeypatch, session) -> None:
+    """武装倍率不是 5：可选支出按一次生成调用当量算，成本看板的基线与倍数也按依据里的基线算。"""
+    from novel_system.services.cost_aggregation import _budget_view
+    from novel_system.services.scene_budget import baseline_tokens, budget_unit
+
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "10")
+    _seed_scene(session)
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    baseline = state.scene_budget_basis_json["baseline_tokens"]
+    assert state.scene_budget_basis_json["budget_multiplier"] == 10
+    assert state.scene_token_budget == 10 * baseline
+
+    assert baseline_tokens(state) == baseline
+    assert budget_unit(state) == baseline
+    state.scene_tokens_used = baseline
+    view = _budget_view(state)
+    assert view["baseline"] == baseline
+    assert view["multiplier_used"] == 1.0
+
+
+def test_single_call_baseline_survives_an_author_topup(client, session) -> None:
+    """作者追加只放大预算、不改基线：可选支出的当量、成本看板的基线、工作台的建议追加量都不跟着变大。"""
+    from novel_system.services.cost_aggregation import _budget_view
+    from novel_system.services.scene_budget import budget_unit
+
+    _seed_scene(session)
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    baseline = state.scene_budget_basis_json["baseline_tokens"]
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/budget/topup",
+        json={"extra_tokens": 3 * baseline, "reason": "关键场景需要再补几个候选"},
+        headers={"X-Idempotency-Key": "b02-09-topup-baseline"},
+    )
+    assert response.status_code == 200
+    session.refresh(state)
+    assert state.scene_token_budget == 8 * baseline
+
+    assert budget_unit(state) == baseline
+    assert _budget_view(state)["baseline"] == baseline
+    lifecycle = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]["scene_run_state"]["lifecycle_budget"]
+    assert lifecycle["baseline_tokens"] == baseline
+    assert lifecycle["recommended_topup_tokens"] == baseline
+
+
+def test_legacy_budget_without_a_recorded_baseline_divides_its_initial_budget(client, session) -> None:
+    """依据里没记基线的旧预算：基线按初始预算 ÷ 历史倍率 5 还原；追加过之后也不变（以前拿当前预算去除）。"""
+    from novel_system.services.scene_budget import budget_unit
+
+    _seed_scene(session)
+    state = session.get(SceneRunState, SCENE_ID)
+    state.scene_token_budget = 1000
+    session.commit()
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/budget/topup",
+        json={"extra_tokens": 500, "reason": "旧预算追加"},
+        headers={"X-Idempotency-Key": "b02-09-topup-legacy"},
+    )
+    assert response.status_code == 200
+    session.refresh(state)
+    assert state.scene_token_budget == 1500
+    assert state.scene_budget_basis_json["basis_type"] == "legacy_existing_scene_token_budget"
+
+    assert budget_unit(state) == 200
+    lifecycle = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]["scene_run_state"]["lifecycle_budget"]
+    assert lifecycle["baseline_tokens"] == 200
+
+
 @pytest.mark.parametrize(
     ("topup", "expected"),
     [

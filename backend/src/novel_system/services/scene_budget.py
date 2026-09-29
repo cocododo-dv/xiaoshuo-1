@@ -36,6 +36,7 @@ from novel_system.db.models import LlmCall, OperationLog, SceneRunState
 
 _LOGGER = logging.getLogger(__name__)
 
+# 历史上唯一的武装倍率：settings 读不到时的保守回退，也是依据里没记倍率的旧场景还原单发基线的除数。
 BUDGET_MULTIPLIER = 5
 # PromptBuilder / task_config 不可得时的保守回退（≈短场景输入 + stylize 输出上限）
 FALLBACK_INPUT_TOKENS = 4000
@@ -504,10 +505,40 @@ def estimate_baseline_tokens(session: Session, snapshot: dict[str, Any]) -> int:
     return input_tokens + output_tokens
 
 
+def baseline_tokens(state: SceneRunState | None) -> int | None:
+    """这一场的单发基线（一次生成调用当量）；不可得时 ``None``。
+
+    不可变依据里记的 ``baseline_tokens`` 优先；依据里没记基线的旧场景按「初始预算 ÷ 当时的倍率」还原（没记倍率的
+    按历史倍率 5），依据还没写的旧预算同样按 5 还原。作者追加（topup）只放大预算、不改基线，所以绝不能拿当前预算去
+    除——武装倍率不是 5、或追加过一次，那样算出的「基线」都是错的。解除武装的场景没有基线（它的预算是哨兵）。
+    """
+    if state is None:
+        return None
+    basis = state.scene_budget_basis_json
+    if isinstance(basis, dict):
+        recorded = basis.get("baseline_tokens")
+        if type(recorded) is int and recorded > 0:
+            return recorded
+        if basis.get("scene_budget_armed") is False:
+            return None
+        initial = basis.get("scene_token_budget")
+        multiplier = basis.get("budget_multiplier")
+        if type(multiplier) is not int or multiplier <= 0:
+            multiplier = BUDGET_MULTIPLIER
+        if type(initial) is int and initial > 0:
+            return max(1, initial // multiplier)
+        return None
+    budget = state.scene_token_budget
+    if type(budget) is int and budget > 0:
+        return max(1, budget // BUDGET_MULTIPLIER)
+    return None
+
+
 def budget_unit(state: SceneRunState) -> int:
-    """一个「生成调用当量」的估算值 = 基线（预算/5）；未初始化回退常量。"""
-    if state.scene_token_budget:
-        return max(1, int(state.scene_token_budget) // BUDGET_MULTIPLIER)
+    """一个「生成调用当量」的估算值 = 这一场的单发基线（:func:`baseline_tokens`）；没有基线时回退常量。"""
+    baseline = baseline_tokens(state)
+    if baseline is not None:
+        return baseline
     return FALLBACK_INPUT_TOKENS + FALLBACK_OUTPUT_TOKENS
 
 

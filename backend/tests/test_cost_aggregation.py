@@ -259,6 +259,30 @@ def test_scene_cost_budget_over_and_under(session):
     assert under["budget"]["over_budget"] is False
 
 
+def test_scene_cost_budget_baseline_comes_from_the_budget_basis(session):
+    """B02-09：武装倍率 10、作者又追加过一次——基线仍是依据里记的单发基线，倍数按它算（不是「预算 ÷ 5」）。"""
+    _scene(session, "S3c")
+    session.add(
+        SceneRunState(
+            scene_id="S3c",
+            scene_token_budget=13_000,
+            scene_tokens_used=2_000,
+            scene_budget_basis_json={
+                "baseline_tokens": 1_000,
+                "budget_multiplier": 10,
+                "scene_token_budget": 10_000,
+                "scene_budget_armed": True,
+            },
+        )
+    )
+    session.flush()
+    _call(session, "S3c", node_id="style_draft", tokens=150)
+    budget = ca.scene_cost(session, "S3c")["budget"]
+    assert budget["budget"] == 13_000
+    assert budget["baseline"] == 1_000
+    assert budget["multiplier_used"] == 2.0
+
+
 def test_scene_cost_three_calibers(session):
     _scene(session, "S4")
     _runstate(session, "S4", budget=1000, used=150)
