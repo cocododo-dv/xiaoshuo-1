@@ -247,6 +247,39 @@ describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统
     } finally { rec.stop(); }
   });
 
+  it("新建作品：拿到正式 id 之前切换器里已经有它，但不广播、各 store 不拿临时 id 发 GET；正式 id 回来才换过去（F01-06）", async () => {
+    const { installApiRouter, DEFAULT_PROJECT } = await import("./test-helpers.js");
+    const client = await import("./lib/client.js");
+    installApiRouter(client, { projects: [DEFAULT_PROJECT] });
+    let releaseCreate;
+    client.apiPost.mockImplementation((url) => (url === "/api/v2/projects"
+      ? new Promise((resolve) => { releaseCreate = resolve; })
+      : Promise.resolve({})));
+    // 目录 / 回收站 / 待办这几个 store 都在听 ws:work-changed
+    await import("./ws-catalog.jsx");
+    await import("./ws-review.jsx");
+    const { WsWorks } = await import("./ws-works.jsx");
+    await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"));
+    await vi.waitFor(() => expect(WsWorks.status("prj-main").dashboard.phase).toBe("ready"));
+    const rec = recordEvents();
+    try {
+      client.apiGet.mockClear();
+      const temp = WsWorks.create({ title: "新的一部" });
+      expect(WsWorks.active().title).toBe("新的一部");
+      expect(WsWorks.list().map((w) => w.title)).toContain("新的一部");
+      expect(WsWorks.readyId()).toBe(null);
+      // 待办的换作品重读有 600 ms 去抖：等过去再看有没有拿临时 id 发出去的 GET
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(client.apiGet.mock.calls.map(([url]) => url).filter((url) => url.includes(temp.id))).toEqual([]);
+      expect(rec.seen.filter(([type]) => type === "ws:work-changed")).toEqual([]);
+
+      releaseCreate({ project: { project_id: "prj-new", title: "新的一部", stats: {} } });
+      await vi.waitFor(() => expect(WsWorks.readyId()).toBe("prj-new"));
+      expect(rec.seen).toContainEqual(["ws:work-changed", "prj-new"]);
+      await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/prj-new/catalog"));
+    } finally { rec.stop(); }
+  });
+
   it("删掉另一部作品（书架成员变化）也广播 ws:work-changed", async () => {
     const { mod } = await loadStore([
       { project_id: "p1", title: "First", stats: {} },

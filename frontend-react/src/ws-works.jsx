@@ -1,6 +1,9 @@
 import React from "react";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
+import { toStoreError } from "./lib/store-kit.js";
+import { emit } from "./lib/events.js";
+import { LOADING_WORK_ID, isRealWorkId } from "./lib/work-id.js";
 import { snowStepByBackendKey } from "./ws-nav.js";
 import { sceneLabel } from "./labels/catalog.js";
 
@@ -124,7 +127,7 @@ function wsLoadCache() {
   } catch (e) {}
   return [
     {
-      id: "__loading__",
+      id: LOADING_WORK_ID,
       title: "正在打开书架…",
       genre: "", mark: "汐", accent: "slate", sub: "",
       wordsTotal: 0, wordsTarget: 100000, chaptersWritten: 0, chaptersTotal: 0,
@@ -173,14 +176,6 @@ const wsRemoteState = {
   dashboards: {},
 };
 
-function wsErrorShape(error, fallback) {
-  return {
-    code: (error && error.code) || (error && error.status) || "NETWORK_ERROR",
-    message: (error && error.message) || fallback,
-    offline: typeof navigator !== "undefined" && navigator.onLine === false,
-  };
-}
-
 function wsStatusNotify() {
   wsStatusSubs.notify();
 }
@@ -212,17 +207,21 @@ function wsSaveCache() {
    广播它，一次字数汇总就引发约 10 个 GET 和整个应用重渲。现在统计变化只广播
    ws:work-stats-changed（React 侧走 WsWorks.subscribe），档案字段（书名 / 主色）也只走 subscribe。
    作品 id 第一次从 __loading__ 落定时 id 变了，照旧广播 ws:work-changed。 */
-function wsMembership() { return WS_WORKS.map(w => w.id).join("\u0001"); }
+function wsMembership() { return WS_WORKS.filter(w => !w.pending).map(w => w.id).join("\u0001"); }
+/* 这个 id 是不是一部还在等后端正式 id 的新建作品 */
+function wsIsPending(id) { return !!id && WS_WORKS.some(w => w.id === id && w.pending); }
 let wsBroadcast = { id: WS_ACTIVE_ID, members: wsMembership() };
 
 function wsNotify() {
   wsSubs.notify();
+  /* 新建作品还在等后端给正式 id（临时作品）：切换器 / 主页已经显示它，但不广播——各 store 听到
+     ws:work-changed 就会拿临时 id 去拉目录、回收站、待办、资料、雪花，全是打不中的 GET（审计 F01-06）。
+     正式 id 回来（或新建失败回滚）时再按那一刻的状态广播。 */
+  if (wsIsPending(WS_ACTIVE_ID)) return;
   const members = wsMembership();
   const switched = WS_ACTIVE_ID !== wsBroadcast.id || members !== wsBroadcast.members;
   wsBroadcast = { id: WS_ACTIVE_ID, members };
-  try {
-    window.dispatchEvent(new CustomEvent(switched ? "ws:work-changed" : "ws:work-stats-changed", { detail: WS_ACTIVE_ID }));
-  } catch (e) {}
+  emit(switched ? "ws:work-changed" : "ws:work-stats-changed", WS_ACTIVE_ID);
 }
 
 function wsToastError(error, fallback) {
@@ -296,7 +295,7 @@ async function wsRefresh() {
       wsSetProjectsStatus("ready");
     } catch (e) {
       console.warn("[WsWorks] 拉取作品列表失败（保留本地缓存影子）:", e);
-      wsSetProjectsStatus("error", wsErrorShape(e, "作品列表暂时无法连接，当前显示本地缓存"));
+      wsSetProjectsStatus("error", toStoreError(e, "作品列表暂时无法连接，当前显示本地缓存"));
     } finally {
       wsRefreshing = null;
     }
@@ -309,7 +308,7 @@ async function wsRefresh() {
    主页挂载又会拉一次，开发模式的 StrictMode 还会再挂一次——过去启动就是 2～3 个一模一样的 GET。 */
 const wsHomeInflight = new Map();
 function wsLoadHome(id) {
-  if (!id || id === "__loading__") return Promise.resolve();
+  if (!isRealWorkId(id) || wsIsPending(id)) return Promise.resolve();
   const pending = wsHomeInflight.get(id);
   if (pending) return pending;
   const run = wsFetchHome(id).finally(() => { wsHomeInflight.delete(id); });
@@ -334,7 +333,7 @@ async function wsFetchHome(id) {
     wsSetDashboardStatus(id, "ready");
   } catch (e) {
     console.warn("[WsWorks] 拉取 dashboard 失败:", e);
-    wsSetDashboardStatus(id, "error", wsErrorShape(e, "主页数据暂时无法连接，当前显示最近一次缓存"));
+    wsSetDashboardStatus(id, "error", toStoreError(e, "主页数据暂时无法连接，当前显示最近一次缓存"));
   }
 }
 
@@ -342,6 +341,9 @@ const WsWorks = {
   list: () => WS_WORKS,
   active: () => WS_WORKS.find(w => w.id === WS_ACTIVE_ID) || WS_WORKS[0] || WS_EMPTY_WORK,
   activeId: () => WS_ACTIVE_ID,
+  /* 当前作品在后端已经存在时给它的 id；书架还在加载（占位作品）、后端确认书架为空、或新建作品还在等
+     正式 id 时给 null。store 拿它决定能不能发请求——临时 id 在后端不存在，发出去全是失败的 GET。 */
+  readyId: () => (isRealWorkId(WS_ACTIVE_ID) && !wsIsPending(WS_ACTIVE_ID) ? WS_ACTIVE_ID : null),
   setActive(id) {
     if (id !== WS_ACTIVE_ID && WS_WORKS.some(w => w.id === id)) {
       WS_ACTIVE_ID = id;
@@ -366,7 +368,8 @@ const WsWorks = {
       target_word_count: Number(body.wordsTarget) || 100000,
       words_target_daily: 1000,
     });
-    WS_WORKS = [...WS_WORKS.filter(w => w.id !== "__loading__"), temp];
+    temp.pending = true;
+    WS_WORKS = [...WS_WORKS.filter(w => w.id !== LOADING_WORK_ID), temp];
     WS_ACTIVE_ID = tempId;
     wsSaveCache();
     wsNotify();
@@ -414,7 +417,7 @@ const WsWorks = {
     wsSaveCache();
     wsNotify();
     apiDelete(`/api/v2/projects/${id}`).then(() => {
-      try { window.dispatchEvent(new CustomEvent("ws:trash-changed")); } catch (e) {}
+      emit("ws:trash-changed");
     }).catch((error) => {
       WS_WORKS = prevList;
       WS_ACTIVE_ID = prevActive;

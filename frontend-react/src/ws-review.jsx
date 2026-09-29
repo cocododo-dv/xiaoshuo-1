@@ -14,6 +14,7 @@ import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { preferenceHintLabel, reviewSourceLabel } from "./labels/review.js";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 import { isRealWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    WsReview — 待办收件箱
@@ -52,7 +53,7 @@ const RV_LEGACY_LS = "ws_review_v1";
    按 20 秒节流，窗口内的信号合并成窗口末尾的一次补拉（与侧栏徽标同一口径）。 */
 const RV_NOISY_MIN_INTERVAL_MS = 20_000;
 
-const rvActiveId = () => { try { return WsWorks.activeId(); } catch (e) { return null; } };
+const rvActiveId = () => readyWorkId(WsWorks);
 
 /* 旧表的「写作偏好」行（item_type author_preference_profile）标题是后端直接 dump 的 JSON：
    从里面取出可读的倾向拼一个标题，不把原始 JSON 摊给作者。 */

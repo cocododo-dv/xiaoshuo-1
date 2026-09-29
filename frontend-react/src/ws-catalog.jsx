@@ -5,6 +5,7 @@ import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.j
 import { createKeyedLoader } from "./lib/store-kit.js";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 import { isRealWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    WsCatalog — 章节 / 场景单一真相源（per-work）
@@ -22,7 +23,8 @@ import { isRealWorkId } from "./lib/work-id.js";
    ========================================================== */
 
 const CAT_LS = "arr.chapters.v2";            // v2：目录收敛后的新键；旧键由旧版编排台自动写入的陈旧种子，不再读取
-const catActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
+/* 能发请求的当前作品（加载占位 / 空书架 / 新建作品还没拿到正式 id 时是 null） */
+const catActiveId = () => readyWorkId(WsWorks);
 
 
 /* ---- 给乐观创建、还没有后端 id 的场补一个**临时** sid ----
