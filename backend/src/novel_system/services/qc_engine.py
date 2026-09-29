@@ -44,7 +44,11 @@ from novel_system.services.qc_constraints import (
     named_scene_card_sources,
     source_field_satisfied,
 )
-from novel_system.services.qc_validator import QCValidationError, validate_qc_report
+from novel_system.services.qc_validator import (
+    QCValidationError,
+    apply_style_scores_alias,
+    validate_qc_report,
+)
 from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.style_prompt_injection import (
     STYLED_GATE_UNAVAILABLE_VERDICT,
@@ -730,6 +734,9 @@ def _normalize_soft_qc_scores(payload: Mapping[str, Any], *, schema: Any = None)
     )
 
     normalized = dict(payload)
+    # 旧的 style_scores 别名先摊成 style_dimensions / style_score，再和别的分数一起定刻度、换算——
+    # 别名的 0–10 分数以前要到校验时才摊开，错过了换算，整遍软 QC 被判 invalid 豁免（B04-18）
+    apply_style_scores_alias(normalized)
     dims = normalized.get("style_dimensions")
     judge = judge_dimension_scores(normalized.get("dimension_scores"))
     dim_scores = [dim.get("score") for dim in dims if isinstance(dim, Mapping)] if isinstance(dims, list) else []

@@ -153,3 +153,24 @@ def test_qc_validator_normalizes_flattened_style_deviation_keys_from_local_model
     assert len(report.style_deviations) == 1
     assert report.style_deviations[0].severity == "medium"
     assert report.style_deviations[0].patch_brief == "Adjust dialogue to be sparse and grounded in gesture."
+
+
+def test_legacy_style_scores_alias_is_scaled_before_validation() -> None:
+    """B04-18：本地模型给的旧别名 ``style_scores`` 是 0–10 分——节点出口先把它摊开、按模板声明的刻度换算，
+    校验才收得下（以前别名在校验里才摊开，错过换算，7.5 超出 0–1 → 整遍软 QC 被判 invalid 豁免）。"""
+    from novel_system.services.qc_engine import _normalize_soft_qc_scores
+
+    schema = {"properties": {"style_score": {"type": "number", "minimum": 0, "maximum": 10}}}
+    payload = {
+        "resolution_code": "soft_pass",
+        "pass_flag": True,
+        "next_action": "pass",
+        "issues": [],
+        "rewrite_brief": [],
+        "style_scores": {"rhythm": 8, "voice": 7},
+    }
+
+    report = validate_qc_report("soft_qc", _normalize_soft_qc_scores(payload, schema=schema))
+
+    assert report.style_score == 0.75
+    assert [(item.name, item.score) for item in report.style_dimensions] == [("rhythm", 0.8), ("voice", 0.7)]
