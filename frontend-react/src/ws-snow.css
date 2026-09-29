@@ -1,7 +1,8 @@
 /* 雪花页（ws-snow.jsx 与 ws-snow-*.jsx）的外框样式，sf-/snow- 前缀隔离。
-   开头是页面骨架（页头条 · 三栏 · 步骤列 · 画布 · 右栏，原在 screens.css），后面是教练、各种横幅、对话框、
-   历史与对照（原为视图内嵌的 S2Styles <style> 块）。分章面板在 ws-snow-chapters.css，01–10 的编辑器与右栏在
-   ws-snow-editors.css——main.jsx 按这个先后连着导入，层叠顺序与拆之前一个文件时相同。 */
+   页面骨架（页头条 · 三栏 · 步骤列 · 画布 · 页脚与略过浮层 · 右栏的框：宽屏第三栏 / 窄屏抽屉，连同各档断点的
+   三栏布局，原在 screens.css）、教练页（日志、方向卡、要点卡、AI 工具条、教练回复的排版）、各种横幅、对话框、
+   历史与对照。分章面板在 ws-snow-chapters.css；01–10 的编辑器与右栏里的内容在 ws-snow-editors.css。
+   main.jsx 按这个先后连着导入。 */
 
 /* ---------- 骨架 ---------- */
 .snow-page {
@@ -245,6 +246,27 @@
   border-top: 1px solid var(--line-1);
   background: var(--paper-0);
 }
+/* footer：上一步 | 同步状态 | 略过此步 · 确认本步 · 下一步 */
+.sf-foot-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+/* 页脚的双层保存状态：本机与服务器分别陈述（原先一半规则在 wr-recovery.css，已并到这里）。
+   中间的同步状态夹在「上一步」与右侧三个按钮之间：只放一句短话（出错原因在画布上方的提示条
+   .sf-sync-notice 里说全——以前原因挤在这里，常被截成三个字）；挤的时候状态句省略，
+   「重试 / 立即导出」永远整词显示（以前只有它能缩，窄屏和展开右栏时竖成「重 / 试」）。
+   字号与颜色用 token：原来 9.5–11px 的 --sage / --gold / --crimson 在夜间不到 4.5:1。 */
+.snow-canvas-foot .sf-sync-state { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--ink-3); font-size: var(--fs-xs); }
+.snow-canvas-foot .sf-sync-state > svg { flex: none; }
+.snow-canvas-foot .sf-sync-state > span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snow-canvas-foot .sf-sync-state > button { flex: none; white-space: nowrap; border: 0; border-bottom: 1px solid currentColor; padding: 1px 0; background: transparent; cursor: pointer; font: 700 var(--fs-xs) var(--font-sans); color: var(--crimson-ink); }
+.snow-canvas-foot .sf-sync-state.is-synced { color: var(--sage-ink); }
+.snow-canvas-foot .sf-sync-state.is-local_only { color: var(--gold-ink); }
+.snow-canvas-foot .sf-sync-state.is-syncing { color: var(--ink-2); }
+.snow-canvas-foot .sf-sync-state.is-error { color: var(--crimson-ink); }
+/* 略过浮层是共享的 Popover；它在页脚，所以向上展开 */
+.ws-popover.sf-skip-pop { top: auto; bottom: calc(100% + 8px); width: min(340px, 80vw); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.sf-skip-label { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
+.sf-skip-label small { font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); }
+.sf-skip-pop .input { width: 100%; }
+.sf-skip-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
 .snow-ctx {
   border-left: 1px solid var(--line-1);
@@ -252,6 +274,7 @@
   padding: 18px 20px;
   display: flex;
   flex-direction: column;
+  gap: 16px;
   overflow-y: auto;
 }
 /* 右栏的一块（章节编排的体检抽屉也用它） */
@@ -259,8 +282,38 @@
 @media (max-width: 1280px) {
   .snow-cols { grid-template-columns: 240px minmax(0, 1fr) 280px; }
 }
-/* ≤1180 右栏折成抽屉（见下文）；以前这里 ≤1100 还有一条 .snow-ctx { display: none }，
-   把抽屉也藏了——ⓘ 只会把页面调暗，什么都不出来。 */
+/* 本步上下文：宽屏可收起的第三栏；窄屏（≤1180）折成抽屉 */
+.sf-ctx-drawer-head { display: none; }
+.sf-ctx-scrim { display: none; }
+@media (min-width: 1181px) {
+  .snow-cols[data-rail="off"] { grid-template-columns: 280px minmax(0, 1fr); }
+  .snow-cols[data-rail="off"] > .snow-ctx { display: none; }
+}
+@media (min-width: 1181px) and (max-width: 1280px) {
+  .snow-cols[data-rail="off"] { grid-template-columns: 240px minmax(0, 1fr); }
+}
+@media (max-width: 1180px) {
+  .snow-cols { grid-template-columns: 236px minmax(0, 1fr); }
+  .sf-ctx-open-label { display: none; }
+  /* 关着时 visibility:hidden：抽屉里的按钮不再落进 Tab 顺序、读屏也读不到 */
+  .snow-ctx {
+    display: flex;
+    position: fixed; top: 0; right: 0; bottom: 0; width: 380px; max-width: 88vw; z-index: calc(var(--z-overlay) + 1);
+    transform: translateX(100%); visibility: hidden;
+    transition: transform var(--dur, 0.32s) var(--ease, cubic-bezier(.2,.7,.2,1)), visibility 0s linear var(--dur, 0.32s);
+    box-shadow: var(--shadow-lg); overflow-y: auto; outline: none;
+  }
+  .snow-cols[data-ctx="open"] .snow-ctx { transform: none; visibility: visible; transition-delay: 0s; }
+  .sf-ctx-drawer-head { display: flex; align-items: center; justify-content: space-between; margin: -4px 0 -4px; }
+  .sf-ctx-scrim { display: block; position: fixed; inset: 0; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity var(--dur, 0.32s) var(--ease, ease); z-index: var(--z-overlay); }
+  .sf-ctx-scrim.show { opacity: 1; pointer-events: auto; }
+}
+@media (prefers-reduced-motion: reduce) { .snow-ctx, .sf-ctx-scrim { transition: none !important; } }
+@media (max-width: 760px) {
+  .snow-cols { grid-template-columns: 1fr; }
+  .snow-steps { display: none; }
+}
+/* 以前这里 ≤1100 还有一条 .snow-ctx { display: none }，把上面的抽屉也藏了——ⓘ 只会把页面调暗，什么都不出来。 */
 
 /* 教练回复里的列表与强调（ws-snow-reply.jsx）。段落沿用 ws-snow.css 的 .sf-coach-body p，块间距沿用它的 gap。
    中文没有真斜体，浏览器只会把字斜切；字重 500 在 YaHei / Noto Sans SC 上也不存在，会回落成常规体、和正文一模一样。
@@ -271,64 +324,6 @@
 .sf-coach-body strong { font-weight: 600; }
 .sf-coach-body em { font-style: normal; font-family: var(--font-serif); }
 
-/* ---------- 各步交互 ---------- */
-/* --- 自由草稿覆盖面板（采纳候选可见化） --- */
-/* --- 10 逐场规划 --- */
-.sf-plan-empty { display: flex; align-items: center; gap: 14px; padding: 26px 20px; border: 1px dashed var(--line-2); border-radius: 12px; color: var(--ink-2); }
-.sf-plan-empty > div { flex: 1; }
-.sf-plan-nav { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 10px 12px; border-radius: 11px; background: var(--paper-1); border: 1px solid var(--line-1); }
-.sf-plan-cov { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); flex: 0 0 auto; }
-.sf-plan-cov.is-all { color: var(--sage-ink); }
-.sf-plan-cells { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; min-width: 0; }
-.sf-plan-cell { width: 26px; height: 24px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--paper-0); font-size: 11px; font-weight: 600; color: var(--ink-3); cursor: pointer; transition: transform 0.12s; position: relative; font-variant-numeric: tabular-nums; }
-.sf-plan-cell:hover { transform: translateY(-1px); }
-.sf-plan-cell.st-1 { background: var(--gold-wash); border-color: var(--gold); color: var(--gold-ink); }
-.sf-plan-cell.st-2 { background: var(--sage-wash); border-color: var(--sage); color: var(--sage-ink); }
-.sf-plan-cell.is-sel { box-shadow: 0 0 0 2px var(--ink-1); }
-.sf-plan-cell.is-rea { border-radius: 12px; }
-.sf-plan-cell.is-spine::after { content: ""; position: absolute; top: -3px; right: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--crimson); }
-.sf-plan-cell.tri-maybe { box-shadow: inset 0 -2.5px 0 var(--gold); }
-.sf-plan-cell.tri-rewrite { box-shadow: inset 0 -2.5px 0 var(--crimson); }
-.sf-plan-cell.tri-pass { box-shadow: inset 0 -2.5px 0 var(--sage); }
-.sf-plan-cell.tri-cut { box-shadow: inset 0 -2.5px 0 var(--ink-3); opacity: .55; text-decoration: line-through; }
-.sf-plan-cell.is-sel.tri-maybe, .sf-plan-cell.is-sel.tri-rewrite, .sf-plan-cell.is-sel.tri-pass, .sf-plan-cell.is-sel.tri-cut { box-shadow: 0 0 0 2px var(--ink-1); }
-/* 覆盖格图例：形状 = 主动 / 反应，颜色 = 规划进度，红点 = 灾难场，下划线 = 分诊结果 */
-.sf-plan-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; width: 100%; font-size: var(--fs-xs); color: var(--ink-3); }
-.sf-plan-legend span { display: inline-flex; align-items: center; gap: 5px; }
-.sf-plan-legend i { display: inline-block; width: 12px; height: 11px; border: 1px solid var(--line-3); border-radius: 3px; background: var(--paper-0); position: relative; }
-.sf-plan-legend .lg-rea { border-radius: 6px; }
-.sf-plan-legend .lg-full { background: var(--sage-wash); border-color: var(--sage); }
-.sf-plan-legend .lg-half { background: var(--gold-wash); border-color: var(--gold); }
-.sf-plan-legend .lg-spine { width: 7px; height: 7px; border: 0; border-radius: 50%; background: var(--crimson); }
-.sf-plan-legend .lg-tri { box-shadow: inset 0 -2.5px 0 var(--gold); }
-/* 阶段 R：作者裁定行 + 篇幅带 */
-.sf-plan-verdict { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.sf-plan-verdict .sf-plan-render-opt.tri-cut.is-on { color: var(--ink-3); text-decoration: line-through; }
-.sf-plan-verdict .sf-plan-render-opt.tri-rewrite.is-on { color: var(--crimson-ink); background: var(--crimson-wash); border-color: var(--crimson); }
-.sf-plan-verdict .sf-plan-render-opt.tri-maybe.is-on { color: var(--gold-ink); }
-.sf-plan-verdict .sf-plan-render-opt.tri-pass.is-on { color: var(--sage-ink); background: var(--sage-wash); border-color: var(--sage); }
-.sf-plan-verdict-hint { font-size: var(--fs-xs); color: var(--ink-3); }
-.sf-plan-length-custom { max-width: 170px; }
-.sf-triage-sum .tri-cut { color: var(--ink-3); }
-.sf-triage.tri-cut { border-color: var(--ink-3); opacity: .8; }
-.sf-triage.tri-cut .sf-triage-badge { color: var(--ink-3); text-decoration: line-through; }
-/* 分诊摘要（在 AI 工具条里）与逐场分诊卡 */
-.sf-triage-sum { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-xs); font-weight: 600; padding: 4px 10px; border-radius: 999px; background: var(--paper-0); border: 1px solid var(--line-1); }
-.sf-triage-sum .tri-pass { color: var(--sage-ink); }
-.sf-triage-sum .tri-maybe { color: var(--gold-ink); }
-.sf-triage-sum .tri-rewrite { color: var(--crimson-ink); }
-.sf-triage { padding: 10px 13px; border-radius: 11px; border: 1px solid var(--line-1); background: var(--paper-1); }
-.sf-triage.tri-maybe { border-color: var(--gold); background: var(--gold-wash); }
-.sf-triage.tri-rewrite { border-color: var(--crimson); background: var(--crimson-wash); }
-.sf-triage.tri-pass { border-color: var(--sage); background: var(--sage-wash); }
-.sf-triage-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-.sf-triage-badge { font-size: var(--fs-xs); font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--paper-0); color: var(--ink-2); flex: 0 0 auto; }
-.sf-triage.tri-maybe .sf-triage-badge { color: var(--gold-ink); }
-.sf-triage.tri-rewrite .sf-triage-badge { color: var(--crimson-ink); }
-.sf-triage.tri-pass .sf-triage-badge { color: var(--sage-ink); }
-.sf-triage-score { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); flex: 0 0 auto; }
-.sf-triage-notes { font-size: 12.5px; color: var(--ink-1); flex: 1; min-width: 160px; }
-.sf-triage-fixes { margin: 7px 0 0; padding-left: 18px; font-size: var(--fs-xs); color: var(--ink-1); display: flex; flex-direction: column; gap: 3px; }
 /* 驻场教练 tab */
 .sf-coach { display: flex; flex-direction: column; gap: 10px; padding-bottom: 16px; }
 .sf-coach-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 13px; border-radius: 11px; background: var(--paper-1); font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
@@ -384,73 +379,47 @@
 .sf-aibar-prov { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); }
 .sf-aibar-prov.is-stale { padding: 7px 10px; border-radius: 9px; background: var(--gold-wash); color: var(--ink-1); }
 .sf-aibar .sf-ai-err { margin-bottom: 0; }
-/* 右栏的要点摘要（只读，最多三条） */
-.sfx-brief { display: flex; flex-direction: column; gap: 8px; }
-.sfx-brief-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.sfx-link { border: 0; background: none; padding: 0; font: inherit; font-size: var(--fs-xs); color: var(--crimson-ink); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
-.sfx-link:hover { color: var(--ink-1); }
-.sfx-brief-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
-.sfx-brief-list li { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; line-height: 1.55; color: var(--ink-1); }
-.sfx-brief-list li.is-inherited { color: var(--ink-2); }
-.sfx-brief-text { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.sfx-brief-kind { flex: 0 0 auto; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--paper-2); color: var(--ink-2); margin-top: 1px; }
-.sfx-brief-list li.is-decision .sfx-brief-kind { color: var(--gold-ink); background: var(--gold-wash); }
-.sfx-brief-list li.is-rejection .sfx-brief-kind { color: var(--crimson-ink); background: var(--crimson-wash); }
-.sfx-brief-list li.is-pending .sfx-brief-kind { color: var(--ink-3); }
-.sfx-brief-from { margin-left: auto; font-size: 11px; color: var(--ink-3); flex: 0 0 auto; }
-/* 第 10 步场景头：编号 · 题名 · 形态 · 视角 · AI 补全这一场；下面一行地点 / 灾难 / 功能，再下面你的裁定 */
-.sf-plan-head { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line-1); background: var(--paper-0); }
-.sf-plan-head-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.sf-plan-cur-id { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); padding: 3px 8px; border-radius: 7px; background: var(--paper-2); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
-.sf-plan-title { flex: 1 1 220px; min-width: 160px; font-family: var(--font-serif); font-size: var(--fs-xl); font-weight: 600; line-height: var(--lh-tight); color: var(--ink-1); border: 1px solid transparent; border-radius: 8px; background: transparent; padding: 4px 8px; }
-.sf-plan-title:hover { background: var(--paper-1); }
-.sf-plan-title:focus { outline: none; border-color: var(--crimson); background: var(--paper-0); box-shadow: 0 0 0 3px var(--crimson-wash); }
-.sf-plan-title::placeholder { color: var(--ink-3); font-weight: 400; }
-.sf-plan-type { display: inline-flex; align-items: center; gap: 7px; padding: 4px 6px 4px 10px; border-radius: 999px; font-size: var(--fs-xs); font-weight: 600; flex: 0 0 auto; }
-.sf-plan-type.is-pro { background: var(--crimson-wash); color: var(--crimson-ink); }
-.sf-plan-type.is-rea { background: var(--slate-wash); color: var(--slate-ink); }
-.sf-plan-type-go { border: 0; border-radius: 999px; padding: 1px 8px; font: inherit; font-size: 11px; font-weight: 600; background: var(--paper-0); color: inherit; cursor: pointer; }
-.sf-plan-type-go:hover { text-decoration: underline; }
-/* 视角只读（09 定）：名字 + 与形态胶囊同一句「在 09 改」；场景头是白底，门带一道细边才看得见 */
-.sf-plan-pov { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 200px; min-width: 140px; }
-.sf-plan-pov .sf-field-label { white-space: nowrap; flex: 0 0 auto; }
-.sf-plan-pov-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
-.sf-plan-pov.is-empty .sf-plan-pov-name { font-weight: 400; color: var(--ink-3); }
-.sf-plan-pov .sf-plan-type-go { flex: 0 0 auto; border: 1px solid var(--line-2); color: var(--ink-2); }
-.sf-plan-head-sub { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: var(--fs-xs); color: var(--ink-3); padding-left: 2px; }
-.sf-plan-head-sub span { display: inline-flex; align-items: center; gap: 4px; }
-.sf-plan-spine { color: var(--gold-ink); font-weight: 600; }
-.sf-plan-fill { margin-left: auto; }
-.sf-plan-seam { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; border-radius: 9px; background: var(--paper-1); font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
-.sf-plan-seam.is-empty { background: var(--gold-wash); color: var(--ink-1); }
-.sf-plan-seam-tag { font-weight: 600; font-size: var(--fs-xs); color: var(--ink-3); flex: 0 0 auto; }
-.sf-plan-seam.is-empty .sf-plan-seam-tag { color: var(--gold-ink); }
-.sf-plan-seam-go { border: 0; background: none; color: var(--gold-ink); font: inherit; font-weight: 600; font-size: var(--fs-xs); cursor: pointer; text-decoration: underline; padding: 0 2px; }
-.sf-plan-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
-.sf-plan-foot-pos { font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
-/* 场景卡细节（收起时也在 DOM 里） */
-.sf-plan-details { border: 1px solid var(--line-1); border-radius: 12px; background: var(--paper-1); }
-.sf-plan-details > summary { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 10px 14px; cursor: pointer; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); list-style: none; }
-.sf-plan-details > summary::-webkit-details-marker { display: none; }
-.sf-plan-details > summary::before { content: ""; width: 7px; height: 7px; border-right: 1.5px solid var(--ink-3); border-bottom: 1.5px solid var(--ink-3); transform: rotate(-45deg); align-self: center; transition: transform var(--t-fast); }
-.sf-plan-details[open] > summary::before { transform: rotate(45deg); }
-.sf-plan-details-count { font-size: var(--fs-xs); font-weight: 500; color: var(--ink-3); font-variant-numeric: tabular-nums; }
-.sf-plan-details-sum { font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); }
-.sf-plan-details-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 4px 14px 14px; }
-.sf-plan-details-grid .is-wide { grid-column: 1 / -1; }
-.sf-plan-details-grid .sf-plan-render { align-items: flex-start; }
-.sf-plan-opts { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.sf-plan-onstage-chips { display: flex; gap: 5px; flex-wrap: wrap; }
-.sf-muted-note { font-size: var(--fs-xs); color: var(--ink-3); }
-.sf-plan-secondary > summary { cursor: pointer; font-size: var(--fs-sm); color: var(--ink-2); padding: 4px 2px; }
-.sf-plan-secondary[open] > summary { margin-bottom: 8px; }
-.sf-plan-exception .sf-field-input { max-width: 100%; }
-@media (max-width: 1100px) { .sf-plan-details-grid { grid-template-columns: 1fr; } }
-/* --- 04 名册权威 / 06·08 只读继承 --- */
-.sf-chardeep-name.is-ro, .sf-chardeep-role.is-ro { border: 0; background: none; }
-.sf-chardeep-name.is-ro { width: auto; font-family: var(--font-serif); font-size: 19px; font-weight: 600; color: var(--ink-1); }
-.sf-chardeep-role.is-ro { flex: 0 0 auto; font-size: 12.5px; color: var(--ink-2); padding: 3px 9px; border-radius: 999px; background: var(--paper-2); }
-.sf-char-legacy { font-style: normal; font-size: 11px; color: var(--gold-ink); margin-left: 3px; }
+
+/* ====== 阶段 T：本步要点（作者意图要点）卡 · 教练页 ====== */
+.sf-brief { display: flex; flex-direction: column; gap: 9px; padding: 11px 13px; border-radius: 12px; border: 1px solid var(--line-1); background: var(--paper-0); }
+.sf-brief.is-busy { opacity: .75; }
+.sf-brief-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.sf-brief-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
+.sf-brief-count { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--gold-wash); color: var(--gold-ink); }
+.sf-brief-hint { font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); }
+.sf-brief-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sf-brief-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--ink-2); cursor: pointer; }
+.sf-brief-stale { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 8px 11px; border-radius: 10px; background: var(--gold-wash); color: var(--ink-1); font-size: 12.5px; }
+.sf-brief-empty { font-size: 12.5px; color: var(--ink-3); padding: 4px 2px; }
+.sf-brief-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sf-brief-line { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 9px; background: var(--paper-1); }
+.sf-brief-kind { flex: 0 0 auto; font: inherit; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 0; background: var(--paper-0); color: var(--ink-2); cursor: pointer; }
+.sf-brief-kind.is-static { cursor: default; }
+.sf-brief-line.is-decision .sf-brief-kind { color: var(--gold-ink); background: var(--gold-wash); }
+.sf-brief-line.is-rejection .sf-brief-kind { color: var(--crimson-ink); background: var(--crimson-wash); }
+.sf-brief-line.is-constraint .sf-brief-kind { color: var(--ink-1); }
+.sf-brief-line.is-pending .sf-brief-kind { color: var(--ink-3); }
+/* 要点正文是按钮（点一下改写），外观仍是正文 */
+.sf-brief-text { flex: 1; min-width: 0; border: 0; background: none; padding: 0; font: inherit; font-size: var(--fs-sm); line-height: 1.55; color: var(--ink-1); text-align: left; cursor: text; border-radius: 4px; }
+.sf-brief-text:hover:not(:disabled) { text-decoration: underline dotted var(--line-3); text-underline-offset: 3px; }
+.sf-brief-text:disabled { cursor: default; }
+.sf-brief-text.is-dismissed { color: var(--ink-3); text-decoration: line-through; cursor: default; }
+.sf-brief-edit { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-sm); padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--paper-0); color: var(--ink-1); }
+.sf-brief-scope { flex: 0 0 auto; font: inherit; font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line-2); background: transparent; color: var(--ink-3); cursor: pointer; }
+.sf-brief-scope.is-book { color: var(--gold-ink); border-color: var(--gold); }
+.sf-brief-origin { flex: 0 0 auto; font-size: 11px; color: var(--ink-3); }
+.sf-brief-x { flex: 0 0 auto; border: 0; background: transparent; color: var(--ink-3); font-size: 15px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.sf-brief-x:hover { color: var(--danger-ink); background: var(--danger-wash); }
+.sf-brief-add { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.sf-brief-add select { font: inherit; font-size: var(--fs-xs); padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--paper-0); color: var(--ink-2); }
+.sf-brief-add input { flex: 1; min-width: 160px; font: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--paper-0); color: var(--ink-1); }
+.sf-brief-inherited, .sf-brief-dismissed { display: flex; flex-direction: column; gap: 5px; }
+.sf-brief-inherited.is-off { opacity: .55; }
+.sf-brief-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); }
+.sf-brief-inherited ul, .sf-brief-dismissed ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sf-brief-inherited li, .sf-brief-dismissed li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+.sf-brief-from { font-size: 11px; color: var(--ink-3); margin-left: auto; white-space: nowrap; }
+
 .hist-restore { color: var(--gold-ink); }
 /* --- 对话框内容（外壳是 ws-dialog.jsx 的 WsDialog：.ws-dialog-*） --- */
 .sf-dialog-hint { margin-right: auto; align-self: center; font-size: var(--fs-xs); color: var(--ink-3); }
@@ -577,14 +546,3 @@
 .sf-trk-tag.trk-orient { background: var(--slate-wash); color: var(--slate-ink); }
 .sf-lineage { display: inline-flex; align-items: center; gap: 3px; border: 0; background: transparent; color: var(--ink-3); font: inherit; font-size: var(--fs-xs); cursor: pointer; padding: 1px 4px; border-radius: 6px; }
 .sf-lineage:hover { color: var(--crimson-ink); background: var(--crimson-wash); }
-
-/* word meter */
-.sf-meter { margin: 2px 0 12px; }
-.sf-meter-track { position: relative; height: 6px; border-radius: 3px; background: var(--paper-2); overflow: visible; }
-.sf-meter-fill { height: 100%; border-radius: 3px; background: var(--sage); transition: width var(--t-base), background var(--t-base); }
-.sf-meter.is-over .sf-meter-fill { background: var(--rose); }
-.sf-meter-cap { position: absolute; top: -3px; width: 2px; height: 12px; background: var(--line-3); border-radius: 1px; transform: translateX(-1px); }
-.sf-meter-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; }
-.sf-meter-count { font-size: 11.5px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
-.sf-meter.is-over .sf-meter-count { color: var(--danger-ink); }
-.sf-meter-note { font-size: var(--fs-xs); color: var(--ink-3); text-align: right; }

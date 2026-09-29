@@ -59,9 +59,9 @@ const KNOWN_OFF_SCALE_BREAKPOINTS = [
   "ws-home.css: max-width: 960px",
   "ws-shell.css: max-height: 680px",
   "ws-shell.css: max-width: 720px",
-  "ws-snow-editors.css: max-width: 1180px",
-  "ws-snow-editors.css: max-width: 760px",
-  "ws-snow-editors.css: min-width: 1181px",
+  "ws-snow.css: max-width: 1180px",
+  "ws-snow.css: max-width: 760px",
+  "ws-snow.css: min-width: 1181px",
   "ws-snow.css: max-width: 1279px",
 ];
 // 颜料字压在同色 -wash 底上、但容器里只有 aria-hidden 图标的规则（"文件: 选择器"）。图形只需 3:1，

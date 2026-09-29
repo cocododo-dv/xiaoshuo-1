@@ -168,7 +168,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
             <span className="sf-field-label">你的裁定</span>
             {S2_VERDICTS.map(v => (
               <button key={v} type="button" data-testid={`snow-verdict-${v}`} aria-pressed={!!(selTri && selTri.status === v && selTri.manual)}
-                className={`sf-plan-render-opt tri-${v} ${selTri && selTri.status === v && selTri.manual ? "is-on" : ""}`} onClick={() => ai.onVerdict(selId, v)}>{S2_TRIAGE_LABEL[v]}</button>
+                className={`sf-chip tri-${v} ${selTri && selTri.status === v && selTri.manual ? "is-on" : ""}`} onClick={() => ai.onVerdict(selId, v)}>{S2_TRIAGE_LABEL[v]}</button>
             ))}
             {selTri && !selTri.manual && selTri.status && <span className="sf-plan-verdict-hint">系统建议：{S2_TRIAGE_LABEL[selTri.status] || selTri.status}</span>}
           </div>
@@ -225,7 +225,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
               {(roster || []).filter(r => r.id !== scenePov).map(r => {
                 const on = (plan.onstage || []).includes(r.id);
                 return (
-                  <button key={r.id} type="button" aria-pressed={on} className={`sf-plan-render-opt ${on ? "is-on" : ""}`}
+                  <button key={r.id} type="button" aria-pressed={on} className={`sf-chip ${on ? "is-on" : ""}`}
                     onClick={() => setPlan("onstage", on ? (plan.onstage || []).filter(x => x !== r.id) : [...(plan.onstage || []), r.id])}>{r.name}</button>
                 );
               })}
@@ -249,9 +249,9 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
             title="整场戏剧化，还是两三段叙述概述（约 200–500 字）？概述场整理后拿到 200-500 的篇幅带，起草按概述写">
             <span className="sf-field-label">呈现</span>
             <span className="sf-plan-opts">
-              <button type="button" aria-pressed={renderMode === "full"} className={`sf-plan-render-opt ${renderMode === "full" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
-              <button type="button" aria-pressed={renderMode === "summary"} className={`sf-plan-render-opt ${renderMode === "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "summary")}>概述两段</button>
-              {!proactive && <button type="button" aria-pressed={renderMode === "skip"} className={`sf-plan-render-opt ${renderMode === "skip" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "skip")} title="页面上略过这一场，直接进下一场主动场景——反应 / 两难 / 决定照样写，它们决定下一场的目标，也会带给下一场的写手">略过</button>}
+              <button type="button" aria-pressed={renderMode === "full"} className={`sf-chip ${renderMode === "full" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "full")}>完整场</button>
+              <button type="button" aria-pressed={renderMode === "summary"} className={`sf-chip ${renderMode === "summary" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "summary")}>概述两段</button>
+              {!proactive && <button type="button" aria-pressed={renderMode === "skip"} className={`sf-chip ${renderMode === "skip" ? "is-on" : ""}`} onClick={() => setPlan("rendering", "skip")} title="页面上略过这一场，直接进下一场主动场景——反应 / 两难 / 决定照样写，它们决定下一场的目标，也会带给下一场的写手">略过</button>}
             </span>
           </div>
           {/* 阶段 R：篇幅带——原著「场景长度没有标准，一百词到五千词都可以」；短 / 中 / 长或自定义字数区间（如 800-1200，数值带会被起草硬约束）；概述场固定 200–500 */}
@@ -261,7 +261,7 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
               <span className="sf-field-label">篇幅</span>
               <span className="sf-plan-opts">
                 {[["short", "短"], ["medium", "中"], ["long", "长"]].map(([v, l]) => (
-                  <button key={v} type="button" aria-pressed={(plan.length || "medium") === v} className={`sf-plan-render-opt ${(plan.length || "medium") === v ? "is-on" : ""}`} onClick={() => setPlan("length", v)}>{l}</button>
+                  <button key={v} type="button" aria-pressed={(plan.length || "medium") === v} className={`sf-chip ${(plan.length || "medium") === v ? "is-on" : ""}`} onClick={() => setPlan("length", v)}>{l}</button>
                 ))}
                 <input className="sf-field-input sf-plan-length-custom" data-testid="snow-plan-length-custom" value={/^\d+\s*[-–—]\s*\d+$/.test(plan.length || "") ? plan.length : ""} onChange={(e) => setPlan("length", e.target.value.trim())} placeholder="或写字数，如 800-1200" aria-label="自定义字数区间" />
               </span>

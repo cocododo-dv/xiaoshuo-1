@@ -591,15 +591,15 @@ describe("阶段 M · 09/10 交互", () => {
     for (const id of ["snow-plan-title", "snow-plan-must-include", "snow-plan-exception", "snow-plan-length", "snow-plan-length-custom", "snow-plan-render", "snow-plan-verdict"]) {
       expect(host.querySelector(`[data-testid="${id}"]`), id).toBeTruthy();
     }
-    const renderOpts = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-plan-render-opt')].map(b => b.textContent);
+    const renderOpts = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-chip')].map(b => b.textContent);
     expect(renderOpts).toEqual(["完整场", "概述两段"]); // S01 是主动场：可以概述，没有「略过」
     expect(s2PlanState({ exception: "全书收尾的叙述交代" }, "proactive")).toBe(2);
     expect(s2PlanState({ goal: "g" }, "proactive")).toBe(1);
-    const longBtn = [...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-plan-render-opt')].find(b => b.textContent === "长");
+    const longBtn = [...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-chip')].find(b => b.textContent === "长");
     await act(async () => { longBtn.click(); });
-    expect([...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-plan-render-opt')].find(b => b.textContent === "长").className).toContain("is-on");
+    expect([...host.querySelectorAll('[data-testid="snow-plan-length"] .sf-chip')].find(b => b.textContent === "长").className).toContain("is-on");
     // 概述两段：篇幅带固定 200–500，篇幅选择器让位
-    const summaryBtn = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-plan-render-opt')].find(b => b.textContent === "概述两段");
+    const summaryBtn = [...host.querySelectorAll('[data-testid="snow-plan-render"] .sf-chip')].find(b => b.textContent === "概述两段");
     await act(async () => { summaryBtn.click(); });
     expect(host.querySelector('[data-testid="snow-plan-length"]')).toBeNull();
   });
