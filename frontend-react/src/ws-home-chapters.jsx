@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Tag } from "./ws-ui.jsx";
-import { SCENE_STATE_META } from "./ws-labels.js";
+import { SCENE_STATE_META } from "./labels/catalog.js";
 
 /* ==========================================================
    主页底部「全书 N 章」：进度脊（每章一段）+ 前线章附近的几张章卡。

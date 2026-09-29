@@ -1,7 +1,7 @@
 import React from "react";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
-import { sceneLabel } from "./ws-labels.js";
+import { sceneLabel } from "./labels/catalog.js";
 import {
   scnQueueDismissAdd, scnQueueDismissClear, scnQueueDismissLoad, scnQueueLoad, scnQueueSave, scnRunLoad, scnRunSave,
 } from "./ws-scene-store.js";

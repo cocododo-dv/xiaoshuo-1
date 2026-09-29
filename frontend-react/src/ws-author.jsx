@@ -13,7 +13,7 @@ import { ArrEditor } from "./ws-author-detail.jsx";
 import { ArrChapterContext, ArrRail } from "./ws-author-side.jsx";
 import { EmptyState, Spinner } from "./ws-ui.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
-import { chapterLabel, chapterOwnTitle } from "./ws-labels.js";
+import { chapterLabel, chapterOwnTitle } from "./labels/catalog.js";
 import { randomSuffix } from "./lib/ids.js";
 
 /* ==========================================================

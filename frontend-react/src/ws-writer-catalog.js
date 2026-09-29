@@ -1,7 +1,7 @@
 import React from "react";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { sceneDesignModel } from "./ws-scene-design.jsx";
-import { manuscriptStage, sceneLabel } from "./ws-labels.js";
+import { manuscriptStage, sceneLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    写作台读目录（2026-09-21 从 ws-writer.jsx 拆出）

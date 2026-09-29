@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { chapterHeading, sceneLabel } from "./ws-labels.js";
+import { chapterHeading, sceneLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    场景设计卡 — 写作台与 AI 起草台共用的同一张卡（阶段 X「一条书脊」）

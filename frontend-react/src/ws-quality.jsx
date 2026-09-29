@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { useCatalogChapters } from "./ws-catalog.jsx";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner, StatTile, Tag } from "./ws-ui.jsx";
-import { chapterLabel, chapterLabelById, findSceneByBackendId } from "./ws-labels.js";
+import { chapterLabel, chapterLabelById, findSceneByBackendId } from "./labels/catalog.js";
 import {
   QUALITY_DIMS, QUALITY_DIM_KEYS, QUALITY_MIN_SEVERITIES, QUALITY_SEV, QUALITY_TEXT_LAYERS, Q_ITEM_LAYER,
   qDimLabel, qFindingText, qObjectLabel, qPct, qPlainText, qRiskDims, qScore, qSevLabel, qSevTone,

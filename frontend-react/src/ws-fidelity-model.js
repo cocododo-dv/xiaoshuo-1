@@ -6,11 +6,11 @@
    「重点」的维没有越界）；reliable = 文字够长、参考书能比的片段够多。这里把它翻成小说作者一眼读懂的话：
    「第 72 位 / 100」+「在作者的正常范围内」+ 一句解释；越界的地方用后端给的白话短语，从不给作者看 z 分。
    · 风格参考的「对照检查」、起草台的「像不像」、成稿中心的角标、文风画像的逐维平均都从这里取说法；
-   · 维度名与层名从 ws-labels.js 取（一张词表）。
+   · 维度名与层名从 labels/style-reference.js 取（一张词表）。
    不依赖 React，不读 store，不写 window，可单测。
    ========================================================== */
 import { isChineseMessage } from "./lib/messages.js";
-import { STYLE_DIMENSIONS, STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, styleDimensionLabel, styleLayerOf } from "./ws-labels.js";
+import { STYLE_DIMENSIONS, STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, styleDimensionLabel, styleLayerOf } from "./labels/style-reference.js";
 
 const DEFAULT_MAX_PERCENTILE = 90;
 const DEFAULT_MIN_RELIABLE_CHARS = 600;

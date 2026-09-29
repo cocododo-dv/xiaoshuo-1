@@ -7,7 +7,7 @@ import { ArrSpineLens } from "./ws-author-spine.jsx";
 import { ArrDoctor } from "./ws-author-doctor.jsx";
 import { ArrBudgetBar, ArrChapterStateTag, ArrGrip, ArrMiniScenes } from "./ws-author-ui.jsx";
 import { PageHeader, Segmented, Tag } from "./ws-ui.jsx";
-import { chapterHeading, chapterLabel } from "./ws-labels.js";
+import { chapterHeading, chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    全书编排 — overview

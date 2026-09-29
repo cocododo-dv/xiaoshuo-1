@@ -1,5 +1,5 @@
 import { escapeManuscriptText } from "./manuscript-html.js";
-import { chapterLabel, chapterStateMeta, manuscriptStage } from "./ws-labels.js";
+import { chapterLabel, chapterStateMeta, manuscriptStage } from "./labels/catalog.js";
 
 /* ==========================================================
    ws-manuscripts-compile — 成稿中心的纯函数

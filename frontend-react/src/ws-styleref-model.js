@@ -5,7 +5,7 @@
    · 一本书现在走到哪一步（书库徽标、页头、步骤条、落点）；
    · 作者读得懂的出错说法与下一步（按错误码 + 后端的 author_action，不给作者看英文原话）；
    · 估算、耗时、百分比的格式；活动条目的文案；界面偏好 ws_sr_ui_v1。
-   词表（16 维、段落类型、章内位置、场面 / 情绪标签、作业叫法）在 ws-labels.js，这里只引用。
+   词表（16 维、段落类型、章内位置、场面 / 情绪标签、作业叫法）在 labels/style-reference.js，这里只引用。
    不依赖 React，不写 window，可单测。
    ========================================================== */
 import { isChineseMessage } from "./lib/messages.js";
@@ -15,7 +15,7 @@ import {
   STYLE_LAYER_ORDER,
   styleJobKindLabel,
   styleLayerOf,
-} from "./ws-labels.js";
+} from "./labels/style-reference.js";
 import { formatCharsWan, formatCountWan, formatDurationClock, formatMinutesApprox, formatMonthDayTime, formatPercent } from "./lib/format.js";
 
 /* ---------- 用于作品：绑定配置的四个旋钮 ---------- */
@@ -519,7 +519,7 @@ export function srActivityKindLabel(entry) {
   if (entry.kind === "classify") {
     if (entry.mode === "import") return "导入 · 段落分类";
     if (entry.mode === "retype") return "用模型重新分类";
-    return "段落分类";
+    return styleJobKindLabel("classify");
   }
   return styleJobKindLabel(entry.kind) || entry.kind_label || entry.kind || "";
 }

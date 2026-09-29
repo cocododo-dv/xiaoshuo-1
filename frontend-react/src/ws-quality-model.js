@@ -1,4 +1,4 @@
-import { chapterLabelById, sceneLabelById } from "./ws-labels.js";
+import { chapterLabelById, sceneLabelById } from "./labels/catalog.js";
 
 /* ==========================================================
    文学质量的纯模型（从 ws-quality.jsx 拆出，2026-09-22）

@@ -9,7 +9,7 @@
    = 写作中），叫法取 CHAPTER_STATE_META（图例、章卡、悬停说明同一个词）——与成稿中心、章节编排同一份。
    ========================================================== */
 import { snowStepByBackendKey } from "./ws-nav.js";
-import { CHAPTER_STATE_ORDER, chapterHeading, chapterLabel, chapterStateMeta, manuscriptStage, sceneLabel } from "./ws-labels.js";
+import { CHAPTER_STATE_ORDER, chapterHeading, chapterLabel, chapterStateMeta, manuscriptStage, sceneLabel } from "./labels/catalog.js";
 import { LEGACY_DRAFT_PLACEHOLDER } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { wanFixed } from "./lib/format.js";

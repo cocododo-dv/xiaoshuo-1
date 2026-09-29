@@ -1,7 +1,7 @@
 import React from "react";
 import { wsConfirm } from "./ws-notify.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
-import { STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, paragraphTypeLabel } from "./ws-labels.js";
+import { STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, paragraphTypeLabel } from "./labels/style-reference.js";
 import {
   SR_ACTIVITY_WHERE, srActivityKindLabel, srActivityView, srClassifyEstimateText, srCloudPolicyMeta, srFormatPct,
   srFormatWhen, srJobErrorText, srProvenanceView, srRetypeUnfinished,

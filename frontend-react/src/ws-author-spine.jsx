@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { Tag } from "./ws-ui.jsx";
 import { arrBookFacts, arrBookSpine } from "./ws-author-derive.js";
 import { ARR_SCENE_STATE } from "./ws-author-data.jsx";
-import { chapterHeading, chapterLabel } from "./ws-labels.js";
+import { chapterHeading, chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    结构镜头 — Book Spine（阶段 Z）

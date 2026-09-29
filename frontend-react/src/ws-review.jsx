@@ -10,7 +10,7 @@ import { PageHeader, Segmented, Tag, EmptyState, Notice, Spinner } from "./ws-ui
 import { isImeComposing } from "./lib/keyboard.js";
 import { wsToast } from "./ws-notify.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
-import { preferenceHintLabel, reviewSourceLabel } from "./ws-labels.js";
+import { preferenceHintLabel, reviewSourceLabel } from "./labels/review.js";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 import { isRealWorkId } from "./lib/work-id.js";
 

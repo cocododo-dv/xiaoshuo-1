@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
-import { paragraphTypeLabel, styleDimensionLabel, styleWindowSlotLabel, windowPositionLabel } from "./ws-labels.js";
+import { paragraphTypeLabel, styleDimensionLabel, styleWindowSlotLabel, windowPositionLabel } from "./labels/style-reference.js";
 import { SR_SEGMENTS_ONLY_LABEL, srFormatChars, srReferenceModeMeta, srSceneOptions } from "./ws-styleref-model.js";
 import { srLoadParagraphs, srLoadWorkScenes, srScenePreview } from "./ws-styleref-store.js";
 import { SrErrorLine } from "./ws-styleref-ui.jsx";

@@ -2,7 +2,8 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { StatCard } from "./ws-quality-ui.jsx";
 import { Tag } from "./ws-ui.jsx";
-import { accountingStatusMeta, chapterLabelById, llmNodeLabel, sceneLabelById } from "./ws-labels.js";
+import { chapterLabelById, sceneLabelById } from "./labels/catalog.js";
+import { accountingStatusMeta, llmNodeLabel } from "./labels/llm.js";
 import { PHASE_LABEL, costBack } from "./ws-cost-store.js";
 import { formatIntOrDash as fmtInt, formatPercentRounded as fmtPct, isoMonthDay as fmtDay, isoMonthDayTime as fmtTime } from "./lib/format.js";
 

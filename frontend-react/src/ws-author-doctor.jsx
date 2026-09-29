@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Tag } from "./ws-ui.jsx";
-import { chapterLabel } from "./ws-labels.js";
+import { chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    全书体检 — Book Doctor
