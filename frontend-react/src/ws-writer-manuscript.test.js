@@ -73,6 +73,8 @@ describe("写作台辅助", () => {
   it("字数不含空白", () => {
     expect(wrCountText(editor("<p>一 二\n三</p><p>四</p>"))).toBe(4);
     expect(wrCountText(null)).toBe(0);
+    // 按码点计，与服务端 count_words 同口径（UTF-16 的 .length 会把一个生僻字算成两个）
+    expect(wrCountText(editor("<p>𠀀字</p>"))).toBe(2);
   });
 
   it("按拼接后的文字找选区，能跨实体高亮拆开的文本节点", () => {

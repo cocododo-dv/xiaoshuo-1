@@ -1,7 +1,7 @@
 import React from "react";
 import { storeAlert } from "./lib/store-utils.js";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { WrDocs } from "./wr-doc-store.jsx";
+import { WrDocs, WrRecovery } from "./wr-doc-store.jsx";
 import { contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { copyGatePromoteMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { wsConfirm } from "./ws-notify.jsx";
@@ -13,8 +13,8 @@ import { useWrEvent } from "./ws-writer-hooks.js";
    写作台正文与权威正文（2026-09-21 从 WriterRoom 拆出）
    ----------------------------------------------------------
    · useDocBinding：一场一份正文。换场时同步读 WrDocs 缓存进编辑器、后台水合服务端草稿；
-     敲字后 900ms 自动保存（落盘的只有 wrSerializeManuscript 出来的干净正文）并把字数增量
-     回写目录；离开这一场 / 卸载前把没落盘的改动用「当时的」场景 id 冲掉。
+     敲字后 900ms 自动保存（落盘的只有 wrSerializeManuscript 出来的干净正文；目录字数随保存
+     回包的 words_rollup 更新）；离开这一场 / 卸载前把没落盘的改动用「当时的」场景 id 冲掉。
      decorate(el)：每次整段换掉编辑器内容之后调用（标实体、标批注）；
      afterLoad(el)：换场载入之后调用，可返回清理函数；beforeSave(el, sceneId)：落盘前调用。
    · useCanonicalPromotion：把已保存的草稿提升为权威正文，含内容风险逐项复核那一轮。
@@ -28,7 +28,6 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
   const [savedAt, setSavedAt] = useState(null);
   const [canonicalStatus, setCanonicalStatus] = useState("unknown");
   const saveTimer = useRef(null);
-  const baselineRef = useRef(0);   // 场景载入时的字数基线，增量回写用
   const dirtyRef = useRef(false);  // 有未落盘的改动
   const editVersionRef = useRef(0);
   const mountedRef = useRef(false);
@@ -58,6 +57,47 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     return state && state.canonicalDirty === false ? "current" : "dirty";
   };
 
+  /* 把读缓存里的这一场放进编辑器（服务端水合 / 409 冲突之后） */
+  const showStored = (el, sceneId) => {
+    let fresh = null;
+    try { fresh = WrDocs.load(sceneId); } catch (e) {}
+    const next = fresh == null ? null : wrPrepareLoadedHTML(fresh);
+    if (next != null && wrSerializeManuscript(el) !== next) {
+      el.innerHTML = next || WR_EMPTY_DOC;
+      decorateEvent(el);
+      recount();
+    }
+  };
+
+  /* 409 冲突：WrDocs 已把本机那一稿放进「同步与恢复」、读缓存换成了服务端版本（toast 这么说）。
+     编辑器必须跟着换，否则下一次敲字会带着新的 base_revision_no 把另一台设备的正文盖掉。
+     保存在路上时作者又敲的字不在那份副本里，先另存一份再换。WrDocs 自己没能留副本
+     （配额不足、仍标 dirty）时编辑器保持本机稿不动。 */
+  const adoptServerAfterConflict = (el, sceneId, savedHTML, editVersion) => {
+    const state = WrDocs.state(sceneId);
+    if (!state || state.dirty) return false;
+    clearTimeout(saveTimer.current);
+    if (editVersionRef.current !== editVersion) {
+      const pendingHTML = wrSerializeManuscript(el);
+      if (pendingHTML !== savedHTML) {
+        const backup = WrRecovery.create({
+          sid: sceneId,
+          html: pendingHTML,
+          type: "conflict",
+          reason: "服务端在别处更新（409 冲突）时编辑器里还有没保存的改动",
+          label: `场景 ${sceneId} · 冲突本地稿`,
+        });
+        if (!backup || !backup.durable) return false;
+      }
+    }
+    editVersionRef.current += 1;
+    dirtyRef.current = false;
+    showStored(el, sceneId);
+    setSaved("草稿已加载");
+    setCanonicalStatus(canonicalFromStore(sceneId));
+    return true;
+  };
+
   /* 真·自动保存：正文落盘 + 字数增量回写目录/作品 */
   const persistDoc = useCallback(async () => {
     const el = editorRef.current;
@@ -71,14 +111,11 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     beforeSaveEvent(el, sceneId);
     /* 落盘的只有干净正文：实体高亮、批注划线、改写标记、深改诊断、段落状态 class 都不进草稿 */
     const html = wrSerializeManuscript(el);
-    const count = wrCountText(el);
     const editVersion = editVersionRef.current;
-    const baseline = baselineRef.current;
     const stillCurrent = () => mountedRef.current && sceneRef.current === sceneId;
     try {
+      // 目录字数以保存回包的 words_rollup 为准（WrDocs 已经写进目录），这里不再拿本机计数盖它
       await WrDocs.save(sceneId, html);
-      if (WsCatalog) { try { WsCatalog.recordSceneWords(sceneId, count, baseline); } catch (e) {} }
-      if (stillCurrent()) baselineRef.current = count;
       if (stillCurrent() && editVersionRef.current === editVersion) {
         dirtyRef.current = false;
         setSaved("草稿已保存");
@@ -87,6 +124,10 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       }
       return true;
     } catch (e) {
+      if (e && e.code === "AUTHOR_DRAFT_CONFLICT" && stillCurrent()
+          && adoptServerAfterConflict(el, sceneId, html, editVersion)) {
+        return false;
+      }
       if (stillCurrent() && editVersionRef.current === editVersion) {
         dirtyRef.current = true;
         setSaved("草稿保存失败");
@@ -127,22 +168,13 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     try { stored = WrDocs.load(activeScene); } catch (e) {}
     el.innerHTML = wrPrepareLoadedHTML(stored) || WR_EMPTY_DOC;
     decorateEvent(el);
-    baselineRef.current = wrCountText(el);
     recount();
     const cleanupAfterLoad = afterLoadEvent(el);
 
     /* 服务端草稿水合完成且本地无未保存改动 → 回填编辑器（跨浏览器以服务端为准） */
     const onDocLoaded = (e) => {
       if (!e || e.detail !== activeScene || dirtyRef.current) return;
-      let fresh = null;
-      try { fresh = WrDocs.load(activeScene); } catch (e2) {}
-      const next = fresh == null ? null : wrPrepareLoadedHTML(fresh);
-      if (next != null && wrSerializeManuscript(el) !== next) {
-        el.innerHTML = next || WR_EMPTY_DOC;
-        decorateEvent(el);
-        baselineRef.current = wrCountText(el);
-        recount();
-      }
+      showStored(el, activeScene);
       setSaved("草稿已保存");
       setCanonicalStatus(canonicalFromStore(activeScene));
     };
@@ -164,7 +196,8 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       if (dirtyRef.current && sid && !wrSceneIsApproved(sid)) {
         try { beforeSaveEvent(el, sid); } catch (e) {}
         try { void WrDocs.save(sid, wrSerializeManuscript(el)).catch(() => {}); } catch (e) {}
-        try { if (WsCatalog) WsCatalog.recordSceneWords(sid, wrCountText(el), baselineRef.current); } catch (e) {}
+        // 不等回包的离场冲刷：先按本机计数更新目录，回包的 words_rollup 到了再以服务端为准
+        try { WsCatalog.recordSceneWords(sid, wrCountText(el)); } catch (e) {}
         dirtyRef.current = false;
       }
     };

@@ -441,10 +441,8 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   } catch (e) {
     cacheWarning = "正文已安全归档到服务器，但本地状态同步失败；请刷新页面从服务器恢复";
   }
-  const hit = WsCatalog.sceneById(sid);
-  const prev = hit && typeof hit.scene.words === "number" ? hit.scene.words : 0;
   const count = countChars(text);
-  try { WsCatalog.recordSceneWords(sid, count, prev); } catch (e) {}
+  try { WsCatalog.recordSceneWords(sid, count); } catch (e) {}
   try {
     WsCatalog.set(WsCatalog.get().map(c => ({
       ...c, scenes: (c.scenes || []).map(s => s.sid === sid ? { ...s, state: "done" } : s),
