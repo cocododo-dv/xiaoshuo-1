@@ -12,7 +12,7 @@ import {
   AUTHOR_NOTE_LIMIT, RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES, scnPipeStepName, scnParaText,
   scnGateLog, scnFriendly, scnRunUiAbortError, scnStyleNoticeLabel, scnRunRecordFromWorkbench,
 } from "./ws-scene-derive.js";
-import { isRealWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 import { createPoller } from "./lib/poll.js";
 
 /* ==========================================================
@@ -253,8 +253,8 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
    本地队列从此只是这份管线真相的读缓存，换浏览器时队列成员可恢复。
    读不到时返回 null 而不是 []——场景页据此决定「这一场没进过管线、不必问 latest」，读不到就不能这么断定。 ---- */
 async function scnBackendRunSids() {
-  const workId = WsWorks.activeId();
-  if (!isRealWorkId(workId)) return null;
+  const workId = readyWorkId(WsWorks);   // 书架还在加载 / 新建作品还没有正式 id：不发请求
+  if (!workId) return null;
   let data = null;
   try { data = await apiGet(`/api/v1/scene-run-states?project_id=${encodeURIComponent(workId)}`); } catch (e) { return null; }
   const items = (data && data.items) || [];

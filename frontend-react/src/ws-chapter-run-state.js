@@ -1,7 +1,7 @@
 import React from "react";
 import { apiGet, apiPost } from "./lib/client.js";
 import { createPoller } from "./lib/poll.js";
-import { isRealWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WsWorks } from "./ws-works.jsx";
@@ -167,7 +167,7 @@ export function useChapterRun({ chapter, onCatalogRefresh, pollIntervalMs = 1200
   useEffect(() => {
     const chapterId = chapter && chapter.backendId;
     const chapterKey = chapterId || (chapter && chapter.id) || "";
-    const projectId = WsWorks.activeId();
+    const projectId = readyWorkId(WsWorks);
     const token = requestRef.current + 1;
     requestRef.current = token;
     submittingRef.current = false;
@@ -186,7 +186,7 @@ export function useChapterRun({ chapter, onCatalogRefresh, pollIntervalMs = 1200
       });
       return;
     }
-    if (!isRealWorkId(projectId)) {
+    if (!projectId) {
       setHydration({
         status: "error",
         chapterKey,
@@ -201,8 +201,8 @@ export function useChapterRun({ chapter, onCatalogRefresh, pollIntervalMs = 1200
   const retryHydration = () => {
     const chapterId = chapter && chapter.backendId;
     const chapterKey = chapterId || (chapter && chapter.id) || "";
-    const projectId = WsWorks.activeId();
-    if (!chapterId || !isRealWorkId(projectId)) return;
+    const projectId = readyWorkId(WsWorks);
+    if (!chapterId || !projectId) return;
     const token = requestRef.current + 1;
     requestRef.current = token;
     completedRef.current = null;
@@ -232,8 +232,8 @@ export function useChapterRun({ chapter, onCatalogRefresh, pollIntervalMs = 1200
       });
       return;
     }
-    const projectId = WsWorks.activeId();
-    if (!isRealWorkId(projectId)) {
+    const projectId = readyWorkId(WsWorks);
+    if (!projectId) {
       setCardOpen(true);
       setRun({
         ...EMPTY_RUN,
