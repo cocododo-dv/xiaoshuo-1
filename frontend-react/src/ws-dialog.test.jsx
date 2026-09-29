@@ -2,7 +2,7 @@ import React from "react";
 import { act } from "react";
 import ReactDOMClient from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WsDialog, isImeComposing, focusableIn } from "./ws-dialog.jsx";
+import { WsDialog, isImeComposing, focusableIn, topModalLayer, usePopover } from "./ws-dialog.jsx";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -194,6 +194,150 @@ describe("WsDialog stacking and in-place mode", () => {
     await act(async () => root.render(<WsDialog portal={false} label="就地" testId="inplace"><button type="button">x</button></WsDialog>));
     expect(host.querySelector("[data-testid=inplace]")).not.toBeNull();
     expect(host.querySelector(".ws-dialog-scrim")).not.toBeNull();
+  });
+});
+
+describe("usePopover（非模态浮层与层栈）", () => {
+  /* 一个最小的浮层：anchor 按钮 + 里面两个控件；父组件可以从外面收起它 */
+  function Pop({ onClose, closeOnFocusOut, focusOnOpen, children }) {
+    const [open, setOpen] = React.useState(false);
+    const anchorRef = React.useRef(null);
+    const ref = React.useRef(null);
+    const close = usePopover(ref, {
+      open, anchorRef, closeOnFocusOut, focusOnOpen,
+      onClose: (reason) => { if (onClose) onClose(reason); setOpen(false); },
+    });
+    return (
+      <div>
+        <button type="button" ref={anchorRef} data-testid="anchor" onClick={() => setOpen((o) => !o)}>筛选</button>
+        <button type="button" data-testid="outside">别处</button>
+        <button type="button" data-testid="parent-close" onClick={() => setOpen(false)}>父组件收起</button>
+        {open && (
+          <div ref={ref} role="dialog" aria-label="筛选" tabIndex={-1} data-testid="pop">
+            <button type="button" data-testid="pop-first">第一项</button>
+            <button type="button" data-testid="pop-done" onClick={() => close("select")}>完成</button>
+            {children}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const q = (id) => document.querySelector(`[data-testid=${id}]`);
+  const pointerDown = (node) => node.dispatchEvent(new Event("pointerdown", { bubbles: true, cancelable: true }));
+
+  async function openPop(props = {}, wrap = (node) => node) {
+    await act(async () => root.render(wrap(<Pop {...props} />)));
+    q("anchor").focus();
+    await act(async () => q("anchor").click());
+  }
+
+  it("打开时焦点进浮层；Esc 收起并把焦点还给 anchor；输入法组字中的 Esc 不算", async () => {
+    const onClose = vi.fn();
+    await openPop({ onClose });
+    expect(document.activeElement).toBe(q("pop-first"));
+    await act(async () => { press("Escape", { isComposing: true }); });
+    expect(q("pop")).not.toBeNull();
+    await act(async () => { press("Escape"); });
+    expect(onClose).toHaveBeenCalledWith("escape");
+    expect(q("pop")).toBeNull();
+    expect(document.activeElement).toBe(q("anchor"));
+  });
+
+  it("在浮层与 anchor 之外按下才收起（焦点不抢回 anchor）；按在 anchor 上交给它自己的开关", async () => {
+    const onClose = vi.fn();
+    await openPop({ onClose });
+    await act(async () => { pointerDown(q("pop-first")); });
+    await act(async () => { pointerDown(q("anchor")); });
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { pointerDown(q("outside")); });
+    expect(onClose).toHaveBeenCalledWith("outside");
+    expect(q("pop")).toBeNull();
+    // 按下别处之前焦点在浮层里：浮层收起、焦点掉进 body 时还给 anchor（真实浏览器随后把焦点交给点中的控件）
+    await act(async () => {});
+    expect(document.activeElement).toBe(q("anchor"));
+  });
+
+  it("焦点移到浮层之外（Tab 出去）就收起；closeOnFocusOut: false 时不收", async () => {
+    const onClose = vi.fn();
+    await openPop({ onClose });
+    await act(async () => q("outside").focus());
+    expect(onClose).toHaveBeenCalledWith("focusout");
+    expect(document.activeElement).toBe(q("outside"));
+    await act(async () => root.render(<div />));
+    const onClose2 = vi.fn();
+    await openPop({ onClose: onClose2, closeOnFocusOut: false });
+    await act(async () => q("outside").focus());
+    expect(onClose2).not.toHaveBeenCalled();
+    expect(q("pop")).not.toBeNull();
+  });
+
+  it("浮层里的动作用返回的 close 收起并还焦点；父组件直接收起、焦点掉进 body 时也还给 anchor", async () => {
+    const onClose = vi.fn();
+    await openPop({ onClose });
+    await act(async () => q("pop-done").click());
+    expect(onClose).toHaveBeenCalledWith("select");
+    expect(document.activeElement).toBe(q("anchor"));
+    await act(async () => q("anchor").click());
+    expect(document.activeElement).toBe(q("pop-first"));
+    await act(async () => { q("parent-close").dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await act(async () => {});
+    expect(q("pop")).toBeNull();
+    expect(document.activeElement).toBe(q("anchor"));
+  });
+
+  it("focusOnOpen: false 时焦点留在 anchor", async () => {
+    await openPop({ focusOnOpen: false });
+    expect(q("pop")).not.toBeNull();
+    expect(document.activeElement).toBe(q("anchor"));
+  });
+
+  it("开在对话框里的浮层：第一下 Esc 只关浮层，第二下才关对话框；topModalLayer 仍是对话框，Tab 仍关在对话框里", async () => {
+    const onDialogClose = vi.fn();
+    const onPopClose = vi.fn();
+    await openPop({ onClose: onPopClose }, (node) => <WsDialog label="外层" testId="dlg" onClose={onDialogClose}>{node}</WsDialog>);
+    const dialog = q("dlg");
+    expect(topModalLayer()).toBe(dialog);
+    // 浮层在栈顶时对话框的焦点陷阱照常工作：浮层里的「完成」是对话框里最后一个控件，Tab 绕回对话框的第一个控件
+    q("pop-done").focus();
+    const tab = press("Tab");
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(q("anchor"));
+    expect(q("pop")).not.toBeNull(); // 焦点回到 anchor 不算「移到浮层之外」
+    await act(async () => { press("Escape"); });
+    expect(onPopClose).toHaveBeenCalledWith("escape");
+    expect(onDialogClose).not.toHaveBeenCalled();
+    expect(q("dlg")).not.toBeNull();
+    await act(async () => { press("Escape"); });
+    expect(onDialogClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("浮层上面又打开了模态框：按在模态框里、焦点进模态框都不关浮层，Esc 先关模态框", async () => {
+    function WithConfirm({ onPopClose, onConfirmClose }) {
+      const [confirm, setConfirm] = React.useState(false);
+      return (
+        <Pop onClose={onPopClose}>
+          <button type="button" data-testid="ask" onClick={() => setConfirm(true)}>删除</button>
+          <WsDialog open={confirm} label="确认" testId="confirm" onClose={() => { onConfirmClose(); setConfirm(false); }}>
+            <button type="button" data-testid="confirm-ok">确定</button>
+          </WsDialog>
+        </Pop>
+      );
+    }
+    const onPopClose = vi.fn();
+    const onConfirmClose = vi.fn();
+    await act(async () => root.render(<WithConfirm onPopClose={onPopClose} onConfirmClose={onConfirmClose} />));
+    q("anchor").focus();
+    await act(async () => q("anchor").click());
+    await act(async () => q("ask").click());
+    expect(document.activeElement).toBe(q("confirm-ok"));
+    await act(async () => { pointerDown(q("confirm-ok")); });
+    expect(onPopClose).not.toHaveBeenCalled();
+    expect(topModalLayer()).toBe(q("confirm"));
+    await act(async () => { press("Escape"); });
+    expect(onConfirmClose).toHaveBeenCalledTimes(1);
+    expect(onPopClose).not.toHaveBeenCalled();
+    expect(q("pop")).not.toBeNull();
   });
 });
 

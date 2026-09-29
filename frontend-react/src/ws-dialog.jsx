@@ -27,14 +27,24 @@ export function focusableIn(root) {
 /* 输入法组字判定住在 lib/keyboard.js；这里转出，旧的导入路径照旧可用。 */
 export { isImeComposing };
 
-/* 当前打开的对话框栈：只有栈顶响应 Esc / 焦点陷阱。每一项记着它的根节点（topModalLayer 用）。 */
+/* 当前打开的层栈：模态层（useFocusTrap：WsDialog、续写托盘、窄屏抽屉……）与非模态浮层（usePopover：
+   弹出菜单、筛选面板……）按打开顺序叠放。Esc 只归栈顶那一层；焦点陷阱只看最上面的模态层（浮层开在
+   对话框里时，Tab 仍在对话框里循环）。每一项记着它的根节点（topModalLayer 用），浮层项带 modal: false。 */
 const dialogStack = [];
+
+function topModalToken() {
+  for (let i = dialogStack.length - 1; i >= 0; i -= 1) {
+    if (dialogStack[i].modal !== false) return dialogStack[i];
+  }
+  return null;
+}
 
 /* 最上层的模态层（WsDialog、续写托盘、窄屏抽屉……凡是激活了 useFocusTrap 的都算）的根节点，没有就是 null。
    全局快捷键（⌘K、写作台的 ⌘J / ⌘1 …）用它判断背后的页面此刻该不该响应：键只作用于最上层——
-   过去确认框开着时 ⌘K 照样在它底下打开命令面板，回车就把整个应用跳走了。 */
+   过去确认框开着时 ⌘K 照样在它底下打开命令面板，回车就把整个应用跳走了。非模态浮层不算（它开着时
+   快捷键照常；Esc 由浮层自己先接住，见 usePopover）。 */
 export function topModalLayer() {
-  const top = dialogStack[dialogStack.length - 1];
+  const top = topModalToken();
   return (top && top.root) || null;
 }
 
@@ -58,7 +68,7 @@ export function useFocusTrap(ref, active = true, { initialFocus, restoreFocus = 
     if (target && typeof target.focus === "function") target.focus({ preventScroll: true });
 
     const onKey = (event) => {
-      if (event.key !== "Tab" || dialogStack[dialogStack.length - 1] !== token) return;
+      if (event.key !== "Tab" || topModalToken() !== token) return;
       const nodes = focusableIn(root);
       if (!nodes.length) { event.preventDefault(); root.focus(); return; }
       const first = nodes[0];
@@ -89,6 +99,87 @@ export function useFocusTrap(ref, active = true, { initialFocus, restoreFocus = 
     // initialFocus 是 ref，不参与依赖
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
+}
+
+/* usePopover — 非模态浮层（弹出菜单、筛选面板、就地小表单）的开合行为，一处写全：
+   · 打开时进层栈（modal: false）：Esc 只在它是栈顶时由它接住（开在对话框里的浮层先关自己，对话框不动），
+     输入法组字中的 Esc 不算；Esc 关上后把焦点还给 anchorRef（打开它的按钮）；
+   · 在浮层与 anchor 之外按下指针（pointerdown）、或焦点移到它们之外（Tab 出去）就关，焦点留在作者去的地方；
+     上面还叠着别的层（例如从浮层里打开的确认框）时，外面的按下与焦点移动都归那一层，不关浮层；
+   · 打开时焦点进浮层：initialFocus → 第一个可聚焦的控件 → 浮层本身（focusOnOpen: false 时留在原处）；
+   · 浮层被父组件直接收起、焦点随之掉进 <body> 时，还给 anchor。
+   onClose(reason) 的 reason：escape | outside | focusout，或调用返回的 close 时调用方给的（默认 close）。
+   返回 close(reason, { restoreFocus = true })：由浮层里的动作收起它（菜单项选中、表单提交）。
+   纯 DOM，不写 window。样式与定位由调用方（或 ws-ui 的 Popover / MenuButton）负责。 */
+export function usePopover(ref, { open, onClose, anchorRef, initialFocus, focusOnOpen = true, closeOnFocusOut = true } = {}) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  const focusAnchor = useCallback(() => {
+    const anchor = anchorRef && anchorRef.current;
+    if (anchor && typeof anchor.focus === "function" && document.contains(anchor)) anchor.focus({ preventScroll: true });
+  }, [anchorRef]);
+
+  const close = useCallback((reason = "close", { restoreFocus = true } = {}) => {
+    if (closeRef.current) closeRef.current(reason);
+    if (restoreFocus) focusAnchor();
+  }, [focusAnchor]);
+
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const root = ref.current;
+    if (!root) return undefined;
+    const token = { root, modal: false };
+    dialogStack.push(token);
+    const isTop = () => dialogStack[dialogStack.length - 1] === token;
+    const inside = (node) => {
+      const anchor = anchorRef && anchorRef.current;
+      return !!node && (root.contains(node) || !!(anchor && anchor.contains(node)));
+    };
+    if (focusOnOpen) {
+      const target = (initialFocus && initialFocus.current) || focusableIn(root)[0] || root;
+      if (target && typeof target.focus === "function") target.focus({ preventScroll: true });
+    }
+    // 焦点此刻在不在浮层里（收起时据此决定要不要把焦点还给 anchor）
+    let focusInside = root.contains(document.activeElement);
+    const onKey = (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented || isImeComposing(event) || !isTop()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (closeRef.current) closeRef.current("escape");
+      focusAnchor();
+    };
+    const onPress = (event) => {
+      if (!isTop() || inside(event.target)) return;
+      if (closeRef.current) closeRef.current("outside");
+    };
+    const onFocusIn = (event) => {
+      focusInside = root.contains(event.target);
+      if (!closeOnFocusOut || !isTop() || inside(event.target)) return;
+      if (closeRef.current) closeRef.current("focusout");
+    };
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPress, true);
+    document.addEventListener("focusin", onFocusIn, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onPress, true);
+      document.removeEventListener("focusin", onFocusIn, true);
+      const index = dialogStack.indexOf(token);
+      if (index >= 0) dialogStack.splice(index, 1);
+      // 浮层里有焦点时被收起：焦点随节点一起掉进 <body>，还给打开它的按钮（与 useFocusTrap 一样放到微任务里）。
+      // 焦点本来就不在浮层里（点了页面空白处、focusOnOpen: false）时不动它。
+      if (!focusInside) return;
+      queueMicrotask(() => {
+        const now = document.activeElement;
+        if (!now || now === document.body) focusAnchor();
+      });
+    };
+    // initialFocus / anchorRef 是 ref，不参与依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, focusOnOpen, closeOnFocusOut]);
+
+  return close;
 }
 
 /* WsDialog — 通用模态框。
