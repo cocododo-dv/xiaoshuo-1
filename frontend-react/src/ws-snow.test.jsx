@@ -513,6 +513,36 @@ describe("阶段 M · 09/10 交互", () => {
     expect(window.SnowSync.skipStep).toHaveBeenCalledTimes(2);
   });
 
+  it("Q2-02：略过浮层点外面、焦点移出、再点一下「略过此步」只是收起——写了一半的理由留着；Esc 与取消才清掉", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
+    const host = await renderAt("characters");
+    const openBtn = () => host.querySelector('[data-testid="snow-skip-open"]');
+    const reason = () => host.querySelector('[data-testid="snow-skip-reason"]');
+    const reopen = async () => { await act(async () => openBtn().click()); return reason().value; };
+    await act(async () => openBtn().click());
+    const input = reason();
+    const setNative = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    await act(async () => { setNative.call(input, "人物表等第二稿"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    // 点页面别处
+    await act(async () => { document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+    expect(reason()).toBeNull();
+    expect(await reopen()).toBe("人物表等第二稿");
+    // 再点一下按钮
+    await act(async () => openBtn().click());
+    expect(reason()).toBeNull();
+    expect(await reopen()).toBe("人物表等第二稿");
+    // 焦点移到浮层外
+    await act(async () => { host.querySelector('[data-testid="snow-confirm-step"]').focus(); });
+    expect(reason()).toBeNull();
+    expect(await reopen()).toBe("人物表等第二稿");
+    // Esc：收起并清掉，焦点回到按钮
+    await act(async () => { reason().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(reason()).toBeNull();
+    expect(document.activeElement).toBe(openBtn());
+    expect(await reopen()).toBe("");
+    expect(window.SnowSync.skipStep).not.toHaveBeenCalled();
+  });
+
   it("07 章节表按数组顺序显示；第二幕已有章时「添加第一幕章节」插在第一幕最后一章之后，而不是存成最后一章", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { outline: { chapters: [
       { id: "01", act: 1, title: "合成一章", summary: "a", spine: "" },

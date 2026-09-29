@@ -301,22 +301,24 @@ function S2SkipControl({ step, onSkip }) {
         title={`${step.name}是整理章节结构之前必须确认的一步，不能略过——先写完再确认`}>略过此步</button>
     );
   }
-  /* 收起（Esc、点外面、焦点移出、取消）一律清掉没提交的理由；Esc 与取消把焦点还给按钮 */
-  const dismiss = () => { setOpen(false); setReason(""); };
-  const cancel = () => { dismiss(); if (btnRef.current) btnRef.current.focus(); };
+  /* 点外面、焦点移出、再点一下「略过此步」只是收起：写了一半的理由留着，再打开还在；只有 Esc、取消与略过成功
+     才清掉它。Esc 由浮层自己把焦点还给按钮，取消在这里还。 */
+  const clear = () => { setOpen(false); setReason(""); };
+  const cancel = () => { clear(); if (btnRef.current) btnRef.current.focus(); };
+  const onPopoverClose = (why) => { if (why === "escape") clear(); else setOpen(false); };
   const submit = async () => {
     const text = reason.trim();
     if (!text || busy) return;
     setBusy(true);
     const ok = await onSkip(text);
     setBusy(false);
-    if (ok) dismiss();
+    if (ok) clear();
   };
   return (
     <div className="ws-popover-wrap">
       <button ref={btnRef} type="button" className="btn btn-ghost" data-testid="snow-skip-open" aria-expanded={open} aria-controls="sf-skip-pop"
-        onClick={() => (open ? dismiss() : setOpen(true))}>略过此步</button>
-      <Popover open={open} onClose={dismiss} anchorRef={btnRef} id="sf-skip-pop" label={`略过「${step.name}」`}
+        onClick={() => setOpen(o => !o)}>略过此步</button>
+      <Popover open={open} onClose={onPopoverClose} anchorRef={btnRef} id="sf-skip-pop" label={`略过「${step.name}」`}
         initialFocus={inputRef} className="sf-skip-pop">
         <label className="sf-skip-label" htmlFor="sf-skip-reason">略过「{step.name}」的理由<small>会记在服务端，下游步骤照常继续</small></label>
         <input ref={inputRef} id="sf-skip-reason" className="input" data-testid="snow-skip-reason" value={reason} disabled={busy}
