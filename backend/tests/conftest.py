@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import threading
 from collections.abc import Generator
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from novel_system.api.app import create_app
 from novel_system.cache_registry import reset_all_caches
 from novel_system.db.base import Base
 from novel_system.db.session import SessionLocal, reset_engine
+from novel_system.services.style_reference.jobs import SWEEPER_THREAD_NAME, shutdown_job_workers
 
 
 @pytest.fixture(scope="session")
@@ -42,6 +44,20 @@ def _hermetic_test_process() -> Generator[None, None, None]:
     reset_all_caches()
     yield
     reset_all_caches()
+
+
+def _wait_for_job_sweepers(timeout: float = 30.0) -> None:
+    """用例的 app 关掉后，它的风格作业清扫线程可能还在最后一拍里：换库之前等它收尾（X04-20），免得那一拍落到
+    下一个用例的库上。到时还没停的是 lifespan 没停掉的清扫线程——停掉它，算这个用例的错。"""
+    sweepers = [thread for thread in threading.enumerate() if thread.name == SWEEPER_THREAD_NAME]
+    for thread in sweepers:
+        thread.join(timeout)
+    leaked = [thread for thread in sweepers if thread.is_alive()]
+    if leaked:
+        shutdown_job_workers()
+        for thread in leaked:
+            thread.join(timeout)
+        pytest.fail(f"{len(leaked)} 个风格作业清扫线程在用例结束后仍在运行（没有经过 shutdown_job_workers）", pytrace=False)
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +98,7 @@ def isolated_database(
 
     reset_engine()
     yield
+    _wait_for_job_sweepers()
     # 关掉本测试的连接池（Windows 上不关掉删不了 tmp 目录里的库文件）。
     reset_engine()
 
