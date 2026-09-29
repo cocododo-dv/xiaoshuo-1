@@ -4,7 +4,7 @@ import threading
 import uuid
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -37,7 +37,6 @@ from novel_system.services.scene_rehome import rehome_scenes
 from novel_system.services.system_config import SystemConfigService
 from novel_system.services.snowflake_steps import SNOWFLAKE_METHOD_VERSION
 from novel_system.settings import get_settings
-from novel_system.services.hash_engine import sha256_text
 from novel_system.services.scene_lookup import require_project
 from novel_system.services.snowflake_queries import latest_outline_plan
 
@@ -953,8 +952,28 @@ class ProjectChapterFlowService:
                 "revision_notes must be 2000 characters or fewer",
                 status_code=400,
             )
+        read_request = body.get("read_confirmation")
+        if read_request is not None and not isinstance(read_request, dict):
+            raise DomainError(
+                "CHAPTER_READ_CONFIRM_INVALID",
+                "read_confirmation must be an object with body_hash",
+                status_code=400,
+            )
         ChapterManuscriptService(self.session).require_publishable(chapter_id)
-        read_confirmation = self._require_current_read_confirmation(project, chapter_id)
+        read = ChapterManuscriptService(self.session).assembled_body(chapter_id)
+        if read_request is not None:
+            # 批准 #10：「已通读」随「确认定稿」一次提交——绑定作者读到的那一份正文（成稿中心拿到的 body_hash），
+            # 服务器现算一次；读完之后正文又变了就 409，两条审计记录写在同一个事务里
+            read_confirmation = self._record_read_confirmation(
+                project,
+                chapter_id,
+                read,
+                note=read_request.get("note"),
+                expected_body_hash=read_request.get("body_hash"),
+                actor_ref=actor_ref,
+            )
+        else:
+            read_confirmation = self._require_current_read_confirmation(project, chapter_id, read)
 
         approved = list(project.approved_chapter_ids_json or [])
         if chapter_id not in approved:
@@ -1083,31 +1102,69 @@ class ProjectChapterFlowService:
                 status_code=409,
             )
         ChapterManuscriptService(self.session).require_publishable(chapter_id)
-        packet = self.review_packet(project, chapter_id)
-        if not packet or not packet.get("body_hash"):
+        read = ChapterManuscriptService(self.session).assembled_body(chapter_id)
+        return self._record_read_confirmation(
+            project,
+            chapter_id,
+            read,
+            note=body.get("note"),
+            expected_body_hash=None,
+            actor_ref=actor_ref,
+        )
+
+    def _record_read_confirmation(
+        self,
+        project: StoryProject,
+        chapter_id: str,
+        read: dict[str, Any],
+        *,
+        note: Any,
+        expected_body_hash: Any,
+        actor_ref: str,
+    ) -> dict[str, Any]:
+        """记一条「作者已通读」：绑定的是各场当前终稿现拼的整章正文（``read`` = ``assembled_body``）。
+
+        ``expected_body_hash`` 是作者读的那一份的哈希（「确认定稿」一次提交时带来）；和现在的正文对不上 →
+        409 ``CHAPTER_FINAL_BODY_CHANGED``，什么也不记。
+        """
+        body_hash = str(read.get("body_hash") or "")
+        if not body_hash:
             raise DomainError(
                 "CHAPTER_FINAL_READ_CONFIRM_UNAVAILABLE",
                 "current chapter body is not available for read confirmation",
                 status_code=409,
             )
-        note = str(body.get("note") or "").strip()
-        if len(note) > 1000:
+        if expected_body_hash is not None:
+            expected = str(expected_body_hash or "").strip()
+            if not expected:
+                raise DomainError(
+                    "CHAPTER_READ_CONFIRM_INVALID",
+                    "read_confirmation.body_hash is required",
+                    status_code=400,
+                )
+            if expected != body_hash:
+                raise DomainError(
+                    "CHAPTER_FINAL_BODY_CHANGED",
+                    "这一章的正文在你通读之后又变了，请重新读一遍当前正文再确认定稿。",
+                    status_code=409,
+                    details={"chapter_id": chapter_id, "body_hash": body_hash, "expected_body_hash": expected},
+                )
+        normalized_note = str(note or "").strip()
+        if len(normalized_note) > 1000:
             raise DomainError(
                 "CHAPTER_READ_CONFIRM_NOTE_TOO_LONG",
                 "note must be 1000 characters or fewer",
                 status_code=400,
             )
-        confirmed_at = utcnow()
-        confirmed_by = actor_ref or "operator"
         confirmation = {
             "project_id": project.project_id,
             "chapter_id": chapter_id,
-            "body_hash": packet["body_hash"],
-            "char_count": int(packet.get("char_count") or 0),
-            "body_source": packet.get("body_source"),
-            "confirmed_at": confirmed_at,
-            "confirmed_by": confirmed_by,
-            "note": note,
+            "body_hash": body_hash,
+            "char_count": int(read.get("char_count") or 0),
+            "body_source": "assembled",
+            "confirmed_at": utcnow(),
+            "confirmed_by": actor_ref or "operator",
+            "note": normalized_note,
         }
         self.session.add(
             OperationLog(
@@ -1124,6 +1181,11 @@ class ProjectChapterFlowService:
     def review_packet(
         self, project: StoryProject, chapter_id: str | None
     ) -> dict[str, Any] | None:
+        """v1 看板 / 运行本章回包里的终审材料：只在项目停在「本章终审」时给（与看板的 next_action 同一口径）。
+
+        能不能通读确认、能不能定稿**不看这个状态**——那两步直接读各场当前终稿（``assembled_body``）。
+        「本章终审」只有「运行本章」会置上；作者在写作台写完、逐场晋升的章走不到这里，过去于是永远定不了稿（B08-01）。
+        """
         if not chapter_id or project.status != PROJECT_STATUS_CHAPTER_FINAL_REVIEW:
             return None
         chapter = self.session.get(ChapterGoal, chapter_id)
@@ -1143,16 +1205,11 @@ class ProjectChapterFlowService:
         )
         aggregate = manuscript.get("aggregate") or None
         assembled = manuscript.get("assembled") or {}
-        if aggregate and str(aggregate.get("content") or ""):
-            body = str(aggregate.get("content") or "")
-            body_source = "aggregate"
-            char_count = int(aggregate.get("char_count") or len(body))
-            aggregate_row_id = aggregate.get("row_id")
-        else:
-            body = str(assembled.get("content") or "")
-            body_source = "assembled" if body else "empty"
-            char_count = int(assembled.get("char_count") or len(body))
-            aggregate_row_id = None
+        # 正文取各场当前终稿现拼（成稿中心读的那一份），不取章汇总：汇总可能落后于逐场终稿（R13）
+        body = str(assembled.get("content") or "")
+        body_source = "assembled" if body else "empty"
+        char_count = int(assembled.get("char_count") or len(body))
+        aggregate_row_id = aggregate.get("row_id") if aggregate else None
         missing_scene_ids = list(assembled.get("missing_scene_ids") or [])
         completion_status = manuscript.get("completion_status") or "empty"
         body_empty_reason = None
@@ -1162,7 +1219,7 @@ class ProjectChapterFlowService:
                 if completion_status == "empty"
                 else "manuscript_body_empty"
             )
-        body_hash = self._chapter_body_hash(body) if body else ""
+        body_hash = str(manuscript.get("body_hash") or "")
         read_confirmation = (
             self._latest_read_confirmation(
                 project.project_id, chapter.chapter_id, body_hash
@@ -1202,11 +1259,14 @@ class ProjectChapterFlowService:
         }
 
     def _require_current_read_confirmation(
-        self, project: StoryProject, chapter_id: str
+        self, project: StoryProject, chapter_id: str, read: dict[str, Any]
     ) -> dict[str, Any]:
-        packet = self.review_packet(project, chapter_id)
-        body_hash = str((packet or {}).get("body_hash") or "")
-        confirmation = (packet or {}).get("read_confirmation")
+        body_hash = str(read.get("body_hash") or "")
+        confirmation = (
+            self._latest_read_confirmation(project.project_id, chapter_id, body_hash)
+            if body_hash
+            else None
+        )
         if not body_hash or not confirmation:
             raise DomainError(
                 "CHAPTER_FINAL_READ_CONFIRM_REQUIRED",
@@ -1216,26 +1276,27 @@ class ProjectChapterFlowService:
             )
         return confirmation
 
-    @staticmethod
-    def _chapter_body_hash(body: str) -> str:
-        return sha256_text(body)
-
     def _latest_read_confirmation(
         self, project_id: str, chapter_id: str, body_hash: str
     ) -> dict[str, Any] | None:
         if not body_hash:
             return None
+        # 这一章的通读记录 + 本作品的「重新打开」记录（重开会作废被撤销那几章的通读）；
+        # 别的作品的重开记录不读（过去是把全库的重开事件都拉回来再在内存里挑）
         rows = (
             self.session.execute(
                 select(OperationLog)
                 .where(
-                    OperationLog.event_type.in_(
-                        ("chapter_final_read_confirmed", "chapter_final_reopened")
-                    ),
                     OperationLog.object_type == "chapter",
                     or_(
-                        OperationLog.object_ref == chapter_id,
-                        OperationLog.event_type == "chapter_final_reopened",
+                        and_(
+                            OperationLog.event_type == "chapter_final_read_confirmed",
+                            OperationLog.object_ref == chapter_id,
+                        ),
+                        and_(
+                            OperationLog.event_type == "chapter_final_reopened",
+                            func.json_extract(OperationLog.payload_json, "$.project_id") == project_id,
+                        ),
                     ),
                 )
                 .order_by(

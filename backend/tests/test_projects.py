@@ -364,7 +364,8 @@ def test_project_chapter_final_requires_current_read_confirmation(client, sessio
     assert read_log.payload_json["confirmed_by"] == "author-c"
 
 
-def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(client, session) -> None:
+def test_project_review_packet_uses_the_assembled_finals_even_when_an_aggregate_exists(client, session) -> None:
+    """R13：终审包的正文取各场当前终稿现拼（成稿中心读的那一份）；章汇总可能落后，只作对照（comparison_status）。"""
     project = _create_project(client, target_chapter_count=1, key="review-packet-body")
     plan = _generate_plan(client, project["project_id"])
     approved = _approve_plan(client, project["project_id"], plan["plan_id"])
@@ -424,10 +425,11 @@ def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(clien
 
     assert response.status_code == 200
     packet = response.json()["data"]["review_packet"]
+    assembled = "\n".join(f"assembled scene {index}" for index in range(1, len(scenes) + 1))
     assert packet["chapter_id"] == chapter_id
-    assert packet["body"] == "aggregate chapter body"
-    assert packet["body_source"] == "aggregate"
-    assert packet["char_count"] == len("aggregate chapter body")
+    assert packet["body"] == assembled
+    assert packet["body_source"] == "assembled"
+    assert packet["char_count"] == len(assembled)
     assert packet["body_empty_reason"] is None
     assert packet["completion_status"] == "complete"
     assert packet["comparison_status"] == "aggregate_differs_current"

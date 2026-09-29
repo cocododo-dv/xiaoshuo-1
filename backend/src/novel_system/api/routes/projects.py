@@ -28,10 +28,19 @@ class ProjectChapterReadConfirmRequest(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class ProjectChapterReadConfirmationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    body_hash: str = Field(min_length=1, max_length=128)
+    note: str | None = Field(default=None, max_length=1000)
+
+
 class ProjectChapterApproveFinalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     revision_notes: str | None = Field(default=None, max_length=2000)
+    # 批准 #10：「已通读」随「确认定稿」一次提交，绑定作者读到的那一份正文（GET chapter-manuscripts 的 body_hash）
+    read_confirmation: ProjectChapterReadConfirmationRequest | None = None
 
 
 class ProjectChapterReopenFinalRequest(BaseModel):
