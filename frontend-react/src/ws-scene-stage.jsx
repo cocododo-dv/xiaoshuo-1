@@ -340,7 +340,7 @@ function CandidatePicker({ sid, onDone, onRework = null }) {
           </div>
         </>
       )}
-      {candidates.length > 0 && <p className="scn2-draft-foot">终选只写一次：提交后要改选，需要在后端显式重开（留审计）。</p>}
+      {candidates.length > 0 && <p className="scn2-draft-foot">终选提交后不能改选；想换一稿，请重新起草这一场。</p>}
     </div>
   );
 }

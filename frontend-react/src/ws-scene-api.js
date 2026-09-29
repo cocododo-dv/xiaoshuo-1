@@ -285,7 +285,7 @@ async function scnTopupBudget(sid, budgetBlock) {
 /* ---- 候选终选（Wave 3 · 治理 §5.5）----
    关键场景管线暂停在 awaiting_author_choice：盲化候选（后端 blinded_order 随机序、默认无分数）
    → 作者整稿选择 → resume 从批判修订 / 质检续跑到归档。
-   终选一次写入：改选须显式 reopen（后端锁定，SELECTION_LOCKED 上抛）。 ---- */
+   终选一次写入：提交后不能改选（后端锁定，SELECTION_LOCKED 上抛）；想换一稿就重新起草这一场。 ---- */
 async function scnCandidates(sid) {
   const sceneId = await scnRequireSceneId(sid);
   return apiGet(`/api/v1/scenes/${sceneId}/style-candidates`);

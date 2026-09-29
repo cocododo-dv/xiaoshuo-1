@@ -216,6 +216,10 @@ describe("AI 起草台 · 只认后端（2026-09-21）", () => {
     await click(tabs[2]);
     expect(view.host.querySelector('[data-testid="scene-candidate-select"]').dataset.candidateRowId).toBe("cand-z");
     expect(view.host.querySelector('[data-testid="scene-candidate-tie"]')?.textContent).toContain("各稿无明显差异");
+    // 终选锁定之后没有「重开」这条路了（重评 R2）：页脚不再许诺它，说清怎么换一稿
+    const foot = view.host.querySelector(".scn2-draft-foot").textContent;
+    expect(foot).toBe("终选提交后不能改选；想换一稿，请重新起草这一场。");
+    expect(foot).not.toContain("重开");
   });
 
   it("「存为候选并去写作台」：稿进「同步与恢复」、不归档不覆盖，然后打开写作台这一场和那份候选", async () => {
