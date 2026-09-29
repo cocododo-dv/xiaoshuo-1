@@ -59,15 +59,39 @@ class ProjectedFact:
     event_id: str
     confidence: str = "high"
 
+    @classmethod
+    def from_event(cls, event: NarrativeEvent) -> ProjectedFact:
+        return cls(
+            entity_type=event.entity_type,
+            entity_id=event.entity_id,
+            fact_key=event.fact_key,
+            fact_value=event.fact_value,
+            scene_id=event.scene_id,
+            event_id=event.event_id,
+            confidence=event.confidence,
+        )
+
 
 # 置信档：spec/规则事件=high(权威)，prose 抽取的 advisory 事件=extracted(顾问)。
-# 重放在**同一 scene_seq**内必须让高置信优先——advisory(LLM)事件不得反超 spec 事实，
-# 否则 LLM 幻觉会覆盖「单一真相源」。跨 scene_seq 仍按最新事件演进（latest-wins）。
+# 重放在**同一场**内必须让高置信优先——advisory(LLM)事件不得反超 spec 事实，
+# 否则 LLM 幻觉会覆盖「单一真相源」。跨场仍按最新事件演进（latest-wins）。
 _CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0, "extracted": 0}
 
 
 def _confidence_rank(confidence: str | None) -> int:
     return _CONFIDENCE_RANK.get((confidence or "high").strip().lower(), 1)
+
+
+def fold_fact(facts: dict[str, ProjectedFact], event: NarrativeEvent) -> None:
+    """把一条事件叠进某个实体的事实表：同一事实键取最新的一条，只是同一场里低置信的不盖过高置信的。"""
+    existing = facts.get(event.fact_key)
+    if (
+        existing is not None
+        and existing.scene_id == event.scene_id
+        and _confidence_rank(existing.confidence) > _confidence_rank(event.confidence)
+    ):
+        return
+    facts[event.fact_key] = ProjectedFact.from_event(event)
 
 
 @dataclass(slots=True)
@@ -84,17 +108,33 @@ class EntityState:
         return {k: v.fact_value for k, v in sorted(self.facts.items())}
 
 
-@dataclass(slots=True)
-class CharacterState:
-    character_id: str
-    facts: dict[str, ProjectedFact] = field(default_factory=dict)
+class CharacterState(EntityState):
+    """角色的投影：按 entity_id 叠加这个角色名下的全部事件（不分 entity_type）。"""
 
-    def get(self, fact_key: str) -> str | None:
-        f = self.facts.get(fact_key)
-        return f.fact_value if f else None
+    __slots__ = ()
 
-    def as_dict(self) -> dict[str, str]:
-        return {k: v.fact_value for k, v in sorted(self.facts.items())}
+    def __init__(
+        self,
+        character_id: str,
+        facts: dict[str, ProjectedFact] | None = None,
+    ) -> None:
+        EntityState.__init__(
+            self,
+            entity_type="character",
+            entity_id=character_id,
+            facts=dict(facts or {}),
+        )
+
+    @property
+    def character_id(self) -> str:
+        return self.entity_id
+
+
+def fold_events(events, state: EntityState) -> EntityState:
+    """按给定次序把事件叠进 ``state``（调用方负责只给属于这个实体的事件）。"""
+    for event in events:
+        fold_fact(state.facts, event)
+    return state
 
 
 @dataclass(slots=True)
@@ -294,25 +334,7 @@ class NarrativeEventLog:
         )
 
         events = self.session.execute(query).scalars().all()
-        state = CharacterState(character_id=character_id)
-        for evt in events:
-            existing = state.facts.get(evt.fact_key)
-            if (
-                existing is not None
-                and existing.scene_id == evt.scene_id
-                and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
-            ):
-                continue  # 同场景内 advisory 不得反超高置信 spec 事实
-            state.facts[evt.fact_key] = ProjectedFact(
-                entity_type=evt.entity_type,
-                entity_id=evt.entity_id,
-                fact_key=evt.fact_key,
-                fact_value=evt.fact_value,
-                scene_id=evt.scene_id,
-                event_id=evt.event_id,
-                confidence=evt.confidence,
-            )
-        return state
+        return fold_events(events, CharacterState(character_id))
 
     def project_entity_state(
         self,
@@ -339,25 +361,7 @@ class NarrativeEventLog:
         )
 
         events = self.session.execute(query).scalars().all()
-        state = EntityState(entity_type=entity_type, entity_id=entity_id)
-        for evt in events:
-            existing = state.facts.get(evt.fact_key)
-            if (
-                existing is not None
-                and existing.scene_id == evt.scene_id
-                and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
-            ):
-                continue  # 同场景内 advisory 不得反超高置信 spec 事实
-            state.facts[evt.fact_key] = ProjectedFact(
-                entity_type=evt.entity_type,
-                entity_id=evt.entity_id,
-                fact_key=evt.fact_key,
-                fact_value=evt.fact_value,
-                scene_id=evt.scene_id,
-                event_id=evt.event_id,
-                confidence=evt.confidence,
-            )
-        return state
+        return fold_events(events, EntityState(entity_type=entity_type, entity_id=entity_id))
 
     def known_facts_for_character(
         self,
@@ -383,18 +387,7 @@ class NarrativeEventLog:
         )
 
         events = self.session.execute(query).scalars().all()
-        return [
-            ProjectedFact(
-                entity_type=evt.entity_type,
-                entity_id=evt.entity_id,
-                fact_key=evt.fact_key,
-                fact_value=evt.fact_value,
-                scene_id=evt.scene_id,
-                event_id=evt.event_id,
-                confidence=evt.confidence,
-            )
-            for evt in events
-        ]
+        return [ProjectedFact.from_event(evt) for evt in events]
 
     def check_consistency(
         self,
