@@ -28,19 +28,24 @@ def _snowflake_chapters(client, project_id: str) -> list[dict]:
 
 
 def _trash_chapter(client, project_id: str, chapter_id: str) -> None:
-    response = client.delete(
-        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",
+    # 界面删章走 v1 的 chapters/trash（目录的 v2 DELETE 桥接已删，批准 #24a）
+    response = client.post(
+        "/api/v1/chapters/trash",
+        json={"chapter_ids": [chapter_id]},
         headers={"X-Idempotency-Key": f"trash-{chapter_id}"},
     )
     assert response.status_code == 200, response.text
+    assert response.json()["data"]["blocked"] == [], response.text
 
 
 def _trash_scene(client, project_id: str, scene_id: str) -> None:
-    response = client.delete(
-        f"/api/v2/projects/{project_id}/catalog/scenes/{scene_id}",
+    response = client.post(
+        "/api/v1/scenes/trash",
+        json={"scene_ids": [scene_id]},
         headers={"X-Idempotency-Key": f"trash-{scene_id}"},
     )
     assert response.status_code == 200, response.text
+    assert response.json()["data"]["blocked"] == [], response.text
 
 
 def _cards(session, project_id: str) -> list[SceneCard]:
