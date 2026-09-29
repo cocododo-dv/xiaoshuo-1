@@ -554,14 +554,9 @@ _HOUSE_TASTE_TEXT = "脚步在门外停了；他将信封搁到桌上——也�
 
 
 def test_house_taste_gate_is_recorded_but_never_rewrites_under_style_first(session, monkeypatch) -> None:
+    # 这份稿子会触发房风门（neutral_first 下要去模板）；作者手笔直起时风格步让位于参考，不跑它
     gate = sg._anti_template_quality_gate(_HOUSE_TASTE_TEXT, scene_id="s", chapter_id="c")
     assert gate["triggered"] and "summary_ending" in gate["risk_dimensions"]
-    deferred = sg._defer_house_taste_gate(gate)
-    assert deferred["triggered"] is False and deferred["rewrite_pass"] == 0
-    assert deferred["findings"] == [] and deferred["risk_dimensions"] == []
-    assert deferred["house_taste_gate"] == "deferred_to_reference"
-    assert "summary_ending" in deferred["advisory_risk_dimensions"]
-    assert len(deferred["advisory_findings"]) == len(gate["findings"]) >= 1
 
     _seed_binding("sfd_g1", project_id="proj_sfd_g1")
     scene = _seed_scene(session, project_id="proj_sfd_g1", scene_id="SFD_G1_SC01", chapter_id="SFD_G1")
@@ -606,21 +601,14 @@ def test_house_taste_gate_still_rewrites_under_neutral_first(session) -> None:
     assert "de_template" in steps, steps
 
 
-def test_de_template_regression_check_ignores_house_dims_when_deferred(session) -> None:
+def test_de_template_regression_check_counts_house_dims(session) -> None:
+    """去模板改写只在 neutral_first 的风格稿链上跑：改写新添了房风风险就判回退。"""
     scene = _seed_scene(session, project_id="proj_sfd_g3", scene_id="SFD_G3_SC01", chapter_id="SFD_G3")
     source_gate = sg._anti_template_quality_gate(_VOICED_TEXT, scene_id=scene.scene_id, chapter_id=scene.chapter_id)
     strict = sg._assess_de_template_rewrite(
         scene=scene, source_content=_VOICED_TEXT, rewritten_content=_HOUSE_TASTE_TEXT, source_quality_gate=source_gate
     )
     assert "anti_template_risks_increased" in strict["reasons"]
-    deferred = sg._assess_de_template_rewrite(
-        scene=scene,
-        source_content=_VOICED_TEXT,
-        rewritten_content=_HOUSE_TASTE_TEXT,
-        source_quality_gate=source_gate,
-        house_taste_deferred=True,
-    )
-    assert not any(reason.startswith("anti_template") or reason.startswith("target_quality") for reason in deferred["reasons"])
 
 
 def test_near_final_deterministic_gates_defer_under_style_bound() -> None:

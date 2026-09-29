@@ -210,12 +210,11 @@ STYLE_NOTICE_ATTEMPT_STEPS: tuple[str, ...] = (
     STYLE_PATCH_KEEP_STEP,
     "scene_literary_rewrite",
 )
-# style_first 下 style_draft 步位看到的来源稿标签(模板按标签切换「重组」与「复读」)。
+# 来源稿标签:作者手笔直起的定向修改看到首稿,neutral_first 的风格稿看到已批准的中性稿。
 FIRST_DRAFT_SOURCE_LABEL = "First Draft (already in the reference author's hand)"
 NEUTRAL_DRAFT_SOURCE_LABEL = "Approved Neutral Draft"
-# AttemptTracker.details_json.content_source 标记:首稿直起 / 复读稿回退到首稿。
+# AttemptTracker.details_json.content_source 标记:首稿直起。
 STYLE_FIRST_DRAFT_CONTENT_SOURCE = "style_first_draft"
-FIRST_DRAFT_FALLBACK_CONTENT_SOURCE = "first_draft_fallback"
 # 风格参考 v3（P5b）：风格步「首稿即风格稿」产品的谱系标记（StyleGenerationResult.lineage / 检查点描述符）。
 LINEAGE_FIRST_DRAFT_ACCEPTED = "first_draft_accepted"
 STYLE_STEP_VERSION = "style_step_v1"
@@ -224,18 +223,8 @@ REASON_COPY_UNCHECKED = "copy_gate_unavailable"
 _STYLE_NOTICE_SEVERITIES = ("info", "warning", "error", "blocking")
 
 
-def _source_draft_label(bundle: Mapping[str, Any] | None) -> str:
-    """style_draft 步位看到的来源稿标签:style_first → 首稿(复读);否则中性稿(重组)。"""
-    return FIRST_DRAFT_SOURCE_LABEL if style_policy_for_bundle(bundle).style_first else NEUTRAL_DRAFT_SOURCE_LABEL
-
-
-def _source_draft_instruction(bundle: Mapping[str, Any] | None) -> str:
-    if style_policy_for_bundle(bundle).style_first:
-        return (
-            "Revise the first draft one step closer to the reference samples without changing the approved facts; "
-            "keep every passage that already sounds like the author."
-        )
-    return "Apply the style prompt template without changing the approved facts."
+# neutral_first 风格稿（重组中性稿）的来源稿指令；style_first 在入口就分流到风格步，走不到这条链。
+_NEUTRAL_STYLE_INSTRUCTION = "Apply the style prompt template without changing the approved facts."
 
 
 def _prompt_carries_style_reference(prompt: Mapping[str, Any] | None) -> bool:
@@ -468,14 +457,6 @@ _STYLE_SAFETY_REPAIR_TASK_PROMPT = (
     "Preserve its wording, paragraph architecture, reusable style, facts, chronology, and ending wherever they "
     "already pass; change only the exact hard-constraint failures listed below. Return one complete replacement "
     "scene_text and no commentary."
-)
-# 2026-09-14 风格保真修补:有绑定时修复 / 补丁的附加句——参考是唯一的风格权威,增删文字用作者
-# 自己的手段,不用房风的「加动作反应 / 删修饰」。
-_STYLE_BOUND_REPAIR_CLAUSE = (
-    " The [STYLE_REFERENCE] block above is the style authority: keep the draft in the reference author's "
-    "hand, and wherever the repair must add or remove text, do it with that author's own means as the "
-    "[风格样例] show (summary, digression, dialogue, description, reflection), never with generic "
-    "action-reaction filler; never reuse the samples' sentences, names, or events."
 )
 _STYLE_DE_TEMPLATE_REPAIR_TASK_PROMPT = (
     "Edit the labeled style draft directly. Apply only the listed de-template corrections while preserving its "
@@ -1038,10 +1019,10 @@ class SceneGenerationService:
             stage="style_draft",
             llm_step="style_draft",
             neutral_content=neutral_content,
-            source_label=_source_draft_label(bundle),
+            source_label=NEUTRAL_DRAFT_SOURCE_LABEL,
             source_row_id=neutral_draft_row_id,
             extra_instruction=(
-                _source_draft_instruction(bundle)
+                _NEUTRAL_STYLE_INSTRUCTION
                 + _author_note_instruction_for_bundle(bundle, author_note)
             ),
             source_draft_row_id=neutral_draft_row_id,
@@ -1087,10 +1068,7 @@ class SceneGenerationService:
         adversarial 质量差距受限的候选间改序。连续复刻参考原文的候选由独立硬
         guard 后置，不依赖未校准的风格分数。
         """
-        from novel_system.services.literary_quality import (
-            adversarial_rank_score,
-            get_dimension_weights,
-        )
+        from novel_system.services.literary_quality import adversarial_rank_score
 
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -1119,23 +1097,6 @@ class SceneGenerationService:
                 product_callback=product_callback,
             )
 
-        # §6 dynamic quality weights — project-level style profile can shift
-        # which adversarial dimensions matter most for this particular work.
-        _project_weights = (
-            get_dimension_weights(
-                scene.project_id,
-                self.session,
-            )
-            if scene and scene.project_id
-            else None
-        )
-        # Evidence-gated per-cell strategy policies were retired; ranking always
-        # uses the project/built-in dimension weights.
-        quality_strategy_audit: dict[str, Any] = {
-            "status": "project_or_builtin_weights",
-            "matched_policy_id": None,
-        }
-
         try:
             task_config = self._llm_runner.task_config("style_draft")
             base_temp = task_config.temperature
@@ -1162,7 +1123,7 @@ class SceneGenerationService:
         candidates: list[tuple[StyleGenerationResult, float]] = [
             (
                 candidate,
-                adversarial_rank_score(candidate.content, weights=_project_weights),
+                adversarial_rank_score(candidate.content),
             )
             for candidate in durable_products.values()
         ]
@@ -1185,10 +1146,10 @@ class SceneGenerationService:
                     stage="style_draft",
                     llm_step="style_draft",
                     neutral_content=neutral_content,
-                    source_label=_source_draft_label(bundle),
+                    source_label=NEUTRAL_DRAFT_SOURCE_LABEL,
                     source_row_id=neutral_draft_row_id,
                     extra_instruction=(
-                        "Apply the style prompt template without changing the approved facts."
+                        _NEUTRAL_STYLE_INSTRUCTION
                         + _author_note_instruction_for_bundle(bundle, author_note)
                     ),
                     source_draft_row_id=neutral_draft_row_id,
@@ -1201,7 +1162,6 @@ class SceneGenerationService:
                         "candidate_index": idx,
                         "temperature_override": temp,
                         "n_candidates": n_candidates,
-                        "quality_strategy": quality_strategy_audit,
                     },
                     product_slot_key=slot_key,
                     product_slot_order=idx,
@@ -1209,7 +1169,7 @@ class SceneGenerationService:
                     product_callback=product_callback,
                     step_reconciler=step_reconciler,
                 )
-                score = adversarial_rank_score(result.content, weights=_project_weights)
+                score = adversarial_rank_score(result.content)
                 candidates.append((result, score))
                 if candidate_checkpoint is not None:
                     candidate_checkpoint(idx, result)
@@ -1305,10 +1265,10 @@ class SceneGenerationService:
                         stage="style_draft",
                         llm_step="style_draft",
                         neutral_content=neutral_content,
-                        source_label=_source_draft_label(bundle),
+                        source_label=NEUTRAL_DRAFT_SOURCE_LABEL,
                         source_row_id=neutral_draft_row_id,
                         extra_instruction=(
-                            "Apply the style prompt template without changing the approved facts."
+                            _NEUTRAL_STYLE_INSTRUCTION
                             + _author_note_instruction_for_bundle(bundle, author_note)
                         ),
                         source_draft_row_id=neutral_draft_row_id,
@@ -1325,7 +1285,6 @@ class SceneGenerationService:
                             "max_candidates": candidate_cap,
                             "diversification_strategy": strategy,
                             "progressive_top_up": True,
-                            "quality_strategy": quality_strategy_audit,
                         },
                         product_slot_key=slot_key,
                         product_slot_order=n_candidates + top_up_index - 1,
@@ -1336,9 +1295,7 @@ class SceneGenerationService:
                     candidates.append(
                         (
                             result,
-                            adversarial_rank_score(
-                                result.content, weights=_project_weights
-                            ),
+                            adversarial_rank_score(result.content),
                         )
                     )
                     if candidate_checkpoint is not None:
@@ -2629,10 +2586,10 @@ class SceneGenerationService:
         style_first = policy.style_first
 
         if stage == "style_draft":
+            # style_draft 步只有 neutral_first 走得到（style_first 在入口就分流到风格步）
             extra_instruction += _style_length_instruction(
                 scene,
                 source_length=_visible_char_count(neutral_content),
-                style_first=style_first,
             )
 
         user_prompt = self._build_style_user_prompt(
@@ -2717,31 +2674,24 @@ class SceneGenerationService:
                 )
                 repair_source_row_id = rejected_candidate_row_id
                 repair_source_content = style_content
-                # 已批准的来源稿是安全降级真源(neutral_first:中性稿;style_first:已按参考
-                # 手笔写成的首稿)。保留 provider 原稿为独立 rejected 行,主 style_draft 行只
+                # 已批准的中性稿是安全降级真源。保留 provider 原稿为独立 rejected 行,主 style_draft 行只
                 # 承载可继续进入 QC/候选选择的安全文本。
                 style_content = neutral_content
                 notices.append(
                     style_notice(
                         STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL,
-                        (
-                            "风格复读稿因长度 / 必含项 / 禁用内容 / 文本完整性未通过确定性安全门，"
-                            "已回退为首稿（首稿本身已按参考作者手笔写成）；后续修复通道会尝试一次安全修复。"
-                            if style_first
-                            else "风格稿因长度 / 必含项 / 禁用内容 / 文本完整性未通过确定性安全门，"
-                            "已回退为已批准的中性稿；后续修复通道会尝试一次带风格的安全修复。"
-                        ),
+                        "风格稿因长度 / 必含项 / 禁用内容 / 文本完整性未通过确定性安全门，"
+                        "已回退为已批准的中性稿；后续修复通道会尝试一次带风格的安全修复。",
                         severity="warning",
                         reasons=list(base_safety.get("reasons") or []),
                         rejected_candidate_row_id=rejected_candidate_row_id,
-                        draft_mode=(DRAFT_MODE_STYLE_FIRST if style_first else None),
                     )
                 )
             # 风格参考 v3（S2 c）：中性首稿再润色且有绑定——风格稿出来后读一次读数，与中性稿比，不更像就把中性稿
             # 当风格稿交付（与作者手笔直起同一条「永不越改越远」规则）；读数不可信 / 未绑定 → 照旧接受风格稿。
             style_step_decision: dict[str, Any] | None = None
             not_closer_row_id: str | None = None
-            if stage == "style_draft" and base_safety["accepted"] and not style_first and policy.bound:
+            if stage == "style_draft" and base_safety["accepted"] and policy.bound:
                 style_step_decision, not_closer_row_id, style_content = self._neutral_first_style_keep(
                     scene=scene,
                     bundle=bundle,
@@ -2787,13 +2737,8 @@ class SceneGenerationService:
                 if isinstance(prompt.get("_style_reference_runtime_audit"), dict)
                 else None
             )
-            fallback_content_source = (
-                FIRST_DRAFT_FALLBACK_CONTENT_SOURCE
-                if style_first
-                else "approved_neutral_fallback"
-            )
             content_source = (
-                fallback_content_source
+                "approved_neutral_fallback"
                 if rejected_candidate_row_id is not None
                 else style_step.CONTENT_SOURCE_REVISION_NOT_CLOSER
                 if not_closer_row_id is not None
@@ -2918,10 +2863,6 @@ class SceneGenerationService:
                 chapter_id=scene.chapter_id,
             )
             quality_gate["base_safety"] = base_safety
-            if style_first:
-                # 2026-09-12 风格直起:房风维度整体让位——只记录为 advisory_findings,不触发
-                # 去模板改写;安全门仍可触发修复(旧的参考派生形状包络随 v2 指标包络删除,风格参考 v3 S2)。
-                quality_gate = _defer_house_taste_gate(quality_gate)
             if not base_safety["accepted"]:
                 quality_gate["triggered"] = True
                 quality_gate["rewrite_pass"] = 1
@@ -3143,11 +3084,7 @@ class SceneGenerationService:
         user_prompt = self._build_style_user_prompt(
             prompt["user_prompt"],
             neutral_content=annotated_source,
-            source_label=(
-                "Segment-addressed First Draft (already in the reference author's hand) for Style Salvage"
-                if style_policy_for_bundle(bundle).style_first
-                else "Segment-addressed Approved Neutral Draft for Style Salvage"
-            ),
+            source_label="Segment-addressed Approved Neutral Draft for Style Salvage",
             source_row_id=neutral_row_id,
             extra_instruction=_style_salvage_instruction(
                 scene,
@@ -3224,7 +3161,6 @@ class SceneGenerationService:
             rewritten_content=rewritten_content,
         )
         acceptance = _assess_de_template_rewrite(
-            house_taste_deferred=style_policy_for_bundle(bundle).defers_house_taste(),
             scene=scene,
             source_content=neutral_content,
             authoritative_content=neutral_content,
@@ -3356,9 +3292,7 @@ class SceneGenerationService:
             and _parse_numeric_length_band(scene.target_length_band) is not None
         )
         length_patch_audit: dict[str, Any] | None = None
-        # 2026-09-14 风格保真修补:有绑定时修复 / 补丁也在作者的原文面前进行(见下方注入分支),
-        # 且扩缩指令改用作者自己的手段;neutral_first 逐字不变。
-        style_first = style_policy_for_bundle(bundle).defers_house_taste()
+        # 去模板 / 安全修复 / 长度补丁只在 neutral_first 的风格稿链上跑（作者手笔直起在入口就分流到风格步）。
         if is_length_patch:
             # 整篇“修长度”在真实模型上会稳定退化成摘要。程序先给原文分段编号，
             # 模型只提交 segment_id + new_text；原文定位和套用不依赖模型复制精度。
@@ -3389,7 +3323,6 @@ class SceneGenerationService:
                     scene,
                     source_length=_visible_char_count(source_content),
                     editable_segment_ids=editable_segment_ids,
-                    style_first=style_first,
                 ),
             )
         else:
@@ -3398,7 +3331,6 @@ class SceneGenerationService:
                     scene=scene,
                     source_content=source_content,
                     authoritative_content=authoritative_content,
-                    style_first=style_first,
                 )
             else:
                 repair_brief = _de_template_rewrite_brief(quality_gate)
@@ -3432,7 +3364,6 @@ class SceneGenerationService:
                         "turning them into counts or punctuation quotas, and do not flatten the prose back to a neutral draft."
                     )
                     + repair_length_instruction
-                    + (_STYLE_BOUND_REPAIR_CLAUSE if style_first else "")
                 ),
                 patch_brief=repair_brief,
                 patch_heading=(
@@ -3441,43 +3372,14 @@ class SceneGenerationService:
                     else "De-template Rewrite Brief"
                 ),
             )
-        if is_length_patch:
-            if style_first:
-                # 2026-09-14 风格保真修补:有绑定时长度补丁也带 [STYLE_REFERENCE](样例、声音、
-                # 正向、禁忌、红线),新增 / 替换的段落以作者手笔写。context_text=None:
-                # [风格分布指导] 不按被拒稿的异常篇幅算「当前」偏差,局部补丁不会变成风格重写。
-                prompt = self._inject_style_reference(
-                    prompt,
-                    scene,
-                    task_type="scene_generation",
-                    bundle=bundle,
-                    context_text=None,
-                    final_user_prompt=user_prompt,
-                    placement=PLACEMENT_USER_TAIL,
-                    role=ROLE_REVISE,
-                    node_id="style_patch",
-                )
-        elif is_safety_repair:
-            if style_first:
-                # 同上:安全修复只修硬约束,但修的时候仍要看着作者的原文。
-                prompt = self._inject_style_reference(
-                    base_prompt,
-                    scene,
-                    task_type="scene_generation",
-                    bundle=bundle,
-                    context_text=None,
-                    final_user_prompt=user_prompt,
-                    placement=PLACEMENT_USER_TAIL,
-                    role=ROLE_REVISE,
-                    node_id="style_patch",
-                )
-            else:
-                # 这一遍只负责把已生成的风格稿恢复到事实、长度与正文完整性硬约束内。
-                # 再注入完整画像会按“不合格源稿”的异常篇幅重算段数/分号目标，并把
-                # 一个局部修复重新变成风格重写；真实基准中这会诱发过度压缩与事实丢失。
-                # 被拒稿本身已承载可复用风格，故安全修复只使用冻结的原始 style 模板。
-                prompt = dict(base_prompt)
-        else:
+        # 长度补丁只按编号改几段：用上面装配好的长度补丁模板本身，不带参考前缀。
+        if is_safety_repair and not is_length_patch:
+            # 这一遍只负责把已生成的风格稿恢复到事实、长度与正文完整性硬约束内。
+            # 再注入完整画像会按“不合格源稿”的异常篇幅重算段数/分号目标，并把
+            # 一个局部修复重新变成风格重写；真实基准中这会诱发过度压缩与事实丢失。
+            # 被拒稿本身已承载可复用风格，故安全修复只使用冻结的原始 style 模板。
+            prompt = dict(base_prompt)
+        elif not is_safety_repair:
             prompt = self._inject_style_reference(
                 base_prompt,
                 scene,
@@ -3562,7 +3464,6 @@ class SceneGenerationService:
             }
 
         acceptance = _assess_de_template_rewrite(
-            house_taste_deferred=style_policy_for_bundle(bundle).defers_house_taste(),
             scene=scene,
             source_content=source_content,
             authoritative_content=authoritative_content,
@@ -4508,12 +4409,8 @@ def _assess_de_template_rewrite(
     rewritten_content: str,
     source_quality_gate: dict[str, Any],
     style_conformance: dict[str, Any] | None = None,
-    house_taste_deferred: bool = False,
 ) -> dict[str, Any]:
-    """确定性验收一次去模板改写；只阻止可证明的回退，不猜测作者审美。
-
-    ``house_taste_deferred``(style_first):房风维度已让位,不再用启发式去模板分数判回退。
-    """
+    """确定性验收一次去模板改写；只阻止可证明的回退，不猜测作者审美。"""
     source_length = _visible_char_count(source_content)
     rewritten_length = _visible_char_count(rewritten_content)
     length_range = _parse_numeric_length_band(scene.target_length_band)
@@ -4609,7 +4506,7 @@ def _assess_de_template_rewrite(
     # 此时 source_quality_gate 还人为追加了 style_safety finding，且原稿本身不可交付；
     # 再要求启发式去模板分数不下降，会把已经安全、仍保留风格的修复稿错误退回中性稿。
     # 普通 de-template 改写仍维持严格非回退门。
-    enforce_quality_non_regression = authoritative_content is None and not house_taste_deferred
+    enforce_quality_non_regression = authoritative_content is None
     if enforce_quality_non_regression:
         if rewritten_quality_score + 0.005 < source_quality_score:
             reasons.append("anti_template_quality_regressed")
@@ -5364,7 +5261,6 @@ def _style_length_patch_instruction(
     *,
     source_length: int,
     editable_segment_ids: Sequence[str],
-    style_first: bool = False,
 ) -> str:
     length_range = _parse_numeric_length_band(scene.target_length_band)
     if length_range is None:
@@ -5405,14 +5301,7 @@ def _style_length_patch_instruction(
         "The final source segment marked PROTECTED_ENDING is forbidden. Segment markers are addresses and must "
         "never appear in new_text."
         f"{required_rule}"
-        + (
-            " Every new_text is written in the reference author's hand: expand or compress with that author's "
-            "own means as the [风格样例] show (summary, digression, dialogue, description, reflection), never "
-            "with generic action-reaction filler, and never reuse the samples' sentences, names, or events."
-            if style_first
-            else ""
-        )
-        + " Return edits only, never scene_text or the complete scene."
+        " Return edits only, never scene_text or the complete scene."
     )
 
 
@@ -5529,25 +5418,6 @@ def _anti_template_quality_gate(
     }
 
 
-def _defer_house_taste_gate(quality_gate: dict[str, Any]) -> dict[str, Any]:
-    """style_first:去模板门的房风维度(ANTI_TEMPLATE_GATE_DIMENSIONS)整体降级为仅记录。
-
-    参考是唯一的风格权威:概述式结尾、句法单调、复沓、解释动机、装饰意象……在参考作者
-    自己也这样写时都是手法而不是缺陷。命中保留在 ``advisory_findings`` 供审计,不再触发
-    改写,也不再参与「改后不降分即拒绝」的比较。
-    """
-    deferred = dict(quality_gate)
-    deferred["advisory_findings"] = list(quality_gate.get("findings") or [])
-    deferred["advisory_risk_dimensions"] = list(quality_gate.get("risk_dimensions") or [])
-    deferred["house_taste_gate"] = "deferred_to_reference"
-    deferred["findings"] = []
-    deferred["risk_dimensions"] = []
-    deferred["quality_signal_ids"] = []
-    deferred["triggered"] = False
-    deferred["rewrite_pass"] = 0
-    return deferred
-
-
 def _de_template_rewrite_brief(quality_gate: dict[str, Any]) -> list[str]:
     brief = [
         "Run no more than this one de-template pass; do not add another rewrite loop.",
@@ -5572,7 +5442,6 @@ def _style_safety_repair_brief(
     scene: SceneCard,
     source_content: str,
     authoritative_content: str,
-    style_first: bool = False,
 ) -> list[str]:
     """把确定性失败翻译成一次可执行、无正文泄漏的修复清单。"""
     del authoritative_content  # 仅表明调用方已提供可信事实基线；正文不进入提示。
@@ -5616,13 +5485,8 @@ def _style_safety_repair_brief(
             brief.append(
                 f"Add {local_minimum - current_length}-{local_maximum - current_length} visible characters; do not return fewer or more than that correction range. "
                 "Keep every existing factual beat in order; "
-                + (
-                    "expand inside the same event with the reference author's own means as the [风格样例] show "
-                    "(summary, digression, dialogue, description, reflection) "
-                    if style_first
-                    else "add concrete action-reaction, blocking, perception, or consequence inside the same event "
-                )
-                + f"until {local_minimum}-{local_maximum} visible characters are present."
+                "add concrete action-reaction, blocking, perception, or consequence inside the same event "
+                f"until {local_minimum}-{local_maximum} visible characters are present."
             )
         elif current_length > maximum:
             brief.append(
