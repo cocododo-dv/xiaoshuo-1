@@ -1,14 +1,15 @@
 import React from "react";
-import { I } from "./icons.jsx";
-import { Notice, Spinner } from "./ws-ui.jsx";
 import { focusableIn, isImeComposing } from "./ws-dialog.jsx";
-import { WR_RW_ACTIONS, wrToneInstr } from "./ws-writer-ai.js";
+import { useWindowEvents } from "./lib/events.js";
+import { WR_RW_ACTIONS } from "./ws-writer-ai.js";
 import { wrDecidePatch, wrRequestRewrite } from "./ws-writer-requests.js";
 import {
-  WR_ANNO_MAX_ITEMS, WR_ANNO_MAX_NOTE, WR_ANNO_MAX_QUOTE,
+  WR_ANNO_MAX_ITEMS, WR_ANNO_MAX_QUOTE,
   wrAnnoAnchor, wrAnnoId, wrAnnoLoad, wrAnnoMark, wrAnnoRetitle, wrAnnoSave, wrAnnoUnmark,
 } from "./ws-writer-annotations.js";
-import { WrAiErrorBlock } from "./ws-writer-candidates.jsx";
+import {
+  WrAnnoPop, WrDeepSelectionBar, WrRevPop, WrRewriteBar, WrRewritePop, wrCaretAfter, wrSameRange,
+} from "./ws-writer-inline-parts.jsx";
 import { wrBlockSlice } from "./ws-writer-manuscript.js";
 import { MANUSCRIPT_BLOCK_SELECTOR, unwrapNode } from "./manuscript-html.js";
 
@@ -29,51 +30,14 @@ import { MANUSCRIPT_BLOCK_SELECTOR, unwrapNode } from "./manuscript-html.js";
    弹层打开时焦点进弹层（结果出来落在选中的那一版上）；Esc / 取消 / 做完之后焦点回到正文：
    没动过正文就把原来的选区还回去（还回去的选区不再弹工具条），替换 / 批注之后光标放在那一处后面。
    过去焦点掉在 <body> 上，作者接着敲的字哪儿也去不了。输入法组字中的 Esc 只是撤掉拼音，不关弹层。
+   画面部分（工具条、各个弹层）在 ws-writer-inline-parts.jsx，这里管状态、选区、请求与焦点。
    ESM 模块，不写 window。
    ========================================================== */
 
 const { useEffect, useRef, useState } = React;
 
-function WrToneSlider({ label, lo, hi, value, onChange }) {
-  return (
-    <div className="wr-tune-row">
-      <div className="wr-tune-poles"><span>{lo}</span><span className="wr-tune-label">{label}</span><span>{hi}</span></div>
-      <input type="range" min="0" max="100" value={value} aria-label={`${label}：${lo} 到 ${hi}`} className="wr-tune-range" onChange={(e) => onChange(+e.target.value)} />
-    </div>
-  );
-}
-
 function announceAnnotations(sceneId) {
   window.dispatchEvent(new CustomEvent("ws:anno-change", { detail: { sid: sceneId } }));
-}
-
-function wrSameRange(a, b) {
-  try {
-    return a.compareBoundaryPoints(Range.START_TO_START, b) === 0 && a.compareBoundaryPoints(Range.END_TO_END, b) === 0;
-  } catch (e) { return false; }
-}
-
-/* 紧跟在某个节点后面的光标（节点随后被拆包 / 合并时，活动 Range 会跟着挪到那段字后面） */
-function wrCaretAfter(node) {
-  if (!node || !node.parentNode) return null;
-  const range = document.createRange();
-  range.setStartAfter(node);
-  range.collapse(true);
-  return range;
-}
-
-/* 工具条里的 ←→ / Home / End：在按钮之间移动（role=toolbar 的键盘约定） */
-function onToolbarKeyDown(event) {
-  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-  const buttons = focusableIn(event.currentTarget);
-  if (!buttons.length) return;
-  event.preventDefault();
-  const at = buttons.indexOf(document.activeElement);
-  let next = 0;
-  if (event.key === "End") next = buttons.length - 1;
-  else if (event.key === "ArrowRight") next = at < 0 ? 0 : (at + 1) % buttons.length;
-  else if (event.key === "ArrowLeft") next = at <= 0 ? buttons.length - 1 : at - 1;
-  buttons[next].focus();
 }
 
 /* finding / onFindingDone（2026-09-22 诊断统一）：深改面板「选中这一句去改写 / 按诊断改写」带过来的那条发现。
@@ -243,9 +207,10 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     if (first) first.focus({ preventScroll: true });
   };
 
-  useEffect(() => {
-    /* 自己处理掉的 Esc 标记为已处理，写作台就不会再顺手收起侧栏 */
-    const onKey = (e) => {
+  /* 自己处理掉的 Esc 标记为已处理，写作台就不会再顺手收起侧栏。
+     useWindowEvents 只挂一次监听、每次调用读最新的处理函数（过去每次渲染都拆了重挂）。 */
+  useWindowEvents({
+    keydown: (e) => {
       if (isImeComposing(e)) return; // 组字中的 Esc 只是撤掉拼音：过去它关掉弹层、丢掉写了一半的批注
       /* Alt+F10：从正文进工具条（选区还在、工具条被 Esc 收起过时重新弹出来） */
       if (e.key === "F10" && e.altKey) {
@@ -260,10 +225,8 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
       if (e.key !== "Escape" || !(rect || phase !== "idle")) return;
       e.preventDefault();
       dismiss();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }); // 每次渲染重挂：处理函数要读到最新的阶段
+    },
+  });
 
   /* Alt+F10 弹出的工具条画出来以后再把焦点放进去 */
   useEffect(() => {
@@ -496,157 +459,47 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
 
   if (phase === "idle" && deep) {
     return (
-      <div className="wr-irw-bar" ref={barRef} role="toolbar" aria-label="深改姿态下的选区" aria-keyshortcuts="Alt+F10" style={pos(onPassageReview ? 340 : 220)}
-        onMouseDown={(e) => e.preventDefault()} onKeyDown={onToolbarKeyDown}>
-        <span className="wr-irw-spark" aria-hidden="true"><I.Pen size={13} /></span>
-        {onPassageReview && (
-          <button type="button" className="wr-irw-btn" disabled={passageBusy}
-            title="让模型对着整场看选中的这几段：有没有要改的、和别处矛不矛盾、怎么改"
-            onClick={() => {
-              const slice = selBlockRef.current;
-              setRect(null);
-              if (slice) onPassageReview({ pid: slice.pid, pidEnd: slice.pidEnd, find: slice.text });
-            }}>
-            {selBlockRef.current && selBlockRef.current.pidEnd > selBlockRef.current.pid ? "AI 看这几段" : "AI 看这一段"}
-          </button>
-        )}
-        <button type="button" className="wr-irw-btn accent"
-          onClick={() => {
-            const slice = selBlockRef.current;
-            setRect(null);
-            if (onRewriteSelection && slice) onRewriteSelection({ pid: slice.pid, find: slice.text, start: slice.start, end: slice.end });
-          }}>
-          回起草改这句
-        </button>
-      </div>
+      <WrDeepSelectionBar barRef={barRef} style={pos(onPassageReview ? 340 : 220)} slice={selBlockRef.current}
+        onPassageReview={onPassageReview} passageBusy={passageBusy}
+        onReviewPassage={() => {
+          const slice = selBlockRef.current;
+          setRect(null);
+          if (slice) onPassageReview({ pid: slice.pid, pidEnd: slice.pidEnd, find: slice.text });
+        }}
+        onRewriteSelection={() => {
+          const slice = selBlockRef.current;
+          setRect(null);
+          if (onRewriteSelection && slice) onRewriteSelection({ pid: slice.pid, find: slice.text, start: slice.start, end: slice.end });
+        }} />
     );
   }
   if (phase === "idle") {
     return (
-      <div className="wr-irw-bar" ref={barRef} role="toolbar" aria-label="改写选中的文字" aria-keyshortcuts="Alt+F10" style={pos(448)}
-        onMouseDown={(e) => e.preventDefault()} onKeyDown={onToolbarKeyDown}>
-        <span className="wr-irw-spark" aria-hidden="true"><I.Sparkles size={13} /></span>
-        {finding && (
-          <button type="button" className="wr-irw-btn accent" title={finding.issue || ""}
-            onClick={() => run(finding.recommendation || WR_RW_ACTIONS[0].instr)}>
-            按诊断改写
-          </button>
-        )}
-        {WR_RW_ACTIONS.map((action) => (
-          <button type="button" key={action.id} className="wr-irw-btn" onClick={() => run(action.instr)}>{action.label}</button>
-        ))}
-        <span className="wr-irw-sep" />
-        {selRangeTextRef.current.length > WR_ANNO_MAX_QUOTE
-          ? <button type="button" className="wr-irw-btn" disabled title={`批注最多圈 ${WR_ANNO_MAX_QUOTE} 字，选短一点再批注`}>批注</button>
-          : <button type="button" className="wr-irw-btn" onClick={startAnno}>批注</button>}
-        <button type="button" className="wr-irw-btn" onClick={() => setPhase("tune")}>调音</button>
-        <button type="button" className="wr-irw-btn accent" onClick={() => setPhase("custom")}>自定义…</button>
-      </div>
+      <WrRewriteBar barRef={barRef} style={pos(448)} finding={finding} quoteLength={selRangeTextRef.current.length}
+        onRun={run} onStartAnno={startAnno} onTune={() => setPhase("tune")} onCustom={() => setPhase("custom")} />
     );
   }
   if (phase === "rev") {
     const span = revElRef.current;
-    const orig = span ? (span.getAttribute("data-orig") || "") : "";
-    const now = span ? span.textContent : "";
     return (
-      <div className="wr-irw-pop" ref={popRef} tabIndex={-1} role="dialog" aria-label="AI 改写的这一处" style={popStyle} onMouseDown={(e) => e.stopPropagation()}>
-        <div className="wr-irw-head"><I.Sparkles size={14} /> 这一处是 AI 改写的 <span className="sp">离开这一场后不再标出</span></div>
-        <div className="wr-irw-body">
-          <div className="wr-rev-row"><span className="wr-rev-tag">原文</span><div className="wr-irw-orig wr-rev-text">{orig}</div></div>
-          <div className="wr-rev-row"><span className="wr-rev-tag now">改写</span><div className="wr-irw-new wr-rev-text">{now}</div></div>
-        </div>
-        <div className="wr-irw-foot">
-          <button type="button" className="btn btn-quiet btn-sm" onClick={dismiss}>关闭</button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={revertRev}>还原原文</button>
-          <button type="button" className="btn btn-accent btn-sm" onClick={acceptRev}>保留改写</button>
-        </div>
-      </div>
+      <WrRevPop popRef={popRef} style={popStyle}
+        orig={span ? (span.getAttribute("data-orig") || "") : ""} now={span ? span.textContent : ""}
+        onDismiss={dismiss} onRevert={revertRev} onAccept={acceptRev} />
     );
   }
   if (phase === "anno") {
     return (
-      <div className="wr-irw-pop" ref={popRef} tabIndex={-1} role="dialog" aria-label="批注" style={popStyle} onMouseDown={(e) => e.stopPropagation()}>
-        <div className="wr-irw-head"><I.FileText size={14} /> 批注 <span className="sp">{annoNew ? "新建" : "已有"}</span></div>
-        <div className="wr-anno-note">
-          <textarea autoFocus value={annoText} maxLength={WR_ANNO_MAX_NOTE} aria-label="批注内容" placeholder="写下对这段文字的批注、疑问或待办…" onChange={(e) => setAnnoText(e.target.value)} />
-          {annoText.length >= WR_ANNO_MAX_NOTE * 0.8 && (
-            <p className="wr-anno-scope wr-anno-count" aria-live="polite">
-              {annoText.length >= WR_ANNO_MAX_NOTE ? `已到 ${WR_ANNO_MAX_NOTE} 字上限` : `${annoText.length} / ${WR_ANNO_MAX_NOTE} 字`}
-            </p>
-          )}
-          <p className="wr-anno-scope">批注保存在本机浏览器里，不进正文，也不会同步到服务器或其他设备。</p>
-          {annoSaveError === "storage" && <p className="wr-anno-scope is-error" role="alert">这台浏览器不让写入本地存储（隐私模式或存储已满），批注没有存下来。</p>}
-          {annoSaveError === "full" && <p className="wr-anno-scope is-error" role="alert">这一场已经有 {WR_ANNO_MAX_ITEMS} 条批注，到上限了，这一条没有存下来。先在批注页签删掉几条用不着的再加。</p>}
-        </div>
-        <div className="wr-irw-foot">
-          <button type="button" className="btn btn-quiet btn-sm" onClick={cancelAnno}>{annoNew ? "取消" : "关闭"}</button>
-          {!annoNew && <button type="button" className="btn btn-ghost btn-sm" onClick={deleteAnno}>删除批注</button>}
-          <button type="button" className="btn btn-accent btn-sm" onClick={saveAnno}>{annoNew ? "添加批注" : "更新批注"}</button>
-        </div>
-      </div>
+      <WrAnnoPop popRef={popRef} style={popStyle} annoNew={annoNew} annoText={annoText} onAnnoText={setAnnoText}
+        annoSaveError={annoSaveError} onCancel={cancelAnno} onDelete={deleteAnno} onSave={saveAnno} />
     );
   }
+  const retry = () => run(lastInstr.current || WR_RW_ACTIONS[0].instr);
   return (
-    <div className="wr-irw-pop" ref={popRef} tabIndex={-1} role="dialog" aria-label="AI 改写选中的文字" style={popStyle} onMouseDown={(e) => e.stopPropagation()}>
-      <div className="wr-irw-head"><I.Sparkles size={14} /> AI 改写{phase === "result" && results.length > 1 ? `（${results.length} 版）` : ""}{finding ? ` · 按诊断：${finding.label || ""}` : ""} <span className="sp">选中 {selRef.current.length} 字</span></div>
-      {phase === "custom" && (
-        <div className="wr-irw-custom">
-          <input className="wr-irw-input" autoFocus value={custom} aria-label="改写要求" placeholder="如：更冷一点、删掉比喻、加一个动作…"
-            onChange={(e) => setCustom(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229 && custom.trim()) { e.preventDefault(); run(custom.trim()); } }} />
-          <button type="button" className="btn btn-accent btn-sm" disabled={!custom.trim()} onClick={() => custom.trim() && run(custom.trim())}>改写</button>
-        </div>
-      )}
-      {phase === "tune" && (
-        <>
-          <div className="wr-tune">
-            <WrToneSlider label="语气" lo="冷峻" hi="温情" value={tone.warm} onChange={(v) => setTone((t) => ({ ...t, warm: v }))} />
-            <WrToneSlider label="繁简" lo="凝练" hi="铺陈" value={tone.expand} onChange={(v) => setTone((t) => ({ ...t, expand: v }))} />
-            <WrToneSlider label="显隐" lo="含蓄" hi="直白" value={tone.direct} onChange={(v) => setTone((t) => ({ ...t, direct: v }))} />
-            <div className="wr-tune-prev">{wrToneInstr(tone)}</div>
-          </div>
-          <div className="wr-irw-foot">
-            <button type="button" className="btn btn-quiet btn-sm" onClick={dismiss}>取消</button>
-            <button type="button" className="btn btn-accent btn-sm" onClick={() => run(wrToneInstr(tone))}>按这个语气改写</button>
-          </div>
-        </>
-      )}
-      {phase === "loading" && (<div className="wr-irw-load" role="status"><Spinner size={15} /> 正在改写，稍等…</div>)}
-      {phase === "error" && (
-        <>
-          <div className="wr-irw-body">
-            <WrAiErrorBlock error={error} onRetry={() => run(lastInstr.current || WR_RW_ACTIONS[0].instr)}
-              onOpenSettings={onOpenSettings ? () => { close({ refocus: false }); onOpenSettings(); } : null} />
-          </div>
-          <div className="wr-irw-foot"><button type="button" className="btn btn-quiet btn-sm" onClick={dismiss}>关闭</button></div>
-        </>
-      )}
-      {phase === "result" && (
-        <>
-          <div className="wr-irw-body">
-            {staleSel && (
-              <Notice tone="warn" className="wr-irw-stale"
-                actions={<button type="button" className="btn btn-ghost btn-sm" onClick={copyChosen}>{copied ? "已复制" : `复制第 ${pick + 1} 版`}</button>}>
-                选中的那段字已经不在原处（改过、删掉，或正文刚重新载入），这一版没有替换进去。可以先复制这一版，或重新选中再改。
-              </Notice>
-            )}
-            <div className="wr-irw-orig">{selRef.current}</div>
-            <div className="wr-irw-cands" role="radiogroup" aria-label="改写版本">
-              {results.map((text, i) => (
-                <button type="button" key={i} role="radio" aria-checked={pick === i} className={`wr-irw-cand ${pick === i ? "is-sel" : ""}`} onClick={() => { setPick(i); setCopied(false); }}>
-                  <span className="wr-irw-cand-k" aria-hidden="true">{i + 1}</span>
-                  <span className="wr-irw-cand-t">{text}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="wr-irw-foot">
-            <button type="button" className="btn btn-quiet btn-sm" onClick={dismiss}>取消</button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => run(lastInstr.current || WR_RW_ACTIONS[0].instr)}>再改一次</button>
-            <button type="button" className="btn btn-accent btn-sm" disabled={staleSel} onClick={doReplace}>替换为第 {pick + 1} 版</button>
-          </div>
-        </>
-      )}
-    </div>
+    <WrRewritePop popRef={popRef} style={popStyle} phase={phase} finding={finding} selText={selRef.current}
+      results={results} pick={pick} onPick={(i) => { setPick(i); setCopied(false); }}
+      custom={custom} onCustom={setCustom} tone={tone} onTone={(patch) => setTone((t) => ({ ...t, ...patch }))}
+      error={error} staleSel={staleSel} copied={copied} onCopy={copyChosen}
+      onRun={run} onRetry={retry} onDismiss={dismiss} onReplace={doReplace}
+      onOpenSettings={onOpenSettings ? () => { close({ refocus: false }); onOpenSettings(); } : null} />
   );
 }
