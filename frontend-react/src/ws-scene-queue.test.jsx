@@ -82,6 +82,23 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+describe("AI 起草台 · 进页面时取回在办场的运行记录（F03-11）", () => {
+  it("一场的 workbench 慢：另一场照样去取，不排在它后面干等", async () => {
+    window.localStorage.setItem("scn-queue:v1::prj-main", JSON.stringify(["ch01s1", "ch01s2"]));
+    const { WsScene, client } = await loadScene();
+    const base = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => (
+      url === "/api/v1/scenes/s1/workbench" ? new Promise(() => {}) : base(url, options)
+    ));
+    await render(<WsScene t={{}} />);
+    await vi.waitFor(() => {
+      const urls = client.apiGet.mock.calls.map(([url]) => url);
+      expect(urls).toContain("/api/v1/scenes/s1/workbench");
+      expect(urls).toContain("/api/v1/scenes/s2/workbench");
+    }, T);
+  });
+});
+
 describe("AI 起草台 · 运行队列移出", () => {
   it("单条移出：不拦确认弹窗，直接移出并给回执，且从不调用场景软删端点", async () => {
     await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
