@@ -23,7 +23,7 @@ from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.catalog_labels import chapter_title, scene_title
 from novel_system.services.errors import DomainError
 from novel_system.services.project_purge import build_project_purge_plan, purge_project_rows
-from novel_system.services.scene_lookup import require_project
+from novel_system.services.scene_lookup import require_project, scene_project_id
 
 
 class TrashService:
@@ -110,11 +110,7 @@ class TrashService:
 
     def trash_scene_in_project(self, project_id: str, scene_id: str, *, actor_ref: str) -> dict[str, Any]:
         scene = self.session.get(SceneCard, scene_id)
-        owner = scene.project_id if scene else None
-        if scene is not None and not owner:
-            chapter = self.session.get(ChapterGoal, scene.chapter_id)
-            owner = chapter.project_id if chapter else None
-        if scene is None or owner != project_id:
+        if scene is None or scene_project_id(self.session, scene) != project_id:
             raise DomainError("SCENE_NOT_FOUND", "scene not found in project", status_code=404)
         result = self._lifecycle.trash_scenes([scene_id], actor_ref)
         return self._lifecycle_result(f"scene:{scene_id}", result)

@@ -156,7 +156,7 @@ def _call(kind: str, session):
     "kind, module",
     [
         ("writer", "novel_system.services.writer_deep_review"),
-        ("author", "novel_system.services.author_drafts"),
+        ("author", "novel_system.services.author_drafts.proposals"),
         ("blueprint", "novel_system.services.scene_blueprint"),
     ],
 )

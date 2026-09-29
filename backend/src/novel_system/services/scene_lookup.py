@@ -7,6 +7,7 @@
   409 SCENE_TRASHED（传 trashed_as_conflict=True），文案同样不可变。
 - 只查存在、不看回收站的变体（``get_scene_or_404`` / ``get_chapter_or_404`` / ``require_project``）
   与带 project_id 的 ``require_project_chapter``（文案 "chapter not found in project"）也在这里。
+- 场景归哪部作品（场景卡的 project_id，旧卡看所在的章）只算一处：``scene_project_id``（作者稿、目录、回收站共用）。
 - 文案或条件不同的仍留在原处：catalog._require_scene（归属按章回推）、trash 的项目内章 / 场
   （不看回收站）、canon_continuity.chapter_status（"chapter not found" 且带 project_id）、
   projects._require_project_chapter（PROJECT_CHAPTER_NOT_FOUND）。
@@ -68,6 +69,17 @@ def require_project(session: Session, project_id: str, *, reject_trashed: bool =
     if project is None or (reject_trashed and project.trashed_flag == 1):
         raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
     return project
+
+
+def scene_project_id(session: Session, scene: SceneCard) -> str | None:
+    """场景归哪部作品：场景卡自己的 project_id；v1 建的旧卡没有，就看它所在的章（都没有给 None）。
+
+    只读、不报错的那一种——写路径要「两边对不上就拒」时用 ``scene_ownership.require_scene_project_id``。
+    """
+    if scene.project_id:
+        return scene.project_id
+    chapter = session.get(ChapterGoal, scene.chapter_id)
+    return chapter.project_id if chapter is not None else None
 
 
 def active_chapter_scenes(session: Session, chapter_id: str) -> list[SceneCard]:

@@ -82,7 +82,7 @@ from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-ex
     plan_owned_scene_ids,
     scene_order_owned_by_plan_action,
 )
-from novel_system.services.scene_lookup import require_project, require_project_chapter
+from novel_system.services.scene_lookup import require_project, require_project_chapter, scene_project_id
 
 # narrative_json 里由目录 API 维护的字段。章级的张力 / 视角 / 时间 / 地点 / 入口 / 出口 / 衔接 / 线索（批准 #17a）
 # 没有任何地方能填、也没有程序写它们，不再读、不再写、不再下发——库里已有的旧值原样留着；
@@ -666,11 +666,7 @@ class CatalogService(CatalogReader):
         scene = self.session.get(SceneCard, scene_id)
         if scene is None or scene.trashed_flag == 1:
             raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        owner = scene.project_id
-        if not owner:
-            chapter = self.session.get(ChapterGoal, scene.chapter_id)
-            owner = chapter.project_id if chapter else None
-        if owner != project_id:
+        if scene_project_id(self.session, scene) != project_id:
             raise DomainError("SCENE_NOT_FOUND", "scene not found in project", status_code=404)
         return scene
 
