@@ -563,15 +563,13 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
         return result
 
     # 「先看 3 个方向」（阶段 U 起是教练日志里的一种回合）——提示词由模板组装。
-    # 上下文以后端权威材料为主（各步规范草稿 + 当前步压力诊断），draft_override 与整步生成同源；
-    # 旧客户端折叠的 context / draft 文本仍作「本地未上行编辑」的补充信号。fail-closed：LLM 未启用即 409。
+    # 上下文以后端权威材料为主（各步规范草稿 + 当前步压力诊断），draft_override 与整步生成同源。
+    # fail-closed：LLM 未启用即 409。
     def step_candidates(
         self,
         *,
         project: StoryProject,
         step_key: str,
-        context_text: str = "",
-        current_draft: str = "",
         target_chars: int,
         latest_by_step: Mapping[str, Any] | None = None,
         draft_override: dict[str, Any] | None = None,
@@ -590,10 +588,6 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             "step_instruction": guidance.get("instruction"),
             "target_chars": target_chars,
         }
-        if str(context_text or "").strip():
-            prompt_payload["fe_local_context"] = context_text
-        if str(current_draft or "").strip():
-            prompt_payload["current_draft_text"] = current_draft
         # 阶段 U：作者对这一组方向的要求（教练输入框里的那句话）——三条方向都要满足它，在它划定的范围内分岔
         if str(author_ask or "").strip():
             prompt_payload["author_ask"] = {

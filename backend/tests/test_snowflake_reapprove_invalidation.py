@@ -12,28 +12,14 @@ from __future__ import annotations
 import pytest
 
 from novel_system.db.models import ChapterState
+from tests.real_llm_fakes import install_skeleton_snowflake
 
 
 @pytest.fixture(autouse=True)
 def _skeleton_snowflake_generate(monkeypatch):
     """假生成已退役：本文件只回归物化/再批准链路，不关心生成质量——
     把 generate_step 打成「规划器骨架直通」（与旧离线 fallback 同形），并开 llm_enabled 过路由闸。"""
-    from novel_system.services.hash_engine import normalize
-    from novel_system.services.snowflake_planner import SnowflakePlannerService
-    from novel_system.services.snowflake_workspace_llm import (
-        SnowflakeWorkspaceLLMService,
-        WorkspaceLLMResult,
-    )
-
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
-
-    def fake_generate_step(self, *, project, step_key, latest_by_step, **kwargs):
-        payload = SnowflakePlannerService(self.session)._build_artifact_json(
-            project, step_key, dict(latest_by_step)
-        )
-        return WorkspaceLLMResult(source="llm", llm_call_id=None, payload=normalize(payload))
-
-    monkeypatch.setattr(SnowflakeWorkspaceLLMService, "generate_step", fake_generate_step)
+    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
 
 ALL_STEPS = [
     "book_brief",
@@ -65,11 +51,12 @@ def _create_project(client, key: str) -> dict:
     return response.json()["data"]["project"]
 
 
-def _generate(client, pid: str, step_key: str, payload: dict | None = None) -> dict:
+def _generate(client, pid: str, step_key: str, payload: dict | None = None, *, attempt: int = 1) -> dict:
+    # 每次生成都是一次新的作者意图：幂等键带上第几次（旧版借 force_new 字段区分，那个字段已删）
     r = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/{step_key}/generate",
         json=payload or {},
-        headers={"X-Idempotency-Key": f"qa3-reappr-gen-{pid}-{step_key}-{(payload or {}).get('force_new')}"},
+        headers={"X-Idempotency-Key": f"qa3-reappr-gen-{pid}-{step_key}-{attempt}"},
     )
     assert r.status_code == 200, r.text
     return r.json()["data"]
@@ -128,7 +115,7 @@ def test_reapprove_upstream_step_after_materialization_does_not_500(client, sess
     # 3) 再次确认上游步 book_brief（broad impact 覆盖全部已物化场景）
     #    BUG-1：263-loop 与 _apply_block 各建一遍同一 chapter 的 ChapterState → flush 撞 UNIQUE → 500。
     #    修复（263-loop 后 flush）后应 200。
-    _generate(client, pid, "book_brief", {"force_new": True})
+    _generate(client, pid, "book_brief", attempt=2)
     resp = _approve(client, pid, "book_brief")
     assert resp.status_code == 200, f"re-approve 上游步在已物化项目上崩溃: {resp.status_code} {resp.text}"
 
@@ -161,7 +148,7 @@ def test_reapprove_scoped_step_after_materialization_does_not_500(client, sessio
     assert outline_approved.status_code == 200, outline_approved.text
     _drop_chapter_states(session)
 
-    _generate(client, pid, "scene_details", {"force_new": True})
+    _generate(client, pid, "scene_details", attempt=2)
     resp = _approve(client, pid, "scene_details")
     assert resp.status_code == 200, f"re-approve scene_details 崩溃: {resp.status_code} {resp.text}"
 
@@ -280,6 +267,103 @@ def test_first_upstream_approval_keeps_existing_downstream_draft_approvable(clie
     second = _approve(client, pid, "one_sentence_summary")
     assert second.status_code == 200, second.text
     assert second.json()["data"]["step"]["status"] == "approved"
+
+
+def _materialize_all(client, pid: str) -> None:
+    for step_key in ALL_STEPS:
+        _generate(client, pid, step_key)
+        assert _approve(client, pid, step_key).status_code == 200
+    materialized = client.post(
+        f"/api/v2/projects/{pid}/snowflake-workspace/materialize",
+        json={},
+        headers={"X-Idempotency-Key": f"runtime-scoped-materialize-{pid}"},
+    )
+    assert materialized.status_code == 200, materialized.text
+    outline_approved = client.post(
+        f"/api/v2/projects/{pid}/snowflake-workspace/outline/approve",
+        json={},
+        headers={"X-Idempotency-Key": f"runtime-scoped-outline-{pid}"},
+    )
+    assert outline_approved.status_code == 200, outline_approved.text
+
+
+def test_reapproving_scene_details_invalidates_only_the_changed_scenes_runtime(client, session):
+    """R9 移植（3a，原 v1 规划器用例）：确认一版改过一场的第 10 步（工作台总是带 sync_catalog），
+    只有改过的那一场的执行契约 / 草稿 / QC 过期、运行态打回 needs_replan；没改的那一场原样保留。"""
+    from novel_system.db.models import QcReport, SceneCard, SceneDraft, SceneExecutionContract, SceneRunState
+    from novel_system.services.scene_execution import SceneExecutionContractService
+
+    pid = _create_project(client, "runtime-scoped")["project_id"]
+    _materialize_all(client, pid)
+    workspace = client.get(f"/api/v2/projects/{pid}/snowflake-workspace").json()["data"]
+    rows = [dict(row) for row in next(s for s in workspace["steps"] if s["step_key"] == "scene_details")["draft"]["scenes"]]
+    changed, unchanged = rows[0], rows[1]
+
+    contracts: dict[str, str] = {}
+    for index, row in enumerate((changed, unchanged), start=1):
+        scene_id = row["scene_id"]
+        contracts[scene_id] = SceneExecutionContractService(session).generate(scene_id).contract_id
+        session.commit()
+        state = session.get(SceneRunState, scene_id)
+        assert state is not None
+        chapter_id = session.get(SceneCard, scene_id).chapter_id
+        session.add(
+            SceneDraft(
+                row_id=f"scene_draft_runtime_scoped_{index}",
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                stage="neutral_draft",
+                content=f"old draft {index}",
+                source_bundle_id=f"bundle_runtime_scoped_{index}",
+                source_bundle_hash=f"hash_runtime_scoped_{index}",
+            )
+        )
+        session.add(
+            QcReport(
+                qc_report_id=f"qc_runtime_scoped_{index}",
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                qc_type="soft_qc",
+                source_draft_row_id=f"scene_draft_runtime_scoped_{index}",
+                source_bundle_id=f"bundle_runtime_scoped_{index}",
+                resolution_code="soft_pass",
+                pass_flag=1,
+                next_action="pass",
+                issues_json=[],
+                rewrite_brief_json=[],
+            )
+        )
+        state.scene_status = "archived"
+        state.current_neutral_draft_row_id = f"scene_draft_runtime_scoped_{index}"
+        state.current_qc_report_id = f"qc_runtime_scoped_{index}"
+    session.commit()
+
+    for row in rows:
+        if row["scene_id"] == changed["scene_id"]:
+            row["summary"] = "作者改了这一场：她没有追送信人，而是回家把信烧了。"
+    patched = client.patch(f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_details", json={"draft": {"scenes": rows}})
+    assert patched.status_code == 200, patched.text
+    approved = client.post(
+        f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_details/approve",
+        json={"sync_catalog": True},
+        headers={"X-Idempotency-Key": f"runtime-scoped-reapprove-{pid}"},
+    )
+    assert approved.status_code == 200, approved.text
+    runtime = approved.json()["data"]["impact"]["runtime"]
+    assert runtime["affected_scene_ids"] == [changed["scene_id"]], runtime
+
+    session.expire_all()
+    assert session.get(SceneExecutionContract, contracts[changed["scene_id"]]).status == "stale"
+    assert session.get(SceneDraft, "scene_draft_runtime_scoped_1").status == "stale"
+    assert session.get(QcReport, "qc_runtime_scoped_1").status == "stale"
+    changed_state = session.get(SceneRunState, changed["scene_id"])
+    assert changed_state.scene_status == "needs_replan"
+    assert changed_state.current_neutral_draft_row_id is None and changed_state.current_qc_report_id is None
+
+    assert session.get(SceneExecutionContract, contracts[unchanged["scene_id"]]).status == "active"
+    assert session.get(SceneDraft, "scene_draft_runtime_scoped_2").status != "stale"
+    assert session.get(QcReport, "qc_runtime_scoped_2").status != "stale"
+    assert session.get(SceneRunState, unchanged["scene_id"]).scene_status == "archived"
 
 
 def test_scene_content_treats_the_default_rendering_mode_as_absent() -> None:

@@ -1,9 +1,9 @@
 """Shared snowflake version / latest-row lookups (a leaf: models + SQLAlchemy only).
 
-The step-run table (``SnowflakeStepRun``, v2 workspace) and the legacy artifact table
-(``SnowflakeArtifact``, v1 planner) share the same version rule, so the helpers take the model.
-Story order and triage verdicts have their own leaves: ``snowflake_scene_order`` and
-``snowflake_triage``.
+The helpers take the step-run model (``SnowflakeStepRun``) explicitly: the retired v1 planner's
+``SnowflakeArtifact`` table shared the same version rule until 2026-09-30 (R9); its table is kept
+for a later migration, but nothing reads or writes it any more. Story order and triage verdicts have
+their own leaves: ``snowflake_scene_order`` and ``snowflake_triage``.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from typing import TypeVar
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import OutlinePlan, SnowflakeArtifact, SnowflakeStepRun
+from novel_system.db.models import OutlinePlan, SnowflakeStepRun
 
-StepRow = TypeVar("StepRow", SnowflakeStepRun, SnowflakeArtifact)
+StepRow = TypeVar("StepRow", bound=SnowflakeStepRun)
 
 
 def latest_by_step(session: Session, model: type[StepRow], project_id: str) -> dict[str, StepRow]:

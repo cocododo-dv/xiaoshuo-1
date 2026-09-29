@@ -39,12 +39,7 @@ from novel_system.services.projects import (
     trash_emptied_snowflake_chapters,
 )
 from novel_system.services.project_runtime_invalidation import ProjectRuntimeInvalidationService
-from novel_system.services.snowflake_planner import (
-    GATE_STATUSES,
-    SnowflakePlannerService,
-    _beats_from_detail,
-    _scene_writer_brief,
-)
+from novel_system.services.snowflake_scene_brief import beats_from_detail, scene_writer_brief
 from novel_system.services.snowflake_staleness import (
     changed_scene_row_uids,
     stable_json,
@@ -54,6 +49,7 @@ from novel_system.services.snowflake_staleness import (
     snapshot_consumed_sigs,
 )
 from novel_system.services.snowflake_steps import (
+    CONFIRMED_STEP_STATUSES,
     MATERIALIZATION_REQUIREMENTS,
     MATERIALIZATION_REQUIRED_STEPS,
     MATERIALIZATION_WARNING_STEPS,
@@ -84,9 +80,9 @@ from novel_system.services.snowflake_direction_brief import DirectionBriefStore,
 from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService, draft_has_content
 from novel_system.services.hash_engine import sha256_text
 from novel_system.services.value_coercion import coerce_string_list, int_or_default
+from novel_system.services.writing_stats import WritingStatsService
 from novel_system.services.snowflake_queries import latest_by_step, latest_outline_plan, next_outline_plan_version, next_step_version
 
-STRUCTURED_GATE_STATUSES = set(GATE_STATUSES)
 SCENE_PATCH_FIELDS = {
     # P1-1: scene_id / chapter_id are system-minted identity, never author-editable.
     # chapter_title / chapter_goal / chapter_role stay editable (content, not identity).
@@ -131,16 +127,10 @@ SCENE_LIST_OWNED_FIELDS = ("primary_form", "scene_type", "pov_character_id")
 
 
 
-def _effective_rendering_mode(scene_type: Any, value: Any) -> str:
-    """呈现方式的收口规则——单一实现在 ``snowflake_steps.effective_rendering_mode``。"""
-    return effective_rendering_mode(scene_type, value)
-
-
 class SnowflakeWorkspaceService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self._projects = ProjectService(session)
-        self._planner = SnowflakePlannerService(session)
         self._chaptering = SnowflakeChapteringService(session)
         self._llm = SnowflakeWorkspaceLLMService(session)
         # 阶段 T：作者意图要点（教练对话蒸馏、作者可编辑），生成 / 候选 / 分诊 / 教练都从这里读
@@ -154,8 +144,6 @@ class SnowflakeWorkspaceService:
             if str(item.get("planning_mode") or "") == "snowflake"
         ]
         # FE-ALIGN P2: 切换器/主页需要每部作品的统计摘要（只读派生，D2 服务端计算）。
-        from novel_system.services.writing_stats import WritingStatsService
-
         stats = WritingStatsService(self.session)
         for item in items:
             project_id = item.get("project_id")
@@ -384,8 +372,6 @@ class SnowflakeWorkspaceService:
         llm_result = self._llm.step_candidates(
             project=project,
             step_key=step_key,
-            context_text=str(body.get("context") or "")[:6000],
-            current_draft=str(body.get("draft") or "")[:3000],
             target_chars=target_chars,
             latest_by_step=latest_by_step,
             draft_override=self._merged_draft_override(latest_by_step, step_key, body.get("draft_override")),
@@ -1071,11 +1057,10 @@ class SnowflakeWorkspaceService:
     ) -> dict[str, Any]:
         """按构思侧章表分组产出 OutlinePlan（P2）。
 
-        与被它取代的 ``snowflake_planner._build_outline_plan`` 的关键差别：章不再从
+        与被它取代的 v1 规划器 ``_build_outline_plan``（2026-09-30 退役）的关键差别：章不再从
         场景行的 ``chapter_id`` 反推（那条路上所有场都写着 ``…_CH01``，于是全书一章，
         章标题就是章 id 字符串），而是读作者在 07 里真正编出来的章 —— 标题、幕、脊柱、
-        章目标都来自那里。v1 路由 ``/snowflake/materialize-outline-plan`` 仍走旧
-        builder，本方法不改它。
+        章目标都来自那里。
         """
         chapters = self._chaptering.ensure_chapter_plans(project.project_id)
         # 阶段 B（雪花评估 B5）：挫折 / 胜利以主角衡量，不以 POV 衡量——Ingermanson：POV 是对手时，
@@ -1096,7 +1081,7 @@ class SnowflakeWorkspaceService:
             members = [
                 item
                 for item in grouped[chapter.chapter_plan_id]
-                if _effective_rendering_mode(item.scene_type, item.rendering_mode) != "skip"
+                if effective_rendering_mode(item.scene_type, item.rendering_mode) != "skip"
             ]
             if not members:
                 continue  # 空章不落库：预览里已经就此告警过，作者选择保留就是不要它
@@ -1112,7 +1097,7 @@ class SnowflakeWorkspaceService:
                 scene_type = detail.get("primary_form") or "proactive"
                 # 阶段 C / N：summary 场（两种形态都可以）拿到数值篇幅带（起草 / 长度补丁按数值硬约束），
                 # 并把呈现方式写进简报，结构简报会渲染它。
-                rendering_mode = _effective_rendering_mode(scene_type, detail.get("rendering_mode"))
+                rendering_mode = effective_rendering_mode(scene_type, detail.get("rendering_mode"))
                 detail["rendering_mode"] = rendering_mode
                 detail["target_length_band"] = (
                     SUMMARY_LENGTH_BAND if rendering_mode == "summary" else (detail.get("target_length_band") or "medium")
@@ -1147,7 +1132,7 @@ class SnowflakeWorkspaceService:
                         "scene_type": scene_type,
                         "is_chapter_last": 1 if seq == len(members) else 0,
                         "writer_brief_json": {
-                            **_scene_writer_brief(scene_type, detail),
+                            **scene_writer_brief(scene_type, detail),
                             # 阶段 X：构思里起过的短题名随卡进目录（整句摘要不算题名）
                             **_scene_title_seed(detail),
                         },
@@ -1644,7 +1629,7 @@ class SnowflakeWorkspaceService:
         run = latest_by_step.get(step_key)
         if run is None:
             return False
-        if run.status in STRUCTURED_GATE_STATUSES:
+        if run.status in CONFIRMED_STEP_STATUSES:
             return True
         return run.status == "stale" and bool(run.stale_accepted_at)
 
@@ -1825,7 +1810,7 @@ class SnowflakeWorkspaceService:
     @staticmethod
     def _scene_card_resync_patch(plan: SnowflakeScenePlan, scene: SceneCard, *, excluded: bool = False) -> dict[str, Any]:
         # 阶段 C：呈现方式与篇幅带同物化一个口径——summary 场回流也拿数值带。
-        rendering_mode = _effective_rendering_mode(plan.scene_type, plan.rendering_mode)
+        rendering_mode = effective_rendering_mode(plan.scene_type, plan.rendering_mode)
         # 阶段 N：作者裁定该重写 / 待删的场与「略过」同路——卡进回收站，改回裁定时取回。
         skipped = rendering_mode == "skip" or bool(excluded)
         if rendering_mode == "summary":
@@ -2242,7 +2227,7 @@ class SnowflakeWorkspaceService:
                     message=f"{step_label} 曾被标记为过期，但当前草稿已经复核并确认仍然有效。",
                     step_key=step_key,
                 )
-            if run.status not in STRUCTURED_GATE_STATUSES and not (run.status == "stale" and run.stale_accepted_at):
+            if run.status not in CONFIRMED_STEP_STATUSES and not (run.status == "stale" and run.stale_accepted_at):
                 add_step_item(
                     severity="blocker",
                     kind="unapproved_required_step",
@@ -2288,7 +2273,7 @@ class SnowflakeWorkspaceService:
                     step_key=step_key,
                 )
                 continue
-            if run.status not in STRUCTURED_GATE_STATUSES:
+            if run.status not in CONFIRMED_STEP_STATUSES:
                 add_step_item(
                     severity="warning",
                     kind="unapproved_optional_step",
@@ -2302,7 +2287,7 @@ class SnowflakeWorkspaceService:
         # 的 happy path，也不与「scene_details 未确认」的既有 blocker 重复）。
         scene_details_run = latest_by_step.get("scene_details")
         scene_details_ready = scene_details_run is not None and (
-            scene_details_run.status in STRUCTURED_GATE_STATUSES
+            scene_details_run.status in CONFIRMED_STEP_STATUSES
             or (scene_details_run.status == "stale" and scene_details_run.stale_accepted_at)
         )
         if scene_details_ready and not (scene_plans or []):
@@ -2924,7 +2909,7 @@ class SnowflakeWorkspaceService:
                 setattr(scene, key, str(value or "").strip())
         # 补丁键的顺序不可依赖（SCENE_PATCH_FIELDS 是集合）：类型定下来之后再统一收口——
         # 阶段 N：概述对两种形态都合法，略过只给反应场。
-        scene.rendering_mode = _effective_rendering_mode(scene.scene_type, scene.rendering_mode)
+        scene.rendering_mode = effective_rendering_mode(scene.scene_type, scene.rendering_mode)
 
     def _supersede_same_step(self, run: SnowflakeStepRun) -> None:
         rows = self.session.execute(
@@ -3478,12 +3463,11 @@ def _scene_card_beats(scene_type: str, detail: dict[str, Any]) -> list[str]:
     """``SceneCard.beats_json`` 的唯一配方，物化与 resync 共用。
 
     规划行自带节拍就用它；否则按场景类型从 goal/conflict/setback（主动）或
-    reaction/dilemma/decision（反应）推导——即规划器 ``_beats_from_detail`` 的口径，
-    v1 物化路也是它。hook 不进节拍：它已经单独落在 ``SceneCard.hook`` 与 brief 的
+    reaction/dilemma/decision（反应）推导（``snowflake_scene_brief.beats_from_detail``）。hook 不进节拍：它已经单独落在 ``SceneCard.hook`` 与 brief 的
     ``next_scene_pull`` 上，resync 曾额外拼进去，正是「刚物化完就待同步」的来源。
     """
     beats = coerce_string_list(detail.get("beats_json"))
-    return beats or _beats_from_detail(scene_type, detail)
+    return beats or beats_from_detail(scene_type, detail)
 
 
 def _scene_list_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:

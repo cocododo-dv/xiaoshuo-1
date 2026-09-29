@@ -70,7 +70,7 @@ def test_fe_candidates_is_fail_closed_without_llm_and_records_no_turn(client) ->
     pid = _create_project(client)
     response = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/one_sentence_summary/fe-candidates",
-        json={"context": "【01 读者定位】文学悬疑", "draft": "她发现恩师改写了档案。", "target_chars": 120},
+        json={"target_chars": 120},
         headers={"X-Idempotency-Key": "fe-cands-fallback"},
     )
     assert response.status_code == 409, response.text
@@ -148,9 +148,17 @@ def test_fe_candidates_prompt_grounded_in_backend_truth_not_fe_fold(client, monk
         _fake_generate_capturing(captured, payload),
     )
 
-    response = client.post(
+    # 旧客户端折叠的 context / draft 两个字段已删（前端早已不发）：信封拒收，不再当补充信号进提示
+    legacy = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/one_sentence_summary/fe-candidates",
         json={"context": "【01 读者定位】前端折叠上下文", "draft": "她发现恩师改写了档案。", "target_chars": 120},
+    )
+    assert legacy.status_code == 422, legacy.text
+    assert not captured
+
+    response = client.post(
+        f"/api/v2/projects/{pid}/snowflake-workspace/steps/one_sentence_summary/fe-candidates",
+        json={"target_chars": 120},
     )
     assert response.status_code == 200, response.text
     data = response.json()["data"]
@@ -164,8 +172,7 @@ def test_fe_candidates_prompt_grounded_in_backend_truth_not_fe_fold(client, monk
     assert "读者定位" in user_prompt
     assert '"current_pressure_diagnosis"' in user_prompt
     assert '"pressure_rubric"' in user_prompt
-    # FE 折叠文本降级为补充信号
-    assert '"fe_local_context"' in user_prompt and "前端折叠上下文" in user_prompt
+    assert '"fe_local_context"' not in user_prompt and '"current_draft_text"' not in user_prompt
     # fe_* 写穿缓存键不泄漏；作者自由草稿显式保留
     assert "fe_scaffold" not in user_prompt
     assert "不应进提示" not in user_prompt

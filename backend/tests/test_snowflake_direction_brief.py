@@ -434,7 +434,7 @@ def test_candidates_and_triage_carry_the_brief(client, monkeypatch) -> None:
 
     with_brief = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/one_sentence_summary/fe-candidates",
-        json={"context": "【01 读者定位】文学悬疑", "draft": "", "target_chars": 80},
+        json={"target_chars": 80},
         headers={"X-Idempotency-Key": "cands-with-brief"},
     )
     assert with_brief.status_code == 200, with_brief.text
@@ -444,7 +444,7 @@ def test_candidates_and_triage_carry_the_brief(client, monkeypatch) -> None:
 
     without = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/one_sentence_summary/fe-candidates",
-        json={"context": "", "draft": "", "target_chars": 80, "use_direction_brief": False},
+        json={"target_chars": 80, "use_direction_brief": False},
         headers={"X-Idempotency-Key": "cands-without-brief"},
     )
     assert without.status_code == 200, without.text

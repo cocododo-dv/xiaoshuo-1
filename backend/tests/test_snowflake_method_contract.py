@@ -14,7 +14,7 @@ import yaml
 
 from novel_system.db.models import SceneCard
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
-from novel_system.services.snowflake_planner import _scene_writer_brief
+from novel_system.services.snowflake_scene_brief import scene_writer_brief
 from novel_system.services.snowflake_steps import (
     SCENE_FIELD_EXAMPLES,
     _normalize_scene_item,
@@ -300,7 +300,7 @@ def test_is_protagonist_role(role, expected: bool) -> None:
 
 
 def test_writer_brief_carries_the_protagonist_and_the_structure_brief_renders_it() -> None:
-    brief = _scene_writer_brief(
+    brief = scene_writer_brief(
         "proactive",
         {
             "protagonist_hint": "林一鸣",
@@ -340,7 +340,7 @@ def test_writer_brief_carries_the_protagonist_and_the_structure_brief_renders_it
     assert "Protagonist (挫折以此人衡量): 林一鸣 — the POV character is not the protagonist" in text
 
     # 没有主角提示时不渲染这一行
-    without = _scene_writer_brief("proactive", {"goal": "x", "conflict": "y", "setback": "z", "scene_crucible": "w"})
+    without = scene_writer_brief("proactive", {"goal": "x", "conflict": "y", "setback": "z", "scene_crucible": "w"})
     assert without["protagonist_hint"] is None
     plain = SceneCard(scene_id="SSBB_SC03", chapter_id="SSBB", scene_seq=3, scene_goal="", scene_type="proactive", writer_brief_json=without)
     assert "Protagonist" not in render_scene_structure_brief(plain)

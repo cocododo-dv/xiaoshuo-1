@@ -731,24 +731,6 @@ def list_step_definitions() -> list[dict[str, Any]]:
     return deepcopy(SNOWFLAKE_STEP_CATALOG)
 
 
-def planner_step_list() -> list[dict[str, Any]]:
-    """Lightweight projection of the single catalog for the legacy planner flow.
-
-    Keeps the planner's existing API payload shape (step_key/label/english_label/
-    description/skippable) while sourcing all truth from SNOWFLAKE_STEP_CATALOG.
-    """
-    return [
-        {
-            "step_key": step["step_key"],
-            "label": step["label"],
-            "english_label": step["english_label"],
-            "description": step["description"],
-            "skippable": bool(step.get("skippable")),
-        }
-        for step in SNOWFLAKE_STEP_CATALOG
-    ]
-
-
 def get_step_definition(step_key: str) -> dict[str, Any]:
     for step in SNOWFLAKE_STEP_CATALOG:
         if step["step_key"] == step_key:

@@ -27,8 +27,8 @@ from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectSe
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService, _rhythm_report
 from novel_system.services.snowflake_staleness import semantic_payload
-from novel_system.services.snowflake_steps import RENDERING_MODES, SUMMARY_LENGTH_BAND, _scene_detail_seed
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService, _effective_rendering_mode
+from novel_system.services.snowflake_steps import RENDERING_MODES, SUMMARY_LENGTH_BAND, _scene_detail_seed, effective_rendering_mode
+from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.snowflake_workspace_llm import _sanitize_scene_detail_items
 
 PROJECT_ID = "prj-render"
@@ -155,12 +155,12 @@ def test_summary_is_legal_for_both_forms_and_skip_only_for_reactive(session) -> 
 
 def test_effective_rendering_mode_and_seed_defaults() -> None:
     assert RENDERING_MODES == ("full", "summary", "skip")
-    assert _effective_rendering_mode("reactive", "summary") == "summary"
-    assert _effective_rendering_mode("reactive", "SUMMARY ") == "summary"
-    assert _effective_rendering_mode("proactive", "summary") == "summary"  # 阶段 N：主动场也可以概述
-    assert _effective_rendering_mode("reactive", "skip") == "skip"  # 阶段 I：原著的第三个选项
-    assert _effective_rendering_mode("proactive", "skip") == "full"  # 略过只给反应场
-    assert _effective_rendering_mode("reactive", "bogus") == "full"
+    assert effective_rendering_mode("reactive", "summary") == "summary"
+    assert effective_rendering_mode("reactive", "SUMMARY ") == "summary"
+    assert effective_rendering_mode("proactive", "summary") == "summary"  # 阶段 N：主动场也可以概述
+    assert effective_rendering_mode("reactive", "skip") == "skip"  # 阶段 I：原著的第三个选项
+    assert effective_rendering_mode("proactive", "skip") == "full"  # 略过只给反应场
+    assert effective_rendering_mode("reactive", "bogus") == "full"
     assert _scene_detail_seed({"summary": "x", "primary_form": "reactive"}, 1)["rendering_mode"] == "full"
 
 

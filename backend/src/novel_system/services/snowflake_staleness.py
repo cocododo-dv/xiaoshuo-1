@@ -1,10 +1,10 @@
 """依赖 / diff 感知的雪花失效判定（P0-3 · 收口-3）。
 
-历史上 planner（``SnowflakeArtifact``）与 workspace（``SnowflakeStepRun``）各有一份
+历史上 v1 planner（``SnowflakeArtifact``，2026-09-30 退役）与 workspace（``SnowflakeStepRun``）各有一份
 ``_mark_downstream_stale``，把下标更大的步骤**无差别**全标 stale——改一次第 3 步，
 第 4–9 步连同场景计划集体亮红，与「鼓励回修」直接对立。
 
-本模块把两份全量循环收敛为**一个**纯函数判定：一步只在它**真正消费过的上游**发生
+本模块把全量循环收敛为**一个**纯函数判定：一步只在它**真正消费过的上游**发生
 **它会读到的字段**改动时才变 stale。语义上对齐原型 ``ws-snow.jsx`` 的
 ``s2SnapAncestors`` —— 审批时拍下「我消费的上游长这样」的快照，之后按内容签名 + 字段
 diff 比对。
@@ -17,8 +17,8 @@ diff 比对。
 - 缺快照的老 run（``consumed_input_sigs_json`` 为空）：第一次回修时**保守按依赖边全标**
   （等价旧行为），下次 approve 补齐快照后转入精细模式。无破坏性迁移。
 
-判定本身是无副作用的：调用方拿到 ``StaleHit`` 列表后，各自往自己的模型上落地
-（workspace 还要写 ``stale_reason`` / ``RevisionLink`` / 场景计划；planner 只置 status）。
+判定本身是无副作用的：调用方拿到 ``StaleHit`` 列表后往行上落地（workspace 写 ``stale_reason``、
+场景计划，并为一次级联留一条操作日志）。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from novel_system.services.hash_engine import sha256_text
 
@@ -146,21 +146,6 @@ def scene_row_content(row: dict[str, Any]) -> str:
     return stable_json(content)
 
 
-class _StaleRow(Protocol):
-    """planner 的 ``SnowflakeArtifact`` 与 workspace 的 ``SnowflakeStepRun`` 的公共形态。
-
-    两者都暴露 ``step_key`` / ``status`` / ``artifact_json``（StepRun 上是返回
-    ``draft_json`` 的 property）/ ``consumed_input_sigs_json``。
-    """
-
-    step_key: str
-    status: str
-    consumed_input_sigs_json: dict[str, Any] | None
-
-    @property
-    def artifact_json(self) -> dict[str, Any]: ...
-
-
 @dataclass
 class StaleHit:
     """一条「应置 stale」的判定结果。``row`` 是命中的下游行，调用方据此落地。"""
@@ -269,7 +254,7 @@ def snapshot_consumed_sigs(
     for key in consumed_step_keys:
         run = latest_by_step.get(key)
         if run is not None:
-            snapshot[key] = field_sigs(run.artifact_json)
+            snapshot[key] = field_sigs(run.draft_json)
     return snapshot
 
 
@@ -277,7 +262,7 @@ def recompute_stale(
     *,
     changed_step_key: str,
     current_field_sigs: dict[str, str],
-    candidate_rows: Iterable[_StaleRow],
+    candidate_rows: Iterable[Any],
     step_order: dict[str, int],
 ) -> list[StaleHit]:
     """给定刚被（重新）审批的步骤，算出真正受影响的下游步骤。

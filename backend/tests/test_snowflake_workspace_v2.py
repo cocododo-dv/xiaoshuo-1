@@ -669,7 +669,7 @@ def test_workspace_v2_marks_downstream_steps_stale_after_upstream_regeneration(c
 
     # P0-3: staleness is diff-aware, so the upstream revision must actually change
     # book_brief's content to invalidate the step that consumed it.
-    replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    replacement = _generate_step(client, project["project_id"], "book_brief")
     client.patch(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
         json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},
@@ -686,7 +686,7 @@ def test_workspace_v2_accepts_stale_step_with_audit_trail(client, session) -> No
     _approve_generated_step(client, project["project_id"], "book_brief")
     _approve_generated_step(client, project["project_id"], "one_sentence_summary")
 
-    replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    replacement = _generate_step(client, project["project_id"], "book_brief")
     client.patch(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
         json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},

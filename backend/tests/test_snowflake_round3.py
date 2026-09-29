@@ -23,7 +23,7 @@ from novel_system.services.scene_structure_brief import (
     scene_has_structure,
 )
 from novel_system.services.snowflake_chaptering import _rhythm_report
-from novel_system.services.snowflake_planner import _outline_scene_detail, _outline_scene_list, _scene_writer_brief
+from novel_system.services.snowflake_scene_brief import scene_writer_brief
 from novel_system.services.snowflake_steps import (
     SCENE_FIELD_EXAMPLES,
     diagnose_scene_detail,
@@ -133,7 +133,7 @@ def test_structure_brief_renders_the_exception_and_preflight_stops_nagging() -> 
         chapter_id="c",
         scene_seq=1,
         scene_type="proactive",
-        writer_brief_json=_scene_writer_brief("proactive", GOLDILOCKS_EXCEPTIONS["scene_23_wrap_up"]),
+        writer_brief_json=scene_writer_brief("proactive", GOLDILOCKS_EXCEPTIONS["scene_23_wrap_up"]),
     )
     assert card.writer_brief_json["exception_reason"].startswith("全书收尾")
     assert scene_has_structure(card)
@@ -145,7 +145,7 @@ def test_structure_brief_renders_the_exception_and_preflight_stops_nagging() -> 
 
     # 没有破例理由的残缺场照旧报缺
     plain = SceneCard(scene_id="S24", project_id="p", chapter_id="c", scene_seq=2, scene_type="proactive",
-                      writer_brief_json=_scene_writer_brief("proactive", {"crucible": "困局", "goal": "拿到东西"}))
+                      writer_brief_json=scene_writer_brief("proactive", {"crucible": "困局", "goal": "拿到东西"}))
     assert missing_structure_fields(plain) == ["conflict", "setback"]
 
 
@@ -328,8 +328,10 @@ def test_step_instructions_agree_with_the_prompts() -> None:
     assert "苦乐" in step_guidance("one_paragraph_summary")["instruction"]
 
 
-def test_v1_planner_detail_fallback_is_proactive_not_parity() -> None:
+def test_skeleton_fixture_keeps_a_reactive_sample_and_defaults_details_to_proactive() -> None:
+    """测试夹具的形状钉（v1 规划器 2026-09-30 退役，骨架生成器搬进 tests/snowflake_skeleton.py）。"""
     from novel_system.db.models import StoryProject
+    from tests.snowflake_skeleton import _outline_scene_detail, _outline_scene_list
 
     # 夹具形状不变：每章一场主动加一场反应（回流 / 目录测试要有反应场样本）
     project = StoryProject(project_id="prj-v1", title="v1", outline_text="a\nb", planning_mode="snowflake", target_chapter_count=2)
