@@ -34,9 +34,23 @@ export function wrFromCatalog() {
   }));
 }
 
+/* 大纲形状逐字段比（过去是两次整份 JSON.stringify，每次自动保存回写字数都要跑一遍） */
+const CHAPTER_KEYS = ["id", "n", "title", "state", "stage", "origin", "summary", "spine", "expanded"];
+const SCENE_KEYS = ["id", "title", "summary", "state", "planOwned"];
+function sameFields(a, b, keys) {
+  return keys.every((key) => a[key] === b[key]);
+}
 function sameOutline(a, b) {
   if (a === b) return true;
-  try { return JSON.stringify(a) === JSON.stringify(b); } catch (e) { return false; }
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((chapter, i) => {
+    const other = b[i];
+    if (!other || !sameFields(chapter, other, CHAPTER_KEYS)) return false;
+    const scenes = chapter.scenes || [];
+    const otherScenes = other.scenes || [];
+    return scenes.length === otherScenes.length
+      && scenes.every((scene, j) => sameFields(scene, otherScenes[j], SCENE_KEYS));
+  });
 }
 
 export function wrInitialScene() {

@@ -49,6 +49,9 @@ function designPov(design) {
   return fact && fact.v ? fact.v : "";
 }
 
+/* 只挪光标、不改正文的键：松开时才需要重新定当前段 / 看 @ 提示（改正文的键 onInput 已经处理过） */
+const WR_CARET_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+
 function annoKeyFor(sceneId) {
   return sceneId ? wsKey("wr-anno:" + sceneId) : null;
 }
@@ -100,7 +103,10 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     if (!wsToast({ message, tone })) showNotice({ text: message, tone });
   });
 
-  /* ---- 段落聚焦 / 打字机滚动 ---- */
+  /* ---- 段落聚焦 / 打字机滚动 ----
+     每敲一个字都会走这里：只改上一个当前段与这一个（过去每次把整篇稿子的段落挨个 toggle 一遍）。
+     上一个当前段已经不在编辑器里（整段换过内容）时它的 class 随节点一起没了，不用管。 */
+  const activeBlockRef = useRef(null);
   const updateActive = useWrEvent(() => {
     const el = editorRef.current;
     if (!el) return;
@@ -108,7 +114,15 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     let node = sel && sel.anchorNode;
     if (!node || !el.contains(node)) return;
     while (node && node.parentNode !== el) node = node.parentNode;
-    Array.from(el.children).forEach((child) => child.classList.toggle("is-active", child === node));
+    const prev = activeBlockRef.current;
+    if (prev !== node) {
+      if (prev && prev.parentNode === el) prev.classList.remove("is-active");
+      activeBlockRef.current = node;
+    }
+    if (node && node.classList && !node.classList.contains("is-active")) node.classList.add("is-active");
+    /* 回车拆段、粘贴本编辑器里复制出去的段落时，浏览器会把 is-active 一起复制过来：多出来的才整篇清一遍 */
+    const marked = el.querySelectorAll(":scope > .is-active");
+    if (marked.length > 1) marked.forEach((child) => { if (child !== node) child.classList.remove("is-active"); });
     const scroller = scrollRef.current;
     if (!scroller || !node) return;
     const typewriter = tw.typewriter;
@@ -455,7 +469,12 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
               contentEditable={posture !== "deep" && !approvedLocked} suppressContentEditableWarning spellCheck={false}
               onInput={() => { onInput(); mention.detectMention(); }}
               onKeyDown={mention.onMentionKeyDown}
-              onKeyUp={() => { updateActive(); mention.detectMention(); }}
+              onKeyUp={(e) => {
+                /* 敲字、删字已经由 onInput 处理过；这里只管只挪光标的键 */
+                if (!WR_CARET_KEYS.has(e.key)) return;
+                updateActive();
+                mention.detectMention();
+              }}
               onMouseOver={entities.onEditorOver} onMouseOut={entities.onEditorOut}
               onClick={(e) => {
                 if (posture === "deep") {

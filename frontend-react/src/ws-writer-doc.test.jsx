@@ -168,3 +168,36 @@ describe("useDocBinding · 字数以服务端 words_rollup 为准（F03-08）", 
     expect(hit.chapter.words.cur).toBe(654);
   }, LONG);
 });
+
+describe("写作台 · 当前段标记（F03-09）", () => {
+  it("光标挪到另一段：只有那一段是当前段；拆段 / 粘贴复制过来的 is-active 会被清掉", async () => {
+    const { client, WriterRoom } = await loadWriter();
+    client.apiPost.mockImplementation((url) => (
+      /\/author-drafts\/scene\/s1\/ensure$/.test(url)
+        ? Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "<p>第一段。</p><p>第二段。</p><p>第三段。</p>" } })
+        : Promise.resolve({})
+    ));
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const editor = () => host.querySelector(".wr-editor");
+    await vi.waitFor(() => expect(editor().querySelectorAll("p").length).toBe(3), T);
+    const put = async (index, key) => {
+      const block = editor().querySelectorAll("p")[index];
+      const range = document.createRange();
+      range.setStart(block.firstChild, 1);
+      range.collapse(true);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      await act(async () => editor().dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key })));
+    };
+    const active = () => [...editor().querySelectorAll("p")].map((p) => p.classList.contains("is-active"));
+    await put(0, "ArrowDown");
+    expect(active()).toEqual([true, false, false]);
+    await put(2, "ArrowDown");
+    expect(active()).toEqual([false, false, true]);
+    // 浏览器拆段时把 class 一起复制给了新段落
+    editor().querySelectorAll("p")[0].classList.add("is-active");
+    await put(1, "ArrowUp");
+    expect(active()).toEqual([false, true, false]);
+  }, LONG);
+});
+
