@@ -19,7 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import yaml
+from novel_system.services.config_cache import safe_load_yaml
 
 
 def _config_dir() -> Path:
@@ -40,7 +40,7 @@ def _load_yaml(name: str) -> Any:
             f" (expected one of: input_thresholds / banned_adjectives / "
             f"injection_budget / function_words / voice_baseline)"
         )
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    return safe_load_yaml(path.read_text(encoding="utf-8"))
 
 
 def load_yaml_config(name: str) -> dict[str, Any]:

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import uuid
+from functools import cached_property
 from typing import Any
 
 from sqlalchemy import select
@@ -115,8 +116,19 @@ def blueprint_situation_tags(blueprint_json: object) -> list[str]:
 class SceneBlueprintService:
     def __init__(self, session: Session, *, llm_client: Any | None = None, llm_runner: LLMNodeRunner | None = None) -> None:
         self.session = session
-        self.prompt_builder = PromptBuilder()
-        self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
+        self._llm_client = llm_client
+        if llm_runner is not None:
+            self._llm_runner = llm_runner
+
+    # 提示词装配与 LLM 运行器第一次用到时才建：只读路径（工作台摘要、最新一版读取）一次都用不到，
+    # 不该为它们读提示词与运行时配置。测试照旧可以直接给实例的这两个属性赋值。
+    @cached_property
+    def prompt_builder(self) -> PromptBuilder:
+        return PromptBuilder()
+
+    @cached_property
+    def _llm_runner(self) -> LLMNodeRunner:
+        return LLMNodeRunner(self.session, llm_client=self._llm_client)
 
     def latest(self, scene_id: str) -> SceneBlueprint | None:
         return self.session.execute(
