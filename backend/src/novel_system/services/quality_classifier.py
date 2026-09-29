@@ -55,7 +55,6 @@ ISSUE_KEY_POLICY: dict[str, IssuePolicy] = {
     "source_leak_risk": IssuePolicy(Q0, "source_safety_scan", Q2),
     "style_plagiarism": IssuePolicy(Q0, "style_plagiarism_ngram", Q2),
     # ---- Q1 候选（有确定证据的硬事实冲突） ----
-    "character_pronoun_drift": IssuePolicy(Q1, "character_contract_detector", Q2),
     "event_log_consistency_violation": IssuePolicy(Q1, "narrative_event_log_keyword", Q2),
     "forbidden_text": IssuePolicy(Q1, "scene_card_forbidden_term", Q2),
     "missing_required_text": IssuePolicy(Q1, "scene_card_required_text", Q2),

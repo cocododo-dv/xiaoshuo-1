@@ -5,10 +5,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneBundle, SceneCard, SceneRunState
-from novel_system.services.character_continuity import (
-    detect_character_pronoun_drift,
-    detect_mechanical_required_beat_listing,
-)
+from novel_system.services.character_continuity import detect_mechanical_required_beat_listing
 from novel_system.services.content_safety import ContentSafetyService
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_text, verify_bundle_snapshot_hash
@@ -340,13 +337,6 @@ class FinalTextGateService:
                 }
             )
 
-        snapshot = bundle.frozen_snapshot_json if bundle is not None else {}
-        inline_digests = snapshot.get("inline_digests") if isinstance(snapshot, dict) else {}
-        character_contract = (
-            inline_digests.get("character_contract") if isinstance(inline_digests, dict) else None
-        )
-        for issue in detect_character_pronoun_drift(content, character_contract):
-            issues.append({**issue, "source": "deterministic"})
         listing = detect_mechanical_required_beat_listing(
             content=content,
             must_include_text=scene.must_include_text,

@@ -29,10 +29,7 @@ from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.character_continuity import (
-    detect_character_pronoun_drift,
-    detect_mechanical_required_beat_listing,
-)
+from novel_system.services.character_continuity import detect_mechanical_required_beat_listing
 from novel_system.services.quality_classifier import (
     classify_issue,
     classify_issues,
@@ -67,10 +64,15 @@ HARD_QC_STYLE_ONLY_ISSUE_KEYS = {
     "style_rule_violation",
 }
 HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS = {"character_role_inconsistency"}
-UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {
-    "character_pronoun_ambiguity",
-    "character_pronoun_continuity",
-}
+# 质检模型报的代词意见（指代不清 / 代词前后不一）一律不收。以前要有确定性的代词漂移检测作佐证才留下，那个
+# 检测器只认声线卡里写的代词，随声线卡一起删了（批准#15，重评 R8）——现在就是整批丢掉，质检结论与以前相同。
+# 要不要把它们作为 Q3 提示交给作者，是批次 3 的决定。
+LLM_PRONOUN_ISSUE_KEYS = frozenset(
+    {
+        "character_pronoun_ambiguity",
+        "character_pronoun_continuity",
+    }
+)
 # 2026-09 风格模仿 v2（W5，规格 §2.W5.5）：styled-draft gate。
 # - 中性稿上的 style gate 只保留确定性 n-gram 抄袭（Q0）裁决；quant / 生成禁用词不再对
 #   中性稿做（中性稿没有注入任何参考风格，量化容差与禁用词对它没有意义）。
@@ -515,13 +517,7 @@ def _reported_duplicate_appears_once(issue_blob: str, content: str) -> bool:
 def _deterministic_quality_issues(
     scene: SceneCard, bundle: dict[str, Any], content: str
 ) -> list[dict[str, Any]]:
-    inline_digests = bundle.get("snapshot", {}).get("inline_digests", {})
-    character_contract = (
-        inline_digests.get("character_contract")
-        if isinstance(inline_digests, dict)
-        else None
-    )
-    issues = detect_character_pronoun_drift(content, character_contract)
+    issues: list[dict[str, Any]] = []
     listing_issue = detect_mechanical_required_beat_listing(
         content=content,
         must_include_text=scene.must_include_text,
@@ -624,18 +620,12 @@ def _dedupe_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
-def _drop_unsubstantiated_pronoun_continuity_issue(
+def _drop_llm_pronoun_issues(
     *,
     payload: dict[str, Any],
-    deterministic_issues: list[dict[str, Any]],
     qc_type: str,
 ) -> dict[str, Any]:
-    if any(
-        issue.get("issue_key") == "character_pronoun_drift"
-        for issue in deterministic_issues
-    ):
-        return payload
-
+    """丢掉质检模型的代词意见（``LLM_PRONOUN_ISSUE_KEYS``）；只剩它们撑着的非 pass 结论改判 pass。"""
     issues = payload.get("issues")
     if not isinstance(issues, list):
         return payload
@@ -646,7 +636,7 @@ def _drop_unsubstantiated_pronoun_continuity_issue(
         if (
             isinstance(issue, dict)
             and str(issue.get("issue_key") or "").strip()
-            in UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS
+            in LLM_PRONOUN_ISSUE_KEYS
         ):
             removed = True
             continue
@@ -684,13 +674,7 @@ def _rewrite_briefs_for_deterministic_issues(issues: list[dict[str, Any]]) -> li
     briefs: list[str] = []
     for issue in issues:
         issue_key = issue.get("issue_key")
-        if issue_key == "character_pronoun_drift":
-            display_name = issue.get("display_name") or "角色"
-            expected = issue.get("expected_pronoun") or "既定代词"
-            briefs.append(
-                f"修正{display_name}的代词连续性，保持使用{expected}；若指代不清，请重复角色姓名。"
-            )
-        elif issue_key == "mechanical_required_beat_listing":
+        if issue_key == "mechanical_required_beat_listing":
             briefs.append(
                 "将必须出现的剧情节拍自然织入动作和因果，不要在段尾追加清单。"
             )
@@ -842,11 +826,7 @@ def _qc_apply_deterministic_quality_gates(
     qc_type: str,
 ) -> dict[str, Any]:
     deterministic_issues = _deterministic_quality_issues(scene, bundle, draft_content)
-    payload = _drop_unsubstantiated_pronoun_continuity_issue(
-        payload=payload,
-        deterministic_issues=deterministic_issues,
-        qc_type=qc_type,
-    )
+    payload = _drop_llm_pronoun_issues(payload=payload, qc_type=qc_type)
     if not deterministic_issues:
         return payload
     # Wave 2：gate 只做合并——是否改判分支/触发补丁由分级器统一裁决（硬 QC 侧

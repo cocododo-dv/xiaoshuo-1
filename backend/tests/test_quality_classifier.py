@@ -93,14 +93,16 @@ def test_llm_source_leak_claim_downgrades_when_scan_is_clean() -> None:
     assert issue["downgrade_reason"] == "no_deterministic_verification"
 
 
-def test_llm_pronoun_drift_claim_downgrades_without_deterministic_detector() -> None:
+def test_llm_pronoun_drift_claim_never_blocks() -> None:
+    """代词漂移没有确定性检测器（它只认声线卡里的代词，随声线卡删了，R8）：模型的这条意见只是 Q2 警告。"""
     issue = classify_issue(
         {"issue_key": "character_pronoun_drift", "message": "代词漂移", "source": "llm_advisory"},
         scene=_scene(),
         content="正文",
     )
     assert issue["quality_level"] == "Q2"
-    assert issue["downgraded_from"] == "Q1"
+    assert issue["blocking"] is False
+    assert issue["verified_by"] is None
 
 
 # ---------- 确定性复核通过 → Q0/Q1 + verified_by ----------
@@ -116,18 +118,6 @@ def test_source_leak_verified_by_deterministic_scan_blocks(monkeypatch) -> None:
     assert issue["blocking"] is True
     assert issue["verified_by"] == "source_safety_scan"
     assert issue["authority_ref"]
-
-
-def test_deterministic_pronoun_drift_is_verified_q1() -> None:
-    issue = classify_issue(
-        {"issue_key": "character_pronoun_drift", "message": "代词漂移", "source": "deterministic"},
-        scene=_scene(),
-        content="正文",
-    )
-    assert issue["quality_level"] == "Q1"
-    assert issue["blocking"] is True
-    assert issue["verified_by"]
-    assert issue["source"] == "deterministic"
 
 
 def test_missing_required_text_verified_only_when_truly_missing() -> None:
@@ -267,7 +257,12 @@ def test_helpers_split_blocking_and_warning_sets() -> None:
     scene = _scene()
     classified = classify_issues(
         [
-            {"issue_key": "character_pronoun_drift", "message": "drift", "source": "deterministic"},
+            {
+                "issue_key": "event_log_consistency_violation",
+                "message": "drift",
+                "source": "deterministic",
+                "details": {"entity_id": "CHAR_A", "fact_key": "location"},
+            },
             {"issue_key": "scene_conflict_missing", "message": "conflict"},
             {"issue_key": "style_compliance", "message": "style"},
         ],
@@ -275,4 +270,4 @@ def test_helpers_split_blocking_and_warning_sets() -> None:
         content="正文",
     )
     assert has_blocking(classified) is True
-    assert [i["issue_key"] for i in blocking_issues(classified)] == ["character_pronoun_drift"]
+    assert [i["issue_key"] for i in blocking_issues(classified)] == ["event_log_consistency_violation"]
