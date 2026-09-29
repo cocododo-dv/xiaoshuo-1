@@ -32,8 +32,10 @@ from novel_system.services.llm_client import (
 )
 from novel_system.services.llm_routing import (
     DEFAULT_PROVIDER_BASE_URLS,
+    LEGACY_TASK_ALIASES,
     SUPPORTED_PROVIDERS,
     parse_model_routing_config,
+    routing_for_models_payload,
 )
 from novel_system.services.llm_accounting import (
     LLMCallContext,
@@ -70,9 +72,6 @@ LLM_PROVIDER_SECRET_PREFIX = "llm_provider"
 PROBE_ACCOUNTING_OUTPUT_BUDGET = 1024
 # 「测试连接」的超时与长文本生成上限无关，探测必须有限且短。
 PROVIDER_PROBE_TIMEOUT_SECONDS = 30.0
-# task_routing 里唯一不是节点 id 的合法键:parse_model_routing_config 把它映射到
-# style_draft,从不并入 node_routing。剪枝退役节点时必须放过它。
-_TASK_ROUTING_ALIASES = frozenset({"stylize"})
 
 
 def repo_config_dir() -> Path:
@@ -584,7 +583,13 @@ class SystemConfigService:
         }
         node_catalog = llm_node_catalog()
         try:
-            routing = parse_model_routing_config(models_payload.get("parsed") or {})
+            # 与运行时同一条规则(llm_routing.load_model_routing_config):有快照只看快照;没有快照时
+            # 库里没有服务 → 注册表默认路由,已保存过服务 → 一个节点也不配(显示未指派,等一键补齐)
+            routing = routing_for_models_payload(
+                models_payload.get("parsed") or {},
+                from_snapshot=models_payload.get("active_snapshot") is not None,
+                api_has_providers=bool(providers),
+            )
             node_routes = {
                 node_id: _serialize_task_config(node_id, task_config, node_catalog.get(node_id))
                 for node_id, task_config in routing.node_routing.items()
@@ -937,19 +942,11 @@ class SystemConfigService:
                 status_code=422,
             )
 
-        current_models = dict(self._category_payload("models").get("parsed") or {})
-        node_routing = dict(current_models.get("node_routing") or {})
-        task_routing = dict(current_models.get("task_routing") or {})
-        config_payload = {
-            "task_routing": task_routing,
-            "node_routing": node_routing,
-            "retry_budget": dict(current_models.get("retry_budget") or {}),
-            "job_runtime": dict(current_models.get("job_runtime") or {}),
-        }
         # 老安装的快照里可能还带着已退役节点的路由(常指向早已删除的服务)。
         # 这里只补齐目录内节点,退役条目不会被重绑,却会被激活校验拦成 422,
         # 让「一键补齐路由」永远失败——先剪掉,并在响应里告知剪了什么。
-        pruned_stale_routes = _prune_retired_routes(config_payload)
+        config_payload, pruned_stale_routes = _writable_models_payload(self._category_payload("models"))
+        node_routing = config_payload["node_routing"]
         synced_node_ids: list[str] = []
         provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
         account_id = optional_text(provider.get("account_id"))
@@ -1090,11 +1087,9 @@ class SystemConfigService:
         overview = self.llm_overview()
         providers = overview["providers"]
 
-        current_models = dict(self._category_payload("models").get("parsed") or {})
-        node_routing = dict(current_models.get("node_routing") or {})
-        task_routing = dict(current_models.get("task_routing") or {})
         # 同 sync-missing:退役节点的残留路由不随分工前滚,剪掉并回报。
-        pruned_stale_routes = _prune_retired_routes({"node_routing": node_routing, "task_routing": task_routing})
+        config_payload, pruned_stale_routes = _writable_models_payload(self._category_payload("models"))
+        node_routing = config_payload["node_routing"]
 
         applied: dict[str, dict[str, Any]] = {}
         for slot_id, binding in assignments.items():
@@ -1153,12 +1148,6 @@ class SystemConfigService:
                 "node_ids": slot_node_ids,
             }
 
-        config_payload = {
-            "task_routing": task_routing,
-            "node_routing": node_routing,
-            "retry_budget": dict(current_models.get("retry_budget") or {}),
-            "job_runtime": dict(current_models.get("job_runtime") or {}),
-        }
         routing_config = _parse_route_config_or_raise(config_payload)
         activate = _bool_value(payload.get("activate", True))
         if activate:
@@ -1811,7 +1800,7 @@ def _retired_route_ids(*routing_tables: dict[str, Any]) -> list[str]:
             str(key)
             for table in routing_tables
             for key in table
-            if key not in node_catalog and key not in _TASK_ROUTING_ALIASES
+            if key not in node_catalog and key not in LEGACY_TASK_ALIASES
         }
     )
 
@@ -1832,6 +1821,25 @@ def _prune_retired_routes(config_payload: dict[str, Any]) -> list[str]:
             del table[key]
             pruned.add(key)
     return sorted(pruned)
+
+
+def _writable_models_payload(models_category: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """写路由(一键补齐 / 分工)的起点:当前活动 models 快照里只留 ``node_routing``,返回 (新快照内容, 剪掉的退役节点)。
+
+    老快照 ``task_routing`` 里还在起作用的条目(node_routing 里没有的节点)并进 node_routing,解析结果不变;
+    其余各段不再抄进新快照——task_routing 是节点注册表的旧抄本,retry_budget / job_runtime 以仓库 models.yaml
+    为准,model_profiles / role_assignments 没人读(2026-09-30 重评 R4、批准#5a)。没有活动快照时从空表开始:
+    注册表默认路由只给「API 配置来自环境变量」的安装用,不写进作者的快照。
+    """
+    current = dict(models_category.get("parsed") or {}) if models_category.get("active_snapshot") else {}
+    node_routing = dict(current.get("node_routing") or {})
+    legacy_task_routing = current.get("task_routing")
+    if isinstance(legacy_task_routing, dict):
+        for key, route in legacy_task_routing.items():
+            if key not in LEGACY_TASK_ALIASES and key not in node_routing:
+                node_routing[key] = route
+    config_payload: dict[str, Any] = {"node_routing": node_routing}
+    return config_payload, _prune_retired_routes(config_payload)
 
 
 def _parse_route_config_or_raise(config_payload: dict[str, Any]):

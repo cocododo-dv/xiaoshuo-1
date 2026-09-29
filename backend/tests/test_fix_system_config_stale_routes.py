@@ -23,6 +23,7 @@ from novel_system.services.llm_node_registry import (
     default_task_config_payload,
     llm_node_catalog,
 )
+from novel_system.services.llm_routing import parse_model_routing_config, registry_default_node_routing
 from novel_system.services.system_config import default_config_payload
 
 
@@ -91,16 +92,25 @@ def _seed_active_snapshot(session, *, category: str, parsed: dict) -> str:
 
 
 def _legacy_models_payload(**stale_entries: dict) -> dict:
-    """repo 默认 models 配置 + 老安装遗留的退役节点 task_routing 条目。"""
+    """老安装的 models 快照形状:当年的写路径把仓库 models.yaml(task_routing 是注册表的整份抄本 + stylize
+    别名)整个抄进快照,再加上老安装遗留的退役节点 task_routing 条目。"""
     _, parsed, _, _ = default_config_payload("models")
+    task_routing = {
+        **{node_id: _route_without_provider(route) for node_id, route in registry_default_node_routing().items()},
+        "stylize": _route_without_provider(registry_default_node_routing()["style_draft"]),
+    }
     payload = {
-        "model_profiles": dict(parsed.get("model_profiles") or {}),
-        "task_routing": {**dict(parsed.get("task_routing") or {}), **stale_entries},
-        "node_routing": dict(parsed.get("node_routing") or {}),
+        "model_profiles": {"quality_strong": {"label": "精修"}},
+        "task_routing": {**task_routing, **stale_entries},
+        "node_routing": {},
         "retry_budget": dict(parsed.get("retry_budget") or {}),
         "job_runtime": dict(parsed.get("job_runtime") or {}),
     }
     return payload
+
+
+def _route_without_provider(route: dict) -> dict:
+    return {key: value for key, value in route.items() if key != "api_mode"}
 
 
 def test_retired_fixture_ids_are_really_outside_the_catalog() -> None:
@@ -152,7 +162,8 @@ def test_sync_missing_prunes_stale_route_bound_to_deleted_provider(client, monke
     assert payload["pruned_stale_routes"] == [RETIRED_NODE_ID]
     assert payload["snapshot"]["active"] is True
     assert RETIRED_NODE_ID not in payload["snapshot"]["parsed"]["node_routing"]
-    assert RETIRED_NODE_ID not in payload["snapshot"]["parsed"]["task_routing"]
+    # 重评 R4:写路径不再抄 task_routing(注册表的旧抄本)
+    assert "task_routing" not in payload["snapshot"]["parsed"]
     assert "snowflake_step_candidates" in payload["synced_node_ids"]
 
     after = client.get("/api/v1/system-config/llm").json()["data"]
@@ -186,10 +197,11 @@ def test_sync_missing_prunes_stale_task_routing_entry_from_legacy_snapshot(clien
     payload = response.json()["data"]
     assert payload["pruned_stale_routes"] == [RETIRED_TASK_ID]
     parsed = payload["snapshot"]["parsed"]
-    assert RETIRED_TASK_ID not in parsed["task_routing"]
     assert RETIRED_TASK_ID not in parsed["node_routing"]
-    # 合法的 task 别名不能被误剪
-    assert "stylize" in parsed["task_routing"]
+    # 老快照 task_routing 里还在起作用的条目并进 node_routing,整张表不再存(重评 R4);
+    # stylize 别名不必存,解析时照旧从 style_draft 镜像出来
+    assert set(parsed) == {"node_routing"}
+    assert parse_model_routing_config(parsed).task_routing["stylize"].model == "Qwen3-14B-Q8_0.gguf"
     assert payload["overview"]["stale_routes"] == []
     assert payload["overview"]["missing_active_routes"] == []
 
@@ -241,8 +253,8 @@ def test_reserved_node_routes_in_live_snapshot_are_stale_and_pruned_by_sync_miss
     assert response.status_code == 200, response.json()
     payload = response.json()["data"]
     assert payload["pruned_stale_routes"] == list(_RESERVED_LEGACY_IDS)
-    for table in ("node_routing", "task_routing"):
-        assert not set(_RESERVED_LEGACY_IDS) & set(payload["snapshot"]["parsed"].get(table) or {})
+    assert not set(_RESERVED_LEGACY_IDS) & set(payload["snapshot"]["parsed"]["node_routing"])
+    assert "task_routing" not in payload["snapshot"]["parsed"]
     assert payload["overview"]["stale_routes"] == []
     assert payload["overview"]["readiness"]["active_route_count"] == 32
 
@@ -288,7 +300,7 @@ def test_role_routes_save_prunes_stale_routes_and_reports_them(client, session, 
     assert response.status_code == 200, response.json()
     payload = response.json()["data"]
     assert payload["pruned_stale_routes"] == [RETIRED_TASK_ID]
-    assert RETIRED_TASK_ID not in payload["snapshot"]["parsed"]["task_routing"]
+    assert "task_routing" not in payload["snapshot"]["parsed"]
     assert RETIRED_TASK_ID not in payload["snapshot"]["parsed"]["node_routing"]
     assert payload["overview"]["stale_routes"] == []
 
@@ -418,8 +430,15 @@ def test_role_routes_names_provider_whose_stored_api_mode_is_invalid(client, ses
         assert "api_mode" in error["message"]
 
 
-def test_sync_missing_reports_invalid_stored_route_as_domain_error(client, session, monkeypatch) -> None:
-    """活动 models 快照里某个目录内节点带非法 api_mode:sync-missing 要 422 点名节点,不是 500。"""
+def test_invalid_stored_route_is_a_domain_error_for_role_routes_and_is_replaced_by_sync_missing(
+    client, session, monkeypatch
+) -> None:
+    """活动 models 快照里某个目录内节点带非法 api_mode:
+
+    - 分工保存不碰这个节点(它不在这次的槽里)→ 422 点名节点,不是 500;
+    - 一键补齐:overview 读不懂这份快照,每个节点都算未配好,于是整张表按当前服务重写——非法路由被换掉。
+      (重评 R4 之前写路径还会把老快照的 task_routing 原样抄进新快照,非法条目跟着留下,补齐也只能 422。)
+    """
     _enable_admin(monkeypatch)
     assert _create_provider(client, "local_qwen").status_code == 200
     _seed_active_snapshot(
@@ -429,12 +448,23 @@ def test_sync_missing_reports_invalid_stored_route_as_domain_error(client, sessi
     )
 
     response = client.post(
-        "/api/v1/system-config/llm/node-routes/sync-missing",
+        "/api/v1/system-config/llm/role-routes",
         headers=ADMIN_HEADERS,
-        json={"activate": True},
+        json={"assignments": {"review": {"provider_id": "local_qwen", "model": "Qwen3-14B-Q8_0.gguf"}}, "activate": True},
     )
     assert response.status_code == 422, response.json()
     error = response.json()["error"]
     assert error["code"] == "CONFIG_ROUTE_INVALID"
     assert "neutral_draft" in error["message"]
     assert "api_mode" in error["message"]
+
+    response = client.post(
+        "/api/v1/system-config/llm/node-routes/sync-missing",
+        headers=ADMIN_HEADERS,
+        json={"activate": True},
+    )
+    assert response.status_code == 200, response.json()
+    payload = response.json()["data"]
+    assert payload["snapshot"]["parsed"]["node_routing"]["neutral_draft"]["api_mode"] == "chat"
+    assert payload["overview"]["missing_active_routes"] == []
+    assert payload["overview"]["node_routes"]["neutral_draft"]["ready"] is True

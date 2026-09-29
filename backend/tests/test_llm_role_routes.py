@@ -6,6 +6,11 @@
 
 from __future__ import annotations
 
+import pytest
+
+from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_client import parse_model_routing_config
+from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.llm_node_registry import (
     ROLE_SLOTS,
     active_llm_node_ids,
@@ -90,14 +95,16 @@ def test_save_role_routes_expands_only_slot_nodes(client, monkeypatch) -> None:
     assert sorted(applied["node_ids"]) == sorted(role_slot_node_ids("drafting"))
 
     node_routing = data["snapshot"]["parsed"]["node_routing"]
+    effective = parse_model_routing_config(data["snapshot"]["parsed"]).node_routing
     for node_id in role_slot_node_ids("drafting"):
         route = node_routing[node_id]
         assert route["provider_id"] == "main_provider"
         assert route["model"] == "test-model-b"
         spec = get_llm_node_spec(node_id)
-        # 节点级默认参数(temperature/max_output_tokens)必须保留
-        assert route["temperature"] == spec.temperature
-        assert route["max_output_tokens"] == spec.max_output_tokens
+        # 批准#5a:快照只存作者的选择;节点级默认参数(temperature/max_output_tokens)解析时取 spec
+        assert "temperature" not in route and "max_output_tokens" not in route
+        assert effective[node_id].temperature == spec.temperature
+        assert effective[node_id].max_output_tokens == spec.max_output_tokens
     # 槽外节点不被覆写成该 provider
     for node_id in role_slot_node_ids("review"):
         route = node_routing.get(node_id)
@@ -328,3 +335,44 @@ def test_runner_retry_backoff_reads_job_runtime_override(session) -> None:
         ),
     )
     assert tuned_runner._retry_backoff_seconds() == 0.25
+
+
+def _route_probe(session, node_id: str) -> str:
+    """走真实运行器问一个节点要路由:返回拒绝码(路由缺失时运行器 fail-closed,在发请求之前)。"""
+    with pytest.raises(LLMNodeExecutionError) as excinfo:
+        LLMNodeRunner(session).run_task(
+            task_name=node_id,
+            prompt_text="x",
+            system_prompt="y",
+            context=LLMCallContext(scope_type="system", scope_id="route-probe", node_id=node_id, step="route_probe"),
+        )
+    return excinfo.value.error_code
+
+
+def test_saved_provider_without_models_snapshot_routes_no_node_and_fails_closed(client, session, monkeypatch) -> None:
+    """重评 R4 复核补充 1:作者已在设置里保存过服务、还没有 models 快照时,不拿注册表默认路由(占位模型 gpt-5)
+    发到作者的中转——每个节点都是未指派(设置页显示 32 个缺失、给出一键补齐),运行时 LLM_ROUTE_NOT_CONFIGURED。"""
+    _enable_admin(monkeypatch)
+    _create_provider(client)
+
+    overview = client.get("/api/v1/system-config/llm").json()["data"]
+    assert overview["missing_active_routes"] == active_llm_node_ids()
+    assert overview["readiness"]["configured_route_count"] == 0
+    assert overview["readiness"]["active_route_count"] == len(active_llm_node_ids())
+    assert overview["node_routes"]["neutral_draft"]["readiness_reason"] == "not_configured"
+    assert _route_probe(session, "extraction") == "LLM_ROUTE_NOT_CONFIGURED"
+
+
+def test_configured_snapshot_missing_a_node_still_fails_closed(client, session, monkeypatch) -> None:
+    """节点级规则:有 models 快照时,快照里没有的节点就是没配——绝不在快照底下垫注册表默认值。"""
+    _enable_admin(monkeypatch)
+    _create_provider(client)
+    response = client.post(
+        "/api/v1/system-config/llm/role-routes",
+        headers=ADMIN_HEADERS,
+        json={"assignments": {"drafting": {"provider_id": "main_provider", "model": "test-model-a"}}, "activate": True},
+    )
+    assert response.status_code == 200, response.json()
+    assert "extraction" not in role_slot_node_ids("drafting")
+    assert "extraction" in response.json()["data"]["overview"]["missing_active_routes"]
+    assert _route_probe(session, "extraction") == "LLM_ROUTE_NOT_CONFIGURED"

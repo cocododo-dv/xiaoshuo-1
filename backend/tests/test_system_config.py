@@ -170,7 +170,8 @@ def test_system_config_read_includes_repo_defaults_without_admin_token(client) -
     assert payload["runtime"]["admin_configured"] is False
     assert payload["runtime"]["secret_configured"] is False
     assert payload["categories"]["models"]["source"] == "repo_default"
-    assert "task_routing" in payload["categories"]["models"]["parsed"]
+    # 重评 R4:仓库 models.yaml 不再带路由表,只剩两段运行参数
+    assert set(payload["categories"]["models"]["parsed"]) == {"retry_budget", "job_runtime"}
     assert payload["categories"]["api"]["secrets"]["llm_api_key"]["configured"] is False
 
 

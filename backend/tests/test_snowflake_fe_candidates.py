@@ -647,18 +647,18 @@ def test_save_scene_triage_reuses_triage_id_without_duplicating_rows(client, mon
 
 
 def test_candidates_node_registered_with_routing_and_template() -> None:
-    """三件套铁律：registry + models.yaml task_routing + prompts.yaml 模板缺一不可。"""
+    """两件套：节点注册表（路由默认值的唯一来源，重评 R4）+ prompts.yaml 模板缺一不可。"""
     import yaml
     from pathlib import Path
+
+    from novel_system.services.llm_client import load_model_routing_config
 
     node = get_llm_node_spec("snowflake_step_candidates")
     assert node is not None, "registry missing snowflake_step_candidates"
     root = Path(__file__).resolve().parents[2]
-    models = yaml.safe_load((root / "config" / "models.yaml").read_text(encoding="utf-8"))
-    assert "snowflake_step_candidates" in models.get("task_routing", {})
-    # 输出预算：三条方向 + 思考 token，1800 装不下；spec 与 task_routing 必须一致（node_routing 以 spec 为准且优先）
-    routed = models["task_routing"]["snowflake_step_candidates"]["max_output_tokens"]
-    assert node.max_output_tokens == routed and routed >= 4096
+    # 输出预算：三条方向 + 思考 token，1800 装不下
+    assert node.max_output_tokens >= 4096
+    assert load_model_routing_config().node_routing["snowflake_step_candidates"].max_output_tokens == node.max_output_tokens
     prompts = yaml.safe_load((root / "config" / "prompts.yaml").read_text(encoding="utf-8"))
     template = prompts.get("templates", {}).get("snowflake_step_candidates")
     assert template and template.get("structured_schema", {}).get("required") == ["candidates"]

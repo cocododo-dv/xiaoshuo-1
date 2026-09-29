@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 
-# 2026-09-30 重评 R15b:四个从不调模型的「保留」节点(章节摘要 / 连续性压缩 / 归档与索引 / 章节汇总)删了,
+# 节点注册表是模型路由默认值的唯一来源(2026-09-30 重评 R4:config/models.yaml 的 task_routing 逐字段抄了一份,已删):
+# 没有 models 快照时每个节点的路由、快照路由缺的参数,都取这里的 spec。
+# 重评 R15b:四个从不调模型的「保留」节点(章节摘要 / 连续性压缩 / 归档与索引 / 章节汇总)删了,
 # 注册表里只剩真正调模型的节点。status / requires_llm 仍随目录与路由载荷发出(设置页按它们筛选),取值只有这一种。
 NodeStatus = Literal["active"]
 
@@ -24,8 +26,8 @@ class LLMNodeSpec:
     response_format: str = "json_object"
     reasoning_level: str = "medium"
     api_mode: str = "responses"
-    # §7 anti-mean sampling — decoding-level penalties carried into DB node routing so the
-    # System-Config UI route keeps them instead of silently dropping to None on the DB path.
+    # §7 anti-mean sampling — decoding-level penalties; a DB node route that does not carry them
+    # gets them from here at parse time (route_defaults), so the UI path never drops them to None.
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
     top_p: float | None = None
@@ -51,6 +53,34 @@ class LLMNodeSpec:
             "order": order,
         }
 
+    def route_defaults(self) -> dict[str, Any]:
+        """节点的默认参数:温度、输出预算、响应格式、推理档位、解码惩罚。
+
+        models 快照里的路由只存作者的选择(见 ``route_payload``);解析时这些字段缺哪个就从这里补,
+        代码里修好的默认值(输出预算、温度……)于是随发布直接到达已配置过的安装(批准#5a)。
+        """
+        defaults: dict[str, Any] = {
+            "temperature": self.temperature,
+            "max_output_tokens": self.max_output_tokens,
+            "response_format": self.response_format,
+            "reasoning_level": self.reasoning_level,
+        }
+        # §7 anti-mean sampling:只有声明了惩罚的节点(风格化)才带这几个键,其余节点用服务默认
+        for key in ("frequency_penalty", "presence_penalty", "top_p"):
+            value = getattr(self, key)
+            if value is not None:
+                defaults[key] = value
+        return defaults
+
+    def default_route(self) -> dict[str, Any]:
+        """没有 models 快照、API 配置也来自环境变量时这个节点的路由(测试 / E2E / 本机假服务走这条)。"""
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "api_mode": self.api_mode,
+            **self.route_defaults(),
+        }
+
     def route_payload(
         self,
         *,
@@ -61,28 +91,18 @@ class LLMNodeSpec:
         api_mode: str | None = None,
         credential_mode: str | None = None,
     ) -> dict[str, Any]:
+        """设置页(一键补齐 / 分工)写进 models 快照的一条路由:只有作者的选择——服务、模型、端点模式、
+        凭据方式、账号。其余参数不抄进快照,解析时取 ``route_defaults``。"""
         payload: dict[str, Any] = {
             "provider": provider or self.provider,
             "provider_id": provider_id,
             "model": model or self.model,
-            "temperature": self.temperature,
-            "max_output_tokens": self.max_output_tokens,
-            "response_format": self.response_format,
-            "reasoning_level": self.reasoning_level,
             "api_mode": api_mode or self.api_mode,
         }
         if account_id:
             payload["account_id"] = account_id
         if credential_mode:
             payload["credential_mode"] = credential_mode
-        # §7 carry decoding-level sampling penalties into the route payload so DB-stored
-        # node routing (System-Config UI) preserves them instead of dropping them to None.
-        if self.frequency_penalty is not None:
-            payload["frequency_penalty"] = self.frequency_penalty
-        if self.presence_penalty is not None:
-            payload["presence_penalty"] = self.presence_penalty
-        if self.top_p is not None:
-            payload["top_p"] = self.top_p
         return payload
 
 
@@ -105,12 +125,11 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_step_candidates",
         temperature=0.7,
         # 三条方向各可到 400 字，外加标签 / 要点与 reasoning 模型的思考 token：1800 连可见输出的最坏情况都
-        # 装不下，每次都要靠客户端的截断阶梯翻倍重试一遍（白花一次完整调用）。与 models.yaml 同名 task 必须一致
-        # （node_routing 以这里为准且优先于 task_routing）；已存过 models 快照的安装用 raise_llm_output_budget 抬。
+        # 装不下，每次都要靠客户端的截断阶梯翻倍重试一遍（白花一次完整调用）。
         max_output_tokens=4096,
     ),
     # 2026-09-23 风格参考 v3:按字数分批(≤6,000 字 / ≤100 段)的一批结果 ≤~4k token;分类不需要思考
-    # token,推理默认关;8192 给不肯关思考的中转留余量。与 models.yaml 同名 task 必须一致。
+    # token,推理默认关;8192 给不肯关思考的中转留余量。
     LLMNodeSpec(
         "style_ref_paragraph_classify_anchor",
         "Style Reference 段落分类(锚定集,quality_strong)",
@@ -133,7 +152,9 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         reasoning_level="off",
     ),
     # 2026-09-23 风格参考 v3「学习文风」作业:四层各一次调用读同一组约 4 万字的窗口、文风卡合成、受保护专名、窗口标签。
-    # 输出预算见 models.yaml 同名 task 的注释(必须一致:node_routing 以这里为准且优先于 task_routing)。
+    # 四层各一次调用读同一组约 4 万字的窗口,每层 4 维 × (≤5 观察 + ≤2 避免) × 2–4 处引文,输出可达 ~1.1 万字;
+    # 文风卡合成 16 维 + 气质 + 规划手法 ~1.3 万字;都留 16384(含思考 token)。受保护专名 ≤300 个词;
+    # 窗口标签每批 8 窗,关推理。
     LLMNodeSpec(
         "style_ref_extract_language",
         "Style Reference 学习文风 · 语言层(同一组窗口,4 维)",
@@ -205,8 +226,7 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_step_generate",
         temperature=0.25,
         # 整步生成一次要吐出全表（角色表多人多字段、场景列表 / 场景规划几十场），reasoning 模型的
-        # 思考 token 同样吃这个预算：3200 装不下（config/models.yaml 同名 task 早已是 8192，但系统设置
-        # 同步进库的 node_routing 以这里的默认值为准、且运行时优先于 task_routing——两处必须一致）。
+        # 思考 token 同样吃这个预算：3200 装不下。8192 是客户端截断阶梯的上限（MAX_OUTPUT_TOKENS_CEILING）。
         max_output_tokens=8192,
     ),
     LLMNodeSpec(
@@ -358,7 +378,7 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="writer_passage_patch",
         temperature=0.45,
         # 2026-09-30 重评 R12:改写候选不再逐项回抄原文,一次要装下两版近 2000 字的改写(含思考 token),
-        # 2600 装不下。与 models.yaml 同名 task 一致。
+        # 2600 装不下。
         max_output_tokens=8192,
     ),
     LLMNodeSpec(

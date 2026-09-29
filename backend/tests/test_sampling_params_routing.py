@@ -2,12 +2,11 @@
 
 Two gaps this guards:
 
-1. The decoding-level penalties (frequency_penalty/presence_penalty) only reached the
-   request on the YAML task_routing path. The System-Config UI path stores routes as DB
-   ``node_routing`` whose payload came from ``LLMNodeSpec.route_payload`` — which did NOT
-   emit the penalties, so a normal UI-configured route silently dropped them to None.
-   Fix: LLMNodeSpec carries the penalties and route_payload emits them, so the
-   route_payload -> (DB) -> _load_task_model_config round-trip preserves them.
+1. The decoding-level penalties (frequency_penalty/presence_penalty) once reached the
+   request only on the YAML task_routing path: a UI-configured DB ``node_routing`` route
+   silently dropped them to None. Since approval #5a a DB route stores only the author's
+   choice (provider / model) and the parser fills every other parameter from the node
+   spec, so the route_payload -> (DB) -> _load_task_model_config round-trip keeps them.
 
 2. The Anthropic adapter forwarded none of the sampling params. Anthropic's Messages API
    supports ``top_p`` but not frequency/presence penalties (OpenAI-only). Fix: map only
@@ -17,13 +16,16 @@ Two gaps this guards:
 from __future__ import annotations
 
 
-def test_route_payload_carries_sampling_penalties() -> None:
-    from novel_system.services.llm_node_registry import default_task_config_payload
+def test_route_payload_carries_only_the_authors_choice_and_the_spec_carries_the_penalties() -> None:
+    """批准#5a:快照里的路由只存作者的选择;解码惩罚随节点 spec 走(见下一条的往返)。"""
+    from novel_system.services.llm_node_registry import default_task_config_payload, get_llm_node_spec
 
     payload = default_task_config_payload("style_draft", provider_id="acct1")
+    assert "frequency_penalty" not in payload and "presence_penalty" not in payload
     # 2026-09-09 样例优先:惩罚归零(会抹平参考作者刻意的复沓),但键仍随路由发出。
-    assert payload["frequency_penalty"] == 0.0
-    assert payload["presence_penalty"] == 0.0
+    defaults = get_llm_node_spec("style_draft").route_defaults()
+    assert defaults["frequency_penalty"] == 0.0
+    assert defaults["presence_penalty"] == 0.0
 
 
 def test_db_node_route_roundtrip_preserves_penalties() -> None:

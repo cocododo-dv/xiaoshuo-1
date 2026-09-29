@@ -1,7 +1,8 @@
 """LLM 模型路由：节点 → 服务 / 模型 / 采样参数（从 llm_client 拆出，2026-09-30）。
 
-路由来源：库里有活动 models 快照读快照（系统配置保存的节点路由），否则读 ``config/models.yaml``。
-``resolve_node_route`` 是运行时查路由的唯一入口，``build_llm_request`` 把一条路由翻译成 ``LLMRequest``。
+默认值只有一个来源：节点注册表（``llm_node_registry``）。库里的活动 models 快照记作者为每个节点选的
+服务与模型；规则见 ``load_model_routing_config``。``resolve_node_route`` 是运行时查路由的唯一入口，
+``build_llm_request`` 把一条路由翻译成 ``LLMRequest``。
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from typing import Any, Literal
 
 from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
+from novel_system.services.llm_node_registry import get_llm_node_spec, llm_node_specs
 from novel_system.services.llm_providers import default_provider_base_urls, supported_provider_types
 from novel_system.services.llm_providers.base import (
     LLMConfigurationError,
@@ -58,17 +60,14 @@ class ModelRoutingConfig:
 
 
 def resolve_node_route(routing: Any, node_id: str) -> Any:
-    """解析一个 LLM 节点的路由配置:DB node_routing 优先,yaml task_routing 兜底。
+    """解析一个 LLM 节点的路由配置:node_routing 优先,task_routing(老快照里的那张表)兜底。
 
-    优先级教训(不要改动顺序):``parse_model_routing_config`` 的合并是
-    setdefault——yaml task 条目赢。历史上风格参考的单次节点调用只读
-    task_routing,导致用户在系统设置「模型与接入」角色槽配好的
-    provider/model/api_mode 被 yaml 占位(gpt-5/responses)遮蔽,风格抽取对
-    chat-only 中转直接 404(真实回归;那个调用层已随旧学习链路删除,现在风格参考的
-    分类 / 学习 / 对照检查节点都直接调这里)。
-    因此所有调用点必须先查 node_routing(系统设置同步的 DB 节点路由),
-    再退回 task_routing(config/models.yaml 的 task 默认);两处皆缺 →
-    ``KeyError(node_id)``,由调用方翻译成各自的引导错误。
+    优先级教训(不要改动顺序):历史上风格参考的单次节点调用只读 task_routing,导致用户在
+    系统设置「模型与接入」角色槽配好的 provider/model/api_mode 被仓库 yaml 占位(gpt-5/responses)
+    遮蔽,风格抽取对 chat-only 中转直接 404(真实回归;那个调用层已随旧学习链路删除,现在风格参考的
+    分类 / 学习 / 对照检查节点都直接调这里)。因此所有调用点必须先查 node_routing,再退回
+    task_routing;两处皆缺 → ``KeyError(node_id)``,由调用方翻译成各自的引导错误
+    (``LLM_ROUTE_NOT_CONFIGURED`` 一类)。
     """
     node_routing = getattr(routing, "node_routing", None)
     if isinstance(node_routing, dict) and node_id in node_routing:
@@ -124,31 +123,114 @@ def build_llm_request(
 
 
 
-# 解析好的路由按来源内容记忆（活动 models 快照的原文 / 文件正文，见 config_cache）：同一份内容只解析一次，
-# 内容一变（系统配置保存路由 / 切换快照、raise_llm_output_budget、改文件）下一次读取就重新解析。
+# 解析好的路由按来源内容记忆（活动 models 快照的原文 + 仓库 models.yaml 的正文 / 文件正文，见 config_cache）：
+# 同一份内容只解析一次，内容一变（系统配置保存路由 / 切换快照、raise_llm_output_budget、改文件）下一次读取就重新解析。
 _MODEL_ROUTING_CACHE = ContentKeyedCache(maxsize=4)
+
+# 老快照 task_routing 里唯一不是节点 id 的键:style_draft 的旧名。解析时照旧镜像,剪枝退役节点时放过它。
+LEGACY_TASK_ALIASES = frozenset({"stylize"})
+# 快照路由里「作者的选择」:服务、模型、端点模式、凭据方式、账号——设置页写进快照的只有这些字段
+# (见 ``LLMNodeSpec.route_payload``);其余参数缺省时取节点 spec(``LLMNodeSpec.route_defaults``)。
+ROUTE_CHOICE_FIELDS = ("provider", "provider_id", "model", "api_mode", "credential_mode", "account_id")
+# 仓库 models.yaml 仍然管的两段(设置页不编辑):快照里有的键覆盖它,没有的取仓库值。
+FILE_SECTIONS = ("retry_budget", "job_runtime")
 
 
 def load_model_routing_config(path: str | Path | None = None) -> ModelRoutingConfig:
-    """模型路由：库里有活动 models 快照读快照，否则读 ``config/models.yaml``；给 ``path`` 就读那份文件。
+    """模型路由。两条规则(2026-09-30 重评 R4 / 批准#5a):
 
-    返回的 ``ModelRoutingConfig`` 由缓存共享、只读（调用方都只查表；要改先拷贝）。
+    * **节点级**:库里有活动 models 快照时,路由表只取快照——快照里没有的节点就是没配,
+      运行时 ``LLM_ROUTE_NOT_CONFIGURED``(fail-closed),绝不在快照底下垫注册表默认值。
+      没有快照时:API 配置来自环境变量(库里没有保存过服务:测试、E2E、本机假服务)→ 每个节点取
+      注册表默认路由;作者已经在设置里保存过服务 → 一个节点也不配,等作者「一键补齐」/ 分工
+      (否则会把占位模型 gpt-5 发给作者的中转)。设置页 overview 用同一条规则(``routing_for_models_payload``)。
+    * **字段级**:一条快照路由缺的温度 / 输出预算 / 响应格式 / 推理档位 / 解码惩罚取该节点的 spec
+      (快照只存作者选的服务与模型,代码里修好的默认值随发布到达实例)。
+
+    ``retry_budget`` / ``job_runtime`` 以仓库 ``config/models.yaml`` 为底,快照里有的键覆盖。
+    给 ``path`` 时读那份文件,当作没有快照的环境配置(每个节点取注册表默认路由,文件里的路由覆盖)。
+    返回的 ``ModelRoutingConfig`` 由缓存共享、只读(调用方都只查表;要改先拷贝)。
     """
-    if path is None:
-        from novel_system.services.config_snapshot_reader import load_active_config_parsed
-
-        routing = load_active_config_parsed(
-            "models", parse_model_routing_config, cache=_MODEL_ROUTING_CACHE
+    if path is not None:
+        text = Path(path).read_text(encoding="utf-8")
+        return _MODEL_ROUTING_CACHE.get_or_build(
+            ("file", text, True), lambda: _file_routing(safe_load_yaml(text), registry_defaults=True)
         )
-        if routing is not None:
-            return routing
-        config_path = _default_models_config_path()
-    else:
-        config_path = Path(path)
-    text = config_path.read_text(encoding="utf-8")
-    return _MODEL_ROUTING_CACHE.get_or_build(
-        ("file", text), lambda: parse_model_routing_config(safe_load_yaml(text))
+
+    from novel_system.services.config_snapshot_reader import load_active_config_parsed
+
+    file_text = _default_models_config_path().read_text(encoding="utf-8")
+    routing = load_active_config_parsed(
+        "models",
+        lambda payload: snapshot_routing(payload, file_payload=safe_load_yaml(file_text)),
+        cache=_MODEL_ROUTING_CACHE,
+        key_extra=(file_text,),
     )
+    if routing is not None:
+        return routing
+    registry_defaults = not _api_config_has_providers()
+    return _MODEL_ROUTING_CACHE.get_or_build(
+        ("file", file_text, registry_defaults),
+        lambda: _file_routing(safe_load_yaml(file_text), registry_defaults=registry_defaults),
+    )
+
+
+def routing_for_models_payload(
+    parsed: dict[str, Any] | None,
+    *,
+    from_snapshot: bool,
+    api_has_providers: bool,
+) -> ModelRoutingConfig:
+    """设置页 overview 用的路由:与 ``load_model_routing_config`` 同一套规则,只是 models 配置由调用方给出。"""
+    if from_snapshot:
+        return snapshot_routing(parsed or {})
+    return _file_routing(parsed or {}, registry_defaults=not api_has_providers)
+
+
+def snapshot_routing(snapshot_payload: Any, *, file_payload: Any = None) -> ModelRoutingConfig:
+    """活动 models 快照的路由:路由表只取快照,``retry_budget`` / ``job_runtime`` 以 ``file_payload`` 为底。"""
+    if not isinstance(snapshot_payload, dict):
+        return parse_model_routing_config(snapshot_payload)
+    payload = dict(snapshot_payload)
+    if isinstance(file_payload, dict):
+        for section in FILE_SECTIONS:
+            base = file_payload.get(section)
+            overlay = payload.get(section)
+            if isinstance(base, dict) and (overlay is None or isinstance(overlay, dict)):
+                payload[section] = {**base, **(overlay or {})}
+    return parse_model_routing_config(payload)
+
+
+def registry_default_node_routing() -> dict[str, dict[str, Any]]:
+    """每个节点的注册表默认路由(原样的路由字典,解析前)。"""
+    return {spec.node_id: spec.default_route() for spec in llm_node_specs()}
+
+
+def _file_routing(file_payload: Any, *, registry_defaults: bool) -> ModelRoutingConfig:
+    """没有快照时的路由:``registry_defaults`` 时每个节点先取注册表默认路由,文件里写了路由的节点以文件为准。"""
+    if file_payload is None:
+        file_payload = {}
+    if not isinstance(file_payload, dict):
+        return parse_model_routing_config(file_payload)
+    if not registry_defaults:
+        return parse_model_routing_config(file_payload)
+    file_task_routing = _require_mapping(file_payload, "task_routing")
+    node_routing = {
+        **registry_default_node_routing(),
+        **{key: value for key, value in file_task_routing.items() if key not in LEGACY_TASK_ALIASES},
+        **_require_mapping(file_payload, "node_routing"),
+    }
+    return parse_model_routing_config({**file_payload, "node_routing": node_routing})
+
+
+def _api_config_has_providers() -> bool:
+    """活动 api 快照里有没有作者保存过的服务(``llm.providers``);没有 api 快照 → 配置来自环境变量。"""
+    from novel_system.services.config_snapshot_reader import load_active_config_payload
+
+    payload = load_active_config_payload("api") or {}
+    llm = payload.get("llm") if isinstance(payload.get("llm"), dict) else payload
+    providers = llm.get("providers") if isinstance(llm, dict) else None
+    return isinstance(providers, dict) and any(isinstance(item, dict) for item in providers.values())
 
 
 def reset_model_routing_cache() -> None:
@@ -157,6 +239,12 @@ def reset_model_routing_cache() -> None:
 
 
 def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
+    """解析一份 models 配置(快照或文件)。
+
+    老快照的 ``task_routing`` 照旧解析、照旧的优先级:node_routing 里没有的节点从 task_routing 补进来,
+    ``stylize`` 别名只镜像;返回值的 ``task_routing`` 是 node_routing 的镜像(给按旧名查表的调用方)。
+    每条路由缺的参数取该节点的 spec(见 ``_load_task_model_config``)。
+    """
     if raw_payload is None:
         raw_payload = {}
     if not isinstance(raw_payload, dict):
@@ -188,9 +276,7 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
     }
 
     for task_name, task_config in task_routing.items():
-        if task_name == "stylize":
-            continue
-        else:
+        if task_name not in LEGACY_TASK_ALIASES:
             node_routing.setdefault(task_name, task_config)
 
     for node_name, node_config in node_routing.items():
@@ -216,6 +302,10 @@ def _load_task_model_config(task_name: str, payload: Any) -> TaskModelConfig:
             "LLM_MODEL_CONFIG_INVALID",
             f"task_routing.{task_name} must be a mapping",
         )
+    spec = get_llm_node_spec(task_name)
+    if spec is not None:
+        # 字段级:快照只存作者的选择,缺的参数取节点 spec(退役节点没有 spec,照旧要求完整)
+        payload = {**spec.route_defaults(), **payload}
 
     try:
         return TaskModelConfig(

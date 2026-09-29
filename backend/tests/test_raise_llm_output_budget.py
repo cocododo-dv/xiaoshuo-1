@@ -1,7 +1,7 @@
 """raise_llm_output_budget：只抬输出预算，不碰界面配好的路由。
 
-存在意义见工具 docstring——库内有活动 models 快照时，改 config/models.yaml 不会
-到达运行中的实例；而整份重新导入会把界面上配的 provider/model 一起冲掉。
+存在意义见工具 docstring——快照只存作者的选择之后（批准#5a），它只用于把某个节点抬到高于默认值
+（显式覆盖）和处理迁移之前的老快照；整份重新导入会把界面上配的 provider/model 一起冲掉。
 """
 from __future__ import annotations
 
@@ -122,6 +122,21 @@ def test_task_routing_already_high_but_node_routing_low_is_still_raised(session,
     assert _active_payload(session)["node_routing"]["snowflake_step_generate"]["max_output_tokens"] == 8192
 
 
-def test_no_active_snapshot_says_the_repo_file_is_live(session, capsys):
+def test_no_active_snapshot_says_registry_defaults_are_live(session, capsys):
     assert tool.main([]) == 0
-    assert "config/models.yaml" in capsys.readouterr().out
+    assert "节点注册表" in capsys.readouterr().out
+
+
+def test_lean_route_budget_counts_the_node_default_and_is_raised_as_an_explicit_override(session, capsys):
+    """快照只存作者的选择：路由没写输出预算时按节点默认值算当前值，低于下限才写显式覆盖。"""
+    lean = {"provider": "openai_compatible", "provider_id": "relay", "model": "relay-model", "api_mode": "chat"}
+    _activate(session, {"node_routing": {"neutral_draft": dict(lean), "snowflake_step_generate": dict(lean)}})
+
+    assert tool.main(["--node", "neutral_draft", "--node", "snowflake_step_generate", "--floor", "8192", "--execute"]) == 0
+    out = capsys.readouterr().out
+    # neutral_draft 默认 6000 < 8192 → 抬；snowflake_step_generate 默认已是 8192 → 不动
+    assert "node_routing.neutral_draft: 6000 → 8192" in out
+    assert "snowflake_step_generate" not in out
+    node_routing = _active_payload(session)["node_routing"]
+    assert node_routing["neutral_draft"] == {**lean, "max_output_tokens": 8192}
+    assert node_routing["snowflake_step_generate"] == lean
