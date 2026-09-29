@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from novel_system.db.models import StoryProject
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
-from novel_system.services.snowflake_step_catalog import CONFIRMED_STEP_STATUSES, STEP_ORDER, list_step_definitions
+from novel_system.services.snowflake_step_catalog import CONFIRMED_STEP_STATUSES, STEP_ORDER, step_definition_views
 from novel_system.services.snowflake_step_drafts import merge_step_draft
 from novel_system.services.snowflake_step_diagnosis import diagnose_scene_detail
 from novel_system.services.value_coercion import has_value
@@ -99,6 +100,24 @@ CURRENT_DRAFT_HOW_TO_USE = (
 )
 
 
+def step_confirmed(status: Any, stale_accepted_at: Any = None) -> bool:
+    """这一步算不算作者确认过的事实：确认 / 略过，或过期但作者点过「已复核」——与物化闸门同一条规则（B06-16）。"""
+    status = str(status or "")
+    return status in CONFIRMED_STEP_STATUSES or (status == "stale" and bool(stale_accepted_at))
+
+
+def context_step_item(step_key: str, label: Any, *, status: Any, confirmed: bool, draft: Any) -> dict[str, Any] | None:
+    """上下文里的一步（整步生成的 ``upstream_steps`` 与教练 / AI 分诊的 ``approved_context`` 同一种形状）。
+
+    规范草稿剥掉前端写穿键（作者的自由草稿以 ``author_free_draft`` 保留）；剥完一个字都没有的空骨架（还没写的步骤）
+    不进上下文——不占提示预算，也别让模型误以为作者已经交代过什么。
+    """
+    sanitized = _sanitize_canonical_draft(draft if isinstance(draft, dict) else {})
+    if not has_value(sanitized):
+        return None
+    return {"step_key": step_key, "label": label, "status": status, "confirmed": confirmed, "draft": sanitized}
+
+
 def _upstream_step_context(
     latest_by_step: Mapping[str, Any],
     *,
@@ -115,29 +134,44 @@ def _upstream_step_context(
     """
     limit = STEP_ORDER.get(str(step_key or ""), len(STEP_ORDER))
     items: list[dict[str, Any]] = []
-    for definition in list_step_definitions():
+    for definition in step_definition_views():
         key = str(definition["step_key"])
         if STEP_ORDER[key] >= limit:
             continue
         artifact = latest_by_step.get(key)
         if artifact is None:
             continue
-        draft = _sanitize_canonical_draft(
-            merge_step_draft(key, getattr(artifact, "draft_json", None), latest_by_step=dict(latest_by_step))
-        )
-        # 空骨架（还没写的步骤）不占提示预算，也别让模型误以为作者已经交代过什么。
-        if not has_value(draft):
-            continue
         status = str(getattr(artifact, "status", "") or "")
-        items.append(
-            {
-                "step_key": key,
-                "label": definition.get("label"),
-                "status": status,
-                "confirmed": status in CONFIRMED_STEP_STATUSES,
-                "draft": draft,
-            }
+        item = context_step_item(
+            key,
+            definition.get("label"),
+            status=status,
+            confirmed=step_confirmed(status, getattr(artifact, "stale_accepted_at", None)),
+            draft=merge_step_draft(key, getattr(artifact, "draft_json", None), latest_by_step=dict(latest_by_step)),
         )
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def approved_context_from_steps(steps: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """驻场教练 / AI 分诊看到的全书上下文：工作台各步（09 / 10 由场景计划行现拼），与 ``upstream_steps`` 同一种条目。
+
+    和 _upstream_step_context 同一条纪律：不能只收确认过的。explore 模式下作者可以一路不确认，改上游又会把下游
+    打成 stale，只收已确认就等于让教练看不见这本书的故事，只能泛泛而谈或另编一套。未确认草稿照给，如实标注状态。
+    """
+    items: list[dict[str, Any]] = []
+    for step in steps:
+        item = context_step_item(
+            step["step_key"],
+            step.get("label"),
+            status=step.get("status"),
+            # 工作台的 gate_satisfied 就是 step_confirmed 这条规则
+            confirmed=bool(step.get("gate_satisfied")),
+            draft=deepcopy(step.get("draft") or {}),
+        )
+        if item is not None:
+            items.append(item)
     return items
 
 
@@ -386,8 +420,3 @@ def _project_id_from_steps(latest_by_step: Mapping[str, Any]) -> str:
         if project_id:
             return project_id
     return ""
-
-
-def draft_has_content(draft: Any) -> bool:
-    """草稿里是否有任何非空内容——空骨架代表作者还没写，不该占提示上下文。"""
-    return has_value(draft)

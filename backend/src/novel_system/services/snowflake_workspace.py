@@ -93,7 +93,8 @@ from novel_system.services.snowflake_triage import (
     plan_ids_with_status,
 )
 from novel_system.services.snowflake_direction_brief import DirectionBriefStore, delta_changed
-from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService, draft_has_content
+from novel_system.services.snowflake_llm_context import approved_context_from_steps
+from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService
 from novel_system.services.hash_engine import sha256_text
 from novel_system.services.value_coercion import coerce_string_list, int_or_default
 from novel_system.services.writing_stats import WritingStatsService
@@ -3344,24 +3345,8 @@ class SnowflakeWorkspaceService:
 
     @staticmethod
     def _approved_context(workspace: dict[str, Any]) -> list[dict[str, Any]]:
-        """驻场教练/场景急救看到的全书上下文。
-
-        和 _upstream_step_context 同一条纪律：不能只收 gate_satisfied（approved/skipped）。
-        explore 模式下作者可以一路不确认，改上游又会把下游打成 stale，只收已确认
-        就等于让教练看不见这本书的故事，只能泛泛而谈或另编一套。未确认草稿照给，
-        如实标注状态即可。
-        """
-        return [
-            {
-                "step_key": item["step_key"],
-                "label": item["label"],
-                "status": item.get("status"),
-                "confirmed": bool(item.get("gate_satisfied")),
-                "draft": deepcopy(item.get("draft") or {}),
-            }
-            for item in workspace.get("steps") or []
-            if draft_has_content(item.get("draft"))
-        ]
+        """驻场教练 / AI 分诊看到的全书上下文——与整步生成的 upstream_steps 同一种条目（B06-16）。"""
+        return approved_context_from_steps(workspace.get("steps") or [])
 
     @staticmethod
     def _merged_draft_override(

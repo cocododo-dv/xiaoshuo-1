@@ -89,8 +89,10 @@ from novel_system.services.snowflake_llm_context import (  # noqa: F401
     _scene_ref,
     _scene_rules,
     _upstream_step_context,
-    draft_has_content,
+    approved_context_from_steps,
+    context_step_item,
     resolve_generation_focus,
+    step_confirmed,
 )
 from novel_system.services.snowflake_llm_schema import (  # noqa: F401
     _editor_schema_properties,
