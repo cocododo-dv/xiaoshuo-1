@@ -1,5 +1,6 @@
 import React from "react";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { SnowSync } from "./ws-snow-sync.jsx";
 import { wsKey } from "./ws-works.jsx";
 import { navigateWithViewIntent, queueViewIntent } from "./ws-view-intents.js";
 import { wsConfirm } from "./ws-notify.jsx";
@@ -17,7 +18,7 @@ import { randomSuffix } from "./lib/ids.js";
    · useAuthorSnow —— 构思 → 目录的回流（SnowSync.resync）与「整理章节结构」这扇门给不给
    · useChapterDnd / useSceneDnd —— 章 / 场的拖动与方向键挪位
    · arrGoView —— 跨视图跳转的唯一出口（有宿主的 go 就走 go，没有就排队意图 + 改 hash）
-   不写 window（只读 window.SnowSync）；不 import 任何 ws-author 视图模块，免得成环。
+   不写 window（只读 SnowSync）；不 import 任何 ws-author 视图模块，免得成环。
    ========================================================== */
 
 const { useState, useRef, useEffect, useMemo, useCallback } = React;
@@ -121,8 +122,8 @@ export function useSelection() {
    同源）；resync 内部已重拉 WsCatalog，这里再把最新目录灌回本页。pending 来自后端 resync_status（真相），不写死。
    canPlan：页面上给不给「整理章节结构」这扇门。构思的闸门此刻没过（某一步被改动、待重新确认）也要给——目录里
    已经有构思分出来的章，它们在这里不能拖，门不能跟着消失；面板自己会列出没过的那几项并带你去补。 */
-const readSnowResync = () => { try { return (window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0 }; } catch (e) { return { pendingCount: 0 }; } };
-const readSnowReady = () => { try { return !!(window.SnowSync && window.SnowSync.readyToMaterialize && window.SnowSync.readyToMaterialize()); } catch (e) { return false; } };
+const readSnowResync = () => { try { return (SnowSync && SnowSync.resyncStatus()) || { pendingCount: 0 }; } catch (e) { return { pendingCount: 0 }; } };
+const readSnowReady = () => { try { return !!(SnowSync && SnowSync.readyToMaterialize && SnowSync.readyToMaterialize()); } catch (e) { return false; } };
 
 export function useAuthorSnow({ chapters, reload, showNotice, notifyError, goView }) {
   const [resync, setResync] = useState(readSnowResync);
@@ -138,7 +139,7 @@ export function useAuthorSnow({ chapters, reload, showNotice, notifyError, goVie
 
   const sync = async () => {
     if (busy) return;
-    if (!window.SnowSync || !window.SnowSync.resync) { notifyError("同步能力还没准备好：请刷新页面，或先到「构思」里「整理章节结构」。"); return; }
+    if (!SnowSync || !SnowSync.resync) { notifyError("同步能力还没准备好：请刷新页面，或先到「构思」里「整理章节结构」。"); return; }
     if (!ready && !hasPlanChapters) {   // 从没走过物化主路径：暂无可回流的场，引导去构思页
       const goSnow = await wsConfirm({
         title: "这部作品还没从构思整理过章节结构",
@@ -150,7 +151,7 @@ export function useAuthorSnow({ chapters, reload, showNotice, notifyError, goVie
     }
     setBusy(true);
     try {
-      const r = await window.SnowSync.resync();                  // POST /resync，内部已 WsCatalog.__refresh
+      const r = await SnowSync.resync();                  // POST /resync，内部已 WsCatalog.__refresh
       reload();                                                   // 订阅也会收敛；这里让结果即时可见
       refreshResync();
       showNotice({ text: (r && r.synced) ? `已把 ${r.synced} 场的构思改动同步到目录` : "目录已经是最新的，没有要同步的", tone: (r && r.synced) ? "ok" : "neutral" });

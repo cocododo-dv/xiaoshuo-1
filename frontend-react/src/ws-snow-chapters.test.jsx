@@ -1,6 +1,11 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+// 分章面板从 ws-snow-sync.jsx import SnowSync；每个用例把自己的假 SnowSync 挂在 window 上，这里转发过去
+// （用例没给的方法读出来是 undefined，面板照「同步模块尚未就绪」处理）。
+vi.mock("./ws-snow-sync.jsx", () => ({
+  SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
+}));
 
 import {
   WsChapterPlanPanel, applyChapterNames, buildChapterPlanPayload, buildChapterTitlesRequest, chapterActRuns,

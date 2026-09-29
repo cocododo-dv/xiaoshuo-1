@@ -12,7 +12,7 @@ import {
   s2BlankScaffolds, s2Content, s2SceneNo, s2StaleMap,
 } from "./ws-snow-model.js";
 import {
-  activeWorkId, s2Key, useSnowDocument, useSnowEvents, useSnowNotices, useSnowSyncMirror, useStableCallback,
+  activeWorkId, s2Key, s2WorkIdOfKey, useSnowDocument, useSnowEvents, useSnowNotices, useSnowSyncMirror, useStableCallback,
 } from "./ws-snow-hooks.js";
 import { useSnowGeneration } from "./ws-snow-generation.js";
 import {
@@ -71,7 +71,7 @@ function WsSnowflake({ initialStep }) {
   const keyRef = useSR(null);
   if (keyRef.current == null) keyRef.current = s2Key();
   const myKey = keyRef.current;
-  const snowWorkId = String(myKey || "").split("::")[1] || "";
+  const snowWorkId = s2WorkIdOfKey(myKey);
 
   /* 十步内容（本机缓存写穿 SnowSync）与同步层镜像。先挂内容：水合时它先重读缓存，
      后面的落点 / 场景目标处理拿到的就是重读之后的状态。 */
