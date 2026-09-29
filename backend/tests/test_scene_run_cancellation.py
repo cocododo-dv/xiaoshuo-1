@@ -937,15 +937,14 @@ def test_expired_cancellation_reconciles_reservation_from_dispatch_truth(
     assert state.active_run_job_id is None
 
 
-def test_request_cancel_does_not_touch_registry_before_commit(client, session) -> None:
-    from novel_system.services.scene_run_jobs import is_cancellation_cached
-
+def test_request_cancel_is_not_durable_before_commit(client, session) -> None:
     job = _create_queued_job(client)
     service = SceneRunJobService(session)
 
     service.request_cancel(job["job_id"], actor_ref="author")
 
-    assert is_cancellation_cached(job["job_id"]) is False
+    with SessionLocal() as observer:
+        assert observer.get(ChapterRunJob, job["job_id"]).status == "queued"
     session.rollback()
     session.expire_all()
     assert session.get(ChapterRunJob, job["job_id"]).status == "queued"
@@ -1035,12 +1034,10 @@ def test_claim_and_cancel_race_is_linearized_by_database_cas(client) -> None:
         db.close()
 
 
-def test_endpoint_commit_failure_leaves_no_registry_or_persisted_cancel(
+def test_endpoint_commit_failure_leaves_no_persisted_cancel(
     client,
     monkeypatch,
 ) -> None:
-    from novel_system.services.scene_run_jobs import is_cancellation_cached
-
     job = _create_queued_job(client)
     original_commit = SqlAlchemySession.commit
     commit_count = 0
@@ -1057,7 +1054,6 @@ def test_endpoint_commit_failure_leaves_no_registry_or_persisted_cancel(
     with pytest.raises(RuntimeError, match="injected cancellation commit failure"):
         client.post(f"/api/v1/run-jobs/{job['job_id']}/cancel")
 
-    assert is_cancellation_cached(job["job_id"]) is False
     db = SessionLocal()
     try:
         persisted = db.get(ChapterRunJob, job["job_id"])
@@ -1067,7 +1063,7 @@ def test_endpoint_commit_failure_leaves_no_registry_or_persisted_cancel(
         db.close()
 
 
-def test_endpoint_database_busy_leaves_no_registry_or_persisted_cancel(
+def test_endpoint_database_busy_leaves_no_persisted_cancel(
     client,
     monkeypatch,
 ) -> None:
@@ -1093,7 +1089,6 @@ def test_endpoint_database_busy_leaves_no_registry_or_persisted_cancel(
         "details": {"retryable": True},
     }
 
-    assert job_module.is_cancellation_cached(job["job_id"]) is False
     db = SessionLocal()
     try:
         persisted = db.get(ChapterRunJob, job["job_id"])

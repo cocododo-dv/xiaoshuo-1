@@ -10,7 +10,6 @@ from uuid import uuid4
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
-from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import ChapterRunJob, LlmCall, OperationLog, QcReport, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
@@ -45,9 +44,6 @@ _BUDGET_REJECTION_CODES = frozenset(
         "LLM_DAILY_COST_LIMIT",
     }
 )
-_CANCELLED_JOB_REGISTRY: set[str] = set()
-_CANCELLED_JOB_REGISTRY_LOCK = threading.Lock()
-register_cache_reset("scene_run_jobs.cancelled_hints", _CANCELLED_JOB_REGISTRY.clear)
 
 
 @dataclass
@@ -93,7 +89,7 @@ class SceneRunJobService:
         budget_resume_parent_execution_id: str | None = None,
     ) -> ChapterRunJob:
         scene = AuthorLifecycleService(self.session).require_active_scene(scene_id)
-        run_preflight = SceneRunPreflightService(self.session).build(scene, {})
+        run_preflight = SceneRunPreflightService(self.session).build(scene)
         can_run = bool(run_preflight.get("can_run"))
         current_step = "queued" if can_run else "preflight_blocked"
         status = "queued" if can_run else "blocked"
@@ -146,7 +142,6 @@ class SceneRunJobService:
                 "scene_id": scene_id,
                 "actor_ref": actor_ref,
                 "current_step": current_step,
-                "lock_wait_ms": 0,
                 "run_preflight_status": run_preflight.get("overall_status"),
                 **({"author_note": note} if note else {}),
                 # Wave 2：运行策略随任务下发（reliable|strict|auto，列属 Wave 3）
@@ -421,8 +416,6 @@ class SceneRunJobService:
             "started_at": job.started_at,
             "finished_at": job.finished_at,
             "elapsed_ms": _elapsed_ms(job.started_at or job.created_at, job.finished_at),
-            "current_model_call": summary.get("current_model_call"),
-            "lock_wait_ms": payload.get("lock_wait_ms", 0),
             "latest_qc": latest_qc,
             "needs_human_review": bool(summary.get("needs_human_review")),
             "error_code": job.error_code,
@@ -941,18 +934,6 @@ def _begin_immediate(session: Session) -> None:
         session.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
 
-def remember_committed_cancellation(job_id: str) -> None:
-    """Optional same-process hint; durable job status remains authoritative."""
-
-    with _CANCELLED_JOB_REGISTRY_LOCK:
-        _CANCELLED_JOB_REGISTRY.add(job_id)
-
-
-def is_cancellation_cached(job_id: str) -> bool:
-    with _CANCELLED_JOB_REGISTRY_LOCK:
-        return job_id in _CANCELLED_JOB_REGISTRY
-
-
 def recover_expired_cancel_requested_jobs(
     session: Session,
     *,
@@ -1083,7 +1064,6 @@ def recover_expired_cancel_requested_jobs(
         )
         service._clear_active_job(job)
         session.commit()
-        remember_committed_cancellation(job_id)
         recovered.append(
             {
                 "job_id": job_id,
@@ -1140,7 +1120,6 @@ def _run_scene_job_worker(job_id: str) -> None:
             job = service.get_job(job_id)
             service.mark_cancelled(owner)
             session.commit()
-            remember_committed_cancellation(job_id)
             return
         state = session.get(SceneRunState, scene_id)
         scene_status = result.get("scene_status") if isinstance(result, dict) else state.scene_status if state else ""
@@ -1210,9 +1189,7 @@ def _mark_worker_failure(
         session.refresh(job)
         if job.status == "cancel_requested":
             service.mark_cancelled(owner)
-            cancelled = True
         else:
-            cancelled = False
             service.mark_failed(
                 job,
                 error_code=error_code,
@@ -1222,8 +1199,6 @@ def _mark_worker_failure(
                 status="blocked" if _is_budget_rejection(error_code) else "failed",
             )
         session.commit()
-        if cancelled:
-            remember_committed_cancellation(job_id)
     except DomainError as exc:
         session.rollback()
         if exc.code != "RUN_OWNER_LEASE_LOST":
@@ -1273,7 +1248,6 @@ def _mark_worker_cancellation(
         if job.status == "cancel_requested":
             service.mark_cancelled(owner)
             session.commit()
-            remember_committed_cancellation(job_id)
     except Exception:  # noqa: BLE001 — 工人线程边界：取消由新主人或恢复清扫收尾
         session.rollback()
         _LOGGER.exception("scene run job %s could not confirm its cancellation", job_id)

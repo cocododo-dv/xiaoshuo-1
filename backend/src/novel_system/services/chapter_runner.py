@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -83,10 +82,10 @@ class ChapterRunnerService:
         self.session = session
         self._active_owner: ChapterRunLease | None = None
 
-    def run_full(self, chapter_id: str, *, restart: bool = False, request_lease=None) -> dict[str, Any]:
+    def run_full(self, chapter_id: str, *, request_lease=None) -> dict[str, Any]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
         scene_ids = self._scene_ids(chapter_id)
-        job = None if restart else self._resumeable_job(chapter_id)
+        job = self._latest_job(chapter_id)
         if job is None:
             job = self._create_job(chapter_id, scene_ids)
         else:
@@ -192,20 +191,12 @@ class ChapterRunnerService:
         """执行一个场景；执行异常时按失败落库并返回 None（调用方直接序列化任务）。"""
 
         try:
-            call_parameters = inspect.signature(orchestrator.run_scene).parameters
-            if "execution_id" in call_parameters:
-                call_kwargs = {
-                    "execution_id": chapter_scene_execution_id(job.job_id, scene_id),
-                    "lease_renewer": lease_renewer,
-                }
-                if "run_job_id" in call_parameters or any(
-                    parameter.kind == inspect.Parameter.VAR_KEYWORD
-                    for parameter in call_parameters.values()
-                ):
-                    call_kwargs["run_job_id"] = job.job_id
-                result = orchestrator.run_scene(scene_id, **call_kwargs)
-            else:  # compatibility for focused test doubles
-                result = orchestrator.run_scene(scene_id)
+            result = orchestrator.run_scene(
+                scene_id,
+                execution_id=chapter_scene_execution_id(job.job_id, scene_id),
+                run_job_id=job.job_id,
+                lease_renewer=lease_renewer,
+            )
         except Exception as exc:  # pragma: no cover - safety net for runtime failures
             self._release_scene_job_ownership(scene_id, job.job_id)
             logger.exception(
@@ -298,7 +289,7 @@ class ChapterRunnerService:
     def prepare_full_run(self, chapter_id: str) -> tuple[dict[str, Any], bool]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
         scene_ids = self._scene_ids(chapter_id)
-        job = self._resumeable_job(chapter_id)
+        job = self._latest_job(chapter_id)
         should_start_worker = False
         if job is None:
             job = self._create_job(chapter_id, scene_ids)
@@ -348,9 +339,6 @@ class ChapterRunnerService:
             .where(ChapterRunJob.chapter_id == chapter_id, ChapterRunJob.job_type == JOB_TYPE_CHAPTER_FULL)
             .order_by(ChapterRunJob.created_at.desc(), ChapterRunJob.job_id.desc())
         ).scalars().first()
-
-    def _resumeable_job(self, chapter_id: str) -> ChapterRunJob | None:
-        return self._latest_job(chapter_id)
 
     def _create_job(self, chapter_id: str, scene_ids: list[str]) -> ChapterRunJob:
         now = utcnow()
@@ -744,10 +732,11 @@ class ChapterRunnerService:
         return dict(action) if isinstance(action, dict) else None
 
     def _chapter_gate_error(self, chapter_id: str, *, scene_id: str | None = None) -> dict[str, Any] | None:
-        human_review_error = self._scene_human_review_error(scene_id)
-        if human_review_error is not None:
-            return human_review_error
-        return None
+        """章节起草在每一场之前 / 之后的唯一闸门：这一场有没处理完的人工审核。
+
+        章级的其他闸门（待回填、人工挂起）随 2026-09 的减法删了。
+        """
+        return self._scene_human_review_error(scene_id)
 
     def _scene_human_review_error(self, scene_id: str | None) -> dict[str, Any] | None:
         if not scene_id:

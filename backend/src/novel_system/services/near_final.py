@@ -838,12 +838,6 @@ class NearFinalAcceptanceService:
         payload: dict[str, Any],
         llm_call_id: str | None,
     ) -> WriterEvaluation:
-        raw_contract_field_refs = payload.get("contract_field_refs")
-        contract_field_refs = (
-            dict(raw_contract_field_refs)
-            if isinstance(raw_contract_field_refs, dict)
-            else {}
-        )
         evaluation = WriterEvaluation(
             evaluation_id=f"near_final_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,
@@ -860,7 +854,7 @@ class NearFinalAcceptanceService:
             findings_json=payload.get("findings") or [],
             failure_class=payload.get("failure_class"),
             auto_rewrite_eligible=1 if NearFinalAcceptanceService._should_rewrite(payload) else 0,
-            contract_field_refs_json=contract_field_refs,
+            contract_field_refs_json={},
             promotion_blockers_json=_promotion_blockers_from_acceptance(payload),
             revision_brief_json=payload.get("revision_brief") or [],
             requires_human_review=1 if payload.get("requires_human_review") else 0,
@@ -1078,11 +1072,6 @@ def _normalize_chapter_architecture_payload(payload: Any) -> dict[str, Any]:
 
 
 def _promotion_blockers_from_acceptance(payload: dict[str, Any]) -> list[str]:
-    blockers = payload.get("promotion_blockers")
-    if isinstance(blockers, list):
-        normalized = [str(item).strip() for item in blockers if str(item).strip()]
-        if normalized:
-            return normalized
     if payload.get("pass_flag"):
         return []
     if payload.get("requires_human_review"):

@@ -271,7 +271,6 @@ def _scene_memory_row_id(scene_id: str, final_scene_row_id: str) -> str:
 
 def _gate_audit_summary(result: dict[str, Any]) -> dict[str, Any]:
     literary = result.get("literary_quality") or {}
-    longform = result.get("longform_contract") or {}
     content_safety = result.get("content_safety") or {}
     return {
         "schema_version": result.get("schema_version"),
@@ -303,17 +302,6 @@ def _gate_audit_summary(result: dict[str, Any]) -> dict[str, Any]:
                 for item in (content_safety.get("findings") or [])
                 if isinstance(item, dict)
             ],
-        },
-        "longform_contract": {
-            "available": bool(longform.get("available")),
-            "contract_id": longform.get("contract_id"),
-            "contract_status": longform.get("contract_status"),
-            "provenance": dict(longform.get("provenance") or {}),
-            "bundle_integrity": dict(longform.get("bundle_integrity") or {}),
-            "key_hits": list(longform.get("key_hits") or []),
-            "waivers": list(longform.get("waivers") or []),
-            "unresolved": list(longform.get("unresolved") or []),
-            "blockers": list(longform.get("blockers") or []),
         },
         "literary_scores": dict(literary.get("scores") or {}),
         "risky_dimensions": list(literary.get("risky_dimensions") or []),

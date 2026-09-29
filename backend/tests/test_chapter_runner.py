@@ -63,17 +63,6 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
     shared = {
         "calls": [],
         "execution_contexts": [],
-        "gate": {
-            "chapter_id": "CH900",
-            "chapter_passed_scene_count": 0,
-            "chapter_backfill_pending_count": 0,
-            "mid_aggregate_enabled_effective": 0,
-            "aggregate_block_reason": "none",
-            "manual_hold_reason": None,
-            "last_interim_memory_row_id": None,
-            "last_final_memory_row_id": None,
-            "staged_backfill_items": [],
-        },
     }
 
     class FakeOrchestrator:
@@ -85,6 +74,7 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
             scene_id: str,
             *,
             execution_id: str | None = None,
+            run_job_id: str | None = None,
             lease_renewer=None,
         ) -> dict:
             shared["calls"].append(scene_id)
@@ -116,38 +106,11 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
             state.current_human_review_event_id = None
             state.current_final_scene_row_id = f"final_scene_{scene_id}"
             self.session.flush()
-
-            if blocked_scene == scene_id and block_kind == "backfill":
-                shared["gate"] = {
-                    **shared["gate"],
-                    "chapter_backfill_pending_count": 1,
-                    "aggregate_block_reason": "blocked_waiting_backfill",
-                    "staged_backfill_items": [
-                        {
-                            "stage_id": f"stage_{scene_id}",
-                            "chapter_id": "CH900",
-                            "scene_id": scene_id,
-                            "marker_id": "F001",
-                            "marker_text": "marker text",
-                            "marker_token": '{{backfill id=F001 text="marker text"}}',
-                            "status": "pending",
-                            "linked_tracker_row_id": None,
-                            "last_strategy": None,
-                        }
-                    ],
-                }
             return {
                 "scene_status": "archived",
                 "current_human_review_event_id": None,
                 "current_final_scene_row_id": state.current_final_scene_row_id,
             }
-
-    class FakeChapterRuntimeService:
-        def __init__(self, session) -> None:
-            self.session = session
-
-        def chapter_state_payload(self, chapter_id: str) -> dict:
-            return {**shared["gate"], "chapter_id": chapter_id}
 
     monkeypatch.setattr("novel_system.services.chapter_runner.Orchestrator", FakeOrchestrator)
     return shared
@@ -423,7 +386,7 @@ def test_chapter_retry_reuses_scene_execution_checkpoint_without_recharging(
         def __init__(self, worker_session) -> None:
             self.session = worker_session
 
-        def run_scene(self, scene_id: str, *, execution_id=None, lease_renewer=None) -> dict:
+        def run_scene(self, scene_id: str, *, execution_id=None, run_job_id=None, lease_renewer=None) -> dict:
             nonlocal provider_dispatches
             observed_execution_ids.append(execution_id)
             checkpoints = SceneRunCheckpointService(self.session)
@@ -527,12 +490,6 @@ def test_chapter_run_full_blocks_on_human_review_and_resume_retries_blocked_scen
     )
     session.commit()
 
-    shared["gate"] = {
-        **shared["gate"],
-        "aggregate_block_reason": "none",
-        "chapter_backfill_pending_count": 0,
-        "staged_backfill_items": [],
-    }
     shared["calls"].clear()
     _install_fake_runner(monkeypatch)
 

@@ -346,7 +346,7 @@ def test_bundle_builds_without_voice_or_relation_cards_and_still_injects_existin
 
     seed_voice_profile(session)
     seed_relation_profile(session)
-    carded = BundleBuilder(session).build("CH912_SC01", force_rebuild=True)["snapshot"]
+    carded = BundleBuilder(session).build("CH912_SC01")["snapshot"]
     assert carded["inline_digests"]["voice_card"] == "short clipped lines; pressure makes the tone harder"
     assert carded["inline_digests"]["relation_card"] == "reunion tension; B knows slightly more than A"
     assert carded["source_version_refs"]["voice_profile_id"] == "VOICE_CHAR_A"

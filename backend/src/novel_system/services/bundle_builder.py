@@ -519,7 +519,6 @@ class BundleBuilder:
         self,
         scene_id: str,
         execution_mode: str = "P2",
-        force_rebuild: bool = False,
         *,
         author_note: str | None = None,
     ) -> dict[str, Any]:

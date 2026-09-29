@@ -22,17 +22,16 @@ class SceneRunPreflightService:
         self.session = session
         self.contracts = SceneExecutionContractService(session)
 
-    def build(self, scene: SceneCard, chapter_state: dict[str, Any]) -> dict[str, Any]:
+    def build(self, scene: SceneCard) -> dict[str, Any]:
         execution_contract = self.contracts.latest(scene.scene_id)
         blocking_items = self._blocking_items(scene, execution_contract)
         warning_items = self._warning_items(scene)
-        context_items = self._context_items(chapter_state)
         constraint_conflicts = self._constraint_conflicts(scene)
 
         if blocking_items or constraint_conflicts:
             overall_status = "blocked"
             can_run = False
-        elif warning_items or context_items:
+        elif warning_items:
             overall_status = "warning"
             can_run = True
         else:
@@ -44,7 +43,8 @@ class SceneRunPreflightService:
             "overall_status": overall_status,
             "blocking_items": blocking_items,
             "warning_items": warning_items,
-            "context_items": context_items,
+            # 章级上下文提示（人工挂起、待回填）随 2026-09 的减法删了；键留着，工作台载荷的形状不变
+            "context_items": [],
             "constraint_conflicts": constraint_conflicts,
         }
 
@@ -209,33 +209,6 @@ class SceneRunPreflightService:
                     "title": "Scene literary intent is incomplete",
                     "detail": "Consider filling the v2 writer brief fields before generation: " + ", ".join(missing_intent),
                     "technical_hint": "scene_card.writer_brief_json",
-                }
-            )
-
-        return items
-
-    def _context_items(self, chapter_state: dict[str, Any]) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-
-        manual_hold_reason = (chapter_state.get("manual_hold_reason") or "").strip()
-        if manual_hold_reason:
-            items.append(
-                {
-                    "code": "CHAPTER_MANUAL_HOLD_ACTIVE",
-                    "title": "本章已设置人工挂起",
-                    "detail": "这不会阻止当前场景运行，但会继续阻止章节级 final aggregate。",
-                    "technical_hint": f"manual hold reason: {manual_hold_reason}",
-                }
-            )
-
-        pending_backfill_count = int(chapter_state.get("chapter_backfill_pending_count") or 0)
-        if pending_backfill_count > 0:
-            items.append(
-                {
-                    "code": "CHAPTER_BACKFILL_PENDING",
-                    "title": "本章仍有待处理的 staged backfill",
-                    "detail": "这不会阻止当前场景运行，但会继续阻止章节级 final aggregate。",
-                    "technical_hint": f"pending staged backfill count: {pending_backfill_count}",
                 }
             )
 
