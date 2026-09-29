@@ -48,4 +48,5 @@ def test_canon_and_narrative_errors_speak_chinese() -> None:
         if not _CJK.search(text)
     ]
     assert not english, english
-    assert _domain_error_messages(SERVICES / "canon_continuity.py"), "扫描没找到任何 DomainError（路径变了？）"
+    scanned = sum(len(_domain_error_messages(path)) for path in AUTHOR_FACING_MODULES if path.exists())
+    assert scanned >= 30, f"只扫到 {scanned} 个 DomainError（模块搬家了？）"
