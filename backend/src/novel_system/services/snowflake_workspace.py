@@ -1959,12 +1959,9 @@ class SnowflakeWorkspaceService:
         }
 
     def _triage_items(self, project_id: str) -> list[dict[str, Any]]:
-        stored = {
-            row.scene_plan_id: row
-            for row in self.session.execute(
-                select(SnowflakeSceneTriageItem).where(SnowflakeSceneTriageItem.project_id == project_id)
-            ).scalars().all()
-        }
+        # 每一场只看最新的一条分诊记录——与物化 / 回流 / 设计上下文同一个口径（snowflake_triage）。
+        # 以前按库里的扫描顺序取行：作者看到「通过」，整理时这一场却按更新的「待删」不建卡（B06-02）。
+        stored = latest_triage_rows(self.session, project_id)
         items: list[dict[str, Any]] = []
         for scene in self._scene_plans(project_id):
             row = stored.get(scene.scene_plan_id)
