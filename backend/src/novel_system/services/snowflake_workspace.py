@@ -434,8 +434,11 @@ class SnowflakeWorkspaceService:
         # ``fe_*`` 是前端写穿缓存（其中 book_brief.fe_meta 会在确认任何后续步骤时变化）；
         # 若把它当故事修订，就会把第 1 步重新打回待审，并连锁 staling 全部下游。
         # 元数据仍原位写入，保证跨会话 UI 账本不丢；规范故事字段确有变化时才新建待审版本。
+        # 过期（stale）的步骤同理（PRE-01）：前端每次打开构思都会把 09 / 10 各上行一次，以前这会把
+        # 「已复核」的过期步骤打成一版新的待审——整理闸门认「已复核」、不认待审，作者只是打开页面就被挡住。
+        # 状态与失效留痕（stale_*）原样保留。
         same_semantic_draft = latest is not None and semantic_payload(draft) == semantic_payload(latest.draft_json)
-        if latest is not None and latest.status in {"approved", "skipped"} and same_semantic_draft:
+        if latest is not None and latest.status in {"approved", "skipped", "stale"} and same_semantic_draft:
             if (draft or {}) != (latest.draft_json or {}):
                 latest.draft_json = draft
                 self.session.flush()
