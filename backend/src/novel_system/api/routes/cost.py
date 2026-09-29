@@ -1,9 +1,9 @@
-"""成本看板端点（结果闭环治理设计 §5.8/§6.3/§10，Wave 6）。
+"""成本看板端点（结果闭环治理设计 §5.8/§6.3/§10）。
 
-GET /api/v2/projects/{project_id}/cost-summary   —— 场景/章节/全书级 token 与费用聚合。
+GET /api/v2/projects/{project_id}/cost-summary   —— 场景 / 章节 / 全书级 token 聚合（金额只算有单价的模型）。
 默认返回项目级；``?scene_id=`` / ``?chapter_id=`` 下钻。
 GET /api/v2/projects/{project_id}/cost-dashboard —— 看板一读聚合：summary + 近 N 天
-趋势 + 模型/节点/章节构成 + Top 调用 + 全局用量读数。两者均只读，不改任何状态。
+趋势 + 模型 / 节点 / 章节构成 + 用 token 最多的调用 + 全局用量读数。两者均只读，不改任何状态。
 """
 from __future__ import annotations
 

@@ -1,10 +1,12 @@
-"""Wave 6（结果闭环治理 §5.8/§10）：token/费用聚合——场景/章节/项目三级。
+"""token / 金额聚合——场景 / 章节 / 项目三级 + 成本看板（结果闭环治理 §5.8/§10）。
 
-完成门：任意场景可解释总成本、各阶段占比、是否超预算、评审是否独立。跨 provider
-token 不相加（分词器不同）、汇总以费用为准；三口径（估算/实际/计费）；额外成本
-（失败重试/重复 QC/低分散补候选）可归因。
+以 token 为主（批准#4）：占比、构成、排序都按 token；金额只算价书里写了单价的模型，其余「未定价」
+（``cost`` 为 ``None``）。跨服务的 token 分列；三口径（估算 / 实际 / 计费）；额外成本只算失败的物理尝试
+（重评 R2 第 5 项删了「重复质检」「补候选」两项）。
 """
 from __future__ import annotations
+
+import textwrap
 
 import pytest
 from sqlalchemy import func, select
@@ -19,6 +21,31 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services import cost_aggregation as ca
+from novel_system.services import pricing
+
+
+@pytest.fixture
+def priced_gpt5(tmp_path, monkeypatch):
+    """价书只给 openai_compatible/gpt-5 定价：输入 1、输出 4（每千 token）。"""
+    path = tmp_path / "pricing.yaml"
+    path.write_text(
+        textwrap.dedent(
+            """
+            currency: USD
+            prices:
+              - {provider: openai_compatible, model: gpt-5, input_per_1k: 1.0, output_per_1k: 4.0}
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pricing, "_price_book_path", lambda: path)
+    pricing.reset_price_book_cache()
+    return path
+
+
+def _gpt5_cost(tokens: int) -> float:
+    """``_call`` 把 tokens 拆成 2/3 输入 + 1/3 输出。"""
+    return int(tokens * 2 // 3) / 1000 * 1.0 + int(tokens // 3) / 1000 * 4.0
 
 
 def _scene(session, scene_id, chapter_id="CH1", project_id="proj1", seq=None):
@@ -226,9 +253,53 @@ def test_scene_cost_phase_shares_sum_to_one(session):
     result = ca.scene_cost(session, "S1")
     shares = sum(p["share"] for p in result["phase_breakdown"].values())
     assert abs(shares - 1.0) < 1e-6
+    # 占比按 token：模型未定价时各阶段照样有占比
+    assert result["phase_breakdown"]["candidate_generation"]["share"] == pytest.approx(0.6)
     assert result["phase_breakdown"]["candidate_generation"]["call_count"] == 1
-    assert result["total_cost"] > 0
+    assert result["total_tokens"] == 500
     assert result["call_count"] == 3
+
+
+def test_unpriced_models_show_tokens_and_no_invented_money(session):
+    """默认价书没有任何单价：金额全是 None（「未定价」），不再按占位估算价编一个美元数。"""
+    _scene(session, "S1u")
+    _runstate(session, "S1u")
+    _call(session, "S1u", node_id="style_draft", tokens=300, model="relay-sonnet")
+    _call(session, "S1u", node_id="hard_qc", tokens=100, model="relay-flash")
+    result = ca.scene_cost(session, "S1u")
+    assert result["total_tokens"] == 400
+    assert result["total_cost"] is None
+    assert result["currency"] is None
+    assert result["cost_by_provider"] == {"openai_compatible": None}
+    assert all(phase["cost"] is None for phase in result["phase_breakdown"].values())
+    assert result["pricing"] == {
+        "priced_call_count": 0,
+        "unpriced_call_count": 2,
+        "priced_tokens": 0,
+        "unpriced_tokens": 400,
+        "complete": False,
+        "unpriced_models": [
+            {"provider": "openai_compatible", "model": "relay-sonnet", "tokens": 300, "call_count": 1},
+            {"provider": "openai_compatible", "model": "relay-flash", "tokens": 100, "call_count": 1},
+        ],
+    }
+
+
+def test_money_covers_only_priced_models(session, priced_gpt5):
+    _scene(session, "S1p")
+    _runstate(session, "S1p")
+    _call(session, "S1p", node_id="style_draft", tokens=300)
+    _call(session, "S1p", node_id="hard_qc", tokens=150, model="relay-flash")
+    result = ca.scene_cost(session, "S1p")
+    assert result["total_cost"] == pytest.approx(_gpt5_cost(300))
+    assert result["currency"] == "USD"
+    assert result["phase_breakdown"]["candidate_generation"]["cost"] == pytest.approx(_gpt5_cost(300))
+    assert result["phase_breakdown"]["quality_check"]["cost"] is None
+    assert result["pricing"]["priced_call_count"] == 1
+    assert result["pricing"]["priced_tokens"] == 300
+    assert result["pricing"]["unpriced_tokens"] == 150
+    assert result["pricing"]["complete"] is False
+    assert [m["model"] for m in result["pricing"]["unpriced_models"]] == ["relay-flash"]
 
 
 def test_scene_cost_cross_provider_tokens_not_summed(session):
@@ -306,7 +377,13 @@ def test_scene_cost_uses_parent_once_and_attempts_only_for_calibers_and_observab
         "legacy_parent_without_attempt_count": 0,
         "legacy_unreconstructable_tokens": 0,
     }
-    assert result["extra_cost"]["failed_call_cost"] > 0
+    # 失败重试 = 发出去却失败的那次物理尝试（40 token），不是整个父调用
+    assert result["extra_cost"] == {
+        "failed_tokens": 40,
+        "failed_attempt_count": 1,
+        "failed_cost": None,
+        "failed_share": 0.4,
+    }
 
 
 @pytest.mark.parametrize(
@@ -363,32 +440,66 @@ def test_undispatched_attempt_row_is_not_reported_as_a_physical_provider_attempt
     assert result["calibers"]["provider_actual"]["tokens"] == 60
 
 
-def test_scene_cost_extra_cost_attribution(session):
+def test_scene_cost_extra_cost_is_failed_attempts_only(session, priced_gpt5):
     _scene(session, "S5")
-    _runstate(session, "S5", criticality="standard")  # 标准场景初始 N=2
-    # 3 个候选 → 超出初始 2 → 1 个补候选归 low_dispersion_topup
-    _call(session, "S5", node_id="style_draft", tokens=100, created_at="2026-07-12T00:00:01Z")
-    _call(session, "S5", node_id="style_draft", tokens=100, created_at="2026-07-12T00:00:02Z")
-    _call(session, "S5", node_id="style_draft", tokens=100, created_at="2026-07-12T00:00:03Z")
-    # 2 个 QC → 第 2 个归 repeat_qc
-    _call(session, "S5", node_id="hard_qc", tokens=50, created_at="2026-07-12T00:00:04Z")
-    _call(session, "S5", node_id="hard_qc", tokens=50, created_at="2026-07-12T00:00:05Z")
-    # 1 个失败调用 → failed_call
-    _call(session, "S5", node_id="style_patch", tokens=40, error_code="LLM_TIMEOUT", created_at="2026-07-12T00:00:06Z")
+    _runstate(session, "S5", criticality="standard")
+    _call(session, "S5", node_id="style_draft", tokens=300, created_at="2026-07-12T00:00:01Z")
+    _call(session, "S5", node_id="hard_qc", tokens=60, created_at="2026-07-12T00:00:02Z")
+    # 1 个失败的老式调用（没有物理尝试行）→ 失败重试
+    _call(session, "S5", node_id="style_patch", tokens=40, error_code="LLM_TIMEOUT", created_at="2026-07-12T00:00:03Z")
     extra = ca.scene_cost(session, "S5")["extra_cost"]
-    assert extra["failed_call_cost"] > 0
-    assert extra["repeat_qc_cost"] > 0
-    assert extra["low_dispersion_topup_cost"] > 0
-    assert extra["total"] > 0
-    assert 0 <= extra["retry_cost_ratio"] <= 1
+    assert extra == {
+        "failed_tokens": 40,
+        "failed_attempt_count": 1,
+        "failed_cost": pytest.approx(_gpt5_cost(40)),
+        "failed_share": 0.1,
+    }
+
+
+def _live_shaped_critical_scene_run(session, scene_id):
+    """真实库里一场关键场景的一轮起草：蓝图 + 章节架构 + 人物压力 + 两次风格稿，三道不同的质检各一次。"""
+    _scene(session, scene_id)
+    _runstate(session, scene_id, criticality="critical")
+    for second, node_id in enumerate(
+        (
+            "scene_blueprint",
+            "chapter_story_architecture",
+            "character_pressure_blueprint",
+            "style_draft",
+            "style_draft",
+            "hard_qc",
+            "soft_qc",
+            "near_final_acceptance_review",
+        ),
+        start=1,
+    ):
+        _call(session, scene_id, node_id=node_id, tokens=90, created_at=f"2026-07-12T00:00:{second:02d}Z")
+
+
+def test_single_candidate_critical_scene_shows_no_candidate_top_up(session, priced_gpt5):
+    """重评 R2 第 5 项：只有一份候选的关键场景没有「补候选」——蓝图 / 架构 / 人物压力 / 风格稿都不是补写。"""
+    _live_shaped_critical_scene_run(session, "S5-critical")
+    extra = ca.scene_cost(session, "S5-critical")["extra_cost"]
+    assert "low_dispersion_topup_cost" not in extra
+    assert extra["failed_tokens"] == 0
+
+
+def test_ordinary_quality_checks_are_not_repeated_checks(session, priced_gpt5):
+    """一轮起草依次跑硬质检 / 软质检 / 准定稿评审——三道不同的质检，不是「重复质检」。"""
+    _live_shaped_critical_scene_run(session, "S5-qc")
+    extra = ca.scene_cost(session, "S5-qc")["extra_cost"]
+    assert "repeat_qc_cost" not in extra
+    assert extra == {"failed_tokens": 0, "failed_attempt_count": 0, "failed_cost": None, "failed_share": 0.0}
 
 
 def test_scene_cost_empty_no_calls(session):
     _scene(session, "S6")
     _runstate(session, "S6")
     result = ca.scene_cost(session, "S6")
-    assert result["total_cost"] == 0
+    assert result["total_tokens"] == 0
+    assert result["total_cost"] is None
     assert result["call_count"] == 0
+    assert result["pricing"]["complete"] is True
 
 
 # ---- chapter / project rollup ------------------------------------------------
@@ -416,12 +527,47 @@ def test_project_cost_rollup(session):
     _call(session, "P1S2", node_id="hard_qc", tokens=100, chapter_id="PCH2", project_id="P1")
     _archived(session, "P1S1", chapter_id="PCH1")
     result = ca.project_cost(session, "P1")
-    assert result["total_cost"] > 0
+    assert result["total_tokens"] == 300
+    assert result["total_cost"] is None
     assert result["calibers"]["estimate"]["tokens"] == 300
     assert result["calibers"]["provider_actual"]["tokens"] == 0
     assert result["calibers"]["budget_charged"]["tokens"] == 0
     assert result["chapter_count"] == 2
+    assert result["scene_count"] == 2
     assert result["archived_scene_count"] == 1
+    assert result["archived_chapter_count"] == 1
+    assert result["tokens_per_archived_scene"] == 300
+    assert result["cost_per_archived_chapter"] is None
+
+
+def test_project_cost_counts_archived_chapters_in_one_query_each(session, priced_gpt5):
+    """归档场景 / 归档章节各一次聚合查询（以前逐章查一次），口径不变：只数本项目的场景与章节。"""
+    for index in range(1, 4):
+        _scene(session, f"P2S{index}", chapter_id=f"P2CH{index}", project_id="P2")
+        _call(session, f"P2S{index}", node_id="style_draft", tokens=300, chapter_id=f"P2CH{index}", project_id="P2")
+    _archived(session, "P2S1", chapter_id="P2CH1")
+    _archived(session, "P2S2", chapter_id="P2CH2")
+    _scene(session, "OTHER1", chapter_id="OCH1", project_id="OTHER")
+    _archived(session, "OTHER1", chapter_id="OCH1")
+
+    statements: list[str] = []
+    from sqlalchemy import event
+
+    listener = lambda *args: statements.append(args[2])  # noqa: E731 — (conn, cursor, statement, ...)
+    event.listen(session.get_bind(), "before_cursor_execute", listener)
+    try:
+        result = ca.project_cost(session, "P2")
+    finally:
+        event.remove(session.get_bind(), "before_cursor_execute", listener)
+    assert result["archived_scene_count"] == 2
+    assert result["archived_chapter_count"] == 2
+    assert result["cost_per_archived_chapter"] == pytest.approx(round(3 * _gpt5_cost(300) / 2, 6))
+    assert sum("final_scenes" in statement for statement in statements) == 2
+    # 调用与物理尝试各查一次，只取要用的列（请求摘要只对没有尝试行的老记录单独读一次）
+    call_queries = [s for s in statements if "llm_calls.total_tokens" in s]
+    assert len(call_queries) == 1
+    assert "request_payload_summary" not in call_queries[0]
+    assert sum("llm_call_attempts.total_tokens" in s for s in statements) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +609,8 @@ def test_dashboard_trend_dense_window_and_bucketing(session):
     today_bucket = trend["series"][-1]
     assert today_bucket["tokens"] == 300
     assert today_bucket["call_count"] == 1
-    assert today_bucket["cost"] > 0
+    assert today_bucket["cost"] is None  # 默认价书没有单价
+    assert trend["window_cost"] is None
     yesterday_bucket = trend["series"][-2]
     assert yesterday_bucket["tokens"] == 100
 
@@ -474,15 +621,17 @@ def test_dashboard_summary_covers_all_calls_regardless_of_window(session):
     assert dash["summary"]["total_tokens"] == 600
     assert dash["summary"]["call_count"] == 3
     # summary 与 project_cost 同口径
-    assert dash["summary"]["total_cost"] == ca.project_cost(session, "DP")["total_cost"]
+    assert dash["summary"] == ca.project_cost(session, "DP")
 
 
-def test_dashboard_by_model_sorted_by_cost(session):
+def test_dashboard_by_model_sorted_by_tokens(session):
     _dash_seed(session)
     dash = ca.project_cost_dashboard(session, "DP")
     by_model = dash["by_model"]
     assert len(by_model) == 2
-    assert by_model[0]["cost"] >= by_model[1]["cost"]
+    assert [m["tokens"] for m in by_model] == [500, 100]
+    assert [m["priced"] for m in by_model] == [False, False]
+    assert [m["cost"] for m in by_model] == [None, None]
     assert {(m["provider"], m["model"]) for m in by_model} == {
         ("openai_compatible", "gpt-5"),
         ("anthropic", "claude-x"),
@@ -524,12 +673,33 @@ def test_dashboard_top_calls_ordered_and_limited(session):
     dash = ca.project_cost_dashboard(session, "DP", call_limit=2)
     top = dash["top_calls"]
     assert len(top) == 2
-    assert top[0]["cost"] >= top[1]["cost"]
-    assert top[0]["total_tokens"] == 300
+    assert [row["total_tokens"] for row in top] == [300, 200]
     for row in top:
         assert row["phase"] in {"candidate_generation", "quality_check"}
         assert row["accounting_status"]
-        assert row["currency"]
+        assert (row["priced"], row["cost"], row["currency"]) == (False, None, None)
+
+
+def test_dashboard_money_for_priced_models_only(session, priced_gpt5):
+    """gpt-5 有单价、claude-x 没有：金额只覆盖 gpt-5，claude-x 那一格是「未定价」，排序照样按 token。"""
+    _dash_seed(session)
+    dash = ca.project_cost_dashboard(session, "DP", days=7)
+    gpt, claude = dash["by_model"]
+    assert (gpt["model"], gpt["priced"], gpt["cost"]) == ("gpt-5", True, pytest.approx(_gpt5_cost(300) + _gpt5_cost(200)))
+    assert (claude["model"], claude["priced"], claude["cost"]) == ("claude-x", False, None)
+    summary = dash["summary"]
+    assert summary["total_cost"] == pytest.approx(_gpt5_cost(300) + _gpt5_cost(200))
+    assert summary["pricing"]["unpriced_models"] == [
+        {"provider": "anthropic", "model": "claude-x", "tokens": 100, "call_count": 1}
+    ]
+    trend = dash["trend"]
+    assert trend["series"][-1]["cost"] == pytest.approx(_gpt5_cost(300))
+    assert trend["series"][-2]["cost"] is None  # 昨天只有未定价的 claude-x
+    assert trend["window_cost"] == pytest.approx(_gpt5_cost(300))
+    top = dash["top_calls"]
+    assert top[0]["priced"] is True and top[0]["currency"] == "USD"
+    nodes = dash["by_node"]["top"]
+    assert [(n["node_id"], n["cost"] is None) for n in nodes] == [("style_draft", False), ("hard_qc", True)]
 
 
 def test_dashboard_days_clamped_and_bad_input_safe(session):
@@ -547,4 +717,5 @@ def test_dashboard_empty_project_returns_empty_shapes(session):
     assert dash["by_chapter"] == []
     assert dash["top_calls"] == []
     assert len(dash["trend"]["series"]) == ca.DASHBOARD_DEFAULT_DAYS
-    assert dash["trend"]["window_cost"] == 0
+    assert dash["trend"]["window_tokens"] == 0
+    assert dash["trend"]["window_cost"] is None

@@ -1,35 +1,24 @@
-# 价格快照（结果闭环治理设计 §5.8，Wave 6）
+# 模型单价（成本看板用）
 #
-# per (provider, model) 的生效时间单价，单位：每 1000 token（USD 除非另注 currency）。
-# 成本聚合服务用它把 LlmCall 的 token 折算成费用。设计要求「不向每条调用写死价格」，
-# 价格集中在这里、按 effective_at 生效，可随时替换。
+# 成本看板以 token 为主。只有在这里写了单价的模型才折算金额；没写的模型在看板上标「未定价」，
+# 不用占位估算价编一个数（2026-09-30 起；以前这里的两条 gpt-5 占位价与 default_estimate 兜底价已删）。
 #
-# 重要：以下为**占位估算单价**，全部标 is_estimate: true —— 它们不是权威计费口径。
-# 运维接入真实 provider 计费后，把对应快照的 is_estimate 改 false 并填真实单价。
-# 未命中 (provider, model) 时回落 default_estimate（同样标估算）。
+# 每一条：
+#   provider       调用记录里的服务类型；经中转接入的一般是 openai_compatible
+#   model          发给服务的模型 id（与 设置 · AI 模型 里选的一致）
+#   input_per_1k   输入每 1000 token 的单价
+#   output_per_1k  输出每 1000 token 的单价
+#   effective_at   可选，起生效时间（UTC ISO）；同一模型可写多条，按调用时间取当时生效的那条
+# 整本价书一个币种（currency）；写了别的币种的条目不参与折算。改完保存即生效，不用重启后端。
+#
+# 例：
+#   prices:
+#     - provider: openai_compatible
+#       model: your-model-id
+#       effective_at: "2026-01-01T00:00:00Z"
+#       input_per_1k: 0.003
+#       output_per_1k: 0.015
 
-version: 1
-
-# 任何未在 snapshots 命中的 (provider, model) 的兜底口径。
-default_estimate:
-  input_per_1k: 0.5
-  output_per_1k: 1.5
-  currency: USD
-  is_estimate: true
-
-snapshots:
-  # —— openai_compatible 默认路由用到的模型（models.yaml task_routing）——
-  - provider: openai_compatible
-    model: gpt-5
-    effective_at: "2026-01-01T00:00:00Z"
-    input_per_1k: 1.25
-    output_per_1k: 10.0
-    currency: USD
-    is_estimate: true
-  - provider: openai_compatible
-    model: gpt-5-mini
-    effective_at: "2026-01-01T00:00:00Z"
-    input_per_1k: 0.25
-    output_per_1k: 2.0
-    currency: USD
-    is_estimate: true
+version: 2
+currency: USD
+prices: []
