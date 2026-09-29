@@ -270,7 +270,8 @@ def test_styled_gate_clean_text_passes_and_records_event(session) -> None:
     assert gate["profile_id"] == "sr_profile_styled_pass"
     # 风格参考 v3：没有 bundle 时按当前活动绑定轻量现解析（StylePolicy.mode == "live"）
     assert gate["runtime_contract_mode"] == "live"
-    assert set(gate["quantitative"]) == {"checked", "passed"}
+    # 旧校验层的量化回测随校验层删了，诊断字典不再带那个恒为空的 quantitative 摘要（B04-07）
+    assert "quantitative" not in gate
     events = _metric_events(session, STYLED_DRAFT_GATE_EVENT_KIND)
     assert len(events) == 1 and events[0].outcome == "pass"
     assert events[0].context_json["stage"] == "style_draft"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -953,6 +954,46 @@ def _qc_record_attempt(
     )
 
 
+HARD_QC_GATE_EVENT_KIND = "qc_gate_decided"
+
+
+def _scene_has_gate_scope(scene: Any) -> bool:
+    """这一场有没有能挂风格绑定的作用域（作品 / 场景 / 视角角色 / 在场角色）；没有就谈不上绑定，门不跑。"""
+    return bool(
+        getattr(scene, "project_id", None)
+        or getattr(scene, "scene_id", None)
+        or getattr(scene, "pov_character_id", None)
+        or (getattr(scene, "onstage_chars_json", None) or [])
+    )
+
+
+def _record_gate_event(
+    session: Session,
+    event_kind: str,
+    *,
+    scene_id: str | None,
+    profile_id: str | None,
+    binding_id: str | None,
+    outcome: str,
+    started_at: float,
+    context: dict[str, Any],
+) -> str:
+    """管线里两道原文重合门（中性步位稿 ``qc_gate_decided`` / 风格稿 ``styled_draft_gate_decided``）的审计行。"""
+    from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
+
+    return MetricsRecorder.record(
+        session,
+        event_kind,
+        target_kind="scene",
+        target_ref_id=scene_id,
+        profile_id=profile_id,
+        binding_id=binding_id,
+        outcome=outcome,
+        latency_ms=int((time.perf_counter() - started_at) * 1000),
+        context=context,
+    )
+
+
 def _styled_gate_result(
     *,
     stage: str,
@@ -964,8 +1005,8 @@ def _styled_gate_result(
 ) -> dict[str, Any]:
     """把风格稿门的读数(:func:`_styled_gate_report` 的形状)压成可入 AttemptTracker / notices 的诊断字典。
 
-    抄袭命中只记位置与长度（不落匹配原文——那正是参考作品的原文）；禁用词命中记词本身
-    （短、已在 banned_terms 表里）；量化结果只记通过计数，永不变成 issue。
+    抄袭命中只记位置、长度与指纹（不落匹配原文——那正是参考作品的原文）；禁用词命中记词本身
+    （短、已在 banned_terms 表里）。
     """
     plagiarism = dict(getattr(report, "plagiarism_json", None) or {})
     raw_hits = plagiarism.get("hits") if isinstance(plagiarism.get("hits"), list) else []
@@ -973,9 +1014,7 @@ def _styled_gate_result(
         {
             "position": int(hit.get("position") or 0),
             "matched_length": int(hit.get("matched_length") or 0),
-            # 抄袭门给的命中本来就只有指纹；旧校验报告带原文，这里就地压成指纹
-            "matched_sha256": str(hit.get("matched_sha256") or "")
-            or sha256_text(hit.get("matched_text"))[:16],
+            "matched_sha256": str(hit.get("matched_sha256") or ""),
         }
         for hit in raw_hits[:_STYLED_GATE_MAX_HITS]
         if isinstance(hit, dict)
@@ -991,11 +1030,6 @@ def _styled_gate_result(
         ]
         if isinstance(hit, dict)
     ]
-    quantitative = [
-        item
-        for item in (getattr(report, "quantitative_json", None) or [])
-        if isinstance(item, dict)
-    ]
     verdict_obj = getattr(report, "verdict", None)
     verdict = str(getattr(verdict_obj, "value", verdict_obj) or "")
     return {
@@ -1006,10 +1040,6 @@ def _styled_gate_result(
         "plagiarism_hit_count": len(raw_hits),
         "forbidden_hits": forbidden_hits,
         "forbidden_hit_count": len(getattr(report, "forbidden_hits_json", None) or []),
-        "quantitative": {
-            "checked": len(quantitative),
-            "passed": sum(1 for item in quantitative if item.get("passed")),
-        },
         "profile_id": profile_id,
         "binding_id": binding_id,
         "runtime_contract_hash": runtime_contract_hash,
@@ -1043,7 +1073,6 @@ def styled_gate_unavailable_result(
         "plagiarism_hit_count": None,
         "forbidden_hits": [],
         "forbidden_hit_count": None,
-        "quantitative": {"checked": 0, "passed": 0},
         "profile_id": profile_id,
         "binding_id": binding_id,
         "runtime_contract_hash": runtime_contract_hash,
@@ -1069,27 +1098,16 @@ def run_styled_draft_style_gate(
     gate 不阻断主流程，但「检查没跑」必须与「无绑定」区分开，由调用方挂 Q2 / notice 让作者看见。
 
     返回诊断字典（见 ``_styled_gate_result``）：``verdict`` 为 ``plagiarism`` 表示确定性 n-gram 重叠命中（Q0）；
-    ``forbidden_hits`` 非空表示用了画像现行的生成禁用词 / 受保护专名；``quantitative`` 只作诊断。每次裁决（含 gate 自身失败）
+    ``forbidden_hits`` 非空表示用了画像现行的生成禁用词 / 受保护专名。每次裁决（含 gate 自身失败）
     写一行 ``styled_draft_gate_decided`` MetricEvent。
     """
-    import time as _time
-
-    from novel_system.services.style_reference.metrics_recorder import (
-        MetricsRecorder,
-    )
-
     if stage not in STYLED_DRAFT_GATE_STAGES:
         raise ValueError(f"unknown styled-draft gate stage: {stage}")
-    if scene is None or not text or not str(text).strip():
+    if scene is None or not text or not str(text).strip() or not _scene_has_gate_scope(scene):
         return None
-    project_id = getattr(scene, "project_id", None)
     scene_id = getattr(scene, "scene_id", None)
-    if not project_id and not scene_id and not getattr(scene, "pov_character_id", None) and not (
-        getattr(scene, "onstage_chars_json", None) or []
-    ):
-        return None
 
-    started_at = _time.perf_counter()
+    started_at = time.perf_counter()
     result: dict[str, Any] | None = None
     profile_id: str | None = None
     binding_id: str | None = None
@@ -1170,15 +1188,14 @@ def run_styled_draft_style_gate(
                 result is not None
                 and result.get("verdict") == STYLED_GATE_UNAVAILABLE_VERDICT
             )
-            event_id = MetricsRecorder.record(
+            event_id = _record_gate_event(
                 session,
                 STYLED_DRAFT_GATE_EVENT_KIND,
-                target_kind="scene",
-                target_ref_id=scene_id,
+                scene_id=scene_id,
                 profile_id=profile_id,
                 binding_id=binding_id,
                 outcome=outcome,
-                latency_ms=int((_time.perf_counter() - started_at) * 1000),
+                started_at=started_at,
                 context={
                     "stage": stage,
                     "runtime_contract_hash": runtime_contract_hash,
@@ -1218,8 +1235,8 @@ def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
     生成期禁用词、学习作业写的受保护专名、环境变量的全局词），同一套规范化匹配。冻结契约里的禁用词只用来渲染
     提示词的红线，不参与判定：作者删掉一个误收的词，这里立刻不再认它（以前冻结的词会让已建场景一直被拦）。
     绑定的书查不到 / 策略降级 → ``unavailable_reason``（这一道门没有查成，调用方报 unavailable，不当作通过）。
-    风格参考 v3（P5b）：旧校验层的量化回测（只作诊断）随校验层删除，``quantitative`` 恒为空。
-    返回与旧校验报告同形的对象，交给 :func:`_styled_gate_result` 压成诊断字典。
+    返回与旧校验报告同形的对象，交给 :func:`_styled_gate_result` 压成诊断字典（``quantitative_json`` 恒为空：
+    旧校验层的量化回测随校验层删了，诊断字典已不再带它；只剩一个风格参考测试还读这个属性）。
     """
     from types import SimpleNamespace
 
@@ -1624,21 +1641,11 @@ class HardQcEngine:
         StylePolicy（场景当前 bundle 冻结的契约 → 旧 bundle / 无 bundle 时按当前活动绑定轻量现解析），
         原文重合走唯一抄袭门（按书一次索引、同一稿不重复扫描）。
         """
-        import time as _time
-
         from novel_system.services.reference_copy_gate import check_reference_copy
-        from novel_system.services.style_reference.metrics_recorder import (
-            MetricsRecorder,
-        )
 
-        if not neutral_content or not (
-            getattr(scene, "project_id", None)
-            or getattr(scene, "scene_id", None)
-            or getattr(scene, "pov_character_id", None)
-            or (getattr(scene, "onstage_chars_json", None) or [])
-        ):
+        if not neutral_content or not _scene_has_gate_scope(scene):
             return None
-        started_at = _time.perf_counter()
+        started_at = time.perf_counter()
         verdict: str | None = None
         profile_id: str | None = None
         binding_id: str | None = None
@@ -1667,15 +1674,14 @@ class HardQcEngine:
         finally:
             # PR-10 §13 — 记录 qc gate 决策事件;无 active binding 时不记录
             if profile_id is not None:
-                MetricsRecorder.record(
+                _record_gate_event(
                     self.session,
-                    "qc_gate_decided",
-                    target_kind="scene",
-                    target_ref_id=scene.scene_id,
+                    HARD_QC_GATE_EVENT_KIND,
+                    scene_id=scene.scene_id,
                     profile_id=profile_id,
                     binding_id=binding_id,
                     outcome=verdict or "error",
-                    latency_ms=int((_time.perf_counter() - started_at) * 1000),
+                    started_at=started_at,
                     context={"runtime_contract_hash": runtime_contract_hash},
                 )
 
