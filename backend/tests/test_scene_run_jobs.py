@@ -392,6 +392,167 @@ def test_budget_resume_job_rejects_when_no_budget_blocked_execution_exists(clien
     assert response.json()["error"]["code"] == "RUN_BUDGET_RESUME_UNAVAILABLE"
 
 
+def _create_budget_resume_job(client, session) -> tuple[str, str]:
+    """一场被预算闸拦下的首跑 + 作者「追加预算后续跑」建的续跑任务（未启动）→ (父任务 id, 续跑任务 id)。"""
+    _create_chapter_and_scene(client)
+    first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]
+    first_job = session.get(ChapterRunJob, first["job_id"])
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    assert first_job is not None and state is not None
+    first_job.status = "blocked"
+    first_job.error_code = "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED"
+    state.active_run_job_id = None
+    state.active_execution_id = first_job.job_id
+    state.run_execution_status = "failed"
+    state.run_checkpoint = "hard_qc_ready"
+    state.run_checkpoint_json = {
+        "execution_id": first_job.job_id,
+        "node_key": "hard_qc_ready",
+        "artifact_refs": {},
+        "artifact_hashes": {},
+        "superseded_execution_ids": [],
+    }
+    session.commit()
+    resumed = client.post(
+        "/api/v1/scenes/CHJOB_SC01/run/jobs?start=false",
+        json={"resume_budget": True},
+    )
+    assert resumed.status_code == 200, resumed.text
+    return first_job.job_id, resumed.json()["data"]["job_id"]
+
+
+def test_budget_resume_job_that_died_after_its_handoff_resumes_on_recovery(
+    client, session, monkeypatch
+) -> None:
+    """B03-02：续跑任务交接完检查点后进程退出（--reload / 崩溃），恢复时不能再要求「父执行仍是失败态」。
+
+    修之前：再次认领后交接报 RUN_BUDGET_RESUME_UNAVAILABLE，回滚把认领一起撤掉，记失败又因不是主人抛
+    RUN_OWNER_LEASE_LOST 出线程——任务永远 running、这一场永远 409，每次重启都一样。
+    """
+    from novel_system.services import scene_run_jobs as job_module
+
+    parent_id, resumed_id = _create_budget_resume_job(client, session)
+
+    class _ProcessKilled:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            raise SystemExit("process killed mid-run")
+
+    monkeypatch.setattr(job_module, "Orchestrator", _ProcessKilled)
+    with pytest.raises(SystemExit):
+        job_module._run_scene_job_worker(resumed_id)
+
+    session.expire_all()
+    orphan = session.get(ChapterRunJob, resumed_id)
+    assert orphan is not None and orphan.status == "running"
+    assert session.get(SceneRunState, "CHJOB_SC01").active_execution_id == resumed_id
+    # 重启：死掉的工人的租约过期了，恢复把任务再派发一次
+    orphan.lease_expires_at = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    session.commit()
+
+    calls: list[tuple[str, str | None, str | None]] = []
+
+    class _Resumed:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, scene_id: str, *, execution_id=None, run_job_id=None, **_kwargs) -> dict:
+            calls.append((scene_id, execution_id, run_job_id))
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _Resumed)
+    job_module._run_scene_job_worker(resumed_id)
+
+    assert calls == [("CHJOB_SC01", resumed_id, resumed_id)]
+    session.expire_all()
+    job = session.get(ChapterRunJob, resumed_id)
+    assert job is not None and job.status == "completed" and job.attempt_no == 2
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    assert state.active_run_job_id is None
+    assert state.active_execution_id == resumed_id
+    assert parent_id in state.run_checkpoint_json["artifact_execution_lineage_ids"]
+
+
+def test_worker_failure_after_losing_its_lease_does_not_raise_out_of_the_thread(
+    client, session, monkeypatch
+) -> None:
+    """B03-02 (c)：租约过期后别的工人接手了任务，这个工人随后失败——记失败被 fence 拒绝时只记日志，
+    不能把 RUN_OWNER_LEASE_LOST 抛出工人线程，也不能碰新主人的任务。"""
+    from sqlalchemy import update
+
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
+
+    class _LeaseTakenOver:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            with SessionLocal() as other:
+                other.execute(
+                    update(ChapterRunJob)
+                    .where(ChapterRunJob.job_id == job_id)
+                    .values(lease_expires_at=(datetime.now(UTC) - timedelta(seconds=5)).isoformat())
+                )
+                other.commit()
+                SceneRunJobService(other).claim_running(
+                    job_id,
+                    worker_id="worker-after-expiry",
+                    current_step="planning_running",
+                    lease_seconds=600,
+                )
+                other.commit()
+            raise DomainError("LLM_PROVIDER_FAILED", "provider failed after the lease was taken over")
+
+    monkeypatch.setattr(job_module, "Orchestrator", _LeaseTakenOver)
+    job_module._run_scene_job_worker(job_id)
+
+    session.expire_all()
+    job = session.get(ChapterRunJob, job_id)
+    assert job is not None
+    assert (job.status, job.worker_id, job.attempt_no, job.error_code) == (
+        "running",
+        "worker-after-expiry",
+        2,
+        None,
+    )
+
+
+def test_worker_whose_claim_was_rolled_back_fails_the_unowned_job_instead_of_leaving_it_queued(
+    client, session, monkeypatch
+) -> None:
+    """B03-02 (c)：认领在工人手里被回滚（这里：场景被别的任务占着），任务没有活着的主人——按任务 id 记失败
+    （error_details.retryable，认领路径可以重领），不再永远停在 queued、也不把异常抛出线程。"""
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    state.active_run_job_id = "scene_run_other_owner"
+    session.commit()
+
+    class _NeverCalled:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            raise AssertionError("the pipeline must not run without owning the scene")
+
+    monkeypatch.setattr(job_module, "Orchestrator", _NeverCalled)
+    job_module._run_scene_job_worker(job_id)
+
+    session.expire_all()
+    job = session.get(ChapterRunJob, job_id)
+    assert job is not None
+    assert job.status == "failed" and job.error_code == "RUN_JOB_IN_PROGRESS"
+    assert job.result_summary_json["error_details"]["retryable"] is True
+    assert session.get(SceneRunState, "CHJOB_SC01").active_run_job_id == "scene_run_other_owner"
+
+
 def test_scene_job_retry_reuses_execution_checkpoint_without_recharging(client, session, monkeypatch) -> None:
     from novel_system.services import scene_run_jobs as job_module
 

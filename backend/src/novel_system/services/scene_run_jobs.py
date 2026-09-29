@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,8 @@ from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService, scene_job_execution_id
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
+
+_LOGGER = logging.getLogger(__name__)
 
 JOB_TYPE_SCENE_FULL = "scene_run_full"
 RUN_JOB_CANCEL_REQUESTED = "RUN_JOB_CANCEL_REQUESTED_BY_AUTHOR"
@@ -637,6 +640,77 @@ class SceneRunJobService:
             self.session.refresh(job)
         job.status = status
         job.finished_at = utcnow()
+        self._record_failure(
+            job, status=status, error_code=error_code, error_text=error_text, details=details
+        )
+
+    def fail_unowned(
+        self,
+        job_id: str,
+        *,
+        error_code: str,
+        error_text: str,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        """工人的认领没能落库（被回滚）或已丢：任务没有活着的主人时按任务 id 记失败（B03-02）。
+
+        只收 queued、或租约已过期 / 没有租约的 running——有活着的主人的任务不碰。失败带
+        ``error_details.retryable``：出问题的是工人的认领，不是管线，认领路径可以重领。返回是否记上了。
+        """
+        self.session.commit()
+        _begin_immediate(self.session)
+        job = self.get_job(job_id)
+        self.session.refresh(job)
+        now_iso = datetime.now(UTC).isoformat()
+        live_owner = job.status == "running" and (
+            job.lease_expires_at is not None and job.lease_expires_at > now_iso
+        )
+        if job.status not in {"queued", "running"} or live_owner:
+            self.session.rollback()
+            return False
+        changed = self.session.execute(
+            update(ChapterRunJob)
+            .where(
+                ChapterRunJob.job_id == job_id,
+                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
+                ChapterRunJob.status == job.status,
+                ChapterRunJob.attempt_no == job.attempt_no,
+                (
+                    ChapterRunJob.worker_id.is_(None)
+                    if job.worker_id is None
+                    else ChapterRunJob.worker_id == job.worker_id
+                ),
+                (
+                    ChapterRunJob.lease_expires_at.is_(None)
+                    if job.lease_expires_at is None
+                    else ChapterRunJob.lease_expires_at == job.lease_expires_at
+                ),
+            )
+            .values(status="failed", finished_at=utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if changed.rowcount != 1:
+            self.session.rollback()
+            return False
+        self.session.refresh(job)
+        self._record_failure(
+            job,
+            status="failed",
+            error_code=error_code,
+            error_text=error_text,
+            details={**dict(details or {}), "retryable": True},
+        )
+        return True
+
+    def _record_failure(
+        self,
+        job: ChapterRunJob,
+        *,
+        status: str,
+        error_code: str,
+        error_text: str,
+        details: dict[str, Any] | None,
+    ) -> None:
         job.error_code = error_code
         job.error_text = error_text
         error_details = dict(details or {})
@@ -1046,16 +1120,18 @@ def _run_scene_job_worker(job_id: str) -> None:
             lease_seconds=owner_lease_ttl_seconds(),
         )
         service.claim_scene_active_job(owner, scene_id)
+        # B03-02：认领先落库，再做预算续跑的交接——交接失败回滚时不会把认领一起撤掉，失败记得上。
+        session.commit()
         budget_resume_parent = str(
             (job.payload_json or {}).get("budget_resume_parent_execution_id") or ""
         )
-        if budget_resume_parent:
+        if budget_resume_parent and _budget_handoff_pending(session, scene_id, job_id):
             SceneRunCheckpointService(session).acquire_budget_resume(
                 scene_id,
                 scene_job_execution_id(job_id),
                 expected_parent_execution_id=budget_resume_parent,
             )
-        session.commit()
+            session.commit()
         result = Orchestrator(session).run_scene(
             scene_id,
             author_note=str((job.payload_json or {}).get("author_note") or "") or None,
@@ -1106,6 +1182,18 @@ def _run_scene_job_worker(job_id: str) -> None:
         session.close()
 
 
+def _budget_handoff_pending(session: Session, scene_id: str, job_id: str) -> bool:
+    """预算续跑的检查点交接还没做（B03-02）。
+
+    这一任务的执行已经是场景的活动执行 = 上一次认领时交接完了、随后进程退出：不再交接（父执行早已
+    不是失败态，再交接只会被拒），``run_scene`` 按自己的执行 id 从检查点续跑。
+    """
+    current = session.scalar(
+        select(SceneRunState.active_execution_id).where(SceneRunState.scene_id == scene_id)
+    )
+    return current != scene_job_execution_id(job_id)
+
+
 def _mark_worker_failure(
     job_id: str,
     error_code: str,
@@ -1113,6 +1201,11 @@ def _mark_worker_failure(
     details: dict[str, Any] | None = None,
     owner: SceneRunJobLease | None = None,
 ) -> None:
+    """工人线程的失败收尾；绝不把异常抛出线程（B03-02）。
+
+    丢了租约（fence 拒绝）时：任务已有活着的新主人就不碰；没有活着的主人（认领被回滚、或主人也死了）
+    就按任务 id 记失败，免得任务永远停在 queued / running、这一场一直 409。
+    """
     if owner is None:
         return
     session = SessionLocal()
@@ -1136,8 +1229,38 @@ def _mark_worker_failure(
         session.commit()
         if cancelled:
             remember_committed_cancellation(job_id)
+    except DomainError as exc:
+        session.rollback()
+        if exc.code != "RUN_OWNER_LEASE_LOST":
+            _LOGGER.exception("scene run job %s could not record its failure %s", job_id, error_code)
+            return
+        _fail_unowned_job(job_id, error_code, error_text, details)
+    except Exception:  # noqa: BLE001 — 工人线程边界：收尾失败只记日志
+        session.rollback()
+        _LOGGER.exception("scene run job %s could not record its failure %s", job_id, error_code)
     finally:
         session.close()
+
+
+def _fail_unowned_job(
+    job_id: str,
+    error_code: str,
+    error_text: str,
+    details: dict[str, Any] | None,
+) -> None:
+    try:
+        with SessionLocal() as session:
+            failed = SceneRunJobService(session).fail_unowned(
+                job_id, error_code=error_code, error_text=error_text, details=details
+            )
+            session.commit()
+    except Exception:  # noqa: BLE001 — 工人线程边界
+        _LOGGER.exception("scene run job %s lost its owner and could not be marked failed", job_id)
+        return
+    if failed:
+        _LOGGER.warning("scene run job %s had no live owner; marked failed (%s)", job_id, error_code)
+    else:
+        _LOGGER.info("scene run job %s is owned by another worker; its failure %s is not recorded", job_id, error_code)
 
 
 def _mark_worker_cancellation(
@@ -1156,6 +1279,9 @@ def _mark_worker_cancellation(
             service.mark_cancelled(owner)
             session.commit()
             remember_committed_cancellation(job_id)
+    except Exception:  # noqa: BLE001 — 工人线程边界：取消由新主人或恢复清扫收尾
+        session.rollback()
+        _LOGGER.exception("scene run job %s could not confirm its cancellation", job_id)
     finally:
         session.close()
 
