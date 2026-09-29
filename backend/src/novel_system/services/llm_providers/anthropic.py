@@ -7,7 +7,6 @@ from novel_system.services.llm_providers.base import (
     CompletionProbeRequest,
     LLMRequest,
     LLMResponseError,
-    ModelListRequest,
     ProviderAdapter,
     ProviderRuntimeConfig,
 )
@@ -91,17 +90,7 @@ class AnthropicAdapter(ProviderAdapter):
             headers["x-api-key"] = api_key
         return headers
 
-    def list_models_request(
-        self,
-        *,
-        base_url: str,
-        api_key: str | None,
-        provider_options: dict[str, Any] | None = None,
-    ) -> ModelListRequest | None:
-        return ModelListRequest(
-            url=f"{base_url}/models",
-            headers=self.auth_headers(api_key=api_key, provider_options=provider_options),
-        )
+    # list_models_request: the base ``GET {base}/models`` with the headers above.
 
     def completion_probe_request(
         self,

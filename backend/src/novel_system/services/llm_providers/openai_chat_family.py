@@ -95,3 +95,18 @@ class OpenAIChatFamilyAdapter(ProviderAdapter):
             api_mode="chat",
             endpoint="/chat/completions",
         )
+
+
+def thinking_enabled_on_demand(request: LLMRequest) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """``thinking: {"type": "enabled"}`` only for medium / high reasoning; nothing otherwise
+    (DeepSeek, Kimi — some of their models reject an explicit ``disabled``)."""
+    if request.reasoning_level in {"medium", "high"}:
+        native_reasoning = {"type": "enabled"}
+        return {"thinking": native_reasoning}, native_reasoning
+    return {}, None
+
+
+def thinking_enabled_or_disabled(request: LLMRequest) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Always send ``thinking``: ``enabled`` for medium / high reasoning, else ``disabled`` (GLM, Doubao)."""
+    native_reasoning = {"type": "enabled" if request.reasoning_level in {"medium", "high"} else "disabled"}
+    return {"thinking": native_reasoning}, native_reasoning
