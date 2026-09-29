@@ -1,0 +1,912 @@
+{
+  "chapter": {
+    "project_id": "PRJ_CANON_STATUS",
+    "chapter_id": "PRJ_CANON_STATUS_CH01",
+    "complete": false,
+    "scene_count": 6,
+    "synced_scene_count": 1,
+    "pending_scene_ids": [
+      "PRJ_CANON_STATUS_CH01_SC02",
+      "PRJ_CANON_STATUS_CH01_SC03",
+      "PRJ_CANON_STATUS_CH01_SC04",
+      "PRJ_CANON_STATUS_CH01_SC06"
+    ],
+    "missing_final_scene_ids": [
+      "PRJ_CANON_STATUS_CH01_SC05"
+    ],
+    "pending_candidate_count": 2,
+    "scenes": [
+      {
+        "project_id": "PRJ_CANON_STATUS",
+        "chapter_id": "PRJ_CANON_STATUS_CH01",
+        "scene_id": "PRJ_CANON_STATUS_CH01_SC01",
+        "scene_seq": 1,
+        "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC01_v1",
+        "status": "synced",
+        "complete": true,
+        "pending_count": 0,
+        "accepted_count": 1,
+        "rejected_count": 0,
+        "candidates": [
+          {
+            "candidate_id": "<factcand#1>",
+            "project_id": "PRJ_CANON_STATUS",
+            "chapter_id": "PRJ_CANON_STATUS_CH01",
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC01",
+            "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC01_v1",
+            "event_type": "character_state",
+            "entity_type": "character",
+            "raw_entity_ref": "林远",
+            "resolved_entity_id": "CHAR_LINYUAN",
+            "entity_resolution_status": "exact",
+            "entity_candidates": [
+              "CHAR_LINYUAN"
+            ],
+            "entity_options": [
+              {
+                "entity_id": "CHAR_LINYUAN",
+                "label": "林远"
+              }
+            ],
+            "fact_key": "missing_limb",
+            "fact_value": "右臂",
+            "evidence": {
+              "text": "右臂已经折断",
+              "start": 8,
+              "end": 14,
+              "grounded": true
+            },
+            "source_kind": "manual",
+            "confidence": "author_candidate",
+            "criticality": "critical",
+            "planned_timeline_event_id": null,
+            "status": "accepted",
+            "canon_commit_id": "canon_commit_<factcand#1>",
+            "decided_by": "author",
+            "decided_at": "<ts>",
+            "decision_note": null,
+            "created_at": "<ts>"
+          }
+        ],
+        "snapshot": {
+          "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC01_v1",
+          "scope_type": "scene",
+          "scope_id": "final_PRJ_CANON_STATUS_CH01_SC01_v1",
+          "status": "complete",
+          "summary_text": "- [character_state] CHAR_LINYUAN · missing_limb = 右臂",
+          "state_deltas": [
+            {
+              "event_id": "<nevt#2>",
+              "canon_commit_id": "canon_commit_<factcand#1>",
+              "event_type": "character_state",
+              "entity_type": "character",
+              "entity_id": "CHAR_LINYUAN",
+              "fact_key": "missing_limb",
+              "fact_value": "右臂",
+              "evidence": "右臂已经折断",
+              "scene_id": "PRJ_CANON_STATUS_CH01_SC01"
+            }
+          ],
+          "knowledge_deltas": [],
+          "relationship_deltas": [],
+          "item_deltas": [],
+          "timeline_deltas": [],
+          "open_obligations": [],
+          "entity_ids": [
+            "CHAR_LINYUAN"
+          ],
+          "source_commit_ids": [
+            "canon_commit_<factcand#1>",
+            "canon_verify_1f7402d03136a51f8909"
+          ],
+          "metadata": {
+            "extraction_outcome": "not_invoked",
+            "extraction_reason": "awaiting_extraction",
+            "requires_empty_confirmation": false,
+            "requires_scene_confirmation": false,
+            "manual_candidates_added": true,
+            "author_verified": true,
+            "author_verification_note": "作者已核对本场正史"
+          },
+          "updated_at": "<ts>"
+        },
+        "extraction": {
+          "extraction_outcome": "not_invoked",
+          "extraction_reason": "awaiting_extraction",
+          "requires_empty_confirmation": false,
+          "requires_scene_confirmation": false,
+          "manual_candidates_added": true,
+          "author_verified": true,
+          "author_verification_note": "作者已核对本场正史"
+        }
+      },
+      {
+        "project_id": "PRJ_CANON_STATUS",
+        "chapter_id": "PRJ_CANON_STATUS_CH01",
+        "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+        "scene_seq": 2,
+        "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+        "status": "pending_review",
+        "complete": false,
+        "pending_count": 2,
+        "accepted_count": 0,
+        "rejected_count": 1,
+        "candidates": [
+          {
+            "candidate_id": "<factcand#3>",
+            "project_id": "PRJ_CANON_STATUS",
+            "chapter_id": "PRJ_CANON_STATUS_CH01",
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+            "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+            "event_type": "character_state",
+            "entity_type": "character",
+            "raw_entity_ref": "阿远",
+            "resolved_entity_id": null,
+            "entity_resolution_status": "ambiguous",
+            "entity_candidates": [
+              "CHAR_LINYUAN",
+              "CHAR_LINNING"
+            ],
+            "entity_options": [
+              {
+                "entity_id": "CHAR_LINYUAN",
+                "label": "林远"
+              },
+              {
+                "entity_id": "CHAR_LINNING",
+                "label": "林宁"
+              }
+            ],
+            "fact_key": "has_item",
+            "fact_value": "旧信",
+            "evidence": {
+              "text": "阿远把旧信塞进怀里",
+              "start": 0,
+              "end": 9,
+              "grounded": true
+            },
+            "source_kind": "prose_extraction",
+            "confidence": "extracted",
+            "criticality": "critical",
+            "planned_timeline_event_id": null,
+            "status": "pending",
+            "canon_commit_id": null,
+            "decided_by": null,
+            "decided_at": null,
+            "decision_note": null,
+            "created_at": "<ts>"
+          },
+          {
+            "candidate_id": "<factcand#4>",
+            "project_id": "PRJ_CANON_STATUS",
+            "chapter_id": "PRJ_CANON_STATUS_CH01",
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+            "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+            "event_type": "character_state",
+            "entity_type": "character",
+            "raw_entity_ref": "苏晚",
+            "resolved_entity_id": "CHAR_SUWAN",
+            "entity_resolution_status": "exact",
+            "entity_candidates": [
+              "CHAR_SUWAN"
+            ],
+            "entity_options": [
+              {
+                "entity_id": "CHAR_SUWAN",
+                "label": "苏晚"
+              }
+            ],
+            "fact_key": "mood",
+            "fact_value": "紧张",
+            "evidence": {
+              "text": "苏晚接过旧信",
+              "start": 10,
+              "end": 16,
+              "grounded": true
+            },
+            "source_kind": "prose_extraction",
+            "confidence": "extracted",
+            "criticality": "critical",
+            "planned_timeline_event_id": null,
+            "status": "rejected",
+            "canon_commit_id": null,
+            "decided_by": "author",
+            "decided_at": "<ts>",
+            "decision_note": "情绪不是持久事实",
+            "created_at": "<ts>"
+          },
+          {
+            "candidate_id": "<factcand#5>",
+            "project_id": "PRJ_CANON_STATUS",
+            "chapter_id": "PRJ_CANON_STATUS_CH01",
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+            "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+            "event_type": "item_change",
+            "entity_type": "character",
+            "raw_entity_ref": "苏晚",
+            "resolved_entity_id": "CHAR_SUWAN",
+            "entity_resolution_status": "exact",
+            "entity_candidates": [
+              "CHAR_SUWAN"
+            ],
+            "entity_options": [
+              {
+                "entity_id": "CHAR_SUWAN",
+                "label": "苏晚"
+              }
+            ],
+            "fact_key": "holder",
+            "fact_value": "旧信",
+            "evidence": {
+              "text": "苏晚接过旧信",
+              "start": 10,
+              "end": 16,
+              "grounded": true
+            },
+            "source_kind": "manual",
+            "confidence": "author_candidate",
+            "criticality": "critical",
+            "planned_timeline_event_id": "timeline_letter",
+            "status": "pending",
+            "canon_commit_id": null,
+            "decided_by": null,
+            "decided_at": null,
+            "decision_note": null,
+            "created_at": "<ts>"
+          }
+        ],
+        "snapshot": {
+          "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC02_v1",
+          "scope_type": "scene",
+          "scope_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+          "status": "pending",
+          "summary_text": "",
+          "state_deltas": [],
+          "knowledge_deltas": [],
+          "relationship_deltas": [],
+          "item_deltas": [],
+          "timeline_deltas": [],
+          "open_obligations": [],
+          "entity_ids": [],
+          "source_commit_ids": [],
+          "metadata": {
+            "extraction_outcome": "completed_events",
+            "extraction_reason": null,
+            "requires_empty_confirmation": false,
+            "requires_scene_confirmation": true,
+            "extraction_error_code": null,
+            "manual_candidates_added": true
+          },
+          "updated_at": "<ts>"
+        },
+        "extraction": {
+          "extraction_outcome": "completed_events",
+          "extraction_reason": null,
+          "requires_empty_confirmation": false,
+          "requires_scene_confirmation": true,
+          "extraction_error_code": null,
+          "manual_candidates_added": true
+        }
+      },
+      {
+        "project_id": "PRJ_CANON_STATUS",
+        "chapter_id": "PRJ_CANON_STATUS_CH01",
+        "scene_id": "PRJ_CANON_STATUS_CH01_SC03",
+        "scene_seq": 3,
+        "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC03_v1",
+        "status": "pending_extraction",
+        "complete": false,
+        "pending_count": 0,
+        "accepted_count": 0,
+        "rejected_count": 0,
+        "candidates": [],
+        "snapshot": {
+          "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC03_v1",
+          "scope_type": "scene",
+          "scope_id": "final_PRJ_CANON_STATUS_CH01_SC03_v1",
+          "status": "pending",
+          "summary_text": "",
+          "state_deltas": [],
+          "knowledge_deltas": [],
+          "relationship_deltas": [],
+          "item_deltas": [],
+          "timeline_deltas": [],
+          "open_obligations": [],
+          "entity_ids": [],
+          "source_commit_ids": [],
+          "metadata": {
+            "extraction_outcome": "not_invoked",
+            "extraction_reason": "awaiting_extraction",
+            "requires_empty_confirmation": false,
+            "requires_scene_confirmation": true
+          },
+          "updated_at": "<ts>"
+        },
+        "extraction": {
+          "extraction_outcome": "not_invoked",
+          "extraction_reason": "awaiting_extraction",
+          "requires_empty_confirmation": false,
+          "requires_scene_confirmation": true
+        }
+      },
+      {
+        "project_id": "PRJ_CANON_STATUS",
+        "chapter_id": "PRJ_CANON_STATUS_CH01",
+        "scene_id": "PRJ_CANON_STATUS_CH01_SC04",
+        "scene_seq": 4,
+        "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC04_v1",
+        "status": "degraded",
+        "complete": false,
+        "pending_count": 0,
+        "accepted_count": 0,
+        "rejected_count": 0,
+        "candidates": [],
+        "snapshot": {
+          "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC04_v1",
+          "scope_type": "scene",
+          "scope_id": "final_PRJ_CANON_STATUS_CH01_SC04_v1",
+          "status": "degraded",
+          "summary_text": "",
+          "state_deltas": [],
+          "knowledge_deltas": [],
+          "relationship_deltas": [],
+          "item_deltas": [],
+          "timeline_deltas": [],
+          "open_obligations": [],
+          "entity_ids": [],
+          "source_commit_ids": [],
+          "metadata": {
+            "extraction_outcome": "provider_failed",
+            "extraction_reason": "provider_call_failed",
+            "requires_empty_confirmation": false,
+            "requires_scene_confirmation": false,
+            "extraction_error_code": "LLM_PROVIDER_TIMEOUT"
+          },
+          "updated_at": "<ts>"
+        },
+        "extraction": {
+          "extraction_outcome": "provider_failed",
+          "extraction_reason": "provider_call_failed",
+          "requires_empty_confirmation": false,
+          "requires_scene_confirmation": false,
+          "extraction_error_code": "LLM_PROVIDER_TIMEOUT"
+        }
+      },
+      {
+        "project_id": "PRJ_CANON_STATUS",
+        "chapter_id": "PRJ_CANON_STATUS_CH01",
+        "scene_id": "PRJ_CANON_STATUS_CH01_SC05",
+        "scene_seq": 5,
+        "final_scene_row_id": null,
+        "status": "missing_final",
+        "complete": false,
+        "pending_count": 0,
+        "accepted_count": 0,
+        "rejected_count": 0,
+        "candidates": [],
+        "snapshot": null,
+        "extraction": {}
+      },
+      {
+        "project_id": "PRJ_CANON_STATUS",
+        "chapter_id": "PRJ_CANON_STATUS_CH01",
+        "scene_id": "PRJ_CANON_STATUS_CH01_SC06",
+        "scene_seq": 6,
+        "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC06_v1",
+        "status": "pending_review",
+        "complete": false,
+        "pending_count": 0,
+        "accepted_count": 0,
+        "rejected_count": 0,
+        "candidates": [],
+        "snapshot": {
+          "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC06_v1",
+          "scope_type": "scene",
+          "scope_id": "final_PRJ_CANON_STATUS_CH01_SC06_v1",
+          "status": "pending",
+          "summary_text": "",
+          "state_deltas": [],
+          "knowledge_deltas": [],
+          "relationship_deltas": [],
+          "item_deltas": [],
+          "timeline_deltas": [],
+          "open_obligations": [],
+          "entity_ids": [],
+          "source_commit_ids": [],
+          "metadata": {
+            "extraction_outcome": "completed_empty",
+            "extraction_reason": null,
+            "requires_empty_confirmation": true,
+            "requires_scene_confirmation": true,
+            "extraction_error_code": null
+          },
+          "updated_at": "<ts>"
+        },
+        "extraction": {
+          "extraction_outcome": "completed_empty",
+          "extraction_reason": null,
+          "requires_empty_confirmation": true,
+          "requires_scene_confirmation": true,
+          "extraction_error_code": null
+        }
+      }
+    ],
+    "snapshot": {
+      "snapshot_id": "continuity_chapter_PRJ_CANON_STATUS_CH01",
+      "scope_type": "chapter",
+      "scope_id": "PRJ_CANON_STATUS_CH01",
+      "status": "degraded",
+      "summary_text": "- [character_state] CHAR_LINYUAN · missing_limb = 右臂",
+      "state_deltas": [
+        {
+          "event_id": "<nevt#2>",
+          "canon_commit_id": "canon_commit_<factcand#1>",
+          "event_type": "character_state",
+          "entity_type": "character",
+          "entity_id": "CHAR_LINYUAN",
+          "fact_key": "missing_limb",
+          "fact_value": "右臂",
+          "evidence": "右臂已经折断",
+          "scene_id": "PRJ_CANON_STATUS_CH01_SC01"
+        }
+      ],
+      "knowledge_deltas": [],
+      "relationship_deltas": [],
+      "item_deltas": [],
+      "timeline_deltas": [],
+      "open_obligations": [],
+      "entity_ids": [
+        "CHAR_LINYUAN"
+      ],
+      "source_commit_ids": [
+        "canon_commit_<factcand#1>",
+        "canon_verify_1f7402d03136a51f8909"
+      ],
+      "metadata": {
+        "scene_statuses": [
+          {
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC01",
+            "status": "synced"
+          },
+          {
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+            "status": "pending_review"
+          },
+          {
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC03",
+            "status": "pending_extraction"
+          },
+          {
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC04",
+            "status": "degraded"
+          },
+          {
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC05",
+            "status": "missing_final"
+          },
+          {
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC06",
+            "status": "pending_review"
+          }
+        ]
+      },
+      "updated_at": "<ts>"
+    }
+  },
+  "scenes": {
+    "1": {
+      "project_id": "PRJ_CANON_STATUS",
+      "chapter_id": "PRJ_CANON_STATUS_CH01",
+      "scene_id": "PRJ_CANON_STATUS_CH01_SC01",
+      "scene_seq": 1,
+      "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC01_v1",
+      "status": "synced",
+      "complete": true,
+      "pending_count": 0,
+      "accepted_count": 1,
+      "rejected_count": 0,
+      "candidates": [
+        {
+          "candidate_id": "<factcand#1>",
+          "project_id": "PRJ_CANON_STATUS",
+          "chapter_id": "PRJ_CANON_STATUS_CH01",
+          "scene_id": "PRJ_CANON_STATUS_CH01_SC01",
+          "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC01_v1",
+          "event_type": "character_state",
+          "entity_type": "character",
+          "raw_entity_ref": "林远",
+          "resolved_entity_id": "CHAR_LINYUAN",
+          "entity_resolution_status": "exact",
+          "entity_candidates": [
+            "CHAR_LINYUAN"
+          ],
+          "entity_options": [
+            {
+              "entity_id": "CHAR_LINYUAN",
+              "label": "林远"
+            }
+          ],
+          "fact_key": "missing_limb",
+          "fact_value": "右臂",
+          "evidence": {
+            "text": "右臂已经折断",
+            "start": 8,
+            "end": 14,
+            "grounded": true
+          },
+          "source_kind": "manual",
+          "confidence": "author_candidate",
+          "criticality": "critical",
+          "planned_timeline_event_id": null,
+          "status": "accepted",
+          "canon_commit_id": "canon_commit_<factcand#1>",
+          "decided_by": "author",
+          "decided_at": "<ts>",
+          "decision_note": null,
+          "created_at": "<ts>"
+        }
+      ],
+      "snapshot": {
+        "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC01_v1",
+        "scope_type": "scene",
+        "scope_id": "final_PRJ_CANON_STATUS_CH01_SC01_v1",
+        "status": "complete",
+        "summary_text": "- [character_state] CHAR_LINYUAN · missing_limb = 右臂",
+        "state_deltas": [
+          {
+            "event_id": "<nevt#2>",
+            "canon_commit_id": "canon_commit_<factcand#1>",
+            "event_type": "character_state",
+            "entity_type": "character",
+            "entity_id": "CHAR_LINYUAN",
+            "fact_key": "missing_limb",
+            "fact_value": "右臂",
+            "evidence": "右臂已经折断",
+            "scene_id": "PRJ_CANON_STATUS_CH01_SC01"
+          }
+        ],
+        "knowledge_deltas": [],
+        "relationship_deltas": [],
+        "item_deltas": [],
+        "timeline_deltas": [],
+        "open_obligations": [],
+        "entity_ids": [
+          "CHAR_LINYUAN"
+        ],
+        "source_commit_ids": [
+          "canon_commit_<factcand#1>",
+          "canon_verify_1f7402d03136a51f8909"
+        ],
+        "metadata": {
+          "extraction_outcome": "not_invoked",
+          "extraction_reason": "awaiting_extraction",
+          "requires_empty_confirmation": false,
+          "requires_scene_confirmation": false,
+          "manual_candidates_added": true,
+          "author_verified": true,
+          "author_verification_note": "作者已核对本场正史"
+        },
+        "updated_at": "<ts>"
+      },
+      "extraction": {
+        "extraction_outcome": "not_invoked",
+        "extraction_reason": "awaiting_extraction",
+        "requires_empty_confirmation": false,
+        "requires_scene_confirmation": false,
+        "manual_candidates_added": true,
+        "author_verified": true,
+        "author_verification_note": "作者已核对本场正史"
+      }
+    },
+    "2": {
+      "project_id": "PRJ_CANON_STATUS",
+      "chapter_id": "PRJ_CANON_STATUS_CH01",
+      "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+      "scene_seq": 2,
+      "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+      "status": "pending_review",
+      "complete": false,
+      "pending_count": 2,
+      "accepted_count": 0,
+      "rejected_count": 1,
+      "candidates": [
+        {
+          "candidate_id": "<factcand#3>",
+          "project_id": "PRJ_CANON_STATUS",
+          "chapter_id": "PRJ_CANON_STATUS_CH01",
+          "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+          "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+          "event_type": "character_state",
+          "entity_type": "character",
+          "raw_entity_ref": "阿远",
+          "resolved_entity_id": null,
+          "entity_resolution_status": "ambiguous",
+          "entity_candidates": [
+            "CHAR_LINYUAN",
+            "CHAR_LINNING"
+          ],
+          "entity_options": [
+            {
+              "entity_id": "CHAR_LINYUAN",
+              "label": "林远"
+            },
+            {
+              "entity_id": "CHAR_LINNING",
+              "label": "林宁"
+            }
+          ],
+          "fact_key": "has_item",
+          "fact_value": "旧信",
+          "evidence": {
+            "text": "阿远把旧信塞进怀里",
+            "start": 0,
+            "end": 9,
+            "grounded": true
+          },
+          "source_kind": "prose_extraction",
+          "confidence": "extracted",
+          "criticality": "critical",
+          "planned_timeline_event_id": null,
+          "status": "pending",
+          "canon_commit_id": null,
+          "decided_by": null,
+          "decided_at": null,
+          "decision_note": null,
+          "created_at": "<ts>"
+        },
+        {
+          "candidate_id": "<factcand#4>",
+          "project_id": "PRJ_CANON_STATUS",
+          "chapter_id": "PRJ_CANON_STATUS_CH01",
+          "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+          "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+          "event_type": "character_state",
+          "entity_type": "character",
+          "raw_entity_ref": "苏晚",
+          "resolved_entity_id": "CHAR_SUWAN",
+          "entity_resolution_status": "exact",
+          "entity_candidates": [
+            "CHAR_SUWAN"
+          ],
+          "entity_options": [
+            {
+              "entity_id": "CHAR_SUWAN",
+              "label": "苏晚"
+            }
+          ],
+          "fact_key": "mood",
+          "fact_value": "紧张",
+          "evidence": {
+            "text": "苏晚接过旧信",
+            "start": 10,
+            "end": 16,
+            "grounded": true
+          },
+          "source_kind": "prose_extraction",
+          "confidence": "extracted",
+          "criticality": "critical",
+          "planned_timeline_event_id": null,
+          "status": "rejected",
+          "canon_commit_id": null,
+          "decided_by": "author",
+          "decided_at": "<ts>",
+          "decision_note": "情绪不是持久事实",
+          "created_at": "<ts>"
+        },
+        {
+          "candidate_id": "<factcand#5>",
+          "project_id": "PRJ_CANON_STATUS",
+          "chapter_id": "PRJ_CANON_STATUS_CH01",
+          "scene_id": "PRJ_CANON_STATUS_CH01_SC02",
+          "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+          "event_type": "item_change",
+          "entity_type": "character",
+          "raw_entity_ref": "苏晚",
+          "resolved_entity_id": "CHAR_SUWAN",
+          "entity_resolution_status": "exact",
+          "entity_candidates": [
+            "CHAR_SUWAN"
+          ],
+          "entity_options": [
+            {
+              "entity_id": "CHAR_SUWAN",
+              "label": "苏晚"
+            }
+          ],
+          "fact_key": "holder",
+          "fact_value": "旧信",
+          "evidence": {
+            "text": "苏晚接过旧信",
+            "start": 10,
+            "end": 16,
+            "grounded": true
+          },
+          "source_kind": "manual",
+          "confidence": "author_candidate",
+          "criticality": "critical",
+          "planned_timeline_event_id": "timeline_letter",
+          "status": "pending",
+          "canon_commit_id": null,
+          "decided_by": null,
+          "decided_at": null,
+          "decision_note": null,
+          "created_at": "<ts>"
+        }
+      ],
+      "snapshot": {
+        "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC02_v1",
+        "scope_type": "scene",
+        "scope_id": "final_PRJ_CANON_STATUS_CH01_SC02_v1",
+        "status": "pending",
+        "summary_text": "",
+        "state_deltas": [],
+        "knowledge_deltas": [],
+        "relationship_deltas": [],
+        "item_deltas": [],
+        "timeline_deltas": [],
+        "open_obligations": [],
+        "entity_ids": [],
+        "source_commit_ids": [],
+        "metadata": {
+          "extraction_outcome": "completed_events",
+          "extraction_reason": null,
+          "requires_empty_confirmation": false,
+          "requires_scene_confirmation": true,
+          "extraction_error_code": null,
+          "manual_candidates_added": true
+        },
+        "updated_at": "<ts>"
+      },
+      "extraction": {
+        "extraction_outcome": "completed_events",
+        "extraction_reason": null,
+        "requires_empty_confirmation": false,
+        "requires_scene_confirmation": true,
+        "extraction_error_code": null,
+        "manual_candidates_added": true
+      }
+    },
+    "3": {
+      "project_id": "PRJ_CANON_STATUS",
+      "chapter_id": "PRJ_CANON_STATUS_CH01",
+      "scene_id": "PRJ_CANON_STATUS_CH01_SC03",
+      "scene_seq": 3,
+      "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC03_v1",
+      "status": "pending_extraction",
+      "complete": false,
+      "pending_count": 0,
+      "accepted_count": 0,
+      "rejected_count": 0,
+      "candidates": [],
+      "snapshot": {
+        "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC03_v1",
+        "scope_type": "scene",
+        "scope_id": "final_PRJ_CANON_STATUS_CH01_SC03_v1",
+        "status": "pending",
+        "summary_text": "",
+        "state_deltas": [],
+        "knowledge_deltas": [],
+        "relationship_deltas": [],
+        "item_deltas": [],
+        "timeline_deltas": [],
+        "open_obligations": [],
+        "entity_ids": [],
+        "source_commit_ids": [],
+        "metadata": {
+          "extraction_outcome": "not_invoked",
+          "extraction_reason": "awaiting_extraction",
+          "requires_empty_confirmation": false,
+          "requires_scene_confirmation": true
+        },
+        "updated_at": "<ts>"
+      },
+      "extraction": {
+        "extraction_outcome": "not_invoked",
+        "extraction_reason": "awaiting_extraction",
+        "requires_empty_confirmation": false,
+        "requires_scene_confirmation": true
+      }
+    },
+    "4": {
+      "project_id": "PRJ_CANON_STATUS",
+      "chapter_id": "PRJ_CANON_STATUS_CH01",
+      "scene_id": "PRJ_CANON_STATUS_CH01_SC04",
+      "scene_seq": 4,
+      "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC04_v1",
+      "status": "degraded",
+      "complete": false,
+      "pending_count": 0,
+      "accepted_count": 0,
+      "rejected_count": 0,
+      "candidates": [],
+      "snapshot": {
+        "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC04_v1",
+        "scope_type": "scene",
+        "scope_id": "final_PRJ_CANON_STATUS_CH01_SC04_v1",
+        "status": "degraded",
+        "summary_text": "",
+        "state_deltas": [],
+        "knowledge_deltas": [],
+        "relationship_deltas": [],
+        "item_deltas": [],
+        "timeline_deltas": [],
+        "open_obligations": [],
+        "entity_ids": [],
+        "source_commit_ids": [],
+        "metadata": {
+          "extraction_outcome": "provider_failed",
+          "extraction_reason": "provider_call_failed",
+          "requires_empty_confirmation": false,
+          "requires_scene_confirmation": false,
+          "extraction_error_code": "LLM_PROVIDER_TIMEOUT"
+        },
+        "updated_at": "<ts>"
+      },
+      "extraction": {
+        "extraction_outcome": "provider_failed",
+        "extraction_reason": "provider_call_failed",
+        "requires_empty_confirmation": false,
+        "requires_scene_confirmation": false,
+        "extraction_error_code": "LLM_PROVIDER_TIMEOUT"
+      }
+    },
+    "5": {
+      "project_id": "PRJ_CANON_STATUS",
+      "chapter_id": "PRJ_CANON_STATUS_CH01",
+      "scene_id": "PRJ_CANON_STATUS_CH01_SC05",
+      "scene_seq": 5,
+      "final_scene_row_id": null,
+      "status": "missing_final",
+      "complete": false,
+      "pending_count": 0,
+      "accepted_count": 0,
+      "rejected_count": 0,
+      "candidates": [],
+      "snapshot": null,
+      "extraction": {}
+    },
+    "6": {
+      "project_id": "PRJ_CANON_STATUS",
+      "chapter_id": "PRJ_CANON_STATUS_CH01",
+      "scene_id": "PRJ_CANON_STATUS_CH01_SC06",
+      "scene_seq": 6,
+      "final_scene_row_id": "final_PRJ_CANON_STATUS_CH01_SC06_v1",
+      "status": "pending_review",
+      "complete": false,
+      "pending_count": 0,
+      "accepted_count": 0,
+      "rejected_count": 0,
+      "candidates": [],
+      "snapshot": {
+        "snapshot_id": "continuity_scene_final_PRJ_CANON_STATUS_CH01_SC06_v1",
+        "scope_type": "scene",
+        "scope_id": "final_PRJ_CANON_STATUS_CH01_SC06_v1",
+        "status": "pending",
+        "summary_text": "",
+        "state_deltas": [],
+        "knowledge_deltas": [],
+        "relationship_deltas": [],
+        "item_deltas": [],
+        "timeline_deltas": [],
+        "open_obligations": [],
+        "entity_ids": [],
+        "source_commit_ids": [],
+        "metadata": {
+          "extraction_outcome": "completed_empty",
+          "extraction_reason": null,
+          "requires_empty_confirmation": true,
+          "requires_scene_confirmation": true,
+          "extraction_error_code": null
+        },
+        "updated_at": "<ts>"
+      },
+      "extraction": {
+        "extraction_outcome": "completed_empty",
+        "extraction_reason": null,
+        "requires_empty_confirmation": true,
+        "requires_scene_confirmation": true,
+        "extraction_error_code": null
+      }
+    }
+  }
+}
