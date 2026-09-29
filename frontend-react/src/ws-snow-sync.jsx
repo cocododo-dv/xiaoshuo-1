@@ -4,6 +4,8 @@ import { s2NormalizeState } from "./ws-snow-model.js";
 import { randomSuffix } from "./lib/ids.js";
 import { adoptModuleListeners, retireModuleListeners } from "./lib/events.js";
 import { isRealWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
+import { WsWorks } from "./ws-works.jsx";
 import {
   BE_BY_FE, FE_BY_BE, SNOW_STEPS, applyCanonPatch, canonFromFE, canonText, feFromCanon, mergeCanon, snowCacheKey,
   stepIsPristine, stepSig, stripFe,
@@ -56,14 +58,14 @@ const onSnowSaved = (e) => {
 /* ---------- 触发面 ---------- */
 const onSnowHashChange = () => {
   const h = location.hash || "";
-  if (h.indexOf("snowflake") >= 0 || h.indexOf("home") >= 0) snowHydrate(activeWork());
+  if (h.indexOf("snowflake") >= 0 || h.indexOf("home") >= 0) snowHydrate(readyWorkId(WsWorks) || "");
 };
 const onSnowWorkChanged = (e) => { if (e && e.detail) snowHydrate(e.detail); };
 window.addEventListener("ws:snow-saved", onSnowSaved);
 window.addEventListener("hashchange", onSnowHashChange);
 window.addEventListener("ws:work-changed", onSnowWorkChanged);
 // 启动水合（等待 WsWorks 就绪）。句柄必须单独保存，便于 HMR/测试模块重载时撤销旧监听器。
-const snowHydrateTimer = setTimeout(() => snowHydrate(activeWork()), 600);
+const snowHydrateTimer = setTimeout(() => snowHydrate(readyWorkId(WsWorks) || ""), 600);
 adoptModuleListeners("ws-snow-sync", () => {
   window.removeEventListener("ws:snow-saved", onSnowSaved);
   window.removeEventListener("hashchange", onSnowHashChange);

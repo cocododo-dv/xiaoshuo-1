@@ -107,8 +107,17 @@ function stateSnapshot(sid) {
   };
 }
 
+/* 通知：订阅者（WrDocs.subscribe，fn(kind, detail)，kind = "state" / "loaded"）与 ws:wr-doc-state /
+   ws:wr-doc-loaded 窗口事件同一条消息（写作台还在听窗口事件；改用 subscribe 之后事件可以收掉）。 */
+const docListeners = new Set();
+function notifyDoc(kind, detail) {
+  docListeners.forEach((fn) => { try { fn(kind, detail); } catch (e) { /* 订阅者出错不打断保存 */ } });
+}
+
 function notifyState(sid) {
-  emit("ws:wr-doc-state", { sid, ...stateSnapshot(sid) });
+  const detail = { sid, ...stateSnapshot(sid) };
+  notifyDoc("state", detail);
+  emit("ws:wr-doc-state", detail);
 }
 
 function cacheRead(sid) {
@@ -160,6 +169,7 @@ function recoveryNotice(sid, message) {
 }
 
 function notifyLoaded(sid) {
+  notifyDoc("loaded", sid);
   emit("ws:wr-doc-loaded", sid);
 }
 
@@ -444,6 +454,11 @@ const WrDocs = {
     notifyLoaded(sid);
     notifyState(sid);
     return stateSnapshot(sid);
+  },
+  /* 正文状态 / 读缓存变化的订阅：fn(kind, detail)，返回退订函数（见 notifyDoc） */
+  subscribe(fn) {
+    docListeners.add(fn);
+    return () => { docListeners.delete(fn); };
   },
   /* 本机读缓存里这一场的正文（不触发水合；可能是 null = 从未写过）。别的台子要读缓存时用它，
      不必自己拼 wr-doc: 键去读 localStorage（会绕过会话内存里配额不足时的那一份）。 */
