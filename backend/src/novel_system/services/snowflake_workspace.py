@@ -192,12 +192,17 @@ class SnowflakeWorkspaceService:
         project = result["project"]
         return {
             "project": project,
-            "workspace": self.workspace(project["project_id"]),
+            "workspace": self.mutation_workspace(project["project_id"]),
         }
 
     def workspace(self, project_id: str) -> dict[str, Any]:
         """交给前端的工作台：角色 id 按草稿口径（剥作品前缀，见 ``snowflake_character_ids``）。"""
         return self._present_workspace(project_id, self._workspace_payload(project_id))
+
+    def mutation_workspace(self, project_id: str) -> dict[str, Any]:
+        """变更回包里的工作台（B06-05）：与 GET 同一个构建，只是不带没人读的 ``scene_board``，步骤 ``artifact``
+        也不再带一份 ``health`` 的深拷贝（``diagnosis_json``）——前端从变更回包里只读步骤、闸门、分诊、回流与教练历史。"""
+        return self._present_workspace(project_id, self._workspace_payload(project_id, lean=True))
 
     def _present_workspace(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -210,17 +215,32 @@ class SnowflakeWorkspaceService:
     def _present_step(project_id: str, step: dict[str, Any]) -> dict[str, Any]:
         return {**step, "draft": present_draft(project_id, step.get("draft"))}
 
+    def _presented_step(self, project_id: str, step_key: str) -> dict[str, Any]:
+        """只建这一步（自动保存 ``include_workspace=false`` 的回包，B06-05）：与工作台里的那一步同一个构建、同一个前端口径。"""
+        latest_by_step = self._latest_by_step(project_id)
+        scene_plans = self._scene_plans(project_id, latest_by_step=latest_by_step) if step_key in SCENE_PLAN_STEPS else None
+        step = self._workspace_step(
+            step_definition_view(step_key),
+            latest_by_step,
+            project_id=project_id,
+            confirmed_steps=self._steps_with_confirmed_version(project_id),
+            scene_plans=scene_plans,
+            include_diagnosis=False,
+        )
+        return self._present_step(project_id, step)
+
     @staticmethod
     def _present_turn(project_id: str, turn: dict[str, Any]) -> dict[str, Any]:
         if not turn.get("candidate_patch"):
             return turn
         return {**turn, "candidate_patch": present_draft(project_id, turn["candidate_patch"])}
 
-    def _workspace_payload(self, project_id: str) -> dict[str, Any]:
+    def _workspace_payload(self, project_id: str, *, lean: bool = False) -> dict[str, Any]:
         """工作台的库内口径（角色 id 带作品前缀）：提示词与服务端内部都读它。
 
         一次构建每样东西只读一遍库（B06-04）：各步最新版本、按故事序排好的场景计划（故事序用已读出的 09 草稿算）、
-        每场最新的分诊记录、场景卡，各段共用。
+        每场最新的分诊记录、场景卡，各段共用。``lean``（变更回包与服务内部用，B06-05）不建 ``scene_board``，
+        步骤 ``artifact`` 不带重复 ``health`` 的 ``diagnosis_json``；GET 的形状不变。
         """
         project = self._require_snowflake_project(project_id)
         latest_by_step = self._latest_by_step(project_id)
@@ -237,12 +257,13 @@ class SnowflakeWorkspaceService:
                 project_id=project_id,
                 confirmed_steps=confirmed_steps,
                 scene_plans=scene_plans,
+                include_diagnosis=not lean,
             )
             for step in step_definition_views()
         ]
         chapter_plan_status = self._chaptering.status(project_id, scene_plans)
         gate = self._materialization_gate(latest_by_step, triage_items, scene_plans, chapter_plan_status)
-        return {
+        payload: dict[str, Any] = {
             "chapter_plan_status": chapter_plan_status,
             "project": project_payload(project),
             "method_version": SNOWFLAKE_METHOD_VERSION,
@@ -251,19 +272,25 @@ class SnowflakeWorkspaceService:
             "current_step_key": current_step_key,
             "ready_to_materialize": gate["status"] != "blocked",
             "latest_plan": outline_plan_payload(latest_plan) if latest_plan is not None else None,
-            "scene_board": self._scene_board(project_id, scene_plans=scene_plans),
-            "triage_items": triage_items,
-            "assistant_history": self._assistant_history(project_id),
-            # 阶段 T：每步的作者意图要点（含已撤条目供恢复、继承的上游全书级条目）
-            "direction_briefs": self._briefs.all_payloads(project_id),
-            "materialization_gate": gate,
-            "resync_status": self._resync_status(
-                project.project_id,
-                scene_plans,
-                excluded=plan_ids_with_status(triage_rows, EXCLUDED_TRIAGE_STATUSES),
-            ),
-            "steps": steps,
         }
+        if not lean:
+            payload["scene_board"] = self._scene_board(project_id, scene_plans=scene_plans)
+        payload.update(
+            {
+                "triage_items": triage_items,
+                "assistant_history": self._assistant_history(project_id),
+                # 阶段 T：每步的作者意图要点（含已撤条目供恢复、继承的上游全书级条目）
+                "direction_briefs": self._briefs.all_payloads(project_id),
+                "materialization_gate": gate,
+                "resync_status": self._resync_status(
+                    project.project_id,
+                    scene_plans,
+                    excluded=plan_ids_with_status(triage_rows, EXCLUDED_TRIAGE_STATUSES),
+                ),
+                "steps": steps,
+            }
+        )
+        return payload
 
     def generate_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -405,7 +432,7 @@ class SnowflakeWorkspaceService:
             self._supersede_same_step(run)
             self._mark_downstream_stale(run)
         self.session.flush()
-        workspace = self.workspace(project.project_id)
+        workspace = self.mutation_workspace(project.project_id)
         return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
 
     # 阶段 U（2026-09-17）：「先看 3 个方向」是教练日志里的一种回合，不再是独立的「候选」页签。
@@ -466,7 +493,16 @@ class SnowflakeWorkspaceService:
             "assistant_history": self._presented_history(project.project_id),
         }
 
-    def update_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def update_step(
+        self,
+        project_id: str,
+        step_key: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        include_workspace: bool = True,
+    ) -> dict[str, Any]:
+        """保存一步的草稿。``include_workspace=False``（前端的防抖自动保存只读回包里的 ``step``，B06-05）
+        只回 ``{step, step_run}``，不再为每一次键入重建整个工作台。"""
         project = self._require_snowflake_project(project_id)
         body = payload or {}
         self._require_step(step_key)
@@ -493,12 +529,7 @@ class SnowflakeWorkspaceService:
             if (draft or {}) != (latest.draft_json or {}):
                 latest.draft_json = draft
                 self.session.flush()
-            workspace = self.workspace(project.project_id)
-            return {
-                "step": self._step_from_workspace(workspace, step_key),
-                "workspace": workspace,
-                "step_run": self._step_run_payload(latest),
-            }
+            return self._step_saved_response(project.project_id, step_key, latest, include_workspace=include_workspace)
 
         # 2026-09-18 抹空保护：pending_review 步平时原位改写（不为每次键入造版本），但「整步抹空」不行——
         # 旧稿有成段的故事文字、新稿一个字都没有时另起一版，旧稿留在历史里可用 restore 取回。前端同步层
@@ -544,8 +575,16 @@ class SnowflakeWorkspaceService:
         self.session.flush()
         self._sync_structured_step_data(project, step_key, draft, run)
         self.session.flush()
-        workspace = self.workspace(project.project_id)
-        return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace, "step_run": self._step_run_payload(run)}
+        return self._step_saved_response(project.project_id, step_key, run, include_workspace=include_workspace)
+
+    def _step_saved_response(
+        self, project_id: str, step_key: str, run: SnowflakeStepRun, *, include_workspace: bool
+    ) -> dict[str, Any]:
+        step_run = self._step_run_payload(run, include_diagnosis=False)
+        if not include_workspace:
+            return {"step": self._presented_step(project_id, step_key), "step_run": step_run}
+        workspace = self.mutation_workspace(project_id)
+        return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace, "step_run": step_run}
 
     def step_history(
         self,
@@ -634,8 +673,8 @@ class SnowflakeWorkspaceService:
                 step_key, draft, "pending_review", generation_source="history_restore", generation_notice=sync_notice
             )
         self.session.flush()
-        workspace = self.workspace(project.project_id)
-        step_run = self._step_run_payload(run) or {}
+        workspace = self.mutation_workspace(project.project_id)
+        step_run = self._step_run_payload(run, include_diagnosis=False) or {}
         step_run["restored_from_step_run_id"] = source_run.step_run_id
         result = {
             "step": self._step_from_workspace(workspace, step_key),
@@ -667,7 +706,7 @@ class SnowflakeWorkspaceService:
             # 已经确认过的步骤再点一次确认：没有新的构思可跟，但上次留下的待同步（比如当时目录里
             # 还没有目标章）现在可能已经搬得动了。
             catalog_sync = self._auto_sync_catalog(project.project_id, actor_ref=actor_ref) if sync_catalog else None
-            workspace = self.workspace(project.project_id)
+            workspace = self.mutation_workspace(project.project_id)
             result = {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
             if catalog_sync is not None:
                 result["catalog_sync"] = catalog_sync
@@ -728,7 +767,7 @@ class SnowflakeWorkspaceService:
         )
         self.session.flush()
         catalog_sync = self._auto_sync_catalog(project.project_id, actor_ref=actor_ref) if sync_catalog else None
-        workspace = self.workspace(project.project_id)
+        workspace = self.mutation_workspace(project.project_id)
         result = {
             "step": self._step_from_workspace(workspace, step_key),
             "workspace": workspace,
@@ -870,14 +909,14 @@ class SnowflakeWorkspaceService:
             )
         )
         self.session.flush()
-        workspace = self.workspace(project.project_id)
+        workspace = self.mutation_workspace(project.project_id)
         return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
 
     def request_assistant(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         body = payload or {}
         latest_by_step = self._latest_by_step(project.project_id)
-        workspace = self._workspace_payload(project.project_id)
+        workspace = self._workspace_payload(project.project_id, lean=True)
         step_key = str(body.get("step_key") or workspace.get("current_step_key") or "book_brief").strip() or "book_brief"
         step = self._step_from_workspace(workspace, step_key)
         step = self._step_with_override(project.project_id, step, body.get("draft_override"), latest_by_step=latest_by_step)
@@ -975,7 +1014,7 @@ class SnowflakeWorkspaceService:
     def suggest_scene_triage(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         body = payload or {}
-        workspace = self._workspace_payload(project.project_id)
+        workspace = self._workspace_payload(project.project_id, lean=True)
         step = self._step_from_workspace(workspace, "scene_details")
         if not step.get("draft", {}).get("scenes"):
             raise DomainError("SNOWFLAKE_SCENE_DETAILS_REQUIRED", "需要先完成场景规划（场景细化）。", status_code=409)
@@ -1035,7 +1074,7 @@ class SnowflakeWorkspaceService:
             row.manual_override = 1 if manual_status and manual_status != recommended_status else 0
             row.llm_call_id = str(item.get("llm_call_id") or "").strip() or row.llm_call_id
         self.session.flush()
-        workspace = self.workspace(project.project_id)
+        workspace = self.mutation_workspace(project.project_id)
         return {"items": workspace["triage_items"], "workspace": workspace}
 
     def _latest_triage_row(self, project_id: str, scene_plan_id: str) -> SnowflakeSceneTriageItem | None:
@@ -1097,8 +1136,7 @@ class SnowflakeWorkspaceService:
             # 或场景行自己带着的章归属。派生不出来（前端那一路所有场都是 CH01）时
             # 什么也不做，下面的闸门会把作者送进分章面板。
             self._chaptering.ensure_chapter_plans(project.project_id)
-        workspace = self.workspace(project.project_id)
-        gate = workspace.get("materialization_gate") or {}
+        gate = self._workspace_payload(project.project_id, lean=True).get("materialization_gate") or {}
         if gate.get("status") == "blocked":
             raise DomainError(
                 "SNOWFLAKE_NOT_READY",
@@ -1119,7 +1157,7 @@ class SnowflakeWorkspaceService:
         project.status = "outline_review"
         self.session.add(plan)
         self.session.flush()
-        return {"plan": outline_plan_payload(plan), "workspace": self.workspace(project.project_id)}
+        return {"plan": outline_plan_payload(plan), "workspace": self.mutation_workspace(project.project_id)}
 
     def _build_chaptered_outline_plan(
         self,
@@ -1290,7 +1328,7 @@ class SnowflakeWorkspaceService:
         if latest_plan is None:
             raise DomainError("OUTLINE_PLAN_NOT_FOUND", "未找到大纲计划。", status_code=404)
         result = self._projects.approve_outline_plan(project.project_id, latest_plan.plan_id)
-        workspace = self.workspace(project.project_id)
+        workspace = self.mutation_workspace(project.project_id)
         return {
             "plan": result["plan"],
             "workspace": workspace,
@@ -1475,7 +1513,7 @@ class SnowflakeWorkspaceService:
         }
         if include_workspace:
             # 确认即同步（approve_step）自己会在最后取一次工作台，不必在这里再算一遍
-            result["workspace"] = self.workspace(project.project_id)
+            result["workspace"] = self.mutation_workspace(project.project_id)
         if pending_moves:
             # 静默跳过等于撒谎：作者以为回流做完了，目录其实还停在上一版章节结构。
             targets = sorted({item["target_chapter_id"] for item in pending_moves})
@@ -1644,6 +1682,7 @@ class SnowflakeWorkspaceService:
         project_id: str,
         confirmed_steps: set[str] | None = None,
         scene_plans: list[SnowflakeScenePlan] | None = None,
+        include_diagnosis: bool = True,
     ) -> dict[str, Any]:
         run = latest_by_step.get(step["step_key"])
         draft = self._draft_for_step(step["step_key"], run, latest_by_step, project_id=project_id, scene_plans=scene_plans)
@@ -1674,7 +1713,7 @@ class SnowflakeWorkspaceService:
             "can_backtrack": run is not None and run.status in {"approved", "skipped", "stale"},
             "guidance": step_guidance(step["step_key"]),
             "gate_satisfied": self._gate_satisfied(step["step_key"], latest_by_step),
-            "artifact": self._step_run_payload(run),
+            "artifact": self._step_run_payload(run, include_diagnosis=include_diagnosis),
             "draft": draft,
             "completeness": step_completeness(step["step_key"], draft),
             "editor": editor_payload(step["step_key"]),
@@ -3248,10 +3287,11 @@ class SnowflakeWorkspaceService:
         return health
 
     @staticmethod
-    def _step_run_payload(run: SnowflakeStepRun | None) -> dict[str, Any] | None:
+    def _step_run_payload(run: SnowflakeStepRun | None, *, include_diagnosis: bool = True) -> dict[str, Any] | None:
+        """一版草稿的元数据。``diagnosis_json`` 是 ``health`` 的一份深拷贝，只有 GET 的工作台还带它（B06-05）。"""
         if run is None:
             return None
-        return {
+        payload = {
             "step_run_id": run.step_run_id,
             "artifact_id": run.step_run_id,
             "step_key": run.step_key,
@@ -3270,6 +3310,9 @@ class SnowflakeWorkspaceService:
             "created_at": run.created_at,
             "updated_at": run.updated_at,
         }
+        if not include_diagnosis:
+            del payload["diagnosis_json"]
+        return payload
 
     @staticmethod
     def _step_run_history_payload(run: SnowflakeStepRun, *, include_draft: bool = False) -> dict[str, Any]:

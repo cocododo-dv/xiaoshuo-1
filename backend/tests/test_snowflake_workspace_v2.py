@@ -659,7 +659,12 @@ def test_workspace_v2_step_health_reports_structural_pressure_gaps(client) -> No
     assert health["gaps"] == health["pressure_flags"]
     assert health["next_actions"] == health["fix_steps"]
     assert isinstance(health["hard_blockers"], list)
-    assert step["artifact"]["diagnosis_json"]["pressure_score"] == health["pressure_score"]
+    # 变更回包不再带 health 的深拷贝（B06-05）；GET 的工作台照旧带
+    assert "diagnosis_json" not in step["artifact"]
+    assert "diagnosis_json" not in response.json()["data"]["step_run"]
+    fetched = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
+    fetched_step = next(item for item in fetched["steps"] if item["step_key"] == "book_brief")
+    assert fetched_step["artifact"]["diagnosis_json"]["pressure_score"] == health["pressure_score"]
 
 
 def test_workspace_v2_marks_downstream_steps_stale_after_upstream_regeneration(client) -> None:

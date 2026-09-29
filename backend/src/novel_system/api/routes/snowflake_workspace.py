@@ -103,16 +103,26 @@ def update_workspace_step(
     step_key: str,
     payload: BoundedJsonObject | None,
     request: Request,
+    include_workspace: bool = True,
     session: Session = Depends(get_session),
 ):
+    """保存一步草稿。``include_workspace=false``：只回 ``{step, step_run}``（防抖自动保存只读 ``step``，B06-05）。"""
     body = payload or {}
     return optional_idempotent_response(
         request,
         session,
         method="PATCH",
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
-        payload={"project_id": project_id, "step_key": step_key, "body": body},
-        action=lambda: SnowflakeWorkspaceService(session).update_step(project_id, step_key, body),
+        # 只在关掉工作台时进幂等指纹：默认请求的指纹与以前一样
+        payload={
+            "project_id": project_id,
+            "step_key": step_key,
+            "body": body,
+            **({} if include_workspace else {"include_workspace": False}),
+        },
+        action=lambda: SnowflakeWorkspaceService(session).update_step(
+            project_id, step_key, body, include_workspace=include_workspace
+        ),
     )
 
 
@@ -405,7 +415,7 @@ def save_chapter_plan(
             body,
             actor_ref=actor_ref_of(request),
         )
-        return {**saved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
+        return {**saved, "workspace": SnowflakeWorkspaceService(session).mutation_workspace(project_id)}
 
     return optional_idempotent_response(
         request,
@@ -442,7 +452,7 @@ def resolve_orphaned_scene(
             action=action,
             actor_ref=actor_ref_of(request),
         )
-        return {**resolved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
+        return {**resolved, "workspace": SnowflakeWorkspaceService(session).mutation_workspace(project_id)}
 
     return optional_idempotent_response(
         request,
