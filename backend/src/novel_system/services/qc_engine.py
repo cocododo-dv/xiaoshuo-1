@@ -926,22 +926,20 @@ def _qc_record_attempt(
 ) -> None:
     """details_json 键名是 checkpoint 契约：公共键在此固定，引擎差异键
     （soft 侧 source_draft_row_id/rewrite_brief）经 details_extra 注入。"""
-    details_json: dict[str, Any] = {
-        "qc_report_id": qc_report_id,
-        "resolution_code": resolution_code,
-        "next_action": next_action,
-        "human_review_event_id": human_review_event_id,
-        "execution_step_key": execution_step_key,
-        **(details_extra or {}),
-    }
-    if llm_call_id is not None:
-        details_json["llm_call_id"] = llm_call_id
-    if error_code is not None:
-        details_json["error_code"] = error_code
-    if retryable is not None:
-        details_json["retryable"] = retryable
-    if continuity_warning is not None:
-        details_json["continuity_warning"] = continuity_warning
+    details_json = _with_run_context(
+        {
+            "qc_report_id": qc_report_id,
+            "resolution_code": resolution_code,
+            "next_action": next_action,
+            "human_review_event_id": human_review_event_id,
+            "execution_step_key": execution_step_key,
+            **(details_extra or {}),
+        },
+        llm_call_id=llm_call_id,
+        error_code=error_code,
+        retryable=retryable,
+        continuity_warning=continuity_warning,
+    )
     session.add(
         AttemptTracker(
             scene_id=scene_id,
@@ -1277,7 +1275,12 @@ def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
     )
 
 
-class HardQcEngine:
+class QcEngineBase:
+    """硬 / 软质检共用的引擎骨架：构造、提示词装配与 LLM 运行器、开生成阻断的人工复核事件。
+
+    两个引擎的分支逻辑各自保留——阻断词汇、熔断、软风险接受、重放上下文都不一样，合成一个引擎不会更简单。
+    """
+
     def __init__(
         self,
         session: Session,
@@ -1302,6 +1305,77 @@ class HardQcEngine:
     def _llm_runner(self) -> LLMNodeRunner:
         return LLMNodeRunner(self.session, llm_client=self._llm_client)
 
+    def _open_generation_blocker(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        draft_row_id: str,
+        failure_reason: str,
+        trigger_reason: str,
+        replay_context: dict[str, Any],
+        allow_soft_risk_acceptance: bool = False,
+    ) -> Any:
+        """开一条生成阻断的人工复核事件，这一场挂到人工复核上。"""
+        event = self.human_review_manager.create_generation_blocker_event(
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            object_ref=draft_row_id,
+            target_type="scene_draft",
+            target_id=draft_row_id,
+            target_ref=f"scene_draft:{draft_row_id}",
+            failure_reason=failure_reason,
+            trigger_reason=trigger_reason,
+            recommended_action="human_review_required",
+            replay_context=replay_context,
+            allow_soft_risk_acceptance=allow_soft_risk_acceptance,
+        )
+        state.current_human_review_event_id = event.event_id
+        state.scene_status = "human_review_required"
+        return event
+
+
+def _with_run_context(
+    context: dict[str, Any],
+    *,
+    llm_call_id: str | None,
+    error_code: str | None,
+    retryable: bool | None,
+    continuity_warning: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """重放上下文 / 尝试记录里「有才写」的四个键（键名是检查点契约）。"""
+    if llm_call_id is not None:
+        context["llm_call_id"] = llm_call_id
+    if error_code is not None:
+        context["error_code"] = error_code
+    if retryable is not None:
+        context["retryable"] = retryable
+    if continuity_warning is not None:
+        context["continuity_warning"] = continuity_warning
+    return context
+
+
+def _soft_block_human(payload: dict[str, Any], *, issue: dict[str, Any], brief: str) -> dict[str, Any]:
+    """软质检结论改判「要人工复核」：追加一条已分级的 issue 与一句修改简报，清掉随稿携带的备注。"""
+    rewrite_brief = [
+        item
+        for item in payload.get("rewrite_brief", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    return {
+        **payload,
+        "resolution_code": "soft_block_human",
+        "pass_flag": False,
+        "next_action": "human_review_required",
+        "issues": _dedupe_issues([*(payload.get("issues") or []), issue]),
+        "rewrite_brief": _append_unique_rewrite_briefs(rewrite_brief, [brief]),
+        "carry_forward_note": False,
+        "note_scope": None,
+        "carry_note_text": None,
+    }
+
+
+class HardQcEngine(QcEngineBase):
     def evaluate(
         self,
         *,
@@ -1803,38 +1877,30 @@ class HardQcEngine:
         error_code: str | None = None,
         retryable: bool | None = None,
     ) -> HardQcDecision:
-        replay_context = {
-            "scene_id": scene.scene_id,
-            "chapter_id": scene.chapter_id,
-            "source_bundle_id": bundle["bundle_id"],
-            "source_bundle_hash": bundle["bundle_snapshot_hash"],
-            "neutral_draft_row_id": neutral_draft_row_id,
-            "current_qc_report_id": qc_report.qc_report_id,
-            "scene_status_before_block": state.scene_status,
-            "total_attempt_count": state.total_attempt_count,
-        }
-        if llm_call_id is not None:
-            replay_context["llm_call_id"] = llm_call_id
-        if error_code is not None:
-            replay_context["error_code"] = error_code
-        if retryable is not None:
-            replay_context["retryable"] = retryable
-        if continuity_warning is not None:
-            replay_context["continuity_warning"] = continuity_warning
-        event = self.human_review_manager.create_generation_blocker_event(
-            scene_id=scene.scene_id,
-            chapter_id=scene.chapter_id,
-            object_ref=neutral_draft_row_id,
-            target_type="scene_draft",
-            target_id=neutral_draft_row_id,
-            target_ref=f"scene_draft:{neutral_draft_row_id}",
+        replay_context = _with_run_context(
+            {
+                "scene_id": scene.scene_id,
+                "chapter_id": scene.chapter_id,
+                "source_bundle_id": bundle["bundle_id"],
+                "source_bundle_hash": bundle["bundle_snapshot_hash"],
+                "neutral_draft_row_id": neutral_draft_row_id,
+                "current_qc_report_id": qc_report.qc_report_id,
+                "scene_status_before_block": state.scene_status,
+                "total_attempt_count": state.total_attempt_count,
+            },
+            llm_call_id=llm_call_id,
+            error_code=error_code,
+            retryable=retryable,
+            continuity_warning=continuity_warning,
+        )
+        event = self._open_generation_blocker(
+            scene=scene,
+            state=state,
+            draft_row_id=neutral_draft_row_id,
             failure_reason=failure_reason,
             trigger_reason=trigger_reason,
-            recommended_action="human_review_required",
             replay_context=replay_context,
         )
-        state.current_human_review_event_id = event.event_id
-        state.scene_status = "human_review_required"
         self._record_attempt(
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
@@ -1864,31 +1930,7 @@ class HardQcEngine:
         )
 
 
-class SoftQcEngine:
-    def __init__(
-        self,
-        session: Session,
-        *,
-        llm_client: Any | None = None,
-        llm_runner: LLMNodeRunner | None = None,
-        human_review_manager: HumanReviewManager | None = None,
-    ) -> None:
-        self.session = session
-        self._llm_client = llm_client
-        if llm_runner is not None:
-            self._llm_runner = llm_runner
-        self.human_review_manager = human_review_manager or HumanReviewManager(session)
-
-    # 提示词装配与 LLM 运行器第一次用到时才建：只读路径（工作台摘要、最新一版读取）一次都用不到，
-    # 不该为它们读提示词与运行时配置。测试照旧可以直接给实例的这两个属性赋值。
-    @cached_property
-    def prompt_builder(self) -> PromptBuilder:
-        return PromptBuilder()
-
-    @cached_property
-    def _llm_runner(self) -> LLMNodeRunner:
-        return LLMNodeRunner(self.session, llm_client=self._llm_client)
-
+class SoftQcEngine(QcEngineBase):
     def evaluate(
         self,
         *,
@@ -2219,29 +2261,14 @@ class SoftQcEngine:
             scene=scene,
             content=content,
         )
-        rewrite_brief = [
-            item
-            for item in payload.get("rewrite_brief", [])
-            if isinstance(item, str) and item.strip()
-        ]
-        rewrite_brief = _append_unique_rewrite_briefs(
-            rewrite_brief,
-            [
+        return _soft_block_human(
+            payload,
+            issue=issue,
+            brief=(
                 "风格稿与参考作品原文存在确定性连续重叠：人工复核后重写重叠段落，"
                 "只保留句法 / 节奏机制，不得沿用参考原文的字句。"
-            ],
+            ),
         )
-        return {
-            **payload,
-            "resolution_code": "soft_block_human",
-            "pass_flag": False,
-            "next_action": "human_review_required",
-            "issues": _dedupe_issues([*(payload.get("issues") or []), issue]),
-            "rewrite_brief": rewrite_brief,
-            "carry_forward_note": False,
-            "note_scope": None,
-            "carry_note_text": None,
-        }
 
     @staticmethod
     def _style_banned_term_review_payload(
@@ -2279,31 +2306,16 @@ class SoftQcEngine:
             scene=scene,
             content=content,
         )
-        rewrite_brief = [
-            item
-            for item in payload.get("rewrite_brief", [])
-            if isinstance(item, str) and item.strip()
-        ]
-        rewrite_brief = _append_unique_rewrite_briefs(
-            rewrite_brief,
-            [
+        return _soft_block_human(
+            payload,
+            issue=issue,
+            brief=(
                 "风格稿用了参考画像的生成禁用词 / 受保护专名（"
                 + "、".join(terms)
                 + "）：人工复核——是参考书的专名就换成自己的；若只是日常用词被误收进了专名表，可以接受这一处，"
                 "并到文风画像的禁用词里删掉它。"
-            ],
+            ),
         )
-        return {
-            **payload,
-            "resolution_code": "soft_block_human",
-            "pass_flag": False,
-            "next_action": "human_review_required",
-            "issues": _dedupe_issues([*(payload.get("issues") or []), issue]),
-            "rewrite_brief": rewrite_brief,
-            "carry_forward_note": False,
-            "note_scope": None,
-            "carry_note_text": None,
-        }
 
     @staticmethod
     def _style_gate_unavailable_review_payload(
@@ -2342,29 +2354,14 @@ class SoftQcEngine:
             scene=scene,
             content=content,
         )
-        rewrite_brief = [
-            item
-            for item in payload.get("rewrite_brief", [])
-            if isinstance(item, str) and item.strip()
-        ]
-        rewrite_brief = _append_unique_rewrite_briefs(
-            rewrite_brief,
-            [
+        return _soft_block_human(
+            payload,
+            issue=issue,
+            brief=(
                 "风格稿的抄袭 / 禁用词检查未能执行：人工复核该稿是否沿用参考原文字句或"
                 "复刻了参考画像的生成禁用词，再决定是否接受。"
-            ],
+            ),
         )
-        return {
-            **payload,
-            "resolution_code": "soft_block_human",
-            "pass_flag": False,
-            "next_action": "human_review_required",
-            "issues": _dedupe_issues([*(payload.get("issues") or []), issue]),
-            "rewrite_brief": rewrite_brief,
-            "carry_forward_note": False,
-            "note_scope": None,
-            "carry_note_text": None,
-        }
 
     @staticmethod
     def _degraded_waive_payload(
@@ -2640,34 +2637,25 @@ class SoftQcEngine:
         }
         if source_draft_content_hash is not None:
             replay_context["source_draft_content_hash"] = source_draft_content_hash
-        if llm_call_id is not None:
-            replay_context["llm_call_id"] = llm_call_id
-        if error_code is not None:
-            replay_context["error_code"] = error_code
-        if retryable is not None:
-            replay_context["retryable"] = retryable
-        if continuity_warning is not None:
-            replay_context["continuity_warning"] = continuity_warning
-        allow_soft_risk_acceptance = (
-            source_draft_content_hash is not None
-            and trigger_reason
-            in {"blocking_soft_qc_issue", "soft_qc_requested_human_review"}
-        )
-        event = self.human_review_manager.create_generation_blocker_event(
-            scene_id=scene.scene_id,
-            chapter_id=scene.chapter_id,
-            object_ref=source_draft_row_id,
-            target_type="scene_draft",
-            target_id=source_draft_row_id,
-            target_ref=f"scene_draft:{source_draft_row_id}",
+        event = self._open_generation_blocker(
+            scene=scene,
+            state=state,
+            draft_row_id=source_draft_row_id,
             failure_reason=failure_reason,
             trigger_reason=trigger_reason,
-            recommended_action="human_review_required",
-            replay_context=replay_context,
-            allow_soft_risk_acceptance=allow_soft_risk_acceptance,
+            replay_context=_with_run_context(
+                replay_context,
+                llm_call_id=llm_call_id,
+                error_code=error_code,
+                retryable=retryable,
+                continuity_warning=continuity_warning,
+            ),
+            # 软风险接受只给「阻断级软质检意见 / 软质检要人工」这两类，而且要有这份稿子的内容哈希
+            allow_soft_risk_acceptance=(
+                source_draft_content_hash is not None
+                and trigger_reason in {"blocking_soft_qc_issue", "soft_qc_requested_human_review"}
+            ),
         )
-        state.current_human_review_event_id = event.event_id
-        state.scene_status = "human_review_required"
         self._record_attempt(
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
