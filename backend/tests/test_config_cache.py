@@ -1,11 +1,12 @@
 """配置解析缓存（2026-09-29 重构 P00b，审计 X01-01 / 02 / 15 / 21、X04-02）。
 
 提示词模板与模型路由按**来源内容**记忆（``services/config_cache.py``）：同一份内容只解析一次，内容一变下一次
-读取就是新配置。这里守两件事：
+读取就是新配置。这里守三件事：
 
 1. 作者在系统配置里保存 / 切换 / 回滚快照、``sync_prompt_templates`` / ``raise_llm_output_budget`` 激活新快照、
    迁移就地改写快照、改仓库 yaml（哪怕大小与修改时间都不变）——下一次读取立刻看到新内容，不必重启；
-2. C 解析器与纯 Python 解析器对仓库里每份 yaml 解析结果相同，出错时的报错逐字相同。
+2. C 解析器与纯 Python 解析器对仓库里每份 yaml 解析结果相同，出错时的报错逐字相同；
+3. 回归守卫：代表性的只读请求不重复解析 yaml、不写库；只读服务构造时不读提示词与运行时配置。
 """
 
 from __future__ import annotations
@@ -15,10 +16,13 @@ from pathlib import Path
 
 import pytest
 import yaml
-from sqlalchemy import update
+from fastapi.testclient import TestClient
+from sqlalchemy import event, update
 
+from novel_system.api.app import create_app
 from novel_system.db.models import SystemConfigSnapshot
-from novel_system.services import config_cache, idempotency, llm_client, prompt_builder
+from novel_system.db.session import engine
+from novel_system.services import config_cache, idempotency, llm_client, llm_task_runner, prompt_builder
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.llm_client import load_model_routing_config, reset_model_routing_cache
 from novel_system.services.prompt_builder import (
@@ -328,3 +332,135 @@ def test_node_routes_saved_through_system_config_are_visible_at_once(client, mon
         )
         assert saved.status_code == 200, saved.json()
         assert load_model_routing_config().node_routing["neutral_draft"].max_output_tokens == budget
+
+
+# ---------------------------------------------------------------- 延迟构建
+
+
+def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_used(session, monkeypatch) -> None:
+    from novel_system.services.near_final import NearFinalAcceptanceService, NearFinalPlanningService
+    from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+    from novel_system.services.scene_blueprint import SceneBlueprintService
+    from novel_system.services.writer_deep_review import WriterDeepReviewService
+    from novel_system.services.writer_review import WriterReviewService
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("constructing a read-only service must not load prompts or runtime settings")
+
+    monkeypatch.setattr(prompt_builder, "load_prompt_templates", refuse)
+    monkeypatch.setattr(llm_task_runner, "get_settings", refuse)
+
+    services = [
+        cls(session)
+        for cls in (
+            WriterReviewService,
+            WriterDeepReviewService,
+            SceneBlueprintService,
+            NearFinalPlanningService,
+            NearFinalAcceptanceService,
+            HardQcEngine,
+            SoftQcEngine,
+        )
+    ]
+    runner = llm_task_runner.LLMNodeRunner(session)
+    assert runner.provider_execution_mode == "online"
+
+    # 第一次真用到时才构造——配置读不出来照旧当场报错（fail-closed 不变）
+    with pytest.raises(AssertionError):
+        services[0].prompt_builder
+    with pytest.raises(AssertionError):
+        runner.settings
+    monkeypatch.undo()
+    assert services[2].prompt_builder.has_template("scene_blueprint")
+    assert services[2].prompt_builder is services[2].prompt_builder
+    assert services[2]._llm_runner.settings.llm_enabled is False
+
+
+def test_injected_runner_and_builder_are_kept(session) -> None:
+    from novel_system.services.qc_engine import HardQcEngine
+
+    runner = llm_task_runner.LLMNodeRunner(session, settings=object())
+    engine_ = HardQcEngine(session, llm_runner=runner)
+    assert engine_._llm_runner is runner
+
+    replacement = object()
+    engine_.prompt_builder = replacement
+    assert engine_.prompt_builder is replacement
+
+
+# ---------------------------------------------------------------- 回归守卫：只读请求
+
+
+def _seed_scene(api: TestClient) -> None:
+    chapter = api.post(
+        "/api/v1/chapters",
+        json={
+            "chapter_id": "CH930",
+            "planned_scene_count": 1,
+            "chapter_goal": "林昭在雨城找到旧信",
+            "main_plot_push": "案卷重开",
+            "emotional_target": "不安",
+            "ending_effect": "悬念",
+        },
+        headers={"X-Idempotency-Key": "config-cache-chapter"},
+    )
+    assert chapter.status_code == 200, chapter.json()
+    scene = api.post(
+        "/api/v1/scenes",
+        json={
+            "scene_id": "CH930_SC01",
+            "chapter_id": "CH930",
+            "scene_seq": 1,
+            "pov_character_id": "CHAR_A",
+            "onstage_chars_json": ["CHAR_A", "CHAR_B"],
+            "location": "雨城旧档案室",
+            "scene_goal": "林昭拿到旧信",
+            "beats_json": ["翻案卷", "发现旧信"],
+            "must_include_text": "旧信",
+            "target_length_band": "short",
+            "scene_type": "discovery",
+            "is_chapter_last": 0,
+        },
+        headers={"X-Idempotency-Key": "config-cache-scene"},
+    )
+    assert scene.status_code == 200, scene.json()
+
+
+READ_PATHS = (
+    "/api/v1/scenes/CH930_SC01/workbench",
+    "/api/v1/scenes/CH930_SC01/deep-review",
+    "/api/v1/scenes/CH930_SC01/diagnosis-rollup",
+    "/api/v1/chapters/CH930/deep-review",
+    "/api/v1/chapter-manuscripts/CH930",
+)
+
+
+def test_read_paths_never_reparse_config_and_never_write(monkeypatch) -> None:
+    # 不进 lifespan：没有后台清扫线程，这段时间里库上的每一条语句都来自下面的请求
+    api = TestClient(create_app())
+    _seed_scene(api)
+    yaml_parses = _count_yaml_parses(monkeypatch)
+    template_loads = _count_calls(monkeypatch, prompt_builder, "load_prompt_templates")
+    writes: list[str] = []
+
+    def record_writes(_conn, _cursor, statement, _params, _context, _executemany):
+        verb = statement.lstrip().split(None, 1)[0].upper() if statement.strip() else ""
+        if verb in {"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER"}:
+            writes.append(statement)
+
+    bind = engine()
+    event.listen(bind, "before_cursor_execute", record_writes)
+    try:
+        for _ in range(3):
+            for path in READ_PATHS:
+                response = api.get(path)
+                assert response.status_code == 200, (path, response.json())
+    finally:
+        event.remove(bind, "before_cursor_execute", record_writes)
+
+    assert writes == []
+    # 三轮同样的读取：每份配置至多解析一次（冷启动那一次），不随请求数增长
+    assert yaml_parses["prompts"] <= 1
+    assert yaml_parses["models"] <= 1
+    # 这几个只读摘要不发 LLM 调用，也就不该装配提示词（X01-02：服务构造时不再顺手建 PromptBuilder）
+    assert template_loads == []
