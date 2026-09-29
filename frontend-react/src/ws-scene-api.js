@@ -3,7 +3,7 @@ import { WsWorks, wsKey } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
-import { hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
+import { escapeHtmlText, hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
 import { copyGateAdoptMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { fidPatchView, fidRankText, fidStyleStepView, fidVerdict } from "./ws-fidelity-model.js";
 import {
@@ -312,9 +312,8 @@ async function scnHydrateAfterSelection(sid, resumed) {
    「完成」的真值在后端：POST adopt-current 携带浏览器当前正文和作者稿 base revision，服务端在同一事务内
    保存并提升精确修订。成功响应后只吸收权威修订到写作器缓存、回写字数、目录卡置 done——done 只由服务端
    archived 响应映射，不先本地置位。后端拒绝时不动本地任何状态，如实返回失败原因。 ---- */
-function scnEscape(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function scnDraftHTML(draft) {
-  return (draft || []).map(p => "<p>" + scnEscape(scnParaText(p)) + "</p>").join("");
+  return (draft || []).map(p => "<p>" + escapeHtmlText(scnParaText(p)) + "</p>").join("");
 }
 function scnHTMLParas(raw) {
   if (!raw) return [];

@@ -13,6 +13,7 @@
    纯函数模块，不读 store、不写 window；真正发请求的在 ws-writer-requests.js。
    ========================================================== */
 import { copyGateGenerationMessage, isCopyGateError } from "./ws-copy-gate.js";
+import { escapeHtmlText } from "./manuscript-html.js";
 
 /* kind: copy（AI 写出来的每一版都照搬了参考书，被抄袭门拦下丢掉）| config（去系统设置）| not-ready（场景还没同步好）
         | empty（模型没给出可用结果）| unclear（服务器没说清原因：重试，也给去系统设置）| retry
@@ -107,9 +108,6 @@ export function wrContinueChips(design) {
   return chips;
 }
 
-function escapeHTML(text) {
-  return String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 function tidy(text) {
   return String(text || "").replace(/\s*\n\s*/g, "").trim();
 }
@@ -135,7 +133,7 @@ export function wrContinueCandidates(generated) {
       approach: direction.label,
       tone: direction.tone,
       note: (proposal && proposal.rationale) || "",
-      html: escapeHTML(text),
+      html: escapeHtmlText(text),
     });
   });
   if (!cands.length) throw wrAiLocalError(offline ? "no-model" : "no-result");

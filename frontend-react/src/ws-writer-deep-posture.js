@@ -7,6 +7,7 @@ import {
 } from "./ws-deep.jsx";
 import { WsDiagnosis, announceDiagnosisChanged } from "./ws-diagnosis-summary.jsx";
 import { wrRangeForOffsets, wrRangeForText } from "./ws-writer-manuscript.js";
+import { MANUSCRIPT_BLOCK_SELECTOR } from "./manuscript-html.js";
 import { useWrEvent } from "./ws-writer-hooks.js";
 
 /* ==========================================================
@@ -100,7 +101,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
   const locatePara = useWrEvent((pid, behavior = "smooth") => {
     const el = editorRef.current;
     if (!el) return;
-    locateBlock(el.querySelectorAll("p, blockquote")[pid], behavior);
+    locateBlock(el.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR)[pid], behavior);
   });
   const locateFinding = useWrEvent((finding) => {
     const el = editorRef.current;
@@ -108,7 +109,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     let target = null;
     try { target = el.querySelector(`[data-dx="${CSS.escape(finding.signal_id)}"]`); } catch (e) { target = null; }
     if (target) {
-      const block = target.matches("p, blockquote") ? target : target.closest("p, blockquote");
+      const block = target.matches(MANUSCRIPT_BLOCK_SELECTOR) ? target : target.closest(MANUSCRIPT_BLOCK_SELECTOR);
       locateBlock(block || target);
       return;
     }
@@ -391,7 +392,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     const select = () => {
       const el = editorRef.current;
       if (!el) return;
-      const blocks = el.querySelectorAll("p, blockquote");
+      const blocks = el.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR);
       let block = blocks[pid];
       let range = null;
       if (block) {

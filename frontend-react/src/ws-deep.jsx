@@ -5,6 +5,7 @@ import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { CloseButton, IconButton, Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { wrAiError } from "./ws-writer-ai.js";
 import { wrRangeForOffsets, wrRangeForText } from "./ws-writer-manuscript.js";
+import { MANUSCRIPT_BLOCK_SELECTOR, unwrapNode } from "./manuscript-html.js";
 import { useWrInert } from "./ws-writer-hooks.js";
 import { qSevLabel, qSevTone } from "./ws-quality-model.js";
 
@@ -140,8 +141,7 @@ function wrDeepUnmark(el) {
   if (!el) return;
   el.querySelectorAll("mark.wr-dx").forEach((mk) => {
     const parent = mk.parentNode;
-    while (mk.firstChild) parent.insertBefore(mk.firstChild, mk);
-    parent.removeChild(mk);
+    unwrapNode(mk);
     parent.normalize();
   });
   el.querySelectorAll(".wr-dx-para").forEach((p) => {
@@ -156,7 +156,7 @@ function wrDeepUnmark(el) {
 function wrDxRangeFor(el, finding) {
   const ev = finding && finding.evidence;
   if (!el || !ev) return null;
-  const blocks = Array.from(el.querySelectorAll("p, blockquote"));
+  const blocks = Array.from(el.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR));
   let block = Number.isInteger(ev.paragraph_index) ? blocks[ev.paragraph_index] : null;
   let range = null;
   if (block) {

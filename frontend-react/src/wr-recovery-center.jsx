@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WrRecovery } from "./wr-doc-store.jsx";
-import { sanitizeManuscriptHTML } from "./manuscript-html.js";
+import { htmlToPlainText } from "./manuscript-html.js";
 import { WsDialog } from "./ws-dialog.jsx";
 import { wsConfirm, wsToast } from "./ws-notify.jsx";
 
@@ -21,12 +21,6 @@ const TYPE_LABEL = {
   backup: "覆盖前备份",
   candidate: "AI 候选",
 };
-
-function plainText(html) {
-  const node = document.createElement("div");
-  node.innerHTML = sanitizeManuscriptHTML(html || "");
-  return (node.textContent || "").trim();
-}
 
 function formatTime(value) {
   if (!value) return "时间未知";
@@ -96,7 +90,7 @@ async function copyText(text) {
 }
 
 function exportEntry(entry) {
-  const text = plainText(entry.html || "");
+  const text = htmlToPlainText(entry.html || "");
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -299,7 +293,7 @@ function WrRecoveryCenter() {
             <div className="wrr-list-head"><span>待处理校样</span><b>{count}</b></div>
             {/* 没有记录时只说一次：右边的详情区给那一句，这一栏不再重复一个空态 */}
             {entries.map((entry) => {
-              const preview = plainText(entry.html || "").slice(0, 54);
+              const preview = htmlToPlainText(entry.html || "").slice(0, 54);
               return (
                 <button
                   type="button"
@@ -343,7 +337,7 @@ function WrRecoveryCenter() {
                   </button>
                   <button type="button" className="btn btn-ghost" onClick={async () => {
                     try {
-                      await copyText(plainText(selected.html || ""));
+                      await copyText(htmlToPlainText(selected.html || ""));
                       setMessage("正文已复制到剪贴板。");
                     } catch (error) { setMessage((error && error.message) || "复制失败，请改用导出"); }
                   }}>
