@@ -9,6 +9,7 @@ from copy import deepcopy
 from typing import Any
 
 from novel_system.services.value_coercion import coerce_string_list
+from novel_system.services.snowflake_draft_merge import merge_default
 from novel_system.services.snowflake_step_catalog import LONG_SYNOPSIS_PARAGRAPHS, step_definition_view
 
 
@@ -38,7 +39,7 @@ def merge_step_draft(
     payload = stored_draft or {}
     if not isinstance(payload, dict):
         return draft
-    return _normalize_step_draft(step_key, _merge_dicts(draft, payload))
+    return _normalize_step_draft(step_key, merge_default(draft, payload))
 
 
 def default_step_draft(step_key: str, *, latest_by_step: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -78,7 +79,7 @@ def _normalize_character_bible(item: dict[str, Any]) -> dict[str, Any]:
         if field.get("key") == "characters"
     )
     template = deepcopy(template_field.get("template") or {})
-    normalized = _merge_dicts(template, item)
+    normalized = merge_default(template, item)
 
     physical = normalized.setdefault("physical_profile", {})
     personality = normalized.setdefault("personality_profile", {})
@@ -160,11 +161,5 @@ def _coerce_positional_list(value: Any) -> list[str]:
     return [str(item or "").strip() for item in value]
 
 
-def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    merged = deepcopy(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_dicts(merged[key], value)
-        else:
-            merged[key] = deepcopy(value)
-    return merged
+#: 旧名（``snowflake_steps`` 照旧转出）；实现在 ``snowflake_draft_merge``
+_merge_dicts = merge_default

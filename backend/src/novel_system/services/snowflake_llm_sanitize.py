@@ -11,6 +11,7 @@ from typing import Any
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.snowflake_character_ids import canonical_character_id, mint_character_id
+from novel_system.services.snowflake_draft_merge import apply_member_patch, patch_id_key
 from novel_system.services.snowflake_step_catalog import LONG_SYNOPSIS_PARAGRAPHS, RENDERING_MODES, get_step_definition
 from novel_system.services.snowflake_step_diagnosis import is_lead_role, step_completeness
 from novel_system.services.value_coercion import coerce_string_list, has_value, int_or_default
@@ -669,48 +670,9 @@ def _sanitize_template_value(template_value: Any, value: Any) -> Any:
     return str(value or "").strip()
 
 
-def _merge_patch(base: Any, patch: Any, *, collection_key: str | None = None) -> Any:
-    if isinstance(base, dict) and isinstance(patch, dict):
-        merged = dict(normalize(base))
-        for key, value in patch.items():
-            merged[key] = _merge_patch(merged.get(key), value, collection_key=key)
-        return merged
-    if isinstance(base, list) and isinstance(patch, list):
-        id_key = _collection_id_key(collection_key)
-        if not id_key:
-            return normalize(patch)
-        base_items = [normalize(item) for item in base if isinstance(item, dict)]
-        patch_items = [normalize(item) for item in patch if isinstance(item, dict)]
-        patch_by_id = {
-            str(item.get(id_key) or ""): item
-            for item in patch_items
-            if str(item.get(id_key) or "")
-        }
-        # 保持底稿成员顺序（名册/场景序即作者语序）：patch 命中的按 id 就地合并，
-        # 模型新增的成员追加在尾部——定向补全不打乱其余成员的排列。
-        merged_items = []
-        seen_ids: set[str] = set()
-        for item in base_items:
-            item_id = str(item.get(id_key) or "")
-            if not item_id:
-                continue
-            merged_items.append(_merge_patch(item, patch_by_id[item_id]) if item_id in patch_by_id else item)
-            seen_ids.add(item_id)
-        for item in patch_items:
-            item_id = str(item.get(id_key) or "")
-            if item_id and item_id not in seen_ids:
-                merged_items.append(_merge_patch({}, item))
-                seen_ids.add(item_id)
-        return merged_items
-    return normalize(patch)
-
-
-def _collection_id_key(collection_key: str | None) -> str | None:
-    if collection_key == "characters":
-        return "character_id"
-    if collection_key == "scenes":
-        return "scene_id"
-    return None
+#: 旧名（``snowflake_workspace_llm`` 照旧转出）；实现在 ``snowflake_draft_merge``
+_merge_patch = apply_member_patch
+_collection_id_key = patch_id_key
 
 
 # 场景分诊修补器接受的场景键——也是分诊 wire schema 里 repair_patch 的 properties（enrich_structured_schema）。
