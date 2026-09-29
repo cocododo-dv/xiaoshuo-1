@@ -150,6 +150,22 @@ describe("WsDiagnosis · 每场 / 每章开着的发现数", () => {
     expect(client.apiGet).toHaveBeenCalledTimes(2);
   });
 
+  it("两个视图同时挂着 hook：先卸下的那个不带走另一个的监听（F01-23）", async () => {
+    const { useDiagnosisSummary, announceDiagnosisChanged } = await load();
+    const first = await mountProbe(useDiagnosisSummary);
+    const second = await mountProbe(useDiagnosisSummary);
+    await vi.waitFor(() => expect(second.textContent).toBe("3/5"));
+    expect(first.textContent).toBe("3/5");
+
+    // 先挂的那个先卸下（后进先出的 afterEach 之外，手动卸第一个）
+    const entry = mounted.shift();
+    await act(async () => entry.root.unmount());
+    entry.host.remove();
+
+    await act(async () => { announceDiagnosisChanged({ rollup: { project_id: "prj-main", chapter_id: "c1", chapters: { c1: { ...C1, open: 3, blocking: 1 } }, scenes: { s1: { ...S1, open: 2 }, s2: S2 } } }); });
+    await vi.waitFor(() => expect(second.textContent).toBe("2/4"));
+  });
+
   it("refreshScene：起草台归档终稿后只拉这一章的 rollup", async () => {
     const { client, WsDiagnosis } = await load();
     await WsDiagnosis.refresh();

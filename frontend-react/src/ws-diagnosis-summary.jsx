@@ -3,7 +3,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { apiGet } from "./lib/client.js";
 import { createSubscribers, useStoreTick } from "./lib/store-utils.js";
 import { emit } from "./lib/events.js";
-import { realWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    WsDiagnosis — 一本书每一场 / 每一章开着的诊断发现数（2026-09-22 场景诊断统一；第三轮改成随写回传）
@@ -25,9 +25,7 @@ const dgFailed = {};        // workId → true
 const dgSceneFetching = {}; // sceneId → Promise
 const DG_COUNT_KEYS = ["open", "blocking", "revision", "taste", "info", "ignored", "stale"];
 
-function dgWorkId() {
-  try { return realWorkId(WsWorks.activeId()); } catch (e) { return null; }
-}
+const dgWorkId = () => readyWorkId(WsWorks);
 
 const EMPTY_SCENE = { open: 0, blocking: 0, revision: 0, taste: 0, info: 0, ignored: 0, stale: 0, ai_status: "not_run", review_status: "not_run" };
 const EMPTY_CHAPTER = { open: 0, blocking: 0, chapter_level: 0, chapter_level_blocking: 0, scenes: 0, scenes_with_findings: 0, ai_status: "not_run" };
@@ -240,22 +238,38 @@ function dgOnChanged(event) {
   dgRefresh(dgWorkId());
 }
 
-/* hook：视图挂载 / 换作品时读一次整本书；写入随响应推送；目录成员变了只剪掉不在目录里的条目 */
-function useDiagnosisSummary() {
-  useStoreTick((bump) => {
-    const un = WsDiagnosis.subscribe(bump);
+/* 窗口事件由模块统一挂一份、按挂着的 hook 计数：第一个 hook 挂载时挂上，最后一个卸下时才撤。
+   过去每个 hook 各自 add / remove 同一个模块级处理函数——两个视图同时挂着时，先卸下的那个把另一个的也撤了
+   （审计 F01-23）。 */
+let dgMounted = 0;
+let dgDetach = null;
+function dgAttach() {
+  dgMounted += 1;
+  if (dgMounted === 1) {
     const onWork = () => { dgRefresh(dgWorkId()); };
     const onCatalog = () => { dgReconcile(); };
     window.addEventListener("ws:diagnosis-changed", dgOnChanged);
     window.addEventListener("ws:catalog-changed", onCatalog);
     window.addEventListener("ws:work-changed", onWork);
-    dgRefresh(dgWorkId());
-    return () => {
-      un();
+    dgDetach = () => {
       window.removeEventListener("ws:diagnosis-changed", dgOnChanged);
       window.removeEventListener("ws:catalog-changed", onCatalog);
       window.removeEventListener("ws:work-changed", onWork);
     };
+  }
+  return () => {
+    dgMounted -= 1;
+    if (dgMounted === 0 && dgDetach) { dgDetach(); dgDetach = null; }
+  };
+}
+
+/* hook：视图挂载 / 换作品时读一次整本书；写入随响应推送；目录成员变了只剪掉不在目录里的条目 */
+function useDiagnosisSummary() {
+  useStoreTick((bump) => {
+    const un = WsDiagnosis.subscribe(bump);
+    const detach = dgAttach();
+    dgRefresh(dgWorkId());
+    return () => { un(); detach(); };
   });
   return WsDiagnosis;
 }
