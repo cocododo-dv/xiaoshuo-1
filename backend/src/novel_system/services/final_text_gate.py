@@ -16,8 +16,7 @@ from novel_system.services.literary_quality import (
     DIMENSION_WEIGHTS,
     QUALITY_DIMENSIONS,
     analyze_literary_quality,
-    get_dimension_weights,
-    rule_signal_id,
+    ignored_dimensions_from_findings,
 )
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
 from novel_system.services.qc_constraints import contains_forbidden_term, source_field_satisfied
@@ -471,9 +470,7 @@ class FinalTextGateService:
                 content, calibration=calibration if calibrated else None
             )
             habitual = set(calibration.habitual_dimensions) if calibrated else set()
-            weights = get_dimension_weights(scene.project_id if scene is not None else None, self.session)
-            if not weights:
-                weights = dict(DIMENSION_WEIGHTS)
+            weights = DIMENSION_WEIGHTS
 
             def effective(dimension: str) -> float:
                 if dimension in habitual:
@@ -526,19 +523,10 @@ class FinalTextGateService:
             # 2026-09-22 场景诊断统一:作者在写作台深改面板里忽略过的发现不再回到成稿中心当警告。
             # 忽略清单记的是发现的 signal_id;整个维度的发现都被忽略了,这个维度才算作者拍过板。
             # 风格参考 v3:signal_id 从这一次（校准后）的发现里算，与深改面板看到的是同一批。
-            ignored_keys = {
-                str(key)
-                for key in ((getattr(scene, "deep_review_ignored_keys_json", None) or []) if scene is not None else [])
-                if str(key)
-            }
-            ids_by_dimension: dict[str, list[str]] = {}
-            for finding in findings:
-                ids_by_dimension.setdefault(str(finding.get("dimension") or ""), []).append(rule_signal_id(finding))
-            ignored_dimensions = {
-                dimension
-                for dimension, ids in ids_by_dimension.items()
-                if dimension and ids and ignored_keys and all(signal_id in ignored_keys for signal_id in ids)
-            }
+            ignored_dimensions = ignored_dimensions_from_findings(
+                findings,
+                (getattr(scene, "deep_review_ignored_keys_json", None) or []) if scene is not None else [],
+            )
             warn_dimensions = [
                 dimension
                 for dimension in risky_dimensions

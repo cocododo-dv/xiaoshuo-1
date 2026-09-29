@@ -60,15 +60,11 @@ ISSUE_KEY_POLICY: dict[str, IssuePolicy] = {
     "forbidden_text": IssuePolicy(Q1, "scene_card_forbidden_term", Q2),
     "missing_required_text": IssuePolicy(Q1, "scene_card_required_text", Q2),
     "missing_hard_constraint": IssuePolicy(Q1, "scene_card_required_text", Q2),
-    # ---- Q2（结构/节奏层；含旧阻断词表中无确定性生产者的键） ----
-    "scene_conflict_missing": IssuePolicy(Q2, None, Q2),
-    "instruction_residue": IssuePolicy(Q2, None, Q2),
-    "mechanical_required_beat_listing": IssuePolicy(Q2, None, Q2),
-    "unsupported_event": IssuePolicy(Q2, None, Q2),
-    "duplicate_text": IssuePolicy(Q2, None, Q2),
-    "character_role_inconsistency": IssuePolicy(Q2, None, Q2),
-    "event_log_consistency_llm_flag": IssuePolicy(Q2, None, Q2),
-    "theme_relevance_warning": IssuePolicy(Q2, None, Q2),
+    # ---- Q2（结构/节奏层）：走默认策略，不必登记 ----
+    # 模型常给、也常被人问到的键——scene_conflict_missing、instruction_residue、unsupported_event、
+    # duplicate_text、character_role_inconsistency，以及确定性检测器产出的 mechanical_required_beat_listing——
+    # 都没有确定性复核器，一律是 Q2 警告（_DEFAULT_POLICY）。以前它们在这里各占一行 IssuePolicy(Q2, None, Q2)，
+    # 与默认值逐字相同。
     # ---- Q3（风格/口癖/实验指标） ----
     "character_pronoun_ambiguity": IssuePolicy(Q3, None, Q3),
     "character_pronoun_continuity": IssuePolicy(Q3, None, Q3),

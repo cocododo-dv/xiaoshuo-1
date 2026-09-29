@@ -84,11 +84,12 @@ def get_dimension_weights(
     project_id: str | None = None,
     session: Session | None = None,
 ) -> dict[str, float]:
-    """一部作品的 21 维质量权重：恒为 :data:`DIMENSION_WEIGHTS` 的一份拷贝。
+    """一部作品的质量权重：恒为 :data:`DIMENSION_WEIGHTS` 的一份拷贝（已弃用，直接读常量）。
 
     2026-09-24（风格参考 v3 清理 S3）之前这里会查作品的风格绑定，读画像里的 ``quality_weight_overrides`` /
-    ``style_tag`` 调权重——这两个键从来没有任何写入者（学习作业不产出它们），查询只是白跑一趟。参数保留给
-    调用方（``scene_generation`` / ``final_text_gate``）的签名；房风权重让不让位由 ``StylePolicy`` 决定，不在这里。
+    ``style_tag`` 调权重——这两个键从来没有任何写入者（学习作业不产出它们），查询只是白跑一趟。只剩
+    ``scene_generation`` 的旧调用还在用这个名字（场景生成拆包后已改读常量）；那边合并之后删掉它。房风权重让不让位
+    由 ``StylePolicy`` 决定，不在这里。
     """
     return dict(DIMENSION_WEIGHTS)
 
@@ -219,17 +220,18 @@ def unify_rule_finding(finding: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def ignored_rule_dimensions(text: str, ignored_keys: Iterable[str]) -> set[str]:
-    """Dimensions whose every rule finding on ``text`` the author has ignored in the writer.
+def ignored_dimensions_from_findings(findings: Iterable[Mapping[str, Any]], ignored_keys: Iterable[str]) -> set[str]:
+    """Dimensions whose every finding in ``findings`` the author has ignored in the writer.
 
-    The final-text gate drops its Q3 warnings for those dimensions: a finding dismissed
-    in the deep drawer must not come back as a warning in 成稿中心.
+    The ignore list holds signal ids (``rule_signal_id``); a dimension counts as the author's
+    decision only when all of its findings were ignored. The final-text gate drops its Q3
+    warnings for those dimensions: a finding dismissed in the deep drawer must not come back
+    as a warning in 成稿中心.
     """
 
     ignored = {str(key) for key in ignored_keys or [] if str(key)}
     if not ignored:
         return set()
-    _, findings = analyze_literary_quality(text)
     by_dimension: dict[str, list[str]] = {}
     for finding in findings:
         by_dimension.setdefault(str(finding.get("dimension") or ""), []).append(rule_signal_id(finding))
@@ -238,6 +240,16 @@ def ignored_rule_dimensions(text: str, ignored_keys: Iterable[str]) -> set[str]:
         for dimension, ids in by_dimension.items()
         if dimension and ids and all(signal_id in ignored for signal_id in ids)
     }
+
+
+def ignored_rule_dimensions(text: str, ignored_keys: Iterable[str]) -> set[str]:
+    """:func:`ignored_dimensions_from_findings` over the house-rule findings of ``text``."""
+
+    ignored = [str(key) for key in ignored_keys or [] if str(key)]
+    if not ignored:
+        return set()
+    _, findings = analyze_literary_quality(text)
+    return ignored_dimensions_from_findings(findings, ignored)
 
 MODEL_VOICE_TERMS = (
     "suddenly realized",
@@ -1253,7 +1265,6 @@ class LiteraryQualityService:
 def analyze_literary_quality(
     text: str,
     *,
-    external_signals: dict[str, dict[str, Any]] | None = None,
     calibration: RuleCalibration | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
     """21 维规则。``calibration``（有风格绑定时由 scene_diagnosis 按参考书算出）：参考作者的常用词从「命中即
@@ -1312,11 +1323,6 @@ def analyze_literary_quality(
     _add_false_poetic_closure_signal(signals, findings, normalized, terms=lex["poetic_closure"])
     _add_perception_filter_signal(signals, findings, normalized, terms=lex["perception_filter"])
 
-    if external_signals:
-        for dim, signal in external_signals.items():
-            if dim in QUALITY_DIMENSIONS:
-                signals[dim] = signal
-
     _apply_dimension_calibration(findings, calibration)
     for dimension in QUALITY_DIMENSIONS:
         signals.setdefault(dimension, {"risk": False, "score": 1.0, "evidence": ""})
@@ -1338,10 +1344,9 @@ def _add_self_repetition_signal(
 ) -> None:
     """Detect exact sentence reuse inside one passage.
 
-    Cross-scene repetition can still arrive through ``external_signals``.  This
-    local guard catches the higher-confidence failure where a generated scene
-    repeats the same substantive sentence verbatim; previously the dimension
-    existed but remained permanently clean without an external detector.
+    This local guard catches the higher-confidence failure where a generated scene
+    repeats the same substantive sentence verbatim (cross-scene repetition is prompt
+    guidance in ``self_repetition``, not a signal of this engine).
     """
 
     normalized_sentences: dict[str, list[str]] = {}

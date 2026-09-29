@@ -477,15 +477,6 @@ def test_self_repetition_detects_high_confidence_mechanical_loop() -> None:
     assert any(item["dimension"] == "self_repetition" for item in findings)
 
 
-def test_external_signals_override_defaults() -> None:
-    signals, _ = analyze_literary_quality(
-        "She opened the door.",
-        external_signals={"self_repetition": {"risk": True, "score": 0.3, "evidence": "repeated phrase"}},
-    )
-    assert signals["self_repetition"]["risk"] is True
-    assert signals["self_repetition"]["score"] == 0.3
-
-
 def _seed_cross_scene_template_reuse(session) -> None:
     chapter_id = "LQ300"
     session.add(
