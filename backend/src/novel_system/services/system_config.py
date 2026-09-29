@@ -99,8 +99,27 @@ def load_active_config_yaml(category: str) -> str | None:
 
 
 def apply_active_api_config(settings):
-    payload = load_active_config_payload("api")
-    api_key = load_secret_value(LLM_API_KEY_SECRET_ID)
+    """把活动 api 快照与它用到的密钥叠到环境设置上。
+
+    快照与密钥在同一个只读事务里读（原来是三个会话各读一样，``get_settings()`` 在一次请求里会被调很多次）；
+    SQLite 忙时整个事务按 ``read_with_transient_retry`` 重试。
+    """
+    return _read_with_transient_retry(lambda: _apply_active_api_config(settings))
+
+
+def _apply_active_api_config(settings):
+    from novel_system.services.config_snapshot_reader import active_config_payload
+
+    with SessionLocal() as session:
+        return _overlay_api_config(
+            settings,
+            payload=active_config_payload(session, "api"),
+            read_secret=lambda secret_id: _secret_value(session, secret_id),
+        )
+
+
+def _overlay_api_config(settings, *, payload, read_secret):
+    api_key = read_secret(LLM_API_KEY_SECRET_ID)
     if not payload and not api_key:
         return settings
 
@@ -109,7 +128,7 @@ def apply_active_api_config(settings):
     if providers:
         provider_id = str(llm_payload.get("default_provider_id") or next(iter(providers.keys())))
         provider_payload = providers.get(provider_id) or next(iter(providers.values()))
-        provider_secret = load_secret_value(llm_provider_api_key_secret_id(provider_id))
+        provider_secret = read_secret(llm_provider_api_key_secret_id(provider_id))
         return replace(
             settings,
             llm_provider=provider_payload.get("provider_type", provider_payload.get("provider", settings.llm_provider)),
@@ -137,15 +156,20 @@ def apply_active_api_config(settings):
 def load_secret_value(secret_id: str) -> str | None:
     def _read():
         with SessionLocal() as session:
-            secret = session.get(SystemSecret, secret_id)
-            if secret is None:
-                return None
-            try:
-                return _decrypt_secret(secret.encrypted_value)
-            except (DomainError, InvalidToken):
-                return None
+            return _secret_value(session, secret_id)
 
     return _read_with_transient_retry(_read)
+
+
+def _secret_value(session: Session, secret_id: str) -> str | None:
+    """解密后的密钥；没有这一条、没配 NOVEL_SYSTEM_CONFIG_SECRET 或解不开 → ``None``。"""
+    secret = session.get(SystemSecret, secret_id)
+    if secret is None:
+        return None
+    try:
+        return _decrypt_secret(secret.encrypted_value)
+    except (DomainError, InvalidToken):
+        return None
 
 
 def llm_provider_api_key_secret_id(provider_id: str) -> str:
@@ -153,7 +177,21 @@ def llm_provider_api_key_secret_id(provider_id: str) -> str:
 
 
 def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
-    payload = load_active_config_payload("api") or {}
+    """每个服务商的运行时配置（地址、模式、解密后的密钥）；快照与密钥在同一个只读事务里读。"""
+    return _read_with_transient_retry(_load_llm_provider_runtime_configs)
+
+
+def _load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
+    from novel_system.services.config_snapshot_reader import active_config_payload
+
+    with SessionLocal() as session:
+        return _provider_runtime_configs(
+            active_config_payload(session, "api") or {},
+            read_secret=lambda secret_id: _secret_value(session, secret_id),
+        )
+
+
+def _provider_runtime_configs(payload, *, read_secret) -> dict[str, ProviderRuntimeConfig]:
     llm_payload = _coerce_api_payload(payload) if payload else {}
     providers = _provider_payloads_from_llm(llm_payload)
     if not providers:
@@ -178,8 +216,8 @@ def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
         if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
             continue
         secret_id = llm_provider_api_key_secret_id(provider_id)
-        secret_value = load_secret_value(secret_id)
-        legacy_api_key = load_secret_value(LLM_API_KEY_SECRET_ID) if provider_id in {"openai_compatible", "openai"} else None
+        secret_value = read_secret(secret_id)
+        legacy_api_key = read_secret(LLM_API_KEY_SECRET_ID) if provider_id in {"openai_compatible", "openai"} else None
         runtime_configs[provider_id] = ProviderRuntimeConfig(
             provider_id=provider_id,
             provider_type=str(provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id),

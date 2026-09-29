@@ -334,6 +334,45 @@ def test_node_routes_saved_through_system_config_are_visible_at_once(client, mon
         assert load_model_routing_config().node_routing["neutral_draft"].max_output_tokens == budget
 
 
+# ---------------------------------------------------------------- 运行时 api 配置与密钥
+
+
+def test_runtime_settings_read_snapshot_and_keys_in_one_transaction_and_follow_saves(session, monkeypatch) -> None:
+    from novel_system.services import system_config
+    from novel_system.settings import get_settings
+
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    service = SystemConfigService(session)
+
+    def save_provider(api_key: str) -> None:
+        service.save_llm_provider(
+            payload={
+                "provider_id": "fixture_relay",
+                "provider_type": "openai_compatible",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "enabled": True,
+                "credential_mode": "api_key",
+                "api_mode": "chat",
+                "models": ["fixture-model"],
+                "api_key": api_key,
+            },
+            actor_ref="test",
+        )
+
+    save_provider("sk-fixture-first-0001")
+    sessions = _count_calls(monkeypatch, system_config, "SessionLocal")
+
+    settings = get_settings()
+    assert (settings.llm_enabled, settings.llm_api_key) == (True, "sk-fixture-first-0001")
+    assert len(sessions) == 1  # 活动快照、旧版密钥、服务商密钥：一个只读事务（原来三个）
+    assert system_config.load_llm_provider_runtime_configs()["fixture_relay"].api_key == "sk-fixture-first-0001"
+    assert len(sessions) == 2
+
+    save_provider("sk-fixture-second-0002")
+    assert get_settings().llm_api_key == "sk-fixture-second-0002"
+    assert system_config.load_llm_provider_runtime_configs()["fixture_relay"].api_key == "sk-fixture-second-0002"
+
+
 # ---------------------------------------------------------------- 延迟构建
 
 
