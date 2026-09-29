@@ -24,6 +24,8 @@ from novel_system.services.run_job_leases import (
     STATUS_RUNNING,
     RunJobLease,
     cas_claim,
+    drop_lease,
+    hold_lease,
     lease_is_active,
 )
 from novel_system.services.scene_run_checkpoint import chapter_scene_execution_id
@@ -88,6 +90,8 @@ class ChapterRunnerService:
         )
         self._active_owner = owner
         self.session.commit()
+        # 进程退出（lifespan 结束）时这份租约就地到期，重启后的恢复立刻接着跑（B03-01）
+        hold_lease(owner)
 
         renew_all = _CompositeLeaseRenewer(owner, request_lease)
 
@@ -163,6 +167,8 @@ class ChapterRunnerService:
                 error_text="chapter run failed; see server logs for the request details",
             )
             raise
+        finally:
+            drop_lease(owner)
 
     def _run_claimed_scene(
         self,

@@ -115,11 +115,11 @@ class DaemonLane:
                 ).start()
         return True
 
-    def close(self) -> int:
-        """不再收新任务，丢下还没开始的任务；返回丢下的个数（正在跑的照旧跑完或随进程退出）。"""
+    def close(self) -> list[tuple[Any, ...]]:
+        """不再收新任务，丢下还没开始的任务；返回丢下的任务的参数（正在跑的照旧跑完或随进程退出）。"""
         with self._lock:
             self._closed = True
-            dropped = len(self._queue)
+            dropped = [args for _fn, args in self._queue]
             self._queue.clear()
         return dropped
 
@@ -157,8 +157,8 @@ def daemon_lane(name: str, *, max_workers: int) -> DaemonLane:
         return lane
 
 
-def close_daemon_lanes(*names: str) -> dict[str, int]:
-    """关闭车道（不给名字 = 全部），返回每条丢下的任务数。"""
+def close_daemon_lanes(*names: str) -> dict[str, list[tuple[Any, ...]]]:
+    """关闭车道（不给名字 = 全部），返回每条丢下的任务的参数。"""
     with _LANES_LOCK:
         targets = [name for name in (names or tuple(_LANES)) if name in _LANES]
         lanes = [_LANES.pop(name) for name in targets]

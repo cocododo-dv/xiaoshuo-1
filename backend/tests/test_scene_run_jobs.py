@@ -113,6 +113,79 @@ def test_scene_run_job_api_creates_pollable_nonblocking_job(client, session) -> 
     assert session.get(ChapterRunJob, job["job_id"]).scene_id == "CHJOB_SC01"
 
 
+def test_scene_run_workers_run_at_most_two_pipelines_at_once(client, monkeypatch) -> None:
+    """B03-13：场景任务的工人跑在有界的守护车道上（一次最多两条管线）。修之前每个任务一条不设上限的线程，
+    启动恢复扫到 N 个排队任务就在 2 核的机器上同时起 N 条管线。"""
+    import time
+    from threading import Event
+
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    for seq in (2, 3):
+        created = client.post(
+            "/api/v1/scenes",
+            json={
+                "scene_id": f"CHJOB_SC0{seq}",
+                "chapter_id": "CHJOB",
+                "scene_seq": seq,
+                "pov_character_id": "",
+                "onstage_chars_json": [],
+                "location": "Control room",
+                "scene_goal": f"Queue run {seq}",
+                "beats_json": ["start", "poll"],
+                "target_length_band": "short",
+                "scene_type": "test",
+            },
+            headers={"X-Idempotency-Key": f"scene-job-lane-{seq}"},
+        )
+        assert created.status_code == 200, created.text
+    lock = Lock()
+    release = Event()
+    started: list[str] = []
+    running = 0
+    peak = 0
+
+    class _Pipeline:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, scene_id: str, **_kwargs) -> dict:
+            nonlocal running, peak
+            with lock:
+                running += 1
+                peak = max(peak, running)
+                started.append(scene_id)
+            release.wait(30)
+            with lock:
+                running -= 1
+            return {"scene_status": "archived"}
+
+    def wait_until(predicate, timeout: float = 20.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not predicate():
+            time.sleep(0.05)
+        return bool(predicate())
+
+    def statuses() -> list[str]:
+        with SessionLocal() as observer:
+            return [observer.get(ChapterRunJob, job_id).status for job_id in job_ids]
+
+    monkeypatch.setattr(job_module, "Orchestrator", _Pipeline)
+    job_ids = [
+        client.post(f"/api/v1/scenes/CHJOB_SC0{seq}/run/jobs").json()["data"]["job_id"] for seq in (1, 2, 3)
+    ]
+    try:
+        assert wait_until(lambda: len(started) == 2)
+        time.sleep(0.5)
+        assert len(started) == 2
+        assert sorted(statuses()) == ["queued", "running", "running"]
+    finally:
+        release.set()
+    assert wait_until(lambda: statuses() == ["completed"] * 3)
+    assert peak == 2 and len(started) == 3
+
+
 def test_scene_run_job_idempotency_replay_does_not_start_a_second_worker(client, monkeypatch) -> None:
     _create_chapter_and_scene(client)
     started: list[str] = []

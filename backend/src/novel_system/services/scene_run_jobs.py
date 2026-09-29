@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -12,6 +11,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ChapterRunJob, LlmCall, OperationLog, QcReport, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.background_jobs import daemon_lane
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
@@ -19,15 +19,21 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.run_job_leases import (
     JOB_TYPE_SCENE_FULL,
     OWNED_STATUSES,
+    SCENE_RUN_LANE,
+    SCENE_RUN_LANE_WORKERS,
     SCENE_RUN_STAGE_ORDER,
     SCENE_STEP_CLAIMED,
     RunJobLease,
     begin_immediate,
     cas_claim,
+    drop_lease,
+    hold_lease,
     lease_expiry,
     lease_is_active,
+    mark_dispatched,
     parse_iso,
     scene_job_step,
+    unmark_dispatched,
     update_observed,
 )
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService, scene_job_execution_id
@@ -953,8 +959,22 @@ def recover_expired_cancel_requested_jobs(
 
 
 def start_scene_run_job_worker(job_id: str) -> None:
-    thread = threading.Thread(target=_run_scene_job_worker, args=(job_id,), daemon=True)
-    thread.start()
+    """把任务交给有界的守护车道（一次最多 ``SCENE_RUN_LANE_WORKERS`` 条管线，B03-13）。
+
+    本进程里已经排着或在跑的任务不重复派发；车道已关（进程在退出）时任务留在队列里，下次启动的恢复接着派发。
+    """
+    if not mark_dispatched(job_id):
+        return
+    lane = daemon_lane(SCENE_RUN_LANE, max_workers=SCENE_RUN_LANE_WORKERS)
+    if not lane.submit(_run_dispatched_scene_job, job_id):
+        unmark_dispatched(job_id)
+
+
+def _run_dispatched_scene_job(job_id: str) -> None:
+    try:
+        _run_scene_job_worker(job_id)
+    finally:
+        unmark_dispatched(job_id)
 
 
 def _run_scene_job_worker(job_id: str) -> None:
@@ -971,6 +991,8 @@ def _run_scene_job_worker(job_id: str) -> None:
             current_step=SCENE_STEP_CLAIMED,
             lease_seconds=owner_lease_ttl_seconds(),
         )
+        # 进程退出（lifespan 结束）时这份租约就地到期，重启后的恢复立刻接着跑（B03-01）
+        hold_lease(owner)
         service.claim_scene_active_job(owner, scene_id)
         # B03-02：认领先落库，再做预算续跑的交接——交接失败回滚时不会把认领一起撤掉，失败记得上。
         session.commit()
@@ -1030,6 +1052,7 @@ def _run_scene_job_worker(job_id: str) -> None:
             owner=owner,
         )
     finally:
+        drop_lease(owner)
         session.close()
 
 

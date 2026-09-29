@@ -1,13 +1,19 @@
-"""场景 / 章节运行任务的共用词表与租约内核（叶子模块：只依赖 ``db`` 与 SQLAlchemy）。
+"""场景 / 章节运行任务的共用词表与租约内核（叶子模块：只依赖 ``db`` 与 SQLAlchemy、``background_jobs``）。
 
 两种任务都是 ``chapter_run_jobs`` 表里的一行（``job_type`` 区分），用同一套租约字段：
 ``worker_id`` / ``attempt_no`` / ``lease_expires_at``。认领是对「看到的那一行」（状态、attempt、worker、租约）
 的条件更新，之后每一次写都以 ``worker_id + attempt_no`` 为 fence——丢了租约的旧工人的写全部落空。
 每种任务「哪些状态可认领、失败能不能重领」的策略留在各自的服务里（B03-12 / B03-24）。
+
+**进程退出**（B03-01）：本进程工人持有的租约登记在这里；lifespan 结束时工人代 +1（``background_jobs``），
+之后这些租约不再续，并被就地到期（``release_held_leases``）——重启后的恢复立刻把任务接着跑，不必等 600 秒
+的租约自然过期。进程里还在跑或排着队的任务（``busy_job_ids``）不会被周期恢复再派发一次。
 """
 
 from __future__ import annotations
 
+import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
@@ -15,8 +21,12 @@ from typing import Any, ClassVar
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import ChapterRunJob
+from novel_system.services.background_jobs import current_worker_generation, generation_changed
 from novel_system.services.errors import DomainError
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------- 任务类型 / 状态
 JOB_TYPE_SCENE_FULL = "scene_run_full"
@@ -32,8 +42,14 @@ STATUS_CANCELLED = "cancelled"
 STATUS_BLOCKED = "blocked"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
-# 有工人正持有租约的状态（场景任务请求取消之后主人仍可续约）
+# 有工人正持有租约的状态（续约、进程退出时就地到期都认这两个）
 OWNED_STATUSES: tuple[str, ...] = (STATUS_RUNNING, STATUS_CANCEL_REQUESTED)
+
+# 工人车道（background_jobs.DaemonLane）：场景任务一次最多两条管线；恢复派发的无项目章节任务一次一章
+SCENE_RUN_LANE = "scene_run"
+SCENE_RUN_LANE_WORKERS = 2
+CHAPTER_RUN_LANE = "chapter_run"
+CHAPTER_RUN_LANE_WORKERS = 1
 
 # ---------------------------------------------------------------------- 场景任务的步位词表（B03-03）
 # ``current_step`` 对作者只说一套词：管线阶段（进行中）+ 几个停点。前端 ``ws-scene-derive.js`` 的
@@ -168,7 +184,7 @@ class RunJobLease:
     """一次认领拿到的租约；``worker_id + attempt_no`` 是之后每一次写的 fence。
 
     ``renew`` 用认领时的会话；``renew_detached`` 自己开会话（长时间的模型调用期间由心跳线程调用，
-    ``llm_task_runner`` 经绑定方法的 ``__self__`` 找到它）。
+    ``llm_task_runner`` 经绑定方法的 ``__self__`` 找到它）。进程要退出之后两者都不再续（B03-01）。
     每种任务的子类给出 ``job_type`` / 可续约的状态 / 丢租约时的说法。
     """
 
@@ -177,17 +193,23 @@ class RunJobLease:
     attempt_no: int
     lease_expires_at: str
     _session: Session = field(repr=False, compare=False)
+    # 认领时的工人代；lifespan 结束（工人代 +1）后不再续约
+    generation: int | None = field(default_factory=current_worker_generation, repr=False, compare=False)
 
     job_type: ClassVar[str] = ""
     renewable_statuses: ClassVar[tuple[str, ...]] = (STATUS_RUNNING,)
     lost_message: ClassVar[str] = "run job owner lease was lost"
 
     def renew(self, *, lease_seconds: int) -> str:
+        if generation_changed(self.generation):
+            return self.lease_expires_at
         self.lease_expires_at = self._renew_in(self._session, lease_seconds)
         return self.lease_expires_at
 
     def renew_detached(self, *, lease_seconds: int) -> str:
         """Renew with an independent session for long provider calls."""
+        if generation_changed(self.generation):
+            return self.lease_expires_at
         from novel_system.db.session import SessionLocal
 
         with SessionLocal() as session:
@@ -235,3 +257,78 @@ class RunJobLease:
             raise self.lost()
         session.flush()
         return expires
+
+
+# ---------------------------------------------------------------------- 本进程持有的租约（B03-01）
+_HELD: dict[str, RunJobLease] = {}
+_DISPATCHED: set[str] = set()
+_REGISTRY_LOCK = threading.Lock()
+
+
+def _reset_registry() -> None:
+    with _REGISTRY_LOCK:
+        _HELD.clear()
+        _DISPATCHED.clear()
+
+
+# 任务 id 按库而定：测试每个用例一个新库、反复用同样的 id
+register_cache_reset("run_job_leases.held", _reset_registry)
+
+
+def hold_lease(lease: RunJobLease) -> None:
+    """工人拿到租约：登记，进程退出时就地到期。"""
+    with _REGISTRY_LOCK:
+        _HELD[lease.job_id] = lease
+
+
+def drop_lease(lease: RunJobLease | None) -> None:
+    """工人结束：注销（只注销自己那一次认领的登记）。"""
+    if lease is None:
+        return
+    with _REGISTRY_LOCK:
+        held = _HELD.get(lease.job_id)
+        if held is not None and (held.worker_id, held.attempt_no) == (lease.worker_id, lease.attempt_no):
+            del _HELD[lease.job_id]
+
+
+def mark_dispatched(job_id: str) -> bool:
+    """任务交给本进程的工人车道（排着队或在跑）；已经交过 → False（不重复派发）。"""
+    with _REGISTRY_LOCK:
+        if job_id in _DISPATCHED:
+            return False
+        _DISPATCHED.add(job_id)
+        return True
+
+
+def unmark_dispatched(job_id: str) -> None:
+    with _REGISTRY_LOCK:
+        _DISPATCHED.discard(job_id)
+
+
+def busy_job_ids() -> set[str]:
+    """本进程里排着队或正持有租约的任务：周期恢复不再派发它们。"""
+    with _REGISTRY_LOCK:
+        return set(_DISPATCHED) | set(_HELD)
+
+
+def release_held_leases() -> list[str]:
+    """进程要退出：本进程工人持有的租约就地到期（条件在 worker_id / attempt_no 上），返回到期了的任务。
+
+    先把工人代 +1（``background_jobs.bump_worker_generation``）再调它：这之后工人不再续约，到期的租约不会被
+    心跳线程又续上。
+    """
+    from novel_system.db.session import SessionLocal
+
+    with _REGISTRY_LOCK:
+        leases = list(_HELD.values())
+        _HELD.clear()
+    released: list[str] = []
+    for lease in leases:
+        try:
+            with SessionLocal() as session:
+                if lease.update_owned(session, statuses=OWNED_STATUSES, values={"lease_expires_at": iso_now()}):
+                    released.append(lease.job_id)
+                session.commit()
+        except Exception:  # noqa: BLE001 — 进程退出路径：到期不了就等租约自然过期
+            logger.exception("run job %s lease could not be released on shutdown", lease.job_id)
+    return released

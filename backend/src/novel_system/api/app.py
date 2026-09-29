@@ -72,11 +72,19 @@ async def _lifespan(_app: FastAPI):
         shutdown_job_workers,
         start_job_sweeper,
     )
+    # 场景 / 章节运行任务：进程还活着时每分钟收拾一次租约过期的孤儿；lifespan 结束时把本进程持有的租约就地
+    # 到期，重启后的启动恢复立刻接着跑（B03-01）。
+    from novel_system.services.background_recovery import (
+        shutdown_run_job_workers,
+        start_run_job_sweeper,
+    )
 
     start_job_sweeper()
+    start_run_job_sweeper()
     try:
         yield
     finally:
+        shutdown_run_job_workers()
         shutdown_job_workers(wait=False)
 
 
