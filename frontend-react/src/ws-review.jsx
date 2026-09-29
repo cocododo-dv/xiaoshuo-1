@@ -4,6 +4,7 @@ import { I } from "./icons.jsx";
 import { agoLabel } from "./lib/format.js";
 import { apiGet, apiPost } from "./lib/client.js";
 import { storeAlert } from "./lib/store-utils.js";
+import { createKeyedLoader } from "./lib/store-kit.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { PageHeader, Segmented, Tag, EmptyState, Notice, Spinner } from "./ws-ui.jsx";
@@ -155,41 +156,49 @@ function rvEmit() {
   emit("ws:review-changed", { urgent: rvUrgentCount(), projectId: rvActiveId() });
 }
 
-let rvFetching = null;
+/* 读取器（lib/store-kit）：键 = 作品 id，只收「当前作品」的结果。拉取途中换了作品，新作品另发请求——
+   过去并进上一部还在飞的那次，那份结果又因作品不符被丢掉，新作品的收件箱就一直停在「还没读到」（审计 F01-05）。
+   处理 / 稍后 / 投递这些写入经 rvLoader.write：写入之前发出的读取回来时不把刚划掉的卡放回来，写完以服务端为准重读。 */
 let rvLastFetchAt = 0;
+const rvLoader = createKeyedLoader({
+  async fetch(pid) {
+    rvLastFetchAt = Date.now();
+    await rvMigrateLegacy(pid);
+    const [open, snoozed] = await Promise.all([
+      apiGet(`/api/v1/review-items?state=open&project_id=${encodeURIComponent(pid)}`),
+      apiGet(`/api/v1/review-items?state=snoozed&project_id=${encodeURIComponent(pid)}`),
+    ]);
+    return { open, snoozed };
+  },
+  isCurrent: (pid) => rvActiveId() === pid,
+  apply(pid, { open, snoozed }) {
+    rvCache = {
+      open: ((open && open.items) || []).map(rvAdapt),
+      snoozed: ((snoozed && snoozed.items) || []).map(rvAdapt),
+    };
+    rvLoadedFor = pid;
+    rvLoadError = null;
+    rvEmit();
+  },
+  onError(pid, e) {
+    console.warn("[WsReview] 拉取收件箱失败:", e);
+    // 记下来给视图说清楚、给重试；否则还没拉到过的收件箱会永远停在「正在读取」
+    rvLoadError = { pid, message: (e && e.message) || "" };
+    rvNotifyLoad();
+  },
+});
+
+/* 以服务端为准重读当前作品的收件箱（在飞的那一次作废，结束后恰好再读一次） */
 function rvFetch() {
   const pid = rvActiveId();
-  if (!isRealWorkId(pid)) return Promise.resolve();
-  if (rvFetching) return rvFetching;
-  rvLastFetchAt = Date.now();
-  rvFetching = (async () => {
-    try {
-      await rvMigrateLegacy(pid);
-      const [open, snoozed] = await Promise.all([
-        apiGet(`/api/v1/review-items?state=open&project_id=${encodeURIComponent(pid)}`),
-        apiGet(`/api/v1/review-items?state=snoozed&project_id=${encodeURIComponent(pid)}`),
-      ]);
-      // 拉取途中换了作品：这份结果属于上一部，丢掉
-      if (rvActiveId() !== pid) return;
-      rvCache = {
-        open: ((open && open.items) || []).map(rvAdapt),
-        snoozed: ((snoozed && snoozed.items) || []).map(rvAdapt),
-      };
-      rvLoadedFor = pid;
-      rvLoadError = null;
-      rvEmit();
-    } catch (e) {
-      console.warn("[WsReview] 拉取收件箱失败:", e);
-      // 记下来给视图说清楚、给重试；否则还没拉到过的收件箱会永远停在「正在读取」
-      if (rvActiveId() === pid) {
-        rvLoadError = { pid, message: (e && e.message) || "" };
-        rvNotifyLoad();
-      }
-    } finally {
-      rvFetching = null;
-    }
-  })();
-  return rvFetching;
+  if (!isRealWorkId(pid)) return Promise.resolve(false);
+  return rvLoader.invalidate(pid);
+}
+
+/* 本机对当前作品收件箱的一次写入：run 返回 Promise；写完（成功或失败）重读 */
+function rvWrite(pid, run) {
+  if (!isRealWorkId(pid)) return Promise.resolve().then(run);
+  return rvLoader.write(pid, run);
 }
 
 let rvFetchTimer = null;
@@ -254,7 +263,7 @@ function rvCustomList() { return rvCache.open.filter(i => !i.live); }
 
 function rvPush(item) {
   const payload = rvToPayload(item || {});
-  apiPost("/api/v1/review-items", payload).then(() => rvFetch()).catch((e) => {
+  rvWrite(payload.project_id, () => apiPost("/api/v1/review-items", payload)).catch((e) => {
     console.warn("[WsReview] 投递待办失败:", e);
   });
   return "pending"; // 旧签名返回 id；真实 id 由刷新后的列表供给
@@ -317,7 +326,7 @@ function rvMarkResolved(ids) {
   rvCache = { ...rvCache, open: rvCache.open.filter(i => !ids.includes(i.id)) };
   rvBumpDone((ids || []).length);
   rvEmit();
-  (async () => {
+  rvWrite(pid, async () => {
     for (const id of ids || []) {
       const body = { project_id: pid };
       if (rvPendingAction[id] != null) { body.action_index = rvPendingAction[id]; delete rvPendingAction[id]; }
@@ -326,8 +335,7 @@ function rvMarkResolved(ids) {
         storeAlert(e, "处理失败。");
       }
     }
-    rvFetch();
-  })();
+  });
 }
 
 /* 撤销：items 是视图刚放回列表的卡。缓存里也放回去（不广播，视图已经按原位置插好），
@@ -337,12 +345,11 @@ function rvUnresolve(ids, items) {
   const back = (items || []).filter(it => it && !rvCache.open.some(x => x.id === it.id));
   if (back.length) rvCache = { ...rvCache, open: [...rvCache.open, ...back] };
   rvBumpDone(-(ids || []).length);
-  (async () => {
+  rvWrite(rvActiveId(), async () => {
     for (const id of ids || []) {
       try { await apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/unresolve`, {}); } catch (e) {}
     }
-    rvFetch();
-  })();
+  });
 }
 
 /* 稍后 / 恢复都在 store 里乐观移动再广播：视图只听广播，不自己在两份列表之间搬
@@ -356,9 +363,7 @@ function rvMarkSnoozed(id, fallback) {
     snoozed: it ? [it, ...rvCache.snoozed.filter(x => x.id !== id)] : rvCache.snoozed,
   };
   rvEmit();
-  apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/snooze`, { project_id: pid })
-    .then(() => rvFetch())
-    .catch(() => rvFetch());
+  rvWrite(pid, () => apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/snooze`, { project_id: pid }).catch(() => {}));
 }
 
 function rvUnsnooze(id) {
@@ -369,9 +374,7 @@ function rvUnsnooze(id) {
     snoozed: rvCache.snoozed.filter(x => x.id !== id),
   };
   rvEmit();
-  apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/unsnooze`, { project_id: pid })
-    .then(() => rvFetch())
-    .catch(() => rvFetch());
+  rvWrite(pid, () => apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/unsnooze`, { project_id: pid }).catch(() => {}));
 }
 
 function rvIsResolved(id) { return rvResolvedSet.has(id); }

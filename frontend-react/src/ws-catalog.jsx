@@ -2,6 +2,7 @@ import React from "react";
 import { WsWorks } from "./ws-works.jsx";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
+import { createKeyedLoader } from "./lib/store-kit.js";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 import { isRealWorkId } from "./lib/work-id.js";
 
@@ -353,43 +354,54 @@ const catApiBase = (id) => `/api/v2/projects/${id}/catalog`;
    再 setState，最终触发 Maximum update depth。空快照必须保持引用稳定。 */
 function catLoad(workId) { return catCache[workId] || CAT_EMPTY; }
 
-const catFetching = {};
-function catFetch(workId, options) {
-  const migrate = !options || options.migrate !== false;
-  if (!isRealWorkId(workId)) return Promise.resolve();
-  if (catFetching[workId]) return catFetching[workId];
-  delete catErrorMap[workId];
-  catFetching[workId] = (async () => {
-    try {
-      let data = await apiGet(catApiBase(workId));
-      let chapters = (data && data.chapters) || [];
-      if (migrate && !chapters.length) {
-        const imported = await catMigrateLegacy(workId);
-        if (imported) {
-          data = await apiGet(catApiBase(workId));
-          chapters = (data && data.chapters) || [];
-        }
+/* 读取器（lib/store-kit）：按作品合并在飞请求；本机写入进行中或写入之前发出的读取回来时不写缓存——
+   否则写后补读会并进写入之前那一次，回来的是写入前的服务端状态，刚改的标题在屏上退回去（审计 F01-05）。 */
+const catLoader = createKeyedLoader({
+  async fetch(workId, options) {
+    // 旧本机目录的一次性上行只在启动 / 换作品那次装载里试（显式 { migrate: true }）；写后补读、重试都不试
+    const migrate = !!(options && options.migrate);
+    let data = await apiGet(catApiBase(workId));
+    let chapters = (data && data.chapters) || [];
+    if (migrate && !chapters.length) {
+      const imported = await catMigrateLegacy(workId);
+      if (imported) {
+        data = await apiGet(catApiBase(workId));
+        chapters = (data && data.chapters) || [];
       }
-      const mapped = chapters.map(catFromApiChapter);
-      catMigrateSidKeys(workId, mapped);
-      catTrackAliases(workId, catCache[workId], mapped);
-      catCache[workId] = mapped;
-      catReadyMap[workId] = true;
-      delete catErrorMap[workId];
-      catNotify();
-      catPushTotals();
-      try { window.WrDocs && window.WrDocs.hydrateActive && window.WrDocs.hydrateActive(); } catch (e) {}
-    } catch (e) {
-      catErrorMap[workId] = e instanceof Error ? e : new Error("章节目录加载失败");
-      console.warn("[WsCatalog] 拉取目录失败:", e);
-      catNotify();
-    } finally {
-      delete catFetching[workId];
     }
-  })();
-  // 新作品开始装载时立即通知订阅者清掉上一部作品的场景选择，避免跨作品串稿。
-  catNotify();
-  return catFetching[workId];
+    return chapters.map(catFromApiChapter);
+  },
+  apply(workId, mapped) {
+    catMigrateSidKeys(workId, mapped);
+    catTrackAliases(workId, catCache[workId], mapped);
+    catCache[workId] = mapped;
+    catReadyMap[workId] = true;
+    delete catErrorMap[workId];
+    catNotify();
+    catPushTotals();
+    try { window.WrDocs && window.WrDocs.hydrateActive && window.WrDocs.hydrateActive(); } catch (e) {}
+  },
+  onError(workId, e) {
+    catErrorMap[workId] = e instanceof Error ? e : new Error("章节目录加载失败");
+    console.warn("[WsCatalog] 拉取目录失败:", e);
+    catNotify();
+  },
+});
+
+/* 装载（在飞就复用）。新作品开始装载时立即通知订阅者清掉上一部作品的场景选择，避免跨作品串稿。 */
+function catFetch(workId, options) {
+  if (!isRealWorkId(workId)) return Promise.resolve(false);
+  const fresh = !catLoader.inflight(workId);
+  if (fresh) delete catErrorMap[workId];
+  const run = catLoader.load(workId, options);
+  if (fresh) catNotify();
+  return run;
+}
+
+/* 以服务端为准重读：在飞的那一次（可能早于服务端刚发生的变化）作废，结束后恰好再读一次 */
+function catRefetch(workId) {
+  if (!isRealWorkId(workId)) return Promise.resolve(false);
+  return catLoader.invalidate(workId);
 }
 
 /* 旧 localStorage 目录编辑 → 一次性上行（仅后端目录为空时；import 端点 loopback 免 token） */
@@ -411,10 +423,9 @@ async function catMigrateLegacy(workId) {
   }
 }
 
-/* 写失败统一恢复：以服务端为准整体重拉 + 提示 */
+/* 写失败统一提示；以服务端为准的重拉由 catLoader.write 收尾时统一做 */
 function catRecover(error) {
   storeAlert(error, "目录保存失败，已恢复为服务端版本。");
-  catFetch(catActiveId(), { migrate: false });
 }
 
 /* 后端 id 解析（含等待乐观创建完成）。
@@ -519,7 +530,7 @@ async function catTrash(path, body) {
    这里按差异派发端点调用；任何一步失败 → 整体重拉恢复。
    删除先于其它操作、且章/场各合并成一次批量调用：批量删 20 章不再打 20 个请求，
    场景删除也必须早于 scene-order（后端要求顺序集合覆盖章内全部在册场景）。 */
-async function catDispatchDiff(workId, prev, next) {
+function catDispatchDiff(workId, prev, next) {
   const ops = [];
   let planTitleSynced = false;
   const prevById = Object.fromEntries(prev.map(c => [c.id, c]));
@@ -613,20 +624,23 @@ async function catDispatchDiff(workId, prev, next) {
       await apiPost(`${catApiBase(workId)}/chapter-order`, { chapter_ids: chapterIds });
     });
   }
-  if (!ops.length) return;
-  try {
-    for (const op of ops) await op();
-    if (planTitleSynced) {
-      try {
-        const sync = window.SnowSync;
-        if (sync && typeof sync.adoptServerChapters === "function") await sync.adoptServerChapters(workId);
-      } catch (e) { console.warn("[WsCatalog] 本机雪花缓存接章表失败（下次打开构思时水合）:", e); }
+  if (!ops.length) return false;
+  /* 写入期间回来的读取一律不写缓存；写完（成功或失败）以服务端编号 / rollup 收敛——重读由 write 收尾时发 */
+  catLoader.write(workId, async () => {
+    try {
+      for (const op of ops) await op();
+      if (planTitleSynced) {
+        try {
+          const sync = window.SnowSync;
+          if (sync && typeof sync.adoptServerChapters === "function") await sync.adoptServerChapters(workId);
+        } catch (e) { console.warn("[WsCatalog] 本机雪花缓存接章表失败（下次打开构思时水合）:", e); }
+      }
+      emit("ws:trash-changed");
+    } catch (e) {
+      catRecover(e);
     }
-    catFetch(workId, { migrate: false }); // 以服务端编号/rollup 收敛
-    emit("ws:trash-changed");
-  } catch (e) {
-    catRecover(e);
-  }
+  });
+  return true;
 }
 
 const WsCatalog = {
@@ -638,7 +652,7 @@ const WsCatalog = {
     const id = catActiveId();
     if (!catReadyMap[id]) {
       storeAlert(null, "章节目录尚未从服务端加载完成，本次修改未提交。请先重试加载目录。");
-      if (!catFetching[id]) catFetch(id, { migrate: false });
+      catFetch(id);
       return false;
     }
     const prev = catLoad(id);
@@ -653,7 +667,7 @@ const WsCatalog = {
     delete catCache[id];
     catReadyMap[id] = false;
     delete catErrorMap[id];
-    catFetch(id, { migrate: false });
+    catRefetch(id);
     catNotify();
     return this.get();
   },
@@ -838,7 +852,7 @@ const WsCatalog = {
     }
     catPushTotals();
   },
-  __refresh(workId) { return catFetch(workId || catActiveId(), { migrate: false }); },
+  __refresh(workId) { return catRefetch(workId || catActiveId()); },
 };
 
 /* hook：订阅目录 + 作品切换 */
@@ -854,10 +868,10 @@ function useCatalogChapters() {
 /* 启动 & 切换作品：装载目录 + 同步统计（进度同源）。
    模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉旧实例挂在 window 上的监听器（在回收站那段末尾登记）。 */
 retireModuleListeners("ws-catalog");
-try { catFetch(catActiveId()); } catch (e) {}
+try { catFetch(catActiveId(), { migrate: true }); } catch (e) {}
 try { catPushTotals(); } catch (e) {}
 const catOnWorkChanged = () => {
-  try { catFetch(catActiveId()); } catch (e) {}
+  try { catFetch(catActiveId(), { migrate: true }); } catch (e) {}
   try { catPushTotals(); } catch (e) {}
 };
 window.addEventListener("ws:work-changed", catOnWorkChanged);
@@ -871,7 +885,6 @@ window.addEventListener("ws:work-changed", catOnWorkChanged);
    ========================================================== */
 const trashSubs = createSubscribers();
 let trashCache = [];
-let trashFetching = null;
 /* 读取状态（只读，给视图区分「真的空」「还在读」「读不到」）：以前拉取失败只 console.warn，
    列表停在 []，作者看到的是「回收站是空的」——删掉的东西像是没了。 */
 let trashLoad = { status: "idle", message: "" };
@@ -892,22 +905,43 @@ function trashAdapt(item) {
   };
 }
 
-function trashFetch() {
-  if (trashFetching) return trashFetching;
-  const id = catActiveId();
-  const qs = isRealWorkId(id) ? `?project_id=${encodeURIComponent(id)}` : "";
-  // 已经读到过一次时，后台刷新不把状态打回「读取中」（视图不该因此闪一下）
-  if (trashLoad.status !== "ready") { trashLoad = { status: "loading", message: "" }; trashNotify(); }
-  trashFetching = apiGet(`/api/v2/trash${qs}`).then((data) => {
+/* 回收站只存「当前作品」一份：键 = 当前作品 id（没有作品时是空串，只拿全局作品桶）。
+   换作品时新作品另发请求，上一部还在飞的那次回来直接丢掉（审计 F01-05：过去并进同一个在飞请求，
+   新作品的回收站显示上一部的章与场）。 */
+const trashKey = () => { const id = catActiveId(); return isRealWorkId(id) ? id : ""; };
+const trashLoader = createKeyedLoader({
+  fetch(key) {
+    const qs = key ? `?project_id=${encodeURIComponent(key)}` : "";
+    return apiGet(`/api/v2/trash${qs}`);
+  },
+  isCurrent: (key) => key === trashKey(),
+  apply(key, data) {
     trashCache = ((data && data.items) || []).map(trashAdapt);
     trashLoad = { status: "ready", message: "" };
     trashNotify();
-  }).catch((e) => {
+  },
+  onError(key, e) {
     console.warn("[WsTrashStore] 拉取回收站失败:", e);
     trashLoad = { status: "error", message: (e && e.message) || "读不到回收站。" };
     trashNotify();
-  }).finally(() => { trashFetching = null; });
-  return trashFetching;
+  },
+});
+
+function trashLoading() {
+  // 已经读到过一次时，后台刷新不把状态打回「读取中」（视图不该因此闪一下）
+  if (trashLoad.status !== "ready") { trashLoad = { status: "loading", message: "" }; trashNotify(); }
+}
+
+/* 装载（这部作品的在飞请求可以复用） */
+function trashFetch() {
+  trashLoading();
+  return trashLoader.load(trashKey());
+}
+
+/* 服务端刚变过（软删 / 恢复 / 永久删除）：在飞的那一次作废，结束后恰好再读一次 */
+function trashRefetch() {
+  trashLoading();
+  return trashLoader.invalidate(trashKey());
 }
 
 const WsTrashStore = {
@@ -915,32 +949,32 @@ const WsTrashStore = {
   /* { status: idle | loading | ready | error, message }——只读 */
   loadState() { return trashLoad; },
   /* 回收站打开时重拉一次：分章 / 物化可能在服务端自动移入或取回了章与场景 */
-  refresh() { return trashFetch(); },
+  refresh() { return trashRefetch(); },
   /* 兼容壳：各软删端点已自动产生后端条目，这里只触发刷新（旧调用点无害化） */
   push(item) {
-    trashFetch();
+    trashRefetch();
     return { id: "pending", removedAt: Date.now(), ...(item || {}) };
   },
   restore(id) {
     apiPost(`/api/v2/trash/${encodeURIComponent(id)}/restore`, {}).then(() => {
-      trashFetch();
+      trashRefetch();
       if (String(id).startsWith("work:")) {
         if (WsWorks && WsWorks.__refresh) WsWorks.__refresh();
       } else {
-        catFetch(catActiveId(), { migrate: false });
+        catRefetch(catActiveId());
       }
     }).catch((e) => {
       storeAlert(e, "恢复失败。");
-      trashFetch();
+      trashRefetch();
     });
     return true; // 乐观返回；失败走上面的独立提示
   },
   purge(id) {
     apiDelete(`/api/v2/trash/${encodeURIComponent(id)}`).then(() => {
-      trashFetch();
+      trashRefetch();
     }).catch((e) => {
       storeAlert(e, "永久删除失败。");
-      trashFetch();
+      trashRefetch();
     });
   },
   async clear() {
@@ -957,11 +991,11 @@ const WsTrashStore = {
         failures.push({ item: it, error: e });
       }
     }
-    await trashFetch();
+    await trashRefetch();
     if (failures.length) {
       const first = failures[0].error;
       const reason = first && first.message ? `：${first.message}` : "";
-      try { window.alert(`回收站未能完全清空，${failures.length} 条仍需重试${reason}`); } catch (e) {}
+      storeAlert(null, `回收站未能完全清空，${failures.length} 条仍需重试${reason}`);
       return false;
     }
     return true;
@@ -973,7 +1007,7 @@ try { trashFetch(); } catch (e) {}
 const trashOnWorkChanged = () => { try { trashFetch(); } catch (e) {} };
 window.addEventListener("ws:work-changed", trashOnWorkChanged);
 /* 软删端点完成后的精确刷新信号（WsWorks.remove / 目录删除成功时 dispatch） */
-const trashOnChanged = () => { try { trashFetch(); } catch (e) {} };
+const trashOnChanged = () => { try { trashRefetch(); } catch (e) {} };
 window.addEventListener("ws:trash-changed", trashOnChanged);
 adoptModuleListeners("ws-catalog", () => {
   window.removeEventListener("ws:work-changed", catOnWorkChanged);

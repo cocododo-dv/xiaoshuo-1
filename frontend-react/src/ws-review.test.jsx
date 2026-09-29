@@ -64,6 +64,31 @@ describe("WsReview（收件箱乐观处理 + 失败告警）", () => {
       ), T);
   });
 
+  it("拉取途中换了作品：新作品照样读到自己的收件箱，不停在「还没读到」（F01-05）", async () => {
+    const other = { project_id: "prj-other", title: "另一部", stats: {} };
+    const client = await import("./lib/client.js");
+    installApiRouter(client, { projects: [{ project_id: "prj-main", title: "北岸手记", stats: {} }, other] });
+    const route = client.apiGet.getMockImplementation();
+    let releaseMain;
+    const mainOpen = new Promise((resolve) => { releaseMain = resolve; });
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/review-items?state=open&project_id=prj-main") return mainOpen;
+      if (url === "/api/v1/review-items?state=open&project_id=prj-other") return Promise.resolve({ items: [{ ...DEFAULT_REVIEW_CARD, id: "rv-other" }] });
+      return route(url);
+    });
+    const mod = await import("./ws-review.jsx");
+    await settleActive();
+    await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v1/review-items?state=open&project_id=prj-main"), T);
+
+    window.WsWorks.setActive("prj-other");
+    // 去抖（600 ms）之后才拉新作品；上一部的请求此时还在飞
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    releaseMain({ items: [{ ...DEFAULT_REVIEW_CARD, id: "rv-main" }] });
+
+    await vi.waitFor(() => expect(mod.rvReady()).toBe(true), T);
+    expect(mod.rvOpenItems().map((i) => i.id)).toEqual(["rv-other"]);
+  });
+
   it("resolve 端点失败时告警", async () => {
     const { mod, client } = await loadReview({ reviewOpen: [DEFAULT_REVIEW_CARD] });
     await vi.waitFor(() => expect(mod.rvOpenItems().length).toBeGreaterThan(0), T);
