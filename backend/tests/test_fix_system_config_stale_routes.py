@@ -18,7 +18,11 @@ import pytest
 import yaml
 
 from novel_system.db.models import SystemConfigSnapshot, utcnow
-from novel_system.services.llm_node_registry import active_llm_node_ids, llm_node_catalog
+from novel_system.services.llm_node_registry import (
+    active_llm_node_ids,
+    default_task_config_payload,
+    llm_node_catalog,
+)
 from novel_system.services.system_config import default_config_payload
 
 
@@ -188,6 +192,80 @@ def test_sync_missing_prunes_stale_task_routing_entry_from_legacy_snapshot(clien
     assert "stylize" in parsed["task_routing"]
     assert payload["overview"]["stale_routes"] == []
     assert payload["overview"]["missing_active_routes"] == []
+
+
+# 2026-09-30 重评 R15b:删掉的四个保留节点里,archive / chapter_aggregate 在真实安装的活动快照里还带着
+# task_routing 条目(老版 models.yaml 抄进去的)。它们现在是退役路由:overview 列在 stale_routes 里、
+# 不计入就绪统计,下一次「一键补齐」/ 分工保存把它们剪掉,激活不因它们 422。
+_RESERVED_LEGACY_IDS = ("archive", "chapter_aggregate")
+
+
+def _live_shaped_models_payload(provider_id: str) -> dict:
+    """真实安装形状的活动 models 快照:每个节点都绑在一个服务上,task_routing 里还留着两个保留节点。"""
+    node_routing = {
+        node_id: default_task_config_payload(
+            node_id,
+            provider_id=provider_id,
+            provider="openai_compatible",
+            model="Qwen3-14B-Q8_0.gguf",
+            api_mode="chat",
+            credential_mode="none",
+        )
+        for node_id in active_llm_node_ids()
+    }
+    task_routing = {
+        node_id: _route(provider_id, max_output_tokens=4000 if node_id == "chapter_aggregate" else 1200)
+        for node_id in _RESERVED_LEGACY_IDS
+    }
+    return {"task_routing": task_routing, "node_routing": node_routing, "retry_budget": {}, "job_runtime": {}}
+
+
+def test_reserved_node_routes_in_live_snapshot_are_stale_and_pruned_by_sync_missing(client, session, monkeypatch) -> None:
+    _enable_admin(monkeypatch)
+    assert _create_provider(client, "local_qwen").status_code == 200
+    _seed_active_snapshot(session, category="models", parsed=_live_shaped_models_payload("local_qwen"))
+
+    before = client.get("/api/v1/system-config/llm").json()["data"]
+    assert before["stale_routes"] == list(_RESERVED_LEGACY_IDS)
+    assert before["readiness"]["active_route_count"] == 32
+    assert before["missing_active_routes"] == []
+    for node_id in _RESERVED_LEGACY_IDS:
+        assert node_id not in before["node_routes"]
+        assert node_id not in before["node_catalog"]
+
+    response = client.post(
+        "/api/v1/system-config/llm/node-routes/sync-missing",
+        headers=ADMIN_HEADERS,
+        json={"activate": True},
+    )
+    assert response.status_code == 200, response.json()
+    payload = response.json()["data"]
+    assert payload["pruned_stale_routes"] == list(_RESERVED_LEGACY_IDS)
+    for table in ("node_routing", "task_routing"):
+        assert not set(_RESERVED_LEGACY_IDS) & set(payload["snapshot"]["parsed"].get(table) or {})
+    assert payload["overview"]["stale_routes"] == []
+    assert payload["overview"]["readiness"]["active_route_count"] == 32
+
+
+def test_role_routes_save_activates_with_reserved_nodes_left_in_legacy_task_routing(client, session, monkeypatch) -> None:
+    _enable_admin(monkeypatch)
+    assert _create_provider(client, "local_qwen").status_code == 200
+    _seed_active_snapshot(session, category="models", parsed=_live_shaped_models_payload("local_qwen"))
+
+    response = client.post(
+        "/api/v1/system-config/llm/role-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "assignments": {"review": {"provider_id": "local_qwen", "model": "Qwen3-14B-Q8_0.gguf"}},
+            "activate": True,
+        },
+    )
+    assert response.status_code == 200, response.json()
+    payload = response.json()["data"]
+    assert payload["snapshot"]["active"] is True
+    assert payload["pruned_stale_routes"] == list(_RESERVED_LEGACY_IDS)
+    assert payload["overview"]["stale_routes"] == []
+    assert payload["overview"]["readiness"]["active_route_count"] == 32
 
 
 def test_role_routes_save_prunes_stale_routes_and_reports_them(client, session, monkeypatch) -> None:

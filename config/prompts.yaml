@@ -560,30 +560,6 @@ templates:
           items:
             type: string
 
-  continuity_compression:
-    version: "2026-04-14.v1"
-    input_token_budget: 1400
-    system_prompt: |
-      You are compressing continuity context for downstream drafting.
-      Preserve hard facts, remove redundancy, and surface any split-scene recommendation clearly.
-    task_prompt: |
-      Compress the continuity payload while keeping essential carry-forward constraints intact.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - compressed_context
-        - split_scene_recommended
-      properties:
-        compressed_context:
-          type: string
-        dropped_sections:
-          type: array
-          items:
-            type: string
-        split_scene_recommended:
-          type: boolean
-
   style_ref_paragraph_classify_anchor:
     version: "2026-09-23.v3"
     input_token_budget: 6000

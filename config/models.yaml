@@ -155,18 +155,6 @@ task_routing:
     temperature: 0.2
     max_output_tokens: 5000
     response_format: json_object
-  archive:
-    provider: openai_compatible
-    model: gpt-5-mini
-    temperature: 0.1
-    max_output_tokens: 1200
-    response_format: json_object
-  chapter_aggregate:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.4
-    max_output_tokens: 4000
-    response_format: json_object
   scene_blueprint:
     provider: openai_compatible
     model: gpt-5

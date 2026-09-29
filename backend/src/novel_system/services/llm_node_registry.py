@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 
-NodeStatus = Literal["active", "reserved", "local"]
+# 2026-09-30 重评 R15b:四个从不调模型的「保留」节点(章节摘要 / 连续性压缩 / 归档与索引 / 章节汇总)删了,
+# 注册表里只剩真正调模型的节点。status / requires_llm 仍随目录与路由载荷发出(设置页按它们筛选),取值只有这一种。
+NodeStatus = Literal["active"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,11 +25,6 @@ class LLMNodeSpec:
     reasoning_level: str = "medium"
     api_mode: str = "responses"
     model_profile: str | None = None
-    fallback_route_ids: tuple[str, ...] = ()
-    # PR-8 §5.1 — 分段续写场景专用:每 N 字符重新拉取 [STYLE_REFERENCE] 注入,
-    # 防止风格漂移。0 = 不刷新(默认)。曾仅由已下线的 long_form_continuation
-    # 节点启用;字段保留在 spec 契约里(catalog/route payload 消费方兼容)。
-    refresh_every_chars: int = 0
     # §7 anti-mean sampling — decoding-level penalties carried into DB node routing so the
     # System-Config UI route keeps them instead of silently dropping to None on the DB path.
     frequency_penalty: float | None = None
@@ -50,8 +47,6 @@ class LLMNodeSpec:
             "reasoning_level": self.reasoning_level,
             "api_mode": self.api_mode,
             "model_profile": self.model_profile,
-            "fallback_route_ids": list(self.fallback_route_ids),
-            "refresh_every_chars": self.refresh_every_chars,
             "frequency_penalty": self.frequency_penalty,
             "presence_penalty": self.presence_penalty,
             "top_p": self.top_p,
@@ -253,7 +248,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="scene_blueprint",
         temperature=0.25,
         max_output_tokens=1800,
-        fallback_route_ids=("neutral_draft", "style_draft", "stylize"),
     ),
     LLMNodeSpec(
         "character_pressure_blueprint",
@@ -262,7 +256,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="character_pressure_blueprint",
         temperature=0.25,
         max_output_tokens=1800,
-        fallback_route_ids=("scene_blueprint", "neutral_draft", "style_draft", "stylize"),
     ),
     LLMNodeSpec(
         "chapter_story_architecture",
@@ -271,7 +264,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_story_architecture",
         temperature=0.25,
         max_output_tokens=2200,
-        fallback_route_ids=("scene_blueprint", "neutral_draft", "style_draft", "stylize"),
     ),
     # 章节编排 LLM 规划三通道（docs/chapter-arrangement-llm-design-2026-07-16.md §4）
     LLMNodeSpec(
@@ -337,7 +329,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.55,
         max_output_tokens=6000,
         model_profile="quality_strong",
-        fallback_route_ids=("style_draft", "style_patch", "stylize", "neutral_draft"),
     ),
     LLMNodeSpec(
         "hard_qc",
@@ -363,7 +354,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="near_final_acceptance_review",
         temperature=0.15,
         max_output_tokens=5000,
-        fallback_route_ids=("soft_qc", "hard_qc", "style_draft", "neutral_draft"),
     ),
     LLMNodeSpec(
         "chapter_near_final_review",
@@ -372,7 +362,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_near_final_review",
         temperature=0.15,
         max_output_tokens=3200,
-        fallback_route_ids=("soft_qc", "hard_qc", "style_draft", "neutral_draft"),
     ),
     LLMNodeSpec(
         "writer_passage_patch",
@@ -398,49 +387,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.45,
         max_output_tokens=2600,
     ),
-    LLMNodeSpec(
-        "chapter_summary",
-        "Chapter summary",
-        "local",
-        status="reserved",
-        requires_llm=False,
-        template_name=None,
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=1200,
-    ),
-    LLMNodeSpec(
-        "continuity_compression",
-        "Continuity compression",
-        "local",
-        status="reserved",
-        requires_llm=False,
-        template_name=None,
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=1200,
-    ),
-    LLMNodeSpec(
-        "archive",
-        "Archive and index",
-        "local",
-        status="reserved",
-        requires_llm=False,
-        template_name=None,
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=1200,
-    ),
-    LLMNodeSpec(
-        "chapter_aggregate",
-        "Chapter aggregate",
-        "local",
-        status="reserved",
-        requires_llm=False,
-        template_name=None,
-        temperature=0.4,
-        max_output_tokens=4000,
-    ),
 )
 
 
@@ -455,24 +401,8 @@ def llm_node_catalog() -> dict[str, dict[str, Any]]:
     }
 
 
-def llm_node_statuses() -> dict[str, str]:
-    return {spec.node_id: spec.status for spec in _NODE_SPECS}
-
-
 def active_llm_node_ids() -> list[str]:
-    return [
-        spec.node_id
-        for spec in _NODE_SPECS
-        if spec.status == "active" and spec.requires_llm
-    ]
-
-
-def reserved_llm_node_ids() -> set[str]:
-    return {
-        spec.node_id
-        for spec in _NODE_SPECS
-        if spec.status != "active" or not spec.requires_llm
-    }
+    return [spec.node_id for spec in _NODE_SPECS]
 
 
 def get_llm_node_spec(node_id: str) -> LLMNodeSpec | None:
@@ -506,8 +436,7 @@ def default_task_config_payload(
 
 
 # ---- 角色分工槽位(writer-facing routing) ---------------------------------
-# 写作者视角的三个分工槽位,按节点分组批量路由;覆盖全部 active 节点
-# (local 组 requires_llm=False 不入槽)。前端「设置 → AI 模型 → 分工」用。
+# 写作者视角的三个分工槽位,按节点分组批量路由;覆盖全部节点。前端「设置 → AI 模型 → 分工」用。
 
 
 @dataclass(frozen=True, slots=True)
@@ -561,11 +490,7 @@ def role_slot_node_ids(slot_id: str) -> list[str]:
     if slot is None:
         raise KeyError(slot_id)
     groups = set(slot.groups)
-    return [
-        spec.node_id
-        for spec in _NODE_SPECS
-        if spec.group in groups and spec.status == "active" and spec.requires_llm
-    ]
+    return [spec.node_id for spec in _NODE_SPECS if spec.group in groups]
 
 
 def role_slot_catalog() -> list[dict[str, Any]]:

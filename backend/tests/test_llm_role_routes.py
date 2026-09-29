@@ -103,10 +103,8 @@ def test_save_role_routes_expands_only_slot_nodes(client, monkeypatch) -> None:
         route = node_routing.get(node_id)
         if route is not None:
             assert route.get("provider_id") != "main_provider"
-    assert data["snapshot"]["parsed"]["role_assignments"]["drafting"] == {
-        "provider_id": "main_provider",
-        "model": "test-model-b",
-    }
+    # 槽位绑定从 node_routes 反推(overview.role_slots),快照不再另存一份没人读的 role_assignments
+    assert "role_assignments" not in data["snapshot"]["parsed"]
 
 
 def test_save_role_routes_activate_updates_overview_inference(client, monkeypatch) -> None:
@@ -134,58 +132,6 @@ def test_save_role_routes_activate_updates_overview_inference(client, monkeypatc
     assert slots["extraction"]["current"] == {"provider_id": "main_provider", "model": "test-model-b", "mixed": False}
     # 全部 active 节点都被路由后,缺失列表应为空
     assert data["overview"]["missing_active_routes"] == []
-
-
-def test_advanced_node_route_save_preserves_active_role_assignments(
-    client, monkeypatch
-) -> None:
-    _enable_admin(monkeypatch)
-    _create_provider(client)
-    role_response = client.post(
-        "/api/v1/system-config/llm/role-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "assignments": {
-                "extraction": {
-                    "provider_id": "main_provider",
-                    "model": "test-model-a",
-                }
-            },
-            "activate": True,
-        },
-    )
-    assert role_response.status_code == 200
-
-    route_response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "activate": False,
-            "node_routing": {
-                "style_ref_extract_language": {
-                    "provider": "openai_compatible",
-                    "provider_id": "main_provider",
-                    "model": "test-model-a",
-                    "temperature": 0.0,
-                    "max_output_tokens": 6400,
-                    "response_format": "json_object",
-                    "reasoning_level": "medium",
-                    "api_mode": "chat",
-                    "credential_mode": "none",
-                }
-            },
-            "retry_budget": {},
-            "job_runtime": {},
-        },
-    )
-
-    assert route_response.status_code == 200
-    assert route_response.json()["data"]["snapshot"]["parsed"]["role_assignments"] == {
-        "extraction": {
-            "provider_id": "main_provider",
-            "model": "test-model-a",
-        }
-    }
 
 
 def test_save_role_routes_partial_assignment_activates_incrementally(client, monkeypatch) -> None:

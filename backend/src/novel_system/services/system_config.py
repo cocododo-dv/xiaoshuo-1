@@ -48,8 +48,6 @@ from novel_system.services.llm_node_registry import (
     default_task_config_payload,
     get_role_slot_spec,
     llm_node_catalog,
-    llm_node_statuses,
-    reserved_llm_node_ids,
     role_slot_catalog,
     role_slot_node_ids,
 )
@@ -66,7 +64,6 @@ YAML_CONFIG_FILES = {
 }
 LLM_API_KEY_SECRET_ID = "llm_api_key"
 LLM_PROVIDER_SECRET_PREFIX = "llm_provider"
-LLM_NODE_STATUSES = llm_node_statuses()
 # 探活调用向记账层申报的输出预算(详见 _probe_completion 内注释)
 PROBE_ACCOUNTING_OUTPUT_BUDGET = 1024
 # 「测试连接」的超时与长文本生成上限无关，探测必须有限且短。
@@ -583,15 +580,15 @@ class SystemConfigService:
             provider_id: self._serialize_provider(provider_id, provider_payload)
             for provider_id, provider_payload in _provider_payloads_from_llm(llm_payload).items()
         }
+        node_catalog = llm_node_catalog()
         try:
             routing = parse_model_routing_config(models_payload.get("parsed") or {})
             node_routes = {
-                node_id: _serialize_task_config(node_id, task_config)
+                node_id: _serialize_task_config(node_id, task_config, node_catalog.get(node_id))
                 for node_id, task_config in routing.node_routing.items()
             }
         except LLMConfigurationError:
             node_routes = {}
-        node_catalog = llm_node_catalog()
         # 存量 models 快照的 node_routing 只前滚不剪枝：节点从注册表退役后，
         # 老安装的快照仍带着它的路由。这类目录外条目没有 spec，不该渲染成
         # 无名路由行或计入就绪统计，单列为 stale_routes 供排查。
@@ -632,9 +629,7 @@ class SystemConfigService:
                 "reason": route.get("readiness_reason"),
             }
             for route in node_routes.values()
-            if _route_requires_llm(route)
-            and route.get("configured")
-            and route.get("ready") is not True
+            if route.get("configured") and route.get("ready") is not True
         ]
         return {
             "provider_catalog": _provider_catalog(),
@@ -881,16 +876,12 @@ class SystemConfigService:
         }
 
     def save_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
-        current_models = dict(self._category_payload("models").get("parsed") or {})
         config_payload = {
             "model_profiles": dict(payload.get("model_profiles") or {}),
             "task_routing": dict(payload.get("task_routing") or {}),
             "node_routing": dict(payload.get("node_routing") or {}),
             "retry_budget": dict(payload.get("retry_budget") or {}),
             "job_runtime": dict(payload.get("job_runtime") or {}),
-            # 节点高级编辑表单不提交角色槽元数据；保存时必须沿用当前绑定，
-            # 否则一次无关的温度/预算调整会让设置页静默丢失三个角色分工。
-            "role_assignments": dict(current_models.get("role_assignments") or {}),
         }
         routing_config = _parse_route_config_or_raise(config_payload)
         # 整表保存是原样写入的高级路径:退役节点的条目照存(overview 仍在
@@ -1102,7 +1093,6 @@ class SystemConfigService:
         current_models = dict(self._category_payload("models").get("parsed") or {})
         node_routing = dict(current_models.get("node_routing") or {})
         task_routing = dict(current_models.get("task_routing") or {})
-        role_assignments = dict(current_models.get("role_assignments") or {})
         # 同 sync-missing:退役节点的残留路由不随分工前滚,剪掉并回报。
         pruned_stale_routes = _prune_retired_routes({"node_routing": node_routing, "task_routing": task_routing})
 
@@ -1157,7 +1147,6 @@ class SystemConfigService:
                     api_mode=api_mode,
                     credential_mode=credential_mode,
                 )
-            role_assignments[slot.slot_id] = {"provider_id": provider_id, "model": model}
             applied[slot.slot_id] = {
                 "provider_id": provider_id,
                 "model": model,
@@ -1170,7 +1159,6 @@ class SystemConfigService:
             "node_routing": node_routing,
             "retry_budget": dict(current_models.get("retry_budget") or {}),
             "job_runtime": dict(current_models.get("job_runtime") or {}),
-            "role_assignments": role_assignments,
         }
         routing_config = _parse_route_config_or_raise(config_payload)
         activate = _bool_value(payload.get("activate", True))
@@ -1637,11 +1625,10 @@ def _none_secret_status() -> dict[str, Any]:
     }
 
 
-def _serialize_task_config(node_id: str, task_config) -> dict[str, Any]:
-    spec = llm_node_catalog().get(node_id, {})
+def _serialize_task_config(node_id: str, task_config, spec: dict[str, Any] | None) -> dict[str, Any]:
     payload = {
         "node_id": node_id,
-        "status": LLM_NODE_STATUSES.get(node_id, "active"),
+        "status": "active",
         "configured": True,
         "provider": task_config.provider,
         "provider_id": task_config.provider_id,
@@ -1683,18 +1670,9 @@ def _provider_view_ready(provider: dict[str, Any]) -> bool:
 
 
 def _route_readiness(route: dict[str, Any], providers: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    status = str(route.get("status") or "active")
     provider_id = optional_text(route.get("provider_id"))
     model = optional_text(route.get("model"))
     configured = bool(route.get("configured") or provider_id or model)
-    if status == "reserved" or route.get("requires_llm") is False:
-        return {
-            "ready": False,
-            "provider_ready": False,
-            "provider_missing": False,
-            "model_missing": False,
-            "readiness_reason": "reserved",
-        }
     if not configured:
         return {
             "ready": False,
@@ -1767,10 +1745,6 @@ def _annotate_node_route_readiness(
         route.update(_route_readiness(route, providers))
 
 
-def _route_requires_llm(route: dict[str, Any]) -> bool:
-    return str(route.get("status") or "active") == "active" and route.get("requires_llm") is not False
-
-
 def _llm_readiness_summary(
     *,
     providers: dict[str, dict[str, Any]],
@@ -1778,7 +1752,7 @@ def _llm_readiness_summary(
 ) -> dict[str, Any]:
     provider_count = len(providers)
     active_provider_count = sum(1 for provider in providers.values() if _provider_view_ready(provider))
-    active_routes = [route for route in node_routes.values() if _route_requires_llm(route)]
+    active_routes = list(node_routes.values())
     configured_routes = [
         route
         for route in active_routes
@@ -1831,7 +1805,7 @@ def _role_slot_overview(node_routes: dict[str, dict[str, Any]]) -> list[dict[str
 
 
 def _retired_route_ids(*routing_tables: dict[str, Any]) -> list[str]:
-    """路由表里已退役的键:不在节点注册表(reserved 节点仍在表内),也不是 task 别名。"""
+    """路由表里已退役的键:不在节点注册表,也不是 task 别名。"""
     node_catalog = llm_node_catalog()
     return sorted(
         {
@@ -1897,11 +1871,8 @@ def _validate_activating_node_route_bindings(
     missing_bindings: list[str] = []
     missing_models: list[str] = []
     not_ready_providers: list[str] = []
-    reserved_nodes = reserved_llm_node_ids()
     node_catalog = llm_node_catalog()
     for node_id, task_config in node_routing.items():
-        if node_id in reserved_nodes:
-            continue
         if node_id not in node_catalog:
             # 退役节点的残留路由是惰性的:不参与激活校验(它常指向已删除的服务),
             # 由写路径剪枝、overview 的 stale_routes 展示。
