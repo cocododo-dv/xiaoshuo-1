@@ -353,7 +353,7 @@ def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(cli
         object_type="scene",
         object_id="LQSET_LAYER_SC01",
         source_text_ref=f"final_scene:{final_row_id}",
-        content="作者稿里误写了龙族；角色只能选择保护证人，代价是公开证据被延迟。",
+        content="作者稿里误写了灰港学院；角色只能选择保护证人，代价是公开证据被延迟。",
         revision_no=1,
         status="current",
     )
@@ -365,7 +365,7 @@ def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(cli
         json={
             "chapter_ids": ["LQSET_LAYER"],
             "text_layer": "author_draft_preferred",
-            "protected_terms": ["龙族"],
+            "protected_terms": ["灰港学院"],
         },
     )
 
@@ -374,7 +374,7 @@ def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(cli
     assert payload["summary"]["scene_count"] == 1
     assert payload["scenes"][0]["text_layer"] == "author_draft"
     assert payload["scenes"][0]["source_ref"] == f"author_draft:{scene_draft.draft_id}"
-    assert payload["reference_safety_findings"][0]["term"] == "龙族"
+    assert payload["reference_safety_findings"][0]["term"] == "灰港学院"
     assert payload["reference_safety_findings"][0]["source_ref"] == f"author_draft:{scene_draft.draft_id}"
 
 

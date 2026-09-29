@@ -10,8 +10,8 @@ from novel_system.db.models import utcnow as now_iso
 
 
 # BUG-002 hardening: protected-source-term matching must survive trivial
-# evasion of a red-line term — intra-term whitespace ("屠 龙"), inserted
-# punctuation ("屠-龙" / "龙·族"), and traditional Chinese ("龍族" / "屠龍").
+# evasion of a red-line term — intra-term whitespace ("潜 龙港"), inserted
+# punctuation ("潜-龙港" / "灰港·学院"), and traditional Chinese ("潜龍港" / "青銅與熱泉").
 #
 # Traditional→simplified folding is intentionally tiny and exists only to make
 # explicitly configured/profile-derived protected terms resilient to cosmetic

@@ -16,58 +16,58 @@ from novel_system.services.source_safety import (
 
 
 SOURCE_FIXTURE_TERMS = (
-    "龙族",
-    "路明非",
-    "楚子航",
-    "青铜与火",
-    "血统",
-    "屠龙",
+    "灰港学院",
+    "欧文灰港",
+    "沈既白",
+    "青铜与热泉",
+    "雨城陈氏",
+    "潜龙港",
 )
 
 
 def test_direct_literal_leak_is_still_blocked() -> None:
     """Regression: the plain substring path must keep working unchanged."""
     result = scan_source_safety(
-        "第二场错误出现了龙族与楚子航。",
+        "第二场错误出现了灰港学院与沈既白。",
         protected_terms=SOURCE_FIXTURE_TERMS,
     )
     assert result["safe"] is False
     # original simplified term + PROTECTED_SOURCE_TERMS iteration order preserved
-    assert result["blocked_terms"] == ["龙族", "楚子航"]
+    assert result["blocked_terms"] == ["灰港学院", "沈既白"]
 
 
 def test_intra_term_whitespace_variant_is_detected() -> None:
-    """BUG-002 repro: a space spliced inside the term ("屠 龙") must not evade."""
+    """BUG-002 repro: a space spliced inside the term ("潜 龙港") must not evade."""
     result = scan_source_safety(
-        "反派在终章完成了屠 龙的仪式。",
+        "反派在终章烧毁了潜 龙港的灯塔。",
         protected_terms=SOURCE_FIXTURE_TERMS,
     )
     assert result["safe"] is False
-    assert "屠龙" in result["blocked_terms"]
+    assert "潜龙港" in result["blocked_terms"]
 
 
 def test_intra_term_punctuation_variant_is_detected() -> None:
-    """BUG-002 repro: inserted punctuation ("屠-龙", "龙·族") must not evade."""
-    dash = scan_source_safety("他立誓要屠-龙。", protected_terms=SOURCE_FIXTURE_TERMS)
+    """BUG-002 repro: inserted punctuation ("潜-龙港", "灰港·学院") must not evade."""
+    dash = scan_source_safety("他立誓要回到潜-龙港。", protected_terms=SOURCE_FIXTURE_TERMS)
     assert dash["safe"] is False
-    assert "屠龙" in dash["blocked_terms"]
+    assert "潜龙港" in dash["blocked_terms"]
 
-    dot = scan_source_safety("传说里的龙·族早已覆灭。", protected_terms=SOURCE_FIXTURE_TERMS)
+    dot = scan_source_safety("传说里的灰港·学院早已覆灭。", protected_terms=SOURCE_FIXTURE_TERMS)
     assert dot["safe"] is False
-    assert "龙族" in dot["blocked_terms"]
+    assert "灰港学院" in dot["blocked_terms"]
 
 
 def test_traditional_chinese_variant_is_detected() -> None:
-    """BUG-002 repro: traditional forms ("龍族", "屠龍", "血統") must not evade."""
+    """BUG-002 repro: traditional forms ("潜龍港", "青銅與熱泉", "雨城陳氏") must not evade."""
     result = scan_source_safety(
-        "成稿里赫然写着龍族与屠龍，还有血統一词。",
+        "成稿里赫然写着潜龍港与青銅與熱泉，还有雨城陳氏一词。",
         protected_terms=SOURCE_FIXTURE_TERMS,
     )
     assert result["safe"] is False
     blocked = result["blocked_terms"]
-    assert "龙族" in blocked
-    assert "屠龙" in blocked
-    assert "血统" in blocked
+    assert "潜龙港" in blocked
+    assert "青铜与热泉" in blocked
+    assert "雨城陈氏" in blocked
 
 
 def test_clean_original_text_is_safe() -> None:
@@ -83,7 +83,7 @@ def test_clean_original_text_is_safe() -> None:
 
 def test_named_work_terms_are_not_global_defaults() -> None:
     """A project that did not bind/configure a source must not inherit its names."""
-    result = scan_source_safety("龙王检查了血统记录，又把旧档案交给同伴。")
+    result = scan_source_safety("镜湖馆长检查了雨城陈氏的记录，又把旧档案交给同伴。")
 
     assert result["safe"] is True
     assert result["blocked_terms"] == []
@@ -99,13 +99,13 @@ def test_named_work_terms_are_not_global_defaults() -> None:
 def test_global_terms_require_explicit_json_configuration(monkeypatch) -> None:
     monkeypatch.setenv(
         "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON",
-        json.dumps(["路明非", "卡塞尔"], ensure_ascii=False),
+        json.dumps(["欧文灰港", "镜湖档案馆"], ensure_ascii=False),
     )
 
-    result = scan_source_safety("路 明 非站在卡·塞尔门外。")
+    result = scan_source_safety("欧 文 灰 港站在镜·湖档案馆门外。")
 
     assert result["safe"] is False
-    assert result["blocked_terms"] == ["路明非", "卡塞尔"]
+    assert result["blocked_terms"] == ["欧文灰港", "镜湖档案馆"]
     assert result["protected_terms_source"] == "environment"
 
 
