@@ -8,12 +8,42 @@ BACKEND_DIR="$REPO_ROOT/backend"
 REACT_DIR="$REPO_ROOT/frontend-react"
 RUN_DIR="$REPO_ROOT/.codex-run/e2e-linux"
 
+# Never the dev stack's ports (backend 8000, React 5174): an author's running stack there would
+# answer this lane's readiness probes and the smokes would drive the live app and its database.
 BACKEND_PORT="${PLAYWRIGHT_BACKEND_PORT:-8009}"
-REACT_PORT="${PLAYWRIGHT_REACT_PORT:-5174}"
+REACT_PORT="${PLAYWRIGHT_REACT_PORT:-5176}"
 READY_TIMEOUT_SECONDS="${PLAYWRIGHT_READY_TIMEOUT_SECONDS:-120}"
 PYTHON_BIN="${NOVEL_SYSTEM_PYTHON:-python}"
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}"
 REACT_URL="http://127.0.0.1:${REACT_PORT}/"
+
+# Refuse (exit 2) before touching anything when a chosen port is unusable or already served:
+# this lane only stops the processes it starts, so with another server on the port the readiness
+# probe below would pass against that server and the smokes would run against it.
+refuse_to_start() {
+  echo "verify_react_e2e: refusing to start: $1" >&2
+  exit 2
+}
+
+port_is_listening() {
+  timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null
+}
+
+check_port() {
+  local label="$1" port="$2" variable="$3"
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    refuse_to_start "$variable=$port is not a TCP port."
+  fi
+  if port_is_listening "$port"; then
+    refuse_to_start "the $label port $port already has a listener on 127.0.0.1. Stop it or pick a free port with $variable=<port>."
+  fi
+}
+
+check_port "backend" "$BACKEND_PORT" PLAYWRIGHT_BACKEND_PORT
+check_port "React" "$REACT_PORT" PLAYWRIGHT_REACT_PORT
+if [ "$BACKEND_PORT" = "$REACT_PORT" ]; then
+  refuse_to_start "the backend and React ports are both $BACKEND_PORT."
+fi
 
 mkdir -p "$RUN_DIR"
 DB_PATH="$RUN_DIR/e2e.db"
@@ -43,9 +73,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Wait until our own process answers at the URL: if it exits first (e.g. the port was taken after
+# the preflight), fail instead of trusting whatever else answers there.
 wait_http() {
-  local label="$1" url="$2" waited=0
+  local label="$1" url="$2" pid="$3" waited=0
   until curl -fsS -o /dev/null "$url" 2>/dev/null; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "The ${label} process exited before answering at ${url}" >&2
+      return 1
+    fi
     if [ "$waited" -ge "$READY_TIMEOUT_SECONDS" ]; then
       echo "Timed out waiting for ${label}: ${url}" >&2
       return 1
@@ -53,6 +89,10 @@ wait_http() {
     sleep 1
     waited=$((waited + 1))
   done
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "Something answered at ${url} but the ${label} process is gone; refusing to run the smokes against it" >&2
+    return 1
+  fi
 }
 
 if [ ! -f "$REACT_DIR/node_modules/playwright/package.json" ]; then
@@ -90,11 +130,11 @@ echo "==> Starting React at $REACT_URL"
 ) >"$REACT_LOG" 2>&1 &
 REACT_PID=$!
 
-if ! wait_http "backend readiness" "$BACKEND_URL/ready"; then
+if ! wait_http "backend" "$BACKEND_URL/ready" "$BACKEND_PID"; then
   tail -n 120 "$BACKEND_LOG" >&2 || true
   exit 1
 fi
-if ! wait_http "React frontend" "$REACT_URL"; then
+if ! wait_http "React dev server" "$REACT_URL" "$REACT_PID"; then
   tail -n 120 "$REACT_LOG" >&2 || true
   exit 1
 fi
