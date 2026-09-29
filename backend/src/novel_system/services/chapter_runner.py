@@ -750,17 +750,31 @@ class ChapterRunnerService:
         evidence = [f"场景：{scene_id}"]
         if event_id:
             evidence.append(f"审核：{event_id}")
-        return {
-            "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
-            "message": "scene requires human review before chapter run can continue",
-            "author_action": author_action(
+        event = self.session.get(HumanReviewEvent, event_id) if event_id else None
+        if event is not None and event.event_source == "candidate_selection":
+            # 关键场景的匿名候选终选只能在 AI 起草台做（批准#2，重评 R2）：指引直接指向那一场
+            action = author_action(
+                "这一场在等你终选",
+                "关键场景起草了几份候选，在等你选定一份。去 AI 起草台读完候选再选，选完这一场会自动续跑；"
+                "然后回到这里重新运行本章。",
+                target_view="scene",
+                target_ref=f"scene_card:{scene_id}",
+                primary_button_label="去 AI 起草台终选",
+                evidence_summary=evidence,
+            )
+        else:
+            action = author_action(
                 "场景需要人工审核",
                 "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
                 target_view="review",
                 target_ref=target_ref,
                 primary_button_label="去待处理建议",
                 evidence_summary=evidence,
-            ),
+            )
+        return {
+            "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
+            "message": "scene requires human review before chapter run can continue",
+            "author_action": action,
         }
 
     def _scene_incomplete_error(self, scene_id: str, result: dict[str, Any] | None) -> dict[str, Any] | None:

@@ -91,6 +91,32 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
                     "scene_status": "human_review_required",
                     "current_human_review_event_id": state.current_human_review_event_id,
                 }
+            if blocked_scene == scene_id and block_kind == "candidate_selection":
+                # 关键场景的匿名候选终选（orchestrator 的终选闸门写的就是这样一条审核）
+                from novel_system.db.models import SceneCard
+
+                event_id = f"hre_sel_{scene_id}"
+                self.session.add(
+                    HumanReviewEvent(
+                        event_id=event_id,
+                        scene_id=scene_id,
+                        chapter_id=self.session.get(SceneCard, scene_id).chapter_id,
+                        object_ref=f"candidate_selection:{scene_id}",
+                        event_source="candidate_selection",
+                        priority="high",
+                        status="awaiting_review",
+                        allowed_actions_json=["select"],
+                        details_json={"gate_type": "style_candidate_selection", "decision_status": "awaiting"},
+                        default_action="select",
+                    )
+                )
+                state.scene_status = "awaiting_candidate_selection"
+                state.current_human_review_event_id = event_id
+                self.session.flush()
+                return {
+                    "scene_status": "awaiting_candidate_selection",
+                    "current_human_review_event_id": event_id,
+                }
             if blocked_scene == scene_id and block_kind == "partial_rewrite":
                 state.scene_status = "hard_qc_partial_rewrite_required"
                 state.current_human_review_event_id = None
@@ -643,6 +669,52 @@ def test_chapter_run_full_stays_blocked_until_human_review_resolves(client, sess
     completed = resumed_after_resolution.json()["data"]
     assert completed["status"] == "completed"
     assert completed["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02"]
+
+
+def test_chapter_run_blocked_on_candidate_selection_points_at_the_drafting_desk(client, session, monkeypatch) -> None:
+    """批准#2（重评 R2）：关键场景停在匿名候选终选时，章节起草的指引是「这一场在等你终选」、指向 AI 起草台的这一场
+
+    （终选只能在起草台做；过去指向「待处理建议」，那里没有这张卡，作者找不到出口）。选完之前重新运行本章
+    仍然停在这一场、同一个指引，不会再跑这一场。
+    """
+    _create_chapter(client, "CH903")
+    _create_scene(client, "CH903", "CH903_SC01", 1)
+    _create_scene(client, "CH903", "CH903_SC02", 2, is_chapter_last=1)
+    shared = _install_fake_runner(monkeypatch, blocked_scene="CH903_SC01", block_kind="candidate_selection")
+
+    expected_error = {
+        "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
+        "message": "scene requires human review before chapter run can continue",
+        "author_action": {
+            "title": "这一场在等你终选",
+            "message": "关键场景起草了几份候选，在等你选定一份。去 AI 起草台读完候选再选，选完这一场会自动续跑；然后回到这里重新运行本章。",
+            "target_view": "scene",
+            "target_ref": "scene_card:CH903_SC01",
+            "primary_button_label": "去 AI 起草台终选",
+            "evidence_summary": ["场景：CH903_SC01", "审核：hre_sel_CH903_SC01"],
+        },
+    }
+    blocked_response = client.post(
+        "/api/v1/chapters/CH903/run/full",
+        headers={"X-Idempotency-Key": "chapter-run-candidate-selection"},
+    )
+    assert blocked_response.status_code == 200
+    blocked = blocked_response.json()["data"]
+    assert blocked["status"] == "blocked"
+    assert blocked["blocked_scene_id"] == "CH903_SC01"
+    assert blocked["latest_error"] == expected_error
+
+    shared["calls"].clear()
+    _install_fake_runner(monkeypatch)
+    rerun_response = client.post(
+        "/api/v1/chapters/CH903/run/full",
+        headers={"X-Idempotency-Key": "chapter-run-candidate-selection-rerun"},
+    )
+    assert rerun_response.status_code == 200
+    rerun = rerun_response.json()["data"]
+    assert rerun["status"] == "blocked"
+    assert rerun["latest_error"] == expected_error
+    assert shared["calls"] == []
 
 
 def test_prepare_full_run_restarts_resolved_blocked_job(client, session, monkeypatch) -> None:
