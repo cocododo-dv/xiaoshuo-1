@@ -27,6 +27,7 @@ from novel_system.db.models import (
     StyleReferenceBook,
 )
 from novel_system.services.hash_engine import compute_bundle_hash_projection, sha256_text
+from novel_system.services.house_taste_lexicons import FALSE_CLARITY_PHRASES, SUMMARY_ENDING_PHRASES
 from novel_system.services.literary_quality import fingerprint_literary_quality
 from novel_system.services.resolver import Resolver
 from novel_system.services.character_continuity import (
@@ -1239,13 +1240,8 @@ class BundleBuilder:
             budget["avoid_action_templates"] = action_templates
             budget["avoid_image_fields"] = image_fields[:6]
             budget["vary_syntax_shapes"] = syntax_shapes[:5]
-            budget["avoid_false_clarity"] = ["她知道", "他知道", "忽然意识到", "突然意识到"]
-            budget["avoid_summary_endings"] = [
-                "这意味着",
-                "一切都变了",
-                "事情从此不同",
-                "解释了一切",
-            ]
+            budget["avoid_false_clarity"] = list(FALSE_CLARITY_PHRASES)
+            budget["avoid_summary_endings"] = list(SUMMARY_ENDING_PHRASES)
             budget["instruction"] = (
                 "Use this as a freshness budget: do not repeat high-frequency action templates, "
                 "rotate image fields, and end on a hard action instead of explanation."

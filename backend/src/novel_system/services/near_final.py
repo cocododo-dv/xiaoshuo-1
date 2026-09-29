@@ -23,6 +23,13 @@ from novel_system.db.models import (
 from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_json_normalized
+from novel_system.services.house_taste_lexicons import (
+    CHOICE_MARKERS,
+    COST_MARKERS,
+    ENDING_ACTION_MARKERS,
+    EXPLAINED_ENDING_SUFFIXES,
+    MODEL_VOICE_PHRASES,
+)
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
 from novel_system.services.llm_fail_closed import is_llm_capability_error, raise_llm_domain_error
 from novel_system.services.llm_task_runner import (
@@ -33,7 +40,7 @@ from novel_system.services.llm_task_runner import (
 )
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.review_scores import normalize_score, response_score_scale
-from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.scene_lookup import active_chapter_scenes, require_chapter, require_scene
 from novel_system.services.scene_structure_brief import (
     SCENE_STRUCTURE_SECTION_KEY,
     render_scene_structure_brief,
@@ -492,11 +499,7 @@ class NearFinalPlanningService:
         return dict(policy.contract) if policy.bound and policy.contract is not None else None
 
     def _chapter_scene_digest(self, chapter_id: str) -> list[dict[str, Any]]:
-        rows = self.session.execute(
-            select(SceneCard)
-            .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-            .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-        ).scalars().all()
+        rows = active_chapter_scenes(self.session, chapter_id)
         return [
             {
                 "scene_id": row.scene_id,
@@ -678,18 +681,7 @@ class NearFinalAcceptanceService:
 
     def _chapter_first_scene(self, chapter: Any) -> SceneCard | None:
         try:
-            return (
-                self.session.execute(
-                    select(SceneCard)
-                    .where(
-                        SceneCard.chapter_id == chapter.chapter_id,
-                        SceneCard.trashed_flag == 0,
-                    )
-                    .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-                )
-                .scalars()
-                .first()
-            )
+            return next(iter(active_chapter_scenes(self.session, chapter.chapter_id)), None)
         except Exception:  # noqa: BLE001 — 只影响前缀注入,不影响评审本身
             return None
 
@@ -961,13 +953,7 @@ class NearFinalAcceptanceService:
                 "source_text_ref": f"chapter_memory:{memory.row_id}",
                 "source_bundle_id": None,
             }
-        scene_ids = list(
-            self.session.execute(
-                select(SceneCard.scene_id)
-                .where(SceneCard.chapter_id == chapter.chapter_id, SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-            ).scalars()
-        )
+        scene_ids = [scene.scene_id for scene in active_chapter_scenes(self.session, chapter.chapter_id)]
         # 每场的当前正文（SceneRunState 指针），不是每场最后建的那一行（B03-04）
         current_finals = current_final_scenes(self.session, scene_ids)
         parts = [
@@ -1328,23 +1314,7 @@ def _missing_scene_machinery(content: str) -> list[str]:
 
 def _model_voice_gate_findings(content: str) -> list[dict[str, Any]]:
     text = content or ""
-    terms = [
-        term
-        for term in (
-            "某种意义上",
-            "一切都变得",
-            "她知道",
-            "他知道",
-            "忽然意识到",
-            "突然意识到",
-            "解释了一切",
-            "解释了所有",
-            "前因后果",
-            "事情从此不同",
-            "意义重大",
-        )
-        if term in text
-    ]
+    terms = [term for term in MODEL_VOICE_PHRASES if term in text]
     if not terms:
         return []
     return [
@@ -1366,51 +1336,21 @@ def _is_test_placeholder_draft(content: str) -> bool:
 
 
 def _has_choice(text: str) -> bool:
-    return _contains_any(
-        text,
-        ("选择", "决定", "公开", "保护", "还是", "不能同时", "二选一", "分成两份", "拆成", "split", "choose", "choice"),
-    )
+    return _contains_any(text, CHOICE_MARKERS)
 
 
 def _has_cost(text: str) -> bool:
-    return _contains_any(
-        text,
-        ("代价", "暴露", "失去", "风险", "追踪", "追缉", "不能", "只剩", "交给", "递给", "藏", "拆成", "分成", "cost", "risk"),
-    )
+    return _contains_any(text, COST_MARKERS)
 
 
 def _has_ending_action(text: str) -> bool:
     stripped = re.sub(r"\s+", "", text or "")
     if not stripped:
         return False
-    if stripped.endswith(("从此不同。", "变得不同。", "很重要。", "意义重大。")):
+    if stripped.endswith(EXPLAINED_ENDING_SUFFIXES):
         return False
     tail = stripped[-80:]
-    return _contains_any(
-        tail,
-        (
-            "转身",
-            "递给",
-            "交给",
-            "藏",
-            "看见",
-            "推开",
-            "关上",
-            "走进",
-            "拿起",
-            "按住",
-            "沉入",
-            "亮起",
-            "留下",
-            "拆成",
-            "分成",
-            "turns",
-            "hands",
-            "leaves",
-            "sees",
-            "opens",
-        ),
-    )
+    return _contains_any(tail, ENDING_ACTION_MARKERS)
 
 
 def _execution_failure_payload(message: str) -> dict[str, Any]:

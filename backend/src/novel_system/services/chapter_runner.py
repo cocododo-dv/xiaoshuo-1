@@ -10,7 +10,7 @@ from uuid import uuid4
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState, utcnow
+from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_actions import author_action
@@ -18,7 +18,7 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.scene_run_checkpoint import chapter_scene_execution_id
-from novel_system.services.scene_lookup import get_scene_or_404
+from novel_system.services.scene_lookup import active_chapter_scenes, get_scene_or_404
 
 JOB_TYPE_CHAPTER_FULL = "chapter_run_full"
 JOB_STATUS_PENDING = "pending"
@@ -340,12 +340,7 @@ class ChapterRunnerService:
         self.session.flush()
 
     def _scene_ids(self, chapter_id: str) -> list[str]:
-        scenes = self.session.execute(
-            select(SceneCard)
-            .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-            .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-        ).scalars().all()
-        return [scene.scene_id for scene in scenes]
+        return [scene.scene_id for scene in active_chapter_scenes(self.session, chapter_id)]
 
     def _latest_job(self, chapter_id: str) -> ChapterRunJob | None:
         return self.session.execute(
