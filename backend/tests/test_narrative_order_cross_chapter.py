@@ -13,7 +13,6 @@ from novel_system.db.models import (
 )
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.catalog import CatalogService
-from novel_system.services.errors import DomainError
 from novel_system.services.narrative_event_log import NarrativeEventLog
 
 
@@ -144,18 +143,6 @@ def test_chapter_reorder_changes_dynamic_replay_without_rewriting_events(session
         )
         for event in rows
     } == before
-
-def test_legacy_scene_seq_cursor_is_rejected_for_multi_chapter_project(session) -> None:
-    _seed_two_chapters(session)
-    log = NarrativeEventLog(session)
-    _event(log, "NO_CH1_SC1", "harbor")
-    session.commit()
-
-    with pytest.raises(DomainError) as rejected:
-        log.project_character_state("CHAR_A", PROJECT, up_to_scene_seq=1)
-
-    assert rejected.value.code == "NARRATIVE_CURSOR_AMBIGUOUS"
-
 
 def test_final_aggregate_uses_scene_order_not_memory_row_id(session) -> None:
     _seed_two_chapters(session)

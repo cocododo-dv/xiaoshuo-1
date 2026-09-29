@@ -26,11 +26,10 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     CanonCommit,
-    ChapterGoal,
     FinalScene,
     NarrativeEvent,
-    SceneCard,
 )
+from novel_system.services.narrative_contracts import require_scene_boundary
 from novel_system.services.narrative_position import NarrativePositionService
 from novel_system.services.errors import DomainError
 
@@ -167,14 +166,9 @@ class NarrativeEventLog:
         *,
         before_scene_id: str | None = None,
         up_to_scene_id: str | None = None,
-        up_to_scene_seq: int | None = None,
         descending: bool = False,
     ):
-        boundaries = sum(
-            value is not None
-            for value in (before_scene_id, up_to_scene_id, up_to_scene_seq)
-        )
-        if boundaries > 1:
+        if before_scene_id is not None and up_to_scene_id is not None:
             raise DomainError(
                 "NARRATIVE_CURSOR_CONFLICT",
                 "use exactly one narrative boundary",
@@ -189,46 +183,7 @@ class NarrativeEventLog:
         elif up_to_scene_id is not None:
             cursor = self.positions.cursor_for_scene(project_id, up_to_scene_id)
             statement = self.positions.before(statement, cursor, inclusive=True)
-        elif up_to_scene_seq is not None:
-            self._require_unambiguous_legacy_cursor(project_id)
-            # Backward compatibility for callers that operate on a one-chapter
-            # project.  New runtime paths always pass a scene id.
-            statement = statement.where(SceneCard.scene_seq <= up_to_scene_seq)
         return self.positions.ordered_events(statement, descending=descending)
-
-    def _require_unambiguous_legacy_cursor(self, project_id: str) -> None:
-        chapter_ids = set(
-            self.session.execute(
-                select(SceneCard.chapter_id)
-                .join(ChapterGoal, ChapterGoal.chapter_id == SceneCard.chapter_id)
-                .where(
-                    SceneCard.trashed_flag == 0,
-                    ChapterGoal.trashed_flag == 0,
-                    or_(
-                        SceneCard.project_id == project_id,
-                        ChapterGoal.project_id == project_id,
-                    ),
-                )
-                .distinct()
-            ).scalars().all()
-        )
-        if not chapter_ids:
-            chapter_ids = set(
-                self.session.execute(
-                    select(NarrativeEvent.chapter_id)
-                    .where(
-                        NarrativeEvent.project_id == project_id,
-                        self._runtime_authority_clause(),
-                    )
-                    .distinct()
-                ).scalars().all()
-            )
-        if len(chapter_ids) > 1:
-            raise DomainError(
-                "NARRATIVE_CURSOR_AMBIGUOUS",
-                "scene_seq is chapter-local; use a scene_id boundary for multi-chapter replay",
-                status_code=400,
-            )
 
     def events(
         self,
@@ -236,7 +191,6 @@ class NarrativeEventLog:
         *,
         before_scene_id: str | None = None,
         up_to_scene_id: str | None = None,
-        up_to_scene_seq: int | None = None,
         event_type: str | None = None,
         entity_id: str | None = None,
         fact_key: str | None = None,
@@ -247,7 +201,6 @@ class NarrativeEventLog:
             project_id,
             before_scene_id=before_scene_id,
             up_to_scene_id=up_to_scene_id,
-            up_to_scene_seq=up_to_scene_seq,
             descending=descending,
         )
         if event_type is not None:
@@ -316,7 +269,6 @@ class NarrativeEventLog:
         character_id: str,
         project_id: str,
         *,
-        up_to_scene_seq: int | None = None,
         up_to_scene_id: str | None = None,
         before_scene_id: str | None = None,
     ) -> CharacterState:
@@ -326,8 +278,7 @@ class NarrativeEventLog:
                 project_id,
                 before_scene_id=before_scene_id,
                 up_to_scene_id=up_to_scene_id,
-                up_to_scene_seq=up_to_scene_seq,
-            )
+                )
             .where(
                 NarrativeEvent.entity_id == character_id,
             )
@@ -342,7 +293,6 @@ class NarrativeEventLog:
         entity_id: str,
         project_id: str,
         *,
-        up_to_scene_seq: int | None = None,
         up_to_scene_id: str | None = None,
         before_scene_id: str | None = None,
     ) -> EntityState:
@@ -352,8 +302,7 @@ class NarrativeEventLog:
                 project_id,
                 before_scene_id=before_scene_id,
                 up_to_scene_id=up_to_scene_id,
-                up_to_scene_seq=up_to_scene_seq,
-            )
+                )
             .where(
                 NarrativeEvent.entity_type == entity_type,
                 NarrativeEvent.entity_id == entity_id,
@@ -368,7 +317,6 @@ class NarrativeEventLog:
         character_id: str,
         project_id: str,
         *,
-        up_to_scene_seq: int | None = None,
         up_to_scene_id: str | None = None,
         before_scene_id: str | None = None,
     ) -> list[ProjectedFact]:
@@ -378,8 +326,7 @@ class NarrativeEventLog:
                 project_id,
                 before_scene_id=before_scene_id,
                 up_to_scene_id=up_to_scene_id,
-                up_to_scene_seq=up_to_scene_seq,
-            )
+                )
             .where(
                 NarrativeEvent.entity_id == character_id,
                 NarrativeEvent.event_type == "character_learns",
@@ -453,9 +400,9 @@ class NarrativeEventLog:
     def format_state_for_prompt(
         self,
         project_id: str,
-        scene_seq: int | None = None,
+        scene_seq: None = None,
         *,
-        scene_id: str | None = None,
+        scene_id: str,
         pov_character_id: str | None = None,
         onstage_character_ids: list[str] | None = None,
     ) -> str:
@@ -471,16 +418,12 @@ class NarrativeEventLog:
                 PovKnowledgeProjection,
             )
             return PovKnowledgeProjection(self.session, event_log=self).format_state_for_prompt(
-                project_id, scene_seq,
-                scene_id=scene_id,
+                project_id,
+                scene_id=require_scene_boundary(scene_seq, scene_id),
                 pov_character_id=pov_character_id,
                 onstage_character_ids=onstage_character_ids,
             )
-        boundary = (
-            {"before_scene_id": scene_id}
-            if scene_id is not None
-            else {"up_to_scene_seq": int(scene_seq or 0) - 1}
-        )
+        boundary = {"before_scene_id": require_scene_boundary(scene_seq, scene_id)}
         chars = onstage_character_ids or self._characters_in_project(project_id)
         lines: list[str] = []
         lines.append("## Authoritative Character State (from event log, do NOT contradict)")
@@ -527,10 +470,10 @@ class NarrativeEventLog:
     def information_asymmetry_digest(
         self,
         project_id: str,
-        scene_seq: int | None,
-        onstage_character_ids: list[str],
+        scene_seq: None = None,
+        onstage_character_ids: list[str] | None = None,
         *,
-        scene_id: str | None = None,
+        scene_id: str,
         pov_character_id: str | None = None,
     ) -> str:
         """Blueprint §2/§11: format information gaps between onstage characters for prompt injection.
@@ -547,15 +490,13 @@ class NarrativeEventLog:
                 PovKnowledgeProjection,
             )
             return PovKnowledgeProjection(self.session, event_log=self).information_asymmetry_digest(
-                project_id, scene_seq, onstage_character_ids,
-                scene_id=scene_id,
+                project_id,
+                onstage_character_ids=onstage_character_ids,
+                scene_id=require_scene_boundary(scene_seq, scene_id),
                 pov_character_id=pov_character_id,
             )
-        boundary = (
-            {"before_scene_id": scene_id}
-            if scene_id is not None
-            else {"up_to_scene_seq": int(scene_seq or 0) - 1}
-        )
+        boundary = {"before_scene_id": require_scene_boundary(scene_seq, scene_id)}
+        onstage_character_ids = list(onstage_character_ids or [])
         if len(onstage_character_ids) < 2:
             return ""
 

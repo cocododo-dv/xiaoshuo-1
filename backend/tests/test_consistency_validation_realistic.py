@@ -227,7 +227,7 @@ def _naive_violation_count(log: NarrativeEventLog, text: str) -> int:
     text_lower = text.lower()
     count = 0
     for char_id in ["林远", "苏晚", "沧澜城城主"]:
-        state = log.project_character_state(char_id, PROJECT_ID, up_to_scene_seq=4)
+        state = log.project_character_state(char_id, PROJECT_ID, up_to_scene_id=SETUP_SCENE_IDS[-1])
         for fact_key, projected in state.facts.items():
             if fact_key not in {"alive", "location", "missing_limb", "has_item",
                                 "physical_state", "appearance", "ability"}:
@@ -359,7 +359,7 @@ class TestHardQcReadsFullStateDespitePovProjection:
         assert any(v.fact_key == "alive" for v in report.violations)
 
         # (2) 硬 QC 的全量投影仍持有秘密（供确定性校验/人工确认使用）。
-        full_state = log.project_character_state("沧澜城城主", PROJECT_ID, up_to_scene_seq=4)
+        full_state = log.project_character_state("沧澜城城主", PROJECT_ID, up_to_scene_id=SETUP_SCENE_IDS[-1])
         assert full_state.get("secret_held_by") == "城主藏了传国玉玺"
 
         # (3) 但**写作提示词**（POV=林远，非秘密持有者）不含该秘密正文。
@@ -367,7 +367,7 @@ class TestHardQcReadsFullStateDespitePovProjection:
             session,
             event_log=NarrativeEventLog(session),
         ).format_state_for_prompt(
-            PROJECT_ID, scene_seq=5,
+            PROJECT_ID, scene_id=TARGET_SCENE_ID,
             pov_character_id="林远", onstage_character_ids=["林远", "沧澜城城主"],
         )
         assert "城主藏了传国玉玺" not in writing_prompt
