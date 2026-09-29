@@ -657,9 +657,9 @@ def test_legacy_accounting_bypasses_are_removed_from_production() -> None:
 def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
     source_root = Path(__file__).parents[1] / "src" / "novel_system"
     allowed_without_context = {
-        ("services/near_final.py", "NearFinalPlanningService", "_generate_chapter_architecture"),
-        ("services/near_final.py", "NearFinalPlanningService", "_generate_character_pressure"),
-        ("services/near_final.py", "NearFinalAcceptanceService", "evaluate_scene"),
+        # 章架构 / 人物压力两份规划产物由同一个生成函数按规格表产出（B03-21）
+        ("services/near_final_planning.py", "NearFinalPlanningService", "_generate_artifact"),
+        ("services/near_final_review.py", "NearFinalAcceptanceService", "evaluate_scene"),
         # 2026-09-12 风格直起:公共入口 generate_neutral_draft / _run_style_generation 只设长度带
         # 放宽上下文再委派;真正调用 runner 的是这两个 inner 方法(调用点数量不变)。
         ("services/scene_generation.py", "SceneGenerationService", "_generate_first_draft"),
@@ -728,7 +728,8 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
     # 2026-09-22 场景诊断第二轮：writer_deep_review.run_passage_review（「AI 看这一处」局部深评）是第 15 个调用点，
     # 带 context（scene 作用域）——与整场深评 / 段落修补同一条记账路径。
     # 2026-09-23 风格参考 v3（P5b）：SceneGenerationService._run_targeted_revision 是第 16 个（场景运行派生 context）。
-    assert len(calls) == 16
+    # 2026-09-29 B03-21：准定稿规划的两个生成函数合成一个，少一个调用点。
+    assert len(calls) == 15
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context
 
