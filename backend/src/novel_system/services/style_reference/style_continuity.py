@@ -1,6 +1,5 @@
 """风格参考 — 从冻结的运行时契约里读跨场景声音参照（纯函数，不写库、不调 LLM）。
 
-- :func:`contract_voice_reference`：契约各层 ``voice_signature.features`` 的加权均值；
 - :func:`contract_deliberate_repetition`：任一层画像标了刻意复沓（新鲜度预算据此不把作者的复沓当重复）。
 
 风格参考 v3（2026-09-23）删掉了这里的「漂移驾驶」两端：归档期的 ``observe_style_drift``（写
@@ -41,51 +40,6 @@ def _layer_profile_json(layer: Mapping[str, Any]) -> dict[str, Any]:
     return dict(profile_json) if isinstance(profile_json, Mapping) else {}
 
 
-def _layer_voice_features(layer: Mapping[str, Any]) -> dict[str, float]:
-    voice = _layer_profile_json(layer).get("voice_signature")
-    if not isinstance(voice, Mapping):
-        return {}
-    features = voice.get("features")
-    if not isinstance(features, Mapping):
-        return {}
-    result: dict[str, float] = {}
-    for name, raw in features.items():
-        value = finite_or_none_accepting_bool(raw)
-        if value is not None:
-            result[str(name)] = value
-    return result
-
-
-def contract_voice_reference(contract: Mapping[str, Any] | None) -> dict[str, float]:
-    """契约各层 ``voice_signature.features`` 的加权均值（泛 → 具体权重 1..n）。
-
-    越具体的层权重越大（2026-09-24 指标基线合并已删，这里是唯一的按层加权）。
-    没有任何层带 voice_signature 时返回 ``{}``。
-    """
-    layers = _contract_layers(contract)
-    weighted: list[tuple[float, dict[str, float]]] = []
-    for index, layer in enumerate(layers):
-        features = _layer_voice_features(layer)
-        if features:
-            weighted.append((float(index + 1), features))
-    if not weighted:
-        return {}
-    names: set[str] = set()
-    for _weight, features in weighted:
-        names.update(features)
-    blended: dict[str, float] = {}
-    for name in sorted(names):
-        total = 0.0
-        weight_sum = 0.0
-        for weight, features in weighted:
-            if name in features:
-                total += weight * features[name]
-                weight_sum += weight
-        if weight_sum > 0:
-            blended[name] = total / weight_sum
-    return blended
-
-
 def contract_deliberate_repetition(contract: Mapping[str, Any] | None) -> bool:
     """任一层画像标记 ``voice_signature.deliberate_repetition=true`` → True。"""
     for layer in _contract_layers(contract):
@@ -95,4 +49,4 @@ def contract_deliberate_repetition(contract: Mapping[str, Any] | None) -> bool:
     return False
 
 
-__all__ = ["contract_deliberate_repetition", "contract_voice_reference"]
+__all__ = ["contract_deliberate_repetition"]

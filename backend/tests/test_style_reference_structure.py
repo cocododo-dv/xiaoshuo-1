@@ -36,7 +36,6 @@ from novel_system.services.style_reference.structure import (
     compute_structure_card,
     derive_planning_guidance,
     render_planning_guidance,
-    render_structure_card,
     render_structure_card_parts,
 )
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
@@ -252,7 +251,7 @@ def test_structure_card_without_markers_treats_the_book_as_one_chapter() -> None
     assert len(card["samples"]["chapter_endings"]) == 1
     assert card["samples"]["chapter_openings"][0]["text"] == rows[0]["text"]
     assert card["samples"]["chapter_endings"][0]["text"] == "第5章的结尾，他说：“走吧。”"
-    rendered = render_structure_card({"structure_card": card})
+    rendered = "\n".join(render_structure_card_parts({"structure_card": card}))
     assert "无章节标记" in rendered
 
 
@@ -268,7 +267,7 @@ def test_structure_card_truncates_long_excerpts_and_marks_them() -> None:
     ending = card["samples"]["chapter_endings"][0]
     assert len(opening["text"]) == 150 and opening["truncated"] is True
     assert len(ending["text"]) == 150 and ending["truncated"] is True
-    rendered = render_structure_card({"structure_card": card})
+    rendered = "\n".join(render_structure_card_parts({"structure_card": card}))
     assert f"{opening['text']}……" in rendered
     assert f"……{ending['text']}" in rendered
 
@@ -319,13 +318,12 @@ def test_render_structure_card_is_bounded_numeric_and_wraps_samples() -> None:
     assert "章首样例：" in samples and "章尾样例：" in samples
     assert samples.count("（第 ") == 6
     assert "第3章的开头" in samples and "“走吧。”" in samples
-    # 合并渲染 = 画像 + 样例；不含样例时没有边界
-    assert render_structure_card(profile_json) == f"{stats}\n{samples}"
-    assert SAMPLES_BOUNDARY not in render_structure_card(profile_json, include_samples=False)
+    # 不含样例时样例块为空（没有边界）
+    assert render_structure_card_parts(profile_json, include_samples=False) == (stats, "")
     # 旧画像 / 形状不对 → 空
-    assert render_structure_card({"style_features": ["短句"]}) == ""
-    assert render_structure_card({"structure_card": {"chapter_count": 0}}) == ""
-    assert render_structure_card(None) == ""
+    assert render_structure_card_parts({"style_features": ["短句"]}) == ("", "")
+    assert render_structure_card_parts({"structure_card": {"chapter_count": 0}}) == ("", "")
+    assert render_structure_card_parts(None) == ("", "")
 
 
 def test_planning_guidance_derivation_round_robins_and_filters() -> None:

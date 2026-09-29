@@ -2,7 +2,7 @@
 
 风格参考 v3（2026-09-23）删掉了漂移驾驶：归档期的 ``observe_style_drift`` / ``style_drift_observed`` 事件、
 下一场 bundle 的漂移校准段与漂移优先选窗。这里留下：其它测试共用的种子 helper、契约读取
-（``contract_voice_reference`` / ``contract_deliberate_repetition``）与归档读数槽位的守卫。
+（``contract_deliberate_repetition``）与归档读数槽位的守卫。
 """
 
 from __future__ import annotations
@@ -149,21 +149,6 @@ def _add_final_scene(session, *, scene_id: str, content: str, status: str = "arc
     )
     session.commit()
     return row_id
-
-
-def test_contract_voice_reference_blends_layers_generic_to_specific() -> None:
-    contract = {
-        "layers": [
-            {"order": 1, "profile": {"profile_id": "specific", "profile_json": {"voice_signature": {"features": {"sent_len_mean": 30.0}}}}},
-            {"order": 0, "profile": {"profile_id": "generic", "profile_json": {"voice_signature": {"features": {"sent_len_mean": 12.0, "punct_comma_per_1k": 80.0}}}}},
-        ]
-    }
-    blended = sc.contract_voice_reference(contract)
-    # 泛层权重 1、具体层权重 2：(12×1 + 30×2) / 3 = 24
-    assert blended["sent_len_mean"] == pytest.approx(24.0)
-    assert blended["punct_comma_per_1k"] == pytest.approx(80.0)
-    assert sc.contract_voice_reference({"layers": [{"profile": {"profile_json": {}}}]}) == {}
-    assert sc.contract_voice_reference(None) == {}
 
 
 def test_contract_deliberate_repetition_any_layer() -> None:

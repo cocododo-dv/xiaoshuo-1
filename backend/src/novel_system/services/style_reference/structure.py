@@ -10,8 +10,8 @@
   占比 / 开章段型与首段摘录 / 收章段型与末段摘录；全书章数、章长分位、每章段数、段型比重、
   开章 / 收章段型分布、人称（取自 voice_signature）、章首 / 章尾样例（≤3 × ≤150 字，跨全书
   首 / 中 / 末取样）。无章标记 → 全书一章、``has_chapter_markers=False``。
-- ``render_structure_card(profile_json)`` → ``[结构画像]`` 块（≤1,500 字、**带数字**——规划层
-  需要尺度）+ 「章首样例」「章尾样例」（原文，过 ``secure_reference_block``）。
+- ``render_structure_card_parts(profile_json)`` → （``[结构画像]`` 块（≤1,500 字、**带数字**——规划层
+  需要尺度）, 「章首样例」「章尾样例」「章题样例」块（原文，过 ``secure_reference_block``））。
 - ``derive_planning_guidance(findings, ...)`` → ``profile_json["planning_guidance"]``：
   scene.* / theme.* 的 observation 陈述（≤10 行、跨子维度轮转、原文重合过滤）；
   ``render_planning_guidance(profile_json)`` → ``[场景手法]`` 块。
@@ -921,19 +921,6 @@ def render_structure_card_parts(
     return stats, samples_block
 
 
-def render_structure_card(
-    profile_json: Mapping[str, Any] | None,
-    *,
-    include_samples: bool = True,
-    chapter_titles: Mapping[str, Any] | None = None,
-) -> str:
-    """``[结构画像]`` 块（≤1,500 字）+ 章首 / 章尾 / 章题样例（封装原文）；旧画像 → ``""``。"""
-    stats, samples = render_structure_card_parts(
-        profile_json, include_samples=include_samples, chapter_titles=chapter_titles
-    )
-    return "\n".join(part for part in (stats, samples) if part)
-
-
 # ---------------------------------------------------------------------------
 # 场景手法：scene.* / theme.* observation 陈述
 # ---------------------------------------------------------------------------
@@ -1080,7 +1067,6 @@ __all__ = [
     "compute_structure_card",
     "derive_planning_guidance",
     "render_planning_guidance",
-    "render_structure_card",
     "render_structure_card_parts",
     "non_body_kind",
     "split_book_chapters",

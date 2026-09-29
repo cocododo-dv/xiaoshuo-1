@@ -1,4 +1,4 @@
-"""text_utils.py 单测:清洗 / 分段 / 分句 / checksum / 引号提取。
+"""text_utils.py 单测:清洗 / 分段 / 分句 / checksum。
 
 参见 plans/style-reference-v1-1-fancy-shannon.md §"测试策略"。
 """
@@ -12,7 +12,6 @@ from novel_system.services.style_reference.text_utils import (
     compact_ws,
     compute_text_checksum,
     decode_text,
-    extract_dialogue_spans,
     normalize_text,
     split_paragraphs,
     split_sentences,
@@ -97,27 +96,6 @@ def test_split_sentences_chinese() -> None:
 def test_split_sentences_ignores_empty() -> None:
     assert split_sentences("。。。") == []
     assert split_sentences("") == []
-
-
-def test_extract_dialogue_spans_english_quotes() -> None:
-    text = '他说:"你好。"她答:"再见。"'
-    spans = extract_dialogue_spans(text)
-    assert "你好。" in spans
-    assert "再见。" in spans
-
-
-def test_extract_dialogue_spans_chinese_quotes() -> None:
-    text = "他说:“你好。”她答:“再见。”"
-    spans = extract_dialogue_spans(text)
-    assert "你好。" in spans
-    assert "再见。" in spans
-
-
-def test_extract_dialogue_spans_japanese_quotes() -> None:
-    text = "「你好。」「再见。」"
-    spans = extract_dialogue_spans(text)
-    assert "你好。" in spans
-    assert "再见。" in spans
 
 
 def test_compact_ws_collapses_whitespace() -> None:

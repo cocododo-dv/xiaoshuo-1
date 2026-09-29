@@ -407,8 +407,8 @@ def test_job_without_llm_fails_with_llm_required(session, monkeypatch) -> None:
 # ---------------------------------------------------------------- unit: parsing / planning / anchors
 
 
-def test_parse_batch_output_is_strict() -> None:
-    ok = seg.parse_batch_output(
+def test_parse_batch_items_flags_every_mismatch() -> None:
+    ok = seg.parse_batch_items(
         {
             "classifications": [
                 {"paragraph_index": 7, "paragraph_type": "dialogue", "confidence": "high"},
@@ -417,7 +417,7 @@ def test_parse_batch_output_is_strict() -> None:
         },
         [7, 8],
     )
-    assert ok == {7: ("dialogue", 0.9), 8: ("action", 0.5)}
+    assert ok == ({7: ("dialogue", 0.9), 8: ("action", 0.5)}, [], 2)
     bad_outputs = [
         None,
         {"classifications": "nope"},
@@ -442,8 +442,8 @@ def test_parse_batch_output_is_strict() -> None:
         ]},
     ]
     for output in bad_outputs:
-        with pytest.raises(seg.ClassificationBatchMismatch):
-            seg.parse_batch_output(output, [7, 8])
+        _results, problems, _received = seg.parse_batch_items(output, [7, 8])
+        assert problems, output
 
 
 def test_plan_batches_respects_char_and_paragraph_limits() -> None:
@@ -813,7 +813,6 @@ def test_a_legacy_half_classified_book_can_resume_without_a_job_row(session, mon
         other.commit()
         new_job_id = job.job_id
     assert new_job_id != job_id
-    assert "classification" not in _book(book_id).stats_json
     run_job_inline(new_job_id)
     assert _job(new_job_id).state == "succeeded"
     assert _book(book_id).status == "ready"
@@ -1164,14 +1163,12 @@ def test_parse_batch_items_keeps_valid_items_and_drops_duplicated_indexes() -> N
             {"paragraph_index": 9, "paragraph_type": "dialogue", "confidence": "low"},
         ]
     }
-    results, problems, received = seg._parse_batch_items(structured, [1, 2, 3, 4])
+    results, problems, received = seg.parse_batch_items(structured, [1, 2, 3, 4])
     assert results == {1: ("narration", results[1][1])} and received == 5
     assert any("invalid paragraph_type" in p for p in problems)
     assert any("more than once" in p for p in problems)
     assert any("not in this batch" in p for p in problems)
     assert any("missing" in p for p in problems)
-    with pytest.raises(seg.ClassificationBatchMismatch):
-        seg.parse_batch_output(structured, [1, 2, 3, 4])
 
 
 @pytest.mark.parametrize("mode, status_after", [("import", "failed"), ("retype", "ready")])

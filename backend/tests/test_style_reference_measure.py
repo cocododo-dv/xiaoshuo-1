@@ -88,11 +88,11 @@ def test_feature_table_keeps_the_voice_names_and_is_finite() -> None:
         "numeral_unit_per_1k",
         "latin_word_per_1k",
     )
-    features = m.text_features("\n".join(_PARAGRAPHS * 3))
+    features = m.kernel_features(m.measure_text("\n".join(_PARAGRAPHS * 3)))
     assert tuple(features) == m.FEATURE_NAMES
     assert all(isinstance(value, float) and math.isfinite(value) for value in features.values())
-    assert m.text_features("") == {name: 0.0 for name in m.FEATURE_NAMES}
-    assert m.text_features("。。！！——……") == {name: 0.0 for name in m.FEATURE_NAMES}
+    assert m.kernel_features(m.measure_text("")) == {name: 0.0 for name in m.FEATURE_NAMES}
+    assert m.kernel_features(m.measure_text("。。！！——……")) == {name: 0.0 for name in m.FEATURE_NAMES}
 
 
 def test_sentence_final_mo_after_question_words_is_not_a_particle() -> None:

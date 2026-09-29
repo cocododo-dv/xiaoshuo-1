@@ -258,14 +258,6 @@ def _body_texts(rows: Iterable[Mapping[str, Any]]) -> list[str]:
     return texts
 
 
-def window_text(session: Session, window: StyleReferenceWindow | Mapping[str, Any]) -> str:
-    """一窗的正文（段落以 ``\\n`` 相连，跳过章题 / 场分隔 / 脚注 / 落款）——``features_json`` 就是在这段文字上测的。"""
-    book_id = _attr(window, "book_id")
-    start = int(_attr(window, "start_index") or 0)
-    end = int(_attr(window, "end_index") or start)
-    return "\n".join(_body_texts(_paragraph_rows(session, str(book_id), start, end)))
-
-
 # 批量取窗口正文时,相邻窗口之间隔着不到这么多段就并成一次查询(学习作业取全书 → 一次;起草选 12 窗 → 各查各的)
 _MERGE_GAP_PARAGRAPHS = 200
 
@@ -294,21 +286,6 @@ def window_texts(session: Session, windows: Sequence[StyleReferenceWindow]) -> d
                 last = bisect_right(indices, int(window.end_index))
                 result[int(window.window_no)] = "\n".join(_body_texts(rows[first:last]))
     return result
-
-
-def window_ref(window: StyleReferenceWindow) -> dict[str, Any]:
-    """选窗 / 审计用的轻量引用（不带正文）。"""
-    return {
-        "window_no": int(window.window_no),
-        "start": int(window.start_index),
-        "end": int(window.end_index),
-        "chapter": int(window.chapter_no or 0),
-        "position": str(window.position or ""),
-        "chars": int(window.chars or 0),
-        "paragraphs": int(window.paragraph_count or 0),
-        "dialogue_share": float(window.dialogue_share or 0.0),
-        "typicality": float(window.typicality or 0.0),
-    }
 
 
 def _attr(item: Any, name: str) -> Any:
@@ -537,8 +514,6 @@ __all__ = [
     "load_windows",
     "marker_is_current",
     "set_window_tags",
-    "window_ref",
-    "window_text",
     "window_texts",
     "window_position",
     "window_typicality",

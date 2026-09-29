@@ -9,7 +9,6 @@ import io
 import json
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
@@ -39,8 +38,7 @@ from tests.style_reference_route_helpers import (  # noqa: E402
 )
 
 
-def test_legacy_reference_books_routes_are_never_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ENABLE_LEGACY_REFERENCE_BOOKS", "true")
+def test_legacy_reference_books_routes_are_never_exposed() -> None:
     with TestClient(create_app()) as client:
         paths = {getattr(route, "path", "") for route in client.app.routes}
 

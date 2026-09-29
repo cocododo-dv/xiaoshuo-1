@@ -10,8 +10,8 @@
   就、也、还、可是」「句末常带吧、呢、啊（大约每十句一次）」「几乎不用分号」），**不再**拿 1920 年代的鲁迅 /
   朱自清基线比「偏多 / 偏少」（v1 对真实网文说「连接词整体偏少」，而生成稿用得比作者还少得多）；不含阿拉伯数字；
 - 基线（``voice_baseline.yaml``）在管线里只剩一处用途：``deliberate_repetition``（叠词 / 短句连打 ≥ 基线字面 p85）。
-  z 值接口（``feature_z_scores`` / ``distinctive_features``）已没有管线调用方——样例窗口的典型度在 ``windows.py``、
-  「像不像作者」的读数看作者自己的窗口分布（``fidelity.py``）——只留作检验基线本身的工具（黄金语料测试用）。
+  样例窗口的典型度在 ``windows.py``、「像不像作者」的读数看作者自己的窗口分布（``fidelity.py``）；检验基线本身的
+  z 值工具只给黄金语料测试用，在 ``tests/style_reference_voice_baseline_helpers.py``。
 
 基线由运维工具 ``python -m novel_system.tools.build_voice_baseline build-baseline`` 用
 ``backend/tests/golden/style_reference/corpus`` 全部文本按 1500 字块生成（2026-09-24 从本模块的 ``__main__`` 搬过去）；
@@ -52,13 +52,10 @@ VOICE_BASELINE_VERSION = "voice_baseline_v2"
 BASELINE_BLOCK_CHARS = 1500
 TOP_WORDS_PER_GROUP = 5
 MAX_HABIT_LINES = 12
-# 整书签名是 n 块的聚合,块间 std 对它过宽——旧 z 值接口按 1/sqrt(min(n, 16)) 收窄;
-# REPETITION_FEATURES(叠词 / 短句连打)始终按字面 p85 判(deliberate_repetition 的规格口径)。
-Z_MAX_AGGREGATION_BLOCKS = 16
+# REPETITION_FEATURES(叠词 / 短句连打)按基线字面 p85 判(deliberate_repetition 的规格口径),整书签名也不收窄。
 REPETITION_FEATURES: tuple[str, ...] = ("redup_total_per_1k", "sent_short_run_ratio")
 # 少于这些可见字符的文本不渲染习惯句(统计无意义)。
 MIN_RENDER_CHARS = 200
-_Z_CLIP = 8.0
 
 # top_words 的组:8 个虚词组 + 句末助词 + 引导动词。
 TOP_WORD_GROUPS: tuple[str, ...] = (*FUNCTION_WORD_GROUPS, "sentence_final", "speech_verb")
@@ -182,36 +179,14 @@ def _baseline_stat(baseline: Mapping[str, Any] | None, feature: str, key: str) -
     return value if math.isfinite(value) else None
 
 
-def _block_count_of(features_or_signature: Mapping[str, Any] | None) -> int:
-    """签名覆盖的基线块数(由 stats.char_count 推出);仅 features 时视为 1 块。"""
-    if not isinstance(features_or_signature, Mapping):
-        return 1
-    stats = features_or_signature.get("stats")
-    if not isinstance(stats, Mapping):
-        return 1
-    try:
-        char_count = float(stats.get("char_count", 0))
-    except (TypeError, ValueError):
-        return 1
-    if not math.isfinite(char_count) or char_count <= 0:
-        return 1
-    return max(1, int(round(char_count / BASELINE_BLOCK_CHARS)))
-
-
-def _aggregation_scale(block_count: int | None) -> float:
-    count = 1 if block_count is None else max(1, int(block_count))
-    return math.sqrt(min(count, Z_MAX_AGGREGATION_BLOCKS))
-
-
 def _deliberate_repetition(
     features: Mapping[str, float],
     baseline: Mapping[str, Any] | None,
 ) -> bool:
     """叠词密度或短句连打高于基线**字面** p85 → True;无基线时 False(fail-closed)。
 
-    规格 §2.W3:「显著高于基线(≥p85)」。这里不套 1/sqrt(n) 聚合收窄——那只属于
-    z 值接口;整书签名对照块级 p85 本身判定。旗标只放松下游的新鲜度守卫(作者本就爱叠词 /
-    连打短句时,不把重复当毛病),不进习惯句。
+    规格 §2.W3:「显著高于基线(≥p85)」。整书签名也对照块级 p85 本身判定,不按块数收窄。
+    旗标只放松下游的新鲜度守卫(作者本就爱叠词 / 连打短句时,不把重复当毛病),不进习惯句。
     """
     return any(_level(features, baseline, name) == "high" for name in REPETITION_FEATURES)
 
@@ -235,87 +210,14 @@ def _unpack(features_or_signature: Mapping[str, Any] | None) -> tuple[dict[str, 
     return {str(k): finite_or_zero(v) for k, v in features_or_signature.items() if isinstance(v, (int, float))}, {}
 
 
-def feature_z_scores(
-    features: Mapping[str, Any],
-    baseline_features: Mapping[str, Any],
-    baseline_std: Mapping[str, Any] | None = None,
-    *,
-    block_count: int | None = None,
-) -> dict[str, float]:
-    """逐特征 z 值。
-
-    ``baseline_features`` 的值可以是均值数字,也可以是 ``{"mean", "std", ...}``
-    映射(voice_baseline.yaml 的形态);``baseline_std`` 显式给出时覆盖 std。
-    std 有下限(均值的 5% 或 1e-6)避免除零;结果裁到 ±8 且恒有限。
-    缺失的特征(任一侧)跳过。
-
-    基线 std 是块级(1500 字)波动。``features`` 传整份签名时按 ``stats.char_count``
-    推出它聚合的块数 n,std 按 1/sqrt(min(n, 16)) 收窄;显式 ``block_count`` 覆盖
-    (传 1 即得字面块级 z)。仅传 features 时 n=1。
-    """
-    values, _ = _unpack(features)
-    result: dict[str, float] = {}
-    if not isinstance(baseline_features, Mapping):
-        return result
-    scale = _aggregation_scale(block_count if block_count is not None else _block_count_of(features))
-    for name, value in values.items():
-        entry = baseline_features.get(name)
-        if entry is None:
-            continue
-        if isinstance(entry, Mapping):
-            mean = finite_or_zero(entry.get("mean", 0.0))
-            std = finite_or_zero(entry.get("std", 0.0))
-        else:
-            mean = finite_or_zero(entry)
-            std = 0.0
-        if baseline_std is not None and name in baseline_std:
-            std = finite_or_zero(baseline_std.get(name))
-        floor = max(1e-6, 0.05 * abs(mean))
-        effective_std = max(std, floor) / scale
-        z = (value - mean) / effective_std
-        result[name] = _round(max(-_Z_CLIP, min(_Z_CLIP, z)))
-    return result
-
-
-def distinctive_features(
-    features: Mapping[str, Any],
-    baseline: Mapping[str, Any] | None = None,
-    *,
-    min_abs_z: float = 1.0,
-    block_count: int | None = None,
-) -> list[dict[str, Any]]:
-    """相对基线偏离显著(|z| ≥ min_abs_z)的特征,按 |z| 降序。
-
-    返回 ``[{"feature", "z", "direction": "high"|"low"}]``;无基线时返回空表。
-    ``block_count`` 语义同 :func:`feature_z_scores`。
-    """
-    if baseline is None:
-        baseline = load_voice_baseline()
-    baseline_features = baseline.get("features") if isinstance(baseline, Mapping) else None
-    if not isinstance(baseline_features, Mapping):
-        return []
-    scores = feature_z_scores(features, baseline_features, block_count=block_count)
-    selected = [
-        {"feature": name, "z": z, "direction": "high" if z > 0 else "low"}
-        for name, z in scores.items()
-        if abs(z) >= min_abs_z
-    ]
-    selected.sort(key=lambda item: (-abs(item["z"]), item["feature"]))
-    return selected
-
-
 def _level(
     features: Mapping[str, float],
     baseline: Mapping[str, Any] | None,
     name: str,
-    *,
-    scale: float = 1.0,
 ) -> str | None:
-    """对照 p15 / p85 判「偏低 / 偏高」;无基线或落在中段返回 None。
+    """对照基线字面 p15 / p85 判「偏低 / 偏高」;无基线或落在中段返回 None。
 
-    ``scale`` > 1 时(整书聚合签名)把 p15 / p85 带按 1/scale 向 p50 收窄,
-    与 :func:`feature_z_scores` 的 std 收窄同一口径;scale=1 即字面 p15 / p85。
-    """
+    上下界按 p50 ± 半带算(旧的收窄口径去掉 scale 之后逐位不变)。"""
     if name not in features:
         return None
     p15 = _baseline_stat(baseline, name, "p15")
@@ -325,9 +227,8 @@ def _level(
         return None
     if p50 is None or not (p15 <= p50 <= p85):
         p50 = (p15 + p85) / 2.0
-    factor = max(1.0, float(scale))
-    high_bound = p50 + (p85 - p50) / factor
-    low_bound = p50 - (p50 - p15) / factor
+    high_bound = p50 + (p85 - p50)
+    low_bound = p50 - (p50 - p15)
     value = features[name]
     if value > high_bound and high_bound > low_bound:
         return "high"
@@ -599,15 +500,12 @@ __all__ = [
     "MAX_HABIT_LINES",
     "MIN_RENDER_CHARS",
     "REPETITION_FEATURES",
-    "Z_MAX_AGGREGATION_BLOCKS",
     "SPEECH_VERB_KEYS",
     "TOP_WORD_GROUPS",
     "VOICE_BASELINE_VERSION",
     "VOICE_SIGNATURE_VERSION",
     "compute_voice_signature",
     "compute_voice_signature_for_text",
-    "distinctive_features",
-    "feature_z_scores",
     "load_voice_baseline",
     "load_voice_lexicon",
     "quantile",

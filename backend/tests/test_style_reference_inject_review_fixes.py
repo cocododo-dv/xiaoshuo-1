@@ -47,7 +47,6 @@ from novel_system.services.style_reference.card import (
     UNIT_PRIMARY,
     normalize_card,
     plan_card_block,
-    render_card_block,
 )
 from novel_system.services.style_reference.errors import CloudPolicyBlockedError
 from novel_system.services.style_reference.inject import selection as selection_module
@@ -346,13 +345,13 @@ def _card_sections(text: str) -> tuple[str, list[str]]:
 
 def test_card_budget_keeps_pinned_and_mandatory_lines_and_an_avoid_share() -> None:
     card, states, pinned, must = _card_fixture()
-    text = render_card_block(
+    text = plan_card_block(
         card,
         dimension_states=states,
         line_states={pinned.line_id: "pinned"},
         recent_gaps=["逗号比作者少，句子一口气说到底"],
         budget_chars=2600,
-    )
+    ).text
     assert len(text) <= 2600
     assert pinned.text in text and ("（必须）" + must.text) in text
     main, avoid = _card_sections(text)

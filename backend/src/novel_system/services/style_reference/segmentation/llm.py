@@ -8,10 +8,10 @@
 - **锚定集**在全书上分层抽样(``select_anchor_positions``):按位置等分成 ``ANCHOR_SIZE`` 层,
   每层按书的种子确定性地挑一段,跳过章题、书前的书名页 / 简介块、副文本与场分隔行——不再是「前 200 段」;
 - **按字数自适应分批**(``plan_batches``):一批 ≤ ``BATCH_MAX_CHARS`` 字且 ≤ ``BATCH_MAX_PARAGRAPHS`` 段;
-- **一批一次记账调用**(``classify_batch``):每段带批外的前 / 后一段作只读上下文;
-- **严格解析**(``parse_batch_output``):按 ``paragraph_index`` 对齐,``paragraph_type`` 按
-  ``schemas.ParagraphType`` 校验;缺段、多出、重复、非法类型一律 ``ClassificationBatchMismatch``
-  (作业整批重试),绝不按位置对齐、绝不补「叙述 0.3」。
+- **一批一次记账调用**(``classify_batch_partial``):每段带批外的前 / 后一段作只读上下文;
+- **逐条核对**(``parse_batch_items``):按 ``paragraph_index`` 对齐,``paragraph_type`` 按
+  ``schemas.ParagraphType`` 校验;合格的条目照收,缺段、多出、重复、非法类型记进问题清单(作业只重发还没分出来
+  的段),绝不按位置对齐、绝不补「叙述 0.3」。
 
 ``positions`` 指段落在按 ``paragraph_index`` 升序排好的列表里的位置(0..n-1);发给模型、从模型
 收回的是真实的 ``paragraph_index``(老书刷新过可能不连续)。
@@ -88,25 +88,6 @@ class SegmentationLLMError(Exception):
         self.code = code
         self.message = message
         self.details = dict(details or {})
-
-
-class ClassificationBatchMismatch(SegmentationLLMError):
-    """模型的输出与这一批对不上(缺段 / 多出 / 重复 / 非法类型 / 缺字段):整批重试。"""
-
-    def __init__(self, problems: Sequence[str], *, expected: int, received: int) -> None:
-        shown = list(problems)[:8]
-        super().__init__(
-            "STYLE_REFERENCE_CLASSIFY_OUTPUT_MISMATCH",
-            f"classification output does not match the batch ({len(problems)} problem(s)): "
-            + "; ".join(shown),
-            details={
-                "problems": shown,
-                "problem_count": len(problems),
-                "expected": expected,
-                "received": received,
-            },
-        )
-        self.problems = list(problems)
 
 
 @dataclass(frozen=True)
@@ -370,31 +351,6 @@ def _call_batch(
     return getattr(response, "structured_output", None)
 
 
-def classify_batch(
-    runtime: NodeRuntime,
-    positions: Sequence[int],
-    texts: Sequence[str],
-    indexes: Sequence[int],
-    llm_client: Any,
-    *,
-    session: Session,
-    scope_id: str,
-    step: str,
-) -> dict[int, tuple[str, float]]:
-    """一次记账 LLM 调用分类一批段落,返回 ``{paragraph_index: (type, confidence)}``(与本批一一对应)。
-
-    ``session`` 只给记账用(``execute_accounted_call`` 会自己提交):并行的批次各用各的会话。
-    记账 / 控制面失败原样抛出(不重试、不降级);其余调用失败是 ``SegmentationLLMError``,
-    输出对不上是 ``ClassificationBatchMismatch``——两者由作业整批重试。
-    """
-    if not positions:
-        return {}
-    structured = _call_batch(
-        runtime, positions, texts, indexes, llm_client, session=session, scope_id=scope_id, step=step
-    )
-    return parse_batch_output(structured, [int(indexes[pos]) for pos in positions])
-
-
 def classify_batch_partial(
     runtime: NodeRuntime,
     positions: Sequence[int],
@@ -406,17 +362,20 @@ def classify_batch_partial(
     scope_id: str,
     step: str,
 ) -> tuple[dict[int, tuple[str, float]], list[str]]:
-    """同 :func:`classify_batch`,但输出按条收:返回(自身合格的每一条,问题清单)。
+    """一次记账 LLM 调用分类一批段落,输出按条收:返回(自身合格的每一条 ``{paragraph_index: (type,
+    confidence)}``,问题清单)。
 
     分类作业用它:一批 100 段里模型漏了一段 / 给了一个非法类型,合格的 99 段照收,只把缺的段再发一次
-    (整批重发同样的 100 段,模型常常在同一处再漏)。调用失败仍抛 ``SegmentationLLMError``。
+    (整批重发同样的 100 段,模型常常在同一处再漏)。``session`` 只给记账用(``execute_accounted_call`` 会自己
+    提交):并行的批次各用各的会话。记账 / 控制面失败原样抛出(不重试、不降级);其余调用失败是
+    ``SegmentationLLMError``,由作业重试。
     """
     if not positions:
         return {}, []
     structured = _call_batch(
         runtime, positions, texts, indexes, llm_client, session=session, scope_id=scope_id, step=step
     )
-    results, problems, _received = _parse_batch_items(structured, [int(indexes[pos]) for pos in positions])
+    results, problems, _received = parse_batch_items(structured, [int(indexes[pos]) for pos in positions])
     return results, problems
 
 
@@ -432,7 +391,7 @@ def _as_index(value: Any) -> int | None:
     return None
 
 
-def _parse_batch_items(
+def parse_batch_items(
     structured: Any,
     expected_indexes: Sequence[int],
 ) -> tuple[dict[int, tuple[str, float]], list[str], int]:
@@ -476,21 +435,6 @@ def _parse_batch_items(
         preview = ", ".join(str(index) for index in missing[:6])
         problems.append(f"{len(missing)} paragraph(s) missing (e.g. {preview})")
     return results, problems, len(classifications)
-
-
-def parse_batch_output(
-    structured: Any,
-    expected_indexes: Sequence[int],
-) -> dict[int, tuple[str, float]]:
-    """严格解析一批的输出:按 ``paragraph_index`` 对齐,类型必须是 8 类之一,每段恰好一次。
-
-    置信度标签缺失 / 不认识时记 0.5(不为它重试);其余任何不一致都抛
-    ``ClassificationBatchMismatch``——调用方整批重试,绝不按位置对齐或补默认类型。
-    """
-    results, problems, received = _parse_batch_items(structured, expected_indexes)
-    if problems:
-        raise ClassificationBatchMismatch(problems, expected=len(list(expected_indexes)), received=received)
-    return results
 
 
 # ---------------------------------------------------------------- calibration
@@ -542,7 +486,6 @@ __all__ = [
     "BATCH_MAX_PARAGRAPHS",
     "CLASSIFY_NODE_IDS",
     "CONTEXT_MAX_CHARS",
-    "ClassificationBatchMismatch",
     "NODE_ANCHOR",
     "NODE_BULK",
     "NodeRuntime",
@@ -553,12 +496,11 @@ __all__ = [
     "batch_items",
     "build_batch_request",
     "build_calibration",
-    "classify_batch",
     "classify_batch_partial",
     "confidence_level",
     "estimated_message_chars",
     "load_classification_runtimes",
-    "parse_batch_output",
+    "parse_batch_items",
     "plan_batches",
     "same_model",
     "select_anchor_positions",

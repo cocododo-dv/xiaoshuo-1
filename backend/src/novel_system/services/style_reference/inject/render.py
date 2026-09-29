@@ -7,7 +7,7 @@
 **参考方式说到做到**（N8 / J8，``policy.reference_mode``，渲染时再按书**现在**的云策略压一次——v1 契约的书快照
 没有策略，``segments_only`` 的书照样只送文风卡，L1）：
 
-- ``full``：文风卡（或旧画像的卡替身）+ 声音 + 本场冻结的样例窗 + 红线；
+- ``full``：文风卡 + 声音 + 本场冻结的样例窗 + 红线；
 - ``samples_only``：样例窗 + 红线；
 - ``card_only``：文风卡 + 声音 + 红线，**不送窗口**；卡句后面至多挂一句 ≤11 字的原话例子（取自这句的证据引文，
   含受保护专名 / 禁用词或疑似指令的片段不用，M3）。``segments_only`` 的书由 ``effective_reference_mode`` 强制走这里。
@@ -834,7 +834,7 @@ def _cache_put(key: str, value: RenderedStyle) -> None:
 
 def keep_priority(refs: Sequence[WindowRef]) -> list[WindowRef]:
     """预算拟合的保留次序（先保的在前）：改稿换进来的「示范要改那几维手法」的窗最先保（它们是这一次修改的
-    依据，L3——原来它们占着选窗顺序末尾的位置，拟合第一个就去掉它们），其余按选窗顺序（位置 → 场面 → 手法 →
+    依据，L3——原来它们占着选窗顺序末尾的位置，拟合第一个就去掉它们），其余按选窗顺序（位置 → 场面 → 维度示范 →
     质地 → 典型）。"""
     revise = [ref for ref in refs if ref.slot == SLOT_REVISE]
     return revise + [ref for ref in refs if ref.slot != SLOT_REVISE]

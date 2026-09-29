@@ -32,7 +32,7 @@
                ``ready``(绑定照常用),失败 / 取消也回到 ``ready``(已写的新类型保留,可继续)。
 
 每次成功:``stats_json["paragraph_types_revision"]`` +1、``classification_provenance`` 记来源
-(``llm`` + 份额 + 提示词版本 + 时间),并从段落行重算指标 / 段型分布(导入与破坏式重分类还重算声音签名)。
+(``llm`` + 份额 + 提示词版本 + 时间),并从段落行重算分类器校准与段型分布(导入与破坏式重分类还重算声音签名)。
 
 处理器的脚手架(检查点、并行调用循环、退避重试、终态映射)在 ``job_runtime.JobRun``,与学习 / 对照检查共用。
 """
@@ -238,14 +238,6 @@ def create_classification_job(
     job.progress_json = {"phase": "queued", "phase_label": "排队中", "mode": mode}
     if mode != MODE_RETYPE:
         book.status = "ingesting"
-    if "classification" in (book.stats_json or {}):
-        # 2026-09-15 的书上 JSON 游标状态机已退役,作业表是唯一的进度真源。作业行已经插入(本事务
-        # 持有写锁),重读 stats_json 再去掉旧键,不覆盖别人刚写进去的键。
-        session.flush()
-        session.refresh(book, ["stats_json"])
-        stats = dict(book.stats_json or {})
-        stats.pop("classification", None)
-        book.stats_json = stats
     session.flush()
     return job
 
@@ -921,7 +913,6 @@ class _ClassificationRun(JobRun):
             stats["voice_signature"] = voice_signature
         stats["paragraph_types_revision"] = revision
         stats["classification_provenance"] = provenance
-        stats.pop("classification", None)
         book.stats_json = stats
         book.status = "ready"
         self.session.flush()

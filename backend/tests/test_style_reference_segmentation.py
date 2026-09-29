@@ -203,7 +203,7 @@ def test_classify_batch_secures_the_request_and_accounts_the_call(
     texts = [_MALICIOUS_PARAGRAPH] * 6
     indexes = list(range(10, 16))
 
-    result = segmentation_llm.classify_batch(
+    result, problems = segmentation_llm.classify_batch_partial(
         runtime,
         [1, 2, 4],
         texts,
@@ -214,7 +214,7 @@ def test_classify_batch_secures_the_request_and_accounts_the_call(
         step="paragraph_classification:anchor_strong:11:3",
     )
 
-    assert set(result) == {11, 12, 14}
+    assert set(result) == {11, 12, 14} and problems == []
     assert all(conf == 0.9 for _ptype, conf in result.values())
     assert len(client.requests) == 1
     request = client.requests[0]
@@ -284,7 +284,7 @@ def test_segmentation_renderer_failure_uses_stable_error_without_calling_client(
 
     client = CountingClient()
     with pytest.raises(segmentation_llm.SegmentationLLMError) as exc_info:
-        segmentation_llm.classify_batch(
+        segmentation_llm.classify_batch_partial(
             _anchor_runtime(),
             [0],
             [leaked_payload],
@@ -310,7 +310,7 @@ def test_llm_failure_is_an_error_never_a_heuristic_fallback(session) -> None:
             raise RuntimeError("network down")
 
     with pytest.raises(segmentation_llm.SegmentationLLMError) as caught:
-        segmentation_llm.classify_batch(
+        segmentation_llm.classify_batch_partial(
             _anchor_runtime(),
             [0, 1],
             ["几日后。", "他心里想着,觉得不安。"],

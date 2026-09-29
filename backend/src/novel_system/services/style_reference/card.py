@@ -402,33 +402,6 @@ def plan_card_block(
     )
 
 
-def render_card_block(
-    card: DimensionCard | None,
-    *,
-    dimension_states: Mapping[str, str] | None = None,
-    line_states: Mapping[str, str] | None = None,
-    recent_gaps: Sequence[str] | None = None,
-    budget_chars: int = DEFAULT_CARD_BUDGET_CHARS,
-    role: str = "draft",
-    examples: Mapping[str, str] | None = None,
-) -> str:
-    """``[文风卡]`` 块（system 前缀里的抽象部分；样例在 user 尾部）——:func:`plan_card_block` 的正文。
-
-    顺序：气质（必须体现）→ 重点维 → 其余维（按辨识度）→ 「作者不这么写」→ 近期常见偏差。
-    ``exclude`` 的维整维不出现；预算内整句取舍，永不截半句；钉住 / 标「必须」的句永不因预算去掉。
-    ``role`` 只改标题口径（draft：写这一场时照着做；review：评审时逐维对照）。
-    """
-    return plan_card_block(
-        card,
-        dimension_states=dimension_states,
-        line_states=line_states,
-        recent_gaps=recent_gaps,
-        budget_chars=budget_chars,
-        role=role,
-        examples=examples,
-    ).text
-
-
 __all__ = [
     "CARD_AVOID_SHARE",
     "CARD_AVOID_TITLE",
@@ -464,5 +437,4 @@ __all__ = [
     "line_states_from_profile_json",
     "normalize_card",
     "plan_card_block",
-    "render_card_block",
 ]

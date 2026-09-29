@@ -6,7 +6,7 @@ from __future__ import annotations
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.windows import book_windows
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.structure import compute_structure_card, render_structure_card
+from novel_system.services.style_reference.structure import compute_structure_card, render_structure_card_parts
 from novel_system.services.style_reference.text_utils import (
     explicit_scene_breaks,
     is_scene_break_paragraph,
@@ -145,13 +145,13 @@ def test_structure_card_counts_scenes_from_explicit_breaks() -> None:
     assert [entry["scene_count"] for entry in card["chapters"]] == [2, 2, None]
     # 符号分隔行不入正文段数
     assert all(entry["paragraph_count"] == 8 for entry in card["chapters"])
-    rendered = render_structure_card({"structure_card": card})
+    rendered = "\n".join(render_structure_card_parts({"structure_card": card}))
     assert "- 场：有显式场分隔（2 章），每章约 2 场" in rendered
     assert "每章约 2 场、场长约" in rendered
 
     plain = compute_structure_card(_rows_with_breaks(breaks=False))
     assert plain["scene_break_style"] == "none" and plain["scene_break_chapters"] == 0
-    assert "- 场：无显式场分隔" in render_structure_card({"structure_card": plain})
+    assert "- 场：无显式场分隔" in render_structure_card_parts({"structure_card": plain})[0]
 
 
 def test_structure_card_uses_ingest_recorded_blank_line_breaks() -> None:

@@ -195,8 +195,8 @@ def style_policy_live(
 
     ``freeze_contract=False``（P5a）：只读绑定 / 画像状态 / 书的云策略三处的几列，不冻结契约（``contract`` /
     ``contract_hash`` 为 None）——给只需要「绑没绑、是否让位、参考的是哪本书 / 哪份画像」的节点用
-    （场景诊断逐场判定、抄袭门、写作台采纳）。冻结一份契约要读全书段落算根哈希（真实库约 0.8 s），
-    逐场做不起；要渲染参考的节点仍用默认的冻结路径。选层规则与注入单选一致：scene > character（POV
+    （场景诊断逐场判定、抄袭门、写作台采纳）。冻结一份契约要读整份画像与书快照（段落根哈希已存在 ``stats_json``
+    里，真实库每次约 20–50 ms，轻路径约 2 ms），逐场做太贵；要渲染参考的节点仍用默认的冻结路径。选层规则与注入单选一致：scene > character（POV
     优先）> project > global，同层取最新——最具体的一层说了算。命中的绑定里没有一条指向 active 画像时
     **降级**（``error_code=STYLE_REFERENCE_PROFILE_NOT_ACTIVE``，带最具体那条的 profile / binding / book id），
     不当作未绑定（C7）。

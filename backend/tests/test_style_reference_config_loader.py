@@ -20,30 +20,11 @@ def test_load_input_thresholds_yaml() -> None:
     assert cfg["language"]["skip"] == 10000
 
 
-def test_sensory_lexicon_is_gone() -> None:
-    """2026-09-23:感官词表指标(子串匹配)随测量核删除,词表文件一并删除。"""
-    with pytest.raises(FileNotFoundError):
-        load_yaml_config("sensory_lexicon")
-
-
-def test_dead_learning_configs_are_gone() -> None:
-    """2026-09-23 v3:旧抽取器的采样 / 重试配置(extraction.yaml)与 👍/👎 调档阈值(feedback.yaml)随代码删除。"""
-    for name in ("extraction", "feedback"):
-        with pytest.raises(FileNotFoundError):
-            load_yaml_config(name)
-
-
 def test_load_banned_adjectives_yaml_returns_items_key() -> None:
     """banned_adjectives.yaml 顶层是 list,wrapper 返回 {'items': [...]}。"""
     cfg = load_yaml_config("banned_adjectives")
     assert "items" in cfg
     assert "文笔优美" in cfg["items"]
-
-
-def test_tolerance_floors_is_gone() -> None:
-    """2026-09-24 风格参考 v3 S2:v2 指标包络(metrics.py / candidate_rerank.py)连同 tolerance_floors.yaml 一起删除。"""
-    with pytest.raises(FileNotFoundError):
-        load_yaml_config("tolerance_floors")
 
 
 def test_load_anti_plagiarism_template() -> None:

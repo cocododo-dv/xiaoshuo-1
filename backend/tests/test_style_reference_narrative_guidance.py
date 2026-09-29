@@ -11,11 +11,9 @@ from novel_system.services.style_reference.narrative_guidance import (
     NARRATIVE_AVOID_MARKER,
     NARRATIVE_GUIDANCE_MAX_LINES,
     NARRATIVE_GUIDANCE_SECTION_KEY,
-    NARRATIVE_GUIDANCE_SECTION_LABEL,
     collect_narrative_guidance,
     mark_forbidden_narrative_statement,
     render_narrative_section,
-    render_section,
 )
 
 
@@ -83,7 +81,6 @@ def test_render_section_prefixes_purpose_line_and_bullets() -> None:
     # 只决定叙事取舍，不含任何语言层块 / 原文样例的标记
     assert "[STYLE_REFERENCE]" not in text
     assert "[风格样例]" not in text
-    assert render_section is render_narrative_section
 
 
 def test_mark_forbidden_statement_adds_avoid_marker_unless_already_negated() -> None:
@@ -146,7 +143,7 @@ def test_section_constants_match_context_budget_registration() -> None:
     specs = {name: (label, keys) for name, label, keys in SECTION_SPECS}
     assert NARRATIVE_GUIDANCE_SECTION_KEY == "style_narrative_guidance"
     label, keys = specs[NARRATIVE_GUIDANCE_SECTION_KEY]
-    assert label == NARRATIVE_GUIDANCE_SECTION_LABEL == "Style Reference — Narrative Mechanisms"
+    assert label == "Style Reference — Narrative Mechanisms"
     assert keys == (NARRATIVE_GUIDANCE_SECTION_KEY,)
     # 叙事机制块是 neutral_draft 唯一可见的风格参考块（规格 §1.3）
     assert NARRATIVE_GUIDANCE_SECTION_KEY not in NEUTRAL_DRAFT_STYLE_SECTIONS

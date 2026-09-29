@@ -906,11 +906,6 @@ def kernel_features(measure: TextMeasure) -> dict[str, float]:
     return {name: _round(features.get(name, 0.0)) for name in FEATURE_NAMES}
 
 
-def text_features(text: str | None) -> dict[str, float]:
-    """``kernel_features(measure_text(text))`` 的简写。"""
-    return kernel_features(measure_text(text))
-
-
 def dialogue_char_share(measure: TextMeasure) -> float:
     """唯一的对白占比：引号内可见字 ÷ 可见字。"""
     return _round(share(measure.quoted_chars, measure.char_count))
@@ -1020,6 +1015,5 @@ __all__ = [
     "robust_center_scale",
     "robust_scale",
     "share",
-    "text_features",
     "visible_length",
 ]

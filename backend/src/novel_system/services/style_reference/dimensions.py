@@ -64,7 +64,3 @@ LAYER_TO_SUB_DIMS: dict[Layer, list[SubDimension]] = {
         SubDimension.THEME_NARRATIVE_PHILOSOPHY,
     ],
 }
-
-
-def layer_of(sub_dim: SubDimension) -> Layer:
-    return Layer(sub_dim.value.split(".", 1)[0])
