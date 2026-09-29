@@ -114,6 +114,9 @@ export function useFocusTrap(ref, active = true, { initialFocus, restoreFocus = 
 export function usePopover(ref, { open, onClose, anchorRef, initialFocus, focusOnOpen = true, closeOnFocusOut = true } = {}) {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  // 开关项走 ref：只在打开时读一次，浮层开着时父组件换了取值也不会把它拆下重装（重装会重新抢焦点）
+  const optionsRef = useRef({ focusOnOpen, closeOnFocusOut });
+  optionsRef.current = { focusOnOpen, closeOnFocusOut };
 
   const focusAnchor = useCallback(() => {
     const anchor = anchorRef && anchorRef.current;
@@ -136,7 +139,7 @@ export function usePopover(ref, { open, onClose, anchorRef, initialFocus, focusO
       const anchor = anchorRef && anchorRef.current;
       return !!node && (root.contains(node) || !!(anchor && anchor.contains(node)));
     };
-    if (focusOnOpen) {
+    if (optionsRef.current.focusOnOpen) {
       const target = (initialFocus && initialFocus.current) || focusableIn(root)[0] || root;
       if (target && typeof target.focus === "function") target.focus({ preventScroll: true });
     }
@@ -155,7 +158,7 @@ export function usePopover(ref, { open, onClose, anchorRef, initialFocus, focusO
     };
     const onFocusIn = (event) => {
       focusInside = root.contains(event.target);
-      if (!closeOnFocusOut || !isTop() || inside(event.target)) return;
+      if (!optionsRef.current.closeOnFocusOut || !isTop() || inside(event.target)) return;
       if (closeRef.current) closeRef.current("focusout");
     };
     document.addEventListener("keydown", onKey, true);
@@ -175,9 +178,9 @@ export function usePopover(ref, { open, onClose, anchorRef, initialFocus, focusO
         if (!now || now === document.body) focusAnchor();
       });
     };
-    // initialFocus / anchorRef 是 ref，不参与依赖
+    // initialFocus / anchorRef 是 ref，开关项读 optionsRef，都不参与依赖
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, focusOnOpen, closeOnFocusOut]);
+  }, [open]);
 
   return close;
 }
