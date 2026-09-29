@@ -1,9 +1,9 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 import { CloseButton, Tag } from "./ws-ui.jsx";
-import { chapterHeading, chapterLabel, chapterStateMeta, sceneLabel, sceneStateMeta } from "./labels/catalog.js";
+import { chapterHeading, chapterLabel, chapterStateMeta, sceneStateMeta } from "./labels/catalog.js";
 import { isImeComposing } from "./lib/keyboard.js";
 import { useWrEvent, useWrInert } from "./ws-writer-hooks.js";
 
@@ -296,15 +296,8 @@ export function useWrOutlineActions({ chapters, refresh, activeScene, setActiveS
   });
   const onDelete = useWrEvent((chId, sid) => {
     if (chapterLocked(chId) || !WsCatalog) return;
-    // 进回收站（正文文档保留在存储里，恢复时一并回来；彻底删除时由回收站清理）
+    // 进回收站：目录的软删端点自己产生回收站条目（正文文档保留，恢复时一并回来）
     const hit = WsCatalog.sceneById(sid);
-    if (hit && WsTrashStore) {
-      WsTrashStore.push({
-        kind: "场景",
-        title: sceneLabel(hit.chapter, hit.index, hit.scene, { withTitle: true, maxTitle: 40 }),
-        payload: { type: "scene", chId: hit.chapter.id, index: hit.index, scene: hit.scene },
-      });
-    }
     const title = (hit && hit.scene.title) || "未命名场景";
     WsCatalog.removeScene(chId, sid);
     settleAfterDelete(new Set([sid]), `已把场景「${title}」移入回收站`);
