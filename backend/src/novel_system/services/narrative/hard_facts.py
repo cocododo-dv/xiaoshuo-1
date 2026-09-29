@@ -73,8 +73,11 @@ def check_consistency(
             if fact_key not in CHECKABLE_FACT_KEYS:
                 continue
             facts_checked += 1
-            violation = _check_fact_against_text(
-                text_lower, char_id, fact_key, projected.fact_value,
+            violation = check_fact_against_text(
+                text_lower,
+                EntityReference.of(char_id),
+                fact_key,
+                projected.fact_value,
                 known_locations=known_locations,
             )
             if violation is not None:
@@ -342,9 +345,276 @@ def _norm_limb_group(value_lower: str) -> str | None:
     return None
 
 
-def _check_fact_against_text(
+@dataclass(frozen=True, slots=True)
+class EntityReference:
+    """正文里指向一个实体的写法：全部小写的匹配形式，外加证据里用的原样写法（一一对应）。"""
+
+    entity_id: str
+    names: tuple[str, ...]
+    labels: tuple[str, ...]
+
+    @classmethod
+    def of(cls, entity_id: str, extra_names: tuple[str, ...] = ()) -> EntityReference:
+        seen: dict[str, str] = {}
+        for label in (*extra_names, entity_id):
+            clean = str(label or "").strip()
+            if clean and clean.lower() not in seen:
+                seen[clean.lower()] = clean
+        return cls(entity_id=entity_id, names=tuple(seen), labels=tuple(seen.values()))
+
+    def in_clause(self, clause: str) -> bool:
+        return any(name in clause for name in self.names)
+
+    def verb_after(self, clause: str, verbs: tuple[str, ...], window: int) -> tuple[str, str] | None:
+        """第一个后面 ``window`` 字以内跟着动作的写法：(原样写法, 动作)。"""
+        for name, label in zip(self.names, self.labels, strict=True):
+            verb = _verb_after(clause, name, verbs, window)
+            if verb:
+                return label, verb
+        return None
+
+    def referred_by(self, clauses: list[str], index: int) -> bool:
+        return any(_clause_refers_to_entity(clauses, index, name) for name in self.names)
+
+
+@dataclass(frozen=True, slots=True)
+class _FactCheck:
+    """一条事实对一段正文的检查输入。"""
+
+    entity: EntityReference
+    fact_key: str
+    fact_value: str
+    value_lower: str
+    text_lower: str
+    clauses: list[str]
+    known_locations: set[str]
+
+    def violation(self, *, expected: str, actual: str, evidence: str) -> ConsistencyViolation:
+        return ConsistencyViolation(
+            fact_key=self.fact_key,
+            expected=expected,
+            actual=actual,
+            entity_id=self.entity.entity_id,
+            evidence=evidence,
+        )
+
+
+def _check_alive(check: _FactCheck) -> ConsistencyViolation | None:
+    """alive==dead：死去的角色做着活人的动作（回忆 / 闪回 / 遗体之类的框定不算）。"""
+    if check.value_lower != "dead":
+        return None
+    for clause in check.clauses:
+        if not check.entity.in_clause(clause):
+            continue
+        if any(g in clause for g in _DEATH_MEMORY_GUARDS):
+            continue  # memory / flashback / corpse framing → not a contradiction
+        found = check.entity.verb_after(clause, _ALIVE_ACTION_VERBS, window=10)
+        if found:
+            label, verb = found
+            return check.violation(expected="dead", actual="appears alive in text", evidence=f"{label}…{verb}")
+    return None
+
+
+def _check_location(check: _FactCheck) -> ConsistencyViolation | None:
+    """location：正文说角色「还在」另一个已知的地方。"""
+    wrong_locs = {loc for loc in check.known_locations if loc and loc != check.value_lower}
+    for clause in check.clauses:
+        if not check.entity.in_clause(clause):
+            continue
+        if check.value_lower and check.value_lower in clause:
+            continue  # correct location mentioned → assume consistent
+        if not any(p in clause for p in _STILL_AT_PHRASES):
+            continue
+        # 一句里同时出现几个错地名时取最先出现的那个（以前按集合次序取，随进程的哈希种子变）
+        present_wrong = min(
+            (w for w in wrong_locs if w in clause),
+            key=lambda w: (clause.index(w), -len(w), w),
+            default=None,
+        )
+        if present_wrong:
+            return check.violation(
+                expected=check.fact_value,
+                actual=f"text places {check.entity.entity_id} at {present_wrong}",
+                evidence=clause[:80],
+            )
+    return None
+
+
+def _check_missing_limb(check: _FactCheck) -> ConsistencyViolation | None:
+    """missing_limb：角色用了已经失去的肢体（或断了一条胳膊还「双手」做事）。"""
+    if not check.value_lower:
+        return None
+    group = _norm_limb_group(check.value_lower)
+    if not group:
+        return None
+    limb_words = _LIMB_GROUPS[group]
+    for clause_index, clause in enumerate(check.clauses):
+        if not check.entity.referred_by(check.clauses, clause_index):
+            continue
+        if any(g in clause for g in _LIMB_MISSING_GUARDS):
+            continue  # clause describes the loss, not a use of the limb
+        gap = _min_gap(clause, limb_words, _LIMB_ACTION_VERBS)
+        if gap is not None and gap <= 6:
+            return check.violation(
+                expected=f"missing: {check.fact_value}",
+                actual="text uses the missing limb",
+                evidence=clause[:80],
+            )
+        # using BOTH hands when one arm is gone (blueprint's 双手握剑 example)
+        if group in ("right_arm", "left_arm"):
+            gap2 = _min_gap(clause, _BOTH_HANDS, _LIMB_ACTION_VERBS)
+            if gap2 is not None and gap2 <= 6:
+                return check.violation(
+                    expected=f"missing: {check.fact_value}",
+                    actual="text uses both hands despite a missing arm",
+                    evidence=clause[:80],
+                )
+    return None
+
+
+def _check_has_item(check: _FactCheck) -> ConsistencyViolation | None:
+    """has_item=lost:X：角色拿出 / 握着已经遗失的物品。"""
+    if not check.value_lower.startswith("lost:"):
+        return None
+    lost_item = check.value_lower.replace("lost:", "").strip()
+    if not lost_item:
+        return None
+    for clause_index, clause in enumerate(check.clauses):
+        if not check.entity.referred_by(check.clauses, clause_index):
+            continue
+        if lost_item not in clause:
+            continue
+        if any(g in clause for g in _ITEM_LOSS_GUARDS):
+            continue
+        gap = _min_gap(clause, (lost_item,), _ITEM_POSSESS_VERBS)
+        if gap is not None and gap <= 6:
+            return check.violation(
+                expected=f"item lost: {lost_item}",
+                actual="text shows character using the lost item",
+                evidence=clause[:80],
+            )
+    return None
+
+
+_INCAPACITY_ACTIONS: dict[str, tuple[str, ...]] = {
+    "unconscious": tuple(dict.fromkeys((*_ALIVE_ACTION_VERBS, *_SPEAKING_ACTIONS, *_WALKING_ACTIONS))),
+    "blind": _VISUAL_ACTIONS,
+    "deaf": _HEARING_ACTIONS,
+    "mute": _SPEAKING_ACTIONS,
+    "paralyzed": _WALKING_ACTIONS,
+}
+
+
+def _check_physical_state(check: _FactCheck) -> ConsistencyViolation | None:
+    """physical_state：只认明确、稳定的失能（断肢、昏迷、失明、失聪、失语、瘫痪）。"""
+    missing_limb = _physical_state_missing_limb(check.value_lower)
+    if missing_limb:
+        limb_violation = _check_missing_limb(
+            _FactCheck(
+                entity=check.entity,
+                fact_key="missing_limb",
+                fact_value=missing_limb,
+                value_lower=missing_limb.lower(),
+                text_lower=check.text_lower,
+                clauses=check.clauses,
+                known_locations=check.known_locations,
+            )
+        )
+        if limb_violation is not None:
+            return check.violation(
+                expected=check.fact_value,
+                actual=limb_violation.actual,
+                evidence=limb_violation.evidence,
+            )
+
+    state_kind = _physical_state_kind(check.value_lower)
+    if state_kind is None:
+        return None
+    for clause in check.clauses:
+        if not check.entity.in_clause(clause) or _clause_has_negated_or_nonactual_action(clause):
+            continue
+        if state_kind in {"blind", "deaf"} and any(
+            guard in clause for guard in _ASSISTIVE_PERCEPTION_GUARDS
+        ):
+            continue
+        found = check.entity.verb_after(clause, _INCAPACITY_ACTIONS[state_kind], window=14)
+        if found:
+            return check.violation(
+                expected=check.fact_value,
+                actual=f"text shows an action incompatible with {state_kind}: {found[1]}",
+                evidence=clause[:120],
+            )
+    return None
+
+
+def _check_appearance(check: _FactCheck) -> ConsistencyViolation | None:
+    """appearance：只认结构化的发色 / 瞳色或光头。"""
+    contract = _appearance_contract(check.value_lower)
+    if contract is None:
+        return None
+    feature, expected_color = contract
+    anchors = _HAIR_ANCHORS if feature in {"hair", "bald"} else _EYE_ANCHORS
+    for clause in check.clauses:
+        if not check.entity.in_clause(clause) or any(g in clause for g in _APPEARANCE_MEMORY_GUARDS):
+            continue
+        if feature == "bald":
+            if any(marker in clause for marker in ("一头长发", "满头长发", "浓密头发", "thick hair", "long hair")):
+                return check.violation(
+                    expected=check.fact_value,
+                    actual="text gives the character a full head of hair",
+                    evidence=clause[:120],
+                )
+            continue
+        expected_aliases = _COLOR_ALIASES.get(expected_color, ())
+        if expected_aliases and _min_gap(clause, anchors, expected_aliases) is not None:
+            continue
+        for actual_color, aliases in _COLOR_ALIASES.items():
+            if actual_color == expected_color:
+                continue
+            gap = _min_gap(clause, anchors, aliases)
+            if gap is not None and gap <= 5:
+                return check.violation(
+                    expected=check.fact_value,
+                    actual=f"text describes {feature} colour as {actual_color}",
+                    evidence=clause[:120],
+                )
+    return None
+
+
+def _check_ability(check: _FactCheck) -> ConsistencyViolation | None:
+    """ability：明确的否定契约（cannot: / unable: / lost: / no: …）。"""
+    contract = _negative_ability_contract(check.value_lower)
+    if contract is None:
+        return None
+    ability_name, action_tokens = contract
+    for clause in check.clauses:
+        if not check.entity.in_clause(clause) or _clause_has_negated_or_nonactual_action(clause):
+            continue
+        found = check.entity.verb_after(clause, action_tokens, window=16)
+        if found:
+            return check.violation(
+                expected=check.fact_value,
+                actual=f"text shows forbidden ability '{ability_name}': {found[1]}",
+                evidence=clause[:120],
+            )
+    return None
+
+
+# 每个可查的事实键一个检查函数；键集合与 taxonomy.CHECKABLE_FACT_KEYS 相同（test 钉住）。
+_FACT_CHECKERS = {
+    "alive": _check_alive,
+    "location": _check_location,
+    "missing_limb": _check_missing_limb,
+    "has_item": _check_has_item,
+    "physical_state": _check_physical_state,
+    "appearance": _check_appearance,
+    "ability": _check_ability,
+}
+
+
+def check_fact_against_text(
     text_lower: str,
-    char_id: str,
+    entity: EntityReference,
     fact_key: str,
     fact_value: str,
     *,
@@ -356,187 +626,17 @@ def _check_fact_against_text(
     prose, not just textbook-exact phrasings. Returns at most one violation.
     Soft facts (tone, relationship nuance) are deliberately out of scope.
     """
-    value_lower = fact_value.lower()
-    char_lower = char_id.lower()
-    clauses = _split_clauses(text_lower)
-    known_locations = known_locations or set()
-
-    # --- alive / dead: dead character performing a living action ---
-    if fact_key == "alive" and value_lower == "dead":
-        for clause in clauses:
-            if char_lower not in clause:
-                continue
-            if any(g in clause for g in _DEATH_MEMORY_GUARDS):
-                continue  # memory / flashback / corpse framing → not a contradiction
-            verb = _verb_after(clause, char_lower, _ALIVE_ACTION_VERBS, window=10)
-            if verb:
-                return ConsistencyViolation(
-                    fact_key=fact_key, expected="dead",
-                    actual="appears alive in text",
-                    entity_id=char_id, evidence=f"{char_id}…{verb}",
-                )
-
-    # --- location: character is still at the WRONG named place ---
-    if fact_key == "location":
-        wrong_locs = {loc for loc in known_locations if loc and loc != value_lower}
-        for clause in clauses:
-            if char_lower not in clause:
-                continue
-            if value_lower and value_lower in clause:
-                continue  # correct location mentioned → assume consistent
-            if not any(p in clause for p in _STILL_AT_PHRASES):
-                continue
-            present_wrong = next((w for w in wrong_locs if w in clause), None)
-            if present_wrong:
-                return ConsistencyViolation(
-                    fact_key=fact_key, expected=fact_value,
-                    actual=f"text places {char_id} at {present_wrong}",
-                    entity_id=char_id, evidence=clause[:80],
-                )
-
-    # --- missing_limb: character uses a limb they no longer have ---
-    if fact_key == "missing_limb" and value_lower:
-        group = _norm_limb_group(value_lower)
-        if group:
-            limb_words = _LIMB_GROUPS[group]
-            for clause_index, clause in enumerate(clauses):
-                if not _clause_refers_to_entity(clauses, clause_index, char_lower):
-                    continue
-                if any(g in clause for g in _LIMB_MISSING_GUARDS):
-                    continue  # clause describes the loss, not a use of the limb
-                gap = _min_gap(clause, limb_words, _LIMB_ACTION_VERBS)
-                if gap is not None and gap <= 6:
-                    return ConsistencyViolation(
-                        fact_key=fact_key, expected=f"missing: {fact_value}",
-                        actual="text uses the missing limb",
-                        entity_id=char_id, evidence=clause[:80],
-                    )
-                # using BOTH hands when one arm is gone (blueprint's 双手握剑 example)
-                if group in ("right_arm", "left_arm"):
-                    gap2 = _min_gap(clause, _BOTH_HANDS, _LIMB_ACTION_VERBS)
-                    if gap2 is not None and gap2 <= 6:
-                        return ConsistencyViolation(
-                            fact_key=fact_key, expected=f"missing: {fact_value}",
-                            actual="text uses both hands despite a missing arm",
-                            entity_id=char_id, evidence=clause[:80],
-                        )
-
-    # --- has_item: character uses an item they lost ---
-    if fact_key == "has_item" and value_lower.startswith("lost:"):
-        lost_item = value_lower.replace("lost:", "").strip()
-        if lost_item:
-            for clause_index, clause in enumerate(clauses):
-                if not _clause_refers_to_entity(clauses, clause_index, char_lower):
-                    continue
-                if lost_item not in clause:
-                    continue
-                if any(g in clause for g in _ITEM_LOSS_GUARDS):
-                    continue
-                gap = _min_gap(clause, (lost_item,), _ITEM_POSSESS_VERBS)
-                if gap is not None and gap <= 6:
-                    return ConsistencyViolation(
-                        fact_key=fact_key, expected=f"item lost: {lost_item}",
-                        actual="text shows character using the lost item",
-                        entity_id=char_id, evidence=clause[:80],
-                    )
-
-    # --- physical_state: only explicit, stable incapacity contracts ---
-    if fact_key == "physical_state":
-        missing_limb = _physical_state_missing_limb(value_lower)
-        if missing_limb:
-            limb_violation = _check_fact_against_text(
-                text_lower,
-                char_id,
-                "missing_limb",
-                missing_limb,
-                known_locations=known_locations,
-            )
-            if limb_violation is not None:
-                return ConsistencyViolation(
-                    fact_key=fact_key,
-                    expected=fact_value,
-                    actual=limb_violation.actual,
-                    entity_id=char_id,
-                    evidence=limb_violation.evidence,
-                )
-
-        state_kind = _physical_state_kind(value_lower)
-        action_map: dict[str, tuple[str, ...]] = {
-            "unconscious": tuple(dict.fromkeys((*_ALIVE_ACTION_VERBS, *_SPEAKING_ACTIONS, *_WALKING_ACTIONS))),
-            "blind": _VISUAL_ACTIONS,
-            "deaf": _HEARING_ACTIONS,
-            "mute": _SPEAKING_ACTIONS,
-            "paralyzed": _WALKING_ACTIONS,
-        }
-        if state_kind is not None:
-            for clause in clauses:
-                if char_lower not in clause or _clause_has_negated_or_nonactual_action(clause):
-                    continue
-                if state_kind in {"blind", "deaf"} and any(
-                    guard in clause for guard in _ASSISTIVE_PERCEPTION_GUARDS
-                ):
-                    continue
-                action = _verb_after(clause, char_lower, action_map[state_kind], window=14)
-                if action:
-                    return ConsistencyViolation(
-                        fact_key=fact_key,
-                        expected=fact_value,
-                        actual=f"text shows an action incompatible with {state_kind}: {action}",
-                        entity_id=char_id,
-                        evidence=clause[:120],
-                    )
-
-    # --- appearance: structured hair/eye colour or baldness only ---
-    if fact_key == "appearance":
-        contract = _appearance_contract(value_lower)
-        if contract is not None:
-            feature, expected_color = contract
-            anchors = _HAIR_ANCHORS if feature in {"hair", "bald"} else _EYE_ANCHORS
-            for clause in clauses:
-                if char_lower not in clause or any(g in clause for g in _APPEARANCE_MEMORY_GUARDS):
-                    continue
-                if feature == "bald":
-                    if any(marker in clause for marker in ("一头长发", "满头长发", "浓密头发", "thick hair", "long hair")):
-                        return ConsistencyViolation(
-                            fact_key=fact_key,
-                            expected=fact_value,
-                            actual="text gives the character a full head of hair",
-                            entity_id=char_id,
-                            evidence=clause[:120],
-                        )
-                    continue
-                expected_aliases = _COLOR_ALIASES.get(expected_color, ())
-                if expected_aliases and _min_gap(clause, anchors, expected_aliases) is not None:
-                    continue
-                for actual_color, aliases in _COLOR_ALIASES.items():
-                    if actual_color == expected_color:
-                        continue
-                    gap = _min_gap(clause, anchors, aliases)
-                    if gap is not None and gap <= 5:
-                        return ConsistencyViolation(
-                            fact_key=fact_key,
-                            expected=fact_value,
-                            actual=f"text describes {feature} colour as {actual_color}",
-                            entity_id=char_id,
-                            evidence=clause[:120],
-                        )
-
-    # --- ability: explicit negative contracts (cannot:/unable:/lost:/no:) ---
-    if fact_key == "ability":
-        contract = _negative_ability_contract(value_lower)
-        if contract is not None:
-            ability_name, action_tokens = contract
-            for clause in clauses:
-                if char_lower not in clause or _clause_has_negated_or_nonactual_action(clause):
-                    continue
-                action = _verb_after(clause, char_lower, action_tokens, window=16)
-                if action:
-                    return ConsistencyViolation(
-                        fact_key=fact_key,
-                        expected=fact_value,
-                        actual=f"text shows forbidden ability '{ability_name}': {action}",
-                        entity_id=char_id,
-                        evidence=clause[:120],
-                    )
-
-    return None
+    checker = _FACT_CHECKERS.get(fact_key)
+    if checker is None:
+        return None
+    return checker(
+        _FactCheck(
+            entity=entity,
+            fact_key=fact_key,
+            fact_value=fact_value,
+            value_lower=fact_value.lower(),
+            text_lower=text_lower,
+            clauses=_split_clauses(text_lower),
+            known_locations=known_locations or set(),
+        )
+    )
