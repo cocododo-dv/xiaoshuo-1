@@ -1,6 +1,6 @@
 """风格参考 v3 · P5b：编排器里的风格步 / 补丁去留 / 归档读数（检查点校验与续跑），对照检查作业，读数接口，旧回测下线。
 
-编排器用 ``test_scene_run_checkpoint_resume`` 的记账替身（首稿 / 补丁走真实的 LLMNodeRunner + 假供应商，软 QC 与准定稿
+编排器用 ``tests/support/checkpoint_fakes.py`` 的记账替身（首稿 / 补丁走真实的 LLMNodeRunner + 假供应商，软 QC 与准定稿
 是写真实账本行的替身）；读数的数值由替身按文字给定。全部是合成文本。
 """
 
@@ -32,7 +32,7 @@ from novel_system.services.style_reference.jobs import JOB_KIND_CHECK, register_
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.real_llm_fakes import install_online_pipeline
 from tests.style_reference_inject_helpers import bind, seed_reference
-from tests.test_scene_run_checkpoint_resume import (
+from tests.support.checkpoint_fakes import (
     _CountingGenerationClient,
     _FailNearFinal,
     _HardPassClient,
