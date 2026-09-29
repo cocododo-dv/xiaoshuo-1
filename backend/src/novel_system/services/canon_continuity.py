@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -42,6 +43,17 @@ _DEGRADED_EXTRACTION_OUTCOMES = {
 _SCENE_COMPLETION_COMMIT_KINDS = {"author_verification", "facts_unchanged"}
 
 
+@dataclass(frozen=True)
+class _RetireScope:
+    """一次退役的范围：各表的筛选条件，外加要保住的终稿。"""
+
+    candidates: tuple[Any, ...]
+    events: tuple[Any, ...]
+    commits: tuple[Any, ...]
+    snapshots: list[ContinuitySnapshot]
+    keep_final_ids: frozenset[str] = field(default_factory=frozenset)
+
+
 class CanonContinuityService:
     """Turn prose-grounded candidates into accepted, replayable story canon.
 
@@ -63,9 +75,10 @@ class CanonContinuityService:
         if (
             state.narrative_sync_status == "synced"
             and state.narrative_sync_final_scene_row_id == final.row_id
-            and self.scene_status(project_id, scene.scene_id)["complete"]
         ):
-            return self.scene_status(project_id, scene.scene_id)
+            current = self.scene_status(project_id, scene.scene_id)
+            if current["complete"]:
+                return current
 
         # A new unverified revision must not erase the last committed canon.
         # Retire only unfinished review artifacts here; accepted facts and their
@@ -600,12 +613,7 @@ class CanonContinuityService:
         self._supersede_prior_revision(scene.scene_id, final.row_id)
         self._activate_accepted_events(final)
         self._realize_accepted_timelines(final)
-        commit_base = f"canon_verify_{self._stable_digest(final.row_id + ':' + self._final_hash(final))[:20]}"
-        commit_id = commit_base
-        commit = self.session.get(CanonCommit, commit_id)
-        if commit is not None and commit.status != "active":
-            commit_id = f"{commit_base}_{uuid.uuid4().hex[:8]}"
-            commit = None
+        commit_id, commit = self._mint_commit_id("canon_verify", final)
         if commit is None:
             decisions = self._candidate_rows(final.row_id)
             commit = CanonCommit(
@@ -727,12 +735,7 @@ class CanonContinuityService:
         )
         final.content_hash = self._final_hash(final)
         self._supersede_prior_revision(scene.scene_id, final.row_id)
-        commit_base = f"canon_carry_{self._stable_digest(final.row_id + ':' + self._final_hash(final))[:20]}"
-        commit_id = commit_base
-        commit = self.session.get(CanonCommit, commit_id)
-        if commit is not None and commit.status != "active":
-            commit_id = f"{commit_base}_{uuid.uuid4().hex[:8]}"
-            commit = None
+        commit_id, commit = self._mint_commit_id("canon_carry", final)
         if commit is None:
             commit = CanonCommit(
                 commit_id=commit_id,
@@ -1405,103 +1408,106 @@ class CanonContinuityService:
                 },
             )
 
-    def _supersede_prior_revision(self, scene_id: str, current_final_scene_row_id: str) -> None:
-        for row in self.session.execute(
-            select(FactCandidate).where(
-                FactCandidate.scene_id == scene_id,
-                FactCandidate.final_scene_row_id != current_final_scene_row_id,
-                FactCandidate.status.in_(("pending", "accepted")),
-            )
-        ).scalars().all():
+    def _mint_commit_id(self, prefix: str, final: FinalScene) -> tuple[str, CanonCommit | None]:
+        """「本场核对完成」提交的 id：由终稿行与正文哈希决定，重复调用拿到同一条；
+        同一个 id 已经被退役过时另起一个带随机后缀的，返回 (id, 已有的有效提交或 None)。"""
+        commit_id = f"{prefix}_{self._stable_digest(final.row_id + ':' + self._final_hash(final))[:20]}"
+        commit = self.session.get(CanonCommit, commit_id)
+        if commit is not None and commit.status != "active":
+            return f"{commit_id}_{uuid.uuid4().hex[:8]}", None
+        return commit_id, commit
+
+    def _retire(self, scope: _RetireScope) -> None:
+        """把一版（或几版）终稿名下的正史产物一起退役：候选、暂存 / 已认可事件、提交、它们兑现过的计划时间线、
+        场景快照。``keep_final_ids`` 里的终稿（已完整核对、要保住的上一版正史）原样留着。"""
+        keep = scope.keep_final_ids
+        for row in self.session.execute(select(FactCandidate).where(*scope.candidates)).scalars().all():
+            if row.final_scene_row_id not in keep:
+                row.status = "superseded"
+        for row in self.session.execute(select(NarrativeEvent).where(*scope.events)).scalars().all():
+            if row.final_scene_row_id not in keep:
+                row.authority_status = "superseded"
+        retired_commits = [
+            row
+            for row in self.session.execute(select(CanonCommit).where(*scope.commits)).scalars().all()
+            if row.final_scene_row_id not in keep
+        ]
+        for row in retired_commits:
             row.status = "superseded"
-        for row in self.session.execute(
-            select(NarrativeEvent).where(
-                NarrativeEvent.scene_id == scene_id,
-                NarrativeEvent.final_scene_row_id.is_not(None),
-                NarrativeEvent.final_scene_row_id != current_final_scene_row_id,
-                NarrativeEvent.authority_status.in_(("pending", "accepted")),
-            )
-        ).scalars().all():
-            row.authority_status = "superseded"
-        prior_commits = list(
-            self.session.execute(
-                select(CanonCommit).where(
-                    CanonCommit.scene_id == scene_id,
-                    CanonCommit.final_scene_row_id != current_final_scene_row_id,
-                    CanonCommit.status == "active",
-                )
-            ).scalars().all()
-        )
-        prior_commit_ids = [row.commit_id for row in prior_commits]
-        for row in prior_commits:
-            row.status = "superseded"
-        if prior_commit_ids:
+        if retired_commits:
             for timeline in self.session.execute(
                 select(TimelineEvent).where(
-                    TimelineEvent.realized_canon_commit_id.in_(prior_commit_ids)
+                    TimelineEvent.realized_canon_commit_id.in_([row.commit_id for row in retired_commits])
                 )
             ).scalars().all():
                 timeline.realization_status = "planned"
                 timeline.realized_canon_commit_id = None
                 timeline.realized_scene_id = None
-        for row in self.session.execute(
-            select(ContinuitySnapshot).where(
-                ContinuitySnapshot.scene_id == scene_id,
-                ContinuitySnapshot.final_scene_row_id.is_not(None),
-                ContinuitySnapshot.final_scene_row_id != current_final_scene_row_id,
-                ContinuitySnapshot.status != "superseded",
+        for row in scope.snapshots:
+            if row.final_scene_row_id not in keep:
+                row.status = "superseded"
+
+    def _supersede_prior_revision(self, scene_id: str, current_final_scene_row_id: str) -> None:
+        """确认新一版时，这一场之前各版的正史一律退役（新版的事实此刻原子地接上）。"""
+        self._retire(
+            _RetireScope(
+                candidates=(
+                    FactCandidate.scene_id == scene_id,
+                    FactCandidate.final_scene_row_id != current_final_scene_row_id,
+                    FactCandidate.status.in_(("pending", "accepted")),
+                ),
+                events=(
+                    NarrativeEvent.scene_id == scene_id,
+                    NarrativeEvent.final_scene_row_id.is_not(None),
+                    NarrativeEvent.final_scene_row_id != current_final_scene_row_id,
+                    NarrativeEvent.authority_status.in_(("pending", "accepted")),
+                ),
+                commits=(
+                    CanonCommit.scene_id == scene_id,
+                    CanonCommit.final_scene_row_id != current_final_scene_row_id,
+                    CanonCommit.status == "active",
+                ),
+                snapshots=self._prior_scene_snapshots(
+                    scene_id,
+                    current_final_scene_row_id,
+                    ContinuitySnapshot.status != "superseded",
+                ),
             )
-        ).scalars().all():
-            row.status = "superseded"
+        )
 
     def _supersede_stale_current_revision(self, final: FinalScene) -> None:
         """Fail closed if an older path changed prose without creating a new row."""
 
         current_hash = self._final_hash(final)
-        stale_commits = list(
-            self.session.execute(
-                select(CanonCommit).where(
-                    CanonCommit.final_scene_row_id == final.row_id,
-                    CanonCommit.status == "active",
-                    CanonCommit.final_content_hash != current_hash,
-                )
-            ).scalars().all()
+        stale_commit_filter = (
+            CanonCommit.final_scene_row_id == final.row_id,
+            CanonCommit.status == "active",
+            CanonCommit.final_content_hash != current_hash,
         )
-        if not stale_commits:
-            if final.content_hash != current_hash:
-                final.content_hash = current_hash
-            return
+        has_stale_commit = self.session.execute(
+            select(CanonCommit.commit_id).where(*stale_commit_filter).limit(1)
+        ).first() is not None
         # Once the stale proof is quarantined, repair the cache so the next
         # review can bind a new commit to the actual prose bytes.
-        final.content_hash = current_hash
-        stale_commit_ids = [row.commit_id for row in stale_commits]
-        for row in stale_commits:
-            row.status = "superseded"
-        for row in self.session.execute(
-            select(FactCandidate).where(
-                FactCandidate.final_scene_row_id == final.row_id,
-                FactCandidate.status != "superseded",
-            )
-        ).scalars().all():
-            row.status = "superseded"
-        for row in self.session.execute(
-            select(NarrativeEvent).where(
-                NarrativeEvent.final_scene_row_id == final.row_id,
-                NarrativeEvent.authority_status.in_(("pending", "accepted", "rejected")),
-            )
-        ).scalars().all():
-            row.authority_status = "superseded"
-        for timeline in self.session.execute(
-            select(TimelineEvent).where(
-                TimelineEvent.realized_canon_commit_id.in_(stale_commit_ids)
-            )
-        ).scalars().all():
-            timeline.realization_status = "planned"
-            timeline.realized_canon_commit_id = None
-            timeline.realized_scene_id = None
+        if final.content_hash != current_hash:
+            final.content_hash = current_hash
+        if not has_stale_commit:
+            return
         snapshot = self.session.get(ContinuitySnapshot, f"continuity_scene_{final.row_id}")
-        if snapshot is not None:
-            snapshot.status = "superseded"
+        self._retire(
+            _RetireScope(
+                candidates=(
+                    FactCandidate.final_scene_row_id == final.row_id,
+                    FactCandidate.status != "superseded",
+                ),
+                events=(
+                    NarrativeEvent.final_scene_row_id == final.row_id,
+                    NarrativeEvent.authority_status.in_(("pending", "accepted", "rejected")),
+                ),
+                commits=stale_commit_filter,
+                snapshots=[snapshot] if snapshot is not None else [],
+            )
+        )
 
     def _supersede_prior_pending_revision(
         self,
@@ -1510,15 +1516,7 @@ class CanonContinuityService:
     ) -> None:
         """Retire abandoned partial reviews while preserving completed canon."""
 
-        prior_snapshots = list(
-            self.session.execute(
-                select(ContinuitySnapshot).where(
-                    ContinuitySnapshot.scene_id == scene_id,
-                    ContinuitySnapshot.final_scene_row_id.is_not(None),
-                    ContinuitySnapshot.final_scene_row_id != current_final_scene_row_id,
-                )
-            ).scalars().all()
-        )
+        prior_snapshots = self._prior_scene_snapshots(scene_id, current_final_scene_row_id)
         preserved_final_ids: set[str] = set()
         for row in prior_snapshots:
             if row.status != "complete" or not row.final_scene_row_id:
@@ -1531,53 +1529,45 @@ class CanonContinuityService:
                 scene_id=scene_id,
             ):
                 preserved_final_ids.add(row.final_scene_row_id)
-        candidates = self.session.execute(
-            select(FactCandidate).where(
-                FactCandidate.scene_id == scene_id,
-                FactCandidate.final_scene_row_id != current_final_scene_row_id,
-                FactCandidate.status.in_(("pending", "accepted")),
-            )
-        ).scalars().all()
-        for row in candidates:
-            if row.final_scene_row_id not in preserved_final_ids:
-                row.status = "superseded"
-        events = self.session.execute(
-            select(NarrativeEvent).where(
-                NarrativeEvent.scene_id == scene_id,
-                NarrativeEvent.final_scene_row_id.is_not(None),
-                NarrativeEvent.final_scene_row_id != current_final_scene_row_id,
-                NarrativeEvent.authority_status.in_(("pending", "accepted")),
-            )
-        ).scalars().all()
-        for row in events:
-            if row.final_scene_row_id not in preserved_final_ids:
-                row.authority_status = "superseded"
-        retired_commits = [
-            row
-            for row in self.session.execute(
-                select(CanonCommit).where(
+        self._retire(
+            _RetireScope(
+                candidates=(
+                    FactCandidate.scene_id == scene_id,
+                    FactCandidate.final_scene_row_id != current_final_scene_row_id,
+                    FactCandidate.status.in_(("pending", "accepted")),
+                ),
+                events=(
+                    NarrativeEvent.scene_id == scene_id,
+                    NarrativeEvent.final_scene_row_id.is_not(None),
+                    NarrativeEvent.final_scene_row_id != current_final_scene_row_id,
+                    NarrativeEvent.authority_status.in_(("pending", "accepted")),
+                ),
+                commits=(
                     CanonCommit.scene_id == scene_id,
                     CanonCommit.final_scene_row_id != current_final_scene_row_id,
                     CanonCommit.status == "active",
+                ),
+                snapshots=prior_snapshots,
+                keep_final_ids=frozenset(preserved_final_ids),
+            )
+        )
+
+    def _prior_scene_snapshots(
+        self,
+        scene_id: str,
+        current_final_scene_row_id: str,
+        *criteria: Any,
+    ) -> list[ContinuitySnapshot]:
+        return list(
+            self.session.execute(
+                select(ContinuitySnapshot).where(
+                    ContinuitySnapshot.scene_id == scene_id,
+                    ContinuitySnapshot.final_scene_row_id.is_not(None),
+                    ContinuitySnapshot.final_scene_row_id != current_final_scene_row_id,
+                    *criteria,
                 )
             ).scalars().all()
-            if row.final_scene_row_id not in preserved_final_ids
-        ]
-        retired_commit_ids = [row.commit_id for row in retired_commits]
-        for row in retired_commits:
-            row.status = "superseded"
-        if retired_commit_ids:
-            for timeline in self.session.execute(
-                select(TimelineEvent).where(
-                    TimelineEvent.realized_canon_commit_id.in_(retired_commit_ids)
-                )
-            ).scalars().all():
-                timeline.realization_status = "planned"
-                timeline.realized_canon_commit_id = None
-                timeline.realized_scene_id = None
-        for row in prior_snapshots:
-            if row.final_scene_row_id not in preserved_final_ids:
-                row.status = "superseded"
+        )
 
     def _ensure_scene_snapshot(self, final: FinalScene, project_id: str) -> ContinuitySnapshot:
         snapshot_id = f"continuity_scene_{final.row_id}"
