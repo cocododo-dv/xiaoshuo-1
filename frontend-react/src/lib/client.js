@@ -1,6 +1,8 @@
-// FE-ALIGN Phase 2: 自 frontend/src/lib/api/client.js 移植（两端共享同一契约）。
-// 信封 {ok,data,error,request_id} / X-Idempotency-Key / X-Operator-Ref /
-// novel-system-api-base 逻辑保持一致；去掉 Vue 端的 cursorPagination 依赖。
+// 前端与后端之间的唯一传输层：信封 {ok,data,error,request_id} → ApiRequestError；X-Idempotency-Key（按「方法 +
+// 路径 + 载荷」签名持键，同签名的在飞写入并成一个请求）；X-Operator-Ref / X-Client-Request-Id /
+// X-Novel-Access-Token / X-Admin-Token；读超时 30 s、写超时 15 min（VITE_NOVEL_SYSTEM_READ_TIMEOUT_MS /
+// VITE_NOVEL_SYSTEM_MUTATION_TIMEOUT_MS 可改）；API 地址 = 构建期 VITE_NOVEL_SYSTEM_API_BASE，本机
+// novel-system-api-base 覆盖见 getApiBase。只放传输，不放业务端点。
 import { randomSuffix } from "./ids.js";
 
 const API_BASE_KEY = "novel-system-api-base";
@@ -112,10 +114,19 @@ function shouldUseInjectedDefault(stored, storedDefault) {
   return !storedDefault && isLoopbackApiBase(stored) && isLoopbackApiBase(DEFAULT_API_BASE);
 }
 
+/* API 地址只在第一次用到时解析（并把注入的默认值写回本机），之后每个请求直接用缓存——过去每个请求都读两次、
+   写一到两次 localStorage。setApiBase 或别的标签页改了这两个键（storage 事件）时作废缓存、下次重新解析。 */
+let apiBaseCache = null;
+
 export function getApiBase() {
   if (typeof window === "undefined") {
     return DEFAULT_API_BASE;
   }
+  if (apiBaseCache == null) apiBaseCache = resolveApiBase();
+  return apiBaseCache;
+}
+
+function resolveApiBase() {
   const stored = (safeStorageGet("local", API_BASE_KEY) || "").trim();
   const storedDefault = (safeStorageGet("local", API_BASE_DEFAULT_KEY) || "").trim();
   if (shouldUseInjectedDefault(stored, storedDefault)) {
@@ -129,6 +140,7 @@ export function getApiBase() {
 
 export function setApiBase(value) {
   const normalized = value.trim() || DEFAULT_API_BASE;
+  apiBaseCache = null;
   if (typeof window !== "undefined") {
     safeStorageSet("local", API_BASE_KEY, normalized);
     safeStorageSet("local", API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
@@ -151,20 +163,34 @@ export function setOperatorRef(value) {
   return normalized;
 }
 
+/* 访问令牌同样只在第一次用到时读 sessionStorage，之后走缓存；setRemoteAccessToken 更新它。 */
+let remoteAccessTokenCache = null;
+
 export function getRemoteAccessToken() {
   if (typeof window === "undefined") {
     return DEFAULT_REMOTE_ACCESS_TOKEN;
   }
-  return (safeStorageGet("session", REMOTE_ACCESS_TOKEN_KEY) || DEFAULT_REMOTE_ACCESS_TOKEN).trim();
+  if (remoteAccessTokenCache == null) {
+    remoteAccessTokenCache = (safeStorageGet("session", REMOTE_ACCESS_TOKEN_KEY) || DEFAULT_REMOTE_ACCESS_TOKEN).trim();
+  }
+  return remoteAccessTokenCache;
 }
 
 export function setRemoteAccessToken(value) {
   const normalized = String(value || "").trim();
+  remoteAccessTokenCache = null;
   if (typeof window !== "undefined") {
     if (normalized) safeStorageSet("session", REMOTE_ACCESS_TOKEN_KEY, normalized);
     else safeStorageRemove("session", REMOTE_ACCESS_TOKEN_KEY);
   }
   return normalized;
+}
+
+/* 别的标签页改了 API 地址：下一个请求重新解析（sessionStorage 不跨标签页，令牌不用听） */
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (!event || event.key == null || event.key === API_BASE_KEY || event.key === API_BASE_DEFAULT_KEY) apiBaseCache = null;
+  });
 }
 
 function withAccessToken(headers = {}) {
@@ -219,6 +245,11 @@ function acquireIdempotencyKey(method, path, body) {
 function releaseIdempotencyKey(signature) {
   inflightIdempotencyKeys.delete(signature);
 }
+
+/* 同签名的写入正在飞时，第二个调用方拿到同一个 Promise（一个请求、两边同一个结果）。
+   过去两个一模一样的写入带同一个幂等键先后发出，后一个必然撞上 409 IDEMPOTENCY_REQUEST_IN_PROGRESS——
+   双击、开发模式下 effect 连跑两遍都会这样（正文 store 的 ensure 曾为此自己做合并）。 */
+const inflightMutations = new Map();
 
 function buildClientRequestId() {
   return `client_${Date.now()}_${randomSuffix(6)}`;
@@ -398,7 +429,20 @@ function isFormData(body) {
   return typeof FormData !== "undefined" && body instanceof FormData;
 }
 
-async function mutationRequest(method, path, body, { adminToken = "", signal, timeoutMs, idempotencyKey = "" } = {}) {
+function mutationRequest(method, path, body, options = {}) {
+  // 显式给键 / multipart 的写入各走各的（见 sendMutation）；其余按签名合并在飞的同一个写入
+  if (options.idempotencyKey || isFormData(body)) return sendMutation(method, path, body, options);
+  const signature = requestSignature(method, path, body) + (options.adminToken ? " admin" : "");
+  const pending = inflightMutations.get(signature);
+  if (pending) return pending;
+  const run = sendMutation(method, path, body, options).finally(() => {
+    if (inflightMutations.get(signature) === run) inflightMutations.delete(signature);
+  });
+  inflightMutations.set(signature, run);
+  return run;
+}
+
+async function sendMutation(method, path, body, { adminToken = "", signal, timeoutMs, idempotencyKey = "" } = {}) {
   const clientRequestId = buildClientRequestId();
   // 调用方显式给键（例如风格参考的导入：同一次导入重试时让后端重放）时直接用它，不进签名表；
   // multipart（FormData，参考书上传）的载荷没法按内容签名：没给键就每次新配一个；

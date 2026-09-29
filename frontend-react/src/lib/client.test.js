@@ -99,6 +99,42 @@ describe("remote access token transport", () => {
     expect(second.headers["X-Idempotency-Key"]).not.toBe(third.headers["X-Idempotency-Key"]);
   });
 
+  it("two identical mutations in flight share one request and one result (no self-inflicted 409)", async () => {
+    const releases = [];
+    global.fetch = vi.fn(() => new Promise((resolve) => { releases.push(resolve); }));
+    const ok = (data) => ({ ok: true, status: 200, json: async () => ({ ok: true, data }) });
+
+    const first = apiPost("/mutation/double", { value: 1 });
+    const second = apiPost("/mutation/double", { value: 1 });
+    const other = apiPost("/mutation/double", { value: 2 });
+    await vi.waitFor(() => expect(releases).toHaveLength(2)); // 同载荷的两个并成一个；另一个载荷照常另发
+    releases[0](ok({ n: 1 }));
+    releases[1](ok({ n: 2 }));
+    await expect(first).resolves.toEqual({ n: 1 });
+    await expect(second).resolves.toEqual({ n: 1 });
+    await expect(other).resolves.toEqual({ n: 2 });
+
+    // 前一个结束之后，同载荷再来一次是新的意图：另发一个请求
+    global.fetch = vi.fn().mockResolvedValue(ok({ again: true }));
+    await expect(apiPost("/mutation/double", { value: 1 })).resolves.toEqual({ again: true });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves the API base once instead of touching localStorage on every request", async () => {
+    await apiGet("/ready");
+    const getItem = vi.spyOn(Storage.prototype, "getItem");
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    await apiGet("/ready");
+    await apiPost("/mutation/storage", { value: 1 });
+    expect(getItem.mock.calls.filter(([key]) => String(key).startsWith("novel-system-api-base"))).toEqual([]);
+    expect(setItem).not.toHaveBeenCalled();
+    // setApiBase 作废缓存，下一个请求用新地址
+    setApiBase("http://127.0.0.1:8123");
+    await apiGet("/ready");
+    expect(global.fetch.mock.calls.at(-1)[0]).toBe("http://127.0.0.1:8123/ready");
+    setApiBase("");
+  });
+
   it("canonicalizes object key order when retaining an uncertain mutation", async () => {
     global.fetch
       .mockRejectedValueOnce(new TypeError("Load failed"))
