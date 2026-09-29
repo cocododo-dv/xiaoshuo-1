@@ -44,6 +44,15 @@ _SCENE_COMPLETION_COMMIT_KINDS = {"author_verification", "facts_unchanged"}
 
 
 @dataclass(frozen=True)
+class _StatusInputs:
+    """读模型一次载入的行：按场的运行状态、按行 id 的终稿、按快照 id 的场景快照。"""
+
+    states: dict[str, SceneRunState]
+    finals: dict[str, FinalScene]
+    snapshots: dict[str, ContinuitySnapshot]
+
+
+@dataclass(frozen=True)
 class _RetireScope:
     """一次退役的范围：各表的筛选条件，外加要保住的终稿。"""
 
@@ -921,72 +930,20 @@ class CanonContinuityService:
         return "\n".join(lines)
 
     def scene_status(self, project_id: str, scene_id: str) -> dict[str, Any]:
-        final, scene, owned_project_id, state = self._current_scene_context(
+        _final, scene, owned_project_id, _state = self._current_scene_context(
             project_id,
             scene_id,
             require_final=False,
         )
         if owned_project_id != project_id:
             raise self._scene_not_found()
-        candidates = self._candidate_rows(final.row_id) if final is not None else []
-        snapshot = (
-            self.session.get(ContinuitySnapshot, f"continuity_scene_{final.row_id}")
-            if final is not None
-            else None
-        )
-        status = "missing_final"
-        if final is not None:
-            status = state.narrative_sync_status if state is not None else "pending_extraction"
-            if (
-                status == "synced"
-                and state is not None
-                and state.narrative_sync_final_scene_row_id != final.row_id
-            ):
-                status = "pending_extraction"
-            has_valid_commit = self._has_valid_completion_commit(
-                final,
-                snapshot,
-                project_id=project_id,
-                scene_id=scene.scene_id,
-            )
-            if (
-                status == "synced"
-                and (
-                    snapshot is None
-                    or snapshot.status != "complete"
-                    or snapshot.final_scene_row_id != final.row_id
-                    or not has_valid_commit
-                )
-            ):
-                status = "pending_review"
-        return {
-            "project_id": project_id,
-            "chapter_id": scene.chapter_id,
-            "scene_id": scene.scene_id,
-            "scene_seq": scene.scene_seq,
-            "final_scene_row_id": final.row_id if final is not None else None,
-            "status": status,
-            "complete": status == "synced",
-            "pending_count": sum(row.status == "pending" for row in candidates),
-            "accepted_count": sum(row.status == "accepted" for row in candidates),
-            "rejected_count": sum(row.status == "rejected" for row in candidates),
-            "candidates": [self._serialize_candidate(row) for row in candidates],
-            "snapshot": self._serialize_snapshot(snapshot),
-            "extraction": dict(snapshot.metadata_json or {}) if snapshot is not None else {},
-        }
+        return self._scene_status_payloads(project_id, [scene])[0]
 
     def chapter_status(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         chapter = self.session.get(ChapterGoal, chapter_id)
         if chapter is None or chapter.project_id != project_id or chapter.trashed_flag:
             raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
-        scenes = list(
-            self.session.execute(
-                select(SceneCard)
-                .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.scene_seq, SceneCard.scene_id)
-            ).scalars().all()
-        )
-        items = [self.scene_status(project_id, scene.scene_id) for scene in scenes]
+        items = self._scene_status_payloads(project_id, self._chapter_scene_rows(chapter_id))
         missing = [item["scene_id"] for item in items if item["status"] == "missing_final"]
         pending = [
             item["scene_id"]
@@ -1018,6 +975,154 @@ class CanonContinuityService:
                 details=status,
             )
         return status
+
+    # ------------------------------------------------------------------
+    # Read-model loading（B11-12：一章的场一起查，每张表一条语句）
+    # ------------------------------------------------------------------
+
+    def _chapter_scene_rows(self, chapter_id: str) -> list[SceneCard]:
+        return list(
+            self.session.execute(
+                select(SceneCard)
+                .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
+                .order_by(SceneCard.scene_seq, SceneCard.scene_id)
+            ).scalars().all()
+        )
+
+    def _status_inputs(self, project_id: str, scenes: list[SceneCard]) -> _StatusInputs:
+        """这些场的运行状态、当前终稿、场景快照，以及快照引用的提交（预先载进会话，核对提交时不再逐条查）。"""
+        for scene in scenes:
+            # 与逐场读取时一样：场的归属对不上作品就当没有这一场
+            if self._scene_project_id(scene) != project_id:
+                raise self._scene_not_found()
+        scene_ids = [scene.scene_id for scene in scenes]
+        states = {
+            row.scene_id: row
+            for row in self.session.execute(
+                select(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids))
+            ).scalars().all()
+        } if scene_ids else {}
+        final_ids = [state.current_final_scene_row_id for state in states.values() if state.current_final_scene_row_id]
+        finals = {
+            row.row_id: row
+            for row in self.session.execute(select(FinalScene).where(FinalScene.row_id.in_(final_ids))).scalars().all()
+        } if final_ids else {}
+        snapshots = {
+            row.snapshot_id: row
+            for row in self.session.execute(
+                select(ContinuitySnapshot).where(
+                    ContinuitySnapshot.snapshot_id.in_([f"continuity_scene_{final_id}" for final_id in finals])
+                )
+            ).scalars().all()
+        } if finals else {}
+        commit_ids = list(
+            dict.fromkeys(
+                commit_id for snapshot in snapshots.values() for commit_id in (snapshot.source_commit_ids_json or [])
+            )
+        )
+        if commit_ids:
+            # 只为把行放进会话的身份映射：_has_valid_completion_commit 的 session.get 随后不再发语句
+            self.session.execute(select(CanonCommit).where(CanonCommit.commit_id.in_(commit_ids))).scalars().all()
+        return _StatusInputs(states=states, finals=finals, snapshots=snapshots)
+
+    def _scene_status_core(
+        self,
+        project_id: str,
+        scene: SceneCard,
+        inputs: _StatusInputs,
+    ) -> tuple[str, FinalScene | None, ContinuitySnapshot | None]:
+        """一场的正史状态（不序列化候选）：返回 (状态, 当前终稿, 这版终稿的场景快照)。"""
+        state = inputs.states.get(scene.scene_id)
+        final_id = state.current_final_scene_row_id if state is not None else None
+        final = inputs.finals.get(final_id) if final_id else None
+        snapshot = inputs.snapshots.get(f"continuity_scene_{final.row_id}") if final is not None else None
+        status = "missing_final"
+        if final is not None:
+            status = state.narrative_sync_status if state is not None else "pending_extraction"
+            if (
+                status == "synced"
+                and state is not None
+                and state.narrative_sync_final_scene_row_id != final.row_id
+            ):
+                status = "pending_extraction"
+            if status == "synced" and (
+                snapshot is None
+                or snapshot.status != "complete"
+                or snapshot.final_scene_row_id != final.row_id
+                or not self._has_valid_completion_commit(
+                    final,
+                    snapshot,
+                    project_id=project_id,
+                    scene_id=scene.scene_id,
+                )
+            ):
+                status = "pending_review"
+        return status, final, snapshot
+
+    def _scene_status_payloads(self, project_id: str, scenes: list[SceneCard]) -> list[dict[str, Any]]:
+        inputs = self._status_inputs(project_id, scenes)
+        candidates_by_final: dict[str, list[FactCandidate]] = {}
+        if inputs.finals:
+            for row in self.session.execute(
+                select(FactCandidate)
+                .where(
+                    FactCandidate.final_scene_row_id.in_(list(inputs.finals)),
+                    FactCandidate.status != "superseded",
+                )
+                .order_by(FactCandidate.created_at, FactCandidate.candidate_id)
+            ).scalars().all():
+                candidates_by_final.setdefault(row.final_scene_row_id, []).append(row)
+        entity_labels = self._entity_labels(
+            project_id,
+            {
+                entity_id
+                for rows in candidates_by_final.values()
+                for row in rows
+                for entity_id in (row.entity_candidates_json or [])
+            },
+        )
+        payloads: list[dict[str, Any]] = []
+        for scene in scenes:
+            status, final, snapshot = self._scene_status_core(project_id, scene, inputs)
+            candidates = candidates_by_final.get(final.row_id, []) if final is not None else []
+            payloads.append(
+                {
+                    "project_id": project_id,
+                    "chapter_id": scene.chapter_id,
+                    "scene_id": scene.scene_id,
+                    "scene_seq": scene.scene_seq,
+                    "final_scene_row_id": final.row_id if final is not None else None,
+                    "status": status,
+                    "complete": status == "synced",
+                    "pending_count": sum(row.status == "pending" for row in candidates),
+                    "accepted_count": sum(row.status == "accepted" for row in candidates),
+                    "rejected_count": sum(row.status == "rejected" for row in candidates),
+                    "candidates": [
+                        self._serialize_candidate(row, final=final, entity_labels=entity_labels)
+                        for row in candidates
+                    ],
+                    "snapshot": self._serialize_snapshot(snapshot),
+                    "extraction": dict(snapshot.metadata_json or {}) if snapshot is not None else {},
+                }
+            )
+        return payloads
+
+    def _entity_labels(self, project_id: str, entity_ids: set[str]) -> dict[str, str]:
+        """候选实体的显示名（人物优先，其次资料库实体），只认本作品的。"""
+        if not entity_ids:
+            return {}
+        labels: dict[str, str] = {}
+        for row in self.session.execute(
+            select(LibraryEntity).where(LibraryEntity.entity_id.in_(entity_ids))
+        ).scalars().all():
+            if row.project_id == project_id:
+                labels[row.entity_id] = row.name
+        for row in self.session.execute(
+            select(StoryCharacter).where(StoryCharacter.character_id.in_(entity_ids))
+        ).scalars().all():
+            if row.project_id == project_id:
+                labels[row.character_id] = row.display_name
+        return labels
 
     # ------------------------------------------------------------------
     # Internal projection helpers
@@ -1235,32 +1340,19 @@ class CanonContinuityService:
         return self._rebuild_chapter_snapshot(project_id, chapter_id)
 
     def _rebuild_chapter_snapshot(self, project_id: str, chapter_id: str) -> ContinuitySnapshot:
-        scene_rows = list(
-            self.session.execute(
-                select(SceneCard)
-                .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.scene_seq, SceneCard.scene_id)
-            ).scalars().all()
-        )
+        # 只要每场的状态和当前终稿的快照：不为此去序列化每一场的候选（B11-12）
+        scene_rows = self._chapter_scene_rows(chapter_id)
+        inputs = self._status_inputs(project_id, scene_rows)
         current_scene_snapshots: list[ContinuitySnapshot] = []
         status_rows: list[dict[str, Any]] = []
         for scene in scene_rows:
-            state = self.session.get(SceneRunState, scene.scene_id)
+            status, _final, _snapshot = self._scene_status_core(project_id, scene, inputs)
+            state = inputs.states.get(scene.scene_id)
             final_id = state.current_final_scene_row_id if state is not None else None
-            snap = (
-                self.session.get(ContinuitySnapshot, f"continuity_scene_{final_id}")
-                if final_id
-                else None
-            )
+            snap = inputs.snapshots.get(f"continuity_scene_{final_id}") if final_id else None
             if snap is not None:
                 current_scene_snapshots.append(snap)
-            authoritative_status = self.scene_status(project_id, scene.scene_id)
-            status_rows.append(
-                {
-                    "scene_id": scene.scene_id,
-                    "status": authoritative_status["status"],
-                }
-            )
+            status_rows.append({"scene_id": scene.scene_id, "status": status})
         snapshot_id = f"continuity_chapter_{chapter_id}"
         snapshot = self.session.get(ContinuitySnapshot, snapshot_id)
         if snapshot is None:
@@ -1729,8 +1821,15 @@ class CanonContinuityService:
     def _merge_snapshot_lists(rows: list[ContinuitySnapshot], field: str) -> list[dict[str, Any]]:
         return [item for row in rows for item in (getattr(row, field) or [])]
 
-    def _serialize_candidate(self, row: FactCandidate) -> dict[str, Any]:
-        final = self.session.get(FinalScene, row.final_scene_row_id)
+    def _serialize_candidate(
+        self,
+        row: FactCandidate,
+        *,
+        final: FinalScene | None = None,
+        entity_labels: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        if final is None or final.row_id != row.final_scene_row_id:
+            final = self.session.get(FinalScene, row.final_scene_row_id)
         evidence_grounded = bool(
             final is not None
             and row.evidence_start is not None
@@ -1751,7 +1850,7 @@ class CanonContinuityService:
             "resolved_entity_id": row.resolved_entity_id,
             "entity_resolution_status": row.entity_resolution_status,
             "entity_candidates": list(row.entity_candidates_json or []),
-            "entity_options": self._entity_options(row),
+            "entity_options": self._entity_options(row, entity_labels),
             "fact_key": row.fact_key,
             "fact_value": row.fact_value,
             "evidence": {
@@ -1772,17 +1871,19 @@ class CanonContinuityService:
             "created_at": row.created_at,
         }
 
-    def _entity_options(self, row: FactCandidate) -> list[dict[str, str]]:
-        values: list[dict[str, str]] = []
-        for entity_id in row.entity_candidates_json or []:
-            character = self.session.get(StoryCharacter, entity_id)
-            if character is not None and character.project_id == row.project_id:
-                values.append({"entity_id": entity_id, "label": character.display_name})
-                continue
-            entity = self.session.get(LibraryEntity, entity_id)
-            if entity is not None and entity.project_id == row.project_id:
-                values.append({"entity_id": entity_id, "label": entity.name})
-        return values
+    def _entity_options(
+        self,
+        row: FactCandidate,
+        entity_labels: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        entity_ids = list(row.entity_candidates_json or [])
+        if entity_labels is None:
+            entity_labels = self._entity_labels(row.project_id, set(entity_ids))
+        return [
+            {"entity_id": entity_id, "label": entity_labels[entity_id]}
+            for entity_id in entity_ids
+            if entity_id in entity_labels
+        ]
 
     @staticmethod
     def _serialize_snapshot(row: ContinuitySnapshot | None) -> dict[str, Any] | None:

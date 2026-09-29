@@ -163,3 +163,50 @@ def test_canon_status_payloads_match_golden(session) -> None:
     for seq, payload in expected["scenes"].items():
         assert actual["scenes"][seq] == payload, seq
     assert actual == expected
+
+
+def _selects(session, action) -> int:
+    from sqlalchemy import event
+
+    engine = session.get_bind()
+    statements: list[str] = []
+
+    def record(_conn, _cursor, statement, _params, _context, _executemany) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    session.expire_all()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        action()
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    return len(statements)
+
+
+def test_chapter_status_statement_count_does_not_grow_with_scenes_or_candidates(session) -> None:
+    """成稿中心的章列表每一行都带整章的正史状态：以前每场各查几次、每条候选再各查几次（B11-12）。"""
+    service = _seed(session)
+    before = _selects(session, lambda: service.chapter_status(PROJECT, CHAPTER))
+
+    log = NarrativeEventLog(session)
+    for seq in range(8, 14):
+        scene = SceneCard(scene_id=_scene(seq), chapter_id=CHAPTER, project_id=PROJECT, scene_seq=seq, scene_goal="加场")
+        session.add(scene)
+        session.flush()
+        seed_final_scene(session, scene=scene, content="阿远把旧信塞进怀里。")
+        final_id = f"final_{_scene(seq)}_v1"
+        service.mark_archive_pending(final_id)
+        event_row = log.log_event(
+            project_id=PROJECT, chapter_id=CHAPTER, scene_id=_scene(seq),
+            event_type="character_state", entity_type="character", entity_id="阿远",
+            fact_key="has_item", fact_value="旧信", confidence="extracted",
+            source_text_excerpt="阿远把旧信塞进怀里", payload={"source": "prose"},
+            authority_status="pending", source_kind="prose_extraction", final_scene_row_id=final_id,
+        )
+        service.stage_extraction(final_id, outcome="completed_events", event_ids=[event_row.event_id])
+    session.commit()
+    after = _selects(session, lambda: service.chapter_status(PROJECT, CHAPTER))
+
+    assert after == before, (before, after)
+    assert before <= 12, before
