@@ -237,7 +237,7 @@ class CanonContinuityService:
         from novel_system.services.llm_accounting import LLMCallContext
         from novel_system.services.llm_task_runner import LLMNodeRunner
         from novel_system.services.prose_event_extractor import (
-            extract_events_from_prose,
+            extract_scene_events,
             stage_prose_events,
         )
         from novel_system.settings import get_settings
@@ -280,12 +280,14 @@ class CanonContinuityService:
             step=step,
             provider_execution_mode=runner.provider_execution_mode,
         )
-        product = extract_events_from_prose(
+        # 读完整场：按段落切成几段、每段一次调用（批准 #14，B11-15）
+        extraction = extract_scene_events(
             final.content,
             session=self.session,
             llm_runner=runner,
             llm_context=context,
         )
+        product = extraction.result
         event_ids = stage_prose_events(
             NarrativeEventLog(self.session),
             {"project_id": project_id, "chapter_id": scene.chapter_id, "scene_id": scene.scene_id},
@@ -295,7 +297,8 @@ class CanonContinuityService:
                 "source": "prose",
                 "trigger": "author_requested",
                 "extract_ordinal": ordinal,
-                "llm_call_id": product.llm_call_id,
+                "extract_chunk": extraction.event_chunks[ordinal],
+                "llm_call_id": extraction.event_call_ids[ordinal],
             },
         )
         staged = self.stage_extraction(
@@ -308,6 +311,7 @@ class CanonContinuityService:
         return {
             "already_extracted": False,
             "product": product.product_snapshot(),
+            "chunk_count": extraction.chunk_count,
             "staged": staged,
             "scene": self.scene_status(project_id, scene_id),
         }

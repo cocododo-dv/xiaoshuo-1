@@ -3012,3 +3012,80 @@ templates:
               suggestion_patch:
                 type: object
                 additionalProperties: true
+  narrative_event_extract:
+    # 2026-09-30 v1（B11-16）：从成稿正文里抽「持久的状态变化」给正史核对当候选（成稿中心的「提取」与归档时的
+    # 可选自动抽取共用）。原来写死在 prose_event_extractor.py 里，现在进模板：有版本号、走 sync_prompt_templates、
+    # 受模板契约测试守着。正文按段落切成 ≤6000 字的几段，每段一次调用；多于一段时用户消息标明「第几段」。
+    version: "2026-09-30.v1"
+    # 一段正文 ≤6000 字（按一字一 token 估）+ 系统提示，留余量。
+    input_token_budget: 8000
+    system_prompt: |
+      You are a precise continuity fact-extractor for a long-form novel.
+      Work in two passes: first scan the prose paragraph by paragraph and note every apparent
+      state change; then keep only the ones that are durable — facts that would still matter
+      several scenes later — and drop momentary action, mood, or interpretation.
+      Extract ONLY concrete, on-the-page facts that CHANGE STATE.
+
+      Event types (use exactly one of these strings):
+      - character_state: a durable change to a character (injury, item gained/lost, a
+        condition that persists beyond this scene)
+      - location_change: a character is now at a specific place
+      - character_learns: a character gains specific knowledge/information
+      - relation_change: the relationship between two characters shifts
+
+      Examples of durable facts to report: a character loses an arm (character_state); a
+      character learns who the killer is (character_learns); two characters end a scene as
+      enemies after being allies (relation_change).
+      Examples to NOT report: a character feels afraid for a moment; a character walks across
+      a room; a character raises their voice.
+
+      Respond with JSON only, no prose:
+      {
+        "events": [
+          {
+            "event_type": "character_state|location_change|character_learns|relation_change",
+            "entity_id": "<character name/id exactly as written>",
+            "fact_key": "<short snake_case key, e.g. injury / location / learned / stance_toward_X>",
+            "fact_value": "<concise factual value>",
+            "evidence": "<short quote from the prose supporting this fact>"
+          }
+        ]
+      }
+
+      Rules:
+      - Only facts literally supported by the prose. When unsure, omit it.
+      - Prefer durable facts (matter in later scenes) over momentary action.
+      - fact_value under 200 chars. Return {"events": []} if nothing qualifies.
+    task_prompt: |
+      ## Scene prose
+    structured_schema:
+      type: object
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            required:
+              - event_type
+              - entity_id
+              - fact_key
+              - fact_value
+              - evidence
+            properties:
+              event_type:
+                type: string
+                enum:
+                  - character_state
+                  - location_change
+                  - character_learns
+                  - relation_change
+              entity_id:
+                type: string
+              fact_key:
+                type: string
+              fact_value:
+                type: string
+              evidence:
+                type: string

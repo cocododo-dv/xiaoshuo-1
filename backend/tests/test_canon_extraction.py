@@ -39,6 +39,9 @@ class ScriptedExtractionRunner:
         index = len(self.calls)
         self.calls.append({"task_name": task_name, "prompt_text": prompt_text, "system_prompt": system_prompt})
         call_id = f"llmcall_canon_extract_{index:02d}"
+        reply = self.replies[index] if index < len(self.replies) else {"events": []}
+        failure = reply.get("__fail__") if isinstance(reply, dict) else None
+        status = "failed" if failure else "settled"
         self.session.add(
             LlmCall(
                 llm_call_id=call_id,
@@ -63,9 +66,10 @@ class ScriptedExtractionRunner:
                 budget_charged_tokens=12,
                 latency_ms=1,
                 usage_is_estimate=False,
-                accounting_status="settled",
+                accounting_status=status,
                 request_dispatched_at="2026-09-30T00:00:00Z",
                 settled_at="2026-09-30T00:00:01Z",
+                error_code=failure,
             )
         )
         self.session.add(
@@ -83,13 +87,24 @@ class ScriptedExtractionRunner:
                 budget_charged_tokens=12,
                 latency_ms=1,
                 usage_is_estimate=False,
-                accounting_status="settled",
+                accounting_status=status,
                 request_dispatched_at="2026-09-30T00:00:00Z",
                 settled_at="2026-09-30T00:00:01Z",
+                error_code=failure,
             )
         )
         self.session.flush()
-        reply = self.replies[index] if index < len(self.replies) else {"events": []}
+        if failure:
+            from novel_system.services.llm_task_runner import LLMNodeExecutionError
+
+            raise LLMNodeExecutionError(
+                llm_call_id=call_id,
+                error_code=failure,
+                message=failure,
+                request_summary={},
+                response_summary={},
+                original_error=RuntimeError(failure),
+            )
         return _Response(json.dumps(reply, ensure_ascii=False), call_id)
 
 
@@ -139,7 +154,7 @@ def test_author_requested_extraction_stages_pending_candidates(session, monkeypa
     assert result["already_extracted"] is False
     assert result["product"]["outcome"] == "completed_events"
     assert [call["task_name"] for call in runner.calls] == ["narrative_event_extract"]
-    assert PROSE in runner.calls[0]["prompt_text"]
+    assert runner.calls[0]["prompt_text"] == f"## Scene prose\n\n{PROSE}"
     scene_status = result["scene"]
     assert scene_status["status"] == "pending_review"
     assert scene_status["extraction"]["extraction_outcome"] == "completed_events"
@@ -155,8 +170,20 @@ def test_author_requested_extraction_stages_pending_candidates(session, monkeypa
         for row in session.query(FactCandidate).filter(FactCandidate.scene_id == SCENE).order_by(FactCandidate.created_at)
     ]
     assert [event.payload_json for event in staged_events] == [
-        {"source": "prose", "trigger": "author_requested", "extract_ordinal": 0, "llm_call_id": "llmcall_canon_extract_00"},
-        {"source": "prose", "trigger": "author_requested", "extract_ordinal": 1, "llm_call_id": "llmcall_canon_extract_00"},
+        {
+            "source": "prose",
+            "trigger": "author_requested",
+            "extract_ordinal": 0,
+            "extract_chunk": 0,
+            "llm_call_id": "llmcall_canon_extract_00",
+        },
+        {
+            "source": "prose",
+            "trigger": "author_requested",
+            "extract_ordinal": 1,
+            "extract_chunk": 0,
+            "llm_call_id": "llmcall_canon_extract_00",
+        },
     ]
     assert {(event.authority_status, event.source_kind, event.confidence) for event in staged_events} == {
         ("pending", "prose_extraction", "extracted")
@@ -175,3 +202,89 @@ def test_repeated_extraction_is_not_redispatched(session, monkeypatch, extractio
     assert first["scene"]["extraction"]["requires_empty_confirmation"] is True
     assert second["already_extracted"] is True
     assert len(runner.calls) == 1
+
+
+# 超过一段上限的长场：三段正文，每段一句「林远……」的事实，结尾的挫折落在最后一段。
+_LONG_PARAGRAPHS = [
+    "林远在雨城的码头醒来，右臂裹着布。" + "雨一直下。" * 1100,
+    "苏晚翻开案卷，才知道钟楼下埋着东西。" + "风很冷。" * 1490,
+    "天亮时，林远把旧信烧掉，从此再也回不去雨城。",
+]
+LONG_PROSE = "\n".join(_LONG_PARAGRAPHS)
+
+
+@pytest.fixture
+def long_scene(session, monkeypatch):
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    seed_narrative_world(session)
+    scene = session.get(SceneCard, SCENE)
+    seed_final_scene(session, scene=scene, content=LONG_PROSE)
+    CanonContinuityService(session).mark_archive_pending(f"final_{SCENE}_v1")
+    session.commit()
+    return scene
+
+
+def _fact(entity: str, key: str, value: str, evidence: str) -> dict:
+    return {"event_type": "character_state", "entity_id": entity, "fact_key": key, "fact_value": value, "evidence": evidence}
+
+
+def test_extraction_reads_the_whole_scene_in_paragraph_chunks(session, monkeypatch, long_scene) -> None:
+    """以前只读前 6,000 字就报「抽取完成」：结尾烧信那条事实永远抽不到（批准 #14，B11-15）。"""
+    assert len(LONG_PROSE) > 6000
+    runner = ScriptedExtractionRunner(
+        session,
+        [
+            {"events": [_fact("林远", "injury", "右臂受伤", "右臂裹着布")]},
+            {"events": [_fact("苏晚", "knows_archive", "钟楼下埋着东西", "才知道钟楼下埋着东西")]},
+            {"events": [_fact("林远", "item_lost", "旧信", "林远把旧信烧掉")]},
+        ],
+    )
+    _install_runner(monkeypatch, runner)
+
+    result = CanonContinuityService(session).extract_scene_candidates(WORLD_PROJECT, SCENE)
+
+    assert result["chunk_count"] == 3
+    assert len(runner.calls) == 3
+    for index, call in enumerate(runner.calls, start=1):
+        assert f"(Part {index} of 3 of this scene. Report only facts written in this part.)" in call["prompt_text"]
+        assert len(call["prompt_text"].split("\n\n", 2)[2]) <= 6000
+    chunk_text = "".join(call["prompt_text"].split("\n\n", 2)[2] for call in runner.calls)
+    assert chunk_text == LONG_PROSE
+    candidates = result["scene"]["candidates"]
+    assert [(c["raw_entity_ref"], c["fact_key"]) for c in candidates] == [
+        ("林远", "injury"),
+        ("苏晚", "knows_archive"),
+        ("林远", "item_lost"),
+    ]
+    assert all(c["evidence"]["grounded"] for c in candidates)
+    staged = [
+        session.get(NarrativeEvent, row.staged_event_id)
+        for row in session.query(FactCandidate).filter(FactCandidate.scene_id == SCENE).order_by(FactCandidate.created_at)
+    ]
+    assert [(e.payload_json["extract_ordinal"], e.payload_json["extract_chunk"], e.payload_json["llm_call_id"]) for e in staged] == [
+        (0, 0, "llmcall_canon_extract_00"),
+        (1, 1, "llmcall_canon_extract_01"),
+        (2, 2, "llmcall_canon_extract_02"),
+    ]
+    assert result["scene"]["extraction"]["extraction_outcome"] == "completed_events"
+
+
+def test_a_failed_chunk_degrades_the_whole_extraction_and_stages_nothing(session, monkeypatch, long_scene) -> None:
+    """半场读不出就不算抽完：整场按降级报、不暂存前几段的候选，作者重点一次会整场重读。"""
+    runner = ScriptedExtractionRunner(
+        session,
+        [
+            {"events": [_fact("林远", "injury", "右臂受伤", "右臂裹着布")]},
+            {"__fail__": "LLM_PROVIDER_TIMEOUT"},
+        ],
+    )
+    _install_runner(monkeypatch, runner)
+
+    result = CanonContinuityService(session).extract_scene_candidates(WORLD_PROJECT, SCENE)
+
+    assert len(runner.calls) == 2
+    assert result["product"]["outcome"] == "provider_failed"
+    assert result["product"]["error_code"] == "LLM_PROVIDER_TIMEOUT"
+    assert result["scene"]["status"] == "degraded"
+    assert result["scene"]["candidates"] == []
+    assert session.query(FactCandidate).filter(FactCandidate.scene_id == SCENE).count() == 0
