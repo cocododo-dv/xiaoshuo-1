@@ -428,19 +428,15 @@ class ProjectService:
             ),
             None,
         )
-        backtrack_items: list[dict[str, Any]] = []
         return {
             "project": project_payload(project),
             "latest_plan": outline_plan_payload(latest_plan) if latest_plan else None,
             "chapters": chapters,
             "current_chapter": current_chapter,
-            "backtrack_items": backtrack_items,
             "review_packet": ProjectChapterFlowService(self.session).review_packet(
                 project, project.current_chapter_id
             ),
-            "next_action": self._next_action(
-                project, latest_plan, backtrack_items=backtrack_items
-            ),
+            "next_action": self._next_action(project, latest_plan),
             "runtime": self._runtime_readiness(),
         }
 
@@ -764,25 +760,9 @@ class ProjectService:
         )
         return [chapter_payload(self.session, chapter) for chapter in chapters]
 
-    def _next_action(
-        self,
-        project: StoryProject,
-        latest_plan: OutlinePlan | None,
-        *,
-        backtrack_items: list[dict[str, Any]] | None = None,
-    ) -> str:
-        if any(item.get("status") == "pending" for item in (backtrack_items or [])):
-            return "resolve_backtrack_items"
-        if project.status == PROJECT_STATUS_COMPLETED:
-            return "completed"
-        if project.status == PROJECT_STATUS_CHAPTER_FINAL_REVIEW:
-            return "approve_chapter_final"
-        if project.status == PROJECT_STATUS_CHAPTER_RUNNING:
-            return "view_chapter_progress"
-        if project.status == PROJECT_STATUS_CHAPTER_READY:
-            return "run_current_chapter"
-        if project.status == PROJECT_STATUS_CHAPTER_BLOCKED:
-            return "resolve_blocker"
+    def _next_action(self, project: StoryProject, latest_plan: OutlinePlan | None) -> str:
+        if project.status in _NEXT_ACTION_BY_STATUS:
+            return _NEXT_ACTION_BY_STATUS[project.status]
         if latest_plan and latest_plan.status == PLAN_STATUS_PENDING_REVIEW:
             return "approve_outline_plan"
         return "generate_outline_plan"
@@ -841,22 +821,12 @@ class ProjectChapterFlowService:
     def run_chapter(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         project = ProjectService(self.session).require_project(project_id)
         self._require_project_chapter(project, chapter_id)
-        if project.current_chapter_id != chapter_id:
-            raise DomainError(
-                "PROJECT_CHAPTER_NOT_CURRENT",
-                "only the current chapter can be run from project dashboard",
-            )
+        _require_current_chapter(project, chapter_id, _RUN_NOT_CURRENT_MESSAGE)
 
         project.status = PROJECT_STATUS_CHAPTER_RUNNING
         self.session.flush()
         run_result = ChapterRunnerService(self.session).run_full(chapter_id)
-        if run_result.get("status") == "completed":
-            ChapterManuscriptService(self.session).require_complete(chapter_id)
-            project.status = PROJECT_STATUS_CHAPTER_FINAL_REVIEW
-        elif run_result.get("status") == "blocked":
-            project.status = PROJECT_STATUS_CHAPTER_BLOCKED
-        else:
-            project.status = PROJECT_STATUS_CHAPTER_READY
+        project.status = _project_status_after_run(self.session, chapter_id, run_result.get("status"))
         self.session.flush()
         return {
             "project": project_payload(project),
@@ -864,28 +834,10 @@ class ProjectChapterFlowService:
             "review_packet": self.review_packet(project, chapter_id),
         }
 
-    def prepare_chapter_run_job(
-        self,
-        project_id: str,
-        chapter_id: str,
-        *,
-        offline_demo: bool = False,
-    ) -> dict[str, Any]:
-        # 离线演示已退役：offline_demo 保留为受校验的遗留契约字段（非布尔仍拒），
-        # 但 True 不再绕过 fail-closed —— LLM 未启用照样拦截。
-        if type(offline_demo) is not bool:
-            raise DomainError(
-                "INVALID_CHAPTER_RUN_MODE",
-                "offline_demo must be a boolean",
-                status_code=400,
-            )
+    def prepare_chapter_run_job(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         project = ProjectService(self.session).require_project(project_id)
         self._require_project_chapter(project, chapter_id)
-        if project.current_chapter_id != chapter_id:
-            raise DomainError(
-                "PROJECT_CHAPTER_NOT_CURRENT",
-                "only the current chapter can be run from project dashboard",
-            )
+        _require_current_chapter(project, chapter_id, _RUN_NOT_CURRENT_MESSAGE)
 
         llm_enabled = get_settings().llm_enabled
         if not llm_enabled:
@@ -906,25 +858,13 @@ class ProjectChapterFlowService:
         run_payload, should_start_worker = ChapterRunnerService(
             self.session
         ).prepare_full_run(chapter_id)
-        if run_payload.get("status") in {"pending", "running"}:
-            project.status = PROJECT_STATUS_CHAPTER_RUNNING
-            next_action = "view_chapter_progress"
-        elif run_payload.get("status") == "completed":
-            ChapterManuscriptService(self.session).require_complete(chapter_id)
-            project.status = PROJECT_STATUS_CHAPTER_FINAL_REVIEW
-            next_action = "approve_chapter_final"
-        elif run_payload.get("status") == "blocked":
-            project.status = PROJECT_STATUS_CHAPTER_BLOCKED
-            next_action = "resolve_blocker"
-        else:
-            project.status = PROJECT_STATUS_CHAPTER_READY
-            next_action = "run_current_chapter"
+        project.status = _project_status_after_run(self.session, chapter_id, run_payload.get("status"))
         self.session.flush()
         return {
             "project": project_payload(project),
             "run": run_payload,
             "review_packet": self.review_packet(project, chapter_id),
-            "next_action": next_action,
+            "next_action": _NEXT_ACTION_BY_STATUS[project.status],
             "_start_worker": should_start_worker
             and run_payload.get("status") == "pending",
         }
@@ -940,11 +880,7 @@ class ProjectChapterFlowService:
         body = payload or {}
         project = ProjectService(self.session).require_project(project_id)
         self._require_project_chapter(project, chapter_id)
-        if project.current_chapter_id != chapter_id:
-            raise DomainError(
-                "PROJECT_CHAPTER_NOT_CURRENT",
-                "only the current chapter final can be approved",
-            )
+        _require_current_chapter(project, chapter_id, "only the current chapter final can be approved")
         revision_notes = str(body.get("revision_notes") or "").strip()
         if len(revision_notes) > 2000:
             raise DomainError(
@@ -1095,12 +1031,7 @@ class ProjectChapterFlowService:
         body = payload or {}
         project = ProjectService(self.session).require_project(project_id)
         self._require_project_chapter(project, chapter_id)
-        if project.current_chapter_id != chapter_id:
-            raise DomainError(
-                "PROJECT_CHAPTER_NOT_CURRENT",
-                "only the current chapter final can be confirmed",
-                status_code=409,
-            )
+        _require_current_chapter(project, chapter_id, "only the current chapter final can be confirmed")
         ChapterManuscriptService(self.session).require_publishable(chapter_id)
         read = ChapterManuscriptService(self.session).assembled_body(chapter_id)
         return self._record_read_confirmation(
@@ -1251,11 +1182,6 @@ class ProjectChapterFlowService:
             "issues_summary": issues_summary,
             "run_status": latest_job.status if latest_job else "idle",
             "reference_safety": list(REFERENCE_SAFETY_RULES),
-            "small_revision_entry": {
-                "writer_room_object_type": "chapter",
-                "writer_room_object_id": chapter.chapter_id,
-                "deepdesk_object_id": chapter.chapter_id,
-            },
         }
 
     def _require_current_read_confirmation(
@@ -1497,6 +1423,41 @@ class ProjectChapterFlowService:
         )
 
 
+_RUN_NOT_CURRENT_MESSAGE = "only the current chapter can be run from project dashboard"
+
+#: 作品状态 → v1 看板 / 运行本章回包的下一步（``outline_draft`` 另看大纲计划）
+_NEXT_ACTION_BY_STATUS = {
+    PROJECT_STATUS_COMPLETED: "completed",
+    PROJECT_STATUS_CHAPTER_FINAL_REVIEW: "approve_chapter_final",
+    PROJECT_STATUS_CHAPTER_RUNNING: "view_chapter_progress",
+    PROJECT_STATUS_CHAPTER_READY: "run_current_chapter",
+    PROJECT_STATUS_CHAPTER_BLOCKED: "resolve_blocker",
+}
+
+
+def _require_current_chapter(project: StoryProject, chapter_id: str, message: str) -> None:
+    """项目流（运行本章 / 通读确认 / 定稿）只对「当前章」开放：按章依次推进。"""
+    if project.current_chapter_id != chapter_id:
+        raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", message, status_code=409)
+
+
+def _project_status_after_run(session: Session, chapter_id: str, run_status: Any) -> str:
+    """一次章节运行（同步运行、后台任务的准备、后台 worker）结束后作品该停在哪个状态——三处共用一张表。
+
+    跑完（completed）先确认整章都有权威正文，再进「本章终审」；阻断或失败都停在「待处理阻断」；
+    任务还在排队 / 在跑就是「运行中」；其余回到「可以运行本章」。
+    """
+    status = str(run_status or "")
+    if status in {"pending", "running"}:
+        return PROJECT_STATUS_CHAPTER_RUNNING
+    if status == "completed":
+        ChapterManuscriptService(session).require_complete(chapter_id)
+        return PROJECT_STATUS_CHAPTER_FINAL_REVIEW
+    if status in {"blocked", "failed"}:
+        return PROJECT_STATUS_CHAPTER_BLOCKED
+    return PROJECT_STATUS_CHAPTER_READY
+
+
 def start_project_chapter_run_job_worker(
     project_id: str, chapter_id: str, job_id: str
 ) -> None:
@@ -1514,25 +1475,13 @@ def _run_project_chapter_job_worker(
     session = SessionLocal()
     try:
         project = ProjectService(session).require_project(project_id)
-        if project.current_chapter_id != chapter_id:
-            raise DomainError(
-                "PROJECT_CHAPTER_NOT_CURRENT",
-                "only the current chapter can be run from project dashboard",
-            )
+        _require_current_chapter(project, chapter_id, _RUN_NOT_CURRENT_MESSAGE)
         project.status = PROJECT_STATUS_CHAPTER_RUNNING
         session.commit()
 
         run_result = ChapterRunnerService(session).run_full(chapter_id)
         project = ProjectService(session).require_project(project_id)
-        if run_result.get("status") == "completed":
-            ChapterManuscriptService(session).require_complete(chapter_id)
-            project.status = PROJECT_STATUS_CHAPTER_FINAL_REVIEW
-        elif run_result.get("status") == "blocked":
-            project.status = PROJECT_STATUS_CHAPTER_BLOCKED
-        elif run_result.get("status") == "failed":
-            project.status = PROJECT_STATUS_CHAPTER_BLOCKED
-        else:
-            project.status = PROJECT_STATUS_CHAPTER_READY
+        project.status = _project_status_after_run(session, chapter_id, run_result.get("status"))
         session.commit()
     except DomainError as exc:
         session.rollback()
@@ -1622,19 +1571,17 @@ def project_payload(project: StoryProject) -> dict[str, Any]:
         "target_word_count": project.target_word_count,
         "target_chapter_count": project.target_chapter_count,
         # FE-ALIGN P2 作品档案字段（原型 WsWorks 作品对象）
-        "mark": getattr(project, "mark", None),
-        "accent": getattr(project, "accent", None),
-        "synopsis_line": getattr(project, "synopsis_line", None),
-        "words_target_daily": getattr(project, "words_target_daily", None),
-        # Compatibility-only response field. Demo project identity was retired
-        # by migration 20260717_0074 and is no longer persisted.
+        "mark": project.mark,
+        "accent": project.accent,
+        "synopsis_line": project.synopsis_line,
+        "words_target_daily": project.words_target_daily,
+        # 演示作品在迁移 20260717_0074 退役、不再入库；前端 ws-works.jsx 仍按这个键过滤退役演示作品，
+        # 那道过滤去掉之后这个恒为 False 的键可以一起删。
         "is_demo": False,
         "outline_text": project.outline_text,
-        "planning_mode": getattr(project, "planning_mode", "outline_driven")
-        or "outline_driven",
-        "snowflake_schema_version": getattr(project, "snowflake_schema_version", None),
-        "snowflake_workflow_mode": getattr(project, "snowflake_workflow_mode", "strict")
-        or "strict",
+        "planning_mode": project.planning_mode or "outline_driven",
+        "snowflake_schema_version": project.snowflake_schema_version,
+        "snowflake_workflow_mode": project.snowflake_workflow_mode or "strict",
         "status": project.status,
         "active_outline_plan_id": project.active_outline_plan_id,
         "current_chapter_id": project.current_chapter_id,

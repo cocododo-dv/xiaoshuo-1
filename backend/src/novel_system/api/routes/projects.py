@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session, request_id_of
@@ -17,9 +17,9 @@ router = APIRouter(tags=["projects"])
 
 
 class ProjectChapterRunJobRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    """运行本章没有可调的选项（离线演示已退役，``offline_demo`` 一并删去）；空对象即可。"""
 
-    offline_demo: StrictBool = False
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class ProjectChapterReadConfirmRequest(BaseModel):
@@ -129,16 +129,12 @@ def run_project_chapter_job(
     payload: ProjectChapterRunJobRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload.model_dump(mode="json") if payload is not None else {"offline_demo": False}
+    body = payload.model_dump(mode="json") if payload is not None else {}
     job_to_start: str | None = None
 
     def prepare() -> dict[str, Any]:
         nonlocal job_to_start
-        result = ProjectChapterFlowService(session).prepare_chapter_run_job(
-            project_id,
-            chapter_id,
-            offline_demo=bool(body["offline_demo"]),
-        )
+        result = ProjectChapterFlowService(session).prepare_chapter_run_job(project_id, chapter_id)
         if bool(result.pop("_start_worker", False)):
             job_to_start = result["run"]["job_id"]
         return result

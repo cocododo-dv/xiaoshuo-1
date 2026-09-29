@@ -14,7 +14,6 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
 )
-from novel_system.services.errors import DomainError
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.projects import ProjectChapterFlowService
 
@@ -566,9 +565,10 @@ def test_project_chapter_run_job_reuses_existing_running_job(client, session, mo
 def test_project_chapter_flow_request_contracts_are_strict(client) -> None:
     base = "/api/v1/projects/missing-project/chapters/missing-chapter"
     cases = [
-        (f"{base}/run-job", {"offline_demo": "true"}, "body.offline_demo", "bool_type"),
+        # 离线演示已退役：offline_demo 不再是契约字段，和别的未知字段一样 422
+        (f"{base}/run-job", {"offline_demo": False}, "body.offline_demo", "extra_forbidden"),
         (f"{base}/run-job", {"allow_demo": True}, "body.allow_demo", "extra_forbidden"),
-        (f"{base}/run-job", {"offline_demo": False, "unexpected": 1}, "body.unexpected", "extra_forbidden"),
+        (f"{base}/run-job", {"unexpected": 1}, "body.unexpected", "extra_forbidden"),
         (f"{base}/read-confirm", {"note": "x", "unexpected": 1}, "body.unexpected", "extra_forbidden"),
         (f"{base}/approve-final", {"revision_notes": "x", "unexpected": 1}, "body.unexpected", "extra_forbidden"),
     ]
@@ -584,14 +584,11 @@ def test_project_chapter_flow_request_contracts_are_strict(client) -> None:
         )
 
 
-def test_project_chapter_run_service_rejects_non_boolean_or_legacy_demo_flags(session) -> None:
+def test_project_chapter_run_service_takes_no_demo_flags(session) -> None:
     service = ProjectChapterFlowService(session)
-    with pytest.raises(DomainError) as non_boolean:
-        service.prepare_chapter_run_job("missing-project", "missing-chapter", offline_demo="true")
-    assert non_boolean.value.code == "INVALID_CHAPTER_RUN_MODE"
-
-    with pytest.raises(TypeError):
-        service.prepare_chapter_run_job("missing-project", "missing-chapter", allow_demo=True)
+    for legacy_flag in ("offline_demo", "allow_demo"):
+        with pytest.raises(TypeError):
+            service.prepare_chapter_run_job("missing-project", "missing-chapter", **{legacy_flag: True})
 
 
 def test_project_chapter_flow_request_length_boundaries(client) -> None:
