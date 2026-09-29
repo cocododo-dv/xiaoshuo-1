@@ -13,10 +13,11 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, FinalScene, SceneCard, SceneRunState, StoryProject
+from novel_system.services.narrative_position import NarrativePositionService
 from novel_system.services.style_reference.validation.plagiarism import (
     check_plagiarism,
     normalize_text_for_matching,
@@ -154,16 +155,8 @@ class SelfRepetitionDetector:
             .limit(lookback_scenes)
         ).scalars().all())
 
-        prev_chapters = list(self.session.execute(
-            select(ChapterGoal.chapter_id)
-            .where(
-                ChapterGoal.trashed_flag == 0,
-                ChapterGoal.chapter_id < chapter_id,
-            )
-            .order_by(ChapterGoal.chapter_id.desc())
-            .limit(1)
-        ).scalars().all())
-        for prev_ch_id in prev_chapters:
+        previous_chapter_id = self._previous_chapter_id(chapter_id)
+        for prev_ch_id in [previous_chapter_id] if previous_chapter_id else []:
             remaining = lookback_scenes - len(scene_cards)
             if remaining <= 0:
                 break
@@ -191,6 +184,38 @@ class SelfRepetitionDetector:
             scene_ids.append(sc.scene_id)
 
         return texts, scene_ids
+
+    def _previous_chapter_id(self, chapter_id: str) -> str | None:
+        """同一部作品里排在 ``chapter_id`` 前面的那一章（目录次序：display_order，缺序的排后，同序按 chapter_id）。
+
+        以前按 chapter_id 的字典序在**所有**作品里找「比它小的那个」——阶段 Y 之后章号是钉住的流水号、不是书里的
+        次序，一部作品的第一章还会拿到别的作品的章，把那本书的终稿混进复读检查的语料（B04-10）。"""
+        chapter = self.session.get(ChapterGoal, chapter_id)
+        if chapter is None:
+            return None
+        missing = NarrativePositionService.chapter_missing_expr()
+        order = NarrativePositionService.chapter_order_expr()
+        own_missing = 1 if chapter.display_order is None else 0
+        own_order = int(chapter.display_order or 0)
+        same_project = (
+            ChapterGoal.project_id.is_(None)
+            if chapter.project_id is None
+            else ChapterGoal.project_id == chapter.project_id
+        )
+        return self.session.execute(
+            select(ChapterGoal.chapter_id)
+            .where(
+                same_project,
+                ChapterGoal.trashed_flag == 0,
+                or_(
+                    missing < own_missing,
+                    and_(missing == own_missing, order < own_order),
+                    and_(missing == own_missing, order == own_order, ChapterGoal.chapter_id < chapter.chapter_id),
+                ),
+            )
+            .order_by(missing.desc(), order.desc(), ChapterGoal.chapter_id.desc())
+            .limit(1)
+        ).scalars().first()
 
     def _recent_scene_texts(self, chapter_id: str, lookback: int) -> list[str]:
         scene_cards = self.session.execute(
