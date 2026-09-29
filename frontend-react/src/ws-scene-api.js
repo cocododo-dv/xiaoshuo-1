@@ -268,9 +268,6 @@ async function scnBackendRunSids() {
   // 端点按 updated_at 倒序返回：最近有动静的场排前面
   return items.map(it => bySceneId[it.scene_id]).filter(Boolean);
 }
-async function scnBackendQueueSids() {
-  return (await scnBackendRunSids()) || [];
-}
 
 /* ---- 生命周期预算追加：显式、带理由，从持久化检查点继续 ---- */
 async function scnTopupBudget(sid, budgetBlock) {
@@ -471,7 +468,7 @@ function scnFetchStyleWindowText(bookId, w) {
 }
 
 export {
-  scnRun, scnHydrateFromBackend, scnBackendRunSids, scnBackendQueueSids, scnTopupBudget,
+  scnRun, scnHydrateFromBackend, scnBackendRunSids, scnTopupBudget,
   scnCandidates, scnSelectCandidate, scnResumeAfterSelection, scnHydrateAfterSelection,
   scnAdoptionPreview, scnPrepareAdoption, scnAdoptToDoc, scnFetchStyleWindowText,
 };

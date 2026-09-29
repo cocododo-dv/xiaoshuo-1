@@ -1,4 +1,4 @@
-// ws-scene-run store 层单测：队列成员的后端派生（scnBackendQueueSids）。
+// ws-scene-run store 层单测：队列成员的后端派生（scnBackendRunSids）。
 // 贯通轮遗留 ①：GET /scene-run-states 是队列成员真相源，localStorage 退化为读缓存——
 // 这里验证「run-states → 目录 backendId 对位 → sid 列表」的派生契约与其兜底路径。
 import React, { act } from "react";
@@ -18,9 +18,6 @@ vi.mock("./lib/client.js", () => ({
   getLatestSceneRunJob: vi.fn(),
 }));
 
-// ws-scene-run 已不再依赖 ws-snow.jsx（离线起草链已退役）；
-// ws-catalog 链上的 ws-snow-sync 只取 S2_BE_STEPS。mock 掉避免拉入整张雪花视图。
-vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [] }));
 
 const T = { timeout: 5000, interval: 25 };
 
@@ -1709,7 +1706,7 @@ describe("SceneRunJobControl", () => {
   });
 });
 
-describe("scnBackendQueueSids（队列成员的后端派生）", () => {
+describe("scnBackendRunSids（队列成员的后端派生）", () => {
   beforeEach(() => {
     vi.resetModules();
     window.localStorage.clear();
@@ -1730,7 +1727,7 @@ describe("scnBackendQueueSids（队列成员的后端派生）", () => {
       })
     );
 
-    const sids = await mod.scnBackendQueueSids();
+    const sids = await mod.scnBackendRunSids();
 
     expect(sids).toEqual(["ch01s1"]);
     expect(client.apiGet).toHaveBeenCalledWith("/api/v1/scene-run-states?project_id=prj-main");
@@ -1754,18 +1751,18 @@ describe("scnBackendQueueSids（队列成员的后端派生）", () => {
       return base(url);
     });
 
-    const sids = await mod.scnBackendQueueSids();
+    const sids = await mod.scnBackendRunSids();
 
     expect(sids).toEqual(["ch01s1"]);
   });
 
-  it("run-states 端点失败时返回空列表（本地队列照常可用，不炸）", async () => {
+  it("run-states 端点失败时返回 null（读不到 ≠ 没进过管线；本地队列照常可用，不炸）", async () => {
     const { mod, client } = await loadSceneRun();
     routeRunStates(client, () => Promise.reject(new Error("boom")));
 
-    const sids = await mod.scnBackendQueueSids();
+    const sids = await mod.scnBackendRunSids();
 
-    expect(sids).toEqual([]);
+    expect(sids).toBeNull();
   });
 });
 

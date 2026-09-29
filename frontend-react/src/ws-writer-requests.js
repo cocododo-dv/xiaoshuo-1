@@ -17,23 +17,13 @@ import { wrAiLocalError, wrContinueCandidates } from "./ws-writer-ai.js";
    · 抄袭门（与绑定的参考书原文连续相同；用了它的专名只提醒、不拦）：生成时每一版都被拦下 → 409，wrAiError 说成 kind copy；
      续写只丢了几版 → 列表上说丢了几版；采纳时被拦下 → 提示第几字要改（ws-copy-gate.js）。
    场景 id 一律由调用方显式传入：过去这里读一个由 WriterRoom 镜像出来的模块级「当前场景」，
-   另一个模块级变量在两次渲染之间捎带待裁决的候选。只有单测 / 旧调用不传场景时，
-   才回落到目录里「现在在写的那一场」。
+   另一个模块级变量在两次渲染之间捎带待裁决的候选。
    服务端的失败原样抛出（ApiRequestError 带 code / status / details），由 wrAiError 翻译。
    ESM 模块，不写 window。
    ========================================================== */
 
-function fallbackSceneId() {
-  try {
-    const hit = WsCatalog ? WsCatalog.writingScene() : null;
-    return hit && hit.scene ? hit.scene.sid : null;
-  } catch (e) {
-    return null;
-  }
-}
-
 export async function wrContinueMulti(instruction, sceneId) {
-  const sid = sceneId || fallbackSceneId();
+  const sid = sceneId;
   if (!sid) throw wrAiLocalError("no-scene");
   let draftId = null;
   try { draftId = await WrDocs.draftId(sid); } catch (e) {}
@@ -53,7 +43,7 @@ export async function wrContinueMulti(instruction, sceneId) {
    不再是「润色」两个字；没有发现时维度是 author_instruction，指令本身走 instruction。
    也带上作者稿 id：后端把整场正文当上下文，补丁才接得上前后文。 */
 export async function wrRequestRewrite({ sceneId, text, instruction, finding = null }) {
-  const sid = sceneId || fallbackSceneId();
+  const sid = sceneId;
   let backendId = null;
   try {
     backendId = sid && WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;

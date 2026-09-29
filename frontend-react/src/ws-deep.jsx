@@ -51,9 +51,6 @@ function wrDxAddSkip(sid, key) {
 function wrDxRemoveSkip(sid, key) {
   const s = wrDxSkips(sid); s.delete(key); wrDxWriteSkips(sid, s);
 }
-function wrDxClearSkips(sid) {
-  try { localStorage.removeItem(dxKey("wr-deep-skip:" + sid)); } catch (e) {}
-}
 
 function wrDxSnapshot(sid) {
   return { decision_log: wrDxLog(sid), ignored_issue_keys: [...wrDxSkips(sid)] };
@@ -569,7 +566,7 @@ function WrDeepDrawer({
 
 export {
   wrDeepMark, wrDeepUnmark, wrDxRangeFor, wrDxFetch, wrDxRunAi, wrDxReviewPassage, wrDxWithIgnored,
-  wrDxLog, wrDxPushLog, wrDxAddSkip, wrDxRemoveSkip, wrDxClearSkips, wrDxSkips, wrDxSnapshot,
+  wrDxLog, wrDxPushLog, wrDxAddSkip, wrDxRemoveSkip, wrDxSkips, wrDxSnapshot,
   wrDxApplyPreferences, wrDxMergePreferences, wrDxLoadPreferences, wrDxSavePreferences,
   WR_DX_SOURCES, WrDeepDrawer,
 };

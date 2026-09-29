@@ -319,7 +319,7 @@ describe("写作台 · AI 续写三候选", () => {
     });
     client.apiPost.mockClear();
 
-    const candidates = await wrContinueMulti("自然承接下一拍");
+    const candidates = await wrContinueMulti("自然承接下一拍", "ch01s1");
 
     expect(client.apiPost).toHaveBeenCalledTimes(1);
     expect(client.apiPost).toHaveBeenCalledWith(

@@ -312,10 +312,6 @@ function scnQC(paras) {
   const words = countChars(draft.map(p => p.parts[0].text).join(""));
   return { draft, words, verdict: { words } };
 }
-function scnReQC(draft) {
-  const paras = (draft || []).map(p => ({ id: p.id, text: scnParaText(p) }));
-  return paras.length ? scnQC(paras) : null;
-}
 
 /* 一条后端裁决条目给作者看的那句话；没附说明的条目不把英文 issue_key 甩给作者。 */
 function scnFindingText(finding) {
@@ -512,7 +508,7 @@ export {
   runJobStepLabel, RUN_STAGES, scnRunStageIndex, scnPipeStepName, scnDraftModeFrom,
   STYLE_NOTICE_LABELS, scnStyleNoticeSeverity, scnStyleNoticeLabel, scnStyleNoticeView, scnStyleNoticesFrom, scnStyleWindowsFrom,
   STYLE_WINDOW_STEP_LABELS, scnStyleWindowLabel, scnStyleWindowTags, scnStyleWindowKey, scnStyleFidelityFrom,
-  scnParaText, scnQC, scnReQC, scnFindingText, scnFindingIsPlainLanguage, scnGateFrom, scnGateLog,
+  scnParaText, scnQC, scnFindingText, scnFindingIsPlainLanguage, scnGateFrom, scnGateLog,
   scnFriendly, scnTerminalJobMessage, SCN_RUN_UI_ABORTED, scnRunUiAbortError,
   scnRewriteBriefFrom, scnRunRecordFromWorkbench,
 };
