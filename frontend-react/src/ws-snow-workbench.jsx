@@ -459,7 +459,7 @@ export function useSnowMoreMenu({
     { label: "导入结构", hint: "粘贴十步规范 JSON，逐步保存并批准", icon: <I.Download size={14} />, testId: "snow-import-open",
       onSelect: () => { setImportError(""); setImportOpen(true); } },
     { label: "导出大纲", hint: "全书十步导出为 Markdown", icon: <I.UploadCloud size={14} />, onSelect: exportOutline },
-    { sep: true },
+    { separator: true },
     { label: "清空十步构思…", hint: "服务器会记一版空稿，清空前的内容留在「历史」里", icon: <I.Trash size={14} />, danger: true, testId: "snow-reset-open",
       onSelect: () => setResetOpen(true) },
   ], [exportOutline]);

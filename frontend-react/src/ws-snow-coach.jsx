@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { Tag } from "./ws-ui.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
 import { modEnterShortcut } from "./lib/platform.js";
 import { isImeComposing } from "./lib/keyboard.js";
@@ -290,11 +291,11 @@ function S2DirectionCards({ turn, freeText, focusLabel, structBusy, busyTarget, 
           <header className="sf-dir-head">
             <span className="sf-dir-id">{S2_ID_LETTERS[i] || i + 1}</span>
             <span className="sf-dir-label">{c.label}</span>
-            {c.tag && <span className="pill text-xs"><span className="pill-dot" />{c.tag}</span>}
-            {chosen === i && <span className="pill pill-sage text-xs sf-dir-chosen" title="本步有一版就是按这个方向生成的"><span className="pill-dot" />已按此生成</span>}
+            {c.tag && <Tag dot>{c.tag}</Tag>}
+            {chosen === i && <Tag tone="ok" dot className="sf-dir-chosen" title="本步有一版就是按这个方向生成的">已按此生成</Tag>}
           </header>
           <p className="sf-dir-text">{c.text}</p>
-          {(c.notes || []).length > 0 && <div className="sf-dir-notes">{c.notes.map((n, j) => <span key={j} className="pill text-xs">{n}</span>)}</div>}
+          {(c.notes || []).length > 0 && <div className="sf-dir-notes">{c.notes.map((n, j) => <Tag key={j}>{n}</Tag>)}</div>}
           <div className="sf-dir-actions">
             {freeText ? (
               <button className="btn btn-primary btn-sm" onClick={() => onAdoptText(turn, i)} data-testid="snow-direction-use-text" title="这一句就是本步的内容，直接采用（不再调用模型）">
@@ -386,7 +387,7 @@ export function S2Coach({ active, beKey, history, busy, dirBusy, focusRow, focus
                               {replyBusy ? <I.Refresh size={13} className="sf-spin" /> : <I.Wand size={13} />} {replyBusy ? "生成中…" : "按此生成本步"}
                             </button>
                           )}
-                          {adopted && <span className="pill pill-sage text-xs sf-dir-chosen" title="本步有一版就是按这段回复生成的"><span className="pill-dot" />已按此生成</span>}
+                          {adopted && <Tag tone="ok" dot className="sf-dir-chosen" title="本步有一版就是按这段回复生成的">已按此生成</Tag>}
                         </div>
                       )}
                     </React.Fragment>

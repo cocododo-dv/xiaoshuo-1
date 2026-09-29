@@ -318,7 +318,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     await act(async () => { document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
     expect(document.querySelector('[data-testid="snow-upstream-diff"]')).toBeNull();
     // 导入结构：从「更多」菜单打开，提交走 SnowSync.importCanonicalPlan
-    await act(async () => host.querySelector(".sf-more-btn").click());
+    await act(async () => host.querySelector('[data-testid="snow-more"]').click());
     await act(async () => document.querySelector('[data-testid="snow-import-open"]').click());
     const dialog = document.querySelector('[data-testid="snow-import-dialog"]');
     expect(dialog.getAttribute("role")).toBe("dialog");
@@ -344,7 +344,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     }));
     const host = await renderSnow();
     expect([...host.querySelectorAll("button")].some(b => b.textContent.trim() === "重置")).toBe(false);
-    await act(async () => host.querySelector('.sf-more-btn').click());
+    await act(async () => host.querySelector('[data-testid="snow-more"]').click());
     await act(async () => document.querySelector('[data-testid="snow-reset-open"]').click());
     const dialog = document.querySelector('[data-testid="snow-reset-dialog"]');
     expect(dialog.getAttribute("role")).toBe("dialog");

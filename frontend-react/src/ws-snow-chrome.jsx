@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { onRovingTabKeyDown } from "./lib/keyboard.js";
 import { modEnterShortcut } from "./lib/platform.js";
 import { WsDialog, isImeComposing } from "./ws-dialog.jsx";
-import { Notice } from "./ws-ui.jsx";
+import { MenuButton, Notice, Popover } from "./ws-ui.jsx";
 import { S2_STATE_LABEL, S2_STEPS } from "./ws-snow-model.js";
 import { formatClockTime } from "./lib/format.js";
 
@@ -58,7 +58,7 @@ export const S2Strip = React.memo(function S2Strip({ states, staleMap, activeKey
           onClick={onOpenChapterPlan} title="先预览分章（07 章表 + 09 场景 + 10 规划），确认后才写入章节目录">
           <I.Layout size={13} /> 整理章节结构
         </button>
-        <S2MoreMenu label="更多操作" items={moreItems} />
+        <MenuButton label="更多操作" items={moreItems} testId="snow-more" />
       </div>
     </header>
   );
@@ -287,102 +287,46 @@ export function S2Footer({ step, idx, settled, blank = false, syncState, savedAt
   );
 }
 
-/* ---- 页头「更多」菜单：次要动作收进这里（导入 / 导出 / 危险区的清空），主操作只留一个 ---- */
-function S2MoreMenu({ label, items }) {
-  const [open, setOpen] = useSS(false);
-  const btnRef = useSR(null);
-  const menuRef = useSR(null);
-  useSE(() => {
-    if (!open) return undefined;
-    const first = menuRef.current && menuRef.current.querySelector('[role="menuitem"]');
-    if (first) first.focus();
-    const onDown = (e) => {
-      if (menuRef.current && menuRef.current.contains(e.target)) return;
-      if (btnRef.current && btnRef.current.contains(e.target)) return;
-      setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-  const close = (refocus) => { setOpen(false); if (refocus && btnRef.current) btnRef.current.focus(); };
-  const onMenuKey = (e) => {
-    const nodes = menuRef.current ? [...menuRef.current.querySelectorAll('[role="menuitem"]')] : [];
-    if (!nodes.length) return;
-    const at = nodes.indexOf(document.activeElement);
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); }
-    else if (e.key === "ArrowDown") { e.preventDefault(); nodes[(at + 1) % nodes.length].focus(); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); nodes[(at - 1 + nodes.length) % nodes.length].focus(); }
-    else if (e.key === "Home") { e.preventDefault(); nodes[0].focus(); }
-    else if (e.key === "End") { e.preventDefault(); nodes[nodes.length - 1].focus(); }
-    else if (e.key === "Tab") close(false);
-  };
-  return (
-    <div className="sf-more">
-      <button ref={btnRef} type="button" className="btn btn-ghost btn-sm sf-more-btn" aria-haspopup="menu" aria-expanded={open}
-        aria-label={label} title={label} onClick={() => setOpen(o => !o)}>
-        <I.More size={15} />
-      </button>
-      {open && (
-        <div ref={menuRef} className="sf-more-menu" role="menu" aria-label={label} onKeyDown={onMenuKey}>
-          {items.map((it, i) => it.sep ? <div key={i} role="separator" className="sf-more-sep" /> : (
-            <button key={i} type="button" role="menuitem" className={`sf-more-item ${it.danger ? "is-danger" : ""}`} data-testid={it.testId}
-              onClick={() => { close(true); it.onSelect(); }}>
-              <span className="sf-more-ic" aria-hidden="true">{it.icon}</span>
-              <span className="sf-more-text"><span>{it.label}</span>{it.hint && <small>{it.hint}</small>}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ---- 页脚「略过此步」：必填步直接禁用（说明为什么）；可略过的步在一个小浮层里写一句理由再略过。
    以前用浏览器原生 prompt 收理由，必填步还能点、点了只弹一句「不能略过」。 ---- */
 function S2SkipControl({ step, onSkip }) {
   const [open, setOpen] = useSS(false);
   const [reason, setReason] = useSS("");
   const [busy, setBusy] = useSS(false);
-  const wrapRef = useSR(null);
   const btnRef = useSR(null);
-  useSE(() => {
-    if (!open) return undefined;
-    const onDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  const inputRef = useSR(null);
   if (step.essential) {
     return (
       <button type="button" className="btn btn-ghost" disabled
         title={`${step.name}是整理章节结构之前必须确认的一步，不能略过——先写完再确认`}>略过此步</button>
     );
   }
-  const close = () => { setOpen(false); setReason(""); if (btnRef.current) btnRef.current.focus(); };
+  /* 收起（Esc、点外面、焦点移出、取消）一律清掉没提交的理由；Esc 与取消把焦点还给按钮 */
+  const dismiss = () => { setOpen(false); setReason(""); };
+  const cancel = () => { dismiss(); if (btnRef.current) btnRef.current.focus(); };
   const submit = async () => {
     const text = reason.trim();
     if (!text || busy) return;
     setBusy(true);
     const ok = await onSkip(text);
     setBusy(false);
-    if (ok) { setOpen(false); setReason(""); }
+    if (ok) dismiss();
   };
   return (
-    <div className="sf-skip" ref={wrapRef}>
+    <div className="ws-popover-wrap">
       <button ref={btnRef} type="button" className="btn btn-ghost" data-testid="snow-skip-open" aria-expanded={open} aria-controls="sf-skip-pop"
-        onClick={() => setOpen(o => !o)}>略过此步</button>
-      {open && (
-        <div className="sf-skip-pop" id="sf-skip-pop" role="dialog" aria-label={`略过「${step.name}」`}
-          onKeyDown={(e) => { if (e.key === "Escape" && !isImeComposing(e)) { e.preventDefault(); e.stopPropagation(); close(); } }}>
-          <label className="sf-skip-label" htmlFor="sf-skip-reason">略过「{step.name}」的理由<small>会记在服务端，下游步骤照常继续</small></label>
-          <input id="sf-skip-reason" className="input" autoFocus data-testid="snow-skip-reason" value={reason} disabled={busy}
-            placeholder="比如：先按梗概走，人物表等第二稿" onChange={(e) => setReason(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !isImeComposing(e)) { e.preventDefault(); submit(); } }} />
-          <div className="sf-skip-actions">
-            <button type="button" className="btn btn-quiet btn-sm" data-testid="snow-skip-cancel" onClick={close} disabled={busy}>取消</button>
-            <button type="button" className="btn btn-accent btn-sm" data-testid="snow-skip-confirm" disabled={!reason.trim() || busy} onClick={submit}>{busy ? "记录中…" : "确认略过"}</button>
-          </div>
+        onClick={() => (open ? dismiss() : setOpen(true))}>略过此步</button>
+      <Popover open={open} onClose={dismiss} anchorRef={btnRef} id="sf-skip-pop" label={`略过「${step.name}」`}
+        initialFocus={inputRef} className="sf-skip-pop">
+        <label className="sf-skip-label" htmlFor="sf-skip-reason">略过「{step.name}」的理由<small>会记在服务端，下游步骤照常继续</small></label>
+        <input ref={inputRef} id="sf-skip-reason" className="input" data-testid="snow-skip-reason" value={reason} disabled={busy}
+          placeholder="比如：先按梗概走，人物表等第二稿" onChange={(e) => setReason(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !isImeComposing(e)) { e.preventDefault(); submit(); } }} />
+        <div className="sf-skip-actions">
+          <button type="button" className="btn btn-quiet btn-sm" data-testid="snow-skip-cancel" onClick={cancel} disabled={busy}>取消</button>
+          <button type="button" className="btn btn-accent btn-sm" data-testid="snow-skip-confirm" disabled={!reason.trim() || busy} onClick={submit}>{busy ? "记录中…" : "确认略过"}</button>
         </div>
-      )}
+      </Popover>
     </div>
   );
 }

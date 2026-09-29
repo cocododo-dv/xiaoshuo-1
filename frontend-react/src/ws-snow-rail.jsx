@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { Tag } from "./ws-ui.jsx";
 import {
   BRIEF_KIND_LABEL, S2_DISASTERS, S2_RUBRIC, s2PlanAuto, s2Pipeline, s2SceneAuto,
 } from "./ws-snow-model.js";
@@ -96,9 +97,9 @@ function S2BriefRail({ brief, onOpen }) {
 }
 
 const S2_BE_VERDICT = {
-  pass: { label: "结构达标", tone: "sage" },
-  maybe: { label: "可以更好", tone: "gold" },
-  rewrite: { label: "建议重写", tone: "rose" },
+  pass: { label: "结构达标", tone: "ok" },
+  maybe: { label: "可以更好", tone: "warn" },
+  rewrite: { label: "建议重写", tone: "danger" },
 };
 function S2Checks({ stepKey, health, scaffold, scenes, checklist, checks, onToggle }) {
   const be = health || null;
@@ -116,7 +117,7 @@ function S2Checks({ stepKey, health, scaffold, scenes, checklist, checks, onTogg
         <p className="sfx-muted"><I.Cpu size={11} /> 保存本步后，这里显示服务端的评定：完备度、缺什么、前序步骤是否已确认。</p>
       ) : (
         <div className="sfx-verdict">
-          {verdict && <span className={`pill pill-${verdict.tone} text-xs`}><span className="pill-dot" />{verdict.label}</span>}
+          {verdict && <Tag tone={verdict.tone} dot>{verdict.label}</Tag>}
           {typeof be.filled === "number" && typeof be.total === "number" && <span className="sfx-verdict-fact">已填 {be.filled}/{be.total} 项</span>}
           <span className={`sfx-verdict-fact ${be.gateSatisfied ? "is-ok" : "is-warn"}`}>
             {be.gateSatisfied ? <><I.Unlock size={11} /> 前序步骤已确认</> : <><I.Lock size={11} /> 前序步骤还没确认</>}

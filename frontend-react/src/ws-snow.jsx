@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsChapterPlanPanel, keepFocusOnDialogBackdrop } from "./ws-snow-chapters.jsx";
 import { isImeComposing } from "./ws-dialog.jsx";
-import { CloseButton } from "./ws-ui.jsx";
+import { CloseButton, Tag } from "./ws-ui.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { navigateWithViewIntent, setViewIntentTargetReady } from "./ws-view-intents.js";
 import { useUndoToast, UndoToast } from "./ws-undo-toast.jsx";
@@ -327,18 +327,18 @@ function WsSnowflake({ initialStep }) {
                 {stStatus === "done" ? (
                   beApproved ? (
                     /* 和计数「N/10 已确认」、按钮「确认本步」同一个词（以前这里叫「已批准」） */
-                    <span className="pill pill-sage" data-testid="snow-confirmed-pill" title="服务器已记下：本步已确认"><span className="pill-dot" />已确认</span>
+                    <Tag tone="ok" dot testId="snow-confirmed-pill" title="服务器已记下：本步已确认">已确认</Tag>
                   ) : (curHealth && curHealth.revisedAfterApproval) ? (
-                    <span className="pill pill-gold" data-testid="snow-reconfirm-pill" title="确认之后又改过：点「确认本步」重新确认，下游步骤才会按新版本核对"><span className="pill-dot" />已改动 · 待重新确认</span>
+                    <Tag tone="warn" dot testId="snow-reconfirm-pill" title="确认之后又改过：点「确认本步」重新确认，下游步骤才会按新版本核对">已改动 · 待重新确认</Tag>
                   ) : (
-                    <span className="pill pill-gold" title={(curHealth && !curHealth.gateSatisfied) ? "本地已确认，服务器还没确认：前序步骤没确认完——补齐上游各步后会自动确认" : "本地已确认 · 正在同步到服务器…"}><span className="pill-dot" />本地已确认</span>
+                    <Tag tone="warn" dot title={(curHealth && !curHealth.gateSatisfied) ? "本地已确认，服务器还没确认：前序步骤没确认完——补齐上游各步后会自动确认" : "本地已确认 · 正在同步到服务器…"}>本地已确认</Tag>
                   )
                 ) : active.essential ? (
-                  <span className="pill pill-crimson" title="整理章节结构之前必须确认的一步"><span className="pill-dot" />必填</span>
+                  <Tag tone="accent" dot title="整理章节结构之前必须确认的一步">必填</Tag>
                 ) : (
-                  <span className="pill" title="可以留空或略过"><span className="pill-dot" />建议</span>
+                  <Tag dot title="可以留空或略过">建议</Tag>
                 )}
-                {curStale && <span className="pill pill-gold"><span className="pill-dot" />需复核</span>}
+                {curStale && <Tag tone="warn" dot>需复核</Tag>}
                 <button ref={ctxBtnRef} className={`btn btn-quiet btn-sm sf-ctx-open ${ctxExpanded ? "is-on" : ""}`} onClick={toggleContext}
                   aria-expanded={ctxExpanded} aria-controls="snow-ctx" aria-label="本步上下文：任务、检查与写作指引"
                   title={narrow ? "打开本步上下文" : (railShown ? "收起右栏，把宽度让给编辑区" : "展开右栏：本步任务、检查与写作指引")}>

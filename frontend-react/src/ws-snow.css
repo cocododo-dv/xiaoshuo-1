@@ -601,17 +601,6 @@
 .sf-skip-mark { font-weight: 700; color: var(--ink-3); }
 
 /* 「更多」菜单 */
-.sf-more { position: relative; }
-.sf-more-btn { padding-left: 8px; padding-right: 8px; }
-.sf-more-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: var(--z-popover); min-width: 250px; padding: 6px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--paper-0); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 2px; }
-.sf-more-item { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-1); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
-.sf-more-item:hover, .sf-more-item:focus-visible { background: var(--paper-2); outline: none; }
-.sf-more-ic { color: var(--ink-3); flex: 0 0 auto; margin-top: 1px; }
-.sf-more-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.sf-more-text small { font-size: var(--fs-xs); color: var(--ink-3); line-height: 1.4; }
-.sf-more-item.is-danger, .sf-more-item.is-danger .sf-more-ic { color: var(--danger-ink); }
-.sf-more-item.is-danger:hover, .sf-more-item.is-danger:focus-visible { background: var(--danger-wash); }
-.sf-more-sep { height: 1px; margin: 4px 6px; background: var(--line-1); }
 
 /* left list: track legend + accent bars */
 .sf-track-legend { display: flex; align-items: center; gap: 10px; padding: 2px 6px 10px; flex-wrap: wrap; }
@@ -700,8 +689,8 @@
 .snow-canvas-foot .sf-sync-state.is-local_only { color: var(--gold-ink); }
 .snow-canvas-foot .sf-sync-state.is-syncing { color: var(--ink-2); }
 .snow-canvas-foot .sf-sync-state.is-error { color: var(--crimson-ink); }
-.sf-skip { position: relative; }
-.sf-skip-pop { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: var(--z-popover); width: min(340px, 80vw); padding: 12px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--paper-0); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 8px; }
+/* 略过浮层是共享的 Popover；它在页脚，所以向上展开 */
+.ws-popover.sf-skip-pop { top: auto; bottom: calc(100% + 8px); width: min(340px, 80vw); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .sf-skip-label { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
 .sf-skip-label small { font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); }
 .sf-skip-pop .input { width: 100%; }
