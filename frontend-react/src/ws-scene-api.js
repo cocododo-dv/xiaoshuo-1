@@ -329,11 +329,10 @@ function scnAdoptionPreview(sid, draft) {
     diff: WrDocVersions.diff(htmlToParagraphs(stripLegacyDraftPlaceholder(existing)), htmlToParagraphs(html)),
   };
 }
-/* 预检先等服务器上的作者稿：WrDocs.draftId 与别处正在进行的 ensure 共用一次请求、读不到服务器时抛错；
-   WrDocs.hydrate 遇到正在进行的水合会立刻返回、出错也不抛，单靠它会把还没水合的缓存当成空稿。 */
+/* 预检先等服务器上的作者稿：WrDocs.hydrate 与别处正在进行的水合共用一次（写作台的预热水合还在路上时等它落地，
+   不把还没水合的缓存当成空稿）、读不到服务器时抛错。 */
 async function scnPrepareAdoption(sid, draft) {
   try {
-    await WrDocs.draftId(sid);
     await WrDocs.hydrate(sid);
   } catch (e) {
     throw Object.assign(new Error("无法核对服务器上的作者稿，已停止采用；请检查网络后重试"), {
