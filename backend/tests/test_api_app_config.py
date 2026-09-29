@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
@@ -37,6 +39,24 @@ def test_create_app_respects_explicit_auto_create_tables_off(monkeypatch) -> Non
     create_app()
 
     assert calls == []
+
+
+def test_retired_quota_env_vars_log_one_startup_warning_and_block_nothing(monkeypatch, caplog) -> None:
+    """重评 R3:额度闸删了,这些变量还设着时启动照常(以前只设金额上限不设单价、或值写错,后端起不来),
+    每个进程只记一条警告,点名仍然设着的变量。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD", "5")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", "not-a-number")
+
+    with caplog.at_level(logging.WARNING, logger="novel_system.settings"):
+        create_app()
+        get_settings()
+        get_settings(include_runtime_config=False)
+
+    warnings = [record.getMessage() for record in caplog.records if "no longer have any effect" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD" in warnings[0]
+    assert "NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS" in warnings[0]
+    assert "NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT" not in warnings[0]
 
 
 def test_settings_read_does_not_create_vector_store_directory(monkeypatch, tmp_path) -> None:

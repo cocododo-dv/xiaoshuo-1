@@ -3,7 +3,7 @@
 GET /api/v2/projects/{project_id}/cost-summary   —— 场景/章节/全书级 token 与费用聚合。
 默认返回项目级；``?scene_id=`` / ``?chapter_id=`` 下钻。
 GET /api/v2/projects/{project_id}/cost-dashboard —— 看板一读聚合：summary + 近 N 天
-趋势 + 模型/节点/章节构成 + Top 调用 + 全局额度。两者均只读，不改任何状态。
+趋势 + 模型/节点/章节构成 + Top 调用 + 全局用量读数。两者均只读，不改任何状态。
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.response import ok
 from novel_system.services import cost_aggregation
-from novel_system.services.llm_accounting import llm_quota_snapshot
+from novel_system.services.llm_usage_readings import usage_readings
 
 router = APIRouter(tags=["cost"])
 
@@ -32,7 +32,7 @@ def project_cost_summary(
         payload = {"level": "chapter", "summary": cost_aggregation.chapter_cost(session, chapter_id)}
     else:
         payload = {"level": "project", "summary": cost_aggregation.project_cost(session, project_id)}
-    payload["quota"] = llm_quota_snapshot(session, project_id=project_id)
+    payload["quota"] = usage_readings(session, project_id=project_id)
     return ok(payload, req_id=request_id_of(request))
 
 
@@ -44,5 +44,5 @@ def project_cost_dashboard(
     session: Session = Depends(get_session),
 ):
     payload = cost_aggregation.project_cost_dashboard(session, project_id, days=days)
-    payload["quota"] = llm_quota_snapshot(session, project_id=project_id)
+    payload["quota"] = usage_readings(session, project_id=project_id)
     return ok(payload, req_id=request_id_of(request))

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.core_runtime import load_core_runtime
 from novel_system.database_runtime import load_database_runtime
 from novel_system.env_parsing import (
@@ -13,12 +15,41 @@ from novel_system.env_parsing import (
     positive_int_env,
     quota_int_env,
 )
-from novel_system.llm_accounting_runtime import load_llm_accounting_runtime
 from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_VECTOR_STORE_DIR = BACKEND_ROOT / ".vector_store"
+
+_LOGGER = logging.getLogger(__name__)
+
+# 2026-09-30 重评 R3（批准#3a）：这些环境变量曾经打开六道全局额度闸、给金额闸提供单价。闸删了，设着也没有效果——
+# 启动时（第一次读设置）记一条警告，不报错（以前只设金额上限不设单价会让后端起不来）。
+RETIRED_ENV_VARS = (
+    "NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT",
+    "NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT",
+    "NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT",
+    "NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT",
+    "NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS",
+    "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD",
+    "NOVEL_SYSTEM_LLM_INPUT_COST_PER_MILLION_USD",
+    "NOVEL_SYSTEM_LLM_OUTPUT_COST_PER_MILLION_USD",
+)
+_retired_env_warning: dict[str, bool] = {"logged": False}
+register_cache_reset("settings.retired_env_warning", lambda: _retired_env_warning.update(logged=False))
+
+
+def warn_retired_env_vars() -> list[str]:
+    """仍然设着的退役环境变量（按上表顺序）；每个进程第一次发现时记一条警告。"""
+    in_use = [name for name in RETIRED_ENV_VARS if os.environ.get(name) is not None]
+    if in_use and not _retired_env_warning["logged"]:
+        _retired_env_warning["logged"] = True
+        _LOGGER.warning(
+            "environment variables %s no longer have any effect: the global LLM quota fences and the "
+            "env cost prices were removed (usage readings stay on the cost dashboard); unset them",
+            ", ".join(in_use),
+        )
+    return in_use
 
 
 @dataclass(slots=True)
@@ -43,18 +74,6 @@ class Settings:
     # 2026-09-14 opt-in: multi-candidate style drafts on standard / critical scenes
     # (criticality-driven N, blinded author terminal selection on critical scenes).
     scene_best_of_n_enabled: bool = False
-    # Singleton-local hard fences, all opt-in: ``0`` disables a fence outright.
-    # A single-author desktop install has no third party to fence off, and a
-    # finite default only ever fires at the author mid-draft, so every fence
-    # ships off and is re-armed by setting its env var to a positive value.
-    llm_daily_token_limit: int = 0
-    llm_monthly_token_limit: int = 0
-    llm_project_daily_token_limit: int = 0
-    llm_daily_request_limit: int = 0
-    llm_max_concurrent_requests: int = 0
-    llm_daily_cost_limit_usd: float = 0.0
-    llm_input_cost_per_million_usd: float = 0.0
-    llm_output_cost_per_million_usd: float = 0.0
     # Per-scene lifecycle budget multiplier: the scene end-to-end token ceiling is
     # ``N × single-shot baseline`` plus finite business/provider attempt caps. This
     # was the one hard fence that still shipped armed. A single-author desktop
@@ -118,6 +137,7 @@ def _resolve_runtime_path(value: str | Path) -> Path:
 
 
 def get_settings(*, include_runtime_config: bool = True) -> Settings:
+    warn_retired_env_vars()
     database_runtime = load_database_runtime()
     database_url = database_runtime.database_url
     sqlite_foreign_keys_enabled = database_runtime.sqlite_foreign_keys_enabled
@@ -136,15 +156,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     scene_best_of_n_enabled = bool_env("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", False)
     scene_structure_brief_enabled = bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
     scene_design_context_enabled = bool_env("NOVEL_SYSTEM_SCENE_DESIGN_CONTEXT", True)
-    accounting_runtime = load_llm_accounting_runtime()
-    llm_daily_token_limit = accounting_runtime.daily_token_limit
-    llm_monthly_token_limit = accounting_runtime.monthly_token_limit
-    llm_project_daily_token_limit = accounting_runtime.project_daily_token_limit
-    llm_daily_request_limit = accounting_runtime.daily_request_limit
-    llm_max_concurrent_requests = accounting_runtime.max_concurrent_requests
-    llm_daily_cost_limit_usd = accounting_runtime.daily_cost_limit_usd
-    llm_input_cost_per_million_usd = accounting_runtime.input_cost_per_million_usd
-    llm_output_cost_per_million_usd = accounting_runtime.output_cost_per_million_usd
     scene_token_budget_multiplier = quota_int_env(
         "NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", 0
     )
@@ -198,14 +209,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         scene_best_of_n_enabled=scene_best_of_n_enabled,
         scene_structure_brief_enabled=scene_structure_brief_enabled,
         scene_design_context_enabled=scene_design_context_enabled,
-        llm_daily_token_limit=llm_daily_token_limit,
-        llm_monthly_token_limit=llm_monthly_token_limit,
-        llm_project_daily_token_limit=llm_project_daily_token_limit,
-        llm_daily_request_limit=llm_daily_request_limit,
-        llm_max_concurrent_requests=llm_max_concurrent_requests,
-        llm_daily_cost_limit_usd=llm_daily_cost_limit_usd,
-        llm_input_cost_per_million_usd=llm_input_cost_per_million_usd,
-        llm_output_cost_per_million_usd=llm_output_cost_per_million_usd,
         scene_token_budget_multiplier=scene_token_budget_multiplier,
         snowflake_input_token_budget=snowflake_input_token_budget,
         admin_token=admin_token,

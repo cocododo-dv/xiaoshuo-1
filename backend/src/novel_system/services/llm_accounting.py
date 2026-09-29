@@ -878,19 +878,6 @@ def _execution_step_conflict(existing_call: LlmCall) -> LLMAccountingError:
     )
 
 
-def _global_fences_armed(settings: Any) -> bool:
-    """Whether any singleton-wide provider fence is configured (``0`` = off)."""
-
-    return (
-        settings.llm_max_concurrent_requests > 0
-        or settings.llm_daily_request_limit > 0
-        or settings.llm_daily_token_limit > 0
-        or settings.llm_monthly_token_limit > 0
-        or settings.llm_project_daily_token_limit > 0
-        or settings.llm_daily_cost_limit_usd > 0
-    )
-
-
 def _usage_overage_is_fenced(session: Session, scene_id: str | None) -> bool:
     """Whether provider usage beyond the reservation must block delivery.
 
@@ -898,17 +885,16 @@ def _usage_overage_is_fenced(session: Session, scene_id: str | None) -> bool:
     keeps: thinking backends report reasoning tokens inside ``completion_tokens``
     and relays routinely do not cap them under ``max_tokens`` (a 2,000-token
     classification answer came back with 11,776 completion tokens), so actual
-    usage can legitimately exceed any deterministic estimate.  While a fence is
-    armed — any singleton-wide quota, or an armed scene token budget — the
-    overage means that fence was checked against too small a number, and the
-    response stays blocked exactly as before.  With nothing armed (the
-    single-author default) there is no fence to protect: the tokens are already
-    spent, so the response is delivered and settled at actual usage, with the
-    overage kept in the audit summary as ``usage_overage_tokens``.
+    usage can legitimately exceed any deterministic estimate.  The only fence
+    left is an armed per-scene token budget (the six env-only global quotas were
+    retired on 2026-09-30, 重评 R3): while it is armed the overage means the
+    fence was checked against too small a number, and the response stays
+    blocked exactly as before.  With nothing armed (the single-author default)
+    there is no fence to protect: the tokens are already spent, so the response
+    is delivered and settled at actual usage, with the overage kept in the audit
+    summary as ``usage_overage_tokens``.
     """
 
-    if _global_fences_armed(load_llm_accounting_runtime()):
-        return True
     if scene_id is None:
         return False
     state = session.get(SceneRunState, scene_id)
@@ -917,271 +903,6 @@ def _usage_overage_is_fenced(session: Session, scene_id: str | None) -> bool:
     from novel_system.services import scene_budget
 
     return not scene_budget.is_scene_budget_disarmed(state)
-
-
-def _enforce_global_llm_quotas(
-    session: Session,
-    context: LLMCallContext,
-    estimate: RequestUsageEstimate,
-) -> None:
-    """Atomically fence singleton-wide, monthly, and project provider spend.
-
-    Every fence is opt-in and ships disabled: a limit of ``0`` means "no
-    ceiling", and an install with nothing armed returns before running any of
-    the counting scans below.  The caller has already opened an immediate claim
-    transaction on SQLite.  Open attempts count at their full reservation;
-    terminal attempts count at actual provider usage (or the conservative usage
-    estimate persisted for a failed response).  ``budget_charged_tokens``
-    intentionally remains capped by the reservation for scene-budget semantics
-    and must not be reused as a singleton-wide spend counter.
-    """
-
-    settings = load_llm_accounting_runtime()
-    if not _global_fences_armed(settings):
-        return
-    now = datetime.now(UTC)
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
-
-    if settings.llm_max_concurrent_requests > 0:
-        concurrent_count = len(
-            list(
-                session.scalars(
-                    select(LlmCallAttempt.attempt_id)
-                    .where(LlmCallAttempt.accounting_status == "reserved")
-                    .limit(settings.llm_max_concurrent_requests)
-                )
-            )
-        )
-        if concurrent_count >= settings.llm_max_concurrent_requests:
-            _reject_global_quota(
-                session,
-                "LLM_GLOBAL_CONCURRENCY_LIMIT",
-                "global provider concurrency limit reached",
-                used=concurrent_count,
-                requested=1,
-                limit=settings.llm_max_concurrent_requests,
-                period="concurrent",
-            )
-
-    daily_tokens = 0
-    daily_requests = 0
-    daily_cost = 0.0
-    if (
-        settings.llm_daily_request_limit > 0
-        or settings.llm_daily_token_limit > 0
-        or settings.llm_daily_cost_limit_usd > 0
-    ):
-        daily_rows = _quota_attempt_rows(session, created_after=day_start)
-        daily_tokens, daily_requests, daily_cost = _quota_usage(daily_rows, settings=settings)
-    if (
-        settings.llm_daily_request_limit > 0
-        and daily_requests + 1 > settings.llm_daily_request_limit
-    ):
-        _reject_global_quota(
-            session,
-            "LLM_DAILY_REQUEST_LIMIT",
-            "daily provider request limit reached",
-            used=daily_requests,
-            requested=1,
-            limit=settings.llm_daily_request_limit,
-            period="utc_day",
-        )
-    if (
-        settings.llm_daily_token_limit > 0
-        and daily_tokens + estimate.reserved_tokens > settings.llm_daily_token_limit
-    ):
-        _reject_global_quota(
-            session,
-            "LLM_DAILY_TOKEN_LIMIT",
-            "daily provider token limit reached",
-            used=daily_tokens,
-            requested=estimate.reserved_tokens,
-            limit=settings.llm_daily_token_limit,
-            period="utc_day",
-        )
-
-    if settings.llm_monthly_token_limit > 0:
-        monthly_rows = _quota_attempt_rows(session, created_after=month_start)
-        monthly_tokens, _, _ = _quota_usage(monthly_rows, settings=settings)
-        if monthly_tokens + estimate.reserved_tokens > settings.llm_monthly_token_limit:
-            _reject_global_quota(
-                session,
-                "LLM_MONTHLY_TOKEN_LIMIT",
-                "monthly provider token limit reached",
-                used=monthly_tokens,
-                requested=estimate.reserved_tokens,
-                limit=settings.llm_monthly_token_limit,
-                period="utc_month",
-            )
-
-    if context.project_id and settings.llm_project_daily_token_limit > 0:
-        project_rows = _quota_attempt_rows(
-            session,
-            created_after=day_start,
-            project_id=context.project_id,
-        )
-        project_tokens, _, _ = _quota_usage(project_rows, settings=settings)
-        if project_tokens + estimate.reserved_tokens > settings.llm_project_daily_token_limit:
-            _reject_global_quota(
-                session,
-                "LLM_PROJECT_DAILY_TOKEN_LIMIT",
-                "project daily provider token limit reached",
-                used=project_tokens,
-                requested=estimate.reserved_tokens,
-                limit=settings.llm_project_daily_token_limit,
-                period="utc_day",
-                project_id=context.project_id,
-            )
-
-    if settings.llm_daily_cost_limit_usd > 0:
-        max_rate = max(
-            settings.llm_input_cost_per_million_usd,
-            settings.llm_output_cost_per_million_usd,
-        )
-        requested_cost = estimate.reserved_tokens * max_rate / 1_000_000
-        if daily_cost + requested_cost > settings.llm_daily_cost_limit_usd:
-            _reject_global_quota(
-                session,
-                "LLM_DAILY_COST_LIMIT",
-                "daily provider cost limit reached",
-                used=round(daily_cost, 8),
-                requested=round(requested_cost, 8),
-                limit=settings.llm_daily_cost_limit_usd,
-                period="utc_day",
-            )
-
-
-def _quota_attempt_rows(
-    session: Session,
-    *,
-    created_after: str,
-    project_id: str | None = None,
-) -> list[tuple[LlmCallAttempt, str | None]]:
-    query = (
-        select(LlmCallAttempt, LlmCall.project_id)
-        .join(LlmCall, LlmCall.llm_call_id == LlmCallAttempt.llm_call_id)
-        .where(LlmCallAttempt.created_at >= created_after)
-    )
-    if project_id is not None:
-        query = query.where(LlmCall.project_id == project_id)
-    return list(session.execute(query).all())
-
-
-def _quota_usage(
-    rows: list[tuple[LlmCallAttempt, str | None]],
-    *,
-    settings: Any,
-) -> tuple[int, int, float]:
-    tokens = 0
-    request_count = 0
-    cost = 0.0
-    max_rate = max(
-        settings.llm_input_cost_per_million_usd,
-        settings.llm_output_cost_per_million_usd,
-    )
-    for attempt, _project_id in rows:
-        is_open = attempt.accounting_status == "reserved"
-        if is_open:
-            charged = int(attempt.reserved_tokens or 0)
-            cost += charged * max_rate / 1_000_000
-        else:
-            # A provider may report more tokens than the pre-dispatch
-            # reservation.  The scene budget records only the bounded
-            # ``budget_charged_tokens`` amount, while global/project quotas
-            # must retain the complete provider liability.
-            charged = int(attempt.total_tokens or 0)
-            cost += (
-                int(attempt.prompt_tokens or 0) * settings.llm_input_cost_per_million_usd
-                + int(attempt.completion_tokens or 0) * settings.llm_output_cost_per_million_usd
-            ) / 1_000_000
-        tokens += charged
-        if is_open or attempt.request_dispatched_at is not None:
-            request_count += 1
-    return tokens, request_count, cost
-
-
-def _reject_global_quota(
-    session: Session,
-    code: str,
-    message: str,
-    *,
-    used: int | float,
-    requested: int | float,
-    limit: int | float,
-    period: str,
-    project_id: str | None = None,
-) -> None:
-    session.rollback()
-    raise LLMAccountingRejected(
-        code,
-        message,
-        details={
-            "used": used,
-            "requested": requested,
-            "limit": limit,
-            "period": period,
-            "project_id": project_id,
-            "retryable": period in {"concurrent", "utc_day", "utc_month"},
-        },
-    )
-
-
-def llm_quota_snapshot(session: Session, *, project_id: str | None = None) -> dict[str, Any]:
-    """Return the same quota counters used by the pre-dispatch hard gate."""
-
-    settings = load_llm_accounting_runtime()
-    now = datetime.now(UTC)
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
-    daily_tokens, daily_requests, daily_cost = _quota_usage(
-        _quota_attempt_rows(session, created_after=day_start),
-        settings=settings,
-    )
-    monthly_tokens, _, _ = _quota_usage(
-        _quota_attempt_rows(session, created_after=month_start),
-        settings=settings,
-    )
-    project_tokens = None
-    if project_id:
-        project_tokens, _, _ = _quota_usage(
-            _quota_attempt_rows(session, created_after=day_start, project_id=project_id),
-            settings=settings,
-        )
-    concurrent = len(
-        list(
-            session.scalars(
-                select(LlmCallAttempt.attempt_id).where(
-                    LlmCallAttempt.accounting_status == "reserved"
-                )
-            )
-        )
-    )
-    return {
-        "period_timezone": "UTC",
-        "any_enforced": _global_fences_armed(settings),
-        "daily_tokens": _quota_meter(daily_tokens, settings.llm_daily_token_limit),
-        "monthly_tokens": _quota_meter(monthly_tokens, settings.llm_monthly_token_limit),
-        "project_daily_tokens": {
-            "project_id": project_id,
-            **_quota_meter(project_tokens, settings.llm_project_daily_token_limit),
-        },
-        "daily_requests": _quota_meter(daily_requests, settings.llm_daily_request_limit),
-        "concurrent_requests": _quota_meter(concurrent, settings.llm_max_concurrent_requests),
-        "daily_cost_usd": _quota_meter(
-            round(daily_cost, 8), settings.llm_daily_cost_limit_usd
-        ),
-    }
-
-
-def _quota_meter(used: int | float | None, limit: int | float) -> dict[str, Any]:
-    """Shape one dashboard meter; a ``0`` limit reports the fence as disarmed.
-
-    ``used`` is always reported so the dashboard keeps its consumption reading
-    after every fence is turned off.
-    """
-
-    return {"used": used, "limit": limit or None, "enforced": limit > 0}
 
 
 def _reserve_scene_capacity(
@@ -1966,7 +1687,6 @@ class _LedgerAttemptHook:
         attempt_id = f"llmattempt_{uuid.uuid4().hex}"
         _begin_claim_transaction(self._session)
         _assert_run_job_running(self._session, self._context)
-        _enforce_global_llm_quotas(self._session, self._context, estimate)
         scene_fence_tokens = _reserve_scene_capacity(
             self._session,
             self._context.scene_id,
