@@ -36,7 +36,6 @@ from novel_system.services.llm_client import (
     LLMRequest,
     LLMResponse,
     LLMAttemptHook,
-    OfflineDeterministicExecution,
     OnlineAccountedExecution,
 )
 from novel_system.services.llm_providers.base import LLMDispatchKind
@@ -70,8 +69,6 @@ _CONTROL_PLANE_ERROR_CODES = ACCOUNTING_INTEGRITY_ERROR_CODES | {
     "LLM_ACCOUNTING_ADVISORY_FAILURE_UNTRACKED",
     "LLM_ACCOUNTING_PARENT_ID_MISSING",
     "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-    "LLM_OFFLINE_RESPONSE_INVALID",
-    "LLM_OFFLINE_CAPABILITY_UNSUPPORTED",
     "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
     "LLM_ACCOUNTING_CONTEXT_INVALID",
     "LLM_ACCOUNTING_INTEGRITY_BLOCKED",
@@ -96,6 +93,9 @@ class LLMCallContext:
     run_job_id: str | None = None
     execution_id: str | None = None
     execution_step_key: str | None = None
+    # 只有 online 会执行（B09-04：离线确定性执行模式已退役，没有任何生产客户端实现它）。类型里暂留这个旧字面值，
+    # 是为了让自动批评 / 事件抽取 / 检查点校验里还没删的旧分支（归别的包）照旧能构造上下文——带着它进账本的调用在
+    # 派发前被拒（LLM_ACCOUNTING_CONTEXT_INVALID），账本里历史的离线行过不了产品校验。
     provider_execution_mode: Literal["online", "offline_deterministic"] = "online"
 
     def __post_init__(self) -> None:
@@ -394,29 +394,9 @@ def validate_product_call_ledger(
                 invalid("local rejected product must have a zero-attempt, zero-token parent")
             return
 
-    if (
-        expected_outcome in {"completed", "parse_failed"}
-        and execution_mode == "offline_deterministic"
-    ):
-        offline_zero_fields = (
-            parent.estimated_tokens,
-            parent.reserved_tokens,
-            parent.budget_charged_tokens,
-            parent.prompt_tokens,
-            parent.completion_tokens,
-            parent.total_tokens,
-            parent.latency_ms,
-        )
-        if (
-            attempts
-            or parent.provider != "offline_deterministic"
-            or parent.accounting_status != "settled"
-            or parent.request_dispatched_at is not None
-            or parent.error_code is not None
-            or any(value != 0 for value in offline_zero_fields)
-        ):
-            invalid("offline product violates zero-attempt deterministic settlement")
-        return
+    if expected_outcome in {"completed", "parse_failed"} and execution_mode != "online":
+        # 历史的离线确定性产品（零尝试、零用量）不再是合法产品：那个执行模式已退役（B09-04）
+        invalid("product was not produced by online provider execution")
 
     if not attempts:
         invalid("provider-backed product is missing physical attempts")
@@ -759,9 +739,6 @@ def estimate_request_usage(request: LLMRequest) -> RequestUsageEstimate:
 
 
 def normalize_response_usage(response: LLMResponse, request: LLMRequest) -> NormalizedUsage:
-    if response.provider == "offline_deterministic" and _is_explicit_zero_usage(response.usage):
-        return NormalizedUsage(0, 0, 0, False)
-
     if response.usage_complete is True:
         actual = normalize_raw_usage(response.raw_usage)
         if actual is not None:
@@ -1100,19 +1077,6 @@ def _settle_scene_usage(
             "LLM_ACCOUNTING_SCENE_SETTLEMENT_CORRUPT",
             "scene settlement affected an unexpected number of rows",
         )
-
-
-def _validate_offline_response(response: object) -> LLMResponse:
-    if (
-        not isinstance(response, LLMResponse)
-        or response.provider != "offline_deterministic"
-        or not _is_explicit_zero_usage(response.usage)
-    ):
-        raise LLMAccountingRejected(
-            "LLM_OFFLINE_RESPONSE_INVALID",
-            "offline deterministic execution requires an offline_deterministic response with complete zero usage",
-        )
-    return response
 
 
 def _reject_integrity_blocked_scene(session: Session, scene_id: str | None) -> None:
@@ -1543,41 +1507,28 @@ def execute_accounted_call(
     online_capability_invoked = False
     response: object | None = None
     try:
-        if context.provider_execution_mode == "offline_deterministic":
-            if not isinstance(client, OfflineDeterministicExecution):
-                raise LLMAccountingRejected(
-                    "LLM_OFFLINE_CAPABILITY_UNSUPPORTED",
-                    "offline deterministic mode requires the explicit offline execution capability",
-                )
-            response = _validate_offline_response(
-                client.generate_offline_deterministic(request)
+        if context.provider_execution_mode != "online":
+            raise LLMAccountingRejected(
+                "LLM_ACCOUNTING_CONTEXT_INVALID",
+                "offline deterministic execution was retired; only online provider execution is accounted",
             )
-        else:
-            if not isinstance(client, OnlineAccountedExecution):
-                raise LLMAccountingRejected(
-                    "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
-                    "online provider clients must implement the explicit accounted execution capability",
-                )
-            _reject_integrity_blocked_scene(session, context.scene_id)
-            online_capability_invoked = True
-            response = client.generate_accounted(request, accounting_hook=hook)
-            if hook.attempt_count == 0:
-                raise LLMAccountingError(
-                    "LLM_ACCOUNTING_HOOK_NOT_INVOKED",
-                    "online provider client returned without forwarding the accounting hook",
-                )
-            if _has_open_attempt(session, call_id):
-                raise _lifecycle_incomplete_error(call_id=call_id, hook=hook)
+        if not isinstance(client, OnlineAccountedExecution):
+            raise LLMAccountingRejected(
+                "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
+                "online provider clients must implement the explicit accounted execution capability",
+            )
+        _reject_integrity_blocked_scene(session, context.scene_id)
+        online_capability_invoked = True
+        response = client.generate_accounted(request, accounting_hook=hook)
+        if hook.attempt_count == 0:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_HOOK_NOT_INVOKED",
+                "online provider client returned without forwarding the accounting hook",
+            )
+        if _has_open_attempt(session, call_id):
+            raise _lifecycle_incomplete_error(call_id=call_id, hook=hook)
         response = replace(response, llm_call_id=call_id)
 
-        if context.provider_execution_mode == "offline_deterministic":
-            _settle_without_physical_attempt(
-                session,
-                call_id=call_id,
-                request=request,
-                response=response,
-                request_estimate=request_estimate,
-            )
         _finalize_parent_success(
             session,
             call_id=call_id,
@@ -1622,8 +1573,7 @@ def execute_accounted_call(
     except Exception as exc:
         error = exc
         lifecycle_incomplete = (
-            context.provider_execution_mode == "online"
-            and online_capability_invoked
+            online_capability_invoked
             and hook.before_dispatch_count > 0
             and _has_open_attempt(session, call_id)
         )
@@ -1633,11 +1583,7 @@ def execute_accounted_call(
                 and exc.code == "LLM_ACCOUNTING_LIFECYCLE_INCOMPLETE"
             ):
                 error = _lifecycle_incomplete_error(call_id=call_id, hook=hook)
-        elif (
-            context.provider_execution_mode == "online"
-            and online_capability_invoked
-            and hook.before_dispatch_count == 0
-        ):
+        elif online_capability_invoked and hook.before_dispatch_count == 0:
             error = _record_unknown_dispatch(
                 session,
                 call_id=call_id,
@@ -1917,31 +1863,6 @@ class _LedgerAttemptHook:
         _aggregate_parent(self._session, self._call_id)
         self._session.commit()
         _expire_cached_scene_accounting_state(self._session, self._context.scene_id)
-
-
-def _settle_without_physical_attempt(
-    session: Session,
-    *,
-    call_id: str,
-    request: LLMRequest,
-    response: LLMResponse,
-    request_estimate: RequestUsageEstimate,
-) -> None:
-    usage = normalize_response_usage(response, request)
-    parent = session.get(LlmCall, call_id)
-    assert parent is not None
-    parent.prompt_tokens = usage.prompt_tokens
-    parent.completion_tokens = usage.completion_tokens
-    parent.total_tokens = usage.total_tokens
-    parent.estimated_tokens = 0 if response.provider == "offline_deterministic" else request_estimate.estimated_tokens
-    parent.reserved_tokens = 0 if response.provider == "offline_deterministic" else max(
-        request_estimate.reserved_tokens,
-        usage.total_tokens,
-    )
-    parent.budget_charged_tokens = usage.total_tokens
-    parent.latency_ms = 0
-    parent.usage_is_estimate = usage.usage_is_estimate
-    session.commit()
 
 
 def _aggregate_parent(session: Session, call_id: str) -> None:
@@ -2495,10 +2416,6 @@ def _probe_error_message(response: httpx.Response, body: dict[str, Any]) -> str:
     if isinstance(body.get("text"), str) and body["text"]:
         return str(body["text"])
     return f"provider returned status {response.status_code}"
-
-
-def _is_explicit_zero_usage(usage: dict[str, Any]) -> bool:
-    return usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
 
 def _has_exceeded_attempt(session: Session, call_id: str) -> bool:

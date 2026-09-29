@@ -642,8 +642,6 @@ def test_extract_true_child_aggregate_mismatch_is_not_degraded(session) -> None:
         "RUN_CHECKPOINT_OUTPUT_MISSING",
         "RUN_OWNER_LEASE_LOST",
         "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
-        "LLM_OFFLINE_RESPONSE_INVALID",
-        "LLM_OFFLINE_CAPABILITY_UNSUPPORTED",
     ],
 )
 def test_extract_control_plane_failures_are_not_degraded(

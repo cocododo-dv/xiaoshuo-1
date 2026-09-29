@@ -312,56 +312,69 @@ def test_real_client_missing_raw_usage_is_estimated_and_never_charged_as_zero(se
     assert attempt.total_tokens > 0
 
 
-def test_explicit_offline_zero_usage_settles_parent_without_physical_attempt(session) -> None:
+def test_retired_offline_context_is_rejected_before_any_provider_work(session) -> None:
+    """B09-04:离线确定性执行模式退役了——带着它的上下文在派发之前被拒,客户端一次都不调,父行记 rejected。"""
     accounting = _accounting_module()
-    scene_id = "scene-offline"
-    session.add(
-        _scene_run_state(
+
+    class OfflineShapedClient:
+        called = 0
+
+        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
+            self.called += 1
+            raise AssertionError("retired offline execution must not run")
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            self.called += 1
+            raise AssertionError("an offline context must not reach a provider either")
+
+    client = OfflineShapedClient()
+    with pytest.raises(accounting.LLMAccountingRejected) as exc_info:
+        accounting.execute_accounted_call(
             session,
-            scene_id=scene_id,
-            scene_token_budget=100,
-            provider_attempt_budget=5,
+            client,
+            _request(),
+            replace(_context(accounting), provider_execution_mode="offline_deterministic"),
         )
+
+    assert exc_info.value.code == "LLM_ACCOUNTING_CONTEXT_INVALID"
+    assert client.called == 0
+    assert session.query(LlmCallAttempt).count() == 0
+    parent = session.query(LlmCall).one()
+    assert parent.accounting_status == "rejected"
+    assert parent.request_payload_summary["_accounting_provider_execution_mode"] == "offline_deterministic"
+
+
+def test_historical_offline_product_no_longer_validates(session) -> None:
+    """账本里历史的离线确定性产品(零尝试、零用量)过不了产品校验:检查点不能靠它续跑。"""
+    accounting = _accounting_module()
+    now = datetime.now(UTC).isoformat()
+    parent = LlmCall(
+        llm_call_id="historical-offline-product",
+        provider="offline_deterministic",
+        scope_type="project",
+        scope_id="project-1",
+        project_id="project-1",
+        node_id="neutral_draft",
+        step="draft",
+        request_payload_summary={"_accounting_provider_execution_mode": "offline_deterministic"},
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        estimated_tokens=0,
+        reserved_tokens=0,
+        budget_charged_tokens=0,
+        latency_ms=0,
+        usage_is_estimate=False,
+        accounting_status="settled",
+        settled_at=now,
     )
+    session.add(parent)
     session.commit()
 
-    class OfflineClient(accounting.OfflineDeterministicExecution):
-        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
-            return LLMResponse(
-                request_id="offline-1",
-                provider="offline_deterministic",
-                model=request.model,
-                text='{"scene_text":"offline"}',
-                structured_output={"scene_text": "offline"},
-                response_format=request.response_format,
-                raw_response={"id": "offline-1"},
-                usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-                finish_reason="offline_fallback",
-            )
+    with pytest.raises(accounting.LLMAccountingError) as exc_info:
+        accounting.validate_product_call_ledger(session, parent, expected_outcome="completed")
 
-    response = accounting.execute_accounted_call(
-        session,
-        OfflineClient(),
-        _request(),
-        replace(
-            _scene_context(accounting, scene_id),
-            provider_execution_mode="offline_deterministic",
-        ),
-    )
-
-    session.expire_all()
-    call = session.query(LlmCall).one()
-    assert response.provider == "offline_deterministic"
-    assert call.accounting_status == "settled"
-    assert call.total_tokens == 0
-    assert call.budget_charged_tokens == 0
-    assert call.latency_ms == 0
-    assert call.usage_is_estimate is False
-    assert session.query(LlmCallAttempt).count() == 0
-    run_state = session.get(SceneRunState, scene_id)
-    assert run_state.provider_attempts_used == 0
-    assert run_state.scene_tokens_reserved == 0
-    assert run_state.scene_tokens_used == 0
+    assert exc_info.value.code == "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID"
 
 
 def test_online_wrapper_forwards_attempt_hook_and_is_fully_accounted(session) -> None:
@@ -966,83 +979,6 @@ def test_untracked_dispatch_keeps_child_audit_when_scene_budget_is_uninitialized
         )
     assert post_count == 1
     assert session.query(LlmCallAttempt).count() == 1
-
-
-@pytest.mark.parametrize(
-    ("provider", "usage"),
-    [
-        (
-            "openai_compatible",
-            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-        ),
-        (
-            "offline_deterministic",
-            {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
-        ),
-    ],
-)
-def test_offline_mode_rejects_non_offline_or_nonzero_response(
-    session,
-    provider: str,
-    usage: dict[str, int],
-) -> None:
-    accounting = _accounting_module()
-
-    class InvalidOfflineClient(accounting.OfflineDeterministicExecution):
-        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
-            return LLMResponse(
-                request_id="invalid-offline",
-                provider=provider,
-                model=request.model,
-                text="not offline",
-                structured_output=None,
-                response_format=request.response_format,
-                raw_response={},
-                usage=usage,
-            )
-
-    with pytest.raises(Exception) as exc_info:
-        accounting.execute_accounted_call(
-            session,
-            InvalidOfflineClient(),
-            _request(),
-            replace(
-                _context(accounting),
-                provider_execution_mode="offline_deterministic",
-            ),
-        )
-
-    assert getattr(exc_info.value, "code", None) == "LLM_OFFLINE_RESPONSE_INVALID"
-    assert session.query(LlmCallAttempt).count() == 0
-    assert session.query(LlmCall).one().accounting_status == "rejected"
-
-
-def test_offline_method_name_without_explicit_capability_is_rejected_before_call(session) -> None:
-    accounting = _accounting_module()
-
-    class MethodNameOnlyOfflineClient:
-        called = 0
-
-        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
-            self.called += 1
-            raise AssertionError("method-name-only client must not execute")
-
-    client = MethodNameOnlyOfflineClient()
-    with pytest.raises(Exception) as exc_info:
-        accounting.execute_accounted_call(
-            session,
-            client,
-            _request(),
-            replace(
-                _context(accounting),
-                provider_execution_mode="offline_deterministic",
-            ),
-        )
-
-    assert getattr(exc_info.value, "code", None) == "LLM_OFFLINE_CAPABILITY_UNSUPPORTED"
-    assert client.called == 0
-    assert session.query(LlmCallAttempt).count() == 0
-    assert session.query(LlmCall).one().accounting_status == "rejected"
 
 
 def _response_with_raw_usage(raw_usage, *, complete: bool) -> LLMResponse:

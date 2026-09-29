@@ -820,8 +820,6 @@ def test_llm_critique_failed_parent_wins_over_terminal_undispatched_rejection(
         "RUN_CHECKPOINT_OUTPUT_MISSING",
         "RUN_OWNER_LEASE_LOST",
         "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
-        "LLM_OFFLINE_RESPONSE_INVALID",
-        "LLM_OFFLINE_CAPABILITY_UNSUPPORTED",
     ],
 )
 def test_llm_critique_control_plane_failures_are_not_degraded(
