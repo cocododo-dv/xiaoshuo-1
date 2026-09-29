@@ -804,6 +804,20 @@ def test_archiver_keeps_literary_findings_advisory(client, session):
     assert attempt.details_json["final_text_gate"]["content_hash"] == gate["content_hash"]
 
 
+def test_final_gate_does_not_warn_about_the_diagnostic_evidence_signal(session):
+    """B04-17：「文字够不够下判断」是只作诊断的伪信号，不是正文的毛病——短稿不再多挂一条
+    ``literary:automated_evidence_sufficiency`` 警告（英文原话、深改面板里也忽略不掉）。"""
+    from novel_system.services.final_text_gate import FinalTextGateService
+
+    gate = FinalTextGateService(session).evaluate(scene_id="scene_short_text", content="她推开门，选择离开。")
+
+    literary = gate["literary_quality"]
+    assert literary["signals"]["automated_evidence_sufficiency"]["risk"] is True  # 诊断照记
+    assert "automated_evidence_sufficiency" not in literary["risky_dimensions"]
+    assert "literary:automated_evidence_sufficiency" not in [item["issue_key"] for item in gate["warnings"]]
+    assert "literary:automated_evidence_sufficiency" not in gate["warning_codes"]
+
+
 def test_archiver_blocks_persisted_content_hash_mismatch_before_side_effects(client, session):
     _create_chapter(client, "chapter_archive_gate_hash")
     _create_scene(

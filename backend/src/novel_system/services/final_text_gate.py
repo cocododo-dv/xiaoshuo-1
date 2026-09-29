@@ -516,8 +516,12 @@ class FinalTextGateService:
                     promotion_blockers.append("literary:ending_drive")
                 if scores["choice_pressure"] < CHOICE_PRESSURE_MIN:
                     promotion_blockers.append("literary:choice_pressure")
+            # 只看规则维度：``automated_evidence_sufficiency`` 是只作诊断的伪信号（文字够不够下判断），
+            # 不是正文的毛病——短稿以前因此多挂一条英文警告、还翻起 literary_warnings_unresolved（B04-17）
             risky_dimensions = [
-                dimension for dimension, signal in signals.items() if bool(signal.get("risk"))
+                dimension
+                for dimension, signal in signals.items()
+                if dimension in QUALITY_DIMENSIONS and bool(signal.get("risk"))
             ]
             # 2026-09-22 场景诊断统一:作者在写作台深改面板里忽略过的发现不再回到成稿中心当警告。
             # 忽略清单记的是发现的 signal_id;整个维度的发现都被忽略了,这个维度才算作者拍过板。
