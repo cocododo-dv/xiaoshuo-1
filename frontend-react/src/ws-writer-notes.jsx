@@ -7,13 +7,18 @@ import { wsKey } from "./ws-works.jsx";
    本场笔记（2026-09-21 从 ws-writer.jsx 拆出）
    只跟这一场有关的提醒、伏笔、待回收。存服务器（/api/v1/scenes/{id}/author-notes，
    带修订号；冲突时停下来让作者决定），本机留一份缓存（wr-notes:*）和「还没同步」的标记
-   （wr-notes-pending:*）。换场时旧场景排队中的保存不会落到新场景上。ESM 模块，不写 window。
+   （wr-notes-pending:*）。换场时旧场景排队中的保存照旧存回旧场景（带旧场景自己的修订号），
+   不会落到新场景上；防抖还没到点的改动在离开时立刻存。ESM 模块，不写 window。
    ========================================================== */
 
 const { useCallback, useEffect, useRef, useState } = React;
 
 function wrNotesKey(scene) { return wsKey("wr-notes:" + scene); }
 function wrNotesPendingKey(scene) { return wsKey("wr-notes-pending:" + scene); }
+
+// 缓存键 → 离开那一场时还没存完的保存链。回到这一场先等它落地再读服务器，
+// 否则会把自己刚发出去的那一次当成「别的设备改过」。
+const leavingChains = new Map();
 
 export function WrCtxNotes({ scene }) {
   const [val, setVal] = useState("");
@@ -22,17 +27,17 @@ export function WrCtxNotes({ scene }) {
   const sceneState = useRef(null);
   const valueRef = useRef("");
 
+  // state.active 只表示「这一场还在屏幕上」（决定要不要改状态行）；离开之后排队的保存照样存回这一场。
   const persist = useCallback((value, requestedState = sceneState.current) => {
     const state = requestedState;
-    if (!state || !state.active) return Promise.resolve();
+    if (!state) return Promise.resolve();
+    state.unsaved = null;
     const version = ++state.saveVersion;
     const persistedEditVersion = state.editVersion;
     if (sceneState.current === state) setStatus("saving");
     state.chain = state.chain.then(async () => {
-      if (!state.active) return;
       try {
         const sceneId = state.backendSceneId || await WsCatalog.__backendSceneId(state.scene);
-        if (!state.active) return;
         if (!sceneId) throw Object.assign(new Error("场景尚未同步到服务器"), { code: "SCENE_NOT_READY" });
         state.backendSceneId = sceneId;
         const data = await apiPatch(`/api/v1/scenes/${sceneId}/author-notes`, {
@@ -53,7 +58,6 @@ export function WrCtxNotes({ scene }) {
           && persistedEditVersion === state.editVersion
         ) setStatus("saved");
       } catch (error) {
-        if (!state.active) return;
         if (error && error.code === "SCENE_AUTHOR_NOTES_CONFLICT" && state.backendSceneId) {
           try {
             const current = await apiGet(`/api/v1/scenes/${state.backendSceneId}/author-notes`);
@@ -77,6 +81,7 @@ export function WrCtxNotes({ scene }) {
       revision: 0,
       saveVersion: 0,
       editVersion: 0,
+      unsaved: null,   // 防抖还没到点的那一稿（离开时立刻存）
       chain: Promise.resolve(),
     };
     sceneState.current = state;
@@ -91,6 +96,9 @@ export function WrCtxNotes({ scene }) {
     const loadEditVersion = state.editVersion;
     void (async () => {
       try {
+        const leaving = leavingChains.get(wrNotesKey(scene));
+        if (leaving) await leaving;
+        if (!state.active || sceneState.current !== state) return;
         const sceneId = await WsCatalog.__backendSceneId(scene);
         if (!sceneId || !state.active || sceneState.current !== state) return;
         state.backendSceneId = sceneId;
@@ -104,8 +112,10 @@ export function WrCtxNotes({ scene }) {
         let currentPending = false;
         try { currentStored = localStorage.getItem(wrNotesKey(scene)); } catch (e) {}
         try { currentPending = localStorage.getItem(wrNotesPendingKey(scene)) != null; } catch (e) {}
+        // 本机还有没同步上的一稿（上个会话没存上）：留着本机稿、给「重试」，不冒充冲突——
+        // 只有服务端真回了 SCENE_AUTHOR_NOTES_CONFLICT 才说「与其他设备冲突」
         if (currentPending && currentStored != null && currentStored !== serverValue) {
-          setStatus("conflict");
+          setStatus("local");
           return;
         }
         valueRef.current = serverValue;
@@ -125,13 +135,21 @@ export function WrCtxNotes({ scene }) {
       state.active = false;
       if (sceneState.current === state) sceneState.current = null;
       clearTimeout(timer.current);
+      if (state.unsaved != null) void persist(state.unsaved, state);
+      const key = wrNotesKey(scene);
+      const chain = state.chain;
+      leavingChains.set(key, chain);
+      void chain.then(() => { if (leavingChains.get(key) === chain) leavingChains.delete(key); });
     };
-  }, [scene]);
+  }, [scene, persist]);
 
   const onChange = (e) => {
     const v = e.target.value;
     const state = sceneState.current;
-    if (state && state.scene === scene) state.editVersion += 1;
+    if (state && state.scene === scene) {
+      state.editVersion += 1;
+      state.unsaved = v;
+    }
     valueRef.current = v;
     setVal(v);
     setStatus("saving");

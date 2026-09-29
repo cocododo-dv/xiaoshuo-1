@@ -90,12 +90,43 @@ describe("写作台场景笔记的异步隔离", () => {
     firstPatch.resolve({ revision_no: 2 });
     await flushPromises();
 
-    expect(client.apiPatch).toHaveBeenCalledTimes(1);
+    // 排队中的那一次仍然存回旧场景（带旧场景自己的修订号），绝不会落到新场景上
+    expect(client.apiPatch).toHaveBeenCalledTimes(2);
     expect(client.apiPatch.mock.calls[0][0]).toBe("/api/v1/scenes/backend-scene-a/author-notes");
+    expect(client.apiPatch.mock.calls[1]).toEqual([
+      "/api/v1/scenes/backend-scene-a/author-notes",
+      { notes: "queued edit", base_revision_no: 2 },
+    ]);
     expect(client.apiPatch.mock.calls.some(([url]) => url.includes("backend-scene-b"))).toBe(false);
-    expect([...Array(window.localStorage.length).keys()]
-      .map((index) => window.localStorage.key(index))
-      .some((key) => key.startsWith("wr-notes-pending:scene-a"))).toBe(true);
+  });
+
+  it("没到自动保存就换场：离开时把这一场的笔记存上，回来不报「与其他设备冲突」（F03-06）", async () => {
+    const { client, WrCtxNotes } = await loadNotes();
+    const server = { "backend-scene-a": { notes: "", revision_no: 1 }, "backend-scene-b": { notes: "", revision_no: 1 } };
+    client.apiGet.mockImplementation(async (url) => server[url.split("/")[4]]);
+    client.apiPatch.mockImplementation(async (url, body) => {
+      const key = url.split("/")[4];
+      server[key] = { notes: body.notes, revision_no: body.base_revision_no + 1 };
+      return server[key];
+    });
+
+    await act(async () => root.render(<WrCtxNotes scene="scene-a" />));
+    await flushPromises();
+    await changeTextarea(host.querySelector("textarea"), "伏笔：旧信");
+    // 0.5 秒的防抖还没到就换场
+    await act(async () => root.render(<WrCtxNotes scene="scene-b" />));
+    await flushPromises();
+    expect(client.apiPatch).toHaveBeenCalledWith(
+      "/api/v1/scenes/backend-scene-a/author-notes",
+      { notes: "伏笔：旧信", base_revision_no: 1 },
+    );
+
+    await act(async () => root.render(<WrCtxNotes scene="scene-a" />));
+    await flushPromises();
+    await flushPromises();
+    expect(host.querySelector("textarea").value).toBe("伏笔：旧信");
+    expect(host.querySelector(".wr-notes-state").textContent).toContain("已存服务器");
+    expect(host.textContent).not.toContain("与其他设备冲突");
   });
 
   it("服务器初始读取晚到时不会覆盖用户刚输入的本地笔记", async () => {
