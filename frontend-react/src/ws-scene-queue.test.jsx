@@ -99,6 +99,34 @@ describe("AI 起草台 · 进页面时取回在办场的运行记录（F03-11）
   });
 });
 
+describe("AI 起草台 · 慢到的取回不盖掉更新的运行记录（F03-13）", () => {
+  it("进页面时那一份 workbench 回来得晚：内存里已有跑完的记录时，缓存也不被它盖回去", async () => {
+    window.localStorage.setItem("scn-queue:v1::prj-main", JSON.stringify(["ch01s1"]));
+    const { WsScene, client } = await loadScene({ runStateSceneIds: ["s1"] });
+    client.getLatestSceneRunJob.mockResolvedValue({ job_id: "job-1", scene_id: "s1", status: "completed", author_note: "只改对白" });
+    const workbench = {
+      style_draft: { content: "跑完的这一稿。" },
+      scene_run_state: { scene_status: "near_final" },
+      author_state: { author_state: "draft_ready", can_archive: true },
+    };
+    let releaseSlow;
+    const slow = new Promise((resolve) => { releaseSlow = resolve; });
+    const base = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url !== "/api/v1/scenes/s1/workbench") return base(url, options);
+      // 进页面时的那一次取回不带 signal、回来得晚；任务到了终态之后的那一次带着任务（和它的作者指令）
+      return options && options.signal ? Promise.resolve(workbench) : slow;
+    });
+    await render(<WsScene t={{}} />);
+    const cached = () => JSON.parse(window.localStorage.getItem("scn-run:ch01s1::prj-main") || "null");
+    await vi.waitFor(() => expect(cached() && cached().authorNote).toBe("只改对白"), T);
+
+    await act(async () => { releaseSlow(workbench); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(cached().authorNote).toBe("只改对白");
+  }, 15000);
+});
+
 describe("AI 起草台 · 运行队列移出", () => {
   it("单条移出：不拦确认弹窗，直接移出并给回执，且从不调用场景软删端点", async () => {
     await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });

@@ -104,9 +104,14 @@ function useSceneQueue({ showNotice }) {
     return () => { mountedRef.current = false; };
   }, []);
 
+  /* 取回的记录只在这一场还没有记录时才用：期间已有记录（本机的、或刚跑出来 / 收敛好的）就连缓存也不动——
+     过去内存留着新记录、本机缓存却被这份慢到的旧记录盖掉，刷新之后看到的就是旧的（作者指令、尝试历史都没了）。 */
   const saveRun = (id, sid, record) => {
-    setRuns(m => (m[id] ? m : { ...m, [id]: record }));
-    scnRunSave(sid, record);
+    setRuns(m => {
+      if (m[id]) return m;
+      scnRunSave(sid, record);
+      return { ...m, [id]: record };
+    });
   };
 
   /* 把一场放上台面。pin=true：交给 AI（入列，落盘）；pin=false：只是在书脊上点开看看（transient）。
