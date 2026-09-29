@@ -191,6 +191,6 @@ function TweakSelect({ label, value, options, hint, onChange }) {
 }
 
 export {
-  TweaksPanel, TweakSection, TweakRow,
-  TweakSlider, TweakToggle, TweakRadio, TweakSelect,
+  TweaksPanel, TweakSection,
+  TweakSlider, TweakToggle, TweakRadio,
 };

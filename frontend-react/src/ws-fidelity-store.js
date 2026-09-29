@@ -33,8 +33,6 @@ const TIMERS = new Map();
 
 function notify() { subs.notify(); }
 
-export function fidSubscribe(fn) { return subs.subscribe(fn); }
-
 /* 视图订阅：store 一变就重渲 */
 export function useFidelityStore() {
   useStoreTick((bump) => subs.subscribe(bump));

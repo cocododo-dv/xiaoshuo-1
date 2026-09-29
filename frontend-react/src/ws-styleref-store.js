@@ -221,7 +221,6 @@ export function srLoadLearn(bookId, opts) {
 }
 
 /* 用模型重新分类（就地）的费用估算 */
-export function srClassifyEstimate(bookId) { return srCacheGet(`estimate:${bookId}`); }
 export function srLoadClassifyEstimate(bookId, opts) {
   return srCacheLoad(`estimate:${bookId}`, async () => ((await apiGet(`${API}/books/${encodeURIComponent(bookId)}/classification/estimate`)) || {}).estimate || null, opts);
 }

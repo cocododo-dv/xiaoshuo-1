@@ -3,28 +3,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { domainChunk, productionChunk } from "../build-chunks.js";
+import { productionChunk } from "../build-chunks.js";
 
-describe("生产构建业务域分块", () => {
-  it.each([
-    ["ws-snow.jsx", "domain-snowflake"],
-    ["ws-snow-sync.jsx", "domain-snowflake"],
-    ["ws-styleref.jsx", "domain-style-reference"],
-    ["ws-writer.jsx", "domain-writer"],
-    ["ws-scene-run.jsx", "domain-scene"],
-    ["ws-author.jsx", "domain-author"],
-    ["ws-library-edit.jsx", "domain-library"],
-    ["ws-manuscripts.jsx", "domain-manuscripts"],
-    ["ws-settings-ai.jsx", "domain-settings"],
-  ])("将 %s 放入 %s", (file, expected) => {
-    expect(domainChunk(`E:\\repo\\frontend-react\\src\\${file}`)).toBe(expected);
-  });
-
-  it("将第三方依赖与核心入口分别处理", () => {
-    expect(domainChunk("E:/repo/frontend-react/node_modules/react/index.js")).toBe("vendor");
-    expect(domainChunk("E:/repo/frontend-react/src/ws-app.jsx")).toBeUndefined();
+describe("生产构建分块", () => {
+  it("只把第三方依赖固定进 vendor，业务模块交给懒加载路由切分", () => {
+    expect(productionChunk("E:\\repo\\frontend-react\\node_modules\\react\\index.js")).toBe("vendor");
     expect(productionChunk("E:/repo/frontend-react/node_modules/react/index.js")).toBe("vendor");
     expect(productionChunk("E:/repo/frontend-react/src/ws-writer.jsx")).toBeUndefined();
+    expect(productionChunk("E:/repo/frontend-react/src/ws-app.jsx")).toBeUndefined();
+    const viteConfig = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "vite.config.js"), "utf8");
+    expect(viteConfig).toContain("manualChunks: productionChunk");
   });
 
   it("入口不再用副作用导入预加载全部业务模块", () => {

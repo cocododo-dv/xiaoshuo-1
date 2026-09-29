@@ -1,5 +1,5 @@
 import React from "react";
-import { WsWorks, wsKey } from "./ws-works.jsx";
+import { WsWorks } from "./ws-works.jsx";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 
@@ -19,10 +19,6 @@ import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.j
    ========================================================== */
 
 const CAT_LS = "arr.chapters.v2";            // v2：目录收敛后的新键；旧键由旧版编排台自动写入的陈旧种子，不再读取
-const CAT_DAY_LS = "ws_words_today_v1";     // 每日写作字数 { d, n }
-const CAT_STREAK_LS = "ws_streak_v1";       // 连续写作天数 { last, streak }，按作品
-
-const catKey = (base) => (wsKey ? wsKey(base) : base);
 const catActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 
 
@@ -39,10 +35,6 @@ function catStamp(list) {
       return { ...s, sid: `tmp_${c.id}_${Date.now().toString(36)}_${catTempSeq}` };
     }),
   }));
-}
-
-function catSeedFor(workId) {
-  return []; // 目录真相来自后端；本地不再内置任何种子章节
 }
 
 /* 汇总同步进 WsWorks（切换器 / 主页进度同源）。

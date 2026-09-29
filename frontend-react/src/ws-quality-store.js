@@ -12,7 +12,7 @@ let qState = { overview: null, analyze: null, review: null, loading: false, anal
 export function qSnapshot() { return qState; }
 function qEmit() { try { window.dispatchEvent(new CustomEvent("ws:quality-changed")); } catch (e) {} }
 
-/* 自建查询串：只 import apiGet/apiPost，避免单测 mock 掉 buildQueryPath */
+/* 查询串：跳过空值 */
 function qBuildPath(base, filters) {
   const p = new URLSearchParams();
   Object.entries(filters || {}).forEach(([k, v]) => {

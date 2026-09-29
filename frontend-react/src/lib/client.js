@@ -243,18 +243,6 @@ export class ApiRequestError extends Error {
   }
 }
 
-export function buildQueryPath(path, filters = {}, aliases = {}) {
-  const params = new URLSearchParams();
-  Object.entries(filters || {}).forEach(([key, value]) => {
-    if (value === null || value === undefined || value === "") {
-      return;
-    }
-    params.set(aliases[key] || key, value);
-  });
-  const query = params.toString();
-  return query ? `${path}?${query}` : path;
-}
-
 function normalizeRequestError(error, clientRequestId = null, timeout = null) {
   if (error instanceof ApiRequestError) {
     return error;

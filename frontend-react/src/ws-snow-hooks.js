@@ -3,7 +3,7 @@ import { WsWorks, wsKey } from "./ws-works.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { apiPost } from "./lib/client.js";
 import {
-  S2_STEPS, S2_BE_KEY, s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds, s2NormalizeState,
+  S2_STEPS, S2_BE_KEY, s2DefaultDrafts, s2DefaultStates, s2MergeChecks, s2MergeScaffolds,
 } from "./ws-snow-model.js";
 
 /* ==========================================================
@@ -27,7 +27,7 @@ export function activeWorkId() {
 export const s2Key = () => (wsKey ? wsKey("ws_snow_state_v2") : "ws_snow_state_v2");
 export function s2Load(key) { try { return JSON.parse(localStorage.getItem(key || s2Key())) || {}; } catch (e) { return {}; } }
 
-/* 主页速览：读同一份持久化真相，而非静态拷贝（window.s2StepSummary，smoke-f3 读它） */
+/* 主页速览：读同一份持久化真相，而非静态拷贝 */
 export function s2StepSummary() {
   try {
     const saved = s2Load();
@@ -40,12 +40,6 @@ export function s2StepSummary() {
     const cur = S2_STEPS.find(s => { const v = states[s.key] || "todo"; return v !== "done" && v !== "skip"; });
     return { steps, now: cur ? `${cur.name} · 第 ${cur.num} 步` : "十步已全部确认" };
   } catch (e) { return null; }
-}
-
-/* 场景运行提示词等只读消费者使用：把当前作品的雪花状态物化为独立快照。
-   该快照不是项目备份，也不承担跨作品恢复。 */
-export function s2ExportState() {
-  try { return s2NormalizeState(s2Load()); } catch (e) { return null; }
 }
 
 /* ---- 界面偏好（只存本机，不同步，读写都容错：隐私窗口 / 存储被禁时照常工作） ---- */

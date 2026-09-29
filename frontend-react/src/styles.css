@@ -557,11 +557,6 @@ button:focus:not(:focus-visible) { outline: none; }
   letter-spacing: 0.02em;
   margin-bottom: 6px;
 }
-.help {
-  font-size: var(--fs-xs);
-  color: var(--ink-3);
-  margin-top: 4px;
-}
 
 /* ==========================================================
    Utility

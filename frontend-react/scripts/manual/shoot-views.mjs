@@ -1,6 +1,7 @@
-// Phase 1 验收辅助：对 React 工程逐视图截图 + 捕获 console/page 错误。
-// 运行：cd frontend && node ../frontend-react/scripts/shoot-views.mjs <BASE> <OUTDIR>
+// 手动工具（不在任何自动化 lane 里）：对 React 工作台逐视图截图 + 捕获 console/page 错误。
+// 运行：node frontend-react/scripts/manual/shoot-views.mjs [BASE] [OUTDIR] [API] [WORK]
 // （Playwright 由 frontend-react 自己锁定，可从任意工作目录启动）
+// 作者的前端占着 5174、后端占着 8000：做探针时另起端口的前端，API 指向库副本的后端。
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -11,11 +12,13 @@ const { chromium } = require("playwright");
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
 const OUT = process.argv[3] || path.resolve("react-shots");
 const API = process.argv[4] || null; // 可选：覆盖 novel-system-api-base（默认 8000）
+const WORK = process.argv[5] || null; // 可选：先切到这部作品（ws_active_work_v1）
 fs.mkdirSync(OUT, { recursive: true });
 
+// 与 src/ws-nav.js 的页面一致；高级页（章节编排起）打开时会自动切到高级模式
 const VIEWS = [
   "home", "snowflake", "writer", "styleref", "review", "library",
-  "author", "scene", "manuscripts", "longform", "index", "interop", "settings", "trash",
+  "author", "scene", "manuscripts", "quality", "cost", "settings", "trash",
 ];
 
 const errors = [];
@@ -43,8 +46,8 @@ if (API) {
 await page.goto(BASE);
 await waitApp();
 
-for (const id of ["salt", "tide"]) {
-  await page.evaluate((wid) => localStorage.setItem("ws_active_work_v1", wid), id);
+if (WORK) {
+  await page.evaluate((wid) => localStorage.setItem("ws_active_work_v1", wid), WORK);
   await page.reload();
   await waitApp();
 }

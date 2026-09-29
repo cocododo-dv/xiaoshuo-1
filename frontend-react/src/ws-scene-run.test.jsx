@@ -20,7 +20,7 @@ vi.mock("./lib/client.js", () => ({
 
 // ws-scene-run 已不再依赖 ws-snow.jsx（离线起草链已退役）；
 // ws-catalog 链上的 ws-snow-sync 只取 S2_BE_STEPS。mock 掉避免拉入整张雪花视图。
-vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [], s2ExportState: () => null }));
+vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [] }));
 
 const T = { timeout: 5000, interval: 25 };
 

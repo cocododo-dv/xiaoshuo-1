@@ -38,10 +38,9 @@ afterEach(async () => {
 
 describe("没有挂提示层时", () => {
   it("storeAlert 仍走 window.alert，wsConfirm 退回 window.confirm，wsToast 返回 false", async () => {
-    const { storeAlert, wsConfirm, wsToast, wsNotifyReady } = await load();
+    const { storeAlert, wsConfirm, wsToast } = await load();
     const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    expect(wsNotifyReady()).toBe(false);
     storeAlert(new Error("保存失败"), "兜底");
     expect(alertSpy).toHaveBeenCalledWith("保存失败");
     await expect(wsConfirm({ title: "删除？", body: "会进回收站" })).resolves.toBe(false);

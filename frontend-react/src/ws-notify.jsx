@@ -28,10 +28,6 @@ const TOAST_MAX = 4;   // 同时最多几条；超了先让最早的非失败类
 
 let hostApi = null;
 
-function wsNotifyReady() {
-  return !!hostApi;
-}
-
 function wsToast(input) {
   const opts = typeof input === "string" ? { message: input } : (input || {});
   if (!hostApi || !opts.message) return false;
@@ -194,4 +190,4 @@ function WsToastHost() {
   );
 }
 
-export { WsToastHost, wsConfirm, wsNotifyReady, wsToast };
+export { WsToastHost, wsConfirm, wsToast };

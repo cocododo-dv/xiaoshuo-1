@@ -14,7 +14,7 @@ import {
   s2LandingStep, s2MergeScaffolds, s2SceneNo, s2StaleMap,
 } from "./ws-snow-model.js";
 import {
-  activeWorkId, s2Key, s2Load, s2LoadUiPref, s2SaveUiPref, s2StepSummary, S2_PREF_KEYS,
+  activeWorkId, s2Key, s2Load, s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS,
   useSnowDocument, useSnowEvents, useSnowGeneration, useSnowMedia, useSnowSyncMirror, useStableCallback,
 } from "./ws-snow-hooks.js";
 import { S2StepEditor } from "./ws-snow-scaffolds.jsx";
@@ -849,12 +849,9 @@ function WsConstruct() {
   return <WsSnowflake initialStep={initialStep} />;
 }
 
-/* 主页速览（smoke-f3 读 window.s2StepSummary）。其余旧的 window 导出没有读者，已去掉。 */
-window.s2StepSummary = s2StepSummary;
-
 export { WsSnowflake, WsConstruct };
 export {
   S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2NormalizeState, s2NextSceneRowId,
   s2PlanSlots, s2PlanState, s2PlanAuto, s2StaleMap, s2UpstreamDrift, s2ReorderScenes,
 } from "./ws-snow-model.js";
-export { s2StepSummary, s2ExportState } from "./ws-snow-hooks.js";
+export { s2StepSummary } from "./ws-snow-hooks.js";
