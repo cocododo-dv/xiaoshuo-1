@@ -27,7 +27,6 @@ def _bundle_snapshot() -> dict:
         "inline_digests": {
             "chapter_goal": " ".join(["Goal pressure"] * 80),
             "scene_card": " ".join(["Scene pressure"] * 80),
-            "voice_card": "Short clipped lines; pressure makes the tone harder.",
             "style_rule": "Keep emotion in gesture and pause.",
             "banned_rule": "Do not explain the whole backstory at reunion time.",
             "style_observation": (
@@ -35,16 +34,11 @@ def _bundle_snapshot() -> dict:
                 "End paragraphs on pressure, not exposition. Keep the emotional turn tactile."
             ),
             "calibration_line": "The door closed like a sentence left unfinished.",
-            "relation_card": "Reunion tension; B knows slightly more than A.",
             "world_rule": "Public spellcasting inside the city is forbidden.",
             "foreshadow": "The old letter sender clue is now in play.",
             "scene_memory": "Previous scene memory digest about the hidden sender.",
             "scene_summary": "Current scene summary digest about the reunion beat.",
             "chapter_summary": "Chapter summary digest about guarded trust replacing suspicion.",
-            "similar_scene": (
-                "Similar-scene reference: another gate reunion leaned too heavily on explanation "
-                "and lost pressure halfway through."
-            ),
         },
     }
 
@@ -124,24 +118,34 @@ class TrackingClient(AccountedGenerateMixin):
         raise AssertionError("LLM should not be called when continuity warning requires scene splitting")
 
 
-def test_collect_prompt_sections_includes_author_preference_profile() -> None:
+def test_retired_sections_in_an_old_frozen_bundle_are_not_rendered() -> None:
+    """R1 / R8 / R5（2026-09-30）：相似场景、声线卡、关系卡、作者偏好四段退役。早先冻结的 bundle 里若还带着这些摘要
+    （实库副本里一份都没有），重新渲染时不再成段——与别的退役摘要（style_rule 之类）一样静静略过。"""
     snapshot = _bundle_snapshot()
-    snapshot["inline_digests"]["author_preference_profile"] = (
-        "Author prefers sharper rhetorical questions and rejects explanatory dialogue."
+    snapshot["inline_digests"].update(
+        {
+            "similar_scene": "Similar-scene reference: another gate reunion lost pressure halfway through.",
+            "voice_card": "Short clipped lines; pressure makes the tone harder.",
+            "relation_card": "Reunion tension; B knows slightly more than A.",
+            "author_preference_profile": "Author prefers sharper rhetorical questions.",
+        }
     )
 
+    names = [section.name for section in collect_prompt_sections(snapshot)]
     result = apply_context_budget(
         system_prompt="System prompt.",
         task_prompt="Task prompt.",
         bundle_snapshot=snapshot,
         sections=collect_prompt_sections(snapshot),
-        max_input_tokens=900,
+        max_input_tokens=24000,
+        task_kind="drafting",
     )
-    budget = result["budget"]
 
-    assert budget["section_status"]["author_preference_profile"]["status"] == "included"
-    assert "## Author Preference Profile" in result["user_prompt"]
-    assert "sharper rhetorical questions" in result["user_prompt"]
+    assert not {"similar_scene_context", "pov_voice", "relation_digest", "author_preference_profile"} & set(names)
+    for retired in ("Similar-scene reference", "Short clipped lines", "Reunion tension", "sharper rhetorical questions"):
+        assert retired not in result["user_prompt"]
+    assert "preserve_author_instruction" in result["budget"]["continuity_policy"]
+    assert not any("similar_scene" in label or "relation" in label for label in result["budget"]["continuity_policy"])
 
 
 def test_prompt_builder_surfaces_continuity_warning_into_token_budget() -> None:

@@ -8,7 +8,6 @@ from sqlalchemy import select
 
 from novel_system.db.models import (
     AttemptTracker,
-    AuthorPreferenceProfile,
     ChapterGoal,
     ChapterState,
     FinalScene,
@@ -939,62 +938,6 @@ def test_neutral_draft_fails_closed_when_the_only_repair_is_still_invalid(
     assert attempt.details_json["error_code"] == "NEUTRAL_DRAFT_REPAIR_INVALID"
     assert attempt.details_json["validation"]["accepted"] is False
     assert session.get(SceneRunState, "CH100_SC01").current_neutral_draft_row_id is None
-
-
-def test_bundle_and_style_prompt_include_only_approved_runtime_author_preference(session) -> None:
-    _seed_scene(session)
-    session.add(
-        AuthorPreferenceProfile(
-            profile_id="author_pref_draft_ignored",
-            scope_type="global",
-            scope_ref_id="global",
-            status="draft",
-            runtime_eligible=0,
-            summary_json={"preferred_revision_moves": ["draft preference should stay out of runtime prompts"]},
-            source_patch_ids_json=[],
-        )
-    )
-    session.add(
-        AuthorPreferenceProfile(
-            profile_id="author_pref_approved_runtime",
-            scope_type="global",
-            scope_ref_id="global",
-            status="approved",
-            runtime_eligible=1,
-            summary_json={
-                "preferred_revision_moves": ["sharper rhetorical questions"],
-                "rejected_revision_moves": ["expository dialogue"],
-                "ai_trace_terms_to_watch": ["somehow meaningful"],
-            },
-            source_patch_ids_json=["patch_runtime_pref"],
-        )
-    )
-    session.commit()
-
-    bundle = BundleBuilder(session).build("CH100_SC01")
-    snapshot = bundle["snapshot"]
-
-    assert snapshot["source_version_refs"]["author_preference_profile_id"] == "author_pref_approved_runtime"
-    assert "author_preference_profile" in snapshot["inline_digests"]
-    assert "sharper rhetorical questions" in snapshot["inline_digests"]["author_preference_profile"]
-    assert "draft preference should stay out" not in snapshot["inline_digests"]["author_preference_profile"]
-
-    fake_client = FakeSceneClient()
-    request = SceneGenerationService(session, llm_client=fake_client).generate_style_draft(
-        "CH100_SC01",
-        bundle,
-        neutral_draft_row_id="draft_neutral_CH100_SC01",
-        neutral_content="Approved neutral draft.",
-    )
-
-    style_prompt = fake_client.requests[0].messages[1]["content"]
-    assert "sharper rhetorical questions" in style_prompt
-    assert "expository dialogue" in style_prompt
-    assert "draft preference should stay out" not in style_prompt
-    style_call = session.get(LlmCall, request.llm_call_id)
-    assert style_call is not None
-    prompt_summary = style_call.request_payload_summary or {}
-    assert "author_preference_profile" in prompt_summary["token_budget"]["included_sections"]
 
 
 def test_author_instruction_is_frozen_into_bundle_and_reaches_neutral_prompt(session) -> None:

@@ -55,7 +55,6 @@ def _bundle_snapshot() -> dict:
                 '[{"character_id":"CHAR_A","display_name":"Mira","pronouns":["she"],'
                 '"role":"archivist","aliases":["M"]}]}'
             ),
-            "voice_card": "Short clipped lines; pressure makes the tone harder.",
             "style_rule": "Keep emotion in gesture and pause.",
             "banned_rule": "Do not explain the whole backstory at reunion time.",
             "style_observation": (
@@ -63,15 +62,16 @@ def _bundle_snapshot() -> dict:
                 "End paragraphs on pressure, not exposition. Keep the emotional turn tactile."
             ),
             "calibration_line": "The door closed like a sentence left unfinished.",
-            "relation_card": "Reunion tension; B knows slightly more than A.",
             "world_rule": "Public spellcasting inside the city is forbidden.",
             "foreshadow": "The old letter sender clue is now in play.",
             "scene_memory": "Previous scene memory digest about the hidden sender.",
             "scene_summary": "Current scene summary digest about the reunion beat.",
             "chapter_summary": "Chapter summary digest about guarded trust replacing suspicion.",
-            "similar_scene": (
-                "Similar-scene reference: another gate reunion leaned too heavily on explanation "
-                "and lost pressure halfway through."
+            # 软背景：超预算时第一个让路的 section（压成要点：只留一句话概括，删视角故事）
+            "scene_design_context": (
+                "Book logline: A reunion on the clocktower roof forces two old allies to trade secrets.\n"
+                "POV story so far (视角故事, excerpt): Mira has spent three years pretending the letter never "
+                "arrived, and every archive shift since has been a way of not reading it."
             ),
         },
     }
@@ -196,8 +196,8 @@ def test_prompt_builder_enforces_budget_using_rendered_prompt_shape() -> None:
 
     assert payload["token_budget"]["estimated_input_tokens"] <= threshold
     assert (
-        payload["token_budget"]["section_status"]["similar_scene_context"]["status"]
-        == "omitted"
+        payload["token_budget"]["section_status"]["scene_design_context"]["status"]
+        == "compressed"
     )
 
 
@@ -326,7 +326,7 @@ def test_prompt_builder_passes_template_task_kind_to_context_budget() -> None:
     assert "omit_scene_design_context" in hard_qc["token_budget"]["continuity_policy"]
     assert drafting["token_budget"]["task_kind"] == "drafting"
     assert (
-        "preserve_author_instruction_and_preference_profile"
+        "preserve_author_instruction"
         in drafting["token_budget"]["continuity_policy"]
     )
     assert chapter_review["token_budget"]["task_kind"] == "chapter_review"

@@ -41,6 +41,11 @@ PREVIOUSLY_DROPPED_KEYS = (
     "volume_summary",            # §2 summary tower (wave-2 E5)
 )
 
+# 2026-09-30 R1 / R8 / R5：相似场景、声线卡、关系卡、作者偏好四段从 SECTION_SPECS 退役（P01a）；bundle_builder 里写这四个
+# 键的几处由 P01b 删。两边合并之前 bundle_builder 还在写它们——对账只放过这四个，而且它们不许再有渲染位。
+# P01b 合并之后这四个键没人再写，这张表随之删掉（合并时由 lead 删）。
+RETIRING_BUNDLE_DIGESTS = frozenset({"similar_scene", "voice_card", "relation_card", "author_preference_profile"})
+
 # digest_key -> (rendered section label, sentinel value injected for the test)
 REVIVED = {
     "volume_summary": ("Volume Summary (atmosphere only)", "VOLUME_SUMMARY_SENTINEL"),
@@ -112,9 +117,10 @@ def test_section_specs_covers_all_bundle_writes() -> None:
     )
     assert written_keys, "regex failed to find any inline_digests writes — pattern drift?"
 
-    business_keys = {k for k in written_keys if not k.startswith("_")}
+    business_keys = {k for k in written_keys if not k.startswith("_")} - RETIRING_BUNDLE_DIGESTS
     registered = _registered_digest_keys()
     missing = business_keys - registered
+    assert not RETIRING_BUNDLE_DIGESTS & registered, "retired digests must not get a render slot back"
 
     assert not missing, (
         "inline_digests keys written by bundle_builder but NOT registered in "

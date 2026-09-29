@@ -55,8 +55,6 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("character_contract", "Character Continuity Contract", ("character_contract",)),
     ("narrative_state", "Authoritative Character State (Event Log)", ("narrative_state",)),
     ("information_asymmetry", "Information Asymmetry (who knows what)", ("information_asymmetry",)),
-    ("pov_voice", "POV Voice", ("voice_card",)),
-    ("author_preference_profile", "Author Preference Profile", ("author_preference_profile",)),
     ("literary_freshness_budget", "Literary Freshness Budget", ("literary_freshness_budget",)),
     # 2026-09 风格模仿 v2（W5，规格 §1.3）：叙事机制块是 neutral_draft 唯一可见的风格参考块；
     # 前文声音锚只对 style_draft 可见。（风格参考 v3 删掉了漂移校准段 style_drift_calibration。）
@@ -67,8 +65,6 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "Previous Scene Voice Anchor (own prose; keep the same voice)",
         ("previous_scene_voice_anchor",),
     ),
-    ("similar_scene_context", "Similar Scene Context", ("similar_scene", "similar_scene_context")),
-    ("relation_digest", "Relation Digest", ("relation_card", "relation_digest")),
     ("scene_memory_digest", "Previous Scene Memory", ("scene_memory", "scene_memory_digest")),
     ("scene_summary", "Scene Summary", ("scene_summary",)),
     ("chapter_summary", "Chapter Summary", ("chapter_summary",)),
@@ -81,7 +77,6 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 # style_draft 的风格增益无法被单独衡量。人物 POV/voice contract 不在这里：它们
 # 属于角色身份与连续性约束，而不是被模仿作品的目标文风。
 NEUTRAL_DRAFT_STYLE_SECTIONS: tuple[str, ...] = (
-    "author_preference_profile",
     # v2（规格 §1.3）：前文声音锚是目标文风的延续信号，中性稿不看；
     # style_narrative_guidance 刻意不在此列——叙事取舍机制正是中性稿要吸收的。
     "previous_scene_voice_anchor",
@@ -91,25 +86,22 @@ NEUTRAL_DRAFT_STYLE_SECTIONS: tuple[str, ...] = (
 # 已经装得下就停；最后仍超预算 → 拆场建议。``compress`` 只压仍完整在场的 section，``omit`` 整段省略。
 # scene_card、结构简报等事实 section 从不出现在这里。
 BUDGET_LADDER: tuple[tuple[str, str], ...] = (
-    ("similar_scene_context", "omit"),
     # v2：前文声音锚先被压成尾部片段（比任何事实 section 都先让路）。
     ("previous_scene_voice_anchor", "compress"),
     # 阶段 F：设计背景紧随其后压成要点（视角故事 / 五句脊柱 / 在场人物先让路），仍先于任何事实 section。
     ("scene_design_context", "compress"),
-    # 连续性摘要压成首块。
-    ("relation_digest", "compress"),
+    # 上一场的记忆摘要压成首块。
     ("scene_memory_digest", "compress"),
-    # v2：连续性摘要都压过仍超预算 → 整段省略声音锚（软性延续信号）与设计背景，再走拆场建议。
+    # v2：记忆摘要也压过仍超预算 → 整段省略声音锚（软性延续信号）与设计背景，再走拆场建议。
     ("previous_scene_voice_anchor", "omit"),
     ("scene_design_context", "omit"),
 )
 
 # 预算审计里记的策略标签（``token_budget.continuity_policy``）：只写上面真正实现了的动作。
 CONTINUITY_POLICY: list[str] = [
-    "drop_similar_scene_context",
     "compress_previous_scene_voice_anchor",
     "compress_scene_design_context",
-    "compress_relation_and_memory_digests",
+    "compress_scene_memory_digest",
     "drop_voice_anchor_then_design_context",
     "split_scene_recommendation",
 ]
@@ -117,7 +109,7 @@ CONTINUITY_POLICY: list[str] = [
 TASK_KIND_POLICIES: dict[str, list[str]] = {
     "default": list(CONTINUITY_POLICY),
     "drafting": [
-        "preserve_author_instruction_and_preference_profile",
+        "preserve_author_instruction",
         *CONTINUITY_POLICY,
     ],
     "neutral_draft": [
@@ -408,7 +400,6 @@ def compress_design_context(text: str) -> str:
 _SECTION_COMPRESSORS = {
     "previous_scene_voice_anchor": _compress_voice_anchor,
     "scene_design_context": compress_design_context,
-    "relation_digest": _compress_continuity_digest,
     "scene_memory_digest": _compress_continuity_digest,
 }
 

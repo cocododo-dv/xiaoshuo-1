@@ -101,7 +101,7 @@ def _zh(target_chars: int, *, seed: int) -> str:
 SCENE_DRAFT = DRAFT_MARKER + "\n" + _prose(3000, seed=1)
 CHAPTER_TEXT = DRAFT_MARKER + "\n" + "\n\n".join(_prose(2500, seed=10 + index) for index in range(6))
 
-# 中等 bundle：一个已跑过蓝图与规划、有风格画像与作者偏好、有记忆摘要的在写项目
+# 中等 bundle：一个已跑过蓝图与规划、有风格画像、有事件态与记忆摘要的在写项目
 # （实测 11.3k–13.3k tok 的那一档）。
 _RICH_SECTION_CHARS = {
     "chapter_goal": 60,
@@ -113,16 +113,16 @@ _RICH_SECTION_CHARS = {
     "character_pressure": 500,
     "chapter_story_architecture": 800,
     "character_contract": 400,
-    "voice_card": 150,
+    "information_asymmetry": 150,
     "style_profile": 800,
-    "author_preference_profile": 400,
+    "narrative_state": 400,
     "style_rule": 300,
     "banned_rule": 200,
     "foreshadow": 200,
-    "similar_scene": 600,
+    "volume_summary": 600,
     "style_observation": 300,
     "calibration_line": 200,
-    "relation_card": 300,
+    "chapter_transition_buffer": 300,
     "world_rule": 300,
     "scene_memory": 500,
     "scene_summary": 300,
