@@ -19,6 +19,7 @@ import { formatLocaleMonthDayTime } from "./lib/format.js";
    ----------------------------------------------------------
    WsSnowflake 以前是一个约 770 行的函数：落点与跳转、右栏抽屉、步骤流转、十几个 AI 入口、导入 / 导出 /
    清空、键盘全挤在一起。这里一块一个钩子，视图只剩状态接线与版面：
+   · useSnowWorkbenchApi —— AI 通道（生成 / 教练 / 分诊）调视图的那张显式接口；
    · useSnowLanding —— 落在哪一步、按步骤记住的页签、外部跳步 / 跳场（ws:snow-step / ws:snow-scene）；
    · useSnowContextRail —— 右栏：宽屏可收起的第三栏、窄屏抽屉（焦点陷阱与还焦点）、写作指引首访展开；
    · useSnowStepFlow —— 确认 / 复核 / 上游对照 / 略过 / 快照回滚；
@@ -29,6 +30,38 @@ import { formatLocaleMonthDayTime } from "./lib/format.js";
    ========================================================== */
 
 const { useState: useSS, useEffect: useSE, useRef: useSR, useMemo: useSM } = React;
+
+/* ---- 工作台 API：AI 通道调视图的一张显式接口 ----
+   以前三个通道钩子（useSnowGeneration / useSnowCoach / useSnowTriage）共读一个每次渲染整份重写的 env ref：
+   视图的状态、setter、回调全装在里面，教练的历史 setter 也是塞进去给生成通道用的——谁读了什么、能改什么，
+   只能挨个翻。这里挂载时建一次、身份不变；方法在调用那一刻读视图的最新值（通道在 await 之后写回时仍用发起那一刻
+   取到的步骤键，与以前一样），通道只能调这些方法，碰不到视图的其余状态。live 是这一次渲染视图交出来的值：
+   { workId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, sceneLabel }。 */
+export function useSnowWorkbenchApi(live) {
+  const liveRef = useSR(live);
+  liveRef.current = live;
+  return useSM(() => {
+    const v = () => liveRef.current;
+    return {
+      /* 挂载时冻结的作品 id（本机缓存键里的那个） */
+      workId: () => v().workId,
+      /* 此刻所在的一步：key 前端步骤键，step 目录条目（num / name…），data 写作指引与编辑形态 */
+      current: () => ({ key: v().activeKey, step: v().active, data: v().data }),
+      /* 此刻的十步内容：draft_override、聚焦的场 / 角色都从这里取 */
+      doc: () => ({ drafts: v().drafts, scaffolds: v().scaffolds }),
+      setScaffolds: (updater) => v().setScaffolds(updater),
+      setDrafts: (updater) => v().setDrafts(updater),
+      /* 把某一步切到某个页签（生成完回编辑页，要方向时去教练页） */
+      showTab: (key, tab) => v().setTabFor(key, tab),
+      /* 历史记一条（snap 是可回滚的快照；who / key 缺省 = 我 / 此刻这一步）；给某一步此刻的内容拍一份快照 */
+      journal: (action, note, who, snap, key) => v().pushHist(action, note, who, snap, key),
+      snapshot: (key) => v().snapNow(key),
+      toast: (text, tone) => v().showToast(text, tone),
+      /* 场景的显示号（S01…），不把 row_<uuid> 摆给作者 */
+      sceneLabel: (rowUid) => v().sceneLabel(rowUid),
+    };
+  }, []);
+}
 
 /* 右栏：09 / 10 是两张宽表，默认收起、把宽度让给表格；其余步骤默认展开。作者的选择按两组记住。
    窄屏（≤1180）右栏本来就折成抽屉，这个偏好不参与。 */
@@ -363,7 +396,7 @@ export function useSnowAiActions({
     doneAction: "按最新要点重新生成", doneNote: "本步按最新意图要点重新展开",
     toastOk: "已按最新要点重新生成 · 可回滚", toastFail: "重新生成失败",
   });
-  /* 传给 09/10 与 04/06/08 编辑器的 AI 工具面（memo：编辑器只在忙态 / 分诊变化时因它重渲染） */
+  /* AI 工具面（下面的 stepAI）上的各个入口：身份不变的回调 */
   const onGenerateAll = useStableCallback(() => gen.structuredGenerate({
     target: { kind: "scenes_all" },
     histAction: "AI 生成场景表", doneAction: "AI 生成场景表",
@@ -391,14 +424,15 @@ export function useSnowAiActions({
   const onTriage = useStableCallback(() => tri.runTriage());
   const onApplyRepair = useStableCallback((rowUid, item) => tri.applyTriageRepair(rowUid, item));
   const onVerdict = useStableCallback((rowUid, status) => tri.setTriageVerdict(rowUid, status));
-  const sceneAI = useSM(() => ({
+  /* 交给编辑器（与 09 / 10 的整表动作）的 AI 工具面：每一步都是同一个形状——本步的忙态与正在转圈的入口、
+     分诊结果，以及各个入口（稳定回调）；编辑器取自己用得上的那几样。以前按步骤给三种东西（09 / 10 一份、
+     04 / 06 / 08 另一份、其余不给），编辑器得先猜自己拿到的是哪一种。memo：只在忙态 / 分诊变化时换身份。 */
+  const stepAI = useSM(() => ({
     structBusy, busyTarget: genTarget, triage: tri.triage, triageBusy: tri.triageBusy,
-    onTriage, onApplyRepair, onVerdict, onGenerateAll, onFillAll, onFillScene,
+    onTriage, onApplyRepair, onVerdict, onGenerateAll, onFillAll, onFillScene, onFillChar,
   }), [structBusy, genTarget, tri.triage, tri.triageBusy]);
-  const charAI = useSM(() => ({ structBusy, busyTarget: genTarget, onFillChar }), [structBusy, genTarget]);
   const isTableStep = !!(data.scaffold && (data.scaffold.type === "scenelist" || data.scaffold.type === "scene"));
-  const isCharStep = !!(data.scaffold && (data.scaffold.type === "charsheet" || data.scaffold.type === "backstory" || data.scaffold.type === "profile"));
-  return { regenFromUpstream, aiFocus, adoptDirection, adoptDirectionAsText, generateStep, regenWithBrief, sceneAI, charAI, isTableStep, isCharStep };
+  return { regenFromUpstream, aiFocus, adoptDirection, adoptDirectionAsText, generateStep, regenWithBrief, stepAI, isTableStep };
 }
 
 /* ---- 「更多」菜单：导入 / 导出 / 危险区的清空 ---- */

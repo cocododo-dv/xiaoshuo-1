@@ -396,4 +396,91 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     expect(scenes.lines).toEqual(lines);
     expect(scenes.list.map(r => [r.id, r.line])).toEqual([["S01", "L1"], ["S09", "main"]]);
   });
+
+  /* F02-19：分诊、修复补丁、单角色补全、填入教练改写都经工作台 API（useSnowWorkbenchApi）读写视图——以前三条通道
+     共读一个每次渲染整份重写的 env ref。这几条入口以前没有直接的用例，改接口时靠它们守住：底稿与上行同源、
+     动手前留底、只动焦点成员、回执与历史记在发起的那一步上。 */
+  const castAndScenes = () => ({ scaffolds: {
+    characters: { sel: "c2", chars: {
+      c1: { name: "林昭", role: "主角", goal: "查清旧案", ambition: "", values: "", conflict: "", epiphany: "" },
+      c2: { name: "许言", role: "配角", goal: "", ambition: "", values: "", conflict: "", epiphany: "" },
+    } },
+    scenes: { lines: [], list: [{ id: "S01", type: "proactive", line: "main", pov: "c1", place: "码头", event: "取信", crucible: "", fn: "", spine: "" }] },
+    planning: { sel: "S01", plans: { S01: { goal: "拿到旧信" } } },
+  } });
+  const withRoutes = (routes) => {
+    const base = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation(async (url, body) => {
+      const hit = Object.keys(routes).find(k => String(url).endsWith(k));
+      return hit ? routes[hit](body) : base(url, body);
+    });
+  };
+  const hist = () => readCache().history || [];
+
+  it("F02-19：AI 分诊（底稿同源、存档、历史）→ 应用修复补丁（三拍进 10、坩埚回写 09、应用前留底）", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(castAndScenes()));
+    window.SnowSync.pushCanon = vi.fn((key) => ({ scenes: [{ row_uid: "S01", marker: `canon-${key}` }] }));
+    window.SnowSync.refetch = vi.fn();
+    withRoutes({
+      "/scene-triage/suggest": () => ({ source: "llm", items: [{ row_uid: "S01", scene_id: "SC1", scene_plan_id: "sp1", status: "maybe", score: 60,
+        notes: "坩埚空着", fix_steps: ["补上坩埚"], missing_fields: ["crucible"], repair_patch: { crucible: "退路被断", conflict: "三方堵截" } }] }),
+      "/scene-triage": () => ({ items: [{ scene_plan_id: "sp1", triage_id: "t1" }] }),
+    });
+    const host = await renderSnow("planning");
+    await act(async () => host.querySelector('[data-testid="snow-ai-triage"]').click());
+    await vi.waitFor(() => expect(host.querySelector(".sf-triage-badge")).toBeTruthy(), T);
+    const suggest = client.apiPost.mock.calls.find(c => String(c[0]).endsWith("/scene-triage/suggest"));
+    expect(suggest[0]).toBe("/api/v2/projects/coach-book/snowflake-workspace/scene-triage/suggest");
+    expect(suggest[1]).toEqual({ draft_override: { scenes: [{ row_uid: "S01", marker: "canon-planning" }] } });
+    expect(window.SnowSync.pushCanon).toHaveBeenCalledWith("planning", expect.objectContaining({ scaffolds: expect.objectContaining({ planning: expect.any(Object) }) }), "coach-book");
+    const saved = client.apiPost.mock.calls.find(c => String(c[0]).endsWith("/scene-triage"));
+    expect(saved[1].items[0]).toMatchObject({ scene_plan_id: "sp1", recommended_status: "maybe" });
+    expect(host.querySelector(".sf-triage-badge").textContent).toBe("需修补");
+    await vi.waitFor(() => expect(hist()[0]).toMatchObject({ action: "场景分诊", who: "AI", key: "planning" }), T);
+
+    const repair = [...host.querySelectorAll("button")].find(b => b.textContent.includes("应用修复补丁"));
+    await act(async () => repair.click());
+    await vi.waitFor(() => expect(readCache().scaffolds.planning.plans.S01.conflict).toBe("三方堵截"), T);
+    const cache = readCache();
+    expect(cache.scaffolds.planning.plans.S01).toEqual({ goal: "拿到旧信", conflict: "三方堵截" });
+    expect(cache.scaffolds.scenes.list[0].crucible).toBe("退路被断");
+    expect(cache.history[0]).toMatchObject({ action: "应用修复补丁", note: "10 场景规划 · S01 修复前留底", key: "planning" });
+    expect(cache.history[0].snap.scaffold.plans.S01).toEqual({ goal: "拿到旧信" });
+  });
+
+  it("F02-19：04「AI 补全此角色」只并回焦点角色；教练回复「填入本步」经 applyCanonPatch 合并当前两块内容、填入前留底、回编辑页", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(castAndScenes()));
+    const patchTurn = { ...CHAT_TURN, turn_id: "turn-p", step_key: "character_sheets", reply: "改好了。",
+      candidate_patch: { characters: [{ character_id: "c2", goal: "替恩师顶罪" }] }, candidate_label: "许言的目标", brief_delta: null };
+    installApi({ history: [patchTurn] });
+    window.SnowSync.pushCanon = vi.fn((key) => ({ characters: [{ character_id: "c2", marker: `canon-${key}` }] }));
+    window.SnowSync.applyServerStep = vi.fn(() => ({ scaffold: { sel: "c1", chars: {
+      c1: { name: "林昭（模型改了）", role: "主角", goal: "别的", ambition: "", values: "", conflict: "", epiphany: "" },
+      c2: { name: "许言", role: "配角", goal: "AI 写的目标", ambition: "", values: "", conflict: "", epiphany: "" },
+    } } }));
+    const host = await renderSnow("characters");
+    const fill = [...host.querySelectorAll("button")].find(b => b.textContent.includes("AI 补全此角色"));
+    await act(async () => fill.click());
+    await vi.waitFor(() => expect(generateCalls().length).toBe(1), T);
+    expect(generateCalls()[0][0]).toContain("/steps/character_sheets/generate");
+    expect(generateCalls()[0][1]).toMatchObject({ source: "fe_char_focus_ai", focus_character_refs: ["c2"], draft_override: { characters: [{ character_id: "c2", marker: "canon-characters" }] } });
+    await vi.waitFor(() => expect(readCache().scaffolds.characters.chars.c2.goal).toBe("AI 写的目标"), T);
+    expect(readCache().scaffolds.characters.chars.c1.name).toBe("林昭");
+    expect(hist().slice(0, 2).map(h => h.action)).toEqual(["AI 补全角色「许言」", "AI 补全角色「许言」"]);
+    expect(hist()[1].snap.scaffold.chars.c2.goal).toBe("");
+
+    window.SnowSync.applyCanonPatch = vi.fn((key, doc) => ({ scaffold: { ...doc.scaffolds.characters,
+      chars: { ...doc.scaffolds.characters.chars, c2: { ...doc.scaffolds.characters.chars.c2, goal: "替恩师顶罪" } } } }));
+    await openCoach(host);
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-coach-patch"]')).toBeTruthy(), T);
+    await act(async () => host.querySelector('[data-testid="snow-coach-patch"]').click());
+    expect(window.SnowSync.applyCanonPatch).toHaveBeenCalledWith("characters",
+      expect.objectContaining({ drafts: expect.any(Object), scaffolds: expect.objectContaining({ characters: expect.any(Object) }) }),
+      patchTurn.candidate_patch, null);
+    await vi.waitFor(() => expect(readCache().scaffolds.characters.chars.c2.goal).toBe("替恩师顶罪"), T);
+    expect(hist()[0]).toMatchObject({ action: "填入教练改写", key: "characters" });
+    expect(hist()[0].snap.scaffold.chars.c2.goal).toBe("AI 写的目标");
+    expect(host.querySelector('[data-testid="snow-aibar"]')).toBeTruthy(); // 回到编辑页
+    expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("已填入「许言的目标」");
+  });
 });

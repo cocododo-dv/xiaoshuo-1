@@ -16,7 +16,7 @@ import {
 } from "./ws-snow-hooks.js";
 import { useSnowGeneration } from "./ws-snow-generation.js";
 import {
-  useSnowAiActions, useSnowContextRail, useSnowKeyboard, useSnowLanding, useSnowMoreMenu, useSnowStepFlow,
+  useSnowAiActions, useSnowContextRail, useSnowKeyboard, useSnowLanding, useSnowMoreMenu, useSnowStepFlow, useSnowWorkbenchApi,
 } from "./ws-snow-workbench.jsx";
 import { S2StepEditor } from "./ws-snow-scaffolds.jsx";
 import { S2SceneAiActions, useSnowTriage } from "./ws-snow-scenes.jsx";
@@ -110,12 +110,14 @@ function WsSnowflake({ initialStep }) {
     try { return JSON.parse(JSON.stringify({ draft: cur.drafts[key] || "", scaffold: cur.scaffolds[key] })); } catch (e) { return null; }
   };
 
-  /* 教练、生成、分诊三块状态都读这个 env（调用时读最新值） */
-  const env = useSR(null);
-  const coach = useSnowCoach(env, tab);
-  const gen = useSnowGeneration(env);
-  const tri = useSnowTriage(env);
-  env.current = { workId: snowWorkId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, sceneLabel, setCoachHist: coach.setCoachHist };
+  /* 教练、生成、分诊三条 AI 通道经工作台 API 调视图（ws-snow-workbench.jsx：挂载时建一次，调用时读最新值）；
+     生成回来的教练历史直接交给教练的 setter */
+  const api = useSnowWorkbenchApi({
+    workId: snowWorkId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, sceneLabel,
+  });
+  const coach = useSnowCoach(api, tab);
+  const gen = useSnowGeneration(api, coach.setCoachHist);
+  const tri = useSnowTriage(api);
   const structBusy = !!gen.structBusyMap[activeKey];
   const genTarget = gen.genTargetMap[activeKey] || null;
   const dirBusy = !!gen.dirBusyMap[activeKey];
@@ -229,7 +231,7 @@ function WsSnowflake({ initialStep }) {
     selectStep, setTabFor, setDrafts, setScaffolds, setHistory,
   });
 
-  const { regenFromUpstream, aiFocus, adoptDirection, adoptDirectionAsText, generateStep, regenWithBrief, sceneAI, charAI, isTableStep, isCharStep } = useSnowAiActions({
+  const { regenFromUpstream, aiFocus, adoptDirection, adoptDirectionAsText, generateStep, regenWithBrief, stepAI, isTableStep } = useSnowAiActions({
     gen, tri, activeKey, active, data, scaffolds, structBusy, genTarget, sceneLabel, pushHist, snapNow, setDraft, setTab, showToast, setStates,
   });
 
@@ -357,13 +359,13 @@ function WsSnowflake({ initialStep }) {
             {tab === "edit" && (
               <React.Fragment>
                 <S2AiBar stepName={active.name} canGenerate={!isTableStep} emphasize={stepBlank}
-                  primary={isTableStep ? <S2SceneAiActions step={activeKey} ai={sceneAI} emphasize={stepBlank} sceneRows={((scaffolds.scenes || {}).list) || []} plans={(scaffolds.planning || {}).plans} /> : null}
+                  primary={isTableStep ? <S2SceneAiActions step={activeKey} ai={stepAI} emphasize={stepBlank} sceneRows={((scaffolds.scenes || {}).list) || []} plans={(scaffolds.planning || {}).plans} /> : null}
                   structBusy={structBusy} busyTarget={genTarget} dirBusy={dirBusy} onGenerate={generateStep} onDirections={() => gen.requestDirections("")}
                   brief={brief} usage={briefUsage} health={curHealth} onOpenCoach={() => setTab("coach")}
                   onRegenWithBrief={regenWithBrief} err={genErr} onClearErr={() => gen.clearGenErr(activeKey)} />
                 <S2StepEditor step={active} data={data} draft={draft} setDraft={setDraft}
                   scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} refs={scaffolds} go={selectStep}
-                  ai={isTableStep ? sceneAI : isCharStep ? charAI : undefined} onOpenChapterPlan={openChapterPlan}
+                  ai={stepAI} onOpenChapterPlan={openChapterPlan}
                   catalogHasChapters={catalogChapters.length > 0} />
               </React.Fragment>
             )}
