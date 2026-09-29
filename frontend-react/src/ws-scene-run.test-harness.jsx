@@ -1,5 +1,6 @@
-// 起草台单测的共用装配（2026-09-29 从 ws-scene-run.test.jsx 拆出；文件名带 .test. 但不是测试文件，
-// vitest 只收 *.test.js / *.test.jsx，设计与模块守卫按 .test. 跳过它）。
+// 起草台单测的共用装配（2026-09-29 从 ws-scene-run.test.jsx 拆出）。文件名以 .test-harness.jsx 结尾：
+// vitest 只收 *.test.js / *.test.jsx，不会把它当测试跑；名字里没有 ".test."，设计守卫与模块守卫
+// 照样把它当源码扫（与 test-helpers.js 一样）。
 // 调用方自己写 vi.mock("./lib/client.js") 与 vi.mock("./ws-scene-job-api.js")（vi.mock 按文件提升）。
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
