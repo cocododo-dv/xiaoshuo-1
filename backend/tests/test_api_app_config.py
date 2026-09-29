@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from novel_system.api.app import SUPPORTED_DATABASE_REVISION, create_app
 from novel_system.db.base import Base
-from novel_system.database_runtime import DEFAULT_DATABASE_PATH
+from novel_system.env_config import DEFAULT_DATABASE_PATH
 from novel_system.db.session import engine
 from novel_system.settings import (
     BACKEND_ROOT,
@@ -47,7 +47,7 @@ def test_retired_quota_env_vars_log_one_startup_warning_and_block_nothing(monkey
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD", "5")
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", "not-a-number")
 
-    with caplog.at_level(logging.WARNING, logger="novel_system.settings"):
+    with caplog.at_level(logging.WARNING, logger="novel_system.env_config"):
         create_app()
         get_settings()
         get_settings(include_runtime_config=False)

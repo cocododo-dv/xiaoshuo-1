@@ -6,7 +6,7 @@ import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
+from novel_system.env_config import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.api.app import create_app
 from novel_system.db.models import LlmCall, LlmCallAttempt, SystemConfigSnapshot, SystemSecret
 from novel_system.services.llm_audit import fingerprint_identifier

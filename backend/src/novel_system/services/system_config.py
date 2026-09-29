@@ -19,7 +19,12 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import LlmCall, OperationLog, SystemConfigSnapshot, SystemSecret, utcnow
 from novel_system.db.session import SessionLocal
-from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
+from novel_system.env_config import (
+    DEFAULT_LLM_TIMEOUT_SECONDS,
+    env_admin_token,
+    env_config_secret,
+    load_env_settings,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.llm_client import (
@@ -187,9 +192,7 @@ def _provider_runtime_configs(payload, *, read_secret) -> dict[str, ProviderRunt
     llm_payload = _coerce_api_payload(payload) if payload else {}
     providers = _provider_payloads_from_llm(llm_payload)
     if not providers:
-        from novel_system.core_runtime import load_core_runtime
-
-        settings = load_core_runtime()
+        settings = load_env_settings()
         provider_id = settings.llm_provider
         providers = {
             provider_id: {
@@ -1358,9 +1361,7 @@ def validate_config(category: str, yaml_raw: str) -> tuple[dict[str, Any], dict[
 def default_config_payload(category: str) -> tuple[str, dict[str, Any], dict[str, Any], str]:
     _ensure_category(category)
     if category == "api":
-        from novel_system.core_runtime import load_core_runtime
-
-        settings = load_core_runtime()
+        settings = load_env_settings()
         parsed = {
             "llm": {
                 "provider": settings.llm_provider,
@@ -1968,15 +1969,11 @@ def _mask_secret(value: str) -> str:
 
 
 def _admin_token() -> str | None:
-    from novel_system.core_runtime import load_core_runtime
-
-    return load_core_runtime().admin_token
+    return env_admin_token()
 
 
 def _config_secret() -> str | None:
-    from novel_system.core_runtime import load_core_runtime
-
-    return load_core_runtime().config_secret
+    return env_config_secret()
 
 
 def _requested_probe_model(payload: dict[str, Any]) -> str | None:

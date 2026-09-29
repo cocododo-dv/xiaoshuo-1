@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
+from novel_system.env_config import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.llm_node_registry import get_llm_node_spec, llm_node_specs
 from novel_system.services.llm_providers import default_provider_base_urls, supported_provider_types

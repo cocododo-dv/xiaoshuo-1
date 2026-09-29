@@ -200,6 +200,8 @@ def test_only_style_policy_resolves_style_binding_state() -> None:
 # 任何域服务都能引它们而不闭环。
 SHARED_HELPER_LEAVES: dict[str, set[str]] = {
     "novel_system.env_parsing": set(),
+    # 2026-09-30 P06（B09-05）：环境变量里的设置与共用常量；Alembic 引导、记账层、system_config 都读它
+    "novel_system.env_config": {"novel_system.env_parsing", "novel_system.cache_registry"},
     "novel_system.services.value_coercion": set(),
     "novel_system.services.scene_lookup": {"novel_system.db.models", "novel_system.services.errors"},
     "novel_system.services.scene_text": {"novel_system.db.models"},

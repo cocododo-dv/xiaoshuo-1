@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, LlmCall, LlmCallAttempt, SceneRunState, utcnow
-from novel_system.llm_accounting_runtime import load_llm_accounting_runtime
+from novel_system.env_config import reservation_recovery_ttl_seconds
 from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.llm_audit import (
     audit_error_text,
@@ -2219,7 +2219,7 @@ def recover_stale_legacy_reservations(
     else:
         current = current.astimezone(UTC)
     configured_ttl = (
-        load_llm_accounting_runtime().reservation_recovery_ttl_seconds
+        reservation_recovery_ttl_seconds()
         if ttl_seconds is None
         else int(ttl_seconds)
     )
