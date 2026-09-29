@@ -49,7 +49,26 @@ from novel_system.services.snowflake_draft_merge import (  # noqa: F401 — 旧�
     merge_member_lists as _merge_member_lists,
     overlay_keeping_members as _merge_dicts_keeping_members,
 )
-from novel_system.services.snowflake_scene_brief import beats_from_detail, scene_writer_brief
+from novel_system.services.snowflake_step_catalog import step_label as step_display_label
+from novel_system.services.snowflake_step_diagnosis import is_protagonist_role
+from novel_system.services.snowflake_scene_brief import (
+    followed_scene_title,
+    real_scene_title,
+    scene_card_beats,
+    scene_title_seed,
+    scene_writer_brief,
+)
+from novel_system.services.snowflake_scene_rows import (
+    CATALOG_SYNC_STEPS,
+    SCENE_LIST_OWNED_FIELDS,
+    SCENE_PLAN_STEPS,
+    mint_row_uid,
+    mint_scene_id,
+    sanitize_scene_patch,
+    scene_list_payload,
+    scene_plan_content_signature,
+    scene_plan_payload,
+)
 from novel_system.services.snowflake_step_runs import (
     WIPE_PRESERVED_EVENT,
     StepRunStore,
@@ -59,7 +78,6 @@ from novel_system.services.snowflake_step_runs import (
 )
 from novel_system.services.snowflake_staleness import (
     changed_scene_row_uids,
-    stable_json,
     field_sigs,
     recompute_stale,
     semantic_payload,
@@ -99,6 +117,7 @@ from novel_system.services.snowflake_scene_order import (
 )
 from novel_system.services.snowflake_triage import (
     EXCLUDED_TRIAGE_STATUSES,
+    coerce_triage_status,
     excluded_scene_plan_ids,
     latest_triage_rows,
     plan_ids_with_status,
@@ -111,50 +130,15 @@ from novel_system.services.value_coercion import coerce_string_list, int_or_defa
 from novel_system.services.writing_stats import WritingStatsService
 from novel_system.services.snowflake_queries import latest_outline_plan, next_outline_plan_version
 
-SCENE_PATCH_FIELDS = {
-    # P1-1: scene_id / chapter_id are system-minted identity, never author-editable.
-    # chapter_title / chapter_goal / chapter_role stay editable (content, not identity).
-    "chapter_title",
-    "chapter_goal",
-    "chapter_role",
-    # 灾一/灾二/灾三：作者标在场上的结构铰链，脊柱锚点分章要用（P2）。
-    # 它是内容标注，不是身份，所以可编辑。
-    "spine",
-    "scene_seq",
-    "pov_character_id",
-    "onstage_chars_json",
-    "title",
-    "summary",
-    "primary_form",
-    "scene_type",
-    "location",
-    "scene_crucible",
-    "crucible",
-    "goal",
-    "conflict",
-    "setback",
-    "reaction",
-    "dilemma",
-    "decision",
-    "cost_requirement",
-    "beats_json",
-    "must_include_text",
-    "exit_change",
-    "hook",
-    "target_length_band",
-    # 阶段 C / N：呈现方式——summary 对两种形态都合法，skip 只给反应场（见 snowflake_steps.effective_rendering_mode）。
-    "rendering_mode",
-    # 阶段 J：原著的几栏——读者应感到什么、故事时间（在场人物已在上面）。
-    "expected_reader_emotion",
-    "story_time",
-    # 阶段 N：作者的破例理由（原著：不过关也可以放行，但要知道理由）。
-    "exception_reason",
-}
-#: 已有场景计划行上只归 09 场景列表改的字段（第 10 步的草稿不改它们）
-SCENE_LIST_OWNED_FIELDS = ("primary_form", "scene_type", "pov_character_id")
 #: 一条 ``IN`` 查询最多带多少个 id（远低于 SQLite 的变量上限）
 _IN_CHUNK = 500
 
+
+
+# 旧名：测试从本模块 import（实现各在叶子模块）
+_scene_card_beats = scene_card_beats
+_coerce_triage_status = coerce_triage_status
+_is_protagonist_role = is_protagonist_role
 
 
 class SnowflakeWorkspaceService:
@@ -1019,9 +1003,9 @@ class SnowflakeWorkspaceService:
             if not isinstance(item, dict):
                 continue
             scene = self._scene_plan_for_triage_item(project.project_id, item)
-            diagnosis = diagnose_scene_detail(_scene_plan_payload(scene))
-            manual_status = _coerce_triage_status(item.get("status") or item.get("manual_status"))
-            recommended_status = _coerce_triage_status(item.get("recommended_status")) or diagnosis["recommended_status"]
+            diagnosis = diagnose_scene_detail(scene_plan_payload(scene))
+            manual_status = coerce_triage_status(item.get("status") or item.get("manual_status"))
+            recommended_status = coerce_triage_status(item.get("recommended_status")) or diagnosis["recommended_status"]
             effective_status = manual_status or recommended_status
             triage_id = str(item.get("triage_id") or "").strip()
             row = self.session.get(SnowflakeSceneTriageItem, triage_id) if triage_id else None
@@ -1045,7 +1029,7 @@ class SnowflakeWorkspaceService:
             row.score = int_or_default(item.get("score"), diagnosis["score"])
             row.missing_fields_json = coerce_string_list(item.get("missing_fields")) or diagnosis["missing_fields"]
             row.fix_steps_json = coerce_string_list(item.get("fix_steps")) or diagnosis["fix_steps"]
-            row.repair_patch_json = _sanitize_scene_patch(item.get("repair_patch") or {})
+            row.repair_patch_json = sanitize_scene_patch(item.get("repair_patch") or {})
             row.pressure_flags_json = coerce_string_list(item.get("pressure_flags")) or diagnosis["pressure_flags"]
             row.notes = str(item.get("notes") or "").strip()
             # blocking = 这一场被排除在物化之外（该重写 / 待删）；阶段 N 起它不再阻断全书。
@@ -1178,7 +1162,7 @@ class SnowflakeWorkspaceService:
             goal = (chapter.chapter_goal or chapter.summary or "").strip() or f"推进本章：{chapter.title or chapter_id}"
             scenes_payload: list[dict[str, Any]] = []
             for seq, scene in enumerate(members, start=1):
-                detail = _scene_plan_payload(scene)
+                detail = scene_plan_payload(scene)
                 if protagonist is not None:
                     detail["protagonist_hint"] = protagonist["display_name"]
                     detail["protagonist_character_id"] = protagonist["character_id"]
@@ -1199,7 +1183,7 @@ class SnowflakeWorkspaceService:
                         "onstage_chars_json": detail.get("onstage_chars_json") or [],
                         "location": detail.get("location") or None,
                         "scene_goal": detail.get("summary") or detail.get("title") or goal,
-                        "beats_json": _scene_card_beats(scene_type, detail),
+                        "beats_json": scene_card_beats(scene_type, detail),
                         # 阶段 F：摘要不再冒充「必须包含」的硬约束（它本来就含挫折，写成硬约束会让
                         # 硬 QC 拿一句概括去卡正文）；钩子 / 离场变化没写就留空，简报只陈述作者写过的。
                         "must_include_text": detail.get("must_include_text") or "",
@@ -1222,7 +1206,7 @@ class SnowflakeWorkspaceService:
                         "writer_brief_json": {
                             **scene_writer_brief(scene_type, detail),
                             # 阶段 X：构思里起过的短题名随卡进目录（整句摘要不算题名）
-                            **_scene_title_seed(detail),
+                            **scene_title_seed(detail),
                         },
                     }
                 )
@@ -1283,7 +1267,7 @@ class SnowflakeWorkspaceService:
                 if row.character_id == explicit:
                     return {"character_id": row.character_id, "display_name": row.display_name}
         for row in rows:
-            if _is_protagonist_role(row.role):
+            if is_protagonist_role(row.role):
                 return {"character_id": row.character_id, "display_name": row.display_name}
         return None
 
@@ -1711,7 +1695,7 @@ class SnowflakeWorkspaceService:
     ) -> dict[str, Any]:
         if step_key in SCENE_PLAN_STEPS:
             plans = self._scene_plans(project_id) if scene_plans is None else scene_plans
-            row_payload = _scene_list_payload if step_key == "scene_list" else _scene_plan_payload
+            row_payload = scene_list_payload if step_key == "scene_list" else scene_plan_payload
             scenes = [row_payload(scene) for scene in plans]
             return {"scenes": scenes} if scenes else merge_step_draft(step_key, run.draft_json if run else None, latest_by_step=latest_by_step)
         return merge_step_draft(step_key, run.draft_json if run else None, latest_by_step=latest_by_step)
@@ -1829,7 +1813,7 @@ class SnowflakeWorkspaceService:
         return sort_in_story_order(self.session, project_id, rows, positions=positions)
 
     def _scene_board(self, project_id: str, *, scene_plans: list[SnowflakeScenePlan] | None = None) -> dict[str, Any]:
-        scenes = [_scene_plan_payload(scene) for scene in (scene_plans if scene_plans is not None else self._scene_plans(project_id))]
+        scenes = [scene_plan_payload(scene) for scene in (scene_plans if scene_plans is not None else self._scene_plans(project_id))]
         chapters_by_id: dict[str, dict[str, Any]] = {}
         for scene in scenes:
             chapter_id = scene["chapter_id"]
@@ -1930,7 +1914,7 @@ class SnowflakeWorkspaceService:
         brief = {
             **carried,
             # 阶段 X：题名跟构思走，除非作者在台子上改过（``desk_edited_at`` 是阶段 X 留下的旧记号，回流时顺手清掉）
-            **_followed_scene_title(previous_brief, _real_scene_title(plan.title, plan.summary)),
+            **followed_scene_title(previous_brief, real_scene_title(plan.title, plan.summary)),
             "source": "snowflake_resync",
             "scene_plan_id": plan.scene_plan_id,
             "project_id": plan.project_id,
@@ -1956,10 +1940,10 @@ class SnowflakeWorkspaceService:
             "skipped_by_plan": skipped,
             "excluded_by_triage": bool(excluded),
         }
-        # 与物化同一配方（_scene_card_beats）：两个写入方各算一套，刚物化完的每一场
+        # 与物化同一配方（scene_card_beats）：两个写入方各算一套，刚物化完的每一场
         # 都会因 beats_json 不同被报成「待同步」，横幅在物化当刻就喊 N 场。
-        detail = _scene_plan_payload(plan)
-        beats = _scene_card_beats(str(detail.get("scene_type") or "proactive"), detail)
+        detail = scene_plan_payload(plan)
+        beats = scene_card_beats(str(detail.get("scene_type") or "proactive"), detail)
         trash_patch: dict[str, Any] = {}
         if skipped:
             trash_patch["trashed_flag"] = 1
@@ -2072,7 +2056,7 @@ class SnowflakeWorkspaceService:
             if row is not None:
                 items.append(self._triage_payload(row))
                 continue
-            diagnosis = diagnose_scene_detail(_scene_plan_payload(scene))
+            diagnosis = diagnose_scene_detail(scene_plan_payload(scene))
             items.append(
                 {
                     "triage_id": "",
@@ -2317,7 +2301,7 @@ class SnowflakeWorkspaceService:
 
         for step_key in MATERIALIZATION_REQUIRED_STEPS:
             run = latest_by_step.get(step_key)
-            step_label = _step_display_label(step_key)
+            step_label = step_display_label(step_key)
             if run is None:
                 add_step_item(
                     severity="blocker",
@@ -2360,7 +2344,7 @@ class SnowflakeWorkspaceService:
 
         for step_key in MATERIALIZATION_WARNING_STEPS:
             run = latest_by_step.get(step_key)
-            step_label = _step_display_label(step_key)
+            step_label = step_display_label(step_key)
             if run is None:
                 add_step_item(
                     severity="warning",
@@ -2424,12 +2408,12 @@ class SnowflakeWorkspaceService:
             ),
             "scene_details",
         )
-        stale_plan_label = _step_display_label(stale_plan_step)
+        stale_plan_label = step_display_label(stale_plan_step)
         for scene in scene_plans or []:
             if scene.status != "stale":
                 continue
             scene_label = str(scene.title or scene.summary or scene.scene_id or "scene").strip()
-            item = _scene_plan_payload(scene)
+            item = scene_plan_payload(scene)
             if scene.stale_accepted_at:
                 add_scene_item(
                     severity="warning",
@@ -2845,14 +2829,14 @@ class SnowflakeWorkspaceService:
             seq_by_chapter[chapter_id] = scene_seq
 
             if created:
-                row_uid = row_uid or _mint_row_uid()
+                row_uid = row_uid or mint_row_uid()
                 # P1-2 铸造规则：草稿自带 scene_id 就沿用它（骨架/LLM 输出靠这个字符串
                 # 在第 9→10 步之间对位；换成别的值会让第 10 步认不回第 9 步的行）。只有
                 # 在它缺席或已被占用时才用 row_uid 铸——前端 canonFromFE 恰好不发
                 # scene_id，所以作者手改场景表这一路始终走 row_uid 基、天然不撞号。
-                scene_id = incoming_scene_id or _mint_scene_id(project_id, row_uid)
+                scene_id = incoming_scene_id or mint_scene_id(project_id, row_uid)
                 if scene_id in seen_scene_ids or scene_id in by_scene_id:
-                    scene_id = _mint_scene_id(project_id, row_uid)
+                    scene_id = mint_scene_id(project_id, row_uid)
                 plan = SnowflakeScenePlan(
                     scene_plan_id=f"snowflake_scene_plan_{project_id}_{row_uid}",
                     project_id=project_id,
@@ -2870,17 +2854,17 @@ class SnowflakeWorkspaceService:
                 scene_id = plan.scene_id
                 if not plan.row_uid:
                     # Adopt a row_uid for a legacy row matched via scene_id.
-                    plan.row_uid = row_uid or _mint_row_uid()
+                    plan.row_uid = row_uid or mint_row_uid()
                     by_row_uid.setdefault(plan.row_uid, plan)
                     minted = True
                 row_uid = plan.row_uid
 
-            before = None if created else _scene_plan_content_signature(plan)
+            before = None if created else scene_plan_content_signature(plan)
             plan.scene_seq = scene_seq
             plan.source_step_run_id = run.step_run_id
             # Discard any author-supplied scene_id / chapter_id — those are system
             # identity, not editable narrative fields.
-            patch = _sanitize_scene_patch(item)
+            patch = sanitize_scene_patch(item)
             patch.pop("scene_id", None)
             patch.pop("chapter_id", None)
             if step_key == "scene_details" and not created:
@@ -2891,7 +2875,7 @@ class SnowflakeWorkspaceService:
             self._apply_scene_patch(plan, patch)
             # 阶段 G：草稿同步只把**内容真的变了**（或新建）的场打回 draft；「AI 补全这一场」和
             # 一次无谓的整表 PATCH 不再把其余几十场的确认与复核留痕一起清零。批准仍然整表置 approved。
-            if approved or created or before != _scene_plan_content_signature(plan):
+            if approved or created or before != scene_plan_content_signature(plan):
                 plan.status = "approved" if approved else "draft"
                 plan.stale_reason = None
                 plan.stale_accepted_at = None
@@ -2901,7 +2885,7 @@ class SnowflakeWorkspaceService:
                 plan.title = str(item.get("title") or item.get("summary") or f"场景 {index:02d}").strip()
             if created and not plan.chapter_title:
                 plan.chapter_title = str(item.get("chapter_title") or chapter_id).strip()
-            plan.diagnosis_json = diagnose_scene_detail(_scene_plan_payload(plan))
+            plan.diagnosis_json = diagnose_scene_detail(scene_plan_payload(plan))
 
             seen_row_uids.add(row_uid)
             seen_scene_ids.add(scene_id)
@@ -3024,7 +3008,7 @@ class SnowflakeWorkspaceService:
                     "title": scene.title or scene.summary or scene.scene_id,
                     "primary_form": scene.scene_type,
                     "scene_type": scene.scene_type,
-                    "repair_patch": _sanitize_scene_patch(item.get("repair_patch") or {}),
+                    "repair_patch": sanitize_scene_patch(item.get("repair_patch") or {}),
                 }
             )
         return result
@@ -3298,189 +3282,3 @@ class SnowflakeWorkspaceService:
 
 # 阶段 U：「先看 3 个方向」没带作者要求时，回合里的「我」这一行写这句
 CANDIDATES_DEFAULT_ASK = "给我 3 个不同方向"
-
-_PROTAGONIST_EXCLUDE_ZH = ("对手", "反派", "对立", "配角", "敌")
-_PROTAGONIST_TOKENS_EN = ("protagonist", "main character", "heroine", "hero", "lead")
-_PROTAGONIST_EXCLUDE_EN = ("antagonist", "opposition", "villain", "rival", "supporting")
-
-
-def _is_protagonist_role(role: Any) -> bool:
-    """角色定位是不是主角：中文含「主角」且不含对手 / 反派类字眼；英文 lead / protagonist / hero(ine)。"""
-    text = str(role or "").strip().lower()
-    if not text:
-        return False
-    if "主角" in text:
-        return not any(token in text for token in _PROTAGONIST_EXCLUDE_ZH)
-    if any(token in text for token in _PROTAGONIST_EXCLUDE_EN):
-        return False
-    return any(token in text for token in _PROTAGONIST_TOKENS_EN)
-
-
-_SCENE_PLAN_STATE_KEYS: frozenset[str] = frozenset(
-    {"scene_plan_id", "status", "stale_reason", "stale_accepted_at", "stale_accepted_by", "stale_accepted_note", "diagnosis"}
-)
-
-
-def _scene_plan_content_signature(scene: SnowflakeScenePlan) -> str:
-    """场景计划行的**内容**签名（去掉状态 / 失效留痕 / 诊断 / 身份）；同步时据此判断这一行有没有真的改。"""
-    payload = {key: value for key, value in _scene_plan_payload(scene).items() if key not in _SCENE_PLAN_STATE_KEYS}
-    return stable_json(payload)
-
-
-def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
-    return {
-        "scene_plan_id": scene.scene_plan_id,
-        "row_uid": scene.row_uid or "",
-        "scene_id": scene.scene_id,
-        "chapter_plan_id": scene.chapter_plan_id or "",
-        "chapter_id": scene.chapter_id,
-        "chapter_title": scene.chapter_title or "",
-        "chapter_goal": scene.chapter_goal or "",
-        "chapter_role": scene.chapter_role or "",
-        "spine": scene.spine or "",
-        "scene_seq": scene.scene_seq,
-        "pov_character_id": scene.pov_character_id or "",
-        "onstage_chars_json": list(scene.onstage_chars_json or []),
-        "title": scene.title or "",
-        "summary": scene.summary or "",
-        "primary_form": scene.scene_type or "proactive",
-        "scene_type": scene.scene_type or "proactive",
-        "location": scene.location or "",
-        "scene_crucible": scene.scene_crucible or "",
-        "crucible": scene.scene_crucible or "",
-        "goal": scene.goal or "",
-        "conflict": scene.conflict or "",
-        "setback": scene.setback or "",
-        "reaction": scene.reaction or "",
-        "dilemma": scene.dilemma or "",
-        "decision": scene.decision or "",
-        "cost_requirement": scene.cost_requirement or "",
-        "beats_json": list(scene.beats_json or []),
-        "must_include_text": scene.must_include_text or "",
-        "exit_change": scene.exit_change or "",
-        "hook": scene.hook or "",
-        "target_length_band": scene.target_length_band or "",
-        "rendering_mode": scene.rendering_mode or "full",
-        "expected_reader_emotion": scene.expected_reader_emotion or "",
-        "story_time": scene.story_time or "",
-        "exception_reason": scene.exception_reason or "",
-        "status": scene.status,
-        "stale_reason": scene.stale_reason or "",
-        "stale_accepted_at": scene.stale_accepted_at,
-        "stale_accepted_by": scene.stale_accepted_by or "",
-        "stale_accepted_note": scene.stale_accepted_note or "",
-        "diagnosis": deepcopy(scene.diagnosis_json or {}),
-    }
-
-
-#: 产出场景计划的两步（09 场景列表 / 10 场景规划）：它们的「已复核」连同过期的场景计划一起复核
-SCENE_PLAN_STEPS = frozenset({"scene_list", "scene_details"})
-#: 确认这两步时（工作台带 ``sync_catalog``）已物化的场景卡自动跟上构思
-CATALOG_SYNC_STEPS = SCENE_PLAN_STEPS
-
-#: 构思里的场景题名超过这个长度就当它是摘要（09 没单独起题名时 title 会跟着摘要走）
-_SCENE_TITLE_SEED_MAX_CHARS = 40
-
-
-def _real_scene_title(title: Any, summary: Any) -> str:
-    """构思里**真起过**的场景短题名；空、和摘要一字不差、或长得像一句摘要的都不算。"""
-    value = " ".join(str(title or "").split())
-    if not value or value == " ".join(str(summary or "").split()) or len(value) > _SCENE_TITLE_SEED_MAX_CHARS:
-        return ""
-    return value
-
-
-def _scene_title_seed(detail: dict[str, Any]) -> dict[str, str]:
-    """物化写进场景卡简报的题名键：``title``（目录显示用，作者可在台子上改）+ ``seeded_title``
-    （这次播下去的值——之后题名还等于它，就说明作者没改过，回流 / 重新物化可以跟着构思走）。"""
-    real = _real_scene_title(detail.get("title"), detail.get("summary"))
-    # seeded_title 总是写（哪怕是空串）：这个键在，就说明这张卡是阶段 X 之后播的，题名可以参与「待同步」比较
-    return {"title": real, "seeded_title": real} if real else {"seeded_title": ""}
-
-
-def _followed_scene_title(previous_brief: dict[str, Any], real: str) -> dict[str, str]:
-    """回流 / 重新物化时题名怎么走：作者在台子上改过的（≠ 上次播的）原样保留，否则跟构思。"""
-    current = str(previous_brief.get("title") or "").strip()
-    seeded = str(previous_brief.get("seeded_title") or "").strip()
-    if current and current != seeded:
-        return {"title": current, "seeded_title": real}
-    return {"title": real, "seeded_title": real} if real else {"seeded_title": ""}
-
-
-def _scene_card_beats(scene_type: str, detail: dict[str, Any]) -> list[str]:
-    """``SceneCard.beats_json`` 的唯一配方，物化与 resync 共用。
-
-    规划行自带节拍就用它；否则按场景类型从 goal/conflict/setback（主动）或
-    reaction/dilemma/decision（反应）推导（``snowflake_scene_brief.beats_from_detail``）。hook 不进节拍：它已经单独落在 ``SceneCard.hook`` 与 brief 的
-    ``next_scene_pull`` 上，resync 曾额外拼进去，正是「刚物化完就待同步」的来源。
-    """
-    beats = coerce_string_list(detail.get("beats_json"))
-    return beats or beats_from_detail(scene_type, detail)
-
-
-def _scene_list_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
-    return {
-        "scene_plan_id": scene.scene_plan_id,
-        "row_uid": scene.row_uid or "",
-        "scene_id": scene.scene_id,
-        "chapter_plan_id": scene.chapter_plan_id or "",
-        "chapter_id": scene.chapter_id,
-        "chapter_title": scene.chapter_title or scene.chapter_id,
-        "chapter_goal": scene.chapter_goal or "",
-        "spine": scene.spine or "",
-        "scene_seq": scene.scene_seq,
-        "pov_character_id": scene.pov_character_id or "",
-        "summary": scene.summary or scene.title or "",
-        "primary_form": scene.scene_type or "proactive",
-        "scene_type": scene.scene_type or "proactive",
-        "chapter_role": scene.chapter_role or "",
-        "location": scene.location or "",
-        "crucible": scene.scene_crucible or "",
-    }
-
-
-def _sanitize_scene_patch(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-    patch: dict[str, Any] = {}
-    for key in SCENE_PATCH_FIELDS:
-        if key in payload:
-            patch[key] = deepcopy(payload[key])
-    if "primary_form" in patch:
-        patch["scene_type"] = patch["primary_form"]
-    return patch
-
-
-def _coerce_triage_status(value: Any) -> str:
-    # 阶段 N：cut（待删）是作者专用的裁定——原著「杀要杀得对：不真删，标记待删」；LLM 分诊只出 pass / maybe / rewrite。
-    status = str(value or "").strip().lower()
-    return status if status in {"pass", "maybe", "rewrite", "cut"} else ""
-
-
-def _step_display_label(step_key: str) -> str:
-    try:
-        return str(step_definition_view(step_key).get("label") or step_key)
-    except KeyError:
-        return step_key
-
-
-def _mint_row_uid() -> str:
-    """Mint an immutable, system-owned scene-row identity (P1-1).
-
-    Scene identity no longer derives from the author-editable ``scene_id``; this
-    uuid is minted once when a row is first seen and then never changes, so a
-    reorder or an ID re-mint can never orphan a plan or break the diff chain.
-    """
-    return f"row_{uuid.uuid4().hex}"
-
-
-def _mint_scene_id(project_id: str, row_uid: str) -> str:
-    """Mint the scene's materialization identity from its immutable row anchor (P1-2).
-
-    The old rule was ``f"{chapter_id}_SC{scene_seq:02d}"``, frozen at creation while
-    ``scene_seq`` was recomputed on every save — so deleting a scene and adding another
-    reliably produced two rows with the same ``scene_id``, and materialization then lost
-    one of them without a word. Deriving it from ``row_uid`` instead makes it unique by
-    construction and independent of both chapter membership and ordering.
-    """
-    return f"{project_id}_SC_{row_uid}"

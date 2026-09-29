@@ -27,6 +27,7 @@ from novel_system.services.snowflake_step_catalog import (  # noqa: F401
     list_step_definitions,
     step_definition_view,
     step_definition_views,
+    step_label,
 )
 from novel_system.services.snowflake_step_guidance import (  # noqa: F401
     _DEFAULT_GUIDANCE,
@@ -84,5 +85,6 @@ from novel_system.services.snowflake_step_diagnosis import (  # noqa: F401
     diagnose_scene_detail,
     diagnose_step_pressure,
     is_lead_role,
+    is_protagonist_role,
     step_completeness,
 )

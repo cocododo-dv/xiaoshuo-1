@@ -714,3 +714,20 @@ SCENE_FIELD_EXAMPLES: dict[str, str] = {
 
 
 _SCENE_PLACEHOLDER_TEXTS: dict[str, frozenset[str]] = _collect_scene_placeholder_texts()
+
+
+_PROTAGONIST_EXCLUDE_ZH = ("对手", "反派", "对立", "配角", "敌")
+_PROTAGONIST_TOKENS_EN = ("protagonist", "main character", "heroine", "hero", "lead")
+_PROTAGONIST_EXCLUDE_EN = ("antagonist", "opposition", "villain", "rival", "supporting")
+
+
+def is_protagonist_role(role: Any) -> bool:
+    """角色定位是不是主角：中文含「主角」且不含对手 / 反派类字眼；英文 lead / protagonist / hero(ine)。"""
+    text = str(role or "").strip().lower()
+    if not text:
+        return False
+    if "主角" in text:
+        return not any(token in text for token in _PROTAGONIST_EXCLUDE_ZH)
+    if any(token in text for token in _PROTAGONIST_EXCLUDE_EN):
+        return False
+    return any(token in text for token in _PROTAGONIST_TOKENS_EN)

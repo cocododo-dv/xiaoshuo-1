@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -47,3 +48,9 @@ def latest_triage_plan_ids(session: Session, project_id: str, statuses: frozense
 
 def excluded_scene_plan_ids(session: Session, project_id: str) -> set[str]:
     return latest_triage_plan_ids(session, project_id, EXCLUDED_TRIAGE_STATUSES)
+
+
+def coerce_triage_status(value: Any) -> str:
+    # 阶段 N：cut（待删）是作者专用的裁定——原著「杀要杀得对：不真删，标记待删」；LLM 分诊只出 pass / maybe / rewrite。
+    status = str(value or "").strip().lower()
+    return status if status in {"pass", "maybe", "rewrite", "cut"} else ""

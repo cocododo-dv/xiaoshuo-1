@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from novel_system.services.value_coercion import coerce_string_list
+
 
 def scene_writer_brief(scene_type: str, detail: dict[str, Any]) -> dict[str, Any]:
     common = {
@@ -71,3 +73,43 @@ def beats_from_detail(scene_type: str, detail: dict[str, Any]) -> list[str]:
     primary = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
     secondary = ["goal", "conflict", "setback"] if scene_type == "reactive" else ["reaction", "dilemma", "decision"]
     return [str(detail.get(key) or "").strip() for key in [*primary, *secondary] if str(detail.get(key) or "").strip()]
+
+
+#: 构思里的场景题名超过这个长度就当它是摘要（09 没单独起题名时 title 会跟着摘要走）
+SCENE_TITLE_SEED_MAX_CHARS = 40
+
+
+def real_scene_title(title: Any, summary: Any) -> str:
+    """构思里**真起过**的场景短题名；空、和摘要一字不差、或长得像一句摘要的都不算。"""
+    value = " ".join(str(title or "").split())
+    if not value or value == " ".join(str(summary or "").split()) or len(value) > SCENE_TITLE_SEED_MAX_CHARS:
+        return ""
+    return value
+
+
+def scene_title_seed(detail: dict[str, Any]) -> dict[str, str]:
+    """物化写进场景卡简报的题名键：``title``（目录显示用，作者可在台子上改）+ ``seeded_title``
+    （这次播下去的值——之后题名还等于它，就说明作者没改过，回流 / 重新物化可以跟着构思走）。"""
+    real = real_scene_title(detail.get("title"), detail.get("summary"))
+    # seeded_title 总是写（哪怕是空串）：这个键在，就说明这张卡是阶段 X 之后播的，题名可以参与「待同步」比较
+    return {"title": real, "seeded_title": real} if real else {"seeded_title": ""}
+
+
+def followed_scene_title(previous_brief: dict[str, Any], real: str) -> dict[str, str]:
+    """回流 / 重新物化时题名怎么走：作者在台子上改过的（≠ 上次播的）原样保留，否则跟构思。"""
+    current = str(previous_brief.get("title") or "").strip()
+    seeded = str(previous_brief.get("seeded_title") or "").strip()
+    if current and current != seeded:
+        return {"title": current, "seeded_title": real}
+    return {"title": real, "seeded_title": real} if real else {"seeded_title": ""}
+
+
+def scene_card_beats(scene_type: str, detail: dict[str, Any]) -> list[str]:
+    """``SceneCard.beats_json`` 的唯一配方，物化与 resync 共用。
+
+    规划行自带节拍就用它；否则按场景类型从 goal/conflict/setback（主动）或
+    reaction/dilemma/decision（反应）推导（``snowflake_scene_brief.beats_from_detail``）。hook 不进节拍：它已经单独落在 ``SceneCard.hook`` 与 brief 的
+    ``next_scene_pull`` 上，resync 曾额外拼进去，正是「刚物化完就待同步」的来源。
+    """
+    beats = coerce_string_list(detail.get("beats_json"))
+    return beats or beats_from_detail(scene_type, detail)

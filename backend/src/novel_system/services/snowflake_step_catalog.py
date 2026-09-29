@@ -567,3 +567,10 @@ def step_definition_views() -> tuple[Mapping[str, Any], ...]:
 def step_definition_view(step_key: str) -> Mapping[str, Any]:
     """一步定义的只读视图（不拷贝，只许读）；未知步骤与 ``get_step_definition`` 一样抛 ``KeyError``。"""
     return _STEP_VIEW_BY_KEY[step_key]
+
+
+def step_label(step_key: str) -> str:
+    try:
+        return str(step_definition_view(step_key).get("label") or step_key)
+    except KeyError:
+        return step_key
