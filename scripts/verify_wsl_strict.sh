@@ -50,5 +50,5 @@ if ! "$PYTHON_BIN" -c 'import chromadb, multipart, pytest' >/dev/null 2>&1; then
 fi
 
 run_step "Chroma smoke" "$PYTHON_BIN" -m novel_system.tools.chroma_smoke
-run_step "Focused Chroma suite" "$PYTHON_BIN" -m pytest tests/test_chroma_smoke.py tests/test_chroma_vector_store.py tests/test_review_release.py tests/test_vector_verify_gate.py tests/test_acceptance_flow.py -q
+run_step "Focused Chroma suite" "$PYTHON_BIN" -m pytest tests/test_chroma_smoke.py tests/test_chroma_vector_store.py tests/test_acceptance_flow.py -q
 run_step "Full backend pytest" "$PYTHON_BIN" -m pytest -q
