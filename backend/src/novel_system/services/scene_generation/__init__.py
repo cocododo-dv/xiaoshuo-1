@@ -18,14 +18,7 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import sha256_text
-from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
-from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.llm_task_runner import (
-    CONTINUITY_BUDGET_ERROR_CODE,
-    CONTINUITY_BUDGET_MESSAGE,
-    SCENE_SPLIT_RECOMMENDATION,
-    LLMNodeContinuityError,
     LLMNodeExecutionError,
     LLMNodeRunner,
     current_llm_execution_id,
@@ -83,7 +76,17 @@ from novel_system.services.scene_generation.length_policy import (
     _style_length_instruction,
     _style_repair_length_instruction,
 )
-from novel_system.services.scene_generation import text_gates
+from novel_system.services.scene_generation import fidelity_probe, text_gates
+from novel_system.services.scene_generation.ledger import (
+    DraftLedger,
+    accepted_draft_step_key,
+    counts_as_business_attempt,
+    first_draft_lineage,
+    raise_original_runner_error,
+    resume_base_safety,
+    resume_style_repair_source,
+    runtime_audit,
+)
 from novel_system.services.scene_generation.segment_patch import (
     _annotate_style_length_patch_source,
     _apply_style_length_patch,
@@ -197,33 +200,6 @@ __all__ = [
 ]
 
 _LOGGER = logging.getLogger(__name__)
-_PRE_DISPATCH_ACCOUNTING_REJECTIONS = frozenset(
-    {
-        "LLM_SCENE_TOKEN_BUDGET_UNINITIALIZED",
-        "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
-        "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED",
-        "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED",
-        "LLM_SCENE_CALL_IN_FLIGHT",
-        "LLM_ACCOUNTING_INTEGRITY_BLOCKED",
-    }
-)
-
-
-def _counts_as_business_attempt(exc: Exception) -> bool:
-    """A pre-dispatch accounting rejection is evidence, not a generation attempt."""
-    original = getattr(exc, "original_error", None)
-    code = str(getattr(exc, "error_code", None) or getattr(exc, "code", None) or "")
-    original_code = str(
-        getattr(original, "error_code", None) or getattr(original, "code", None) or ""
-    )
-    return not (
-        isinstance(exc, LLMAccountingRejected)
-        or isinstance(original, LLMAccountingRejected)
-        or code in _PRE_DISPATCH_ACCOUNTING_REJECTIONS
-        or original_code in _PRE_DISPATCH_ACCOUNTING_REJECTIONS
-    )
-
-
 # 生成侧要跑 styled-draft gate 的阶段：落库内容是 provider 的风格化输出、且会成为终稿
 # 候选的每一个阶段。style_draft 回退中性稿时不跑（内容是已批准的中性稿）。
 _STYLED_GATE_GENERATION_STAGES: frozenset[str] = frozenset(
@@ -332,6 +308,7 @@ class SceneGenerationService:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         lengths = LengthPolicy.for_scene(bundle, scene)
+        ledger = DraftLedger(self.session, scene, state, bundle)
         fallback_llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
@@ -345,10 +322,7 @@ class SceneGenerationService:
         try:
             prompt = self._prompt_builder().build(bundle["snapshot"], template_name)
         except Exception as exc:
-            self._persist_generation_failure(
-                scene=scene,
-                state=state,
-                bundle=bundle,
+            ledger.persist_generation_failure(
                 llm_call_id=fallback_llm_call_id,
                 step="neutral_draft",
                 node_id=draft_node_id,
@@ -413,16 +387,13 @@ class SceneGenerationService:
             response = node_result.response
             neutral_content = _extract_scene_text(response)
         except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
-            self._record_runner_failure_attempt(
-                scene=scene,
-                state=state,
-                bundle=bundle,
+            ledger.record_runner_failure(
                 step="neutral_draft",
                 prompt=prompt,
                 exc=exc,
             )
             if isinstance(exc, LLMNodeExecutionError):
-                self._raise_original_runner_error(exc)
+                raise_original_runner_error(exc)
             raise
 
         neutral_row_id = versioned_scene_artifact_id("draft_neutral", scene_id, bundle)
@@ -499,10 +470,7 @@ class SceneGenerationService:
                 repaired_content = _extract_scene_text(repaired_result.response)
                 repaired_assessment = text_gates._assess_neutral_draft(scene, repaired_content, lengths)
             except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
-                self._record_runner_failure_attempt(
-                    scene=scene,
-                    state=state,
-                    bundle=bundle,
+                ledger.record_runner_failure(
                     step="neutral_draft_repair",
                     # 记的是修复这一遍实际发出的提示（style_first 下重新注入过、审计不同），不是首稿那一份
                     prompt=repair_prompt_payload,
@@ -511,11 +479,11 @@ class SceneGenerationService:
                 # 第一遍 provider 调用已经真实消耗了一次业务尝试。若修复在
                 # provider dispatch 前被预算/连续性门拒绝，通用失败记录不会计数，
                 # 这里补记一次；无论哪类失败都不能把原始不合格稿伪装成完成稿。
-                if not _counts_as_business_attempt(exc):
+                if not counts_as_business_attempt(exc):
                     state.total_attempt_count += 1
                     self.session.flush()
                 if isinstance(exc, LLMNodeExecutionError):
-                    self._raise_original_runner_error(exc)
+                    raise_original_runner_error(exc)
                 raise
             else:
                 repair_accepted = bool(repaired_assessment["accepted"])
@@ -525,22 +493,11 @@ class SceneGenerationService:
                 rejected_result = (
                     original_result if repair_accepted else repaired_result
                 )
-                rejected_hash = sha256_text(rejected_content)[:10]
-                rejected_row_id = (
-                    f"{neutral_row_id}_rejected_{rejected_hash}"
-                )
-                self.session.add(
-                    SceneDraft(
-                        row_id=rejected_row_id,
-                        scene_id=scene_id,
-                        chapter_id=scene.chapter_id,
-                        stage="neutral_rejected",
-                        status="rejected",
-                        content=rejected_content,
-                        source_bundle_id=bundle["bundle_id"],
-                        source_bundle_hash=bundle["bundle_snapshot_hash"],
-                        generation_llm_call_id=rejected_result.llm_call_id,
-                    )
+                rejected_row_id = ledger.add_rejected(
+                    neutral_row_id,
+                    stage="neutral_rejected",
+                    content=rejected_content,
+                    llm_call_id=rejected_result.llm_call_id,
                 )
                 if repair_accepted:
                     neutral_content = repaired_content
@@ -558,22 +515,17 @@ class SceneGenerationService:
                     "repair_assessment": repaired_assessment,
                 }
                 if not repair_accepted:
-                    self.session.add(
-                        AttemptTracker(
-                            scene_id=scene_id,
-                            chapter_id=scene.chapter_id,
-                            step="neutral_draft",
-                            status="failed",
-                            source_bundle_id=bundle["bundle_id"],
-                            details_json={
-                                "llm_call_id": repaired_result.llm_call_id,
-                                "error_code": "NEUTRAL_DRAFT_REPAIR_INVALID",
-                                "rejected_row_id": rejected_row_id,
-                                "validation": repaired_assessment,
-                                "repair": repair_audit,
-                                "business_attempt_consumed": True,
-                            },
-                        )
+                    ledger.add_attempt(
+                        "neutral_draft",
+                        {
+                            "llm_call_id": repaired_result.llm_call_id,
+                            "error_code": "NEUTRAL_DRAFT_REPAIR_INVALID",
+                            "rejected_row_id": rejected_row_id,
+                            "validation": repaired_assessment,
+                            "repair": repair_audit,
+                            "business_attempt_consumed": True,
+                        },
+                        status="failed",
                     )
                     state.current_bundle_id = bundle["bundle_id"]
                     state.current_bundle_hash = bundle["bundle_snapshot_hash"]
@@ -592,17 +544,11 @@ class SceneGenerationService:
                         },
                     )
 
-        self.session.add(
-            SceneDraft(
-                row_id=neutral_row_id,
-                scene_id=scene_id,
-                chapter_id=scene.chapter_id,
-                stage="neutral_draft",
-                content=neutral_content,
-                source_bundle_id=bundle["bundle_id"],
-                source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=node_result.llm_call_id,
-            )
+        ledger.add_draft(
+            neutral_row_id,
+            stage="neutral_draft",
+            content=neutral_content,
+            llm_call_id=node_result.llm_call_id,
         )
         self.session.flush()
 
@@ -630,26 +576,14 @@ class SceneGenerationService:
             attempt_details["notices"] = deepcopy(notices)
             if styled_draft_gate is not None:
                 attempt_details["styled_draft_gate"] = deepcopy(styled_draft_gate)
-            runtime_audit = (
-                deepcopy(prompt["_style_reference_runtime_audit"])
-                if isinstance(prompt, Mapping)
-                and isinstance(prompt.get("_style_reference_runtime_audit"), dict)
-                else None
+            reference_runtime = runtime_audit(
+                prompt, outcome=STYLE_FIRST_DRAFT_CONTENT_SOURCE, draft_mode=draft_mode, notices=notices
             )
-            if runtime_audit is not None:
-                runtime_audit["generation_outcome"] = STYLE_FIRST_DRAFT_CONTENT_SOURCE
-                runtime_audit["draft_mode"] = draft_mode
-                runtime_audit["notice_codes"] = [item["code"] for item in notices]
-                attempt_details["style_reference_runtime"] = runtime_audit
-        self.session.add(
-            AttemptTracker(
-                scene_id=scene_id,
-                chapter_id=scene.chapter_id,
-                step="neutral_draft",
-                status="completed",
-                source_bundle_id=bundle["bundle_id"],
-                details_json=attempt_details,
-            )
+            if reference_runtime is not None:
+                attempt_details["style_reference_runtime"] = reference_runtime
+        ledger.add_attempt(
+            "neutral_draft",
+            attempt_details,
         )
         self.session.flush()
 
@@ -669,7 +603,8 @@ class SceneGenerationService:
             bundle_hash=bundle["bundle_snapshot_hash"],
             # 检查点记的是**写出这份稿子的那次调用**的步键：修复稿被采用时是 neutral_draft_repair 那次调用，
             # 记成 neutral_draft 会让续跑的账本校验（调用的 execution_step_key 对不上）判检查点损坏
-            execution_step_key=self._accepted_draft_step_key(
+            execution_step_key=accepted_draft_step_key(
+                self.session,
                 node_result.llm_call_id,
                 repaired=bool(repair_audit and repair_audit.get("accepted")),
             ),
@@ -677,12 +612,6 @@ class SceneGenerationService:
             notices=notices,
             styled_draft_gate=styled_draft_gate,
         )
-
-    def _accepted_draft_step_key(self, llm_call_id: str | None, *, repaired: bool) -> str:
-        """采用的首稿 / 中性稿出自哪一步（账本行记的 execution_step_key 为准；替身运行器没有账本行时按是否修复推断）。"""
-        call = self.session.get(LlmCall, llm_call_id) if llm_call_id else None
-        step_key = str(getattr(call, "execution_step_key", "") or "") if call is not None else ""
-        return step_key or ("neutral_draft_repair" if repaired else "neutral_draft")
 
     def generate_style_draft(
         self,
@@ -1030,15 +959,11 @@ class SceneGenerationService:
             )
 
         best_result = candidates[0][0]
-        state.current_style_draft_row_id = best_result.row_id
-        state.latest_valid_draft_row_id = best_result.row_id
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         # §6 Defect D: persist dispersion score for author-facing quality signal
         if len(candidates) >= 2:
             final_dispersion = _candidate_dispersion([c.content for c, _ in candidates])
             state.candidate_dispersion_score = round(final_dispersion, 4)
-        self.session.flush()
+        DraftLedger(self.session, scene, state, bundle).point_style(best_result.row_id)
 
         return [result for result, _ in candidates]
 
@@ -1175,8 +1100,8 @@ class SceneGenerationService:
         thresholds = style_step.fidelity_thresholds()
         reading_error = first_reading_error
         if first_reading is None and first_reading_id is None and not first_reading_done:
-            first_reading, first_reading_id, reading_error = self._record_first_draft_reading(
-                scene, policy, first_row_id, first_content, thresholds
+            first_reading, first_reading_id, reading_error = fidelity_probe.record_first_draft_reading(
+                self.session, scene, policy, first_row_id, first_content, thresholds
             )
         revise, gate_reason = style_step.style_step_gate(first_reading, thresholds)
         if reading_error is not None and first_reading is None:
@@ -1228,52 +1153,10 @@ class SceneGenerationService:
             attempt_details_extra=attempt_details_extra,
         )
 
-    def _record_first_draft_reading(
-        self,
-        scene: SceneCard,
-        policy: Any,
-        first_row_id: str,
-        first_content: str,
-        thresholds: Any,
-    ) -> tuple[Any, str | None, str | None]:
-        """读首稿并记一条 first_draft 读数（同一稿行幂等）→ (读数, 读数行 id, 读数出错时的错误码)。
-
-        读数失败只记日志、按「读不出」处理（保留首稿），但错误码单独返回（L8）：「读数出错」与「参考书没有可用的
-        尺子」在决定与提示里分开说。读数在保存点里读（L3）：它可能要先给这本书建窗口索引、写库，失败只回滚保存点，
-        不弄坏会话。"""
-        reading, error_code = self._observe_reading(policy, first_content, ref=scene.scene_id, what="first-draft")
-        if reading is None:
-            return None, None, error_code
-        row = style_readings.record_fidelity_reading(
-            self.session,
-            policy=policy,
-            text=first_content,
-            source=style_readings.SOURCE_PIPELINE,
-            stage=style_readings.STAGE_FIRST_DRAFT,
-            scene_id=scene.scene_id,
-            project_id=style_readings.scene_project_id(self.session, scene),
-            draft_ref=first_row_id,
-            reading=reading,
-            max_percentile=thresholds.style_step_max_percentile,
-        )
-        return reading, (row.reading_id if row is not None else None), None
-
-    def _observe_reading(self, policy: Any, text: str, *, ref: str, what: str) -> tuple[Any, str | None]:
-        """读一段文字的「像不像」读数 → (读数或 None, 出错时的错误码)。
-
-        读数是观察，永远不能弄坏管线：在保存点里读（第一次读一本书时要建窗口索引、写库），任何失败只回滚这个保存点、
-        记日志——会话照样可用，后面的落库与检查点照常（风格参考 v3 L3：否则一次已派发的调用会落不下检查点，续跑报
-        ``RUN_CHECKPOINT_OUTPUT_MISSING``）。"""
-        try:
-            with self.session.begin_nested():
-                return style_readings.reading_for_text(self.session, policy, text), None
-        except Exception as exc:  # noqa: BLE001 — 读数是观察：失败按读不出处理
-            _LOGGER.warning("%s fidelity reading failed (%s)", what, ref, exc_info=True)
-            return None, str(getattr(exc, "code", None) or type(exc).__name__)
-
     def _neutral_first_style_keep(
         self,
         *,
+        ledger: DraftLedger,
         scene: SceneCard,
         bundle: dict[str, Any],
         policy: Any,
@@ -1292,11 +1175,11 @@ class SceneGenerationService:
         返回 ``(风格步决定, 被退回的风格稿行 id 或 None, 交付的正文)``。读数记进 ``style_fidelity_readings``
         （中性稿 first_draft、风格稿 revision，按稿行幂等）；被退回的风格稿另存一行 ``style_rejected``。"""
         thresholds = style_step.fidelity_thresholds()
-        neutral_reading, neutral_error = self._observe_reading(
-            policy, neutral_content, ref=scene.scene_id, what="neutral-draft"
+        neutral_reading, neutral_error = fidelity_probe.observe(
+            self.session, policy, neutral_content, ref=scene.scene_id, what="neutral-draft"
         )
-        style_reading, style_error = self._observe_reading(
-            policy, style_content, ref=scene.scene_id, what="style-draft"
+        style_reading, style_error = fidelity_probe.observe(
+            self.session, policy, style_content, ref=scene.scene_id, what="style-draft"
         )
         project_id = style_readings.scene_project_id(self.session, scene)
         neutral_row = (
@@ -1340,20 +1223,11 @@ class SceneGenerationService:
         rejected_row_id: str | None = None
         delivered = style_content
         if not keep:
-            rejected_hash = sha256_text(style_content)[:10]
-            rejected_row_id = f"{row_id}_rejected_{rejected_hash}"
-            self.session.add(
-                SceneDraft(
-                    row_id=rejected_row_id,
-                    scene_id=scene.scene_id,
-                    chapter_id=scene.chapter_id,
-                    stage="style_rejected",
-                    status="rejected",
-                    content=style_content,
-                    source_bundle_id=bundle["bundle_id"],
-                    source_bundle_hash=bundle["bundle_snapshot_hash"],
-                    generation_llm_call_id=llm_call_id,
-                )
+            rejected_row_id = ledger.add_rejected(
+                row_id,
+                stage="style_rejected",
+                content=style_content,
+                llm_call_id=llm_call_id,
             )
             delivered = neutral_content
             notices.append(
@@ -1400,15 +1274,6 @@ class SceneGenerationService:
             "thresholds": thresholds.audit(),
         }
         return decision, rejected_row_id, delivered
-
-    def _first_draft_lineage(self, first_row_id: str) -> tuple[str | None, str, str | None]:
-        """首稿的 (llm_call_id, execution_step_key, execution_id)——「首稿即风格稿」的产品沿用首稿那次调用的谱系。"""
-        row = self.session.get(SceneDraft, first_row_id)
-        llm_call_id = str(getattr(row, "generation_llm_call_id", "") or "") or None if row is not None else None
-        call = self.session.get(LlmCall, llm_call_id) if llm_call_id else None
-        step_key = str(getattr(call, "execution_step_key", "") or "") or "neutral_draft"
-        execution_id = str(getattr(call, "execution_id", "") or "") or None if call is not None else None
-        return llm_call_id, step_key, execution_id
 
     @staticmethod
     def _style_first_gate_decision(decision: Mapping[str, Any]) -> dict[str, Any]:
@@ -1528,7 +1393,8 @@ class SceneGenerationService:
         notice_severity: str = "info",
     ) -> StyleGenerationResult:
         """首稿即风格稿：不调模型，风格稿行就是首稿原文（谱系沿用首稿那次调用）。"""
-        llm_call_id, step_key, execution_id = self._first_draft_lineage(first_row_id)
+        ledger = DraftLedger(self.session, scene, state, bundle)
+        llm_call_id, step_key, execution_id = first_draft_lineage(self.session, first_row_id)
         decision = {
             "version": STYLE_STEP_VERSION,
             "decision": style_step.DECISION_FIRST_DRAFT_ACCEPTED,
@@ -1564,45 +1430,29 @@ class SceneGenerationService:
                 distance=getattr(first_reading, "distance", None),
             )
         notices = [notice]
-        self.session.add(
-            SceneDraft(
-                row_id=row_id,
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                stage="style_draft",
-                content=first_content,
-                source_bundle_id=bundle["bundle_id"],
-                source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=llm_call_id,
-            )
+        ledger.add_draft(
+            row_id,
+            stage="style_draft",
+            content=first_content,
+            llm_call_id=llm_call_id,
         )
         self.session.flush()
-        self.session.add(
-            AttemptTracker(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                step="style_draft",
-                status="completed",
-                source_bundle_id=bundle["bundle_id"],
-                details_json={
-                    "row_id": row_id,
-                    "llm_call_id": llm_call_id,
-                    "source_draft_row_id": first_row_id,
-                    "content_source": style_step.CONTENT_SOURCE_FIRST_DRAFT_ACCEPTED,
-                    "lineage": LINEAGE_FIRST_DRAFT_ACCEPTED,
-                    "draft_mode": DRAFT_MODE_STYLE_FIRST,
-                    "notices": deepcopy(notices),
-                    "style_step": deepcopy(decision),
-                    **(attempt_details_extra or {}),
-                },
-            )
+        ledger.add_attempt(
+            "style_draft",
+            {
+                "row_id": row_id,
+                "llm_call_id": llm_call_id,
+                "source_draft_row_id": first_row_id,
+                "content_source": style_step.CONTENT_SOURCE_FIRST_DRAFT_ACCEPTED,
+                "lineage": LINEAGE_FIRST_DRAFT_ACCEPTED,
+                "draft_mode": DRAFT_MODE_STYLE_FIRST,
+                "notices": deepcopy(notices),
+                "style_step": deepcopy(decision),
+                **(attempt_details_extra or {}),
+            },
         )
         self.session.flush()
-        state.current_style_draft_row_id = row_id
-        state.latest_valid_draft_row_id = row_id
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        self.session.flush()
+        ledger.point_style(row_id)
         product = StyleGenerationResult(
             row_id=row_id,
             content=first_content,
@@ -1676,16 +1526,14 @@ class SceneGenerationService:
         differences = style_step.revision_differences(first_reading, dimensions)
         card_lines = style_step.card_lines_for(card, dimensions, line_states=line_states)
         lengths = LengthPolicy.for_scene(bundle, scene)
+        ledger = DraftLedger(self.session, scene, state, bundle)
         fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
         try:
             prompt = self._prompt_builder().build(bundle["snapshot"], template_name)
         except Exception as exc:
-            self._persist_generation_failure(
-                scene=scene,
-                state=state,
-                bundle=bundle,
+            ledger.persist_generation_failure(
                 llm_call_id=fallback_llm_call_id,
                 step="style_draft",
                 node_id="style_draft",
@@ -1748,17 +1596,14 @@ class SceneGenerationService:
             )
             revision_content = _extract_scene_text(node_result.response)
         except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
-            self._record_runner_failure_attempt(
-                scene=scene,
-                state=state,
-                bundle=bundle,
+            ledger.record_runner_failure(
                 step="style_draft",
                 prompt=prompt,
                 exc=exc,
                 source_draft_row_id=first_row_id,
             )
             if isinstance(exc, LLMNodeExecutionError):
-                self._raise_original_runner_error(exc)
+                raise_original_runner_error(exc)
             raise
 
         base_safety = _assess_style_base_rewrite(
@@ -1783,8 +1628,8 @@ class SceneGenerationService:
             _LOGGER.warning("copy gate failed on targeted revision for scene %s", scene.scene_id, exc_info=True)
             copy_blocked = copy_unchecked = True
         # L3：读数在保存点里读，失败只回滚保存点（读不出按「不更像」处理），不耽误后面落库与检查点
-        revision_reading, _revision_error = self._observe_reading(
-            policy, revision_content, ref=scene.scene_id, what="revision"
+        revision_reading, _revision_error = fidelity_probe.observe(
+            self.session, policy, revision_content, ref=scene.scene_id, what="revision"
         )
         if candidate_mode:
             keep = bool(base_safety["accepted"]) and not copy_blocked and revision_reading is not None
@@ -1814,20 +1659,11 @@ class SceneGenerationService:
             content_source = style_step.CONTENT_SOURCE_TARGETED_REVISION
             revision_row_ref = row_id
         else:
-            rejected_hash = sha256_text(revision_content)[:10]
-            rejected_row_id = f"{row_id}_rejected_{rejected_hash}"
-            self.session.add(
-                SceneDraft(
-                    row_id=rejected_row_id,
-                    scene_id=scene.scene_id,
-                    chapter_id=scene.chapter_id,
-                    stage="style_rejected",
-                    status="rejected",
-                    content=revision_content,
-                    source_bundle_id=bundle["bundle_id"],
-                    source_bundle_hash=bundle["bundle_snapshot_hash"],
-                    generation_llm_call_id=node_result.llm_call_id,
-                )
+            rejected_row_id = ledger.add_rejected(
+                row_id,
+                stage="style_rejected",
+                content=revision_content,
+                llm_call_id=node_result.llm_call_id,
             )
             content = first_content
             content_source = style_step.CONTENT_SOURCE_REVISION_NOT_CLOSER
@@ -1849,17 +1685,11 @@ class SceneGenerationService:
                     rejected_candidate_row_id=rejected_row_id,
                 )
             )
-        self.session.add(
-            SceneDraft(
-                row_id=row_id,
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                stage="style_draft",
-                content=content,
-                source_bundle_id=bundle["bundle_id"],
-                source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=node_result.llm_call_id,
-            )
+        ledger.add_draft(
+            row_id,
+            stage="style_draft",
+            content=content,
+            llm_call_id=node_result.llm_call_id,
         )
         self.session.flush()
         revision_reading_row = style_readings.record_fidelity_reading(
@@ -1905,45 +1735,29 @@ class SceneGenerationService:
             "candidate_mode": bool(candidate_mode),
             "slot_key": slot_key,
         }
-        runtime_audit = (
-            deepcopy(prompt["_style_reference_runtime_audit"])
-            if isinstance(prompt, Mapping) and isinstance(prompt.get("_style_reference_runtime_audit"), dict)
-            else None
+        reference_runtime = runtime_audit(
+            prompt, outcome=content_source, draft_mode=DRAFT_MODE_STYLE_FIRST, notices=notices
         )
-        if runtime_audit is not None:
-            runtime_audit["generation_outcome"] = content_source
-            runtime_audit["draft_mode"] = DRAFT_MODE_STYLE_FIRST
-            runtime_audit["notice_codes"] = [item["code"] for item in notices]
-        self.session.add(
-            AttemptTracker(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                step="style_draft",
-                status="completed",
-                source_bundle_id=bundle["bundle_id"],
-                details_json={
-                    "row_id": row_id,
-                    "llm_call_id": node_result.llm_call_id,
-                    "source_draft_row_id": first_row_id,
-                    "template_name": template_name,
-                    "base_safety": base_safety,
-                    "rejected_candidate_row_id": rejected_row_id,
-                    "content_source": content_source,
-                    "draft_mode": DRAFT_MODE_STYLE_FIRST,
-                    "notices": deepcopy(notices),
-                    "style_step": deepcopy(decision),
-                    **({"styled_draft_gate": deepcopy(styled_draft_gate)} if styled_draft_gate is not None else {}),
-                    **({"style_reference_runtime": runtime_audit} if runtime_audit is not None else {}),
-                    **(attempt_details_extra or {}),
-                },
-            )
+        ledger.add_attempt(
+            "style_draft",
+            {
+                "row_id": row_id,
+                "llm_call_id": node_result.llm_call_id,
+                "source_draft_row_id": first_row_id,
+                "template_name": template_name,
+                "base_safety": base_safety,
+                "rejected_candidate_row_id": rejected_row_id,
+                "content_source": content_source,
+                "draft_mode": DRAFT_MODE_STYLE_FIRST,
+                "notices": deepcopy(notices),
+                "style_step": deepcopy(decision),
+                **({"styled_draft_gate": deepcopy(styled_draft_gate)} if styled_draft_gate is not None else {}),
+                **({"style_reference_runtime": reference_runtime} if reference_runtime is not None else {}),
+                **(attempt_details_extra or {}),
+            },
         )
         self.session.flush()
-        state.current_style_draft_row_id = row_id
-        state.latest_valid_draft_row_id = row_id
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        self.session.flush()
+        ledger.point_style(row_id)
         product = StyleGenerationResult(
             row_id=row_id,
             content=content,
@@ -1987,8 +1801,8 @@ class SceneGenerationService:
         （它们是按测得的差异定向改的，不是独立采样）。关键场景的匿名终选门不变（按正文去重后给作者选）。
         """
         thresholds = style_step.fidelity_thresholds()
-        first_reading, first_reading_id, first_reading_error = self._record_first_draft_reading(
-            scene, policy, first_row_id, first_content, thresholds
+        first_reading, first_reading_id, first_reading_error = fidelity_probe.record_first_draft_reading(
+            self.session, scene, policy, first_row_id, first_content, thresholds
         )
         usable = first_reading is not None and first_reading.reliable
         try:
@@ -2047,13 +1861,9 @@ class SceneGenerationService:
             results, policy=policy, first_reading=first_reading, first_row_id=first_row_id
         )
         best = ranked[0]
-        state.current_style_draft_row_id = best.row_id
-        state.latest_valid_draft_row_id = best.row_id
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         if len(ranked) >= 2:
             state.candidate_dispersion_score = round(_candidate_dispersion([c.content for c in ranked]), 4)
-        self.session.flush()
+        DraftLedger(self.session, scene, state, bundle).point_style(best.row_id)
         return ranked
 
     def _rank_style_first_candidates(
@@ -2079,8 +1889,8 @@ class SceneGenerationService:
                 reading = first_reading
             else:
                 # L3：读不出排最后；读数在保存点里读，失败不弄坏会话
-                reading, _error = self._observe_reading(
-                    policy, result.content, ref=result.row_id, what="candidate"
+                reading, _error = fidelity_probe.observe(
+                    self.session, policy, result.content, ref=result.row_id, what="candidate"
                 )
             copy_passed: bool | None
             try:
@@ -2251,6 +2061,7 @@ class SceneGenerationService:
     ) -> StyleGenerationResult:
         # 长度带按 bundle 的 StylePolicy（与场景的呈现方式）放宽，这一遍里的验收、指引与补丁都用它
         lengths = LengthPolicy.for_scene(bundle, scene)
+        ledger = DraftLedger(self.session, scene, state, bundle)
         fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
@@ -2263,10 +2074,7 @@ class SceneGenerationService:
             )
             prompt = self._prompt_builder().build(bundle["snapshot"], template_name)
         except Exception as exc:
-            self._persist_generation_failure(
-                scene=scene,
-                state=state,
-                bundle=bundle,
+            ledger.persist_generation_failure(
                 llm_call_id=fallback_llm_call_id,
                 step=llm_step,
                 node_id=("style_patch" if llm_step == "soft_patch" else llm_step),
@@ -2341,17 +2149,14 @@ class SceneGenerationService:
                 )
                 style_content = _extract_scene_text(node_result.response)
             except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
-                self._record_runner_failure_attempt(
-                    scene=scene,
-                    state=state,
-                    bundle=bundle,
+                ledger.record_runner_failure(
                     step=llm_step,
                     prompt=prompt,
                     exc=exc,
                     source_draft_row_id=source_draft_row_id,
                 )
                 if isinstance(exc, LLMNodeExecutionError):
-                    self._raise_original_runner_error(exc)
+                    raise_original_runner_error(exc)
                 raise
 
             base_safety = _assess_style_base_rewrite(
@@ -2364,20 +2169,11 @@ class SceneGenerationService:
             repair_source_row_id = row_id
             repair_source_content = style_content
             if stage == "style_draft" and not base_safety["accepted"]:
-                rejected_hash = sha256_text(style_content)[:10]
-                rejected_candidate_row_id = f"{row_id}_rejected_{rejected_hash}"
-                self.session.add(
-                    SceneDraft(
-                        row_id=rejected_candidate_row_id,
-                        scene_id=scene.scene_id,
-                        chapter_id=scene.chapter_id,
-                        stage="style_rejected",
-                        status="rejected",
-                        content=style_content,
-                        source_bundle_id=bundle["bundle_id"],
-                        source_bundle_hash=bundle["bundle_snapshot_hash"],
-                        generation_llm_call_id=node_result.llm_call_id,
-                    )
+                rejected_candidate_row_id = ledger.add_rejected(
+                    row_id,
+                    stage="style_rejected",
+                    content=style_content,
+                    llm_call_id=node_result.llm_call_id,
                 )
                 repair_source_row_id = rejected_candidate_row_id
                 repair_source_content = style_content
@@ -2400,6 +2196,7 @@ class SceneGenerationService:
             not_closer_row_id: str | None = None
             if stage == "style_draft" and base_safety["accepted"] and policy.bound:
                 style_step_decision, not_closer_row_id, style_content = self._neutral_first_style_keep(
+                    ledger=ledger,
                     scene=scene,
                     bundle=bundle,
                     policy=policy,
@@ -2410,17 +2207,11 @@ class SceneGenerationService:
                     llm_call_id=node_result.llm_call_id,
                     notices=notices,
                 )
-            self.session.add(
-                SceneDraft(
-                    row_id=row_id,
-                    scene_id=scene.scene_id,
-                    chapter_id=scene.chapter_id,
-                    stage=stage,
-                    content=style_content,
-                    source_bundle_id=bundle["bundle_id"],
-                    source_bundle_hash=bundle["bundle_snapshot_hash"],
-                    generation_llm_call_id=node_result.llm_call_id,
-                )
+            ledger.add_draft(
+                row_id,
+                stage=stage,
+                content=style_content,
+                llm_call_id=node_result.llm_call_id,
             )
             self.session.flush()
 
@@ -2439,11 +2230,6 @@ class SceneGenerationService:
                 )
                 notices.extend(_styled_draft_gate_notices(styled_draft_gate))
 
-            runtime_audit = (
-                deepcopy(prompt["_style_reference_runtime_audit"])
-                if isinstance(prompt.get("_style_reference_runtime_audit"), dict)
-                else None
-            )
             content_source = (
                 "approved_neutral_fallback"
                 if rejected_candidate_row_id is not None
@@ -2451,56 +2237,46 @@ class SceneGenerationService:
                 if not_closer_row_id is not None
                 else "provider_style_output"
             )
-            if runtime_audit is not None:
-                runtime_audit["generation_outcome"] = content_source
-                runtime_audit["draft_mode"] = (
-                    DRAFT_MODE_STYLE_FIRST if style_first else DRAFT_MODE_NEUTRAL_FIRST
-                )
-                runtime_audit["notice_codes"] = [item["code"] for item in notices]
-            self.session.add(
-                AttemptTracker(
-                    scene_id=scene.scene_id,
-                    chapter_id=scene.chapter_id,
-                    step=llm_step,
-                    status="completed",
-                    source_bundle_id=bundle["bundle_id"],
-                    details_json={
-                        "row_id": row_id,
-                        "llm_call_id": node_result.llm_call_id,
-                        "source_draft_row_id": source_draft_row_id,
-                        "base_safety": base_safety,
-                        "rejected_candidate_row_id": rejected_candidate_row_id,
-                        "content_source": content_source,
-                        "notices": deepcopy(notices),
-                        **(
-                            {"styled_draft_gate": deepcopy(styled_draft_gate)}
-                            if styled_draft_gate is not None
-                            else {}
-                        ),
-                        **(
-                            {
-                                "style_step": deepcopy(style_step_decision),
-                                "not_closer_rejected_row_id": not_closer_row_id,
-                            }
-                            if style_step_decision is not None
-                            else {}
-                        ),
-                        **(
-                            {"style_reference_runtime": runtime_audit}
-                            if runtime_audit is not None
-                            else {}
-                        ),
-                        **(attempt_details_extra or {}),
-                    },
-                )
+            reference_runtime = runtime_audit(
+                prompt,
+                outcome=content_source,
+                draft_mode=DRAFT_MODE_STYLE_FIRST if style_first else DRAFT_MODE_NEUTRAL_FIRST,
+                notices=notices,
+            )
+            ledger.add_attempt(
+                llm_step,
+                {
+                    "row_id": row_id,
+                    "llm_call_id": node_result.llm_call_id,
+                    "source_draft_row_id": source_draft_row_id,
+                    "base_safety": base_safety,
+                    "rejected_candidate_row_id": rejected_candidate_row_id,
+                    "content_source": content_source,
+                    "notices": deepcopy(notices),
+                    **(
+                        {"styled_draft_gate": deepcopy(styled_draft_gate)}
+                        if styled_draft_gate is not None
+                        else {}
+                    ),
+                    **(
+                        {
+                            "style_step": deepcopy(style_step_decision),
+                            "not_closer_rejected_row_id": not_closer_row_id,
+                        }
+                        if style_step_decision is not None
+                        else {}
+                    ),
+                    **(
+                        {"style_reference_runtime": reference_runtime}
+                        if reference_runtime is not None
+                        else {}
+                    ),
+                    **(attempt_details_extra or {}),
+                },
             )
             self.session.flush()
 
-            state.current_style_draft_row_id = row_id
-            state.latest_valid_draft_row_id = row_id
-            state.current_bundle_id = bundle["bundle_id"]
-            state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-            self.session.flush()
+            ledger.point_style(row_id)
             base_result = StyleGenerationResult(
                 row_id=row_id,
                 content=style_content,
@@ -2538,7 +2314,7 @@ class SceneGenerationService:
                 )
             base_result = resume_base
             style_content = resume_base.content
-            base_safety = _resume_base_safety(
+            base_safety = resume_base_safety(
                 self.session,
                 scene_id=scene.scene_id,
                 row_id=resume_base.row_id,
@@ -2550,7 +2326,7 @@ class SceneGenerationService:
                 ),
             )
             repair_source_row_id, repair_source_content = (
-                _resume_style_repair_source(
+                resume_style_repair_source(
                     self.session,
                     scene_id=scene.scene_id,
                     row_id=resume_base.row_id,
@@ -2780,6 +2556,7 @@ class SceneGenerationService:
             )
             + f"_{source_suffix}"
         )
+        ledger = DraftLedger(self.session, scene, state, bundle)
         prompt = self._prompt_builder().build(
             bundle["snapshot"],
             "style_salvage_patch",
@@ -2850,10 +2627,7 @@ class SceneGenerationService:
                     ),
                 }
         except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
-            self._record_runner_failure_attempt(
-                scene=scene,
-                state=state,
-                bundle=bundle,
+            ledger.record_runner_failure(
                 step="style_salvage_patch",
                 prompt=prompt,
                 exc=exc,
@@ -2866,7 +2640,7 @@ class SceneGenerationService:
                 "error_code": exc.error_code,
             }
 
-        conformance = _assess_style_rewrite_drift(
+        conformance = fidelity_probe.rewrite_drift(
             self.session,
             policy_or_bundle=bundle,
             source_content=neutral_content,
@@ -2898,20 +2672,15 @@ class SceneGenerationService:
         acceptance["style_salvage_non_regression_enforced"] = True
         acceptance["style_salvage_max_distance_increase"] = conformance.get("max_distance_increase")
 
-        self.session.add(
-            SceneDraft(
-                row_id=row_id,
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                stage="style_salvage",
-                status="active" if acceptance["accepted"] else "rejected",
-                content=rewritten_content,
-                source_bundle_id=bundle["bundle_id"],
-                source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=node_result.llm_call_id,
-            )
+        ledger.add_draft(
+            row_id,
+            stage="style_salvage",
+            status="active" if acceptance["accepted"] else "rejected",
+            content=rewritten_content,
+            llm_call_id=node_result.llm_call_id,
         )
         self.session.flush()
+        reference_runtime = runtime_audit(prompt)
         details = {
             "row_id": row_id,
             "llm_call_id": node_result.llm_call_id,
@@ -2924,25 +2693,11 @@ class SceneGenerationService:
             "quality_gate": quality_gate,
             "acceptance": acceptance,
             "style_salvage": salvage_audit,
-            **(
-                {
-                    "style_reference_runtime": deepcopy(
-                        prompt["_style_reference_runtime_audit"]
-                    )
-                }
-                if isinstance(prompt.get("_style_reference_runtime_audit"), dict)
-                else {}
-            ),
+            **({"style_reference_runtime": reference_runtime} if reference_runtime is not None else {}),
         }
-        self.session.add(
-            AttemptTracker(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                step="style_salvage_patch",
-                status="completed",
-                source_bundle_id=bundle["bundle_id"],
-                details_json=details,
-            )
+        ledger.add_attempt(
+            "style_salvage_patch",
+            details,
         )
         self.session.flush()
         outcome = {
@@ -2957,11 +2712,7 @@ class SceneGenerationService:
         }
         if not acceptance["accepted"]:
             return None, outcome
-        state.current_style_draft_row_id = row_id
-        state.latest_valid_draft_row_id = row_id
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        self.session.flush()
+        ledger.point_style(row_id)
         return (
             StyleGenerationResult(
                 row_id=row_id,
@@ -2996,6 +2747,7 @@ class SceneGenerationService:
         # SceneDraft.row_id 为 opaque 主键、不被下游解析，故追加 source_row_id 的短哈希后缀即可（唯一且长度有界）。
         source_suffix = hashlib.sha1(source_row_id.encode("utf-8")).hexdigest()[:10]
         row_id = f"{versioned_scene_artifact_id('draft_style_de_template', scene.scene_id, bundle)}_{source_suffix}"
+        ledger = DraftLedger(self.session, scene, state, bundle)
         is_safety_repair = authoritative_content is not None
         base_safety_reasons = set(
             (quality_gate.get("base_safety") or {}).get("reasons") or []
@@ -3150,10 +2902,7 @@ class SceneGenerationService:
             else:
                 rewritten_content = _extract_scene_text(node_result.response)
         except (LLMNodeExecutionError, SceneGenerationPostprocessError) as exc:
-            self._record_runner_failure_attempt(
-                scene=scene,
-                state=state,
-                bundle=bundle,
+            ledger.record_runner_failure(
                 step="de_template",
                 prompt=prompt,
                 exc=exc,
@@ -3185,7 +2934,7 @@ class SceneGenerationService:
             authoritative_content=authoritative_content,
             rewritten_content=rewritten_content,
             source_quality_gate=quality_gate,
-            style_conformance=_assess_style_rewrite_drift(
+            style_conformance=fidelity_probe.rewrite_drift(
                 self.session,
                 policy_or_bundle=bundle,
                 source_content=source_content,
@@ -3194,56 +2943,35 @@ class SceneGenerationService:
             lengths=lengths,
         )
 
-        self.session.add(
-            SceneDraft(
-                row_id=row_id,
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                stage="de_template",
-                status="active" if acceptance["accepted"] else "rejected",
-                content=rewritten_content,
-                source_bundle_id=bundle["bundle_id"],
-                source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=node_result.llm_call_id,
-            )
+        ledger.add_draft(
+            row_id,
+            stage="de_template",
+            status="active" if acceptance["accepted"] else "rejected",
+            content=rewritten_content,
+            llm_call_id=node_result.llm_call_id,
         )
         self.session.flush()
 
-        self.session.add(
-            AttemptTracker(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                step="de_template",
-                status="completed",
-                source_bundle_id=bundle["bundle_id"],
-                details_json={
-                    "row_id": row_id,
-                    "llm_call_id": node_result.llm_call_id,
-                    # Durable work-item checkpoint 的既有契约以 base row 为父项；
-                    # 安全修复实际读取的 rejected provider row 另列，避免伪装血缘。
-                    "source_style_draft_row_id": checkpoint_base_row_id,
-                    "repair_source_style_draft_row_id": source_row_id,
-                    "authoritative_source_row_id": authoritative_row_id,
-                    "quality_gate": quality_gate,
-                    "acceptance": acceptance,
-                    **(
-                        {"length_patch": length_patch_audit}
-                        if length_patch_audit is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            "style_reference_runtime": deepcopy(
-                                prompt["_style_reference_runtime_audit"]
-                            )
-                        }
-                        if isinstance(
-                            prompt.get("_style_reference_runtime_audit"), dict
-                        )
-                        else {}
-                    ),
-                },
-            )
+        reference_runtime = runtime_audit(prompt)
+        ledger.add_attempt(
+            "de_template",
+            {
+                "row_id": row_id,
+                "llm_call_id": node_result.llm_call_id,
+                # Durable work-item checkpoint 的既有契约以 base row 为父项；
+                # 安全修复实际读取的 rejected provider row 另列，避免伪装血缘。
+                "source_style_draft_row_id": checkpoint_base_row_id,
+                "repair_source_style_draft_row_id": source_row_id,
+                "authoritative_source_row_id": authoritative_row_id,
+                "quality_gate": quality_gate,
+                "acceptance": acceptance,
+                **(
+                    {"length_patch": length_patch_audit}
+                    if length_patch_audit is not None
+                    else {}
+                ),
+                **({"style_reference_runtime": reference_runtime} if reference_runtime is not None else {}),
+            },
         )
         self.session.flush()
 
@@ -3267,11 +2995,7 @@ class SceneGenerationService:
             # None 后会继续返回 base_result，并把 rejected outcome 写入 checkpoint。
             return None, outcome
 
-        state.current_style_draft_row_id = row_id
-        state.latest_valid_draft_row_id = row_id
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        self.session.flush()
+        ledger.point_style(row_id)
 
         return (
             StyleGenerationResult(
@@ -3397,152 +3121,6 @@ class SceneGenerationService:
                 stage=stage, error=type(exc).__name__
             )
 
-    def _record_runner_failure_attempt(
-        self,
-        *,
-        scene: SceneCard,
-        state: SceneRunState,
-        bundle: dict[str, Any],
-        step: str,
-        prompt: dict[str, Any],
-        exc: LLMNodeExecutionError | SceneGenerationPostprocessError,
-        source_draft_row_id: str | None = None,
-    ) -> None:
-        details_json: dict[str, Any] = {
-            "llm_call_id": exc.llm_call_id,
-            "error_code": exc.error_code,
-            "message": str(getattr(exc, "message", None) or str(exc)),
-            "retryable": bool(getattr(exc, "retryable", False)),
-            "business_attempt_consumed": _counts_as_business_attempt(exc),
-        }
-        if prompt is not None:
-            details_json["template_name"] = prompt.get("template_name")
-            details_json["template_version"] = prompt.get("template_version")
-            if isinstance(prompt.get("_style_reference_runtime_audit"), dict):
-                details_json["style_reference_runtime"] = deepcopy(
-                    prompt["_style_reference_runtime_audit"]
-                )
-        if source_draft_row_id is not None:
-            details_json["source_draft_row_id"] = source_draft_row_id
-        if isinstance(exc, LLMNodeContinuityError):
-            details_json["continuity_warning"] = exc.continuity_warning
-        self.session.add(
-            AttemptTracker(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                step=step,
-                status="failed",
-                source_bundle_id=bundle["bundle_id"],
-                details_json=details_json,
-            )
-        )
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        if _counts_as_business_attempt(exc):
-            state.total_attempt_count += 1
-        self.session.flush()
-
-    @staticmethod
-    def _raise_original_runner_error(exc: LLMNodeExecutionError) -> None:
-        if isinstance(exc, LLMNodeContinuityError):
-            raise DomainError(
-                CONTINUITY_BUDGET_ERROR_CODE,
-                CONTINUITY_BUDGET_MESSAGE,
-                status_code=409,
-                details={
-                    "continuity_warning": exc.continuity_warning,
-                    "recommended_action": SCENE_SPLIT_RECOMMENDATION,
-                },
-            ) from exc
-        if exc.original_error is not None:
-            raise exc.original_error
-        raise exc
-
-    def _persist_generation_failure(
-        self,
-        *,
-        scene: SceneCard,
-        state: SceneRunState,
-        bundle: dict[str, Any],
-        llm_call_id: str,
-        step: str,
-        node_id: str,
-        execution_step_key: str | None = None,
-        started_at: float,
-        task_config: Any | None,
-        prompt: dict[str, Any] | None,
-        request_summary: dict[str, Any],
-        exc: Exception,
-        source_draft_row_id: str | None = None,
-    ) -> None:
-        error_code = getattr(exc, "code", exc.__class__.__name__)
-        self.session.add(
-            LlmCall(
-                llm_call_id=llm_call_id,
-                scope_type="scene",
-                scope_id=scene.scene_id,
-                provider=getattr(task_config, "provider", None),
-                provider_id=getattr(task_config, "provider_id", None),
-                account_id=getattr(task_config, "account_id", None),
-                model=getattr(task_config, "model", None),
-                # 这一步本该派发到的节点（soft_patch 走 style_patch 路由、作者手笔首稿走 style_draft），不是步名
-                node_id=node_id,
-                reasoning_level=getattr(task_config, "reasoning_level", None),
-                native_reasoning_json=None,
-                credential_mode=getattr(task_config, "credential_mode", None),
-                prompt_hash=(
-                    prompt.get("prompt_hash") if isinstance(prompt, dict) else None
-                ),
-                step=step,
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                execution_id=current_llm_execution_id(),
-                execution_step_key=execution_step_key,
-                estimated_tokens=0,
-                reserved_tokens=0,
-                budget_charged_tokens=0,
-                accounting_status="rejected",
-                request_payload_summary=sanitize_audit_summary(request_summary),
-                # error_audit_summary 已做过 sanitize，勿再包一层（重复 sanitize 幂等但多余）。
-                response_payload_summary=error_audit_summary(exc),
-                prompt_tokens=0,
-                completion_tokens=0,
-                total_tokens=0,
-                latency_ms=int((time.perf_counter() - started_at) * 1000),
-                finish_reason=None,
-                error_code=error_code,
-            )
-        )
-        self.session.flush()
-        details_json: dict[str, Any] = {
-            "llm_call_id": llm_call_id,
-            "error_code": error_code,
-            "message": str(exc),
-            "execution_step_key": execution_step_key,
-            "business_attempt_consumed": _counts_as_business_attempt(exc),
-        }
-        if prompt is not None:
-            details_json["template_name"] = prompt.get("template_name")
-            details_json["template_version"] = prompt.get("template_version")
-        if source_draft_row_id is not None:
-            details_json["source_draft_row_id"] = source_draft_row_id
-        self.session.add(
-            AttemptTracker(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                step=step,
-                status="failed",
-                source_bundle_id=bundle["bundle_id"],
-                details_json=details_json,
-            )
-        )
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        if _counts_as_business_attempt(exc):
-            state.total_attempt_count += 1
-        self.session.flush()
-
-
 def _candidate_dispersion(texts: list[str]) -> float:
     """Measure pairwise surface dissimilarity of candidate texts (0=identical, 1=fully disjoint).
 
@@ -3567,139 +3145,5 @@ def _candidate_dispersion(texts: list[str]) -> float:
             else:
                 distances.append(1.0 - len(a & b) / union)
     return sum(distances) / len(distances) if distances else 0.0
-
-
-def _assess_style_rewrite_drift(
-    session: Session,
-    *,
-    policy_or_bundle: Any,
-    source_content: str,
-    rewritten_content: str,
-) -> dict[str, Any]:
-    """改写不退步（风格参考 v3 S2 d）：两稿各读一次「像不像」读数——
-
-    ``regressed`` = 改写稿 distance > 来源稿 distance + ``patch_max_distance_increase``；``comparable`` = 两边读数都可信。
-    未绑定 / 读不出 / 不可信 / 读数出错 → ``comparable=False``（``regressed`` 恒 False），消费方语义不变：去模板改写
-    只在 ``regressed`` 时拒，风格挽救补丁在 ``comparable is not True`` 时不采用。读数在保存点里读，失败只回滚保存点。
-    ``policy_or_bundle`` 收 StylePolicy 或 bundle（bundle 按其冻结契约解析策略）。
-    """
-    thresholds = style_step.fidelity_thresholds()
-    audit: dict[str, Any] = {
-        "version": "style_rewrite_drift_v1",
-        "available": False,
-        "comparable": False,
-        "regressed": False,
-        "max_distance_increase": float(thresholds.patch_max_distance_increase),
-        "source": None,
-        "rewritten": None,
-    }
-    try:
-        policy = (
-            policy_or_bundle
-            if hasattr(policy_or_bundle, "bound")
-            else style_policy_for_bundle(policy_or_bundle)
-        )
-        audit["runtime_contract_mode"] = getattr(policy, "mode", None)
-        if not getattr(policy, "bound", False):
-            audit["unavailable_reason"] = (
-                getattr(policy, "error_code", None)
-                or ("bundle_has_no_style_profile" if getattr(policy, "mode", None) == "absent" else "style_policy_unbound")
-            )
-            return audit
-
-        readings_by_sha: dict[str, tuple[Any, str | None]] = {}
-
-        def _read(text: str, what: str) -> tuple[Any, str | None]:
-            sha = style_readings.text_sha256(text)
-            if sha not in readings_by_sha:
-                try:
-                    with session.begin_nested():
-                        readings_by_sha[sha] = (style_readings.reading_for_text(session, policy, text), None)
-                except Exception as exc:  # noqa: BLE001 — 读数是观察：失败按读不出处理
-                    _LOGGER.warning("%s fidelity reading failed (rewrite drift)", what, exc_info=True)
-                    readings_by_sha[sha] = (None, str(getattr(exc, "code", None) or type(exc).__name__))
-            return readings_by_sha[sha]
-
-        def _brief(reading: Any) -> dict[str, Any] | None:
-            if reading is None:
-                return None
-            return {
-                "distance": float(reading.distance),
-                "percentile": float(reading.percentile),
-                "reliable": bool(reading.reliable),
-                "char_count": int(reading.char_count),
-            }
-
-        source_reading, source_error = _read(source_content, "source")
-        rewritten_reading, rewritten_error = _read(rewritten_content, "rewritten")
-        audit["source"] = _brief(source_reading)
-        audit["rewritten"] = _brief(rewritten_reading)
-        if source_reading is None or rewritten_reading is None:
-            audit["unavailable_reason"] = "reading_failed" if (source_error or rewritten_error) else "reading_unavailable"
-            return audit
-        audit["available"] = True
-        comparable = bool(source_reading.reliable) and bool(rewritten_reading.reliable)
-        delta = float(rewritten_reading.distance) - float(source_reading.distance)
-        audit["comparable"] = comparable
-        audit["distance_delta"] = round(delta, 6)
-        audit["regressed"] = bool(comparable and delta > float(thresholds.patch_max_distance_increase))
-        if not comparable:
-            audit["unavailable_reason"] = "reading_unreliable"
-        return audit
-    except Exception:  # noqa: BLE001 — optional evidence gate must fail open (comparable=False)
-        _LOGGER.warning("style rewrite drift audit degraded", exc_info=True)
-        return {**audit, "unavailable_reason": "style_drift_internal_error"}
-
-
-def _resume_base_safety(
-    session: Session,
-    *,
-    scene_id: str,
-    row_id: str,
-    fallback: dict[str, Any],
-) -> dict[str, Any]:
-    for attempt in session.query(AttemptTracker).filter_by(
-        scene_id=scene_id,
-        step="style_draft",
-        status="completed",
-    ):
-        details = attempt.details_json or {}
-        if details.get("row_id") == row_id and isinstance(
-            details.get("base_safety"), dict
-        ):
-            return dict(details["base_safety"])
-    return fallback
-
-
-def _resume_style_repair_source(
-    session: Session,
-    *,
-    scene_id: str,
-    row_id: str,
-    fallback_row_id: str,
-    fallback_content: str,
-) -> tuple[str, str]:
-    """恢复 base checkpoint 时找回被拒绝的 provider 风格稿供一次定向修复。"""
-    for attempt in session.query(AttemptTracker).filter_by(
-        scene_id=scene_id,
-        step="style_draft",
-        status="completed",
-    ):
-        details = attempt.details_json or {}
-        if details.get("row_id") != row_id:
-            continue
-        rejected_row_id = details.get("rejected_candidate_row_id")
-        if not isinstance(rejected_row_id, str) or not rejected_row_id:
-            break
-        rejected = session.get(SceneDraft, rejected_row_id)
-        if (
-            rejected is not None
-            and rejected.stage == "style_rejected"
-            and rejected.status == "rejected"
-            and rejected.content
-        ):
-            return rejected.row_id, rejected.content
-        break
-    return fallback_row_id, fallback_content
 
 

@@ -1002,7 +1002,7 @@ def test_style_rewrite_drift_reads_both_texts_and_flags_a_measurable_regression(
                 _VOICED_MARK: _fixed_reading(rewritten_d, 70.0, reliable=rewritten_reliable),
             },
         )
-        return sg._assess_style_rewrite_drift(
+        return sg.fidelity_probe.rewrite_drift(
             session, policy_or_bundle=policy_or_bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
         )
 
@@ -1023,13 +1023,13 @@ def test_style_rewrite_drift_reads_both_texts_and_flags_a_measurable_regression(
     assert unreliable["unavailable_reason"] == "reading_unreliable"
     # 读数出错 → 不可比
     _install_readings(monkeypatch, {_NEUTRAL_MARK: RuntimeError, _VOICED_MARK: _fixed_reading(1.0, 60.0)})
-    failed = sg._assess_style_rewrite_drift(
+    failed = sg.fidelity_probe.rewrite_drift(
         session, policy_or_bundle=bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
     )
     assert failed["available"] is False and failed["comparable"] is False and failed["regressed"] is False
     assert failed["unavailable_reason"] == "reading_failed" and failed["source"] is None
     # 未绑定 → 不可比（去模板不拒、挽救补丁不采用——消费方语义不变）
-    unbound = sg._assess_style_rewrite_drift(
+    unbound = sg.fidelity_probe.rewrite_drift(
         session, policy_or_bundle={"snapshot": {}}, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
     )
     assert unbound["available"] is False and unbound["comparable"] is False and unbound["regressed"] is False
@@ -1047,7 +1047,7 @@ def test_style_rewrite_drift_reads_both_texts_and_flags_a_measurable_regression(
     _install_readings(monkeypatch, {_NEUTRAL_MARK: _fixed_reading(1.0, 60.0)})
     original = readings.reading_for_text
     monkeypatch.setattr(readings, "reading_for_text", counting)
-    same = sg._assess_style_rewrite_drift(
+    same = sg.fidelity_probe.rewrite_drift(
         session, policy_or_bundle=bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_NEUTRAL_TEXT
     )
     assert len(calls) == 1 and same["regressed"] is False and same["comparable"] is True

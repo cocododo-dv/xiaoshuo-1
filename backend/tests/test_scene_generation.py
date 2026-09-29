@@ -1388,7 +1388,7 @@ def test_extreme_underlength_style_uses_bounded_neutral_salvage(
     # 未绑定的场景没有读数（挽救补丁不可比 → 不采用，见 test_style_salvage_is_never_adopted_without_comparable_readings）；
     # 这里把「改写不退步」定死为可比且没退步，只看补丁本身的接线
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._assess_style_rewrite_drift",
+        "novel_system.services.scene_generation.fidelity_probe.rewrite_drift",
         lambda *_args, **_kwargs: {
             "available": True,
             "comparable": True,
