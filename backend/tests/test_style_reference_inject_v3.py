@@ -14,14 +14,13 @@ from sqlalchemy import func, select
 
 from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph, StyleReferenceSceneWindows
 from novel_system.services.context_budget import estimate_tokens
-from novel_system.services.style_policy import policy_from_contract, reset_style_policy_cache
+from novel_system.services.style_policy import policy_from_contract
 from novel_system.services.style_prompt_injection import (
     PLACEMENT_USER_TAIL,
     STYLE_USER_TAIL_KEY,
     apply_style_user_tail,
     inject_style_reference_prefix,
 )
-from novel_system.services.style_reference.config_loader import clear_config_cache
 from novel_system.services.style_reference.inject.bindings import (
     describe_binding_layers,
     most_specific_binding,
@@ -81,16 +80,6 @@ from tests.style_reference_inject_helpers import (
     seed_scene,
     tag_windows,
 )
-
-
-@pytest.fixture(autouse=True)
-def _fresh_caches():
-    clear_config_cache()
-    reset_render_cache()
-    reset_contract_memo()
-    reset_style_policy_cache()
-    yield
-    reset_render_cache()
 
 
 def _policy(session, key: str, *, config: dict | None = None, scene=None, **seed_kwargs):

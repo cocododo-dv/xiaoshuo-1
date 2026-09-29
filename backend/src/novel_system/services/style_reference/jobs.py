@@ -671,7 +671,10 @@ _CANCEL_HOOKS: dict[str, CancelHook] = {}
 _EXECUTORS: dict[str, ThreadPoolExecutor] = {}
 _EXECUTOR_LOCK = threading.Lock()
 _DISPATCHED: set[str] = set()
+SWEEPER_THREAD_NAME = "sr_job_sweeper"
 _SWEEPER: threading.Thread | None = None
+# 当前清扫线程自己的停止信号：每次启动换一个新的（线程闭包里抓住的是自己那一个），停下后不再清。旧做法共用一个事件：
+# 旧线程还在一拍里时下一个 lifespan 启动、把事件清掉，旧线程醒来看到的是没置位的事件，就接着每 30 s 清扫一次。
 _SWEEPER_STOP = threading.Event()
 # 工人代：``shutdown_job_workers`` 每次 +1；认领时记下当时的代，检查点发现代变了 = 进程要退出
 _GENERATION = 0
@@ -962,19 +965,20 @@ def sweeper_tick(*, now: float | None = None) -> None:
 def start_job_sweeper(*, interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> None:
     """常驻清扫线程（FastAPI lifespan 启动时调用一次；重复调用无害）。启动时先跑一拍（清扫 + 全部维护任务），
     之后每 ``interval_seconds`` 秒一拍（维护任务只在各自的间隔到期时才跑）。"""
-    global _SWEEPER
+    global _SWEEPER, _SWEEPER_STOP
     with _EXECUTOR_LOCK:
         if _SWEEPER is not None and _SWEEPER.is_alive():
             return
-        _SWEEPER_STOP.clear()
+        stop = threading.Event()
         _MAINTENANCE_LAST_RUN.clear()
 
         def _loop() -> None:
             sweeper_tick()
-            while not _SWEEPER_STOP.wait(max(1.0, float(interval_seconds))):
+            while not stop.wait(max(1.0, float(interval_seconds))):
                 sweeper_tick()
 
-        _SWEEPER = threading.Thread(target=_loop, name="sr_job_sweeper", daemon=True)
+        _SWEEPER_STOP = stop
+        _SWEEPER = threading.Thread(target=_loop, name=SWEEPER_THREAD_NAME, daemon=True)
         _SWEEPER.start()
 
 
@@ -983,8 +987,8 @@ def shutdown_job_workers(*, wait: bool = False) -> None:
 
     ``wait=True`` 等在跑的处理器放回作业再返回（测试用）；缺省不等——它们在几秒内自己放回。"""
     global _SWEEPER, _GENERATION
-    _SWEEPER_STOP.set()
     with _EXECUTOR_LOCK:
+        _SWEEPER_STOP.set()
         _GENERATION += 1
         executors = list(_EXECUTORS.values())
         _EXECUTORS.clear()
@@ -1017,6 +1021,7 @@ __all__ = [
     "STATE_QUEUED",
     "STATE_RUNNING",
     "STATE_SUCCEEDED",
+    "SWEEPER_THREAD_NAME",
     "StyleJobService",
     "TERMINAL_STATES",
     "already_active_error",

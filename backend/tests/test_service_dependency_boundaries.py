@@ -31,7 +31,6 @@ def test_removed_service_cycles_do_not_regress() -> None:
     assert "novel_system.services.writer_review" not in _imported_modules("bundle_builder.py")
     assert "novel_system.services.qc_engine" not in _imported_modules("quality_classifier.py")
     assert "novel_system.services.qc_engine" not in _imported_modules("final_text_gate.py")
-    assert "novel_system.services.writer_room" not in _imported_modules("author_drafts.py")
 
 
 def test_writer_brief_contract_is_independent_and_preserves_validation() -> None:

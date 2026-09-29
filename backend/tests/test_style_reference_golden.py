@@ -20,11 +20,9 @@ from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
-    reset_reference_copy_gate_cache,
 )
 from novel_system.services.style_reference.fidelity import (
     DEFAULT_MAX_PERCENTILE,
-    clear_reference_cache,
     read_fidelity,
     reference_distribution_for_book,
     within_author_range,
@@ -33,15 +31,6 @@ from novel_system.services.style_reference.fidelity import (
 GOLDEN = Path(__file__).resolve().parent / "golden" / "style_reference"
 CORPUS = GOLDEN / "corpus"
 EXPECTED = GOLDEN / "expected"
-
-
-@pytest.fixture(autouse=True)
-def _clear_corpus_cache():
-    reset_reference_copy_gate_cache()
-    clear_reference_cache()
-    yield
-    reset_reference_copy_gate_cache()
-    clear_reference_cache()
 
 
 def _ingest(path: Path, title: str) -> tuple[str, dict, int]:

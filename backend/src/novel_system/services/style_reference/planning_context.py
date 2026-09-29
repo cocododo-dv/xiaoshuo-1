@@ -34,6 +34,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.style_policy import style_policy_live
 from novel_system.services.style_reference.binding_config import (
@@ -102,6 +103,7 @@ REFERENCE_TITLES_HOW_TO_USE = (
 # 旧画像(structure_card_v1)没有 chapter_titles:按段落表惰性补算,按 (book_id, 段落数) 缓存。
 _CHAPTER_TITLES_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
 _CHAPTER_TITLES_CACHE_MAX = 64
+register_cache_reset("style_reference.planning_context.chapter_titles", _CHAPTER_TITLES_CACHE.clear)
 
 
 def chapter_titles_for_book(session: Session | None, book_id: str | None) -> dict[str, Any] | None:

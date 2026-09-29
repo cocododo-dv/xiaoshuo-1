@@ -23,6 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.services.style_reference.binding_config import (
     DEFAULT_SAMPLE_WINDOWS,
     DRAFT_MODE_NEUTRAL_FIRST,
@@ -377,6 +378,9 @@ def style_policy_for_scene(
 def reset_style_policy_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+
+
+register_cache_reset("style_policy", reset_style_policy_cache)
 
 
 __all__ = [

@@ -32,6 +32,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import StyleReferenceBook
 from novel_system.services.style_reference.binding_config import (
     ALL_DIMENSIONS,
@@ -628,6 +629,9 @@ def _cache_put(key: tuple[str, str, str, str], dist: ReferenceDistribution) -> N
 def clear_reference_cache() -> None:
     with _DIST_CACHE_LOCK:
         _DIST_CACHE.clear()
+
+
+register_cache_reset("style_reference.fidelity.reference_distribution", clear_reference_cache)
 
 
 def reference_distribution_for_book(session: Session, book_id: str) -> ReferenceDistribution | None:

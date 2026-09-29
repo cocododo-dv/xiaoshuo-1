@@ -3,10 +3,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from novel_system.db.session import SessionLocal
-from novel_system.services.style_reference.config_loader import clear_config_cache
 from novel_system.services.style_reference.windows import book_windows
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.structure import compute_structure_card, render_structure_card
@@ -14,13 +11,6 @@ from novel_system.services.style_reference.text_utils import (
     explicit_scene_breaks,
     is_scene_break_paragraph,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_yaml_cache():
-    clear_config_cache()
-    yield
-    clear_config_cache()
 
 
 # ---------------------------------------------------------------------------

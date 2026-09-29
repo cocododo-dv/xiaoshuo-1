@@ -36,6 +36,7 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
+from novel_system.cache_registry import register_cache_reset
 from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.text_utils import split_sentences
@@ -321,6 +322,9 @@ def clear_kernel_cache() -> None:
     _kernel_lexicon.cache_clear()
     with _CACHE_LOCK:
         _LARGE_MEASURE_CACHE.clear()
+
+
+register_cache_reset("style_reference.measure.kernel", clear_kernel_cache)
 
 
 @lru_cache(maxsize=1)

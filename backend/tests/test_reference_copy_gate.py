@@ -26,7 +26,6 @@ from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     check_reference_copy_for_scope,
     copy_block_author_action,
-    reset_reference_copy_gate_cache,
 )
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.validation.plagiarism import check_plagiarism
@@ -40,13 +39,6 @@ OTHER_PARAGRAPHS = (
     "码头的吊车在雾里停了三天，工头每天早上都来敲一次铁皮门，说船期又推后了。",
     "她把旧车票夹进字典里，翻到的那一页正好是讲潮汐的词条，墨水已经褪成了浅灰色。",
 )
-
-
-@pytest.fixture(autouse=True)
-def _fresh_gate_cache():
-    reset_reference_copy_gate_cache()
-    yield
-    reset_reference_copy_gate_cache()
 
 
 def _seed_scene(session) -> SceneCard:

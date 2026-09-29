@@ -41,6 +41,11 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# Unknown marks / ini keys are errors, not warnings; a test hung past 5 minutes dumps every
+# thread's stack (the suite waits on barriers and background workers) instead of silently
+# running into the CI job timeout.
+addopts = "--strict-markers --strict-config"
+faulthandler_timeout = 300
 markers = [
   "chroma_integration: requires a real Chroma runtime in Linux or WSL",
   "consistency_validation: blueprint §17 Action B recall/precision tests",

@@ -13,18 +13,11 @@ from novel_system.services.style_policy import policy_from_contract
 from novel_system.services.style_reference import policy as policy_module
 from novel_system.services.style_reference.errors import CloudPolicyBlockedError
 from novel_system.services.style_reference.inject.bindings import resolve_binding_layers
-from novel_system.services.style_reference.inject.render import render_style, reset_render_cache
+from novel_system.services.style_reference.inject.render import render_style
 from novel_system.services.style_reference.inject.request import PLACEMENT_USER_TAIL, StyleRenderRequest
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import build_style_runtime_contract
 from tests.style_reference_inject_helpers import PROJECT_ID, bind, seed_reference
-
-
-@pytest.fixture(autouse=True)
-def _fresh():
-    reset_render_cache()
-    yield
-    reset_render_cache()
 
 
 def _policy(session, key: str, cloud_policy: str):

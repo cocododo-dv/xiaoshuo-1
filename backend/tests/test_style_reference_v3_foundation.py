@@ -8,7 +8,6 @@ from novel_system.services.style_policy import (
     MODE_FROZEN,
     UNBOUND,
     policy_from_contract,
-    reset_style_policy_cache,
     style_policy_for_bundle,
 )
 from novel_system.services.style_reference.binding_config import (
@@ -173,7 +172,6 @@ def test_policy_from_contract_reads_the_most_specific_layer() -> None:
 
 
 def test_policy_for_bundle_states() -> None:
-    reset_style_policy_cache()
     assert style_policy_for_bundle(None) == UNBOUND
     absent = style_policy_for_bundle(
         {"source_version_refs": {"style_reference_runtime_contract_status": "absent"}, "inline_digests": {}}

@@ -18,7 +18,7 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.style_policy import policy_from_contract, style_policy_live
-from novel_system.services.style_reference.inject.render import render_style, reset_render_cache
+from novel_system.services.style_reference.inject.render import render_style
 from novel_system.services.style_reference.inject.request import StyleRenderRequest
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
@@ -184,7 +184,6 @@ def test_contract_is_hashed_tamper_evident_and_contains_no_raw_quote(session) ->
 def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
     session,
 ) -> None:
-    reset_render_cache()
     seeded = _seed_reference(session, seed="frozen", config_json={"reference_mode": "card_only"})
     contract = build_style_runtime_contract(
         seeded.repo,
@@ -224,7 +223,6 @@ def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
 
 def test_frozen_contract_samples_require_current_send_rights(session) -> None:
     """样例窗口在渲染时再查一次发送权：冻结后作者撤回了发送权 → 一窗都不送（卡与红线照送）。"""
-    reset_render_cache()
     seeded = _seed_reference(session, seed="rights")
     book = seeded.repo.get_book(seeded.book_id)
     book.cloud_policy = "allow_full_cloud"

@@ -17,6 +17,8 @@ from typing import Any
 
 from novel_system.services.config_cache import safe_load_yaml
 
+from novel_system.cache_registry import register_cache_reset
+
 _LOGGER = logging.getLogger(__name__)
 
 # 内置硬回退（价书文件缺失/解析失败时用；与 config/pricing.yaml default_estimate 一致语义）
@@ -67,6 +69,9 @@ def reset_price_book_cache() -> None:
     """测试/配置热更用：清缓存下次 load 重读文件。"""
     global _CACHE
     _CACHE = None
+
+
+register_cache_reset("pricing.price_book", reset_price_book_cache)
 
 
 def _coerce_snapshot(raw: dict[str, Any], *, default_is_estimate: bool = True) -> PriceSnapshot:

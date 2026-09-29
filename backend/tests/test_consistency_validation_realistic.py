@@ -373,20 +373,3 @@ class TestHardQcReadsFullStateDespitePovProjection:
             pov_character_id="林远", onstage_character_ids=["林远", "沧澜城城主"],
         )
         assert "城主藏了传国玉玺" not in writing_prompt
-
-
-# ---------------------------------------------------------------------------
-# §9.3 发布门 lane（离线跳过）：悬疑样本真实 LLM 对照——检查 POV 视角是否提前
-# 据未知秘密行动或暗示。本机无 LLM 额度（CentOS7 / node16），发布门实跑。
-# ---------------------------------------------------------------------------
-@pytest.mark.skipif(
-    __import__("os").environ.get("NOVEL_SYSTEM_LLM_ENABLED", "").lower() not in ("1", "true"),
-    reason="悬疑 POV LLM 对照属 §9.3 发布门 lane，需真实 LLM 额度；离线跳过（golden 覆盖逻辑门）",
-)
-def test_suspense_pov_no_early_action_release_gate() -> None:  # pragma: no cover
-    """占位：发布门实跑时，用悬疑样本生成 POV 场景并核验不提前泄漏/据未知秘密行动。
-
-    离线由 test_pov_knowledge_projection.py 的 golden 用例覆盖投影极性；真实模型
-    行为波动性验证归发布门（设计 §9.3 / §8 Wave 4 项 5）。
-    """
-    raise AssertionError("release-gate only; must be run with NOVEL_SYSTEM_LLM_ENABLED")

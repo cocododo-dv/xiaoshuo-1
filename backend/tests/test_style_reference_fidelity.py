@@ -306,7 +306,6 @@ def test_recent_gap_phrases_count_repeated_deviations() -> None:
 
 
 def test_reference_distribution_for_book_is_cached_per_root(session) -> None:
-    F.clear_reference_cache()
     book_id = seed_book(session, "fid_book", synthetic_rows("fidelity"))
     dist = F.reference_distribution_for_book(session, book_id)
     session.commit()
