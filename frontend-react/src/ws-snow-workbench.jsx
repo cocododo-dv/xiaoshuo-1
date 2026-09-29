@@ -96,7 +96,7 @@ export function useSnowLanding({ workId: snowWorkId, myKey, initialStep, states,
     if (movedRef.current) return;
     const s = s2Load(myKey);
     let health = {};
-    try { health = SnowSync.health() || {}; } catch (e) {}
+    try { health = SnowSync.health(snowWorkId) || {}; } catch (e) {}
     setActiveKey(s2LandingStep({ states: { ...s2DefaultStates(), ...(s.states || {}) }, health, lastVisited: lastVisitedRef.current }));
   };
   useSnowEvents({

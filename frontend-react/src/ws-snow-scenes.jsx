@@ -84,7 +84,7 @@ export function useSnowTriage(env) {
   const restore = () => {
     if (triage) return;
     try {
-      const saved = SnowSync.triageItems();
+      const saved = SnowSync.triageItems(env.current && env.current.workId);
       if (saved && saved.items && Object.keys(saved.items).length) setTriage(saved);
     } catch (e) {}
   };

@@ -166,8 +166,8 @@ const IDLE_SYNC = { phase: "idle", error: null };
 const NO_RESYNC = { pendingCount: 0, pendingScenes: [] };
 export function useSnowSyncMirror(workId) {
   const readSync = () => { try { return SnowSync.syncState(workId) || IDLE_SYNC; } catch (e) { return IDLE_SYNC; } };
-  const readHealth = () => { try { return { ...(SnowSync.health() || {}) }; } catch (e) { return {}; } };
-  const readResync = () => { try { return SnowSync.resyncStatus() || NO_RESYNC; } catch (e) { return NO_RESYNC; } };
+  const readHealth = () => { try { return { ...(SnowSync.health(workId) || {}) }; } catch (e) { return {}; } };
+  const readResync = () => { try { return SnowSync.resyncStatus(workId) || NO_RESYNC; } catch (e) { return NO_RESYNC; } };
   const [syncState, setSyncState] = useState(readSync);
   const [health, setHealth] = useState(readHealth);
   const [resync, setResync] = useState(readResync);

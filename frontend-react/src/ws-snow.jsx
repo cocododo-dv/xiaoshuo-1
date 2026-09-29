@@ -115,7 +115,7 @@ function WsSnowflake({ initialStep }) {
   const coach = useSnowCoach(env, tab);
   const gen = useSnowGeneration(env);
   const tri = useSnowTriage(env);
-  env.current = { activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, sceneLabel, setCoachHist: coach.setCoachHist };
+  env.current = { workId: snowWorkId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, sceneLabel, setCoachHist: coach.setCoachHist };
   const structBusy = !!gen.structBusyMap[activeKey];
   const genTarget = gen.genTargetMap[activeKey] || null;
   const dirBusy = !!gen.dirBusyMap[activeKey];
@@ -241,8 +241,8 @@ function WsSnowflake({ initialStep }) {
   /* 要点镜像在 SnowSync 里；教练回包 / 作者编辑 / 生成回包都会发事件（briefTick 随之变，这里重读） */
   let brief = null;
   let briefUsage = NO_BRIEF_USAGE;
-  try { brief = SnowSync.directionBrief(null, activeKey) || null; } catch (e) {}
-  try { briefUsage = SnowSync.briefUsage(null, activeKey) || NO_BRIEF_USAGE; } catch (e) {}
+  try { brief = SnowSync.directionBrief(snowWorkId, activeKey) || null; } catch (e) {}
+  try { briefUsage = SnowSync.briefUsage(snowWorkId, activeKey) || NO_BRIEF_USAGE; } catch (e) {}
   void briefTick;
 
   const {
