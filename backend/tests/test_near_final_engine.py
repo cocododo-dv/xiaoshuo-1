@@ -881,3 +881,39 @@ def test_paragraph_collapse_is_a_text_integrity_marker() -> None:
     assert regressed["regressed"] and "text_integrity_regressed" in regressed["reasons"]
     kept = assess_rewrite_regressions(scene, None, source_content=styled, rewritten_content=styled)
     assert kept == {"regressed": False, "reasons": [], "rewritten_integrity_markers": []}
+
+
+def test_chapter_near_final_review_reads_each_scenes_current_text(session) -> None:
+    """B03-04：章级准定稿评审拼的是每一场的当前正文（SceneRunState 指针），不是每场最后建的那一行。"""
+    _seed_scene(session, is_chapter_last=1)
+    session.add_all(
+        [
+            FinalScene(
+                row_id="final_nf_current",
+                scene_id=SCENE_ID,
+                chapter_id=CHAPTER_ID,
+                content="当前正文：林岑把录音带分成两份。",
+                status="archived",
+                source_bundle_id="b",
+                source_bundle_hash="h",
+                created_at="2026-09-01T00:00:00+00:00",
+            ),
+            FinalScene(
+                row_id="final_nf_abandoned",
+                scene_id=SCENE_ID,
+                chapter_id=CHAPTER_ID,
+                content="作废的重跑稿。",
+                status="near_final_ready",
+                source_bundle_id="b",
+                source_bundle_hash="h",
+                created_at="2026-09-03T00:00:00+00:00",
+            ),
+        ]
+    )
+    session.get(SceneRunState, SCENE_ID).current_final_scene_row_id = "final_nf_current"
+    session.flush()
+
+    source = NearFinalAcceptanceService(session)._chapter_source(session.get(ChapterGoal, CHAPTER_ID))
+
+    assert source["content"] == "当前正文：林岑把录音带分成两份。"
+    assert source["source_text_ref"] == f"chapter_assembled:{CHAPTER_ID}"

@@ -15,7 +15,6 @@ from novel_system.db.models import (
     AttemptTracker,
     AuthorPreferenceProfile,
     ChapterGoal,
-    FinalScene,
     GenerationPlanningArtifact,
     SceneBundle,
     SceneCard,
@@ -89,7 +88,11 @@ from novel_system.services.author_preferences import (
 )
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.scene_lookup import get_chapter_or_404, get_scene_or_404
-from novel_system.services.planning_queries import latest_active_planning_artifact, latest_scene_blueprint
+from novel_system.services.planning_queries import (
+    current_final_scenes,
+    latest_active_planning_artifact,
+    latest_scene_blueprint,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -1176,26 +1179,20 @@ class BundleBuilder:
         正是参考作者的风格（真实案例：「劣质 + 材质名词」这类像参考作者的比喻被当成「章内已禁用」）。
         策略由 bundle 构建时建好的那份契约给出，不再为新鲜度预算另建一次契约。
         """
-        rows = (
+        # 同章更早各场的当前正文（重跑过的场只取当前那一版，B03-04）
+        earlier_scene_ids = list(
             self.session.execute(
-                select(FinalScene)
-                .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+                select(SceneCard.scene_id)
                 .where(
-                    FinalScene.chapter_id == scene.chapter_id,
-                    # Wave 1 词表统一：archived 是归档事务写入的权威成稿态，必须与旧值并列
-                    FinalScene.status.in_(("approved", "near_final_ready", "archived")),
+                    SceneCard.chapter_id == scene.chapter_id,
                     SceneCard.trashed_flag == 0,
                     SceneCard.scene_seq < scene.scene_seq,
                 )
-                .order_by(
-                    SceneCard.scene_seq.asc(),
-                    FinalScene.created_at.asc(),
-                    FinalScene.row_id.asc(),
-                )
-            )
-            .scalars()
-            .all()
+                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+            ).scalars()
         )
+        current_finals = current_final_scenes(self.session, earlier_scene_ids)
+        rows = [current_finals[scene_id] for scene_id in earlier_scene_ids if scene_id in current_finals]
         if not rows:
             return None
 
@@ -1381,53 +1378,24 @@ class BundleBuilder:
         try:
             if scene.scene_seq and scene.scene_seq > 1:
                 return None
-            current_chapter = self.session.get(ChapterGoal, scene.chapter_id)
-            if current_chapter is None:
-                return None
-            current_order = current_chapter.display_order
-            if current_order is not None:
-                prev_chapter = (
-                    self.session.execute(
-                        select(ChapterGoal)
-                        .where(
-                            ChapterGoal.project_id == scene.project_id,
-                            ChapterGoal.display_order < current_order,
-                        )
-                        .order_by(ChapterGoal.display_order.desc())
-                    )
-                    .scalars()
-                    .first()
-                )
-            else:
-                prev_chapter = (
-                    self.session.execute(
-                        select(ChapterGoal)
-                        .where(
-                            ChapterGoal.project_id == scene.project_id,
-                            ChapterGoal.chapter_id < scene.chapter_id,
-                        )
-                        .order_by(ChapterGoal.chapter_id.desc())
-                    )
-                    .scalars()
-                    .first()
-                )
+            # 上一章跳过回收站里的章（清空后自动入回收站的章，B03-05），与前文声音锚同一口径
+            prev_chapter = _previous_chapter(self.session, scene)
             if prev_chapter is None:
                 return None
-            last_final = (
+            prev_scene_ids = list(
                 self.session.execute(
-                    select(FinalScene)
-                    .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+                    select(SceneCard.scene_id)
                     .where(
-                        FinalScene.chapter_id == prev_chapter.chapter_id,
-                        FinalScene.status.in_(
-                            ("approved", "near_final_ready", "archived")
-                        ),
+                        SceneCard.chapter_id == prev_chapter.chapter_id,
                         SceneCard.trashed_flag == 0,
                     )
-                    .order_by(SceneCard.scene_seq.desc(), FinalScene.created_at.desc())
-                )
-                .scalars()
-                .first()
+                    .order_by(SceneCard.scene_seq.desc(), SceneCard.scene_id.desc())
+                ).scalars()
+            )
+            current_finals = current_final_scenes(self.session, prev_scene_ids)
+            last_final = next(
+                (current_finals[scene_id] for scene_id in prev_scene_ids if scene_id in current_finals),
+                None,
             )
             if last_final and last_final.content:
                 tail = last_final.content[-800:]
@@ -1447,23 +1415,22 @@ class BundleBuilder:
             project_id = require_scene_project_id(self.session, scene)
             collection_name = f"scenes_{project_id}"
             store = get_vector_store()
-            approved_scenes = (
+            other_scene_ids = list(
                 self.session.execute(
-                    select(FinalScene)
-                    .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+                    select(SceneCard.scene_id)
                     .where(
-                        FinalScene.status.in_(
-                            ("approved", "near_final_ready", "archived")
-                        ),
                         SceneCard.trashed_flag == 0,
                         SceneCard.scene_id != scene.scene_id,
                         SceneCard.project_id == project_id,
                     )
-                    .order_by(SceneCard.scene_seq.asc())
-                )
-                .scalars()
-                .all()
+                    .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+                ).scalars()
             )
+            # 每场一条、取当前正文（重跑过的场的旧版不再以同一个 id 重复进集合，B03-04）
+            current_finals = current_final_scenes(self.session, other_scene_ids)
+            approved_scenes = [
+                current_finals[scene_id] for scene_id in other_scene_ids if scene_id in current_finals
+            ]
             if not approved_scenes or len(approved_scenes) < 2:
                 return None
             documents = [

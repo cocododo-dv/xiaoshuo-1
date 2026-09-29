@@ -13,7 +13,6 @@ from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
     ChapterMemory,
-    FinalScene,
     GenerationPlanningArtifact,
     LlmCall,
     RevisionCandidate,
@@ -46,7 +45,11 @@ from novel_system.services.style_reference.planning_context import (
 )
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
-from novel_system.services.planning_queries import latest_active_planning_artifact, latest_scene_blueprint
+from novel_system.services.planning_queries import (
+    current_final_scenes,
+    latest_active_planning_artifact,
+    latest_scene_blueprint,
+)
 
 
 NEAR_FINAL_RUBRIC_ID = "near_final_acceptance_v1"
@@ -958,20 +961,20 @@ class NearFinalAcceptanceService:
                 "source_text_ref": f"chapter_memory:{memory.row_id}",
                 "source_bundle_id": None,
             }
-        scenes = self.session.execute(
-            select(SceneCard)
-            .where(SceneCard.chapter_id == chapter.chapter_id, SceneCard.trashed_flag == 0)
-            .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-        ).scalars().all()
-        parts: list[str] = []
-        for scene in scenes:
-            final = self.session.execute(
-                select(FinalScene)
-                .where(FinalScene.scene_id == scene.scene_id)
-                .order_by(FinalScene.created_at.desc(), FinalScene.row_id.desc())
-            ).scalars().first()
-            if final is not None and final.content:
-                parts.append(final.content)
+        scene_ids = list(
+            self.session.execute(
+                select(SceneCard.scene_id)
+                .where(SceneCard.chapter_id == chapter.chapter_id, SceneCard.trashed_flag == 0)
+                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+            ).scalars()
+        )
+        # 每场的当前正文（SceneRunState 指针），不是每场最后建的那一行（B03-04）
+        current_finals = current_final_scenes(self.session, scene_ids)
+        parts = [
+            current_finals[scene_id].content
+            for scene_id in scene_ids
+            if scene_id in current_finals and current_finals[scene_id].content
+        ]
         content = "\n\n".join(parts).strip()
         if not content:
             raise DomainError("CHAPTER_NEAR_FINAL_SOURCE_MISSING", "chapter near-final review needs aggregate or final scene text", status_code=409)

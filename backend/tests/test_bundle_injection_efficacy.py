@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from novel_system.db.models import (
     ChapterGoal,
+    FinalScene,
     SceneCard,
     SceneRunState,
     StoryProject,
@@ -49,6 +50,146 @@ def _seed_catalog_style_scene(session, project_id: str = "projp6"):
     session.add(SceneRunState(scene_id=scene.scene_id))
     session.flush()
     return scene
+
+
+def _seed_book(session, project_id: str, chapters: list[tuple[str, int, int, int]]) -> dict[str, SceneCard]:
+    """chapters = [(chapter 后缀, display_order, 场数, trashed_flag)] → {scene_id: SceneCard}。"""
+    session.add(StoryProject(project_id=project_id, title="T", outline_text="o"))
+    scenes: dict[str, SceneCard] = {}
+    for suffix, display_order, scene_count, trashed in chapters:
+        chapter_id = f"{project_id}_{suffix}"
+        session.add(
+            ChapterGoal(
+                chapter_id=chapter_id,
+                project_id=project_id,
+                chapter_goal=f"目标 {suffix}",
+                display_order=display_order,
+                trashed_flag=trashed,
+            )
+        )
+        for seq in range(1, scene_count + 1):
+            scene = SceneCard(
+                scene_id=f"{chapter_id}_SC{seq:02d}",
+                chapter_id=chapter_id,
+                project_id=project_id,
+                scene_seq=seq,
+                scene_goal=f"推进 {suffix}-{seq}",
+                location="雨城旧档案馆",
+                trashed_flag=trashed,
+            )
+            session.add(scene)
+            session.add(SceneRunState(scene_id=scene.scene_id))
+            scenes[scene.scene_id] = scene
+    session.flush()
+    return scenes
+
+
+def _add_final(
+    session,
+    scene: SceneCard,
+    *,
+    row_id: str,
+    content: str,
+    created_at: str,
+    current: bool = False,
+    status: str = "archived",
+) -> None:
+    session.add(
+        FinalScene(
+            row_id=row_id,
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            content=content,
+            status=status,
+            source_bundle_id="b",
+            source_bundle_hash="h",
+            created_at=created_at,
+        )
+    )
+    session.flush()
+    if current:
+        session.get(SceneRunState, scene.scene_id).current_final_scene_row_id = row_id
+        session.flush()
+
+
+def test_freshness_budget_reads_only_the_current_version_of_a_rerun_scene(session):
+    """B03-04：重跑过的场有好几版 FinalScene（旧版照旧 archived）；新鲜度预算只读每场的当前正文。"""
+    scenes = _seed_book(session, "P_RERUN_FRESH", [("CH01", 1, 2, 0)])
+    first, second = scenes["P_RERUN_FRESH_CH01_SC01"], scenes["P_RERUN_FRESH_CH01_SC02"]
+    _add_final(session, first, row_id="final_old", content="旧版：林昭把旧信塞进案卷。", created_at="2026-09-01T00:00:00+00:00")
+    _add_final(
+        session, first, row_id="final_new", content="新版：林昭把旧信烧了。", created_at="2026-09-02T00:00:00+00:00", current=True
+    )
+
+    budget = BundleBuilder(session)._literary_freshness_budget(second)
+
+    assert budget is not None
+    assert budget["source_final_scene_ids"] == ["final_new"]
+    assert budget["budget"]["source_scene_ids"] == [first.scene_id]
+
+
+def test_chapter_transition_buffer_reads_the_current_version_of_the_previous_ending(session):
+    """B03-04：上一章结尾那一场的当前正文由 SceneRunState 指针决定，不是最后建的那一行。"""
+    scenes = _seed_book(session, "P_RERUN_TRANS", [("CH01", 1, 1, 0), ("CH02", 2, 1, 0)])
+    ending = scenes["P_RERUN_TRANS_CH01_SC01"]
+    _add_final(
+        session, ending, row_id="final_current", content="当前结尾：雨停了，她合上案卷。", created_at="2026-09-01T00:00:00+00:00", current=True
+    )
+    _add_final(
+        session, ending, row_id="final_abandoned", content="作废的重跑稿：他推门出去。", created_at="2026-09-03T00:00:00+00:00"
+    )
+
+    buffer = BundleBuilder(session)._chapter_transition_buffer(scenes["P_RERUN_TRANS_CH02_SC01"])
+
+    assert buffer is not None and "当前结尾：雨停了，她合上案卷。" in buffer
+    assert "作废的重跑稿" not in buffer
+
+
+def test_chapter_transition_buffer_skips_a_trashed_previous_chapter(session):
+    """B03-05：前面紧挨着的章在回收站里（清空后自动入回收站的章）时，过渡缓冲取的是活着的上一章。"""
+    scenes = _seed_book(
+        session, "P_TRASHED_PREV", [("CH01", 1, 1, 0), ("CH02", 2, 1, 1), ("CH03", 3, 1, 0)]
+    )
+    _add_final(
+        session,
+        scenes["P_TRASHED_PREV_CH01_SC01"],
+        row_id="final_live_prev",
+        content="上一章结尾：旧信落进雨里。",
+        created_at="2026-09-01T00:00:00+00:00",
+        current=True,
+    )
+
+    buffer = BundleBuilder(session)._chapter_transition_buffer(scenes["P_TRASHED_PREV_CH03_SC01"])
+
+    assert buffer is not None and "上一章结尾：旧信落进雨里。" in buffer
+
+
+def test_similar_scene_collection_indexes_one_current_text_per_scene(session):
+    """B03-04：相似场景集合按场一条、取当前正文（旧版不再作为同 id 的重复文档进集合）。"""
+    from novel_system.services.vector_store import get_vector_store
+
+    scenes = _seed_book(session, "P_RERUN_SIM", [("CH01", 1, 3, 0)])
+    first = scenes["P_RERUN_SIM_CH01_SC01"]
+    _add_final(session, first, row_id="final_sim_old", content="旧版：案卷潮了。", created_at="2026-09-01T00:00:00+00:00")
+    _add_final(
+        session, first, row_id="final_sim_new", content="新版：案卷烧了。", created_at="2026-09-02T00:00:00+00:00", current=True
+    )
+    _add_final(
+        session,
+        scenes["P_RERUN_SIM_CH01_SC02"],
+        row_id="final_sim_second",
+        content="第二场：雨城起雾。",
+        created_at="2026-09-02T00:00:00+00:00",
+        current=True,
+    )
+
+    BundleBuilder(session)._similar_scene_context(scenes["P_RERUN_SIM_CH01_SC03"])
+
+    documents = get_vector_store().load_collection("scenes_P_RERUN_SIM")
+    assert sorted((doc["id"], doc["text"]) for doc in documents) == [
+        (first.scene_id, "新版：案卷烧了。"),
+        ("P_RERUN_SIM_CH01_SC02", "第二场：雨城起雾。"),
+    ]
 
 
 def test_narrative_state_digest_uses_scene_project_id(session):
