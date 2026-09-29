@@ -431,7 +431,10 @@ function isFormData(body) {
 
 function mutationRequest(method, path, body, options = {}) {
   // 显式给键 / multipart 的写入各走各的（见 sendMutation）；其余按签名合并在飞的同一个写入
-  if (options.idempotencyKey || isFormData(body)) return sendMutation(method, path, body, options);
+  // 带自己的取消信号 / 超时的调用也不合并：合并后第二个调用方会被第一个的取消一起打断（复核 Q1-R1）
+  if (options.idempotencyKey || isFormData(body) || options.signal || options.timeoutMs != null) {
+    return sendMutation(method, path, body, options);
+  }
   const signature = requestSignature(method, path, body) + (options.adminToken ? " admin" : "");
   const pending = inflightMutations.get(signature);
   if (pending) return pending;

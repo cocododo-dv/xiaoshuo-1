@@ -431,11 +431,13 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(window.WsWorks.active().wordsTotal).toBe(38180);
     expect(mod.WsCatalog.sceneById("ch01s1").scene.words).toBe(180);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(statsGets()).toBe(before);
+    // 节流：连着两次保存至多问一次（首次立刻问，让今日字数跟得上），不再每存一次就问
+    expect(statsGets()).toBeLessThanOrEqual(before + 1);
+    const afterBurst = statsGets();
 
     mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 200, chapter_words: 200, words_total: 38200, words_today: 200, streak_days: 4 });
     expect(window.WsWorks.active()).toMatchObject({ wordsTotal: 38200, wordsToday: 200, streak: 4 });
-    expect(statsGets()).toBe(before);
+    expect(statsGets()).toBe(afterBurst);
   });
 
   it("写入之前发出、写入之后才回来的读取不盖掉新状态：写后补读另发一次，第二次改名不退回去（F01-05）", async () => {

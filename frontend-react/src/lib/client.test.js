@@ -120,6 +120,14 @@ describe("remote access token transport", () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("does not coalesce a mutation that carries its own abort signal (one caller's cancel must not abort another)", async () => {
+    global.fetch = vi.fn(() => new Promise(() => {}));
+    const controller = new AbortController();
+    apiPost("/mutation/signal", { value: 1 }, { signal: controller.signal }).catch(() => {});
+    apiPost("/mutation/signal", { value: 1 }).catch(() => {});
+    await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
+  });
+
   it("resolves the API base once instead of touching localStorage on every request", async () => {
     await apiGet("/ready");
     const getItem = vi.spyOn(Storage.prototype, "getItem");

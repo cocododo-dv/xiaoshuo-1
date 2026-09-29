@@ -76,9 +76,19 @@ function catPushTotals() {
    rollup 带上 words_today / streak_days 时（后端补上这两个字段之后）连这一次也省掉。 */
 const CAT_TOTALS_SETTLE_MS = 15_000;
 let catTotalsTimer = null;
+let catTotalsLastAt = 0;
+/* 节流（首尾都发）：连续写作时至多每 15 秒问一次，停笔后再补最后一次——纯尾部防抖会让今日字数在
+   不停笔时一直不动（复核 Q1-R2） */
 function catPushTotalsSoon() {
-  clearTimeout(catTotalsTimer);
-  catTotalsTimer = setTimeout(() => { catTotalsTimer = null; catPushTotals(); }, CAT_TOTALS_SETTLE_MS);
+  const now = Date.now();
+  if (now - catTotalsLastAt >= CAT_TOTALS_SETTLE_MS && !catTotalsTimer) {
+    catTotalsLastAt = now;
+    catPushTotals();
+    return;
+  }
+  if (catTotalsTimer) return;
+  const wait = Math.max(0, CAT_TOTALS_SETTLE_MS - (now - catTotalsLastAt));
+  catTotalsTimer = setTimeout(() => { catTotalsTimer = null; catTotalsLastAt = Date.now(); catPushTotals(); }, wait);
 }
 
 /* rollup 里现成的统计直接注入书架（值没变就不注入，免得主页、切换器白白重渲）；

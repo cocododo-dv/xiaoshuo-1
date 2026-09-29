@@ -52,6 +52,8 @@ retireModuleListeners("ws-snow-sync");
 
 const onSnowSaved = (e) => {
   const key = (e && e.detail) || (activeWork() ? snowCacheKey(activeWork()) : null);
+  // 新建作品还没拿到正式 id（临时 id）：它的构思缓存先不上行，免得拿临时 id 去 GET 工作区（复核 Q1-R3）
+  if (key && activeWork() && !readyWorkId(WsWorks) && key === snowCacheKey(activeWork())) return;
   if (key) schedulePush(key);
 };
 
