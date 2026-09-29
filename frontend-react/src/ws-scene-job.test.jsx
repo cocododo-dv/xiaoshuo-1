@@ -18,6 +18,8 @@ vi.mock("./lib/client.js", () => ({
 }));
 // 任务控制条的两个请求（ws-scene-job-api.js）
 vi.mock("./ws-scene-job-api.js", () => ({ cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn() }));
+// 单条上限放到 15 s：冷启动的模块转换加上 5 s 的 waitFor，主机负载高时会顶到默认的 5 s（与写作台的装配测试一样）
+vi.setConfig({ testTimeout: 15000 });
 
 describe("scene run cancellation client", () => {
   beforeEach(() => {
@@ -166,9 +168,11 @@ describe("SceneRunJobControl", () => {
 
   it("does not let a late cancel response for job A overwrite a newer latest job B", async () => {
     const { mod, client } = await loadSceneRun();
+    // B 只在点了取消之后才报来：过去 B 立刻就绪，5 ms 一轮的轮询可能在断言看见 A 之前就把它换成 B
+    const latestB = deferred();
     client.getLatestSceneRunJob
       .mockResolvedValueOnce({ job_id: "job-a", scene_id: "SC01", status: "running" })
-      .mockResolvedValue({ job_id: "job-b", scene_id: "SC01", status: "completed" });
+      .mockImplementation(() => latestB.promise);
     let resolveCancelA;
     client.cancelRunJob.mockImplementation(() => new Promise(resolve => { resolveCancelA = resolve; }));
     const view = await renderRunJobControl(mod.SceneRunJobControl, {
@@ -178,8 +182,9 @@ describe("SceneRunJobControl", () => {
     await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-a"), T);
 
     await click(view.host.querySelector('[data-testid="scene-run-cancel-button"]'));
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 15)); });
-    expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-b");
+    // 取消 A 还在路上时，下一轮 latest 报来 B（等它到，不赌固定的 15 ms）
+    await act(async () => { latestB.resolve({ job_id: "job-b", scene_id: "SC01", status: "completed" }); });
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-b"), T);
     await act(async () => {
       resolveCancelA({ job_id: "job-a", scene_id: "SC01", status: "cancelled" });
     });
@@ -194,9 +199,11 @@ describe("SceneRunJobControl", () => {
 
   it("does not attach a late cancel failure for job A to a newer latest job B", async () => {
     const { mod, client } = await loadSceneRun();
+    // B 只在点了取消之后才报来（同上一条）
+    const latestB = deferred();
     client.getLatestSceneRunJob
       .mockResolvedValueOnce({ job_id: "job-a", scene_id: "SC01", status: "running" })
-      .mockResolvedValue({ job_id: "job-b", scene_id: "SC01", status: "completed" });
+      .mockImplementation(() => latestB.promise);
     let rejectCancelA;
     client.cancelRunJob.mockImplementation(() => new Promise((resolve, reject) => {
       void resolve;
@@ -209,8 +216,9 @@ describe("SceneRunJobControl", () => {
     await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-a"), T);
 
     await click(view.host.querySelector('[data-testid="scene-run-cancel-button"]'));
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 15)); });
-    expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-b");
+    // 取消 A 还在路上时，下一轮 latest 报来 B（等它到，不赌固定的 15 ms）
+    await act(async () => { latestB.resolve({ job_id: "job-b", scene_id: "SC01", status: "completed" }); });
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-b"), T);
     await act(async () => {
       rejectCancelA(Object.assign(new Error("cancel A failed"), { code: "NETWORK_ERROR", retryable: true }));
     });
@@ -281,8 +289,7 @@ describe("SceneRunJobControl", () => {
     await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.jobId).toBe("job-a"), T);
 
     await click(view.host.querySelector('[data-testid="scene-run-cancel-button"]'));
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
-    expect(client.getLatestSceneRunJob.mock.calls.length).toBeGreaterThanOrEqual(2);
+    await vi.waitFor(() => expect(client.getLatestSceneRunJob.mock.calls.length).toBeGreaterThanOrEqual(2), T);
     await act(async () => {
       rejectCancelA(Object.assign(new Error("cancel A failed"), { code: "NETWORK_ERROR", retryable: true }));
     });
