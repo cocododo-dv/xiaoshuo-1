@@ -5,16 +5,16 @@ reference_profile_synthesize …),但活动 models 快照仍带着它们的路�
 的服务可能早已删除。修复前:
 - 「一键补齐路由」(sync-missing)永远 422(CONFIG_ROUTE_PROVIDER_MISSING),因为激活校验
   会连退役条目一起校验;
-- node-routes / role-routes / sync-missing 在遇到非法 api_mode / response_format 时把
+- role-routes / sync-missing 在遇到非法 api_mode / response_format 时把
   LLMConfigurationError 漏成 500 INTERNAL_ERROR;
 - 服务保存不校验 api_mode。
+(原样整表写入的 node-routes 接口没有界面调用,2026-09-30 重评 R15a 删了,它的三例随之删掉。)
 """
 
 from __future__ import annotations
 
 import uuid
 
-import pytest
 import yaml
 
 from novel_system.db.models import SystemConfigSnapshot, utcnow
@@ -120,25 +120,23 @@ def test_retired_fixture_ids_are_really_outside_the_catalog() -> None:
 
 
 # --------------------------------------------------------------------------- (1)
-def test_sync_missing_prunes_stale_route_bound_to_deleted_provider(client, monkeypatch) -> None:
+def test_sync_missing_prunes_stale_route_bound_to_deleted_provider(client, session, monkeypatch) -> None:
     """退役节点的路由指向已删除的服务时,「一键补齐路由」必须成功并剪掉该条目。"""
     _enable_admin(monkeypatch)
     assert _create_provider(client, "legacy_provider").status_code == 200
     assert _create_provider(client, "local_qwen").status_code == 200
 
-    # node-routes 是原样写入的高级路径:借它把「退役节点 → legacy_provider」写进活动快照
-    route_response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
+    # 老安装的活动快照:一个目录内节点和一个退役节点都指着 legacy_provider
+    _seed_active_snapshot(
+        session,
+        category="models",
+        parsed={
             "node_routing": {
                 "snowflake_step_candidates": _route("legacy_provider"),
                 RETIRED_NODE_ID: _route("legacy_provider"),
-            },
-            "activate": True,
+            }
         },
     )
-    assert route_response.status_code == 200
 
     delete_response = client.delete(
         "/api/v1/system-config/llm/providers/legacy_provider",
@@ -305,75 +303,7 @@ def test_role_routes_save_prunes_stale_routes_and_reports_them(client, session, 
     assert payload["overview"]["stale_routes"] == []
 
 
-def test_node_routes_activation_ignores_stale_entries_and_reports_them(client, monkeypatch) -> None:
-    """高级整表保存原样写入(overview 仍可在 stale_routes 看到),但退役条目不再阻塞激活。"""
-    _enable_admin(monkeypatch)
-    assert _create_provider(client, "local_qwen").status_code == 200
-
-    response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "node_routing": {
-                "snowflake_step_candidates": _route("local_qwen"),
-                # 指向根本不存在的服务:修复前激活校验对它报 CONFIG_ROUTE_PROVIDER_MISSING
-                RETIRED_NODE_ID: _route("deleted_provider", model="gpt-old"),
-            },
-            "activate": True,
-        },
-    )
-    assert response.status_code == 200, response.json()
-    payload = response.json()["data"]
-    assert payload["stale_routes"] == [RETIRED_NODE_ID]
-    assert payload["snapshot"]["active"] is True
-
-    overview = client.get("/api/v1/system-config/llm").json()["data"]
-    assert overview["stale_routes"] == [RETIRED_NODE_ID]
-    assert overview["node_routes"]["snowflake_step_candidates"]["ready"] is True
-
-
-def test_node_routes_activation_still_rejects_unbound_active_nodes(client, monkeypatch) -> None:
-    """剪枝只针对退役节点:目录内节点绑定到不存在的服务仍须 422。"""
-    _enable_admin(monkeypatch)
-    assert _create_provider(client, "local_qwen").status_code == 200
-
-    response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "node_routing": {"snowflake_step_candidates": _route("deleted_provider")},
-            "activate": True,
-        },
-    )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "CONFIG_ROUTE_PROVIDER_MISSING"
-
-
 # --------------------------------------------------------------------------- (2)
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("api_mode", "completions"), ("response_format", "xml")],
-)
-def test_node_routes_save_rejects_invalid_route_field_as_domain_error(client, monkeypatch, field, value) -> None:
-    _enable_admin(monkeypatch)
-    assert _create_provider(client, "local_qwen").status_code == 200
-
-    response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "node_routing": {"snowflake_step_candidates": _route("local_qwen", **{field: value})},
-            "activate": True,
-        },
-    )
-    assert response.status_code == 422, response.json()
-    error = response.json()["error"]
-    assert error["code"] == "CONFIG_ROUTE_INVALID"
-    assert "snowflake_step_candidates" in error["message"]
-    assert field in error["message"]
-    assert value in error["message"]
-
-
 def test_provider_save_rejects_invalid_api_mode(client, monkeypatch) -> None:
     _enable_admin(monkeypatch)
 

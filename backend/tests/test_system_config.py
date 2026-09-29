@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -12,11 +13,37 @@ from novel_system.db.models import LlmCall, LlmCallAttempt, SystemConfigSnapshot
 from novel_system.services.llm_audit import fingerprint_identifier
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.system_config import load_llm_provider_runtime_configs
+from novel_system.services.system_config import SystemConfigService, load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
 
 
 ADMIN_HEADERS = {"X-Admin-Token": "admin-token", "X-Operator-Ref": "ops.config"}
+
+
+def _local_provider_body(**overrides) -> dict:
+    body = {
+        "provider_id": "local_qwen",
+        "provider_type": "openai_compatible",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "enabled": True,
+        "credential_mode": "none",
+        "api_mode": "chat",
+        "models": ["Qwen3-14B-Q8_0.gguf"],
+    }
+    body.update(overrides)
+    return body
+
+
+def _create_config_draft(session, category: str, yaml_raw: str, *, secrets: dict | None = None) -> dict:
+    """保存一份配置草稿（运维工具的入口；HTTP 的 drafts / activate 路由没有界面调用，已删——重评 R15a）。"""
+    return SystemConfigService(session).create_draft(
+        category=category, yaml_raw=yaml_raw, secrets=secrets, actor_ref="ops.config"
+    )
+
+
+def _activate_config(session, category: str, yaml_raw: str, *, secrets: dict | None = None) -> dict:
+    created = _create_config_draft(session, category, yaml_raw, secrets=secrets)
+    return SystemConfigService(session).activate(created["snapshot"]["snapshot_id"], actor_ref="ops.config")["snapshot"]
 
 
 def test_completion_probe_success_missing_usage_http_and_transport_are_accounted(
@@ -162,67 +189,74 @@ def test_repo_model_config_declares_independent_provider_attempt_budget() -> Non
     assert routing_config.retry_budget["provider_attempt_budget"] == DEFAULT_PROVIDER_ATTEMPT_BUDGET
 
 
-def test_system_config_read_includes_repo_defaults_without_admin_token(client) -> None:
+def test_system_config_read_is_a_summary_without_yaml_or_history(client) -> None:
+    """重评 R15a:GET /api/v1/system-config 只给摘要——它唯一的调用方(开发启动脚本)只看 runtime;
+    以前每一份历史快照的 YAML 正文都随它发出(MB 级)。"""
     response = client.get("/api/v1/system-config")
 
     assert response.status_code == 200
     payload = response.json()["data"]
+    assert set(payload) == {"runtime", "categories"}
     assert payload["runtime"]["admin_configured"] is False
     assert payload["runtime"]["secret_configured"] is False
-    assert payload["categories"]["models"]["source"] == "repo_default"
-    # 重评 R4:仓库 models.yaml 不再带路由表,只剩两段运行参数
-    assert set(payload["categories"]["models"]["parsed"]) == {"retry_budget", "job_runtime"}
+    models = payload["categories"]["models"]
+    assert models["source"] == "repo_default"
+    assert models["active_snapshot"] is None
+    assert "yaml_raw" not in models and "parsed" not in models
     assert payload["categories"]["api"]["secrets"]["llm_api_key"]["configured"] is False
+
+
+def test_system_config_read_summarises_the_active_snapshot_version(client, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    snapshot = _activate_config(session, "models", "node_routing: {}\n")
+
+    models = client.get("/api/v1/system-config").json()["data"]["categories"]["models"]
+
+    assert models["source"] == "database_active"
+    assert models["active_snapshot"]["snapshot_id"] == snapshot["snapshot_id"]
+    assert models["active_snapshot"]["version"] == snapshot["version"]
+    assert models["active_snapshot"]["active"] is True
+    assert "yaml_raw" not in models["active_snapshot"] and "parsed" not in models["active_snapshot"]
 
 
 def test_system_config_write_requires_admin_token(client, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
-    response = client.post(
-        "/api/v1/system-config/drafts",
-        json={"category": "models", "yaml_raw": "task_routing: {}\nretry_budget: {}\njob_runtime: {}\n"},
-    )
+    response = client.post("/api/v1/system-config/llm/providers", json=_local_provider_body())
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "ADMIN_TOKEN_REQUIRED"
 
 
-def test_system_config_draft_honors_idempotency_key(client, session, monkeypatch) -> None:
+def test_system_config_write_honors_idempotency_key(client, session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-    headers = {**ADMIN_HEADERS, "X-Idempotency-Key": "system-config-draft-once"}
-    body = {
-        "category": "models",
-        "yaml_raw": "task_routing: {}\nretry_budget: {}\njob_runtime: {}\n",
-    }
+    headers = {**ADMIN_HEADERS, "X-Idempotency-Key": "system-config-provider-once"}
 
-    created = client.post("/api/v1/system-config/drafts", headers=headers, json=body)
-    replayed = client.post("/api/v1/system-config/drafts", headers=headers, json=body)
+    created = client.post("/api/v1/system-config/llm/providers", headers=headers, json=_local_provider_body())
+    replayed = client.post("/api/v1/system-config/llm/providers", headers=headers, json=_local_provider_body())
 
     assert created.status_code == 200, created.text
     assert replayed.status_code == 200, replayed.text
     assert replayed.headers["X-Idempotency-Status"] == "replayed"
     assert replayed.json()["data"] == created.json()["data"]
     session.expire_all()
-    assert session.query(SystemConfigSnapshot).filter_by(category="models").count() == 1
+    assert session.query(SystemConfigSnapshot).filter_by(category="api").count() == 1
 
 
-def test_system_config_draft_rejects_same_key_with_different_payload(client, monkeypatch) -> None:
+def test_system_config_write_rejects_same_key_with_different_payload(client, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-    headers = {**ADMIN_HEADERS, "X-Idempotency-Key": "system-config-draft-conflict"}
-    first = {
-        "category": "models",
-        "yaml_raw": "task_routing: {}\nretry_budget: {}\njob_runtime: {}\n",
-    }
-    changed = {
-        "category": "models",
-        "yaml_raw": "task_routing: {}\nretry_budget: {max_attempts: 2}\njob_runtime: {}\n",
-    }
+    headers = {**ADMIN_HEADERS, "X-Idempotency-Key": "system-config-provider-conflict"}
 
-    assert client.post("/api/v1/system-config/drafts", headers=headers, json=first).status_code == 200
-    conflict = client.post("/api/v1/system-config/drafts", headers=headers, json=changed)
+    first = client.post("/api/v1/system-config/llm/providers", headers=headers, json=_local_provider_body())
+    assert first.status_code == 200
+    conflict = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=headers,
+        json=_local_provider_body(models=["Qwen3-14B-Q8_0.gguf", "another-model"]),
+    )
 
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD"
@@ -344,25 +378,15 @@ def test_llm_sync_missing_routes_populates_all_active_nodes(client, monkeypatch)
     assert overview["node_routes"]["style_draft"]["model"] == "Qwen3-14B-Q8_0.gguf"
 
 
-def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, monkeypatch) -> None:
+def _activate_node_routing(session, node_routing: dict) -> dict:
+    return _activate_config(session, "models", yaml.safe_dump({"node_routing": node_routing}, allow_unicode=True))
+
+
+def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, session, monkeypatch) -> None:
     """存量快照里已退役节点的残留路由必须进 stale_routes，不得混入 node_routes/就绪统计。"""
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-
-    provider_response = client.post(
-        "/api/v1/system-config/llm/providers",
-        headers=ADMIN_HEADERS,
-        json={
-            "provider_id": "local_qwen",
-            "provider_type": "openai_compatible",
-            "base_url": "http://127.0.0.1:8080/v1",
-            "enabled": True,
-            "credential_mode": "none",
-            "api_mode": "chat",
-            "models": ["Qwen3-14B-Q8_0.gguf"],
-        },
-    )
-    assert provider_response.status_code == 200
+    assert client.post("/api/v1/system-config/llm/providers", headers=ADMIN_HEADERS, json=_local_provider_body()).status_code == 200
 
     route_config = {
         "provider": "openai_compatible",
@@ -374,19 +398,14 @@ def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, monkeyp
         "reasoning_level": "medium",
         "api_mode": "chat",
     }
-    route_response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "node_routing": {
-                "snowflake_step_candidates": dict(route_config),
-                # 模拟老安装：节点已从注册表退役，但活动快照仍带着它的路由
-                "reference_profile_synthesize": dict(route_config),
-            },
-            "activate": True,
+    _activate_node_routing(
+        session,
+        {
+            "snowflake_step_candidates": dict(route_config),
+            # 模拟老安装：节点已从注册表退役，但活动快照仍带着它的路由
+            "reference_profile_synthesize": dict(route_config),
         },
     )
-    assert route_response.status_code == 200
 
     overview = client.get("/api/v1/system-config/llm").json()["data"]
     assert overview["stale_routes"] == ["reference_profile_synthesize"]
@@ -398,92 +417,36 @@ def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, monkeyp
     assert "reference_profile_synthesize" not in readiness_blocked
 
 
-def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
-    session.add(
-        LlmCall(
-            llm_call_id="llm_call_offline_style_draft_test",
-            scope_type="scene",
-            scope_id="SC_AUDIT",
-            provider="offline_deterministic",
-            model="scene-auto-rewrite-policy",
-            node_id="style_draft",
-            step="style_draft",
-            scene_id="SC_AUDIT",
-            chapter_id="CH_AUDIT",
-            request_payload_summary={},
-            response_payload_summary={"source": "offline_deterministic"},
-            prompt_tokens=0,
-            completion_tokens=0,
-            total_tokens=0,
-            latency_ms=0,
-        )
+def _parsed_routes(node_routing: dict):
+    from novel_system.services.llm_routing import parse_model_routing_config
+
+    return parse_model_routing_config({"node_routing": node_routing}).node_routing
+
+
+def test_route_activation_gate_requires_an_existing_provider_binding() -> None:
+    """激活路由前的守门(一键补齐 / 分工写快照之前都过它):节点指着不存在的服务 → 422 点名。"""
+    import pytest
+
+    from novel_system.services.errors import DomainError
+    from novel_system.services.system_config import _validate_activating_node_route_bindings
+
+    routes = _parsed_routes(
+        {"style_draft": {"provider": "openai_compatible", "provider_id": "missing_qwen", "model": "Qwen3-14B-Q8_0.gguf", "api_mode": "chat"}}
     )
-    session.add(
-        LlmCall(
-            llm_call_id="llm_call_live_project_outline_test",
-            scope_type="system",
-            scope_id="snowflake_step_candidates",
-            provider="fake",
-            model="fake-model",
-            node_id="snowflake_step_candidates",
-            step="snowflake_step_candidates",
-            request_payload_summary={},
-            response_payload_summary={"source": "llm"},
-            prompt_tokens=1,
-            completion_tokens=1,
-            total_tokens=2,
-            latency_ms=1,
-        )
-    )
-    session.commit()
-
-    response = client.get("/api/v1/system-config/llm/calls/audit")
-
-    assert response.status_code == 200
-    payload = response.json()["data"]
-    assert payload["offline_deterministic_required_count"] == 1
-    assert payload["offline_deterministic_required_calls"][0]["node_id"] == "style_draft"
-    matrix = {item["node_id"]: item for item in payload["required_node_matrix"]}
-    assert matrix["snowflake_step_candidates"]["success_count"] == 1
-    assert matrix["style_draft"]["offline_deterministic_count"] == 1
+    with pytest.raises(DomainError) as excinfo:
+        _validate_activating_node_route_bindings(node_routing=routes, providers={})
+    assert excinfo.value.code == "CONFIG_ROUTE_PROVIDER_MISSING"
+    assert "missing_qwen" in excinfo.value.message
 
 
-def test_llm_node_route_activation_requires_existing_provider_binding(client, monkeypatch) -> None:
+def test_route_activation_gate_requires_a_ready_provider_secret(client, monkeypatch) -> None:
+    import pytest
+
+    from novel_system.services.errors import DomainError
+    from novel_system.services.system_config import _validate_activating_node_route_bindings
+
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-
-    response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "activate": True,
-            "node_routing": {
-                "style_draft": {
-                    "provider": "openai_compatible",
-                    "provider_id": "missing_qwen",
-                    "model": "Qwen3-14B-Q8_0.gguf",
-                    "temperature": 0.2,
-                    "max_output_tokens": 3000,
-                    "response_format": "json_object",
-                    "reasoning_level": "medium",
-                    "api_mode": "chat",
-                    "credential_mode": "none",
-                }
-            },
-            "retry_budget": {},
-            "job_runtime": {},
-        },
-    )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "CONFIG_ROUTE_PROVIDER_MISSING"
-    assert "missing_qwen" in response.json()["error"]["message"]
-
-
-def test_llm_node_route_activation_requires_ready_provider_secret(client, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
-    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-
     provider_response = client.post(
         "/api/v1/system-config/llm/providers",
         headers=ADMIN_HEADERS,
@@ -499,74 +462,34 @@ def test_llm_node_route_activation_requires_ready_provider_secret(client, monkey
     )
     assert provider_response.status_code == 200
     assert provider_response.json()["data"]["provider"]["secret"]["configured"] is False
+    providers = client.get("/api/v1/system-config/llm").json()["data"]["providers"]
 
-    response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "activate": True,
-            "node_routing": {
-                "neutral_draft": {
-                    "provider": "openai",
-                    "provider_id": "openai_no_secret",
-                    "model": "gpt-5.4",
-                    "temperature": 0.2,
-                    "max_output_tokens": 3000,
-                    "response_format": "json_object",
-                    "reasoning_level": "medium",
-                    "api_mode": "responses",
-                }
-            },
-            "retry_budget": {},
-            "job_runtime": {},
-        },
+    routes = _parsed_routes(
+        {"neutral_draft": {"provider": "openai", "provider_id": "openai_no_secret", "model": "gpt-5.4", "api_mode": "responses"}}
     )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "CONFIG_ROUTE_PROVIDER_NOT_READY"
-    assert "openai_no_secret" in response.json()["error"]["message"]
+    with pytest.raises(DomainError) as excinfo:
+        _validate_activating_node_route_bindings(node_routing=routes, providers=providers)
+    assert excinfo.value.code == "CONFIG_ROUTE_PROVIDER_NOT_READY"
+    assert "openai_no_secret" in excinfo.value.message
+    # 分工保存同样拒绝(在展开路由之前就查服务是否就绪)
+    role_response = client.post(
+        "/api/v1/system-config/llm/role-routes",
+        headers=ADMIN_HEADERS,
+        json={"assignments": {"drafting": {"provider_id": "openai_no_secret", "model": "gpt-5.4"}}, "activate": True},
+    )
+    assert role_response.status_code == 422
+    assert role_response.json()["error"]["code"] == "CONFIG_ROUTE_PROVIDER_NOT_READY"
 
 
 def test_llm_overview_marks_route_model_missing_when_provider_models_change(client, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-
-    provider_response = client.post(
-        "/api/v1/system-config/llm/providers",
-        headers=ADMIN_HEADERS,
-        json={
-            "provider_id": "local_qwen",
-            "provider_type": "openai_compatible",
-            "base_url": "http://127.0.0.1:8080/v1",
-            "enabled": True,
-            "credential_mode": "none",
-            "api_mode": "chat",
-            "models": ["Qwen3-14B-Q8_0.gguf"],
-        },
-    )
-    assert provider_response.status_code == 200
+    assert client.post("/api/v1/system-config/llm/providers", headers=ADMIN_HEADERS, json=_local_provider_body()).status_code == 200
 
     route_response = client.post(
-        "/api/v1/system-config/llm/node-routes",
+        "/api/v1/system-config/llm/role-routes",
         headers=ADMIN_HEADERS,
-        json={
-            "activate": True,
-            "node_routing": {
-                "style_draft": {
-                    "provider": "openai_compatible",
-                    "provider_id": "local_qwen",
-                    "model": "Qwen3-14B-Q8_0.gguf",
-                    "temperature": 0.2,
-                    "max_output_tokens": 3000,
-                    "response_format": "json_object",
-                    "reasoning_level": "medium",
-                    "api_mode": "chat",
-                    "credential_mode": "none",
-                }
-            },
-            "retry_budget": {},
-            "job_runtime": {},
-        },
+        json={"assignments": {"drafting": {"provider_id": "local_qwen", "model": "Qwen3-14B-Q8_0.gguf"}}, "activate": True},
     )
     assert route_response.status_code == 200
 
@@ -614,7 +537,7 @@ def test_system_config_local_setup_mode_rejects_non_loopback_writes(monkeypatch)
     assert "admin" not in response.text.lower()
 
 
-def test_api_config_draft_encrypts_secret_and_active_snapshot_feeds_settings(client, monkeypatch) -> None:
+def test_api_config_draft_encrypts_secret_and_active_snapshot_feeds_settings(client, session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
@@ -626,20 +549,15 @@ llm:
   timeout_seconds: 12.5
 """.strip()
 
-    draft_response = client.post(
-        "/api/v1/system-config/drafts",
-        headers=ADMIN_HEADERS,
-        json={"category": "api", "yaml_raw": yaml_raw, "secrets": {"llm_api_key": "super-secret-key"}},
-    )
-    assert draft_response.status_code == 200
-    draft = draft_response.json()["data"]["snapshot"]
+    created = _create_config_draft(session, "api", yaml_raw, secrets={"llm_api_key": "super-secret-key"})
+    draft = created["snapshot"]
     assert draft["validation"]["ok"] is True
-    assert "super-secret-key" not in draft_response.text
-    assert draft_response.json()["data"]["secrets"]["llm_api_key"]["configured"] is True
+    assert "super-secret-key" not in repr(created)
+    assert created["secrets"]["llm_api_key"]["configured"] is True
+    assert session.get(SystemSecret, "llm_api_key").encrypted_value != "super-secret-key"
 
-    activate_response = client.post(f"/api/v1/system-config/{draft['snapshot_id']}/activate", headers=ADMIN_HEADERS)
-    assert activate_response.status_code == 200
-    assert activate_response.json()["data"]["snapshot"]["active"] is True
+    activated = SystemConfigService(session).activate(draft["snapshot_id"], actor_ref="ops.config")
+    assert activated["snapshot"]["active"] is True
 
     read_response = client.get("/api/v1/system-config")
     assert read_response.status_code == 200
@@ -656,18 +574,15 @@ llm:
     assert settings.llm_api_key == "super-secret-key"
 
 
-def test_api_config_without_timeout_uses_safe_generation_ceiling(client, monkeypatch) -> None:
+def test_api_config_without_timeout_uses_safe_generation_ceiling(session, monkeypatch) -> None:
     """省略 timeout 使用 15 分钟安全上限，而不是历史上过短的 30 秒。"""
 
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
-    draft_response = client.post(
-        "/api/v1/system-config/drafts",
-        headers=ADMIN_HEADERS,
-        json={
-            "category": "api",
-            "yaml_raw": """
+    created = _create_config_draft(
+        session,
+        "api",
+        """
 llm:
   enabled: true
   default_provider_id: slow_local
@@ -682,45 +597,39 @@ llm:
       models:
         - "qwen3:14b"
 """.lstrip(),
-        },
     )
-    assert draft_response.status_code == 200
-    snapshot_id = draft_response.json()["data"]["snapshot"]["snapshot_id"]
-    assert draft_response.json()["data"]["snapshot"]["parsed"]["llm"]["timeout_seconds"] == 900.0
+    assert created["snapshot"]["parsed"]["llm"]["timeout_seconds"] == 900.0
 
-    activate_response = client.post(
-        f"/api/v1/system-config/{snapshot_id}/activate", headers=ADMIN_HEADERS
-    )
-    assert activate_response.status_code == 200
+    SystemConfigService(session).activate(created["snapshot"]["snapshot_id"], actor_ref="ops.config")
     assert get_settings().llm_timeout_seconds == 900.0
 
 
-def test_api_config_rejects_a_negative_timeout(client, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+def test_api_config_rejects_a_negative_timeout(session, monkeypatch) -> None:
+    import pytest
+
+    from novel_system.services.errors import DomainError
+
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
-    draft_response = client.post(
-        "/api/v1/system-config/drafts",
-        headers=ADMIN_HEADERS,
-        json={
-            "category": "api",
-            "yaml_raw": """
+    with pytest.raises(DomainError) as excinfo:
+        _create_config_draft(
+            session,
+            "api",
+            """
 llm:
   enabled: true
   provider: openai_compatible
   base_url: "https://local-llm.test/v1"
   timeout_seconds: -5
 """.lstrip(),
-        },
-    )
+        )
 
-    body = draft_response.text
-    assert draft_response.status_code >= 400 or "negative" in body
-    assert "must not be negative" in body
+    assert excinfo.value.code == "CONFIG_VALIDATION_FAILED"
+    assert excinfo.value.status_code == 422
+    assert "must not be negative" in excinfo.value.message
 
 
-def test_active_model_and_prompt_snapshots_feed_runtime_loaders(client, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+def test_active_model_and_prompt_snapshots_feed_runtime_loaders(session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     models_yaml = """
 task_routing:
@@ -752,18 +661,8 @@ templates:
           type: string
 """.strip()
 
-    model_draft = client.post(
-        "/api/v1/system-config/drafts",
-        headers=ADMIN_HEADERS,
-        json={"category": "models", "yaml_raw": models_yaml},
-    ).json()["data"]["snapshot"]
-    prompt_draft = client.post(
-        "/api/v1/system-config/drafts",
-        headers=ADMIN_HEADERS,
-        json={"category": "prompts", "yaml_raw": prompts_yaml},
-    ).json()["data"]["snapshot"]
-    assert client.post(f"/api/v1/system-config/{model_draft['snapshot_id']}/activate", headers=ADMIN_HEADERS).status_code == 200
-    assert client.post(f"/api/v1/system-config/{prompt_draft['snapshot_id']}/activate", headers=ADMIN_HEADERS).status_code == 200
+    assert _activate_config(session, "models", models_yaml)["active"] is True
+    assert _activate_config(session, "prompts", prompts_yaml)["active"] is True
 
     routing_config = load_model_routing_config()
     assert routing_config.task_routing["neutral_draft"].model == "custom-neutral"
@@ -784,24 +683,26 @@ templates:
     assert prompt["system_prompt"] == "Custom system prompt"
 
 
-def test_system_config_rejects_invalid_models_yaml(client, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+def test_system_config_rejects_invalid_models_yaml(session, monkeypatch) -> None:
+    import pytest
+
+    from novel_system.services.errors import DomainError
+
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
-    response = client.post(
-        "/api/v1/system-config/drafts",
-        headers=ADMIN_HEADERS,
-        json={"category": "models", "yaml_raw": "task_routing: []\nretry_budget: {}\njob_runtime: {}\n"},
-    )
+    with pytest.raises(DomainError) as excinfo:
+        _create_config_draft(session, "models", "task_routing: []\nretry_budget: {}\njob_runtime: {}\n")
 
-    assert response.status_code == 422
-    payload = response.json()["error"]
-    assert payload["code"] == "CONFIG_VALIDATION_FAILED"
-    assert "task_routing must be a mapping" in payload["message"]
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.code == "CONFIG_VALIDATION_FAILED"
+    assert "task_routing must be a mapping" in excinfo.value.message
 
 
-def test_system_config_rejects_oauth2_in_model_routing_yaml(client, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+def test_system_config_rejects_oauth2_in_model_routing_yaml(session, monkeypatch) -> None:
+    import pytest
+
+    from novel_system.services.errors import DomainError
+
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     models_yaml = """
 task_routing:
@@ -816,16 +717,12 @@ retry_budget: {}
 job_runtime: {}
 """.strip()
 
-    response = client.post(
-        "/api/v1/system-config/drafts",
-        headers=ADMIN_HEADERS,
-        json={"category": "models", "yaml_raw": models_yaml},
-    )
+    with pytest.raises(DomainError) as excinfo:
+        _create_config_draft(session, "models", models_yaml)
 
-    assert response.status_code == 422
-    payload = response.json()["error"]
-    assert payload["code"] == "CONFIG_VALIDATION_FAILED"
-    assert "unsupported credential_mode oauth2" in payload["message"]
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.code == "CONFIG_VALIDATION_FAILED"
+    assert "unsupported credential_mode oauth2" in excinfo.value.message
 
 
 def test_llm_config_provider_secret_and_node_routes_do_not_leak_credentials(client, session, monkeypatch) -> None:
@@ -862,44 +759,28 @@ def test_llm_config_provider_secret_and_node_routes_do_not_leak_credentials(clie
     assert stored_secret.metadata_json["provider_id"] == "openai_primary"
     assert "sk-secret-openai" not in stored_secret.encrypted_value
 
-    route_response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "activate": True,
-            "node_routing": {
-                "neutral_draft": {
-                    "provider": "openai",
-                    "provider_id": "openai_primary",
-                    "account_id": "acct_ops",
-                    "model": "gpt-5.4",
-                    "temperature": 0.25,
-                    "max_output_tokens": 3200,
-                    "response_format": "json_object",
-                    "reasoning_level": "medium",
-                    "api_mode": "responses",
-                },
-                "style_draft": {
-                    "provider": "openai",
-                    "provider_id": "openai_primary",
-                    "account_id": "acct_ops",
-                    "model": "gpt-5.4",
-                    "temperature": 0.65,
-                    "max_output_tokens": 5000,
-                    "response_format": "json_object",
-                    "reasoning_level": "high",
-                    "api_mode": "responses",
-                },
+    # 运维用服务方法写一份带显式覆盖(style_draft 推理 high)的路由快照:界面的分工只写服务与模型
+    snapshot = _activate_node_routing(
+        session,
+        {
+            "neutral_draft": {
+                "provider": "openai",
+                "provider_id": "openai_primary",
+                "account_id": "acct_ops",
+                "model": "gpt-5.4",
+                "api_mode": "responses",
             },
-            "retry_budget": {"total_attempt_budget": 4},
-            "job_runtime": {},
+            "style_draft": {
+                "provider": "openai",
+                "provider_id": "openai_primary",
+                "account_id": "acct_ops",
+                "model": "gpt-5.4",
+                "reasoning_level": "high",
+                "api_mode": "responses",
+            },
         },
     )
-
-    assert route_response.status_code == 200
-    route_payload = route_response.json()["data"]
-    assert route_payload["snapshot"]["active"] is True
-    assert route_payload["snapshot"]["parsed"]["node_routing"]["neutral_draft"]["reasoning_level"] == "medium"
+    assert snapshot["active"] is True
 
     overview = client.get("/api/v1/system-config/llm")
     assert overview.status_code == 200
@@ -985,26 +866,17 @@ def test_llm_provider_delete_removes_secret_and_reassigns_default(client, sessio
         assert response.status_code == 200
 
     # 一条节点路由指向即将删除的服务 → 删除响应应把它列为 orphaned
-    route_response = client.post(
-        "/api/v1/system-config/llm/node-routes",
-        headers=ADMIN_HEADERS,
-        json={
-            "node_routing": {
-                "snowflake_step_candidates": {
-                    "provider": "openai",
-                    "provider_id": "openai_primary",
-                    "model": "gpt-5.4",
-                    "temperature": 0.25,
-                    "max_output_tokens": 3200,
-                    "response_format": "json_object",
-                    "reasoning_level": "medium",
-                    "api_mode": "responses",
-                }
-            },
-            "activate": True,
+    _activate_node_routing(
+        session,
+        {
+            "snowflake_step_candidates": {
+                "provider": "openai",
+                "provider_id": "openai_primary",
+                "model": "gpt-5.4",
+                "api_mode": "responses",
+            }
         },
     )
-    assert route_response.status_code == 200
 
     delete_response = client.delete(
         "/api/v1/system-config/llm/providers/openai_primary",
@@ -1269,16 +1141,14 @@ def test_llm_config_normalizes_host_only_openai_compatible_base_url_to_v1(client
     assert overview.json()["data"]["providers"]["cli_proxy"]["base_url"] == "http://127.0.0.1:8317/v1"
 
 
-def test_llm_provider_probe_caps_active_llm_timeout_at_probe_ceiling(client, monkeypatch) -> None:
+def test_llm_provider_probe_caps_active_llm_timeout_at_probe_ceiling(client, session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
-    draft_response = client.post(
-        "/api/v1/system-config/drafts",
-        headers=ADMIN_HEADERS,
-        json={
-            "category": "api",
-            "yaml_raw": """
+    _activate_config(
+        session,
+        "api",
+        """
 llm:
   enabled: true
   timeout_seconds: 180
@@ -1294,16 +1164,7 @@ llm:
       models:
         - "qwen3:14b"
 """.lstrip(),
-        },
     )
-    assert draft_response.status_code == 200
-    snapshot_id = draft_response.json()["data"]["snapshot"]["snapshot_id"]
-
-    activate_response = client.post(
-        f"/api/v1/system-config/{snapshot_id}/activate",
-        headers=ADMIN_HEADERS,
-    )
-    assert activate_response.status_code == 200
 
     def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
         assert url == "https://local-llm.test/v1/models"
@@ -1597,26 +1458,9 @@ def test_llm_overview_marks_route_not_ready_when_secret_cannot_be_decrypted(
     assert provider_response.status_code == 200
 
     route_response = client.post(
-        "/api/v1/system-config/llm/node-routes",
+        "/api/v1/system-config/llm/role-routes",
         headers=ADMIN_HEADERS,
-        json={
-            "activate": True,
-            "node_routing": {
-                "neutral_draft": {
-                    "provider": "openai",
-                    "provider_id": "openai_primary",
-                    "account_id": "acct_ops",
-                    "model": "gpt-5.4",
-                    "temperature": 0.25,
-                    "max_output_tokens": 3200,
-                    "response_format": "json_object",
-                    "reasoning_level": "medium",
-                    "api_mode": "responses",
-                },
-            },
-            "retry_budget": {"total_attempt_budget": 4},
-            "job_runtime": {},
-        },
+        json={"assignments": {"drafting": {"provider_id": "openai_primary", "model": "gpt-5.4"}}, "activate": True},
     )
     assert route_response.status_code == 200
 

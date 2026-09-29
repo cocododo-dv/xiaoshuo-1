@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import LlmCall, OperationLog, SystemConfigSnapshot, SystemSecret, utcnow
+from novel_system.db.models import OperationLog, SystemConfigSnapshot, SystemSecret, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.env_config import (
     DEFAULT_LLM_TIMEOUT_SECONDS,
@@ -282,17 +282,19 @@ class SystemConfigService:
         else:
             self.session.flush()
 
-    def overview(self) -> dict[str, Any]:
+    def overview(self, *, include_content: bool = True) -> dict[str, Any]:
+        """运行时状态与五类配置的现状。
+
+        ``include_content`` 时每类带 YAML 正文与解析结果（运维工具要读）；``GET /api/v1/system-config``
+        只要摘要（来源、校验结果、活动快照的版本，api 的密钥状态）——以前它把每一份历史快照的正文都带上，
+        MB 级，而唯一的调用方（开发启动脚本的探活）只看 runtime（2026-09-30 重评 R15a）。
+        """
         categories = {}
         for category in CONFIG_CATEGORIES:
-            categories[category] = self._category_payload(category)
-        history = self.session.execute(
-            select(SystemConfigSnapshot).order_by(
-                SystemConfigSnapshot.created_at.desc(),
-                SystemConfigSnapshot.category.asc(),
-                SystemConfigSnapshot.version.desc(),
-            )
-        ).scalars().all()
+            payload = self._category_payload(category)
+            if not include_content:
+                payload = _category_summary(payload)
+            categories[category] = payload
         return {
             "runtime": {
                 "admin_configured": bool(_admin_token()),
@@ -300,7 +302,6 @@ class SystemConfigService:
                 "supported_categories": list(CONFIG_CATEGORIES),
             },
             "categories": categories,
-            "history": [_serialize_snapshot(snapshot) for snapshot in history],
         }
 
     def create_draft(
@@ -378,15 +379,6 @@ class SystemConfigService:
         )
         self._finish_mutation()
         return {"snapshot": _serialize_snapshot(snapshot)}
-
-    def export_category(self, category: str) -> dict[str, Any]:
-        _ensure_category(category)
-        payload = self._category_payload(category)
-        return {
-            "category": category,
-            "source": payload["source"],
-            "yaml_raw": payload["yaml_raw"],
-        }
 
     def test_provider(self, *, payload: dict[str, Any]) -> dict[str, Any]:
         provider_payload = _coerce_api_payload(payload)
@@ -659,96 +651,6 @@ class SystemConfigService:
             "models_snapshot": models_payload.get("active_snapshot"),
         }
 
-    def llm_call_audit(self, *, limit: int = 1000) -> dict[str, Any]:
-        node_catalog = llm_node_catalog()
-        active_nodes = set(active_llm_node_ids())
-        # 审计 P-15：聚合只需要标量列——不加载 request/response 全量 JSON 载荷
-        rows = self.session.execute(
-            select(
-                LlmCall.llm_call_id,
-                LlmCall.node_id,
-                LlmCall.step,
-                LlmCall.scene_id,
-                LlmCall.chapter_id,
-                LlmCall.provider,
-                LlmCall.provider_id,
-                LlmCall.model,
-                LlmCall.error_code,
-                LlmCall.created_at,
-            )
-            .order_by(LlmCall.created_at.desc(), LlmCall.llm_call_id.desc())
-            .limit(max(1, min(int(limit or 1000), 5000)))
-        ).all()
-        by_node: dict[str, dict[str, Any]] = {
-            node_id: {
-                "node_id": node_id,
-                "group": node_catalog.get(node_id, {}).get("group"),
-                "requires_llm": True,
-                "call_count": 0,
-                "success_count": 0,
-                "failure_count": 0,
-                "latest_provider": None,
-                "latest_provider_id": None,
-                "latest_model": None,
-                "latest_error_code": None,
-                "offline_deterministic_count": 0,
-            }
-            for node_id in active_nodes
-        }
-        offline_required_calls: list[dict[str, Any]] = []
-        for row in rows:
-            node_id = str(row.node_id or row.step or "")
-            if not node_id:
-                continue
-            entry = by_node.setdefault(
-                node_id,
-                {
-                    "node_id": node_id,
-                    "group": node_catalog.get(node_id, {}).get("group"),
-                    "requires_llm": node_id in active_nodes,
-                    "call_count": 0,
-                    "success_count": 0,
-                    "failure_count": 0,
-                    "latest_provider": None,
-                    "latest_provider_id": None,
-                    "latest_model": None,
-                    "latest_error_code": None,
-                    "offline_deterministic_count": 0,
-                },
-            )
-            entry["call_count"] += 1
-            if row.error_code:
-                entry["failure_count"] += 1
-            else:
-                entry["success_count"] += 1
-            if entry["latest_provider"] is None:
-                entry["latest_provider"] = row.provider
-                entry["latest_provider_id"] = row.provider_id
-                entry["latest_model"] = row.model
-                entry["latest_error_code"] = row.error_code
-            if row.provider == "offline_deterministic":
-                entry["offline_deterministic_count"] += 1
-                if node_id in active_nodes:
-                    offline_required_calls.append(
-                        {
-                            "llm_call_id": row.llm_call_id,
-                            "node_id": node_id,
-                            "step": row.step,
-                            "scene_id": row.scene_id,
-                            "chapter_id": row.chapter_id,
-                            "model": row.model,
-                            "created_at": _serialize_datetimeish(row.created_at),
-                        }
-                    )
-        required_matrix = [by_node[node_id] for node_id in active_llm_node_ids()]
-        return {
-            "limit": limit,
-            "required_node_matrix": required_matrix,
-            "offline_deterministic_required_calls": offline_required_calls,
-            "offline_deterministic_required_count": len(offline_required_calls),
-            "nodes_without_calls": [item["node_id"] for item in required_matrix if item["call_count"] == 0],
-        }
-
     def save_llm_provider(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
         try:
             provider = _normalize_provider_payload(payload)
@@ -882,34 +784,6 @@ class SystemConfigService:
             "orphaned_route_node_ids": orphaned_route_node_ids,
             "snapshot": _serialize_snapshot(snapshot),
         }
-
-    def save_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
-        config_payload = {
-            "task_routing": dict(payload.get("task_routing") or {}),
-            "node_routing": dict(payload.get("node_routing") or {}),
-            "retry_budget": dict(payload.get("retry_budget") or {}),
-            "job_runtime": dict(payload.get("job_runtime") or {}),
-        }
-        routing_config = _parse_route_config_or_raise(config_payload)
-        # 整表保存是原样写入的高级路径:退役节点的条目照存(overview 仍在
-        # stale_routes 列出),但激活校验对它们惰性——老安装带着已删服务的
-        # 退役路由不能把整个保存卡成 422。真正的剪枝在 sync-missing / role-routes。
-        stale_routes = _retired_route_ids(routing_config.node_routing)
-        if _bool_value(payload.get("activate", False)):
-            _validate_activating_node_route_bindings(
-                node_routing=routing_config.node_routing,
-                providers=self.llm_overview()["providers"],
-            )
-        snapshot = self._store_config_snapshot(
-            category="models",
-            parsed=config_payload,
-            validation={"ok": True, "message": "models config is valid"},
-            status="active" if _bool_value(payload.get("activate", False)) else "draft",
-            active=_bool_value(payload.get("activate", False)),
-            actor_ref=actor_ref,
-        )
-        self._finish_mutation()
-        return {"snapshot": _serialize_snapshot(snapshot), "stale_routes": stale_routes}
 
     def sync_missing_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
         overview = self.llm_overview()
@@ -1423,12 +1297,19 @@ def _serialize_snapshot(snapshot: SystemConfigSnapshot) -> dict[str, Any]:
     }
 
 
-def _serialize_datetimeish(value: Any) -> str | None:
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
+_SNAPSHOT_SUMMARY_KEYS = ("snapshot_id", "category", "version", "status", "active", "created_by", "created_at", "activated_at")
+
+
+def _category_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """一类配置的摘要：去掉 YAML 正文与解析结果（活动快照也只留版本信息）。"""
+    summary = {key: payload[key] for key in ("category", "source", "validation") if key in payload}
+    active = payload.get("active_snapshot")
+    summary["active_snapshot"] = (
+        {key: active.get(key) for key in _SNAPSHOT_SUMMARY_KEYS} if isinstance(active, dict) else None
+    )
+    if "secrets" in payload:
+        summary["secrets"] = payload["secrets"]
+    return summary
 
 
 def _ensure_category(category: str) -> None:

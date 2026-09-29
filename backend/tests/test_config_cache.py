@@ -326,7 +326,7 @@ def test_models_snapshot_changes_reach_routing_and_lease_ttl_at_once(session) ->
 
 
 def test_node_routes_saved_through_system_config_are_visible_at_once(client, monkeypatch) -> None:
-    """系统配置界面保存节点路由（同一个 HTTP 入口）之后，下一次读路由就是新的输出预算。"""
+    """系统配置界面保存模型分工（同一个 HTTP 入口）之后，下一次读路由就是新的模型。"""
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     provider = client.post(
@@ -339,31 +339,20 @@ def test_node_routes_saved_through_system_config_are_visible_at_once(client, mon
             "enabled": True,
             "credential_mode": "none",
             "api_mode": "chat",
-            "models": ["fixture-model"],
+            "models": ["fixture-model-a", "fixture-model-b"],
         },
     )
     assert provider.status_code == 200, provider.json()
     load_model_routing_config()  # 先把保存之前的路由读进缓存
 
-    for budget in (1111, 2222):
-        route = {
-            "provider": "openai_compatible",
-            "provider_id": "fixture_local",
-            "model": "fixture-model",
-            "temperature": 0.5,
-            "max_output_tokens": budget,
-            "response_format": "text",
-            "reasoning_level": "medium",
-            "api_mode": "chat",
-            "credential_mode": "none",
-        }
+    for model in ("fixture-model-a", "fixture-model-b"):
         saved = client.post(
-            "/api/v1/system-config/llm/node-routes",
+            "/api/v1/system-config/llm/role-routes",
             headers=ADMIN_HEADERS,
-            json={"node_routing": {"neutral_draft": route}, "activate": True},
+            json={"assignments": {"drafting": {"provider_id": "fixture_local", "model": model}}, "activate": True},
         )
         assert saved.status_code == 200, saved.json()
-        assert load_model_routing_config().node_routing["neutral_draft"].max_output_tokens == budget
+        assert load_model_routing_config().node_routing["neutral_draft"].model == model
 
 
 # ---------------------------------------------------------------- 运行时 api 配置与密钥
