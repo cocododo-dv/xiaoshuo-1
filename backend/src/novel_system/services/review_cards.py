@@ -99,6 +99,8 @@ class ReviewCardService:
                 # legacy 行（project_id 同为 NULL）不全局扩散
                 | (ReviewItem.project_id.is_(None) & (ReviewItem.item_type == CARD_ITEM_TYPE))
             )
+            # 写作偏好学习已退役（批准 #6）：它留下的「写作偏好」决策卡处理了也不会改变任何生成，不再列出（行留在库里）
+            .where(ReviewItem.item_type != "author_preference_profile")
             .order_by(ReviewItem.created_at.desc(), ReviewItem.review_id.desc())
         ).scalars().all()
         persistent = [self.card_payload(row) for row in rows if self._unified_state(row) == state]

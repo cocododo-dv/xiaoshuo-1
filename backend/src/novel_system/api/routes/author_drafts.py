@@ -52,50 +52,10 @@ class CanonicalPromotionRequest(StrictAuthorDraftRequest):
     )
 
 
-class ProposalTargetRangeRequest(StrictAuthorDraftRequest):
-    unit: str | None = Field(default=None, max_length=32)
-    start: int | None = Field(default=None, ge=0, le=MAX_DRAFT_CONTENT_CHARS)
-    end: int | None = Field(default=None, ge=0, le=MAX_DRAFT_CONTENT_CHARS)
-    source_excerpt: str | None = Field(default=None, max_length=100_000)
-    before_text: str | None = Field(default=None, max_length=100_000)
-    excerpt: str | None = Field(default=None, max_length=100_000)
-
-
-class ProposalGenerateRequest(StrictAuthorDraftRequest):
-    proposal_type: OptionalIdentifier | None = None
-    instruction: str | None = Field(default=None, max_length=MAX_INSTRUCTION_CHARS)
-    target_range: ProposalTargetRangeRequest | None = None
-    replacement_text: str | None = Field(default=None, max_length=MAX_DRAFT_CONTENT_CHARS)
-    proposal_kind: OptionalIdentifier | None = None
-    source_evaluation_id: OptionalIdentifier | None = None
-    proposal_source: OptionalIdentifier | None = None
-
-
 class ProposalGenerateSetRequest(StrictAuthorDraftRequest):
+    # 只剩「AI 续写」一种（continuation_variants，缺省也是它）：局部段落范围与评估来源随采纳 / 对比接口一起删了（批准 #7）
     mode: str | None = Field(default=None, max_length=64)
     instruction: str | None = Field(default=None, max_length=MAX_INSTRUCTION_CHARS)
-    target_range: ProposalTargetRangeRequest | None = None
-    source_evaluation_id: OptionalIdentifier | None = None
-
-
-class ScopedProposalApplyRequest(StrictAuthorDraftRequest):
-    proposal_id: OptionalIdentifier | None = None
-    apply_mode: str | None = Field(default=None, max_length=64)
-    note: NoteText | None = None
-    decision_reason: NoteText | None = None
-
-
-class ProposalApplyRequest(StrictAuthorDraftRequest):
-    apply_mode: str | None = Field(default=None, max_length=64)
-    note: NoteText | None = None
-    decision_reason: NoteText | None = None
-    affected_excerpt: str | None = Field(default=None, max_length=100_000)
-
-
-class ProposalRejectRequest(StrictAuthorDraftRequest):
-    note: NoteText | None = None
-    decision_reason: NoteText | None = None
-    rejected_ai_trace: str | None = Field(default=None, max_length=100_000)
 
 
 @router.get("/api/v1/author-drafts/{object_type}/{object_id}/current")
@@ -203,61 +163,6 @@ def get_author_draft_revision(draft_id: str, revision_no: int, request: Request,
     return ok(result, req_id=request_id_of(request))
 
 
-@router.get("/api/v1/author-drafts/{draft_id}/proposals")
-def get_author_draft_proposals(draft_id: str, request: Request, session: Session = Depends(get_session)):
-    result = AuthorDraftService(session).proposals(draft_id)
-    return ok(result, req_id=request_id_of(request))
-
-
-@router.get("/api/v1/author-drafts/{draft_id}/proposals/{proposal_id}/diff")
-def get_author_draft_proposal_diff(
-    draft_id: str,
-    proposal_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    result = AuthorDraftService(session).proposal_diff(draft_id, proposal_id)
-    return ok(result, req_id=request_id_of(request))
-
-
-@router.post("/api/v1/author-drafts/{draft_id}/apply-proposal")
-def apply_author_draft_scoped_proposal(
-    draft_id: str,
-    request: Request,
-    payload: ScopedProposalApplyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = actor_ref_of(request)
-    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/author-drafts/{draft_id}/apply-proposal",
-        payload={"draft_id": draft_id, "body": body},
-        action=lambda: AuthorDraftService(session).apply_proposal_to_draft(draft_id, body, actor_ref=actor_ref),
-    )
-
-
-@router.post("/api/v1/author-drafts/{draft_id}/proposals/generate")
-def generate_author_draft_proposal(
-    draft_id: str,
-    request: Request,
-    payload: ProposalGenerateRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = actor_ref_of(request)
-    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/author-drafts/{draft_id}/proposals/generate",
-        payload={"draft_id": draft_id, "body": body},
-        action=lambda: AuthorDraftService(session).generate_proposal(draft_id, body, actor_ref=actor_ref),
-    )
-
-
 @router.post("/api/v1/author-drafts/{draft_id}/proposals/generate-set")
 def generate_author_draft_proposal_set(
     draft_id: str,
@@ -275,43 +180,3 @@ def generate_author_draft_proposal_set(
         payload={"draft_id": draft_id, "body": body},
         action=lambda: AuthorDraftService(session).generate_proposal_set(draft_id, body, actor_ref=actor_ref),
     )
-
-
-@router.post("/api/v1/author-draft-proposals/{proposal_id}/apply")
-def apply_author_draft_proposal(
-    proposal_id: str,
-    request: Request,
-    payload: ProposalApplyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = actor_ref_of(request)
-    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/author-draft-proposals/{proposal_id}/apply",
-        payload={"proposal_id": proposal_id, "body": body},
-        action=lambda: AuthorDraftService(session).apply_proposal(proposal_id, body, actor_ref=actor_ref),
-    )
-
-
-@router.post("/api/v1/author-draft-proposals/{proposal_id}/reject")
-def reject_author_draft_proposal(
-    proposal_id: str,
-    request: Request,
-    payload: ProposalRejectRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = actor_ref_of(request)
-    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/author-draft-proposals/{proposal_id}/reject",
-        payload={"proposal_id": proposal_id, "body": body},
-        action=lambda: AuthorDraftService(session).reject_proposal(proposal_id, body, actor_ref=actor_ref),
-    )
-
-

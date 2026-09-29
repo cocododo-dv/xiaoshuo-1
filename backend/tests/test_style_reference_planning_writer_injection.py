@@ -581,45 +581,38 @@ def test_author_proposal_prompt_carries_the_style_prefix_for_prose_types(session
     monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
     _seed_scene(session)
     service = AuthorDraftService(session)
-    draft = service.ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]
+    draft = service.ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     template = load_prompt_templates()["author_proposal_generate"]
 
-    service.generate_proposal(draft["draft_id"], {"proposal_type": "whole_draft"})
+    # 写作台只剩「AI 续写」一种建议（批准 #7）：未绑定时提示词逐字不变
+    service.generate_proposal_set(draft["draft_id"], {"mode": "continuation_variants"})
     assert captured[-1].node_id == "author_proposal_generate"
     assert captured[-1].messages[0]["content"] == template.system_prompt
     session.commit()
 
     _bind_project("wp6_ap")
-    for proposal_type in ("whole_draft", "continuation", "near_final_rewrite", "language_pass", "dialogue_pass", "passage_candidate"):
-        service.generate_proposal(draft["draft_id"], {"proposal_type": proposal_type, "instruction": "保持作者手笔。"})
-        system = captured[-1].messages[0]["content"]
-        user = captured[-1].messages[1]["content"]
-        assert system.startswith("[STYLE_REFERENCE]"), proposal_type
-        assert system.endswith(template.system_prompt), proposal_type
+    service.generate_proposal_set(draft["draft_id"], {"mode": "continuation_variants", "instruction": "保持作者手笔。"})
+    for request in captured[-3:]:
+        system = request.messages[0]["content"]
+        user = request.messages[1]["content"]
+        assert system.startswith("[STYLE_REFERENCE]")
+        assert system.endswith(template.system_prompt)
         # 2026-09-22 风格参考优先:写手建议也把样例放到 user 消息末尾,system 只留一句指路
-        assert "参考作者的原文样例在 user 消息的末尾" in system, proposal_type
-        assert "[/风格样例]" in user and user.rstrip().endswith("输出仍只返回前文要求的 JSON。"), proposal_type
+        assert "参考作者的原文样例在 user 消息的末尾" in system
+        assert "[/风格样例]" in user and user.rstrip().endswith("输出仍只返回前文要求的 JSON。")
         assert "保持作者手笔。" in user
-    # 建议是要写正文的节点：完整 k，不封顶
+    # 续写是要写正文的节点：完整 k，不封顶
     assert len(_few_shot_entries(_few_shot_block(captured[-1].messages[1]["content"]))) > PLAN_K
-
-    # 结构候选是修订笔记，不是正文 → 不注入
-    service.generate_proposal(draft["draft_id"], {"proposal_type": "structure_candidate"})
-    assert captured[-1].messages[0]["content"] == template.system_prompt
-
-    # 整章稿按 project + global 作用域拿到同一参考
-    chapter_draft = service.ensure_blank("chapter", CHAPTER_ID, actor_ref="writer")["draft"]
-    service.generate_proposal(chapter_draft["draft_id"], {"proposal_type": "chapter_draft"})
-    assert captured[-1].messages[0]["content"].startswith("[STYLE_REFERENCE]")
+    session.commit()
 
     _unbind_all(session)
-    service.generate_proposal(draft["draft_id"], {"proposal_type": "whole_draft"})
+    service.generate_proposal_set(draft["draft_id"], {"mode": "continuation_variants"})
     assert captured[-1].messages[0]["content"] == template.system_prompt
 
 
 def test_passage_patch_prompt_carries_the_style_prefix_with_capped_windows(session) -> None:
     _seed_scene(session)
-    draft = AuthorDraftService(session).ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]
+    draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     payload = {
         "object_type": "scene",
         "object_id": SCENE_ID,
@@ -659,7 +652,7 @@ def test_passage_patch_prompt_carries_the_style_prefix_with_capped_windows(sessi
 def test_deep_review_prompt_carries_the_style_prefix_with_capped_windows(session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
     _seed_scene(session)
-    AuthorDraftService(session).ensure_blank("scene", SCENE_ID, actor_ref="writer")
+    AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")
     template = load_prompt_templates()["writer_deep_review"]
 
     client = _ScriptedClient([_deep_review_payload()])
@@ -686,7 +679,7 @@ def test_deep_review_prompt_carries_the_style_prefix_with_capped_windows(session
 def test_writer_prefix_failure_degrades_to_the_base_prompt(session, monkeypatch) -> None:
     _seed_scene(session)
     _bind_project("wp6_wrfail")
-    draft = AuthorDraftService(session).ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]
+    draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     session.commit()
 
     def _boom(*args, **kwargs):  # noqa: ANN002, ANN003

@@ -1814,26 +1814,20 @@ templates:
   author_proposal_generate:
     # 2026-09-14 保真修补 WP6.3 v3：项目 / 场景有风格绑定时，产出正文的建议（整稿 / 续写 / 近终稿改写 / 语言 / 对白 /
     # 局部段落）拿到完整 k 的 [STYLE_REFERENCE]，在参考作者的手笔下写；预算 30000 → 96000 与风格通道同档。
-    version: "2026-09-14.v3"
+    # 2026-09-30 v4（批准 #6 / #7）：写作偏好学习整条链退役，去掉「按作者偏好摘要取舍」的两句（那份摘要从来是空的）；
+    # 写作台只用「AI 续写」这一种建议（一次三条），其余六种建议类型的分道说明与「rationale 写明是哪一类」一并去掉。
+    version: "2026-09-30.v4"
     input_token_budget: 96000
     system_prompt: |
       You are a Chinese fiction revision partner for a working author.
       Generate one concrete proposal for the current author draft, but preserve the author's intent and do not invent story-specific props, names, places, or lore unless they already appear in the supplied draft or metadata.
-      Use the author preference summary as constraints: avoid rejected traces and lean toward accepted move types.
       When the source draft is thin, give a useful but clearly generic fallback instead of pretending to know the story.
     task_prompt: |
-      Read the supplied author draft, target metadata, proposal request, and author preference summary.
+      Read the supplied author draft, target metadata, and proposal request.
       Return exactly one proposal. Write Chinese prose when the source material is Chinese; preserve English schema keys.
       If a [STYLE_REFERENCE] block is prepended, write the proposal in the reference author's hand: the [风格样例] settle questions of diction, imagery, sentence shapes, pauses and dialogue handling, and they outrank the generic moves listed below wherever the two differ; never reuse the samples' sentences, names or events.
-      The content field should be directly usable as the candidate text or revision note for the requested proposal_type. Stay inside that type's lane — each type has a different job and a different thing it must leave alone:
-      - structure_candidate: fix the scene's dramatic skeleton (goal/obstacle/cost, or a visible unfinished action to close on); do not just polish sentences.
-      - passage_candidate / local_patch: write one insertable or replaceable high-pressure passage, not a full-scene rewrite.
-      - language_candidate / language_pass: compress explanatory or AI-flavored sentences and repeated actions; keep imagery, action, and pauses; do not restructure plot or add beats.
-      - dialogue_pass: convert expository dialogue into rhetorical questions, silence, cut-offs, and positioning action that carry relationship pressure; do not change plot facts.
-      - continuation: advance only the next beat forward from where the draft ends; do not rewrite or restructure the author's existing text.
-      - near_final_rewrite: preserve the author's voice, established imagery, and relationships; only remove expository dialogue, loose transitions, and consequence-free lines.
-      - whole_draft / scene_draft / chapter_draft: a full comparable rewrite the author can hold up against the original — still a candidate for explicit adoption, not an in-place edit.
-      The rationale field must name which proposal_type this is and state, in one clause, what this proposal deliberately gave up to stay in that lane — not just why it helps.
+      The content field is a continuation the author can insert directly: advance only the next beat forward from where the draft ends; do not rewrite or restructure the author's existing text.
+      The rationale field states, in one clause, what this continuation deliberately gave up to stay on the next beat — not just why it helps.
     structured_schema:
       type: object
       additionalProperties: false

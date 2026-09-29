@@ -252,49 +252,6 @@ def test_scope_helper_checks_the_live_binding_even_when_the_bundle_froze_none(se
     assert check.blocked is True
 
 
-def test_applying_an_ai_proposal_that_copies_the_reference_is_refused(session) -> None:
-    from novel_system.services.author_drafts import AuthorDraftService
-
-    _seed_scene(session)
-    _bind(session)
-    session.add(
-        AuthorDraft(
-            draft_id="author_draft_copy_gate",
-            object_type="scene",
-            object_id=SCENE_ID,
-            source_text_ref="author_blank:scene",
-            content="<p>原来的一句。</p>",
-            revision_no=3,
-            status="current",
-        )
-    )
-    session.add(
-        AuthorDraftProposal(
-            proposal_id="proposal_copy_gate",
-            draft_id="author_draft_copy_gate",
-            object_type="scene",
-            object_id=SCENE_ID,
-            proposal_type="scene_draft",
-            content=f"<p>她抬头。{REFERENCE_PASSAGE[:40]}</p>",
-            proposal_kind="whole_draft",
-            status="candidate",
-        )
-    )
-    session.commit()
-
-    with pytest.raises(DomainError) as excinfo:
-        AuthorDraftService(session).apply_proposal("proposal_copy_gate", {"apply_mode": "replace"})
-
-    assert excinfo.value.code == "SOURCE_SAFETY_BLOCKED"
-    action = excinfo.value.details["author_action"]
-    assert action["title"].startswith("这条 AI 建议")
-    assert REFERENCE_PASSAGE[:THRESHOLD_CHARS] not in str(excinfo.value.details)
-    session.rollback()
-    draft = session.get(AuthorDraft, "author_draft_copy_gate")
-    assert draft.revision_no == 3 and draft.content == "<p>原来的一句。</p>"
-    assert session.get(AuthorDraftProposal, "proposal_copy_gate").status == "candidate"
-
-
 def test_accepting_a_passage_rewrite_that_copies_the_reference_is_refused(session) -> None:
     from novel_system.services.writer_deep_review import WriterDeepReviewService
 
@@ -390,7 +347,7 @@ def test_generated_proposals_that_copy_the_reference_never_reach_the_author(sess
         "结构笔记：先让她沉默。",
         f"<p>作者自己粘进来的：{REFERENCE_PASSAGE[:20]}。她把伞收好。</p>",
     ]
-    result = service.generate_proposal_set("author_draft_gen_gate", {"mode": "daily"})
+    result = service.generate_proposal_set("author_draft_gen_gate", {"mode": "continuation_variants"})
     assert len(result["proposals"]) == 2
     assert result["reference_copy_blocked_count"] == 1
     assert all(REFERENCE_PASSAGE[:40] not in item["content"] for item in result["proposals"])
@@ -401,20 +358,14 @@ def test_generated_proposals_that_copy_the_reference_never_reach_the_author(sess
     # 三版全照抄 → 409，一行都不落库，报的是建议里的位置、不印原文
     outputs[:] = [f"第{index}版：{REFERENCE_PASSAGE[:30]}" for index in range(3)]
     with pytest.raises(DomainError) as excinfo:
-        service.generate_proposal_set("author_draft_gen_gate", {"mode": "daily"})
+        service.generate_proposal_set("author_draft_gen_gate", {"mode": "continuation_variants"})
     assert excinfo.value.code == "SOURCE_SAFETY_BLOCKED"
     assert excinfo.value.details["author_action"]["title"].startswith("这条 AI 建议")
     assert REFERENCE_PASSAGE[:THRESHOLD_CHARS] not in str(excinfo.value.details)
     session.rollback()
-    assert session.query(AuthorDraftProposal).filter_by(draft_id="author_draft_gen_gate").count() == 2
-
-    # 单条建议照抄 → 409，不落库
-    outputs[:] = [f"她抬头。{REFERENCE_PASSAGE[:40]}"]
-    with pytest.raises(DomainError) as single:
-        service.generate_proposal("author_draft_gen_gate", {"proposal_type": "whole_draft"})
-    assert single.value.code == "SOURCE_SAFETY_BLOCKED"
-    session.rollback()
-    assert session.query(AuthorDraftProposal).filter_by(draft_id="author_draft_gen_gate").count() == 2
+    # 整组被拦：上一组原样开着，不被「新一组替换」（批准 #7）
+    stored = session.query(AuthorDraftProposal).filter_by(draft_id="author_draft_gen_gate").all()
+    assert len(stored) == 2 and {row.status for row in stored} == {"candidate"}
 
 
 def test_generated_passage_rewrites_that_copy_the_reference_are_dropped(session, monkeypatch) -> None:
