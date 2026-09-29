@@ -108,10 +108,11 @@ def test_post_archive_failure_retries_missing_side_effects_before_archived_check
     ) == 1
 
 
-def test_archive_rule_events_checkpoint_prevents_replay_after_vector_failure(session) -> None:
+def test_archive_rule_events_step_records_an_empty_product(session) -> None:
+    """归档第 5 步不再按场景计划写规则事件（它们从来没人读，B11-02）：产品是空的 rule_events，续跑照常。"""
     _seed_resume_scene(session)
     generation_client = _CountingGenerationClient()
-    execution_id = "idempotency:archive-rule-events-prefix"
+    execution_id = "idempotency:archive-rule-events-empty"
 
     def orchestrator() -> Orchestrator:
         return Orchestrator(
@@ -134,20 +135,72 @@ def test_archive_rule_events_checkpoint_prevents_replay_after_vector_failure(ses
     refs = state.run_checkpoint_json["artifact_refs"]
     assert state.run_checkpoint == "near_final_ready"
     assert state.run_checkpoint_json["sub_index"] == 5
-    event_ids = refs["archive_rule_event_ids"]
-    assert event_ids
-    assert {
-        "causal_predecessor_id",
-        "theme_tags",
-        "obligation_ids",
-        "created_at",
-        "payload_json",
-    }.issubset(refs["archive_rule_events"][0])
-    event_count = session.scalar(
+    assert refs["archive_rule_event_ids"] == []
+    assert refs["archive_rule_events"] == []
+    assert refs["archive_rule_product"]["kind"] == "rule_events"
+    assert refs["archive_rule_product"]["outcome"] == "recorded"
+    provider_calls = len(generation_client.requests)
+
+    result = orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)
+    assert result["scene_status"] == "archived"
+    assert len(generation_client.requests) == provider_calls
+    assert session.scalar(
         select(func.count()).select_from(NarrativeEvent).where(
             NarrativeEvent.scene_id == "CH_RESUME_SC01",
-            NarrativeEvent.confidence == "high",
+            NarrativeEvent.authority_status == "planned",
         )
+    ) == 0
+
+
+def test_checkpoint_written_with_rule_events_by_the_old_code_still_resumes(session) -> None:
+    """改之前写下的检查点：第 5 步里记着规则事件。续跑照原样校验这几行、不重写、不重复。"""
+    from novel_system.services.narrative_event_log import NarrativeEventLog
+
+    _seed_resume_scene(session)
+    generation_client = _CountingGenerationClient()
+    execution_id = "idempotency:archive-rule-events-legacy"
+
+    def orchestrator() -> Orchestrator:
+        return Orchestrator(
+            session,
+            scene_generation_service=SceneGenerationService(
+                session,
+                llm_client=generation_client,
+            ),
+            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+        )
+
+    def legacy_rule_events(scene, _contract, content, *, final_scene_row_id=None, **_kwargs):  # noqa: ANN001, ANN202
+        event = NarrativeEventLog(session).log_event(
+            project_id=scene.project_id or "P_RESUME",
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            event_type="character_state",
+            entity_type="character",
+            entity_id="CHAR_A",
+            fact_key="appeared_in_scene",
+            fact_value=scene.scene_id,
+            source_text_excerpt=content[:200],
+            authority_status="planned",
+            source_kind="scene_plan",
+            final_scene_row_id=final_scene_row_id,
+        )
+        return [event.event_id]
+
+    first = orchestrator()
+    first._record_narrative_events = legacy_rule_events
+    first._record_prose_events = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("stop after legacy rule event checkpoint")
+    )
+    with pytest.raises(RuntimeError, match="stop after legacy rule event checkpoint"):
+        first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
+
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    refs = state.run_checkpoint_json["artifact_refs"]
+    assert state.run_checkpoint_json["sub_index"] == 5
+    assert len(refs["archive_rule_event_ids"]) == 1
+    assert {"causal_predecessor_id", "theme_tags", "obligation_ids", "created_at", "payload_json"}.issubset(
+        refs["archive_rule_events"][0]
     )
     provider_calls = len(generation_client.requests)
 
@@ -157,9 +210,9 @@ def test_archive_rule_events_checkpoint_prevents_replay_after_vector_failure(ses
     assert session.scalar(
         select(func.count()).select_from(NarrativeEvent).where(
             NarrativeEvent.scene_id == "CH_RESUME_SC01",
-            NarrativeEvent.confidence == "high",
+            NarrativeEvent.authority_status == "planned",
         )
-    ) == event_count
+    ) == 1
 
 
 def test_archive_prose_checkpoint_is_durable_and_tamper_blocks_before_next_step(session) -> None:

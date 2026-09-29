@@ -735,8 +735,6 @@ def test_prose_control_plane_failure_crosses_recording_catches(session, monkeypa
         writer_brief_json={},
     )
     contract = SimpleNamespace(payload_json={})
-    orch._record_relation_events = lambda *_args, **_kwargs: None
-    orch._record_foreshadow_events = lambda *_args, **_kwargs: None
     orch._record_prose_events = raise_control
     with pytest.raises(type(error)) as outer:
         orch._record_narrative_events(scene, contract, "prose")

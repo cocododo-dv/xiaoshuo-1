@@ -1,7 +1,8 @@
 """Archive-time side-effect recorders extracted from the scene orchestrator.
 
 This module owns the post-approval archival effect cluster: narrative event
-recording (rule-based + prose-grounded), vector indexing of the final scene
+recording (prose-grounded candidates only — the plan-based rule events were never
+read and are no longer written, B11-02), vector indexing of the final scene
 text, and the archive-time slot for the style fidelity reading (风格参考 v3:
 the old style-drift steering was removed; the slot keeps its checkpoint step
 key so persisted checkpoints still resume). The methods here were moved from
@@ -28,7 +29,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    SceneBlueprint,
     SceneCard,
     SceneDraft,
 )
@@ -83,109 +83,28 @@ class SceneArchiveEffects:
         degrade_errors: bool = True,
         final_scene_row_id: str | None = None,
     ) -> list[str]:
-        """Extract all 7 event types from approved scene and log to event sourcing.
+        """归档时往叙事事件账本里记的东西。
 
-        Blueprint §2: event log is the single source of truth.
+        以前先按场景卡的「计划」记一批规则事件（出场、位置、出口变化、揭示、关系转折），记成 ``planned``；可运行时
+        重放只认 ``accepted``，也没有任何代码把它们升级——每次归档都写、从来没人读（B11-02）。现在不再写：归档第 5 步
+        （``archive:rule_events:0``）照旧产出一份空的 ``rule_events`` 产品，写过规则事件的旧检查点照样按原样校验、续跑。
+        ``include_prose`` 时只剩正文抽取（同样是暂存、等作者在正史核对里决定）。
         """
+        if not include_prose:
+            return []
         try:
             from novel_system.services.narrative_event_log import NarrativeEventLog
 
-            base_log = NarrativeEventLog(self.session)
-            event_ids: list[str] = []
-
-            class _RecordingEventLog:
-                def log_event(self, **kwargs):
-                    kwargs.setdefault("authority_status", "planned")
-                    kwargs.setdefault("source_kind", "scene_plan")
-                    kwargs.setdefault("final_scene_row_id", final_scene_row_id)
-                    event = base_log.log_event(**kwargs)
-                    event_ids.append(event.event_id)
-                    return event
-
-                def __getattr__(self, name: str):
-                    return getattr(base_log, name)
-
-            log = _RecordingEventLog()
-            payload = contract.payload_json or {}
-            project_id = self._dispatch._resolve_scene_project_id(scene, contract)
-            pov = scene.pov_character_id or payload.get("pov_character_id")
-            onstage = scene.onstage_chars_json or []
-            all_chars = list(
-                dict.fromkeys(([pov] if pov else []) + [c for c in onstage if c != pov])
+            _result, event_ids = self._dispatch._record_prose_events(
+                NarrativeEventLog(self.session),
+                scene,
+                self._dispatch._archive_event_base(scene, contract),
+                content,
+                final_scene_row_id=final_scene_row_id,
+                return_event_ids=True,
             )
-            base = dict(
-                project_id=project_id,
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-            )
-
-            # --- 1. character_state: appeared_in_scene ---
-            for char_id in all_chars:
-                if not char_id:
-                    continue
-                log.log_event(
-                    **base,
-                    event_type="character_state",
-                    entity_type="character",
-                    entity_id=char_id,
-                    fact_key="appeared_in_scene",
-                    fact_value=scene.scene_id,
-                    source_text_excerpt=content[:200] if content else None,
-                )
-
-            # --- 2. character_state: exit_change ---
-            exit_change = scene.exit_change or payload.get("exit_change") or ""
-            if exit_change and pov:
-                log.log_event(
-                    **base,
-                    event_type="character_state",
-                    entity_type="character",
-                    entity_id=pov,
-                    fact_key="exit_change",
-                    fact_value=exit_change[:500],
-                )
-
-            # --- 3. location_change ---
-            location = scene.location or payload.get("location")
-            if location:
-                for char_id in all_chars:
-                    if not char_id:
-                        continue
-                    log.log_event(
-                        **base,
-                        event_type="location_change",
-                        entity_type="character",
-                        entity_id=char_id,
-                        fact_key="location",
-                        fact_value=location[:200],
-                    )
-
-            # --- 4. character_learns: from writer_brief must_reveal ---
-            writer_brief = scene.writer_brief_json or {}
-            must_reveal = writer_brief.get("must_reveal")
-            if must_reveal and pov:
-                reveal_text = (
-                    must_reveal if isinstance(must_reveal, str) else str(must_reveal)
-                )
-                log.log_event(
-                    **base,
-                    event_type="character_learns",
-                    entity_type="character",
-                    entity_id=pov,
-                    fact_key="scene_revelation",
-                    fact_value=reveal_text[:500],
-                )
-
-            # --- 5. relation_change: from scene blueprint relationship_turn ---
-            self._dispatch._record_relation_events(log, scene, base, pov, all_chars)
-
-            # --- 7. (opt-in) prose-grounded events: what the TEXT actually realized,
-            # not just what the spec planned. Advisory (confidence="extracted"). ---
-            if include_prose:
-                self._dispatch._record_prose_events(log, scene, base, content)
-
             self.session.flush()
-            return event_ids
+            return list(event_ids)
         except Exception as exc:
             if is_llm_control_plane_failure(exc) or isinstance(exc, LLMAccountingError):
                 raise
@@ -310,44 +229,6 @@ class SceneArchiveEffects:
             },
         )
         return (result, event_ids) if return_event_ids else result
-
-    def _record_relation_events(
-        self,
-        log,
-        scene: SceneCard,
-        base: dict,
-        pov: str | None,
-        all_chars: list[str],
-    ) -> None:
-        """Extract relation_change events from scene blueprint and writer brief."""
-        blueprint = (
-            self.session.execute(
-                select(SceneBlueprint)
-                .where(
-                    SceneBlueprint.scene_id == scene.scene_id,
-                    SceneBlueprint.status.in_(("accepted", "draft")),
-                )
-                .order_by(SceneBlueprint.created_at.desc())
-            )
-            .scalars()
-            .first()
-        )
-        relationship_turn = None
-        if blueprint and blueprint.blueprint_json:
-            relationship_turn = blueprint.blueprint_json.get("relationship_turn")
-        if not relationship_turn:
-            relationship_turn = (scene.writer_brief_json or {}).get("relationship_turn")
-        if relationship_turn and pov and len(all_chars) >= 2:
-            other = next((c for c in all_chars if c != pov), pov)
-            log.log_event(
-                **base,
-                event_type="relation_change",
-                entity_type="relation",
-                entity_id=f"{pov}--{other}",
-                fact_key="relationship_turn",
-                fact_value=str(relationship_turn)[:500],
-            )
-
 
     # 归档检查点 ``archive:style_drift:0``（sub 11，产品 kind ``style_drift``）这个槽位留着：已持久化的检查点
     # 按它续跑，校验器接受 {"recorded", "not_applicable", "no_op", "observed", "degraded"}。风格参考 v3 起槽位里记的是
