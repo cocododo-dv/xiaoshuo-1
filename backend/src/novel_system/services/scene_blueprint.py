@@ -17,15 +17,8 @@ from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.scene_design_context import (
-    SCENE_DESIGN_SECTION_KEY,
-    build_scene_design_context,
-)
 from novel_system.services.scene_lookup import require_chapter, require_scene
-from novel_system.services.scene_structure_brief import (
-    SCENE_STRUCTURE_SECTION_KEY,
-    render_scene_structure_brief,
-)
+from novel_system.services.scene_sections import attach_scene_sections
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 from novel_system.services.style_prompt_injection import (
@@ -308,22 +301,15 @@ class SceneBlueprintService:
         }
         # 2026-09-13 阶段 A：蓝图从作者写下的场景结构（形态、坩埚、三拍、代价）推导，
         # 而不是从被 v2 归一化抽空的简报重新猜一遍欲望 / 抉择 / 代价。
-        structure_brief = render_scene_structure_brief(scene, self.session)
-        if structure_brief:
-            snapshot["source_version_refs"][SCENE_STRUCTURE_SECTION_KEY] = scene.scene_id
-            snapshot["ordered_injections"].append(
-                {"slot": SCENE_STRUCTURE_SECTION_KEY, "ref_id": scene.scene_id, "digest_key": SCENE_STRUCTURE_SECTION_KEY}
-            )
-            snapshot["inline_digests"][SCENE_STRUCTURE_SECTION_KEY] = structure_brief
         # 2026-09-13 阶段 F：蓝图也看已确认的设计背景——POV 的目标 / 价值观 / 顿悟给 visible_desire
         # 与 forced_choice 以人物依据，章的幕次与灾难标记、相邻两场给 ending_action 与 next_scene_pull 以位置。
-        design_context = build_scene_design_context(scene, self.session)
-        if design_context is not None:
-            snapshot["source_version_refs"][SCENE_DESIGN_SECTION_KEY] = list(design_context.step_run_ids)
-            snapshot["ordered_injections"].append(
-                {"slot": SCENE_DESIGN_SECTION_KEY, "ref_id": scene.scene_id, "digest_key": SCENE_DESIGN_SECTION_KEY}
-            )
-            snapshot["inline_digests"][SCENE_DESIGN_SECTION_KEY] = design_context.text
+        attach_scene_sections(
+            scene,
+            self.session,
+            refs=snapshot["source_version_refs"],
+            injections=snapshot["ordered_injections"],
+            digests=snapshot["inline_digests"],
+        )
         # 2026-09 风格模仿 v2（规格 §2.W5.4）：规划层也看参考作品的叙事取舍机制——
         # 注入 narrative_guidance（无语言层特征），让 information_release / pacing /
         # ending_action 受其牵引。2026-09-12 结构跟随：再加结构画像（章 / 场尺度、开合方式、

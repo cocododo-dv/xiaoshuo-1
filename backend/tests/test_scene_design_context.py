@@ -314,6 +314,55 @@ def test_design_context_is_absent_without_confirmed_design_or_when_switched_off(
     assert SCENE_DESIGN_SECTION_KEY not in snapshot["source_version_refs"]
 
 
+def test_design_context_reads_the_story_order_once_and_writes_no_list_reprs(session, monkeypatch) -> None:
+    """B02-13：一次组装只读一遍故事序（位置行与相邻两场共用）。B02-14：表格里误存成列表的字段按空处理
+    （与结构简报同一个取值口径，scene_form.text），不把 Python 的列表 repr 写进提示词。"""
+    import novel_system.services.scene_design_context as design_module
+
+    service = _seed_workspace(session)
+    _seed_canon(session)
+    _materialize(session, service)
+    sheets = session.get(SnowflakeStepRun, f"run_{PROJECT_ID}_character_sheets_approved")
+    draft = dict(sheets.draft_json)
+    draft["characters"] = [dict(item) for item in draft["characters"]]
+    draft["characters"][0]["goal"] = ["证明清白", "找回执照"]
+    sheets.draft_json = draft
+    session.flush()
+    calls: list[str] = []
+    real_ordered_plans = design_module._ordered_plans
+
+    def counting(session_arg, project_id):  # noqa: ANN001
+        calls.append(project_id)
+        return real_ordered_plans(session_arg, project_id)
+
+    monkeypatch.setattr(design_module, "_ordered_plans", counting)
+    context = build_scene_design_context(_card(session, "u2"), session)
+    assert context is not None
+    assert calls == [PROJECT_ID]
+    assert "scene 2 of 3 in the book" in context.text and "Next scene (S03) opens on Reaction" in context.text
+    sheet = next(line for line in context.text.split("\n") if line.startswith("POV character sheet"))
+    assert "['" not in context.text and "Goal:" not in sheet and "Epiphany: 体面的自保比污点更致命" in sheet
+
+
+def test_blueprint_and_bundle_carry_the_same_two_design_sections(session) -> None:
+    """蓝图经 scene_sections 挂两段，bundle 暂时还是自己那一份（P01c 再换）：两边挂出来的内容、来源与次序必须一样。"""
+    from novel_system.db.models import ChapterGoal
+
+    service = _seed_workspace(session)
+    _seed_canon(session)
+    _materialize(session, service)
+    card = _card(session, "u2")
+    bundle = BundleBuilder(session).build(card.scene_id)["snapshot"]
+    blueprint = SceneBlueprintService(session)._source_snapshot(card, session.get(ChapterGoal, card.chapter_id))["snapshot"]
+    for key in (SCENE_STRUCTURE_SECTION_KEY, SCENE_DESIGN_SECTION_KEY):
+        assert blueprint["inline_digests"][key] == bundle["inline_digests"][key], key
+        assert blueprint["source_version_refs"][key] == bundle["source_version_refs"][key], key
+    order = [SCENE_STRUCTURE_SECTION_KEY, SCENE_DESIGN_SECTION_KEY]
+    assert [item for item in blueprint["ordered_injections"] if item["slot"] in order] == [
+        item for item in bundle["ordered_injections"] if item["slot"] in order
+    ]
+
+
 def test_compression_keeps_the_essentials_and_drops_the_heavy_lines() -> None:
     text = "\n".join(
         [

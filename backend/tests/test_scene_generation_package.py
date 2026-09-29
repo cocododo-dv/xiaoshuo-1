@@ -44,6 +44,41 @@ def test_scene_form_is_a_leaf() -> None:
     assert [module for module in imports if module.startswith("novel_system")] == []
 
 
+def test_scene_form_is_the_one_reader_of_the_scene_form() -> None:
+    """B02-14：结构简报、执行契约、关键度、设计上下文与长度策略都从 scene_form 取形态 / 呈现方式 / 文本值。"""
+    readers = (
+        SERVICES_ROOT / "scene_structure_brief.py",
+        SERVICES_ROOT / "scene_execution.py",
+        SERVICES_ROOT / "scene_criticality.py",
+        SERVICES_ROOT / "scene_design_context.py",
+        PACKAGE_ROOT / "length_policy.py",
+    )
+    assert [path.name for path in readers if "novel_system.services.scene_form" not in _imported_modules(path)] == []
+
+
+def test_token_estimate_is_a_leaf_that_context_budget_reexports() -> None:
+    """B02-21：估算器住在叶子 token_estimate；context_budget 的老导入路径是同一个对象。"""
+    from novel_system.services import context_budget, token_estimate
+
+    imports = {module for module in _imported_modules(SERVICES_ROOT / "token_estimate.py") if module.startswith("novel_system")}
+    assert imports == {"novel_system.services.hash_engine"}
+    assert context_budget.estimate_tokens is token_estimate.estimate_tokens
+    assert context_budget.TOKEN_ESTIMATOR_VERSION == token_estimate.TOKEN_ESTIMATOR_VERSION
+
+
+def test_scene_sections_is_the_blueprints_way_to_the_two_design_sections() -> None:
+    """B02-13：结构简报与设计上下文怎么挂进来源快照只写一次（scene_sections）；蓝图不再自己挂。"""
+    imports = {module for module in _imported_modules(SERVICES_ROOT / "scene_sections.py") if module.startswith("novel_system")}
+    assert imports == {
+        "novel_system.db.models",
+        "novel_system.services.scene_design_context",
+        "novel_system.services.scene_structure_brief",
+    }
+    blueprint = set(_imported_modules(SERVICES_ROOT / "scene_blueprint.py"))
+    assert "novel_system.services.scene_sections" in blueprint
+    assert not blueprint & {"novel_system.services.scene_design_context", "novel_system.services.scene_structure_brief"}
+
+
 def test_literary_signals_only_wraps_the_rule_analysis() -> None:
     imports = {module for module in _imported_modules(SERVICES_ROOT / "literary_signals.py") if module.startswith("novel_system")}
     assert imports == {"novel_system.cache_registry", "novel_system.services.literary_quality"}

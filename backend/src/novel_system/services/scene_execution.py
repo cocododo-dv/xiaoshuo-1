@@ -16,6 +16,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.qc_constraints import strip_reference_policy
+from novel_system.services.scene_form import form_alias
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
     normalize_story_slot,
@@ -378,22 +379,22 @@ class SceneExecutionContractService:
         return [str(policy.profile_id)] if policy.profile_id else []
 
 
+def _declared_scene_forms(scene: SceneCard, brief: dict[str, Any]) -> list[str]:
+    """契约沿用的显式形态写法：``scene_mode`` / ``scene_form`` / 场景卡 ``scene_type``，含 ``reaction`` / ``goal``
+    两个别名（:func:`~novel_system.services.scene_form.form_alias`）。契约 payload 与来源快照哈希靠它们不变。"""
+    return [form for form in (form_alias(value) for value in (brief.get("scene_mode"), brief.get("scene_form"), scene.scene_type)) if form]
+
+
 def _infer_scene_mode(scene: SceneCard, brief: dict[str, Any]) -> str:
-    for value in (brief.get("scene_mode"), brief.get("scene_form"), scene.scene_type):
-        text = str(value or "").strip().lower()
-        if text in {"reactive", "reaction"}:
-            return "reactive"
-        if text in {"proactive", "goal"}:
-            return "proactive"
+    declared = _declared_scene_forms(scene, brief)
+    if declared:
+        return declared[0]
+    # 没有显式声明：契约一向按「填了反应或决定就是反应场」推断（与结构简报按三拍组推断不同，保持契约哈希不变）
     return "reactive" if brief.get("reaction") or brief.get("decision") else "proactive"
 
 
 def _is_explicit_structured_scene(scene: SceneCard, brief: dict[str, Any]) -> bool:
-    for value in (brief.get("scene_mode"), brief.get("scene_form"), scene.scene_type):
-        text = str(value or "").strip().lower()
-        if text in {"proactive", "reactive", "reaction", "goal"}:
-            return True
-    return False
+    return bool(_declared_scene_forms(scene, brief))
 
 
 def _first_text(*values: Any) -> str:

@@ -36,6 +36,7 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryCharacter,
 )
+from novel_system.services.scene_form import text as _text
 from novel_system.services.snowflake_scene_order import sort_in_story_order
 from novel_system.services.snowflake_triage import latest_triage_plan_ids
 from novel_system.settings import get_settings
@@ -119,10 +120,12 @@ def build_scene_design_context(scene: SceneCard, session: Session | None) -> Sce
     if premise:
         lines.append(f"Moral premise: {premise}")
 
+    # 故事序（全部活的场景计划 + 分诊 + 09 行序）每次组装只取一次：位置行与相邻两场都用它
+    ordered = _ordered_plans(session, project_id) if plan is not None else []
     chapter_line = _chapter_line(session, scene, plan)
     if chapter_line:
         lines.append(chapter_line)
-    position_line = _position_line(session, project_id, plan)
+    position_line = _position_line(ordered, plan)
     if position_line:
         lines.append(position_line)
 
@@ -157,7 +160,7 @@ def build_scene_design_context(scene: SceneCard, session: Session | None) -> Sce
         label = _character_label(sheet, names.get(character_id))
         lines.append(f"Onstage — {label}: {one_liner}" if one_liner else f"Onstage — {label}")
 
-    previous_line, next_line = _neighbour_lines(session, project_id, plan, names)
+    previous_line, next_line = _neighbour_lines(ordered, plan, names)
     if previous_line:
         lines.append(previous_line)
     if next_line:
@@ -273,10 +276,9 @@ def _chapter_line(session: Session, scene: SceneCard, plan: SnowflakeScenePlan |
     return "Chapter: " + " · ".join(parts)
 
 
-def _position_line(session: Session, project_id: str, plan: SnowflakeScenePlan | None) -> str | None:
+def _position_line(ordered: list[SnowflakeScenePlan], plan: SnowflakeScenePlan | None) -> str | None:
     if plan is None:
         return None
-    ordered = _ordered_plans(session, project_id)
     index = next((i for i, item in enumerate(ordered, start=1) if item.scene_plan_id == plan.scene_plan_id), None)
     parts: list[str] = []
     if index is not None:
@@ -360,14 +362,12 @@ def _pov_story_excerpt(synopsis_item: dict[str, Any] | None) -> str:
 
 
 def _neighbour_lines(
-    session: Session,
-    project_id: str,
+    ordered: list[SnowflakeScenePlan],
     plan: SnowflakeScenePlan | None,
     names: dict[str, str],
 ) -> tuple[str | None, str | None]:
     if plan is None:
         return None, None
-    ordered = _ordered_plans(session, project_id)
     index = next((i for i, item in enumerate(ordered) if item.scene_plan_id == plan.scene_plan_id), None)
     if index is None:
         return None, None
@@ -424,7 +424,3 @@ def _coerce_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number or None
-
-
-def _text(value: Any) -> str:
-    return str(value or "").strip()

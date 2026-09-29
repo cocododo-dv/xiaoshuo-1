@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, SceneCard
+from novel_system.services.scene_form import text
 
 
 GOLDEN_CHAPTER_COUNT = 3
@@ -76,8 +77,10 @@ def classify_scene(
         score += 1
         reasons.append("substantial_crucible")
 
-    scene_form = writer_brief.get("scene_form") or scene.scene_type or ""
-    if scene_form == "proactive":
+    # 只认显式声明的形态（简报 scene_form、场景卡 scene_type），不按三拍推断：关键度还决定过渡场跳不跳批判，
+    # 推断会把只填了三拍的手写场升一档。
+    declared_form = text(writer_brief.get("scene_form")) or text(scene.scene_type)
+    if declared_form == "proactive":
         score += 1
         reasons.append("proactive_scene")
 

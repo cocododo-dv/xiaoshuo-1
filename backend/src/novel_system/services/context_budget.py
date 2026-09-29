@@ -3,14 +3,18 @@ from __future__ import annotations
 import copy
 import math
 import re
-import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 from novel_system.services.hash_engine import normalize_string
+# 估算器住在叶子 token_estimate（老的 ``context_budget.estimate_tokens`` 导入路径照旧可用）
+from novel_system.services.token_estimate import (
+    TOKEN_ESTIMATOR_VERSION,
+    estimate_tokens,
+    is_wide_token_char,
+)
 
 
-TOKEN_ESTIMATOR_VERSION = "cjk_aware_conservative_v1"
 CONTINUITY_DIGEST_COMPRESSED_TOKENS = 24
 # v2（W5）：前文声音锚是软性延续信号，预算紧张时先于任何事实 section 被压缩——
 # 保留尾部（离本场最近的节拍），再不够就整段省略；scene_card 永不因它被压。
@@ -283,27 +287,6 @@ def render_user_prompt(
     return "\n".join(prompt_parts).strip()
 
 
-def estimate_tokens(text: str) -> int:
-    """Return a conservative, deterministic prompt-token estimate.
-
-    The previous ``len(text) / 4`` rule is a reasonable rough estimate for
-    English, but it under-counts Chinese/Japanese/Korean text by roughly four
-    times.  East-Asian wide characters (including CJK punctuation and most
-    emoji) are therefore charged as one token each, while the remaining text
-    keeps the established four-characters-per-token approximation.
-
-    This is deliberately a budgeting upper bound rather than a claim about a
-    provider's exact tokenizer.  Provider-reported usage remains authoritative
-    for accounting after the request completes.
-    """
-    normalized_text = normalize_string(text)
-    if not normalized_text:
-        return 0
-    wide_count = sum(1 for char in normalized_text if _is_wide_token_char(char))
-    compact_count = len(normalized_text) - wide_count
-    return max(1, wide_count + math.ceil(compact_count / 4))
-
-
 def _finalize_budget(
     *,
     budget: dict[str, Any],
@@ -455,13 +438,6 @@ def _apply_compressed_text(section: PromptSection, compressed_text: str) -> None
     section.status = "compressed"
 
 
-def _is_wide_token_char(char: str) -> bool:
-    """Whether a character should be budgeted as an approximately whole token."""
-    if not char or char.isspace():
-        return False
-    return unicodedata.east_asian_width(char) in {"W", "F"}
-
-
 def _truncate_to_estimated_tokens(text: str, *, max_tokens: int) -> str:
     """Truncate mixed-language text without relying on whitespace tokenization."""
     normalized = normalize_string(text)
@@ -472,8 +448,8 @@ def _truncate_to_estimated_tokens(text: str, *, max_tokens: int) -> str:
     compact_units = 0
     end = 0
     for index, char in enumerate(normalized):
-        next_wide = wide_units + (1 if _is_wide_token_char(char) else 0)
-        next_compact = compact_units + (0 if _is_wide_token_char(char) else 1)
+        next_wide = wide_units + (1 if is_wide_token_char(char) else 0)
+        next_compact = compact_units + (0 if is_wide_token_char(char) else 1)
         estimated = next_wide + math.ceil(next_compact / 4)
         if estimated > max_tokens:
             break
