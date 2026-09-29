@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -35,6 +36,7 @@ from novel_system.services.llm_accounting import (
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.hash_engine import sha256_text
+from novel_system.services.narrative.taxonomy import entity_type_for_event
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +321,40 @@ def extract_events_from_prose(
         execution_step_key=llm_context.execution_step_key,
         run_job_id=llm_context.run_job_id,
     )
+
+
+def stage_prose_events(
+    log: Any,
+    base: dict[str, str],
+    events: list[ExtractedEvent],
+    *,
+    final_scene_row_id: str | None,
+    payload: Callable[[int], dict[str, Any]],
+) -> list[str]:
+    """把抽取出的事件写进事件账本、等作者核对：一律 ``pending`` / ``prose_extraction`` / ``extracted``。
+
+    作者点「提取」与归档时的自动抽取共用这一份（以前各写一遍，B11-13）；``payload(序号)`` 给各自的出处键。
+    """
+    event_ids: list[str] = []
+    for ordinal, extracted in enumerate(events):
+        event = log.log_event(
+            **base,
+            event_type=extracted.event_type,
+            entity_type=entity_type_for_event(extracted.event_type),
+            entity_id=extracted.entity_id,
+            fact_key=extracted.fact_key,
+            fact_value=extracted.fact_value,
+            confidence="extracted",
+            # Never manufacture evidence from an arbitrary prose prefix. A missing
+            # quote must remain missing so acceptance fails closed.
+            source_text_excerpt=extracted.evidence or None,
+            payload=payload(ordinal),
+            authority_status="pending",
+            source_kind="prose_extraction",
+            final_scene_row_id=final_scene_row_id,
+        )
+        event_ids.append(event.event_id)
+    return event_ids
 
 
 def _parse_response(response: Any) -> dict[str, Any] | None:

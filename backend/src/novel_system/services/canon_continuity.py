@@ -30,6 +30,7 @@ from novel_system.services.character_names import (
     project_entity_names,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.narrative.taxonomy import entity_type_for_event
 from novel_system.services.narrative_event_log import ENTITY_TYPES, EVENT_TYPES, NarrativeEventLog
 from novel_system.services.hash_engine import sha256_text
 
@@ -235,7 +236,10 @@ class CanonContinuityService:
 
         from novel_system.services.llm_accounting import LLMCallContext
         from novel_system.services.llm_task_runner import LLMNodeRunner
-        from novel_system.services.prose_event_extractor import extract_events_from_prose
+        from novel_system.services.prose_event_extractor import (
+            extract_events_from_prose,
+            stage_prose_events,
+        )
         from novel_system.settings import get_settings
 
         final, scene, _owned_project_id, _state = self._current_scene_context(
@@ -282,37 +286,18 @@ class CanonContinuityService:
             llm_runner=runner,
             llm_context=context,
         )
-        log = NarrativeEventLog(self.session)
-        event_ids: list[str] = []
-        for ordinal, extracted in enumerate(product.events):
-            event = log.log_event(
-                project_id=project_id,
-                chapter_id=scene.chapter_id,
-                scene_id=scene.scene_id,
-                event_type=extracted.event_type,
-                entity_type=(
-                    "relation"
-                    if extracted.event_type == "relation_change"
-                    else "character"
-                ),
-                entity_id=extracted.entity_id,
-                fact_key=extracted.fact_key,
-                fact_value=extracted.fact_value,
-                confidence="extracted",
-                # Never manufacture evidence from an arbitrary prose prefix. A
-                # missing quote must remain missing so acceptance fails closed.
-                source_text_excerpt=extracted.evidence or None,
-                payload={
-                    "source": "prose",
-                    "trigger": "author_requested",
-                    "extract_ordinal": ordinal,
-                    "llm_call_id": product.llm_call_id,
-                },
-                authority_status="pending",
-                source_kind="prose_extraction",
-                final_scene_row_id=final.row_id,
-            )
-            event_ids.append(event.event_id)
+        event_ids = stage_prose_events(
+            NarrativeEventLog(self.session),
+            {"project_id": project_id, "chapter_id": scene.chapter_id, "scene_id": scene.scene_id},
+            product.events,
+            final_scene_row_id=final.row_id,
+            payload=lambda ordinal: {
+                "source": "prose",
+                "trigger": "author_requested",
+                "extract_ordinal": ordinal,
+                "llm_call_id": product.llm_call_id,
+            },
+        )
         staged = self.stage_extraction(
             final.row_id,
             outcome=product.outcome,
@@ -370,7 +355,7 @@ class CanonContinuityService:
                 "manual fact evidence must be an exact excerpt from the current final scene",
                 status_code=409,
             )
-        resolved_type = entity_type or self._entity_type_for_event(event_type)
+        resolved_type = entity_type or entity_type_for_event(event_type)
         if resolved_type not in ENTITY_TYPES:
             raise DomainError("CANON_ENTITY_TYPE_INVALID", "unsupported entity type", status_code=400)
         if planned_timeline_event_id:
@@ -1713,16 +1698,6 @@ class CanonContinuityService:
     @staticmethod
     def _normalized_name(value: Any) -> str:
         return normalized_name(value)
-
-    @staticmethod
-    def _entity_type_for_event(event_type: str) -> str:
-        if event_type == "item_change":
-            return "item"
-        if event_type.startswith("foreshadow_"):
-            return "foreshadow"
-        if event_type == "relation_change":
-            return "relation"
-        return "character"
 
     def _realize_accepted_timelines(self, final: FinalScene) -> None:
         for candidate in self._candidate_rows(final.row_id):

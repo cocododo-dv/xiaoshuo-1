@@ -238,6 +238,7 @@ class SceneArchiveEffects:
         from novel_system.services.prose_event_extractor import (
             ProseExtractionResult,
             extract_events_from_prose,
+            stage_prose_events,
         )
         from novel_system.settings import get_settings
 
@@ -296,33 +297,18 @@ class SceneArchiveEffects:
             llm_runner=self.llm_runner,
             llm_context=extract_context,
         )
-        event_ids: list[str] = []
-        for ordinal, ev in enumerate(result.events):
-            event = log.log_event(
-                **base,
-                event_type=ev.event_type,
-                entity_type=(
-                    "relation" if ev.event_type == "relation_change" else "character"
-                ),
-                entity_id=ev.entity_id,
-                fact_key=ev.fact_key,
-                fact_value=ev.fact_value,
-                confidence="extracted",
-                # Missing extractor evidence stays missing. Substituting an
-                # arbitrary prose prefix would let an unsupported fact appear
-                # grounded during canon review.
-                source_text_excerpt=ev.evidence or None,
-                authority_status="pending",
-                source_kind="prose_extraction",
-                final_scene_row_id=final_scene_row_id,
-                payload={
-                    "source": "prose",
-                    "archive_execution_id": self._execution_id,
-                    "archive_step_key": extract_step_key,
-                    "archive_ordinal": ordinal,
-                },
-            )
-            event_ids.append(event.event_id)
+        event_ids = stage_prose_events(
+            log,
+            base,
+            result.events,
+            final_scene_row_id=final_scene_row_id,
+            payload=lambda ordinal: {
+                "source": "prose",
+                "archive_execution_id": self._execution_id,
+                "archive_step_key": extract_step_key,
+                "archive_ordinal": ordinal,
+            },
+        )
         return (result, event_ids) if return_event_ids else result
 
     def _record_relation_events(
