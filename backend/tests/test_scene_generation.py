@@ -1991,16 +1991,3 @@ def test_adversarial_rank_score_lower_for_ai_heavy_text() -> None:
         "Everything changed forever. As if fate."
     )
     assert adversarial_rank_score(clean_text) > adversarial_rank_score(ai_heavy_text)
-
-
-def test_candidate_dispersion_detects_identical_vs_diverse() -> None:
-    from novel_system.services.literary_quality import candidate_dispersion
-
-    same = ["She opened the door." * 3, "She opened the door." * 3]
-    assert candidate_dispersion(same) == 0.0
-
-    diverse = [
-        "She ran through the fog, choosing to reveal the hidden letters.",
-        "He opened the safe and left the key on the windowsill.",
-    ]
-    assert candidate_dispersion(diverse) > 0.0

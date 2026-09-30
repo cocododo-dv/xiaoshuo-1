@@ -4,7 +4,7 @@
 - ``lexicons``：词表；``text``：文本助手；
 - ``calibration``：按参考书校准；``scoring``：证据充分度与自动诊断分的上限；
 - ``rules``：规则维度与 ``analyze_literary_quality``；
-- ``fingerprint``：质量指纹；``candidates``：候选稿的对抗排名分与离散度；
+- ``fingerprint``：质量指纹；``candidates``：候选稿的对抗排名分；
 - ``report``：视图的报告层（统一形状的发现、定位、风险簇、跨场复用、推荐动作、整维已忽略）；
 - ``chapter_set``：章组复审；``service``：``LiteraryQualityService``（包里唯一读库的模块）。
 
@@ -31,7 +31,6 @@ from novel_system.services.literary_quality.calibration import (
 from novel_system.services.literary_quality.candidates import (
     ADVERSARIAL_DIMS,
     adversarial_rank_score,
-    candidate_dispersion,
 )
 from novel_system.services.literary_quality.dimensions import (
     AUTOMATED_DIAGNOSTIC_CEILING,
@@ -48,7 +47,6 @@ from novel_system.services.literary_quality.dimensions import (
     SEVERITY_RANK,
     describe_rule_finding,
     dimension_label,
-    get_dimension_weights,
     rule_signal_id,
     unify_rule_finding,
 )
@@ -101,12 +99,10 @@ __all__ = [
     "automated_evidence_sufficiency",
     "calibrate_lexicons",
     "calibrated_lexicons",
-    "candidate_dispersion",
     "describe_rule_finding",
     "dimension_label",
     "dimension_level",
     "fingerprint_literary_quality",
-    "get_dimension_weights",
     "ignored_dimensions_from_findings",
     "ignored_rule_dimensions",
     "poisson_tail",

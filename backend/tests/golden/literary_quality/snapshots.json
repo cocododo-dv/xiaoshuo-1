@@ -3369,7 +3369,6 @@
    ]
   }
  },
- "candidate_dispersion": 0.9045,
  "calibration": {
   "source": "reference",
   "windows": 48,

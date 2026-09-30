@@ -1,7 +1,7 @@
 """文学质量规则引擎的逐字安全网（B04-01：拆 literary_quality 之前先钉住）。
 
 几段固定的合成文本 → ``analyze_literary_quality``（信号、发现、统一形状与 signal id）、
-``fingerprint_literary_quality``、``adversarial_rank_score``、``candidate_dispersion``，外加按一份合成的参考书
+``fingerprint_literary_quality``、``adversarial_rank_score``，外加按一份合成的参考书
 校准之后的同一组分析。signal id 是按命中的词 / 句算的哈希，分句或词表口径一变这里就会红。
 
 输出有意变化时用 ``LITERARY_GOLDEN_REGEN=1`` 重生成 golden，并在提交里说明原因——``git diff`` 应只显示有意的
@@ -19,7 +19,6 @@ from novel_system.services.literary_quality import (
     adversarial_rank_score,
     analyze_literary_quality,
     calibrate_lexicons,
-    candidate_dispersion,
     fingerprint_literary_quality,
     unify_rule_finding,
 )
@@ -95,9 +94,6 @@ def _snapshot() -> dict:
         text = TEXTS[name]
         _lexicons, waived = calibrate_lexicons(CALIBRATION, text)
         snapshot["calibrated"][name] = {**_analysis(text, calibration=CALIBRATION), "waived": waived}
-    snapshot["candidate_dispersion"] = candidate_dispersion(
-        [TEXTS["template_reuse"], TEXTS["dialogue_report"], TEXTS["conflict_clean"], TEXTS["english"]]
-    )
     snapshot["calibration"] = CALIBRATION.as_dict()
     snapshot["calibration_signature"] = CALIBRATION.signature
     return snapshot

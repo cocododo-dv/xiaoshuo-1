@@ -7,12 +7,9 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from novel_system.services.literary_quality.text import _compact_ws
-
-if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
 
 
 QUALITY_DIMENSIONS: tuple[str, ...] = (
@@ -77,20 +74,6 @@ AUTOMATED_EVIDENCE_TARGET_SENTENCES = 3
 
 
 AUTOMATED_EVIDENCE_SIGNAL = "automated_evidence_sufficiency"
-
-
-def get_dimension_weights(
-    project_id: str | None = None,
-    session: Session | None = None,
-) -> dict[str, float]:
-    """一部作品的质量权重：恒为 :data:`DIMENSION_WEIGHTS` 的一份拷贝（已弃用，直接读常量）。
-
-    2026-09-24（风格参考 v3 清理 S3）之前这里会查作品的风格绑定，读画像里的 ``quality_weight_overrides`` /
-    ``style_tag`` 调权重——这两个键从来没有任何写入者（学习作业不产出它们），查询只是白跑一趟。只剩
-    ``scene_generation`` 的旧调用还在用这个名字（场景生成拆包后已改读常量）；那边合并之后删掉它。房风权重让不让位
-    由 ``StylePolicy`` 决定，不在这里。
-    """
-    return dict(DIMENSION_WEIGHTS)
 
 
 SEVERITY_RANK = {"blocking": 0, "revision": 1, "taste": 2, "info": 3}
