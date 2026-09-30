@@ -6,6 +6,7 @@
    「计划中 / 待聚合」、在主页叫「规划」。这里给一份：
    · CHAPTER_STATE_META —— 目录状态 → 中文叫法 / 语气色（ws-ui 的 tone）；SCENE_STATE_META —— 场的三态；
    · chapterStage（旧名 manuscriptStage）—— 一章走到哪一步：主页、成稿中心、章节编排同一条规则；
+     chapterStarted —— 其中「动笔了没有」那一半；
    · chapterLabel / sceneLabel / *ById —— 后端 id → 「第 N 章 · 章名」「第 N 章 · 第 M 场」；
    · DRAMA_FIELDS —— 戏剧卡六格的键与叫法（编辑器、成稿中心、导出附录同一套）。
    纯函数：章节列表由调用方传入（通常是 WsCatalog.get()），不读 store、不写 window。
@@ -34,8 +35,10 @@ export function chapterStateMeta(state) {
   return CHAPTER_STATE_META[state] || CHAPTER_STATE_META.planned;
 }
 
-/* 这一章动笔了没有：已经有字，或者有一场在写 / 写完了（场上记着字数也算） */
-function chapterStarted(chapter) {
+/* 这一章动笔了没有：已经有字，或者有一场在写 / 写完了（场上记着字数也算）。
+   下面的阶段规则用它；成稿中心左栏收不收一个「规划中」的章（ws-manuscripts-store 的 manuscriptChapterEligible）
+   也该按它——否则一章在页头进度里读作写作中，左栏里却没有它。 */
+export function chapterStarted(chapter) {
   if (!chapter) return false;
   if (Number(chapter.words && chapter.words.cur) > 0) return true;
   return (chapter.scenes || []).some((scene) => scene && (

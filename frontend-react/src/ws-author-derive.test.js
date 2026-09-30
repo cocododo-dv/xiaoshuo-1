@@ -4,7 +4,7 @@ import {
   arrIsPlanChapter, arrLensChapters, arrPovCandidates, arrRailTally, arrRangeLabel, arrSceneBeatsPlanned,
 } from "./ws-author-derive.js";
 import { arrDeriveIssues } from "./ws-author-doctor.jsx";
-import { chapterStage, chapterStageDerived } from "./labels/catalog.js";
+import { chapterStage, chapterStageDerived, chapterStarted } from "./labels/catalog.js";
 
 /* 阶段 Z：章节编排读的是作者在构思里真的做出来的东西（场上的 POV / 时间 / 地点 / 离场变化、章装着第几到第几场），
    而不是一套没人能填的章级字段。这里全是目录载荷上的纯函数。 */
@@ -173,6 +173,15 @@ describe("章的显示状态、章节体检与卷带", () => {
     expect(chapterStage(chapter("j", { state: "something-new" }))).toBe("planned");
     expect([chapter("k", { state: "draft" }), chapter("l", { state: "review" }), chapter("m", { state: "approved" })].map(chapterStageDerived)).toEqual([false, false, false]);
     expect([chapter("n", { state: "writing" }), chapter("o", { state: "planned" })].map(chapterStageDerived)).toEqual([true, true]);
+    // 「动笔了没有」那一半单独转出（成稿中心左栏收不收规划中的章该用同一条）：有字、有一场在写 / 写完了 / 记着字数
+    expect([
+      chapter("p", { scenes: [scene("s6", { state: "writing" })] }),
+      chapter("q", { scenes: [scene("s7", { words: 30 })] }),
+      chapter("r", { words: { cur: 5, target: 0 } }),
+      chapter("s", { scenes: [scene("s8", { state: "archived" })] }),
+      chapter("t", { scenes: [scene("s9")] }),
+      null,
+    ].map(chapterStarted)).toEqual([true, true, true, true, false, false]);
   });
 
   it("序列栏的数按同一条阶段规则：审阅中 / 草稿有章时单独成一项，不再记在「写作中」名下", () => {
