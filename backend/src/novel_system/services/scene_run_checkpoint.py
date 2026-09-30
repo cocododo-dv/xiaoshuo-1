@@ -27,6 +27,22 @@ RUN_CHECKPOINT_ORDER = (
 _TERMINAL_EXECUTION_STATUSES = frozenset({"failed", "completed", "cancelled"})
 
 
+def scene_run_outcome(scene_status: str | None) -> Literal["completed", "waiting_selection", "failed"]:
+    """一次运行（首跑或终选后的续跑）停下时的场景状态 → 执行围栏的终态；场景任务据此判完成还是阻塞（B01-05）。
+
+    - ``archived``：归档完成；
+    - ``quality_warning_pending_acceptance``：严格模式停在一份可归档的稿子上、等作者接受 Q2/Q3 警告——这是
+      成功的终点，不是失败 / 可重试的检查点；
+    - ``awaiting_candidate_selection``：停在匿名终选门，等作者选；
+    - 其余（人工复核、准终稿要修改 …）：失败，可从检查点重试。
+    """
+    if scene_status in {"archived", "quality_warning_pending_acceptance"}:
+        return "completed"
+    if scene_status == "awaiting_candidate_selection":
+        return "waiting_selection"
+    return "failed"
+
+
 def checkpoint_corrupt(message: str, *, details: dict[str, Any] | None = None) -> DomainError:
     """``RUN_CHECKPOINT_CORRUPT``（409）：检查点与库里的产物、账本或执行归属对不上——续跑不再往下走。"""
     return DomainError("RUN_CHECKPOINT_CORRUPT", message, status_code=409, details=details)
@@ -444,6 +460,14 @@ class SceneRunCheckpointService:
             )
 
         return "retry"
+
+    def mark_run_outcome(self, scene_id: str, execution_id: str, scene_status: str | None) -> None:
+        """按 :func:`scene_run_outcome` 给这次执行记终态。"""
+        outcome = scene_run_outcome(scene_status)
+        if outcome == "waiting_selection":
+            self.mark_waiting_selection(scene_id, execution_id)
+        else:
+            self._mark_terminal(scene_id, execution_id, outcome)
 
     def mark_failed(self, scene_id: str, execution_id: str) -> None:
         self._mark_terminal(scene_id, execution_id, "failed")

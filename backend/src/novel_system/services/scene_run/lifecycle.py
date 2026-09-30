@@ -104,18 +104,10 @@ class RunLifecycleMixin:
                 author_note=author_note,
                 run_policy=run_policy,
             )
-            if result.get("scene_status") in {
-                "archived",
-                "quality_warning_pending_acceptance",
-            }:
-                # Strict mode deliberately stops with a valid draft awaiting the
-                # author's Q2/Q3 acceptance.  It is a successful execution
-                # terminal, not a failure/retry checkpoint.
-                checkpoints.mark_completed(scene_id, effective_execution_id)
-            elif result.get("scene_status") == "awaiting_candidate_selection":
-                checkpoints.mark_waiting_selection(scene_id, effective_execution_id)
-            else:
-                checkpoints.mark_failed(scene_id, effective_execution_id)
+            # 严格模式停在一份可归档的稿子上等作者接受 Q2/Q3，是成功的终点（scene_run_outcome）
+            checkpoints.mark_run_outcome(
+                scene_id, effective_execution_id, result.get("scene_status")
+            )
             self.session.commit()
             return result
         except DomainError as exc:
@@ -558,10 +550,10 @@ class RunLifecycleMixin:
             # retry may already be at soft/near-final sub-checkpoints; routing it
             # through the ordinary run pipeline would recreate the selection gate.
             result = self._resume_after_selection_pipeline(scene_id)
-            if result.get("scene_status") == "archived":
-                checkpoints.mark_completed(scene_id, effective_execution_id)
-            else:
-                checkpoints.mark_failed(scene_id, effective_execution_id)
+            # 与首跑同一张终态表：终选后严格模式停在待接受的稿子上同样是完成，不是失败（B01-05）
+            checkpoints.mark_run_outcome(
+                scene_id, effective_execution_id, result.get("scene_status")
+            )
             self.session.commit()
             return result
         except LLMAccountingRejected as exc:

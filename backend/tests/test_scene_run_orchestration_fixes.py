@@ -2,7 +2,8 @@
 
 - 终选门只按抄袭门淘汰候选，受保护专名从不淘汰（[批准#12]，B04-15）；
 - ``run_policy="auto"`` 不再接收（B01-09）；
-- 准终稿第一轮评审 / 软 QC 第一轮之后的分支表存与读共用一份（B01-04）。
+- 准终稿第一轮评审 / 软 QC 第一轮之后的分支表存与读共用一份（B01-04）；
+- 终选后续跑停在严格模式的待接受稿上算完成，与首跑同一张终态表（B01-05）。
 """
 
 from __future__ import annotations
@@ -148,3 +149,37 @@ def test_branch_tables_only_allow_the_step_on_its_own_branch() -> None:
             control = soft_qc0_control(branch, spend_allowed=spend)
             assert control["patch_allowed"] == (branch == "patch" and spend)
             assert (control["skip_reason"] is None) == control["patch_allowed"]
+
+
+# ---------------------------------------------------------------------------------------------- B01-05
+
+
+def test_strict_stop_after_selection_resume_completes_the_execution(session, monkeypatch) -> None:
+    """终选后续跑（界面总按 strict 发）停在一份待作者接受 Q2/Q3 的稿子上：与首跑一样是成功的终点。以前续跑只把
+    ``archived`` 记成完成，这里记成 ``failed``，下一次续跑还会把它当可重试的失败接手。"""
+    _seed_resume_scene(session)
+    parent = "idempotency:strict-selection-origin"
+    state = session.get(SceneRunState, SCENE_ID)
+    state.run_checkpoint = "selection_wait"
+    state.run_execution_status = "waiting_selection"
+    state.active_execution_id = parent
+    state.run_checkpoint_json = {
+        "execution_id": parent,
+        "node_key": "selection_wait",
+        "artifact_refs": {},
+        "artifact_hashes": {},
+    }
+    session.commit()
+    monkeypatch.setattr(
+        Orchestrator,
+        "_resume_after_selection_pipeline",
+        lambda self, scene_id: {"scene_status": "quality_warning_pending_acceptance"},
+    )
+
+    result = Orchestrator(session).resume_after_selection(SCENE_ID, execution_id="idempotency:strict-selection-resume")
+
+    assert result["scene_status"] == "quality_warning_pending_acceptance"
+    session.expire_all()
+    state = session.get(SceneRunState, SCENE_ID)
+    assert state.active_execution_id == "idempotency:strict-selection-resume"
+    assert state.run_execution_status == "completed"
