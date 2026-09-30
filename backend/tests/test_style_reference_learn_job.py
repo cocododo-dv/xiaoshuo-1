@@ -1325,3 +1325,41 @@ def test_relearning_picks_the_archived_profile_that_still_has_an_active_binding_
     assert third.state == "succeeded" and third.result_json["profile_created"] is True
     assert third.result_json["profile_id"] != profile_id
     assert _profile(profile_id).status == "archived"
+
+
+def test_a_learn_run_reads_the_whole_book_text_once(session, monkeypatch) -> None:
+    """声音签名（书上还没有现成的）、结构卡、专名候选、定稿的原文重合过滤都要全书正文：一次学习只整本读一遍段落表、
+    章题 / 副文本只判一遍（原来读三四遍、每遍再判一次，真实书上每遍约 1 s）。"""
+    from sqlalchemy import event
+
+    from novel_system.db.session import engine
+
+    loads: list[int] = []
+    real_rows = learn_run._LearnRun._paragraph_rows
+
+    def counting_rows(self):  # noqa: ANN001
+        if self._paragraph_rows_cache is None:
+            loads.append(1)
+        return real_rows(self)
+
+    monkeypatch.setattr(learn_run._LearnRun, "_paragraph_rows", counting_rows)
+    text_only_scans: list[str] = []
+
+    def spy(_conn, _cursor, statement, _params, _context, _executemany) -> None:
+        compact = " ".join(str(statement).split())
+        # 旧 _body_texts 的形状：只取正文、整本按序号读
+        if compact.startswith("SELECT style_reference_paragraphs.text FROM style_reference_paragraphs WHERE"):
+            text_only_scans.append(compact)
+
+    seed_book(session)
+    fake = _use(monkeypatch, _fake())
+    job_id = _start("learn_book")
+    event.listen(engine(), "before_cursor_execute", spy)
+    try:
+        run_job_inline(job_id)
+    finally:
+        event.remove(engine(), "before_cursor_execute", spy)
+    job = _job(job_id)
+    assert job.state == "succeeded", job.error_json
+    assert fake.calls
+    assert loads == [1] and text_only_scans == []

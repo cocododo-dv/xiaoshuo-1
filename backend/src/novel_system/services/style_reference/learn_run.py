@@ -213,6 +213,10 @@ class _LearnRun(JobRun):
         self.cursor: dict[str, Any] = dict(claimed.cursor or {})
         self.runtimes: dict[str, NodeRuntime] = {}
         self.book_title = ""
+        # 这本书的段落（序号、类型、正文、id）与去掉章题 / 副文本后的正文：一次学习各读一遍、算一遍（声音签名、
+        # 结构卡、专名候选、定稿的原文重合过滤都用它）。学习与分类在同一本书上互斥，段落不会在学习中途变。
+        self._paragraph_rows_cache: list[tuple[Any, Any, Any, Any]] | None = None
+        self._prose_texts_cache: list[str] | None = None
 
     # ---- lifecycle (终态的附带写:血缘 run 行) -----------------------------
     def finish_cancelled(self) -> None:
@@ -605,16 +609,32 @@ class _LearnRun(JobRun):
         self.cursor["voice"] = voice
         return voice
 
+    def _paragraph_rows(self) -> list[tuple[Any, Any, Any, Any]]:
+        """这本书的全部段落 ``(paragraph_index, paragraph_type, text, paragraph_id)``，按序号（一次学习读一遍）。"""
+        if self._paragraph_rows_cache is None:
+            self._paragraph_rows_cache = [
+                tuple(row)
+                for row in self.session.execute(
+                    select(
+                        StyleReferenceParagraph.paragraph_index,
+                        StyleReferenceParagraph.paragraph_type,
+                        StyleReferenceParagraph.text,
+                        StyleReferenceParagraph.paragraph_id,
+                    )
+                    .where(StyleReferenceParagraph.book_id == self.book_id)
+                    .order_by(StyleReferenceParagraph.paragraph_index)
+                )
+            ]
+        return self._paragraph_rows_cache
+
     def _body_texts(self) -> list[str]:
-        return [
-            str(text)
-            for (text,) in self.session.execute(
-                select(StyleReferenceParagraph.text)
-                .where(StyleReferenceParagraph.book_id == self.book_id)
-                .order_by(StyleReferenceParagraph.paragraph_index)
-            )
-            if str(text or "").strip()
-        ]
+        return [str(text) for _index, _ptype, text, _pid in self._paragraph_rows() if str(text or "").strip()]
+
+    def _prose_texts(self) -> list[str]:
+        """去掉章题 / 书前书后 / 副文本之后的正文段（专名候选、定稿的原文重合过滤用；一次学习算一遍）。"""
+        if self._prose_texts_cache is None:
+            self._prose_texts_cache = [t for t in self._body_texts() if non_body_kind(t) is None]
+        return self._prose_texts_cache
 
     def _structure_card(self, voice: Mapping[str, Any]) -> dict[str, Any] | None:
         cached = self.cursor.get("structure_card")
@@ -624,16 +644,7 @@ class _LearnRun(JobRun):
         stats = dict(book.stats_json or {})
         rows = [
             {"paragraph_index": index, "paragraph_type": ptype, "text": text, "paragraph_id": pid}
-            for index, ptype, text, pid in self.session.execute(
-                select(
-                    StyleReferenceParagraph.paragraph_index,
-                    StyleReferenceParagraph.paragraph_type,
-                    StyleReferenceParagraph.text,
-                    StyleReferenceParagraph.paragraph_id,
-                )
-                .where(StyleReferenceParagraph.book_id == self.book_id)
-                .order_by(StyleReferenceParagraph.paragraph_index)
-            )
+            for index, ptype, text, pid in self._paragraph_rows()
         ]
         breaks = stats.get("scene_breaks")
         try:
@@ -728,7 +739,7 @@ class _LearnRun(JobRun):
     def _phase_protected(self) -> None:
         began = time.monotonic()
         self._enter(PHASE_PROTECTED)
-        texts = [t for t in self._body_texts() if non_body_kind(t) is None]
+        texts = self._prose_texts()
         corpus = "\n".join(texts)
         candidates = proper_noun_candidates(texts)
         run_id = str(self.cursor.get("run_id") or "")
@@ -971,7 +982,7 @@ class _LearnRun(JobRun):
         self._enter(PHASE_FINALIZE)
         run_id = str(self.cursor.get("run_id") or "")
         book = self.book()
-        texts = [t for t in self._body_texts() if non_body_kind(t) is None]
+        texts = self._prose_texts()
         target_id = str(self.params.get("profile_id") or self.claimed.profile_id or "") or None
         # 作者在画像里删掉过的自动专名(多半是误收的日常词):不再当专名、不再滤卡片、不再加回禁用词表
         dismissed = self._dismissed_terms(target_id)
