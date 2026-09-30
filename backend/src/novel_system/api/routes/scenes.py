@@ -12,7 +12,6 @@ from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest, WriterBriefJsonInput
 from novel_system.api.response import ok
-from novel_system.api.text_input import clean_backfill_markers, validate_user_text_payload
 from novel_system.db.models import (
     AttemptTracker,
     AuthorDraft,
@@ -63,6 +62,7 @@ from novel_system.services.scene_run_jobs import (
     start_scene_run_job_worker,
 )
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
+from novel_system.services.text_input import clean_backfill_markers, validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
 from novel_system.services.writer_review import WriterReviewService
 

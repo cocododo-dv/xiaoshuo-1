@@ -1,5 +1,6 @@
-"""请求体里的正文输入校验（B04-32：原来的 services/text_validation.py——它是 API 的入口检查，不是质量闸门，只有
-章 / 场两个路由用它）。
+"""请求体里的正文输入校验（B04-32：原来的 services/text_validation.py——它是写入口的检查，不是质量闸门）。
+
+放在 services 下，路由与接手路由逻辑的服务（v1 建章 / 建场）都能引，服务层不必反过来依赖 api。
 
 - ``validate_user_text_payload``：粘贴进来的文字像是乱码或没解码（U+FFFD、``???`` 占位、C1 控制符、被当成
   Latin-1 读的 UTF-8）→ 400 ``TEXT_ENCODING_INVALID``；
