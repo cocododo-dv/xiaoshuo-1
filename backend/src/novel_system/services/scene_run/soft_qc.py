@@ -48,8 +48,10 @@ from novel_system.services.style_reference import readings as style_readings
 from novel_system.services.style_reference.style_step import (
     PATCH_DECISION_REVERTED,
     fidelity_thresholds,
+    judge_unit,
     patch_keep_decision,
     reading_brief,
+    report_reference_judge,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -471,22 +473,8 @@ class SoftQcCheckpointMixin:
         )
 
     def _report_judge(self, qc_report_id: str | None) -> dict[str, Any] | None:
-        """软 QC 报告里的参考评审分（10 分制的 ``reference_judge`` 条目）；没有 → None。"""
-        report = self.session.get(QcReport, qc_report_id) if qc_report_id else None
-        for entry in (report.rewrite_brief_json or []) if report is not None else []:
-            if isinstance(entry, dict) and entry.get("kind") == "reference_judge":
-                return dict(entry)
-        return None
-
-    @staticmethod
-    def _judge_unit(judge: dict[str, Any] | None) -> float | None:
-        if not isinstance(judge, dict):
-            return None
-        try:
-            value = float(judge.get("style_score"))
-        except (TypeError, ValueError):
-            return None
-        return max(0.0, min(1.0, value / 10.0))
+        """软 QC 报告里的参考评审分（10 分制的 ``reference_judge`` 条目，``style_step.report_reference_judge``）；没有 → None。"""
+        return report_reference_judge(self.session.get(QcReport, qc_report_id) if qc_report_id else None)
 
     def _observe_patch_keep(
         self,
@@ -545,8 +533,8 @@ class SoftQcCheckpointMixin:
             and reading_after.reliable
         )
         decision, reason = patch_keep_decision(
-            before_judge=self._judge_unit(judge_before),
-            after_judge=self._judge_unit(judge_after),
+            before_judge=judge_unit(judge_before),
+            after_judge=judge_unit(judge_after),
             before_distance=reading_before.distance if comparable else None,
             after_distance=reading_after.distance if comparable else None,
             thresholds=thresholds,
