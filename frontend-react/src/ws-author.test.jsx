@@ -26,19 +26,25 @@ vi.mock("./ws-works.jsx", () => ({
   },
 }));
 
-// 章节编排与分章面板从 ws-snow-sync.jsx import SnowSync；每个用例把自己的假 SnowSync 挂在 window 上，这里转发过去
-// （用例没给的方法读出来是 undefined，面板照「同步模块尚未就绪」处理）。
+// 章节编排与分章面板从 ws-snow-sync.jsx import SnowSync：每个用例一份假的（snow.current），默认是「构思还没物化过」；
+// installSnowSync 换成物化好的、带分章面板接口的那一份。
+const snow = vi.hoisted(() => ({ current: null }));
 vi.mock("./ws-snow-sync.jsx", () => ({
-  SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
+  SnowSync: new Proxy({}, { get: (_target, name) => snow.current[name] }),
 }));
+const baseSnowSync = () => ({
+  readyToMaterialize: () => false,
+  resyncStatus: () => ({ pendingCount: 0 }),
+  subscribe: () => () => {},
+  feStepKey: () => "",
+  resync: vi.fn(async () => ({ synced: 0 })),
+});
 vi.mock("./ws-chapter-run.jsx", () => ({
   ArrChapterRunAction: () => <button type="button">运行本章</button>,
 }));
 
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsAuthor } from "./ws-author.jsx";
-
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let host;
 let root;
@@ -65,7 +71,7 @@ const click = (node) => node.dispatchEvent(new MouseEvent("click", { bubbles: tr
 const byText = (selector, text) => [...host.querySelectorAll(selector)].find((node) => node.textContent.includes(text));
 
 beforeEach(() => {
-  localStorage.clear();
+  snow.current = baseSnowSync();
   catalogState.ready = false;
   catalogState.chapters = [];
   catalogState.error = null;
@@ -78,7 +84,6 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
-  delete window.SnowSync;
 });
 
 describe("章节编排 · 服务端目录真相", () => {
@@ -334,7 +339,8 @@ describe("章节编排 · 服务端目录真相", () => {
     ...extra,
   });
   const installSnowSync = (extra = {}) => {
-    window.SnowSync = {
+    snow.current = {
+      ...baseSnowSync(),
       readyToMaterialize: () => true,
       resyncStatus: () => ({ pendingCount: 0 }),
       chapterPreview: vi.fn(async () => ({
@@ -421,7 +427,7 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => {});
     const panel = host.querySelector('[data-testid="chapter-plan-panel"]');
     expect(panel).not.toBeNull();
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledWith("auto", {});
+    expect(snow.current.chapterPreview).toHaveBeenCalledWith("auto", {});
     expect(panel.textContent).toContain("旧信到了");
 
     // 面板里的一场 → 构思第 10 步的那一场
@@ -445,8 +451,8 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => {});
     await act(async () => click(host.querySelector('[data-testid="chapter-plan-confirm"]')));
     await act(async () => {});
-    expect(window.SnowSync.materialize).toHaveBeenCalledTimes(1);
-    expect(window.SnowSync.materialize.mock.calls[0][1].replace_chapters).toBe(true);
+    expect(snow.current.materialize).toHaveBeenCalledTimes(1);
+    expect(snow.current.materialize.mock.calls[0][1].replace_chapters).toBe(true);
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeNull();
     expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("章节结构已按这一版写入目录 · 1 个变空的旧章已移入回收站");
   });
@@ -516,6 +522,31 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(confirm.mock.calls[0][0]).toContain("构思的分章还在");
     expect(confirm.mock.calls[0][0]).toContain("整理章节结构");
     expect(WsCatalog.set).toHaveBeenCalledTimes(1); // 取消 = 什么都不删
+  });
+
+  it("构思的回流状态变了（SnowSync.subscribe 的 resync / hydrated）就重读待同步的场数；别的消息不重读", async () => {
+    let pending = 0;
+    const listeners = new Set();
+    const resyncStatus = vi.fn(() => ({ pendingCount: pending }));
+    installSnowSync({ resyncStatus, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); } });
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [planChapter("ch01", "雨夜来信", { scenes: [planScene("SC1", 1)] })];
+    await act(async () => root.render(<WsAuthor />));
+    expect(listeners.size).toBe(1);
+    expect(host.querySelector('[data-testid="arr-plan-resync"]')).toBeNull();
+
+    pending = 2;
+    const reads = resyncStatus.mock.calls.length;
+    await act(async () => { listeners.forEach((fn) => fn("health", "project-1")); });
+    expect(resyncStatus.mock.calls.length).toBe(reads);
+    await act(async () => { listeners.forEach((fn) => fn("resync", "project-1")); });
+    expect(host.querySelector('[data-testid="arr-plan-resync"]').textContent).toContain("同步 2 场改动");
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    expect(listeners.size).toBe(0);                                // 离开页面就退订
   });
 
   it("构思的闸门此刻没过（某一步待重新确认）：目录里已有构思分出来的章，门不能跟着消失；纯手建的书没有这扇门", async () => {

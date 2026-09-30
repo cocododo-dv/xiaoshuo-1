@@ -7,6 +7,7 @@ import { wsConfirm } from "./ws-notify.jsx";
 import { ARR_ACTS } from "./ws-author-data.jsx";
 import { arrIsPlanChapter, arrIsPlanScene } from "./ws-author-derive.js";
 import { randomSuffix } from "./lib/ids.js";
+import { useWindowEvents } from "./lib/events.js";
 
 /* ==========================================================
    章节编排 · 外壳的管线（hooks + 两个小工具）
@@ -15,7 +16,7 @@ import { randomSuffix } from "./lib/ids.js";
    · useArrPref —— 按作品落地的界面偏好（只有 arr.mode / arr.lens / arr.picked 三个键）
    · useArrChapterList —— 本页的章表：拖拽中的即时视图 + 写回目录（服务端目录始终是单一真相源）
    · useSelection —— 章 / 场两种多选共用的一套 Set 选择
-   · useAuthorSnow —— 构思 → 目录的回流（SnowSync.resync）与「整理章节结构」这扇门给不给
+   · useAuthorSnow —— 构思 → 目录的回流（SnowSync.resync）与「整理章节结构」这扇门给不给（听 SnowSync.subscribe）
    · useChapterDnd / useSceneDnd —— 章 / 场的拖动与方向键挪位
    · arrGoView —— 跨视图跳转的唯一出口（有宿主的 go 就走 go，没有就排队意图 + 改 hash）
    不写 window（只读 SnowSync）；不 import 任何 ws-author 视图模块，免得成环。
@@ -37,7 +38,7 @@ export function useArrPref(key, fallback) {
    右栏只在 ≤1360 是抽屉（页头「体检」按钮拉出来，ws-author.css 的同一个断点）。抽屉开着时窗口变宽（最大化、缩放、
    收起开发者工具），右栏回到静态一列：「体检」按钮、关闭按钮、遮罩全都隐藏了，焦点陷阱却还开着——Tab 永远落在
    那个看不见的关闭按钮上，也关不掉。所以断点一过就把抽屉关上。jsdom 没有 matchMedia：没有就不管。 */
-export const ARR_CTX_DRAWER_QUERY = "(max-width: 1360px)";
+const ARR_CTX_DRAWER_QUERY = "(max-width: 1360px)";
 
 export function useCtxDrawer() {
   const [open, setOpen] = useState(false);
@@ -118,28 +119,25 @@ export function useSelection() {
 }
 
 /* ---- 构思 → 目录 ----
-   回流：把构思 9/10 步的改动写回本作目录场景卡（三拍 / POV / 章 brief）。能力来自全局 SnowSync（与构思页「重新同步」
-   同源）；resync 内部已重拉 WsCatalog，这里再把最新目录灌回本页。pending 来自后端 resync_status（真相），不写死。
+   回流：把构思 9/10 步的改动写回本作目录场景卡（三拍 / POV / 章 brief）。与构思页「重新同步」同一个 SnowSync.resync；
+   resync 内部已重拉 WsCatalog，这里再把最新目录灌回本页。pending 来自后端 resync_status（真相），不写死；
+   构思水合完、回流状态变了（SnowSync.subscribe 的 hydrated / resync）或换了作品时重读。
    canPlan：页面上给不给「整理章节结构」这扇门。构思的闸门此刻没过（某一步被改动、待重新确认）也要给——目录里
    已经有构思分出来的章，它们在这里不能拖，门不能跟着消失；面板自己会列出没过的那几项并带你去补。 */
-const readSnowResync = () => { try { return (SnowSync && SnowSync.resyncStatus()) || { pendingCount: 0 }; } catch (e) { return { pendingCount: 0 }; } };
-const readSnowReady = () => { try { return !!(SnowSync && SnowSync.readyToMaterialize && SnowSync.readyToMaterialize()); } catch (e) { return false; } };
+const readSnowResync = () => SnowSync.resyncStatus() || { pendingCount: 0 };
+const SNOW_RESYNC_KINDS = ["resync", "hydrated"];
 
 export function useAuthorSnow({ chapters, reload, showNotice, notifyError, goView }) {
   const [resync, setResync] = useState(readSnowResync);
   const [busy, setBusy] = useState(false);
   const refreshResync = useCallback(() => setResync(readSnowResync()), []);
-  useEffect(() => {
-    const events = ["ws:snow-resync", "ws:snow-hydrated", "ws:work-changed"];
-    events.forEach((name) => window.addEventListener(name, refreshResync));
-    return () => events.forEach((name) => window.removeEventListener(name, refreshResync));
-  }, [refreshResync]);
-  const ready = readSnowReady();
+  useEffect(() => SnowSync.subscribe((kind) => { if (SNOW_RESYNC_KINDS.includes(kind)) refreshResync(); }), [refreshResync]);
+  useWindowEvents({ "ws:work-changed": refreshResync });
+  const ready = !!SnowSync.readyToMaterialize();
   const hasPlanChapters = chapters.some(arrIsPlanChapter);
 
   const sync = async () => {
     if (busy) return;
-    if (!SnowSync || !SnowSync.resync) { notifyError("同步能力还没准备好：请刷新页面，或先到「构思」里「整理章节结构」。"); return; }
     if (!ready && !hasPlanChapters) {   // 从没走过物化主路径：暂无可回流的场，引导去构思页
       const goSnow = await wsConfirm({
         title: "这部作品还没从构思整理过章节结构",

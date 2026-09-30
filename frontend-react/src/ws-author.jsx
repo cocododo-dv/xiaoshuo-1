@@ -110,10 +110,7 @@ function WsAuthor({ go }) {
   /* —— 整理章节结构（阶段 Z）：和构思页头的同名按钮是同一张面板、同一条落库路径（SnowSync.materialize）。
      章的结构只有这一个编辑器；章节编排只是它的第二扇门。确认写入之后目录整份重拉，这里给一句回执。 */
   const [planOpen, setPlanOpen] = useState(false);
-  const openPlan = () => {
-    if (!SnowSync || !SnowSync.chapterPreview) { notifyError("分章能力还没准备好，请刷新页面后再试。"); return; }
-    setPlanOpen(true);
-  };
+  const openPlan = () => setPlanOpen(true);
   const onPlanDone = (result) => {
     setPlanOpen(false);
     const r = result || {};
@@ -128,7 +125,7 @@ function WsAuthor({ go }) {
     refreshResync();
   };
   const goToSnowStep = (beKey) => {
-    const feKey = (SnowSync && SnowSync.feStepKey && SnowSync.feStepKey(beKey)) || "";
+    const feKey = SnowSync.feStepKey(beKey) || "";
     setPlanOpen(false);
     goView("snowflake", feKey ? { type: "ws:snow-step", detail: feKey } : null);
   };
