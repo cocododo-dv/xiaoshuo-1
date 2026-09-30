@@ -205,13 +205,21 @@ function ProjectField({ label, hint, value, onSave, type = "text", step, stacked
   );
 }
 
+/* 项目页的改动、「删除作品」发往哪个作品 id：能拿去发请求（lib/ready-work），而且就是屏上显示的这部作品；否则 null，
+   字段只读、按钮不可点。书架还在加载（占位作品）、新建的作品还在等后端给正式 id 时没有能发请求的 id——以前照样 PATCH /
+   DELETE 到 /projects/__loading__ 或临时 id 上，先说「已保存」再失败回滚报错。
+   光看 readyWorkId 不够：本机记着上次的作品 id、书架还没读回来时，它已经是那个 id，屏上却还是占位作品「正在打开书架…」，
+   这时 WsWorks.update 在书架里找不到这部作品，改动悄悄丢掉，书架一到字段重挂、敲的字也没了（复核 Q5-R1）。 */
+function editableWorkId(work) {
+  const id = readyWorkId(WsWorks);
+  return id && work && work.id === id ? id : null;
+}
+
 function ProjectSettings() {
   const work = useActiveWork();
   useCatalogChapters();   // 订阅目录：字数 / 章数变化时这里跟着刷新
   const totals = WsCatalog.totals();
-  /* 改动只发往「能拿去发请求的」作品 id（lib/ready-work）：书架还在加载（占位作品）、新建的作品还在等后端给正式 id 时
-     没有这个 id，字段先只读——以前照样 PATCH 到 /projects/__loading__ 或临时 id 上，先说「已保存」再失败回滚报错 */
-  const readyId = readyWorkId(WsWorks);
+  const readyId = editableWorkId(work);
   const locked = !readyId;
   const save = (patch) => { if (readyId) WsWorks.update(readyId, patch); };
   const pct = work.wordsTarget ? Math.min(100, Math.round((totals.words / work.wordsTarget) * 100)) : 0;
@@ -328,8 +336,8 @@ function DataSettings({ go }) {
   const works = useWorks();
   const work = WsWorks.active();
   const worksN = works.length || 1;
-  /* 删作品发往能拿去发请求的作品 id：新建的作品还在等后端给正式 id 时没有，按钮先不可点（以前照样 DELETE 临时 id） */
-  const readyId = readyWorkId(WsWorks);
+  /* 删的必须是确认框里点名的这部作品，而且它能拿去发请求（见 editableWorkId）；否则按钮先不可点 */
+  const readyId = editableWorkId(work);
 
   const clearLocalCache = async () => {
     let annotations = 0;

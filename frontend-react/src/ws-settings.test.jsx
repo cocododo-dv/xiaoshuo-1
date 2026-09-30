@@ -176,6 +176,91 @@ describe("设置页", () => {
     }
   });
 
+  /* 复核 Q5-R1：本机记着上次的作品 id（每个 Playwright 冒烟都是这样起步的）而书架还没读回来时，readyWorkId 已经是那个 id，
+     屏上却还是占位作品——改动交给 WsWorks.update 会因为书架里找不到这部作品悄悄丢掉，书架一到字段重挂，敲的字也没了 */
+  it("本机记着上次的作品、书架还在读：项目字段同样只读，敲的字不会悄悄丢；书架到了照常保存", async () => {
+    window.localStorage.setItem("ws_active_work_v1", "prj-s");
+    const client = await import("./lib/client.js");
+    let resolveShelf;
+    const shelf = new Promise((resolve) => { resolveShelf = resolve; });
+    client.apiGet.mockImplementation((url) => (url === "/api/v2/projects" ? shelf : Promise.resolve({})));
+    const { WsWorks } = await import("./ws-works.jsx");
+    expect(WsWorks.readyId()).toBe("prj-s");
+    expect(WsWorks.active().id).toBe("__loading__");
+    const { WsSettings } = await import("./ws-settings.jsx");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const genreInput = () => Array.from(host.querySelectorAll(".set-row")).find(r => r.textContent.includes("题材")).querySelector("input");
+    const typeAndEnter = async (input, text) => {
+      await act(async () => { input.focus(); });
+      await act(async () => { setValue.call(input, text); input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" })); });
+    };
+    try {
+      await act(async () => root.render(<WsSettings go={vi.fn()} t={{}} setTweak={vi.fn()} />));
+      expect(host.textContent).toContain("正在打开书架");
+      expect(genreInput().disabled).toBe(true);
+      await typeAndEnter(genreInput(), "悬疑");
+      expect(client.apiPatch).not.toHaveBeenCalled();
+
+      await act(async () => { resolveShelf({ items: [{ project_id: "prj-s", title: "试写本", genre: "原题材" }] }); });
+      await vi.waitFor(() => expect(genreInput().disabled).toBe(false));
+      expect(genreInput().value).toBe("原题材");
+      await typeAndEnter(genreInput(), "悬疑");
+      expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/prj-s/profile", { genre: "悬疑" });
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("书架缓存里没有本机记着的那部作品（书架还在读）：「删除作品」不可点，确认框不会点着别的书名去删", async () => {
+    window.sessionStorage.setItem("ws_settings_tab_v1", "data");
+    window.localStorage.setItem("ws_works_cache_v1", JSON.stringify([
+      { id: "prj-a", title: "旧信" },
+      { id: "prj-b", title: "案卷" },
+    ]));
+    window.localStorage.setItem("ws_active_work_v1", "prj-c");
+    const client = await import("./lib/client.js");
+    let resolveShelf;
+    const shelf = new Promise((resolve) => { resolveShelf = resolve; });
+    client.apiGet.mockImplementation((url) => (url === "/api/v2/projects" ? shelf : Promise.resolve({})));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { WsWorks } = await import("./ws-works.jsx");
+    expect(WsWorks.readyId()).toBe("prj-c");
+    expect(WsWorks.active().id).toBe("prj-a");
+    const { WsSettings } = await import("./ws-settings.jsx");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<WsSettings go={vi.fn()} t={{}} setTweak={vi.fn()} />));
+      const del = btn(host, "删除作品");
+      expect(del.disabled).toBe(true);
+      await click(del);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(client.apiDelete).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveShelf({ items: [
+          { project_id: "prj-a", title: "旧信" },
+          { project_id: "prj-b", title: "案卷" },
+          { project_id: "prj-c", title: "雨城" },
+        ] });
+      });
+      await vi.waitFor(() => expect(WsWorks.active().id).toBe("prj-c"));
+      await vi.waitFor(() => expect(btn(host, "删除作品").disabled).toBe(false));
+      await click(btn(host, "删除作品"));
+      await vi.waitFor(() => expect(client.apiDelete).toHaveBeenCalledWith("/api/v2/projects/prj-c"));
+      expect(confirm.mock.calls[0][0]).toContain("雨城");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
   it("新建的作品还在等正式 id：「删除作品」先不可点，不会 DELETE 临时 id；拿到正式 id 就能删", async () => {
     window.sessionStorage.setItem("ws_settings_tab_v1", "data");
     const view = await mountSettings();
