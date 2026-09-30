@@ -4,7 +4,7 @@
 - 关键场景候选生成后暂停编排（awaiting_candidate_selection），未选择前
   管线不归档、adopt-current 也拒绝（双入口封死）；
 - 盲化视图：默认按 blinded_order 输出全文、剥离机器分数；主动展开不重排；
-- 终选一次写入：同选幂等、异选 409，显式重开后方可改选（审计留痕）；
+- 终选一次写入：同选幂等、异选 409 SELECTION_LOCKED（不能改选，想换一稿就重新起草这一场）；
 - 选择后 resume-after-selection 从批判修订/QC 继续，安全归档，终稿=选中稿。
 
 2026-09-30 [批准#2]：多稿只剩作者手笔直起——候选 = 首稿 + 定向修改（按读数排序）。这里的场景都绑一本合成参考书
@@ -463,7 +463,87 @@ def test_blinded_candidates_view_strips_scores_and_uses_blinded_order(
     assert all("adversarial_score" in c for c in scored["candidates"])
 
 
-# ---------- 终选锁定与重开 ----------
+def test_candidate_views_carry_no_dispersion_reading(client, session) -> None:
+    """重评 R2：候选离散度不再写（补写那一套随先中性后润色删了），两个 GET 都不再带它的读数。"""
+    _seed_scene(session)
+    session.add(
+        SceneDraft(
+            row_id="w3_diag",
+            scene_id=SCENE_ID,
+            chapter_id=CHAPTER_ID,
+            stage="style_draft",
+            content="诊断视图里的一份风格稿。",
+            source_bundle_id="bundle_w3",
+            source_bundle_hash="hash_w3",
+        )
+    )
+    session.commit()
+
+    diagnostic = client.get(f"/api/v1/scenes/{SCENE_ID}/style-candidates").json()["data"]
+    assert diagnostic["blinded"] is False
+    assert [c["row_id"] for c in diagnostic["candidates"]] == ["w3_diag"]
+    assert "dispersion_score" not in diagnostic and "dispersion_signal" not in diagnostic
+
+    _seed_manual_gate(session, ["w3_cand_a"], ["w3_cand_a"])
+    blinded = client.get(f"/api/v1/scenes/{SCENE_ID}/style-candidates").json()["data"]
+    assert blinded["blinded"] is True
+    assert "dispersion_score" not in blinded and "dispersion_signal" not in blinded
+
+
+# ---------- 终选锁定 ----------
+
+
+def test_a_different_second_selection_is_locked_and_names_no_reopen(client, session) -> None:
+    """终选一次写入：同选幂等；换一份 409 SELECTION_LOCKED，提示不再指向已经删掉的「重开」（重评 R2）。"""
+    _seed_scene(session)
+    _seed_manual_gate(session, ["w3_cand_a", "w3_cand_b"], ["w3_cand_b", "w3_cand_a"])
+    path = f"/api/v1/scenes/{SCENE_ID}/style-candidates"
+
+    first = client.post(f"{path}/w3_cand_a/select", json={}, headers={"X-Idempotency-Key": "w3-lock-first"})
+    assert first.status_code == 200
+    same = client.post(f"{path}/w3_cand_a/select", json={}, headers={"X-Idempotency-Key": "w3-lock-same"})
+    assert same.status_code == 200 and same.json()["data"]["message"] == "Candidate already selected"
+
+    other = client.post(f"{path}/w3_cand_b/select", json={}, headers={"X-Idempotency-Key": "w3-lock-other"})
+    assert other.status_code == 409
+    error = other.json()["error"]
+    assert error["code"] == "SELECTION_LOCKED"
+    assert "reopen" not in error["message"].lower()
+    assert error["details"]["selected_row_id"] == "w3_cand_a"
+
+
+def test_selecting_without_a_gate_records_a_select_only_gate(client, session) -> None:
+    """标准场直接终选时补建的已决门只允许 select——终选没有「重开改选」（重评 R2 复核补充 4）。"""
+    _seed_scene(session)
+    session.add(
+        SceneDraft(
+            row_id="w3_standard",
+            scene_id=SCENE_ID,
+            chapter_id=CHAPTER_ID,
+            stage="style_draft",
+            content="标准场的一份风格稿。",
+            source_bundle_id="bundle_w3",
+            source_bundle_hash="hash_w3",
+        )
+    )
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/w3_standard/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-no-gate"},
+    )
+    assert response.status_code == 200
+    session.expire_all()
+    gates = session.execute(
+        select(HumanReviewEvent).where(
+            HumanReviewEvent.scene_id == SCENE_ID,
+            HumanReviewEvent.event_source == "candidate_selection",
+        )
+    ).scalars().all()
+    assert len(gates) == 1
+    assert gates[0].allowed_actions_json == ["select"]
+    assert gates[0].details_json["selected_row_id"] == "w3_standard"
 
 
 def test_select_outside_gate_candidates_rejected(client, session) -> None:

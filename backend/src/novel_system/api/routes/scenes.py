@@ -738,7 +738,6 @@ def get_scene_style_candidates(
 
     state = session.get(SceneRunState, scene_id)
     gate = _latest_selection_gate_event(session, scene_id)
-    dispersion_score = state.candidate_dispersion_score if state else None
     criticality_info = None
     if state and state.criticality_level:
         criticality_info = {
@@ -785,7 +784,6 @@ def get_scene_style_candidates(
                     ),
                     "event_id": gate.event_id,
                 },
-                "dispersion_score": dispersion_score,
                 "criticality": criticality_info,
             },
             req_id=request_id_of(request),
@@ -825,12 +823,6 @@ def get_scene_style_candidates(
             "blinded": False,
             "candidates": candidates,
             "total": len(candidates),
-            "dispersion_score": dispersion_score,
-            "dispersion_signal": (
-                "low"
-                if dispersion_score is not None and dispersion_score < 0.15
-                else "adequate" if dispersion_score is not None else None
-            ),
             "criticality": criticality_info,
         },
         req_id=request_id_of(request),
@@ -848,7 +840,7 @@ def select_style_candidate(
     """Wave 3（治理 §5.5/§6.3）：作者终选——一次写入 + 锁定。
 
     相同选择重复提交幂等返回；已存在不同终选记录时新的 select 返回
-    409 SELECTION_LOCKED；变更选择需先显式 reopen（留审计）。记录
+    409 SELECTION_LOCKED：终选提交后不能改选，想换一稿就重新起草这一场（重评 R2）。记录
     选择耗时/无明显差异标记（§5.5 记录选择、放弃、无明显差异和选择耗时）。
     """
     actor_ref = actor_ref_of(request)
@@ -887,7 +879,7 @@ def select_style_candidate(
                     }
                 raise DomainError(
                     "SELECTION_LOCKED",
-                    "terminal selection is locked — reopen explicitly before changing the choice",
+                    "terminal selection is locked — re-draft the scene to choose again",
                     status_code=409,
                     details={
                         "scene_id": scene_id,
@@ -950,7 +942,8 @@ def select_style_candidate(
                 event_source="candidate_selection",
                 priority="high",
                 status="resolved",
-                allowed_actions_json=["select", "reopen"],
+                # 终选一次写入，不再有「重开改选」（重评 R2 复核补充 4）
+                allowed_actions_json=["select"],
                 details_json={
                     "gate_type": "style_candidate_selection",
                     "candidate_row_ids": [row_id],
@@ -1582,7 +1575,7 @@ def scene_workbench(
                 {"row_id": final.row_id, "content": final.content} if final else None
             ),
             "source_safety_scan": source_safety_scan,
-            # 2026-09-22：终稿的 21 维体检不再随工作台载荷每次轮询重算——它在写作台深改面板
+            # 2026-09-22：终稿的规则维度体检不再随工作台载荷每次轮询重算——它在写作台深改面板
             # （GET /api/v1/scenes/{id}/deep-review）里，和其他诊断来源一起、按作者的忽略清单过滤。
             "literary_blueprint": blueprint_service.latest_payload(scene_id),
             "execution_contract": contract_service.serialize(execution_contract),
