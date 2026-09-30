@@ -31,7 +31,6 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services import auto_critique as _auto_critique
-from novel_system.services import idempotency as _idempotency
 from novel_system.services import scene_budget
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
@@ -95,10 +94,10 @@ from novel_system.services.scene_generation import (
 )
 from novel_system.services.scene_run_checkpoint import (
     RUN_CHECKPOINT_ORDER,
-    RunCheckpointContext,
     SceneRunCheckpointService,
     checkpoint_corrupt,
 )
+from novel_system.services.scene_run.kernel import RunCheckpointKernelMixin
 from novel_system.services.scene_run.constants import (
     NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON,
     NEAR_FINAL_REWRITE_GATE_STAGE,
@@ -151,7 +150,7 @@ __all__ = [
 ]
 
 
-class Orchestrator:
+class Orchestrator(RunCheckpointKernelMixin):
     def __init__(
         self,
         session: Session,
@@ -188,52 +187,11 @@ class Orchestrator:
         self.near_final_service = near_final_service or NearFinalAcceptanceService(
             session, llm_runner=llm_runner
         )
-        # Per-run execution ownership (execution_id / run_job_id /
-        # checkpoint_service / lease_renewer) lives on the checkpoint
-        # kernel context and is exposed via forwarding properties below.
-        # lease TTL 经 lambda 在调用时解析模块属性，保住测试对
-        # idempotency.owner_lease_ttl_seconds 的打桩。
-        self._ckpt = RunCheckpointContext(
-            session,
-            lease_ttl_seconds=lambda: _idempotency.owner_lease_ttl_seconds(),
-        )
-
-    # ------------------------------------------------------------------
-    # Per-run checkpoint kernel state lives on RunCheckpointContext; these
-    # forwarding properties keep the four fields readable/writable on the
-    # orchestrator itself (run entrypoints and tests set them directly, and
-    # per-call workers such as SceneArchiveEffects read their current value).
-    @property
-    def _execution_id(self) -> str | None:
-        return self._ckpt._execution_id
-
-    @_execution_id.setter
-    def _execution_id(self, value: str | None) -> None:
-        self._ckpt._execution_id = value
-
-    @property
-    def _run_job_id(self) -> str | None:
-        return self._ckpt._run_job_id
-
-    @_run_job_id.setter
-    def _run_job_id(self, value: str | None) -> None:
-        self._ckpt._run_job_id = value
-
-    @property
-    def _checkpoint_service(self) -> SceneRunCheckpointService | None:
-        return self._ckpt._checkpoint_service
-
-    @_checkpoint_service.setter
-    def _checkpoint_service(self, value: SceneRunCheckpointService | None) -> None:
-        self._ckpt._checkpoint_service = value
-
-    @property
-    def _lease_renewer(self):
-        return self._ckpt._lease_renewer
-
-    @_lease_renewer.setter
-    def _lease_renewer(self, value) -> None:
-        self._ckpt._lease_renewer = value
+        # 每次运行的执行归属（检查点内核 RunCheckpointKernelMixin 的四个字段）：开跑时设、收尾时清
+        self._execution_id: str | None = None
+        self._run_job_id: str | None = None
+        self._checkpoint_service: SceneRunCheckpointService | None = None
+        self._lease_renewer = None
 
     def run_scene(
         self,
@@ -1189,78 +1147,6 @@ class Orchestrator:
             candidate_summaries=candidate_summaries,
             run_policy=run_policy,
         )
-
-    def _checkpoint_reached(self, node_key: str) -> bool:
-        return self._ckpt._checkpoint_reached(node_key)
-
-    def _checkpoint_artifact(self, key: str, *, expected_node_at_least: str) -> Any:
-        return self._ckpt._checkpoint_artifact(
-            key, expected_node_at_least=expected_node_at_least
-        )
-
-    def _save_run_checkpoint(
-        self,
-        node_key: str,
-        *,
-        artifact_refs: dict[str, Any] | None = None,
-        artifact_hashes: dict[str, str] | None = None,
-        sub_index: int | None = None,
-        strategy: str | None = None,
-        branch: str | None = None,
-    ) -> None:
-        self._ckpt._save_run_checkpoint(
-            node_key,
-            artifact_refs=artifact_refs,
-            artifact_hashes=artifact_hashes,
-            sub_index=sub_index,
-            strategy=strategy,
-            branch=branch,
-        )
-
-    def _reconcile_execution_step(
-        self,
-        execution_step_key: str,
-        *,
-        chapter_scope: bool = False,
-    ) -> None:
-        self._ckpt._reconcile_execution_step(
-            execution_step_key, chapter_scope=chapter_scope
-        )
-
-    def _validate_checkpoint_llm_output(
-        self,
-        *,
-        scene_id: str,
-        llm_call_id: Any,
-        execution_step_key: Any,
-        execution_id: str | None = None,
-        allowed_accounting_statuses: tuple[str, ...] = ("settled",),
-        allow_local_rejected_output: bool = False,
-    ) -> LlmCall:
-        return self._ckpt._validate_checkpoint_llm_output(
-            scene_id=scene_id,
-            llm_call_id=llm_call_id,
-            execution_step_key=execution_step_key,
-            execution_id=execution_id,
-            allowed_accounting_statuses=allowed_accounting_statuses,
-            allow_local_rejected_output=allow_local_rejected_output,
-        )
-
-    def _validate_artifact_execution_owner(self, owner_execution_id: Any) -> str:
-        return self._ckpt._validate_artifact_execution_owner(owner_execution_id)
-
-    def _checkpoint_execution_owner_matches(
-        self,
-        execution_id: Any,
-        run_job_id: Any,
-    ) -> bool:
-        return self._ckpt._checkpoint_execution_owner_matches(execution_id, run_job_id)
-
-    def _renew_owner_lease(self, *, lease_seconds: int) -> None:
-        self._ckpt._renew_owner_lease(lease_seconds=lease_seconds)
-
-    def _raise_if_run_cancelled(self) -> None:
-        self._ckpt._raise_if_run_cancelled()
 
     def _validate_budget_checkpoint(self, state: SceneRunState) -> None:
         try:
@@ -6049,29 +5935,6 @@ class Orchestrator:
             ):
                 raise checkpoint_corrupt("soft completion prefix/branch/hash mismatch")
         return decision, generation
-
-    def _checkpoint_hash(self, key: str) -> str | None:
-        return self._ckpt._checkpoint_hash(key)
-
-    def _raise_checkpoint_output_missing(self, *, row_id: Any) -> None:
-        self._ckpt._raise_checkpoint_output_missing(row_id=row_id)
-
-    def _require_checkpoint_row(self, model: Any, row_id: Any) -> Any:
-        return self._ckpt._require_checkpoint_row(model, row_id)
-
-    def _sub_checkpoint_progress(self, node_key: str, **kwargs: Any) -> int:
-        return self._ckpt._sub_checkpoint_progress(node_key, **kwargs)
-
-    def _active_checkpoint_state(self) -> SceneRunState:
-        return self._ckpt._active_checkpoint_state()
-
-    @staticmethod
-    def _text_hash(content: str) -> str:
-        return RunCheckpointContext._text_hash(content)
-
-    @staticmethod
-    def _json_hash(payload: Any) -> str:
-        return RunCheckpointContext._json_hash(payload)
 
     @staticmethod
     def _prepare_state_for_run(state: SceneRunState, *, new_execution: bool) -> None:
