@@ -5,6 +5,10 @@ import {
   manuBuildBody, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
   manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScenesArchived, manuScopeProblem,
 } from "./ws-manuscripts-compile.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { CANON_EVENT_LABELS } from "./labels/canon.js";
 
 const CANON_DONE = { complete: true, missing_final_scene_ids: [], pending_scene_ids: [], pending_candidate_count: 0 };
 
@@ -150,5 +154,17 @@ describe("导出", () => {
     expect(out.content).toContain("&lt;b&gt;交班&lt;/b&gt;");
     expect(out.content).toContain("<p>他说：&quot;&lt;script&gt;&quot;</p>");
     expect(out.content).not.toContain("<script>");
+  });
+});
+
+describe("正史审核台的词表", () => {
+  it("候选事实的类型与后端 narrative/taxonomy.py 的 EVENT_TYPES 逐项相同，每一类都有中文名", () => {
+    const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      "../../backend/src/novel_system/services/narrative/taxonomy.py"), "utf8");
+    const start = source.indexOf("EVENT_TYPES = (");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const backend = [...source.slice(start, source.indexOf(")", start)).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(Object.keys(CANON_EVENT_LABELS)).toEqual(backend);
+    expect(Object.values(CANON_EVENT_LABELS).every((label) => /[\u4e00-\u9fff]/.test(label))).toBe(true);
   });
 });
