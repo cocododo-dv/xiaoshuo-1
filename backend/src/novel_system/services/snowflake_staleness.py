@@ -96,17 +96,34 @@ def changed_scene_row_uids(previous_payload: dict[str, Any] | None, current_payl
 
     任一侧有行两种身份都缺 → 返回 ``None``，调用方退回「全部场景计划置 stale」。
     被删掉的场不在返回集合里——它们已经软删，没有计划行可标。
+    先后按两边都在的行彼此之间比（:func:`relative_ranks`）：插进 / 删掉一行不让后面每一场都算「改了」。
     """
     previous = _scene_rows_by_uid(previous_payload)
     current = _scene_rows_by_uid(current_payload)
     if previous is None or current is None:
         return None
-    changed: set[str] = set()
-    for row_uid, row in current.items():
-        before = previous.get(row_uid)
-        if before is None or scene_row_content(before) != scene_row_content(row):
+    changed = set(current) - set(previous)
+    for row_uid, (before, after) in relative_ranks(previous, current).items():
+        if scene_row_content({**previous[row_uid], "_ordinal": before}) != scene_row_content(
+            {**current[row_uid], "_ordinal": after}
+        ):
             changed.add(row_uid)
     return changed
+
+
+def relative_ranks(
+    previous: dict[str, dict[str, Any]],
+    current: dict[str, dict[str, Any]],
+) -> dict[str, tuple[int, int]]:
+    """两边都在的成员 → （它在旧表里、新表里各排第几），只数两边都在的成员（成员带 ``_ordinal``：它在表里的行号）。
+
+    按绝对行号比的话，在第 2 行插进一场，后面每一场的行号都挪一格，全被当成「改了」（B07-02）。09 重新批准的
+    失效判定与运行时失效分析（``project_runtime_invalidation``）用的是这同一把尺。
+    """
+    before = [key for key in sorted(previous, key=lambda key: previous[key]["_ordinal"]) if key in current]
+    after = [key for key in sorted(current, key=lambda key: current[key]["_ordinal"]) if key in previous]
+    before_rank = {key: rank for rank, key in enumerate(before, start=1)}
+    return {key: (before_rank[key], rank) for rank, key in enumerate(after, start=1)}
 
 
 def _scene_rows_by_uid(payload: dict[str, Any] | None) -> dict[str, dict[str, Any]] | None:

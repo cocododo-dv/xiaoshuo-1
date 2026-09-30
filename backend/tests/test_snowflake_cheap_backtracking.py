@@ -146,6 +146,52 @@ def test_scene_list_reapproval_stales_only_the_changed_scene_plans(client, sessi
         assert by_uid[scene["row_uid"]].status == "approved", scene["row_uid"]
 
 
+def test_changed_scene_rows_compare_the_order_among_rows_on_both_sides() -> None:
+    """09 的行按身份比内容；先后只在两边都在的行之间比（与运行时失效同一条规则，B07-02）——插进 / 删掉一行，后面
+    每一场的绝对行号都挪一格，以前因此全被当成「改了」。"""
+    from novel_system.services.snowflake_staleness import changed_scene_row_uids
+
+    rows = [{"row_uid": f"u{i}", "summary": f"第{i}场", "primary_form": "proactive"} for i in range(1, 6)]
+    inserted = [*rows[:2], {"row_uid": "new", "summary": "插进来的一场", "primary_form": "reactive"}, *rows[2:]]
+    assert changed_scene_row_uids({"scenes": rows}, {"scenes": inserted}) == {"new"}
+    assert changed_scene_row_uids({"scenes": rows}, {"scenes": [*rows[:2], *rows[3:]]}) == set()
+    edited = [*rows[:3], {**rows[3], "summary": "第4场改写"}, rows[4]]
+    assert changed_scene_row_uids({"scenes": rows}, {"scenes": edited}) == {"u4"}
+    # 真的换了先后的场照旧算改了
+    swapped = [rows[0], rows[2], rows[1], *rows[3:]]
+    assert changed_scene_row_uids({"scenes": rows}, {"scenes": swapped}) == {"u2", "u3"}
+
+
+def test_inserting_or_deleting_a_scene_row_stales_only_that_row_on_reapproval(client, session) -> None:
+    """在确认过的 09 中间插进一场再确认：只有新来的那一场需复核，原有的每一场都还是已确认；删掉中间一场再确认：
+    留下的场一场都不需复核（以前后面的每一场都按「换了位置」标成 stale）。"""
+    pid = _create_project(client, key="g6-rows")["project_id"]
+    _approve_through(client, pid, "scene_details")
+    scenes = _step(_workspace(client, pid), "scene_list")["draft"]["scenes"]
+    assert len(scenes) >= 2 and all(scene.get("row_uid") for scene in scenes)
+    identity = {"row_uid", "scene_id", "scene_plan_id", "chapter_plan_id"}
+    fresh = {key: value for key, value in scenes[0].items() if key not in identity}
+    fresh["summary"] = "插进来的一场：她在旧码头等到了送信人。"
+
+    _revise_and_approve(client, pid, "scene_list", {"scenes": [dict(scenes[0]), fresh, *map(dict, scenes[1:])], "_rev": "g6-insert"})
+
+    session.expire_all()
+    plans = _plans(session, pid)
+    old_uids = {scene["row_uid"] for scene in scenes}
+    [added] = [plan for plan in plans if plan.row_uid not in old_uids]
+    assert added.status == "stale"
+    assert {plan.row_uid: plan.status for plan in plans if plan.row_uid in old_uids} == {uid: "approved" for uid in old_uids}
+
+    kept = [scene for scene in _step(_workspace(client, pid), "scene_list")["draft"]["scenes"] if scene["row_uid"] != scenes[0]["row_uid"]]
+    _revise_and_approve(client, pid, "scene_list", {"scenes": [dict(scene) for scene in kept], "_rev": "g6-delete"})
+
+    session.expire_all()
+    remaining = {plan.row_uid: plan.status for plan in _plans(session, pid)}
+    assert set(remaining) == {scene["row_uid"] for scene in kept}
+    # 确认 09 时场景计划整表回到 approved；留下的场内容与彼此的先后都没变，一场都不再标需复核
+    assert set(remaining.values()) == {"approved"}
+
+
 def test_draft_sync_keeps_unchanged_scene_rows_approved(client, session) -> None:
     pid = _create_project(client, key="g-sync")["project_id"]
     _approve_through(client, pid, "scene_details")
