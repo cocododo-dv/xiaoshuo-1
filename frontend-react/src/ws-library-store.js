@@ -254,7 +254,14 @@ adoptModuleListeners("ws-library-store", () => window.removeEventListener("ws:wo
    写：人物 characters、世界 entities、大事记 timeline、关系 relations
    ========================================================== */
 
-const libApiBase = () => `/api/v2/projects/${libActiveId()}/library`;
+/* 写请求的前缀。没有能发请求的作品（书架还在加载、书架是空的、新建的作品还没拿到正式 id）时抛错，由各写入口的
+   catch 报给作者、不发请求——以前拼成 /api/v2/projects/null/library/…，空书架或书架还没读回来时点「新建第一份档案」
+   就白发一个必然失败的 POST。 */
+function libApiBase() {
+  const pid = libActiveId();
+  if (!pid) throw new Error("作品还没打开好，稍后再试。");
+  return `/api/v2/projects/${pid}/library`;
+}
 const libToast = (e, fallback) => storeAlert(e, fallback);
 
 /* 世界条目的类型：接受后端枚举或中文名，其余值不写（后端只收四种） */

@@ -233,6 +233,24 @@ describe("资料库 store：按需拉取、不可变快照、窗口接缝", () =
     await vi.waitFor(() => expect(store.libLive().entries.map(e => e.name)).toEqual(["甲角色"]), T);
   });
 
+  it("还没有能发请求的作品（书架还没读回来）：新建不发请求、说清楚为什么，不再拼出 /projects/null/…", async () => {
+    const client = await import("./lib/client.js");
+    const shelf = deferred();
+    client.apiGet.mockImplementation((url) => (url === "/api/v2/projects" ? shelf.promise : Promise.resolve({})));
+    client.apiPost.mockResolvedValue({ character_id: "c-new" });
+    const { WsWorks } = await import("./ws-works.jsx");
+    expect(WsWorks.readyId()).toBeNull();
+    const store = await import("./ws-library-store.js");
+    try {
+      expect(await store.LIB_createEntry("people", "林岑")).toBeNull();
+      expect(await store.LIB_createEntry("events", "第三潮汐事件")).toBeNull();
+      expect(client.apiPost).not.toHaveBeenCalled();
+      expect(window.alert).toHaveBeenCalledWith("作品还没打开好，稍后再试。");
+    } finally {
+      shelf.resolve({ items: [] });
+    }
+  });
+
   it("门面只挂还有人读的窗口名：LIB_ENTRIES / LIB_BY_ID / LIB_CATS（写作台、章节编排、冒烟）与 LIB_persist / LIB_live", async () => {
     await activeWork();
     const data = await import("./ws-library-data.jsx");
