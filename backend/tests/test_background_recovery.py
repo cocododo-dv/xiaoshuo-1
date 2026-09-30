@@ -6,7 +6,6 @@ import threading
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
 from novel_system.db.models import (
@@ -25,6 +24,7 @@ from novel_system.services.background_recovery import (
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import recover_stale_legacy_reservations
 from novel_system.services.scene_run_jobs import SceneRunJobService
+from tests.support.api_client import AutoKeyTestClient
 
 
 def _seed_run_job_parents(
@@ -204,7 +204,7 @@ def test_fastapi_lifespan_runs_background_recovery(monkeypatch) -> None:
         lambda: calls.append(True) or {},
     )
 
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         assert client.get("/live").status_code == 200
 
     assert calls == [True]
@@ -459,7 +459,7 @@ def test_app_shutdown_releases_its_run_leases_so_a_restart_resumes_at_once(sessi
             return {"scene_status": "archived"}
 
     monkeypatch.setattr(job_module, "Orchestrator", _BlockingPipeline)
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         _create_chapter_and_scene(client)
         job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs").json()["data"]["job_id"]
         assert started.wait(10)
@@ -580,7 +580,7 @@ def test_lifespan_runs_the_run_job_sweeper_only_while_the_app_is_up() -> None:
     def sweepers() -> list[threading.Thread]:
         return [t for t in threading.enumerate() if t.name == RUN_JOB_SWEEPER_THREAD_NAME and t.is_alive()]
 
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         assert client.get("/live").status_code == 200
         assert len(sweepers()) == 1
     assert _wait_until(lambda: not sweepers(), timeout=10)

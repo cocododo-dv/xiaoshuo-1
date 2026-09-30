@@ -139,7 +139,7 @@ def test_demo_seed_populates_library(client, session):
     assert len(overview2["relations"]) == len(overview["relations"])
 
 
-def test_library_creates_honor_idempotency_replay(client):
+def test_library_creates_honor_idempotency_replay(client, raw_client):
     """FE-ALIGN 修复：资料库创建端点兑现幂等键（重放不建重复行）。"""
     pid = _create_project(client)
     key = "lib-idem-entity-1"
@@ -152,7 +152,7 @@ def test_library_creates_honor_idempotency_replay(client):
     overview = client.get(f"/api/v2/projects/{pid}/library").json()["data"]
     assert sum(1 for e in overview["entities"] if e["name"] == "幂等灯塔") == 1
 
-    missing = client.post(f"/api/v2/projects/{pid}/library/timeline", json={"label": "无键事件"})
+    missing = raw_client.post(f"/api/v2/projects/{pid}/library/timeline", json={"label": "无键事件"})
     assert missing.status_code == 400
     assert missing.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 

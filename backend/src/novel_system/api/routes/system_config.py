@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.system_config import (
     LlmNodeRouteSyncRequest,
@@ -37,11 +37,9 @@ def test_system_config_provider(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/test-provider",
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).test_provider(payload=body),
     )
@@ -61,11 +59,9 @@ def save_system_config_llm_provider(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/providers",
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).save_llm_provider(
             payload=body,
@@ -83,11 +79,9 @@ def delete_system_config_llm_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template="/api/v1/system-config/llm/providers/{provider_id}",
         payload={"provider_id": provider_id},
         action=lambda: SystemConfigService(session, auto_commit=False).delete_llm_provider(
             provider_id=provider_id,
@@ -105,11 +99,9 @@ def set_default_system_config_llm_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/providers/{provider_id}/default",
         payload={"provider_id": provider_id},
         action=lambda: SystemConfigService(session, auto_commit=False).set_default_llm_provider(
             provider_id=provider_id,
@@ -127,11 +119,9 @@ def sync_missing_system_config_llm_node_routes(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/node-routes/sync-missing",
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).sync_missing_llm_node_routes(
             payload=body,
@@ -151,11 +141,9 @@ def probe_system_config_llm_provider(
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True) if payload else {}
     request_payload = {"provider_id": provider_id, **body}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/providers/{provider_id}/probe",
         payload=request_payload,
         action=lambda: SystemConfigService(session, auto_commit=False).probe_llm_provider(
             provider_id=provider_id,
@@ -189,11 +177,9 @@ def save_system_config_llm_role_routes(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/role-routes",
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).save_llm_role_routes(
             payload=body,

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.literary_quality import (
     LiteraryQualityAnalyzeTextRequest,
     LiteraryQualityChapterSetRequest,
@@ -49,11 +49,9 @@ def literary_quality_analyze_text(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/literary-quality/analyze-text",
         payload=body,
         action=lambda: _quality_service(session).analyze_text(body),
     )
@@ -66,11 +64,9 @@ def literary_quality_chapter_set_review(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/literary-quality/chapter-set-review",
         payload=body,
         action=lambda: _quality_service(session).chapter_set_review(body),
     )

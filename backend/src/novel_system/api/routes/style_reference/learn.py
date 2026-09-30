@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.style_reference import LearnRequest
 from novel_system.api.response import respond
@@ -72,11 +72,9 @@ def learn_book_style(
         )
         return {"book_id": book_id, "job_id": job.job_id, "state": job.state, "learn": learn_payload(job)}
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}/learn",
         payload={"book_id": book_id, **body},
         action=_do,
         after_commit=dispatch_response_job,
@@ -135,11 +133,9 @@ def cancel_book_learning(
             "finished": job.state == "cancelled",
         }
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}/learn/cancel",
         payload={"book_id": book_id},
         action=_do,
     )

@@ -398,11 +398,11 @@ PREFIX = "/api/v2/style-reference"
 
 
 def _client():
-    from fastapi.testclient import TestClient
+    from tests.support.api_client import AutoKeyTestClient
 
     from novel_system.api.app import create_app
 
-    return TestClient(create_app())
+    return AutoKeyTestClient(create_app())
 
 
 def test_upload_exceeding_size_limit_returns_413(monkeypatch: pytest.MonkeyPatch):

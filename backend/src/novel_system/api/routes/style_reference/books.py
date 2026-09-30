@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.style_reference import BulkDeleteRequest, ImportPathRequest, ReclassifyRequest
 from novel_system.api.response import respond
@@ -80,11 +80,9 @@ def import_book_path(
         )
         return _import_response(session, result)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/import-path",
         payload=body,
         action=_do,
         after_commit=dispatch_response_job,
@@ -188,11 +186,9 @@ async def import_book_upload(
     def _run_import() -> Any:
         # 幂等边界在这里显式调用(tests/test_route_mutation_policy 按 AST 找调用点),
         # 整段在线程池里执行;分类作业在事务提交后派发。
-        return idempotent_response(
+        return mutate(
             request,
             session,
-            method="POST",
-            path_template=f"{PATH_PREFIX}/books/import-upload",
             payload=payload,
             action=_do,
             after_commit=dispatch_response_job,
@@ -324,11 +320,9 @@ def delete_book(
         result = delete_reference_book(session, book_id)
         return {"book_id": book_id, "deleted": True, "unbound": result["unbound"]}
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}",
         payload={"book_id": book_id},
         action=_do,
     )
@@ -347,11 +341,9 @@ def bulk_delete_books(
     def _do() -> dict[str, Any]:
         return delete_reference_books(session, book_ids)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/bulk-delete",
         payload={"book_ids": book_ids},
         action=_do,
     )
@@ -397,11 +389,9 @@ def reclassify_book(
             "classification": classification_payload(job),
         }
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
         payload={"book_id": book_id, "resume": resume, "mode": mode},
         action=_do,
         after_commit=dispatch_response_job,
@@ -437,11 +427,9 @@ def cancel_book_classification(
             "finished": job.state == "cancelled",
         }
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}/classification/cancel",
         payload={"book_id": book_id},
         action=_do,
     )

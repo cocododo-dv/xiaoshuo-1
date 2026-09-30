@@ -15,6 +15,7 @@ from novel_system.api.app import create_app
 from novel_system.db.models import StyleReferenceProfile
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.support.api_client import AutoKeyTestClient
 
 
 SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心情,字数足以触发分段。
@@ -39,7 +40,7 @@ from tests.style_reference_route_helpers import (  # noqa: E402
 
 
 def test_legacy_reference_books_routes_are_never_exposed() -> None:
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         paths = {getattr(route, "path", "") for route in client.app.routes}
 
     assert "/api/v1/reference-books" not in paths

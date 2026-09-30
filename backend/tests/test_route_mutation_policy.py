@@ -6,16 +6,14 @@ from pathlib import Path
 
 ROUTES_DIR = Path(__file__).resolve().parents[1] / "src" / "novel_system" / "api" / "routes"
 MUTATION_METHODS = {"post", "put", "patch", "delete"}
-# Route handlers must go through the two shared wrappers in api/mutations.py:
-# - idempotent_response: X-Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED when missing)
-# - optional_idempotent_response: keyed calls replay durably, unkeyed legacy calls execute once
-# Raw execute_with_idempotency / execute_with_optional_idempotency calls and
-# per-file copies (_with_idem, _mutation_response aliases) were migrated away
-# and must not reappear in route files.
-IDEMPOTENCY_BOUNDARIES = {
-    "idempotent_response",
-    "optional_idempotent_response",
-}
+# Route handlers must go through the one shared wrapper in api/mutations.py:
+# - mutate: X-Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED when missing); method and path
+#   template come from the matched route, never from a hand-copied literal.
+# The optional-key shim (optional_idempotent_response / execute_with_optional_idempotency) was deleted
+# (B12-05 / B09-26): the React client and every smoke send a key on each mutation. Raw
+# execute_with_idempotency calls and per-file copies (_with_idem, _mutation_response aliases) must not
+# reappear in route files.
+IDEMPOTENCY_BOUNDARIES = {"mutate"}
 READ_ONLY_POST_EXEMPTIONS = {
     ("style_reference/profiles.py", "dryrun_injection_preview"),
 }
@@ -89,4 +87,15 @@ def test_route_handlers_never_own_transactions_directly() -> None:
                     offenders.append(f"{_route_file_key(path)}:{node.lineno}:{node.name}")
                     break
 
+    assert offenders == []
+
+
+def test_route_files_do_not_hand_copy_method_or_path_template() -> None:
+    """``mutate`` takes both from ``request.scope["route"]``; a hand-copied literal can only drift."""
+    offenders: list[str] = []
+    for path in _route_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and any(kw.arg in {"path_template", "method"} for kw in node.keywords):
+                offenders.append(f"{_route_file_key(path)}:{node.lineno}")
     assert offenders == []

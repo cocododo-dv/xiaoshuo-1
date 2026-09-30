@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from novel_system.api.app import create_app
@@ -48,6 +47,7 @@ from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
 import pytest as _pytest_ap
 from tests.real_llm_fakes import install_online_pipeline as _install_online_pipeline
+from tests.support.api_client import AutoKeyTestClient
 
 
 @_pytest_ap.fixture(autouse=True)
@@ -1388,7 +1388,7 @@ def test_concurrent_three_dimensional_topups_are_atomic_and_each_audited_once(se
     # metadata during application assembly.  Creating both apps inside worker
     # threads races FastAPI/Pydantic field cloning and emits a spurious
     # UnsupportedFieldAttributeWarning unrelated to the budget contract.
-    with TestClient(create_app()) as first_client, TestClient(create_app()) as second_client:
+    with AutoKeyTestClient(create_app()) as first_client, AutoKeyTestClient(create_app()) as second_client:
         worker_clients = (first_client, second_client)
         with ThreadPoolExecutor(max_workers=2) as pool:
             outcomes = list(pool.map(topup, (1, 2)))

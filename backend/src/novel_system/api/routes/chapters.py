@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.requests.chapters import ChapterIdsRequest, ChapterSceneOrderRequest, ChapterUpsertRequest
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.response import respond
 from novel_system.services.author_lifecycle import AuthorLifecycleService
@@ -35,11 +35,9 @@ def create_chapter(
     body["writer_brief_json"] = normalize_chapter_writer_brief(
         body.get("writer_brief_json")
     )
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/chapters",
         payload=body,
         action=lambda: upsert_chapter(session, body),
     )
@@ -49,11 +47,9 @@ def create_chapter(
 def trash_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
     body = payload.model_dump(mode="json")
     actor_ref = actor_ref_of(request)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/chapters/trash",
         payload=body,
         action=lambda: AuthorLifecycleService(session).trash_chapters(body["chapter_ids"], actor_ref),
     )
@@ -67,11 +63,9 @@ def run_chapter_full(
     session: Session = Depends(get_session),
 ):
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/chapters/{chapter_id}/run/full",
         payload={"chapter_id": chapter_id},
         action=lambda lease: ChapterRunnerService(session).run_full(chapter_id, request_lease=lease),
     )
@@ -92,11 +86,9 @@ def reorder_chapter_scenes(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/chapters/{chapter_id}/scene-order",
         payload={"chapter_id": chapter_id, **body},
         action=lambda: CatalogService(session).reorder_scenes(chapter_id, body),
     )

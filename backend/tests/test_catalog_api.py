@@ -277,7 +277,7 @@ def test_draft_save_updates_scene_words_and_returns_rollup(client, session):
     assert tree["chapters"][0]["scenes"][0]["words"] == 19
 
 
-def test_create_chapter_idempotency_contract(client):
+def test_create_chapter_idempotency_contract(client, raw_client):
     """FE-ALIGN 修复：目录创建端点必须兑现幂等键（重放同响应、缺键 400、换载荷 409）。"""
     project = _create_project(client)
     pid = project["project_id"]
@@ -300,7 +300,7 @@ def test_create_chapter_idempotency_contract(client):
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     assert sum(1 for ch in tree["chapters"] if ch["title"] == "幂等章") == 1
 
-    missing = client.post(f"/api/v2/projects/{pid}/catalog/chapters", json={"title": "无键章"})
+    missing = raw_client.post(f"/api/v2/projects/{pid}/catalog/chapters", json={"title": "无键章"})
     assert missing.status_code == 400
     assert missing.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 

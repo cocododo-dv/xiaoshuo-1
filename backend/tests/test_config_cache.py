@@ -31,6 +31,7 @@ from novel_system.services.prompt_builder import (
     reset_prompt_template_cache,
 )
 from novel_system.services.system_config import SystemConfigService, validate_config
+from tests.support.api_client import AutoKeyTestClient
 
 
 REPO_CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -495,7 +496,7 @@ READ_PATHS = (
 
 def test_read_paths_never_reparse_config_and_never_write(monkeypatch) -> None:
     # 不进 lifespan：没有后台清扫线程，这段时间里库上的每一条语句都来自下面的请求
-    api = TestClient(create_app())
+    api = AutoKeyTestClient(create_app())
     _seed_scene(api)
     yaml_parses = _count_yaml_parses(monkeypatch)
     template_loads = _count_calls(monkeypatch, prompt_builder, "load_prompt_templates")

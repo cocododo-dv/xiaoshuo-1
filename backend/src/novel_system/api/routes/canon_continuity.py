@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.canon_continuity import (
     FactCandidateDecisionRequest,
@@ -37,11 +37,9 @@ def create_manual_fact_candidate(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/projects/{project_id}/canon/scenes/{scene_id}/candidates",
         payload={"project_id": project_id, "scene_id": scene_id, **body},
         action=lambda: CanonContinuityService(session).create_manual_candidate(
             project_id,
@@ -60,11 +58,9 @@ def extract_scene_fact_candidates(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload is not None else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/projects/{project_id}/canon/scenes/{scene_id}/extract",
         payload={"project_id": project_id, "scene_id": scene_id, "body": body},
         action=lambda: CanonContinuityService(session).extract_scene_candidates(
             project_id,
@@ -83,11 +79,9 @@ def decide_fact_candidate(
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
     actor_ref = actor_ref_of(request)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/projects/{project_id}/canon/candidates/{candidate_id}/decision",
         payload={"project_id": project_id, "candidate_id": candidate_id, **body},
         action=lambda: CanonContinuityService(session).decide_candidate(
             project_id,
@@ -108,11 +102,9 @@ def verify_scene_canon(
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
     actor_ref = actor_ref_of(request)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/projects/{project_id}/canon/scenes/{scene_id}/verify",
         payload={"project_id": project_id, "scene_id": scene_id, **body},
         action=lambda: CanonContinuityService(session).verify_scene_complete(
             project_id,

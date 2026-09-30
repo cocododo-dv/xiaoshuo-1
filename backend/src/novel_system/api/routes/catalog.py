@@ -1,9 +1,7 @@
 """FE-ALIGN Phase 3: 目录 API（v2）—— 章节/场景树的唯一真相源。
 
-对应原型 WsCatalog（design/ws-catalog.jsx）；创建类端点（建章/建场景）经
-idempotent_response 兑现幂等键（必填 + 同键重放同响应）；PATCH 对旧调用方不强制键，
-但客户端给键时同样执行持久重放。删章 / 删场走 v1 的 ``/api/v1/{chapters,scenes}/trash``，
-恢复走 /api/v2/trash 统一回收站端点（这里的两个 DELETE 与 localStorage 一次性迁移用的 import 端点
+对应原型 WsCatalog（design/ws-catalog.jsx）；每个写接口都经 mutate 兑现幂等键（必填 + 同键重放同响应）。
+删章 / 删场走 v1 的 ``/api/v1/{chapters,scenes}/trash``，恢复走 /api/v2/trash 统一回收站端点（这里的两个 DELETE 与 localStorage 一次性迁移用的 import 端点
 没有界面调用，已删：批准 #24a / #25）。
 """
 from __future__ import annotations
@@ -19,7 +17,7 @@ from novel_system.api.requests.catalog import (
     ChapterOrderRequest,
 )
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import idempotent_response, optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.response import respond
 from novel_system.services.catalog import CatalogService
 
@@ -39,11 +37,9 @@ def create_catalog_chapter(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters",
         payload={"project_id": project_id, "body": body},
         action=lambda: CatalogService(session).create_chapter(project_id, body),
     )
@@ -58,11 +54,9 @@ def update_catalog_chapter(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: CatalogService(session).update_chapter(
             project_id, chapter_id, body, actor_ref=actor_ref_of(request)
@@ -78,11 +72,9 @@ def reorder_catalog_chapters(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapter-order",
         payload={"project_id": project_id, **body},
         action=lambda: CatalogService(session).reorder_chapters(
             project_id,
@@ -100,11 +92,9 @@ def create_catalog_scene(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/scenes",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: CatalogService(session).create_scene(project_id, chapter_id, body),
     )
@@ -119,11 +109,9 @@ def update_catalog_scene(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/catalog/scenes/{scene_id}",
         payload={"project_id": project_id, "scene_id": scene_id, "body": body},
         action=lambda: CatalogService(session).update_scene(project_id, scene_id, body),
     )

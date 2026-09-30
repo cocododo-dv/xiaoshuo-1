@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.projects import ProjectProfileUpdateRequest
 from novel_system.api.response import respond
 from novel_system.services.project_overview import ProjectOverviewService
@@ -26,11 +26,9 @@ def update_project_profile(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/profile",
         payload={"project_id": project_id, "body": body},
         action=lambda: ProjectService(session).update_profile(project_id, body),
     )

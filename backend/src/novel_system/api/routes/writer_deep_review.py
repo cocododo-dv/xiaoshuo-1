@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.writer_deep_review import (
     ChapterReviewRequest,
@@ -41,11 +41,9 @@ def save_scene_deep_review_preferences(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v1/scenes/{scene_id}/deep-review/preferences",
         payload={"scene_id": scene_id, "body": body},
         action=lambda: SceneDeepReviewPreferencesService(session).save(
             scene_id,
@@ -72,11 +70,9 @@ def run_scene_deep_review(
     session: Session = Depends(get_session),
 ):
     actor_ref = actor_ref_of(request)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/deep-review",
         payload={"scene_id": scene_id},
         action=lambda: WriterDeepReviewService(session).run_scene_review(scene_id, actor_ref=actor_ref),
     )
@@ -91,11 +87,9 @@ def run_scene_passage_review(
 ):
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/deep-review/passage",
         payload={"scene_id": scene_id, "body": body},
         action=lambda: WriterDeepReviewService(session).run_passage_review(
             scene_id,
@@ -153,11 +147,9 @@ def run_chapter_deep_review(
 ):
     actor_ref = actor_ref_of(request)
     scope = (payload.scope if payload is not None else None) or "all"
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/chapters/{chapter_id}/deep-review",
         payload={"chapter_id": chapter_id, "scope": scope},
         action=lambda: WriterDeepReviewService(session).run_chapter_review(chapter_id, actor_ref=actor_ref, scope=scope),
     )
@@ -171,11 +163,9 @@ def create_passage_patch_candidate(
 ):
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/passages/patch-candidates",
         payload=body,
         action=lambda: WriterDeepReviewService(session).create_patch_candidate(body, actor_ref=actor_ref),
     )
@@ -190,11 +180,9 @@ def accept_passage_patch_candidate(
 ):
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/passage-patch-candidates/{patch_id}/accept",
         payload={"patch_id": patch_id, "body": body},
         action=lambda: WriterDeepReviewService(session).accept_patch_candidate(
             patch_id, body, actor_ref=actor_ref
@@ -211,11 +199,9 @@ def reject_passage_patch_candidate(
 ):
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/passage-patch-candidates/{patch_id}/reject",
         payload={"patch_id": patch_id, "body": body},
         action=lambda: WriterDeepReviewService(session).reject_patch_candidate(
             patch_id, body, actor_ref=actor_ref

@@ -9,7 +9,7 @@ from novel_system.api.requests.author_drafts import (
     ProposalGenerateSetRequest,
 )
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import idempotent_response, optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.response import respond
 from novel_system.services.author_drafts import AuthorDraftService
@@ -33,11 +33,9 @@ def ensure_author_draft(
     session: Session = Depends(get_session),
 ):
     actor_ref = actor_ref_of(request)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/author-drafts/{object_type}/{object_id}/ensure",
         payload={"object_type": object_type, "object_id": object_id},
         action=lambda: AuthorDraftService(session).ensure(object_type, object_id, actor_ref=actor_ref),
     )
@@ -52,11 +50,9 @@ def save_author_draft(
 ):
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v1/author-drafts/{draft_id}",
         payload={"draft_id": draft_id, "body": body},
         action=lambda: AuthorDraftService(session).save(draft_id, body, actor_ref=actor_ref),
     )
@@ -78,11 +74,9 @@ def promote_author_draft_canonical(
 
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/author-drafts/{draft_id}/promote-canonical",
         payload={"draft_id": draft_id, **body},
         action=lambda: CanonicalSceneService(session).promote_author_draft(
             draft_id,
@@ -123,11 +117,9 @@ def generate_author_draft_proposal_set(
 ):
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/author-drafts/{draft_id}/proposals/generate-set",
         payload={"draft_id": draft_id, "body": body},
         action=lambda: AuthorDraftService(session).generate_proposal_set(draft_id, body, actor_ref=actor_ref),
     )

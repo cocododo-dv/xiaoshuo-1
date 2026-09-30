@@ -30,11 +30,38 @@ def chapter_payload(goal: str) -> dict:
     }
 
 
-def test_post_requires_idempotency_header(client) -> None:
-    response = client.post("/api/v1/chapters", json=chapter_payload("目标一"))
+def test_post_requires_idempotency_header(raw_client) -> None:
+    response = raw_client.post("/api/v1/chapters", json=chapter_payload("目标一"))
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+
+def test_request_identity_comes_from_the_matched_route_template(client, session) -> None:
+    """mutate() 用这次请求匹配到的路由模板（不是具体 URL、也不再手抄）算请求哈希：与以前各路由手抄的字面量一致，
+    既有的幂等记录照旧重放。执行失败的请求也先记下了 idempotency_started。"""
+    response = client.patch(
+        "/api/v2/projects/missing-project-7/profile",
+        json={"title": "改名"},
+        headers={"X-Idempotency-Key": "route-template-probe"},
+    )
+    assert response.status_code == 404
+
+    started = session.execute(
+        select(OperationLog).where(
+            OperationLog.event_type == "idempotency_started",
+            OperationLog.object_ref == "route-template-probe",
+        )
+    ).scalar_one()
+    assert started.payload_json["request_method"] == "PATCH"
+    assert started.payload_json["request_path_template"] == "/api/v2/projects/{project_id}/profile"
+    record = session.get(IdempotencyKey, "route-template-probe")
+    assert record.status == "failed"
+    assert record.request_hash == canonical_request_hash(
+        "PATCH",
+        "/api/v2/projects/{project_id}/profile",
+        {"project_id": "missing-project-7", "body": {"title": "改名"}},
+    )
 
 
 def test_same_key_same_payload_is_replayed(client) -> None:

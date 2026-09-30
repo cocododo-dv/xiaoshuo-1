@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import idempotent_response, optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import INT64_MAX, EmptyRequest
 from novel_system.api.requests.scenes import (
     AdoptCurrentRequest,
@@ -106,11 +106,9 @@ def save_scene_author_notes(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v1/scenes/{scene_id}/author-notes",
         payload={"scene_id": scene_id, "body": body},
         action=lambda: SceneNotesService(session).save(
             scene_id,
@@ -126,11 +124,9 @@ def trash_scenes(
 ):
     body = payload.model_dump(mode="json")
     actor_ref = actor_ref_of(request)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/trash",
         payload=body,
         action=lambda: AuthorLifecycleService(session).trash_scenes(
             body["scene_ids"], actor_ref
@@ -150,11 +146,9 @@ def create_scene(
     body["writer_brief_json"] = normalize_scene_writer_brief(
         body.get("writer_brief_json")
     )
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes",
         payload=body,
         action=lambda: _create_scene(session, body),
     )
@@ -346,11 +340,9 @@ def run_scene(
     author_note = normalize_author_note(body.get("author_note"))
     # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict；列属 Wave 3）
     run_policy = _parse_run_policy(body)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/run/full",
         payload={
             "scene_id": scene_id,
             **({"author_note": author_note} if author_note else {}),
@@ -432,11 +424,9 @@ def create_scene_run_job(
             job_to_start = job.job_id
         return service.serialize_job(job)
 
-    response = optional_idempotent_response(
+    response = mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/run/jobs",
         payload={"scene_id": scene_id, "start": start, "body": body},
         action=create_job,
     )
@@ -470,11 +460,9 @@ def cancel_run_job(
         )
         return service.serialize_job(job)
 
-    response = optional_idempotent_response(
+    response = mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/run-jobs/{job_id}/cancel",
         payload={"job_id": job_id, "body": body},
         action=cancel,
     )
@@ -855,11 +843,9 @@ def select_style_candidate(
             "message": "Candidate selected for human terminal review",
         }
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select",
         payload={"scene_id": scene_id, "row_id": row_id, **body},
         action=lambda: _select(session),
     )
@@ -874,11 +860,9 @@ def resume_after_selection(
 ):
     """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。"""
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/resume-after-selection",
         payload={"scene_id": scene_id},
         action=lambda lease: Orchestrator(session).resume_after_selection(
             scene_id,
@@ -934,11 +918,9 @@ def topup_scene_budget(
             actor_ref=actor_ref,
         )
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/budget/topup",
         payload={
             "scene_id": scene_id,
             "extra_tokens": extra_tokens,
@@ -1320,11 +1302,9 @@ def adopt_current_scene(
             "author_state": compute_author_state(session, scene_id, state),
         }
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/adopt-current",
         payload={"scene_id": scene_id, **body},
         action=lambda: _adopt(session),
     )

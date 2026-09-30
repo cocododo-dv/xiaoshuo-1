@@ -4,7 +4,6 @@ from pathlib import Path
 
 import httpx
 import yaml
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from novel_system.env_config import DEFAULT_PROVIDER_ATTEMPT_BUDGET
@@ -15,6 +14,7 @@ from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.system_config import SystemConfigService, load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
+from tests.support.api_client import AutoKeyTestClient
 
 
 ADMIN_HEADERS = {"X-Admin-Token": "admin-token", "X-Operator-Ref": "ops.config"}
@@ -266,7 +266,7 @@ def test_system_config_local_setup_mode_allows_loopback_writes_without_admin_tok
     monkeypatch.delenv("NOVEL_SYSTEM_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
-    with TestClient(create_app(), client=("127.0.0.1", 50000)) as local_client:
+    with AutoKeyTestClient(create_app(), client=("127.0.0.1", 50000)) as local_client:
         response = local_client.post(
             "/api/v1/system-config/llm/providers",
             json={
@@ -292,7 +292,7 @@ def test_no_key_local_provider_is_an_enabled_runtime_provider(monkeypatch) -> No
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
 
-    with TestClient(create_app(), client=("127.0.0.1", 50000)) as local_client:
+    with AutoKeyTestClient(create_app(), client=("127.0.0.1", 50000)) as local_client:
         response = local_client.post(
             "/api/v1/system-config/llm/providers",
             json={
@@ -520,7 +520,7 @@ def test_system_config_local_setup_mode_rejects_non_loopback_writes(monkeypatch)
     monkeypatch.delenv("NOVEL_SYSTEM_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
-    with TestClient(create_app(), client=("192.0.2.42", 50000)) as remote_client:
+    with AutoKeyTestClient(create_app(), client=("192.0.2.42", 50000)) as remote_client:
         response = remote_client.post(
             "/api/v1/system-config/llm/providers",
             json={

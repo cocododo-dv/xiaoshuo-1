@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.response import respond
 from novel_system.services.trash import TrashService
@@ -26,11 +26,9 @@ def trash_project(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template="/api/v2/projects/{project_id}",
         payload={"project_id": project_id},
         action=lambda: TrashService(session).trash_project(project_id, actor_ref=actor_ref_of(request)),
     )
@@ -48,11 +46,9 @@ def restore_trash_entry(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/trash/{entry_id}/restore",
         payload={"entry_id": entry_id},
         action=lambda: TrashService(session).restore_entry(entry_id, actor_ref=actor_ref_of(request)),
     )
@@ -65,11 +61,9 @@ def purge_trash_entry(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template="/api/v2/trash/{entry_id}",
         payload={"entry_id": entry_id},
         action=lambda: TrashService(session).purge_entry(entry_id),
     )

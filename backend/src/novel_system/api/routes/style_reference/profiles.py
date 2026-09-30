@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.style_reference import BannedTermCreateRequest, CardLineStateRequest
 from novel_system.api.response import respond
@@ -73,11 +73,9 @@ def set_profile_card_line_state(
     def _do() -> dict[str, Any]:
         return set_card_line_state(session, profile_id, line_id, state)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}",
         payload={"profile_id": profile_id, "line_id": line_id, "state": state},
         action=_do,
     )
@@ -115,11 +113,9 @@ def create_banned_term(
             session, profile_id, term=term_text, scope=scope, replacement_hint=payload.replacement_hint
         )
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms",
         payload={
             "profile_id": profile_id,
             "term": term_text,
@@ -142,11 +138,9 @@ def delete_banned_term(
     def _do() -> dict[str, Any]:
         return banned_terms.delete_banned_term(session, term_id)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template=f"{PATH_PREFIX}/banned-terms/{{term_id}}",
         payload={"term_id": term_id},
         action=_do,
     )

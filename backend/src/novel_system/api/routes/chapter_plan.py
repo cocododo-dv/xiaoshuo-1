@@ -19,7 +19,7 @@ from novel_system.api.requests.chapter_plan import (
     ChapterPlanFillRequest,
 )
 from novel_system.api.deps import actor_ref_of, get_session
-from novel_system.api.mutations import idempotent_response, optional_idempotent_response
+from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import respond
 from novel_system.services.chapter_plan_llm import ChapterPlanService
@@ -47,11 +47,9 @@ def put_chapter_architecture(
     session: Session = Depends(get_session),
 ):
     body = payload or {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PUT",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).put_architecture(
             project_id,
@@ -71,11 +69,9 @@ def generate_chapter_architecture(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload else {}
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture/generate",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).generate_architecture(
             project_id,
@@ -94,11 +90,9 @@ def chapter_plan_candidates(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/candidates",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).candidates(project_id, chapter_id, body),
     )
@@ -113,11 +107,9 @@ def chapter_plan_fill(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/fill",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).fill(project_id, chapter_id, body),
     )
@@ -132,11 +124,9 @@ def chapter_plan_review(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/review",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).review(project_id, chapter_id),
     )
@@ -163,11 +153,9 @@ def chapter_plan_apply(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).apply(
             project_id,
