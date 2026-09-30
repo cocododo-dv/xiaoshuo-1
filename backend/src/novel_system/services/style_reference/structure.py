@@ -34,10 +34,7 @@ from novel_system.services.style_reference.text_utils import (
     is_scene_break_paragraph,
 )
 from novel_system.services.style_reference.untrusted_data import secure_reference_block
-from novel_system.services.style_reference.validation.plagiarism import (
-    check_plagiarism,
-    normalize_text_for_matching,
-)
+from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
 from novel_system.services.value_coercion import quantile
 
 # 2026-09-22 结构跟随参考书:v2 多了 ``chapter_titles``(章题形态与题名样例);旧画像缺键时
@@ -115,9 +112,6 @@ _PLANNING_SUB_DIMENSIONS: tuple[tuple[str, str], ...] = (
 _PLANNING_PREFIXES = ("scene.", "theme.")
 _CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0}
 _STATUS_RANK = {"approved": 1, "pending": 0}
-# 原文重合过滤口径（6-gram / 8 字；文风卡行在学习作业里另按 12 字连续重合过滤）。
-_OVERLAP_NGRAM = 6
-_OVERLAP_THRESHOLD_CHARS = 8
 # 人称判定阈值与 voice_signature.render_voice_habits §12 一致。
 _PERSON_FIRST_MIN = 0.55
 _PERSON_THIRD_MIN = 0.6
@@ -911,24 +905,6 @@ def render_structure_card_parts(
 # ---------------------------------------------------------------------------
 
 
-def _default_overlap_filter(corpus_texts: Sequence[str]) -> Callable[[str], bool]:
-    corpus = [text for text in (str(item or "") for item in corpus_texts) if text.strip()]
-    if not corpus:
-        return lambda _text: False
-
-    def _overlaps(text: str) -> bool:
-        if not text.strip():
-            return False
-        return not check_plagiarism(
-            text,
-            corpus,
-            ngram_size=_OVERLAP_NGRAM,
-            threshold_chars=_OVERLAP_THRESHOLD_CHARS,
-        ).passed
-
-    return _overlaps
-
-
 def _planning_label(sub_dimension: str) -> str | None:
     for key, label in _PLANNING_SUB_DIMENSIONS:
         if sub_dimension == key:
@@ -941,18 +917,15 @@ def _planning_label(sub_dimension: str) -> str | None:
 def derive_planning_guidance(
     findings: Iterable[Any],
     *,
-    corpus_texts: Sequence[str] = (),
-    overlap_filter: Callable[[str], bool] | None = None,
+    overlap_filter: Callable[[str], bool],
     max_lines: int = PLANNING_GUIDANCE_MAX_LINES,
 ) -> list[str]:
     """scene.* / theme.* 的 observation 陈述 → ≤``max_lines`` 行「标签：陈述」。
 
     跨子维度轮转取样（每个子维度先各出最可信的一条，再出第二条 …），避免一个子维度
-    独占全部名额；被驳回的 finding 不收；``overlap_filter``（缺省按 6-gram / 8 字对
-    ``corpus_texts`` 做原文重合过滤）命中的陈述丢弃；按规范化文本去重。
+    独占全部名额；被驳回的 finding 不收；``overlap_filter`` 命中的陈述丢弃（学习作业传原文重合
+    + 受保护专名的判定）；按规范化文本去重。
     """
-    if overlap_filter is None:
-        overlap_filter = _default_overlap_filter(corpus_texts)
     buckets: dict[str, list[tuple[tuple[int, int, int], str]]] = {}
     for order, finding in enumerate(findings):
         if str(_field(finding, "finding_kind", "") or "") != "observation":

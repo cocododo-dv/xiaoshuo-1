@@ -5,10 +5,15 @@
 
 from __future__ import annotations
 
+import random
 import time
 
+import pytest
+
 from novel_system.services.style_reference.validation.plagiarism import (
+    BookNgramIndex,
     check_plagiarism,
+    normalize_text_for_matching,
 )
 
 
@@ -65,3 +70,78 @@ def test_plagiarism_performance_50k_quote() -> None:
     assert elapsed < 200.0, f"plagiarism scan 耗时 {elapsed:.1f}ms 超过软线 200ms"
     # 不论 passed 与否,关键是性能
     assert isinstance(report.passed, bool)
+
+
+# ---------------------------------------------------------------- BookNgramIndex（一本书一份的 t 字元索引）
+
+
+def _random_case(seed: int, *, threshold: int) -> tuple[list[str], list[str]]:
+    """小字母表的随机「书」与随机检查行：一半从书里截（长短跨过门槛），一半随机拼，另加标点 / 空白 / 空行。"""
+    rng = random.Random(seed)
+    alphabet = "的一是在不了有和人这中大为上个国我以要他时来用们"
+    corpus = ["".join(rng.choice(alphabet) for _ in range(rng.randint(30, 80))) for _ in range(40)]
+    # 书里的标点 / 空白同样在规范化时去掉：隔几段插一个
+    corpus = [text[:9] + "，" + text[9:15] + " " + text[15:] if n % 4 == 0 else text for n, text in enumerate(corpus)]
+    corpus.append("")  # 空段不进索引
+    lines: list[str] = []
+    for _ in range(150):
+        if rng.random() < 0.5:
+            src = rng.choice([text for text in corpus if text])
+            start = rng.randint(0, len(src) - threshold - 4)
+            piece = src[start : start + rng.randint(threshold - 3, threshold + 4)]
+            # 插空格 / 换标点：规范化之后仍是原文
+            if rng.random() < 0.3 and len(piece) > 4:
+                piece = piece[:2] + "，" + piece[2:4] + " " + piece[4:]
+            lines.append(piece)
+        else:
+            lines.append("".join(rng.choice(alphabet) for _ in range(rng.randint(5, 30))))
+    lines.extend(["，。！", "", "   ", "他，的 一 是"])
+    return corpus, lines
+
+
+def _brute_force_spans(normalized: str, corpus: list[str], threshold: int) -> list[tuple[int, int]]:
+    """定义本身：被检查文字里每个 t 字元只要是某段（规范化后）的子串就算命中，命中窗口的并集合并成区间。"""
+    norms = [normalize_text_for_matching(text) for text in corpus if text]
+    spans: list[list[int]] = []
+    for start in range(len(normalized) - threshold + 1):
+        gram = normalized[start : start + threshold]
+        if not any(gram in norm for norm in norms):
+            continue
+        if spans and start <= spans[-1][1]:
+            spans[-1][1] = start + threshold
+        else:
+            spans.append([start, start + threshold])
+    return [(begin, end) for begin, end in spans]
+
+
+@pytest.mark.parametrize("seed", [7, 11, 2026])
+@pytest.mark.parametrize("threshold, ngram_size", [(8, 6), (12, 8)])
+def test_book_ngram_index_matches_check_plagiarism_exactly(seed: int, threshold: int, ngram_size: int) -> None:
+    corpus, lines = _random_case(seed, threshold=threshold)
+    index = BookNgramIndex(corpus, threshold_chars=threshold)
+    assert index.paragraph_count == 40 and len(index.hashes) > 0
+    positives = 0
+    for line in lines:
+        expected = not check_plagiarism(line, corpus, ngram_size=ngram_size, threshold_chars=threshold).passed
+        assert index.overlaps(line) is expected, line
+        normalized = normalize_text_for_matching(line)
+        spans = index.overlap_spans(normalized)
+        assert spans == _brute_force_spans(normalized, corpus, threshold), line
+        assert bool(spans) is expected, line
+        positives += int(expected)
+    assert 0 < positives < len(lines)
+
+
+def test_book_ngram_index_edges() -> None:
+    assert BookNgramIndex([], threshold_chars=8).overlaps("随便一行，足够长的一行字") is False
+    index = BookNgramIndex(["甲乙丙丁戊己庚辛壬癸子丑"], threshold_chars=12)
+    assert index.overlaps("前缀甲乙丙丁戊己庚辛壬癸子丑后缀") is True
+    assert index.overlaps("甲乙丙丁戊己庚辛壬癸子") is False  # 11 字不到门槛
+    assert index.overlaps("") is False and index.overlaps("   ") is False
+    # 段与段之间不会拼出假命中：两段各 6 字，连起来的 12 字不算
+    split = BookNgramIndex(["甲乙丙丁戊己", "庚辛壬癸子丑"], threshold_chars=12)
+    assert split.overlaps("甲乙丙丁戊己庚辛壬癸子丑") is False
+    assert split.contains("甲乙丙丁戊己庚辛壬癸子丑") is False
+    # 抄袭门按书标命中：book_id 只是标签，缺省为空
+    assert index.book_id is None
+    assert BookNgramIndex(["甲乙丙丁戊己庚辛壬癸子丑"], book_id="book-1").book_id == "book-1"

@@ -151,7 +151,7 @@ from novel_system.services.style_reference.structure import (
     render_structure_card_parts,
 )
 from novel_system.services.style_reference.tags import TAGS_VERSION
-from novel_system.services.style_reference.validation.plagiarism import CorpusOverlapIndex
+from novel_system.services.style_reference.validation.plagiarism import BookNgramIndex
 from novel_system.services.style_reference.voice_signature import (
     VOICE_SIGNATURE_VERSION,
     compute_voice_signature,
@@ -1386,7 +1386,7 @@ class _LearnRun(JobRun):
         run_id = str(self.cursor.get("run_id") or "")
         book = self.book()
         texts = [t for t in self._body_texts() if non_body_kind(t) is None]
-        overlap = CorpusOverlapIndex(texts, threshold_chars=12)
+        overlap = BookNgramIndex(texts, threshold_chars=12)
         # 作者给这份画像录入的禁用词(任何域)同样不能进卡片:画像已存在时一并过滤
         target_id = str(self.params.get("profile_id") or self.claimed.profile_id or "") or None
         # 作者在画像里删掉过的自动专名(多半是误收的日常词):不再当专名、不再滤卡片、不再加回禁用词表
@@ -1409,7 +1409,7 @@ class _LearnRun(JobRun):
         assembly, filtered = filter_card(
             CardAssembly.from_cursor(self.cursor.get("card") or {}),
             protected=[t.term for t in protected] + author_terms,
-            overlaps=lambda text: overlap.contains_overlap(text, ngram_size=8),
+            overlaps=overlap.overlaps,
         )
         if assembly.card is None or not assembly.card.all_lines():
             # 重新学习是就地更新:一张空卡会把作者正在用的画像冲掉——宁可失败,画像原样不动
@@ -1439,8 +1439,7 @@ class _LearnRun(JobRun):
                     }
                     for f in findings
                 ],
-                overlap_filter=lambda text: overlap.contains_overlap(text, ngram_size=8)
-                or any(t.term in text for t in protected),
+                overlap_filter=lambda text: overlap.overlaps(text) or any(t.term in text for t in protected),
             )
         sub_dimensions = sub_dimension_summary(self.session, run_id)
         index_state = dict(self.cursor.get("index") or {})

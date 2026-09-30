@@ -4,8 +4,8 @@
 - 活动清单只列作业表条目(``job:<id>``,kind ∈ classify / learn / check):学习文风作业的七步进度、分类作业
   (导入 / 重新分类)、对照检查作业同形列出;旧抽取 run、旧回测报告、进程内登记簿与给旧前端的别名条目都没有;
 - 导入 / 重新分类的响应带 ``job_id``,分类过程中与跑完之后都能在清单里按 ``job:<id>`` 读到进度,请求在建作业
-  之前就失败时没有条目;旧的 ``GET …/imports/{key}/progress`` 轮询已删除;
-- 源文重合过滤的 n-gram 索引与逐行 ``check_plagiarism`` 判定完全一致。
+  之前就失败时没有条目;旧的 ``GET …/imports/{key}/progress`` 轮询已删除。
+(源文重合过滤的 n-gram 索引与逐行 ``check_plagiarism`` 的等价见 test_style_reference_validation_plagiarism.py。)
 (学习作业本身见 test_style_reference_learn_job.py。)
 """
 
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import io
 import json
-import random
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,45 +23,10 @@ from sqlalchemy import select
 from novel_system.db.models import StyleReferenceJob, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.validation.plagiarism import (
-    CorpusOverlapIndex,
-    check_plagiarism,
-)
 from tests.style_reference_route_helpers import fake_import_llm, install_fake_classifier, wait_book_status
 from tests.test_style_reference_routes import _import_book, _seed_full_chain
 
 PREFIX = "/api/v2/style-reference"
-
-
-# ---------------------------------------------------------------- overlap index
-
-
-def test_corpus_overlap_index_matches_check_plagiarism_exactly() -> None:
-    rng = random.Random(7)
-    alphabet = "的一是在不了有和人这中大为上个国我以要他时来用们"
-    corpus = [
-        "".join(rng.choice(alphabet) for _ in range(rng.randint(30, 80))) for _ in range(40)
-    ]
-    index = CorpusOverlapIndex(corpus, threshold_chars=8)
-    lines: list[str] = []
-    for _ in range(150):
-        if rng.random() < 0.5:
-            src = rng.choice(corpus)
-            start = rng.randint(0, len(src) - 12)
-            lines.append(src[start : start + rng.randint(6, 12)])
-        else:
-            lines.append("".join(rng.choice(alphabet) for _ in range(rng.randint(5, 20))))
-    lines.extend(["，。！", "", "他，的 一 是"])
-    positives = 0
-    for line in lines:
-        expected = not check_plagiarism(line, corpus, ngram_size=6, threshold_chars=8).passed
-        assert index.contains_overlap(line, ngram_size=6) is expected, line
-        if not index.may_overlap(line):
-            assert expected is False
-        positives += int(expected)
-    assert positives > 0 and positives < len(lines)
-    assert index.ngram_count > 0
-    assert CorpusOverlapIndex([], threshold_chars=8).contains_overlap("随便一行") is False
 
 
 # ---------------------------------------------------------------- activity endpoint

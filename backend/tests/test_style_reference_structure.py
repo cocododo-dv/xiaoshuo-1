@@ -39,6 +39,7 @@ from novel_system.services.style_reference.structure import (
     render_structure_card_parts,
 )
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
+from novel_system.services.style_reference.validation.plagiarism import BookNgramIndex
 
 GOLDEN_CORPUS = (
     Path(__file__).resolve().parent / "golden" / "style_reference" / "corpus" / "luxun_short_stories.txt"
@@ -340,7 +341,9 @@ def test_planning_guidance_derivation_round_robins_and_filters() -> None:
         _Finding("scene.sensory_priority", "她把灯芯拨小，屋里暗下去一半，谁也没有说话"),  # 原文重合
         _Finding("theme.motifs", "对白短促，常以反问收束"),  # 与对白行重复
     ]
-    lines = derive_planning_guidance(findings, corpus_texts=corpus)
+    # 原文重合过滤按 8 字连续重合（与 check_plagiarism(ngram_size=6, threshold_chars=8) 同值）
+    overlap = BookNgramIndex(corpus, threshold_chars=8)
+    lines = derive_planning_guidance(findings, overlap_filter=overlap.overlaps)
     assert lines == [
         "对白：对白短促，常以反问收束",
         "环境：环境只在情绪转折处出现",
@@ -349,8 +352,8 @@ def test_planning_guidance_derivation_round_robins_and_filters() -> None:
         "对白：对白后常接一段沉默",
     ]
     many = [_Finding("scene.dialogue", f"对白手法 {index}") for index in range(20)]
-    assert len(derive_planning_guidance(many)) == PLANNING_GUIDANCE_MAX_LINES
-    assert derive_planning_guidance([_Finding("language.vocabulary", "只有语言层")]) == []
+    assert len(derive_planning_guidance(many, overlap_filter=overlap.overlaps)) == PLANNING_GUIDANCE_MAX_LINES
+    assert derive_planning_guidance([_Finding("language.vocabulary", "只有语言层")], overlap_filter=overlap.overlaps) == []
 
     rendered = render_planning_guidance({"planning_guidance": lines})
     assert rendered.startswith("[场景手法]")
