@@ -286,3 +286,92 @@ def test_moving_a_paragraph_boundary_is_a_new_findings_version(session, house_ta
     voice_second = next(item for item in second if item["dimension"] == "model_voice")
     assert voice_first["evidence"]["paragraph_index"] == 0
     assert voice_second["evidence"]["paragraph_index"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 5. 逐场的查询是批量的（B05-03 / X01-12）
+# ---------------------------------------------------------------------------
+
+
+def _seed_reviewed_scene(session, scene_id: str, seq: int) -> None:
+    from novel_system.db.models import WriterEvaluation
+
+    session.add(SceneCard(scene_id=scene_id, chapter_id=CHAPTER_ID, project_id=PROJECT_ID, scene_seq=seq, scene_goal="她开口。", beats_json=[]))
+    session.add(AuthorDraft(draft_id=f"draft_{scene_id}", object_type="scene", object_id=scene_id, source_text_ref=f"scene:{scene_id}", content=DRAFT_HTML, status="current"))
+    finding = {"dimension": "choice_pressure", "severity": "revision", "issue": "选择没有落成动作。", "recommendation": "让她动手。", "evidence_excerpt": "录音里传来三声钟响"}
+    for rubric, prefix in (("near_final_acceptance_v1", "nf"), ("literary_revision_v1", "ai")):
+        session.add(
+            WriterEvaluation(
+                evaluation_id=f"{prefix}_{scene_id}",
+                object_type="scene",
+                object_id=scene_id,
+                chapter_id=CHAPTER_ID,
+                scene_id=scene_id,
+                rubric_id=rubric,
+                source_text_ref=f"author_draft:draft_{scene_id}",
+                lens="aggregate",
+                findings_json=[finding],
+                status="completed",
+            )
+        )
+    session.add(
+        WriterEvaluation(
+            evaluation_id=f"lens_{scene_id}",
+            object_type="scene",
+            object_id=scene_id,
+            chapter_id=CHAPTER_ID,
+            scene_id=scene_id,
+            rubric_id="literary_revision_v1",
+            lens="story",
+            parent_evaluation_id=f"ai_{scene_id}",
+            findings_json=[],
+            status="completed",
+        )
+    )
+    session.add(
+        WriterEvaluation(
+            evaluation_id=f"passage_{scene_id}",
+            object_type="scene",
+            object_id=scene_id,
+            chapter_id=CHAPTER_ID,
+            scene_id=scene_id,
+            rubric_id="literary_revision_passage_v1",
+            source_text_ref=f"author_draft:draft_{scene_id}",
+            lens="passage",
+            findings_json=[finding],
+            contract_field_refs_json={"kind": "passage", "paragraph_index": 1, "focus_paragraphs": [1], "verdict": "holds"},
+            status="completed",
+        )
+    )
+
+
+def test_diagnosis_queries_do_not_grow_with_the_scene_count(client, session) -> None:
+    session.add(StoryProject(project_id=PROJECT_ID, title="诊断缓存", outline_text=""))
+    session.add(ChapterGoal(chapter_id=CHAPTER_ID, project_id=PROJECT_ID, planned_scene_count=8, chapter_goal="她必须决定。"))
+    for index in range(2):
+        _seed_reviewed_scene(session, f"{CHAPTER_ID}_SC{index + 1:02d}", index + 1)
+    session.commit()
+
+    def statements_for(path: str) -> tuple[int, dict]:
+        session.expire_all()
+        with _Statements(session) as statements:
+            response = client.get(path)
+        assert response.status_code == 200, response.json()
+        return len(statements.statements), response.json()["data"]
+
+    few_summary, summary = statements_for(f"/api/v1/projects/{PROJECT_ID}/diagnosis-summary")
+    few_scene, scene_payload = statements_for(f"/api/v1/scenes/{CHAPTER_ID}_SC01/deep-review")
+    assert summary["scenes"][f"{CHAPTER_ID}_SC01"]["open"] >= 3
+    assert scene_payload["review"]["status"] == "current" and scene_payload["ai"]["lenses"] == [{"lens": "story", "label": "故事", "overall_score": None}]
+    assert len(scene_payload["passage_reviews"]) == 1
+
+    for index in range(2, 8):
+        _seed_reviewed_scene(session, f"{CHAPTER_ID}_SC{index + 1:02d}", index + 1)
+    session.commit()
+    many_summary, summary = statements_for(f"/api/v1/projects/{PROJECT_ID}/diagnosis-summary")
+    many_scene, _ = statements_for(f"/api/v1/scenes/{CHAPTER_ID}_SC01/deep-review")
+    assert len(summary["scenes"]) == 8
+    # 多 6 场只多 6 条：每场的风格策略现解析（style_policy_live，一场一查）；草稿、终稿、评审行、局部深评、
+    # 镜头行、冻结正文都是整组一次（以前每场六七条）
+    assert many_summary - few_summary <= 6, (few_summary, many_summary)
+    assert many_scene - few_scene <= 6, (few_scene, many_scene)

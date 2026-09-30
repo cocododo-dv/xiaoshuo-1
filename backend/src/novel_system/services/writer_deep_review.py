@@ -445,9 +445,8 @@ class WriterDeepReviewService:
         )
         self.session.add(row)
         self.session.flush()
-        payload = diagnosis_service.diagnose_scene(scene)
+        payload = diagnosis_service.scene_payload(scene)
         payload["passage_review"] = serialize_passage_review(row, "current")
-        payload["diagnosis_rollup"] = diagnosis_service.scene_rollup(scene)
         return payload
 
     def create_patch_candidate(self, payload: dict[str, Any], actor_ref: str = "operator") -> dict[str, Any]:
