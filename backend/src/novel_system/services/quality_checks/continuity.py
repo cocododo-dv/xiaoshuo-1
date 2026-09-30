@@ -37,6 +37,30 @@ class ContinuityCheck:
     unavailable_error: str | None = None
 
 
+def event_log_violation_message(entity: str, fact_key: str, expected: str, actual: str) -> str:
+    """事件账本矛盾那条 issue 的说明。``entity`` 给作者看的是人物名（没有名字才是账本里的 id）。"""
+    return f"Event log contradiction: {entity}.{fact_key} expected '{expected}' but text suggests '{actual}'"
+
+
+def reference_message(issue: dict[str, Any]) -> str | None:
+    """事件账本矛盾的说明按账本 id 写的那一份；别的 issue → None。
+
+    质检从 issue 的说明里取词（证据位置、与场景卡的冲突、去重）；说明里的人物名是在指这个人物，不是质检要改的词——
+    取词仍按 id 算，与说明里印 id 的时候一样（名字多半写在场景卡上，按名字取词会凭空多出「场景卡冲突」，
+    把一条确定性的事实矛盾升级成人工复核，I1-R1(a)）。"""
+    if issue.get("issue_key") != EVENT_LOG_VIOLATION_KEY or issue.get("source") != "deterministic":
+        return None
+    details = issue.get("details")
+    if not isinstance(details, dict) or not details.get("entity_id"):
+        return None
+    return event_log_violation_message(
+        str(details["entity_id"]),
+        str(details.get("fact_key") or ""),
+        str(details.get("expected") or ""),
+        str(details.get("actual") or ""),
+    )
+
+
 def deterministic_continuity_issues(session: Session, scene: SceneCard, content: str) -> ContinuityCheck:
     issues: list[dict[str, Any]] = []
     listing = detect_mechanical_required_beat_listing(content=content, must_include_text=scene.must_include_text)
@@ -55,13 +79,18 @@ def deterministic_continuity_issues(session: Session, scene: SceneCard, content:
     issues.extend(
         {
             "issue_key": EVENT_LOG_VIOLATION_KEY,
-            "message": (
-                f"Event log contradiction: {violation.entity_id}.{violation.fact_key} "
-                f"expected '{violation.expected}' but text suggests '{violation.actual}'"
+            # 说明印人物名（批准#14：正史事实按人物名找、摘要显示名字）；账本 id 留在 details 里（分类器按它拼
+            # authority_ref）
+            "message": event_log_violation_message(
+                violation.entity_name or violation.entity_id,
+                violation.fact_key,
+                violation.expected,
+                violation.actual,
             ),
             "source": "deterministic",
             "details": {
                 "entity_id": violation.entity_id,
+                "entity_name": violation.entity_name or violation.entity_id,
                 "fact_key": violation.fact_key,
                 "expected": violation.expected,
                 "actual": violation.actual,
