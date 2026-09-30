@@ -21,28 +21,8 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ChapterGoal, SnowflakeChapterPlan, SnowflakeScenePlan
 from novel_system.services.author_actions import author_action
 from novel_system.services.scene_design_ownership import is_snowflake_origin
+from novel_system.services.snowflake_chapter_table import live_chapter_plans_by_catalog_id  # noqa: F401 — 目录服务从这里 import
 from novel_system.services.snowflake_scene_order import sort_in_story_order
-
-
-def live_chapter_plans_by_catalog_id(session: Session, project_id: str | None) -> dict[str, SnowflakeChapterPlan]:
-    """目录章 id → 钉着它的那一行章计划（没被软删的）。一个目录章至多被一行钉住（铸号规则保证）。"""
-    if not project_id:
-        return {}
-    rows = session.execute(
-        select(SnowflakeChapterPlan)
-        .where(
-            SnowflakeChapterPlan.project_id == project_id,
-            SnowflakeChapterPlan.removed_at.is_(None),
-            SnowflakeChapterPlan.catalog_chapter_id.is_not(None),
-        )
-        .order_by(SnowflakeChapterPlan.chapter_seq.asc(), SnowflakeChapterPlan.chapter_plan_id.asc())
-    ).scalars()
-    pinned: dict[str, SnowflakeChapterPlan] = {}
-    for row in rows:
-        chapter_id = str(row.catalog_chapter_id or "").strip()
-        if chapter_id and chapter_id not in pinned:
-            pinned[chapter_id] = row
-    return pinned
 
 
 def structure_owned_by_plan(

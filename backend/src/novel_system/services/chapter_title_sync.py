@@ -15,98 +15,21 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
-from novel_system.db.models import (
-    ChapterGoal,
-    OperationLog,
-    SnowflakeChapterPlan,
-    SnowflakeScenePlan,
-    SnowflakeStepRun,
+from novel_system.db.models import ChapterGoal, OperationLog, SnowflakeChapterPlan, SnowflakeScenePlan
+
+# 章名规则、活章表与 07 镜像的实现在章表叶子 snowflake_chapter_table（B07-05）；目录服务照旧从这里 import。
+from novel_system.services.snowflake_chapter_table import (  # noqa: F401
+    AUTO_TITLE_PATTERN,
+    PLACEHOLDER_TITLE_MARKERS,
+    is_auto_chapter_title,
+    live_chapter_plans,
+    mirror_chapters_into_long_synopsis,
 )
-
-# 「未命名」= 章节编排里把章名清空后落下的「未命名章节」：同样不是作者起的名字
-PLACEHOLDER_TITLE_MARKERS = ("待补", "TODO", "todo", "TBD", "tbd", "占位", "未命名")
-#: 系统起的占位章名「第 N 章」——它跟着章序走，不是作者的命名
-AUTO_TITLE_PATTERN = re.compile(r"^第\s*\d+\s*章$")
-
-
-def is_auto_chapter_title(title: Any) -> bool:
-    """章名是不是系统起的占位（空、「第 N 章」、「（待补）」一类）——AI 起章名只碰这些，作者起的名字不碰。"""
-    text = str(title or "").strip()
-    return (
-        not text
-        or bool(AUTO_TITLE_PATTERN.match(text))
-        or any(marker in text for marker in PLACEHOLDER_TITLE_MARKERS)
-    )
-
-
-def live_chapter_plans(session: Session, project_id: str) -> list[SnowflakeChapterPlan]:
-    return list(
-        session.execute(
-            select(SnowflakeChapterPlan)
-            .where(SnowflakeChapterPlan.project_id == project_id, SnowflakeChapterPlan.removed_at.is_(None))
-            .order_by(SnowflakeChapterPlan.chapter_seq.asc(), SnowflakeChapterPlan.row_uid.asc())
-        ).scalars()
-    )
-
-
-def mirror_chapters_into_long_synopsis(session: Session, project_id: str, chapters: list[SnowflakeChapterPlan]) -> None:
-    """把章表写回 07 最新草稿的 ``chapters``（带 row_uid），前端 07 表格与章表行才是同一份。
-
-    草稿里的 ``fe_scaffold.chapters`` 是前端写穿缓存，水合时**优先于**规范字段——只改 ``chapters``
-    的话，新浏览器看到的仍是旧章表（真实故障里是两行「（待补）」），下一次 07 上行还会把它们
-    当成作者的章表同步回来、把刚确认的分章冲掉。两处一起写。
-    """
-    run = session.execute(
-        select(SnowflakeStepRun)
-        .where(
-            SnowflakeStepRun.project_id == project_id,
-            SnowflakeStepRun.step_key == "long_synopsis",
-            SnowflakeStepRun.status != "superseded",
-        )
-        .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
-    ).scalars().first()
-    if run is None:
-        return
-    ordered = sorted(chapters, key=lambda row: (int(row.chapter_seq or 0), row.row_uid))
-    draft = dict(run.draft_json or {})
-    draft["chapters"] = [
-        {
-            "row_uid": row.row_uid,
-            "chapter_seq": row.chapter_seq,
-            "act": row.act,
-            "title": row.title or "",
-            "summary": row.summary or "",
-            "spine": row.spine or "",
-            "chapter_goal": row.chapter_goal or "",
-        }
-        for row in ordered
-    ]
-    scaffold = draft.get("fe_scaffold")
-    if isinstance(scaffold, dict):
-        draft["fe_scaffold"] = {
-            **scaffold,
-            "chapters": [
-                {
-                    "row_uid": row.row_uid,
-                    "id": f"{index:02d}",
-                    "act": min(max(int(row.act or 1), 1), 3),
-                    "title": row.title or "",
-                    "summary": row.summary or "",
-                    "spine": row.spine or "",
-                    "goal": row.chapter_goal or "",
-                }
-                for index, row in enumerate(ordered, start=1)
-            ],
-        }
-    run.draft_json = draft
-    flag_modified(run, "draft_json")
 
 
 def adopt_catalog_title(

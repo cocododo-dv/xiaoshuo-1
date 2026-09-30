@@ -51,6 +51,31 @@ def next_step_version(session: Session, model: type[StepRow], project_id: str, s
     return int(latest or 0) + 1
 
 
+def latest_step_run(
+    session: Session,
+    project_id: str,
+    step_key: str,
+    *,
+    statuses: tuple[str, ...] | None = None,
+) -> SnowflakeStepRun | None:
+    """The newest version of one step (highest ``version``, ties: later ``created_at``).
+
+    ``statuses`` limits the candidates (e.g. ``("approved", "stale")`` = the confirmed design); by default
+    anything that is not ``superseded`` counts — the same rule as :func:`latest_by_step`, for one step.
+    """
+    query = select(SnowflakeStepRun).where(
+        SnowflakeStepRun.project_id == project_id, SnowflakeStepRun.step_key == step_key
+    )
+    query = (
+        query.where(SnowflakeStepRun.status.in_(statuses))
+        if statuses
+        else query.where(SnowflakeStepRun.status != "superseded")
+    )
+    return session.execute(
+        query.order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
+    ).scalars().first()
+
+
 def next_outline_plan_version(session: Session, project_id: str) -> int:
     latest = session.execute(
         select(OutlinePlan.version)

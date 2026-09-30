@@ -14,7 +14,7 @@
   写入方只剩 :func:`renumber_scene_seq` 一个。
 - 章是故事序上**连续的一段**；章内顺序永远等于故事序，不存在第二套「章内手排」。
 
-这是叶子模块（只依赖 ORM 模型），分章、工作台、场景设计上下文都可以引用而不会闭环。
+这是叶子模块（只依赖 ORM 模型与版本查询叶子 ``snowflake_queries``），分章、工作台、场景设计上下文都可以引用而不会闭环。
 """
 
 from __future__ import annotations
@@ -24,20 +24,13 @@ from typing import Any, Iterable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SnowflakeChapterPlan, SnowflakeScenePlan, SnowflakeStepRun
+from novel_system.db.models import SnowflakeChapterPlan, SnowflakeScenePlan
+from novel_system.services.snowflake_queries import latest_step_run
 
 
 def story_positions(session: Session, project_id: str) -> dict[str, int]:
     """``row_uid`` / ``scene_id`` → 在最新 09 草稿里的行号（0 起）。没有 09 草稿或草稿为空时返回空表。"""
-    run = session.execute(
-        select(SnowflakeStepRun)
-        .where(
-            SnowflakeStepRun.project_id == project_id,
-            SnowflakeStepRun.step_key == "scene_list",
-            SnowflakeStepRun.status != "superseded",
-        )
-        .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
-    ).scalars().first()
+    run = latest_step_run(session, project_id, "scene_list")
     if run is None:
         return {}
     return positions_from_rows((run.draft_json or {}).get("scenes"))

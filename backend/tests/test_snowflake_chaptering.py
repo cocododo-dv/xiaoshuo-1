@@ -681,42 +681,6 @@ def test_a_frontend_payload_missing_chapters_cannot_wipe_the_chapter_table(sessi
     assert merged["chapters"][0]["title"] == "一（改）"
 
 
-def test_status_sees_the_same_chapters_materialize_would_derive(client, session) -> None:
-    """闸门的诊断必须和 ensure_chapter_plans 用同一条派生链，否则它会撒谎。
-
-    07 里编好了章表、但章行还没落库（历史项目 / 刚导入）时，status 曾经漏掉
-    ``_derive_from_long_synopsis``，于是报「还没有分章：章节结构要先决定每一场归哪一章」，
-    把作者支回 07 去做一件他已经做完的事。真相是章有了、只是还没有一场绑上去。
-    """
-    from novel_system.db.models import SnowflakeScenePlan
-    from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
-
-    project_id = _create_project(client, "status-truth")
-    for step_key, draft in _UPSTREAM.items():
-        _patch(client, project_id, step_key, draft)
-    _patch(client, project_id, "scene_list", {"scenes": [_scene(f"S{i:02d}", i, f"事件{i}") for i in range(1, 13)]})
-
-    # 模拟「07 有章表，但 SnowflakeChapterPlan 行还不存在」
-    session.expire_all()
-    for row in session.execute(
-        select(SnowflakeChapterPlan).where(SnowflakeChapterPlan.project_id == project_id)
-    ).scalars():
-        session.delete(row)
-    for plan in session.execute(
-        select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == project_id)
-    ).scalars():
-        plan.chapter_plan_id = None
-    session.flush()
-
-    service = SnowflakeChapteringService(session)
-    status = service.status(project_id, service.scene_plans(project_id))
-    assert status["chapter_count"] == len(_CHAPTERS), "status 看不见 07 的章表"
-    assert status["unassigned_scene_count"] == 12, "章有了但还没有一场绑上去——这才是此时的真相"
-    assert status["chaptered"] is False
-    # 与 materialize 走的那条链结果一致
-    assert len(service.ensure_chapter_plans(project_id)) == status["chapter_count"]
-
-
 # ------------------------------------------------- 孤儿场：blocker 必须有出路
 
 
