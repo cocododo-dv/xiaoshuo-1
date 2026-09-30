@@ -213,3 +213,50 @@ describe("同步与恢复中心", () => {
     await vi.waitFor(() => expect(WrRecovery.list()).toEqual([]), T);
   });
 });
+
+/* 审计 F03-23：恢复记录是作者的安全网——从不自动淘汰；一场多到软上限时只提示导出或清理。列出时不再每次把每一条重解析一遍。 */
+describe("恢复记录的索引与软上限", () => {
+  it("列出只解析新的或变了的记录；别处写进来的、删掉的照样认得", async () => {
+    const { WrRecovery } = await loadRecovery();
+    const ids = [];
+    for (let i = 0; i < 5; i += 1) ids.push(WrRecovery.create({ sid: "ch01s1", html: `<p>第 ${i} 份。</p>`, type: "backup" }).id);
+    expect(WrRecovery.list()).toHaveLength(5);
+    const parse = vi.spyOn(JSON, "parse");
+    expect(WrRecovery.list()).toHaveLength(5);
+    expect(parse).not.toHaveBeenCalled();                     // 以前：每次列出都把五条全文重解析一遍
+    parse.mockRestore();
+
+    // 另一个标签页直接写进来的一份：照样列出来；删掉的一份：不再列出，也按 id 找不到
+    const outside = { id: "outside-1", version: 1, workId: "prj-main", sid: "ch01s1", type: "conflict", reason: "", label: "场景 ch01s1",
+      source: "writer", createdAt: Date.now() + 1000, html: "<p>别处的一份。</p>", durable: true };
+    window.localStorage.setItem("wr-recovery:v1:outside-1", JSON.stringify(outside));
+    expect(WrRecovery.list()[0]).toMatchObject({ id: "outside-1", html: "<p>别处的一份。</p>" });
+    expect(WrRecovery.remove(ids[0])).toBe(true);
+    expect(WrRecovery.list().map((e) => e.id)).not.toContain(ids[0]);
+    expect(WrRecovery.diff(ids[0])).toBeNull();
+    expect(WrRecovery.diff("outside-1")).toMatchObject({ candidate: "<p>别处的一份。</p>" });
+    // 列表给出去的是副本：改它不会改到下一次列出的内容
+    WrRecovery.list()[0].html = "被改掉";
+    expect(WrRecovery.list()[0].html).toBe("<p>别处的一份。</p>");
+  });
+
+  it("一场的恢复记录超过软上限：中心提示导出或清理、新记录的回执顺带说一句；一份都不替作者删", async () => {
+    const { WrRecovery, WrRecoveryCenter, WsToastHost } = await loadRecovery();
+    for (let i = 0; i < 20; i += 1) WrRecovery.create({ sid: "ch01s1", html: `<p>第 ${i} 份。</p>`, type: "backup" });
+    const host = await renderCenter(() => <><WrRecoveryCenter /><WsToastHost /></>);
+    await click(host.querySelector(".wrr-trigger"));
+    expect(document.querySelector('[data-testid="recovery-crowded"]')).toBeNull();    // 20 份：还在软上限之内
+    await click(document.querySelector(".wrr-close"));
+
+    await act(async () => { WrRecovery.create({ sid: "ch01s1", html: "<p>第 21 份。</p>", type: "conflict" }); });
+    const toast = document.querySelector('[data-testid="undo-toast"]');
+    expect(toast.textContent).toContain("这一场已有 21 份恢复记录，打开后可导出或清理");
+    expect(WrRecovery.list()).toHaveLength(21);                                          // 没有自动淘汰
+
+    await click(host.querySelector(".wrr-trigger"));
+    const notice = document.querySelector('[data-testid="recovery-crowded"]');
+    expect(notice.textContent).toContain("《交班》 21 份");
+    expect(notice.textContent).toContain("先导出再删除");
+  });
+});
+

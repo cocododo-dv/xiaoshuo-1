@@ -161,13 +161,16 @@ function WrRecoveryCenter() {
 
   useEffect(() => {
     const onChange = (event) => {
-      refresh();
+      const next = refresh();
       const detail = (event && event.detail) || {};
       // 中心开着时作者自己就在看（恢复前的自动备份也会走到这里），不再弹回执。
       if (detail.action !== "created" || openRef.current || !detail.entry) return;
       const entry = detail.entry;
+      // 这一场的记录已经多到软上限：回执里顺带说一句（只提示，从不替作者删）
+      const crowded = WrRecovery.crowdedScenes(next).find((hit) => hit.sid === entry.sid && hit.workId === (entry.workId || ""));
       wsToast({
-        message: `${TYPE_LABEL[entry.type] || "恢复稿"}已放入「同步与恢复」：${entryTitle(entry)}`,
+        message: `${TYPE_LABEL[entry.type] || "恢复稿"}已放入「同步与恢复」：${entryTitle(entry)}`
+          + (crowded ? `。这一场已有 ${crowded.count} 份恢复记录，打开后可导出或清理` : ""),
         action: { label: "打开", onClick: () => openCenter({ id: entry.id }) },
       });
     };
@@ -196,6 +199,9 @@ function WrRecoveryCenter() {
   const diff = useMemo(() => selected ? WrRecovery.diff(selected.id) : null, [selected, entries]);
   const volatileCount = entries.filter(item => item.durable === false).length;
   const count = entries.length;
+  /* 记录多到软上限的场（审计 F03-23）：它们和写作台的本机缓存共用一份浏览器存储空间，满了之后连缓存都写不进。
+     这里只提示作者导出或清理，从不替作者删——恢复记录是作者的安全网 */
+  const crowded = useMemo(() => WrRecovery.crowdedScenes(entries), [entries]);
 
   const run = async (kind, action) => {
     if (!selected || busy) return;
@@ -285,6 +291,12 @@ function WrRecoveryCenter() {
         {volatileCount > 0 && (
           <div className="wrr-warning" role="alert">
             <I.AlertTriangle size={15} /> {volatileCount} 份记录因浏览器空间不足仅保留在本次会话。请立即复制或导出，刷新页面后它们会消失。
+          </div>
+        )}
+        {crowded.length > 0 && (
+          <div className="wrr-warning" role="status" data-testid="recovery-crowded">
+            <I.AlertTriangle size={15} /> {crowded.slice(0, 3).map((hit) => `${entryTitle({ sid: hit.sid, label: `场景 ${hit.sid}` })} ${hit.count} 份`).join("、")}
+            {crowded.length > 3 ? ` 等 ${crowded.length} 场` : ""}的恢复记录已经很多。它们都存在这台电脑的浏览器里、和正文的本机缓存共用一份空间：确认不再需要的，先导出再删除。
           </div>
         )}
 

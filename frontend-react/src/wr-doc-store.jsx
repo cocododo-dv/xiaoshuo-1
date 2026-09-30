@@ -4,7 +4,9 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { WrDocs, refusalReason } from "./wr-doc-sync.js";
 import { cacheRead, cacheReadForWork } from "./wr-doc-cache.js";
 import { WrDocVersions, diffSentences } from "./wr-doc-versions.js";
-import { activeWorkId, notifyRecoveryChanged, recoveryCreate, recoveryList, recoveryRemove } from "./wr-recovery-store.js";
+import {
+  activeWorkId, notifyRecoveryChanged, recoveryCreate, recoveryCrowdedScenes, recoveryFind, recoveryList, recoveryRemove,
+} from "./wr-recovery-store.js";
 
 /* ==========================================================
    写作台正文的门面（2026-09-29 拆分）：
@@ -125,8 +127,10 @@ const WrRecovery = {
   },
   remove(id) { return recoveryRemove(id); },
   current(sid) { return cacheRead(sid) || ""; },
+  /* 记录多到软上限的场（[{ workId, sid, count }]）：同步与恢复中心据此提示导出或清理，从不自动删 */
+  crowdedScenes(list) { return recoveryCrowdedScenes(list); },
   diff(id) {
-    const entry = recoveryList().find(item => item.id === id);
+    const entry = recoveryFind(id);
     if (!entry) return null;
     const current = cacheReadForWork(entry.sid, entry.workId) || "";
     return {
@@ -137,7 +141,7 @@ const WrRecovery = {
     };
   },
   async restore(id) {
-    const entry = recoveryList().find(item => item.id === id);
+    const entry = recoveryFind(id);
     if (!entry) throw Object.assign(new Error("恢复记录已不存在"), { code: "RECOVERY_NOT_FOUND" });
     assertRecoveryWork(entry);
     let sid = entrySceneSid(entry);
