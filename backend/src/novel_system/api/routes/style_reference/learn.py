@@ -22,7 +22,7 @@ from novel_system.api.routes.style_reference._common import (
     llm_client_and_enabled,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.style_reference.errors import LLMRequiredError
+from novel_system.services.style_reference.errors import LLMRequiredError, book_not_found
 from novel_system.services.style_reference.learn_job import (
     LEARN_NOT_ACTIVE_CODE,
     cancel_learn,
@@ -116,11 +116,7 @@ def get_book_learning(
     估算里的标签批数只算还要打的窗口(``windows_to_tag``);``?retag=true`` 按全书重打估。"""
     book = StyleReferenceRepository(session).get_book(book_id)
     if book is None:
-        raise DomainError(
-            "STYLE_REFERENCE_BOOK_NOT_FOUND",
-            f"book {book_id!r} not found",
-            status_code=404,
-        )
+        raise book_not_found(book_id)
     client, _enabled = llm_client_and_enabled()
     return ok(
         {
@@ -144,11 +140,7 @@ def cancel_book_learning(
 
     def _do() -> dict[str, Any]:
         if StyleReferenceRepository(session).get_book(book_id) is None:
-            raise DomainError(
-                "STYLE_REFERENCE_BOOK_NOT_FOUND",
-                f"book {book_id!r} not found",
-                status_code=404,
-            )
+            raise book_not_found(book_id)
         job = cancel_learn(session, book_id)
         if job is None:
             raise DomainError(

@@ -59,7 +59,7 @@ from novel_system.services.style_reference.card import (
     card_from_profile_json,
     line_states_from_profile_json,
 )
-from novel_system.services.style_reference.errors import LLMRequiredError
+from novel_system.services.style_reference.errors import LLMRequiredError, book_not_found, profile_not_found
 from novel_system.services.style_reference.fidelity import DIMENSION_FEATURES, reference_distribution_for_book
 from novel_system.services.style_reference.job_runtime import (
     JobRun,
@@ -274,7 +274,7 @@ def active_learn_job(session: Session, book_id: str) -> StyleReferenceJob | None
 def _book_or_404(session: Session, book_id: str) -> StyleReferenceBook:
     book = session.get(StyleReferenceBook, str(book_id))
     if book is None:
-        raise DomainError("STYLE_REFERENCE_BOOK_NOT_FOUND", f"book {book_id!r} not found", status_code=404)
+        raise book_not_found(book_id)
     return book
 
 
@@ -287,9 +287,7 @@ def _target_profile(session: Session, book_id: str, requested: str | None) -> St
     if requested:
         profile = session.get(StyleReferenceProfile, str(requested))
         if profile is None:
-            raise DomainError(
-                "STYLE_REFERENCE_PROFILE_NOT_FOUND", f"profile {requested!r} not found", status_code=404
-            )
+            raise profile_not_found(requested)
         if str(profile.book_id) != str(book_id):
             raise DomainError(
                 "STYLE_REFERENCE_PROFILE_BOOK_MISMATCH",

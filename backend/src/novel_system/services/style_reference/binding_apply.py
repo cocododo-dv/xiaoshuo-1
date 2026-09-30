@@ -43,6 +43,7 @@ from novel_system.services.style_reference.binding_config import (
     effective_reference_mode,
     normalize_binding_config,
 )
+from novel_system.services.style_reference.errors import profile_not_found
 from novel_system.services.style_reference.schemas import (
     BindingStatus,
     InjectionStrategy,
@@ -132,11 +133,7 @@ def binding_payload(
 def _profile_or_error(session: Session, profile_id: str) -> StyleReferenceProfile:
     profile = session.get(StyleReferenceProfile, str(profile_id))
     if profile is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-            f"profile {profile_id!r} not found",
-            status_code=404,
-        )
+        raise profile_not_found(profile_id)
     if (profile.coverage_json or {}).get("stale"):
         raise DomainError(
             "STYLE_REFERENCE_PROFILE_STALE",

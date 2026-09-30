@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import delete, select, text
@@ -169,16 +170,12 @@ def delete_reference_book(session: Session, book_id: str) -> dict[str, Any]:
     (与解除绑定同一口径)→ :func:`purge_derived_data` 清派生数据 → 段落 → 书。书不存在 404。
     """
     from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph
-    from novel_system.services.errors import DomainError
+    from novel_system.services.style_reference.errors import book_not_found
     from novel_system.services.style_reference.jobs import StyleJobService
 
     book = session.get(StyleReferenceBook, str(book_id))
     if book is None:
-        raise DomainError(
-            "STYLE_REFERENCE_BOOK_NOT_FOUND",
-            f"book {book_id!r} not found",
-            status_code=404,
-        )
+        raise book_not_found(book_id)
     title = book.title
     cancelled = StyleJobService(session).cancel_all_for_book(book_id)
     unbound = supersede_book_bindings(session, book_id, reason=f"style_reference_book_deleted:{book_id}")
@@ -201,6 +198,39 @@ def delete_reference_book(session: Session, book_id: str) -> dict[str, Any]:
         "unbound": unbound,
         "counts": counts,
     }
+
+
+def _begin_outer_transaction(session: Session) -> None:
+    """pysqlite 旧式事务控制下,没有未决写时 ``SAVEPOINT`` 自己开事务、``RELEASE`` 就是提交——每本书各自提交,
+    与幂等记录不在一个事务里(中途进程死掉,重放时已删的书报 404)。先把外层事务开起来,保存点才是真的嵌套:
+    整批删除与调用方的其余写(幂等记录)一起提交或一起回滚。"""
+    connection = session.connection()
+    if connection.dialect.name != "sqlite":
+        return
+    dbapi_connection = connection.connection.dbapi_connection
+    if not dbapi_connection.in_transaction:
+        connection.exec_driver_sql("BEGIN")
+
+
+def delete_reference_books(session: Session, book_ids: Sequence[str]) -> dict[str, Any]:
+    """书库多选删除(台账 U4 / L6;flush 不 commit):每本书与单本删除走同一个 :func:`delete_reference_book`,各在一个
+    保存点里——一本失败(不存在)不影响其余的;结果逐本给出 ``deleted`` / ``error``。保存点只用来逐本收集这类业务错误,
+    其它异常(连库失败……)照常抛出,整批连同调用方的写一起回滚。"""
+    from novel_system.services.errors import DomainError
+
+    _begin_outer_transaction(session)
+    results: list[dict[str, Any]] = []
+    for book_id in book_ids:
+        try:
+            with session.begin_nested():
+                outcome = delete_reference_book(session, book_id)
+            results.append(
+                {"book_id": book_id, "title": outcome["title"], "deleted": True, "unbound": outcome["unbound"]}
+            )
+        except DomainError as exc:
+            results.append({"book_id": book_id, "deleted": False, "error": {"code": exc.code, "message": exc.message}})
+    deleted = sum(1 for item in results if item["deleted"])
+    return {"results": results, "deleted_count": deleted, "failed_count": len(results) - deleted}
 
 
 def cleanup_metric_events(

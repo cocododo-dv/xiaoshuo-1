@@ -62,7 +62,7 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     normalize_binding_config,
 )
-from novel_system.services.style_reference.errors import LLMRequiredError
+from novel_system.services.style_reference.errors import LLMRequiredError, profile_not_found
 from novel_system.services.style_reference.job_runtime import JobRun
 from novel_system.services.style_reference.jobs import (
     JOB_KIND_CHECK,
@@ -162,9 +162,7 @@ def _profile_policy(session: Session, profile_id: str) -> Any:
 
     profile = session.get(StyleReferenceProfile, str(profile_id))
     if profile is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND", f"profile {profile_id!r} not found", status_code=404
-        )
+        raise profile_not_found(profile_id)
     contract = preview_contract(session, profile, normalize_binding_config({}))
     return policy_from_contract(contract, mode=POLICY_MODE_CHECK)
 
@@ -176,11 +174,7 @@ def _light_policy(session: Session, params: Mapping[str, Any]) -> Any:
     if params.get("profile_id"):
         profile = session.get(StyleReferenceProfile, str(params["profile_id"]))
         if profile is None:
-            raise DomainError(
-                "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-                f"profile {params['profile_id']!r} not found",
-                status_code=404,
-            )
+            raise profile_not_found(params['profile_id'])
         return SimpleNamespace(bound=True, profile_id=profile.profile_id, book_id=profile.book_id)
     if params.get("scene_id"):
         scene = session.get(SceneCard, str(params["scene_id"]))

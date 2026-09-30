@@ -95,6 +95,20 @@ class StyleReferenceRepository:
             stmt = stmt.where(StyleReferenceParagraph.paragraph_type == paragraph_type)
         return list(self.session.scalars(stmt).all())
 
+    def paragraph_range(self, book_id: str, start: int, end: int) -> list[StyleReferenceParagraph]:
+        """段落序号在 ``[start, end]``(闭区间)里的段落,按序号升序(本场参考窗口的「展开原文」)。"""
+        return list(
+            self.session.scalars(
+                select(StyleReferenceParagraph)
+                .where(
+                    StyleReferenceParagraph.book_id == book_id,
+                    StyleReferenceParagraph.paragraph_index >= start,
+                    StyleReferenceParagraph.paragraph_index <= end,
+                )
+                .order_by(StyleReferenceParagraph.paragraph_index)
+            ).all()
+        )
+
     # ----------------------------------------------------------------- runs
     def create_run(self, **kwargs: Any) -> StyleReferenceRun:
         row = StyleReferenceRun(**kwargs)

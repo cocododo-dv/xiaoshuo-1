@@ -12,7 +12,6 @@ check 作业与读数表接手。
 
 from __future__ import annotations
 
-import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
@@ -23,14 +22,11 @@ from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.api.routes.style_reference._common import (
-    PATH_PREFIX,
-    ROUTE_TAGS,
-    serialize_banned_term,
-)
-from novel_system.services.errors import DomainError
+from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS
+from novel_system.services.style_reference import banned_terms
 from novel_system.services.style_reference.binding_config import normalize_binding_config
 from novel_system.services.style_reference.card_states import set_card_line_state
+from novel_system.services.style_reference.errors import profile_not_found
 from novel_system.services.style_reference.inject.preview import preview_render
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.scene_preview import scene_preview_payload
@@ -41,7 +37,6 @@ from novel_system.services.style_reference.schemas import (
     SystemPromptFragments,
 )
 from novel_system.services.style_reference.summaries import profile_detail
-from novel_system.services.style_reference.protected_terms import PROTECTED_SOURCE, dismiss_protected_term
 
 router = APIRouter(tags=ROUTE_TAGS)
 
@@ -65,11 +60,7 @@ class BannedTermCreateRequest(BaseModel):
 def _profile_or_404(session: Session, profile_id: str):
     profile = StyleReferenceRepository(session).get_profile(profile_id)
     if profile is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-            f"profile {profile_id!r} not found",
-            status_code=404,
-        )
+        raise profile_not_found(profile_id)
     return profile
 
 
@@ -118,9 +109,6 @@ def set_profile_card_line_state(
 # ---------------------------------------------------------------------------
 
 
-BANNED_TERM_SCOPES = ("generation", "extraction")
-
-
 @router.get(f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms")
 def list_banned_terms(
     profile_id: str,
@@ -128,13 +116,7 @@ def list_banned_terms(
     scope: str | None = None,
     session: Session = Depends(get_session),
 ):
-    repo = StyleReferenceRepository(session)
-    _profile_or_404(session, profile_id)
-    terms = repo.list_banned_terms(profile_id, scope=scope)
-    return ok(
-        {"terms": [serialize_banned_term(t) for t in terms]},
-        req_id=request_id_of(request),
-    )
+    return ok({"terms": banned_terms.list_banned_terms(session, profile_id, scope=scope)}, req_id=request_id_of(request))
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms")
@@ -144,39 +126,15 @@ def create_banned_term(
     request: Request,
     session: Session = Depends(get_session),
 ):
+    """登记一个禁用词(业务规则在 ``services/style_reference/banned_terms``:空词 / 作用域不对 400,画像不存在 404,
+    同一画像 + 同一个词 + 同一个作用域重复登记返回既有的那行)。"""
     term_text = payload.term.strip()
     scope = payload.scope.strip()
 
     def _do() -> dict[str, Any]:
-        if not term_text:
-            raise DomainError(
-                "STYLE_REFERENCE_BANNED_TERM_INVALID",
-                "term must be non-empty",
-                status_code=400,
-            )
-        if scope not in BANNED_TERM_SCOPES:
-            raise DomainError(
-                "STYLE_REFERENCE_BANNED_TERM_INVALID",
-                f"scope must be one of {BANNED_TERM_SCOPES}",
-                status_code=400,
-            )
-        repo = StyleReferenceRepository(session)
-        _profile_or_404(session, profile_id)
-        # (profile_id, term, scope) 唯一:重复创建返回既有行(幂等友好)
-        existing = repo.find_banned_term(profile_id, term_text, scope)
-        if existing is not None:
-            if payload.replacement_hint is not None:
-                existing.replacement_hint = payload.replacement_hint
-            return {"term": serialize_banned_term(existing), "created": False}
-        row = repo.create_banned_term(
-            term_id=f"sr_term_{uuid.uuid4().hex[:12]}",
-            profile_id=profile_id,
-            term=term_text,
-            replacement_hint=payload.replacement_hint,
-            source="user",
-            scope=scope,
+        return banned_terms.create_banned_term(
+            session, profile_id, term=term_text, scope=scope, replacement_hint=payload.replacement_hint
         )
-        return {"term": serialize_banned_term(row), "created": True}
 
     return idempotent_response(
         request,
@@ -200,26 +158,10 @@ def delete_banned_term(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
+    """删一个禁用词:不存在 404;预置的不能删 400;删掉自动识别的本书专名时记下来,重新学习不再加回。"""
+
     def _do() -> dict[str, Any]:
-        repo = StyleReferenceRepository(session)
-        row = repo.get_banned_term(term_id)
-        if row is None:
-            raise DomainError(
-                "STYLE_REFERENCE_BANNED_TERM_NOT_FOUND",
-                f"banned term {term_id!r} not found",
-                status_code=404,
-            )
-        if row.source == "preset":
-            raise DomainError(
-                "STYLE_REFERENCE_BANNED_TERM_PROTECTED",
-                "preset banned terms cannot be deleted",
-                status_code=400,
-            )
-        if row.source == PROTECTED_SOURCE and row.profile_id:
-            # 作者删掉一个自动识别的专名（多半是误收的日常词）：记下来，重新学习不再把它加回来
-            dismiss_protected_term(session, str(row.profile_id), str(row.term))
-        repo.delete_banned_term(term_id)
-        return {"term_id": term_id, "deleted": True}
+        return banned_terms.delete_banned_term(session, term_id)
 
     return idempotent_response(
         request,

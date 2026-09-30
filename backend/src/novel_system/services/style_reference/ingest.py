@@ -40,6 +40,7 @@ from novel_system.services.style_reference.classification_stats import compute_c
 from novel_system.services.style_reference.cleanup import purge_derived_data, supersede_book_bindings
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.errors import (
+    book_not_found,
     DuplicateBookError,
     EmptyBookError,
     LLMRequiredError,
@@ -257,14 +258,6 @@ def assess_input_size(total_chars: int) -> dict[str, str]:
     return result
 
 
-def _book_not_found(book_id: str) -> DomainError:
-    return DomainError(
-        "STYLE_REFERENCE_BOOK_NOT_FOUND",
-        f"book {book_id!r} not found",
-        status_code=404,
-    )
-
-
 def bulk_insert_paragraphs(
     session: Session,
     *,
@@ -420,7 +413,7 @@ class IngestService:
             raise ValueError(f"unknown reclassify mode {mode!r}")
         book = self.repo.get_book(book_id)
         if book is None:
-            raise _book_not_found(book_id)
+            raise book_not_found(book_id)
         if not self._llm_enabled:
             raise LLMRequiredError(operation="reclassify_book")
         ensure_cloud_llm_allowed(
@@ -468,7 +461,7 @@ class IngestService:
 
         book = self.repo.get_book(book_id)
         if book is None:
-            raise _book_not_found(book_id)
+            raise book_not_found(book_id)
         if not self._llm_enabled:
             raise LLMRequiredError(operation="resume_classification")
         ensure_cloud_llm_allowed(

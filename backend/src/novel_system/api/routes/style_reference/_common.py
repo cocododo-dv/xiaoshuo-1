@@ -9,24 +9,11 @@
 
 from __future__ import annotations
 
-from typing import Any
 
 from fastapi import Request
 
 PATH_PREFIX = "/api/v2/style-reference"
 ROUTE_TAGS = ["style_reference"]
-
-
-def serialize_banned_term(term) -> dict[str, Any]:
-    return {
-        "term_id": term.term_id,
-        "profile_id": term.profile_id,
-        "term": term.term,
-        "replacement_hint": term.replacement_hint,
-        "source": term.source,
-        "scope": term.scope,
-        "created_at": term.created_at,
-    }
 
 
 def client_host(request: Request) -> str | None:
@@ -60,5 +47,4 @@ __all__ = [
     "client_host",
     "dispatch",
     "llm_client_and_enabled",
-    "serialize_banned_term",
 ]
