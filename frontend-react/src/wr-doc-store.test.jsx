@@ -41,6 +41,11 @@ function wireDrafts(client) {
   });
 }
 
+/* 目录装载后的预热水合（WsCatalog.onLoaded → WrDocs.hydrateActive）停掉：数 ensure 次数的用例只数被测的那几个调用发的 */
+function stopWarmHydrate(mod) {
+  vi.spyOn(mod.WrDocs, "hydrateActive").mockImplementation(() => {});
+}
+
 async function settleActive(id = "prj-main") {
   await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe(id), T);
 }
@@ -214,13 +219,22 @@ describe("WrDocs 跨作品 sid 前缀防污染（历史 bug 回归）", () => {
 
   it("同名 sid 在不同作品下：缓存键(wsKey)与 docMeta(metaKeyOf)双隔离", async () => {
     const { mod, client } = await loadDocs({ projects: [DEFAULT_PROJECT, SALT_PROJECT] });
-    // ensure 按当前激活作品返回不同 draft_id，以验证 docMeta 隔离（裸 sid 会复用上一部的 draftId）
+    // ensure 按当前激活作品返回不同 draft_id，以验证 docMeta 隔离（裸 sid 会复用上一部的 draftId）。
+    // 两份草稿各自记着存上的修订号和正文（像后端）：回到一场时的后台复核读到的是它存上的那一版，不是一份永远的空稿
+    const drafts = { "d-main": { revision: 1, content: "" }, "d-second": { revision: 1, content: "" } };
+    const snapshotOf = (id) => ({ draft: { draft_id: id, revision_no: drafts[id].revision, content: drafts[id].content } });
     client.apiPost.mockImplementation((url) => {
       if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
-        const w = window.WsWorks.activeId();
-        return Promise.resolve({ draft: { draft_id: w === "prj-second" ? "d-second" : "d-main", revision_no: 1, content: "" } });
+        return Promise.resolve(snapshotOf(window.WsWorks.activeId() === "prj-second" ? "d-second" : "d-main"));
       }
       return Promise.resolve({});
+    });
+    client.apiPatch.mockImplementation((url, body) => {
+      const id = url.split("/").pop();
+      if (!drafts[id]) return Promise.resolve({});
+      drafts[id].revision += 1;
+      drafts[id].content = body.content;
+      return Promise.resolve(snapshotOf(id));
     });
 
     // —— 作品 prj-main：保存 ch01s1 ——
@@ -654,9 +668,16 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
 
   it("同一场并发读版本 / 正文 / draftId 只发一次 ensure（开发模式 effect 连跑两遍）", async () => {
     const { mod, client } = await loadDocs();
+    // 目录装载后的预热水合另有自己的一次读取（水合总是读服务端，W1 复核四 W1-R4B-6；前一个用例留下的旧实例在它退役之前
+    // 也可能预热一次）：这里只数被测的版本 / 正文 / draftId 这几个调用发出的 ensure
+    stopWarmHydrate(mod);
     const ensure = deferred();
+    let ensures = 0;
     client.apiPost.mockImplementation((url) => {
-      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) return ensure.promise;
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        ensures += 1;
+        return ensure.promise;
+      }
       return Promise.resolve({});
     });
     client.apiGet.mockImplementation((url) => {
@@ -665,13 +686,12 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
       if (/\/author-drafts\/d1\/revisions\/\d+$/.test(url)) return Promise.resolve({ revision: { content: "<p>旧版一句。</p>" } });
       return Promise.resolve({});
     });
-    const ensureCalls = () => client.apiPost.mock.calls.filter(c => /\/scene\/s1\/ensure$/.test(c[0]));
 
     const first = mod.WrDocVersions.list("ch01s1");
     const second = mod.WrDocVersions.list("ch01s1");
     const third = mod.WrDocVersions.paras("ch01s1", 1);
     const fourth = mod.WrDocs.draftId("ch01s1");
-    await vi.waitFor(() => expect(ensureCalls()).toHaveLength(1), T);
+    await vi.waitFor(() => expect(ensures).toBe(1), T);
     ensure.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "" } });
 
     await expect(first).resolves.toEqual([]);
@@ -679,24 +699,28 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
     await expect(third).resolves.toEqual(["旧版一句。"]);
     await expect(fourth).resolves.toBe("d1");
     // 可证伪：去掉 in-flight 共享，四个调用各发一次 ensure
-    expect(ensureCalls()).toHaveLength(1);
+    expect(ensures).toBe(1);
   });
 
   it("ensure 失败后并发调用方都拿到同一个错误，之后的调用重新请求", async () => {
     const { mod, client } = await loadDocs();
+    stopWarmHydrate(mod);
     const failure = Object.assign(new Error("offline"), { code: "NETWORK_ERROR" });
     const firstEnsure = deferred();
+    let ensures = 0;
     client.apiPost.mockImplementation((url) => {
-      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) return firstEnsure.promise;
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        ensures += 1;
+        return firstEnsure.promise;
+      }
       return Promise.resolve({});
     });
-    const ensureCalls = () => client.apiPost.mock.calls.filter(c => /\/scene\/s1\/ensure$/.test(c[0]));
 
     const a = mod.WrDocs.draftId("ch01s1");
     const b = mod.WrDocs.draftId("ch01s1");
     const aRejected = expect(a).rejects.toBe(failure);
     const bRejected = expect(b).rejects.toBe(failure);
-    await vi.waitFor(() => expect(ensureCalls()).toHaveLength(1), T);
+    await vi.waitFor(() => expect(ensures).toBe(1), T);
     firstEnsure.reject(failure);
     await aRejected;
     await bRejected;
@@ -704,12 +728,13 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
     // 结束即清掉 in-flight：再次调用会重新 POST（可证伪：失败的 promise 若被缓存，这里仍然拒绝）
     client.apiPost.mockImplementation((url) => {
       if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        ensures += 1;
         return Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "" } });
       }
       return Promise.resolve({});
     });
     await expect(mod.WrDocs.draftId("ch01s1")).resolves.toBe("d1");
-    expect(ensureCalls()).toHaveLength(2);
+    expect(ensures).toBe(2);
   });
 
   it("diff 句级：新增句被标 add（纯函数，无需 mock）", async () => {

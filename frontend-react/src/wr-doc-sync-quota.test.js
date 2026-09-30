@@ -154,3 +154,88 @@ describe("复核三 · 本机存储满了：共用读缓存里停着的是这一
     await tick(50);
   });
 });
+
+/* ==========================================================
+   复核四：本机存储满了——按占用算容量（键 + 值的长度加起来不能超过这时的总量；F03-23：同步与恢复的记录没有上限，
+   一个本机存储真的会被塞满）。断言的都是安全的结果：共用读缓存里不会有一份没同步上、又没有未同步标记的字
+   （下次打开时它会被当成过时的读缓存、让服务端版本静默盖掉）；只留在本次会话里的字，作者当场被告知。
+   ========================================================== */
+
+function usage(store) {
+  let total = 0;
+  for (let i = 0; i < store.length; i += 1) {
+    const key = store.key(i);
+    total += key.length + String(store.getItem(key) ?? "").length;
+  }
+  return total;
+}
+
+/* 从这时起本机存储满了：容量 = 眼下已用的；让总量变大的写入都写不进去（写同样长的、变短的照常写） */
+function armFullStorage() {
+  const realSet = Storage.prototype.setItem;
+  const cap = usage(window.localStorage);
+  const refused = [];
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+    const k = String(key);
+    const v = String(value);
+    const before = this.getItem(k);
+    const next = usage(this) - (before == null ? 0 : k.length + before.length) + k.length + v.length;
+    if (next > cap) {
+      refused.push(k);
+      throw Object.assign(new Error("The quota has been exceeded."), { name: "QuotaExceededError" });
+    }
+    return realSet.call(this, key, value);
+  });
+  return { refused };
+}
+
+const OLD_RECORD = JSON.stringify({
+  id: "old-1", version: 1, workId: "prj-main", sid: "ch09s9", type: "conflict", reason: "旧记录", label: "场景 ch09s9 · 冲突本地稿",
+  source: "writer", createdAt: 1, html: `<p>${"很久以前的一段。".repeat(40)}</p>`,
+});
+const alertsSoFar = () => window.alert.mock.calls.map(([message]) => String(message));
+
+describe("复核四 · 本机存储满了：没写进本机的字要么有未同步标记、要么当场告诉作者（W1-R4B-1 · W1-R4B-8）", () => {
+  it("R4-S1 把一句改短了（读缓存写得进去）、未同步标记要新的一条键写不进去、又断网：读缓存里不留一份没有标记的新稿；作者被告知它只在本次会话里", async () => {
+    const shared = { revision: 1, content: "<p>起点正文。第一句写好了。第二句写好了。第三句还要再改一改。</p>" };
+    const tab = await loadDocs(shared);
+    tab.mod.WrDocs.load("ch01s1");
+    await tab.mod.WrDocs.hydrate("ch01s1");
+    window.localStorage.setItem("wr-recovery:v1:old-1", OLD_RECORD);
+    const quota = armFullStorage();
+    tab.client.apiPatch.mockImplementation(() => Promise.reject(Object.assign(new Error("offline"), { code: "NETWORK_ERROR", status: 0, retryable: true })));
+    const REWRITE = "<p>起点正文。第一句写好了。第二句写好了。新写的这一句。</p>";
+    await expect(tab.mod.WrDocs.save("ch01s1", REWRITE)).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    await tick();
+    const slot = window.localStorage.getItem(CACHE);
+    expect({ unmarkedUnsynced: slot === REWRITE && window.localStorage.getItem(PENDING) == null }).toEqual({ unmarkedUnsynced: false });
+    expect(quota.refused).toContain(PENDING);
+    expect(tab.mod.WrDocs.cachedHTML("ch01s1")).toBe(REWRITE);            // 编辑器这一页的会话内存里还是它
+    expect(tab.mod.WrDocs.state("ch01s1")).toMatchObject({ localDurable: false, cacheError: expect.objectContaining({ code: "LOCAL_STORAGE_QUOTA" }) });
+    expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === REWRITE)).toEqual([expect.objectContaining({ durable: false })]);
+    expect(alertsSoFar().filter((message) => message.includes("本次会话"))).toHaveLength(1);
+    // 断网时接着自动保存：同一段失败不一遍遍提示
+    await tab.mod.WrDocs.save("ch01s1", "<p>起点正文。第一句写好了。第二句写好了。新写的这一句，</p>").catch(() => {});
+    await tick();
+    expect(alertsSoFar().filter((message) => message.includes("本次会话"))).toHaveLength(1);
+  });
+
+  it("R4-S1b 把一句写长了（读缓存写不进去）、又断网：作者当场被告知这几句只留在本次会话的「同步与恢复」里", async () => {
+    const shared = { revision: 1, content: "<p>起点正文。</p>" };
+    const tab = await loadDocs(shared);
+    tab.mod.WrDocs.load("ch01s1");
+    await tab.mod.WrDocs.hydrate("ch01s1");
+    await tab.mod.WrDocs.save("ch01s1", "<p>起点正文。第一句。</p>");       // rev 2，标记已清
+    window.localStorage.setItem("wr-recovery:v1:old-1", OLD_RECORD);
+    armFullStorage();
+    tab.client.apiPatch.mockImplementation(() => Promise.reject(Object.assign(new Error("offline"), { code: "NETWORK_ERROR", status: 0, retryable: true })));
+    const LONGER = "<p>起点正文。第一句。第二句是新写的。</p>";
+    await expect(tab.mod.WrDocs.save("ch01s1", LONGER)).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    await tick();
+    expect(window.localStorage.getItem(CACHE)).toBe("<p>起点正文。第一句。</p>");
+    expect(tab.mod.WrDocs.cachedHTML("ch01s1")).toBe(LONGER);
+    expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === LONGER)).toEqual([expect.objectContaining({ durable: false })]);
+    const warned = alertsSoFar().filter((message) => message.includes("本次会话") && message.includes("同步与恢复"));
+    expect(warned).toHaveLength(1);
+  });
+});

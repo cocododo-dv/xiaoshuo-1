@@ -207,13 +207,14 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       setCanonicalStatus(canonicalFromStore(sid));
     };
     /* 读缓存换成了别的版本：作者正在写的就是这份底稿（文字一样）时接着写，下一次保存带新的修订号；否则换稿。
-       force（服务端拒绝了本机的字 / 章已锁定）：接着写也存不上——照样换，正在写的那几句先留。
-       换上的正文还在等保存（恢复稿）或没存上时，状态照 WrDocs 的说 */
+       force（服务端拒绝了本机的字 / 章已锁定 / 采纳时还有没存上的字）：接着写也存不上——照样换，正在写的那几句先留。
+       换上的正文还在等保存（恢复稿）或没存上时，状态照 WrDocs 的说；章已锁定换回的是终稿正文（「终稿已锁定」） */
     const onLoaded = (detail) => {
       const typing = editVersionRef.current !== handedRef.current;
       if (!detail.force && typing && sameManuscriptText(detail.html, baseRef.current)) return;
       replaceEditor(detail.html, detail.reason || "server");
-      setSaved(detail.force ? "loaded" : saveStatusOf(detail, typing ? "loaded" : "saved"));
+      if (detail.reason === "locked") setSaved("locked");
+      else setSaved(detail.force ? "loaded" : saveStatusOf(detail, typing ? "loaded" : "saved"));
     };
     const onResolved = (detail) => {
       replaceEditor(detail.html, detail.reason || "conflict");
@@ -224,7 +225,8 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       if (detail.conflictPending || detail.lastSaveError) { setSaved("failed"); return; }
       if (!detail.dirty && editVersionRef.current === handedRef.current) {
         dirtyRef.current = false;
-        setSaved("saved");
+        // 章已批准锁定、写作台已转只读（「终稿已锁定」）：锁定之前那一次保存的回包、后台的读取不把它改说成「草稿已保存」
+        setSaved((prev) => (prev === "locked" && wrSceneIsApproved(sid) ? prev : "saved"));
       }
     };
     const unsubscribe = WrDocs.subscribe((kind, detail) => {
@@ -288,6 +290,10 @@ export function canonicalPromotionErrorMessage(error) {
   if (code === "AUTHOR_DRAFT_MOVED_BY_SELF") {
     return "提升途中你又改了几句，已经保存；这次没有提升。看过之后再点一次「提升为权威正文」。";
   }
+  // 提升途中接着写的那几句还没能确认存上服务端（那一次自动保存的回包丢了、再发也没成）：也不是别处的改动（复核四 W1-R4B-7）
+  if (code === "AUTHOR_DRAFT_UNSAVED") {
+    return "提升途中你又改了几句，还没确认保存到服务端；这次没有提升。等草稿保存成功后再点一次「提升为权威正文」。";
+  }
   if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") {
     return "这次修改涉及故事事实，必须先核对叙事事件，系统不会静默沿用旧事实。";
   }
@@ -315,10 +321,11 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
   const [error, setError] = useState("");
   const { setSaved, setCanonicalStatus, dirtyRef, settle, cancelPendingSave, shownHTML } = doc;
 
-  /* 提升没成之后权威正文的状态：作者自己接着写、草稿已往前走（MOVED_BY_SELF）是「待更新」，不是「提升失败」 */
+  /* 提升没成之后权威正文的状态：作者自己接着写、草稿已往前走（MOVED_BY_SELF）或还没确认存上（UNSAVED）是「待更新」，
+     不是「提升失败」 */
   const failedCanonicalStatus = (sceneId, code) => {
     if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") return "reconcile";
-    return code === "AUTHOR_DRAFT_MOVED_BY_SELF" ? canonicalStatusOf(sceneId) : "error";
+    return code === "AUTHOR_DRAFT_MOVED_BY_SELF" || code === "AUTHOR_DRAFT_UNSAVED" ? canonicalStatusOf(sceneId) : "error";
   };
 
   const promote = useWrEvent(async () => {

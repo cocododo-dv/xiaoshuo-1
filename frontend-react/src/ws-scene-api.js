@@ -415,7 +415,8 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
     return { ok: false, reason: "无法取得服务器作者稿修订，已停止归档以避免正文错位" };
   }
   // 采纳在路上：WrDocs 不再发写作台的保存，路上那一次这期间撞上的 409（多半就是采纳撞的）先按住，
-  // 采纳成了随 acceptCanonical 作废，没成（endAdoption）再照常核对 / 冲突——不为作者自己的采纳提示「在别处被修改」
+  // 采纳成了随 acceptCanonical 作废，没成（endAdoption）再照常核对 / 冲突——不为作者自己的采纳提示「在别处被修改」。
+  // 记号带着这一场：作者在采纳途中换了作品，收尾照样落在原来那一场上（复核四 W1-R4A-1）
   const adopting = WrDocs.beginAdoption(sid);
   let adoption = null;
   try {
@@ -429,17 +430,28 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       },
     });
   } catch (e) {
-    WrDocs.endAdoption(sid, adopting);
-    // 抄袭门拦下（与参考书原文连续相同 / 用了它的专名）：说成作者读得懂的话，只给处数，不给参考原文
-    if (isCopyGateError(e)) return { ok: false, reason: copyGateAdoptMessage(e), error: e, authorBackup, copyBlocked: true };
-    const code = (e && e.code) || "";
-    const msg = (e && e.message) || String(e || "");
-    return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
+    // 回包丢了（断网、超时、服务端出错）：采纳也许已经存下并提升了——读一次服务端，存下的正是这一稿就照成了收尾
+    // （复核四 W1-R4A-4 · W1-R4B-5：过去这时报「后端归档未通过」，写作台接着写的第一句还提示「在别处被修改过」）
+    let landed = null;
+    try { landed = await WrDocs.adoptionLanded(sid, adopting, html, e); } catch (readError) { landed = null; }
+    if (!landed) {
+      WrDocs.endAdoption(sid, adopting);
+      // 抄袭门拦下（与参考书原文连续相同 / 用了它的专名）：说成作者读得懂的话，只给处数，不给参考原文
+      if (isCopyGateError(e)) return { ok: false, reason: copyGateAdoptMessage(e), error: e, authorBackup, copyBlocked: true };
+      const code = (e && e.code) || "";
+      // 作者稿在这之间被别处存过（按修订号拒绝）：说清楚、作者稿没动；再试一次时预检会先读到服务端眼下的那一版（复核四 W1-R4B-4）
+      if (code === "AUTHOR_DRAFT_CONFLICT") {
+        return { ok: false, reason: "服务器上的作者稿刚在别处更新过，这次没有覆盖，作者稿也没有被改动；再试一次会先读到最新的一版", error: e, authorBackup };
+      }
+      const msg = (e && e.message) || String(e || "");
+      return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
+    }
+    adoption = landed;
   }
   // 2) 服务端已经保存并归档同一修订；这里只吸收回包，不再 PATCH 新修订。
   let cacheWarning = null;
   try {
-    const synced = WrDocs.acceptCanonical(sid, html, adoption);
+    const synced = WrDocs.acceptCanonical(sid, html, adoption, { token: adopting });
     if (synced && synced.localDurable === false) cacheWarning = "正文已安全归档到服务器，但浏览器缓存写入失败；刷新后可从服务器恢复";
   } catch (e) {
     cacheWarning = "正文已安全归档到服务器，但本地状态同步失败；请刷新页面从服务器恢复";

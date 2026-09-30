@@ -22,8 +22,12 @@ function storageKeyFor(workId, sid, base) {
   return workId === activeWorkId() ? wsKey(base + sid) : `${base}${sid}::${workId}`;
 }
 
+function pendingKeyOf(m) {
+  return storageKeyFor(m.workId, m.sid, "wr-doc-pending:");
+}
+
 function pendingRead(m) {
-  try { return localStorage.getItem(storageKeyFor(m.workId, m.sid, "wr-doc-pending:")); } catch (e) { return null; }
+  try { return localStorage.getItem(pendingKeyOf(m)); } catch (e) { return null; }
 }
 
 /* 草稿 id 只记尾巴（后端的 id 很长，尾巴是随机的那一截）：标记要短，本机存储满了时也写得进去 */
@@ -31,26 +35,56 @@ function draftTail(draftId) {
   return String(draftId || "").slice(-12);
 }
 
-/* 未同步标记里记下的「这一稿写在服务端哪一版上」{ draft, revision }；旧版的标记（只有时刻）、不知道的 → null */
+/* 一段正文的指纹：字数 + 文字（连同分段、空行、格式；写法不同算一样，见 docText）的散列。未同步标记用它记下自己说的是哪一段字 */
+function textFingerprint(html) {
+  const text = docText(html);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${text.length.toString(36)}.${hash.toString(36)}`;
+}
+
+/* 未同步标记里记下的：共用读缓存里那一稿写在服务端哪一版上（draft / revision，不知道时都是 null）、是哪一段字（fp，
+   没有指纹的旧版标记是 null）。没有标记 → null */
 function pendingBase(m) {
   const raw = pendingRead(m);
   if (!raw) return null;
-  const [, revision, draft] = String(raw).split("|");
+  const [, revision, draft, fp] = String(raw).split("|");
   const rev = Number(revision);
-  return draft && Number.isInteger(rev) ? { draft, revision: rev } : null;
+  const known = !!draft && revision !== "" && Number.isInteger(rev);
+  return { draft: known ? draft : null, revision: known ? rev : null, fp: fp || null };
 }
 
 /* 未同步标记：dirty 只在内存，重启浏览器即丢；标记跨会话存活，下次水合据此先留冲突副本，不让服务端旧稿静默盖掉本机较新的稿。
-   值是「时刻|修订号|草稿 id 的尾巴」：共用读缓存里那一稿写在服务端哪一版上（下次打开时服务端若还停在那一版，作者在它上面
-   接着写的字就是那一版的下一稿，照常保存）。base 没给（水合之前不知道）时沿用标记里原有的。 */
-function pendingWrite(m, base) {
-  const known = base ? { draft: draftTail(base.draftId), revision: base.revision } : pendingBase(m);
-  let value = String(Date.now());
-  if (known && known.draft && Number.isInteger(known.revision)) value += `|${known.revision}|${known.draft}`;
-  try { localStorage.setItem(storageKeyFor(m.workId, m.sid, "wr-doc-pending:"), value); } catch (e) {}
+   值是「时刻|修订号|草稿 id 的尾巴|指纹」：共用读缓存里那一稿（html；没给就是眼下存在那里的那一份）是哪一段字、写在服务端
+   哪一版上（base { draftId 或 draft, revision }）——下次打开时服务端若还停在那一版、作者又正是在这段字上接着写的，那就是那一版的
+   下一稿，照常保存。不知道写在哪一版上（base 为空）就空着，不沿用原来那个标记的：它说的是另一段字（复核四 W1-R4A-2）。
+   → { ok, error }：本机存储满了写不进去时 ok=false——调用方据此决定这一稿算不算在本机落了地（复核四 W1-R4B-1） */
+function pendingWrite(m, base, html) {
+  const text = html === undefined ? readStored(m.workId, m.sid) : html;
+  const draft = base ? (base.draft || draftTail(base.draftId)) : "";
+  const known = !!draft && Number.isInteger(base && base.revision);
+  const value = `${Date.now()}|${known ? base.revision : ""}|${known ? draft : ""}|${textFingerprint(text)}`;
+  try {
+    localStorage.setItem(pendingKeyOf(m), value);
+    return { ok: true, error: null };
+  } catch (error) {
+    return { ok: false, error: storageFailure(error) };
+  }
 }
+
+/* 把未同步标记放回先前那个值（raw 为 null = 先前没有标记）：新的那一稿没写进读缓存，标记还得说那里原有的那一份 */
+function pendingRestore(m, raw) {
+  try {
+    if (raw == null) localStorage.removeItem(pendingKeyOf(m));
+    else localStorage.setItem(pendingKeyOf(m), raw);
+  } catch (e) { /* 放不回去：标记说的是没写进去的那一稿，下次打开时照样当成没同步上的留一份，不会盖掉谁 */ }
+}
+
 function pendingClear(m) {
-  try { localStorage.removeItem(storageKeyFor(m.workId, m.sid, "wr-doc-pending:")); } catch (e) {}
+  try { localStorage.removeItem(pendingKeyOf(m)); } catch (e) {}
 }
 
 function readStored(workId, sid) {
@@ -213,6 +247,6 @@ function sameManuscriptText(a, b) {
 }
 
 export {
-  cacheRead, cacheReadForWork, cacheWrite, docText, draftTail, pendingBase, pendingClear, pendingRead, pendingWrite, readCache,
-  readSlot, rememberInSession, sameManuscriptText, toDocHTML,
+  cacheRead, cacheReadForWork, cacheWrite, docText, draftTail, pendingBase, pendingClear, pendingRead, pendingRestore, pendingWrite,
+  readCache, readSlot, rememberInSession, sameManuscriptText, textFingerprint, toDocHTML,
 };
