@@ -39,6 +39,13 @@ const baseSnowSync = () => ({
   feStepKey: () => "",
   resync: vi.fn(async () => ({ synced: 0 })),
 });
+/* 资料库的读取（章节编排的视角候选读它的人物）：用例自己往 lib.entries 里放人，改完 bump 一下 */
+const lib = vi.hoisted(() => ({ entries: [], rev: 0, subs: new Set() }));
+vi.mock("./ws-library-data.jsx", () => ({
+  LIB_ENTRIES: lib.entries,
+  libSnapshot: () => lib.rev,
+  libSubscribe: (fn) => { lib.subs.add(fn); return () => lib.subs.delete(fn); },
+}));
 vi.mock("./ws-chapter-run.jsx", () => ({
   ArrChapterRunAction: () => <button type="button">运行本章</button>,
 }));
@@ -73,6 +80,7 @@ const byText = (selector, text) => [...host.querySelectorAll(selector)].find((no
 
 beforeEach(() => {
   snow.current = baseSnowSync();
+  lib.entries.length = 0;
   catalogState.ready = false;
   catalogState.chapters = [];
   catalogState.error = null;
@@ -218,6 +226,31 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(host.querySelector("button.arr-beats")).toBeNull();
     await act(async () => click(host.querySelectorAll(".arr-scene")[1].querySelector(".arr-beats")));
     expect(host.textContent).toContain("已选 1 / 2 场");
+  });
+
+  it("手加的场：视角候选取自资料库的人物与各场用过的视角——不必先打开资料库；资料库读回来就跟着变", async () => {
+    lib.entries.push({ cat: "people", name: "林昭" }, { cat: "places", name: "雨城" });
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [
+      chapter("ch01", "第一章", {
+        scenes: [
+          { sid: "s1", backendId: "b1", title: "开场", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" },
+          { sid: "s2", backendId: "b2", title: "构思的场", kind: "主动", state: "todo", goal: "目标", obstacle: "冲突", turn: "挫折", povName: "顾行", design: { origin: "snowflake", owner: "plan" } },
+        ],
+      }),
+      chapter("ch02", "第二章", { scenes: [{ sid: "s3", backendId: "b3", title: "夜渡", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "", povName: "待定" }] }),
+    ];
+    await act(async () => root.render(<WsAuthor />));
+    const input = host.querySelector('input[aria-label="开场 · 视角"]');
+    const options = () => [...document.getElementById(input.getAttribute("list")).querySelectorAll("option")].map((o) => o.value);
+    expect(options()).toEqual(["林昭", "顾行"]);
+
+    lib.entries.push({ cat: "people", name: "周川" });
+    lib.rev += 1;
+    await act(async () => { lib.subs.forEach((fn) => fn()); });
+    expect(options()).toEqual(["林昭", "周川", "顾行"]);
   });
 
   it("批量删除被作者取消时不写目录（confirm 是真闸门，不是装饰）", async () => {

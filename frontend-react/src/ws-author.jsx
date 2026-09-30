@@ -198,7 +198,7 @@ function WsAuthor({ go }) {
             <ArrRail chapters={chapters} numOf={numOf} pickedId={ch.id} onPick={openChapter} rowDnd={chDnd.row} boardDnd={chDnd.board}
               canMove={chDnd.canMove} onMove={chDnd.move}
               onBack={backToOverview} onNew={() => addChapter({ afterId: ch.id })} />
-            <ArrEditor ch={ch} num={numOf[ch.id]} prev={prev} next={next} numOf={numOf}
+            <ArrEditor ch={ch} chapters={chapters} num={numOf[ch.id]} prev={prev} next={next} numOf={numOf}
               sceneDnd={scDnd} onAddScene={edits.addScene} onCycleKind={edits.cycleKind} onDeleteScene={edits.deleteScene} onEditScene={edits.editScene}
               onPatchTitle={edits.patchTitle} onPatchDrama={edits.patchDrama} onDeleteChapter={edits.deleteChapter} onOpenTrash={openTrash}
               highlightSid={highlightSid} onClearHighlight={clearHighlight}

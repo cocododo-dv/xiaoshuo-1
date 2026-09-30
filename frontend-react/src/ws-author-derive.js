@@ -21,6 +21,16 @@ const isBlank = (value) => {
 };
 const clean = (value) => (isBlank(value) ? "" : String(value).trim());
 
+/* 视角候选（手加的场填视角时的下拉）：资料库里的人物，再加上目录里各场已经用过的视角名（资料库没建档的人也在）；
+   去重、保持先后，占位词（待定……）不算名字 */
+export function arrPovCandidates(entries, chapters) {
+  const names = [];
+  const add = (name) => { const text = clean(name); if (text && !names.includes(text)) names.push(text); };
+  (entries || []).forEach((entry) => { if (entry && entry.cat === "people") add(entry.name); });
+  (chapters || []).forEach((c) => ((c && c.scenes) || []).forEach((s) => add(s && s.povName)));
+  return names;
+}
+
 /* 这一章的结构归构思的分章（先后 / 幕 / 成员只在「整理章节结构」里改）吗 */
 export const arrIsPlanChapter = (c) => !!(c && c.structure && c.structure.owner === "plan");
 export const arrIsPlanScene = (s) => !!(s && s.design && s.design.owner === "plan");

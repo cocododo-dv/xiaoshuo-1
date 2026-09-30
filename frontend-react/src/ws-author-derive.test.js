@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   arrActSpans, arrBookFacts, arrBookSpine, arrChapterChecks, arrChapterEdge, arrChapterFacts,
-  arrIsPlanChapter, arrLensChapters, arrRailTally, arrRangeLabel, arrSceneBeatsPlanned,
+  arrIsPlanChapter, arrLensChapters, arrPovCandidates, arrRailTally, arrRangeLabel, arrSceneBeatsPlanned,
 } from "./ws-author-derive.js";
 import { arrDeriveIssues } from "./ws-author-doctor.jsx";
 import { chapterStage, chapterStageDerived } from "./labels/catalog.js";
@@ -50,6 +50,13 @@ describe("章节编排 · 派生层", () => {
     expect(arrChapterEdge(chapter("ch09"), "exit")).toBe("");
     expect(arrRangeLabel({ sceneRange: { first: 4, last: 4 } })).toBe("第 4 场");
     expect(arrRangeLabel({ sceneRange: null })).toBe("");
+  });
+
+  it("视角候选：资料库的人物在前，各场用过、资料库里还没建档的视角名跟在后面；去重、不收占位词", () => {
+    const entries = [{ cat: "people", name: "林昭" }, { cat: "places", name: "雨城" }, { cat: "people", name: " 顾行 " }];
+    const chapters = [chapter("ch01", { scenes: [scene("a", { povName: "顾行" }), scene("b", { povName: "老陈" })] }), chapter("ch02", { scenes: [scene("c", { povName: "待定" })] })];
+    expect(arrPovCandidates(entries, chapters)).toEqual(["林昭", "顾行", "老陈"]);
+    expect(arrPovCandidates(null, null)).toEqual([]);
   });
 
   it("系统占位的三拍按没规划算", () => {

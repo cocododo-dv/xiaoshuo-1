@@ -1,10 +1,11 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { ARR_SCENE_STATE } from "./ws-author-data.js";
-import { arrIsPlanScene } from "./ws-author-derive.js";
+import { arrIsPlanScene, arrPovCandidates } from "./ws-author-derive.js";
 import { ArrGrip, ArrSceneStateTag, blurOnEnter } from "./ws-author-ui.jsx";
 import { KIND_FIELDS_GCS, KIND_FIELDS_RDD } from "./ws-catalog-adapt.js";
 import { sceneDesignModel } from "./ws-scene-design.jsx";
+import { LIB_ENTRIES, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
 import { EmptyState, IconButton, Tag } from "./ws-ui.jsx";
 import { sceneNoLabel } from "./labels/catalog.js";
 
@@ -16,13 +17,16 @@ import { sceneNoLabel } from "./labels/catalog.js";
    就在这里改（ArrDeskBeats）。题名、状态、删除、分流执行两种场都照常。
    ========================================================== */
 
-const { useEffect, useMemo, useRef, useState } = React;
+const { useEffect, useMemo, useRef, useState, useSyncExternalStore } = React;
 
-/* POV 候选（best-effort，取自资料库人物；冷启动没有人物时为空，仍可自由输入新名） */
-const arrPovOptions = () => {
-  try { return [...new Set((window.LIB_ENTRIES || []).filter((e) => e.cat === "people").map((e) => e.name).filter(Boolean))]; }
-  catch (e) { return []; }
-};
+/* 视角候选：资料库的人物（ES 导入资料库的读取：挂上就会读一次；以前读 window.LIB_ENTRIES，只有这次会话打开过
+   资料库才有，冷启动进章节编排时下拉是空的）+ 目录里各场已经用过的视角名。资料库读回来 / 改了就跟着变。
+   候选只是建议，仍可自由输入新名。 */
+function useArrPovOptions(chapters) {
+  const revision = useSyncExternalStore(libSubscribe, libSnapshot, libSnapshot);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => arrPovCandidates(LIB_ENTRIES, chapters), [revision, chapters]);
+}
 
 const ARR_PLAN_OWNED_TIP = "这一场是雪花整理出来的：形态、三拍、视角在构思第 10 步改，确认后自动同步到这里";
 
@@ -148,7 +152,7 @@ function ArrSceneRow({
 /* 场景看板：这一页真正干活的地方。与全书编排同一套模式语言：多选态下看板头部只剩批量操作。
    从结构镜头点进某一场时，把那一行滚进视野并短暂标出来（highlightSid）。 */
 function ArrSceneBoard({
-  ch, locked, sceneDnd, sceneBatch, highlightSid, onClearHighlight, onAddScene, onCycleKind, onDeleteScene, onEditScene,
+  ch, chapters, locked, sceneDnd, sceneBatch, highlightSid, onClearHighlight, onAddScene, onCycleKind, onDeleteScene, onEditScene,
   onOpenTrash, onEditPlan, onForkWrite, onForkAI, sectionRef,
 }) {
   const scenes = ch.scenes || [];
@@ -157,7 +161,7 @@ function ArrSceneBoard({
   const sb = sceneBatch;
   const sceneSelectMode = !!sb.mode && !locked;
   const sceneSelected = scenes.filter((s) => sb.has(s.sid)).length;
-  const povOptions = useMemo(arrPovOptions, [ch.id]);
+  const povOptions = useArrPovOptions(chapters);
   const povListId = povOptions.length ? `arr-pov-${ch.id}` : undefined;
   const models = useMemo(() => scenes.map((s, index) => (arrIsPlanScene(s) ? sceneDesignModel({ chapter: ch, scene: s, index }) : null)), [ch, scenes]);
   const listRef = useRef(null);

@@ -100,7 +100,7 @@ function ArrPlanStrip({ ch, snow, locked, onOpenPlan, onEditPlan }) {
 
 /* ---- 编辑器 ---- */
 function ArrEditor({
-  ch, num, prev, next, numOf, sceneDnd, onAddScene, onCycleKind, onDeleteScene, onEditScene,
+  ch, chapters, num, prev, next, numOf, sceneDnd, onAddScene, onCycleKind, onDeleteScene, onEditScene,
   onPatchTitle, onPatchDrama, onDeleteChapter, onOpenTrash, highlightSid, onClearHighlight, onJump, onBack, snow, chapterRun,
   sceneBatch, onOpenPlan, ctxOpen, onToggleCtx, warnCount, goView, onConfigureModel,
 }) {
@@ -165,7 +165,7 @@ function ArrEditor({
         <ArrPlanStrip ch={ch} snow={snow} locked={locked} onOpenPlan={onOpenPlan} onEditPlan={editInPlan} />
 
         {/* scene board —— 这一页真正干活的地方，放在最前面 */}
-        <ArrSceneBoard ch={ch} locked={locked} sceneDnd={sceneDnd} sceneBatch={sceneBatch} sectionRef={refs.scenes}
+        <ArrSceneBoard ch={ch} chapters={chapters} locked={locked} sceneDnd={sceneDnd} sceneBatch={sceneBatch} sectionRef={refs.scenes}
           highlightSid={highlightSid} onClearHighlight={onClearHighlight} onAddScene={onAddScene} onCycleKind={onCycleKind}
           onDeleteScene={onDeleteScene} onEditScene={onEditScene} onOpenTrash={onOpenTrash}
           onEditPlan={editInPlan} onForkWrite={forkWrite} onForkAI={forkAI} />
