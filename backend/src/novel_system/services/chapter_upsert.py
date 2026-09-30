@@ -14,7 +14,7 @@ from novel_system.db.models import ChapterGoal, ChapterState
 from novel_system.services.chapter_approval import is_chapter_approved, require_chapter_mutation_allowed
 from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.errors import DomainError
-from novel_system.services.text_validation import validate_user_text_payload
+from novel_system.services.text_input import validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
 
