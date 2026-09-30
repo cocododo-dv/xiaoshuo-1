@@ -48,6 +48,15 @@ def _active_snapshot_value(session, category: str, column):
     ).first()
 
 
+def active_snapshot(session, category: str) -> SystemConfigSnapshot | None:
+    """活动快照这一行（同一类别有多条活动行时取版本最高、最新的那条）；没有 → ``None``。"""
+    return session.execute(
+        select(SystemConfigSnapshot)
+        .where(SystemConfigSnapshot.category == category, SystemConfigSnapshot.active_flag == 1)
+        .order_by(SystemConfigSnapshot.version.desc(), SystemConfigSnapshot.created_at.desc())
+    ).scalars().first()
+
+
 def active_config_payload(session, category: str) -> dict[str, Any] | None:
     """在调用方的会话里读活动快照的 ``parsed_json``（新 dict）；没有活动快照 → ``None``。"""
     row = _active_snapshot_value(session, category, SystemConfigSnapshot.parsed_json)
@@ -72,6 +81,7 @@ def load_active_config_parsed(
     parse: Callable[[dict[str, Any]], T],
     *,
     cache: ContentKeyedCache,
+    key_extra: tuple = (),
     session_factory=SessionLocal,
     sleep: Callable[[float], None] = time.sleep,
 ) -> T | None:
@@ -80,6 +90,7 @@ def load_active_config_parsed(
     ``payload`` 与 ``load_active_config_payload`` 返回的完全相同。每次调用都读一次活动快照的
     ``parsed_json`` 原文（一条窄查询，不解码 JSON），原文变了（保存 / 切换 / 回滚快照、别的进程激活新快照、
     迁移就地改写）就重新解析——所以作者在系统配置里一保存，下一次读取就是新配置。
+    ``parse`` 还依赖快照之外的内容（例如仓库里的配置文件）时，把那份内容放进 ``key_extra``。
     """
 
     def _read():
@@ -93,7 +104,7 @@ def load_active_config_parsed(
         return None
     stored = row[0]
     return cache.get_or_build(
-        ("snapshot", category, stored),
+        ("snapshot", category, stored, *key_extra),
         lambda: parse(_decode_stored_payload(stored)),
     )
 

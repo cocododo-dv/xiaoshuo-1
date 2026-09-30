@@ -1,27 +1,31 @@
-"""token/费用聚合（结果闭环治理设计 §5.8/§10，Wave 6）。
+"""token / 金额聚合：场景 / 章节 / 全书三级 + 成本看板（结果闭环治理设计 §5.8/§10）。
 
-基于现有 ``LlmCall``（token/延迟）+ ``SceneRunState``（5× 预算）建立聚合，
-**不复制调用日志、不新增列**。价格层在 ``services/pricing.py``。
+基于 ``LlmCall``（逻辑调用，父行）+ ``LlmCallAttempt``（物理尝试）+ ``SceneRunState``（场景预算）聚合，
+不复制调用日志、不新增列。单价在 ``services/pricing.py``。
 
-完成门：任意场景可解释——
-- 总成本 + 币种（跨 provider 汇总以**费用**为准，§5.8）；
-- 各阶段占比（候选生成 / QC / 修订 / 评审）；
-- 是否超预算（5× 上限使用率，源自 SceneRunState）；
-- 评审是否独立（observed → config 回退，见 model_independence）。
+以 token 为主（2026-09-30 重构 P06 · 批准#4，审计 B09-17）：各级汇总与看板的构成、排序都按 token；
+金额只算价书（``config/pricing.yaml``）里写了单价的模型，其余是「未定价」——``cost`` 为 ``None``，
+不再用占位估算价编一个数。每级汇总带 ``pricing``：已定价 / 未定价各多少调用、多少 token、哪些模型没有单价。
 
 口径纪律（§5.8）：
-- 跨 provider 的 token 不直接相加（分词器不同）——``tokens_by_provider`` 分列；
+- 跨服务的 token 分列（``tokens_by_provider``：分词器不同，只作参考）；
 - 三口径 estimate / provider_actual / budget_charged，父调用只汇总一次；
-- 额外成本可归因（失败重试 / 重复 QC / 低分散补候选）。
+- 额外成本只算真正白花的：发出去却失败了的物理尝试（重评 R2 第 5 项删了「重复质检」与「补候选」两项，
+  见 :func:`_extra_cost`）。
+
+性能（审计 B09-15）：调用与物理尝试各一次查询、只取要用的列；每条调用只折算一次价格；
+归档场景 / 章节各一次聚合查询（不再逐章查）。
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, distinct, func, or_, select
+from sqlalchemy.engine import Row
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -41,9 +45,6 @@ PHASE_REVISION = "revision"
 PHASE_REVIEW = "review"
 PHASE_OTHER = "other"
 _PHASES = (PHASE_CANDIDATE, PHASE_QC, PHASE_REVISION, PHASE_REVIEW, PHASE_OTHER)
-
-# criticality → Best-of-N 初始候选数（与 scene_criticality 语义一致；超出即补候选）
-_INITIAL_CANDIDATES = {"critical": 3, "standard": 2, "transition": 1}
 
 
 def classify_phase(node_id: str | None, step: str | None = None) -> str:
@@ -82,52 +83,126 @@ def classify_phase(node_id: str | None, step: str | None = None) -> str:
     return PHASE_OTHER
 
 
-def _call_cost(call: LlmCall) -> dict[str, Any]:
-    return pricing.compute_cost(
-        call.provider,
-        call.model,
-        call.prompt_tokens,
-        call.completion_tokens,
-        at=call.created_at,
-    )
+# 调用 / 物理尝试只取聚合要用的列：``request_payload_summary`` 等 JSON 摘要列不读（审计 B09-15）
+_CALL_COLUMNS = (
+    LlmCall.llm_call_id,
+    LlmCall.provider,
+    LlmCall.model,
+    LlmCall.node_id,
+    LlmCall.step,
+    LlmCall.scene_id,
+    LlmCall.chapter_id,
+    LlmCall.prompt_tokens,
+    LlmCall.completion_tokens,
+    LlmCall.total_tokens,
+    LlmCall.estimated_tokens,
+    LlmCall.budget_charged_tokens,
+    LlmCall.usage_is_estimate,
+    LlmCall.error_code,
+    LlmCall.accounting_status,
+    LlmCall.latency_ms,
+    LlmCall.created_at,
+)
+_ATTEMPT_COLUMNS = (
+    LlmCallAttempt.llm_call_id,
+    LlmCallAttempt.provider_attempt_no,
+    LlmCallAttempt.dispatch_kind,
+    LlmCallAttempt.prompt_tokens,
+    LlmCallAttempt.completion_tokens,
+    LlmCallAttempt.total_tokens,
+    LlmCallAttempt.usage_is_estimate,
+    LlmCallAttempt.accounting_status,
+    LlmCallAttempt.error_code,
+    LlmCallAttempt.request_dispatched_at,
+)
+_LEGACY_ID_CHUNK = 500
+_FAILED_ATTEMPT_STATUSES = frozenset({"failed", "usage_exceeds_reservation"})
+_DEGRADE_DISPATCH_KINDS = frozenset({"api_mode_degrade", "structured_output_degrade", "missing_text_degrade"})
+_ACCOUNTING_MARKER = "_accounting_provider_execution_mode"
 
 
-def _attempt_cost(call: LlmCall, attempt: LlmCallAttempt) -> dict[str, Any]:
-    return pricing.compute_cost(
-        call.provider,
-        call.model,
-        attempt.prompt_tokens,
-        attempt.completion_tokens,
-        at=call.created_at,
-    )
+@dataclass(slots=True)
+class _Ledger:
+    """一个范围（场景 / 章节 / 全书）的调用、它们的物理尝试、每条调用的金额（只折算一次，价书只读一次）。"""
+
+    calls: list[Row]
+    attempts: dict[str, list[Row]]
+    costs: dict[str, dict[str, Any]]
+    legacy_ids: frozenset[str]
+    book: pricing.PriceBook
 
 
-def _empty_phase_breakdown() -> dict[str, dict[str, Any]]:
-    return {p: {"tokens": 0, "cost": 0.0, "share": 0.0, "call_count": 0} for p in _PHASES}
+def _legacy_parent_ids(session: Session, call_ids: list[str]) -> frozenset[str]:
+    """没有物理尝试行、请求摘要里也没有记账标记的父调用：迁移 0064 之前的老记录。只对这几行读摘要列。"""
+    legacy: set[str] = set()
+    for start in range(0, len(call_ids), _LEGACY_ID_CHUNK):
+        chunk = call_ids[start : start + _LEGACY_ID_CHUNK]
+        rows = session.execute(
+            select(LlmCall.llm_call_id, LlmCall.request_payload_summary).where(LlmCall.llm_call_id.in_(chunk))
+        )
+        for call_id, summary in rows:
+            if not isinstance(summary, dict) or _ACCOUNTING_MARKER not in summary:
+                legacy.add(call_id)
+    return frozenset(legacy)
 
 
-def _aggregate_calls(session: Session, calls: list[LlmCall]) -> dict[str, Any]:
-    """把一组 LlmCall 折算为费用/阶段/provider 维度的通用聚合（scene/chapter/project 复用）。"""
-    total_cost = 0.0
-    total_tokens = 0
-    is_estimate = False
-    currency: str | None = None
-    phase = _empty_phase_breakdown()
-    tokens_by_provider: dict[str, int] = {}
-    cost_by_provider: dict[str, float] = {}
-    attempts_by_call: dict[str, list[LlmCallAttempt]] = {}
+def _load_ledger(session: Session, condition: ColumnElement[bool]) -> _Ledger:
+    calls = list(session.execute(select(*_CALL_COLUMNS).where(condition)).all())
+    attempts: dict[str, list[Row]] = {}
     if calls:
-        attempts = session.execute(
-            select(LlmCallAttempt)
-            .where(LlmCallAttempt.llm_call_id.in_([call.llm_call_id for call in calls]))
-            .order_by(
-                LlmCallAttempt.llm_call_id.asc(),
-                LlmCallAttempt.provider_attempt_no.asc(),
-            )
-        ).scalars().all()
-        for attempt in attempts:
-            attempts_by_call.setdefault(attempt.llm_call_id, []).append(attempt)
+        rows = session.execute(
+            select(*_ATTEMPT_COLUMNS)
+            .where(LlmCallAttempt.llm_call_id.in_(select(LlmCall.llm_call_id).where(condition)))
+            .order_by(LlmCallAttempt.llm_call_id.asc(), LlmCallAttempt.provider_attempt_no.asc())
+        )
+        for attempt in rows:
+            attempts.setdefault(attempt.llm_call_id, []).append(attempt)
+    book = pricing.load_price_book()
+    costs = {
+        call.llm_call_id: pricing.compute_cost(
+            call.provider, call.model, call.prompt_tokens, call.completion_tokens, at=call.created_at, book=book
+        )
+        for call in calls
+    }
+    without_attempts = [call.llm_call_id for call in calls if call.llm_call_id not in attempts]
+    return _Ledger(calls, attempts, costs, _legacy_parent_ids(session, without_attempts), book)
 
+
+# ---- token 桶：token / 调用数为主，金额只累计已定价的部分 ------------------------------------------
+
+def _bucket(**fields: Any) -> dict[str, Any]:
+    return {**fields, "tokens": 0, "call_count": 0, "_money": 0.0, "_priced": 0}
+
+
+def _add(bucket: dict[str, Any], tokens: Any, cost: dict[str, Any]) -> None:
+    bucket["tokens"] += int(tokens or 0)
+    bucket["call_count"] += 1
+    if cost["priced"]:
+        bucket["_money"] += cost["cost"]
+        bucket["_priced"] += 1
+
+
+def _close(bucket: dict[str, Any], *, with_priced: bool = False) -> dict[str, Any]:
+    """桶收口：金额 = 已定价部分之和；一条已定价的都没有 → ``None``（未定价），不是 0。"""
+    money, priced = bucket.pop("_money"), bucket.pop("_priced")
+    bucket["cost"] = money if priced else None
+    if with_priced:
+        bucket["priced"] = priced == bucket["call_count"]
+    return bucket
+
+
+def _money_sum(values: list[float | None]) -> float | None:
+    priced = [value for value in values if value is not None]
+    return sum(priced) if priced else None
+
+
+def _summarize(ledger: _Ledger) -> dict[str, Any]:
+    """一个范围的通用汇总（场景 / 章节 / 全书共用）。"""
+    total = _bucket()
+    phases = {phase: _bucket() for phase in _PHASES}
+    providers: dict[str, dict[str, Any]] = {}
+    unpriced_models: dict[tuple[str, str], dict[str, Any]] = {}
+    is_estimate = False
     estimated_tokens = 0
     provider_actual_tokens = 0
     budget_charged_tokens = 0
@@ -142,26 +217,19 @@ def _aggregate_calls(session: Session, calls: list[LlmCall]) -> dict[str, Any]:
     degrade_attempt_count = 0
     legacy_parent_without_attempt_count = 0
     legacy_unreconstructable_tokens = 0
-    for call in calls:
-        cost = _call_cost(call)
+    for call in ledger.calls:
+        cost = ledger.costs[call.llm_call_id]
         tokens = int(call.total_tokens or 0)
-        total_cost += cost["cost"]
-        total_tokens += tokens
-        is_estimate = (
-            is_estimate
-            or bool(cost["is_estimate"])
-            or bool(call.usage_is_estimate)
-        )
-        currency = currency or cost["currency"]
-        ph = classify_phase(call.node_id, call.step)
-        phase[ph]["tokens"] += tokens
-        phase[ph]["cost"] += cost["cost"]
-        phase[ph]["call_count"] += 1
-        prov = call.provider or "unknown"
-        tokens_by_provider[prov] = tokens_by_provider.get(prov, 0) + tokens
-        cost_by_provider[prov] = cost_by_provider.get(prov, 0.0) + cost["cost"]
+        _add(total, tokens, cost)
+        _add(phases[classify_phase(call.node_id, call.step)], tokens, cost)
+        provider = call.provider or "unknown"
+        _add(providers.setdefault(provider, _bucket()), tokens, cost)
+        if not cost["priced"]:
+            key = (provider, call.model or "unknown")
+            _add(unpriced_models.setdefault(key, _bucket(provider=key[0], model=key[1])), tokens, cost)
+        is_estimate = is_estimate or bool(call.usage_is_estimate)
 
-        call_attempts = attempts_by_call.get(call.llm_call_id, [])
+        call_attempts = ledger.attempts.get(call.llm_call_id, [])
         if call_attempts:
             # 父调用是唯一逻辑/报表层；它的账目字段已是物理尝试之和。
             estimated_tokens += int(call.estimated_tokens or 0)
@@ -186,17 +254,11 @@ def _aggregate_calls(session: Session, calls: list[LlmCall]) -> dict[str, Any]:
                     transport_retry_attempt_count += 1
                 if dispatched and attempt.dispatch_kind == "response_parse_retry":
                     response_parse_retry_attempt_count += 1
-                if dispatched and attempt.dispatch_kind in {
-                    "api_mode_degrade",
-                    "structured_output_degrade",
-                    "missing_text_degrade",
-                }:
+                if dispatched and attempt.dispatch_kind in _DEGRADE_DISPATCH_KINDS:
                     degrade_attempt_count += 1
             continue
 
-        request_summary = call.request_payload_summary or {}
-        is_legacy_parent = "_accounting_provider_execution_mode" not in request_summary
-        if is_legacy_parent:
+        if call.llm_call_id in ledger.legacy_ids:
             # 0064 前的父调用没有物理尝试行和新账目字段；显式兼容读取。
             legacy_parent_without_attempt_count += 1
             legacy_unreconstructable_tokens += tokens
@@ -210,8 +272,23 @@ def _aggregate_calls(session: Session, calls: list[LlmCall]) -> dict[str, Any]:
         else:
             estimated_tokens += int(call.estimated_tokens or 0)
             budget_charged_tokens += int(call.budget_charged_tokens or 0)
-    for ph in phase.values():
-        ph["share"] = (ph["cost"] / total_cost) if total_cost > 0 else 0.0
+
+    total_tokens = total["tokens"]
+    priced_call_count = total["_priced"]
+    _close(total)
+    phase_breakdown: dict[str, dict[str, Any]] = {}
+    for phase, bucket in phases.items():
+        _close(bucket)
+        # 占比按 token：金额只覆盖已定价的模型，按金额算的占比会把未定价的阶段算成 0
+        bucket["share"] = (bucket["tokens"] / total_tokens) if total_tokens > 0 else 0.0
+        phase_breakdown[phase] = bucket
+    for bucket in providers.values():
+        _close(bucket)
+    unpriced = sorted(
+        ({key: value for key, value in _close(bucket).items() if key != "cost"} for bucket in unpriced_models.values()),
+        key=lambda item: (-item["tokens"], item["provider"], item["model"]),
+    )
+    unpriced_tokens = sum(item["tokens"] for item in unpriced)
     estimate_legacy_suffix = (
         "_with_legacy_total_tokens_fallback"
         if legacy_parent_without_attempt_count
@@ -223,15 +300,23 @@ def _aggregate_calls(session: Session, calls: list[LlmCall]) -> dict[str, Any]:
         else ""
     )
     return {
-        "total_cost": total_cost,
         "total_tokens": total_tokens,
-        "currency": currency or "USD",
+        "call_count": total["call_count"],
+        "total_cost": total["cost"],
+        "currency": ledger.book.currency if priced_call_count else None,
         "is_estimate": is_estimate,
-        "cross_provider": len(tokens_by_provider) > 1,
-        "tokens_by_provider": tokens_by_provider,
-        "cost_by_provider": cost_by_provider,
-        "phase_breakdown": phase,
-        "call_count": len(calls),
+        "pricing": {
+            "priced_call_count": priced_call_count,
+            "unpriced_call_count": total["call_count"] - priced_call_count,
+            "priced_tokens": total_tokens - unpriced_tokens,
+            "unpriced_tokens": unpriced_tokens,
+            "complete": priced_call_count == total["call_count"],
+            "unpriced_models": unpriced,
+        },
+        "cross_provider": len(providers) > 1,
+        "tokens_by_provider": {provider: bucket["tokens"] for provider, bucket in providers.items()},
+        "cost_by_provider": {provider: bucket["cost"] for provider, bucket in providers.items()},
+        "phase_breakdown": phase_breakdown,
         "calibers": {
             "estimate": {
                 "tokens": estimated_tokens,
@@ -309,196 +394,124 @@ def _budget_view(state: SceneRunState | None) -> dict[str, Any]:
     }
 
 
-def _extra_cost(session: Session, scene_id: str, calls: list[LlmCall], total_cost: float,
-                state: SceneRunState | None) -> dict[str, Any]:
-    """额外成本归因（§5.8：低分散补候选 / 失败重试 / 重复 QC）。启发式、口径已注释。"""
-    ordered = sorted(calls, key=lambda c: (c.created_at or "", c.llm_call_id))
-    attempts_by_call: dict[str, list[LlmCallAttempt]] = {}
-    if ordered:
-        attempts = session.execute(
-            select(LlmCallAttempt).where(
-                LlmCallAttempt.llm_call_id.in_([call.llm_call_id for call in ordered])
-            )
-        ).scalars().all()
-        for attempt in attempts:
-            attempts_by_call.setdefault(attempt.llm_call_id, []).append(attempt)
-    # 新账本按失败物理尝试归因；legacy 无子账时回退父 error_code。
-    failed_cost = 0.0
-    for call in ordered:
-        call_attempts = attempts_by_call.get(call.llm_call_id, [])
+def _extra_cost(ledger: _Ledger, total_tokens: int) -> dict[str, Any]:
+    """白花的 token：发出去却失败了的物理尝试（报错 / 用量超出预留）；老记录没有尝试行时看父调用的 ``error_code``。
+
+    重评 R2 第 5 项（批准#2 / #4）：以前还有「重复质检」（质检阶段第 2 次起的调用）与「补候选」（超出按关键度
+    给的初始候选数的生成类调用）两项。可一轮普通起草本来就依次跑硬质检 / 软质检 / 准定稿评审三道不同的质检，
+    还有蓝图、章节架构、人物压力几次生成类调用，于是每一场都被算出两笔并不存在的额外成本（真实库里三场各
+    2 / 2 / 3 次质检被记成重复质检，5 / 1 / 1 次普通调用被记成补候选）。这两项删了，只留失败重试。
+    """
+    failed = _bucket()
+    for call in ledger.calls:
+        call_attempts = ledger.attempts.get(call.llm_call_id)
         if call_attempts:
-            failed_cost += sum(
-                _attempt_cost(call, attempt)["cost"]
-                for attempt in call_attempts
-                if attempt.request_dispatched_at is not None
-                and (
-                    attempt.error_code
-                    or attempt.accounting_status
-                    in {"failed", "usage_exceeds_reservation"}
+            for attempt in call_attempts:
+                if attempt.request_dispatched_at is None:
+                    continue
+                if not (attempt.error_code or attempt.accounting_status in _FAILED_ATTEMPT_STATUSES):
+                    continue
+                cost = pricing.compute_cost(
+                    call.provider,
+                    call.model,
+                    attempt.prompt_tokens,
+                    attempt.completion_tokens,
+                    at=call.created_at,
+                    book=ledger.book,
                 )
-            )
+                _add(failed, attempt.total_tokens, cost)
         elif call.error_code:
-            failed_cost += _call_cost(call)["cost"]
-    # 重复 QC：QC 阶段第 2 次起
-    qc_calls = [c for c in ordered if classify_phase(c.node_id, c.step) == PHASE_QC]
-    repeat_qc_cost = sum(_call_cost(c)["cost"] for c in qc_calls[1:])
-    # 低分散补候选：候选阶段超出 criticality 初始 N 的部分
-    cand_calls = [c for c in ordered if classify_phase(c.node_id, c.step) == PHASE_CANDIDATE]
-    initial = _INITIAL_CANDIDATES.get((state.criticality_level or "").lower(), 1) if state else 1
-    topup_cost = sum(_call_cost(c)["cost"] for c in cand_calls[initial:])
-    total = failed_cost + repeat_qc_cost + topup_cost
+            _add(failed, call.total_tokens, ledger.costs[call.llm_call_id])
+    _close(failed)
     return {
-        "failed_call_cost": failed_cost,
-        "repeat_qc_cost": repeat_qc_cost,
-        "low_dispersion_topup_cost": topup_cost,
-        "total": total,
-        "retry_cost_ratio": round(total / total_cost, 4) if total_cost > 0 else 0.0,
+        "failed_tokens": failed["tokens"],
+        "failed_attempt_count": failed["call_count"],
+        "failed_cost": failed["cost"],
+        "failed_share": round(min(1.0, failed["tokens"] / total_tokens), 4) if total_tokens > 0 else 0.0,
     }
 
 
 def scene_cost(session: Session, scene_id: str) -> dict[str, Any]:
-    calls = list(
-        session.execute(select(LlmCall).where(LlmCall.scene_id == scene_id)).scalars().all()
-    )
-    state = session.get(SceneRunState, scene_id)
-    agg = _aggregate_calls(session, calls)
-    budget = _budget_view(state)
-    result = {
+    ledger = _load_ledger(session, LlmCall.scene_id == scene_id)
+    summary = _summarize(ledger)
+    return {
         "scene_id": scene_id,
-        "total_cost": agg["total_cost"],
-        "currency": agg["currency"],
-        "is_estimate": agg["is_estimate"],
-        "total_tokens": agg["total_tokens"],
-        "cross_provider": agg["cross_provider"],
-        "tokens_by_provider": agg["tokens_by_provider"],
-        "cost_by_provider": agg["cost_by_provider"],
-        "phase_breakdown": agg["phase_breakdown"],
-        "call_count": agg["call_count"],
-        "budget": budget,
-        "calibers": agg["calibers"],
-        "attempt_observability": agg["attempt_observability"],
-        "extra_cost": _extra_cost(session, scene_id, calls, agg["total_cost"], state),
+        **summary,
+        "budget": _budget_view(session.get(SceneRunState, scene_id)),
+        "extra_cost": _extra_cost(ledger, summary["total_tokens"]),
     }
-    return result
 
 
-def _archived_scene_ids(session: Session, *, chapter_id: str | None = None,
-                        scene_ids: set[str] | None = None) -> set[str]:
-    stmt = select(FinalScene.scene_id).where(FinalScene.status == "archived")
-    if chapter_id is not None:
-        stmt = stmt.where(FinalScene.chapter_id == chapter_id)
-    rows = set(session.execute(stmt).scalars().all())
-    if scene_ids is not None:
-        rows &= scene_ids
-    return rows
+def _count(session: Session, statement: Any) -> int:
+    return int(session.scalar(statement) or 0)
 
 
 def chapter_cost(session: Session, chapter_id: str) -> dict[str, Any]:
-    calls = list(
-        session.execute(select(LlmCall).where(LlmCall.chapter_id == chapter_id)).scalars().all()
+    summary = _summarize(_load_ledger(session, LlmCall.chapter_id == chapter_id))
+    archived_count = _count(
+        session,
+        select(func.count(distinct(FinalScene.scene_id))).where(
+            FinalScene.status == "archived", FinalScene.chapter_id == chapter_id
+        ),
     )
-    agg = _aggregate_calls(session, calls)
-    archived = _archived_scene_ids(session, chapter_id=chapter_id)
-    archived_count = len(archived)
     return {
         "chapter_id": chapter_id,
-        "total_cost": agg["total_cost"],
-        "currency": agg["currency"],
-        "is_estimate": agg["is_estimate"],
-        "total_tokens": agg["total_tokens"],
-        "cross_provider": agg["cross_provider"],
-        "tokens_by_provider": agg["tokens_by_provider"],
-        "cost_by_provider": agg["cost_by_provider"],
-        "phase_breakdown": agg["phase_breakdown"],
-        "call_count": agg["call_count"],
-        "calibers": agg["calibers"],
-        "attempt_observability": agg["attempt_observability"],
+        **summary,
         "archived_scene_count": archived_count,
         "tokens_per_archived_scene": (
-            round(agg["total_tokens"] / archived_count) if archived_count else None
+            round(summary["total_tokens"] / archived_count) if archived_count else None
         ),
-        "cost_per_archived_chapter": agg["total_cost"] if archived_count else None,
+        "cost_per_archived_chapter": summary["total_cost"] if archived_count else None,
     }
 
 
-def _project_calls(session: Session, project_id: str, scene_ids: set[str]) -> list[LlmCall]:
-    """项目命中的全部调用：project_id 直接命中 或 scene_id ∈ 项目场景（LlmCall.project_id 可能为空）。"""
-    calls = list(
-        session.execute(select(LlmCall).where(LlmCall.project_id == project_id)).scalars().all()
-    )
-    seen = {c.llm_call_id for c in calls}
-    if scene_ids:
-        for call in session.execute(
-            select(LlmCall).where(LlmCall.scene_id.in_(scene_ids))
-        ).scalars().all():
-            if call.llm_call_id not in seen:
-                calls.append(call)
-                seen.add(call.llm_call_id)
-    return calls
+def _project_calls(project_id: str) -> ColumnElement[bool]:
+    """项目命中的调用：``project_id`` 直接命中，或 ``scene_id`` 属于项目的场景（``LlmCall.project_id`` 可能为空）。"""
+    project_scenes = select(SceneCard.scene_id).where(SceneCard.project_id == project_id)
+    return or_(LlmCall.project_id == project_id, LlmCall.scene_id.in_(project_scenes))
 
 
-def _project_scope(session: Session, project_id: str) -> tuple[set[str], set[str], list[LlmCall]]:
-    scene_ids = set(
-        session.execute(
-            select(SceneCard.scene_id).where(SceneCard.project_id == project_id)
-        ).scalars().all()
+def _project_summary(session: Session, project_id: str, ledger: _Ledger) -> dict[str, Any]:
+    summary = _summarize(ledger)
+    cards = session.execute(select(SceneCard.scene_id, SceneCard.chapter_id).where(SceneCard.project_id == project_id)).all()
+    archived = FinalScene.status == "archived"
+    archived_count = _count(
+        session,
+        select(func.count(distinct(FinalScene.scene_id))).where(
+            archived, FinalScene.scene_id.in_(select(SceneCard.scene_id).where(SceneCard.project_id == project_id))
+        ),
     )
-    chapter_ids = set(
-        session.execute(
-            select(SceneCard.chapter_id).where(SceneCard.project_id == project_id)
-        ).scalars().all()
+    archived_chapter_count = _count(
+        session,
+        select(func.count(distinct(FinalScene.chapter_id))).where(
+            archived, FinalScene.chapter_id.in_(select(SceneCard.chapter_id).where(SceneCard.project_id == project_id))
+        ),
     )
-    calls = _project_calls(session, project_id, scene_ids)
-    return scene_ids, chapter_ids, calls
+    total_cost = summary["total_cost"]
+    return {
+        "project_id": project_id,
+        **summary,
+        "chapter_count": len({card.chapter_id for card in cards}),
+        "scene_count": len({card.scene_id for card in cards}),
+        "archived_scene_count": archived_count,
+        "archived_chapter_count": archived_chapter_count,
+        "tokens_per_archived_scene": (
+            round(summary["total_tokens"] / archived_count) if archived_count else None
+        ),
+        "cost_per_archived_chapter": (
+            round(total_cost / archived_chapter_count, 6)
+            if archived_chapter_count and total_cost is not None
+            else None
+        ),
+    }
 
 
 def project_cost(session: Session, project_id: str) -> dict[str, Any]:
-    scene_ids, chapter_ids, calls = _project_scope(session, project_id)
-    return _project_summary(session, project_id, scene_ids, chapter_ids, calls)
-
-
-def _project_summary(
-    session: Session,
-    project_id: str,
-    scene_ids: set[str],
-    chapter_ids: set[str],
-    calls: list[LlmCall],
-) -> dict[str, Any]:
-    agg = _aggregate_calls(session, calls)
-    archived = _archived_scene_ids(session, scene_ids=scene_ids) if scene_ids else set()
-    archived_count = len(archived)
-    archived_chapters = {
-        cid for cid in chapter_ids
-        if _archived_scene_ids(session, chapter_id=cid)
-    }
-    return {
-        "project_id": project_id,
-        "total_cost": agg["total_cost"],
-        "currency": agg["currency"],
-        "is_estimate": agg["is_estimate"],
-        "total_tokens": agg["total_tokens"],
-        "cross_provider": agg["cross_provider"],
-        "tokens_by_provider": agg["tokens_by_provider"],
-        "cost_by_provider": agg["cost_by_provider"],
-        "phase_breakdown": agg["phase_breakdown"],
-        "call_count": agg["call_count"],
-        "calibers": agg["calibers"],
-        "attempt_observability": agg["attempt_observability"],
-        "chapter_count": len(chapter_ids),
-        "scene_count": len(scene_ids),
-        "archived_scene_count": archived_count,
-        "archived_chapter_count": len(archived_chapters),
-        "tokens_per_archived_scene": (
-            round(agg["total_tokens"] / archived_count) if archived_count else None
-        ),
-        "cost_per_archived_chapter": (
-            round(agg["total_cost"] / len(archived_chapters), 6) if archived_chapters else None
-        ),
-    }
+    return _project_summary(session, project_id, _load_ledger(session, _project_calls(project_id)))
 
 
 # ---------------------------------------------------------------------------
-# 项目成本看板（cost-dashboard）：summary 之上补趋势 / 构成 / 明细，一读拿全。
+# 项目成本看板（cost-dashboard）：summary 之上补趋势 / 构成 / 明细，一读拿全。构成与排序都按 token。
 # ---------------------------------------------------------------------------
 
 DASHBOARD_DEFAULT_DAYS = 30
@@ -515,138 +528,105 @@ def _clamp_days(days: Any) -> int:
     return max(1, min(DASHBOARD_MAX_DAYS, value))
 
 
-def _call_day(call: LlmCall) -> str:
-    """created_at 是 UTC ISO 字符串，前 10 位即日桶；缺失归空串（不进趋势）。"""
-    return (call.created_at or "")[:10]
+def _trend(ledger: _Ledger, days: int) -> dict[str, Any]:
+    """近 ``days`` 天（含今天，UTC）逐日 token / 调用数 / 金额，稠密序列——缺日补零。
 
-
-def _trend(rows: list[tuple[LlmCall, dict[str, Any]]], days: int) -> dict[str, Any]:
-    """近 ``days`` 天（含今天，UTC）逐日费用/token/调用数，稠密序列——缺日补零。"""
+    ``created_at`` 是 UTC ISO 字符串，前 10 位即日桶；缺失的不进趋势。
+    """
     today = datetime.now(UTC).date()
     window = [(today - timedelta(days=offset)).isoformat() for offset in range(days - 1, -1, -1)]
-    by_day: dict[str, dict[str, Any]] = {
-        day: {"date": day, "cost": 0.0, "tokens": 0, "call_count": 0} for day in window
-    }
-    window_start = window[0]
-    for call, cost in rows:
-        day = _call_day(call)
-        bucket = by_day.get(day)
-        if bucket is None:
-            continue
-        bucket["cost"] += cost["cost"]
-        bucket["tokens"] += int(call.total_tokens or 0)
-        bucket["call_count"] += 1
-    series = [by_day[day] for day in window]
+    by_day = {day: _bucket(date=day) for day in window}
+    for call in ledger.calls:
+        bucket = by_day.get((call.created_at or "")[:10])
+        if bucket is not None:
+            _add(bucket, call.total_tokens, ledger.costs[call.llm_call_id])
+    series = [_close(by_day[day]) for day in window]
     return {
         "days": days,
-        "window_start": window_start,
+        "window_start": window[0],
         "window_end": window[-1],
         "series": series,
-        "window_cost": sum(item["cost"] for item in series),
         "window_tokens": sum(item["tokens"] for item in series),
         "window_call_count": sum(item["call_count"] for item in series),
+        "window_cost": _money_sum([item["cost"] for item in series]),
     }
 
 
-def _by_model(rows: list[tuple[LlmCall, dict[str, Any]]]) -> list[dict[str, Any]]:
+def _by_model(ledger: _Ledger) -> list[dict[str, Any]]:
     buckets: dict[tuple[str, str], dict[str, Any]] = {}
-    for call, cost in rows:
+    for call in ledger.calls:
         key = (call.provider or "unknown", call.model or "unknown")
-        bucket = buckets.setdefault(
-            key,
-            {
-                "provider": key[0],
-                "model": key[1],
-                "cost": 0.0,
-                "tokens": 0,
-                "call_count": 0,
-                "is_estimate": False,
-            },
-        )
-        bucket["cost"] += cost["cost"]
-        bucket["tokens"] += int(call.total_tokens or 0)
-        bucket["call_count"] += 1
-        bucket["is_estimate"] = (
-            bucket["is_estimate"] or bool(cost["is_estimate"]) or bool(call.usage_is_estimate)
-        )
-    return sorted(buckets.values(), key=lambda b: (-b["cost"], b["provider"], b["model"]))
+        bucket = buckets.setdefault(key, _bucket(provider=key[0], model=key[1], is_estimate=False))
+        _add(bucket, call.total_tokens, ledger.costs[call.llm_call_id])
+        bucket["is_estimate"] = bucket["is_estimate"] or bool(call.usage_is_estimate)
+    rows = [_close(bucket, with_priced=True) for bucket in buckets.values()]
+    return sorted(rows, key=lambda b: (-b["tokens"], b["provider"], b["model"]))
 
 
-def _by_node(
-    rows: list[tuple[LlmCall, dict[str, Any]]], limit: int
-) -> dict[str, Any]:
+def _by_node(ledger: _Ledger, limit: int) -> dict[str, Any]:
     buckets: dict[str, dict[str, Any]] = {}
-    for call, cost in rows:
+    for call in ledger.calls:
         node = call.node_id or call.step or "unknown"
-        bucket = buckets.setdefault(
-            node,
-            {
-                "node_id": node,
-                "phase": classify_phase(call.node_id, call.step),
-                "cost": 0.0,
-                "tokens": 0,
-                "call_count": 0,
-            },
-        )
-        bucket["cost"] += cost["cost"]
-        bucket["tokens"] += int(call.total_tokens or 0)
-        bucket["call_count"] += 1
-    ordered = sorted(buckets.values(), key=lambda b: (-b["cost"], b["node_id"]))
+        bucket = buckets.setdefault(node, _bucket(node_id=node, phase=classify_phase(call.node_id, call.step)))
+        _add(bucket, call.total_tokens, ledger.costs[call.llm_call_id])
+    ordered = sorted((_close(bucket) for bucket in buckets.values()), key=lambda b: (-b["tokens"], b["node_id"]))
     top, rest = ordered[:limit], ordered[limit:]
     remainder = None
     if rest:
         remainder = {
             "node_count": len(rest),
-            "cost": sum(b["cost"] for b in rest),
             "tokens": sum(b["tokens"] for b in rest),
             "call_count": sum(b["call_count"] for b in rest),
+            "cost": _money_sum([b["cost"] for b in rest]),
         }
     return {"top": top, "remainder": remainder}
 
 
-def _by_chapter(rows: list[tuple[LlmCall, dict[str, Any]]]) -> list[dict[str, Any]]:
+def _by_chapter(ledger: _Ledger) -> list[dict[str, Any]]:
     buckets: dict[str | None, dict[str, Any]] = {}
-    for call, cost in rows:
+    scenes: dict[str | None, set[str]] = {}
+    for call in ledger.calls:
         key = call.chapter_id or None
-        bucket = buckets.setdefault(
-            key,
-            {"chapter_id": key, "cost": 0.0, "tokens": 0, "call_count": 0, "scene_ids": set()},
-        )
-        bucket["cost"] += cost["cost"]
-        bucket["tokens"] += int(call.total_tokens or 0)
-        bucket["call_count"] += 1
+        _add(buckets.setdefault(key, _bucket(chapter_id=key)), call.total_tokens, ledger.costs[call.llm_call_id])
         if call.scene_id:
-            bucket["scene_ids"].add(call.scene_id)
-    result = []
-    for bucket in buckets.values():
-        bucket["scene_count"] = len(bucket.pop("scene_ids"))
-        result.append(bucket)
-    # 未关联章节的调用（项目级节点等）排最后，其余按费用降序
-    return sorted(result, key=lambda b: (b["chapter_id"] is None, -b["cost"], b["chapter_id"] or ""))
+            scenes.setdefault(key, set()).add(call.scene_id)
+    rows = []
+    for key, bucket in buckets.items():
+        _close(bucket)
+        bucket["scene_count"] = len(scenes.get(key, ()))
+        rows.append(bucket)
+    # 未关联章节的调用（项目级节点等）排最后，其余按 token 降序
+    return sorted(rows, key=lambda b: (b["chapter_id"] is None, -b["tokens"], b["chapter_id"] or ""))
 
 
-def _top_calls(rows: list[tuple[LlmCall, dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
-    ordered = sorted(rows, key=lambda r: (-r[1]["cost"], r[0].created_at or "", r[0].llm_call_id))
-    return [
-        {
-            "llm_call_id": call.llm_call_id,
-            "created_at": call.created_at,
-            "node_id": call.node_id or call.step,
-            "phase": classify_phase(call.node_id, call.step),
-            "provider": call.provider,
-            "model": call.model,
-            "total_tokens": int(call.total_tokens or 0),
-            "cost": cost["cost"],
-            "currency": cost["currency"],
-            "is_estimate": bool(cost["is_estimate"]) or bool(call.usage_is_estimate),
-            "latency_ms": call.latency_ms,
-            "error_code": call.error_code,
-            "accounting_status": call.accounting_status,
-            "scene_id": call.scene_id,
-            "chapter_id": call.chapter_id,
-        }
-        for call, cost in ordered[:limit]
-    ]
+def _top_calls(ledger: _Ledger, limit: int) -> list[dict[str, Any]]:
+    ordered = sorted(
+        ledger.calls, key=lambda call: (-int(call.total_tokens or 0), call.created_at or "", call.llm_call_id)
+    )
+    rows = []
+    for call in ordered[:limit]:
+        cost = ledger.costs[call.llm_call_id]
+        rows.append(
+            {
+                "llm_call_id": call.llm_call_id,
+                "created_at": call.created_at,
+                "node_id": call.node_id or call.step,
+                "phase": classify_phase(call.node_id, call.step),
+                "provider": call.provider,
+                "model": call.model,
+                "total_tokens": int(call.total_tokens or 0),
+                "priced": cost["priced"],
+                "cost": cost["cost"],
+                "currency": cost["currency"],
+                "is_estimate": bool(call.usage_is_estimate),
+                "latency_ms": call.latency_ms,
+                "error_code": call.error_code,
+                "accounting_status": call.accounting_status,
+                "scene_id": call.scene_id,
+                "chapter_id": call.chapter_id,
+            }
+        )
+    return rows
 
 
 def project_cost_dashboard(
@@ -657,20 +637,19 @@ def project_cost_dashboard(
     node_limit: int = DASHBOARD_NODE_LIMIT,
     call_limit: int = DASHBOARD_CALL_LIMIT,
 ) -> dict[str, Any]:
-    """成本看板一读聚合：summary + 趋势 + 模型/节点/章节构成 + Top 调用。
+    """成本看板一读聚合：summary + 趋势 + 模型 / 节点 / 章节构成 + 用 token 最多的调用。
 
-    只读、复用 ``project_cost`` 的调用命中口径；每条调用只折算一次价格。
+    只读，与 ``project_cost`` 同一个调用范围；调用与尝试各查一次，每条调用只折算一次价格。
     趋势按 UTC 日桶且稠密补零，前端可直接画图；空项目返回空构成不 500。
     """
     days = _clamp_days(days)
-    scene_ids, chapter_ids, calls = _project_scope(session, project_id)
-    rows = [(call, _call_cost(call)) for call in calls]
+    ledger = _load_ledger(session, _project_calls(project_id))
     return {
         "project_id": project_id,
-        "summary": _project_summary(session, project_id, scene_ids, chapter_ids, calls),
-        "trend": _trend(rows, days),
-        "by_model": _by_model(rows),
-        "by_node": _by_node(rows, max(1, int(node_limit))),
-        "by_chapter": _by_chapter(rows),
-        "top_calls": _top_calls(rows, max(1, int(call_limit))),
+        "summary": _project_summary(session, project_id, ledger),
+        "trend": _trend(ledger, days),
+        "by_model": _by_model(ledger),
+        "by_node": _by_node(ledger, max(1, int(node_limit))),
+        "by_chapter": _by_chapter(ledger),
+        "top_calls": _top_calls(ledger, max(1, int(call_limit))),
     }

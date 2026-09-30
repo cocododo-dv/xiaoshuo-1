@@ -1,8 +1,7 @@
-"""Environment-variable parsers shared by settings and the *_runtime loaders.
+"""Environment-variable parsers behind ``env_config`` (and a few services that read one variable).
 
-A leaf: imports only the standard library, so the Alembic bootstrap
-(``database_runtime``) and the low-level ledger (``llm_accounting_runtime``) can use it
-without pulling in services.
+A leaf: imports only the standard library, so the Alembic bootstrap and the low-level
+ledger can use it (through ``env_config``) without pulling in services.
 
 Two boolean rules exist on purpose and stay per variable exactly as before:
 ``bool_env(strict=False)`` treats anything outside ``1/true/yes/on`` as ``False``

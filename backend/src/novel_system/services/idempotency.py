@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 from uuid import uuid4
 
-from sqlalchemy import update
+from sqlalchemy import and_, delete, or_, update
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -41,7 +41,7 @@ def owner_lease_ttl_seconds() -> int:
     读取失败时回退 settings 缺省。
     """
     try:
-        from novel_system.services.llm_client import load_model_routing_config
+        from novel_system.services.llm_routing import load_model_routing_config
 
         value = load_model_routing_config().job_runtime.get("idempotency_claim_ttl_seconds")
         if value is not None:
@@ -53,7 +53,7 @@ def owner_lease_ttl_seconds() -> int:
 
 def owner_lease_grace_seconds() -> int:
     try:
-        from novel_system.services.llm_client import load_model_routing_config
+        from novel_system.services.llm_routing import load_model_routing_config
 
         value = load_model_routing_config().job_runtime.get("heartbeat_interval_seconds")
         if value is not None:
@@ -242,6 +242,82 @@ class IdempotencyLeaseService:
             response_json=dict(record.response_json or {}) if record.response_json is not None else None,
             _service=self,
         )
+
+
+# ---- 重放缓存保留期（批准#23 / 重评 R14）-------------------------------------------------------------
+# 幂等记录只为「同一次点击的网络重试」服务：重试都在几秒到几分钟之内，72 小时足够。以前这张表只增不删——
+# 每次构思自动保存都把整个工作区原样存一份，真实库 437 MB 里有 413 MB 是它。
+IDEMPOTENCY_REPLAY_RETENTION_HOURS = 72
+# 清理任务在全系统维护登记表（``services/maintenance.py``，随运行任务巡检线程跑）上的名字与间隔：
+# 每 6 小时一次，``run_at_start=False``（见 ``run_idempotency_retention``）。
+IDEMPOTENCY_RETENTION_TASK = "idempotency_retention"
+IDEMPOTENCY_RETENTION_INTERVAL_SECONDS = 6 * 3600
+
+
+def expired_idempotency_condition(now: datetime) -> Any:
+    """过了保留期的幂等记录：已成功 / 已失败且 ``updated_at`` 早于 72 小时前；仍是 ``started`` 的，租约早在
+    72 小时前就过期了（没有租约的老行看 ``updated_at``）。还在租约里的请求永远不在其中。
+
+    时间戳与写入方同一种形状（``datetime.now(UTC).isoformat()``），按字符串比较即按时间比较。
+    """
+    cutoff = (now - timedelta(hours=IDEMPOTENCY_REPLAY_RETENTION_HOURS)).isoformat()
+    finished = and_(IdempotencyKey.status.in_(("succeeded", "failed")), IdempotencyKey.updated_at < cutoff)
+    abandoned = and_(
+        IdempotencyKey.status == "started",
+        or_(
+            IdempotencyKey.lease_expires_at < cutoff,
+            and_(IdempotencyKey.lease_expires_at.is_(None), IdempotencyKey.updated_at < cutoff),
+        ),
+    )
+    return or_(finished, abandoned)
+
+
+def purge_expired_idempotency(session: Session, now: datetime | None = None) -> int:
+    """删掉过了重放保留期的幂等记录，返回删掉的行数；不提交（调用方提交）。
+
+    保留期内同一个 key 照常重放；删掉之后同一个 key 再来就是一次新请求（重新执行）。
+    ``idempotency_*`` 操作日志不动。
+    """
+    result = session.execute(
+        delete(IdempotencyKey)
+        .where(expired_idempotency_condition(now or utcnow()))
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
+
+
+def release_free_pages(dbapi_connection: Any) -> None:
+    """``PRAGMA incremental_vacuum``：把空闲页还给文件系统（库没切到 ``auto_vacuum=INCREMENTAL`` 时什么都不做）。
+
+    这条 pragma 每走一步还一页：要在驱动的游标上把结果取完，只 ``execute`` 一次只还一页
+    （经 SQLAlchemy 的结果对象也不行——它把无列的语句当成不返回行，直接关掉游标）。
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA incremental_vacuum")
+        cursor.fetchall()
+    finally:
+        cursor.close()
+
+
+def run_idempotency_retention() -> int:
+    """系统维护任务：自开一个会话清一次过期的幂等记录并提交，然后把腾出的页还给文件系统。
+
+    还页只在库已切到 ``auto_vacuum=INCREMENTAL``（部署时的 ``tools/compact_db`` 切的）时起作用；它让一阵
+    大量写入删掉之后不在文件里、也不在每一份备份里留下永久的高水位。
+    登记到维护登记表时 ``run_at_start=False``：后端热加载新代码时第一次清理必须等部署时的备份做完。
+    """
+    from novel_system.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        deleted = purge_expired_idempotency(session)
+        session.commit()
+        if deleted:
+            release_free_pages(session.connection().connection)
+            session.commit()
+    if deleted:
+        logger.info("idempotency retention purged %s replay rows", deleted)
+    return deleted
 
 
 def _in_progress_error() -> DomainError:

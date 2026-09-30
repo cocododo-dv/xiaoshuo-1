@@ -324,6 +324,58 @@ def _run_durable_runner(
         end_llm_execution(token)
 
 
+def test_owner_lease_is_computed_once_per_call_for_renewal_and_heartbeat(session, monkeypatch) -> None:
+    """B09-19:派发前续约与心跳用同一个租约数(以前各算一次,两次之间模型快照换了就不一致;一次调用要把
+    models 快照读五六遍),调用结束时的默认 TTL 续约再读一次。"""
+    from contextlib import contextmanager
+
+    from novel_system.services import llm_task_runner
+
+    _seed_durable_runner_scene(session)
+    ttl_reads: list[int] = []
+    ttl_values = iter([10_000, 20_000, 30_000, 40_000])
+
+    def reading_ttl() -> int:
+        ttl_reads.append(next(ttl_values))
+        return ttl_reads[-1]
+
+    monkeypatch.setattr("novel_system.services.idempotency.owner_lease_ttl_seconds", reading_ttl)
+    monkeypatch.setattr("novel_system.services.idempotency.owner_lease_grace_seconds", lambda: 5)
+    heartbeats: list[int] = []
+
+    @contextmanager
+    def recording_heartbeat(*, lease_seconds: int, interval_seconds: float | None = None):
+        heartbeats.append(lease_seconds)
+        yield
+
+    monkeypatch.setattr(llm_task_runner, "_execution_owner_heartbeat", recording_heartbeat)
+    renewals: list[int] = []
+    token = begin_llm_execution("exec-lease-once", lease_renewer=lambda *, lease_seconds: renewals.append(lease_seconds))
+    try:
+        LLMNodeRunner(
+            session,
+            llm_client=_AccountedRecordingClient(),
+            routing_config=_routing_config(),
+            settings=_live_settings(),
+        ).run(
+            scene_id="CH_RUNNER_SC01",
+            chapter_id="CH_RUNNER",
+            bundle_id="bundle-runner",
+            bundle_hash="sha256:runner",
+            node_id="neutral_draft",
+            step="neutral_draft",
+            prompt=_prompt(),
+            user_prompt="Scene ID: CH_RUNNER_SC01\nReturn JSON.",
+            execution_step_key="neutral_draft",
+        )
+    finally:
+        end_llm_execution(token)
+
+    assert heartbeats == [10_000]
+    assert renewals == [10_000, 20_000]
+    assert ttl_reads == [10_000, 20_000]
+
+
 def test_durable_runner_recovers_crash_after_reservation_and_retries_once(session) -> None:
     _seed_durable_runner_scene(session)
     client = _AccountedRecordingClient()

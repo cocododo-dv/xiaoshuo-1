@@ -1,7 +1,7 @@
 """Compact chapter display_order once, so the catalog read no longer writes.
 
 Revision ID: 20260929_0097
-Revises: 20260929_0094
+Revises: 20260929_0096
 Create Date: 2026-09-29
 
 目录读取（``GET …/catalog``、主页、待办、章节规划都要读）过去在读的时候顺手把每部作品活跃章的
@@ -28,7 +28,7 @@ from alembic import op
 
 
 revision = "20260929_0097"
-down_revision = "20260929_0094"
+down_revision = "20260929_0096"
 branch_labels = None
 depends_on = None
 

@@ -20,7 +20,8 @@ import uuid
 from typing import Any
 
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_client import LLMClient, load_model_routing_config, resolve_node_route
+from novel_system.services.llm_client import LLMClient
+from novel_system.services.llm_routing import load_model_routing_config, resolve_node_route
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.system_config import (
     build_llm_client,

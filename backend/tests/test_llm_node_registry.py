@@ -20,9 +20,12 @@
 """
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 
-from novel_system.services.llm_client import load_model_routing_config
+import yaml
+
+from novel_system.services.llm_client import TaskModelConfig, load_model_routing_config, parse_model_routing_config
 from novel_system.services.llm_node_registry import get_llm_node_spec, llm_node_specs
 from novel_system.services.prompt_builder import load_prompt_templates
 
@@ -81,9 +84,7 @@ def test_prompts_yaml_templates_are_well_formed():
 
 
 def test_style_analysis_defaults_are_stable_and_have_verified_output_headroom():
-    """仓库 YAML 与系统设置的节点默认值必须同时保持确定性，避免同步后静默回退。"""
-    root = Path(__file__).resolve().parents[2]
-    routing = load_model_routing_config(root / "config" / "models.yaml")
+    """风格参考的分析节点:确定性(温度 0)与验证过的输出余量。节点 spec 是唯一的默认值来源(重评 R4)。"""
     # 2026-09-23 v3 学习文风作业:四层各一次读同一组 4 万字窗口、整张文风卡一次写完 → 16384;
     # 专名 8192、窗口标签每批 8 窗 4096(关推理)
     expected = {
@@ -98,8 +99,63 @@ def test_style_analysis_defaults_are_stable_and_have_verified_output_headroom():
     }
 
     for node_id, max_output_tokens in expected.items():
-        route = routing.task_routing[node_id]
         spec = get_llm_node_spec(node_id)
         assert spec is not None
-        assert route.temperature == spec.temperature == 0.0
-        assert route.max_output_tokens == spec.max_output_tokens == max_output_tokens
+        assert spec.temperature == 0.0
+        assert spec.max_output_tokens == max_output_tokens
+
+
+def _spec_as_task_config(spec) -> dict:
+    return {
+        "provider": spec.provider,
+        "model": spec.model,
+        "temperature": spec.temperature,
+        "max_output_tokens": spec.max_output_tokens,
+        "response_format": spec.response_format,
+        "provider_id": None,
+        "account_id": None,
+        "reasoning_level": spec.reasoning_level,
+        "api_mode": spec.api_mode,
+        "credential_mode": None,
+        "provider_options": {},
+        "frequency_penalty": spec.frequency_penalty,
+        "presence_penalty": spec.presence_penalty,
+        "top_p": spec.top_p,
+        "timeout_seconds": None,
+    }
+
+
+def test_repo_models_yaml_declares_no_routes_any_more():
+    """重评 R4:models.yaml 的 task_routing 是注册表逐字段的抄本(删之前证明过 0 处差异),已删;
+    文件只剩设置页不编辑的两段运行参数。"""
+    root = Path(__file__).resolve().parents[2]
+    payload = yaml.safe_load((root / "config" / "models.yaml").read_text(encoding="utf-8"))
+    assert set(payload) == {"retry_budget", "job_runtime"}
+
+
+def test_snapshot_less_resolution_equals_the_spec_for_every_node():
+    """没有 models 快照、库里也没有保存过服务(API 配置来自环境变量)时,每个节点逐字段就是它的 spec。"""
+    routing = load_model_routing_config()
+    specs = {spec.node_id: spec for spec in llm_node_specs()}
+    assert set(routing.node_routing) == set(specs)
+    diffs = [
+        (node_id, field.name, getattr(routing.node_routing[node_id], field.name), _spec_as_task_config(spec)[field.name])
+        for node_id, spec in specs.items()
+        for field in fields(TaskModelConfig)
+        if getattr(routing.node_routing[node_id], field.name) != _spec_as_task_config(spec)[field.name]
+    ]
+    assert diffs == []
+    assert routing.task_routing["stylize"] == routing.node_routing["style_draft"]
+    assert routing.retry_budget["provider_attempt_budget"] == 32
+    assert routing.job_runtime["idempotency_claim_ttl_seconds"] == 600
+
+
+def test_writer_passage_patch_output_budget_fits_two_long_rewrites():
+    """重评 R12:改写候选不再回抄原文,两版近 2000 字的改写(含思考 token)一次装下——节点默认值 8192,
+    快照里只存了服务 / 模型的路由也按它发(已存过 models 快照的安装由迁移 0096 去掉当年抄进去的 2600)。"""
+    spec = get_llm_node_spec("writer_passage_patch")
+    assert spec is not None and spec.max_output_tokens == 8192
+    lean = parse_model_routing_config(
+        {"node_routing": {"writer_passage_patch": {"provider_id": "relay", "model": "m", "api_mode": "chat"}}}
+    )
+    assert lean.node_routing["writer_passage_patch"].max_output_tokens == 8192

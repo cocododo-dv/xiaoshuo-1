@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Literal
 
 
-NodeStatus = Literal["active", "reserved", "local"]
+# 节点注册表是模型路由默认值的唯一来源(2026-09-30 重评 R4:config/models.yaml 的 task_routing 逐字段抄了一份,已删):
+# 没有 models 快照时每个节点的路由、快照路由缺的参数,都取这里的 spec。
+# 重评 R15b:四个从不调模型的「保留」节点(章节摘要 / 连续性压缩 / 归档与索引 / 章节汇总)删了,
+# 注册表里只剩真正调模型的节点。status / requires_llm 仍随目录与路由载荷发出(设置页按它们筛选),取值只有这一种。
+NodeStatus = Literal["active"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,14 +26,8 @@ class LLMNodeSpec:
     response_format: str = "json_object"
     reasoning_level: str = "medium"
     api_mode: str = "responses"
-    model_profile: str | None = None
-    fallback_route_ids: tuple[str, ...] = ()
-    # PR-8 §5.1 — 分段续写场景专用:每 N 字符重新拉取 [STYLE_REFERENCE] 注入,
-    # 防止风格漂移。0 = 不刷新(默认)。曾仅由已下线的 long_form_continuation
-    # 节点启用;字段保留在 spec 契约里(catalog/route payload 消费方兼容)。
-    refresh_every_chars: int = 0
-    # §7 anti-mean sampling — decoding-level penalties carried into DB node routing so the
-    # System-Config UI route keeps them instead of silently dropping to None on the DB path.
+    # §7 anti-mean sampling — decoding-level penalties; a DB node route that does not carry them
+    # gets them from here at parse time (route_defaults), so the UI path never drops them to None.
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
     top_p: float | None = None
@@ -49,13 +47,38 @@ class LLMNodeSpec:
             "response_format": self.response_format,
             "reasoning_level": self.reasoning_level,
             "api_mode": self.api_mode,
-            "model_profile": self.model_profile,
-            "fallback_route_ids": list(self.fallback_route_ids),
-            "refresh_every_chars": self.refresh_every_chars,
             "frequency_penalty": self.frequency_penalty,
             "presence_penalty": self.presence_penalty,
             "top_p": self.top_p,
             "order": order,
+        }
+
+    def route_defaults(self) -> dict[str, Any]:
+        """节点的默认参数:温度、输出预算、响应格式、推理档位、解码惩罚。
+
+        models 快照里的路由只存作者的选择(见 ``route_payload``);解析时这些字段缺哪个就从这里补,
+        代码里修好的默认值(输出预算、温度……)于是随发布直接到达已配置过的安装(批准#5a)。
+        """
+        defaults: dict[str, Any] = {
+            "temperature": self.temperature,
+            "max_output_tokens": self.max_output_tokens,
+            "response_format": self.response_format,
+            "reasoning_level": self.reasoning_level,
+        }
+        # §7 anti-mean sampling:只有声明了惩罚的节点(风格化)才带这几个键,其余节点用服务默认
+        for key in ("frequency_penalty", "presence_penalty", "top_p"):
+            value = getattr(self, key)
+            if value is not None:
+                defaults[key] = value
+        return defaults
+
+    def default_route(self) -> dict[str, Any]:
+        """没有 models 快照、API 配置也来自环境变量时这个节点的路由(测试 / E2E / 本机假服务走这条)。"""
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "api_mode": self.api_mode,
+            **self.route_defaults(),
         }
 
     def route_payload(
@@ -68,30 +91,18 @@ class LLMNodeSpec:
         api_mode: str | None = None,
         credential_mode: str | None = None,
     ) -> dict[str, Any]:
+        """设置页(一键补齐 / 分工)写进 models 快照的一条路由:只有作者的选择——服务、模型、端点模式、
+        凭据方式、账号。其余参数不抄进快照,解析时取 ``route_defaults``。"""
         payload: dict[str, Any] = {
             "provider": provider or self.provider,
             "provider_id": provider_id,
             "model": model or self.model,
-            "temperature": self.temperature,
-            "max_output_tokens": self.max_output_tokens,
-            "response_format": self.response_format,
-            "reasoning_level": self.reasoning_level,
             "api_mode": api_mode or self.api_mode,
         }
         if account_id:
             payload["account_id"] = account_id
         if credential_mode:
             payload["credential_mode"] = credential_mode
-        if self.model_profile:
-            payload["model_profile"] = self.model_profile
-        # §7 carry decoding-level sampling penalties into the route payload so DB-stored
-        # node routing (System-Config UI) preserves them instead of dropping them to None.
-        if self.frequency_penalty is not None:
-            payload["frequency_penalty"] = self.frequency_penalty
-        if self.presence_penalty is not None:
-            payload["presence_penalty"] = self.presence_penalty
-        if self.top_p is not None:
-            payload["top_p"] = self.top_p
         return payload
 
 
@@ -114,12 +125,11 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_step_candidates",
         temperature=0.7,
         # 三条方向各可到 400 字，外加标签 / 要点与 reasoning 模型的思考 token：1800 连可见输出的最坏情况都
-        # 装不下，每次都要靠客户端的截断阶梯翻倍重试一遍（白花一次完整调用）。与 models.yaml 同名 task 必须一致
-        # （node_routing 以这里为准且优先于 task_routing）；已存过 models 快照的安装用 raise_llm_output_budget 抬。
+        # 装不下，每次都要靠客户端的截断阶梯翻倍重试一遍（白花一次完整调用）。
         max_output_tokens=4096,
     ),
     # 2026-09-23 风格参考 v3:按字数分批(≤6,000 字 / ≤100 段)的一批结果 ≤~4k token;分类不需要思考
-    # token,推理默认关;8192 给不肯关思考的中转留余量。与 models.yaml 同名 task 必须一致。
+    # token,推理默认关;8192 给不肯关思考的中转留余量。
     LLMNodeSpec(
         "style_ref_paragraph_classify_anchor",
         "Style Reference 段落分类(锚定集,quality_strong)",
@@ -142,7 +152,9 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         reasoning_level="off",
     ),
     # 2026-09-23 风格参考 v3「学习文风」作业:四层各一次调用读同一组约 4 万字的窗口、文风卡合成、受保护专名、窗口标签。
-    # 输出预算见 models.yaml 同名 task 的注释(必须一致:node_routing 以这里为准且优先于 task_routing)。
+    # 四层各一次调用读同一组约 4 万字的窗口,每层 4 维 × (≤5 观察 + ≤2 避免) × 2–4 处引文,输出可达 ~1.1 万字;
+    # 文风卡合成 16 维 + 气质 + 规划手法 ~1.3 万字;都留 16384(含思考 token)。受保护专名 ≤300 个词;
+    # 窗口标签每批 8 窗,关推理。
     LLMNodeSpec(
         "style_ref_extract_language",
         "Style Reference 学习文风 · 语言层(同一组窗口,4 维)",
@@ -214,10 +226,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_step_generate",
         temperature=0.25,
         # 整步生成一次要吐出全表（角色表多人多字段、场景列表 / 场景规划几十场），reasoning 模型的
-        # 思考 token 同样吃这个预算：3200 装不下（config/models.yaml 同名 task 早已是 8192，但系统设置
-        # 同步进库的 node_routing 以这里的默认值为准、且运行时优先于 task_routing——两处必须一致）。
+        # 思考 token 同样吃这个预算：3200 装不下。8192 是客户端截断阶梯的上限（MAX_OUTPUT_TOKENS_CEILING）。
         max_output_tokens=8192,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "snowflake_workspace_assistant",
@@ -226,7 +236,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_workspace_assistant",
         temperature=0.35,
         max_output_tokens=3200,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "snowflake_scene_triage",
@@ -235,7 +244,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_scene_triage_suggest",
         temperature=0.15,
         max_output_tokens=2200,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "snowflake_chapter_plan",
@@ -244,7 +252,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="snowflake_chapter_plan_suggest",
         temperature=0.2,
         max_output_tokens=2600,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "scene_blueprint",
@@ -253,7 +260,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="scene_blueprint",
         temperature=0.25,
         max_output_tokens=1800,
-        fallback_route_ids=("neutral_draft", "style_draft", "stylize"),
     ),
     LLMNodeSpec(
         "character_pressure_blueprint",
@@ -262,7 +268,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="character_pressure_blueprint",
         temperature=0.25,
         max_output_tokens=1800,
-        fallback_route_ids=("scene_blueprint", "neutral_draft", "style_draft", "stylize"),
     ),
     LLMNodeSpec(
         "chapter_story_architecture",
@@ -271,7 +276,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_story_architecture",
         temperature=0.25,
         max_output_tokens=2200,
-        fallback_route_ids=("scene_blueprint", "neutral_draft", "style_draft", "stylize"),
     ),
     # 章节编排 LLM 规划三通道（docs/chapter-arrangement-llm-design-2026-07-16.md §4）
     LLMNodeSpec(
@@ -281,7 +285,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_scene_plan_candidates",
         temperature=0.6,
         max_output_tokens=3200,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "chapter_scene_plan_fill",
@@ -290,7 +293,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_scene_plan_fill",
         temperature=0.2,
         max_output_tokens=3200,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "chapter_plan_review",
@@ -299,7 +301,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_plan_review",
         temperature=0.15,
         max_output_tokens=2600,
-        model_profile="quality_strong",
     ),
     LLMNodeSpec(
         "neutral_draft",
@@ -336,8 +337,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="scene_literary_rewrite",
         temperature=0.55,
         max_output_tokens=6000,
-        model_profile="quality_strong",
-        fallback_route_ids=("style_draft", "style_patch", "stylize", "neutral_draft"),
     ),
     LLMNodeSpec(
         "hard_qc",
@@ -363,7 +362,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="near_final_acceptance_review",
         temperature=0.15,
         max_output_tokens=5000,
-        fallback_route_ids=("soft_qc", "hard_qc", "style_draft", "neutral_draft"),
     ),
     LLMNodeSpec(
         "chapter_near_final_review",
@@ -372,7 +370,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="chapter_near_final_review",
         temperature=0.15,
         max_output_tokens=3200,
-        fallback_route_ids=("soft_qc", "hard_qc", "style_draft", "neutral_draft"),
     ),
     LLMNodeSpec(
         "writer_passage_patch",
@@ -380,7 +377,9 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "rewrite",
         template_name="writer_passage_patch",
         temperature=0.45,
-        max_output_tokens=2600,
+        # 2026-09-30 重评 R12:改写候选不再逐项回抄原文,一次要装下两版近 2000 字的改写(含思考 token),
+        # 2600 装不下。
+        max_output_tokens=8192,
     ),
     LLMNodeSpec(
         "writer_deep_review",
@@ -398,49 +397,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.45,
         max_output_tokens=2600,
     ),
-    LLMNodeSpec(
-        "chapter_summary",
-        "Chapter summary",
-        "local",
-        status="reserved",
-        requires_llm=False,
-        template_name=None,
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=1200,
-    ),
-    LLMNodeSpec(
-        "continuity_compression",
-        "Continuity compression",
-        "local",
-        status="reserved",
-        requires_llm=False,
-        template_name=None,
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=1200,
-    ),
-    LLMNodeSpec(
-        "archive",
-        "Archive and index",
-        "local",
-        status="reserved",
-        requires_llm=False,
-        template_name=None,
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=1200,
-    ),
-    LLMNodeSpec(
-        "chapter_aggregate",
-        "Chapter aggregate",
-        "local",
-        status="reserved",
-        requires_llm=False,
-        template_name=None,
-        temperature=0.4,
-        max_output_tokens=4000,
-    ),
 )
 
 
@@ -455,24 +411,8 @@ def llm_node_catalog() -> dict[str, dict[str, Any]]:
     }
 
 
-def llm_node_statuses() -> dict[str, str]:
-    return {spec.node_id: spec.status for spec in _NODE_SPECS}
-
-
 def active_llm_node_ids() -> list[str]:
-    return [
-        spec.node_id
-        for spec in _NODE_SPECS
-        if spec.status == "active" and spec.requires_llm
-    ]
-
-
-def reserved_llm_node_ids() -> set[str]:
-    return {
-        spec.node_id
-        for spec in _NODE_SPECS
-        if spec.status != "active" or not spec.requires_llm
-    }
+    return [spec.node_id for spec in _NODE_SPECS]
 
 
 def get_llm_node_spec(node_id: str) -> LLMNodeSpec | None:
@@ -480,6 +420,20 @@ def get_llm_node_spec(node_id: str) -> LLMNodeSpec | None:
         if spec.node_id == node_id:
             return spec
     return None
+
+
+_NEUTRAL_ROUTE_FIELDS = ("temperature", "max_output_tokens", "response_format", "reasoning_level")
+
+
+def neutral_route_defaults() -> dict[str, Any]:
+    """没有 spec 的路由(节点后来从注册表删掉了)缺参数时的中性占位:``LLMNodeSpec`` 自己的字段默认值。
+
+    快照只存作者的选择(``route_payload``),节点一退役,它那条路由就没有 spec 可补参数了。这样的路由不会被派发
+    (运行时只按注册表里的节点查路由),补上占位只为让它照旧解析得了、不拖垮整张路由表:设置页列为
+    stale_routes,下一次一键补齐 / 分工剪掉——和以前整份抄进快照的退役路由一样。
+    """
+    defaults = {spec_field.name: spec_field.default for spec_field in fields(LLMNodeSpec)}
+    return {key: defaults[key] for key in _NEUTRAL_ROUTE_FIELDS}
 
 
 def default_task_config_payload(
@@ -506,8 +460,7 @@ def default_task_config_payload(
 
 
 # ---- 角色分工槽位(writer-facing routing) ---------------------------------
-# 写作者视角的三个分工槽位,按节点分组批量路由;覆盖全部 active 节点
-# (local 组 requires_llm=False 不入槽)。前端「设置 → AI 模型 → 分工」用。
+# 写作者视角的三个分工槽位,按节点分组批量路由;覆盖全部节点。前端「设置 → AI 模型 → 分工」用。
 
 
 @dataclass(frozen=True, slots=True)
@@ -561,11 +514,7 @@ def role_slot_node_ids(slot_id: str) -> list[str]:
     if slot is None:
         raise KeyError(slot_id)
     groups = set(slot.groups)
-    return [
-        spec.node_id
-        for spec in _NODE_SPECS
-        if spec.group in groups and spec.status == "active" and spec.requires_llm
-    ]
+    return [spec.node_id for spec in _NODE_SPECS if spec.group in groups]
 
 
 def role_slot_catalog() -> list[dict[str, Any]]:

@@ -22,7 +22,7 @@ from sqlalchemy import event, update
 from novel_system.api.app import create_app
 from novel_system.db.models import SystemConfigSnapshot
 from novel_system.db.session import engine
-from novel_system.services import config_cache, idempotency, llm_client, llm_service_base, llm_task_runner, prompt_builder
+from novel_system.services import config_cache, idempotency, llm_routing, llm_service_base, llm_task_runner, prompt_builder
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
 from novel_system.services.llm_client import load_model_routing_config, reset_model_routing_cache
 from novel_system.services.prompt_builder import (
@@ -297,7 +297,7 @@ def test_sync_prompt_templates_activation_is_visible_at_once(session, tmp_path, 
 
 
 def test_model_routing_is_parsed_once_per_content(monkeypatch) -> None:
-    parses = _count_calls(monkeypatch, llm_client, "parse_model_routing_config")
+    parses = _count_calls(monkeypatch, llm_routing, "parse_model_routing_config")
     yaml_parses = _count_yaml_parses(monkeypatch)
 
     routings = {id(load_model_routing_config()) for _ in range(5)}
@@ -326,7 +326,7 @@ def test_models_snapshot_changes_reach_routing_and_lease_ttl_at_once(session) ->
 
 
 def test_node_routes_saved_through_system_config_are_visible_at_once(client, monkeypatch) -> None:
-    """系统配置界面保存节点路由（同一个 HTTP 入口）之后，下一次读路由就是新的输出预算。"""
+    """系统配置界面保存模型分工（同一个 HTTP 入口）之后，下一次读路由就是新的模型。"""
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     provider = client.post(
@@ -339,38 +339,27 @@ def test_node_routes_saved_through_system_config_are_visible_at_once(client, mon
             "enabled": True,
             "credential_mode": "none",
             "api_mode": "chat",
-            "models": ["fixture-model"],
+            "models": ["fixture-model-a", "fixture-model-b"],
         },
     )
     assert provider.status_code == 200, provider.json()
     load_model_routing_config()  # 先把保存之前的路由读进缓存
 
-    for budget in (1111, 2222):
-        route = {
-            "provider": "openai_compatible",
-            "provider_id": "fixture_local",
-            "model": "fixture-model",
-            "temperature": 0.5,
-            "max_output_tokens": budget,
-            "response_format": "text",
-            "reasoning_level": "medium",
-            "api_mode": "chat",
-            "credential_mode": "none",
-        }
+    for model in ("fixture-model-a", "fixture-model-b"):
         saved = client.post(
-            "/api/v1/system-config/llm/node-routes",
+            "/api/v1/system-config/llm/role-routes",
             headers=ADMIN_HEADERS,
-            json={"node_routing": {"neutral_draft": route}, "activate": True},
+            json={"assignments": {"drafting": {"provider_id": "fixture_local", "model": model}}, "activate": True},
         )
         assert saved.status_code == 200, saved.json()
-        assert load_model_routing_config().node_routing["neutral_draft"].max_output_tokens == budget
+        assert load_model_routing_config().node_routing["neutral_draft"].model == model
 
 
 # ---------------------------------------------------------------- 运行时 api 配置与密钥
 
 
 def test_runtime_settings_read_snapshot_and_keys_in_one_transaction_and_follow_saves(session, monkeypatch) -> None:
-    from novel_system.services import system_config
+    from novel_system.services import llm_provider_config, system_config
     from novel_system.settings import get_settings
 
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
@@ -392,7 +381,7 @@ def test_runtime_settings_read_snapshot_and_keys_in_one_transaction_and_follow_s
         )
 
     save_provider("sk-fixture-first-0001")
-    sessions = _count_calls(monkeypatch, system_config, "SessionLocal")
+    sessions = _count_calls(monkeypatch, llm_provider_config, "SessionLocal")
 
     settings = get_settings()
     assert (settings.llm_enabled, settings.llm_api_key) == (True, "sk-fixture-first-0001")

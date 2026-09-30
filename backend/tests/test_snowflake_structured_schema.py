@@ -6,19 +6,18 @@
 
 1. 下发的 schema 按编辑器模板补全成员 properties（教练补丁 / 分诊修补同理）；
 2. 清洗后仍只剩身份键 → 带原因重试一次，再空就如实 409（``sparse_output``），空成员不铸幽灵 id；
-3. 节点默认输出预算 8192（与 config/models.yaml 一致；补全后的角色表实测 4.7k 输出 token，3200 装不下）。
+3. 节点默认输出预算 8192（节点 spec 是唯一来源；补全后的角色表实测 4.7k 输出 token，3200 装不下）。
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 from tests.accounted_llm_fakes import accounted_generate_method
 
-from novel_system.services.llm_client import LLMResponse, load_model_routing_config
-from novel_system.services.llm_node_registry import get_llm_node_spec
+from novel_system.services.llm_client import LLMResponse, load_model_routing_config, parse_model_routing_config
+from novel_system.services.llm_node_registry import default_task_config_payload, get_llm_node_spec
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.snowflake_prompt_budget import PROTECTED_KEYS
 from novel_system.services.snowflake_steps import get_step_definition
@@ -328,15 +327,16 @@ def test_empty_items_never_become_phantom_members() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_snowflake_step_generate_output_budget_matches_models_yaml() -> None:
-    root = Path(__file__).resolve().parents[2]
-    routing = load_model_routing_config(root / "config" / "models.yaml")
+def test_snowflake_step_generate_output_budget_is_the_spec_default_everywhere() -> None:
+    """整步生成的输出预算只有一个来源:节点 spec(重评 R4 删了 models.yaml 的抄本)。没有快照时就是它;
+    「一键补齐」写进快照的路由只记服务与模型,也按它发——「3200 盖住 8192」那种两处不一致不会再有。"""
     spec = get_llm_node_spec("snowflake_step_generate")
-    assert spec is not None
-    assert spec.max_output_tokens == routing.task_routing["snowflake_step_generate"].max_output_tokens == 8192, (
-        "系统设置同步进库的 node_routing 以节点默认值为准、且运行时优先于 task_routing——两处不一致时"
-        "「一键补齐」过的安装会按较小的那个发请求"
+    assert spec is not None and spec.max_output_tokens == 8192
+    assert load_model_routing_config().node_routing["snowflake_step_generate"].max_output_tokens == 8192
+    synced = parse_model_routing_config(
+        {"node_routing": {"snowflake_step_generate": default_task_config_payload("snowflake_step_generate", provider_id="relay", model="m")}}
     )
+    assert synced.node_routing["snowflake_step_generate"].max_output_tokens == 8192
 
 
 @pytest.mark.parametrize(

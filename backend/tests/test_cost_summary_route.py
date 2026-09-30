@@ -48,7 +48,10 @@ def test_project_cost_summary(client, session):
     data = r.json()["data"]
     assert data["level"] == "project"
     summary = data["summary"]
-    assert summary["total_cost"] > 0
+    assert summary["total_tokens"] == 300
+    # 默认价书没有单价：金额是「未定价」而不是编出来的数
+    assert summary["total_cost"] is None
+    assert summary["pricing"]["unpriced_call_count"] == 1
     assert summary["archived_scene_count"] == 1
 
 
@@ -77,7 +80,8 @@ def test_empty_project_does_not_500(client):
     r = client.get("/api/v2/projects/NOPE/cost-summary")
     assert r.status_code == 200, r.text
     data = r.json()["data"]
-    assert data["summary"]["total_cost"] == 0
+    assert data["summary"]["total_tokens"] == 0
+    assert data["summary"]["total_cost"] is None
 
 
 def test_cost_dashboard_route(client, session):
@@ -86,7 +90,7 @@ def test_cost_dashboard_route(client, session):
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert data["project_id"] == "RP"
-    assert data["summary"]["total_cost"] > 0
+    assert data["summary"]["total_tokens"] == 300
     assert data["trend"]["days"] == 7
     assert len(data["trend"]["series"]) == 7
     assert isinstance(data["by_model"], list)

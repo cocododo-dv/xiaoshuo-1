@@ -13,9 +13,9 @@ from novel_system.services.llm_client import (
     MAX_OUTPUT_TOKENS_CEILING,
     LLMRequest,
     LLMResponseError,
-    _degrade_request_after_failure,
     _loads_json_object_text,
 )
+from novel_system.services.llm_degrade import degrade_request_after_failure
 
 
 def _scene_payload(count: int) -> dict:
@@ -88,7 +88,7 @@ def test_truncation_degrades_by_doubling_the_output_budget(provider_type):
     )
     exc = LLMResponseError("LLM_RESPONSE_TRUNCATED", "truncated")
 
-    degraded = _degrade_request_after_failure(_request(3200), exc, config)
+    degraded = degrade_request_after_failure(_request(3200), exc, config)
     assert degraded is not None, "截断必须能通过抬高输出预算重试"
     request, reason = degraded
     assert request.max_output_tokens == 6400
@@ -103,7 +103,7 @@ def test_truncation_at_the_ceiling_is_not_degradable():
         provider_id="p", provider_type="openai_compatible", base_url="http://x", api_key="k",
     )
     exc = LLMResponseError("LLM_RESPONSE_TRUNCATED", "truncated")
-    assert _degrade_request_after_failure(_request(MAX_OUTPUT_TOKENS_CEILING), exc, config) is None
+    assert degrade_request_after_failure(_request(MAX_OUTPUT_TOKENS_CEILING), exc, config) is None
 
 
 def test_client_escalates_the_budget_and_succeeds_on_the_retry():

@@ -1,33 +1,11 @@
-"""Database bootstrap settings with no dependency on services or ORM modules."""
+"""兼容转出：数据库引导设置住在 ``env_config``（B09-05）。
+
+还从这里 import 的：``alembic/env.py``、``db/session.py``（P09a 在改）与 ``tests/test_db_session_guard.py``。
+它们改成 ``from novel_system.env_config import …`` 之后删掉本文件。
+"""
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-from pathlib import Path
+from novel_system.env_config import BACKEND_ROOT, DEFAULT_DATABASE_PATH, DatabaseRuntime, load_database_runtime
 
-from novel_system.env_parsing import bool_env
-
-
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATABASE_PATH = BACKEND_ROOT / "novel_system.db"
-
-
-@dataclass(frozen=True, slots=True)
-class DatabaseRuntime:
-    database_url: str
-    sqlite_foreign_keys_enabled: bool
-
-
-def load_database_runtime() -> DatabaseRuntime:
-    return DatabaseRuntime(
-        database_url=os.environ.get(
-            "NOVEL_SYSTEM_DATABASE_URL",
-            f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}",
-        ),
-        sqlite_foreign_keys_enabled=bool_env(
-            "NOVEL_SYSTEM_SQLITE_FOREIGN_KEYS_ENABLED",
-            True,
-            strict=True,
-        ),
-    )
+__all__ = ["BACKEND_ROOT", "DEFAULT_DATABASE_PATH", "DatabaseRuntime", "load_database_runtime"]

@@ -9,7 +9,7 @@ import pytest
 
 from tests.test_migration_0084_scene_plan_rendering_mode import _insert_minimal_row, _migrate
 
-PREVIOUS_HEAD = "20260929_0094"
+PREVIOUS_HEAD = "20260929_0096"
 CURRENT_HEAD = "20260929_0097"
 
 

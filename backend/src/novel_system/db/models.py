@@ -896,6 +896,9 @@ class LlmCall(Base):
             ),
         ),
         Index("ix_llm_calls_accounting_status", "accounting_status"),
+        # 迁移 20260929_0096：成本看板按作品 / 章节过滤
+        Index("ix_llm_calls_project_created", "project_id", "created_at"),
+        Index("ix_llm_calls_chapter", "chapter_id"),
     )
 
     llm_call_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -1000,6 +1003,8 @@ class LlmCallAttempt(Base):
             name="ck_llm_call_attempts_dispatch_kind",
         ),
         Index("ix_llm_call_attempts_call_status", "llm_call_id", "accounting_status"),
+        # 迁移 20260929_0096：今日 / 本月用量读数按尝试时间过滤
+        Index("ix_llm_call_attempts_created", "created_at"),
     )
 
     attempt_id: Mapped[str] = mapped_column(String, primary_key=True)

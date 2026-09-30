@@ -6,7 +6,7 @@ system_prompt)`` — existed only on a test fake, never on the production ``LLMN
 These tests cover the now-real wiring:
 
 - ``LLMNodeRunner.run_task`` assembles an ad-hoc request and uses the resolved client.
-- the ``auto_critique_llm`` route resolves (models.yaml task_routing).
+- the ``auto_critique_llm`` route resolves (borrowed ``soft_qc`` route; node-registry defaults when no snapshot).
 - the orchestrator path degrades to rule-only when the runner is absent (opt-in default).
 - the LLM editor's issues are merged into the rewrite brief when a runner is present.
 """
@@ -820,8 +820,6 @@ def test_llm_critique_failed_parent_wins_over_terminal_undispatched_rejection(
         "RUN_CHECKPOINT_OUTPUT_MISSING",
         "RUN_OWNER_LEASE_LOST",
         "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
-        "LLM_OFFLINE_RESPONSE_INVALID",
-        "LLM_OFFLINE_CAPABILITY_UNSUPPORTED",
     ],
 )
 def test_llm_critique_control_plane_failures_are_not_degraded(

@@ -1,11 +1,19 @@
-"""价格快照（结果闭环治理设计 §5.8，Wave 6）。
+"""模型单价：把一次调用的 token 折算成金额——只对作者在 ``config/pricing.yaml`` 里写了单价的模型。
 
-成本聚合的价格层：把 ``LlmCall`` 的 token 折算成费用。设计要求「新增可配置价格
-快照」且「不向每条调用写死价格」——价格集中在 ``config/pricing.yaml``，按
-(provider, model) + ``effective_at`` 解析，未命中回落 ``default_estimate``。
+2026-09-30 重构 P06（批准#4，审计 B09-17）：成本看板以 token 为主。以前价书里只有两条占位估算价
+（``openai_compatible`` 的 gpt-5 / gpt-5-mini），其余每个真实模型（经中转接入的全部模型）都回落到
+``default_estimate`` 的 0.5 / 1.5 美元每千 token——看板上的美元数是编出来的。现在没有兜底价：
+价书里没有的 (provider, model) 就是「未定价」，:func:`compute_cost` 回 ``priced: False`` / ``cost: None``。
 
-诚实标注：占位价书全部 ``is_estimate: true``；文件缺失时硬回退到内置估算，
-读路径永不抛（成本页/信号面板不能因价书问题 500）。
+价书格式（``prices`` 里每一条）：``provider``（调用记录里的服务类型，经中转接入的一般是 ``openai_compatible``）、
+``model``（发给服务的模型 id）、``input_per_1k`` / ``output_per_1k``（每 1000 token 的单价，非负数）、
+可选的 ``effective_at``（ISO 时间，起生效；同一模型可写多条，按调用时间取当时生效的最新一条；不写 = 一直生效）。
+整本价书一个币种（顶层 ``currency``，默认 USD）：一条写了别的币种的单价不参与折算（记一条告警），
+免得把两种货币加在一起。
+
+读路径永不抛：文件缺失、解析失败、条目不合法都只是少了单价（记告警），成本页不会因为价书 500。
+缓存按文件正文：改了价书，下一次读取就用新单价，不用重启后端。每次 :func:`load_price_book` 都读一遍文件，
+所以一次聚合要折算很多条调用时，先读一次价书，再把它经 ``book=`` 交给 :func:`compute_cost`。
 """
 
 from __future__ import annotations
@@ -15,50 +23,35 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from novel_system.services.config_cache import safe_load_yaml
-
 from novel_system.cache_registry import register_cache_reset
+from novel_system.services.config_cache import safe_load_yaml
 
 _LOGGER = logging.getLogger(__name__)
 
-# 内置硬回退（价书文件缺失/解析失败时用；与 config/pricing.yaml default_estimate 一致语义）
-_BUILTIN_DEFAULT = {
-    "input_per_1k": 0.5,
-    "output_per_1k": 1.5,
-    "currency": "USD",
-    "is_estimate": True,
-}
+DEFAULT_CURRENCY = "USD"
+# 以前的价书格式：占位估算价与它的兜底口径（已退役，出现时只记告警、不读）
+RETIRED_KEYS = ("default_estimate", "snapshots")
 
 
 @dataclass(frozen=True, slots=True)
-class PriceSnapshot:
-    provider: str | None
-    model: str | None
+class Price:
+    provider: str
+    model: str
     input_per_1k: float
     output_per_1k: float
-    currency: str
-    is_estimate: bool
     effective_at: str | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "input_per_1k": self.input_per_1k,
-            "output_per_1k": self.output_per_1k,
-            "currency": self.currency,
-            "is_estimate": self.is_estimate,
-            "effective_at": self.effective_at,
-        }
 
 
 @dataclass(frozen=True, slots=True)
 class PriceBook:
-    default_estimate: PriceSnapshot
-    snapshots: tuple[PriceSnapshot, ...]
+    currency: str
+    prices: tuple[Price, ...]
 
 
-_CACHE: PriceBook | None = None
+EMPTY_PRICE_BOOK = PriceBook(currency=DEFAULT_CURRENCY, prices=())
+
+# (价书正文, 解析结果)；正文变了就重新解析
+_CACHE: tuple[str, PriceBook] | None = None
 
 
 def _price_book_path() -> Path:
@@ -66,7 +59,6 @@ def _price_book_path() -> Path:
 
 
 def reset_price_book_cache() -> None:
-    """测试/配置热更用：清缓存下次 load 重读文件。"""
     global _CACHE
     _CACHE = None
 
@@ -74,60 +66,114 @@ def reset_price_book_cache() -> None:
 register_cache_reset("pricing.price_book", reset_price_book_cache)
 
 
-def _coerce_snapshot(raw: dict[str, Any], *, default_is_estimate: bool = True) -> PriceSnapshot:
-    return PriceSnapshot(
-        provider=raw.get("provider"),
-        model=raw.get("model"),
-        input_per_1k=float(raw.get("input_per_1k", _BUILTIN_DEFAULT["input_per_1k"])),
-        output_per_1k=float(raw.get("output_per_1k", _BUILTIN_DEFAULT["output_per_1k"])),
-        currency=str(raw.get("currency", "USD")),
-        is_estimate=bool(raw.get("is_estimate", default_is_estimate)),
-        effective_at=raw.get("effective_at"),
-    )
+def _price_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if number >= 0 else None
 
 
-def _builtin_default_snapshot() -> PriceSnapshot:
-    return _coerce_snapshot(dict(_BUILTIN_DEFAULT))
+def _text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _parse_price(raw: Any, currency: str) -> Price | None:
+    if not isinstance(raw, dict):
+        _LOGGER.warning("pricing.yaml: skipped a price entry that is not a mapping: %r", raw)
+        return None
+    provider, model = _text(raw.get("provider")), _text(raw.get("model"))
+    input_per_1k, output_per_1k = _price_number(raw.get("input_per_1k")), _price_number(raw.get("output_per_1k"))
+    if not provider or not model or input_per_1k is None or output_per_1k is None:
+        _LOGGER.warning(
+            "pricing.yaml: skipped a price entry without provider / model / non-negative input_per_1k and output_per_1k: %r",
+            raw,
+        )
+        return None
+    entry_currency = _text(raw.get("currency")) or currency
+    if entry_currency != currency:
+        _LOGGER.warning(
+            "pricing.yaml: skipped the price of %s/%s in %s (the price book is in %s)",
+            provider,
+            model,
+            entry_currency,
+            currency,
+        )
+        return None
+    effective_at = _text(raw.get("effective_at")) or None
+    return Price(provider, model, input_per_1k, output_per_1k, effective_at)
+
+
+def parse_price_book(raw: Any) -> PriceBook:
+    """价书内容（``yaml`` 解析后的对象）→ :class:`PriceBook`；不合法的部分跳过并记告警，从不抛。"""
+    if not isinstance(raw, dict):
+        return EMPTY_PRICE_BOOK
+    retired = [key for key in RETIRED_KEYS if key in raw]
+    if retired:
+        _LOGGER.warning(
+            "pricing.yaml: %s belong to the retired placeholder-estimate format and are ignored; "
+            "write real prices under `prices`",
+            ", ".join(retired),
+        )
+    currency = _text(raw.get("currency")) or DEFAULT_CURRENCY
+    entries = raw.get("prices")
+    parsed = (_parse_price(entry, currency) for entry in (entries if isinstance(entries, list) else []))
+    return PriceBook(currency=currency, prices=tuple(price for price in parsed if price is not None))
 
 
 def load_price_book() -> PriceBook:
     global _CACHE
-    if _CACHE is not None:
-        return _CACHE
     path = _price_book_path()
-    default = _builtin_default_snapshot()
-    snapshots: list[PriceSnapshot] = []
     try:
-        raw = safe_load_yaml(path.read_text(encoding="utf-8")) or {}
-        default_raw = raw.get("default_estimate")
-        if isinstance(default_raw, dict):
-            default = _coerce_snapshot(default_raw)
-        for entry in raw.get("snapshots") or []:
-            if isinstance(entry, dict) and entry.get("provider") and entry.get("model"):
-                snapshots.append(_coerce_snapshot(entry, default_is_estimate=True))
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        _LOGGER.info("pricing.yaml not found at %s; using builtin estimate", path)
-    except Exception:  # 解析失败硬回退，读路径永不抛（§5.8）
-        _LOGGER.warning("pricing.yaml could not be parsed; using builtin estimate", exc_info=True)
-    _CACHE = PriceBook(default_estimate=default, snapshots=tuple(snapshots))
-    return _CACHE
+        return EMPTY_PRICE_BOOK
+    except OSError:
+        _LOGGER.warning("pricing.yaml could not be read at %s; every model is unpriced", path, exc_info=True)
+        return EMPTY_PRICE_BOOK
+    cached = _CACHE
+    if cached is not None and cached[0] == text:
+        return cached[1]
+    try:
+        book = parse_price_book(safe_load_yaml(text))
+    except Exception:  # 解析失败：全部未定价，读路径不抛
+        _LOGGER.warning("pricing.yaml could not be parsed; every model is unpriced", exc_info=True)
+        book = EMPTY_PRICE_BOOK
+    _CACHE = (text, book)
+    return book
 
 
-def resolve_price(provider: str | None, model: str | None, at: str | None = None) -> PriceSnapshot:
-    """取 (provider, model) 生效于 ``at`` 的最新快照；未命中回落 default_estimate。
+def resolve_price(
+    provider: str | None,
+    model: str | None,
+    at: str | None = None,
+    *,
+    book: PriceBook | None = None,
+) -> Price | None:
+    """(provider, model) 在 ``at`` 时生效的单价；价书里没有 → ``None``（未定价）。
 
-    ``effective_at`` 为 ISO 字符串，按字典序即时间序比较（UTC "Z" 后缀）。``at=None``
-    视为「现在或之后」——取该 (provider, model) 最新一条。
+    ``effective_at`` 与 ``at`` 都是 UTC ISO 字符串，按字典序即时间序比较；``at=None`` 取最新一条。
     """
-    book = load_price_book()
     candidates = [
-        s for s in book.snapshots
-        if s.provider == provider and s.model == model
-        and (at is None or (s.effective_at or "") <= at)
+        price
+        for price in (book if book is not None else load_price_book()).prices
+        if price.provider == provider
+        and price.model == model
+        and (at is None or price.effective_at is None or price.effective_at <= at)
     ]
-    if candidates:
-        return max(candidates, key=lambda s: s.effective_at or "")
-    return book.default_estimate
+    if not candidates:
+        return None
+    return max(candidates, key=lambda price: price.effective_at or "")
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def unpriced() -> dict[str, Any]:
+    return {"priced": False, "cost": None, "input_cost": None, "output_cost": None, "currency": None, "unit": None}
 
 
 def compute_cost(
@@ -136,29 +182,40 @@ def compute_cost(
     prompt_tokens: Any,
     completion_tokens: Any,
     at: str | None = None,
+    *,
+    book: PriceBook | None = None,
 ) -> dict[str, Any]:
-    """token → 费用：cost = tokens/1000 × 单价。返回口径含 is_estimate 与 unit。"""
-    snap = resolve_price(provider, model, at=at)
-    p = _as_int(prompt_tokens)
-    c = _as_int(completion_tokens)
-    input_cost = p / 1000.0 * snap.input_per_1k
-    output_cost = c / 1000.0 * snap.output_per_1k
+    """token → 金额（token / 1000 × 单价）。未定价的模型回 ``priced: False``，金额字段全是 ``None``。"""
+    if book is None:
+        book = load_price_book()
+    price = resolve_price(provider, model, at=at, book=book)
+    if price is None:
+        return unpriced()
+    input_cost = _as_int(prompt_tokens) / 1000.0 * price.input_per_1k
+    output_cost = _as_int(completion_tokens) / 1000.0 * price.output_per_1k
     return {
+        "priced": True,
         "cost": input_cost + output_cost,
         "input_cost": input_cost,
         "output_cost": output_cost,
-        "currency": snap.currency,
-        "is_estimate": snap.is_estimate,
+        "currency": book.currency,
         "unit": {
-            "input_per_1k": snap.input_per_1k,
-            "output_per_1k": snap.output_per_1k,
-            "effective_at": snap.effective_at,
+            "input_per_1k": price.input_per_1k,
+            "output_per_1k": price.output_per_1k,
+            "effective_at": price.effective_at,
         },
     }
 
 
-def _as_int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
+__all__ = [
+    "DEFAULT_CURRENCY",
+    "EMPTY_PRICE_BOOK",
+    "Price",
+    "PriceBook",
+    "compute_cost",
+    "load_price_book",
+    "parse_price_book",
+    "reset_price_book_cache",
+    "resolve_price",
+    "unpriced",
+]

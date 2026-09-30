@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
@@ -7,7 +9,7 @@ from sqlalchemy import event
 
 from novel_system.api.app import SUPPORTED_DATABASE_REVISION, create_app
 from novel_system.db.base import Base
-from novel_system.database_runtime import DEFAULT_DATABASE_PATH
+from novel_system.env_config import DEFAULT_DATABASE_PATH
 from novel_system.db.session import engine
 from novel_system.settings import (
     BACKEND_ROOT,
@@ -41,6 +43,36 @@ def test_create_app_never_builds_the_schema_itself(monkeypatch) -> None:
         client.get("/live")
 
     assert calls == []
+
+
+def test_retired_quota_env_vars_log_one_startup_warning_and_block_nothing(monkeypatch, caplog) -> None:
+    """重评 R3:额度闸删了,这些变量还设着时启动照常(以前只设金额上限不设单价、或值写错,后端起不来),
+    每个进程只记一条警告,点名仍然设着的变量。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD", "5")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", "not-a-number")
+
+    with caplog.at_level(logging.WARNING, logger="novel_system.env_config"):
+        create_app()
+        get_settings()
+        get_settings(include_runtime_config=False)
+
+    warnings = [record.getMessage() for record in caplog.records if "no longer have any effect" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD" in warnings[0]
+    assert "NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS" in warnings[0]
+    assert "NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT" not in warnings[0]
+
+
+@pytest.mark.parametrize("value", ["0", "-60", "an-hour"])
+def test_invalid_reservation_recovery_ttl_still_stops_startup(monkeypatch, value: str) -> None:
+    """NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS 没有退役(重评 R3 只退役那八个):写错了照旧起不来。
+    只在启动对账里才读的话,后端照常起来,对账只记一条 scan_failed,没有主人的非场景预留永远回收不了。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS", value)
+
+    with pytest.raises(ValueError, match="NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS"):
+        get_settings(include_runtime_config=False)
+    with pytest.raises(ValueError, match="NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS"):
+        create_app()
 
 
 def test_settings_read_does_not_create_vector_store_directory(monkeypatch, tmp_path) -> None:

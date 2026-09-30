@@ -45,6 +45,7 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
+from novel_system.services.llm_routing import registry_default_node_routing
 from novel_system.services.style_reference import learn_finalize, learn_job, learn_run, learn_tags
 from novel_system.services.style_reference.card import card_from_profile_json
 from novel_system.services.style_reference.card_states import set_card_line_state
@@ -898,10 +899,10 @@ def test_start_refuses_missing_routes_and_stale_templates_before_creating_a_job(
     seed_book(session)
     _use(monkeypatch, _fake())
     config_dir = Path(__file__).resolve().parents[2] / "config"
-    models = yaml.safe_load((config_dir / "models.yaml").read_text(encoding="utf-8"))
+    # 老安装的 models 快照:每个节点都配了路由,只差这次发布新加的两个节点(快照里没有的节点就是没配)
+    models = {"node_routing": registry_default_node_routing()}
     for key in ("style_ref_protected_terms", "style_ref_tag_windows"):
-        models["task_routing"].pop(key)
-        (models.get("node_routing") or {}).pop(key, None)
+        models["node_routing"].pop(key)
     _activate_snapshot(session, "models", models)
     with pytest.raises(DomainError) as excinfo:
         learn_job.start_learn_job(session, "learn_book")

@@ -1,16 +1,14 @@
-"""把库内活动 models 配置里过低的 max_output_tokens 抬到下限。
+"""把库内活动 models 快照里某些节点的输出预算抬到下限（写成快照里的显式覆盖）。
 
-为什么需要这个工具：一旦系统配置界面存过一版 models 配置，运行时读的就是库内活动
-快照，仓库里的 `config/models.yaml` 便不再生效——改了文件也不会到达正在跑的实例。
-而整份重新导入 models.yaml 会把界面上配好的 provider/model 路由（比如自建中转的
-模型名）一起冲掉，所以这里只改 max_output_tokens，其余字段原样保留。
+2026-09-30 起（批准#5a / 重评 R4）models 快照只存作者为每个节点选的服务与模型；输出预算、温度等参数
+解析时取节点注册表（llm_node_registry）的默认值——代码里修好的默认值随发布直接到达实例，迁移
+20260929_0096 把已有快照里抄进去的参数都去掉了。所以一般不再需要这个工具，只剩两种用处：
+- 想让某个节点的输出预算高于默认值（例如某个中转的思考 token 特别多）：写成显式覆盖；
+- 迁移之前另存、后来又被重新激活的老快照，路由里仍带着当年抄进去的完整参数。
 
-背景：整步生成一次要吐出全表（场景列表/场景规划几十场、角色全档案多人多维），
-3200 装不下——reasoning 模型光思考就能吃满，正文被 max_tokens 砍断。
-
-两张表都要抬：运行时 `resolve_node_route` 先查系统设置同步进库的 `node_routing`，再退回
-`task_routing`——只抬 task_routing 时，界面「一键补齐」写进 node_routing 的 3200 仍然生效
-（2026-09-16 真实故障：task_routing 早已是 8192，请求却按 3200 发出）。
+不要为此整份重新导入 models 配置：那会把界面上配好的 provider/model 路由一起冲掉。这里只改
+max_output_tokens，其余字段原样保留。两张表都看：运行时 `resolve_node_route` 先查 `node_routing`，
+再退回老快照的 `task_routing`。路由没写输出预算时按节点默认值算「当前值」。
 
     python -m novel_system.tools.raise_llm_output_budget            # 干跑，只看会改什么
     python -m novel_system.tools.raise_llm_output_budget --execute  # 落库并激活新快照
@@ -25,6 +23,7 @@ import yaml
 
 from novel_system.db.session import SessionLocal
 from novel_system.services.config_cache import safe_load_yaml
+from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.system_config import SystemConfigService
 from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
@@ -51,6 +50,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 ROUTING_TABLES = ("node_routing", "task_routing")
 
 
+def _current_budget(node_id: str, config: dict[str, Any]) -> int | None:
+    """这条路由实际生效的输出预算：写了就是它，没写取节点默认值（退役节点没有默认值 → None）。"""
+    current = config.get("max_output_tokens")
+    if isinstance(current, int):
+        return current
+    if current is None:
+        spec = get_llm_node_spec(node_id)
+        return spec.max_output_tokens if spec is not None else None
+    return None
+
+
 def _targets(routing: dict[str, Any], nodes: list[str] | None, floor: int) -> dict[str, int]:
     selected = nodes or list(DEFAULT_NODES)
     keys = routing.keys() if selected == ["all"] else selected
@@ -59,8 +69,8 @@ def _targets(routing: dict[str, Any], nodes: list[str] | None, floor: int) -> di
         config = routing.get(key)
         if not isinstance(config, dict):
             continue
-        current = config.get("max_output_tokens")
-        if isinstance(current, int) and current < floor:
+        current = _current_budget(key, config)
+        if current is not None and current < floor:
             hits[key] = current
     return hits
 
@@ -87,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         category = service.overview()["categories"]["models"]
         snapshot = category.get("active_snapshot")
         if not snapshot:
-            print("库内没有活动的 models 配置快照——运行时直接读 config/models.yaml，改文件即可生效。")
+            print("库内没有活动的 models 配置快照——节点路由取节点注册表（llm_node_registry）的默认值，改默认值即可生效，无需处理。")
             return 0
 
         payload = safe_load_yaml(category["yaml_raw"]) or {}

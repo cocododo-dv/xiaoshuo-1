@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,17 +17,6 @@ router = APIRouter(tags=["system_config"])
 
 def _client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
-
-
-class SystemConfigDraftRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    category: Literal["api", "models", "prompts", "allowlists", "hash_contract"]
-    yaml_raw: str = Field(min_length=1, max_length=2_000_000)
-    secrets: dict[
-        Annotated[str, Field(min_length=1, max_length=255)],
-        Annotated[str, Field(max_length=16_384)],
-    ] | None = Field(default=None, max_length=64)
 
 
 class ProviderProbeRequest(BaseModel):
@@ -66,17 +55,6 @@ class LlmProviderConfigRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=16_384)
 
 
-class LlmNodeRoutesRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    node_routing: BoundedJsonObject
-    model_profiles: BoundedJsonObject | None = None
-    task_routing: BoundedJsonObject | None = None
-    retry_budget: BoundedJsonObject | None = None
-    job_runtime: BoundedJsonObject | None = None
-    activate: bool = False
-
-
 class LlmNodeRouteSyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -94,53 +72,8 @@ class LlmRoleRoutesRequest(BaseModel):
 
 @router.get("/api/v1/system-config")
 def system_config_overview(request: Request, session: Session = Depends(get_session)):
-    return ok(SystemConfigService(session).overview(), req_id=request_id_of(request))
-
-
-@router.post("/api/v1/system-config/drafts")
-def create_system_config_draft(
-    payload: SystemConfigDraftRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
-):
-    require_admin_token(x_admin_token, client_host=_client_host(request))
-    body = payload.model_dump(mode="json")
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/system-config/drafts",
-        payload=body,
-        action=lambda: SystemConfigService(session, auto_commit=False).create_draft(
-            category=payload.category,
-            yaml_raw=payload.yaml_raw,
-            secrets=payload.secrets,
-            actor_ref=actor_ref_of(request),
-        ),
-    )
-
-
-@router.post("/api/v1/system-config/{snapshot_id}/activate")
-def activate_system_config_snapshot(
-    snapshot_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
-):
-    require_admin_token(x_admin_token, client_host=_client_host(request))
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/system-config/{snapshot_id}/activate",
-        payload={"snapshot_id": snapshot_id},
-        action=lambda: SystemConfigService(session, auto_commit=False).activate(
-            snapshot_id,
-            actor_ref=actor_ref_of(request),
-        ),
-    )
+    # 摘要：运行时状态 + 各类配置的来源与活动快照版本（不带 YAML 正文与历史快照；设置页读 /llm）
+    return ok(SystemConfigService(session).overview(include_content=False), req_id=request_id_of(request))
 
 
 @router.post("/api/v1/system-config/test-provider")
@@ -162,22 +95,9 @@ def test_system_config_provider(
     )
 
 
-@router.get("/api/v1/system-config/export/{category}")
-def export_system_config_category(category: str, request: Request, session: Session = Depends(get_session)):
-    return ok(
-        SystemConfigService(session).export_category(category),
-        req_id=request_id_of(request),
-    )
-
-
 @router.get("/api/v1/system-config/llm")
 def system_config_llm_overview(request: Request, session: Session = Depends(get_session)):
     return ok(SystemConfigService(session).llm_overview(), req_id=request_id_of(request))
-
-
-@router.get("/api/v1/system-config/llm/calls/audit")
-def system_config_llm_call_audit(request: Request, session: Session = Depends(get_session)):
-    return ok(SystemConfigService(session).llm_call_audit(), req_id=request_id_of(request))
 
 
 @router.post("/api/v1/system-config/llm/providers")
@@ -241,28 +161,6 @@ def set_default_system_config_llm_provider(
         payload={"provider_id": provider_id},
         action=lambda: SystemConfigService(session, auto_commit=False).set_default_llm_provider(
             provider_id=provider_id,
-            actor_ref=actor_ref_of(request),
-        ),
-    )
-
-
-@router.post("/api/v1/system-config/llm/node-routes")
-def save_system_config_llm_node_routes(
-    payload: LlmNodeRoutesRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
-):
-    require_admin_token(x_admin_token, client_host=_client_host(request))
-    body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/node-routes",
-        payload=body,
-        action=lambda: SystemConfigService(session, auto_commit=False).save_llm_node_routes(
-            payload=body,
             actor_ref=actor_ref_of(request),
         ),
     )
@@ -332,7 +230,7 @@ def list_system_config_llm_provider_models(
     require_admin_token(x_admin_token, client_host=_client_host(request))
     return ok(
         SystemConfigService(session).list_llm_provider_models(provider_id=provider_id),
-        req_id=None,
+        req_id=request_id_of(request),
     )
 
 

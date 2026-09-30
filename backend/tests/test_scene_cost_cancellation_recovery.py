@@ -53,8 +53,8 @@ def test_legacy_0064_over_budget_cost_remains_readable_without_becoming_normal_s
     summary = ca.scene_cost(session, "CX2")
     # 仅兼容读取 0064 历史脏数据；新在线调用由预留门禁阻止制造该状态。
     assert summary["budget"]["over_budget"] is True
-    assert summary["total_cost"] > 0
-    assert summary["phase_breakdown"]["candidate_generation"]["cost"] > 0
+    assert summary["total_tokens"] == 1_200
+    assert summary["phase_breakdown"]["candidate_generation"]["tokens"] == 1_200
     assert summary["calibers"]["estimate"]["tokens"] == 1_200
     assert summary["calibers"]["provider_actual"]["tokens"] == 0
     assert summary["calibers"]["budget_charged"]["tokens"] == 0
@@ -84,7 +84,8 @@ def test_failed_call_does_not_roll_back_draft_and_is_attributed(session):
     state = session.get(SceneRunState, "CX3")
     assert state.latest_valid_draft_row_id == "draft_CX3"  # 失败不清指针
     summary = ca.scene_cost(session, "CX3")
-    assert summary["extra_cost"]["failed_call_cost"] > 0
+    assert summary["extra_cost"]["failed_tokens"] == 100
+    assert summary["extra_cost"]["failed_attempt_count"] == 1
 
 
 def test_archived_final_survives_after_stop(session):

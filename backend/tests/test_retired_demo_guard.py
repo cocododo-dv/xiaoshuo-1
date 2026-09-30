@@ -5,8 +5,9 @@
 
 刻意不覆盖：
 - 测试文件（`*.test.jsx` / `*_test.py` / `tests/`）—— 夹具用中性名，允许出现；
-- 记账边界的 `offline_deterministic` 执行模式常量与 `OfflineDeterministicExecution`
-  ABC —— 休眠的基础设施，不是演示数据。
+- 记账账本里 `offline_deterministic` 这个字面值 —— 离线确定性执行模式已退役（2026-09-30，
+  `OfflineDeterministicExecution` 已删），只剩「带着它的上下文被拒、历史的离线行过不了产品校验」这一层，
+  不是演示数据。
 """
 from __future__ import annotations
 
