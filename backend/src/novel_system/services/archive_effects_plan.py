@@ -10,10 +10,14 @@
 - 章汇总：流水线只在章末那一场重建（归档第 8 步）；晋升（成稿中心，以及带作者稿的采纳——React 的「采纳并归档」
   总带作者稿 ``exact_author_draft``，走的就是晋升）每次都重建；不带作者稿的两种采纳（已归档的重放、流水线稿，只有
   API 兼容调用会走）不重建——章级读者一律按当前各场终稿现拼（重评 R13 复核补充 1、3），这里不照搬流水线「只在
-  章末」的规则；
-- 卷汇总跟着章汇总走：流水线在章末那一场（归档第 9 步）；晋升在章汇总之后（:func:`aggregate_volume_after_chapter`：
-  卷边界、幂等都由 ``maybe_aggregate_volume`` 自己管，失败只降级、不挡归档，与流水线第 9 步同一条规则）；不重建
-  章汇总的路径也不做——卷汇总读的就是各章的章汇总；
+  章末」的规则。章汇总只是派生缓存：晋升时拼不出来（``run_final_aggregate`` 没回 ``created``，例如同一章里位置
+  对不上的旧行）只记日志与 ``OperationLog.payload_json.chapter_aggregate``，不挡发布（以前是 409
+  ``CANONICAL_AGGREGATE_REBUILD_BLOCKED``）；
+- 卷汇总跟着章汇总走：流水线在章末那一场（归档第 9 步）；晋升在章汇总重建成功之后（:func:`aggregate_volume_after_chapter`：
+  卷边界、幂等都由 ``maybe_aggregate_volume`` 自己管，失败只降级、不挡归档，与流水线第 9 步同一条规则）；这一次
+  章汇总没重建成（``volume_aggregate`` 记 ``skipped``，钉在 ``test_chapter_aggregate_derive_on_read.py::
+  test_promotion_logs_a_chapter_aggregate_it_cannot_rebuild_instead_of_refusing``）或不重建章汇总的路径都不做——
+  卷汇总读的就是各章的章汇总，不拿旧的那份去卷；
 - 只在流水线做的：正文事件抽取（可选的 LLM 节点，归档第 6 步）、章级准终稿评审（LLM，归档第 10 步）。
 """
 
