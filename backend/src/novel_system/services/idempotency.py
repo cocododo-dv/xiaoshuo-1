@@ -248,6 +248,10 @@ class IdempotencyLeaseService:
 # 幂等记录只为「同一次点击的网络重试」服务：重试都在几秒到几分钟之内，72 小时足够。以前这张表只增不删——
 # 每次构思自动保存都把整个工作区原样存一份，真实库 437 MB 里有 413 MB 是它。
 IDEMPOTENCY_REPLAY_RETENTION_HOURS = 72
+# 清理任务在全系统维护登记表（``services/maintenance.py``，随运行任务巡检线程跑）上的名字与间隔：
+# 每 6 小时一次，``run_at_start=False``（见 ``run_idempotency_retention``）。
+IDEMPOTENCY_RETENTION_TASK = "idempotency_retention"
+IDEMPOTENCY_RETENTION_INTERVAL_SECONDS = 6 * 3600
 
 
 def expired_idempotency_condition(now: datetime) -> Any:

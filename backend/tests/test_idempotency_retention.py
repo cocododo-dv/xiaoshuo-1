@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import IdempotencyKey, OperationLog
@@ -12,6 +13,8 @@ from novel_system.db.session import SessionLocal
 from novel_system.services import idempotency
 from novel_system.services.idempotency import (
     IDEMPOTENCY_REPLAY_RETENTION_HOURS,
+    IDEMPOTENCY_RETENTION_INTERVAL_SECONDS,
+    IDEMPOTENCY_RETENTION_TASK,
     execute_with_idempotency,
     purge_expired_idempotency,
     release_free_pages,
@@ -122,6 +125,44 @@ def test_maintenance_task_purges_in_its_own_session_and_commits(session, monkeyp
     with SessionLocal() as fresh:
         assert set(fresh.scalars(select(IdempotencyKey.idempotency_key))) == {"new"}
     assert run_idempotency_retention() == 0
+
+
+def test_retention_runs_every_6_hours_on_the_system_maintenance_registry_but_never_on_the_first_tick(
+    session, monkeypatch
+) -> None:
+    """重评 R14：清理登记在全系统维护登记表上（``services/maintenance.py``，随运行任务巡检线程跑），每 6 小时一次；
+    启动后的第一拍不清——后端热加载新代码时，第一次大批量删除必须等部署时那份备份做完（复核补充 2 / 7）。
+
+    登记表随 P01b 进来：它还不在树上时本例跳过。两边合并之后要在 ``idempotency.py`` 末尾登记::
+
+        register_maintenance_task(IDEMPOTENCY_RETENTION_TASK, run_idempotency_retention,
+                                  interval_seconds=IDEMPOTENCY_RETENTION_INTERVAL_SECONDS, run_at_start=False)
+
+    没登记本例就红：保留期只在部署时的 compact_db 里跑一次，之后这张表又会一直长下去。
+    """
+    maintenance = pytest.importorskip("novel_system.services.maintenance")
+    registered = maintenance.SYSTEM_MAINTENANCE.tasks.get(IDEMPOTENCY_RETENTION_TASK)
+    assert registered is not None, "idempotency retention is not registered on the system maintenance registry"
+    task, interval = registered
+    assert task is run_idempotency_retention
+    assert interval == IDEMPOTENCY_RETENTION_INTERVAL_SECONDS == 6 * 3600
+
+    _row(session, "old", status="succeeded", updated_hours_ago=100, lease_hours_ago=100)
+    session.commit()
+    monkeypatch.setattr(idempotency, "utcnow", lambda: NOW)
+    start = 1_000.0
+    try:
+        maintenance.reset_maintenance_schedule(now=start)
+        assert IDEMPOTENCY_RETENTION_TASK not in maintenance.run_due_maintenance(now=start + 60)
+        session.expire_all()
+        assert session.get(IdempotencyKey, "old") is not None
+
+        ran = maintenance.run_due_maintenance(now=start + IDEMPOTENCY_RETENTION_INTERVAL_SECONDS)
+        assert IDEMPOTENCY_RETENTION_TASK in ran
+        session.expire_all()
+        assert session.get(IdempotencyKey, "old") is None
+    finally:
+        maintenance.reset_maintenance_schedule()
 
 
 def test_released_pages_go_back_to_the_file_system_on_an_incremental_database(tmp_path) -> None:
