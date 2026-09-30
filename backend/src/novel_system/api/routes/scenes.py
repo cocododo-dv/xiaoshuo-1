@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import mutate
-from novel_system.api.requests.common import EmptyRequest, INT64_MAX
+from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.scenes import (
     AdoptCurrentRequest,
     SceneAuthorNotesSaveRequest,
@@ -48,7 +48,7 @@ from novel_system.services.reference_copy_gate import (
     copy_block_author_action,
 )
 from novel_system.services.run_job_leases import STATUS_QUEUED
-from novel_system.services.scene_budget import apply_topup
+from novel_system.services.scene_budget import apply_topup, validated_topup
 from novel_system.services.scene_notes import SceneNotesService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
@@ -569,54 +569,17 @@ def topup_scene_budget(
 ):
     """作者显式追加 token/业务尝试/provider 尝试预算；唯一扩容入口，留审计。"""
     actor_ref = actor_ref_of(request)
-    body = payload.model_dump(mode="json") if payload else {}
-    raw_extras = {
-        "extra_tokens": body.get("extra_tokens", 0),
-        "extra_attempts": body.get("extra_attempts", 0),
-        "extra_provider_attempts": body.get("extra_provider_attempts", 0),
-    }
-    invalid_fields = {
-        field: value
-        for field, value in raw_extras.items()
-        if type(value) is not int or value < 0 or value > INT64_MAX
-    }
-    if invalid_fields or not any(
-        value > 0 for value in raw_extras.values() if type(value) is int
-    ):
-        raise DomainError(
-            "INVALID_BUDGET_TOPUP",
-            "topup values must be non-negative integers and at least one must be positive",
-            status_code=422,
-            details={**raw_extras, "max_lifecycle_budget": INT64_MAX},
-        )
-    extra_tokens = raw_extras["extra_tokens"]
-    extra_attempts = raw_extras["extra_attempts"]
-    extra_provider_attempts = raw_extras["extra_provider_attempts"]
-    reason = str(body.get("reason") or "").strip()[:300]
+    topup = validated_topup(payload.model_dump(mode="json") if payload else {})
 
-    def _topup(session: Session) -> dict[str, Any]:
+    def _topup() -> dict:
         AuthorLifecycleService(session).require_active_scene(scene_id)
-        return apply_topup(
-            session,
-            scene_id,
-            extra_tokens=extra_tokens,
-            extra_attempts=extra_attempts,
-            extra_provider_attempts=extra_provider_attempts,
-            reason=reason,
-            actor_ref=actor_ref,
-        )
+        return apply_topup(session, scene_id, **topup, actor_ref=actor_ref)
 
     return mutate(
         request,
         session,
-        payload={
-            "scene_id": scene_id,
-            "extra_tokens": extra_tokens,
-            "extra_attempts": extra_attempts,
-            "extra_provider_attempts": extra_provider_attempts,
-            "reason": reason,
-        },
-        action=lambda: _topup(session),
+        payload={"scene_id": scene_id, **topup},
+        action=_topup,
     )
 
 

@@ -683,6 +683,37 @@ def lifecycle_budget_payload(state: SceneRunState) -> dict[str, int] | None:
     }
 
 
+TOPUP_FIELDS: tuple[str, ...] = ("extra_tokens", "extra_attempts", "extra_provider_attempts")
+TOPUP_REASON_MAX_CHARS = 300
+
+
+def validated_topup(body: dict[str, Any]) -> dict[str, Any]:
+    """作者追加预算请求的三道额度与理由（``POST …/budget/topup``）。
+
+    三个额度都是 0 到有符号 64 位上限之间的整数、至少一个大于 0；不合格的一并报 422 ``INVALID_BUDGET_TOPUP``
+    （``details`` 带原值与上限）。理由去掉首尾空白、截到 300 字。
+    """
+    raw_extras = {field: body.get(field, 0) for field in TOPUP_FIELDS}
+    invalid_fields = {
+        field: value
+        for field, value in raw_extras.items()
+        if type(value) is not int or value < 0 or value > LIFECYCLE_BUDGET_MAX
+    }
+    if invalid_fields or not any(
+        value > 0 for value in raw_extras.values() if type(value) is int
+    ):
+        raise DomainError(
+            "INVALID_BUDGET_TOPUP",
+            "topup values must be non-negative integers and at least one must be positive",
+            status_code=422,
+            details={**raw_extras, "max_lifecycle_budget": LIFECYCLE_BUDGET_MAX},
+        )
+    return {
+        **raw_extras,
+        "reason": str(body.get("reason") or "").strip()[:TOPUP_REASON_MAX_CHARS],
+    }
+
+
 def can_spend(state: SceneRunState | None, estimated_tokens: int) -> bool:
     """可选支出的前置预留检查；预算未初始化不拦（渐进迁移）。"""
     if state is None or state.scene_token_budget is None:
