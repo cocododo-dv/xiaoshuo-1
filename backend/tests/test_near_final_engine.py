@@ -837,13 +837,14 @@ def test_near_final_guard_rejects_a_rewrite_that_moves_away_from_the_author(sess
     from types import SimpleNamespace
 
     from novel_system.services import orchestrator as orchestrator_module
+    from novel_system.services.scene_run import near_final_stage
 
     orch = object.__new__(Orchestrator)
     orch.session = session
     source = SimpleNamespace(content=_paragraphed_scene(), row_id="src")
     rewrite = SimpleNamespace(content=_paragraphed_scene(3), row_id="rw")
     monkeypatch.setattr(
-        orchestrator_module, "assess_rewrite_regressions", lambda *a, **k: {"regressed": False, "reasons": [], "rewritten_integrity_markers": []}
+        near_final_stage, "assess_rewrite_regressions", lambda *a, **k: {"regressed": False, "reasons": [], "rewritten_integrity_markers": []}
     )
     drift = {"moved_away": True, "source_distance": 0.99, "rewrite_distance": 1.36, "source_percentile": 92.7, "rewrite_percentile": 98.3, "tolerance": 0.05}
     monkeypatch.setattr(Orchestrator, "_near_final_rewrite_drift", lambda self, **kwargs: drift)
