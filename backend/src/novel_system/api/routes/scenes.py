@@ -1,6 +1,15 @@
+"""场景接口：作者笔记、删场、v1 场景卡建 / 改、运行（同步 run/full · 后台任务 · 取消 · 查询）、运行态与状态投影、
+关键场景的候选终选与选后续跑、生命周期预算追加、采纳归档、AI 起草台的工作台载荷。
+
+路由只做请求校验、幂等与信封；业务都在服务里（B12-01）：工作台载荷 ``services/scene_workbench.py``、候选终选
+``services/candidate_selection.py``、采纳归档 ``services/scene_adoption.py``、v1 场景卡 ``services/scene_upsert.py``、
+预算追加 ``services/scene_budget.py``、运行态视图 ``services/author_state.py``。
+
+``Orchestrator`` 与 ``start_scene_run_job_worker`` 是这个模块上的名字，由这里调用——测试在这里替换它们。
+"""
+
 from __future__ import annotations
 
-import logging
 from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, Request
@@ -22,33 +31,32 @@ from novel_system.api.requests.scenes import (
     StyleCandidateSelectRequest,
 )
 from novel_system.api.response import respond
-from novel_system.db.models import (
-    ChapterRunJob,
-    SceneCard,
-    SceneRunState,
-)
+from novel_system.db.models import ChapterRunJob
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_state import project_run_states, scene_status_payload
 from novel_system.services.candidate_selection import candidates_view, select_candidate
-from novel_system.services.chapter_approval import is_chapter_approved, require_chapter_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.run_job_leases import STATUS_QUEUED
 from novel_system.services.scene_adoption import adopt_current
 from novel_system.services.scene_budget import apply_topup, validated_topup
 from novel_system.services.scene_notes import SceneNotesService
-from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
+from novel_system.services.scene_run_jobs import (
+    SceneRunJobService,
+    start_scene_run_job_worker,
+)
+from novel_system.services.scene_upsert import upsert_scene
 from novel_system.services.scene_workbench import (
     INCLUDE_DIAGNOSTICS,
     SceneWorkbenchService,
     attach_style_notices,
 )
-from novel_system.services.text_input import validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
 
 router = APIRouter(tags=["scenes"])
-_LOGGER = logging.getLogger(__name__)
+
+
 @router.get("/api/v1/scenes/{scene_id}/author-notes")
 def get_scene_author_notes(
     scene_id: str,
@@ -111,154 +119,8 @@ def create_scene(
         request,
         session,
         payload=body,
-        action=lambda: _create_scene(session, body),
+        action=lambda: upsert_scene(session, body),
     )
-
-
-def _create_scene(session: Session, payload: dict) -> dict:
-    validate_user_text_payload(payload, field_prefix="scene")
-    payload = {
-        **payload,
-        "writer_brief_json": normalize_scene_writer_brief(
-            payload.get("writer_brief_json")
-        ),
-    }
-    lifecycle = AuthorLifecycleService(session)
-    chapter_id = payload.get("chapter_id")
-    if not isinstance(chapter_id, str) or not chapter_id:
-        raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
-
-    chapter = lifecycle.require_active_chapter(chapter_id)
-
-    scene = session.get(SceneCard, payload["scene_id"])
-    created = scene is None
-    effective_scene_seq = (
-        payload.get("scene_seq")
-        if payload.get("scene_seq") is not None
-        else (
-            scene.scene_seq
-            if scene is not None
-            else _next_scene_seq(session, chapter_id)
-        )
-    )
-    _assert_scene_seq_available(
-        session,
-        scene_id=payload["scene_id"],
-        chapter_id=chapter_id,
-        scene_seq=int(effective_scene_seq),
-    )
-    if scene is None:
-        require_chapter_mutation_allowed(
-            session,
-            chapter,
-            changed_fields=["scenes.create"],
-            operation="scenes.upsert_create",
-        )
-        if payload.get("scene_seq") is None:
-            payload = {
-                **payload,
-                "scene_seq": _next_scene_seq(session, chapter_id),
-            }
-        scene = SceneCard(**payload)
-        session.add(scene)
-        session.flush()
-        changed = True
-    else:
-        if scene.trashed_flag == 1:
-            raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
-        if payload["chapter_id"] != scene.chapter_id:
-            raise DomainError(
-                "SCENE_IDENTITY_IMMUTABLE",
-                "an existing scene cannot be moved to another chapter",
-                status_code=409,
-            )
-        if "project_id" in payload:
-            requested_project_id = payload["project_id"]
-            may_bind_from_chapter = (
-                scene.project_id is None
-                and requested_project_id is not None
-                and requested_project_id == chapter.project_id
-            )
-            if requested_project_id != scene.project_id and not may_bind_from_chapter:
-                raise DomainError(
-                    "SCENE_IDENTITY_IMMUTABLE",
-                    "an existing scene cannot be moved to another project",
-                    status_code=409,
-                )
-        if "outline_plan_id" in payload:
-            requested_outline_id = payload["outline_plan_id"]
-            may_bind_from_chapter = (
-                scene.outline_plan_id is None
-                and requested_outline_id is not None
-                and requested_outline_id == chapter.outline_plan_id
-            )
-            if (
-                requested_outline_id != scene.outline_plan_id
-                and not may_bind_from_chapter
-            ):
-                raise DomainError(
-                    "SCENE_IDENTITY_IMMUTABLE",
-                    "an existing scene cannot be rebound to another outline plan",
-                    status_code=409,
-                )
-        if payload.get("scene_seq") is None:
-            payload = {
-                **payload,
-                "scene_seq": scene.scene_seq,
-            }
-        changed_fields = [
-            key
-            for key, value in payload.items()
-            if key not in {"scene_id", "chapter_id"} and getattr(scene, key) != value
-        ]
-        changed = require_chapter_mutation_allowed(
-            session,
-            chapter,
-            changed_fields=changed_fields,
-            operation="scenes.upsert_update",
-        )
-        if changed:
-            for key, value in payload.items():
-                setattr(scene, key, value)
-
-    state = session.get(SceneRunState, payload["scene_id"])
-    should_create_state = state is None and (
-        created or not is_chapter_approved(session, chapter)
-    )
-    if should_create_state:
-        state = SceneRunState(scene_id=payload["scene_id"], scene_status="ready")
-        session.add(state)
-        changed = True
-    session.flush()
-    return {"scene_id": scene.scene_id, "changed": changed}
-
-
-def _assert_scene_seq_available(
-    session: Session,
-    *,
-    scene_id: str,
-    chapter_id: str,
-    scene_seq: int,
-) -> None:
-    conflict = session.execute(
-        select(SceneCard.scene_id).where(
-            SceneCard.chapter_id == chapter_id,
-            SceneCard.scene_seq == scene_seq,
-            SceneCard.trashed_flag == 0,
-            SceneCard.scene_id != scene_id,
-        )
-    ).scalar_one_or_none()
-    if conflict is not None:
-        raise DomainError(
-            "SCENE_SEQUENCE_CONFLICT",
-            "another active scene already uses this scene_seq",
-            status_code=409,
-            details={
-                "chapter_id": chapter_id,
-                "scene_seq": scene_seq,
-                "conflicting_scene_id": conflict,
-            },
-        )
 
 
 def _parse_run_policy(payload: dict | None) -> str:
@@ -396,13 +258,12 @@ def cancel_run_job(
         )
         return service.serialize_job(job)
 
-    response = mutate(
+    return mutate(
         request,
         session,
         payload={"job_id": job_id, "body": body},
         action=cancel,
     )
-    return response
 
 
 @router.get("/api/v1/scenes/{scene_id}/run/jobs/latest")
@@ -545,9 +406,3 @@ def scene_workbench(
         request,
         SceneWorkbenchService(session).payload(scene_id, diagnostics=include == INCLUDE_DIAGNOSTICS),
     )
-
-
-# WP4.1:本场参考窗口从哪几步的尝试回读,按优先级——风格稿(style_draft)是成稿前最后一次带
-# 样例的通道;风格直起下中性步位的首稿同样带窗口;近终稿重写稿作兜底。
-def _next_scene_seq(session: Session, chapter_id: str) -> int:
-    return AuthorLifecycleService(session).next_scene_append_seq(chapter_id)
