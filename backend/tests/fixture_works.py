@@ -300,7 +300,6 @@ def seed_fixture_works(session: Session) -> list[str]:
         steps=_WORK_A_STEPS,
         resume_lines=_WORK_A_RESUME_LINES,
         paused_days_ago=3,
-        words_total=38420,
         streak_days=6,
         streak_last_day=yesterday,
     )
@@ -320,7 +319,6 @@ def seed_fixture_works(session: Session) -> list[str]:
         steps=_WORK_B_STEPS,
         resume_lines=_WORK_B_RESUME_LINES,
         paused_days_ago=1,
-        words_total=12600,
         streak_days=0,
         streak_last_day=None,
     )
@@ -351,7 +349,6 @@ def _seed_work(
     steps: dict[str, str],
     resume_lines: list[str],
     paused_days_ago: int,
-    words_total: int,
     streak_days: int,
     streak_last_day: str | None,
 ) -> None:
@@ -429,7 +426,6 @@ def _seed_work(
 
     WritingStatsService(session).seed_stats(
         project_id,
-        words_total=words_total,
         streak_days=streak_days,
         streak_last_day=streak_last_day,
     )

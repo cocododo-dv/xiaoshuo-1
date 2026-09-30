@@ -41,11 +41,11 @@ await check("书架来自后端（两部 demo 种子）", async () => {
   await page.keyboard.press("Escape");
 });
 
-await check("切换器进度数字来自 writing-stats（3.8 万字）", async () => {
+await check("切换器进度数字来自 writing-stats（2.7 万字）", async () => {
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
   const row = await page.textContent('.ws-wsw-row:has-text("样例长卷")');
-  if (!row.includes("3.8 万字")) throw new Error(`row: ${row}`);
+  if (!row.includes("2.7 万字")) throw new Error(`row: ${row}`);
   await page.keyboard.press("Escape");
 });
 

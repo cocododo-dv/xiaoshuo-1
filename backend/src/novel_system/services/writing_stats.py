@@ -166,14 +166,12 @@ class WritingStatsService:
         self,
         project_id: str,
         *,
-        words_total: int = 0,
         streak_days: int = 0,
         streak_last_day: str | None = None,
         last_active_at: str | None = None,
     ) -> ProjectWritingStats:
         """demo seed 用：直接写入统计基线（不走增量记账）。"""
         row = self._row(project_id, create=True)
-        row.words_total = int(words_total)
         row.streak_days = int(streak_days)
         row.streak_last_day = streak_last_day
         row.day = None
