@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import random
 from copy import deepcopy
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -168,7 +171,9 @@ from novel_system.db.models import (
     WriterEvaluation,
     utcnow,
 )
+from novel_system.services import auto_critique as _auto_critique
 from novel_system.services import idempotency as _idempotency
+from novel_system.services import scene_budget
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
 from novel_system.services.hash_engine import verify_bundle_snapshot_hash
@@ -181,10 +186,12 @@ from novel_system.services.llm_accounting import (
     validate_product_call,
     validate_product_call_ledger,
 )
+from novel_system.services.literary_quality import adversarial_rank_score
 from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_instructions import normalize_author_note
+from novel_system.services.author_state import compute_author_state
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
@@ -201,7 +208,11 @@ from novel_system.services.qc_engine import (
     SoftQcDecision,
     SoftQcEngine,
 )
+from novel_system.services.narrative_event_log import NarrativeEventLog
+from novel_system.services.pov_knowledge_projection import PovKnowledgeProjection
 from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.scene_criticality import classify_scene_with_context
+from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.services.style_reference import readings as style_readings
 from novel_system.services.style_reference.style_step import (
     PATCH_DECISION_REVERTED,
@@ -229,6 +240,7 @@ from novel_system.services.scene_run_checkpoint import (
 )
 from novel_system.services.scene_archive_checkpoint import SceneArchiveCheckpoint
 from novel_system.services.scene_archive_effects import SceneArchiveEffects
+from novel_system.settings import get_settings
 
 if TYPE_CHECKING:
     from novel_system.services.prose_event_extractor import ProseExtractionResult
@@ -498,9 +510,8 @@ class Orchestrator:
         # Wave 3（§6.1）：本次运行的生效策略落列（预算/使用量不在 _prepare 重置，§7.12）
         state.run_policy = run_policy
 
-        # Wave 3（§4.6/§5.5）：确立场景 token 预算 = 5 × 单发基线（已设不覆盖）
-        from novel_system.services import scene_budget
-
+        # Wave 3（§4.6/§5.5）：确立场景 token 预算（N × 单发基线，N 取 NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER，
+        # 默认 0 = 不设上限；已设不覆盖）
         if not self._checkpoint_reached("budget_ready"):
             state = scene_budget.ensure_scene_budget_initialized(self.session, scene_id)
             self._save_run_checkpoint(
@@ -655,7 +666,7 @@ class Orchestrator:
             planning = self._load_planning_checkpoint(scene_id)
 
         if not self._checkpoint_reached("bundle_ready"):
-            bundle = self.bundle_builder.build(scene_id, "P2", author_note=author_note)
+            bundle = self.bundle_builder.build(scene_id, author_note=author_note)
             self._save_run_checkpoint(
                 "bundle_ready",
                 artifact_refs={"bundle_id": bundle["bundle_id"]},
@@ -666,8 +677,6 @@ class Orchestrator:
             self._assert_author_note_matches_bundle(
                 bundle, author_note, scene_id=scene_id
             )
-
-        from novel_system.services.scene_criticality import classify_scene_with_context
 
         # §6.4 / §16：chapter_seq、连续过渡计数、constraint_intensity 的上下文推导
         # 统一收敛在 classify_scene_with_context——与崩溃续跑同一入口，判定不得分叉。
@@ -682,8 +691,6 @@ class Orchestrator:
         # §6 Defect D: persist criticality classification for API exposure
         state.criticality_level = criticality.level
         state.criticality_reasons_json = criticality.reasons
-
-        # §10 / §12: pre-generation tension + theme diagnostics
 
         if self._checkpoint_reached("neutral_ready"):
             neutral_generation = self._load_checkpoint_draft(
@@ -728,7 +735,7 @@ class Orchestrator:
                 neutral_content=neutral_content,
                 execution_step_key="hard_qc:0",
             )
-            # 键序不变：前六键沿用 _hard_qc_result_payload 的顺序，哈希才可复现。
+            # 前六键与 _hard_qc_result_payload 同源；哈希按排好序的键算（_json_hash），键序不影响哈希。
             hard_decision = {
                 **self._hard_qc_result_payload(hard_qc),
                 "should_continue": hard_qc.should_continue,
@@ -884,8 +891,6 @@ class Orchestrator:
 
         # 标准场景：机器下限 + 受约束风格信号继续管线；关键场景在下方暂停终选。
         # 从 checkpoint 恢复时也重建同一摘要，避免审计信息因一次进程中断消失。
-        from novel_system.services.literary_quality import adversarial_rank_score
-
         for idx, cand in enumerate(candidates):
             ranking = cand.ranking_audit or {}
             cand_score = ranking.get("quality_score")
@@ -1035,8 +1040,6 @@ class Orchestrator:
         near-final 重写）过预算闸（§5.8 预算耗尽停止新调用、交付最佳稿）；
         候选补满上限的场按 §5.5 固定预算优先级放弃 LLM 批判与补丁。
         """
-        from novel_system.services import scene_budget
-
         scene_id = scene.scene_id
         strict_mode = run_policy == "strict"
         gave_up_optional = (
@@ -1384,13 +1387,8 @@ class Orchestrator:
         self._ckpt._raise_if_run_cancelled()
 
     def _validate_budget_checkpoint(self, state: SceneRunState) -> None:
-        from novel_system.services.scene_budget import (
-            audited_scene_budget_prefixes,
-            ensure_scene_budget_initialized,
-        )
-
         try:
-            state = ensure_scene_budget_initialized(self.session, state.scene_id)
+            state = scene_budget.ensure_scene_budget_initialized(self.session, state.scene_id)
         except ValueError as exc:
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -1419,7 +1417,7 @@ class Orchestrator:
                 "budget checkpoint counters are invalid",
                 status_code=409,
             )
-        budget_prefixes = audited_scene_budget_prefixes(self.session, state)
+        budget_prefixes = scene_budget.audited_scene_budget_prefixes(self.session, state)
         if (
             expected_budget not in budget_prefixes
             or state.scene_tokens_used + state.scene_tokens_reserved
@@ -2565,8 +2563,6 @@ class Orchestrator:
         rewrite_generation: StyleGenerationResult,
     ) -> dict[str, Any] | None:
         """作者手笔直起时重写稿相对来源稿的读数比较；不适用 / 读不出 / 读数不可信 → ``None``（不拿它拒稿）。"""
-        from novel_system.services.style_policy import style_policy_for_bundle
-
         policy = style_policy_for_bundle(bundle)
         if not policy.bound or not policy.style_first:
             return None
@@ -2612,43 +2608,11 @@ class Orchestrator:
         """
         progress = self._near_final_checkpoint_progress()
         if progress >= 3:
-            final_scene, payload = self._load_near_final_checkpoint(
-                scene=scene,
-                bundle=bundle,
-                source_generation=source_generation,
-            )
-            generation = StyleGenerationResult(
-                row_id=str(
-                    (self._active_checkpoint_state().run_checkpoint_json or {})
-                    .get("artifact_refs", {})
-                    .get("near_final_source_draft_row_id")
-                ),
-                content=final_scene.content,
-                llm_call_id=final_scene.generation_llm_call_id or "",
-                bundle_id=bundle["bundle_id"],
-                bundle_hash=bundle["bundle_snapshot_hash"],
-                execution_step_key=(
-                    self._active_checkpoint_state().run_checkpoint_json or {}
-                )
-                .get("artifact_refs", {})
-                .get("final_generation_execution_step_key"),
-                artifact_execution_id=(
-                    self._active_checkpoint_state().run_checkpoint_json or {}
-                )
-                .get("artifact_refs", {})
-                .get("final_generation_artifact_execution_id"),
-            )
-            stored_gate = payload.get("rewrite_style_gate")
-            return (
-                payload,
-                generation,
-                int(payload.get("rewrite_count") or 0),
-                (
-                    (self._active_checkpoint_state().run_checkpoint_json or {})
-                    .get("artifact_refs", {})
-                    .get("near_final_skip_reason")
-                ),
-                deepcopy(stored_gate) if isinstance(stored_gate, dict) else None,
+            # 调用方 _finalize_after_style 在准终稿子游标 ≥3 时已直接去归档；这之间只写 soft_qc_ready，推不动这个游标。
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "near-final completion appeared while the soft QC phase was running",
+                status_code=409,
             )
 
         if progress < 0:
@@ -4929,8 +4893,6 @@ class Orchestrator:
             critique_outcome = "unchanged"
             critique_skip_reason: str | None = None
             patch_failure_product: dict[str, Any] | None = None
-            from novel_system.services.auto_critique import llm_auto_critique
-
             critique_spend_allowed = optional_spend_allowed()
             critique_runner = (
                 self._resolve_auto_critique_runner() if critique_spend_allowed else None
@@ -4957,15 +4919,11 @@ class Orchestrator:
             skip_critique = bool(getattr(criticality, "skip_critique", False))
             # 2026-09-12 风格直起:style_first 下规则版自动批评让位——它的指令(删感知词、
             # 句式要多样、意象要有意义)是房风,不再据此发风格补丁;参考是唯一的风格权威。
-            from novel_system.services.style_policy import style_policy_for_bundle
-
             if style_policy_for_bundle(bundle).defers_house_taste():
                 skip_critique = True
-            from novel_system.services.auto_critique import auto_critique
-
             critique = self._recover_auto_critique_rejected_product(
                 critique_context,
-                auto_critique(
+                _auto_critique.auto_critique(
                     style_generation.content,
                     # A durable rejected parent proves this pass reached its call path;
                     # its recovered deterministic product therefore is not a skip result.
@@ -4983,7 +4941,7 @@ class Orchestrator:
                 ),
             )
             if critique is None:
-                critique = llm_auto_critique(
+                critique = _auto_critique.llm_auto_critique(
                     style_generation.content,
                     scene_context=self._scene_critique_context(scene, contract),
                     session=self.session,
@@ -5027,14 +4985,10 @@ class Orchestrator:
                     )
                 else:
                     try:
-                        from novel_system.services.auto_critique import (
-                            format_critique_brief,
-                        )
-
                         critique_brief = self._pov_desensitize_brief(
                             scene,
                             contract,
-                            format_critique_brief(critique),
+                            _auto_critique.format_critique_brief(critique),
                         )
                         style_generation = (
                             self.scene_generation_service.generate_style_patch(
@@ -5409,8 +5363,6 @@ class Orchestrator:
         比较补丁前后参考评审的总分（软 QC 两轮）与确定性读数的 distance；记一条 ``patched`` 读数（带补丁后那轮的
         评审分）与一条 ``style_patch_keep`` 尝试（决定、读数、评审分；退回时带 STYLE_PATCH_REVERTED 提示）。
         """
-        from novel_system.services.style_policy import style_policy_for_bundle
-
         policy = style_policy_for_bundle(bundle)
         if not policy.style_first or qc1.branch == "human_review_required":
             return None
@@ -5972,9 +5924,7 @@ class Orchestrator:
         source_content: str,
         patch_outcome: str,
     ) -> None:
-        from novel_system.services.auto_critique import auto_critique
-
-        expected_rule = auto_critique(
+        expected_rule = _auto_critique.auto_critique(
             source_content,
             skip_critique=(
                 product.get("outcome") == "not_invoked"
@@ -6089,12 +6039,10 @@ class Orchestrator:
             )
 
     def _auto_critique_llm_contribution_hash(self, product: dict[str, Any]) -> str:
-        from novel_system.services.auto_critique import critique_llm_contribution_hash
-
         contribution = product.get("llm_contribution")
         if not isinstance(contribution, dict):
             return ""
-        return critique_llm_contribution_hash(contribution)
+        return _auto_critique.critique_llm_contribution_hash(contribution)
 
     def _validate_auto_critique_patch_failure_checkpoint(
         self,
@@ -6285,8 +6233,6 @@ class Orchestrator:
         allow_retry: bool,
     ) -> Any | None:
         """Rebuild a lost no-dispatch product before a flipped gate emits no-call."""
-
-        from dataclasses import replace
 
         rows = (
             self.session.execute(
@@ -6499,9 +6445,7 @@ class Orchestrator:
                 corrupt(
                     "auto-critique no-call product unexpectedly has an execution ledger"
                 )
-            from novel_system.services.auto_critique import auto_critique
-
-            expected_rule = auto_critique(
+            expected_rule = _auto_critique.auto_critique(
                 source_content,
                 skip_critique=reason == "skip_critique",
             )
@@ -7158,11 +7102,6 @@ class Orchestrator:
         if not brief:
             return brief
         try:
-            from novel_system.services.pov_knowledge_projection import (
-                PovKnowledgeProjection,
-            )
-            from novel_system.services.narrative_event_log import NarrativeEventLog
-
             payload = getattr(contract, "payload_json", None) or {}
             pov = scene.pov_character_id or payload.get("pov_character_id")
             if not pov:
@@ -7174,7 +7113,6 @@ class Orchestrator:
             ).redact_brief(
                 brief,
                 project_id,
-                None,
                 scene_id=scene.scene_id,
                 pov_character_id=pov,
                 onstage_character_ids=scene.onstage_chars_json or [],
@@ -7269,8 +7207,6 @@ class Orchestrator:
         self, scene_id: str, state: SceneRunState, payload: dict[str, Any]
     ) -> dict[str, Any]:
         """Wave 2 项 5：run 结果（含全部早退路径）统一附 §5.3 作者状态契约。"""
-        from novel_system.services.author_state import compute_author_state
-
         projection = compute_author_state(self.session, scene_id, state)
         return {**payload, **projection}
 
@@ -7407,8 +7343,6 @@ class Orchestrator:
         critic runner is ``None`` and ``llm_auto_critique`` degrades to the rule-based pass.
         Extracted from ``run_scene`` so the opt-in gate is unit-testable in isolation
         (blueprint §8 + §15 honest-bounds)."""
-        from novel_system.settings import get_settings
-
         settings = get_settings()
         return (
             self.llm_runner
@@ -7467,8 +7401,6 @@ class Orchestrator:
         and critical scenes pause at the blinded author terminal selection (``human_gate``).
         Tests may still override this method directly.
         """
-        from novel_system.settings import get_settings
-
         try:
             enabled = bool(getattr(get_settings(), "scene_best_of_n_enabled", False))
         except Exception:  # noqa: BLE001 — settings 读不到就按关闭
@@ -7517,11 +7449,8 @@ class Orchestrator:
         风格参考 v3（S2 a）：有绑定时，抄袭门「没检查成」的候选（``plagiarism_checked`` 不为 True——读数 / 抄袭门
         抛过异常）也不交给作者盲选（fail-closed；成稿门仍是最后一道）；未绑定的场景没有抄袭门，照旧交付。
         """
-        import random
-        import uuid
-        from novel_system.db.models import HumanReviewEvent
+        # 调用时按模块属性取：测试在 source_safety 老家替换它
         from novel_system.services.source_safety import scan_source_safety
-        from novel_system.services.style_policy import style_policy_for_bundle
 
         style_bound = bool(getattr(style_policy_for_bundle(bundle), "bound", False))
         valid_candidates: list[Any] = []
@@ -7560,7 +7489,7 @@ class Orchestrator:
         blinded_order = list(valid_row_ids)
         random.shuffle(blinded_order)
         event = HumanReviewEvent(
-            event_id=f"hre_sel_{uuid.uuid4().hex[:12]}",
+            event_id=f"hre_sel_{uuid4().hex[:12]}",
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
             object_ref=f"candidate_selection:{scene.scene_id}",
@@ -7709,8 +7638,6 @@ class Orchestrator:
             "selection_candidate_row_ids",
             expected_node_at_least="selection_wait",
         )
-        from novel_system.db.models import HumanReviewEvent
-
         gate = (
             self.session.get(HumanReviewEvent, selection_event_id)
             if isinstance(selection_event_id, str)
@@ -7895,12 +7822,8 @@ class Orchestrator:
         contract = self.execution_contract_service.get_or_create(
             scene_id, actor_ref="orchestrator"
         )
-        from novel_system.services.scene_criticality import classify_scene_with_context
-
         # 与首跑主管线同一入口：续跑同样喂入 §6.4 连续过渡计数，判定不降级。
         criticality = classify_scene_with_context(self.session, scene)
-        from types import SimpleNamespace
-
         style_generation = SimpleNamespace(
             row_id=draft.row_id,
             content=draft.content,
@@ -7927,12 +7850,10 @@ class Orchestrator:
     def _scene_critique_context(self, scene: SceneCard, contract):
         """Build the §8 SceneContext for the LLM editor critic (best-effort; the critic
         degrades gracefully when fields are absent)."""
-        from novel_system.services.auto_critique import SceneContext
-
         payload = getattr(contract, "payload_json", None) or {}
         brief = getattr(scene, "writer_brief_json", None) or {}
         tension = brief.get("tension_target")
-        return SceneContext(
+        return _auto_critique.SceneContext(
             scene_goal=str(
                 getattr(scene, "scene_goal", "") or payload.get("scene_goal") or ""
             ),
@@ -7954,7 +7875,7 @@ class Orchestrator:
             "stop_reason": soft_qc.stop_reason,
         }
 
-    # 键序即契约：hard_qc_decision checkpoint 哈希覆盖此序列化值，不得调整键序。
+    # hard_qc_decision 检查点哈希覆盖这些键与值（哈希按排好序的键算，键序不影响）：改键名 / 增删键就是改哈希。
     @staticmethod
     def _hard_qc_result_payload(hard_qc) -> dict[str, str | None]:
         return {

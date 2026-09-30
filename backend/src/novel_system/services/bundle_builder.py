@@ -48,16 +48,9 @@ from novel_system.services.character_continuity import (
     CHARACTER_CONTRACT_VERSION,
     build_character_contract_digest,
 )
-from novel_system.services.scene_design_context import (
-    SCENE_DESIGN_SECTION_KEY,
-    build_scene_design_context,
-)
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.scene_ownership import require_scene_project_id
-from novel_system.services.scene_structure_brief import (
-    SCENE_STRUCTURE_SECTION_KEY,
-    render_scene_structure_brief,
-)
+from novel_system.services.scene_sections import attach_scene_sections
 from novel_system.services.style_reference.budget_config import injection_budget
 from novel_system.services.style_reference.inject.bindings import (
     ordered_character_ids,
@@ -186,7 +179,6 @@ class BundleBuilder:
     def build(
         self,
         scene_id: str,
-        execution_mode: str = "P2",
         *,
         author_note: str | None = None,
     ) -> dict[str, Any]:
@@ -240,25 +232,16 @@ class BundleBuilder:
         # 2026-09-13 阶段 A：雪花 / 章节编排写下的场景结构（形态、坩埚、三拍、代价）直读
         # 原始键进入 bundle，作为与 scene_card 同级的事实 section。此前它只经 v2 简报的
         # 归一化通道到达写作，而那条通道会把这些键全部丢掉——起草模型从未见过作者的三拍。
-        structure_brief = render_scene_structure_brief(scene, self.session)
-        if structure_brief:
-            sections.add(
-                SCENE_STRUCTURE_SECTION_KEY,
-                ref_id=scene.scene_id,
-                text=structure_brief,
-                refs={SCENE_STRUCTURE_SECTION_KEY: scene.scene_id},
-            )
         # 2026-09-13 阶段 F：已确认的雪花设计背景（02 / 03 / 04 / 06 与章表、相邻两场）紧随结构简报。
         # 它是背景不是事实：预算紧时被压缩 / 省略，硬 QC 不看；引用的步骤版本进 source_version_refs，
-        # 设计一改，bundle 哈希就变。
-        design_context = build_scene_design_context(scene, self.session)
-        if design_context is not None:
-            sections.add(
-                SCENE_DESIGN_SECTION_KEY,
-                ref_id=scene.scene_id,
-                text=design_context.text,
-                refs={SCENE_DESIGN_SECTION_KEY: list(design_context.step_run_ids)},
-            )
+        # 设计一改，bundle 哈希就变。两段的登记次序与 sections.add 相同（来源引用 → 注入顺序 → 正文）。
+        attach_scene_sections(
+            scene,
+            self.session,
+            refs=sections.source_version_refs,
+            injections=sections.ordered_injections,
+            digests=sections.inline_digests,
+        )
         # 2026-09-22 风格参考优先:契约写了 style_first 时,本系统自己的前文不再作为「声音」进入提示
         # (前文声音锚 / 整篇上一场正文)——第 1 场若跑偏,后面每一场都被要求接着那个腔写。
         # 风格参考 v3:契约每个 bundle 只建一次,这一次的 StylePolicy 管本 bundle 里所有让位判定(含新鲜度预算)。
@@ -294,7 +277,7 @@ class BundleBuilder:
                         )
                     # 2026-09-22 结构跟随参考书:style_first 下按参考作者的章长与本章的场数推算
                     # 「这位作者的一场多长」,起草通道据此把硬范围上限抬到参考尺度(见
-                    # scene_generation._parse_numeric_length_band)。以 _ 开头:不进 section。
+                    # scene_generation.length_policy._parse_numeric_length_band)。以 _ 开头:不进 section。
                     if reference_first and book_sections_allowed:
                         scene_scale = self._reference_scene_scale(scene, style_runtime_contract)
                         if scene_scale:
@@ -542,7 +525,6 @@ class BundleBuilder:
             bundle_id=bundle_id,
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
-            execution_mode=execution_mode,
             bundle_snapshot_hash=bundle_hash,
             frozen_snapshot_json=snapshot,
         )
@@ -633,7 +615,6 @@ class BundleBuilder:
             # PovKnowledgeProjection 做减法投影，隐藏非 POV 秘密内容（硬 QC 仍读全量）。
             text = log.format_state_for_prompt(
                 project_id,
-                None,
                 scene_id=scene.scene_id,
                 pov_character_id=scene.pov_character_id,
                 onstage_character_ids=scene.onstage_chars_json,
@@ -700,8 +681,7 @@ class BundleBuilder:
             # 内容被抑制，只保留 POV 独有认知与内容无关的盲区提示。
             text = log.information_asymmetry_digest(
                 project_id,
-                None,
-                onstage,
+                onstage_character_ids=onstage,
                 scene_id=scene.scene_id,
                 pov_character_id=scene.pov_character_id,
             )

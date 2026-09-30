@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -358,10 +358,10 @@ class SceneRunCheckpointService:
         execution_step_key: str,
         output_exists: bool,
         allow_local_rejected_output: bool = False,
-        ledger_scene_id: str | None = None,
-        use_owner_scene_id: bool = True,
+        ledger_scope: Literal["scene", "chapter"] = "scene",
     ) -> str:
-        effective_scene_id = scene_id if use_owner_scene_id else ledger_scene_id
+        """步位产物与它的账本行对账。``ledger_scope="chapter"``：这一步的调用记在章上（章级评审），账本行不带场景。"""
+        effective_scene_id = scene_id if ledger_scope == "scene" else None
         calls = self.session.execute(
             select(LlmCall)
             .where(
@@ -860,8 +860,7 @@ class RunCheckpointContext:
             execution_id=self._execution_id,
             execution_step_key=execution_step_key,
             output_exists=False,
-            ledger_scene_id=None,
-            use_owner_scene_id=not chapter_scope,
+            ledger_scope="chapter" if chapter_scope else "scene",
         )
 
     def _validate_checkpoint_llm_output(
@@ -980,10 +979,7 @@ class RunCheckpointContext:
     def _renew_owner_lease(self, *, lease_seconds: int) -> None:
         if self._lease_renewer is None:
             return
-        try:
-            self._lease_renewer(lease_seconds=lease_seconds)
-        except TypeError:
-            self._lease_renewer()
+        self._lease_renewer(lease_seconds=lease_seconds)
 
     def _raise_if_run_cancelled(self) -> None:
         if self._run_job_id is None:
