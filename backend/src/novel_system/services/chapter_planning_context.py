@@ -363,8 +363,9 @@ class ChapterPlanningContextBuilder:
         names = self._character_names([*previous_povs, *character_ids])
         pov_counts: dict[str, int] = {}
         for pov in previous_povs:
-            label = names.get(pov) or pov
-            pov_counts[label] = pov_counts.get(label, 0) + 1
+            label = names.get(pov)
+            if label:  # 认不出名字的视角不进提示（模型读不懂内部 id）
+                pov_counts[label] = pov_counts.get(label, 0) + 1
         return {
             "recent_pov_distribution": pov_counts,
             "onstage_characters": [names[cid] for cid in character_ids if names.get(cid)],
