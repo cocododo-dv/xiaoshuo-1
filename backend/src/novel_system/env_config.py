@@ -34,7 +34,6 @@ from novel_system.env_parsing import (
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = BACKEND_ROOT / "novel_system.db"
-DEFAULT_VECTOR_STORE_DIR = BACKEND_ROOT / ".vector_store"
 
 # Long-context local models can legitimately take several minutes, but an
 # unlimited read blocks a synchronous worker forever when an upstream accepts
@@ -127,7 +126,6 @@ def warn_retired_env_vars() -> list[str]:
 class Settings:
     database_url: str
     vector_backend: str
-    vector_store_dir: Path
     sqlite_foreign_keys_enabled: bool = True
     idempotency_ttl_seconds: int = 90
     llm_provider: str = "openai_compatible"
@@ -210,9 +208,6 @@ def load_env_settings() -> Settings:
     database_url = database_runtime.database_url
     sqlite_foreign_keys_enabled = database_runtime.sqlite_foreign_keys_enabled
     vector_backend = os.environ.get("NOVEL_SYSTEM_VECTOR_BACKEND", "memory")
-    vector_store_dir = _resolve_runtime_path(
-        os.environ.get("NOVEL_SYSTEM_CHROMA_DIR", DEFAULT_VECTOR_STORE_DIR)
-    )
     llm_provider = os.environ.get("NOVEL_SYSTEM_LLM_PROVIDER", "openai_compatible")
     llm_base_url = os.environ.get("NOVEL_SYSTEM_LLM_BASE_URL", "https://api.openai.com/v1")
     llm_api_key = os.environ.get("NOVEL_SYSTEM_LLM_API_KEY")
@@ -264,7 +259,6 @@ def load_env_settings() -> Settings:
     return Settings(
         database_url=database_url,
         vector_backend=vector_backend,
-        vector_store_dir=vector_store_dir,
         sqlite_foreign_keys_enabled=sqlite_foreign_keys_enabled,
         llm_provider=llm_provider,
         llm_base_url=llm_base_url,

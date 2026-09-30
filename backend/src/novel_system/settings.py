@@ -8,7 +8,6 @@ from __future__ import annotations
 from novel_system.env_config import (
     BACKEND_ROOT,
     DEFAULT_DATABASE_PATH,
-    DEFAULT_VECTOR_STORE_DIR,
     Settings,
     load_env_settings,
     warn_retired_env_vars,
@@ -17,7 +16,6 @@ from novel_system.env_config import (
 __all__ = [
     "BACKEND_ROOT",
     "DEFAULT_DATABASE_PATH",
-    "DEFAULT_VECTOR_STORE_DIR",
     "Settings",
     "get_settings",
 ]

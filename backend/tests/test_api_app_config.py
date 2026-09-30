@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 from fastapi import Request
@@ -13,7 +14,6 @@ from novel_system.env_config import DEFAULT_DATABASE_PATH
 from novel_system.db.session import engine
 from novel_system.settings import (
     BACKEND_ROOT,
-    DEFAULT_VECTOR_STORE_DIR,
     get_settings,
 )
 
@@ -75,37 +75,31 @@ def test_invalid_reservation_recovery_ttl_still_stops_startup(monkeypatch, value
         create_app()
 
 
-def test_settings_read_does_not_create_vector_store_directory(monkeypatch, tmp_path) -> None:
-    vector_dir = tmp_path / "not-initialized-yet"
-    monkeypatch.setenv("NOVEL_SYSTEM_CHROMA_DIR", str(vector_dir))
-
-    settings = get_settings(include_runtime_config=False)
-
-    assert settings.vector_store_dir == vector_dir
-    assert not vector_dir.exists()
-
-
 def test_default_runtime_paths_do_not_depend_on_process_working_directory(
     monkeypatch,
     tmp_path,
 ) -> None:
     monkeypatch.delenv("NOVEL_SYSTEM_DATABASE_URL", raising=False)
-    monkeypatch.delenv("NOVEL_SYSTEM_CHROMA_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
 
     settings = get_settings(include_runtime_config=False)
 
     assert settings.database_url == f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
-    assert settings.vector_store_dir == DEFAULT_VECTOR_STORE_DIR
-    assert settings.vector_store_dir.is_relative_to(BACKEND_ROOT)
 
 
-def test_relative_runtime_paths_are_resolved_from_backend_root(monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_CHROMA_DIR", "runtime/vector")
+def test_relative_runtime_paths_are_resolved_from_backend_root(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS",
+        os.pathsep.join(["runtime/books", str(tmp_path / "absolute-books")]),
+    )
 
     settings = get_settings(include_runtime_config=False)
 
-    assert settings.vector_store_dir == BACKEND_ROOT / "runtime" / "vector"
+    assert settings.style_reference_import_roots == (
+        BACKEND_ROOT / "runtime" / "books",
+        tmp_path / "absolute-books",
+    )
 
 
 def test_cors_defaults_to_local_dev_origins_without_wildcard_credentials(monkeypatch) -> None:

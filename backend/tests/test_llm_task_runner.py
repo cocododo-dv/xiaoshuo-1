@@ -90,7 +90,6 @@ def _live_settings() -> Settings:
     return Settings(
         database_url="sqlite:///test.db",
         vector_backend="memory",
-        vector_store_dir=__import__("pathlib").Path(".vector_store_test"),
         llm_provider="openai_compatible",
         llm_base_url="http://127.0.0.1:8080/v1",
         llm_api_key=None,
