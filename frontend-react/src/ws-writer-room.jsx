@@ -1,4 +1,5 @@
 import React from "react";
+import { emit, useWindowEvents } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { SceneDesignCard, planIntentsForScene, sdLoadCollapsed } from "./ws-scene-design.jsx";
@@ -17,7 +18,7 @@ import { wrAnnoAnchoredIds, wrAnnoApply, wrAnnoLoad, wrAnnoRefresh, wrAnnoSave }
 import {
   useImmersionChrome, useRailResize, useWrCounter, useWrEvent, useWrLayout, useWriterShortcuts,
 } from "./ws-writer-hooks.js";
-import { useWrCatalog, useWrSceneMeta, wrInitialScene, wrNeighbours } from "./ws-writer-catalog.js";
+import { useWrCatalog, useWrCatalogStatus, useWrSceneMeta, wrInitialScene, wrNeighbours } from "./ws-writer-catalog.js";
 import { useCanonicalPromotion, useDocBinding } from "./ws-writer-doc.js";
 import { useDeepPosture } from "./ws-writer-deep-posture.js";
 import { WrEntityPop, WrMentionPicker, useWrEntities, useWrMention, wrHighlightEntities } from "./ws-writer-entities.jsx";
@@ -49,6 +50,9 @@ function designPov(design) {
   return fact && fact.v ? fact.v : "";
 }
 
+/* 只挪光标、不改正文的键：松开时才需要重新定当前段 / 看 @ 提示（改正文的键 onInput 已经处理过） */
+const WR_CARET_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+
 function annoKeyFor(sceneId) {
   return sceneId ? wsKey("wr-anno:" + sceneId) : null;
 }
@@ -67,21 +71,25 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
      FE-ALIGN P3：目录是后端异步装载的；冷启动直达写作台时 activeScene 可能是 null，目录就绪后选中在写场景。
      切换作品 / 目录重载时，旧作品的场景 id 绝不能继续留在编辑器里；命中就换成目录里现在的 sid
      （乐观创建时的临时 sid、旧深链里的位置式 sid 都经别名解析到同一场）。 */
-  const keepOrRefocus = useWrEvent(() => setActiveScene((prev) => {
+  const refocusTarget = (prev) => {
     const kept = prev ? WsCatalog.sceneById(prev) : null;
     if (kept) return kept.scene.sid;
     const hit = WsCatalog.focusScene ? WsCatalog.focusScene() : WsCatalog.writingScene();
     return hit && hit.scene ? hit.scene.sid : null;
-  }));
-  const { chapters, rev, refresh } = useWrCatalog(keepOrRefocus);
-  const meta = useWrSceneMeta(chapters, activeScene, rev);
+  };
+  /* 目录这次通知没动到当前场（绝大多数时候：自动保存回写字数）就不排更新——空更新也会让整间写作台重渲染 */
+  const keepOrRefocus = useWrEvent(() => {
+    if (refocusTarget(activeScene) === activeScene) return;
+    setActiveScene(refocusTarget);
+  });
+  const { chapters, refresh } = useWrCatalog(keepOrRefocus);
+  const meta = useWrSceneMeta(chapters, activeScene);
   const design = meta.design;
   const activeChapter = chapters.find((chapter) => chapter.scenes.some((scene) => scene.id === activeScene));
   const approvedLocked = !!(activeChapter && activeChapter.state === "approved");
-  const catalogLoadError = WsCatalog.loadError ? WsCatalog.loadError() : null;
-  const catalogPending = !!(WsCatalog.ready && !WsCatalog.ready());
-  const catalogUnavailable = catalogPending && !!catalogLoadError;
-  const catalogLoading = catalogPending && !catalogLoadError;
+  const catalogStatus = useWrCatalogStatus();
+  const catalogUnavailable = catalogStatus.pending && catalogStatus.failed;
+  const catalogLoading = catalogStatus.pending && !catalogStatus.failed;
   const nav = useMemo(() => wrNeighbours(chapters, activeScene), [chapters, activeScene]);
 
   /* ---- 布局（两侧栏的停靠规则要看姿态，useWrLayout 在深改姿态之后调用） ---- */
@@ -100,7 +108,10 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     if (!wsToast({ message, tone })) showNotice({ text: message, tone });
   });
 
-  /* ---- 段落聚焦 / 打字机滚动 ---- */
+  /* ---- 段落聚焦 / 打字机滚动 ----
+     每敲一个字都会走这里：只改上一个当前段与这一个（过去每次把整篇稿子的段落挨个 toggle 一遍）。
+     上一个当前段已经不在编辑器里（整段换过内容）时它的 class 随节点一起没了，不用管。 */
+  const activeBlockRef = useRef(null);
   const updateActive = useWrEvent(() => {
     const el = editorRef.current;
     if (!el) return;
@@ -108,7 +119,15 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     let node = sel && sel.anchorNode;
     if (!node || !el.contains(node)) return;
     while (node && node.parentNode !== el) node = node.parentNode;
-    Array.from(el.children).forEach((child) => child.classList.toggle("is-active", child === node));
+    const prev = activeBlockRef.current;
+    if (prev !== node) {
+      if (prev && prev.parentNode === el) prev.classList.remove("is-active");
+      activeBlockRef.current = node;
+    }
+    if (node && node.classList && !node.classList.contains("is-active")) node.classList.add("is-active");
+    /* 回车拆段、粘贴本编辑器里复制出去的段落时，浏览器会把 is-active 一起复制过来：多出来的才整篇清一遍 */
+    const marked = el.querySelectorAll(":scope > .is-active");
+    if (marked.length > 1) marked.forEach((child) => { if (child !== node) child.classList.remove("is-active"); });
     const scroller = scrollRef.current;
     if (!scroller || !node) return;
     const typewriter = tw.typewriter;
@@ -144,7 +163,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
       wrHighlightEntities(el);
       annoScopeRef.current = { sid: activeScene, key: annoKey };
       annoAnchoredRef.current = Array.from(wrAnnoApply(el, wrAnnoLoad(annoKey))).sort().join(",");
-      window.dispatchEvent(new CustomEvent("ws:anno-change", { detail: { sid: activeScene } }));
+      emit("ws:anno-change", { sid: activeScene });
     },
     afterLoad: () => {
       const frame = requestAnimationFrame(updateActive);
@@ -164,7 +183,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
       const anchored = Array.from(wrAnnoAnchoredIds(el)).sort().join(",");
       if (annoAnchoredRef.current !== anchored) {
         annoAnchoredRef.current = anchored;
-        window.dispatchEvent(new CustomEvent("ws:anno-change", { detail: { sid: sceneId } }));
+        emit("ws:anno-change", { sid: sceneId });
       }
     },
   });
@@ -199,10 +218,12 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     }
     doc.recount();
     doc.schedulePersist();
-    // 作者一碰「作为草稿插入」的那一段，它就成了作者自己的字
+    // 作者一碰「作为草稿插入」的那一段，它就成了作者自己的字（插进来的是几段就各算各的）
     if (el) {
-      const merged = el.querySelector("p.is-merge");
-      if (merged && merged.contains(window.getSelection().anchorNode)) merged.classList.remove("is-merge");
+      const anchor = window.getSelection().anchorNode;
+      const node = anchor && anchor.nodeType === 1 ? anchor : anchor && anchor.parentElement;
+      const merged = node && node.closest ? node.closest("p.is-merge") : null;
+      if (merged && el.contains(merged)) merged.classList.remove("is-merge");
     }
     updateActive();
   };
@@ -256,51 +277,62 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     selection.addRange(range);
   };
 
-  /* 采纳后留在正文里：空白页上那个空段落先拿掉，免得正文以一个空行开头 */
-  const appendParagraph = (className, html) => {
+  /* 采纳后留在正文里：续写是几段就追加几段 <p>（空白页上那个空段落先拿掉，免得正文以一个空行开头）。
+     返回追加的段落；光标放在最后一段末尾。 */
+  const appendParagraphs = (className, htmls) => {
     const el = editorRef.current;
-    if (approvedLocked || inDeep || !el) return null;
-    const p = document.createElement("p");
-    p.className = className;
-    p.innerHTML = html;
+    const list = (htmls || []).filter((html) => html);
+    if (approvedLocked || inDeep || !el || !list.length) return [];
     if (el.children.length === 1 && !String(el.textContent || "").trim()) el.innerHTML = "";
-    el.appendChild(p);
+    const added = list.map((html) => {
+      const p = document.createElement("p");
+      p.className = className;
+      p.innerHTML = html;
+      el.appendChild(p);
+      return p;
+    });
     trayReturnRef.current = null;
     setTrayOpen(false);
     if (!layout.dockRight) layout.closeRight();
-    caretToEnd(p);
+    caretToEnd(added[added.length - 1]);
     doc.recount();
     doc.schedulePersist();
-    return p;
+    return added;
   };
   const scrollToEnd = () => {
     const scroller = scrollRef.current;
     if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
   };
-  const adoptHTML = (html) => {
-    const p = appendParagraph("is-fresh", html);
-    if (!p) return;
+  const adoptParagraphs = (htmls) => {
+    const added = appendParagraphs("is-fresh", htmls);
+    if (!added.length) return;
     requestAnimationFrame(() => {
       scrollToEnd();
       updateActive();
-      setTimeout(() => p.classList.remove("is-fresh"), 1600);
+      setTimeout(() => added.forEach((p) => p.classList.remove("is-fresh")), 1600);
     });
   };
-  const adoptText = useWrEvent((text) => {
-    if (!text) return;
-    const holder = document.createElement("p");
-    holder.textContent = text;
-    adoptHTML(holder.innerHTML);
+  /* 候选里的一段（已转义的 HTML）→ 可以进正文的段落 HTML */
+  const candParagraphs = (cand) => ((cand && cand.paras) || []).map((html) => sanitizeManuscriptHTML(String(html).replace(/<\/?mark>/g, "")));
+  /* 采纳选中的几句：texts 是按原来的段落拼好的纯文字（一段一条） */
+  const adoptText = useWrEvent((texts) => {
+    const list = (Array.isArray(texts) ? texts : [texts]).filter((text) => text);
+    if (!list.length) return;
+    adoptParagraphs(list.map((text) => {
+      const holder = document.createElement("p");
+      holder.textContent = text;
+      return holder.innerHTML;
+    }));
   });
-  const adopt = useWrEvent((cand) => adoptHTML(sanitizeManuscriptHTML(cand.html.replace(/<\/?mark>/g, ""))));
-  /* 作为草稿插入：插成一段待改的草稿段落并把光标放进去，让作者用自己的话揉进去，而不是原样收下。
+  const adopt = useWrEvent((cand) => adoptParagraphs(candParagraphs(cand)));
+  /* 作为草稿插入：插成待改的草稿段落并把光标放进去，让作者用自己的话揉进去，而不是原样收下。
      草稿段落的虚线框只在这次打开时可见（落盘的是干净正文）。 */
   const merge = useWrEvent((cand) => {
-    const p = appendParagraph("is-merge", sanitizeManuscriptHTML(cand.html.replace(/<\/?mark>/g, "")));
-    if (!p) return;
+    const added = appendParagraphs("is-merge", candParagraphs(cand));
+    if (!added.length) return;
     requestAnimationFrame(() => {
       scrollToEnd();
-      caretToEnd(p);
+      caretToEnd(added[added.length - 1]);
       updateActive();
     });
   });
@@ -332,21 +364,16 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     const signalId = detail && typeof detail === "object" ? (detail.signal_id || detail.signalId || null) : null;
     deep.setPosture(next === "deep" ? "deep" : "draft", { signalId });
   });
+  /* 先挂监听、再报「写作台已就绪」：排队的跨页意图在报就绪时立即派发（两个 effect 按声明顺序执行） */
+  useWindowEvents({
+    "ws:writer-scene": (e) => { if (e.detail) onSceneIntent(e.detail); },
+    "ws:writer-action": (e) => onActionIntent(e.detail),
+    "ws:writer-posture": (e) => onPostureIntent(e.detail),
+  });
   useEffect(() => {
-    const onScene = (e) => { if (e.detail) onSceneIntent(e.detail); };
-    const onAction = (e) => onActionIntent(e.detail);
-    const onPosture = (e) => onPostureIntent(e.detail);
-    window.addEventListener("ws:writer-scene", onScene);
-    window.addEventListener("ws:writer-action", onAction);
-    window.addEventListener("ws:writer-posture", onPosture);
     setViewIntentTargetReady("writer");
-    return () => {
-      setViewIntentTargetReady("writer", false);
-      window.removeEventListener("ws:writer-scene", onScene);
-      window.removeEventListener("ws:writer-action", onAction);
-      window.removeEventListener("ws:writer-posture", onPosture);
-    };
-  }, [onSceneIntent, onActionIntent, onPostureIntent]);
+    return () => setViewIntentTargetReady("writer", false);
+  }, []);
 
   /* ---- 大纲 ---- */
   const outline = useWrOutlineActions({ chapters, refresh, activeScene, setActiveScene, showNotice, go });
@@ -455,7 +482,12 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
               contentEditable={posture !== "deep" && !approvedLocked} suppressContentEditableWarning spellCheck={false}
               onInput={() => { onInput(); mention.detectMention(); }}
               onKeyDown={mention.onMentionKeyDown}
-              onKeyUp={() => { updateActive(); mention.detectMention(); }}
+              onKeyUp={(e) => {
+                /* 敲字、删字已经由 onInput 处理过；这里只管只挪光标的键 */
+                if (!WR_CARET_KEYS.has(e.key)) return;
+                updateActive();
+                mention.detectMention();
+              }}
               onMouseOver={entities.onEditorOver} onMouseOut={entities.onEditorOut}
               onClick={(e) => {
                 if (posture === "deep") {
@@ -504,15 +536,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
         onDeleteChapter={outline.onDeleteChapter} onDeleteBatch={outline.onDeleteBatch} onAdd={outline.onAdd}
         onPick={pickScene} onClose={layout.closeLeft} />
       {posture === "deep"
-        ? <WrDeepDrawer open={rightOpen} loading={deep.loading} error={deep.error} onRetry={deep.reload}
-            diagnosis={deep.diagnosis} findings={deep.findings} activeKey={deep.activeKey}
-            filter={deep.filter} onFilter={deep.setFilter} showIgnored={deep.showIgnored} onToggleIgnored={deep.toggleIgnored}
-            onPick={deep.pick} onIgnore={deep.ignore} onRestore={deep.restore} onRescan={deep.rescan}
-            onSelect={deep.selectForRewrite} onRewrite={deep.rewriteFromFinding}
-            aiBusy={deep.aiBusy} aiError={deep.aiError} onRunAi={deep.runAi} onOpenSettings={onOpenSettings}
-            onPassageReview={deep.reviewPassage} passageBusy={deep.passageBusy} passageError={deep.passageError}
-            lastPassage={deep.lastPassage} onRewriteParagraph={deep.rewriteParagraph} onLocateParagraph={deep.locateParagraph}
-            handoffMiss={deep.handoffMiss} log={deep.log} persistenceStatus={deep.persistenceStatus} onClose={layout.closeRight} />
+        ? <WrDeepDrawer deep={deep} open={rightOpen} onOpenSettings={onOpenSettings} onClose={layout.closeRight} />
         : <WrContext open={rightOpen} tab={rightTab} setTab={setRightTab} onClose={layout.closeRight} place={tw.aiPlace}
             tight={dockRight && railR < 232} sceneId={activeScene} design={design} designVariant={contextVariant} sync={sync} go={go}
             editorRef={editorRef} annoKey={annoKey} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} onOpenSettings={onOpenSettings} />}

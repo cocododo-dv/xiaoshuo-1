@@ -1,4 +1,5 @@
 import React from "react";
+import { useWindowEvents } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { useCatalogChapters, WsCatalog } from "./ws-catalog.jsx";
 import { planIntentsForScene, sceneDesignModel } from "./ws-scene-design.jsx";
@@ -14,6 +15,7 @@ import { SceneRunJobControl } from "./ws-scene-job.jsx";
 import { DecisionBar } from "./ws-scene-decide.jsx";
 import { AttemptCompare, Evidence } from "./ws-scene-evidence.jsx";
 import { SceneAdoptionDialogs, SceneAdoptionNote, useSceneAdoption } from "./ws-scene-adopt.jsx";
+import { AUTHOR_NOTE_LIMIT } from "./ws-scene-derive.js";
 
 const { useState, useEffect, useMemo, useRef } = React;
 
@@ -30,9 +32,8 @@ const { useState, useEffect, useMemo, useRef } = React;
    各栏在 ws-scene-spine / -stage / -decide / -evidence，与后端说话的在 ws-scene-api.js。
    ========================================================== */
 
-/* 「参考该版复盘意见重写」的作者指令。复盘意见可能本身就是一条近 2000 字的旧指令：
+/* 「参考该版复盘意见重写」的作者指令。复盘意见可能本身就是一条近 AUTHOR_NOTE_LIMIT 字的旧指令：
    整句超过上限时把意见截短（带省略号），而不是让 startRun 以「指令太长」拒收、点了没反应。 */
-const AUTHOR_NOTE_LIMIT = 2000;
 function attemptRewriteNote(attempt) {
   const attemptNo = (attempt && (attempt.n || attempt.attempt)) || "所选";
   const verdict = attempt && attempt.cmp && attempt.cmp.verdict ? String(attempt.cmp.verdict).trim() : "";
@@ -60,17 +61,14 @@ function WsSceneBoard({ go, t }) {
 
   /* 窄屏证据抽屉：Esc 收起（对话框开着时 WsDialog 在捕获阶段先吃掉 Esc）。
      输入法组字时的 Esc、在文本框里按的 Esc（例如退回重写的指令框）不算——那是在跟输入框说话。 */
-  useEffect(() => {
-    if (!evidenceOpen) return undefined;
-    const onKey = (event) => {
+  useWindowEvents(evidenceOpen ? {
+    keydown: (event) => {
       if (event.key !== "Escape" || event.defaultPrevented || isImeComposing(event)) return;
       const target = event.target;
       if (target && target.closest && target.closest("textarea, input, select, [contenteditable='true']")) return;
       setEvidenceOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [evidenceOpen]);
+    },
+  } : {});
   /* 抽屉的焦点：拉开时落在抽屉的关闭按钮上；收起时焦点若还在抽屉里（或已掉到 body）就回到「证据」按钮。
      抽屉只在 ≤1120px 出现、没有遮罩，所以不锁焦点，只负责进出。宽屏时关闭按钮不显示，focus 什么也不做。 */
   const eviToggleRef = useRef(null);

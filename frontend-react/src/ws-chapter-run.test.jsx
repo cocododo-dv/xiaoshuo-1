@@ -18,16 +18,16 @@ vi.mock("./ws-catalog.jsx", () => ({
   WsCatalog: {
     __refresh: vi.fn(() => Promise.resolve()),
     get: vi.fn(() => []),
+    sidForBackendId: vi.fn(() => null),
   },
 }));
 
 import { apiGet, apiPost } from "./lib/client.js";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { clearViewIntents, flushViewIntents } from "./ws-view-intents.js";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { ArrChapterRunAction, normalizeRun } from "./ws-chapter-run.jsx";
-
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const mounted = [];
 const CHAPTER = { id: "ch01", backendId: "chapter-1", title: "盐场的早班", state: "writing", current: true };
@@ -95,6 +95,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  clearViewIntents("scene");
+  window.location.hash = "";
   vi.restoreAllMocks();
   while (mounted.length) {
     const record = mounted.pop();
@@ -344,6 +346,88 @@ describe("章节编排 · 运行本章真实接线", () => {
     await click(view.host.querySelector(".arr-run-close"));
     expect(view.host.querySelector(".arr-run-card")).toBeNull();
     expect(view.host.querySelector(".arr-run-chip").textContent).toBe("上次运行：已完成");
+  });
+
+  it("受阻时后端点名了等你的那一场：按钮用后端给的字，点了去 AI 起草台把那一场放上台面", async () => {
+    WsCatalog.sidForBackendId.mockImplementation((id) => (id === "scene-2" ? "ch01s2" : null));
+    apiGet.mockResolvedValueOnce(runPayload("blocked", {
+      completed_count: 1,
+      progress_pct: 33,
+      current_scene_id: "scene-2",
+      latest_error: {
+        code: "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
+        message: "scene requires human review before chapter run can continue",
+        author_action: {
+          title: "这一场在等你终选",
+          message: "这一场在等你终选：去 AI 起草台读完候选再选一份，选完自动续跑。",
+          target_view: "scene",
+          target_ref: "scene_card:scene-2",
+          primary_button_label: "去 AI 起草台终选",
+          evidence_summary: [],
+        },
+      },
+    }));
+    const view = await renderRun();
+    await click(view.host.querySelector(".arr-run-chip"));
+    expect(view.host.querySelector(".arr-run-card").textContent).toContain("这一场在等你终选");
+    const door = view.host.querySelector('[data-testid="chapter-run-action"]');
+    expect(door.textContent).toContain("去 AI 起草台终选");
+
+    const enqueued = [];
+    const onEnqueue = (event) => enqueued.push(event.detail);
+    window.addEventListener("ws:scene-enqueue", onEnqueue);
+    try {
+      await click(door);
+      expect(window.location.hash).toBe("#scene");
+      flushViewIntents("scene", window);
+      expect(enqueued).toEqual([{ sid: "ch01s2" }]);
+    } finally {
+      window.removeEventListener("ws:scene-enqueue", onEnqueue);
+    }
+  });
+
+  it("受阻、后端指向待办：按钮去待办；指向系统设置（模型路由没配）：按钮去系统设置", async () => {
+    apiGet.mockResolvedValueOnce(runPayload("blocked", {
+      latest_error: {
+        code: "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
+        message: "scene requires human review before chapter run can continue",
+        author_action: {
+          title: "场景需要人工审核",
+          message: "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
+          target_view: "review",
+          target_ref: "human_review_event:evt-1",
+          primary_button_label: "去待处理建议",
+          evidence_summary: [],
+        },
+      },
+    }));
+    const review = await renderRun();
+    await click(review.host.querySelector(".arr-run-chip"));
+    await click(review.host.querySelector('[data-testid="chapter-run-action"]'));
+    expect(window.location.hash).toBe("#review");
+    await review.unmount();
+
+    apiGet.mockResolvedValueOnce(runPayload("failed", {
+      latest_error: {
+        code: "LLM_ROUTE_NOT_CONFIGURED",
+        message: "model route is not configured for scene generation",
+        author_action: {
+          title: "需要配置模型路由",
+          message: "起草这一场要用到的模型路由还没配置。",
+          target_view: "config",
+          target_ref: "system_config:llm",
+          primary_button_label: "去系统配置",
+          evidence_summary: [],
+        },
+      },
+    }));
+    const onConfigureModel = vi.fn();
+    const config = await renderRun({ onConfigureModel });
+    await click(config.host.querySelector(".arr-run-chip"));
+    const door = config.host.querySelector('[data-testid="chapter-run-action"]');
+    expect(door.textContent).toContain("去系统配置");
+    await click(door);
+    expect(onConfigureModel).toHaveBeenCalledTimes(1);
   });
 
   it("不能运行的原因直接写在按钮旁边", async () => {

@@ -47,6 +47,15 @@ function contentSafetyReviewFromError(error) {
   };
 }
 
+/* 作者勾选的代码是否正好是服务端这一轮要求确认的那几条：一条不少、一条不多、没有重复（与顺序无关）。
+   写作台的「提升为权威正文」与起草台的「采纳并归档」都用它，同一个后端契约只有一种读法。 */
+function exactCodesMatch(expected, received) {
+  const want = Array.isArray(expected) ? expected : [];
+  const got = Array.isArray(received) ? received : [];
+  if (got.length !== want.length || new Set(got).size !== got.length) return false;
+  return want.every((code) => got.includes(code));
+}
+
 /* 严重度 / 判定方式在服务端是英文枚举；给作者看中文 */
 const SEVERITY_LABEL = { critical: "极高", high: "高", medium: "中", low: "低" };
 const CONFIDENCE_LABEL = { heuristic: "启发式规则", model: "模型判断", llm: "模型判断", rule: "规则" };
@@ -145,4 +154,4 @@ function ContentSafetyReviewDialog({ review, busy = false, error = "", onCancel,
   );
 }
 
-export { ContentSafetyReviewDialog, contentSafetyReviewFromError };
+export { ContentSafetyReviewDialog, contentSafetyReviewFromError, exactCodesMatch };

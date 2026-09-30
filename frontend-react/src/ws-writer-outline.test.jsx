@@ -11,8 +11,9 @@ vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
 }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const T = { timeout: 5000, interval: 25 };
+// 整间写作台的装配测试：文件里第一条用例要付模块转换的冷启动（负载高时 5 s 不够）
+vi.setConfig({ testTimeout: 15000 });
 const mounted = [];
 const innerTextDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText");
 const scrollToDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTo");
@@ -276,6 +277,55 @@ describe("写作台 · 续写托盘关上后焦点回到正文", () => {
   });
 });
 
+describe("写作台 · 续写按段采纳（重评 R6）", () => {
+  const MULTI = {
+    mode: "continuation_variants",
+    proposals: [{
+      proposal_id: "p-action",
+      proposal_type: "continuation",
+      content: "屋里只剩炉火的声音。\n\n她站起来。走到窗边。\n外面有人敲门。",
+      rationale: "动作推进",
+    }],
+  };
+  async function trayWithMultiParagraph() {
+    const { WriterRoom, client } = await loadWriter();
+    vi.spyOn(window.WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
+    vi.spyOn(window.WrDocs, "draftId").mockResolvedValue("draft-s1");
+    vi.spyOn(window.WrDocs, "save").mockResolvedValue({});
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("她把灯关了"), T);
+    const editor = host.querySelector(".wr-editor");
+    const tray = host.querySelector(".wr-tray");
+    client.apiPost.mockResolvedValue(MULTI);
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", ctrlKey: true, bubbles: true, cancelable: true })));
+    await click([...tray.querySelectorAll("button")].find((button) => button.textContent.includes("生成三条")));
+    await vi.waitFor(() => expect(tray.querySelectorAll(".wr-cand-text > p")).toHaveLength(3), T);
+    return { editor, tray };
+  }
+  const paragraphs = (editor) => [...editor.querySelectorAll("p")].map((p) => p.textContent);
+
+  it("三段的续写：卡片按段画；采纳整段是接在正文后面的连续三段，不再挤成一段", async () => {
+    const { editor, tray } = await trayWithMultiParagraph();
+    await click([...tray.querySelectorAll("button")].find((button) => button.textContent === "采纳整段"));
+    expect(paragraphs(editor)).toEqual(["她把灯关了。", "屋里只剩炉火的声音。", "她站起来。走到窗边。", "外面有人敲门。"]);
+  });
+
+  it("只挑几句：按原来的段落拼回；作为草稿插入：每一段都是待改的草稿段", async () => {
+    const { editor, tray } = await trayWithMultiParagraph();
+    const sentences = [...tray.querySelectorAll(".wr-sen")];
+    expect(sentences.map((span) => span.textContent)).toEqual(["屋里只剩炉火的声音。", "她站起来。", "走到窗边。", "外面有人敲门。"]);
+    await click(sentences[0]);
+    await click(sentences[2]);
+    await click([...tray.querySelectorAll("button")].find((button) => button.textContent === "采纳选中 2 句"));
+    expect(paragraphs(editor)).toEqual(["她把灯关了。", "屋里只剩炉火的声音。", "走到窗边。"]);
+
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", ctrlKey: true, bubbles: true, cancelable: true })));
+    await click([...tray.querySelectorAll("button")].find((button) => button.textContent === "作为草稿插入"));
+    const merged = [...editor.querySelectorAll("p.is-merge")].map((p) => p.textContent);
+    expect(merged).toEqual(["屋里只剩炉火的声音。", "她站起来。走到窗边。", "外面有人敲门。"]);
+  });
+});
+
 describe("写作台 · 大纲里的改名与输入法", () => {
   it("输入法确认候选的那一下回车不算改完；真正的回车才提交", async () => {
     const { WriterRoom } = await loadWriter({ catalog: [DEFAULT_CHAP, SECOND_CHAP] });
@@ -319,7 +369,7 @@ describe("写作台 · AI 续写三候选", () => {
     });
     client.apiPost.mockClear();
 
-    const candidates = await wrContinueMulti("自然承接下一拍");
+    const candidates = await wrContinueMulti("自然承接下一拍", "ch01s1");
 
     expect(client.apiPost).toHaveBeenCalledTimes(1);
     expect(client.apiPost).toHaveBeenCalledWith(
@@ -330,10 +380,10 @@ describe("写作台 · AI 续写三候选", () => {
       },
     );
     expect(candidates.map((item) => item.id)).toEqual(["p-action", "p-relation", "p-suspense"]);
-    expect(candidates.map((item) => item.html)).toEqual([
-      "她推门追了出去。",
-      "他没有回头，却放慢了脚步。",
-      "门外只剩一枚还在发热的钥匙。",
+    expect(candidates.map((item) => item.paras)).toEqual([
+      ["她推门追了出去。"],
+      ["他没有回头，却放慢了脚步。"],
+      ["门外只剩一枚还在发热的钥匙。"],
     ]);
   });
 });

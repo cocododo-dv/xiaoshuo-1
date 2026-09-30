@@ -17,14 +17,14 @@ export {
   STYLE_NOTICE_LABELS, RUN_STAGES, runJobStepLabel, scnRunStageIndex, scnDraftModeFrom,
   scnStyleNoticesFrom, scnStyleWindowsFrom, scnStyleNoticeLabel, scnStyleNoticeView, scnStyleWindowLabel,
   scnStyleWindowTags, scnStyleFidelityFrom,
-  scnTerminalJobMessage, scnQC, scnReQC, scnFindingText, scnFindingIsPlainLanguage,
+  scnTerminalJobMessage, scnQC, scnFindingText, scnFindingIsPlainLanguage,
   scnGateFrom, scnRewriteBriefFrom, scnRunRecordFromWorkbench,
 } from "./ws-scene-derive.js";
 export {
   scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear,
 } from "./ws-scene-store.js";
 export {
-  scnRun, scnHydrateFromBackend, scnBackendQueueSids, scnBackendRunSids, scnTopupBudget,
+  scnRun, scnHydrateFromBackend, scnBackendRunSids, scnTopupBudget,
   scnCandidates, scnSelectCandidate, scnResumeAfterSelection,
   scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption,
 } from "./ws-scene-api.js";

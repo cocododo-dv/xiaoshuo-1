@@ -484,14 +484,6 @@ export async function apiPost(path, body = {}, options = {}) {
   return mutationRequest("POST", path, body, options);
 }
 
-export function cancelRunJob(jobId, options) {
-  return apiPost(`/api/v1/run-jobs/${encodeURIComponent(jobId)}/cancel`, {}, options);
-}
-
-export function getLatestSceneRunJob(sceneId, options) {
-  return apiGet(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs/latest`, options);
-}
-
 export async function apiPatch(path, body = {}, options = {}) {
   return mutationRequest("PATCH", path, body, options);
 }

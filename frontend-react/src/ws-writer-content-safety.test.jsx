@@ -7,8 +7,9 @@ vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
 }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const T = { timeout: 5000, interval: 25 };
+// 整间写作台的装配测试：文件里第一条用例要付模块转换的冷启动（负载高时 5 s 不够）
+vi.setConfig({ testTimeout: 15000 });
 const mounted = [];
 const innerTextDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText");
 const rangeRectDescriptor = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
@@ -85,7 +86,9 @@ afterEach(async () => {
 describe("WriterRoom canonical 内容风险复核接缝", () => {
   it("首次 409 打开逐项确认；作者勾选后仅携 exact code 重试", async () => {
     const { WriterRoom, WrDocs } = await loadWriter();
-    vi.spyOn(WrDocs, "state").mockReturnValue({ canonicalDirty: true });
+    // 提升成功后权威正文状态照 WrDocs 说（提升在路上时草稿可能又往前走了一版）：替身的提升成功时把替身状态一起翻过来
+    let canonicalDirty = true;
+    vi.spyOn(WrDocs, "state").mockImplementation(() => ({ canonicalDirty }));
     vi.spyOn(WrDocs, "load").mockReturnValue("<p>作者正文</p>");
     vi.spyOn(WrDocs, "save").mockResolvedValue({});
     const reviewError = Object.assign(new Error("review required"), {
@@ -110,7 +113,7 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
     });
     const promote = vi.spyOn(WrDocs, "promote")
       .mockRejectedValueOnce(reviewError)
-      .mockResolvedValueOnce({ canonical_dirty: false });
+      .mockImplementationOnce(async () => { canonicalDirty = false; return { canonical_dirty: false }; });
 
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
     await vi.waitFor(() => expect(host.querySelector(".wr-canonical-promote")?.disabled).toBe(false), T);
@@ -118,7 +121,8 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
 
     await vi.waitFor(() => expect(document.querySelector(".wr-safety-dialog")).toBeTruthy(), T);
     expect(document.querySelector(".wr-safety-dialog").textContent).toContain("age:16");
-    expect(promote).toHaveBeenNthCalledWith(1, "ch01s1", { narrativeEffect: "facts_unchanged" });
+    // 提升带上作者确认「只改了文字」时编辑器里的那一稿：WrDocs 只提升它（复核三 W1-R3A-1）
+    expect(promote).toHaveBeenNthCalledWith(1, "ch01s1", { narrativeEffect: "facts_unchanged", expectedText: "<p>作者正文</p>" });
     const checkbox = document.querySelector('.wr-safety-dialog input[type="checkbox"]');
     const confirm = document.querySelector('[data-testid="content-safety-confirm"]');
     expect(confirm.disabled).toBe(true);
@@ -131,6 +135,7 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
     expect(promote).toHaveBeenNthCalledWith(2, "ch01s1", {
       narrativeEffect: "facts_unchanged",
       acceptedWarningCodes: ["sexual_content_with_minor_indicators"],
+      expectedText: "<p>作者正文</p>",
     });
     await vi.waitFor(() => expect(document.querySelector(".wr-safety-dialog")).toBeNull(), T);
     expect(host.querySelector('[data-testid="canonical-status"]').textContent).toBe("权威正文已更新");

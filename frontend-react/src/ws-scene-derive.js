@@ -312,10 +312,6 @@ function scnQC(paras) {
   const words = countChars(draft.map(p => p.parts[0].text).join(""));
   return { draft, words, verdict: { words } };
 }
-function scnReQC(draft) {
-  const paras = (draft || []).map(p => ({ id: p.id, text: scnParaText(p) }));
-  return paras.length ? scnQC(paras) : null;
-}
 
 /* 一条后端裁决条目给作者看的那句话；没附说明的条目不把英文 issue_key 甩给作者。 */
 function scnFindingText(finding) {
@@ -506,13 +502,17 @@ function scnRunRecordFromWorkbench(wb, { job = null, authorNote = "", pipeState 
   return record;
 }
 
+/* 作者改写指令的上限（按码点计；与后端 author_note 的上限一致）。超了就说，不静默截断。 */
+const AUTHOR_NOTE_LIMIT = 2000;
+
 export {
+  AUTHOR_NOTE_LIMIT,
   stateLabelOf, stateToneOf,
   RUN_JOB_POLLING_STATUSES, RUN_JOB_CANCELABLE_STATUSES, RUN_JOB_TERMINAL_STATUSES, RUN_JOB_STATUS_LABELS,
   runJobStepLabel, RUN_STAGES, scnRunStageIndex, scnPipeStepName, scnDraftModeFrom,
   STYLE_NOTICE_LABELS, scnStyleNoticeSeverity, scnStyleNoticeLabel, scnStyleNoticeView, scnStyleNoticesFrom, scnStyleWindowsFrom,
   STYLE_WINDOW_STEP_LABELS, scnStyleWindowLabel, scnStyleWindowTags, scnStyleWindowKey, scnStyleFidelityFrom,
-  scnParaText, scnQC, scnReQC, scnFindingText, scnFindingIsPlainLanguage, scnGateFrom, scnGateLog,
+  scnParaText, scnQC, scnFindingText, scnFindingIsPlainLanguage, scnGateFrom, scnGateLog,
   scnFriendly, scnTerminalJobMessage, SCN_RUN_UI_ABORTED, scnRunUiAbortError,
   scnRewriteBriefFrom, scnRunRecordFromWorkbench,
 };

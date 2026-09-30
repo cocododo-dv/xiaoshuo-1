@@ -1,6 +1,7 @@
 import React from "react";
 import { Spinner } from "./ws-ui.jsx";
-import { cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
+import { cancelRunJob, getLatestSceneRunJob } from "./ws-scene-job-api.js";
+import { createPoller } from "./lib/poll.js";
 import {
   RUN_JOB_CANCELABLE_STATUSES, RUN_JOB_POLLING_STATUSES, RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES,
   runJobStepLabel,
@@ -177,10 +178,13 @@ function SceneRunJobControl({
 
   useEffect(() => {
     if (!sceneId || !job || !RUN_JOB_POLLING_STATUSES.has(job.status)) return undefined;
-    const timer = window.setInterval(() => {
-      void refreshLatest({ silent: true });
-    }, Math.max(1, pollIntervalMs));
-    return () => window.clearInterval(timer);
+    /* 看页面可见性（lib/poll.js）：隐藏时放慢到 30 秒，回到前台立刻问一次；前台照旧每 pollIntervalMs 问一次 */
+    const poller = createPoller({
+      interval: Math.max(1, pollIntervalMs),
+      run: () => refreshLatest({ silent: true }),
+    });
+    poller.start();
+    return () => poller.stop();
   }, [sceneId, job && job.job_id, job && job.status, pollIntervalMs, refreshLatest]);
 
   const requestCancellation = useCallback(async () => {

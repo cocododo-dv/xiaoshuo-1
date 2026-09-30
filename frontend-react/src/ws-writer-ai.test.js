@@ -11,7 +11,6 @@ describe("写作台 AI 失败提示按错误代码分流", () => {
     expect(wrAiError(apiError("AUTHOR_PROPOSAL_LLM_NOT_CONFIGURED", { status: 409 })).kind).toBe("config");
     expect(wrAiError(apiError("SOMETHING", { details: { author_action: { view: "settings" } } })).kind).toBe("config");
     expect(wrAiError(apiError("WRITER_DEEP_REVIEW_LLM_FAILED", { details: { next_action: "configure_writer_deep_review_route_and_retry" } })).kind).toBe("config");
-    expect(wrAiError(wrAiLocalError("no-model"))).toMatchObject({ kind: "config", actionLabel: "去系统设置" });
   });
 
   it("断网 / 超时 / 5xx → 重试，而不是叫作者去配置模型", () => {
@@ -38,6 +37,14 @@ describe("写作台 AI 失败提示按错误代码分流", () => {
   });
 });
 
+describe("选区改写的字数上限", () => {
+  it("选区太长（本地拒绝，没发请求）：说字数、请分段改写；不给「重试」，也不叫作者去配置模型", () => {
+    const info = wrAiError(Object.assign(wrAiLocalError("selection-too-long"), { details: { length: 2500, limit: 2000 } }));
+    expect(info).toMatchObject({ kind: "too-long", message: "选区太长（2500 字），请分段改写。", actionLabel: "" });
+    expect(info.offersSettings).toBeFalsy();
+  });
+});
+
 describe("续写候选的方向与快捷词", () => {
   it("按 proposal_source 的方向命名，缺了就按位置", () => {
     expect(wrContinueDirection({ proposal_source: "writer_room_continuation_variants:suspense" }, 0).label).toBe("悬念");
@@ -54,18 +61,16 @@ describe("续写候选的方向与快捷词", () => {
 });
 
 describe("续写候选与调音指令", () => {
-  it("generate-set 的响应按方向命名、转义 HTML、去掉换行；离线占位不当成候选", () => {
+  it("generate-set 的响应按方向命名、转义 HTML、按换行分段（空行、行首尾空白不算）；空白的不当成候选", () => {
     const cands = wrContinueCandidates({ proposals: [
-      { proposal_id: "p1", proposal_source: "continuation:relationship", content: "她说<好>\n。", rationale: "关系" },
-      { proposal_id: "p2", content: "占位", rationale: "offline deterministic stub" },
-      { proposal_id: "p3", content: "  " },
+      { proposal_id: "p1", proposal_source: "continuation:relationship", content: "她说<好>。\n\n  他没有回答。 \n", rationale: "关系" },
+      { proposal_id: "p3", content: "  \n " },
     ] });
-    expect(cands).toEqual([{ id: "p1", approach: "关系压力", tone: "slate", note: "关系", html: "她说&lt;好&gt;。" }]);
+    expect(cands).toEqual([{ id: "p1", approach: "关系压力", tone: "info", note: "关系", paras: ["她说&lt;好&gt;。", "他没有回答。"] }]);
   });
 
-  it("一条可用的都没有：全是离线占位 → no-model（去系统设置），否则 → no-result（换个说法重试）", () => {
-    expect(() => wrContinueCandidates({ proposals: [{ content: "占位", rationale: "Offline Deterministic" }] }))
-      .toThrow(expect.objectContaining({ code: "no-model" }));
+  it("一条可用的都没有 → no-result（换个说法重试）", () => {
+    expect(() => wrContinueCandidates({ proposals: [{ content: "  " }] })).toThrow(expect.objectContaining({ code: "no-result" }));
     expect(() => wrContinueCandidates({ proposals: [] })).toThrow(expect.objectContaining({ code: "no-result" }));
     expect(() => wrContinueCandidates(null)).toThrow(expect.objectContaining({ code: "no-result" }));
   });

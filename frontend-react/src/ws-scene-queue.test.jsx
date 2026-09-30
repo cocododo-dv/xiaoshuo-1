@@ -9,12 +9,10 @@ import { DEFAULT_CHAP, DEFAULT_PROJECT, installApiRouter } from "./test-helpers.
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
-  cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn(),
 }));
-// 起草台只从雪花取提示词上下文（与队列无关）：mock 掉，避免为测队列拉进整张构思视图。
-vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [] }));
+// 任务控制条的两个请求（ws-scene-job-api.js）
+vi.mock("./ws-scene-job-api.js", () => ({ cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn() }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const T = { timeout: 5000, interval: 25 };
 const mounted = [];
 
@@ -28,17 +26,20 @@ const TWO_SCENE_CHAP = {
 const RUN_STATES_URL = /^\/api\/v1\/scene-run-states\?/;
 
 async function loadScene(opts = {}) {
-  const client = await import("./lib/client.js");
-  installApiRouter(client, { catalog: [TWO_SCENE_CHAP], ...opts });
-  client.getLatestSceneRunJob.mockRejectedValue(Object.assign(new Error("no job"), { status: 404 }));
+  const clientModule = await import("./lib/client.js");
+  installApiRouter(clientModule, { catalog: [TWO_SCENE_CHAP], ...opts });
   if (opts.runStateSceneIds) {
-    const base = client.apiGet.getMockImplementation();
-    client.apiGet.mockImplementation((url) => (
+    const base = clientModule.apiGet.getMockImplementation();
+    clientModule.apiGet.mockImplementation((url) => (
       RUN_STATES_URL.test(url)
         ? Promise.resolve({ items: opts.runStateSceneIds.map((id) => ({ scene_id: id })) })
         : base(url)
     ));
   }
+  // 任务控制条的两个请求（mock）并进 client，测试照旧写 client.getLatestSceneRunJob
+  const { cancelRunJob, getLatestSceneRunJob } = await import("./ws-scene-job-api.js");
+  const client = { ...clientModule, cancelRunJob, getLatestSceneRunJob };
+  client.getLatestSceneRunJob.mockRejectedValue(Object.assign(new Error("no job"), { status: 404 }));
   await import("./ws-catalog.jsx");
   await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
   await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
@@ -79,6 +80,51 @@ afterEach(async () => {
   const { clearViewIntents } = await import("./ws-view-intents.js");
   clearViewIntents("scene");
   vi.restoreAllMocks();
+});
+
+describe("AI 起草台 · 进页面时取回在办场的运行记录（F03-11）", () => {
+  it("一场的 workbench 慢：另一场照样去取，不排在它后面干等", async () => {
+    window.localStorage.setItem("scn-queue:v1::prj-main", JSON.stringify(["ch01s1", "ch01s2"]));
+    const { WsScene, client } = await loadScene();
+    const base = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => (
+      url === "/api/v1/scenes/s1/workbench" ? new Promise(() => {}) : base(url, options)
+    ));
+    await render(<WsScene t={{}} />);
+    await vi.waitFor(() => {
+      const urls = client.apiGet.mock.calls.map(([url]) => url);
+      expect(urls).toContain("/api/v1/scenes/s1/workbench");
+      expect(urls).toContain("/api/v1/scenes/s2/workbench");
+    }, T);
+  });
+});
+
+describe("AI 起草台 · 慢到的取回不盖掉更新的运行记录（F03-13）", () => {
+  it("进页面时那一份 workbench 回来得晚：内存里已有跑完的记录时，缓存也不被它盖回去", async () => {
+    window.localStorage.setItem("scn-queue:v1::prj-main", JSON.stringify(["ch01s1"]));
+    const { WsScene, client } = await loadScene({ runStateSceneIds: ["s1"] });
+    client.getLatestSceneRunJob.mockResolvedValue({ job_id: "job-1", scene_id: "s1", status: "completed", author_note: "只改对白" });
+    const workbench = {
+      style_draft: { content: "跑完的这一稿。" },
+      scene_run_state: { scene_status: "near_final" },
+      author_state: { author_state: "draft_ready", can_archive: true },
+    };
+    let releaseSlow;
+    const slow = new Promise((resolve) => { releaseSlow = resolve; });
+    const base = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url !== "/api/v1/scenes/s1/workbench") return base(url, options);
+      // 进页面时的那一次取回不带 signal、回来得晚；任务到了终态之后的那一次带着任务（和它的作者指令）
+      return options && options.signal ? Promise.resolve(workbench) : slow;
+    });
+    await render(<WsScene t={{}} />);
+    const cached = () => JSON.parse(window.localStorage.getItem("scn-run:ch01s1::prj-main") || "null");
+    await vi.waitFor(() => expect(cached() && cached().authorNote).toBe("只改对白"), T);
+
+    await act(async () => { releaseSlow(workbench); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(cached().authorNote).toBe("只改对白");
+  }, 15000);
 });
 
 describe("AI 起草台 · 运行队列移出", () => {

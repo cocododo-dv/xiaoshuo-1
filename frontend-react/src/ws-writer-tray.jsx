@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { CloseButton, Spinner } from "./ws-ui.jsx";
-import { wrPickedText, wrSentences } from "./writer-candidates.js";
+import { wrCandSentences, wrPickedParas } from "./writer-candidates.js";
 import { useWrInert } from "./ws-writer-hooks.js";
 import { isImeComposing, useFocusTrap } from "./ws-dialog.jsx";
 import { WrAiErrorBlock, WrCandidateList, WrContinueChips, useWrContinuation } from "./ws-writer-candidates.jsx";
@@ -58,7 +58,7 @@ function WrTrayImpl({ open, onClose, onAdopt, onMerge, onAdoptText, sceneLabel, 
         const cand = c.cands[sel];
         if (!cand) return;
         const picked = c.picks[cand.id] || [];
-        if (picked.length && onAdoptText) onAdoptText(wrPickedText(wrSentences(cand.html), picked));
+        if (picked.length && onAdoptText) onAdoptText(wrPickedParas(wrCandSentences(cand.paras), picked));
         else onAdopt(cand);
       }
       else if (e.key.toLowerCase() === "r") { e.preventDefault(); regenerate(); }

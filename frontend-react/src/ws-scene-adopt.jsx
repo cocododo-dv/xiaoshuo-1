@@ -1,9 +1,10 @@
 import React from "react";
+import { emit } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
 import { wsToast } from "./ws-notify.jsx";
 import { CloseButton, IconButton, Notice, Tag } from "./ws-ui.jsx";
-import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
+import { ContentSafetyReviewDialog, contentSafetyReviewFromError, exactCodesMatch } from "./wr-content-safety-review.jsx";
 import { scnAdoptToDoc, scnPrepareAdoption } from "./ws-scene-api.js";
 import { scnRunSave } from "./ws-scene-store.js";
 
@@ -19,7 +20,7 @@ const { useEffect, useRef, useState } = React;
 
 /* 「同步与恢复」在侧栏底部；外壳听这个事件打开它（detail {id} 定位到一份候选，{sid} 定位到这一场）。 */
 function openRecoveryCenter(detail) {
-  window.dispatchEvent(new CustomEvent("ws:recovery-open", { detail: detail || null }));
+  emit("ws:recovery-open", detail || null);
 }
 
 function useSceneAdoption({ items, runs, setRuns, pickedId, pickedIdRef, mountedRef, onArchived, go }) {
@@ -301,7 +302,7 @@ function SceneAdoptionDialogs({ adoption }) {
           onCancel={adoption.closeSafetyReview}
           onConfirm={async (acceptedWarningCodes) => {
             const expected = safetyReview.review.findings.map(item => item.code);
-            if (acceptedWarningCodes.length !== expected.length || expected.some(code => !acceptedWarningCodes.includes(code))) {
+            if (!exactCodesMatch(expected, acceptedWarningCodes)) {
               adoption.setSafetyError("请逐项核对当前服务端返回的全部风险提示后再继续。");
               return;
             }

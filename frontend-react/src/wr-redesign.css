@@ -465,6 +465,7 @@
 }
 .wr-cand.is-sel .wr-cand-key { background: var(--accent); color: var(--on-accent); }
 .wr-cand-text { font-family: var(--font-serif); font-size: 14.5px; line-height: 1.75; color: var(--ink-1); flex: 1; }
+.wr-cand-text > p + p { margin-top: 0.55em; }  /* 续写按段给：段与段之间留一点空 */
 .wr-cand-note { font-size: var(--fs-xs); color: var(--ink-3); line-height: 1.5; margin-top: 12px; padding-top: 11px; border-top: 1px dashed var(--line-1); }
 .wr-cand-act { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .wr-cand-stack { margin-bottom: 10px; animation: none; opacity: 1; transform: none; }

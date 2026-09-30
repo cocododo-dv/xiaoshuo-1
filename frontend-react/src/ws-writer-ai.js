@@ -8,7 +8,7 @@
    · wrContinueDirection(proposal, index)：后端一次生成三条续写，分别按
      动作推进 / 关系压力 / 悬念 三个方向（author_drafts.CONTINUATION_VARIANT_DIRECTIONS，
      proposal_source 的后缀就是方向），候选卡片据此命名，不再叫「候选 1/2/3」。
-   · wrContinueCandidates(generated)：generate-set 的响应 → 候选卡片数据。
+   · wrContinueCandidates(generated)：generate-set 的响应 → 候选卡片数据（按段）。
    · WR_RW_ACTIONS / wrToneInstr：选区工具条的改写指令。
    纯函数模块，不读 store、不写 window；真正发请求的在 ws-writer-requests.js。
    ========================================================== */
@@ -16,6 +16,7 @@ import { copyGateGenerationMessage, isCopyGateError } from "./ws-copy-gate.js";
 import { escapeHtmlText } from "./manuscript-html.js";
 
 /* kind: copy（AI 写出来的每一版都照搬了参考书，被抄袭门拦下丢掉）| config（去系统设置）| not-ready（场景还没同步好）
+        | too-long（选区超过一次改写的上限：请分段改写，没有「重试」）
         | empty（模型没给出可用结果）| unclear（服务器没说清原因：重试，也给去系统设置）| retry
    offersSettings：提示里要不要同时给「去系统设置」（config 与 unclear 为 true）。
    抄袭门的拒绝也带 author_action（「去改写这些位置」），所以要先认它：过去它被当成「没有可用的模型」。 */
@@ -31,7 +32,6 @@ export function wrAiError(error) {
     /_LLM_NOT_CONFIGURED$|^LLM_(NOT_CONFIGURED|DISABLED|REQUIRED)/.test(code)
     || details.author_action
     || /^configure_/.test(nextAction)
-    || code === "no-model"
   ) {
     return {
       kind: "config",
@@ -45,6 +45,14 @@ export function wrAiError(error) {
       kind: "not-ready",
       message: "这一场还没有同步到服务器，稍等几秒再试。",
       actionLabel: "重试",
+    };
+  }
+  if (code === "selection-too-long") {
+    const length = Number(details.length) || 0;
+    return {
+      kind: "too-long",
+      message: `选区太长${length ? `（${length} 字）` : ""}，请分段改写。`,
+      actionLabel: "",
     };
   }
   if (code === "no-result") {
@@ -79,9 +87,9 @@ export function wrAiLocalError(code) {
 }
 
 const CONTINUE_DIRECTIONS = [
-  { key: "action", label: "动作推进", tone: "crimson" },
-  { key: "relationship", label: "关系压力", tone: "slate" },
-  { key: "suspense", label: "悬念", tone: "gold" },
+  { key: "action", label: "动作推进", tone: "accent" },
+  { key: "relationship", label: "关系压力", tone: "info" },
+  { key: "suspense", label: "悬念", tone: "warn" },
 ];
 
 export function wrContinueDirection(proposal, index) {
@@ -89,7 +97,7 @@ export function wrContinueDirection(proposal, index) {
   const slot = source.includes(":") ? source.slice(source.lastIndexOf(":") + 1) : "";
   return CONTINUE_DIRECTIONS.find((item) => item.key === slot)
     || CONTINUE_DIRECTIONS[index]
-    || { key: "", label: `第 ${index + 1} 条`, tone: "slate" };
+    || { key: "", label: `第 ${index + 1} 条`, tone: "info" };
 }
 
 /* 续写提示的快捷词：只放「接着往下写」一类的指令（续写接口只追加下一拍，从不改已有正文）；
@@ -108,35 +116,30 @@ export function wrContinueChips(design) {
   return chips;
 }
 
-function tidy(text) {
-  return String(text || "").replace(/\s*\n\s*/g, "").trim();
+/* 续写正文 → 段落：服务端按换行分段。过去整条去掉换行，三五段的续写被当成一段显示、采纳成一个 <p>，
+   不同人物的对白挤进同一段。换行两边的空白去掉，空段不要。 */
+function continuationParagraphs(text) {
+  return String(text || "").split(/\s*\n\s*/).map((part) => part.trim()).filter(Boolean);
 }
 
-/* 离线兜底产物是确定性占位文字——按「模型不可用」如实处理，不混进候选里 */
-export function wrIsOfflinePlaceholder(rationale) {
-  return /offline deterministic/i.test(String(rationale || ""));
-}
-
-/* generate-set 的响应 → 候选卡片 { id, approach, tone, note, html }。
-   一条可用的都没有时抛本地错误（全是离线占位 → no-model，否则 no-result），由 wrAiError 翻译。 */
+/* generate-set 的响应 → 候选卡片 { id, approach, tone, note, paras }（paras：每段一条已转义的 HTML）。
+   一条可用的都没有时抛本地错误 no-result，由 wrAiError 翻译（没配模型时服务端直接回 409，不会走到这里）。 */
 export function wrContinueCandidates(generated) {
   const cands = [];
-  let offline = false;
   const proposals = Array.isArray(generated && generated.proposals) ? generated.proposals : [];
   proposals.forEach((proposal, index) => {
-    const text = tidy(proposal && proposal.content);
-    if (!text) return;
-    if (wrIsOfflinePlaceholder(proposal && proposal.rationale)) { offline = true; return; }
+    const paras = continuationParagraphs(proposal && proposal.content);
+    if (!paras.length) return;
     const direction = wrContinueDirection(proposal, index);
     cands.push({
       id: (proposal && proposal.proposal_id) || ("cand" + cands.length),
       approach: direction.label,
       tone: direction.tone,
       note: (proposal && proposal.rationale) || "",
-      html: escapeHtmlText(text),
+      paras: paras.map(escapeHtmlText),
     });
   });
-  if (!cands.length) throw wrAiLocalError(offline ? "no-model" : "no-result");
+  if (!cands.length) throw wrAiLocalError("no-result");
   return cands;
 }
 

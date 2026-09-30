@@ -41,6 +41,11 @@ function wireDrafts(client) {
   });
 }
 
+/* 目录装载后的预热水合（WsCatalog.onLoaded → WrDocs.hydrateActive）停掉：数 ensure 次数的用例只数被测的那几个调用发的 */
+function stopWarmHydrate(mod) {
+  vi.spyOn(mod.WrDocs, "hydrateActive").mockImplementation(() => {});
+}
+
 async function settleActive(id = "prj-main") {
   await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe(id), T);
 }
@@ -69,8 +74,9 @@ describe("WrDocs.save（ensure + PATCH 带 base_revision_no）", () => {
     await mod.WrDocs.save("ch01s1", "<p>正文</p>");
     // 同步缓存：视图零等待即可读到
     expect(mod.WrDocs.load("ch01s1")).toBe("<p>正文</p>");
+    // 每一次 ensure 带自己的幂等键（复核二 W1-R2A-1：回包丢了的那一次不会被服务端按同一个键重放给之后的读取）
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v1/author-drafts/scene/s1/ensure", {}), T);
+      "/api/v1/author-drafts/scene/s1/ensure", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })), T);
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
       "/api/v1/author-drafts/d1",
       { content: "<p>正文</p>", base_revision_no: 1 }), T);
@@ -109,7 +115,9 @@ describe("WrDocs.save（ensure + PATCH 带 base_revision_no）", () => {
     });
   });
 
-  it("旧请求发生 409 时保留队列中的较新正文，刷新 revision 后继续保存", async () => {
+  /* 作者拍板 #20c 的更严格做法（W1）：过去这里是「排在后面的较新本机稿静默赢」——带着刷新后的修订号把另一台设备
+     同时存下的正文盖掉，同步与恢复里什么都没有。现在服务端版本上读缓存，两份本机稿都进同步与恢复，排队的不再发。 */
+  it("旧请求 409、队列里还有较新的正文：两份本机稿都进同步与恢复，排队的不再发，读缓存换成服务端版本", async () => {
     const { mod, client } = await loadDocs();
     let ensureCount = 0;
     client.apiPost.mockImplementation((url) => {
@@ -130,22 +138,28 @@ describe("WrDocs.save（ensure + PATCH 带 base_revision_no）", () => {
       .mockImplementationOnce(() => firstPatch.promise)
       .mockResolvedValueOnce({ draft: { draft_id: "d1", revision_no: 6 } });
     const conflict = Object.assign(new Error("conflict"), { code: "AUTHOR_DRAFT_CONFLICT" });
+    const resolved = [];
+    mod.WrDocs.subscribe((kind, detail) => { if (kind === "conflict-resolved") resolved.push(detail.html); });
 
     const firstSave = mod.WrDocs.save("ch01s1", "<p>已被后续编辑取代</p>");
     const firstRejected = expect(firstSave).rejects.toBe(conflict);
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledTimes(1), T);
     const secondSave = mod.WrDocs.save("ch01s1", "<p>不能丢的最新正文</p>");
+    const secondRejected = expect(secondSave).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
     firstPatch.reject(conflict);
 
     await firstRejected;
-    await secondSave;
-    expect(mod.WrDocs.load("ch01s1")).toBe("<p>不能丢的最新正文</p>");
-    expect(mod.WrRecovery.list()).toEqual([]);
-    expect(window.alert).not.toHaveBeenCalled();
-    expect(client.apiPatch).toHaveBeenNthCalledWith(2, "/api/v1/author-drafts/d1", {
-      content: "<p>不能丢的最新正文</p>",
-      base_revision_no: 5,
-    });
+    await secondRejected;
+    await vi.waitFor(() => expect(resolved).toEqual(["<p>服务端并发版本</p>"]), T);
+    expect(mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>服务端并发版本</p>");
+    expect(mod.WrRecovery.list().map((entry) => entry.html)).toEqual(expect.arrayContaining([
+      "<p>已被后续编辑取代</p>",
+      "<p>不能丢的最新正文</p>",
+    ]));
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ revision: 5, dirty: false, conflictPending: false, lastSaveError: null });
+    await vi.waitFor(() => expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("同步与恢复")), T);
+    // 排队的那一稿没有带着服务端的修订号发出去
+    expect(client.apiPatch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -160,7 +174,18 @@ describe("WrDocs 409 冲突重水合（历史 bug 回归）", () => {
   it("PATCH 抛 AUTHOR_DRAFT_CONFLICT → 重新 ensure 重水合 + alert 提示", async () => {
     const { mod, client } = await loadDocs();
     const conflict = Object.assign(new Error("conflict"), { code: "AUTHOR_DRAFT_CONFLICT" });
-    client.apiPatch.mockRejectedValueOnce(conflict); // 仅首次保存冲突
+    // 409 = 服务端在别处往前走了：冲突之后的 ensure 读到的是另一台设备存下的 rev 2（读回来的修订号比撞上的那一次还旧，
+    // WrDocs 当没读到、马上再读——这里按真实服务端回包，不再回一份不可能出现的旧快照）
+    let patched = false;
+    client.apiPost.mockImplementation((url) => {
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        return Promise.resolve(patched
+          ? { draft: { draft_id: "d1", revision_no: 2, content: "<p>另一台设备的正文</p>" } }
+          : { draft: { draft_id: "d1", revision_no: 1, content: "" } });
+      }
+      return Promise.resolve({});
+    });
+    client.apiPatch.mockImplementationOnce(() => { patched = true; return Promise.reject(conflict); }); // 仅首次保存冲突
     client.apiPost.mockClear();
 
     await expect(mod.WrDocs.save("ch01s1", "<p>本地改动</p>")).rejects.toBe(conflict);
@@ -194,13 +219,22 @@ describe("WrDocs 跨作品 sid 前缀防污染（历史 bug 回归）", () => {
 
   it("同名 sid 在不同作品下：缓存键(wsKey)与 docMeta(metaKeyOf)双隔离", async () => {
     const { mod, client } = await loadDocs({ projects: [DEFAULT_PROJECT, SALT_PROJECT] });
-    // ensure 按当前激活作品返回不同 draft_id，以验证 docMeta 隔离（裸 sid 会复用上一部的 draftId）
+    // ensure 按当前激活作品返回不同 draft_id，以验证 docMeta 隔离（裸 sid 会复用上一部的 draftId）。
+    // 两份草稿各自记着存上的修订号和正文（像后端）：回到一场时的后台复核读到的是它存上的那一版，不是一份永远的空稿
+    const drafts = { "d-main": { revision: 1, content: "" }, "d-second": { revision: 1, content: "" } };
+    const snapshotOf = (id) => ({ draft: { draft_id: id, revision_no: drafts[id].revision, content: drafts[id].content } });
     client.apiPost.mockImplementation((url) => {
       if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
-        const w = window.WsWorks.activeId();
-        return Promise.resolve({ draft: { draft_id: w === "prj-second" ? "d-second" : "d-main", revision_no: 1, content: "" } });
+        return Promise.resolve(snapshotOf(window.WsWorks.activeId() === "prj-second" ? "d-second" : "d-main"));
       }
       return Promise.resolve({});
+    });
+    client.apiPatch.mockImplementation((url, body) => {
+      const id = url.split("/").pop();
+      if (!drafts[id]) return Promise.resolve({});
+      drafts[id].revision += 1;
+      drafts[id].content = body.content;
+      return Promise.resolve(snapshotOf(id));
     });
 
     // —— 作品 prj-main：保存 ch01s1 ——
@@ -345,10 +379,23 @@ describe("WrRecovery（配额保护 + 恢复重试）", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("409 时若恢复副本写入触发 quota，不覆盖本地稿并暴露仅会话记录", async () => {
+  /* W1：过去配额不足时 store 干脆不读服务端版本、本机稿留在编辑器里，每次保存都再撞 409。现在服务端版本照样上屏
+     （只进会话内存），本机稿留在本次会话的同步与恢复并醒目提示；本机存储里那一份本机稿和未同步标记留着——
+     刷新之后按跨会话的路径再走一次冲突副本，那时空间够了就持久地留下。 */
+  it("409 时冲突副本写不进本机存储：只留本次会话的记录并提示；服务端版本只进会话内存，本机存储里的本机稿留到刷新以后", async () => {
     const { mod, client } = await loadDocs();
+    let ensureCount = 0;
+    client.apiPost.mockImplementation((url) => {
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        ensureCount += 1;
+        return Promise.resolve(ensureCount === 1
+          ? { draft: { draft_id: "d1", revision_no: 1, content: "" } }
+          : { draft: { draft_id: "d1", revision_no: 3, content: "<p>另一台设备的正文</p>" } });
+      }
+      return Promise.resolve({});
+    });
     const originalSetItem = Storage.prototype.setItem;
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
+    const quota = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
       if (String(key).startsWith("wr-recovery:v1:")) {
         throw new DOMException("quota full", "QuotaExceededError");
       }
@@ -358,18 +405,40 @@ describe("WrRecovery（配额保护 + 恢复重试）", () => {
     client.apiPatch.mockRejectedValueOnce(conflict);
 
     await expect(mod.WrDocs.save("ch01s1", "<p>不能丢的本地稿</p>")).rejects.toBe(conflict);
+    await vi.waitFor(() => expect(mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>另一台设备的正文</p>"), T);
 
-    expect(mod.WrDocs.load("ch01s1")).toBe("<p>不能丢的本地稿</p>");
     expect(mod.WrDocs.state("ch01s1")).toMatchObject({
-      dirty: true,
+      dirty: false,
+      conflictPending: false,
       localDurable: false,
       cacheError: expect.objectContaining({ code: "LOCAL_STORAGE_QUOTA" }),
     });
     expect(mod.WrRecovery.list()).toEqual([
       expect.objectContaining({ sid: "ch01s1", type: "conflict", durable: false, html: "<p>不能丢的本地稿</p>" }),
     ]);
-    // 没有持久副本就不进行第二次 ensure / 水合覆盖。
-    expect(client.apiPost.mock.calls.filter(c => /\/scene\/s1\/ensure$/.test(c[0]))).toHaveLength(1);
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("本次会话"));
+    expect(window.localStorage.getItem(window.wsKey("wr-doc:ch01s1"))).toBe("<p>不能丢的本地稿</p>");
+    expect(window.localStorage.getItem(window.wsKey("wr-doc-pending:ch01s1"))).not.toBeNull();
+    expect(client.apiPatch).toHaveBeenCalledTimes(1);
+
+    // 作者腾出了空间、刷新了页面：跨会话的路径把本机稿持久地放进同步与恢复，服务端版本上屏
+    quota.mockRestore();
+    vi.resetModules();
+    const client2 = await import("./lib/client.js");
+    installApiRouter(client2);
+    client2.apiPost.mockImplementation((url) => (/\/author-drafts\/scene\/.+\/ensure$/.test(url)
+      ? Promise.resolve({ draft: { draft_id: "d1", revision_no: 3, content: "<p>另一台设备的正文</p>" } })
+      : Promise.resolve({})));
+    await import("./ws-catalog.jsx");
+    await settleActive("prj-main");
+    await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+    const mod2 = await import("./wr-doc-store.jsx");
+    mod2.WrDocs.load("ch01s1");
+    await vi.waitFor(() => expect(mod2.WrDocs.cachedHTML("ch01s1")).toBe("<p>另一台设备的正文</p>"), T);
+    expect(mod2.WrRecovery.list()).toEqual([
+      expect.objectContaining({ sid: "ch01s1", type: "conflict", durable: true, html: "<p>不能丢的本地稿</p>" }),
+    ]);
+    expect(window.localStorage.getItem(window.wsKey("wr-doc-pending:ch01s1"))).toBeNull();
   });
 
   it("正文缓存触发 quota 时以内存中的新稿为准，不让旧 localStorage 值回盖", async () => {
@@ -599,9 +668,16 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
 
   it("同一场并发读版本 / 正文 / draftId 只发一次 ensure（开发模式 effect 连跑两遍）", async () => {
     const { mod, client } = await loadDocs();
+    // 目录装载后的预热水合另有自己的一次读取（水合总是读服务端，W1 复核四 W1-R4B-6；前一个用例留下的旧实例在它退役之前
+    // 也可能预热一次）：这里只数被测的版本 / 正文 / draftId 这几个调用发出的 ensure
+    stopWarmHydrate(mod);
     const ensure = deferred();
+    let ensures = 0;
     client.apiPost.mockImplementation((url) => {
-      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) return ensure.promise;
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        ensures += 1;
+        return ensure.promise;
+      }
       return Promise.resolve({});
     });
     client.apiGet.mockImplementation((url) => {
@@ -610,13 +686,12 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
       if (/\/author-drafts\/d1\/revisions\/\d+$/.test(url)) return Promise.resolve({ revision: { content: "<p>旧版一句。</p>" } });
       return Promise.resolve({});
     });
-    const ensureCalls = () => client.apiPost.mock.calls.filter(c => /\/scene\/s1\/ensure$/.test(c[0]));
 
     const first = mod.WrDocVersions.list("ch01s1");
     const second = mod.WrDocVersions.list("ch01s1");
     const third = mod.WrDocVersions.paras("ch01s1", 1);
     const fourth = mod.WrDocs.draftId("ch01s1");
-    await vi.waitFor(() => expect(ensureCalls()).toHaveLength(1), T);
+    await vi.waitFor(() => expect(ensures).toBe(1), T);
     ensure.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "" } });
 
     await expect(first).resolves.toEqual([]);
@@ -624,24 +699,28 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
     await expect(third).resolves.toEqual(["旧版一句。"]);
     await expect(fourth).resolves.toBe("d1");
     // 可证伪：去掉 in-flight 共享，四个调用各发一次 ensure
-    expect(ensureCalls()).toHaveLength(1);
+    expect(ensures).toBe(1);
   });
 
   it("ensure 失败后并发调用方都拿到同一个错误，之后的调用重新请求", async () => {
     const { mod, client } = await loadDocs();
+    stopWarmHydrate(mod);
     const failure = Object.assign(new Error("offline"), { code: "NETWORK_ERROR" });
     const firstEnsure = deferred();
+    let ensures = 0;
     client.apiPost.mockImplementation((url) => {
-      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) return firstEnsure.promise;
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        ensures += 1;
+        return firstEnsure.promise;
+      }
       return Promise.resolve({});
     });
-    const ensureCalls = () => client.apiPost.mock.calls.filter(c => /\/scene\/s1\/ensure$/.test(c[0]));
 
     const a = mod.WrDocs.draftId("ch01s1");
     const b = mod.WrDocs.draftId("ch01s1");
     const aRejected = expect(a).rejects.toBe(failure);
     const bRejected = expect(b).rejects.toBe(failure);
-    await vi.waitFor(() => expect(ensureCalls()).toHaveLength(1), T);
+    await vi.waitFor(() => expect(ensures).toBe(1), T);
     firstEnsure.reject(failure);
     await aRejected;
     await bRejected;
@@ -649,12 +728,13 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
     // 结束即清掉 in-flight：再次调用会重新 POST（可证伪：失败的 promise 若被缓存，这里仍然拒绝）
     client.apiPost.mockImplementation((url) => {
       if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        ensures += 1;
         return Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "" } });
       }
       return Promise.resolve({});
     });
     await expect(mod.WrDocs.draftId("ch01s1")).resolves.toBe("d1");
-    expect(ensureCalls()).toHaveLength(2);
+    expect(ensures).toBe(2);
   });
 
   it("diff 句级：新增句被标 add（纯函数，无需 mock）", async () => {

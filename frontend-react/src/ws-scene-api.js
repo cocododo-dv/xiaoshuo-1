@@ -1,17 +1,20 @@
 import { apiGet, apiPost } from "./lib/client.js";
-import { WsWorks, wsKey } from "./ws-works.jsx";
+import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { sceneApiId } from "./ws-scene-id.js";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
-import { escapeHtmlText, hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
+import { sameManuscriptText } from "./wr-doc-cache.js";
+import { escapeHtmlText, hasAuthorText, htmlToParagraphs, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { copyGateAdoptMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
 import { fidPatchView, fidRankText, fidStyleStepView, fidVerdict } from "./ws-fidelity-model.js";
 import {
-  RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES, scnPipeStepName, scnParaText,
+  AUTHOR_NOTE_LIMIT, RUN_JOB_STATUS_LABELS, RUN_JOB_TERMINAL_STATUSES, scnPipeStepName, scnParaText,
   scnGateLog, scnFriendly, scnRunUiAbortError, scnStyleNoticeLabel, scnRunRecordFromWorkbench,
 } from "./ws-scene-derive.js";
-import { isRealWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
+import { createPoller } from "./lib/poll.js";
 
 /* ==========================================================
    AI 起草台 — 与后端说话的部分
@@ -25,10 +28,8 @@ import { isRealWorkId } from "./lib/work-id.js";
 
 const NOT_SYNCED_MESSAGE = "这一场还没同步到后端目录——稍候片刻或刷新后重试。";
 
-/* 目录 sid → 后端 scene id；目录还没同步到后端时是 null。 */
-async function scnSceneIdOf(sid) {
-  return (await WsCatalog.__backendSceneId(sid)) || null;
-}
+/* 目录 sid → 后端 scene id；目录还没同步到后端时是 null（ws-scene-id.js）。 */
+const scnSceneIdOf = sceneApiId;
 async function scnRequireSceneId(sid) {
   const sceneId = await scnSceneIdOf(sid);
   if (!sceneId) throw new Error(NOT_SYNCED_MESSAGE);
@@ -38,23 +39,6 @@ async function scnRequireSceneId(sid) {
 function scnThrowIfAborted(signal) {
   if (signal && signal.aborted) throw scnRunUiAbortError();
 }
-function scnPollDelay(delayMs, signal) {
-  scnThrowIfAborted(signal);
-  if (!signal) return new Promise(resolve => setTimeout(resolve, delayMs));
-  return new Promise((resolve, reject) => {
-    const finish = () => {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    };
-    const abort = () => {
-      clearTimeout(timer);
-      reject(scnRunUiAbortError());
-    };
-    const timer = setTimeout(finish, delayMs);
-    signal.addEventListener("abort", abort, { once: true });
-  });
-}
-
 /* 等待终态。页面传 lifecycle.waitForTerminal（由场景页唯一的任务控制条轮询 latest，终态时兑现），
    这里就不再自己每 2 秒去问 run-jobs/{id}——过去同一个任务被两个轮询者同时问。
    没传（冒烟脚本、单测直接调用）时退回自己轮询。没有客户端时限：一次 LLM 调用本来就可能要 15 分钟，
@@ -88,17 +72,35 @@ async function scnWaitForTerminalJob(job, sceneId, lifecycle, trackedGet, signal
     // null：控制条那边看到的是别的任务（另一个标签页又起了一次、或一条迟到的旧 latest）——
     // 认不准就自己盯住这一个任务，宁可多一个轮询者也不卡在「运行中」。
   }
-  let last = job;
-  while (!RUN_JOB_TERMINAL_STATUSES.has(last.status)) {
-    await scnPollDelay(2000, signal);
-    scnThrowIfAborted(signal);
-    try {
-      last = await trackedGet(`/api/v1/run-jobs/${job.job_id}`);
-    } catch (e) {
-      scnThrowIfAborted(signal);
-    }
-  }
-  return last;
+  return scnPollJob(job, trackedGet, signal);
+}
+
+/* 自己盯住一个任务：每 2 秒问一次 run-jobs/{id}，读失败照常再问；页面隐藏时放慢、回到前台立刻问
+   （lib/poll.js）。中途取消（signal）→ 以 SCENE_RUN_UI_ABORTED 结束，在途的 GET 随 signal 一起中止。 */
+function scnPollJob(job, trackedGet, signal) {
+  return new Promise((resolve, reject) => {
+    let last = job;
+    let poller = null;
+    const onAbort = () => {
+      if (poller) poller.stop();
+      reject(scnRunUiAbortError());
+    };
+    if (signal && signal.aborted) { onAbort(); return; }
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    poller = createPoller({
+      interval: 2000,
+      run: async () => {
+        if (signal && signal.aborted) return false;
+        try { last = await trackedGet(`/api/v1/run-jobs/${job.job_id}`); } catch (e) { /* 读失败：下一轮再问 */ }
+        if (signal && signal.aborted) return false;
+        if (!RUN_JOB_TERMINAL_STATUSES.has(last.status)) return true;
+        if (signal) signal.removeEventListener("abort", onAbort);
+        resolve(last);
+        return false;
+      },
+    });
+    poller.start();
+  });
 }
 
 /* ---- 完整一跑（FE-ALIGN F6）：投递 run job → 等终态 → workbench 取产出 ----
@@ -118,8 +120,8 @@ async function scnRun(item, note, _prevText, lifecycle = {}) {
   // 由「采纳并归档」留下明确接受记录；无 Q2 时后端仍可按契约自动完成。
   const body = { run_policy: (lifecycle && lifecycle.runPolicy) || "strict" };
   const authorNote = note == null ? "" : String(note).trim();
-  if (Array.from(authorNote).length > 2000) {
-    const error = new Error("作者改写指令不能超过 2000 个字符，请精简后重试；系统没有截断或提交这段指令。");
+  if (Array.from(authorNote).length > AUTHOR_NOTE_LIMIT) {
+    const error = new Error(`作者改写指令不能超过 ${AUTHOR_NOTE_LIMIT} 个字符，请精简后重试；系统没有截断或提交这段指令。`);
     error.code = "AUTHOR_NOTE_TOO_LONG";
     throw error;
   }
@@ -252,8 +254,8 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
    本地队列从此只是这份管线真相的读缓存，换浏览器时队列成员可恢复。
    读不到时返回 null 而不是 []——场景页据此决定「这一场没进过管线、不必问 latest」，读不到就不能这么断定。 ---- */
 async function scnBackendRunSids() {
-  const workId = WsWorks.activeId();
-  if (!isRealWorkId(workId)) return null;
+  const workId = readyWorkId(WsWorks);   // 书架还在加载 / 新建作品还没有正式 id：不发请求
+  if (!workId) return null;
   let data = null;
   try { data = await apiGet(`/api/v1/scene-run-states?project_id=${encodeURIComponent(workId)}`); } catch (e) { return null; }
   const items = (data && data.items) || [];
@@ -267,9 +269,6 @@ async function scnBackendRunSids() {
   } catch (e) {}
   // 端点按 updated_at 倒序返回：最近有动静的场排前面
   return items.map(it => bySceneId[it.scene_id]).filter(Boolean);
-}
-async function scnBackendQueueSids() {
-  return (await scnBackendRunSids()) || [];
 }
 
 /* ---- 生命周期预算追加：显式、带理由，从持久化检查点继续 ---- */
@@ -287,7 +286,7 @@ async function scnTopupBudget(sid, budgetBlock) {
 /* ---- 候选终选（Wave 3 · 治理 §5.5）----
    关键场景管线暂停在 awaiting_author_choice：盲化候选（后端 blinded_order 随机序、默认无分数）
    → 作者整稿选择 → resume 从批判修订 / 质检续跑到归档。
-   终选一次写入：改选须显式 reopen（后端锁定，SELECTION_LOCKED 上抛）。 ---- */
+   终选一次写入：提交后不能改选（后端锁定，SELECTION_LOCKED 上抛）；想换一稿就重新起草这一场。 ---- */
 async function scnCandidates(sid) {
   const sceneId = await scnRequireSceneId(sid);
   return apiGet(`/api/v1/scenes/${sceneId}/style-candidates`);
@@ -317,17 +316,10 @@ async function scnHydrateAfterSelection(sid, resumed) {
 function scnDraftHTML(draft) {
   return (draft || []).map(p => "<p>" + escapeHtmlText(scnParaText(p)) + "</p>").join("");
 }
-function scnHTMLParas(raw) {
-  if (!raw) return [];
-  const node = document.createElement("div");
-  node.innerHTML = raw;
-  const items = [...node.querySelectorAll("p, li")].map(el => (el.textContent || "").trim()).filter(Boolean);
-  return items.length ? items : ((node.textContent || "").trim() ? [(node.textContent || "").trim()] : []);
-}
 function scnAdoptionPreview(sid, draft) {
   const html = scnDraftHTML(draft);
   let existing = "";
-  try { existing = WrRecovery.current(sid) || localStorage.getItem(wsKey("wr-doc:" + sid)) || ""; } catch (e) {}
+  try { existing = WrDocs.cachedHTML(sid) || ""; } catch (e) {}
   // 旧草稿开头可能留着空白页占位句：只去掉开头那一句再看有没有字。过去整份草稿里只要出现过这句话
   // 就当成空稿，作者正文后文恰好写到它时，AI 稿会不经确认直接覆盖。existing 本身不改（备份要逐字一致）。
   return {
@@ -335,17 +327,50 @@ function scnAdoptionPreview(sid, draft) {
     html,
     existing,
     hasReal: hasAuthorText(existing),
-    diff: WrDocVersions.diff(scnHTMLParas(stripLegacyDraftPlaceholder(existing)), scnHTMLParas(html)),
+    diff: WrDocVersions.diff(htmlToParagraphs(stripLegacyDraftPlaceholder(existing)), htmlToParagraphs(html)),
   };
 }
-async function scnPrepareAdoption(sid, draft) {
-  try { await WrDocs.hydrate(sid); } catch (e) {
+/* 预检先和服务器上的作者稿对齐（WrDocs.prepareAdoption）：与别处正在进行的水合共用一次（写作台的预热水合还在路上时
+   等它落地，不把还没水合的缓存当成空稿）、冲突中的先读到服务端版本、保存失败后停着的一稿再发一次（回包丢了的那一稿
+   其实存上了时接上修订号，采纳带的才是服务端眼下的修订号）；读不到服务器时抛错。 */
+async function scnAdoptionPreflight(sid, draft) {
+  try {
+    await WrDocs.prepareAdoption(sid);
+  } catch (e) {
     throw Object.assign(new Error("无法核对服务器上的作者稿，已停止采用；请检查网络后重试"), {
       code: "AUTHOR_DRAFT_PREFLIGHT_FAILED",
       cause: e,
     });
   }
   return scnAdoptionPreview(sid, draft);
+}
+
+/* 作者看过差异的那一稿（作品 id::sid → 预检交给他看的作者稿；没有作者正文时是 ""）。起草台的「采纳并归档」先调
+   scnPrepareAdoption，有作者正文就把这份差异放进保护对话框；「确认覆盖并归档」（以及随后的内容风险复核）只覆盖这一稿——
+   对话框开着时别处又存了一版（后台复核、预检的再读把它读了进来），作者没看过它，就不在「确认覆盖」的名义下把它换掉
+   （复核五 W1-R5A-1）。调用方给出 options.expectedExisting 时以它为准。 */
+const shownPreviews = new Map();
+function previewKeyOf(sid) {
+  let workId = "";
+  try { workId = WsWorks.activeId() || ""; } catch (e) {}
+  return `${workId}::${sid}`;
+}
+async function scnPrepareAdoption(sid, draft) {
+  const preview = await scnAdoptionPreflight(sid, draft);
+  shownPreviews.set(previewKeyOf(sid), preview.hasReal ? preview.existing : "");
+  return preview;
+}
+/* 作者确认覆盖时看过的那一稿（没给、也没交给他看过：undefined，不比） */
+function confirmedExisting(sid, options) {
+  if (Object.prototype.hasOwnProperty.call(options, "expectedExisting")) return options.expectedExisting || "";
+  const key = previewKeyOf(sid);
+  return shownPreviews.has(key) ? shownPreviews.get(key) : undefined;
+}
+/* 要换掉的作者稿已不是作者看过（或预检读到）的那一稿时的一句：确认框开着时请他关掉重看 */
+function movedReason(options) {
+  return options.confirmed === true
+    ? "服务器上的作者稿在你看差异之后又更新了（别处存下了新的一版），这次没有覆盖、也没有归档；请关掉这个对话框，重新点「采纳并归档」看最新的差异再决定。"
+    : "服务器上的作者稿刚又更新了一版，这次没有覆盖、也没有归档；请重新点「采纳并归档」，看过最新的差异再决定。";
 }
 async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   if (!sid) return { ok: false, reason: "没有场景卡" };
@@ -355,18 +380,14 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
     const count = (gate.blocking || []).length;
     return { ok: false, reason: `${count ? `有 ${count} 条` : "有"}已证实的硬问题，暂不能归档——正文已保留，处理或重跑后再采纳` };
   }
-  const preview = await scnPrepareAdoption(sid, draft);
-  const html = preview.html;
-  const text = (draft || []).map(scnParaText).join("");
   // API 层也采用安全默认：任何未声明模式的调用，只要检测到作者正文，都先保存为候选。
   // 显式 overwrite 才可能进入覆盖路径，避免未来新增入口绕过页面对话框后又退回直接覆盖。
   const requestedMode = options.mode;
   if (requestedMode && !["candidate", "overwrite"].includes(requestedMode)) {
     return { ok: false, reason: "未知的采用模式，已停止以保护作者稿" };
   }
-  const mode = requestedMode || (preview.hasReal ? "candidate" : "overwrite");
-  if (mode === "candidate") {
-    const candidate = WrRecovery.createCandidate(sid, html, "AI 起草台候选；未覆盖作者当前正文，也未归档");
+  const saveCandidate = (candidateHTML) => {
+    const candidate = WrRecovery.createCandidate(sid, candidateHTML, "AI 起草台候选；未覆盖作者当前正文，也未归档");
     return {
       ok: true,
       archived: false,
@@ -374,7 +395,14 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       candidate,
       warning: candidate.durable === false ? "浏览器空间不足，候选仅保留在本次会话，请立即导出" : null,
     };
-  }
+  };
+  // 显式「存为候选」不碰作者稿，也就不必先核对服务器上的作者稿：服务器读不到时照样能把 AI 稿存下来
+  if (requestedMode === "candidate") return saveCandidate(scnDraftHTML(draft));
+  const preview = await scnAdoptionPreflight(sid, draft);
+  const html = preview.html;
+  const text = (draft || []).map(scnParaText).join("");
+  const mode = requestedMode || (preview.hasReal ? "candidate" : "overwrite");
+  if (mode === "candidate") return saveCandidate(html);
   if (preview.hasReal && mode === "overwrite" && options.confirmed !== true) {
     return {
       ok: false,
@@ -382,21 +410,43 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       confirmationRequired: true,
     };
   }
+  // 作者确认覆盖的是他看过差异的那一稿：这次预检读到的已经不是它（对话框开着时别处又存了一版），就不覆盖——不备份、不发请求，
+  // 交回眼下这份差异，让作者重新看过再定（复核五 W1-R5A-1：过去确认一份 X 的差异，换掉的却是作者没看过的 Y）
+  // 读到的作者稿就是这份 AI 稿（上一次采纳其实落了地、这次预检才读到）：换掉它什么都不会少，不必重看
+  const seen = options.confirmed === true ? confirmedExisting(sid, options) : undefined;
+  if (seen !== undefined && !sameManuscriptText(preview.hasReal ? preview.existing : "", seen)
+      && !sameManuscriptText(preview.existing, html)) {
+    return { ok: false, reason: movedReason(options), confirmationRequired: true, moved: true, preview };
+  }
+  // 目录里的后端 id 先取好：从下面核对作者稿、备份到发出采纳请求，中间不再等任何东西（作者稿不会在这中间又换一版）
+  let sceneId = null;
+  try { sceneId = await scnSceneIdOf(sid); } catch (e) {}
+  if (!sceneId) return { ok: false, reason: "这一场还没同步到后端目录——稍候片刻或刷新后重试" };
+  const docState = WrDocs.state(sid);
+  if (!docState || !docState.draftId || !Number.isInteger(docState.revision) || docState.revision < 1) {
+    return { ok: false, reason: "无法取得服务器作者稿修订，已停止归档以避免正文错位" };
+  }
+  // 预检之后作者稿又换了一版（后台读取在这之间落地）：要换掉的已不是预检读到、作者看过的那一稿——同样不覆盖
+  if (!sameManuscriptText(WrDocs.cachedHTML(sid) || "", preview.existing)) {
+    return { ok: false, reason: movedReason(options), confirmationRequired: true, moved: true, preview: scnAdoptionPreview(sid, draft) };
+  }
   let authorBackup = null;
   if (preview.hasReal) {
     try {
       const currentWorkId = WsWorks.activeId();
-      authorBackup = options.authorBackupId
-        ? WrRecovery.list().find(item => (
-            item.id === options.authorBackupId
-            && item.type === "backup"
-            && item.source === "author"
-            && item.sid === sid
-            && item.workId === currentWorkId
-            && item.html === preview.existing
-            && item.durable !== false
-          )) || null
-        : null;
+      const sameBackup = item => (
+        item.type === "backup"
+        && item.source === "author"
+        && item.sid === sid
+        && item.workId === currentWorkId
+        && item.html === preview.existing
+        && item.durable !== false
+      );
+      const backups = WrRecovery.list();
+      // 给了 id 就用那一份；没给时一模一样的作者稿已经持久地备份过（上一次采纳没成）就沿用它，不每试一次多一份
+      authorBackup = (options.authorBackupId
+        ? backups.find(item => item.id === options.authorBackupId && sameBackup(item))
+        : backups.find(sameBackup)) || null;
       if (!authorBackup) {
         authorBackup = WrRecovery.createBackup(sid, preview.existing, "AI 稿确认覆盖前自动备份作者正文");
       }
@@ -406,13 +456,11 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   }
   // 1) 后端归档单入口：确切 HTML + 作者稿 revision + 当前 FinalScene 指针在一个事务中完成保存与提升，
   //    不再让服务端自行猜测浏览器选中了哪份稿。
-  let sceneId = null;
-  try { sceneId = await scnSceneIdOf(sid); } catch (e) {}
-  if (!sceneId) return { ok: false, reason: "这一场还没同步到后端目录——稍候片刻或刷新后重试" };
-  const docState = WrDocs.state(sid);
-  if (!docState || !docState.draftId || !Number.isInteger(docState.revision) || docState.revision < 1) {
-    return { ok: false, reason: "无法取得服务器作者稿修订，已停止归档以避免正文错位" };
-  }
+  // 采纳在路上：WrDocs 不再发写作台的保存，路上那一次这期间撞上的 409（多半就是采纳撞的）先按住，
+  // 采纳成了随 acceptCanonical 作废，没成（endAdoption）再照常核对 / 冲突——不为作者自己的采纳提示「在别处被修改」。
+  // 记号带着这一场：作者在采纳途中换了作品，收尾照样落在原来那一场上（复核四 W1-R4A-1）
+  // 记号也带着采纳的那一稿：采纳的回包回来之前，写作台的后台复核若先读到了它，说的是这次采纳，不是「在别处有更新」（复核七 W1-R7B-6）
+  const adopting = WrDocs.beginAdoption(sid, { html });
   let adoption = null;
   try {
     adoption = await apiPost(`/api/v1/scenes/${sceneId}/adopt-current`, {
@@ -425,26 +473,63 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       },
     });
   } catch (e) {
-    // 抄袭门拦下（与参考书原文连续相同 / 用了它的专名）：说成作者读得懂的话，只给处数，不给参考原文
-    if (isCopyGateError(e)) return { ok: false, reason: copyGateAdoptMessage(e), error: e, authorBackup, copyBlocked: true };
-    const code = (e && e.code) || "";
-    const msg = (e && e.message) || String(e || "");
-    return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
+    // 回包丢了（断网、超时、服务端出错）：采纳也许已经存下并提升了——读一次服务端，存下的正是这一稿就照成了收尾
+    // （复核四 W1-R4A-4 · W1-R4B-5：过去这时报「后端归档未通过」，写作台接着写的第一句还提示「在别处被修改过」）
+    let landed = null;
+    try { landed = await WrDocs.adoptionLanded(sid, adopting, html, e); } catch (readError) { landed = null; }
+    if (!landed) {
+      WrDocs.endAdoption(sid, adopting);
+      // 回包丢了、之后那一次读取也没读到服务端：采纳可能成了，也可能没成——照实说没能确认，不说「归档未通过」。写作台那边
+      // 之后按修订号撞上的 409 会先核对是不是这次采纳（复核五 W1-R5B-4）
+      if (adopting && adopting.unknown) {
+        return {
+          ok: false,
+          unknown: true,
+          reason: "网络中断，没能确认这次采纳是否已经归档（覆盖前的作者稿已备份到「同步与恢复」）。连上服务器后再点一次「采纳并归档」：已经归档的会直接认下，没有的照常归档。",
+          error: e,
+          authorBackup,
+        };
+      }
+      // 抄袭门拦下（与参考书原文连续相同 / 用了它的专名）：说成作者读得懂的话，只给处数，不给参考原文
+      if (isCopyGateError(e)) return { ok: false, reason: copyGateAdoptMessage(e), error: e, authorBackup, copyBlocked: true };
+      const code = (e && e.code) || "";
+      // 作者稿在这之间被存过（按修订号拒绝）：说清楚、作者稿没动；再试一次时预检会先读到服务端眼下的那一版（复核四 W1-R4B-4）。
+      // 这期间存上的全是写作台这一页自己的保存（路上那一次先到了）：照实说是它，不说「在别处」（复核五 W1-R5B-5）；
+      // 写作台那一次的回包丢了、还没能确认它存上了没有：照实说没能确认，同样不说「在别处」（复核六 W1-R6A-2）
+      if (code === "AUTHOR_DRAFT_CONFLICT") {
+        let cause = "other";
+        try { cause = await WrDocs.adoptionRefusalCause(sid, adopting, e); } catch (checkError) { cause = "other"; }
+        const reason = cause === "own"
+          ? "你在写作台刚写的一稿先存到了服务器，这次没有覆盖，作者稿也没有被改动；再点一次即可采纳"
+          : cause === "unsure"
+            ? "你在写作台刚写的一稿可能先存到了服务器，但它的保存回包丢了、还没能确认；这次没有覆盖，作者稿也没有被改动。等写作台显示草稿已保存后再点一次"
+            : "服务器上的作者稿刚在别处更新过，这次没有覆盖，作者稿也没有被改动；再试一次会先读到最新的一版";
+        return {
+          ok: false, reason, error: e, authorBackup,
+          ...(cause === "own" ? { overtakenBySelf: true } : {}),
+          ...(cause === "unsure" ? { overtakenUnconfirmed: true } : {}),
+        };
+      }
+      const msg = (e && e.message) || String(e || "");
+      return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
+    }
+    adoption = landed;
   }
-  // 2) 服务端已经保存并归档同一修订；这里只吸收回包，不再 PATCH 新修订。
-  // 成稿门的不拦警告（用了参考书的专名 / 原文重合检查这次没做成）：归档照常，告诉作者一声
-  const gateNotes = finalGateNotes(adoption);
+  // 2) 服务端已经保存并归档同一修订；这里只吸收回包，不再 PATCH 新修订。作者看过的那份差异用掉了
+  shownPreviews.delete(previewKeyOf(sid));
   let cacheWarning = null;
   try {
-    const synced = WrDocs.acceptCanonical(sid, html, adoption);
+    const synced = WrDocs.acceptCanonical(sid, html, adoption, { token: adopting });
     if (synced && synced.localDurable === false) cacheWarning = "正文已安全归档到服务器，但浏览器缓存写入失败；刷新后可从服务器恢复";
   } catch (e) {
     cacheWarning = "正文已安全归档到服务器，但本地状态同步失败；请刷新页面从服务器恢复";
+  } finally {
+    WrDocs.endAdoption(sid, adopting); // acceptCanonical 已收尾时什么也不做；它抛错时按住的 409 照常走（读到的是采纳后的版本）
   }
-  const hit = WsCatalog.sceneById(sid);
-  const prev = hit && typeof hit.scene.words === "number" ? hit.scene.words : 0;
+  // 成稿门的不拦警告（用了参考书的专名 / 原文重合检查这次没做成）：归档照常，告诉作者一声
+  const gateNotes = finalGateNotes(adoption);
   const count = countChars(text);
-  try { WsCatalog.recordSceneWords(sid, count, prev); } catch (e) {}
+  try { WsCatalog.recordSceneWords(sid, count); } catch (e) {}
   try {
     WsCatalog.set(WsCatalog.get().map(c => ({
       ...c, scenes: (c.scenes || []).map(s => s.sid === sid ? { ...s, state: "done" } : s),
@@ -468,7 +553,7 @@ function scnFetchStyleWindowText(bookId, w) {
 }
 
 export {
-  scnRun, scnHydrateFromBackend, scnBackendRunSids, scnBackendQueueSids, scnTopupBudget,
+  scnRun, scnHydrateFromBackend, scnBackendRunSids, scnTopupBudget,
   scnCandidates, scnSelectCandidate, scnResumeAfterSelection, scnHydrateAfterSelection,
   scnAdoptionPreview, scnPrepareAdoption, scnAdoptToDoc, scnFetchStyleWindowText,
 };

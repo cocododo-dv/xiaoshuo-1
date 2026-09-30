@@ -11,11 +11,10 @@ import { DEFAULT_CHAP, installApiRouter } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
-  cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn(),
 }));
-vi.mock("./ws-snow.jsx", () => ({ S2_BE_STEPS: [] }));
+// 任务控制条的两个请求（ws-scene-job-api.js）
+vi.mock("./ws-scene-job-api.js", () => ({ cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn() }));
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const T = { timeout: 5000, interval: 25 };
 const mounted = [];
 const QUEUE_KEY = "scn-queue:v1::prj-main";
@@ -35,15 +34,18 @@ const BOOK = [
 const RUN_STATES_URL = /^\/api\/v1\/scene-run-states\?/;
 
 async function loadScene(opts = {}) {
-  const client = await import("./lib/client.js");
-  installApiRouter(client, { catalog: BOOK, ...opts });
-  client.getLatestSceneRunJob.mockRejectedValue(Object.assign(new Error("no job"), { status: 404 }));
-  const base = client.apiGet.getMockImplementation();
-  client.apiGet.mockImplementation((url) => (
+  const clientModule = await import("./lib/client.js");
+  installApiRouter(clientModule, { catalog: BOOK, ...opts });
+  const base = clientModule.apiGet.getMockImplementation();
+  clientModule.apiGet.mockImplementation((url) => (
     RUN_STATES_URL.test(url)
       ? Promise.resolve({ items: (opts.runStateSceneIds || []).map((id) => ({ scene_id: id })) })
       : base(url)
   ));
+  // 任务控制条的两个请求（mock）并进 client，测试照旧写 client.getLatestSceneRunJob
+  const { cancelRunJob, getLatestSceneRunJob } = await import("./ws-scene-job-api.js");
+  const client = { ...clientModule, cancelRunJob, getLatestSceneRunJob };
+  client.getLatestSceneRunJob.mockRejectedValue(Object.assign(new Error("no job"), { status: 404 }));
   await import("./ws-catalog.jsx");
   await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
   await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);

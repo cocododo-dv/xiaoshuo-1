@@ -1,5 +1,7 @@
 import React from "react";
+import { useWindowEvents } from "./lib/events.js";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { sceneApiId } from "./ws-scene-id.js";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
 import { sceneLabel } from "./labels/catalog.js";
 import {
@@ -8,7 +10,7 @@ import {
 import {
   scnBackendRunSids, scnHydrateAfterSelection, scnHydrateFromBackend, scnResumeAfterSelection, scnRun, scnTopupBudget,
 } from "./ws-scene-api.js";
-import { RUN_JOB_TERMINAL_STATUSES, SCN_RUN_UI_ABORTED, scnRunUiAbortError, scnTerminalJobMessage } from "./ws-scene-derive.js";
+import { AUTHOR_NOTE_LIMIT, RUN_JOB_TERMINAL_STATUSES, SCN_RUN_UI_ABORTED, scnRunUiAbortError, scnTerminalJobMessage } from "./ws-scene-derive.js";
 import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 const { useEffect, useRef, useState } = React;
@@ -23,6 +25,23 @@ const JOB_HANDOFF_GRACE_MS = 6000;
    · useSceneRuns：选中那一场的后端任务——解析后端 scene id、跟任务控制条要终态、起草 / 退回重写、
      追加预算、终选续跑，以及终态任务留下的本地 running 收敛
    ========================================================== */
+
+/* 从后端取回几场的运行记录：选中的那一场排最前，同时最多 HYDRATE_CONCURRENCY 个 workbench 请求
+   （过去一场一场串行取，在办清单长的时候，选中的那一场要等前面每一场的整份 workbench）。
+   worker(sid) 自己决定取回之后写不写（已有本地记录 / 期间跑起来的不覆盖）；alive() 为假时停。 */
+const HYDRATE_CONCURRENCY = 2;
+async function hydrateScenes(sids, worker, { first = null, alive = () => true } = {}) {
+  const order = first && sids.includes(first) ? [first, ...sids.filter(sid => sid !== first)] : sids.slice();
+  let next = 0;
+  const lane = async () => {
+    while (alive() && next < order.length) {
+      const sid = order[next];
+      next += 1;
+      try { await worker(sid); } catch (e) { /* 取不回的场留在本机状态，不打断别的场 */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(HYDRATE_CONCURRENCY, order.length) }, lane));
+}
 
 /* 目录场景卡 → 起草台的一条工作项。
    阶段 X：左栏不再是一份手工挑出来的队列，而是全书的书脊（章 → 场，与写作台大纲同一份目录）。
@@ -85,9 +104,14 @@ function useSceneQueue({ showNotice }) {
     return () => { mountedRef.current = false; };
   }, []);
 
+  /* 取回的记录只在这一场还没有记录时才用：期间已有记录（本机的、或刚跑出来 / 收敛好的）就连缓存也不动——
+     过去内存留着新记录、本机缓存却被这份慢到的旧记录盖掉，刷新之后看到的就是旧的（作者指令、尝试历史都没了）。 */
   const saveRun = (id, sid, record) => {
-    setRuns(m => (m[id] ? m : { ...m, [id]: record }));
-    scnRunSave(sid, record);
+    setRuns(m => {
+      if (m[id]) return m;
+      scnRunSave(sid, record);
+      return { ...m, [id]: record };
+    });
   };
 
   /* 把一场放上台面。pin=true：交给 AI（入列，落盘）；pin=false：只是在书脊上点开看看（transient）。
@@ -179,15 +203,13 @@ function useSceneQueue({ showNotice }) {
      换浏览器 / 后台完成的运行不再「消失」；已有本地记录或期间跑起来的不覆盖 */
   useEffect(() => {
     let alive = true;
-    (async () => {
-      for (const it of initRef.current.items) {
-        if (initRef.current.runs0[it.id]) continue;
-        let r = null;
-        try { r = await scnHydrateFromBackend(it.sid); } catch (e) {}
-        if (!alive) return;
-        if (r) saveRun(it.id, it.sid, r);
-      }
-    })();
+    const pending = initRef.current.items.filter(it => !initRef.current.runs0[it.id]);
+    const picked = initRef.current.items.find(it => it.id === pickedIdRef.current);
+    void hydrateScenes(pending.map(it => it.sid), async (sid) => {
+      let r = null;
+      try { r = await scnHydrateFromBackend(sid); } catch (e) {}
+      if (alive && r) saveRun("cq-" + sid, sid, r);
+    }, { first: picked ? picked.sid : null, alive: () => alive });
     return () => { alive = false; };
   }, []);
 
@@ -222,32 +244,35 @@ function useSceneQueue({ showNotice }) {
       if (restored.length) setPicked(current => current || restored[0].id);
       /* 新并入的场恢复运行态；已在初始队列里的由上面的水合 effect 负责 */
       const fresh = sids.filter(sid => !initRef.current.items.some(i => i.sid === sid));
+      const remote = [];
       for (const sid of fresh) {
         const id = "cq-" + sid;
         const local = scnRunLoad(sid);
-        if (local) { setRuns(m => (m[id] ? m : { ...m, [id]: local })); continue; }
+        if (local) setRuns(m => (m[id] ? m : { ...m, [id]: local }));
+        else remote.push(sid);
+      }
+      const picked = restored.find(item => item.id === pickedIdRef.current);
+      await hydrateScenes(remote, async (sid) => {
         let hr = null;
         try { hr = await scnHydrateFromBackend(sid); } catch (e) {}
-        if (!alive) return;
-        if (hr) saveRun(id, sid, hr);
-      }
+        if (alive && hr) saveRun("cq-" + sid, sid, hr);
+      }, { first: picked ? picked.sid : null, alive: () => alive });
     })();
     return () => { alive = false; };
   }, []);
 
   /* 其它视图（章节编排「交给 AI」、写作台）经跨页指令送来的入列请求 */
-  useEffect(() => {
-    const onEnq = (e) => {
+  /* 先挂监听、再报「起草台已就绪」：排队的跨页意图在报就绪时立即派发（两个 effect 按声明顺序执行） */
+  useWindowEvents({
+    "ws:scene-enqueue": (e) => {
       const detail = e.detail || {};
       if (Array.isArray(detail.sids)) detail.sids.slice().reverse().forEach(enqueueSid);
       if (detail.sid) enqueueSid(detail.sid);
-    };
-    window.addEventListener("ws:scene-enqueue", onEnq);
+    },
+  });
+  useEffect(() => {
     setViewIntentTargetReady("scene");
-    return () => {
-      setViewIntentTargetReady("scene", false);
-      window.removeEventListener("ws:scene-enqueue", onEnq);
-    };
+    return () => setViewIntentTargetReady("scene", false);
   }, []);
 
   const pinned = items.filter(q => !q.transient);
@@ -303,7 +328,7 @@ function useSceneRuns({ items, runs, setRuns, pickedId, pinItem }) {
     setAuthoritativeRunJob(null);
     const sid = selected && selected.sid;
     if (!sid) return () => { alive = false; };
-    Promise.resolve(WsCatalog.__backendSceneId(sid))
+    sceneApiId(sid)
       .then(sceneId => { if (alive) setActiveBackendScene(sceneId ? { sid, sceneId } : null); })
       .catch(() => { if (alive) setActiveBackendScene(null); });
     return () => { alive = false; };
@@ -424,8 +449,8 @@ function useSceneRuns({ items, runs, setRuns, pickedId, pinItem }) {
     runAbortControllers.current[id] = controller;
     const token = (runSeq.current[id] || 0) + 1; runSeq.current[id] = token;
     const normalizedNote = note == null ? "" : String(note).trim();
-    if (Array.from(normalizedNote).length > 2000) {
-      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), error: "作者改写指令不能超过 2000 个字符，请精简后重试；内容没有被静默截断。" } }));
+    if (Array.from(normalizedNote).length > AUTHOR_NOTE_LIMIT) {
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), error: `作者改写指令不能超过 ${AUTHOR_NOTE_LIMIT} 个字符，请精简后重试；内容没有被静默截断。` } }));
       delete runAbortControllers.current[id];
       return;
     }

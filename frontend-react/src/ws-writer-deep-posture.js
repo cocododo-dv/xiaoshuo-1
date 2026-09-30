@@ -1,5 +1,5 @@
 import React from "react";
-import { WsCatalog } from "./ws-catalog.jsx";
+import { requireSceneApiId } from "./ws-scene-id.js";
 import {
   wrDeepMark, wrDeepUnmark, wrDxAddSkip, wrDxApplyPreferences, wrDxFetch, wrDxLoadPreferences,
   wrDxMergePreferences, wrDxPushLog, wrDxRemoveSkip, wrDxReviewPassage, wrDxRunAi, wrDxSavePreferences, wrDxSkips,
@@ -28,15 +28,6 @@ import { useWrEvent } from "./ws-writer-hooks.js";
    ========================================================== */
 
 const { useEffect, useMemo, useRef, useState } = React;
-
-async function resolveBackendId(sid) {
-  try {
-    const resolved = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
-    return resolved || sid;
-  } catch (e) {
-    return sid;
-  }
-}
 
 function shortIssue(finding) {
   const label = finding.label || finding.dimension || "";
@@ -140,7 +131,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
       .catch(() => undefined)
       .then(async () => {
         /* 服务端按后端场景 id 存；本机键仍按写作台的 sid（两者在乐观创建的场上会不同） */
-        const backendId = await resolveBackendId(sceneId);
+        const backendId = await requireSceneApiId(sceneId);
         let snapshot = queuedSnapshot;
         let result;
         try {
@@ -213,8 +204,8 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
-    const backendId = await resolveBackendId(sceneId);
     try {
+      const backendId = await requireSceneApiId(sceneId);
       const payload = await wrDxFetch(backendId);
       if (seq !== loadSeq.current || sceneRef.current !== sceneId) return;
       applyPayload(sceneId, payload);
@@ -313,8 +304,8 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     const sceneId = activeScene;
     setAiBusy(true);
     setAiError(null);
-    const backendId = await resolveBackendId(sceneId);
     try {
+      const backendId = await requireSceneApiId(sceneId);
       const payload = await wrDxRunAi(backendId);
       if (sceneRef.current !== sceneId) return;
       const score = payload && payload.ai && payload.ai.overall_score != null ? Math.round(payload.ai.overall_score * 100) : null;
@@ -348,8 +339,8 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     if (question) body.question = String(question).slice(0, 2000);
     setPassageBusy(key);
     setPassageError(null);
-    const backendId = await resolveBackendId(sceneId);
     try {
+      const backendId = await requireSceneApiId(sceneId);
       const payload = await wrDxReviewPassage(backendId, body);
       if (sceneRef.current !== sceneId) return;
       const review = (payload && payload.passage_review) || null;

@@ -115,6 +115,49 @@ describe("同步与恢复中心", () => {
     expect(host.querySelector(".wrr-trigger").getAttribute("aria-label")).toBe("打开同步与恢复中心");
   });
 
+  /* 复核 W1-A1：恢复稿交给 WrDocs 之后（编辑器与本机缓存已经换成它）PATCH 断网失败，过去这里说「操作未完成」，
+     可那一稿已经在本机、下一次保存就会同步上去——说的和发生的不一样 */
+  it("重试同步时断网：恢复稿已在编辑器和本机缓存里，中心照实说「还没同步」（不说「操作未完成」），记录留着", async () => {
+    const { WrRecovery, WrRecoveryCenter, WrDocs, client } = await loadRecovery();
+    const entry = WrRecovery.create({ sid: "ch01s1", html: "<p>断网留下的正文。</p>", type: "unsynced", reason: "网络中断" });
+    client.apiPatch.mockImplementation(() => Promise.reject(Object.assign(new Error("offline"), { code: "NETWORK_ERROR", retryable: true })));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const host = await renderCenter(WrRecoveryCenter);
+    await click(host.querySelector(".wrr-trigger"));
+    await click([...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent.includes("重试同步")));
+
+    const live = () => document.querySelector('[role="dialog"] .wrr-live').textContent;
+    await vi.waitFor(() => expect(live()).toContain("还没同步到服务端"), T);
+    expect(live()).toContain("已恢复到编辑器");
+    expect(live()).not.toContain("操作未完成");
+    expect(WrRecovery.list().some(item => item.id === entry.id)).toBe(true);
+    expect(WrDocs.cachedHTML("ch01s1")).toBe("<p>断网留下的正文。</p>");
+  });
+
+  /* 复核 W1-R1B-2：恢复稿还没发出去就被随后的一稿取代（排队只留最新一稿），存上的不是它——过去照样说「已同步、移出列表」 */
+  it("重试同步时恢复稿被随后改过的一稿取代：记录留着，中心不说「移出恢复列表」", async () => {
+    const { WrRecovery, WrRecoveryCenter, WrDocs, client } = await loadRecovery();
+    const entry = WrRecovery.create({ sid: "ch01s1", html: "<p>断网留下的正文。</p>", type: "unsynced", reason: "网络中断" });
+    let release;
+    const hung = new Promise((resolve) => { release = resolve; });
+    client.apiPatch
+      .mockImplementationOnce(() => hung.then(() => ({ draft: { draft_id: "d1", revision_no: 2, content: "<p>起点正文</p>" } })))
+      .mockImplementation((url, body) => Promise.resolve({ draft: { draft_id: "d1", revision_no: 3, content: body.content } }));
+    void WrDocs.save("ch01s1", "<p>起点正文</p>").catch(() => {});        // 路上还有一次保存
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledTimes(1), T);
+    const host = await renderCenter(WrRecoveryCenter);
+    await click(host.querySelector(".wrr-trigger"));
+    await click([...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent.includes("重试同步")));
+    await vi.waitFor(() => expect(WrDocs.cachedHTML("ch01s1")).toBe("<p>断网留下的正文。</p>"), T);
+    void WrDocs.save("ch01s1", "<p>断网留下的正文。又改了一句。</p>").catch(() => {});   // 恢复稿发出去之前就被取代
+    await act(async () => { release(); });
+
+    const live = () => document.querySelector('[role="dialog"] .wrr-live').textContent;
+    await vi.waitFor(() => expect(live()).toContain("这份记录先留着"), T);
+    expect(live()).not.toContain("移出恢复列表");
+    expect(WrRecovery.list().some(item => item.id === entry.id)).toBe(true);
+  });
+
   it("ws:recovery-open 从任何页面直接打开并选中那份记录", async () => {
     const { WrRecovery, WrRecoveryCenter } = await loadRecovery();
     WrRecovery.create({ sid: "ch01s1", html: "<p>较早的一份。</p>", type: "unsynced", reason: "网络中断", label: "较早记录" });

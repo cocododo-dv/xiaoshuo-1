@@ -1,4 +1,5 @@
 import React from "react";
+import { emit, useWindowEvents } from "./lib/events.js";
 import { I } from "./icons.jsx";
 import { CloseButton, EmptyState, Tabs } from "./ws-ui.jsx";
 import { SceneDesignCard, planIntentsForScene } from "./ws-scene-design.jsx";
@@ -16,13 +17,13 @@ import { WrCtxNotes } from "./ws-writer-notes.jsx";
    不再靠每秒一次的整树重渲染「顺便」读 DOM。ESM 模块，不写 window。
    ========================================================== */
 
-const { memo, useEffect, useRef, useState } = React;
+const { memo, useRef, useState } = React;
 
 /* 批注清单：存在本机浏览器；正文里标得出来的点一下定位，找不到原文的可以删 */
 function WrAnnoList({ editorRef, annoKey, sceneId }) {
   const list = wrAnnoLoad(annoKey);
   const anchored = wrAnnoAnchoredIds(editorRef && editorRef.current);
-  const announce = () => window.dispatchEvent(new CustomEvent("ws:anno-change", { detail: { sid: sceneId } }));
+  const announce = () => emit("ws:anno-change", { sid: sceneId });
   const jump = (id) => {
     const editor = editorRef.current;
     const mark = wrAnnoFirstMark(editor, id);
@@ -108,11 +109,7 @@ function WrContextImpl({
 }) {
   // 批注增删、换场重新标注后都会广播 ws:anno-change：这一栏据此重读批注数与清单
   const [, setAnnoTick] = useState(0);
-  useEffect(() => {
-    const bump = () => setAnnoTick((n) => n + 1);
-    window.addEventListener("ws:anno-change", bump);
-    return () => window.removeEventListener("ws:anno-change", bump);
-  }, []);
+  useWindowEvents({ "ws:anno-change": () => setAnnoTick((n) => n + 1) });
   const annoCount = wrAnnoLoad(annoKey).length;
   /* AI 页签只在「AI 放在抽屉里」时出现；放在托盘时，续写只有托盘这一个入口 */
   const aiInDrawer = place === "drawer";
