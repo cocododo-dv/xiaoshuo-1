@@ -26,6 +26,7 @@ from novel_system.db.models import (
     AttemptTracker,
     AuthorDraft,
     ChapterGoal,
+    ChapterRunJob,
     FinalScene,
     HumanReviewEvent,
     LlmCall,
@@ -71,6 +72,7 @@ from novel_system.services.scene_run_jobs import (
     SceneRunJobService,
     start_scene_run_job_worker,
 )
+from novel_system.services.run_job_leases import STATUS_QUEUED
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.text_input import clean_backfill_markers, validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
@@ -403,10 +405,8 @@ def create_scene_run_job(
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     _reject_manual_checkpoint_controls(body)
-    job_to_start: str | None = None
 
     def create_job() -> dict:
-        nonlocal job_to_start
         service = SceneRunJobService(session)
         budget_resume_parent_execution_id = (
             service.resolve_budget_resume_execution_id(scene_id)
@@ -420,20 +420,27 @@ def create_scene_run_job(
             run_policy=_parse_run_policy(body),
             budget_resume_parent_execution_id=budget_resume_parent_execution_id,
         )
-        if start and job.status == "queued":
-            job_to_start = job.job_id
         return service.serialize_job(job)
 
-    response = mutate(
+    def dispatch_if_queued(result: dict) -> None:
+        # 提交之后派发（B12-07）；同一个幂等键重放时也走这里：任务还在排队（提交与派发之间进程退出、--reload）
+        # 就由这次重试接上，已经在跑 / 已结束的不动。工人的认领是条件写，重复派发无害。
+        job_id = str((result or {}).get("job_id") or "")
+        if start and job_id and _run_job_status(session, job_id) == STATUS_QUEUED:
+            start_scene_run_job_worker(job_id)
+
+    return mutate(
         request,
         session,
         payload={"scene_id": scene_id, "start": start, "body": body},
         action=create_job,
+        after_commit=dispatch_if_queued,
     )
-    # 闭包只在本请求真正执行动作时填充;持久重放直接返回缓存响应,不再拉起 worker。
-    if job_to_start is not None:
-        start_scene_run_job_worker(job_to_start)
-    return response
+
+
+def _run_job_status(session: Session, job_id: str) -> str | None:
+    """任务当前在库里的状态（列查询，不读会话里可能过期的对象）。"""
+    return session.scalar(select(ChapterRunJob.status).where(ChapterRunJob.job_id == job_id))
 
 
 @router.get("/api/v1/run-jobs/{job_id}")

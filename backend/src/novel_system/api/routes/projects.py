@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session
@@ -16,7 +17,9 @@ from novel_system.api.requests.projects import (
 )
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.response import respond
+from novel_system.db.models import ChapterRunJob
 from novel_system.services.projects import ProjectChapterFlowService, ProjectService, start_project_chapter_run_job_worker
+from novel_system.services.run_job_leases import STATUS_PENDING
 
 router = APIRouter(tags=["projects"])
 
@@ -85,26 +88,27 @@ def run_project_chapter_job(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload is not None else {}
-    job_to_start: str | None = None
 
     def prepare() -> dict[str, Any]:
-        nonlocal job_to_start
         result = ProjectChapterFlowService(session).prepare_chapter_run_job(project_id, chapter_id)
-        if bool(result.pop("_start_worker", False)):
-            job_to_start = result["run"]["job_id"]
+        # 要不要拉起工人以库里任务的状态为准（见 dispatch_if_pending）：服务给的旗子只在还是 pending 时为真
+        result.pop("_start_worker", None)
         return result
 
-    response = mutate(
+    def dispatch_if_pending(result: dict[str, Any]) -> None:
+        # 提交之后派发（B12-07）；同一个幂等键重放时也走这里：任务还在等（提交与派发之间进程退出）就由这次重试
+        # 接上，已经在跑 / 已结束的不动（工人拉起之前会先把作品标成运行中，所以不能给不在等的任务派发）。
+        job_id = str(((result or {}).get("run") or {}).get("job_id") or "")
+        if job_id and session.scalar(select(ChapterRunJob.status).where(ChapterRunJob.job_id == job_id)) == STATUS_PENDING:
+            start_project_chapter_run_job_worker(project_id, chapter_id, job_id)
+
+    return mutate(
         request,
         session,
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=prepare,
+        after_commit=dispatch_if_pending,
     )
-    # The closure is populated only when this request executed the action. A
-    # durable replay returns the cached response without launching another worker.
-    if job_to_start is not None:
-        start_project_chapter_run_job_worker(project_id, chapter_id, job_to_start)
-    return response
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final")
