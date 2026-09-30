@@ -830,6 +830,18 @@ describe("成稿中心 · 像不像", () => {
     expect(row.children.length).toBe(5);
   });
 
+  it("角标悬停里的「前 N 位」按作品汇总里记下的范围说：scene_finals 没带时用走势里同一条读数记下的", async () => {
+    fidFx.project = {
+      bound: true,
+      scene_finals: { s1: { reading_id: "r1", percentile: 41.6, within_range: true, reliable: true, created_at: "2026-09-23T10:00:00" } },
+      trend: [{ reading_id: "r1", scene_id: "s1", stage: "final", percentile: 41.6, within_range: true, reliable: true, max_percentile: 85, created_at: "2026-09-23T10:00:00" }],
+    };
+    const host = await renderPage("review");
+    const title = host.querySelector('.ms-scene-head [data-testid="ms-scene-fidelity"]').getAttribute("title");
+    expect(title).toContain("前 85 位");
+    expect(title).not.toContain("前 90 位");
+  });
+
   it("超出范围 / 量不准各有说法；作品没用参考书的文风时什么也不挂", async () => {
     fidFx.project = { bound: true, scene_finals: { s1: { percentile: 96, within_range: false, reliable: true } } };
     let host = await renderPage("review");

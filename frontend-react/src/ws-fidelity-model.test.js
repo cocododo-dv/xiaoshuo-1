@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fidBadgeView, fidCopyView, fidDimensionGroups, fidErrorInfo, fidExplain, fidFinalsSummary, fidGaps, fidGapsByDimension,
-  fidJobView, fidJudgeView, fidPatchView, fidRank, fidReadingStates, fidReadingView, fidScoreTone,
+  fidJobView, fidJudgeView, fidPatchView, fidRank, fidReadingStates, fidReadingView, fidSceneFinals, fidScoreTone,
   fidStyleStepView, fidTrendPoints, fidUnreliableText, fidVerdict, fidWeakestDims,
 } from "./ws-fidelity-model.js";
 
@@ -133,6 +133,34 @@ describe("成稿中心 / 文风画像 / 走势", () => {
     expect(fidFinalsSummary({ a: { percentile: 30, within_range: true, reliable: true }, b: { percentile: 97, within_range: false, reliable: true }, c: { percentile: 40, within_range: true, reliable: false } }))
       .toEqual({ total: 3, within: 1, text: "3 场终稿里 1 场在作者范围内" });
     expect(fidFinalsSummary({})).toBeNull();
+  });
+
+  it("角标的范围从作品汇总里取：scene_finals 自己带的优先，没带就用走势里同一条读数记下的，读数不在走势里就用走势最近一条的", () => {
+    const summary = {
+      bound: true,
+      scene_finals: {
+        s1: { reading_id: "r1", percentile: 40, within_range: true, reliable: true },
+        s2: { reading_id: "r-old", percentile: 50, within_range: true, reliable: true },
+        s3: { reading_id: "r3", percentile: 60, within_range: true, reliable: true, max_percentile: 70 },
+      },
+      trend: [
+        { reading_id: "r1", stage: "final", percentile: 40, max_percentile: 80 },
+        { reading_id: "r2", stage: "first_draft", percentile: 93, max_percentile: null },
+        { reading_id: "r9", stage: "final", percentile: 30, max_percentile: 85 },
+      ],
+    };
+    const finals = fidSceneFinals(summary);
+    expect(finals.s1.max_percentile).toBe(80);                 // 同一条读数记下的（不是最近一条的 85）
+    expect(finals.s2.max_percentile).toBe(85);                 // 早于走势窗口：走势里最近记下的
+    expect(finals.s3.max_percentile).toBe(70);                 // 自己带的
+    expect(fidBadgeView(finals.s1).title).toContain("前 80 位");
+    expect(fidBadgeView(finals.s2).title).toContain("前 85 位");
+    expect(summary.scene_finals.s1.max_percentile).toBeUndefined();   // 不改原对象
+    // 走势里一条都没记：不补，角标照旧说默认的 90
+    const bare = fidSceneFinals({ scene_finals: { s1: { reading_id: "r1", percentile: 40, within_range: true, reliable: true } }, trend: [] });
+    expect(bare.s1.max_percentile).toBeUndefined();
+    expect(fidBadgeView(bare.s1).title).toContain("前 90 位");
+    expect(fidSceneFinals(null)).toEqual({});
   });
 
   it("近期常见偏差按维归组；走势点按时间顺序、首稿与终稿分开", () => {
