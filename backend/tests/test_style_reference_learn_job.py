@@ -1232,6 +1232,37 @@ def test_a_book_too_small_for_windows_fails_without_resume_and_force_still_creat
     assert forced_job.state == "queued" and forced_job.params_json["force"] is True and forced_job.params_json["skipped_layers"] == []
 
 
+def test_a_non_retryable_failure_offers_no_resume_in_the_activity_and_refuses_resume(session, monkeypatch) -> None:
+    """活动面板与续跑请求用书载荷同一条规则（B10-01）：正文太少这类失败不给「继续学习」，续跑请求 409
+    ``STYLE_REFERENCE_LEARN_NOTHING_TO_RESUME``（``reason: not_retryable``），作业不被放回队列；可续跑的失败照旧。"""
+    from novel_system.services.style_reference.activity import list_activity
+
+    seed_book(session, rows=learn_rows(chapters=1, per_chapter=3))
+    _use(monkeypatch, _fake())
+    job_id = _start("learn_book")
+    run_job_inline(job_id)
+    assert _job(job_id).state == "failed"
+    [entry] = [item for item in list_activity(session) if item["job_id"] == job_id]
+    assert entry["status"] == "failed" and entry["resumable"] is False
+    with SessionLocal() as db:
+        with pytest.raises(DomainError) as excinfo:
+            learn_job.start_learn_job(db, "learn_book", resume=True)
+        db.rollback()
+    assert excinfo.value.code == learn_job.LEARN_NOTHING_TO_RESUME_CODE
+    details = excinfo.value.details
+    assert details["reason"] == "not_retryable" and details["reason_code"] == "input_too_small"
+    assert details["job_id"] == job_id and details["author_action"]["action"] == "learn_style"
+    assert _job(job_id).state == "failed"
+
+    # 可续跑的失败：活动条目给「继续学习」
+    service = StyleJobService(session)
+    soft = service.create(JOB_KIND_LEARN, book_id="learn_book", allow_parallel=True)
+    service.fail(service.claim(soft.job_id), code="STYLE_REFERENCE_LEARN_FAILED", message="x", retryable=True)
+    session.commit()
+    [soft_entry] = [item for item in list_activity(session) if item["job_id"] == soft.job_id]
+    assert soft_entry["resumable"] is True
+
+
 def test_relearning_picks_the_archived_profile_that_still_has_an_active_binding_and_revives_it(session, monkeypatch) -> None:
     """迁移 0092 把旧版画像归档、绑定保留:学习文风就地更新那份画像并复活为 active,绑定不动;没有绑定的归档画像不选。"""
     _fake1, first = _learn(monkeypatch, session)

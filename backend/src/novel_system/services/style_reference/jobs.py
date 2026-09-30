@@ -665,7 +665,7 @@ def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -
         "eta_seconds": round(eta, 1) if eta is not None else None,
         "stalled": stalled,
         "cancellable": job.state in ACTIVE_STATES,
-        "resumable": job.state in (STATE_FAILED, STATE_CANCELLED),
+        "resumable": job_resumable(job),
         "cancel_requested": bool(job.cancel_requested),
         "error": dict(job.error_json) if job.error_json else None,
         "result": dict(job.result_json) if job.result_json else None,
@@ -678,8 +678,10 @@ def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -
 # ---------------------------------------------------------------------- 工人框架
 JobHandler = Callable[[Session, ClaimedJob, StyleJobService], None]
 CancelHook = Callable[[Session, StyleReferenceJob], None]
+ResumableRule = Callable[[StyleReferenceJob], bool]
 _HANDLERS: dict[str, JobHandler] = {}
 _CANCEL_HOOKS: dict[str, CancelHook] = {}
+_RESUMABLE_RULES: dict[str, ResumableRule] = {}
 _EXECUTORS: dict[str, ThreadPoolExecutor] = {}
 _EXECUTOR_LOCK = threading.Lock()
 _DISPATCHED: set[str] = set()
@@ -695,13 +697,31 @@ _LANE_CHECK = "check"
 _LANE_WORKERS = {_LANE_LONG: EXECUTOR_MAX_WORKERS, _LANE_CHECK: CHECK_EXECUTOR_MAX_WORKERS}
 
 
-def register_job_handler(kind: str, handler: JobHandler, *, on_cancelled: CancelHook | None = None) -> None:
-    """登记一类作业的处理器；``on_cancelled(session, job)`` 在请求 / 认领 / 清扫里直接收尾取消时调用（同一事务）。"""
+def register_job_handler(
+    kind: str,
+    handler: JobHandler,
+    *,
+    on_cancelled: CancelHook | None = None,
+    resumable: ResumableRule | None = None,
+) -> None:
+    """登记一类作业的处理器；``on_cancelled(session, job)`` 在请求 / 认领 / 清扫里直接收尾取消时调用（同一事务）；
+    ``resumable(job)`` 是这类作业「能不能继续」的规则（活动条目的 ``resumable``；缺省：失败 / 取消的都能）。"""
     if kind not in JOB_KINDS:
         raise ValueError(f"unknown style job kind: {kind!r}")
     _HANDLERS[kind] = handler
     if on_cancelled is not None:
         _CANCEL_HOOKS[kind] = on_cancelled
+    if resumable is not None:
+        _RESUMABLE_RULES[kind] = resumable
+
+
+def job_resumable(job: StyleReferenceJob) -> bool:
+    """这个作业能不能从游标处继续：按这类作业登记的规则（学习作业看失败的 ``error.retryable``，对照检查从不续跑）；
+    没登记规则的种类按缺省——失败 / 取消的都能。"""
+    rule = _RESUMABLE_RULES.get(str(job.kind))
+    if rule is not None:
+        return bool(rule(job))
+    return job.state in (STATE_FAILED, STATE_CANCELLED)
 
 
 def registered_job_handler(kind: str) -> JobHandler | None:
@@ -978,6 +998,7 @@ __all__ = [
     "heartbeat_is_stale",
     "is_worker_interruption",
     "job_activity_entry",
+    "job_resumable",
     "register_job_handler",
     "register_maintenance_task",
     "registered_job_handler",

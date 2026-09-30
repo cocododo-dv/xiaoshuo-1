@@ -15,6 +15,7 @@ from novel_system.services.style_reference import jobs as jobs_module
 from novel_system.services.style_reference.jobs import (
     JOB_ALREADY_ACTIVE_CODE,
     JOB_CANCELLED_CODE,
+    JOB_KIND_CHECK,
     JOB_KIND_CLASSIFY,
     JOB_KIND_LEARN,
     JobCancelled,
@@ -40,11 +41,14 @@ def _book(session, book_id: str = "sr_book_jobs") -> str:
 def _reset_handlers():
     saved = dict(jobs_module._HANDLERS)
     saved_hooks = dict(jobs_module._CANCEL_HOOKS)
+    saved_rules = dict(jobs_module._RESUMABLE_RULES)
     yield
     jobs_module._HANDLERS.clear()
     jobs_module._HANDLERS.update(saved)
     jobs_module._CANCEL_HOOKS.clear()
     jobs_module._CANCEL_HOOKS.update(saved_hooks)
+    jobs_module._RESUMABLE_RULES.clear()
+    jobs_module._RESUMABLE_RULES.update(saved_rules)
 
 
 def _stale(session, job_id: str, *, seconds: float = 3600) -> None:
@@ -169,6 +173,28 @@ def test_requeue_keeps_the_cursor_and_merges_params(session) -> None:
     requeued = service.requeue(job.job_id, params_update={"resume": True})
     assert requeued.state == STATE_QUEUED and requeued.cursor_json == {"done": [0, 1]}
     assert requeued.params_json == {"mode": "import", "resume": True} and requeued.error_json is None
+
+
+def test_resumable_follows_the_rule_of_each_kind(session) -> None:
+    """活动条目的 ``resumable`` 按这类作业登记的规则（B10-01）：分类按缺省（失败 / 取消的能续），学习看失败的
+    ``error.retryable``，对照检查从不续跑（失败了是「重新检查」，建新作业）。"""
+    from novel_system.services.style_reference import check_job, learn_job  # noqa: F401 — 登记各自的规则
+
+    book_id = _book(session)
+    service = StyleJobService(session)
+
+    def failed(kind: str, *, retryable: bool) -> StyleReferenceJob:
+        job = service.create(kind, book_id=book_id if kind != JOB_KIND_CHECK else None, allow_parallel=True)
+        service.fail(service.claim(job.job_id), code="X", message="boom", retryable=retryable)
+        return service.get(job.job_id, fresh=True)
+
+    assert job_activity_entry(failed(JOB_KIND_CLASSIFY, retryable=False))["resumable"] is True
+    assert job_activity_entry(failed(JOB_KIND_LEARN, retryable=True))["resumable"] is True
+    assert job_activity_entry(failed(JOB_KIND_LEARN, retryable=False))["resumable"] is False
+    assert job_activity_entry(failed(JOB_KIND_CHECK, retryable=True))["resumable"] is False
+    cancelled = service.create(JOB_KIND_CHECK)
+    service.request_cancel(cancelled.job_id)
+    assert job_activity_entry(service.get(cancelled.job_id, fresh=True))["resumable"] is False
 
 
 def test_requeue_refuses_a_live_running_job(session) -> None:

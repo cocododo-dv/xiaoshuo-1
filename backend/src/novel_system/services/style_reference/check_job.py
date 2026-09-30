@@ -685,7 +685,12 @@ def check_job_payload(session: Session, job: StyleReferenceJob) -> dict[str, Any
     return {"job": job_activity_entry(job), "reading": reading}
 
 
-register_job_handler(JOB_KIND_CHECK, run_check_job)
+def _check_never_resumes(_job: StyleReferenceJob) -> bool:
+    """对照检查没有续跑:失败 / 取消了就「重新检查」(新作业),活动条目不给「继续」。"""
+    return False
+
+
+register_job_handler(JOB_KIND_CHECK, run_check_job, resumable=_check_never_resumes)
 
 
 __all__ = [

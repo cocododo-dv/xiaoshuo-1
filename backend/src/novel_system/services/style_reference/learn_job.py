@@ -431,6 +431,23 @@ def start_learn_job(
                 status_code=409,
                 details={"book_id": book_id},
             )
+        if not learn_resumable(latest):
+            # 上一次失败的原因续跑解决不了(正文太少、文风卡被滤空):放回队列只会原样再失败一次
+            failure = dict(latest.error_json or {})
+            failure_details = failure.get("details") if isinstance(failure.get("details"), Mapping) else {}
+            raise DomainError(
+                LEARN_NOTHING_TO_RESUME_CODE,
+                "上一次学习失败的原因续跑解决不了,「继续学习」只会再失败一次;重新「学习文风」"
+                "(正文太少时可以「仍然学习」)。",
+                status_code=409,
+                details={
+                    "book_id": book_id,
+                    "job_id": latest.job_id,
+                    "reason": "not_retryable",
+                    "reason_code": failure_details.get("reason_code"),
+                    "author_action": {"action": "learn_style", "view": "styleref", "label": "重新学习", "book_id": book_id},
+                },
+            )
         job = service.requeue(latest.job_id, params_update={"retag": True} if retag else None)
         # 放回队列这条 UPDATE 已拿到写锁:再查一次分类作业(与建作业同一个「先写后查」,见 jobs 模块文档)
         conflict = service.first_conflict(book_id, kinds=(JOB_KIND_CLASSIFY,), excluding=job.job_id)
@@ -493,6 +510,18 @@ def cancel_learn(session: Session, book_id: str) -> StyleReferenceJob | None:
     return StyleJobService(session).request_cancel(job.job_id)
 
 
+def learn_resumable(job: StyleReferenceJob) -> bool:
+    """能不能「继续学习」:取消 / 心跳过期的能;失败的看 ``error.retryable``——正文太少(input_too_small)、卡片被滤空
+    这类失败续跑只会再失败一次,只能「重新学习」(或带 force「仍然学习」)。书载荷、活动条目与续跑请求共用这一条。"""
+    error = job.error_json or {}
+    stalled = job.state == STATE_RUNNING and heartbeat_is_stale(job.heartbeat_at)
+    return (
+        job.state == STATE_CANCELLED
+        or stalled
+        or (job.state == STATE_FAILED and error.get("retryable") is not False)
+    )
+
+
 def learn_payload(job: StyleReferenceJob | None) -> dict[str, Any] | None:
     """书载荷里的 ``learn``：最近一个学习作业的摘要（没有返回 None）。"""
     if job is None:
@@ -501,13 +530,7 @@ def learn_payload(job: StyleReferenceJob | None) -> dict[str, Any] | None:
     progress = dict(job.progress_json or {})
     error = dict(job.error_json) if job.error_json else None
     stalled = job.state == STATE_RUNNING and heartbeat_is_stale(job.heartbeat_at)
-    # 能不能「继续学习」:取消 / 心跳过期的能;失败的看 error.retryable——正文太少(input_too_small)、卡片被滤空这类
-    # 失败续跑只会再失败一次,只能「重新学习」(或带 force「仍然学习」)
-    resumable = (
-        job.state == STATE_CANCELLED
-        or stalled
-        or (job.state == STATE_FAILED and (error or {}).get("retryable") is not False)
-    )
+    resumable = learn_resumable(job)
     return {
         "job_id": job.job_id,
         "state": job.state,
@@ -1657,7 +1680,7 @@ def _on_learn_cancelled(session: Session, job: StyleReferenceJob) -> None:
     _set_run_status(session, dict(job.cursor_json or {}).get("run_id"), "cancelled")
 
 
-register_job_handler(JOB_KIND_LEARN, run_learn_job, on_cancelled=_on_learn_cancelled)
+register_job_handler(JOB_KIND_LEARN, run_learn_job, on_cancelled=_on_learn_cancelled, resumable=learn_resumable)
 
 
 __all__ = [
@@ -1674,6 +1697,7 @@ __all__ = [
     "estimate_learning",
     "latest_learn_job",
     "learn_payload",
+    "learn_resumable",
     "resolve_learn_client",
     "run_learn_job",
     "start_learn_job",
