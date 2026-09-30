@@ -34,7 +34,6 @@ from typing import Any
 from sqlalchemy import func, update
 
 from novel_system.db.models import StyleReferenceBook
-from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.jobs import BOOK_EXCLUSIVE_KINDS, StyleJobService
 from novel_system.services.style_reference.paragraph_root import COUNT_KEY, ROOT_KEY, patch_book_stats
 from novel_system.services.style_reference.repository import StyleReferenceRepository
@@ -45,6 +44,7 @@ from novel_system.services.style_reference.text_utils import (
 )
 from novel_system.services.style_reference.voice_signature import compute_voice_signature
 from novel_system.tools._checkout_guard import refuse_foreign_checkout
+from novel_system.tools._cli import open_checked_session
 
 TOOL_VERSION = "refresh_style_reference_books_v3"
 
@@ -215,7 +215,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     refuse_foreign_checkout("refresh_style_reference_books")
     args = _parse_args(argv)
-    with SessionLocal() as session:
+    with open_checked_session("refresh_style_reference_books", writes=args.execute) as session:
         repo = StyleReferenceRepository(session)
         if args.book:
             book_ids = list(dict.fromkeys(args.book))

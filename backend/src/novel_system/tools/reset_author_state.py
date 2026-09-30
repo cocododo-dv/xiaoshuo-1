@@ -52,9 +52,9 @@ from novel_system.db.models import (
     StyleReferenceSceneWindows,
     WriterEvaluation,
 )
-from novel_system.db.session import SessionLocal
 from novel_system.services.project_ownership import project_owned_models_child_first
 from novel_system.tools._checkout_guard import refuse_foreign_checkout
+from novel_system.tools._cli import open_checked_session
 
 PRESERVED_DOMAINS = [
     "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
@@ -273,7 +273,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--yes", action="store_true", help="confirm the destructive reset")
     args = parser.parse_args(argv)
 
-    with SessionLocal() as session:
+    with open_checked_session("reset_author_state", writes=args.execute and args.yes) as session:
         if args.execute and not args.yes:
             summary = collect_reset_summary(session)
             summary["status"] = "confirmation_required"

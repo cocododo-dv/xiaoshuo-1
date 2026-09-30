@@ -19,18 +19,16 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-import yaml
-
-from novel_system.db.session import SessionLocal
-from novel_system.services.config_cache import safe_load_yaml
 from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.system_config import SystemConfigService
 from novel_system.tools._checkout_guard import refuse_foreign_checkout
+from novel_system.tools._cli import activate_snapshot_payload, active_snapshot_payload, open_checked_session
 
 # 客户端降级阶梯的上限（MAX_OUTPUT_TOKENS_CEILING），配置值与之对齐才有意义。
 DEFAULT_FLOOR = 8192
 # 默认只管整步生成——它是唯一"一次调用要输出整张表"的节点。
 DEFAULT_NODES = ("snowflake_step_generate",)
+ACTOR = "raise_llm_output_budget"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -91,16 +89,13 @@ def _targets_by_table(payload: dict[str, Any], nodes: list[str] | None, floor: i
 def main(argv: list[str] | None = None) -> int:
     refuse_foreign_checkout("raise_llm_output_budget")
     args = _parse_args(argv)
-    session = SessionLocal()
-    try:
+    with open_checked_session(ACTOR, writes=args.execute) as session:
         service = SystemConfigService(session)
-        category = service.overview()["categories"]["models"]
-        snapshot = category.get("active_snapshot")
+        snapshot, payload = active_snapshot_payload(service, "models")
         if not snapshot:
             print("库内没有活动的 models 配置快照——节点路由取节点注册表（llm_node_registry）的默认值，改默认值即可生效，无需处理。")
             return 0
 
-        payload = safe_load_yaml(category["yaml_raw"]) or {}
         if not any(isinstance(payload.get(table), dict) for table in ROUTING_TABLES):
             print("活动快照里既没有 node_routing 也没有 task_routing，无需处理。")
             return 0
@@ -122,18 +117,10 @@ def main(argv: list[str] | None = None) -> int:
         for table, table_hits in hits.items():
             for node_id in table_hits:
                 payload[table][node_id]["max_output_tokens"] = args.floor
-        created = service.create_draft(
-            category="models",
-            yaml_raw=yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-            secrets=None,
-            actor_ref="raise_llm_output_budget",
-        )
-        activated = service.activate(created["snapshot"]["snapshot_id"], actor_ref="raise_llm_output_budget")
-        print(f"\n已激活新快照 v{activated['snapshot']['version']}（{activated['snapshot']['snapshot_id']}）。")
+        activated = activate_snapshot_payload(service, "models", payload, actor=ACTOR)
+        print(f"\n已激活新快照 v{activated['version']}（{activated['snapshot_id']}）。")
         print("重启后端后生效。")
         return 0
-    finally:
-        session.close()
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI 入口

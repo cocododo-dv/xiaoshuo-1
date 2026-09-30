@@ -32,6 +32,7 @@ from novel_system.services.prompt_builder import (
 )
 from novel_system.services.system_config import SystemConfigService, validate_config
 from tests.support.api_client import AutoKeyTestClient
+from tests.support.schema import stamp_schema_revision
 
 
 REPO_CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -288,6 +289,7 @@ def test_sync_prompt_templates_activation_is_visible_at_once(session, tmp_path, 
     _activate(session, "prompts", {"templates": {"neutral_draft": _template("快照旧版")}})
     assert load_prompt_templates()["neutral_draft"].system_prompt == "快照旧版"
 
+    stamp_schema_revision()  # 工具的 --execute 先核对库结构版本（tools/_cli.py）
     assert sync_prompt_templates.main(["--execute"]) == 0
 
     synced = load_prompt_templates()["neutral_draft"]
@@ -322,6 +324,7 @@ def test_models_snapshot_changes_reach_routing_and_lease_ttl_at_once(session) ->
     assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 1500
     assert idempotency.owner_lease_ttl_seconds() == 654
 
+    stamp_schema_revision()  # 工具的 --execute 先核对库结构版本（tools/_cli.py）
     assert raise_llm_output_budget.main(["--node", "neutral_draft", "--floor", "4096", "--execute"]) == 0
     assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 4096
 

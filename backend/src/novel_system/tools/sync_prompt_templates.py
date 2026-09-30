@@ -33,10 +33,10 @@ from typing import Any
 
 import yaml
 
-from novel_system.db.session import SessionLocal
 from novel_system.services.config_cache import safe_load_yaml
 from novel_system.services.system_config import SystemConfigService
 from novel_system.tools._checkout_guard import refuse_foreign_checkout
+from novel_system.tools._cli import activate_snapshot_payload, active_snapshot_payload, open_checked_session
 
 # 版本号变了才同步的字段——它们承载创作意图，可能被作者在界面上改过。
 TEXT_FIELDS = ("version", "system_prompt", "task_prompt", "structured_schema")
@@ -170,16 +170,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"没有模板匹配 --prefix {', '.join(args.prefixes or [])}——仓库文件里共有 {len(repo_templates)} 个模板。")
         return 2
 
-    session = SessionLocal()
-    try:
+    with open_checked_session(ACTOR, writes=args.execute) as session:
         service = SystemConfigService(session)
-        category = service.overview()["categories"]["prompts"]
-        snapshot = category.get("active_snapshot")
+        snapshot, payload = active_snapshot_payload(service, "prompts")
         if not snapshot:
             print("库内没有活动的 prompts 快照——运行时直接读 config/prompts.yaml，改文件即已生效，无需同步。")
             return 0
 
-        payload = safe_load_yaml(category["yaml_raw"]) or {}
         snapshot_templates = payload.get("templates")
         if not isinstance(snapshot_templates, dict):
             print("活动快照里没有 templates 段，形状异常——请先在系统配置界面检查这一版。")
@@ -223,18 +220,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         _apply(snapshot_templates, repo_templates, actionable)
-        created = service.create_draft(
-            category="prompts",
-            yaml_raw=yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-            secrets=None,
-            actor_ref=ACTOR,
-        )
-        activated = service.activate(created["snapshot"]["snapshot_id"], actor_ref=ACTOR)
-        print(f"\n已激活新快照 v{activated['snapshot']['version']}（{activated['snapshot']['snapshot_id']}）。")
+        activated = activate_snapshot_payload(service, "prompts", payload, actor=ACTOR)
+        print(f"\n已激活新快照 v{activated['version']}（{activated['snapshot_id']}）。")
         print("重启后端后生效。")
         return 0
-    finally:
-        session.close()
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI 入口
