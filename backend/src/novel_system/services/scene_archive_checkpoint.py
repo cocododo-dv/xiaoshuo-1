@@ -43,7 +43,6 @@ from novel_system.db.models import (
     VolumeSummary,
     WriterEvaluation,
 )
-from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import (
     ACCOUNTING_EXECUTION_MODE_KEY,
     LLMAccountingError,
@@ -51,7 +50,7 @@ from novel_system.services.llm_accounting import (
     validate_product_call,
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
-from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER
+from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
 from novel_system.services.scene_run.results import (
     apply_finality,
     merged_warnings,
@@ -109,11 +108,7 @@ class SceneArchiveCheckpoint:
         refs = state_payload.get("artifact_refs") or {}
         carry_notes = list(refs.get("carry_notes") or [])
         if self._orch._json_hash(carry_notes) != self._orch._checkpoint_hash("carry_notes"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final carry notes hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final carry notes hash mismatch")
         progress = self._orch._near_final_checkpoint_progress()
         if progress < 4:
             archive_result = self._orch.archiver.archive_final_scene(
@@ -569,35 +564,12 @@ class SceneArchiveCheckpoint:
     def _near_final_checkpoint_progress(self) -> int:
         if self._orch._execution_id is None or self._orch._checkpoint_service is None:
             return -1
-        state = self._orch._active_checkpoint_state()
-        current = state.run_checkpoint
-        if current not in RUN_CHECKPOINT_ORDER:
-            return -1
-        near_index = RUN_CHECKPOINT_ORDER.index("near_final_ready")
-        current_index = RUN_CHECKPOINT_ORDER.index(current)
-        if current_index < near_index:
-            return -1
-        if current_index > near_index:
-            return 11
-        payload = state.run_checkpoint_json or {}
-        sub_index = payload.get("sub_index") if isinstance(payload, dict) else None
-        if (
-            isinstance(sub_index, int)
-            and not isinstance(sub_index, bool)
-            and sub_index in set(range(12))
-        ):
-            return sub_index
-        refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
-        if (
-            sub_index is None
-            and isinstance(refs, dict)
-            and refs.get("final_scene_row_id")
-        ):
-            return 3
-        raise DomainError(
-            "RUN_CHECKPOINT_CORRUPT",
-            "near-final checkpoint sub-index is invalid",
-            status_code=409,
+        return self._orch._sub_checkpoint_progress(
+            "near_final_ready",
+            last_sub_index=11,
+            legacy_complete=lambda refs: bool(refs.get("final_scene_row_id")),
+            legacy_sub_index=3,
+            invalid_message="near-final checkpoint sub-index is invalid",
         )
 
     def _archive_product(
@@ -670,11 +642,7 @@ class SceneArchiveCheckpoint:
                 and self._orch._json_hash(product) != self._orch._checkpoint_hash("archive_core")
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive core checkpoint product schema/owner/hash is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive core checkpoint product schema/owner/hash is invalid")
         memory = self.session.get(SceneMemory, product["scene_memory_row_id"])
         rolling = self.session.get(
             ChapterRollingNote,
@@ -701,11 +669,7 @@ class SceneArchiveCheckpoint:
             )
             for key in snapshot_refs
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive core independent snapshot hashes are invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive core independent snapshot hashes are invalid")
         if memory is None or rolling is None or attempt is None:
             self._orch._raise_checkpoint_output_missing(
                 row_id=(
@@ -755,11 +719,7 @@ class SceneArchiveCheckpoint:
             != final_scene.row_id
             or (attempt.details_json or {}).get("execution_id") != self._orch._execution_id
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive core checkpoint product graph is inconsistent",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive core checkpoint product graph is inconsistent")
         return {
             "scene_memory_row_id": memory.row_id,
             "chapter_rolling_note_row_id": rolling.row_id,
@@ -828,11 +788,7 @@ class SceneArchiveCheckpoint:
                 != self._orch._checkpoint_hash("archive_rule_product")
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive rule-event checkpoint schema/owner/hash is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive rule-event checkpoint schema/owner/hash is invalid")
         actual = self._orch._narrative_event_snapshots(event_ids)
         if actual != events or any(
             event.get("scene_id") != scene.scene_id
@@ -846,11 +802,7 @@ class SceneArchiveCheckpoint:
             or (event.get("payload_json") or {}).get("archive_ordinal") != ordinal
             for ordinal, event in enumerate(actual)
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive rule-event checkpoint rows are missing, detached, or changed",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive rule-event checkpoint rows are missing, detached, or changed")
 
     def _validate_archive_prose_checkpoint(
         self,
@@ -905,11 +857,7 @@ class SceneArchiveCheckpoint:
                 != self._orch._checkpoint_hash("archive_prose_events")
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive prose-extraction checkpoint schema/owner/hash is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive prose-extraction checkpoint schema/owner/hash is invalid")
 
         expected_extraction_fields = {
             "schema_version",
@@ -941,19 +889,11 @@ class SceneArchiveCheckpoint:
             or extraction.get("execution_step_key") != "archive:prose_event_extract:0"
             or not isinstance(extraction.get("events"), list)
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive prose-extraction product field matrix is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive prose-extraction product field matrix is invalid")
         call_id = extraction.get("llm_call_id")
         if outcome == "not_invoked":
             if call_id is not None or extraction.get("error_code") is not None:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "archive prose no-call product has a parent/error",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("archive prose no-call product has a parent/error")
             ledger = (
                 self.session.execute(
                     select(LlmCall).where(
@@ -965,18 +905,10 @@ class SceneArchiveCheckpoint:
                 .all()
             )
             if ledger:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "archive prose no-call product unexpectedly has a ledger",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("archive prose no-call product unexpectedly has a ledger")
         else:
             if not isinstance(call_id, str) or not call_id:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "archive prose called product has no parent id",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("archive prose called product has no parent id")
             parent = self.session.get(LlmCall, call_id)
             base = self._orch._archive_event_base(scene, contract)
             context = LLMCallContext(
@@ -1013,10 +945,8 @@ class SceneArchiveCheckpoint:
                     ),
                 )
             except LLMAccountingError as exc:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "archive prose parent/attempt ledger is invalid",
-                    status_code=409,
                     details={"llm_call_id": call_id, "error_code": exc.code},
                 ) from exc
             if not isinstance(
@@ -1026,11 +956,7 @@ class SceneArchiveCheckpoint:
             ) != self._orch._json_hash(
                 product
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "archive prose product hash is detached from its parent",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("archive prose product hash is detached from its parent")
             if outcome in {"completed_empty", "completed_events"}:
                 from novel_system.services.prose_event_extractor import (
                     prose_extraction_parsed_hash,
@@ -1039,11 +965,7 @@ class SceneArchiveCheckpoint:
                 if parent.response_payload_summary.get(
                     "prose_extraction_parsed_hash"
                 ) != prose_extraction_parsed_hash(extraction.get("events") or []):
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "archive prose parsed output hash is detached from its parent",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("archive prose parsed output hash is detached from its parent")
         actual = self._orch._narrative_event_snapshots(event_ids)
         extracted_events = extraction.get("events") or []
         if (
@@ -1074,11 +996,7 @@ class SceneArchiveCheckpoint:
                 for ordinal, event in enumerate(actual)
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive prose event rows are missing, detached, or changed",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive prose event rows are missing, detached, or changed")
 
     def _recover_archive_prose_rejection(self) -> ProseExtractionResult | None:
         """Restore a durable local rejection without creating a second parent call."""
@@ -1108,18 +1026,10 @@ class SceneArchiveCheckpoint:
             call is not rejected[0] and call.accounting_status != "released"
             for call in calls
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive prose rejected tombstone ledger is ambiguous",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive prose rejected tombstone ledger is ambiguous")
         parent = rejected[0]
         if not isinstance(parent.error_code, str) or not parent.error_code:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive prose rejected tombstone has no error code",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive prose rejected tombstone has no error code")
         return ProseExtractionResult(
             outcome="rejected_before_dispatch",
             llm_call_id=parent.llm_call_id,
@@ -1158,11 +1068,7 @@ class SceneArchiveCheckpoint:
             or not isinstance(product.get("input_hash"), str)
             or not product.get("input_hash")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"archive {kind} product schema/owner is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"archive {kind} product schema/owner is invalid")
         return product
 
     def _run_archive_vector_index(
@@ -1203,18 +1109,10 @@ class SceneArchiveCheckpoint:
         if require_checkpoint_hash and self._orch._json_hash(
             product
         ) != self._orch._checkpoint_hash("archive_vector_product"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive vector product identity/hash is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive vector product identity/hash is invalid")
         if product["outcome"] == "retired":
             if product != self._retired_vector_product(scene, final_scene):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "archive vector product identity/hash is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("archive vector product identity/hash is invalid")
             return product
         # 第 7 步退役之前写下的检查点：只核对产品自身的结构与它记的正文哈希，不再去碰向量库（向量库已删）。
         if (
@@ -1237,11 +1135,7 @@ class SceneArchiveCheckpoint:
                 and product.get("outcome") == "non_persistent"
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive vector product identity/hash is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive vector product identity/hash is invalid")
         if product["outcome"] == "non_persistent":
             if product.get("error_code") is not None or product.get(
                 "write_status"
@@ -1249,31 +1143,21 @@ class SceneArchiveCheckpoint:
                 "indexed",
                 "already_present",
             }:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "non-persistent vector product has invalid local write evidence",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("non-persistent vector product has invalid local write evidence")
             return product
         if product["outcome"] in {"indexed", "already_present"}:
             if (
                 product.get("error_code") is not None
                 or product.get("write_status") != product["outcome"]
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "persistent vector product outcome does not match its write evidence",
-                    status_code=409,
                 )
         elif (
             not isinstance(product.get("error_code"), str)
             or product.get("write_status") != "failed"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive vector failure has no stable error code",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive vector failure has no stable error code")
         return product
 
     def _scene_memory_inputs(self, chapter_id: str) -> list[dict[str, str]]:
@@ -1357,11 +1241,7 @@ class SceneArchiveCheckpoint:
         if require_checkpoint_hash and self._orch._json_hash(
             product
         ) != self._orch._checkpoint_hash("archive_chapter_product"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter aggregate product hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter aggregate product hash mismatch")
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
@@ -1376,11 +1256,7 @@ class SceneArchiveCheckpoint:
                 or product.get("result") is not None
                 or product.get("chapter_memory") is not None
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "non-final scene chapter product is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("non-final scene chapter product is invalid")
             return product
         inputs = product.get("inputs")
         if (
@@ -1388,11 +1264,7 @@ class SceneArchiveCheckpoint:
             or inputs != sorted(inputs, key=lambda item: item.get("row_id", ""))
             or product.get("input_hash") != self._orch._json_hash(inputs)
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter aggregate input manifest is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter aggregate input manifest is invalid")
         for item in inputs:
             memory = self.session.get(
                 SceneMemory, item.get("row_id") if isinstance(item, dict) else None
@@ -1405,11 +1277,7 @@ class SceneArchiveCheckpoint:
                 or item.get("chapter_id") != scene.chapter_id
                 or self._orch._text_hash(memory.content) != item.get("content_hash")
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "chapter aggregate input memory changed",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("chapter aggregate input memory changed")
         snapshot = product.get("chapter_memory")
         if product.get("outcome") == "aggregated":
             memory = self.session.get(ChapterMemory, (snapshot or {}).get("row_id"))
@@ -1428,27 +1296,15 @@ class SceneArchiveCheckpoint:
                 self.session.get(SceneMemory, item["row_id"]).content for item in inputs
             )
             if actual != snapshot or memory.content != expected_content:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "chapter aggregate output changed",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("chapter aggregate output changed")
         elif snapshot is not None:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter no-op unexpectedly has output",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter no-op unexpectedly has output")
         if (
             product.get("outcome") == "no_op"
             and isinstance(product.get("result"), dict)
             and product["result"].get("status") == "created"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter aggregate created result lost its output",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter aggregate created result lost its output")
         return product
 
     def _volume_input_memories(self, scene: SceneCard) -> list[dict[str, str]]:
@@ -1570,11 +1426,7 @@ class SceneArchiveCheckpoint:
         if require_checkpoint_hash and self._orch._json_hash(
             product
         ) != self._orch._checkpoint_hash("archive_volume_product"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "volume aggregate product hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("volume aggregate product hash mismatch")
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
@@ -1585,32 +1437,20 @@ class SceneArchiveCheckpoint:
                 or product.get("reason") != "not_chapter_last"
                 or product.get("inputs") != []
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "non-final scene volume product is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("non-final scene volume product is invalid")
             if (
                 final_scene is None
                 or product.get("input_hash") != self._orch._text_hash(final_scene.content)
                 or product.get("result") is not None
                 or product.get("volume_summary") is not None
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "non-final scene volume no-op payload is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("non-final scene volume no-op payload is invalid")
             return product
         inputs = product.get("inputs")
         if not isinstance(inputs, list) or product.get("input_hash") != self._orch._json_hash(
             inputs
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "volume aggregate input manifest is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("volume aggregate input manifest is invalid")
         for item in inputs:
             row = self.session.get(
                 ChapterMemory, item.get("row_id") if isinstance(item, dict) else None
@@ -1620,11 +1460,7 @@ class SceneArchiveCheckpoint:
             if row.chapter_id != item.get("chapter_id") or self._orch._text_hash(
                 row.content
             ) != item.get("content_hash"):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "volume aggregate input changed",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("volume aggregate input changed")
         snapshot = product.get("volume_summary")
         if product.get("outcome") == "aggregated":
             row = self.session.get(VolumeSummary, (snapshot or {}).get("row_id"))
@@ -1641,35 +1477,19 @@ class SceneArchiveCheckpoint:
             ):
                 actual[mutable_field] = snapshot.get(mutable_field)
             if actual != snapshot:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "volume aggregate output changed",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("volume aggregate output changed")
         elif snapshot is not None:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "volume non-output product has a row",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("volume non-output product has a row")
         if (
             product.get("outcome") == "no_op"
             and isinstance(product.get("result"), dict)
             and product["result"].get("status") == "created"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "volume aggregate created result lost its output",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("volume aggregate created result lost its output")
         if product.get("outcome") == "degraded" and not isinstance(
             product.get("error_code"), str
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "volume degraded product has no error code",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("volume degraded product has no error code")
         return product
 
     def _run_archive_chapter_evaluation(
@@ -1749,11 +1569,7 @@ class SceneArchiveCheckpoint:
         if require_checkpoint_hash and self._orch._json_hash(
             product
         ) != self._orch._checkpoint_hash("archive_chapter_evaluation_product"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter evaluation product hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter evaluation product hash mismatch")
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
@@ -1767,18 +1583,12 @@ class SceneArchiveCheckpoint:
                 or final_scene is None
                 or product.get("input_hash") != self._orch._text_hash(final_scene.content)
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "non-final scene chapter evaluation is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("non-final scene chapter evaluation is invalid")
             return product
         snapshot = product.get("evaluation_row")
         if not isinstance(snapshot, dict) or not snapshot.get("evaluation_id"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 f"chapter evaluation product has no full row snapshot: {snapshot!r}; keys={sorted(product)!r}",
-                status_code=409,
                 details={"product_keys": sorted(product), "snapshot": snapshot},
             )
         row = self.session.get(WriterEvaluation, (snapshot or {}).get("evaluation_id"))
@@ -1796,11 +1606,7 @@ class SceneArchiveCheckpoint:
             or (product.get("evaluation") or {}).get("evaluation_id")
             != row.evaluation_id
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter evaluation row is detached or changed",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter evaluation row is detached or changed")
         expected_input_hash = self._orch._json_hash(
             {
                 "chapter_product_hash": self._orch._checkpoint_hash(
@@ -1810,11 +1616,7 @@ class SceneArchiveCheckpoint:
             }
         )
         if product.get("input_hash") != expected_input_hash:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter evaluation input hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter evaluation input hash mismatch")
         parent = self.session.get(LlmCall, row.evaluator_llm_call_id)
         if parent is None:
             self._orch._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
@@ -1824,11 +1626,7 @@ class SceneArchiveCheckpoint:
             else None
         )
         if execution_mode != "online":
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter evaluation parent execution mode is missing or invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter evaluation parent execution mode is missing or invalid")
         expected_outcome = (
             "completed"
             if parent.accounting_status == "settled"
@@ -1848,11 +1646,7 @@ class SceneArchiveCheckpoint:
                 and scene.project_id != authoritative_project_id
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter evaluation project ownership is inconsistent",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter evaluation project ownership is inconsistent")
         context = LLMCallContext(
             scope_type="chapter",
             scope_id=scene.chapter_id,
@@ -1877,19 +1671,11 @@ class SceneArchiveCheckpoint:
                 ),
             )
         except (LLMAccountingError, ValueError) as exc:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter evaluation parent ledger is invalid",
-                status_code=409,
-            ) from exc
+            raise checkpoint_corrupt("chapter evaluation parent ledger is invalid") from exc
         if (parent.response_payload_summary or {}).get(
             "archive_chapter_near_final_product_hash"
         ) != self._orch._json_hash(product):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "chapter evaluation hash is detached from parent",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("chapter evaluation hash is detached from parent")
         return product
 
     def _validate_archive_drift_product(
@@ -1916,28 +1702,16 @@ class SceneArchiveCheckpoint:
         if require_checkpoint_hash and self._orch._json_hash(
             product
         ) != self._orch._checkpoint_hash("archive_drift_product"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style drift product hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style drift product hash mismatch")
         # 风格参考 v3：这个槽位记归档读数（漂移驾驶已删）；旧检查点里的 observed / no_op 产品照常通过。
         if product.get("outcome") == "degraded" and not isinstance(
             product.get("error_code"), str
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style drift degraded product has no error code",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style drift degraded product has no error code")
         if product.get("outcome") == "recorded" and not isinstance(
             product.get("reading_id"), str
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "fidelity reading product has no reading id",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("fidelity reading product has no reading id")
         return product
 
     def _archive_manifest(self) -> list[dict[str, Any]]:
@@ -1964,11 +1738,7 @@ class SceneArchiveCheckpoint:
             for sub_index, kind, hash_key in entries
         ]
         if any(not isinstance(entry["product_hash"], str) for entry in manifest):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archive manifest is incomplete",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archive manifest is incomplete")
         return manifest
 
     def _validate_archive_prefix(

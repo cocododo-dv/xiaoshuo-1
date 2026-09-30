@@ -28,6 +28,11 @@ RUN_CHECKPOINT_ORDER = (
 _TERMINAL_EXECUTION_STATUSES = frozenset({"failed", "completed", "cancelled"})
 
 
+def checkpoint_corrupt(message: str, *, details: dict[str, Any] | None = None) -> DomainError:
+    """``RUN_CHECKPOINT_CORRUPT``（409）：检查点与库里的产物、账本或执行归属对不上——续跑不再往下走。"""
+    return DomainError("RUN_CHECKPOINT_CORRUPT", message, status_code=409, details=details)
+
+
 def idempotency_execution_id(idempotency_key: str) -> str:
     return f"idempotency:{idempotency_key}"
 
@@ -309,12 +314,12 @@ class SceneRunCheckpointService:
         branch: str | None = None,
     ) -> ExecutionCheckpoint:
         if node_key not in RUN_CHECKPOINT_ORDER:
-            raise self._corrupt(f"unknown checkpoint node: {node_key}")
+            raise checkpoint_corrupt(f"unknown checkpoint node: {node_key}")
         state = self._state(scene_id, refresh=True)
         if state.active_execution_id != execution_id:
             raise self._superseded(execution_id, state.active_execution_id)
         if state.run_execution_status != "active":
-            raise self._corrupt("checkpoint cannot advance a non-active execution")
+            raise checkpoint_corrupt("checkpoint cannot advance a non-active execution")
 
         previous = self._checkpoint_payload(state)
         self._validate_checkpoint(state, previous)
@@ -373,7 +378,7 @@ class SceneRunCheckpointService:
         ).scalars().all()
         if not calls:
             if output_exists:
-                raise self._corrupt("checkpoint output has no execution-step ledger row")
+                raise checkpoint_corrupt("checkpoint output has no execution-step ledger row")
             return "retry"
 
         if not output_exists:
@@ -420,7 +425,7 @@ class SceneRunCheckpointService:
                 )
             )
             if len(blocking_calls) != 1 and not valid_local_degraded:
-                raise self._corrupt(
+                raise checkpoint_corrupt(
                     "checkpoint output must resolve to exactly one dispatched or explicitly local-degraded ledger row"
                 )
             return "complete"
@@ -470,7 +475,7 @@ class SceneRunCheckpointService:
             "completed",
             "waiting_selection",
         }:
-            raise self._corrupt(
+            raise checkpoint_corrupt(
                 f"cannot mark execution cancelled from {previous_status}"
             )
         cancelled_payload = {
@@ -499,7 +504,7 @@ class SceneRunCheckpointService:
             if state.active_execution_id != execution_id:
                 raise self._superseded(execution_id, state.active_execution_id)
             if state.run_execution_status != "cancelled" or state.run_checkpoint != "cancelled":
-                raise self._corrupt(
+                raise checkpoint_corrupt(
                     f"cannot mark execution cancelled from {state.run_execution_status}"
                 )
         self.session.flush()
@@ -559,7 +564,7 @@ class SceneRunCheckpointService:
     def mark_waiting_selection(self, scene_id: str, execution_id: str) -> None:
         state = self._state(scene_id, refresh=True)
         if state.run_checkpoint != "selection_wait":
-            raise self._corrupt("selection wait status requires a selection_wait checkpoint")
+            raise checkpoint_corrupt("selection wait status requires a selection_wait checkpoint")
         changed = self.session.execute(
             update(SceneRunState)
             .where(
@@ -591,7 +596,7 @@ class SceneRunCheckpointService:
             if state.active_execution_id != execution_id:
                 raise self._superseded(execution_id, state.active_execution_id)
             if state.run_execution_status != status:
-                raise self._corrupt(f"cannot mark execution {status} from {state.run_execution_status}")
+                raise checkpoint_corrupt(f"cannot mark execution {status} from {state.run_execution_status}")
         self.session.flush()
 
     def _result(self, state: SceneRunState, *, resumed: bool) -> ExecutionCheckpoint:
@@ -628,19 +633,19 @@ class SceneRunCheckpointService:
         sub_index: int | None,
     ) -> None:
         if sub_index is not None and (not isinstance(sub_index, int) or sub_index < 0):
-            raise SceneRunCheckpointService._corrupt("sub_index must be a non-negative integer")
+            raise checkpoint_corrupt("sub_index must be a non-negative integer")
         if previous_node == node_key:
             if sub_index is None:
-                raise SceneRunCheckpointService._corrupt("checkpoint sub_index did not advance")
+                raise checkpoint_corrupt("checkpoint sub_index did not advance")
             if isinstance(previous_sub_index, int) and sub_index <= previous_sub_index:
-                raise SceneRunCheckpointService._corrupt("checkpoint sub_index did not advance")
+                raise checkpoint_corrupt("checkpoint sub_index did not advance")
             return
         expected = SceneRunCheckpointService._next_node(previous_node)
         # selection_wait is an optional branch; ordinary runs advance style -> soft QC.
         if previous_node == "style_ready" and node_key == "soft_qc_ready":
             return
         if node_key != expected:
-            raise SceneRunCheckpointService._corrupt(
+            raise checkpoint_corrupt(
                 f"checkpoint advanced out of order: expected {expected}, got {node_key}"
             )
 
@@ -648,40 +653,40 @@ class SceneRunCheckpointService:
     def _validate_checkpoint(state: SceneRunState, payload: dict[str, Any]) -> None:
         if state.run_checkpoint is None:
             if payload.get("node_key") is not None:
-                raise SceneRunCheckpointService._corrupt("checkpoint JSON has a node but cursor is empty")
+                raise checkpoint_corrupt("checkpoint JSON has a node but cursor is empty")
             return
         if state.run_checkpoint == "cancelled":
             if state.run_execution_status != "cancelled":
-                raise SceneRunCheckpointService._corrupt(
+                raise checkpoint_corrupt(
                     "cancelled checkpoint requires cancelled execution status"
                 )
             if payload.get("execution_id") != state.active_execution_id:
-                raise SceneRunCheckpointService._corrupt(
+                raise checkpoint_corrupt(
                     "checkpoint execution does not match active execution"
                 )
             if payload.get("node_key") != "cancelled":
-                raise SceneRunCheckpointService._corrupt(
+                raise checkpoint_corrupt(
                     "checkpoint JSON does not match checkpoint cursor"
                 )
             if not isinstance(payload.get("artifact_refs", {}), dict):
-                raise SceneRunCheckpointService._corrupt(
+                raise checkpoint_corrupt(
                     "checkpoint artifact references are invalid"
                 )
             if not isinstance(payload.get("artifact_hashes", {}), dict):
-                raise SceneRunCheckpointService._corrupt(
+                raise checkpoint_corrupt(
                     "checkpoint artifact hashes are invalid"
                 )
             return
         if state.run_checkpoint not in RUN_CHECKPOINT_ORDER:
-            raise SceneRunCheckpointService._corrupt("stored checkpoint node is unknown")
+            raise checkpoint_corrupt("stored checkpoint node is unknown")
         if payload.get("execution_id") != state.active_execution_id:
-            raise SceneRunCheckpointService._corrupt("checkpoint execution does not match active execution")
+            raise checkpoint_corrupt("checkpoint execution does not match active execution")
         if payload.get("node_key") != state.run_checkpoint:
-            raise SceneRunCheckpointService._corrupt("checkpoint JSON does not match checkpoint cursor")
+            raise checkpoint_corrupt("checkpoint JSON does not match checkpoint cursor")
         if not isinstance(payload.get("artifact_refs", {}), dict):
-            raise SceneRunCheckpointService._corrupt("checkpoint artifact references are invalid")
+            raise checkpoint_corrupt("checkpoint artifact references are invalid")
         if not isinstance(payload.get("artifact_hashes", {}), dict):
-            raise SceneRunCheckpointService._corrupt("checkpoint artifact hashes are invalid")
+            raise checkpoint_corrupt("checkpoint artifact hashes are invalid")
 
     @staticmethod
     def _checkpoint_payload(state: SceneRunState) -> dict[str, Any]:
@@ -689,7 +694,7 @@ class SceneRunCheckpointService:
         if payload is None:
             return {}
         if not isinstance(payload, dict):
-            raise SceneRunCheckpointService._corrupt("checkpoint JSON is not an object")
+            raise checkpoint_corrupt("checkpoint JSON is not an object")
         return dict(payload)
 
     def _state(self, scene_id: str, *, refresh: bool) -> SceneRunState:
@@ -720,9 +725,6 @@ class SceneRunCheckpointService:
             details={"execution_id": execution_id, "active_execution_id": active_execution_id},
         )
 
-    @staticmethod
-    def _corrupt(message: str) -> DomainError:
-        return DomainError("RUN_CHECKPOINT_CORRUPT", message, status_code=409)
 
 
 class RunCheckpointContext:
@@ -772,18 +774,10 @@ class RunCheckpointContext:
             not isinstance(payload, dict)
             or payload.get("execution_id") != self._execution_id
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "checkpoint owner payload is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("checkpoint owner payload is invalid")
         refs = payload.get("artifact_refs")
         if not isinstance(refs, dict):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "checkpoint artifact references are invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("checkpoint artifact references are invalid")
         return refs.get(key)
 
     def _save_run_checkpoint(
@@ -880,18 +874,10 @@ class RunCheckpointContext:
             or not isinstance(execution_step_key, str)
             or not execution_step_key
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "checkpoint LLM output reference is incomplete",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("checkpoint LLM output reference is incomplete")
         owner_execution_id = execution_id or self._execution_id
         if not owner_execution_id:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "checkpoint execution owner is missing",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("checkpoint execution owner is missing")
         self._checkpoint_service.reconcile_step_output(
             scene_id=scene_id,
             execution_id=owner_execution_id,
@@ -913,10 +899,8 @@ class RunCheckpointContext:
                 )
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "checkpoint output parent LLM call does not match its execution ledger",
-                status_code=409,
                 details={
                     "llm_call_id": llm_call_id,
                     "execution_id": owner_execution_id,
@@ -938,10 +922,8 @@ class RunCheckpointContext:
         if isinstance(payload, dict):
             allowed.update(payload.get("artifact_execution_lineage_ids") or [])
         if not isinstance(owner_execution_id, str) or owner_execution_id not in allowed:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "checkpoint artifact execution owner is outside the durable execution lineage",
-                status_code=409,
                 details={"artifact_execution_id": owner_execution_id},
             )
         return owner_execution_id
@@ -1029,11 +1011,7 @@ class RunCheckpointContext:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         hashes = payload.get("artifact_hashes") if isinstance(payload, dict) else None
         if not isinstance(hashes, dict):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "checkpoint artifact hashes are invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("checkpoint artifact hashes are invalid")
         value = hashes.get(key)
         return str(value) if value is not None else None
 
@@ -1044,6 +1022,48 @@ class RunCheckpointContext:
             status_code=409,
             details={"row_id": row_id},
         )
+
+    def _sub_checkpoint_progress(
+        self,
+        node_key: str,
+        *,
+        last_sub_index: int,
+        legacy_complete: Callable[[dict[str, Any]], bool],
+        legacy_sub_index: int,
+        invalid_message: str,
+    ) -> int:
+        """一个带子游标的节点走到了哪一步：还没到 → -1；已经过了 → ``last_sub_index``；正停在这个节点上 → 它的
+        ``sub_index``。子游标上线之前写下的完整检查点没有 ``sub_index``：``legacy_complete(refs)`` 成立时按
+        ``legacy_sub_index`` 读；别的一律 ``RUN_CHECKPOINT_CORRUPT``（``invalid_message``）。"""
+        state = self._active_checkpoint_state()
+        current = state.run_checkpoint
+        if current not in RUN_CHECKPOINT_ORDER:
+            return -1
+        node_index = RUN_CHECKPOINT_ORDER.index(node_key)
+        current_index = RUN_CHECKPOINT_ORDER.index(current)
+        if current_index < node_index:
+            return -1
+        if current_index > node_index:
+            return last_sub_index
+        payload = state.run_checkpoint_json or {}
+        sub_index = payload.get("sub_index") if isinstance(payload, dict) else None
+        if (
+            isinstance(sub_index, int)
+            and not isinstance(sub_index, bool)
+            and 0 <= sub_index <= last_sub_index
+        ):
+            return sub_index
+        refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
+        if sub_index is None and isinstance(refs, dict) and legacy_complete(refs):
+            return legacy_sub_index
+        raise checkpoint_corrupt(invalid_message)
+
+    def _require_checkpoint_row(self, model: Any, row_id: Any) -> Any:
+        """检查点引用的一行：id 不是字符串或库里没有这一行 → ``RUN_CHECKPOINT_OUTPUT_MISSING``。"""
+        row = self.session.get(model, row_id) if isinstance(row_id, str) else None
+        if row is None:
+            self._raise_checkpoint_output_missing(row_id=row_id)
+        return row
 
     def _active_checkpoint_state(self) -> SceneRunState:
         if self._execution_id is None:

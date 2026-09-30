@@ -97,6 +97,7 @@ from novel_system.services.scene_run_checkpoint import (
     RUN_CHECKPOINT_ORDER,
     RunCheckpointContext,
     SceneRunCheckpointService,
+    checkpoint_corrupt,
 )
 from novel_system.services.scene_run.constants import (
     NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON,
@@ -504,11 +505,7 @@ class Orchestrator:
                     ),
                 }
                 if kind not in substeps:
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        f"unknown planning artifact callback: {kind}",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt(f"unknown planning artifact callback: {kind}")
                 sub_index, prefix, step_key = substeps[kind]
                 current_progress = self._planning_checkpoint_progress()
                 if current_progress >= sub_index:
@@ -519,11 +516,7 @@ class Orchestrator:
                         expected_kind=kind,
                     )
                     if checkpoint_row.row_id != serialized.get("row_id"):
-                        raise DomainError(
-                            "RUN_CHECKPOINT_CORRUPT",
-                            f"{kind} callback differs from durable planning checkpoint",
-                            status_code=409,
-                        )
+                        raise checkpoint_corrupt(f"{kind} callback differs from durable planning checkpoint")
                     return
                 artifact_refs = self._planning_artifact_refs(
                     prefix=prefix,
@@ -723,11 +716,7 @@ class Orchestrator:
                 ]
                 slot_order = metadata.get("slot_order")
                 if not isinstance(slot_order, int):
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "style product slot order is invalid",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("style product slot order is invalid")
                 self._save_run_checkpoint(
                     "hard_qc_ready",
                     sub_index=slot_order * 2 + (1 if phase == "final" else 0),
@@ -1277,10 +1266,8 @@ class Orchestrator:
         try:
             state = scene_budget.ensure_scene_budget_initialized(self.session, state.scene_id)
         except ValueError as exc:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "budget state cannot be reconstructed from its immutable basis and topup audit",
-                status_code=409,
             ) from exc
         expected_budget = self._checkpoint_artifact(
             "scene_token_budget",
@@ -1299,11 +1286,7 @@ class Orchestrator:
             not isinstance(value, int) or isinstance(value, bool) or value < 0
             for value in values.values()
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "budget checkpoint counters are invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("budget checkpoint counters are invalid")
         budget_prefixes = scene_budget.audited_scene_budget_prefixes(self.session, state)
         if (
             expected_budget not in budget_prefixes
@@ -1315,42 +1298,15 @@ class Orchestrator:
             or self._json_hash(state.scene_budget_basis_json)
             != self._checkpoint_hash("budget_basis")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "budget state differs from its durable checkpoint",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("budget state differs from its durable checkpoint")
 
     def _planning_checkpoint_progress(self) -> int:
-        state = self._active_checkpoint_state()
-        current = state.run_checkpoint
-        if current not in RUN_CHECKPOINT_ORDER:
-            return -1
-        planning_index = RUN_CHECKPOINT_ORDER.index("planning_ready")
-        current_index = RUN_CHECKPOINT_ORDER.index(current)
-        if current_index < planning_index:
-            return -1
-        if current_index > planning_index:
-            return 3
-        payload = state.run_checkpoint_json or {}
-        sub_index = payload.get("sub_index") if isinstance(payload, dict) else None
-        if (
-            isinstance(sub_index, int)
-            and not isinstance(sub_index, bool)
-            and 0 <= sub_index <= 3
-        ):
-            return sub_index
-        refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
-        if (
-            sub_index is None
-            and isinstance(refs, dict)
-            and isinstance(refs.get("planning"), dict)
-        ):
-            return 3
-        raise DomainError(
-            "RUN_CHECKPOINT_CORRUPT",
-            "planning checkpoint sub-index is invalid",
-            status_code=409,
+        return self._sub_checkpoint_progress(
+            "planning_ready",
+            last_sub_index=3,
+            legacy_complete=lambda refs: isinstance(refs.get("planning"), dict),
+            legacy_sub_index=3,
+            invalid_message="planning checkpoint sub-index is invalid",
         )
 
     def _planning_artifact_refs(
@@ -1374,11 +1330,7 @@ class Orchestrator:
         else:
             artifact_execution_id = self._execution_id
         if not reused and artifact_execution_id != self._execution_id:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "new planning artifact is not owned by the current execution",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("new planning artifact is not owned by the current execution")
         return {
             f"{prefix}_row_id": serialized.get("row_id"),
             f"{prefix}_llm_call_id": llm_call_id,
@@ -1396,20 +1348,12 @@ class Orchestrator:
     ) -> str | None:
         provenance = planning_provenance(refs, prefix)
         if self._json_hash(provenance) != self._checkpoint_hash(f"{prefix}_provenance"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"{prefix} provenance hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"{prefix} provenance hash mismatch")
         reused = provenance.get("reused")
         owner_execution_id = provenance.get("artifact_execution_id")
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         if not isinstance(reused, bool):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "planning reuse marker is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("planning reuse marker is invalid")
         if llm_call_id is None:
             if reused:
                 valid_owner = owner_execution_id is None
@@ -1426,18 +1370,10 @@ class Orchestrator:
                     allowed.update(payload.get("artifact_execution_lineage_ids") or [])
                 valid_owner = owner_execution_id in allowed
             if not valid_owner:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "local planning provenance is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("local planning provenance is invalid")
             return None
         if not isinstance(owner_execution_id, str):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "planning execution provenance is missing",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("planning execution provenance is missing")
         superseded = (
             set(payload.get("superseded_execution_ids") or [])
             if isinstance(payload, dict)
@@ -1448,10 +1384,8 @@ class Orchestrator:
                 owner_execution_id == self._execution_id
                 or owner_execution_id not in superseded
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "reused planning artifact is outside the superseded execution lineage",
-                    status_code=409,
                 )
         elif owner_execution_id != self._execution_id:
             allowed = {
@@ -1464,11 +1398,7 @@ class Orchestrator:
             if isinstance(payload, dict):
                 allowed.update(payload.get("artifact_execution_lineage_ids") or [])
             if owner_execution_id not in allowed:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "current planning artifact is owned by another execution",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("current planning artifact is owned by another execution")
         return owner_execution_id
 
     @staticmethod
@@ -1510,21 +1440,10 @@ class Orchestrator:
         payload = state.run_checkpoint_json or {}
         refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
         if not isinstance(refs, dict):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "planning references are invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("planning references are invalid")
         serialized = refs.get("scene_blueprint")
         row_id = refs.get("planning_scene_blueprint_row_id")
-        row = (
-            self.session.get(SceneBlueprint, row_id)
-            if isinstance(row_id, str)
-            else None
-        )
-        if row is None:
-            self._raise_checkpoint_output_missing(row_id=row_id)
-        assert row is not None
+        row = self._require_checkpoint_row(SceneBlueprint, row_id)
         scene = self.session.get(SceneCard, scene_id)
         if (
             not isinstance(serialized, dict)
@@ -1542,11 +1461,7 @@ class Orchestrator:
             or refs.get("planning_scene_blueprint_execution_step_key")
             != "scene_blueprint"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "planning blueprint checkpoint is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("planning blueprint checkpoint is invalid")
         owner_execution_id = self._validate_planning_provenance(
             refs=refs,
             prefix="planning_scene_blueprint",
@@ -1573,21 +1488,10 @@ class Orchestrator:
         payload = state.run_checkpoint_json or {}
         refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
         if not isinstance(refs, dict):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "planning references are invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("planning references are invalid")
         serialized = refs.get(prefix)
         row_id = refs.get(f"{prefix}_row_id")
-        row = (
-            self.session.get(GenerationPlanningArtifact, row_id)
-            if isinstance(row_id, str)
-            else None
-        )
-        if row is None:
-            self._raise_checkpoint_output_missing(row_id=row_id)
-        assert row is not None
+        row = self._require_checkpoint_row(GenerationPlanningArtifact, row_id)
         scene = self.session.get(SceneCard, scene_id)
         expected_shapes = {
             "chapter_architecture": (
@@ -1623,11 +1527,7 @@ class Orchestrator:
             or refs.get(f"{prefix}_llm_call_id") != row.llm_call_id
             or refs.get(f"{prefix}_execution_step_key") != expected_step_key
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"{expected_kind} checkpoint is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"{expected_kind} checkpoint is invalid")
         owner_execution_id = self._validate_planning_provenance(
             refs=refs,
             prefix=prefix,
@@ -1669,32 +1569,18 @@ class Orchestrator:
             or self._json_hash(blueprint_payload)
             != self._checkpoint_hash("scene_blueprint")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "planning checkpoint payload/hash is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("planning checkpoint payload/hash is invalid")
 
         scene = self.session.get(SceneCard, scene_id)
         blueprint_id = blueprint_payload.get("row_id")
-        blueprint = (
-            self.session.get(SceneBlueprint, blueprint_id)
-            if isinstance(blueprint_id, str)
-            else None
-        )
-        if blueprint is None:
-            self._raise_checkpoint_output_missing(row_id=blueprint_id)
+        blueprint = self._require_checkpoint_row(SceneBlueprint, blueprint_id)
         assert blueprint is not None and scene is not None
         if (
             blueprint.scene_id != scene_id
             or blueprint.chapter_id != scene.chapter_id
             or self.scene_blueprint_service.serialize(blueprint) != blueprint_payload
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "scene blueprint checkpoint row is misbound",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("scene blueprint checkpoint row is misbound")
         self._validate_reused_planning_call(
             scene_id=scene_id,
             llm_call_id=blueprint.llm_call_id,
@@ -1722,14 +1608,7 @@ class Orchestrator:
         for key, shape in expected_shapes.items():
             serialized = planning.get(key)
             row_id = serialized.get("row_id") if isinstance(serialized, dict) else None
-            row = (
-                self.session.get(GenerationPlanningArtifact, row_id)
-                if isinstance(row_id, str)
-                else None
-            )
-            if row is None:
-                self._raise_checkpoint_output_missing(row_id=row_id)
-            assert row is not None
+            row = self._require_checkpoint_row(GenerationPlanningArtifact, row_id)
             if (
                 not isinstance(serialized, dict)
                 or self.planning_service.serialize_artifact(row) != serialized
@@ -1739,11 +1618,7 @@ class Orchestrator:
                 or row.chapter_id != shape["chapter_id"]
                 or row.scene_id != shape["scene_id"]
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    f"{key} planning artifact is misbound",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt(f"{key} planning artifact is misbound")
             self._validate_reused_planning_call(
                 scene_id=scene_id,
                 llm_call_id=row.llm_call_id,
@@ -1762,14 +1637,7 @@ class Orchestrator:
     ) -> None:
         if llm_call_id is None and allow_absent:
             return
-        call = (
-            self.session.get(LlmCall, llm_call_id)
-            if isinstance(llm_call_id, str)
-            else None
-        )
-        if call is None:
-            self._raise_checkpoint_output_missing(row_id=llm_call_id)
-        assert call is not None
+        call = self._require_checkpoint_row(LlmCall, llm_call_id)
         if (
             call.scene_id != scene_id
             or call.request_dispatched_at is None
@@ -1779,11 +1647,7 @@ class Orchestrator:
                 and call.execution_step_key != expected_step_key
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "planning artifact LLM call is misbound",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("planning artifact LLM call is misbound")
         if call.execution_id == self._execution_id:
             self._validate_checkpoint_llm_output(
                 scene_id=scene_id,
@@ -1837,10 +1701,8 @@ class Orchestrator:
                 continue
             matched.append(attempt)
         if len(matched) != 1:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 f"{step} checkpoint has no unique matching attempt audit row",
-                status_code=409,
                 details={
                     "qc_report_id": qc_report_id,
                     "matching_attempts": len(matched),
@@ -2459,11 +2321,7 @@ class Orchestrator:
         progress = self._near_final_checkpoint_progress()
         if progress >= 3:
             # 调用方 _finalize_after_style 在准终稿子游标 ≥3 时已直接去归档；这之间只写 soft_qc_ready，推不动这个游标。
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final completion appeared while the soft QC phase was running",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final completion appeared while the soft QC phase was running")
 
         if progress < 0:
             self._reconcile_execution_step("near_final_acceptance:0")
@@ -2562,11 +2420,7 @@ class Orchestrator:
                 # 接受）。重写稿永远不能成为终稿——不再对它做 near-final 评审，回退到
                 # 重写前、已过 soft_qc gate 的来源稿；skip_reason 与 Q2 警告让作者看见。
                 if progress >= 2:
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "near-final evaluation exists for a gate-rejected rewrite",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("near-final evaluation exists for a gate-rejected rewrite")
                 rejection_skip_reason = _near_final_rejection_skip_reason(rewrite_gate)
                 _LOGGER.warning(
                     "near-final rewrite for scene %s rejected (%s); falling back to the gated source draft %s",
@@ -2614,11 +2468,7 @@ class Orchestrator:
             return eval1, rewrite_generation, 1, None, rewrite_gate
 
         if progress >= 1:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final rewrite checkpoint exists for a non-rewrite eval0 branch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final rewrite checkpoint exists for a non-rewrite eval0 branch")
         return eval0, source_generation, 0, control.get("skip_reason"), None
 
     def _near_candidate_refs_and_hashes(
@@ -2639,26 +2489,12 @@ class Orchestrator:
         )
         if candidate_id is None:
             if rows:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "passing near-final evaluation has an unexpected revision candidate",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("passing near-final evaluation has an unexpected revision candidate")
             snapshot = None
         else:
-            candidate = (
-                self.session.get(RevisionCandidate, candidate_id)
-                if isinstance(candidate_id, str)
-                else None
-            )
-            if candidate is None:
-                self._raise_checkpoint_output_missing(row_id=candidate_id)
+            candidate = self._require_checkpoint_row(RevisionCandidate, candidate_id)
             if len(rows) != 1 or rows[0].revision_id != candidate_id:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "near-final evaluation candidate reference is not unique",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("near-final evaluation candidate reference is not unique")
             snapshot = revision_candidate_snapshot(candidate)
         return (
             {
@@ -2681,13 +2517,7 @@ class Orchestrator:
         self.session.flush()
         prefix = f"near_eval{round_index}"
         evaluation_id = result.get("evaluation_id")
-        evaluation = (
-            self.session.get(WriterEvaluation, evaluation_id)
-            if isinstance(evaluation_id, str)
-            else None
-        )
-        if evaluation is None:
-            self._raise_checkpoint_output_missing(row_id=evaluation_id)
+        evaluation = self._require_checkpoint_row(WriterEvaluation, evaluation_id)
         normalized = near_evaluation_payload(result)
         candidate_refs, candidate_hashes = self._near_candidate_refs_and_hashes(
             prefix=prefix,
@@ -2747,13 +2577,7 @@ class Orchestrator:
         refs = payload.get("artifact_refs") or {}
         prefix = f"near_eval{round_index}"
         evaluation_id = refs.get(f"{prefix}_evaluation_id")
-        evaluation = (
-            self.session.get(WriterEvaluation, evaluation_id)
-            if isinstance(evaluation_id, str)
-            else None
-        )
-        if evaluation is None:
-            self._raise_checkpoint_output_missing(row_id=evaluation_id)
+        evaluation = self._require_checkpoint_row(WriterEvaluation, evaluation_id)
         normalized = refs.get(f"{prefix}_payload")
         if (
             not isinstance(normalized, dict)
@@ -2761,11 +2585,7 @@ class Orchestrator:
             or self._json_hash(writer_evaluation_snapshot(evaluation))
             != self._checkpoint_hash(f"{prefix}_evaluation")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"near-final evaluation {round_index} payload/content hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"near-final evaluation {round_index} payload/content hash mismatch")
         bundle = self._load_checkpoint_bundle(scene_id)
         llm_call_id = refs.get(f"{prefix}_llm_call_id")
         step_key = refs.get(f"{prefix}_execution_step_key")
@@ -2819,11 +2639,7 @@ class Orchestrator:
                 and not isinstance(normalized.get("revision_candidate_id"), str)
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"near-final evaluation {round_index} identity/source mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"near-final evaluation {round_index} identity/source mismatch")
         candidate_id = refs.get(f"{prefix}_revision_candidate_id")
         expected_candidate_id = normalized.get("revision_candidate_id")
         candidate_snapshot = refs.get(f"{prefix}_candidate_snapshot")
@@ -2838,19 +2654,11 @@ class Orchestrator:
         )
         if expected_candidate_id is None:
             if candidate_id is not None or candidate_snapshot is not None or candidates:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     f"near-final evaluation {round_index} has a forged candidate reference",
-                    status_code=409,
                 )
         else:
-            candidate = (
-                self.session.get(RevisionCandidate, candidate_id)
-                if isinstance(candidate_id, str)
-                else None
-            )
-            if candidate is None:
-                self._raise_checkpoint_output_missing(row_id=candidate_id)
+            candidate = self._require_checkpoint_row(RevisionCandidate, candidate_id)
             if (
                 candidate_id != expected_candidate_id
                 or len(candidates) != 1
@@ -2866,19 +2674,11 @@ class Orchestrator:
                 or candidate.status not in {"candidate", "superseded"}
                 or revision_candidate_snapshot(candidate) != candidate_snapshot
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    f"near-final evaluation {round_index} candidate is misbound",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt(f"near-final evaluation {round_index} candidate is misbound")
         if self._json_hash(candidate_snapshot) != self._checkpoint_hash(
             f"{prefix}_candidate"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"near-final evaluation {round_index} candidate hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"near-final evaluation {round_index} candidate hash mismatch")
         self._validate_near_final_attempt(
             scene_id=scene_id,
             evaluation_id=evaluation.evaluation_id,
@@ -2924,10 +2724,8 @@ class Orchestrator:
             ):
                 matched.append(attempt)
         if len(matched) != 1:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "near-final checkpoint has no unique matching attempt audit row",
-                status_code=409,
                 details={
                     "evaluation_id": evaluation_id,
                     "matching_attempts": len(matched),
@@ -2956,11 +2754,7 @@ class Orchestrator:
                 and not isinstance(control.get("skip_reason"), str)
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final eval0 branch control is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final eval0 branch control is invalid")
         expected_branch: str
         expected_skip_reason: str | None
         if eval0.get("requires_human_review"):
@@ -2986,11 +2780,7 @@ class Orchestrator:
             control.get("branch") != expected_branch
             or control.get("skip_reason") != expected_skip_reason
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final eval0 branch/skip reason is inconsistent",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final eval0 branch/skip reason is inconsistent")
         return deepcopy(control)
 
     def _save_near_rewrite_checkpoint(
@@ -3041,11 +2831,7 @@ class Orchestrator:
             or not isinstance(gate.get("rejected"), bool)
             or self._json_hash(gate) != expected_hash
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final rewrite styled-draft gate checkpoint hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final rewrite styled-draft gate checkpoint hash mismatch")
         return deepcopy(gate)
 
     def _load_near_rewrite_checkpoint(
@@ -3059,11 +2845,7 @@ class Orchestrator:
             "artifact_refs"
         ) or {}
         row_id = refs.get("near_rewrite_draft_row_id")
-        draft = (
-            self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
-        )
-        if draft is None:
-            self._raise_checkpoint_output_missing(row_id=row_id)
+        draft = self._require_checkpoint_row(SceneDraft, row_id)
         bundle = self._load_checkpoint_bundle(scene_id)
         llm_call_id = refs.get("near_rewrite_llm_call_id")
         step_key = refs.get("near_rewrite_execution_step_key")
@@ -3090,11 +2872,7 @@ class Orchestrator:
             or self._text_hash(draft.content)
             != self._checkpoint_hash("near_rewrite_draft")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final rewrite checkpoint identity/source/hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final rewrite checkpoint identity/source/hash mismatch")
         attempts = (
             self.session.execute(
                 select(AttemptTracker).where(
@@ -3117,11 +2895,7 @@ class Orchestrator:
             == source_evaluation_id
         ]
         if len(matched) != 1:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final rewrite checkpoint has no unique matching attempt audit row",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final rewrite checkpoint has no unique matching attempt audit row")
         return StyleGenerationResult(
             row_id=draft.row_id,
             content=draft.content,
@@ -3144,14 +2918,7 @@ class Orchestrator:
             "final_scene_row_id",
             expected_node_at_least="near_final_ready",
         )
-        final_scene = (
-            self.session.get(FinalScene, final_row_id)
-            if isinstance(final_row_id, str)
-            else None
-        )
-        if final_scene is None:
-            self._raise_checkpoint_output_missing(row_id=final_row_id)
-        assert final_scene is not None
+        final_scene = self._require_checkpoint_row(FinalScene, final_row_id)
         state_payload = self._active_checkpoint_state().run_checkpoint_json or {}
         refs = state_payload.get("artifact_refs") or {}
         generation_call_id = refs.get("final_generation_llm_call_id")
@@ -3174,39 +2941,20 @@ class Orchestrator:
             or self._text_hash(final_scene.content)
             != self._checkpoint_hash("final_scene")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final checkpoint identity/hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final checkpoint identity/hash mismatch")
 
         near_final_payload = refs.get("near_final")
         if not isinstance(near_final_payload, dict) or self._json_hash(
             near_final_payload
         ) != self._checkpoint_hash("near_final"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final payload hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final payload hash mismatch")
         carry_notes = refs.get("carry_notes")
         if not isinstance(carry_notes, list) or self._json_hash(
             carry_notes
         ) != self._checkpoint_hash("carry_notes"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final carry notes hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final carry notes hash mismatch")
         evaluation_id = refs.get("near_final_evaluation_id")
-        evaluation = (
-            self.session.get(WriterEvaluation, evaluation_id)
-            if isinstance(evaluation_id, str)
-            else None
-        )
-        if evaluation is None:
-            self._raise_checkpoint_output_missing(row_id=evaluation_id)
-        assert evaluation is not None
+        evaluation = self._require_checkpoint_row(WriterEvaluation, evaluation_id)
         evaluation_call_id = refs.get("near_final_evaluation_llm_call_id")
         evaluation_step_key = refs.get("near_final_evaluation_step_key")
         evaluation_execution_id = self._validate_artifact_execution_owner(
@@ -3232,18 +2980,10 @@ class Orchestrator:
             or evaluation.evaluator_llm_call_id != evaluation_call_id
             or near_final_payload.get("evaluation_id") != evaluation.evaluation_id
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "near-final evaluation checkpoint is misbound",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("near-final evaluation checkpoint is misbound")
         if refs.get("near_completion") is not None:
             if source_generation is None:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "near-final prefix validation requires the soft-final source draft",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("near-final prefix validation requires the soft-final source draft")
             eval0 = self._load_near_evaluation_checkpoint(
                 scene_id=scene_id,
                 round_index=0,
@@ -3260,17 +3000,9 @@ class Orchestrator:
                     not control.get("rewrite_allowed")
                     or control.get("skip_reason") is not None
                 ):
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "near-final rewrite completion is not reachable from eval0",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("near-final rewrite completion is not reachable from eval0")
                 if rewrite_gate is not None and rewrite_gate.get("rejected"):
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "near-final completion promoted a gate-rejected rewrite",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("near-final completion promoted a gate-rejected rewrite")
                 expected_generation = self._load_near_rewrite_checkpoint(
                     scene_id=scene_id,
                     source_generation=source_generation,
@@ -3286,11 +3018,7 @@ class Orchestrator:
                     # v2（W5）：允许的重写被 styled-draft gate 拒绝（抄袭）才可能走到
                     # 这里——重写产物必须仍在且匹配，终稿则是重写前的来源稿。
                     if rewrite_gate is None or not rewrite_gate.get("rejected"):
-                        raise DomainError(
-                            "RUN_CHECKPOINT_CORRUPT",
-                            "near-final completion skipped an allowed rewrite",
-                            status_code=409,
-                        )
+                        raise checkpoint_corrupt("near-final completion skipped an allowed rewrite")
                     self._load_near_rewrite_checkpoint(
                         scene_id=scene_id,
                         source_generation=source_generation,
@@ -3298,19 +3026,11 @@ class Orchestrator:
                     )
                     expected_skip_reason = _near_final_rejection_skip_reason(rewrite_gate)
                 elif rewrite_gate is not None:
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "near-final rewrite gate exists for a non-rewrite branch",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("near-final rewrite gate exists for a non-rewrite branch")
                 expected_generation = source_generation
                 final_evaluation = eval0
             else:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "near-final rewrite count is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("near-final rewrite count is invalid")
             expected_payload = near_final_result_payload(
                 final_evaluation,
                 rewrite_count=rewrite_count,
@@ -3329,10 +3049,8 @@ class Orchestrator:
                     else "candidate"
                 )
                 if eval0_candidate.status != expected_eval0_candidate_status:
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
+                    raise checkpoint_corrupt(
                         "near-final eval0 candidate lifecycle is inconsistent with the final evaluation",
-                        status_code=409,
                     )
             completion = refs.get("near_completion")
             expected_completion = {
@@ -3357,11 +3075,7 @@ class Orchestrator:
                 or final_scene.content != expected_generation.content
                 or final_scene.generation_llm_call_id != expected_generation.llm_call_id
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "near-final completion prefix/branch/hash mismatch",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("near-final completion prefix/branch/hash mismatch")
             finalize_attempts = (
                 self.session.execute(
                     select(AttemptTracker).where(
@@ -3384,11 +3098,7 @@ class Orchestrator:
                 == refs.get("soft_qc_report_id")
             ]
             if len(matched_finalize) != 1:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "near-final checkpoint has no unique finalize attempt audit row",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("near-final checkpoint has no unique finalize attempt audit row")
         return final_scene, near_final_payload
 
     def _load_archived_checkpoint(self, scene_id: str) -> FinalScene:
@@ -3410,11 +3120,7 @@ class Orchestrator:
         refs = (state.run_checkpoint_json or {}).get("artifact_refs", {})
         carry_notes = list(refs.get("carry_notes") or [])
         if self._json_hash(carry_notes) != self._checkpoint_hash("carry_notes"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archived carry notes hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archived carry notes hash mismatch")
         contract = self.execution_contract_service.get_or_create(
             scene_id,
             actor_ref="orchestrator",
@@ -3437,22 +3143,11 @@ class Orchestrator:
         if manifest != expected_manifest or self._json_hash(
             manifest
         ) != self._checkpoint_hash("archive_manifest"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archived product manifest is incomplete or changed",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archived product manifest is incomplete or changed")
         memory_id = self._checkpoint_artifact(
             "scene_memory_row_id", expected_node_at_least="archived"
         )
-        memory = (
-            self.session.get(SceneMemory, memory_id)
-            if isinstance(memory_id, str)
-            else None
-        )
-        if memory is None:
-            self._raise_checkpoint_output_missing(row_id=memory_id)
-        assert memory is not None
+        memory = self._require_checkpoint_row(SceneMemory, memory_id)
         if (
             state.run_checkpoint != "archived"
             or state.scene_status != "archived"
@@ -3468,11 +3163,7 @@ class Orchestrator:
             or memory.active_flag != 1
             or memory.runtime_eligible != 1
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "archived checkpoint product graph is inconsistent",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("archived checkpoint product graph is inconsistent")
         return final_scene
 
     def _load_checkpoint_bundle(self, scene_id: str) -> dict[str, Any]:
@@ -3493,20 +3184,14 @@ class Orchestrator:
                 details={"bundle_id": bundle_id},
             )
         if bundle.scene_id != scene_id or bundle.bundle_snapshot_hash != expected_hash:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "checkpoint bundle identity/hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("checkpoint bundle identity/hash mismatch")
         bundle_integrity = verify_bundle_snapshot_hash(
             bundle.frozen_snapshot_json,
             expected_hash=bundle.bundle_snapshot_hash,
         )
         if not bundle_integrity["valid"]:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "checkpoint bundle snapshot no longer matches its recorded hash",
-                status_code=409,
                 details={
                     "bundle_id": bundle.bundle_id,
                     "bundle_integrity": bundle_integrity,
@@ -3530,10 +3215,7 @@ class Orchestrator:
         row_id = self._checkpoint_artifact(
             ref_key, expected_node_at_least=expected_node_at_least
         )
-        row = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
-        if row is None:
-            self._raise_checkpoint_output_missing(row_id=row_id)
-        assert row is not None
+        row = self._require_checkpoint_row(SceneDraft, row_id)
         bundle = self._load_checkpoint_bundle(scene_id)
         hash_key = "draft" if result_type == "neutral" else "selected_draft"
         if result_type == "neutral":
@@ -3574,10 +3256,8 @@ class Orchestrator:
         try:
             self._validate_settled_parent_ledger(generation_parent)
         except LLMAccountingError as exc:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 f"{result_type} checkpoint generation attempt ledger is invalid",
-                status_code=409,
                 details={"llm_call_id": llm_call_id, "error_code": exc.code},
             ) from exc
         if (
@@ -3588,11 +3268,7 @@ class Orchestrator:
             or row.generation_llm_call_id != llm_call_id
             or self._text_hash(row.content) != self._checkpoint_hash(hash_key)
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "checkpoint draft identity/hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("checkpoint draft identity/hash mismatch")
         kwargs = {
             "row_id": row.row_id,
             "content": row.content,
@@ -3611,11 +3287,7 @@ class Orchestrator:
         # [批准#2] 补候选（topup:N）随先中性后润色的多稿删掉，工作项只有 initial:N 槽位
         parts = slot_key.split(":") if isinstance(slot_key, str) else []
         if len(parts) != 2 or parts[0] != "initial" or not parts[1].isdigit():
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style work-item slot key is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style work-item slot key is invalid")
         return parts[0], int(parts[1])
 
     def _style_artifact_descriptor(
@@ -3632,11 +3304,7 @@ class Orchestrator:
         assert row is not None
         owner = product.artifact_execution_id or self._execution_id
         if not isinstance(owner, str):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style artifact owner is missing",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style artifact owner is missing")
         descriptor = {
             "phase": phase,
             "row_id": product.row_id,
@@ -3673,11 +3341,7 @@ class Orchestrator:
             or slot_order < 0
             or metadata.get("source_neutral_draft_row_id") != neutral_draft_row_id
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style product callback metadata is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style product callback metadata is invalid")
         item = next(
             (
                 candidate
@@ -3688,11 +3352,7 @@ class Orchestrator:
         )
         if phase == "base":
             if item is not None or slot_order != len(work_items):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "style base phase is not a monotonic prefix",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("style base phase is not a monotonic prefix")
             descriptor = self._style_artifact_descriptor(
                 product,
                 phase="base",
@@ -3700,11 +3360,7 @@ class Orchestrator:
                 source_base_row_id=None,
             )
             if descriptor["stage"] != "style_draft":
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "style base product has the wrong stage",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("style base product has the wrong stage")
             work_items.append(
                 {
                     "slot_key": slot_key,
@@ -3723,11 +3379,7 @@ class Orchestrator:
             or item.get("slot_order") != slot_order
             or item.get("final") is not None
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style final phase has no matching base prefix",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style final phase has no matching base prefix")
         gate_decision = metadata.get("gate_decision")
         de_template_outcome = metadata.get("de_template_outcome")
         source_base_row_id = metadata.get("source_base_row_id")
@@ -3747,22 +3399,14 @@ class Orchestrator:
                 and de_template_outcome.get("status") == "not_required"
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style final gate/source metadata is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style final gate/source metadata is invalid")
         if de_template_outcome["status"] == "completed" and (
             de_template_outcome.get("llm_call_id") != product.llm_call_id
             or de_template_outcome.get("execution_step_key")
             != product.execution_step_key
             or de_template_outcome.get("accounting_status") != "settled"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "completed de-template outcome is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("completed de-template outcome is invalid")
         if de_template_outcome["status"] == "failed" and (
             not isinstance(de_template_outcome.get("llm_call_id"), str)
             or not isinstance(de_template_outcome.get("execution_step_key"), str)
@@ -3771,11 +3415,7 @@ class Orchestrator:
             not in {"failed", "rejected"}
             or not isinstance(de_template_outcome.get("error_code"), str)
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "failed de-template outcome is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("failed de-template outcome is invalid")
         if de_template_outcome["status"] == "rejected" and (
             not isinstance(de_template_outcome.get("llm_call_id"), str)
             or not isinstance(de_template_outcome.get("execution_step_key"), str)
@@ -3785,11 +3425,7 @@ class Orchestrator:
             or not isinstance(de_template_outcome.get("acceptance"), dict)
             or de_template_outcome["acceptance"].get("accepted") is not False
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "rejected de-template outcome is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("rejected de-template outcome is invalid")
         descriptor = self._style_artifact_descriptor(
             product,
             phase="final",
@@ -3802,11 +3438,7 @@ class Orchestrator:
             else "style_draft"
         )
         if descriptor["stage"] != expected_stage:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style final product contradicts its gate",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style final product contradicts its gate")
         item["gate_decision"] = deepcopy(gate_decision)
         item["de_template_outcome"] = deepcopy(de_template_outcome)
         item["final"] = descriptor
@@ -3824,16 +3456,9 @@ class Orchestrator:
         source_base_row_id: str | None,
     ) -> StyleGenerationResult:
         if not isinstance(descriptor, dict):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style artifact descriptor is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style artifact descriptor is invalid")
         row_id = descriptor.get("row_id")
-        row = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
-        if row is None:
-            self._raise_checkpoint_output_missing(row_id=row_id)
-        assert row is not None
+        row = self._require_checkpoint_row(SceneDraft, row_id)
         owner = self._validate_artifact_execution_owner(
             descriptor.get("artifact_execution_id")
         )
@@ -3855,10 +3480,8 @@ class Orchestrator:
                 or neutral_row.generation_llm_call_id != descriptor.get("llm_call_id")
                 or self._text_hash(neutral_row.content) != descriptor.get("content_hash")
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "accepted first-draft style product is detached from its first draft",
-                    status_code=409,
                 )
             expected_step_key = str(descriptor.get("execution_step_key") or "")
         if (
@@ -3877,11 +3500,7 @@ class Orchestrator:
             or row.generation_llm_call_id != descriptor.get("llm_call_id")
             or self._text_hash(row.content) != descriptor.get("content_hash")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style artifact identity/source/hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style artifact identity/source/hash mismatch")
         attempt_step = (
             "de_template" if expected_stage == "de_template" else "style_draft"
         )
@@ -3912,11 +3531,7 @@ class Orchestrator:
             ):
                 matching_attempts.append(attempt)
         if len(matching_attempts) != 1:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style artifact attempt ledger is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style artifact attempt ledger is invalid")
         attempt_details = matching_attempts[0].details_json or {}
         return StyleGenerationResult(
             row_id=row.row_id,
@@ -3943,11 +3558,7 @@ class Orchestrator:
         require_complete: bool,
     ) -> list[tuple[StyleGenerationResult, StyleGenerationResult | None]]:
         if not isinstance(work_items, list) or (require_complete and not work_items):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style work-item cursor is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style work-item cursor is invalid")
         bundle = self._load_checkpoint_bundle(scene_id)
         neutral_row_id = self._checkpoint_artifact(
             "neutral_draft_row_id", expected_node_at_least="neutral_ready"
@@ -3964,11 +3575,7 @@ class Orchestrator:
                 or item.get("kind") != "initial"
                 or item.get("slot_index") != order
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "style work-item prefix/slot identity is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("style work-item prefix/slot identity is invalid")
             base_step_key = f"style_draft:{order}"
             base = self._validate_style_artifact_descriptor(
                 item.get("base"),
@@ -3988,11 +3595,7 @@ class Orchestrator:
                     or item.get("de_template_outcome") is not None
                     or order != len(work_items) - 1
                 ):
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "style work-item final prefix is incomplete",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("style work-item final prefix is incomplete")
                 saw_partial = True
                 products.append((base, None))
                 continue
@@ -4007,11 +3610,7 @@ class Orchestrator:
                 or (not gate["triggered"] and outcome.get("status") != "not_required")
                 or (gate["triggered"] and outcome.get("status") == "not_required")
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "style work-item gate decision is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("style work-item gate decision is invalid")
             final_stage = (
                 "de_template" if outcome["status"] == "completed" else "style_draft"
             )
@@ -4035,28 +3634,16 @@ class Orchestrator:
                 or final.llm_call_id != base.llm_call_id
                 or final.content != base.content
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "fallback style product is not base=final",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("fallback style product is not base=final")
             if outcome["status"] == "completed" and final.row_id == base.row_id:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "de-template product does not have independent lineage",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("de-template product does not have independent lineage")
             if outcome["status"] == "completed" and (
                 outcome.get("llm_call_id") != final.llm_call_id
                 or outcome.get("execution_step_key") != final.execution_step_key
                 or outcome.get("artifact_execution_id") != final.artifact_execution_id
                 or outcome.get("accounting_status") != "settled"
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "completed de-template outcome is misbound",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("completed de-template outcome is misbound")
             if outcome["status"] == "failed":
                 self._validate_failed_style_de_template_outcome(
                     outcome,
@@ -4112,11 +3699,7 @@ class Orchestrator:
             or row.source_bundle_hash != bundle["bundle_snapshot_hash"]
             or row.generation_llm_call_id != call.llm_call_id
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "rejected de-template artifact ledger is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("rejected de-template artifact ledger is invalid")
         matching_attempts = []
         for attempt in self.session.execute(
             select(AttemptTracker).where(
@@ -4136,11 +3719,7 @@ class Orchestrator:
             ):
                 matching_attempts.append(attempt)
         if len(matching_attempts) != 1:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "rejected de-template attempt is missing or duplicated",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("rejected de-template attempt is missing or duplicated")
 
     def _validate_failed_style_de_template_outcome(
         self,
@@ -4180,11 +3759,7 @@ class Orchestrator:
                 and call.request_dispatched_at is not None
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "failed de-template call ledger is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("failed de-template call ledger is invalid")
         provider_attempts = (
             self.session.execute(
                 select(LlmCallAttempt).where(
@@ -4241,11 +3816,7 @@ class Orchestrator:
                     )
                 )
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "failed de-template provider-attempt ledger is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("failed de-template provider-attempt ledger is invalid")
         failed_attempts = []
         for attempt in self.session.execute(
             select(AttemptTracker).where(
@@ -4263,11 +3834,7 @@ class Orchestrator:
             ):
                 failed_attempts.append(attempt)
         if len(failed_attempts) != 1:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "failed de-template attempt is missing or duplicated",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("failed de-template attempt is missing or duplicated")
 
     def _load_partial_style_work_items(
         self,
@@ -4286,11 +3853,7 @@ class Orchestrator:
             or refs.get("style_initial_candidate_count") != expected_initial_count
             or self._json_hash(work_items) != self._checkpoint_hash("style_work_items")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "partial style work-item cursor is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("partial style work-item cursor is invalid")
         products = self._validate_style_work_items(
             work_items,
             scene_id=scene_id,
@@ -4300,11 +3863,7 @@ class Orchestrator:
         last_order = len(products) - 1
         last_phase = 1 if products and products[-1][1] is not None else 0
         if payload.get("sub_index") != last_order * 2 + last_phase:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "partial style subcursor does not match its phase",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("partial style subcursor does not match its phase")
         return deepcopy(work_items)
 
     def _style_resume_products(
@@ -4341,11 +3900,7 @@ class Orchestrator:
             "style_draft_row_id", expected_node_at_least="style_ready"
         )
         if not isinstance(row_ids, list) or not row_ids or row_ids[0] != selected:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style candidate checkpoint is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style candidate checkpoint is invalid")
         work_items = self._checkpoint_artifact(
             "style_work_items", expected_node_at_least="style_ready"
         )
@@ -4357,11 +3912,7 @@ class Orchestrator:
             or initial_count < 1
             or self._json_hash(work_items) != self._checkpoint_hash("style_work_items")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style work-item completion ledger is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style work-item completion ledger is invalid")
         lineage_products = self._validate_style_work_items(
             work_items,
             scene_id=scene_id,
@@ -4376,11 +3927,7 @@ class Orchestrator:
         if len(final_by_row_id) != len(lineage_products) or set(row_ids) != set(
             final_by_row_id
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style candidate ordering is detached from work-item lineage",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style candidate ordering is detached from work-item lineage")
         results: list[StyleGenerationResult] = []
         bundle = self._load_checkpoint_bundle(scene_id)
         llm_call_ids = self._checkpoint_artifact(
@@ -4404,38 +3951,19 @@ class Orchestrator:
             or not isinstance(execution_ids, list)
             or len(execution_ids) != len(row_ids)
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style candidate ledger references are invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style candidate ledger references are invalid")
         if ranking_audits is not None and (
             not isinstance(ranking_audits, list)
             or len(ranking_audits) != len(row_ids)
             or self._json_hash(ranking_audits)
             != checkpoint_hashes.get("style_candidate_rankings")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style candidate ranking audit is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("style candidate ranking audit is invalid")
         for index, row_id in enumerate(row_ids):
             lineage_result = final_by_row_id.get(row_id)
             if lineage_result is None:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "style candidate has no final work item",
-                    status_code=409,
-                )
-            row = (
-                self.session.get(SceneDraft, row_id)
-                if isinstance(row_id, str)
-                else None
-            )
-            if row is None:
-                self._raise_checkpoint_output_missing(row_id=row_id)
-            assert row is not None
+                raise checkpoint_corrupt("style candidate has no final work item")
+            row = self._require_checkpoint_row(SceneDraft, row_id)
             self._validate_checkpoint_llm_output(
                 scene_id=scene_id,
                 llm_call_id=llm_call_ids[index],
@@ -4456,19 +3984,11 @@ class Orchestrator:
                 or self._text_hash(row.content)
                 != self._checkpoint_hash(f"style_ready_candidate_{index}")
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "style candidate identity/source/hash mismatch",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("style candidate identity/source/hash mismatch")
             if index == 0 and self._text_hash(row.content) != self._checkpoint_hash(
                 "selected_draft"
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "selected style draft hash mismatch",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("selected style draft hash mismatch")
             results.append(
                 StyleGenerationResult(
                     row_id=row.row_id,
@@ -4503,25 +4023,14 @@ class Orchestrator:
             candidate for candidate in candidates if candidate.row_id == selected_row_id
         ]
         if len(selected) != 1:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "selected style candidate is absent or ambiguous in the durable prefix",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("selected style candidate is absent or ambiguous in the durable prefix")
         return selected[0]
 
     def _load_hard_qc_checkpoint(self, scene_id: str) -> HardQcDecision:
         qc_report_id = self._checkpoint_artifact(
             "qc_report_id", expected_node_at_least="hard_qc_ready"
         )
-        report = (
-            self.session.get(QcReport, qc_report_id)
-            if isinstance(qc_report_id, str)
-            else None
-        )
-        if report is None:
-            self._raise_checkpoint_output_missing(row_id=qc_report_id)
-        assert report is not None
+        report = self._require_checkpoint_row(QcReport, qc_report_id)
         bundle = self._load_checkpoint_bundle(scene_id)
         state = self._active_checkpoint_state()
         payload = state.run_checkpoint_json or {}
@@ -4546,11 +4055,7 @@ class Orchestrator:
             or report.source_bundle_id != bundle["bundle_id"]
             or refs.get("hard_qc_bundle_id") != bundle["bundle_id"]
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "hard QC checkpoint identity/source mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("hard QC checkpoint identity/source mismatch")
         decision = HardQcDecision(
             branch=str(refs.get("branch") or "continue"),
             qc_report_id=report.qc_report_id,
@@ -4578,19 +4083,11 @@ class Orchestrator:
         if self._json_hash(decision_summary) != self._checkpoint_hash(
             "hard_qc_decision"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "hard QC decision hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("hard QC decision hash mismatch")
         if self._json_hash(qc_report_snapshot(report)) != self._checkpoint_hash(
             "hard_qc_report"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "hard QC report hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("hard QC report hash mismatch")
         self._validate_qc_attempt(
             scene_id=scene_id,
             step="hard_qc",
@@ -4603,36 +4100,13 @@ class Orchestrator:
         return decision
 
     def _soft_checkpoint_progress(self) -> int:
-        state = self._active_checkpoint_state()
-        current = state.run_checkpoint
-        if current not in RUN_CHECKPOINT_ORDER:
-            return -1
-        soft_index = RUN_CHECKPOINT_ORDER.index("soft_qc_ready")
-        current_index = RUN_CHECKPOINT_ORDER.index(current)
-        if current_index < soft_index:
-            return -1
-        if current_index > soft_index:
-            return 3
-        payload = state.run_checkpoint_json or {}
-        sub_index = payload.get("sub_index") if isinstance(payload, dict) else None
-        if (
-            isinstance(sub_index, int)
-            and not isinstance(sub_index, bool)
-            and sub_index in {0, 1, 2, 3}
-        ):
-            return sub_index
-        refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
-        if (
-            sub_index is None
-            and isinstance(refs, dict)
-            and refs.get("soft_qc_report_id")
-        ):
-            # 兼容子游标上线前已经完整提交的 soft checkpoint。
-            return 3
-        raise DomainError(
-            "RUN_CHECKPOINT_CORRUPT",
-            "soft QC checkpoint sub-index is invalid",
-            status_code=409,
+        # 没有 sub_index 的完整检查点：兼容子游标上线前已经完整提交的 soft checkpoint。
+        return self._sub_checkpoint_progress(
+            "soft_qc_ready",
+            last_sub_index=3,
+            legacy_complete=lambda refs: bool(refs.get("soft_qc_report_id")),
+            legacy_sub_index=3,
+            invalid_message="soft QC checkpoint sub-index is invalid",
         )
 
     def _ensure_soft_qc_subcheckpoints(
@@ -5009,11 +4483,7 @@ class Orchestrator:
             return soft_qc, final_generation
 
         if progress >= 2:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "soft patch checkpoint exists for a non-patch QC0 branch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("soft patch checkpoint exists for a non-patch QC0 branch")
         self._save_soft_qc_round_checkpoint(
             sub_index=3,
             round_index=0,
@@ -5229,19 +4699,9 @@ class Orchestrator:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         refs = payload.get("artifact_refs") or {}
         row_id = refs.get(f"{prefix}_draft_row_id")
-        draft = (
-            self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
-        )
-        if draft is None:
-            self._raise_checkpoint_output_missing(row_id=row_id)
+        draft = self._require_checkpoint_row(SceneDraft, row_id)
         source_row_id = refs.get(f"{prefix}_source_draft_row_id")
-        source = (
-            self.session.get(SceneDraft, source_row_id)
-            if isinstance(source_row_id, str)
-            else None
-        )
-        if source is None:
-            self._raise_checkpoint_output_missing(row_id=source_row_id)
+        source = self._require_checkpoint_row(SceneDraft, source_row_id)
         bundle = self._load_checkpoint_bundle(scene_id)
         llm_call_id = refs.get(f"{prefix}_llm_call_id")
         execution_step_key = refs.get(f"{prefix}_execution_step_key")
@@ -5260,11 +4720,7 @@ class Orchestrator:
             or self._text_hash(historical_execution_mode)
             != self._checkpoint_hash(f"{prefix}_provider_execution_mode")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"{prefix} checkpoint provider execution mode snapshot is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"{prefix} checkpoint provider execution mode snapshot is invalid")
         if (
             draft.scene_id != scene_id
             or draft.stage not in expected_stages
@@ -5277,19 +4733,11 @@ class Orchestrator:
             or self._text_hash(draft.content)
             != self._checkpoint_hash(f"{prefix}_draft")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"{prefix} checkpoint draft identity/source/hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"{prefix} checkpoint draft identity/source/hash mismatch")
         if expected_source_qc_report_id is not None and (
             refs.get(f"{prefix}_source_qc_report_id") != expected_source_qc_report_id
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"{prefix} checkpoint QC source mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"{prefix} checkpoint QC source mismatch")
         try:
             self._validate_generation_parent_identity(
                 scene_id=scene_id,
@@ -5301,10 +4749,8 @@ class Orchestrator:
             )
             self._validate_settled_parent_ledger(generation_parent)
         except LLMAccountingError as exc:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 f"{prefix} generation parent/physical-attempt ledger is invalid",
-                status_code=409,
                 details={"llm_call_id": llm_call_id, "error_code": exc.code},
             ) from exc
         if prefix == "soft_input":
@@ -5328,11 +4774,7 @@ class Orchestrator:
                 )
                 or (outcome != "patched" and draft.row_id != source_row_id)
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "soft input auto-critique decision is inconsistent",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("soft input auto-critique decision is inconsistent")
             self._validate_auto_critique_product_semantics(
                 critique,
                 source_content=source.content,
@@ -5350,11 +4792,7 @@ class Orchestrator:
                     patch_failure_product,
                 )
             elif patch_failure_product is not None:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "non-failed auto-critique patch has a failure product",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("non-failed auto-critique patch has a failure product")
         return StyleGenerationResult(
             row_id=draft.row_id,
             content=draft.content,
@@ -5651,11 +5089,7 @@ class Orchestrator:
             "rule_flagged_dimensions": expected_rule.rule_flagged_dimensions,
         }
         if any(product.get(key) != value for key, value in rule_fields.items()):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "auto-critique rule product differs from deterministic source analysis",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("auto-critique rule product differs from deterministic source analysis")
         if product.get("outcome") != "completed":
             merged_rule_fields = {
                 "should_rewrite": expected_rule.should_rewrite,
@@ -5666,17 +5100,11 @@ class Orchestrator:
             if any(
                 product.get(key) != value for key, value in merged_rule_fields.items()
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "auto-critique degraded/no-call product is not the deterministic rule result",
-                    status_code=409,
                 )
             if product.get("llm_contribution") is not None:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "auto-critique non-completed product contains an LLM contribution",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("auto-critique non-completed product contains an LLM contribution")
         else:
             contribution = product.get("llm_contribution")
             issues = (
@@ -5707,11 +5135,7 @@ class Orchestrator:
                 )
                 or contribution.get("should_rewrite") != bool(issues)
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "auto-critique completed LLM contribution schema is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("auto-critique completed LLM contribution schema is invalid")
             expected_directives = list(expected_rule.directives)
             expected_flagged = list(expected_rule.flagged_dimensions)
             seen_dimensions = set(expected_flagged)
@@ -5735,21 +5159,15 @@ class Orchestrator:
                 == (expected_rule.should_rewrite or contribution["should_rewrite"])
             )
             if not completed_invariants_hold:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "auto-critique completed product violates deterministic merge invariants",
-                    status_code=409,
                 )
         should_rewrite = product.get("should_rewrite") is True
         if (not should_rewrite and patch_outcome != "unchanged") or (
             should_rewrite
             and patch_outcome not in {"patched", "patch_skipped", "patch_failed"}
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "auto-critique decision and patch outcome are semantically inconsistent",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("auto-critique decision and patch outcome are semantically inconsistent")
 
     def _auto_critique_llm_contribution_hash(self, product: dict[str, Any]) -> str:
         contribution = product.get("llm_contribution")
@@ -5790,19 +5208,11 @@ class Orchestrator:
             or not isinstance(product.get("reason"), str)
             or not isinstance(product.get("error_code"), str)
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "auto-critique patch failure product schema/owner is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("auto-critique patch failure product schema/owner is invalid")
         if validate_checkpoint_hash and self._json_hash(
             product
         ) != self._checkpoint_hash("soft_auto_critique_patch_failure"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "auto-critique patch failure product hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("auto-critique patch failure product hash mismatch")
         context = self._auto_critique_patch_context(
             scene_id,
             execution_id=product["execution_id"],
@@ -5830,11 +5240,7 @@ class Orchestrator:
         ) != self._json_hash(
             product
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "auto-critique patch failure product is detached from its parent",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("auto-critique patch failure product is detached from its parent")
         try:
             if outcome == "parse_failed":
                 if (
@@ -5860,10 +5266,8 @@ class Orchestrator:
                     expected_error_code=product["error_code"],
                 )
         except LLMAccountingError as exc:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "auto-critique patch failure parent/attempt ledger is invalid",
-                status_code=409,
                 details={"llm_call_id": call_id, "error_code": exc.code},
             ) from exc
 
@@ -5893,10 +5297,8 @@ class Orchestrator:
             if released and len(released) == len(rows):
                 if allow_retry:
                     return None
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "auto-critique patch no-call gate cannot replace a released tombstone",
-                    status_code=409,
                     details={"llm_call_ids": [row.llm_call_id for row in rows]},
                 )
             return None
@@ -6024,10 +5426,8 @@ class Orchestrator:
         if not rejected:
             if allow_retry:
                 return None
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "auto-critique no-call gate cannot replace a released accounting tombstone",
-                status_code=409,
                 details={"execution_step_key": context.execution_step_key},
             )
         parent = rejected[-1]
@@ -6069,15 +5469,8 @@ class Orchestrator:
             "error_code",
         }
 
-        def corrupt(message: str) -> None:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                message,
-                status_code=409,
-            )
-
         if set(product) != expected_fields or product.get("schema_version") != 1:
-            corrupt("auto-critique checkpoint product schema is invalid")
+            raise checkpoint_corrupt("auto-critique checkpoint product schema is invalid")
         outcome = product.get("outcome")
         if outcome not in {
             "not_invoked",
@@ -6086,7 +5479,7 @@ class Orchestrator:
             "provider_failed",
             "parse_failed",
         }:
-            corrupt("auto-critique checkpoint outcome is invalid")
+            raise checkpoint_corrupt("auto-critique checkpoint outcome is invalid")
         if (
             type(product.get("should_rewrite")) is not bool
             or type(product.get("rule_should_rewrite")) is not bool
@@ -6111,9 +5504,9 @@ class Orchestrator:
                 for field_name in ("dimension_scores", "rule_dimension_scores")
             )
         ):
-            corrupt("auto-critique checkpoint product fields are invalid")
+            raise checkpoint_corrupt("auto-critique checkpoint product fields are invalid")
         if outcome != "completed" and product.get("llm_contribution") is not None:
-            corrupt("auto-critique non-completed contribution field is invalid")
+            raise checkpoint_corrupt("auto-critique non-completed contribution field is invalid")
         expected_step = "soft_qc:auto_critique:0"
         if (
             not self._checkpoint_execution_owner_matches(
@@ -6121,7 +5514,7 @@ class Orchestrator:
             )
             or product.get("execution_step_key") != expected_step
         ):
-            corrupt("auto-critique checkpoint execution ownership is invalid")
+            raise checkpoint_corrupt("auto-critique checkpoint execution ownership is invalid")
 
         call_id = product.get("llm_call_id")
         reason = product.get("reason")
@@ -6138,7 +5531,7 @@ class Orchestrator:
                 }
                 or error_code is not None
             ):
-                corrupt("auto-critique no-call outcome field matrix is invalid")
+                raise checkpoint_corrupt("auto-critique no-call outcome field matrix is invalid")
             ledger_rows = (
                 self.session.execute(
                     select(LlmCall).where(
@@ -6150,7 +5543,7 @@ class Orchestrator:
                 .all()
             )
             if ledger_rows:
-                corrupt(
+                raise checkpoint_corrupt(
                     "auto-critique no-call product unexpectedly has an execution ledger"
                 )
             expected_rule = _auto_critique.auto_critique(
@@ -6170,27 +5563,27 @@ class Orchestrator:
                     "rule_flagged_dimensions": expected_rule.rule_flagged_dimensions,
                 }.items()
             ):
-                corrupt(
+                raise checkpoint_corrupt(
                     "auto-critique no-call product differs from its deterministic rule result"
                 )
             return
         if not isinstance(call_id, str) or not call_id:
-            corrupt("auto-critique called outcome is missing its parent id")
+            raise checkpoint_corrupt("auto-critique called outcome is missing its parent id")
         if outcome == "completed":
             if reason is not None or error_code is not None:
-                corrupt("auto-critique completed outcome field matrix is invalid")
+                raise checkpoint_corrupt("auto-critique completed outcome field matrix is invalid")
         elif (
             not isinstance(reason, str)
             or not reason
             or not isinstance(error_code, str)
             or not error_code
         ):
-            corrupt("auto-critique degraded outcome field matrix is invalid")
+            raise checkpoint_corrupt("auto-critique degraded outcome field matrix is invalid")
         if outcome == "parse_failed" and (
             reason != "invalid_llm_response"
             or error_code != "LLM_CRITIQUE_RESPONSE_INVALID"
         ):
-            corrupt("auto-critique parse-failed outcome code is invalid")
+            raise checkpoint_corrupt("auto-critique parse-failed outcome code is invalid")
 
         scene = self.session.get(SceneCard, scene_id)
         chapter = (
@@ -6199,7 +5592,7 @@ class Orchestrator:
             else None
         )
         if scene is None:
-            corrupt("auto-critique checkpoint scene owner is missing")
+            raise checkpoint_corrupt("auto-critique checkpoint scene owner is missing")
         product_parent = self.session.get(LlmCall, call_id)
         context = LLMCallContext(
             scope_type="scene",
@@ -6235,12 +5628,12 @@ class Orchestrator:
             or parent.response_payload_summary.get("auto_critique_product_hash")
             != self._json_hash(product)
         ):
-            corrupt("auto-critique product hash is detached from its accounting parent")
+            raise checkpoint_corrupt("auto-critique product hash is detached from its accounting parent")
         if outcome == "completed" and (
             parent.response_payload_summary.get("auto_critique_parsed_llm_hash")
             != self._auto_critique_llm_contribution_hash(product)
         ):
-            corrupt(
+            raise checkpoint_corrupt(
                 "auto-critique LLM merge payload is detached from its parsed-result hash"
             )
         try:
@@ -6256,10 +5649,8 @@ class Orchestrator:
                 ),
             )
         except LLMAccountingError as exc:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "auto-critique checkpoint parent/physical-attempt ledger is invalid",
-                status_code=409,
                 details={"llm_call_id": call_id, "error_code": exc.code},
             ) from exc
 
@@ -6380,22 +5771,12 @@ class Orchestrator:
         refs = payload.get("artifact_refs") or {}
         prefix = f"soft_qc{round_index}"
         report_id = refs.get(f"{prefix}_report_id")
-        report = (
-            self.session.get(QcReport, report_id)
-            if isinstance(report_id, str)
-            else None
-        )
-        if report is None:
-            self._raise_checkpoint_output_missing(row_id=report_id)
+        report = self._require_checkpoint_row(QcReport, report_id)
         decision_payload = refs.get(f"{prefix}_decision")
         if not isinstance(decision_payload, dict) or self._json_hash(
             decision_payload
         ) != self._checkpoint_hash(f"{prefix}_decision"):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"soft QC{round_index} decision hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"soft QC{round_index} decision hash mismatch")
         decision = SoftQcDecision(
             branch=str(decision_payload.get("branch") or "continue"),
             qc_report_id=str(decision_payload.get("qc_report_id") or ""),
@@ -6434,11 +5815,7 @@ class Orchestrator:
             or self._json_hash(qc_report_snapshot(report))
             != self._checkpoint_hash(f"{prefix}_report")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                f"soft QC{round_index} checkpoint identity/source mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt(f"soft QC{round_index} checkpoint identity/source mismatch")
         self._validate_qc_attempt(
             scene_id=scene_id,
             step="soft_qc",
@@ -6463,11 +5840,7 @@ class Orchestrator:
                 or replay_context.get("source_draft_row_id") != source_generation.row_id
                 or replay_context.get("source_bundle_id") != bundle["bundle_id"]
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    f"soft QC{round_index} human-review event is misbound",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt(f"soft QC{round_index} human-review event is misbound")
         return decision
 
     def _load_soft_qc0_branch_control(
@@ -6483,18 +5856,10 @@ class Orchestrator:
             or (decision.branch != "patch" and control["patch_allowed"])
             or (control["patch_allowed"] and control.get("skip_reason") is not None)
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "soft QC0 branch control is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("soft QC0 branch control is invalid")
         skip_reason = control.get("skip_reason")
         if skip_reason is not None and not isinstance(skip_reason, str):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "soft QC0 skip reason is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("soft QC0 skip reason is invalid")
         return control["patch_allowed"], skip_reason
 
     def _load_soft_qc_checkpoint(
@@ -6507,31 +5872,15 @@ class Orchestrator:
             "soft_qc_report_id",
             expected_node_at_least="soft_qc_ready",
         )
-        report = (
-            self.session.get(QcReport, report_id)
-            if isinstance(report_id, str)
-            else None
-        )
-        if report is None:
-            self._raise_checkpoint_output_missing(row_id=report_id)
-        assert report is not None
+        report = self._require_checkpoint_row(QcReport, report_id)
         if report.scene_id != scene_id or report.qc_type != "soft_qc":
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "soft QC checkpoint identity mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("soft QC checkpoint identity mismatch")
 
         row_id = self._checkpoint_artifact(
             "soft_final_draft_row_id",
             expected_node_at_least="soft_qc_ready",
         )
-        draft = (
-            self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
-        )
-        if draft is None:
-            self._raise_checkpoint_output_missing(row_id=row_id)
-        assert draft is not None
+        draft = self._require_checkpoint_row(SceneDraft, row_id)
         bundle = self._load_checkpoint_bundle(scene_id)
         state = self._active_checkpoint_state()
         payload = state.run_checkpoint_json or {}
@@ -6570,11 +5919,7 @@ class Orchestrator:
             or report.source_bundle_id != bundle["bundle_id"]
             or refs.get("soft_qc_bundle_id") != bundle["bundle_id"]
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "soft QC draft identity/hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("soft QC draft identity/hash mismatch")
 
         decision = SoftQcDecision(
             branch=str(
@@ -6607,19 +5952,11 @@ class Orchestrator:
         if self._json_hash(decision_summary) != self._checkpoint_hash(
             "soft_qc_decision"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "soft QC decision hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("soft QC decision hash mismatch")
         if self._json_hash(qc_report_snapshot(report)) != self._checkpoint_hash(
             "soft_qc_report"
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "soft QC report hash mismatch",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("soft QC report hash mismatch")
         self._validate_qc_attempt(
             scene_id=scene_id,
             step="soft_qc",
@@ -6640,10 +5977,8 @@ class Orchestrator:
         )
         if refs.get("soft_completion") is not None:
             if selected_style_generation is None:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "soft checkpoint prefix validation requires the selected style source",
-                    status_code=409,
                 )
             soft_input = self._load_soft_draft_checkpoint(
                 scene_id,
@@ -6665,11 +6000,7 @@ class Orchestrator:
                     or not patch_allowed
                     or skip_reason is not None
                 ):
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "soft QC1 completion is not reachable from its QC0 branch",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("soft QC1 completion is not reachable from its QC0 branch")
                 patch_generation = self._load_soft_draft_checkpoint(
                     scene_id,
                     prefix="soft_patch",
@@ -6691,19 +6022,11 @@ class Orchestrator:
                     expected_skip_reason = STYLE_PATCH_REVERTED_SKIP_REASON
             elif final_qc_round == 0:
                 if qc0.branch == "patch" and patch_allowed:
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "soft QC0 completion skipped an allowed patch",
-                        status_code=409,
-                    )
+                    raise checkpoint_corrupt("soft QC0 completion skipped an allowed patch")
                 checkpoint_decision = qc0
                 expected_generation = soft_input
             else:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "soft final QC round is invalid",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("soft final QC round is invalid")
             completion = refs.get("soft_completion")
             expected_completion = {
                 "final_qc_round": final_qc_round,
@@ -6724,11 +6047,7 @@ class Orchestrator:
                 or expected_generation.row_id != generation.row_id
                 or expected_generation.llm_call_id != generation.llm_call_id
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "soft completion prefix/branch/hash mismatch",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("soft completion prefix/branch/hash mismatch")
         return decision, generation
 
     def _checkpoint_hash(self, key: str) -> str | None:
@@ -6736,6 +6055,12 @@ class Orchestrator:
 
     def _raise_checkpoint_output_missing(self, *, row_id: Any) -> None:
         self._ckpt._raise_checkpoint_output_missing(row_id=row_id)
+
+    def _require_checkpoint_row(self, model: Any, row_id: Any) -> Any:
+        return self._ckpt._require_checkpoint_row(model, row_id)
+
+    def _sub_checkpoint_progress(self, node_key: str, **kwargs: Any) -> int:
+        return self._ckpt._sub_checkpoint_progress(node_key, **kwargs)
 
     def _active_checkpoint_state(self) -> SceneRunState:
         return self._ckpt._active_checkpoint_state()
@@ -7241,19 +6566,11 @@ class Orchestrator:
             or not isinstance(offered_row_ids, list)
             or not offered_row_ids
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "selection checkpoint event/candidate context is invalid",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("selection checkpoint event/candidate context is invalid")
         details = dict(gate.details_json or {}) if gate is not None else {}
         selected_row_id = details.get("selected_row_id")
         if details.get("candidate_row_ids") != offered_row_ids:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "selection gate candidates differ from the durable checkpoint",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("selection gate candidates differ from the durable checkpoint")
         if (
             gate is None
             or details.get("decision_status") != "selected"
@@ -7266,11 +6583,7 @@ class Orchestrator:
                 details={"scene_id": scene_id},
             )
         if selected_row_id not in offered_row_ids:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "selected candidate is outside the durable offered set",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("selected candidate is outside the durable offered set")
 
         # Selection is a hand-off, not a new prefix. Validate the complete durable
         # prefix before trusting the chosen style row or entering the post-style path.
@@ -7285,11 +6598,7 @@ class Orchestrator:
         )
         hard_qc = self._load_hard_qc_checkpoint(scene_id)
         if not hard_qc.should_continue:
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "selection checkpoint follows a terminal hard QC decision",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("selection checkpoint follows a terminal hard QC decision")
         self._load_style_checkpoint_candidates(scene_id)
         draft = self.session.get(SceneDraft, selected_row_id)
         if draft is None or not (draft.content or "").strip():
@@ -7305,10 +6614,8 @@ class Orchestrator:
             or self._text_hash(draft.content)
             != self._checkpoint_hash(f"selection_candidate_{selected_index}")
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
+            raise checkpoint_corrupt(
                 "selected candidate identity/source/hash differs from the durable checkpoint",
-                status_code=409,
             )
         checkpoint_payload = state.run_checkpoint_json or {}
         checkpoint_refs = checkpoint_payload.get("artifact_refs") or {}
@@ -7329,11 +6636,7 @@ class Orchestrator:
                 == len(candidate_execution_ids)
             )
         ):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "selected candidate ledger lineage is incomplete",
-                status_code=409,
-            )
+            raise checkpoint_corrupt("selected candidate ledger lineage is incomplete")
         candidate_index = candidate_row_ids.index(selected_row_id)
         selected_llm_call_id = candidate_llm_call_ids[candidate_index]
         selected_step_key = candidate_step_keys[candidate_index]
@@ -7381,18 +6684,12 @@ class Orchestrator:
                     )
                 )
             ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
+                raise checkpoint_corrupt(
                     "selection resume sub-checkpoint differs from committed business state",
-                    status_code=409,
                 )
         else:
             if state.run_checkpoint != "selection_wait":
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "post-selection checkpoint is missing its durable handoff decision",
-                    status_code=409,
-                )
+                raise checkpoint_corrupt("post-selection checkpoint is missing its durable handoff decision")
             state.current_style_draft_row_id = draft.row_id
             state.latest_valid_draft_row_id = draft.row_id
             gate.status = "resolved"
