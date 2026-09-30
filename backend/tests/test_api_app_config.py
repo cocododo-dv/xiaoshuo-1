@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 
 from novel_system.api.app import SUPPORTED_DATABASE_REVISION, create_app
+from novel_system.api.error_catalog import ERROR_MESSAGES
 from novel_system.db.base import Base
 from novel_system.env_config import DEFAULT_DATABASE_PATH
 from novel_system.db.session import engine
@@ -191,7 +192,7 @@ def test_unhandled_errors_return_request_id_without_leaking_exception_text() -> 
     payload = response.json()
     assert response.status_code == 500
     assert payload["error"]["code"] == "INTERNAL_ERROR"
-    assert payload["error"]["message"] == "internal server error"
+    assert payload["error"]["message"] == ERROR_MESSAGES["INTERNAL_ERROR"]
     assert "secret database password" not in response.text
     assert payload["request_id"].startswith("req_")
 
@@ -224,7 +225,7 @@ def test_unhandled_errors_leave_through_cors_with_the_request_id(caplog) -> None
     assert payload["ok"] is False and payload["data"] is None
     assert payload["error"] == {
         "code": "INTERNAL_ERROR",
-        "message": "internal server error",
+        "message": ERROR_MESSAGES["INTERNAL_ERROR"],
         "details": {"retryable": False},
     }
     logged = [record for record in caplog.records if record.getMessage().startswith("Unhandled API error")]
@@ -241,7 +242,10 @@ def test_unhandled_error_detail_is_exposed_only_when_configured(monkeypatch) -> 
         response = client.get("/api/v2/boom-for-test")
 
     assert response.status_code == 500
-    assert response.json()["error"]["message"] == "boom detail for the developer"
+    # 说明照常是中文；异常原文只在开了 expose_error_detail 时随 details.debug_message 带回（批准 #27）
+    error = response.json()["error"]
+    assert error["message"] == ERROR_MESSAGES["INTERNAL_ERROR"]
+    assert error["details"]["debug_message"] == "boom detail for the developer"
 
 
 def test_unhandled_errors_still_propagate_to_the_server_and_test_client() -> None:
@@ -540,7 +544,8 @@ def test_api_answers_schema_upgrade_needed_while_the_database_is_behind_the_code
     assert payload["error"]["details"]["current_revision"] == "20260716_0072"
     assert payload["request_id"] == behind.headers["X-Request-Id"]
     assert behind.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
-    assert ready.status_code == 503 and ready.json()["error"]["message"] == "database schema revision is not ready"
+    assert ready.status_code == 503 and ready.json()["error"]["message"] == ERROR_MESSAGES["SERVICE_NOT_READY"]
+    assert ready.json()["error"]["details"]["reason"] == "schema_revision_mismatch"
     assert live.status_code == 200
     assert upgraded.status_code == 200
     # 结构落后时不拿旧结构跑启动恢复

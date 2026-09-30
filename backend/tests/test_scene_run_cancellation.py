@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session as SqlAlchemySession
 
+from novel_system.api.error_catalog import ERROR_MESSAGES
 from novel_system.db.models import (
     ChapterGoal,
     ChapterRunJob,
@@ -1091,7 +1092,7 @@ def test_endpoint_database_busy_leaves_no_persisted_cancel(
     assert response.status_code == 503
     assert response.json()["error"] == {
         "code": "DATABASE_BUSY",
-        "message": "database is busy; retry after the current long-running operation finishes",
+        "message": ERROR_MESSAGES["DATABASE_BUSY"],
         "details": {"retryable": True},
     }
 

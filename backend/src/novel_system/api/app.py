@@ -10,6 +10,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from novel_system.api.error_catalog import ERROR_MESSAGES
 from novel_system.api.errors import install_exception_handlers
 from novel_system.api.middleware import SchemaGateMiddleware, UnhandledErrorMiddleware
 from novel_system.api.readiness import (  # noqa: F401 — SUPPORTED_DATABASE_REVISION 仍从这里导出
@@ -191,7 +192,7 @@ def create_app() -> FastAPI:
             ):
                 response = error(
                     "REMOTE_ACCESS_DISABLED",
-                    "this service accepts loopback requests only",
+                    ERROR_MESSAGES["REMOTE_ACCESS_DISABLED"],
                     status_code=403,
                     details={
                         "local_only": True,
@@ -208,7 +209,7 @@ def create_app() -> FastAPI:
                 ):
                     response = error(
                         "REMOTE_ACCESS_TOKEN_REQUIRED",
-                        "valid X-Novel-Access-Token is required",
+                        ERROR_MESSAGES["REMOTE_ACCESS_TOKEN_REQUIRED"],
                         status_code=401,
                         details={"local_only": False},
                         req_id=request.state.request_id,

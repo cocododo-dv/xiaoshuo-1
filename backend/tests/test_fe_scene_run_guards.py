@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from novel_system.api.error_catalog import ERROR_MESSAGES
 from novel_system.db.models import (
     ChapterGoal,
     SceneCard,
@@ -249,7 +250,7 @@ def test_manual_resume_controls_are_rejected_instead_of_skipping_checkpoint(
         assert response.status_code == 422
         assert response.json()["error"] == {
             "code": "RUN_CHECKPOINT_CONTROL_FORBIDDEN",
-            "message": "scene runs resume only from the server-owned durable checkpoint",
+            "message": ERROR_MESSAGES["RUN_CHECKPOINT_CONTROL_FORBIDDEN"],
             "details": {"unsupported_fields": [field]},
         }
     session.expire_all()

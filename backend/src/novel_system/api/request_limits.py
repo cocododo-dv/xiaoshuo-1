@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from novel_system.api.error_catalog import localized_message
 from novel_system.api.response import error
 
 
@@ -142,7 +143,7 @@ class RequestBodyLimitMiddleware:
         request_id = (scope.get("state") or {}).get("request_id")
         response = error(
             code,
-            message,
+            localized_message(code, message)[0],
             status_code=status_code,
             details=details,
             req_id=request_id,
