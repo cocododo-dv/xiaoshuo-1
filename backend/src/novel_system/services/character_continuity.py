@@ -14,17 +14,13 @@ def build_character_contract_digest(
     *,
     pov_character_id: str | None,
     onstage_character_ids: Iterable[str] | None,
-    voice_profile_content: str | None = None,
-    relation_profile_content: str | None = None,
     display_names: dict[str, str] | None = None,
 ) -> str:
     """本场角色的身份契约（CHARACTER_CONTRACT_v1）：id 与权威显示名，按 POV 在前、在场角色依次、同名去重。
 
-    声线卡 / 关系卡已退役（批准 #15，重评 R8）：产品里没有任何地方能写它们，实库两张表都是空的。
-    ``voice_profile_content`` / ``relation_profile_content`` 只为还在传它们的调用方留着、一律不读；
+    声线卡 / 关系卡已退役（批准 #15，重评 R8）：产品里没有任何地方能写它们，实库两张表都是空的；契约不再读它们，
     没有卡的场（所有真实作品）契约逐字节与以前相同。
     """
-    del voice_profile_content, relation_profile_content
     character_ids = _ordered_character_ids(pov_character_id, onstage_character_ids)
     if not character_ids:
         return ""
@@ -54,15 +50,6 @@ def build_character_contract_digest(
         "characters": characters,
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-
-
-def detect_character_pronoun_drift(content: str, contract_digest: str | None) -> list[dict[str, Any]]:
-    """已退役（批准 #15，重评 R8）：代词只来自声线卡，卡没有地方能写，人物契约也不再带代词——检查一次都不会命中。
-
-    质检与成稿门那一侧的调用由质量闸门包删掉；这个空壳只为还没合并那一侧的检出能导入而留着，合并后连同调用一起删。
-    """
-    del content, contract_digest
-    return []
 
 
 def detect_mechanical_required_beat_listing(

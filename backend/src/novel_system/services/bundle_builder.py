@@ -427,8 +427,6 @@ class BundleBuilder:
         character_contract = build_character_contract_digest(
             pov_character_id=scene.pov_character_id,
             onstage_character_ids=scene.onstage_chars_json,
-            voice_profile_content=None,
-            relation_profile_content=None,
             display_names=character_display_names,
         )
         if character_contract:

@@ -26,19 +26,6 @@ def test_card_less_contract_json_is_unchanged() -> None:
     assert build_character_contract_digest(pov_character_id=None, onstage_character_ids=[]) == ""
 
 
-def test_voice_and_relation_card_content_is_ignored() -> None:
-    """还在传卡片内容的调用方拿到的契约与不传时相同：不再从卡里解析代词 / 职责 / 别名 / 关系立场（批准 #15）。"""
-    with_cards = build_character_contract_digest(
-        pov_character_id="CHAR_LINYUAN",
-        onstage_character_ids=["CHAR_LINYUAN", "CHAR_SUWAN", "林远", "CHAR_GUZHOU"],
-        voice_profile_content="角色名：林岑\n代词：她\n角色职责：档案修复师\n别名：小林",
-        relation_profile_content="林岑与许望互相信任，但在公开真相的时机上有分歧。",
-        display_names={"CHAR_LINYUAN": "林远", "CHAR_SUWAN": "苏晚"},
-    )
-    assert with_cards == CARD_LESS_CONTRACT
-    assert "relationship_stance" not in json.loads(with_cards)
-
-
 def test_build_character_contract_digest_dedupes_by_display_name() -> None:
     """POV 的权威显示名与在场名单里直接写的名字相同 → 只留一个角色。"""
     digest = build_character_contract_digest(
