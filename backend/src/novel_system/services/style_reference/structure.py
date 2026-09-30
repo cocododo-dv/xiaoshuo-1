@@ -27,6 +27,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from novel_system.services.style_reference.budget_config import REFERENCE_SCENE_CHARS_MAX
 from novel_system.services.style_reference.measure import quoted_char_share
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.text_utils import (
@@ -48,8 +49,8 @@ STRUCTURE_SAMPLES_PER_SIDE = 3
 STRUCTURE_TITLE_SAMPLES = 8
 STRUCTURE_TITLE_MAX_CHARS = 48
 # 2026-09-22 结构跟随参考书:style_first 下按参考章长推场长时的上限(字),防止 2 场的章把一场
-# 推成万字;可由 injection_budget.yaml 的 style_first_reference_scene_chars_max 覆盖。
-REFERENCE_SCENE_CHARS_CEILING = 5000
+# 推成万字;可由 injection_budget.yaml 的 style_first_reference_scene_chars_max 覆盖(缺省只在 budget_config 写一次)。
+REFERENCE_SCENE_CHARS_CEILING = REFERENCE_SCENE_CHARS_MAX
 REFERENCE_SCENE_CHARS_FLOOR = 300
 STRUCTURE_SAMPLES_KIND = "structure_samples"
 STRUCTURE_SAMPLES_PREAMBLE = (

@@ -30,6 +30,7 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     normalize_dimension_states,
 )
+from novel_system.services.style_reference.budget_config import CARD_BUDGET_CHARS
 from novel_system.services.hash_engine import sha256_text
 
 DIMENSION_CARD_VERSION = "dimension_card_v1"
@@ -59,7 +60,8 @@ LINE_STATE_EXCLUDED = "excluded"
 LINE_STATES = (LINE_STATE_PINNED, LINE_STATE_EXCLUDED)
 
 CARD_LINE_MAX_CHARS = 90
-DEFAULT_CARD_BUDGET_CHARS = 2600
+# 卡的总预算缺省只有一处（budget_config）；这里的名字给 plan_card_block 的缺省参数与旧调用方
+DEFAULT_CARD_BUDGET_CHARS = CARD_BUDGET_CHARS
 # 「作者不这么写」在卡预算里的保底份额：排在其余卡句之前取，免得总被挤掉（M2）
 CARD_AVOID_SHARE = 0.25
 CARD_HEADER_DRAFT = (

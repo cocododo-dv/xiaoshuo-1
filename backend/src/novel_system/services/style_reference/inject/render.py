@@ -61,8 +61,8 @@ from novel_system.services.style_reference.binding_config import (
 )
 from novel_system.services.style_reference.binding_config import sends_card as mode_sends_card
 from novel_system.services.style_reference.binding_config import sends_samples as mode_sends_samples
+from novel_system.services.style_reference.budget_config import injection_budget
 from novel_system.services.style_reference.card import (
-    DEFAULT_CARD_BUDGET_CHARS,
     EXAMPLE_UNIT_PREFIX,
     LINE_STATE_EXCLUDED,
     UNIT_GAP,
@@ -71,10 +71,7 @@ from novel_system.services.style_reference.card import (
     line_states_from_profile_json,
     plan_card_block,
 )
-from novel_system.services.style_reference.config_loader import (
-    load_optional_yaml_config,
-    load_text_template,
-)
+from novel_system.services.style_reference.config_loader import load_text_template
 from novel_system.services.style_reference.fidelity import FEATURE_DIMENSIONS
 from novel_system.services.style_reference.inject.audit import build_audit, block_digest
 from novel_system.services.style_reference.inject.gaps import gap_dimensions
@@ -123,8 +120,6 @@ NOTICE_SAMPLES_BLOCKED = "STYLE_REFERENCE_SAMPLES_BLOCKED"
 STYLE_REFERENCE_OPEN = "[STYLE_REFERENCE]\n"
 STYLE_REFERENCE_CLOSE = "\n[/STYLE_REFERENCE]\n\n"
 
-# 单窗正文上限（切窗规则 ≤4,000 字，短尾窗并入时可放宽 25%；超长的单段窗在句边界截断）
-SAMPLE_WINDOW_MAX_CHARS = 5000
 # 只用文风卡时卡句后面的原话例子：至多 11 个字（界面的承诺「卡上的例子至多 11 个字」），太短的片段不当例子
 CARD_EXAMPLE_MAX_CHARS = 11
 CARD_EXAMPLE_MIN_CHARS = 4
@@ -217,20 +212,6 @@ _FALLBACK_RED_LINE = """## 严格禁止
 此外,以下专有名词严禁出现在生成文本中(可能引发版权或角色混淆):
 {banned_terms_list}"""
 _WINDOW_POSITION_LABELS = {POSITION_OPENING: "章首", POSITION_CLOSING: "章末", POSITION_WHOLE: "整章"}
-
-
-def _budget() -> dict[str, Any]:
-    try:
-        return load_optional_yaml_config("injection_budget")
-    except Exception:  # noqa: BLE001 — 坏配置按默认值
-        return {}
-
-
-def _budget_int(name: str, default: int) -> int:
-    try:
-        return max(0, int(_budget().get(name, default)))
-    except (TypeError, ValueError):
-        return default
 
 
 # ---------------------------------------------------------------------------
@@ -856,7 +837,7 @@ def _sample_windows(session: Session, book_id: str, refs: Sequence[WindowRef]) -
         text = str(texts.get(ref.window_no) or "").strip()
         if not text:
             continue
-        text = _clip_at_sentence(text, _budget_int("sample_window_max_chars", SAMPLE_WINDOW_MAX_CHARS))
+        text = _clip_at_sentence(text, injection_budget().sample_window_max_chars)
         safe = safe_reference_text(text)
         windows.append(
             SampleWindow(
@@ -910,7 +891,7 @@ def build_card_source(
         dimension_states=states,
         line_states=line_states_from_profile_json(profile_json),
         recent_gaps=gaps,
-        budget_chars=_budget_int("card_budget_chars", DEFAULT_CARD_BUDGET_CHARS),
+        budget_chars=injection_budget().card_budget_chars,
         examples=examples,
     )
 
@@ -1122,7 +1103,6 @@ __all__ = [
     "RenderParts",
     "RenderedStyle",
     "SAMPLE_HEADERS",
-    "SAMPLE_WINDOW_MAX_CHARS",
     "STYLE_REFERENCE_CLOSE",
     "STYLE_REFERENCE_OPEN",
     "SampleWindow",

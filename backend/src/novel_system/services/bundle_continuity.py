@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any
 
@@ -12,37 +11,19 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ChapterGoal, SceneCard
 from novel_system.services.bundle_draft_lineage import latest_styled_draft_for_scene
 from novel_system.services.planning_queries import current_final_scenes
-from novel_system.services.style_reference.config_loader import load_optional_yaml_config
-
-_LOGGER = logging.getLogger(__name__)
+from novel_system.services.style_reference.budget_config import injection_budget
 
 # 2026-09 风格模仿 v2（W5，规格 §1.3）——前文声音锚 section 的登记名。风格参考 v3 删掉了漂移校准段
 # （``style_drift_calibration``）与漂移优先选窗（``_drift_ptype_priority``）：归档读数不再回灌进下一场。
 VOICE_ANCHOR_SECTION_KEY = "previous_scene_voice_anchor"
-_CONTINUITY_BUDGET_DEFAULTS: dict[str, int] = {
-    "continuity_anchor_max_chars": 900,
-}
 _SENTENCE_END_RE = re.compile(r"[。！？!?…]+[”’」』）)]*")
 
 
 def load_continuity_budget() -> dict[str, int]:
-    """读 ``config/style_reference/injection_budget.yaml`` 的跨场景连续性预算键
-    （``continuity_anchor_max_chars``）；文件或键缺失时回到规格 §1.4 的默认值（900 字）。
+    """``config/style_reference/injection_budget.yaml`` 的跨场景连续性预算键（``continuity_anchor_max_chars``，
+    ``budget_config`` 解析）；文件或键缺失、值不是正整数时回到规格 §1.4 的默认值（900 字）。
     """
-    budget = dict(_CONTINUITY_BUDGET_DEFAULTS)
-    try:
-        raw = load_optional_yaml_config("injection_budget")
-    except Exception:  # noqa: BLE001 — 配置损坏不应让 bundle 构建失败
-        _LOGGER.warning("injection_budget.yaml unreadable; using continuity defaults", exc_info=True)
-        return budget
-    for key, default in _CONTINUITY_BUDGET_DEFAULTS.items():
-        value = raw.get(key, default)
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            parsed = default
-        budget[key] = parsed if parsed > 0 else default
-    return budget
+    return {"continuity_anchor_max_chars": injection_budget().continuity_anchor_max_chars}
 
 
 def tail_at_sentence_boundary(text: str, max_chars: int) -> str:

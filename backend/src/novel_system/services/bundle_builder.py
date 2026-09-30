@@ -58,9 +58,7 @@ from novel_system.services.scene_structure_brief import (
     SCENE_STRUCTURE_SECTION_KEY,
     render_scene_structure_brief,
 )
-from novel_system.services.style_reference.config_loader import (
-    load_optional_yaml_config,
-)
+from novel_system.services.style_reference.budget_config import injection_budget
 from novel_system.services.style_reference.inject.bindings import (
     ordered_character_ids,
     resolve_binding_layers,
@@ -83,10 +81,7 @@ from novel_system.services.style_reference.runtime_contract import (
     build_style_runtime_contract,
     contract_layer,
 )
-from novel_system.services.style_reference.structure import (
-    REFERENCE_SCENE_CHARS_CEILING,
-    reference_scene_scale,
-)
+from novel_system.services.style_reference.structure import reference_scene_scale
 from novel_system.services.style_prompt_injection import SCENE_SITUATION_TAGS_KEY
 from novel_system.services.style_reference.tags import normalize_situation_tags
 from novel_system.services.writer_briefs import (
@@ -605,12 +600,7 @@ class BundleBuilder:
             ).scalar()
             or 0
         )
-        ceiling = REFERENCE_SCENE_CHARS_CEILING
-        try:
-            raw = load_optional_yaml_config("injection_budget")
-            ceiling = int(raw.get("style_first_reference_scene_chars_max", ceiling) or ceiling)
-        except Exception:  # noqa: BLE001 — 配置损坏不应让 bundle 构建失败
-            ceiling = REFERENCE_SCENE_CHARS_CEILING
+        ceiling = injection_budget().style_first_reference_scene_chars_max
         return reference_scene_scale(card, scenes_in_chapter=scenes_in_chapter, ceiling=ceiling)
 
     def _latest_planning_artifact(

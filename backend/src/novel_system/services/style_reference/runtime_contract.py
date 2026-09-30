@@ -42,7 +42,7 @@ from typing import Any, Mapping, Sequence
 from novel_system.cache_registry import register_cache_reset
 from novel_system.services.hash_engine import sha256_json_normalized, sha256_text
 from novel_system.services.style_reference.binding_config import normalize_binding_config
-from novel_system.services.style_reference.config_loader import load_yaml_config
+from novel_system.services.style_reference.budget_config import injection_budget
 from novel_system.services.style_reference.inject.bindings import SCOPE_RANK, most_specific_binding
 from novel_system.services.style_reference.paragraph_root import ensure_paragraph_root
 from novel_system.services.style_reference.policy import book_allows_cloud
@@ -118,22 +118,13 @@ DRAFT_MODE_NEUTRAL_FIRST = "neutral_first"
 _ALLOWED_DRAFT_MODES = frozenset({DRAFT_MODE_STYLE_FIRST, DRAFT_MODE_NEUTRAL_FIRST})
 
 
-def _default_draft_mode() -> str:
-    """``injection_budget.yaml`` 的 ``draft_mode_default``(缺省 style_first)。"""
-    try:
-        budget = load_yaml_config("injection_budget")
-    except FileNotFoundError:
-        budget = {}
-    value = str(budget.get("draft_mode_default") or "").strip().lower()
-    return value if value in _ALLOWED_DRAFT_MODES else DRAFT_MODE_STYLE_FIRST
-
-
 def resolve_draft_mode(config_json: Mapping[str, Any] | None) -> str:
-    """一个绑定的生效起草方式:``config_json.draft_mode`` 合法即用,否则取 yaml 缺省。"""
+    """一个绑定的生效起草方式:``config_json.draft_mode`` 合法即用,否则取 ``injection_budget.yaml`` 的
+    ``draft_mode_default``(缺省 style_first,``budget_config`` 解析)。"""
     raw = ""
     if isinstance(config_json, Mapping):
         raw = str(config_json.get("draft_mode") or "").strip().lower()
-    return raw if raw in _ALLOWED_DRAFT_MODES else _default_draft_mode()
+    return raw if raw in _ALLOWED_DRAFT_MODES else injection_budget().draft_mode_default
 
 
 def compute_paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:

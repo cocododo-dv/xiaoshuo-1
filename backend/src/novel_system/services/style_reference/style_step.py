@@ -30,6 +30,7 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     normalize_dimension_states,
 )
+from novel_system.services.style_reference.budget_config import injection_budget
 from novel_system.services.style_reference.card import (
     DIMENSION_LABELS,
     LINE_STATE_EXCLUDED,
@@ -43,7 +44,6 @@ from novel_system.services.style_reference.cn_phrases import (
     rate_phrase,
     tenths_phrase,
 )
-from novel_system.services.style_reference.config_loader import load_optional_yaml_config
 from novel_system.services.style_reference.fidelity import (
     DEFAULT_MAX_PERCENTILE,
     MEASURABLE_DIMENSIONS,
@@ -52,7 +52,6 @@ from novel_system.services.style_reference.fidelity import (
     within_author_range,
 )
 
-FIDELITY_CONFIG_SECTION = "fidelity"
 # 软补丁的去留记在这一步的尝试上（编排器写，工作台 / 读数接口读）。
 STYLE_PATCH_KEEP_STEP = "style_patch_keep"
 MAX_REVISE_DIMENSIONS = 4
@@ -118,12 +117,8 @@ def _number(value: Any, default: float, *, low: float = 0.0, high: float = math.
 
 
 def fidelity_thresholds() -> FidelityThresholds:
-    """``injection_budget.yaml`` 的 ``fidelity:`` 段（缺键 / 坏值按默认）。"""
-    try:
-        raw = load_optional_yaml_config("injection_budget").get(FIDELITY_CONFIG_SECTION)
-    except Exception:  # noqa: BLE001 — 坏配置按默认
-        raw = None
-    section = raw if isinstance(raw, Mapping) else {}
+    """``injection_budget.yaml`` 的 ``fidelity:`` 段（``budget_config`` 读文件；缺键 / 坏值按默认）。"""
+    section = injection_budget().fidelity
     return FidelityThresholds(
         style_step_max_percentile=_number(
             section.get("style_step_max_percentile"), DEFAULT_THRESHOLDS.style_step_max_percentile, high=100.0
@@ -416,7 +411,6 @@ __all__ = [
     "DECISION_REVISION_KEPT",
     "DECISION_REVISION_REJECTED",
     "DEFAULT_THRESHOLDS",
-    "FIDELITY_CONFIG_SECTION",
     "FidelityThresholds",
     "MAX_REVISE_DIMENSIONS",
     "PATCH_DECISION_KEPT",
