@@ -18,10 +18,9 @@ import { sceneLabel } from "./labels/catalog.js";
      派生统计与档案字段的变化只通知 WsWorks.subscribe 的订阅者（见 wsNotify）
    ========================================================== */
 
-const WS_WORKS_LS = "ws_works_created_v1";   // 旧 localStorage 时代的本地作品（一次性上行迁移源）
+/* 6 月原型时期本机作品（ws_works_created_v1）的一次性上行已删除（批准 #25，重评 R16）：旧键原样留着、不再读。 */
 const WS_ACTIVE_LS = "ws_active_work_v1";    // 当前作品 id（UI 状态，长期保留 localStorage）
 const WS_CACHE_LS = "ws_works_cache_v1";     // 列表启动缓存（API 真相的本地影子，仅为同步 list()）
-const WS_MIGRATED_LS = "ws_migrated_v1";     // 一次性迁移标记
 const WS_RETIRED_DEMO_IDS = new Set(["tide", "salt"]);
 
 function wsIsRetiredDemo(work) {
@@ -226,49 +225,6 @@ function wsToastError(error, fallback) {
   storeAlert(error, fallback);
 }
 
-/* —— 一次性上行迁移：旧 localStorage 作品 → POST 后端 —— */
-async function wsMigrateLegacy() {
-  try {
-    if (localStorage.getItem(WS_MIGRATED_LS)) return false;
-    const raw = localStorage.getItem(WS_WORKS_LS);
-    const legacy = raw ? JSON.parse(raw) : null;
-    let migrated = false;
-    let failed = 0;
-    if (Array.isArray(legacy)) {
-      for (const w of legacy) {
-        if (!w || !w.title || wsIsRetiredDemo(w)) continue;
-        try {
-          await apiPost("/api/v2/projects", {
-            title: w.title,
-            genre: w.genre || null,
-            mark: w.mark || null,
-            accent: w.accent || null,
-            synopsis_line: w.sub || null,
-            target_word_count: Number(w.wordsTarget) || null,
-            words_target_daily: Number(w.wordsTargetDay) || null,
-            outline_text: ((w.sub || w.title || "").trim() || "（迁移自本地草稿）"),
-          });
-          migrated = true;
-        } catch (e) {
-          // 单部失败不阻塞其余；旧键保留（Phase 8 清理）
-          failed += 1;
-          console.warn("[WsWorks] 迁移本地作品失败:", w.title, e);
-        }
-      }
-    }
-    // 审计 P-19：有失败就不落"已迁移"标记，下次启动重试失败的作品；
-    // 全部成功（或无可迁移项）才封口。
-    if (failed === 0) {
-      localStorage.setItem(WS_MIGRATED_LS, new Date().toISOString());
-    } else {
-      console.warn(`[WsWorks] ${failed} 部作品迁移失败，保留旧键待下次启动重试。`);
-    }
-    return migrated;
-  } catch (e) {
-    return false;
-  }
-}
-
 /* —— 拉取列表（启动 / 写后失效重拉）—— */
 let wsRefreshing = null;
 async function wsRefresh() {
@@ -276,9 +232,7 @@ async function wsRefresh() {
   wsRefreshing = (async () => {
     wsSetProjectsStatus("loading");
     try {
-      const migrated = await wsMigrateLegacy();
-      let data = await apiGet("/api/v2/projects");
-      if (migrated) data = await apiGet("/api/v2/projects");
+      const data = await apiGet("/api/v2/projects");
       const items = data && Array.isArray(data.items) ? data.items : [];
       const prevHomes = Object.fromEntries(WS_WORKS.map(w => [w.id, w.home]));
       WS_WORKS = items.map(item => wsAdaptProject(item, prevHomes[item.project_id]));
@@ -400,7 +354,10 @@ const WsWorks = {
   },
   remove(id) {
     /* FE-ALIGN P4：整部软删（DELETE /api/v2/projects/{id}）。
-       乐观下架 + 失败回滚；回收站条目由后端自动产生。 */
+       乐观下架 + 失败回滚；回收站条目由后端自动产生。
+       还不能发请求的 id（书架还在读的 __loading__ 占位、还在等后端正式 id 的新建作品）不动：
+       发出去只会是 /projects/<临时 id> 的 404（与 wsLoadHome 同一条规矩；设置页的调用方早已守住，这里是底线） */
+    if (!isRealWorkId(id) || wsIsPending(id)) return;
     if (WS_WORKS.length <= 1) {
       // 审计 P-19：静默 return 让用户不知道为何删不掉——给出明确提示
       storeAlert(null, "至少需要保留一部作品，无法删除最后一部。");
@@ -425,6 +382,7 @@ const WsWorks = {
     });
   },
   update(id, patch) {
+    if (!isRealWorkId(id) || wsIsPending(id)) return; // 同 remove：没有正式 id 的作品不发请求
     const body = patch || {};
     /* 字数/进度类字段改为只读派生（writing-stats / dashboard），不再接受回写 */
     const profile = {};

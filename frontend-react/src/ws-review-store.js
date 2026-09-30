@@ -1,12 +1,12 @@
 import { apiGet, apiPost } from "./lib/client.js";
-import { agoLabel } from "./lib/format.js";
+import { agoLabel, localDayKey } from "./lib/format.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 import { createKeyedLoader } from "./lib/store-kit.js";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 import { isRealWorkId } from "./lib/work-id.js";
 import { readyWorkId } from "./lib/ready-work.js";
 import { WsWorks } from "./ws-works.jsx";
-import { preferenceHintLabel, reviewSourceLabel } from "./labels/review.js";
+import { reviewSourceLabel } from "./labels/review.js";
 
 /* ==========================================================
    待办收件箱的 store（2026-09-29 从 ws-review.jsx 拆出；视图仍在 ws-review.jsx，它转出这里的名字）。
@@ -32,10 +32,9 @@ const RV_KINDS = {
    resolve 的 effect 在后端同一事务执行；视图通过 rvResolveAction
    告知本次点击的动作，store 把 action_index 带给 resolve 端点。
    「今日已处理 N 件」是 UI 偏好级计数，留 localStorage。
+   6 月原型时期本机待办（ws_review_v1::<作品>）的一次性上行已删除（批准 #25，重评 R16）：旧键原样留着、不再读。
    ========================================================== */
 const RV_DONE_LS = "ws_review_done_v1";
-const RV_MIGRATED_LS = "ws_review_migrated_v1";
-const RV_LEGACY_LS = "ws_review_v1";
 
 /* 目录与雪花的每次保存（写作时自动保存的字数回写也算）都可能改变派生卡，但频率太高：
    按 20 秒节流，窗口内的信号合并成窗口末尾的一次补拉。 */
@@ -43,31 +42,9 @@ const RV_NOISY_MIN_INTERVAL_MS = 20_000;
 
 const rvActiveId = () => readyWorkId(WsWorks);
 
-/* 旧表的「写作偏好」行（item_type author_preference_profile）标题是后端直接 dump 的 JSON：
-   从里面取出可读的倾向拼一个标题，不把原始 JSON 摊给作者。 */
-function rvPreferenceSummary(raw) {
-  const text = String(raw || "").trim();
-  if (!/^[{[]/.test(text)) return null;
-  let parsed;
-  try { parsed = JSON.parse(text); } catch (e) { return null; }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const hints = Array.isArray(parsed.safe_preference_hints) ? parsed.safe_preference_hints : [];
-  const labels = [...new Set(hints.map(preferenceHintLabel).filter(Boolean))];
-  const edits = Number(parsed.manual_edit_count) || 0;
-  const rejected = Number(parsed.rejected_proposal_count) || 0;
-  return {
-    title: labels.length ? `写作偏好：${labels.slice(0, 3).join("、")}${labels.length > 3 ? " 等" : ""}` : "写作偏好有新记录",
-    detail: [
-      edits ? `从你最近 ${edits} 次手改里记下的倾向。` : rejected ? `从你驳回的 ${rejected} 条修改提案里记下的倾向。` : "系统记下的一条写作倾向。",
-      "这条只是记录，不会改变之后的生成；点「知道了」把它移出收件箱。",
-    ].join(""),
-  };
-}
-
 /* 后端卡片 → 视图条目（形状=契约附录卡片形状） */
 function rvAdapt(card) {
   const occurred = card.occurred_at ? Date.parse(card.occurred_at) : NaN;
-  const pref = rvPreferenceSummary(card.title);
   return {
     id: card.id,
     kind: card.kind || "note",
@@ -75,11 +52,11 @@ function rvAdapt(card) {
     /* 后端卡带质量分级时透传——Q0/Q1=阻断、Q2/Q3=建议，
        视图据此把「无法继续」与「有稿建议修改」标开；无分级不猜 */
     qualityLevel: card.quality_level || undefined,
-    title: pref ? pref.title : card.title,
+    title: card.title,
     where: card.where || "",
     source: reviewSourceLabel(card.source),
     time: card.live ? "实时" : (Number.isNaN(occurred) ? "" : agoLabel(occurred)),
-    detail: card.detail || (pref ? pref.detail : ""),
+    detail: card.detail || "",
     preview: card.preview || undefined,
     checklist: card.checklist || undefined,
     options: card.options || undefined,
@@ -152,7 +129,6 @@ let rvLastFetchAt = 0;
 const rvLoader = createKeyedLoader({
   async fetch(pid) {
     rvLastFetchAt = Date.now();
-    await rvMigrateLegacy(pid);
     const [open, snoozed] = await Promise.all([
       apiGet(`/api/v1/review-items?state=open&project_id=${encodeURIComponent(pid)}`),
       apiGet(`/api/v1/review-items?state=snoozed&project_id=${encodeURIComponent(pid)}`),
@@ -205,50 +181,6 @@ function rvFetchThrottled() {
   rvNoisyTimer = setTimeout(() => { rvNoisyTimer = null; rvFetch(); }, wait);
 }
 
-/* 一次性迁移：旧 localStorage 的 custom 项上行。
-   只有全部写入成功才落完成标记；每项使用稳定 dedupe_key，因此中途失败后的整批重试
-   不会复制已成功写入的卡片。resolved/snoozed 状态无法可靠映射，保留为 open。 */
-const rvLegacyMigrations = new Map();
-async function rvMigrateLegacy(pid) {
-  if (!isRealWorkId(pid)) return false;
-  const flagKey = RV_MIGRATED_LS + "::" + pid;
-  try {
-    if (localStorage.getItem(flagKey)) return true;
-  } catch (e) {
-    console.warn("[WsReview] 无法读取旧待办迁移状态:", e);
-    return false;
-  }
-  if (rvLegacyMigrations.has(pid)) return rvLegacyMigrations.get(pid);
-
-  const migration = (async () => {
-    try {
-      // 使用调用时已锁定的作品 id；不能再读取可能已切换的全局 activeId。
-      const raw = localStorage.getItem(`${RV_LEGACY_LS}::${pid}`);
-      const st = raw ? JSON.parse(raw) : null;
-      const custom = Array.isArray(st && st.custom) ? st.custom : [];
-      for (let index = 0; index < custom.length; index += 1) {
-        const it = custom[index];
-        if (!it || !it.title) continue;
-        const legacyId = String(it.id || "item").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 80);
-        await apiPost("/api/v1/review-items", rvToPayload({
-          ...it,
-          dedupeKey: it.dedupeKey || it.dedupe_key || `legacy-review:${index}:${legacyId}`,
-        }));
-      }
-      localStorage.setItem(flagKey, new Date().toISOString());
-      return true;
-    } catch (e) {
-      // 不写完成标记，也不删除旧数据；下一次刷新会用同一 dedupe_key 安全重试。
-      console.warn("[WsReview] 旧待办迁移失败（保留旧数据，下次重试）:", e);
-      return false;
-    } finally {
-      rvLegacyMigrations.delete(pid);
-    }
-  })();
-  rvLegacyMigrations.set(pid, migration);
-  return migration;
-}
-
 function rvPush(item) {
   const payload = rvToPayload(item || {});
   rvWrite(payload.project_id, () => apiPost("/api/v1/review-items", payload)).catch((e) => {
@@ -291,7 +223,8 @@ function useReviewUrgent() {
   return urgent > 0 ? urgent : null;
 }
 
-const rvToday = () => new Date().toISOString().slice(0, 10);
+/* 「今日」按作者所在时区的日历日（审计 F05-05：以前是 UTC 日，东八区早上 8 点才换日） */
+const rvToday = () => localDayKey();
 function rvDoneState() {
   try { return JSON.parse(localStorage.getItem(RV_DONE_LS)) || {}; } catch (e) { return {}; }
 }
@@ -402,6 +335,6 @@ try { rvFetch(); } catch (e) {}
 
 export {
   RV_KINDS, rvOpenItems, rvSnoozedList, rvReady, rvLoadErrorOf, rvUrgentCount, rvDoneToday,
-  rvFetch, rvPush, rvMarkResolved, rvUnresolve, rvMarkSnoozed, rvUnsnooze, rvResolveAction, rvMigrateLegacy,
+  rvFetch, rvPush, rvMarkResolved, rvUnresolve, rvMarkSnoozed, rvUnsnooze, rvResolveAction,
   rvSubscribe, useReviewOpenItems, useReviewUrgent,
 };

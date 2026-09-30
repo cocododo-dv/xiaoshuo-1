@@ -99,50 +99,54 @@ describe("WsReview（收件箱乐观处理 + 失败告警）", () => {
     await vi.waitFor(() => expect(window.alert).toHaveBeenCalled(), T);
   });
 
-  it("旧待办迁移失败时不落完成标记，并以稳定去重键安全重试", async () => {
-    const { mod, client } = await loadReview();
-    const migrationProject = "prj-migration-test";
-    const legacyKey = `ws_review_v1::${migrationProject}`;
-    const migratedKey = `ws_review_migrated_v1::${migrationProject}`;
-    window.localStorage.removeItem(migratedKey);
-    window.localStorage.setItem(legacyKey, JSON.stringify({
-      custom: [{ id: "legacy-1", title: "未迁移批注", kind: "note" }],
+  it("6 月原型时期的本机待办不再上行（批准 #25，重评 R16）：旧键原样留着，不发任何投递", async () => {
+    window.localStorage.setItem("ws_review_v1::prj-main", JSON.stringify({
+      custom: [{ id: "legacy-1", title: "六月的旧批注", kind: "note" }],
     }));
-    client.apiPost.mockClear();
-    client.apiPost.mockRejectedValueOnce(new Error("offline"));
+    const { mod, client } = await loadReview();
+    await vi.waitFor(() => expect(mod.rvReady()).toBe(true), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(client.apiPost.mock.calls.filter(([url]) => url === "/api/v1/review-items")).toEqual([]);
+    expect(window.localStorage.getItem("ws_review_v1::prj-main")).not.toBeNull();
+    expect(window.localStorage.getItem("ws_review_migrated_v1::prj-main")).toBeNull();
+  });
 
-    await expect(mod.rvMigrateLegacy(migrationProject)).resolves.toBe(false);
-    expect(window.localStorage.getItem(migratedKey)).toBeNull();
-    expect(window.localStorage.getItem(legacyKey)).not.toBeNull();
-
-    await expect(mod.rvMigrateLegacy(migrationProject)).resolves.toBe(true);
-    expect(window.localStorage.getItem(migratedKey)).not.toBeNull();
-    const writes = client.apiPost.mock.calls.filter(([url]) => url === "/api/v1/review-items");
-    expect(writes).toHaveLength(2);
-    expect(writes[0][1].dedupe_key).toBe("legacy-review:0:legacy-1");
-    expect(writes[1][1].dedupe_key).toBe(writes[0][1].dedupe_key);
+  it("「今日已处理」按作者所在的时区换日：东八区早上 8 点以前也还是今天（审计 F05-05）", async () => {
+    await loadReview();
+    const store = await import("./ws-review-store.js");
+    const prevTZ = process.env.TZ;
+    process.env.TZ = "Asia/Shanghai";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-01T23:30:00Z"));        // 东八区 10 月 2 日 07:30（UTC 还是 10 月 1 日）
+      window.localStorage.setItem("ws_review_done_v1", JSON.stringify({ d: "2026-10-02", n: 3 }));
+      expect(store.rvDoneToday()).toBe(3);
+      vi.setSystemTime(new Date("2026-10-02T15:59:00Z"));        // 东八区 23:59：还是同一天
+      expect(store.rvDoneToday()).toBe(3);
+      vi.setSystemTime(new Date("2026-10-02T16:01:00Z"));        // 东八区 10 月 3 日 00:01：换日，从零数起
+      expect(store.rvDoneToday()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      if (prevTZ === undefined) delete process.env.TZ; else process.env.TZ = prevTZ;
+    }
   });
 });
 
-/* ---------- 视图：旧表行可读、没有动作的卡也能用鼠标处理、键盘快捷键不吞按钮 ---------- */
+/* ---------- 视图：没有动作的卡也能用鼠标处理、键盘快捷键不吞按钮 ---------- */
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 
-const PREF_CARD = {
-  id: "rv-pref",
+/* 没有动作的工作台卡（后端给的 actions 是空的）：收件箱照样给「知道了 / 稍后」 */
+const PLAIN_CARD = {
+  id: "rv-plain",
   kind: "decision",
   priority: 2,
-  title: JSON.stringify({
-    manual_edit_count: 2,
-    manual_edit_observations: [{ object_id: "X_CH01_SC01", labels: ["prefer_expansion"] }],
-    safe_preference_hints: ["prefer_expansion", "prefer_longer_paragraphs"],
-  }),
+  title: "旧信要不要先拆开",
   where: "",
-  source: "author_preference_profile",
+  source: "fe_card",
   occurred_at: "2026-06-08T00:00:00Z",
   live: false,
   actions: [],
-  legacy: true,
 };
 
 describe("WsReview 视图", () => {
@@ -177,13 +181,12 @@ describe("WsReview 视图", () => {
     return { mod, client };
   }
 
-  it("旧表的写作偏好行：标题是可读的倾向，不是原始 JSON；来源是中文；给出「知道了 / 稍后」", async () => {
-    const { mod, client } = await mount([PREF_CARD]);
+  it("没有动作的卡：来源是中文、补出「知道了 / 稍后」，「知道了」不带卡上的动作编号", async () => {
+    const { mod, client } = await mount([PLAIN_CARD]);
     const card = host.querySelector(".rv-item");
-    expect(card.textContent).toContain("写作偏好：偏好扩写、偏好更长的段落");
-    expect(card.textContent).not.toContain("safe_preference_hints");
-    expect(card.textContent).not.toContain("author_preference_profile");
-    expect(card.textContent).toContain("来自写作偏好");
+    expect(card.textContent).toContain("旧信要不要先拆开");
+    expect(card.textContent).toContain("来自工作台");
+    expect(card.textContent).not.toContain("fe_card");
     const labels = [...card.querySelectorAll(".rv-actions button")].map((b) => b.textContent);
     expect(labels).toEqual(["知道了", "稍后"]);
     expect(mod.rvReady()).toBe(true);
@@ -193,16 +196,16 @@ describe("WsReview 视图", () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 350)); });
     // 补出来的「知道了」不是卡上的动作：resolve 不带 action_index
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v1/review-items/rv-pref/resolve", { project_id: "prj-main" }), T);
+      "/api/v1/review-items/rv-plain/resolve", { project_id: "prj-main" }), T);
   });
 
   it("只有一个优先级段时不画段头", async () => {
-    await mount([PREF_CARD]);
+    await mount([PLAIN_CARD]);
     expect(host.querySelector(".rv-band")).toBeNull();
   });
 
   it("焦点在按钮上时回车 / 空格不被收件箱吞掉；E 只处理焦点所在的那张卡", async () => {
-    const { client } = await mount([DEFAULT_REVIEW_CARD, { ...PREF_CARD, id: "rv2", priority: 1 }]);
+    const { client } = await mount([DEFAULT_REVIEW_CARD, { ...PLAIN_CARD, id: "rv2", priority: 1 }]);
     const chip = [...host.querySelectorAll('[role="radio"]')].find((b) => b.textContent.includes("决策"));
     const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
     await act(async () => { chip.dispatchEvent(enter); });
@@ -241,7 +244,7 @@ describe("WsReview 视图", () => {
   });
 
   it("开发模式（StrictMode）下稍后一张卡，「稍后处理」只数 1；恢复后列表里也只有一张", async () => {
-    const { client } = await mount([PREF_CARD], { strict: true });
+    const { client } = await mount([PLAIN_CARD], { strict: true });
     // 稍后 / 恢复的请求一直挂着：断言的是乐观移动本身，不让刷新回来的列表把它盖掉
     client.apiPost.mockImplementation(() => new Promise(() => {}));
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});

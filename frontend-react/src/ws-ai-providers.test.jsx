@@ -26,8 +26,6 @@ async function loadStore() {
 describe("WsAiProviders store(AI 模型接入)", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
-    window.sessionStorage.clear();
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -85,16 +83,22 @@ describe("WsAiProviders store(AI 模型接入)", () => {
     expect(client.apiGet.mock.calls.length).toBe(callsBefore);
   });
 
-  it("admin token stays session-scoped and migrates legacy local storage", async () => {
+  it("管理令牌只读 sessionStorage：旧版 localStorage 里的那一份不再搬过来，但照旧抹掉（批准 #25，重评 R16）", async () => {
     window.localStorage.setItem("novel-system-admin-token", "legacy-token");
     const { mod } = await loadStore();
 
-    expect(mod.WsAiProviders.adminToken()).toBe("legacy-token");
+    expect(mod.WsAiProviders.adminToken()).toBe("");
     expect(window.localStorage.getItem("novel-system-admin-token")).toBeNull();
-    expect(window.sessionStorage.getItem("novel-system-admin-token")).toBe("legacy-token");
+    expect(window.sessionStorage.getItem("novel-system-admin-token")).toBeNull();
 
     mod.WsAiProviders.setAdminToken("session-token");
+    expect(mod.WsAiProviders.adminToken()).toBe("session-token");
     expect(window.sessionStorage.getItem("novel-system-admin-token")).toBe("session-token");
+    expect(window.localStorage.getItem("novel-system-admin-token")).toBeNull();
+
+    // 会话里有令牌时，localStorage 里再冒出来的旧值同样抹掉、不取代会话里的
+    window.localStorage.setItem("novel-system-admin-token", "stale-token");
+    expect(mod.WsAiProviders.adminToken()).toBe("session-token");
     expect(window.localStorage.getItem("novel-system-admin-token")).toBeNull();
   });
 });
