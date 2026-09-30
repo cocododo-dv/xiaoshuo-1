@@ -67,7 +67,7 @@ PASSAGE_RELATION_LABELS: dict[str, str] = {"contradiction": "矛盾", "repetitio
 
 
 def candidate_category_for_dimension(dimension: str) -> str:
-    """一条发现的维度 → 局部修补的类别（偏好画像按类别学）。规则维度与深评十维都认。"""
+    """一条发现的维度 → 局部修补的类别（记在改写候选行上，改写策略按它给）。规则维度与深评十维都认。"""
 
     value = str(dimension or "")
     if value in {"dialogue_subtext", "dialogue_edge", "relationship_tension", "expository_dialogue", "dialogue_as_report"}:

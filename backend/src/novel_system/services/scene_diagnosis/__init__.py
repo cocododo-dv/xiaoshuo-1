@@ -33,8 +33,9 @@
 
 包的分工（依赖只朝下）：``vocabulary``（口径、来源、维度中文名）← ``text``（诊断看的正文、定位、局部深评的
 范围）← ``calibration``（节奏检查的参考书读数；规则维度那一半在 ``literary_quality.calibration_source``）←
-``findings``（各来源 → 统一发现、计数、进程缓存）← ``serialize``（改写候选 / 局部深评的序列化）← ``service``
-（``SceneDiagnosisService``：读库、拼载荷、计数）。只依赖 ``literary_quality``、``manuscript_html``、两个纯函数的
+``findings``（各来源 → 统一发现、计数、进程缓存）← ``serialize``（改写候选 / 局部深评的序列化）← ``context``
+（一组场的诊断原料一次取齐：正文、评审行、局部深评、镜头行、冻结正文）← ``service``（``SceneDiagnosisService``：
+拼载荷、计数）。只依赖 ``literary_quality``、``manuscript_html``、两个纯函数的
 段型判断、模型与风格绑定解析；``writer_deep_review`` / ``api.routes`` 从这里取载荷。调用方从这个包取的名字在这里
 原样再导出。
 """
