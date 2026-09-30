@@ -19,7 +19,10 @@ _WS_RE = re.compile(r"\s+")
 
 @dataclass
 class DiagnosisText:
-    """一场的诊断正文。建好之后不再改（``paragraphs`` 不追加、不替换），所以可见文字与哈希只算一次。"""
+    """一场的诊断正文。建好之后不再改（``paragraphs`` 不追加、不替换），所以可见文字与哈希只算一次。
+
+    ``layer``：``author_draft`` / ``runtime_final_scene``，或 ``none``——没有可见文字（空白作者稿也是，见
+    ``context.diagnosis_text``）；各处「有没有正文」都只看 ``layer == "none"`` 这一个口径。"""
 
     layer: str
     ref: str | None

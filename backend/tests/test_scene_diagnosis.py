@@ -601,6 +601,20 @@ def test_scene_without_text_diagnoses_nothing(client: TestClient, session) -> No
     assert payload["summary"]["open"] == 0
 
 
+def test_a_blank_author_draft_is_no_text(client: TestClient, session) -> None:
+    """写作台一打开就建的空白作者稿是一张白纸：诊断说没有正文、不报发现，整本书的计数也不把它算成有字的场。以前它
+    算「作者稿层」：缺选择 / 缺代价 / 结尾没推力这类规则对白纸报四条，主页与成稿中心的角标给每个打开过的空场
+    「诊断 4」，深评还拿它去调模型（复核 P02b-R1）。"""
+
+    _seed_scene(session, draft_html="<p><br></p>")
+    payload = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
+    assert payload["text"] == {"layer": "none", "ref": None, "sha256": None, "paragraph_count": 0, "chars": 0}
+    assert payload["findings"] == [] and payload["summary"]["open"] == 0
+    summary = client.get(f"/api/v1/projects/{PROJECT_ID}/diagnosis-summary").json()["data"]
+    assert summary["scenes"][SCENE_ID]["text_layer"] == "none" and summary["scenes"][SCENE_ID]["open"] == 0
+    assert summary["totals"]["scenes_with_text"] == 0 and summary["totals"]["open"] == 0
+
+
 # ---------------------------------------------------------------------------
 # 第二轮（同日）：节奏检查按参考作者校准
 # ---------------------------------------------------------------------------

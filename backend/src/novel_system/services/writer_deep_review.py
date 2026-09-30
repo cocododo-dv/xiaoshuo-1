@@ -197,7 +197,8 @@ class WriterDeepReviewService(PassagePatchMixin):
 
     def run_scene_review(self, scene_id: str, actor_ref: str = "operator") -> dict[str, Any]:
         """「AI 深评」：对写作台看到的这一场正文跑一次 writer_deep_review 节点，返回统一诊断载荷。拒绝式：无模型即
-        409；这一场还没有正文也 409（不拿空提示词去花钱，模型给的「发现」只能是编的）。"""
+        409；这一场还没有正文也 409（不拿空提示词去花钱，模型给的「发现」只能是编的）——写作台打开就建的空白作者稿
+        也算没有正文（``diagnosis_text`` 按可见文字判）。"""
 
         scene = require_scene(self.session, scene_id)
         self._require_live_llm("writer_deep_review")
@@ -302,6 +303,7 @@ class WriterDeepReviewService(PassagePatchMixin):
         diagnosis_service = SceneDiagnosisService(self.session)
         text = diagnosis_service.text_for_scene(scene)
         if text.layer == "none":
+            # 空白作者稿也在这里（diagnosis_text 按可见文字判）：不拿空段落去调模型
             raise DomainError("WRITER_PASSAGE_REVIEW_NO_TEXT", "这一场还没有正文，没有可看的段落。", status_code=409)
         about: dict[str, Any] | None = None
         focus: list[int] = []
@@ -349,6 +351,14 @@ class WriterDeepReviewService(PassagePatchMixin):
                 f"一次最多看 {PASSAGE_MAX_FOCUS_PARAGRAPHS} 段；要看整场就跑 AI 深评。",
                 status_code=400,
                 details={"paragraph_count": len(text.paragraphs), "focus_count": len(focus)},
+            )
+        if not any(text.paragraphs[index].strip() for index in focus):
+            # 焦点段全是空段（编辑器里的空行）：没有可看的字，模型给的判断只能是编的（复核 P02b-R1）
+            raise DomainError(
+                "WRITER_PASSAGE_REVIEW_NO_TEXT",
+                "要看的那一段是空的，没有可看的字。",
+                status_code=409,
+                details={"paragraph_count": len(text.paragraphs), "focus_paragraphs": focus},
             )
         scope = passage_scope(text.paragraphs, focus)
         snapshot: dict[str, Any] = {

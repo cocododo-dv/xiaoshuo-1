@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from novel_system.db.models import (
+    AuthorDraft,
     AuthorPreferenceProfile,
     ChapterGoal,
     FinalScene,
@@ -674,7 +675,10 @@ def test_a_provider_failure_is_a_502_and_a_missing_route_a_409_on_every_writer_n
 
 
 def test_deep_review_without_any_text_refuses_before_calling_the_model(client: TestClient, session, monkeypatch) -> None:
-    """没有正文不调模型（审计 B05-06）：整场深评与整章通读都 409 WRITER_DEEP_REVIEW_NO_TEXT，不花一次调用。"""
+    """没有正文不调模型（审计 B05-06）：整场深评与整章通读都 409 WRITER_DEEP_REVIEW_NO_TEXT、局部深评 409
+    WRITER_PASSAGE_REVIEW_NO_TEXT，不花一次调用。没有正文也包括写作台一打开就建的空白作者稿（``""``，编辑器存回的
+    ``<p></p>`` / ``<p><br></p>``）：以前它算「作者稿层」，照样调模型、模型编的发现落进诊断，缺什么的规则还对白纸
+    报四条（复核 P02b-R1）；有字的场里一个空段，局部深评也不看。"""
 
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
     calls: list = []
@@ -684,16 +688,96 @@ def test_deep_review_without_any_text_refuses_before_calling_the_model(client: T
     final.content = "   "
     session.commit()
 
-    scene = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
-    assert scene.status_code == 409 and scene.json()["error"]["code"] == "WRITER_DEEP_REVIEW_NO_TEXT"
-    chapter = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review")
-    assert chapter.status_code == 409 and chapter.json()["error"]["code"] == "WRITER_DEEP_REVIEW_NO_TEXT"
+    def refused() -> None:
+        scene = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+        assert scene.status_code == 409 and scene.json()["error"]["code"] == "WRITER_DEEP_REVIEW_NO_TEXT"
+        chapter = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review")
+        assert chapter.status_code == 409 and chapter.json()["error"]["code"] == "WRITER_DEEP_REVIEW_NO_TEXT"
+        passage = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 0})
+        assert passage.status_code == 409 and passage.json()["error"]["code"] == "WRITER_PASSAGE_REVIEW_NO_TEXT"
+
+    refused()
+    # 写作台打开这一场：空白作者稿（没有有字终稿的场，写作台建的就是这一份）
+    draft_id = AuthorDraftService(session).ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]["draft_id"]
+    session.commit()
+    for blank in ("", "<p></p>", "<p><br></p>", "<p> </p><p>\u3000</p>"):
+        session.get(AuthorDraft, draft_id).content = blank
+        session.commit()
+        text = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
+        assert text["text"]["layer"] == "none" and text["text"]["chars"] == 0, blank
+        assert text["findings"] == [], "白纸不诊断：缺选择 / 缺代价这类规则对白纸全会响"
+        refused()
+    assert calls == []
+
+    # 有字的场里一个空段（编辑器里的空行）：局部深评不拿它去调模型
+    session.get(AuthorDraft, draft_id).content = "<p>门外很安静。</p><p></p><p>钟响了三声。</p>"
+    session.commit()
+    empty_focus = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 1})
+    assert empty_focus.status_code == 409 and empty_focus.json()["error"]["code"] == "WRITER_PASSAGE_REVIEW_NO_TEXT"
+    assert empty_focus.json()["error"]["details"]["focus_paragraphs"] == [1]
     assert calls == []
 
     # 没有模型时照旧先说「要模型」（与局部深评同一个先后）
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     denied = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
     assert denied.status_code == 409 and denied.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_REQUIRED"
+
+
+def test_a_blank_scene_is_not_read_through_and_never_counts_as_changed(client: TestClient, session, monkeypatch) -> None:
+    """章里一场只有空白作者稿（写作台打开过、还没写字）：「AI 通读本章」不送它（以前送一个空的 【第 2 场】）、它记的
+    哈希是空的；通读之后又打开一场新的空白场，章级通读也不因此变成「改前的」——以前空白作者稿按空串的哈希算有字，
+    成稿中心给「只通读改过的 1 场」，点了又是一次只有摘要的白花钱的调用（复核 P02b-R1）。"""
+
+    prompts: list[str] = []
+
+    class ReadThroughRunner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
+        def run(self, **kwargs):
+            prompts.append(kwargs["user_prompt"])
+            return SimpleNamespace(
+                llm_call_id=f"llm_call_read_through_{len(prompts)}",
+                response=SimpleNamespace(structured_output={"findings": [], "scores": {}, "revision_brief": [], "lens_evaluations": []}),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", ReadThroughRunner)
+    _seed_finished_scene(session)
+    blank_ids = [f"{CHAPTER_ID}_SC02", f"{CHAPTER_ID}_SC03"]
+    for seq, scene_id in enumerate(blank_ids, start=2):
+        session.add(SceneCard(scene_id=scene_id, chapter_id=CHAPTER_ID, scene_seq=seq, scene_goal="她去码头等船。"))
+    session.commit()
+    # 第 2 场：没有终稿，写作台打开时建的就是空白作者稿
+    AuthorDraftService(session).ensure("scene", blank_ids[0], actor_ref="writer")
+    session.commit()
+
+    read = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review")
+    assert read.status_code == 200
+    assert len(prompts) == 1 and "【第 1 场】" in prompts[0] and "【第 2 场】" not in prompts[0]
+    row = session.get(WriterEvaluation, read.json()["data"]["ai"]["evaluation_id"])
+    recorded = {item["scene_id"]: item for item in row.contract_field_refs_json["scenes"]}
+    assert recorded[blank_ids[0]]["layer"] == "none" and recorded[blank_ids[0]]["sha256"] == ""
+    assert recorded[SCENE_ID]["sha256"]
+
+    # 通读之后打开第 3 场（也是白纸）：章级通读仍是现在这份字的，没有「改过的场」
+    AuthorDraftService(session).ensure("scene", blank_ids[1], actor_ref="writer")
+    session.commit()
+    after = client.get(f"/api/v1/chapters/{CHAPTER_ID}/deep-review").json()["data"]
+    assert after["ai"]["status"] == "current"
+    assert after["ai"]["changed_scene_ids"] == [] and after["ai"]["changed_count"] == 0
+    assert {entry["scene_id"]: entry["text_layer"] for entry in after["scenes"]} == {
+        SCENE_ID: "runtime_final_scene",
+        blank_ids[0]: "none",
+        blank_ids[1]: "none",
+    }
+    changed_only = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review", json={"scope": "changed"})
+    assert changed_only.status_code == 200 and changed_only.json()["data"]["notice"]["code"] == "CHAPTER_REVIEW_UP_TO_DATE"
+    assert len(prompts) == 1
 
 
 # ---------------------------------------------------------------------------

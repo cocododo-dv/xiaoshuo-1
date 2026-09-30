@@ -38,26 +38,44 @@ _MISSING = object()
 
 
 def diagnosis_text(draft: Any | None, final: FinalScene | None) -> DiagnosisText:
-    """诊断的正文 = 写作台看到的那份：当前作者稿，其次运行终稿（有字的），否则没有正文。"""
+    """诊断的正文 = 写作台看到的那份：当前作者稿，其次运行终稿（有字的），否则没有正文。
+
+    「有字」按可见文字算，不按存的内容：写作台一打开没有终稿的场就建一份空白作者稿（``""``，编辑器存回来是
+    ``<p></p>`` / ``<p><br></p>``），写作台上是一张白纸——这也是没有正文（``layer="none"``）：规则不诊断它（缺什么
+    的规则对白纸全会响），深评 / 局部深评 / 章级通读都不拿它去调模型（复核 P02b-R1），前端照 ``none`` 说「这一场还
+    没有正文」。作者稿在就以作者稿为准，不退回终稿——写作台上看到的就是这张白纸。"""
 
     if draft is not None:
         content = draft.content or ""
+        paragraphs = manuscript_paragraphs(content)
+        if not _has_visible_text(paragraphs):
+            return _no_text()
         return DiagnosisText(
             layer="author_draft",
             ref=f"author_draft:{draft.draft_id}",
             content=content,
-            paragraphs=manuscript_paragraphs(content),
+            paragraphs=paragraphs,
             updated_at=draft.updated_at,
         )
-    if final is not None and (final.content or "").strip():
+    if final is not None:
         content = final.content or ""
-        return DiagnosisText(
-            layer="runtime_final_scene",
-            ref=f"final_scene:{final.row_id}",
-            content=content,
-            paragraphs=manuscript_paragraphs(content),
-            updated_at=final.created_at,
-        )
+        paragraphs = manuscript_paragraphs(content)
+        if _has_visible_text(paragraphs):
+            return DiagnosisText(
+                layer="runtime_final_scene",
+                ref=f"final_scene:{final.row_id}",
+                content=content,
+                paragraphs=paragraphs,
+                updated_at=final.created_at,
+            )
+    return _no_text()
+
+
+def _has_visible_text(paragraphs: list[str]) -> bool:
+    return any(paragraph.strip() for paragraph in paragraphs)
+
+
+def _no_text() -> DiagnosisText:
     return DiagnosisText(layer="none", ref=None, content="", paragraphs=[], updated_at=None)
 
 
