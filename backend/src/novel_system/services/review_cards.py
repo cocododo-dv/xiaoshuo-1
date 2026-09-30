@@ -110,10 +110,6 @@ class ReviewCardService:
         items.sort(key=lambda card: 0 if card.get("priority") == 1 else 1)
         return {"items": items}
 
-    def badge(self, project_id: str) -> dict[str, Any]:
-        open_items = self.list_cards(project_id, state="open")["items"]
-        return {"count": sum(1 for card in open_items if card.get("priority") == 1)}
-
     # ---- 状态流转 ----
 
     def resolve(
