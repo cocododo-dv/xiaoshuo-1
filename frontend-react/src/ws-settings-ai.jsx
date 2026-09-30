@@ -13,7 +13,7 @@ import { CloseButton, Notice } from "./ws-ui.jsx";
    · 模型服务：已接入服务卡片（启用 / 测试 / 默认 / 编辑 / 删除）+ 预设添加流程
    · 模型分工：写作主力 / 审稿质检 / 提炼整理 三个分工批量路由
    · 高级路由：按分工列出每个 AI 功能用的服务与模型（只看不改），一键补齐缺失路由
-   2026-09-21：删掉「AI 行为 · 生成候选数」（只写 localStorage，没有代码读取）；内联样式收进 screens.css 的 .set-* 类。
+   2026-09-21：删掉「AI 行为 · 生成候选数」（只写 localStorage，没有代码读取）；样式在 ws-settings.css 的 .set-* 类。
    这个文件只管页面骨架与提示条：服务卡片与表单在 ws-settings-ai-providers.jsx，
    接入状态 / 分工 / 高级路由在 ws-settings-ai-routes.jsx，共用的纯函数在 ws-settings-ai-health.js。
    ========================================================== */

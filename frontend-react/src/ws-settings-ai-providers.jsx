@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsAiProviders } from "./ws-ai-providers.jsx";
-import { errText, providerHealth } from "./ws-settings-ai-health.js";
+import { errText, flashError, flashSyncMissing, providerHealth } from "./ws-settings-ai-health.js";
 import { Section, Row, Field, Toggle } from "./ws-settings-shared.jsx";
 import { Segmented, Tag } from "./ws-ui.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
@@ -46,7 +46,7 @@ function ProviderCard({ id, provider, state, onEdit, setFlash }) {
 
   const toggleEnabled = (on) => {
     WsAiProviders.saveProvider({ ...provider, provider_id: id, enabled: on })
-      .catch((error) => setFlash({ tone: "err", text: errText(error, "更新服务状态失败。") }));
+      .catch((error) => flashError(setFlash, error, "更新服务状态失败。"));
   };
 
   const remove = async () => {
@@ -65,13 +65,11 @@ function ProviderCard({ id, provider, state, onEdit, setFlash }) {
           text: `服务「${id}」已删除。有 ${orphaned.length} 个 AI 功能还指向它，已标为未就绪。`,
           action: {
             label: "一键补齐路由",
-            run: () => WsAiProviders.syncMissing({})
-              .then((r) => setFlash({ tone: "ok", text: `已用默认服务补齐 ${r.synced_node_ids?.length ?? 0} 个 AI 功能的路由。` }))
-              .catch((error) => setFlash({ tone: "err", text: errText(error, "补齐路由失败。") })),
+            run: () => flashSyncMissing(WsAiProviders.syncMissing({}), setFlash, (n) => `已用默认服务补齐 ${n} 个 AI 功能的路由。`),
           },
         } : { tone: "ok", text: `服务「${id}」已删除。` });
       })
-      .catch((error) => setFlash({ tone: "err", text: errText(error, "删除服务失败。") }));
+      .catch((error) => flashError(setFlash, error, "删除服务失败。"));
   };
 
   return (
@@ -100,7 +98,7 @@ function ProviderCard({ id, provider, state, onEdit, setFlash }) {
         </button>
         {!isDefault && (
           <button type="button" className="btn btn-ghost btn-sm" disabled={state.busy[`default:${id}`]}
-            onClick={() => WsAiProviders.setDefault(id).catch((error) => setFlash({ tone: "err", text: errText(error, "设为默认失败。") }))}>
+            onClick={() => WsAiProviders.setDefault(id).catch((error) => flashError(setFlash, error, "设为默认失败。"))}>
             设为默认
           </button>
         )}
@@ -215,9 +213,7 @@ function ProviderForm({ state, preset, editingId, onDone, setFlash, focusField }
         text: `服务「${form.provider_id.trim()}」已保存。还有 ${missing.length} 个 AI 功能没有指派模型。`,
         action: {
           label: "一键补齐路由",
-          run: () => WsAiProviders.syncMissing({ provider_id: form.provider_id.trim() })
-            .then((r) => setFlash({ tone: "ok", text: `已补齐 ${r.synced_node_ids?.length ?? 0} 个 AI 功能的路由。` }))
-            .catch((error) => setFlash({ tone: "err", text: errText(error, "补齐路由失败。") })),
+          run: () => flashSyncMissing(WsAiProviders.syncMissing({ provider_id: form.provider_id.trim() }), setFlash, (n) => `已补齐 ${n} 个 AI 功能的路由。`),
         },
       } : { tone: "ok", text: `服务「${form.provider_id.trim()}」已保存。` });
       onDone();
@@ -333,7 +329,7 @@ function ProvidersSection({ state, setFlash, editing, onEdit, onCloseEdit }) {
   const ids = Object.keys(providers);
 
   const openAdd = () => {
-    WsAiProviders.loadPresets().catch((error) => setFlash({ tone: "err", text: errText(error, "加载厂商目录失败。") }));
+    WsAiProviders.loadPresets().catch((error) => flashError(setFlash, error, "加载厂商目录失败。"));
     setAddMode("pick");
   };
 

@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsAiProviders } from "./ws-ai-providers.jsx";
-import { errText, providerHealth, providerUsable, reasonKey } from "./ws-settings-ai-health.js";
+import { flashError, flashSyncMissing, providerHealth, providerUsable, reasonKey } from "./ws-settings-ai-health.js";
 import { Section, Row, Field } from "./ws-settings-shared.jsx";
 import { Notice, Tag } from "./ws-ui.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
@@ -33,7 +33,7 @@ const REASON_SHORT = {
 
 /* ===== 没就绪的原因：按原因 + 服务分组，每组一条提示和一个能直接动手的按钮 ===== */
 function blockedGroups(overview) {
-  const blocked = (overview.readiness && overview.readiness.blocked_routes) || overview.blocked_routes || [];
+  const blocked = (overview.readiness && overview.readiness.blocked_routes) || [];
   const map = new Map();
   blocked.forEach((route) => {
     const key = reasonKey(route.reason);
@@ -177,7 +177,7 @@ function RoleSlotsSection({ state, setFlash }) {
     if (!ok) return;
     WsAiProviders.saveRoleRoutes(assignments, true)
       .then(() => { setDraft({}); setFlash({ tone: "ok", text: "分工已应用，对应 AI 功能的模型已经生效。" }); })
-      .catch((error) => setFlash({ tone: "err", text: errText(error, "应用分工失败。") }));
+      .catch((error) => flashError(setFlash, error, "应用分工失败。"));
   };
 
   return (
@@ -253,9 +253,7 @@ function AdvancedRoutes({ state, setFlash }) {
           <Notice tone="warn" title={`有 ${missing.length} 个 AI 功能还没有指派模型`}
             actions={(
               <button type="button" className="btn btn-ghost btn-sm" disabled={state.busy["sync-missing"]}
-                onClick={() => WsAiProviders.syncMissing({})
-                  .then((r) => setFlash({ tone: "ok", text: `已用默认服务补齐 ${r.synced_node_ids?.length ?? 0} 个 AI 功能。` }))
-                  .catch((error) => setFlash({ tone: "err", text: errText(error, "补齐路由失败。") }))}>
+                onClick={() => flashSyncMissing(WsAiProviders.syncMissing({}), setFlash, (n) => `已用默认服务补齐 ${n} 个 AI 功能。`)}>
                 用默认服务补齐
               </button>
             )}>

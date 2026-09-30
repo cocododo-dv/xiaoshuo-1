@@ -206,6 +206,34 @@ describe("设置页", () => {
     }
   });
 
+  it("高级路由「用默认服务补齐」：成功报补了几个 AI 功能，失败按错误码说人话", async () => {
+    window.sessionStorage.setItem("ws_settings_tab_v1", "ai");
+    const view = await mountSettings();
+    const overview = { ...llmOverview(), missing_active_routes: ["hard_qc"] };
+    view.client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [{ project_id: "prj-s", title: "试写本" }] });
+      if (url === "/api/v1/system-config/llm") return Promise.resolve(overview);
+      return Promise.resolve({});
+    });
+    const { WsAiProviders } = await import("./ws-ai-providers.jsx");
+    try {
+      await act(async () => { await WsAiProviders.refresh(); });
+      await vi.waitFor(() => expect(btn(view.host, "用默认服务补齐")).toBeTruthy());
+      view.client.apiAdminPost.mockResolvedValueOnce({ synced_node_ids: ["hard_qc"] });
+      await click(btn(view.host, "用默认服务补齐"));
+      await vi.waitFor(() => expect(view.host.querySelector(".set-flash").textContent).toContain("已用默认服务补齐 1 个 AI 功能。"));
+      expect(view.client.apiAdminPost).toHaveBeenCalledWith(
+        "/api/v1/system-config/llm/node-routes/sync-missing", { activate: true }, expect.anything());
+
+      view.client.apiAdminPost.mockRejectedValueOnce(Object.assign(new Error("admin token required"), { code: "ADMIN_TOKEN_REQUIRED" }));
+      await click(btn(view.host, "用默认服务补齐"));
+      await vi.waitFor(() => expect(view.host.querySelector(".set-flash").textContent).toContain("管理令牌缺失或不正确"));
+      expect(view.host.querySelector(".set-flash").textContent).not.toContain("admin token required");
+    } finally {
+      await view.unmount();
+    }
+  });
+
   it("外观：开关是 role=switch，字号范围来自偏好 schema，动效与界面模式都在", async () => {
     window.sessionStorage.setItem("ws_settings_tab_v1", "appear");
     const view = await mountSettings();

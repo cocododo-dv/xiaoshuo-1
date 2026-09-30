@@ -10,6 +10,7 @@ import { WS_NAV_GROUPS } from "./ws-nav.js";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { isImeComposing } from "./lib/keyboard.js";
+import { emit } from "./lib/events.js";
 import { WR_ANNO_KEY_PREFIX, wrAnnoLoad } from "./ws-writer-annotations.js";
 
 const { useState: useSt6, useEffect: useEf6, useLayoutEffect: useLayout6, useRef: useRef6 } = React;
@@ -202,10 +203,10 @@ function ProjectField({ label, hint, value, onSave, type = "text", step, stacked
 }
 
 function ProjectSettings() {
-  const work = useActiveWork ? useActiveWork() : { id: "", title: "", genre: "", sub: "", wordsTarget: 0, wordsTargetDay: 0, streak: 0 };
+  const work = useActiveWork();
   useCatalogChapters();   // 订阅目录：字数 / 章数变化时这里跟着刷新
-  const totals = WsCatalog ? WsCatalog.totals() : { words: 0, written: 0, planned: 0, today: 0 };
-  const save = (patch) => { if (WsWorks && work.id) WsWorks.update(work.id, patch); };
+  const totals = WsCatalog.totals();
+  const save = (patch) => { if (work.id) WsWorks.update(work.id, patch); };
   const pct = work.wordsTarget ? Math.min(100, Math.round((totals.words / work.wordsTarget) * 100)) : 0;
 
   return (
@@ -316,8 +317,8 @@ export function wsWorkCachePurgePlan(workId, storage = localStorage) {
 }
 
 function DataSettings({ go }) {
-  const works = useWorks ? useWorks() : [];
-  const work = WsWorks ? WsWorks.active() : { id: "", title: "—" };
+  const works = useWorks();
+  const work = WsWorks.active();
   const worksN = works.length || 1;
 
   const clearLocalCache = async () => {
@@ -357,7 +358,7 @@ function DataSettings({ go }) {
           <button type="button" className="btn btn-ghost" onClick={() => go && go("manuscripts")}>去成稿中心 <I.ArrowRight size={13} /></button>
         </Row>
         <Row label="浏览器缓存快照" hint="冲突副本、未同步稿和覆盖前备份，供诊断和人工找回；不含服务端数据库，不能用来迁移项目。" readonly>
-          <button type="button" className="btn btn-ghost" onClick={() => window.dispatchEvent(new CustomEvent("ws:recovery-open"))}>
+          <button type="button" className="btn btn-ghost" onClick={() => emit("ws:recovery-open")}>
             <I.Database size={13} /> 打开同步与恢复
           </button>
         </Row>
