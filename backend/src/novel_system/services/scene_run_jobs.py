@@ -53,18 +53,14 @@ register_cache_reset("scene_run_jobs.bundle_draft_modes", _BUNDLE_DRAFT_MODES.cl
 
 RUN_JOB_CANCEL_REQUESTED = "RUN_JOB_CANCEL_REQUESTED_BY_AUTHOR"
 RUN_JOB_CANCELLED = "RUN_JOB_CANCELLED_BY_AUTHOR"
+# 场景级预算闸（llm_scene_fence）拦下的几种：任务记 blocked，检查点可按预算续跑。全局额度闸的六个码
+# 随那六道闸一起退役了（批准 #3a，重评 R3），没有谁再抛它们。
 _BUDGET_REJECTION_CODES = frozenset(
     {
         "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED",
         "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED",
         "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
         "LLM_USAGE_EXCEEDS_RESERVATION",
-        "LLM_GLOBAL_CONCURRENCY_LIMIT",
-        "LLM_DAILY_REQUEST_LIMIT",
-        "LLM_DAILY_TOKEN_LIMIT",
-        "LLM_MONTHLY_TOKEN_LIMIT",
-        "LLM_PROJECT_DAILY_TOKEN_LIMIT",
-        "LLM_DAILY_COST_LIMIT",
     }
 )
 
